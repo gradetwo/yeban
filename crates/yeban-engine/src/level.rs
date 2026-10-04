@@ -409,12 +409,48 @@ mod tests {
         );
     }
 
-    /// 判据：搬迁前的关键数值经 **engine 路径**仍然逐位一致。
+    /// IEEE-754 单调映射：`f32` 位模式 → 可比较大小的整数，差值即 ulp 距离。
+    fn ordered_bits(bits: u32) -> i64 {
+        if bits & 0x8000_0000 != 0 {
+            -i64::from(bits & 0x7fff_ffff)
+        } else {
+            i64::from(bits)
+        }
+    }
+
+    /// 经过 `log10`/`exp`/`powf` 的冻结值在非冻结架构上允许的 ulp 预算。
+    ///
+    /// 与 `yeban_dsp::meter::tests` 的常量同源同值（各自的测例私有，不能共享）。
+    /// 依据见那份判据的文档：超越函数不要求正确舍入，跨架构可差 1 ulp 并沿弹道累积；
+    /// 4096 ulp ≈ 2.4e-4 相对，远小于任何真实行为漂移（最小的注入效应 ≈ 50000 ulp）。
+    const TRANSCENDENTAL_ULP_BUDGET: i64 = 4096;
+
+    /// **判据**：搬迁前的关键数值经 **engine 路径**仍然一致。
     ///
     /// 这是 `yeban-engine/src/level.rs`（main `b014e8f`）上实测冻结的位模式子集；
     /// 完整 285 条的对照在 `yeban_dsp::meter::tests`。
+    ///
+    /// - 只经过 IEEE 正确舍入运算的量（钳位、比较、`abs`/`max`、乘除、`sqrt`）：
+    ///   **逐位**相同，没有容差；
+    /// - 经过 `log10`/`exp`/`powf` 的量：给 4096 ulp 的跨架构预算，
+    ///   在冻结架构（aarch64）上仍然要求逐位相同。
     #[test]
     fn frozen_level_table_through_the_engine_path() {
+        /// 超越函数类条目的比较：ulp 预算 + 冻结架构上逐位。
+        fn assert_within_ulp_budget(name: &str, got: f32, frozen: u32) {
+            let distance = (ordered_bits(got.to_bits()) - ordered_bits(frozen)).abs();
+            assert!(
+                distance <= TRANSCENDENTAL_ULP_BUDGET,
+                "{name} 超出 ulp 预算: 实测 {:#010x} ({}), 搬迁前 {frozen:#010x} ({}), 相距 {distance} ulp",
+                got.to_bits(),
+                got,
+                f32::from_bits(frozen)
+            );
+            if cfg!(target_arch = "aarch64") {
+                assert_eq!(got.to_bits(), frozen, "{name} 在冻结架构上必须逐位相同");
+            }
+        }
+
         // 纯函数：钳位 / dBFS / 取最新（位模式来自搬迁前实测）。
         assert_eq!(sanitize_sample(f32::NAN).to_bits(), 0x0000_0000);
         assert_eq!(sanitize_sample(f32::INFINITY).to_bits(), 0x4180_0000);
@@ -423,11 +459,13 @@ mod tests {
         assert_eq!(sanitize_sample(-1.0e30).to_bits(), 0xc180_0000);
         assert_eq!(sanitize_sample(0.25).to_bits(), 0x3e80_0000);
         assert_eq!(sanitize_sample(-0.0).to_bits(), 0x8000_0000);
+        // `dbfs(1.0) = 0`、`dbfs(≤0) = −∞` 是**精确**边界, 逐位钉住。
         assert_eq!(dbfs(1.0).to_bits(), 0x0000_0000);
-        assert_eq!(dbfs(0.5).to_bits(), 0xc0c0_a8c2);
         assert_eq!(dbfs(0.0).to_bits(), 0xff80_0000);
         assert_eq!(dbfs(f32::NAN).to_bits(), 0xff80_0000);
-        assert_eq!(dbfs(16.0).to_bits(), 0x41c0_a8c2);
+        // 一般点由 `log10` 得出 ⇒ 走 ulp 预算。
+        assert_within_ulp_budget("dbfs(0.5)", dbfs(0.5), 0xc0c0_a8c2);
+        assert_within_ulp_budget("dbfs(16.0)", dbfs(16.0), 0x41c0_a8c2);
         assert_eq!(dbfs_clamped(0.0, -120.0).to_bits(), 0xc2f0_0000);
         assert_eq!(dbfs_clamped(1.0e-9, -120.0).to_bits(), 0xc2f0_0000);
         assert_eq!(dbfs_clamped(1.0, -120.0).to_bits(), 0x0000_0000);
@@ -445,19 +483,23 @@ mod tests {
         assert_eq!(reading.peak.to_bits(), 0x3f80_0000);
         assert_eq!(reading.peak_hold.to_bits(), 0x3f80_0000);
         assert_eq!(reading.rms.to_bits(), 0x3f35_04f3);
-        assert_eq!(reading.rms_smoothed.to_bits(), 0x3d88_3b02);
+        assert_within_ulp_budget("sine1.rms_smoothed", reading.rms_smoothed, 0x3d88_3b02);
         assert_eq!(reading.peak_dbfs().to_bits(), 0x0000_0000);
         assert_eq!(reading.peak_hold_dbfs().to_bits(), 0x0000_0000);
-        assert_eq!(reading.rms_dbfs().to_bits(), 0xc1bc_5432);
+        assert_within_ulp_budget("sine1.rms_dbfs", reading.rms_dbfs(), 0xc1bc_5432);
 
         // 峰值保持的 1 量子释放乘子与平滑均方的一量子系数（内部弹道系数）。
         let mut detector = LevelDetector::new();
         let _ = detector.analyze(&[1.0f32; 64]);
-        assert_eq!(detector.analyze(&[]).peak_hold.to_bits(), 0x3f7e_6ed4);
+        assert_within_ulp_budget(
+            "release.one_quantum",
+            detector.analyze(&[]).peak_hold,
+            0x3f7e_6ed4,
+        );
         let mut detector = LevelDetector::new();
         let one = detector.analyze(&[1.0f32; 64]);
-        assert_eq!(one.rms_smoothed.to_bits(), 0x3dc0_a8b6);
-        assert_eq!(detector.mean_square().to_bits(), 0x3c10_fd80);
+        assert_within_ulp_budget("smooth.one_quantum_rms", one.rms_smoothed, 0x3dc0_a8b6);
+        assert_within_ulp_budget("smooth.one_quantum_ms", detector.mean_square(), 0x3c10_fd80);
 
         // 静音 / 空块的边界。
         let mut detector = LevelDetector::new();

@@ -120,6 +120,28 @@ rms_coeff         = exp(−1 / (τ · qps))             // τ = 300 ms @375 ⇒ 
 **为什么用位模式而不是容差**：容差会掩盖"顺手改了行为"。把 20 dB/s 改成 10 dB/s、
 把钳位删掉、把 `NaN` 原样返回，都会在这张表上逐条变红（§6 的注入 1–3 实测）。
 
+#### 3.1.1 两类比较（跨架构的诚实处理）
+
+这张表是 **aarch64 本机**冻结的，而 CI 是 **x86_64**。第一版判据要求 285 条**全部**逐位相同，
+**CI 实测抓到 1 条 1 ulp 差异**（run `37238420778`，`rust (workspace 全量)` → `test --workspace`）：
+`dbfs(√½)`，aarch64 `0xc040a8c2`（−3.0103002）vs x86_64 `0xc040a8c3`（−3.0103004）。
+原因是 `f32::log10` 这类**超越函数不要求正确舍入**，两个架构的标准库实现可以差 1 ulp。
+
+因此判据按**运算类别**分开（不是简单放宽容差）：
+
+| 类别 | 判据 | 依据 |
+| :--- | :--- | :--- |
+| **IEEE 精确类**：`san.*`、`sup.*`、`const.*`，以及读数的 `.peak`（`abs`/`max`）、`.rms`（乘加/除/`sqrt`）、`.is_sane` | **跨架构逐位相同，零容差** | 这些运算 IEEE-754 要求**正确舍入**，任何架构都必须给出同一位模式 |
+| **超越函数类**：`db.*`、`dbc.*`、`.peak_hold*`、`.rms_smoothed`、`.`*`_dbfs`、`release.one_quantum`、`smooth.*`、`decay.*`、`reset.*` | 非冻结架构给 **4096 ulp** 预算；**冻结架构（aarch64）上仍然逐位相同** | `log10`/`exp`/`powf` 不要求正确舍入；误差沿弹道递归累积上界 ≈ `750 · 2^-24 ≈ 4.5e-5`（≈ 750 ulp），4096 ulp ≈ 2.4e-4 相对留 5× 余量 |
+
+**预算足够紧吗**：最小的一次真实漂移是注入 1（20 → 10 dB/s 改动 `peak_release` 0.3%
+≈ **50000 ulp**），仍然远超 4096 ulp 的预算 ⇒ 行为漂移照样变红（§7.2 实测重跑确认）。
+换句话说：**同类内逐位、跨架构限 ulp、行为漂移照抓**。
+
+> 诚实边界：**"285 条逐位相同"这个结论只在 aarch64 本机上被验证过**。
+> CI（x86_64）验证的是"IEEE 精确类逐位 + 超越函数类 ≤ 4096 ulp"。
+> 不得把后者说成跨架构逐位 —— 见 §8 的 N4（现已由本设计**收敛**，不再是悬空风险）。
+
 ### 3.2 关键数值表（搬迁前实测，搬迁后仍逐位相同）
 
 | 输入 / 场景 | 量 | 位模式 | 十进制 |
@@ -143,8 +165,8 @@ rms_coeff         = exp(−1 / (τ · qps))             // τ = 300 ms @375 ⇒ 
 
 ### 3.3 交叉核对
 
-- dsp 侧 285 条**全部**逐位命中；
-- engine 侧经 `yeban_engine::level` 再导出的关键子集逐位命中；
+- dsp 侧 285 条**全部**命中（aarch64：逐位；见 §3.1.1 的两类规则）；
+- engine 侧经 `yeban_engine::level` 再导出的关键子集命中；
 - 搬迁前后 engine 的结构性读数**完全一致**：
   `[meter-rt] S1 汇总: quanta=10242 publishes=10242 frames=40968 capacity_drops=0`
   （与 `engine-meters-notes.md` §5.3 的上一轮实测逐字相同）；
@@ -240,8 +262,8 @@ rms_coeff         = exp(−1 / (τ · qps))             // τ = 300 ms @375 ⇒ 
 
 | # | 判据 | 测试名 | 注入什么会变红 |
 | :-: | :--- | :--- | :--- |
-| d1 | 搬迁前后 285 条读数逐位相同 | `frozen_pre_hoist_table_is_reproduced_bit_for_bit`（dsp） | 任何行为漂移（实测注入 1/2/3） |
-| d2 | engine 路径下关键子集逐位相同 | `frozen_level_table_through_the_engine_path`（engine） | 同上（实测注入 1/2/4） |
+| d1 | 搬迁前后 285 条读数一致（IEEE 精确类逐位；超越函数类 ≤ 4096 ulp，冻结架构上逐位） | `frozen_pre_hoist_table_is_reproduced_bit_for_bit`（dsp） | 任何行为漂移（实测注入 1/2/3/5） |
+| d2 | engine 路径下关键子集一致（同一分策） | `frozen_level_table_through_the_engine_path`（engine） | 同上（实测注入 1/2/3/4/5） |
 | d3 | engine 只有再导出、无第二份实现 | `engine_level_module_has_no_second_implementation` | 在 engine 加回任何实现记号（实测注入 4） |
 | d4 | engine 与 dsp **是同一个类型/函数** | `engine_level_is_literally_the_dsp_type` | 同上（实测注入 4） |
 | d5 | 峰值保持 1 秒恰好回落 **20 dB**（375 量子/s，写死） | `peak_hold_decays_by_the_documented_rate` | 释放率改成 10 dB/s（实测注入 1） |
@@ -320,15 +342,22 @@ rms_coeff         = exp(−1 / (τ · qps))             // τ = 300 ms @375 ⇒ 
 - `cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace --all-targets`
   的**默认 feature** 形态（含 cpal / Slint / symphonia）；
 - `cargo deny check`（本机跑了 light 档的许可清单对账，**不是** deny 全量）；
-- 跨平台（x86_64 Linux runner）的数值复现：`log10`/`powf`/`exp`/`sqrt` 的 1 ulp 差异
-  只影响观测量与 LUFS 的第 4 位小数，不影响 `MUST-GATE-002` 的音频 digest。
-  **注意**：§3 的 285 条位模式是 **aarch64 本机**的冻结值；若 CI 的 x86_64 上
-  `log10`/`powf` 有 1 ulp 差异，`frozen_pre_hoist_table_is_reproduced_bit_for_bit`
-  **可能**在 CI 上变红。这是一个**已知风险**，见 §8 的 N4。
+- 跨平台（x86_64 Linux runner）的数值复现 —— **真的抓到了东西**，见 §7.4。
 
-### 7.4 CI 判决
+### 7.4 CI 判决与"CI 抓到的真问题"
 
-见 §9（本线提交后回填 run id 与结论）。
+| 轮 | commit | run id | 结论 | 关键读数 |
+| :-: | :--- | :--- | :--- | :--- |
+| 1 | `79c9c37` | `37238420778` | ❌ **红**：`checks`/`lockfile`/`deny`/`plan` 全绿，`rust (workspace 全量)` 的 `clippy --workspace -D warnings` **绿**，但 `test --workspace` **红** | `crates/yeban-dsp/src/meter.rs:1621`：`db.fract_1_sqrt2 漂移: 实测 0xc040a8c3 (-3.0103004), 搬迁前 0xc040a8c2 (-3.0103002)`；`test result: FAILED. 141 passed; 1 failed`。**285 条里只有 1 条**、且只差 **1 ulp** —— 这正是 `log10` 跨架构不保证正确舍入 |
+| 2 | 本提交 | 见下 | — | 判据改为按运算类别分策（§3.1.1）：IEEE 精确类逐位、超越函数类 4096 ulp；本地重跑 5 条注入确认仍然全红 |
+
+> **这是本线最有价值的一次 CI 反馈**：`ci.yml` 的 workspace 腿（不是 per-crate 腿）
+> 跑了 x86_64，把"我在 aarch64 上冻结的位模式"与"跨架构可复现"之间的差距**具体化**成一条 1 ulp 的断言。
+> 处理方式不是把判据调松到"随便近似"，而是**按运算的舍入性质分类**：
+> 该逐位的仍然零容差，只有数学上不保证正确舍入的那一类才拿到 ulp 预算。
+>
+> ⚠ 同时它暴露了本机验证的边界：**本机（aarch64）无法发现跨架构的数值差异**，
+> 这类判据的最终裁决只能来自 CI。
 
 ---
 
@@ -339,7 +368,7 @@ rms_coeff         = exp(−1 / (τ · qps))             // τ = 300 ms @375 ⇒ 
 | N1 | **`engine-meters-notes.md` 的 MN1 关闭**：本线上移已落地，那份台账需要集成者补记（本线不改别的线所有者的文件） | 集成者 |
 | N2 | **`docs/ledger/gate-status.md` 的 `MUST-GATE-001` 证据行**：可补一句"电平口径已在 `yeban-dsp`，engine 侧零分配窗口不变"。状态**不变**（仍为"部分"） | 集成者 |
 | N3 | **真峰值倍数**：4× 在 `0.4·fs` 欠读 0.44 dB。若母带/导出要更紧的真峰值，需要 8×/16× 或 BS.1770 Annex 2 的专用核——属于新切片与口径裁决 | 人类/架构 |
-| N4 | **冻结位模式的跨架构稳定性**：若 x86_64 CI 上 285 条出现 1 ulp 差异，需要把该判据降级为"跨架构容差 ≤ 1 ulp + 同架构逐位"。本线**没有**做过 x86_64 实测，**不得**宣称跨架构逐位 | 集成者/CI 实测后裁决 |
+| N4 | ~~冻结位模式的跨架构稳定性~~ **已由设计收敛**：按运算类别分策（IEEE 精确类逐位 / 超越函数类 4096 ulp），已在 CI run `37238420778` 的实测反馈上落地。**仍存**的诚实边界：`aarch64` 上"285 条全逐位"是本地结论，CI 只验证"IEEE 精确类逐位" | 已处理（本线） |
 | N5 | **LUFS 门限切片**（−70 LUFS 绝对门限 + −10 LU 相对门限 + 400 ms/75% 重叠块 + 3 s 短时窗口）。落地时必须**显式改写** `silence_padding_pulls_ungated_loudness_down` | 后续电平/母带线 |
 | N6 | **其它采样率的 K 加权系数**（44.1/88.2/96 kHz）。本实现明确拒绝，需要核验过的系数表 | 后续线 |
 | N7 | **多声道（>2）独立电平与环绕权重**（沿用上一轮的 pending） | 混音台切片 |

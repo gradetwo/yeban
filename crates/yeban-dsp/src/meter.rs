@@ -1314,11 +1314,51 @@ mod tests {
         out
     }
 
-    /// **搬迁的机械证据**：285 个 `f32` 位模式在 `yeban-engine/src/level.rs`（main `b014e8f`）
-    /// 上实测冻结；搬到本模块后必须**逐位**仍然相同。
+    /// 冻结值在**非冻结架构**上允许的 ulp 预算（只对经过超越函数的条目生效）。
     ///
-    /// 为什么位模式而不是容差：容差会掩盖"搬家时顺手改了行为"。
+    /// 依据：`log10`/`exp`/`powf` 不要求正确舍入，标准库实现跨架构可差 1 ulp；
+    /// 弹道递归最多迭代 750 次，相对误差上界 ≈ `750 · 2^-24 ≈ 4.5e-5`
+    /// ≈ 750 ulp。给 4096 ulp（≈ 2.4e-4 相对）留 5× 余量，
+    /// 而最小的注入效应（20→10 dB/s 改动 `peak_release` 0.3%）≈ 50000 ulp，
+    /// 仍然远超预算 ⇒ 行为漂移照样变红（§6 的注入 1 实测）。
+    const TRANSCENDENTAL_ULP_BUDGET: i64 = 4096;
+
+    /// IEEE-754 单调映射：把 `f32` 位模式映射成可比较大小的整数，差值即 ulp 距离。
+    fn ordered_bits(bits: u32) -> i64 {
+        if bits & 0x8000_0000 != 0 {
+            -i64::from(bits & 0x7fff_ffff)
+        } else {
+            i64::from(bits)
+        }
+    }
+
+    /// 该冻结条目是否只经过 **IEEE 正确舍入** 的运算（⇒ 跨架构必须逐位相同）。
+    ///
+    /// 精确类：`sanitize_sample`（比较/钳位）、`supersedes`（整数比较）、常量、
+    /// 以及检测器读数里的 `.peak`（`abs`/`max`）、`.rms`（乘加/除/`sqrt`）、
+    /// `.is_sane`（有限性判断）——它们不碰 `log10`/`exp`/`powf`。
+    fn frozen_entry_is_ieee_exact(name: &str) -> bool {
+        name.starts_with("san.")
+            || name.starts_with("sup.")
+            || name.starts_with("const.")
+            || name.ends_with(".peak")
+            || name.ends_with(".rms")
+            || name.ends_with(".is_sane")
+    }
+
+    /// **搬迁的机械证据**：285 个 `f32` 位模式在 `yeban-engine/src/level.rs`（main `b014e8f`）
+    /// 上实测冻结；搬到本模块后必须**仍然相同**。
+    ///
+    /// 比较分两类（见 [`frozen_entry_is_ieee_exact`]）：
+    ///
+    /// - **IEEE 精确类**：跨架构**逐位**相同，没有容差；
+    /// - **超越函数类**：给 4096 ulp 的跨架构预算（[`TRANSCENDENTAL_ULP_BUDGET`]），
+    ///   在冻结架构（aarch64）上仍然要求逐位相同。
+    ///
+    /// 为什么用位模式而不是容差：容差会掩盖"搬家时顺手改了行为"。
     /// 任何一处行为漂移（释放率、时间常数、钳位、`0/0`、NaN 处理）都会在这里变红。
+    /// 实测：本判据在 CI（x86_64 Linux）第一版把 `dbfs(√½)` 的 **1 ulp** 差异抓了出来
+    /// （aarch64 `0xc040a8c2` vs x86_64 `0xc040a8c3`）——那正是需要区分类别的证据。
     #[test]
     fn frozen_pre_hoist_table_is_reproduced_bit_for_bit() {
         const FROZEN: &[(&str, u32)] = &[
@@ -1618,13 +1658,34 @@ mod tests {
         );
         for ((name, bits), (frozen_name, frozen_bits)) in actual.iter().zip(FROZEN.iter()) {
             assert_eq!(name, frozen_name, "读数顺序/命名漂移");
-            assert_eq!(
-                bits,
-                frozen_bits,
-                "{name} 漂移: 实测 {bits:#010x} ({}), 搬迁前 {frozen_bits:#010x} ({})",
-                f32::from_bits(*bits),
-                f32::from_bits(*frozen_bits)
-            );
+            if frozen_entry_is_ieee_exact(name) {
+                // 只经过比较/钳位/abs/max/min/加减乘除/开方 ⇒ IEEE-754 要求正确舍入
+                // ⇒ **跨架构也必须逐位相同**。
+                assert_eq!(
+                    bits,
+                    frozen_bits,
+                    "{name} 漂移: 实测 {bits:#010x} ({}), 搬迁前 {frozen_bits:#010x} ({})",
+                    f32::from_bits(*bits),
+                    f32::from_bits(*frozen_bits)
+                );
+            } else {
+                // 经过 `log10`/`exp`/`powf`：标准库实现**不要求**正确舍入，
+                // aarch64 与 x86_64 可以差 1 ulp，误差还会沿弹道递归累积。
+                // 因此给一个 ulp 预算（见常量）；在冻结架构上仍然要求逐位相同。
+                let distance = (ordered_bits(*bits) - ordered_bits(*frozen_bits)).abs();
+                assert!(
+                    distance <= TRANSCENDENTAL_ULP_BUDGET,
+                    "{name} 超出 ulp 预算: 实测 {bits:#010x} ({}), 搬迁前 {frozen_bits:#010x} ({}), 相距 {distance} ulp",
+                    f32::from_bits(*bits),
+                    f32::from_bits(*frozen_bits)
+                );
+                if cfg!(target_arch = "aarch64") {
+                    assert_eq!(
+                        bits, frozen_bits,
+                        "{name} 在冻结架构 (aarch64) 上必须逐位相同"
+                    );
+                }
+            }
         }
     }
 }
