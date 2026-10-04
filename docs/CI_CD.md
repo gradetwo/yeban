@@ -11,7 +11,7 @@
 | :--- | :--- | :--- |
 | `.github/workflows/ci.yml` | **自动**：`push` 到 `main` / `line/**`；`pull_request` 到 `main`；另加 `workflow_dispatch` | 主门禁：计划 → 格式/红线/schema → 受影响 crate 的 clippy+test → 锁文件 → cargo-deny |
 | `.github/workflows/gates-manual.yml` | **手动**：`workflow_dispatch`（下拉选择门禁） | 昂贵/专项门禁：`inventory`（门禁清单）、`all-features`（全 feature 组合编译）、`bench`、`determinism`、`pending` |
-| `.github/workflows/site-deploy.yml` | **自动**：`push` 到 `website`；另加 `workflow_dispatch`（可选 ref） | 官网 `yeban.wangda.today`：站点静态契约检查 + `wrangler deploy` 到 Cloudflare Workers |
+| `.github/workflows/site-deploy.yml` | **自动**：`push` 到 `website`；另加 `workflow_dispatch`（可选 ref） | 官网 `yeban.wangda.today`：站点静态契约检查 → Chromium 浏览器核验（含截图归档）→ `wrangler deploy` 到 Cloudflare Workers |
 
 ### 为什么自动档只跑这些
 
@@ -67,6 +67,18 @@ GH_TOKEN=... scripts/dev/ci-verdict.sh --logs <run-id>   # 拉失败 job 的原�
 **未读取的判决记为 `pending`，不得写成"通过"。**
 
 ---
+
+## 3.1 官网门禁（`website` 分支）
+
+官网有自己的两道门禁，都在 `site-deploy.yml` 里，且 `deploy` 依赖它们：
+
+| job | 脚本 | 检查什么 |
+| :--- | :--- | :--- |
+| `check` | `scripts/check-site.mjs`（纯 Node，零依赖） | 10 组静态契约：词典键集相同、用到的键都存在、无死键、站内引用真实存在、无明文 http、切换控件与语义锚点齐全、必备文件与格式、`lang`/`hreflang`/`canonical`、品牌资产非空、无白名单外外部主机 |
+| `visual` | `scripts/visual-check.mjs`（Playwright + Chromium） | 8 组浏览器断言：无控制台错误、i18n 无空占位、自动模式跟随系统配色、三态主题切换立刻生效、`?lang=en` 真的换语言与 `<html lang>`、390px 无横向溢出、区块锚点齐全、404 语义正确；并把全页截图上传为 artifact（保留 30 天） |
+
+截图 artifact 的意义：**"没在渲染器里看过"就是没验证过**。有了 artifact，任何人（包括下一个 Agent）
+都能事后回看版面，而不是只能相信断言。
 
 ## 4. 已接线 vs PENDING
 

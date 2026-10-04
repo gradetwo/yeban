@@ -76,6 +76,8 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | JSON Schema | **4/4 合法**（Draft 2020-12） | `python3 scripts/gates/validate_schemas.py` |
 | cargo-deny（开源合规） | **advisories ok, bans ok, licenses ok, sources ok** | `YEBAN_CARGO_DENY=… bash scripts/gates/run-gates.sh deny` |
 | 首次 CI（run 37216800773） | **22/23 job 绿**；唯一红的是 `deny`，原因是 `deny.toml` 的 TOML 表位置错误（见第 6 节），已修复 | `gh run view 37216800773` |
+| 修复后 CI（run 37217037266） | **27/27 job 全绿**：plan / checks / lockfile / deny + 23 条 rust 矩阵腿 | `gh run view 37217037266` |
+| 官网分支首次 CI（run 37217762431，branch `website`） | **绿**：站点契约检查通过；部署步骤按设计"缺凭据 → 优雅跳过" | `gh run view 37217762431` |
 | 品牌资产 | 母版拆出 **10 个 SVG 变体** + 10 个 PNG（深/浅 × 512/256/128/64/32） | `assets/brand/` |
 | `Cargo.lock` | 已生成并提交（MUST-GATE-005 要求）；`cargo metadata --locked` 通过；**不含** slint/cpal/symphonia 等重依赖（spike 的重依赖暂时注释） | `git ls-files Cargo.lock`, `cargo metadata --locked` |
 
@@ -100,6 +102,11 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | 守卫 G02（引擎层零 GUI 依赖） | 往 `crates/yeban-dsp/Cargo.toml` 的 `[dependencies]` 插入 `slint.workspace = true` | 红：`引擎层 crate yeban-dsp 引入了 GUI 依赖 slint` | 绿 |
 | 守卫 G04（严禁 `0.0.0.0`） | 往 `crates/yeban-engine/src/lib.rs` 追加 `pub const BAD_BIND: &str = "0.0.0.0:9316";` | 红：`crates/yeban-engine/src/lib.rs:18` | 绿 |
 | `yeban-model` 属性 | `ModelError` 一度派生 `Eq` 而字段含 `f32` → 编译红；`ulid 3.0` 无 `Ulid::new()` → 编译红 | 两次真实变红并修复（见 ADR-0001 D6） | 绿 |
+| 官网 `check-site.mjs` C1/C2 | 删掉 `en.json` 的 `nav.features` | 红：`en.json 缺少键` + `HTML 用到 nav.features 但 en.json 里没有` | 绿 |
+| 官网 C2/C3 | 把 HTML 里的 `data-i18n="nav.stack"` 改成不存在的键 | 红：`HTML 用到 nav.nonexistent` ×2 + `词典里的 nav.stack 从未被使用` | 绿 |
+| 官网 C6/C3 | 删掉"浅色"主题按钮 | 红：`缺少主题-浅色按钮` + `nav.theme_light 从未被使用` | 绿 |
+| 官网 C4 | 把 logo 路径改成不存在的文件 | 红：`引用了不存在的站内路径` | 绿 |
+| 官网 C7 | 从 `site.webmanifest` 删掉 `icons` | 红：`缺少字段: icons` | 绿 |
 
 **注意第一次 G02 的证伪过程**：第一次注入把 `slint.workspace = true` 追加到了文件**末尾**，
 落进了 `[lints]` 表而不是 `[dependencies]`，守卫正确地没有报红——错的是注入，不是守卫。
@@ -111,7 +118,8 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | :--- | :--- |
 | `scripts/dev/changed-crates.py` 的受影响集合推导 | 只在 `--base HEAD --head HEAD`（空 diff）下验证了保守回退路径；**非空 diff 的闭包推导要等第一次真实分支推送后再验证** |
 | `scripts/dev/ci-verdict.sh` | 仓库还没有任何 workflow run，脚本尚未真实取回过一次判决 |
-| `site-deploy.yml` 的部署路径 | 需要 Cloudflare 凭据，当前只会走"优雅跳过"分支 |
+| `site-deploy.yml` 的真实部署路径 | 需要 Cloudflare 凭据，当前只验证了"缺凭据 → 优雅跳过"这条分支 |
+| 官网的浏览器视觉核验 | `scripts/visual-check.mjs` 已写，但本机不装 Chromium（重活），首次真实执行就是 CI；在 CI 跑绿之前记为 pending |
 | `gates-manual.yml` 的 `determinism` / `bench` | 目标功能未实现，只有 PENDING 说明路径 |
 
 ---
@@ -188,3 +196,13 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
   安装步骤写进 `docs/DEV_WORKFLOW.md` 与本文件 §1.1。
 - **推论（避免单点阻塞）**：任何"只能靠 CI 判"的门禁，都要在 `docs/CI_CD.md` 里写清**为什么**
   本机做不了；写不出理由的，说明它本该在本机就能跑。
+
+### L5 — `cmd | head` 会用 SIGPIPE 杀掉长命令（SKILL 规则 4 的另一种形态）
+
+- **现象**：批量建工作树时写成 `bash scripts/dev/worktree.sh add "$line" main | head -2`。
+  `worktree.sh` 打印到第二行时 `head` 退出，`git worktree add` 收到 SIGPIPE 被杀在**创建目录之前**——
+  结果：分支建好了（`git branch` 能看到 `line/*`），工作树目录却不存在，而屏幕上的输出看起来"成功了"。
+- **规则**：**不要把一个会做实际工作的命令管道到 `head`/`tail`。** 想看前几行就用 `--quiet` 或
+  重定向到文件后再读。SKILL 规则 4 讲的是退出码被管道吞掉，这里是同一个根因的第二个后果：
+  管道会把**下游提前退出**升级成上游进程被杀。
+- **已落地**：改用 `> /tmp/wt-$line.log 2>&1` 再读文件；`scripts/dev/worktree.sh` 依然保持"失败就非零退出"。
