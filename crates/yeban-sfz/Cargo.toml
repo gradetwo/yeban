@@ -13,6 +13,9 @@ name = "yeban_sfz"
 path = "src/lib.rs"
 
 [dependencies]
+# 轻依赖是本条工作线的最大优势：运行时依赖只有 thiserror（已在根 [workspace.dependencies] 登记）。
+# 测试夹具刻意用 std-only 的 tests/support/mod.rs，不引入 tempfile。
+thiserror.workspace = true
 
 [lints]
 workspace = true

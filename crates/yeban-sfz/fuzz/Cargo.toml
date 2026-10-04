@@ -1,0 +1,26 @@
+[package]
+name = "yeban-sfz-fuzz"
+description = "yeban-sfz 的 cargo-fuzz 目标 (MUST-GATE-011: SFZ 词法解析器零崩溃)"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/gradetwo/yeban"
+
+[package.metadata]
+cargo-fuzz = true
+
+# 独立 workspace: 本目录位于 crates/yeban-sfz/ 之下, 而根 workspace 只 glob `crates/*`,
+# 因此必须自带 [workspace] 才能让 cargo 不去找上层清单。
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+yeban-sfz = { path = ".." }
+
+[[bin]]
+name = "sfz_parse"
+path = "fuzz_targets/sfz_parse.rs"
+test = false
+doc = false
+bench = false

@@ -598,6 +598,9 @@ version = "0.0.1"
 [[package]]
 name = "yeban-sfz"
 version = "0.0.1"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "yeban-theory"
