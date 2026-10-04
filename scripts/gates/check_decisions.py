@@ -94,14 +94,29 @@ def main() -> int:
     if "不构成单点阻塞" not in decisions_text and "单点阻塞" not in decisions_text:
         problems.append("清单没有声明'不等裁决也能继续推进'(否则它本身就是单点阻塞)")
 
+    # 已裁决的行必须带**日期** —— 否则'已裁决'只是一句话, 无法追溯是哪一轮、依谁的授权落定的。
+    decided = 0
+    for line in decisions_text.splitlines():
+        if not line.startswith("| `HD-"):
+            continue
+        if "✅" in line:
+            decided += 1
+            if not re.search(r"\d{4}-\d{2}-\d{2}", line):
+                problems.append(
+                    f"{line.split('|')[1].strip()}: 标了已裁决但没有日期"
+                )
+
     if problems:
         print("待裁决清单校验未通过:", file=sys.stderr)
         for item in problems:
             print(f"  - {item}", file=sys.stderr)
         return 1
-    print(
-        f"[ok] human-decisions.md: {rows} 项待裁决; ADR 里 {len(awaiting)} 条人类标记的裁决全部在册"
+    summary = (
+        f"[ok] human-decisions.md: {rows} 项"
+        f"(其中 {decided} 项已裁决); "
+        f"ADR 里 {len(awaiting)} 条人类标记的裁决全部在册"
     )
+    print(summary)
     return 0
 
 
