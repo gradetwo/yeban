@@ -386,6 +386,9 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 | `ui-test-port` | `7d3b31e` | Tier-1 无头软件光栅化 + 语义控件树 + 动态遮罩 SSIM(≥0.98) + 三级权限; app 侧窄口子适配器(默认关闭 feature) |
 | `mcp-core` | `60424a3` | Yeban Intent API v2 工具层: 10 个工具注册表与契约逐条对账、JSON-RPC 2.0、六级 scope 纯函数判定、`ui:inject` 生产硬禁、256-bit Bearer token + 0600 落盘、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0)、`dryRun`/`idempotencyKey` 真实现；十个工具的领域实现未接线(返回 -32005 NOT_IMPLEMENTED)；108 条判据 |
 
+| `mcp-core` | `6a860b1` | Yeban Intent API v2 工具层: 10 工具注册表与契约逐条对账(含联集 20 错误码与双射守卫)、JSON-RPC 2.0、六级 scope 纯函数、`ui:inject` 生产硬禁(先于 token 校验)、256-bit Bearer token + 0600 落盘(读到 644 直接拒)、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0, 绑定后回读 `local_addr()` 断言 `is_loopback()`)、`dryRun`/`idempotencyKey` 真实现; 112 条判据; **十工具领域实现未接线(-32005)** |
+| `app-introspect` | `b581795` | 真实界面的 Tier-1 内省: 适配器修到可编译 + 用**自动发现**测试目标让判据进入默认门禁; 产出三张 1920×1080 真实界面截图(100% 非黑, 2973/2784/2811 色)与运行时控件树; 控件树 184 注册 / 95 运行时 / 未注册 0; 动态区遮罩后 SSIM 精确 1.0; 中文非 tofu 判据(24px→648px) |
+
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
 
@@ -474,3 +477,36 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 - **已落地**：本次三组验证（meta-only → 1 / 完整目录 → 0 / 故意非法实例 → 1）**全部用退出码断言**，
   并顺手证明了契约现在是承重的。
 
+### 真实界面首次被渲染 —— 实测数字（`line/app-introspect`）
+
+| 状态 | 尺寸 | 非黑像素 | 颜色数 | PNG 字节 | 指纹 |
+| :--- | :--- | :--- | :--- | ---: | :--- |
+| Arrangement 全展开 | 1920×1080 | 2 073 600 = **100%** | **2973** | 6 222 418 | `d112dc495785a95a` |
+| Arrangement compact | 1920×1080 | 100% | 2784 | 6 222 418 | `ac7b4fe101ef217e` |
+| Session 全展开 | 1920×1080 | 100% | 2811 | 6 222 418 | `0f90993cfb31caa0` |
+
+- 三个指纹**互不相同** ⇒ `session_view.slint` 与 compact 分支都**真的被渲染过**，不是同一张图复制三份。
+- 同一状态**两次连续截图逐字节相同** ⇒ Tier-1 光栅化确定。
+- 控件树实测：注册表 **184** / 运行时 **95** / 运行时独有 **0**（即 `运行时 ⊆ 注册表` 成立）/ 缺失 89；
+  关键单例覆盖率 **39/39 = 100%**；`track-*-header=6`、`clip-*-header=3`、`note-*-rect=7` 等重复实例**都能按语义 ID 寻址**
+  ⇒ `[UI-TEST-001]` 点名的三族可用，上一线留的 pending #8 关闭。
+- 动态区 6 个 = 18 752 px = 画面 **0.9043%**：未遮罩抖动 SSIM **0.991518**（拉不下 0.98 —— 这是 D23 的口径问题，
+  不是判据失效）；**遮罩后精确 1.000000**；静态回归（39.4% 画面刷白）未遮罩 **0.636255** / 遮罩后 **0.636324**。
+
+### 上游发现：Slint 1.18.1 的 `font-family` 逗号列表**不是回退链**（修正 D24 的理由）
+
+`line/app-introspect` 读上游源码后确认（`sharedparley/shaping.rs:86-105`）：整串逗号列表被当成**一个** family 名，
+只回退到 `SansSerif` / `SystemUi` 两个泛型家族。因此 `tokens.slint` 里写的"PingFang SC / Microsoft YaHei /
+Noto Sans CJK SC"**不是链** —— 汉字能否渲染取决于系统字体覆盖（fontconfig/CoreText）。
+D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字体覆盖"**，规范 §12.5"配置字体降级链"也需修订。
+实测佐证：无 `fonts-noto-cjk` 时汉字区域墨迹 **24 px**，装上后同一区域 **648 px**（27×），
+`cjk_ink >= 150` 已成为判据（两侧都实测过，真的红过）。
+
+### 系统性盲区：挂在 `required-features` 后面的判据会"绿着跳过"
+
+`crates/yeban-app` 的 `[[test]] test_port_adapter` 挂在 `required-features = ["ui-test-port"]` 后面，
+而 CI 从不启用该 feature ⇒ 那条"UI 变更必须双重验证"的判据**跑都没跑，run 却是绿的**（连续若干轮无人察觉，
+直到集成者按纪律去核对"这一步到底做了什么"）。
+**规则**：判据若必须执行，就**不能**只靠 `required-features` 挂着 —— 要么放进**自动发现**的测试目标
+（该线的做法：`tests/real_ui_tier1.rs` + `#[path]` 引入同一份源码，并用 `[dev-dependencies]` 保证默认就编译），
+要么在 CI 里显式启用该 feature。**"绿着跳过"与 L12"门禁空跑"、D25"契约空转"是同一族错误。**

@@ -191,8 +191,17 @@
   2. `line/ui-test-port` 实测：Tier-1 光栅化在**同一字体环境**下是确定的（两次不同 runner 的截图指纹一致），
      但字体环境一变，截图必然变 ⇒ 跨平台比图本来就不成立。
 - **裁决**：**不捆绑 CJK 字体**。
-  · 应用侧：使用系统字体栈（`PingFang SC` / `Microsoft YaHei` / `Noto Sans CJK SC` 的回退链，已在
-    `crates/yeban-app/ui/tokens.slint` 落地）—— 这也是桌面应用的常规做法，且不占二进制预算；
+  · 应用侧：使用系统字体栈（`crates/yeban-app/ui/tokens.slint` 里写的是
+    `PingFang SC` / `Microsoft YaHei` / `Noto Sans CJK SC` 这类**列表**）—— 不占二进制预算。
+    ⚠ **2026-10-05 修正（`line/app-introspect` 的上游实测）**：Slint 1.18.1 的 Parley 路径**不把
+    `font-family` 的逗号列表当回退链** —— 整串被当成**一个** family 名，随后只回退到
+    `SansSerif`/`SystemUi` 两个泛型家族（依据：`sharedparley/shaping.rs:86-105`）。
+    因此 `tokens.slint` 里那条"链"**不是链**：汉字能否渲染，完全取决于**系统里是否存在覆盖 CJK 的字体**
+    （fontconfig / CoreText 决定），而不是取决于我们写了几个名字。
+    这不改变 D24 的结论（不捆绑字体），但**改变了理由**：我们不是"配置了降级链"，而是"依赖系统字体覆盖"。
+    规范 §12.5 里"配置字体降级链"的措辞同样需要修订。CI 因此**必须**装 `fonts-noto-cjk`（已装），
+    否则"稳定地渲染成豆腐块"。该线实测：无字体时汉字区域墨迹 **24 px**（几乎什么都没画），
+    有字体后同一区域 **648 px**（27×），并已把 `cjk_ink >= 150` 做成判据。
   · 测试侧：**分平台**维护 Golden 基准（`tests/golden/<platform>/`），跨平台只比较**结构性判据**
     （控件树 JSON、几何比例、颜色 token），不比较像素；
   · **明确不采纳** `i-slint-backend-testing` 的内部 `configure_test_fonts()`：它是内部 feature，
