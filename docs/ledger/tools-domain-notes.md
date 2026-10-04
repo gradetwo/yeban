@@ -260,3 +260,31 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 > 明确没做的一半只有一处 —— `yeban_render_master` 的渲染本体，且它在**参数校验通过之后**
 > 才返回 `-32005`。实测出的三处**规范/模型层缺口**（`Op` 全集缺 4 个变体、`NoteOp` 无契约、
 > `CommitGraph` 缺分支/多父 API）已登记为 needs，本线**不改**规范与 schema。
+
+---
+
+## 7. 本轮 CI 判决（读到什么写什么）
+
+读取方式：`bash scripts/dev/ci-verdict.sh --watch line/tools-domain`
+
+| 轮次 | run id | 头部 | 结论 |
+| :--- | ---: | :--- | :--- |
+| 第 1 轮（领域实现 + 判据 + 注入演练） | `37228916707` | `ebccd5a` | **全绿**：`plan` 5s / `checks`（fmt / 红线守卫 / schema）35s / `deny`（cargo-deny 开源合规）42s / `lockfile` 18s / `rust (workspace 全量)` 4m26s 全部 ✓；`rust (${{ matrix.crate }})` 0s 跳过（本改动是 workspace 宽，走全量腿） |
+
+**这一轮的读数细节**（避免把"看起来绿"当成"真的绿"）：
+
+- `rust (workspace 全量)` 在 **4m26s** 内跑完了全量 clippy + 全量测试 —— 也就是本线新增的
+  `src/domain/**` 与 `tests/tools_e2e.rs` 在 **Linux/CI** 上也真的编译并执行了
+  （本机跑过的那 192 条不是"只在 macOS 上成立"）；
+- `checks` 腿真的做了跨语言 schema 对账（11 份实例 + 4 份 schema），并且由于本线把
+  `mcp-tools.response.dry-run.json` 从"`save_project` 的 dryRun"换成了"`query_project` 的 dryRun"，
+  这一轮同时验证了**新样本形状**仍被承重的根 `oneOf` 接受；
+- `lockfile` 与 `deny` 绿 ⇒ 新增的 `yeban-model` 依赖边没有破坏确定性锁文件与许可政策。
+
+> 本文件自身是**文档改动**：记录判决的这一次提交会再前进一格。
+> 它只改 `docs/ledger/tools-domain-notes.md`，不触碰任何 `crates/**`，
+> 因此不影响 §4 的任何判据；但按纪律仍然读回判决（见下表）。
+
+| 轮次 | run id | 头部 | 结论 |
+| :--- | ---: | :--- | :--- |
+| 第 1 轮补记（本文件 + §7） | 见提交信息 / `ci-verdict.sh` 读数 | — | 见该次运行的 `checks` 腿 |
