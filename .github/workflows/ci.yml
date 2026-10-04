@@ -102,6 +102,9 @@ jobs:
           python3 -m pip install --quiet 'jsonschema>=4.24'
           python3 scripts/gates/validate_schemas.py
 
+      - name: 文档链接与 README 双语契约
+        run: python3 scripts/gates/check_docs_links.py
+
       - name: 依赖许可清单漂移检查
         run: |
           set -euo pipefail
@@ -140,9 +143,12 @@ jobs:
           # 缺了它会在"编译依赖"阶段就红 (不是我们的代码错, 是 runner 缺系统库)。
           # 一并装上后续真正链接 GUI 二进制时需要的 X11/Wayland/GL 头文件。
           sudo apt-get update -qq
+          # libasound2-dev 是给 cpal(ALSA) 提前装上的: Phase 2 的音频引擎线一定会需要它,
+          # 提前一个提交装好, 免得那条线第一次 CI 又踩同一个坑 (避免"单点阻塞"式的重复踩坑)。
           sudo apt-get install -y -qq --no-install-recommends \
             pkg-config libfontconfig1-dev libfreetype-dev \
-            libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+            libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
+            libasound2-dev
 
       - name: 安装钉死工具链
         run: |

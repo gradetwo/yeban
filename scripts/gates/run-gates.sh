@@ -50,6 +50,11 @@ gate_guards() {
   run "guards" python3 scripts/guards/policy_check.py
 }
 
+gate_docs() {
+  step "文档链接与 README 双语契约"
+  run "docs" python3 scripts/gates/check_docs_links.py
+}
+
 gate_schemas() {
   step "JSON Schema 契约校验"
   run "schemas" python3 scripts/gates/validate_schemas.py
@@ -89,11 +94,13 @@ case "$MODE" in
   light)
     gate_fmt
     gate_guards
+    gate_docs
     ;;
   crate)
     [[ $# -ge 1 ]] || fail "用法: run-gates.sh crate <crate-name> [更多 crate...]"
     gate_fmt
     gate_guards
+    gate_docs
     for crate in "$@"; do gate_crate "$crate"; done
     ;;
   deny)
@@ -105,6 +112,7 @@ case "$MODE" in
     fi
     gate_fmt
     gate_guards
+    gate_docs
     gate_schemas
     step "cargo clippy --workspace --all-targets -- -D warnings"
     run "clippy[workspace]" cargo clippy --workspace --all-targets -- -D warnings

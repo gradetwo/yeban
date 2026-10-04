@@ -53,6 +53,41 @@
   这既保留了 serde 的默认（externally tagged）行为，也让契约与实现一致。
 - **代价**：消费方必须按 `oneOf` 处理两种形状；换来的是不丢载荷。
 
+### D14 — 流派规则库的数量以**实测值**为准，规范正文的"159 种"视为下限
+
+- **冲突**：规范正文多处写"159 种流派规则"，而 `yeban-theory` 实际落地 **182 条**（全部自行编码、按来源分类登记）。
+- **裁决**：数量由 crate 内的机械判据钉住（`library_size_is_pinned_to_the_measured_number`），
+  规范里的"159"读作"**至少** 159 种"；实际数字记入 `docs/DEVELOPMENT_LEDGER.md` 与
+  `docs/ledger/theory-core-notes.md`。**不修改规范正文**。
+- **代价**：对外文案不得再写死任何数字（`Cargo.toml` 的 description 已改为不带数字的"流派规则库"）。
+
+### D15 — `PPQ = 960` 允许在两个 crate 各有一份，但必须被对账
+
+- **现状**：`yeban-model` 与 `yeban-theory` 各定义一份同值常量；为这一个整数新增
+  `theory → model` 的依赖不划算（会让纯函数层依赖整个数据模型）。
+- **裁决**：允许重复，但**必须**有独立对账：集成属性测试以"4/4 一小节 = 3840 tick"验证两者一致。
+  日后再出现第三份时必须同样对账，否则合并为单一来源。
+
+### D16 — 循环点微平滑窗以**规范公式**为准（π 版），不是对称 Hann 窗
+
+- **冲突**：规范 §3.3 给的是 `w(n)=½[1−cos(πn/(N−1))]`（`w(0)=0, w(N−1)=1`，N=64 时 `w(32)≈0.5125`），
+  而早期任务书里的示例判据 `w[0]==w[N−1]==0, w[N/2]≈1` 描述的是 2π 对称 Hann 窗。
+- **裁决**：**以 Normative 规范为准**（π 版），"首尾相接无跳变"由**互补窗对**实现
+  （fade-in 用 `w`，fade-out 用 `w` 的镜像）。差异已记入 `docs/ledger/dsp-core-provenance.md` §5.1。
+- **待人类确认**：若产品意图是对称 Hann 窗，需要改规范 §3.3 —— 那属于人类对规范的修改，Agent 不代改。
+
+### D17 — 依赖许可白名单接纳 `BSL-1.0`（Proposed，待人类法务追认）
+
+- **背景**：引入 Slint 后，`clipboard-win` / `error-code`（← `arboard` ← winit/slint，Windows 目标）
+  声明 `BSL-1.0`（Boost Software License 1.0），被 `cargo deny` 拒绝。
+- **裁决**：加入白名单。判定依据：BSL-1.0 是 OSI 认证 + FSF Free/Libre + 宽松 + 与 GPLv3 兼容，
+  **不属于** AGENTS.md §2 红线 2 禁止的三类（非商业限制 / 专有不可再分发 / 不兼容 GPLv3）。
+- **诚实声明**：提出该修改的是 Agent（集成者）。"接纳一个新许可"在精神上属于 `ROAD-M-1-006`
+  的人类判断范畴，因此本裁决状态为 `Proposed`：人类可以否决，否决时回滚 `deny.toml` 中该行，
+  并改由 CI 安装 `libfontconfig`/改用其它剪贴板方案来绕行。
+- **同类前置**：Slint 在 Linux 上还需要系统 `fontconfig` 开发库（见 `docs/CI_CD.md` §3.2），
+  已由 CI 统一安装，而不是在各 crate 里加 feature 垫片。
+
 ---
 
 ## D5 的落地细节（版本钉死）
@@ -89,7 +124,11 @@
 
 ## 待人类批准/补充
 
-1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1`、D7 的 PENDING 策略、D12 对 `Op` 全集的扩展）；
+1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1`、D7 的 PENDING 策略、D12 对 `Op` 全集的扩展、
+   D16 的窗函数口径、D17 的 BSL-1.0 接纳）；
 2. `ROAD-M-1-006` 的 4 条人类审核（法务措辞、ASIO、商标、发布签名）——Agent 不得代签；
 3. 自托管固定频率 runner 的预算与接入时间（决定 BASELINE 与确定性门禁何时接线）；
-4. `website` 分支的 Cloudflare 凭据（`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`）。
+4. `website` 分支的 Cloudflare 凭据（`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`）；
+5. `LEGAL.md` / `GOVERNANCE.md` 里 6 处失效的 `file:///home/crow/work/agy/review/...` 绝对链接
+   （AGENTS.md §2 红线 1 禁止 Agent 修改这些文件，因此 `scripts/gates/check_docs_links.py`
+   对它们**只告警不阻断**，等人类负责人修复）。

@@ -77,6 +77,9 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | cargo-deny（开源合规） | **advisories ok, bans ok, licenses ok, sources ok** | `YEBAN_CARGO_DENY=… bash scripts/gates/run-gates.sh deny` |
 | 首次 CI（run 37216800773） | **22/23 job 绿**；唯一红的是 `deny`，原因是 `deny.toml` 的 TOML 表位置错误（见第 6 节），已修复 | `gh run view 37216800773` |
 | 修复后 CI（run 37217037266） | **27/27 job 全绿**：plan / checks / lockfile / deny + 23 条 rust 矩阵腿 | `gh run view 37217037266` |
+| `yeban-theory` 落地（run 37217942685） | **27/27 全绿**；94 条测试（71 单元 + 22 属性 + 1 doctest）；流派规则库 **182 条**（规范正文写 159，见 ADR-0001 D14） | `gh run view 37217942685` |
+| `yeban-dsp` 落地（run 37217904082） | **27/27 全绿**；108 单元测试 + 1 doctest；13 个模块（含 2 个新写、11 个从 `synth-core` MIT 移植改写） | `gh run view 37217904082` |
+| 引入 Slint 后的依赖规模 | 外部包 **62 → 579**；许可族新增 `BSL-1.0`（2 个 Windows-only 包）；无一包缺 license 字段 | `cargo metadata` + `scripts/gates/license_inventory.py` |
 | 官网分支首次 CI（run 37217762431，branch `website`） | **绿**：站点契约检查通过；部署步骤按设计"缺凭据 → 优雅跳过" | `gh run view 37217762431` |
 | 品牌资产 | 母版拆出 **10 个 SVG 变体** + 10 个 PNG（深/浅 × 512/256/128/64/32） | `assets/brand/` |
 | `Cargo.lock` | 已生成并提交（MUST-GATE-005 要求）；`cargo metadata --locked` 通过；**不含** slint/cpal/symphonia 等重依赖（spike 的重依赖暂时注释） | `git ls-files Cargo.lock`, `cargo metadata --locked` |
@@ -107,6 +110,10 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | 官网 C6/C3 | 删掉"浅色"主题按钮 | 红：`缺少主题-浅色按钮` + `nav.theme_light 从未被使用` | 绿 |
 | 官网 C4 | 把 logo 路径改成不存在的文件 | 红：`引用了不存在的站内路径` | 绿 |
 | 官网 C7 | 从 `site.webmanifest` 删掉 `icons` | 红：`缺少字段: icons` | 绿 |
+| 文档门禁 `check_docs_links.py` | README.md 里一个相对链接改成不存在的路径 | 红：`链接指向不存在的路径` | 绿 |
+| 文档门禁 R2 | 去掉 README.md 里的语言互链 | 红：`README.md 没有链接到 README.zh-CN.md` | 绿 |
+| 文档门禁 R3 | 把中文 README 的 logo 源写成不存在的文件 | 红：`缺少 yeban-dark-256.png` | 绿 |
+| 官网 visual A8（CI 上真实抓到） | 无需注入：404 页接上 i18n 后原生的 "404" 字样被替换掉 | 红：`404 页 h1 不含 404: Page not found` | 修复后绿 |
 
 **注意第一次 G02 的证伪过程**：第一次注入把 `slint.workspace = true` 追加到了文件**末尾**，
 落进了 `[lints]` 表而不是 `[dependencies]`，守卫正确地没有报红——错的是注入，不是守卫。
@@ -119,7 +126,9 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `scripts/dev/changed-crates.py` 的受影响集合推导 | 只在 `--base HEAD --head HEAD`（空 diff）下验证了保守回退路径；**非空 diff 的闭包推导要等第一次真实分支推送后再验证** |
 | `scripts/dev/ci-verdict.sh` | 仓库还没有任何 workflow run，脚本尚未真实取回过一次判决 |
 | `site-deploy.yml` 的真实部署路径 | 需要 Cloudflare 凭据，当前只验证了"缺凭据 → 优雅跳过"这条分支 |
-| 官网的浏览器视觉核验 | `scripts/visual-check.mjs` 已写，但本机不装 Chromium（重活），首次真实执行就是 CI；在 CI 跑绿之前记为 pending |
+| 官网的浏览器视觉核验 | **已在 CI 跑绿**（run 37217947487）：8 组断言通过，4 张全页截图作为 artifact 留存，并已下载人工过目（深色中文首页 / 浅色英文首页 / 移动端 390px / 404 页）。截图证据：`gh run download 37217947487 -n site-screenshots` |
+| 依赖许可清单 `--check` 的首次真实红/绿 | 本机已验（62 包时绿）；**Slint 引入后 579 包的那一版清单尚未重新生成**，ui-shell 合并后必须重跑，否则 CI 会红 |
+| Linux 上 Slint 的系统库前置 | 已由 CI 的 apt 步骤覆盖（含提前加入的 `libasound2-dev`），但**尚未有一次真实跑通的判决** —— ui-shell 第二轮 CI 见分晓 |
 | `gates-manual.yml` 的 `determinism` / `bench` | 目标功能未实现，只有 PENDING 说明路径 |
 
 ---
