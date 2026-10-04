@@ -1307,3 +1307,27 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **顺带证实的并发修复**：这条 `arm` 档与那条 85 分钟的 `fuzz` 档**同时在跑**
   （此前它被按 ref 分组的旧规则堵在 fuzz 后面）—— 修 `concurrency.group` 按档位拆分是有效的实测。
 
+### 第 7 轮：`model-automation` 落地 + 兑现"合并时补契约"的承诺（`Op` 27 → 29）
+
+- **先如实记我的失误**：main 的修复轮（run 37244705178 @ `c210eb4`）状态是 **`cancelled`** ——
+  因为我在它跑的时候又推了 ARM 里程碑那一笔，`ci.yml` 的 `cancel-in-progress: true` 把它取消了。
+  ⇒ **L23/L26 由我自己再次触发**（"未读取的判决 = 没有判决"，而这次连判决都没产生）。
+  处置：不再追加零散推送，改为**在最终 tip 上派发一次全量验证**（`force_full`），
+  让一份判决覆盖"app 修复 + 模型新能力 + 契约同步"全部内容。
+- **`line/model-automation` 交付**：自动化泳道的数据形状（`read_enabled` / `write_mode` / `domain`，
+  三者 `#[serde(default)]` 且**默认值不落盘** ⇒ 旧工程可读、再导出逐字节不变）；
+  **唯一求值入口** `automation_value_at`（同 tick 由 `point_id` 定胜者；首前/末后/单点保持；
+  分段插值而**非阶梯**；四个形状只用 `+ - *` ⇒ D32 的 IEEE 精确类，跨架构零容差）；
+  `Op` 27 → 29 且**逐字节真逆**（含"隐式泳道"的自动建/自动收精确互逆）。
+  实测里值得一提的一条：`domain` 的端点私有 + 构造与反序列化都排序 ⇒ `min <= max` 是**类型不变量**，
+  "区间反了"**不可表示** ⇒ **零新增 `ModelError` 变体**（下游 `code_for_model` 的穷举 match 无需改动）。
+  —— 这是"用类型消掉一类错误"而不是"加一条判据去抓它"的范例。
+- **我兑现了契约承诺**：`schemas/ops.schema.json` 的 `op.oneOf` 27 → **29**（补
+  `SetAutomationLane` / `RemoveAutomationLane`），并把 `PENDING_CONTRACT_OPS` **清空**。
+  该线的**棘轮判据**（`enum − contract == PENDING_CONTRACT_OPS`，且两集合不相交）因此从"欠账 2 个"
+  变成"欠账 0 个"—— 它是**机器校验的欠账**：契约补上后若不清空清单，判据会立刻红并指名"清空它"。
+  实测：`cargo test -p yeban-model` 107 + 28 + 50 + 16 全绿；
+  `export_schema_samples` + `validate_schemas.py --repo-assets --samples-dir` = **4 份样本全过**（29 分支契约）。
+- **顺带确认**：该线**零新增 `ModelError` 变体**、零新增依赖、未改 `schemas/**`（由我改），
+  因此 `yeban-mcp` 的穷举映射与 `deny.toml` 都无需变动 —— 这正是"边界写清楚"带来的省事。
+

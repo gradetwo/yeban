@@ -69,3 +69,5 @@
 | `HD-39` | `run-gates.sh` 的 `heavy_deps_of` **只读本 crate 清单，看不见传递重依赖** | A 补传递识别（已做）；B 靠人判断 | **A** | ✅ **已裁决并落地（第 7 轮，依负责人"CI 在 GitHub 跑、本机不跑重活"的指示）**：新增 `scripts/dev/heavy-deps.py`（成员间传递闭包 + 三态退出码），`crate yeban-mcp` 现自动 SKIP、`crate yeban-engine` 改用 `--no-default-features` 轻量变体真跑 |
 | `HD-40` | 手动档 `bench` / `fuzz` 的**默认时长**（fuzz 实测：稳态 3 519 exec/s，千万次约需 47 分钟） | A 把 `fuzz_seconds` 默认提到 3000+；B 保持手动短跑 | **A**（否则 `MUST-GATE-011` 永远差一个数量级） | 手动短跑；达标需人记得传时长 |
 | `HD-41` | **D32 的 4096 ulp 与 `MUST-GATE-003` 的 `1e-6` 被同时施加**（更严的一方生效）。若真实跨架构读数落在"过 1e-6 但超 4096 ulp"（或反之）之间，以哪条为准？ | A 以**更严者**为准（现状，等于两条都要过）；B 只以 `1e-6` 为准（ulp 预算仅作诊断）；C 只以 ulp 预算为准 | **A**（先按最严跑，拿到真实读数再放宽 —— 放宽容易，收紧难） | 现状按 A 执行；`arm` 档跑出的第一份真实读数就是这条的判据 |
+| `HD-42` | **`Op` 全集再次扩展**：`line/model-automation` 加了 `SetAutomationLane` / `RemoveAutomationLane`（27 → **29**），契约 `schemas/ops.schema.json` 的 `op.oneOf` 已同步；按 **D12/D27** 需回写架构 §6.1/§7.2 | A 追认并回写规范；B 否决（回到 27） | **A** | 已按 A 执行（枚举 + 契约 + 样本对账三者一致，且模型侧有**棘轮**：`enum − contract == PENDING_CONTRACT_OPS`，欠账不可能静默漂移）；否决则要改模型、契约与 28 条判据 |
+

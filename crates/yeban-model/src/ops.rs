@@ -2410,7 +2410,11 @@ mod tests {
     ///
     /// 集成者把两个分支加进 `schemas/ops.schema.json` 的 `op.oneOf` 后，
     /// **同时**把这里清成空数组即可（`needs` 里已点名）。
-    const PENDING_CONTRACT_OPS: [&str; 2] = ["RemoveAutomationLane", "SetAutomationLane"];
+    /// **已清空**：集成者已在 `schemas/ops.schema.json` 的 `op.oneOf` 补上
+    /// `SetAutomationLane` / `RemoveAutomationLane`（27 → 29），欠账归零。
+    /// 这份清单保留为空数组，是为了让"契约落后于枚举"这件事**仍有地方可登记**
+    /// （下一次谁加了变体又来不及改契约，就往这里加一个名字，棘轮会替他记住）。
+    const PENDING_CONTRACT_OPS: [&str; 0] = [];
 
     /// [`PENDING_CONTRACT_OPS`] 的集合形态。
     fn pending_contract_ops() -> std::collections::BTreeSet<String> {
@@ -2437,8 +2441,8 @@ mod tests {
         );
         assert_eq!(
             contract.len(),
-            27,
-            "op.oneOf 必须覆盖 27 个变体, 实际 {}: {contract:?}",
+            29,
+            "op.oneOf 必须覆盖 29 个变体, 实际 {}: {contract:?}",
             contract.len()
         );
 

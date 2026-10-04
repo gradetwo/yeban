@@ -752,8 +752,8 @@ mod tests {
         let contract: Vec<String> = schema_op_variant_names();
         assert_eq!(
             contract.len(),
-            27,
-            "ops.schema.json 的 op.oneOf 必须覆盖 27 个变体, 实际 {}",
+            29,
+            "ops.schema.json 的 op.oneOf 必须覆盖 29 个变体, 实际 {}",
             contract.len()
         );
         for stamped in [default_stamped_op(), filled_stamped_op()] {
