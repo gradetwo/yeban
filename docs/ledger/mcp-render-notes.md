@@ -20,6 +20,11 @@
 
 > 本文件回答：**`yeban_render_master` 现在到底渲染了什么**、**什么明确没渲染**、
 > **实测数字是多少**、**哪些读数来自本机、哪些只能来自 CI**、**需要谁裁决什么**。
+>
+> **后续工作线（`line/audio-render`）已接手本文件的 `needs-1` 与 `needs-2`**：
+> `ClipContent::Audio` 现在**真的**解码进母带（并接了 `rubato` sinc 重采样）。
+> 那一线自己的台账是 [`docs/ledger/audio-render-notes.md`](audio-render-notes.md)，
+> 里面有**前后对照的能力矩阵**；本文件 §2 的对应格子已按那份对照更新。
 
 ---
 
@@ -56,6 +61,8 @@
 | 输出路径规则（显式 `path` / 缺省 `<stem>.master.<format>`） | `RenderRequest::output_path` | 单元 `default_output_path_follows_the_documented_rule` + e2e `dry_run_...` |
 | 输出路径两条护栏（工程文件本身 / `.yeban.lock`） | `guard_output_path` | 单元 + e2e `output_path_may_not_be_the_project_or_the_lock_file` |
 | 帧数推导（tick→帧，四舍五入）与 1 小时上限 | `render_math::ticks_to_frames` | 纯逻辑 17 条（含整数有理数对账） |
+| **音频片段**（`ClipContent::Audio`）—— CAS 资产字节 → 解码 → 采样率转换 → 落位 → 门控 → PDC | `render::resolve_asset` + `AudioClipSource`（`line/audio-render` 补上） | `tests/render_audio_clips.rs` 13 条；台账见 [`audio-render-notes.md`](audio-render-notes.md) |
+| **重采样**（`sampleRate` ≠ 工程采样率） | `yeban_decode::resample_interleaved`（`rubato` sinc，`ADR-0001` D26） | 同上判据 4/5；旧的 `unwired = "resampler"` 拒绝**已退役** |
 | 路由图剪枝 / 源节点集合 | 探针编译 `RenderPlan::compile_with_latencies`（frames=1） | e2e 全绿 + `sources[].audible` |
 | MIDI 合成源（正弦基波 + 线性 5ms/10ms 包络） | `MidiSynthSource` | e2e `the_master_is_not_silent_and_panning_moves_the_image` |
 | 音符字段：`start_tick`/`duration_ticks`/`pitch`(等程律)/`velocity`/`micro_timing_ticks` | `build_source` | 同上 + `master_is_not_silent` 的 RMS 断言 |
@@ -80,10 +87,10 @@
 | 外部插件 | 延迟照算 | 没有宿主、没有参数 ⇒ `externalPlugins` |
 | 自动化 | 工程里的自动化泳道被**如实登记** | 曲线没有求值（连静态值也不代偿） ⇒ `automationLanes` |
 | 循环 | placement 第一遍被渲染 | `loop_config` 的**重复**没有展开 ⇒ `clipLoopRepetition` |
-| 音频片段 | 摆放的时序被计入母带长度 | `ClipContent::Audio` 的 CAS 资产字节**没有被消费**（`yeban-decode` 不在本线地盘） ⇒ `audioClips`（静音 + 登记） |
+| 音频片段 | ~~摆放的时序被计入母带长度~~ ⇒ **已由 `line/audio-render` 补全**：真解码 + 重采样 + 落位 + 门控 + PDC（`tests/render_audio_clips.rs` 13 条判据） | `audioClips` 这个键**收窄**为"工程声明了资产、会话 CAS 池里没有字节"（裸 JSON 兼容路径的形态）才会出现；容器形态下不会出现。详见 [`audio-render-notes.md`](audio-render-notes.md) §3 |
 | `solo` | 源轨规则：`any_solo ⇒ 仅 solo || solo_safe 发声` | 辅助返回**总线**不参与 solo 判定（登记在 §7 边界） |
 | 包络 | 固定 5 ms 起音 / 10 ms 释音（线性） | 工程模型里没有 ADSR 字段可读；这是**本地常量**（`ATTACK_MS`/`RELEASE_MS`） |
-| 位深/声道/采样率 | 24-bit 立体声；采样率必须与工程一致 | 重采样器未接线 ⇒ 不一致时 `RENDER_FAILED`（**不是**猜一个）；位深/声道不可配（规范表格也没有这两个参数） |
+| 位深/声道/采样率 | 24-bit 立体声；采样率由 `rubato` sinc 转（**已接线**，见 [`audio-render-notes.md`](audio-render-notes.md)） | 位深/声道不可配（规范表格也没有这两个参数）；素材 >2 声道会被**拒绝**而不是静默降混 |
 | `bext` 响度 | 写哨兵 `UNKNOWN`（沿用 `yeban-render` 的裁决） | 归一化后的 **sample peak** 报了；**true peak / LUFS** 没有测量（真峰值需要过采样，`TruePeak` 在 `yeban-dsp`，本线未接） ⇒ 绝不写假 LUFS |
 | 性能 | 管线是真的、并行是真的 | **没有** `criterion` 打点 ⇒ 与 `BASELINE-001` 无关（见 §7） |
 
@@ -91,10 +98,10 @@
 
 | 项 | 为什么 |
 | :--- | :--- |
-| 重采样（`ARCH-DSP-002`、ADR-0001 D26 的 `rubato`） | 不在本线地盘；请求采样率 ≠ 工程采样率时返回 `RENDER_FAILED`（`data.unwired = "resampler"`） |
+| ~~重采样（`ARCH-DSP-002`、ADR-0001 D26 的 `rubato`）~~ | **已接线**（`line/audio-render`）：请求采样率 ≠ 工程采样率时逐资产 `resample_interleaved`，响应报 `data.audio.resampler.method` |
 | 侧链**键控**语义 | `yeban-render` 的既有边界：侧链边按普通音频边处理；出现即登记 `sidechainRouting` |
 | Master 轨 `pan` | 总线节点的声相无法在源侧表达；出现即登记 `masterPan` |
-| 音频解码（WAV/FLAC/MP3 资产） | `yeban-decode` 是别的所有者；因此音频片段只登记不渲染 |
+| ~~音频解码（WAV/FLAC 资产）~~ | **已接线**（`line/audio-render`）：`yeban-mcp → yeban-decode`；仍不支持 MKV/AIFF/CAF/MP4/MP3/AAC/ALAC（feature 未启用）与 >2 声道素材 |
 | `BUSY` | 领域状态单线程同步 ⇒ "已有渲染在跑"的窗口不存在（**登记，不是遗漏**） |
 | 更细的工程时间轴（自动化驱动的长度、`transport` 循环） | 母带长度 = 源节点上可闻 placement/音符的最大末端 tick（确定，可解释） |
 
@@ -164,7 +171,11 @@ arguments.path 存在        → 原样使用（空串/纯空白 ⇒ INVALID_PAR
 | `normalize` 非布尔、`path` 非非空字符串 | `INVALID_PARAMETER_RANGE` | 实参形状 |
 | 输出路径 = 工程文件 / 锁文件 | `INVALID_PARAMETER_RANGE` | `outputPath` / `projectPath` / `lockFile` |
 | 没有活跃工程 | `NO_ACTIVE_PROJECT` | — |
-| 采样率 ≠ 工程采样率（重采样未接线） | `RENDER_FAILED` | `unwired: "resampler"`、`requestedSampleRate`、`projectSampleRate`、`specId: ARCH-DSP-002` |
+| ~~采样率 ≠ 工程采样率（重采样未接线）~~ | **不再是错误**（`line/audio-render`）：输出率就是请求的率，素材按需要重采样 | 响应给 `data.audio.assets[].{sourceSampleRate,targetSampleRate,resampled}` 与 `data.audio.resampler` |
+| 片段引用的资产既不在 CAS 池、工程 `assets` 索引里也没有 | `RENDER_FAILED` | `reason: "assetMissing"`、`asset`、`declaredInIndex: false` |
+| CAS 池里的字节与它声明的 SHA-256 不符 | `RENDER_FAILED` | `reason: "assetHashMismatch"`、`asset`、`actual` |
+| 资产解码失败（坏/截断/不支持的容器） | `RENDER_FAILED`（解码器报 I/O 时走 `IO_ERROR`） | `reason: "assetDecodeFailed"`、`decodeError`（分类名）、`detail` |
+| 素材声道数无法映射到立体声母线（>2） | `RENDER_FAILED` | `reason: "assetChannelLayout"`、`sourceChannels`、`targetChannels` |
 | 0 帧（没有可渲染的 MIDI 内容） | `RENDER_FAILED` | `endTick`、`sourceNodes`、`hint` |
 | 帧数超上限（1 小时 @ 48 kHz） | `RENDER_FAILED` | `frames`、`maxFrames` |
 | 路由图非法 / Master 不在图里 / 有环 | `RENDER_FAILED` | `renderError`（`RenderError` 的 Debug）、`context` |
@@ -308,8 +319,8 @@ arguments.path 存在        → 原样使用（空串/纯空白 ⇒ INVALID_PAR
 
 | # | 项 | 性质 | 建议 |
 | :--- | :--- | :--- | :--- |
-| **needs-1** | **音频片段渲染**（`ClipContent::Audio` 的 CAS 资产） | 跨所有者 | 需要 `yeban-decode` 的解码接口（WAV 之外还有 FLAC/MP3 的 D26 落差）。本线只登记 `audioClips` 并静音，**绝不**假装渲染了 |
-| **needs-2** | **重采样**（`sampleRate` ≠ 工程采样率） | `ARCH-DSP-002` / D26 | 接 `rubato` 后把 `RENDER_FAILED` 换成真重采样。当前行为是**响亮的拒绝**，不是静默错音高 |
+| ~~**needs-1**~~ | ~~**音频片段渲染**（`ClipContent::Audio` 的 CAS 资产）~~ | **已关闭**（`line/audio-render`，`44a071a` 之后） | 解码 → 延迟裁剪 → `rubato` 重采样 → `AudioClipSource`；台账 [`audio-render-notes.md`](audio-render-notes.md) |
+| ~~**needs-2**~~ | ~~**重采样**（`sampleRate` ≠ 工程采样率）~~ | **已关闭**（`line/audio-render`） | `yeban_decode::resample_interleaved`（sinc/BlackmanHarris2/256/1024）；响应写清口径，按 `D32` **不**作跨架构位级承诺 |
 | **needs-3** | **设备链 DSP / 自动化求值** | 引擎层 | 需要 engine 线的参数求值与自动化曲线求值接口；本线只把 `latency_samples` 接进 PDC |
 | **needs-4** | `Op` 全集缺 `AddClip`/`AddRoutingNode`（承接 `tools-domain` 的 needs-1） | 规范缺口 | 与 `yeban_propose_section` 的"配器骨架"同一个缺口；本线未触碰 |
 | **needs-5** | `bext` v2 响度哨兵 / 工程 ULID 的规范落点（承接 `render-master` 的 needs） | 需要人类裁决（EBU Tech 3285 PDF 不可机读） | 本线沿用 `Loudness::UNKNOWN` 与 `OriginatorReference`，并把 `CodingHistory` 换成**真实**参数（不再写 `<sample_rate>` 字面量） |

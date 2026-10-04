@@ -34,6 +34,7 @@
 //! | [`proposal`] | 提案记录（Musical PR 的可追溯性） |
 //! | [`render`] | `yeban_render_master` 的参数校验 **+ 真渲染**（`yeban-render` 接线、原子落盘） |
 //! | [`render_math`] | 渲染的**零第三方依赖**纯逻辑（tick→帧、归一化、包络、日历），本机可单独验证 |
+//! | [`render_clip_math`] | 音频片段装配的**零第三方依赖**纯逻辑（帧落位、增益合成、声道矩阵、重采样判定、延迟裁剪、魔数嗅探），本机可单独验证 |
 //! | [`ids`] | 确定性夹具身份（让 `dryRun` 预览与真调用逐字节相同） |
 
 pub mod error;
@@ -43,6 +44,7 @@ pub mod macros;
 pub mod notes;
 pub mod proposal;
 pub mod render;
+pub mod render_clip_math;
 pub mod render_math;
 pub mod section;
 pub mod store;
@@ -1118,7 +1120,9 @@ fn plan_render_master(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let project_path = domain.active_path().ok_or_else(no_active_project)?;
     let request = render::validate(&call.arguments)?;
-    let artifact = render::build(project, project_path, &request, domain.now_ms())?;
+    // 资产字节的唯一来源是会话 CAS 池（`assets/{sha256}`）；`Domain` 自己实现
+    // `render::AssetStore`，因此渲染层不需要认识 `Domain` 的任何内部结构。
+    let artifact = render::build(project, project_path, &request, domain.now_ms(), domain)?;
     Ok(Plan::RenderMaster {
         artifact: Box::new(artifact),
     })
@@ -1625,6 +1629,16 @@ pub fn execute(domain: &mut Domain, call: &ToolCall) -> Result<Value, ErrorObjec
 /// 由调用方用 [`Fault::into_result`] 分流。
 pub fn preview(domain: &Domain, call: &ToolCall) -> Result<Value, Fault> {
     plan(domain, call).and_then(|planned| planned.describe(domain))
+}
+
+impl render::AssetStore for Domain {
+    /// 会话 CAS 池的只读投影（`ARCH-SEC-003` 的 `assets/{sha256}`）。
+    ///
+    /// 语义与 [`Domain::asset`] 完全一致 —— 这里不复制一份查找逻辑，
+    /// 而是直接转发，避免"池的读法"出现第二个事实源。
+    fn asset(&self, hash: &AssetHash) -> Option<&[u8]> {
+        Domain::asset(self, hash)
+    }
 }
 
 #[cfg(test)]

@@ -6,10 +6,12 @@
 //! JSON-RPC `-32005 NOT_IMPLEMENTED`。现在这一半**接线到 `yeban-render`**：
 //!
 //! ```text
-//! 工程 + 路由图
-//!   ├─ track_latencies(DeviceDefinition::latency_samples)   [ARCH-PDC-001] 唯一延迟来源
+//! 工程 + 路由图 + 会话 CAS 资产池 (assets/{sha256})
+//!   ├─ 音频片段: 资产字节 → (哈希复核) → yeban-decode 解码 → 编码器延迟裁剪
+//!   │            → 必要时 rubato sinc 重采样 → AudioClipSource   [ARCH-DSP-002 / D26]
+//!   ├─ track_latencies(DeviceDefinition::latency_samples)   [ARCH-PDC-001] **唯一**延迟来源
 //!   ├─ RenderPlan::compile_with_latencies(...)              拓扑分层 + PDC 关键路径
-//!   ├─ 每个源节点注入一个 AudioSource                       MIDI 音符 → 确定性合成源
+//!   ├─ 每个源节点注入一个 AudioSource                       MIDI 合成源 ⊕ 音频片段源
 //!   ├─ RenderPlan::execute(...)                             Rayon 并行 + 固定顺序归约 [ARCH-DET-002]
 //!   ├─ 母带增益 + (可选) 峰值归一化
 //!   ├─ TPDF 抖动 → 24-bit PCM                              [ARCH-FMT-001]
@@ -21,20 +23,30 @@
 //! SHA-256、帧数都是**实测值**而不是估算），落盘发生在 `domain::apply`。
 //! 这个切分保住了"`dryRun` 不改状态"的类型系统级保证：[`super::plan`] 只拿 `&Domain`。
 //!
+//! ## 解码发生在哪里（[ARCH-TOP-002] / [ARCH-RT-001]）
+//!
+//! **全部解码在 [`build`] 里完成，一次都不在 `AudioSource::render_block` 里。**
+//! 这是刻意的边界：`render_block` 会被 Rayon 工作线程按块反复调用，
+//! 一个"按需现解码"的实现会在每一块上重开一次容器。
+//! 每个资产只解码一次（`BTreeMap<AssetHash, …>` 缓存），必要时重采样一次，
+//! 渲染期只有"按帧拷贝 + 乘增益"。
+//!
 //! ## 真的渲染了什么 / 明确没渲染什么
 //!
-//! **真做**：MIDI 音符（起止 tick、音高、力度、微时值）、placement 的
-//! `start_tick`（缺省 0）、`muted`、音轨 `volume_db` / `pan`（等功率 −3 dB）/
-//! `mute` / `solo`（见下）、**未旁通设备的 `latency_samples`**（PDC 对齐）、
-//! 边增益 `gain_db`、Master 轨的 `volume_db`、确定性 TPDF 抖动与 24-bit 量化、
-//! RIFF/RF64/BW64 容器与 `bext` 元数据、峰值归一化。
+//! **真做**：**音频片段**（`ClipContent::Audio`——CAS 资产字节 → 解码 → 采样率不一致时
+//! `rubato` sinc 重采样 → 按 placement 的帧区间落位、按 placement 的 `muted` 与片段的
+//! `gain_db` 门控、参与 [ARCH-PDC-001] 的延迟对齐）、MIDI 音符（起止 tick、音高、力度、
+//! 微时值）、placement 的 `start_tick`（缺省 0）、`muted`、音轨 `volume_db` /
+//! `pan`（等功率 −3 dB）/ `mute` / `solo`（见下）、**未旁通设备的 `latency_samples`**
+//! （PDC 对齐）、边增益 `gain_db`、Master 轨的 `volume_db`、确定性 TPDF 抖动与
+//! 24-bit 量化、RIFF/RF64/BW64 容器与 `bext` 元数据、峰值归一化。
 //!
 //! **明确没做**（只要工程里真的出现，就会同时出现在响应的 `unsupported` 与
 //! `unsupportedCounts` 里，**绝不静默**）：
 //!
 //! | 键 | 含义 |
 //! | :--- | :--- |
-//! | `audioClips` | `ClipContent::Audio` 的片段内容没有解码（CAS 资产池的字节未被消费），当作静音 |
+//! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（裸 JSON 兼容路径与内存注入夹具就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。容器形态下索引与字节必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链的**参数**（滤波器/音色）没有求值；只有 `latency_samples` 进了 PDC |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
@@ -49,8 +61,23 @@
 //! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定） |
 //! | `sfzSampler` | 本模型版本（`DeviceKind`）里**没有** SFZ 设备变体；该能力不在本切片内 |
 //!
-//! "工程里有 MIDI 音符"这一条是渲染的**前提**：完全没有可渲染内容（0 帧）时返回
-//! `RENDER_FAILED`，而不是写一个 0 帧的文件冒充成功。
+//! "工程里有 MIDI 音符或音频片段"这一条是渲染的**前提**：完全没有可渲染内容（0 帧）
+//! 时返回 `RENDER_FAILED`，而不是写一个 0 帧的文件冒充成功。
+//!
+//! ## 采样率：请求率 ≠ 工程率**不再**是错误
+//!
+//! 上一版在"请求采样率 ≠ 工程采样率"时直接返回 `RENDER_FAILED`
+//! （`data.unwired = "resampler"`）。本线把 `yeban-decode` 的 `rubato` sinc 接进来之后，
+//! 这条拒绝**退役**了：
+//!
+//! - 渲染速率 = **请求的** `sampleRate`（母带就是那个率）；
+//! - 每个音频资产的采样率如果与之不同，就先用
+//!   `yeban_decode::resample_interleaved` 转过去（[`clip_math::RESAMPLER_SUMMARY`]）；
+//! - MIDI 合成本来就是按渲染率算相位的，因此换率对音高没有影响。
+//!
+//! **绝不**用"改个采样率标签"或"丢帧"代替重采样：前者改时长、后者改音高，
+//! 两者都是静默的错误音频。响应 `data.audio.assets[]` 逐条给出
+//! `sourceSampleRate` / `targetSampleRate` / `resampled`。
 //!
 //! ## 输出路径规则（确定性，`dryRun` 与真调用共用同一份实现）
 //!
@@ -88,7 +115,8 @@
 //! `frames` / `channels` / `sampleRate` / `bytes`（容器总字节）/ `headerBytes` /
 //! `payloadBytes` / `sha256`（整份文件）/ `masterDigest`（母带样本的位级 SHA-256）/
 //! `blocks` / `longestPathFrames` / `peak.before` / `peak.after` / `sourceNodes` /
-//! `unsupported`。`dryRun` 返回同一批数字 + `wouldWrite`，**不落盘**。
+//! `audio`（音频片段的**实测**事实：容器嗅探、声道布局、源/目标采样率、裁剪帧数、
+//! 重采样口径）/ `unsupported`。`dryRun` 返回同一批数字 + `wouldWrite`，**不落盘**。
 //!
 //! ## 错误映射（不发明新码，`ADR-0001 D25`）
 //!
@@ -96,8 +124,21 @@
 //! | :--- | :--- |
 //! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
 //! | 没有活跃工程 | `NO_ACTIVE_PROJECT`（带内） |
-//! | 采样率与工程不一致（重采样器未接线）、0 帧、超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID） |
+//! | 0 帧、超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID） |
+//! | 片段引用的资产既不在会话 CAS 池里、工程 `assets` 索引里也没有 | `RENDER_FAILED`（`data.reason = "assetMissing"`） |
+//! | 会话 CAS 池里的字节与它声明的 SHA-256 不符（完整性破坏） | `RENDER_FAILED`（`data.reason = "assetHashMismatch"`） |
+//! | 资产解码失败（坏/截断/不支持的容器） | `RENDER_FAILED`（`data.reason = "assetDecodeFailed"` + 分类）；解码器报的是 I/O 错时走 `IO_ERROR` |
+//! | 素材声道数与母线声道数无法映射（>2 声道素材进立体声母线） | `RENDER_FAILED`（`data.reason = "assetChannelLayout"`） |
 //! | 输出目录不可写 / 磁盘满 / 目标父目录不存在 | `IO_ERROR` / `DISK_FULL`（带内，来自 `store` 的既有映射） |
+//!
+//! **缺资产为什么不一律报错**：`assets` 索引（工程文档里的声明）与会话 CAS 池
+//! （容器里的 `assets/{sha256}` 字节）在 `.yeban` 容器形态下必然同时存在
+//! （`store` 读写双向校验），而在**裸 JSON 兼容路径**与**内存注入夹具**
+//! （`yeban_model::samples::filled_project()`）里，索引在、字节不在 —— 那是
+//! "这份文档格式本来就不携带资产载荷"，不是工程损坏。因此口径是：
+//! **索引也没有 ⇒ 明确的 `assetMissing` 错误**；索引有而字节不在 ⇒
+//! 按老语义登记 `audioClips` + 静音（并在 `data.audio.assets[]` 里写
+//! `bytesPresent = false`）。两条路都**不静默**。
 //!
 //! `BUSY` 在当前架构下**仍然不可达**：领域状态单线程同步，一次 `tools/call` 完整跑完
 //! 才返回，不存在"已经有一个渲染在跑"的窗口。这是登记，不是遗漏。
@@ -110,9 +151,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+use yeban_decode::{DecodeError, DecodeOptions, resample_interleaved};
 use yeban_model::{
     AssetHash, ClipContent, DeviceKind, EntityId, PPQ, RoutingKind, SampleRate, TrackV3,
     YebanProjectV1,
@@ -126,6 +169,7 @@ use yeban_render::rf64::{Bext, ContainerKind, ContainerPlan, PcmFormat, write_co
 use yeban_render::rng::dither_rng_for;
 
 use super::error::Fault;
+use super::render_clip_math as clip_math;
 use super::render_math as math;
 use super::store;
 use crate::tools::ErrorCode;
@@ -158,8 +202,34 @@ pub const MAX_RENDER_FRAMES: u64 = 48_000 * 3_600;
 /// 源节点没有可识别名字时的文件名 stem。
 pub const DEFAULT_STEM: &str = "master";
 
-/// 音频源种类（响应 `sources[].kind`）。
+/// 音频源种类（响应 `sources[].kind`）：只有 MIDI 片段的源。
 pub const SOURCE_KIND: &str = "midi-synth-osc";
+
+/// 音频源种类：只有音频片段的源。
+pub const AUDIO_SOURCE_KIND: &str = "audio-clip";
+
+/// 音频源种类：MIDI 片段与音频片段**都有**的源。
+pub const MIXED_SOURCE_KIND: &str = "midi-synth-osc+audio-clip";
+
+/// 音频源种类：既没有音符也没有可渲染的音频片段（静音源）。
+pub const SILENT_SOURCE_KIND: &str = "silent";
+
+/// 资产字节的只读提供者（`ARCH-SEC-003` 的 `assets/{sha256}` 会话 CAS 池）。
+///
+/// 抽成 trait 而不是直接吃 `&BTreeMap`：`yeban-mcp` 的会话池住在
+/// [`super::Domain`] 的私有字段里，而判据需要能注入一份**手工构造**的池
+/// （例如"池里的字节与它声明的哈希不符"这种完整性破坏，走
+/// [`super::Domain::put_asset`] 是造不出来的——它总是用字节算出键）。
+pub trait AssetStore {
+    /// 取一份资产的原始字节；池里没有它时返回 `None`。
+    fn asset(&self, hash: &AssetHash) -> Option<&[u8]>;
+}
+
+impl AssetStore for BTreeMap<AssetHash, Vec<u8>> {
+    fn asset(&self, hash: &AssetHash) -> Option<&[u8]> {
+        self.get(hash).map(Vec::as_slice)
+    }
+}
 
 /// 一次已校验的渲染请求（**还没有渲染**）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,12 +380,20 @@ pub struct SourceReport {
     pub node: EntityId,
     /// 音轨名（人眼可读）。
     pub track: String,
-    /// 音频源种类。
+    /// 音频源种类（见 [`SOURCE_KIND`] 一族）。
     pub kind: &'static str,
     /// 是否可闻（`mute` / `solo` 判定之后的结论）。
     pub audible: bool,
     /// 排程的音符数。
     pub notes: u64,
+    /// **真的参与渲染**的音频片段摆放数（不含被静音或被登记的）。
+    pub audio_clips: u64,
+    /// 因为资产字节不在会话池里而**没有**渲染的音频片段摆放数。
+    pub audio_clips_unrendered: u64,
+    /// 因为所在音轨被 `mute` / `solo` 门控而没有渲染的音频片段摆放数
+    /// （这类摆放**不做解码** —— 静音轨的资产坏了不该让整份母带导出失败，
+    /// 但它必须被数出来，而不是看起来"这段工程里没有音频片段"）。
+    pub audio_clips_gated: u64,
     /// 该源贡献的时间轴末端（tick）。
     pub end_tick: u64,
 }
@@ -330,7 +408,79 @@ impl SourceReport {
             "kind": self.kind,
             "audible": self.audible,
             "notes": self.notes,
+            "audioClips": self.audio_clips,
+            "audioClipsUnrendered": self.audio_clips_unrendered,
+            "audioClipsGated": self.audio_clips_gated,
             "endTick": self.end_tick,
+        })
+    }
+}
+
+/// 一个音频资产的**实测**事实（进响应 `data.audio.assets`）。
+///
+/// 全部字段都是"解出来/量出来"的值，没有一个是按工程声明抄的
+/// （唯一的例外是 `declared_bytes`，它是索引里的声明，刻意与实测并列，好让
+/// "声明与实际不符"这件事**可见**）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioAssetReport {
+    /// CAS 键（`assets/{sha256}`）。
+    pub hash: String,
+    /// 会话池里有没有它的字节。
+    pub bytes_present: bool,
+    /// 工程 `assets` 索引里有没有它的声明。
+    pub declared_in_index: bool,
+    /// 魔数嗅探出的容器形态（**报告用**，不是裁决）。
+    pub container: &'static str,
+    /// 解码器实际产出的样本格式（`S16`/`F32`/…；未解码时为 `"unknown"`）。
+    pub pcm_format: &'static str,
+    /// 素材声道数。
+    pub source_channels: u16,
+    /// 素材采样率 (Hz)。
+    pub source_sample_rate: u32,
+    /// 素材帧数。
+    pub source_frames: u64,
+    /// 渲染管线采样率 (Hz)。
+    pub target_sample_rate: u32,
+    /// 是否真的做了重采样。
+    pub resampled: bool,
+    /// 声道布局（[`clip_math::ChannelLayout::name`]）。
+    pub channel_layout: &'static str,
+    /// 编码器前置延迟（容器上报表，帧）。
+    pub encoder_delay_frames: Option<u32>,
+    /// 编码器尾部填充（容器上报表，帧）。
+    pub encoder_padding_frames: Option<u32>,
+    /// 实际**丢掉**的帧数（`delay + padding` 中真正落在素材内的部分）。
+    pub trimmed_frames: u64,
+    /// 进入渲染的帧数（裁剪之后）。
+    pub rendered_frames: u64,
+    /// 原始资产字节数。
+    pub bytes: usize,
+    /// 引用这个资产的**参与渲染**的片段摆放数。
+    pub clips: u64,
+}
+
+impl AudioAssetReport {
+    /// 进响应的 JSON 形状。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "hash": self.hash.clone(),
+            "bytesPresent": self.bytes_present,
+            "declaredInIndex": self.declared_in_index,
+            "container": self.container,
+            "pcmFormat": self.pcm_format,
+            "sourceChannels": self.source_channels,
+            "sourceSampleRate": self.source_sample_rate,
+            "sourceFrames": self.source_frames,
+            "targetSampleRate": self.target_sample_rate,
+            "resampled": self.resampled,
+            "channelLayout": self.channel_layout,
+            "encoderDelayFrames": self.encoder_delay_frames,
+            "encoderPaddingFrames": self.encoder_padding_frames,
+            "trimmedFrames": self.trimmed_frames,
+            "renderedFrames": self.rendered_frames,
+            "bytes": self.bytes,
+            "clips": self.clips,
         })
     }
 }
@@ -377,6 +527,10 @@ pub struct RenderArtifact {
     pub source_nodes: Vec<EntityId>,
     /// 每个源节点的报告。
     pub sources: Vec<SourceReport>,
+    /// **真的参与渲染**的音频片段摆放数（全部源节点合计）。
+    pub audio_clips: u64,
+    /// 每个被引用的音频资产的实测事实（键序 = 哈希字典序）。
+    pub audio_assets: Vec<AudioAssetReport>,
     /// 归一化前的峰值。
     pub peak_before: f32,
     /// 归一化后的峰值（未请求归一化时等于 `peak_before`）。
@@ -483,6 +637,32 @@ impl RenderArtifact {
             Value::Array(self.sources.iter().map(SourceReport::to_value).collect()),
         );
         map.insert(
+            "audio".to_owned(),
+            serde_json::json!({
+                "wired": true,
+                "clipsRendered": self.audio_clips,
+                "assetsReferenced": self.audio_assets.len(),
+                "assets": self
+                    .audio_assets
+                    .iter()
+                    .map(AudioAssetReport::to_value)
+                    .collect::<Vec<_>>(),
+                "supported": clip_math::SUPPORTED_ASSET_SUMMARY,
+                "unsupported": clip_math::UNSUPPORTED_ASSET_SUMMARY,
+                // 重采样口径 (D26): 写清**用的是哪一种**, 而不是只说"已重采样"。
+                "resampler": {
+                    "method": clip_math::RESAMPLER_SUMMARY,
+                    "specId": "ARCH-DSP-002",
+                    "adr": "ADR-0001 D26",
+                },
+                "bitExactness": {
+                    // D32: 重采样含超越函数, 因此跨架构只承诺数值预算, 不承诺逐位。
+                    "identityRate": "bit-exact (无滤波, 逐位透传)",
+                    "resampled": "同架构同工具链逐位; 跨架构按 ADR-0001 D32 给数值预算 (不承诺位级)",
+                },
+            }),
+        );
+        map.insert(
             "peak".to_owned(),
             serde_json::json!({
                 "before": self.peak_before,
@@ -585,38 +765,30 @@ impl RenderArtifact {
 /// 这是本模块唯一的入口：`plan_render_master` 调它拿 [`RenderArtifact`]，
 /// `domain::apply` 只负责把 `artifact.bytes` 原子写到 `artifact.path`。
 ///
+/// `assets` 是会话 CAS 池的只读视图（`assets/{sha256}`）；音频片段的字节只从这里来。
+///
 /// # Errors
 ///
-/// - `RENDER_FAILED`：采样率不一致（重采样未接线）、0 帧、超出帧数上限、
-///   路由图非法、源节点没有对应音轨、摆放引用了不存在的片段、容器编码失败；
+/// - `RENDER_FAILED`：0 帧、超出帧数上限、路由图非法、源节点没有对应音轨、
+///   摆放引用了不存在的片段、容器编码失败、**资产缺失/哈希不符/解码失败/声道布局不支持**；
+/// - `IO_ERROR`：资产解码时报的是 I/O 错；
 /// - `INVALID_PARAMETER_RANGE`：输出路径是工程文件或锁文件。
 pub fn build(
     project: &YebanProjectV1,
     project_path: &Path,
     request: &RenderRequest,
     now_ms: u64,
+    assets: &dyn AssetStore,
 ) -> Result<RenderArtifact, Fault> {
     let sample_rate = request.sample_rate.hz();
-    let project_rate = project.audio_config.sample_rate.hz();
-    // 1. 采样率必须与工程一致: 重采样器 (ARCH-DSP-002 / D26) 未接线, 猜一个会产出
-    //    音高错误的母带 —— 那是"假成功", 必须报错。
-    if sample_rate != project_rate {
-        return Err(render_failed(
-            "输出采样率与工程采样率不一致, 而重采样器尚未接线 (ARCH-DSP-002)",
-            serde_json::json!({
-                "requestedSampleRate": sample_rate,
-                "projectSampleRate": project_rate,
-                "unwired": "resampler",
-                "specId": "ARCH-DSP-002",
-            }),
-        ));
-    }
-    // 2. 输出路径 + 两条安全护栏。
+    // 1. 输出路径 + 两条安全护栏。
     let path = request.output_path(project_path)?;
     guard_output_path(&path, project_path)?;
-    // 3. 延迟表: 唯一来源是 DeviceDefinition::latency_samples [ARCH-PDC-001]。
+    // 2. 延迟表: 唯一来源是 DeviceDefinition::latency_samples [ARCH-PDC-001]。
+    //    音频片段**不自建第二来源** —— 模型里没有 per-asset 延迟字段,
+    //    片段所在音轨的设备链延迟就是它的全部延迟贡献。
     let latencies = track_latencies(&project.tracks);
-    // 4. 探针编译: 用 frames=1 取得"剪枝后的可达子图 + 源节点集合"。
+    // 3. 探针编译: 用 frames=1 取得"剪枝后的可达子图 + 源节点集合"。
     //    刻意复用渲染器的剪枝/分层逻辑, 而不是在这里复制一份图算法(两份必然漂移)。
     let probe = RenderOptions::l1(1, MASTER_CHANNELS, sample_rate, project.rng_seed);
     let probe_plan = RenderPlan::compile_with_latencies(
@@ -632,7 +804,7 @@ pub fn build(
         .copied()
         .filter(|node| is_source_node(&probe_plan, *node))
         .collect();
-    // 5. 组装音源 + 采集"明确没渲染"的部分 + 得到时间轴末端。
+    // 4. 组装音源 + 采集"明确没渲染"的部分 + 得到时间轴末端。
     let mut unsupported: BTreeSet<&'static str> = BTreeSet::new();
     let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let any_solo = project.tracks.values().any(|track| track.solo);
@@ -644,7 +816,11 @@ pub fn build(
     {
         note_unsupported(&mut unsupported, &mut counts, "sidechainRouting");
     }
+    // 资产上下文: 每个资产**解码/重采样一次**, 供所有音轨共享（`Arc<[f32]>` 只读）。
+    let mut asset_cache: BTreeMap<AssetHash, Option<Arc<PreparedAsset>>> = BTreeMap::new();
+    let mut asset_reports: BTreeMap<AssetHash, AudioAssetReport> = BTreeMap::new();
     let mut registry: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+    let mut pending: Vec<(EntityId, TrackSource)> = Vec::new();
     let mut reports: Vec<SourceReport> = Vec::new();
     let mut end_tick = 0u64;
     for &node in &source_nodes {
@@ -659,17 +835,17 @@ pub fn build(
             track,
             sample_rate,
             any_solo,
+            assets,
+            &mut asset_cache,
+            &mut asset_reports,
             &mut unsupported,
             &mut counts,
         )?;
         end_tick = end_tick.max(report.end_tick);
         reports.push(report);
-        // 显式标注类型: 让 `Box<MidiSynthSource> -> Box<dyn AudioSource>` 的强制转换
-        // 出现在插槽类型已知的位置, 而不是依赖 `insert` 的参数推断。
-        let source: Box<dyn AudioSource> = Box::new(source);
-        registry.insert(node, source);
+        pending.push((node, source));
     }
-    // 6. 非源节点(总线/主轨)上的片段: 不渲染, 但**明确登记**, 不静默丢。
+    // 5. 非源节点(总线/主轨)上的片段: 不渲染, 但**明确登记**, 不静默丢。
     for &node in &nodes {
         if source_nodes.contains(&node) {
             continue;
@@ -684,14 +860,14 @@ pub fn build(
     let frames = math::ticks_to_frames(end_tick, PPQ, project.bpm, sample_rate);
     if frames == 0 {
         return Err(render_failed(
-            "工程里没有可渲染的 MIDI 内容 (0 帧)",
+            "工程里没有可渲染的内容 (0 帧)",
             serde_json::json!({
                 "endTick": end_tick,
                 "sourceNodes": source_nodes
                     .iter()
                     .map(|node| node.to_canonical_string())
                     .collect::<Vec<_>>(),
-                "hint": "需要至少一个未静音的 MIDI 片段摆放 (ClipContent::Midi)",
+                "hint": "需要至少一个未静音的 MIDI 音符或可渲染的音频片段摆放",
             }),
         ));
     }
@@ -700,6 +876,15 @@ pub fn build(
             "渲染帧数超出单次上限 (1 小时 @ 48 kHz)",
             serde_json::json!({ "frames": frames, "maxFrames": MAX_RENDER_FRAMES }),
         ));
+    }
+    // 7b. 音频片段的帧区间在**知道总帧数之后**才能夹住（避免区间越过母带末端）。
+    //     这一步只改内存里的 `TrackSource`，不重新解码。
+    for (node, mut source) in pending {
+        source.clamp_to(frames);
+        // 显式标注类型: 让 `Box<TrackSource> -> Box<dyn AudioSource>` 的强制转换
+        // 出现在插槽类型已知的位置, 而不是依赖 `insert` 的参数推断。
+        let boxed: Box<dyn AudioSource> = Box::new(source);
+        registry.insert(node, boxed);
     }
     // 8. 真编译 + 真执行。
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
@@ -777,6 +962,7 @@ pub fn build(
         )
     })?;
     let project_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
+    let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
     Ok(RenderArtifact {
         request: request.clone(),
         path,
@@ -796,6 +982,8 @@ pub fn build(
         node_count: nodes.len(),
         source_nodes,
         sources: reports,
+        audio_clips,
+        audio_assets: asset_reports.into_values().collect(),
         peak_before,
         peak_after,
         normalize_applied,
@@ -858,6 +1046,10 @@ struct ScheduledNote {
 /// 相位 `= (global_frame - note_start) * frequency / sample_rate`，
 /// 因此输出只依赖**绝对帧号**，与块边界、块大小、线程数完全无关 ——
 /// 这比"在块之间累加相位"更强：累加只要错一次（丢块/重复块）就会漂移。
+///
+/// **累加而不是覆写**：调用方（[`TrackSource`] 与 `yeban-render` 的 `render_node`）
+/// 负责先把缓冲清零，本源的语义是"把这一块的贡献**加上去**"。这样 MIDI 与音频片段
+/// 可以按固定顺序叠加到同一个源节点上，而不需要一块额外的中转缓冲。
 struct MidiSynthSource {
     notes: Vec<ScheduledNote>,
     /// 左声道增益（音轨音量 × 等功率声相）。
@@ -870,7 +1062,6 @@ struct MidiSynthSource {
 
 impl AudioSource for MidiSynthSource {
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
-        out.fill(0.0);
         let channels = context.channels;
         if channels == 0 || self.notes.is_empty() {
             return Ok(());
@@ -917,28 +1108,436 @@ impl AudioSource for MidiSynthSource {
     }
 }
 
+/// 一个音频片段摆放的**帧区间 + 左右增益**（tick→帧的换算已在构造时做完）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ClipSpan {
+    /// 起始帧（含）。
+    start: i64,
+    /// 结束帧（不含）。
+    end: i64,
+    /// 左声道增益（片段 `gain_db` + 音轨 `volume_db` → 线性，× 等功率声相）。
+    gain_l: f32,
+    /// 右声道增益。
+    gain_r: f32,
+}
+
+/// 一个**已经解码（必要时已重采样）**的音频资产的共享载体。
+///
+/// 用 `Arc<[f32]>` 而不是 `Vec<f32>`：同一份素材可以被多条音轨的片段引用，
+/// 只读共享让它只解码一次、只驻留一份（[ARCH-TOP-002] 的"不可变资产"语义）。
+#[derive(Debug)]
+struct PreparedAsset {
+    /// 交织 `f32` 样本（已经过编码器延迟裁剪与重采样）。
+    samples: Arc<[f32]>,
+    /// 素材原始声道数（决定声道布局映射）。
+    source_channels: u16,
+    /// 裁剪后进入渲染的帧数。
+    frames: i64,
+}
+
+/// 音频片段源：把一份**已经解码好**的 PCM 按 placement 的帧区间搬进母带。
+///
+/// 语义（全部是刻意的、可判据化的）：
+///
+/// - **累加**（不是覆写）：与 [`MidiSynthSource`] 一样，调用方负责清零；
+/// - **块无关**：某帧的取值只由 `帧号 - 片段起点` 决定，与块边界、块大小、
+///   线程数、块的到达顺序都无关 ⇒ 母带逐位可复现；
+/// - **硬切**：`placement.duration_ticks` 换算出的区间之外一律不加，
+///   素材比区间长就截断、比区间短就留静音（没有淡入淡出 —— 本模型版本
+///   没有交叉淡化字段，凭空造一个是发明规范）；
+/// - **重叠相加**：同一素材的多个摆放重叠时按 `(start, end, gain 位型)` 全序
+///   依次累加（[ARCH-DET-002]：浮点加法不满足结合律，顺序必须与输入顺序无关）。
+struct AudioClipSource {
+    asset: Arc<PreparedAsset>,
+    /// 声道布局（素材声道数 → 母线声道数）。
+    layout: clip_math::ChannelLayout,
+    /// 摆放区间，**已按 `(start, end, gain)` 全序排好**。
+    spans: Vec<ClipSpan>,
+}
+
+impl AudioClipSource {
+    /// 把每个区间夹进 `[0, frames)`（母带长度在构造之后才知道）。
+    fn clamp_to(&mut self, frames: u64) {
+        let limit = i64::try_from(frames).unwrap_or(i64::MAX);
+        for span in &mut self.spans {
+            span.start = span.start.clamp(0, limit);
+            span.end = span.end.clamp(0, limit);
+        }
+        self.spans.retain(|span| span.start < span.end);
+    }
+
+    /// 按 `[ARCH-DET-002]` 的固定全序排好区间。
+    fn sort_spans(&mut self) {
+        self.spans.sort_by(|a, b| {
+            a.start
+                .cmp(&b.start)
+                .then(a.end.cmp(&b.end))
+                .then(a.gain_l.to_bits().cmp(&b.gain_l.to_bits()))
+                .then(a.gain_r.to_bits().cmp(&b.gain_r.to_bits()))
+        });
+    }
+
+    /// 本块内某一帧在**素材**里的下标（超出素材则 `None`）。
+    fn asset_frame(&self, span: &ClipSpan, global: i64) -> Option<usize> {
+        let offset = global - span.start;
+        if offset < 0 || offset >= self.asset.frames {
+            return None;
+        }
+        usize::try_from(offset).ok()
+    }
+}
+
+impl AudioSource for AudioClipSource {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        let channels = context.channels;
+        if channels == 0 || self.spans.is_empty() || self.asset.frames <= 0 {
+            return Ok(());
+        }
+        let source_channels = usize::from(self.asset.source_channels);
+        let block_start = i64::try_from(context.first_frame).unwrap_or(i64::MAX);
+        let block_end =
+            block_start.saturating_add(i64::try_from(context.frames).unwrap_or(i64::MAX));
+        for span in &self.spans {
+            // spans 按 start 升序: 一旦起点已经在块之后, 后面的也不可能落进来。
+            if span.start >= block_end {
+                break;
+            }
+            if span.end <= block_start {
+                continue;
+            }
+            let from = span.start.max(block_start);
+            let to = span.end.min(block_end);
+            for global in from..to {
+                let Some(asset_frame) = self.asset_frame(span, global) else {
+                    continue;
+                };
+                let source_base = asset_frame * source_channels;
+                let index = usize::try_from(global - block_start).unwrap_or(0);
+                let out_base = index * channels;
+                match self.layout {
+                    clip_math::ChannelLayout::Identity => {
+                        for channel in 0..channels {
+                            let gain = channel_gain(span, channel);
+                            out[out_base + channel] +=
+                                self.asset.samples[source_base + channel] * gain;
+                        }
+                    }
+                    clip_math::ChannelLayout::MonoToAll => {
+                        let value = self.asset.samples[source_base];
+                        for channel in 0..channels {
+                            let gain = channel_gain(span, channel);
+                            out[out_base + channel] += value * gain;
+                        }
+                    }
+                    clip_math::ChannelLayout::StereoToMono => {
+                        let mixed = (self.asset.samples[source_base]
+                            + self.asset.samples[source_base + 1])
+                            * 0.5;
+                        out[out_base] += mixed * span.gain_l;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 某一输出声道的增益（第 0 声道左、第 1 声道右，其余不参与）。
+fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
+    match channel {
+        0 => span.gain_l,
+        1 => span.gain_r,
+        _ => 0.0,
+    }
+}
+
+/// 一条音轨的复合源：**MIDI 合成 ⊕ 音频片段**（固定顺序相加）。
+///
+/// 一个 `AudioSource` 对应一个源节点（= 一条音轨），而一条音轨上可以同时有
+/// MIDI 片段与音频片段 —— 因此需要一个把两者按**固定顺序**叠起来的容器。
+/// 顺序是"先 MIDI、后音频片段"，与块边界无关，因此逐位可复现。
+struct TrackSource {
+    midi: MidiSynthSource,
+    clips: Vec<AudioClipSource>,
+}
+
+impl TrackSource {
+    /// 把音频片段的区间夹进母带长度（母带长度在构造之后才知道）。
+    fn clamp_to(&mut self, frames: u64) {
+        for clips in &mut self.clips {
+            clips.clamp_to(frames);
+        }
+    }
+
+    /// 源种类（响应 `sources[].kind`）。
+    fn kind(&self) -> &'static str {
+        let has_midi = !self.midi.notes.is_empty();
+        let has_audio = self.clips.iter().any(|clips| !clips.spans.is_empty());
+        match (has_midi, has_audio) {
+            (true, true) => MIXED_SOURCE_KIND,
+            (true, false) => SOURCE_KIND,
+            (false, true) => AUDIO_SOURCE_KIND,
+            (false, false) => SILENT_SOURCE_KIND,
+        }
+    }
+}
+
+impl AudioSource for TrackSource {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        // 调用方（`yeban-render` 的 `render_node`）已经把缓冲清零；这里只累加。
+        self.midi.render_block(context, out)?;
+        for clips in &mut self.clips {
+            clips.render_block(context, out)?;
+        }
+        Ok(())
+    }
+}
+
+/// 解析（必要时解码 + 重采样）一个音频资产；结果按哈希缓存。
+///
+/// 返回 `Ok(None)` 的**唯一**情形是"工程声明了它、但会话 CAS 池里没有它的字节"
+/// —— 调用方据此登记 `audioClips` 并当静音。其余一切异常都是明确的 `Fault`。
+fn resolve_asset(
+    hash: &AssetHash,
+    project: &YebanProjectV1,
+    assets: &dyn AssetStore,
+    target_rate: u32,
+    cache: &mut BTreeMap<AssetHash, Option<Arc<PreparedAsset>>>,
+    reports: &mut BTreeMap<AssetHash, AudioAssetReport>,
+) -> Result<Option<Arc<PreparedAsset>>, Fault> {
+    if let Some(cached) = cache.get(hash) {
+        if let Some(entry) = reports.get_mut(hash) {
+            entry.clips = entry.clips.saturating_add(1);
+        }
+        return Ok(cached.clone());
+    }
+    let declared_in_index = project.assets.contains_key(hash);
+    let sniffed = assets.asset(hash).map_or(
+        clip_math::ContainerSniff::Unknown,
+        clip_math::sniff_container,
+    );
+    // 池里没有字节：工程也没声明 ⇒ 悬空引用（明确错误）；声明了 ⇒ 登记 + 静音。
+    let Some(bytes) = assets.asset(hash) else {
+        if !declared_in_index {
+            return Err(render_failed(
+                "音频片段引用了一个既不在会话资产池里、工程资产索引里也不存在的资产 \
+                 (悬空的 CAS 引用)",
+                serde_json::json!({
+                    "reason": "assetMissing",
+                    "asset": hash.as_str(),
+                    "declaredInIndex": false,
+                    "hint": "容器形态下 assets/{sha256} 与工程 assets 索引必须同时存在; \
+                             单独存在的哈希说明工程被改坏了",
+                }),
+            ));
+        }
+        reports.insert(
+            hash.clone(),
+            AudioAssetReport {
+                hash: hash.as_str().to_owned(),
+                bytes_present: false,
+                declared_in_index: true,
+                container: sniffed.name(),
+                pcm_format: "unknown",
+                source_channels: 0,
+                source_sample_rate: 0,
+                source_frames: 0,
+                target_sample_rate: target_rate,
+                resampled: false,
+                channel_layout: "none",
+                encoder_delay_frames: None,
+                encoder_padding_frames: None,
+                trimmed_frames: 0,
+                rendered_frames: 0,
+                bytes: 0,
+                clips: 1,
+            },
+        );
+        cache.insert(hash.clone(), None);
+        return Ok(None);
+    };
+    // 完整性: 池里的字节必须**真的是**这个哈希的内容。
+    // 容器读写两侧都校验 SHA-256，这里是第三道 —— 内存注入的池（判据用的那种）
+    // 不经过容器，因此这一道不是多余的。
+    let actual = AssetHash::of_bytes(bytes);
+    if actual != *hash {
+        return Err(render_failed(
+            "会话资产池里的字节与它声明的 SHA-256 不符 (资产被篡改或串位)",
+            serde_json::json!({
+                "reason": "assetHashMismatch",
+                "asset": hash.as_str(),
+                "actual": actual.as_str(),
+                "bytes": bytes.len(),
+            }),
+        ));
+    }
+    let decoded = yeban_decode::decode_bytes(bytes, &DecodeOptions::default())
+        .map_err(|error| decode_fault(hash, &error))?;
+    let source_channels = decoded.channels();
+    let source_rate = decoded.sample_rate();
+    let source_frames = decoded.frame_count();
+    let facts = decoded.facts();
+    let delay = facts.encoder_delay_frames;
+    let padding = facts.encoder_padding_frames;
+    let (from, to) =
+        clip_math::encoder_trim_span(source_frames, delay, padding).ok_or_else(|| {
+            render_failed(
+                "音频资产的编码器延迟/填充把整段都裁掉了 (没有可渲染的样本)",
+                serde_json::json!({
+                    "reason": "assetDecodeFailed",
+                    "asset": hash.as_str(),
+                    "sourceFrames": source_frames,
+                    "encoderDelayFrames": delay,
+                    "encoderPaddingFrames": padding,
+                }),
+            )
+        })?;
+    let retained_frames = to - from;
+    let source_channels_usize = usize::from(source_channels);
+    let trimmed = if from == 0 && to == source_frames {
+        decoded.samples().to_vec()
+    } else {
+        let lo = usize::try_from(from)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(source_channels_usize);
+        let hi = usize::try_from(to)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(source_channels_usize);
+        decoded
+            .samples()
+            .get(lo..hi)
+            .map_or_else(Vec::new, <[f32]>::to_vec)
+    };
+    // 采样率不一致 ⇒ 必须**真的重采样**（[ARCH-DSP-002] / D26），
+    // 绝不用"改标签"（改时长）或"丢帧"（改音高）代替。
+    let resampled = clip_math::needs_resample(source_rate, target_rate);
+    let converted = resample_interleaved(&trimmed, source_channels, source_rate, target_rate)
+        .map_err(|error| decode_fault(hash, &error))?;
+    let frames = i64::try_from(converted.len() / source_channels_usize.max(1)).unwrap_or(i64::MAX);
+    // 报告里的样本格式是**解码器实际吐出的**那一种（不是容器声明的），
+    // 用穷举映射成 `&'static str`（不泄漏字符串、也不随 `Debug` 措辞漂移）。
+    let pcm_format_name = pcm_format_name(decoded.pcm_format());
+    let channel_layout = clip_math::channel_layout(source_channels, MASTER_CHANNELS);
+    let layout_name = channel_layout.map_or("unsupported", clip_math::ChannelLayout::name);
+    let prepared = Arc::new(PreparedAsset {
+        samples: Arc::from(converted),
+        source_channels,
+        frames,
+    });
+    reports.insert(
+        hash.clone(),
+        AudioAssetReport {
+            hash: hash.as_str().to_owned(),
+            bytes_present: true,
+            declared_in_index,
+            container: sniffed.name(),
+            pcm_format: pcm_format_name,
+            source_channels,
+            source_sample_rate: source_rate,
+            source_frames,
+            target_sample_rate: target_rate,
+            resampled,
+            channel_layout: layout_name,
+            encoder_delay_frames: delay,
+            encoder_padding_frames: padding,
+            // `trimmed_frames` 是**丢掉**的帧数, `rendered_frames` 是**重采样之后**
+            // 真正进渲染的帧数（`retained_frames` 是重采样前的帧数, 两者只在
+            // 采样率一致时相等 —— 这一点由 `a_44k1_asset_...` 判据钉住）。
+            trimmed_frames: source_frames.saturating_sub(retained_frames),
+            rendered_frames: u64::try_from(frames.max(0)).unwrap_or(0),
+            bytes: bytes.len(),
+            clips: 1,
+        },
+    );
+    cache.insert(hash.clone(), Some(Arc::clone(&prepared)));
+    Ok(Some(prepared))
+}
+
+/// `PcmFormat` → 稳定的短名（响应用）。
+fn pcm_format_name(format: yeban_decode::PcmFormat) -> &'static str {
+    use yeban_decode::PcmFormat as P;
+    match format {
+        P::U8 => "u8",
+        P::U16 => "u16",
+        P::U24 => "u24",
+        P::U32 => "u32",
+        P::S8 => "s8",
+        P::S16 => "s16",
+        P::S24 => "s24",
+        P::S32 => "s32",
+        P::F32 => "f32",
+        P::F64 => "f64",
+    }
+}
+
+/// `DecodeError` → 契约内的错误码 + 可自纠的载荷。
+///
+/// 只有一个变体走 `IO_ERROR`（`DecodeError::Io`）—— 它**确实**是 I/O 失败；
+/// 其余（畸形流、不支持的容器、声道数非法、空流…）走 `RENDER_FAILED`，
+/// 并在 `data.decodeError` 里带上分类名，绝不吞成"静音成功"。
+fn decode_fault(hash: &AssetHash, error: &DecodeError) -> Fault {
+    let classification = decode_error_class(error);
+    let data = serde_json::json!({
+        "reason": "assetDecodeFailed",
+        "asset": hash.as_str(),
+        "decodeError": classification,
+        "detail": error.to_string(),
+        "specId": "MODEL-AST-007",
+    });
+    match error {
+        DecodeError::Io(_) => Fault::domain_with_data(
+            ErrorCode::IoError,
+            format!("音频资产 {} 读取失败: {error}", hash.as_str()),
+            data,
+        ),
+        _ => render_failed(
+            format!("音频资产 {} 解码失败: {error}", hash.as_str()),
+            data,
+        ),
+    }
+}
+
+/// `DecodeError` 的稳定分类名（响应用；不随 `Display` 的措辞漂移）。
+fn decode_error_class(error: &DecodeError) -> &'static str {
+    match error {
+        DecodeError::Io(_) => "io",
+        DecodeError::UnsupportedFormat => "unsupportedFormat",
+        DecodeError::NoAudioTrack => "noAudioTrack",
+        DecodeError::MissingCodecParameters => "missingCodecParameters",
+        DecodeError::UnsupportedCodec { .. } => "unsupportedCodec",
+        DecodeError::MissingSampleRate => "missingSampleRate",
+        DecodeError::ResetRequired => "resetRequired",
+        DecodeError::Malformed { .. } => "malformed",
+        DecodeError::Budget(_) => "budget",
+        DecodeError::InconsistentLayout { .. } => "inconsistentLayout",
+        DecodeError::EmptyStream => "emptyStream",
+        DecodeError::DurationMismatch(_) => "durationMismatch",
+        DecodeError::ResamplerConfiguration { .. } => "resamplerConfiguration",
+        DecodeError::Resampling { .. } => "resampling",
+        DecodeError::LengthContract(_) => "lengthContract",
+    }
+}
+
 /// 由一条音轨构造音频源 + 报告，并把"没渲染的部分"登记进 `unsupported`。
+#[allow(clippy::too_many_arguments)]
 fn build_source(
     project: &YebanProjectV1,
     track: &TrackV3,
     sample_rate: u32,
     any_solo: bool,
+    assets: &dyn AssetStore,
+    cache: &mut BTreeMap<AssetHash, Option<Arc<PreparedAsset>>>,
+    asset_reports: &mut BTreeMap<AssetHash, AudioAssetReport>,
     unsupported: &mut BTreeSet<&'static str>,
     counts: &mut BTreeMap<&'static str, u64>,
-) -> Result<(MidiSynthSource, SourceReport), Fault> {
+) -> Result<(TrackSource, SourceReport), Fault> {
     // solo 语义（只作用于源轨；辅助返回总线不参与判定 —— 登记在 notes 的边界里）:
     // 只要工程里有任一音轨 solo, 未 solo 且非 solo-safe 的源轨就不发声。
     let audible = !track.mute && (!any_solo || track.solo || track.solo_safe);
-    let gain = if audible {
+    let track_gain = if audible {
         db_to_linear(track.volume_db)
     } else {
         0.0
-    };
-    let (gain_l, gain_r) = if track.pan.is_finite() && track.pan != 0.0 {
-        let (left, right) = pan_gains(track.pan);
-        (gain * left, gain * right)
-    } else {
-        (gain, gain)
     };
     // 设备链: 只有 latency_samples 进了 PDC; 参数求值没有实现 —— 出现即登记。
     if track.devices.iter().any(|device| !device.bypassed) {
@@ -959,6 +1558,10 @@ fn build_source(
     let attack_frames = math::ms_to_frames(ATTACK_MS, sample_rate);
     let release_frames = math::ms_to_frames(RELEASE_MS, sample_rate);
     let mut scheduled: Vec<ScheduledNote> = Vec::new();
+    // 每个资产 → 它在这条音轨上的摆放区间（同一资产的多个摆放共用一个源对象）。
+    let mut per_asset: BTreeMap<AssetHash, (Arc<PreparedAsset>, Vec<ClipSpan>)> = BTreeMap::new();
+    let mut clips_unrendered = 0u64;
+    let mut clips_gated = 0u64;
     let mut end_tick = 0u64;
     for placement in track.clips.values() {
         if placement.muted {
@@ -983,52 +1586,107 @@ fn build_source(
         {
             note_unsupported(unsupported, counts, "clipLoopRepetition");
         }
-        let ClipContent::Midi { notes } = &clip.content else {
-            note_unsupported(unsupported, counts, "audioClips");
-            continue;
-        };
-        for note in notes.values() {
-            if note
-                .probability
-                .is_some_and(|probability| probability < 1.0)
-            {
-                note_unsupported(unsupported, counts, "noteProbability");
+        match &clip.content {
+            ClipContent::Midi { notes } => {
+                for note in notes.values() {
+                    if note
+                        .probability
+                        .is_some_and(|probability| probability < 1.0)
+                    {
+                        note_unsupported(unsupported, counts, "noteProbability");
+                    }
+                    if note.ratchet.is_some_and(|ratchet| ratchet > 1) {
+                        note_unsupported(unsupported, counts, "noteRatchet");
+                    }
+                    if note.slide.is_some() {
+                        note_unsupported(unsupported, counts, "noteSlide");
+                    }
+                    if !note.pitch_bend_curve.is_empty() {
+                        note_unsupported(unsupported, counts, "notePitchBend");
+                    }
+                    if note.syllable.is_some() || !note.phonemes.is_empty() {
+                        note_unsupported(unsupported, counts, "noteLyrics");
+                    }
+                    let micro = i64::from(note.micro_timing_ticks.unwrap_or(0));
+                    let (start, end) = math::note_frame_span(
+                        placement.start_tick.saturating_add(note.start_tick),
+                        note.duration_ticks,
+                        micro,
+                        PPQ,
+                        project.bpm,
+                        sample_rate,
+                    );
+                    scheduled.push(ScheduledNote {
+                        start,
+                        end,
+                        frequency: pitch_to_hz(note.pitch),
+                        amplitude: f32::from(note.velocity) / 127.0,
+                    });
+                    let shifted_micro = u64::try_from(micro.max(0)).unwrap_or(0);
+                    end_tick = end_tick.max(
+                        placement
+                            .start_tick
+                            .saturating_add(note.start_tick)
+                            .saturating_add(shifted_micro)
+                            .saturating_add(note.duration_ticks),
+                    );
+                }
             }
-            if note.ratchet.is_some_and(|ratchet| ratchet > 1) {
-                note_unsupported(unsupported, counts, "noteRatchet");
+            ClipContent::Audio { asset, gain_db } => {
+                // 片段增益与音轨音量都是 dB ⇒ 先求和（一次超越函数求值）再转线性。
+                let Some(combined_db) =
+                    clip_math::combined_gain_db(*gain_db, track.volume_db, audible)
+                else {
+                    // 音轨被 mute/solo 门控掉: 不发声、**不解码**, 但仍计入时间轴末端。
+                    clips_gated = clips_gated.saturating_add(1);
+                    continue;
+                };
+                let gain = db_to_linear(combined_db);
+                let (gain_l, gain_r) = if track.pan.is_finite() && track.pan != 0.0 {
+                    let (left, right) = pan_gains(track.pan);
+                    (gain * left, gain * right)
+                } else {
+                    (gain, gain)
+                };
+                let Some(prepared) =
+                    resolve_asset(asset, project, assets, sample_rate, cache, asset_reports)?
+                else {
+                    note_unsupported(unsupported, counts, "audioClips");
+                    clips_unrendered = clips_unrendered.saturating_add(1);
+                    continue;
+                };
+                // 声道布局不支持 ⇒ **拒绝**，而不是悄悄丢声道。
+                let Some(_layout) =
+                    clip_math::channel_layout(prepared.source_channels, MASTER_CHANNELS)
+                else {
+                    return Err(render_failed(
+                        "音频素材的声道数无法映射到立体声母线 (不做丢声道的静默降混)",
+                        serde_json::json!({
+                            "reason": "assetChannelLayout",
+                            "asset": asset.as_str(),
+                            "sourceChannels": prepared.source_channels,
+                            "targetChannels": MASTER_CHANNELS,
+                            "supported": [1, MASTER_CHANNELS],
+                        }),
+                    ));
+                };
+                let (start, end) = clip_math::clip_frame_span(
+                    placement.start_tick,
+                    placement.duration_ticks,
+                    PPQ,
+                    project.bpm,
+                    sample_rate,
+                );
+                let entry = per_asset
+                    .entry(asset.clone())
+                    .or_insert_with(|| (Arc::clone(&prepared), Vec::new()));
+                entry.1.push(ClipSpan {
+                    start,
+                    end,
+                    gain_l,
+                    gain_r,
+                });
             }
-            if note.slide.is_some() {
-                note_unsupported(unsupported, counts, "noteSlide");
-            }
-            if !note.pitch_bend_curve.is_empty() {
-                note_unsupported(unsupported, counts, "notePitchBend");
-            }
-            if note.syllable.is_some() || !note.phonemes.is_empty() {
-                note_unsupported(unsupported, counts, "noteLyrics");
-            }
-            let micro = i64::from(note.micro_timing_ticks.unwrap_or(0));
-            let (start, end) = math::note_frame_span(
-                placement.start_tick.saturating_add(note.start_tick),
-                note.duration_ticks,
-                micro,
-                PPQ,
-                project.bpm,
-                sample_rate,
-            );
-            scheduled.push(ScheduledNote {
-                start,
-                end,
-                frequency: pitch_to_hz(note.pitch),
-                amplitude: f32::from(note.velocity) / 127.0,
-            });
-            let shifted_micro = u64::try_from(micro.max(0)).unwrap_or(0);
-            end_tick = end_tick.max(
-                placement
-                    .start_tick
-                    .saturating_add(note.start_tick)
-                    .saturating_add(shifted_micro)
-                    .saturating_add(note.duration_ticks),
-            );
         }
     }
     // 浮点求和不满足结合律 [ARCH-DET-002]: 排程顺序必须是**全序**且与输入顺序无关。
@@ -1040,24 +1698,56 @@ fn build_source(
             .then(a.frequency.to_bits().cmp(&b.frequency.to_bits()))
             .then(a.amplitude.to_bits().cmp(&b.amplitude.to_bits()))
     });
+    let audio_clips: u64 = per_asset
+        .values()
+        .map(|(_, spans)| u64::try_from(spans.len()).unwrap_or(u64::MAX))
+        .sum();
+    // 一条音轨可能引用多个资产（本模型允许）: 为每个资产建一个源，
+    // 由 `TrackSource` 按**哈希字典序**（`BTreeMap` 的键序）叠加 ——
+    // 顺序确定且与输入顺序无关，因此逐位可复现。
+    let clips: Vec<AudioClipSource> = per_asset
+        .into_iter()
+        .map(|(_, (asset, spans))| {
+            // 声道布局在 resolve 阶段已经校验过；这里复用同一张表（不另立一份）。
+            let layout = clip_math::channel_layout(asset.source_channels, MASTER_CHANNELS)
+                .unwrap_or(clip_math::ChannelLayout::MonoToAll);
+            let mut source = AudioClipSource {
+                asset,
+                layout,
+                spans,
+            };
+            source.sort_spans();
+            source
+        })
+        .collect();
+    let midi = MidiSynthSource {
+        notes: scheduled,
+        gain_l: if track.pan.is_finite() && track.pan != 0.0 {
+            track_gain * pan_gains(track.pan).0
+        } else {
+            track_gain
+        },
+        gain_r: if track.pan.is_finite() && track.pan != 0.0 {
+            track_gain * pan_gains(track.pan).1
+        } else {
+            track_gain
+        },
+        attack_frames,
+        release_frames,
+    };
+    let source = TrackSource { midi, clips };
     let report = SourceReport {
         node: track.id,
         track: track.name.clone(),
-        kind: SOURCE_KIND,
+        kind: source.kind(),
         audible,
-        notes: u64::try_from(scheduled.len()).unwrap_or(u64::MAX),
+        notes: u64::try_from(source.midi.notes.len()).unwrap_or(u64::MAX),
+        audio_clips,
+        audio_clips_unrendered: clips_unrendered,
+        audio_clips_gated: clips_gated,
         end_tick,
     };
-    Ok((
-        MidiSynthSource {
-            notes: scheduled,
-            gain_l,
-            gain_r,
-            attack_frames,
-            release_frames,
-        },
-        report,
-    ))
+    Ok((source, report))
 }
 
 /// 等程律频率：`440 * 2^((pitch - 69) / 12)`，走 `libm::powf` [ARCH-DET-001]。
