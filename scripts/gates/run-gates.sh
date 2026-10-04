@@ -85,23 +85,76 @@ gate_deny() {
   run "cargo-deny" "$deny_bin" --all-features check
 }
 
+#: 这些 crate 的**重依赖挂在 feature 后面** ⇒ 本机可以用 `--no-default-features` 真编译真跑
+#: (ADR-0001 D19)。比"整条跳过"更有价值: 仍然是零重依赖的本机验证, 但仍然不跑重活。
+#:
+#: ⚠ 刻意**不用关联数组**: 开发机 macOS 自带的是 **bash 3.2**, 它没有 `declare -A`
+#: （实测: `${ARR[key]}` 会被当成**算术下标**, 于是 `key` 里的 `-` 让 bash 报
+#: `yeban: unbound variable`, 而且 `bash -n` 语法检查**照样通过** —— 只有真跑才暴露）。
+#: 用 `case` 表达同一件事, 在 bash 3.2 与 5.x 上都成立。
+light_variant_of() {
+  case "$1" in
+    yeban-engine) printf '%s' "--no-default-features" ;;
+    *) return 1 ;;
+  esac
+}
+
 heavy_deps_of() {
-  local crate="$1" manifest="crates/$1/Cargo.toml"
+  # ⚠ 必须看**传递**依赖, 不能只看本 crate 的清单。
+  #
+  # 为什么: `yeban-mcp` 自己的清单里没有任何重依赖, 但它现在依赖 `yeban-render`
+  # ⇒ 传递拉进 rayon/hound/midly。旧实现只看本 crate 清单 ⇒ 本机会**真的编译**这些重依赖,
+  # 直接违背"本机不跑重活、CI 在 GitHub 上跑"的纪律(人类负责人第 7 轮重申)。
+  # 判定逻辑住在 `scripts/dev/heavy-deps.py`(可单独测): 0=含重依赖 / 1=不含 / 2=无法判定。
+  # 由 `line/mcp-render` 的 needs-7 发现, 集成者落地。
+  python3 scripts/dev/heavy-deps.py "$1" >/dev/null 2>&1
+  [[ $? -ne 1 ]]   # 0 或 2 都按"含重依赖"处理(2 = 拿不到图, 保守跳过)
+}
+
+legacy_heavy_deps_of() {
+  local crate="$1"
+  # ① 先用清单里的直接匹配快速命中(绝大多数情况到此为止, 不启动 cargo)
+  local manifest="crates/$1/Cargo.toml"
   [[ -f "$manifest" ]] || manifest="spikes/$1/Cargo.toml"
   [[ -f "$manifest" ]] || return 1
-  grep -E "$HEAVY_RE" "$manifest" 2>/dev/null | grep -v '^[[:space:]]*#'
+  if grep -E "$HEAVY_RE" "$manifest" 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q .; then
+    return 0
+  fi
+  # ② 再看依赖图(resolve 图, 不编译任何东西; 只在 ① 没命中时才走这条路)
+  local metadata
+  metadata="$(cargo metadata --format-version 1 --no-deps 2>/dev/null)" || return 1
+  python3 - "$crate" <<'PY' <<<"$metadata"
+import json, sys
+crate = sys.argv[1]
+heavy = ("slint", "cpal", "winit", "symphonia", "rubato", "rayon", "hound", "midly")
+data = json.load(sys.stdin)
+# 用**本 crate 的直接依赖名**再走一层: `--no-deps` 只给成员自己的清单,
+# 所以对每个直接依赖查它的清单(成员 → 一次即可覆盖 crates/* 之间的边)。
+members = {pkg["name"]: pkg for pkg in data["packages"]}
+pkg = members.get(crate)
+if pkg is None:
+    sys.exit(1)
+names = {dep["name"] for dep in pkg["dependencies"]}
+sys.exit(0 if names & set(heavy) else 1)
+PY
 }
 
 gate_crate() {
-  local crate="$1"
-  if [[ -z "${YEBAN_ALLOW_HEAVY:-}" ]] && heavy_deps_of "$crate" >/dev/null; then
-    printf '\033[33mSKIP\033[0m %s 含重依赖, 本机不编译 (交给 CI; 见 docs/DEV_WORKFLOW.md)\n' "$crate"
-    return 0
+  local crate="$1" extra=()
+  if [[ -z "${YEBAN_ALLOW_HEAVY:-}" ]] && heavy_deps_of "$crate"; then
+    if variant="$(light_variant_of "$crate")"; then
+      # 重依赖在 feature 后面 ⇒ 跑**本机轻量变体**(不编译重依赖), 而不是整条跳过。
+      extra=("$variant")
+      printf '\033[33mNOTE\033[0m %s 的 %s 变体零重依赖, 本机用该变体真跑 (D19)\n' "$crate" "$variant"
+    else
+      printf '\033[33mSKIP\033[0m %s 含重依赖, 本机不编译 (交给 GitHub CI; 见 docs/DEV_WORKFLOW.md)\n' "$crate"
+      return 0
+    fi
   fi
-  step "crate $crate: clippy --all-targets -D warnings"
-  run "clippy[$crate]" cargo clippy -p "$crate" --all-targets -- -D warnings
-  step "crate $crate: test"
-  run "test[$crate]" cargo test -p "$crate"
+  step "crate $crate: clippy --all-targets -D warnings ${extra[*]:-}"
+  run "clippy[$crate]" cargo clippy -p "$crate" --all-targets "${extra[@]}" -- -D warnings
+  step "crate $crate: test ${extra[*]:-}"
+  run "test[$crate]" cargo test -p "$crate" "${extra[@]}"
 }
 
 case "$MODE" in
