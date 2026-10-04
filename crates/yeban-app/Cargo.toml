@@ -48,6 +48,24 @@ slint = { workspace = true, features = [
 yeban-model = { workspace = true }
 
 # ---------------------------------------------------------------------------
+# yeban-engine: 实时引擎的**只读消费面** (电平 SPSC + 快照), app-mixer 工作线
+# ---------------------------------------------------------------------------
+# 为什么 app 需要它: `[ARCH-UI-002]` 要求"实时线程以 60Hz 向无锁 Meter SPSC 压入真峰值
+# 与 RMS, UI 线程定时器批量出队更新 Slint Properties"。生产侧 (`MeterBank` /
+# `MeterCollector::drain_latest` / `MeterBoard` / `supersedes`) 已在 `yeban-engine` 落地
+# (见 docs/ledger/engine-meters-notes.md), **消费者**只能是持有 UI 线程的那一侧 ——
+# 也就是本 crate。app 侧**不另造队列**: `meter_channel()` 建的 SPSC 由引擎提供,
+# UI 只持消费端 (`src/meters.rs`)。
+#
+# 为什么用**默认 feature** (ADR-0001 D19): 本 crate 未来要宿主声卡 (cpal),
+# 而 D19 的裁决是"引擎把设备 I/O 用 feature 隔开, 需要设备的消费者用默认 feature"。
+# **不在 app 里引 cpal 的裸类型**: `src/engine_host.rs` 只用 `EngineSnapshot` /
+# `EngineRuntime` / `meter_channel` 这些与设备无关的公开面, 一个 `cpal::*` 都不出现
+# (D19 的字面要求)。离线渲染器 `yeban-render` 走的是另一条路
+# (`default-features = false`), 与本条无关。
+yeban-engine = { workspace = true }
+
+# ---------------------------------------------------------------------------
 # ui-test-port: 无头 UI 自动化测试端口 (默认**关闭**)
 # ---------------------------------------------------------------------------
 # 依赖方向 (架构规范 §8 的 crate 清单): yeban-app --(feature)--> yeban-ui-test-port。

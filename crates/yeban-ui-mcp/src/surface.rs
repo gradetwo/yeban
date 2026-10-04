@@ -24,6 +24,7 @@
 //! 于是"截图"这条路只有一条：`capture_image()` → （可选）遮罩 → 证据 → PNG 编码。
 //! 判据 `screenshot_evidence_requires_a_non_black_non_empty_frame` 钉住这条。
 
+use serde_json::{Map, Value};
 use yeban_ui_test_port::image::Rgb8Image;
 use yeban_ui_test_port::png::{self, REPO_MAX_FILE_BYTES};
 use yeban_ui_test_port::port::{PortError, UiTestPort};
@@ -108,6 +109,135 @@ pub trait UiSurface: UiTestPort {
     ///
     /// 光栅化失败（`PortError::Capture`）。
     fn capture_image(&self) -> Result<Rgb8Image, PortError>;
+
+    /// 取走**上一个管理动作**的结构化回执（`ui/switch_main_view` / `ui/force_save` /
+    /// `ui/reload_engine`）。默认 `None`。
+    ///
+    /// ## 为什么需要它（"如实报告结果"的可判据形态）
+    ///
+    /// §12.3 的三个 Administrative 动作在**执行面**上真的做了什么（切到了哪个视图 /
+    /// 写了多少字节 / 引擎重建到第几代、推了多少量子），只有执行面自己知道。
+    /// 服务层把 `*_impl` 的空返回合成一个 `{"accepted": true}` 是**不够**的：
+    /// 那既证明不了副作用发生过，也让"失败被吞掉"与"成功"长得一样。
+    ///
+    /// 因此：执行面把事实交出来（[`AdminReport`]），服务层原样放进 `result.report`。
+    /// **默认实现返回 `None`**，所以既有的假执行面与 [`PortAdapter`] 一行都不用改，
+    /// 行为与从前完全一致（有判据钉住这一点：管理动作的**前后**结果在默认执行面上不变）。
+    ///
+    /// 取走（而不是借出）是刻意的：回执属于"那一次调用"，重复读会让调用方分不清
+    /// 两次调用各报了什么。因此命名是 `take_*`。
+    fn take_admin_report(&mut self) -> Option<AdminReport> {
+        None
+    }
+}
+
+/// 管理动作回执里的一个值。
+///
+/// 存在的理由：回执要**跨 crate** 交给本 crate（接线方在 `yeban-app`），而把
+/// `serde_json::Value` 放进公开签名会让接线方不得不依赖 `serde_json` 才能说一句
+/// "写了 4096 字节"。这个枚举只覆盖回执真正需要的形态，转换点**只有一处**
+/// （[`ReportValue::to_json`]），因此线上形态仍然稳定。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReportValue {
+    /// 布尔。
+    Bool(bool),
+    /// 有符号整数。
+    Int(i64),
+    /// 非负计数（`u64`）。
+    Uint(u64),
+    /// 浮点（例如 dBFS / 版本）。
+    Float(f64),
+    /// 文本（路径之外的一切短标识：视图名 / 容器布局名）。
+    Text(String),
+}
+
+impl ReportValue {
+    /// 线格式（唯一转换点）。
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Bool(value) => Value::from(*value),
+            Self::Int(value) => Value::from(*value),
+            Self::Uint(value) => Value::from(*value),
+            Self::Float(value) => Value::from(*value),
+            Self::Text(value) => Value::from(value.as_str()),
+        }
+    }
+}
+
+impl From<bool> for ReportValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<i64> for ReportValue {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<u64> for ReportValue {
+    fn from(value: u64) -> Self {
+        Self::Uint(value)
+    }
+}
+
+impl From<usize> for ReportValue {
+    fn from(value: usize) -> Self {
+        Self::Uint(value as u64)
+    }
+}
+
+impl From<f64> for ReportValue {
+    fn from(value: f64) -> Self {
+        Self::Float(value)
+    }
+}
+
+impl From<&str> for ReportValue {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_owned())
+    }
+}
+
+impl From<String> for ReportValue {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+/// 一个管理动作的**结构化回执**（谁做的、报的是什么）。
+///
+/// `operation` 与方法注册表里的方法名同名（判据
+/// `admin_reports_name_the_operation_that_was_actually_run` 钉住"回执不是别人写的"），
+/// `fields` 是有序的（`Vec` 而不是 `Map`）：回执进日志与 artifact，键序必须稳定 ——
+/// 与 `[MODEL-AST-003]` 的确定性要求同族（红线 4 的精神）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdminReport {
+    /// 真的跑过的那个动作（`"switch_main_view"` / `"force_save"` / `"reload_engine"`）。
+    pub operation: &'static str,
+    /// 有序字段。
+    pub fields: Vec<(&'static str, ReportValue)>,
+}
+
+impl AdminReport {
+    /// 组装。
+    #[must_use]
+    pub fn new(operation: &'static str, fields: Vec<(&'static str, ReportValue)>) -> Self {
+        Self { operation, fields }
+    }
+
+    /// 线格式：`{"operation": …, <field>: …}`。
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        let mut root = Map::new();
+        root.insert("operation".to_owned(), Value::from(self.operation));
+        for (name, value) in &self.fields {
+            root.insert((*name).to_owned(), value.to_json());
+        }
+        Value::Object(root)
+    }
 }
 
 /// 把一张（可能已遮罩的）图编码成 PNG 并算出证据。

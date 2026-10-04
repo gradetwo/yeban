@@ -16,7 +16,7 @@ use std::rc::Rc;
 use serde_json::Value;
 
 use crate::service::UiService;
-use crate::surface::UiSurface;
+use crate::surface::{AdminReport, UiSurface};
 
 use yeban_mcp::jsonrpc::{ErrorObject, Request};
 use yeban_mcp::security::{BearerToken, Channel, RunMode, Scope, ScopeSet};
@@ -33,6 +33,11 @@ pub(crate) struct Fixture {
     pub(crate) image: Rgb8Image,
     pub(crate) calls: Vec<String>,
     pub(crate) reject_admin: bool,
+    /// 下一个管理动作要交出的**结构化回执**（`app-mixer` 工作线新增）。
+    ///
+    /// 假执行面不"真的"做事，但它必须能扮演"会交回执的执行面"，否则服务层的
+    /// "把回执挂进 `result.report`"这条路径在本机（零 Slint）就没有判据覆盖。
+    pub(crate) report: Option<AdminReport>,
 }
 
 pub(crate) fn fixture_tree() -> ControlTree {
@@ -93,6 +98,7 @@ pub(crate) fn shared(permission: Permission) -> Rc<RefCell<Fixture>> {
         image: fixture_image(),
         calls: Vec::new(),
         reject_admin: false,
+        report: None,
     }))
 }
 
@@ -111,6 +117,11 @@ impl UiSurface for FakeSurface {
     }
     fn capture_image(&self) -> Result<Rgb8Image, PortError> {
         Ok(self.state.borrow().image.clone())
+    }
+
+    /// 交出（并取走）夹具里预置的回执 —— 与真实执行面同语义。
+    fn take_admin_report(&mut self) -> Option<AdminReport> {
+        self.state.borrow_mut().report.take()
     }
 }
 

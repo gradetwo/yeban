@@ -33,16 +33,27 @@
 //! 解析（非法 / 缺失显式回退）；真实的 `.yeban` 文件经 [`open`] 的容器入口打开，
 //! 容器的拒绝原因**原样**上报，绝不退化成空工程。
 //!
-//! 仍未接线的部分（走带 / Op 归约 / 电平 SPSC / 混音台通道条 / 设备链 / 自动化）
-//! 逐条记在 `docs/ledger/app-completion-notes.md` 与 `docs/ledger/app-binding-notes.md`
+//! **混音台通道条**（app-mixer 工作线，`[ARCH-UI-002]`）：通道条数 = 工程轨道数，
+//! 名字 / 音量 / 声相 / 静音 / 独奏 / 色标来自投影（推子位置 = `TrackV3::volume_db`），
+//! 而**电平**来自引擎：实时线程每量子一次批量发布到 SPSC（`yeban-engine` 的生产侧），
+//! UI 线程的 [`meters::MeterRuntime`] 用 `drain_latest` 抽干取最新 → [`host::apply_meters`]
+//! 写 Slint 属性；`.slint` 侧 `track-{i}-meter` 的 `accessible-label` 携带 dBFS 文本，
+//! 因此"界面真的消费了电平"可以被控件树机械验证。引擎的重建（快照 / 队列 / 量子驱动）
+//! 由 [`engine_host`] 负责，`.yeban` 的原子落盘（`[ARCH-SEC-004]`）由 [`save`] 负责。
+//!
+//! 仍未接线的部分（走带 / Op 归约 / 设备链 / 自动化 / 声卡宿主 / UI→模型写入）
+//! 逐条记在 `docs/ledger/app-mixer-notes.md` §7 与 `docs/ledger/app-binding-notes.md`
 //! 的未实现项里。
 #![deny(missing_docs)]
 
 pub mod bridge;
 pub mod elements;
+pub mod engine_host;
 pub mod host;
 pub mod input;
+pub mod meters;
 pub mod open;
+pub mod save;
 pub mod scene;
 
 /// `build.rs` 里 `slint_build::compile("ui/app.slint")` 生成的 Slint 组件类型。

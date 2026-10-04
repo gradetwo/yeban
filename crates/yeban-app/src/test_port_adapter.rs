@@ -1448,12 +1448,23 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
     assert_eq!(project_view.tracks.len(), 3);
     assert_eq!(demo_view.tracks.len(), 6);
     // 色标族规模 == 工程轨道规模（两侧都判），且**缺色**轨道的标签是回退色。
+    //
+    // ⚠ 只看 **arrangement** 的色标：app-mixer 之后调音台也有 `track-{i}-mixer-color-swatch`
+    // （同一个投影字段，不同的语义 ID）。它在**注册表**里恒存在，而"`visible: false` 的分支
+    // 是否进运行时树"是上游几何遍历的结论 —— 本判据不假设哪一种，只把计数口径收窄到
+    // arrangement（与 `elements.rs` 的注册表版本一致）。
+    let arrangement_swatches = |tree: &ControlTree| -> usize {
+        tree.with_prefix("track-")
+            .filter(|node| node.id.ends_with("-color-swatch"))
+            .filter(|node| !node.id.contains("-mixer-"))
+            .count()
+    };
     for (tree, view, label) in [
         (&runtime, &project_view, "filled_project"),
         (&demo_runtime, &demo_view, "demo_project"),
     ] {
         assert_eq!(
-            family_count(tree, "track-", "-color-swatch"),
+            arrangement_swatches(tree),
             view.tracks.len(),
             "{label}: 色标元素数必须等于工程的轨道数"
         );

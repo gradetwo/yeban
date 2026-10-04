@@ -217,6 +217,33 @@ export component MainWindow inherits Window {
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
 
+    // =====================================================================
+    // 混音台电平注入面（[ARCH-UI-002] 的"UI 线程定时器批量出队更新 Slint Properties"）
+    // =====================================================================
+    // 推子位置（0.0–1.0）由工程的 `TrackV3::volume_db` 派生 —— 与电平柱高是**两个量**：
+    // 推子说"我把这条轨设到多大声"，电平说"它现在多大声"（`src/bridge.rs` 的
+    // `volume_fraction` 与 `src/meters.rs` 的 `peak_fraction` 各有一份判据）。
+    in property <[float]> track-volume-fractions: [];
+    // 声相文本（`"C"` / `"L50"` / `"R30"`）—— 由投影的整数千分之一派生。
+    in property <[string]> track-pans: [];
+    // 电平：`{:.1}` dBFS 文本 + 0.0–1.0 柱高。长度**恒等于** `track-names.length`
+    // （换工程时 `host::apply_view` 先重置成等长的静音，`apply_meters` 再填真实读数）。
+    in property <[string]> track-meter-peaks: [];
+    in property <[string]> track-meter-rmss: [];
+    in property <[float]> track-meter-levels: [];
+    // 主控通道条（投影 + 电平）
+    in property <string> master-name: "Master";
+    in property <string> master-volume-display: "";
+    in property <float> master-volume-fraction: 0.0;
+    in property <string> master-pan: "C";
+    in property <bool> master-mute: false;
+    in property <bool> master-solo: false;
+    in property <color> master-color: #2c3a63;
+    in property <string> master-color-label: "";
+    in property <string> master-meter-peak: "-120.0";
+    in property <string> master-meter-rms: "-120.0";
+    in property <float> master-meter-level: 0.0;
+
     title: root.window-title;
     // 演示窗口落在 §1.2 的"全展开"档 (≥1920×1080): 左栏 240 + 主区 + 右栏 280,
     // 中段与底部控制台各占弹性区的 60% / 40% (规范要 55–65% / 35–45%)。
@@ -354,6 +381,29 @@ export component MainWindow inherits Window {
             note-positions: root.note-positions;
             note-ys: root.note-ys;
             note-widths: root.note-widths;
+            // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。
+            track-names: root.track-names;
+            track-volumes: root.track-volumes;
+            track-volume-fractions: root.track-volume-fractions;
+            track-pans: root.track-pans;
+            track-mutes: root.track-mutes;
+            track-solos: root.track-solos;
+            track-colors: root.track-colors;
+            track-color-labels: root.track-color-labels;
+            track-meter-peaks: root.track-meter-peaks;
+            track-meter-rmss: root.track-meter-rmss;
+            track-meter-levels: root.track-meter-levels;
+            master-name: root.master-name;
+            master-volume-display: root.master-volume-display;
+            master-volume-fraction: root.master-volume-fraction;
+            master-pan: root.master-pan;
+            master-mute: root.master-mute;
+            master-solo: root.master-solo;
+            master-color: root.master-color;
+            master-color-label: root.master-color-label;
+            master-meter-peak: root.master-meter-peak;
+            master-meter-rms: root.master-meter-rms;
+            master-meter-level: root.master-meter-level;
 
             select-piano-roll => { root.console-tab = 0; }
             select-mixer => { root.console-tab = 1; }

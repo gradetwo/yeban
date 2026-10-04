@@ -340,8 +340,15 @@ pub struct TrackView {
     pub volume_db: f32,
     /// 音量的显示文本（`{:.1}` dB）。
     pub volume_display: String,
+    /// 推子位置（0.0–1.0），由 [`volume_fraction`] 从 `volume_db` 派生。
+    ///
+    /// 界面的推子帽位置只读它 —— 与**电平柱高**（`track-meter-levels`，来自引擎）是
+    /// 两个不同的量：推子说"我把它设到多大声"，电平说"它现在多大声"。
+    pub volume_fraction: f32,
     /// 声相，模型是 `-1.0..=1.0` 的 `f32`；投影成**整数千分之一**以避免在界面层碰浮点。
     pub pan_millis: i32,
+    /// 声相的显示文本（`"C"` / `"L50"` / `"R30"`）—— `.slint` 直接画它，界面不做任何算术。
+    pub pan_display: String,
     /// 该轨道上的摆放数量（`TrackV3::clips` 的长度）。
     pub clip_count: usize,
     /// 是否为 `master_bus_track_id` 指向的主总线。
@@ -779,6 +786,26 @@ impl ViewState {
         self.tracks.iter().map(|track| track.color_rgb).collect()
     }
 
+    /// 非主总线轨道的声相显示文本（`"C"` / `"L50"` / `"R30"`）。
+    ///
+    /// 混音台通道条的声相文本源：界面只做"取数组下标"，不做任何算术或格式化。
+    #[must_use]
+    pub fn track_pans(&self) -> Vec<String> {
+        self.tracks
+            .iter()
+            .map(|track| track.pan_display.clone())
+            .collect()
+    }
+
+    /// 非主总线轨道的推子位置（0.0–1.0，由 `TrackV3::volume_db` 派生）。
+    #[must_use]
+    pub fn track_volume_fractions(&self) -> Vec<f32> {
+        self.tracks
+            .iter()
+            .map(|track| track.volume_fraction)
+            .collect()
+    }
+
     /// 非主总线轨道的规范化色标文本（`#RRGGBB`，回退色也在内）。
     ///
     /// 这一份同时进 `.slint` 的 `track-color-labels` 与语义注册表的标签 ——
@@ -843,7 +870,7 @@ impl ViewState {
         }
         for track in &self.tracks {
             lines.push(format!(
-                "track index={} id={} name={} kind={} color={} color_rgb={} mute={} solo={} solo_safe={} volume_db={:.6} pan_millis={} clips={}",
+                "track index={} id={} name={} kind={} color={} color_rgb={} mute={} solo={} solo_safe={} volume_db={:.6} pan_millis={} pan={} clips={}",
                 track.index,
                 track.id,
                 track.name,
@@ -855,6 +882,7 @@ impl ViewState {
                 track.solo_safe,
                 track.volume_db,
                 track.pan_millis,
+                track.pan_display,
                 track.clip_count,
             ));
         }
@@ -987,10 +1015,59 @@ fn track_view(track: &TrackV3, index: usize, is_master: bool) -> TrackView {
         solo_safe: track.solo_safe,
         volume_db: track.volume_db,
         volume_display: format!("{:.1}", track.volume_db),
+        volume_fraction: volume_fraction(track.volume_db),
         pan_millis,
+        pan_display: pan_display(pan_millis),
         clip_count: track.clips.len(),
         is_master,
     }
+}
+
+/// 推子的 dB 量程下界（与 `ui/console/mixer_console.slint` 的 `accessible-value-minimum` 一致）。
+pub const FADER_MIN_DB: f32 = -60.0;
+
+/// 推子的 dB 量程上界（与 `.slint` 的 `accessible-value-maximum` 一致）。
+pub const FADER_MAX_DB: f32 = 6.0;
+
+/// 音量 dB → 推子位置（0.0–1.0）。
+///
+/// 线性映射到 `[`FADER_MIN_DB`, `FADER_MAX_DB`]` 并夹紧；`NaN`/`±∞` 归 `0.0`
+/// （推子几何里出现 `NaN` 会让 Slint 的布局算出非有限值 —— 那是最难查的一类界面 bug）。
+///
+/// **与电平无关**：电平柱高来自引擎的 `MeterFrame`（[`crate::meters`]），推子位置来自工程的
+/// `TrackV3::volume_db`。把两者混在一个数组里（旧版 `FADER_LEVELS` 就是这么干的）会让
+/// "推子动了"与"有声音了"在界面上无法区分。
+#[must_use]
+pub fn volume_fraction(volume_db: f32) -> f32 {
+    if !volume_db.is_finite() {
+        return 0.0;
+    }
+    ((volume_db - FADER_MIN_DB) / (FADER_MAX_DB - FADER_MIN_DB)).clamp(0.0, 1.0)
+}
+
+/// 声相千分之一 → 显示文本（**唯一**的声相文本实现）。///
+/// 口径（一条纯函数，判据 `pan_display_is_centred_around_zero` 钉住）：
+///
+/// | `pan_millis` | 文本 | 含义 |
+/// | :--- | :--- | :--- |
+/// | `0` | `"C"` | 居中 |
+/// | `-500` | `"L50"` | 左 50% |
+/// | `-5` | `"L0"` | 左偏但不足 1%（**不设死区**：读数是"偏了"，就该显示"偏了"） |
+/// | `1000` | `"R100"` | 右满 |
+/// | 越界值 | 先夹到 `-1000..=1000` | 模型 `validate()` 已拦，但投影不假设输入可信 |
+///
+/// 用整数（千分之一）而不是 `f32`：声相文本会进 `accessible-value`，跨平台浮点格式化
+/// 的 1 ulp 差异会让"同一工程两台机器给出不同文本"（`ARCH-DET-001` 禁止的正是这个）。
+#[must_use]
+pub fn pan_display(pan_millis: i32) -> String {
+    let clamped = pan_millis.clamp(-1000, 1000);
+    if clamped == 0 {
+        return "C".to_owned();
+    }
+    // 千分之一 → 百分数：整除 10（`-505` ⇒ `L50`，与 DAW 常见的整数百分比显示一致）。
+    let percent = (clamped.abs() / 10) as u32;
+    let side = if clamped < 0 { 'L' } else { 'R' };
+    format!("{side}{percent}")
 }
 
 /// 投影一个 MIDI 音符：身份 / 力度来自模型，**位置**由 tick / 音高整数派生。
@@ -2107,5 +2184,52 @@ mod tests {
             PITCH_LANE_HEIGHT_PX, 14.0,
             "车道高必须与 .slint 的 14px 一致"
         );
+    }
+
+    /// 判据：声相文本是**整数千分之一**派生的纯函数（居中 / 左右 / 越界夹紧）。
+    ///
+    /// 混音台通道条的声相文本 (`track-pans[i]`) 与判据都读这一个函数，因此
+    /// "界面显示的声相"与"工程里的 `TrackV3::pan`"不可能各说各话。
+    #[test]
+    fn pan_display_is_centred_around_zero() {
+        assert_eq!(pan_display(0), "C");
+        assert_eq!(pan_display(-500), "L50");
+        assert_eq!(pan_display(500), "R50");
+        assert_eq!(pan_display(1000), "R100");
+        assert_eq!(pan_display(-1000), "L100");
+        // 越界：夹紧（不绕回、不 panic），并且**不出现负号**（符号进了 `L`/`R` 前缀）。
+        assert_eq!(pan_display(4321), "R100");
+        assert_eq!(pan_display(-4321), "L100");
+        assert_eq!(pan_display(-5), "L0", "不足 1% 的偏移仍如实显示方向");
+        assert_eq!(pan_display(5), "R0");
+        for millis in [-1000, -999, -1, 0, 1, 999, 1000] {
+            let text = pan_display(millis);
+            assert!(
+                text == "C" || text.starts_with('L') || text.starts_with('R'),
+                "`{text}` 不符口径"
+            );
+            assert!(!text.contains('-'), "`{text}` 不许带负号");
+        }
+        // 投影出来的每一轨都有文本，且与 `pan_millis` 同源。
+        let view = ViewState::from_project(&filled_project()).expect("投影");
+        let pans = view.track_pans();
+        assert_eq!(pans.len(), view.tracks.len());
+        for (track, text) in view.tracks.iter().zip(&pans) {
+            assert_eq!(*text, pan_display(track.pan_millis));
+        }
+
+        // ---- 推子位置：与**电平**无关，只由 `volume_db` 派生 ----
+        assert_eq!(volume_fraction(FADER_MAX_DB), 1.0);
+        assert_eq!(volume_fraction(FADER_MIN_DB), 0.0);
+        assert_eq!(volume_fraction(1_000.0), 1.0, "越界向上夹紧");
+        assert_eq!(volume_fraction(-1_000.0), 0.0, "越界向下夹紧");
+        assert_eq!(volume_fraction(f32::NAN), 0.0, "NaN 不许进几何");
+        assert_eq!(volume_fraction(f32::INFINITY), 0.0);
+        let fractions = view.track_volume_fractions();
+        assert_eq!(fractions.len(), view.tracks.len());
+        for (track, fraction) in view.tracks.iter().zip(&fractions) {
+            assert_eq!(*fraction, volume_fraction(track.volume_db));
+            assert!((0.0..=1.0).contains(fraction), "推子位置必须归一化");
+        }
     }
 }

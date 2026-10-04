@@ -219,8 +219,12 @@ const VIEW: ParamSpec = ParamSpec {
     name: "view",
     json_type: "string",
     required: true,
-    allowed: None,
-    description: "目标主视图名（例：`arrangement` / `session` / `mixer`）",
+    // 白名单 = 两条主视图（`app.slint` 的 `arrangement-view` 是一个 `bool`，只有两个取值）。
+    // 非法值由**参数校验**拒绝 ⇒ `-32602 INVALID_PARAMS`，而不是执行面的
+    // `-32005 NOT_IMPLEMENTED`（那是"能力没接线"）。两者混在一起会让调用方以为
+    // 控制面没实现主视图切换 —— 而它已经实现了（`crates/yeban-app/src/live_surface.rs`）。
+    allowed: Some(&["arrangement", "session"]),
+    description: "目标主视图名（`arrangement` = 线性编曲 / `session` = 触发矩阵）",
 };
 
 /// 全部方法，**注册表顺序 = 文档顺序**（不依赖任何容器迭代顺序）。

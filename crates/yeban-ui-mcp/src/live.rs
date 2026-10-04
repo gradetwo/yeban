@@ -498,16 +498,38 @@ impl ControlPlane {
         )
     }
 
+    /// 测试模式 + §12.3 的 **Administrative** 一级（`[UI-MCP-001]`）。
+    ///
+    /// 覆盖 `ui/switch_main_view`（`app:admin`）、`ui/force_save`（`app:save`）、
+    /// `ui/reload_engine`（`app:reload-engine`）三个动作所需的作用域 ——
+    /// 作用域集合**不是**在这里手写的，而是走 [`scopes_for_permission`] 那张唯一的映射表
+    /// （`Permission::Administrative` ⇒ 六级全给）。手写一份就会造出第二条"权限事实源"。
+    ///
+    /// 与 [`Self::interactive_for_tests`] 一样，名字里的 `for_tests` 是契约的一部分：
+    /// 这三个动作在**生产模式**下应当由 `app:*` scope 与（`ui:inject` 之外的）授权模型
+    /// 逐个把关，不该被发行路径顺手打开。
+    #[must_use]
+    pub fn administrative_for_tests(surface: Box<dyn UiSurface>) -> Self {
+        Self::with_scope_set(
+            surface,
+            scopes_for_permission(yeban_ui_test_port::port::Permission::Administrative),
+            RunMode::Test,
+        )
+    }
+
     /// 显式给出作用域与运行模式（其余构造点都走它）。
     #[must_use]
     pub fn with_scopes(surface: Box<dyn UiSurface>, scopes: &[Scope], mode: RunMode) -> Self {
+        Self::with_scope_set(surface, ScopeSet::from_scopes(scopes.iter().copied()), mode)
+    }
+
+    /// 显式给出**作用域集合**与运行模式。
+    ///
+    /// 私有：`ScopeSet` 属于 `yeban-mcp`，接线方（`yeban-app`）不该也不需要构造它 ——
+    /// 它只说"我要哪一级"（[`scopes_for_permission`] 是唯一的映射点）。
+    fn with_scope_set(surface: Box<dyn UiSurface>, scopes: ScopeSet, mode: RunMode) -> Self {
         let generated = BearerToken::generate();
-        let service = UiService::new(
-            generated.token.clone(),
-            ScopeSet::from_scopes(scopes.iter().copied()),
-            mode,
-            surface,
-        );
+        let service = UiService::new(generated.token.clone(), scopes, mode, surface);
         Self {
             service,
             token: generated.token,
