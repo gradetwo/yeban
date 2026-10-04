@@ -13,6 +13,31 @@ name = "yeban_render"
 path = "src/lib.rs"
 
 [dependencies]
+# 路由图与 EntityId 的唯一事实源 [MODEL-AST-001/004]。渲染层不复制数据模型。
+yeban-model.workspace = true
+# 共用纯数学 DSP 原语: 确定性 xorshift RNG 与标量块混音 [ARCH-RT-001] [ARCH-DET-001]。
+# 版本由根清单钉死; 本 crate 不改变它的版本, 只把 feature 显式说清。
+yeban-dsp.workspace = true
+# L1 确定性要求"统一启用纯 Rust libm"、禁止平台 libm [ARCH-DET-001]:
+# 分贝→线性增益等超越函数一律走 libm, 结果与宿主 libm 实现无关。
+libm.workspace = true
+# 输出缓冲的 SHA-256 位级摘要 (MUST-GATE-002 的 L1 bit-exact 判据需要可比较的哈希)。
+sha2.workspace = true
+# 离线渲染的并行工作窃取 [ROAD-M4-004]。
+rayon.workspace = true
+# SMF 0/1 导出 [ARCH-FMT-001 §5.5]。根清单用 default-features = false 登记 midly,
+# 而 Smf::write_std 属于 midly 的 `std` feature, 因此这里必须显式打开它
+# (实测见 docs/ledger/render-master-notes.md §3)。
+midly = { workspace = true, features = ["std"] }
+# 普通 RIFF WAV 的读写。RF64/BW64 的 ds64/bext 由本 crate 自研 (见 src/rf64.rs),
+# hound 在这里同时充当"独立第三方读取器"来交叉验证自研写入器的字节布局。
+hound.workspace = true
+
+[dev-dependencies]
+# 属性测试 (ARCH-DET-002 的"任意线程数 → 逐位相同")。
+proptest.workspace = true
+# 文件往返测试需要真实临时文件。
+tempfile.workspace = true
 
 [lints]
 workspace = true
