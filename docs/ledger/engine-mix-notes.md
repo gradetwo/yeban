@@ -510,3 +510,57 @@ run id  : 待读（见下方 §9.2 的读回记录）
 在 **CI 的 `rust (yeban-engine)` 腿（默认 feature = cpal 在编）** 上会再跑一次
 clippy + test；`workspace 全量` 是否进 matrix 取决于 `scripts/dev/changed-crates.py`
 的计划器（`line/engine-sound` 的 N8 已经记录它认不出 `workspace = true` 的依赖边）。
+
+### 9.2 CI 判决（**已读回**，不是 pending）
+
+```text
+run id  : 37244879720   （line/engine-mix, push 触发, tip 9b03ca7）
+结论    : failure —— 5 绿 1 红 2 跳过
+  ✓ plan (受影响集合)                5s
+  ✓ checks (fmt / 红线守卫 / schema) 32s
+  ✓ deny (cargo-deny)                44s
+  ✓ lockfile (确定性 Cargo.lock)     16s
+  ✓ rust (yeban-engine)              54s   ← clippy -D warnings + test，**默认 feature（含 cpal）**
+  ✗ rust (yeban-app)                 4m1s  ← clippy ✓ / test ✗（1 条红，11 条绿）
+  - rust (workspace 全量)                  ← 被 plan 跳过
+  - windows (yeban-mcp / yeban-model)      ← 与本改动无关
+```
+
+**红点原文**（`ci-verdict.sh --logs 37244879720` 摘录）：
+
+```text
+test admin_reload_engine_rebuilds_and_resets_the_meter_tap ... FAILED
+panicked at crates/yeban-app/tests/live_ui_mcp.rs:892:
+assertion `left == right` failed: 引擎换代之后旧读数必须作废（电平回到下限）
+  left: "轨道 鼓 电平表 峰值 -6.0 RMS -23.4 dBFS"
+ right: "轨道 鼓 电平表 峰值 -120.0 RMS -120.0 dBFS"
+test result: FAILED. 11 passed; 1 failed
+```
+
+### 9.3 这个红点是什么（诊断，附证据）
+
+**它不是本线引入的回归，而是 `44a071a` 修好"假绿生成器"之后**第一次**把所有下游拖进矩阵**，
+于是暴露了一个**跨线潜伏失败**（与 `engine-sound-notes.md` §7 的 S3 **完全同族**）：
+
+1. 该判据的**副作用链**是"注入一帧电平 ⇒ `ui/reload_engine` 重建引擎 ⇒
+   **旧的注入帧必须作废** ⇒ 读回下限 −120 dBFS"；
+2. 它隐含的前提是"**新引擎的前几帧没有任何声源**"——那在 `line/engine-sound`
+   之前是**真的**（`render_track_into` 是 `out.fill(0.0)` 占位静音）；
+3. `line/engine-sound` 让引擎**真的出声**（`demo_project` 的鼓轨有 MIDI 音符）
+   ⇒ 重建后的引擎在第 4 个量子就有真实电平 −6.0 dBFS；
+4. 而 `rust (yeban-app)` **从来没在 `line/engine-sound` 的推送里跑过** ——
+   正是 `44a071a` 记录的 N8（计划器看不见 `{ workspace = true }` 依赖边）。
+   所以这个红点在 `line/engine-mix` 之前的 `main` 上**已经潜伏**，只是没人编译到它。
+
+**为什么本线不能修**：修复点在 `crates/yeban-app/tests/live_ui_mcp.rs`，
+而任务书把 `其它 crates/**` 列为**禁改**。处置建议（给 `line/app-mixer` / 集成者）：
+
+- **(a) 改判据意图**：把"读回 −120 dBFS"改成"读回的**不是**注入的那一帧"
+  （例如断言 `quanta == 4`、`visibleQuantum == 4`，且读数来自引擎）。
+  这条更贴近判据标题"重建引擎并重置电平抽头"的**真实意图**；
+- **(b) 或者**把 `demo_project` 换成"无音符"的工程（与 `meter_rt_contract.rs::silent_project()`
+  的做法一致）——那样"新引擎前几帧静音"重新成立，判据一字不改。
+
+**本线已做的部分**：`line/engine-sound` 修 S3 时已经采取过 (b) 的做法；
+`engine-sound-notes.md` §7 末尾那条"给电平线的提醒"说的就是这个形态
+（**夹具隐含依赖了另一个模块的实现细节**，P9.7 同族）。
