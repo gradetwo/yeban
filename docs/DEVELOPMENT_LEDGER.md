@@ -83,6 +83,8 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `yeban-app` 首次真的编译 Slint（run 37218433961） | **`rust (yeban-app)` = success**：13 个 `.slint` 全部编译通过，`slint_build::compile` 生成代码可用，`slint::include_modules!()` 在嵌套模块里可行，clippy `-D warnings` 零告警，40 条单元测试绿 | `gh run view 37218433961` |
 | `yeban-app` 全绿（run 37218791723，round 3） | **success**：含 `checks` 里新接的"依赖许可清单漂移检查"（该门禁第一次变红就抓到了 Slint 引入后清单未重生成） | `gh run view 37218791723` |
 | **主分支 tip 全量真跑**（手动 `force_full`，run 37219320374） | **27/27 job success，0 failure**：计划器返回全部 **23** 条 rust 矩阵腿（含 `yeban-app` 真实编译 Slint），加上 checks / lockfile / deny / plan | `gh run view 37219320374` |
+| **主分支当前 tip 全量真跑**（run 37219697954，含 sfz 合并与全部门禁改进） | **27/27 job success，0 failure** —— 这是"当前 tip 全绿"的最终证据 | `gh run view 37219697954` |
+| 已合并工作线的退役 | 5 条线（model-core / theory-core / dsp-core / ui-shell / sfz-core）**先打归档标签 `line-archive/<name>` 再删除本地+远程分支**；远程只剩 `main` 与 `website`；5 条线的实现内容全部保留在 main 的合并提交里 | `git tag --list 'line-archive/*'`; `git ls-remote --heads origin` |
 | `yeban-sfz` 落地（run 37219428588） | **27/27 全绿**；58 条测试（27 lib + 16 include 沙箱 + 12 畸形输入 + 3 doctest）；运行时依赖仅 `thiserror`，零 dev-dependency | `gh run view 37219428588` |
 | 跨语言契约对账（本机实测全链路） | `cargo run -p yeban-model --example export_schema_samples` → 4 份样本 → `validate_schemas.py --samples-dir` → **4/4 通过**（ops 样本 23 变体 oneOf 对账通过） | 见 `docs/ledger/model-core-provenance.md` §4 |
 | 官网分支首次 CI（run 37217762431，branch `website`） | **绿**：站点契约检查通过；部署步骤按设计"缺凭据 → 优雅跳过" | `gh run view 37217762431` |
