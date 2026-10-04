@@ -384,6 +384,7 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 | `engine-rt` | `35ee5ab` | 实时引擎核心: 定长块/快照退役回收/内部 PDC/FTZ-DAZ/批量 SPSC/cpal 宿主+NullBackend; 按 D19 切分 device feature; 延迟改从 DeviceDefinition::latency_samples 读取 |
 | `render-master` | `136c791` | 离线母带渲染: 拓扑分层 Rayon 并行 + 按 EntityId 字典序确定性串行归约; 自研 RF64/BW64+bext; TPDF 抖动; SMF 0/1 导出; pdc.rs 最小同构实现(待 engine 提供公共签名后按 D19 退役) |
 | `ui-test-port` | `7d3b31e` | Tier-1 无头软件光栅化 + 语义控件树 + 动态遮罩 SSIM(≥0.98) + 三级权限; app 侧窄口子适配器(默认关闭 feature) |
+| `mcp-core` | `60424a3` | Yeban Intent API v2 工具层: 10 个工具注册表与契约逐条对账、JSON-RPC 2.0、六级 scope 纯函数判定、`ui:inject` 生产硬禁、256-bit Bearer token + 0600 落盘、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0)、`dryRun`/`idempotencyKey` 真实现；十个工具的领域实现未接线(返回 -32005 NOT_IMPLEMENTED)；108 条判据 |
 
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
