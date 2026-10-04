@@ -496,3 +496,19 @@ rust 腿在 lib 就停了（见 §4.1）。
 **没有。** 本线没有新增任何外部依赖（`serde` / `serde_json` / `thiserror` 早已在
 `[workspace.dependencies]`；`yeban-mcp` / `yeban-ui-test-port` 是同工作区 crate），
 因此根 `Cargo.toml` 不需要任何改动。
+
+---
+
+## 追加（集成者代记）：`needs-3`（app 侧接线）已由 `line/live-port` 关闭
+
+- **`needs-3`「app 侧两行 `PortAdapter` 接线」** → **已完成**：`crates/yeban-app/src/live_surface.rs`
+  是 app 侧**唯一**接线点（`build_live_ui(project, permission)` = 投影 → 注册表 → `LivePort::new`
+  → 装 Tier-1 平台 + `host::build_main_window` + `show()` + 抓运行时树），`PortAdapter` 升格为 `UiSurface`。
+- **「真实界面（`LivePort`）从未被端到端驱动过」** → **已证明**（CI run 37233532606，全量腿）：
+  `ui/tree` 读出 79 个节点；`track-0-header` 的 `label` 是 `轨道 Lead`（来自 `filled_project()`）；
+  族规模 3/2/2 与工程一致；`ui/screenshot` 得到 1920×1080、非黑 **99.1%**、颜色 **2642**、遮罩指纹
+  `91e06ec5d83fadd3`，未遮罩帧指纹 `a360802d81461bee` **同时等于** app-binding 线记录的同工程同视图指纹
+  （两条独立代码路径给出同一串字节）。
+- 仍未做（转记）：**不把控制面接进发行版运行路径**（`main.rs` 事件循环一行未动）。若要在发行版开控制面，
+  需要非默认 feature + `main.rs` 开关 + 一条**带该 feature** 的 clippy/test（`ci.yml` 归集成者）；
+  管理动作仍如实 `-32005`；真实 GL/物理窗口后端未验证。
