@@ -1,0 +1,1403 @@
+//! `YebanProjectV1` → 视图状态的**投影层**（纯函数，零 Slint 依赖）。
+//!
+//! 规范来源 (Normative):
+//! - `[MODEL-AST-001]` 960 PPQ 整数时钟：位置**一律**由整数 tick 导出，
+//!   投影里没有任何一处用浮点累加位置（`ARCH-DET-001` 的 L1/L2 确定性契约）。
+//! - `[MODEL-AST-002]` `YebanProjectV1` 是唯一权威持久化结构，界面只读它。
+//! - `[UI-GRID-001]` / `[UI-GRID-002]` 网格与断点（断点判定仍在 [`crate::scene`]）。
+//! - `[UI-TEST-001]` §12.2 语义 Element ID 的 `{ulid}` 段必须来自**真实实体身份**，
+//!   不能是手写常量 —— 本模块把 `EntityId` 的 26 字符规范文本直接交给 `.slint`。
+//! - `[MODEL-ISO-001]` 三层状态物理隔离：走带位置 / 当前分支属**会话运行态**，
+//!   不在 `YebanProjectV1` 里，因此 [`crate::scene::DemoScene`] 明确标注它们是占位。
+//!
+//! ## 为什么这一层要存在，而且要零 Slint 依赖
+//!
+//! 在这个模块出现之前，`src/scene.rs` 的 `demo()` 是界面的**唯一数据源** ——
+//! 一组 `&'static str` 常量。界面因此"好看但装不进工程"。投影层把
+//! "模型字段 → 视图字段"的映射收敛成**一个纯函数**，带来三件事：
+//!
+//! 1. 界面侧只剩"取字段"与"画像素"，没有业务判断；
+//! 2. 这一层不含 Slint，于是它**能在本机用 `rustc --edition 2024 --test` 真跑判据**
+//!    （本机纪律禁止编译 Slint，见 `AGENTS.md` §5）；
+//! 3. `.slint` 里的 `for … in 6` 变成 `for … in root.tracks` —— 轨道数 / 剪辑数 /
+//!    段落数由工程决定，而不是由界面里的字面量决定。
+//!
+//! ## 位置为什么必须是整数运算
+//!
+//! `tick → 像素` 走**整数除法**（[`tick_to_px`]），`像素 → tick` 走
+//! **`checked_mul`**（[`px_to_tick`]）。两者互为往返：对任意像素 `p`，
+//! `tick_to_px(px_to_tick(p)?)? == p` 恒成立。用浮点累加（`x += dt / tpp`）会让
+//! `tpp = 30` 这种除不尽的比例产生 1e-16 量级的漂移，累积到第 N 个剪辑就变成
+//! "同一工程在两台机器上导出不同的 x" —— 这正是 `ARCH-DET-001` 禁止的东西。
+//!
+//! ## 溢出策略（不 panic，也不静默回绕）
+//!
+//! `u64` 的 tick 与 `duration_ticks` 相加、`u32` 的像素乘以 `ticks_per_pixel`
+//! 都可能越界。投影**返回 `Result`**，越界即 [`BridgeError`]，绝不 wrap 或饱和后假装正常。
+//! 空工程是合法输入（[`YebanProjectV1::default`]），投影成空视图而不 panic。
+
+use std::collections::BTreeSet;
+use std::fmt;
+
+use yeban_model::ids::EntityId;
+use yeban_model::project::{
+    ClipContent, ClipPlacement, SceneV3, SectionV3, TimeSignature, TrackKind, TrackV3,
+    YebanProjectV1,
+};
+
+/// 960 PPQ 整数时钟（`[MODEL-AST-001]`）—— 从模型层再导出，避免两处各写一个字面量。
+pub use yeban_model::PPQ;
+
+/// 默认缩放：**每 30 tick 一个逻辑像素**。
+///
+/// 为什么是 30 而不是 32：
+/// - 30 让 4/4 的一小节（3840 tick）落在 128px，与 UI/UX 规范 §4.2 的标尺密度同量级；
+/// - 30 **不是** 2 的幂 ⇒ `1.0 / 30.0` 在二进制浮点里不精确。因此只要有人把
+///   [`tick_to_px`] 改成浮点实现，`tick_to_px(30, 30)` 就会算出 0 而不是 1，
+///   往返判据立即变红。这个数字本身就是"不许用浮点算位置"的**活判据**（不是巧合）。
+pub const DEFAULT_TICKS_PER_PIXEL: u64 = 30;
+
+/// 一个剪辑 / 段落在时间轴上的最小可见宽度（逻辑像素）。
+///
+/// 亚像素宽的块会被 Slint 的裁剪语义过滤掉（`i-slint-core` 的
+/// `absolute_clip_rect_and_geometry`），从而让"语义 ID 存在但运行时树里查不到" ——
+/// 那会把 `[UI-TEST-001]` 的寻址变成概率事件。因此投影给一个**显式地板**，
+/// 并在判据里如实断言（`width == max(1, …)`），而不是靠夹具的时值足够大来回避。
+pub const MIN_BLOCK_WIDTH_PX: f32 = 1.0;
+
+/// 标尺至少画出这么多小节线（规范 §4.2 的最小可视密度；工程更长时按需增加）。
+pub const MIN_BAR_COUNT: usize = 16;
+
+/// 投影过程中可恢复的输入问题。
+///
+/// 刻意**不**用 `panic!`：工程文档来自磁盘 / 归档，属不可信输入
+/// （与 `yeban-model` 的 `validate()` 同一条纪律）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeError {
+    /// `ticks_per_pixel == 0`：除零，且没有任何合法解释。
+    ZeroTicksPerPixel,
+    /// `start_tick + duration_ticks` 越过 `u64::MAX`。
+    TickOverflow {
+        /// 溢出发生的起始 tick。
+        start_tick: u64,
+    },
+    /// tick 换算出的像素数超出 `u32`。
+    PixelOverflow {
+        /// 越界的 tick。
+        tick: u64,
+    },
+    /// 像素换算回 tick 时越过 `u64::MAX`。
+    TickBackOverflow {
+        /// 越界的像素。
+        px: u32,
+    },
+    /// 拍号的分母为 0（小节长度无法定义）。
+    ZeroTimeSignatureDenominator,
+    /// 小节长度计算溢出。
+    BarLengthOverflow,
+}
+
+impl fmt::Display for BridgeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroTicksPerPixel => formatter.write_str("ticks_per_pixel 不能为 0"),
+            Self::TickOverflow { start_tick } => write!(
+                formatter,
+                "剪辑起始 tick {start_tick} 与 duration_ticks 相加越过 u64::MAX"
+            ),
+            Self::PixelOverflow { tick } => {
+                write!(formatter, "tick {tick} 换算出的像素数超出 u32 范围")
+            }
+            Self::TickBackOverflow { px } => {
+                write!(formatter, "像素 {px} 换算回 tick 时越过 u64::MAX")
+            }
+            Self::ZeroTimeSignatureDenominator => formatter.write_str("拍号分母不能为 0"),
+            Self::BarLengthOverflow => formatter.write_str("小节长度计算溢出"),
+        }
+    }
+}
+
+impl std::error::Error for BridgeError {}
+
+/// `tick → 逻辑像素`：**整数**除法（向下取整）。
+///
+/// # Errors
+///
+/// `ticks_per_pixel == 0` → [`BridgeError::ZeroTicksPerPixel`]；
+/// 商超出 `u32` → [`BridgeError::PixelOverflow`]。
+pub fn tick_to_px(tick: u64, ticks_per_pixel: u64) -> Result<u32, BridgeError> {
+    if ticks_per_pixel == 0 {
+        return Err(BridgeError::ZeroTicksPerPixel);
+    }
+    u32::try_from(tick / ticks_per_pixel).map_err(|_| BridgeError::PixelOverflow { tick })
+}
+
+/// `逻辑像素 → tick`：整数乘法，**用 `checked_mul`**。
+///
+/// # Errors
+///
+/// `ticks_per_pixel == 0` → [`BridgeError::ZeroTicksPerPixel`]；
+/// 乘积越过 `u64::MAX` → [`BridgeError::TickBackOverflow`]。
+pub fn px_to_tick(px: u32, ticks_per_pixel: u64) -> Result<u64, BridgeError> {
+    if ticks_per_pixel == 0 {
+        return Err(BridgeError::ZeroTicksPerPixel);
+    }
+    u64::from(px)
+        .checked_mul(ticks_per_pixel)
+        .ok_or(BridgeError::TickBackOverflow { px })
+}
+
+/// `[MODEL-AST-001]` 一小节有多少 tick（960 PPQ × 分子 × 4 ÷ 分母）。
+///
+/// # Errors
+///
+/// 分母为 0、或乘法溢出 → [`BridgeError`]。
+pub fn bar_length_ticks(time_signature: TimeSignature) -> Result<u64, BridgeError> {
+    if time_signature.denominator == 0 {
+        return Err(BridgeError::ZeroTimeSignatureDenominator);
+    }
+    PPQ.checked_mul(u64::from(time_signature.numerator))
+        .and_then(|value| value.checked_mul(4))
+        .map(|value| value / u64::from(time_signature.denominator))
+        .ok_or(BridgeError::BarLengthOverflow)
+}
+
+/// 视图里的一个轨道（**不是**模型实体 —— 它是投影结果，可以带界面派生字段）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackView {
+    /// 视图内的轨道序号（0 起，**已排除**主总线）。进 `track-{i}-*` 的语义 ID。
+    pub index: usize,
+    /// `EntityId` 的 26 字符规范文本。
+    pub id: String,
+    /// 显示名（`TrackV3::name`）。
+    pub name: String,
+    /// 轨道类型（`midi` / `audio` / `aux-return` / `master`），`.slint` 用它选图标位。
+    pub kind: &'static str,
+    /// 界面色标（`TrackV3::color`，`None` = 用主题默认）。
+    pub color: Option<String>,
+    /// 静音（`TrackV3::mute`）。
+    pub mute: bool,
+    /// 独奏（`TrackV3::solo`）。
+    pub solo: bool,
+    /// 独奏安全（`TrackV3::solo_safe`）。
+    pub solo_safe: bool,
+    /// 音量 (dB)，原样保留模型值。
+    pub volume_db: f32,
+    /// 音量的显示文本（`{:.1}` dB）。
+    pub volume_display: String,
+    /// 声相，模型是 `-1.0..=1.0` 的 `f32`；投影成**整数千分之一**以避免在界面层碰浮点。
+    pub pan_millis: i32,
+    /// 该轨道上的摆放数量（`TrackV3::clips` 的长度）。
+    pub clip_count: usize,
+    /// 是否为 `master_bus_track_id` 指向的主总线。
+    pub is_master: bool,
+}
+
+/// 视图里的一个剪辑摆放（`ClipPlacement` + 它落在哪条轨 / 哪个片段池条目上）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipView {
+    /// 视图内的剪辑序号（0 起，按"轨道序 → 摆放身份"排序）。
+    pub index: usize,
+    /// 摆放身份（`ClipPlacement::id`）的规范文本 —— `[UI-TEST-001]` 的 `clip-{ulid}-header`。
+    pub placement_id: String,
+    /// 片段池身份（`ClipPlacement::clip_id`），用于显示名与内容类型。
+    pub clip_id: String,
+    /// 落在哪条视图轨道上（[`TrackView::index`]）。
+    pub track_index: usize,
+    /// 该轨道的显示名。
+    pub track_name: String,
+    /// 片段池条目的显示名（`ClipPoolEntry::name`）。
+    pub clip_name: String,
+    /// 片段内容类型：`midi` / `audio`。
+    pub content: &'static str,
+    /// 界面标签：`"{track_name} · {clip_name}"`（`.slint` 直接画它）。
+    pub label: String,
+    /// 起始 tick（`ClipPlacement::start_tick`）。
+    pub start_tick: u64,
+    /// 结束 tick（`start_tick + duration_ticks`，`checked_add`）。
+    pub end_tick: u64,
+    /// 摆放时值 (tick)。
+    pub duration_ticks: u64,
+    /// 时间轴相对 x（逻辑像素，0 = tick 0）。
+    pub x: f32,
+    /// 块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
+    pub width: f32,
+    /// 车道序号（= [`ClipView::track_index`]，`.slint` 用它算 y）。
+    pub lane: i32,
+    /// 是否静音（`ClipPlacement::muted`）。
+    pub muted: bool,
+}
+
+/// 视图里的一个曲式段落（`SectionV3`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionView {
+    /// 视图内序号（`BTreeMap` 键序 ⇒ 身份升序 ⇒ 跨进程稳定）。
+    pub index: usize,
+    /// 段落身份规范文本。
+    pub id: String,
+    /// 段落名（`Intro` / `Verse` / …）。
+    pub name: String,
+    /// 起始 tick。
+    pub start_tick: u64,
+    /// 结束 tick。
+    pub end_tick: u64,
+    /// 时间轴相对 x（逻辑像素）。
+    pub x: f32,
+    /// 卡片宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
+    pub width: f32,
+    /// 界面色标。
+    pub color: Option<String>,
+}
+
+/// 视图里的一个场景（`SceneV3`，Session View 的行）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneView {
+    /// 视图内序号。
+    pub index: usize,
+    /// 场景身份规范文本。
+    pub id: String,
+    /// 场景名。
+    pub name: String,
+    /// 速度覆盖（`None` = 跟随工程速度）。
+    pub tempo: Option<f64>,
+    /// 界面色标。
+    pub color: Option<String>,
+}
+
+/// 一次投影的完整结果：界面侧**唯一**的数据来源。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewState {
+    /// 工程身份规范文本。
+    pub project_id: String,
+    /// 窗口标题（`YebanProjectV1::title`）。
+    pub title: String,
+    /// 工程速度（`YebanProjectV1::bpm`）。
+    pub bpm: f64,
+    /// 速度显示文本（`{:.2}`，与 `.slint` 的 `bpm-display` 对齐）。
+    pub bpm_display: String,
+    /// 速度的整数千分之一（给需要整数的判据 / 无障碍值用，避免界面层碰浮点）。
+    pub bpm_millis: u32,
+    /// 拍号分子。
+    pub time_signature_numerator: u8,
+    /// 拍号分母。
+    pub time_signature_denominator: u8,
+    /// 拍号显示文本（`"4/4"`）。
+    pub time_signature_display: String,
+    /// 每四分音符 tick 数（恒为 [`PPQ`]）。
+    pub ppq: u64,
+    /// 缩放：每逻辑像素多少 tick。
+    pub ticks_per_pixel: u64,
+    /// 一小节的 tick 数。
+    pub bar_length_ticks: u64,
+    /// 非主总线轨道（`BTreeMap` 键序 ⇒ 身份升序）。
+    pub tracks: Vec<TrackView>,
+    /// 主总线轨道（`master_bus_track_id`；工程无轨道时为 `None`）。
+    pub master: Option<TrackView>,
+    /// 全部剪辑摆放（轨道序 → 摆放身份序）。
+    pub clips: Vec<ClipView>,
+    /// 全部段落（身份升序）。
+    pub sections: Vec<SectionView>,
+    /// 全部场景（身份升序）。
+    pub scenes: Vec<SceneView>,
+    /// 片段池里全部 MIDI 音符的身份（片段序 → 音符身份序，去重保序）。
+    ///
+    /// 它进 `.slint` 的 `note-{ulid}-rect`：这些 ID 必须来自**工程里的音符实体**，
+    /// 不能是手写常量。
+    pub note_ulids: Vec<String>,
+    /// 与 [`Self::note_ulids`] **逐个对齐**的音符力度（0.0–1.0 归一化）。
+    ///
+    /// 原始值是 `MidiNote::velocity`（0–127 整数，`MODEL-AST-005`）；归一化是**显示**需要的
+    /// 形态（力度泳道按比例画柱高），量化与吸附仍归模型层。
+    pub note_velocities: Vec<f32>,
+    /// 标尺的小节线 x 位置（逻辑像素），至少 [`MIN_BAR_COUNT`] 条。
+    pub bar_positions: Vec<f32>,
+}
+
+impl ViewState {
+    /// 投影一个工程（默认缩放 [`DEFAULT_TICKS_PER_PIXEL`]）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。空工程**不是**错误 —— 它投影成空视图。
+    pub fn from_project(project: &YebanProjectV1) -> Result<Self, BridgeError> {
+        Self::from_project_with_zoom(project, DEFAULT_TICKS_PER_PIXEL)
+    }
+
+    /// 投影一个工程并指定缩放（`ticks_per_pixel`）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。
+    pub fn from_project_with_zoom(
+        project: &YebanProjectV1,
+        ticks_per_pixel: u64,
+    ) -> Result<Self, BridgeError> {
+        if ticks_per_pixel == 0 {
+            return Err(BridgeError::ZeroTicksPerPixel);
+        }
+
+        let bar_ticks = bar_length_ticks(project.time_signature)?;
+
+        let mut tracks: Vec<TrackView> = Vec::new();
+        let mut master: Option<TrackView> = None;
+        let mut clips: Vec<ClipView> = Vec::new();
+
+        // `BTreeMap::values()` 是**身份升序**：跨进程、跨重启、跨机器都给出同一顺序
+        // （红线 4 的确定性要求）。这里刻意不排序 —— 排序会掩盖"集合被换成 HashMap"。
+        for track in project.tracks.values() {
+            if track.id == project.master_bus_track_id {
+                master = Some(track_view(track, 0, true));
+                continue;
+            }
+            let index = tracks.len();
+            for placement in track.clips.values() {
+                clips.push(clip_view(
+                    project,
+                    placement,
+                    index,
+                    &track.name,
+                    ticks_per_pixel,
+                )?);
+            }
+            tracks.push(track_view(track, index, false));
+        }
+        for (index, clip) in clips.iter_mut().enumerate() {
+            clip.index = index;
+        }
+
+        let mut sections = Vec::with_capacity(project.sections.len());
+        for (index, section) in project.sections.values().enumerate() {
+            sections.push(section_view(section, index, ticks_per_pixel)?);
+        }
+
+        let mut scenes = Vec::with_capacity(project.scenes.len());
+        for (index, scene) in project.scenes.values().enumerate() {
+            scenes.push(scene_view(scene, index));
+        }
+
+        // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
+        // 身份进 `note-{ulid}-rect`，力度进力度泳道（`velocity-{i}-bar`）。
+        let mut note_ulids = Vec::new();
+        let mut note_velocities = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for entry in project.clip_pool.values() {
+            let Some(notes) = entry.content.notes() else {
+                continue;
+            };
+            for note in notes.values() {
+                let text = note.id.to_canonical_string();
+                if seen.insert(text.clone()) {
+                    note_ulids.push(text);
+                    note_velocities.push(velocity_normalized(note.velocity));
+                }
+            }
+        }
+
+        // 标尺：覆盖工程实际长度，至少 `MIN_BAR_COUNT` 条。
+        let mut end_tick = 0_u64;
+        for clip in &clips {
+            end_tick = end_tick.max(clip.end_tick);
+        }
+        for section in &sections {
+            end_tick = end_tick.max(section.end_tick);
+        }
+        let bars_in_project = end_tick.div_ceil(bar_ticks.max(1));
+        let bar_count =
+            usize::try_from(bars_in_project.max(MIN_BAR_COUNT as u64)).unwrap_or(MIN_BAR_COUNT);
+        let mut bar_positions = Vec::with_capacity(bar_count);
+        for bar in 0..bar_count {
+            let tick = u64::try_from(bar)
+                .ok()
+                .and_then(|bar| bar.checked_mul(bar_ticks))
+                .ok_or(BridgeError::BarLengthOverflow)?;
+            bar_positions.push(as_px(tick_to_px(tick, ticks_per_pixel)?));
+        }
+
+        Ok(Self {
+            project_id: project.id.to_canonical_string(),
+            title: project.title.clone(),
+            bpm: project.bpm,
+            bpm_display: format!("{:.2}", project.bpm),
+            bpm_millis: bpm_millis(project.bpm),
+            time_signature_numerator: project.time_signature.numerator,
+            time_signature_denominator: project.time_signature.denominator,
+            time_signature_display: format!(
+                "{}/{}",
+                project.time_signature.numerator, project.time_signature.denominator
+            ),
+            ppq: PPQ,
+            ticks_per_pixel,
+            bar_length_ticks: bar_ticks,
+            tracks,
+            master,
+            clips,
+            sections,
+            scenes,
+            note_ulids,
+            note_velocities,
+            bar_positions,
+        })
+    }
+
+    /// 演示工程（`src/scene.rs` 的夹具事实源）的投影。
+    ///
+    /// 这个夹具**就是**一个 `YebanProjectV1` —— 界面不再有第二份硬编码数据。
+    ///
+    /// # Panics
+    ///
+    /// 仅当本文件里的演示夹具被改成非法时 panic（夹具是编译期常量，属编程错误）。
+    #[must_use]
+    pub fn demo() -> Self {
+        Self::from_project(&demo_project()).expect("演示夹具必须能投影")
+    }
+
+    /// 空工程的投影：零轨道、零剪辑、零段落、零场景。
+    ///
+    /// UI 侧在"工程投影失败"时的兜底值 —— 画一个空界面，而不是画上一次的残留。
+    ///
+    /// # Panics
+    ///
+    /// 不会 panic（空工程是合法输入，见 `empty_project_projects_to_an_empty_view`）。
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::from_project(&YebanProjectV1::default()).expect("空工程必须能投影")
+    }
+
+    /// 非主总线轨道的名称（`[UI-GRID-001]` 轨道包头列的文本源）。
+    #[must_use]
+    pub fn track_names(&self) -> Vec<String> {
+        self.tracks.iter().map(|track| track.name.clone()).collect()
+    }
+
+    /// 非主总线轨道的音量显示文本（`TrackV3::volume_db` 的 `{:.1}` 形态）。
+    #[must_use]
+    pub fn track_volumes(&self) -> Vec<String> {
+        self.tracks
+            .iter()
+            .map(|track| track.volume_display.clone())
+            .collect()
+    }
+
+    /// 非主总线轨道的静音位（进 `accessible-checked`）。
+    #[must_use]
+    pub fn track_mutes(&self) -> Vec<bool> {
+        self.tracks.iter().map(|track| track.mute).collect()
+    }
+
+    /// 非主总线轨道的独奏位（进 `accessible-checked`）。
+    #[must_use]
+    pub fn track_solos(&self) -> Vec<bool> {
+        self.tracks.iter().map(|track| track.solo).collect()
+    }
+
+    /// 段落名（章节卡片文本源）。
+    #[must_use]
+    pub fn section_names(&self) -> Vec<String> {
+        self.sections
+            .iter()
+            .map(|section| section.name.clone())
+            .collect()
+    }
+
+    /// 场景名（Session 视图文本源）。
+    #[must_use]
+    pub fn scene_names(&self) -> Vec<String> {
+        self.scenes.iter().map(|scene| scene.name.clone()).collect()
+    }
+
+    /// 剪辑摆放身份（`clip-{ulid}-header` 的 `{ulid}` 段）。
+    #[must_use]
+    pub fn clip_ulids(&self) -> Vec<String> {
+        self.clips
+            .iter()
+            .map(|clip| clip.placement_id.clone())
+            .collect()
+    }
+
+    /// 剪辑标签（`"{轨道} · {片段}"`）。
+    #[must_use]
+    pub fn clip_labels(&self) -> Vec<String> {
+        self.clips.iter().map(|clip| clip.label.clone()).collect()
+    }
+
+    /// 剪辑相对 x（逻辑像素）。
+    #[must_use]
+    pub fn clip_positions(&self) -> Vec<f32> {
+        self.clips.iter().map(|clip| clip.x).collect()
+    }
+
+    /// 剪辑宽度（逻辑像素）。
+    #[must_use]
+    pub fn clip_widths(&self) -> Vec<f32> {
+        self.clips.iter().map(|clip| clip.width).collect()
+    }
+
+    /// 剪辑车道序号。
+    #[must_use]
+    pub fn clip_lanes(&self) -> Vec<i32> {
+        self.clips.iter().map(|clip| clip.lane).collect()
+    }
+
+    /// 段落相对 x（逻辑像素）。
+    #[must_use]
+    pub fn section_positions(&self) -> Vec<f32> {
+        self.sections.iter().map(|section| section.x).collect()
+    }
+
+    /// 段落卡片宽（逻辑像素）。
+    #[must_use]
+    pub fn section_widths(&self) -> Vec<f32> {
+        self.sections.iter().map(|section| section.width).collect()
+    }
+
+    /// 规范行协议：逐字节稳定的投影快照（`BTreeMap` 顺序 + 定点浮点格式化）。
+    ///
+    /// 存在的意义是把"确定性"变成**可比较的字节**：同一工程的两次投影必须给出
+    /// 完全相同的行；而任何算术改动（浮点位置、顺序漂移、字段丢失）都会改掉字节。
+    #[must_use]
+    pub fn canonical_lines(&self) -> Vec<String> {
+        let mut lines = Vec::with_capacity(
+            6 + self.tracks.len() + self.clips.len() + self.sections.len() + self.scenes.len(),
+        );
+        lines.push(format!(
+            "project id={} title={} bpm={:.6} ts={}/{} ppq={} tpp={} bar_ticks={}",
+            self.project_id,
+            self.title,
+            self.bpm,
+            self.time_signature_numerator,
+            self.time_signature_denominator,
+            self.ppq,
+            self.ticks_per_pixel,
+            self.bar_length_ticks,
+        ));
+        if let Some(master) = &self.master {
+            lines.push(format!(
+                "master id={} name={} kind={} mute={} solo={} volume_db={:.6} pan_millis={} clips={}",
+                master.id,
+                master.name,
+                master.kind,
+                master.mute,
+                master.solo,
+                master.volume_db,
+                master.pan_millis,
+                master.clip_count,
+            ));
+        }
+        for track in &self.tracks {
+            lines.push(format!(
+                "track index={} id={} name={} kind={} color={} mute={} solo={} solo_safe={} volume_db={:.6} pan_millis={} clips={}",
+                track.index,
+                track.id,
+                track.name,
+                track.kind,
+                track.color.as_deref().unwrap_or("-"),
+                track.mute,
+                track.solo,
+                track.solo_safe,
+                track.volume_db,
+                track.pan_millis,
+                track.clip_count,
+            ));
+        }
+        for clip in &self.clips {
+            lines.push(format!(
+                "clip index={} placement={} clip={} track={} name={} start={} end={} dur={} x={:.6} width={:.6} lane={} muted={}",
+                clip.index,
+                clip.placement_id,
+                clip.clip_id,
+                clip.track_index,
+                clip.clip_name,
+                clip.start_tick,
+                clip.end_tick,
+                clip.duration_ticks,
+                clip.x,
+                clip.width,
+                clip.lane,
+                clip.muted,
+            ));
+        }
+        for section in &self.sections {
+            lines.push(format!(
+                "section index={} id={} name={} start={} end={} x={:.6} width={:.6} color={}",
+                section.index,
+                section.id,
+                section.name,
+                section.start_tick,
+                section.end_tick,
+                section.x,
+                section.width,
+                section.color.as_deref().unwrap_or("-"),
+            ));
+        }
+        for scene in &self.scenes {
+            lines.push(format!(
+                "scene index={} id={} name={} tempo={} color={}",
+                scene.index,
+                scene.id,
+                scene.name,
+                scene
+                    .tempo
+                    .map_or_else(|| "-".to_owned(), |tempo| format!("{tempo:.6}")),
+                scene.color.as_deref().unwrap_or("-"),
+            ));
+        }
+        for (index, ulid) in self.note_ulids.iter().enumerate() {
+            let velocity = self.note_velocities.get(index).copied().unwrap_or_default();
+            lines.push(format!(
+                "note index={index} id={ulid} velocity={velocity:.6}"
+            ));
+        }
+        for (index, x) in self.bar_positions.iter().enumerate() {
+            lines.push(format!("bar index={index} x={x:.6}"));
+        }
+        lines
+    }
+
+    /// [`Self::canonical_lines`] 的字节形态（以 `\n` 结尾，便于 diff 与哈希）。
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut text = self.canonical_lines().join("\n");
+        text.push('\n');
+        text.into_bytes()
+    }
+}
+
+/// `u32` 像素 → `f32`（显式转换点，集中在这里便于审查）。
+///
+/// 只做一次转换、不做任何累加，因此不引入 `ARCH-DET-001` 关注的漂移。
+fn as_px(value: u32) -> f32 {
+    value as f32
+}
+
+/// `MidiNote::velocity`（0–127）→ 力度泳道用的 0.0–1.0。
+///
+/// 越界值被夹到闭区间（模型 `validate()` 已拒绝 >127，但投影不假设输入可信）。
+fn velocity_normalized(velocity: u8) -> f32 {
+    let clamped = velocity.min(yeban_model::music::MIDI_VELOCITY_MAX);
+    f32::from(clamped) / f32::from(yeban_model::music::MIDI_VELOCITY_MAX)
+}
+
+/// BPM → 整数千分之一（`120.005` → `120005`）；非有限值或负值归 0。
+fn bpm_millis(bpm: f64) -> u32 {
+    if !bpm.is_finite() || bpm < 0.0 {
+        return 0;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let millis = (bpm * 1000.0).round() as u64;
+    u32::try_from(millis).unwrap_or(u32::MAX)
+}
+
+/// 轨道类型 → `.slint` 用的短名。
+fn kind_name(kind: TrackKind) -> &'static str {
+    match kind {
+        TrackKind::Midi => "midi",
+        TrackKind::Audio => "audio",
+        TrackKind::AuxReturn => "aux-return",
+        TrackKind::Master => "master",
+    }
+}
+
+/// 投影一条轨道。
+fn track_view(track: &TrackV3, index: usize, is_master: bool) -> TrackView {
+    #[allow(clippy::cast_possible_truncation)]
+    let pan_millis = (f64::from(track.pan) * 1000.0).round() as i32;
+    TrackView {
+        index,
+        id: track.id.to_canonical_string(),
+        name: track.name.clone(),
+        kind: kind_name(track.kind),
+        color: track.color.clone(),
+        mute: track.mute,
+        solo: track.solo,
+        solo_safe: track.solo_safe,
+        volume_db: track.volume_db,
+        volume_display: format!("{:.1}", track.volume_db),
+        pan_millis,
+        clip_count: track.clips.len(),
+        is_master,
+    }
+}
+
+/// 投影一个剪辑摆放（`index` 由调用方在收集完成后统一编号）。
+fn clip_view(
+    project: &YebanProjectV1,
+    placement: &ClipPlacement,
+    track_index: usize,
+    track_name: &str,
+    ticks_per_pixel: u64,
+) -> Result<ClipView, BridgeError> {
+    let start_tick = placement.start_tick;
+    let end_tick = start_tick
+        .checked_add(placement.duration_ticks)
+        .ok_or(BridgeError::TickOverflow { start_tick })?;
+    let x = as_px(tick_to_px(start_tick, ticks_per_pixel)?);
+    let x_end = as_px(tick_to_px(end_tick, ticks_per_pixel)?);
+    let entry = project.clip_pool.get(&placement.clip_id);
+    let clip_name = entry.map_or_else(String::new, |entry| entry.name.clone());
+    let content = entry.map_or("unknown", |entry| match entry.content {
+        ClipContent::Midi { .. } => "midi",
+        ClipContent::Audio { .. } => "audio",
+    });
+    let label = if clip_name.is_empty() {
+        track_name.to_owned()
+    } else {
+        format!("{track_name} · {clip_name}")
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let lane = track_index as i32;
+    Ok(ClipView {
+        index: 0,
+        placement_id: placement.id.to_canonical_string(),
+        clip_id: placement.clip_id.to_canonical_string(),
+        track_index,
+        track_name: track_name.to_owned(),
+        clip_name,
+        content,
+        label,
+        start_tick,
+        end_tick,
+        duration_ticks: placement.duration_ticks,
+        x,
+        width: (x_end - x).max(MIN_BLOCK_WIDTH_PX),
+        lane,
+        muted: placement.muted,
+    })
+}
+
+/// 投影一个段落。
+fn section_view(
+    section: &SectionV3,
+    index: usize,
+    ticks_per_pixel: u64,
+) -> Result<SectionView, BridgeError> {
+    let x = as_px(tick_to_px(section.start_tick, ticks_per_pixel)?);
+    let x_end = as_px(tick_to_px(section.end_tick, ticks_per_pixel)?);
+    Ok(SectionView {
+        index,
+        id: section.id.to_canonical_string(),
+        name: section.name.clone(),
+        start_tick: section.start_tick,
+        end_tick: section.end_tick,
+        x,
+        width: (x_end - x).max(MIN_BLOCK_WIDTH_PX),
+        color: section.color.clone(),
+    })
+}
+
+/// 投影一个场景。
+fn scene_view(scene: &SceneV3, index: usize) -> SceneView {
+    SceneView {
+        index,
+        id: scene.id.to_canonical_string(),
+        name: scene.name.clone(),
+        tempo: scene.tempo,
+        color: scene.color.clone(),
+    }
+}
+
+/// 演示工程的实体身份：`01J8Z5Q0R7K3M9X2V4B6N8P0` + 2 字符尾段。
+///
+/// 前缀与 `scene.rs` 里的演示 ULID 常量同族（`…N8Pxx`），尾段用另一段命名空间
+/// （前导 `0`）以免与音符 / 剪辑常量相撞。
+///
+/// # Panics
+///
+/// 尾段不是合法 Crockford Base32 时 panic（常量错误属编程错误）。
+#[must_use]
+fn demo_id(tail: &str) -> EntityId {
+    use std::str::FromStr as _;
+    EntityId::from_str(&format!("01J8Z5Q0R7K3M9X2V4B6N8P0{tail}"))
+        .expect("演示夹具的 ULID 必须是合法 Crockford Base32")
+}
+
+/// **演示工程的夹具**：`src/scene.rs` 里原先那组硬编码常量的模型化形态。
+///
+/// 它与 `scene::TRACK_NAMES` / `NOTE_ULIDS` / `CLIP_ULIDS` / `SECTION_NAMES` /
+/// `SCENE_NAMES` / `FADER_DB_LABELS` **逐字对应**，并有判据钉住
+/// （`demo_projection_reproduces_the_scene_constants`）。这样"演示数据"就不再是
+/// 界面里的常量，而是**一个真正的 `YebanProjectV1`** —— 换成
+/// [`yeban_model::samples::filled_project`] 时走的是**同一条**代码路径。
+#[must_use]
+pub fn demo_project() -> YebanProjectV1 {
+    use std::collections::BTreeMap;
+    use std::str::FromStr as _;
+
+    use yeban_model::music::MidiNote;
+    use yeban_model::project::{ClipPoolEntry, LoopConfig, RoutingEdge, RoutingGraph, RoutingKind};
+
+    let master_id = demo_id("M0");
+    let track_ids: [EntityId; 6] = [
+        demo_id("T1"),
+        demo_id("T2"),
+        demo_id("T3"),
+        demo_id("T4"),
+        demo_id("T5"),
+        demo_id("T6"),
+    ];
+    // 与 `scene::TRACK_NAMES` 逐字一致；顺序 = 身份升序（`BTreeMap` 迭代序）。
+    let track_names = ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
+    // 与 `scene::FADER_DB_LABELS` 逐字一致（模型是权威，界面标签由投影生成）。
+    let track_volumes = [-3.2_f32, -6.0, -8.4, -4.8, -12.0, -10.6];
+    let track_kinds = [
+        TrackKind::Midi,
+        TrackKind::Audio,
+        TrackKind::Midi,
+        TrackKind::Midi,
+        TrackKind::Midi,
+        TrackKind::Audio,
+    ];
+    let track_colors = [
+        Some("#f7e6b0"),
+        None,
+        Some("#22aa88"),
+        None,
+        None,
+        Some("#3366ff"),
+    ];
+
+    let midi_clip_id = demo_id("K1");
+    let audio_clip_id = demo_id("K2");
+
+    // 六个音符的身份与 `scene::NOTE_ULIDS` 逐字一致。
+    let note_ids: [EntityId; 6] = [
+        "01J8Z5Q0R7K3M9X2V4B6N8P1A2",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1A3",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1B0",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1C7",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1D4",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1E1",
+    ]
+    .map(|text| EntityId::from_str(text).expect("演示音符 ULID 必须合法"));
+
+    let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+    for (index, note_id) in note_ids.into_iter().enumerate() {
+        let pitch = [60_u8, 64, 67, 72, 74, 76][index];
+        let start = 480 * u64::try_from(index).unwrap_or(0);
+        notes.insert(note_id, MidiNote::new(note_id, start, pitch, 480));
+    }
+
+    let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
+    tracks.insert(master_id, master_track(master_id));
+    for (slot, track_id) in track_ids.into_iter().enumerate() {
+        tracks.insert(
+            track_id,
+            TrackV3 {
+                id: track_id,
+                name: track_names[slot].to_owned(),
+                kind: track_kinds[slot],
+                volume_db: track_volumes[slot],
+                pan: 0.0,
+                mute: slot == 5,
+                solo: slot == 0,
+                solo_safe: false,
+                folder_id: None,
+                color: track_colors[slot].map(str::to_owned),
+                devices: Vec::new(),
+                macros: Vec::new(),
+                automation_lanes: BTreeMap::new(),
+                clips: BTreeMap::new(),
+            },
+        );
+    }
+
+    // 三个剪辑摆放：身份与 `scene::CLIP_ULIDS` 逐字一致；一个 MIDI、两个音频。
+    let placements: [(EntityId, EntityId, usize, u64, u64); 3] = [
+        (
+            EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1F9").expect("剪辑 ULID 必须合法"),
+            midi_clip_id,
+            0,
+            0,
+            3840,
+        ),
+        (
+            EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1G6").expect("剪辑 ULID 必须合法"),
+            audio_clip_id,
+            1,
+            1920,
+            960,
+        ),
+        (
+            EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1H3").expect("剪辑 ULID 必须合法"),
+            audio_clip_id,
+            2,
+            5760,
+            3840,
+        ),
+    ];
+    for (placement_id, clip_id, slot, start_tick, duration_ticks) in placements {
+        if let Some(track) = tracks.get_mut(&track_ids[slot]) {
+            track.clips.insert(
+                placement_id,
+                ClipPlacement {
+                    id: placement_id,
+                    clip_id,
+                    start_tick,
+                    duration_ticks,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                },
+            );
+        }
+    }
+
+    // 四个段落 / 四个场景，与 `scene::SECTION_NAMES` / `scene::SCENE_NAMES` 逐字一致。
+    let mut sections: BTreeMap<EntityId, SectionV3> = BTreeMap::new();
+    for (slot, name) in ["Intro", "Verse", "Chorus", "Outro"]
+        .into_iter()
+        .enumerate()
+    {
+        let id = demo_id(["S1", "S2", "S3", "S4"][slot]);
+        let start = 7680 * u64::try_from(slot).unwrap_or(0);
+        sections.insert(
+            id,
+            SectionV3 {
+                id,
+                name: name.to_owned(),
+                start_tick: start,
+                end_tick: start + 7680,
+                // `if` 而不是 `bool::then(..)`：后者会被 `clippy::unnecessary_lazy_evaluations`
+                // 盯上（本仓库在 test_port_adapter.rs 里已踩过一次同类）。
+                color: if slot == 0 {
+                    Some("#22AA88".to_owned())
+                } else {
+                    None
+                },
+            },
+        );
+    }
+    let mut scenes: BTreeMap<EntityId, SceneV3> = BTreeMap::new();
+    for (slot, name) in ["Intro", "Verse", "Chorus", "Drop"].into_iter().enumerate() {
+        let id = demo_id(["C1", "C2", "C3", "C4"][slot]);
+        scenes.insert(
+            id,
+            SceneV3 {
+                id,
+                name: name.to_owned(),
+                tempo: None,
+                color: None,
+            },
+        );
+    }
+
+    // 路由：每条轨道 → 主总线（`RoutingGraph` 是声学连接的唯一真理源，红线见 MODEL-AST-004）。
+    let mut edges: BTreeMap<EntityId, RoutingEdge> = BTreeMap::new();
+    for (slot, track_id) in track_ids.into_iter().enumerate() {
+        let edge_id = demo_id(["R1", "R2", "R3", "R4", "R5", "R6"][slot]);
+        edges.insert(
+            edge_id,
+            RoutingEdge {
+                id: edge_id,
+                source_node: track_id,
+                destination_node: master_id,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+    }
+    let mut nodes = vec![master_id];
+    nodes.extend(track_ids);
+
+    let mut clip_pool: BTreeMap<EntityId, ClipPoolEntry> = BTreeMap::new();
+    clip_pool.insert(
+        midi_clip_id,
+        ClipPoolEntry {
+            id: midi_clip_id,
+            name: "夜色铺底".to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    );
+    clip_pool.insert(
+        audio_clip_id,
+        ClipPoolEntry {
+            id: audio_clip_id,
+            name: "909 鼓组".to_owned(),
+            content: ClipContent::Audio {
+                asset: yeban_model::ids::AssetHash::of_bytes(b"yeban-demo-kick"),
+                gain_db: -1.5,
+            },
+        },
+    );
+
+    YebanProjectV1 {
+        title: "夜半 Yeban".to_owned(),
+        author: "Yeban Project Contributors".to_owned(),
+        bpm: 120.0,
+        id: demo_id("P0"),
+        tracks,
+        master_bus_track_id: master_id,
+        routing_graph: RoutingGraph { nodes, edges },
+        sections,
+        scenes,
+        clip_pool,
+        ..YebanProjectV1::default()
+    }
+}
+
+/// 最小主总线音轨夹具（`TrackKind::Master`）。
+#[must_use]
+fn master_track(id: EntityId) -> TrackV3 {
+    TrackV3 {
+        id,
+        name: "Master".to_owned(),
+        kind: TrackKind::Master,
+        ..TrackV3::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr as _;
+
+    use super::*;
+    use yeban_model::samples::{default_project, filled_project};
+
+    /// 把 `[&str; N]` 常量提升成可与 `Vec<String>` 比较的形态。
+    fn owned(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// 判据 1: **同一工程两次投影逐字节相同**（`ARCH-DET-001` 的界面侧版本）。
+    ///
+    /// 这条判据抓三类漂移：浮点位置累加、`BTreeMap` 被换成 `HashMap`、
+    /// 以及任何"看起来一样但字节不同"的格式化改动。
+    #[test]
+    fn two_projections_of_the_same_project_are_byte_identical() {
+        for project in [demo_project(), filled_project(), default_project()] {
+            let first = ViewState::from_project(&project).expect("投影");
+            let second = ViewState::from_project(&project).expect("投影");
+            assert_eq!(
+                first.canonical_bytes(),
+                second.canonical_bytes(),
+                "同一工程的两次投影必须逐字节相同"
+            );
+            assert!(first.canonical_bytes().ends_with(b"\n"));
+            // 中间夹一次别的投影 —— 顺序不得影响结果。
+            let _other = ViewState::from_project(&filled_project()).expect("投影");
+            let third = ViewState::from_project(&project).expect("投影");
+            assert_eq!(first.canonical_lines(), third.canonical_lines());
+        }
+    }
+
+    /// 判据 2: tick ↔ 像素**往返**精确（两个方向都测）。
+    ///
+    /// 这是"位置一律用整数 tick 计算"的可测形态：任何浮点实现都会在
+    /// `ticks_per_pixel = 30` 上露馅（`tick_to_px(30, 30)` 会算成 0）。
+    #[test]
+    fn tick_to_pixel_round_trips_in_both_directions() {
+        for tpp in [1_u64, 5, 30, 32, 60, 120, 960] {
+            // 像素 → tick → 像素：对任意像素恒等。
+            for px in [0_u32, 1, 2, 29, 30, 31, 1000, 65_535] {
+                let tick = px_to_tick(px, tpp).expect("像素 → tick");
+                assert_eq!(
+                    tick_to_px(tick, tpp).expect("tick → 像素"),
+                    px,
+                    "px={px} tpp={tpp} 往返失败"
+                );
+            }
+            // tick 是 tpp 的整数倍 → tick → 像素 → tick：恒等。
+            for step in [0_u64, 1, 2, 17, 128, 4096] {
+                let tick = step * tpp;
+                let px = tick_to_px(tick, tpp).expect("tick → 像素");
+                assert_eq!(
+                    px_to_tick(px, tpp).expect("像素 → tick"),
+                    tick,
+                    "tick={tick} tpp={tpp} 往返失败"
+                );
+            }
+        }
+        // 30 不是 2 的幂 ⇒ 这条断言是"不许用浮点算位置"的探针。
+        assert_eq!(tick_to_px(30, 30), Ok(1));
+        assert_eq!(px_to_tick(1, 30), Ok(30));
+    }
+
+    /// 判据 3: **空工程不 panic**，且投影成空视图（轨道 / 剪辑 / 段落 / 场景全空）。
+    #[test]
+    fn empty_project_projects_to_an_empty_view() {
+        let view = ViewState::from_project(&default_project()).expect("空工程必须能投影");
+        assert!(view.tracks.is_empty());
+        assert!(view.master.is_none());
+        assert!(view.clips.is_empty());
+        assert!(view.sections.is_empty());
+        assert!(view.scenes.is_empty());
+        assert!(view.note_ulids.is_empty());
+        assert_eq!(view.ppq, 960);
+        assert_eq!(view.time_signature_display, "4/4");
+        assert_eq!(view.bpm_display, "120.00");
+        assert_eq!(ViewState::empty().canonical_bytes(), view.canonical_bytes());
+        // 标尺仍有 16 条（规范 §4.2 的最小可视密度）。
+        assert_eq!(view.bar_positions.len(), MIN_BAR_COUNT);
+        assert_eq!(view.bar_positions[0], 0.0);
+    }
+
+    /// 判据 4: **超长工程不溢出** —— 越界的 tick 让投影返回 `Err` 而不是 wrap / panic。
+    #[test]
+    fn absurd_tick_ranges_error_instead_of_overflowing() {
+        let mut project = default_project();
+        let track_id = demo_id("T9");
+        let mut track = TrackV3 {
+            id: track_id,
+            name: "Overflow".to_owned(),
+            ..TrackV3::default()
+        };
+        let clip_id = demo_id("K9");
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "clip".to_owned(),
+                content: ClipContent::default(),
+            },
+        );
+        let placement_id = demo_id("Z9");
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: u64::MAX - 1,
+                duration_ticks: u64::MAX,
+                ..ClipPlacement::default()
+            },
+        );
+        project.tracks.insert(track_id, track);
+        assert_eq!(
+            ViewState::from_project(&project),
+            Err(BridgeError::TickOverflow {
+                start_tick: u64::MAX - 1
+            }),
+            "越界 tick 必须返回错误, 不得 wrap"
+        );
+
+        // 像素侧：像素 × tpp 越界。
+        assert_eq!(
+            px_to_tick(u32::MAX, u64::MAX),
+            Err(BridgeError::TickBackOverflow { px: u32::MAX })
+        );
+        // tick 侧：商超出 u32。
+        assert_eq!(
+            tick_to_px(u64::MAX, 1),
+            Err(BridgeError::PixelOverflow { tick: u64::MAX })
+        );
+        // 除零。
+        assert_eq!(tick_to_px(0, 0), Err(BridgeError::ZeroTicksPerPixel));
+        assert_eq!(px_to_tick(0, 0), Err(BridgeError::ZeroTicksPerPixel));
+        assert_eq!(
+            ViewState::from_project_with_zoom(&default_project(), 0),
+            Err(BridgeError::ZeroTicksPerPixel)
+        );
+        // 拍号分母为 0。
+        let mut broken = default_project();
+        broken.time_signature.denominator = 0;
+        assert_eq!(
+            bar_length_ticks(broken.time_signature),
+            Err(BridgeError::ZeroTimeSignatureDenominator)
+        );
+    }
+
+    /// 判据 5: 演示工程是**合法工程**，且它的投影逐字复现 `src/scene.rs` 的常量。
+    ///
+    /// 这条是"演示数据已由投影层产出"的机械证明：改投影或改夹具都会变红。
+    #[test]
+    fn demo_projection_reproduces_the_scene_constants() {
+        let project = demo_project();
+        assert_eq!(project.validate(), Ok(()), "演示夹具必须是合法工程");
+        assert_eq!(project.check_readable(), Ok(()));
+
+        let view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(view.track_names(), owned(&crate::scene::TRACK_NAMES));
+        assert_eq!(view.note_ulids, owned(&crate::scene::NOTE_ULIDS));
+        assert_eq!(view.clip_ulids(), owned(&crate::scene::CLIP_ULIDS));
+        assert_eq!(view.section_names(), owned(&crate::scene::SECTION_NAMES));
+        assert_eq!(view.scene_names(), owned(&crate::scene::SCENE_NAMES));
+        assert_eq!(
+            view.tracks
+                .iter()
+                .map(|track| track.volume_display.clone())
+                .collect::<Vec<_>>(),
+            owned(&crate::scene::FADER_DB_LABELS)
+        );
+        assert_eq!(view.tracks.len(), crate::scene::TRACK_COUNT);
+        assert_eq!(view.clips.len(), crate::scene::CLIP_COUNT);
+        assert_eq!(view.note_ulids.len(), crate::scene::NOTE_COUNT);
+        assert_eq!(view.sections.len(), crate::scene::SCENE_COUNT);
+        assert_eq!(view.scenes.len(), crate::scene::SCENE_COUNT);
+        assert_eq!(view.bpm_display, "120.00");
+    }
+
+    /// 判据 6: 字段映射 —— `filled_project()` 的每一个被投影用到的模型字段都进了视图。
+    #[test]
+    fn filled_project_maps_every_model_field_the_view_consumes() {
+        let project = filled_project();
+        let view = ViewState::from_project(&project).expect("投影");
+
+        assert_eq!(view.title, project.title);
+        assert_eq!(view.bpm_display, format!("{:.2}", project.bpm));
+        assert_eq!(view.bpm_millis, 128_000);
+        assert_eq!(view.time_signature_display, "4/4");
+        assert_eq!(view.project_id, project.id.to_canonical_string());
+
+        // 主总线被单独挑出，不进 `tracks`。
+        let master = view.master.as_ref().expect("filled_project 有主总线");
+        assert!(master.is_master);
+        assert_eq!(master.kind, "master");
+        assert_eq!(view.tracks.len(), project.tracks.len() - 1);
+
+        // 逐字段对账：名称 / 类型 / 颜色 / 静音 / 独奏 / 音量 / 声相 / 摆放数。
+        let model_tracks: Vec<&TrackV3> = project
+            .tracks
+            .values()
+            .filter(|track| track.id != project.master_bus_track_id)
+            .collect();
+        for (view_track, model_track) in view.tracks.iter().zip(model_tracks) {
+            assert_eq!(view_track.id, model_track.id.to_canonical_string());
+            assert_eq!(view_track.name, model_track.name);
+            assert_eq!(view_track.kind, kind_name(model_track.kind));
+            assert_eq!(view_track.color, model_track.color);
+            assert_eq!(view_track.mute, model_track.mute);
+            assert_eq!(view_track.solo, model_track.solo);
+            assert_eq!(view_track.volume_db, model_track.volume_db);
+            assert_eq!(
+                view_track.volume_display,
+                format!("{:.1}", model_track.volume_db)
+            );
+            assert_eq!(view_track.clip_count, model_track.clips.len());
+            #[allow(clippy::cast_possible_truncation)]
+            let pan_millis = (f64::from(model_track.pan) * 1000.0).round() as i32;
+            assert_eq!(view_track.pan_millis, pan_millis);
+        }
+
+        // 剪辑：起止 tick、身份、标签、内容类型、车道全部来自模型。
+        assert_eq!(view.clips.len(), 2);
+        let lead = view
+            .tracks
+            .iter()
+            .find(|track| track.name == "Lead")
+            .expect("filled_project 有 Lead 轨");
+        let lead_id = EntityId::from_str(&lead.id).expect("视图 ID 必须是合法 ULID");
+        let placement = project
+            .tracks
+            .get(&lead_id)
+            .and_then(|track| track.clips.values().next())
+            .expect("Lead 轨有一个摆放");
+        let clip = view
+            .clips
+            .iter()
+            .find(|clip| clip.placement_id == placement.id.to_canonical_string())
+            .expect("摆放必须进视图");
+        assert_eq!(clip.start_tick, placement.start_tick);
+        assert_eq!(
+            clip.end_tick,
+            placement.start_tick + placement.duration_ticks
+        );
+        assert_eq!(clip.track_index, lead.index);
+        assert_eq!(clip.track_name, "Lead");
+        assert_eq!(clip.content, "midi");
+        assert_eq!(clip.clip_name, "Clip");
+        assert_eq!(clip.label, "Lead · Clip");
+        assert_eq!(clip.lane, i32::try_from(lead.index).unwrap());
+
+        // 段落 / 场景 / 音符身份逐条来自模型。
+        assert_eq!(view.sections.len(), project.sections.len());
+        assert_eq!(view.sections[0].name, "Intro");
+        assert_eq!(view.sections[0].color.as_deref(), Some("#22AA88"));
+        assert_eq!(view.scenes.len(), project.scenes.len());
+        assert_eq!(view.scenes[0].name, "Scene 1");
+        assert_eq!(view.scenes[0].tempo, Some(128.0));
+        assert_eq!(view.note_ulids.len(), 4);
+        assert_eq!(
+            view.note_velocities.len(),
+            view.note_ulids.len(),
+            "力度必须与音符身份逐个对齐"
+        );
+        for velocity in &view.note_velocities {
+            assert!((0.0..=1.0).contains(velocity), "归一化力度越界: {velocity}");
+            assert!(
+                (velocity - 100.0_f32 / 127.0).abs() < 1e-6,
+                "filled_project 的音符力度是 100/127, 实测 {velocity}"
+            );
+        }
+        for ulid in &view.note_ulids {
+            assert!(
+                crate::scene::is_ulid_text(ulid),
+                "`{ulid}` 不是合法 ULID 文本"
+            );
+        }
+    }
+
+    /// 判据 7: 位置是**整数派生**的 —— 与独立算出的 `tick / tpp` 逐个相等，
+    /// 且小节线严格等距、段落 x 恰为前面宽度之和（不存在累加漂移）。
+    #[test]
+    fn positions_are_integer_derived_and_bars_are_equidistant() {
+        let project = demo_project();
+        let view = ViewState::from_project_with_zoom(&project, 30).expect("投影");
+
+        for clip in &view.clips {
+            let expected = tick_to_px(clip.start_tick, 30).expect("tick → 像素");
+            assert_eq!(clip.x, as_px(expected), "剪辑 x 必须是 tick/tpp 的整数商");
+            let expected_end = tick_to_px(clip.end_tick, 30).expect("tick → 像素");
+            assert_eq!(
+                clip.width,
+                as_px(expected_end - expected).max(MIN_BLOCK_WIDTH_PX)
+            );
+        }
+        for section in &view.sections {
+            let expected = tick_to_px(section.start_tick, 30).expect("tick → 像素");
+            assert_eq!(section.x, as_px(expected));
+        }
+
+        // 小节线等距：相邻差恒等于 bar_length_ticks / tpp。
+        let bar_px = as_px(u32::try_from(view.bar_length_ticks / view.ticks_per_pixel).unwrap());
+        for window in view.bar_positions.windows(2) {
+            assert_eq!(window[1] - window[0], bar_px);
+        }
+        // 一节的 x 恰好是前几节宽度之和（整数派生 ⇒ 可加）。
+        let mut cursor = 0.0_f32;
+        for section in &view.sections {
+            assert_eq!(section.x, cursor, "段落 x 必须等于前面宽度的整数和");
+            cursor += section.width;
+        }
+    }
+
+    /// 判据 8: 音符身份来自 `clip_pool`，顺序确定（片段键序 → 音符键序）且去重；
+    /// 音频片段不贡献音符。
+    #[test]
+    fn note_ulids_come_from_the_clip_pool_in_a_deterministic_order() {
+        let view = ViewState::from_project(&demo_project()).expect("投影");
+        let mut sorted = view.note_ulids.clone();
+        sorted.sort();
+        assert_eq!(view.note_ulids, sorted, "音符身份必须按键序给出");
+        let unique: BTreeSet<&String> = view.note_ulids.iter().collect();
+        assert_eq!(unique.len(), view.note_ulids.len(), "音符身份不得重复");
+        // 音频片段不贡献音符：filled_project 的两条音频摆放与四个 MIDI 音符。
+        let filled = ViewState::from_project(&filled_project()).expect("投影");
+        assert_eq!(filled.note_ulids.len(), 4);
+        assert_eq!(filled.clips.len(), 2);
+    }
+
+    /// 判据 9: 速度 / 拍号 / 小节长度的投影（含边界与非法输入）。
+    #[test]
+    fn tempo_and_time_signature_projection_covers_the_boundaries() {
+        let mut project = default_project();
+        project.bpm = 999.0;
+        project.time_signature = TimeSignature {
+            numerator: 7,
+            denominator: 8,
+        };
+        let view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(view.bpm_display, "999.00");
+        assert_eq!(view.bpm_millis, 999_000);
+        assert_eq!(view.time_signature_display, "7/8");
+        // 7/8: 960 × 7 × 4 ÷ 8 = 3360。
+        assert_eq!(view.bar_length_ticks, 3360);
+
+        project.bpm = 20.0;
+        let view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(view.bpm_display, "20.00");
+        assert_eq!(view.bpm_millis, 20_000);
+
+        // 非有限值不 panic（模型 `validate()` 会拒绝它，但投影本身也必须稳健）。
+        project.bpm = f64::NAN;
+        let view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(view.bpm_millis, 0);
+    }
+}

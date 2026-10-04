@@ -1,25 +1,37 @@
-//! 演示场景数据 —— UI 骨架的**假数据源**。
+//! 演示场景数据 —— 界面外壳的**夹具**，现在由 [`crate::bridge`] 的投影层产出。
 //!
 //! 规范来源 (Normative):
 //! - `[UI-GRID-002]` UI/UX 规范 §1.2: ≥1920 全展开 / 1366–1919 折叠 —— 断点判定在
 //!   [`DemoScene::is_compact`] 里落成可测的纯函数。
 //! - `[UI-TEST-001]` §12.2: `note-{ulid}` / `clip-{ulid}` 里的 ULID 必须真实合法
 //!   (26 字符 Crockford Base32), 否则语义 ID 就成了编造的字符串。
+//! - `[MODEL-AST-002]` `YebanProjectV1` 是唯一权威工程结构。
+//! - `[MODEL-ISO-001]` 三层状态物理隔离: **走带位置**（`timecode`）与**当前分支**
+//!   (`branch_name`) 属于会话运行态 / 提交图谱，**不在** `YebanProjectV1` 里。
+//!   本模块因此明确把它们标成占位常量，而不是假装它们是工程字段。
 //!
-//! ## 这不是模型层
+//! ## 这一版与上一版的区别（这是本工作线的核心变更）
 //!
-//! 这里的常量是**一次性演示数据**, 不是 `yeban-model` 的 `YebanProjectV1`, 也不是
-//! `yeban-engine` 的 `EngineSnapshot`。用它的唯一目的是: 让 UI 骨架能离屏渲染出
-//! "有内容"的画面, 让元素注册表有真实的成员可以断言。
+//! 上一版里 [`TRACK_NAMES`] / [`NOTE_ULIDS`] / [`CLIP_ULIDS`] / [`SECTION_NAMES`] 是
+//! **界面的唯一数据源** —— 一组 `&'static str`。现在它们只是[**判据锚点**]：
+//! 真正的数据源是 [`crate::bridge::demo_project`] 返回的一个 `YebanProjectV1`，
+//! 由 [`DemoScene::demo`] → [`DemoScene::from_view`] 投影出来。
 //!
-//! ## 与 `.slint` 的字面量重复 (known debt)
+//! `bridge::tests::demo_projection_reproduces_the_scene_constants` 逐字钉住
+//! "常量的值 == 演示工程投影出来的值"；`elements.rs` 的注册表也改为由投影构造。
+//! 于是"演示数据"与"真实工程数据"走的是**同一条代码路径** ——
+//! 换成 `yeban_model::samples::filled_project()` 时没有任何分支切换。
 //!
-//! `ui/workspace/arrangement_view.slint` 与 `ui/console/piano_roll.slint` 里各自内联了
-//! 一份同样的 ULID 数组 / 轨道名数组 —— 因为 Slint 的数组属性需要**默认值**才能在
-//! 没有宿主注入时独立渲染。这份重复是临时的: `yeban-model` 落地后改成 Rust 侧
-//! `ModelRc` 单向注入, `.slint` 里只留空数组。见 `docs/ledger/ui-shell-notes.md` 的 pending。
+//! ## 与 `.slint` 的字面量重复：已消除（本线）
+//!
+//! 上一版 `ui/workspace/arrangement_view.slint` 与 `ui/piano_roll.slint` 里各自内联了
+//! 一份同样的 ULID / 轨道名数组作为**属性默认值**（Slint 数组属性需要默认值才能独立渲染）。
+//! 本线把 arrangement / session 两处的默认值改成**空数组**，由 Rust 侧经
+//! `src/host.rs` 单向注入 —— 重复只剩 `piano_roll.slint` 一处（见 notes 的未实现项）。
 
-/// 演示轨道数。与 `ui/` 下所有 `for … in 6` 循环的边界一致。
+use crate::bridge::{BridgeError, ViewState};
+
+/// 演示轨道数。与演示工程 `demo_project()` 的非主总线轨道数一致（有判据钉住）。
 pub const TRACK_COUNT: usize = 6;
 
 /// 演示场景数 (Session View 的行数)。
@@ -37,19 +49,19 @@ pub const BREAKPOINT_FULL_HD: u32 = 1920;
 /// `[UI-GRID-002]` 折叠区间下界: 1366–1919 逻辑像素宽 → 左栏 36px 图标导轨 + 右栏变抽屉。
 pub const BREAKPOINT_MIN: u32 = 1366;
 
-/// 轨道名 (演示数据)。
+/// 演示轨道名 —— **现在只是判据锚点**：值由 `bridge::demo_project()` 的投影复现。
 pub const TRACK_NAMES: [&str; TRACK_COUNT] = ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
 
-/// 场景名 (演示数据)。
+/// 场景名 —— 同上（判据锚点，事实源是演示工程的 `scenes`）。
 pub const SCENE_NAMES: [&str; SCENE_COUNT] = ["Intro", "Verse", "Chorus", "Drop"];
 
-/// 章节卡片名 (演示数据)。
+/// 章节卡片名 —— 同上（事实源是演示工程的 `sections`）。
 pub const SECTION_NAMES: [&str; SCENE_COUNT] = ["Intro", "Verse", "Chorus", "Outro"];
 
-/// 音符实体的演示 ULID。
+/// 音符实体的演示 ULID —— 事实源是演示工程 MIDI 片段里的 `MidiNote::id`。
 ///
-/// 逐字必须与 `ui/console/piano_roll.slint` 的 `note-ulids` 默认值一致 ——
-/// [`crate::elements::ElementRegistry`] 就是用这一组常量生成 `note-{ulid}-rect` 的。
+/// [`crate::elements::ElementRegistry`] 用它们生成 `note-{ulid}-rect`，而注册表现在由
+/// 投影构造，因此这组常量与工程里的音符身份**逐字对账**。
 pub const NOTE_ULIDS: [&str; NOTE_COUNT] = [
     "01J8Z5Q0R7K3M9X2V4B6N8P1A2",
     "01J8Z5Q0R7K3M9X2V4B6N8P1A3",
@@ -59,7 +71,7 @@ pub const NOTE_ULIDS: [&str; NOTE_COUNT] = [
     "01J8Z5Q0R7K3M9X2V4B6N8P1E1",
 ];
 
-/// 剪辑实体的演示 ULID。必须与 `ui/workspace/arrangement_view.slint` 的 `clip-ulids` 一致。
+/// 剪辑实体的演示 ULID —— 事实源是演示工程里 `ClipPlacement::id`（时间轴摆放身份）。
 pub const CLIP_ULIDS: [&str; CLIP_COUNT] = [
     "01J8Z5Q0R7K3M9X2V4B6N8P1F9",
     "01J8Z5Q0R7K3M9X2V4B6N8P1G6",
@@ -91,14 +103,30 @@ pub const TOOL_NAMES: [&str; 5] = ["select", "pencil", "knife", "velocity", "era
 /// 4 段 EQ 的频段名 (`[UI-NOTE-004]` 规范 §5.1)。
 pub const EQ_BANDS: [&str; 4] = ["low", "low-mid", "high-mid", "high"];
 
-/// 设备链里的设备卡名 (演示数据)。
+/// 设备链里的设备卡名。
+///
+/// **已知债**：它**没有**接到 `TrackV3::devices` 上（设备机架尚未由模型驱动，
+/// 见 `docs/ledger/app-binding-notes.md` 的未实现项）。
 pub const DEVICE_NAMES: [&str; 3] = ["EQ 4 段", "Compressor", "Space Reverb"];
 
-/// 演出用的推子位置 (0.0–1.0 归一化) —— 只喂给 `.slint` 的 `levels` 默认值。
+/// 演出用的推子位置 (0.0–1.0 归一化)。
+///
+/// **这是会话运行态而不是工程状态**：真实数值来自 `[ARCH-UI-002]` 的无锁 Meter SPSC
+/// （由 `yeban-engine` 每 60Hz 推送），不落在 `YebanProjectV1` 里。演示期先用常量。
 pub const FADER_LEVELS: [f32; TRACK_COUNT] = [0.72, 0.55, 0.48, 0.62, 0.35, 0.40];
 
-/// 推子分贝显示值 (演示数据; 真实换算归模型层)。
+/// 推子分贝显示值 —— 事实源是演示工程每轨的 `TrackV3::volume_db`（有判据逐字对账）。
 pub const FADER_DB_LABELS: [&str; TRACK_COUNT] = ["-3.2", "-6.0", "-8.4", "-4.8", "-12.0", "-10.6"];
+
+/// `[MODEL-ISO-001]` 走带位置占位：它属于**会话运行态**，不是 `YebanProjectV1` 的字段。
+///
+/// 真实值来自 `yeban-engine` 的 `EngineSnapshot`（960 PPQ 整数 tick → 时间码），
+/// 本工作线无权发明那个映射，因此保留字面量并显式登记。
+pub const SESSION_TIMECODE: &str = "001.01.000";
+
+/// `[MODEL-ISO-001]` 当前分支占位：分支头住在 `yeban-model::commit::CommitGraph`，
+/// 不在工程文档里。接上提交图谱之前保留 `main`。
+pub const SESSION_BRANCH_NAME: &str = "main";
 
 /// 一个控制台标签: `name` 进语义 ID, `label` 进可读标签。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,17 +137,21 @@ pub struct ConsoleTab {
     pub label: &'static str,
 }
 
-/// UI 骨架的演示数据集合。
-#[derive(Debug, Clone, Copy)]
+/// 界面外壳的场景参数（窗口标题 / 走带显示 / 视口尺寸）。
+///
+/// 字段拆成两类，**不混用**（`[MODEL-ISO-001]`）：
+/// - **工程派生**：`title` / `bpm_display` —— 由 [`Self::from_view`] 从投影取；
+/// - **会话运行态 / 本机视口**：`timecode` / `branch_name` / `viewport_*` —— 占位或本机探测。
+#[derive(Debug, Clone, PartialEq)]
 pub struct DemoScene {
-    /// 窗口标题。
-    pub title: &'static str,
-    /// 顶栏时间码显示值。
-    pub timecode: &'static str,
-    /// 顶栏 BPM 显示值 (字符串: 格式化是模型层的活)。
-    pub bpm_display: &'static str,
-    /// 顶栏分支名。
-    pub branch_name: &'static str,
+    /// 窗口标题（来自 `YebanProjectV1::title`）。
+    pub title: String,
+    /// 顶栏时间码显示值（会话运行态占位，见 [`SESSION_TIMECODE`]）。
+    pub timecode: String,
+    /// 顶栏 BPM 显示值（来自工程 `bpm`，格式化由投影层完成）。
+    pub bpm_display: String,
+    /// 顶栏分支名（提交图谱占位，见 [`SESSION_BRANCH_NAME`]）。
+    pub branch_name: String,
     /// 启动时是否直接进 Arrangement 视图 (规范的默认视图是线性编曲)。
     pub arrangement_by_default: bool,
     /// 演示视口宽度 (逻辑像素) —— 1920 落在 `[UI-GRID-002]` 的全展开档。
@@ -129,18 +161,41 @@ pub struct DemoScene {
 }
 
 impl DemoScene {
-    /// 构造演示场景。全部数值都是常量, 因此**没有任何 I/O 与分配**, 可随时调用。
+    /// 构造演示场景：**由投影层产出**（`bridge::demo_project()` → `ViewState`）。
+    ///
+    /// 无 I/O、无分配以外的副作用；夹具非法时 panic（属编程错误）。
+    ///
+    /// # Panics
+    ///
+    /// 仅当 [`crate::bridge::demo_project`] 被改成非法工程时 panic。
     #[must_use]
-    pub const fn demo() -> Self {
+    pub fn demo() -> Self {
+        Self::from_view(&ViewState::demo())
+    }
+
+    /// 由一个**投影结果**构造外壳场景。这是界面侧唯一的取数口径。
+    #[must_use]
+    pub fn from_view(view: &ViewState) -> Self {
         Self {
-            title: "夜半 Yeban",
-            timecode: "001.01.000",
-            bpm_display: "120.00",
-            branch_name: "main",
+            title: view.title.clone(),
+            timecode: SESSION_TIMECODE.to_owned(),
+            bpm_display: view.bpm_display.clone(),
+            branch_name: SESSION_BRANCH_NAME.to_owned(),
             arrangement_by_default: true,
             viewport_width: BREAKPOINT_FULL_HD,
             viewport_height: 1080,
         }
+    }
+
+    /// 由一个**真实工程**构造外壳场景（真实路径：`from_project(&project)`）。
+    ///
+    /// # Errors
+    ///
+    /// 投影失败（越界 tick / 非法拍号）时冒泡 [`BridgeError`]。
+    pub fn from_project(
+        project: &yeban_model::project::YebanProjectV1,
+    ) -> Result<Self, BridgeError> {
+        Ok(Self::from_view(&ViewState::from_project(project)?))
     }
 
     /// `[UI-GRID-002]` 响应式断点判定: 视口宽度是否落在「折叠」档。
@@ -175,8 +230,9 @@ impl Default for DemoScene {
 /// 规则来自 `MODEL-AST-001`/ADR-0001 D6 的实测结论: 26 个字符, 字母表是 Crockford Base32
 /// (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`, 大小写不敏感, 不含 `I`/`L`/`O`/`U`)。
 ///
-/// 存在的意义: 演示 ULID 是**手写常量**, 手写就会写错。把校验写成可测函数, 而不是
-/// 让编造的字符串混进语义 ID —— 那会让 `note-{ulid}-rect` 这个约定形同虚设。
+/// 存在的意义: 语义 ID 里的 `{ulid}` 段来自**实体身份**（现在由投影给出），而身份是运行时
+/// 生成的。把校验写成可测函数，而不是让编造的字符串混进语义 ID —— 那会让
+/// `note-{ulid}-rect` 这个约定形同虚设。
 #[must_use]
 pub fn is_ulid_text(value: &str) -> bool {
     if value.len() != 26 {
@@ -254,6 +310,37 @@ mod tests {
         assert_eq!(scene.viewport_width, BREAKPOINT_FULL_HD);
         assert!(!scene.compact(), "1920 宽的演示视口必须落在全展开档");
         assert!(scene.arrangement_by_default);
+    }
+
+    /// 判据: 外壳场景的**工程派生字段**确实来自投影（而不是另一份常量）。
+    #[test]
+    fn demo_scene_is_projected_from_the_demo_project() {
+        let view = ViewState::demo();
+        let scene = DemoScene::demo();
+        assert_eq!(scene.title, view.title);
+        assert_eq!(scene.bpm_display, view.bpm_display);
+        assert_eq!(scene.title, "夜半 Yeban");
+        assert_eq!(scene.bpm_display, "120.00");
+        // 会话运行态字段明确是占位（[MODEL-ISO-001]），不得被当成工程字段。
+        assert_eq!(scene.timecode, SESSION_TIMECODE);
+        assert_eq!(scene.branch_name, SESSION_BRANCH_NAME);
+        // `from_view` 是同一个口径：换一个工程 ⇒ 换一个标题 / BPM。
+        let filled = yeban_model::samples::filled_project();
+        let filled_scene = DemoScene::from_project(&filled).expect("投影");
+        assert_eq!(filled_scene.title, "Yeban Model Core Sample");
+        assert_eq!(filled_scene.bpm_display, "128.00");
+        assert_ne!(filled_scene.title, scene.title);
+    }
+
+    /// 判据: 非法工程经 `from_project` 返回 `Err`，而不是 panic。
+    #[test]
+    fn from_project_propagates_projection_errors() {
+        let mut project = yeban_model::samples::default_project();
+        project.time_signature.denominator = 0;
+        assert_eq!(
+            DemoScene::from_project(&project),
+            Err(BridgeError::ZeroTimeSignatureDenominator)
+        );
     }
 
     #[test]

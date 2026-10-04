@@ -7,23 +7,43 @@
 //   - [UI-TEST-001] §12.2: 语义 Element ID —— `clip-{ulid}-header` 与 `track-{i}-header`
 //     就落在这个文件; `track-{i}-fader` 归 console/mixer_console.slint
 //   - [UI-MCP-002] §12.5: 走带光标属高频刷新区域, 无头截图比对前必须动态遮罩
+//   - [MODEL-AST-001]/[MODEL-AST-002]: 轨道数 / 剪辑数 / 段落数与全部 x 坐标**来自工程**,
+//     由 `src/bridge.rs` 的投影算出、`src/host.rs` 单向注入
 //
-// 静态骨架 + 演示数据: 没有波形金字塔, 没有 R-Tree 视口裁剪, 没有拖拽/吸附。
-// 那些是 [UI-NOTE-001..005] 的范围, 需要 `yeban-render` 与 `yeban-model` 先落地。
+// ## 数据是注入的，不是内联的（本线变更）
+//
+// 上一版这里内联了 `clip-ulids` / `tracks` / `sections` 三份**演示数据默认值**，
+// 并用 `for … in 6` / `for … in 3` / `for … in 4` 把**演示规模刻进界面**。
+// 现在三者的默认值是**空数组**，循环写成 `for name[index] in root.<数组> :`，
+// 规模由工程决定；x / width 由投影的整数 tick 换算给出（`tick / ticks_per_pixel`）。
+// 代价：直接预览本文件（不注入）会看到空轨道 —— 这是"只有一个事实源"的必要代价。
+//
+// 仍未实现: 波形金字塔 / R-Tree 视口裁剪 / 拖拽吸附 / 循环选区拖拽。
+// 那些是 [UI-NOTE-001..005] 的范围, 需要 `yeban-render` 与 Op 日志先落地。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
 export component ArrangementView inherits Rectangle {
-    // 演示用 ULID —— 必须与 crates/yeban-app/src/scene.rs 的 DEMO_CLIP_ULIDS 逐字一致。
-    // 这个"两处写同一份常量"的重复是**已知的临时状态**, 见 notes 的 pending:
-    // 模型线落地后改成 Rust 侧 ModelRc 单向注入, 这里只留空数组。
-    in property <[string]> clip-ulids: [
-        "01J8Z5Q0R7K3M9X2V4B6N8P1F9",
-        "01J8Z5Q0R7K3M9X2V4B6N8P1G6",
-        "01J8Z5Q0R7K3M9X2V4B6N8P1H3"
-    ];
-    in property <[string]> tracks: ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
-    in property <[string]> sections: ["Intro", "Verse", "Chorus", "Outro"];
+    // ---- 由 src/host.rs 注入的投影数据 (默认空 = 没有内联演示数据) ----
+    in property <[string]> clip-ulids: [];
+    // `"{轨道} · {片段}"` —— 由投影拼好, 界面不再自己拼字符串
+    in property <[string]> clip-labels: [];
+    // 时间轴相对 x / 宽度 (逻辑像素; 由整数 tick ÷ ticks_per_pixel 得出)
+    in property <[length]> clip-positions: [];
+    in property <[length]> clip-widths: [];
+    // 剪辑所在车道 (= 非主总线轨道的序号)
+    in property <[int]> clip-lanes: [];
+
+    in property <[string]> tracks: [];
+    in property <[string]> track-volumes: [];
+    in property <[bool]> track-mutes: [];
+    in property <[bool]> track-solos: [];
+
+    in property <[string]> sections: [];
+    in property <[length]> section-positions: [];
+    in property <[length]> section-widths: [];
+    // 标尺小节线 x (逻辑像素)
+    in property <[length]> bar-positions: [];
 
     background: Tokens.bg-void;
     clip: true;
@@ -33,26 +53,26 @@ export component ArrangementView inherits Rectangle {
     accessible-label: "Arrangement 线性编曲时间轴";
 
     // ---------------------------------------------------------------- 章节卡片层 (§4.3)
-    for section_index in 4 : Rectangle {
-        x: 168px + 160px * section_index;
+    for section_name[section_index] in root.sections : Rectangle {
+        x: 168px + root.section-positions[section_index];
         y: 0;
-        width: 156px;
+        width: root.section-widths[section_index];
         height: 20px;
         background: section_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel;
         border-radius: Tokens.radius-sm;
         clip: true;
         accessible-role: list-item;
         accessible-id: "section-" + section_index + "-card";
-        accessible-label: "章节 " + root.sections[section_index];
+        accessible-label: "章节 " + section_name;
         accessible-item-index: section_index;
-        accessible-item-count: 4;
+        accessible-item-count: root.sections.length;
 
         UiText {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;
             height: parent.height;
-            text: root.sections[section_index];
+            text: section_name;
             color: Tokens.gold;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -70,8 +90,12 @@ export component ArrangementView inherits Rectangle {
         accessible-id: "arrangement-ruler";
         accessible-label: "小节与拍标尺";
 
-        for bar_index in 16 : Rectangle {
-            x: 120px * bar_index;
+        // 小节线位置由投影给出（一小节 = 960 PPQ × 分子 × 4 ÷ 分母 tick）。
+        // `for _[i] in <model>`：**必须**有声明标识符（`_` 即可）。Slint 1.18.1 不接受
+        // 只有索引的 `for [i] in <model>`（上游 parser 的 doc 注释里有，真实语法没有）。
+        // 实测解析错误见 docs/ledger/app-binding-notes.md（CI run 37228953370）。
+        for _[bar_index] in root.bar-positions : Rectangle {
+            x: root.bar-positions[bar_index];
             y: 0;
             width: 1px;
             height: parent.height;
@@ -98,7 +122,7 @@ export component ArrangementView inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 轨道包头列
-    for track_index in 6 : Rectangle {
+    for track_name[track_index] in root.tracks : Rectangle {
         x: 0;
         y: 42px + 56px * track_index;
         width: 168px;
@@ -109,9 +133,9 @@ export component ArrangementView inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "track-" + track_index + "-header";
-        accessible-label: "轨道 " + root.tracks[track_index];
+        accessible-label: "轨道 " + track_name;
         accessible-item-index: track_index;
-        accessible-item-count: 6;
+        accessible-item-count: root.tracks.length;
         accessible-item-selectable: true;
         accessible-item-selected: false;
 
@@ -120,25 +144,25 @@ export component ArrangementView inherits Rectangle {
             y: Tokens.space-2;
             width: 96px;
             height: 18px;
-            text: root.tracks[track_index];
+            text: track_name;
             color: Tokens.ink-0;
             font-size: Tokens.font-size-md;
             overflow: elide;
         }
 
-        // 静音
+        // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`
         Rectangle {
             x: Tokens.space-4;
             y: 26px;
             width: 22px;
             height: 18px;
-            background: Tokens.bg-void;
+            background: root.track-mutes[track_index] ? Tokens.record-red : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "track-" + track_index + "-mute-button";
-            accessible-label: "轨道 " + root.tracks[track_index] + " 静音";
+            accessible-label: "轨道 " + track_name + " 静音";
             accessible-checkable: true;
-            accessible-checked: false;
+            accessible-checked: root.track-mutes[track_index];
 
             UiText {
                 x: 0;
@@ -157,19 +181,19 @@ export component ArrangementView inherits Rectangle {
             }
         }
 
-        // 独奏
+        // 独奏 —— `accessible-checked` 来自工程的 `TrackV3::solo`
         Rectangle {
             x: 34px;
             y: 26px;
             width: 22px;
             height: 18px;
-            background: Tokens.bg-void;
+            background: root.track-solos[track_index] ? Tokens.gold-deep : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "track-" + track_index + "-solo-button";
-            accessible-label: "轨道 " + root.tracks[track_index] + " 独奏";
+            accessible-label: "轨道 " + track_name + " 独奏";
             accessible-checkable: true;
-            accessible-checked: false;
+            accessible-checked: root.track-solos[track_index];
 
             UiText {
                 x: 0;
@@ -188,12 +212,13 @@ export component ArrangementView inherits Rectangle {
             }
         }
 
+        // 音量显示 = `TrackV3::volume_db` 的字符串形态（投影层格式化）
         UiMonoText {
             x: 120px;
             y: 26px;
             width: 40px;
             height: 18px;
-            text: "-6.0";
+            text: root.track-volumes[track_index];
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: right;
@@ -201,7 +226,9 @@ export component ArrangementView inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 时间轴车道 + 剪辑
-    for lane_index in 6 : Rectangle {
+    // 每条非主总线轨道一条车道 —— 车道数 = 工程里的轨道数。
+    // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见本文件标尺那处的注释。
+    for _[lane_index] in root.tracks : Rectangle {
         x: 168px;
         y: 42px + 56px * lane_index;
         width: parent.width - 168px;
@@ -211,10 +238,10 @@ export component ArrangementView inherits Rectangle {
         border-color: Tokens.line;
     }
 
-    for clip_index in 3 : Rectangle {
-        x: 168px + 24px + 140px * clip_index;
-        y: 42px + 56px * clip_index + 4px;
-        width: 240px;
+    for clip_ulid[clip_index] in root.clip-ulids : Rectangle {
+        x: 168px + root.clip-positions[clip_index];
+        y: 42px + 56px * root.clip-lanes[clip_index] + 4px;
+        width: root.clip-widths[clip_index];
         height: 46px;
         background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
@@ -222,7 +249,7 @@ export component ArrangementView inherits Rectangle {
         border-color: Tokens.gold-deep;
         clip: true;
 
-        // 剪辑包头 —— [UI-TEST-001] `clip-{ulid}-header`
+        // 剪辑包头 —— [UI-TEST-001] `clip-{ulid}-header`，`{ulid}` = 工程的摆放身份
         Rectangle {
             x: 0;
             y: 0;
@@ -230,10 +257,10 @@ export component ArrangementView inherits Rectangle {
             height: 18px;
             background: Tokens.bg-raised;
             accessible-role: list-item;
-            accessible-id: "clip-" + root.clip-ulids[clip_index] + "-header";
-            accessible-label: "剪辑 " + root.tracks[clip_index] + " 包头";
+            accessible-id: "clip-" + clip_ulid + "-header";
+            accessible-label: "剪辑 " + root.clip-labels[clip_index];
             accessible-item-index: clip_index;
-            accessible-item-count: 3;
+            accessible-item-count: root.clip-ulids.length;
             accessible-item-selectable: true;
             accessible-item-selected: false;
 
@@ -242,7 +269,7 @@ export component ArrangementView inherits Rectangle {
                 y: 0;
                 width: parent.width - 8px;
                 height: parent.height;
-                text: root.clip-ulids[clip_index];
+                text: clip_ulid;
                 color: Tokens.gold;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;

@@ -25,11 +25,18 @@
 //!
 //! ## 状态
 //!
-//! **scaffold**：Phase 3 之前是占位骨架 + 演示数据，尚无任何真实引擎/模型绑定。
-//! 缺口与待决项逐条记录在 `docs/ledger/ui-shell-notes.md`。
+//! **由模型驱动（model-bound）**：界面数据来自 [`bridge`] 对 `YebanProjectV1` 的投影，
+//! 经 [`host`] 单向注入 `.slint`。`.slint` 里不再有 `for … in 6` 这类把演示数据
+//! 刻进界面的写法 —— 轨道数 / 剪辑数 / 段落数由工程决定。
+//! `[elements]` 的语义注册表同样由投影构造，因此它总是与当前工程一致。
+//!
+//! 仍未接线的部分（走带 / Op 归约 / 电平 SPSC / 卷帘音符渲染 / 混音台通道条）逐条记在
+//! `docs/ledger/app-binding-notes.md` 的未实现项里。
 #![deny(missing_docs)]
 
+pub mod bridge;
 pub mod elements;
+pub mod host;
 pub mod input;
 pub mod scene;
 

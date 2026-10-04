@@ -6184,6 +6184,7 @@ version = "0.0.1"
 dependencies = [
  "slint",
  "slint-build",
+ "yeban-model",
  "yeban-ui-test-port",
 ]
 

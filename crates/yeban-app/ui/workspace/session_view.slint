@@ -6,17 +6,21 @@
 //   - [UI-GRID-002] §1.2: 断点折叠时主工作区占最高展示优先级
 //   - [UI-TEST-001] §12.2: 语义 Element ID。本文件用 `slot-…` / `scene-launch-…`,
 //     `clip-{ulid}-header` 归 arrangement_view.slint (那里才是剪辑包头所在的层)
+//   - [MODEL-AST-002]: 轨道名与场景名**来自工程**，由 `src/host.rs` 单向注入
 //
-// 静态骨架 + 演示数据: 没有接 `EngineSnapshot`, 没有量化触发状态机, 没有拖拽。
-// 触发/量化/Back-to-Arrangement 的引擎侧语义等 `yeban-engine` 落地。
+// 仍未实现: `EngineSnapshot` 绑定、量化触发状态机、拖拽装载。触发/量化/Back-to-Arrangement
+// 的引擎侧语义等 `yeban-engine` 落地。
+//
+// 本线的变更: `tracks` / `scenes` 的默认值改为**空数组**（不再内联演示数据），
+// 循环规模由数组长度决定，Scene Launch 列的 x 也由 `root.tracks.length` 算出
+// （上一版写死 `128px * 6`，轨道数一变就错位）。
 
 import { Tokens, UiText } from "../tokens.slint";
 
 export component SessionView inherits Rectangle {
-    // 场景名 —— 演示数据
-    in property <[string]> scenes: ["Intro", "Verse", "Chorus", "Drop"];
-    // 轨道名 —— 演示数据
-    in property <[string]> tracks: ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
+    // 由 src/host.rs 注入: 轨道名 / 场景名 (默认空 = 没有内联演示数据)
+    in property <[string]> scenes: [];
+    in property <[string]> tracks: [];
 
     callback back-to-arrangement();
 
@@ -28,7 +32,7 @@ export component SessionView inherits Rectangle {
     accessible-label: "Session 触发矩阵";
 
     // ------------------------------------------------------------ 轨道包头行
-    for track_index in 6 : Rectangle {
+    for track_name[track_index] in root.tracks : Rectangle {
         x: 8px + 128px * track_index;
         y: 0;
         width: 120px;
@@ -38,16 +42,16 @@ export component SessionView inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "session-track-" + track_index + "-header";
-        accessible-label: root.tracks[track_index];
+        accessible-label: track_name;
         accessible-item-index: track_index;
-        accessible-item-count: 6;
+        accessible-item-count: root.tracks.length;
 
         UiText {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;
             height: parent.height;
-            text: root.tracks[track_index];
+            text: track_name;
             color: Tokens.ink-0;
             font-size: Tokens.font-size-sm;
             overflow: elide;
@@ -55,16 +59,17 @@ export component SessionView inherits Rectangle {
     }
 
     // ------------------------------------------------------------ 剪辑插槽矩阵
-    for track_index in 6 : Rectangle {
+    // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见 arrangement_view.slint 的注释。
+    for _[track_index] in root.tracks : Rectangle {
         x: 8px + 128px * track_index;
         y: 32px;
         width: 120px;
-        height: 68px * 4;
+        height: 68px * root.scenes.length;
         background: Tokens.bg-shell;
         border-radius: Tokens.radius-sm;
 
-        // 纵向轨道列: 每条轨道 4 个插槽 (对应 4 个场景)
-        for scene_index in 4 : Rectangle {
+        // 纵向轨道列: 每条轨道一个插槽行对应一个场景
+        for scene_name[scene_index] in root.scenes : Rectangle {
             x: 0;
             y: 68px * scene_index;
             width: parent.width;
@@ -76,9 +81,9 @@ export component SessionView inherits Rectangle {
             clip: true;
             accessible-role: list-item;
             accessible-id: "slot-" + track_index + "-" + scene_index + "-cell";
-            accessible-label: root.tracks[track_index] + " · " + root.scenes[scene_index];
+            accessible-label: root.tracks[track_index] + " · " + scene_name;
             accessible-item-index: scene_index;
-            accessible-item-count: 4;
+            accessible-item-count: root.scenes.length;
             accessible-item-selectable: true;
             accessible-item-selected: (track_index + scene_index).mod(3) == 0;
 
@@ -87,7 +92,7 @@ export component SessionView inherits Rectangle {
                 y: Tokens.space-3;
                 width: parent.width - 12px;
                 height: 16px;
-                text: root.scenes[scene_index];
+                text: scene_name;
                 color: Tokens.gold;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;
@@ -109,7 +114,7 @@ export component SessionView inherits Rectangle {
 
     // ------------------------------------------------------------ Scene Launch 列
     Rectangle {
-        x: 8px + 128px * 6;
+        x: 8px + 128px * root.tracks.length;
         y: 0;
         width: 104px;
         height: 28px;
@@ -130,8 +135,8 @@ export component SessionView inherits Rectangle {
         }
     }
 
-    for scene_index in 4 : Rectangle {
-        x: 8px + 128px * 6;
+    for scene_name[scene_index] in root.scenes : Rectangle {
+        x: 8px + 128px * root.tracks.length;
         y: 32px + 68px * scene_index;
         width: 104px;
         height: 64px;
@@ -142,16 +147,16 @@ export component SessionView inherits Rectangle {
         clip: true;
         accessible-role: button;
         accessible-id: "scene-launch-" + scene_index + "-button";
-        accessible-label: "激发场景 " + root.scenes[scene_index];
+        accessible-label: "激发场景 " + scene_name;
         accessible-item-index: scene_index;
-        accessible-item-count: 4;
+        accessible-item-count: root.scenes.length;
 
         UiText {
             x: 0;
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: root.scenes[scene_index];
+            text: scene_name;
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
@@ -166,8 +171,8 @@ export component SessionView inherits Rectangle {
     // ------------------------------------------------------------ Back to Arrangement
     // 规范 §2.2: 仅在 Session 即兴触发后浮现。骨架里先常驻 (状态机等引擎)。
     Rectangle {
-        x: 8px + 128px * 6;
-        y: 32px + 68px * 4 + 8px;
+        x: 8px + 128px * root.tracks.length;
+        y: 32px + 68px * root.scenes.length + 8px;
         width: 104px;
         height: 28px;
         background: back_area.pressed ? Tokens.bg-raised : Tokens.bg-void;

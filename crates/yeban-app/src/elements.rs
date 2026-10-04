@@ -37,10 +37,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::scene::{
-    CLIP_COUNT, CLIP_ULIDS, CONSOLE_TABS, DEVICE_NAMES, EQ_BANDS, NOTE_COUNT, NOTE_ULIDS,
-    SCENE_COUNT, TOOL_NAMES, TRACK_COUNT, TRACK_NAMES,
-};
+use crate::bridge::ViewState;
+use crate::scene::{CONSOLE_TABS, DEVICE_NAMES, EQ_BANDS, TOOL_NAMES};
 
 /// 一个语义元素在无障碍树里的角色。
 ///
@@ -140,11 +138,25 @@ pub struct ElementRegistry {
 impl ElementRegistry {
     /// 按 `ui/` 下 `.slint` 文件里**实际写着**的 `accessible-id` 构建演示注册表。
     ///
+    /// 演示注册表 = [`crate::bridge::ViewState::demo`]（演示 `YebanProjectV1` 的投影）
+    /// 的注册表。它不是"另一份常量"—— 与真实工程走的是**同一条**路径：
+    /// [`Self::from_view`]。
+    #[must_use]
+    pub fn demo() -> Self {
+        Self::from_view(&ViewState::demo())
+    }
+
+    /// 由**投影结果**构造注册表：条目数、`{ulid}` 段与标签全部来自工程。
+    ///
     /// 覆盖面: 骨架里每一个带 `accessible-id` 的节点。`.slint` 里加了 ID 而这里没加,
     /// `console_tab_buttons_cover_every_declared_tab` 一类的判据抓不住 —— 那种漂移靠
     /// `yeban-ui-test-port` 的有窗实例对账 (见模块文档), 属于已登记的边界。
+    ///
+    /// 哪些族**不由**工程驱动（如实登记，见 `docs/ledger/app-binding-notes.md`）：
+    /// 侧栏资源 / 控制台标签 / 卷帘工具矩阵 / 设备机架 / 两个对话框 —— 它们要么是
+    /// 规范级常量（工具矩阵、EQ 频段），要么还没有对应的模型实体（设备链）。
     #[must_use]
-    pub fn demo() -> Self {
+    pub fn from_view(view: &ViewState) -> Self {
         let mut registry = Self::default();
 
         // ------------------------------------------------------------ 外壳
@@ -365,20 +377,20 @@ impl ElementRegistry {
             "Session 触发矩阵",
             false,
         );
-        for (track_index, name) in TRACK_NAMES.iter().enumerate().take(TRACK_COUNT) {
+        for (track_index, track) in view.tracks.iter().enumerate() {
             registry.add(
                 &format!("session-track-{track_index}-header"),
                 ElementKind::ListItem,
                 "workspace/session_view.slint",
-                &format!("Session 轨道 {name}"),
+                &format!("Session 轨道 {}", track.name),
                 false,
             );
-            for scene_index in 0..SCENE_COUNT {
+            for (scene_index, _scene) in view.scenes.iter().enumerate() {
                 registry.add(
                     &format!("slot-{track_index}-{scene_index}-cell"),
                     ElementKind::ListItem,
                     "workspace/session_view.slint",
-                    &format!("轨道 {name} 的场景插槽 {scene_index}"),
+                    &format!("轨道 {} 的场景插槽 {scene_index}", track.name),
                     false,
                 );
             }
@@ -390,12 +402,12 @@ impl ElementRegistry {
             "场景一键激发列",
             false,
         );
-        for scene_index in 0..SCENE_COUNT {
+        for (scene_index, scene) in view.scenes.iter().enumerate() {
             registry.add(
                 &format!("scene-launch-{scene_index}-button"),
                 ElementKind::Button,
                 "workspace/session_view.slint",
-                &format!("激发场景 {scene_index}"),
+                &format!("激发场景 {}", scene.name),
                 false,
             );
         }
@@ -415,12 +427,12 @@ impl ElementRegistry {
             "Arrangement 线性编曲时间轴",
             false,
         );
-        for section_index in 0..SCENE_COUNT {
+        for (section_index, section) in view.sections.iter().enumerate() {
             registry.add(
                 &format!("section-{section_index}-card"),
                 ElementKind::ListItem,
                 "workspace/arrangement_view.slint",
-                &format!("章节卡片 {section_index}"),
+                &format!("章节 {}", section.name),
                 false,
             );
         }
@@ -438,32 +450,32 @@ impl ElementRegistry {
             "循环选区",
             false,
         );
-        for (track_index, name) in TRACK_NAMES.iter().enumerate().take(TRACK_COUNT) {
+        for (track_index, track) in view.tracks.iter().enumerate() {
             registry.add(
                 &format!("track-{track_index}-header"),
                 ElementKind::ListItem,
                 "workspace/arrangement_view.slint",
-                &format!("轨道包头 {name}"),
+                &format!("轨道包头 {}", track.name),
                 false,
             );
             registry.add(
                 &format!("track-{track_index}-mute-button"),
                 ElementKind::Button,
                 "workspace/arrangement_view.slint",
-                &format!("轨道 {name} 静音"),
+                &format!("轨道 {} 静音", track.name),
                 false,
             );
             registry.add(
                 &format!("track-{track_index}-solo-button"),
                 ElementKind::Button,
                 "workspace/arrangement_view.slint",
-                &format!("轨道 {name} 独奏"),
+                &format!("轨道 {} 独奏", track.name),
                 false,
             );
         }
-        for (clip_index, ulid) in CLIP_ULIDS.iter().enumerate().take(CLIP_COUNT) {
+        for (clip_index, clip) in view.clips.iter().enumerate() {
             registry.add(
-                &format!("clip-{ulid}-header"),
+                &format!("clip-{}-header", clip.placement_id),
                 ElementKind::ListItem,
                 "workspace/arrangement_view.slint",
                 &format!("剪辑包头 {clip_index}"),
@@ -541,7 +553,7 @@ impl ElementRegistry {
             "音符网格画布",
             false,
         );
-        for (note_index, ulid) in NOTE_ULIDS.iter().enumerate().take(NOTE_COUNT) {
+        for (note_index, ulid) in view.note_ulids.iter().enumerate() {
             registry.add(
                 &format!("note-{ulid}-rect"),
                 ElementKind::ListItem,
@@ -564,7 +576,7 @@ impl ElementRegistry {
             "力度泳道",
             false,
         );
-        for velocity_index in 0..NOTE_COUNT {
+        for velocity_index in 0..view.note_ulids.len() {
             registry.add(
                 &format!("velocity-{velocity_index}-bar"),
                 ElementKind::Slider,
@@ -589,19 +601,19 @@ impl ElementRegistry {
             "多轨调音台总控",
             false,
         );
-        for (track_index, name) in TRACK_NAMES.iter().enumerate().take(TRACK_COUNT) {
+        for (track_index, track) in view.tracks.iter().enumerate() {
             registry.add(
                 &format!("track-{track_index}-channel-strip"),
                 ElementKind::GroupBox,
                 "console/mixer_console.slint",
-                &format!("通道条 {name}"),
+                &format!("通道条 {}", track.name),
                 false,
             );
             registry.add(
                 &format!("track-{track_index}-meter"),
                 ElementKind::ProgressIndicator,
                 "console/mixer_console.slint",
-                &format!("轨道 {name} 电平表"),
+                &format!("轨道 {} 电平表", track.name),
                 true,
             );
             // [UI-TEST-001] 明文点名的约定族之一
@@ -609,7 +621,7 @@ impl ElementRegistry {
                 &format!("track-{track_index}-fader"),
                 ElementKind::Slider,
                 "console/mixer_console.slint",
-                &format!("轨道 {name} 推子"),
+                &format!("轨道 {} 推子", track.name),
                 false,
             );
         }
@@ -881,9 +893,38 @@ pub fn is_well_formed_id(id: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+/// 已经由 [`crate::bridge`] 的投影驱动的语义 ID 族（前缀）。
+///
+/// 这份清单把"哪些部件的数据来自工程"从注释变成**可断言的事实**：
+/// 判据只允许对这些族做"不得出现演示数据"的负向断言；其余部件
+/// （侧栏资源库 / 混音台 / 设备机架 / 两个对话框）的静态标签是**已知的未实现项**
+/// （见 `docs/ledger/app-binding-notes.md`）—— 对它们做全局断言会假红，
+/// 例如侧栏里有 `Sub Bass 低频`、混音台通道条仍用演示轨道名。
+pub const MODEL_DRIVEN_FAMILIES: [&str; 8] = [
+    "track-",
+    "section-",
+    "clip-",
+    "note-",
+    "velocity-",
+    "session-track-",
+    "scene-launch-",
+    "slot-",
+];
+
+/// 该语义 ID 是否属于 [`MODEL_DRIVEN_FAMILIES`]（即"应当携带工程数据"的部件）。
+#[must_use]
+pub fn is_model_driven_family(id: &str) -> bool {
+    MODEL_DRIVEN_FAMILIES
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 这些常量现在只被**判据**用到（事实源是 `bridge::demo_project` 的投影），
+    // 因此 import 放在 tests 里 —— 放进模块级会撞上 lib 构建的 `unused_imports`。
+    use crate::scene::{CLIP_COUNT, CLIP_ULIDS, NOTE_COUNT, NOTE_ULIDS, TRACK_COUNT};
 
     fn registry() -> ElementRegistry {
         ElementRegistry::demo()
@@ -1251,6 +1292,106 @@ mod tests {
                 "{file} 里的 accessible-id 模板 {segments:?} (template={is_template}) 在注册表里一个成员都没有"
             );
         }
+    }
+
+    /// 判据: 注册表由**投影**驱动 —— 换一个工程, 三族结构随之改变, 且标签携带工程数据。
+    ///
+    /// 这条判据是"界面不再渲染演示数据"在**纯 Rust 侧**的对应物：它不需要 Slint,
+    /// 因此本机就能跑（Tier-1 的像素版判据在 `test_port_adapter.rs`，只有 CI 能跑）。
+    #[test]
+    fn registry_follows_the_projected_project() {
+        let filled_project = yeban_model::samples::filled_project();
+        let filled_view = ViewState::from_project(&filled_project).expect("投影");
+        let demo = ElementRegistry::from_view(&ViewState::demo());
+        let filled = ElementRegistry::from_view(&filled_view);
+
+        assert!(
+            demo.contains("track-5-header"),
+            "演示工程有 6 条非主总线轨道"
+        );
+        assert!(
+            !filled.contains("track-3-header"),
+            "filled_project 只有 3 条非主总线轨道 —— 第 4 条不该存在"
+        );
+        assert!(filled.contains("track-0-header"));
+        assert_ne!(
+            demo.ids().collect::<Vec<_>>(),
+            filled.ids().collect::<Vec<_>>(),
+            "两个工程的语义 ID 集合必须不同（否则注册表没有跟着投影走）"
+        );
+
+        let lead = filled.get("track-0-header").expect("track-0-header");
+        assert!(
+            lead.label.contains("Lead"),
+            "标签必须来自工程: {}",
+            lead.label
+        );
+        for meta in filled.iter() {
+            assert!(
+                !meta.label.contains("鼓"),
+                "`{}` 的标签里出现了演示夹具的轨道名 `鼓`: {}",
+                meta.id,
+                meta.label
+            );
+        }
+
+        // 剪辑 / 段落 / 音符三族同样来自工程身份。
+        let placement = filled_view.clips[0].placement_id.clone();
+        assert!(filled.contains(&format!("clip-{placement}-header")));
+        let section = filled_view.sections[0].id.clone();
+        assert!(!section.is_empty(), "段落身份必须非空");
+        assert!(filled.contains("section-0-card"));
+        assert_eq!(filled_view.sections.len(), 2);
+        for ulid in &filled_view.note_ulids {
+            assert!(filled.contains(&format!("note-{ulid}-rect")));
+        }
+        for ulid in NOTE_ULIDS {
+            assert!(
+                !filled.contains(&format!("note-{ulid}-rect")),
+                "演示音符 `{ulid}` 不该出现在 filled_project 的注册表里"
+            );
+        }
+    }
+
+    /// 判据: `MODEL_DRIVEN_FAMILIES` 恰好覆盖投影驱动的族，且**不**覆盖仍是静态的部件。
+    ///
+    /// 这条判据存在的原因：判据本身曾用"整棵树的标签都不含演示名"做负向断言，
+    /// 而侧栏里有 `Sub Bass 低频`、混音台通道条仍用演示轨道名 ⇒ **假红**。
+    /// 收窄的口径必须可测，否则下一次还会踩。
+    #[test]
+    fn model_driven_families_scope_is_exact() {
+        let registry = registry();
+        for id in [
+            "track-0-header",
+            "section-0-card",
+            "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
+            "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
+            "velocity-0-bar",
+            "session-track-0-header",
+            "scene-launch-0-button",
+            "slot-0-0-cell",
+        ] {
+            assert!(registry.contains(id), "判据清单里的 `{id}` 不在注册表里");
+            assert!(is_model_driven_family(id), "`{id}` 应当被判为投影驱动");
+        }
+        for id in [
+            "sidebar-item-0",
+            "sidebar-category-0-button",
+            "mixer-console",
+            "device-rack",
+            "musical-pr-drawer",
+            "undo-tree-modal",
+            "status-bar",
+            "transport-bpm-field",
+            "piano-roll",
+        ] {
+            assert!(registry.contains(id), "判据清单里的 `{id}` 不在注册表里");
+            assert!(
+                !is_model_driven_family(id),
+                "`{id}` 仍是静态部件, 不该被判为投影驱动"
+            );
+        }
+        assert!(!is_model_driven_family(""));
     }
 
     #[test]
