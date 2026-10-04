@@ -5965,6 +5965,7 @@ version = "0.0.1"
 dependencies = [
  "slint",
  "slint-build",
+ "yeban-ui-test-port",
 ]
 
 [[package]]
@@ -6047,6 +6048,12 @@ version = "0.0.1"
 [[package]]
 name = "yeban-ui-test-port"
 version = "0.0.1"
+dependencies = [
+ "i-slint-backend-testing",
+ "serde",
+ "serde_json",
+ "slint",
+]
 
 [[package]]
 name = "yeban-vst"

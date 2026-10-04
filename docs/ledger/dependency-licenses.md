@@ -3,28 +3,28 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `f61642f86869fd8b`
-- 外部依赖包数: **597**（不含 23 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `005b0e2897c53549`
+- 外部依赖包数: **579**（不含 23 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
 
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
-| `MIT OR Apache-2.0` | 275 |
-| `MIT` | 126 |
+| `MIT OR Apache-2.0` | 268 |
+| `MIT` | 125 |
 | `Apache-2.0 OR MIT` | 52 |
 | `Unicode-3.0` | 27 |
-| `Apache-2.0` | 18 |
-| `Zlib OR Apache-2.0 OR MIT` | 16 |
+| `Apache-2.0` | 16 |
 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 14 |
-| `MIT/Apache-2.0` | 14 |
+| `MIT/Apache-2.0` | 13 |
+| `Zlib OR Apache-2.0 OR MIT` | 12 |
 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 8 |
 | `MIT OR Apache-2.0 OR Zlib` | 7 |
 | `BSD-3-Clause` | 5 |
 | `Unlicense OR MIT` | 4 |
 | `Zlib` | 4 |
-| `Apache-2.0/MIT` | 3 |
+| `Apache-2.0/MIT` | 2 |
 | `BSD-2-Clause OR Apache-2.0 OR MIT` | 2 |
 | `BSD-3-Clause OR Apache-2.0` | 2 |
 | `BSD-3-Clause OR MIT OR Apache-2.0` | 2 |
@@ -37,11 +37,9 @@
 | `Apache-2.0 / MIT` | 1 |
 | `Apache-2.0 AND MIT` | 1 |
 | `BSD-2-Clause` | 1 |
-| `BSD-2-Clause OR MIT OR Apache-2.0` | 1 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
 | `ISC` | 1 |
 | `MIT / Apache-2.0` | 1 |
-| `Unlicense` | 1 |
 
 > 多许可表达式（`A OR B`）只要有一个分支在白名单内即通过 `cargo deny`；`AND` 则要求每一侧都被允许。`deny.toml` 的 `allow` 列表是唯一策略来源。
 
@@ -63,8 +61,6 @@
 | `ahash` | `0.8.12` | `MIT OR Apache-2.0` | 传递 | — |
 | `aho-corasick` | `1.1.5` | `Unlicense OR MIT` | 传递 | — |
 | `allocator-api2` | `0.2.21` | `MIT OR Apache-2.0` | 传递 | — |
-| `alsa` | `0.11.0` | `Apache-2.0/MIT` | 传递 | — |
-| `alsa-sys` | `0.4.0` | `MIT` | 传递 | — |
 | `android-activity` | `0.6.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `android-properties` | `0.2.2` | `MIT` | 传递 | — |
 | `android_system_properties` | `0.1.6` | `MIT OR Apache-2.0` | 传递 | — |
@@ -133,21 +129,16 @@
 | `core-foundation-sys` | `0.8.7` | `MIT OR Apache-2.0` | 传递 | — |
 | `core-graphics` | `0.23.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `core-graphics-types` | `0.1.3` | `MIT OR Apache-2.0` | 传递 | — |
-| `coreaudio-rs` | `0.14.2` | `MIT/Apache-2.0` | 传递 | — |
 | `countme` | `3.0.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `cpal` | `0.18.2` | `Apache-2.0` | 直接 | `yeban-engine` |
 | `cpufeatures` | `0.3.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `crc32fast` | `1.5.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `critical-section` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `crossbeam-channel` | `0.5.17` | `MIT OR Apache-2.0` | 传递 | — |
-| `crossbeam-deque` | `0.8.8` | `MIT OR Apache-2.0` | 传递 | — |
-| `crossbeam-epoch` | `0.9.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `crossbeam-utils` | `0.8.23` | `MIT OR Apache-2.0` | 传递 | — |
 | `crunchy` | `0.2.4` | `MIT` | 传递 | — |
 | `crypto-common` | `0.2.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `ctor` | `0.10.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `cursor-icon` | `1.2.0` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
-| `dasp_sample` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `data-url` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `derive_more` | `2.1.1` | `MIT` | 传递 | — |
 | `derive_more-impl` | `2.1.1` | `MIT` | 传递 | — |
@@ -230,12 +221,11 @@
 | `hermit-abi` | `0.3.9` | `MIT OR Apache-2.0` | 传递 | — |
 | `hermit-abi` | `0.5.3` | `MIT OR Apache-2.0` | 传递 | — |
 | `hex` | `0.4.3` | `MIT OR Apache-2.0` | 传递 | — |
-| `hound` | `3.5.1` | `Apache-2.0` | 直接 | `yeban-render` |
 | `htmlparser` | `0.2.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `hybrid-array` | `0.4.15` | `MIT OR Apache-2.0` | 传递 | — |
 | `i-slint-backend-linuxkms` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `i-slint-backend-selector` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
-| `i-slint-backend-testing` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
+| `i-slint-backend-testing` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-ui-test-port` |
 | `i-slint-backend-winit` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `i-slint-common` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `i-slint-compiler` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
@@ -287,7 +277,7 @@
 | `lazy_static` | `1.5.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `libc` | `0.2.190` | `MIT OR Apache-2.0` | 传递 | — |
 | `libloading` | `0.8.9` | `ISC` | 传递 | — |
-| `libm` | `0.2.16` | `MIT` | 直接 | `yeban-render`, `yeban-theory` |
+| `libm` | `0.2.16` | `MIT` | 直接 | `yeban-theory` |
 | `libredox` | `0.1.25` | `MIT` | 传递 | — |
 | `libseat` | `0.2.4` | `MIT` | 传递 | — |
 | `libseat-sys` | `0.2.0` | `MIT` | 传递 | — |
@@ -304,11 +294,9 @@
 | `lyon_extra` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `lyon_geom` | `1.0.19` | `MIT OR Apache-2.0` | 传递 | — |
 | `lyon_path` | `1.0.19` | `MIT OR Apache-2.0` | 传递 | — |
-| `mach2` | `0.6.0` | `BSD-2-Clause OR MIT OR Apache-2.0` | 传递 | — |
 | `memchr` | `2.8.3` | `Unlicense OR MIT` | 传递 | — |
 | `memmap2` | `0.9.11` | `MIT OR Apache-2.0` | 传递 | — |
 | `memoffset` | `0.9.1` | `MIT` | 传递 | — |
-| `midly` | `0.5.3` | `Unlicense` | 直接 | `yeban-render` |
 | `minimal-lexical` | `0.2.1` | `MIT/Apache-2.0` | 传递 | — |
 | `miniz_oxide` | `0.8.9` | `MIT OR Zlib OR Apache-2.0` | 传递 | — |
 | `miniz_oxide` | `0.9.1` | `MIT OR Zlib OR Apache-2.0` | 传递 | — |
@@ -323,7 +311,6 @@
 | `nix` | `0.31.3` | `MIT` | 传递 | — |
 | `nom` | `7.1.3` | `MIT` | 传递 | — |
 | `nom` | `8.0.0` | `MIT` | 传递 | — |
-| `num-derive` | `0.4.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `num-traits` | `0.2.19` | `MIT OR Apache-2.0` | 传递 | — |
 | `num_enum` | `0.7.6` | `BSD-3-Clause OR MIT OR Apache-2.0` | 传递 | — |
 | `num_enum_derive` | `0.7.6` | `BSD-3-Clause OR MIT OR Apache-2.0` | 传递 | — |
@@ -332,12 +319,8 @@
 | `objc2` | `0.6.4` | `MIT` | 传递 | — |
 | `objc2-app-kit` | `0.2.2` | `MIT` | 传递 | — |
 | `objc2-app-kit` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
-| `objc2-audio-toolbox` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
-| `objc2-avf-audio` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
 | `objc2-cloud-kit` | `0.2.2` | `MIT` | 传递 | — |
 | `objc2-contacts` | `0.2.2` | `MIT` | 传递 | — |
-| `objc2-core-audio` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
-| `objc2-core-audio-types` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
 | `objc2-core-data` | `0.2.2` | `MIT` | 传递 | — |
 | `objc2-core-foundation` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
 | `objc2-core-graphics` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
@@ -397,7 +380,7 @@
 | `proc-macro-crate` | `3.5.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `proc-macro2` | `1.0.107` | `MIT OR Apache-2.0` | 传递 | — |
 | `profiling` | `1.0.18` | `MIT OR Apache-2.0` | 传递 | — |
-| `proptest` | `1.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-render`, `yeban-theory` |
+| `proptest` | `1.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-theory` |
 | `pulldown-cmark` | `0.13.4` | `MIT` | 传递 | — |
 | `pxfm` | `0.1.30` | `BSD-3-Clause OR Apache-2.0` | 传递 | — |
 | `quick-error` | `2.0.1` | `MIT/Apache-2.0` | 传递 | — |
@@ -414,8 +397,6 @@
 | `range-alloc` | `0.1.5` | `MIT OR Apache-2.0` | 传递 | — |
 | `raw-window-handle` | `0.6.2` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
 | `raw-window-metal` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
-| `rayon` | `1.12.0` | `MIT OR Apache-2.0` | 直接 | `yeban-render` |
-| `rayon-core` | `1.13.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `read-fonts` | `0.41.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `redox_syscall` | `0.4.1` | `MIT` | 传递 | — |
 | `redox_syscall` | `0.5.18` | `MIT` | 传递 | — |
@@ -429,7 +410,6 @@
 | `rowan` | `0.17.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `roxmltree` | `0.21.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `rspolib` | `0.1.2` | `MIT` | 传递 | — |
-| `rtrb` | `0.4.0` | `MIT OR Apache-2.0` | 直接 | `yeban-engine` |
 | `rustc-hash` | `1.1.0` | `Apache-2.0/MIT` | 传递 | — |
 | `rustc-hash` | `2.1.3` | `Apache-2.0 OR MIT` | 传递 | — |
 | `rustc_version` | `0.4.1` | `MIT OR Apache-2.0` | 传递 | — |
@@ -442,13 +422,13 @@
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `sctk-adwaita` | `0.10.1` | `MIT` | 传递 | — |
 | `semver` | `1.0.28` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-model` |
+| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-ui-test-port` |
 | `serde_core` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_derive` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-model` |
+| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-ui-test-port` |
 | `serde_repr` | `0.1.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-render` |
+| `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-model` |
 | `shlex` | `1.3.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `shlex` | `2.0.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `signal-hook-registry` | `1.4.8` | `MIT OR Apache-2.0` | 传递 | — |
@@ -461,7 +441,7 @@
 | `skia-safe` | `0.153.3` | `MIT` | 传递 | — |
 | `skrifa` | `0.44.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `slab` | `0.4.12` | `MIT` | 传递 | — |
-| `slint` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-app` |
+| `slint` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-app`, `yeban-ui-test-port` |
 | `slint-build` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-app` |
 | `slint-macros` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `slotmap` | `1.1.1` | `Zlib` | 传递 | — |
@@ -487,10 +467,10 @@
 | `sys-locale` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `taffy` | `0.10.1` | `MIT` | 传递 | — |
 | `tar` | `0.4.46` | `MIT OR Apache-2.0` | 传递 | — |
-| `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | 直接 | `yeban-render` |
+| `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `text-size` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `thiserror` | `1.0.69` | `MIT OR Apache-2.0` | 直接 | `yeban-engine`, `yeban-model`, `yeban-sfz`, `yeban-theory` |
-| `thiserror` | `2.0.21` | `MIT OR Apache-2.0` | 直接 | `yeban-engine`, `yeban-model`, `yeban-sfz`, `yeban-theory` |
+| `thiserror` | `1.0.69` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-sfz`, `yeban-theory` |
+| `thiserror` | `2.0.21` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-sfz`, `yeban-theory` |
 | `thiserror-impl` | `1.0.69` | `MIT OR Apache-2.0` | 传递 | — |
 | `thiserror-impl` | `2.0.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `tiny-skia` | `0.11.4` | `BSD-3-Clause` | 传递 | — |

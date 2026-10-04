@@ -1,0 +1,877 @@
+//! Tier-1 软件光栅化截图 —— `[ARCH-SLINT-001]` / `[ROAD-M0-008]` / `[ROAD-M3-007]` / `[MUST-GATE-015]`。
+//!
+//! ## 为什么必须走这条路（而不是 `i-slint-backend-testing`）
+//!
+//! `[MUST-GATE-015]` 原文：*CI 中增加断言，Golden 图必须由 Tier 1 软件光栅化方案
+//! （`SoftwareRenderer` + Framebuffer 捕获）产出，禁止使用 `i-slint-backend-testing`
+//! （该后端不渲染像素）；Golden 图尺寸非零且非全黑。*
+//!
+//! 本模块因此做三件事：
+//! 1. 实现 `slint::platform::Platform`，把窗口适配器接到 [`MinimalSoftwareWindow`]；
+//! 2. 把窗口渲染进内存 `SharedPixelBuffer<Rgb8Pixel>`（**不依赖任何物理显示器**，
+//!    CI 上没有 X11/Wayland 也能跑）；
+//! 3. 把像素变成 [`crate::image::Rgb8Image`]（零 Slint 依赖的底座），
+//!    并断言 `[MUST-GATE-015]` 的两条门槛（尺寸非零、非全黑）。
+//!
+//! ## 逐条核验过的上游 API（写代码前对过源码，不是凭记忆）
+//!
+//! | 用到的 API | 确切形态 | 出处 |
+//! | :--- | :--- | :--- |
+//! | `Platform` trait | **只有一个必需方法** `fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError>` | <https://docs.rs/slint/1.18.1/slint/platform/trait.Platform.html> |
+//! | `set_platform` | `pub fn set_platform(platform: Box<dyn Platform + 'static>) -> Result<(), SetPlatformError>`；**已设置则返回 `Err`** | <https://docs.rs/slint/1.18.1/slint/platform/fn.set_platform.html> |
+//! | `MinimalSoftwareWindow::new` | `pub fn new(repaint_buffer_type: RepaintBufferType) -> Rc<Self>` | <https://docs.rs/slint/1.18.1/slint/platform/software_renderer/struct.MinimalSoftwareWindow.html> |
+//! | `MinimalSoftwareWindow::draw_if_needed` | `pub fn draw_if_needed(&self, render_callback: impl FnOnce(&SoftwareRenderer)) -> bool`（**只有需要重绘时才调用回调**） | 同上 |
+//! | `SoftwareRenderer::render` | `pub fn render(&self, buffer: &mut [impl TargetPixel], pixel_stride: usize) -> PhysicalRegion` | <https://docs.rs/slint/1.18.1/slint/platform/software_renderer/struct.SoftwareRenderer.html> |
+//! | `Rgb8Pixel` | `pub type Rgb8Pixel = Rgb<u8>`，**实现了 `TargetPixel`**，字段 `r/g/b` | <https://docs.rs/slint/1.18.1/slint/type.Rgb8Pixel.html> |
+//! | `SharedPixelBuffer::as_bytes` | `pub fn as_bytes(&self) -> &[u8]`（`Pixel: Pod + ComponentBytes<u8>`） | 上游源码 `i-slint-core-1.18.1/graphics/image.rs:100` |
+//! | `RepaintBufferType::NewBuffer` | 语义 = "The full window is always redrawn"（Golden 要的就是全量重绘） | <https://docs.rs/slint/1.18.1/slint/platform/software_renderer/enum.RepaintBufferType.html> |
+//! | `WindowEvent` | `PointerPressed{position,button}` / `PointerMoved{position}` / `PointerReleased{position,button}` / `KeyPressed{text}` / `KeyReleased{text}` | 上游源码 `i-slint-core-1.18.1/platform.rs:367` |
+//! | `Window::dispatch_event` | `pub fn dispatch_event(&self, event: WindowEvent)`（出错时 panic；不要用已废弃的 `try_dispatch_event`） | 上游源码 `i-slint-core-1.18.1/api.rs:633` |
+//! | `Key::*` | `Tab` / `Return` / `Escape` / `Shift` / `Control` / `Space` / `Backspace`，且 `impl From<Key> for SharedString` | 上游源码 `i-slint-common-1.18.1/key_codes.rs:32-54` |
+//!
+//! **规范与上游不符之处**（ADR-0001 D18）：`SLINT_BACKEND=headless` 在 1.18.1 **不存在**
+//! （只认 `qt`/`winit`/`linuxkms`）。本模块不依赖任何环境变量：它用
+//! `slint::platform::set_platform` 直接装自研平台，因此"无头"是代码路径而不是环境变量。
+//!
+//! ## 线程约束（重要）
+//!
+//! 上游把平台存在**线程局部**里：`MinimalSoftwareWindow` 的回归测试注释写着
+//! *"Each test runs on its own thread, so the thread-local global context is unset here."*
+//! 因此 [`Tier1Window::install`] 每个**线程**只能成功一次；
+//! 一个 `#[test]` 里装一次、用完即弃是最稳的用法。`cargo test` 默认每个测试一个线程，
+//! 所以"每个测试各装一次"是安全的（不要在同一测试里装两次）。
+
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+use slint::platform::{Key, Platform, PointerEventButton, WindowAdapter, WindowEvent};
+use slint::{ComponentHandle, LogicalPosition, PhysicalSize, Rgb8Pixel, SharedPixelBuffer};
+
+use crate::image::{Rgb8Image, Size};
+use crate::port::{KeyCode, Permission, PointerButton, PortError, UiTestPort};
+use crate::tree::{ControlTree, TreeError};
+use crate::{inspect, mask, png};
+
+/// Tier-1 渲染 / 端口错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderError {
+    /// 请求了零尺寸表面。
+    EmptySurface {
+        /// 出错的尺寸。
+        size: Size,
+    },
+    /// `set_platform` 失败（当前线程已经装过后端）。
+    PlatformUnavailable {
+        /// 上游错误消息。
+        message: String,
+    },
+    /// 组件构造 / 显示失败。
+    Component {
+        /// 上游错误消息。
+        message: String,
+    },
+    /// `draw_if_needed` 说"不需要重绘"，于是没有像素可断言。
+    NotRendered {
+        /// 排障提示。
+        hint: &'static str,
+    },
+    /// `[MUST-GATE-015]`：Golden 图**不得全黑**。
+    AllBlack {
+        /// 出错的尺寸（尺寸合法但内容全黑 ⇒ 渲染管线或平台装配有问题）。
+        size: Size,
+    },
+    /// 像素缓冲与图像模型不兼容。
+    Surface {
+        /// 底层错误消息。
+        message: String,
+    },
+    /// 控件树构建失败。
+    Tree(TreeError),
+    /// PNG 编码 / 落盘失败。
+    Artifact {
+        /// 底层错误消息。
+        message: String,
+    },
+}
+
+impl core::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptySurface { size } => {
+                write!(f, "表面尺寸不得为零: {}x{}", size.width, size.height)
+            }
+            Self::PlatformUnavailable { message } => {
+                write!(f, "无法安装 Tier-1 平台 (每个线程只能装一次): {message}")
+            }
+            Self::Component { message } => write!(f, "Slint 组件构造/显示失败: {message}"),
+            Self::NotRendered { hint } => write!(f, "本次没有发生重绘, 无像素可断言; {hint}"),
+            Self::AllBlack { size } => write!(
+                f,
+                "[MUST-GATE-015] 违反: {}x{} 的截图全黑 —— 软件光栅化没有产出有效像素",
+                size.width, size.height
+            ),
+            Self::Surface { message } => write!(f, "像素缓冲不兼容: {message}"),
+            Self::Tree(err) => write!(f, "控件树构建失败: {err}"),
+            Self::Artifact { message } => write!(f, "PNG 产出失败: {message}"),
+        }
+    }
+}
+
+impl core::error::Error for RenderError {}
+
+impl From<TreeError> for RenderError {
+    fn from(value: TreeError) -> Self {
+        Self::Tree(value)
+    }
+}
+
+/// 自研 `Platform`：把唯一的窗口适配器交给 [`MinimalSoftwareWindow`]。
+///
+/// `create_window_adapter` 是 `Platform` 在 1.18.1 的**唯一**必需方法
+/// （其余 9 个都有默认实现，见模块文档的核验表）。返回同一个 `Rc` 是上游
+/// `mcu-board-support` 一类的标准做法：一个进程/线程只有一个软件窗口。
+struct Tier1Platform {
+    window: Rc<MinimalSoftwareWindow>,
+}
+
+impl Platform for Tier1Platform {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+        Ok(self.window.clone())
+    }
+}
+
+/// 已经装好的 Tier-1 软件窗口。
+#[derive(Clone)]
+pub struct Tier1Window {
+    window: Rc<MinimalSoftwareWindow>,
+}
+
+impl Tier1Window {
+    /// 安装 Tier-1 平台并创建一个 `size` 大小的软件窗口。
+    ///
+    /// **必须在构造任何 Slint 组件之前调用**（上游要求：`set_platform` 要在创建组件前完成）。
+    /// 每个线程只能成功一次。
+    pub fn install(size: Size) -> Result<Self, RenderError> {
+        if size.is_empty() {
+            return Err(RenderError::EmptySurface { size });
+        }
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        window.set_size(PhysicalSize::new(size.width, size.height));
+        let platform = Tier1Platform {
+            window: window.clone(),
+        };
+        slint::platform::set_platform(Box::new(platform)).map_err(|err| {
+            RenderError::PlatformUnavailable {
+                message: err.to_string(),
+            }
+        })?;
+        Ok(Self { window })
+    }
+
+    /// 当前窗口尺寸（物理像素）。
+    #[must_use]
+    pub fn size(&self) -> Size {
+        let size = self.window.size();
+        Size::new(size.width, size.height)
+    }
+
+    /// 调整窗口尺寸。组件创建之后再调一次可以确保根元素的布局拿到最终尺寸。
+    pub fn resize(&self, size: Size) -> Result<(), RenderError> {
+        if size.is_empty() {
+            return Err(RenderError::EmptySurface { size });
+        }
+        self.window
+            .set_size(PhysicalSize::new(size.width, size.height));
+        Ok(())
+    }
+
+    /// 强制本次 `draw_if_needed` 会重绘（`NewBuffer` 语义下等价于"全量重绘"）。
+    pub fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
+
+    /// 渲染当前窗口到内存缓冲，返回零 Slint 依赖的图像。
+    ///
+    /// 注意：`draw_if_needed` 只在"需要重绘"时调用回调，所以这里先显式
+    /// `request_redraw()`；否则第二次截图会拿到"没有渲染"的空结果，
+    /// 表现为全黑 —— 那正是 `[MUST-GATE-015]` 要抓的假绿。
+    pub fn capture(&self) -> Result<Rgb8Image, RenderError> {
+        let requested = self.size();
+        if requested.is_empty() {
+            return Err(RenderError::EmptySurface { size: requested });
+        }
+        let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(requested.width, requested.height);
+        let stride = buffer.width() as usize;
+        let mut drew = false;
+        self.request_redraw();
+        let redrawn = self.window.draw_if_needed(|renderer| {
+            renderer.render(buffer.make_mut_slice(), stride);
+            drew = true;
+        });
+        if !redrawn || !drew {
+            return Err(RenderError::NotRendered {
+                hint: "先 ui.show() 再 capture(); 并确认窗口尺寸非零",
+            });
+        }
+        let size = Size::new(buffer.width(), buffer.height());
+        Rgb8Image::from_raw(size, buffer.as_bytes().to_vec()).map_err(|err| RenderError::Surface {
+            message: err.to_string(),
+        })
+    }
+
+    /// 直接向窗口分发一个 Slint 窗口事件（`[UI-TEST-002]` 的底层动作）。
+    pub fn dispatch(&self, event: WindowEvent) {
+        self.window.dispatch_event(event);
+    }
+
+    /// 指针按下（窗口逻辑坐标）。
+    pub fn pointer_down(&self, position: LogicalPosition, button: PointerEventButton) {
+        self.dispatch(WindowEvent::PointerPressed { position, button });
+    }
+
+    /// 指针移动（窗口逻辑坐标）。
+    pub fn pointer_move(&self, position: LogicalPosition) {
+        self.dispatch(WindowEvent::PointerMoved { position });
+    }
+
+    /// 指针释放（窗口逻辑坐标）。
+    pub fn pointer_up(&self, position: LogicalPosition, button: PointerEventButton) {
+        self.dispatch(WindowEvent::PointerReleased { position, button });
+    }
+
+    /// 键盘按下。
+    pub fn key_press(&self, key: Key) {
+        self.dispatch(WindowEvent::KeyPressed { text: key.into() });
+    }
+
+    /// 键盘释放。
+    pub fn key_release(&self, key: Key) {
+        self.dispatch(WindowEvent::KeyReleased { text: key.into() });
+    }
+
+    /// 输入一个字符（`KeyCode::Character`）。
+    pub fn type_char(&self, ch: char) {
+        self.dispatch(WindowEvent::KeyPressed {
+            text: ch.to_string().into(),
+        });
+    }
+}
+
+/// `[MUST-GATE-015]` 的证据：由**像素**推出的一组可记录数字。
+///
+/// 它存在的意义是让"Golden 是有效的"这件事变成可打印、可入库的数字，
+/// 而不是一句"测试通过了"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoldenEvidence {
+    /// 图像尺寸（必须非零）。
+    pub size: Size,
+    /// 非黑像素数（必须 > 0）。
+    pub non_black_pixels: u64,
+    /// 不同颜色数（> 1 说明不是一个纯色块）。
+    pub distinct_colors: usize,
+    /// PNG 编码后的字节数。
+    pub png_bytes: usize,
+    /// PNG 字节的 FNV-1a 64 指纹（决定性编码 ⇒ 可当稳定标识用；**不是**密码学摘要）。
+    pub fingerprint: u64,
+}
+
+impl GoldenEvidence {
+    /// 一行人类可读摘要（测试里 `eprintln!` 出来就是证据）。
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "Tier-1 Golden: {}x{} ({} px), 非黑 {} ({}%), 颜色 {} 种, PNG {} 字节, 指纹 {:016x}",
+            self.size.width,
+            self.size.height,
+            self.size.pixel_count(),
+            self.non_black_pixels,
+            (self.non_black_pixels as f64 * 100.0 / self.size.pixel_count() as f64 * 10.0).round()
+                / 10.0,
+            self.distinct_colors,
+            self.png_bytes,
+            self.fingerprint
+        )
+    }
+}
+
+/// 断言 `[MUST-GATE-015]` 的两条门槛并返回证据：**尺寸非零** + **非全黑**。
+pub fn golden_evidence(image: &Rgb8Image) -> Result<GoldenEvidence, RenderError> {
+    let size = image.size();
+    if size.is_empty() {
+        return Err(RenderError::EmptySurface { size });
+    }
+    if image.is_all_black() {
+        return Err(RenderError::AllBlack { size });
+    }
+    let bytes = png::encode_rgb8_limited(image, png::REPO_MAX_FILE_BYTES).map_err(|err| {
+        RenderError::Artifact {
+            message: err.to_string(),
+        }
+    })?;
+    Ok(GoldenEvidence {
+        size,
+        non_black_pixels: image.non_black_pixels(),
+        distinct_colors: image.distinct_color_count(),
+        png_bytes: bytes.len(),
+        fingerprint: fnv1a64(&bytes),
+    })
+}
+
+/// FNV-1a 64 位指纹（零依赖、逐位确定）。用于给 Golden 一个稳定的短标识，**不是**安全摘要。
+#[must_use]
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 截图落盘的目录：`<repo>/target/ui-test-port/`。
+///
+/// 刻意放在 `target/` 下（`.gitignore` 已忽略）：PNG 是**过程产物**，不是仓库资产 ——
+/// stored-deflate 的 1080p PNG 约 6.2 MB，提交进仓库会撞上 `AGENTS.md` §2 红线 9
+/// 的 10 MB 单文件上限（守卫 G06）。
+#[must_use]
+pub fn artifact_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-test-port")
+}
+
+/// 把截图写成 PNG 落到 [`artifact_dir`]，返回落盘路径。
+pub fn write_artifact(name: &str, image: &Rgb8Image) -> Result<PathBuf, RenderError> {
+    let bytes = png::encode_rgb8_limited(image, png::REPO_MAX_FILE_BYTES).map_err(|err| {
+        RenderError::Artifact {
+            message: err.to_string(),
+        }
+    })?;
+    let dir = artifact_dir();
+    std::fs::create_dir_all(&dir).map_err(|err| RenderError::Artifact {
+        message: format!("{}: {err}", dir.display()),
+    })?;
+    let path = dir.join(format!("{name}.png"));
+    std::fs::write(&path, bytes).map_err(|err| RenderError::Artifact {
+        message: format!("{}: {err}", path.display()),
+    })?;
+    Ok(path)
+}
+
+/// 端口 + 活窗口：同一个实例同时给出**控件树**（含真实几何）与**像素**。
+///
+/// 构造顺序被类型钉死（先装平台 → 再建组件 → 再 show → 再抓树），
+/// 调用方不可能把顺序写错。
+pub struct LivePort<T: ComponentHandle> {
+    ui: T,
+    window: Tier1Window,
+    permission: Permission,
+    tree: ControlTree,
+    /// 最近一次指针位置。`[UI-TEST-002]` 的 `dispatch_pointer_up(button)` **没有**坐标参数，
+    /// 所以释放必须复用上一次按下的位置，否则"按下 A、释放在 (0,0)"这类语义会破坏拖拽用例。
+    pointer: LogicalPosition,
+}
+
+impl<T: ComponentHandle> LivePort<T> {
+    /// 装平台 → 建组件 → `show()` → 按需注入静态注册表的动态标记 → 抓运行时控件树。
+    ///
+    /// `registry` 是可选的静态注册表（例如 `yeban-app` 的 `ElementRegistry` 适配出来的树）：
+    /// 传入时，[`ControlTree::merge_dynamic_flags_from`] 会把"哪些节点是高频刷新区"
+    /// 注入到运行时树上 —— 运行时读不到这种业务知识，而 `[UI-MCP-002]` 的遮罩需要它。
+    pub fn new(
+        size: Size,
+        permission: Permission,
+        registry: Option<&ControlTree>,
+        build: impl FnOnce() -> Result<T, slint::PlatformError>,
+    ) -> Result<Self, RenderError> {
+        let window = Tier1Window::install(size)?;
+        let ui = build().map_err(|err| RenderError::Component {
+            message: err.to_string(),
+        })?;
+        ui.show().map_err(|err| RenderError::Component {
+            message: err.to_string(),
+        })?;
+        window.resize(size)?;
+        let tree = inspect::tree_from_element_root(&ui, registry)?;
+        Ok(Self {
+            ui,
+            window,
+            permission,
+            tree,
+            pointer: LogicalPosition::new(0.0, 0.0),
+        })
+    }
+
+    /// 窗口（截图 / 直接分发事件用）。
+    #[must_use]
+    pub fn window(&self) -> &Tier1Window {
+        &self.window
+    }
+
+    /// 组件实例（断言生成组件上的属性用）。
+    #[must_use]
+    pub fn ui(&self) -> &T {
+        &self.ui
+    }
+
+    /// 重新抓一次控件树（UI 状态变了之后调用；几何会更新）。
+    pub fn refresh_tree(
+        &mut self,
+        registry: Option<&ControlTree>,
+    ) -> Result<&ControlTree, RenderError> {
+        self.tree = inspect::tree_from_element_root(&self.ui, registry)?;
+        Ok(&self.tree)
+    }
+}
+
+impl<T: ComponentHandle> UiTestPort for LivePort<T> {
+    fn permission(&self) -> Permission {
+        self.permission
+    }
+
+    fn tree(&self) -> &ControlTree {
+        &self.tree
+    }
+
+    fn capture_png(&self) -> Result<Vec<u8>, PortError> {
+        let image = self.window.capture().map_err(|err| PortError::Capture {
+            message: err.to_string(),
+        })?;
+        golden_evidence(&image).map_err(|err| PortError::Capture {
+            message: err.to_string(),
+        })?;
+        png::encode_rgb8_limited(&image, png::REPO_MAX_FILE_BYTES).map_err(|err| {
+            PortError::Capture {
+                message: err.to_string(),
+            }
+        })
+    }
+
+    fn read_property(&self, element_id: &str, name: &str) -> Result<String, PortError> {
+        if !self.tree.contains(element_id) {
+            return Err(PortError::UnknownElement {
+                id: element_id.to_owned(),
+            });
+        }
+        let handle = inspect::find_by_accessible_id(&self.ui, element_id).ok_or_else(|| {
+            PortError::UnknownElement {
+                id: element_id.to_owned(),
+            }
+        })?;
+        inspect::property_of(&handle, name).ok_or_else(|| PortError::Rejected {
+            message: format!("不支持的属性名 `{name}` (见 inspect::property_of 的清单)"),
+        })
+    }
+
+    fn dispatch_pointer_down_impl(
+        &mut self,
+        element_id: &str,
+        x_offset: f64,
+        y_offset: f64,
+        button: PointerButton,
+    ) -> Result<(), PortError> {
+        let node = self
+            .tree
+            .find_by_id(element_id)
+            .ok_or_else(|| PortError::UnknownElement {
+                id: element_id.to_owned(),
+            })?;
+        let bounds = node.bounds.ok_or_else(|| PortError::MissingGeometry {
+            id: element_id.to_owned(),
+        })?;
+        let position = LogicalPosition::new(
+            bounds.x as f32 + x_offset as f32,
+            bounds.y as f32 + y_offset as f32,
+        );
+        self.pointer = position;
+        self.window.pointer_down(position, slint_button(button));
+        Ok(())
+    }
+
+    fn dispatch_pointer_move_impl(&mut self, x: f64, y: f64) -> Result<(), PortError> {
+        let position = LogicalPosition::new(x as f32, y as f32);
+        self.pointer = position;
+        self.window.pointer_move(position);
+        Ok(())
+    }
+
+    fn dispatch_pointer_up_impl(&mut self, button: PointerButton) -> Result<(), PortError> {
+        // 释放复用最后一次按下/移动的位置（§12.4 的 `dispatch_pointer_up(button)` 没有坐标参数）。
+        let position = self.pointer;
+        self.window.pointer_up(position, slint_button(button));
+        Ok(())
+    }
+
+    fn dispatch_key_press_impl(&mut self, key: KeyCode) -> Result<(), PortError> {
+        match key {
+            KeyCode::Tab => self.window.key_press(Key::Tab),
+            KeyCode::Escape => self.window.key_press(Key::Escape),
+            KeyCode::Return => self.window.key_press(Key::Return),
+            KeyCode::Space => self.window.key_press(Key::Space),
+            KeyCode::Backspace => self.window.key_press(Key::Backspace),
+            KeyCode::Shift => self.window.key_press(Key::Shift),
+            KeyCode::Control => self.window.key_press(Key::Control),
+            KeyCode::ShiftEnter => {
+                // 修饰键必须**用完就放**：只按下不释放会让后续按键一直被当成 Shift 组合,
+                // 那是一条隐蔽的状态泄漏。
+                self.window.key_press(Key::Shift);
+                self.window.key_press(Key::Return);
+                self.window.key_release(Key::Shift);
+            }
+            KeyCode::Character(ch) => self.window.type_char(ch),
+        }
+        Ok(())
+    }
+
+    fn switch_main_view_impl(&mut self, _view: &str) -> Result<(), PortError> {
+        Err(PortError::Rejected {
+            message: "主视图切换需要 yeban-app 的模型绑定 (本线只定义接口与权限判定, \
+                      不依赖 yeban-model, 见 docs/ledger/ui-test-port-notes.md 的 needs)"
+                .to_owned(),
+        })
+    }
+
+    fn force_save_impl(&mut self) -> Result<(), PortError> {
+        Err(PortError::Rejected {
+            message: "强制保存需要工程存储层 (.yeban 容器), 不属于 yeban-ui-test-port 的依赖方向"
+                .to_owned(),
+        })
+    }
+
+    fn reload_engine_impl(&mut self) -> Result<(), PortError> {
+        Err(PortError::Rejected {
+            message: "引擎重载需要 yeban-engine 句柄; 本线只定义接口与权限判定".to_owned(),
+        })
+    }
+}
+
+fn slint_button(button: PointerButton) -> PointerEventButton {
+    match button {
+        PointerButton::Left => PointerEventButton::Left,
+        PointerButton::Middle => PointerEventButton::Middle,
+        PointerButton::Right => PointerEventButton::Right,
+        PointerButton::Other => PointerEventButton::Other,
+    }
+}
+
+/// 遮罩 + SSIM 的便捷入口：把运行时树里的动态区遮掉再比对。
+///
+/// 这是 `[UI-MCP-002]` + `[UI-MCP-003]` 的**联合**路径：遮罩矩形来自控件树
+/// （不是测试里手写的坐标），因此界面改版后遮罩区域会自动跟着走。
+pub fn compare_with_dynamic_masking(
+    left: &Rgb8Image,
+    right: &Rgb8Image,
+    tree: &ControlTree,
+) -> Result<crate::ssim::Verdict, RenderError> {
+    let rects = mask::mask_rects_from_tree(tree)?;
+    let masked_left = mask::masked(left, &rects);
+    let masked_right = mask::masked(right, &rects);
+    crate::ssim::compare(&masked_left, &masked_right).map_err(|err| RenderError::Surface {
+        message: err.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::image::Rect;
+    use crate::ssim;
+    use crate::tree::{ControlNode, Role};
+
+    /// 夹具 UI。用 `slint!` **内联**（而不是 `.slint` 文件）：本 crate 因此不需要 `build.rs`，
+    /// 也不会把 `yeban-app` 的 `.slint` 拖进依赖图（依赖方向不允许）。
+    ///
+    /// 两条刻意的写法：
+    /// - **用 `rgb(r, g, b)` 而不是 `#rrggbb`**：`slint!` 的输入要过 Rust 词法器，
+    ///   `#0b…` 与 `#<digits>e<非十六进制>` 两种颜色字面量会被 Rust 词法器直接拒绝
+    ///   （上游 `slint-macros-1.18.1/lib.rs:360-378` 的 "Limitations"）。函数式颜色整类绕开这个坑。
+    /// - 每个节点都同时给 `accessible-role` 与 `accessible-id`：上游把 role 当作其他
+    ///   accessibility 属性的前置条件（`docs/ledger/ui-shell-notes.md` §2 第 11 条）。
+    ///
+    /// `#[allow(clippy::all, …)]` 与 `crates/yeban-app/src/lib.rs` 里 `ui` 模块的处理一致：
+    /// `slint!` 展开的是第三方生成代码，不保证通过 `[workspace.lints] clippy::all = "deny"`。
+    /// 把这几个 allow 收在一个模块里，好过在 crate 根放松全局 lint 策略。
+    #[allow(missing_docs, clippy::all, rust_2018_idioms)]
+    mod fixture_ui {
+        #![allow(missing_docs, clippy::all, rust_2018_idioms)]
+
+        slint::slint! {
+            export component PortFixture inherits Rectangle {
+                width: 160px;
+                height: 100px;
+                background: rgb(16, 32, 48);
+
+                accessible-role: main;
+                accessible-id: "surface-main";
+                accessible-label: "无头测试画布";
+
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: 160px;
+                    height: 16px;
+                    background: rgb(21, 29, 56);
+                    accessible-role: region;
+                    accessible-id: "transport-bar";
+                    accessible-label: "走带栏";
+
+                    Rectangle {
+                        x: 4px;
+                        y: 3px;
+                        width: 24px;
+                        height: 10px;
+                        background: rgb(247, 230, 176);
+                        accessible-role: button;
+                        accessible-id: "transport-play-button";
+                        accessible-label: "播放";
+                    }
+                }
+
+                Rectangle {
+                    x: 8px;
+                    y: 24px;
+                    width: 64px;
+                    height: 40px;
+                    background: rgb(226, 199, 126);
+                    accessible-role: list-item;
+                    accessible-id: "clip-01J8ZQ9K2M-header";
+                    accessible-label: "剪辑包头";
+                }
+
+                Rectangle {
+                    x: 80px;
+                    y: 24px;
+                    width: 8px;
+                    height: 64px;
+                    background: rgb(34, 197, 94);
+                    accessible-role: progress-indicator;
+                    accessible-id: "mixer-vu-track-0";
+                    accessible-label: "轨道 0 VU 电平";
+                }
+
+                Rectangle {
+                    x: 96px;
+                    y: 24px;
+                    width: 2px;
+                    height: 64px;
+                    background: rgb(245, 158, 11);
+                    accessible-role: image;
+                    accessible-id: "transport-playhead";
+                    accessible-label: "走带光标";
+                }
+
+                Text {
+                    x: 104px;
+                    y: 24px;
+                    width: 48px;
+                    height: 16px;
+                    text: "1.1.000";
+                    color: rgb(253, 252, 250);
+                    font-size: 11px;
+                    accessible-role: text;
+                    accessible-id: "transport-timecode";
+                    accessible-label: "时间码";
+                }
+            }
+        }
+    }
+
+    use fixture_ui::PortFixture;
+
+    const FIXTURE_SIZE: Size = Size::new(160, 100);
+
+    /// 夹具的静态注册表：与 `PortFixture` 的 `accessible-id` 一一对应，
+    /// 并把两个高频刷新区标成 dynamic（`[UI-MCP-002]`）。
+    fn fixture_registry() -> ControlTree {
+        let mut registry = ControlTree::new();
+        let mut add = |id: &str, role: &str, label: &str| {
+            let role = Role::parse(role).expect("夹具角色必须合法");
+            registry
+                .insert(ControlNode::new(id, role, label))
+                .expect("夹具 ID 必须唯一且合法");
+        };
+        add("surface-main", "main", "无头测试画布");
+        add("transport-bar", "region", "走带栏");
+        add("transport-play-button", "button", "播放");
+        add("clip-01J8ZQ9K2M-header", "list-item", "剪辑包头");
+        add("transport-timecode", "text", "时间码");
+        registry
+            .insert(
+                ControlNode::new(
+                    "mixer-vu-track-0",
+                    Role::parse("progress-indicator").expect("合法角色"),
+                    "轨道 0 VU 电平",
+                )
+                .as_dynamic(),
+            )
+            .expect("夹具 ID 必须唯一且合法");
+        registry
+            .insert(
+                ControlNode::new(
+                    "transport-playhead",
+                    Role::parse("image").expect("合法角色"),
+                    "走带光标",
+                )
+                .as_dynamic(),
+            )
+            .expect("夹具 ID 必须唯一且合法");
+        registry
+    }
+
+    /// **本线的核心判据**：`[MUST-GATE-015]` + `[UI-TEST-001]` + `[UI-MCP-001]` + `[UI-MCP-002]`
+    /// 在**同一个活窗口实例**上一次性闭环。
+    ///
+    /// 一个 `#[test]` 里做完所有 Slint 动作，是因为平台是**线程局部**的：
+    /// 上游 `MinimalSoftwareWindow` 的回归测试原文是 *"Each test runs on its own thread,
+    /// so the thread-local global context is unset here."* —— 每个测试线程只能装一次平台。
+    #[test]
+    fn tier1_software_renderer_produces_a_non_black_png_and_a_verified_control_tree() {
+        let registry = fixture_registry();
+        let mut port = LivePort::new(
+            FIXTURE_SIZE,
+            Permission::ReadOnly,
+            Some(&registry),
+            PortFixture::new,
+        )
+        .expect("Tier-1 平台 + 组件 + 运行时控件树");
+
+        // ---------------- [UI-TEST-001] 控件树断言（JSON 可断言） ----------------
+        // 取**拥有所有权**的副本（而不是 `port.tree()` 的借用）：后面还要用 `&mut port`
+        // 调 `dispatch_*` 验证权限，长借用会让借用检查器直接拒绝编译。
+        let tree = port.tree().clone();
+        assert_eq!(
+            tree.len(),
+            registry.len(),
+            "运行时控件树必须与注册表条目数一致: {tree:?}"
+        );
+        let coverage = tree.coverage_against(&registry);
+        assert!(coverage.is_complete(), "双向覆盖必须闭合: {coverage}");
+        assert!(
+            tree.find_by_id("surface-main").is_some(),
+            "根节点也必须被收录"
+        );
+        assert_eq!(
+            tree.find_by_id("transport-play-button")
+                .map(|node| node.role.as_str().to_owned()),
+            Some("button".to_owned())
+        );
+
+        // `accessible-id` 在运行时的**唯一性**（`line/ui-shell` 留在 notes 里的未实测项）：
+        // 重复 ID 会让 `tree_from_element_root` 直接报 DuplicateId 而失败，
+        // 因此"能构造出来"本身就是这条判据的证据。
+        let ids: Vec<&str> = tree.ids().collect();
+        assert_eq!(ids.len(), tree.len());
+
+        // 几何必须来自真实布局（不是 0）。
+        let button_bounds = tree
+            .find_by_id("transport-play-button")
+            .and_then(|node| node.bounds);
+        assert!(
+            button_bounds.is_some_and(|rect| rect.width > 0 && rect.height > 0),
+            "{button_bounds:?}"
+        );
+
+        // ---------------- [UI-MCP-002] 动态区遮罩 ----------------
+        let mask_rects = mask::mask_rects_from_tree(&tree).expect("动态区必须有包围盒");
+        assert_eq!(mask_rects.len(), 2, "夹具登记了两个动态区: {mask_rects:?}");
+        assert!(
+            mask_rects
+                .iter()
+                .all(|rect| rect.intersect(FIXTURE_SIZE).is_some())
+        );
+
+        // ---------------- [MUST-GATE-015] Tier-1 截图 + 非全黑 ----------------
+        let first = port.window().capture().expect("第一次截图");
+        let evidence = golden_evidence(&first).expect("[MUST-GATE-015] 尺寸非零且非全黑");
+        assert_eq!(evidence.size, FIXTURE_SIZE);
+        assert!(evidence.non_black_pixels > 0, "{evidence:?}");
+        assert!(
+            evidence.distinct_colors >= 3,
+            "至少应有背景 + 两个图元颜色: {evidence:?}"
+        );
+        assert_eq!(evidence.png_bytes, png::encoded_len(&first));
+        eprintln!("{}", evidence.summary());
+
+        // 逐字节确定性：NewBuffer 语义下全量重绘，静态界面必须给出同一份像素。
+        let second = port.window().capture().expect("第二次截图");
+        assert_eq!(
+            first.pixels(),
+            second.pixels(),
+            "静态界面两次截图必须逐字节相同"
+        );
+
+        // ---------------- [UI-MCP-002] + [UI-MCP-003] 遮罩吸收抖动、保留静态回归 ----------------
+        let mut jittered = first.clone();
+        let vu = mask_rects
+            .iter()
+            .copied()
+            .find(|rect| rect.height >= 60)
+            .expect("VU 表矩形的识别");
+        jittered.fill_rect(vu, [0x00, 0xff, 0x00]);
+
+        let unmasked = ssim::ssim(&first, &jittered).expect("同尺寸可算");
+        assert!(
+            !ssim::Verdict::with_default_threshold(unmasked).passed,
+            "未遮罩的抖动必须被检出"
+        );
+        let verdict = compare_with_dynamic_masking(&first, &jittered, &tree).expect("遮罩比对");
+        assert!(verdict.passed, "遮罩后必须通过: {verdict}");
+        assert!(
+            (verdict.score - 1.0).abs() <= f64::EPSILON,
+            "遮罩后实测 {}",
+            verdict.score
+        );
+
+        // 静态区被改动 ⇒ 遮罩之后仍然要低于阈值（遮罩不能把整幅图变成盲区）。
+        let mut regressed = first.clone();
+        regressed.fill_rect(Rect::new(8, 24, 64, 40), [0x00, 0x00, 0x00]);
+        let regressed_verdict =
+            compare_with_dynamic_masking(&first, &regressed, &tree).expect("遮罩比对");
+        assert!(
+            !regressed_verdict.passed,
+            "静态回归必须被检出: {regressed_verdict}"
+        );
+
+        // ---------------- [UI-MCP-001] 三级权限在真实端口上的行为 ----------------
+        assert_eq!(port.permission(), Permission::ReadOnly);
+        assert!(matches!(
+            port.dispatch_key_press(KeyCode::Tab),
+            Err(PortError::PermissionDenied {
+                required: Permission::Interactive,
+                ..
+            })
+        ));
+        assert_eq!(
+            port.dispatch_pointer_down("transport-play-button", 2.0, 2.0, PointerButton::Left),
+            Err(PortError::PermissionDenied {
+                operation: crate::port::Operation::DispatchPointer,
+                required: Permission::Interactive,
+                actual: Permission::ReadOnly,
+            })
+        );
+        // ReadOnly 允许的三件事。
+        assert!(!port.capture_png().expect("只读允许截图").is_empty());
+        assert_eq!(
+            port.read_property("transport-play-button", "role")
+                .as_deref(),
+            Ok("button")
+        );
+        let width = port
+            .read_property("transport-play-button", "width")
+            .expect("宽度是支持的属性");
+        assert!(
+            width.parse::<f64>().is_ok_and(|value| value > 0.0),
+            "实测 width={width}"
+        );
+        assert!(matches!(
+            port.read_property("transport-play-button", "nope"),
+            Err(PortError::Rejected { .. })
+        ));
+
+        // ---------------- 过程产物落盘（target/ 下, 不提交） ----------------
+        let png_path = write_artifact("fixture-port-fixture", &first).expect("写 PNG");
+        let json_path = artifact_dir().join("control-tree.json");
+        std::fs::write(&json_path, tree.dump_json()).expect("写控件树 JSON");
+        eprintln!("Golden 证据: {}", png_path.display());
+        eprintln!("控件树 JSON: {}", json_path.display());
+    }
+}
