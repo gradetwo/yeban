@@ -402,8 +402,28 @@ G/H 是**本轮新增**的两条：它们钉住的正是"契约变成承重之�
 
 ## 7. 本轮 CI 判决（读到什么写什么）
 
-<!-- CI-VERDICT -->
+读取方式：`bash scripts/dev/ci-verdict.sh --watch line/mcp-core`
 
-- 状态：**pending**（尚未读取）
-- run id：—
-- 读取方式：`bash scripts/dev/ci-verdict.sh line/mcp-core`
+| 轮次 | run id | 头部 | 结论 |
+| :--- | ---: | :--- | :--- |
+| 第 1 轮（D25 修复前） | `37225147123` | `7d0b0c4` | **全绿**：`plan` / `checks` / `deny` / `lockfile` / `rust (workspace 全量)` 全部 ✓ |
+| 第 2 轮（rebase + D25 升级） | `37225665357` | `b8f61f7` | **全绿**：同上五个 job 全部 ✓（`rust (matrix)` 0s 跳过，改动是 workspace 宽，走了 `rust-workspace` 腿 4m8s） |
+
+**关键证据 —— 跨语言对账这次真的在 CI 里跑了**（`checks` job 的原始日志）：
+
+```text
+cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples
+     Running `target/debug/examples/export_mcp_samples --out target/schema-samples`
+target/schema-samples/mcp-tools.registry.json
+target/schema-samples/mcp-tools.error-codes.json
+target/schema-samples/mcp-tools.call.yeban_open_project.json
+… (共 12 份)
+[ok] mcp-tools.call.yeban_close_project.json: 通过 mcp-tools.schema.json
+[ok] mcp-tools.call.yeban_edit_notes.json: 通过 mcp-tools.schema.json
+… (12/12 全过)
+```
+
+> 本文件自身是**文档改动**，因此"记录判决"这个动作会让头部前进一格。
+> 表中第 2 轮的结论对应的是**紧邻本节的代码头部** `b8f61f7`；
+> 记录判决的那次文档提交只改了本文件，不影响任何判据（`checks` 的 fmt/守卫/契约对账
+> 与 `rust` 腿的 clippy/test 都与文档内容无关）。
