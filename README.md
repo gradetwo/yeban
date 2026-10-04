@@ -58,6 +58,20 @@ python3 -m http.server -d public 8080  # 任意静态服务器预览
 自定义域 `yeban.wangda.today`：在 Cloudflare 控制台接入该域后，取消 `wrangler.toml` 里
 `[[routes]]` 的注释再部署即可。未配置时会先发到 `<name>.<subdomain>.workers.dev`。
 
+## 许可
+
+本站点是**夜半 (Yeban) 项目**的一部分，整体以 **GNU GPLv3**（附 GPLv3 §7 的 CLAP 插件例外条款）发布。
+完整的许可文本与治理文件在 `main` 分支的仓库根目录（`LICENSE` / `LEGAL.md` / `TRADEMARK.md`）：
+
+```bash
+git show main:LICENSE | head -20     # 或直接在 GitHub 上切到 main 分支查看
+```
+
+页面页脚也明确声明了这一许可。本分支是 orphan 分支（只承载站点），因此不重复存放许可全文 ——
+**唯一权威文本始终是 `main` 分支的 `LICENSE`**，避免出现两份可能不一致的副本。
+
+"夜半 / Yeban" 的标识使用规则见 `main` 分支的 `TRADEMARK.md`。
+
 ## 门禁能失败吗
 
 `scripts/check-site.mjs` 的每组判据都写了"怎么才会红"，并且经过实测：
