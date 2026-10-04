@@ -149,6 +149,11 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 > 变异 B/C 在 `elements::registry_follows_the_projected_project` 上变红，是 CI 侧核心判据
 > （`project_projection_reaches_the_control_tree_and_the_pixels`）在**纯 Rust 侧的对应物**：
 > 它断言的是"注册表/标签携带工程数据、且不含演示名"，与控件树判据同源。
+>
+> **额外证据（不是注入，是真红）**：核心判据自己在第 2 轮 CI 上真的红过一次 ——
+> 因为它最后一处断言写反了（把"演示树里不该有 `track-3-header`"当断言，而演示工程有 6 条轨道）。
+> `run 37229239490` 如实报 `test result: FAILED. 8 passed; 1 failed`。
+> 这比任何注入都更能说明它**不是注释**：它抓到了作者自己的错。
 
 ### 4.3 本机**没有**验证的（交给 CI，逐条说清）
 
@@ -181,8 +186,56 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 
 ## 5. 模型数据到达像素的证据（字段 → 控件树 ID → 截图区域）
 
-> 这一节里的**数字**由 CI 的 `rust (yeban-app)` 腿产出（判据把实测值 `observe()` 到
-> stderr 与 `target/ui-test-port/app-introspect-observations.txt`）。判决读到后回填。
+> **下面全部是在 CI 上真跑出来的**（run 37229239490 的 `rust (yeban-app)` 腿；
+> 判据把实测值 `observe()` 到 CI 日志与 `target/ui-test-port/app-introspect-observations.txt`，
+> 截图落进 artifact `ui-screenshots-yeban-app`）。
+>
+> 那一轮 `project_projection_reaches_the_control_tree_and_the_pixels` 在本节**全部断言上都是绿的**
+> —— 它唯一失败的是最后一处**我自己写反的**断言（见 §6 第 2 轮），本节数字因此是可信的实测。
+
+### 5.1 实测数字（run 37229239490）
+
+```text
+[model-binding] filled_project 投影: 轨道 3 条 / 段落 2 条 / 场景 1 条 / 剪辑 2 条 / 音符 4 个 / bpm 128.00 / 拍号 4/4
+[model-binding] 运行时控件树 79 条; track-*-header=3, section-*-card=2, clip-*-header=2
+[model-binding] 工程字段 TrackV3::name[0]="Lead"       -> 控件树 track-0-header.label="轨道 Lead"
+[model-binding] 工程字段 TrackV3::name[1]="Bass"       -> 控件树 track-1-header.label="轨道 Bass"
+[model-binding] 工程字段 TrackV3::name[2]="Aux Reverb" -> 控件树 track-2-header.label="轨道 Aux Reverb"
+[model-binding] 状态 A (由 filled_project 驱动 / Arrangement):
+                Tier-1 Golden: 1920x1080 (2073600 px), 非黑 2073600 (100%), 颜色 2825 种,
+                PNG 6222418 字节, 指纹 a360802d81461bee
+[model-binding] 状态 B (由 demo_project 驱动 / Arrangement, **同一个活窗口**):
+                Tier-1 Golden: 1920x1080 (2073600 px), 非黑 2073600 (100%), 颜色 3074 种,
+                PNG 6222418 字节, 指纹 ef5972f3ac60466f
+（既有判据的）状态 A (Arrangement / 全展开 1920x1080): 颜色 3074 种, 指纹 ef5972f3ac60466f
+状态 A 两次截图逐字节相同: true
+控件树计数: 注册表 184 条 / 运行时 95 条 / 运行时有而注册表无 0 条 / 注册表有而运行时无 89 条
+关键单例覆盖率: 39/39 = 100%（硬下限 90%）
+重复族: track-*-header=6, note-*-rect=7, clip-*-header=3, velocity-*-bar=6,
+        section-*-card=4, tab-*-button=3, sidebar-item-*=8, piano-roll-tool-*-button=5
+[D24] 声学诊断卡(12 汉字) 648 px; 对照 status-bar-chord 213 px; 下限 150 px
+[UI-MCP-003] 抖动未遮罩 0.991519 / 遮罩后 1.000000; 静态回归 1400x583 未遮罩 0.636304 / 遮罩后 0.636331
+```
+
+### 5.2 这些数字各自证明了什么
+
+| 证据 | 数字 | 它排除了什么 |
+| :--- | :--- | :--- |
+| **族计数跟着工程走** | `filled_project` 窗口里 `track-*-header=**3**`（演示是 6）、`section-*-card=**2**`（演示是 4）、`clip-*-header=**2**`（演示是 3） | 排除了"界面里还写着 `for … in 6/4/3`" —— 规模现在由 `root.<数组>.length` 决定 |
+| **标签里是工程数据** | `track-0-header.label == "轨道 Lead"`（Bass / Aux Reverb 同） | 排除了"标签仍来自内联演示常量" |
+| **换工程 ⇒ 换像素** | `a360802d81461bee`(filled) ≠ `ef5972f3ac60466f`(demo)，同一进程/同一后端/同一字体 | 排除了"树变了但像素没变"（即没真接线到 `.slint`） |
+| **投影复现了原演示渲染** | 同一窗口切回演示后指纹 `ef5972f3ac60466f` **等于**既有判据里那张演示截图的指纹 | 这是**最强的回归证据**：改成投影驱动之后，演示画面与改之前**逐字节相同**（既没有丢东西，也没有多东西） |
+| **既有契约没被破坏** | 注册表 **184** / 运行时 **95** / 未登记 **0** / 单例覆盖 **39/39 = 100%** / 重复族 6/7/3/6/4/3/8/5 | 与 `app-introspect` 的实测**完全一致**：这次改造没有改变任何语义 ID 的集合 |
+| **可重复** | 同一状态连续两次截图**逐字节相同**（`true`） | 光栅化仍是确定的 |
+| **字体判据** | D24 汉字墨迹 648 px ≥ 150 | 界面上的汉字仍被真正栅格化 |
+
+### 5.3 artifact（人眼复核用）
+
+`ui-screenshots-yeban-app`（CI 上传 30 天），本线新增两张：
+
+- `app-model-driven-filled-project-1920x1080.png` —— 由 `yeban_model::samples::filled_project()` 驱动
+- `app-model-driven-demo-project-1920x1080.png` —— 同一活窗口切回演示工程的结果
+  （与既有的 `app-main-window-arrangement-full-1920x1080.png` 逐字节相同）
 
 | 工程字段（`filled_project()`） | 控件树 ID | 断言 | 截图证据 |
 | :--- | :--- | :--- | :--- |
@@ -214,6 +267,7 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 
 | 轮 | commit | run | 结论 | 说明 |
 | :-- | :--- | :--- | :--- | :--- |
+| 2 | `b97202c` | [37229239490](https://github.com/gradetwo/yeban/actions/runs/37229239490) | **failure（`rust (yeban-app)`：8 判据绿 / 1 判据红，红的是我自己写反的断言）** | **`.slint` 全部编译通过**（第 1 轮的 3 处语法错误已修），`clippy -p yeban-app --all-targets -D warnings` **绿**；`cargo test -p yeban-app --all-targets` 里 **27 条本机判据 + 8 条 Tier-1 判据全绿**，只有本线新增的核心判据在**最后一处**断言上 panic：`filled_project 只有 3 条轨道 ⇒ 切回演示前后都不该有第 4 条` —— 该断言写反了（演示工程有 **6** 条轨道，切回演示后 `track-3-header` **本来就应该存在**）。§5.1 的全部数字与 §5.2 的全部结论都来自这一轮（它们在该判据里位于该断言**之前**，全都通过）。修复见第 3 轮：把"工程树不该有 `track-3-header`"与"演示树必须有 `track-3-header`"分开写，并加一对**逐族计数 == 工程规模**的断言（3/2/2 与 6/4/3）。 |
 | 1 | `1fd3f23` | [37228953370](https://github.com/gradetwo/yeban/actions/runs/37228953370) | **failure（唯一的红点是我的，已定位并修掉）** | `checks` / `plan` / `lockfile` / `deny` 全绿；`rust (workspace 全量)` 的 `clippy --workspace -D warnings` 死在 **`build.rs` 的 Slint 编译**：`session_view.slint:62` / `arrangement_view.slint:94` / `piano_roll.slint:191` 三处 `for [idx] in <model>`（**只有索引**的循环）→ `Parse error` + `Syntax error: expected ';'`（同一文件后面的 "expected a top-level item" 是级联）。`rust (${{ matrix.crate }})` 被 plan 判为"受影响 crate 集合为空"而跳过（`.github/workflows/ci.yml` 的矩阵腿在 `rust (workspace 全量)` 变红时不会给出独立读数）。 |
 
 ### 6.1 第 1 轮暴露的上游事实（**新发现，值得写进 ADR-0001 D18 一族**）
@@ -241,15 +295,17 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
   或者用发布版编译器真跑。本机不编译 Slint，所以本线把这条降级成一条**文本层静态检查**
   （§4.4 第 3 条），它能复现第 1 轮的失败。
 
-### 6.2 同一轮里被解析错误"盖住"的东西（尚未有读数，交给第 2 轮）
+### 6.2 第 2 轮关闭掉的"未知项"（第 1 轮被解析错误盖住的东西）
 
-第 1 轮止步于**解析**，因此下面这些**还没有 CI 读数**，第 2 轮才会真正判：
+第 2 轮的读数把这批一次性关掉（**全部为绿**）：
 
-- `.slint` 的语义与类型检查（`[length]` 数组属性、`root.<数组>.length`、数组属性转发、
-  `168px + <length>`、`56px * root.clip-lanes[i]`）；
-- `host.rs` / `main.rs` / `test_port_adapter.rs` 的 `clippy -D warnings` 与编译；
-- 运行时控件树的内容、Tier-1 像素（尺寸 / 非黑 / 颜色数 / PNG 字节）、
-  以及 §5 那张"模型数据到达像素"的证据表。
+- `.slint` 的语义与类型检查：`[length]` 数组属性、`root.<数组>.length`（**不带括号** ——
+  上游 `tests/syntax/basic/expected_type.slint:53` 明文写着 `length` 是属性不是方法，
+  `arr.length()` 是 `error{The expression is not a function}`）、数组属性转发
+  （`tracks: root.track-names`）、`168px + <length>`、`56px * root.clip-lanes[i]`、
+  `128px * root.tracks.length` —— **全部编译通过**；
+- `host.rs` / `main.rs` / `test_port_adapter.rs` 的编译与 `clippy -D warnings` —— **绿**；
+- 运行时控件树的内容与 Tier-1 像素 —— 见 §5.1/§5.2。
 
 ---
 

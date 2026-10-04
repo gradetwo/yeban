@@ -1317,11 +1317,7 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
     };
     assert!(
         demo_runtime.contains("track-5-header"),
-        "演示工程有 6 条轨道 ⇒ `track-5-header` 必须出现"
-    );
-    assert!(
-        !demo_runtime.contains("track-3-header"),
-        "filled_project 只有 3 条轨道 ⇒ 切回演示前后都不该有第 4 条（树没有刷新？）"
+        "演示工程有 6 条非主总线轨道 ⇒ `track-5-header` 必须出现（工程驱动的树里它不该出现）"
     );
     for node in demo_runtime.iter() {
         if !is_model_driven_family(&node.id) {
@@ -1334,6 +1330,59 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
             node.label
         );
     }
+    // 两个工程驱动的三族计数必须各自等于**自己那个工程**的规模：
+    // 工程 A（filled_project）3/2/2，工程 B（demo_project）6/4/3。
+    // 这一对断言把"轨道数/剪辑数/段落数来自工程"从文字变成数字 ——
+    // 曾经在这里写反过一次（把"演示树里不该有 track-3-header"当成断言，
+    // 而演示工程有 6 条轨道，它**本来就有** track-3-header），
+    // CI run 37229239490 把它抓成红。判据是可失败的，这次是它自己犯了错。
+    let family_count = |tree: &ControlTree, prefix: &str, suffix: &str| -> usize {
+        tree.with_prefix(prefix)
+            .filter(|node| node.id.ends_with(suffix))
+            .count()
+    };
+    for (tree, label, tracks, sections, clips) in [
+        (
+            &runtime,
+            "filled_project",
+            project_view.tracks.len(),
+            project_view.sections.len(),
+            project_view.clips.len(),
+        ),
+        (
+            &demo_runtime,
+            "demo_project",
+            demo_view.tracks.len(),
+            demo_view.sections.len(),
+            demo_view.clips.len(),
+        ),
+    ] {
+        assert_eq!(
+            family_count(tree, "track-", "-header"),
+            tracks,
+            "{label}: 控件树里的轨道包头数必须等于工程的轨道数"
+        );
+        assert_eq!(
+            family_count(tree, "section-", "-card"),
+            sections,
+            "{label}: 章节卡片数必须等于工程的段落数"
+        );
+        assert_eq!(
+            family_count(tree, "clip-", "-header"),
+            clips,
+            "{label}: 剪辑包头数必须等于工程的剪辑摆放数"
+        );
+    }
+    assert_eq!(project_view.tracks.len(), 3);
+    assert_eq!(demo_view.tracks.len(), 6);
+    assert!(
+        !runtime.contains("track-3-header"),
+        "filled_project 只有 3 条非主总线轨道 ⇒ 工程驱动的树里不该有 `track-3-header`"
+    );
+    assert!(
+        demo_runtime.contains("track-3-header"),
+        "演示工程有 6 条轨道 ⇒ 演示驱动的树里**必须**有 `track-3-header`"
+    );
     observe(&format!(
         "[model-binding] 切换后运行时控件树 {} 条; 工程驱动的树 {} 条 —— 两者必须不同",
         demo_runtime.len(),
