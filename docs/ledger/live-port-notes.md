@@ -304,13 +304,24 @@ bash /Users/crow/work/music/.live-port-harness/clippy.sh
 
 | 轮 | commit | run id | 结论 |
 | :--- | :--- | :--- | :--- |
-| 1 | `pending` | `pending` | `pending`（提交后回填） |
+| 1 | `9ddac1a` | [37232856705](https://github.com/gradetwo/yeban/actions/runs/37232856705) | **failure**：`plan` / `checks` / `lockfile` / `deny` 全绿；`rust (workspace 全量)` 的 **clippy 死了 1 条**（本线的）：`crates/yeban-app/tests/../src/live_surface.rs:215` `error: method \`scene\` is never used`。⇒ `test --workspace` **没有跑到**本线的 4 条端到端判据（这一轮没有代码读数）。`rust (${{ matrix.crate }})` 按计划跳过（0s）。 |
+| 2 | `pending` | `pending` | `pending` |
 
-**预期（提交前的推导，不是读数）**：本线改了 `Cargo.lock`，而
-`scripts/dev/changed-crates.py` 的 `ROOT_TRIGGERS` 含 `Cargo.lock`
-⇒ `workspace_wide = true` ⇒ 走 **`rust (workspace 全量)`** 单腿
-（`clippy --workspace --all-targets` + `test --workspace --all-targets`）而不是 per-crate 矩阵腿。
-因此本线的 4 条端到端判据会在**全量腿**里被执行。
+### 6.1 第 1 轮的两条读数（都值得写下来）
+
+1. **计划器的行为被证实**：本线改了 `Cargo.lock`，而 `scripts/dev/changed-crates.py` 的
+   `ROOT_TRIGGERS` 含 `Cargo.lock` ⇒ `workspace_wide = true` ⇒ 走
+   **`rust (workspace 全量)`** 单腿（`clippy --workspace --all-targets` +
+   `test --workspace --all-targets`），per-crate 矩阵腿被**跳过**（0s）。
+   因此本线的 4 条端到端判据会在**全量腿**里被执行 —— 与提交前的推导一致。
+2. **红点是"只有 CI 能抓"的那一类，而且是本线的**：`LiveControlPlane::scene()` 这个访问器
+   **没有任何调用方**（判据只用 `viewport()`），在 `-D warnings` 下是 `dead_code`。
+   它与 `app-introspect-notes.md` §6 的 `TOKEN_BG_PANEL_ALT is never used` 是同一族：
+   `src/live_surface.rs` 含 Slint ⇒ 本机探针**看不见**它（本机 clippy 只覆盖零 Slint 部分，
+   见 §5.3），只有 CI 的 `clippy --workspace --all-targets` 能抓。
+   **修法**：不是给访问器加 `#[allow]`，也不是让别的代码"顺手调用一下"，
+   而是**删掉它**（有用的 API 才留）—— 判据只用到 `viewport()`，
+   这已经由 `LiveControlPlane::viewport()` 覆盖。
 
 ---
 

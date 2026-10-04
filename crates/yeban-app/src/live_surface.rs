@@ -52,6 +52,27 @@
 //! 构造 `MainWindow` 走的仍然是 `host::build_main_window`（**唯一**注入点，D28）。
 //! 要把这条路径装进发行版的 `--ui-control-plane` 开关，需要集成者加一个
 //! **可选** feature 与 CI 步骤（见 `docs/ledger/live-port-notes.md` 的 needs）。
+//!
+//! ## 这个接法的固有代价（**显式设计，不是意外**）
+//!
+//! 用 `#[path]` 从测试目标引入产品源码，意味着这个文件是在**测试 crate** 里被编译的
+//! （CI 日志里它的路径长成 `crates/yeban-app/tests/../src/live_surface.rs`）。后果有两条，
+//! 都是刻意的取舍：
+//!
+//! 1. **`-D warnings` 下任何没人用的项都是硬错误**。CI 第 1 轮实测就死在这里：
+//!    `error: method \`scene\` is never used`（那个访问器判据没用到）。
+//!    处置是**删掉**它（`docs/ledger/live-port-notes.md` §6.1），
+//!    而不是 `#[allow(dead_code)]` —— 后者会把"这块代码没人用"这个真实信号一起盖掉。
+//!    ⇒ **本文件的公开 API 只包含当前真的被调用的东西**；加方法时要么同时接上调用方，
+//!    要么就别加。
+//! 2. **它不会进 release 构建**（dev-dependency 的直接后果，红线 6 要的正是这个）。
+//!    哪天要把它变成产品路径，做法是"加一个非默认 feature + 把依赖从 dev 段挪到
+//!    `[dependencies]` 的 optional 段"，而不是让测试目标继续当它的唯一编译者。
+//!
+//! 为什么不干脆把它挪到 `tests/` 下：`tests/*.rs` 会被 cargo **自动发现**成独立测试目标
+//! （于是共享模块得走 `tests/<dir>/mod.rs` 的子目录约定），而本文件想表达的是
+//! "这是 app 侧的产品接线，只是**今天**由测试目标编译"；`src/test_port_adapter.rs`
+//! 已经用同一形态表达过同一件事（`app-introspect-notes.md` §2）。
 
 #![allow(missing_docs, rust_2018_idioms)]
 
@@ -210,12 +231,6 @@ impl LiveControlPlane {
         &self.registry
     }
 
-    /// 外壳场景（视口尺寸在这里）。
-    #[must_use]
-    pub fn scene(&self) -> &DemoScene {
-        &self.scene
-    }
-
     /// 装配时直接抓的那一帧。
     #[must_use]
     pub fn reference(&self) -> &Rgb8Image {
@@ -223,6 +238,10 @@ impl LiveControlPlane {
     }
 
     /// 视口尺寸（`[MUST-GATE-015]` 的"尺寸正确"要对的数）。
+    ///
+    /// 注：**没有**单独的 `scene()` 访问器 —— 判据只用到视口尺寸，
+    /// 一个没人调用的公开方法在 `-D warnings` 下是 `dead_code`（CI 第一轮实测踩到：
+    /// `error: method scene is never used`）。有用的 API 才留，不留"以后可能有用"。
     #[must_use]
     pub fn viewport(&self) -> Size {
         Size::new(self.scene.viewport_width, self.scene.viewport_height)
