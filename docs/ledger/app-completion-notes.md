@@ -205,15 +205,64 @@ Tier-1 运行时控件树的**内容**、`track-{i}-color-swatch` 到底在不�
 音符 `bounds` 的真实像素、截图指纹 / 颜色数 / SSIM、`cargo test` 的**运行**结果
 （`cargo test` 需要 Slint 完整 codegen，属本机禁跑的重活）。
 
+> **后续**：这一批已由 CI run 37235793566 读出（全绿），逐条数字见 §5.1 ——
+> 其中 `track-{i}-color-swatch` 在运行时树里、标签等于投影的 `#RRGGBB`（缺色为回退色）、
+> 音符 `x` 每步恰好 +32 px、`y` 随音高严格递减，全部有实测。
+> `cargo-local.sh clippy` 这条本机捷径**不能**替代它们（它不做 codegen、不跑光栅化）。
+
 ---
 
 ## 5. CI 判决
 
-> 未读到的判决一律记 `pending`。
+> 未读到的判决一律记 `pending`。判决由 `scripts/dev/ci-verdict.sh line/app-completion --watch` 读回
+> （退出码 0 ⇒ 判决 SHA == 分支 tip）。
 
 | 轮 | commit | run | 结论 | 说明 |
 | :-- | :--- | :--- | :--- | :--- |
-| 1 | `pending` | `pending` | **pending** | 见 §7 的读数回填 |
+| 1（代码净判决） | `b9b0bab` | [37235793566](https://github.com/gradetwo/yeban/actions/runs/37235793566) | **success（本线的净判决）** | `checks` / `lockfile` / `plan` / `deny` 全绿；**`rust (yeban-app)` = success（3m41s）**：`cargo clippy -p yeban-app --all-targets --locked -- -D warnings` 零告警，`cargo test -p yeban-app --all-targets --locked` 四个目标是 **`67 passed`**（lib：`bridge`/`scene`/`elements`/`open`/`input`，本线新增 8 条）、**`0 passed`**（bin）、**`2 passed`**（本线新增的集成目标 `tests/open_project_file.rs`）、**`9 passed`**（Tier-1，含本线追加的色标与音符几何断言）、**`4 passed`**（`tests/live_ui_mcp.rs`）。`rust (workspace 全量)` 被 `plan` **跳过**（受影响集合只有 `yeban-app` + 一份 docs 文件）—— 因此"全量腿也绿"**不**由本线这一轮证明（§7 needs-6）。 |
+| 2（docs-only） | `pending` | `pending` | pending | 只改本文件 ⇒ 按设计跳过 rust 腿；本线的**代码判决锚定在 `b9b0bab` / run 37235793566**。 |
+
+### 5.1 CI 实测数字（run 37235793566 的 `rust (yeban-app)` 腿）
+
+```text
+running 67 tests  →  test result: ok. 67 passed; 0 failed     # lib（含 open.rs 的 6 条）
+running 2 tests   →  test result: ok. 2 passed; 0 failed      # tests/open_project_file.rs（公开 API）
+running 9 tests   →  test result: ok. 9 passed; 0 failed      # Tier-1（含本线追加的断言）
+running 4 tests   →  test result: ok. 4 passed; 0 failed      # tests/live_ui_mcp.rs
+[model-binding] 运行时控件树 82 条; track-*-header=3, section-*-card=2, clip-*-header=2
+[model-binding] 工程字段 TrackV3::color[0]=Some("#FF8800") -> 控件树 track-0-color-swatch.label="轨道色标 #FF8800"
+[model-binding] 工程字段 TrackV3::color[1]=Some("#3366FF") -> 控件树 track-1-color-swatch.label="轨道色标 #3366FF"
+[model-binding] 工程字段 TrackV3::color[2]=None         -> 控件树 track-2-color-swatch.label="轨道色标 #2C3A63"
+[model-binding] 工程字段 MidiNote(start=0,    pitch=60) -> 控件树 note-…0100-rect bounds=(68, 907)
+[model-binding] 工程字段 MidiNote(start=960,  pitch=64) -> 控件树 note-…0101-rect bounds=(100, 851)
+[model-binding] 工程字段 MidiNote(start=1920, pitch=67) -> 控件树 note-…0102-rect bounds=(132, 809)
+[model-binding] 工程字段 MidiNote(start=2880, pitch=72) -> 控件树 note-…0103-rect bounds=(164, 739)
+[model-binding] 状态 A (filled_project): 1920x1080, 非黑 2073600 (100%), 颜色 2831 种, PNG 6222418 字节, 指纹 214fd0608f81b3a3
+[model-binding] 状态 B (demo_project):   1920x1080, 非黑 2073600 (100%), 颜色 3086 种, PNG 6222418 字节, 指纹 5daadb8b3ea09869
+[model-binding] 切换后运行时控件树 101 条; 工程驱动的树 82 条 —— 两者必须不同
+控件树计数: 注册表 190 条 / 运行时 101 条 / 运行时有而注册表无 0 条 / 注册表有而运行时无 89 条
+关键单例覆盖率: 39/39 = 100%（硬下限 90%）
+重复族实测: track-*-header=6, note-*-rect=7, clip-*-header=3, velocity-*-bar=6, section-*-card=4, tab-*-button=3, sidebar-item-*=8, piano-roll-tool-*-button=5
+[D24] 汉字墨迹 648 px (下限 150);  状态 A 两次截图逐字节相同: true
+[UI-MCP-003] 抖动未遮罩 SSIM=0.991552 / 遮罩后 1.000000; 静态回归未遮罩 0.636225 / 遮罩后 0.636252
+```
+
+| 证据 | 数字 | 它排除了什么 |
+| :--- | :--- | :--- |
+| **色标真的到了运行时树** | `track-0-color-swatch.label == "轨道色标 #FF8800"`、`#3366FF`、缺色的 `#2C3A63` | 排除了"颜色只进了 Rust 没进 `.slint`"与"缺色没有回退路径" |
+| **色标族规模 == 轨道规模** | 运行时树 79 → **82**（filled 3 轨）/ 95 → **101**（演示 6 轨）；注册表 184 → **190** | 排除了"色块只画了第一个"或"色块被裁剪掉" |
+| **音符 x 来自 tick** | `start = 0/960/1920/2880` ⇒ `x = 68/100/132/164`（**每步恰好 +32 px** = 960 ÷ 30） | 排除了"x 还是索引布局"（索引布局的步长是 76px 且与 tick 无关） |
+| **音符 y 来自音高** | `pitch = 60/64/67/72` ⇒ `y = 907/851/809/739`（**严格递减**） | 排除了索引布局（索引布局下 y 与音高**同向**递增） |
+| **既有契约未被破坏** | 注册表 190 / 运行时 101 / 未登记 **0** / 单例覆盖 **39/39 = 100%** / 重复族计数与既有实测一致 | 本线只**增加**了一个族，没有动任何既有语义 ID |
+| **像素仍是确定的** | 同一状态连续两次截图**逐字节相同** `true`；D24 汉字墨迹 648 px | 光栅化确定性、CJK 字体判据都没退化 |
+| **换工程 ⇒ 换像素** | 指纹 `214fd0608f81b3a3`(filled) ≠ `5daadb8b3ea09869`(demo) | 树变了、像素也变了 |
+
+> 与 `app-binding` 的指纹对比：本线**故意**改变了两张演示截图的字节
+> （音符从索引布局换成 tick 定位、每轨多一个色块），因此
+> `app-main-window-arrangement-full-1920x1080.png` 与状态 B 的指纹不再是
+> `ef5972f3ac60466f` —— 这是"位置真的来自工程"的**代价**，也是它的证据。
+> artifact `ui-screenshots-yeban-app` 里可以人眼复核这四张图。
+
 
 ---
 
