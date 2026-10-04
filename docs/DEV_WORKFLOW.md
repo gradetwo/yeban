@@ -84,6 +84,19 @@ scripts/dev/worktree.sh rm model-core --purge   # 显式废弃：删树 + 删分
   由**集成者独占**；工作线通过新增目录/新 crate 来扩展，不改共享文件。这就是
   `members = ["crates/*", "spikes/*"]` 用 glob 的原因。
 
+### 生成物冲突：不要手工合并，要重新生成
+
+有些文件是**从真实状态生成的**，两条线同时改它们必然冲突（`docs/ledger/dependency-licenses.md`
+已经真实撞过一次，`Cargo.lock` 同理）：
+
+| 生成物 | 生成方式 | 冲突时的正确处置 |
+| :--- | :--- | :--- |
+| `Cargo.lock` | `cargo metadata`（或任意 `cargo` 命令） | 取一侧后重新生成，再断言 `cargo metadata --locked` 通过 |
+| `docs/ledger/dependency-licenses.md` | `python3 scripts/gates/license_inventory.py` | 直接重新生成，然后 `--check` 通过 |
+
+政策：**工作线只需保证自己分支上自洽**（自己能过 `--check`）；**集成者在每次改动依赖图的合并之后
+统一重生成一次**。工作线不需要预测 main 的未来状态，也不应该手工合并这两个文件。
+
 ---
 
 ## 2. 单次变更的固定动作（顺序不能换）

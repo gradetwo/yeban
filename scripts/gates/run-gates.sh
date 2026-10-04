@@ -60,6 +60,15 @@ gate_schemas() {
   run "schemas" python3 scripts/gates/validate_schemas.py
 }
 
+# 依赖许可清单漂移检查: 需要 cargo metadata (不编译, 只解析), 因此属于"零编译"一族。
+# 为什么放进 light 档: 工作线反馈"加依赖 → 本机全绿 → CI 红"必然复现 —— 因为这条判据
+# 只在 CI 的 checks job 里跑。一条判据如果本机能跑却只放在 CI, 就会制造无谓的红。
+# 直接跑在 light 档里, 让它在提交前就能发现。
+gate_license_inventory() {
+  step "依赖许可清单漂移检查"
+  run "licenses" python3 scripts/gates/license_inventory.py --check
+}
+
 gate_deny() {
   step "cargo deny check (开源合规)"
   # 优先用 PATH 里的 cargo-deny; 也可以用预编译二进制并通过 YEBAN_CARGO_DENY 指过来
@@ -95,12 +104,14 @@ case "$MODE" in
     gate_fmt
     gate_guards
     gate_docs
+    gate_license_inventory
     ;;
   crate)
     [[ $# -ge 1 ]] || fail "用法: run-gates.sh crate <crate-name> [更多 crate...]"
     gate_fmt
     gate_guards
     gate_docs
+    gate_license_inventory
     for crate in "$@"; do gate_crate "$crate"; done
     ;;
   deny)
@@ -113,6 +124,7 @@ case "$MODE" in
     gate_fmt
     gate_guards
     gate_docs
+    gate_license_inventory
     gate_schemas
     step "cargo clippy --workspace --all-targets -- -D warnings"
     run "clippy[workspace]" cargo clippy --workspace --all-targets -- -D warnings
