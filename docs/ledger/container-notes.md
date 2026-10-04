@@ -413,9 +413,18 @@ empty      0x00000000      a          0xE8B7BE43      abc        0x352441C2
 ## 10. CI 判决
 
 - 分支：`line/container`
-- 判决：**见下方回填**（本文件先于推送写成，推送后由 `scripts/dev/ci-verdict.sh line/container` 读回）
+- **第 1 轮（也是唯一一轮）：run [`37232754838`](https://github.com/gradetwo/yeban/actions/runs/37232754838) —— `completed / success`**（零红轮）
 
-<!-- CI-VERDICT -->
+| job | 结论 |
+| :--- | :--- |
+| checks (fmt / 红线守卫 / schema) | ✓ success（37s） |
+| deny (cargo-deny 开源合规) | ✓ success（43s） |
+| lockfile (确定性 Cargo.lock) | ✓ success（20s） |
+| plan (受影响集合) | ✓ success（6s） |
+| rust (yeban-model) | ✓ success（1m2s，**84 条容器判据在 CI 上真跑，不是 SKIP**） |
+| rust (workspace 全量) | — `skipped`（`plan` 判定本次只影响 `yeban-model`，无需全量编译） |
+
+判决由 `scripts/dev/ci-verdict.sh line/container` 读回（本机绿只是参考，这里才是"绿"）。
 
 ---
 
