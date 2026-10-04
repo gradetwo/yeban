@@ -1,6 +1,6 @@
 [package]
 name = "yeban-decode"
-description = "基于 symphonia 的全格式解码与 rubato 高精重采样"
+description = "基于 symphonia 的离线解码与 rubato 高精 sinc 重采样: 输入文件 -> 内容寻址的不可变 PCM 资产"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,36 @@ name = "yeban_decode"
 path = "src/lib.rs"
 
 [dependencies]
+# 依赖图与 feature 决策 (逐条理由见 src/lib.rs "支持的格式" 与
+# docs/ledger/decode-core-notes.md §3):
+#   - 根 Cargo.toml 把 symphonia 钉成 default-features = false, 因此**必须**在这里
+#     显式列出要启用的容器/编解码器, 否则一个 format/codec 都不会注册。
+#   - 只启用"规范点名的开放标准" + "上游默认集里的开放标准":
+#     wav/flac (ROAD-M-1-004 点名), pcm/adpcm/vorbis (上游默认), ogg (容器),
+#     ape/id3v1/id3v2 (元数据读取器, 与上游默认一致)。
+#   - **刻意不启用** mkv / aiff / caf / isomp4 / mp3 / mpa / aac / alac: 上游默认关闭
+#     或属有损/视频, 规范未点名, 且会扩大不可信输入的解析面。
+#   - **刻意不启用** opt-simd-sse / opt-simd-avx / opt-simd-neon: 它们会拉入 rustfft,
+#     并让解码路径依赖运行时 CPU 探测, 与 ARCH-DET-001 的 L1/L2 确定性目标相悖。
+symphonia = { workspace = true, features = [
+    "wav",
+    "ogg",
+    "flac",
+    "pcm",
+    "adpcm",
+    "vorbis",
+    "ape",
+    "id3v1",
+    "id3v2",
+] }
+# rubato 保持 default-features = false (根清单已钉死): 本 crate 用 Async::new_sinc,
+# 不需要 fft_resampler (它才会拉入 realfft/rustfft), 也不需要 log feature。
+rubato.workspace = true
+thiserror.workspace = true
+yeban-model.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
