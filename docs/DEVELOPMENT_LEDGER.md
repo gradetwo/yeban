@@ -392,3 +392,19 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 更好的做法是 `land <line> [message-file]`，或让 `land` 在自动提交后提示"如需详细摘要请 `git commit --amend`"
 （后者会迫使人改写已推送历史，不可取）。登记为待办。
 
+### 本轮新增的可视证据与它的边界（重要）
+
+- **Tier-1 光栅化管线已被证明可用**：CI workspace 腿产出了 artifact `ui-screenshots-workspace`
+  （`fixture-port-fixture.png` 200×120 + `control-tree.json`）。我把 PNG 下载并**肉眼看过**：
+  它是一张真实的软件光栅化渲染图（色块 + 真实文字 "1.1.0"，非全黑、非空白）。
+  实测数字（工作线报告）：非黑像素 24000/24000 = 100%、62 种颜色、两次截图逐字节相同、
+  **两次不同 runner 上指纹一致**（`7b25ded60810171f`）—— 即 Tier-1 光栅化在同一字体环境下是确定的。
+- **但它渲染的是"测试夹具"，不是 DAW 界面。**  `yeban-app` 的 13 个 `.slint` 至今**从未被渲染过**。
+  根因是构建期 debug info 缺失（见 ADR-0001 D22）：没有它，真实界面的控件树恒为空、不报错，
+  于是 `ARCH-UI-005` / §12.3 / §12.4 / §12.5 一条都执行不了。
+- **已落地的修复**：`crates/yeban-app/build.rs` 改为 `compile_with_config(..., with_debug_info(true))`；
+  CI workspace 腿新增 `cargo test -p yeban-app --features ui-test-port`（该测试带 `required-features`，
+  此前从未被执行）。**这条判据的首次真实执行就是它的第一次判决** —— 在看到绿之前，
+  "DAW 界面被渲染器看过"仍然**不成立**。
+- **SSIM 的量化限定**见 ADR-0001 D23（0.98 对细长条/等亮度换色几乎免疫）。
+

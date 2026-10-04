@@ -239,6 +239,16 @@ jobs:
           set -o pipefail
           cargo test --workspace --all-targets --locked 2>&1 | tee -a /tmp/gate.log
 
+      - name: 真实界面的内省判据 (yeban-app + ui-test-port feature)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          # 这条测试默认**不跑**(required-features), 因此它此前从未被执行过:
+          # 它要在**真实界面**上验证语义控件树与 Tier-1 截图, 而 yeban-app 的 build.rs
+          # 直到 2026-10-05 才打开 debug info —— 在那之前控件树恒为空(且不报错)。
+          # 显式启用 feature 才能让这条判据真的执行。
+          cargo test -p yeban-app --features ui-test-port --locked 2>&1 | tee -a /tmp/gate.log
+
       - name: 上传无头 UI 截图 (Tier-1 光栅化产物, 供人眼复核)
         if: always()
         uses: actions/upload-artifact@v4
