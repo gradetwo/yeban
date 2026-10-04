@@ -135,30 +135,53 @@ jobs:
   # 基准: 目前没有任何 criterion 基准, 只验证 bench 目标可编译
   # ---------------------------------------------------------------------------
   bench:
-    name: bench (编译校验)
+    name: bench (数量级测量)
     if: inputs.gate == 'bench'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
-      - name: 基准目标编译 + 运行 (若存在)
+      - name: 系统库 (GUI/音频链接需要)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev \
+            libgl1-mesa-dev libasound2-dev fonts-noto-cjk
+      - name: 'BASELINE-001 离线渲染吞吐 (参考工程 A)'
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          # 为什么用 example 而不是 criterion: 见 crates/yeban-render/examples/bench_render.rs 的文件头
+          # (零新增依赖 + 可被门禁直接调用 + 判据跑在 debug 断言与并行测试里, 量不出有意义的数)。
+          cargo run --release -p yeban-render --locked --example bench_render -- 32 30 2>&1 | tee /tmp/bench.log
+      - name: criterion 目标编译校验 (若存在)
         run: |
           set -euo pipefail
           if compgen -G "crates/*/benches/*.rs" > /dev/null || compgen -G "benches/*.rs" > /dev/null; then
             cargo bench --workspace --locked
           else
-            cargo bench --workspace --no-run --locked
-            echo "::notice::尚无基准用例, 只做了 bench 目标编译校验"
+            echo "::notice::尚无 criterion 基准用例(benches/*.rs); DoD 4 的 3% 回归阈值见下方口径声明"
           fi
-      - name: BASELINE 提醒
+      - name: 测量结果 + 口径声明
+        if: always()
         run: |
           {
-            echo "### BASELINE 状态: PENDING"
-            echo ""
-            echo "BASELINE-001..006 必须在固定频率的参考硬件上测量"
-            echo "(Apple M2 Pro 12 核 / Ryzen 7 7840HS)。GitHub 托管 runner 频率不固定,"
-            echo "因此本 job 的读数**不能**用来判定基准是否达标, 只能验证基准代码可跑。"
+            echo '### BASELINE 读数 (数量级, 不是达标判定)'
+            echo ''
+            echo '```text'
+            grep -E '^BENCH ' /tmp/bench.log 2>/dev/null || echo '(没有捕获到 BENCH 行)'
+            echo '```'
+            echo ''
+            echo '**运行环境**: GitHub 托管 runner (ubuntu-latest)。CPU 型号共享且频率不固定,'
+            echo '因此读数只能给**数量级**, **不能**用来判定 BASELINE-001 的 ">=100x 实时" 是否达标。'
+            echo ''
+            echo '**DoD 4 的 "衰退不得超过 3%"** 需要**可比的固定硬件**才成立(自托管 runner 或指定参考机)。'
+            echo '托管 runner 上不同次运行的 CPU 漂移远超 3%, 该阈值在本 CI 上**不可判定**, 记为 pending;'
+            echo '不要把它读成"通过"或"不通过"。'
+            echo ''
+            echo '**复跑方式**: cargo run --release -p yeban-render --example bench_render -- <轨数> <秒数>'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------

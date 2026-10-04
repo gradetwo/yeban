@@ -574,3 +574,23 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   账本里 9 MiB 的数字更正为 10 MiB、并明确承认上一个提交信息里的那句话是假的。
 - **附带教训**：`git add -A` 之前应当先看一眼 `git diff --cached --stat` ——
   本次只要看一眼就会立刻发现三个 6.2 MiB 的二进制混进来了。
+
+### BASELINE-001 的测量入口与"3% 回归"在托管 runner 上不可判定
+
+- **此前状态**：`crates/yeban-render/src/lib.rs` 的 crate 文档自己写着"没有 criterion 基准，
+  因此 `BASELINE-001` 的 '≥100× 实时' **未被本分支证实**"；手动档的 `bench` 也只是"编译校验"
+  （`benches/*.rs` 不存在，于是什么都没跑）。**BASELINE 一族全部 PENDING。**
+- **本轮做了什么**：新增 `crates/yeban-render/examples/bench_render.rs`（参考工程 A：32 轨 → 母线星形），
+  用 `--release` 跑 30 秒音频并打印机器可读的一行：
+  `BENCH baseline=001 ... threads=1|auto wall_ms=… realtime_x=… longest_path_frames=… digest=…`。
+  手动档 `bench` 改为**真的跑它**并把 `BENCH` 行写进 job summary。
+- **与 DoD 4 的偏差（必须记账）**：DoD 4 点名 `criterion` / `iai-callgrind`。本仓库**没有**引入它们，
+  理由是：① 新增依赖要逐条裁决（ADR-0001 D5/D20/D21），而 `criterion` 会拉进 `plotters`/`tinytemplate`
+  一整棵树；② 这里要的是"数量级"，不是置信区间；③ example 能被门禁直接调用、零依赖、`--release` 可复跑。
+  **若人类要求严格按 DoD 4 用 criterion**，那是根 `Cargo.toml` 加依赖（集成者职责），登记为待办。
+- **更重要的判定**：DoD 4 的 **"衰退不得超过 3%"** 需要**可比的固定硬件**才成立
+  （自托管 runner 或指定参考机）。GitHub 托管 runner 的 CPU 型号共享、频率不固定，
+  不同次运行的漂移远超 3% ⇒ **该阈值在本 CI 上不可判定**，只能记为 `pending`。
+  这不是"没做"，而是"在当前硬件条件下**做不出有意义的结论**" —— 与 `BASELINE-005`（硬件往返时延）同一处境。
+  ⇒ 已经把它写进 job summary 的口径声明里，避免后人把读数读成"通过"。
+
