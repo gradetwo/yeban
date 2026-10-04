@@ -1030,10 +1030,24 @@ fn runtime_control_tree_cross_check_against_the_registry() {
         ),
         TOKEN_BG_VOID,
     );
+    // 第三块：4 个汉字 + 12 个 ASCII —— 它在"没有 CJK 字体"的环境里**仍然**有墨迹（ASCII 那 12 个），
+    // 因此它是"墨迹数不等于汉字数"的对照，也是 §6.2 那张表里唯一两侧都很大的样本。
+    let (mixed_ink, _, _) = ink_stats(
+        &image,
+        inset_rect(
+            runtime
+                .find_by_id("ai-rail-musical-pr-button")
+                .and_then(|node| node.bounds)
+                .expect("AI 协作栏的『Musical PR』卡片必须可见"),
+            4,
+        ),
+        TOKEN_BG_PANEL_ALT,
+    );
     observe(&format!(
         "[D24] 汉字墨迹: 声学诊断卡(12 汉字+3 ASCII) {cjk_ink} px (包围盒 {cjk_bbox:?}, 颜色 {cjk_colors}); \
          对照 `status-bar-chord`(2 汉字+5 ASCII) {reference_ink} px (包围盒 {reference_bbox:?}, 颜色 {reference_colors}); \
-         意图生成卡(14 汉字+2 ASCII) {intent_ink} px; 下限 {MIN_CJK_INK_PIXELS} px"
+         意图生成卡(14 汉字+2 ASCII) {intent_ink} px; \
+         混合卡 Musical PR(4 汉字+12 ASCII) {mixed_ink} px; 下限 {MIN_CJK_INK_PIXELS} px"
     ));
     assert!(
         cjk_ink >= MIN_CJK_INK_PIXELS,

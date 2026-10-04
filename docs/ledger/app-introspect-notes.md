@@ -229,8 +229,20 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 
 | 轮 | commit | run | 结论 | 说明 |
 | :-- | :--- | :--- | :--- | :--- |
-| 1 | `53e2f93` | [37224871698](https://github.com/gradetwo/yeban/actions/runs/37224871698) | **success** | `plan` / `checks` / `lockfile` / `deny` / `rust (yeban-ui-test-port)` / **`rust (yeban-app)`** 全绿；`rust (workspace 全量)` 按设计跳过。`rust (yeban-app)` 真的执行了本线的判据：`running 8 tests` → `test result: ok. 8 passed`，并产出 artifact **`ui-screenshots-yeban-app`** |
-| 2 | 见下 | `pending` | `pending` | rebase 到含 D24(`fonts-noto-cjk`) 的 main + 新增"汉字非 tofu"判据（§6.3） |
+| 1 | `53e2f93` | [37224871698](https://github.com/gradetwo/yeban/actions/runs/37224871698) | **success** | `plan` / `checks` / `lockfile` / `deny` / `rust (yeban-ui-test-port)` / **`rust (yeban-app)`** 全绿；`rust (workspace 全量)` 按设计跳过。`rust (yeban-app)` 真的执行了本线的判据：`running 8 tests` → `test result: ok. 8 passed`，并产出 artifact **`ui-screenshots-yeban-app`**（§6.1 的数字来自这一轮） |
+| 2 | `c667fa2` | [37225490791](https://github.com/gradetwo/yeban/actions/runs/37225490791) | **failure（2 条，1 条是我的、1 条是 main 的）** | ① **我的**：`rust (workspace 全量)` 的 `clippy --workspace -D warnings` 死在 `error: constant TOKEN_BG_PANEL_ALT is never used` —— 第 2 轮我把对照元素从"Musical PR 卡"换成了 `status-bar-chord`，那个色值常量就没人用了。`test --workspace` 因此没跑，**CJK 数字与 D24 判据这一轮没有结果**。② **main 的**：`checks` 的"跨语言契约对账"死在 `no example target named export_mcp_samples in yeban-mcp package` —— D25 的 ci.yml 步骤先落地、mcp-core 的 example 后落地，`origin/main` 当时自己是红的（376… 见下），与本线无关。 |
+| 3 | 见下 | `pending` | `pending` | 修掉 ①（把 `TOKEN_BG_PANEL_ALT` 用起来：多打印一块"混合卡"的墨迹），并 rebase 到已经补上 `export_mcp_samples` 的 `origin/main`（`101380c`）⇒ ② 也应消失 |
+
+**第 2 轮的教训（写给后来的本机验证）**：本机 harness **抓不到"未使用常量"这类错误** ——
+它只按名字抽取出"被判据引用到的"函数/常量，未被引用的项根本不会进 harness，
+于是 `dead_code` 只在 CI 的 `-D warnings` 下暴露。这类"编译期才成立"的约束只有 CI 能判
+（与本仓库既有的"只有 CI 能抓"清单同类：`clippy::chunks_exact_to_as_chunks`、`error[wildcard]`）。
+
+**main 变红时的读法（本线第 2 轮实测）**：`checks` 里的"跨语言契约对账"步骤引用了
+`cargo run -p yeban-mcp --example export_mcp_samples`，而该 example 当时只在 mcp-core 那条线的
+分支上。判定"是不是我的错"的方法：`git ls-tree -r --name-only origin/main -- <路径>` +
+`git log --oneline origin/main`（本线就是这么判定 ② 不是自己的）。
+
 
 ### 6.1 第 1 轮的实测数字（`gh run view --job 111502378733 --log` 取回）
 
@@ -313,14 +325,17 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 但**不能**逐字形比对（那需要一份人类批准的参考图样，D24 原文的"与已知 tofu 图样比对"）。
 另外它**不**覆盖 `font-ui` 回退链里"用了哪个字体"（PingFang vs Noto 的字形差异只能由分平台 Golden 管）。
 
-### 6.3 第 2 轮要验的三件事
+### 6.3 第 3 轮要验的三件事（第 2 轮因 clippy 提前中止，所以顺延）
 
 1. **rebase 到含 D24 的 main** ⇒ 该 job 的 apt 步骤装上 `fonts-noto-cjk`
    ⇒ 汉字第一次真的被栅格化 ⇒ **三个状态的像素指纹必然与第 1 轮不同**
    （第 1 轮 `5e6020089976cb69` / `06bce1e2e0f6cec6` / `14559b0cb92839d6`）。
    指纹变了本身就是"字体确实生效"的证据；若指纹**没变**，说明装字体那一步无效（要查 apt 步骤）。
 2. **新判据必须绿**：`cjk_ink >= 150` 且 `cjk_ink > reference_ink`（§6.2 两侧的余量）。
-3. **`clippy -D warnings` 仍然绿**（新增了 `inset_rect` / `ink_stats` / 三处新断言）。
+3. **`clippy --workspace -D warnings` 绿**（第 2 轮就是死在这里 —— 未使用常量）。
+
+若第 3 轮仍然红：**残留一定不是本线的**（读法见上面"main 变红时的读法"），
+此时本线的正确处置是**如实报告 + 不动别人独占的文件**，而不是去改 `.github/**` 或 `crates/yeban-mcp/**`。
 
 ---
 
