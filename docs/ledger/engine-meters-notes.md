@@ -246,6 +246,26 @@ A/B 交叉淡化）无关**，本线不做任何音频 DSP。
 - 跨平台（x86_64 Linux runner）的电平数值复现 —— `log10`/`powf`/`exp` 的 1 ulp 差异
   只影响观测量，不影响 [MUST-GATE-002] 的音频 digest。
 
+### 5.5 CI 判决（**只有 CI 的判决算数**）
+
+| 轮 | run id | 结论 | 关键读数 |
+| :-: | :--- | :--- | :--- |
+| 1 | `37235815404`（commit `cdf58cd`） | ✅ **全绿** | `checks` ✅ 31s（fmt + 13 守卫 + schema + 文档链接 48 文件 / 121 链接 + 许可清单）、`lockfile` ✅ 19s、`deny` ✅ 44s、`plan` ✅ 6s、**`rust (yeban-engine)` ✅ 49s**（默认 feature，含 cpal/device：`clippy --all-targets -D warnings` + `test --all-targets`）。`rust (workspace 全量)` 被 `plan` 按受影响集合跳过（本次只动 `yeban-engine` + 文档）。 |
+
+CI（x86_64 Linux）上与代码同源的关键读数（从 job 日志抓取，与本机完全一致）：
+
+```text
+test result: ok. 84 passed; 0 failed           ← 默认 feature(含 device 的 10 条)
+[meter-rt] S1 汇总: quanta=10242 publishes=10242 frames=40968 capacity_drops=0
+[ARCH-UI-002] ok: 真峰值/RMS 计量 + 每量子一次批量发布 + UI 取最新 + 10,000 量子零分配
+[MUST-GATE-001] ok: 10,000 量子 + 63 次快照交换，实时窗口内零分配零释放
+（allocations=0 deallocations=0 共 105 行）
+```
+
+> 注：本文件**追加 CI 记录**的那次提交是纯文档提交，其 `plan` 会按受影响集合
+> **跳过 rust 腿**（L23 的形状）。因此"代码被验证过"的锚点是 `cdf58cd` / run
+> `37235815404`，不是之后的文档提交；读判决时必须同时回答"哪个 SHA"与"哪条腿真的跑了"。
+
 ---
 
 ## 6. 判据覆盖到的结构性契约（"每量子恰好一次批量发布"等）
