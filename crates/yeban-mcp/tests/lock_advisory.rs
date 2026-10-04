@@ -522,6 +522,14 @@ fn holder_metadata_while_locked_is_platform_specific() {
         let _ = other_handle;
     }
 
+    // ②′ 平台无关：**自己**加锁之前取的那份快照在两个平台都可读 ——
+    //     这正是"把读取放到加锁之前"的收益（对**别人的**持有者, Windows 上才会读不到）。
+    //     若有人把 `LockFileSnapshot::read` 挪到 `try_lock` 之后, 这条会在 Windows 门禁上变红。
+    assert!(
+        guard.holder_snapshot().readable(),
+        "加锁前读到的快照必须可读（证明读取确实发生在加锁之前）"
+    );
+
     // ③ 平台无关：**占用者路径**必须产出 `PROJECT_LOCKED` 且**可读性口径**明确，
     //    而且**不 panic、不把打开操作判失败**（这正是 Windows 上退化后必须保住的性质）。
     let (mut blocked, blocked_auth) = dispatcher();
