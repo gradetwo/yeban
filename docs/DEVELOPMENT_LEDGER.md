@@ -395,8 +395,10 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 远程当前只剩 `main` 与 `website`。
 
 **当前进度快照（2026-10-05，第 5 轮结束时）**：
-- 已落地 **19 条工作线**（`line-archive/*` 共 19 个标签：前 16 条 + `container` / `lock-advisory` / `live-port` /
-  `store-container` / `app-completion` / `engine-meters` 中的本批），远程只剩 `main` 与 `website`。
+- 已落地 **20 条工作线**（`line-archive/*` 共 **20** 个标签：model-core / theory-core / dsp-core / ui-shell /
+  sfz-core / engine-rt / render-master / ui-test-port / mcp-core / decode-core / app-introspect / tools-domain /
+  app-binding / ui-mcp / container / lock-advisory / live-port / store-container / app-completion / engine-meters），
+  远程只剩 `main` 与 `website`。（**这个数字我先写成 19，核对标签后改为 20** —— 计数类断言要跑一遍再写。）
 - **13 个 crate 有真实实现**；`services`(v1.1.0) / `plugin-host`(v2.0.0) / `vst`(v2.0.0) 的空壳是规范安排的
   版本阶段（见 `docs/ledger/gate-status.md` §C.4）。
 - **门禁状态**（单一事实源 `docs/ledger/gate-status.md`，由 `check_gate_status.py` 守卫）：
