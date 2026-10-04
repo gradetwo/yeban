@@ -405,6 +405,10 @@
 
 ## 待人类批准/补充
 
+> **唯一入口**：`docs/ledger/human-decisions.md`（40 项，编号 `HD-01..HD-40`，每项都写了选项/建议/不决定的后果）。
+> 本节只做**索引**，细节与"当前处置"以那份清单为准；它由 `scripts/gates/check_decisions.py` 机械守卫
+> （本 ADR 里任何标了 `Proposed`/`待人类`/`需人类` 的裁决若不在册，`run-gates.sh light` 会红）。
+
 1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1`、D7 的 PENDING 策略、D12 对 `Op` 全集的扩展、
    D16 的窗函数口径、D17 的 BSL-1.0 与 D20 的 Unlicense 接纳）；
 2. `ROAD-M-1-006` 的 4 条人类审核（法务措辞、ASIO、商标、发布签名）——Agent 不得代签；
