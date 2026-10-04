@@ -1,12 +1,15 @@
-# Groove Lab Next-Gen (V3) Slint 原生桌面 UI/UX 布局与交互全重构设计规范 (Pure Rust + Slint 极速版)
+# 夜半 (Yeban) 专业桌面 DAW UI/UX 布局与交互重构设计规范 (Pure Rust + Slint 极速版)
 
+> **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`  
+> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev5, LEGAL.md`  
 > **修订记录 (Revision Log)**：  
+> - `v3.0-rev5` (2026-10-04)：**开源合规与技术纠偏升级**。正式更名为“夜半 (Yeban)”，确立整体以 GPLv3 许可证在 GitHub 开源；修复 LaTeX 坐标转换公式的转义符渲染兼容性；更新 Slint 无头启动参数为标准 `SLINT_BACKEND=headless`；阐明 Slint 内嵌 MCP 基于 HTTP JSON-RPC 与内部 Protobuf `IntrospectionState` / `ElementHandle` API 运作机制；将“对标”规范化为“设计参考 / 架构借鉴”；crate 名称统一为 `yeban-*`。  
 > - `v3.0-rev4` (2026-10-04)：**新增 Slint 无头运行与 AI 视觉内省交互规范**。增设 §12 专门规范 Slint 软件光栅化无头模式（`SLINT_BACKEND=headless-software`）、内嵌 MCP 服务器远程内省协议（UI 控件树查询、事件模拟注入）以及基于无头 Framebuffer 截图的 AI 自动化视觉回归断言体系。  
 > - `v3.0-rev3` (2026-10-04)：**重大技术架构转型**。彻底放弃 Web/HTML5 Canvas/DOM 方案，全线重构为 **Slint 原生桌面声明式矢量界面体系**；深度融合 Slint 响应式属性与高性能自定义渲染，交付恒定 120 FPS 视网膜高清响应；全面消除按键冲突；保留 FL Studio 式卷帘心流与色盲安全三向 Diff 审查体系。  
 > - `v3.0-rev2` (2026-10-04)：依据设计评审完成快捷键冲突解耦与无障碍补全。  
 > - `v3.0-rev1` (2026-10-04)：初始版本。
 
-> **定位**：对标 Ableton Live 12、Bitwig Studio 5 与 FL Studio 24 的纯血工业级现代化桌面音频工作站（DAW）。  
+> **定位**：以 Ableton Live 12、Bitwig Studio 5 与 FL Studio 24 为工业级设计参考与架构借鉴的纯血现代化桌面音频工作站（DAW）。  
 > **设计哲学**：零历史包袱、视听绝对一致（WYHIWYG）、Slint 硬件加速矢量渲染、AI Agent 与人类音乐家沉浸式协同。
 
 ---
@@ -72,7 +75,7 @@
 
 ```mermaid
 graph TD
-    A[crates/groove-model 权威数据总线] --> B[Track 1..N 轨道实体]
+    A[crates/yeban-model 权威数据总线] --> B[Track 1..N 轨道实体]
     B --> C[ClipPool 统一资产池]
     
     subgraph Slint UI 表现层投射
@@ -112,7 +115,7 @@ graph TD
         │
         │ 1. 触发 Slint 视口属性变动: min_tick, max_tick, min_pitch, max_pitch
         ▼
-[Rust 空间裁剪核心 (crates/groove-app)]
+[Rust 空间裁剪核心 (crates/yeban-app)]
         │
         │ 2. 调用 R-Tree locate_in_envelope_intersecting 检索相交音符
         │ 3. 极速提取可见图元 [x, y, w, h, velocity, color_idx, flags]
@@ -127,12 +130,12 @@ graph TD
 ### 3.2 坐标系双向转换方程 (Screen Coordinates ⟷ Musical Domain)
 
 1. **音乐坐标 ➔ 屏幕像素**：
-   $$	ext{pixelX} = (	ext{tick} - 	ext{scrollX}) 	imes 	ext{zoomX} + 	ext{PianoKeyWidth}$$
-   $$	ext{pixelY} = (	ext{MaxKey} - 	ext{pitch}) 	imes 	ext{zoomY} - 	ext{scrollY}$$
+   $$\mathrm{pixelX} = (\mathrm{tick} - \mathrm{scrollX}) \times \mathrm{zoomX} + \mathrm{PianoKeyWidth}$$
+   $$\mathrm{pixelY} = (\mathrm{MaxKey} - \mathrm{pitch}) \times \mathrm{zoomY} - \mathrm{scrollY}$$
 2. **屏幕像素 ➔ 音乐坐标（吸附与量化）**：
-   $$	ext{rawTick} = rac{	ext{pixelX} - 	ext{PianoKeyWidth}}{	ext{zoomX}} + 	ext{scrollX}$$
-   $$	ext{snappedTick} = 	ext{round}\left(rac{	ext{rawTick}}{	ext{gridStepTicks}}ight) 	imes 	ext{gridStepTicks}$$
-   $$	ext{pitch} = 	ext{MaxKey} - 	ext{floor}\left(rac{	ext{pixelY} + 	ext{scrollY}}{	ext{zoomY}}ight)$$
+   $$\mathrm{rawTick} = \frac{\mathrm{pixelX} - \mathrm{PianoKeyWidth}}{\mathrm{zoomX}} + \mathrm{scrollX}$$
+   $$\mathrm{snappedTick} = \mathrm{round}\left(\frac{\mathrm{rawTick}}{\mathrm{gridStepTicks}}\right) \times \mathrm{gridStepTicks}$$
+   $$\mathrm{pitch} = \mathrm{MaxKey} - \mathrm{floor}\left(\frac{\mathrm{pixelY} + \mathrm{scrollY}}{\mathrm{zoomY}}\right)$$
 
 ### 3.3 视听反馈引擎与多工具交互矩阵
 
@@ -254,7 +257,7 @@ stateDiagram-v2
 ## 8. Slint 组件树架构与 Rust 状态绑定规范
 
 ```
-crates/groove-app/ui/
+crates/yeban-app/ui/
 ├── app.slint                        # 主窗口容器 (全局网格与多标签导轨)
 ├── transport.slint                  # 走带控制条与时间码液晶屏
 ├── sidebar.slint                    # 左侧 323 款 SFZ 采样与合成器资源树
@@ -321,18 +324,18 @@ crates/groove-app/ui/
 1. **构建与环境变量参数**：
    ```bash
    # 启用内嵌 MCP 特性与 Skia 软件渲染后端
-   cargo build -p groove-app --features "slint/mcp,slint/renderer-skia"
+   cargo build -p yeban-app --features "slint/mcp,slint/renderer-skia"
    
    # 无窗口启动并监听 MCP 端口
-   SLINT_BACKEND=headless-software \
+   SLINT_BACKEND=headless \
    SLINT_MCP_PORT=9315 \
-   ./target/debug/groove-app
+   ./target/debug/yeban-app
    ```
 2. **无物理窗口保障**：
-   - `SLINT_BACKEND=headless-software` 激活软件光栅化渲染管线，无需 DISPLAY 环境变量，无需启动 Xvfb 虚拟 X11 即可正常完成全部 Slint 声明式组件的布局计算与像素绘制。
+   - `SLINT_BACKEND=headless`（支持 `headless-software` 软件光栅化模式，测试环境亦可借助 `i-slint-backend-testing`）激活无窗口渲染管线，无需 DISPLAY 环境变量，无需启动 Xvfb 虚拟 X11 即可正常完成全部 Slint 声明式组件的布局计算与像素绘制。
 
 ### 12.2 UI 元素树远程内省协议 (Widget Tree Introspection)
-AI Agent 通过 HTTP 访问 `http://localhost:9315` 发送 JSON-RPC 请求，审查当前 Slint 界面的层级结构与渲染几何：
+Slint 内嵌 MCP 服务器基于 HTTP 上的 JSON-RPC 暴露接口，底层依托 Slint 内部基于 Protobuf 的 `IntrospectionState` 与 `ElementHandle` API 体系运作。AI Agent 访问 `http://localhost:9315` 发送 JSON-RPC 请求，审查当前 Slint 界面的层级结构与渲染几何：
 
 1. **控件树遍历与属性查询**：
    - 支持根据 `id`、类型（如 `PianoRollNote`、`MixerFader`、`TrackHeader`）检索对应元素的物理坐标 `(x, y, width, height)`、层级深度、可见性（`visible`）与使能状态（`enabled`）；

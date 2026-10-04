@@ -1,12 +1,15 @@
-# Groove Lab Next-Gen (V3) 行业顶级软件深度调研与开源生态融合战略 (Slint + Pure Rust 原生桌面版)
+# 夜半 (Yeban) 专业桌面 DAW 行业顶级软件深度调研与开源生态融合战略 (Slint + Pure Rust 原生桌面版)
 
+> **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`  
+> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev5, LEGAL.md`  
 > **修订记录 (Revision Log)**：  
+> - `v3.0-rev5` (2026-10-04)：**开源合规与合规审计升级**。正式更名为“夜半 (Yeban)”，确立整体以 GPLv3 许可证在 GitHub 开源；在 `LICENSE` 中显式附加 GPLv3 §7 允许的 CLAP 专有插件加载豁免条款；锁定 VST3 SDK 3.8.0+ MIT 许可证以消除传染风险；细化 Slint GPLv3 双授权模式对第三方闭源分发的法律限制声明；针对 `yeban-vst` 确立 Cargo feature 物理隔离与 `cargo-deny` 白名单策略；将所有“对标”用语规范化为“设计参考 / 架构借鉴”以消除商标混淆风险；增补 `assets/samples/ATTRIBUTION.md` 样本授权核查机制。  
 > - `v3.0-rev4` (2026-10-04)：**增补 Slint 无头架构与内嵌 MCP 内省技术优势**。深度阐述 Slint 相对于 JUCE 与 Qt 在“无头运行”（`SLINT_BACKEND=headless-software`、`i-slint-backend-testing`）及“内嵌 MCP 远程内省协议”方面的独特架构优势，确立其作为 AI Agent 全自主驱动开发与 CI/CD 视觉闭环自测的核心支撑地位；更新工业融合架构蓝图。  
 > - `v3.0-rev3` (2026-10-04)：**重大技术架构转型**。依据用户决策彻底放弃 Web 路线，全线确立 **Slint GUI + Pure Rust 原生桌面 DAW** 路线；深度解构桌面 GUI 框架选型（Slint vs JUCE vs Qt vs egui/iced）；将对比矩阵、开源军火库与痛点追溯全面升级为面向纯原生桌面工程架构；指标口径对齐 ROADMAP §5。  
 > - `v3.0-rev2` (2026-10-04)：依据设计评审完成事实纠偏与引用核实。  
 > - `v3.0-rev1` (2026-10-04)：初始版本。
 
-> **调研目的**：深入解构全球顶级商业 DAW 与工业级音频工具的设计哲学、技术实现、优缺点与商业护城河；全面盘点开源世界中成熟的音频宿主、Rust 原生音频生态（Crates）、Slint 原生 GUI 表现力、采样引擎与音频 AI 模型，为 Groove V3 确立“**汲取行业顶级精髓、规避历史遗留痛点、最大化复用 Rust 开源生态、打造纯血原生桌面差异化优势**”的实施指南。
+> **调研目的**：深入解构全球顶级商业 DAW 与工业级音频工具的设计哲学、技术实现、优缺点与商业护城河；全面盘点开源世界中成熟的音频宿主、Rust 原生音频生态（Crates）、Slint 原生 GUI 表现力、采样引擎与音频 AI 模型，为夜半 (Yeban) 确立“**汲取行业顶级精髓、规避历史遗留痛点、最大化复用 Rust 开源生态、打造纯血原生桌面差异化优势**”的实施指南。
 
 ---
 
@@ -35,17 +38,15 @@
    - [4.5 空间几何、版本图谱与实时协同: rstar, yrs](#45-空间几何版本图谱与实时协同-rstar-yrs)
 5. [开源音源格式与采样引擎深度调研](#5-开源音源格式与采样引擎深度调研)
    - [5.1 SFZ 生态与 sfizz 引擎](#51-sfz-生态与-sfizz-引擎)
-   - [5.2 SoundFont 2 (SF2/SF3) 与 FluidSynth](#52-soundfont-2-sf2sf3-与-fluidsynth)
-   - [5.3 Decent Sampler 与 Pianobook 社区标准](#53-decent-sampler-与-pianobook-社区标准)
-   - [5.4 商业采样库 (Kontakt NKI / EXS24) 开放区位映射解析](#54-商业采样库-kontakt-nki--exs24-开放区位映射解析)
+   - [5.2 SoundFont 2 (SF2/SF3) 与 Decent Sampler](#52-soundfont-2-sf2sf3-与-decent-sampler)
+   - [5.3 商业采样库 (Kontakt NKI / EXS24) 开放区位映射解析](#53-商业采样库-kontakt-nki--exs24-开放区位映射解析)
 6. [开源音频 AI 与机器学习模型集成调研](#6-开源音频-ai-与机器学习模型集成调研)
    - [6.1 音源分轨 (Stem Separation): Meta Demucs v4 与 BS-Roformer](#61-音源分轨-stem-separation-meta-demucs-v4-与-bs-roformer)
    - [6.2 音频转 MIDI (Audio-to-MIDI): Spotify Basic Pitch 与 CREPE](#62-音频转-midi-audio-to-midi-spotify-basic-pitch-与-crepe)
-   - [6.3 智能音频降噪与修复: DeepFilterNet](#63-智能音频降噪与修复-deepfilternet)
-   - [6.4 音色替换与虚拟歌手: RVC v2 与 Diff-SVC](#64-音色替换与虚拟歌手-rvc-v2-与-diff-svc)
+   - [6.3 智能音频降噪: DeepFilterNet](#63-智能音频降噪-deepfilternet)
 7. [开源许可证审计与知识产权风控矩阵 (License Audit & IP Risk Matrix)](#7-开源许可证审计与知识产权风控矩阵-license-audit--ip-risk-matrix)
-8. [行业痛点与 Groove V3 设计决策追溯矩阵 (Traceability Matrix)](#8-行业痛点与-groove-v3-设计决策追溯矩阵-traceability-matrix)
-9. [Groove V3 工业融合架构蓝图](#9-groove-v3-工业融合架构蓝图)
+8. [行业痛点与夜半 (Yeban) 设计决策追溯矩阵 (Traceability Matrix)](#8-行业痛点与-yeban-设计决策追溯矩阵-traceability-matrix)
+9. [夜半 (Yeban) 工业融合架构蓝图](#9-夜半-yeban-工业融合架构蓝图)
 10. [参考资料与权威来源 (References)](#10-参考资料与权威来源-references)
 
 ---
@@ -115,21 +116,21 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 1. **浏览器沙盒与第三方商业插件物理绝缘**：无法直接 `dlopen` 加载本地 C++ 编写的 VST3 / CLAP 动态库，专业混音师依赖的 Kontakt 7、Serum、FabFilter 等大件完全无法使用；
 2. **音频硬件与驱动受限**：Web Audio API 无法接管专有硬件 ASIO 或 CoreAudio 独占流，输入输出往返延迟难以压缩至专业监听所需的 5ms 以内；
 3. **内存与存储物理限制**：32 位 Wasm 内存上限（4GB）无法容纳多层立体声大体积管弦音色库；
-4. **决策结论**：**Groove V3 全面放弃 Web/Wasm 架构，转型为纯 Rust 原生桌面 DAW（Slint + Native Audio Engine）**，直面 REAPER、Bitwig 与 Ableton Live，在专业生产力领域降维突破！
+4. **决策结论**：**夜半 (Yeban) 全面放弃 Web/Wasm 架构，转型为纯 Rust 原生桌面 DAW（Slint + Native Audio Engine）**，直面 REAPER、Bitwig 与 Ableton Live，在专业生产力领域降维突破！
 
 ---
 
 ### 1.8 全球主流专业 DAW 七维横向对比矩阵
 
-| 评估维度 | Ableton Live 12 | Bitwig Studio 5 | Cockos REAPER 7 | FL Studio 24 | PreSonus Studio One 7 | Groove V3 (Slint + Pure Rust) |
+| 评估维度 | Ableton Live 12 | Bitwig Studio 5 | Cockos REAPER 7 | FL Studio 24 | PreSonus Studio One 7 | 夜半 (Yeban) (Slint + Pure Rust) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **底层架构语言** | C++ | Java / C++ | 纯 C / C++ | Delphi / C++ | C++ | **纯 Rust 编译 (Zero-unsafe 哲学)** |
 | **GUI 渲染框架** | 自研矢量 C++ | Java / OpenGL | 自研 Win32 / GDI / SWELL | 自研 Delphi / Direct2D | 自研 C++ 矢量引擎 | **Slint 响应式矢量引擎 (FemtoVG/Skia/OpenGL)** |
-| **插件防崩溃沙盒**| ❌ 无 (单进程) | ✅ 行业标杆 (3级沙盒) | ⚠️ 独立进程桥 (可选) | ❌ 无 (易闪退) | ❌ 无 | **✅ 操作系统共享内存沙盒 (`groove-plugin-host`)** |
+| **插件防崩溃沙盒**| ❌ 无 (单进程) | ✅ 行业标杆 (3级沙盒) | ⚠️ 独立进程桥 (可选) | ❌ 无 (易闪退) | ❌ 无 | **✅ 操作系统共享内存沙盒 (`yeban-plugin-host`)** |
 | **版本管理能力** | ❌ 仅另存为 | ❌ 仅本地历史 | ❌ 无内置分支图 | ❌ 无 | ⚠️ Scratch Pad (草稿箱) | **✅ 领域操作日志 + 匿名撤销树 + 分支 A/B 盲听** |
 | **钢琴卷帘交互** | 良好 | 优秀 (MPE 支持) | 一般 (需大量定制) | **👑 行业标杆 (Ghost/Slide)**| 良好 (智能工具) | **👑 融合 FL 交互 + Slint 120 FPS 原生卷帘** |
 | **音轨路由模型** | 固定分轨 | 灵活 (Grid 模块) | **👑 万能音轨 (64通道/轨)** | 通道需手动连线 | 传统分轨 + 自动化车道 | **✅ 统一有向无环图 RoutingGraph + ULID id-Map** |
-| **AI 原生集成度** | ❌ 依赖外部 VST | ❌ 无 | ❌ 无 | 基础 (分轨) | 基础 (音频分轨) | **👑 原生 Groove Intent API v2 + 提案隔离分支** |
+| **AI 原生集成度** | ❌ 依赖外部 VST | ❌ 无 | ❌ 无 | 基础 (分轨) | 基础 (音频分轨) | **👑 原生 Yeban Intent API v2 + 提案隔离分支** |
 | **启动速度与内存**| 慢 (几百MB) | 慢 (Java 虚拟机常驻) | **👑 极快 (15MB / 秒启)** | 中等 (几百MB) | 慢 (几百MB) | **👑 极快 (<100ms 冷启 / <35MB 基础常驻内存)** |
 
 ---
@@ -182,14 +183,14 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 ## 4. Rust 原生顶级音频武器库盘点与集成评估
 
 ### 4.1 插件格式与宿主桥接: clack, vst3-sys, nih-plug
-1. **CLAP 宿主实现 (`clack`)**：基于纯 Rust 实现的 CLAP 插件与宿主桥接库，作为 `crates/groove-plugin-host` 首选的第三方插件加载框架；
-2. **VST3 宿主绑定 (`vst3-sys`)**：提供与 Steinberg C++ VST3 接口的零开销 FFI 绑定，配合跨进程沙盒加载 VST3 商业大件；
-3. **插件反向导出 (`nih-plug`)**：将 Groove 核心 DSP（`groove-dsp`）反向打包为 VST3 / CLAP 插件对外输出。
+1. **CLAP 宿主实现 (`clack`)**：基于纯 Rust 实现的 CLAP 插件与宿主桥接库，作为 `crates/yeban-plugin-host` 首选的第三方插件加载框架。针对宿主加载专有 CLAP 插件的法律边界，夜半项目在根目录 `LICENSE` 中显式附加了 GPLv3 第 7 条允许的附加许可（CLAP 例外条款），允许宿主动态加载商业独立模块而无需迫使该插件受 GPLv3 约束；
+2. **VST3 宿主绑定 (`vst3-sys`) 与 SDK 3.8.0+ 版本锁定**：Steinberg 已于 2025 年 10 月将 VST3 SDK 从 GPLv3/专有双许可正式切换为 MIT 许可证（版本 3.8.0）。夜半项目锁定最低依赖版本为 VST3 SDK 3.8.0+，优先选择 MIT 路径彻底消除上游许可证传染风险。Rust 绑定层 `vst3-sys` 以 GPLv3 发布，与本项目 GPLv3 许可证天然契合，配合跨进程沙盒加载 VST3 商业大件；
+3. **插件反向导出与依赖隔离 (`nih-plug`)**：`nih-plug` 采用 GPL-3.0 / MPL-2.0 双许可。夜半项目将其完全隔离在专用的外接桥接 crate `crates/yeban-vst` 中，并设计细分 Cargo features（`vst3` 与 `clap`），默认不引入 `vst3-sys` 依赖，并在 `cargo-deny` 的 `deny.toml` 中精细化配置排除规则，确保 `yeban-dsp` 等核心模块的纯粹性与安全性。
 
 ### 4.2 跨平台硬件音频 IO: cpal, rodio
 1. **`cpal` (Cross-Platform Audio Library)**：
    - 驱动本地 Native 二进制的物理音频输出，支持 macOS (CoreAudio)、Windows (WASAPI / ASIO)、Linux (ALSA / JACK / PipeWire)，提供统一全平台声卡抽象；
-2. **`rtrb` / 原生无锁环形队列**：实现 UI 线程与实时音频线程之间 < 0.05ms 的无锁 SPSC 事件传递。
+2. **`rtrb` / 原生无锁环形队列**：实现 UI 线程与实时音频线程之间 < 0.05ms 的无锁 SPSC 事件传递。主线程与实时音频线程之间批量数据交换强制遵循 `rtrb` 批量 API（`bulk_push` / `bulk_pop` 结合栈分配 `[f32; 128]`），严禁单样本循环调用。
 
 ### 4.3 纯 Rust 解码与文件 IO: symphonia, hound, midly
 1. **`symphonia`**：纯 Rust 媒体解封装与音频解码库，零 C 依赖，全格式支持（WAV, FLAC, MP3, AAC-LC, OGG 等）[4]；
@@ -210,7 +211,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 
 ### 5.1 SFZ 生态与 sfizz 引擎
 * **格式地位**：开放纯文本采样规范，由 `sfzformat.com` 社区共同维护 [5]。
-* **Groove V3 策略**：全量 323 款原声乐器资产均基于 SFZ。`crates/groove-sfz` 采用纯 Rust 零拷贝解析与静态预分配语音池，在底层音频线程以绝对零 GC 运行。
+* **夜半 (Yeban) 策略**：全量 323 款原声乐器资产均基于 SFZ。`crates/yeban-sfz` 采用纯 Rust 零拷贝解析与静态预分配语音池，在底层音频线程以绝对零 GC 运行。
 
 ### 5.2 SoundFont 2 (SF2/SF3) 与 Decent Sampler
 * **SoundFont 2 (SF2)**：集成轻量二进制 GM 音色库解析器；
@@ -227,7 +228,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 * 基于轻量 ONNX 运行时在本地快速转录多音符和弦与滑音包络。
 
 ### 6.3 智能音频降噪: DeepFilterNet
-* 德国埃尔朗根-纽伦堡大学开源的低延迟纯 Rust 语音降噪库 [8]，集成于 `crates/groove-services` 作为人声音轨近线修复工具。
+* 德国埃尔朗根-纽伦堡大学开源的低延迟纯 Rust 语音降噪库 [8]，集成于 `crates/yeban-services` 作为人声音轨近线修复工具。
 
 ---
 
@@ -235,34 +236,35 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 
 | 开源组件 / 资产 | 开源许可证 | 项目中使用范围 | 风险评估与合规动作 |
 | :--- | :--- | :--- | :--- |
-| **`Slint`** | GPLv3 / 商业双轨 | `groove-app` 桌面 UI 宿主 | 严格遵守开源协议规范；商业闭源分发需遵循双轨授权策略 |
-| **`nih-plug`** | GPL-3.0 / MPL-2.0 | `groove-vst` (对外插件包装) | 隔离于独立 crate；核心 `groove-dsp` 与 `groove-model` 维持 MIT/Apache-2.0 |
-| **`clack` (CLAP)** | MIT / Apache-2.0 | `groove-plugin-host` CLAP 宿主 | 极低（现代开放友好许可），作为首选插件加载架构 |
-| **`symphonia`** | MPL-2.0 | `groove-decode` 全局解码 | 低，作为独立 crate 引用，不修改其内部源码 |
-| **`hound`, `midly`** | MIT / Apache-2.0 | WAV 读写与 MIDI 解析 | 零风险，直接静态编译 |
-| **`rubato`, `biquad`** | MIT | 重采样与参数滤波 | 零风险，直接静态编译 |
-| **`signalsmith-stretch`** | MIT | 弹性拉伸与变调 | 零风险（采用宽松 MIT 替代 GPL 的 Rubber Band） |
-| **323 款内置 SFZ 采样** | CC-BY / CC0 / MIT 等 | 官方开箱即用音色资产库 | 建立全量采样 Attribution 清单与商用许可审查 |
+| **`Slint`** | GPLv3 / 商业双轨 | `yeban-app` 桌面 UI 宿主 | **夜半自身完全合规**：夜半项目整体以 GPLv3 发布，完全符合 Slint GPLv3 授权条款。**第三方 Fork 合规限制**：任何基于夜半代码 fork 并希望以闭源或非 GPLv3 兼容协议分发的第三方，无法继续使用 GPLv3 模式下的 Slint，须自行向 SixtyFPS GmbH 获取商业许可；夜半项目不提供 Slint 商业许可的任何担保或转授。 |
+| **`VST3 SDK`** | MIT (自 3.8.0 起) | `yeban-plugin-host` 插件桥接 | Steinberg 已于 2025 年 10 月将 VST3 SDK 切换为 MIT 许可证。夜半锁定依赖版本为 VST3 SDK 3.8.0+，消除上游 GPL 传染风险；`vst3-sys` Rust 绑定层以 GPLv3 发布，与夜半许可证天然兼容。注：ASIO 驱动许可独立于 VST3，使用 ASIO 须单独审计。 |
+| **`clack` (CLAP)** | MIT / Apache-2.0 | `yeban-plugin-host` CLAP 宿主 | 极低（现代开放友好许可）。针对宿主加载专有 CLAP 插件的法律争议，夜半在 `LICENSE` 中显式附加了 GPLv3 §7 允许的 CLAP 专有插件动态加载例外条款。 |
+| **`nih-plug`** | GPL-3.0 / MPL-2.0 | `yeban-vst` (对外插件包装) | 物理隔离于独立 crate `yeban-vst`；拆分独立 Cargo features（`vst3` 与 `clap`），默认不启用 `vst3`；在 `cargo-deny` 的 `deny.toml` 中精细化配置排除规则，确保 `yeban-dsp` 等核心库保持纯粹。 |
+| **`symphonia`** | MPL-2.0 | `yeban-decode` 全局解码 | 低，作为独立 crate 引用，不修改其内部源码，符合 MPL-2.0 隔离要求。 |
+| **`hound`, `midly`** | MIT / Apache-2.0 | WAV 读写与 MIDI 解析 | 零风险，直接静态编译。 |
+| **`rubato`, `biquad`** | MIT | 重采样与参数滤波 | 零风险，直接静态编译。 |
+| **`signalsmith-stretch`** | MIT | 弹性拉伸与变调 | 零风险（采用宽松 MIT 替代 GPL 的 Rubber Band）。 |
+| **323 款内置 SFZ 采样** | CC-BY / CC0 / MIT 等 | 官方开箱即用音色资产库 | 建立全量采样 Attribution 清单 (`assets/samples/ATTRIBUTION.md`) 与 CI 资产指纹自动化审计，确保无专有未授权资产混入。 |
 
 ---
 
-## 8. 行业痛点与 Groove V3 设计决策追溯矩阵 (Traceability Matrix)
+## 8. 行业痛点与夜半 (Yeban) 设计决策追溯矩阵 (Traceability Matrix)
 
-| 行业痛点与缺陷来源 | 核心病灶剖析 | Groove V3 原生架构应对决策 | 对应规范章节 | 落地交付版本 |
+| 行业痛点与缺陷来源 | 核心病灶剖析 | 夜半 (Yeban) 原生架构应对决策 | 对应规范章节 | 落地交付版本 |
 | :--- | :--- | :--- | :--- | :---: |
-| **Ableton / FL 插件连带闪退** | 宿主与插件处于同一进程，插件崩溃直接拉崩工程 | 跨进程独立沙盒宿主 (`groove-plugin-host`)，内存共享无锁环形缓冲 | ARCH §9.7 | V4.0 |
+| **Ableton / FL 插件连带闪退** | 宿主与插件处于同一进程，插件崩溃直接拉崩工程 | 跨进程独立沙盒宿主 (`yeban-plugin-host`)，内存共享无锁环形缓冲 | ARCH §9.7 | V4.0 |
 | **传统 DAW 线性撤销历史丢失** | 撤销后一旦执行新编辑，跳过的操作分支被彻底截断 | 基于领域操作日志（Ops Log）的匿名分叉撤销树，历史永久可回退 | ARCH §6 | V3.0 |
 | **Web DAW 纯 JS GC 爆音与高延迟** | 垃圾回收阻塞主线程，音频时延 > 100ms | **放弃 Web，全栈转型 Slint + cpal 原生引擎**，硬件回路延迟 ≤ 5ms | ARCH §1, ROADMAP §3 | V3.0 |
 | **传统 DAW 启动缓慢且占用巨大** | 笨重的框架与动态脚本虚拟机（几百 MB） | Slint + 纯 Rust 原生单二进制，冷启动 ≤ 100ms，常驻内存 ≤ 35MB | ROADMAP §5 | V3.0 |
-| **AI 编曲机械填音消耗海量 Token** | MCP 每次传递数千个离散音符，耗时长且极易超限 | 声明式乐理与曲式意图 API (Groove Intent API v2)，单次交互 ≤ 600 Token | ARCH §7 | V3.0 |
+| **AI 编曲机械填音消耗海量 Token** | MCP 每次传递数千个离散音符，耗时长且极易超限 | 声明式乐理与曲式意图 API (Yeban Intent API v2)，单次交互 ≤ 600 Token | ARCH §7 | V3.0 |
 
 ---
 
-## 9. Groove V3 工业融合架构蓝图
+## 9. 夜半 (Yeban) 工业融合架构蓝图
 
 ```
 +────────────────────────────────────────────────────────────────────────────────────────────────────────+
-|                             GROOVE LAB V3 原生工业融合架构蓝图 (Slint + Pure Rust)                      |
+|                             夜半 (Yeban) 原生工业融合架构蓝图 (Slint + Pure Rust)                        |
 +────────────────────────────────────────────────────────────────────────────────────────────────────────+
 |                                                                                                        |
 |  [ 交互心流 (Slint Native UI/UX) ]                                                                     |
@@ -279,14 +281,14 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 |  [ 生态资产与开源集成 (Ecosystem & Open Source) ]                                                       |
 |  ├─ 纯 Rust 解码与重采样 ──────────► 集成 symphonia (全格式解码) + rubato (Sinc 多相滤波重采样)         |
 |  ├─ 采样音源矩阵全平权 ────────────► 原生支持 323 款 SFZ 资产 + [V3.2] SF2 + [V3.2] Decent Sampler     |
-|  ├─ 商业插件生态全面拥抱 ──────────► [V4.0] VST3 / CLAP 商业插件沙盒原生视窗呼出与状态热重启            |
+|  ├─ 商业插件生态全面拥抱 ──────────► [V4.0] VST3 (3.8.0+ MIT) / CLAP 商业插件沙盒原生视窗与状态热重启   |
 |  └─ 开源音频 AI 原生流水线 ────────► [V3.0] Basic Pitch (本地扒带) + [V3.1] DeepFilterNet (近线降噪)    |
 |                                                                                                        |
 |  ====================================================================================================  |
-|  [ GROOVE V3 核心技术突破点 (Core Breakthroughs) ]                                                     |
+|  [ 夜半 (Yeban) 核心技术突破点 (Core Breakthroughs) ]                                                  |
 |  1. 编曲时光机 (Git DAG & Ops Log) ──► 告别线性撤销栈，支持匿名分叉、30ms 等功率盲听与三向视觉审查      |
-|  2. 原生 Groove Intent API v2 ──────► 意图驱动函数调用，单次交互 Token 消耗中位数 ≤ 600 Tokens          |
-|  3. 确定性声学内核 (Bit-Exact) ─────► Rayon 500x 极速多核母带导出，消除任何算法漂移 (指标见 ROADMAP §5) |
+|  2. 原生 Yeban Intent API v2 ───────► 意图驱动函数调用，单次交互 Token 消耗中位数 ≤ 600 Tokens          |
+|  3. 确定性声学内核 (Bit-Exact) ─────► Rayon 100x 极速多核母带导出，消除任何算法漂移 (指标见 ROADMAP §5) |
 |  4. 双 MCP 协同与全自主开发闭环 ────► 业务 MCP (编曲意图) + Slint MCP (UI 树内省/无头截图)，AI 自测试闭环 |
 +────────────────────────────────────────────────────────────────────────────────────────────────────────+
 ```
