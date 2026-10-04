@@ -17,8 +17,8 @@
 
 | 交付物 | 规范 ID | 本线做了什么 |
 | :--- | :--- | :--- |
-| `crates/yeban-app/src/test_port_adapter.rs` | `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` `UI-MCP-003` `MUST-GATE-015` `ARCH-UI-005` | **修到能编译**（8 处错误）；真实 `MainWindow` 的三种状态 Tier-1 截图；运行时控件树 vs 注册表的**实测**覆盖判据；动态遮罩 + SSIM 判据；`ReadOnly` 权限判据 |
-| `crates/yeban-app/tests/real_ui_tier1.rs`（新建） | 同上 | 同一份判据的**第二个 cargo 目标**（自动发现 ⇒ CI 上真的执行） |
+| `crates/yeban-app/src/test_port_adapter.rs` | `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` `UI-MCP-003` `MUST-GATE-015` `ARCH-UI-005` **ADR-0001 D22/D24** | **修到能编译**（8 处错误）；真实 `MainWindow` 的三种状态 Tier-1 截图；运行时控件树 vs 注册表的**实测**覆盖判据；动态遮罩 + SSIM 判据；**D24 的"汉字非 tofu"量化判据**；`ReadOnly` 权限判据 |
+| `crates/yeban-app/tests/real_ui_tier1.rs`（新建） | 同上 | 同一份判据的**第二个 cargo 目标**（自动发现 ⇒ CI 上真的执行；集成者已批准，见 §2） |
 | `crates/yeban-app/Cargo.toml` | ADR-0001 D18/D21 | 新增 `[dev-dependencies] yeban-ui-test-port`（理由见 §2）；原 `[[test]]` + feature 设计**原样保留** |
 | `crates/yeban-ui-test-port/src/render.rs` | `MUST-GATE-015` | 新增公开 `report_line()`，`report_evidence` / `report_capability` 改为委托它（唯一出口，语义不变） |
 | `crates/yeban-ui-test-port/src/lib.rs` | — | 根重导出补 `report_line` |
@@ -72,9 +72,14 @@ $ cargo tree -p yeban-app -e dev,normal --locked | grep -n yeban-ui-test-port
 `Cargo.lock` **未变**（同一条 `yeban-ui-test-port` 依赖项早就在 lock 里，只是多了一个 dev 边），
 因此依赖许可清单也不需要重新生成（`license_inventory.py --check` 在本机仍是绿的，见 §5.4）。
 
-**若集成者不采纳这个第二入口**：删掉 `crates/yeban-app/tests/real_ui_tier1.rs` 与
-`Cargo.toml` 里的 `[dev-dependencies]` 两段即可（判据本身不动），代价是回到"必须先在
-`ci.yml` 里加回 feature 步骤才可能知道它能不能编译"。这是一个显式的取舍，不藏在提交里。
+**集成者裁决（第 1 轮判决之后）**：**批准保留**，并且**不再加**那条 CI 步骤 ——
+理由与我给的一致（"在加回之前判据仍然是没人跑的状态，正是账本批评的失败模式"）。
+账本里"待重新加回 CI 步骤"的记载改成"由 app 侧自动发现测试覆盖，无需专用步骤"。
+`[[test]] test_port_adapter` 与 `ui-test-port` feature 仍然保留（那条显式命令继续可用）。
+
+**若将来要回退这个第二入口**：删掉 `crates/yeban-app/tests/real_ui_tier1.rs` 与
+`Cargo.toml` 里的 `[dev-dependencies]` 两段即可（判据本身不动），代价是回到"必须先改
+`ci.yml` 才能知道它能不能编译"。这是一个显式的取舍，不藏在提交里。
 
 ---
 
@@ -123,8 +128,13 @@ $ cargo tree -p yeban-app -e dev,normal --locked | grep -n yeban-ui-test-port
 `slot-*-cell` / `tab-*-button` / `sidebar-item-*` / `piano-roll-tool-*-button` 的**实测计数**
 打印进 CI 日志与 `target/ui-test-port/app-introspect-observations.txt`（artifact）。
 
-**实测计数在 §6 的 CI 判决里逐条记录** —— 这一条一旦有数，"重复元素能否逐个语义寻址"就从
-pending 变成事实，`[UI-TEST-001]` 可用/不可用的边界也就有了定论。
+**实测结果（第 1 轮 CI，run 37224871698，见 §6.1）**：
+`track-*-header=6`、`clip-*-header=3`、`section-*-card=4`、`tab-*-button=3`、`sidebar-item-*=8`、
+`piano-roll-tool-*-button=5`、`velocity-*-bar=6`、`note-*-rect=7`（6 个音符 + 1 个 AI 建议块）
+⇒ **每个重复实例都能被语义 ID 寻址**（不是只有第一个）。上一条线的 pending #8 因此关闭：
+上游把重复元素展开成"每个实例一个子 ItemTree（`element_index == 0`）"，
+`[UI-TEST-001]` 点名的三个族 `note-{ulid}-rect` / `clip-{ulid}-header` / `track-{i}-header` **全都可用**。
+下限判据（"至少一个成员"）留在原地作为这个结论的下界 —— 它一旦变红就说明重复元素整族不可寻址。
 
 ---
 
@@ -150,13 +160,18 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_ui_test_port -L depend
   pure_lib.rs -o /tmp/libyeban_ui_test_port.rlib
 rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
   app_lib.rs -o /tmp/libyeban_app_local.rlib
-# 判据: 6 条(计算/选块/遮罩+SSIM) + 2 条(ID 清单)
+# 判据: 9 条(计算/选块/遮罩+SSIM/inset/墨迹/真实截图对账) + 2 条(ID 清单)
 ./extract.sh && rustc --edition 2024 --test -D warnings -L dependency=$DEPS \
   --extern yeban_ui_test_port=/tmp/libyeban_ui_test_port.rlib main.rs -o /tmp/ai_pure_tests \
   && /tmp/ai_pure_tests --nocapture
 ./extract_ids.sh && rustc --edition 2024 --test -D warnings \
   --extern yeban_app=/tmp/libyeban_app_local.rlib idcheck.rs -o /tmp/id_check && /tmp/id_check
 ```
+
+第 9 条判据（`ink_stats_matches_an_independent_decoder_on_the_real_screenshot`）用的是**真实截图**：
+第 1 轮 CI 的 artifact 里那张 1920×1080 PNG，四个区域由 **Pillow**（独立解码器）按同一轮的
+`app-runtime-control-tree.json` 的几何裁出来（`real_regions.txt` + 4 个 `.raw`）。
+它同时证明"我们自产的 PNG 能被标准解码器读"（本仓库的编码器只写不读）。
 
 ### 5.1 结果（本机实测数字）
 
@@ -169,11 +184,14 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 | 反向对照：0.48% 画面的小改动 | **0.994871** ≥ 0.98（**检不出** —— 这就是"候选必须 ≥5% 画面"的实测依据） |
 | 39 条单例 ID / 16 条硬清单 / 10 条族样本 / 7 条黑名单 | 全部是注册表里**真实存在**的条目（`idcheck.rs`，2 条判据） |
 | `overlap_area` / `mean_luma` 边界 | 相离/相切/包含/部分重叠/越界裁剪/黑白各半=127.5 全过 |
+| `inset_rect` 边界 | 正常/退化(宽 8 收 4 ⇒ 0×0)/负坐标/0×0 全过 |
+| `ink_stats` 合成用例 | 纯背景 ⇒ 0 墨迹；8 px 白块 ⇒ 墨迹 8、包围盒 4×2、2 色；背景色给错 ⇒ 整块 128 px 都是墨迹 |
+| `ink_stats` vs **独立解码器**（真实截图） | 四块区域墨迹数/颜色数/**包围盒长宽**逐个相等（见 §6.2 的数字） |
 
 ### 5.2 变异测试（"从没红过的判据是注释"）
 
 变异只作用在**生成物副本**（`extracted.rs` / `id_lists.rs`），仓库文件全程未被改动；
-每次变异后都重新生成并确认恢复为绿。
+每次变异后都重新生成并确认恢复为绿。**11 处变异，11 处都让至少一条判据变红**。
 
 | # | 注入 | 结果 |
 | :-- | :--- | :--- |
@@ -185,13 +203,16 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 | f | 把"被动态区盖掉 ≥10% 就跳过"放宽成"有任何交集就跳过" | **红 1 条**（`regression_target_follows_d23`：最大的候选被误跳过） |
 | g | 删掉"动态区不得当候选"的检查 | **红 1 条**（`regression_target_never_picks_a_dynamic_region`） |
 | h | 把清单里的 `scene-launch-column-header` 改成 `scene-launch-column-head` | **红 1 条**（`every_listed_id_exists_in_the_registry`）—— 这正是本线真的犯过的一次手滑 |
+| i | `ink_stats` 恒返回 `(0, None, 0)` | **红 2 条**（合成用例 + 真实截图对账） |
+| j | `inset_rect` 原样返回（不收边） | **红 1 条**（`inset_rect_handles_degenerate_inputs`） |
+| k | `INK_CHANNEL_TOLERANCE` 改成 255（什么都算不上墨迹） | **红 2 条**（同 i） |
 
 ### 5.3 本机**没有**验证的（交给 CI，逐条说清）
 
 - `test_port_adapter.rs` 与 `tests/real_ui_tier1.rs` 的**编译正确性**（含 Slint ⇒ 本机禁止编译）；
 - `ElementHandle` 的真实遍历结果：树有多少节点、哪些 ID 可寻址、重复族计数（§4）；
 - Tier-1 光栅化的真实像素：尺寸 / 非黑占比 / 颜色数 / PNG 字节数 / 确定性；
-- 真实界面上的遮罩矩形与 SSIM 数字（本机用的是合成画面，见 §5.1 的说明）；
+- **真实界面上**的遮罩矩形与 SSIM 数字（本机用合成画面）；
 - `clippy -D warnings`。
 
 ### 5.4 本机跑过的门禁
@@ -204,28 +225,102 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 
 ## 6. CI 判决与**真实界面的实测数字**
 
-> 这一节在读到判决后逐轮追加；未读到的判决一律记 `pending`。
+> 未读到的判决一律记 `pending`。
 
 | 轮 | commit | run | 结论 | 说明 |
 | :-- | :--- | :--- | :--- | :--- |
-| 1 | `pending` | `pending` | `pending` | 说明：本线**第一次**让判据真的进入 CI 的可执行目标（见 §2），所以这一轮同时是"能编译吗"和"数字是多少"的首次判决 |
+| 1 | `53e2f93` | [37224871698](https://github.com/gradetwo/yeban/actions/runs/37224871698) | **success** | `plan` / `checks` / `lockfile` / `deny` / `rust (yeban-ui-test-port)` / **`rust (yeban-app)`** 全绿；`rust (workspace 全量)` 按设计跳过。`rust (yeban-app)` 真的执行了本线的判据：`running 8 tests` → `test result: ok. 8 passed`，并产出 artifact **`ui-screenshots-yeban-app`** |
+| 2 | 见下 | `pending` | `pending` | rebase 到含 D24(`fonts-noto-cjk`) 的 main + 新增"汉字非 tofu"判据（§6.3） |
 
-**判据脚本读回来的实测数字会贴在这里**（`scripts/dev/ci-verdict.sh line/app-introspect` +
-`gh run view <run-id> --log-failed` / `--log`）：
+### 6.1 第 1 轮的实测数字（`gh run view --job 111502378733 --log` 取回）
 
-- `[MUST-GATE-015]` 三个状态的 Golden 证据（尺寸 / 非黑占比 / 颜色数 / PNG 字节数 / 指纹）；
-- 控件树计数（注册表 N / 运行时 M / 未登记 U / 缺失 K）与各重复族计数；
-- 可见单例覆盖率；
-- 遮罩与 SSIM 的四组数字。
+```text
+控件树计数: 注册表 184 条 / 运行时 95 条 / 运行时有而注册表无 0 条 / 注册表有而运行时无 89 条
+运行时有而注册表无(必须为空): []
+关键单例覆盖率: 39/39 = 100%（硬下限 90%）缺: []
+重复族实测计数(观察值, 非断言): track-*-header=6, track-*-fader=0, track-*-meter=0,
+  note-*-rect=7, clip-*-header=3, velocity-*-bar=6, section-*-card=4, slot-*-cell=0,
+  tab-*-button=3, sidebar-item-*=8, piano-roll-tool-*-button=5
+可见重复族里可被语义 ID 寻址的样本: 10/10
+运行时动态区: 6 个（在画面内 6 个）, 总面积 18752 px = 画面的 0.9043%
+[UI-MCP-003] 动态抖动未遮罩 SSIM=0.991640 / 遮罩后 SSIM=1.000000(passed=true);
+  静态回归 1400x583@(240,48) 平均亮度 16.90 填 [255,255,255]: 未遮罩 SSIM=0.636483, 遮罩后 SSIM=0.636552(passed=false)
+说明: 动态区只占画面 0.9043% ⇒ 未遮罩 SSIM=0.991640 拉不下 0.98（SSIM 口径, 非判据失效）
+状态 A (Arrangement / 全展开 1920x1080): 1920x1080 (2073600 px), 非黑 2073600 (100%),
+  颜色 2349 种, PNG 6222418 字节, 指纹 5e6020089976cb69
+状态 A 两次截图逐字节相同: true
+状态 B (Arrangement / compact): 1920x1080, 非黑 2073600 (100%), 颜色 2131 种, PNG 6222418 字节, 指纹 06bce1e2e0f6cec6
+状态 C (Session / 全展开): 1920x1080, 非黑 2073600 (100%), 颜色 2235 种, PNG 6222418 字节, 指纹 14559b0cb92839d6
+控件树 JSON: 注册表 184 条 -> app-registry-control-tree.json; 运行时(默认视图) 95 条 -> app-runtime-control-tree.json
+```
 
-产出 artifact（人眼复核用，30 天）：`ui-screenshots-workspace` 或 `ui-screenshots-yeban-app`
-（取决于 plan 走全量腿还是矩阵腿），内含：
+读法（这张表就是本线最有价值的产物 —— "界面被渲染过"从口号变成了数字）：
+
+| 项目 | 实测 | 结论 |
+| :--- | :--- | :--- |
+| 尺寸 | 1920×1080 = 2073600 px（三个状态一致） | `[MUST-GATE-015]` 的"尺寸非零"✓ |
+| 非全黑 | 非黑 **2073600 / 2073600 = 100%** | `[MUST-GATE-015]` 的"非全黑"✓ |
+| 颜色数 | A 2349 / B 2131 / C 2235 种 | 远不是"只画了背景" |
+| PNG 字节 | 三个状态都是 6222418（stored deflate ⇒ 与内容无关的定长） | < 红线 9 的 10 MB ✓ |
+| 确定性 | **同一状态连续两次截图逐字节相同** | 光栅化确定 ✓ |
+| 三个状态互不相同 | 三个指纹互不相同（`5e60…` / `06bc…` / `1455…`） | Arrangement / compact / Session **都真的被渲染过**（不是同一张图复制三份） |
+| 控件树 | 注册表 184 / 运行时 95（缺 89 = 全部不可见分支） | `[UI-TEST-001]` 的运行时⊆注册表**严格成立**（未登记 0 条） |
+| 关键单例覆盖率 | **39/39 = 100%** | 默认视图里能声明到的单例一个不缺 |
+| 重复族实例数 | `track-*-header=6`、`clip-*-header=3`、`section-*-card=4`、`tab-*-button=3`、`sidebar-item-*=8`、`piano-roll-tool-*-button=5`、`velocity-*-bar=6` | **`for` 循环的每一个实例都能被语义 ID 寻址** —— 上一条线的 pending #8 从"最重要的技术风险"变成**已证伪的风险**（见下） |
+| 动态区 | 6 个（时间码 / 选区 / 和弦 / 设备 / 两个走带光标），合计 18752 px = 0.90% 画面 | 未遮罩 SSIM=0.991640 拉不下 0.98 ⇒ **"≥5% 画面"的前置断言是承重的**（否则这里会假红） |
+| 遮罩 | 遮罩后 SSIM = **1.000000**（精确） | `[UI-MCP-002]` 完全吸收动态抖动 ✓ |
+| 遮罩不遮瞎 | 静态回归（1400×583 = 39.4% 画面，暗 ⇒ 刷白）未遮罩 0.636483 / 遮罩后 0.636552 | `[UI-MCP-003]` 仍能检出静态缺陷 ✓ |
+
+**上一条线的 pending #8 关闭**：`ElementHandle::accessible_id()` 对 `element_index != 0` 返回 `None`
+这件事**不影响 `for` 循环的重复实例** —— 实测每个实例都能被语义 ID 找到（6/3/4/8/5 个）。
+上游把重复元素展开成**每个实例一个子 ItemTree**（`element_index == 0`），因此
+`[UI-TEST-001]` 的 `note-{ulid}-rect` / `clip-{ulid}-header` / `track-{i}-header` 三族**全都可用**。
+本线因此把"至少一个成员可寻址"的下限判据留在原地（它是这个结论的下界），
+并把"全实例计数"如实打印（上表）。
+
+**artifact（人眼复核用，30 天）**：`ui-screenshots-yeban-app`
+（`gh run download 37224871698 -n ui-screenshots-yeban-app`），内含：
 
 - `app-main-window-arrangement-full-1920x1080.png`（默认演示视图）
 - `app-main-window-arrangement-compact-1920x1080.png`（`compact` 断点：左栏 36px 导轨）
 - `app-main-window-session-full-1920x1080.png`（Session 视图，`session_view.slint` 首次被渲染）
 - `app-registry-control-tree.json` / `app-runtime-control-tree.json`（两份树，可逐条 diff）
 - `app-introspect-observations.txt`（本线的全部实测观察值）
+
+集成者已下载并把三张图**肉眼核对**过（原文：结构完整、语义正确、与规范 §1 的网格在视觉上对得上）。
+
+### 6.2 D24「界面字体非 tofu」：两侧都有实测，判据因此是承重的
+
+第 1 轮的 runner **没有**装 `fonts-noto-cjk`（D24 的 CI 改动晚于这一轮），于是截图里
+**汉字整片没有被画出来**。这不是猜测 —— 用 **Pillow 独立解码**同一轮的 PNG，按元素树里的
+几何裁片后量墨迹（规则：任一通道与该元素背景色相差 > 24）：
+
+| 元素 | 内容 | 无 CJK 字体（第 1 轮 CI 实测） | 有 CJK 字体（本机 FreeType + 苹方/宋体，11px 量、按 10px 折算） |
+| :--- | :--- | :--- | :--- |
+| `ai-rail-diagnose-button` | 12 汉字 + `:`/`/` | **24 px** 墨迹（只剩 ASCII 标点） | **≈590 px** |
+| `ai-rail-intent-button` | 14 汉字 + `:`/`…` | **6 px** | ≈620 px |
+| `ai-rail-musical-pr-button` | 4 汉字 + 12 ASCII | **272 px** | ≈395 px |
+| `status-bar-chord` | 2 汉字 + 5 ASCII | **119 px** | ≈225 px |
+| `transport-bpm-field`（纯 ASCII 对照） | `BPM 120.00` | 264 px | 264 px（不含汉字 ⇒ 两栏相同） |
+
+**结论（直接决定判据的形状）**：缺 CJK 字体时不是"画成豆腐块"，而是**什么都不画**
+（连 `.notdef` 方框都没有）⇒ "墨迹 >= 150 px" 这条量化判据**真的能检出它**：
+无字体 24 px（差 6×）、有字体 ≈590 px（余 4×）。
+`ai-rail-diagnose-button`（12 汉字）与 `status-bar-chord`（2 汉字 + 5 ASCII）的**对比**判据
+在两侧分别是 24/119 = 0.20 与 ≈590/225 ≈ 2.6 ⇒ 方向也毫无歧义。
+
+**限制（明说，写进断言消息与 needs）**：它证明"汉字字形真的被画出来了"，
+但**不能**逐字形比对（那需要一份人类批准的参考图样，D24 原文的"与已知 tofu 图样比对"）。
+另外它**不**覆盖 `font-ui` 回退链里"用了哪个字体"（PingFang vs Noto 的字形差异只能由分平台 Golden 管）。
+
+### 6.3 第 2 轮要验的三件事
+
+1. **rebase 到含 D24 的 main** ⇒ 该 job 的 apt 步骤装上 `fonts-noto-cjk`
+   ⇒ 汉字第一次真的被栅格化 ⇒ **三个状态的像素指纹必然与第 1 轮不同**
+   （第 1 轮 `5e6020089976cb69` / `06bce1e2e0f6cec6` / `14559b0cb92839d6`）。
+   指纹变了本身就是"字体确实生效"的证据；若指纹**没变**，说明装字体那一步无效（要查 apt 步骤）。
+2. **新判据必须绿**：`cjk_ink >= 150` 且 `cjk_ink > reference_ink`（§6.2 两侧的余量）。
+3. **`clippy -D warnings` 仍然绿**（新增了 `inset_rect` / `ink_stats` / 三处新断言）。
 
 ---
 
@@ -245,12 +340,11 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 
 ## 8. needs（需要别人做 / 需要人类裁决）
 
-0. **集成者裁决：是否保留 §2 的 `[dev-dependencies]` 第二入口。**
-   保留 ⇒ 判据在本线 CI 里真的执行（这一轮的判决因此有内容）；删除 ⇒ 回到"必须先改
-   `ci.yml` 才知道能不能编译"。两条路本线都已给出（删除步骤见 §2 末尾）。
-1. **`ci.yml` 的 feature 步骤**：`cargo test -p yeban-app --features ui-test-port --locked`
-   现在**可以加回**了（判据已在 `--all-targets` 下真实跑过，见 §6）。
-   加了它，`[[test]] test_port_adapter` 那条显式目标也会被执行（两个目标跑同一批判据）。
+0. ~~集成者裁决：是否保留 §2 的 `[dev-dependencies]` 第二入口~~ —— **已裁决（第 1 轮后）：保留**，
+   且不再加 `ci.yml` 专用步骤（理由与回退办法见 §2）。
+1. ~~`ci.yml` 的 feature 步骤~~ —— 集成者已决定**不加**：判据现在走自动发现的
+   `tests/real_ui_tier1.rs`，`cargo test -p yeban-app --all-targets` 就会跑到它。
+   `[[test]] test_port_adapter` 仍保留给显式 `--features ui-test-port` 的用法。
 2. **`ControlNode::parent` 永远是 `None`**（§7.2）：需要上游暴露 `parent_item`，
    或 app 注册表补父 ID 字段。属规范/模型缺口，本线不发明。
 3. **`ElementMeta::component` 进不了控件树 JSON**（§7.3）：建议给 `ControlNode` 加可选
@@ -258,32 +352,41 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 4. **分平台 Golden 的尺寸策略**：stored deflate 下 1920×1080 ≈ 6.2 MB/张，
    接近红线 9 的 10 MB。本线的截图一律落在 `target/ui-test-port/`（不进仓库）；
    要在仓库里维护基准图，仍需裁决"多小的截图算合格基准"或"是否允许引入压缩器"。
-5. **人类裁决：要不要用 `configure_test_fonts()` 消除跨平台字体差异**（上一条线 §2 第 21 条）。
-   本线的三张截图**字体不确定**（系统字体回退），因此它们只能做**人眼复核**，
-   不能直接当基准图 —— 这一点是 `[UI-MCP-003]` 分平台要求的直接后果。
-6. **重复族语义寻址的定论**（§4）：本线的实测计数会给出事实；若上游确实只让第一个实例可寻址，
-   则 `[UI-TEST-001]` 点名的 `note-{ulid}-rect` / `clip-{ulid}-header` / `track-{i}-header`
-   需要替代机制（`find_by_element_id` + 索引，或路径选择器），**需人类裁决**。
+5. ~~人类裁决：要不要用 `configure_test_fonts()`~~ —— **已由 ADR-0001 D24 裁决：不采纳**
+   （内部 feature 会让测试字体与生产字体不一致）。本线的三张截图仍然是**字体依赖环境**的，
+   因此只能做**人眼复核**，不能直接当基准图 —— 这是 D24"分平台 Golden"的直接后果。
+6. ~~重复族语义寻址的定论~~ —— **已由第 1 轮 CI 实测关闭**：`for` 循环的每个实例都能被语义 ID
+   寻址（6/3/4/8/5 个），`[UI-TEST-001]` 的三个族全都可用（见 §6.1）。
+7. **D24「与已知 tofu 图样比对」这一层还没做**：§6.2 的判据证明"汉字被画出来了"，
+   但**不能**逐字形比对。要真正区分"正确字形"与"错误的回退字形（例如全部落到某个只有
+   假名的字体）"，需要一份**人类批准**的参考图样 + 分平台基准（与 needs 4 是同一件事的两面）。
+8. **`fonts-noto-cjk` 的安装效果本身要由本线第 2 轮 CI 来证**（D24 自己写的 pending）。
+   §6.3 给了判定方法：三个状态的像素指纹必须与第 1 轮**不同**，且新判据必须绿。
 
 ## 9. pending（未证实的、已知的债）
 
-1. **CI 判决**：见 §6 —— 未读到之前一律 `pending`。
+1. **第 2 轮 CI 判决**：见 §6 —— 未读到之前一律 `pending`。
 2. **`slint` 在任何真实屏幕（winit/femtovg 后端）上的渲染**仍未验证 —— 本线只走
    `set_platform` + `MinimalSoftwareWindow` 的 Tier-1 无头路径（`[MUST-GATE-015]` 要求的正是它）。
-3. **`render.rs` / `inspect.rs` 的编译**只经过"逐条对源码"的核验，第一次真判决在 CI。
-4. **本线的 `clippy -D warnings`**：新增/改写的判据代码没在本机过 clippy（含 Slint）。
-   上一条线的教训（`chunks_exact_to_as_chunks`、`useless_conversion`）说明本机 clippy 探针
-   只覆盖零 Slint 的模块；本线新增的 Slint 侧代码靠 CI。
+3. **跨 runner 的指纹一致性**：第 1 轮只有一个数据点。"同一字体环境下 Tier-1 光栅化确定"
+   这件事本线能给的证据是"同一进程内两次截图逐字节相同"（`true`）；跨 runner 的比较要等
+   第 2 轮（且第 2 轮换了字体环境 ⇒ 与第 1 轮**本来就不该相同**，见 §6.3）。
+4. **本线的 `clippy -D warnings`**：第 1 轮已验证绿（`rust (yeban-app)` job 里 clippy 先跑且通过）；
+   第 2 轮新增的 `inset_rect` / `ink_stats` / 三处断言由第 2 轮 CI 判。
 
 ## 10. TODO(hoist) —— 建议集成者提升到共享账本 / ADR
 
 1. **hoist → ADR-0001 D18**：§3 的 A1-A5 五条（`visible:` 的 lower 语义 + 上游回归测试背书）。
    它决定所有 UI 线的控件树判据形状，不该只活在本文件里。
 2. **hoist → `docs/DEVELOPMENT_LEDGER.md`**：把 run 37223586792 那段"适配器编译失败、CI 暂时
-   移除该步骤"的 pending，替换为**本线 CI 判决 + 实测数字**（§6），并把"要验证它必须跑
-   `cargo test -p yeban-app --all-targets --locked`"写进命令表。
-3. **hoist → needs**：`[UI-TEST-001]` 的重复元素寻址边界（§8 第 6 条）是**规范级**问题，
-   一旦 §6 给出计数就应升级为需人类裁决项。
+   移除该步骤"的 pending，替换为**第 1 轮判决 + §6.1 的实测数字**，并把
+   "验证命令是 `cargo test -p yeban-app --all-targets --locked`（不需要 feature）"写进命令表。
+3. **hoist → needs**：~~`[UI-TEST-001]` 的重复元素寻址边界~~ —— 已关闭（§6.1）。
+   替代它的是 D24 的第 2 层（"与已知 tofu 图样比对"，§8 第 7 条）。
 4. **hoist → `docs/DEV_WORKFLOW.md`**（可选）：`required-features` 目标在 CI 里"绿着跳过"是
    一类系统性盲区（本线实测踩到）。建议在"多线纪律"里加一句：**判据必须挂在 CI 会执行的目标上**，
    否则它等于注释。
+5. **hoist → ADR-0001 D24 的执行段**：`fonts-noto-cjk` 的安装效果已由本线第 2 轮给出判定方法
+   （指纹必须变 + 墨迹从 24 px 变成数百 px）。建议把这组数字写进 D24，作为"环境依赖真的生效"
+   的可核验判据。
+

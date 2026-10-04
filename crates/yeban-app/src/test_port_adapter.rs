@@ -173,6 +173,93 @@ fn mean_luma(luma: &LumaImage, rect: Rect) -> f64 {
     if count == 0 { 0.0 } else { sum / count as f64 }
 }
 
+/// `ui/tokens.slint` §6 的两个色值。
+///
+/// 为什么在这里写一份副本：`.slint` 的 `Tokens` global 不保证能从 Rust 侧按名取到，
+/// 而"判据需要这两个背景色"不值得为它生成一层绑定代码。这与
+/// `src/scene.rs` ↔ `.slint` 的常量重复是同一类 known debt（见 `scene.rs` 的模块文档）。
+/// 判据本身钉住了"这两个色值确实是面板背景"：下面任何一个背景色写错，
+/// 该元素内部的墨迹数都会暴涨（把整块背景都算成墨迹），判据立刻变红。
+const TOKEN_BG_VOID: [u8; 3] = [0x06, 0x0a, 0x14];
+/// 见 [`TOKEN_BG_VOID`]。
+const TOKEN_BG_PANEL_ALT: [u8; 3] = [0x1b, 0x24, 0x47];
+/// 见 [`TOKEN_BG_VOID`]（状态栏的面板色）。
+const TOKEN_BG_PANEL: [u8; 3] = [0x15, 0x1d, 0x38];
+
+/// ADR-0001 D24「界面字体非 tofu」判据的硬下限：**以汉字为主的文本元素**内部的墨迹像素数。
+///
+/// 两侧都有实测（数字与测法见 `docs/ledger/app-introspect-notes.md` §6.2）：
+/// - **没有 CJK 字体**（第 1 轮 CI 的真实截图，用 Pillow **独立解码**）：`ai-rail-diagnose-button`
+///   内部只有 **24 px** 墨迹 —— 只剩 ASCII 的 `:` 与 `/`，汉字整片**什么都不画**
+///   （实测不是豆腐块：连 `.notdef` 方框都没有）；
+/// - **有 CJK 字体**（本机用 FreeType + 苹方/宋体按 10–11px 量同一串）：`声学诊断:` ≈ 211–239 px、
+///   `掩蔽 / 相位 / 动态范围` ≈ 497–562 px，按 10px 折算合计 ≈ **590 px**。
+///
+/// 取 150：比"无字体"基线高 6×，比"有字体"预期低 4×，两侧都不擦边。
+const MIN_CJK_INK_PIXELS: u64 = 150;
+
+/// 通道差超过它才算"墨迹"（抗锯齿的浅色边缘也算 —— 那是真实的字形覆盖）。
+const INK_CHANNEL_TOLERANCE: u8 = 24;
+
+/// 把矩形向内收 `margin` 像素（用于排除面板的 1px 边框）。退化时返回空矩形。
+fn inset_rect(rect: Rect, margin: u32) -> Rect {
+    let shrink = margin.saturating_mul(2);
+    if rect.width <= shrink || rect.height <= shrink {
+        return Rect::new(rect.x, rect.y, 0, 0);
+    }
+    Rect::new(
+        rect.x.saturating_add(margin as i32),
+        rect.y.saturating_add(margin as i32),
+        rect.width - shrink,
+        rect.height - shrink,
+    )
+}
+
+/// 一张图里某个矩形内的"墨迹"统计：`(墨迹像素数, 墨迹包围盒, 不同颜色数)`。
+///
+/// "墨迹" = 任一通道与**该元素的背景色**相差超过 [`INK_CHANNEL_TOLERANCE`] 的像素。
+/// 用"与该元素自己的背景色比较"而不是"非黑"，因为 DAW 面板本身就不是黑的
+/// （`bg-void` 是 `#060a14`）；用"非黑"会让整块面板都算成墨迹。
+fn ink_stats(image: &Rgb8Image, rect: Rect, background: [u8; 3]) -> (u64, Option<Rect>, usize) {
+    let Some(area) = rect.intersect(image.size()) else {
+        return (0, None, 0);
+    };
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    let mut ink = 0_u64;
+    let mut colors = std::collections::BTreeSet::new();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let Some(pixel) = image.pixel(x as u32, y as u32) else {
+                continue;
+            };
+            colors.insert(pixel);
+            let differs = (0..3).any(|channel| {
+                pixel[channel].abs_diff(background[channel]) > INK_CHANNEL_TOLERANCE
+            });
+            if differs {
+                ink += 1;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    // `if` 而不是 `bool::then(..)`：后者会被 `clippy::unnecessary_lazy_evaluations` 盯上
+    // （闭包里只是算术，没有副作用），而 CI 的 `-D warnings` 不接受"善意提示"。
+    let bbox = if ink > 0 {
+        Some(Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x + 1) as u32,
+            (max_y - min_y + 1) as u32,
+        ))
+    } else {
+        None
+    };
+    (ink, bbox, colors.len())
+}
+
 /// 为"遮罩不得把界面变成盲区"这条判据挑一个改动对象：**面积 ≥5% 画面**、
 /// 且**不与动态遮罩区大面积重叠**的静态节点，并按它的**实测**平均亮度决定改向。
 ///
@@ -183,6 +270,11 @@ fn mean_luma(luma: &LumaImage, rect: Rect) -> f64 {
 /// ① 候选必须 ≥5% 画面（SSIM 是逐窗均值，改动区太小无论如何都拉不下 0.98）；
 /// ② 动态区盖掉候选的 <10% 面积（否则回归会被遮罩吸收）；
 /// ③ 平均亮度 >127.5 ⇒ 往黑改，否则往白改 ⇒ **保证**是"亮度差大"的方向。
+///
+/// 5% 这个门槛不是随手定的：本机实测（用 `ssim.rs` 的真实实现 + 合成画面）
+/// **0.48% 画面的改动未遮罩 SSIM = 0.994871 ⇒ 检不出**（≥0.98），
+/// 而 ≥5% 画面 + 亮度差大的改动实测 0.62 量级 ⇒ 检得出。
+/// 数字与依据见 `docs/ledger/app-introspect-notes.md` §5.1；口径见 ADR-0001 D23。
 fn pick_regression_target(
     tree: &ControlTree,
     luma: &LumaImage,
@@ -909,6 +1001,55 @@ fn runtime_control_tree_cross_check_against_the_registry() {
         !regression_masked.passed,
         "静态回归在**遮罩之后**仍然必须被检出（遮罩不能把界面变成盲区）, 实测 SSIM {}",
         regression_masked.score
+    );
+
+    // ---- ADR-0001 D24：界面字体**非 tofu**（"汉字真的被栅格化"的量化版本） ----
+    //
+    // D24 把这条判据明确划给本线（原文建议"可用字符包围盒非零或与已知 tofu 图样比对"）。
+    // 这里用墨迹量化：`ai-rail-diagnose-button` 的内容是两行汉字（12 个汉字 + `:`/`/` 三个 ASCII），
+    // 对照是状态栏的 `status-bar-chord`（2 个汉字 + 5 个 ASCII，同为 font-size-xs）。
+    let cjk_card = runtime
+        .find_by_id("ai-rail-diagnose-button")
+        .and_then(|node| node.bounds)
+        .expect("AI 协作栏的『声学诊断』卡片必须可见（D24 的汉字判据挂在它上面）");
+    let (cjk_ink, cjk_bbox, cjk_colors) = ink_stats(&image, inset_rect(cjk_card, 4), TOKEN_BG_VOID);
+    let reference_card = runtime
+        .find_by_id("status-bar-chord")
+        .and_then(|node| node.bounds)
+        .expect("状态栏的『和弦』文本必须可见（D24 的对照项）");
+    let (reference_ink, reference_bbox, reference_colors) =
+        ink_stats(&image, inset_rect(reference_card, 4), TOKEN_BG_PANEL);
+    let (intent_ink, _, _) = ink_stats(
+        &image,
+        inset_rect(
+            runtime
+                .find_by_id("ai-rail-intent-button")
+                .and_then(|node| node.bounds)
+                .expect("AI 协作栏的『意图生成』卡片必须可见"),
+            4,
+        ),
+        TOKEN_BG_VOID,
+    );
+    observe(&format!(
+        "[D24] 汉字墨迹: 声学诊断卡(12 汉字+3 ASCII) {cjk_ink} px (包围盒 {cjk_bbox:?}, 颜色 {cjk_colors}); \
+         对照 `status-bar-chord`(2 汉字+5 ASCII) {reference_ink} px (包围盒 {reference_bbox:?}, 颜色 {reference_colors}); \
+         意图生成卡(14 汉字+2 ASCII) {intent_ink} px; 下限 {MIN_CJK_INK_PIXELS} px"
+    ));
+    assert!(
+        cjk_ink >= MIN_CJK_INK_PIXELS,
+        "D24「界面字体非 tofu」: `ai-rail-diagnose-button` 内部几乎没有墨迹（实测 {cjk_ink} px, 下限 {MIN_CJK_INK_PIXELS}）\
+         ⇒ 汉字没有被栅格化。\n\
+         已知两侧实测: 没有 CJK 字体的 runner 上该卡片只有 24 px（只剩 ASCII 的 `:` 与 `/`）; \
+         有 CJK 字体时应为数百 px（本机 FreeType 按 10px 折算 ≈ 590 px）。\n\
+         排查顺序: ① 该 job 的 apt 步骤是否装了 `fonts-noto-cjk`（ADR-0001 D24 的运行时环境依赖, 不是仓库资产）; \
+         ② Slint 的字体回退链（`ui/tokens.slint` 的 `font-ui`）是否命中它。\n\
+         限制（明说）: 本判据证明「汉字字形真的被画出来了」, 但**不能**逐字形比对 —— \
+         那需要一份人类批准的参考图样（见 docs/ledger/app-introspect-notes.md §8）。"
+    );
+    assert!(
+        cjk_ink > reference_ink,
+        "D24: 以汉字为主的卡片({cjk_ink} px) 的墨迹必须多于以 ASCII 为主的对照卡({reference_ink} px) —— \
+         没有 CJK 字体时实测是 24/119 = 0.20, 有字体时约为 3–5"
     );
 
     // ---- `[UI-MCP-001]` ReadOnly 的属性读取（需要运行时元素） ----
