@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `0626220c0e03f33b`
+- `Cargo.lock` SHA-256（前 16 位）: `b70f5657613a5bd7`
 - 外部依赖包数: **618**（不含 23 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -295,7 +295,7 @@
 | `lazy_static` | `1.5.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `libc` | `0.2.190` | `MIT OR Apache-2.0` | 传递 | — |
 | `libloading` | `0.8.9` | `ISC` | 传递 | — |
-| `libm` | `0.2.16` | `MIT` | 直接 | `yeban-render`, `yeban-theory` |
+| `libm` | `0.2.16` | `MIT` | 直接 | `yeban-mcp`, `yeban-render`, `yeban-theory` |
 | `libredox` | `0.1.25` | `MIT` | 传递 | — |
 | `libseat` | `0.2.4` | `MIT` | 传递 | — |
 | `libseat-sys` | `0.2.0` | `MIT` | 传递 | — |

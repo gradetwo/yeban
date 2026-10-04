@@ -32,11 +32,11 @@
 //!
 //! ## 领域失败的两种出口（`ADR-0001 D25` 之后仍然闭合）
 //!
-//! - **领域失败**（工程锁被占、片段不存在、提案已被拒绝……）走
+//! - **领域失败**（工程锁被占、片段不存在、提案已被拒绝、渲染失败……）走
 //!   `ToolResponse{status:"error", error:{code}}`，`code` 必须落在
 //!   `schemas/mcp-tools.schema.json` 的**20 值** enum 里
 //!   （[`tools::ErrorCode::SCHEMA_CONTRACT`]）；
-//! - **实现级状况**（离线渲染尚未接线）走 JSON-RPC `-32005`，
+//! - **实现级状况**（目前只剩"本平台没有 OS 建议锁"这一条）走 JSON-RPC `-32005`，
 //!   [`domain::error::Fault`] 是这两条出口的唯一分叉点。
 //!
 //! 判据 `tests/tools_e2e.rs::every_emitted_error_code_is_inside_the_contract_enum`
@@ -44,8 +44,12 @@
 //!
 //! ## 本轮的实现状态（逐工具如实标注）
 //!
-//! 十个工具都接了真实现；唯一**明确未接线**的一半是 `yeban_render_master` 的
-//! **渲染本体**（参数校验、scope、`dryRun` 都是真的，通过校验后返回 `-32005`）。
+//! 十个工具**全部接了真实现**，包括 `yeban_render_master` 的渲染本体：
+//! 它真的调用 `yeban-render`（拓扑分层并行 + 固定顺序归约 + TPDF 抖动 +
+//! RIFF/RF64/BW64 容器 + BWF `bext`），并把产物按 `ARCH-SEC-004` 的
+//! 同目录临时文件 + `fsync` + `rename` 原子落盘。明确的**能力边界**（音频片段、
+//! 设备链 DSP、自动化曲线、连击/概率/弯音/歌词、循环重复……）同时写进
+//! `docs/ledger/mcp-render-notes.md` 与每次响应的 `unsupported` 载荷。
 //! 逐工具的"真做 / 半做 / 未接线"表在 `docs/ledger/tools-domain-notes.md`。
 //!
 //! ```text
@@ -100,10 +104,17 @@
 //!
 //! ## 本轮的实现状态
 //!
-//! **分发 / 鉴权 / `dryRun` / 幂等 / 传输 / 十个工具的领域实现都是真的**。
-//! 唯一未接线的一半是 `yeban_render_master` 的渲染本体：参数校验、scope、
-//! `dryRun` 全真，通过校验后返回 JSON-RPC `-32005 NOT_IMPLEMENTED`
-//! （`data.validated = true` + `data.request`），绝不伪装成功。
+//! **分发 / 鉴权 / `dryRun` / 幂等 / 传输 / 十个工具的领域实现都是真的** ——
+//! 包括 `yeban_render_master` 的**渲染本体**：它真的从活跃工程构造 `RoutingGraph`
+//! 与音源、编译并执行 `yeban_render::RenderPlan`、写出 24-bit RIFF/RF64/BW64 母带
+//! （TPDF 抖动 + BWF `bext`），并在响应里给出实测的帧数/字节数/SHA-256/块数/
+//! 最长延迟路径。`dryRun` 走同一条**只读**渲染路径，因此预览里的数字是实测值，
+//! 且一个字节都不落盘。
+//!
+//! 明确的**能力边界**（音频片段、设备链 DSP、自动化曲线、`ratchet`/`probability`/
+//! 弯音/歌词、循环重复、侧链键控……；本模型版本里没有 SFZ 设备变体）逐条写在
+//! `docs/ledger/mcp-render-notes.md`，只要工程里真的出现就会出现在响应的
+//! `unsupported` / `unsupportedCounts` 载荷里 —— 不声称渲染了没渲染的东西。
 //!
 //! ```text
 //! bash scripts/dev/cargo-local.sh test -p yeban-mcp

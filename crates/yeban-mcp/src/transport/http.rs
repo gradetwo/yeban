@@ -963,9 +963,9 @@ mod tests {
     }
 
     #[test]
-    fn unwired_renderer_maps_to_501_only_after_parameter_validation() {
+    fn render_master_is_in_band_over_http_and_never_answers_501() {
         let server = loopback_server_with_project();
-        // 坏参数 ⇒ **带内**领域失败 (200), 校验先于未接线。
+        // 坏参数 ⇒ **带内**领域失败 (200), 校验先于渲染。
         let bad = server.handle_text(&request(
             Some(&bearer(&server)),
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_render_master","arguments":{"format":"mp3","sampleRate":48000}}}"#,
@@ -975,15 +975,22 @@ mod tests {
         assert!(value.get("error").is_none(), "领域失败必须带内传递");
         assert_eq!(value["result"]["error"]["code"], "INVALID_PARAMETER_RANGE");
 
-        // 好参数 ⇒ 参数校验通过 ⇒ 实现级 -32005 ⇒ HTTP 501。
-        let response = server.handle_text(&request(
+        // 好参数但**工程采样率不一致**（规范样本工程是 48 kHz, 这里请求 44.1 kHz）:
+        // 重采样器未接线 ⇒ 契约内的 `RENDER_FAILED`（带内 200），
+        // 既不是"假装成功", 也不再是实现级 501。
+        let mismatched = server.handle_text(&request(
             Some(&bearer(&server)),
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_render_master","arguments":{"format":"wav","sampleRate":48000}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_render_master","arguments":{"format":"wav","sampleRate":44100}}}"#,
         ));
-        assert_eq!(response.status, 501);
-        let value: Value = serde_json::from_str(&response.body).expect("JSON");
-        assert_eq!(value["error"]["code"], crate::jsonrpc::NOT_IMPLEMENTED);
-        assert_eq!(value["error"]["data"]["validated"], true);
+        assert_eq!(mismatched.status, 200, "渲染器已接线, 不再有 501");
+        let value: Value = serde_json::from_str(&mismatched.body).expect("JSON");
+        assert!(value.get("error").is_none(), "领域失败必须带内传递");
+        assert_eq!(value["result"]["status"], "error");
+        assert_eq!(value["result"]["error"]["code"], "RENDER_FAILED");
+        assert_eq!(
+            value["result"]["error"]["data"]["unwired"], "resampler",
+            "必须如实说明是什么没接线"
+        );
     }
 
     #[test]

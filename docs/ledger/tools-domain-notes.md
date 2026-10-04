@@ -30,7 +30,7 @@
 | `src/domain/section.rs` | `MCP-TOOL-005` | 风格预设 → 段落 + 声部音轨骨架；**DFS 着色判环**（模型层不判环） |
 | `src/domain/macros.rs` | `MCP-TOOL-007` | 宏旋钮 + 按 `MacroMapping` 级联 S 曲线自动化点 |
 | `src/domain/proposal.rs` | `MCP-TOOL-005/006/007/009/010`、`ARCH-OPS-002` | 提案记录（状态、基于哪个提交、op 清单、合并/拒绝留痕） |
-| `src/domain/render.rs` | `MCP-TOOL-008` | 渲染参数校验（`format` 白名单 + 走模型层 `SampleRate::from_hz`）；渲染本体**未接线** |
+| `src/domain/render.rs` | `MCP-TOOL-008` | 渲染参数校验（`format` 白名单 + 走模型层 `SampleRate::from_hz`）；**渲染本体已由 `line/mcp-render` 接线** |
 | `src/domain/ids.rs` | `MODEL-AST-001` 精神 | 确定性夹具身份（FNV-1a 128 → Crockford Base32 ULID），让 `dryRun` 预览与真调用逐字节一致 |
 | `src/dispatch.rs` | `MCP-TOOL-001..010` | `Dispatcher` 持有 `Domain`；`dryRun` 走只读 `domain::preview`；幂等缓存查询仍在执行之前 |
 | `tests/tools_e2e.rs` | `MCP-TOOL-001..010`、`MUST-GATE-010` | **25 条端到端判据**（真实文件系统 + 真实 JSON-RPC 管线） |
@@ -55,13 +55,17 @@
 | `MCP-TOOL-005` | `yeban_propose_section` | **半做** | 4 个风格预设（未知 → `STYLE_NOT_FOUND`）；`bars` 1..=64（越界 → `OUT_OF_RANGE`）；调式写法校验；段落起点接在最后一个段落之后；每个声部一条 MIDI 音轨；**整批 op 在克隆体上模拟后才建提案**；现有路由图成环 → `CYCLE_DETECTED` | §7.2 的"**声部连接**"与"配器骨架里的**片段**"没有产出：`ARCH-OPS-001` 的 `Op` 全集**没有** `AddClip`/`RemoveClip` 与 `AddRoutingNode`，而 `Op::ConnectRouting` 的前置条件要求两端已在 `routing_graph.nodes` 里 ⇒ **表达不出来**。响应里用 `data.unwired = ["clipPoolEntries","routingEdges"]` 明示（见 §5 needs-1） |
 | `MCP-TOOL-006` | `yeban_edit_notes` | **真做** | 4 种 `NoteOp`（`add`/`delete`/`move`/`velocity`）→ `Op` 编译；`Delete` 的 `previous_note` 从当前文档读取；音域 `0..=127`（含平移后）→ `OUT_OF_RANGE`；**发声数峰值 > 32** → `OUT_OF_RANGE`（带 peak/limit）；音符不存在 → `ENTITY_NOT_FOUND`；产物是提案（可逆、可审查） | `NoteOp` 的 JSON 形状没有契约（§5 needs-2）；"发声数"上限 32 是本地常量 |
 | `MCP-TOOL-007` | `yeban_set_macro` | **半做** | 音轨 → `TRACK_NOT_FOUND`；宏下标 → `INDEX_OUT_OF_BOUNDS`（带 `macroCount`）；值域 `0.0..=1.0` 且有限 → `OUT_OF_RANGE`；`Op::SetMacro` 的 `old_val` 从文档读；按每个 `MacroMapping` 展开 2 个 S 曲线自动化点（起点 → 一小节后） | **级联点的物理量纲**：`MacroMapping` 只有 `depth`，参数真实值域（dB/Hz/%）住在设备层 ⇒ 写的是**归一化值**，响应里 `normalized: true`（见 §5 needs-4） |
-| `MCP-TOOL-008` | `yeban_render_master` | **未接线（另一半明确没做）** | `format` 白名单（`wav`/`rf64`/`bw64`）；`sampleRate` 走**模型层** `SampleRate::from_hz` 允许集合；`normalize` 缺省 `false`；无活跃工程 → `NO_ACTIVE_PROJECT`；`dryRun` **真的**做完全部校验并披露渲染器未接线 | **渲染本体**（触发 `yeban-render`、返回产物哈希与路径）没有接线 ⇒ 通过校验后返回 JSON-RPC `-32005`（`data.validated = true` + `data.request`）。`BUSY` 在当前单线程同步架构下**不可达**（登记，不是遗漏） |
+| `MCP-TOOL-008` | `yeban_render_master` | **真做（渲染本体已由 `line/mcp-render` 接线）** | `format` 白名单（`wav`/`rf64`/`bw64`）；`sampleRate` 走**模型层** `SampleRate::from_hz` 允许集合；`normalize` 缺省 `false`；无活跃工程 → `NO_ACTIVE_PROJECT`；**真调用 `yeban-render`**：`track_latencies(DeviceDefinition::latency_samples)` → `RenderPlan::compile_with_latencies` → 逐源节点注入 MIDI 合成源 → `execute` → Master 增益/峰值归一化 → TPDF 抖动 → 24-bit → RIFF/RF64/BW64 + `bext` → **原子落盘**（同目录 tmp + `fsync` + rename）；响应给出实测 帧数/声道/采样率/字节数/SHA-256/块数/最长延迟路径；`dryRun` 走同一条**只读**渲染路径（不落盘、目录为空）| **能力边界**（只要工程里出现就进响应 `unsupported`）：音频片段（`audioClips`，CAS 资产未解码）、设备链 DSP（`deviceChainDsp`，只有延迟进了 PDC）、外部插件、自动化曲线、循环重复、`ratchet`/`probability`/弯音/滑音/歌词；采样率 ≠ 工程采样率 ⇒ `RENDER_FAILED`（重采样未接线）；`sfzSampler` 在本模型 `DeviceKind` 里**没有变体**。`BUSY` 在当前单线程同步架构下**不可达**（登记，不是遗漏）。台账：`docs/ledger/mcp-render-notes.md` |
 | `MCP-TOOL-009` | `yeban_merge_proposal` | **真做** | 提案 op 包成**单一原子 `Op::Batch`** 施加；失败（含基线漂移）→ `CONFLICT`（带 `baseCommitMoved`）；合并后 `append` 一条主分支提交（`OpOrigin::McpProposal`）；幂等：已合并再合并 → `alreadyMerged` + `appliedOps = 0`；已拒绝的提案 → `CONFLICT` | `CommitGraph` **没有**"多父合并提交"的 API（`Commit.parents` 是 `Vec` 但 `append` 永远写单父），因此合并提交在主分支上只有一个父；提案分支与合并提交的对应关系由本线的 `Proposal` 记录承担（见 §5 needs-5） |
 | `MCP-TOOL-010` | `yeban_reject_proposal` | **真做** | 未知提案 → `PROPOSAL_NOT_FOUND`（带 `proposalId`）；已拒绝再拒 → `alreadyRejected`（幂等）；已合并再拒 → `CONFLICT`；**记录保留**（`status`/`resolvedAt`/`resolution` = 拒绝原因）⇒"拒绝也必须可追溯"；拒绝**不改工程字节** | 未真正"释放无用内存快照"（`CommitGraph` 没有 GC API） |
 
-**一句话**：**8 个真做 / 2 个半做（`open_project`、`propose_section`、`set_macro` 中的三处缩水）/ 1 个未接线的一半（`render_master` 的渲染器）**。
-上一线的 **P1**（"十工具一律 `-32005 NOT_IMPLEMENTED`"）**关闭**：现在唯一可能返回 `-32005` 的路径是
-`yeban_render_master` **参数校验通过之后**的那一半。
+**一句话**：**十个工具现在全部真的做事** —— 原来的 1 处未接线（`render_master` 的渲染本体）
+已由 `line/mcp-render` 接线；剩下的缩水只有 `open_project` / `propose_section` / `set_macro`
+的各项（见上表那三行，逐条写了缩水在哪）。
+上一线的 **P1**（"十工具一律 `-32005 NOT_IMPLEMENTED`"）**关闭**，且**本 crate 的工具路径上
+不再有任何实现级 `-32005` 出口**（只剩"本平台没有 OS 建议锁"这一条，
+见 `docs/ledger/lock-advisory-notes.md`）。`yeban_render_master` 的能力边界与实测数字见
+`docs/ledger/mcp-render-notes.md`。
 
 ---
 
@@ -236,7 +240,7 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 
 | # | 项 | 状态 |
 | :--- | :--- | :--- |
-| P1（承接 `mcp-core` 台账） | 十工具领域实现未接线 | **本轮关闭**（唯一残留 = 渲染器本体，见 `MCP-TOOL-008`） |
+| P1（承接 `mcp-core` 台账） | 十工具领域实现未接线 | **本轮关闭**（唯一残留 = 渲染器本体，见 `MCP-TOOL-008`）—— 该残留已由 `line/mcp-render` 关闭：见 `docs/ledger/mcp-render-notes.md` |
 | P2（承接） | 冷启动 ≤ 20ms 未测量 | **仍 pending**（本线不新增打点） |
 | P4 / P5 / P10（承接） | ADR-0001 D25 的两处取舍（联集 20 值、4 个 schema 原有码是否全留）待人类追认 | **仍 pending** |
 | P6（承接） | `.yeban.lock` 的 OS 建议锁 / 心跳 / 陈旧锁抢占 | **仍 pending**（本线把"原子创建 + 存在即拒"做实了，见 boundary-3） |
@@ -257,8 +261,8 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 > （缓存查询在执行之前）保证、由"提案数/提交数/工程字节只前进一次"证明；
 > 原子保存由"只读目录下失败且原文件逐字节不变"证明；逆操作**只有一份事实源**
 > （`yeban-model` 的 `Op::invert`）。四条注入各自让对应的判据变红，还原后全绿。
-> 明确没做的一半只有一处 —— `yeban_render_master` 的渲染本体，且它在**参数校验通过之后**
-> 才返回 `-32005`。实测出的三处**规范/模型层缺口**（`Op` 全集缺 4 个变体、`NoteOp` 无契约、
+> 当时明确没做的一半只有一处 —— `yeban_render_master` 的渲染本体（`line/mcp-render` 已接线，
+> 见 `docs/ledger/mcp-render-notes.md`）。实测出的三处**规范/模型层缺口**（`Op` 全集缺 4 个变体、`NoteOp` 无契约、
 > `CommitGraph` 缺分支/多父 API）已登记为 needs，本线**不改**规范与 schema。
 
 ---

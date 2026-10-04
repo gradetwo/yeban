@@ -728,34 +728,56 @@ mod tests {
         assert_eq!(dispatcher.domain().project_digest(), digest_before);
     }
 
+    /// 一个**保证可写**的渲染输出路径（独占临时目录里的一个文件名）。
+    ///
+    /// 目录真的被创建：渲染现在会**真的落盘**，因此这个判据需要一个存在的父目录。
+    fn render_output_path(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-dispatch-render-{}-{tag}-{}",
+            std::process::id(),
+            crate::security::BearerToken::generate().token.expose()
+        ));
+        std::fs::create_dir_all(&dir).expect("建渲染输出目录");
+        dir.join("master.wav")
+    }
+
     #[test]
-    fn idempotency_replays_the_same_result_with_the_current_id() {
+    fn idempotency_replays_the_same_result_without_rendering_twice() {
         let mut dispatcher = dispatcher();
         seed_project(&mut dispatcher, unique_project_path());
         let auth = bearer(&dispatcher);
-        let first_line = serde_json::json!({
-            "jsonrpc": "2.0", "id": "first", "method": "tools/call",
-            "params": {"name": "yeban_render_master",
-                       "arguments": {"format": "wav", "sampleRate": 48000, "idempotencyKey": "k1"}}
-        })
-        .to_string();
+        let output = render_output_path("idem");
+        let arguments = serde_json::json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": output.display().to_string(),
+            "idempotencyKey": "k1",
+        });
+        let line = |id: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "yeban_render_master", "arguments": arguments}
+            })
+            .to_string()
+        };
+        let first_line = line("first");
         let first = dispatcher.handle_line(Channel::Http, Some(&auth), &first_line);
-        // 参数校验已通过 ⇒ 这一半未接线 ⇒ 实现级 -32005（绝不是伪装的 ToolResponse）。
-        assert_eq!(first.error_code(), Some(jsonrpc::NOT_IMPLEMENTED));
+        assert_eq!(first.error_code(), None, "渲染必须带内成功");
         assert_eq!(dispatcher.idempotency_len(), 1);
         assert_eq!(dispatcher.idempotency_keys(), vec!["k1"]);
+        let first_response = first.response.expect("响应");
+        let first_result = first_response.result.clone().expect("result");
+        assert_eq!(first_result["status"], "success", "{first_result}");
+        assert!(output.is_file(), "第一次调用必须真的写出母带");
+        let modified_first = std::fs::metadata(&output)
+            .expect("元数据")
+            .modified()
+            .expect("mtime");
 
-        let second_line = serde_json::json!({
-            "jsonrpc": "2.0", "id": "second", "method": "tools/call",
-            "params": {"name": "yeban_render_master",
-                       "arguments": {"format": "wav", "sampleRate": 48000, "idempotencyKey": "k1"}}
-        })
-        .to_string();
+        let second_line = line("second");
         let second = dispatcher.handle_line(Channel::Http, Some(&auth), &second_line);
         assert_eq!(dispatcher.replayed(), 1, "第二次必须命中缓存");
         assert_eq!(dispatcher.idempotency_len(), 1, "缓存不得增长");
-
-        let first_response = first.response.expect("响应");
         let envelope = second.response.expect("响应");
         assert_eq!(
             envelope.id,
@@ -766,11 +788,74 @@ mod tests {
         assert_eq!(replayed["replayed"], true);
         let inner = &replayed["response"];
         assert_eq!(inner["id"], "second", "内层也要用当前 id");
-        // 错误主体逐字节相同。
         assert_eq!(
-            inner["error"],
-            serde_json::to_value(first_response.error.expect("错误")).expect("序列化")
+            inner["result"], first_result,
+            "重放的主体必须与首次逐字节相同"
         );
+        assert_eq!(
+            std::fs::metadata(&output)
+                .expect("元数据")
+                .modified()
+                .expect("mtime"),
+            modified_first,
+            "命中幂等缓存 ⇒ 输出文件不得被重写"
+        );
+
+        // 最强的一条: 把产物删掉再重放同键 —— 文件**不会**被重建,
+        // 因此第二次调用确实没有进入渲染路径(而不是"渲染出一样的字节")。
+        std::fs::remove_file(&output).expect("删掉产物");
+        let third = dispatcher.handle_line(Channel::Http, Some(&auth), &line("third"));
+        let third_result = third.response.expect("响应").result.expect("result");
+        assert_eq!(third_result["replayed"], true);
+        assert!(!output.exists(), "同键重放不得重新渲染 (产物不应被重建)");
+        assert_eq!(dispatcher.replayed(), 2);
+        if let Some(parent) = output.parent() {
+            std::fs::remove_dir_all(parent).ok();
+        }
+    }
+
+    #[test]
+    fn render_master_is_wired_and_writes_a_real_master() {
+        let mut dispatcher = dispatcher();
+        seed_project(&mut dispatcher, unique_project_path());
+        let auth = bearer(&dispatcher);
+        let output = render_output_path("wired");
+        let outcome = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &call(
+                "yeban_render_master",
+                serde_json::json!({
+                    "format": "wav",
+                    "sampleRate": 48000,
+                    "path": output.display().to_string(),
+                }),
+            ),
+        );
+        assert_eq!(outcome.http_status, 200, "不再有实现级 -32005");
+        assert_eq!(outcome.error_code(), None);
+        let result = outcome.response.expect("响应").result.expect("result");
+        assert_eq!(result["status"], "success", "{result}");
+        assert_eq!(result["data"]["rendered"], true);
+        assert_eq!(result["data"]["format"], "wav");
+        assert_eq!(result["data"]["bitDepth"], 24);
+        assert_eq!(result["data"]["frames"], 90_000);
+        let written = std::fs::read(&output).expect("产物");
+        assert_eq!(
+            written.len(),
+            usize::try_from(result["data"]["bytes"].as_u64().expect("bytes")).expect("小尺寸")
+        );
+        // 落盘是原子的: 目录里不许留下临时文件。
+        let leftovers: Vec<String> = std::fs::read_dir(output.parent().expect("父目录"))
+            .expect("列目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(crate::domain::store::TEMP_INFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+        if let Some(parent) = output.parent() {
+            std::fs::remove_dir_all(parent).ok();
+        }
     }
 
     #[test]
@@ -855,28 +940,50 @@ mod tests {
     }
 
     #[test]
-    fn the_only_implementation_level_code_left_is_the_unwired_renderer() {
+    fn no_tool_is_left_at_an_implementation_level_error() {
+        // 上一线唯一的实现级出口是"参数校验通过之后的渲染器"。
+        // 渲染器接线之后, 这个出口在本 crate 的工具路径上**不再存在**:
+        // 好参数 ⇒ 真渲染 ⇒ 带内 ToolResponse; 坏参数 ⇒ 带内领域失败。
         let mut dispatcher = dispatcher();
         seed_project(&mut dispatcher, unique_project_path());
         let auth = bearer(&dispatcher);
-        // 好参数 + 有工程 ⇒ 参数校验通过 ⇒ 实现级 -32005, 且 `data` 带规范 ID。
-        let outcome = dispatcher.handle_line(
+        let output = render_output_path("no-impl");
+        let good = dispatcher.handle_line(
             Channel::Http,
             Some(&auth),
             &call(
                 "yeban_render_master",
-                serde_json::json!({"format": "wav", "sampleRate": 48000}),
+                serde_json::json!({
+                    "format": "wav",
+                    "sampleRate": 48000,
+                    "path": output.display().to_string(),
+                }),
             ),
         );
-        assert_eq!(outcome.http_status, 501);
-        assert_eq!(outcome.error_code(), Some(jsonrpc::NOT_IMPLEMENTED));
-        let error = outcome.response.expect("响应").error.expect("错误");
-        let data = error.data.expect("data");
-        assert_eq!(data["code"], "NOT_IMPLEMENTED");
-        assert_eq!(data["tool"], "yeban_render_master");
-        assert_eq!(data["specId"], "MCP-TOOL-008");
-        assert_eq!(data["validated"], true);
-        assert_eq!(data["request"]["wired"], false);
+        assert_eq!(good.http_status, 200);
+        assert_eq!(good.error_code(), None);
+        let result = good.response.expect("响应").result.expect("result");
+        assert_eq!(result["status"], "success", "{result}");
+        assert!(
+            result["data"].get("validated").is_none(),
+            "旧的 `validated` 披露字段属于 -32005 那一版, 不该再出现"
+        );
+        // 坏参数仍然先于渲染被拦下（参数校验先于渲染）。
+        let bad = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &call(
+                "yeban_render_master",
+                serde_json::json!({"format": "mp3", "sampleRate": 48000}),
+            ),
+        );
+        assert_eq!(bad.http_status, 200);
+        let bad_result = bad.response.expect("响应").result.expect("result");
+        assert_eq!(bad_result["status"], "error");
+        assert_eq!(bad_result["error"]["code"], "INVALID_PARAMETER_RANGE");
+        if let Some(parent) = output.parent() {
+            std::fs::remove_dir_all(parent).ok();
+        }
     }
 
     /// 为每个工具造一份最小合法实参（只为走到执行分支）。
