@@ -402,7 +402,11 @@ crates/yeban-app/ui/
 `[UI-TEST-003]` **无头运行模式 (Headless Mode Execution)**：为支撑 AI Agent 在 Linux 服务器、无显示器容器或 CI/CD 流水线中进行全自主测试与视觉验收，界面系统支持完整的无头运行体系：
 
 ```bash
-# 启动集成测试并在无头模式下运行
+# ⚠ 修订(2026-10-04, 裁决 D18): **Slint 1.18.1 没有名为 `headless` 的后端**
+# （`SLINT_BACKEND` 只接受 qt / winit / linuxkms，可加 -software / -skia / -vello 后缀）。
+# 下面这行是**本规范点名的原样命令行**：夜半的 CLI 接受它并折算成自研哨兵值 `--headless`
+# （不构造 Slint 组件、不初始化后端、不进事件循环，打印 `headless ok` 后退出 0）。
+# 它证明的是"无显示器环境能跑起来"，**不证明控件树正确** —— 后者由 yeban-ui-test-port 负责。
 SLINT_BACKEND=headless \
 cargo test -p yeban-app --test headless_ui_test
 
@@ -452,3 +456,21 @@ YEBAN_UI_TEST_PORT=9315 \
 3. `[UI-MCP-003]` **分平台 Golden 截图基准库与 SSIM 目标**：
    - 因 Linux (FreeType)、macOS (CoreText) 与 Windows (DirectWrite) 系统的底层字体光栅化与亚像素抗锯齿算法存在微弱渲染差异，CI 视觉回归测试严禁跨平台混用同一张 Golden 图，必须按操作系统独立维护基准图集；
    - **初版工程基准目标收敛为 SSIM ≥ 0.98**（像素差异占比 < 2%），平衡跨平台字体渲染差异与视觉回归敏锐度；关键静态视觉缺陷（如元素缺失、布局错位）可 100% 灵敏检出。
+
+---
+
+## 附：修订记录（Errata，经负责人 **2026-10-04** 追认）
+
+> 本规范是 Normative 文本。以下条目是**实现过程中实测到的、与本规范原措辞不符**之处；
+> 裁决与证据在 `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md`，
+> 逐条结论见 `docs/ledger/human-decisions.md`。**以本节的措辞为准。**
+
+| 原措辞（已不准确） | 修订后的措辞 | 裁决 | 实测依据 |
+| :--- | :--- | :--- | :--- |
+| 用 `SLINT_BACKEND=headless` 启动无头模式 | **Slint 1.18.1 没有名为 `headless` 的后端**（`SLINT_BACKEND` 只接受 `qt`/`winit`/`linuxkms`，可加 `-software`/`-skia`/`-vello` 后缀）。夜半的对外**契约**是自研哨兵值 **`yeban-app --headless`**（等价地 `SLINT_BACKEND=headless ./target/debug/yeban-app --headless` 仅作为"规范原样命令行"被**接受并折算**）：不构造任何 Slint 组件、不初始化后端、不进事件循环，打印握手行 `headless ok` 后退出 0。它只证明"无显示器环境能跑起来"，**不证明控件树正确** —— 后者由 `yeban-ui-test-port` 的测试后端负责 | D18 | 上游 1.18.1 的公开 API 与文档 |
+| `renderer-skia` 作为无头软件渲染后端 | **默认用可移植的 `renderer-software`**；启用 Skia 需要 LLVM/clang 工具链，编译成本与渲染一致性都要另行评估，**列为 PENDING**，不在初版启用 | D18 | 构建依赖核验 |
+| `SSIM ≥ 0.98` 与"关键静态视觉缺陷可 **100%** 灵敏检出" | SSIM 对**细长条、等亮度换色**近乎免疫，**不能**保证"任何可见差异都会红"。判据因此挑**成块 + 亮度差大**的变化；"100%"这个措辞应读作"**在选定判据下**的关键缺陷可检出" | D23 | `yeban-ui-test-port` 的注入实测 |
+| "按操作系统独立维护基准图集" + "配置字体降级链" | 两句**互相矛盾**（分平台 Golden 意味着字体差异已被吸收，就不再需要降级链）。裁决：**不捆绑 CJK 字体**（依赖系统字体覆盖，以维持"单二进制 < 25 MB"），CI 显式安装 `fonts-noto-cjk` 并断言"汉字非 tofu"；Golden 按平台独立维护 | D24 | CI 字体渲染实测 |
+| UI 控制面六级 scope 覆盖"界面状态写" | 六级 scope（`ui:read`/`ui:screenshot`/`ui:inject`/`app:save`/`app:reload-engine`/`app:admin`）**没有**"界面状态写"这一级；`ui/switch_main_view` 因此挂在 `app:admin` 下。端口三级 `Permission` 与网络六级 `Scope` **保持两套**（前者是能力，后者是授权） | D29 | `yeban-ui-mcp` 的 scope 矩阵 |
+| 轨道颜色只写"十六进制颜色" | 明确定义为：可选 `#` + **3 位或 6 位**十六进制（大小写不敏感，3 位按 CSS 规则展开）；**非法或缺省一律回退 `#2C3A63`**（= `Tokens.line-strong`，由判据直读 `tokens.slint` 对账）。只有**一处**解析实现 | HD-22 | `crates/yeban-app/src/bridge.rs` + `arrangement_view.slint` 的色标判据 |
+| `.yeban.lock` 的持有者信息与心跳 | 持有者信息**跨进程读在 Windows 上不可用**（`LockFileEx` 是强制锁）⇒ `PROJECT_LOCKED` 载荷用 `holderMetadata ∈ {available, unavailable-on-this-platform, unavailable}` **如实**表达；**不做心跳抢占**（建议锁本身即活体证据），心跳只进诊断载荷 | D31, HD-29 | `yeban-mcp` 的 Windows 门禁实测 |

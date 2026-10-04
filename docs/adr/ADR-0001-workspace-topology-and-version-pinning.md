@@ -1,6 +1,8 @@
 # ADR-0001 — 工作区拓扑、命名与版本钉死
 
-- **状态**: Proposed（在人类负责人批准前，Agent 一律照此执行）
+- **状态**: **Accepted（负责人已于 2026-10-04 授权"按建议执行"，全部裁决追认）**
+  （在此之前的状态是 `Proposed`：Agent 一律照此执行，但保留人类否决权；现在否决权未行使、追认已给出。
+  逐条结论与建议列见 `docs/ledger/human-decisions.md`。）
 - **日期**: 2026-10-05
 - **依据**: `AGENTS.md` §1/§2/§4、`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §8、`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` §3
 - **背景**: 四份 Normative 规范之间以及规范与现实之间存在若干必须裁决的冲突与缺口。本 ADR 把裁决、依据与代价一次写清，避免每条工作线各自发明一套答案。
@@ -76,14 +78,14 @@
   （fade-in 用 `w`，fade-out 用 `w` 的镜像）。差异已记入 `docs/ledger/dsp-core-provenance.md` §5.1。
 - **待人类确认**：若产品意图是对称 Hann 窗，需要改规范 §3.3 —— 那属于人类对规范的修改，Agent 不代改。
 
-### D17 — 依赖许可白名单接纳 `BSL-1.0`（Proposed，待人类法务追认）
+### D17 — 依赖许可白名单接纳 `BSL-1.0`（**Accepted 2026-10-04**）
 
 - **背景**：引入 Slint 后，`clipboard-win` / `error-code`（← `arboard` ← winit/slint，Windows 目标）
   声明 `BSL-1.0`（Boost Software License 1.0），被 `cargo deny` 拒绝。
 - **裁决**：加入白名单。判定依据：BSL-1.0 是 OSI 认证 + FSF Free/Libre + 宽松 + 与 GPLv3 兼容，
   **不属于** AGENTS.md §2 红线 2 禁止的三类（非商业限制 / 专有不可再分发 / 不兼容 GPLv3）。
 - **诚实声明**：提出该修改的是 Agent（集成者）。"接纳一个新许可"在精神上属于 `ROAD-M-1-006`
-  的人类判断范畴，因此本裁决状态为 `Proposed`：人类可以否决，否决时回滚 `deny.toml` 中该行，
+  的人类判断范畴，因此本裁决最初状态为 `Proposed`（**已于 2026-10-04 追认**；若未来否决，回滚 `deny.toml` 中该行即可），
   并改由 CI 安装 `libfontconfig`/改用其它剪贴板方案来绕行。
 - **同类前置**：Slint 在 Linux 上还需要系统 `fontconfig` 开发库（见 `docs/CI_CD.md` §3.2），
   已由 CI 统一安装，而不是在各 crate 里加 feature 垫片。
@@ -124,7 +126,7 @@
 - **前提修正**：`ARCH-PDC-001` 明写 `DeviceDefinition::latency_samples`，但该字段此前**并不存在**。
   已按规范补上（`yeban-model`，`#[serde(default)]` 取 0 表示"未上报"，填充样本里给 32 采样点做覆盖）。
 
-### D20 — 依赖许可白名单接纳 `Unlicense`（Proposed，待人类法务追认）
+### D20 — 依赖许可白名单接纳 `Unlicense`（**Accepted 2026-10-04**）
 
 - **背景**：`midly`（规范 §4 指定的 SMF 0/1 零堆分配编解码库）**只有** `Unlicense`，
   不像多数 crate 那样带 `MIT/Apache` 兜底分支，因此被 `cargo deny` 逐条拒绝。
@@ -133,7 +135,7 @@
 - **考虑过的替代**：自研 SMF 编解码器（约 180 行，可让 `yeban-render` 的 MIDI 模块零第三方依赖）。
   **否决**：SMF 的运行状态、VLQ 边界、tempo map 语义是"领域早已定型"的东西，
   自研等于把一个小问题变成长期维护问题（SKILL「不要重新发明已定型的东西」）。
-- **诚实声明**：与 D17 一样，这是 Agent（集成者）提出的白名单扩张，状态 `Proposed`，人类可否决；
+- **诚实声明**：与 D17 一样，这是 Agent（集成者）提出的白名单扩张，**已于 2026-10-04 由负责人追认**；
   否决时改为自研 SMF 编解码器。
 
 ### D21 — 内部 path 依赖豁免通配检查（否则每条线都撞同一堵墙）
@@ -219,7 +221,7 @@
    **16 个**，交集只有 3 个 ⇒ 13 个领域错误码（`FILE_NOT_FOUND` / `DISK_FULL` / `CLIP_NOT_FOUND` / `CONFLICT` …）
    **没有家**：任何真实的领域失败都会产出被契约判为非法的响应。
    · **裁决**：取**两集合的联集**（20 个值），既有 7 个一个不删（`PERMISSION_DENIED` 还是 scope 强制的必需码），
-     规范并集一个不缺。**扩展 enum 属契约变更，状态 Proposed 待人类追认**（与 D17/D20 同一处理方式）。
+     规范并集一个不缺。**扩展 enum 属契约变更，状态已由负责人追认（2026-10-04）**（与 D17/D20 同一处理方式）。
 2. **根不引用 `definitions`**：根只有 `$schema/$id/title/description/type/definitions`，
    于是 `validate_schemas.py --samples-dir` 在本 schema 上**是空转的** —— 实测
    `{"anything":[1,2,3]}` 与 `{"name":"完全不在枚举里的工具"}` **都能通过根校验**。
@@ -407,7 +409,8 @@
 
 > **唯一入口**：`docs/ledger/human-decisions.md`（40 项，编号 `HD-01..HD-40`，每项都写了选项/建议/不决定的后果）。
 > 本节只做**索引**，细节与"当前处置"以那份清单为准；它由 `scripts/gates/check_decisions.py` 机械守卫
-> （本 ADR 里任何标了 `Proposed`/`待人类`/`需人类` 的裁决若不在册，`run-gates.sh light` 会红）。
+> （本 ADR 里任何标了 `Proposed`/`待人类`/`需人类` 的裁决若不在册，`run-gates.sh light` 会红。
+> **2026-10-04 起本 ADR 的全部裁决已追认**，那 42 项的逐条结论见该清单。）
 
 1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1`、D7 的 PENDING 策略、D12 对 `Op` 全集的扩展、
    D16 的窗函数口径、D17 的 BSL-1.0 与 D20 的 Unlicense 接纳）；

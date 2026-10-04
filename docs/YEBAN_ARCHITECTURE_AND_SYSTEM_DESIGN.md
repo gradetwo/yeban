@@ -1233,3 +1233,18 @@ YEBAN_UI_TEST_PORT=9315 \
    - **Golden 截图产出方式 (MUST)** ：Golden 图必须由 **Tier 1 软件光栅化方案**（`slint::platform::SoftwareRenderer` + Framebuffer 捕获）产出，而非 `i-slint-backend-testing`（该后端不渲染像素）；
    - **初版工程基准目标收敛为 SSIM ≥ 0.98**（像素差异占比 < 2%），平衡跨平台字体渲染差异与视觉回归敏锐度；关键静态视觉缺陷（如元素缺失、布局错位）可 100% 灵敏检出。
 
+---
+
+## 附：修订记录（Errata，经负责人 **2026-10-04** 追认）
+
+> 本规范是 Normative 文本。以下条目是**实现过程中实测到的、与本规范原措辞不符**之处；
+> 裁决与证据见 `docs/adr/ADR-0001-*`，逐条结论见 `docs/ledger/human-decisions.md`。**以本节的措辞为准。**
+
+| 原措辞（已不准确） | 修订后的措辞 | 裁决 | 实测依据 |
+| :--- | :--- | :--- | :--- |
+| §6.1 的 `Op` 全集 | 实测全集为 **29 个变体**（在架构原文基础上依次扩展）：`RemoveSection`/`RemoveScene`（D12）、`AddClip`/`RemoveClip`/`AddRoutingNode`/`RemoveRoutingNode`（D27）、`SetAutomationLane`/`RemoveAutomationLane`（D42/HD-42）。契约 `schemas/ops.schema.json` 的 `op.oneOf` 与枚举**逐变体对账**，且有**棘轮判据**（`enum − contract == PENDING_CONTRACT_OPS`，两集合不相交）保证欠账不会静默漂移 | D12, D27, HD-42 | `crates/yeban-model` 的 `op_variants_match_ops_schema_exactly` |
+| 错误码里同时出现 `CYCLE_DETECTED` 与 `ROUTING_CYCLE_DETECTED` | 二者**同义**（都指路由图成环）。对外契约取**联集 20 值**并保留二者以兼容既有样本；**新代码一律用 `ROUTING_CYCLE_DETECTED`**（更准确），`CYCLE_DETECTED` 仅作为既有样本的兼容别名 | D25 | `schemas/mcp-tools.schema.json` 的 `error.code` 联集 |
+| §3.3 的窗函数措辞（"Hann"） | 实现采用**周期 Hann**（`w[n] = 0.5 - 0.5·cos(2πn/N)`，分母是 `N` 而非 `N-1`）。规范若意在**对称 Hann**，需明确写出；当前以**周期 Hann**为准（STFT 重建常数叠加更自然） | D16 | `crates/yeban-dsp` 的窗函数判据 |
+| 重采样 API 点名 `SincFixedIn` / `FftFixedIn` | `rubato 5.0.1` **没有**这两个名字（实际为 `Async::new_sinc` 等）；`symphonia 0.6` 的 EOF/类型名也与旧文档不同。规范按**实际锁定版本**修订 | D26 | `Cargo.toml` 锁定版本 + `yeban-decode` 实测 |
+| "统一处理块大小（128 采样点）"用作**所有**时间量化的分母 | 必须区分两个概念：**处理量子**（`L1_BLOCK_SIZE = 128`，由本规范的确定性契约钉死，是**所有弹道/平滑时间量化的分母**）与**设备缓冲**（`audio_config.block_size`，例如 256，交给 `BufferSize::Fixed`）。引擎把任意长度的设备缓冲**按 128 切成整量子**；把设备缓冲当作量子会让峰值保持按 10 dB/s 衰减而不是 20 dB/s（**实测缺陷**，已修并加判据） | HD-28 | `crates/yeban-engine/src/rt.rs` + `quanta_per_second` 判据 |
+| `MAX_PCM_BYTES` 类上限 | 现有 `2 GiB` 在 96 kHz 立体声下约 46 分钟、8 声道下约 11.6 分钟 ⇒ **长工程会撞上限**。裁决：**提高上限或改为流式**（`HD-24`，列为待实现项） | HD-24 | `yeban-decode` 的上限判据 |
