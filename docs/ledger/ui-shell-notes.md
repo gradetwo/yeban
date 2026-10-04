@@ -212,6 +212,8 @@ UI/UX 规范定义了**网格几何**（§1.1/§1.2）与**视觉 Diff 语义色
 | 环境：`scripts/dev/local-env.sh`（集成者新增） | `run-gates.sh` 与 `cargo-local.sh` 会自动 source 它，沙箱里自动切 `CARGO_HOME` / `RUSTUP_TOOLCHAIN`，不必再手动 export |
 | 教训 L6（集成者踩过，后来者注意） | **不要把门禁管道到 `tail`/`head`**：管道的退出码是 `tail` 的 0，fmt 失败会被吞掉并推上去。本文件记录的所有门禁结果都没有管道化 |
 | `python3 scripts/gates/license_inventory.py` + `--check` | 生成后 `--check` 通过（"依赖许可清单与依赖图一致 (635 行)"）。任何改动依赖图的线都会撞到这条门禁，它是**预期**行为 |
+| `bash scripts/dev/ci-verdict.sh line/ui-shell` | 判决**用项目自带工具读回**（不是靠 `gh run list` 猜），输出见第 8 节 |
+| `gh run view --job <id> --log` | 第 1、2 轮变红时用它读**真实构建错误**（不是猜），据此定位到 fontconfig 构建脚本与许可清单漂移 |
 | `cargo-local.sh metadata --format-version 1` | 通过；`Cargo.lock` 从 84 个包涨到 **602** 个包（+5774/−290 行） |
 | `cargo-deny --all-features check`（用 `docs/DEV_WORKFLOW.md` 里的预编译二进制） | `advisories ok, bans ok, **licenses FAILED**, sources ok` —— 见第 8 节 |
 | `rustc --edition 2024 --test`（把 `scene.rs` / `input.rs` / `elements.rs` 三个**纯 Rust** 模块单独编译执行） | **40 条测试全绿**；`-D warnings -W missing-docs` 零告警 |
@@ -356,11 +358,41 @@ error[rejected]: failed to satisfy license requirements
 集成者另给出更省事的判定办法：改白名单前先用 `cargo metadata --locked --format-version 1`
 枚举**全部**外部包的 license 逐条比对（他在本分支上枚举了 579 个包，真正被拒的只有 BSL-1.0）。
 
-### 第 3 轮：判决
+### 第 3 轮：`05b2a1d` → run [`37218791723`](https://github.com/gradetwo/yeban/actions/runs/37218791723) —— **success**
 
-- 处置：重新生成 `docs/ledger/dependency-licenses.md`（唯一漂移的文件），其余不变。
-- 预期：全部 job 绿。
-- 结果：**pending（必须在读取后回填；未读取的判决不算数）**
+判决用项目自带工具读回（`bash scripts/dev/ci-verdict.sh line/ui-shell`）：
+
+```
+✓ line/ui-shell CI · 37218791723
+✓ checks (fmt / 红线守卫 / schema) in 47s
+✓ deny (cargo-deny 开源合规) in 42s
+✓ plan (受影响集合) in 5s
+✓ lockfile (确定性 Cargo.lock) in 16s
+- rust (${{ matrix.crate }}) in 0s      ← **被 plan 跳过**
+```
+
+**必须如实说清的一点**：这一轮 `rust` 矩阵腿是**被跳过**的，不是"跑过且绿"。
+原因是 `scripts/dev/changed-crates.py` 的受影响集合推导：`05b2a1d` 相对 `953b85b`
+**只改了两个 markdown**（`docs/ledger/dependency-licenses.md`、`docs/ledger/ui-shell-notes.md`），
+而 `docs/` 不在 `ROOT_TRIGGERS` 里，于是 plan 得出"无受影响 crate"，矩阵腿按设计跳过。
+实测核对（`git diff --name-only 953b85b..05b2a1d` + 对 `crates/ Cargo.toml Cargo.lock scripts/ .github/`
+做 `git diff --stat`）：**代码逐字节相同**，没有任何 crate 源码差异。
+
+因此本分支的完整判决账目是：
+
+| 事实 | 证据 |
+| :--- | :--- |
+| Slint UI 在 Linux 上真的能编译（clippy `-D warnings` + 40 条测试） | run **37218433961** @ `953b85b`，job `rust (yeban-app)` = **success** |
+| 依赖许可清单门禁通过（`license_inventory.py --check`） | run **37218791723** @ `05b2a1d`，job `checks` = **success** |
+| 分支 tip 整体判决 | run **37218791723** = **success** |
+| 其余 crate | run 37218433961 的 25 条 rust 矩阵腿全 success |
+
+即：**代码的编译/测试判决落在 `953b85b`（那一轮唯一红的是 `checks`，与代码无关），
+`checks` 的判决落在 `05b2a1d`（那一轮 rust 腿按设计跳过）。两轮合起来覆盖了全部 job。
+没有出现"某一轮里代码和门禁同时绿"的单点，但两者的代码版本完全相同。**
+
+如果集成者希望看到 tip 上的一次**全量**绿（rust 腿也真跑），
+`.github/workflows/ci.yml` 的 `workflow_dispatch` 有 `force_full` 输入 —— 那是手动档，由集成者决定。
 
 ---
 
@@ -414,7 +446,8 @@ error[rejected]: failed to satisfy license requirements
    属于 `yeban-ui-mcp` 线；本工作线只提供 `--dump-elements` 的离线清单。
 9. **未启用 `renderer-skia`**：规范 §12.1 提到的 Skia 软件后端会拖入 LLVM/clang；本次用
    `renderer-software` 兜底。若 Tier 1 视觉回归（`UI-MCP-003`）要求 Skia，需要单独裁决。
-10. **`deny` job 的预期红**：见第 9 节第 1 条（BSL-1.0），需要集成者一行修复。
+10. ~~`deny` job 的预期红~~ —— **已解决**：集成者在 `main` 放行 `BSL-1.0` 后，
+    `deny` 在 run 37218433961 与 37218791723 都是 success。
 11. ~~Linux 构建前置条件~~ —— **已由集成者在 CI 统一加装系统依赖解决**（含提前装好的
     `libasound2-dev`，为 Phase 2 的 cpal 线省一次失败）。保留本条是为了让后来者知道
     "本项目第一次真正编译 Slint 时死在哪"，以及**系统库前置应当落在 CI，不要落在产品依赖图里**。
