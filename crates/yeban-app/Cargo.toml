@@ -94,6 +94,26 @@ ui-test-port = ["dep:yeban-ui-test-port"]
 [dev-dependencies]
 yeban-ui-test-port = { path = "../yeban-ui-test-port" }
 
+# ---------------------------------------------------------------------------
+# ui-mcp: UI 控制面 —— **只**在测试目标里接线 (live-port 工作线)
+# ---------------------------------------------------------------------------
+# 为什么是 dev-dependency 而不是普通依赖 —— 这是**红线 6** 的直接后果
+# (AGENTS.md §2 红线 6 / MUST-GATE-009: 官方默认 release 构建中严禁默认开启
+#  `mcp-http` / `ui-mcp`)。真实接线代码住在 `src/live_surface.rs`: 它只在测试目标里
+# 被 `#[path]` 装进去 (与 `src/test_port_adapter.rs` 同款做法), 因此
+# `cargo build -p yeban-app` (含 `--release`) 的依赖图里**没有** yeban-ui-mcp。
+# 核验命令 (零编译, 本机可跑):
+#     cargo tree -p yeban-app -e normal --locked       # 不应出现 yeban-ui-mcp
+#     cargo tree -p yeban-app -e dev,normal --locked   # 测试目标里应当出现
+#
+# 依赖方向: yeban-app --(dev)--> yeban-ui-mcp --> yeban-ui-test-port。
+# **不反向** (yeban-ui-mcp 绝不依赖 yeban-app, 否则成环): 因此"拿像素"的能力由
+# yeban-ui-mcp 的 `PortAdapter` 以**闭包/函数指针**的形式注入, 见 ui-mcp 的
+# `docs/ledger/ui-mcp-notes.md` §8 needs-3。
+#
+# 不写 version 的理由同 `yeban-ui-test-port` (ADR-0001 D5/D21: 成员间 path 依赖)。
+yeban-ui-mcp = { path = "../yeban-ui-mcp" }
+
 # 无头控件树断言 + Tier-1 截图比对。**不放进 default**:
 # 一个 `[[test]]` 目标 (src/test_port_adapter.rs) 通过 `required-features` 挂在它后面。
 [[test]]

@@ -6185,6 +6185,7 @@ dependencies = [
  "slint",
  "slint-build",
  "yeban-model",
+ "yeban-ui-mcp",
  "yeban-ui-test-port",
 ]
 

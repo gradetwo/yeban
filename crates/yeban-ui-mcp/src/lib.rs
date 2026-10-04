@@ -38,6 +38,7 @@
 //! | [`tree`] | 否 | 语义控件树的 **JSON 投影**（稳定键序 / `visible` 的证据语义 / 动态区矩形） | `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` |
 //! | [`methods`] | 否 | 14 条方法的名字 / 参数 / scope / 规范出处 | `UI-MCP-001` `UI-TEST-002` `ARCH-UI-004` |
 //! | [`service`] | 否 | 管线：方法解析 → 授权（硬禁→token→scope）→ 参数 → 执行 | `UI-MCP-001` `ARCH-SEC-002` `MUST-GATE-009` |
+//! | [`live`] | 否 | **真实界面上的控制面装配**（`ControlPlane`）与端到端读数（`ui/tree` → `ui/node` → `ui/screenshot`） | `ARCH-UI-004` `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` `MUST-GATE-015` |
 //! | [`surface`] | 否 | 执行面 `UiSurface`（= `UiTestPort` + Tier-1 像素）、像素证据、`PortAdapter` | `MUST-GATE-015` |
 //! | [`transport`] | 否 | stdio（默认开）与环回 HTTP（默认关，两道开关） | `ARCH-UI-004` `MUST-GATE-009` `ROAD-M4-002` |
 //! | [`samples`] | 否 | 3 份 `.meta.` 文档样本 + 跨语言对账入口 | `MUST-GATE-010` `TEST-SPEC-005` |
@@ -84,6 +85,7 @@
 #![forbid(unsafe_code)]
 
 pub mod base64;
+pub mod live;
 pub mod methods;
 pub mod samples;
 pub mod service;
@@ -94,6 +96,10 @@ pub mod tree;
 #[cfg(test)]
 mod testing;
 
+pub use live::{
+    CallResult, ControlPlane, LiveProbe, ProbeError, ProbeOptions, ScreenshotProbe,
+    find_family_member, find_semantic_node, scopes_for_permission,
+};
 pub use methods::{METHOD_COUNT, MethodSpec, ParamSpec};
 pub use service::{
     CAPTURE_FAILED, ELEMENT_NOT_FOUND, GEOMETRY_UNAVAILABLE, SERVICE_NAME, UiService,

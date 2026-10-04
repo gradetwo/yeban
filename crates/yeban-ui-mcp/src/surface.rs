@@ -95,7 +95,8 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 /// 执行面：`yeban-ui-test-port` 的进程内调用面 + Tier-1 像素访问。
 ///
 /// 实现者：
-/// - `yeban_ui_test_port::render::LivePort<T>`（真实无头窗口）→ [`crate::live`]；
+/// - 真实无头窗口：`yeban_ui_test_port::render::LivePort<T>` 经 [`crate::live::ControlPlane`]
+///   装配（真实接线在 `crates/yeban-app/src/live_surface.rs`）；
 /// - 判据里的假面（零 Slint，可以在本机跑）→ `crate::service::tests`。
 pub trait UiSurface: UiTestPort {
     /// 执行面的稳定标识（进响应与日志，**不要**放令牌或路径）。
