@@ -38,6 +38,13 @@
 容器 API 来自 `yeban_model::container`（main 已有）。本线**不重写**任何一条防御，只做三件事：
 文件尺寸上限、错误如实映射、上限可注入。
 
+> **修订（`line/app-no-compat`，D43）**：下表覆盖的是**纯函数**入口（`open_project_archive` /
+> `open_project_bytes`）与文件入口的容器侧裁决，**全部仍然成立**。变化只发生在文档入口
+> `open_project_document_file`：它曾经"顺便接受裸 `project.json`"（`DocumentFormat::BareProjectJson`），
+> 该兼容路径已按 D43 **整段删除** —— 非容器输入现在得到 `OpenError::NotAYebanContainer`
+> （"不是 `.yeban` 容器" + 容器原裁决）。详见
+> [`app-no-compat-notes.md`](app-no-compat-notes.md) 与 [`app-cli-notes.md`](app-cli-notes.md) §5.1。
+
 | 输入（真容器上做的字节修改 / 参数） | 容器裁决（`ContainerError`） | app 侧结果（`OpenError`） | 判据 |
 | :--- | :--- | :--- | :--- |
 | 合法容器 | — | `Ok(ProjectArchive)`，`project` / `history_dag` / `assets` 全保真 | `open::tests::real_container_round_trips_through_the_open_entry`、`tests/open_project_file.rs` |

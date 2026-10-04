@@ -32,12 +32,16 @@
 //! `--open` 的语法与输出属 `src/cli.rs`；把工程注入界面属 `host.rs`（D28 的唯一注入点）。
 //! 这条边界让本模块保持零 Slint，从而可被判据在本机用 `rustc --edition 2024 --test` 真跑。
 //!
-//! ## 裸 JSON（`project.json`）为什么可以"顺便"打开，而不是第二条解析器
+//! ## 容器是**唯一**工程格式（ADR-0001 **D43**）
 //!
-//! [`open_project_document_file`] 接受裸 `project.json`，但**不**引入 `serde_json`、
-//! 也不写第二份校验逻辑：它把文件字节包成最小容器后交给
-//! `yeban_model::container::read_project_container`（做法与理由见该函数的文档）。
-//! 形态由 [`DocumentFormat`] **明示**回传 —— "兼容"必须是说出来的，不是猜出来的。
+//! 本模块曾经有一条"裸 `project.json` 兼容读路径"（把裸 JSON 在内存里包成最小容器再读）。
+//! D43 明确：1.0.0 之前没有历史包袱与兼容需求 ⇒ **直接推翻**。那条路径连同它的
+//! 形态枚举、错误分类与"像 ZIP 就绝不掉进 JSON 分支"的补丁式判断已经**整段删除**。
+//!
+//! 删掉兼容之后，打开一个非容器文件（裸 JSON / 随机字节 / 空文件）得到的是
+//! **一个精确的错误**（[`OpenError::NotAYebanContainer`]，携带容器层的原裁决），
+//! 既不是"打开成空工程"，也不是泛化的"未知格式" —— 见 [`open_project_document_file`]。
+//! 报告里的 `format=` 只剩一个取值（[`DOCUMENT_FORMAT`]）。
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -101,14 +105,17 @@ pub enum OpenError {
         /// 上限。
         max: u64,
     },
-    /// 容器层拒绝：**原样**携带 `yeban-model` 的裁决。
-    Container(ContainerError),
-    /// 文件既不是 `.yeban` 容器、也不是裸 `project.json` 文档。
+    /// 文件有 ZIP 结构、但被容器层拒绝：**原样**携带 `yeban-model` 的裁决。
     ///
-    /// 携带**容器层的原裁决**：这正是本变体存在的意义 —— "不是容器"这件事本身也有一个
-    /// 精确原因（签名不对 / EOCD 找不到 / 被截断 / ZIP64 …），把它吞掉退化成
-    /// "无法识别的文件" 就是在丢信息。
-    NotAContainerNorJson {
+    /// 这一档的意思是"这**看起来是**一个 `.yeban`，但它坏了 / 不合法"（截断 / CRC /
+    /// Zip-Slip / 炸弹 / 缺件 / 非法 `project.json` …）。
+    Container(ContainerError),
+    /// 文件**不是** `.yeban` 容器（连 ZIP 结构都没有：裸 `project.json` / 随机字节 / 空文件）。
+    ///
+    /// 携带**容器层的原裁决**（通常 [`ContainerError::EocdNotFound`]）：这正是本变体
+    /// 存在的意义 —— "不是容器"这件事本身也有一个精确原因，把它吞掉退化成
+    /// "无法识别的文件"、或者更糟地"打开成空工程"，都是在丢信息。
+    NotAYebanContainer {
         /// 调用方给的路径。
         path: PathBuf,
         /// 容器读取器给出的原始裁决。
@@ -123,12 +130,12 @@ impl OpenError {
     /// 判据也要能比较精确错误码 —— [`OpenError`] 本身不能 `PartialEq`（`io::Error` 不是），
     /// 但 [`ContainerError`] 是，于是比较走这个访问器。
     ///
-    /// [`Self::NotAContainerNorJson`] 也算容器层的裁决（它携带原裁决），因此也返回 `Some`。
+    /// [`Self::NotAYebanContainer`] 也算容器层的裁决（它携带原裁决），因此也返回 `Some`。
     #[must_use]
     pub const fn container(&self) -> Option<&ContainerError> {
         match self {
             Self::Container(error)
-            | Self::NotAContainerNorJson {
+            | Self::NotAYebanContainer {
                 container: error, ..
             } => Some(error),
             Self::Io { .. } | Self::FileTooLarge { .. } => None,
@@ -148,10 +155,9 @@ impl fmt::Display for OpenError {
                 path.display()
             ),
             Self::Container(error) => write!(formatter, "容器被拒绝: {error}"),
-            Self::NotAContainerNorJson { path, container } => write!(
+            Self::NotAYebanContainer { path, container } => write!(
                 formatter,
-                "`{}` 既不是 `.yeban` 容器、也不是裸 `project.json` 工程文档 \
-                 (容器裁决: {container})",
+                "`{}` 不是 `.yeban` 容器 (容器裁决: {container})",
                 path.display()
             ),
         }
@@ -163,7 +169,7 @@ impl std::error::Error for OpenError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Container(error)
-            | Self::NotAContainerNorJson {
+            | Self::NotAYebanContainer {
                 container: error, ..
             } => Some(error),
             Self::FileTooLarge { .. } => None,
@@ -265,71 +271,42 @@ fn read_capped(path: &Path, max_file_bytes: u64) -> Result<Vec<u8>, OpenError> {
     Ok(bytes)
 }
 
-/// 打开文件时**实际识别出**的文档形态（`DocumentFormat`）。
+/// `--open` 报告里 `format=` 的**唯一**取值。
 ///
-/// 为什么要把形态回传给调用方，而不是悄悄接受：命令行必须能说清"我到底按什么读的"
-/// （`--open` 的输出里有 `format=` 一项）。"兼容"如果不写明，读法歧义就回来了 ——
-/// 而 D30 的裁决正是「歧义本身就是漏洞，消除歧义的方式是拒绝或**明示**」。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocumentFormat {
-    /// 标准 `.yeban` 容器（ZIP 子集，`project.json` + `history.dag` + `assets/{sha256}`）。
-    Container,
-    /// 裸 `project.json` 工程文档（**不是**容器；历史与资产池为空，见 [`OpenedProject`]）。
-    BareProjectJson,
-}
+/// 这里刻意**没有**一个"文档形态"枚举：ADR-0001 **D43** 之后 `.yeban` 容器是唯一的
+/// 工程格式，一个只剩单个变体的枚举只会邀请人再往里面塞一个变体回来。常量把
+/// "读法只有一条"这件事写死成事实 —— 判据也据此断言报告里**不可能**出现第二个值。
+pub const DOCUMENT_FORMAT: &str = "yeban-container";
 
-impl DocumentFormat {
-    /// 报告用的稳定短名（`--open` 输出的 `format=` 取值）。
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Container => "yeban-container",
-            Self::BareProjectJson => "project-json",
-        }
-    }
-}
-
-/// 一次成功的"打开一个文档"：全保真归档 + 识别出的形态 + 文件字节数。
+/// 一次成功的"打开一个文档"：全保真归档 + 文件字节数。
 ///
 /// `file_bytes` 是**从磁盘读到的**字节数（不是 `metadata` 声明值）—— 命令行的
 /// "打开了哪个文件、多少字节"必须是实测值。
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenedProject {
-    /// 打开结果（容器形态时含 `history.dag` / 资产池）。
+    /// 打开结果（含 `history.dag` / 资产池）。
     pub archive: ProjectArchive,
-    /// 识别出的文档形态。
-    pub format: DocumentFormat,
     /// 实际读入的字节数。
     pub file_bytes: u64,
 }
 
-/// **命令行的打开入口**：接受 `.yeban` 容器**或**裸 `project.json` 文档。
+/// **命令行的打开入口**：只接受 `.yeban` 容器。
 ///
-/// ## 接受裸 JSON 的手法（零新增依赖，且不重写任何一条容器规则）
+/// ## 判定顺序（顺序是契约的一部分）
 ///
-/// 本模块**不**自己解析 JSON（那会引入 `serde_json`，并且会把 `project.json` 的
-/// 校验规则变成两份）。做法是：把文件字节当成 `project.json` 的内容，用
-/// `yeban_model::container::write_container` 在**内存里**包一个最小容器
-/// （`project.json` + 空 `history.dag`），再交给权威读取器
-/// `read_project_container` —— 于是路径安全、尺寸闸门、ZIP 结构、JSON 反序列化
-/// **全部**复用 `yeban-model` 的那一份实现，错误码也完全一致
-/// （`ContainerError::InvalidProjectJson` 等）。
-///
-/// ## 读法判定顺序（顺序是契约的一部分）
-///
-/// 1. 先按**容器**读。成功 ⇒ [`DocumentFormat::Container`]，`history.dag` / 资产池保真。
-/// 2. 容器失败时，如果文件**看起来仍然像容器**（前 4 字节是 `PK\x03\x04` / `PK\x05\x06`
-///    / `PK\x07\x08`）⇒ **原样上报容器裁决**（[`OpenError::Container`]）。
-///    这一条保证"截断 / 被篡改的 `.yeban`"永远给出精确的容器错误码，而不是
-///    被降级成"无法识别的文件"、更不会被"顺手当成 JSON 试试"。
-/// 3. 否则，如果首个非空白字节是 `{` ⇒ 按裸 `project.json` 走第 2 段的包容器路径。
-/// 4. 否则 ⇒ [`OpenError::NotAContainerNorJson`]（携带容器原裁决）。
+/// 1. 按**容器**读。成功 ⇒ [`Ok`]，`history.dag` / 资产池保真。
+/// 2. 失败且文件**有 ZIP 结构**（前 4 字节是 `PK\x03\x04` / `PK\x05\x06` / `PK\x07\x08`）
+///    ⇒ **原样上报容器裁决**（[`OpenError::Container`]）：截断 / 被篡改的 `.yeban`
+///    因此永远拿到精确的容器错误码。
+/// 3. 否则 ⇒ [`OpenError::NotAYebanContainer`]（携带容器原裁决，通常是
+///    `EocdNotFound`）：**"你给的文件不是 `.yeban` 容器"** —— 裸 `project.json`、
+///    随机字节、空文件都走这一支，一个都不会被"顺手当成工程打开"。
 ///
 /// 任何一条失败路径都**不会**返回默认 / 空工程。
 ///
 /// # Errors
 ///
-/// 见 [`OpenError`]：读失败 / 超上限 / 容器拒绝 / 既不是容器也不是工程 JSON。
+/// 见 [`OpenError`]：读失败 / 超上限 / 容器拒绝 / 不是 `.yeban` 容器。
 pub fn open_project_document_file(
     path: impl AsRef<Path>,
     options: &ProjectOpenOptions,
@@ -341,80 +318,32 @@ pub fn open_project_document_file(
     match open_project_archive(&bytes, &options.limits) {
         Ok(archive) => Ok(OpenedProject {
             archive,
-            format: DocumentFormat::Container,
             file_bytes,
         }),
-        Err(container_error) => {
-            // 第 2 步：像容器的输入绝不去猜别的读法（截断容器必须拿到精确裁决）。
-            if looks_like_zip(&bytes) {
-                return Err(container_error);
-            }
-            if !looks_like_bare_json(&bytes) {
-                return Err(OpenError::NotAContainerNorJson {
-                    path: path.to_path_buf(),
-                    container: match container_error {
-                        OpenError::Container(error) => error,
-                        // `open_project_archive` 只可能返回容器裁决或超限；超限在前面已被
-                        // `read_capped` 拦下，因此这里只剩容器裁决这一支。
-                        other => return Err(other),
-                    },
-                });
-            }
-            // 第 3 步：裸 project.json —— 用权威容器读写器**在内存里**包一层再读。
-            let wrapped = wrap_bare_project_json(&bytes, &options.limits)?;
-            Ok(OpenedProject {
-                archive: wrapped,
-                format: DocumentFormat::BareProjectJson,
-                file_bytes,
+        Err(OpenError::Container(container)) if !has_zip_signature(&bytes) => {
+            Err(OpenError::NotAYebanContainer {
+                path: path.to_path_buf(),
+                container,
             })
         }
+        // ZIP 结构在 ⇒ "容器坏了"，原样转达；`open_project_archive` 只剩容器裁决与
+        // 超限两支，而超限已被上面的 `read_capped` 拦下。
+        Err(other) => Err(other),
     }
 }
 
-/// 前 4 字节是不是 ZIP 的三种签名之一（local header / EOCD / data descriptor）。
+/// 这份字节有没有 ZIP 结构（三种签名：local header / EOCD / data descriptor）。
 ///
-/// 这不是"格式探测"（那是容器的职责），而是**拒绝猜测**的护栏：它保证"看起来像 ZIP
-/// 的东西"绝不会掉进裸 JSON 分支。
-fn looks_like_zip(bytes: &[u8]) -> bool {
+/// **这不是格式探测，也不是为兼容而写的护栏**（旧版用它来防止"看起来像 ZIP 的东西掉进
+/// 裸 JSON 分支"，那条分支已经删掉）。它现在只服务一件事：把诊断分成
+/// "你给的不是 `.yeban`"与"你的 `.yeban` 坏了"两档，而不是把两者糊成一句
+/// "无法识别的文件"。截断的 `.yeban` 前 4 字节仍是 `PK\x03\x04`，因此它落在
+/// "坏了"那一档，拿到的是精确的容器错误码（判据 `truncated_containers_keep_their_precise_container_verdict`）。
+fn has_zip_signature(bytes: &[u8]) -> bool {
     const SIGNATURES: [&[u8; 4]; 3] = [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"];
     SIGNATURES
         .iter()
         .any(|signature| bytes.starts_with(signature.as_slice()))
-}
-
-/// 首个非 ASCII 空白字节是不是 `{`（裸 JSON 对象的唯一合法开头）。
-fn looks_like_bare_json(bytes: &[u8]) -> bool {
-    bytes
-        .iter()
-        .find(|byte| !byte.is_ascii_whitespace())
-        .copied()
-        == Some(b'{')
-}
-
-/// 把裸 `project.json` 字节包成一个最小容器再交给权威读取器（见
-/// [`open_project_document_file`] 的文档）。
-///
-/// `history.dag` 写**空字节**：容器布局要求该条目存在，而裸 JSON 文档里本来就没有提交
-/// 图谱这一层（`[MODEL-ISO-001]` 的三层状态里，它是第二层）。
-///
-/// # Errors
-///
-/// 包容器失败（数据异常，例如工程 JSON 超过单条目上限）或 `project.json` 被权威读取器
-/// 拒绝（[`ContainerError::InvalidProjectJson`] 等）。
-fn wrap_bare_project_json(
-    bytes: &[u8],
-    limits: &ContainerLimits,
-) -> Result<ProjectArchive, OpenError> {
-    use yeban_model::container::{
-        ContainerEntry, HISTORY_DAG_NAME, PROJECT_JSON_NAME, write_container,
-    };
-
-    let wrapped = write_container(&[
-        ContainerEntry::new(PROJECT_JSON_NAME, bytes.to_vec()),
-        ContainerEntry::new(HISTORY_DAG_NAME, Vec::new()),
-    ])?;
-    // 二次过闸门：包出来的容器仍然要过**同一套**上限（裸 JSON 不能成为绕过单条目上限的路）。
-    Ok(read_project_container(&wrapped, limits)?)
 }
 
 /// **任务书点名的入口**：`open_project_file(path) -> Result<YebanProjectV1, OpenError>`。
@@ -677,6 +606,23 @@ mod tests {
             container_err(open_project_bytes(&zip64, &limits)),
             Some(ContainerError::UnsupportedZip64)
         );
+
+        // (h) **中央目录**篡改（与 (c) 的数据区篡改是两处不同的字节）：改 central
+        //     directory 里 `project.json` 的 CRC32 ⇒ 容器在比对 local / central 时
+        //     立刻报 `LocalCentralMismatch`（**中央目录被改过**这件事本身的精确裁决；
+        //     它先于"重算数据 CRC"那一步）。
+        let mut central_crc = bytes.clone();
+        let central = central_record(&central_crc, 0);
+        let original = u32_at(&central_crc, central + 16);
+        patch_u32(&mut central_crc, central + 16, original ^ 0xffff_ffff);
+        assert_eq!(
+            container_err(open_project_bytes(&central_crc, &limits)),
+            Some(ContainerError::LocalCentralMismatch {
+                index: 0,
+                name: "project.json".to_owned(),
+            }),
+            "中央目录篡改必须被拒绝，且给出精确裁决"
+        );
     }
 
     /// 判据 20: 缺失条目 / 非工程 JSON 也要报**精确**错误（不是空工程）。
@@ -805,12 +751,14 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // 文档形态识别（`open_project_document_file`）—— 命令行的 `--open` 走这条
+    // 文档入口（`open_project_document_file`）—— 命令行的 `--open` 走这条。
+    // 容器是**唯一**格式（D43）：这一组判据里"裸 JSON 必须被拒绝"是**反转**来的，
+    // 不是新写的 —— 原判据断言它"能打开"。
     // ------------------------------------------------------------------
 
-    /// 判据 25: **真容器**经文档入口打开 ⇒ 形态如实报告为 `Container`，归档全保真。
+    /// 判据 25: **真容器**经文档入口打开 ⇒ 成功，归档全保真，报告取值只有一个可能。
     #[test]
-    fn document_entry_reports_a_container_as_a_container() {
+    fn document_entry_opens_a_real_container() {
         let (bytes, project) = container_bytes();
         let dir = std::env::temp_dir().join(format!("yeban-doc-container-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录");
@@ -819,14 +767,14 @@ mod tests {
 
         let opened = open_project_document_file(&path, &ProjectOpenOptions::default())
             .expect("真容器必须能打开");
-        assert_eq!(opened.format, DocumentFormat::Container);
-        assert_eq!(opened.format.as_str(), "yeban-container");
         assert_eq!(opened.file_bytes, bytes.len() as u64);
         assert_eq!(opened.archive.project, project);
         assert_eq!(opened.archive.history_dag, b"dag-bytes");
         assert_eq!(opened.archive.assets.len(), 1);
+        // 报告里 `format=` 的唯一取值：容器。
+        assert_eq!(DOCUMENT_FORMAT, "yeban-container");
 
-        // 与"只要归档"的旧入口逐字段一致（两条路不得漂移）。
+        // 与"只要归档"的入口逐字段一致（两条路不得漂移）。
         assert_eq!(
             opened.archive,
             open_project_archive_file(&path, &ProjectOpenOptions::default()).expect("归档入口")
@@ -835,14 +783,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 判据 26: **裸 `project.json`** 经文档入口打开 ⇒ 形态明示为 `BareProjectJson`，
-    /// 工程逐字段一致，而"容器才有的两层"如实为空（不是假装有）。
+    /// 判据 26（**反转**）: 裸 `project.json` 必须被**明确拒绝**，而且理由精确。
     ///
-    /// `project.json` 的字节**从真容器里取出来** —— 于是"裸 JSON 能打开"与"容器里的
-    /// 那一份 JSON"是同一批字节，不是手搓的近似物。
+    /// 旧判据 `document_entry_accepts_a_bare_project_json_document` 断言它"能打开"且形态
+    /// 是 `BareProjectJson`。D43 删掉兼容路径之后，同一条输入必须走**拒绝**分支 ——
+    /// 这是"我们真的删掉了兼容"的机械证据，而不是"没人测了"。
+    ///
+    /// 还额外证明"拒绝的是**容器边界**，不是内容"：同一份 JSON 字节包进真容器就能打开。
     #[test]
-    fn document_entry_accepts_a_bare_project_json_document() {
-        use yeban_model::container::read_container;
+    fn document_entry_rejects_a_bare_project_json_document() {
+        use yeban_model::container::{ContainerEntry, read_container, write_container};
 
         let (bytes, project) = container_bytes();
         let limits = ContainerLimits::default();
@@ -855,29 +805,47 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("yeban-doc-bare-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录");
-        // 前面加空白：判定规则是"首个**非空白**字节是 `{`"，而不是"第一个字节"。
+        // 前面加空白：旧判定规则是"首个**非空白**字节是 `{`"。加空白是为了证明
+        // 新行为不依赖任何"看起来像 JSON"的启发式 —— 它只看容器。
         let mut padded = b"\n  ".to_vec();
         padded.extend_from_slice(&json);
         let path = dir.join("project.json");
         std::fs::write(&path, &padded).expect("写裸 JSON");
 
-        let opened = open_project_document_file(&path, &ProjectOpenOptions::default())
-            .expect("裸 project.json 必须能打开");
-        assert_eq!(opened.format, DocumentFormat::BareProjectJson);
-        assert_eq!(opened.format.as_str(), "project-json");
-        assert_eq!(opened.file_bytes, padded.len() as u64);
+        match open_project_document_file(&path, &ProjectOpenOptions::default()) {
+            Err(error @ OpenError::NotAYebanContainer { .. }) => {
+                assert_eq!(
+                    error.container(),
+                    Some(&ContainerError::EocdNotFound),
+                    "必须携带容器的精确原裁决"
+                );
+                let text = error.to_string();
+                assert!(text.contains("不是 `.yeban` 容器"), "实测: {text}");
+                assert!(
+                    text.contains("end-of-central-directory"),
+                    "必须带上容器原文: {text}"
+                );
+            }
+            other => panic!("裸 project.json 必须被明确拒绝, 实测 {other:?}"),
+        }
+
+        // 拒绝**不是**因为"这份工程内容不行"：同一份 JSON 包进容器就能打开。
+        let wrapped = write_container(&[
+            ContainerEntry::new("project.json", json),
+            ContainerEntry::new("history.dag", Vec::new()),
+        ])
+        .expect("写出容器");
+        let wrapped_path = dir.join("wrapped.yeban");
+        std::fs::write(&wrapped_path, &wrapped).expect("写容器");
+        let opened = open_project_document_file(&wrapped_path, &ProjectOpenOptions::default())
+            .expect("同样的 JSON 在容器里必须能打开");
         assert_eq!(opened.archive.project, project);
-        assert!(
-            opened.archive.history_dag.is_empty(),
-            "裸 JSON 没有提交图谱"
-        );
-        assert!(opened.archive.assets.is_empty(), "裸 JSON 没有资产池");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 判据 27: **截断的容器**必须保住它的容器裁决（精确错误码），
-    /// 绝不被降级成"无法识别的文件"、更不会被顺手当成 JSON 读。
+    /// 绝不被降级成"不是 `.yeban` 容器"、更不会被顺手当成 JSON 读。
     #[test]
     fn truncated_containers_keep_their_precise_container_verdict() {
         let (bytes, _) = container_bytes();
@@ -898,58 +866,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 判据 28: **既不是容器也不是工程 JSON** 的文件 ⇒ 精确拒绝（携带容器原裁决）；
-    /// 而"像 JSON 但 JSON 本身非法" ⇒ 报容器的 `InvalidProjectJson`。
+    /// 判据 28: **非容器输入**（垃圾 / 空 / 随机字节 / 裸坏 JSON）各自拿到
+    /// "不是 `.yeban` 容器"这个**精确**错误，绝不"打开成空工程"；
+    /// 而"有 ZIP 结构但不是合法容器"（多一个条目）走"容器被拒绝"那一档。
     #[test]
-    fn non_container_non_json_input_is_rejected_with_the_container_verdict() {
-        use yeban_model::container::read_container;
-
+    fn non_container_input_is_rejected_precisely_without_an_empty_project() {
         let dir = std::env::temp_dir().join(format!("yeban-doc-junk-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录");
 
-        let junk = dir.join("junk.bin");
-        std::fs::write(&junk, b"not a zip at all").expect("写垃圾");
-        match open_project_document_file(&junk, &ProjectOpenOptions::default()) {
-            Err(error @ OpenError::NotAContainerNorJson { .. }) => {
-                assert_eq!(error.container(), Some(&ContainerError::EocdNotFound));
-                assert!(error.to_string().contains("既不是"), "实测: {error}");
+        // 四种"根本不是容器"的输入：空 / 垃圾文本 / 随机字节 / 看起来像 JSON 的坏 JSON。
+        // 全部断言同一个精确出口，并且明确断言**不是** `Ok`（没有任何一条路会打开成空工程）。
+        let cases: [(&str, &[u8]); 4] = [
+            ("empty.bin", b""),
+            ("junk.bin", b"not a zip at all"),
+            ("random.bin", &[0xAB; 64]),
+            ("broken.json", b"{ not json"),
+        ];
+        for (name, bytes) in cases {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).expect("写输入");
+            match open_project_document_file(&path, &ProjectOpenOptions::default()) {
+                Err(error @ OpenError::NotAYebanContainer { .. }) => {
+                    assert_eq!(
+                        error.container(),
+                        Some(&ContainerError::EocdNotFound),
+                        "{name}: 必须携带精确原裁决"
+                    );
+                    assert!(
+                        error.to_string().contains("不是 `.yeban` 容器"),
+                        "{name}: 实测 {error}"
+                    );
+                }
+                other => panic!("{name} 必须报 `不是 .yeban 容器`, 实测 {other:?}"),
             }
-            other => panic!("垃圾文件必须报 NotAContainerNorJson, 实测 {other:?}"),
         }
 
-        let broken_json = dir.join("broken.json");
-        std::fs::write(&broken_json, b"{ not json").expect("写坏 JSON");
-        match open_project_document_file(&broken_json, &ProjectOpenOptions::default()) {
-            Err(OpenError::Container(ContainerError::InvalidProjectJson { detail })) => {
-                assert!(!detail.is_empty(), "必须携带底层解析器的描述");
-            }
-            other => panic!("坏 JSON 必须报 InvalidProjectJson, 实测 {other:?}"),
-        }
-
-        // 裸 JSON 不能成为**绕过单条目上限**的路（包出来的容器仍过同一套闸门）。
-        let (bytes, _) = container_bytes();
-        let limits = ContainerLimits::default();
-        let json = read_container(&bytes, &limits)
-            .expect("真容器")
-            .get("project.json")
-            .expect("必有 project.json")
-            .data
-            .clone();
-        let good_json = dir.join("good.json");
-        std::fs::write(&good_json, &json).expect("写裸 JSON");
-        let bomb = ProjectOpenOptions {
-            limits: ContainerLimits {
-                max_entry_bytes: 8,
-                ..ContainerLimits::default()
+        // 有 ZIP 结构 ⇒ 归入"容器被拒绝"，不是"不是容器"（诊断分档，不是糊成一句）。
+        let stray = yeban_model::container::write_container(&[
+            yeban_model::container::ContainerEntry::new("project.json", b"{}".to_vec()),
+            yeban_model::container::ContainerEntry::new("history.dag", b"x".to_vec()),
+            yeban_model::container::ContainerEntry::new("notes.txt", b"y".to_vec()),
+        ])
+        .expect("写出容器");
+        let stray_path = dir.join("stray.yeban");
+        std::fs::write(&stray_path, &stray).expect("写容器");
+        assert_eq!(
+            match open_project_document_file(&stray_path, &ProjectOpenOptions::default()) {
+                Err(OpenError::Container(error)) => Some(error),
+                other => panic!("多余条目必须报容器裁决, 实测 {other:?}"),
             },
-            ..ProjectOpenOptions::default()
-        };
-        assert!(
-            matches!(
-                open_project_document_file(&good_json, &bomb),
-                Err(OpenError::Container(ContainerError::EntryTooLarge { .. }))
-            ),
-            "裸 JSON 也必须受单条目上限约束"
+            Some(ContainerError::UnexpectedContainerEntry {
+                name: "notes.txt".to_owned(),
+            })
+        );
+
+        // 判据 ⑥：**几乎合法但缺件**的容器（只有 `history.dag`）⇒ 报错，**不是**空工程。
+        let missing_project = yeban_model::container::write_container(&[
+            yeban_model::container::ContainerEntry::new("history.dag", b"x".to_vec()),
+        ])
+        .expect("写出容器");
+        let missing_path = dir.join("missing-project.yeban");
+        std::fs::write(&missing_path, &missing_project).expect("写容器");
+        let empty = YebanProjectV1::default();
+        match open_project_document_file(&missing_path, &ProjectOpenOptions::default()) {
+            Err(OpenError::Container(ContainerError::MissingProjectJson)) => {}
+            other => panic!("缺 project.json 必须报 MissingProjectJson, 实测 {other:?}"),
+        }
+        assert_ne!(
+            open_project_document_file(&missing_path, &ProjectOpenOptions::default())
+                .ok()
+                .map(|opened| opened.archive.project),
+            Some(empty),
+            "错误不得退化成空工程"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -42,8 +42,9 @@
 //! 由 [`engine_host`] 负责，`.yeban` 的原子落盘（`[ARCH-SEC-004]`）由 [`save`] 负责。
 //!
 //! **命令行面**（app-cli 工作线）：[`cli`] 是零 Slint 依赖的解析 / 用法 / 报告 / 退出码
-//! 实现，`src/main.rs` 只做分发。`--open` 经 [`open`] 打开真工程文档（`.yeban` 容器或裸
-//! `project.json`），`--save-as` 经 [`save`] **原子**落盘，`--export-elements` 把
+//! 实现，`src/main.rs` 只做分发。`--open` 经 [`open`] 打开真工程文档 —— `.yeban` 容器
+//! 是**唯一**工程格式（ADR-0001 D43，裸 `project.json` 兼容读路径已删除），
+//! `--save-as` 经 [`save`] **原子**落盘，`--export-elements` 把
 //! [`elements`] 的注册表原子写到文件；两条路径（GUI / 无窗口）共用同一份报告实现。
 //!
 //! 仍未接线的部分（走带 / Op 归约 / 设备链 / 自动化 / 声卡宿主 / UI→模型写入）
