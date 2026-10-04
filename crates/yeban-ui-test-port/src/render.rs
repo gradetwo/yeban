@@ -640,9 +640,9 @@ mod tests {
 
     use fixture_ui::PortFixture;
 
-    const FIXTURE_SIZE: Size = Size::new(160, 100);
+    const FIXTURE_SIZE: Size = Size::new(200, 120);
 
-    /// 夹具的静态注册表：与 `PortFixture` 里**带 `accessible-id` 的节点**一一对应（6 条），
+    /// 夹具的静态注册表：与 `PortFixture` 里**带 `accessible-id` 的节点**一一对应（7 条），
     /// 并把两个高频刷新区标成 dynamic（`[UI-MCP-002]`）。
     fn fixture_registry() -> ControlTree {
         let mut registry = ControlTree::new();
@@ -659,6 +659,16 @@ mod tests {
         add("transport-play-button", "button", "播放");
         add("clip-01J8ZQ9K2M-header", "list-item", "剪辑包头");
         add("transport-timecode", "text", "时间码");
+        registry
+            .insert(
+                ControlNode::new(
+                    "rta-band-0",
+                    Role::parse("progress-indicator").expect("合法角色"),
+                    "RTA 频谱块",
+                )
+                .as_dynamic(),
+            )
+            .expect("夹具 ID 必须唯一且合法");
         registry
             .insert(
                 ControlNode::new(
@@ -733,7 +743,7 @@ mod tests {
 
         // ---------------- [UI-MCP-002] 动态区遮罩 ----------------
         let mask_rects = mask::mask_rects_from_tree(&tree).expect("动态区必须有包围盒");
-        assert_eq!(mask_rects.len(), 2, "夹具登记了两个动态区: {mask_rects:?}");
+        assert_eq!(mask_rects.len(), 3, "夹具登记了三个动态区: {mask_rects:?}");
         assert!(
             mask_rects
                 .iter()
@@ -761,18 +771,34 @@ mod tests {
         );
 
         // ---------------- [UI-MCP-002] + [UI-MCP-003] 遮罩吸收抖动、保留静态回归 ----------------
+        //
+        // 抖动取**面积最大**的那块动态区（RTA 频谱块），并让它"掉到地板"（黑）——
+        // 这是 DAW 里真实发生的事（静音/无信号 ⇒ 频谱柱落到地线）。
+        //
+        // ⚠️ 为什么必须"亮度差大 + 成块"才断言：SSIM 是局部统计（均值/方差/协方差）的均值，
+        // 对**细长条**与**等亮度换色**几乎不敏感。本机用真实 SSIM 实现预演过（notes §2 第 29 条）：
+        //   · 8x88 窄条改成纯色      → 未遮罩 SSIM = 0.9999（**拉不下阈值**）
+        //   · 60x88 大块改成等亮度平色 → 未遮罩 SSIM = 0.9967（**拉不下阈值**）
+        //   · 60x88 大块掉到黑        → 未遮罩 SSIM = 0.7040（拉得下 ✓）
+        // 所以这里既保留窄条（证明遮罩对任意大小都生效），又用大块来证明"遮罩是承重的"。
         let mut jittered = first.clone();
-        let vu = mask_rects
+        let biggest = mask_rects
             .iter()
             .copied()
-            .find(|rect| rect.height >= 60)
-            .expect("VU 表矩形的识别");
-        jittered.fill_rect(vu, [0x00, 0xff, 0x00]);
+            .max_by_key(|rect| rect.area())
+            .expect("至少有一个动态区");
+        jittered.fill_rect(biggest, [0x00, 0x00, 0x00]);
 
         let unmasked = ssim::ssim(&first, &jittered).expect("同尺寸可算");
         assert!(
+            u64::from(biggest.area()) * 100 >= FIXTURE_SIZE.pixel_count() * 10,
+            "用于'必须被检出'断言的动态区应占画面 ≥10% (实测 {} px / {} px) —— 否则该断言在 SSIM 口径下无意义",
+            biggest.area(),
+            FIXTURE_SIZE.pixel_count()
+        );
+        assert!(
             !ssim::Verdict::with_default_threshold(unmasked).passed,
-            "未遮罩的抖动必须被检出"
+            "未遮罩的抖动必须被检出, 实测 SSIM {unmasked:.6}"
         );
         let verdict = compare_with_dynamic_masking(&first, &jittered, &tree).expect("遮罩比对");
         assert!(verdict.passed, "遮罩后必须通过: {verdict}");

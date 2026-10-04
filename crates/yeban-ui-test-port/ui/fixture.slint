@@ -5,33 +5,41 @@
 //   - [UI-TEST-001] UI/UX §12.2: 稳定语义 Element ID 寻址
 //   - [UI-MCP-002] §12.5: 高频刷新区域必须能被识别并按包围盒遮罩
 //
-// 为什么这个夹具是**独立的 .slint 文件** (而不是 `slint!` 内联宏):
-//   1. `include_modules!()` / `slint_build` 这条路径可以把 debug info 打开
+// ## 为什么是独立的 .slint 文件 (而不是 `slint!` 内联宏)
+//   1. `slint_build` 这条路径可以把 debug info 打开
 //      (`CompilerConfiguration::with_debug_info(true)`), 而 `ElementHandle` 的遍历
 //      **必须**有 debug info —— 否则 `item.element_count()` 返回 None, 整棵控件树
-//      在运行时是空的 (实测: CI run 37221680724 的
-//      `ControlTree { nodes: {} }`)。`slint!` 宏只能靠 `SLINT_EMIT_DEBUG_INFO=1`
-//      环境变量, 那条路在 CI 上不受我们控制。
-//   2. `.slint` 文件不过 Rust 词法器, 因此可以写正常代码而不用担心 `#rrggbb` 被拒绝。
+//      在运行时是空的 (实测: CI run 37221680724 的 `ControlTree { nodes: {} }`)。
+//      `slint!` 宏只能靠 `SLINT_EMIT_DEBUG_INFO=1` 环境变量, 那条路在 CI 上不受本仓库控制。
+//   2. `.slint` 文件不过 Rust 词法器, 因此可以写正常的代码/字面量。
+//   3. `slint!` 宏会把**每一条**编译器警告展开成 `#[deprecated] const WARNING`,
+//      在 `-D warnings` 下变成硬错误 (CI run 37221429630 实测)。
 //
-// 根组件**必须** `inherits Window`: 上游 1.18.1 对"不继承 Window 的导出组件"会发
-// deprecation 警告 (而 `slint!` 会把它变成编译错误, 见 notes §2 第 24 条)。
-// `yeban-app/ui/app.slint` 的 `MainWindow` 也是同一形状。
+// ## 形状上的两条硬约束
+//   - 根组件**必须** `inherits Window`: 上游 1.18.1 对"不继承 Window 的导出组件"会发
+//     deprecation 警告。`yeban-app/ui/app.slint` 的 `MainWindow` 也是同一形状。
+//   - 根节点**故意不给** `accessible-id`/`accessible-role`: 与 `MainWindow` 一致, 且避免让
+//     "Window 根元素的 accessible-id 在运行时是否可见"这个未核验行为决定判据的绿红。
 //
-// 根节点**故意不给** `accessible-id` / `accessible-role`: 与 `MainWindow` 一致,
-// 且避免让"Window 根元素的 accessible-id 在运行时是否可见"这个**未核验**行为
-// 决定判据的绿红。
+// ## 为什么是 200x120, 以及为什么动态区里必须有一个**大块**
+//   [UI-MCP-002] 的判据里有一条"未遮罩的抖动**必须**被检出"。本机用真实 SSIM 实现预演过
+//   候选布局 (见 docs/ledger/ui-test-port-notes.md §2 第 29 条), 有两条结论:
+//     ① SSIM 是**局部统计**的均值, 对"细长条"几乎不敏感 —— 8x88 的窄条改成纯色, 未遮罩
+//        SSIM 仍有 0.9999; 只有"成块的、且亮度差足够大"的改动才会把它拉下阈值;
+//     ② 因此这里有一个**大块** RTA 频谱区 (60x88 ≈ 22% 画面), 它每帧的变化是"掉到地板(黑)",
+//        未遮罩 SSIM ≈ 0.70 ⇒ 那条判据才有意义。窄 VU 条与极窄走带光标仍然保留, 用来证明
+//        "遮罩对**任意**大小的动态区都恰好生效"。
 
 export component PortFixture inherits Window {
-    width: 160px;
-    height: 100px;
+    width: 200px;
+    height: 120px;
     background: rgb(16, 32, 48);
 
-    // 走带栏 (非重复元素, 便于断言)
+    // 走带栏
     Rectangle {
         x: 0px;
         y: 0px;
-        width: 160px;
+        width: 200px;
         height: 16px;
         background: rgb(21, 29, 56);
         accessible-role: region;
@@ -50,7 +58,7 @@ export component PortFixture inherits Window {
         }
     }
 
-    // 剪辑包头 (静态图元, 用来验证"静态回归必须被检出")
+    // 静态图元: 剪辑包头 (用来验证"静态回归必须被检出")
     Rectangle {
         x: 8px;
         y: 24px;
@@ -62,36 +70,49 @@ export component PortFixture inherits Window {
         accessible-label: "剪辑包头";
     }
 
-    // [UI-MCP-002] 高频刷新区 1: VU 电平表
+    // [UI-MCP-002] 动态区 1: RTA 频谱块 (大块; 静音时整块掉到黑)
     Rectangle {
         x: 80px;
         y: 24px;
-        width: 8px;
-        height: 64px;
+        width: 60px;
+        height: 88px;
         background: rgb(34, 197, 94);
+        accessible-role: progress-indicator;
+        accessible-id: "rta-band-0";
+        accessible-label: "RTA 频谱块";
+    }
+
+    // [UI-MCP-002] 动态区 2: VU 电平条 (窄条)
+    Rectangle {
+        x: 148px;
+        y: 24px;
+        width: 8px;
+        height: 88px;
+        background: rgb(56, 189, 248);
         accessible-role: progress-indicator;
         accessible-id: "mixer-vu-track-0";
         accessible-label: "轨道 0 VU 电平";
     }
 
-    // [UI-MCP-002] 高频刷新区 2: 走带光标
+    // [UI-MCP-002] 动态区 3: 走带光标 (极窄, 2px)
     Rectangle {
-        x: 96px;
+        x: 160px;
         y: 24px;
         width: 2px;
-        height: 64px;
+        height: 88px;
         background: rgb(245, 158, 11);
         accessible-role: image;
         accessible-id: "transport-playhead";
         accessible-label: "走带光标";
     }
 
+    // 时间码 (静态文本; 同时验证 `Text` 图元能进控件树)
     Text {
-        x: 104px;
+        x: 166px;
         y: 24px;
-        width: 48px;
+        width: 30px;
         height: 16px;
-        text: "1.1.000";
+        text: "1.1.0";
         color: rgb(253, 252, 250);
         font-size: 11px;
         accessible-role: text;
