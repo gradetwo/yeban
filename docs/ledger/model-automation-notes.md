@@ -441,6 +441,20 @@ FAILED: every_op_variant_is_declared_in_the_contract / op_variants_match_ops_sch
 唯一红点在 main 上以**完全相同**的形态复现 ⇒ 本线**没有引入回归**，但本线的 CI 判决**不能写成"通过"**
 （未通过就是未通过；根因归属是另一件事）。
 
+### 8.3 文档提交的判决（`21566c9`，run **37244665346**）= success，**但它不验证代码**
+
+`docs-only` 的改动被 `plan` 判定为无受影响 crate ⇒ **六条 rust 腿全部 `skipped`**
+（`rust (${{ matrix.crate }}) in 0s -`、`rust (workspace 全量) in 0s -`、`windows ... -`）。
+⇒ 这一轮只证明"文档不破坏 fmt/守卫/schema/许可清单"，**不能**用来声称代码被验证过
+（这正是 `docs/DEVELOPMENT_LEDGER.md` **L23/L26** 记的坑：被取消/被跳过的腿不是判决）。
+代码的验证依据只有 §8.1/§8.2 那一轮（`37244333377`，sha `2a94a5f`）。
+
+### 8.4 红点的归属与处置（集成者已接手）
+
+集成者已确认该红点是 `main` 自己在 `40c371f` 之后带进去的（合并后未读那一轮判决 = L23/L26 的复发），
+并在 `crates/yeban-app` 修（`main` 的 `c210eb4`，run `37244705178`）。**本线不碰别人的 crate**，
+只把它记为 needs N7；等 `main` 转绿后，本线的代码验证结论可以直接复用（本源未触碰 `crates/yeban-app`）。
+
 ## 9. needs（交给集成者 / 契约线 / 人类）
 
 | # | 需要谁 | 具体动作 | 不做会怎样 |
@@ -462,4 +476,4 @@ FAILED: every_op_variant_is_declared_in_the_contract / op_variants_match_ops_sch
 | `TODO(hoist)`：`ARCH-DSP-001` 的 5 ms 单极点平滑 | 模型层**不做**平滑（模型不该有时间常数），由引擎/DSP 在自动化值之后施加 |
 | `PENDING`：跨架构逐位 | 本机只有单架构读数；按 D7/D32 记 PENDING，等 `MUST-GATE-003` 的 ARM 腿 |
 | `PENDING`：`HD-42` 行 | 本线不得改 `docs/ledger/human-decisions.md`（见 N2） |
-| `PENDING`：CI 判决 | 代码提交 `2a94a5f` 的 run `37244333377` = **failure**，唯一红点是 main 上逐字复现的预存在红（§8.2 / N7）；本线不把它算作通过，也不擅自改别人的 crate |
+| `PENDING`：CI 判决 | 代码提交 `2a94a5f` 的 run `37244333377` = **failure**，唯一红点是 main 上逐字复现的预存在红（§8.2 / N7）；本线不把它算作通过，也不擅自改别人的 crate。文档提交 `21566c9` 的 run `37244665346` = success 但**六条 rust 腿被 `plan` 跳过**（§8.3）⇒ 不构成代码验证 |
