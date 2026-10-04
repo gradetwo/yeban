@@ -42,7 +42,13 @@ on:
         default: 7200
 
 concurrency:
-  group: gates-manual-${{ github.ref }}
+  # 分组键里带上**档位**: 不同的手动门禁彼此**互不阻塞**(fuzz 跑 85 分钟时 arm 仍能立刻开跑),
+  # 而**同一个档位**的重复触发仍然串行(cancel-in-progress: false), 避免两条同档互相踩。
+  #
+  # 为什么改: 实测一次 —— `arm` 档派发后长时间停在 `pending`, 原因不是 ARM runner 排队,
+  # 而是旧的 group 只按 ref 分组, 于是它**等在那条 85 分钟的 fuzz 后面**。
+  # 人类负责人的要求是"并发、自动触发及手工触发用好" ⇒ 手动门禁之间不该互相堵。
+  group: gates-manual-${{ github.ref }}-${{ inputs.gate }}
   cancel-in-progress: false
 
 permissions:
