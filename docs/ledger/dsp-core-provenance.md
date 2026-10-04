@@ -298,13 +298,28 @@ crate 内部模块），因此：
 
 ### 8.4 pending（未验证 / 未拿到判决）
 
-1. 本机的 `bash scripts/gates/run-gates.sh crate yeban-dsp` 为**本地**绿灯（fmt + 11 条红线守卫 +
-   clippy `-D warnings` + 108 单元测试 + 1 文档测试）。按 [AGENTS.md](../../AGENTS.md) §5.5，
-   只有 CI 判决算数；本台账不把本地绿写成"通过"。
-2. `cargo deny check` 未在本机运行（需要 `cargo-deny` 二进制；见 `docs/DEV_WORKFLOW.md`），
-   交给 CI 的 `deny` 档位。
-3. 跨架构（x86_64）确定性对账未在本机运行（CI 专属，[ARCH-DET-001]）。
-4. 未跑基准（本机禁止 benchmark；且 `yeban-dsp` 尚无 `benches/`）。
+**已拿到的判决（本工作线首个提交 `141ad13`）**
+
+```
+$ bash scripts/dev/ci-verdict.sh line/dsp-core
+✓ line/dsp-core CI · 37217904082   （conclusion: success）
+✓ lockfile (确定性 Cargo.lock) in 12s
+✓ deny (cargo-deny 开源合规) in 28s
+✓ plan (受影响集合) in 5s
+✓ checks (fmt / 红线守卫 / schema) in 16s
+✓ rust (yeban-dsp) in 17s          # clippy -D warnings + test
+（其余 23 个 crate/spike 的 rust 作业同样 ✓）
+```
+
+即：**11 条红线守卫、`cargo fmt --check`、`cargo clippy -D warnings`、`cargo test`、
+`cargo deny check`、`Cargo.lock` 确定性**在 CI 上全部为绿。
+
+**仍然 pending 的**
+
+1. README/DEVELOPMENT_LEDGER 的更新不由本工作线负责（根级共享文件归集成者）。
+2. 跨架构（x86_64 vs aarch64）声学确定性对账：CI 的 `checks` 档位目前不含该步骤
+   （[ARCH-DET-001] 要求的是分级契约；本 crate 的确定性判据只有 `Rng` 的可复现性测试）。
+3. 未跑基准（本机禁止 benchmark；且 `yeban-dsp` 尚无 `benches/`）。
 
 ---
 
