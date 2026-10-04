@@ -168,6 +168,36 @@ fn project_bytes(dispatcher: &Dispatcher) -> String {
     text
 }
 
+/// 扮演"**另一个打开者**"：真的对 `<工程>.lock` 施加排他 OS 建议锁。
+///
+/// 用 `std::fs::File::try_lock`（stable 1.89.0；Unix = `flock(2)`，Windows =
+/// `LockFileEx`）而不是"写一个锁文件" —— 后者在新语义下是**崩溃遗留**，
+/// 必须能被接管（见 `opening_a_locked_project_is_project_locked_and_leaves_it_alone`）。
+///
+/// 返回的 `File` 必须活到断言结束：`Drop`（关闭 fd）就是释放建议锁。
+fn hold_exclusive_advisory_lock(lock: &Path) -> fs::File {
+    if let Some(parent) = lock.parent() {
+        fs::create_dir_all(parent).expect("建锁文件父目录");
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock)
+        .expect("打开锁文件");
+    // 元数据只是给人看的（持有者 PID），判定完全靠建议锁。
+    let metadata = format!(
+        "{{\"pid\": {}, \"lock_mode\": \"ExclusiveWrite\"}}\n",
+        std::process::id()
+    );
+    let mut writer = &file;
+    use std::io::Write as _;
+    writer.write_all(metadata.as_bytes()).expect("写锁元数据");
+    file.try_lock().expect("另一个打开者必须拿到排他建议锁");
+    file
+}
+
 /// 打开一份最新写入的工程，返回 `(路径, 打开响应)`。
 fn open(scratch: &Scratch, dispatcher: &mut Dispatcher, auth: &str) -> (PathBuf, Value) {
     let (path, _text, _digest) = scratch.write_project("demo.yeban");
@@ -826,15 +856,13 @@ fn exercised_error_codes() -> Vec<String> {
             "yeban_open_project",
             json!({ "path": path.display().to_string() }),
         );
-        // 同一个路径 ⇒ 幂等分支（不加锁）；换一个**已加锁的**路径才拿 PROJECT_LOCKED。
+        // 同一个路径 ⇒ 幂等分支（不加锁）；换一个**真正被占用**的路径才拿 PROJECT_LOCKED。
         assert_eq!(locked["status"], "success");
         let (other_path, _text, _digest) = scratch.write_project("other.yeban");
-        // 手工造一个锁文件（模拟另一个进程持有排他锁）。
-        fs::write(
-            PathBuf::from(format!("{}.lock", other_path.display())),
-            "{\"pid\":1}\n",
-        )
-        .expect("造锁");
+        // 手工造一个**真的被建议锁持有**的锁文件（模拟另一个进程持有排他锁）。
+        // 注意不能只写一个 JSON 文件: 那在新语义下是"崩溃遗留 ⇒ 可接管"。
+        let _holder =
+            hold_exclusive_advisory_lock(&PathBuf::from(format!("{}.lock", other_path.display())));
         record(&call(
             &mut dispatcher,
             &auth,
@@ -1237,11 +1265,14 @@ fn open_save_close_round_trip_preserves_bytes_on_disk() {
 
 #[test]
 fn opening_a_locked_project_is_project_locked_and_leaves_it_alone() {
+    // `MUST-GATE-008` 的端到端判决: 占用 = **OS 建议锁被内核持有**,
+    // 不是"锁文件存在"。因此这条判据必须由**真的持有建议锁**的第二个句柄来制造,
+    // 而不是手写一个 JSON 文件（手写文件在新语义下恰好是"崩溃遗留 ⇒ 可接管"）。
     let scratch = Scratch::new("locked");
     let (mut dispatcher, auth) = dispatcher();
     let (path, original, _digest) = scratch.write_project("demo.yeban");
     let lock = PathBuf::from(format!("{}.lock", path.display()));
-    fs::write(&lock, "{\"pid\": 1, \"lock_mode\": \"ExclusiveWrite\"}\n").expect("造锁");
+    let other_opener = hold_exclusive_advisory_lock(&lock);
 
     let outcome = call(
         &mut dispatcher,
@@ -1255,10 +1286,14 @@ fn opening_a_locked_project_is_project_locked_and_leaves_it_alone() {
         lock.display().to_string()
     );
     assert!(outcome["error"]["data"]["holder"].is_string());
+    assert_eq!(
+        outcome["error"]["data"]["advisoryLockHeld"], true,
+        "PROJECT_LOCKED 的载荷必须说明占用来自内核建议锁: {outcome}"
+    );
     assert!(dispatcher.domain().active_project().is_none());
     assert_eq!(fs::read_to_string(&path).expect("读"), original);
 
-    // 只读打开也要观察到排他锁。
+    // 只读打开也要观察到排他锁（读者与写者互斥）。
     let read_only = call(
         &mut dispatcher,
         &auth,
@@ -1267,8 +1302,10 @@ fn opening_a_locked_project_is_project_locked_and_leaves_it_alone() {
     );
     assert_domain_error(&read_only, "PROJECT_LOCKED", "只读也要拒绝");
 
-    // 锁消失之后可以打开。
-    fs::remove_file(&lock).expect("删锁");
+    // 释放建议锁之后可以打开 —— 注意此时锁文件**仍然存在**,
+    // 证明占用判定来自建议锁而不是文件存在性。
+    drop(other_opener);
+    assert!(lock.exists(), "释放建议锁不删文件（本判据的前提）");
     let opened = call(
         &mut dispatcher,
         &auth,
@@ -1276,6 +1313,10 @@ fn opening_a_locked_project_is_project_locked_and_leaves_it_alone() {
         json!({ "path": path.display().to_string() }),
     );
     assert_eq!(opened["status"], "success", "{opened}");
+    assert_eq!(
+        opened["data"]["tookOverStaleLock"], true,
+        "无人持有的锁文件必须被判为陈旧并接管: {opened}"
+    );
 }
 
 #[test]
@@ -1664,11 +1705,12 @@ fn save_refuses_a_read_only_session() {
         json!({ "path": path.display().to_string(), "readOnly": true }),
     );
     assert_eq!(opened["data"]["readOnly"], true);
-    assert_eq!(opened["data"]["locked"], false);
-    assert!(
-        !PathBuf::from(format!("{}.lock", path.display())).exists(),
-        "只读打开不得创建锁文件"
-    );
+    assert_eq!(opened["data"]["lockMode"], "SharedRead");
+    // 只读打开现在**真的持有一把共享建议锁**（锁在同一个 inode 上，所以能与
+    // 排他写者互斥）。旧实现什么都不锁 ⇒ 写者照样能改，只读是口号。
+    assert_eq!(opened["data"]["locked"], true);
+    let lock = PathBuf::from(format!("{}.lock", path.display()));
+    assert!(lock.exists(), "只读打开必须留下共享锁的锚点（锁文件）");
 
     let saved = call(
         &mut dispatcher,
@@ -1679,6 +1721,15 @@ fn save_refuses_a_read_only_session() {
     assert_domain_error(&saved, "IO_ERROR", "只读会话落盘");
     assert_eq!(fs::read_to_string(&path).expect("读"), original);
 
+    // 读者在场 ⇒ 排他写者必须被内核挡住（这正是"只读"应有的语义）。
+    let blocked = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_domain_error(&blocked, "PROJECT_LOCKED", "读者在场时写者必须被拒");
+
     let closed = call(
         &mut dispatcher,
         &auth,
@@ -1688,6 +1739,19 @@ fn save_refuses_a_read_only_session() {
     assert_eq!(closed["data"]["closed"], true);
     assert_eq!(closed["data"]["saved"], false, "只读会话不该尝试保存");
     assert_eq!(closed["data"]["releasedLock"], false);
+
+    // 会话关闭后共享锁由 `Drop` 释放；残留的锁文件**没有持有者** ⇒ 可接管。
+    let reopened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(reopened["status"], "success", "{reopened}");
+    assert_eq!(
+        reopened["data"]["tookOverStaleLock"], true,
+        "读者退出后留下的锁文件不是永久锁: {reopened}"
+    );
 }
 
 #[test]

@@ -19,27 +19,36 @@
 //! （`schemas/project.schema.json` 是权威契约）—— ZIP 容器（含 Zip-Slip 与解压炸弹防御）
 //! 属于容器/存储拥有者的资产。见 `docs/ledger/tools-domain-notes.md` 的未接线清单。
 //!
-//! ## 锁：实现了什么、没实现什么
+//! ## 锁：本模块的职责边界
 //!
-//! - **实现了**：原子创建（`O_CREAT | O_EXCL` 语义的 `create_new(true)`）+
-//!   排他语义（锁存在即 `PROJECT_LOCKED`）+ 内容元数据协议 + 关闭时释放；
-//! - **没实现**：`fcntl(F_SETLK)` / `LockFileEx` 的 **OS 级建议锁**、
-//!   `SHARED_READ` 多读者共存、心跳与陈旧锁抢占（`kill(pid, 0)` 探测需要 `libc`，
-//!   而本 crate 的新增依赖面被刻意压到最小）。
-//!   只读打开的处置是**观察**排他锁并拒绝，自己不建锁 —— 比"静默忽略锁"安全。
+//! **锁的机制全部住在 [`super::lock`]**（`MUST-GATE-008`）：原子创建 + `flock(2)`
+//! 建议锁 + 崩溃遗留接管 + 平台矩阵。本模块只保留**两个**职责：
+//!
+//! 1. 把锁文件路径/内容协议**再导出**（历史调用点 `store::lock_path` 等不变）；
+//! 2. 把 [`super::lock::LockError`] **唯一地**映射到契约错误码 ——
+//!    `WouldBlock`（含跨进程与同进程另一个 fd）→ `PROJECT_LOCKED`；
+//!    平台无建议锁 → JSON-RPC 实现级 `-32005`（**不发明新错误码**，
+//!    `ADR-0001 D25` 的联集是 20 值，锁相关的领域码只有 `PROJECT_LOCKED`）。
+//!
+//! 历史包袱的处置：旧实现是"锁文件存在即占用"，因此进程崩溃会**永久锁死**工程
+//! （`docs/ledger/tools-domain-notes.md` boundary-3）。新实现里"文件存在"**不是**
+//! 占用证据 —— 证据是"建议锁被内核持有"。见 [`super::lock`] 的崩溃/竞态矩阵。
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 
 use super::error::{Fault, from_io};
+use super::lock::{self, LockError};
+use crate::jsonrpc::{ErrorObject, NOT_IMPLEMENTED};
 use crate::tools::ErrorCode;
 
-/// 锁文件后缀（`demo.yeban` → `demo.yeban.lock`）。
-pub const LOCK_SUFFIX: &str = ".lock";
+pub use super::lock::{
+    HEARTBEAT_INTERVAL_SECS, LOCK_SUFFIX, LockGuard, LockMetadata, LockMode, STALE_HEARTBEAT_SECS,
+    hostname, lock_path, read_metadata,
+};
 
 /// 临时文件名的前缀字符（隐藏文件，且带 `.tmp-` 标记）。
 pub const TEMP_INFIX: &str = ".tmp-";
@@ -50,110 +59,111 @@ pub fn digest_of(bytes: &[u8]) -> String {
     AssetHash::of_bytes(bytes).as_str().to_owned()
 }
 
-/// 工程文件的锁文件路径。
-#[must_use]
-pub fn lock_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().map_or_else(
-        || std::ffi::OsString::from("project"),
-        std::ffi::OsStr::to_os_string,
-    );
-    name.push(LOCK_SUFFIX);
-    path.with_file_name(name)
-}
-
-/// 持有中的排他锁；`Drop` 时删除锁文件（"释放 `.yeban.lock`"）。
+/// 一次成功的加锁（守卫 + 可观察的结果面）。
 ///
-/// **刻意不实现 `Clone`**：克隆一个守卫等于克隆一个"谁先 `Drop` 谁删锁文件"的
-/// 双重所有权。`Domain` 因此也不实现 `Clone`（见 `crate::dispatch::Dispatcher` 的说明）。
-#[derive(Debug, PartialEq, Eq)]
-pub struct LockGuard {
-    path: PathBuf,
+/// 存在理由：`PROJECT_LOCKED` 只看 [`Fault`]，但"**接管了崩溃遗留的陈旧锁**"
+/// 这件事必须能被调用方（和判据）看见 —— [`LockGuard::took_over_stale_lock`]。
+#[derive(Debug)]
+pub struct AcquiredLock {
+    /// RAII 守卫（`Drop` 释放建议锁）。
+    pub guard: LockGuard,
 }
 
-impl LockGuard {
-    /// 锁文件路径。
+impl AcquiredLock {
+    /// 是否接管了一份崩溃遗留的陈旧锁文件。
     #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub const fn took_over_stale_lock(&self) -> bool {
+        self.guard.took_over_stale_lock()
     }
 }
 
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        // 释放失败不做任何事: `Drop` 里 panic 会让"关闭工程"变成崩溃。
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-/// 锁文件的元数据协议（`ARCH-SEC-001` 第 4 条）。
-#[must_use]
-pub fn lock_metadata(pid: u32, lock_mode: &str) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |delta| delta.as_secs());
-    let mut json = serde_json::to_string_pretty(&serde_json::json!({
-        "pid": pid,
-        "hostname": hostname(),
-        "app_version": env!("CARGO_PKG_VERSION"),
-        "lock_mode": lock_mode,
-        "started_at": now,
-        "last_heartbeat": now,
-    }))
-    .unwrap_or_else(|_| String::from("{}"));
-    json.push('\n');
-    json
-}
-
-/// 主机名（读不到就用 `unknown` —— 锁元数据不是承重信息）。
-#[must_use]
-pub fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| String::from("unknown"))
-}
-
-/// 取排他锁。
-///
-/// - `read_only == false`：原子创建锁文件；已存在 → `PROJECT_LOCKED`；
-/// - `read_only == true`：锁文件已存在 → `PROJECT_LOCKED`（观察而不创建）。
+/// **拿到锁**（原子创建 + OS 建议锁）：`MUST-GATE-008` 的唯一入口。
 ///
 /// # Errors
 ///
-/// 锁被占用 → `PROJECT_LOCKED`；创建锁文件本身失败 → `IO_ERROR`。
-pub fn acquire_lock(path: &Path, read_only: bool) -> Result<Option<LockGuard>, Fault> {
-    let lock = lock_path(path);
-    if read_only {
-        if lock.exists() {
-            return Err(locked_fault(&lock));
-        }
-        return Ok(None);
-    }
-    // 原子创建: 检查与创建之间没有竞态窗口 (TOCTOU)。
-    match OpenOptions::new().write(true).create_new(true).open(&lock) {
-        Ok(mut file) => {
-            let metadata = lock_metadata(std::process::id(), "ExclusiveWrite");
-            let write = file
-                .write_all(metadata.as_bytes())
-                .and_then(|()| file.sync_all());
-            if let Err(error) = write {
-                drop(file);
-                let _ = fs::remove_file(&lock);
-                return Err(from_io(&format!("写入锁元数据 {}", lock.display()), &error));
-            }
-            Ok(Some(LockGuard { path: lock }))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(locked_fault(&lock)),
-        Err(error) => Err(from_io(&format!("创建锁文件 {}", lock.display()), &error)),
+/// - 锁被别的活着的持有者占用 → `PROJECT_LOCKED`（载荷含锁文件路径 + 持有者元数据
+///   + 建议锁诊断）；
+/// - 平台无建议锁 → JSON-RPC 实现级 `-32005`（**不是**契约错误码，见 [`Fault::Impl`]）；
+/// - 文件系统失败 → `IO_ERROR` / `FILE_NOT_FOUND` / `DISK_FULL`。
+pub fn lock(project_path: &Path, mode: LockMode) -> Result<AcquiredLock, Fault> {
+    lock::acquire(project_path, mode)
+        .map(|guard| AcquiredLock { guard })
+        .map_err(|error| lock_fault(project_path, error))
+}
+
+/// `read_only: bool` 形态的兼容入口（`domain/mod.rs` 的历史调用点）。
+///
+/// **共享读锁不再返回 `None`**：锁文件会被创建（0 字节或含元数据），
+/// 因为共享锁必须锁在**同一个 inode** 上才能与排他写锁互斥。
+/// 旧实现返回 `None`（"只读打开不建锁文件"）在语义上等于"只读打开不受保护"。
+///
+/// # Errors
+///
+/// 同 [`lock`]。
+pub fn acquire_lock(project_path: &Path, read_only: bool) -> Result<AcquiredLock, Fault> {
+    let mode = if read_only {
+        LockMode::SharedRead
+    } else {
+        LockMode::ExclusiveWrite
+    };
+    lock(project_path, mode)
+}
+
+/// [`LockError`] → [`Fault`] 的**唯一**映射。
+///
+/// | OS 层事实 | 契约出口 | 为什么 |
+/// | :--- | :--- | :--- |
+/// | `WouldBlock` | `ToolResponse.error.code = PROJECT_LOCKED` | 唯一的锁领域码（`ADR-0001 D25` 联集） |
+/// | `UnsupportedPlatform` | JSON-RPC `-32005`（实现级） | 不是领域失败；契约 enum 里**没有**也不该有"平台不支持" |
+/// | `Io` | `IO_ERROR` / `FILE_NOT_FOUND` / `DISK_FULL` | 复用既有 `io::ErrorKind` 映射 |
+#[must_use]
+pub fn lock_fault(project_path: &Path, error: LockError) -> Fault {
+    match error {
+        LockError::WouldBlock => locked_fault(project_path),
+        LockError::UnsupportedPlatform { os, spec_id } => Fault::implementation(
+            ErrorObject::new(
+                NOT_IMPLEMENTED,
+                format!("平台 `{os}` 没有可用的 OS 建议锁, 拒绝打开以防并发写坏工程"),
+            )
+            .with_data(serde_json::json!({
+                "code": ErrorCode::NotImplemented.as_str(),
+                "specId": spec_id,
+                "os": os,
+                "detail": "ARCH-SEC-001 的 OS 建议锁在本平台没有实现; 本实现刻意不静默放行",
+                "lockFile": lock_path(project_path).display().to_string(),
+            })),
+        ),
+        LockError::Io(error) => from_io(
+            &format!("获取建议锁 {}", lock_path(project_path).display()),
+            &error,
+        ),
     }
 }
 
-/// `PROJECT_LOCKED` 的载荷（带持有者元数据，便于人眼排查）。
-fn locked_fault(lock: &Path) -> Fault {
-    let holder = fs::read_to_string(lock).unwrap_or_else(|_| String::from("<不可读>"));
+/// `PROJECT_LOCKED` 的载荷（带持有者元数据 + 建议锁诊断，便于人眼排查）。
+#[must_use]
+pub fn locked_fault(project_path: &Path) -> Fault {
+    let lock = lock_path(project_path);
+    let (holder, parsed) = read_metadata(project_path);
+    let heartbeat_age = parsed
+        .as_ref()
+        .map(LockMetadata::heartbeat_age_secs)
+        .unwrap_or(0);
     Fault::domain_with_data(
         ErrorCode::ProjectLocked,
-        format!("工程已被排他锁占用: {}", lock.display()),
-        serde_json::json!({ "lockFile": lock.display().to_string(), "holder": holder }),
+        format!(
+            "工程已被 OS 建议锁占用 (建议锁由内核持有, 持有者进程死亡时会自动释放): {}",
+            lock.display()
+        ),
+        serde_json::json!({
+            "lockFile": lock.display().to_string(),
+            "holder": holder,
+            "holderPid": parsed.as_ref().map(|meta| meta.pid),
+            "holderMode": parsed.as_ref().map(|meta| meta.lock_mode.clone()),
+            "heartbeatAgeSecs": heartbeat_age,
+            "staleHeartbeatSecs": STALE_HEARTBEAT_SECS,
+            "advisoryLockHeld": true,
+        }),
     )
 }
 
@@ -297,36 +307,61 @@ mod tests {
         let dir = scratch("lock");
         let project = dir.join("demo.yeban");
         fs::write(&project, "{}").expect("占位");
-        let guard = acquire_lock(&project, false)
+        let guard = lock(&project, LockMode::ExclusiveWrite)
             .expect("首次加锁")
-            .expect("持有");
+            .guard;
         assert!(guard.path().is_file());
         let holder = fs::read_to_string(guard.path()).expect("读锁元数据");
         assert!(
             holder.contains("\"lock_mode\": \"ExclusiveWrite\""),
             "{holder}"
         );
-        // 第二次加锁必须失败。
+        assert_eq!(
+            read_metadata(&project).1.map(|meta| meta.pid),
+            Some(std::process::id()),
+            "锁内容必须记录真实持有者 PID"
+        );
+        // 第二次加锁必须被内核拦下 (不是"文件存在" —— 是建议锁)。
         let second = acquire_lock(&project, false).expect_err("锁被占用");
         assert_eq!(second.domain_code(), Some(ErrorCode::ProjectLocked));
         // 只读打开也要观察到排他锁。
         let read_only = acquire_lock(&project, true).expect_err("只读也要拒绝");
         assert_eq!(read_only.domain_code(), Some(ErrorCode::ProjectLocked));
         drop(guard);
-        assert!(!lock_path(&project).exists(), "Drop 必须释放锁");
-        acquire_lock(&project, false)
-            .expect("释放后可以重新加锁")
-            .expect("持有");
+        assert!(!lock_path(&project).exists(), "排他 Drop 必须释放锁文件");
+        let again = lock(&project, LockMode::ExclusiveWrite).expect("释放后可以重新加锁");
+        assert!(
+            !again.took_over_stale_lock(),
+            "正常释放之后重新加锁不是接管"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn read_only_open_does_not_create_a_lock_file() {
+    fn read_only_open_takes_a_shared_lock_and_peers_coexist() {
+        // 旧实现的行为是"只读打开不建锁文件、什么都不锁" —— 那等于只读打开
+        // **完全不受保护**（写者照样能改同一个工程）。新实现让读者锁在**同一个
+        // inode**（锁文件）上取共享锁：读者之间共存，读者与写者互斥。
         let dir = scratch("readonly");
         let project = dir.join("demo.yeban");
         fs::write(&project, "{}").expect("占位");
-        assert!(acquire_lock(&project, true).expect("可读").is_none());
-        assert!(!lock_path(&project).exists(), "只读打开不得创建锁文件");
+        let first = acquire_lock(&project, true).expect("第一个读者");
+        assert_eq!(first.guard.mode(), LockMode::SharedRead);
+        let second = acquire_lock(&project, true).expect("第二个读者必须共存");
+        assert_eq!(second.guard.mode(), LockMode::SharedRead);
+        // 写者必须在读者持有期间被拒绝（否则"只读"只是口号）。
+        let writer = acquire_lock(&project, false).expect_err("写者必须被读者挡住");
+        assert_eq!(writer.domain_code(), Some(ErrorCode::ProjectLocked));
+        drop(first);
+        drop(second);
+        // 读者不删锁文件（删了会制造 check-then-lock 竞态窗口），
+        // 但它**没有持有者** ⇒ 可被接管，不是永久锁。
+        let writer = lock(&project, LockMode::ExclusiveWrite).expect("读者退出后写者可接管");
+        assert!(
+            writer.took_over_stale_lock(),
+            "残留的读锁文件必须被判为可接管"
+        );
+        drop(writer);
         fs::remove_dir_all(&dir).ok();
     }
 

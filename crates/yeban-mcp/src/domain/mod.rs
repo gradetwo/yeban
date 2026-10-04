@@ -37,6 +37,7 @@
 
 pub mod error;
 pub mod ids;
+pub mod lock;
 pub mod macros;
 pub mod notes;
 pub mod proposal;
@@ -57,7 +58,7 @@ use crate::tools::{ErrorCode, ToolCall, ToolResponse};
 
 use error::{Fault, not_wired};
 use proposal::{Proposal, ProposalDraft, ProposalStatus, draft_ops_value};
-use store::LockGuard;
+use store::AcquiredLock;
 
 /// 主分支名。
 pub const MAIN_BRANCH: &str = "main";
@@ -79,8 +80,11 @@ struct Active {
     project: YebanProjectV1,
     /// 最近一次落盘（或打开）时的内容摘要，用于"未保存标记"。
     saved_digest: String,
-    /// 持有的排他锁（只读打开时为 `None`）。
-    lock: Option<LockGuard>,
+    /// 持有的锁（内存会话没有工程文件时为 `None`）。
+    ///
+    /// 排他写是 [`store::LockGuard`]，共享读是包着共享建议锁的 [`AcquiredLock`] ——
+    /// 两者都是 RAII：`Drop` 即释放，进程死亡由内核释放。
+    lock: Option<AcquiredLock>,
 }
 
 /// 领域会话状态：活跃工程 + 提交图谱 + 提案记录 + 注入的时钟。
@@ -146,17 +150,26 @@ impl Domain {
         self.active.as_ref().is_some_and(|active| active.read_only)
     }
 
-    /// 当前持有的锁文件路径（只读打开或没有活跃工程时为 `None`）。
+    /// 当前持有的锁文件路径（内存会话时为 `None`）。
     ///
     /// 这个访问器同时承担一个结构职责：`Active::lock` 是 RAII 守卫
-    /// （`Drop` 释放 `.yeban.lock`），**必须被持有**；通过它读一次，
+    /// （`Drop` 释放 `.yeban.lock` 的建议锁），**必须被持有**；通过它读一次，
     /// "锁一直是活的"这件事就有一个可观察的出口，而不是一个只写字段。
     #[must_use]
     pub fn lock_path(&self) -> Option<&Path> {
         self.active
             .as_ref()
             .and_then(|active| active.lock.as_ref())
-            .map(LockGuard::path)
+            .map(|lock| lock.guard.path())
+    }
+
+    /// 当前持有的锁模式（内存会话时为 `None`）。
+    #[must_use]
+    pub fn lock_mode(&self) -> Option<store::LockMode> {
+        self.active
+            .as_ref()
+            .and_then(|active| active.lock.as_ref())
+            .map(|lock| lock.guard.mode())
     }
 
     /// 提交总数（`dryRun` "状态未变" 判据的一半）。
@@ -257,7 +270,7 @@ impl Domain {
         project: &YebanProjectV1,
         digest: String,
         read_only: bool,
-        lock: Option<LockGuard>,
+        lock: Option<AcquiredLock>,
     ) -> Result<(), Fault> {
         self.graph = CommitGraph::new();
         self.proposals.clear();
@@ -731,6 +744,14 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             serde_json::json!({ "activePath": domain.active_path().map(|open| open.display().to_string()) }),
         ));
     }
+    // 幂等分支只在**模式相同**时成立。
+    //
+    // 本会话只读持有共享建议锁时，再来一个 `readOnly: false` 是**模式升级**：
+    // 放行它等于让一个写者绕过共享锁（那正是 `MUST-GATE-008` 要拦的）。
+    // 必须让底层建议锁仲裁 —— 复用当前句柄是拿不到升级的，直接报 `PROJECT_LOCKED`。
+    if already_open && read_only != domain.is_read_only() {
+        return Err(store::locked_fault(&path));
+    }
     Ok(Plan::Open {
         path,
         read_only,
@@ -1031,24 +1052,44 @@ fn apply_open(
             "alreadyOpen": true,
             "path": path.display().to_string(),
             "readOnly": domain.is_read_only(),
+            "lockMode": lock_mode(domain.is_read_only()).as_str(),
+            "locked": true,
+            "advisoryLock": true,
+            "tookOverStaleLock": false,
             "bytes": bytes,
             "projectDigest": digest,
             "project": summary,
         })));
     }
-    let lock = store::acquire_lock(path, read_only)?;
-    domain.reset_history(path, &project, digest.clone(), read_only, lock)?;
+    let lock = store::lock(path, lock_mode(read_only))?;
+    let took_over_stale_lock = lock.took_over_stale_lock();
+    domain.reset_history(path, &project, digest.clone(), read_only, Some(lock))?;
     Ok(ToolResponse::success(serde_json::json!({
         "opened": true,
         "alreadyOpen": false,
         "path": path.display().to_string(),
         "readOnly": read_only,
-        "locked": !read_only,
+        // 排他写 = 独占; 共享读 = 与其他读者共存 (ARCH-SEC-001 第 3 条)。
+        "lockMode": lock_mode(read_only).as_str(),
+        "locked": true,
+        "advisoryLock": true,
+        // 崩溃遗留的陈旧锁被本次打开接管并重写 —— 这是 MUST-GATE-008
+        // "不留下永久锁"的可观察证据。
+        "tookOverStaleLock": took_over_stale_lock,
         "lockFile": store::lock_path(path).display().to_string(),
         "bytes": bytes,
         "projectDigest": digest,
         "project": project_summary(&project),
     })))
+}
+
+/// `readOnly` 参数 → 锁模式（`ARCH-SEC-001` 第 3 条的双模式）。
+fn lock_mode(read_only: bool) -> store::LockMode {
+    if read_only {
+        store::LockMode::SharedRead
+    } else {
+        store::LockMode::ExclusiveWrite
+    }
 }
 
 /// `yeban_save_project` 的施加。
