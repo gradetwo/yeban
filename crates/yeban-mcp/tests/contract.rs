@@ -180,49 +180,59 @@ fn every_contract_error_code_is_implemented() {
 }
 
 #[test]
-fn the_error_code_gap_between_the_two_contracts_is_pinned() {
-    let contract = contract_error_codes();
-    assert_eq!(contract.len(), 7, "schema enum 是 7 个错误码");
-
-    let documented: Vec<String> = ErrorCode::DOCUMENTED_TOOL_CODES
-        .iter()
-        .map(|code| code.as_str().to_owned())
-        .collect();
-    assert_eq!(documented.len(), 16, "架构 §7.2 表格是 16 个错误码");
-
-    let missing: Vec<&str> = documented
-        .iter()
-        .filter(|name| !contract.contains(*name))
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        missing,
-        vec![
-            "FILE_NOT_FOUND",
-            "DISK_FULL",
-            "NO_ACTIVE_PROJECT",
-            "INVALID_FIELD_SELECTOR",
-            "STYLE_NOT_FOUND",
-            "CYCLE_DETECTED",
-            "CLIP_NOT_FOUND",
-            "OUT_OF_RANGE",
-            "TRACK_NOT_FOUND",
-            "INDEX_OUT_OF_BOUNDS",
-            "RENDER_FAILED",
-            "BUSY",
-            "CONFLICT",
-        ],
-        "schema 装不下的 13 个错误码是**实测**的; 变化需要有人解释 (见 notes §3.1)"
+fn implementation_error_codes_equal_the_contract_enum_exactly() {
+    // ADR-0001 D25 把 ToolResponse.error.code 从 7 值扩成**联集 20 值**。
+    // 第一轮这条判据是"钉住 13 个码的缺口"; 缺口关闭后它升级成**集合相等**:
+    // 少一个 (契约新增而实现没跟上) 或多一个 (实现自创了契约里没有的码) 都会红。
+    let contract = sorted(contract_error_codes());
+    let implemented = sorted(
+        ErrorCode::SCHEMA_CONTRACT
+            .iter()
+            .map(|code| code.as_str().to_owned())
+            .collect(),
     );
-    // 两个契约共有的 3 个。
-    let shared: Vec<&str> = documented
+    assert_eq!(contract.len(), 20, "联集 20 值");
+    assert_eq!(
+        implemented, contract,
+        "ErrorCode::SCHEMA_CONTRACT 必须与契约 enum 集合完全相等"
+    );
+    assert_eq!(
+        ErrorCode::SCHEMA_ONLY.len(),
+        4,
+        "schema 原有而表格未列的 4 个"
+    );
+    assert_eq!(ErrorCode::DOCUMENTED_TOOL_CODES.len(), 16, "架构 §7.2 表格");
+
+    // 表格的 16 个全部落在契约里 (缺口已关闭)。
+    for code in ErrorCode::DOCUMENTED_TOOL_CODES {
+        assert!(
+            code.is_schema_contract(),
+            "表格错误码 {code} 不在契约 enum 里 —— 缺口回来了"
+        );
+    }
+    // 契约减去表格 == 那 4 个 schema 原有码。
+    let schema_only: Vec<String> = contract
         .iter()
-        .filter(|name| contract.contains(*name))
-        .map(String::as_str)
+        .filter(|name| {
+            !ErrorCode::DOCUMENTED_TOOL_CODES
+                .iter()
+                .any(|code| code.as_str() == name.as_str())
+        })
+        .cloned()
         .collect();
     assert_eq!(
-        shared,
-        vec!["PROJECT_LOCKED", "IO_ERROR", "PROPOSAL_NOT_FOUND"]
+        schema_only,
+        vec![
+            "ENTITY_NOT_FOUND".to_owned(),
+            "INVALID_PARAMETER_RANGE".to_owned(),
+            "PERMISSION_DENIED".to_owned(),
+            "ROUTING_CYCLE_DETECTED".to_owned(),
+        ]
+    );
+    // 实现级码 (NOT_IMPLEMENTED) 绝不能被塞进契约路径。
+    assert!(
+        !contract.contains(&ErrorCode::NotImplemented.as_str().to_owned()),
+        "NOT_IMPLEMENTED 是实现级码, 不许进 ToolResponse.error.code"
     );
 }
 
@@ -239,6 +249,7 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
     let argument_keys = contract_argument_keys();
 
     let mut call_samples = 0;
+    let mut response_samples = 0;
     for path in &written {
         let name = path
             .file_name()
@@ -252,19 +263,38 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
         let text = std::fs::read_to_string(path).expect("读样本");
         let value: Value = serde_json::from_str(&text).expect("样本必须是 JSON");
         assert!(value.is_object(), "schema 的根要求 object: {name}");
-        if !name.starts_with(yeban_mcp::samples::CALL_FILE_PREFIX) {
-            continue;
-        }
-        call_samples += 1;
-        let tool = value["name"].as_str().expect("ToolCall.name");
+
+        // 根的 oneOf 语义: 每份样本必须**恰好**是两种形状之一, 不能两边都像。
+        let looks_like_call = value.get("name").is_some() || value.get("arguments").is_some();
+        let looks_like_response = value.get("status").is_some();
         assert!(
-            contract_names.contains(&tool.to_owned()),
-            "样本 `{name}` 的工具名 `{tool}` 不在契约 enum 中"
+            looks_like_call ^ looks_like_response,
+            "样本 `{name}` 必须恰好是 ToolCall 或 ToolResponse 之一"
         );
-        for key in &argument_keys {
+
+        if name.starts_with(yeban_mcp::samples::CALL_FILE_PREFIX) {
+            call_samples += 1;
+            let tool = value["name"].as_str().expect("ToolCall.name");
             assert!(
-                value["arguments"].get(key).is_some(),
-                "样本 `{name}` 的 arguments 缺少契约键 `{key}`"
+                contract_names.contains(&tool.to_owned()),
+                "样本 `{name}` 的工具名 `{tool}` 不在契约 enum 中"
+            );
+            for key in &argument_keys {
+                assert!(
+                    value["arguments"].get(key).is_some(),
+                    "样本 `{name}` 的 arguments 缺少契约键 `{key}`"
+                );
+            }
+        } else {
+            response_samples += 1;
+            let status = value["status"].as_str().expect("ToolResponse.status");
+            assert!(
+                ["success", "error"].contains(&status),
+                "样本 `{name}` 的 status `{status}` 不在契约 enum 中"
+            );
+            assert!(
+                value["data"].is_object(),
+                "样本 `{name}` 的 data 必须是对象 (契约要求)"
             );
         }
     }
@@ -273,24 +303,121 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
         tools::TOOL_COUNT,
         "每个工具一份 ToolCall 样本"
     );
+    assert_eq!(
+        response_samples, 2,
+        "注册表与错误码目录各一份 ToolResponse 样本"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
-fn schema_root_references_the_tool_call_definition() {
-    // 现状: 根没有 $ref / properties / allOf, 因此 --samples-dir 对账对本文件是空转的。
-    // 契约被修好时这条会**变红**, 提醒把样本对账升级成真判据 (并更新 notes §3.2)。
+fn contract_root_is_one_of_tool_call_and_tool_response() {
+    // ADR-0001 D25: 根从"空对象"改成 oneOf($ref ToolCall, $ref ToolResponse)。
+    // 这条判据钉住"契约引用 definitions"这个**结构事实**;
+    // 下一条判据钉住"这个引用真的在判定"。
     let root = contract();
-    let has_reference = root.get("$ref").is_some()
-        || root.get("properties").is_some()
-        || root.get("allOf").is_some()
-        || root.get("oneOf").is_some()
-        || root.get("anyOf").is_some();
+    let branches = root["oneOf"]
+        .as_array()
+        .expect("根的 oneOf 必须是数组 (ADR-0001 D25)");
+    assert_eq!(branches.len(), 2, "oneOf(ToolCall, ToolResponse)");
+    let refs: Vec<&str> = branches
+        .iter()
+        .map(|branch| branch["$ref"].as_str().expect("每个分支必须是 $ref"))
+        .collect();
+    assert!(refs.contains(&"#/definitions/ToolCall"));
+    assert!(refs.contains(&"#/definitions/ToolResponse"));
+    for key in ["properties", "allOf", "anyOf"] {
+        assert!(
+            root.get(key).is_none(),
+            "根不应该再有 `{key}` —— 契约的判定入口应当只有 oneOf"
+        );
+    }
+}
+
+#[test]
+fn contract_rejects_a_deliberately_invalid_sample() {
+    // 把"契约承重"这件事本身钉成判据: 故意违法的样本必须让 --samples-dir 变红。
+    //
+    // 这条判据需要 python3 + jsonschema。CI 的 **rust 矩阵腿**不装 jsonschema
+    // (只有 checks job 装), 所以缺依赖时打印**响亮的 SKIP** 而不是伪造绿;
+    // 真正的跨语言对账在 checks job 里跑 (见 docs/ledger/mcp-core-notes.md §4.2)。
+    if !python_jsonschema_available() {
+        eprintln!(
+            "SKIP[contract_rejects_a_deliberately_invalid_sample]: python3/jsonschema 不可用。\
+             这条判据的**真跑**在 CI 的 checks job (那里装了 jsonschema 且已接线 export_mcp_samples)。"
+        );
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!("yeban-mcp-live-contract-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    yeban_mcp::samples::export_all(&dir).expect("导出样本");
+
+    // (1) 12 份合法样本必须**全部通过**根校验。
+    let clean = run_validate_schemas(&dir);
     assert!(
-        !has_reference,
-        "schemas/mcp-tools.schema.json 的根开始引用 definitions 了 —— \
-         请把 scripts/gates 的 --samples-dir 对账接进 CI, 并更新 docs/ledger/mcp-core-notes.md §3.2"
+        clean.status.success(),
+        "合法样本必须全部通过根校验。stdout={}\nstderr={}",
+        String::from_utf8_lossy(&clean.stdout),
+        String::from_utf8_lossy(&clean.stderr)
     );
+
+    // (2) 混进一份**故意违法**的样本之后必须变红。
+    let bogus = dir.join("mcp-tools.bogus.json");
+    std::fs::write(&bogus, "{\"anything\": [1, 2, 3]}\n").expect("写违法样本");
+    let dirty = run_validate_schemas(&dir);
+    assert!(
+        !dirty.status.success(),
+        "故意违法的样本必须让契约变红 —— 否则这条对账是空转的。stdout={}",
+        String::from_utf8_lossy(&dirty.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&dirty.stderr).contains("mcp-tools.bogus.json"),
+        "变红的原因必须指向那份样本: {}",
+        String::from_utf8_lossy(&dirty.stderr)
+    );
+
+    // (3) "工具名不在 enum 里"的 ToolCall 也必须被拒。
+    std::fs::remove_file(&bogus).ok();
+    let bad_tool = dir.join("mcp-tools.call.not_a_tool.json");
+    std::fs::write(
+        &bad_tool,
+        "{\"name\": \"yeban_not_a_tool\", \"arguments\": {\"dryRun\": true}}\n",
+    )
+    .expect("写违法 ToolCall");
+    let dirty = run_validate_schemas(&dir);
+    assert!(
+        !dirty.status.success(),
+        "未知工具名必须让契约变红。stdout={}",
+        String::from_utf8_lossy(&dirty.stdout)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `python3 -c "import jsonschema"` 是否可用。
+fn python_jsonschema_available() -> bool {
+    std::process::Command::new("python3")
+        .args(["-c", "import jsonschema"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// 跑一次 `validate_schemas.py --samples-dir <dir>`。
+fn run_validate_schemas(dir: &std::path::Path) -> std::process::Output {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let script = repo
+        .join("scripts")
+        .join("gates")
+        .join("validate_schemas.py");
+    std::process::Command::new("python3")
+        .arg(script)
+        .arg("--samples-dir")
+        .arg(dir)
+        .current_dir(repo)
+        .output()
+        .expect("跑 validate_schemas.py")
 }
 
 // ---------------------------------------------------------------------------

@@ -15,24 +15,22 @@
 //! | `mcp-tools.error-codes.meta.json`（文档样本，非契约实例） | 错误码全集 + **契约缺口清单** | 让"schema 的 7 个 enum 装不下表格的 16 个错误码"这件事可被机器读到 |
 //! | `mcp-tools.call.<tool>.json` ×10 | 每个工具一份**规范 `ToolCall`** | 每个工具名都要被契约的 enum 认下来 |
 //!
-//! ## ⚠ 一个必须说清楚的限制：本 schema 的根是"空"的
+//! ## 契约现在是**承重**的（ADR-0001 D25）
 //!
-//! `schemas/mcp-tools.schema.json` 的根只有 `{"type":"object","definitions":{…}}` ——
-//! 它**没有** `properties`、没有 `$ref`、没有 `allOf`。Draft 2020-12 语义下
-//! "任意对象"都能通过根校验，`definitions.ToolCall` 实际上**从未被引用**。
+//! 第一轮实测出来的事实是：本 schema 的根当时只有 `{"type":"object","definitions":{…}}`，
+//! 没有 `properties` / `$ref` / `allOf` —— Draft 2020-12 下"任意对象"都通过根校验，
+//! `definitions.*` **从未被引用**，`--samples-dir` 对账是空转的。
 //!
-//! 也就是说：今天这条 `--samples-dir` 对账在本文件上是**空转**的（它只能证明
-//! "我们写出了一个 JSON 对象"）。本线不擅自改 `schemas/**`（权威契约 + 需要人类裁决），
-//! 因此采取两条腿走路：
+//! 集成者按 **ADR-0001 D25** 把根改成 `oneOf($ref ToolCall, $ref ToolResponse)`，
+//! 并顺手把错误码 enum 扩成联集 20 值。于是**每一个样本都必须真的是 `ToolCall` 或
+//! `ToolResponse`**，否则 `validate_schemas.py --samples-dir` 立刻变红：
 //!
-//! 1. **样本照常导出** —— 它们是"契约被修好后立刻生效"的判据输入，而且形状
-//!    （`ToolCall`）已经是对的；
-//! 2. **真正承重的判据在 Rust 侧** —— `tests/contract.rs` 直接读
-//!    `schemas/mcp-tools.schema.json` 的 `definitions.ToolCall.properties.name.enum`
-//!    做**集合相等**断言，那一条不空转。
+//! - 10 份 `mcp-tools.call.<tool>.json` 是 `ToolCall`；
+//! - 注册表与错误码目录装进 `ToolResponse.data`（`{"status":"success","data":{…}}`）——
+//!   它们的原始形状（裸对象）在新根下**会被拒**，这是契约变承重后的直接后果。
 //!
-//! `tests/contract.rs::schema_root_references_the_tool_call_definition` 会在
-//! 契约被修好（根开始 `$ref` 到 `definitions.ToolCall`）时提醒升级对账口径。
+//! `tests/contract.rs::contract_rejects_a_deliberately_invalid_sample` 把"契约承重"
+//! 这件事本身也钉成了判据（故意违法的样本必须让 `--samples-dir` 变红）。
 
 use std::path::{Path, PathBuf};
 
@@ -89,8 +87,16 @@ pub fn sample_file_names() -> Vec<String> {
 }
 
 /// 注册表样本：工具名集合 / 参数 / 作用域 / 副作用 / 错误码的机器可读快照。
+///
+/// 外层是 `ToolResponse`（`{"status":"success","data":{…}}`）—— 契约的根是
+/// `oneOf(ToolCall, ToolResponse)`，裸对象会被拒（ADR-0001 D25）。
 #[must_use]
 pub fn registry_sample() -> Value {
+    tool_response(registry_payload())
+}
+
+/// 注册表的载荷本体。
+fn registry_payload() -> Value {
     let mut root = Map::new();
     root.insert("count".to_owned(), Value::from(TOOLS.len()));
     root.insert(
@@ -157,16 +163,21 @@ fn param_value(param: &ParamSpec) -> Value {
     Value::Object(map)
 }
 
-/// 错误码样本：两个契约集合 + **缺口清单** + 实现级错误码。
+/// 错误码样本：契约联集（20）/ 规范表格（16）/ schema 原有（4）/ 实现级（1）。
 ///
-/// 这是本线发现的最重要的一处规范冲突的机器可读形态：
-/// schema 的 `ToolResponse.error.code` 是闭合的 7 值 enum，
-/// 而架构 §7.2 的表格给每个工具列的错误码里有 13 个不在其中。
+/// 历史：本线第一轮实测出"schema 的 7 值 enum 装不下表格的 16 个错误码"（缺口 13 个），
+/// 该缺口已由 **ADR-0001 D25** 关闭（契约改成联集 20 值）。
+/// 缺口清单作为方法论留痕保存在 `docs/ledger/mcp-core-notes.md` §3.1；
+/// 这里给出的是**修复后**的四个集合，判据要求它们逐一对上。
 #[must_use]
 pub fn error_codes_sample() -> Value {
-    let missing: Vec<Value> = ErrorCode::DOCUMENTED_TOOL_CODES
+    tool_response(error_codes_payload())
+}
+
+/// 错误码目录的载荷本体。
+fn error_codes_payload() -> Value {
+    let schema_only: Vec<Value> = ErrorCode::SCHEMA_ONLY
         .iter()
-        .filter(|code| !code.is_schema_contract())
         .map(|code| Value::from(code.as_str()))
         .collect();
     let implementation_only: Vec<Value> = ErrorCode::ALL
@@ -193,7 +204,7 @@ pub fn error_codes_sample() -> Value {
                 .collect(),
         ),
     );
-    root.insert("missingFromSchema".to_owned(), Value::Array(missing));
+    root.insert("schemaOnlyCodes".to_owned(), Value::Array(schema_only));
     root.insert(
         "implementationOnly".to_owned(),
         Value::Array(implementation_only),
@@ -207,6 +218,14 @@ pub fn error_codes_sample() -> Value {
                 .collect(),
         ),
     );
+    Value::Object(root)
+}
+
+/// 把一个载荷包成 `ToolResponse`（契约根要求的两种形状之一）。
+fn tool_response(data: Value) -> Value {
+    let mut root = Map::new();
+    root.insert("status".to_owned(), Value::from("success"));
+    root.insert("data".to_owned(), data);
     Value::Object(root)
 }
 
@@ -285,12 +304,12 @@ pub fn export_all(out_dir: &Path) -> Result<Vec<PathBuf>, SampleExportError> {
     std::fs::create_dir_all(out_dir)?;
     let mut written = Vec::new();
 
-    written.push(write_json(out_dir, REGISTRY_FILE, &registry_sample())?);
-    written.push(write_json(
-        out_dir,
-        ERROR_CODES_FILE,
-        &error_codes_sample(),
-    )?);
+    let registry = registry_sample();
+    check_tool_response(REGISTRY_FILE, &registry)?;
+    written.push(write_json(out_dir, REGISTRY_FILE, &registry)?);
+    let error_codes = error_codes_sample();
+    check_tool_response(ERROR_CODES_FILE, &error_codes)?;
+    written.push(write_json(out_dir, ERROR_CODES_FILE, &error_codes)?);
     for spec in &TOOLS {
         let file = call_file(spec.name);
         let sample = call_sample(spec);
@@ -339,6 +358,42 @@ pub fn check_sample(file: &str, sample: &Value) -> Result<(), SampleExportError>
     ] {
         if !arguments.contains_key(key) {
             return Err(invalid(format!("`arguments` 缺少契约要求的 `{key}`")));
+        }
+    }
+    Ok(())
+}
+
+/// `ToolResponse` 样本的 Rust 侧自检：形状必须与 `definitions.ToolResponse` 一致。
+///
+/// # Errors
+///
+/// 缺少 `status`、`status` 不在枚举里、`data` 不是对象，或错误响应的 `code` 不在目录里。
+pub fn check_tool_response(file: &str, sample: &Value) -> Result<(), SampleExportError> {
+    let invalid = |detail: String| SampleExportError::InvalidSample {
+        file: file.to_owned(),
+        detail,
+    };
+    let object = sample
+        .as_object()
+        .ok_or_else(|| invalid("样本必须是 JSON 对象".to_owned()))?;
+    match object.get("status").and_then(Value::as_str) {
+        Some("success") | Some("error") => {}
+        Some(other) => return Err(invalid(format!("`status` 只能是 success/error: {other}"))),
+        None => return Err(invalid("缺少字符串 `status`".to_owned())),
+    }
+    if let Some(data) = object.get("data")
+        && !data.is_object()
+    {
+        return Err(invalid("`data` 必须是对象".to_owned()));
+    }
+    if let Some(code) = object
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+    {
+        let known = ErrorCode::ALL.iter().any(|known| known.as_str() == code);
+        if !known {
+            return Err(invalid(format!("`error.code` `{code}` 不在错误码目录里")));
         }
     }
     Ok(())
@@ -402,6 +457,8 @@ mod tests {
     #[test]
     fn registry_sample_lists_every_tool_and_the_two_common_params() {
         let registry = registry_sample();
+        assert_eq!(registry["status"], "success", "必须是 ToolResponse 形状");
+        let registry = &registry["data"];
         assert_eq!(registry["count"], crate::tools::TOOL_COUNT);
         assert_eq!(registry["dryRunParam"], crate::tools::DRY_RUN_PARAM);
         assert_eq!(
@@ -423,29 +480,63 @@ mod tests {
     }
 
     #[test]
-    fn error_codes_sample_exposes_the_contract_gap() {
+    fn error_codes_sample_matches_the_union_contract() {
         let sample = error_codes_sample();
+        // 契约根是 oneOf(ToolCall, ToolResponse): 两份目录样本都必须是 ToolResponse 形状。
+        assert_eq!(sample["status"], "success");
+        let data = &sample["data"];
         assert_eq!(
-            sample["schemaContractEnum"].as_array().expect("enum").len(),
-            ErrorCode::SCHEMA_CONTRACT.len()
+            data["schemaContractEnum"].as_array().expect("enum").len(),
+            20,
+            "ADR-0001 D25 的联集 20 值"
         );
         assert_eq!(
-            sample["documentedToolCodes"]
-                .as_array()
-                .expect("enum")
-                .len(),
-            ErrorCode::DOCUMENTED_TOOL_CODES.len()
+            data["documentedToolCodes"].as_array().expect("enum").len(),
+            16,
+            "架构 §7.2 表格"
         );
-        let missing = sample["missingFromSchema"].as_array().expect("缺口清单");
-        assert_eq!(missing.len(), 13, "13 个表格错误码不在 schema enum 里");
-        assert!(missing.contains(&Value::from("FILE_NOT_FOUND")));
-        assert!(missing.contains(&Value::from("CONFLICT")));
+        let schema_only = data["schemaOnlyCodes"].as_array().expect("schema 原有码");
+        assert_eq!(schema_only.len(), 4);
+        assert!(schema_only.contains(&Value::from("PERMISSION_DENIED")));
         assert_eq!(
-            sample["implementationOnly"],
+            data["implementationOnly"],
             serde_json::json!(["NOT_IMPLEMENTED"])
         );
-        let all = sample["all"].as_array().expect("all");
-        assert_eq!(all.len(), ErrorCode::ALL.len());
+        assert_eq!(
+            data["all"].as_array().expect("all").len(),
+            ErrorCode::ALL.len()
+        );
+        // 字段名里不再有"缺口": 缺口已由 D25 关闭。
+        assert!(data.get("missingFromSchema").is_none());
+    }
+
+    #[test]
+    fn both_catalogue_samples_are_tool_responses() {
+        for (file, sample) in [
+            (REGISTRY_FILE, registry_sample()),
+            (ERROR_CODES_FILE, error_codes_sample()),
+        ] {
+            check_tool_response(file, &sample).expect("样本必须自洽");
+            assert!(sample.get("name").is_none(), "不得同时长得像 ToolCall");
+            assert!(sample["data"].is_object());
+        }
+        // 反例: 坏 status / 坏 code 必须被自检拦下。
+        assert!(check_tool_response("x.json", &serde_json::json!({"status": "maybe"})).is_err());
+        assert!(
+            check_tool_response(
+                "x.json",
+                &serde_json::json!({"status": "error", "error": {"code": "NOT_A_CODE"}})
+            )
+            .is_err()
+        );
+        assert!(
+            check_tool_response(
+                "x.json",
+                &serde_json::json!({"status": "success", "data": []})
+            )
+            .is_err()
+        );
+        assert!(check_tool_response("x.json", &serde_json::json!({})).is_err());
     }
 
     #[test]

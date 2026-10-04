@@ -54,12 +54,16 @@
 //! - 工具名集合 / `dryRun` / `idempotencyKey` 的权威定义在
 //!   `schemas/mcp-tools.schema.json` 的 `definitions.ToolCall`；
 //! - 每个工具的参数与错误码在 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.2 的表格；
-//! - **两份契约在错误码上冲突**：schema 的 `ToolResponse.error.code` 是闭合的 7 值 enum，
-//!   表格里有 13 个错误码不在其中。详见 [`tools::ErrorCode`] 与
-//!   `docs/ledger/mcp-core-notes.md` §3.1（本线不擅自改 `schemas/**`）。
-//! - `schemas/mcp-tools.schema.json` 的**根没有引用 `definitions`**，因此
-//!   `validate_schemas.py --samples-dir` 在本文件上目前是空转的；
-//!   承重的判据是 `tests/contract.rs` 里直接读 enum 的集合相等断言。
+//! - **错误码取联集 20 值**（[`tools::ErrorCode::SCHEMA_CONTRACT`]）。第 1 轮本线实测出
+//!   "schema 原来的 7 值 enum 装不下规范表格的 16 个错误码（13 个没有家）"，
+//!   已由 **ADR-0001 D25** 修好；判据随之从"钉住缺口"升级成"实现集合 == 契约集合"
+//!   （`tests/contract.rs::implementation_error_codes_equal_the_contract_enum_exactly`）。
+//!   历史留痕见 `docs/ledger/mcp-core-notes.md` §3.1。
+//! - **契约是承重的**：D25 把 schema 的根改成 `oneOf($ref ToolCall, $ref ToolResponse)`，
+//!   因此每一份导出样本都必须真的是两种形状之一，`validate_schemas.py --samples-dir`
+//!   在故意违法的样本上会真变红（判据
+//!   `tests/contract.rs::contract_rejects_a_deliberately_invalid_sample`）。
+//!   在 D25 之前那个根是"空对象"，任意对象都通过 —— 详见 notes §3.2。
 //!
 //! ## 本轮的实现状态
 //!

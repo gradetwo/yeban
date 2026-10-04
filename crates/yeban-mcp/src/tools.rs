@@ -47,19 +47,26 @@ pub const SPEC_ID_PREFIX: &str = "MCP-TOOL-";
 
 /// 契约里的错误码 [MCP-TOOL-001..010]。
 ///
-/// # 两份契约不一致（本线如实登记，见 `docs/ledger/mcp-core-notes.md` §3.1）
+/// # 契约缺口与它的裁决（ADR-0001 D25）
 ///
-/// - `schemas/mcp-tools.schema.json` 的 `definitions.ToolResponse.properties.error.properties.code.enum`
-///   只列了 **7** 个：`PROJECT_LOCKED` / `PROPOSAL_NOT_FOUND` / `ROUTING_CYCLE_DETECTED` /
-///   `ENTITY_NOT_FOUND` / `INVALID_PARAMETER_RANGE` / `PERMISSION_DENIED` / `IO_ERROR`；
-/// - 架构 §7.2 的表格给每个工具列了 **16** 个领域错误码（`FILE_NOT_FOUND` / `DISK_FULL` /
-///   `CLIP_NOT_FOUND` / … ），其中 **13 个不在 schema 的 enum 里**。
+/// 本线第一轮测出来的事实是：schema 的 `ToolResponse.error.code` 只列了 **7** 个值，
+/// 而架构 §7.2 的表格逐工具列出的并集是 **16** 个，交集只有 3 个
+/// （`PROJECT_LOCKED` / `IO_ERROR` / `PROPOSAL_NOT_FOUND`）—— 也就是 **13 个领域错误码
+/// 没有家**，任何一个真实的领域失败都会产出被本 schema 判为非法的 `ToolResponse`。
 ///
-/// 结论：**任何一个真实的领域失败都会产出一份 schema 判为非法的 `ToolResponse`。**
-/// 本线不擅自改 `schemas/**`（那是权威契约，改动需要人类裁决 + ADR），
-/// 而是把两个集合都实现成常量，并让判据把这个缺口暴露成"已知差异"而不是"隐性 bug"。
-/// 在缺口被裁决之前，[`crate::dispatch`] 对"尚未实现"这类**实现级**状况一律走
-/// JSON-RPC 错误对象，绝不伪造一个契约里没有的 `ToolResponse.error.code`。
+/// 集成者按 **ADR-0001 D25** 把契约修成**联集 20 值**（原有 7 个一个不删，
+/// 规范并集一个不缺），缺口因此关闭。本模块随之把 [`ErrorCode::SCHEMA_CONTRACT`]
+/// 对齐成那 20 个，判据从"钉住缺口"升级成"实现集合 **==** 契约集合"。
+/// 历史缺口清单保留在 `docs/ledger/mcp-core-notes.md` §3.1（作为方法论留痕）。
+///
+/// 联集里 schema 原有而规范表格未列的 4 个（[`ErrorCode::SCHEMA_ONLY`]）：
+/// `ROUTING_CYCLE_DETECTED` / `ENTITY_NOT_FOUND` / `INVALID_PARAMETER_RANGE` /
+/// `PERMISSION_DENIED`。其中 `PERMISSION_DENIED` 是 scope 强制的必需码
+/// （[`crate::security::Denial`] 的语义），不是冗余。
+///
+/// [`ErrorCode::NotImplemented`] 是**实现级**错误码，不在任何契约 enum 里：
+/// [`crate::dispatch`] 对"尚未接线"这类状况走 JSON-RPC `-32005`，
+/// 绝不伪造一个契约里没有的 `ToolResponse.error.code`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ErrorCode {
     // ---- 架构 §7.2 的 16 个领域错误码（规范顺序） ----
@@ -95,7 +102,7 @@ pub enum ErrorCode {
     ProposalNotFound,
     /// `CONFLICT`：合并冲突。
     Conflict,
-    // ---- 只出现在 schema enum 里的错误码 ----
+    // ---- 4 个 schema 原有、架构 §7.2 表格未列的错误码（ADR-0001 D25 裁决保留） ----
     /// `ROUTING_CYCLE_DETECTED`：schema 里对 `CYCLE_DETECTED` 的另一种写法（同名异形）。
     RoutingCycleDetected,
     /// `ENTITY_NOT_FOUND`：schema 的通用"实体不存在"。
@@ -135,15 +142,41 @@ impl ErrorCode {
         Self::NotImplemented,
     ];
 
-    /// `schemas/mcp-tools.schema.json` 的 `ToolResponse.error.code` enum（schema 顺序，7 个）。
-    pub const SCHEMA_CONTRACT: [Self; 7] = [
+    /// `schemas/mcp-tools.schema.json` 的 `ToolResponse.error.code` enum
+    /// （**联集 20 值**，按 schema 里的字母序；ADR-0001 D25）。
+    ///
+    /// 判据 `tests/contract.rs::implementation_error_codes_equal_the_contract_enum_exactly`
+    /// 要求本常量与契约文件里的 enum **集合完全相等**（双向包含 + 计数）。
+    pub const SCHEMA_CONTRACT: [Self; 20] = [
+        Self::Busy,
+        Self::ClipNotFound,
+        Self::Conflict,
+        Self::CycleDetected,
+        Self::DiskFull,
+        Self::EntityNotFound,
+        Self::FileNotFound,
+        Self::IndexOutOfBounds,
+        Self::InvalidFieldSelector,
+        Self::InvalidParameterRange,
+        Self::IoError,
+        Self::NoActiveProject,
+        Self::OutOfRange,
+        Self::PermissionDenied,
         Self::ProjectLocked,
         Self::ProposalNotFound,
+        Self::RenderFailed,
+        Self::RoutingCycleDetected,
+        Self::StyleNotFound,
+        Self::TrackNotFound,
+    ];
+
+    /// 契约里的 20 个减去规范表格的 16 个 = **4 个 schema 原有码**
+    /// （架构 §7.2 表格未列，但 ADR-0001 D25 裁决保留）。
+    pub const SCHEMA_ONLY: [Self; 4] = [
         Self::RoutingCycleDetected,
         Self::EntityNotFound,
         Self::InvalidParameterRange,
         Self::PermissionDenied,
-        Self::IoError,
     ];
 
     /// 架构 §7.2 表格里的 16 个领域错误码（表格顺序）。
@@ -902,43 +935,48 @@ mod tests {
     }
 
     #[test]
-    fn error_code_catalog_is_a_strict_superset_of_both_contracts() {
+    fn error_code_catalog_covers_the_union_contract_exactly() {
+        // 21 = 契约联集 20 + 1 个实现级 (NOT_IMPLEMENTED)。
         assert_eq!(ErrorCode::ALL.len(), 21);
+        assert_eq!(
+            ErrorCode::SCHEMA_CONTRACT.len(),
+            20,
+            "ADR-0001 D25 的联集 20 值"
+        );
+        assert_eq!(ErrorCode::DOCUMENTED_TOOL_CODES.len(), 16, "架构 §7.2 表格");
+        assert_eq!(ErrorCode::SCHEMA_ONLY.len(), 4);
+
         for code in ErrorCode::SCHEMA_CONTRACT {
             assert!(
                 ErrorCode::ALL.contains(&code),
-                "schema 契约错误码 {code} 未被实现覆盖"
+                "契约错误码 {code} 未被实现覆盖"
             );
             assert!(code.is_schema_contract());
         }
+        // 规范表格的 16 个**全部**落在契约里 (缺口已由 D25 关闭)。
         for code in ErrorCode::DOCUMENTED_TOOL_CODES {
             assert!(ErrorCode::ALL.contains(&code));
             assert!(code.is_documented_tool_code());
+            assert!(
+                code.is_schema_contract(),
+                "表格错误码 {code} 仍然不在契约里 —— 缺口又回来了"
+            );
         }
-        // 缺口如实可见: 表格里有 13 个错误码**不在** schema enum 里。
-        let gap: Vec<&str> = ErrorCode::DOCUMENTED_TOOL_CODES
+        // 契约减去表格 == 正好那 4 个 schema 原有码。
+        let schema_only: Vec<&str> = ErrorCode::SCHEMA_CONTRACT
             .iter()
-            .filter(|code| !code.is_schema_contract())
+            .filter(|code| !code.is_documented_tool_code())
             .map(|code| code.as_str())
             .collect();
         assert_eq!(
-            gap,
+            schema_only,
             vec![
-                "FILE_NOT_FOUND",
-                "DISK_FULL",
-                "NO_ACTIVE_PROJECT",
-                "INVALID_FIELD_SELECTOR",
-                "STYLE_NOT_FOUND",
-                "CYCLE_DETECTED",
-                "CLIP_NOT_FOUND",
-                "OUT_OF_RANGE",
-                "TRACK_NOT_FOUND",
-                "INDEX_OUT_OF_BOUNDS",
-                "RENDER_FAILED",
-                "BUSY",
-                "CONFLICT",
+                "ENTITY_NOT_FOUND",
+                "INVALID_PARAMETER_RANGE",
+                "PERMISSION_DENIED",
+                "ROUTING_CYCLE_DETECTED",
             ],
-            "契约缺口清单是**实测**的, 变化必须有人看见"
+            "schema 原有码清单是**实测**的"
         );
         // 实现级错误码不在任何契约里。
         assert!(!ErrorCode::NotImplemented.is_schema_contract());
