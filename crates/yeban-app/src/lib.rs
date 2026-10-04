@@ -41,12 +41,18 @@
 //! 因此"界面真的消费了电平"可以被控件树机械验证。引擎的重建（快照 / 队列 / 量子驱动）
 //! 由 [`engine_host`] 负责，`.yeban` 的原子落盘（`[ARCH-SEC-004]`）由 [`save`] 负责。
 //!
+//! **命令行面**（app-cli 工作线）：[`cli`] 是零 Slint 依赖的解析 / 用法 / 报告 / 退出码
+//! 实现，`src/main.rs` 只做分发。`--open` 经 [`open`] 打开真工程文档（`.yeban` 容器或裸
+//! `project.json`），`--save-as` 经 [`save`] **原子**落盘，`--export-elements` 把
+//! [`elements`] 的注册表原子写到文件；两条路径（GUI / 无窗口）共用同一份报告实现。
+//!
 //! 仍未接线的部分（走带 / Op 归约 / 设备链 / 自动化 / 声卡宿主 / UI→模型写入）
 //! 逐条记在 `docs/ledger/app-mixer-notes.md` §7 与 `docs/ledger/app-binding-notes.md`
-//! 的未实现项里。
+//! 的未实现项里；命令行的边界与未实现项记在 `docs/ledger/app-cli-notes.md`。
 #![deny(missing_docs)]
 
 pub mod bridge;
+pub mod cli;
 pub mod elements;
 pub mod engine_host;
 pub mod host;

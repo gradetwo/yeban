@@ -21,8 +21,12 @@
 //!
 //! - 本模块**只**做"字节 → 同目录临时文件 → `sync_all` → `rename`"，不碰锁、不碰
 //!   `history.dag` 的语义、不碰资产池；
-//! - `history.dag` 以**空字节**写出（工程容器布局要求该条目存在；提交图谱的权威内容
-//!   属 `yeban-model::commit`，本切片没有提交可写）；
+//! - [`save_project_file`] 把 `history.dag` 以**空字节**写出（工程容器布局要求该条目存在；
+//!   提交图谱的权威内容属 `yeban-model::commit`，`ui/force_save` 这条切片没有提交可写）；
+//! - [`save_archive_file`] 则把调用方给的归档**原样保真**写回（`history.dag` + `assets/`），
+//!   命令行的 `--save-as` 用它 ⇒ "打开再保存"不会静默丢掉资产池；
+//! - [`write_file_atomically`] 是上面两条**唯一**的落盘实现，也是命令行
+//!   `--export-elements` 的落盘实现 —— 原子替换只有一份代码；
 //! - 一旦 `yeban-mcp` 的 store 落地，应当把本模块换成对它的调用（needs 已登记）。
 //!
 //! ## 平台差异（**如实登记，不写没验证过的代码**）
@@ -43,8 +47,8 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use yeban_model::container::{ContainerError, write_project_container};
-use yeban_model::ids::EntityId;
+use yeban_model::container::{ContainerError, ProjectArchive, write_project_container};
+use yeban_model::ids::{AssetHash, EntityId};
 use yeban_model::project::YebanProjectV1;
 
 /// 临时文件名里的固定中缀（`[ARCH-SEC-004]` 的 `.yeban.tmp-{ulid}` 形态）。
@@ -135,6 +139,10 @@ impl From<ContainerError> for SaveError {
 /// 失败时临时文件会被尽力删除（`remove_file` 的错误被忽略 —— 它与"保存失败"这个主因
 /// 相比是次要信息，而且上报它会盖住主因）。
 ///
+/// `history.dag` 以**空字节**写出、资产池为空：这条入口只拿得到一个 `YebanProjectV1`。
+/// 需要"把打开的东西原样存回去"（保真 `history.dag` 与资产池）的调用方用
+/// [`save_archive_file`]。
+///
 /// # Errors
 ///
 /// 路径无法构造临时文件（[`SaveError::NoFileName`]）、容器写出被拒
@@ -143,16 +151,66 @@ pub fn save_project_file(
     project: &YebanProjectV1,
     path: impl AsRef<Path>,
 ) -> Result<SaveReport, SaveError> {
+    // 第 0 步：先把**字节**全部算出来（容器写出失败时一个文件都还没碰）。
+    // `history.dag` 以空字节写出：容器布局要求该条目存在，而提交图谱的权威内容属
+    // `yeban-model::commit`（本切片没有提交可写，见模块文档的边界）。
+    let bytes = write_project_container(project, &[], &BTreeMap::new())?;
+    write_file_atomically(&bytes, path)
+}
+
+/// 把一个**全保真归档**（工程 + `history.dag` + 资产池）写成一个 `.yeban` 容器并
+/// **原子替换**到 `path`。
+///
+/// 为什么需要它：`--open <a> --save-as <b>` 这类"另存为"必须**无损** —— 否则一个带
+/// 资产池的工程被打开再保存一次，`assets/{sha256}` 与 `history.dag` 会**静默消失**，
+/// 而用户看到的只是"保存成功"。这正是本文件头等忌讳的失败模式（见 `open.rs` 的
+/// "绝不退化成空工程"）。
+///
+/// 与 [`save_project_file`] 的关系：后者 = 本函数 + 一个"历史空 / 资产空"的归档。
+/// 落盘手法（临时文件 → `sync_all` → `rename` → 刷目录）**只有一份实现**
+/// （[`write_file_atomically`]），不存在两条会漂移的原子写入路径。
+///
+/// `history.dag` 与资产池的**内容**由调用方决定（本模块不解释它们，也不替它们做取舍）。
+///
+/// 已知代价（如实登记）：`write_project_container` 的签名要 `BTreeMap<AssetHash, Vec<u8>>`，
+/// 而 `ProjectArchive::assets` 是 `Vec<(AssetHash, Vec<u8>)>`，因此这里要重建一个
+/// `BTreeMap` —— 大资产池会多一次内存拷贝。要消掉它需要 `yeban-model` 暴露一个
+/// `&[(AssetHash, &[u8])]` 形态的写出面（本条已登记为 notes 的 needs）。
+///
+/// # Errors
+///
+/// 同 [`save_project_file`]，外加资产字节与其 CAS 键不符
+/// （`ContainerError::AssetHashMismatch`，原样上报）。
+pub fn save_archive_file(
+    archive: &ProjectArchive,
+    path: impl AsRef<Path>,
+) -> Result<SaveReport, SaveError> {
+    let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+    for (hash, data) in &archive.assets {
+        assets.insert(hash.clone(), data.clone());
+    }
+    let bytes = write_project_container(&archive.project, &archive.history_dag, &assets)?;
+    write_file_atomically(&bytes, path)
+}
+
+/// 把一段已经算好的字节**原子**写到 `path`（`[ARCH-SEC-004]` 的第 1~3.5 步）。
+///
+/// 为什么把它抽成公开函数：工程保存与"导出元素清单"必须共用**同一份**原子写入实现。
+/// 两条各写一遍的原子替换，迟早有一条会退化成"直接 create + write"——那时
+/// **失败现场的旧文件已经被截断**，而调用方只会看到一句"保存失败"。
+///
+/// # Errors
+///
+/// 目标路径没有文件名（[`SaveError::NoFileName`]）或任一步 I/O 失败（[`SaveError::Io`]）。
+pub fn write_file_atomically(
+    bytes: &[u8],
+    path: impl AsRef<Path>,
+) -> Result<SaveReport, SaveError> {
     let path = path.as_ref().to_path_buf();
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| SaveError::NoFileName { path: path.clone() })?;
-
-    // 第 0 步：先把**字节**全部算出来（容器写出失败时一个文件都还没碰）。
-    // `history.dag` 以空字节写出：容器布局要求该条目存在，而提交图谱的权威内容属
-    // `yeban-model::commit`（本切片没有提交可写，见模块文档的边界）。
-    let bytes = write_project_container(project, &[], &BTreeMap::new())?;
 
     // 第 1 步：同目录临时文件（`[ARCH-SEC-004]` 的 `.yeban.tmp-{ulid}` 形态）。
     // `EntityId::new()` 生成一个 ULID，取它的规范文本做尾段 —— 与规范的字面形态一致，
@@ -163,7 +221,7 @@ pub fn save_project_file(
     );
     let temp_path = path.with_file_name(&temp_name);
 
-    let write_result = write_temp(&temp_path, &bytes);
+    let write_result = write_temp(&temp_path, bytes);
     if let Err(error) = write_result {
         let _ = std::fs::remove_file(&temp_path);
         return Err(error);
@@ -332,6 +390,113 @@ mod tests {
         assert!(
             matches!(error, SaveError::NoFileName { .. }),
             "实际: {error:?}"
+        );
+        // 通用原子写入入口同一条契约（否则导出会绕过它）。
+        let error = write_file_atomically(b"x", "/").expect_err("没有文件名必须报错");
+        assert!(
+            matches!(error, SaveError::NoFileName { .. }),
+            "实际: {error:?}"
+        );
+    }
+
+    /// 判据 6：**归档保真保存** —— `history.dag` 与资产池必须原样活过一轮
+    /// "打开 → 另存"（这是 `--save-as` 的语义，见模块文档）。
+    #[test]
+    fn an_archive_save_preserves_history_and_the_asset_pool() {
+        use yeban_model::container::read_project_container;
+        use yeban_model::ids::AssetHash;
+
+        let project = demo_project();
+        let asset = b"yeban-save-archive-asset".to_vec();
+        let hash = AssetHash::of_bytes(&asset);
+        let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+        assets.insert(hash, asset.clone());
+        let source = ProjectArchive {
+            project: project.clone(),
+            history_dag: b"commit-graph-bytes".to_vec(),
+            assets: vec![(AssetHash::of_bytes(&asset), asset.clone())],
+        };
+
+        let dir = scratch_dir("archive");
+        let path = dir.join("kept.yeban");
+        let report = save_archive_file(&source, &path).expect("保真保存");
+        assert_eq!(
+            report.bytes,
+            std::fs::metadata(&path).expect("文件在").len() as usize
+        );
+
+        let bytes = std::fs::read(&path).expect("读回");
+        let read_back =
+            read_project_container(&bytes, &yeban_model::container::ContainerLimits::default())
+                .expect("读回容器");
+        assert_eq!(read_back.project, project);
+        assert_eq!(
+            read_back.history_dag, b"commit-graph-bytes",
+            "history.dag 必须在 --save-as 之后仍然存在"
+        );
+        assert_eq!(read_back.assets.len(), 1, "资产池不得静默消失");
+        assert_eq!(read_back.assets[0].1, asset);
+        assert_eq!(read_back, source, "归档必须逐字段等价");
+    }
+
+    /// 判据 7：通用原子写入在**只读目录**下必须失败，且**旧文件一个字节都没变**
+    /// （`[ARCH-SEC-004]` 的可观测后果 —— 这正是"直接 create+write"会红掉的那条）。
+    ///
+    /// 构造的关键：目标文件**本身可写**，只有**目录**不可写。于是"就地覆盖"会成功、
+    /// 而"同目录临时文件 + rename"必须失败 —— 这条判据因此真的能区分两种实现，
+    /// 而不是只证明"写不进去"。
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_directory_never_touches_the_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = scratch_dir("readonly");
+        let path = dir.join("protected.yeban");
+        save_project_file(&demo_project(), &path).expect("先放一个真容器");
+        let before = std::fs::read(&path).expect("读原文");
+
+        let mut permissions = std::fs::metadata(&dir).expect("目录元数据").permissions();
+        permissions.set_mode(0o555);
+        std::fs::set_permissions(&dir, permissions).expect("降权");
+
+        // 权限对特权进程无效（root）：响亮地跳过，而不是把"没测到"记成"通过"。
+        let probe = dir.join(".probe");
+        let writable = std::fs::write(&probe, b"x").is_ok();
+        let _ = std::fs::remove_file(&probe);
+
+        if writable {
+            eprintln!("[yeban-app/save] 只读目录仍可写 (特权进程?), 本条判据无从判定 —— 响亮跳过");
+        } else {
+            let error = save_project_file(&demo_project(), &path).expect_err("只读目录必须报错");
+            assert!(matches!(error, SaveError::Io { .. }), "实际: {error:?}");
+            assert_eq!(
+                std::fs::read(&path).expect("旧文件仍在"),
+                before,
+                "失败的保存绝不能碰旧文件"
+            );
+            let leftovers: Vec<String> = std::fs::read_dir(&dir)
+                .expect("列目录")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.contains(TEMP_INFIX))
+                .collect();
+            assert!(leftovers.is_empty(), "失败后残留临时文件: {leftovers:?}");
+        }
+
+        let mut permissions = std::fs::metadata(&dir).expect("目录元数据").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&dir, permissions).expect("还原权限");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 判据 7 的非 Unix 占位：Windows 的"只读目录"是 ACL 语义，本仓库没有可移植的
+    /// 构造手法，**不猜**。这里响亮地说明"本平台没测"，而不是静默通过。
+    #[cfg(not(unix))]
+    #[test]
+    fn a_read_only_directory_never_touches_the_existing_file() {
+        eprintln!(
+            "[yeban-app/save] 非 Unix 平台: 只读目录语义是 ACL, 本仓库不构造 —— 该判据只在 Unix 腿有效"
         );
     }
 }
