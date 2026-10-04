@@ -61,6 +61,9 @@
 | 21 | `configure_test_fonts()`（`internal` feature）会把字体集合换成**内嵌 NotoSans**（`system_fonts: false`），并且它改的是 `ctx.font_context()` —— **与软件光栅化共用同一个 font context**。也就是说：**理论上可以让 Tier-1 截图也变成字体确定的**，从而跨平台基准图可比 | `i-slint-backend-testing-1.18.1/lib.rs:101-150` |
 | 22 | **`ElementHandle::accessible_id()` 对 `element_index != 0` 直接返回 `None`**（`search_api.rs:745-748`）。而 `visit_descendants` 会对每个 `ItemRc` 展开 `element_count` 个句柄（`collect_elements`）。`for` 循环展开的重复元素到底走"独立子 ItemTree"（每个实例 `element_index == 0`，语义 ID 可用）还是"单 ItemRc + element_count"（只有第一个实例有语义 ID），**从源码读不出来**（`generate_repeated_component` 给重复元素建了 `sub_tree`，但 `element_count` 的行为取决于是否原生重复项）。⚠️ **这直接决定 `[UI-TEST-001]` 对 `note-{ulid}-rect` / `clip-{ulid}-header` / `track-{i}-header` 是否真的可用** | `i-slint-backend-testing-1.18.1/search_api.rs:330-345,745-748`；`i-slint-compiler-1.18.1/generator/rust.rs:2719-2726` |
 | 23 | 元素没有声明 `accessible-id` 时 `accessible_id()` 返回 **`None`**（不是 `Some("")`）：生成的 `accessible_string_property` 只为**真正声明过** `accessible-*` 的元素生成分支，其余落到 `_ => None` | `i-slint-compiler-1.18.1/generator/rust.rs:1524-1540,2016-2019` |
+| 24 | ⚠️ **`slint!` 是 proc macro，它的每一条编译器 warning（甚至 note）都会被展开成 `#[deprecated] const WARNING: () = (); WARNING`** ⇒ CI 的 `-D warnings` 会把"善意提示"变成硬错误。实测：第一次 CI 就死在 `Exported component 'PortFixture' doesn't inherit Window. This is deprecated` 上（`clippy -D warnings`）。**这个机制只作用于 `slint!`**：`slint_build`（`.slint` 文件路径）把同一批诊断当 cargo warning 打印，所以 `yeban-app` 的 13 个 `.slint` 不受影响 | `i-slint-compiler-1.18.1/diagnostics.rs:575-594`；`passes/check_public_api.rs:63` |
+| 25 | `export component X inherits Window` 才是不触发上述告警的形状 —— `yeban-app/ui/app.slint:154` 的 `MainWindow` 正是如此。本线的夹具因此改成 `inherits Window` | 仓库内 `crates/yeban-app/ui/app.slint` |
+| 26 | **Cargo 会给"只有 path、没有 version"的依赖隐式补 `*`** ⇒ `deny.toml` 的 `[bans] wildcards = "deny"` 报 `error[wildcard]`。实测：第二次 CI 的 `deny` job 死在这里。**本机 `run-gates.sh light` 的 G10 守卫抓不到**（它只看字符串形式的 `*`），所以这是一条"只有 CI 能抓"的坑 —— 已在 notes §7.0 记为本机探针抓不到的类别，靠本机 cargo-deny 补 | `deny.toml:69-71`；CI run 37221429630 的 deny job |
 
 ### 规范 vs 上游 1.18.1：本线**新增**的三处发现（补 ADR-0001 D18）
 
@@ -188,6 +191,17 @@ cd /tmp/uitp-clippy && cargo clippy --offline --all-targets --quiet   # 期望 0
 
 **结论**：本机虽然不能编译 Slint，但"零 Slint 模块"这一半可以用真实 clippy 完全验完。
 这一半包含了本线 ~80% 的代码量。
+
+另外**依赖图相关的门禁在本机也能真跑**（零编译）：仓库文档里给了预编译的 cargo-deny
+（`/Users/crow/work/music/.tooling/cargo-deny-0.20.2-aarch64-apple-darwin/cargo-deny`），
+用与 CI 完全相同的调用即可：
+
+```bash
+cargo-deny --all-features check     # 期望: advisories ok, bans ok, licenses ok, sources ok
+```
+
+它抓到了一条 `clippy` 与 `run-gates.sh light` **都抓不到**的坑：`[bans] wildcards = "deny"`
+会因为"只有 path、没有 version"的依赖而报 `error[wildcard]`（见 §2 第 26 条）。
 
 ### 7.1 方法：用 `rustc --test` 单独编译零 Slint 的 7 个模块
 

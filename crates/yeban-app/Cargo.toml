@@ -49,7 +49,12 @@ slint = { workspace = true, features = [
 # 为什么默认关闭: `AGENTS.md` §2 红线 6 的精神是"测试/内省能力不进默认构建"。
 # 本 crate 的测试端口会把 Slint 的 Testing Backend (官方**内部** crate) 拉进依赖图,
 # 而 release 二进制不需要它。因此它只能被显式 `--features ui-test-port` 打开。
-yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
+# 为什么必须同时写 `version`: Cargo 对"只有 path、没有 version"的依赖会隐式补一个 `*`,
+# 而 `deny.toml` 的 `[bans] wildcards = "deny"` 会因此报
+# `error[wildcard]: found 1 wildcard dependency for crate 'yeban-app'`
+# （实测: CI run 37221429630 的 deny job）。版本必须与 `[workspace.package] version` 一致。
+# TODO(hoist): 集成者把本 crate 登记进根 `[workspace.dependencies]` 后, 这里改回 `workspace = true`。
+yeban-ui-test-port = { path = "../yeban-ui-test-port", version = "0.0.1", optional = true }
 
 [features]
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
