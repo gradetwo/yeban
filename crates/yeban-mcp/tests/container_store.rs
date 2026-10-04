@@ -37,6 +37,19 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 本环境是否有 `python3` **且**装了 `jsonschema`。
+///
+/// 为什么必须先问一句:`python3` 在 Linux 托管 runner 上自带 `jsonschema`, 在 **Windows runner 上不带**。
+/// 若不问就断言"契约必须通过", 同一份判据会在 Windows 上以"契约不通过"收场 —— 而事实是**依赖没装**。
+/// 环境差异不该被读成"代码错了"(与教训 L20 同族), 但**也不能静默跳过**: 所以打印 `[skip]`。
+/// (与 `tests/contract.rs` 的同名函数保持同一约定。)
+fn python_jsonschema_available() -> bool {
+    std::process::Command::new("python3")
+        .args(["-c", "import jsonschema"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
@@ -578,6 +591,13 @@ fn container_project_json_is_accepted_by_the_project_schema() {
             return;
         }
     };
+    if !python_jsonschema_available() {
+        eprintln!(
+            "[skip] 本环境没有 python3 + jsonschema, 无法用 Python 独立实现复核契约 \
+             (Windows runner 不带该依赖); 这不是通过, 只是本环境做不了这条判据"
+        );
+        return;
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

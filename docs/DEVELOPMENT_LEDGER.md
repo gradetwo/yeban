@@ -934,3 +934,19 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 **这两条共同印证了一件事**（与 L12/L18/L20/L22/L23 同族）：**"记在台账里的 pending"与"真的跑过一次"是两件事**。
 只要一个门禁从未执行，它既不能证明通过，也不能证明失败 —— 它只证明"我们不知道"。
 
+### 第 5 轮（续）：Windows 门禁的第二次读数 —— 这次抓到的是**判据对环境的假设**
+
+- 修复"持锁后读元数据"（`line/store-container` 交办项）后复跑 `windows` 门禁（run 37236383874 = 失败），
+  红点换了一条：`crates/yeban-mcp/tests/container_store.rs:583`
+  `container_project_json_is_accepted_by_the_project_schema`，原因是它 `Command::new("python3")`
+  跑 `scripts/gates/validate_schemas.py`，而 **Windows runner 不带 `jsonschema`** ⇒ 脚本以退出码 2 收场
+  （"缺少 jsonschema 依赖"），判据把它读成"契约不通过"。
+- **这是 L20 的又一个实例**：判据里隐含了"本环境有 python3 + jsonschema"这个**环境假设**；
+  Linux 托管 runner 恰好自带，Windows 不带。**"在我的环境通过"不等于"判据是对的"。**
+- **处置**：`container_store.rs` 改用与 `tests/contract.rs` **同名同约定**的守卫
+  `python_jsonschema_available()`（先问一句"依赖在不在"，不在就打印**响亮 SKIP**而不是伪装成通过）。
+  我一开始另加了一个"退出码 2"常量，随后**撤回**——`contract.rs` 早有这个守卫，重复两套约定本身就是债。
+  ⇒ 现在两份文件用**同一个函数名、同一套语义**。
+- **仍未闭环**：`windows` 门禁的第三次读数还没拿到（提交后我会再跑一次）；在那之前
+  `MUST-GATE-008` 的 Windows 侧仍是 **pending**，不许写成已验证。
+
