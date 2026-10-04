@@ -1086,3 +1086,28 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **已落地**：修掉 lint（let-chain），并在本机跑 `clippy -p yeban-model --all-targets -D warnings` 确认 0 告警
   才提交 —— 这次没有任何"我以为它过了"。
 
+### 第 6 轮：一个**跨线发现的真实缺陷** —— 电平弹道差 2 倍（`ARCH-UI-002`）
+
+- **发现者**：`line/app-mixer`。它在把混音台接到引擎电平上时，交叉核对了"每秒量子数"这条 API 语义，
+  发现 `EngineRuntime::process_quantum` **按 `DEFAULT_BLOCK_FRAMES`(128) 切整量子**，
+  而弹道系数却用 **`snapshot.block_frames()`**（项目声明的 `audio_config.block_size`，演示工程 = **256**）折算
+  ⇒ 每秒量子数被算成 `48000/256 = 187.5` 而不是 `48000/128 = 375`
+  ⇒ **峰值保持按 10 dB/s 衰减，而契约要求 20 dB/s**（整整差 2 倍）。
+  它**没有改别人的 crate**，而是把这条当作 needs 上报 —— 这是正确处置。
+- **为什么危险**：这个错**不 panic、不让任何既有判据变红**，只会让电平表"慢慢变得不准"。
+  它是"两个 crate 对同一条 API 语义有两种理解"的典型：**接口一致 ≠ 语义一致**。
+  （`device.rs` 里那个 256 是 **设备缓冲**（`BufferSize::Fixed`）的合理取值；而**处理量子**由 L1 契约钉死在 128。
+  两者都存在、都正确，错在把它们当成了同一个数。）
+- **修法**（集成者，`crates/yeban-engine/src/rt.rs`）：
+  · 弹道系数改用 `sample_rate / DEFAULT_BLOCK_FRAMES`，并在原位写清"设备缓冲 ≠ 处理量子"；
+  · 把"武装进去的那个数"变成**可观测统计量** `EngineStats::quanta_per_second`（`Option<f32>`）——
+    因为**这个错无法从音频内容上观察**（引擎当前渲染占位静音），只能从"武装了什么"上钉住；
+  · `EngineStats` 因此**去掉 `Eq`**（`f32` 无全序，与 `ModelError` 当年同一个理由），保留 `PartialEq`。
+- **判据**：`rt::tests::meter_ballistics_follow_the_processing_quantum` —— 对**声明 256 与 128 两种设备缓冲**
+  各跑一个量子，断言 `quanta_per_second == Some(375.0)`。
+  **注入实测**：把修复改回 `current.block_frames()` ⇒ 判据立刻红，并打出
+  "旧实现会给出 187.5（弹道按 10 dB/s 衰减而不是 20 dB/s）"；还原 ⇒ 绿。
+- **顺带记一条我自己的操作教训**：这次补丁里有一句赋值**没写进去**（锚点因格式化变成单行而没有匹配），
+  我靠**改完立刻 grep 复核**发现（`grep -n 'self.armed_quanta_per_second = Some'` 一开始是空的）。
+  这是 L16/L24/L25 同族的第 N 次 —— **补丁必须复核**，而"脚本退出码 0"从来不是证据。
+

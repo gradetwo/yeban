@@ -342,3 +342,21 @@ test result: ok. 84 passed; 0 failed           ← 默认 feature(含 device 的
 - 仍未做（转记）：峰值保持"钉住时间"（须独立类型，不得改 `LevelDetector` 否则破坏逐位契约）、
   多声道独立电平、UI 侧消费、真峰值倍数（4× 在 0.4·fs 欠读 0.44 dB）、其它采样率的 K 加权系数。
 
+---
+
+## 追加（集成者代记）：`line/app-mixer` 发现的**弹道 2 倍偏差**已修复
+
+- **发现**：把混音台接到电平上时，`line/app-mixer` 交叉核对"每秒量子数"语义发现 ——
+  `process_quantum` 按 `DEFAULT_BLOCK_FRAMES`(128) 切整量子，而弹道系数用 `snapshot.block_frames()`
+  （项目声明的设备缓冲，演示工程 = 256）⇒ 每秒量子数被算成 `48000/256 = 187.5` 而非 `375`
+  ⇒ **峰值保持按 10 dB/s 衰减（契约要求 20 dB/s）**。它没有改别的 crate，而是作为 needs 上报。
+- **已修**（集成者，`crates/yeban-engine/src/rt.rs`）：弹道改用 `sample_rate / DEFAULT_BLOCK_FRAMES`，
+  并把"武装进去的那个数"暴露为 `EngineStats::quanta_per_second`（`Option<f32>`）——
+  因为这个错**无法从音频内容观察**（引擎当前渲染占位静音），只能从"武装了什么"上钉住。
+- **判据**：`rt::tests::meter_ballistics_follow_the_processing_quantum`（声明 256 与 128 两种设备缓冲，
+  都断言 `Some(375.0)`）；注入回旧口径 ⇒ 立刻红（实测）。
+- 语义澄清（值得记住）：**设备缓冲（`BufferSize::Fixed`，来自 `audio_config.block_size`）
+  ≠ 处理量子（L1 契约钉死的 128）**；两者都存在、都正确，错在把同一个数用在两处。
+- 因此 **MN5「UI 消费切片」**也已由 `line/app-mixer` 完成（混音台通道条消费 `MeterBoard`，
+  控件树里 `track-{i}-meter` 的 label 带 dBFS 值 + 柱高几何 + 遮罩生效证据）。
+

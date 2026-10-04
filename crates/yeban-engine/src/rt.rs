@@ -69,7 +69,10 @@ const _: () = crate::block::assert_supported_frames::<DEFAULT_BLOCK_FRAMES>();
 const _: () = assert!(SCRATCH_EVENTS >= DEFAULT_BLOCK_FRAMES);
 
 /// 渲染驱动的累计统计（音频线程写入，非实时线程读取 —— 只用于诊断/UI）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// 刻意**不派生 `Eq`**：`quanta_per_second` 是 `f32`（浮点没有全序），
+/// 与 `yeban-model::ModelError` 当初去掉 `Eq` 是同一个理由。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EngineStats {
     /// 累计渲染量子数。
     pub quanta: u64,
@@ -88,6 +91,15 @@ pub struct EngineStats {
     pub meter_capacity_drops: u64,
     /// 本线程的 FTZ/DAZ 开关结果。
     pub ftz: Option<FtzDazOutcome>,
+    /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
+    ///
+    /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
+    /// （项目声明的 `audio_config.block_size`, 例如 256）⇒ 峰值保持按 10 dB/s 而不是 20 dB/s 衰减。
+    /// 那种错**不会 panic、也不会让既有判据变红**, 只会让表头慢慢不准 ——
+    /// 所以把"武装进去的那个数"变成可读的统计量, 让判据能直接钉住它。
+    ///
+    /// `None` = 还没有任何快照被处理过。
+    pub quanta_per_second: Option<f32>,
 }
 
 /// 渲染驱动：音频回调持有的全部可变状态。
@@ -112,6 +124,8 @@ pub struct EngineRuntime {
     meter_capacity_drops: u64,
     ftz: Option<FtzDazOutcome>,
     ftz_ready: bool,
+    /// 与 [`EngineStats::quanta_per_second`] 同源（实时侧只写一次, 控制面只读）。
+    armed_quanta_per_second: Option<f32>,
 }
 
 impl EngineRuntime {
@@ -145,6 +159,7 @@ impl EngineRuntime {
             meter_capacity_drops: 0,
             ftz: None,
             ftz_ready: false,
+            armed_quanta_per_second: None,
         }
     }
 
@@ -187,6 +202,7 @@ impl EngineRuntime {
                 .meter_capacity_drops
                 .saturating_add(self.bank.capacity_drops()),
             ftz: self.ftz,
+            quanta_per_second: self.armed_quanta_per_second,
         }
     }
 
@@ -261,9 +277,15 @@ impl EngineRuntime {
             // 采样率/块长变了 ⇒ 电平弹道系数按新的"量子/秒"折算(保留电平状态)。
             let revision = current.revision();
             if *armed_revision != Some(revision) {
-                let quanta_per_second =
-                    current.sample_rate() as f32 / current.block_frames().max(1) as f32;
+                // ⚠ 弹道系数必须跟随**实际的处理量子**（[`DEFAULT_BLOCK_FRAMES`] = 128, L1 契约钉死），
+                // 而**不是**设备缓冲长度（`current.block_frames()` = 项目声明的 `audio_config.block_size`，
+                // 例如 256）。两者的区别是真实的：`process_quantum` 会把任意长度的设备缓冲
+                // **按 128 帧切成整量子**，所以一秒内的量子数是 `sample_rate / 128`。
+                // 用 256 会把它算成一半 ⇒ 峰值保持按 10 dB/s 衰减而不是 20 dB/s
+                // （由 `line/app-mixer` 交叉核对时发现；判据见 `meter_ballistics_follow_the_processing_quantum`）。
+                let quanta_per_second = current.sample_rate() as f32 / DEFAULT_BLOCK_FRAMES as f32;
                 bank.set_quanta_per_second(quanta_per_second);
+                self.armed_quanta_per_second = Some(quanta_per_second);
                 *armed_revision = Some(revision);
             }
 
@@ -470,6 +492,85 @@ mod tests {
             sender,
             collector,
             runtime,
+        }
+    }
+
+    /// `[ARCH-UI-002]` 弹道系数必须跟随**处理量子（128）**而不是**设备缓冲（项目声明的 block_size）**。
+    ///
+    /// 实测背景（`line/app-mixer` 交叉核对时发现）：`process_quantum` 把任意长度的设备缓冲按
+    /// [`DEFAULT_BLOCK_FRAMES`] 切成整量子，而旧实现用 `snapshot.block_frames()`（项目声明的 256）
+    /// 折算"每秒量子数" ⇒ 峰值保持按 **10 dB/s** 衰减而不是契约要求的 **20 dB/s**（整整差 2 倍）。
+    /// 这种错不会 panic、也不会让既有判据变红 —— 它只会让表头**慢慢变得不准**。
+    ///
+    /// 判据直接钉住"武装进去的那个数"（`EngineStats::quanta_per_second`）：
+    /// 无论工程声明的设备缓冲是 256 还是 128，**处理量子恒为 128** ⇒ 每秒量子数恒为 `48000/128 = 375`。
+    #[test]
+    fn meter_ballistics_follow_the_processing_quantum() {
+        // 与 `rig()` 相同, 但显式声明**设备缓冲** = 256（≠ 处理量子 128）。
+        let master = EntityId::new();
+        let track = EntityId::new();
+        let mut routing = RoutingGraph {
+            nodes: vec![track, master],
+            ..RoutingGraph::default()
+        };
+        let id = EntityId::new();
+        routing.edges.insert(
+            id,
+            RoutingEdge {
+                id,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        let mut tracks = BTreeMap::new();
+        tracks.insert(
+            track,
+            TrackParams::from_track(
+                &TrackV3 {
+                    id: track,
+                    ..TrackV3::default()
+                },
+                0,
+            ),
+        );
+
+        for declared_block in [256_usize, 128] {
+            let snapshot = EngineSnapshot::from_parts(
+                1,
+                48_000,
+                declared_block,
+                2,
+                master,
+                tracks.clone(),
+                &routing,
+                &LatencyTable::new(),
+            )
+            .expect("合法图");
+            assert_eq!(snapshot.block_frames(), declared_block);
+
+            let slot = SnapshotSlot::new(snapshot);
+            let (retire, _queue) = retire_channel(16);
+            let (_sender, receiver) = event_channel(64);
+            let (publisher, _collector) = meter_channel(256);
+            let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+            assert_eq!(
+                runtime.stats().quanta_per_second,
+                None,
+                "还没处理过快照时应当是 None"
+            );
+
+            let mut output = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            runtime.process_quantum(&mut output, 2);
+
+            assert_eq!(
+                runtime.stats().quanta_per_second,
+                Some(375.0),
+                "声明 {declared_block} 的设备缓冲时, 每秒量子数仍须是 48000/{DEFAULT_BLOCK_FRAMES} = 375 \
+                 —— 旧实现会给出 {} （弹道按 10 dB/s 衰减而不是 20 dB/s）",
+                48_000.0 / declared_block as f32,
+            );
         }
     }
 
