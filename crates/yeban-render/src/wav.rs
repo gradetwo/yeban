@@ -259,8 +259,8 @@ mod tests {
         let plan = crate::rf64::ContainerPlan::for_payload(
             crate::rf64::ContainerKind::Riff,
             format,
-            512 * 2 * 3,
-            512,
+            payload.len() as u64,
+            (input.len() / 2) as u64,
             None,
         );
         let mut file = std::fs::File::create(&path).expect("创建文件");
@@ -306,7 +306,7 @@ mod tests {
             "单声道 16-bit 用 16 字节 fmt"
         );
         assert_eq!(layout.len_of(b"data"), Some(64 * 2));
-        assert!(layout.order().contains(&*b"data"));
+        assert!(layout.order().contains(b"data"));
     }
 
     /// 判据 3: 16 / 24 / 32f 三种位深经 `hound` 往返都逐位一致。

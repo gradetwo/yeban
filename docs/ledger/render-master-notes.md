@@ -133,6 +133,7 @@ midly = { workspace = true, features = ["std"] }
 | `bash scripts/dev/cargo-local.sh metadata --locked --format-version 1` | 通过（`Cargo.lock` 与全部清单一致） |
 | `python3 scripts/gates/license_inventory.py` + `--check` | 重新生成后 `--check` 通过（642 行） |
 | `rustc --edition 2024 -O /tmp/find_nonassoc.rs` | 一次性搜索脚本：**实测**出顺序敏感的 f32 样本集，用来替代"猜一组数值"（见 §6） |
+| `clippy-driver --edition 2024 --test -D warnings -D clippy::all -D clippy::dbg_macro -D clippy::undocumented_unsafe_blocks -D rust_2018_idioms crates/yeban-render/verify/pure_modules.rs` | **通过，0 告警**。这是**工作区 `[lints]` 的逐条等价集合**，因此那 5 个零依赖模块的 clippy 结果与 CI 同源（比只用 `rustc -D warnings` 强得多） |
 
 **没做（纪律要求，一律交给 CI）**：
 
@@ -142,6 +143,21 @@ midly = { workspace = true, features = ["std"] }
 - 任何 `--workspace` 全量构建、benchmark、fuzz。
 - [BASELINE-001] 的 "≥ 100× 实时" 与 `MUST-GATE-002` 的 L1 基准哈希：需要 `criterion`
   与锁定 ISA 的固定频率机器，本机不做。
+
+### 5.1 本机静态审读在 CI-only 文件里抓出的 4 个缺陷
+
+`render.rs` 本机不编译，因此这 4 条是**审读**（不是执行）发现的，如实登记：
+
+| # | 缺陷 | 为什么本机没抓到 |
+| :--- | :--- | :--- |
+| S1 | 早先一次"先切头再拼回"的补丁流程把已改好的头部**覆盖**回未打补丁的版本，于是 `render.rs` 的实现里没有 `compile_with_latencies`/`UnknownNode`，而它的判据在调用这两个名字 —— 必然编译失败 | 该文件不在本机编译范围内；`cargo fmt` 只要求语法合法 |
+| S2 | `for edge in &edges` 里 `edges: Vec<&RoutingEdge>`，`push(edge)` 实际推入 `&&RoutingEdge` —— 类型不匹配 | 同上 |
+| S3 | `AudioSource` 只要求 `Send`，但层内并行会把"已完成节点"的只读视图（含源对象）跨线程共享，`&[NodeState]: Send` 要求 `NodeState: Sync`，进而要求 `dyn AudioSource: Sync` —— 缺一个 supertrait 就是 E0277 | 同上 |
+| S4 | `match &reference { None => reference = Some(..), .. }` 与外层共享借用冲突；已改为 `Option::replace` 一步完成"写入 + 取旧值" | 同上 |
+
+**结论（也是本线最重要的过程教训）**：`cargo fmt` 只能证明"语法合法"，
+它**不能**替代类型检查。本机无法编译的文件，必须假定它"可能不编译"，
+并把这一条写进报告 —— 而不是因为 `fmt` 绿了就当作通过。
 
 ## 6. 变异测试证据（SKILL 规则 3：从没红过的判据是注释）
 

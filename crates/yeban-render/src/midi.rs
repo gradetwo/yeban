@@ -966,13 +966,15 @@ mod tests {
         );
 
         let zero = note(0, 60, 0, 64);
+        // `zero` 会被移入 `&[zero]` 这个临时数组, 因此先把 id 取出来（`EntityId` 是 `Copy`）。
+        let zero_id = zero.id;
         match export(
             MidiFormat::SingleTrack,
             vec![track_from_notes("", 0, &[zero])],
         )
         .to_smf_bytes()
         {
-            Err(MidiError::ZeroDuration { note }) => assert_eq!(note, zero.id),
+            Err(MidiError::ZeroDuration { note }) => assert_eq!(note, zero_id),
             other => panic!("期望 ZeroDuration, 得到 {other:?}"),
         }
 

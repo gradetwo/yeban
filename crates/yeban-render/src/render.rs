@@ -143,7 +143,16 @@ impl BlockContext {
 ///
 /// 实现必须做到: 对同一 `(context, 调用序列)` 给出**逐位相同**的输出 —— 否则
 /// L1 bit-exact 在源这一层就已经破了, 渲染器再怎么确定也救不回来。
-pub trait AudioSource: Send {
+///
+/// ## 为什么同时要求 `Send + Sync`
+///
+/// 层内并行时, 每个任务既要写自己的节点, 又要**只读**地看已完成节点的缓冲。
+/// 而"已完成节点"的只读视图里包含源对象, 所以 `&[NodeState]` 要被判为 `Send`,
+/// 就必须 `NodeState: Sync`, 也就必须 `dyn AudioSource: Sync`。
+///
+/// 这条约束顺带禁止了源内部使用 `Rc`/`RefCell`/`Cell` 这类内部可变性 —— 对确定性
+/// 渲染而言这是**有益**的约束: 内部可变性会让"同一输入两次渲染结果不同"变得可能。
+pub trait AudioSource: Send + Sync {
     /// 把本块的 `context.width()` 个交错样本写进 `out`。
     ///
     /// `out` 的长度保证等于 `context.width()`, 且调用前已被清零。
@@ -173,6 +182,8 @@ pub enum RenderError {
     MissingSource(EntityId),
     /// 给一个**有入边**的节点注册了样本源 —— 那是总线, 不是声部。
     SourceOnBusNode(EntityId),
+    /// 给一个不在（剪枝后的）渲染计划里的节点注册了样本源。
+    UnknownNode(EntityId),
     /// 线程池构建失败。
     ThreadPool(String),
     /// 样本源自己报的错。
@@ -195,6 +206,9 @@ impl core::fmt::Display for RenderError {
             Self::ZeroFrames => f.write_str("总帧数为 0"),
             Self::MissingSource(node) => write!(f, "节点 {node} 没有注册样本源"),
             Self::SourceOnBusNode(node) => write!(f, "节点 {node} 有入边, 不能注册样本源"),
+            Self::UnknownNode(node) => {
+                write!(f, "节点 {node} 不在渲染计划里（未知或被剪枝）")
+            }
             Self::ThreadPool(message) => write!(f, "线程池构建失败: {message}"),
             Self::Source { node, message } => write!(f, "样本源 {node} 失败: {message}"),
         }
@@ -329,6 +343,28 @@ impl RenderPlan {
         master: EntityId,
         options: RenderOptions,
     ) -> Result<Self, RenderError> {
+        Self::compile_with_latencies(graph, master, options, &BTreeMap::new())
+    }
+
+    /// 与 [`Self::compile`] 相同, 但显式注入每个节点**自身**引入的处理延迟（帧）,
+    /// 即 [ARCH-PDC-001] 的 `DeviceDefinition::latency_samples`。
+    ///
+    /// # 为什么延迟要由调用方注入
+    ///
+    /// `yeban_model::DeviceDefinition` 目前**没有** `latency_samples` 字段, 而
+    /// [ARCH-PDC-001] 要求有。`yeban-model` 不归本工作线改, 因此这里把延迟做成显式
+    /// 输入; 待 model 线补齐字段后, 应由 `compile` 自行从 `TrackV3` 的设备链累加并
+    /// 删掉这个参数。已登记在 `docs/ledger/render-master-notes.md` 的 `needs`。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::compile`] 相同。
+    pub fn compile_with_latencies(
+        graph: &RoutingGraph,
+        master: EntityId,
+        options: RenderOptions,
+        latencies: &BTreeMap<EntityId, u32>,
+    ) -> Result<Self, RenderError> {
         if options.channels == 0 {
             return Err(RenderError::ZeroChannels);
         }
@@ -377,14 +413,18 @@ impl RenderPlan {
                 .iter()
                 .map(|edge| (edge.source_node, edge.destination_node))
                 .collect(),
-            latencies: BTreeMap::new(),
+            latencies: latencies
+                .iter()
+                .filter(|(node, _)| keep.contains(node))
+                .map(|(node, &frames)| (*node, frames))
+                .collect(),
         };
         let pdc_plan = pdc::plan(&pdc_graph, master)?;
 
         // ---- 3. 分层: level(n) = 无入边 ? 0 : max(level(src)) + 1 ----
         let mut level: BTreeMap<EntityId, u32> = BTreeMap::new();
         let mut incoming_nodes: BTreeMap<EntityId, Vec<&RoutingEdge>> = BTreeMap::new();
-        for edge in &edges {
+        for &edge in &edges {
             incoming_nodes
                 .entry(edge.destination_node)
                 .or_default()
@@ -505,8 +545,8 @@ impl RenderPlan {
     pub fn node_levels(&self) -> BTreeMap<EntityId, usize> {
         let mut out = BTreeMap::new();
         for (wanted, &(start, end)) in self.layers.iter().enumerate() {
-            for slot in start..end {
-                out.insert(self.states[slot].node, wanted);
+            for state in &self.states[start..end] {
+                out.insert(state.node, wanted);
             }
         }
         out
@@ -556,7 +596,7 @@ impl RenderPlan {
                 .slot_of
                 .get(&node)
                 .copied()
-                .ok_or(RenderError::MissingSource(node))?;
+                .ok_or(RenderError::UnknownNode(node))?;
             if !self.states[slot].incoming.is_empty() {
                 return Err(RenderError::SourceOnBusNode(node));
             }
@@ -680,6 +720,12 @@ mod tests {
         EntityId::from_str(text).expect("合法 ULID")
     }
 
+    /// 造一条边。
+    ///
+    /// 边身份用 `EntityId::new()`（随机 ULID）: 本模块的判据要么按 `(source_node, edge_id)`
+    /// 排序（键的第一段是源节点, 随机第二段不影响顺序）, 要么用 `contains`/按源节点查找,
+    /// 因此与边身份无关。`star_graph` 是唯一需要"边身份与源节点顺序相反"的地方,
+    /// 它在构造后显式覆写 `id`。
     fn edge(source: EntityId, destination: EntityId, gain_db: Option<f32>) -> RoutingEdge {
         RoutingEdge {
             id: EntityId::new(),
@@ -832,15 +878,14 @@ mod tests {
             let output = plan
                 .execute(synthetic_sources(&sources, options.seed))
                 .expect("渲染");
-            match &reference {
-                None => reference = Some(output),
-                Some(expected) => {
-                    assert_eq!(
-                        output.digest, expected.digest,
-                        "{threads} 线程的输出与 1 线程不同 —— 汇聚没有走固定顺序"
-                    );
-                    assert_eq!(output.samples, expected.samples);
-                }
+            let previous = reference.replace(output);
+            if let Some(expected) = previous {
+                let current = reference.as_ref().expect("刚写入");
+                assert_eq!(
+                    current.digest, expected.digest,
+                    "{threads} 线程的输出与 1 线程不同 —— 汇聚没有走固定顺序"
+                );
+                assert_eq!(current.samples, expected.samples);
             }
         }
         let reference = reference.expect("至少跑过一次");

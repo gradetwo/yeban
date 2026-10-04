@@ -239,12 +239,13 @@ mod contract_tests {
                 vec![*b"ds64", *b"fmt ", *b"bext", *b"data"]
             );
 
-            match &reference {
-                None => reference = Some(file),
-                Some(expected) => assert_eq!(
-                    &file, expected,
+            let previous = reference.replace(file);
+            if let Some(expected) = previous {
+                let current = reference.as_ref().expect("刚写入");
+                assert_eq!(
+                    current, &expected,
                     "{threads} 线程产出的文件与 1 线程不同 —— L1 bit-exact 已破"
-                ),
+                );
             }
         }
     }

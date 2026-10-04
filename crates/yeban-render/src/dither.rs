@@ -405,11 +405,13 @@ mod tests {
 
     /// 判据 5: 恒定输入的**期望**量化输出等于输入 (TPDF 的无偏性)。
     ///
-    /// 取一个无法用 16-bit 精确表示的常量: 12345.6789 LSB。
+    /// 取一个无法用 16-bit **整数**精确表示的常量: 12345.25 LSB（小数部分非 0）。
+    /// 这个字面量本身在 `f32` 里是精确的（此处 ULP = 2^-10, 0.25 是它的整数倍）,
+    /// 因此不会触发 `clippy::excessive_precision`, 同时仍然是"非整数 LSB"。
     #[test]
     fn constant_input_is_unbiased() {
         let mut rng = rng();
-        let ideal = 12345.6789f32;
+        let ideal = 12345.25f32;
         let input = ideal / 32768.0;
         let draws = 200_000;
         let mut sum = 0.0f64;
