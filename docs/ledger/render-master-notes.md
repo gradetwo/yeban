@@ -278,11 +278,33 @@ registry 依赖不受影响（根清单给它们写了版本），所以这个�
 **提醒：这不是本线独有的问题**——任何做跨 crate 依赖的并行线（engine 依赖 dsp、
 ui 依赖 model…）都会撞上同一堵墙。建议在合并本线之前先修主线，否则会连续阻塞多条线。
 
-### 第 2 轮 —— 本轮已修（待推送后读回）
+### 第 2 轮 —— run [37221658083](https://github.com/gradetwo/yeban/actions/runs/37221658083)：**红**
 
-- `midi.rs` 的 `type_complexity` → 新增具名 `pub struct TrackChunk { fourcc, payload }`；
-- `render.rs` 的 `collapsible_if` → 可达性循环改为 `if !keep.insert(node) { continue; }`；
-- 顺带 rebase 到 main `8f40290` 并接上 `latency_samples`（新增 `track_latencies` + 判据 25）。
+| job | 结论 | 原因 |
+| :--- | :--- | :--- |
+| `plan` / `checks` / `lockfile` | ✅ 通过 | 新计划器工作正常（`Cargo.lock` 是 ROOT_TRIGGER ⇒ 单条 `rust (workspace 全量)` 腿） |
+| `rust (workspace 全量)` | ❌ clippy 阶段 **6 个类型错误** | 见下 —— **两条 clippy lint 已消掉**，这次是真正的类型错误 |
+| `deny` | ❌ 与第 1 轮完全相同 | 阻断项 A/B 未变（仍在地盘之外，见上） |
+
+第 2 轮的 6 个类型错误（全部在 `render.rs` 的**判据代码**里，全部只能由编译器发现）：
+
+| # | 错误 | 修复 |
+| :--- | :--- | :--- |
+| T1/T2 | `E0308`：`sum::accumulate_into(&[0.5], &mut expected, 1.0)` 里 `expected` 是 `f32`，函数要 `&mut [f32]` | 改成 `let mut expected = [0.0f32; 1]`，断言用 `expected[0]` |
+| T3–T6 | `E0369`：`assert_eq!(RenderPlan::compile(...), Err(...))` —— `RenderPlan` 只有手写的 `Debug`，**没有 `PartialEq`**（它含 `Box<dyn AudioSource>`，无法 derive） | 比错误值：`.err()` → `Option<RenderError>`（既有 `PartialEq` 又有 `Debug`） |
+
+**教训（已并入本文件 §5.1 的结论）**：`assert_eq!` 要求两侧都 `PartialEq`；
+对"含 trait object、只能手写 `Debug`"的类型，比 `Result` 必须走 `.err()`/`matches!`。
+
+### 第 3 轮 —— 本轮已修（待推送后读回）
+
+- T1–T6（上表）；
+- 主动消掉同类 lint 风险：`bus_reduction_order` 的 `Option<Vec<(EntityId, EntityId, u32)>>`
+  换成具名 `pub struct BusInput { source_node, edge_id, delay_frames }`
+  （与 `TrackChunk` 同一个 `clippy::type_complexity` 形状）；
+- `midi.rs` 用 `lanes.into_iter().unzip()` 取名字，去掉 `|(name, _)| name.clone()`
+  （同时避开 `clippy::map_clone` 的可能命中）；
+- `wav.rs` 的位置格式参数全部内联（`format!("{actual_bits} 位, {actual_kind}")`）。
 
 ## 10. 修改文件的绝对路径清单
 

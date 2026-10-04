@@ -223,6 +223,21 @@ impl From<PdcError> for RenderError {
     }
 }
 
+/// 某个总线节点的一条入边在**固定归约顺序**里的位置。
+///
+/// 用具名结构而不是 `(EntityId, EntityId, u32)` 元组: 后者会触发
+/// `clippy::type_complexity`（`midi.rs` 的 `track_chunks` 已经因为这个红过一次）,
+/// 而且 `entry.0 / .1 / .2` 在调用点读不出含义。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BusInput {
+    /// 上游（源）节点身份 —— 归约顺序的**第一排序键**。
+    pub source_node: EntityId,
+    /// 边身份 —— 第二排序键（保证键唯一）。
+    pub edge_id: EntityId,
+    /// 该边的 PDC 补偿延迟（帧）。
+    pub delay_frames: u32,
+}
+
 /// 一条入边在固定归约顺序里的位置。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Contribution {
@@ -602,23 +617,22 @@ impl RenderPlan {
         out
     }
 
-    /// 某个总线节点的**归约顺序** `(source_node, edge_id)`, 以及每条边的补偿延迟。
+    /// 某个总线节点的**归约顺序**（[`BusInput`] 列表, 按 `(source_node, edge_id)`
+    /// 字典序), 以及每条入边的补偿延迟。
     ///
     /// 这是 [ARCH-DET-002] 的可断言形式: 判据直接比较 `source_node` 序列是否等于
     /// EntityId 字典序, 而不是"看起来对"。
     #[must_use]
-    pub fn bus_reduction_order(&self, bus: EntityId) -> Option<Vec<(EntityId, EntityId, u32)>> {
+    pub fn bus_reduction_order(&self, bus: EntityId) -> Option<Vec<BusInput>> {
         let slot = *self.slot_of.get(&bus)?;
         Some(
             self.states[slot]
                 .incoming
                 .iter()
-                .map(|contribution| {
-                    (
-                        contribution.source_node,
-                        contribution.edge_id,
-                        contribution.delay_frames,
-                    )
+                .map(|contribution| BusInput {
+                    source_node: contribution.source_node,
+                    edge_id: contribution.edge_id,
+                    delay_frames: contribution.delay_frames,
                 })
                 .collect(),
         )
@@ -971,13 +985,13 @@ mod tests {
             .expect("编译");
         let order = plan.bus_reduction_order(master).expect("master 有入边");
         assert_eq!(order.len() as u32, tracks);
-        let by_source: Vec<EntityId> = order.iter().map(|(source, _, _)| *source).collect();
+        let by_source: Vec<EntityId> = order.iter().map(|entry| entry.source_node).collect();
         let mut expected = sources.clone();
         expected.sort();
         assert_eq!(by_source, expected, "归约顺序必须是源节点 EntityId 字典序");
 
         // 反向证明: 按边身份排序会得到另一个顺序, 因此上面的断言不是恒真。
-        let by_edge: Vec<EntityId> = order.iter().map(|(_, edge, _)| *edge).collect();
+        let by_edge: Vec<EntityId> = order.iter().map(|entry| entry.edge_id).collect();
         let mut edge_sorted = by_edge.clone();
         edge_sorted.sort();
         assert_eq!(
@@ -1025,13 +1039,13 @@ mod tests {
         let output = plan.execute(sources).expect("渲染");
 
         // 固定顺序是 (first, second): 0.5 * 1.0 + 0.25 * 10^(6/20)
-        let mut expected = 0.0f32;
+        let mut expected = [0.0f32; 1];
         sum::accumulate_into(&[0.5], &mut expected, 1.0);
         sum::accumulate_into(&[0.25], &mut expected, db_to_linear(6.0));
         for sample in &output.samples {
             assert_eq!(
                 sample.to_bits(),
-                expected.to_bits(),
+                expected[0].to_bits(),
                 "总线求和顺序或增益不对"
             );
         }
@@ -1067,12 +1081,12 @@ mod tests {
         let order = plan.bus_reduction_order(master).expect("master 有入边");
         let fast_delay = order
             .iter()
-            .find(|(source, _, _)| *source == fast)
-            .map(|(_, _, delay)| *delay);
+            .find(|entry| entry.source_node == fast)
+            .map(|entry| entry.delay_frames);
         let slow_delay = order
             .iter()
-            .find(|(source, _, _)| *source == slow_bus)
-            .map(|(_, _, delay)| *delay);
+            .find(|entry| entry.source_node == slow_bus)
+            .map(|entry| entry.delay_frames);
         assert_eq!(fast_delay, Some(96), "短支路必须补满 L_max");
         assert_eq!(slow_delay, Some(0), "长支路不补");
 
@@ -1231,8 +1245,9 @@ mod tests {
                     channels: 0,
                     ..RenderOptions::l1(128, 1, 48_000, 0)
                 }
-            ),
-            Err(RenderError::ZeroChannels)
+            )
+            .err(),
+            Some(RenderError::ZeroChannels)
         );
         assert_eq!(
             RenderPlan::compile(
@@ -1242,16 +1257,17 @@ mod tests {
                     block_size: 0,
                     ..RenderOptions::l1(128, 1, 48_000, 0)
                 }
-            ),
-            Err(RenderError::ZeroBlockSize)
+            )
+            .err(),
+            Some(RenderError::ZeroBlockSize)
         );
         assert_eq!(
-            RenderPlan::compile(&routing, master, RenderOptions::l1(0, 1, 48_000, 0)),
-            Err(RenderError::ZeroFrames)
+            RenderPlan::compile(&routing, master, RenderOptions::l1(0, 1, 48_000, 0)).err(),
+            Some(RenderError::ZeroFrames)
         );
         assert_eq!(
-            RenderPlan::compile(&routing, ulid(7), RenderOptions::l1(128, 1, 48_000, 0)),
-            Err(RenderError::MasterNotInGraph(ulid(7)))
+            RenderPlan::compile(&routing, ulid(7), RenderOptions::l1(128, 1, 48_000, 0)).err(),
+            Some(RenderError::MasterNotInGraph(ulid(7)))
         );
         // 边指向不存在的节点 -> RoutingGraph::validate 失败
         let broken = graph(&[master], vec![edge(ulid(1), master, None)]);

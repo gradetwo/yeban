@@ -108,13 +108,12 @@ pub fn check_match(format: &PcmFormat, buffer: &PcmBuffer) -> Result<(), WavErro
     if ok {
         Ok(())
     } else {
+        let expected_bits = expected_depth.bits();
+        let actual_bits = format.bits_per_sample;
+        let actual_kind = if format.is_float { "浮点" } else { "整数" };
         Err(WavError::FormatMismatch {
-            expected: format!("{expected_depth:?} ({} 位)", expected_depth.bits()),
-            got: format!(
-                "{} 位, {}",
-                format.bits_per_sample,
-                if format.is_float { "浮点" } else { "整数" }
-            ),
+            expected: format!("{expected_depth:?} ({expected_bits} 位)"),
+            got: format!("{actual_bits} 位, {actual_kind}"),
         })
     }
 }
@@ -320,7 +319,8 @@ mod tests {
             (BitDepth::Float32, PcmFormat::float(2, 48_000, 32)),
         ];
         for (depth, format) in cases {
-            let path = directory.path().join(format!("depth{}.wav", depth.bits()));
+            let depth_bits = depth.bits();
+            let path = directory.path().join(format!("depth{depth_bits}.wav"));
             let mut rng = DeterministicDitherRng::new(9);
             let pcm = quantize(&input, depth, &mut rng);
             write_plain_wav(&path, &format, &pcm).expect("hound 写入");

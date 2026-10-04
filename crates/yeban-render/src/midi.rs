@@ -418,10 +418,11 @@ impl MidiExport {
             Timing::Metrical(u15::new(self.ppq)),
         );
 
-        // 名字的字节必须活得比 `tracks` 久, 因此先集中放在这里。
-        let names: Vec<Vec<u8>> = lanes.iter().map(|(name, _)| name.clone()).collect();
-        let mut tracks: Vec<Track<'_>> = Vec::with_capacity(lanes.len());
-        for (index, (_, events)) in lanes.iter().enumerate() {
+        // 名字的字节必须活得比 `tracks` 久, 因此用 `unzip` 把名字从车道里**移出**来,
+        // 而不是 clone 一份（`names` 的借用要活到 `tracks` 用完为止）。
+        let (names, event_lanes): (Vec<Vec<u8>>, Vec<Vec<RawEvent>>) = lanes.into_iter().unzip();
+        let mut tracks: Vec<Track<'_>> = Vec::with_capacity(event_lanes.len());
+        for (index, events) in event_lanes.iter().enumerate() {
             let delta_list = deltas(events.iter().map(|event| event.tick()))?;
             let mut lane: Track<'_> = Vec::with_capacity(events.len() + 2);
             if !names[index].is_empty() {
