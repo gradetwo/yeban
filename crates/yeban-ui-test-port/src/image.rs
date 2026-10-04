@@ -268,8 +268,11 @@ impl Rgb8Image {
 
     /// 把整幅图填成一种颜色。
     pub fn fill(&mut self, rgb: Rgb) {
-        for chunk in self.pixels.chunks_exact_mut(3) {
-            chunk.copy_from_slice(&rgb);
+        // `as_chunks_mut::<3>()` 与 `chunks_exact_mut(3)` 语义等价（丢弃不足一块的尾巴），
+        // 但给出 `&mut [u8; 3]`，省掉一次 `copy_from_slice`。
+        // clippy::all 在本工具链上要求用前者（clippy::chunks_exact_to_as_chunks）。
+        for chunk in self.pixels.as_chunks_mut::<3>().0 {
+            *chunk = rgb;
         }
     }
 
@@ -293,7 +296,9 @@ impl Rgb8Image {
     #[must_use]
     pub fn non_black_pixels(&self) -> u64 {
         self.pixels
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter(|p| p[0] != 0 || p[1] != 0 || p[2] != 0)
             .count() as u64
     }
@@ -311,8 +316,10 @@ impl Rgb8Image {
     #[must_use]
     pub fn distinct_color_count(&self) -> usize {
         self.pixels
-            .chunks_exact(3)
-            .map(|p| [p[0], p[1], p[2]])
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .copied()
             .collect::<std::collections::BTreeSet<_>>()
             .len()
     }
@@ -334,7 +341,9 @@ impl Rgb8Image {
     pub fn to_luma(&self) -> LumaImage {
         let data = self
             .pixels
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| 0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2]))
             .collect();
         LumaImage {

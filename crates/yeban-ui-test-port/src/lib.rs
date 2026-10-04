@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(KNOWN_ROLES.len(), 30);
         assert_eq!(SSIM_THRESHOLD, 0.98, "UI-MCP-003 明文要求 SSIM ≥ 0.98");
         assert_eq!(GOLDEN_ROOT, "tests/golden");
-        assert!(REPO_MAX_FILE_BYTES == 10 * 1024 * 1024);
+        assert_eq!(REPO_MAX_FILE_BYTES, 10 * 1024 * 1024);
 
         let unique: std::collections::BTreeSet<&str> =
             IMPLEMENTED_SPEC_IDS.iter().copied().collect();

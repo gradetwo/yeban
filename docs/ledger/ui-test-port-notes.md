@@ -170,6 +170,25 @@ ADR-0001 D18 已记录 `SLINT_BACKEND=headless` 不存在、`slint::testing::*` 
 
 ## 7. 本机判据（**真跑过**）
 
+### 7.0 clippy 探针（**这一条救了至少一轮 CI**）
+
+零 Slint 依赖的 7 个模块还能再进一步：在 `/tmp` 建一个**探针 crate**（`#[path]` 指向仓库源码 +
+`serde`/`serde_json` + 与根 `Cargo.toml` 相同的 `[lints]` 策略），用**真的 clippy** 跑一遍：
+
+```bash
+cd /tmp/uitp-clippy && cargo clippy --offline --all-targets --quiet   # 期望 0 输出 / exit 0
+```
+
+它抓到了两条本机 `rustc`（不跑 lint 组）抓不到的 `clippy::all` 违规：
+
+1. `clippy::chunks_exact_to_as_chunks`（`clippy::all`，clippy 1.99 新增）：
+   `pixels.chunks_exact(3)` / `chunks_exact_mut(3)` 必须改写成 `as_chunks::<3>()` / `as_chunks_mut::<3>()`，
+   否则 CI 的 `clippy -D warnings` 直接红（5 处）；
+2. `clippy::doc_overindented_list_items`：文档列表的续行缩进超过标记宽度（1 处）。
+
+**结论**：本机虽然不能编译 Slint，但"零 Slint 模块"这一半可以用真实 clippy 完全验完。
+这一半包含了本线 ~80% 的代码量。
+
 ### 7.1 方法：用 `rustc --test` 单独编译零 Slint 的 7 个模块
 
 Slint 无关的 7 个模块（`image` / `tree` / `png` / `mask` / `ssim` / `port` / `golden`）可以在本机

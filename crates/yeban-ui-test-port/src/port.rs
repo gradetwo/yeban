@@ -1,11 +1,10 @@
 //! UI 测试端口的**调用面与三级权限** —— `[UI-MCP-001]` / `[UI-TEST-002]`。
 //!
 //! 规范来源 (Normative)：
-//! - `[UI-MCP-001]` UI/UX §12.3「UI MCP 三级权限分层安全模型」：
-//!   · `ReadOnly`（默认）：仅控件树检索、响应式属性读取、无头 Framebuffer 截图，
-//!     **严禁**状态写操作与事件模拟；
-//!   · `Interactive`：增加模拟指针/键盘分发；
-//!   · `Administrative`：切换工作区主视图、强制保存、重载音频引擎。
+//! - `[UI-MCP-001]` UI/UX §12.3「UI MCP 三级权限分层安全模型」的三级：
+//!   `ReadOnly`（默认）仅控件树检索、响应式属性读取、无头 Framebuffer 截图，
+//!   **严禁**状态写操作与事件模拟；`Interactive` 再增加模拟指针/键盘分发；
+//!   `Administrative` 再增加切换工作区主视图、强制保存、重载音频引擎。
 //! - `[UI-TEST-002]` §12.4「交互事件模拟注入」：`dispatch_pointer_down(element_id, x_offset,
 //!   y_offset, button)` / `dispatch_pointer_move(x, y)` / `dispatch_pointer_up(button)` /
 //!   `dispatch_key_press(key_code)`。
