@@ -625,24 +625,36 @@ copy of the Program in return for a fee.
            夜半 (Yeban) DAW 附加许可与例外条款 (GPLv3 §7)
         Additional Permissions & Exceptions for Yeban DAW
 
-作为 GNU General Public License version 3 (GPLv3) 第 7 条允许的附加许可，
-本程序（夜半 / Yeban DAW）的版权持有人特此授予以下附加许可条款：
+Additional permission under GNU GPL version 3 section 7:
 
-1. CLAP 插件加载与链接例外 (CLAP Plugin Loading Exception)：
-   本程序的版权持有人允许您将本程序与使用 CLAP（CLever Audio Plug-in）
-   插件格式接口的独立模块（“插件”）进行动态链接、加载或进程内/跨进程组合，
-   并将包含此类插件组合的成果进行分发，而无需使该第三方插件本身受 GPLv3
-   许可证约束。
-   
-   【边界与限制】：
-   此例外明确**不适用于**将夜半 (Yeban) 核心代码（包括但不限于
-   `yeban-model`、`yeban-dsp`、`yeban-theory`、`yeban-render`、`yeban-engine`）
-   静态链接、嵌入或转译到任何闭源或专有插件中的场景。
+1. CLAP Plugin Dynamic Loading Exception:
+   If you modify this Program, or any covered work, by linking or combining it
+   with independent CLAP plugins that are loaded at runtime through the CLAP
+   hosting interface, the licensors of this Program grant you additional
+   permission to convey the resulting work solely to the extent necessary to
+   load and run those independent plugins.
 
-2. Slint 框架双许可声明 (Slint Dual-Licensing Notice)：
-   本程序用户界面层依赖 Slint GUI 框架（采用 GPLv3 / 免版税应用许可 / 
-   商业付费许可）。基于本程序源码进行二次分发或派生的作品：
-   - 若同样采用 GPLv3 开源协议分发，可直接沿用 Slint 的 GPLv3 授权；
-   - 若希望以非 GPLv3 兼容许可证或闭源商业形式分发，必须由分发者自行向
-     SixtyFPS GmbH 购买并获取 Slint 商业许可。本程序不提供 Slint 商业许可
-     的任何转授权或许可担保。
+   This additional permission applies solely to the copyrightable code of Yeban
+   itself. It does NOT apply to the Program itself, to modifications of the
+   Program, to Slint or any other third-party components, and it does NOT permit
+   proprietary distribution of the Program as a whole. Third-party independent
+   plugins loaded at runtime remain subject to their respective authors' licenses.
+
+   【中文释义】：
+   作为 GPLv3 第 7 条允许的附加许可，本程序版权持有人允许用户将本程序与通过
+   CLAP 宿主接口在运行时动态加载的独立 CLAP 插件组合运行与分发。
+   本例外仅适用于夜半 (Yeban) 自有版权代码，不适用于 Slint 或任何第三方组件，
+   严禁将本程序本体闭源分发，第三方插件本身的授权由其作者独立决定。
+
+2. Slint 授权与第三方闭源 Fork 声明 (Slint & Proprietary Fork Notice):
+   本程序用户界面层依赖 Slint GUI 框架（由 SixtyFPS GmbH 提供 GPLv3 与商业双授权）。
+   任何第三方如基于本项目进行 Fork 并希望以闭源或专有形式分发衍生作品，必须同时满足：
+   a. 获得夜半 (Yeban) 代码版权持有人的单独商业授权（夜半目前不提供任何自有代码的商业闭源授权，仅以 GPL-3.0-or-later 发布）；
+   b. 如继续使用 Slint 且不愿遵循 GPLv3，须自行向 SixtyFPS GmbH 获取 Slint 商业许可。
+   仅获得 Slint 商业许可绝不自动构成闭源分发夜半 (Yeban) 代码的权利。
+
+3. 用户创作内容独立性声明 (User Content Exemption):
+   GPLv3 仅约束本程序软件本身及衍生代码。用户使用本程序创作的工程文件（.yeban）、
+   编曲片段、录音素材及导出的母带音频文件（WAV/FLAC/MP3 等）完全归属于用户所有，
+   不受本程序 GPLv3 许可证的任何版权传染约束。
+

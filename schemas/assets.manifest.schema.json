@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yeban.org/schemas/assets.manifest.schema.json",
+  "title": "AssetsManifest",
+  "description": "Schema for asset attribution and provenance manifests in Yeban DAW",
+  "type": "object",
+  "required": ["category", "version"],
+  "properties": {
+    "category": { "type": "string" },
+    "version": { "type": "string" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "relative_path", "sha256", "license", "commercial_usable"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "relative_path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "size_bytes": { "type": "integer" },
+          "license": { "type": "string" },
+          "author": { "type": "string" },
+          "source_url": { "type": "string" },
+          "commercial_usable": { "type": "boolean" },
+          "attribution_required": { "type": "boolean" },
+          "optional": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

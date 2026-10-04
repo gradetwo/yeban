@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yeban.org/schemas/mcp-tools.schema.json",
+  "title": "YebanMcpTools",
+  "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP",
+  "type": "object",
+  "definitions": {
+    "ToolCall": {
+      "type": "object",
+      "required": ["name", "arguments"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "yeban_open_project",
+            "yeban_save_project",
+            "yeban_close_project",
+            "yeban_query_project",
+            "yeban_propose_section",
+            "yeban_edit_notes",
+            "yeban_set_macro",
+            "yeban_render_master",
+            "yeban_merge_proposal",
+            "yeban_reject_proposal"
+          ]
+        },
+        "arguments": {
+          "type": "object",
+          "properties": {
+            "dryRun": { "type": "boolean", "default": false },
+            "idempotencyKey": { "type": "string" }
+          }
+        }
+      }
+    },
+    "ToolResponse": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["success", "error"] },
+        "data": { "type": "object" },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "PROJECT_LOCKED",
+                "PROPOSAL_NOT_FOUND",
+                "ROUTING_CYCLE_DETECTED",
+                "ENTITY_NOT_FOUND",
+                "INVALID_PARAMETER_RANGE",
+                "PERMISSION_DENIED",
+                "IO_ERROR"
+              ]
+            },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

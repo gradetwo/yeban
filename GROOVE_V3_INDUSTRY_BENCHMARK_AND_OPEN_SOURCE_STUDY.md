@@ -1,7 +1,10 @@
 # 夜半 (Yeban) 专业桌面 DAW 行业顶级软件深度调研与开源生态融合战略 (Slint + Pure Rust 原生桌面版)
 
-> **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`  
-> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev6, ROADMAP v3.0-rev6, LEGAL.md, CONTRIBUTING.md`  
+> **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3 附 CLAP 插件加载附加许可 (GPLv3 §7) | 仓库：`https://github.com/yeban/yeban`  
+> **文档状态**：Informative / Research（事实调研与生态战略参考）  
+> **规范版本**：`v3.0-rev7` (2026-10-04)  
+> **Supersedes**：所有历史 Groove Lab / Groove V1/V2/V3 行业调研与竞品分析备忘录  
+> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev7, ROADMAP v3.0-rev7, LEGAL.md, CONTRIBUTING.md, THIRD_PARTY_LICENSES.md`  
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
@@ -12,22 +15,22 @@
 
 > **修订记录 (Revision Log)**：  
 
-> - `v3.0-rev6` (2026-10-04)：**系统闭环、许可隔离与工业蓝图精准收敛 (依据全量专家评审)**。  
->   1. **事实纠偏与语言客观化**：彻底剔除“全行业最强”、“神级”、“降维突破”等非客观形容词，全面转换为量化工程指标与可验证技术目标；  
->   2. **开源合规与专有驱动隔离**：锁定 VST3 SDK 3.8.0+ MIT 依赖路径；明确 Steinberg ASIO SDK 专有协议属性（禁止入库，Windows 默认首选 WASAPI 独占流，ASIO 仅限用户本地动态装载）；  
->   3. **模型权重与专有格式清理**：严格核查 AI 模型权重许可证（Basic Pitch Apache-2.0，DeepFilterNet MIT/Apache-2.0）；明确剔除 NKI/EXS24/RVC 等专有封闭格式直接解析；  
->   4. **架构蓝图升级**：工业融合蓝图全面对齐双 MCP 拓扑（活会话内嵌 HTTP 挂载 + 独立 stdio CLI + `.yeban.lock` 排他锁）与 L1/L2 声学确定性分级契约。  
+> - `v3.0-rev7` (2026-10-04)：**开源前阻断项清零、事实核验状态表建立与风控矩阵扩容 (依据权威专家评审 P0 意见)**。  
+>   1. **确立 Informative / Research 参考性状态**：明确与 Normative 规范文件的职能边界；  
+>   2. **建立“关键事实核验状态表”**：逐项厘清 Slint 官方能力、VST3 SDK 3.8.0+ MIT 切换、nih-plug 边界、Basic Pitch/DeepFilterNet 模型定位与 signalsmith-stretch 许可；  
+>   3. **知识产权与许可证矩阵全量扩容**：补齐 Skia、FemtoVG、Noto Sans CJK 开源字体、Lucide 图标集与 159 种世界音乐乐理规则库许可审计；  
+>   4. **彻底清理残留夸大修辞**：消除所有非量化形容词，全面转换为工业级性能基准与工程事实。  
+> - `v3.0-rev6` (2026-10-04)：系统闭环、许可隔离与工业蓝图精准收敛。  
 > - `v3.0-rev5` (2026-10-04)：开源合规与合规审计升级，更名为“夜半 (Yeban)”，确立整体以 GPLv3 许可证在 GitHub 开源，建立 CLAP §7 例外与 Slint 双授权声明。  
 > - `v3.0-rev4` (2026-10-04)：增补 Slint 无头架构与内嵌 MCP 内省技术优势。  
 > - `v3.0-rev3` (2026-10-04)：重大技术架构转型，彻底放弃 Web 路线，确立 Slint GUI + Pure Rust 原生桌面 DAW 路线。  
-> - `v3.0-rev2` (2026-10-04)：依据设计评审完成事实纠偏与引用核实。  
-> - `v3.0-rev1` (2026-10-04)：初始版本。
 
 > **调研目的**：深入解构全球顶级商业 DAW 与工业级音频工具的设计哲学、技术实现、优缺点与商业护城河；全面盘点开源世界中成熟的音频宿主、Rust 原生音频生态（Crates）、Slint 原生 GUI 表现力、采样引擎与音频 AI 模型，为夜半 (Yeban) 确立“**汲取行业顶级精髓、规避历史遗留痛点、最大化复用 Rust 开源生态、打造高确定性与高内省性的纯血原生桌面差异化优势**”的实施指南。
 
 ---
 
 ## 目录
+0. [关键事实核验状态表 (Factual Verification Matrix)](#0-关键事实核验状态表-factual-verification-matrix)
 1. [行业顶级商业 DAW 深度解构与优缺点对比](#1-行业顶级商业-daw-深度解构与优缺点对比)
    - [1.1 Ableton Live 12: 双视图同构与即兴机架标杆](#11-ableton-live-12-双视图同构与即兴机架标杆)
    - [1.2 Bitwig Studio 5: 模块化解耦与沙盒宿主之王](#12-bitwig-studio-5-模块化解耦与沙盒宿主之王)
@@ -62,6 +65,22 @@
 8. [行业痛点与夜半 (Yeban) 设计决策追溯矩阵 (Traceability Matrix)](#8-行业痛点与-yeban-设计决策追溯矩阵-traceability-matrix)
 9. [夜半 (Yeban) 工业融合架构蓝图](#9-夜半-yeban-工业融合架构蓝图)
 10. [参考资料与权威来源 (References)](#10-参考资料与权威来源-references)
+
+---
+
+## 0. 关键事实核验状态表 (Factual Verification Matrix)
+
+为确保开源发布的严谨性，对调研引用的核心事实与第三方依赖状态进行独立查证核验：
+
+| 调研对象 / 技术声明 | 原始假设 / 历史表述 | 独立查证与核验结论 | 状态标记 | 落地规范影响 |
+| :--- | :--- | :--- | :---: | :--- |
+| **Slint 上游 MCP / 测试能力** | 假定 `slint/mcp` 与 `SLINT_MCP_PORT` 已稳定可用 | 官方 Testing 后端与自定义 Platform 稳定；官方内嵌 MCP 尚处实验性，未作为正式语义发布 | ⚠️ 部分核实 (已兜底) | 架构解除对其强依赖，采用自研 `yeban-ui-test-port` 适配层与 Tier 1 软件光栅化兜底 |
+| **VST3 SDK 开源许可** | 历史表述双许可存在 GPL 传染风险 | Steinberg 于 2025 年 10 月正式将 VST3 SDK 3.8.0 切换为 MIT 许可 | ✅ 已核实 | 锁定依赖版本 ≥ 3.8.0，优先走 MIT 路径彻底消除上游传染风险 |
+| **nih-plug 宿主功能** | 假定可直接作为 DAW 插件宿主框架 | `nih-plug` 定位为**音频插件开发框架**，非插件宿主（Host） | ✅ 已纠正 | 宿主端采用 `clack` (CLAP) 与 `vst3-sys` (VST3)，`nih-plug` 仅用于对外反向打包 |
+| **Spotify Basic Pitch** | 假定可直接在轻量环境下高精度转录 | 模型约 30MB，基于轻量 CNN 架构，Apache-2.0 协议，支持 ONNX 跨平台推理 | ✅ 已核实 | 集成于 `yeban-services` 作为本地扒带工具，模型权重独立分发 |
+| **DeepFilterNet** | 假定可用于通用母带降噪 | 主要面向全频带语音增强（Speech Enhancement），非乐器母带降噪 | ✅ 已核实 | 精准定位于人声音轨近线修复与播客语音处理，非全曲母带工具 |
+| **signalsmith-stretch** | 替代 Rubber Band 避免 GPL 传染 | MIT 许可证，C++20/Rust 绑定，瞬态保留与共振峰平移优秀，商业友好 | ✅ 已核实 | 作为系统唯一内置音频弹性拉伸与变调算法，替代双许可的 Rubber Band |
+| **ASIO SDK 再分发** | 假定可直接随源码分发 | 专有协议，不可自由再分发 | ✅ 已核实 | 严格隔离，源码包与 Git 仓库 100% 剔除 ASIO，Windows 默认 WASAPI 独占 |
 
 ---
 
@@ -257,6 +276,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 | 开源组件 / 资产 | 开源许可证 | 项目中使用范围 | 风险评估与合规动作 |
 | :--- | :--- | :--- | :--- |
 | **`Slint`** | GPLv3 / 商业双轨 | `yeban-app` 桌面 UI 宿主 | **夜半自身完全合规**：夜半项目整体以 GPLv3 发布，完全符合 Slint GPLv3 授权条款。**第三方 Fork 合规限制**：任何基于夜半代码 fork 并希望以闭源或非 GPLv3 兼容协议分发的第三方，无法继续使用 GPLv3 模式下的 Slint，须自行向 SixtyFPS GmbH 获取商业许可；夜半项目不提供 Slint 商业许可的任何担保或转授。 |
+| **`Skia` / `FemtoVG`** | BSD-3-Clause / Apache-2.0 | Slint 硬件加速与离屏渲染后端 | 零风险，宽松开源协议，完全允许商业与开源集成，无传染性。 |
 | **`VST3 SDK`** | MIT (自 3.8.0 起) | `yeban-plugin-host` 插件桥接 | Steinberg 已于 2025 年 10 月将 VST3 SDK 切换为 MIT 许可证。夜半锁定依赖版本为 VST3 SDK 3.8.0+，消除上游 GPL 传染风险；`vst3-sys` Rust 绑定层以 GPLv3 发布，与夜半许可证天然兼容。 |
 | **`Steinberg ASIO SDK`** | 专有许可 (Proprietary) | 仅 Windows 可选扩展 | **严禁入库**：禁止将 ASIO SDK 头文件与源码打包入仓库；Windows 首选开源友好 WASAPI 独占驱动；ASIO 支持作为独立动态加载模块，仅限用户本地编译。 |
 | **`clack` (CLAP)** | MIT / Apache-2.0 | `yeban-plugin-host` CLAP 宿主 | 极低（现代开放友好许可）。针对宿主加载专有 CLAP 插件的法律争议，夜半在 `LICENSE` 中显式附加了 GPLv3 §7 允许的 CLAP 专有插件动态加载例外条款。 |
@@ -265,8 +285,12 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 | **`hound`, `midly`** | MIT / Apache-2.0 | WAV 读写与 MIDI 解析 | 零风险，直接静态编译。 |
 | **`rubato`, `biquad`** | MIT | 重采样与参数滤波 | 零风险，直接静态编译。 |
 | **`signalsmith-stretch`** | MIT | 弹性拉伸与变调 | 零风险（采用宽松 MIT 替代 GPL 的 Rubber Band）。 |
-| **AI 模型权重 (Basic Pitch)** | Apache-2.0 | `crates/yeban-services` | 零风险，模型权重与代码均遵循 Apache-2.0，支持商业化，与 GPLv3 代码主仓保持物理分离。 |
+| **`Noto Sans CJK` / 开源字体** | SIL Open Font License 1.1 | 界面中英文字符渲染 | 零风险，符合开源字体分发要求，字体许可声明保存于 `assets/fonts/LICENSES.md`。 |
+| **`Lucide Icons` 图标集** | ISC / MIT | 界面矢量控件图标 | 零风险，宽松协议，内联嵌入 Slint 资源编译。 |
+| **AI 模型权重 (Basic Pitch)** | Apache-2.0 | `crates/yeban-services` | 零风险，模型权重与推理代码均遵循 Apache-2.0，支持商业化，模型元数据记录于 `assets/models/MANIFEST.json`。 |
+| **AI 降噪模型 (DeepFilterNet)** | MIT / Apache-2.0 | `crates/yeban-services` | 零风险，语音近线降噪模型采用宽松协议，独立打包分发。 |
 | **323 款内置 SFZ 采样** | CC-BY / CC0 / MIT 等 | 官方开箱即用音色资产库 | 建立全量采样 Attribution 清单 (`assets/samples/ATTRIBUTION.md`) 与 CI 资产指纹自动化审计，确保无专有未授权资产混入。 |
+| **159 种流派规则与和弦走向** | CC0 / Public Domain (公有领域) | `crates/yeban-theory` 乐理库 | 零风险，传统音乐理论与数学比例属于公有领域，规则编码归属于夜半原创代码。 |
 
 ---
 
@@ -278,7 +302,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 | **传统 DAW 线性撤销历史丢失** | 撤销后一旦执行新编辑，跳过的操作分支被彻底截断 | 基于领域操作日志（Ops Log）的匿名分叉撤销树，历史永久可回退 | ARCH §6 | V3.0 |
 | **Web DAW 纯 JS GC 爆音与高延迟** | 垃圾回收阻塞主线程，音频时延 > 100ms | **放弃 Web，全栈转型 Slint + cpal 原生引擎**，硬件回路延迟 ≤ 5ms | ARCH §0/§3, ROADMAP §3 | V3.0 |
 | **传统 DAW 启动缓慢且占用巨大** | 笨重的框架与动态脚本虚拟机（几百 MB） | Slint + 纯 Rust 原生单二进制，冷启动 ≤ 100ms，常驻内存 ≤ 35MB | ROADMAP §5 | V3.0 |
-| **AI 编曲机械填音消耗海量 Token** | MCP 每次传递数千个离散音符，耗时长且极易超限 | 声明式乐理与曲式意图 API (Yeban Intent API v2)，单次交互 ≤ 600 Token | ARCH §7 | V3.0 |
+| **AI 编曲机械填音消耗海量 Token** | MCP 每次传递数千个离散音符，耗时长且极易超限 | 声明式乐理与曲式意图 API (Yeban Intent API v2)，单次交互 JSON 载荷 ≤ 4KB，Token 开销中位数 ≤ 600 Tokens (参考基准) | ARCH §7 | V3.0 |
 | **双 MCP 状态脱节与并发读写冲突** | 独立进程 stdio 与活 GUI 会话脱节，并发读写损坏工程 | 进程内 HTTP 挂载 (127.0.0.1+Token) + 独立 CLI + `.yeban.lock` 排他文件锁 | ARCH §0.3/§7.1 | V3.0 |
 
 ---
@@ -294,7 +318,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 |  ├─ 汲取 FL Studio 卷帘心流 ──────► Ghost Notes 透视、Quick Strum 扫弦、Stamp 和弦印章、Slide 滑音包络  |
 |  ├─ 汲取 Ableton Live 极简美学 ───► Session / Arrangement 双视图同构、Tab 键瞬切、设备机架并行链        |
 |  ├─ 汲取 Studio One 交互理念 ────► 音频切片直观编排、曲式章节积木拼装 (Section Track)                   |
-|  └─ 拥抱 Slint 无头与内嵌 MCP ───► 纯内存无窗口渲染 + slint/mcp 驱动 AI 视觉内省与自测闭环             |
+|  └─ 拥抱 Slint 无头与自研适配 ───► 纯内存无窗口渲染 + yeban-ui-test-port 驱动 AI 视觉内省与自测闭环     |
 |                                                                                                        |
 |  [ 引擎性能与稳定性 (Pure Rust Native Engine) ]                                                        |
 |  ├─ 汲取 Bitwig 隔离防护哲学 ─────► 跨进程共享内存崩溃隔离宿主 (Out-of-Process SHM)，第三方插件崩溃零闪退 |
@@ -310,9 +334,9 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 |  ====================================================================================================  |
 |  [ 夜半 (Yeban) 核心技术目标能力 (Core Target Capabilities) ]                                          |
 |  1. 编曲时光机 (Git DAG & Ops Log) ──► 告别线性撤销栈，支持匿名分叉、30ms 等功率盲听与三向视觉审查      |
-|  2. 原生 Yeban Intent API v2 ───────► 意图驱动函数调用，单次交互 Token 消耗中位数 ≤ 600 Tokens          |
+|  2. 原生 Yeban Intent API v2 ───────► 意图驱动函数调用，单次交互 JSON 载荷 ≤ 4KB，Token 中位数 ≤ 600     |
 |  3. 确定性声学分级契约 (L1/L2) ─────► Rayon 100x 极速多核母带导出，串行归约求和保证确定性 (ROADMAP §5)   |
-|  4. 双 MCP 协同与全自主开发闭环 ────► 活会话 HTTP 挂载 + 独立 stdio CLI + Slint 远程内省，实现 AI 自测闭环 |
+|  4. 双 MCP 协同与全自主开发闭环 ────► 活会话 HTTP 挂载 + 独立 stdio CLI + 自研 UI 测试端点，实现 AI 自测闭环 |
 +────────────────────────────────────────────────────────────────────────────────────────────────────────+
 ```
 

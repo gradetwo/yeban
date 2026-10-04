@@ -1,0 +1,53 @@
+# cargo-deny 自动化开源许可与依赖安全审计配置
+
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+ignore = []
+
+[licenses]
+unlicensed = "deny"
+confidence-threshold = 0.8
+
+# 允许的开源许可证白名单
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "MPL-2.0",
+    "CC0-1.0",
+    "CC-BY-4.0",
+    "OFL-1.1",
+]
+
+# 针对特定 crate 的精细化豁免规则
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 }
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+# 明确禁用的高风险库
+deny = [
+    { name = "rubberband", reason = "商业付费/GPL双轨协议，已由宽松 MIT 的 signalsmith-stretch 替代" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

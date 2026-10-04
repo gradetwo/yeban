@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yeban.org/schemas/ops.schema.json",
+  "title": "StampedOp",
+  "description": "Domain reversible operation log entry with provenance origin",
+  "type": "object",
+  "required": ["origin", "timestamp", "op"],
+  "properties": {
+    "origin": {
+      "type": "string",
+      "enum": ["UserUi", "MidiInput", "McpProposal", "UndoRedo", "AutomationRecord", "Import", "Migration"]
+    },
+    "timestamp": { "type": "integer" },
+    "op": {
+      "type": "object",
+      "oneOf": [
+        { "required": ["AddNote"], "properties": { "AddNote": { "type": "object" } } },
+        { "required": ["DeleteNote"], "properties": { "DeleteNote": { "type": "object" } } },
+        { "required": ["MoveNote"], "properties": { "MoveNote": { "type": "object" } } },
+        { "required": ["AddClipPlacement"], "properties": { "AddClipPlacement": { "type": "object" } } },
+        { "required": ["RemoveClipPlacement"], "properties": { "RemoveClipPlacement": { "type": "object" } } },
+        { "required": ["MoveClipPlacement"], "properties": { "MoveClipPlacement": { "type": "object" } } },
+        { "required": ["AddTrack"], "properties": { "AddTrack": { "type": "object" } } },
+        { "required": ["RemoveTrack"], "properties": { "RemoveTrack": { "type": "object" } } },
+        { "required": ["ConnectRouting"], "properties": { "ConnectRouting": { "type": "object" } } },
+        { "required": ["DisconnectRouting"], "properties": { "DisconnectRouting": { "type": "object" } } },
+        { "required": ["SetRoutingGain"], "properties": { "SetRoutingGain": { "type": "object" } } },
+        { "required": ["SetParam"], "properties": { "SetParam": { "type": "object" } } },
+        { "required": ["SetMacro"], "properties": { "SetMacro": { "type": "object" } } },
+        { "required": ["Batch"], "properties": { "Batch": { "type": "object" } } }
+      ]
+    }
+  }
+}

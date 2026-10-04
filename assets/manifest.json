@@ -1,0 +1,24 @@
+{
+  "$schema": "../schemas/assets.manifest.schema.json",
+  "category": "root",
+  "version": "1.0.0",
+  "sub_manifests": [
+    {
+      "category": "samples",
+      "attribution_doc": "assets/samples/ATTRIBUTION.md",
+      "instruments_count": 323,
+      "format": "SFZ_v2",
+      "allowed_licenses": ["CC0-1.0", "CC-BY-4.0", "MIT", "Apache-2.0"]
+    },
+    {
+      "category": "models",
+      "manifest": "assets/models/MANIFEST.json",
+      "policy": "No proprietary neural weights; permissive open weights only"
+    },
+    {
+      "category": "fonts",
+      "attribution_doc": "assets/fonts/LICENSES.md",
+      "allowed_licenses": ["OFL-1.1", "Apache-2.0"]
+    }
+  ]
+}

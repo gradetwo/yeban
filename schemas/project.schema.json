@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yeban.org/schemas/project.schema.json",
+  "title": "YebanProjectV3",
+  "description": "Authoritative persistent document schema for Yeban DAW v3.0",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "min_reader_version",
+    "writer_version",
+    "id",
+    "title",
+    "bpm",
+    "time_signature",
+    "audio_config",
+    "tracks",
+    "clip_pool",
+    "routing_graph"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1, "description": "Document schema version" },
+    "min_reader_version": { "type": "integer", "minimum": 1, "description": "Minimum required reader version" },
+    "writer_version": { "type": "integer", "minimum": 1, "description": "Writer application version" },
+    "id": { "type": "string", "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$", "description": "ULID string in Crockford Base32" },
+    "title": { "type": "string" },
+    "author": { "type": "string" },
+    "bpm": { "type": "number", "minimum": 20.0, "maximum": 999.0 },
+    "time_signature": {
+      "type": "object",
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "denominator": { "type": "integer", "enum": [1, 2, 4, 8, 16, 32] }
+      }
+    },
+    "audio_config": {
+      "type": "object",
+      "required": ["sample_rate", "block_size", "bit_depth", "pan_law"],
+      "properties": {
+        "sample_rate": { "type": "integer", "enum": [44100, 48000, 88200, 96000, 192000] },
+        "block_size": { "type": "integer", "enum": [64, 128, 256, 512, 1024] },
+        "bit_depth": { "type": "string", "enum": ["Int16", "Int24", "Float32"] },
+        "pan_law": { "type": "string", "enum": ["Linear", "ConstantPowerMinus3dB", "ConstantPowerMinus4_5dB", "ConstantPowerMinus6dB"] }
+      }
+    },
+    "rng_seed": { "type": "integer" },
+    "tracks": {
+      "type": "object",
+      "description": "BTreeMap of EntityId to TrackV3",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["id", "name", "kind", "volume_db", "pan", "mute", "solo"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "kind": { "type": "string", "enum": ["Midi", "Audio", "AuxReturn", "Master"] },
+          "volume_db": { "type": "number" },
+          "pan": { "type": "number", "minimum": -1.0, "maximum": 1.0 },
+          "mute": { "type": "boolean" },
+          "solo": { "type": "boolean" },
+          "solo_safe": { "type": "boolean" },
+          "folder_id": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "clip_pool": {
+      "type": "object",
+      "description": "BTreeMap of EntityId to ClipPoolEntry"
+    },
+    "routing_graph": {
+      "type": "object",
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": { "type": "array", "items": { "type": "string" } },
+        "edges": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}

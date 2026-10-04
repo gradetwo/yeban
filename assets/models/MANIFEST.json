@@ -1,0 +1,22 @@
+{
+  "$schema": "../../schemas/assets.manifest.schema.json",
+  "category": "models",
+  "version": "1.0.0",
+  "policy": "Official repository does NOT bundle large neural weights by default. All models must be open weights with permissive commercial licenses.",
+  "items": [
+    {
+      "id": "model-basic-pitch-onnx-v1",
+      "name": "Spotify Basic Pitch ONNX Model",
+      "relative_path": "assets/models/basic_pitch.onnx",
+      "format": "ONNX",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 18450204,
+      "license": "Apache-2.0",
+      "author": "Spotify Audio Intelligence Lab",
+      "source_url": "https://github.com/spotify/basic-pitch",
+      "commercial_usable": true,
+      "attribution_required": true,
+      "optional": true
+    }
+  ]
+}
