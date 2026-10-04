@@ -28,7 +28,10 @@ source "$REPO/scripts/dev/local-env.sh"
 MODE="${1:-light}"
 shift || true
 
-HEAVY_RE='^[[:space:]]*(slint|slint-build|i-slint-[a-z-]*|cpal|symphonia|rubato|rayon|clack|nih-plug|vst3-sys|zip|flate2|hound|midly|midir|notify|rstar|signalsmith-stretch)[[:space:]]*='
+# 同时匹配两种写法 (AGENTS.md 推荐的是点号继承写法, 只匹配 `=` 会漏):
+#   cpal = { workspace = true, optional = true }
+#   cpal.workspace = true
+HEAVY_RE='^[[:space:]]*(slint|slint-build|i-slint-[a-z-]*|cpal|symphonia|rubato|rayon|clack|nih-plug|vst3-sys|zip|flate2|hound|midly|midir|notify|rstar|signalsmith-stretch)([[:space:]]*\.workspace[[:space:]]*|[[:space:]]*)='
 
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }

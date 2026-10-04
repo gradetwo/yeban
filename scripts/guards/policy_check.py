@@ -77,6 +77,19 @@ def rel(p: Path) -> str:
         return str(p)
 
 
+def rel_parts(path: Path) -> tuple[str, ...]:
+    """相对**仓库根**的路径分量（而不是绝对路径分量）。
+
+    必须这样做的原因: 工作线在 `<main>/.worktrees/<line>/` 里运行, 绝对路径的每一段都含
+    `.worktrees`。若用绝对分量做跳过判定, **工作线里所有源码/配置文件都会被跳过**,
+    G04/G06/G07/G12 会变成永不报错的空判据 —— 那是最糟的一种"假绿"。
+    """
+    try:
+        return path.resolve().relative_to(REPO.resolve()).parts
+    except ValueError:
+        return path.parts
+
+
 def crates() -> list[Path]:
     out: list[Path] = []
     for parent in ("crates", "spikes"):
@@ -96,7 +109,7 @@ def iter_source_files(suffixes: tuple[str, ...] = (".rs", ".toml", ".slint")) ->
     for p in REPO.rglob("*"):
         if not p.is_file():
             continue
-        if any(part in SKIP_DIRS for part in p.parts):
+        if any(part in SKIP_DIRS for part in rel_parts(p)):
             continue
         if p.suffix in suffixes:
             out.append(p)
@@ -225,7 +238,7 @@ def g06_large_files_registered() -> list[Violation]:
     """[AGENTS.md 红线 9] 不得提交 >10MB 未登记二进制。"""
     bad: list[Violation] = []
     for path in REPO.rglob("*"):
-        if not path.is_file() or any(part in SKIP_DIRS for part in path.parts):
+        if not path.is_file() or any(part in SKIP_DIRS for part in rel_parts(path)):
             continue
         if path.stat().st_size <= MAX_FILE_BYTES:
             continue
@@ -246,7 +259,7 @@ def g07_no_asio_sdk() -> list[Violation]:
     bad: list[Violation] = []
     suspicious = re.compile(r"(asio[^a-z]*sdk|steinberg[^a-z]*asio|asio\.h$)", re.IGNORECASE)
     for path in REPO.rglob("*"):
-        if any(part in SKIP_DIRS for part in path.parts):
+        if any(part in SKIP_DIRS for part in rel_parts(path)):
             continue
         if suspicious.search(path.name):
             bad.append(("G07", rel(path), "疑似 ASIO SDK 文件"))

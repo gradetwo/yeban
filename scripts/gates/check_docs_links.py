@@ -35,6 +35,20 @@ REPO = Path(__file__).resolve().parents[2]
 
 SKIP_DIRS = {".git", "target", "node_modules", ".worktrees", "dist", ".cargo-home", ".cache", "artifacts"}
 
+
+def rel_parts(path: Path) -> tuple[str, ...]:
+    """相对**仓库根**的路径分量。
+
+    为什么不能直接用 `path.parts`: 工作线是在 `<main>/.worktrees/<line>/` 里跑的, 于是
+    绝对路径的每一段都含 `.worktrees` ⇒ 若用绝对分量做跳过判定, **工作线里所有文件都会被跳过**,
+    本机门禁静默变成空跑（实测"扫描 0 个 markdown"）。
+    这正是"本机绿、CI 红"的来源: engine-rt 第 1 轮的文档红点就是这么漏掉的。
+    """
+    try:
+        return path.resolve().relative_to(REPO.resolve()).parts
+    except ValueError:
+        return path.parts
+
 #: 红线 1 保护的文件：其内的 file:// 链接只报告，不阻断（Agent 不得修改它们）
 PROTECTED_LEGAL = {
     "LICENSE",
@@ -52,7 +66,7 @@ LINK_RE = re.compile(r"\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 def markdown_files() -> list[Path]:
     out: list[Path] = []
     for path in REPO.rglob("*.md"):
-        if any(part in SKIP_DIRS for part in path.parts):
+        if any(part in SKIP_DIRS for part in rel_parts(path)):
             continue
         out.append(path)
     return sorted(out)
