@@ -29,7 +29,7 @@
 
 use slint::{ModelRc, SharedString, VecModel};
 
-use crate::bridge::ViewState;
+use crate::bridge::{RgbColor, ViewState};
 use crate::scene::DemoScene;
 use crate::ui::MainWindow;
 
@@ -58,6 +58,20 @@ fn booleans(values: &[bool]) -> ModelRc<bool> {
     ModelRc::new(VecModel::from(values.to_vec()))
 }
 
+/// `[color]` 属性 ← `&[RgbColor]`。
+///
+/// 十六进制 **解析**发生在投影层（`bridge::parse_hex_color`，可判据化）；
+/// 这里只做"已解析的 u8 三元组 → `slint::Color`"这一次转换 ——
+/// 因此全仓库只有一处颜色语法实现（见 `docs/ledger/app-completion-notes.md` §2）。
+fn colors(values: &[RgbColor]) -> ModelRc<slint::Color> {
+    ModelRc::new(VecModel::from(
+        values
+            .iter()
+            .map(|color| slint::Color::from_rgb_u8(color.red, color.green, color.blue))
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// 把投影状态**单向**注入一个已存在的 `MainWindow`。
 ///
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
@@ -82,6 +96,14 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState) {
     ui.set_bar_positions(lengths(&view.bar_positions));
     ui.set_note_ulids(strings(&view.note_ulids));
     ui.set_note_velocities(lengths(&view.note_velocities));
+    // 卷帘音符的位置（x / y / 宽）—— 由 `MidiNote::start_tick` / `pitch` 整数派生，
+    // 界面只做"取数组下标"，不做任何位置算术。
+    ui.set_note_positions(lengths(&view.note_positions()));
+    ui.set_note_widths(lengths(&view.note_widths()));
+    ui.set_note_ys(lengths(&view.note_ys()));
+    // 轨道色标：解析 / 回退都在投影层完成，这里只转成 Slint 的 `Color`。
+    ui.set_track_colors(colors(&view.track_colors()));
+    ui.set_track_color_labels(strings(&view.track_color_labels()));
 }
 
 /// 构造主窗口：注入**外壳场景**（会话运行态 / 本机视口）+ 投影状态。

@@ -38,6 +38,11 @@ export component ArrangementView inherits Rectangle {
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    // 轨道色标：`[color]` 由投影解析后的 RGB 构造（十六进制语法只在 `src/bridge.rs`，
+    // 非法 / 缺失已在那边回退）；`track-color-labels` 是同一颜色的规范化 `#RRGGBB` 文本，
+    // 只用于无障碍标签 —— 于是"界面画的颜色"与"控件树读到的色标"来自同一个值。
+    in property <[color]> track-colors: [];
+    in property <[string]> track-color-labels: [];
 
     in property <[string]> sections: [];
     in property <[length]> section-positions: [];
@@ -148,6 +153,23 @@ export component ArrangementView inherits Rectangle {
             color: Tokens.ink-0;
             font-size: Tokens.font-size-md;
             overflow: elide;
+        }
+
+        // 轨道色标 —— `TrackV3::color` 经投影解析后的颜色（非法 / 缺失已回退）。
+        // 它同时是"色标可被自动化读到"的落点：`accessible-label` 携带规范化 `#RRGGBB`，
+        // 因此无头控件树里 `track-{i}-color-swatch` 的标签 == 投影字段
+        // （判据两侧各有一条：`elements::track_color_swatches_carry_the_projected_hex`
+        // 与 Tier-1 的 `project_projection_reaches_the_control_tree_and_the_pixels`）。
+        Rectangle {
+            x: 124px;
+            y: Tokens.space-2;
+            width: 10px;
+            height: 18px;
+            background: root.track-colors[track_index];
+            border-radius: Tokens.radius-sm;
+            accessible-role: image;
+            accessible-id: "track-" + track_index + "-color-swatch";
+            accessible-label: "轨道色标 " + root.track-color-labels[track_index];
         }
 
         // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`

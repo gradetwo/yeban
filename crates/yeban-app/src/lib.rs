@@ -29,15 +29,20 @@
 //! 经 [`host`] 单向注入 `.slint`。`.slint` 里不再有 `for … in 6` 这类把演示数据
 //! 刻进界面的写法 —— 轨道数 / 剪辑数 / 段落数由工程决定。
 //! `[elements]` 的语义注册表同样由投影构造，因此它总是与当前工程一致。
+//! 卷帘音符的 x / y 由 tick / 音高整数派生，轨道色标由 [`bridge::parse_hex_color`]
+//! 解析（非法 / 缺失显式回退）；真实的 `.yeban` 文件经 [`open`] 的容器入口打开，
+//! 容器的拒绝原因**原样**上报，绝不退化成空工程。
 //!
-//! 仍未接线的部分（走带 / Op 归约 / 电平 SPSC / 卷帘音符渲染 / 混音台通道条）逐条记在
-//! `docs/ledger/app-binding-notes.md` 的未实现项里。
+//! 仍未接线的部分（走带 / Op 归约 / 电平 SPSC / 混音台通道条 / 设备链 / 自动化）
+//! 逐条记在 `docs/ledger/app-completion-notes.md` 与 `docs/ledger/app-binding-notes.md`
+//! 的未实现项里。
 #![deny(missing_docs)]
 
 pub mod bridge;
 pub mod elements;
 pub mod host;
 pub mod input;
+pub mod open;
 pub mod scene;
 
 /// `build.rs` 里 `slint_build::compile("ui/app.slint")` 生成的 Slint 组件类型。

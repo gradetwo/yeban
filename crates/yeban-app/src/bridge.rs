@@ -35,14 +35,24 @@
 //! `u64` 的 tick 与 `duration_ticks` 相加、`u32` 的像素乘以 `ticks_per_pixel`
 //! 都可能越界。投影**返回 `Result`**，越界即 [`BridgeError`]，绝不 wrap 或饱和后假装正常。
 //! 空工程是合法输入（[`YebanProjectV1::default`]），投影成空视图而不 panic。
+//!
+//! ## app-completion 工作线补的两件事（见 `docs/ledger/app-completion-notes.md`）
+//!
+//! 1. **卷帘音符位置**：`MidiNote::start_tick` / `pitch` 经 [`tick_to_px`] 与
+//!    [`pitch_lane`] 的**整数**变换给出 `x` / `y` / `width` / `row`（[`NoteView`]）——
+//!    界面不再用"第 i 个音符"的索引布局（`[UI-NOTE-002]`）。
+//! 2. **轨道色标**：`TrackV3::color` 在**这一层**（唯一一处）解析成 [`RgbColor`]，
+//!    非法 / 缺失回退到 [`DEFAULT_TRACK_COLOR`]；规范化的 `#RRGGBB` 文本进 `.slint`
+//!    与语义注册表，于是"投影 ↔ 控件树"两侧可以对账。
 
 use std::collections::BTreeSet;
 use std::fmt;
 
 use yeban_model::ids::EntityId;
+use yeban_model::music::MidiNote;
 use yeban_model::project::{
-    ClipContent, ClipPlacement, SceneV3, SectionV3, TimeSignature, TrackKind, TrackV3,
-    YebanProjectV1,
+    ClipContent, ClipPlacement, ClipPoolEntry, SceneV3, SectionV3, TimeSignature, TrackKind,
+    TrackV3, YebanProjectV1,
 };
 
 /// 960 PPQ 整数时钟（`[MODEL-AST-001]`）—— 从模型层再导出，避免两处各写一个字面量。
@@ -68,6 +78,147 @@ pub const MIN_BLOCK_WIDTH_PX: f32 = 1.0;
 /// 标尺至少画出这么多小节线（规范 §4.2 的最小可视密度；工程更长时按需增加）。
 pub const MIN_BAR_COUNT: usize = 16;
 
+// ---------------------------------------------------------------------------
+// 卷帘音高映射（**整数**，[UI-NOTE-002] 坐标双向映射的投影侧一半）
+// ---------------------------------------------------------------------------
+
+/// 卷帘可见的音高车道数。
+///
+/// 它必须与 `ui/console/piano_roll.slint` 里画出的车道数一致 —— 投影只给出
+/// **车道索引**，车道→像素的乘法与 clips 的 `lane` 同一形态。两者的对账由
+/// `pitch_lane_geometry_matches_the_slint_grid` 这条文本层判据钉住（本机不编译 Slint，
+/// 所以这条耦合只能以"读 `.slint` 原文"的形式断言，见 `docs/ledger/app-completion-notes.md` §4）。
+pub const PITCH_LANE_COUNT: i32 = 16;
+
+/// 车道窗口下界的 MIDI 音高：`C4 = 60`。
+///
+/// 落在窗口之外的音高**钳制**进窗口（不 panic、不绕回）：真正的视口滚动 /
+/// 裁剪属于 `[UI-NOTE-001]`，仍未实现，见 `docs/ledger/app-completion-notes.md` 的未实现项。
+pub const PITCH_LANE_BASE: u8 = 60;
+
+/// 一条车道在逻辑像素里的高度（与 `piano_roll.slint` 的 `14px * lane_index` 对齐）。
+pub const PITCH_LANE_HEIGHT_PX: f32 = 14.0;
+
+/// 音符块在车道内的纵向内缩（与 `piano_roll.slint` 的 `+ 6px` 对齐）。
+pub const NOTE_INSET_Y_PX: f32 = 6.0;
+
+/// 音高 → 车道索引：**整数**、钳制、上界 `0`（高音在上）。
+///
+/// `pitch < PITCH_LANE_BASE` 落到最下面一条车道（索引 `PITCH_LANE_COUNT - 1`），
+/// `pitch >= PITCH_LANE_BASE + PITCH_LANE_COUNT` 落到最上面一条（索引 `0`）。
+/// 单调性：`pitch` 越大 ⇒ 车道索引越小（屏幕上越靠上），在窗口内**严格**递减。
+#[must_use]
+pub fn pitch_lane(pitch: u8) -> i32 {
+    let offset = i32::from(pitch.saturating_sub(PITCH_LANE_BASE)).min(PITCH_LANE_COUNT - 1);
+    PITCH_LANE_COUNT - 1 - offset
+}
+
+/// 音高 → 音符块顶边的相对 y（逻辑像素）。整数车道索引经**一次**乘法得到，不做累加。
+#[must_use]
+pub fn pitch_lane_y(pitch: u8) -> f32 {
+    #[allow(clippy::cast_precision_loss)]
+    let lane = pitch_lane(pitch) as f32;
+    PITCH_LANE_HEIGHT_PX * lane + NOTE_INSET_Y_PX
+}
+
+// ---------------------------------------------------------------------------
+// 界面色标（`TrackV3::color` 的消费方式：**Rust 侧解析**，解析失败必须可判据化）
+// ---------------------------------------------------------------------------
+
+/// 没有色标（`TrackV3::color == None`）或色标非法时的回退色。
+///
+/// 取值就是 `ui/tokens.slint` 的 `Tokens.line-strong`（`#2c3a63`）—— 一个中性石板色：
+/// 它在深色面板上可见、又不会被误认成"某个轨道品牌色"。代价是 `.slint` 与 Rust 各写一份
+/// 十六进制值，由判据 `missing_or_illegal_colors_fall_back_to_the_documented_value` 与
+/// `token_drift_of_the_fallback_color_is_detected` 两侧对账（后者直接读 `tokens.slint` 原文）。
+pub const DEFAULT_TRACK_COLOR_HEX: &str = "#2C3A63";
+
+/// 一个已经解析成功（或已回退）的 RGB 色标。
+///
+/// 存在的意义：`.slint` 的 `[color]` 数组需要 `Color`，而投影层**零 Slint 依赖**，
+/// 所以投影只交出不透明 `u8` 三元组，由唯一的注入点 [`crate::host`] 转成 `slint::Color`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RgbColor {
+    /// 红通道。
+    pub red: u8,
+    /// 绿通道。
+    pub green: u8,
+    /// 蓝通道。
+    pub blue: u8,
+}
+
+impl RgbColor {
+    /// 构造一个不透明色。
+    #[must_use]
+    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
+        Self { red, green, blue }
+    }
+
+    /// 规范化的 `#RRGGBB` 文本（大写十六进制）—— 进判据、进控件树标签、进 `.slint`。
+    ///
+    /// 之所以要**规范化**：模型里同一个颜色可能写成 `#f7e6b0` 或 `#F7E6B0`，
+    /// 而"控件树标签 == 投影字段"这条判据需要一个唯一的文本形态。
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        format!("#{:02X}{:02X}{:02X}", self.red, self.green, self.blue)
+    }
+}
+
+/// 解析 `TrackV3::color` 的十六进制色标。
+///
+/// ## 语法（**规范缺口** —— 模型只写"界面色标"，没有规定格式）
+///
+/// 接受：可选的 `#` + 3 或 6 个 ASCII 十六进制字符（大小写不敏感）。
+/// 3 位短写按 CSS 规则展开（`#abc` → `#aabbcc`）。
+/// 拒绝：空串、含空白、长度不是 3/6、含非十六进制字符、`#RRGGBBAA`、`rgb(...)` 等一切其它形态
+/// （返回 `None`，由调用方回退到 [`DEFAULT_TRACK_COLOR_HEX`]）。
+///
+/// 这条缺口已登记为 needs（建议提升为 ADR 级裁决）；在裁决下来之前，**拒绝的比接受的宽**
+/// 是本实现的取向：宁可回退到中性色，也不猜一个可能画错的颜色。
+#[must_use]
+pub fn parse_hex_color(raw: &str) -> Option<RgbColor> {
+    let digits = raw.strip_prefix('#').unwrap_or(raw);
+    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let nibble = |byte: u8| -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => byte - b'A' + 10,
+        }
+    };
+    let bytes = digits.as_bytes();
+    match bytes.len() {
+        3 => {
+            // `#abc` → `#aabbcc`：每一位复制成两位（CSS Color 3 的短写规则）。
+            let value = |index: usize| -> u8 {
+                let high = nibble(bytes[index]);
+                high * 16 + high
+            };
+            Some(RgbColor::new(value(0), value(1), value(2)))
+        }
+        6 => {
+            let pair = |index: usize| -> u8 {
+                nibble(bytes[index * 2]) * 16 + nibble(bytes[index * 2 + 1])
+            };
+            Some(RgbColor::new(pair(0), pair(1), pair(2)))
+        }
+        _ => None,
+    }
+}
+
+/// [`DEFAULT_TRACK_COLOR_HEX`] 的 `u8` 三元组形态（两者由判据逐字对账，不靠人眼）。
+pub const DEFAULT_TRACK_COLOR: RgbColor = RgbColor::new(0x2c, 0x3a, 0x63);
+
+/// 解析色标，失败即回退到 [`DEFAULT_TRACK_COLOR`]。
+///
+/// 这是 `.slint` 与控件树**唯一**的色标事实源（不存在"另一处再解析一遍"）。
+#[must_use]
+pub fn track_color_or_default(raw: Option<&str>) -> RgbColor {
+    raw.and_then(parse_hex_color).unwrap_or(DEFAULT_TRACK_COLOR)
+}
+
 /// 投影过程中可恢复的输入问题。
 ///
 /// 刻意**不**用 `panic!`：工程文档来自磁盘 / 归档，属不可信输入
@@ -76,7 +227,7 @@ pub const MIN_BAR_COUNT: usize = 16;
 pub enum BridgeError {
     /// `ticks_per_pixel == 0`：除零，且没有任何合法解释。
     ZeroTicksPerPixel,
-    /// `start_tick + duration_ticks` 越过 `u64::MAX`。
+    /// 起始 tick + `duration_ticks` 越过 `u64::MAX`（剪辑摆放与 MIDI 音符共用这一条）。
     TickOverflow {
         /// 溢出发生的起始 tick。
         start_tick: u64,
@@ -103,7 +254,7 @@ impl fmt::Display for BridgeError {
             Self::ZeroTicksPerPixel => formatter.write_str("ticks_per_pixel 不能为 0"),
             Self::TickOverflow { start_tick } => write!(
                 formatter,
-                "剪辑起始 tick {start_tick} 与 duration_ticks 相加越过 u64::MAX"
+                "起始 tick {start_tick} 与 duration_ticks 相加越过 u64::MAX"
             ),
             Self::PixelOverflow { tick } => {
                 write!(formatter, "tick {tick} 换算出的像素数超出 u32 范围")
@@ -175,6 +326,10 @@ pub struct TrackView {
     pub kind: &'static str,
     /// 界面色标（`TrackV3::color`，`None` = 用主题默认）。
     pub color: Option<String>,
+    /// 已解析（或已回退）的色标 RGB —— `.slint` 的 `[color]` 数组由它构造。
+    pub color_rgb: RgbColor,
+    /// 规范化的 `#RRGGBB` 文本（回退色也在这里），进控件树标签与判据。
+    pub color_hex: String,
     /// 静音（`TrackV3::mute`）。
     pub mute: bool,
     /// 独奏（`TrackV3::solo`）。
@@ -191,6 +346,43 @@ pub struct TrackView {
     pub clip_count: usize,
     /// 是否为 `master_bus_track_id` 指向的主总线。
     pub is_master: bool,
+}
+
+/// 视图里的一个 MIDI 音符（`MidiNote` + 它落在哪个片段池条目上 + 投影算出的位置）。
+///
+/// **位置是投影算出来的**（不是界面数出来的）：`x` 来自 `start_tick` 经 [`tick_to_px`]
+/// 的**整数除法**，`width` 来自 `end_tick - start_tick` 的整数像素差（下限
+/// [`MIN_BLOCK_WIDTH_PX`]），`row` / `y` 来自 `pitch` 经 [`pitch_lane`] 的**整数**车道映射。
+/// 因此"同一个音符在不同 PPQ 缩放下位置单调"与"越界 tick 不 panic"都是可判据的事实，
+/// 而不是注释里的承诺（见 `docs/ledger/app-completion-notes.md` §3）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoteView {
+    /// 视图内序号（片段池键序 → 音符键序，去重保序）。
+    pub index: usize,
+    /// `MidiNote::id` 的 26 字符规范文本 —— `note-{ulid}-rect` 的 `{ulid}` 段。
+    pub id: String,
+    /// 来自哪个片段池条目（`ClipPoolEntry::id`），让音符身份可回溯。
+    pub clip_id: String,
+    /// 起始 tick（`MidiNote::start_tick`）。
+    pub start_tick: u64,
+    /// 结束 tick（`start_tick + duration_ticks`，`checked_add`）。
+    pub end_tick: u64,
+    /// 时值（tick）。
+    pub duration_ticks: u64,
+    /// 音高 0..=127。
+    pub pitch: u8,
+    /// 力度 0..=127（模型原值）。
+    pub velocity: u8,
+    /// 力度归一化到 0.0–1.0（力度泳道按比例画柱高）。
+    pub velocity_normalized: f32,
+    /// 音符块左沿相对时间轴 0 的 x（逻辑像素，`tick_to_px(start_tick)`）。
+    pub x: f32,
+    /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
+    pub width: f32,
+    /// 音高车道索引（0 = 最上面一条；由 [`pitch_lane`] 整数映射）。
+    pub row: i32,
+    /// 音符块顶沿的相对 y（逻辑像素，= `PITCH_LANE_HEIGHT_PX × row + NOTE_INSET_Y_PX`）。
+    pub y: f32,
 }
 
 /// 视图里的一个剪辑摆放（`ClipPlacement` + 它落在哪条轨 / 哪个片段池条目上）。
@@ -299,6 +491,12 @@ pub struct ViewState {
     pub sections: Vec<SectionView>,
     /// 全部场景（身份升序）。
     pub scenes: Vec<SceneView>,
+    /// 全部 MIDI 音符（片段池键序 → 音符键序，去重保序），**含**投影算出的 x / y / 宽 / 车道。
+    ///
+    /// 这是音符族唯一的权威投影产物；[`Self::note_ulids`] / [`Self::note_velocities`] 与
+    /// [`Self::note_positions`] 等平行数组都由它派生（判据
+    /// `note_parallel_arrays_agree_with_the_rich_projection` 逐项对账）。
+    pub notes: Vec<NoteView>,
     /// 片段池里全部 MIDI 音符的身份（片段序 → 音符身份序，去重保序）。
     ///
     /// 它进 `.slint` 的 `note-{ulid}-rect`：这些 ID 必须来自**工程里的音符实体**，
@@ -376,22 +574,26 @@ impl ViewState {
         }
 
         // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
-        // 身份进 `note-{ulid}-rect`，力度进力度泳道（`velocity-{i}-bar`）。
-        let mut note_ulids = Vec::new();
-        let mut note_velocities = Vec::new();
+        // 身份进 `note-{ulid}-rect`；力度进力度泳道；**位置**由 start_tick / pitch 经整数
+        // 变换得到（复用 `tick_to_px` 与 `pitch_lane`，不在别处再写一套换算）。
+        let mut notes: Vec<NoteView> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for entry in project.clip_pool.values() {
-            let Some(notes) = entry.content.notes() else {
+            let Some(entry_notes) = entry.content.notes() else {
                 continue;
             };
-            for note in notes.values() {
+            for note in entry_notes.values() {
                 let text = note.id.to_canonical_string();
-                if seen.insert(text.clone()) {
-                    note_ulids.push(text);
-                    note_velocities.push(velocity_normalized(note.velocity));
+                if !seen.insert(text.clone()) {
+                    continue;
                 }
+                let index = notes.len();
+                notes.push(note_view(entry, note, index, ticks_per_pixel)?);
             }
         }
+        // 平行数组一律由 `notes` 派生 —— 只有一个事实源，判据再钉住它们逐项一致。
+        let note_ulids: Vec<String> = notes.iter().map(|note| note.id.clone()).collect();
+        let note_velocities: Vec<f32> = notes.iter().map(|note| note.velocity_normalized).collect();
 
         // 标尺：覆盖工程实际长度，至少 `MIN_BAR_COUNT` 条。
         let mut end_tick = 0_u64;
@@ -433,6 +635,7 @@ impl ViewState {
             clips,
             sections,
             scenes,
+            notes,
             note_ulids,
             note_velocities,
             bar_positions,
@@ -538,6 +741,56 @@ impl ViewState {
         self.clips.iter().map(|clip| clip.lane).collect()
     }
 
+    // ------------------------------------------------------------------
+    // 卷帘音符的位置（x / y / 宽 / 车道）—— 全部由 tick / 音高整数派生
+    // ------------------------------------------------------------------
+
+    /// 音符块左沿 x（逻辑像素，`tick_to_px(start_tick)`）。
+    #[must_use]
+    pub fn note_positions(&self) -> Vec<f32> {
+        self.notes.iter().map(|note| note.x).collect()
+    }
+
+    /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
+    #[must_use]
+    pub fn note_widths(&self) -> Vec<f32> {
+        self.notes.iter().map(|note| note.width).collect()
+    }
+
+    /// 音符块顶沿 y（逻辑像素，由 [`pitch_lane`] 的车道索引一次乘法得到）。
+    #[must_use]
+    pub fn note_ys(&self) -> Vec<f32> {
+        self.notes.iter().map(|note| note.y).collect()
+    }
+
+    /// 音符的音高车道索引（0 = 最上面一条）。
+    #[must_use]
+    pub fn note_rows(&self) -> Vec<i32> {
+        self.notes.iter().map(|note| note.row).collect()
+    }
+
+    // ------------------------------------------------------------------
+    // 轨道色标（`TrackV3::color` 的消费形态）
+    // ------------------------------------------------------------------
+
+    /// 非主总线轨道的色标 RGB（非法 / 缺失已回退到 [`DEFAULT_TRACK_COLOR`]）。
+    #[must_use]
+    pub fn track_colors(&self) -> Vec<RgbColor> {
+        self.tracks.iter().map(|track| track.color_rgb).collect()
+    }
+
+    /// 非主总线轨道的规范化色标文本（`#RRGGBB`，回退色也在内）。
+    ///
+    /// 这一份同时进 `.slint` 的 `track-color-labels` 与语义注册表的标签 ——
+    /// 于是"投影 ↔ 控件树"的色标一致性可以被纯 Rust 判据 + Tier-1 判据**两侧**钉住。
+    #[must_use]
+    pub fn track_color_labels(&self) -> Vec<String> {
+        self.tracks
+            .iter()
+            .map(|track| track.color_hex.clone())
+            .collect()
+    }
+
     /// 段落相对 x（逻辑像素）。
     #[must_use]
     pub fn section_positions(&self) -> Vec<f32> {
@@ -557,7 +810,12 @@ impl ViewState {
     #[must_use]
     pub fn canonical_lines(&self) -> Vec<String> {
         let mut lines = Vec::with_capacity(
-            6 + self.tracks.len() + self.clips.len() + self.sections.len() + self.scenes.len(),
+            6 + self.tracks.len()
+                + self.clips.len()
+                + self.sections.len()
+                + self.scenes.len()
+                + self.notes.len()
+                + self.bar_positions.len(),
         );
         lines.push(format!(
             "project id={} title={} bpm={:.6} ts={}/{} ppq={} tpp={} bar_ticks={}",
@@ -585,12 +843,13 @@ impl ViewState {
         }
         for track in &self.tracks {
             lines.push(format!(
-                "track index={} id={} name={} kind={} color={} mute={} solo={} solo_safe={} volume_db={:.6} pan_millis={} clips={}",
+                "track index={} id={} name={} kind={} color={} color_rgb={} mute={} solo={} solo_safe={} volume_db={:.6} pan_millis={} clips={}",
                 track.index,
                 track.id,
                 track.name,
                 track.kind,
                 track.color.as_deref().unwrap_or("-"),
+                track.color_hex,
                 track.mute,
                 track.solo,
                 track.solo_safe,
@@ -641,10 +900,22 @@ impl ViewState {
                 scene.color.as_deref().unwrap_or("-"),
             ));
         }
-        for (index, ulid) in self.note_ulids.iter().enumerate() {
-            let velocity = self.note_velocities.get(index).copied().unwrap_or_default();
+        for note in &self.notes {
             lines.push(format!(
-                "note index={index} id={ulid} velocity={velocity:.6}"
+                "note index={} id={} clip={} start={} end={} dur={} pitch={} velocity={} norm={:.6} x={:.6} y={:.6} width={:.6} row={}",
+                note.index,
+                note.id,
+                note.clip_id,
+                note.start_tick,
+                note.end_tick,
+                note.duration_ticks,
+                note.pitch,
+                note.velocity,
+                note.velocity_normalized,
+                note.x,
+                note.y,
+                note.width,
+                note.row,
             ));
         }
         for (index, x) in self.bar_positions.iter().enumerate() {
@@ -701,12 +972,16 @@ fn kind_name(kind: TrackKind) -> &'static str {
 fn track_view(track: &TrackV3, index: usize, is_master: bool) -> TrackView {
     #[allow(clippy::cast_possible_truncation)]
     let pan_millis = (f64::from(track.pan) * 1000.0).round() as i32;
+    // 色标：**在这里**（唯一一处）解析 + 回退；界面与判据都只读解析结果。
+    let color_rgb = track_color_or_default(track.color.as_deref());
     TrackView {
         index,
         id: track.id.to_canonical_string(),
         name: track.name.clone(),
         kind: kind_name(track.kind),
         color: track.color.clone(),
+        color_rgb,
+        color_hex: color_rgb.to_hex(),
         mute: track.mute,
         solo: track.solo,
         solo_safe: track.solo_safe,
@@ -716,6 +991,42 @@ fn track_view(track: &TrackV3, index: usize, is_master: bool) -> TrackView {
         clip_count: track.clips.len(),
         is_master,
     }
+}
+
+/// 投影一个 MIDI 音符：身份 / 力度来自模型，**位置**由 tick / 音高整数派生。
+///
+/// # Errors
+///
+/// `start_tick + duration_ticks` 越过 `u64::MAX` → [`BridgeError::TickOverflow`]；
+/// tick 换算出的像素超出 `u32` → [`BridgeError::PixelOverflow`]。
+/// 越界音高**不是**错误（钳制进可见车道，见 [`pitch_lane`]）。
+fn note_view(
+    entry: &ClipPoolEntry,
+    note: &MidiNote,
+    index: usize,
+    ticks_per_pixel: u64,
+) -> Result<NoteView, BridgeError> {
+    let start_tick = note.start_tick;
+    let end_tick = start_tick
+        .checked_add(note.duration_ticks)
+        .ok_or(BridgeError::TickOverflow { start_tick })?;
+    let x = as_px(tick_to_px(start_tick, ticks_per_pixel)?);
+    let x_end = as_px(tick_to_px(end_tick, ticks_per_pixel)?);
+    Ok(NoteView {
+        index,
+        id: note.id.to_canonical_string(),
+        clip_id: entry.id.to_canonical_string(),
+        start_tick,
+        end_tick,
+        duration_ticks: note.duration_ticks,
+        pitch: note.pitch,
+        velocity: note.velocity,
+        velocity_normalized: velocity_normalized(note.velocity),
+        x,
+        width: (x_end - x).max(MIN_BLOCK_WIDTH_PX),
+        row: pitch_lane(note.pitch),
+        y: pitch_lane_y(note.pitch),
+    })
 }
 
 /// 投影一个剪辑摆放（`index` 由调用方在收集完成后统一编号）。
@@ -1120,6 +1431,9 @@ mod tests {
         assert!(view.sections.is_empty());
         assert!(view.scenes.is_empty());
         assert!(view.note_ulids.is_empty());
+        assert!(view.notes.is_empty());
+        assert!(view.note_positions().is_empty());
+        assert!(view.note_rows().is_empty());
         assert_eq!(view.ppq, 960);
         assert_eq!(view.time_signature_display, "4/4");
         assert_eq!(view.bpm_display, "120.00");
@@ -1399,5 +1713,399 @@ mod tests {
         project.bpm = f64::NAN;
         let view = ViewState::from_project(&project).expect("投影");
         assert_eq!(view.bpm_millis, 0);
+    }
+
+    // =====================================================================
+    // app-completion 工作线新增判据（①②③）
+    // =====================================================================
+
+    /// 判据 10: **音符 tick → 像素是整数口径**（`[UI-NOTE-002]` 的投影侧一半）。
+    ///
+    /// 逐音符断言 `x == tick_to_px(start_tick)`、`width == max(1, tick_to_px(end) - x)`。
+    /// `ticks_per_pixel` 覆盖 **非 2 的幂**（3 / 7 / 30）与极端缩放（1 / 960）：
+    /// 这一族数字就是"不许用浮点算位置"的探针（30 与 7 都除不尽）。
+    #[test]
+    fn note_positions_are_integer_derived_from_ticks() {
+        for project in [demo_project(), filled_project()] {
+            for tpp in [1_u64, 3, 7, 30, 32, 120, 960] {
+                let view = ViewState::from_project_with_zoom(&project, tpp).expect("投影");
+                assert!(!view.notes.is_empty(), "夹具必须有音符");
+                for note in &view.notes {
+                    let start_px = tick_to_px(note.start_tick, tpp).expect("tick → 像素");
+                    assert_eq!(
+                        note.x,
+                        as_px(start_px),
+                        "音符 x 必须是 tick / tpp 的整数商 (tpp={tpp})"
+                    );
+                    let end_px = tick_to_px(note.end_tick, tpp).expect("tick → 像素");
+                    assert_eq!(
+                        note.width,
+                        as_px(end_px - start_px).max(MIN_BLOCK_WIDTH_PX),
+                        "音符宽必须是整数像素差 + 显式地板 (tpp={tpp})"
+                    );
+                    assert!(note.width >= MIN_BLOCK_WIDTH_PX);
+                }
+            }
+        }
+        // 非 2 的幂的缩放上，整数除法的**精确**结果（浮点实现会在这里露馅）。
+        assert_eq!(tick_to_px(30, 30), Ok(1));
+        assert_eq!(tick_to_px(7, 7), Ok(1));
+        assert_eq!(tick_to_px(6, 7), Ok(0));
+    }
+
+    /// 判据 11: 音高 → 车道是**整数、单调、钳制**的映射，任何 `u8` 都不 panic。
+    ///
+    /// 单调性口径：音高越大 ⇒ 车道索引越小（屏幕上越靠上）；窗口内严格递减，
+    /// 窗口外（`< 60` 或 `>= 76`）钳制到两端的车道。
+    #[test]
+    fn note_rows_follow_pitch_monotonically_with_clamping() {
+        for pitch in 0..=u8::MAX {
+            let row = pitch_lane(pitch);
+            assert!(
+                (0..PITCH_LANE_COUNT).contains(&row),
+                "pitch={pitch} 的车道 {row} 越界"
+            );
+            assert!((0.0..).contains(&pitch_lane_y(pitch)));
+        }
+        // 窗口内严格递减 + 每一档恰好差一条车道。
+        for pitch in
+            PITCH_LANE_BASE..(PITCH_LANE_BASE + u8::try_from(PITCH_LANE_COUNT).unwrap() - 1)
+        {
+            assert_eq!(
+                pitch_lane(pitch + 1),
+                pitch_lane(pitch) - 1,
+                "pitch={pitch}"
+            );
+        }
+        // 两端钳制（不绕回、不 panic）：这是"越界音高"的**明确**语义。
+        assert_eq!(pitch_lane(0), PITCH_LANE_COUNT - 1);
+        assert_eq!(pitch_lane(PITCH_LANE_BASE - 1), PITCH_LANE_COUNT - 1);
+        assert_eq!(pitch_lane(u8::MAX), 0);
+        assert_eq!(
+            pitch_lane(PITCH_LANE_BASE + u8::try_from(PITCH_LANE_COUNT).unwrap()),
+            0
+        );
+        // 落在窗口内的音高：车道与 y 逐音符与投影一致。
+        let view = ViewState::from_project(&filled_project()).expect("投影");
+        for note in &view.notes {
+            assert_eq!(note.row, pitch_lane(note.pitch));
+            assert_eq!(note.y, pitch_lane_y(note.pitch));
+        }
+    }
+
+    /// 判据 12: **不同 PPQ 缩放下位置单调且往返一致**（任务书对①的直接要求）。
+    ///
+    /// 两个方向：
+    /// - 缩放变大（`tpp` 增）⇒ 同一个音符的 `x` 不增（单调）；
+    /// - 像素 → tick 的**区间包含**关系成立：`px_to_tick(x) ≤ start_tick < px_to_tick(x+1)`。
+    ///   浮点位置实现会在第二条上变红（`tick_to_px(30, 30)` 会算成 0）。
+    #[test]
+    fn note_positions_are_monotone_and_round_trip_across_zoom_levels() {
+        let project = filled_project();
+        let zooms = [1_u64, 3, 7, 30, 32, 120, 960];
+        for (index, note) in ViewState::from_project(&project)
+            .expect("投影")
+            .notes
+            .iter()
+            .enumerate()
+        {
+            let mut previous: Option<(u64, f32)> = None;
+            for tpp in zooms {
+                let view = ViewState::from_project_with_zoom(&project, tpp).expect("缩放投影");
+                let current = &view.notes[index];
+                assert_eq!(
+                    current.start_tick, note.start_tick,
+                    "音符顺序必须与缩放无关"
+                );
+                let px = tick_to_px(current.start_tick, tpp).expect("tick → 像素");
+                assert_eq!(current.x, as_px(px));
+                // 像素 → tick 的区间往回包住起始 tick（整数除法的定义）。
+                assert!(
+                    px_to_tick(px, tpp).expect("像素 → tick") <= current.start_tick,
+                    "tpp={tpp}: px_to_tick(x) 必须 ≤ start_tick"
+                );
+                assert!(
+                    current.start_tick < px_to_tick(px + 1, tpp).expect("像素 → tick"),
+                    "tpp={tpp}: start_tick 必须落在像素 {px} 的 tick 区间内（浮点位置会破坏这一条）"
+                );
+                if let Some((previous_tpp, previous_x)) = previous {
+                    assert!(
+                        previous_tpp < tpp && current.x <= previous_x,
+                        "缩放 {previous_tpp} → {tpp} 时 x 必须单调不增（{previous_x} → {}）",
+                        current.x
+                    );
+                }
+                previous = Some((tpp, current.x));
+            }
+        }
+    }
+
+    /// 判据 13: **越界 tick / 音高不 panic**：越界 tick 返回 `Err`，越界音高钳制。
+    #[test]
+    fn absurd_note_ticks_error_and_out_of_range_pitches_do_not_panic() {
+        use std::collections::BTreeMap;
+
+        let mut project = default_project();
+        let track_id = demo_id("T9");
+        let mut track = TrackV3 {
+            id: track_id,
+            name: "NoteOverflow".to_owned(),
+            ..TrackV3::default()
+        };
+        let clip_id = demo_id("K9");
+        let note_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1Z9").expect("ULID");
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(
+            note_id,
+            MidiNote::new(note_id, u64::MAX - 1, u8::MAX, u64::MAX),
+        );
+        project.clip_pool.insert(
+            clip_id,
+            ClipPoolEntry {
+                id: clip_id,
+                name: "clip".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let placement_id = demo_id("Z9");
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        );
+        project.tracks.insert(track_id, track);
+        assert_eq!(
+            ViewState::from_project(&project),
+            Err(BridgeError::TickOverflow {
+                start_tick: u64::MAX - 1
+            }),
+            "越界音符 tick 必须返回错误, 不得 wrap / panic"
+        );
+
+        // 越界音高（0 / 255）与 0 时值都不 panic：车道钳制、宽有地板。
+        let mut project = default_project();
+        let clip_id = demo_id("K8");
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        for (index, pitch) in [0_u8, 255].into_iter().enumerate() {
+            let id =
+                EntityId::from_str(&format!("01J8Z5Q0R7K3M9X2V4B6N8P1{index}Y")).expect("ULID");
+            notes.insert(id, MidiNote::new(id, 0, pitch, 0));
+        }
+        project.clip_pool.insert(
+            clip_id,
+            ClipPoolEntry {
+                id: clip_id,
+                name: "edge".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let new_track_id = demo_id("T8");
+        let mut new_track = TrackV3 {
+            id: new_track_id,
+            name: "Edge".to_owned(),
+            ..TrackV3::default()
+        };
+        let placement_id = demo_id("Z8");
+        new_track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        );
+        project.tracks.insert(new_track_id, new_track);
+        let view = ViewState::from_project(&project).expect("越界音高不是错误");
+        assert_eq!(view.notes.len(), 2);
+        for note in &view.notes {
+            assert_eq!(note.width, MIN_BLOCK_WIDTH_PX, "0 时值必须落到像素地板");
+            assert!((0..PITCH_LANE_COUNT).contains(&note.row));
+        }
+    }
+
+    /// 判据 14: 平行数组（身份 / 力度 / x / y / 宽 / 车道）与富投影**逐项一致**。
+    ///
+    /// 它们都由 [`ViewState::notes`] 派生；这条判据把"派生"钉死，防止有人单独改一处。
+    #[test]
+    fn note_parallel_arrays_agree_with_the_rich_projection() {
+        for project in [demo_project(), filled_project()] {
+            let view = ViewState::from_project(&project).expect("投影");
+            assert_eq!(view.note_ulids.len(), view.notes.len());
+            assert_eq!(view.note_velocities.len(), view.notes.len());
+            assert_eq!(view.note_positions().len(), view.notes.len());
+            assert_eq!(view.note_widths().len(), view.notes.len());
+            assert_eq!(view.note_ys().len(), view.notes.len());
+            assert_eq!(view.note_rows().len(), view.notes.len());
+            for (index, note) in view.notes.iter().enumerate() {
+                assert_eq!(note.index, index);
+                assert_eq!(view.note_ulids[index], note.id);
+                assert_eq!(view.note_velocities[index], note.velocity_normalized);
+                assert_eq!(view.note_positions()[index], note.x);
+                assert_eq!(view.note_widths()[index], note.width);
+                assert_eq!(view.note_ys()[index], note.y);
+                assert_eq!(view.note_rows()[index], note.row);
+                assert!(crate::scene::is_ulid_text(&note.id));
+            }
+        }
+    }
+
+    /// 判据 15: 色标按 `#RGB` / `#RRGGBB` 解析；**非法 / 缺失一律回退**到文档常量。
+    #[test]
+    fn track_colors_parse_and_missing_or_illegal_colors_fall_back() {
+        assert_eq!(
+            parse_hex_color("#f7e6b0"),
+            Some(RgbColor::new(0xf7, 0xe6, 0xb0))
+        );
+        assert_eq!(
+            parse_hex_color("#F7E6B0"),
+            Some(RgbColor::new(0xf7, 0xe6, 0xb0))
+        );
+        assert_eq!(
+            parse_hex_color("22aa88"),
+            Some(RgbColor::new(0x22, 0xaa, 0x88))
+        );
+        // CSS 短写：每一位复制成两位。
+        assert_eq!(
+            parse_hex_color("#abc"),
+            Some(RgbColor::new(0xaa, 0xbb, 0xcc))
+        );
+        assert_eq!(
+            parse_hex_color("#FFF"),
+            Some(RgbColor::new(0xff, 0xff, 0xff))
+        );
+        // 非法形态一律拒绝（而不是猜一个颜色）。
+        for illegal in [
+            "",
+            "#",
+            "#12",
+            "#12345",
+            "#1234567",
+            "#12345678",
+            "#gggggg",
+            "# f7e6b0",
+            " #f7e6b0",
+            "#f7e6b0 ",
+            "rgb(1,2,3)",
+            "红色",
+            "#f7e6b-",
+        ] {
+            assert_eq!(parse_hex_color(illegal), None, "`{illegal}` 必须被拒绝");
+            assert_eq!(
+                track_color_or_default(Some(illegal)),
+                DEFAULT_TRACK_COLOR,
+                "`{illegal}` 必须回退到文档常量"
+            );
+        }
+        assert_eq!(track_color_or_default(None), DEFAULT_TRACK_COLOR);
+        // 文本与 u8 三元组是同一个颜色（两处表示不得漂移）。
+        assert_eq!(DEFAULT_TRACK_COLOR.to_hex(), DEFAULT_TRACK_COLOR_HEX);
+        assert_eq!(
+            parse_hex_color(DEFAULT_TRACK_COLOR_HEX),
+            Some(DEFAULT_TRACK_COLOR)
+        );
+
+        // 投影侧：合法色保留，缺失 / 非法回退。
+        let mut project = demo_project();
+        let ids: Vec<EntityId> = project
+            .tracks
+            .values()
+            .map(|track| track.id)
+            .filter(|id| *id != project.master_bus_track_id)
+            .collect();
+        if let Some(track) = project.tracks.get_mut(&ids[0]) {
+            track.color = Some("#AbC".to_owned());
+        }
+        if let Some(track) = project.tracks.get_mut(&ids[1]) {
+            track.color = Some("不是颜色".to_owned());
+        }
+        let view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(view.tracks[0].color_rgb, RgbColor::new(0xaa, 0xbb, 0xcc));
+        assert_eq!(view.tracks[0].color_hex, "#AABBCC");
+        assert_eq!(view.tracks[1].color_rgb, DEFAULT_TRACK_COLOR);
+        assert_eq!(view.tracks[1].color_hex, DEFAULT_TRACK_COLOR_HEX);
+        assert_eq!(view.track_colors().len(), view.tracks.len());
+        assert_eq!(
+            view.track_color_labels(),
+            view.track_colors()
+                .iter()
+                .map(|color| color.to_hex())
+                .collect::<Vec<_>>()
+        );
+        // 演示夹具里 `#22aa88` 与两个 `None` 分别给出保留 / 回退。
+        let demo = ViewState::demo();
+        assert_eq!(demo.tracks[0].color_hex, "#F7E6B0");
+        assert_eq!(demo.tracks[1].color_hex, DEFAULT_TRACK_COLOR_HEX);
+        assert_eq!(demo.tracks[2].color_hex, "#22AA88");
+    }
+
+    /// 判据 16: 色标与 `.slint` / `tokens.slint` 的**文本层耦合**（本机不编译 Slint）。
+    ///
+    /// 两条耦合各自都要有机械检查，否则"回退色"和"车道几何"会在无编译条件下静默漂移：
+    /// - 回退色必须就是 `Tokens.line-strong` 的字面值；
+    /// - 车道高度 / 车道数必须与 `piano_roll.slint` 画出的网格一致；
+    /// - 音符位置必须由注入数组给出 —— `.slint` 里不得再出现"第 i 个音符"的索引布局。
+    #[test]
+    fn slint_text_contracts_for_colors_and_pitch_lanes() {
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        let tokens = std::fs::read_to_string(ui.join("tokens.slint")).expect("读 tokens.slint");
+        let strong = tokens
+            .lines()
+            .find(|line| line.contains("line-strong:"))
+            .expect("tokens.slint 必须有 line-strong");
+        let literal = strong
+            .split(':')
+            .nth(1)
+            .expect("line-strong 有值")
+            .trim()
+            .trim_end_matches(';')
+            .to_ascii_uppercase();
+        assert_eq!(
+            literal, DEFAULT_TRACK_COLOR_HEX,
+            "回退色必须等于 Tokens.line-strong（两处各写一份，靠这条判据对账）"
+        );
+
+        let roll = std::fs::read_to_string(ui.join("console/piano_roll.slint"))
+            .expect("读 piano_roll.slint");
+        for required in [
+            "for key_index in 16",
+            "for lane_index in 16",
+            "14px * lane_index",
+            "root.note-positions[note_index]",
+            "root.note-ys[note_index]",
+            "root.note-widths[note_index]",
+            "root.note-positions[velocity_index]",
+        ] {
+            assert!(
+                roll.contains(required),
+                "piano_roll.slint 必须包含 `{required}`（车道几何 / 音符位置来自投影）"
+            );
+        }
+        // 负向断言只看**非注释行**：注释里可以（也应该）提到旧写法作为历史，
+        // 但真正的代码不得再退回"第 i 个音符"的索引布局。
+        let code: String = roll
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("76px * note_index"),
+            "音符位置不得再退回索引布局（`76px * note_index`）"
+        );
+        assert!(
+            code.contains("x: Tokens.space-5 + root.note-positions[note_index];"),
+            "音符 x 必须直接取投影数组"
+        );
+        assert_eq!(PITCH_LANE_COUNT, 16, "车道数必须与 .slint 的 16 条一致");
+        assert_eq!(
+            PITCH_LANE_HEIGHT_PX, 14.0,
+            "车道高必须与 .slint 的 14px 一致"
+        );
     }
 }
