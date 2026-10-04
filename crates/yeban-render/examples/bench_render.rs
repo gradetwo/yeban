@@ -30,88 +30,18 @@
 //! cargo run --release -p yeban-render --example bench_render -- 8 10    # 8 轨 / 10 秒
 //! ```
 
-use std::collections::BTreeMap;
-use std::str::FromStr;
 use std::time::Instant;
 
-use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind};
-use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
+use yeban_render::render::{RenderOptions, RenderPlan};
 
-/// Crockford Base32 字母表（与 `yeban-model` 的手写 ULID 编解码一致）。
-const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+// 参考工程 A 的**唯一构造**，与 `examples/export_l1_receipt.rs` 共用同一份文件
+// （见 `examples/support/reference_project_a.rs` 的模块文档：两者不允许漂移）。
+// `allow(dead_code)`: 两个 example 各自只用它的一部分。
+#[allow(dead_code)]
+#[path = "support/reference_project_a.rs"]
+mod reference_project_a;
 
-/// 造一个合法的 ULID 文本（与仓库其它判据同一手法，避免依赖随机数）。
-fn ulid(index: u32) -> EntityId {
-    let mut text = [b'0'; 26];
-    for position in 0..4 {
-        text[25 - position] = CROCKFORD[((index >> (5 * position)) & 0x1F) as usize];
-    }
-    EntityId::from_str(core::str::from_utf8(&text).expect("ASCII")).expect("合法 ULID")
-}
-
-/// `splitmix64`：固定种子的确定性 PRNG（`[ARCH-DET-001]` 要求渲染不引入真熵源）。
-const fn next(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-/// 一个便宜但**不是常量**的样本源：每块做一点浮点运算，避免"常量填充被优化成 memset"
-/// 让读数虚高。相位用整数帧号推进，避免浮点累加漂移。
-struct ToneSource {
-    seed: u64,
-    phase: u64,
-    step: u64,
-}
-
-impl ToneSource {
-    fn new(seed: u64, step: u64) -> Self {
-        Self {
-            seed,
-            phase: 0,
-            step,
-        }
-    }
-}
-
-impl AudioSource for ToneSource {
-    fn render_block(&mut self, _context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
-        for (index, sample) in out.iter_mut().enumerate() {
-            // 每 8 个样本抖一次相位: 足够便宜, 又不是"整块同一个值"。
-            if index.is_multiple_of(8) {
-                self.phase = self.phase.wrapping_add(self.step);
-            }
-            let noise = (next(&mut self.seed) >> 40) as f32 / 16_777_216.0 - 0.5;
-            let carrier = ((self.phase % 480) as f32 / 480.0) - 0.5;
-            *sample = carrier * 0.5 + noise * 0.001;
-        }
-        Ok(())
-    }
-}
-
-/// 参考工程 A 的形状：`tracks` 条轨道 → 一条母线（星形），母线即 master。
-fn reference_project(tracks: u32) -> (RoutingGraph, EntityId, Vec<EntityId>) {
-    let master = ulid(0xFFFF);
-    let mut nodes = vec![master];
-    let mut edges = BTreeMap::new();
-    let mut sources = Vec::new();
-    for index in 1..=tracks {
-        let track = ulid(index);
-        nodes.push(track);
-        sources.push(track);
-        let edge = RoutingEdge {
-            id: ulid(0x8000 - index),
-            source_node: track,
-            destination_node: master,
-            kind: RoutingKind::TrackToBus,
-            gain_db: None,
-        };
-        edges.insert(edge.id, edge);
-    }
-    (RoutingGraph { nodes, edges }, master, sources)
-}
+use reference_project_a::{reference_project, tone_sources};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -127,22 +57,15 @@ fn main() {
     // 两个数据点: 单线程 与 Rayon 默认线程数。后者才是 `BASELINE-001` 关心的口径
     // （规范要的是"用满机器的离线渲染"), 前者用来暴露并行加速比。
     for threads in [Some(1usize), None] {
-        let (graph, master, source_nodes) = reference_project(tracks);
+        let (graph, master, source_nodes) = reference_project(tracks, None);
         let options = RenderOptions {
             threads,
             ..RenderOptions::l1(frames, CHANNELS, SAMPLE_RATE, 0x5EED)
         };
 
         let mut plan = RenderPlan::compile(&graph, master, options).expect("图应可编译");
-        let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-        for (index, node) in source_nodes.iter().enumerate() {
-            // 每条轨道给不同的相位步长, 让各轨的运算不完全相同(避免分支预测过于乐观)。
-            let step = 1 + (index as u64 % 97);
-            sources.insert(
-                *node,
-                Box::new(ToneSource::new(0x1234_5678 + index as u64, step)),
-            );
-        }
+        // 每条轨道给不同的相位步长（避免分支预测过于乐观），种子固定。
+        let sources = tone_sources(&source_nodes);
 
         let started = Instant::now();
         let output = plan.execute(sources).expect("渲染应成功");
