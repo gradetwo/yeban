@@ -6053,6 +6053,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slint",
+ "slint-build",
 ]
 
 [[package]]

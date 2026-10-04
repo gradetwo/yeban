@@ -361,6 +361,14 @@ pub fn write_artifact(name: &str, image: &Rgb8Image) -> Result<PathBuf, RenderEr
 ///
 /// 构造顺序被类型钉死（先装平台 → 再建组件 → 再 show → 再抓树），
 /// 调用方不可能把顺序写错。
+///
+/// ## ⚠️ 传进来的组件必须是"带 debug info 编译"的
+///
+/// 控件树那一半走 `i-slint-backend-testing` 的 `ElementHandle`，它**要求被内省的
+/// `.slint` 在编译期打开 debug info**（上游默认关闭）。否则 `tree()` 会是空树而
+/// **不会报错** —— 详见 [`crate::inspect`] 的模块文档与
+/// `docs/ledger/ui-test-port-notes.md` §2 第 27 条。
+/// 像素那一半（[`Tier1Window`]）不受影响。
 pub struct LivePort<T: ComponentHandle> {
     ui: T,
     window: Tier1Window,
@@ -577,110 +585,25 @@ mod tests {
     use crate::ssim;
     use crate::tree::{ControlNode, Role};
 
-    /// 夹具 UI。用 `slint!` **内联**（而不是 `.slint` 文件）：本 crate 因此不需要 `build.rs`，
-    /// 也不会把 `yeban-app` 的 `.slint` 拖进依赖图（依赖方向不允许）。
+    /// Tier-1 夹具 UI：由 `build.rs` 用 `slint_build::compile_with_config` 编译
+    /// `ui/fixture.slint`（**打开了 debug info**，见 `build.rs` 的模块文档）。
     ///
-    /// 两条刻意的写法：
-    /// - **用 `rgb(r, g, b)` 而不是 `#rrggbb`**：`slint!` 的输入要过 Rust 词法器，
-    ///   `#0b…` 与 `#<digits>e<非十六进制>` 两种颜色字面量会被 Rust 词法器直接拒绝
-    ///   （上游 `slint-macros-1.18.1/lib.rs:360-378` 的 "Limitations"）。函数式颜色整类绕开这个坑。
-    /// - 每个节点都同时给 `accessible-role` 与 `accessible-id`：上游把 role 当作其他
-    ///   accessibility 属性的前置条件（`docs/ledger/ui-shell-notes.md` §2 第 11 条）。
+    /// 不用 `slint::slint!` 内联宏的两个原因（都是实测出来的，不是偏好）：
+    /// 1. `ElementHandle` 的遍历依赖编译期 debug info，而宏路径只能靠
+    ///    `SLINT_EMIT_DEBUG_INFO=1` 环境变量（CI 上不受本仓库控制）—— 没有它会得到一棵
+    ///    **空的**控件树（CI run 37221680724 实测 `ControlTree { nodes: {} }`）；
+    /// 2. 宏的**每一条**编译器警告都会被展开成 `#[deprecated] const WARNING`，
+    ///    在 `-D warnings` 下变成硬错误（CI run 37221429630 实测）。
     ///
-    /// `#[allow(…)]` 与 `crates/yeban-app/src/lib.rs` 里 `ui` 模块的处理一致（多一个 `deprecated`）：
-    /// `slint!` 展开的是第三方生成代码，不保证通过 `[workspace.lints] clippy::all = "deny"`。
-    /// 把这几个 allow 收在一个模块里，好过在 crate 根放松全局 lint 策略。
-    ///
-    /// **为什么要 `deprecated`**：`slint!` 是 proc macro，它的**每一条**编译器 warning
-    /// 都会被展开成 `#[deprecated] const WARNING: () = (); WARNING`（上游
-    /// `i-slint-compiler-1.18.1/diagnostics.rs:581-593`），于是 CI 的 `-D warnings`
-    /// 会把一条善意提示变成硬错误 —— 实测第一次 CI 就死在
-    /// "Exported component 'PortFixture' doesn't inherit Window" 这一条上。
-    /// 注意这个机制**只**作用于 `slint!`：`slint_build`（`.slint` 文件路径）把它当 cargo warning 打印，
-    /// 所以 `yeban-app` 的 13 个 `.slint` 不受影响。
-    #[allow(missing_docs, clippy::all, rust_2018_idioms, deprecated)]
+    /// `#[allow(clippy::all, …)]` 与 `crates/yeban-app/src/lib.rs` 里 `ui` 模块的处理一致：
+    /// `include_modules!()` 展开的是第三方生成代码，不保证通过
+    /// `[workspace.lints] clippy::all = "deny"`。把这几个 allow 收在一个模块里，
+    /// 好过在 crate 根放松全局 lint 策略。
+    #[allow(missing_docs, clippy::all, rust_2018_idioms)]
     mod fixture_ui {
-        #![allow(missing_docs, clippy::all, rust_2018_idioms, deprecated)]
+        #![allow(missing_docs, clippy::all, rust_2018_idioms)]
 
-        slint::slint! {
-            // 根组件必须 `inherits Window`: 上游 1.18.1 对"不继承 Window 的导出组件"
-            // 会 emit 一条 `#[deprecated]` 警告, 而 CI 的 clippy 用 `-D warnings`
-            // （实测: run 37221429630 就死在这一条上）。`yeban-app/ui/app.slint` 的
-            // `MainWindow` 也是 `inherits Window` —— 本夹具照抄同一形状。
-            export component PortFixture inherits Window {
-                width: 160px;
-                height: 100px;
-                background: rgb(16, 32, 48);
-
-                Rectangle {
-                    x: 0px;
-                    y: 0px;
-                    width: 160px;
-                    height: 16px;
-                    background: rgb(21, 29, 56);
-                    accessible-role: region;
-                    accessible-id: "transport-bar";
-                    accessible-label: "走带栏";
-
-                    Rectangle {
-                        x: 4px;
-                        y: 3px;
-                        width: 24px;
-                        height: 10px;
-                        background: rgb(247, 230, 176);
-                        accessible-role: button;
-                        accessible-id: "transport-play-button";
-                        accessible-label: "播放";
-                    }
-                }
-
-                Rectangle {
-                    x: 8px;
-                    y: 24px;
-                    width: 64px;
-                    height: 40px;
-                    background: rgb(226, 199, 126);
-                    accessible-role: list-item;
-                    accessible-id: "clip-01J8ZQ9K2M-header";
-                    accessible-label: "剪辑包头";
-                }
-
-                Rectangle {
-                    x: 80px;
-                    y: 24px;
-                    width: 8px;
-                    height: 64px;
-                    background: rgb(34, 197, 94);
-                    accessible-role: progress-indicator;
-                    accessible-id: "mixer-vu-track-0";
-                    accessible-label: "轨道 0 VU 电平";
-                }
-
-                Rectangle {
-                    x: 96px;
-                    y: 24px;
-                    width: 2px;
-                    height: 64px;
-                    background: rgb(245, 158, 11);
-                    accessible-role: image;
-                    accessible-id: "transport-playhead";
-                    accessible-label: "走带光标";
-                }
-
-                Text {
-                    x: 104px;
-                    y: 24px;
-                    width: 48px;
-                    height: 16px;
-                    text: "1.1.000";
-                    color: rgb(253, 252, 250);
-                    font-size: 11px;
-                    accessible-role: text;
-                    accessible-id: "transport-timecode";
-                    accessible-label: "时间码";
-                }
-            }
-        }
+        slint::include_modules!();
     }
 
     use fixture_ui::PortFixture;

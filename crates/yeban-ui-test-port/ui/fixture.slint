@@ -1,0 +1,101 @@
+// 夜半 (Yeban) — Tier-1 软件光栅化夹具 (yeban-ui-test-port 自己用)
+//
+// 规范来源 (Normative):
+//   - [MUST-GATE-015] 路线图 §5: Golden 图必须由 Tier-1 软件光栅化产出, 尺寸非零且非全黑
+//   - [UI-TEST-001] UI/UX §12.2: 稳定语义 Element ID 寻址
+//   - [UI-MCP-002] §12.5: 高频刷新区域必须能被识别并按包围盒遮罩
+//
+// 为什么这个夹具是**独立的 .slint 文件** (而不是 `slint!` 内联宏):
+//   1. `include_modules!()` / `slint_build` 这条路径可以把 debug info 打开
+//      (`CompilerConfiguration::with_debug_info(true)`), 而 `ElementHandle` 的遍历
+//      **必须**有 debug info —— 否则 `item.element_count()` 返回 None, 整棵控件树
+//      在运行时是空的 (实测: CI run 37221680724 的
+//      `ControlTree { nodes: {} }`)。`slint!` 宏只能靠 `SLINT_EMIT_DEBUG_INFO=1`
+//      环境变量, 那条路在 CI 上不受我们控制。
+//   2. `.slint` 文件不过 Rust 词法器, 因此可以写正常代码而不用担心 `#rrggbb` 被拒绝。
+//
+// 根组件**必须** `inherits Window`: 上游 1.18.1 对"不继承 Window 的导出组件"会发
+// deprecation 警告 (而 `slint!` 会把它变成编译错误, 见 notes §2 第 24 条)。
+// `yeban-app/ui/app.slint` 的 `MainWindow` 也是同一形状。
+//
+// 根节点**故意不给** `accessible-id` / `accessible-role`: 与 `MainWindow` 一致,
+// 且避免让"Window 根元素的 accessible-id 在运行时是否可见"这个**未核验**行为
+// 决定判据的绿红。
+
+export component PortFixture inherits Window {
+    width: 160px;
+    height: 100px;
+    background: rgb(16, 32, 48);
+
+    // 走带栏 (非重复元素, 便于断言)
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 160px;
+        height: 16px;
+        background: rgb(21, 29, 56);
+        accessible-role: region;
+        accessible-id: "transport-bar";
+        accessible-label: "走带栏";
+
+        Rectangle {
+            x: 4px;
+            y: 3px;
+            width: 24px;
+            height: 10px;
+            background: rgb(247, 230, 176);
+            accessible-role: button;
+            accessible-id: "transport-play-button";
+            accessible-label: "播放";
+        }
+    }
+
+    // 剪辑包头 (静态图元, 用来验证"静态回归必须被检出")
+    Rectangle {
+        x: 8px;
+        y: 24px;
+        width: 64px;
+        height: 40px;
+        background: rgb(226, 199, 126);
+        accessible-role: list-item;
+        accessible-id: "clip-01J8ZQ9K2M-header";
+        accessible-label: "剪辑包头";
+    }
+
+    // [UI-MCP-002] 高频刷新区 1: VU 电平表
+    Rectangle {
+        x: 80px;
+        y: 24px;
+        width: 8px;
+        height: 64px;
+        background: rgb(34, 197, 94);
+        accessible-role: progress-indicator;
+        accessible-id: "mixer-vu-track-0";
+        accessible-label: "轨道 0 VU 电平";
+    }
+
+    // [UI-MCP-002] 高频刷新区 2: 走带光标
+    Rectangle {
+        x: 96px;
+        y: 24px;
+        width: 2px;
+        height: 64px;
+        background: rgb(245, 158, 11);
+        accessible-role: image;
+        accessible-id: "transport-playhead";
+        accessible-label: "走带光标";
+    }
+
+    Text {
+        x: 104px;
+        y: 24px;
+        width: 48px;
+        height: 16px;
+        text: "1.1.000";
+        color: rgb(253, 252, 250);
+        font-size: 11px;
+        accessible-role: text;
+        accessible-id: "transport-timecode";
+        accessible-label: "时间码";
+    }
+}

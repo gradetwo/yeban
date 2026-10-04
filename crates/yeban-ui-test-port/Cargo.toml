@@ -7,6 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+# build.rs 编译 Tier-1 测试夹具 ui/fixture.slint (含 debug info, 见 build.rs 的注释)。
+build = "build.rs"
 
 [lib]
 name = "yeban_ui_test_port"
@@ -56,6 +58,14 @@ i-slint-backend-testing = { workspace = true }
 # 控件树 JSON 序列化 (dump_json / from_json)。两者都已在根 [workspace.dependencies] 登记。
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[build-dependencies]
+# slint-build 的 `compat-1-18` 是**强制特性**: 缺了它 crate 自己会 compile_error!。
+# 根里 slint-build 是 `default-features = false`, 所以这里必须补回来。
+# 出处: <https://docs.rs/slint-build/1.18.1/slint_build/> 的 "Feature flags" 一节,
+#       以及 slint-build-1.18.1 源码 src/lib.rs 的 compile_error! 分支。
+# (与 crates/yeban-app/Cargo.toml 的 build-dependencies 完全同款)
+slint-build = { workspace = true, features = ["compat-1-18"] }
 
 [lints]
 workspace = true

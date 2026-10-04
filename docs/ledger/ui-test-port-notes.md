@@ -63,6 +63,8 @@
 | 23 | 元素没有声明 `accessible-id` 时 `accessible_id()` 返回 **`None`**（不是 `Some("")`）：生成的 `accessible_string_property` 只为**真正声明过** `accessible-*` 的元素生成分支，其余落到 `_ => None` | `i-slint-compiler-1.18.1/generator/rust.rs:1524-1540,2016-2019` |
 | 24 | ⚠️ **`slint!` 是 proc macro，它的每一条编译器 warning（甚至 note）都会被展开成 `#[deprecated] const WARNING: () = (); WARNING`** ⇒ CI 的 `-D warnings` 会把"善意提示"变成硬错误。实测：第一次 CI 就死在 `Exported component 'PortFixture' doesn't inherit Window. This is deprecated` 上（`clippy -D warnings`）。**这个机制只作用于 `slint!`**：`slint_build`（`.slint` 文件路径）把同一批诊断当 cargo warning 打印，所以 `yeban-app` 的 13 个 `.slint` 不受影响 | `i-slint-compiler-1.18.1/diagnostics.rs:575-594`；`passes/check_public_api.rs:63` |
 | 25 | `export component X inherits Window` 才是不触发上述告警的形状 —— `yeban-app/ui/app.slint:154` 的 `MainWindow` 正是如此。本线的夹具因此改成 `inherits Window` | 仓库内 `crates/yeban-app/ui/app.slint` |
+| 27 | ⚠️ **`ElementHandle` 的遍历要求被内省的 `.slint` 在编译期带 debug info，而它默认是关闭的**：`let debug_info = std::env::var_os("SLINT_EMIT_DEBUG_INFO").is_some();`。没有它时 `item.element_count()` 返回 `None` ⇒ `visit_descendants` 一个元素都访问不到 ⇒ **控件树恒为空**（本线实测：CI run 37221680724 打印 `ControlTree { nodes: {} }`）。开法二选一：`slint_build::compile_with_config(.., CompilerConfiguration::new().with_debug_info(true))` 或构建期设 `SLINT_EMIT_DEBUG_INFO=1`。**`slint!` 内联宏只能走环境变量那条**，所以本线的夹具改成了 `.slint` 文件 + `build.rs`（见 §2 第 28 条） | `i-slint-compiler-1.18.1/lib.rs:282`；`i-slint-backend-testing-1.18.1/search_api.rs:62`；实测 run 37221680724 |
+| 28 | 因此本线的**夹具形态**是工程裁决而不是偏好：`crates/yeban-ui-test-port/ui/fixture.slint` + `build.rs`（`compile_with_config(..with_debug_info(true))`）+ `include_modules!()`，而**不是** `slint::slint!`。三条理由：① 宏无法打开 debug info（第 27 条）；② 宏的每条编译器警告都会变成 `#[deprecated]`，在 `-D warnings` 下是硬错误（第 24 条）；③ `.slint` 文件不过 Rust 词法器，可以写正常的 `#rrggbb` | 本仓库 `crates/yeban-ui-test-port/build.rs` |
 | 26 | **Cargo 会给"只有 path、没有 version"的依赖隐式补 `*`** ⇒ `deny.toml` 的 `[bans] wildcards = "deny"` 报 `error[wildcard]`。实测：第二次 CI 的 `deny` job 死在这里。**本机 `run-gates.sh light` 的 G10 守卫抓不到**（它只看字符串形式的 `*`），所以这是一条"只有 CI 能抓"的坑 —— 已在 notes §7.0 记为本机探针抓不到的类别，靠本机 cargo-deny 补 | `deny.toml:69-71`；CI run 37221429630 的 deny job |
 
 ### 规范 vs 上游 1.18.1：本线**新增**的三处发现（补 ADR-0001 D18）
@@ -293,6 +295,14 @@ CI 上另有 `render.rs` 的 1 条端到端判据（Tier-1 光栅化 + 内联 `.
 
 ## 10. needs（需要别人做）
 
+0. **【最高优先】`crates/yeban-app/build.rs` 必须打开编译期 debug info** ——
+   否则 `[ARCH-UI-005]` / `[UI-TEST-001]` / `[UI-MCP-002]` 在**真实界面**上完全无法执行：
+   `ElementHandle` 拿不到任何元素，控件树恒为空（§2 第 27 条）。
+   修法二选一（`build.rs` 不在本线授权范围内，本线不代改）：
+   - `slint_build::compile_with_config("ui/app.slint", CompilerConfiguration::new().with_debug_info(true))`
+     （推荐；本 crate 的 `build.rs` 已经是这个形状，可直接照抄）；
+   - 或 CI 构建步骤加 `SLINT_EMIT_DEBUG_INFO=1`。
+   注意：只改 `.slint` 或只改测试都**没用**，必须是**编译期**开关。
 1. **CI 需要真的跑 app 侧那一条判据**（本线最大的缺口）：给 `.github/workflows/ci.yml` 的
    `rust (yeban-app)` 腿加一步
    `cargo test -p yeban-app --features ui-test-port --test test_port_adapter --locked -- --nocapture`，
@@ -321,6 +331,9 @@ CI 上另有 `render.rs` 的 1 条端到端判据（Tier-1 光栅化 + 内联 `.
    本机不能跑；CI 只判"尺寸非零且非全黑 + 颜色数 ≥3"，不判"好不好看"。
 4. **app 侧端到端判据（13 个 `.slint` 真的被渲染）从未被执行过**（见 §5/§10 第 1 条）。
    在它被执行之前，"界面被渲染过"这件事对 `yeban-app` 仍**未证实**。
+   而且现在已知：**即使跑了，控件树那一半也会红**，因为 `yeban-app/build.rs` 没开
+   debug info（§10 第 0 条）。判据已按"先出像素证据、再报控件树阻塞"的顺序写好，
+   所以它失败时仍然会打印/落盘 Tier-1 截图的证据。
 5. **`#![forbid(unsafe_code)]` 未加**：`slint!` 宏展开的生成代码是否含 `unsafe` 在本机无法核验；
    红线 8 只对 model/theory/dsp/render 强制。核验办法：在 CI 上试着加上该属性编译一次
    （若通过就加上）。

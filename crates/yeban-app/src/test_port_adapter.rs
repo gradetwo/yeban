@@ -257,7 +257,52 @@ fn live_main_window_renders_and_closes_the_control_tree_contract() {
     })
     .expect("Tier-1 平台 + MainWindow + 运行时控件树");
 
-    // ---- `[UI-TEST-001]` 运行时树 vs 静态注册表 ----
+    // ---- `[MUST-GATE-015]` Tier-1 像素证据 ----
+    let image = port.window().capture().expect("Tier-1 截图");
+    let evidence: GoldenEvidence =
+        golden_evidence(&image).expect("[MUST-GATE-015] 尺寸非零且非全黑");
+    assert_eq!(evidence.size, size, "截图尺寸必须等于窗口尺寸");
+    assert!(evidence.non_black_pixels > 0, "全黑截图: {evidence:?}");
+    assert!(
+        evidence.distinct_colors >= 8,
+        "颜色过少, 疑似只画了背景: {evidence:?}"
+    );
+    eprintln!("yeban-app 主窗口 Tier-1 证据: {}", evidence.summary());
+
+    // 过程产物（落在 target/ 下, 不提交）。
+    let png_path =
+        yeban_ui_test_port::write_artifact("app-main-window-arrangement-1920x1080", &image);
+    match png_path {
+        Ok(path) => eprintln!("yeban-app 主窗口截图: {}", path.display()),
+        Err(err) => eprintln!("截图落盘失败（不影响判据）: {err}"),
+    }
+    let json_path = yeban_ui_test_port::artifact_dir().join("app-main-window-control-tree.json");
+    std::fs::write(&json_path, port.tree().dump_json())
+        .unwrap_or_else(|err| panic!("写控件树 JSON 失败 {}: {err}", json_path.display()));
+
+    // ---- `[UI-TEST-001]` 运行时控件树 vs 静态注册表 ----
+    //
+    // ⚠️ 前置条件：`ElementHandle` 的遍历依赖**编译期 debug info**。上游默认是关闭的
+    // （`i-slint-compiler-1.18.1/lib.rs:282`：`debug_info = env::var_os("SLINT_EMIT_DEBUG_INFO").is_some()`），
+    // 而 `crates/yeban-app/build.rs` 用的是 `slint_build::compile(...)` —— 默认关闭。
+    // 因此在这里，`yeban-app` 的控件树会是**空的**：这不是本 crate 的缺陷，而是
+    // `[ARCH-UI-005]` / `[UI-TEST-001]` 在这条链路上**尚未闭环**的确切位置。
+    // 本判据故意在此失败，并把根因与两种修法写在断言消息里。
+    assert!(
+        !port.tree().is_empty(),
+        "[UI-TEST-001] 运行时控件树为空 ⇒ 前置条件不满足: `crates/yeban-app` 的 .slint 没有编译期 debug info。\n\
+         根因: i-slint-compiler-1.18.1/lib.rs:282 `debug_info = env::var_os(\"SLINT_EMIT_DEBUG_INFO\").is_some()` 默认关闭,\n\
+               而 crates/yeban-app/build.rs 用的是 `slint_build::compile(...)`。\n\
+         影响: `i-slint-backend-testing` 的 ElementHandle 遍历拿不到任何元素\n\
+               (item.element_count() 返回 None ⇒ 一棵空树), 于是 §12.2 语义寻址与\n\
+               §12.5 动态遮罩在**真实界面**上都还无法执行。\n\
+         修法 (二选一, 都不在 yeban-ui-test-port 的授权文件范围内):\n\
+           (a) crates/yeban-app/build.rs 改用 `compile_with_config(\"ui/app.slint\",\n\
+               CompilerConfiguration::new().with_debug_info(true))`;\n\
+           (b) CI 的构建步骤加环境变量 `SLINT_EMIT_DEBUG_INFO=1`。\n\
+         本 crate 自己的 Tier-1 夹具已经这么做 (build.rs + ui/fixture.slint)。\n\
+         详见 docs/ledger/ui-test-port-notes.md §2 第 27/28 条与 §10 needs。"
+    );
     let coverage = port.tree().coverage_against(&static_tree);
     assert!(
         coverage.unknown_at_runtime.is_empty(),
@@ -305,29 +350,6 @@ fn live_main_window_renders_and_closes_the_control_tree_contract() {
     for id in DEFAULT_VIEW_MUST_NOT_HAVE {
         assert!(!port.tree().contains(id), "不可见的 `{id}` 混进了运行时树");
     }
-
-    // ---- `[MUST-GATE-015]` Tier-1 像素证据 ----
-    let image = port.window().capture().expect("Tier-1 截图");
-    let evidence: GoldenEvidence =
-        golden_evidence(&image).expect("[MUST-GATE-015] 尺寸非零且非全黑");
-    assert_eq!(evidence.size, size, "截图尺寸必须等于窗口尺寸");
-    assert!(evidence.non_black_pixels > 0, "全黑截图: {evidence:?}");
-    assert!(
-        evidence.distinct_colors >= 8,
-        "颜色过少, 疑似只画了背景: {evidence:?}"
-    );
-    eprintln!("yeban-app 主窗口 Tier-1 证据: {}", evidence.summary());
-
-    // 过程产物（落在 target/ 下, 不提交）。
-    let png_path =
-        yeban_ui_test_port::write_artifact("app-main-window-arrangement-1920x1080", &image);
-    match png_path {
-        Ok(path) => eprintln!("yeban-app 主窗口截图: {}", path.display()),
-        Err(err) => eprintln!("截图落盘失败（不影响判据）: {err}"),
-    }
-    let json_path = yeban_ui_test_port::artifact_dir().join("app-main-window-control-tree.json");
-    std::fs::write(&json_path, port.tree().dump_json())
-        .unwrap_or_else(|err| panic!("写控件树 JSON 失败 {}: {err}", json_path.display()));
 
     // ---- `[UI-MCP-002]` + `[UI-MCP-003]` 遮罩与 SSIM ----
     let rects = mask_rects_from_tree(port.tree()).expect("运行时动态区必须有几何");

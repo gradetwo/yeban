@@ -12,6 +12,27 @@
 //! **不存在**（路径都没有）；实际可用的入口是本模块用到的 `i_slint_backend_testing::init_no_event_loop()`
 //! 与 `ElementHandle`（见 `docs/adr/ADR-0001-...md` D18、`docs/ledger/ui-shell-notes.md` §3.3）。
 //!
+//! ## ⚠️ 硬前置条件：被内省的 `.slint` **必须**在编译期打开 debug info
+//!
+//! `ElementHandle` 的遍历依赖编译期生成的 debug info（`item.element_count()` /
+//! `item_element_infos()`）。上游的默认值是**关闭**：
+//!
+//! ```text
+//! // i-slint-compiler-1.18.1/lib.rs:282
+//! let debug_info = std::env::var_os("SLINT_EMIT_DEBUG_INFO").is_some();
+//! ```
+//!
+//! 没有 debug info 时 `visit_descendants` 会走进 `collect_elements`，
+//! 而 `element_count()` 返回 `None` ⇒ **一个元素都访问不到**，你会得到一棵
+//! `ControlTree { nodes: {} }`（本线实测过：CI run 37221680724）。
+//! 上游的提示原文见 `i-slint-backend-testing-1.18.1/search_api.rs:62`
+//! （`MISSING_DEBUG_INFO_MESSAGE`）。两种开法：
+//!
+//! 1. `build.rs` 里 `slint_build::compile_with_config("ui/app.slint",
+//!    CompilerConfiguration::new().with_debug_info(true))` —— **推荐**，本仓库
+//!    `crates/yeban-ui-test-port/build.rs` 就是这么做的；
+//! 2. 构建时设置环境变量 `SLINT_EMIT_DEBUG_INFO=1`（`slint!` 内联宏只能走这条）。
+//!
 //! ## 本模块**不**安装平台
 //!
 //! `ElementHandle` 的只读路径只依赖 `item_tree()` / `WindowInner`，与具体平台无关，
