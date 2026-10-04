@@ -229,7 +229,27 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 | **可重复** | 同一状态连续两次截图**逐字节相同**（`true`） | 光栅化仍是确定的 |
 | **字体判据** | D24 汉字墨迹 648 px ≥ 150 | 界面上的汉字仍被真正栅格化 |
 
-### 5.3 artifact（人眼复核用）
+### 5.3 第 3 轮（净判决）复现了同一批数字
+
+`run 37229660272` 的 `rust (yeban-app)` 腿（**success**）给出与第 2 轮**逐字相同**的观察值：
+
+```text
+running 53 tests  →  test result: ok. 53 passed; 0 failed
+running 0 tests   →  test result: ok. 0 passed
+running 9 tests   →  test result: ok. 9 passed; 0 failed      # Tier-1 判据（含本线核心判据）
+[model-binding] 运行时控件树 79 条; track-*-header=3, section-*-card=2, clip-*-header=2
+[model-binding] 状态 A (filled_project): 1920x1080, 非黑 2073600 (100%), 颜色 2825 种, PNG 6222418 字节, 指纹 a360802d81461bee
+[model-binding] 状态 B (demo_project):    1920x1080, 非黑 2073600 (100%), 颜色 3074 种, PNG 6222418 字节, 指纹 ef5972f3ac60466f
+[model-binding] 切换后运行时控件树 95 条; 工程驱动的树 79 条 —— 两者必须不同
+控件树计数: 注册表 184 / 运行时 95 / 未登记 0 / 缺失 89;  关键单例覆盖率 39/39 = 100%
+[D24] 汉字墨迹 648 px (下限 150);  状态 A 两次截图逐字节相同: true
+```
+
+⇒ 两个工程把同一棵界面渲染成**不同**的树（79 vs 95 条）与**不同**的像素指纹；
+而"演示工程驱动的树+像素"与改造前的那张截图**完全一致**。
+这正是本线的验收形态：**换 `YebanProjectV1` ⇒ 换像素，中间没有演示数据分支。**
+
+### 5.4 artifact（人眼复核用）
 
 `ui-screenshots-yeban-app`（CI 上传 30 天），本线新增两张：
 
@@ -267,6 +287,7 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 
 | 轮 | commit | run | 结论 | 说明 |
 | :-- | :--- | :--- | :--- | :--- |
+| 3 | `5a89b60` | [37229660272](https://github.com/gradetwo/yeban/actions/runs/37229660272) | **success（本线的净判决）** | `checks` / `lockfile` / `plan` / `deny` 全绿；**`rust (yeban-app)` = success（3m33s）**：`cargo clippy -p yeban-app --all-targets --locked -- -D warnings` **零告警**，随后 `cargo test -p yeban-app --all-targets --locked` 三个目标分别是 **`53 passed`**（单元：`bridge`/`scene`/`elements`/`input` 的 31 条 + 既有 22 条）、**`0 passed`**（bin，无测试）、**`9 passed`**（Tier-1 判据，含本线新增的核心判据与既有的 8 条）。`rust (workspace 全量)` 被 `plan` **跳过**（受影响集合只有 `yeban-app`）—— 因此"全量腿也绿"这一条**不**由本线这一轮证明，如实登记在 §9 needs。 |
 | 2 | `b97202c` | [37229239490](https://github.com/gradetwo/yeban/actions/runs/37229239490) | **failure（`rust (yeban-app)`：8 判据绿 / 1 判据红，红的是我自己写反的断言）** | **`.slint` 全部编译通过**（第 1 轮的 3 处语法错误已修），`clippy -p yeban-app --all-targets -D warnings` **绿**；`cargo test -p yeban-app --all-targets` 里 **27 条本机判据 + 8 条 Tier-1 判据全绿**，只有本线新增的核心判据在**最后一处**断言上 panic：`filled_project 只有 3 条轨道 ⇒ 切回演示前后都不该有第 4 条` —— 该断言写反了（演示工程有 **6** 条轨道，切回演示后 `track-3-header` **本来就应该存在**）。§5.1 的全部数字与 §5.2 的全部结论都来自这一轮（它们在该判据里位于该断言**之前**，全都通过）。修复见第 3 轮：把"工程树不该有 `track-3-header`"与"演示树必须有 `track-3-header`"分开写，并加一对**逐族计数 == 工程规模**的断言（3/2/2 与 6/4/3）。 |
 | 1 | `1fd3f23` | [37228953370](https://github.com/gradetwo/yeban/actions/runs/37228953370) | **failure（唯一的红点是我的，已定位并修掉）** | `checks` / `plan` / `lockfile` / `deny` 全绿；`rust (workspace 全量)` 的 `clippy --workspace -D warnings` 死在 **`build.rs` 的 Slint 编译**：`session_view.slint:62` / `arrangement_view.slint:94` / `piano_roll.slint:191` 三处 `for [idx] in <model>`（**只有索引**的循环）→ `Parse error` + `Syntax error: expected ';'`（同一文件后面的 "expected a top-level item" 是级联）。`rust (${{ matrix.crate }})` 被 plan 判为"受影响 crate 集合为空"而跳过（`.github/workflows/ci.yml` 的矩阵腿在 `rust (workspace 全量)` 变红时不会给出独立读数）。 |
 
@@ -308,6 +329,16 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 - 运行时控件树的内容与 Tier-1 像素 —— 见 §5.1/§5.2。
 
 ---
+
+### 6.3 本线自己的读数纪律
+
+- 第 1 轮的红点是 **`.slint` 解析**（`for [i] in model` 不合法）——
+  本机无法编译 Slint，这一条只能由 CI 判；本线据此补了一条**能复现它**的文本层检查（§4.4 第 4 条）。
+- 第 2 轮的红点是**我自己写反的断言** —— CI 一读就定位到行号与消息，第 3 轮一次修完。
+- 第 3 轮 = `success`，且数字与第 2 轮**逐字相同**（说明第 2 轮的观察值不是巧合）。
+- **本文件本身的提交（docs-only）没有单独的代码判决**：按 `scripts/dev/changed-crates.py` 的推导，
+  只改 `docs/` 的提交不会触发 `rust` 矩阵腿。因此本线的**代码判决锚定在 `5a89b60` /
+  run 37229660272**，而不是某个只改 notes 的后续提交。
 
 ## 7. 边界（本线**不做**什么）
 
@@ -355,6 +386,11 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
    建议集成者在合并时更新那两条。
 5. **`docs/DEVELOPMENT_LEDGER.md`**：建议把"UI 完全无模型绑定"的条目改成
    "默认视图已由 `YebanProjectV1` 驱动；混音台与设备链待接"。
+6. **"全量腿"这一轮没有读数**：`rust (workspace 全量)` 被 `plan` 按受影响集合跳过
+   （本线只动 `crates/yeban-app/**` + `Cargo.lock` + 许可清单）。
+   本线的绿是**矩阵腿**（`rust (yeban-app)`）的绿。若要一次"全量腿也真跑"的读数，
+   需要集成者用 `gates-manual.yml` 的 `force_full`（手动档）或在下一次根级文件变更时顺带覆盖。
+   在此之前不把"全量绿"写成已证事实。
 
 ## 10. TODO(hoist)
 
