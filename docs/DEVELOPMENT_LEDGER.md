@@ -372,3 +372,23 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 （不是猜），继续修到底比把已知红的判据留在分支上更符合纪律。我接受这个理由，并把它写进账本：
 **轮数上限的目的是防止"无根据的试错"，不是惩罚"有根据的收敛"。** 判断标准是"这一轮是否是上一次读数的直接后果"。
 
+---
+
+## 7. 工作线合并台账 (Merge Ledger)
+
+`scripts/dev/worktree.sh land` 会用统一的 `merge(<line>): 工作线落地` 作为合并提交信息（自动化优先），
+因此**每条工作线的详细内容摘要记在这里**，不依赖提交信息的措辞。顺序 = 合并顺序。
+
+| 工作线 | 合并提交 | 内容摘要 |
+| :--- | :--- | :--- |
+| `engine-rt` | `35ee5ab` | 实时引擎核心: 定长块/快照退役回收/内部 PDC/FTZ-DAZ/批量 SPSC/cpal 宿主+NullBackend; 按 D19 切分 device feature; 延迟改从 DeviceDefinition::latency_samples 读取 |
+| `render-master` | `136c791` | 离线母带渲染: 拓扑分层 Rayon 并行 + 按 EntityId 字典序确定性串行归约; 自研 RF64/BW64+bext; TPDF 抖动; SMF 0/1 导出; pdc.rs 最小同构实现(待 engine 提供公共签名后按 D19 退役) |
+| `ui-test-port` | `7d3b31e` | Tier-1 无头软件光栅化 + 语义控件树 + 动态遮罩 SSIM(≥0.98) + 三级权限; app 侧窄口子适配器(默认关闭 feature) |
+
+已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
+远程当前只剩 `main` 与 `website`。
+
+**已知的工具改进项**：`land` 目前不接受自定义合并信息 ⇒ 详细摘要只能落在本表里。
+更好的做法是 `land <line> [message-file]`，或让 `land` 在自动提交后提示"如需详细摘要请 `git commit --amend`"
+（后者会迫使人改写已推送历史，不可取）。登记为待办。
+
