@@ -26,3 +26,10 @@ Thumbs.db
 # 本地生成的门禁产物, 不入库
 /docs/ledger/artifacts/
 *.profraw
+
+# 生成物 / 证据目录: 无头截图、控件树 JSON、从 CI 下载的 artifact 的落地目录。
+# 为什么必须忽略: 守卫 G06 的上限是 **10 MiB**, 而一张 1920x1080 无头截图约 6.2 MiB (=5.9 MiB) ——
+# **能通过大文件守卫**。也就是说"别把大二进制提交进仓库"这条纪律在 6~10 MiB 区间里没有机械保护。
+# (踩过的坑: 上一次我用 `"artifacts/" not in t` 判断是否已存在, 而文件里有 `/docs/ledger/artifacts/`,
+#  子串命中导致规则**根本没写进去**, 随后 `git add -A` 把 18 MB 截图提交了 —— 见账本 L16。)
+artifacts/
