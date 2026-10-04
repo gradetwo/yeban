@@ -394,6 +394,15 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
 
+**当前进度快照（2026-10-05）**：
+- 已落地 **11 条工作线**（标签 `line-archive/{model-core, theory-core, dsp-core, ui-shell, sfz-core, engine-rt, render-master, ui-test-port, mcp-core, decode-core, app-introspect}`），
+  远程无残留分支。
+- **11 个 crate 有真实实现**：`model`(87 测试) / `theory`(93) / `dsp`(108) / `sfz`(58) /
+  `app`(13 个 Slint 组件) / `engine`(60) / `render`(102+64) / `ui-test-port`(47+43) /
+  `mcp`(112) / `decode`(68) / 以及 `model` 的规范样本与跨语言对账。
+- **main 的 tip 全量真跑**：`gh run view 37227367826` = **success**（`clippy --workspace -D warnings` + `test --workspace`）。
+- 仍是骨架：`ui-mcp` / `services` / `plugin-host` / `vst`；十个 MCP 工具的**领域实现**未接线（返回 `-32005`）。
+
 **已知的工具改进项**：`land` 目前不接受自定义合并信息 ⇒ 详细摘要只能落在本表里。
 更好的做法是 `land <line> [message-file]`，或让 `land` 在自动提交后提示"如需详细摘要请 `git commit --amend`"
 （后者会迫使人改写已推送历史，不可取）。登记为待办。
