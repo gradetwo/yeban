@@ -12,7 +12,48 @@ publish.workspace = true
 name = "yeban_ui_mcp"
 path = "src/lib.rs"
 
+[features]
+# 红线 [AGENTS.md §2 红线 6 / MUST-GATE-009]: 环回 HTTP 传输**绝不**进 default。
+# 默认构建里既没有监听循环, 也没有 `yeban-mcp` 的 HTTP 报文层被链接进来;
+# 要开必须显式 `--features ui-mcp-http`, 并且运行时**再**给一次
+# `--enable-ui-mcp-http` —— 两道开关, 见 src/transport/mod.rs。
+default = []
+# 复用 `yeban-mcp` 的环回 HTTP 报文层 (parse_head / split_message / assert_loopback /
+# HttpResponse)。**不是重写** —— 理由与核验见 src/transport/http.rs 的文件头。
+ui-mcp-http = ["yeban-mcp/mcp-http"]
+
 [dependencies]
+# 依赖方向: yeban-ui-mcp → {yeban-mcp, yeban-ui-test-port}。**绝不**反向,
+# 也**不**依赖 yeban-app (会成环)。`yeban-model` 没有被引用 —— 本线不碰领域状态,
+# 加一个用不到的依赖只会污染依赖许可清单 (license_inventory.py 的"直接使用方")。
+#
+# 版本唯一事实源仍是根 Cargo.toml 的 [workspace.dependencies] (ADR-0001 D5);
+# 本文件不写版本号, 因此 `deny.toml` 的 `wildcards = "deny"` 不会报 error[wildcard]
+# (ADR-0001 D21)。
+yeban-mcp = { workspace = true }
+yeban-ui-test-port = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# 为什么同一个包既是 dependency 又是 dev-dependency:
+#
+# `yeban-mcp` 的 `transport::http` 模块是 `#[cfg(any(feature = "mcp-http", test))]`
+# 编译的 —— 对**依赖方**来说 `cfg(test)` 永远为假, 所以只有 `mcp-http` feature 能让它
+# 出现在我的构建里。我又不想让 `ui-mcp-http`(我的 feature) 成为编译 src/transport/http.rs
+# 的**唯一**条件: CI 的 crate 腿跑 `cargo clippy/test -p yeban-ui-mcp --all-targets`,
+# 不带 `--features`, 于是那段代码会**从未被编译过** —— 未编译的代码连语法错都能躲过门禁
+# (docs/DEVELOPMENT_LEDGER.md 的 L6 教训)。
+#
+# 因此: dev-dependency 打开 `mcp-http`, 我的 http 模块用
+# `#[cfg(any(feature = "ui-mcp-http", test))]` 门控。
+# 实测 (resolver = "3" + edition 2024): `cargo test` 会把 dev-dependency 的 feature
+# 并进同一次构建 ⇒ http 模块在测试目标下真的被编译; 而 `cargo build` (只有普通
+# dependency) **不会**打开它 ⇒ 默认 release 构建里没有监听循环, 红线 6 未被削弱
+# (判据 `transport::tests::http_is_off_unless_explicitly_enabled_at_runtime` 与
+# `tests/contract.rs::manifest_default_features_do_not_enable_ui_mcp_http`)。
+yeban-mcp = { workspace = true, features = ["mcp-http"] }
 
 [lints]
 workspace = true

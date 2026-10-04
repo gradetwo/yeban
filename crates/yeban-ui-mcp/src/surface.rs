@@ -1,0 +1,427 @@
+//! 执行面：JSON-RPC 方法**真正落到哪里**。
+//!
+//! ## 分工（这是本 crate 与 `yeban-ui-test-port` 的边界）
+//!
+//! ```text
+//!   AI Agent ──JSON-RPC──> yeban-ui-mcp  ──进程内调用──> yeban-ui-test-port
+//!             (本 crate)                   (UiSurface)        (UiTestPort 实现)
+//! ```
+//!
+//! `yeban-ui-test-port` 已经有一套完整的进程内调用面与三级权限
+//! （`UiTestPort` / `PortError` / `authorize`，`[UI-MCP-001]` §12.3）。
+//! 本 crate **不重写**它，只做一件事：把 JSON-RPC 的请求翻译成那些调用，
+//! 并在网络层再判一次 scope。
+//!
+//! 因此 [`UiSurface`] 是 `UiTestPort` 的**超集**，只多一个方法
+//! [`UiSurface::capture_image`]。为什么要多这一个：
+//!
+//! - `UiTestPort::capture_png` 只给 PNG 字节，而 `[UI-MCP-002]` §12.5 的
+//!   **强制遮罩**需要在像素矩阵上把动态区置黑 —— 我们**没有** PNG 解码器
+//!   （`yeban-ui-test-port` 手写 PNG 时明确只做编码，见那边 notes §4），
+//!   所以遮罩必须在**编码之前**、在 `Rgb8Image` 上做；
+//! - Tier-1 的像素证据（尺寸非零 / 非全黑 / 颜色数，`[MUST-GATE-015]`）也来自同一张图。
+//!
+//! 于是"截图"这条路只有一条：`capture_image()` → （可选）遮罩 → 证据 → PNG 编码。
+//! 判据 `screenshot_evidence_requires_a_non_black_non_empty_frame` 钉住这条。
+
+use yeban_ui_test_port::image::Rgb8Image;
+use yeban_ui_test_port::png::{self, REPO_MAX_FILE_BYTES};
+use yeban_ui_test_port::port::{PortError, UiTestPort};
+
+/// 单帧截图的像素证据（`[MUST-GATE-015]`：尺寸非零且非全黑）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShotEvidence {
+    /// 宽（像素）。
+    pub width: u32,
+    /// 高（像素）。
+    pub height: u32,
+    /// 非黑像素数。
+    pub non_black_pixels: u64,
+    /// 不同颜色数。
+    pub distinct_colors: usize,
+    /// 编码后的 PNG 字节数。
+    pub png_bytes: usize,
+    /// PNG 字节的 FNV-1a 64 指纹（与 `yeban_ui_test_port::render::fnv1a64` **同算法**）：
+    /// 让"两次截图是否逐字节相同"可以只比一个短标识。**不是**安全摘要。
+    pub fingerprint: u64,
+}
+
+impl ShotEvidence {
+    /// 由图像 + 已编码的 PNG 字节构造，并执行 `[MUST-GATE-015]` 的两条门槛。
+    ///
+    /// # Errors
+    ///
+    /// 尺寸为零，或整帧全黑（"渲染了但什么都没画"是**失败**，不是一张合法截图）。
+    pub fn new(image: &Rgb8Image, png_bytes: &[u8]) -> Result<Self, PortError> {
+        let size = image.size();
+        if size.is_empty() {
+            return Err(PortError::Capture {
+                message: "Tier-1 帧缓冲尺寸为零: [MUST-GATE-015] 要求尺寸非零".to_owned(),
+            });
+        }
+        if image.is_all_black() {
+            return Err(PortError::Capture {
+                message: "整帧全黑: [MUST-GATE-015] 要求非全黑 (渲染了但一个像素都没画)".to_owned(),
+            });
+        }
+        Ok(Self {
+            width: size.width,
+            height: size.height,
+            non_black_pixels: image.non_black_pixels(),
+            distinct_colors: image.distinct_color_count(),
+            png_bytes: png_bytes.len(),
+            fingerprint: fnv1a64(png_bytes),
+        })
+    }
+}
+
+/// FNV-1a 64 位指纹（零依赖、逐位确定），与 `yeban_ui_test_port::render::fnv1a64` 同算法。
+///
+/// 为什么这里再写一遍而不是直接调那边的：那是 `render.rs` 里的函数，而 `render.rs`
+/// 依赖 Slint —— 本 crate 的**绝大部分逻辑**（含判据）必须在**零 Slint** 的前提下
+/// 在本机真跑（见 `docs/ledger/ui-mcp-notes.md` 的"本机验证"一节）。
+/// 两份实现的一致性由 CI 侧判据 `fingerprint_matches_the_tier1_renderer` 逐字节对账 ——
+/// 那一条会引用 `render::fnv1a64`，因此它不需要在本机跑。
+#[must_use]
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 执行面：`yeban-ui-test-port` 的进程内调用面 + Tier-1 像素访问。
+///
+/// 实现者：
+/// - `yeban_ui_test_port::render::LivePort<T>`（真实无头窗口）→ [`crate::live`]；
+/// - 判据里的假面（零 Slint，可以在本机跑）→ `crate::service::tests`。
+pub trait UiSurface: UiTestPort {
+    /// 执行面的稳定标识（进响应与日志，**不要**放令牌或路径）。
+    fn surface_name(&self) -> &'static str;
+
+    /// 抓 Tier-1 帧缓冲的 RGB8 像素。
+    ///
+    /// # Errors
+    ///
+    /// 光栅化失败（`PortError::Capture`）。
+    fn capture_image(&self) -> Result<Rgb8Image, PortError>;
+}
+
+/// 把一张（可能已遮罩的）图编码成 PNG 并算出证据。
+///
+/// 这是截图的**唯一出口**：证据与 PNG 必须来自**同一张**图，否则"证据说的是 A 帧、
+/// 发出去的是 B 帧"这类错误无法被发现。
+///
+/// # Errors
+///
+/// PNG 超过 `limit`（默认 [`REPO_MAX_FILE_BYTES`]，仓库单文件上限 10 MiB），
+/// 或 `[MUST-GATE-015]` 的两条门槛不满足。
+pub fn encode_with_evidence(
+    image: &Rgb8Image,
+    limit: usize,
+) -> Result<(Vec<u8>, ShotEvidence), PortError> {
+    // `[MUST-GATE-015]` 的两条门槛**先**判: 一张空帧/全黑帧根本不该进入编码器
+    // (那既浪费时间, 也会让"编码器拒绝了 0 宽 PNG"与"渲染什么都没画"混成同一个错误)。
+    if image.size().is_empty() {
+        return Err(PortError::Capture {
+            message: "Tier-1 帧缓冲尺寸为零: [MUST-GATE-015] 要求尺寸非零".to_owned(),
+        });
+    }
+    if image.is_all_black() {
+        return Err(PortError::Capture {
+            message: "整帧全黑: [MUST-GATE-015] 要求非全黑 (渲染了但一个像素都没画)".to_owned(),
+        });
+    }
+    let bytes = png::encode_rgb8_limited(image, limit).map_err(|error| PortError::Capture {
+        message: error.to_string(),
+    })?;
+    let evidence = ShotEvidence::new(image, &bytes)?;
+    Ok((bytes, evidence))
+}
+
+/// 默认的 PNG 体积上限（仓库单文件上限，`AGENTS.md` §2 红线 9）。
+pub const DEFAULT_MAX_PNG_BYTES: usize = REPO_MAX_FILE_BYTES;
+
+/// 把任意 `UiTestPort` + 一个"怎么拿像素"的闭包升格成 [`UiSurface`]。
+///
+/// ## 为什么需要这一层（以及为什么它不是多余的抽象）
+///
+/// `UiSurface` 只比 `UiTestPort` 多两件事：一个名字，与 `capture_image`。
+/// **真实**的像素只能从具体窗口类型拿 —— 在无头形态下那是
+/// `yeban_ui_test_port::render::LivePort<T>` 的 `window().capture()`，而
+/// `LivePort<T>` 的定义带 `T: slint::ComponentHandle` 约束 ⇒ 想直接为它实现
+/// `UiSurface` 就必须在本 crate 里写出 `slint::ComponentHandle`，
+/// 也就是**把 slint 变成直接依赖**。
+///
+/// 那条路被否掉的理由不是"少一个依赖更优雅"，而是**判据的可执行性**：
+/// 一旦 `crates/yeban-ui-mcp/src/` 里出现 `use slint::…`，本 crate 里**任何**引用到它的
+/// 模块都无法在本机 `rustc --test` 真跑（本机纪律禁止编译 Slint，见
+/// `docs/ledger/ui-mcp-notes.md`）。把"取像素"变成一个闭包之后：
+///
+/// - 持有窗口的一方（`yeban-app` 侧，两行代码）注入真实实现；
+/// - 本 crate 的全部逻辑（含截图/遮罩/证据链）保持零 Slint，可以在本机真跑。
+///
+/// 用法（`yeban-app` 侧）：
+///
+/// ```ignore
+/// let port = yeban_ui_test_port::render::LivePort::new(size, permission, Some(&registry), build)?;
+/// let surface = PortAdapter::new(port, "tier1-live-port", |port| {
+///     port.window().capture().map_err(|error| PortError::Capture { message: error.to_string() })
+/// });
+/// ```
+pub struct PortAdapter<P, F> {
+    port: P,
+    name: &'static str,
+    capture: F,
+}
+
+impl<P, F> PortAdapter<P, F>
+where
+    P: UiTestPort,
+    F: Fn(&P) -> Result<Rgb8Image, PortError>,
+{
+    /// 组装。
+    #[must_use]
+    pub fn new(port: P, name: &'static str, capture: F) -> Self {
+        Self {
+            port,
+            name,
+            capture,
+        }
+    }
+
+    /// 内层端口（只读）。
+    #[must_use]
+    pub fn port(&self) -> &P {
+        &self.port
+    }
+
+    /// 内层端口（可变）。
+    pub fn port_mut(&mut self) -> &mut P {
+        &mut self.port
+    }
+}
+
+impl<P, F> UiSurface for PortAdapter<P, F>
+where
+    P: UiTestPort,
+    F: Fn(&P) -> Result<Rgb8Image, PortError>,
+{
+    fn surface_name(&self) -> &'static str {
+        self.name
+    }
+
+    fn capture_image(&self) -> Result<Rgb8Image, PortError> {
+        (self.capture)(&self.port)
+    }
+}
+
+impl<P, F> UiTestPort for PortAdapter<P, F>
+where
+    P: UiTestPort,
+    F: Fn(&P) -> Result<Rgb8Image, PortError>,
+{
+    fn permission(&self) -> yeban_ui_test_port::port::Permission {
+        self.port.permission()
+    }
+    fn tree(&self) -> &yeban_ui_test_port::tree::ControlTree {
+        self.port.tree()
+    }
+    fn capture_png(&self) -> Result<Vec<u8>, PortError> {
+        self.port.capture_png()
+    }
+    fn read_property(&self, element_id: &str, name: &str) -> Result<String, PortError> {
+        self.port.read_property(element_id, name)
+    }
+    fn dispatch_pointer_down_impl(
+        &mut self,
+        element_id: &str,
+        x_offset: f64,
+        y_offset: f64,
+        button: yeban_ui_test_port::port::PointerButton,
+    ) -> Result<(), PortError> {
+        self.port
+            .dispatch_pointer_down_impl(element_id, x_offset, y_offset, button)
+    }
+    fn dispatch_pointer_move_impl(&mut self, x: f64, y: f64) -> Result<(), PortError> {
+        self.port.dispatch_pointer_move_impl(x, y)
+    }
+    fn dispatch_pointer_up_impl(
+        &mut self,
+        button: yeban_ui_test_port::port::PointerButton,
+    ) -> Result<(), PortError> {
+        self.port.dispatch_pointer_up_impl(button)
+    }
+    fn dispatch_key_press_impl(
+        &mut self,
+        key: yeban_ui_test_port::port::KeyCode,
+    ) -> Result<(), PortError> {
+        self.port.dispatch_key_press_impl(key)
+    }
+    fn switch_main_view_impl(&mut self, view: &str) -> Result<(), PortError> {
+        self.port.switch_main_view_impl(view)
+    }
+    fn force_save_impl(&mut self) -> Result<(), PortError> {
+        self.port.force_save_impl()
+    }
+    fn reload_engine_impl(&mut self) -> Result<(), PortError> {
+        self.port.reload_engine_impl()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yeban_ui_test_port::image::{Rect, Size};
+
+    fn painted() -> Rgb8Image {
+        let mut image = Rgb8Image::new(Size::new(24, 12));
+        image.fill_rect(Rect::new(0, 0, 24, 12), [200, 30, 30]);
+        image.fill_rect(Rect::new(4, 4, 8, 4), [10, 10, 10]);
+        image
+    }
+
+    /// 判据 1: 证据与 PNG 来自同一张图；指纹可复现；两次编码逐字节相同。
+    #[test]
+    fn evidence_and_png_come_from_the_same_frame() {
+        let image = painted();
+        let (bytes, evidence) = encode_with_evidence(&image, DEFAULT_MAX_PNG_BYTES).expect("编码");
+        assert_eq!(evidence.width, 24);
+        assert_eq!(evidence.height, 12);
+        assert_eq!(evidence.png_bytes, bytes.len());
+        assert_eq!(evidence.fingerprint, fnv1a64(&bytes));
+        assert_eq!(evidence.distinct_colors, 2);
+        assert_eq!(evidence.non_black_pixels, 24 * 12, "两个颜色都不是纯黑");
+
+        let (again, evidence_again) =
+            encode_with_evidence(&image, DEFAULT_MAX_PNG_BYTES).expect("编码");
+        assert_eq!(bytes, again, "同一帧两次编码必须逐字节相同");
+        assert_eq!(evidence, evidence_again);
+
+        // PNG 魔数（证明这真是 PNG，而不是一段随便的字节）。
+        assert_eq!(&bytes[..8], &yeban_ui_test_port::png::PNG_SIGNATURE);
+    }
+
+    /// 判据 2: `[MUST-GATE-015]` —— 尺寸为零 / 全黑都**报错**，不许当成"成功的一张图"。
+    #[test]
+    fn screenshot_evidence_requires_a_non_black_non_empty_frame() {
+        // 零尺寸图像在**上游类型**里就构造不出来（`Rgb8Image::new` panic、
+        // `from_raw` 报 `EmptySize`）—— 所以"尺寸为零"这条门槛有两道网：
+        // 上游拒绝构造 + 本函数的第一道检查（防御性，正常路径不可达）。
+        assert!(Rgb8Image::from_raw(Size::new(0, 0), Vec::new()).is_err());
+        assert!(
+            Rgb8Image::from_raw(Size::new(0, 4), Vec::new()).is_err(),
+            "任一边为 0 都必须被拒"
+        );
+
+        let black = Rgb8Image::new(Size::new(16, 16));
+        assert!(black.is_all_black());
+        assert!(
+            matches!(
+                encode_with_evidence(&black, DEFAULT_MAX_PNG_BYTES),
+                Err(PortError::Capture { .. })
+            ),
+            "全黑必须被拒 (MUST-GATE-015)"
+        );
+
+        // 一个像素就够翻案。
+        let mut almost = Rgb8Image::new(Size::new(16, 16));
+        almost.set_pixel(3, 3, [0, 0, 1]);
+        assert!(encode_with_evidence(&almost, DEFAULT_MAX_PNG_BYTES).is_ok());
+    }
+
+    /// 判据 3: 遮罩在**编码之前**动像素 —— 遮罩后的证据与 PNG 都反映置黑结果。
+    ///
+    /// （`[UI-MCP-002]` §12.5 的可核验形态：置黑必须真的进到发出去的字节里。）
+    #[test]
+    fn masking_happens_before_encoding() {
+        let image = painted();
+        let rects = vec![Rect::new(0, 0, 24, 6)];
+        let masked = yeban_ui_test_port::mask::masked(&image, &rects);
+        let (raw_bytes, raw_evidence) =
+            encode_with_evidence(&image, DEFAULT_MAX_PNG_BYTES).expect("原始帧");
+        let (masked_bytes, masked_evidence) =
+            encode_with_evidence(&masked, DEFAULT_MAX_PNG_BYTES).expect("遮罩帧");
+
+        assert_ne!(raw_bytes, masked_bytes, "遮罩必须真的改变字节");
+        assert_eq!(
+            masked_evidence.distinct_colors, 3,
+            "遮罩引入了纯黑, 因此颜色数由 2 变 3 (`distinct_color_count` 把黑也算一种颜色)"
+        );
+        assert!(masked_evidence.non_black_pixels < raw_evidence.non_black_pixels);
+        assert_eq!(masked_evidence.non_black_pixels, 24 * 6);
+        assert!(yeban_ui_test_port::mask::mask_is_effective(&masked, &rects));
+    }
+
+    /// 判据 4: 超过体积上限时必须**显式报错**，不是发出去一个会被仓库红线拒的文件。
+    #[test]
+    fn oversized_png_is_an_explicit_error() {
+        let image = painted();
+        let error = encode_with_evidence(&image, 16).expect_err("超过上限必须报错");
+        assert!(
+            matches!(error, PortError::Capture { .. }),
+            "实际错误: {error:?}"
+        );
+    }
+
+    /// 判据 5: [`PortAdapter`] 是**透明**的 —— 12 个 `UiTestPort` 方法逐个委托，
+    /// 只有 `capture_image` 走注入的闭包；`UiSurface::surface_name` 用注入的名字。
+    ///
+    /// 这条判据让 `yeban-app` 侧那两行接线是**可验证**的（本机零 Slint 就能跑）。
+    #[test]
+    fn port_adapter_delegates_everything_and_injects_pixels() {
+        use crate::testing::{FakeSurface, fixture_tree, shared};
+        use yeban_ui_test_port::port::{Permission, UiTestPort};
+
+        let state = shared(Permission::Administrative);
+        let inner = FakeSurface {
+            state: std::rc::Rc::clone(&state),
+            tree: fixture_tree(),
+        };
+        let mut adapter = PortAdapter::new(inner, "tier1-live-port", |port: &FakeSurface| {
+            port.capture_image()
+        });
+
+        assert_eq!(adapter.surface_name(), "tier1-live-port");
+        assert_eq!(
+            adapter.permission(),
+            Permission::Administrative,
+            "权限必须透传 (否则纵深防御的第二道闸门会被绕过)"
+        );
+        assert_eq!(adapter.tree().len(), 3);
+        let image = adapter.capture_image().expect("闭包提供像素");
+        assert_eq!(image.size().width, 200);
+        assert!(adapter.capture_png().is_ok());
+        assert_eq!(
+            adapter
+                .read_property("track-0-fader", "value")
+                .expect("属性"),
+            "value=1"
+        );
+        adapter
+            .dispatch_key_press(yeban_ui_test_port::port::KeyCode::Tab)
+            .expect("注入");
+        assert_eq!(
+            state.borrow().calls,
+            ["key_press:Tab".to_owned()],
+            "委托必须真的落到内层端口"
+        );
+
+        // 越权的注入仍然被内层端口的闸门挡住（适配器不改变任何权限语义）。
+        let read_only = PortAdapter::new(
+            FakeSurface {
+                state: shared(Permission::ReadOnly),
+                tree: fixture_tree(),
+            },
+            "read-only",
+            |port: &FakeSurface| port.capture_image(),
+        );
+        let mut read_only = read_only;
+        assert!(matches!(
+            read_only.dispatch_key_press(yeban_ui_test_port::port::KeyCode::Tab),
+            Err(PortError::PermissionDenied { .. })
+        ));
+    }
+}

@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `07bb954ab4a8dc79`
+- `Cargo.lock` SHA-256（前 16 位）: `1992a6efe7b00bda`
 - 外部依赖包数: **618**（不含 23 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -454,10 +454,10 @@
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `sctk-adwaita` | `0.10.1` | `MIT` | 传递 | — |
 | `semver` | `1.0.28` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-ui-test-port` |
+| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_core` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_derive` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-ui-test-port` |
+| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_repr` | `0.1.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-render` |
@@ -511,8 +511,8 @@
 | `tar` | `0.4.46` | `MIT OR Apache-2.0` | 传递 | — |
 | `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | 直接 | `yeban-render` |
 | `text-size` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `thiserror` | `1.0.69` | `MIT OR Apache-2.0` | 直接 | `yeban-decode`, `yeban-engine`, `yeban-mcp`, `yeban-model`, `yeban-sfz`, `yeban-theory` |
-| `thiserror` | `2.0.21` | `MIT OR Apache-2.0` | 直接 | `yeban-decode`, `yeban-engine`, `yeban-mcp`, `yeban-model`, `yeban-sfz`, `yeban-theory` |
+| `thiserror` | `1.0.69` | `MIT OR Apache-2.0` | 直接 | `yeban-decode`, `yeban-engine`, `yeban-mcp`, `yeban-model`, `yeban-sfz`, `yeban-theory`, `yeban-ui-mcp` |
+| `thiserror` | `2.0.21` | `MIT OR Apache-2.0` | 直接 | `yeban-decode`, `yeban-engine`, `yeban-mcp`, `yeban-model`, `yeban-sfz`, `yeban-theory`, `yeban-ui-mcp` |
 | `thiserror-impl` | `1.0.69` | `MIT OR Apache-2.0` | 传递 | — |
 | `thiserror-impl` | `2.0.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `tiny-skia` | `0.11.4` | `BSD-3-Clause` | 传递 | — |
