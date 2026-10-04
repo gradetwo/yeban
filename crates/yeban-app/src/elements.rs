@@ -634,6 +634,30 @@ impl ElementRegistry {
                 &format!("轨道 {} 推子", track.name),
                 false,
             );
+            // 混音台的静音 / 独奏 / 色标用**自己**的语义 ID（`-mixer-` 中缀），
+            // 不复用 arrangement 的 `track-{i}-mute-button`：两个视图可能同时可见，
+            // 重复 ID 会让运行时控件树构建直接失败（`TreeError::DuplicateId`）。
+            registry.add(
+                &format!("track-{track_index}-mixer-mute-button"),
+                ElementKind::Button,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 静音 (调音台)", track.name),
+                false,
+            );
+            registry.add(
+                &format!("track-{track_index}-mixer-solo-button"),
+                ElementKind::Button,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 独奏 (调音台)", track.name),
+                false,
+            );
+            registry.add(
+                &format!("track-{track_index}-mixer-color-swatch"),
+                ElementKind::Image,
+                "console/mixer_console.slint",
+                &format!("轨道色标 {} (调音台)", track.color_hex),
+                false,
+            );
         }
         registry.add(
             "mixer-master-strip",
@@ -654,6 +678,27 @@ impl ElementRegistry {
             ElementKind::Slider,
             "console/mixer_console.slint",
             "主控推子",
+            false,
+        );
+        registry.add(
+            "mixer-master-mute-button",
+            ElementKind::Button,
+            "console/mixer_console.slint",
+            "主控静音",
+            false,
+        );
+        registry.add(
+            "mixer-master-solo-button",
+            ElementKind::Button,
+            "console/mixer_console.slint",
+            "主控独奏",
+            false,
+        );
+        registry.add(
+            "mixer-master-color-swatch",
+            ElementKind::Image,
+            "console/mixer_console.slint",
+            "主控色标",
             false,
         );
 
@@ -907,10 +952,15 @@ pub fn is_well_formed_id(id: &str) -> bool {
 ///
 /// 这份清单把"哪些部件的数据来自工程"从注释变成**可断言的事实**：
 /// 判据只允许对这些族做"不得出现演示数据"的负向断言；其余部件
-/// （侧栏资源库 / 混音台 / 设备机架 / 两个对话框）的静态标签是**已知的未实现项**
+/// （侧栏资源库 / 设备机架 / 两个对话框 / 状态栏 / 走带）的静态标签是**已知的未实现项**
 /// （见 `docs/ledger/app-binding-notes.md`）—— 对它们做全局断言会假红，
-/// 例如侧栏里有 `Sub Bass 低频`、混音台通道条仍用演示轨道名。
-pub const MODEL_DRIVEN_FAMILIES: [&str; 8] = [
+/// 例如侧栏里有 `Sub Bass 低频`。
+///
+/// `mixer-` 是 app-mixer 工作线新加的一族：调音台的**通道条**（`track-{i}-*`）本来就在
+/// `track-` 族里，但**主控通道条**（`mixer-master-*`）不共享那个前缀 —— 它的名字 / 音量 /
+/// 声相 / 静音 / 独奏 / 色标同样来自工程，所以必须有自己的族，否则"主控显示的是不是工程"
+/// 就没有机械检查（`ui/console/mixer_console.slint` 的 `mixer-master-strip` 子树）。
+pub const MODEL_DRIVEN_FAMILIES: [&str; 9] = [
     "track-",
     "section-",
     "clip-",
@@ -919,6 +969,7 @@ pub const MODEL_DRIVEN_FAMILIES: [&str; 8] = [
     "session-track-",
     "scene-launch-",
     "slot-",
+    "mixer-",
 ];
 
 /// 该语义 ID 是否属于 [`MODEL_DRIVEN_FAMILIES`]（即"应当携带工程数据"的部件）。
@@ -1378,11 +1429,28 @@ mod tests {
         assert_eq!(
             registry
                 .with_prefix("track-")
+                // 只看 **arrangement** 的色标：app-mixer 之后调音台也有一份
+                // `track-{i}-mixer-color-swatch`（同一个投影字段，不同的语义 ID —— 两个
+                // 视图可能同时可见，重复 ID 会让运行时控件树构建失败）。不收窄计数会翻倍。
                 .filter(|meta| meta.id.ends_with("-color-swatch"))
+                .filter(|meta| !meta.id.contains("-mixer-"))
                 .count(),
             filled.tracks.len(),
             "色标元素数必须等于轨道数"
         );
+        // 调音台色标与 arrangement 色标**逐个对齐**（同一个 `TrackView::color_hex`）。
+        for (index, label) in filled.track_color_labels().iter().enumerate() {
+            let mixer = registry
+                .get(&format!("track-{index}-mixer-color-swatch"))
+                .unwrap_or_else(|| panic!("缺少 track-{index}-mixer-color-swatch"));
+            assert_eq!(mixer.kind, ElementKind::Image, "调音台色标角色必须是 image");
+            assert_eq!(mixer.component, "console/mixer_console.slint");
+            assert!(
+                mixer.label.contains(label),
+                "调音台色标标签必须携带同一个投影色标: {} vs {label}",
+                mixer.label
+            );
+        }
         let labels = filled.track_color_labels();
         for (index, label) in labels.iter().enumerate() {
             let meta = registry
@@ -1437,6 +1505,13 @@ mod tests {
             "session-track-0-header",
             "scene-launch-0-button",
             "slot-0-0-cell",
+            // app-mixer: 调音台通道条 / 电平表 / 主控通道条都由投影或引擎电平驱动。
+            "track-0-channel-strip",
+            "track-0-meter",
+            "track-0-mixer-mute-button",
+            "mixer-console",
+            "mixer-master-strip",
+            "mixer-master-meter",
         ] {
             assert!(registry.contains(id), "判据清单里的 `{id}` 不在注册表里");
             assert!(is_model_driven_family(id), "`{id}` 应当被判为投影驱动");
@@ -1444,7 +1519,6 @@ mod tests {
         for id in [
             "sidebar-item-0",
             "sidebar-category-0-button",
-            "mixer-console",
             "device-rack",
             "musical-pr-drawer",
             "undo-tree-modal",
@@ -1472,5 +1546,249 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("element track-0-fader role=slider"))
         );
+    }
+
+    // =====================================================================
+    // app-mixer 工作线：混音台的**文本层**契约（本机不编译 Slint, 这几条是能真跑的那一半）
+    // =====================================================================
+
+    /// 读出 `.slint` 里声明的 `in property <...> name: …` 的属性名。
+    ///
+    /// 三种可见性都要认：`in property`（注入面）、`in-out property`（宿主可写可读，
+    /// 例如 `console-tab` / `timecode`）、`out property`（`tokens.slint` 的只读令牌）。
+    fn declared_properties(source: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            let rest = trimmed
+                .strip_prefix("in-out property ")
+                .or_else(|| trimmed.strip_prefix("in property "))
+                .or_else(|| trimmed.strip_prefix("out property "));
+            let Some(rest) = rest else {
+                continue;
+            };
+            let Some((_, after)) = rest.split_once('>') else {
+                continue;
+            };
+            if let Some((name, _)) = after.split_once(':') {
+                out.push(name.trim().to_owned());
+            }
+        }
+        out
+    }
+
+    /// 该属性是否属于**注入面**（`track-*` / `master-*` 两族）。
+    ///
+    /// 只对这两族做"两侧逐一对应"的断言：内建属性（`x` / `visible` / `width`…）与
+    /// 别的注入面（`note-*` / `clip-*`）各有自己的判据，混在一起会让这条检查失真。
+    fn is_injection_property(name: &str) -> bool {
+        name.starts_with("track-") || name.starts_with("master-")
+    }
+
+    /// 读出 `Component { … }` 块里**第一层**的属性赋值名（跳过嵌套元素与回调）。
+    ///
+    /// 只做一层缩进无关的花括号深度计数：本仓库这几个实例化块里没有同名嵌套组件，
+    /// 因此"深度 1 上的 `name:`"就是该组件的属性/回调赋值。
+    fn assigned_properties(source: &str, component: &str) -> Vec<String> {
+        let header = format!("{component} {{");
+        let mut out = Vec::new();
+        let mut inside = false;
+        let mut depth = 0_i32;
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if !inside {
+                if trimmed == header {
+                    inside = true;
+                    depth = 1;
+                }
+                continue;
+            }
+            if depth == 1
+                && let Some((name, _)) = trimmed.split_once(':')
+            {
+                let name = name.trim();
+                if !name.is_empty() {
+                    out.push(name.to_owned());
+                }
+            }
+            depth += i32::try_from(trimmed.matches('{').count()).unwrap_or(0)
+                - i32::try_from(trimmed.matches('}').count()).unwrap_or(0);
+            if depth <= 0 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// 判据（文本层）：混音台通道条由**投影 + 引擎电平**驱动，而不是内联演示数据。
+    ///
+    /// 这条能在本机 `rustc --test` 真跑 —— 它是"本机不编译 Slint"这条纪律下能拿到的
+    /// 最强证据之一（`.slint` 的语法/类型仍只能由 CI 判，见 notes §5）。
+    #[test]
+    fn mixer_console_is_driven_by_the_projection_and_the_meter_arrays() {
+        let source = std::fs::read_to_string(ui_dir().join("console/mixer_console.slint"))
+            .expect("读 mixer_console.slint");
+
+        for required in [
+            // 规模由工程决定（不再是 `for track_index in 6`）
+            "for track_name[track_index] in root.track-names",
+            // 投影字段逐个进界面
+            "root.track-colors[track_index]",
+            "root.track-color-labels[track_index]",
+            "root.track-mutes[track_index]",
+            "root.track-solos[track_index]",
+            "root.track-pans[track_index]",
+            "root.track-volumes[track_index]",
+            "root.track-volume-fractions[track_index]",
+            // 电平：柱高 + dBFS 文本（两条独立的机械证据）
+            "100px * root.track-meter-levels[track_index]",
+            "root.track-meter-peaks[track_index]",
+            "root.track-meter-rmss[track_index]",
+            // 主控同源
+            "root.master-meter-level",
+            "root.master-volume-fraction",
+            "root.master-color",
+            // dBFS 必须出现在**控件树可读**的属性里（`[UI-TEST-001]` 只允许语义 ID 寻址，
+            // 而 `ui/property` 的清单里没有 `accessible-value` ⇒ 只能用 label）。
+            "dBFS",
+        ] {
+            assert!(
+                source.contains(required),
+                "mixer_console.slint 必须包含 `{required}`（投影 / 电平驱动契约）"
+            );
+        }
+
+        // 负向断言只看**非注释行**：注释里可以（也应该）提到旧写法作为历史。
+        let code: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in [
+            "for track_index in 6",
+            "db-labels",
+            "FADER_LEVELS",
+            "0.72",
+            "master-level[0]",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "mixer_console.slint 的代码里不许再有 `{forbidden}`（内联演示数据）"
+            );
+        }
+    }
+
+    /// 判据（文本层）：**转发链两侧对齐** —— `app.slint → ConsoleTabs → MixerConsole`
+    /// 的每一个投影 / 电平属性都真的在目标组件里声明了。
+    ///
+    /// 这是本机对"我写对了 20 多个转发属性名"唯一能做的机械检查（对照 CI 的
+    /// `cargo build` 才是最终判决）。它抓的是最真实的手滑：`track-meter-rmss` 写成
+    /// `track-meter-rms`、`master-color-label` 漏了一级转发 —— 那类错误在 CI 上表现成
+    /// 一句"unknown property"，定位成本远高于这里。
+    #[test]
+    fn forwarded_mixer_properties_exist_in_the_target_components() {
+        let ui = ui_dir();
+        let app = std::fs::read_to_string(ui.join("app.slint")).expect("读 app.slint");
+        let tabs = std::fs::read_to_string(ui.join("console/console_tabs.slint"))
+            .expect("读 console_tabs");
+        let mixer = std::fs::read_to_string(ui.join("console/mixer_console.slint"))
+            .expect("读 mixer_console");
+
+        let main_declared = declared_properties(&app);
+        let tabs_declared = declared_properties(&tabs);
+        let mixer_declared = declared_properties(&mixer);
+
+        // 方向 1：app.slint 转发给 ConsoleTabs 的每个注入属性都在 ConsoleTabs 里声明过。
+        let mut forwarded: Vec<String> = assigned_properties(&app, "ConsoleTabs")
+            .into_iter()
+            .filter(|name| is_injection_property(name))
+            .collect();
+        forwarded.sort();
+        forwarded.dedup();
+        assert!(!forwarded.is_empty(), "app.slint 里必须真的转发注入属性");
+        for name in &forwarded {
+            assert!(
+                tabs_declared.contains(name),
+                "app.slint 转发了 `{name}`, 但 ConsoleTabs 没有声明它"
+            );
+            assert!(
+                main_declared.contains(name),
+                "MainWindow 必须声明被转发的 `{name}`"
+            );
+        }
+
+        // 方向 2：ConsoleTabs 转发给 MixerConsole 的每个注入属性都在 MixerConsole 里声明过。
+        let mut to_mixer: Vec<String> = assigned_properties(&tabs, "MixerConsole")
+            .into_iter()
+            .filter(|name| is_injection_property(name))
+            .collect();
+        to_mixer.sort();
+        to_mixer.dedup();
+        assert_eq!(
+            to_mixer, forwarded,
+            "两级转发的注入属性集合必须一致（少一个 = 某一级断了）"
+        );
+        for name in &to_mixer {
+            assert!(
+                mixer_declared.contains(name),
+                "console_tabs.slint 把 `{name}` 转发给 MixerConsole, 但后者没有声明它"
+            );
+        }
+
+        // 方向 3（反向）：MixerConsole 声明的每个注入属性都必须被转发，不许有死属性。
+        let mut declared_injection: Vec<String> = mixer_declared
+            .iter()
+            .filter(|name| is_injection_property(name))
+            .cloned()
+            .collect();
+        declared_injection.sort();
+        assert_eq!(
+            declared_injection, to_mixer,
+            "MixerConsole 声明的注入属性与收到的转发必须一一对应"
+        );
+    }
+
+    /// 判据（文本层）：`host.rs` 里每一个 `ui.set_x_y(...)` 都能在 `MainWindow` 找到
+    /// 对应的 `in property <…> x-y`（kebab-case）。
+    ///
+    /// app-binding 线把这个对账放在**仓库之外**的探针脚本里；本线把它变成仓库内的判据，
+    /// 因为混音台一口气加了 14 个 setter（`docs/ledger/app-mixer-notes.md` §5）。
+    #[test]
+    fn host_setters_match_the_declared_slint_properties() {
+        let ui = ui_dir();
+        let app = std::fs::read_to_string(ui.join("app.slint")).expect("读 app.slint");
+        let host = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+        )
+        .expect("读 host.rs");
+
+        let declared: Vec<String> = declared_properties(&app);
+        assert!(declared.len() > 20, "MainWindow 的注入面异常偏小");
+        let mut setters: Vec<String> = host
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("ui.set_"))
+            .filter_map(|rest| rest.split_once('('))
+            .map(|(name, _)| name.trim().replace('_', "-"))
+            .collect();
+        assert!(!setters.is_empty(), "host.rs 里必须真的有 setter 调用");
+        setters.sort();
+        setters.dedup();
+        for name in &setters {
+            assert!(
+                declared.contains(name),
+                "host.rs 调用了 `ui.set_{}`, 但 MainWindow 没有声明 `{name}`",
+                name.replace('-', "_")
+            );
+        }
+        // 反向：每一个**注入面**属性都必须被某个 setter 写过（`track-` / `master-` 两族）。
+        for name in declared
+            .iter()
+            .filter(|name| name.starts_with("track-") || name.starts_with("master-"))
+        {
+            assert!(
+                setters.contains(name),
+                "MainWindow 声明了 `{name}` 但没有任何 setter 写它（死属性）"
+            );
+        }
     }
 }

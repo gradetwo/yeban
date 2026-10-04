@@ -68,7 +68,9 @@ use yeban_ui_test_port::port::{KeyCode, PointerButton, PortError};
 use yeban_ui_test_port::{image::Rect, mask};
 
 use crate::methods::{self, MethodSpec};
-use crate::surface::{DEFAULT_MAX_PNG_BYTES, ShotEvidence, UiSurface, encode_with_evidence};
+use crate::surface::{
+    AdminReport, DEFAULT_MAX_PNG_BYTES, ShotEvidence, UiSurface, encode_with_evidence,
+};
 use crate::tree::{Coverage, UiTree};
 
 /// 语义 ID 不在控件树里（本线新增；见模块文档的错误码表）。
@@ -369,23 +371,31 @@ impl UiService {
                 self.surface
                     .switch_main_view(&view)
                     .map_err(|error| port_error(PortContext::Admin, error))?;
+                let report = self.surface.take_admin_report();
                 let mut root = Map::new();
                 root.insert("accepted".to_owned(), Value::from(true));
                 root.insert("operation".to_owned(), Value::from("switch_main_view"));
                 root.insert("view".to_owned(), Value::from(view));
+                attach_admin_report(&mut root, report);
                 Ok(Value::Object(root))
             }
             methods::METHOD_FORCE_SAVE => {
                 self.surface
                     .force_save()
                     .map_err(|error| port_error(PortContext::Admin, error))?;
-                Ok(accepted("force_save"))
+                Ok(accepted_with_report(
+                    "force_save",
+                    self.surface.take_admin_report(),
+                ))
             }
             methods::METHOD_RELOAD_ENGINE => {
                 self.surface
                     .reload_engine()
                     .map_err(|error| port_error(PortContext::Admin, error))?;
-                Ok(accepted("reload_engine"))
+                Ok(accepted_with_report(
+                    "reload_engine",
+                    self.surface.take_admin_report(),
+                ))
             }
             // 注册表是 `const`，不可能走到这里；真走到了要**响亮报错**而不是返回空成功。
             other => Err(ErrorObject::new(
@@ -595,6 +605,37 @@ fn accepted(operation: &str) -> Value {
     Value::Object(root)
 }
 
+/// [`accepted`] + 执行面交出来的结构化回执（没有回执时与 [`accepted`] 逐字节相同）。
+fn accepted_with_report(operation: &str, report: Option<AdminReport>) -> Value {
+    let mut root = match accepted(operation) {
+        Value::Object(map) => map,
+        // `accepted` 恒为对象；这条分支只是不给 panic 留位置。
+        other => return other,
+    };
+    attach_admin_report(&mut root, report);
+    Value::Object(root)
+}
+
+/// 把执行面的回执挂到结果载荷上（**唯一**的挂载点）。
+///
+/// 契约（有判据钉住）：
+/// - 没有回执 ⇒ 载荷**一个字节都不变**（既有执行面的行为完全不变）；
+/// - 有回执 ⇒ `result.report` 是 [`AdminReport::to_json`] 的原样输出；
+/// - 回执里的 `operation` 必须与结果根的 `operation` **同名**（否则说明执行面报的是
+///   另一个动作 —— 那种漂移比"没有回执"更危险，见判据
+///   `admin_reports_name_the_operation_that_was_actually_run`）。
+fn attach_admin_report(root: &mut Map<String, Value>, report: Option<AdminReport>) {
+    let Some(report) = report else {
+        return;
+    };
+    debug_assert_eq!(
+        root.get("operation").and_then(Value::as_str),
+        Some(report.operation),
+        "回执的 operation 必须与结果根一致（执行面报错了动作）"
+    );
+    root.insert("report".to_owned(), report.to_json());
+}
+
 /// `serde_json::to_value` 的**不 panic** 包装。
 fn json_of<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
@@ -693,6 +734,7 @@ pub fn http_status_for(error: &ErrorObject) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surface::ReportValue;
     use crate::testing::*;
     use yeban_mcp::jsonrpc::INVALID_PARAMS;
     use yeban_mcp::security::Scope;
@@ -1394,5 +1436,121 @@ mod tests {
             ),
         );
         assert_eq!(error.code, INVALID_PARAMS);
+    }
+
+    /// 判据（`app-mixer` 工作线）：管理动作的**结构化回执**经 `result.report` 原样转达。
+    ///
+    /// 两条方向都要钉住：
+    /// 1. 执行面**没有**回执 ⇒ 载荷与从前**逐字节相同**（既有假面/`PortAdapter` 行为不变）；
+    /// 2. 执行面**有**回执 ⇒ `result.report` 就是它交出来的那一份，且**取走**语义成立
+    ///    （下一次调用不再重复报上一次的事）。
+    #[test]
+    fn admin_reports_are_attached_and_absent_when_the_surface_has_none() {
+        // 方向 1：默认假面没有回执。
+        let plain = shared(Permission::Administrative);
+        let (mut service, token) = build_service(&plain, ScopeSet::all(), RunMode::Test);
+        let result = result_of(
+            &mut service,
+            &token,
+            &request(methods::METHOD_FORCE_SAVE, Value::Null),
+        );
+        assert_eq!(
+            result,
+            serde_json::json!({"accepted": true, "operation": "force_save"}),
+            "没有回执时载荷必须与从前逐字节相同"
+        );
+        assert!(result.get("report").is_none());
+
+        // 方向 2：带回执的执行面。
+        let reporting = shared(Permission::Administrative);
+        reporting.borrow_mut().report = Some(AdminReport::new(
+            "force_save",
+            vec![("bytes", ReportValue::Uint(4096))],
+        ));
+        let (mut service, token) = build_service(&reporting, ScopeSet::all(), RunMode::Test);
+        let result = result_of(
+            &mut service,
+            &token,
+            &request(methods::METHOD_FORCE_SAVE, Value::Null),
+        );
+        assert_eq!(result["report"]["operation"], "force_save");
+        assert_eq!(result["report"]["bytes"], 4096);
+        assert_eq!(result["accepted"], true, "回执不替代既有的 accepted 字段");
+
+        // 取走语义：同一次会话的第二次调用不再有上一次的回执。
+        let again = result_of(
+            &mut service,
+            &token,
+            &request(methods::METHOD_FORCE_SAVE, Value::Null),
+        );
+        assert!(again.get("report").is_none(), "回执必须被取走, 不能复用");
+
+        // 三个管理动作都能带回执（`switch_main_view` 的载荷多一个 `view` 字段）。
+        let switching = shared(Permission::Administrative);
+        switching.borrow_mut().report = Some(AdminReport::new(
+            "switch_main_view",
+            vec![("arrangementView", ReportValue::Bool(false))],
+        ));
+        let (mut service, token) = build_service(&switching, ScopeSet::all(), RunMode::Test);
+        let result = result_of(
+            &mut service,
+            &token,
+            &request(
+                methods::METHOD_SWITCH_MAIN_VIEW,
+                serde_json::json!({"view": "session"}),
+            ),
+        );
+        assert_eq!(result["view"], "session");
+        assert_eq!(result["report"]["operation"], "switch_main_view");
+        assert_eq!(result["report"]["arrangementView"], false);
+        assert!(calls(&switching).contains(&"switch_main_view:session".to_owned()));
+
+        let reloading = shared(Permission::Administrative);
+        reloading.borrow_mut().report = Some(AdminReport::new(
+            "reload_engine",
+            vec![("generation", ReportValue::Uint(2))],
+        ));
+        let (mut service, token) = build_service(&reloading, ScopeSet::all(), RunMode::Test);
+        let result = result_of(
+            &mut service,
+            &token,
+            &request(methods::METHOD_RELOAD_ENGINE, Value::Null),
+        );
+        assert_eq!(result["report"]["generation"], 2);
+    }
+
+    /// 判据（`app-mixer` 工作线）：`ui/switch_main_view` 的 `view` 是**白名单参数** ——
+    /// 拼错就是 `-32602`（参数问题），而不是 `-32005`（能力没接线）。
+    #[test]
+    fn switch_main_view_rejects_a_view_name_outside_the_whitelist() {
+        let state = shared(Permission::Administrative);
+        let (mut service, token) = build_service(&state, ScopeSet::all(), RunMode::Test);
+        let error = error_of(
+            &mut service,
+            &token,
+            &request(
+                methods::METHOD_SWITCH_MAIN_VIEW,
+                serde_json::json!({"view": "mixer"}),
+            ),
+        );
+        assert_eq!(error.code, INVALID_PARAMS, "非法视图名必须是参数错");
+        assert!(
+            calls(&state).is_empty(),
+            "参数校验必须先于执行面: {:?}",
+            calls(&state)
+        );
+
+        // 白名单里的两个值照常放行。
+        for view in ["arrangement", "session"] {
+            let result = result_of(
+                &mut service,
+                &token,
+                &request(
+                    methods::METHOD_SWITCH_MAIN_VIEW,
+                    serde_json::json!({"view": view}),
+                ),
+            );
+            assert_eq!(result["view"], view);
+        }
     }
 }

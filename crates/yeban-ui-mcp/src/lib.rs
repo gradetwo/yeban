@@ -68,8 +68,10 @@
 //! - **不做 PNG 解码 / SSIM 比对**：`ui/screenshot` 给的是 base64 PNG + 像素证据；
 //!   跨进程的图-图比对需要解码器，本线**没有**引入（`yeban-ui-test-port` 手写 PNG 时
 //!   明确只做编码）。进程内的遮罩 + SSIM 仍由那边的 `mask` / `ssim` 提供。
-//! - **不碰领域状态**：`ui/force_save` 等管理动作只做**授权与转发**，真正的落盘需要
-//!   `yeban-model` / `yeban-engine` 句柄，那属于 `yeban-app` 的接线（见 notes 的 needs）。
+//! - **不碰领域状态**：`ui/force_save` 等管理动作在本 crate 里只做**授权 → 转发 → 转达回执**
+//!   （[`AdminReport`]）。真正的落盘 / 引擎重建需要 `yeban-model` / `yeban-engine` 句柄，
+//!   那属于 `yeban-app` 的接线（`crates/yeban-app/src/live_surface.rs`）—— 本 crate **不**
+//!   反向依赖 `yeban-app`（会成环），所以事实由执行面交出来、本 crate 原样放进 `result.report`。
 //!
 //! ## 怎么跑
 //!
@@ -105,7 +107,9 @@ pub use service::{
     CAPTURE_FAILED, ELEMENT_NOT_FOUND, GEOMETRY_UNAVAILABLE, SERVICE_NAME, UiService,
     http_status_for,
 };
-pub use surface::{DEFAULT_MAX_PNG_BYTES, PortAdapter, ShotEvidence, UiSurface};
+pub use surface::{
+    AdminReport, DEFAULT_MAX_PNG_BYTES, PortAdapter, ReportValue, ShotEvidence, UiSurface,
+};
 pub use transport::{ENABLE_HTTP_FLAG, HTTP_FEATURE_NAME, HttpStartup};
 pub use tree::{Coverage, TreeSource, UiNode, UiTree};
 

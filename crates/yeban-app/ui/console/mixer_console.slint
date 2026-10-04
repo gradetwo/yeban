@@ -4,19 +4,65 @@
 //   - 规范 §5.2: 调音台通道条 (Pro Channel Strip & Metering)
 //   - [UI-TEST-001] §12.2: `track-{track_index}-fader` 是**推子**的语义 ID 约定
 //   - [UI-MCP-002] §12.5: VU 电平表是每帧跳变的高频刷新区域, 无头截图比对前必须被遮罩
-//   - [ARCH-UI-002]: 电平必须经 SPSC 无锁通道解耦, UI 侧不许反压音频线程 ——
-//     本骨架**没有**任何通道: 电平是静态演示值, 接真实电平表要等 `yeban-engine`。
+//     (注册表里 `track-{i}-meter` / `mixer-master-meter` 的 `dynamic_region = true`)
+//   - [ARCH-UI-002]: **"UI 线程绝不直接读取音频实时上下文。实时线程以 60Hz 速度向无锁
+//     Meter SPSC 压入真峰值与 RMS 电平，UI 线程定时器批量出队更新 Slint Properties。"**
+//   - [MODEL-AST-002]: 通道条的轨道名 / 音量 / 声相 / 静音 / 独奏 / 色标来自
+//     `YebanProjectV1` 的投影（`src/bridge.rs`），**不是** .slint 里的字面量
 //
-// 数据流方向: 只读。levels 是 0.0–1.0 的归一化推子位置, 分贝换算归模型层。
+// ## 这一版改了什么（本工作线的核心）
+//
+// 上一版这里是 `for track_index in 6` + 内联的 `levels` / `db-labels` 演示数组：
+// 通道条数被**刻死**在 6，音量与"电平"是同一个数，推子位置与电平柱高无法区分。
+// 现在：
+//
+//   1. **规模由工程决定**：`for track_name[track_index] in root.track-names` —— 演示工程 6 条、
+//      `filled_project()` 3 条，界面不需要改一行；
+//   2. **推子 ≠ 电平**：推子位置来自工程的 `TrackV3::volume_db`
+//      (`track-volume-fractions`)，电平柱高来自引擎发布的 `MeterFrame`
+//      (`track-meter-levels`)。两件事在界面上与控件树里都是分开的两个属性；
+//   3. **电平的 dBFS 进控件树**：`track-{i}-meter` 的 `accessible-label` 携带
+//      `"峰值 <x> RMS <y> dBFS"`，`accessible-value` 携带峰值文本 ——
+//      否则"UI 真的消费了电平"无法机械验证（`[UI-TEST-001]` 只允许语义 ID 寻址，
+//      而 `ui/property` 的清单里没有 `accessible-value`）。
+//
+// 数据流方向: 只读。界面只做"取数组下标 + 画像素"，dBFS 换算 / 声相文本 / 推子归一化
+// 全在投影层与 `src/meters.rs`（零 Slint 依赖，本机可 `rustc --test` 真跑）。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
 export component MixerConsole inherits Rectangle {
-    in property <[string]> tracks: ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
-    in property <[float]> levels: [0.72, 0.55, 0.48, 0.62, 0.35, 0.40];
-    in property <[string]> db-labels: ["-3.2", "-6.0", "-8.4", "-4.8", "-12.0", "-10.6"];
-    in property <[float]> master-level: [0.80];
-    in property <string> master-db: "-1.2";
+    // ---- 由 src/host.rs 注入的**投影**数据 (默认空 = 没有内联演示数据) ----
+    in property <[string]> track-names: [];
+    in property <[string]> track-volumes: [];
+    in property <[float]> track-volume-fractions: [];
+    in property <[string]> track-pans: [];
+    in property <[bool]> track-mutes: [];
+    in property <[bool]> track-solos: [];
+    in property <[color]> track-colors: [];
+    in property <[string]> track-color-labels: [];
+
+    // ---- 由 src/host.rs 注入的**电平**数据 (60Hz 抽帧的结果) ----
+    // `track-meter-peaks` / `track-meter-rmss` 是 `{:.1}` dBFS 文本（**已按 -120 下限钳位**，
+    // 且 NaN/±∞ 已在 `src/meters.rs` 落成下限）。`track-meter-levels` 是 0.0–1.0 的柱高。
+    // 三者的长度恒等于 `root.track-names.length` —— 换工程时 `host::apply_view` 会先重置成
+    // "等长的静音"，因此这里按下标取永远不会越界。
+    in property <[string]> track-meter-peaks: [];
+    in property <[string]> track-meter-rmss: [];
+    in property <[float]> track-meter-levels: [];
+
+    // ---- 主控通道条 (同样由投影 + 电平驱动) ----
+    in property <string> master-name: "Master";
+    in property <string> master-volume-display: "";
+    in property <float> master-volume-fraction: 0.0;
+    in property <string> master-pan: "C";
+    in property <bool> master-mute: false;
+    in property <bool> master-solo: false;
+    in property <color> master-color: #2c3a63;
+    in property <string> master-color-label: "";
+    in property <string> master-meter-peak: "-120.0";
+    in property <string> master-meter-rms: "-120.0";
+    in property <float> master-meter-level: 0.0;
 
     background: Tokens.bg-void;
     clip: true;
@@ -26,7 +72,10 @@ export component MixerConsole inherits Rectangle {
     accessible-label: "多轨调音台总控";
 
     // ---------------------------------------------------------------- 通道条
-    for track_index in 6 : Rectangle {
+    // 通道条数 == 工程的非主总线轨道数。`for name[i] in <model>` 必须带声明标识符
+    // （Slint 1.18.1 不接受只有索引的 `for [i] in <model>`，见
+    // docs/ledger/app-binding-notes.md §6.1）。
+    for track_name[track_index] in root.track-names : Rectangle {
         x: Tokens.space-4 + 104px * track_index;
         y: Tokens.space-4;
         width: 96px;
@@ -38,50 +87,119 @@ export component MixerConsole inherits Rectangle {
         clip: true;
         accessible-role: groupbox;
         accessible-id: "track-" + track_index + "-channel-strip";
-        accessible-label: "通道条 " + root.tracks[track_index];
+        accessible-label: "通道条 " + track_name;
 
         UiText {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;
-            height: 20px;
-            text: root.tracks[track_index];
+            height: 18px;
+            text: track_name;
             color: Tokens.ink-0;
             font-size: Tokens.font-size-sm;
             overflow: elide;
         }
 
+        // 声相文本 —— 由投影的 `pan_display` 给出（界面不做任何算术）。
         UiMonoText {
             x: Tokens.space-3;
-            y: 22px;
-            width: parent.width - 8px;
-            height: 16px;
-            text: "PAN C";
+            y: 20px;
+            width: 28px;
+            height: 14px;
+            text: "PAN " + root.track-pans[track_index];
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
+            overflow: elide;
         }
 
-        // VU 电平表 (高频刷新 → 遮罩) [UI-MCP-002]
+        // 轨道色标 —— 与 arrangement 的 `track-{i}-color-swatch` 同源（同一个投影字段），
+        // 但**语义 ID 必须不同**：两个视图可能同时可见，重复 ID 会让运行时控件树构建失败。
+        Rectangle {
+            x: 44px;
+            y: 20px;
+            width: 10px;
+            height: 14px;
+            background: root.track-colors[track_index];
+            border-radius: Tokens.radius-sm;
+            accessible-role: image;
+            accessible-id: "track-" + track_index + "-mixer-color-swatch";
+            accessible-label: "轨道色标 " + root.track-color-labels[track_index];
+        }
+
+        // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`
         Rectangle {
             x: Tokens.space-3;
-            y: 46px;
-            width: 10px;
-            height: 120px;
+            y: 38px;
+            width: 20px;
+            height: 16px;
+            background: root.track-mutes[track_index] ? Tokens.record-red : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-mixer-mute-button";
+            accessible-label: "轨道 " + track_name + " 静音";
+            accessible-checkable: true;
+            accessible-checked: root.track-mutes[track_index];
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "M";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+        }
+
+        // 独奏 —— `accessible-checked` 来自工程的 `TrackV3::solo`
+        Rectangle {
+            x: 30px;
+            y: 38px;
+            width: 20px;
+            height: 16px;
+            background: root.track-solos[track_index] ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-mixer-solo-button";
+            accessible-label: "轨道 " + track_name + " 独奏";
+            accessible-checkable: true;
+            accessible-checked: root.track-solos[track_index];
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "S";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+        }
+
+        // VU 电平表 (高频刷新 → 遮罩) [UI-MCP-002] [ARCH-UI-002]
+        // 柱高来自引擎发布的电平（`track-meter-levels`），文本来自同一帧的 dBFS。
+        Rectangle {
+            x: Tokens.space-3;
+            y: 60px;
+            width: 12px;
+            height: 104px;
             background: Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             accessible-role: progress-indicator;
             accessible-id: "track-" + track_index + "-meter";
-            accessible-label: "轨道 " + root.tracks[track_index] + " 电平表";
-            accessible-value-minimum: 0;
-            accessible-value-maximum: 1;
-            accessible-value-step: 0.01;
-            accessible-value: root.db-labels[track_index];
+            accessible-label: "轨道 " + track_name + " 电平表 峰值 " + root.track-meter-peaks[track_index] + " RMS " + root.track-meter-rmss[track_index] + " dBFS";
+            accessible-value-minimum: -120;
+            accessible-value-maximum: 0;
+            accessible-value-step: 0.1;
+            accessible-value: root.track-meter-peaks[track_index] + " dBFS";
 
             Rectangle {
                 x: 1px;
-                y: parent.height - 4px - 116px * root.levels[track_index];
+                y: parent.height - 2px - 100px * root.track-meter-levels[track_index];
                 width: parent.width - 2px;
-                height: 116px * root.levels[track_index];
+                height: 100px * root.track-meter-levels[track_index];
                 background: Tokens.ok-green;
                 border-radius: Tokens.radius-sm;
             }
@@ -89,18 +207,19 @@ export component MixerConsole inherits Rectangle {
 
         // 推子导轨
         Rectangle {
-            x: 30px;
-            y: 46px;
+            x: 38px;
+            y: 60px;
             width: 6px;
-            height: 120px;
+            height: 104px;
             background: Tokens.bg-void;
             border-radius: Tokens.radius-sm;
         }
 
         // 推子帽 —— [UI-TEST-001] `track-{track_index}-fader`
+        // 位置来自工程的 `volume_db`（`track-volume-fractions`），**不是**电平。
         Rectangle {
-            x: 22px;
-            y: 46px + 104px * (1.0 - root.levels[track_index]);
+            x: 30px;
+            y: 60px + 88px * (1.0 - root.track-volume-fractions[track_index]);
             width: 22px;
             height: 16px;
             background: Tokens.bg-raised;
@@ -109,20 +228,20 @@ export component MixerConsole inherits Rectangle {
             border-color: Tokens.gold-deep;
             accessible-role: slider;
             accessible-id: "track-" + track_index + "-fader";
-            accessible-label: "轨道 " + root.tracks[track_index] + " 推子";
+            accessible-label: "轨道 " + track_name + " 推子";
             accessible-orientation: vertical;
             accessible-value-minimum: -60;
             accessible-value-maximum: 6;
             accessible-value-step: 0.1;
-            accessible-value: root.db-labels[track_index] + " dB";
+            accessible-value: root.track-volumes[track_index] + " dB";
         }
 
         UiMonoText {
             x: Tokens.space-3;
-            y: 172px;
+            y: 176px;
             width: parent.width - 8px;
-            height: 16px;
-            text: root.db-labels[track_index] + " dB";
+            height: 14px;
+            text: root.track-volumes[track_index] + " dB";
             color: Tokens.gold;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -148,49 +267,123 @@ export component MixerConsole inherits Rectangle {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;
-            height: 20px;
-            text: "MASTER";
+            height: 18px;
+            text: root.master-name;
             color: Tokens.gold;
             font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+
+        UiMonoText {
+            x: Tokens.space-3;
+            y: 20px;
+            width: 30px;
+            height: 14px;
+            text: "PAN " + root.master-pan;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        Rectangle {
+            x: 48px;
+            y: 20px;
+            width: 10px;
+            height: 14px;
+            background: root.master-color;
+            border-radius: Tokens.radius-sm;
+            accessible-role: image;
+            accessible-id: "mixer-master-color-swatch";
+            accessible-label: "主控色标 " + root.master-color-label;
         }
 
         Rectangle {
             x: Tokens.space-3;
-            y: 46px;
-            width: 12px;
-            height: 120px;
+            y: 38px;
+            width: 20px;
+            height: 16px;
+            background: root.master-mute ? Tokens.record-red : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "mixer-master-mute-button";
+            accessible-label: "主控静音";
+            accessible-checkable: true;
+            accessible-checked: root.master-mute;
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "M";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+        }
+
+        Rectangle {
+            x: 30px;
+            y: 38px;
+            width: 20px;
+            height: 16px;
+            background: root.master-solo ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "mixer-master-solo-button";
+            accessible-label: "主控独奏";
+            accessible-checkable: true;
+            accessible-checked: root.master-solo;
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "S";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+        }
+
+        Rectangle {
+            x: Tokens.space-3;
+            y: 60px;
+            width: 14px;
+            height: 104px;
             background: Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             accessible-role: progress-indicator;
             accessible-id: "mixer-master-meter";
-            accessible-label: "主控电平表";
-            accessible-value-minimum: 0;
-            accessible-value-maximum: 1;
-            accessible-value-step: 0.01;
-            accessible-value: "0.80";
+            accessible-label: "主控电平表 峰值 " + root.master-meter-peak + " RMS " + root.master-meter-rms + " dBFS";
+            accessible-value-minimum: -120;
+            accessible-value-maximum: 0;
+            accessible-value-step: 0.1;
+            accessible-value: root.master-meter-peak + " dBFS";
 
             Rectangle {
                 x: 1px;
-                y: parent.height - 4px - 116px * root.master-level[0];
+                y: parent.height - 2px - 100px * root.master-meter-level;
                 width: parent.width - 2px;
-                height: 116px * root.master-level[0];
+                height: 100px * root.master-meter-level;
                 background: Tokens.warn-amber;
                 border-radius: Tokens.radius-sm;
             }
         }
 
         Rectangle {
-            x: 34px;
-            y: 46px;
+            x: 40px;
+            y: 60px;
             width: 6px;
-            height: 120px;
+            height: 104px;
             background: Tokens.bg-void;
             border-radius: Tokens.radius-sm;
         }
 
         Rectangle {
-            x: 26px;
-            y: 46px + 104px * (1.0 - root.master-level[0]);
+            x: 32px;
+            y: 60px + 88px * (1.0 - root.master-volume-fraction);
             width: 22px;
             height: 16px;
             background: Tokens.bg-raised;
@@ -204,15 +397,15 @@ export component MixerConsole inherits Rectangle {
             accessible-value-minimum: -60;
             accessible-value-maximum: 6;
             accessible-value-step: 0.1;
-            accessible-value: root.master-db + " dB";
+            accessible-value: root.master-volume-display + " dB";
         }
 
         UiMonoText {
             x: Tokens.space-3;
-            y: 172px;
+            y: 176px;
             width: parent.width - 8px;
-            height: 16px;
-            text: root.master-db + " dB";
+            height: 14px;
+            text: root.master-volume-display + " dB";
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;

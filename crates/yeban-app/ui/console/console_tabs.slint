@@ -28,6 +28,31 @@ export component ConsoleTabs inherits Rectangle {
     in property <[length]> note-positions: [];
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
+    // 调音台通道条（Tab 2）的**透传**属性 —— 本组件不解释它们：
+    // 投影字段（名字/音量/声相/静音/独奏/色标）与引擎电平（dBFS 文本 + 柱高）
+    // 都由 `src/host.rs` 单向注入，`MixerConsole` 只按下标取。
+    in property <[string]> track-names: [];
+    in property <[string]> track-volumes: [];
+    in property <[float]> track-volume-fractions: [];
+    in property <[string]> track-pans: [];
+    in property <[bool]> track-mutes: [];
+    in property <[bool]> track-solos: [];
+    in property <[color]> track-colors: [];
+    in property <[string]> track-color-labels: [];
+    in property <[string]> track-meter-peaks: [];
+    in property <[string]> track-meter-rmss: [];
+    in property <[float]> track-meter-levels: [];
+    in property <string> master-name: "Master";
+    in property <string> master-volume-display: "";
+    in property <float> master-volume-fraction: 0.0;
+    in property <string> master-pan: "C";
+    in property <bool> master-mute: false;
+    in property <bool> master-solo: false;
+    in property <color> master-color: #2c3a63;
+    in property <string> master-color-label: "";
+    in property <string> master-meter-peak: "-120.0";
+    in property <string> master-meter-rms: "-120.0";
+    in property <float> master-meter-level: 0.0;
 
     callback select-piano-roll();
     callback select-mixer();
@@ -132,6 +157,28 @@ export component ConsoleTabs inherits Rectangle {
         width: parent.width;
         height: root.height - 28px;
         visible: root.active-tab == 1;
+        track-names: root.track-names;
+        track-volumes: root.track-volumes;
+        track-volume-fractions: root.track-volume-fractions;
+        track-pans: root.track-pans;
+        track-mutes: root.track-mutes;
+        track-solos: root.track-solos;
+        track-colors: root.track-colors;
+        track-color-labels: root.track-color-labels;
+        track-meter-peaks: root.track-meter-peaks;
+        track-meter-rmss: root.track-meter-rmss;
+        track-meter-levels: root.track-meter-levels;
+        master-name: root.master-name;
+        master-volume-display: root.master-volume-display;
+        master-volume-fraction: root.master-volume-fraction;
+        master-pan: root.master-pan;
+        master-mute: root.master-mute;
+        master-solo: root.master-solo;
+        master-color: root.master-color;
+        master-color-label: root.master-color-label;
+        master-meter-peak: root.master-meter-peak;
+        master-meter-rms: root.master-meter-rms;
+        master-meter-level: root.master-meter-level;
     }
 
     DeviceRack {
