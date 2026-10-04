@@ -88,6 +88,23 @@
 - **同类前置**：Slint 在 Linux 上还需要系统 `fontconfig` 开发库（见 `docs/CI_CD.md` §3.2），
   已由 CI 统一安装，而不是在各 crate 里加 feature 垫片。
 
+### D18 — 规范里的 Slint 无头/测试 API **与上游 1.18.1 不符**，以上游为准并自研兜底
+
+`line/ui-shell` 逐条核对了上游文档与源码（记录在 `docs/ledger/ui-shell-notes.md` §2），发现三处规范与现实的偏差：
+
+| 规范写法 | 上游 1.18.1 现实 | 本文裁决 |
+| :--- | :--- | :--- |
+| `SLINT_BACKEND=headless`（`ARCH-UI-003`、UI/UX §12.1） | **不存在**。上游只接受 `qt` / `winit` / `linuxkms`（可加 `-software` / `-skia` / `-vello` 后缀） | `--headless` 作为**夜半自研哨兵值**：不构造窗口、不初始化后端、不进事件循环，打印握手后退出 0。它只证明"无显示器环境能跑起来"，**不证明控件树正确**。规范措辞需人类修订。 |
+| `slint::testing::init_integration_test_backend()` / `send_mouse_click()` / `send_keyboard_char()`（`ARCH-UI-005`） | **路径不存在**。实际是 `i-slint-backend-testing` 的 `ElementHandle`（`find_by_element_id` / `mock_single_click` / `mock_drag` / `query_descendants` …），且它**不渲染像素** | 控件树断言走 `i-slint-backend-testing` + `ElementHandle`；**截图**必须走 `slint::platform::Platform` + `SoftwareRenderer`（`MUST-GATE-015`）。两条路径分别由 `yeban-ui-test-port` 承载。 |
+| `renderer-skia` 软件后端（UI/UX §12.1） | 需要 LLVM/clang 工具链 | 暂缓：用可移植的 `renderer-software` 兜底；启用 Skia 需人类评估（编译成本 vs 渲染一致性），列 PENDING。 |
+
+- **附带好消息**：Slint 1.18 **原生提供 `accessible-id`**（官方定位即"用于自动化与测试识别控件"），
+  因此 UI/UX §12.2 的语义 ID 约定（`track-{i}-fader` / `note-{ulid}-rect` / `clip-{ulid}-header` / `tab-{name}-button`）
+  可以直接落在 `.slint` 上，而不必自建映射。它只在有窗口实例时存在，所以 `yeban-app` 另外维护一份
+  纯 Rust 注册表（184 条 + 14 个动态遮罩区），并用**双向覆盖判据**把两者钉在一起（`.slint` 与注册表任一侧漂移即变红）。
+- **代价**：在 `yeban-ui-test-port` 落地前，"UI 变更必须双重验证"（DoD 6）无法闭环 ——
+  当前界面只是**编译通过**，从未被渲染器或人眼看过。
+
 ---
 
 ## D5 的落地细节（版本钉死）
@@ -127,6 +144,8 @@
 1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1`、D7 的 PENDING 策略、D12 对 `Op` 全集的扩展、
    D16 的窗函数口径、D17 的 BSL-1.0 接纳）；
 2. `ROAD-M-1-006` 的 4 条人类审核（法务措辞、ASIO、商标、发布签名）——Agent 不得代签；
+2b. **规范措辞修订**：`SLINT_BACKEND=headless` 与 `slint::testing::*` 两处在 `ARCH-UI-003/005` 与
+   UI/UX §12.1 中与上游 1.18.1 不符（ADR-0001 D18），需要人类改写规范正文；
 3. 自托管固定频率 runner 的预算与接入时间（决定 BASELINE 与确定性门禁何时接线）；
 4. `website` 分支的 Cloudflare 凭据（`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`）；
 5. `LEGAL.md` / `GOVERNANCE.md` 里 6 处失效的 `file:///home/crow/work/agy/review/...` 绝对链接
