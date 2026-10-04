@@ -31,6 +31,7 @@
 #![deny(missing_docs)]
 
 pub mod commit;
+pub mod container;
 pub mod error;
 pub mod ids;
 pub mod music;
@@ -41,6 +42,9 @@ pub mod samples;
 pub use commit::{
     ANONYMOUS_BRANCH_PREFIX, BranchHead, Commit, CommitDraft, CommitGraph, SNAPSHOT_INTERVAL,
     UndoCursor, snapshot_due_at_depth,
+};
+pub use container::{
+    ContainerArchive, ContainerEntry, ContainerError, ContainerLimits, ProjectArchive,
 };
 pub use error::ModelError;
 pub use ids::{AssetHash, ContentHash, EntityId, PPQ, ULID_TEXT_LEN};
