@@ -20,10 +20,13 @@
 //!
 //! ```text
 //! 1) 事件：每块**一次**批量出队 [ROAD-M2-007]
-//! 2) 快照：begin_block() 无锁切换 [ARCH-RT-002]；revision 变化时重设电平弹道系数
+//! 2) 快照：begin_block() 无锁切换 [ARCH-RT-002]；revision 变化时
+//!       a) 重设电平弹道系数；b) 声部池对齐到新轨道集合 + 游标校正（只增不减）
 //! 3) 渲染 + 电平：对快照里**每条非母线轨**
-//!       render_track_into(track_scratch)  →  MeterBank::measure(...)  →  汇入母线块
+//!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch
+//!         →  MeterBank::measure(...)  →  汇入母线块
 //!    然后对母线（stereo-linked）MeterBank::measure_bus_stereo(block)
+//!    最后播放头前进 frames（**每量子一次**，与轨道数无关）
 //! 4) 发布：**每量子恰好一次** meters.publish(本量子的全部帧) [ARCH-UI-002, ROAD-M2-008]
 //! 5) end_block() 公布读者进度
 //! ```
@@ -31,6 +34,26 @@
 //! **每量子发布帧数 = 非母线轨数 + 1（母线）**。母线同时出现在 `tracks()` 里时
 //! （`EngineSnapshot::from_project` 的常态，主总线本身也是一条 `TrackV3`）
 //! **不会**被重复计量 —— 这正是本线修正的一处口径。
+//!
+//! ## 真的出声了（本切片的核心）
+//!
+//! 步骤 3 的第一句在本次切片之前是 `render_track_into` 的**占位静音**
+//! （`out.fill(0.0)`）。现在它由 [`crate::synth::SynthEngine`] 从
+//! **快照里的音符调度表**驱动逐样本合成：
+//!
+//! ```text
+//! YebanProjectV1 ──(控制线程投影, snapshot::project_schedules)──► NoteSchedule
+//!   clips → ClipPlacement → clip_pool(Midi) → MidiNote ──(tick → sample)──►
+//!     ScheduledNote { start_sample, end_sample, phase_inc, freq_hz, gain }
+//! ──(RT: 游标触发 → 定长声部池 → 整数相位波表读数)──► track_scratch
+//! ```
+//!
+//! 实时侧仍然是零分配/零锁/零 I/O：声部池是 `[TrackSlot; 16]`（每槽 16 个声部），
+//! 波表是构造期建好的 `Vec`，逐样本路径只有整数递推与 IEEE 精确类浮点运算
+//! （D32 分类见 [`crate::synth`] 模块文档 §2）。
+//!
+//! 播放头（[`EngineRuntime::position_samples`]）属于引擎自己，**不在快照里**：
+//! [MODEL-ISO-001] 明确禁止把挥发性走带状态塞进模型投影。
 //!
 //! ## 电平口径
 //!
@@ -47,6 +70,7 @@
 //! - [`EngineRuntime::scratch_meters`]：`[MeterFrame; 256]`（本量子的发布批次）
 //! - [`EngineRuntime::track_scratch`]：`[f32; 128]`（单轨渲染结果，复用一个缓冲）
 //! - [`EngineRuntime::block`]：`AudioBlock<128>`（`[f32; 128]` × 2）
+//! - [`EngineRuntime::synth`]：`[TrackSlot; 16]` × `[Voice; 16]`（声部池，定长）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
 //! 唯一允许的"共享状态"是原子量与 rtrb 队列；唯一的系统调用级别操作是
@@ -55,13 +79,13 @@
 use std::sync::Arc;
 
 use rtrb::Producer;
-use yeban_model::EntityId;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::snapshot::{EngineSnapshot, SnapshotReader, SnapshotSlot};
+use crate::synth::SynthEngine;
 
 // 编译期钉住块长是规范允许的取值 [ARCH-DET-001, MODEL-AST-002]。
 const _: () = crate::block::assert_supported_frames::<DEFAULT_BLOCK_FRAMES>();
@@ -91,6 +115,21 @@ pub struct EngineStats {
     pub meter_capacity_drops: u64,
     /// 本线程的 FTZ/DAZ 开关结果。
     pub ftz: Option<FtzDazOutcome>,
+    /// 播放头已渲染的样本数（= 音频线程当前的绝对位置）。
+    ///
+    /// 它是 **`EngineRuntime` 自己的状态**，不在快照里：`EngineSnapshot` 是不可变的
+    /// 模型投影，按 [MODEL-ISO-001] 不允许携带挥发性走带状态。
+    pub rendered_samples: u64,
+    /// 当前快照里已调度的音符条数（模型 → 快照 → 合成的**覆盖度**判据）。
+    pub scheduled_notes: u64,
+    /// 当前快照构造时因容量上限丢弃的音符条数。
+    pub note_schedule_drops: u64,
+    /// 声部池累计**硬窃取**次数（[ARCH-RT-004] 的快速淡出尚未接入）。
+    pub voice_steals: u64,
+    /// 因声部池轨道槽耗尽而未参与合成的轨道次数。
+    pub track_drops: u64,
+    /// 累计触发过的音符数。
+    pub notes_triggered: u64,
     /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
     ///
     /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
@@ -114,6 +153,8 @@ pub struct EngineRuntime {
     track_scratch: [f32; DEFAULT_BLOCK_FRAMES],
     /// 每节点电平状态机（峰值保持 / 平滑 RMS）。
     bank: MeterBank<SCRATCH_METERS>,
+    /// 声部池 + 播放头（**真的合成**：见 [`crate::synth`]）。
+    synth: SynthEngine,
     /// 已按哪一份快照的采样率/块长设置过弹道系数。
     armed_revision: Option<u64>,
     quanta: u64,
@@ -126,6 +167,10 @@ pub struct EngineRuntime {
     ftz_ready: bool,
     /// 与 [`EngineStats::quanta_per_second`] 同源（实时侧只写一次, 控制面只读）。
     armed_quanta_per_second: Option<f32>,
+    /// 与 [`EngineStats::scheduled_notes`] 同源（武装快照时抓取）。
+    armed_scheduled_notes: u64,
+    /// 与 [`EngineStats::note_schedule_drops`] 同源（武装快照时抓取）。
+    armed_note_schedule_drops: u64,
 }
 
 impl EngineRuntime {
@@ -150,6 +195,8 @@ impl EngineRuntime {
             scratch_meters: [MeterFrame::default(); SCRATCH_METERS],
             track_scratch: [0.0; DEFAULT_BLOCK_FRAMES],
             bank: MeterBank::new(),
+            // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
+            synth: SynthEngine::new(48_000),
             armed_revision: None,
             quanta: 0,
             events_applied: 0,
@@ -160,6 +207,8 @@ impl EngineRuntime {
             ftz: None,
             ftz_ready: false,
             armed_quanta_per_second: None,
+            armed_scheduled_notes: 0,
+            armed_note_schedule_drops: 0,
         }
     }
 
@@ -202,8 +251,20 @@ impl EngineRuntime {
                 .meter_capacity_drops
                 .saturating_add(self.bank.capacity_drops()),
             ftz: self.ftz,
+            rendered_samples: self.synth.position(),
+            scheduled_notes: self.armed_scheduled_notes,
+            note_schedule_drops: self.armed_note_schedule_drops,
+            voice_steals: self.synth.voice_steals(),
+            track_drops: self.synth.track_drops(),
+            notes_triggered: self.synth.notes_triggered(),
             quanta_per_second: self.armed_quanta_per_second,
         }
+    }
+
+    /// 播放头当前所在的绝对样本位置（0 = 工程 tick 0）。
+    #[must_use]
+    pub const fn position_samples(&self) -> u64 {
+        self.synth.position()
     }
 
     /// 当前快照的模型层版本号（音频线程是否已追上模型线程）。
@@ -248,7 +309,10 @@ impl EngineRuntime {
             scratch_meters,
             track_scratch,
             bank,
+            synth,
             armed_revision,
+            armed_scheduled_notes,
+            armed_note_schedule_drops,
             quanta,
             events_applied,
             event_bulk_pops,
@@ -274,6 +338,11 @@ impl EngineRuntime {
         // --- 2) 快照边界处的无锁切换 [ARCH-RT-002] ---
         let mut produced = 0usize;
         if let Some(current) = snapshot.begin_block() {
+            // 母线（master）虽然通常也在 tracks() 里，但它是**总线**：单独出一帧
+            // stereo-linked 的母线电平，绝不按"轨道"重复计量；它也不参与声部合成
+            // （母线是汇流点，没有自己的声源）。
+            let master = current.master();
+
             // 采样率/块长变了 ⇒ 电平弹道系数按新的"量子/秒"折算(保留电平状态)。
             let revision = current.revision();
             if *armed_revision != Some(revision) {
@@ -287,18 +356,24 @@ impl EngineRuntime {
                 bank.set_quanta_per_second(quanta_per_second);
                 self.armed_quanta_per_second = Some(quanta_per_second);
                 *armed_revision = Some(revision);
+
+                // --- 2b) 声部池对齐到新快照的轨道集合（每修订一次, 非逐样本）---
+                // 新轨道占槽、消失的轨道标记 absent（状态保留）、游标**只增不减**地校正
+                // ⇒ 已触发过的音符绝不重复触发，在鸣的音符不被快照切换切断。
+                synth.begin_snapshot(
+                    current.sample_rate(),
+                    current.tracks().keys().filter(|id| **id != master),
+                );
+                synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+                *armed_scheduled_notes = current.scheduled_notes() as u64;
+                *armed_note_schedule_drops = current.note_schedule_drops();
             }
 
-            // 渲染占位：真正的声部合成/通道条在后续切片接入（见模块文档的边界说明）。
-            // 这里先把"块长来自快照"和"输出块被清空"两条契约落实，避免下游拿到陈旧样本。
             block.silence();
             block.set_frames(frames);
             bank.begin_quantum();
 
             // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
-            // 母线（master）虽然通常也在 tracks() 里，但它是**总线**：
-            // 单独出一帧 stereo-linked 的母线电平，绝不按"轨道"重复计量。
-            let master = current.master();
             let metered_tracks = current.tracks().keys().filter(|id| **id != master).count();
             // 给母线留一个槽位, 保证母线永远有电平可发。
             let track_budget = scratch_meters.len().saturating_sub(1);
@@ -311,7 +386,14 @@ impl EngineRuntime {
                     continue;
                 }
                 let track = *id;
-                render_track_into(&mut track_scratch[..frames], track);
+                // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
+                // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
+                // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
+                synth.render_track(
+                    track,
+                    current.schedule(&track),
+                    &mut track_scratch[..frames],
+                );
                 if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {
                     scratch_meters[produced] = frame;
                     produced += 1;
@@ -321,6 +403,8 @@ impl EngineRuntime {
                 // 汇入立体声母线（占位：等增益写两声道，见 sum_into_bus 的说明）。
                 sum_into_bus(block, &track_scratch[..frames]);
             }
+            // 播放头前进：**每个量子一次**（与轨道数无关）。
+            synth.advance(frames);
 
             // --- 3b) 母线：立体声联动电平 ---
             if produced < scratch_meters.len() {
@@ -346,20 +430,12 @@ impl EngineRuntime {
     }
 }
 
-/// 占位轨道渲染：把该轨本量子的渲染结果写进 `out`（单声道、声相之前）。
-///
-/// 本线**没有**声部合成/采样播放（见模块文档的边界说明与
-/// `docs/ledger/engine-rt-notes.md` §5.1），所以这里写静音。
-/// **接入点就在这里**：后续切片让声部渲染写 `out`，随后的电平计量与母线汇流无需改动。
-fn render_track_into(out: &mut [f32], _track: EntityId) {
-    out.fill(0.0);
-}
-
 /// 占位母线汇流：把单声道轨渲染结果等增益写入左右两声道。
 ///
 /// ⚠ 这**不是**声相定律：等功率声相、发送/辅助汇流、PDC 对齐都属于混音台切片
-/// （见 notes 的 pending）。当前轨道渲染还是占位静音，因此这一步在数值上是恒等变换；
-/// 先写出来是为了让"逐轨 → 母线"的信号路径在结构上完整、可被判据覆盖。
+/// （见 notes 的 pending）。现在轨道渲染是**真实样本**，因此这一步在数值上不再
+/// 是恒等变换 —— 它把每条轨的单声道结果等增益复制到 L/R（等价于"声相居中"），
+/// 于是 `TrackParams::pan` 与 `audio_config.pan_law` 目前都**不影响输出**。
 fn sum_into_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, mono: &[f32]) {
     // 两个切片都由 `stereo_mut()` 按有效帧数给出, `zip` 天然按较短者截断。
     let (left, right) = block.stereo_mut();
@@ -377,7 +453,7 @@ mod tests {
     use crate::ring::event_channel;
     use crate::snapshot::{TrackParams, retire_channel};
     use std::collections::BTreeMap;
-    use yeban_model::{RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
+    use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
 
     /// 轨道 id 升序的前 n 个（用于断言确定性顺序）。
     fn simple_snapshot(revision: u64) -> EngineSnapshot {

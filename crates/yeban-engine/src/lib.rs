@@ -2,7 +2,7 @@
 //!
 //! 本 crate 是实时音频权威：cpal 流宿主、`rtrb` 无锁 SPSC、`Arc<EngineSnapshot>`
 //! 原子交换与退役回收队列、内部 PDC 延迟补偿、FTZ/DAZ 浮点环境
-//! [ARCH-RT-001..005, ARCH-PDC-001..002, ROAD-M2-001..004, ROAD-M2-007..008]。
+//! [ARCH-RT-001..005, ARCH-PDC-001..002, ROAD-M2-001..008]。
 //!
 //! 本 crate **不属于** `#![forbid(unsafe_code)]` 名单（名单为 model/theory/dsp/render）：
 //! FTZ/DAZ 设置与快照原子指针的引用计数操作需要 `unsafe`，但每一处都必须附
@@ -20,6 +20,7 @@
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
+//! | [`synth`] | 静态预分配声部池与逐样本合成（**真的出声**：整数相位波表 + ADSR + 力度增益） | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DET-001]、[ROAD-M2-005]、[ROAD-M2-006] |
 //! | [`rt`] | 渲染量子驱动（`EngineRuntime`），**不依赖 cpal** | [ARCH-TOP-002]、[ARCH-RT-001] |
 //! | `device` | cpal 宿主、配置协商、`NullBackend`（**feature `device`**） | [ARCH-TOP-002]、[ROAD-M2-001] |
 //!
@@ -34,8 +35,8 @@
 //! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
 //!
 //! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `ring` / `snapshot` /
-//! `meter` / `rt` —— 也就是说"PDC 算法 + 快照交换 + SPSC + 渲染量子驱动"全部可用，
-//! 只是没有声卡。
+//! `meter` / `synth` / `rt` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
+//! + 渲染量子驱动"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
 //!
 //! **电平口径不在这条 feature 切分的两侧**：它已经上移到零重依赖的 `yeban-dsp`
 //! （`yeban_dsp::meter`），本 crate 的 [`level`] 只剩 `pub use`。因此无论 `device`
@@ -58,11 +59,16 @@
 //!
 //! ## 设计边界（本切片**没有**证明的东西）
 //!
-//! 1. **声部合成尚未接入**：`EngineRuntime::process_quantum` 目前只做
-//!    "参数/事件出队 → 快照切换 → 渲染（占位静音）→ 逐轨/母线电平计量与发布"，
-//!    真正的乐器/效果渲染留给 `yeban-sfz` / `yeban-dsp` 的后续切片。
-//!    因此本 crate 现在**不能**发声：电平计算本身是真实的（口径见 [`level`]），
-//!    但端到端喂进去的是占位静音 ⇒ 发布出来的电平恒为静音。
+//! 1. **声部合成已接入（合成器是最小实现）**：`process_quantum` 现在真的把
+//!    **工程的 MIDI 音符**变成样本 —— 模型 → 快照（tick → 样本位置、确定性概率触发、
+//!    力度/音量增益）→ 实时侧（整数相位波表读数 + ADSR）→ 逐轨电平 → 立体声母线。
+//!    仍然**没有**的：滤波器/音色参数（`TrackV3` 里还没有到音频线程的乐器参数形状）、
+//!    3 ms 声部窃取淡出（[ARCH-RT-004]）、声相定律（母线汇流是等增益复制）、
+//!    循环片段展开、采样播放与 `yeban-sfz` 接入。
+//!    详见 [`synth`] 的模块文档 §4 与 `docs/ledger/engine-sound-notes.md`。
+//! 2. **走带是"从 tick 0 播放"**：播放头由 [`rt::EngineRuntime`] 自己持有
+//!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），`process_quantum` 每量子
+//!    前进 `frames`。播放/暂停/定位事件通道属于后续切片。
 //! 2. **实时线程优先级**（[ROAD-M2-001]）未实现，理由见 `device` 模块文档与
 //!    `docs/ledger/engine-rt-notes.md` §4：cpal 0.18 的 `realtime` feature 只覆盖
 //!    WASAPI / AAudio / PipeWire / JACK，macOS 与 Linux-ALSA 路径没有开关，
@@ -79,7 +85,7 @@
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3（`ARCH-RT-001..005`、
 //!   `ARCH-PDC-001..002`、`ARCH-TOP-002`、`ARCH-DET-001`）
-//! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` `ROAD-M2-001..004`、`ROAD-M2-007..008`
+//! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` `ROAD-M2-001..008`
 //! - `docs/ledger/engine-rt-notes.md`（API 核验出处与 TODO 清单）
 #![deny(missing_docs)]
 // 红线 8 [AGENTS.md §2] 只对 model/theory/dsp/render 强制 forbid(unsafe_code)。
@@ -96,6 +102,7 @@ pub mod meter;
 pub mod ring;
 pub mod rt;
 pub mod snapshot;
+pub mod synth;
 
 /// 本 crate 实现的规范需求 ID（规格 → 测试映射的单一事实源，测试里逐条引用）。
 ///
@@ -108,7 +115,10 @@ pub const IMPLEMENTED_SPEC_IDS: &[&str] = &[
     "ARCH-PDC-002", // 环形延迟线（时延预算的补偿实现）
     "ARCH-TOP-002", // 线程模型与通信隔离
     "ARCH-UI-002",  // 电平独立 SPSC + 真峰值/RMS 计量 + UI 取最新
-    "ARCH-DET-001", // L1：固定 128 采样块长
+    "ARCH-DET-001", // L1：固定 128 采样块长 + 逐位确定性
+    "ARCH-RT-004",  // 声部窃取（**部分**：静态声部池 + 硬窃取；3ms 淡出待接入）
+    "ROAD-M2-005",  // 静态预分配声部池（SFZ 采样源待接入）
+    "ROAD-M2-006",  // 单轨音符触发稳定发声（内置波表；323 款乐器待接入）
     "ROAD-M2-001",  // 音频调度核心（宿主部分）
     "ROAD-M2-002",  // 双缓冲快照原子交换
     "ROAD-M2-003",  // FTZ/DAZ 强制统一

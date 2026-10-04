@@ -15,7 +15,7 @@
 //! | :-: | :--- | :--- |
 //! | S1 | 带真实电平的 10,000 量子零分配 + 零释放 | 在 `render_block` 里 `Vec::with_capacity(1)` |
 //! | S2 | 每量子**恰好一次**批量发布，帧数 = 非母线轨数 + 1 | 每轨单独 `publish` 一次 |
-//! | S3 | 静音 ⇒ 峰值 0、dBFS 负无穷、无 `NaN` | 用 `0/0` 求 RMS、或删掉钳位 |
+//! | S3 | 静音 ⇒ 峰值 0、dBFS 负无穷、无 `NaN`（输入用 `silent_project`） | 用 `0/0` 求 RMS、或删掉钳位 |
 //! | S4 | 消费者落后时只取最新，旧帧永不覆盖新帧 | 把 `supersedes` 改成 `true`/`>` 取反 |
 //! | S5 | 满幅正弦 ⇒ 峰值 ≈ 0 dBFS；幅度单调；`NaN`/`Inf` 不产生 `NaN` | 删掉 `sanitize_sample` |
 //! | S6 | 队列溢出**可观测**：`dropped > 0` 且 UI 看到的 quantum 落后于生产者 | 把 dropped 计数删掉 |
@@ -132,14 +132,45 @@ fn engine_rig() -> (
     MeterCollector,
     EngineRuntime,
 ) {
-    let project = yeban_model::samples::filled_project();
-    let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具工程必须能编译成快照");
+    engine_rig_with(&yeban_model::samples::filled_project())
+}
+
+/// 同 [`engine_rig`]，但夹具由调用方给定。
+fn engine_rig_with(
+    project: &yeban_model::YebanProjectV1,
+) -> (
+    Arc<SnapshotSlot>,
+    yeban_engine::snapshot::RetireQueue,
+    MeterCollector,
+    EngineRuntime,
+) {
+    let snapshot = EngineSnapshot::from_project(project, 1).expect("夹具工程必须能编译成快照");
     let slot = SnapshotSlot::new(snapshot);
     let (retire, queue) = retire_channel(64);
     let (_sender, receiver) = event_channel(64);
     let (publisher, collector) = meter_channel(8192);
     let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
     (slot, queue, collector, runtime)
+}
+
+/// **真正静音**的夹具：`filled_project` 去掉全部 MIDI 音符（保留轨道/路由/片段）。
+///
+/// ⚠ 为什么必须显式清空音符（`line/engine-sound` 的交叉发现）：
+/// 本文件此前用 `filled_project()` 当"静音输入"，那是**建立在渲染占位静音这个前提上的**
+/// ——`render_track_into` 曾经写 `out.fill(0.0)`，所以"夹具工程的前 128 帧"恒为静音。
+/// `line/engine-sound` 把真实合成接上之后，`filled_project` 的第 0 个音符恰好在
+/// tick 0 起音 ⇒ S3 会立刻变红，而**红的原因不是电平口径坏了**，是夹具不再静音。
+/// 判据的意图是"静音输入 ⇒ 峰值 0 / 有限 / 无 NaN / dBFS 负无穷"，
+/// 因此这里把输入改成**真的**静音；S3 的判别力不变，反而更强
+/// （旧版测的是"占位渲染恰好静音"，新版测的是"真实合成链上的静音"）。
+fn silent_project() -> yeban_model::YebanProjectV1 {
+    let mut project = yeban_model::samples::filled_project();
+    for entry in project.clip_pool.values_mut() {
+        if let Some(notes) = entry.content.notes_mut() {
+            notes.clear();
+        }
+    }
+    project
 }
 
 /// 一段满幅正弦（测试信号；引擎本身不生成信号，只测量）。
@@ -279,7 +310,8 @@ fn scenario_publish_contract_per_quantum(report: &mut Report) {
 
 /// S3：静音 ⇒ 峰值 0、dBFS 负无穷、静音下限有限、无 NaN。
 fn scenario_silence_is_finite(report: &mut Report) {
-    let (_slot, _queue, mut collector, mut runtime) = engine_rig();
+    // 输入是**真的**静音夹具（不是"填充工程恰好被占位渲染成静音"，见 `silent_project`）。
+    let (_slot, _queue, mut collector, mut runtime) = engine_rig_with(&silent_project());
     let mut output = vec![0.0f32; 128 * 2];
     runtime.process_quantum(&mut output, 2);
     let mut scratch = [MeterFrame::default(); 8];
