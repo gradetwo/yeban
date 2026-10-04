@@ -137,7 +137,10 @@ jobs:
             echo '```text'
             tail -80 /tmp/gate.log 2>/dev/null || true
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee /tmp/cmp-summary.md >> "$GITHUB_STEP_SUMMARY"
+          # ⚠ 上面用 `tee`: 判决**必须同时进日志**。
+          # 实测教训: 第一版只写 `>> "$GITHUB_STEP_SUMMARY"` ⇒ 判决只出现在 job summary,
+          # 而 `gh run view --log` 抓不到它 —— 于是"门禁绿了"这件事可读, 但"它凭什么绿"读不到。
 
   # ---------------------------------------------------------------------------
   # 基准: 目前没有任何 criterion 基准, 只验证 bench 目标可编译
