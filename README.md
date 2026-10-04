@@ -62,12 +62,37 @@ cargo build --release -p yeban-app        # just the desktop GUI binary
 ### Run
 
 ```bash
-cargo run --release -p yeban-app                     # open the desktop main window
+cargo run --release -p yeban-app                     # open the desktop main window (needs a display)
 cargo run --release -p yeban-app -- --headless       # no display needed: prints `headless ok` and exits 0
-cargo run --release -p yeban-app -- --dump-elements  # print the semantic control tree, no window
-cargo run --release -p yeban-mcp                     # Intent API v2 over stdio (the MCP server)
-cargo run --release -p yeban-mcp -- --enable-mcp-http --features mcp-http   # loopback-only HTTP (127.0.0.1, dynamic port)
+cargo run --release -p yeban-app -- --help           # every switch, its combination rules and exit codes
+cargo run --release -p yeban-app -- --version        # the real version (read from Cargo.toml)
 ```
+
+Everything below runs **without a display** and is safe on a headless machine:
+
+```bash
+cargo run --release -p yeban-app -- --save-as demo.yeban                      # write the built-in demo project as .yeban
+cargo run --release -p yeban-app -- --open demo.yeban --headless              # open it and print what was read
+cargo run --release -p yeban-app -- --open demo.yeban --save-as copy.yeban    # save-as: atomic, archives preserved
+cargo run --release -p yeban-app -- --open demo.yeban --export-elements e.txt # semantic element list for scripts/AI
+cargo run --release -p yeban-app -- --dump-elements                           # the same list on stdout
+cargo run --release -p yeban-app -- --project-sample filled --save-as f.yeban  # pick a different built-in sample
+cargo run --release -p yeban-app -- --print-shortcuts                         # keyboard-shortcut policy table
+SLINT_BACKEND=headless cargo run --release -p yeban-app -- --headless          # the command line the spec names
+```
+
+The MCP (Intent API v2) server:
+
+```bash
+cargo run --release -p yeban-mcp                                                    # stdio transport
+cargo run --release -p yeban-mcp --features mcp-http -- --enable-mcp-http           # loopback-only HTTP (127.0.0.1, dynamic port)
+```
+
+**What the CLI promises** (measured behaviour, not aspiration): a failed `--open` exits **3** with the container's own
+reason and never degrades into an empty project; `--save-as` replaces the target **atomically** (temp file → `fsync` →
+`rename`) and leaves the old file untouched on failure; with no `--open`, `--save-as` saves the **built-in demo project**
+and says so in its output; unknown switches exit **2** with usage. Exit codes: `0` ok · `1` UI path · `2` usage ·
+`3` open · `4` save · `5` export.
 
 ### Test
 

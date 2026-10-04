@@ -70,12 +70,36 @@ cargo build --release -p yeban-app        # 只构建桌面 GUI 二进制
 ### 运行
 
 ```bash
-cargo run --release -p yeban-app                     # 打开桌面主窗口
+cargo run --release -p yeban-app                     # 打开桌面主窗口（需要显示器）
 cargo run --release -p yeban-app -- --headless       # 无需显示器：打印 headless ok 后退出 0
-cargo run --release -p yeban-app -- --dump-elements  # 打印语义控件树，不建窗口
-cargo run --release -p yeban-mcp                     # Intent API v2 的 stdio 形态（MCP 服务）
-cargo run --release -p yeban-mcp -- --enable-mcp-http --features mcp-http   # 仅环回 HTTP（127.0.0.1 + 动态端口）
+cargo run --release -p yeban-app -- --help           # 全部开关 + 组合语义 + 退出码
+cargo run --release -p yeban-app -- --version        # 真实版本（读 Cargo.toml）
 ```
+
+下面这些**都不需要显示器**，在无头机器上可放心跑：
+
+```bash
+cargo run --release -p yeban-app -- --save-as demo.yeban                      # 把内置演示工程写成 .yeban
+cargo run --release -p yeban-app -- --open demo.yeban --headless              # 打开它，并打印真的读到了什么
+cargo run --release -p yeban-app -- --open demo.yeban --save-as copy.yeban    # 另存为：原子替换，归档保真
+cargo run --release -p yeban-app -- --open demo.yeban --export-elements e.txt # 导出语义元素清单给脚本/AI
+cargo run --release -p yeban-app -- --dump-elements                           # 同一份清单打到 stdout
+cargo run --release -p yeban-app -- --project-sample filled --save-as f.yeban  # 换一个内置样本
+cargo run --release -p yeban-app -- --print-shortcuts                         # 快捷键策略表
+SLINT_BACKEND=headless cargo run --release -p yeban-app -- --headless          # 规范里点名的命令行
+```
+
+MCP（Intent API v2）服务：
+
+```bash
+cargo run --release -p yeban-mcp                                                    # stdio 形态
+cargo run --release -p yeban-mcp --features mcp-http -- --enable-mcp-http           # 仅环回 HTTP（127.0.0.1 + 动态端口）
+```
+
+**CLI 的承诺**（实测行为，不是愿望）：`--open` 失败会退出 **3** 并给出容器的原始原因，**绝不**退化成"打开成空工程"；
+`--save-as` 是**原子替换**（临时文件 → `fsync` → `rename`），失败时旧文件一字未改；没有 `--open` 时 `--save-as`
+存的是**内置演示工程**并在输出里明说；未知开关退出 **2** 并打印用法。退出码：`0` 成功 · `1` 界面路径 ·
+`2` 用法错误 · `3` 打开失败 · `4` 保存失败 · `5` 导出失败。
 
 ### 测试
 
