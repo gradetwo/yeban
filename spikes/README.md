@@ -16,3 +16,25 @@
 | [`spike-09-snapshot-exchange`](./spike-09-snapshot-exchange) | `ROAD-M0-009` | 高频快照原子交换与退役队列压测 | 音频线程零 dealloc、零爆音、队列不溢出、内存曲线平坦 (MUST-GATE-012)。 | 未实现 |
 
 结论与实测数字一律登记到 `docs/DEVELOPMENT_LEDGER.md`（SKILL 规则 9：读数必须写下来）。
+
+---
+
+## 现状：哪些 Spike 已被正式 crate "汲取"（honest bookkeeping）
+
+Spike 的价值在于**得出可复用的结论**，而不是留一个能跑的目录。结论一旦被汲取进 `crates/`，
+spike 本身就可以按需退役（`docs/DEV_WORKFLOW.md`「明确废弃」）。
+
+| Spike | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `spike-04-opslog-model` | **结论已汲取** | `crates/yeban-model` 已落地 ULID `EntityId` + `BTreeMap` 权威 AST + 可逆 `Op` 日志 + proptest 状态守恒（76 个测试，CI run 37217037266 / 37218243856 系列绿）。spike 目录保留为空壳，直到有人把"10,000 次撤销/重做"的实测读数单独跑出来登记。 |
+| 其余 8 个 | **未开始** | 目录为空壳骨架，`[dependencies]` 里的重依赖仍是 `TODO(spike)` 注释。这也意味着一件事：**在 `line/ui-shell` 之前，整个仓库从未编译过 Slint**（第一次真的编译时暴露了 Linux fontconfig 前置条件，见 `docs/CI_CD.md` §3.2）。 |
+
+`spike-04` 的"已汲取"不等于"已验收"：MUST-GATE-010 要求的 **10,000 步**属性测试仍需在 CI 的上限档位
+真实跑过并把读数登记进账本；本机默认只跑小步数。
+
+## 纪律提醒
+
+- 一个 spike 一个目录，**永不共享文件** —— 九条线可以真正并行。
+- 重依赖（slint / cpal / symphonia / rayon）一旦在某条 spike 里启用，**全工作区的 CI 都要为它付编译成本**；
+  启用前请先确认它带来的结论值得这份成本。
+- spike 的结论必须能被**机械判据**证伪（哪个数字、什么条件下变红），否则它只是演示。
