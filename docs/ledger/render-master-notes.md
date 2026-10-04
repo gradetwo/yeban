@@ -296,7 +296,22 @@ ui 依赖 model…）都会撞上同一堵墙。建议在合并本线之前先�
 **教训（已并入本文件 §5.1 的结论）**：`assert_eq!` 要求两侧都 `PartialEq`；
 对"含 trait object、只能手写 `Debug`"的类型，比 `Result` 必须走 `.err()`/`matches!`。
 
-### 第 3 轮 —— 本轮已修（待推送后读回）
+### 第 3 轮 —— run [37221854177](https://github.com/gradetwo/yeban/actions/runs/37221854177)：**只差 1 条 lint**
+
+- `plan` 这次正确推出**只含 `yeban-render`**（集成者的计划器改动生效）；
+- `rust (yeban-render)`：第 2 轮那 6 个类型错误**全部消失**，整 crate（含 `render.rs` /
+  `midi.rs` / `wav.rs` / `rng.rs` / `lib.rs`）**类型检查通过**，只剩 1 条 lint：
+  `lib.rs:267` `clippy::manual_is_multiple_of`（`x % n == 0` → `x.is_multiple_of(n)`）；
+- `deny`：与第 1/2 轮完全相同（阻断项 A/B 未变）。
+
+### 第 4 轮（单条一行修复）—— 本轮已修（待推送后读回）
+
+- 只有 `lib.rs:267` 的 `manual_is_multiple_of` 一条；已按 clippy 的建议改用
+  `usize::is_multiple_of`（Rust 1.87 起稳定，本工作区钉 1.99）。
+- 这一轮**只有一行**：第 3 轮已经把五个 CI-only 文件全部类型检查过了，
+  因此这是"最后一次已知红的收尾"，不是新一轮猜测。
+
+### 第 3 轮及以前的修复清单
 
 - T1–T6（上表）；
 - 主动消掉同类 lint 风险：`bus_reduction_order` 的 `Option<Vec<(EntityId, EntityId, u32)>>`

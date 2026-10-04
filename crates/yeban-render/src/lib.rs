@@ -264,6 +264,10 @@ mod contract_tests {
         let format = PcmFormat::integer(2, 48_000, 24);
         assert_eq!(format.block_align(), 6);
         assert_eq!(format.bytes_per_sample(), 3);
-        assert!(buffer.byte_len() % usize::from(format.block_align()) == 0);
+        assert!(
+            buffer
+                .byte_len()
+                .is_multiple_of(usize::from(format.block_align()))
+        );
     }
 }
