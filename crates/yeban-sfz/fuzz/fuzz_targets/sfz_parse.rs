@@ -46,5 +46,7 @@ fuzz_target!(|data: &[u8]| {
         max_macro_expansions_per_line: 2,
         ..ParseLimits::default()
     };
-    let _ = parse_text(&text, &tight);
+    // 注意: 这里必须用 `owned` 而不是 `text` —— `text` 已被 `into_owned()` 移走,
+    // 再借用它就是 E0382(这个 fuzz 目标因此**从未编译过**, 直到 2026-10-05 手动档首次执行才暴露)。
+    let _ = parse_text(&owned, &tight);
 });
