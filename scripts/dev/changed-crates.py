@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tomllib
 import os
 import subprocess
 import sys
@@ -75,8 +76,34 @@ def all_members() -> list[str]:
     return members
 
 
+def workspace_paths() -> dict[str, str]:
+    """从**根清单**的 `[workspace.dependencies]` 读出 `包名 -> 成员目录名`。
+
+    为什么必须读根清单: ADR-0001 **D21** 之后, 跨成员依赖的推荐写法是
+    `yeban-engine = { workspace = true }`(路径住在根 `[workspace.dependencies]`);
+    只在成员清单里找内联 `path = "crates/x"` 会**看不见这条边**。
+    """
+    manifest = REPO / "Cargo.toml"
+    data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    table = data.get("workspace", {}).get("dependencies", {})
+    out: dict[str, str] = {}
+    for name, spec in table.items():
+        if isinstance(spec, dict) and "path" in spec:
+            out[name] = Path(spec["path"]).name
+    return out
+
+
 def dependents_of(crate: str, members: list[str]) -> set[str]:
-    """找出直接依赖 `crate` 的成员 (workspace 内部路径依赖)。"""
+    """找出直接依赖 `crate` 的成员。
+
+    ⚠ 这条函数曾经**只**在成员清单里找内联 `path = "crates/<name>"`,
+    而 D21 之后的标准写法是 `{ workspace = true }` ⇒ **依赖边被整条漏掉**。
+    后果不是"慢", 是**假绿**: `line/engine-sound` 实测改动 `yeban-engine` 后,
+    `plan` 只返回 `[yeban-engine, yeban-sfz]`, 于是 `rust (yeban-app)` 不进矩阵、
+    "全量腿"也被跳过 —— 而 `yeban-app` 确实消费 engine 的公共 API。
+    纯增量的改动侥幸没事, **下一个非增量的公共 API 改动会拿到"全绿但没编译下游"的判决**。
+    """
+    by_path = workspace_paths()
     out: set[str] = set()
     for other in members:
         for parent in ("crates", "spikes"):
@@ -84,8 +111,17 @@ def dependents_of(crate: str, members: list[str]) -> set[str]:
             if not manifest.is_file():
                 continue
             text = manifest.read_text(encoding="utf-8")
+            # 形态 ①: 内联路径依赖(老写法, 仍然支持)
             if f'"{parent}/{crate}"' in text or f"path = \"{parent}/{crate}\"" in text:
                 out.add(other)
+                continue
+            # 形态 ②: `{ workspace = true }` —— 名字经根清单映射回成员目录
+            data = tomllib.loads(text)
+            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                for name, spec in (data.get(section) or {}).items():
+                    inherited = isinstance(spec, dict) and spec.get("workspace") is True
+                    if inherited and by_path.get(name) == crate:
+                        out.add(other)
     return out
 
 

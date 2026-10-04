@@ -1231,3 +1231,24 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **仍不做的（转记，避免读者以为"能播了"）**：无滤波器/音色参数、无母线限制器（峰值 1.0058 就是它缺席的证据）、
   声相定律未接、`loop_config` 被忽略、无走带控制、SFZ 只做接口预留、**仍不开声卡**（cpal 路径未在这些判据里跑）。
 
+### 第 7 轮：修掉一个**假绿生成器** —— 计划器看不见 `{ workspace = true }` 依赖边
+
+- **发现者**：`line/engine-sound`（并给出实测复现）。`scripts/dev/changed-crates.py::dependents_of`
+  只在**成员自己的** `Cargo.toml` 里找内联字面量 `path = "crates/<name>"`；
+  但 ADR-0001 **D21** 之后跨成员依赖的标准写法是 `yeban-engine = { workspace = true }`
+  （路径住在根 `[workspace.dependencies]`）⇒ **这条依赖边被整条漏掉**。
+- **后果不是"慢"，是"假绿"**：它实测改 `yeban-engine` 后 `plan` 只返回 `[yeban-engine, yeban-sfz]`，
+  于是 **`rust (yeban-app)` 不进矩阵**、"全量腿"也因 `workspace_wide=false` 被跳过 ——
+  而 `yeban-app` 确实消费 engine 的公共 API。那次侥幸没事（改动是纯增量的），
+  **下一个非增量的公共 API 改动会拿到"全绿但根本没编译下游"的判决**。
+  这正是最危险的一类缺陷：**门禁本身在骗人**，而且看起来一切正常。
+- **修法**（集成者，`scripts/dev/changed-crates.py`）：
+  ① 读**根清单**的 `[workspace.dependencies]` 建立 `包名 → 成员目录` 映射；
+  ② 成员清单里凡是 `{ workspace = true }` 的依赖（`dependencies`/`dev-dependencies`/`build-dependencies`
+     三节都查）都按该映射还原成依赖边；③ 内联路径写法仍然支持（向后兼容）。
+- **实测**：`dependents_of('yeban-engine', …)` 从 **`[]`** 变成 **`['yeban-app']`**；
+  场景复跑（`--base 4ffec55 --head HEAD`，即真改过 engine 的那一轮）受影响集合变为
+  **`['yeban-app', 'yeban-engine', 'yeban-sfz']`**（旧逻辑会漏掉 `yeban-app`）。
+- **教训**：**"计划器"也是被测对象**。它算错的代价不是漏跑一个 job，而是**发出一个错误的绿色判决**；
+  凡是"由脚本决定跑什么"的地方，都值得像门禁一样被复核一次（这次是那条工作线顺手做的）。
+
