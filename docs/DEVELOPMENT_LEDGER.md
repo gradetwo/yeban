@@ -889,3 +889,43 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **与 L16 的关系**：L16 记的是同一个形状的**第一次**；这条记的是"**它又发生了，而且这次损失的是记录**"。
   重复出现说明"靠自觉"没用 —— 这也是把纪律写进脚本/流程的理由（对照 AGENTS.md §5.3）。
 
+### 第 5 轮：两个"从未执行过"的门禁第一次真跑，各抓到一个真问题
+
+我这一轮做的事不是加功能，而是**把两条一直标着"已接线但从未执行"的门禁真的按下去**。结果两条都红了，
+而且**红的原因都不是"被测代码有 bug"那么简单** —— 它们暴露的是**我们自己的记录与事实之间的差距**。
+
+#### ① `windows` 门禁（新增）：第一次执行就抓到**真实的跨平台缺陷**
+
+- 新增手动档 `windows`（`windows-latest` 上跑 `yeban-model` + `yeban-mcp` 全部测试与 clippy；
+  选这两个 crate 是因为它们零系统库依赖，Windows runner 上不需要装 Slint/cpal/ALSA）。
+- **首次执行 = 失败**（run 37235205697）：`domain::store::tests::exclusive_lock_is_atomic_and_released_on_drop`
+  在 `crates/yeban-mcp/src/domain/store.rs:314` 报
+  `Os { code: 33, message: "The process cannot access the file because another process has locked a portion of the file." }`。
+- **根因**（不是测试写错，是设计假设不成立）：Unix 的 `try_lock` 底下是 `flock`（**建议锁**，别的句柄照样能读）；
+  Windows 底下是 `LockFileEx`，锁的是**字节区间且强制** —— 被锁区间对**其他句柄（含同进程的其他句柄）**的读写一律被拒。
+  ⇒ "**持锁后再去读锁文件**"这个动作在 Windows 上必然失败。
+- **影响面比那条测试大**：`PROJECT_LOCKED` 时我们想报告"是谁持有（PID/时间戳）"，
+  而另一个进程在持有者持锁期间**读不到** `.yeban.lock` 的内容。
+- **处置**：该 crate 本轮由 `line/store-container` 独占写者 ⇒ 已把完整诊断与修法建议交给它
+  （`LockGuard` 自带元数据 + 访问器；"读持有者"必须在**尝试加锁之前**；必须容忍"读不到"并附明确的平台差异字段；
+  判据要**平台感知**而不是两边跳过）。MUST-GATE-008 因此从"已接线"**退回"部分"**（Unix 已验证，Windows 有缺陷待修）。
+- **这次门禁的价值**：它证明"**Unix 上绿**"不等于"锁是对的"。之前我们只能写"Windows 分支从未编译过"。
+
+#### ② `fuzz` 门禁：第一次真跑发现**目标自己编译不过**
+
+- **首次执行 = 失败**（run 37235241965），但**不是 fuzz 发现崩溃**，而是
+  `crates/yeban-sfz/fuzz/fuzz_targets/sfz_parse.rs` 里 `String::from_utf8_lossy` 的 `Cow`
+  被 `into_owned()` 移走后又被借用 ⇒ `error[E0382]: borrow of moved value: text`。
+  ⇒ 这个 fuzz 目标**从写下那天起就没编译过**，而账本里一直写着"设施已接线，从未执行"。
+- **修法**（集成者直接改，`yeban-sfz` 当前无工作线）：末次调用改用 `owned`，并在原位写下这段来龙去脉。
+  本机 `cargo check`（fuzz 独立 workspace）**exit=0** 后才提交。
+- **修复后重跑（90 秒）= success**（run 37235776161）：libFuzzer 真的跑了 ——
+  `cov: 142 → 237+`、语料 `corp: 1 → 9+`、`ft: 143 → 324`，**零崩溃**。
+  附带产物：`crates/yeban-sfz/fuzz/Cargo.lock` 被本机 `cargo check` 生成并提交 ⇒
+  fuzz 独立 workspace 的依赖从此可复现（此前它没有锁文件）。
+- **仍然是 PENDING 的部分**：90 秒远不是规范说的"千万次"；该门禁的真实达标状态没变，
+  变化的是它**不再以"编译不过"收场**。以后每次手动触发都会真的跑起来。
+
+**这两条共同印证了一件事**（与 L12/L18/L20/L22/L23 同族）：**"记在台账里的 pending"与"真的跑过一次"是两件事**。
+只要一个门禁从未执行，它既不能证明通过，也不能证明失败 —— 它只证明"我们不知道"。
+
