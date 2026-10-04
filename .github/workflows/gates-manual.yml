@@ -23,6 +23,7 @@ on:
           - all-features
           - bench
           - fuzz
+          - windows
           - determinism
           - pending
       crate:
@@ -213,6 +214,51 @@ jobs:
           path: crates/yeban-sfz/fuzz/artifacts
           if-no-files-found: warn
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Windows: 验证"从没编译过"的那条分支 (`.yeban.lock` 的 LockFileEx 路径)。
+  # 只跑**轻依赖**的 crate(yeban-mcp 只依赖 serde/serde_json/thiserror/yeban-model),
+  # 因此不需要 Slint/cpal, 也不会在 Windows runner 上装一堆系统库。
+  # 为什么值得: `std::fs::File::try_lock` 在 Unix 走 flock、在 Windows 走 LockFileEx ——
+  # 两者的语义差异(共享/独占、同进程多句柄)只有真跑才能发现; 之前它一直标着"从未编译"。
+  # ---------------------------------------------------------------------------
+  windows:
+    name: windows (锁与模型真编译真跑)
+    if: inputs.gate == 'windows'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - name: yeban-model 测试 (纯 Rust, 无平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-model --locked 2>&1 | tee /tmp/model.log
+      - name: yeban-mcp 全部目标 (含 .yeban.lock 的 Windows 分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-mcp --locked --all-targets 2>&1 | tee /tmp/mcp.log
+      - name: clippy (-D warnings) on the same crates
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo clippy -p yeban-model -p yeban-mcp --all-targets --locked -- -D warnings 2>&1 | tee /tmp/clippy.log
+      - name: 结果摘要
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Windows 验证 (从没编译过的平台分支)"
+            echo ''
+            echo '```text'
+            grep -E 'test result: ok|test result: FAILED' /tmp/model.log /tmp/mcp.log 2>/dev/null || echo '(没有捕获到测试结果)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # 确定性对账 (L1/L2): 目前无渲染器, 明确列为 PENDING
