@@ -990,14 +990,22 @@ mod tests {
         expected.sort();
         assert_eq!(by_source, expected, "归约顺序必须是源节点 EntityId 字典序");
 
-        // 反向证明: 按边身份排序会得到另一个顺序, 因此上面的断言不是恒真。
-        let by_edge: Vec<EntityId> = order.iter().map(|entry| entry.edge_id).collect();
-        let mut edge_sorted = by_edge.clone();
-        edge_sorted.sort();
+        // 归约顺序是**复合键** `(source_node, edge_id)` 的全序 —— 只有这个才是被承诺的性质。
+        // 单独看边身份**不是**全局升序: 在 star_graph 里两条键的顺序被刻意做成相反,
+        // 因此"边身份升序"这条断言本身是错的（第 4 轮 CI 把它抓出来了）。
+        let by_key: Vec<(EntityId, EntityId)> = order
+            .iter()
+            .map(|entry| (entry.source_node, entry.edge_id))
+            .collect();
+        let mut key_sorted = by_key.clone();
+        key_sorted.sort();
         assert_eq!(
-            by_edge, edge_sorted,
-            "边身份也是升序（因为排序键第二段是边身份）"
+            by_key, key_sorted,
+            "归约顺序必须按 (source_node, edge_id) 全序"
         );
+
+        // 反向证明: 两种键给出**不同**的序列, 因此上面的断言有区分力。
+        let by_edge: Vec<EntityId> = order.iter().map(|entry| entry.edge_id).collect();
         assert_ne!(
             by_source, by_edge,
             "测试图必须让两种键给出不同顺序, 否则判据没有区分力"

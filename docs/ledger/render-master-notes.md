@@ -311,6 +311,24 @@ ui 依赖 model…）都会撞上同一堵墙。建议在合并本线之前先�
 - 这一轮**只有一行**：第 3 轮已经把五个 CI-only 文件全部类型检查过了，
   因此这是"最后一次已知红的收尾"，不是新一轮猜测。
 
+### 第 4 轮 —— run [37221948856](https://github.com/gradetwo/yeban/actions/runs/37221948856)：**clippy 全绿，只剩 2 条判据的期望值写错**
+
+| job | 结论 |
+| :--- | :--- |
+| `plan` / `checks` / `lockfile` | ✅ |
+| `rust (yeban-render)` | **`clippy (-D warnings)` ✅ 通过**（整个 crate + 全部 target 零告警，第 2/3 轮的 lint 与类型错误全消）；`test` ❌ **100 通过 / 2 失败** |
+| `deny` | ❌ 与前三轮完全相同（阻断项 A/B） |
+
+2 条失败**都是判据自己的期望值写错**，实现没问题（CI 直接把 left/right 打出来了）：
+
+| # | 判据 | 错在哪 | 修复 |
+| :--- | :--- | :--- | :--- |
+| F1 | `midi::tests::single_track_export_merges_channels_into_one_chunk` | 断言 `chunks[0].payload == 0..6`，把"负载长度 6"当成了"文件内范围"。`TrackChunk::payload` 是**文件内**范围（fourcc 0..4 + 大端长度 4..8），实际是 `8..14` | 改成 `8..14` 并加注释说明口径 |
+| F2 | `render::tests::master_reduction_order_is_entity_id_lexicographic` | 我额外断言"边身份也全局升序"——**这是错的**：排序键是复合键 `(source_node, edge_id)`，在刻意让两种顺序相反的测试图里，边身份必然不是全局升序 | 改为断言复合键全序 `(source_node, edge_id)`，并保留 `assert_ne!(by_source, by_edge)` 作为"判据有区分力"的证明 |
+
+**教训**：这两条都属于"判据写错而不是代码写错"，而本机因为不编译这几个文件所以**无法发现**。
+反过来说，CI 的 `left/right` 原始输出足以让修复变成确定性的（不需要猜），这也是值得记下来的经验。
+
 ### 第 3 轮及以前的修复清单
 
 - T1–T6（上表）；

@@ -817,7 +817,9 @@ mod tests {
         let chunks = track_chunks(&bytes).expect("chunk 布局");
         assert_eq!(chunks.len(), 2, "MThd + 一条 MTrk");
         assert_eq!(&chunks[0].fourcc, b"MThd");
-        assert_eq!(chunks[0].payload, 0..6);
+        // `payload` 是**文件内**的字节范围（不是相对 chunk 起点的范围）:
+        // fourcc 0..4, 大端长度 4..8, 负载 8..14。
+        assert_eq!(chunks[0].payload, 8..14, "MThd 负载在文件里的范围");
         assert_eq!(chunks[0].len(), 6);
         assert!(!chunks[0].is_empty());
         assert_eq!(&chunks[1].fourcc, b"MTrk");
