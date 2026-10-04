@@ -36,10 +36,11 @@ pub mod ids;
 pub mod music;
 pub mod ops;
 pub mod project;
+pub mod samples;
 
 pub use commit::{
-    ANONYMOUS_BRANCH_PREFIX, BranchHead, Commit, CommitGraph, SNAPSHOT_INTERVAL,
-    snapshot_due_at_depth,
+    ANONYMOUS_BRANCH_PREFIX, BranchHead, Commit, CommitDraft, CommitGraph, SNAPSHOT_INTERVAL,
+    UndoCursor, snapshot_due_at_depth,
 };
 pub use error::ModelError;
 pub use ids::{AssetHash, ContentHash, EntityId, PPQ, ULID_TEXT_LEN};
@@ -53,3 +54,4 @@ pub use project::{
     RoutingGraph, RoutingKind, SCHEMA_VERSION, SampleRate, SceneV3, SectionV3, TimeSignature,
     TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
+pub use samples::{SampleExportError, export_all, export_to_default_dir};
