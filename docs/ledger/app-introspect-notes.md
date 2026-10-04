@@ -247,7 +247,18 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 | 1 | `53e2f93` | [37224871698](https://github.com/gradetwo/yeban/actions/runs/37224871698) | **success** | `plan` / `checks` / `lockfile` / `deny` / `rust (yeban-ui-test-port)` / **`rust (yeban-app)`** 全绿；`rust (workspace 全量)` 按设计跳过。`rust (yeban-app)` 真的执行了本线的判据：`running 8 tests` → `test result: ok. 8 passed`，并产出 artifact **`ui-screenshots-yeban-app`**（§6.1 的数字来自这一轮） |
 | 2 | `c667fa2` | [37225490791](https://github.com/gradetwo/yeban/actions/runs/37225490791) | **failure（2 条，1 条是我的、1 条是 main 的）** | ① **我的**：`rust (workspace 全量)` 的 `clippy --workspace -D warnings` 死在 `error: constant TOKEN_BG_PANEL_ALT is never used` —— 第 2 轮我把对照元素从"Musical PR 卡"换成了 `status-bar-chord`，那个色值常量就没人用了。`test --workspace` 因此没跑，**CJK 数字与 D24 判据这一轮没有结果**。② **main 的**：`checks` 的"跨语言契约对账"死在 `no example target named export_mcp_samples in yeban-mcp package` —— D25 的 ci.yml 步骤先落地、mcp-core 的 example 后落地，`origin/main` 当时自己是红的（376… 见下），与本线无关。 |
 | 3 | `5815b8e` | [37225850785](https://github.com/gradetwo/yeban/actions/runs/37225850785) | **failure（残留全部不是本线的）** | `clippy --workspace -D warnings` **绿**（第 2 轮那条未使用常量已修）⇒ `test --workspace` 真的跑到本线的判据：**`running 8 tests` → `test result: ok. 8 passed`**，含新的 D24 墨迹判据（§6.4）。红的两个 job 都不是本线的：① `rust (workspace 全量)` 的 `test --workspace` 死在 **`crates/yeban-mcp/tests/contract.rs`** 的 2 条契约测试（D25 schema 联集 vs mcp 注册表，属 mcp-core 线）；② `checks` 的"跨语言契约对账"同源。两处都在本线 diff 之外（`git diff --name-only origin/main HEAD` 只有本线 6 个文件） |
-| 4 | 见下 | `pending` | `pending` | 纯 notes 提交（docs-only ⇒ plan 判 `crates: []`，只跑 `checks`）：把第 3 轮数字与 B1/B2 两条字体发现写进账本 |
+| 4 | `5033576` | [37226356522](https://github.com/gradetwo/yeban/actions/runs/37226356522) | **failure（唯一的红点不是本线的）** | 纯 notes 提交 ⇒ plan 判"改动不落在任何成员 crate" ⇒ `rust (workspace 全量)` 与 `rust (矩阵腿)` 都按设计跳过；`plan` / `lockfile` / `deny` 绿，`checks` 仍死在**同一个** mcp-tools 契约对账（`schemas/mcp-tools.schema.json` 不接受 `crates/yeban-mcp` 导出的样本：`missingFromSchema` 一串错误码 + registry 样本整体不被接受）—— 属 mcp-core/D25 |
+| 5 | 本文件这次提交 | —（**未再跑**） | — | 把第 4 轮判决记进账本。**本线到此为止**：再提交一次 notes 只会得到完全相同的"docs-only ⇒ 只跑 checks ⇒ mcp 红"，因此不再刷轮次（这是预测，不是未读判决）。 |
+
+**本线的净判决（4 轮，逐条可核验）**：
+- **本线的代码在 CI 上真的绿过**：第 1 轮 `rust (yeban-app)` 全绿（8 tests passed + artifact）；
+  第 3 轮 `clippy --workspace -D warnings` 绿 + `test --workspace` 跑到本线判据 **8 passed**（含 D24）。
+- **两轮的红点都精确定位在本线之外**：第 2 轮 `checks`（`export_mcp_samples` 当时不存在，
+  main 自己红）、第 3/4 轮 `checks` + `crates/yeban-mcp/tests/contract.rs`（D25 schema 联集 vs
+  mcp 注册表）。判定方法见上"main 变红时的读法"。
+- **本线从未把自己的红点留成没修的状态**：第 2 轮的 `TOKEN_BG_PANEL_ALT` 未使用（我自己的错）
+  在第 3 轮修掉并验证（clippy 绿）。
+
 
 **第 2 轮的教训（写给后来的本机验证）**：本机 harness **抓不到"未使用常量"这类错误** ——
 它只按名字抽取出"被判据引用到的"函数/常量，未被引用的项根本不会进 harness，
