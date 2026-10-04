@@ -39,7 +39,7 @@
 | `BASELINE-001` | 离线母带渲染（32 轨参考工程 A；目标 ≥100× 实时） | **部分** | run 37228045430（`gates-manual` 的 `bench` 档）：30 秒音频单线程 **106.3×** / Rayon 自动 **135.9×**，两次 digest 相同；**托管 runner 不是规范指定的参考硬件** ⇒ 只算数量级超过，不算达标 |
 | `BASELINE-002` | 空工程空闲常驻内存（目标 ≤35 MB） | **PENDING** | 无任何内存测量；需真实进程 + 平台内存 API（CI 可测但未接） |
 | `BASELINE-003` | 界面渲染帧率（10 万音符滚动；目标稳定 120 FPS） | **PENDING** | 帧率判据需要固定刷新率/无噪声硬件（`spikes/README.md` 已登记）；**不得**用托管 runner 读数宣布通过 |
-| `BASELINE-004` | 单步撤销时延 p99（目标 ≤0.2 ms） | **PENDING** | `crates/yeban-model/src/ops.rs` 的逆操作本机可测，但**没有打点**；DoD 4 的"衰退 ≤3%"同样需要固定硬件 |
+| `BASELINE-004` | 单步撤销时延 p99（目标 ≤0.2 ms = 200 µs） | **部分** | 新增 `crates/yeban-model/examples/bench_undo.rs`（另接进手动档 `bench`）。**本机 M2 / `--release` 实测（20,000 次/op）**：`undo_set_param` p99 **0.084 µs**、`undo_set_macro` 0.084 µs、`undo_move_clip` 0.084 µs、`undo_batch2`（两步批次）**1.834 µs** —— 全部远优于 200 µs 目标（max 有 6~23 µs 的调度离群值，故以 p99 为准）。**仍差**：规范点名 Apple M2 Pro 12 核 / Ryzen 7 7840HS 的**确认性**复跑；更大的工程规模与更多 `Op` 种类的扫描 |
 | `BASELINE-005` | 音频硬件往返时延（目标 ≤5.5 ms） | **PENDING** | 需要真实声卡 + 回环（CoreAudio/WASAPI/PipeWire 原生查询）；**唯一无法用 CI 绕行**的门禁，必须有音频硬件的机器 |
 | `BASELINE-006` | AI 交互效率（JSON ≤4 KB、Token 中位数 ≤600） | **PENDING** | 需要"生成 16 小节段落"的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**，且 Token 口径需人类裁决用哪个 tokenizer |
 

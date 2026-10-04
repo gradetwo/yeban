@@ -157,6 +157,13 @@ jobs:
           # 为什么用 example 而不是 criterion: 见 crates/yeban-render/examples/bench_render.rs 的文件头
           # (零新增依赖 + 可被门禁直接调用 + 判据跑在 debug 断言与并行测试里, 量不出有意义的数)。
           cargo run --release -p yeban-render --locked --example bench_render -- 32 30 2>&1 | tee /tmp/bench.log
+      - name: 'BASELINE-004 单步撤销时延 (p99)'
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          # 纯计算 + 零重依赖 ⇒ 这条即使在托管 runner 上也有意义(不像渲染吞吐那样必须独占机器);
+          # 但**绝对值**仍只作数量级参考, 达标判定要在规范指定的参考机型上复跑。
+          cargo run --release -p yeban-model --locked --example bench_undo -- 20000 2>&1 | tee -a /tmp/bench.log
       - name: criterion 目标编译校验 (若存在)
         run: |
           set -euo pipefail
