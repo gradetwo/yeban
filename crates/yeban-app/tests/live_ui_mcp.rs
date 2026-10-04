@@ -429,6 +429,16 @@ fn label_in(tree: &UiTree, id: &str) -> String {
         .clone()
 }
 
+/// 从电平标签里取出**峰值 dBFS**（`"… 峰值 -6.0 RMS -23.4 dBFS"` ⇒ `-6.0`）。
+///
+/// 为什么不用字符串相等去断言电平: 电平是**新引擎真实合成**的产物, 把它写成常量会让这条判据
+/// 在合成器任何一次合理调参后变红 —— 那时红的是"数字变了", 而不是"接线坏了"。
+/// 这条判据要守的是**接线**: 注入值被丢弃 + 读数是新队列的真实结果。
+fn dbfs_value(label: &str) -> Option<f32> {
+    let peak = label.split("峰值 ").nth(1)?;
+    peak.split_whitespace().next()?.parse::<f32>().ok()
+}
+
 /// 一帧像素的 FNV-1a 指纹（与 `ui/screenshot` 的指纹同算法）。
 fn frame_fingerprint(image: &yeban_ui_test_port::Rgb8Image) -> String {
     let (_bytes, evidence) =
@@ -887,17 +897,36 @@ fn admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
         report["visibleQuantum"]
     ));
 
-    // ---- 副作用：电平回到下限（新引擎的读数取代了注入的那一帧） ----
+    // ---- 副作用：**注入的那一帧作废了**，界面转而显示新引擎自己的读数 ----
+    //
+    // ⚠ 这条判据的期望值在 `line/engine-sound` 合并后**必须改**（CI run 37244018311 红在这里）:
+    // 旧期望是"电平回到下限 −120 dB", 那个期望**建立在"渲染是占位静音"之上** ——
+    // 真实合成接上后, 新引擎对"鼓"轨立刻渲染出真实电平（实测 峰值 −6.0 / RMS −23.4 dBFS）,
+    // 于是"回下限"不再成立。**但判据真正要证明的东西没变**: 注入的 0.0/0.0 必须被丢掉、
+    // 界面必须接上**新引擎的电平队列**。所以改成断言那件真正的事:
+    //   ① 注入值（0.0/0.0）确实不在了; ② 读数是新引擎的真实、有限、非下限的读数。
+    // 这是"跨线前提是隐式契约"的第二个实例（第一个是 engine-sound 自己发现的 S3）:
+    // 凡是"因为另一处还没实现, 所以这里可以这样测"的判据, 前提消失时都要主动复核。
     let (after, _) = plane.plane().tree().expect("ui/tree");
-    assert_eq!(
-        label_in(&after, "track-0-meter"),
-        "轨道 鼓 电平表 峰值 -120.0 RMS -120.0 dBFS",
-        "引擎换代之后旧读数必须作废（电平回到下限）"
+    let track_label = label_in(&after, "track-0-meter");
+    assert_ne!(
+        track_label, "轨道 鼓 电平表 峰值 0.0 RMS 0.0 dBFS",
+        "引擎换代之后**注入的旧读数必须作废** —— 界面不许继续显示换代前那一帧"
     );
-    assert_eq!(
-        label_in(&after, "mixer-master-meter"),
-        "主控电平表 峰值 -120.0 RMS -120.0 dBFS"
+    let master_label = label_in(&after, "mixer-master-meter");
+    assert_ne!(
+        master_label, "主控电平表 峰值 0.0 RMS 0.0 dBFS",
+        "主控电平也必须来自新引擎的队列"
     );
+    // 读数必须是**真实合成**的结果: 有限、且不在静音下限上。
+    for (what, label) in [("轨道", &track_label), ("主控", &master_label)] {
+        let peak =
+            dbfs_value(label).unwrap_or_else(|| panic!("{what} 电平标签里应当有峰值: {label}"));
+        assert!(
+            peak.is_finite() && peak > -120.0,
+            "{what} 换代后应当有新引擎的**真实读数**(有限且高于 −120 dB 下限), 实际: {label}"
+        );
+    }
 
     // 再重建一次 ⇒ 代数递增（不是把同一个数字报两遍）。
     let again = plane
