@@ -3,12 +3,17 @@
 # 规范来源 (Normative): docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md ROAD-M-1-002
 # AGENTS.md §2 红线 2 (依赖许可红线), MUST-GATE-004 (cargo-deny 100% 通过)
 #
-# 配置格式已按 cargo-deny 0.20.x 校准 (2026-10-05 核对官方 cfg 文档):
+# 配置格式已按 cargo-deny 0.20.x 校准 (2026-10-05 核对官方 cfg 文档 + 首次 CI 实测):
 #   - [advisories] 的 `vulnerability` / `unsound` / `notice` 字段已**移除**, 保留即报错;
 #     所有漏洞/不健全公告现在一律 error, 需要豁免只能写进 `ignore`。
 #   - [licenses] 的 `unlicensed` / `deny` / `copyleft` / `allow-osi-fsf-free` / `default`
 #     字段已**移除**, 保留即报错; 未在 `allow` 中的许可一律拒绝。
 #   - GNU 系许可自 0.18.4 起按字面严格匹配: 允许 "GPL-3.0" 不等于允许 "GPL-3.0-only"。
+#
+# ⚠ TOML 表是有位置的: 一旦写了 `[licenses.private]`, 它**之后**的键就都属于它。
+#   首次 CI 运行就栽在这里 —— `unused-allowed-license` 与 `allow` 被误放进
+#   `[licenses.private]`, cargo-deny 报 `found 2 unexpected keys`。
+#   规则: 子表一律放在所属父表的**所有标量键之后**。见 docs/DEVELOPMENT_LEDGER.md 第 6 节。
 
 [advisories]
 # unmaintained = "workspace": 只有当**直接依赖**无人维护时才失败。
@@ -19,13 +24,9 @@ ignore = []
 
 [licenses]
 confidence-threshold = 0.8
-# workspace 成员自身不检查许可表达式: 本项目为 "GPL-3.0-only + GPLv3 §7 CLAP 例外",
-# 该 §7 附加许可没有对应 SPDX 标识符, 由根 LICENSE 文本承载。
-[licenses.private]
-ignore = true
+# 白名单之外一律拒绝。GNU 系按字面匹配, 因此 GPL-3.0 / GPL-3.0-only / GPL-3.0-or-later
+# 三者都要显式列出 (本项目自身以 GPL-3.0-only + §7 CLAP 例外发布)。
 unused-allowed-license = "allow"
-
-# 允许的开源许可证白名单
 allow = [
     "MIT",
     "Apache-2.0",
@@ -42,8 +43,17 @@ allow = [
     "CC-BY-4.0",
     "OFL-1.1",
 ]
+# 注意: CC-BY-NC-* / CC-Sampling-Plus / 任何"非商业"或"不可再分发"许可**永远不进白名单**
+# [AGENTS.md §2 红线 2]。历史项目 groove 的采样清单曾主动接受 CC-BY-NC —— 绝不移植
+# (docs/ledger/legacy-reuse-audit.md 第 5 节)。
 
-# 针对特定 crate 的精细化豁免规则
+# workspace 成员自身不检查许可表达式: 本项目为 "GPL-3.0-only + GPLv3 §7 CLAP 例外",
+# 该 §7 附加许可没有对应 SPDX 标识符, 由根 LICENSE 文本承载。
+# 子表必须放在 [licenses] 的标量键与数组之后 (见文件头的 TOML 位置警告)。
+[licenses.private]
+ignore = true
+
+# 针对特定 crate 的精细化豁免规则 (目前仓库尚无 ring 依赖, 保留以备后续引入 TLS 时使用)
 [[licenses.clarify]]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"

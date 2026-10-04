@@ -51,10 +51,13 @@ gate_schemas() {
 
 gate_deny() {
   step "cargo deny check (开源合规)"
-  if ! command -v cargo-deny >/dev/null 2>&1; then
-    fail "cargo-deny 未安装 (CI 上由 EmbarkStudios/cargo-deny-action 提供)"
+  # 优先用 PATH 里的 cargo-deny; 也可以用预编译二进制并通过 YEBAN_CARGO_DENY 指过来
+  # (docs/DEV_WORKFLOW.md: 不要为了装它在本机做一次重编译)。
+  local deny_bin="${YEBAN_CARGO_DENY:-$(command -v cargo-deny || true)}"
+  if [[ -z "$deny_bin" ]]; then
+    fail "cargo-deny 未安装 (CI 上由 EmbarkStudios/cargo-deny-action 提供; 本机见 docs/DEV_WORKFLOW.md)"
   fi
-  run "cargo-deny" cargo deny --all-features check
+  run "cargo-deny" "$deny_bin" --all-features check
 }
 
 heavy_deps_of() {
@@ -86,6 +89,9 @@ case "$MODE" in
     gate_fmt
     gate_guards
     for crate in "$@"; do gate_crate "$crate"; done
+    ;;
+  deny)
+    gate_deny
     ;;
   full)
     if [[ -z "${CI:-}" && -z "${YEBAN_ALLOW_HEAVY:-}" ]]; then

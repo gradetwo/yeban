@@ -27,6 +27,24 @@ SKILL 讲"为什么"，这里讲"怎么敲"。
 > 指向 `/Users/crow/work/music/.cargo-home`。在普通终端里直接 `cargo` 即可，rustup 会按
 > `rust-toolchain.toml` 自动装好钉死的 `1.99.0`。
 
+### 本机跑开源合规门禁（cargo-deny，零编译）
+
+官方提供预编译二进制，**不要**为了它在本机做一次 `cargo install`（那是重编译，违反本机纪律）：
+
+```bash
+mkdir -p /Users/crow/work/music/.tooling && cd /Users/crow/work/music/.tooling
+curl -sL -o cd.tgz https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-apple-darwin.tar.gz
+tar xzf cd.tgz && rm cd.tgz
+
+cd /Users/crow/work/music/yeban
+YEBAN_CARGO_DENY=/Users/crow/work/music/.tooling/cargo-deny-0.20.2-aarch64-apple-darwin/cargo-deny \
+CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
+  bash scripts/gates/run-gates.sh deny
+```
+
+背景（为什么值得加这一档）：首次推送 CI 时 `deny` job 变红，原因只是 `deny.toml` 的 TOML 表位置写错，
+而当时我判断"本机装不了 cargo-deny"——那个判断是错的。见 `docs/DEVELOPMENT_LEDGER.md` 第 6 节 L2/L4。
+
 ---
 
 ## 1. 多条工作线并行：一树一线，一文件一写者

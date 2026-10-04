@@ -15,12 +15,26 @@
 | 本机 cargo | `cargo 1.99.0 (5f94df478 2026-08-27)` | `cargo --version` |
 | Node / pnpm / wrangler | v26.10.0 / 12.4.1 / 4.136.1 | `--version` |
 | 光栅化工具 | `rsvg-convert`、`magick`、`qlmanage` 可用；`cairosvg` 不可用 | `command -v` |
-| `gh` CLI | **不可用** → CI 判决改用公开 REST API 读取（`scripts/dev/ci-verdict.sh`） | `command -v gh` |
+| `gh` CLI | **可用**：`gh 2.102.0`，已登录 `gradetwo`（首个 run 时还不可用，后由人类负责人配置） | `gh auth status` |
+| `cargo-deny` | **本机可用**：0.20.2 预编译二进制（`brew`/`cargo install` 都不必，直接下 release tarball），放在仓库外的 `/Users/crow/work/music/.tooling/` | `<bin> --version` |
 | 仓库 | `git@github.com:gradetwo/yeban.git`，**public**，默认分支 `main` | `git ls-remote`, GitHub API |
-| 沙箱限制 | 受限环境中 rustup/cargo 无法写 `~/.rustup`、`~/.cargo` | 实测报错 `Operation not permitted` |
+| 沙箱限制 | 受限环境中 rustup/cargo 无法写 `~/.rustup`、`~/.cargo`；`gh` 无法写 `~/.cache/gh` | 实测报错 `Operation not permitted` |
 
-**推论（已落地）**：受限环境下必须设 `RUSTUP_TOOLCHAIN=stable` + 工作区内 `CARGO_HOME`；
-这两件事被 `scripts/dev/cargo-local.sh` 封装，不需要每次手敲。
+**推论（已落地）**：受限环境下必须设 `RUSTUP_TOOLCHAIN=stable` + 工作区内 `CARGO_HOME`，
+`gh` 需要把 `XDG_CACHE_HOME` 指到工作区内。这三件事被 `scripts/dev/cargo-local.sh` 与
+`scripts/dev/ci-verdict.sh` 封装，不需要每次手敲。
+
+### 1.1 本机如何跑开源合规门禁（不必重编译）
+
+```bash
+mkdir -p /Users/crow/work/music/.tooling && cd /Users/crow/work/music/.tooling
+curl -sL -o cd.tgz https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-apple-darwin.tar.gz
+tar xzf cd.tgz && rm cd.tgz
+# 之后:
+YEBAN_CARGO_DENY=/Users/crow/work/music/.tooling/cargo-deny-0.20.2-aarch64-apple-darwin/cargo-deny \
+CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
+  bash scripts/gates/run-gates.sh deny
+```
 
 ---
 
@@ -60,14 +74,19 @@
 | 格式 | **clean** | `cargo fmt --all --check` |
 | 机械红线守卫 | **11/11 通过** | `python3 scripts/guards/policy_check.py` |
 | JSON Schema | **4/4 合法**（Draft 2020-12） | `python3 scripts/gates/validate_schemas.py` |
+| cargo-deny（开源合规） | **advisories ok, bans ok, licenses ok, sources ok** | `YEBAN_CARGO_DENY=… bash scripts/gates/run-gates.sh deny` |
+| 首次 CI（run 37216800773） | **22/23 job 绿**；唯一红的是 `deny`，原因是 `deny.toml` 的 TOML 表位置错误（见第 6 节），已修复 | `gh run view 37216800773` |
 | 品牌资产 | 母版拆出 **10 个 SVG 变体** + 10 个 PNG（深/浅 × 512/256/128/64/32） | `assets/brand/` |
-| `Cargo.lock` | 已生成并提交（MUST-GATE-005 要求） | `git ls-files Cargo.lock` |
+| `Cargo.lock` | 已生成并提交（MUST-GATE-005 要求）；`cargo metadata --locked` 通过；**不含** slint/cpal/symphonia 等重依赖（spike 的重依赖暂时注释） | `git ls-files Cargo.lock`, `cargo metadata --locked` |
 
 ### 已知的本地无法验证项（必须由 CI 判定）
 
 - `cargo clippy --workspace`（本机包装器拒绝 `--workspace`，按设计）；
-- `cargo deny check`（本机未安装 cargo-deny，避免为它做重编译）；
-- 任何 Slint / cpal / symphonia 相关编译。
+- 任何 Slint / cpal / symphonia 相关编译；
+- 跨架构（x86_64 ↔ AArch64）确定性对账与全部 BASELINE 性能读数。
+
+（`cargo deny check` 原本也在此列；已通过"下预编译二进制 + `YEBAN_CARGO_DENY`"把它拉回本机可验证集合，
+理由见第 6 节 L4。）
 
 ---
 
@@ -125,3 +144,47 @@
 | `CONTRIBUTING.md` 的 MSRV 表述 | 正文写 "Rust 1.80+"，实际 MSRV 因 slint 1.18.1 定为 **1.92**（ADR-0001 D5）。文件不在红线名单内，但改动治理文档建议由人类确认 |
 | UI/UX 规范的缺口 | 字体与 CJK 字体栈、间距/圆角/字号 scale、DPR 细则、Splitter 约束对象、24px 状态栏归属——见 ADR-0001 与 UI 摘要，实现前需按登记口径执行 |
 | `schemas/mcp-tools.schema.json` 与 10 个工具的最终对账 | 需 `yeban-mcp` 实现后才能做真实对账 |
+
+---
+
+## 6. 教训与由此产生的规则 (Mistakes and the rules they produced)
+
+SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**，这是最便宜的文档。以下四条都是本 sprint 真实踩到的。
+
+### L1 — 生成的骨架里文档注释没加前缀，整个 crate 无法解析
+
+- **现象**：用脚本批量生成 22 个 crate 的 `lib.rs` 时，只给标题行加了 `//!`，正文行是裸文本。
+  于是 `cargo fmt` 报 `E0758: unterminated block doc-comment` —— 因为正文里的
+  `` `synth/crates/synth-core/src/dsp/**` `` 含 `/**`，被当成块注释起始。
+- **规则**：**批量生成代码后必须立刻过一遍解析器（fmt/clippy），不能只看文件"写出来了"。**
+  生成器把内容写进文件 ≠ 内容是合法代码。
+- **已落地**：修复脚本对每行补 `//!` 前缀，并用 `cargo fmt --all --check` 作为"全部文件可解析"的机器判据。
+
+### L2 — TOML 表的**位置**语义：`[licenses.private]` 之后的键都属于它
+
+- **现象**：`deny.toml` 里把 `[licenses.private]` 插在 `unused-allowed-license` 与 `allow` 之前，
+  于是这两个键落进子表。首次 CI 的 `deny` job 报
+  `error[unexpected-keys]: found 2 unexpected keys, expected: ["ignore", "ignore-sources", "registries"]`。
+- **规则**：**子表一律放在父表所有标量键与数组之后。** 这条在 TOML 里是硬语义，不是风格问题。
+- **代价与反思**：这个错误 100% 可以在本地发现——当时没做，是因为我判断"本机不装 cargo-deny"。
+  这条错误直接催生了 L4。
+
+### L3 — "判据没红"必须区分"违规没生效"
+
+- **现象**：为证明守卫 G02（引擎层零 GUI 依赖）能变红，我把 `slint.workspace = true` **追加到
+  `Cargo.toml` 末尾**；结果它落进了 `[lints]` 表，`[dependencies]` 根本没变，守卫正确地没报红。
+  第一次的错误结论是"守卫有问题"，真相是**注入无效**。
+- **规则**：**判据没变红时，先证明你的"故意破坏"真的生效了**（打印被改的那一段、或让破坏本身导致编译失败），
+  再怀疑判据。SKILL 规则 7 说的就是这件事。
+
+### L4 — 能把门禁拉到本机验证的，就不要留给 CI
+
+- **现象**：L2 的 `deny.toml` 错误本可以在 30 秒内本地发现。当时的判断是"装 cargo-deny 要重编译，不划算"——
+  但这个前提是错的：官方提供 **aarch64-apple-darwin 预编译二进制**，下载解压即可，零编译。
+- **规则**：**在把某个门禁推给 CI 之前，先花两分钟确认它在本机是否真的不可行。**
+  "需要重编译"和"需要本机没有的硬件"是两类完全不同的事：前者几乎总有绕行方案（预编译产物、
+  单文件脚本、纯 Python 实现），后者才真正属于 CI/自托管 runner。
+- **已落地**：`scripts/gates/run-gates.sh deny` 档位 + `YEBAN_CARGO_DENY` 环境变量；
+  安装步骤写进 `docs/DEV_WORKFLOW.md` 与本文件 §1.1。
+- **推论（避免单点阻塞）**：任何"只能靠 CI 判"的门禁，都要在 `docs/CI_CD.md` 里写清**为什么**
+  本机做不了；写不出理由的，说明它本该在本机就能跑。
