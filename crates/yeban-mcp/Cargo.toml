@@ -1,0 +1,18 @@
+[package]
+name = "yeban-mcp"
+description = "Yeban Intent API v2: 领域 MCP 服务 (库 + 独立 stdio 二进制双形态)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

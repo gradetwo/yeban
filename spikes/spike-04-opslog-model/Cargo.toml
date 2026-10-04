@@ -1,0 +1,19 @@
+[package]
+name = "spike-04-opslog-model"
+description = "[ROAD-M0-004] ULID + BTreeMap 可逆操作日志"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "spike_04_opslog_model"
+path = "src/lib.rs"
+
+[dependencies]
+# TODO(spike): 由本 spike 工作线在自己的分支中启用 —— yeban-model.workspace = true
+
+[lints]
+workspace = true

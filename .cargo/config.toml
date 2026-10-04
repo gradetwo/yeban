@@ -1,0 +1,13 @@
+# 本地 cargo 别名 —— 让「轻量门禁」在 M2 上一条命令可跑。
+#
+# 背景 (docs/DEV_WORKFLOW.md): 本机是开发/编辑环境, 不是构建农场。
+# 全量 workspace 构建、Slint/cpal/symphonia 编译、benchmark、fuzz、跨架构对账
+# 一律走 GitHub Actions (自动 push/PR + 手动 workflow_dispatch)。
+# 本机只允许: fmt / 单个轻量 crate 的 check+test / 策略守卫脚本 (纯 python, 零编译)。
+[alias]
+# 轻量门禁: 格式检查
+lite = "fmt --all --check"
+# 策略守卫 (HashMap 禁令 / GUI 依赖禁令 / 0.0.0.0 禁令 / 大文件禁令 ...)
+guard = "!python3 scripts/guards/policy_check.py"
+# 全量门禁脚本 (本机只跑轻量档; --full 需要 CI)
+gates = "!bash scripts/gates/run-gates.sh"

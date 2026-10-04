@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="32" height="32">
+  <defs>
+    <radialGradient id="l32-bg" cx="50%" cy="35%" r="80%">
+      <stop offset="0%" stop-color="#FDFCFA"/>
+      <stop offset="100%" stop-color="#F0EBE3"/>
+    </radialGradient>
+    <linearGradient id="l32-ink" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#2A3A5C"/>
+      <stop offset="100%" stop-color="#1A2340"/>
+    </linearGradient>
+    <mask id="l32-moon">
+      <rect width="400" height="400" fill="white"/>
+      <circle cx="220" cy="183" r="71" fill="black"/>
+    </mask>
+  </defs>
+  <rect width="400" height="400" rx="76" fill="url(#l32-bg)"/>
+  <path d="M 257.2 132.8 A 95 95 0 0 1 257.2 267.2" fill="none" stroke="url(#l32-ink)" stroke-width="5" stroke-linecap="round" opacity="0.8"/>
+  <circle cx="190" cy="200" r="75" fill="url(#l32-ink)" mask="url(#l32-moon)"/>
+</svg>

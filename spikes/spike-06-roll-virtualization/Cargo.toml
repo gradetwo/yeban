@@ -1,0 +1,20 @@
+[package]
+name = "spike-06-roll-virtualization"
+description = "[ROAD-M0-006] 10 万音符虚拟化钢琴卷帘"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "spike_06_roll_virtualization"
+path = "src/lib.rs"
+
+[dependencies]
+# TODO(spike): 由本 spike 工作线在自己的分支中启用 —— slint.workspace = true
+# TODO(spike): 由本 spike 工作线在自己的分支中启用 —— rstar.workspace = true
+
+[lints]
+workspace = true

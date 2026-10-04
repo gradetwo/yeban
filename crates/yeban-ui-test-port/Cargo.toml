@@ -1,0 +1,18 @@
+[package]
+name = "yeban-ui-test-port"
+description = "Slint 无头自动化测试端口与语义控件树内省抽屉"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_ui_test_port"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

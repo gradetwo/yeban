@@ -1,0 +1,18 @@
+[package]
+name = "yeban-app"
+description = "Slint GUI 主程序与桌面窗口宿主 (内嵌 MCP 服务)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_app"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

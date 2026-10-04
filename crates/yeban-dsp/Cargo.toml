@@ -1,0 +1,18 @@
+[package]
+name = "yeban-dsp"
+description = "纯数学 DSP 库: 真峰值限制器、总线压缩、通道条、808/909 鼓机与复音合成"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_dsp"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

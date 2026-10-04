@@ -1,0 +1,179 @@
+# 夜半 (Yeban) 持续集成 —— 自动触发的主门禁
+#
+# 规范来源:
+#   AGENTS.md §3 (DoD), docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md §5 (质量门禁)
+#   docs/DEV_WORKFLOW.md (本机只做编辑与轻量检查, 重活全部在 CI)
+#
+# 为什么 CI 是唯一的「绿」(docs/skills/yeban-dev-workflow/SKILL.md「Honesty rules」):
+#   本地绿不是绿。本机是 M2 开发机, 不跑全量构建/重依赖/基准; 只有这里的判决算数,
+#   而且必须用 `scripts/dev/ci-verdict.sh` 把判决读回来才算数 —— 没读的判决是 pending。
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "line/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_full:
+        description: "忽略受影响集合推导, 强制跑全量门禁"
+        type: boolean
+        default: false
+
+concurrency:
+  # 同一分支的新推送取消旧运行 —— 多线并行时这是最省算力的一条规则
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 计划: 由改动文件推导受影响 crate (SKILL 规则 6 —— 用搜索得出, 不凭记忆)
+  # ---------------------------------------------------------------------------
+  plan:
+    name: plan (受影响集合)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      crates: ${{ steps.plan.outputs.crates }}
+      workspace_wide: ${{ steps.plan.outputs.workspace_wide }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 推导受影响 crate
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          FORCE_FULL: ${{ inputs.force_full }}
+        run: |
+          set -euo pipefail
+          if [ "${FORCE_FULL:-false}" = "true" ] || [ -z "${BASE_SHA:-}" ]; then
+            BASE="HEAD~1"
+          else
+            BASE="$BASE_SHA"
+          fi
+          echo "diff base = $BASE"
+          # 首次推送时 github.event.before 是全零 sha; 脚本会保守回退全量。
+          # 逻辑住在脚本里而不是这里, 因此它可以在本机被测 (SKILL 规则 3)。
+          python3 scripts/dev/changed-crates.py --base "$BASE" --head HEAD --github-output
+
+  # ---------------------------------------------------------------------------
+  # 便宜且永远要跑的门禁: 格式 / 机械红线 / JSON Schema 契约
+  # ---------------------------------------------------------------------------
+  checks:
+    name: checks (fmt / 红线守卫 / schema)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装钉死工具链 (单一事实源 rust-toolchain.toml)
+        run: |
+          set -euo pipefail
+          rustup show
+          want="$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | cut -d'"' -f2)"
+          got="$(rustc --version | cut -d' ' -f2)"
+          echo "pinned=$want actual=$got"
+          [ "$want" = "$got" ] || { echo "::error::工具链漂移, L1 声学确定性要求锁定工具链"; exit 1; }
+
+      - name: 格式检查
+        run: cargo fmt --all --check
+
+      - name: 机械红线守卫
+        run: python3 scripts/guards/policy_check.py
+
+      - name: JSON Schema 契约
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'jsonschema>=4.24'
+          python3 scripts/gates/validate_schemas.py
+
+  # ---------------------------------------------------------------------------
+  # 每个受影响 crate 一条矩阵腿: clippy -D warnings + test
+  # ---------------------------------------------------------------------------
+  rust:
+    name: rust (${{ matrix.crate }})
+    needs: plan
+    if: needs.plan.outputs.crates != '["none"]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.plan.outputs.crates) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装钉死工具链
+        run: |
+          set -euo pipefail
+          rustup show
+          rustc --version
+
+      - name: clippy (-D warnings)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo clippy -p "${{ matrix.crate }}" --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
+
+      - name: test
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p "${{ matrix.crate }}" --all-targets --locked 2>&1 | tee -a /tmp/gate.log
+
+      - name: 失败摘要 (把错误贴进 job summary)
+        if: failure()
+        run: |
+          {
+            echo "### 门禁未通过 — ${{ matrix.crate }}"
+            echo '```text'
+            tail -80 /tmp/gate.log 2>/dev/null || echo "(没有捕获到日志)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 锁文件与工作区元数据一致性 (MUST-GATE-005 的前半: 确定性 Cargo.lock)
+  # ---------------------------------------------------------------------------
+  lockfile:
+    name: lockfile (确定性 Cargo.lock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - name: Cargo.lock 必须已提交且与全部清单一致
+        run: |
+          set -euo pipefail
+          test -f Cargo.lock || { echo "::error::Cargo.lock 未提交 (GPLv3 源码可追溯性要求)"; exit 1; }
+          cargo metadata --locked --format-version 1 > /dev/null
+          echo "Cargo.lock 与全部清单一致, --locked 解析通过"
+
+  # ---------------------------------------------------------------------------
+  # 开源合规: cargo-deny (MUST-GATE-004)
+  # ---------------------------------------------------------------------------
+  deny:
+    name: deny (cargo-deny 开源合规)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+          manifest-path: ./Cargo.toml

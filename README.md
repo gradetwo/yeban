@@ -28,10 +28,10 @@
 
 | 规范文档 | 核心职责与涵盖内容 | 规范版本 |
 | :--- | :--- | :---: |
-| [**系统架构与拓扑设计规范 (ARCHITECTURE)**](file:///home/crow/work/agy/review/GROOVE_V3_ARCHITECTURE_AND_SYSTEM_DESIGN.md) | 双 MCP 运行拓扑闭环、`.yeban.lock` OS 排他锁、960 PPQ AST、`BTreeMap` 确定性状态、`RoutingGraph` 单一声学权威、实时音频退役回收队列、内部 PDC 延迟补偿、5.0ms 时延预算、RF64 写入器、Zip-Slip 安全防御、Ops Log 撤销树 (`ARCH-*`, `MODEL-*`, `MCP-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
-| [**工程重构实施路线图 (ROADMAP)**](file:///home/crow/work/agy/review/GROOVE_V3_ENGINEERING_IMPLEMENTATION_ROADMAP.md) | Phase -1 开源合规大扫除、Phase 0 九大技术 Spike 准入验证、Phase 1~4 能力切片推进蓝图、RSK-01 ~ RSK-34 风险登记册、质量门禁体系 (`ROAD-*`, `MUST-GATE-*`, `BASELINE-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
-| [**行业深度调研与开源战略 (BENCHMARK)**](file:///home/crow/work/agy/review/GROOVE_V3_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md) | 关键事实核验状态表、六大顶级 DAW 解构、Web DAW 物理局限剖析、Slint 选型决策论证、Rust 音频军火库盘点、ASIO 隔离审计、AI 权重合规、工业融合架构蓝图与 L1/L2 确定性分级契约 | `v1.0.0-rev1` (起步自 `v0.0.1`) |
-| [**桌面 UI/UX 布局与交互设计规范 (UI/UX)**](file:///home/crow/work/agy/review/GROOVE_V3_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md) | Slint 声明式视网膜高清自适应网格、Session/Arrangement 双视图同构、10 万音符虚拟化钢琴卷帘、A/B 盲听（2048 采样预滚）、色盲安全视觉 Diff、无头视觉回归动态区域遮罩、UI MCP 三级权限分层 (`UI-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
+| [**系统架构与拓扑设计规范 (ARCHITECTURE)**](docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md) | 双 MCP 运行拓扑闭环、`.yeban.lock` OS 排他锁、960 PPQ AST、`BTreeMap` 确定性状态、`RoutingGraph` 单一声学权威、实时音频退役回收队列、内部 PDC 延迟补偿、5.0ms 时延预算、RF64 写入器、Zip-Slip 安全防御、Ops Log 撤销树 (`ARCH-*`, `MODEL-*`, `MCP-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
+| [**工程重构实施路线图 (ROADMAP)**](docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md) | Phase -1 开源合规大扫除、Phase 0 九大技术 Spike 准入验证、Phase 1~4 能力切片推进蓝图、RSK-01 ~ RSK-34 风险登记册、质量门禁体系 (`ROAD-*`, `MUST-GATE-*`, `BASELINE-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
+| [**行业深度调研与开源战略 (BENCHMARK)**](docs/YEBAN_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md) | 关键事实核验状态表、六大顶级 DAW 解构、Web DAW 物理局限剖析、Slint 选型决策论证、Rust 音频军火库盘点、ASIO 隔离审计、AI 权重合规、工业融合架构蓝图与 L1/L2 确定性分级契约 | `v1.0.0-rev1` (起步自 `v0.0.1`) |
+| [**桌面 UI/UX 布局与交互设计规范 (UI/UX)**](docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md) | Slint 声明式视网膜高清自适应网格、Session/Arrangement 双视图同构、10 万音符虚拟化钢琴卷帘、A/B 盲听（2048 采样预滚）、色盲安全视觉 Diff、无头视觉回归动态区域遮罩、UI MCP 三级权限分层 (`UI-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
 
 ---
 
@@ -39,41 +39,69 @@
 
 | 文件路径 | 法律地位与治理内容 |
 | :--- | :--- |
-| [**`LICENSE`**](file:///home/crow/work/agy/review/LICENSE) | **GNU General Public License v3.0** 完整文本，附带 **GPLv3 §7 允许的 CLAP 专有商业插件动态加载豁免条款**与用户原创内容豁免。 |
-| [**`LEGAL.md`**](file:///home/crow/work/agy/review/LEGAL.md) | 第三方商业商标非附属声明（Ableton, FL Studio 等）、Slint GPLv3/商业双轨授权合规提示、Steinberg VST3 3.8.0+ MIT 路径合规声明与开源权重/采样版权守则。 |
-| [**`TRADEMARK.md`**](file:///home/crow/work/agy/review/TRADEMARK.md) | “夜半 / Yeban” 项目商标使用指南与第三方商标非附属声明。 |
-| [**`GOVERNANCE.md`**](file:///home/crow/work/agy/review/GOVERNANCE.md) | 社区治理结构（BDFL + 维护者团队）、重大架构决策流程（RFC）与 AI Agent 自主治理红线。 |
-| [**`AGENTS.md`**](file:///home/crow/work/agy/review/AGENTS.md) | 自主 AI Agent 研发执行规则、单一权威事实源、绝对禁止项清单 (DoD) 与需求编号字典。 |
-| [**`THIRD_PARTY_LICENSES.md`**](file:///home/crow/work/agy/review/THIRD_PARTY_LICENSES.md) | 第三方依赖库、字体（Inter/Fira Code）、图标（Lucide）、权重与乐理数据集许可审计明细表。 |
-| [**`deny.toml`**](file:///home/crow/work/agy/review/deny.toml) | `cargo-deny` 自动化合规门禁配置（严格白名单限制，阻断不兼容协议与专有依赖入库）。 |
-| [**`CONTRIBUTING.md`**](file:///home/crow/work/agy/review/CONTRIBUTING.md) | DCO 1.1 开发者签名规范、代码风格指南、GPLv3 源码可追溯分发（`Cargo.lock` 跟踪、`cargo vendor` 离线依赖、`.slint` 声明式源文件打包）与实时音频线程零分配红线。 |
-| [**`CODE_OF_CONDUCT.md`**](file:///home/crow/work/agy/review/CODE_OF_CONDUCT.md) | 基于 Contributor Covenant 2.1 规范的开源社区行为准则。 |
-| [**`SECURITY.md`**](file:///home/crow/work/agy/review/SECURITY.md) | 安全脆弱性报告通道、跨进程共享内存（POSIX shm）崩溃隔离边界声明与实时边界安全。 |
-| [**`assets/manifest.json`**](file:///home/crow/work/agy/review/assets/manifest.json) | 工程内置字体、图标、乐理词典等静态资产的 SHA-256 校验与元数据注册表。 |
-| [**`assets/models/MANIFEST.json`**](file:///home/crow/work/agy/review/assets/models/MANIFEST.json) | AI 伴奏/人声分离等神经网络权重元数据清单（许可协议、参数量、SHA-256 与外部下载源）。 |
-| [**`assets/samples/ATTRIBUTION.md`**](file:///home/crow/work/agy/review/assets/samples/ATTRIBUTION.md) | 内置 323 款原声乐器采样素材开源许可全量 Attribution 审计清单（严格锁定 CC0 / CC-BY / MIT 协议，零专有商业样本混入）。 |
+| [**`LICENSE`**](LICENSE) | **GNU General Public License v3.0** 完整文本，附带 **GPLv3 §7 允许的 CLAP 专有商业插件动态加载豁免条款**与用户原创内容豁免。 |
+| [**`LEGAL.md`**](LEGAL.md) | 第三方商业商标非附属声明（Ableton, FL Studio 等）、Slint GPLv3/商业双轨授权合规提示、Steinberg VST3 3.8.0+ MIT 路径合规声明与开源权重/采样版权守则。 |
+| [**`TRADEMARK.md`**](TRADEMARK.md) | “夜半 / Yeban” 项目商标使用指南与第三方商标非附属声明。 |
+| [**`GOVERNANCE.md`**](GOVERNANCE.md) | 社区治理结构（BDFL + 维护者团队）、重大架构决策流程（RFC）与 AI Agent 自主治理红线。 |
+| [**`AGENTS.md`**](AGENTS.md) | 自主 AI Agent 研发执行规则、单一权威事实源、绝对禁止项清单 (DoD) 与需求编号字典。 |
+| [**`THIRD_PARTY_LICENSES.md`**](THIRD_PARTY_LICENSES.md) | 第三方依赖库、字体（Inter/Fira Code）、图标（Lucide）、权重与乐理数据集许可审计明细表。 |
+| [**`deny.toml`**](deny.toml) | `cargo-deny` 自动化合规门禁配置（严格白名单限制，阻断不兼容协议与专有依赖入库）。 |
+| [**`CONTRIBUTING.md`**](CONTRIBUTING.md) | DCO 1.1 开发者签名规范、代码风格指南、GPLv3 源码可追溯分发（`Cargo.lock` 跟踪、`cargo vendor` 离线依赖、`.slint` 声明式源文件打包）与实时音频线程零分配红线。 |
+| [**`CODE_OF_CONDUCT.md`**](CODE_OF_CONDUCT.md) | 基于 Contributor Covenant 2.1 规范的开源社区行为准则。 |
+| [**`SECURITY.md`**](SECURITY.md) | 安全脆弱性报告通道、跨进程共享内存（POSIX shm）崩溃隔离边界声明与实时边界安全。 |
+| [**`assets/manifest.json`**](assets/manifest.json) | 工程内置字体、图标、乐理词典等静态资产的 SHA-256 校验与元数据注册表。 |
+| [**`assets/models/MANIFEST.json`**](assets/models/MANIFEST.json) | AI 伴奏/人声分离等神经网络权重元数据清单（许可协议、参数量、SHA-256 与外部下载源）。 |
+| [**`assets/samples/ATTRIBUTION.md`**](assets/samples/ATTRIBUTION.md) | 内置 323 款原声乐器采样素材开源许可全量 Attribution 审计清单（严格锁定 CC0 / CC-BY / MIT 协议，零专有商业样本混入）。 |
+
+---
+
+## 🔗 项目信息
+
+| | |
+| :--- | :--- |
+| 官网 (中英双语 / 深浅色自适应) | <https://yeban.wangda.today> — 源码在 **`website` 分支**，用 wrangler 部署到 Cloudflare Workers |
+| 联系邮箱 | <yeban@wangda.today> |
+| 仓库 | <https://github.com/gradetwo/yeban> |
+| 开发工作流 | [`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md) — 一树一线、本机轻量 / CI 全量 |
+| CI/CD | [`docs/CI_CD.md`](docs/CI_CD.md) — 自动档 + 手动档、判决怎么读回来 |
+| 判例与账本 | [`docs/adr/`](docs/adr) · [`docs/DEVELOPMENT_LEDGER.md`](docs/DEVELOPMENT_LEDGER.md) |
 
 ---
 
 ## 🤖 纯 Rust 工作区架构与 AI Agent 闭环开发流水线
 
-```
+```text
 yeban/
-├── Cargo.toml                      # Workspace 统一清单
-├── Cargo.lock                      # [强制版本控制] 确保 100% 可重现构建与 GPLv3 源码追溯
-├── README.md                       # 本索引导航与核心宪章
-├── LICENSE                         # GPLv3 全文 + GPLv3 §7 CLAP 插件例外条款
-├── LEGAL.md                        # 商标免责、Slint 双授权声明与合规政策
-├── TRADEMARK.md                    # 商标使用守则
-├── GOVERNANCE.md                   # 社区治理与决策流程
-├── AGENTS.md                       # 自主 AI Agent 研发执行规则与规范编号体系
+├── Cargo.toml                      # Workspace 统一清单（members = crates/*, spikes/*）
+│                                   #   └─ 依赖版本的唯一事实源 [workspace.dependencies]
+├── Cargo.lock                      # [强制版本控制] 100% 可重现构建与 GPLv3 源码追溯
+├── rust-toolchain.toml             # L1 确定性: 钉死 Rust 1.99.0
+├── README.md / AGENTS.md           # 人类导航 / AI Agent 执行契约与红线清单
+├── LICENSE / LEGAL.md / TRADEMARK.md / GOVERNANCE.md / NOTICE.md / SECURITY.md
+│                                   # 治理与法务文件（Agent 不得修改，见 AGENTS.md §2 红线 1）
 ├── THIRD_PARTY_LICENSES.md         # 第三方全量依赖与资产合规审计表
 ├── deny.toml                       # cargo-deny 自动化开源许可拦截配置
-├── CONTRIBUTING.md                 # DCO 1.1 协议、代码门禁与 cargo vendor 分发规范
-├── SECURITY.md                     # 安全政策与漏洞披露通道
+├── CONTRIBUTING.md / CODE_OF_CONDUCT.md
 ├── schemas/                        # JSON Schema 机器校验契约 (工程/操作/MCP/资产)
-├── assets/                         # 字体、模型权重元数据与采样 Attribution
-│
+├── assets/
+│   ├── brand/                      # 品牌母版 yeban.svg + 10 个变体 + PNG 产物
+│   ├── fonts/ models/ samples/     # 字体、权重元数据、采样 Attribution 登记表
+│   └── manifest.json
+├── scripts/
+│   ├── dev/                        # cargo-local.sh / worktree.sh / ci-verdict.sh / changed-crates.py
+│   ├── gates/                      # run-gates.sh / validate_schemas.py
+│   ├── guards/                     # policy_check.py — 11 条机械红线守卫
+│   └── brand/                      # render-logo.sh
+├── docs/
+│   ├── YEBAN_*.md                  # 四份 Normative 规范
+│   ├── DEV_WORKFLOW.md / CI_CD.md  # 操作手册
+│   ├── adr/                        # 规范冲突与缺口的裁决留痕
+│   ├── ledger/                     # 历史代码复用审计等账本附件
+│   ├── DEVELOPMENT_LEDGER.md       # 测量账本 + pending 清单
+│   └── skills/                     # yeban-dev-workflow
+├── spikes/                         # Phase 0 九大 Spike，各自独立成 crate（可并行）
+│   └── spike-01-cpal-latency … spike-09-snapshot-exchange
+├── .github/workflows/              # ci.yml(自动) / gates-manual.yml(手动) / site-deploy.yml
 └── crates/
     ├── yeban-app/                  # Slint GUI 主程序与桌面窗口宿主 (内嵌 yeban-mcp HTTP 服务)
     ├── yeban-model/                # [引擎核心] 960 PPQ 数据模型、ULID、BTreeMap AST、Op 日志 (零 GUI 依赖)
@@ -90,6 +118,11 @@ yeban/
     ├── yeban-plugin-host/          # [v2.0.0 崩溃隔离宿主] 跨进程独立崩溃隔离商业插件宿主 (clack + POSIX shm)
     └── yeban-vst/                  # [v2.0.0 反向插件] 基于 nih-plug 将 yeban-dsp 反向打包为 VST3/CLAP 插件
 ```
+
+> `crates/` 与 `spikes/` 是 **glob 成员**：新增 crate 不需要改动根 `Cargo.toml`，
+> 因此多条并行工作线永远不会争抢同一个文件；代价是这两个目录下的每个子目录都必须是合法 crate
+> （守卫 G09 会拦住"建了目录忘了清单"）。
+
 
 ### AI Agent 双 MCP 自动化开发与无头自测流水线
 

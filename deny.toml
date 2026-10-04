@@ -1,14 +1,29 @@
 # cargo-deny 自动化开源许可与依赖安全审计配置
+#
+# 规范来源 (Normative): docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md ROAD-M-1-002
+# AGENTS.md §2 红线 2 (依赖许可红线), MUST-GATE-004 (cargo-deny 100% 通过)
+#
+# 配置格式已按 cargo-deny 0.20.x 校准 (2026-10-05 核对官方 cfg 文档):
+#   - [advisories] 的 `vulnerability` / `unsound` / `notice` 字段已**移除**, 保留即报错;
+#     所有漏洞/不健全公告现在一律 error, 需要豁免只能写进 `ignore`。
+#   - [licenses] 的 `unlicensed` / `deny` / `copyleft` / `allow-osi-fsf-free` / `default`
+#     字段已**移除**, 保留即报错; 未在 `allow` 中的许可一律拒绝。
+#   - GNU 系许可自 0.18.4 起按字面严格匹配: 允许 "GPL-3.0" 不等于允许 "GPL-3.0-only"。
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
+# unmaintained = "workspace": 只有当**直接依赖**无人维护时才失败。
+# 直接对应 RSK-35 (nih-plug maintenance mode) —— 引入 nih-plug 时会被此处拦下。
+unmaintained = "workspace"
 yanked = "deny"
 ignore = []
 
 [licenses]
-unlicensed = "deny"
 confidence-threshold = 0.8
+# workspace 成员自身不检查许可表达式: 本项目为 "GPL-3.0-only + GPLv3 §7 CLAP 例外",
+# 该 §7 附加许可没有对应 SPDX 标识符, 由根 LICENSE 文本承载。
+[licenses.private]
+ignore = true
+unused-allowed-license = "allow"
 
 # 允许的开源许可证白名单
 allow = [

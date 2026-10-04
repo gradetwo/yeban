@@ -1,0 +1,186 @@
+# 夜半 (Yeban) 手动触发门禁 —— 重活与专项验证
+#
+# 为什么需要手动档 (用户要求: 自动触发 + 手动触发双模式):
+#   - 自动档 (ci.yml) 只跑「每次都该跑且够快」的门禁, 保证多线并行不被拖慢;
+#   - 手动档跑**昂贵/专项**的门禁: 全 feature 组合编译、基准、模糊测试、
+#     确定性对账。它们要么耗时长, 要么需要特定硬件, 不适合每次推送都跑。
+#
+# 诚实纪律 (SKILL「Honesty rules」): 尚未具备运行条件的门禁**明确列为 PENDING**,
+#   而不是用一个永远绿的假 job 冒充通过。PENDING 的清单同时登记在
+#   docs/DEVELOPMENT_LEDGER.md, 由人来决定何时补上基础设施。
+
+name: Gates (手动)
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: "要跑的手动门禁"
+        type: choice
+        default: inventory
+        options:
+          - inventory
+          - all-features
+          - bench
+          - determinism
+          - pending
+      crate:
+        description: "all-features 档位下的单个 crate (留空 = 整个工作区)"
+        type: string
+        default: ""
+
+concurrency:
+  group: gates-manual-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 门禁清单: 把「哪些门禁已接线、哪些还缺基础设施」写进 job summary
+  # ---------------------------------------------------------------------------
+  inventory:
+    name: inventory (门禁清单)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: 渲染门禁清单
+        run: |
+          set -euo pipefail
+          cat >> "$GITHUB_STEP_SUMMARY" <<'TABLE'
+          ### 门禁清单 (MUST-GATE 体系)
+
+          | 门禁 | 内容 | 状态 | 运行位置 |
+          | :--- | :--- | :--- | :--- |
+          | MUST-GATE-004 | `cargo deny check` 开源合规 | 已接线 | ci.yml (每次推送) |
+          | MUST-GATE-005 (前半) | 确定性 Cargo.lock + `--locked` 解析 | 已接线 | ci.yml (每次推送) |
+          | AGENTS.md DoD 1 | fmt + clippy --all-targets -D warnings | 已接线 | ci.yml (受影响 crate 矩阵) |
+          | AGENTS.md DoD 2 | 单元/属性测试 | 已接线 | ci.yml (受影响 crate 矩阵) |
+          | 红线守卫 G01–G11 | HashMap/GUI 依赖/0.0.0.0/大文件/ASIO/通配版本 | 已接线 | ci.yml `checks` |
+          | Schema 契约 | schemas/*.json 合法性 + 样本对账 | 已接线 | ci.yml `checks` |
+          | MUST-GATE-001/012 | 实时回调零分配 (分配 Hook) | PENDING | 需 `yeban-engine` 实现后接线 |
+          | MUST-GATE-002 | L1 bit-exact WAV SHA-256 | PENDING | 需 `yeban-render` + 锁定 ISA |
+          | MUST-GATE-003 | L2 跨架构 < 1e-6 对账 | PENDING | 需 x86_64 + AArch64 双 runner |
+          | MUST-GATE-006/007 | Zip-Slip 与解压炸弹 | PENDING | 需 `.yeban` 容器实现 |
+          | MUST-GATE-008 | `.yeban.lock` 并发 `PROJECT_LOCKED` | PENDING | 需锁实现 |
+          | MUST-GATE-009 | MCP 默认安全 (绑定/Token/ui:inject) | PENDING | 需 `yeban-mcp` HTTP 形态 |
+          | MUST-GATE-010 | proptest 10,000 步撤销守恒 | PENDING | 需 `Op` 全变体实现 |
+          | MUST-GATE-011 | cargo-fuzz 千万次变异 | PENDING | 需 SFZ/JSON 解析器 |
+          | MUST-GATE-013 | 仓库无 ASIO SDK | 已接线 | ci.yml `checks` (守卫 G07) |
+          | MUST-GATE-014 | 323 款采样指纹对账 | PENDING | 需资产清单落地 |
+          | MUST-GATE-015 | Golden 图来自 Tier-1 软件光栅化 | PENDING | 需 `yeban-ui-test-port` |
+          | BASELINE-001..006 | 性能基准线 | PENDING | 需固定频率基准机 (M2 Pro / Ryzen 7840HS) |
+
+          **本机不跑重活**: 开发机是 Apple M2, 全量构建/基准/模糊测试一律在 CI 上执行
+          (docs/DEV_WORKFLOW.md)。基准门禁需要固定频率的参考硬件, GitHub 托管 runner
+          频率不固定, 因此 BASELINE 系列必须等自托管 runner 就位后再接线。
+          TABLE
+
+  # ---------------------------------------------------------------------------
+  # 全 feature 组合编译: 只有手动档才跑 (很慢), 但能拦住 feature 门后的编译错误
+  # ---------------------------------------------------------------------------
+  all-features:
+    name: all-features (${{ inputs.crate || 'workspace' }})
+    if: inputs.gate == 'all-features'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装钉死工具链
+        run: |
+          set -euo pipefail
+          rustup show
+          rustc --version
+      - name: clippy --all-features
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if [ -n "${{ inputs.crate }}" ]; then
+            cargo clippy -p "${{ inputs.crate }}" --all-features --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
+          else
+            cargo clippy --workspace --all-features --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
+          fi
+      - name: 失败摘要
+        if: failure()
+        run: |
+          {
+            echo "### all-features 门禁未通过"
+            echo '```text'
+            tail -80 /tmp/gate.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 基准: 目前没有任何 criterion 基准, 只验证 bench 目标可编译
+  # ---------------------------------------------------------------------------
+  bench:
+    name: bench (编译校验)
+    if: inputs.gate == 'bench'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - name: 基准目标编译 + 运行 (若存在)
+        run: |
+          set -euo pipefail
+          if compgen -G "crates/*/benches/*.rs" > /dev/null || compgen -G "benches/*.rs" > /dev/null; then
+            cargo bench --workspace --locked
+          else
+            cargo bench --workspace --no-run --locked
+            echo "::notice::尚无基准用例, 只做了 bench 目标编译校验"
+          fi
+      - name: BASELINE 提醒
+        run: |
+          {
+            echo "### BASELINE 状态: PENDING"
+            echo ""
+            echo "BASELINE-001..006 必须在固定频率的参考硬件上测量"
+            echo "(Apple M2 Pro 12 核 / Ryzen 7 7840HS)。GitHub 托管 runner 频率不固定,"
+            echo "因此本 job 的读数**不能**用来判定基准是否达标, 只能验证基准代码可跑。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 确定性对账 (L1/L2): 目前无渲染器, 明确列为 PENDING
+  # ---------------------------------------------------------------------------
+  determinism:
+    name: determinism (PENDING)
+    if: inputs.gate == 'determinism'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 未接线说明
+        run: |
+          {
+            echo "### 未执行: 确定性对账 (MUST-GATE-002 / MUST-GATE-003)"
+            echo ""
+            echo "阻断项:"
+            echo "1. `yeban-render` 尚未实现, 没有可对账的渲染输出;"
+            echo "2. L1 需要在锁定 ISA/工具链的固定频率机器上产出参考短语 WAV 的 SHA-256;"
+            echo "3. L2 需要 x86_64 与 AArch64 两个 runner 同时产出并对账 (< 1e-6)。"
+            echo ""
+            echo "登记位置: docs/DEVELOPMENT_LEDGER.md 的 pending 清单。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::determinism 门禁尚未接线 (PENDING), 详见 job summary"
+
+  # ---------------------------------------------------------------------------
+  # 一次性列出全部 PENDING 门禁, 方便人类决定补哪块基础设施
+  # ---------------------------------------------------------------------------
+  pending:
+    name: pending (待补基础设施清单)
+    if: inputs.gate == 'pending'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: 列出 PENDING
+        run: |
+          set -euo pipefail
+          # 单一事实源: 工作区里所有尚未接线 PENDING 标记
+          grep -rn "PENDING" docs/DEVELOPMENT_LEDGER.md | head -40 >> "$GITHUB_STEP_SUMMARY" || true
+          echo "完整清单见 docs/DEVELOPMENT_LEDGER.md"

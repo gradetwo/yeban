@@ -1,0 +1,18 @@
+[package]
+name = "yeban-render"
+description = "Rayon 多核并行离线母带渲染与 RF64/MIDI 导出"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_render"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

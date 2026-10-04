@@ -1,0 +1,18 @@
+[package]
+name = "yeban-sfz"
+description = "零拷贝 SFZ v2 词法解析器与预分配语音池"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_sfz"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

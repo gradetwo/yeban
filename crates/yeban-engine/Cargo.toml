@@ -1,0 +1,18 @@
+[package]
+name = "yeban-engine"
+description = "cpal 声卡直驱、无锁 SPSC 调度、内部 PDC 与快照退役回收"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_engine"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

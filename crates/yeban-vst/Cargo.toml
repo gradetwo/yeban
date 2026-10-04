@@ -1,0 +1,18 @@
+[package]
+name = "yeban-vst"
+description = "[v2.0.0] 基于 nih-plug 将 yeban-dsp 反向打包为 VST3/CLAP 插件"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_vst"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

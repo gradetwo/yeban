@@ -1,0 +1,19 @@
+[package]
+name = "spike-05-ui-test-port"
+description = "[ROAD-M0-005] 自研无头 UI 测试端口 (Tier-3 兜底)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "spike_05_ui_test_port"
+path = "src/lib.rs"
+
+[dependencies]
+# TODO(spike): 由本 spike 工作线在自己的分支中启用 —— slint.workspace = true
+
+[lints]
+workspace = true

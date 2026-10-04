@@ -1,0 +1,18 @@
+[package]
+name = "yeban-ui-mcp"
+description = "基于 JSON-RPC 的 UI 自动化测试与无头截图 MCP 适配层"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_ui_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

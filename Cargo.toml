@@ -1,0 +1,124 @@
+# 夜半 (Yeban) — Cargo Workspace 统一清单
+#
+# 规范来源 (Normative):
+#   docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md §8 (683–724 行) — workspace 拓扑
+#   docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md §3 Phase -1 / Phase 0
+#   docs/adr/ADR-0001-workspace-topology-and-version-pinning.md — 版本钉死与命名裁决
+#
+# 纪律 (Rules that protect parallel work):
+#   1. `crates/*` 与 `spikes/*` 是 glob 成员：新建 crate 不需要改动本文件，
+#      因此多条并行工作线 (worktree) 永远不会争抢这个文件。
+#      代价：`crates/` 与 `spikes/` 下的每个目录都**必须**含合法 Cargo.toml。
+#   2. 依赖版本只能写在本文件的 [workspace.dependencies] 中，成员 crate 一律
+#      使用 `foo.workspace = true`。版本决策的唯一事实源在这里。
+#   3. 成员 crate 不得使用 `*` 通配版本 (deny.toml `wildcards = "deny"`)。
+
+[workspace]
+resolver = "3"
+members = ["crates/*", "spikes/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+# MSRV 由最重的依赖决定: slint 1.18.1 要求 Rust 1.92 (symphonia 要求 1.85)。
+# 这里预先写 1.92, 免得日后某条工作线为了引入 slint 去改动这个根文件 (多线冲突源)。
+rust-version = "1.92"
+license = "GPL-3.0-only"
+repository = "https://github.com/gradetwo/yeban"
+homepage = "https://yeban.wangda.today"
+authors = ["Yeban Project Contributors"]
+publish = false
+
+# ---------------------------------------------------------------------------
+# 版本决策 (Measured 2026-10-05 via crates.io API; 见 docs/DEVELOPMENT_LEDGER.md)
+#
+# 规范正文没有钉死 slint / cpal / clack / zip / hound 等版本，此处一次性裁决。
+# 未在 [workspace.dependencies] 中被任何成员引用的条目**不会进入 Cargo.lock**，
+# 也不会被编译 —— 它们只是提前登记的唯一版本事实源。
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# --- 基础 (Phase 0 / Phase 1 已使用) ---
+# 注意: ulid 3.0.0 **没有** serde feature —— EntityId 的序列化在 yeban-model/src/ids.rs
+# 手写实现, 以便严格满足 "26 字符 Crockford Base32 + 大小写不敏感" 的规范要求。
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151" }
+thiserror = { version = "2.0.21" }
+ulid = { version = "3.0.0" }
+sha2 = { version = "0.11.0" }
+rand_xoshiro = { version = "0.8.1" }
+libm = { version = "0.2.16" }
+
+# --- 测试与门禁 ---
+# proptest 默认开启 fork/timeout (依赖 rusty-fork + 进程 fork), 对纯数据模型属性测试
+# 没有必要, 因此只保留 std。
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+approx = { version = "0.5.1" }
+tempfile = { version = "3.27.0" }
+criterion = { version = "0.8.2" }
+iai-callgrind = { version = "0.16.1" }
+
+# --- 实时音频 / UI / 解码 (由后续能力切片引入, 现在仅登记) ---
+slint = { version = "1.18.1", default-features = false }
+slint-build = { version = "1.18.1", default-features = false }
+# 内部 crate, 不遵循 semver: 必须与 slint 精确同版本, 因此用 "=" 前缀。
+i-slint-backend-testing = { version = "=1.18.1", default-features = false }
+cpal = { version = "0.18.2", default-features = false }
+rtrb = { version = "0.4.0", default-features = false }
+rayon = { version = "1.12.0", default-features = false }
+symphonia = { version = "0.6.1", default-features = false }
+rubato = { version = "5.0.1", default-features = false }
+hound = { version = "3.5.1", default-features = false }
+midly = { version = "0.5.3", default-features = false }
+midir = { version = "0.11.0", default-features = false }
+notify = { version = "8.2.0", default-features = false }
+zip = { version = "8.6.0", default-features = false }
+flate2 = { version = "1.1.10", default-features = false }
+rstar = { version = "0.13.0", default-features = false }
+signalsmith-stretch = { version = "0.1.3", default-features = false }
+
+# 夜半自身 crate (workspace 内部路径依赖的唯一登记处)
+yeban-model = { path = "crates/yeban-model" }
+yeban-theory = { path = "crates/yeban-theory" }
+yeban-dsp = { path = "crates/yeban-dsp" }
+yeban-engine = { path = "crates/yeban-engine" }
+yeban-sfz = { path = "crates/yeban-sfz" }
+yeban-decode = { path = "crates/yeban-decode" }
+yeban-render = { path = "crates/yeban-render" }
+yeban-mcp = { path = "crates/yeban-mcp" }
+yeban-app = { path = "crates/yeban-app" }
+yeban-ui-test-port = { path = "crates/yeban-ui-test-port" }
+yeban-ui-mcp = { path = "crates/yeban-ui-mcp" }
+yeban-services = { path = "crates/yeban-services" }
+yeban-plugin-host = { path = "crates/yeban-plugin-host" }
+yeban-vst = { path = "crates/yeban-vst" }
+
+# ---------------------------------------------------------------------------
+# 工作区级 lint 策略 (每个成员 crate 用 [lints] workspace = true 继承)
+# AGENTS.md §3 DoD 1: clippy --workspace --all-targets -- -D warnings 零告警
+# ---------------------------------------------------------------------------
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+undocumented_unsafe_blocks = "deny"
+
+# ---------------------------------------------------------------------------
+# 构建配置
+# ---------------------------------------------------------------------------
+[profile.release]
+lto = "thin"
+codegen-units = 1
+overflow-checks = true
+debug = 1
+
+[profile.bench]
+inherits = "release"
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+panic = "abort"
+codegen-units = 1

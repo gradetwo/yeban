@@ -1,0 +1,17 @@
+# 默认所有文件归仓库负责人审查。
+# 多线并行时, 这些路径由**集成者独占**, 工作线不得直接修改:
+#   /Cargo.toml, /Cargo.lock, /rust-toolchain.toml, /.github/**, /scripts/**, /docs/DEVELOPMENT_LEDGER.md
+# 详见 docs/DEV_WORKFLOW.md「一树一线, 一文件一写者」。
+*                       @gradetwo
+
+# 法务与治理文件: 只有人类负责人可以改 (AGENTS.md §2 红线 1)
+/LICENSE                @gradetwo
+/LEGAL.md               @gradetwo
+/SECURITY.md            @gradetwo
+/TRADEMARK.md           @gradetwo
+/GOVERNANCE.md          @gradetwo
+/NOTICE.md              @gradetwo
+
+# 规范与判例
+/docs/YEBAN_*.md        @gradetwo
+/docs/adr/              @gradetwo

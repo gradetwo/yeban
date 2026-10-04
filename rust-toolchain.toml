@@ -1,0 +1,7 @@
+# L1 声学确定性要求锁定工具链 (ARCH-DET-001)。
+# 升级此文件必须同时更新 docs/DEVELOPMENT_LEDGER.md 中的工具链记录，
+# 并重新生成 L1 bit-exact 基准哈希 (MUST-GATE-002)。
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,18 @@
+[package]
+name = "yeban-theory"
+description = "159 种流派规则、和弦走向展开与声部连接算法"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_theory"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "yeban-services"
+description = "[v1.1.0] 外部专业软件联动与 Ping 声学延迟校准"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_services"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

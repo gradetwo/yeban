@@ -1,0 +1,18 @@
+[package]
+name = "yeban-plugin-host"
+description = "[v2.0.0] 跨进程崩溃隔离商业插件宿主 (clack + POSIX shm)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_plugin_host"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

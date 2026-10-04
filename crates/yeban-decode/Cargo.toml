@@ -1,0 +1,18 @@
+[package]
+name = "yeban-decode"
+description = "基于 symphonia 的全格式解码与 rubato 高精重采样"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_decode"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

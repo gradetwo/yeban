@@ -1,0 +1,20 @@
+[package]
+name = "spike-08-software-renderer"
+description = "[ROAD-M0-008] Tier-1 软件光栅化无头截图"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "spike_08_software_renderer"
+path = "src/lib.rs"
+
+[dependencies]
+# TODO(spike): 由本 spike 工作线在自己的分支中启用 —— slint.workspace = true
+# TODO(spike): 由本 spike 工作线在自己的分支中启用 —— i-slint-backend-testing.workspace = true
+
+[lints]
+workspace = true
