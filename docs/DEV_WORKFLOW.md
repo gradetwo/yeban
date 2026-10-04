@@ -17,7 +17,7 @@ SKILL 讲"为什么"，这里讲"怎么敲"。
 | 工具 | 作用 |
 | :--- | :--- |
 | `scripts/dev/cargo-local.sh` | 本机 cargo 包装器：拒绝 `--workspace`/`--all`，重定向 `CARGO_HOME` 到工作区内 |
-| `scripts/gates/run-gates.sh light` | 格式 + 11 条机械红线守卫，零编译，任何机器都能跑 |
+| `scripts/gates/run-gates.sh light` | 格式 + 12 条机械红线守卫 + 文档链接门禁，零编译，任何机器都能跑 |
 | `scripts/gates/run-gates.sh crate <name>` | 在 light 基础上加该 crate 的 clippy/test；**若该 crate 含重依赖则自动拒绝并交给 CI** |
 | `scripts/gates/run-gates.sh full` | 全量门禁；只允许在 CI 上跑（本机需 `YEBAN_ALLOW_HEAVY=1` 显式放行） |
 | `scripts/dev/ci-verdict.sh [branch]` | 把 CI 判决读回来（公开仓库匿名 REST API 即可） |

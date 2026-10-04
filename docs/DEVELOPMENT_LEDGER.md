@@ -232,3 +232,22 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 - **已落地**：`scripts/gates/run-gates.sh` 与 `scripts/dev/cargo-local.sh` 的说明里都写了这一条；
   本账本把"我本人违反过"这件事留痕 —— 规则如果不记录违反记录，就会被当成建议而不是纪律。
 
+### L7 — `gh` 的 run-log zip 被 `git add -A` 扫进了 main
+
+- **现象**：`scripts/dev/ci-verdict.sh` 的 `prepare_gh()` 把 `XDG_CACHE_HOME` 指到了**仓库内**的 `.cache/`。
+  随后 `gh run view --log` 在那里写下 `run-log-<id>.zip`，而我下一次 `git add -A` 就把它一起提交了
+  （commit `9df4315`，文件 424,092 字节）。
+- **发现方式**：不是我自己发现的 —— `model-core` 工作线在汇报里提醒"曾误把 ci-verdict.sh 落到仓库内的 gh 日志 zip 提交过一次"，
+  我在主工作树 `git status` 里果然看到同一个文件。**这正是"多线 + 诚实汇报"的价值**。
+- **规则**：任何**工具缓存目录**都必须落在仓库之外；`git add -A` 之前先看 `git status`。
+  推论：把缓存目录指到仓库内的默认值，本身就是一颗定时炸弹。
+- **已落地**：
+  1. `ci-verdict.sh` / `local-env.sh` 的缓存目录改到**仓库之外**的工作区根（`/Users/crow/work/music/.cache`）；
+  2. `.gitignore` 增加 `/.cache/`（防御性）；
+  3. 新增守卫 **G12**（工具缓存目录与 `run-log-*.zip` 一律不得入库），并已实证"注入 → 变红 → 还原"；
+  4. 本条修正同步更新了 README / CI_CD / DEV_WORKFLOW 里"11 条守卫"→"12 条"（SKILL 规则 5：改了计数就要跑推导计数的检查）。
+- **历史残留（如实登记）**：该 424KB zip 仍在 main 的历史里（`9df4315`）。
+  它只是**公开仓库**的 CI 日志，不含密钥，体积也远低于 10MB 红线，因此当前处置是"从顶端移除 + 登记 + 加守卫"，
+  **不重写已推送的历史**。若人类要求彻底清除，需要一次 `git filter-repo` + 强制推送（会打乱所有克隆与 CI 记录），
+  列入 `ROAD-M-1-005` 的历史清理项一并决定。
+

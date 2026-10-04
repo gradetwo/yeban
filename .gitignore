@@ -19,6 +19,10 @@ Thumbs.db
 # 多工作线 worktree (docs/DEV_WORKFLOW.md) —— 绝不入库
 /.worktrees/
 
+# 本地缓存 (gh/rustup/cargo 的缓存目录可能被指到这里); 绝不入库 ——
+# 曾经把 gh 的 run-log zip 提交进仓库过一次, 这条是那次的直接产物。
+/.cache/
+
 # 本地生成的门禁产物, 不入库
 /docs/ledger/artifacts/
 *.profraw

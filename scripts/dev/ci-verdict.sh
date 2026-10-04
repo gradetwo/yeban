@@ -35,10 +35,12 @@ current_branch() { git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD; }
 has_gh() { command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; }
 
 # gh 的缓存目录在受限沙箱里不可写; 只在不可写时才改, 避免污染正常环境。
+# 关键: 落到**仓库之外的**工作区根 —— `gh run view --log` 会在缓存目录里写 run-log zip,
+# 指到仓库内会让 `git add -A` 把它一起提交 (真实踩过一次)。
 prepare_gh() {
   local cache="${XDG_CACHE_HOME:-$HOME/.cache}"
   if [[ ! -w "$cache" || ( -e "$cache/gh" && ! -w "$cache/gh" ) ]]; then
-    export XDG_CACHE_HOME="$REPO_ROOT/.cache"
+    export XDG_CACHE_HOME="$(cd "$REPO_ROOT/.." && pwd)/.cache"
     mkdir -p "$XDG_CACHE_HOME"
   fi
 }

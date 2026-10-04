@@ -37,7 +37,9 @@ yeban_local_env() {
     export CARGO_HOME="${YEBAN_LOCAL_CARGO_HOME:-$_yeban_workspace_root/.cargo-home}"
     export RUSTUP_TOOLCHAIN="${YEBAN_LOCAL_RUSTUP_TOOLCHAIN:-stable}"
     mkdir -p "$CARGO_HOME" 2>/dev/null || true
-    # gh 的缓存目录同理 (scripts/dev/ci-verdict.sh 也会用到)
+    # gh 的缓存目录同理 (scripts/dev/ci-verdict.sh 也会用到)。
+    # 注意: 必须落在**仓库之外** —— gh 会把 run-log zip 写进缓存目录,
+    # 指到仓库内就有被 `git add -A` 一起提交的风险。
     if [[ ! -w "${XDG_CACHE_HOME:-$HOME/.cache}" ]]; then
       export XDG_CACHE_HOME="${YEBAN_LOCAL_CACHE_HOME:-$_yeban_workspace_root/.cache}"
       mkdir -p "$XDG_CACHE_HOME" 2>/dev/null || true

@@ -45,6 +45,10 @@ serde_json = { version = "1.0.151" }
 thiserror = { version = "2.0.21" }
 ulid = { version = "3.0.0" }
 sha2 = { version = "0.11.0" }
+# 注意: rand_xoshiro 目前**没有**任何成员引用 —— yeban-model 与 yeban-theory 都选择手写
+# splitmix64, 以把跨平台确定性完全握在自己手里 (少一个依赖、少一处版本漂移面)。
+# 这两行保留为"已核验的候选实现", 不是死条目, 清理时请先读 docs/adr/ADR-0001 D5 与
+# docs/ledger/model-core-provenance.md §2。
 rand_xoshiro = { version = "0.8.1" }
 libm = { version = "0.2.16" }
 

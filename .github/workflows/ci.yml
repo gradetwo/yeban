@@ -114,10 +114,10 @@ jobs:
       - name: 跨语言契约对账 (Rust 样本 ↔ Python jsonschema)
         run: |
           set -euo pipefail
-          # yeban-model 的测试会把规范样本导出到 target/schema-samples/,
-          # 再由 Python 侧的 jsonschema 逐份对账。这是**两个独立实现互相钉住**:
-          # serde 写的字节必须被 jsonschema 读的契约接受, 反之契约漂移立刻变红。
-          cargo test -p yeban-model --locked
+          # 用**非测试**入口导出规范样本: 导出失败就是导出失败, 不会伪装成"测试通过"。
+          # 再由 Python 侧的 jsonschema 逐份对账 —— 两个独立实现互相钉住:
+          # serde 写的字节必须被 jsonschema 读的契约接受, 契约漂移立刻变红。
+          cargo run -p yeban-model --locked --example export_schema_samples -- --out target/schema-samples
           python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
 
   # ---------------------------------------------------------------------------

@@ -335,6 +335,30 @@ def g11_no_web_wasm_engine() -> list[Violation]:
     return bad
 
 
+def g12_no_tool_cache_in_tree() -> list[Violation]:
+    """[仓库卫生 / 教训 L7] 工具缓存与日志 zip 绝不入仓库。
+
+    背景: `gh run view --log` 会把 run-log zip 写进 `XDG_CACHE_HOME`。有一次缓存目录被指到
+    仓库内, 于是 `git add -A` 把一个 424KB 的 CI 日志 zip 提交进了 main (现实中真发生过)。
+    这条守卫保证它不再复发: 目录名与文件名两类都拦。
+    """
+    bad: list[Violation] = []
+    cache_dirs = {".cache", ".wrangler", ".cargo-home", "node_modules", ".venv"}
+    for path in REPO.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        rel_parts = path.relative_to(REPO).parts
+        if any(part in cache_dirs for part in rel_parts):
+            bad.append(("G12", rel(path), "工具缓存目录内的文件不应入库"))
+            continue
+        name = path.name
+        if name.startswith("run-log-") and name.endswith(".zip"):
+            bad.append(("G12", rel(path), "CI 日志 zip 不应入库 (缓存目录被指到仓库内的典型症状)"))
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -347,6 +371,7 @@ GUARDS = {
     "G09": ("[多线纪律] glob 成员目录必须有 Cargo.toml", g09_glob_members_have_manifests),
     "G10": ("[deny.toml] 禁止通配版本", g10_no_wildcard_versions),
     "G11": ("[宪章 2] 引擎层零 web/wasm 依赖", g11_no_web_wasm_engine),
+    "G12": ("[仓库卫生] 工具缓存与 CI 日志 zip 不入库", g12_no_tool_cache_in_tree),
 }
 
 
