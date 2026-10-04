@@ -2475,7 +2475,8 @@ mod tests {
         let path = schema_path("project.schema.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("读取 {} 失败: {err}", path.display()));
-        let schema: serde_json::Value = serde_json::from_str(&text).expect("schema 必须是合法 JSON");
+        let schema: serde_json::Value =
+            serde_json::from_str(&text).expect("schema 必须是合法 JSON");
         let mut out = std::collections::BTreeMap::new();
         let properties = schema
             .get("properties")

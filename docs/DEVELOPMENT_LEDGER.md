@@ -206,3 +206,20 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
   重定向到文件后再读。SKILL 规则 4 讲的是退出码被管道吞掉，这里是同一个根因的第二个后果：
   管道会把**下游提前退出**升级成上游进程被杀。
 - **已落地**：改用 `> /tmp/wt-$line.log 2>&1` 再读文件；`scripts/dev/worktree.sh` 依然保持"失败就非零退出"。
+
+### L6 — 我把门禁管道进了 `tail`，失败被吞掉，红提交被推上去
+
+- **现象**：合并 model-core 之后我写了这样一条命令：
+  `bash scripts/gates/run-gates.sh crate yeban-model 2>&1 | tail -6 && git commit ... && git push`。
+  `run-gates.sh` 报了 `FAIL fmt (exit=1)`，但管道的退出码是 `tail` 的 `0`，
+  于是 `&&` 链继续往下走 —— **一个 fmt 未通过的提交被推到了 main**。
+- **这是 SKILL 规则 4 的原话**（"Never pipe a gate. `gate | tail` reports `tail`'s exit code"），
+  我在 `docs/DEV_WORKFLOW.md` 里抄了这条规则，然后在同一个 sprint 里亲手违反它。
+- **规则（加强版）**：门禁命令**永远**单独执行，或重定向到文件后读文件：
+  `bash scripts/gates/run-gates.sh crate X > /tmp/gate.log 2>&1; echo $?; tail /tmp/gate.log`。
+  如果要保留 `set -o pipefail` 的管道，必须显式 `set -o pipefail`，且**不允许**把这条管道
+  后面再接 `&&` 去做提交/推送这类有副作用的事。
+- **代价**：一次红推送（CI 的 checks job 会在 `cargo fmt --all --check` 变红），下一次提交修复。
+- **已落地**：`scripts/gates/run-gates.sh` 与 `scripts/dev/cargo-local.sh` 的说明里都写了这一条；
+  本账本把"我本人违反过"这件事留痕 —— 规则如果不记录违反记录，就会被当成建议而不是纪律。
+
