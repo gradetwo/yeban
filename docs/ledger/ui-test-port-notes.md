@@ -293,6 +293,21 @@ CI 上另有 `render.rs` 的 1 条端到端判据（Tier-1 光栅化 + 内联 `.
 
 ---
 
+## 9.5 与集成者裁决的关系（记录一次**有证据的分歧**）
+
+集成者在第 2 轮后给的设计裁决是"控件树的权威事实源是注册表；运行时查询是可选的、必须安装
+testing backend 的能力；能力缺失时出声跳过"。本线**采纳前两条**（`dump_json()` 的权威来自注册表；
+运行时交叉核对拆成独立判据），但对第三点与根因判定保留了**实测证据**：
+
+| 分歧点 | 实测证据 | 本线处置 |
+| :--- | :--- | :--- |
+| "运行时树为空是因为无头路径故意不构造窗口 / 必须安装 testing backend" | `ElementHandle` 的**只读**遍历只依赖 `WindowInner::from_pub(window).component()`（`ElementRoot` 对任何 `ComponentHandle` 有 blanket impl，`search_api.rs:103-120`），**与平台类型无关**。本线的 `render::LivePort` 就是在**软件光栅化平台**下同一个实例里既抓树又抓像素。空树的真因是**编译期 debug info 默认关闭**（`i-slint-compiler-1.18.1/lib.rs:282`），上游自己的报错文案就是这么说的（`search_api.rs:62`） | 用 `build.rs` + `ui/fixture.slint` + `with_debug_info(true)` **真的修好了**本 crate 的夹具（CI 第 4 轮验证），而不是降级成 skip |
+| "能力缺失时出声跳过、不算作通过" | 本 crate 的夹具已不需要跳过；而 `yeban-app` 侧的缺口会连带挡住属性读取（§12.3）、动态遮罩（§12.5）与事件注入所需绝对坐标（§12.4） | 采纳"出声"（新增 `report_capability()`：一行 `RUNTIME-TREE-CAPABILITY: …` 直写进程 fd 2，绕过 libtest 捕获）**并且**让 app 侧那条判据**红**（`SKIP` + `return` 会让它算作通过，与"不得算作通过"冲突；`#[ignore]` 无法表达"运行时才知道的能力缺失"） |
+
+如果人类裁决"运行时控件树不是本阶段的能力、事件注入推迟"，那么
+`runtime_control_tree_cross_check_against_the_registry` 应当被**整体删除**（而不是改成 SKIP）——
+删除是一次显式的范围收缩，SKIP 则会让能力悄悄烂掉。
+
 ## 10. needs（需要别人做）
 
 0. **【最高优先】`crates/yeban-app/build.rs` 必须打开编译期 debug info** ——

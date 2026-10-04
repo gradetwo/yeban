@@ -22,12 +22,26 @@
 //!
 //! 证 明（在启用 feature 的前提下，`cargo test -p yeban-app --features ui-test-port`）：
 //! - 184 条注册表条目能被**无损**适配成语义控件树（ID / 角色 / 标签 / 动态标记逐条对齐）；
-//! - 13 个 `.slint` 真的能被 **Tier-1 软件光栅化**渲染出**非零、非全黑**的像素；
-//! - 有窗口实例的运行时控件树与静态注册表在**"运行时有而注册表没有"方向上完全闭合**；
-//! - `[UI-MCP-002]` 的遮罩能把动态区抖动完全吸收，同时静态回归仍被检出。
+//! - 13 个 `.slint` 真的能被 **Tier-1 软件光栅化**渲染出**非零、非全黑**的像素
+//!   （`live_main_window_renders_tier1_pixels_and_enforces_permissions`，**不依赖**控件树）；
+//! - `[UI-MCP-001]` 的 `ReadOnly` 闸门在真实端口上拒绝事件注入。
+//!
+//! ## 控件树的事实源与它的前置条件（按集成者裁决）
+//!
+//! - **权威事实源是注册表**（[`registry_to_tree`]）：它是纯 Rust、确定性、无窗口也能工作的。
+//!   `dump_json()` 的默认输出与产物 `app-registry-control-tree.json` 都来自它。
+//! - **运行时交叉核对是独立的能力**（`runtime_control_tree_cross_check_against_the_registry`），
+//!   它的前置条件是被内省的 `.slint` 在**编译期**打开了 debug info ——
+//!   而上游默认关闭（`i-slint-compiler-1.18.1/lib.rs:282`），本仓库
+//!   `crates/yeban-app/build.rs` 也**没有**打开。因此这条判据现在会：
+//!   ① 打一行机器可读的 `RUNTIME-TREE-CAPABILITY: unavailable: …`（写到进程 fd 2，绕过
+//!   libtest 捕获）；② **红**，并在消息里给出根因与两种修法。
+//!   "能力缺失时静默跳过"在本仓库等于假绿（守卫 G13 对 PyYAML 缺失就是这么处理的），
+//!   而这里的能力缺口还会连带挡住 §12.3 的属性读取、§12.5 的动态遮罩与事件注入所需的
+//!   绝对坐标 —— 所以它必须红到有人修 `build.rs`，而不是被降级成 SKIP。
 //!
 //! 不证明：像素**长什么样**（没有基准图，`[UI-MCP-003]` 的分平台 Golden 需要人类先提交基准）；
-//! 也不证明"UI 没有视觉缺陷" —— 它证明的是"UI 真的被渲染过，并且控件树与注册表对得上"。
+//! 也不证明"UI 没有视觉缺陷" —— 它证明的是"UI 真的被渲染过"。
 
 use yeban_app::elements::ElementRegistry;
 use yeban_app::scene::DemoScene;
@@ -231,13 +245,14 @@ fn control_tree_json_is_stable_and_round_trips() {
     assert!(json.contains("\"track-0-fader\"") || json.contains("track-0-"));
 }
 
-/// **本文件的核心里程碑**：让 13 个 `.slint` 真的被渲染一次，并把控件树、像素、
-/// 遮罩与权限在**同一个活窗口实例**上闭环。
+/// **本文件的核心里程碑（像素那一半）**：让 13 个 `.slint` 真的被 Tier-1 软件光栅化渲染一次，
+/// 并断言 `[MUST-GATE-015]` 的两条门槛（尺寸非零、非全黑）+ `[UI-MCP-001]` 的权限闸门。
 ///
-/// 这条判据的存在本身就是 ADR-0001 D18 里那句"当前界面只是编译通过，从未被渲染器或人眼看过"
-/// 的关闭动作。
+/// 这一条**不依赖运行时控件树**（因此也不依赖编译期 debug info），所以它总是可执行的 ——
+/// 它就是 ADR-0001 D18 里那句"当前界面只是编译通过，从未被渲染器或人眼看过"的关闭动作。
+/// 控件树那一半是 [`runtime_control_tree_cross_check_against_the_registry`]，它有前置条件。
 #[test]
-fn live_main_window_renders_and_closes_the_control_tree_contract() {
+fn live_main_window_renders_tier1_pixels_and_enforces_permissions() {
     let scene = DemoScene::demo();
     let registry = demo_registry();
     let static_tree = registry_to_tree(&registry).expect("注册表适配");
@@ -267,7 +282,7 @@ fn live_main_window_renders_and_closes_the_control_tree_contract() {
         evidence.distinct_colors >= 8,
         "颜色过少, 疑似只画了背景: {evidence:?}"
     );
-    eprintln!("yeban-app 主窗口 Tier-1 证据: {}", evidence.summary());
+    report_evidence(&evidence);
 
     // 过程产物（落在 target/ 下, 不提交）。
     let png_path =
@@ -276,9 +291,70 @@ fn live_main_window_renders_and_closes_the_control_tree_contract() {
         Ok(path) => eprintln!("yeban-app 主窗口截图: {}", path.display()),
         Err(err) => eprintln!("截图落盘失败（不影响判据）: {err}"),
     }
-    let json_path = yeban_ui_test_port::artifact_dir().join("app-main-window-control-tree.json");
-    std::fs::write(&json_path, port.tree().dump_json())
-        .unwrap_or_else(|err| panic!("写控件树 JSON 失败 {}: {err}", json_path.display()));
+    // 控件树的**权威事实源是注册表**（无窗口也能工作、确定性、由构造方注入）：
+    // 这一份才是 `dump_json()` 的默认输出。运行时抠出来的那一份另存为观察值 ——
+    // 它在没有编译期 debug info 时会是 `{}`（见下面那条判据）。
+    let json_path = yeban_ui_test_port::artifact_dir().join("app-registry-control-tree.json");
+    std::fs::write(&json_path, static_tree.dump_json())
+        .unwrap_or_else(|err| panic!("写注册表控件树 JSON 失败 {}: {err}", json_path.display()));
+    let runtime_json = yeban_ui_test_port::artifact_dir().join("app-runtime-control-tree.json");
+    std::fs::write(&runtime_json, port.tree().dump_json())
+        .unwrap_or_else(|err| panic!("写运行时控件树 JSON 失败 {}: {err}", runtime_json.display()));
+    eprintln!(
+        "控件树 JSON: 注册表 {} 条 -> {}; 运行时 {} 条 -> {}",
+        static_tree.len(),
+        json_path.display(),
+        port.tree().len(),
+        runtime_json.display()
+    );
+
+    // ---- `[UI-MCP-001]` 真实端口上的权限行为 ----
+    assert_eq!(port.permission(), Permission::ReadOnly);
+    assert!(matches!(
+        port.dispatch_pointer_down(
+            "transport-play-button",
+            1.0,
+            1.0,
+            yeban_ui_test_port::PointerButton::Left
+        ),
+        Err(PortError::PermissionDenied { .. })
+    ));
+    assert!(matches!(
+        port.dispatch_key_press(yeban_ui_test_port::KeyCode::Tab),
+        Err(PortError::PermissionDenied { .. })
+    ));
+    // ReadOnly 允许的截图（不依赖运行时控件树）。
+    let png = port.capture_png().expect("只读允许截图");
+    assert!(
+        png.starts_with(&yeban_ui_test_port::png::PNG_SIGNATURE),
+        "capture_png 必须返回真 PNG"
+    );
+    // 属性读取依赖运行时元素（`read_property` 先查运行时树），因此它的正向判据在
+    // 下面那条"运行时控件树"判据里 —— 这里不做会假绿的降级。
+}
+
+#[test]
+fn runtime_control_tree_cross_check_against_the_registry() {
+    // 这条判据只在"运行时控件树**确实可用**"时才有意义 ⇒ 它的前置条件是
+    // `crates/yeban-app` 的 `.slint` 在编译期打开了 debug info（见 notes §2 第 27 条）。
+    // 前置条件不满足时它**必须红**（而不是静默跳过）：语义寻址 / 属性读取 / 动态遮罩
+    // 在真实界面上都依赖运行时几何。
+    let scene = DemoScene::demo();
+    let registry = demo_registry();
+    let static_tree = registry_to_tree(&registry).expect("注册表适配");
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
+        let ui = MainWindow::new()?;
+        ui.set_timecode(scene.timecode.into());
+        ui.set_bpm_display(scene.bpm_display.into());
+        ui.set_branch_name(scene.branch_name.into());
+        ui.set_arrangement_view(scene.arrangement_by_default);
+        ui.set_playing(false);
+        ui.set_console_tab(0);
+        ui.set_compact(scene.compact());
+        Ok(ui)
+    })
+    .expect("Tier-1 平台 + MainWindow");
 
     // ---- `[UI-TEST-001]` 运行时控件树 vs 静态注册表 ----
     //
@@ -288,21 +364,29 @@ fn live_main_window_renders_and_closes_the_control_tree_contract() {
     // 因此在这里，`yeban-app` 的控件树会是**空的**：这不是本 crate 的缺陷，而是
     // `[ARCH-UI-005]` / `[UI-TEST-001]` 在这条链路上**尚未闭环**的确切位置。
     // 本判据故意在此失败，并把根因与两种修法写在断言消息里。
-    assert!(
-        !port.tree().is_empty(),
-        "[UI-TEST-001] 运行时控件树为空 ⇒ 前置条件不满足: `crates/yeban-app` 的 .slint 没有编译期 debug info。\n\
-         根因: i-slint-compiler-1.18.1/lib.rs:282 `debug_info = env::var_os(\"SLINT_EMIT_DEBUG_INFO\").is_some()` 默认关闭,\n\
-               而 crates/yeban-app/build.rs 用的是 `slint_build::compile(...)`。\n\
-         影响: `i-slint-backend-testing` 的 ElementHandle 遍历拿不到任何元素\n\
-               (item.element_count() 返回 None ⇒ 一棵空树), 于是 §12.2 语义寻址与\n\
-               §12.5 动态遮罩在**真实界面**上都还无法执行。\n\
-         修法 (二选一, 都不在 yeban-ui-test-port 的授权文件范围内):\n\
-           (a) crates/yeban-app/build.rs 改用 `compile_with_config(\"ui/app.slint\",\n\
-               CompilerConfiguration::new().with_debug_info(true))`;\n\
-           (b) CI 的构建步骤加环境变量 `SLINT_EMIT_DEBUG_INFO=1`。\n\
-         本 crate 自己的 Tier-1 夹具已经这么做 (build.rs + ui/fixture.slint)。\n\
-         详见 docs/ledger/ui-test-port-notes.md §2 第 27/28 条与 §10 needs。"
-    );
+    if port.tree().is_empty() {
+        // 能力缺失必须**出声**且**不得算作通过**（静默跳过 = 假绿）。
+        // 机器可读前缀便于在 CI 日志里 grep：`RUNTIME-TREE-CAPABILITY:`。
+        report_capability(
+            "unavailable: crates/yeban-app 的 .slint 没有编译期 debug info ⇒ ElementHandle \
+             遍历拿到一棵空树 (见 docs/ledger/ui-test-port-notes.md §2 #27 / §10 needs 0)",
+        );
+        panic!(
+            "[UI-TEST-001] 运行时控件树为空 ⇒ 前置条件不满足: `crates/yeban-app` 的 .slint 没有编译期 debug info。\n\
+             根因: i-slint-compiler-1.18.1/lib.rs:282 `debug_info = env::var_os(\"SLINT_EMIT_DEBUG_INFO\").is_some()` 默认关闭,\n\
+                   而 crates/yeban-app/build.rs 用的是 `slint_build::compile(...)`;\n\
+                   `i-slint-backend-testing` 的 ElementHandle 遍历需要它 (item.element_count() 返回 None ⇒ 空树)。\n\
+             影响: §12.2 语义寻址 / §12.3 属性读取 / §12.5 动态遮罩在**真实界面**上都还无法执行 ——\n\
+                   注入事件需要元素的绝对坐标, 而坐标只能来自运行时几何。\n\
+             修法 (二选一, 都不在 yeban-ui-test-port 的授权文件范围内):\n\
+               (a) crates/yeban-app/build.rs 改用 `compile_with_config(\"ui/app.slint\",\n\
+                   CompilerConfiguration::new().with_debug_info(true))`;\n\
+               (b) CI 的构建步骤加环境变量 `SLINT_EMIT_DEBUG_INFO=1`。\n\
+             本 crate 自己的 Tier-1 夹具已经这么做 (build.rs + ui/fixture.slint), 并在 CI 上真的\n\
+             抠出了非空控件树 —— 所以这不是"无头与窗口实例互相矛盾", 而是**一个编译期开关没打开**。\n\
+             详见 docs/ledger/ui-test-port-notes.md §2 第 27/28 条与 §10 needs 第 0 条。"
+        );
+    }
     let coverage = port.tree().coverage_against(&static_tree);
     assert!(
         coverage.unknown_at_runtime.is_empty(),
@@ -402,27 +486,7 @@ fn live_main_window_renders_and_closes_the_control_tree_contract() {
     let verdict = compare_with_dynamic_masking(&image, &regressed, port.tree()).expect("遮罩比对");
     assert!(!verdict.passed, "静态区大改必须被检出: {verdict}");
 
-    // ---- `[UI-MCP-001]` 真实端口上的权限行为 ----
-    assert_eq!(port.permission(), Permission::ReadOnly);
-    assert!(matches!(
-        port.dispatch_pointer_down(
-            "transport-play-button",
-            1.0,
-            1.0,
-            yeban_ui_test_port::PointerButton::Left
-        ),
-        Err(PortError::PermissionDenied { .. })
-    ));
-    assert!(matches!(
-        port.dispatch_key_press(yeban_ui_test_port::KeyCode::Tab),
-        Err(PortError::PermissionDenied { .. })
-    ));
-    // ReadOnly 允许的三件事：树 / 属性 / 截图。
-    let png = port.capture_png().expect("只读允许截图");
-    assert!(
-        png.starts_with(&yeban_ui_test_port::png::PNG_SIGNATURE),
-        "capture_png 必须返回真 PNG"
-    );
+    // ---- `[UI-MCP-001]` ReadOnly 的属性读取（需要运行时元素） ----
     let role = port
         .read_property("transport-play-button", "role")
         .expect("role 可读");
