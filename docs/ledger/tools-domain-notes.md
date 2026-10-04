@@ -288,3 +288,19 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
 | 第 1 轮补记（本文件 + §7） | 见提交信息 / `ci-verdict.sh` 读数 | — | 见该次运行的 `checks` 腿 |
+
+---
+
+## 追加（集成者代记）：`boundary-3` 与 `P6` 已被 `line/lock-advisory` 关闭
+
+本线当时如实登记的两处边界**已经过时**，现由 `line/lock-advisory`（CI run 37232643213 绿）关闭：
+
+- **boundary-3 / P6「`.yeban.lock` 无 OS 建议锁 / 没有 SHARED_READ 多读者」** → **已实现**：
+  `crates/yeban-mcp/src/domain/lock.rs` 用 `std::fs::File::try_lock`（1.89.0 稳定，**零新增依赖**；
+  Unix 底层是 `flock(2)`，因为实测 `fcntl` 的锁在同进程多 fd 之间**不冲突**，拦不住"同进程开两次"）。
+  只读打开现在持**共享锁**；`SIGKILL` 后锁文件仍在磁盘上但**立即可接管**（"文件存在 = 被占用"是错的，有判据钉住）。
+  跨进程互斥用 `Command` 重跑测试二进制 + **文件握手**验证，不是 sleep 猜时间。
+- ⇒ 本线那条 `MCP-TOOL-001` 的"**没有** OS 建议锁"描述不再成立；读 `MCP-TOOL-001` 的实现状态时请以
+  `docs/ledger/lock-advisory-notes.md` 为准。
+- 仍未闭环的（转记自该线）：**Windows 分支从未编译过**；非 Unix/非 Windows 只有 `UnsupportedPlatform` 映射判据。
+

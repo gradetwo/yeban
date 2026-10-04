@@ -20,9 +20,9 @@
 | `MUST-GATE-003` | 跨架构 L2 一致性（< 1e-6） | **PENDING** | 需要 x86_64 与 AArch64 两条真跑后对账；ADR-0001 D7 明确未具备条件前保持 PENDING，**不得**用单架构读数冒充 |
 | `MUST-GATE-004` | `cargo-deny` 100% 通过 | **已接线** | CI `deny` 腿四项全跑（advisories/bans/licenses/sources）；本地 `scripts/gates/run-gates.sh deny` |
 | `MUST-GATE-005` | GPLv3 源码分发完备性（.slint + 锁定 Cargo.lock + vendor） | **部分** | `.slint` 与 `Cargo.lock` 均在版本控制内且 `lockfile` 腿校验锁未被改写；**`cargo vendor` 离线依赖包既无脚本也无门禁** |
-| `MUST-GATE-006` | Zip-Slip 防御（100% 拦截） | **PENDING** | 本波 `line/container` 正在实现 `.yeban` 容器与 `..`/绝对路径/符号链接拦截；落地前不得标绿 |
-| `MUST-GATE-007` | 解压炸弹防御（单条目 ≤2GB、比率 ≤100:1） | **PENDING** | 同上（`line/container`）；该线必须含"**声明值撒谎**"的判据（按实际写入量再判一次），否则伪造头可绕过上限 |
-| `MUST-GATE-008` | `.yeban.lock` OS 建议锁 + `PROJECT_LOCKED` | **PENDING** | `crates/yeban-mcp/src/domain/store.rs` 只有"原子创建锁文件"，**没有 OS 建议锁** ⇒ 崩溃留永久锁、跨进程不被内核拦；本波 `line/lock-advisory` 正在补 |
+| `MUST-GATE-006` | Zip-Slip 防御（100% 拦截） | **已接线** | `crates/yeban-model/src/container/path.rs` 的路径规范化（拒绝 `..`/绝对路径/跨卷符号链接/空段/NUL/反斜杠），判据在 `crates/yeban-model/src/container/mod.rs` 的测试里（84 条容器判据本机全跑）；`git show line-archive/container` 为证据留痕 |
+| `MUST-GATE-007` | 解压炸弹防御（单条目 ≤2GB、比率 ≤100:1） | **已接线** | `ContainerLimits`（阈值可注入）在 `crates/yeban-model/src/container/zip.rs`：声明体积闸门 → 实际写出字节闸门 → 累计体积 → 膨胀比率（**fail-fast 用声明值**）；含"声明值撒谎"判据（按实际写入量再判一次）|
+| `MUST-GATE-008` | `.yeban.lock` OS 建议锁 + `PROJECT_LOCKED` | **已接线** | `crates/yeban-mcp/src/domain/lock.rs`：`std::fs::File::try_lock`（1.89.0 稳定，**零新增依赖**，Unix=`flock`）；同进程 + **跨进程**（`Command` 重跑测试二进制 + 文件握手）双向互斥；`SIGKILL` 后崩溃自愈；`tests/lock_advisory.rs` 15 条；CI run 37232643213 绿。**Windows 分支从未编译**（见证据列外的 pending）|
 | `MUST-GATE-009` | MCP 严格默认安全 | **部分** | `crates/yeban-mcp/src/security.rs` + `transport/http.rs`（默认关/只绑环回并回读断言/`0600`/`ui:inject` 先于 token 硬禁，112 判据）；`crates/yeban-ui-mcp/src/service.rs` 同模型（52+5 判据）；**缺**发行物层面的"默认关"断言 |
 | `MUST-GATE-010` | 10,000 步 `proptest` 逆向守恒 | **已接线** | `crates/yeban-model/src/ops.rs` 的 `state_tree_is_conserved_under_inverse_application`：CI 上 `sequence_steps()` 取 `CI_SEQUENCE_STEPS = 10_000`，32 个 case，逐字节守恒断言 |
 | `MUST-GATE-011` | 格式解析零崩溃（`cargo-fuzz` 千万次） | **PENDING** | `crates/yeban-sfz/fuzz/` 与手动档 `fuzz` job 已接线但**从未执行过**；fuzz 依赖不在主 `Cargo.lock`（许可/漏洞扫描不覆盖，已登记缺口） |

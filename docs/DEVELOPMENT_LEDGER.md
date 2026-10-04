@@ -785,3 +785,21 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   的空壳是**规范安排的版本阶段**，不是欠债。我已把这条写进状态表 §C.4 ——
   否则下一条线很可能会"顺手"去实现 v2.0.0 的东西（我自己就差点开了这条线）。
 
+### 第 4 轮：两条 MUST-GATE 转绿 + 一个能力切片的接缝
+
+- **`MUST-GATE-006` / `MUST-GATE-007`（Zip-Slip / 解压炸弹）→ 已接线**（`line/container`，CI run 37232754838 绿）。
+  实现在 `crates/yeban-model/src/container/`（**手写最小 ZIP 子集、零新增依赖**，ADR-0001 **D30**）：
+  写只写 `stored` 但产出标准 ZIP（本机 `unzip 6.00` 实测可读）；读对 deflate/ZIP64/加密/data descriptor/多卷/非 UTF-8 名
+  **一律明确报错**；local header 与 central directory **逐字段比对，不一致直接拒绝**
+  （"歧义本身就是漏洞，消除歧义的方式是拒绝而不是选一个"）；阈值可注入，因此 2GB/100:1 这类判据能在小数据上**变红**。
+  84 条容器判据**本机全跑**（这正是"零依赖"换来的收益）。
+- **`MUST-GATE-008`（`.yeban.lock` OS 建议锁）→ 已接线**（`line/lock-advisory`，CI run 37232643213 绿，
+  **一轮就好**）。ADR-0001 **D31**：`std::fs::File::try_lock` 自 **1.89.0** 稳定 ⇒ **零新增依赖**；
+  Unix 底层是 `flock(2)` 而非 `fcntl`（实测决定：`fcntl` 同进程多 fd 互不冲突）；**只读打开也上共享锁**（行为变更，待人类确认）；
+  崩溃后锁文件仍在但**立即可接管**（"文件存在 = 被占用"被明确判为错误）。
+  跨进程互斥用 `Command` 重跑测试二进制 + **文件握手**（不是 sleep）。
+- **接缝已留好**：`yeban-mcp/src/domain/store.rs` 的原子落盘**尚未调用**容器模块 ——
+  把 `.yeban` 保存/加载接到 `read/write_project_container` 上是**下一个能力切片**（D30 已登记）。
+- **`MUST-GATE-001` 的运行期断言也补上了**（集成者自己做的，见 `crates/yeban-engine/tests/rt_zero_alloc.rs`）：
+  计数型全局分配器 + 10,000 量子 + 63 次快照交换，断言窗口内 `allocations == 0 && deallocations == 0`。
+
