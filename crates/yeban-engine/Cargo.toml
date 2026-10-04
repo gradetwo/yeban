@@ -63,3 +63,10 @@ harness = false
 [[test]]
 name = "meter_rt_contract"
 harness = false
+
+# 合成路径（[ROAD-M2-005]/[ROAD-M2-006]）接入之后的**同一个**运行期断言：
+# 音符铺满整个测量窗口（256 个交叠音符 ⇒ 10,000 个量子全程有声部在跑），
+# 并**同时**自检"窗口里真的在出声"（防"什么都没跑"的假绿）。同样 `harness = false`。
+[[test]]
+name = "synth_rt_zero_alloc"
+harness = false

@@ -68,11 +68,15 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use thiserror::Error;
+use yeban_dsp::math::note_to_hz;
 use yeban_model::{
-    BlockSize, EntityId, ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
+    BlockSize, ClipContent, EntityId, ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
 };
 
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
+use crate::synth::{
+    MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, tick_to_sample, velocity_gain,
+};
 
 /// 退役队列默认容量（条）。一帧 60Hz 内被替换的快照远不会超过这个数。
 pub const DEFAULT_RETIRE_CAPACITY: usize = 32;
@@ -196,6 +200,15 @@ pub struct EngineSnapshot {
     channels: u16,
     master: EntityId,
     tracks: BTreeMap<EntityId, TrackParams>,
+    /// 每轨的音符调度表（`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    ///
+    /// 实时侧只读它、不构造它：tick → 样本的换算、`probability` 触发判定、
+    /// 力度/音量增益全部在**控制线程**算完（见 [`crate::synth`] 模块文档 §1）。
+    schedules: BTreeMap<EntityId, NoteSchedule>,
+    /// 当前快照里已调度的音符总条数（诊断/判据用）。
+    scheduled_notes: usize,
+    /// 因 [`MAX_NOTES_PER_TRACK`] 容量上限而被丢弃的音符条数（构造期计数）。
+    note_schedule_drops: u64,
     pdc: PdcPlan,
 }
 
@@ -243,6 +256,7 @@ impl EngineSnapshot {
             tracks.insert(*id, TrackParams::from_track(track, latencies.get(id)));
         }
         let block = project.audio_config.block_size.frames() as usize;
+        let (schedules, dropped) = project_schedules(project);
         Self::from_parts(
             revision,
             project.audio_config.sample_rate.hz(),
@@ -253,9 +267,14 @@ impl EngineSnapshot {
             &project.routing_graph,
             latencies,
         )
+        .map(|snapshot| snapshot.with_schedules(schedules, dropped))
     }
 
     /// 低层构造：显式给出全部字段（离线渲染器与测试用）。
+    ///
+    /// **不含**音符调度表（构造出的是静音快照）；需要发声时用
+    /// [`with_schedules`](Self::with_schedules) 附上，或直接用
+    /// [`from_project`](Self::from_project)（它会把工程的 MIDI 摆放投影成调度表）。
     ///
     /// # Errors
     ///
@@ -280,8 +299,27 @@ impl EngineSnapshot {
             channels,
             master,
             tracks,
+            schedules: BTreeMap::new(),
+            scheduled_notes: 0,
+            note_schedule_drops: 0,
             pdc,
         })
+    }
+
+    /// 附上音符调度表（构造期**允许分配**：这一步在控制线程上）。
+    ///
+    /// `dropped` 是构造调度表时因容量上限丢弃的音符条数
+    /// （见 [`crate::synth::MAX_NOTES_PER_TRACK`]）。
+    #[must_use]
+    pub fn with_schedules(
+        mut self,
+        schedules: BTreeMap<EntityId, NoteSchedule>,
+        dropped: u64,
+    ) -> Self {
+        self.scheduled_notes = schedules.values().map(NoteSchedule::len).sum();
+        self.note_schedule_drops = dropped;
+        self.schedules = schedules;
+        self
     }
 
     /// 模型层提交版本号。
@@ -326,6 +364,30 @@ impl EngineSnapshot {
         self.tracks.get(id)
     }
 
+    /// 全部音轨的音符调度表（`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    #[must_use]
+    pub const fn schedules(&self) -> &BTreeMap<EntityId, NoteSchedule> {
+        &self.schedules
+    }
+
+    /// 单轨的音符调度表（没有该轨时为 `None`）。
+    #[must_use]
+    pub fn schedule(&self, id: &EntityId) -> Option<&NoteSchedule> {
+        self.schedules.get(id)
+    }
+
+    /// 本快照已调度的音符总条数。
+    #[must_use]
+    pub const fn scheduled_notes(&self) -> usize {
+        self.scheduled_notes
+    }
+
+    /// 构造调度表时因容量上限丢弃的音符条数。
+    #[must_use]
+    pub const fn note_schedule_drops(&self) -> u64 {
+        self.note_schedule_drops
+    }
+
     /// PDC 计划（拓扑序 + 每节点补偿延迟）。
     #[must_use]
     pub const fn pdc(&self) -> &PdcPlan {
@@ -339,6 +401,120 @@ impl EngineSnapshot {
             .map(|size| size.frames() as usize == self.block_frames)
             .unwrap_or(false)
     }
+}
+
+/// 把工程的 MIDI 摆放投影成"每轨一份已调度音符表"[ROAD-M2-005, ROAD-M2-006]。
+///
+/// 这是**控制线程**上的纯投影（允许分配、允许超越函数），实时侧只读结果：
+///
+/// ```text
+/// TrackV3.clips ─► ClipPlacement ─► clip_pool[clip_id] 为 Midi ─► BTreeMap<EntityId, MidiNote>
+///   │  起点 tick = placement.start_tick + note.start_tick + micro_timing_ticks
+///   │  ratchet 把时值等分成 N 个脉冲（整数除法，余数不补）
+///   │  probability 用 MidiNote::triggers(project.rng_seed) 做**确定性**判定
+///   ▼  tick → sample（一次 f64 换算，IEEE 精确类）
+/// ScheduledNote { start_sample, end_sample, phase_inc, freq_hz, gain }
+/// ```
+///
+/// 语义裁决（本切片明确采取的口径，未在规范里定义的都登记在
+/// `docs/ledger/engine-sound-notes.md` 的 needs）：
+///
+/// 1. **音符时值被裁剪到摆放区间** `[start_tick, start_tick + duration_ticks)`；
+/// 2. **`loop_config` 不展开**（一个摆放只播一遍），坐标语义待裁决；
+/// 3. **力度 0 仍然进调度表**，由 `velocity_gain(0) == 0.0` 让它静音 ——
+///    这样"力度 0 不发声"是**增益路径**的判据，而不是"被调度器丢掉"的巧合；
+/// 4. **静音/独奏**在构造期折算成增益门（`track_is_audible`）：
+///    不可闻的轨道照常触发声部，但增益恒为 0 ⇒ 输出逐位为 0；
+/// 5. **`ClipContent::Audio` 不产生声音**（采样播放/SFZ 尚未接入，见 notes）；
+/// 6. 每轨超过 [`MAX_NOTES_PER_TRACK`] 的音符被丢弃并计数。
+fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedule>, u64) {
+    let sample_rate = project.audio_config.sample_rate.hz();
+    #[allow(clippy::cast_precision_loss)]
+    let sample_rate_f32 = sample_rate as f32;
+    let samples_per_tick = crate::synth::samples_per_tick(project.bpm, sample_rate);
+    let any_solo = project.tracks.values().any(|track| track.solo);
+    let mut schedules: BTreeMap<EntityId, NoteSchedule> = BTreeMap::new();
+    let mut dropped = 0u64;
+
+    for (id, track) in &project.tracks {
+        let audible =
+            crate::synth::track_is_audible(track.mute, track.solo, track.solo_safe, any_solo);
+        let gain = if audible {
+            crate::synth::track_gain(track.volume_db)
+        } else {
+            0.0
+        };
+        let mut notes: Vec<ScheduledNote> = Vec::new();
+
+        for placement in track.clips.values() {
+            if placement.muted {
+                continue;
+            }
+            let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+                continue;
+            };
+            let ClipContent::Midi { notes: pool } = &entry.content else {
+                continue;
+            };
+            let placement_start = i128::from(placement.start_tick);
+            let placement_end = placement_start + i128::from(placement.duration_ticks);
+
+            for note in pool.values() {
+                // 确定性概率触发：种子来自工程（`rng_seed`），与调用次数/顺序无关
+                // [MODEL-AST-005, ARCH-DET-001]。
+                if !note.triggers(project.rng_seed) {
+                    continue;
+                }
+                let ratchet = u64::from(note.ratchet.unwrap_or(1).clamp(1, 16));
+                let step = (note.duration_ticks / ratchet).max(1);
+                let offset =
+                    i128::from(note.start_tick) + i128::from(note.micro_timing_ticks.unwrap_or(0));
+
+                for pulse in 0..ratchet {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let raw_start = placement_start + offset + (pulse * step) as i128;
+                    let start_tick = raw_start.clamp(0, placement_end).min(i128::from(u64::MAX));
+                    let end_tick = (start_tick + i128::from(step))
+                        .min(placement_end)
+                        .min(i128::from(u64::MAX));
+                    if end_tick <= start_tick {
+                        continue;
+                    }
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let (start_tick, end_tick) = (start_tick as u64, end_tick as u64);
+                    let (Some(start_sample), Some(end_sample)) = (
+                        tick_to_sample(start_tick, samples_per_tick),
+                        tick_to_sample(end_tick, samples_per_tick),
+                    ) else {
+                        continue;
+                    };
+                    if end_sample <= start_sample {
+                        continue;
+                    }
+                    if notes.len() >= MAX_NOTES_PER_TRACK {
+                        dropped = dropped.saturating_add(1);
+                        continue;
+                    }
+                    notes.push(ScheduledNote::new(
+                        start_sample,
+                        end_sample,
+                        note.pitch,
+                        note.velocity,
+                        note_to_hz(f32::from(note.pitch)),
+                        velocity_gain(note.velocity) * gain,
+                        sample_rate_f32,
+                    ));
+                }
+            }
+        }
+
+        // 排序 ⇒ 实时侧的单调游标成立（`BTreeMap` 顺序不等于时间顺序）。
+        // 稳定排序 + 全序 key ⇒ 迭代顺序与平台无关 [MODEL-AST-003]。
+        notes.sort_by_key(|note| (note.start_sample(), note.pitch(), note.end_sample()));
+        schedules.insert(*id, NoteSchedule::from_sorted(notes));
+    }
+
+    (schedules, dropped)
 }
 
 /// 退役回收队列的消费端（**主线程**持有）。

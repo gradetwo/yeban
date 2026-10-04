@@ -48,6 +48,25 @@
 //! 2. **内存安全**：本 crate `#![forbid(unsafe_code)]`。
 //! 3. **不可信输入不 panic**：解析路径全部 `Result`，无 `unwrap` / `expect`。
 //! 4. **实时路径零分配** [ARCH-RT-001]：`VoicePool::note_on` / `process` / `retire` 不触碰堆。
+//!
+//! ## 与实时引擎的接口（**预留，Pending**）
+//!
+//! 本 crate 已经能解析乐器（[`parse_text`] → [`Instrument::region_for`]）并持有预分配的
+//! [`VoicePool`]（默认 [`DEFAULT_VOICE_CAPACITY`] / 上限 [`MAX_VOICE_CAPACITY`]，
+//! 含 [`StealFade`] 的 3 ms 淡出）。但**还没有任何调用方**把它接到音源上，
+//! 因为缺少三个前提（全部登记在 `docs/ledger/engine-sound-notes.md` §5.3 与 needs N6）：
+//!
+//! ```text
+//! 1) 采样数据解码（WAV/FLAC）—— 需要依赖裁决（symphonia/hound）或自研解码器；
+//! 2) 重采样（region 的 keycenter/tune/采样率 ≠ 工程采样率）—— 需要 rubato 或自研；
+//! 3) 数据本身：assets/samples/ 目前**只有** ATTRIBUTION.md，且 AGENTS.md §2 红线 9
+//!    要求样本在 assets/manifest.json 登记许可证 + SHA-256。
+//! ```
+//!
+//! **引擎侧的接入点已经就位**：`yeban-engine` 的 `SynthEngine::trigger` 是"选一个声部并
+//! 初始化它"的唯一位置（`docs/ledger/engine-sound-notes.md` §5.3 有精确说明）。
+//! 把"内置波表 + 定点相位"换成"region → 采样播放"只需在那里分派，
+//! 逐样本循环、电平、母线汇流与零分配约束都不需要改。
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
