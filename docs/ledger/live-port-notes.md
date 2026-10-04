@@ -255,6 +255,22 @@ track-0-header 区域 (240,90,408,144): 背景 #151d38, 墨迹 913 px, 该区域
 | 4 个 `note-01J8ZQ…0100..0103-rect` | `(68,697)` … `(296,739)`（`66×12`） | 工程里 `MidiNote::id` 的前 4 个 |
 | 6 个动态区（被置黑） | `arrangement-playhead (768,68,1,563)`、`piano-roll-playhead (236,691,1,365)`、`status-bar-chord (236,1056,96,24)`、`status-bar-device (1652,1056,256,24)`、`status-bar-selection (8,1056,220,24)`、`transport-timecode (224,8,128,32)` —— 面积合计 **18752 px = 0.9043%** | 与 `app-introspect-notes.md` §6.1 的实测**同一个数** |
 
+### 3.5 计划器的 base 语义（**实测**，写给后续的线）
+
+`scripts/dev/changed-crates.py` 的 base 来自 `ci.yml` 的
+`BASE_SHA = ${{ github.event_name == 'pull_request' && ... || github.event.before }}`。
+本线四轮观测到的事实：
+
+| 推送形态 | `github.event.before` | 推导结果 | 实际跑了的腿 |
+| :--- | :--- | :--- | :--- |
+| 新分支首次推送 / **force push**（历史被改写） | 全零或非本分支祖先 ⇒ 回退 `origin/main` | 本线 diff 含 `Cargo.lock` ⇒ `workspace_wide` | **全量腿**（含本线全部判据） |
+| **fast-forward** 的纯 docs 提交 | = 上一 tip（本分支自己的 sha） | 只有 `docs/**` ⇒ 无成员 crate、无根级触发器 | 两条 rust 腿**都跳过**（`checks`/`lockfile`/`deny` 仍跑） |
+
+⇒ 两个可操作的结论：① 想让一条线拿到"含 Slint 的编译"读数，**不能**只靠后续的 docs 提交
+（它们会被判成"纯文档"）；② 若为了 rebase 而 force push，base 会退回 `origin/main`，
+于是**全量腿**会被拉起来（本线第 2/3 轮就是这样拿到真实界面读数的 —— 这是个**好处**，
+代价是那一跑更贵）。
+
 > `track-0-header` 区域里 913 px 墨迹、211 种颜色 ⇒ 那里**真的画了字**（"轨道 Lead"），
 > 而"工程里没有第 4 条轨道"的那一行只有 1 种颜色（纯背景）——
 > 这就是"界面规模由**工程**决定"在最外层可被人眼复核的形态。
@@ -375,7 +391,8 @@ bash /Users/crow/work/music/.live-port-harness/clippy.sh
 | 1 | `9ddac1a` | [37232856705](https://github.com/gradetwo/yeban/actions/runs/37232856705) | **failure**：`plan` / `checks` / `lockfile` / `deny` 全绿；`rust (workspace 全量)` 的 **clippy 死了 1 条**（本线的）：`crates/yeban-app/tests/../src/live_surface.rs:215` `error: method \`scene\` is never used`。⇒ `test --workspace` **没有跑到**本线的 4 条端到端判据（这一轮没有代码读数）。`rust (${{ matrix.crate }})` 按计划跳过（0s）。 |
 | 2 | `9403282` | [37233109787](https://github.com/gradetwo/yeban/actions/runs/37233109787) | **failure（唯一的红点不是本线的）**：`plan` / `checks` / `lockfile` / `deny` 绿；`rust (workspace 全量)` 的 **clippy 零告警**（本线第 1 轮那条死代码已删），`test --workspace` 跑到了本线的全部判据 —— **`tests/live_ui_mcp.rs`：`running 4 tests` → `4 passed`（10.07s）**，读数见 §3.3。红的唯一一条是 **`crates/yeban-engine/tests/rt_zero_alloc.rs:121`**：`[MUST-GATE-001] 10_000 quanta: allocations=9 deallocations=3` ⇒ `left: 9 / right: 0`。该文件由 **origin/main 的 `384ea92`** 引入（不是本线；`git diff --name-only 384ea92 HEAD` 里没有 `crates/yeban-engine/**`）。主分支自己那一轮（run 37232665652 @ `384ea92`）走的是 **per-crate 矩阵腿**、该判据**过**；本线这一轮因为是全量腿（`Cargo.lock` 命中 `ROOT_TRIGGERS`）而把它放进了 `--workspace` 的供给里，于是**同一个测试二进制给出了不同结果** —— 见 §6.2（这是给集成者的 needs，不是本线的红点）。 |
 | 3 | `c16375b` | [37233532606](https://github.com/gradetwo/yeban/actions/runs/37233532606) | **success（本线的净判决）**：`plan` / `checks` / `lockfile` / `deny` / **`rust (workspace 全量)`** 全绿（`rust (${{ matrix.crate }})` 按计划跳过）。`clippy --workspace --all-targets -- -D warnings` **零告警**（含本线那两个含 Slint 的文件）；`test --workspace --all-targets` 里 `tests/live_ui_mcp.rs` = **`running 4 tests` → `ok. 4 passed`（8.95s）**，`yeban_ui_mcp` 的 lib 单元判据 = **`running 66 tests` → `ok. 66 passed`**（与本机零 Slint 探针**同一个数字**）。第 2 轮那条 engine 红点在这一轮**过了**（`rt_zero_alloc`：`ok. 1 passed; 0 failed; 1 ignored`）⇒ 它是**负载/供给敏感的抖动**，与本线无关（§6.2）。 |
-| 4 | `pending` | `pending` | `pending`（只改本 notes 的提交；因为 `Cargo.lock` 仍在 diff 范围内，计划器会**再跑一次全量腿**，因此这一轮也有代码读数） |
+| 4 | `05f1621` | [37233967164](https://github.com/gradetwo/yeban/actions/runs/37233967164) | **success**，但 `rust (workspace 全量)` 与 `rust (${{ matrix.crate }})` 都**按设计跳过**（0s）：本轮是 **fast-forward** 推送，计划器的 base 是**上一 tip**（`c16375b`），diff 里只有 `docs/**` ⇒ 无成员 crate、无根级触发器。`plan` / `checks` / `lockfile` / `deny` 绿。⇒ **代码净判决锚在第 3 轮（run 37233532606 @ `c16375b`）**，本行之后只有 docs 变化、代码字节未动。 |
+| 5 | `pending` | `pending` | `pending`（同第 4 轮：fast-forward 的 docs 提交） |
 
 ### 6.2 第 2 轮的读数：本线全绿，唯一的红点在 **main 自己**的新判据上
 
@@ -511,9 +528,11 @@ test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; fini
    per-crate 矩阵腿（run 37232665652 @ `384ea92`）里是**过**的。触发本线这一轮走全量腿的
    原因是本线的 `Cargo.lock` 变化命中 `scripts/dev/changed-crates.py` 的 `ROOT_TRIGGERS`。
    两个 run id 都在这里，便于复核"同一个测试二进制在两条腿里结果不同"。
-   **第 3 轮（run 37233532606）同一条腿里它 `ok`（`1 passed`）⇒ 确认是负载敏感的抖动**，
-   但"一个全局分配器计数判据在负载下会红"本身就是一条需要 engine 线处理的债。
-   本线**不改** `crates/yeban-engine/**`（别的 crate 不是本线的地盘）。
+   **第 3 轮（run 37233532606）同一条腿里它 `ok`（`1 passed`）⇒ 确认是负载敏感的抖动**。
+   ⇒ **已由 main 自己修掉**：`334fb3e fix(engine): 零分配判据改为 harness = false ——
+   第一版红的不是实时路径, 是 libtest 在别的线程分配 [MUST-GATE-001, 教训 L22]`
+   （诊断与本线的读数一致：libtest 在**别的线程**里分配，被进程级计数型全局分配器记到了）。
+   本线**不改** `crates/yeban-engine/**`（别的 crate 不是本线的地盘），这条 needs 因此**关闭**。
 7. **【人类裁决】`--test-threads=1` 下的平台约束**：4 条 CI 判据各装一次平台，
    这是 libtest 默认（一测一线程）下的正确用法。要不要在 CI 里显式钉住默认线程数，
    或把这条约束变成一条判据（例如检测"同线程第二次 `set_platform`"并给出可读的错误），
