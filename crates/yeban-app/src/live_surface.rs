@@ -516,11 +516,13 @@ impl UiSurface for LiveAdminSurface {
 }
 
 /// 装配好的**真实界面 + 真实执行面**。
+///
+/// ⚠ **投影与注册表不在这里存第二份**：它们只有 `LiveAdminSurface` 里的那一份
+/// （`view` / `registry`），而 `apply_project` 会在**同一个活窗口**上把两者一起换掉。
+/// 若 `LiveUi` 自己也存一份克隆，换工程之后就会留下**过期**的注册表 ——
+/// `ui/coverage` 会拿"新运行时树 + 旧注册表"做双向核对，结果是一堆假 `unknown`
+/// （本机探针抓不到，因为它跑的是零 Slint 的那一半；这条注释就是那次复查的产物）。
 pub struct LiveUi {
-    /// 由 `YebanProjectV1` 投影出来的视图状态（判据据此知道"工程里叫什么"）。
-    pub view: ViewState,
-    /// 静态语义注册表（`[UI-TEST-001]` 的**声明全集**，无窗口也能构造）。
-    pub registry: ControlTree,
     /// 装配时**直接**从活窗口抓的一帧。
     ///
     /// 它的用途只有一个，但很关键：判据可以拿它独立编码一次，断言
@@ -549,10 +551,11 @@ impl LiveUi {
                 ControlPlane::administrative_for_tests(Box::new(self.surface))
             }
         };
+        // 投影与注册表从**执行面**取（唯一的那一份，`apply_project` 换掉的也是它）。
         LiveControlPlane {
+            view: self.surface.view.clone(),
+            registry: self.surface.registry.clone(),
             plane,
-            view: self.view,
-            registry: self.registry,
             scene: self.scene,
             reference: self.reference,
         }
@@ -716,8 +719,6 @@ pub fn build_live_ui_with(
         report: None,
     };
     Ok(LiveUi {
-        view,
-        registry: admin.registry.clone(),
         reference,
         surface: admin,
         scene,

@@ -579,8 +579,13 @@ fn mixer_meter_labels_match_the_injected_frames() {
     assert_eq!(snapshot.master_peak_label(), "0.0");
     assert!(
         (snapshot.tracks[1].peak_dbfs + 6.020_6).abs() < 1e-3,
-        "未取整的 dBFS 必须就是 20·log10(0.5): {}",
+        "未取整的峰值 dBFS 必须就是 20·log10(0.5): {}",
         snapshot.tracks[1].peak_dbfs
+    );
+    assert!(
+        (snapshot.tracks[1].rms_dbfs + 12.041_2).abs() < 1e-3,
+        "未取整的 RMS dBFS 必须就是 20·log10(0.25): {}",
+        snapshot.tracks[1].rms_dbfs
     );
     assert_eq!(snapshot.tracks[0].level, 1.0, "满幅 ⇒ 柱高 1.0");
     assert_eq!(snapshot.tracks[2].level, 0.0, "静音 ⇒ 柱高 0.0");
@@ -588,9 +593,11 @@ fn mixer_meter_labels_match_the_injected_frames() {
     // ---- 控件树：同一个数必须能被 AI 读到（`accessible-label` 是同一条链的出口） ----
     let mut plane = live.into_control_plane(Permission::ReadOnly);
     let (tree, tree_json) = plane.plane().tree().expect("ui/tree");
+    // 注意 RMS 与峰值是**两个不同的口径**：`MeterFrame::new` 让 `rms_smoothed = rms`，
+    // 因此 `ids[1]` 的 0.25 ⇒ 20·log10(0.25) = -12.04 ⇒ 显示 "-12.0"（不是 "-6.0"）。
     for (id, expected) in [
         ("track-0-meter", "峰值 0.0 RMS 0.0 dBFS"),
-        ("track-1-meter", "峰值 -6.0 RMS -6.0 dBFS"),
+        ("track-1-meter", "峰值 -6.0 RMS -12.0 dBFS"),
         ("track-2-meter", "峰值 -120.0 RMS -120.0 dBFS"),
         ("mixer-master-meter", "峰值 0.0 RMS 0.0 dBFS"),
     ] {
@@ -610,7 +617,7 @@ fn mixer_meter_labels_match_the_injected_frames() {
     // `ui/node` 走的是同一条入口（找不到 / 标签不含期望文本都会显式报错）。
     let probe = plane
         .plane()
-        .probe(&ProbeOptions::new("track-1-meter", "-6.0 dBFS").without_masking())
+        .probe(&ProbeOptions::new("track-1-meter", "峰值 -6.0 RMS -12.0 dBFS").without_masking())
         .expect("ui/node 必须给同一个数");
     assert_eq!(probe.node.id, "track-1-meter");
     assert!(
