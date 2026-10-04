@@ -133,6 +133,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `scripts/dev/changed-crates.py` 的受影响集合推导 | 只在 `--base HEAD --head HEAD`（空 diff）下验证了保守回退路径；**非空 diff 的闭包推导要等第一次真实分支推送后再验证** |
 | `scripts/dev/ci-verdict.sh` | 仓库还没有任何 workflow run，脚本尚未真实取回过一次判决 |
 | `site-deploy.yml` 的真实部署路径 | 需要 Cloudflare 凭据，当前只验证了"缺凭据 → 优雅跳过"这条分支 |
+| **硬件往返时延（BASELINE-005 ≤ 5.5ms @64 采样）** | **CI 上永远无法验证**：GitHub runner 没有声卡。规范要求"硬件回环"实测（macOS `kAudioDevicePropertyLatency` / `kAudioStreamPropertyLatency`；Windows `IAudioClient::GetStreamLatency`；Linux PipeWire/JACK 回环）。这需要**有音频设备的机器 + 回环**（物理环回线，或 BlackHole/Loopback 这类虚拟设备）。这条无法靠"绕行"消除，只能由人或有声卡的机器完成 —— 已列入待人类清单，而不是记成 pending 了事。 |
 | 官网的浏览器视觉核验 | **已在 CI 跑绿**（run 37217947487）：8 组断言通过，4 张全页截图作为 artifact 留存，并已下载人工过目（深色中文首页 / 浅色英文首页 / 移动端 390px / 404 页）。截图证据：`gh run download 37217947487 -n site-screenshots` |
 | 依赖许可清单 `--check` | **已闭环**：62 包时本机绿；Slint 引入后 CI 真实变红一次（清单未重生成），重生成后 579 包绿；合并 ui-shell 后本机 `--check` 再次通过（635 行清单） |
 | Linux 上 Slint 的系统库前置 | **已被真实判决覆盖**：apt 步骤加上后 `rust (yeban-app)` 转绿（run 37218433961 / 37218791723） |

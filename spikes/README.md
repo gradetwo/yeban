@@ -27,7 +27,10 @@ spike 本身就可以按需退役（`docs/DEV_WORKFLOW.md`「明确废弃」）�
 | Spike | 状态 | 说明 |
 | :--- | :--- | :--- |
 | `spike-04-opslog-model` | **结论已汲取** | `crates/yeban-model` 已落地 ULID `EntityId` + `BTreeMap` 权威 AST + 可逆 `Op` 日志 + proptest 状态守恒（76 个测试，CI run 37217037266 / 37218243856 系列绿）。spike 目录保留为空壳，直到有人把"10,000 次撤销/重做"的实测读数单独跑出来登记。 |
-| 其余 8 个 | **未开始** | 目录为空壳骨架，`[dependencies]` 里的重依赖仍是 `TODO(spike)` 注释。这也意味着一件事：**在 `line/ui-shell` 之前，整个仓库从未编译过 Slint**（第一次真的编译时暴露了 Linux fontconfig 前置条件，见 `docs/CI_CD.md` §3.2）。 |
+| `spike-01-cpal-latency` | **将由 `line/engine-rt` 部分覆盖** | 该线会在 CI 上验证"能打开/配置设备、回调零分配"等**结构性**性质；但 spike 的通过判据是「30 分钟连续播放零 underrun + **硬件往返 ≤ 5.0ms**」，这两条**CI 上做不到**（runner 无声卡），必须由有音频设备的机器实测。详见 `docs/DEVELOPMENT_LEDGER.md` 的对应条目。 |
+| `spike-02-spsc-retire` / `spike-09-snapshot-exchange` | **将由 `line/engine-rt` 覆盖** | 无锁 SPSC 批量契约、`Arc<EngineSnapshot>` 原子交换与退役队列零泄漏都是该线的交付内容（`ROAD-M2-002/007`）。spike 目录保留为空壳，直到读数登记。 |
+| `spike-05-ui-test-port` / `spike-08-software-renderer` | **将由 `line/ui-test-port` 覆盖** | Tier-1 `SoftwareRenderer` 截图 + 语义控件树（`MUST-GATE-015`）。 |
+| 其余 4 个 | **未开始** | 目录为空壳骨架，`[dependencies]` 里的重依赖仍是 `TODO(spike)` 注释。这也意味着一件事：**在 `line/ui-shell` 之前，整个仓库从未编译过 Slint**（第一次真的编译时暴露了 Linux fontconfig 前置条件，见 `docs/CI_CD.md` §3.2）。 |
 
 `spike-04` 的"已汲取"不等于"已验收"：MUST-GATE-010 要求的 **10,000 步**属性测试仍需在 CI 的上限档位
 真实跑过并把读数登记进账本；本机默认只跑小步数。
