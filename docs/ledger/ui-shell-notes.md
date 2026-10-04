@@ -96,13 +96,20 @@
 
 ### 未能核验、但影响实现的项（已知风险）
 
-| 项 | 状态 | 兜底 |
+> 下表在第 2 轮 CI（`rust (yeban-app)` = success）之后回填了"是否已被证实"。
+> 该 job 真的在 Linux 上编译了 `.slint`、`slint_build` 生成代码与 `main.rs`，并跑了 clippy `-D warnings` 与全部单元测试。
+
+| 项 | 状态 | 依据 / 兜底 |
 | :--- | :--- | :--- |
-| `slint::include_modules!()` 放在**嵌套模块**里（而不是 crate 根）是否一定可行 | **未核验**。它是 `include!`，理论上任意 item 位置都可；万一生成文件以内部属性开头则可能报错 | 失败时改成 crate 根 include；但那样 `#![deny(missing_docs)]` 与 `clippy::all = deny` 会盖到生成代码上，故先选嵌套模块 + `allow` |
-| 生成代码是否本身 lint 干净 | **未核验**（没法在不编译的前提下知道） | 已把 `missing_docs` / `clippy::all` / `rust_2018_idioms` 限在 `pub mod ui` 内 |
-| `accessible-orientation` 的枚举取值是否就是 `horizontal` / `vertical` | **部分核验**（文档给了枚举名 `Orientation`，未逐值列出） | 已在 3 处使用；若 CI 报错，就是这一条 |
-| 8 位十六进制的通道顺序 | **未核验** | 完全不用 8 位十六进制 |
-| `i-slint-backend-testing` 的 `init_*` 函数名（`init_no_event_loop()` 等） | **未核验** | 本 crate **不依赖**该 crate；留给 `yeban-ui-test-port` 线 |
+| `slint::include_modules!()` 放在**嵌套模块**里是否可行 | **已证实可行** | 第 2 轮 `rust (yeban-app)` success（`pub mod ui { #![allow(…)] slint::include_modules!(); }` 编译通过） |
+| 生成代码是否本身 lint 干净 | **已证实干净**（至少对 `clippy::all` + `missing_docs` 而言） | 同上；`allow` 仍保留，因为它同时还挡住了未来版本生成代码的漂移 |
+| 生成组件的可见路径（`yeban_app::ui::MainWindow` 而非 `ui::App::MainWindow`） | **已证实** | 同上，`main.rs` 的 `use yeban_app::ui::MainWindow;` 编译通过 |
+| `ComponentHandle::run(&ui)` 的 UFCS 写法 | **已证实** | 同上（用了 UFCS 以避免 `unused_import` 与 `-D warnings` 打架） |
+| `accessible-orientation: horizontal/vertical`、`overflow: elide`、`accessible-*` 各属性名与类型 | **已证实** | 全部 13 个 `.slint` 编译通过 |
+| 主题层（`export global` + `.with-alpha()` + 字符串拼接 + `length * int` 等） | **已证实** | 同上 |
+| 8 位十六进制的通道顺序 | **仍未核验**（也不需要） | 实现完全不用 8 位十六进制：只用 6 位不透明色 + `.with-alpha()` |
+| `i-slint-backend-testing` 的 `init_*` 函数名（`init_no_event_loop()` 等） | **仍未核验** | 本 crate **不依赖**该 crate；留给 `yeban-ui-test-port` 线 |
+| 运行时行为（窗口真的出现、布局比例、CJK 字体回退、无障碍树内容） | **仍未核验** | 需要真实显示器与 `yeban-ui-test-port`；本工作线从未跑过 GUI |
 
 ---
 
@@ -204,6 +211,7 @@ UI/UX 规范定义了**网格几何**（§1.1/§1.2）与**视觉 Diff 语义色
 | `bash scripts/gates/run-gates.sh light` | **通过**：`cargo fmt --all --check` + 11 条红线守卫全绿 |
 | 环境：`scripts/dev/local-env.sh`（集成者新增） | `run-gates.sh` 与 `cargo-local.sh` 会自动 source 它，沙箱里自动切 `CARGO_HOME` / `RUSTUP_TOOLCHAIN`，不必再手动 export |
 | 教训 L6（集成者踩过，后来者注意） | **不要把门禁管道到 `tail`/`head`**：管道的退出码是 `tail` 的 0，fmt 失败会被吞掉并推上去。本文件记录的所有门禁结果都没有管道化 |
+| `python3 scripts/gates/license_inventory.py` + `--check` | 生成后 `--check` 通过（"依赖许可清单与依赖图一致 (635 行)"）。任何改动依赖图的线都会撞到这条门禁，它是**预期**行为 |
 | `cargo-local.sh metadata --format-version 1` | 通过；`Cargo.lock` 从 84 个包涨到 **602** 个包（+5774/−290 行） |
 | `cargo-deny --all-features check`（用 `docs/DEV_WORKFLOW.md` 里的预编译二进制） | `advisories ok, bans ok, **licenses FAILED**, sources ok` —— 见第 8 节 |
 | `rustc --edition 2024 --test`（把 `scene.rs` / `input.rs` / `elements.rs` 三个**纯 Rust** 模块单独编译执行） | **40 条测试全绿**；`-D warnings -W missing-docs` 零告警 |
@@ -291,14 +299,40 @@ GitHub 托管 runner 上没有 fontconfig 的开发包。**这是本项目第一
 - 教训：垫片当时能让 CI 真的编译（"交付物从未被编译过"的顾虑是真实的），但**环境前置属于环境**，
   正确落点是 CI 的系统依赖安装，而不是产品依赖图。
 
-### 第 2 轮：判决
+分支已 rebase 到含修复的 `main`（`deny.toml` 放行 BSL-1.0 + CI 装系统库 + 两条引擎线合并），
+并按裁决删除了 fontconfig 垫片。两次 rebase 都把 `Cargo.lock` 让给 main 侧，随后用
+`cargo metadata` 重新生成为与本分支清单一致（已验证 `cargo metadata --locked` 通过）——
+否则 `lockfile` job 会红。
 
-- 分支已 rebase 到含修复的 `main`（`deny.toml` 放行 BSL-1.0 + CI 装系统库 + 两条引擎线合并），
-  并按裁决删除了 fontconfig 垫片。
-- 预期：`rust (yeban-app)` 这次是**第一次真正编译** `.slint` 与 `slint_build` 生成代码，
-  也是 `main.rs` 第一次对接生成 API —— 本次最大的未验证项将被证实或证伪。
-- 判决读取：`bash scripts/dev/ci-verdict.sh line/ui-shell`
-- 结果：**pending（必须在读取后回填；未读取的判决不算数）**
+### 第 2 轮：`953b85b` → run [`37218433961`](https://github.com/gradetwo/yeban/actions/runs/37218433961) —— **failure（但只剩 1 条）**
+
+| job | 结果 |
+| :--- | :--- |
+| `plan` / `lockfile` / `deny` | **success**（`deny` 因集成者放行 BSL-1.0 而通过） |
+| **`rust (yeban-app)`** | **success** —— **`.slint` 编译通过、`slint_build` 生成代码可用、`main.rs` 对接生成 API 编译通过、clippy `-D warnings` 零告警、40 条单元测试全绿** |
+| 其余 25 条 rust 矩阵腿 | success |
+| `checks` | **failure** —— 见下 |
+
+**这是本次最重要的一条结论**：规范里最不确定的三件事（`.slint` 语法、`slint::include_modules!()`
+放在嵌套模块里、`ComponentHandle::run` 等生成 API 的实际签名）**全部被 CI 证实**。
+本文件 §2 里那些"未核验"的风险项中的第 1、2 条据此关闭。
+
+**`checks` 的失败原因（与本工作线代码无关，是新增的门禁）**：
+
+```
+依赖许可清单已漂移: docs/ledger/dependency-licenses.md 与真实依赖图不一致。
+请运行 `python3 scripts/gates/license_inventory.py` 并提交结果。
+```
+
+集成者新增了 `scripts/gates/license_inventory.py --check`：它要求
+`docs/ledger/dependency-licenses.md`（机器生成的依赖许可清单，内含 `Cargo.lock` 的 SHA-256）
+与真实依赖图一致。本工作线引入 slint 依赖树后清单必然漂移 —— 这是该门禁**预期**的行为
+（"加了依赖却没重新生成清单" 正是它要抓的）。已在本地重新生成并提交：
+外部依赖 **579** 个，其中 slint 系 14 个包是
+`GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`（取 GPL-3.0-only 分支），
+另 2 个是 BSL-1.0（`clipboard-win` / `error-code`）。
+该生成器**只写** `docs/ledger/dependency-licenses.md` 这一个文件，不碰
+`THIRD_PARTY_LICENSES.md`（后者是集成者独占的人工归属文件）。
 
 **失败 2（根级法务策略，本工作线无权改）**：
 
@@ -321,6 +355,12 @@ error[rejected]: failed to satisfy license requirements
 本工作线提出"接纳新许可属于人类判断"这一点被接受，作为政策异议记录在案。
 集成者另给出更省事的判定办法：改白名单前先用 `cargo metadata --locked --format-version 1`
 枚举**全部**外部包的 license 逐条比对（他在本分支上枚举了 579 个包，真正被拒的只有 BSL-1.0）。
+
+### 第 3 轮：判决
+
+- 处置：重新生成 `docs/ledger/dependency-licenses.md`（唯一漂移的文件），其余不变。
+- 预期：全部 job 绿。
+- 结果：**pending（必须在读取后回填；未读取的判决不算数）**
 
 ---
 
