@@ -287,4 +287,9 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
-| 第 1 轮补记（本文件 + §7） | 见提交信息 / `ci-verdict.sh` 读数 | — | 见该次运行的 `checks` 腿 |
+| 第 1 轮补记（本文件 + §7） | `37229263078` | `b5a802f` | **全绿**：`plan` / `checks` / `deny` / `lockfile` 全部 ✓；两条 `rust` 腿 **0s 跳过** —— 这是**正确**的：`plan` 判定的受影响集合里没有任何 crate（本次只改了本文件），因此不该有编译任务 |
+
+**关于"记录判决本身又会前进一格"**：第 2 轮（`b5a802f`）的读数已写进上表。
+本节之后若再有**纯文档**提交，本文件不再为它单独追加一行 ——
+无限回归（"记录判决的提交自己没被记录"）没有意义，而**代码头部**的判决已经读回并留痕。
+需要复核时一律以 `bash scripts/dev/ci-verdict.sh --watch line/tools-domain` 的**当前**读数为准。
