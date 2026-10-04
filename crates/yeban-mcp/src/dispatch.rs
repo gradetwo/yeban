@@ -18,10 +18,11 @@
 //! ## 为什么"尚未实现"走 JSON-RPC 错误而不是 `ToolResponse`
 //!
 //! `schemas/mcp-tools.schema.json` 的 `ToolResponse.error.code` 是一个**闭合**的
-//! 7 值 enum，而架构 §7.2 的表格里每个工具都会产出这 7 个之外的领域错误码
-//! （见 [`crate::tools::ErrorCode`] 的说明与 `docs/ledger/mcp-core-notes.md` §3.1）。
-//! 在人类裁决这个冲突之前，本模块对**实现级**状况（尚未接线）一律返回 JSON-RPC
-//! 错误对象 `-32005`，绝不伪造一个契约里不存在的 `ToolResponse.error.code`。
+//! enum（ADR-0001 D25 之后是联集 20 值），**领域失败**才走 `ToolResponse`。
+//! `NOT_IMPLEMENTED` 不在那个 enum 里，而且不该在 —— 它不是领域失败，是"这条能力
+//! 还没接线"。所以本模块对**实现级**状况一律返回 JSON-RPC 错误对象 `-32005`，
+//! 绝不伪造一个契约里不存在的 `ToolResponse.error.code`
+//! （见 [`crate::tools::ErrorCode`] 的说明与 `docs/ledger/mcp-core-notes.md` §2 M10）。
 //!
 //! ## 幂等去重
 //!

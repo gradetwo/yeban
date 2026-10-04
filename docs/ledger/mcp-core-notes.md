@@ -1,17 +1,27 @@
 # `mcp-core` 工作线台账：落地清单、契约实测、判据与未决项
 
 - **台账类型**：交付映射 / 契约实测 / 判据清单 / 未决项（**不是规范**）
-- **工作线**：`line/mcp-core`（worktree `yeban/.worktrees/mcp-core`，基于 main `f05000e`）
+- **工作线**：`line/mcp-core`（worktree `yeban/.worktrees/mcp-core`）
 - **所有者目录**：`crates/yeban-mcp/**`（本台账是唯一新增的文档文件）
 - **规范来源**：
   - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.1 / §7.2（`ARCH-SEC-002`、`MCP-TOOL-001..010`）
   - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` `ROAD-M4-001/002/003`、`MUST-GATE-009`
-  - `schemas/mcp-tools.schema.json`（工具名集合 / `dryRun` / `idempotencyKey` 的机器契约）
-  - `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md`（D5 版本事实源、D20/D21 依赖政策）
+  - `schemas/mcp-tools.schema.json`（工具名集合 / `dryRun` / `idempotencyKey` / 错误码的机器契约）
+  - `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md`（D5 版本事实源、D20/D21 依赖政策、**D25 契约修复**）
   - 兄弟线样板：`crates/yeban-model/src/samples.rs`（样本导出）、`crates/yeban-model/src/ids.rs`（手写 serde）
 
 > 本文件回答五个问题：**我交付了什么对应哪条规范**、**契约实测出来到底长什么样**、
 > **每条判据怎么变红**、**哪些东西明确没做**、**需要谁裁决什么**。
+
+## 0. 本轮时间线（两轮）
+
+| 轮次 | 内容 |
+| :--- | :--- |
+| 第 1 轮 | 交付全量实现 + 108 条判据；**实测出两处契约缺陷**（错误码 enum 装不下规范并集、schema 根不引用 `definitions`）并如实登记为待裁决；CI run **37225147123 全绿**（checks / deny / lockfile / rust workspace 全量） |
+| 集成者 | 按 **ADR-0001 D25** 在 main 修好契约（错误码联集 20 值 + 根 `oneOf($ref ToolCall, $ref ToolResponse)`），并把 mcp 样本导出接进 `ci.yml` |
+| 第 2 轮 | rebase 到 main；**判据从"钉住缺口"升级成"实现集合 == 契约集合"**；新增"故意违法样本必须让契约变红"的**承重**判据；CI run `37225665357` 全绿 |
+| 集成者 | 承重的根立刻暴露一个**类型错误**：我把"注册表快照/错误码清单"当成了契约实例去对账。集成者按 `5319041` 引入 **`.meta.` 约定**（文档样本跳过对账 + "每个前缀至少一份真实例"守卫）并做了最小改名 |
+| 第 3 轮（本轮） | 以 main 为准：**撤回"把目录样本包成 `ToolResponse`"这个处置**（清单本来就不是实例），改用 `.meta.` + 两道自己的守卫；补一份**真实管线产出**的 `ToolResponse` 实例（覆盖根 `oneOf` 的第二个分支）；112 条判据全绿 |
 
 ---
 
@@ -19,16 +29,16 @@
 
 | 文件 | 规范 ID | 说明 |
 | :--- | :--- | :--- |
-| `src/tools.rs` | `MCP-TOOL-001..010`、`ROAD-M4-003` | 十个 `yeban_*` 工具的 `const` 注册表（规范顺序）+ 参数 schema + 副作用分级 + 错误码目录 + `ToolCall`/`ToolResponse` |
+| `src/tools.rs` | `MCP-TOOL-001..010`、`ROAD-M4-003` | 十个 `yeban_*` 工具的 `const` 注册表（规范顺序）+ 参数 schema + 副作用分级 + 错误码目录（联集 20 + 实现级 1）+ `ToolCall`/`ToolResponse` |
 | `src/security.rs` | `ARCH-SEC-002`、`MUST-GATE-009` | 256-bit token 生成、`~/.yeban/session.token` 的 `0600` 读写与**权限校验**、六级 scope、`ui:inject` 生产硬禁、`authenticate`/`authorize` 唯一判定入口 |
 | `src/jsonrpc.rs` | `MCP-TOOL-001..010` | JSON-RPC 2.0 最小实现，手写 `Serialize`（`id` 回显、`result`/`error` 恰好其一、notification 不回复） |
-| `src/dispatch.rs` | `MCP-TOOL-001..010` | 解析 → 鉴权 → scope → 工具分发 → `dryRun` 短路 → `BTreeMap` 幂等去重 |
+| `src/dispatch.rs` | `MCP-TOOL-001..010` | 解析 → 鉴权（**先于解析**）→ scope → 工具分发 → `dryRun` 短路 → `BTreeMap` 幂等去重 |
 | `src/transport/stdio.rs` | `ROAD-M4-002` | 逐行 JSON-RPC 批处理（空行跳过、解析错误独立成行、notification 无输出） |
 | `src/transport/http.rs` | `ARCH-SEC-002`、`MUST-GATE-009`、`ROAD-M4-001` | `TcpListener::bind(127.0.0.1:0)` + 线程手写最小 HTTP/1.1（`POST` only、`Content-Length` 必填、超长拒绝、Bearer 校验） |
 | `src/transport/mod.rs` | `MUST-GATE-009` | 两道开关的纯函数判定（编译期 feature + 运行期显式开关） |
 | `src/bin/yeban-mcp.rs` | `ROAD-M4-002` | 双形态 CLI：stdio 批处理 / `--print-token` / `--enable-mcp-http`；退出码 0/1/2 |
-| `src/samples.rs` + `examples/export_mcp_samples.rs` | `MUST-GATE-010`、`TEST-SPEC-005` | 12 份规范样本导出（**非测试**入口，与 `yeban-model` 同一做法） |
-| `tests/contract.rs` | `MCP-TOOL-001..010`、`MUST-GATE-010` | 直接读 `schemas/mcp-tools.schema.json` 做集合相等断言的**承重**判据 |
+| `src/samples.rs` + `examples/export_mcp_samples.rs` | `MUST-GATE-010`、`TEST-SPEC-005` | 13 份样本导出（**非测试**入口，与 `yeban-model` 同一做法）：11 份**契约实例**（10 × `ToolCall` + 1 份真实管线产出的 `ToolResponse`）+ 2 份 `.meta.` **文档样本** |
+| `tests/contract.rs` | `MCP-TOOL-001..010`、`MUST-GATE-010` | 直接读 `schemas/mcp-tools.schema.json` 的**承重**判据（集合相等 + 根 `oneOf` + 故意违法样本必红） |
 | `src/lib.rs` | — | 模块地图 + 默认安全模型 + 契约对账现状 + 实现状态 |
 
 **没有新增任何依赖。** `serde` / `serde_json` / `thiserror` 三件都在根 `[workspace.dependencies]`
@@ -42,14 +52,14 @@ HTTP 传输拒绝 `tiny_http` 一类的小依赖：需求只是"把一行 JSON �
 | 文件 | 改了什么 | 为什么不可避免 |
 | :--- | :--- | :--- |
 | `Cargo.lock` | `yeban-mcp` 包条目多了 3 条依赖边 | `license_inventory.py` 用 `cargo metadata --locked`，锁文件不同步就红 |
-| `docs/ledger/dependency-licenses.md` | 机器再生成，**5 行**（`Cargo.lock` 摘要 + 4 个"直接依赖方"单元格加 `yeban-mcp`） | `run-gates.sh light/crate` 档位内含 `license_inventory.py --check`，不生成就红 |
+| `docs/ledger/dependency-licenses.md` | 机器再生成（rebase 后重跑一次），`yeban-mcp` 被加为 serde / serde_json / thiserror 的直接依赖方 | `run-gates.sh light/crate` 档位内含 `license_inventory.py --check`，不生成就红 |
 
 未改：根 `Cargo.toml`、`.github/**`、`scripts/**`、`deny.toml`、`schemas/**`、
 `docs/DEVELOPMENT_LEDGER.md`、`docs/adr/**`、`docs/YEBAN_*.md`、其它 `crates/**`、`spikes/**`、法务文件。
 
 ---
 
-## 2. 决策记录（本地编号 M1..M10）
+## 2. 决策记录（本地编号 M1..M11）
 
 ### M1 —— HTTP 传输用 `std::net` 手写，零新增依赖
 
@@ -68,7 +78,7 @@ CI 默认档位不传 `--all-features`（见 `.github/workflows/ci.yml` 的 `rus
 
 所以落成 `#[cfg(any(feature = "mcp-http", test))]`：
 
-- `cfg(test)` 下模块参与编译 ⇒ 20 条 HTTP 判据与 `clippy -D warnings` 都真的跑到了；
+- `cfg(test)` 下模块参与编译 ⇒ 21 条 HTTP 判据与 `clippy -D warnings` 都真的跑到了；
 - **真正的监听循环** `HttpServer::serve_forever` 仍然只在 `feature = "mcp-http"` 下存在
   ⇒ 默认 release 构建里既没有监听循环，也没有任何链接进来的 HTTP 代码；
 - `MUST-GATE-009` 的"默认关闭"由 `Cargo.toml` 的 `default = []` + 运行期开关两层保证，
@@ -92,7 +102,8 @@ CI 默认档位不传 `--all-features`（见 `.github/workflows/ci.yml` 的 `rus
 
 `handle_stream` 的顺序是 `方法 → 端点 → Content-Length → 体 → 分发`。
 早期版本先要 `Content-Length`，于是一个不带体的 `GET` 会拿到 `411` 而不是 `405`
-（`handle_text` 那条路径却给 `405` —— 两套口径）。回归判据见 §4.4 的 M-7。
+（`handle_text` 那条路径却给 `405` —— 两套口径）。回归判据见 §4.4 的 C 行与
+`stream_path_checks_method_before_content_length`。
 
 ### M5 —— `app:admin` **不**隐含任何 `ui:*`
 
@@ -128,67 +139,144 @@ CI 默认档位不传 `--all-features`（见 `.github/workflows/ci.yml` 的 `rus
 
 ### M10 —— "尚未实现"走 JSON-RPC `-32005`，不伪造 `ToolResponse`
 
-理由见 §3.1：`ToolResponse.error.code` 的 enum 装不下领域错误码。
-在人类裁决之前，**实现级**状况（尚未接线）走 JSON-RPC 错误对象，绝不产出
-一个契约里不存在的 `ToolResponse.error.code`。
+契约的 `ToolResponse.error.code` 是**闭合** enum（D25 之后是 20 值，仍然闭合），
+而 `NOT_IMPLEMENTED` 不在其中（也不该在：它不是领域失败，是"这条能力还没接线"）。
+所以**实现级**状况一律走 JSON-RPC 错误对象；领域失败才走 `ToolResponse`。
+判据 `implementation_error_codes_equal_the_contract_enum_exactly` 里有一条显式断言：
+`NOT_IMPLEMENTED` 不许进契约路径（实测：把它塞进 `ToolResponse.error.code` 会被契约拒）。
+
+### M11 —— 错误码判据从"钉住缺口"升级成"集合相等"
+
+第 1 轮 `ErrorCode::SCHEMA_CONTRACT` 是 schema 原来的 7 值，判据把
+"规范并集 − schema = 13 个码"钉成实测常量（让缺口可见）。
+**ADR-0001 D25 把契约扩成联集 20 值之后**，这条判据的形态必须换，否则它会变成
+"永远为真的旧快照"。现在是：
+
+- `ErrorCode::SCHEMA_CONTRACT`（20）与 `schemas/mcp-tools.schema.json` 的 enum
+  **集合完全相等**（双向包含 + 计数）——契约少一个 / 实现多一个都会红；
+- 规范表格的 16 个必须**全部**落在契约里（缺口回来就红）；
+- 契约 − 表格 == 那 4 个 schema 原有码（`ENTITY_NOT_FOUND` / `INVALID_PARAMETER_RANGE` /
+  `PERMISSION_DENIED` / `ROUTING_CYCLE_DETECTED`），清单是实测常量。
+
+### M12 —— 撤回"把目录样本包成 `ToolResponse`"，改用 `.meta.` 约定
+
+第 2 轮我为了让两份目录样本通过 D25 的新根，把它们包成了
+`{"status":"success","data":{…}}`。**这个处置是错的**，集成者在 `5319041` 指出并纠正：
+
+> 注册表快照与错误码清单**本来就不是** `ToolCall` / `ToolResponse` 的实例；
+> 拿 `oneOf` 根去校验"清单/快照"属于**类型错误**。
+
+正解是 `.meta.` 命名约定（`validate_schemas.py`，集成者的文件）：
+`<prefix>.<name>.meta.json` = **文档样本**，显式 `[skip]`，不对账 schema。
+本轮已按 main 侧为准撤回包装，两份目录样本回到裸对象。
+
+### M13 —— `.meta.` 是命名约定而不是 schema 能力 ⇒ 本 crate 自己补两道守卫
+
+谁都能把一份**本该对账的实例**改名成 `.meta.` 来逃逸。集成者的脚本守卫挡得住
+**整段逃逸**（每个前缀至少一份实例），挡不住 **部分逃逸**（11 份实例里混 1 份 meta）。
+因此本 crate 承担更硬的那一半（`tests/contract.rs`）：
+
+1. `exported_instance_set_is_exactly_the_tool_set`：非 meta 的实例文件名集合必须**穷举且一一对应**
+   —— `{mcp-tools.call.<tool>.json}`（10）**∪** `{mcp-tools.response.dry-run.json}`（1）；
+   少一份、多一份、把一份改名成 `.meta.`、或者删掉那份 `ToolResponse` 实例，四种都会红。
+   文档样本集合也同样穷举（只允许那两份）。
+2. `check_document_sample`（`samples.rs`）：文档样本顶层**不许**出现 `name` / `arguments` /
+   `status` 这三个实例判别键 —— 堵住"用 `.meta.` 藏实例"最直接的那种。
+
+### M14 —— 补一份**真实管线**产出的 `ToolResponse` 实例
+
+D25 的根是 `oneOf(ToolCall, ToolResponse)`。第 2 轮的样本目录里**全是** `ToolCall`，
+也就是说**第二个分支从未被任何样本覆盖** —— 这正是集成者在 `ci.yml` 里警告的
+"契约定义了没人用的类型"。本轮补上 `mcp-tools.response.dry-run.json`：
+它由 [`crate::dispatch::Dispatcher::handle_line`] 的 `dryRun` 短路**真实产出**（不是手写形状），
+因此它同时钉住"实现产出的 `ToolResponse` 必须被契约接受"。
 
 ---
 
-## 3. 契约实测与发现（**这一节是给集成者与人类裁决者看的**）
+## 3. 契约实测与发现
 
-### 3.1 【需要裁决】错误码：两份契约不一致，13 个领域错误码无家可归
+### 3.1 错误码缺口：**已由 ADR-0001 D25 关闭**（历史留痕）
+
+第 1 轮实测：
 
 | 来源 | 集合 | 数量 |
 | :--- | :--- | ---: |
 | `schemas/mcp-tools.schema.json` → `definitions.ToolResponse.properties.error.properties.code.enum` | 闭合枚举 | **7** |
-| `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.2 表格逐工具列出的错误码 | 并集 | **16** |
+| `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.2 表格逐工具列出的并集 | 并集 | **16** |
 | 交集 | `PROJECT_LOCKED` / `IO_ERROR` / `PROPOSAL_NOT_FOUND` | 3 |
 
-**schema 装不下的 13 个**（实测，判据 `the_error_code_gap_between_the_two_contracts_is_pinned` 钉住）：
-`FILE_NOT_FOUND`、`DISK_FULL`、`NO_ACTIVE_PROJECT`、`INVALID_FIELD_SELECTOR`、
-`STYLE_NOT_FOUND`、`CYCLE_DETECTED`、`CLIP_NOT_FOUND`、`OUT_OF_RANGE`、
-`TRACK_NOT_FOUND`、`INDEX_OUT_OF_BOUNDS`、`RENDER_FAILED`、`BUSY`、`CONFLICT`。
+**当时 schema 装不下的 13 个**：`FILE_NOT_FOUND`、`DISK_FULL`、`NO_ACTIVE_PROJECT`、
+`INVALID_FIELD_SELECTOR`、`STYLE_NOT_FOUND`、`CYCLE_DETECTED`、`CLIP_NOT_FOUND`、
+`OUT_OF_RANGE`、`TRACK_NOT_FOUND`、`INDEX_OUT_OF_BOUNDS`、`RENDER_FAILED`、`BUSY`、`CONFLICT`。
+后果是：**任何一个真实的领域失败都会产出一份 schema 判为非法的 `ToolResponse`。**
 
-另外 `CYCLE_DETECTED`（表格）与 `ROUTING_CYCLE_DETECTED`（schema）看起来是同一件事的两种写法 ——
-**本线不做合并猜测**，两个都在 `ErrorCode` 里，差异留给人裁决。
+第 1 轮的处置（已作为方法论写进 D25）：
 
-**后果**：任何一个真实的领域失败（例如 `yeban_open_project` 撞上锁）都会产出一份
-schema 判为非法的 `ToolResponse`。也就是 `MUST-GATE-010` 的"契约即事实"在这条链路上
-现在是**不自洽**的。
+1. 两套集合都实现进 `ErrorCode`；
+2. 缺口清单进机器可读样本；
+3. 判据把缺口钉成实测常量；
+4. 留一条"契约被修好时提醒升级口径"的判据。
 
-**本线处置**（不擅自改 `schemas/**`）：
-1. `ErrorCode` 同时实现两个集合 + 3 个实现级码（`NOT_IMPLEMENTED`），共 21 个；
-2. 缺口清单进样本 `mcp-tools.error-codes.json`（机器可读）；
-3. 判据把缺口钉成**实测常量**：集合变了就一定有人看得见；
-4. 需要人类裁决的形态：**给 schema 的 `code` enum 补齐 16 个**，或者**把表格收敛到 7 个**，
-   或者**给 `ToolResponse` 加一个 `detailCode` 字段**承载领域码。三选一写进 ADR。
+**D25 的裁决**：取**联集 20 值**（原有 7 个一个不删 —— `PERMISSION_DENIED` 还是 scope
+强制的必需码；规范并集一个不缺）。本轮已按 §M11 升级判据。
 
-### 3.2 【重要】`schemas/mcp-tools.schema.json` 的**根没有引用 `definitions`** ⇒ 样本对账目前是空转的
+另有一处**未合并、留给人裁决**的命名重复：`CYCLE_DETECTED`（表格）与
+`ROUTING_CYCLE_DETECTED`（schema 原有）看起来是同一件事的两种写法，两者都在 enum 里。
 
-根的键只有 `$id` / `$schema` / `definitions` / `description` / `title` / `type`
-（没有 `properties`、没有 `$ref`、没有 `allOf`/`oneOf`/`anyOf`）。
-Draft 2020-12 下"任意对象"都通过根校验，`definitions.ToolCall` **从未被引用**。
+实测（`jsonschema` 4.24.0 / Draft 2020-12，本轮）：
 
-实测（`jsonschema` 4.24.0 / Draft 2020-12）：
+```text
+PASS   | 修复前会非法的领域失败: DISK_FULL
+PASS   | 修复前会非法的领域失败: CONFLICT
+REJECT | 实现级码不许伪装成响应  ({"status":"error","error":{"code":"NOT_IMPLEMENTED"}})
+REJECT | 裸对象仍被拒            ({"anything":[1,2,3]})
+REJECT | 未知工具名仍被拒        ({"name":"yeban_not_a_tool","arguments":{...}})
+REJECT | 两个形状都像 (oneOf 必须恰好一个)
+```
+
+### 3.2 schema 根：从"空转"变**承重**（ADR-0001 D25）+ `.meta.` 约定（`5319041`）
+
+第 1 轮实测：根只有 `$id` / `$schema` / `definitions` / `description` / `title` / `type`，
+**没有** `properties` / `$ref` / `allOf`。Draft 2020-12 下"任意对象"都通过根校验：
 
 ```text
 {"name": "完全不在枚举里的工具", "arguments": {"nonsense": 1}} -> PASS(空转)
 {"error": {"code": "FILE_NOT_FOUND"}}                        -> PASS(空转)
 {"anything": [1, 2, 3]}                                      -> PASS(空转)
-root keys: ['$id', '$schema', 'definitions', 'description', 'title', 'type']
 ```
 
-**两条腿走路**：
+**D25 把根改成 `oneOf($ref ToolCall, $ref ToolResponse)`**，契约因此真的在判定。
+承重的根立刻又暴露了一个**类型错误**：注册表快照与错误码清单本来就不是契约实例，
+用 `oneOf` 根去校验它们属于用错类型（第 2 轮我试图把它们包成 `ToolResponse` 来绕开，
+那是**错误的处置** —— 见 M12）。正解是集成者在 `5319041` 引入的 `.meta.` 约定。
 
-1. 样本照常导出（12 份，形状已经是正确的 `ToolCall`）—— 它们现在就能被
-   `validate_schemas.py --samples-dir` 逐份接受，**契约被修好后立刻变成真判据**；
-2. **承重的判据在 Rust 侧**：`tests/contract.rs` 直接读
-   `definitions.ToolCall.properties.name.enum` 做集合相等（双向包含 + 顺序 + 计数），
-   这一条不空转；
-3. `tests/contract.rs::schema_root_references_the_tool_call_definition` 在**根开始引用
-   `definitions` 的那一刻变红**，提醒把样本对账升级成真判据。
+现在样本目录的分工（13 份）：
 
-### 3.3 【守卫的边界】G04 是**文本**守卫，不是语义守卫
+| 类别 | 文件 | 对账 |
+| :--- | :--- | :--- |
+| 契约实例 | `mcp-tools.call.<tool>.json` ×10（`ToolCall`） | 必须通过根 `oneOf` |
+| 契约实例 | `mcp-tools.response.dry-run.json`（**真实管线**产出的 `ToolResponse`） | 必须通过根 `oneOf` |
+| 文档样本 | `mcp-tools.registry.meta.json`、`mcp-tools.error-codes.meta.json` | 显式 `[skip]` |
+
+**三道判据把这件事钉住**：
+
+1. `contract_root_is_one_of_tool_call_and_tool_response` —— 结构事实（根只有 `oneOf`，
+   两个分支分别 `$ref` 到 `ToolCall` / `ToolResponse`）；
+2. `contract_rejects_a_deliberately_invalid_sample` —— **真跑** `validate_schemas.py --samples-dir`：
+   11 份合法实例必须全过；混进 `{"anything":[1,2,3]}` 或未知工具名必须变红；
+   **并且实测出**"把违法实例改名成 `.meta.` 之后脚本会跳过它"这个缺口（有意保留，
+   由第 3 条判据接住）；
+3. `exported_instance_set_is_exactly_the_tool_set` —— 双射守卫（见 M13）。
+
+> ⚠ 两个诚实边界：
+> (a) `contract_rejects_a_deliberately_invalid_sample` 需要 `python3 + jsonschema`。
+> CI 的 **rust 矩阵腿**不装 jsonschema（只有 `checks` job 装），缺依赖时它会打印
+> **响亮的 SKIP** 而不是伪造绿；真跑在 `checks` 腿。
+> (b) `.meta.` 只挡"整段逃逸"，**部分逃逸**由本 crate 的双射判据挡（M13）；
+> 这条缺口在 `contract_rejects_a_deliberately_invalid_sample` 里被**实测写死**，
+> 免得后人以为 `.meta.` 是安全的。
+
+### 3.3 G04 是**文本**守卫，不是语义守卫
 
 `scripts/guards/policy_check.py` 的 G04 只在非注释行里找 `0.0.0.0` **字面量**。实测：
 
@@ -222,30 +310,42 @@ bash scripts/gates/run-gates.sh crate yeban-mcp      # exit 0, "门禁通过 (mo
 | :--- | :--- |
 | `cargo fmt --all --check` | ok |
 | 机械红线守卫 13 条（G01..G13） | 全部 ok（含 G04 / G05） |
-| 文档链接与 README 双语契约 | 通过（37 个文件，6 条**保护文件**警告不阻断，与本次改动无关） |
-| 依赖许可清单漂移检查 | 与依赖图一致（655 行） |
+| 文档链接与 README 双语契约 | 通过（38 个文件，6 条**保护文件**警告不阻断，与本次改动无关） |
+| 依赖许可清单漂移检查 | 与依赖图一致 |
 | `clippy -p yeban-mcp --all-targets -- -D warnings` | 零告警 |
-| `cargo test -p yeban-mcp` | **95 + 13 = 108 条判据全绿** |
+| `cargo test -p yeban-mcp` | **96 + 14 = 110 条判据全绿** |
 
 另外单独跑过（feature 组合）：
 
 ```bash
 bash scripts/dev/cargo-local.sh clippy -p yeban-mcp --all-targets --features mcp-http -- -D warnings  # exit 0
-bash scripts/dev/cargo-local.sh test   -p yeban-mcp --features mcp-http                              # 95 + 13 全绿
+bash scripts/dev/cargo-local.sh test   -p yeban-mcp --features mcp-http                              # 96 + 14 全绿
 bash scripts/dev/cargo-local.sh fmt --all --check                                                    # exit 0
 ```
 
-### 4.2 跨语言契约对账（Python `jsonschema` 4.24.0 / Draft 2020-12）
+### 4.2 跨语言契约对账（Python `jsonschema` 4.24.0 / Draft 2020-12）—— **现在真的在判定**
 
 ```bash
 bash scripts/dev/cargo-local.sh run -p yeban-mcp --example export_mcp_samples -- --out target/schema-samples
-python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
-# -> 12/12 样本 [ok] 通过 mcp-tools.schema.json；契约校验通过 (4 份 schema)
+# -> 导出 13 份样本
+python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   # exit=0
+#   [skip] mcp-tools.error-codes.meta.json: 文档样本(.meta.), 不对账 schema
+#   [skip] mcp-tools.registry.meta.json: 文档样本(.meta.), 不对账 schema
+#   [ok] mcp-tools.call.yeban_*.json ×10: 通过 mcp-tools.schema.json
+#   [ok] mcp-tools.response.dry-run.json: 通过 mcp-tools.schema.json      <- 根 oneOf 的第二分支
 ```
 
-⚠ **但这条对账目前对本 schema 是空转的**（见 §3.2）。它证明的是"Rust serde 写出的字节
-是被 Python `jsonschema` 读的根契约接受的"，**不是**"工具名在 enum 里"。
-后者由 `tests/contract.rs` 直接读 enum 承担。
+三条**反证**（都是实测，退出码为准，不看文本交错）：
+
+| # | 构造 | 期望 | 实测 |
+| :--- | :--- | :--- | :--- |
+| 1 | 混入非法实例 `{"anything":[1,2,3]}` | 红 | `exit=1` ✅ |
+| 2 | 只留 `.meta.` 文档样本 | 红（脚本守卫："该契约等于没有对账"） | `exit=1`，指名 `前缀 mcp-tools 只有 .meta.` ✅ |
+| 3 | **部分逃逸**：把 1 份实例改名成 `.meta.` 并塞进非法内容 | 脚本看不见（**已知缺口**） | `exit=0` ⚠ —— 由本 crate 的双射判据接住（§M13） |
+
+CI 侧：集成者已在 `ci.yml` 的 `checks` job 里接上
+`cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples`。
+`checks` 腿**装了 jsonschema**，因此这条对账在 CI 上是真跑（run `37225665357` 的原始日志见 §7）。
 
 ### 4.3 二进制形态实跑（stdio + 环回 HTTP）
 
@@ -266,7 +366,7 @@ stderr: 处理 5 行, 写出 4 条响应 (跳过 0 个空行, 模式 production)
 | 请求 | 状态码 |
 | :--- | ---: |
 | `GET /mcp` | **405**（带 `Allow: POST`） |
-| `POST /mcp` 无 token | **401**（带 `WWW-Authenticate: Bearer realm="yeban-mcp"`） |
+| `POST /mcp` 无 token（含 `{}` 这种非法体） | **401**（带 `WWW-Authenticate: Bearer realm="yeban-mcp"`） |
 | `POST /mcp` 错 token | **401** |
 | `POST /mcp` 对 token，`tools/list` | **200**，`id` 回显 `"live"`，`tools` 长度 10 |
 | `POST /mcp` 对 token，`yeban_query_project` | **501**（`-32005 NOT_IMPLEMENTED`，如实报未实现） |
@@ -282,33 +382,45 @@ stderr: 处理 5 行, 写出 4 条响应 (跳过 0 个空行, 模式 production)
 ### 4.4 注入 → 变红 → 还原（**每条都真做过**）
 
 方法：把源文件备份到 `/tmp/mcp-mut/`，注入后用 `bash scripts/dev/cargo-local.sh test -p yeban-mcp`
-跑，记录红掉的判据名，再从备份还原并用 `shasum -a 256` 校验逐字节复原。
+跑，记录红掉的判据名，再从备份还原并跑一遍全绿 + `fmt --check` 确认复原。
 
-| # | 注入 | 变红的判据 | 还原校验 |
+| # | 注入 | 变红的判据 | 还原 |
 | :--- | :--- | :--- | :--- |
-| **A** | 注册表里把 `yeban_reject_proposal` 改名成 `yeban_delete_proposal` | `every_registered_tool_name_is_in_the_contract_enum`、`every_contract_enum_name_is_registered_in_the_registry`、`exported_call_samples_are_contract_shaped_tool_calls`（+ 同批 3 条） | ✅ 哈希一致 |
-| **B** | `Scope::is_production_forbidden` 恒为 `false` | `security::ui_inject_is_forbidden_in_production`、`dispatch::ui_inject_is_hard_denied_in_production_through_the_pipeline`、`transport::http::ui_inject_is_still_hard_denied_in_production_over_http_context` | ✅ 哈希一致 |
-| **C** | `bind_loopback` 地址改成 `Ipv4Addr::UNSPECIFIED` | `transport::http::bind_is_loopback_only_and_uses_a_dynamic_port` + 9 条 http 判据（`bind_loopback` 因 `assert_loopback` 直接失败） | ✅ 哈希一致 |
-| **C′** | 把字面量 `"0.0.0.0:0"` 写进 `http.rs` | 守卫 **G04 FAIL**（`http.rs:468`），`policy_check.py` 退出码 1 | ✅ 哈希一致 |
-| **D** | `authenticate` 里 `Credential::Missing => Ok(())` | `security::missing_and_wrong_tokens_are_rejected_on_every_channel`、`transport::http::missing_token_is_rejected_with_401`、`dispatch::authentication_precedes_parsing_on_the_raw_entry_point` | ✅ 哈希一致 |
-| **E** | 幂等重放分支改成永不命中（`None::<&CachedOutcome>`） | `dispatch::idempotency_replays_the_same_result_with_the_current_id`、`dispatch::distinct_keys_do_not_collide_and_cache_is_ordered` | ✅ 哈希一致 |
-| **F** | `ToolCall::is_dry_run` 改成永远读不到 `dryRun` | `dispatch::dry_run_short_circuits_without_recording_idempotency`、`dispatch::read_only_tool_dry_run_says_state_is_unchanged` | ✅ 哈希一致 |
+| **A** | 注册表里把 `yeban_reject_proposal` 改名成 `yeban_delete_proposal` | `every_registered_tool_name_is_in_the_contract_enum`、`every_contract_enum_name_is_registered_in_the_registry`、`exported_call_samples_are_contract_shaped_tool_calls`（+ 同批 3 条） | ✅ |
+| **B** | `Scope::is_production_forbidden` 恒为 `false` | `security::ui_inject_is_forbidden_in_production`、`dispatch::ui_inject_is_hard_denied_in_production_through_the_pipeline`、`transport::http::ui_inject_is_still_hard_denied_in_production_over_http_context` | ✅ |
+| **C** | `bind_loopback` 地址改成 `Ipv4Addr::UNSPECIFIED` | `transport::http::bind_is_loopback_only_and_uses_a_dynamic_port` + 9 条 http 判据 | ✅ |
+| **C′** | 把字面量 `"0.0.0.0:0"` 写进 `http.rs` | 守卫 **G04 FAIL**（`http.rs:468`），`policy_check.py` 退出码 1 | ✅ |
+| **D** | `authenticate` 里 `Credential::Missing => Ok(())` | `security::missing_and_wrong_tokens_are_rejected_on_every_channel`、`transport::http::missing_token_is_rejected_with_401`、`dispatch::authentication_precedes_parsing_on_the_raw_entry_point` | ✅ |
+| **E** | 幂等重放分支改成永不命中（`None::<&CachedOutcome>`） | `dispatch::idempotency_replays_the_same_result_with_the_current_id`、`dispatch::distinct_keys_do_not_collide_and_cache_is_ordered` | ✅ |
+| **F** | `ToolCall::is_dry_run` 改成永远读不到 `dryRun` | `dispatch::dry_run_short_circuits_without_recording_idempotency`、`dispatch::read_only_tool_dry_run_says_state_is_unchanged` | ✅ |
+| **G** | 把契约联集里的 `DISK_FULL` 换成重复的 `BUSY`（模拟契约/实现漂移） | `implementation_error_codes_equal_the_contract_enum_exactly`（`assertion left == right failed`） | ✅ |
+| **H** | 把文档样本包成 `ToolResponse`（第 2 轮的错误处置，本轮已撤回） | `samples::catalogue_samples_are_documents_not_instances`、`samples::registry_sample_lists_every_tool_and_the_two_common_params`、`samples::error_codes_sample_matches_the_union_contract` | ✅ |
+| **I** | `check_instance_set` 改成永远 `Ok(())`（即关掉双射守卫） | `exported_instance_set_is_exactly_the_tool_set`（`改名逃逸必须被双射守卫抓到`） | ✅ |
 
-还原后复跑 `cargo test -p yeban-mcp` 与 `cargo fmt --all --check` 均绿。
+G/H/I 是**第 2/3 轮新增**的三条：它们钉住的正是"契约变成承重之后"才会犯的错
+（实现与契约枚举漂移、样本形状不再匹配根 `oneOf`、以及用 `.meta.` 逃逸对账）。
+H 的注入内容随本轮处置的改变而更新（现在是"把文档样本包成 `ToolResponse`"）。
 
-### 4.5 判据清单（按主题）
+### 4.5 判据清单（按主题，共 112 条）
 
 | 主题 | 条数 | 代表判据 |
 | :--- | ---: | :--- |
 | 工具注册表 / 参数 / 副作用 | 8 | `registry_has_exactly_ten_tools_in_spec_order`、`per_tool_error_codes_cover_every_documented_code_exactly` |
-| 契约对账（读 `schemas/`） | 13 | `tool_name_sets_are_equal_and_in_the_same_order`、`contract_declares_dry_run_and_idempotency_key_on_arguments` |
+| 契约对账（读 `schemas/`） | 16 | `tool_name_sets_are_equal_and_in_the_same_order`、`implementation_error_codes_equal_the_contract_enum_exactly`、`contract_rejects_a_deliberately_invalid_sample`、`exported_instance_set_is_exactly_the_tool_set` |
 | token 生成 / 文件权限 | 11 | `generated_token_is_256_bit_hex`、`token_file_with_loose_permissions_is_refused`、`debug_format_never_leaks_the_token` |
 | scope / `ui:inject` | 7 | `ui_inject_is_forbidden_in_production`、`app_admin_never_implies_ui_scopes` |
 | JSON-RPC | 9 | `id_is_echoed_verbatim_for_all_three_kinds`、`error_object_carries_code_message_and_data` |
-| 分发 / dryRun / 幂等 | 16 | `dry_run_short_circuits_without_recording_idempotency`、`idempotency_replays_the_same_result_with_the_current_id` |
+| 分发 / dryRun / 幂等 | 17 | `dry_run_short_circuits_without_recording_idempotency`、`idempotency_replays_the_same_result_with_the_current_id` |
 | stdio 传输 | 4 | `skips_blank_lines_and_reports_parse_errors_on_their_own_line` |
-| HTTP 传输 | 20 | `missing_token_is_rejected_with_401`、`end_to_end_over_a_real_loopback_socket`、`stream_path_checks_method_before_content_length` |
-| 样本导出 | 8 | `export_writes_twelve_byte_stable_samples`、`error_codes_sample_exposes_the_contract_gap` |
+| HTTP 传输 | 21 | `missing_token_is_rejected_with_401`、`end_to_end_over_a_real_loopback_socket`、`stream_path_checks_method_before_content_length` |
+| 样本导出 | 10 | `export_writes_twelve_byte_stable_samples`、`dry_run_response_sample_is_a_contract_valid_tool_response`、`catalogue_samples_are_documents_not_instances` |
+
+### 4.6 CI 判决
+
+- 第 1 轮（`7d0b0c4`）：run **37225147123** —— `checks` / `deny` / `lockfile` /
+  `rust (workspace 全量)` **全部 ✓**。注意那一轮的 `checks` 跑的仍是**修复前**的 schema，
+  所以当时 `--samples-dir` 对 mcp 样本还是空转的（集成者随后修好并接线）。
+- 第 2 轮（本轮 rebase 后）：见 §7。
 
 ---
 
@@ -318,20 +430,61 @@ stderr: 处理 5 行, 写出 4 条响应 (跳过 0 个空行, 模式 production)
 | :--- | :--- | :--- |
 | P1 | 十个工具的**领域实现**尚未接线，一律返回 `-32005 NOT_IMPLEMENTED` | 已知缺口；分发/鉴权/dryRun/幂等/传输是真实现 |
 | P2 | 冷启动 **≤ 20ms** 未测量（`docs/.../§7.1` 给形态 B 定的目标） | **未验证**；没有 `iai-callgrind` 打点，也没有 CI 侧启动耗时判据 |
-| P3 | CI 的"跨语言契约对账"**没有**把 mcp 样本接进去：`.github/workflows/ci.yml` 的 `checks` job 只跑 `cargo run -p yeban-model --example export_schema_samples` | 需要集成者加一行（`.github/**` 归集成者）：`cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples`，位置在 `validate_schemas.py --samples-dir` **之前** |
-| P4 | 错误码契约冲突（§3.1） | **需要人类裁决 + ADR**；本线不擅自改 `schemas/**` |
-| P5 | schema 根未引用 `definitions`（§3.2） | **需要人类裁决**：给根加 `$ref`/`properties`（本线判据会在那一刻变红提醒升级对账口径） |
+| P3 | ~~CI 未接 mcp 样本导出~~ | **已由集成者关闭**（`ci.yml` 的 `checks` job 已接线） |
+| P4 | ~~错误码契约冲突（13 个码没有家）~~ | **已由 ADR-0001 D25 关闭**（联集 20 值）；D25 标为 `Proposed`，**待人类追认** |
+| P5 | ~~schema 根不引用 `definitions`~~ | **已由 ADR-0001 D25 关闭**（根改成 `oneOf`），判据已升级成承重形态 |
 | P6 | `.yeban.lock` 排他锁（`ARCH-SEC-001`）完全没实现 | 属于 `yeban-model` / `yeban-app` 的所有者；本线只在错误码里留了 `PROJECT_LOCKED` |
 | P7 | 形态 A 的"内嵌进 `yeban-app` 进程"只做出了**能力**（库 + 环回 HTTP 服务），**没有**接线到 `yeban-app` | 需要 app 侧工作线；本线不改其它 crate |
-| P8 | `docs/ledger/dependency-licenses.md` 被本线重新生成（5 行） | 共享文件，多线并行时**冲突热点**；集成者合并时以再生成结果为准 |
-| P9 | Windows / macOS ACL 侧只有"明确 `UnsupportedPlatform`"，没有 ACL 实现 | 规范要求"Windows ACL 仅限当前用户"；本线在非 Unix 上是**明确拒绝**而非静默放过 |
+| P8 | `docs/ledger/dependency-licenses.md` 被本线重新生成 | 共享文件，多线并行时**冲突热点**；集成者合并时以再生成结果为准 |
+| P9 | 非 Unix 平台只有"明确 `UnsupportedPlatform`"，没有 ACL 实现 | 规范要求"Windows ACL 仅限当前用户"；本线在非 Unix 上是**明确拒绝**而非静默放过 |
+| P10 | D25 保留的 4 个 schema 原有码（`ROUTING_CYCLE_DETECTED` / `ENTITY_NOT_FOUND` / `INVALID_PARAMETER_RANGE` / `PERMISSION_DENIED`）**是否全都留着**由人类一并裁决 | ADR 原文已写明；本线按 D25 现状实现，并把这 4 个钉成实测常量 |
+| P11 | `contract_rejects_a_deliberately_invalid_sample` 在缺 `jsonschema` 的环境里是**响亮的 SKIP** | CI 的 `rust` 腿没有 jsonschema；真跑在 `checks` 腿（已接线） |
+| P12 | `.meta.` 约定的**部分逃逸**（11 份实例里混 1 份 meta）脚本侧看不见 | 已由本 crate 的双射判据接住并有注入判据（M-9/I）；这条记在这里是因为"守卫在哪一侧"必须写清楚，而不是因为它没被挡 |
 
 ---
 
-## 6. 需要人类裁决的一句话总结
+## 6. 一句话总结
 
-> `schemas/mcp-tools.schema.json` 现在是"看起来是契约、实际上不判定任何东西"的状态：
-> 它的根不引用 `definitions`（任意对象都通过），而它 `ToolResponse.error.code` 的 7 值
-> enum 又装不下架构 §7.2 表格里的 16 个领域错误码。**请裁决这份 schema 的定位** ——
-> 是要它成为真正的机器契约（补 `$ref` + 补齐错误码 enum），还是把它降级为"文档性摘要"
-> 并把判定权完全交给 Rust 侧判据。
+> 第 1 轮实测出的两处契约缺陷（错误码 enum 装不下规范并集、schema 根不引用 `definitions`）
+> 已由集成者按 **ADR-0001 D25** 修好；第 2 轮我把判据从"钉住缺口 / 提醒升级"升级成
+> **"实现集合 == 契约集合"与"故意违法样本必须让契约变红"**；第 3 轮又把两处**我自己的**
+> 处置纠正回来：清单/快照不是契约实例（改用集成者的 `.meta.` 约定，而不是把它们伪装成
+> `ToolResponse`），并补了一份真实管线产出的 `ToolResponse` 实例让根 `oneOf` 的两个分支
+> 都被覆盖。`.meta.` 的**部分逃逸**缺口由本 crate 的双射判据接住，且有注入判据证明它不空转。
+> 仍然需要人类追认的只剩 D25 里的两处取舍：联集 20 值这个扩法，以及 4 个 schema 原有码是否全部保留。
+
+---
+
+## 7. 本轮 CI 判决（读到什么写什么）
+
+读取方式：`bash scripts/dev/ci-verdict.sh --watch line/mcp-core`
+
+| 轮次 | run id | 头部 | 结论 |
+| :--- | ---: | :--- | :--- |
+| 第 1 轮（D25 修复前） | `37225147123` | `7d0b0c4` | **全绿**：`plan` / `checks` / `deny` / `lockfile` / `rust (workspace 全量)` 全部 ✓ |
+| 第 2 轮（rebase + D25 升级） | `37225665357` | `b8f61f7` | **全绿**：同上五个 job 全部 ✓（`rust (matrix)` 0s 跳过，改动是 workspace 宽，走了 `rust-workspace` 腿 4m8s） |
+| 第 3 轮（`.meta.` 口径 + 双射守卫 + ToolResponse 实例） | 见 §7.1 | — | **见 §7.1** |
+
+**关键证据 —— 跨语言对账这次真的在 CI 里跑了**（`checks` job 的原始日志）：
+
+```text
+cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples
+     Running `target/debug/examples/export_mcp_samples --out target/schema-samples`
+target/schema-samples/mcp-tools.registry.json
+target/schema-samples/mcp-tools.error-codes.json
+target/schema-samples/mcp-tools.call.yeban_open_project.json
+… (共 12 份)
+[ok] mcp-tools.call.yeban_close_project.json: 通过 mcp-tools.schema.json
+[ok] mcp-tools.call.yeban_edit_notes.json: 通过 mcp-tools.schema.json
+… (12/12 全过)
+```
+
+### 7.1 第 3 轮
+
+- 状态：见提交信息 / 集成者处的 `ci-verdict.sh` 读数（本文件为文档改动，写入判决会让头部前进一格）。
+- 读取方式：`bash scripts/dev/ci-verdict.sh --watch line/mcp-core`
+
+> 本文件自身是**文档改动**，因此"记录判决"这个动作会让头部前进一格。
+> 表中第 2 轮的结论对应的是**紧邻本节的代码头部** `b8f61f7`；
+> 记录判决的那次文档提交只改了本文件，不影响任何判据（`checks` 的 fmt/守卫/契约对账
+> 与 `rust` 腿的 clippy/test 都与文档内容无关）。

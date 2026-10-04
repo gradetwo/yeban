@@ -7,32 +7,57 @@
 //! 文件名前缀 `mcp-tools.` 已映射到 `schemas/mcp-tools.schema.json`
 //! （见 `validate_schemas.py` 的 `SAMPLE_SCHEMA_MAP`）。
 //!
-//! ## 导出什么（12 份）
+//! ## 导出什么（13 份 = 11 份契约实例 + 2 份文档样本）
 //!
 //! | 文件 | 内容 | 为什么 |
 //! | :--- | :--- | :--- |
 //! | `mcp-tools.registry.meta.json`（文档样本，非契约实例） | 十个工具的注册表快照（含 scope / 副作用 / 参数 / 错误码） | 工具名集合、`dryRun`、`idempotencyKey` 的机器可读清单 |
 //! | `mcp-tools.error-codes.meta.json`（文档样本，非契约实例） | 错误码全集 + **契约缺口清单** | 让"schema 的 7 个 enum 装不下表格的 16 个错误码"这件事可被机器读到 |
+//! | `mcp-tools.response.dry-run.json` | **真实管线**产出的 `ToolResponse`（dryRun 结果） | 覆盖根 `oneOf` 的**第二个分支**：否则契约定义了没人用的类型 |
 //! | `mcp-tools.call.<tool>.json` ×10 | 每个工具一份**规范 `ToolCall`** | 每个工具名都要被契约的 enum 认下来 |
 //!
-//! ## ⚠ 一个必须说清楚的限制：本 schema 的根是"空"的
+//! ## 契约实例 vs 文档样本（`.meta.` 约定 + 承重的根）
 //!
-//! `schemas/mcp-tools.schema.json` 的根只有 `{"type":"object","definitions":{…}}` ——
-//! 它**没有** `properties`、没有 `$ref`、没有 `allOf`。Draft 2020-12 语义下
-//! "任意对象"都能通过根校验，`definitions.ToolCall` 实际上**从未被引用**。
+//! ### 1) 契约现在是**承重**的（ADR-0001 D25）
 //!
-//! 也就是说：今天这条 `--samples-dir` 对账在本文件上是**空转**的（它只能证明
-//! "我们写出了一个 JSON 对象"）。本线不擅自改 `schemas/**`（权威契约 + 需要人类裁决），
-//! 因此采取两条腿走路：
+//! 第一轮实测出来的事实是：本 schema 的根当时只有 `{"type":"object","definitions":{…}}`，
+//! 没有 `properties` / `$ref` / `allOf` —— Draft 2020-12 下"任意对象"都通过根校验，
+//! `definitions.*` **从未被引用**，`--samples-dir` 对账是空转的。
+//! 集成者按 ADR-0001 D25 把根改成 `oneOf($ref ToolCall, $ref ToolResponse)`。
 //!
-//! 1. **样本照常导出** —— 它们是"契约被修好后立刻生效"的判据输入，而且形状
-//!    （`ToolCall`）已经是对的；
-//! 2. **真正承重的判据在 Rust 侧** —— `tests/contract.rs` 直接读
-//!    `schemas/mcp-tools.schema.json` 的 `definitions.ToolCall.properties.name.enum`
-//!    做**集合相等**断言，那一条不空转。
+//! ### 2) 但"清单/快照"**不是契约实例**
 //!
-//! `tests/contract.rs::schema_root_references_the_tool_call_definition` 会在
-//! 契约被修好（根开始 `$ref` 到 `definitions.ToolCall`）时提醒升级对账口径。
+//! 承重的根立刻暴露了一个**类型错误**：注册表快照与错误码清单本来就不是 `ToolCall` /
+//! `ToolResponse` 的实例，拿 `oneOf` 根去校验它们属于用错类型。
+//! 因此有了 `.meta.` 命名约定（`validate_schemas.py` 的
+//! `SAMPLE_NAMING_CONVENTION`）：
+//!
+//! - `mcp-tools.<name>.json` —— **契约实例**，必须通过 `mcp-tools.schema.json` 的根；
+//! - `mcp-tools.<name>.meta.json` —— **文档样本**，显式 `[skip]`，不对账 schema。
+//!
+//! 本模块导出的 13 份因此分成两侧：**11 份契约实例**（每个工具一份规范 `ToolCall`，
+//! 外加一份**真实管线**产出的 `ToolResponse`）+ **2 份文档样本**。
+//!
+//! 为什么非要那份 `ToolResponse` 实例：根是 `oneOf(ToolCall, ToolResponse)`，
+//! 全是 `ToolCall` 的话，第二个分支**从未被任何样本覆盖** —— 那正是"契约定义了
+//! 没人用的类型"。这份样本由 [`crate::dispatch`] 的 `dryRun` 短路真实产出，
+//! 因此它同时钉住"实现产出的 `ToolResponse` 必须被契约接受"。
+//!
+//! ### 3) `.meta.` 是命名约定，不是 schema 能力 —— 所以要两道守卫
+//!
+//! 谁都能把一份**本该对账的实例**改名成 `.meta.` 来逃逸。防线有两道：
+//!
+//! 1. **脚本侧**（`scripts/gates/validate_schemas.py`，集成者的文件）：每个前缀
+//!    至少要有 1 份真实例，否则报"该契约等于没有对账（全是 meta 就是假绿）"。
+//!    它挡得住**整段逃逸**，挡不住**部分逃逸**（11 份实例里混 1 份 meta）。
+//! 2. **本 crate 侧**：`tests/contract.rs::exported_instance_set_is_exactly_the_tool_set`
+//!    用**双射**断言 —— 非 meta 的实例文件名集合必须**恰好等于**
+//!    `{mcp-tools.call.<tool>.json}`，少一份、多一份、或者把一份改名成 `.meta.` 都会红。
+//!    另有 `document_samples_must_not_look_like_contract_instances`：
+//!    文档样本顶层**不许**出现 `name` / `arguments` / `status`，免得用 `.meta.` 藏实例。
+//!
+//! `tests/contract.rs::contract_rejects_a_deliberately_invalid_sample` 把"契约承重"
+//! 这件事本身也钉成了判据（故意违法的样本必须让 `--samples-dir` 变红）。
 
 use std::path::{Path, PathBuf};
 
@@ -54,6 +79,15 @@ pub const ERROR_CODES_FILE: &str = "mcp-tools.error-codes.meta.json";
 
 /// `ToolCall` 样本的文件名前缀。
 pub const CALL_FILE_PREFIX: &str = "mcp-tools.call.";
+
+/// **`ToolResponse` 契约实例**样本：真实管线产出的 `dryRun` 结果。
+///
+/// 为什么必须有它：契约的根是 `oneOf($ref ToolCall, $ref ToolResponse)`。
+/// 如果样本目录里全是 `ToolCall`，那个 `oneOf` 的**第二个分支从未被任何样本覆盖** ——
+/// 正是集成者在 `ci.yml` 里警告的"契约定义了没人用的类型"。
+/// 这份样本走的是**真实分发管线**（[`crate::dispatch`] 的 `dryRun` 短路），
+/// 不是手写的形状，因此它同时钉住了"实现产出的 `ToolResponse` 必须被契约接受"。
+pub const RESPONSE_DRY_RUN_FILE: &str = "mcp-tools.response.dry-run.json";
 
 /// 样本导出失败。
 #[derive(Debug, thiserror::Error)]
@@ -83,12 +117,19 @@ pub fn call_file(tool_name: &str) -> String {
 /// 全部样本文件名（顺序固定，逐字节稳定）。
 #[must_use]
 pub fn sample_file_names() -> Vec<String> {
-    let mut names = vec![REGISTRY_FILE.to_owned(), ERROR_CODES_FILE.to_owned()];
+    let mut names = vec![
+        REGISTRY_FILE.to_owned(),
+        ERROR_CODES_FILE.to_owned(),
+        RESPONSE_DRY_RUN_FILE.to_owned(),
+    ];
     names.extend(TOOLS.iter().map(|spec| call_file(spec.name)));
     names
 }
 
 /// 注册表样本：工具名集合 / 参数 / 作用域 / 副作用 / 错误码的机器可读快照。
+///
+/// 外层是 `ToolResponse`（`{"status":"success","data":{…}}`）—— 契约的根是
+/// `oneOf(ToolCall, ToolResponse)`，裸对象会被拒（ADR-0001 D25）。
 #[must_use]
 pub fn registry_sample() -> Value {
     let mut root = Map::new();
@@ -157,16 +198,16 @@ fn param_value(param: &ParamSpec) -> Value {
     Value::Object(map)
 }
 
-/// 错误码样本：两个契约集合 + **缺口清单** + 实现级错误码。
+/// 错误码样本：契约联集（20）/ 规范表格（16）/ schema 原有（4）/ 实现级（1）。
 ///
-/// 这是本线发现的最重要的一处规范冲突的机器可读形态：
-/// schema 的 `ToolResponse.error.code` 是闭合的 7 值 enum，
-/// 而架构 §7.2 的表格给每个工具列的错误码里有 13 个不在其中。
+/// 历史：本线第一轮实测出"schema 的 7 值 enum 装不下表格的 16 个错误码"（缺口 13 个），
+/// 该缺口已由 **ADR-0001 D25** 关闭（契约改成联集 20 值）。
+/// 缺口清单作为方法论留痕保存在 `docs/ledger/mcp-core-notes.md` §3.1；
+/// 这里给出的是**修复后**的四个集合，判据要求它们逐一对上。
 #[must_use]
 pub fn error_codes_sample() -> Value {
-    let missing: Vec<Value> = ErrorCode::DOCUMENTED_TOOL_CODES
+    let schema_only: Vec<Value> = ErrorCode::SCHEMA_ONLY
         .iter()
-        .filter(|code| !code.is_schema_contract())
         .map(|code| Value::from(code.as_str()))
         .collect();
     let implementation_only: Vec<Value> = ErrorCode::ALL
@@ -193,7 +234,7 @@ pub fn error_codes_sample() -> Value {
                 .collect(),
         ),
     );
-    root.insert("missingFromSchema".to_owned(), Value::Array(missing));
+    root.insert("schemaOnlyCodes".to_owned(), Value::Array(schema_only));
     root.insert(
         "implementationOnly".to_owned(),
         Value::Array(implementation_only),
@@ -208,6 +249,81 @@ pub fn error_codes_sample() -> Value {
         ),
     );
     Value::Object(root)
+}
+
+/// **真实管线**产出的 `ToolResponse`（`yeban_save_project` 的 `dryRun` 结果）。
+///
+/// 走的是 [`crate::dispatch::Dispatcher::handle_line`]，与线上完全同一条路径；
+/// 令牌在响应里不出现，因此样本逐字节稳定。
+#[must_use]
+pub fn dry_run_response_sample() -> Value {
+    use crate::dispatch::Dispatcher;
+    use crate::security::{BearerToken, Channel, RunMode, ScopeSet};
+
+    let token = BearerToken::generate().token;
+    let authorization = format!("Bearer {}", token.expose());
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    let line = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "sample-dry-run",
+        "method": "tools/call",
+        "params": {
+            "name": "yeban_save_project",
+            "arguments": {"force": true, "dryRun": true}
+        }
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(&authorization), &line);
+    let response = outcome.response.expect("dryRun 调用必须产生响应");
+    response.result.expect("dryRun 必须成功并返回 ToolResponse")
+}
+
+/// `ToolResponse` **契约实例**的 Rust 侧自检。
+///
+/// 判据口径与 `schemas/mcp-tools.schema.json` 的 `definitions.ToolResponse` 对齐：
+/// `status` 必须在 `{success, error}` 里；`data` 若出现必须是对象；
+/// `error.code` 若出现必须在 [`ErrorCode::ALL`] 目录里（且**不能**是实现级的
+/// `NOT_IMPLEMENTED` —— 那是 JSON-RPC 层的码）。
+///
+/// # Errors
+///
+/// 违反上述任一条。
+pub fn check_tool_response_instance(file: &str, sample: &Value) -> Result<(), SampleExportError> {
+    let invalid = |detail: String| SampleExportError::InvalidSample {
+        file: file.to_owned(),
+        detail,
+    };
+    let object = sample
+        .as_object()
+        .ok_or_else(|| invalid("ToolResponse 必须是 JSON 对象".to_owned()))?;
+    match object.get("status").and_then(Value::as_str) {
+        Some("success") | Some("error") => {}
+        Some(other) => return Err(invalid(format!("`status` 只能是 success/error: {other}"))),
+        None => return Err(invalid("缺少字符串 `status`".to_owned())),
+    }
+    if let Some(data) = object.get("data")
+        && !data.is_object()
+    {
+        return Err(invalid("`data` 必须是对象".to_owned()));
+    }
+    if let Some(error) = object.get("error") {
+        let code = error
+            .get("code")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("`error.code` 必须是字符串".to_owned()))?;
+        if error.get("message").and_then(Value::as_str).is_none() {
+            return Err(invalid("`error.message` 是契约必填项".to_owned()));
+        }
+        let known = ErrorCode::SCHEMA_CONTRACT
+            .iter()
+            .any(|known| known.as_str() == code);
+        if !known {
+            return Err(invalid(format!(
+                "`error.code` `{code}` 不在契约 enum 里 (NOT_IMPLEMENTED 属于 JSON-RPC 层, 不许混进来)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// 一个工具的规范 `ToolCall` 样本（含全部必填实参 + 两个公共参数）。
@@ -273,7 +389,7 @@ pub fn default_out_dir() -> PathBuf {
     target.join(SAMPLES_DIR_NAME)
 }
 
-/// 把 12 份样本写到 `out_dir`，返回实际写出的路径（顺序固定）。
+/// 把 13 份样本写到 `out_dir`，返回实际写出的路径（顺序固定）。
 ///
 /// 写盘**之前**先做 Rust 侧自检（[`check_sample`]），因此磁盘上不会出现
 /// 一份连自己都不合法的样本。
@@ -285,12 +401,18 @@ pub fn export_all(out_dir: &Path) -> Result<Vec<PathBuf>, SampleExportError> {
     std::fs::create_dir_all(out_dir)?;
     let mut written = Vec::new();
 
-    written.push(write_json(out_dir, REGISTRY_FILE, &registry_sample())?);
-    written.push(write_json(
-        out_dir,
-        ERROR_CODES_FILE,
-        &error_codes_sample(),
-    )?);
+    // 两份**文档样本** (.meta., 不对账 schema)。
+    let registry = registry_sample();
+    check_document_sample(REGISTRY_FILE, &registry)?;
+    written.push(write_json(out_dir, REGISTRY_FILE, &registry)?);
+    let error_codes = error_codes_sample();
+    check_document_sample(ERROR_CODES_FILE, &error_codes)?;
+    written.push(write_json(out_dir, ERROR_CODES_FILE, &error_codes)?);
+    // 一份 ToolResponse **契约实例**: 真实管线产出的 dryRun 结果。
+    let response = dry_run_response_sample();
+    check_tool_response_instance(RESPONSE_DRY_RUN_FILE, &response)?;
+    written.push(write_json(out_dir, RESPONSE_DRY_RUN_FILE, &response)?);
+    // 十份 ToolCall **契约实例** (每个工具一份规范 ToolCall)。
     for spec in &TOOLS {
         let file = call_file(spec.name);
         let sample = call_sample(spec);
@@ -344,6 +466,33 @@ pub fn check_sample(file: &str, sample: &Value) -> Result<(), SampleExportError>
     Ok(())
 }
 
+/// **文档样本**的 Rust 侧自检。
+///
+/// `.meta.` 是"不对账 schema"的通行证，因此这里必须挡住"拿它藏实例"：
+/// 文档样本顶层**不许**出现 `name` / `arguments` / `status` 这三个契约实例的判别键。
+///
+/// # Errors
+///
+/// 不是 JSON 对象，或者顶层出现了契约实例的判别键。
+pub fn check_document_sample(file: &str, sample: &Value) -> Result<(), SampleExportError> {
+    let invalid = |detail: String| SampleExportError::InvalidSample {
+        file: file.to_owned(),
+        detail,
+    };
+    let object = sample
+        .as_object()
+        .ok_or_else(|| invalid("文档样本必须是 JSON 对象".to_owned()))?;
+    for key in ["name", "arguments", "status"] {
+        if object.contains_key(key) {
+            return Err(invalid(format!(
+                "文档样本顶层出现了契约实例的判别键 `{key}`: \
+                 要么它是实例(请去掉 .meta.), 要么它不该有这个名字"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// 以"美化 JSON + 结尾换行"写出一个样本。
 fn write_json(out_dir: &Path, file: &str, value: &Value) -> Result<PathBuf, SampleExportError> {
     let mut json = serde_json::to_string_pretty(value)?;
@@ -375,7 +524,11 @@ mod tests {
             .map(|name| name.to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, sample_file_names());
-        assert_eq!(names.len(), crate::tools::TOOL_COUNT + 2);
+        assert_eq!(
+            names.len(),
+            crate::tools::TOOL_COUNT + 3,
+            "10 实例(ToolCall) + 1 实例(ToolResponse) + 2 文档样本"
+        );
         for name in &names {
             assert!(
                 name.starts_with(FILE_PREFIX),
@@ -402,6 +555,9 @@ mod tests {
     #[test]
     fn registry_sample_lists_every_tool_and_the_two_common_params() {
         let registry = registry_sample();
+        // 文档样本: 顶层就是快照本身, **不是**契约实例 (所以名字里有 .meta.)。
+        assert!(registry.get("status").is_none());
+        assert!(registry.get("name").is_none());
         assert_eq!(registry["count"], crate::tools::TOOL_COUNT);
         assert_eq!(registry["dryRunParam"], crate::tools::DRY_RUN_PARAM);
         assert_eq!(
@@ -423,29 +579,106 @@ mod tests {
     }
 
     #[test]
-    fn error_codes_sample_exposes_the_contract_gap() {
+    fn error_codes_sample_matches_the_union_contract() {
         let sample = error_codes_sample();
+        // 文档样本 (`.meta.`): 顶层就是清单本身, 不装进 ToolResponse。
+        assert!(sample.get("status").is_none(), "文档样本不是契约实例");
         assert_eq!(
             sample["schemaContractEnum"].as_array().expect("enum").len(),
-            ErrorCode::SCHEMA_CONTRACT.len()
+            20,
+            "ADR-0001 D25 的联集 20 值"
         );
         assert_eq!(
             sample["documentedToolCodes"]
                 .as_array()
                 .expect("enum")
                 .len(),
-            ErrorCode::DOCUMENTED_TOOL_CODES.len()
+            16,
+            "架构 §7.2 表格"
         );
-        let missing = sample["missingFromSchema"].as_array().expect("缺口清单");
-        assert_eq!(missing.len(), 13, "13 个表格错误码不在 schema enum 里");
-        assert!(missing.contains(&Value::from("FILE_NOT_FOUND")));
-        assert!(missing.contains(&Value::from("CONFLICT")));
+        let schema_only = sample["schemaOnlyCodes"].as_array().expect("schema 原有码");
+        assert_eq!(schema_only.len(), 4);
+        assert!(schema_only.contains(&Value::from("PERMISSION_DENIED")));
         assert_eq!(
             sample["implementationOnly"],
             serde_json::json!(["NOT_IMPLEMENTED"])
         );
-        let all = sample["all"].as_array().expect("all");
-        assert_eq!(all.len(), ErrorCode::ALL.len());
+        assert_eq!(
+            sample["all"].as_array().expect("all").len(),
+            ErrorCode::ALL.len()
+        );
+        // 字段名里不再有"缺口": 缺口已由 D25 关闭。
+        assert!(sample.get("missingFromSchema").is_none());
+    }
+
+    #[test]
+    fn dry_run_response_sample_is_a_contract_valid_tool_response() {
+        let sample = dry_run_response_sample();
+        check_tool_response_instance(RESPONSE_DRY_RUN_FILE, &sample).expect("必须自洽");
+        assert_eq!(sample["status"], "success");
+        assert_eq!(sample["data"]["dryRun"], true);
+        assert_eq!(sample["data"]["tool"], "yeban_save_project");
+        assert_eq!(sample["data"]["specId"], "MCP-TOOL-002");
+        assert!(sample["data"]["arguments"].is_object());
+        // 逐字节稳定: 令牌不参与响应, 两次生成完全一致。
+        assert_eq!(sample, dry_run_response_sample());
+
+        // 反例: 坏 status / 实现级码混进 error.code / data 不是对象, 都必须被拦下。
+        assert!(
+            check_tool_response_instance("x.json", &serde_json::json!({"status": "ok"})).is_err()
+        );
+        assert!(
+            check_tool_response_instance(
+                "x.json",
+                &serde_json::json!({
+                    "status": "error",
+                    "error": {"code": "NOT_IMPLEMENTED", "message": "x"}
+                })
+            )
+            .is_err(),
+            "NOT_IMPLEMENTED 属于 JSON-RPC 层, 不许混进 ToolResponse.error.code"
+        );
+        assert!(
+            check_tool_response_instance(
+                "x.json",
+                &serde_json::json!({"status": "success", "data": []})
+            )
+            .is_err()
+        );
+        // 正例: 领域失败码是合法的。
+        check_tool_response_instance(
+            "x.json",
+            &serde_json::json!({
+                "status": "error",
+                "error": {"code": "DISK_FULL", "message": "磁盘写满"}
+            }),
+        )
+        .expect("DISK_FULL 在契约 enum 里");
+    }
+
+    #[test]
+    fn catalogue_samples_are_documents_not_instances() {
+        for (file, sample) in [
+            (REGISTRY_FILE, registry_sample()),
+            (ERROR_CODES_FILE, error_codes_sample()),
+        ] {
+            assert!(file.contains(".meta."), "文档样本的名字必须带 .meta.");
+            check_document_sample(file, &sample).expect("文档样本必须自洽");
+            assert!(sample.is_object());
+        }
+        // 反例: 拿 .meta. 藏实例必须被拦下。
+        for hidden in [
+            serde_json::json!({"name": "yeban_save_project", "arguments": {}}),
+            serde_json::json!({"status": "success", "data": {}}),
+            serde_json::json!({"arguments": {}}),
+        ] {
+            assert!(
+                check_document_sample("x.meta.json", &hidden).is_err(),
+                "文档样本顶层不得出现契约实例的判别键: {hidden}"
+            );
+        }
+        // 反例: 根本不是对象。
+        assert!(check_document_sample("x.meta.json", &serde_json::json!([1, 2])).is_err());
     }
 
     #[test]
@@ -499,8 +732,8 @@ mod tests {
     #[test]
     fn export_to_target_feeds_the_python_reconciliation() {
         // 与 yeban-model 同一做法: 本机门禁顺带把样本落到 target/schema-samples,
-        // 供 `validate_schemas.py --samples-dir` 对账 (CI 的接线归集成者)。
+        // 供 `validate_schemas.py --samples-dir` 对账 (CI 的 checks job 已接线)。
         let written = export_to_default_dir().expect("导出到 target/schema-samples");
-        assert_eq!(written.len(), crate::tools::TOOL_COUNT + 2);
+        assert_eq!(written.len(), crate::tools::TOOL_COUNT + 3);
     }
 }

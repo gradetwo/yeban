@@ -25,9 +25,13 @@ const USAGE: &str = "\
 用法: export_mcp_samples [--out <dir>]
 
 把 yeban-mcp 的规范样本写到 <dir>:
-  mcp-tools.registry.meta.json        十个工具的注册表快照
-  mcp-tools.error-codes.meta.json     错误码全集 + 契约缺口清单
-  mcp-tools.call.<tool>.json     每个工具一份规范 ToolCall (10 份)
+  mcp-tools.registry.meta.json        文档样本: 十个工具的注册表快照
+  mcp-tools.error-codes.meta.json     文档样本: 错误码四个集合 + D25 历史
+  mcp-tools.response.dry-run.json     契约实例: 真实管线产出的 ToolResponse (dryRun)
+  mcp-tools.call.<tool>.json          契约实例: 每个工具一份规范 ToolCall (10 份)
+
+`.meta.json` = 文档样本(顶层是清单/快照, 跳过 schema 对账); 其余 = 契约实例(必须通过根校验)。
+两者都由 tests/contract.rs 的双射判据钉住(实例集合穷举, 改名成 .meta. 逃逸会红)。
 
 不传 --out 时写到 <repo>/target/schema-samples。
 ";
