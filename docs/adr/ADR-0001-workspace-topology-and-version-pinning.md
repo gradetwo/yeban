@@ -280,6 +280,33 @@
   但**任何按 23 个变体写死的外部实现都要跟到 27**（本仓库的 `samples.rs` 里那处计数断言已经因此红过一次，
   按"改了计数就要重跑派生该计数的判据"的既有纪律修正）。
 
+### D28 — 界面数据链路：**纯函数投影层 + 唯一注入点 + 整数位置**
+
+`line/app-binding` 把界面从"渲染演示常量"改成"由 `YebanProjectV1` 驱动"。三条裁决固化下来：
+
+1. **投影层零 Slint 依赖**（`crates/yeban-app/src/bridge.rs`）：`YebanProjectV1 → ViewState` 是**纯函数**。
+   好处是实测到的：该线的 31 条判据能在**本机**用 `rustc --edition 2024 --test` 真跑（Slint 本机禁编译），
+   而"模型字段 → 视图字段"的映射错误因此在推 CI 之前就被抓到了。**这条与 `ui-test-port`/`render`/`decode`
+   三条线选择"把纯计算部分做成零重依赖模块"是同一个模式，值得作为默认做法。**
+2. **位置一律 960 PPQ 整数运算**：`tick_to_px = tick / ticks_per_pixel`（整数除法）、`px_to_tick` 用 `checked_mul`，
+   越界返回 `Err`。理由不只是确定性：`ticks_per_pixel = 30` **不是 2 的幂**，
+   任何浮点实现在 `tick_to_px(30, 30)` 上都会算出 `0` —— 那是会直接毁掉吸附的错。
+3. **注入实现只能有一份**（`crates/yeban-app/src/host.rs`）：`main.rs` 与判据**共用**它。
+   两份注入 = 两份会漂移的事实源；判据若走自己那份，"测过的"就不是"发布的"。
+
+### D29 — UI 控制面的方法名与 scope 归属（工程裁决 + 一处待人类裁决）
+
+- **方法名**（规范未给 JSON-RPC 方法名）：`ui/methods`、`ui/tree`、`ui/node`、`ui/property`、
+  `ui/dynamic_regions`、`ui/screenshot`、`ui/coverage`，以及**逐字采用** §12.4 函数名的
+  `ui/dispatch_pointer_down|move|up`、`ui/dispatch_key_press`，加管理类 `ui/switch_main_view`/`ui/force_save`/`ui/reload_engine`。
+  出处逐条记在 `docs/ledger/ui-mcp-notes.md` §2。
+- **补齐了一处规范给出的"能力"而契约没给"码"的缺口**：`-32006 ELEMENT_NOT_FOUND`、`-32008 CAPTURE_FAILED`、
+  `-32009 GEOMETRY_UNAVAILABLE` 作为**JSON-RPC 错误码**新增，**不塞进** `ToolResponse.error.code`
+  （那是工具级领域码，D25 已裁定其集合）。两者是不同的层，混用会让 D25 的联集变成垃圾桶。
+- **待人类裁决**：六级 scope（`ui:read`/`ui:screenshot`/`ui:inject`/`app:save`/`app:reload-engine`/`app:admin`）
+  里**没有"界面状态写"**这一级，于是 `ui/switch_main_view` 暂挂 `app:admin`（本地裁决、已登记）。
+  另外端口三级 `Permission` 与网络六级 `Scope` 是否需要合并，也一并待裁决。
+
 ---
 
 ## D5 的落地细节（版本钉死）

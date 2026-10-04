@@ -6277,6 +6277,13 @@ dependencies = [
 [[package]]
 name = "yeban-ui-mcp"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "yeban-mcp",
+ "yeban-ui-test-port",
+]
 
 [[package]]
 name = "yeban-ui-test-port"

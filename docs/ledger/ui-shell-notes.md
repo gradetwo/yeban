@@ -451,3 +451,18 @@ error[rejected]: failed to satisfy license requirements
 11. ~~Linux 构建前置条件~~ —— **已由集成者在 CI 统一加装系统依赖解决**（含提前装好的
     `libasound2-dev`，为 Phase 2 的 cpal 线省一次失败）。保留本条是为了让后来者知道
     "本项目第一次真正编译 Slint 时死在哪"，以及**系统库前置应当落在 CI，不要落在产品依赖图里**。
+
+---
+
+## 追加：两条 pending 已由 `line/app-binding` 关闭（集成者代记）
+
+- **pending 4（"数组属性未从 Rust 注入"）**：已解决。`crates/yeban-app/src/host.rs` 成为**唯一**注入点，
+  5 个 `.slint` 的数组默认值改为空并由投影注入（`for name[i] in root.<数组>`、
+  `accessible-item-count` 用 `.length`）。**新增的上游发现**：Slint 1.18.1 **不接受只有索引的
+  `for [idx] in model`**（parser 的 doc 注释里有这种写法、真实语法没有），必须写 `for _[idx] in model`；
+  该线补了一条**能复现该失败**的文本层检查，避免后人再撞。
+- **pending 5（"演示 ULID/轨道名两处重复"）**：已解决。演示常量降级为**判据锚点**，
+  `demo()` = `from_view(ViewState::demo())`，与 `from_project()` 走同一条路径。
+  回归证据：切回演示的截图指纹与改造前**逐字节相同**。
+- 注册表条目数**未变**（184 条 / 14 个动态区）—— 本线的改造没有偷偷改变语义寻址面。
+
