@@ -180,7 +180,35 @@ export component MainWindow inherits Window {
     callback reject-ai-proposal();
     callback run-acoustic-diagnosis();
 
-    title: "夜半 Yeban";
+    // =====================================================================
+    // 模型投影注入面（**唯一写者** = src/host.rs 的 apply_view）
+    // =====================================================================
+    // 这些数组的默认值一律是**空**：界面里不再内联演示数据（上一版的债见
+    // docs/ledger/ui-shell-notes.md pending 4）。规模（轨道数 / 剪辑数 / 段落数）
+    // 由工程决定，因此 `.slint` 里不存在 `for … in 6` 这种把演示规模刻进界面的写法。
+    //
+    // 为什么长度与数据分两个来源：数组长度本身就是规模（`root.tracks.length`），
+    // 因此不需要额外的 `track-count` 标量属性 —— 少一个可能与数组不一致的状态。
+    in property <string> window-title: "夜半 Yeban";
+    in property <[string]> track-names: [];
+    in property <[string]> track-volumes: [];
+    in property <[bool]> track-mutes: [];
+    in property <[bool]> track-solos: [];
+    in property <[string]> scene-names: [];
+    in property <[string]> section-names: [];
+    in property <[length]> section-positions: [];
+    in property <[length]> section-widths: [];
+    in property <[string]> clip-ulids: [];
+    in property <[string]> clip-labels: [];
+    in property <[length]> clip-positions: [];
+    in property <[length]> clip-widths: [];
+    in property <[int]> clip-lanes: [];
+    in property <[length]> bar-positions: [];
+    // 钢琴卷帘的音符身份与力度（`MidiNote::id` / `MidiNote::velocity` ÷ 127）
+    in property <[string]> note-ulids: [];
+    in property <[float]> note-velocities: [];
+
+    title: root.window-title;
     // 演示窗口落在 §1.2 的"全展开"档 (≥1920×1080): 左栏 240 + 主区 + 右栏 280,
     // 中段与底部控制台各占弹性区的 60% / 40% (规范要 55–65% / 35–45%)。
     // 与 `DemoScene::demo()` 的 viewport_width/height 保持一致 —— 不一致会让
@@ -251,6 +279,8 @@ export component MainWindow inherits Window {
                     width: parent.width;
                     height: parent.height;
                     visible: !root.arrangement-view;
+                    tracks: root.track-names;
+                    scenes: root.scene-names;
                 }
 
                 ArrangementView {
@@ -259,6 +289,19 @@ export component MainWindow inherits Window {
                     width: parent.width;
                     height: parent.height;
                     visible: root.arrangement-view;
+                    tracks: root.track-names;
+                    track-volumes: root.track-volumes;
+                    track-mutes: root.track-mutes;
+                    track-solos: root.track-solos;
+                    sections: root.section-names;
+                    section-positions: root.section-positions;
+                    section-widths: root.section-widths;
+                    clip-ulids: root.clip-ulids;
+                    clip-labels: root.clip-labels;
+                    clip-positions: root.clip-positions;
+                    clip-widths: root.clip-widths;
+                    clip-lanes: root.clip-lanes;
+                    bar-positions: root.bar-positions;
                 }
             }
 
@@ -295,6 +338,8 @@ export component MainWindow inherits Window {
         ConsoleTabs {
             vertical-stretch: Tokens.console-stretch;
             active-tab: root.console-tab;
+            note-ulids: root.note-ulids;
+            note-velocities: root.note-velocities;
 
             select-piano-roll => { root.console-tab = 0; }
             select-mixer => { root.console-tab = 1; }

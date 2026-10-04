@@ -4,9 +4,13 @@
 //!
 //! | 命令 | 行为 |
 //! | :-- | :--- |
-//! | `yeban-app` | 创建 `MainWindow`、注入演示数据、进 Slint 事件循环 |
+//! | `yeban-app` | 把一个 `YebanProjectV1` 投影成 `ViewState`、注入 `MainWindow`、进 Slint 事件循环 |
 //! | `yeban-app --headless`（或 `SLINT_BACKEND=headless`） | **不构造任何 Slint 组件**，打印 `headless ok` 后立刻退出 0 |
 //! | `yeban-app --dump-elements` / `--print-shortcuts` | 打印语义元素清单 / 快捷键策略表，供 CI 与人类核对 |
+//! | `--project-sample <default\|filled>` | 选择驱动界面的工程（默认 `default` = `bridge::demo_project()`） |
+//!
+//! 三条路径共用同一条数据流：`YebanProjectV1` → `bridge::ViewState` → `host`。因此
+//! `--headless` 打印的计数、`--dump-elements` 打印的语义 ID、GUI 画的像素**必然一致**。
 //!
 //! ## 无头路径为什么"什么都不画"（实测记录，不是偷懒）
 //!
@@ -41,20 +45,25 @@
 
 use std::process::ExitCode;
 
+use yeban_app::bridge::{ViewState, demo_project};
 use yeban_app::elements::ElementRegistry;
+use yeban_app::host;
 use yeban_app::input::{InputContext, Modifiers, PhysicalKey};
 use yeban_app::scene::{self, DemoScene};
-use yeban_app::ui::MainWindow;
+use yeban_model::project::YebanProjectV1;
 
 /// 命令行用法。
 const USAGE: &str = "\
-夜半 Yeban — Slint 桌面主程序 (scaffold)
+夜半 Yeban — Slint 桌面主程序 (由 YebanProjectV1 驱动)
 
 用法:
   yeban-app                      启动 GUI (需要显示器; 会进阻塞事件循环)
   yeban-app --headless           无头握手模式: 不构造窗口, 打印 `headless ok` 后退出 0
   yeban-app --dump-elements      打印语义元素注册表 (每行一个元素, 稳定顺序) [UI-TEST-001]
   yeban-app --print-shortcuts    打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
+  yeban-app --project-sample <default|filled>
+                                 选择驱动界面的工程样本 (见 crate::bridge::demo_project 与
+                                 yeban_model::samples::filled_project); 默认 `default`
   yeban-app --help               本帮助
 
 环境变量:
@@ -65,6 +74,29 @@ const USAGE: &str = "\
   1 窗口创建失败或事件循环异常退出
   2 无法识别的参数
 ";
+
+/// 驱动界面的工程样本。
+///
+/// 两个样本走的是**同一条**投影 + 注入路径（`bridge::from_project` → `host::apply_view`），
+/// 区别只在"哪个 `YebanProjectV1`"。这就是本工作线的验收形态：
+/// 换工程 ⇒ 换像素，中间没有任何"演示数据分支"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sample {
+    /// 演示夹具（`bridge::demo_project()`）—— 就是 `scene::*` 常量对应的那个工程。
+    Default,
+    /// `yeban-model` 的规范级丰富样本（`samples::filled_project()`）。
+    Filled,
+}
+
+impl Sample {
+    /// 构造样本工程。
+    fn project(self) -> YebanProjectV1 {
+        match self {
+            Self::Default => demo_project(),
+            Self::Filled => yeban_model::samples::filled_project(),
+        }
+    }
+}
 
 /// 规范 §7.1 的核心快捷键表, 用于 `--print-shortcuts`。
 ///
@@ -134,19 +166,56 @@ fn main() -> ExitCode {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    let sample = match parse_sample(&args) {
+        Ok(sample) => sample,
+        Err(message) => {
+            eprintln!("yeban-app: {message}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
     if args.iter().any(|arg| arg == "--print-shortcuts") {
         print_shortcuts();
         return ExitCode::SUCCESS;
     }
     if wants_headless(&args) {
-        return run_headless(&args);
+        return run_headless(&args, sample);
     }
-    if let Some(unknown) = args.iter().find(|arg| !arg.starts_with("--")) {
+    if let Some(unknown) = args
+        .iter()
+        .find(|arg| !arg.starts_with("--") && !is_sample_value(arg))
+    {
         eprintln!("yeban-app: 无法识别的参数 `{unknown}`\n\n{USAGE}");
         return ExitCode::from(2);
     }
 
-    run_gui()
+    run_gui(sample)
+}
+
+/// 解析 `--project-sample <default|filled>`；缺省为 [`Sample::Default`]。
+fn parse_sample(args: &[String]) -> Result<Sample, String> {
+    let mut sample = Sample::Default;
+    let mut cursor = 0;
+    while cursor < args.len() {
+        if args[cursor] == "--project-sample" {
+            let value = args
+                .get(cursor + 1)
+                .ok_or("`--project-sample` 需要一个取值 (default|filled)")?;
+            sample = match value.as_str() {
+                "default" | "demo" => Sample::Default,
+                "filled" => Sample::Filled,
+                other => return Err(format!("未知的工程样本 `{other}` (可用: default|filled)")),
+            };
+            cursor += 2;
+            continue;
+        }
+        cursor += 1;
+    }
+    Ok(sample)
+}
+
+/// `--project-sample` 的取值本身不是"无法识别的参数"。
+fn is_sample_value(arg: &str) -> bool {
+    matches!(arg, "default" | "demo" | "filled")
 }
 
 /// 判断是否要求无头运行: `--headless`、`--dump-elements`, 或 `SLINT_BACKEND=headless`。
@@ -167,9 +236,21 @@ fn wants_headless(args: &[String]) -> bool {
 }
 
 /// 无头握手：不构造任何 Slint 对象, 不进事件循环。
-fn run_headless(args: &[String]) -> ExitCode {
-    let scene = DemoScene::demo();
-    let registry = ElementRegistry::demo();
+///
+/// 注意它现在走的是**投影路径**：工程 → `ViewState` → 注册表 / 计数。
+/// 因此握手行里的数字（轨道数 / 段落数 / 剪辑数 / 音符数）是**工程**的属性，
+/// 不是 `.slint` 里的字面量。
+fn run_headless(args: &[String], sample: Sample) -> ExitCode {
+    let project = sample.project();
+    let view = match ViewState::from_project(&project) {
+        Ok(view) => view,
+        Err(error) => {
+            eprintln!("yeban-app: 工程投影失败 ({error}) —— 界面无法由此工程驱动");
+            return ExitCode::FAILURE;
+        }
+    };
+    let scene = DemoScene::from_view(&view);
+    let registry = ElementRegistry::from_view(&view);
 
     if args.iter().any(|arg| arg == "--dump-elements") {
         for line in registry.dump_lines() {
@@ -186,16 +267,22 @@ fn run_headless(args: &[String]) -> ExitCode {
 
     // 说清无头路径到底证明了什么 —— 不要让 "headless ok" 看着像 "UI 已验证"。
     println!(
-        "headless: viewport={}x{} compact={} elements={} dynamic-regions={} tabs={} tracks={} notes={} clips={}",
+        "headless: project={} title={} viewport={}x{} compact={} elements={} dynamic-regions={} tabs={} tracks={} sections={} scenes={} clips={} notes={} bpm={} ts={}",
+        view.project_id,
+        scene.title,
         scene.viewport_width,
         scene.viewport_height,
         scene.compact(),
         registry.len(),
         registry.dynamic_regions().count(),
         scene::CONSOLE_TABS.len(),
-        scene::TRACK_COUNT,
-        scene::NOTE_COUNT,
-        scene::CLIP_COUNT,
+        view.tracks.len(),
+        view.sections.len(),
+        view.scenes.len(),
+        view.clips.len(),
+        view.note_ulids.len(),
+        view.bpm_display,
+        view.time_signature_display,
     );
     println!(
         "headless: 未构造 MainWindow, 未初始化 Slint 后端, 未渲染任何像素 —— 控件树断言需要 crates/yeban-ui-test-port 的 testing backend"
@@ -204,10 +291,21 @@ fn run_headless(args: &[String]) -> ExitCode {
 }
 
 /// 正常 GUI 路径。
-fn run_gui() -> ExitCode {
-    let scene = DemoScene::demo();
+///
+/// 数据流：`YebanProjectV1` → [`ViewState`] → [`host::build_main_window`]。
+/// 这里**没有**任何"演示数据"分支 —— `--project-sample` 只换工程。
+fn run_gui(sample: Sample) -> ExitCode {
+    let project = sample.project();
+    let view = match ViewState::from_project(&project) {
+        Ok(view) => view,
+        Err(error) => {
+            eprintln!("yeban-app: 工程投影失败 ({error}) —— 界面无法由此工程驱动");
+            return ExitCode::FAILURE;
+        }
+    };
+    let scene = DemoScene::from_view(&view);
 
-    let ui = match MainWindow::new() {
+    let ui = match host::build_main_window(&view, &scene) {
         Ok(ui) => ui,
         Err(error) => {
             eprintln!(
@@ -217,16 +315,6 @@ fn run_gui() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-
-    // 演示数据注入。全部是标量属性 —— 数组属性要 ModelRc, 等模型线落地后由
-    // `yeban-model` 单向注入 (见 docs/ledger/ui-shell-notes.md 的 pending)。
-    ui.set_timecode(scene.timecode.into());
-    ui.set_bpm_display(scene.bpm_display.into());
-    ui.set_branch_name(scene.branch_name.into());
-    ui.set_arrangement_view(scene.arrangement_by_default);
-    ui.set_playing(false);
-    ui.set_console_tab(0);
-    ui.set_compact(scene.compact());
 
     wire_callbacks(&ui);
 
@@ -251,7 +339,7 @@ fn run_gui() -> ExitCode {
 ///
 /// 回调跑在 UI 线程上; `[ARCH-TOP-002]` / `[ARCH-RT-001]` 约束的是音频线程,
 /// 所以这里的 `eprintln!` 不触碰红线 —— 但接线真实动作时**仍然不许**做长阻塞等待。
-fn wire_callbacks(ui: &MainWindow) {
+fn wire_callbacks(ui: &yeban_app::ui::MainWindow) {
     ui.on_toggle_play(|| trace("toggle-play"));
     ui.on_toggle_view(|| trace("toggle-view"));
     ui.on_toggle_sidebar(|| trace("toggle-sidebar"));

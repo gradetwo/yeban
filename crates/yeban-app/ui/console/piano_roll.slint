@@ -14,16 +14,13 @@
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
 export component PianoRoll inherits Rectangle {
-    // 演示用 ULID —— 必须与 crates/yeban-app/src/scene.rs 的 DEMO_NOTE_ULIDS 逐字一致。
-    // 重复是已知的临时状态, 见 notes 的 pending (模型线落地后改成 ModelRc 单向注入)。
-    in property <[string]> note-ulids: [
-        "01J8Z5Q0R7K3M9X2V4B6N8P1A2",
-        "01J8Z5Q0R7K3M9X2V4B6N8P1A3",
-        "01J8Z5Q0R7K3M9X2V4B6N8P1B0",
-        "01J8Z5Q0R7K3M9X2V4B6N8P1C7",
-        "01J8Z5Q0R7K3M9X2V4B6N8P1D4",
-        "01J8Z5Q0R7K3M9X2V4B6N8P1E1"
-    ];
+    // 由 src/host.rs 单向注入 —— `{ulid}` 段来自**工程里的 `MidiNote::id`**
+    // （不再是界面内联的演示常量）。
+    //
+    // 简化（如实登记，见 docs/ledger/app-binding-notes.md 未实现项）：这里注入的是
+    // **片段池里的全部 MIDI 音符**，而不是"当前编辑片段"的音符 —— 后者的作用域属于
+    // 会话运行态（`MODEL-ISO-001`），还没有对应的状态容器。
+    in property <[string]> note-ulids: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
     in property <[string]> tool-labels: ["选择", "铅笔", "剪刀", "力度", "橡皮"];
     in property <int> active-tool: 1;
@@ -35,8 +32,9 @@ export component PianoRoll inherits Rectangle {
     in property <[bool]> white-key-pattern: [
         true, false, true, false, true, true, false, true, false, true, false, true
     ];
-    // 力度是 0.0–1.0 的归一化值; 0–127 的量化与 960 PPQ 的对齐归模型层。
-    in property <[float]> velocities: [0.85, 0.6, 0.95, 0.45, 0.7, 0.55];
+    // 力度是 0.0–1.0 的归一化值（= `MidiNote::velocity` ÷ 127，由投影层算好）；
+    // 0–127 的量化与 960 PPQ 的对齐归模型层。
+    in property <[float]> velocities: [];
 
     background: Tokens.bg-void;
     clip: true;
@@ -143,7 +141,7 @@ export component PianoRoll inherits Rectangle {
 
         // ------------------------------------------------------------ 音符图元
         // [UI-TEST-001] `note-{ulid}-rect`
-        for note_index in 6 : Rectangle {
+        for note_ulid[note_index] in root.note-ulids : Rectangle {
             x: Tokens.space-5 + 76px * note_index;
             y: 14px * note_index + 6px;
             width: 66px;
@@ -151,10 +149,10 @@ export component PianoRoll inherits Rectangle {
             background: Tokens.gold;
             border-radius: Tokens.radius-sm;
             accessible-role: list-item;
-            accessible-id: "note-" + root.note-ulids[note_index] + "-rect";
-            accessible-label: "音符 " + root.note-ulids[note_index];
+            accessible-id: "note-" + note_ulid + "-rect";
+            accessible-label: "音符 " + note_ulid;
             accessible-item-index: note_index;
-            accessible-item-count: 6;
+            accessible-item-count: root.note-ulids.length;
             accessible-item-selectable: true;
             accessible-item-selected: note_index == 0;
         }
@@ -190,7 +188,7 @@ export component PianoRoll inherits Rectangle {
         accessible-id: "piano-roll-velocity-lane";
         accessible-label: "力度泳道";
 
-        for velocity_index in 6 : Rectangle {
+        for [velocity_index] in root.note-ulids : Rectangle {
             x: 56px + Tokens.space-5 + 76px * velocity_index + 30px;
             y: parent.height - 4px - 28px * root.velocities[velocity_index];
             width: 6px;

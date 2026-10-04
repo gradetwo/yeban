@@ -39,6 +39,14 @@ slint = { workspace = true, features = [
     "renderer-software",
 ] }
 
+# 界面**不再渲染硬编码的演示数据** —— 它由 `YebanProjectV1` 经 `src/bridge.rs` 的投影层驱动
+# (见 docs/ledger/app-binding-notes.md)。因此 app 需要权威数据模型 crate。
+# 依赖方向: 架构规范 §8 的 crate 清单 = yeban-app --> yeban-model (与 slint 一样单向)。
+# 只写 `{ workspace = true }`, **不写 version** —— 根 `[workspace.dependencies]` 是版本唯一
+# 事实源 (ADR-0001 D5); 成员间 path 依赖的通配豁免见 ADR-0001 **D21**。
+# 红线 3 不受影响: 它约束的是**引擎层** crate 不得引入 GUI; 反向 (GUI 依赖模型) 正是规范要求的形态。
+yeban-model = { workspace = true }
+
 # ---------------------------------------------------------------------------
 # ui-test-port: 无头 UI 自动化测试端口 (默认**关闭**)
 # ---------------------------------------------------------------------------

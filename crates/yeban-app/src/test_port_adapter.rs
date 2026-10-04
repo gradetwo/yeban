@@ -31,7 +31,13 @@
 //!   （运行时有 ⇒ 注册表有，严格为空；注册表有 ⇒ 运行时未必有）；
 //! - `[UI-MCP-002]` + `[UI-MCP-003]`：动态区遮罩吸收抖动（SSIM 恒为 1.0），
 //!   而"成块 + 亮度差大"的静态回归在遮罩之后仍被检出（< 0.98）；
-//! - `[UI-MCP-001]` 的 `ReadOnly` 闸门在真实端口上拒绝事件注入。
+//! - `[UI-MCP-001]` 的 `ReadOnly` 闸门在真实端口上拒绝事件注入；
+//! - **`[MODEL-AST-002]` 模型数据真的到达像素**：
+//!   `project_projection_reaches_the_control_tree_and_the_pixels` 用
+//!   `yeban_model::samples::filled_project()` 驱动同一个活窗口，断言控件树里的
+//!   `track-{i}-header` / `section-{i}-card` / `clip-{ulid}-header` 携带的是**工程的**
+//!   名称与身份（`Lead` / `Intro` / 工程的摆放 ULID），而演示夹具的名字（`鼓`/`贝斯`）
+//!   一个都不出现；随后在**同一实例**上换回演示工程，断言截图逐字节变化。
 //!
 //! 不证明：像素**长什么样**（没有基准图，`[UI-MCP-003]` 的分平台 Golden 需要人类先提交基准）；
 //! 也不证明"UI 没有视觉缺陷" —— 它证明的是"UI 真的被渲染过、而且树和像素来自同一个实例"。
@@ -69,7 +75,9 @@
 //!   因此断言失败时无法从 JSON 直接映射回源码文件（已登记为 needs）。
 //! - 静态注册表没有几何 ⇒ `bounds` 一律 `None`，`parent` 一律 `None`（不编造层级）。
 
-use yeban_app::elements::ElementRegistry;
+use yeban_app::bridge::ViewState;
+use yeban_app::elements::{ElementRegistry, is_model_driven_family};
+use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_ui_test_port::port::{Permission, PortError, UiTestPort};
@@ -599,17 +607,15 @@ fn criteria_id_lists_are_all_real_registry_entries() {
     );
 }
 
-/// 构造注入同一组演示数据的主窗口（与 `src/main.rs` 的 GUI 路径一致）。
-fn build_demo_main_window(scene: &DemoScene) -> Result<MainWindow, slint::PlatformError> {
-    let ui = MainWindow::new()?;
-    ui.set_timecode(scene.timecode.into());
-    ui.set_bpm_display(scene.bpm_display.into());
-    ui.set_branch_name(scene.branch_name.into());
-    ui.set_arrangement_view(scene.arrangement_by_default);
-    ui.set_playing(false);
-    ui.set_console_tab(0);
-    ui.set_compact(scene.compact());
-    Ok(ui)
+/// 构造注入演示投影的主窗口。
+///
+/// **与 `src/main.rs` 的 GUI 路径共用 [`host::build_main_window`]** —— 判据断言的界面
+/// 就是命令行启动的那个界面，不存在第二份注入实现（`AGENTS.md` §3 DoD 6 的前提）。
+fn build_demo_main_window(
+    view: &ViewState,
+    scene: &DemoScene,
+) -> Result<MainWindow, slint::PlatformError> {
+    host::build_main_window(view, scene)
 }
 
 /// **本文件的核心里程碑（像素那一半）**：让 13 个 `.slint` 真的被 Tier-1 软件光栅化渲染一次，
@@ -624,13 +630,14 @@ fn build_demo_main_window(scene: &DemoScene) -> Result<MainWindow, slint::Platfo
 /// `sidebar.slint` 的折叠分支仍然是未验证的。
 #[test]
 fn live_main_window_renders_tier1_pixels_and_enforces_permissions() {
-    let scene = DemoScene::demo();
+    let view = ViewState::demo();
+    let scene = DemoScene::from_view(&view);
     let registry = demo_registry();
     let static_tree = registry_to_tree(&registry).expect("注册表适配");
     let size = Size::new(scene.viewport_width, scene.viewport_height);
 
     let mut port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
-        build_demo_main_window(&scene)
+        build_demo_main_window(&view, &scene)
     })
     .expect("Tier-1 平台 + MainWindow + 运行时控件树");
 
@@ -758,14 +765,15 @@ fn live_main_window_renders_tier1_pixels_and_enforces_permissions() {
 /// 不需要"再跑一轮才知道发生了什么"。
 #[test]
 fn runtime_control_tree_cross_check_against_the_registry() {
-    let scene = DemoScene::demo();
+    let view = ViewState::demo();
+    let scene = DemoScene::from_view(&view);
     let registry = demo_registry();
     let static_tree = registry_to_tree(&registry).expect("注册表适配");
     let size = Size::new(scene.viewport_width, scene.viewport_height);
     // 注意：这条判据只用只读方法（`tree()` / `read_property()` / `capture()`），
     // 因此**不能**声明成 `mut` —— `unused_mut` 在 CI 的 `-D warnings` 下是硬错误。
     let port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
-        build_demo_main_window(&scene)
+        build_demo_main_window(&view, &scene)
     })
     .expect("Tier-1 平台 + MainWindow");
 
@@ -1082,4 +1090,258 @@ fn runtime_control_tree_cross_check_against_the_registry() {
         port.read_property("transport-play-button", "no-such-property"),
         Err(PortError::Rejected { .. })
     ));
+}
+
+/// **本工作线最核心的判据**：模型数据真的从 `YebanProjectV1` 流到了像素。
+///
+/// 规范来源 (Normative): `[MODEL-AST-002]`（界面只读工程）、`[UI-TEST-001]` §12.2
+/// （语义 ID 的 `{ulid}` 段来自实体身份）、`[MUST-GATE-015]`（Golden 必须尺寸非零、非全黑）、
+/// `[UI-GRID-001]`（轨道数 / 剪辑数 / 段落数由工程决定）。
+///
+/// ## 它证明什么（逐条）
+///
+/// 1. **控件树里出现工程数据**：`track-{i}-header` 的 `accessible-label` 含
+///    `filled_project()` 的轨道名（`Lead` / `Bass` / `Aux Reverb`），段落卡片含 `Intro` / `Drop`，
+///    剪辑包头 ID 含**工程的摆放身份**（不是演示 ULID）；
+/// 2. **演示数据一个都不出现**：整棵树里没有任何标签含 `鼓` / `贝斯`（演示夹具的轨道名）——
+///    这一条把"界面到底读的是工程还是 `demo()`"变成可判定的；
+/// 3. **像素真的变了**：在**同一个活窗口**上把投影换回演示工程，截图逐字节不同；
+/// 4. **两个方向的树都跟着变**：换回演示工程后 `track-5-header` 出现、`track-3-header` 消失。
+///
+/// ## 为什么在同一个 `LivePort` 上换工程（而不是开两个）
+///
+/// `slint::platform::set_platform` 每个**线程**只能成功一次（上游 `i-slint-core` 的
+/// `GLOBAL_CONTEXT` 是 thread-local `OnceCell`），而 libtest 默认一个测试一个线程。
+/// 在同一个活窗口上先注入工程 A、截图、再注入工程 B、再截图，既省一次平台安装，
+/// 又让"像素差异"这一条断言**排除了字体/后端等环境差异**（同一进程、同一后端、同一字体）。
+#[test]
+fn project_projection_reaches_the_control_tree_and_the_pixels() {
+    let project = yeban_model::samples::filled_project();
+    let project_view = ViewState::from_project(&project).expect("filled_project 必须能投影");
+    let demo_view = ViewState::demo();
+    let scene = DemoScene::from_view(&project_view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let registry = registry_to_tree(&ElementRegistry::from_view(&project_view))
+        .expect("由工程投影构造的注册表必须能适配");
+
+    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
+        host::build_main_window(&project_view, &scene)
+    })
+    .expect("Tier-1 平台 + 由 YebanProjectV1 驱动的主窗口");
+
+    if port.tree().is_empty() {
+        report_capability(
+            "unavailable: crates/yeban-app 的 .slint 没有编译期 debug info ⇒ 控件树为空",
+        );
+        panic!("[UI-TEST-001] 运行时控件树为空 ⇒ 前置条件不满足（ADR-0001 D22）");
+    }
+
+    // =====================================================================
+    // 第 1 步：把**实测数据**全部打印出来（判据建立在这些数字上）
+    // =====================================================================
+    let runtime = port.tree().clone();
+    observe(&format!(
+        "[model-binding] filled_project 投影: 轨道 {} 条 / 段落 {} 条 / 场景 {} 条 / 剪辑 {} 条 / 音符 {} 个 / bpm {} / 拍号 {}",
+        project_view.tracks.len(),
+        project_view.sections.len(),
+        project_view.scenes.len(),
+        project_view.clips.len(),
+        project_view.note_ulids.len(),
+        project_view.bpm_display,
+        project_view.time_signature_display,
+    ));
+    observe(&format!(
+        "[model-binding] 运行时控件树 {} 条; track-*-header={}, section-*-card={}, clip-*-header={}",
+        runtime.len(),
+        runtime
+            .with_prefix("track-")
+            .filter(|node| node.id.ends_with("-header"))
+            .count(),
+        runtime
+            .with_prefix("section-")
+            .filter(|node| node.id.ends_with("-card"))
+            .count(),
+        runtime
+            .with_prefix("clip-")
+            .filter(|node| node.id.ends_with("-header"))
+            .count(),
+    ));
+    for (index, track) in project_view.tracks.iter().enumerate() {
+        if let Some(node) = runtime.find_by_id(&format!("track-{index}-header")) {
+            observe(&format!(
+                "[model-binding] 工程字段 TrackV3::name[{}]={:?} -> 控件树 track-{}-header.label={:?}",
+                index, track.name, index, node.label
+            ));
+        }
+    }
+
+    // =====================================================================
+    // 第 2 步：判据
+    // =====================================================================
+
+    // ---- 方向 1: 工程字段 -> 控件树标签（数据真的到了树里） ----
+    assert!(
+        !project_view.tracks.is_empty(),
+        "filled_project 必须有非主总线轨道, 否则本判据无从执行"
+    );
+    for (index, track) in project_view.tracks.iter().enumerate() {
+        let id = format!("track-{index}-header");
+        let node = runtime.find_by_id(&id).unwrap_or_else(|| {
+            panic!("缺少 `{id}`（工程有 {} 条轨道）", project_view.tracks.len())
+        });
+        assert!(
+            node.label.contains(&track.name),
+            "`{id}` 的标签 {:?} 必须含工程的轨道名 {:?}",
+            node.label,
+            track.name
+        );
+        assert_eq!(node.role.as_str(), "list-item", "轨道包头角色漂移: {id}");
+    }
+    for (index, section) in project_view.sections.iter().enumerate() {
+        let id = format!("section-{index}-card");
+        let node = runtime
+            .find_by_id(&id)
+            .unwrap_or_else(|| panic!("缺少 `{id}`"));
+        assert!(
+            node.label.contains(&section.name),
+            "`{id}` 的标签 {:?} 必须含工程的段落名 {:?}",
+            node.label,
+            section.name
+        );
+    }
+    for clip in &project_view.clips {
+        let id = format!("clip-{}-header", clip.placement_id);
+        assert!(
+            runtime.contains(&id),
+            "[UI-TEST-001] 工程的摆放身份 `{}` 必须在控件树里可寻址（找到的 clip-* 有 {:?}）",
+            clip.placement_id,
+            runtime
+                .with_prefix("clip-")
+                .map(|node| node.id.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+    // 钢琴卷帘（默认可见的控制台页）里的音符身份也必须来自工程 ——
+    // 这是"界面里不再有任何内联演示 ULID"的正面断言。
+    for ulid in &project_view.note_ulids {
+        assert!(
+            runtime.contains(&format!("note-{ulid}-rect")),
+            "工程的音符身份 `{ulid}` 必须出现在卷帘控件树里"
+        );
+    }
+    for index in 0..project_view.note_velocities.len() {
+        assert!(
+            runtime.contains(&format!("velocity-{index}-bar")),
+            "力度条 `velocity-{index}-bar` 必须与工程的音符逐个对齐"
+        );
+    }
+
+    // ---- 方向 2: 由**投影驱动**的族里不许出现演示夹具的数据 ----
+    //
+    // 负向断言**只**覆盖"应当由工程驱动"的语义 ID 族。侧栏资源库（`Sub Bass 低频` /
+    // `Night Pad 夜色铺底` …）、混音台通道条、设备机架与两个对话框目前仍是静态标签
+    // （见 `docs/ledger/app-binding-notes.md` 的未实现项），对它们做全局断言会**假红** ——
+    // 这正是"判据要按事实写、不能为了让数字好看而放宽/收紧"的实例。
+    for node in runtime.iter() {
+        if !is_model_driven_family(&node.id) {
+            continue;
+        }
+        for name in yeban_app::scene::TRACK_NAMES {
+            assert!(
+                !node.label.contains(name),
+                "由工程驱动的 `{}` 的标签里出现了演示夹具的名字 `{name}`: {:?}",
+                node.id,
+                node.label
+            );
+        }
+    }
+    for ulid in yeban_app::scene::NOTE_ULIDS {
+        assert!(
+            !runtime.contains(&format!("note-{ulid}-rect")),
+            "演示音符 `{ulid}` 不该出现在工程驱动的界面里"
+        );
+    }
+
+    // ---- 方向 3: 生成的标量属性同样来自工程（像素就是从这些属性画的） ----
+    assert_eq!(
+        port.ui().get_bpm_display(),
+        "128.00",
+        "BPM 显示值必须来自 YebanProjectV1::bpm={}",
+        project.bpm
+    );
+    assert_eq!(
+        port.ui().get_window_title(),
+        "Yeban Model Core Sample",
+        "窗口标题必须来自 YebanProjectV1::title={:?}",
+        project.title
+    );
+
+    // ---- 方向 4: 像素层（[MUST-GATE-015]） ----
+    let project_image = port.window().capture().expect("Tier-1 截图");
+    let evidence: GoldenEvidence =
+        golden_evidence(&project_image).expect("[MUST-GATE-015] 尺寸非零且非全黑");
+    assert_eq!(evidence.size, size, "截图尺寸必须等于窗口尺寸");
+    assert!(evidence.non_black_pixels > 0, "全黑截图: {evidence:?}");
+    assert!(
+        evidence.distinct_colors >= 8,
+        "颜色过少, 疑似只画了背景: {evidence:?}"
+    );
+    report_evidence(&evidence);
+    observe(&format!(
+        "[model-binding] 状态 A (由 filled_project 驱动 / Arrangement): {}",
+        evidence.summary()
+    ));
+    write_png("app-model-driven-filled-project-1920x1080", &project_image);
+
+    // ---- 方向 5: 在**同一个活窗口**上换回演示工程 ⇒ 树与像素都真的变 ----
+    host::apply_view(port.ui(), &demo_view);
+    let demo_image = port.window().capture().expect("演示投影截图");
+    assert_ne!(
+        demo_image.pixels(),
+        project_image.pixels(),
+        "换工程必须真的改变像素（否则界面画的不是工程数据）"
+    );
+    let demo_evidence = golden_evidence(&demo_image).expect("[MUST-GATE-015] 演示投影截图");
+    observe(&format!(
+        "[model-binding] 状态 B (由 demo_project 驱动 / Arrangement): {}",
+        demo_evidence.summary()
+    ));
+    write_png("app-model-driven-demo-project-1920x1080", &demo_image);
+
+    let demo_registry = registry_to_tree(&ElementRegistry::from_view(&demo_view)).expect("适配");
+    let demo_runtime = {
+        let tree = port
+            .refresh_tree(Some(&demo_registry))
+            .expect("切换工程后重新抓运行时不变量");
+        tree.clone()
+    };
+    assert!(
+        demo_runtime.contains("track-5-header"),
+        "演示工程有 6 条轨道 ⇒ `track-5-header` 必须出现"
+    );
+    assert!(
+        !demo_runtime.contains("track-3-header"),
+        "filled_project 只有 3 条轨道 ⇒ 切回演示前后都不该有第 4 条（树没有刷新？）"
+    );
+    for node in demo_runtime.iter() {
+        if !is_model_driven_family(&node.id) {
+            continue;
+        }
+        assert!(
+            !node.label.contains("Lead"),
+            "切回演示工程后仍能看到工程轨道名 `Lead`: {}={:?}",
+            node.id,
+            node.label
+        );
+    }
+    observe(&format!(
+        "[model-binding] 切换后运行时控件树 {} 条; 工程驱动的树 {} 条 —— 两者必须不同",
+        demo_runtime.len(),
+        runtime.len()
+    ));
+    assert_ne!(
+        demo_runtime.ids().collect::<Vec<_>>(),
+        runtime.ids().collect::<Vec<_>>(),
+        "两个工程驱动的语义 ID 集合必须不同"
+    );
 }

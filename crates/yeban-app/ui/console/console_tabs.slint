@@ -20,6 +20,9 @@ export component ConsoleTabs inherits Rectangle {
     // tab_name 就是语义 ID 里的 {tab_name}, 只允许小写与连字符
     in property <[string]> tab-names: ["piano-roll", "mixer", "devices"];
     in property <[string]> tab-labels: ["钢琴卷帘", "调音台", "设备效果链"];
+    // 卷帘的音符身份与力度 —— 由 MainWindow 从投影透传（本组件不解释它们）
+    in property <[string]> note-ulids: [];
+    in property <[float]> note-velocities: [];
 
     callback select-piano-roll();
     callback select-mixer();
@@ -111,6 +114,8 @@ export component ConsoleTabs inherits Rectangle {
         width: parent.width;
         height: root.height - 28px;
         visible: root.active-tab == 0;
+        note-ulids: root.note-ulids;
+        velocities: root.note-velocities;
     }
 
     MixerConsole {
