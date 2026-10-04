@@ -181,6 +181,15 @@ jobs:
           set -o pipefail
           cargo test -p "${{ matrix.crate }}" --all-targets --locked 2>&1 | tee -a /tmp/gate.log
 
+      - name: 上传无头 UI 截图 (若该 crate 产出了)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots-${{ matrix.crate }}
+          path: target/ui-test-port
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: 失败摘要 (把错误贴进 job summary)
         if: failure()
         run: |
@@ -229,6 +238,18 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test --workspace --all-targets --locked 2>&1 | tee -a /tmp/gate.log
+
+      - name: 上传无头 UI 截图 (Tier-1 光栅化产物, 供人眼复核)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # 为什么必须上传: 无头截图默认落在 runner 的 target/ui-test-port/ 里随容器销毁,
+          # 于是"界面被渲染器看过"只能停在"断言通过"这一层 —— 没有人能真的看一眼那张图。
+          # 有了 artifact, 任何人事后都能下载核对版面/字体/配色, 而不是只能相信断言。
+          name: ui-screenshots-workspace
+          path: target/ui-test-port
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: 失败摘要
         if: failure()
