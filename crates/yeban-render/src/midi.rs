@@ -10,7 +10,8 @@
 //! 因此本 crate 显式打开 `std` —— 见 `Cargo.toml` 注释）。
 //!
 //! **回读走 `midly` 的解析器, 但结构断言走本 crate 自己的字节级检查**:
-//! [`track_chunks`] 直接按 SMF 的 chunk 头解析 `MThd`/`MTrk`, [`crate::vlq`] 是
+//! [`track_chunks`] 直接按 SMF 的 chunk 头解析 `MThd`/`MTrk`（返回 [`TrackChunk`]）,
+//! [`crate::vlq`] 是
 //! 一份独立的 VLQ 解码器。因此判据是"两个独立实现互相钉住", 而不是"`midly`
 //! 读自己写的东西" —— 后者对"库的编码与规范不符"完全无感。
 //!
@@ -536,7 +537,33 @@ pub struct ParsedMidi {
     pub notes: Vec<ParsedNote>,
 }
 
-/// 按 SMF 的 chunk 头把一个文件拆成 `(fourcc, 负载范围)` 列表。
+/// SMF 里的一个 chunk: fourcc 与它在文件里的负载范围。
+///
+/// 用具名结构而不是 `([u8; 4], Range<usize>)` 元组: 后者会触发
+/// `clippy::type_complexity`, 而且 `chunk.0` / `chunk.1` 在调用点无法自解释。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackChunk {
+    /// chunk 标识 (`MThd` / `MTrk` / 其他)。
+    pub fourcc: [u8; 4],
+    /// 负载在文件字节里的范围。
+    pub payload: std::ops::Range<usize>,
+}
+
+impl TrackChunk {
+    /// 负载长度。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.payload.len()
+    }
+
+    /// `true` 表示空负载。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.payload.is_empty()
+    }
+}
+
+/// 按 SMF 的 chunk 头把一个文件拆成 [`TrackChunk`] 列表。
 ///
 /// 这是**本 crate 自己的**结构解析（大端 `u32` 长度）, 用来独立核验 `midly`
 /// 写出的 chunk 布局, 而不是相信 `midly` 自己的解析器。
@@ -544,7 +571,7 @@ pub struct ParsedMidi {
 /// # Errors
 ///
 /// 声明长度超出实际字节时返回 [`MidiError::Decode`]。
-pub fn track_chunks(bytes: &[u8]) -> Result<Vec<([u8; 4], std::ops::Range<usize>)>, MidiError> {
+pub fn track_chunks(bytes: &[u8]) -> Result<Vec<TrackChunk>, MidiError> {
     let mut cursor = 0usize;
     let mut out = Vec::new();
     while cursor + 8 <= bytes.len() {
@@ -563,7 +590,10 @@ pub fn track_chunks(bytes: &[u8]) -> Result<Vec<([u8; 4], std::ops::Range<usize>
                 bytes.len() - start
             )));
         }
-        out.push((fourcc, start..start + len));
+        out.push(TrackChunk {
+            fourcc,
+            payload: start..start + len,
+        });
         cursor = start + len;
     }
     Ok(out)
@@ -785,9 +815,11 @@ mod tests {
 
         let chunks = track_chunks(&bytes).expect("chunk 布局");
         assert_eq!(chunks.len(), 2, "MThd + 一条 MTrk");
-        assert_eq!(&chunks[0].0, b"MThd");
-        assert_eq!(&chunks[0].1, &(0..6));
-        assert_eq!(&chunks[1].0, b"MTrk");
+        assert_eq!(&chunks[0].fourcc, b"MThd");
+        assert_eq!(chunks[0].payload, 0..6);
+        assert_eq!(chunks[0].len(), 6);
+        assert!(!chunks[0].is_empty());
+        assert_eq!(&chunks[1].fourcc, b"MTrk");
 
         let parsed = parse_smf(&bytes).expect("回读");
         assert_eq!(parsed.format, MidiFormat::SingleTrack);
@@ -822,7 +854,7 @@ mod tests {
 
         // 独立核验 MThd: 大端格式号 + 轨道数 + 时间分度。
         let chunks = track_chunks(&bytes).expect("chunk 布局");
-        assert_eq!(&chunks[0].0, b"MThd");
+        assert_eq!(&chunks[0].fourcc, b"MThd");
         assert_eq!(
             u16::from_be_bytes([bytes[8], bytes[9]]),
             0,
@@ -840,7 +872,7 @@ mod tests {
         );
 
         // MTrk 负载从 delta 开始: 4 字节 VLQ + `90 3C 40` (NoteOn ch0 key60 vel64)。
-        let payload = &bytes[chunks[1].1.clone()];
+        let payload = &bytes[chunks[1].payload.clone()];
         assert_eq!(
             &payload[0..4],
             &[0xFF, 0xFF, 0xFF, 0x7F],

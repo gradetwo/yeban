@@ -49,7 +49,7 @@ use std::fmt::Debug;
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use yeban_model::{EntityId, RoutingEdge, RoutingGraph};
+use yeban_model::{EntityId, RoutingEdge, RoutingGraph, TrackV3};
 
 use crate::pdc::{self, DelayLine, PdcError};
 use crate::sum;
@@ -318,6 +318,41 @@ impl RenderOutput {
     }
 }
 
+/// 从模型层的设备链累加每个轨道自身引入的处理延迟（帧）[ARCH-PDC-001]。
+///
+/// 语义与规范一致:
+///
+/// - 只有**未旁通**的设备计入 (`bypassed == true` 的插件不产生延迟);
+/// - `latency_samples == 0` 在模型层的定义是"**未上报**", 不是"零延迟"。本函数把它
+///   当 0 参与求和 —— 这是**保守**的: 少补只会少对齐, 不会造成相位错误; 而凭空发明一个
+///   延迟才是错的。设备作者有义务显式声明真实值
+///   (见 `DeviceDefinition::latency_samples` 的文档)。
+/// - 多个设备串接时延迟相加, 用 `saturating_add` 以免病态输入溢出。
+///
+/// 用法:
+///
+/// ```text
+/// let latencies = yeban_render::render::track_latencies(&project.tracks);
+/// let plan = RenderPlan::compile_with_latencies(
+///     &project.routing_graph, project.master_bus_track_id, options, &latencies)?;
+/// ```
+#[must_use]
+pub fn track_latencies(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityId, u32> {
+    tracks
+        .iter()
+        .map(|(id, track)| {
+            let total = track
+                .devices
+                .iter()
+                .filter(|device| !device.bypassed)
+                .fold(0u32, |accumulated, device| {
+                    accumulated.saturating_add(device.latency_samples)
+                });
+            (*id, total)
+        })
+        .collect()
+}
+
 /// 把 `gain_db` 转成线性增益。
 ///
 /// 走 `libm::powf` 而不是 `f32::powf`: [ARCH-DET-001] 要求"统一启用纯 Rust `libm`
@@ -354,12 +389,19 @@ impl RenderPlan {
     /// 与 [`Self::compile`] 相同, 但显式注入每个节点**自身**引入的处理延迟（帧）,
     /// 即 [ARCH-PDC-001] 的 `DeviceDefinition::latency_samples`。
     ///
-    /// # 为什么延迟要由调用方注入
+    /// # 延迟从哪里来
     ///
-    /// `yeban_model::DeviceDefinition` 目前**没有** `latency_samples` 字段, 而
-    /// [ARCH-PDC-001] 要求有。`yeban-model` 不归本工作线改, 因此这里把延迟做成显式
-    /// 输入; 待 model 线补齐字段后, 应由 `compile` 自行从 `TrackV3` 的设备链累加并
-    /// 删掉这个参数。已登记在 `docs/ledger/render-master-notes.md` 的 `needs`。
+    /// `yeban_model::DeviceDefinition::latency_samples` 是延迟的唯一事实源
+    /// ([ARCH-PDC-001]), [`track_latencies`] 把它从 `TrackV3` 的设备链累加成
+    /// "节点 → 延迟" 映射。这个参数保留为**显式输入**, 因为它同时是:
+    ///
+    /// - **上层推导的注入点**（用 [`track_latencies`] 从工程算出来就是最常见的用法）;
+    /// - **覆盖/替身入口**（测试用固定延迟; 将来引入外部沙盒插件时, 其真实延迟可能
+    ///   来自运行时握手而不是工程文档）。
+    ///
+    /// [`Self::compile`] 等价于传一张空表 —— 那表示"所有节点都未上报延迟", 于是
+    /// `L_max = 0`、没有任何补偿延迟。**这是刻意的保守默认**: 未上报时不做对齐,
+    /// 而不是猜一个值。
     ///
     /// # Errors
     ///
@@ -397,10 +439,13 @@ impl RenderPlan {
         let mut keep: std::collections::BTreeSet<EntityId> = std::collections::BTreeSet::new();
         let mut frontier = vec![master];
         while let Some(node) = frontier.pop() {
-            if keep.insert(node) {
-                if let Some(parents) = predecessors.get(&node) {
-                    frontier.extend(parents.iter().copied());
-                }
+            // 平铺而不是嵌套 `if`: `clippy::collapsible_if` 属于 `clippy::all`,
+            // 而工作区 lints 把它设为 deny。
+            if !keep.insert(node) {
+                continue;
+            }
+            if let Some(parents) = predecessors.get(&node) {
+                frontier.extend(parents.iter().copied());
             }
         }
         let edges: Vec<&RoutingEdge> = graph
@@ -709,7 +754,7 @@ fn render_node(
 mod tests {
     use super::*;
     use std::str::FromStr;
-    use yeban_model::{RoutingEdge, RoutingKind};
+    use yeban_model::{DeviceDefinition, RoutingEdge, RoutingKind};
 
     /// Crockford Base32 字母表（ULID 的规范字母表，排除 I/L/O/U）。
     const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -1214,6 +1259,55 @@ mod tests {
             RenderPlan::compile(&broken, master, RenderOptions::l1(128, 1, 48_000, 0)),
             Err(RenderError::InvalidGraph(_))
         ));
+    }
+
+    /// 判据: `track_latencies` 累加未旁通设备的延迟, 并跳过旁通设备。
+    ///
+    /// 语义要点: `latency_samples == 0` 是模型层的"未上报", 按 0 参与求和
+    /// (保守做法), 而 `bypassed == true` 的设备**完全不产生延迟**。
+    #[test]
+    fn track_latencies_sum_unbypassed_devices_only() {
+        let mut project_tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
+        let chain = ulid(0x10);
+        project_tracks.insert(
+            chain,
+            TrackV3 {
+                devices: vec![
+                    DeviceDefinition {
+                        latency_samples: 32,
+                        ..DeviceDefinition::default()
+                    },
+                    DeviceDefinition {
+                        latency_samples: 4096,
+                        bypassed: true,
+                        ..DeviceDefinition::default()
+                    },
+                    DeviceDefinition {
+                        latency_samples: 100,
+                        ..DeviceDefinition::default()
+                    },
+                ],
+                ..TrackV3::default()
+            },
+        );
+        let bare = ulid(0x11);
+        project_tracks.insert(bare, TrackV3::default());
+
+        let latencies = track_latencies(&project_tracks);
+        assert_eq!(latencies[&chain], 132, "32 + 100, 旁通的 4096 被跳过");
+        assert_eq!(latencies[&bare], 0, "没有设备就是 0（未上报）");
+        assert_eq!(latencies.len(), 2);
+
+        // 未上报的默认值必须真的走"零延迟、零补偿"那条保守路径。
+        let (routing, master, _) = star_graph(2);
+        let plan = RenderPlan::compile_with_latencies(
+            &routing,
+            master,
+            RenderOptions::l1(128, 1, 48_000, 0),
+            &latencies,
+        )
+        .expect("编译");
+        assert_eq!(plan.longest_path_frames(), 0, "源节点自身没有延迟");
     }
 
     /// 判据: 分层正确 —— 一条串联链的层号严格递增, 且每层在槽数组里连续。

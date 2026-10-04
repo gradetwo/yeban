@@ -120,6 +120,7 @@ midly = { workspace = true, features = ["std"] }
 | 22 | 端到端：渲染 → 抖动 → RF64+BEXT 落盘 → 读回，且 1/2/4 线程产出的**文件字节**逐位相同 | `contract_tests::full_lint_to_master_chain_is_thread_count_invariant` | ❌ CI |
 | 23 | 延迟线语义正确（延迟恰好 N 帧、多声道不串台、**块切分不变**） | `pdc::tests::delay_line_*` | ✅ 本机 |
 | 24 | PDC：短支路被补 `L_max`，长支路不补；每条入边到达 Master 的时刻都等于 `L_max` | `pdc::tests::every_branch_arrives_at_master_at_exactly_l_max` + `render::tests::pdc_compensation_delays_the_short_branch` | 前者 ✅ / 后者 ❌ CI |
+| 25 | `track_latencies` 累加未旁通设备的 `latency_samples`、跳过旁通设备；`0` 按"未上报"处理 | `render::tests::track_latencies_sum_unbypassed_devices_only` | ❌ CI |
 
 ## 5. 本机做了什么 / 没做什么
 
@@ -209,7 +210,7 @@ midly = { workspace = true, features = ["std"] }
 | 类型 | 条目 | 说明 |
 | :--- | :--- | :--- |
 | **needs（阻塞式待办）** | **PDC 算法必须改为复用 `yeban-engine`** | `crates/yeban-engine/src/lib.rs` 在本分支上仍是 scaffold、没有任何 PDC API。`src/pdc.rs` 因此是一份**最小同构实现**（纯函数、零 cpal 依赖、零第三方依赖）。引擎线提供接口后应整体退役本模块的 `plan()`，改为调用 `yeban_engine::pdc`，并由 `render.rs` 的等价性判据防止两条实现漂移 |
-| **needs** | **`yeban-model::DeviceDefinition` 缺 `latency_samples` 字段** | `ARCH-PDC-001` 明确要求 "每个插件与内置设备必须精确上报其引入的处理延迟（`DeviceDefinition::latency_samples`）"，但模型层当前没有该字段（已读 `crates/yeban-model/src/project.rs:418`）。`yeban-model` 不归本线改，因此延迟目前由调用方显式注入：`RenderPlan::compile_with_latencies(..., &BTreeMap<EntityId, u32>)`。model 线补齐后应改为从 `TrackV3` 的设备链累加并删掉该参数 |
+| ~~needs~~ **已解决**（集成者 `8f40290`） | `yeban-model::DeviceDefinition::latency_samples` | 本线报告后，集成者已按 `ARCH-PDC-001` 在 main 补上 `latency_samples: u32`（`#[serde(default)]`，**0 = "未上报"**）。本线随即 rebase 并新增 [`render::track_latencies`] 从 `TrackV3` 的设备链累加该值（跳过 `bypassed` 设备），注入参数保留为显式输入 + 覆盖入口。语义（含"0 是未上报而不是零延迟"）写在函数文档与判据 25 里 |
 | **needs** | `bext` v2 响度"未知"哨兵的权威定义 | EBU Tech 3285 PDF 本机不可机读（§1.2）。当前取 `Loudness::UNKNOWN = i16::MIN`。**需要人类按 EBU Tech 3285 s5 附录裁决** |
 | **needs** | 工程 ULID 在 BWF 里的规范落点 | `bext` 没有 ULID 字段；当前写进 32 字节的 `OriginatorReference`。更规范的落点是 BS.2088 的 `axml` 里的 `<ULID>`；若后续实现 `axml`，应两者都写以保持向后兼容。**需人类裁决** |
 | **needs** | 与 `yeban-engine` 的样本源接口对齐 | 目前是 `AudioSource` trait（本 crate 定义）。engine 线落地后应对齐/复用它的渲染图接口，避免两套 trait |
@@ -220,8 +221,68 @@ midly = { workspace = true, features = ["std"] }
 
 ## 9. CI 判决
 
-见下方「判决」小节（由 `bash scripts/dev/ci-verdict.sh line/render-master` 读回后补写）。
-未读回的判决一律记为 `pending`。
+### 第 1 轮 —— run [37221419918](https://github.com/gradetwo/yeban/actions/runs/37221419918)：**红**（2 个 job）
+
+| job | 结论 | 原因 |
+| :--- | :--- | :--- |
+| `plan` / `checks` / `lockfile` | ✅ 通过 | 受影响集合正确推导为只含 `yeban-render` |
+| `rust (yeban-render)` | ❌ **clippy 阶段失败**（`test` 未执行） | 2 条 `clippy::all`：`midi.rs:547` `type_complexity`（`Result<Vec<([u8;4], Range<usize>)>, _>`）、`render.rs:400` `collapsible_if`。**本机无法复现**——这两个文件不在本机编译范围内 |
+| `deny (cargo-deny)` | ❌ `bans FAILED` + `licenses FAILED` | 见下；**两条都在本线地盘之外** |
+
+### 阻断项 A（licenses）：`midly` 是 `Unlicense`，不在 `deny.toml` 白名单里
+
+```
+error[rejected]: failed to satisfy license requirements
+  └─ midly-0.5.3/Cargo.toml:34  license = "Unlicense"
+     rejected: license is not explicitly allowed
+     Unlicense  -  OSI approved, FSF Free/Libre
+```
+
+`deny.toml` 的 `[licenses] allow` 是一份**经过人工逐条裁决**的清单（`BSL-1.0` 那条还附了
+"谁引入的、在哪些目标上编译、为什么不属于红线 2 的三类"的论证）。`Unlicense` 是
+OSI + FSF Free/Libre + 极度宽松 + 与 GPLv3 兼容，按同一标准**几乎肯定应当被允许**，
+但"往许可白名单里加一项"是**法律政策决定**，按 `AGENTS.md` §2 红线 1/2 与本线
+"不得私自改写、规范缺口交人类裁决"的纪律，**不由本线自行添加**。
+
+→ **需要集成者/人类二选一**：
+1. 在 `deny.toml` 的 `[licenses] allow` 里加 `"Unlicense"`（附一句论证，与 `BSL-1.0` 同格式）；或
+2. 本线把 `midi.rs` 改为**自研 SMF 0/1 编解码器**（`vlq.rs` 已在，编码器约 80 行、
+   解码器约 100 行），从而彻底不依赖 `midly` —— 顺带让 `midi.rs` 变成零第三方依赖、
+   可以进本机脚手架（本机可验证的判据从 64 条涨到 90+ 条）。
+   代价：偏离任务书里"SMF 0/1 导出（`midly`）"的指示，且放弃一个久经考验的上游实现。
+
+本线倾向 1（改动最小、保留成熟实现）；若人类希望减少依赖面则选 2，我可以在一轮内做完。
+
+### 阻断项 B（bans/wildcards）：workspace 内部 **path 依赖没有 `version`** ⇒ cargo-deny 视为 `*`
+
+```
+error[wildcard]: found 4 wildcard dependencies for crate 'yeban-render'
+  crates/yeban-render/Cargo.toml:17  yeban-model.workspace = true   ━━ wildcard dependency
+  crates/yeban-render/Cargo.toml:20  yeban-dsp.workspace = true     ━━ wildcard dependency
+```
+
+诊断（已在本机用 `grep` 证实）：`yeban-render` 是**本仓库第一个依赖其它 workspace
+crate 的成员**（`grep -rn 'yeban-model\.workspace' crates/*/Cargo.toml` 只命中本 crate；
+`spikes/spike-04` 里那行还是注释）。根清单的内部 path 依赖写作
+`yeban-model = { path = "crates/yeban-model" }` —— **没有 `version`**，于是
+workspace 继承出来的依赖要求是 `*`，被 `[bans] wildcards = "deny"` 拦下。
+registry 依赖不受影响（根清单给它们写了版本），所以这个坑此前从未暴露。
+
+→ **需要集成者二选一**（两处都在本线地盘之外：根 `Cargo.toml` 是明令禁改的，
+`deny.toml` 是根级共享政策文件）：
+1. 根 `[workspace.dependencies]` 给内部 path 依赖补版本：
+   `yeban-model = { path = "crates/yeban-model", version = "0.0.1" }`（其余内部 crate 同理）；或
+2. `deny.toml` 的 `[bans]` 加 `allow-wildcard-paths = true`
+   （cargo-deny 为"内部 path 依赖"提供的标准豁免；它只放行**带 path** 的 `*`）。
+
+**提醒：这不是本线独有的问题**——任何做跨 crate 依赖的并行线（engine 依赖 dsp、
+ui 依赖 model…）都会撞上同一堵墙。建议在合并本线之前先修主线，否则会连续阻塞多条线。
+
+### 第 2 轮 —— 本轮已修（待推送后读回）
+
+- `midi.rs` 的 `type_complexity` → 新增具名 `pub struct TrackChunk { fourcc, payload }`；
+- `render.rs` 的 `collapsible_if` → 可达性循环改为 `if !keep.insert(node) { continue; }`；
+- 顺带 rebase 到 main `8f40290` 并接上 `latency_samples`（新增 `track_latencies` + 判据 25）。
 
 ## 10. 修改文件的绝对路径清单
 

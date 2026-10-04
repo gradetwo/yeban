@@ -54,8 +54,9 @@
 //!
 //! - 未接入真实的合成器/效果链/侧链键控; 样本源是注入的 trait。
 //! - `bext` 只支持版本 1/2 的读写; BW64 的 `axml`/`bxml`/`sxml`/`chna` XML chunk 未实现。
-//! - `yeban_model::DeviceDefinition` 目前没有 `latency_samples` 字段, 因此 PDC 延迟
-//!   必须由调用方显式注入（[`render::RenderPlan::compile_with_latencies`]）。
+//! - PDC 延迟由调用方显式注入（[`render::RenderPlan::compile_with_latencies`]）;
+//!   [`render::track_latencies`] 提供了从 `DeviceDefinition::latency_samples`
+//!   ([ARCH-PDC-001], main `8f40290` 补上) 推导该映射的标准做法。
 //! - 没有 `criterion` 基准, 因此 [BASELINE-001] 的 "≥ 100× 实时" **未被本分支证实**。
 //!
 //! ## 规范来源 (Normative)
