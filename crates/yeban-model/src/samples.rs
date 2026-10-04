@@ -36,12 +36,13 @@ use crate::ids::{AssetHash, EntityId};
 use crate::music::{CurveType, MidiNote};
 use crate::ops::{Op, OpOrigin, StampedOp};
 use crate::project::{
-    AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, BitDepth, BlockSize,
-    ClipContent, ClipPlacement, ClipPoolEntry, DEFAULT_RNG_SEED, DEFAULT_WRITER_VERSION,
-    DeviceDefinition, DeviceKind, LaunchQuantization, LoopConfig, MIN_READER_VERSION, MacroMapping,
-    MacroParameter, MediaKind, PanLaw, ParameterValue, ProjectAudioConfig, ProjectMetadata,
-    RoutingEdge, RoutingGraph, RoutingKind, SCHEMA_VERSION, SampleRate, SceneV3, SectionV3,
-    TimeSignature, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
+    AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, AutomationValueDomain,
+    AutomationWriteMode, BitDepth, BlockSize, ClipContent, ClipPlacement, ClipPoolEntry,
+    DEFAULT_RNG_SEED, DEFAULT_WRITER_VERSION, DeviceDefinition, DeviceKind, LaunchQuantization,
+    LoopConfig, MIN_READER_VERSION, MacroMapping, MacroParameter, MediaKind, PanLaw,
+    ParameterValue, ProjectAudioConfig, ProjectMetadata, RoutingEdge, RoutingGraph, RoutingKind,
+    SCHEMA_VERSION, SampleRate, SceneV3, SectionV3, TimeSignature, TrackKind, TrackV3,
+    TransportConfig, YebanProjectV1,
 };
 
 /// 默认样本目录名（相对工作区 `target/`）。
@@ -199,6 +200,12 @@ pub fn filled_project() -> YebanProjectV1 {
                     },
                 ),
             ]),
+            // 规范样本刻意**显式**给出三个新字段：它们是"自动化泳道"规范形状的一部分
+            // （读开关 / 写模式 / 取值域）。旧工程可以完全没有它们（见
+            // `tests/automation.rs` 的旧工程兼容判据）。
+            read_enabled: true,
+            write_mode: AutomationWriteMode::Touch,
+            domain: Some(AutomationValueDomain::new(-60.0, 12.0).expect("音量取值域端点必然有限")),
         },
     );
 
