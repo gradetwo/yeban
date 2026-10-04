@@ -104,16 +104,38 @@
 //! | 心跳不参与判定 | §0.2 第 5 条（3s/15s/`kill(pid,0)`） | 见上（收窄） | 建议锁是单调的活体证据 |
 //! | `--force-unlock` | §0.2 第 5 条 | 未实现（接管是**隐式**的：拿到锁即接管） | 接管不需要"强制"开关，残留锁自动可接管 |
 //!
+//! ## 平台矩阵：**持锁期间"谁能读锁文件"是两个平台最尖锐的差异**
+//!
+//! | 性质 | Unix（`flock(2)`） | Windows（`LockFileEx`） |
+//! | :--- | :--- | :--- |
+//! | 锁的强制性 | **建议锁**：不阻止其它句柄 `read`/`write` | **强制锁**：锁住的是**字节区间**，**其它句柄**（含同一进程的另一个句柄）对该区间的读写都被 OS 拒绝 |
+//! | 持锁期间**从另一个句柄**读 `.yeban.lock` | 成功 | **失败**（`ERROR_LOCK_VIOLATION`，`os error 33`） |
+//! | 持锁期间**通过持锁句柄**写元数据 | 成功 | 成功（锁的所有者可以读写自己的区间） |
+//! | 持有者诊断信息的可靠来源 | 磁盘内容 **或** [`LockGuard::holder`] | **只能**是 [`LockGuard::holder`]（内存里那一份） |
+//!
+//! 这条差异是**实测**发现的（CI 的 `windows` 手动门禁第一次执行就红）：
+//! `fs::read_to_string(guard.path())` 在持锁时读锁文件，Unix 通过、Windows 必然失败。
+//! ⇒ 三条设计纪律（**不是**为了让 Windows 变绿，而是让两个平台的真实差异可见）：
+//!
+//! 1. **守卫自己携带它写入的元数据**：[`LockGuard::holder`] 恒可用，任何平台都不需要"持锁再读文件"；
+//! 2. **"读持有者信息"发生在尝试加锁之前**：[`acquire`] 先用一个**独立的**读句柄取一份
+//!    [`LockFileSnapshot`]，再 `try_lock`；`WouldBlock` 时把这份**加锁前**的快照交给调用方。
+//!    （对**别人的**持有者，Windows 上这份快照同样是"读不到" —— 那是 OS 强制的，不是我们能绕的。）
+//! 3. **必须容忍"元数据读不到"**：不 panic、不把打开操作判失败，而是在 `PROJECT_LOCKED`
+//!    载荷里给出明确口径 `holderMetadata: "unavailable-on-this-platform"`。
+//!    判据 `tests/lock_advisory.rs::holder_metadata_while_locked_is_platform_specific`
+//!    按平台断言**两种**行为，**不删断言、不两边都跳过**。
+//!
 //! ## 平台矩阵
 //!
 //! | 平台 | 行为 |
 //! | :--- | :--- |
 //! | Unix（macOS/Linux，CI 的 x86_64 + aarch64） | `flock(2)` 真锁，**本机实测 + CI 编译** |
-//! | Windows | `LockFileEx`（std 内部），**从未在本机编译过/跑过** ⇒ 登记 pending P1 |
+//! | Windows | `LockFileEx`（std 内部）；**CI 的 `windows` 手动门禁已真跑过一次并抓到本节的差异**（修复后由集成者复跑） |
 //! | 其它（wasm 等） | **显式** [`LockError::UnsupportedPlatform`] ⇒ JSON-RPC 实现级 `-32005`；**绝不静默放过** |
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -173,7 +195,13 @@ pub fn lock_path(path: &Path) -> PathBuf {
 #[derive(Debug)]
 pub enum LockError {
     /// 锁已被**别的活着的持有者**占用（内核仲裁，含跨进程与同进程另一个 fd）。
-    WouldBlock,
+    ///
+    /// 携带**尝试加锁之前**读到的锁文件快照：Windows 的 `LockFileEx` 是强制锁，
+    /// 一旦有人持有，我们连读都读不到 —— 那份"读不到"本身就是必须如实上报的事实。
+    WouldBlock {
+        /// 加锁前读到的锁文件快照（可能是"读不到"）。
+        snapshot: LockFileSnapshot,
+    },
     /// 本平台没有实现建议锁 ⇒ 显式失败，**绝不静默放过**。
     UnsupportedPlatform {
         /// `std::env::consts::OS`。
@@ -188,7 +216,7 @@ pub enum LockError {
 impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WouldBlock => write!(f, "文件建议锁已被其它持有者占用"),
+            Self::WouldBlock { .. } => write!(f, "文件建议锁已被其它持有者占用"),
             Self::UnsupportedPlatform { os, spec_id } => write!(
                 f,
                 "平台 `{os}` 没有实现 OS 建议锁 ({spec_id})；为避免静默放任并发写, 拒绝打开"
@@ -202,8 +230,78 @@ impl std::error::Error for LockError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::WouldBlock | Self::UnsupportedPlatform { .. } => None,
+            Self::WouldBlock { .. } | Self::UnsupportedPlatform { .. } => None,
         }
+    }
+}
+
+/// 锁文件在**某一次尝试加锁之前**的可读快照（`ARCH-SEC-001` 第 4 条）。
+///
+/// 存在的理由是一条平台事实：Windows 的 `LockFileEx` 锁的是**字节区间**且是**强制**的，
+/// 因此"持有者活着的时候去读锁文件"在 Windows 上**必然失败**（含同进程的另一个句柄）。
+/// 把"读到什么/读不到"显式建模成一个值，才能让诊断载荷如实区分
+/// **"锁文件里写着别人"** 与 **"这个平台不允许我们看"** —— 而不是把两者都糊成 `None`。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LockFileSnapshot {
+    /// 锁文件原文；`None` = 读不到（Windows 强制锁 / 权限 / 文件刚被删）。
+    raw: Option<String>,
+}
+
+impl LockFileSnapshot {
+    /// 读一份快照。**调用点必须在任何加锁尝试之前**（否则 Windows 上读到的永远是"失败"）。
+    #[must_use]
+    pub fn read(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => Self { raw: Some(raw) },
+            Err(_) => Self { raw: None },
+        }
+    }
+
+    /// 读不到（不碰文件系统）。
+    #[must_use]
+    pub const fn unreadable() -> Self {
+        Self { raw: None }
+    }
+
+    /// 是否读到了内容（**不是**"内容是否合法 JSON"）。
+    #[must_use]
+    pub const fn readable(&self) -> bool {
+        self.raw.is_some()
+    }
+
+    /// 原文（读不到时为 `None`）。
+    #[must_use]
+    pub fn raw(&self) -> Option<&str> {
+        self.raw.as_deref()
+    }
+
+    /// 解析出的持有者元数据（坏 JSON / 读不到 ⇒ `None`；**元数据不参与占用判定**）。
+    #[must_use]
+    pub fn metadata(&self) -> Option<LockMetadata> {
+        self.raw.as_deref().and_then(LockMetadata::parse)
+    }
+
+    /// 进诊断载荷 `holderMetadata` 的口径字符串。
+    ///
+    /// `"unavailable-on-this-platform"` 是**平台事实**（Windows 强制锁），
+    /// `"unavailable"` 是其它原因的读失败（权限、文件已删）。
+    #[must_use]
+    pub const fn availability(&self) -> &'static str {
+        if self.raw.is_some() {
+            "available"
+        } else if cfg!(windows) {
+            "unavailable-on-this-platform"
+        } else {
+            "unavailable"
+        }
+    }
+
+    /// 给人看的持有者文本（读不到时给出**原因**，而不是一个空串）。
+    #[must_use]
+    pub fn holder_text(&self) -> String {
+        self.raw
+            .clone()
+            .unwrap_or_else(|| format!("<{}>", self.availability()))
     }
 }
 
@@ -347,7 +445,10 @@ mod platform {
 
     fn convert(error: std::fs::TryLockError) -> LockError {
         match error {
-            std::fs::TryLockError::WouldBlock => LockError::WouldBlock,
+            // 快照由 `acquire` 在调用点填上（它才是"加锁前读到的那一份"的持有者）。
+            std::fs::TryLockError::WouldBlock => LockError::WouldBlock {
+                snapshot: super::LockFileSnapshot::unreadable(),
+            },
             std::fs::TryLockError::Error(error) => LockError::Io(error),
         }
     }
@@ -380,7 +481,10 @@ mod platform {
 
     fn convert(error: std::fs::TryLockError) -> LockError {
         match error {
-            std::fs::TryLockError::WouldBlock => LockError::WouldBlock,
+            // 快照由 `acquire` 在调用点填上（它才是"加锁前读到的那一份"的持有者）。
+            std::fs::TryLockError::WouldBlock => LockError::WouldBlock {
+                snapshot: super::LockFileSnapshot::unreadable(),
+            },
             std::fs::TryLockError::Error(error) => LockError::Io(error),
         }
     }
@@ -441,6 +545,17 @@ pub struct LockGuard {
     file: Option<File>,
     /// 本次加锁是否是"接管崩溃遗留"。
     took_over_stale_lock: bool,
+    /// **守卫自己携带的**持有者元数据（不读磁盘）。
+    ///
+    /// - 排他：就是本进程刚写进锁文件的那一份 ⇒ 恒为 `Some`；
+    /// - 共享：加锁前从锁文件读到的上一份（读者**不写**元数据）⇒ 可能为 `None`。
+    ///
+    /// 这个字段是 Windows 兼容性的落点：`LockFileEx` 是强制锁，持锁期间
+    /// **任何其它句柄**（含自己开的第二个句柄）都读不到锁文件内容，因此
+    /// "持有者是谁"只能由守卫自己回答。
+    holder: Option<LockMetadata>,
+    /// 加锁**之前**读到的锁文件快照（诊断用；可读性随平台而变）。
+    holder_snapshot: LockFileSnapshot,
 }
 
 impl LockGuard {
@@ -471,16 +586,36 @@ impl LockGuard {
         self.took_over_stale_lock
     }
 
+    /// **持有者元数据**（`ARCH-SEC-001` 第 4 条）。
+    ///
+    /// 这是诊断路径的**唯一**可靠来源：它住在内存里，因此
+    /// Unix（建议锁）与 Windows（强制锁）**行为一致** —— 不要"持锁后再去读锁文件"，
+    /// 那在 Windows 上必然失败（见模块头的平台矩阵）。
+    #[must_use]
+    pub const fn holder(&self) -> Option<&LockMetadata> {
+        self.holder.as_ref()
+    }
+
+    /// 加锁**之前**读到的锁文件快照（可读性随平台而变）。
+    #[must_use]
+    pub const fn holder_snapshot(&self) -> &LockFileSnapshot {
+        &self.holder_snapshot
+    }
+
     /// 持有中的建议锁句柄（只读；用于让"锁一直活着"有可观察出口）。
     #[must_use]
     pub fn file(&self) -> Option<&File> {
         self.file.as_ref()
     }
 
-    /// 读回锁文件内容（诊断用；坏内容返回原文而不是 `Err`）。
+    /// 锁文件的**磁盘内容**（诊断用，best-effort）。
+    ///
+    /// ⚠ **平台差异**：Windows 的 `LockFileEx` 是强制锁，**自己持锁期间**用另一个句柄读
+    /// 会被 OS 拒绝 ⇒ 这里返回 `"<unreadable>"`。**不要**用它断言持有者是谁，
+    /// 那要用 [`LockGuard::holder`]（内存里那一份，两个平台一致）。
     #[must_use]
     pub fn lock_file_contents(&self) -> String {
-        std::fs::read_to_string(&self.path).unwrap_or_else(|_| String::from("<不可读>"))
+        std::fs::read_to_string(&self.path).unwrap_or_else(|_| String::from("<unreadable>"))
     }
 }
 
@@ -522,12 +657,17 @@ impl Drop for LockGuard {
 ///
 /// # Errors
 ///
-/// - 锁被别的活着的持有者占用 → [`LockError::WouldBlock`]（调用方映射成 `PROJECT_LOCKED`）；
+/// - 锁被别的活着的持有者占用 → [`LockError::WouldBlock`]（调用方映射成 `PROJECT_LOCKED`；
+///   载荷里带着**加锁前**读到的锁文件快照）；
 /// - 平台无建议锁 → [`LockError::UnsupportedPlatform`]；
 /// - 文件系统失败 → [`LockError::Io`]。
 pub fn acquire(project_path: &Path, mode: LockMode) -> Result<LockGuard, LockError> {
     let lock_file = lock_path(project_path);
     let (file, created) = open_lock_file(&lock_file)?;
+    // **加锁之前**读一份持有者快照：Windows 的 `LockFileEx` 是强制锁，一旦我们自己
+    // 或别人持锁，之后任何其它句柄的读取都会被 OS 拒绝 —— 因此这一次读取的机会
+    // 只在"还没锁上"的窗口里（见模块头的平台矩阵）。
+    let holder_snapshot = LockFileSnapshot::read(&lock_file);
     // `created == false` ⇒ 文件本来就在。此刻"是否陈旧"还没有结论 ——
     // 它取决于下一行能不能拿到建议锁。
     let took_over_stale_lock = !created && mode.is_exclusive();
@@ -542,27 +682,43 @@ pub fn acquire(project_path: &Path, mode: LockMode) -> Result<LockGuard, LockErr
     // （`WouldBlock` 说明别人正持有它，`Io` 说明我们连自己的创建都没落成；
     //  两种情况都不该由失败者去动那个文件。一个 0 字节的残留锁文件是无害的：
     //  它没有任何持有者，下一次打开会拿到建议锁并接管重写）。
-    #[allow(clippy::question_mark)]
+    // 另一处细节：`WouldBlock` 必须**带走加锁前那份快照**，否则调用方会想去
+    // "现在读一次" —— 那在 Windows 上必然失败，等于把诊断信息丢掉。
     if let Err(error) = locked {
-        return Err(error);
+        return Err(match error {
+            LockError::WouldBlock { .. } => LockError::WouldBlock {
+                snapshot: holder_snapshot,
+            },
+            other => other,
+        });
     }
 
+    // 共享读者**不写**元数据（不截断别人正在写的），因此它携带的是"加锁前读到的那一份"。
     let mut guard = LockGuard {
         project_path: project_path.to_path_buf(),
         path: lock_file,
         mode,
         file: Some(file),
         took_over_stale_lock,
+        holder: if mode.is_exclusive() {
+            None
+        } else {
+            holder_snapshot.metadata()
+        },
+        holder_snapshot,
     };
 
     // 排他模式才重写内容：共享读者不能截断别人正在写的元数据。
-    if mode.is_exclusive()
-        && let Err(error) = rewrite_metadata(guard.file.as_ref(), project_path, mode)
-    {
-        // 元数据写失败 ⇒ 撤掉这次加锁（不能留下"锁是我的但内容是别人的/半截的"）。
-        guard.file = None;
-        let _ = std::fs::remove_file(&guard.path);
-        return Err(LockError::Io(error));
+    if mode.is_exclusive() {
+        let metadata = LockMetadata::new(project_path, mode);
+        if let Err(error) = rewrite_metadata(guard.file.as_ref(), &metadata) {
+            // 元数据写失败 ⇒ 撤掉这次加锁（不能留下"锁是我的但内容是别人的/半截的"）。
+            guard.file = None;
+            let _ = std::fs::remove_file(&guard.path);
+            return Err(LockError::Io(error));
+        }
+        // **先把元数据放进守卫再返回**：这是"持锁期间谁持有"的唯一可靠来源。
+        guard.holder = Some(metadata);
     }
     Ok(guard)
 }
@@ -588,34 +744,29 @@ fn open_lock_file(lock_file: &Path) -> Result<(File, bool), LockError> {
     }
 }
 
-/// **原子地**把锁内容重写成当前持有者的元数据（`ftruncate` + `write` + `fsync`）。
-fn rewrite_metadata(
-    file: Option<&File>,
-    project_path: &Path,
-    mode: LockMode,
-) -> std::io::Result<()> {
+/// **原子地**把锁内容重写成给定元数据（`ftruncate` + `write` + `fsync`）。
+fn rewrite_metadata(file: Option<&File>, metadata: &LockMetadata) -> std::io::Result<()> {
     let Some(file) = file else {
         return Err(std::io::Error::other("锁句柄已经不在守卫里"));
     };
-    let metadata = LockMetadata::new(project_path, mode);
     file.set_len(0)?;
     (&*file).write_all(metadata.to_json().as_bytes())?;
     file.sync_all()
 }
 
 /// 读锁文件里的持有者元数据（诊断用）。返回 `(原文, 解析结果)`。
+///
+/// ⚠ **平台差异**：Windows 上若锁正被持有，这次读取会被 OS 拒绝 ⇒ 返回
+/// `("<unavailable-on-this-platform>", None)`。**不 panic、不报错** ——
+/// "读不到"是一个必须如实上报的事实，而不是一个失败。
 #[must_use]
 pub fn read_metadata(project_path: &Path) -> (String, Option<LockMetadata>) {
-    let path = lock_path(project_path);
-    match File::open(&path).and_then(|mut file| {
-        let mut text = String::new();
-        file.read_to_string(&mut text)?;
-        Ok(text)
-    }) {
-        Ok(text) => {
-            let parsed = LockMetadata::parse(&text);
-            (text, parsed)
-        }
-        Err(_) => (String::from("<不可读>"), None),
-    }
+    let snapshot = read_snapshot(project_path);
+    (snapshot.holder_text(), snapshot.metadata())
+}
+
+/// 读一份锁文件快照（诊断用；**不 panic**）。
+#[must_use]
+pub fn read_snapshot(project_path: &Path) -> LockFileSnapshot {
+    LockFileSnapshot::read(&lock_path(project_path))
 }

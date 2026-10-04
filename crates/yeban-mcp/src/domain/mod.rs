@@ -51,7 +51,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use yeban_model::{CommitDraft, CommitGraph, EntityId, Op, OpOrigin, StampedOp, YebanProjectV1};
+use yeban_model::{
+    AssetHash, CommitDraft, CommitGraph, EntityId, Op, OpOrigin, StampedOp, YebanProjectV1,
+};
 
 use crate::jsonrpc::ErrorObject;
 use crate::tools::{ErrorCode, ToolCall, ToolResponse};
@@ -80,11 +82,39 @@ struct Active {
     project: YebanProjectV1,
     /// 最近一次落盘（或打开）时的内容摘要，用于"未保存标记"。
     saved_digest: String,
+    /// 会话 CAS 资产池（`assets/{sha256}` 的**字节**，`BTreeMap` 保证键序确定）。
+    ///
+    /// 打开容器时由 `assets/{sha256}` 填充；打开裸 JSON 兼容路径时为空
+    /// （裸 JSON 里**没有**资产字节，只有 `project.assets` 这一份元数据索引）。
+    /// 保存时整体交给 `write_project_container` 逐条重算 SHA-256。
+    assets: BTreeMap<AssetHash, Vec<u8>>,
     /// 持有的锁（内存会话没有工程文件时为 `None`）。
     ///
     /// 排他写是 [`store::LockGuard`]，共享读是包着共享建议锁的 [`AcquiredLock`] ——
     /// 两者都是 RAII：`Drop` 即释放，进程死亡由内核释放。
     lock: Option<AcquiredLock>,
+}
+
+/// 打开一个工程所需的全部会话种子（[`Domain::reset_history`] 的入参）。
+///
+/// 收成一个结构体而不是 8 个参数：`clippy::too_many_arguments` 是承重的信号，
+/// 而不是需要 `allow` 掉的噪音 —— 参数一多就意味着"打开"这件事有太多可选形态。
+#[derive(Debug)]
+struct SessionSeed {
+    /// 工程路径。
+    path: PathBuf,
+    /// 只读打开。
+    read_only: bool,
+    /// 权威工程状态。
+    project: YebanProjectV1,
+    /// 内容摘要（规范化 JSON 的 SHA-256）。
+    digest: String,
+    /// 已获取的锁（内存注入时为 `None`）。
+    lock: Option<AcquiredLock>,
+    /// `history.dag` 恢复出的提交图谱；`None` = 从根提交开始的新会话。
+    history: Option<CommitGraph>,
+    /// 会话 CAS 资产池。
+    assets: BTreeMap<AssetHash, Vec<u8>>,
 }
 
 /// 领域会话状态：活跃工程 + 提交图谱 + 提案记录 + 注入的时钟。
@@ -172,6 +202,20 @@ impl Domain {
             .map(|lock| lock.guard.mode())
     }
 
+    /// 当前会话**持有的锁**里那份持有者元数据（内存会话时为 `None`）。
+    ///
+    /// 这是"谁持有这个工程"的**唯一**跨平台可靠来源：它住在守卫（内存）里，
+    /// 而不是"现场去读 `.yeban.lock`"。后者在 Windows 上必然失败 —— `LockFileEx`
+    /// 是**强制**字节区间锁，持锁期间连本进程的另一个句柄都读不到那个文件
+    /// （见 `src/domain/lock.rs` 的平台矩阵与 `docs/ledger/store-container-notes.md`）。
+    #[must_use]
+    pub fn lock_holder(&self) -> Option<&store::LockMetadata> {
+        self.active
+            .as_ref()
+            .and_then(|active| active.lock.as_ref())
+            .and_then(|lock| lock.guard.holder())
+    }
+
     /// 提交总数（`dryRun` "状态未变" 判据的一半）。
     #[must_use]
     pub fn commit_count(&self) -> usize {
@@ -217,6 +261,48 @@ impl Domain {
         self.proposals.keys().copied().collect()
     }
 
+    /// 会话 CAS 池里的资产键（哈希升序 = `BTreeMap` 键序 = 容器内条目顺序）。
+    #[must_use]
+    pub fn asset_hashes(&self) -> Vec<AssetHash> {
+        self.active
+            .as_ref()
+            .map(|active| active.assets.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// 会话 CAS 池里的资产数量。
+    #[must_use]
+    pub fn asset_count(&self) -> usize {
+        self.active.as_ref().map_or(0, |active| active.assets.len())
+    }
+
+    /// 取一份 CAS 资产的**原始字节**（没有活跃工程或池里没有它时为 `None`）。
+    #[must_use]
+    pub fn asset(&self, hash: &AssetHash) -> Option<&[u8]> {
+        self.active
+            .as_ref()
+            .and_then(|active| active.assets.get(hash))
+            .map(Vec::as_slice)
+    }
+
+    /// 把一份资产放进**会话 CAS 池**（`ARCH-SEC-003` 的 `assets/{sha256}`）。
+    ///
+    /// 内容寻址：哈希由字节**算出**并作为返回值/池键，**不接受**调用方声明的哈希 ——
+    /// 否则池里就能存在"条目名与字节不符"的资产，而容器写出时会直接拒绝它，
+    /// 把矛盾推迟到保存那一刻才暴露。返回算出的 [`AssetHash`] 供调用方引用。
+    ///
+    /// 只改内存，不碰文件系统；持久化发生在下一次 `yeban_save_project`。
+    ///
+    /// # Errors
+    ///
+    /// 没有活跃工程 → `NO_ACTIVE_PROJECT`。
+    pub fn put_asset(&mut self, bytes: Vec<u8>) -> Result<AssetHash, Fault> {
+        let hash = AssetHash::of_bytes(&bytes);
+        let active = self.active.as_mut().ok_or_else(no_active_project)?;
+        active.assets.insert(hash.clone(), bytes);
+        Ok(hash)
+    }
+
     /// 当前工程内容的 SHA-256 摘要（没有活跃工程时为 `None`）。
     #[must_use]
     pub fn project_digest(&self) -> Option<String> {
@@ -260,36 +346,45 @@ impl Domain {
             .map_err(|error| error::from_model("工程结构校验", &error))?;
         let json = store::serialize_project(&project)?;
         let digest = store::digest_of(json.as_bytes());
-        self.reset_history(&path.into(), &project, digest, read_only, None)
+        self.reset_history(SessionSeed {
+            path: path.into(),
+            read_only,
+            project,
+            digest,
+            lock: None,
+            history: None,
+            assets: BTreeMap::new(),
+        })
     }
 
-    /// 重建提交图谱（打开工程 = 新会话的根提交）。
-    fn reset_history(
-        &mut self,
-        path: &Path,
-        project: &YebanProjectV1,
-        digest: String,
-        read_only: bool,
-        lock: Option<AcquiredLock>,
-    ) -> Result<(), Fault> {
+    /// 重建会话历史（打开工程 = 恢复 `history.dag`，或新会话的根提交）。
+    ///
+    /// `seed.history` 为 `Some` 时**整体采用**容器里的提交图谱（`ARCH-OPS-002` 的
+    /// "编曲时光机"必须跨打开存活）；为 `None` 时按老语义建一条根提交。
+    fn reset_history(&mut self, seed: SessionSeed) -> Result<(), Fault> {
         self.graph = CommitGraph::new();
         self.proposals.clear();
-        let draft = CommitDraft::new(
-            EntityId::new(),
-            MAIN_BRANCH,
-            AGENT_NAME,
-            format!("open {}", path.display()),
-        )
-        .with_created_at(self.now_ms);
-        self.graph
-            .genesis(draft)
-            .map_err(|failure| error::from_model("提交图谱根", &failure))?;
+        if let Some(history) = seed.history {
+            self.graph = history;
+        } else {
+            let draft = CommitDraft::new(
+                EntityId::new(),
+                MAIN_BRANCH,
+                AGENT_NAME,
+                format!("open {}", seed.path.display()),
+            )
+            .with_created_at(self.now_ms);
+            self.graph
+                .genesis(draft)
+                .map_err(|failure| error::from_model("提交图谱根", &failure))?;
+        }
         self.active = Some(Active {
-            path: path.to_path_buf(),
-            read_only,
-            project: project.clone(),
-            saved_digest: digest,
-            lock,
+            path: seed.path,
+            read_only: seed.read_only,
+            project: seed.project,
+            saved_digest: seed.digest,
+            assets: seed.assets,
+            lock: seed.lock,
         });
         Ok(())
     }
@@ -302,38 +397,54 @@ impl Domain {
     }
 }
 
+/// `yeban_open_project` 的**已校验**打开请求（[`plan_open`] 的产物）。
+///
+/// 收成一个结构体而不是 9 个 `Plan::Open` 字段：打开一个容器要携带的东西是
+/// "工程 + 形态 + 历史 + 资产池"四类，平铺进枚举变体会让每一处 `match` 都变成
+/// 一长串 `..`。结构体也让"打开时必须一起决定的事"在类型上绑在一起。
+#[derive(Debug)]
+pub struct OpenRequest {
+    /// 目标路径。
+    pub path: PathBuf,
+    /// 只读打开。
+    pub read_only: bool,
+    /// 已经解析并校验过的工程。
+    pub project: Box<YebanProjectV1>,
+    /// 工程内容的规范化摘要。
+    pub digest: String,
+    /// 磁盘上的文件字节数（容器形态下是容器字节数）。
+    pub bytes: u64,
+    /// 是否已经打开了同一个工程（幂等）。
+    pub already_open: bool,
+    /// 磁盘形态（容器 / 裸 JSON 兼容路径）。
+    pub format: store::ProjectFormat,
+    /// `history.dag` 恢复出的提交图谱（裸 JSON / 空图谱为 `None`）。
+    pub history: Option<Box<CommitGraph>>,
+    /// `assets/{sha256}` 解出的会话 CAS 资产池。
+    pub assets: BTreeMap<AssetHash, Vec<u8>>,
+}
+
 /// 一次已经校验过的执行计划（**只读计算的产物**）。
 #[derive(Debug)]
 pub enum Plan {
     /// `yeban_open_project`
-    Open {
-        /// 目标路径。
-        path: PathBuf,
-        /// 只读打开。
-        read_only: bool,
-        /// 已经解析并校验过的工程。
-        project: Box<YebanProjectV1>,
-        /// 文件内容摘要。
-        digest: String,
-        /// 文件字节数。
-        bytes: u64,
-        /// 是否已经打开了同一个工程（幂等）。
-        already_open: bool,
-        /// 是否已经打开了**别的**工程（冲突）。
-        conflict_open: bool,
-    },
+    Open(Box<OpenRequest>),
     /// `yeban_save_project`
     Save {
         /// 目标路径。
         path: PathBuf,
-        /// 将要写出的文本。
-        json: String,
-        /// 将要写出的内容摘要。
+        /// 将要写出的**容器字节**（`ARCH-SEC-003`；由 `write_project_container` 产出）。
+        bytes: Vec<u8>,
+        /// 将要写出的工程内容摘要（规范化 JSON 的 SHA-256）。
         digest: String,
         /// 是否强制落盘。
         force: bool,
         /// 相比磁盘上的内容是否真有变化。
         changed: bool,
+        /// 将写进容器的 CAS 资产数。
+        assets: usize,
+        /// 将写进 `history.dag` 的提交数。
+        history_commits: usize,
     },
     /// `yeban_close_project`
     Close {
@@ -384,7 +495,7 @@ impl Plan {
     #[must_use]
     pub const fn op(&self) -> &'static str {
         match self {
-            Self::Open { .. } => "open",
+            Self::Open(..) => "open",
             Self::Save { .. } => "save",
             Self::Close { .. } => "close",
             Self::Query { .. } => "query",
@@ -396,15 +507,35 @@ impl Plan {
     }
 
     /// 该计划会向提交图谱添加的提交数（`dryRun` 的"提交数不变"判据用它预测）。
+    ///
+    /// `Open` 的增量是**变量**（恢复的 `history.dag` 有多少条提交就装多少条），
+    /// 因此它的预测值由 [`Plan::planned_commit_count`] 单独给出，不在这里。
     #[must_use]
     pub const fn commit_delta(&self) -> usize {
         match self {
-            Self::Open { .. } | Self::Propose { .. } | Self::Merge { .. } => 1,
-            Self::Save { .. }
+            Self::Propose { .. } | Self::Merge { .. } => 1,
+            Self::Open(..)
+            | Self::Save { .. }
             | Self::Close { .. }
             | Self::Query { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. } => 0,
+        }
+    }
+
+    /// 施加后提交图谱里的提交数（`dryRun` 预览的**精确**预测，不是 `+delta` 的近似）。
+    ///
+    /// `Open` 会**整体替换**图谱（恢复 `history.dag` 或建一条根提交），所以
+    /// `current + 1` 在"打开一个带历史的容器"时是错的读数 —— 这条判据存在的意义
+    /// 就是不让预览报一个自己都知道不对的数。
+    #[must_use]
+    pub fn planned_commit_count(&self, domain: &Domain) -> usize {
+        match self {
+            Self::Open(request) => request
+                .history
+                .as_ref()
+                .map_or(1, |graph| graph.commit_count()),
+            other => domain.commit_count() + other.commit_delta(),
         }
     }
 
@@ -418,7 +549,7 @@ impl Plan {
     /// `Merge` 的 op 无法整体施加（即真的会冲突）→ `CONFLICT`。
     pub fn project_after(&self, domain: &Domain) -> Result<Option<YebanProjectV1>, Fault> {
         match self {
-            Self::Open { project, .. } => Ok(Some((**project).clone())),
+            Self::Open(request) => Ok(Some((*request.project).clone())),
             Self::Merge { snapshot, .. } => {
                 let current = domain.active_project().ok_or_else(no_active_project)?;
                 let mut simulated = current.clone();
@@ -451,39 +582,63 @@ impl Plan {
         let mut preview = Map::new();
         preview.insert("plan".to_owned(), Value::from(self.op()));
         match self {
-            Self::Open {
-                path,
-                read_only,
-                project,
-                digest,
-                bytes,
-                already_open,
-                conflict_open,
-            } => {
-                preview.insert("path".to_owned(), Value::from(path.display().to_string()));
-                preview.insert("readOnly".to_owned(), Value::from(*read_only));
-                preview.insert("bytes".to_owned(), Value::from(*bytes));
-                preview.insert("projectDigest".to_owned(), Value::from(digest.clone()));
-                preview.insert("alreadyOpen".to_owned(), Value::from(*already_open));
-                preview.insert("conflictOpen".to_owned(), Value::from(*conflict_open));
-                preview.insert("summary".to_owned(), project_summary(project));
+            Self::Open(request) => {
+                preview.insert(
+                    "path".to_owned(),
+                    Value::from(request.path.display().to_string()),
+                );
+                preview.insert("readOnly".to_owned(), Value::from(request.read_only));
+                preview.insert("bytes".to_owned(), Value::from(request.bytes));
+                preview.insert("format".to_owned(), Value::from(request.format.as_str()));
+                preview.insert(
+                    "container".to_owned(),
+                    Value::from(request.format.is_container()),
+                );
+                preview.insert(
+                    "historyCommits".to_owned(),
+                    Value::from(
+                        request
+                            .history
+                            .as_ref()
+                            .map_or(0, |graph| graph.commit_count()),
+                    ),
+                );
+                preview.insert("assets".to_owned(), Value::from(request.assets.len()));
+                preview.insert(
+                    "projectDigest".to_owned(),
+                    Value::from(request.digest.clone()),
+                );
+                preview.insert("alreadyOpen".to_owned(), Value::from(request.already_open));
+                preview.insert("summary".to_owned(), project_summary(&request.project));
             }
             Self::Save {
                 path,
-                json,
+                bytes,
                 digest,
                 force,
                 changed,
+                assets,
+                history_commits,
             } => {
                 preview.insert("path".to_owned(), Value::from(path.display().to_string()));
-                preview.insert("bytes".to_owned(), Value::from(json.len()));
+                preview.insert("bytes".to_owned(), Value::from(bytes.len()));
+                preview.insert(
+                    "format".to_owned(),
+                    Value::from(store::ProjectFormat::Container.as_str()),
+                );
+                preview.insert("containerEntries".to_owned(), Value::from(2 + assets));
+                preview.insert("assets".to_owned(), Value::from(*assets));
+                preview.insert("historyCommits".to_owned(), Value::from(*history_commits));
                 preview.insert("projectDigest".to_owned(), Value::from(digest.clone()));
                 preview.insert("force".to_owned(), Value::from(*force));
                 preview.insert("changed".to_owned(), Value::from(*changed));
                 preview.insert("atomic".to_owned(), Value::from(true));
                 preview.insert(
                     "strategy".to_owned(),
-                    Value::from("同目录临时文件 + fsync + rename (ARCH-SEC-004)"),
+                    Value::from(
+                        "容器字节 (ARCH-SEC-003: project.json + history.dag + assets/{sha256}) \
+                         + 同目录临时文件 + fsync + rename (ARCH-SEC-004)",
+                    ),
                 );
                 preview.insert("wouldSkip".to_owned(), Value::from(!force && !changed));
             }
@@ -588,7 +743,7 @@ impl Plan {
         );
         preview.insert(
             "commitCountAfter".to_owned(),
-            Value::from(domain.commit_count() + self.commit_delta()),
+            Value::from(self.planned_commit_count(domain)),
         );
         preview.insert("wouldApply".to_owned(), Value::from(true));
         Ok(Value::Object(preview))
@@ -721,14 +876,17 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 }
 
 /// `yeban_open_project`。
+///
+/// 读盘一律走 [`store::load_project`]（容器优先，裸 JSON 兼容路径），
+/// 工程**形态 / 历史 / CAS 资产池**一并进入 [`OpenRequest`]。
 fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let path =
         PathBuf::from(arg_str(call, "path").ok_or_else(|| {
             Fault::domain(ErrorCode::InvalidParameterRange, "`path` 必须是字符串")
         })?);
     let read_only = arg_bool(call, "readOnly", false);
-    let (project, _text, bytes) = store::read_project(&path)?;
-    let json = store::serialize_project(&project)?;
+    let loaded = store::load_project(&path)?;
+    let json = store::serialize_project(&loaded.project)?;
     let digest = store::digest_of(json.as_bytes());
     let already_open = domain.active_path().is_some_and(|open| open == path);
     let conflict_open = domain.active_path().is_some_and(|open| open != path);
@@ -752,15 +910,17 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     if already_open && read_only != domain.is_read_only() {
         return Err(store::locked_fault(&path));
     }
-    Ok(Plan::Open {
+    Ok(Plan::Open(Box::new(OpenRequest {
         path,
         read_only,
-        project: Box::new(project),
+        project: Box::new(loaded.project),
         digest,
-        bytes,
+        bytes: loaded.bytes,
         already_open,
-        conflict_open,
-    })
+        format: loaded.format,
+        history: loaded.graph.map(Box::new),
+        assets: loaded.assets,
+    })))
 }
 
 /// `yeban_save_project`。
@@ -774,10 +934,16 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     }
     let json = store::serialize_project(&active.project)?;
     let digest = store::digest_of(json.as_bytes());
+    // 落盘字节 = `ARCH-SEC-003` 的容器（`project.json` + `history.dag` + `assets/{sha256}`）。
+    // 与"工程内容摘要"是**两个量**：前者含提交图谱与资产，后者只描述工程文档。
+    let bytes =
+        store::container_bytes(&active.path, &active.project, &domain.graph, &active.assets)?;
     Ok(Plan::Save {
         path: active.path.clone(),
         changed: digest != active.saved_digest,
-        json,
+        assets: active.assets.len(),
+        history_commits: domain.graph.commit_count(),
+        bytes,
         digest,
         force: arg_bool(call, "force", false),
     })
@@ -790,12 +956,16 @@ fn plan_close(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let save = if save_first && !active.read_only {
         let json = store::serialize_project(&active.project)?;
         let digest = store::digest_of(json.as_bytes());
+        let bytes =
+            store::container_bytes(&active.path, &active.project, &domain.graph, &active.assets)?;
         Some(Box::new(Plan::Save {
             path: active.path.clone(),
-            json,
+            bytes,
             digest,
             force: false,
             changed: true,
+            assets: active.assets.len(),
+            history_commits: domain.graph.commit_count(),
         }))
     } else {
         None
@@ -989,30 +1159,15 @@ fn proposal_not_found(id: &EntityId) -> Fault {
 /// 实现级状况 → [`Fault::Impl`]（走 JSON-RPC 错误对象）。
 pub fn apply(domain: &mut Domain, plan: Plan, call: &ToolCall) -> Result<ToolResponse, Fault> {
     match plan {
-        Plan::Open {
-            path,
-            read_only,
-            project,
-            digest,
-            bytes,
-            already_open,
-            ..
-        } => apply_open(
-            domain,
-            &path,
-            read_only,
-            *project,
-            digest,
-            bytes,
-            already_open,
-        ),
+        Plan::Open(request) => apply_open(domain, *request),
         Plan::Save {
             path,
-            json,
+            bytes,
             digest,
             force,
             changed,
-        } => apply_save(domain, &path, &json, digest, force, changed),
+            ..
+        } => apply_save(domain, &path, &bytes, digest, force, changed),
         Plan::Close {
             save_first,
             save,
@@ -1035,18 +1190,26 @@ pub fn apply(domain: &mut Domain, plan: Plan, call: &ToolCall) -> Result<ToolRes
 }
 
 /// `yeban_open_project` 的施加。
-fn apply_open(
-    domain: &mut Domain,
-    path: &Path,
-    read_only: bool,
-    project: YebanProjectV1,
-    digest: String,
-    bytes: u64,
-    already_open: bool,
-) -> Result<ToolResponse, Fault> {
+///
+/// 容器形态会**恢复** `history.dag`（提交图谱）与 `assets/{sha256}`（CAS 池）；
+/// 裸 JSON 兼容路径两者都为空（那份文件里没有它们）。
+fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse, Fault> {
+    let OpenRequest {
+        path,
+        read_only,
+        project,
+        digest,
+        bytes,
+        already_open,
+        format,
+        history,
+        assets,
+    } = request;
+    let asset_count = assets.len();
+    let history_commits = history.as_ref().map_or(0, |graph| graph.commit_count());
     if already_open {
         // 幂等: 同一个工程重复打开不是错误, 但也不重建历史。
-        let summary = project_summary(domain.active_project().unwrap_or(&project));
+        let summary = domain.active_project().map_or(Value::Null, project_summary);
         return Ok(ToolResponse::success(serde_json::json!({
             "opened": true,
             "alreadyOpen": true,
@@ -1057,13 +1220,24 @@ fn apply_open(
             "advisoryLock": true,
             "tookOverStaleLock": false,
             "bytes": bytes,
+            "format": format.as_str(),
+            "historyRestored": false,
+            "assets": asset_count,
             "projectDigest": digest,
             "project": summary,
         })));
     }
-    let lock = store::lock(path, lock_mode(read_only))?;
+    let lock = store::lock(&path, lock_mode(read_only))?;
     let took_over_stale_lock = lock.took_over_stale_lock();
-    domain.reset_history(path, &project, digest.clone(), read_only, Some(lock))?;
+    domain.reset_history(SessionSeed {
+        path: path.clone(),
+        read_only,
+        project: *project,
+        digest: digest.clone(),
+        lock: Some(lock),
+        history: history.map(|graph| *graph),
+        assets,
+    })?;
     Ok(ToolResponse::success(serde_json::json!({
         "opened": true,
         "alreadyOpen": false,
@@ -1076,10 +1250,17 @@ fn apply_open(
         // 崩溃遗留的陈旧锁被本次打开接管并重写 —— 这是 MUST-GATE-008
         // "不留下永久锁"的可观察证据。
         "tookOverStaleLock": took_over_stale_lock,
-        "lockFile": store::lock_path(path).display().to_string(),
+        "lockFile": store::lock_path(&path).display().to_string(),
         "bytes": bytes,
+        // 磁盘形态 + 容器里另外两类条目的实际装载量（如实上报，不假装）。
+        "format": format.as_str(),
+        "historyRestored": history_commits > 0,
+        "historyCommits": domain.commit_count(),
+        "assets": domain.asset_count(),
         "projectDigest": digest,
-        "project": project_summary(&project),
+        "project": domain
+            .active_project()
+            .map_or(Value::Null, project_summary),
     })))
 }
 
@@ -1093,10 +1274,13 @@ fn lock_mode(read_only: bool) -> store::LockMode {
 }
 
 /// `yeban_save_project` 的施加。
+///
+/// `bytes` 是**容器字节**（`ARCH-SEC-003`），落盘协议仍是 `ARCH-SEC-004` 的
+/// 同目录临时文件 + `fsync` + `rename`（唯一入口 [`store::write_project_atomic`]）。
 fn apply_save(
     domain: &mut Domain,
     path: &Path,
-    json: &str,
+    bytes: &[u8],
     digest: String,
     force: bool,
     changed: bool,
@@ -1107,10 +1291,12 @@ fn apply_save(
             "skipped": true,
             "reason": "内存状态与磁盘一致; 传 force: true 可强制落盘",
             "path": path.display().to_string(),
+            "bytes": bytes.len(),
+            "format": store::ProjectFormat::Container.as_str(),
             "projectDigest": digest,
         })));
     }
-    store::write_project_atomic(path, json)?;
+    store::write_project_atomic(path, bytes)?;
     if let Some(active) = domain.active.as_mut() {
         active.saved_digest.clone_from(&digest);
     }
@@ -1118,8 +1304,12 @@ fn apply_save(
         "saved": true,
         "skipped": false,
         "atomic": true,
+        // 落盘形态与容器里的条目数（2 = project.json + history.dag，其余是资产）。
+        "format": store::ProjectFormat::Container.as_str(),
         "path": path.display().to_string(),
-        "bytes": json.len(),
+        "bytes": bytes.len(),
+        "assets": domain.asset_count(),
+        "historyCommits": domain.commit_count(),
         "projectDigest": digest,
         "forced": force,
     })))
@@ -1135,13 +1325,14 @@ fn apply_close(
     let mut saved = false;
     if let Some(Plan::Save {
         path: save_path,
-        json,
+        bytes,
         digest,
         force,
         changed,
+        ..
     }) = save.map(|boxed| *boxed)
     {
-        apply_save(domain, &save_path, &json, digest, force, changed)?;
+        apply_save(domain, &save_path, &bytes, digest, force, changed)?;
         saved = true;
     }
     let was_read_only = domain.is_read_only();
