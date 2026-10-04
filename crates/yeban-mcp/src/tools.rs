@@ -514,10 +514,32 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
-            param("format", "string", true, "输出容器/编码 (如 wav)"),
-            param("sampleRate", "integer", true, "采样率 (Hz)"),
-            param("normalize", "boolean", false, "是否归一化"),
+            param(
+                "format",
+                "string",
+                true,
+                "输出容器/编码 (wav / rf64 / bw64)",
+            ),
+            param("sampleRate", "integer", true, "采样率 (Hz, 必须与工程一致)"),
+            param(
+                "normalize",
+                "boolean",
+                false,
+                "是否做峰值归一化 (目标满量程)",
+            ),
+            param(
+                "path",
+                "string",
+                false,
+                "输出路径; 缺省为 <工程文件 stem>.master.<format> (与工程同目录)",
+            ),
         ],
+        // 这里声明的仍然是**规范表格那一行**的错误码。实现还会真实产出
+        // `NO_ACTIVE_PROJECT` / `INVALID_PARAMETER_RANGE`（参数与路径护栏）/
+        // `IO_ERROR`（落盘失败）—— 它们全在 ADR-0001 D25 的 20 值联集内,
+        // 由 `docs/ledger/tools-domain-notes.md` 的 boundary-7 与本线台账登记,
+        // 不塞进这一列（这一列的口径是"表格里列了什么"）。
+        // `BUSY` 仍不可达（领域状态单线程同步），见 `domain/render.rs` 模块头。
         errors: &[ErrorCode::RenderFailed, ErrorCode::Busy],
     },
     ToolSpec {

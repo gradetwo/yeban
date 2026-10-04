@@ -5,7 +5,7 @@
 //! | 失败类别 | 载体 | 为什么 |
 //! | :--- | :--- | :--- |
 //! | **领域失败**（工程锁被占、片段不存在……） | `ToolResponse{status:"error", error:{code}}` | `code` 必须落在 `schemas/mcp-tools.schema.json` 的闭合 enum 里 |
-//! | **实现级状况**（渲染器未接线、工程文件读不动……） | JSON-RPC 错误对象 `-32005` 等 | `NOT_IMPLEMENTED` **不在**契约 enum 里，也不该在：它不是领域失败 |
+//! | **实现级状况**（本平台没有 OS 建议锁……） | JSON-RPC 错误对象 `-32005` 等 | `NOT_IMPLEMENTED` **不在**契约 enum 里，也不该在：它不是领域失败 |
 //!
 //! [`Fault`] 把这两类分开表示，[`Fault::into_result`] 是唯一的出海口。
 //! 想在 `ToolResponse.error.code` 里塞一个契约外的字符串，必须**先改这个文件**。
@@ -293,7 +293,8 @@ mod tests {
 
     #[test]
     fn implementation_faults_never_produce_a_tool_response() {
-        let fault = not_wired("yeban_render_master", "MCP-TOOL-008", "x", Map::new());
+        // 现实中的例子: 本平台没有可用的 OS 建议锁 (`lock_fault`)。这里只用机制本身。
+        let fault = not_wired("yeban_open_project", "ARCH-SEC-001", "x", Map::new());
         assert!(fault.domain_code().is_none());
         assert!(fault.to_tool_response().is_none());
         let error = fault.into_result().expect_err("必须走 JSON-RPC 出口");

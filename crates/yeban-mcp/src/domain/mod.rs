@@ -32,7 +32,8 @@
 //! | [`section`] | `yeban_propose_section` 的章节骨架 + 环路判定 |
 //! | [`macros`] | `yeban_set_macro` 的宏与级联自动化展开 |
 //! | [`proposal`] | 提案记录（Musical PR 的可追溯性） |
-//! | [`render`] | `yeban_render_master` 的参数校验（渲染本体未接线） |
+//! | [`render`] | `yeban_render_master` 的参数校验 **+ 真渲染**（`yeban-render` 接线、原子落盘） |
+//! | [`render_math`] | 渲染的**零第三方依赖**纯逻辑（tick→帧、归一化、包络、日历），本机可单独验证 |
 //! | [`ids`] | 确定性夹具身份（让 `dryRun` 预览与真调用逐字节相同） |
 
 pub mod error;
@@ -42,6 +43,7 @@ pub mod macros;
 pub mod notes;
 pub mod proposal;
 pub mod render;
+pub mod render_math;
 pub mod section;
 pub mod store;
 pub mod view;
@@ -58,7 +60,7 @@ use yeban_model::{
 use crate::jsonrpc::ErrorObject;
 use crate::tools::{ErrorCode, ToolCall, ToolResponse};
 
-use error::{Fault, not_wired};
+use error::Fault;
 use proposal::{Proposal, ProposalDraft, ProposalStatus, draft_ops_value};
 use store::AcquiredLock;
 
@@ -483,10 +485,10 @@ pub enum Plan {
         /// 预览用的记录快照。
         snapshot: Box<Proposal>,
     },
-    /// `yeban_render_master`：参数已校验，但渲染器未接线
+    /// `yeban_render_master`：**已经渲染好**的产物（只差落盘）
     RenderMaster {
-        /// 已校验的请求。
-        request: render::RenderRequest,
+        /// 已编码的容器字节 + 全部实测数字。
+        artifact: Box<render::RenderArtifact>,
     },
 }
 
@@ -711,8 +713,14 @@ impl Plan {
                 preview.insert("reason".to_owned(), Value::from(reason.clone()));
                 preview.insert("proposal".to_owned(), snapshot.summary());
             }
-            Self::RenderMaster { request } => {
-                preview.insert("request".to_owned(), request.preview());
+            Self::RenderMaster { artifact } => {
+                // 渲染在 `plan`（只读）里就完成了: 因此预览里的字节数、SHA-256、帧数
+                // 都是**实测值**而不是估算。落盘只发生在 `apply`。
+                if let Value::Object(details) = artifact.preview() {
+                    for (key, value) in details {
+                        preview.insert(key, value);
+                    }
+                }
             }
         }
 
@@ -848,12 +856,12 @@ fn merge_batch(proposal: &Proposal, description: &str) -> Op {
 // plan：只读
 // ---------------------------------------------------------------------------
 
-/// 只读规划：参数校验 + 领域合法性校验。**改不了任何状态**（拿到的是 `&Domain`）。
+/// 只读规划：参数校验 + 领域合法性校验（`yeban_render_master` 连渲染都在这里做完）。
+/// **改不了任何状态**（拿到的是 `&Domain`），也**不碰文件系统**。
 ///
 /// # Errors
 ///
-/// 见各工具的领域语义；实现级状况（如渲染器未接线）不在这里返回
-/// （它在 `apply` 之后才知道，"参数校验先于未接线"是判据）。
+/// 见各工具的领域语义。目前十个工具的实现级状况都不在 `plan` 里产生。
 pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     match call.tool.name {
         "yeban_open_project" => plan_open(domain, call),
@@ -1102,10 +1110,18 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 }
 
 /// `yeban_render_master`。
+///
+/// **只读**：参数校验 + 从活跃工程构造渲染计划、执行渲染、编码容器字节。
+/// 渲染产物只放在 [`Plan::RenderMaster`] 里，落盘是 `apply` 的事 ——
+/// 因此 `dryRun` 拿到的是**实测**的帧数/字节数/SHA-256，且一个字节都不写盘。
 fn plan_render_master(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
-    require_active(domain)?;
+    let project = require_active(domain)?;
+    let project_path = domain.active_path().ok_or_else(no_active_project)?;
     let request = render::validate(&call.arguments)?;
-    Ok(Plan::RenderMaster { request })
+    let artifact = render::build(project, project_path, &request, domain.now_ms())?;
+    Ok(Plan::RenderMaster {
+        artifact: Box::new(artifact),
+    })
 }
 
 /// `yeban_merge_proposal`。
@@ -1153,11 +1169,15 @@ fn proposal_not_found(id: &EntityId) -> Fault {
 
 /// 施加一个计划。**这是唯一会改变状态的入口。**
 ///
+/// 签名里没有 `&ToolCall`：十个工具的执行参数全部在 `plan` 阶段就被消化成
+/// [`Plan`] 的字段（`RenderMaster` 连渲染都做完了），因此 `apply` 不需要再看原始实参 ——
+/// 少一个参数就少一条"`plan` 与 `apply` 读的实参不一致"的漂移路径。
+///
 /// # Errors
 ///
 /// 领域失败 → [`Fault::Domain`]（走 `ToolResponse`）；
 /// 实现级状况 → [`Fault::Impl`]（走 JSON-RPC 错误对象）。
-pub fn apply(domain: &mut Domain, plan: Plan, call: &ToolCall) -> Result<ToolResponse, Fault> {
+pub fn apply(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
     match plan {
         Plan::Open(request) => apply_open(domain, *request),
         Plan::Save {
@@ -1185,8 +1205,18 @@ pub fn apply(domain: &mut Domain, plan: Plan, call: &ToolCall) -> Result<ToolRes
             reason,
             snapshot,
         } => apply_reject(domain, proposal_id, &reason, &snapshot),
-        Plan::RenderMaster { request } => Err(render_unwired(call, request)),
+        Plan::RenderMaster { artifact } => apply_render(*artifact),
     }
+}
+
+/// `yeban_render_master` 的施加：把**已经渲染好**的容器字节原子落盘。
+///
+/// 渲染本身在 `plan` 里完成（只读），这里只有一次 [`store::write_project_atomic`] ——
+/// 即 `ARCH-SEC-004` 的同目录临时文件 + `fsync` + `rename`。失败时原文件不受影响、
+/// 临时文件被清理，**不会留下半个母带**。
+fn apply_render(artifact: render::RenderArtifact) -> Result<ToolResponse, Fault> {
+    store::write_project_atomic(&artifact.path, &artifact.bytes)?;
+    Ok(ToolResponse::success(artifact.response_data()))
 }
 
 /// `yeban_open_project` 的施加。
@@ -1563,23 +1593,6 @@ fn apply_reject(
     })))
 }
 
-/// 渲染器的实现级状况：**参数已经校验通过**，只是这一半没接线。
-fn render_unwired(call: &ToolCall, request: render::RenderRequest) -> Fault {
-    let mut data = Map::new();
-    data.insert("validated".to_owned(), Value::from(true));
-    data.insert("request".to_owned(), request.preview());
-    data.insert(
-        "reason".to_owned(),
-        Value::from("离线渲染属于 line/render-master; 本线只接线参数校验与 dryRun"),
-    );
-    not_wired(
-        call.tool.name,
-        call.tool.spec_id,
-        "渲染器未接线: 参数校验已通过",
-        data,
-    )
-}
-
 // ---------------------------------------------------------------------------
 // 对外的两个入口
 // ---------------------------------------------------------------------------
@@ -1595,7 +1608,7 @@ pub fn execute(domain: &mut Domain, call: &ToolCall) -> Result<Value, ErrorObjec
         Ok(planned) => planned,
         Err(fault) => return fault.into_result(),
     };
-    match apply(domain, planned, call) {
+    match apply(domain, planned) {
         Ok(response) => Ok(response.to_value()),
         Err(fault) => fault.into_result(),
     }
@@ -1810,9 +1823,9 @@ mod tests {
     }
 
     #[test]
-    fn render_master_validates_before_it_reports_not_wired() {
+    fn render_master_validates_first_then_really_writes_a_master() {
         let mut domain = domain();
-        // 坏参数: 领域错误码 (带内 ToolResponse)。
+        // 坏参数: 领域错误码 (带内 ToolResponse) —— 校验仍然先于渲染。
         let bad = execute(
             &mut domain,
             &call(
@@ -1824,18 +1837,52 @@ mod tests {
         assert_eq!(bad["status"], "error");
         assert_eq!(bad["error"]["code"], "INVALID_PARAMETER_RANGE");
 
-        // 好参数: 通过校验 ⇒ 实现级 -32005。
+        // 好参数: 真的渲染 + 真的落盘。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-render-unit-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let out = dir.join("master.wav");
         let good = execute(
             &mut domain,
             &call(
                 "yeban_render_master",
-                serde_json::json!({"format": "wav", "sampleRate": 48000}),
+                serde_json::json!({
+                    "format": "wav",
+                    "sampleRate": 48000,
+                    "path": out.display().to_string(),
+                }),
             ),
         )
-        .expect_err("渲染未接线");
-        assert_eq!(good.code, crate::jsonrpc::NOT_IMPLEMENTED);
-        assert_eq!(good.data.as_ref().expect("data")["validated"], true);
-        assert_eq!(good.data.as_ref().expect("data")["request"]["wired"], false);
+        .expect("带内");
+        assert_eq!(good["status"], "success", "{good}");
+        assert_eq!(good["data"]["rendered"], true);
+        assert_eq!(good["data"]["path"], out.display().to_string());
+        let written = std::fs::read(&out).expect("产物必须真的存在");
+        assert_eq!(
+            written.len(),
+            usize::try_from(good["data"]["bytes"].as_u64().expect("bytes")).expect("小尺寸")
+        );
+        // 128 BPM / 960 PPQ / 3840 tick ⇒ 1.875 s ⇒ 90 000 帧 @ 48 kHz。
+        assert_eq!(good["data"]["frames"], 90_000);
+        assert_eq!(good["data"]["channels"], 2);
+        assert_eq!(good["data"]["bitDepth"], 24);
+        assert_eq!(
+            good["data"]["sha256"].as_str().expect("sha256").len(),
+            64,
+            "整份文件的 SHA-256"
+        );
+        assert!(
+            good["data"]["unsupported"]
+                .as_array()
+                .expect("unsupported 必须是数组")
+                .iter()
+                .any(|key| key == "audioClips"),
+            "规范样本工程含音频片段, 必须如实登记未渲染: {good}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -1102,8 +1102,8 @@ fn implementation_error_code_catalog_equals_the_contract_enum_exactly() {
 
 #[test]
 fn not_implemented_never_appears_in_a_tool_response() {
-    // 实现级码只许出现在 JSON-RPC 层。唯一的实现级状况是渲染器未接线:
-    // 它必须走 `Err(ErrorObject)`, 且 `data.code = NOT_IMPLEMENTED`。
+    // 实现级码只许出现在 JSON-RPC 层, 而渲染器接线之后**本 crate 的工具路径上
+    // 已经没有实现级状况**了: 好参数真的渲染并落盘, 坏参数是带内领域失败。
     let scratch = Scratch::new("not-impl");
     let (mut dispatcher, auth) = dispatcher();
     open(&scratch, &mut dispatcher, &auth);
@@ -1111,20 +1111,18 @@ fn not_implemented_never_appears_in_a_tool_response() {
         &mut dispatcher,
         &auth,
         "yeban_render_master",
-        json!({ "format": "wav", "sampleRate": 48000 }),
+        json!({ "format": "wav", "sampleRate": 48000, "dryRun": true }),
     );
-    assert_eq!(status, 501);
-    let error = outcome.expect_err("渲染器未接线必须是实现级状况");
-    assert_eq!(error.code, yeban_mcp::jsonrpc::NOT_IMPLEMENTED);
-    let data = error.data.expect("data");
-    assert_eq!(data["code"], "NOT_IMPLEMENTED");
-    assert_eq!(data["validated"], true, "参数校验必须先于未接线");
+    assert_eq!(status, 200, "渲染已接线 ⇒ 不再有 501");
+    let result = outcome.expect("必须是带内结果而不是 JSON-RPC 错误");
+    assert_eq!(result["status"], "success", "{result}");
+    assert_eq!(result["data"]["preview"]["wired"], true);
     assert!(
         !ErrorCode::SCHEMA_CONTRACT.contains(&ErrorCode::NotImplemented),
         "NOT_IMPLEMENTED 不许混进契约 enum"
     );
 
-    // 反过来: 坏参数是**领域失败**, 走带内 ToolResponse。
+    // 坏参数仍然是**领域失败**, 走带内 ToolResponse。
     let bad = call(
         &mut dispatcher,
         &auth,
@@ -1194,29 +1192,23 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
     ];
     assert_eq!(arguments.len(), TOOLS.len(), "十个工具都要有用例");
     for (name, arguments) in arguments {
-        let (_, outcome) = call_raw(&mut dispatcher, &auth, name, arguments);
-        match outcome {
-            Ok(result) => {
-                assert!(
-                    matches!(result["status"].as_str(), Some("success" | "error")),
-                    "{name} 必须是契约形状的 ToolResponse: {result}"
-                );
-                if let Some(code) = result["error"]["code"].as_str() {
-                    assert_ne!(code, "NOT_IMPLEMENTED", "{name} 不得伪造实现级码");
-                    assert!(
-                        ErrorCode::SCHEMA_CONTRACT
-                            .iter()
-                            .any(|known| known.as_str() == code),
-                        "{name} 的错误码必须在契约里: {code}"
-                    );
-                }
-            }
-            Err(error) => {
-                // 唯一的合法实现级出口: 渲染器未接线。
-                assert_eq!(name, "yeban_render_master", "{name} 不该有实现级错误");
-                assert_eq!(error.code, yeban_mcp::jsonrpc::NOT_IMPLEMENTED);
-                assert_eq!(error.data.expect("data")["validated"], true);
-            }
+        let (status, outcome) = call_raw(&mut dispatcher, &auth, name, arguments);
+        // 渲染器接线之后, 工具路径上不再有任何实现级出口: 全部必须是带内 ToolResponse。
+        assert_eq!(status, 200, "{name} 不得返回 JSON-RPC 层错误");
+        let result = outcome
+            .unwrap_or_else(|error| panic!("{name} 不该有实现级错误 (渲染器已接线): {error:?}"));
+        assert!(
+            matches!(result["status"].as_str(), Some("success" | "error")),
+            "{name} 必须是契约形状的 ToolResponse: {result}"
+        );
+        if let Some(code) = result["error"]["code"].as_str() {
+            assert_ne!(code, "NOT_IMPLEMENTED", "{name} 不得伪造实现级码");
+            assert!(
+                ErrorCode::SCHEMA_CONTRACT
+                    .iter()
+                    .any(|known| known.as_str() == code),
+                "{name} 的错误码必须在契约里: {code}"
+            );
         }
     }
 }

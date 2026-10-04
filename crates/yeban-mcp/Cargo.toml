@@ -34,9 +34,19 @@ thiserror.workspace = true
 # 十个 Intent 工具不复制一份数据模型, 也不自己写第二套逆操作
 # (见 src/domain/mod.rs 的"逆操作的唯一来源"一节)。
 #
-# 依赖方向: yeban-mcp -> yeban-model。yeban-model 是纯数据模型 (零 GUI、零系统库),
-# 因此本 crate 的"本机可编译"属性没有被削弱。
+# 依赖方向: yeban-mcp -> yeban-model。yeban-model 是纯数据模型 (零 GUI、零系统库)。
 yeban-model.workspace = true
+# 离线母带渲染器 (Rayon 多核调度 + RF64/BW64 + TPDF 抖动写入器)。
+# `yeban_render_master` 的渲染本体不再返回 -32005, 而是真的调用它。版本仍由根清单
+# 唯一决定, 本线**未改**根 `Cargo.toml`, 也未引入任何新的第三方包。
+#
+# 代价 (如实登记): 这条依赖边让本 crate 传递性地依赖 rayon / hound / midly,
+# 因此 `run-gates.sh crate yeban-mcp` 在本机跑的会是重依赖编译 —— 处置见
+# `docs/ledger/mcp-render-notes.md` §6「本机真跑 vs CI」。
+yeban-render.workspace = true
+# 母带合成里的超越函数 (正弦振荡器 / 等程律频率 / 等功率声相) [ARCH-DET-001]:
+# 规范要求"统一启用纯 Rust libm", 禁止落到宿主 libm —— 否则同一工程的母带会随平台差 LSB。
+libm.workspace = true
 
 [lints]
 workspace = true

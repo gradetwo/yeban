@@ -6218,10 +6218,12 @@ dependencies = [
 name = "yeban-mcp"
 version = "0.0.1"
 dependencies = [
+ "libm",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "yeban-model",
+ "yeban-render",
 ]
 
 [[package]]
