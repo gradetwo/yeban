@@ -79,7 +79,10 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | 修复后 CI（run 37217037266） | **27/27 job 全绿**：plan / checks / lockfile / deny + 23 条 rust 矩阵腿 | `gh run view 37217037266` |
 | `yeban-theory` 落地（run 37217942685） | **27/27 全绿**；94 条测试（71 单元 + 22 属性 + 1 doctest）；流派规则库 **182 条**（规范正文写 159，见 ADR-0001 D14） | `gh run view 37217942685` |
 | `yeban-dsp` 落地（run 37217904082） | **27/27 全绿**；108 单元测试 + 1 doctest；13 个模块（含 2 个新写、11 个从 `synth-core` MIT 移植改写） | `gh run view 37217904082` |
-| 引入 Slint 后的依赖规模 | 外部包 **62 → 579**；许可族新增 `BSL-1.0`（2 个 Windows-only 包）；无一包缺 license 字段 | `cargo metadata` + `scripts/gates/license_inventory.py` |
+| 引入 Slint 后的依赖规模 | 外部包 **62 → 579**；许可族新增 `BSL-1.0`（2 个 Windows-only 包）与 `GPL-3.0-only OR LicenseRef-Slint-*`（14 个 slint 包，取 GPL-3.0-only 分支）；无一包缺 license 字段 | `cargo metadata` + `scripts/gates/license_inventory.py` |
+| `yeban-app` 首次真的编译 Slint（run 37218433961） | **`rust (yeban-app)` = success**：13 个 `.slint` 全部编译通过，`slint_build::compile` 生成代码可用，`slint::include_modules!()` 在嵌套模块里可行，clippy `-D warnings` 零告警，40 条单元测试绿 | `gh run view 37218433961` |
+| `yeban-app` 全绿（run 37218791723，round 3） | **success**：含 `checks` 里新接的"依赖许可清单漂移检查"（该门禁第一次变红就抓到了 Slint 引入后清单未重生成） | `gh run view 37218791723` |
+| 跨语言契约对账（本机实测全链路） | `cargo run -p yeban-model --example export_schema_samples` → 4 份样本 → `validate_schemas.py --samples-dir` → **4/4 通过**（ops 样本 23 变体 oneOf 对账通过） | 见 `docs/ledger/model-core-provenance.md` §4 |
 | 官网分支首次 CI（run 37217762431，branch `website`） | **绿**：站点契约检查通过；部署步骤按设计"缺凭据 → 优雅跳过" | `gh run view 37217762431` |
 | 品牌资产 | 母版拆出 **10 个 SVG 变体** + 10 个 PNG（深/浅 × 512/256/128/64/32） | `assets/brand/` |
 | `Cargo.lock` | 已生成并提交（MUST-GATE-005 要求）；`cargo metadata --locked` 通过；**不含** slint/cpal/symphonia 等重依赖（spike 的重依赖暂时注释） | `git ls-files Cargo.lock`, `cargo metadata --locked` |
@@ -127,8 +130,9 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `scripts/dev/ci-verdict.sh` | 仓库还没有任何 workflow run，脚本尚未真实取回过一次判决 |
 | `site-deploy.yml` 的真实部署路径 | 需要 Cloudflare 凭据，当前只验证了"缺凭据 → 优雅跳过"这条分支 |
 | 官网的浏览器视觉核验 | **已在 CI 跑绿**（run 37217947487）：8 组断言通过，4 张全页截图作为 artifact 留存，并已下载人工过目（深色中文首页 / 浅色英文首页 / 移动端 390px / 404 页）。截图证据：`gh run download 37217947487 -n site-screenshots` |
-| 依赖许可清单 `--check` 的首次真实红/绿 | 本机已验（62 包时绿）；**Slint 引入后 579 包的那一版清单尚未重新生成**，ui-shell 合并后必须重跑，否则 CI 会红 |
-| Linux 上 Slint 的系统库前置 | 已由 CI 的 apt 步骤覆盖（含提前加入的 `libasound2-dev`），但**尚未有一次真实跑通的判决** —— ui-shell 第二轮 CI 见分晓 |
+| 依赖许可清单 `--check` | **已闭环**：62 包时本机绿；Slint 引入后 CI 真实变红一次（清单未重生成），重生成后 579 包绿；合并 ui-shell 后本机 `--check` 再次通过（635 行清单） |
+| Linux 上 Slint 的系统库前置 | **已被真实判决覆盖**：apt 步骤加上后 `rust (yeban-app)` 转绿（run 37218433961 / 37218791723） |
+| **DAW 界面从未被人眼或渲染器看过** | Slint 只是**编译通过**。没有截图、没有 SSIM、没有控件树断言 —— 那属于 `yeban-ui-test-port`（`UI-TEST-001/003`、`MUST-GATE-015`），尚未开始。布局比例、CJK 字体回退、无障碍树内容目前都只是"编译层面成立"。**这是本项目当前最大的未验证面。** |
 | `gates-manual.yml` 的 `determinism` / `bench` | 目标功能未实现，只有 PENDING 说明路径 |
 
 ---
