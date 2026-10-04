@@ -391,7 +391,22 @@ error[rejected]: failed to satisfy license requirements
 `checks` 的判决落在 `05b2a1d`（那一轮 rust 腿按设计跳过）。两轮合起来覆盖了全部 job。
 没有出现"某一轮里代码和门禁同时绿"的单点，但两者的代码版本完全相同。**
 
-如果集成者希望看到 tip 上的一次**全量**绿（rust 腿也真跑），
+### 第 4 轮：`a03c792`（本文件自身的 docs-only 提交）→ run [`37218916188`](https://github.com/gradetwo/yeban/actions/runs/37218916188) —— **success**
+
+```
+✓ plan in 6s   ✓ checks in 48s   ✓ deny in 40s   ✓ lockfile in 16s
+- rust (${{ matrix.crate }}) in 0s     ← 同样被 plan 跳过（docs-only）
+```
+
+**账目到此为止（显式终止，不再无限回填）**：任何"只为回填上一轮 CI 判决"的提交本身也是
+docs-only，因此会重复同一模式（`rust` 腿被跳过、其余四条门禁照跑）。所以：
+
+- **代码的编译/测试判决** = run 37218433961 @ `953b85b`，`rust (yeban-app)` = success；
+- **门禁（checks / deny / lockfile / plan）判决** = 此后每一轮 docs-only 提交都 success，
+  最近三轮：37218791723 @ `05b2a1d`、37218916188 @ `a03c792`，以及记录本条的这一轮。
+- 两者对应的代码版本完全相同（`git diff --name-only 953b85b..a03c792` 只有 `docs/ledger/*.md`）。
+
+如果集成者希望看到 tip 上的一次**全量**绿（rust 腿也真跑而不是被受影响集合跳过），
 `.github/workflows/ci.yml` 的 `workflow_dispatch` 有 `force_full` 输入 —— 那是手动档，由集成者决定。
 
 ---
