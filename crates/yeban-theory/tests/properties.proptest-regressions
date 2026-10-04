@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c645f085cfc4240cf1f4dd7bb00742e19ff8ce46b0a79fb8839abd13deff1e99 # shrinks to tonic_value = 2, kind_index = 11, tonic_octave = 5, degree = 18
+cc b332a0f1f3c41112a33eb089e5d9d39211a43d8e3fc0eb63bb4f2a5d7ff98e20 # shrinks to bars = 1, degrees = [Degree { degree: 1, accidental: 0, quality: Major, suffix: None }, Degree { degree: 1, accidental: 0, quality: Major, suffix: None }, Degree { degree: 1, accidental: 0, quality: Major, suffix: None }]
+cc 2dbde7c79c4824dcacf9fdd8441d8c9786feb5cf8fa7d8b2b3fc4dd1b7b7a4bc # shrinks to root_value = 0, kind_index = 19, inversion = 1
+cc 04c3b11b808f4efcdb64fef1e3a976d0df3ed68193f14903da97e687b0dcd130 # shrinks to tonic_value = 0, kind_index = 0, tonic_octave = 6, degree = 26
