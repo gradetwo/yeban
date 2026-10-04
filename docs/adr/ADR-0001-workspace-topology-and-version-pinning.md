@@ -202,6 +202,26 @@
   因此 CI 仍需安装 `fonts-noto-cjk`（运行时依赖，不是仓库资产），并在 UI 判据里断言"中文字形非 tofu"
   （可用字符包围盒非零或与已知 tofu 图样比对）。这一条登记为待接线判据。
 
+### D25 — `mcp-tools.schema.json` 的两处硬缺陷：错误码集合不全 + 根不引用 definitions
+
+`line/mcp-core` 在实现 MCP 工具层时逐条比对契约与架构 §7.2，发现两处（均已在 main 修掉）：
+
+1. **错误码集合不全**：schema 的 `ToolResponse.error.code` 是 **7 值闭合 enum**，而架构 §7.2 逐工具列出的并集是
+   **16 个**，交集只有 3 个 ⇒ 13 个领域错误码（`FILE_NOT_FOUND` / `DISK_FULL` / `CLIP_NOT_FOUND` / `CONFLICT` …）
+   **没有家**：任何真实的领域失败都会产出被契约判为非法的响应。
+   · **裁决**：取**两集合的联集**（20 个值），既有 7 个一个不删（`PERMISSION_DENIED` 还是 scope 强制的必需码），
+     规范并集一个不缺。**扩展 enum 属契约变更，状态 Proposed 待人类追认**（与 D17/D20 同一处理方式）。
+2. **根不引用 `definitions`**：根只有 `$schema/$id/title/description/type/definitions`，
+   于是 `validate_schemas.py --samples-dir` 在本 schema 上**是空转的** —— 实测
+   `{"anything":[1,2,3]}` 与 `{"name":"完全不在枚举里的工具"}` **都能通过根校验**。
+   · **裁决**：根改为 `oneOf($ref ToolCall, $ref ToolResponse)`（去掉裸 `type: object`）。
+     实测修复后上述两个垃圾样本都被拒。这让契约从"定义了一堆没人用的类型"变成**承重**的。
+
+**方法论留痕**（值得后续线照做）：该线没有直接改 `schemas/**`（权威契约），而是
+① 两套集合都实现、② 把缺口写进**机器可读样本**、③ 把缺口钉成"实测常量"判据、
+④ 另加一条判据在"根开始引用 definitions"的那一刻变红，提醒升级口径。
+集成者这次修复会**故意**触发那条提醒判据 —— 那是它按设计工作，不是回归。
+
 ---
 
 ## D5 的落地细节（版本钉死）

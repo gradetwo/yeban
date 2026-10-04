@@ -2,12 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yeban.org/schemas/mcp-tools.schema.json",
   "title": "YebanMcpTools",
-  "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP",
-  "type": "object",
+  "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse)：工具调用与工具响应的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
   "definitions": {
     "ToolCall": {
       "type": "object",
-      "required": ["name", "arguments"],
+      "required": [
+        "name",
+        "arguments"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -27,38 +29,80 @@
         "arguments": {
           "type": "object",
           "properties": {
-            "dryRun": { "type": "boolean", "default": false },
-            "idempotencyKey": { "type": "string" }
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
           }
         }
       }
     },
     "ToolResponse": {
       "type": "object",
-      "required": ["status"],
+      "required": [
+        "status"
+      ],
       "properties": {
-        "status": { "type": "string", "enum": ["success", "error"] },
-        "data": { "type": "object" },
+        "status": {
+          "type": "string",
+          "enum": [
+            "success",
+            "error"
+          ]
+        },
+        "data": {
+          "type": "object"
+        },
         "error": {
           "type": "object",
-          "required": ["code", "message"],
+          "required": [
+            "code",
+            "message"
+          ],
           "properties": {
             "code": {
               "type": "string",
+              "description": "工具级错误码。契约必须覆盖架构 §7.2 逐工具列出的并集：只看 schema 原有的 7 个值，会让 13 个领域失败（如 DISK_FULL / CLIP_NOT_FOUND / CONFLICT）产出被本 schema 判为非法的响应。本 enum 是 schema 原有集合与规范并集的联集（ADR-0001 D25）。",
               "enum": [
+                "BUSY",
+                "CLIP_NOT_FOUND",
+                "CONFLICT",
+                "CYCLE_DETECTED",
+                "DISK_FULL",
+                "ENTITY_NOT_FOUND",
+                "FILE_NOT_FOUND",
+                "INDEX_OUT_OF_BOUNDS",
+                "INVALID_FIELD_SELECTOR",
+                "INVALID_PARAMETER_RANGE",
+                "IO_ERROR",
+                "NO_ACTIVE_PROJECT",
+                "OUT_OF_RANGE",
+                "PERMISSION_DENIED",
                 "PROJECT_LOCKED",
                 "PROPOSAL_NOT_FOUND",
+                "RENDER_FAILED",
                 "ROUTING_CYCLE_DETECTED",
-                "ENTITY_NOT_FOUND",
-                "INVALID_PARAMETER_RANGE",
-                "PERMISSION_DENIED",
-                "IO_ERROR"
+                "STYLE_NOT_FOUND",
+                "TRACK_NOT_FOUND"
               ]
             },
-            "message": { "type": "string" }
+            "message": {
+              "type": "string"
+            }
           }
         }
       }
     }
-  }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/definitions/ToolCall"
+    },
+    {
+      "$ref": "#/definitions/ToolResponse"
+    }
+  ]
 }
