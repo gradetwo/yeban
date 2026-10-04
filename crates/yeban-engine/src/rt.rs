@@ -1,10 +1,10 @@
-//! 渲染量子驱动：**不依赖 cpal** 的回调内逻辑。[ARCH-TOP-002, ARCH-RT-001]
+//! 渲染量子驱动：**不依赖 cpal** 的回调内逻辑。[ARCH-TOP-002, ARCH-RT-001, ARCH-UI-002]
 //!
 //! 本模块把"一个音频回调该做什么"完整实现成 [`EngineRuntime::process_quantum`]，
 //! 并且**完全不引用 cpal**。这样做的理由是很具体的工程约束：
 //!
 //! - CI 上没有声卡，真实设备路径无法端到端运行；
-//! - 但"回调逻辑"（事件批量出队 → 快照无锁切换 → 渲染 → 电平上报 → 退役入队）
+//! - 但"回调逻辑"（事件批量出队 → 快照无锁切换 → 渲染 → 逐轨/母线电平上报 → 退役入队）
 //!   才是红线 7 的所在，必须可测。
 //!
 //! 于是分成两层：
@@ -16,14 +16,38 @@
 //!  device::open_output(...)              device::NullBackend::render(frames)
 //! ```
 //!
+//! ## 每量子的处理顺序（这条顺序就是契约）
+//!
+//! ```text
+//! 1) 事件：每块**一次**批量出队 [ROAD-M2-007]
+//! 2) 快照：begin_block() 无锁切换 [ARCH-RT-002]；revision 变化时重设电平弹道系数
+//! 3) 渲染 + 电平：对快照里**每条非母线轨**
+//!       render_track_into(track_scratch)  →  MeterBank::measure(...)  →  汇入母线块
+//!    然后对母线（stereo-linked）MeterBank::measure_bus_stereo(block)
+//! 4) 发布：**每量子恰好一次** meters.publish(本量子的全部帧) [ARCH-UI-002, ROAD-M2-008]
+//! 5) end_block() 公布读者进度
+//! ```
+//!
+//! **每量子发布帧数 = 非母线轨数 + 1（母线）**。母线同时出现在 `tracks()` 里时
+//! （`EngineSnapshot::from_project` 的常态，主总线本身也是一条 `TrackV3`）
+//! **不会**被重复计量 —— 这正是本线修正的一处口径。
+//!
+//! ## 电平口径
+//!
+//! 峰值 / 峰值保持（20 dB/s 指数释放）/ 块 RMS / 平滑 RMS（τ=300 ms）/
+//! `NaN`·`±∞` 钳位全部在 [`crate::level`]，每节点状态由 [`MeterBank`] 持有。
+//! 每轨测的是**单声道、声相之前**的轨道渲染结果；母线测的是**立体声联动**的汇总块。
+//!
 //! ## 回调内禁令自检（[AGENTS.md §2 红线 7]）
 //!
 //! `process_quantum` 的调用树里**没有**：`Vec::push` / `Box::new` / `format!` / `println!`
 //! / `Mutex::lock` / 文件或网络调用。所有临时缓冲都是结构体字段里的定长数组：
 //!
 //! - [`EngineRuntime::scratch_events`]：`[EngineEvent; 128]`（栈/内联）
-//! - [`EngineRuntime::scratch_meters`]：`[MeterFrame; 256]`
+//! - [`EngineRuntime::scratch_meters`]：`[MeterFrame; 256]`（本量子的发布批次）
+//! - [`EngineRuntime::track_scratch`]：`[f32; 128]`（单轨渲染结果，复用一个缓冲）
 //! - [`EngineRuntime::block`]：`AudioBlock<128>`（`[f32; 128]` × 2）
+//! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
 //! 唯一允许的"共享状态"是原子量与 rtrb 队列；唯一的系统调用级别操作是
 //! FTZ/DAZ 控制寄存器写入（一次）。
@@ -31,10 +55,11 @@
 use std::sync::Arc;
 
 use rtrb::Producer;
+use yeban_model::EntityId;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
-use crate::meter::{MeterFrame, MeterPublisher, SCRATCH_METERS};
+use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::snapshot::{EngineSnapshot, SnapshotReader, SnapshotSlot};
 
@@ -56,6 +81,11 @@ pub struct EngineStats {
     pub event_bulk_pops: u64,
     /// 累计上报的电平帧数。
     pub meter_frames: u64,
+    /// 累计电平批量发布次数（结构性判据：应等于"有快照的量子数"）。
+    pub meter_bulk_publishes: u64,
+    /// 累计因电平容量耗尽而未计量/被淘汰的节点次数
+    /// （发布批次放不下的轨道 + [`MeterBank`] 淘汰的槽）。
+    pub meter_capacity_drops: u64,
     /// 本线程的 FTZ/DAZ 开关结果。
     pub ftz: Option<FtzDazOutcome>,
 }
@@ -68,10 +98,18 @@ pub struct EngineRuntime {
     block: AudioBlock<DEFAULT_BLOCK_FRAMES>,
     scratch_events: [EngineEvent; SCRATCH_EVENTS],
     scratch_meters: [MeterFrame; SCRATCH_METERS],
+    /// 单轨渲染结果（声相之前、单声道）。复用同一个缓冲，避免每轨一份。
+    track_scratch: [f32; DEFAULT_BLOCK_FRAMES],
+    /// 每节点电平状态机（峰值保持 / 平滑 RMS）。
+    bank: MeterBank<SCRATCH_METERS>,
+    /// 已按哪一份快照的采样率/块长设置过弹道系数。
+    armed_revision: Option<u64>,
     quanta: u64,
     events_applied: u64,
     event_bulk_pops: u64,
     meter_frames: u64,
+    meter_bulk_publishes: u64,
+    meter_capacity_drops: u64,
     ftz: Option<FtzDazOutcome>,
     ftz_ready: bool,
 }
@@ -96,10 +134,15 @@ impl EngineRuntime {
             block: AudioBlock::new(),
             scratch_events: [EngineEvent::IDLE; SCRATCH_EVENTS],
             scratch_meters: [MeterFrame::default(); SCRATCH_METERS],
+            track_scratch: [0.0; DEFAULT_BLOCK_FRAMES],
+            bank: MeterBank::new(),
+            armed_revision: None,
             quanta: 0,
             events_applied: 0,
             event_bulk_pops: 0,
             meter_frames: 0,
+            meter_bulk_publishes: 0,
+            meter_capacity_drops: 0,
             ftz: None,
             ftz_ready: false,
         }
@@ -139,6 +182,10 @@ impl EngineRuntime {
             snapshot_switches: self.snapshot.switches(),
             event_bulk_pops: self.event_bulk_pops,
             meter_frames: self.meter_frames,
+            meter_bulk_publishes: self.meter_bulk_publishes,
+            meter_capacity_drops: self
+                .meter_capacity_drops
+                .saturating_add(self.bank.capacity_drops()),
             ftz: self.ftz,
         }
     }
@@ -174,7 +221,7 @@ impl EngineRuntime {
         }
     }
 
-    /// 渲染一个量子。
+    /// 渲染一个量子（**实时路径**：零分配、零锁、零 I/O）。
     fn render_block(&mut self, frames: usize) {
         let Self {
             snapshot,
@@ -183,14 +230,20 @@ impl EngineRuntime {
             block,
             scratch_events,
             scratch_meters,
+            track_scratch,
+            bank,
+            armed_revision,
             quanta,
             events_applied,
             event_bulk_pops,
             meter_frames,
+            meter_bulk_publishes,
+            meter_capacity_drops,
             ..
         } = self;
 
         *quanta = quanta.wrapping_add(1);
+        let quantum = *quanta;
 
         // --- 1) 参数/音符/走带事件：**每块一次**批量出队 [ROAD-M2-007] ---
         let mut applied = 0usize;
@@ -203,26 +256,57 @@ impl EngineRuntime {
         *events_applied = events_applied.wrapping_add(applied as u64);
 
         // --- 2) 快照边界处的无锁切换 [ARCH-RT-002] ---
-        let quantum = *quanta;
-        let mut rendered_tracks = 0usize;
+        let mut produced = 0usize;
         if let Some(current) = snapshot.begin_block() {
+            // 采样率/块长变了 ⇒ 电平弹道系数按新的"量子/秒"折算(保留电平状态)。
+            let revision = current.revision();
+            if *armed_revision != Some(revision) {
+                let quanta_per_second =
+                    current.sample_rate() as f32 / current.block_frames().max(1) as f32;
+                bank.set_quanta_per_second(quanta_per_second);
+                *armed_revision = Some(revision);
+            }
+
             // 渲染占位：真正的声部合成/通道条在后续切片接入（见模块文档的边界说明）。
             // 这里先把"块长来自快照"和"输出块被清空"两条契约落实，避免下游拿到陈旧样本。
             block.silence();
             block.set_frames(frames);
+            bank.begin_quantum();
 
-            // --- 3) 电平：每轨一条 + master 一条，一次批量推送 [ROAD-M2-008] ---
-            for id in current.tracks().keys() {
-                if rendered_tracks >= scratch_meters.len() {
-                    break;
-                }
-                scratch_meters[rendered_tracks] = MeterFrame::measure(*id, quantum, block.left());
-                rendered_tracks += 1;
+            // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
+            // 母线（master）虽然通常也在 tracks() 里，但它是**总线**：
+            // 单独出一帧 stereo-linked 的母线电平，绝不按"轨道"重复计量。
+            let master = current.master();
+            let metered_tracks = current.tracks().keys().filter(|id| **id != master).count();
+            // 给母线留一个槽位, 保证母线永远有电平可发。
+            let track_budget = scratch_meters.len().saturating_sub(1);
+            if metered_tracks > track_budget {
+                *meter_capacity_drops =
+                    meter_capacity_drops.wrapping_add((metered_tracks - track_budget) as u64);
             }
-            if rendered_tracks < scratch_meters.len() {
-                scratch_meters[rendered_tracks] =
-                    MeterFrame::measure(current.master(), quantum, block.left());
-                rendered_tracks += 1;
+            for id in current.tracks().keys() {
+                if *id == master || produced >= track_budget {
+                    continue;
+                }
+                let track = *id;
+                render_track_into(&mut track_scratch[..frames], track);
+                if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {
+                    scratch_meters[produced] = frame;
+                    produced += 1;
+                } else {
+                    *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
+                }
+                // 汇入立体声母线（占位：等增益写两声道，见 sum_into_bus 的说明）。
+                sum_into_bus(block, &track_scratch[..frames]);
+            }
+
+            // --- 3b) 母线：立体声联动电平 ---
+            if produced < scratch_meters.len() {
+                scratch_meters[produced] =
+                    bank.measure_bus_stereo(master, quantum, block.left(), block.right());
+                produced += 1;
+            } else {
+                *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
             }
         } else {
             // 极端情况（写者尚未发布任何快照）：输出静音但绝不 panic。
@@ -231,10 +315,35 @@ impl EngineRuntime {
         }
         snapshot.end_block();
 
-        if rendered_tracks > 0 {
-            let published = meters.publish(&scratch_meters[..rendered_tracks]);
+        // --- 4) 电平：**每量子恰好一次**批量推送（本量子的全部帧）[ROAD-M2-008] ---
+        if produced > 0 {
+            let published = meters.publish(&scratch_meters[..produced]);
             *meter_frames = meter_frames.wrapping_add(published as u64);
+            *meter_bulk_publishes = meter_bulk_publishes.wrapping_add(1);
         }
+    }
+}
+
+/// 占位轨道渲染：把该轨本量子的渲染结果写进 `out`（单声道、声相之前）。
+///
+/// 本线**没有**声部合成/采样播放（见模块文档的边界说明与
+/// `docs/ledger/engine-rt-notes.md` §5.1），所以这里写静音。
+/// **接入点就在这里**：后续切片让声部渲染写 `out`，随后的电平计量与母线汇流无需改动。
+fn render_track_into(out: &mut [f32], _track: EntityId) {
+    out.fill(0.0);
+}
+
+/// 占位母线汇流：把单声道轨渲染结果等增益写入左右两声道。
+///
+/// ⚠ 这**不是**声相定律：等功率声相、发送/辅助汇流、PDC 对齐都属于混音台切片
+/// （见 notes 的 pending）。当前轨道渲染还是占位静音，因此这一步在数值上是恒等变换；
+/// 先写出来是为了让"逐轨 → 母线"的信号路径在结构上完整、可被判据覆盖。
+fn sum_into_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, mono: &[f32]) {
+    // 两个切片都由 `stereo_mut()` 按有效帧数给出, `zip` 天然按较短者截断。
+    let (left, right) = block.stereo_mut();
+    for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono) {
+        *l += *m;
+        *r += *m;
     }
 }
 
@@ -244,10 +353,11 @@ mod tests {
     use crate::graph::LatencyTable;
     use crate::meter::meter_channel;
     use crate::ring::event_channel;
-    use crate::snapshot::retire_channel;
+    use crate::snapshot::{TrackParams, retire_channel};
     use std::collections::BTreeMap;
-    use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind};
+    use yeban_model::{RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
 
+    /// 轨道 id 升序的前 n 个（用于断言确定性顺序）。
     fn simple_snapshot(revision: u64) -> EngineSnapshot {
         let master = EntityId::new();
         let track = EntityId::new();
@@ -267,14 +377,66 @@ mod tests {
             },
         );
         let mut tracks = BTreeMap::new();
-        let track_model = yeban_model::TrackV3 {
+        let track_model = TrackV3 {
             id: track,
-            ..yeban_model::TrackV3::default()
+            ..TrackV3::default()
         };
         tracks.insert(
             track,
             crate::snapshot::TrackParams::from_track(&track_model, 0),
         );
+        EngineSnapshot::from_parts(
+            revision,
+            48_000,
+            DEFAULT_BLOCK_FRAMES,
+            2,
+            master,
+            tracks,
+            &routing,
+            &LatencyTable::new(),
+        )
+        .expect("合法图")
+    }
+
+    /// 母线**也在** `tracks()` 里的快照（`from_project` 的常态）：
+    /// `master` + `track_count` 条普通轨。
+    fn snapshot_with_master_track(revision: u64, track_count: usize) -> EngineSnapshot {
+        let master = EntityId::new();
+        let mut nodes = vec![master];
+        let mut routing = RoutingGraph {
+            nodes: Vec::new(),
+            ..RoutingGraph::default()
+        };
+        let mut tracks: BTreeMap<EntityId, TrackParams> = BTreeMap::new();
+        let master_model = TrackV3 {
+            id: master,
+            ..TrackV3::default()
+        };
+        tracks.insert(
+            master,
+            crate::snapshot::TrackParams::from_track(&master_model, 0),
+        );
+        for _ in 0..track_count {
+            let track = EntityId::new();
+            nodes.push(track);
+            let id = EntityId::new();
+            routing.edges.insert(
+                id,
+                RoutingEdge {
+                    id,
+                    source_node: track,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            );
+            let model = TrackV3 {
+                id: track,
+                ..TrackV3::default()
+            };
+            tracks.insert(track, TrackParams::from_track(&model, 0));
+        }
+        routing.nodes = nodes;
         EngineSnapshot::from_parts(
             revision,
             48_000,
@@ -333,6 +495,8 @@ mod tests {
         assert_eq!(stats.quanta, 1);
         assert_eq!(stats.event_bulk_pops, 1, "每量子一次批量出队");
         assert_eq!(stats.meter_frames, 2, "一条音轨 + 一条 master");
+        assert_eq!(stats.meter_bulk_publishes, 1, "每量子恰好一次批量发布");
+        assert_eq!(stats.meter_capacity_drops, 0);
         assert!(rig.runtime.ftz_armed());
         assert_eq!(rig.runtime.revision(), Some(1));
     }
@@ -400,8 +564,107 @@ mod tests {
         assert_eq!(drained, 10, "5 个量子 × 2 条计量");
         assert_eq!(rig.collector.bulk_pop_calls(), 1, "UI 一次 tick 一次批量读");
         assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));
+        assert!(scratch[..drained].iter().all(MeterFrame::is_sane));
         // 量子序号必须递增（UI 用它做新鲜度判断）
         assert!(scratch[0].quantum < scratch[2].quantum);
+        let stats = rig.runtime.stats();
+        assert_eq!(stats.meter_frames, 10);
+        assert_eq!(stats.meter_bulk_publishes, 5, "每个量子恰好一次批量发布");
+    }
+
+    /// 判据：**每量子发布帧数 == 非母线轨数 + 1 条母线**，
+    /// 且母线即使在 `tracks()` 里也**不重复计量**。
+    #[test]
+    fn bus_is_metered_once_even_when_master_is_in_the_track_map() {
+        let slot = SnapshotSlot::new(snapshot_with_master_track(1, 3));
+        let (retire, _queue) = retire_channel(16);
+        let (_sender, receiver) = event_channel(64);
+        let (publisher, mut collector) = meter_channel(256);
+        let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        runtime.process_quantum(&mut out, 2);
+
+        let mut scratch = [MeterFrame::default(); 16];
+        let drained = collector.tick(&mut scratch);
+        assert_eq!(drained, 4, "3 条普通轨 + 1 条母线");
+        let stats = runtime.stats();
+        assert_eq!(stats.meter_frames, 4);
+        assert_eq!(stats.meter_bulk_publishes, 1);
+
+        // 节点顺序 = BTreeMap 升序的非母线轨, 最后是母线; 母线只出现一次
+        let master = slot.current().master();
+        let expected: Vec<EntityId> = {
+            let snapshot = slot.current();
+            let mut ids: Vec<EntityId> = snapshot
+                .tracks()
+                .keys()
+                .copied()
+                .filter(|id| *id != master)
+                .collect();
+            ids.push(master);
+            ids
+        };
+        let seen: Vec<EntityId> = scratch[..drained].iter().map(|f| f.node).collect();
+        assert_eq!(seen, expected, "节点顺序必须确定(轨道升序 + 母线)");
+        assert_eq!(
+            seen.iter().filter(|id| **id == master).count(),
+            1,
+            "母线不得被当成普通轨再计一次"
+        );
+    }
+
+    /// 判据：静音输入的每一帧都必须是**有限**且峰值 0（dBFS = 负无穷），没有 NaN。
+    #[test]
+    fn silent_input_yields_finite_silent_frames() {
+        let mut rig = rig();
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        let mut scratch = [MeterFrame::default(); 8];
+        let drained = rig.collector.tick(&mut scratch);
+        assert_eq!(drained, 2);
+        for frame in &scratch[..drained] {
+            assert!(frame.is_sane(), "静音不得产生 NaN: {frame:?}");
+            assert_eq!(frame.peak, 0.0);
+            assert_eq!(frame.peak_hold, 0.0);
+            assert_eq!(frame.peak_dbfs(), f32::NEG_INFINITY);
+            assert_eq!(
+                frame.peak_dbfs_clamped(crate::level::SILENCE_FLOOR_DBFS),
+                crate::level::SILENCE_FLOOR_DBFS
+            );
+            assert_eq!(frame.quantum, 1);
+        }
+    }
+
+    /// 判据：母线电平是**单声道视图不可见**的那一路也参与联动
+    /// （这里用 `sum_into_bus` 直接验证汇流路径本身）。
+    #[test]
+    fn sum_into_bus_is_additive_and_bounded_by_valid_frames() {
+        let mut block = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        block.set_frames(4);
+        sum_into_bus(&mut block, &[0.25, -0.5, 1.0, 0.0]);
+        assert_eq!(block.left(), &[0.25f32, -0.5, 1.0, 0.0][..]);
+        assert_eq!(block.right(), &[0.25f32, -0.5, 1.0, 0.0][..]);
+        // 超长输入只按有效帧数累加, 不越界
+        sum_into_bus(&mut block, &[1.0; DEFAULT_BLOCK_FRAMES]);
+        assert_eq!(block.left()[0], 1.25);
+        assert_eq!(block.left().len(), 4);
+    }
+
+    /// 判据：轨道数超过电平状态容量时**不 panic、不扩容**，而是计数并保留母线。
+    #[test]
+    fn oversized_track_set_is_counted_and_never_panics() {
+        let slot = SnapshotSlot::new(snapshot_with_master_track(1, SCRATCH_METERS + 44));
+        let (retire, _queue) = retire_channel(16);
+        let (_sender, receiver) = event_channel(64);
+        let (publisher, _collector) = meter_channel(1024);
+        let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        runtime.process_quantum(&mut out, 2);
+        let stats = runtime.stats();
+        // 300 条轨: 255 条进槽(给母线留 1), 余 45 条计入容量丢弃
+        assert_eq!(stats.meter_capacity_drops, 45);
+        assert_eq!(stats.meter_frames, SCRATCH_METERS as u64);
+        assert_eq!(stats.meter_bulk_publishes, 1);
     }
 
     #[test]

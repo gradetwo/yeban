@@ -51,3 +51,9 @@ workspace = true
 name = "rt_zero_alloc"
 harness = false
 
+# 电平线的运行期判据（[ARCH-UI-002]/[ROAD-M2-008]）：同一个计数型分配器，
+# 但跑的是"带**真实电平计算**的量子"（每轨 + 母线 / 每量子一次批量发布 / UI 取最新 /
+# 队列溢出可观测）。同样必须 `harness = false`（理由见 `rt_zero_alloc.rs` 的模块文档与教训 L22）。
+[[test]]
+name = "meter_rt_contract"
+harness = false
