@@ -189,7 +189,13 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::AutomationLaneTargetMismatch { .. }
         | ModelError::MasterBusKindMismatch { .. }
         | ModelError::OpStateMismatch { .. }
-        | ModelError::AutomationTargetNotApplicable { .. } => ErrorCode::Conflict,
+        | ModelError::AutomationTargetNotApplicable { .. }
+        // ADR-0001 D27 新增的两个"仍被引用"错误: 语义是"资源当前处于冲突状态,
+        // 先解引用再移除" —— 与同组的 OpStateMismatch 属于同一类处置, 因此同样映射到 CONFLICT。
+        // (这条 match **刻意穷举、没有 `_` 兜底**: `Op`/`ModelError` 一扩张就必须在这里做一次显式决定,
+        //  否则编译不过 —— 本次 D27 就是这样被强制发现的。)
+        | ModelError::ClipInUse { .. }
+        | ModelError::RoutingNodeInUse { .. } => ErrorCode::Conflict,
     }
 }
 
