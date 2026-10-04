@@ -394,6 +394,40 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
 
+**当前进度快照（2026-10-05，本轮结束时）**：
+- 已落地 **13 条工作线**（`line-archive/{model-core, theory-core, dsp-core, ui-shell, sfz-core, engine-rt, render-master, ui-test-port, mcp-core, decode-core, app-introspect, tools-domain, app-binding, ui-mcp}` —— 共 14 个标签），远程只剩 `main` + `website`。
+- **13 个 crate 有真实实现**：`model`(89 测试) / `theory`(93) / `dsp`(108) / `sfz`(58) / `app`(53+9) /
+  `engine`(60) / `render`(102+64) / `ui-test-port`(47+43) / `mcp`(152+15) / `decode`(68) / `ui-mcp`(52+5) /
+  以及 `model` 的规范样本对账与 `render` 的基准入口。
+- **main 的 tip 全量真跑**：run **37231131629**（手动 `force_full`）= **success**，
+  `clippy --workspace -D warnings` + `test --workspace` 一条腿覆盖全部成员，日志里累计 **≈932 条通过的判据**。
+- 本轮最重要的能力跃迁：**界面由 `YebanProjectV1` 投影驱动**（`bridge.rs` 纯函数 + `host.rs` 唯一注入点），
+  实测"模型字段 → 控件树 → 像素"三层可追溯，且切回演示的截图与改造前**逐字节相同**；
+  **十个 MCP 工具从 `-32005` 变成真的做事**（8 真做 / 3 半做 / 1 半未接线）；
+  `BASELINE-001` 有了**首个实测读数**（32 轨 30 秒：单线程 106×、Rayon 自动 136× 实时，两次 digest 相同）。
+- 仍是骨架：`services` / `plugin-host` / `vst`。**不是骨架但仍有半边未接线**：`render_master` 的渲染本体、
+  界面上的混音台通道条/自动化/宏、`.yeban` 容器加载、`.yeban.lock` 的 OS 建议锁。
+
+## 7. 工作线合并台账 (Merge Ledger)
+
+`scripts/dev/worktree.sh land` 会用统一的 `merge(<line>): 工作线落地` 作为合并提交信息（自动化优先），
+因此**每条工作线的详细内容摘要记在这里**，不依赖提交信息的措辞。顺序 = 合并顺序。
+
+| 工作线 | 合并提交 | 内容摘要 |
+| :--- | :--- | :--- |
+| `engine-rt` | `35ee5ab` | 实时引擎核心: 定长块/快照退役回收/内部 PDC/FTZ-DAZ/批量 SPSC/cpal 宿主+NullBackend; 按 D19 切分 device feature; 延迟改从 DeviceDefinition::latency_samples 读取 |
+| `render-master` | `136c791` | 离线母带渲染: 拓扑分层 Rayon 并行 + 按 EntityId 字典序确定性串行归约; 自研 RF64/BW64+bext; TPDF 抖动; SMF 0/1 导出; pdc.rs 最小同构实现(待 engine 提供公共签名后按 D19 退役) |
+| `ui-test-port` | `7d3b31e` | Tier-1 无头软件光栅化 + 语义控件树 + 动态遮罩 SSIM(≥0.98) + 三级权限; app 侧窄口子适配器(默认关闭 feature) |
+| `mcp-core` | `60424a3` | Yeban Intent API v2 工具层: 10 个工具注册表与契约逐条对账、JSON-RPC 2.0、六级 scope 纯函数判定、`ui:inject` 生产硬禁、256-bit Bearer token + 0600 落盘、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0)、`dryRun`/`idempotencyKey` 真实现；十个工具的领域实现未接线(返回 -32005 NOT_IMPLEMENTED)；108 条判据 |
+
+| `mcp-core` | `6a860b1` | Yeban Intent API v2 工具层: 10 工具注册表与契约逐条对账(含联集 20 错误码与双射守卫)、JSON-RPC 2.0、六级 scope 纯函数、`ui:inject` 生产硬禁(先于 token 校验)、256-bit Bearer token + 0600 落盘(读到 644 直接拒)、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0, 绑定后回读 `local_addr()` 断言 `is_loopback()`)、`dryRun`/`idempotencyKey` 真实现; 112 条判据; **十工具领域实现未接线(-32005)** |
+| `app-introspect` | `b581795` | 真实界面的 Tier-1 内省: 适配器修到可编译 + 用**自动发现**测试目标让判据进入默认门禁; 产出三张 1920×1080 真实界面截图(100% 非黑, 2973/2784/2811 色)与运行时控件树; 控件树 184 注册 / 95 运行时 / 未注册 0; 动态区遮罩后 SSIM 精确 1.0; 中文非 tofu 判据(24px→648px) |
+
+| `decode-core` | `805fcf9` | 离线解码 + 重采样: symphonia 0.6.1 解码(WAV 8/16/24/32-bit + F32 + FLAC)、rubato 5.0.1 sinc 重采样、内容寻址不可变资产、尺寸/防挂死预算(检查全在分配之前 + `try_reserve` + `checked_mul`)、**主动加 `#![forbid(unsafe_code)]`**; CI 上 68 条单测 + clippy 全绿; **OGG/Vorbis 与 ADPCM 只有代码路径没有字节级夹具；基准打点缺失 ⇒ DoD 4 无法判定(不是通过)** |
+
+已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
+远程当前只剩 `main` 与 `website`。
+
 **当前进度快照（2026-10-05）**：
 - 已落地 **11 条工作线**（标签 `line-archive/{model-core, theory-core, dsp-core, ui-shell, sfz-core, engine-rt, render-master, ui-test-port, mcp-core, decode-core, app-introspect}`），
   远程无残留分支。
