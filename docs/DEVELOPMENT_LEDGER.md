@@ -394,6 +394,43 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
 
+**当前进度快照（2026-10-05，第 5 轮结束时）**：
+- 已落地 **19 条工作线**（`line-archive/*` 共 19 个标签：前 16 条 + `container` / `lock-advisory` / `live-port` /
+  `store-container` / `app-completion` / `engine-meters` 中的本批），远程只剩 `main` 与 `website`。
+- **13 个 crate 有真实实现**；`services`(v1.1.0) / `plugin-host`(v2.0.0) / `vst`(v2.0.0) 的空壳是规范安排的
+  版本阶段（见 `docs/ledger/gate-status.md` §C.4）。
+- **门禁状态**（单一事实源 `docs/ledger/gate-status.md`，由 `check_gate_status.py` 守卫）：
+  `MUST-GATE-004/006/007/008/010/013/015` = **已接线**（008 现在**双平台**：Unix + `windows` 手动门禁实测）；
+  `001/002/005/009/012` = 部分；`003/011/014` = PENDING（跨架构 / fuzz 未达千万次 / 采样未入库）。
+- **第 5 轮的三条能力切片**：`.yeban` 容器接进 `yeban-mcp` 的保存/加载（保存出的字节前 4 字节是 `PK\x03\x04`，
+  资产 CAS 端到端可对账，`ARCH-SEC-004` 三阶段原子落盘一字未改）；界面补完（卷帘音符 **tick 位置**、
+  轨道色标、`.yeban` 打开入口）；引擎**真实电平**（峰值/峰值保持/RMS/钳位，每量子恰好一次批量发布，
+  零分配窗口 105 行 `allocations=0 deallocations=0`）。
+- **新增两个手动门禁**：`windows`（双平台实测）与 `bench` 的**真测量**；手动档 `fuzz` **首次真跑**并修掉
+  "目标从未编译过"的历史遗留（90 秒 ≈ 95 万次执行 / 零崩溃）。
+- **仍未闭环的大项**：`MUST-GATE-003`(跨架构 L2) / `011`(未达千万次) / `014`(采样入库需人类决定)；
+  `BASELINE-002..006`；Windows 门禁尚未接进 `ci.yml` 防回归；容器无 deflate；控制面未进发行版运行路径。
+
+## 7. 工作线合并台账 (Merge Ledger)
+
+`scripts/dev/worktree.sh land` 会用统一的 `merge(<line>): 工作线落地` 作为合并提交信息（自动化优先），
+因此**每条工作线的详细内容摘要记在这里**，不依赖提交信息的措辞。顺序 = 合并顺序。
+
+| 工作线 | 合并提交 | 内容摘要 |
+| :--- | :--- | :--- |
+| `engine-rt` | `35ee5ab` | 实时引擎核心: 定长块/快照退役回收/内部 PDC/FTZ-DAZ/批量 SPSC/cpal 宿主+NullBackend; 按 D19 切分 device feature; 延迟改从 DeviceDefinition::latency_samples 读取 |
+| `render-master` | `136c791` | 离线母带渲染: 拓扑分层 Rayon 并行 + 按 EntityId 字典序确定性串行归约; 自研 RF64/BW64+bext; TPDF 抖动; SMF 0/1 导出; pdc.rs 最小同构实现(待 engine 提供公共签名后按 D19 退役) |
+| `ui-test-port` | `7d3b31e` | Tier-1 无头软件光栅化 + 语义控件树 + 动态遮罩 SSIM(≥0.98) + 三级权限; app 侧窄口子适配器(默认关闭 feature) |
+| `mcp-core` | `60424a3` | Yeban Intent API v2 工具层: 10 个工具注册表与契约逐条对账、JSON-RPC 2.0、六级 scope 纯函数判定、`ui:inject` 生产硬禁、256-bit Bearer token + 0600 落盘、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0)、`dryRun`/`idempotencyKey` 真实现；十个工具的领域实现未接线(返回 -32005 NOT_IMPLEMENTED)；108 条判据 |
+
+| `mcp-core` | `6a860b1` | Yeban Intent API v2 工具层: 10 工具注册表与契约逐条对账(含联集 20 错误码与双射守卫)、JSON-RPC 2.0、六级 scope 纯函数、`ui:inject` 生产硬禁(先于 token 校验)、256-bit Bearer token + 0600 落盘(读到 644 直接拒)、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0, 绑定后回读 `local_addr()` 断言 `is_loopback()`)、`dryRun`/`idempotencyKey` 真实现; 112 条判据; **十工具领域实现未接线(-32005)** |
+| `app-introspect` | `b581795` | 真实界面的 Tier-1 内省: 适配器修到可编译 + 用**自动发现**测试目标让判据进入默认门禁; 产出三张 1920×1080 真实界面截图(100% 非黑, 2973/2784/2811 色)与运行时控件树; 控件树 184 注册 / 95 运行时 / 未注册 0; 动态区遮罩后 SSIM 精确 1.0; 中文非 tofu 判据(24px→648px) |
+
+| `decode-core` | `805fcf9` | 离线解码 + 重采样: symphonia 0.6.1 解码(WAV 8/16/24/32-bit + F32 + FLAC)、rubato 5.0.1 sinc 重采样、内容寻址不可变资产、尺寸/防挂死预算(检查全在分配之前 + `try_reserve` + `checked_mul`)、**主动加 `#![forbid(unsafe_code)]`**; CI 上 68 条单测 + clippy 全绿; **OGG/Vorbis 与 ADPCM 只有代码路径没有字节级夹具；基准打点缺失 ⇒ DoD 4 无法判定(不是通过)** |
+
+已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
+远程当前只剩 `main` 与 `website`。
+
 **当前进度快照（2026-10-05，第 4 轮结束时）**：
 - 已落地 **16 条工作线**（`line-archive/*` 共 16 个标签：model-core / theory-core / dsp-core / ui-shell /
   sfz-core / engine-rt / render-master / ui-test-port / mcp-core / decode-core / app-introspect /
@@ -949,4 +986,24 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   ⇒ 现在两份文件用**同一个函数名、同一套语义**。
 - **仍未闭环**：`windows` 门禁的第三次读数还没拿到（提交后我会再跑一次）；在那之前
   `MUST-GATE-008` 的 Windows 侧仍是 **pending**，不许写成已验证。
+
+### Windows 门禁闭环（第四次读数 = success）与它四次读数的完整轨迹
+
+手动档 `windows` 的四次读数，**每一次红的性质都不同** —— 这正是"新增一个平台"最值钱的地方：
+
+| 次 | run | 结论 | 红点性质 |
+| ---: | ---: | :--- | :--- |
+| 1 | 37235205697 | 失败 | **真缺陷**：`LockFileEx` 是**强制**锁 ⇒ "持锁后读锁文件"在 Windows 上必然失败（OS error 33） |
+| 2 | 37236383874 | 失败 | **判据的环境假设**：`container_store.rs` 那条判据跑 `python3 + jsonschema`，而 Windows runner 不带该依赖 |
+| 3 | 37236922758 | 失败 | **平台相关的未使用 import**：`security.rs` 的 `use std::fs;` 只被 `#[cfg(unix)]` 测试用到 ⇒ `-D warnings` 报错 |
+| 4 | **37237134932** | **success** | 三次修完，Windows 上 `yeban-model` + `yeban-mcp` 的全部测试与 clippy 真跑通过 |
+
+- 修法分别落在：`line/store-container`（`LockGuard` 自带元数据 + 读在加锁前 + 容忍读不到）、
+  集成者（把"缺依赖"改成**响亮 SKIP**，并与 `contract.rs` **统一成同一个守卫函数**；
+  给 unix-only 的 import 加 `#[cfg(unix)]`）。
+- **教训**：一个"从未在某个平台编译过"的分支，藏的**不只是代码 bug**，还有
+  **判据对环境的假设**与**平台相关的 lint**。三者只有真跑才能分开。
+  `MUST-GATE-008` 因此从"Unix 验证 + Windows 未知"升级为**双平台实测**，并在状态表里写清四次 run id。
+- **仍然诚实的一点**：这个门禁目前是**手动档** —— 它证明"能编译能跑"，但不防回归；
+  接进 `ci.yml` 的受影响集合是下一步（已登记）。
 
