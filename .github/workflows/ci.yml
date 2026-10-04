@@ -309,6 +309,60 @@ jobs:
   # ---------------------------------------------------------------------------
   # 开源合规: cargo-deny (MUST-GATE-004)
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Windows: 只验证**有平台分支**的那两个轻依赖 crate（`yeban-mcp` 的 `.yeban.lock` 走 LockFileEx）。
+  #
+  # 为什么放进自动档（它原本只是手动档 `windows`）: 实测三次红各抓到一类真问题
+  # （强制锁语义 / 判据对 jsonschema 的环境假设 / 平台相关的未使用 import），
+  # 而那三条**都只有真在 Windows 上编译才会暴露**。只在手动档跑 = 不防回归。
+  #
+  # 成本控制: 只在 `plan` 判定 `yeban-mcp` 或 `yeban-model` 受影响时运行；
+  # 只跑这两个 crate（零系统库依赖，不需要 Slint/cpal/ALSA），因此不会把 Windows runner 拖满。
+  # ---------------------------------------------------------------------------
+  windows:
+    name: windows (yeban-mcp / yeban-model 的平台分支)
+    needs: plan
+    if: |
+      contains(needs.plan.outputs.crates, 'yeban-mcp') ||
+      contains(needs.plan.outputs.crates, 'yeban-model')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具链漂移断言 (与 Linux 腿同一个钉死版本)
+        shell: bash
+        run: |
+          set -euo pipefail
+          want="$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | head -1 | cut -d'"' -f2)"
+          got="$(rustc --version | awk '{print $2}')"
+          [ "$want" = "$got" ] || { echo "::error::工具链漂移, L1 声学确定性要求锁定工具链"; exit 1; }
+
+      - name: clippy (-D warnings)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo clippy -p yeban-model -p yeban-mcp --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
+
+      - name: test (含 .yeban.lock 的 Windows 分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-model -p yeban-mcp --all-targets --locked 2>&1 | tee -a /tmp/gate.log
+
+      - name: 失败摘要
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### Windows 腿未通过 — 多半是平台分支/lint/环境假设"
+            echo '```text'
+            tail -100 /tmp/gate.log 2>/dev/null || echo "(没有捕获到日志)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deny:
     name: deny (cargo-deny 开源合规)
     runs-on: ubuntu-latest
