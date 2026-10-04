@@ -43,3 +43,11 @@ yeban-model.workspace = true
 
 [lints]
 workspace = true
+
+# `[MUST-GATE-001]` 的运行期断言需要**计数型全局分配器**，而它是进程全局的
+# ⇒ 关掉 libtest 才能让数字无歧义（libtest 自己会在别的线程里分配，第一版实测因此假红 9 次）。
+# `cargo test --all-targets` 仍会构建并运行它，以退出码判定。
+[[test]]
+name = "rt_zero_alloc"
+harness = false
+
