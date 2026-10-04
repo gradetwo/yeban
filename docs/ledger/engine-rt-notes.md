@@ -312,7 +312,11 @@ impl CompensationBank {
 | 轮 | run id | 结论 | 红点与处置 |
 | :-: | :--- | :--- | :--- |
 | 1 | `37221166111` | ❌ | `checks`：文档链接门禁报本文件第 262 行有一个"链接"——其实是正文里写的 markdown 链接**语法示例**，被 `LINK_RE` 抓到 ⇒ 已改写措辞，本文件不再出现该字符组合。<br>`rust (yeban-engine)`：clippy 5 类错误（1 条 unused import、5 条 deprecated intrinsic、1 条 `mem_replace_option_with_some`）⇒ 已全部修掉（§1.3）。<br>其余 job 全绿：`deny` ✅（含新的 cpal/alsa 依赖）、`lockfile` ✅、`plan` ✅、另外 21 条 rust 腿 ✅。 |
-| 2 | 见 `scripts/dev/ci-verdict.sh line/engine-rt` | 待读 | 本轮同时吃进 ADR-0001 D19（feature 切分）、D21（还原 `workspace = true`）与模型层 `latency_samples` |
+| 2 | `37221884009`（commit `3b09dc1`） | ✅ **全绿** | `plan` ✅ / `checks` ✅（fmt + 12 条守卫 + schema + **文档链接** + 许可清单对账）/ `lockfile` ✅ / `deny` ✅（cpal+alsa 许可齐备）/ `rust (workspace 全量)` ✅ 3m57s —— 即 `clippy --workspace --all-targets -- -D warnings` + `test --workspace` 全通过，**本 crate 的 60 条单测（`grep -c '#\[test\]'` 实测；含 FTZ/DAZ 汇编判据 e2、PDC 不变量 c1/c2、退役回收 a1/a2/a3、延迟来源 i1/i2）在 x86_64 Linux 上实测通过**。 |
+
+> 第 2 轮把 21 条 per-crate 矩阵腿换成了**一条 `rust (workspace 全量)`**（集成者改的 CI 形态）：
+> 因为本次是 rebase 后的 force-push，`plan` 推导出工作区全量。判决更强（整仓 clippy+test），
+> 但也就无法从矩阵腿名字直接看出"只有 yeban-engine 被验"；本行如实记录。
 
 ### 6.3 ⚠️ 两个门禁缺口（**发现，需要集成者修 `scripts/**`**）
 
