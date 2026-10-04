@@ -325,6 +325,8 @@ lib 目标，我把探针扩成 lib(OFF)/lib(ON)/单元判据三步 —— 第�
 | 1 | `c1e6067` | [37239212929](https://github.com/gradetwo/yeban/actions/runs/37239212929) | **failure**：`rust (yeban-app)` exit 101 | `checks` / `lockfile` / `deny` / `plan` 绿；`plan` 这次选**窄腿**（`rust (yeban-app)`），`rust (workspace 全量)` 按设计跳过。红点**全在 clippy 的类型检查阶段**（测试没跑到）：10 处 `E0308`（把 `ui/tree` 的 `UiTree` 传给了只接受执行面 `ControlTree` 的助手）、2 处 `E0599`（`UiTree` 没有 `len()`）、1 处 `E0382`（`into_control_plane` 把执行面移进 `Box` 之后才借 `registry`）。**全部是"只有含 Slint 的那一半能判"的类型错** —— 与 §5.2 的清单逐条吻合 |
 | 2 | `72af95b` | [37239546917](https://github.com/gradetwo/yeban/actions/runs/37239546917) | **failure**：只剩 1 条 clippy | `-D unused-variables`：`mixer_meter_labels_match_the_injected_frames` 里一个没用到的 `let view = …`（残留，与"视图真的切了"无关 —— 那条断言在判据 8 里）。**这一轮同时证明了**：`.slint` 全部编译通过、`host.rs` / `live_surface.rs` / `test_port_adapter.rs` / 全部测试目标都过了类型检查（第 1 轮的 13 处全修对了） |
 | 3 | `9aa31ca` | [37239806512](https://github.com/gradetwo/yeban/actions/runs/37239806512) | ✅ **success（本线的净判决）** | `plan` / `checks` / `lockfile` / `deny` 全绿；**`rust (yeban-app)` = success（3m54s）**：`clippy -p yeban-app --all-targets --locked -- -D warnings` 零告警，随后 `cargo test -p yeban-app --all-targets --locked` 三个目标 = **`91 passed`**（单元：`bridge`/`scene`/`elements`/`input`/`meters`/`engine_host`/`save` 等）、**`0 passed`**（bin）、**`12 passed`**（Tier-1 端到端判据 —— 既有 4 条 + 本线新增 8 条）。`rust (workspace 全量)` 被 `plan` **跳过**（受影响集合只有 `yeban-app`） |
+| 4 | `b55bccb` | [37240190698](https://github.com/gradetwo/yeban/actions/runs/37240190698) | ✅ **success（docs-only，设计如此）** | 只改本文件 ⇒ `plan` 判"受影响集合为空"，`rust (yeban-app)` 与 `rust (workspace 全量)` 都**跳过**（0s）；`checks` / `lockfile` / `deny` 绿。**这一轮没有代码读数** —— 代码结论的锚点因此是第 3 轮 `9aa31ca` / run 37239806512，不是这个 docs 提交（`app-binding-notes.md` §6.3 的同款纪律） |
+| 手动档 | `b55bccb` | [37240233176](https://github.com/gradetwo/yeban/actions/runs/37240233176) | ✅ **success** | `gates-manual.yml` 的 `all-features`（`crate=yeban-ui-mcp`）：`cargo clippy -p yeban-ui-mcp --all-features --all-targets --locked -- -D warnings` 零告警（44.43s 编译 —— 这一块以前**只有本机探针**跑过）。见 §9.2 的边界说明 |
 
 ### 9.1 第 3 轮（净判决）的**原始读数**（从 job 日志抓取）
 
@@ -367,10 +369,20 @@ running 12 tests   -> test result: ok. 12 passed; 0 failed     # tests/live_ui_m
 ### 9.2 这一轮**没有**覆盖到的（下一轮/集成者）
 
 1. **`rust (workspace 全量)` 被 `plan` 跳过**（受影响集合 = `yeban-app`）⇒ `yeban-ui-mcp` 的
-   **单元判据**（68 条）在 CI 上这一轮没有跑；它只是作为 `yeban-app` 的 dev-dependency 被
+   **单元判据**（68 条）在 CI 上这一轮**没有执行**；它只是作为 `yeban-app` 的 dev-dependency 被
    **编译**（日志里有 `Checking yeban-ui-mcp v0.0.1`）。本机真跑的证据在 §5.1。
-   要拿 CI 读数需要一次触碰 `crates/yeban-ui-mcp/**` 的推送，或手动档
-   `gates-manual.yml` 的 `all-features`（`cargo clippy -p yeban-ui-mcp --all-features --all-targets --locked`）。
+   作为补偿，本线**手动触发了既有的手动档**（不改 `.github/**`）：
+
+   ```text
+   gh workflow run gates-manual.yml --ref line/app-mixer -f gate=all-features -f crate=yeban-ui-mcp
+   -> run 37240233176 = success（all-features (yeban-ui-mcp) 1m16s）
+      `cargo clippy -p yeban-ui-mcp --all-features --all-targets --locked -- -D warnings` 零告警
+   ```
+
+   它覆盖了 **编译 + clippy**（含 `--all-targets`：`src/testing.rs` / `service.rs` 的判据、
+   `tests/contract.rs`、`examples/export_ui_samples.rs` 与 `ui-mcp-http` 那条 cfg 分支），
+   但**不等于**跑了那 68 条判据（手动档是 clippy 档）。"ui-mcp 的单元判据在 CI 上执行过"
+   这件事仍需一次触碰 `crates/yeban-ui-mcp/**` 的自动档推送或全量腿 —— 如实记在这里。
 2. **两次被 `concurrency` 取消的 run**（§9 第 0a/0b 行）：那两轮里有一次选的是**全量腿**，
    但判决**不存在** —— 记在这里而不是写成"绿"（L23/L26）。
 3. **`main` 与集成**:本线只保证 `line/app-mixer` 的判决；合并之后的全量腿读数归集成者。
