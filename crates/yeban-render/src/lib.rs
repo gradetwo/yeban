@@ -179,7 +179,11 @@ mod contract_tests {
         for sample in samples {
             hasher.update(sample.to_bits().to_le_bytes());
         }
-        let expected: [u8; 32] = hasher.finalize().into();
+        let output = hasher.finalize();
+        let mut expected = [0u8; 32];
+        for (slot, byte) in expected.iter_mut().zip(output.iter()) {
+            *slot = *byte;
+        }
         assert_eq!(crate::render::RenderOutput::digest_of(&samples), expected);
     }
 

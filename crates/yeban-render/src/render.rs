@@ -307,8 +307,13 @@ impl RenderOutput {
         for sample in samples {
             hasher.update(sample.to_bits().to_le_bytes());
         }
+        let output = hasher.finalize();
         let mut digest = [0u8; 32];
-        digest.copy_from_slice(&hasher.finalize());
+        // 逐字节拷贝而不是 `copy_from_slice(&output)`: 只依赖 `Array` 的 `Deref<[u8]>`
+        // 带来的 `.iter()`, 不依赖版本的 `From`/`AsRef` 具体实现。
+        for (slot, byte) in digest.iter_mut().zip(output.iter()) {
+            *slot = *byte;
+        }
         digest
     }
 }
