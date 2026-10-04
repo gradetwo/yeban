@@ -422,12 +422,23 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 - **含义**：`crates/yeban-app/src/test_port_adapter.rs`（505 行）**从未被编译过** ——
   它挂在 `required-features = ["ui-test-port"]` 后面，而此前 CI 从不启用该 feature。
   也就是说 AGENTS.md §3 DoD 6 的"UI 变更双重验证"在**真实界面**上至今没有任何判据在执行。
-- **处置（不假装绿，也不让 main 长期红）**：
-  1. main 的 CI **暂时移除**该步骤，并在 `ci.yml` 原位留下完整说明（含恢复指引）；
-  2. 缺口登记在本节 + ADR-0001 D22；
-  3. 开工作线 `app-introspect` 把适配器修到能编译、能产出**真实界面**（13 个 `.slint`）的
-     Tier-1 截图与控件树；绿了之后由集成者**重新加回** `ci.yml` 的那一步。
-- **恢复命令**（原样）：`cargo test -p yeban-app --features ui-test-port --locked`
+- **已解决（`line/app-introspect`，run 37224871698 绿）**：适配器的 8 处编译错误已修。
+  更重要的是**判据的接线方式被改对了** —— 该线没有等我"记得把 CI 步骤加回去"，
+  而是加了 `[dev-dependencies] yeban-ui-test-port` + 一个**自动发现**的测试目标
+  `crates/yeban-app/tests/real_ui_tier1.rs`（用 `#[path]` 装同一份判据源码），
+  于是 `cargo test --all-targets` 就会跑到它 —— **判据进入默认门禁**，不依赖任何人记得加步骤。
+  证据：`cargo tree -p yeban-app -e normal` 不含它（release 图未变，红线 6 未削弱）、`Cargo.lock` 未变。
+  ⇒ **不再需要**在 `ci.yml` 里加专用步骤；`ci.yml` 里的说明已按此更新。
+- **真实界面确实被渲染了**（同一次 run 的 artifact `ui-screenshots-yeban-app`，192 KB）：
+  三张 **1920×1080** PNG（arrangement full / arrangement compact / session full）+
+  `app-registry-control-tree.json` + `app-runtime-control-tree.json` + `app-introspect-observations.txt`。
+  集成者已下载并**人眼核对**：结构完整且语义正确（顶栏走带/BPM/时间码/分支与提交/AI 徽章/视图切换；
+  左侧 8 项乐器资源栏；轨道头 M/S 与 -6.0 dB；时间轴 Intro/Verse/Chorus/Outro 段落块与带 ULID 的剪辑；
+  右侧 AI 面板；底部钢琴卷帘 Tab 1–5 + `1/16 · PPQ 960` + `C2 - C7` + 音符；
+  状态栏 `1.1.000 - 5.4.480` / `Cmaj7` / `48 kHz / 24-bit · DSP 3.2% · 120 FPS`）。
+  ⇒ "DAW 界面从未被渲染器看过"这一条**到此关闭**。
+- **仍未闭环**：截图里的界面文本以 ASCII 为主 ⇒ "中文 tofu"很可能**未被触发**；
+  该线按 ADR-0001 D24 在 round 2 rebase 拿到 `fonts-noto-cjk` 后再加"中文字形非 tofu"判据。
 
 ### 关于界面字体的决策与它的可见后果（ADR-0001 D24）
 

@@ -252,11 +252,12 @@ jobs:
       # `yeban_ui_test_port::render` 的公开项, 缺 `use`)与一个未绑定的 `image`。
       # 也就是说: 那条"UI 变更必须双重验证"的判据从未真正执行过, 而且**编译不过**。
       #
-      # 处置(不假装绿, 也不让 main 长期红):
-      #   1. 本步暂时移除 —— 让 main 保持"所有在跑的判据都真的通过";
-      #   2. 缺口如实登记在 docs/DEVELOPMENT_LEDGER.md 的 pending 清单;
-      #   3. 开一条工作线把适配器修到能编译并能产出真实界面截图, 绿了之后由集成者**重新加回本步**。
-      #      (要恢复时: 见 commit 66b002c 的这一段, 原文在 git 历史里。)
+      # 已解决(2026-10-05, line/app-introspect, run 37224871698 绿): 适配器的编译错误已修, 而且
+      # 判据的接线方式被改得更好 —— 该线用 `[dev-dependencies] yeban-ui-test-port` + 一个**自动发现**的
+      # 测试目标 `crates/yeban-app/tests/real_ui_tier1.rs` 让判据进入**默认门禁**
+      # (`cargo test --all-targets` 就会跑到), 不再依赖"有人记得加一步 CI"。
+      # ⇒ **本步不需要再加回**: 专用步骤会把同一件事做两遍, 而且给出"只有这一步才算验证"的错觉。
+      # 证据: `cargo tree -p yeban-app -e normal` 不含 yeban-ui-test-port(release 图未变, 红线 6 未削弱)。
 
       - name: 上传无头 UI 截图 (Tier-1 光栅化产物, 供人眼复核)
         if: always()
