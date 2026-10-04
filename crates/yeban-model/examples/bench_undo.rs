@@ -36,17 +36,20 @@ fn micros(duration: std::time::Duration) -> f64 {
 /// 于是判据在"apply"那一步就炸了。**逆操作测量必须建立在一个真的能施加的操作上。**
 fn first_param_target(project: &yeban_model::project::YebanProjectV1) -> (AutomationTarget, f32) {
     for (track_id, track) in &project.tracks {
-        if let Some(device) = track.devices.first() {
-            if let Some(param) = device.params.first() {
-                return (
-                    AutomationTarget::DeviceParam {
-                        track_id: *track_id,
-                        slot_index: 0,
-                        param_index: 0,
-                    },
-                    param.value,
-                );
-            }
+        // let-chain（edition 2024）：`clippy::collapsible_if` 要求把嵌套 if-let 合并。
+        // 这个 lint 是**在 Windows 腿上第一次暴露的** —— 不是因为 Windows 特殊，
+        // 而是因为这个文件的那一轮 run 被下一次推送取消了（见账本 L23）：**没跑过的判据不算判据**。
+        if let Some(device) = track.devices.first()
+            && let Some(param) = device.params.first()
+        {
+            return (
+                AutomationTarget::DeviceParam {
+                    track_id: *track_id,
+                    slot_index: 0,
+                    param_index: 0,
+                },
+                param.value,
+            );
         }
     }
     panic!("夹具工程里应当至少有一条带参数设备的音轨");
