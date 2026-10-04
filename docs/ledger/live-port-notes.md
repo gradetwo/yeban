@@ -392,7 +392,12 @@ bash /Users/crow/work/music/.live-port-harness/clippy.sh
 | 2 | `9403282` | [37233109787](https://github.com/gradetwo/yeban/actions/runs/37233109787) | **failure（唯一的红点不是本线的）**：`plan` / `checks` / `lockfile` / `deny` 绿；`rust (workspace 全量)` 的 **clippy 零告警**（本线第 1 轮那条死代码已删），`test --workspace` 跑到了本线的全部判据 —— **`tests/live_ui_mcp.rs`：`running 4 tests` → `4 passed`（10.07s）**，读数见 §3.3。红的唯一一条是 **`crates/yeban-engine/tests/rt_zero_alloc.rs:121`**：`[MUST-GATE-001] 10_000 quanta: allocations=9 deallocations=3` ⇒ `left: 9 / right: 0`。该文件由 **origin/main 的 `384ea92`** 引入（不是本线；`git diff --name-only 384ea92 HEAD` 里没有 `crates/yeban-engine/**`）。主分支自己那一轮（run 37232665652 @ `384ea92`）走的是 **per-crate 矩阵腿**、该判据**过**；本线这一轮因为是全量腿（`Cargo.lock` 命中 `ROOT_TRIGGERS`）而把它放进了 `--workspace` 的供给里，于是**同一个测试二进制给出了不同结果** —— 见 §6.2（这是给集成者的 needs，不是本线的红点）。 |
 | 3 | `c16375b` | [37233532606](https://github.com/gradetwo/yeban/actions/runs/37233532606) | **success（本线的净判决）**：`plan` / `checks` / `lockfile` / `deny` / **`rust (workspace 全量)`** 全绿（`rust (${{ matrix.crate }})` 按计划跳过）。`clippy --workspace --all-targets -- -D warnings` **零告警**（含本线那两个含 Slint 的文件）；`test --workspace --all-targets` 里 `tests/live_ui_mcp.rs` = **`running 4 tests` → `ok. 4 passed`（8.95s）**，`yeban_ui_mcp` 的 lib 单元判据 = **`running 66 tests` → `ok. 66 passed`**（与本机零 Slint 探针**同一个数字**）。第 2 轮那条 engine 红点在这一轮**过了**（`rt_zero_alloc`：`ok. 1 passed; 0 failed; 1 ignored`）⇒ 它是**负载/供给敏感的抖动**，与本线无关（§6.2）。 |
 | 4 | `05f1621` | [37233967164](https://github.com/gradetwo/yeban/actions/runs/37233967164) | **success**，但 `rust (workspace 全量)` 与 `rust (${{ matrix.crate }})` 都**按设计跳过**（0s）：本轮是 **fast-forward** 推送，计划器的 base 是**上一 tip**（`c16375b`），diff 里只有 `docs/**` ⇒ 无成员 crate、无根级触发器。`plan` / `checks` / `lockfile` / `deny` 绿。⇒ **代码净判决锚在第 3 轮（run 37233532606 @ `c16375b`）**，本行之后只有 docs 变化、代码字节未动。 |
-| 5 | `pending` | `pending` | `pending`（同第 4 轮：fast-forward 的 docs 提交） |
+| 5 | `1349ce0` | [37234078315](https://github.com/gradetwo/yeban/actions/runs/37234078315) | **success**（`plan` / `checks` / `lockfile` / `deny` 绿；两条 rust 腿按 §3.5 的规则跳过 —— 纯 docs 的 fast-forward 提交）。 |
+
+> **本表到此为止。** 本行之后的任何 docs 提交都只会得到与第 4/5 轮**同一形态**的读数
+> （§3.5 的规则：base = 上一 tip，diff 里只有 `docs/**` ⇒ 两条 rust 腿跳过），
+> 因此不再逐轮追记 —— 追记它只会产生新的 docs 提交，而新的 docs 提交又需要被追记。
+> **代码净判决锚在 `c16375b` / run 37233532606（全绿，含本线全部判据）。**
 
 ### 6.2 第 2 轮的读数：本线全绿，唯一的红点在 **main 自己**的新判据上
 
