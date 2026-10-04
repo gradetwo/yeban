@@ -83,7 +83,10 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `yeban-app` 首次真的编译 Slint（run 37218433961） | **`rust (yeban-app)` = success**：13 个 `.slint` 全部编译通过，`slint_build::compile` 生成代码可用，`slint::include_modules!()` 在嵌套模块里可行，clippy `-D warnings` 零告警，40 条单元测试绿 | `gh run view 37218433961` |
 | `yeban-app` 全绿（run 37218791723，round 3） | **success**：含 `checks` 里新接的"依赖许可清单漂移检查"（该门禁第一次变红就抓到了 Slint 引入后清单未重生成） | `gh run view 37218791723` |
 | **主分支 tip 全量真跑**（手动 `force_full`，run 37219320374） | **27/27 job success，0 failure**：计划器返回全部 **23** 条 rust 矩阵腿（含 `yeban-app` 真实编译 Slint），加上 checks / lockfile / deny / plan | `gh run view 37219320374` |
-| **主分支当前 tip 全量真跑**（run 37219697954，含 sfz 合并与全部门禁改进） | **27/27 job success，0 failure** —— 这是"当前 tip 全绿"的最终证据 | `gh run view 37219697954` |
+| **主分支当前 tip 全量真跑**（run 37219697954，含 sfz 合并与全部门禁改进） | **27/27 job success，0 failure** | `gh run view 37219697954` |
+| **七个 crate 落地后的 tip 全量真跑**（run 37222648375，手动 `force_full`） | **success**：`rust (workspace 全量)` 一条腿覆盖 model / theory / dsp / sfz / **app(Slint)** / **engine(cpal)** / **render(rayon+hound+midly)** 的 `clippy --workspace -D warnings` + `test --workspace` | `gh run view 37222648375` |
+| `yeban-engine` 落地（run 37221884009） | **全绿**（含 workspace 全量腿 3m57s）；60 条单测 | `gh run view 37221884009` |
+| `yeban-render` 落地（run 37222215932） | **全绿**（含 workspace 全量腿 2m38s）；crate 内 102 条判据 + 本机脚手架 64 条 | `gh run view 37222215932` |
 | 已合并工作线的退役 | 5 条线（model-core / theory-core / dsp-core / ui-shell / sfz-core）**先打归档标签 `line-archive/<name>` 再删除本地+远程分支**；远程只剩 `main` 与 `website`；5 条线的实现内容全部保留在 main 的合并提交里 | `git tag --list 'line-archive/*'`; `git ls-remote --heads origin` |
 | `yeban-sfz` 落地（run 37219428588） | **27/27 全绿**；58 条测试（27 lib + 16 include 沙箱 + 12 畸形输入 + 3 doctest）；运行时依赖仅 `thiserror`，零 dev-dependency | `gh run view 37219428588` |
 | 跨语言契约对账（本机实测全链路） | `cargo run -p yeban-model --example export_schema_samples` → 4 份样本 → `validate_schemas.py --samples-dir` → **4/4 通过**（ops 样本 23 变体 oneOf 对账通过） | 见 `docs/ledger/model-core-provenance.md` §4 |
@@ -134,6 +137,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | `scripts/dev/ci-verdict.sh` | 仓库还没有任何 workflow run，脚本尚未真实取回过一次判决 |
 | `site-deploy.yml` 的真实部署路径 | 需要 Cloudflare 凭据，当前只验证了"缺凭据 → 优雅跳过"这条分支 |
 | **硬件往返时延（BASELINE-005 ≤ 5.5ms @64 采样）** | **CI 上永远无法验证**：GitHub runner 没有声卡。规范要求"硬件回环"实测（macOS `kAudioDevicePropertyLatency` / `kAudioStreamPropertyLatency`；Windows `IAudioClient::GetStreamLatency`；Linux PipeWire/JACK 回环）。这需要**有音频设备的机器 + 回环**（物理环回线，或 BlackHole/Loopback 这类虚拟设备）。这条无法靠"绕行"消除，只能由人或有声卡的机器完成 —— 已列入待人类清单，而不是记成 pending 了事。 |
+| **`yeban-ui-test-port` 仍未落地** | 该线已迭代 5 轮（clippy/夹具/控件树/SSIM 各修一轮），最新一轮只剩一个 `clippy::useless_conversion`（`render.rs:794`）。**Tier-1 截图的"非零尺寸 + 非全黑"与 SSIM≥0.98 尚未在任何一轮里同时成立** —— 即"DAW 界面从未被渲染器看过"这一条**仍然成立**。 |
 | 官网的浏览器视觉核验 | **已在 CI 跑绿**（run 37217947487）：8 组断言通过，4 张全页截图作为 artifact 留存，并已下载人工过目（深色中文首页 / 浅色英文首页 / 移动端 390px / 404 页）。截图证据：`gh run download 37217947487 -n site-screenshots` |
 | 依赖许可清单 `--check` | **已闭环**：62 包时本机绿；Slint 引入后 CI 真实变红一次（清单未重生成），重生成后 579 包绿；合并 ui-shell 后本机 `--check` 再次通过（635 行清单） |
 | Linux 上 Slint 的系统库前置 | **已被真实判决覆盖**：apt 步骤加上后 `rust (yeban-app)` 转绿（run 37218433961 / 37218791723） |
@@ -348,4 +352,23 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 
 **规则**：工作线报告"判据没生效"时，先复现它给的**具体例子**，再判断是判据错还是注入无效；
 两者都可能是真的（这次就是：例子错、隐患真）。
+
+### L13 — 我据失败输出推断"实现写成了降序"，被工作线用证据纠正
+
+- **现象**：`line/render-master` 的一条判据红了，输出是 `left: [32767…32760]` / `right: [32760…32767]`。
+  我据此判断"实现产出降序，可能是 `rev()` 或排序键拼接顺序问题"，并把它写进了给工作线的诊断。
+- **真相**：同一判据的**前半段**（按源节点投影严格升序）是**通过**的，说明实现确实升序、排序键确实是复合键；
+  红的是它**多加的一条期望值写错**的断言（"边身份投影也全局升序"）—— 而测试夹具为了证明"排序键是复合键
+  而不是边身份"，**刻意**让边身份与源节点逆序。**实现对，判据错。**
+- **规则**：从一条失败的断言推断实现有 bug 之前，先看**同一条判据里的其它断言是否通过** ——
+  通过的部分往往已经把"实现的哪个部分是对的"钉住了。`left/right` 只说明"两者不等"，
+  **不说明哪一侧是"实现的实际输出"**（这次我把 `left` 当成了实现输出，而它其实是那条错误期望的另一半）。
+- **已落地**：更正已写进 `docs/ledger/render-master-notes.md` §9 与合并提交信息；账本留此记录。
+  这条与 L3（"判据没红"要先证明注入生效）是同一族错误的两面：**读数之前先确认读的是什么量**。
+
+### L14 — "最多 3 轮 CI"是**防乱试**的指引，不是硬上限
+
+`line/render-master` 用了 6 次推送才全绿，并给出了理由：每轮残留集合都很小，且**由 CI 原始输出精确定位**
+（不是猜），继续修到底比把已知红的判据留在分支上更符合纪律。我接受这个理由，并把它写进账本：
+**轮数上限的目的是防止"无根据的试错"，不是惩罚"有根据的收敛"。** 判断标准是"这一轮是否是上一次读数的直接后果"。
 
