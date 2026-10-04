@@ -277,6 +277,27 @@ python3 scripts/gates/validate_schemas.py --samples-dir /tmp/yeban-samples
 
 ### CI 判决（GitHub Actions，`line/model-core`）
 
+#### 第二轮（合并后切片：非测试导出入口 + ops 样本）
+
+- **run**: `37218504984` · CI · push · **conclusion: success**（28 个 job 全绿，
+  `checks` 43s、`rust (yeban-model)` 41s、`deny` 32s，其余 12–15s）
+- **关键取证**：`checks` job 的"跨语言契约对账"步骤在 CI 上真的跑了两侧 ——
+  Rust serde 写样本、Python jsonschema 读契约：
+
+  ```text
+  [ok] ops.default.json: 通过 ops.schema.json
+  [ok] ops.filled.json: 通过 ops.schema.json
+  [ok] project.default.json: 通过 project.schema.json
+  [ok] project.filled.json: 通过 project.schema.json
+  契约校验通过 (4 份 schema)。
+  ```
+
+  这一步的 `cargo test -p yeban-model` 也留下 `test result: ok. 86 passed; 0 failed;
+  ... finished in 13.84s` —— GitHub Actions 默认 `CI=true`，所以那次跑的正是
+  **10,000 步**的操作序列。
+
+#### 第一轮（合并前的原始交付）
+
 - **run**: `37217900378` · CI · push · **conclusion: success**（全部 27 个 job 绿，
   含 `rust (yeban-model)` 42s、`checks (fmt/红线守卫/schema)` 14s、`lockfile` 12s、`deny` 47s）
 - 该 run 的 `plan` 步骤因为首推分支的 `github.event.before` 是全零 sha 而保守退化为
