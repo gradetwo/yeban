@@ -86,8 +86,53 @@ cmd_land() {
   git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch" || die "分支不存在: $branch"
   info "把 $branch 合并进 $MAIN_BRANCH (--no-ff, 保留工作线历史)"
   git -C "$REPO" checkout "$MAIN_BRANCH"
-  git -C "$REPO" merge --no-ff "$branch" -m "merge($line): 工作线落地"
-  info "已落地。推送 main 后请**读取 CI 判决** (scripts/dev/ci-verdict.sh), 未读的判决等于 pending。"
+  if ! git -C "$REPO" merge --no-ff "$branch" -m "merge($line): 工作线落地"; then
+    cat >&2 <<EOF
+
+合并未完成。**不要手工合并生成物** —— 按 docs/DEV_WORKFLOW.md「生成物冲突」处置:
+
+  1. 冲突文件若是 Cargo.lock:       git checkout --ours Cargo.lock && cargo metadata --format-version 1 >/dev/null
+  2. 冲突文件若是 dependency-licenses.md: python3 scripts/gates/license_inventory.py
+  3. 其余文件人工判断后 git add -A && git commit
+
+原因: 这两个文件是从真实状态**生成**的产物, 手工合并必然产生与真实依赖图不符的内容。
+EOF
+    return 1
+  fi
+  post_merge_checks
+}
+
+# 合并后必须做的事 (把政策固化进工具, 而不是靠人记得):
+#   1. 生成物 (Cargo.lock / 许可清单) 与合并后的真实状态必须自洽;
+#   2. 本机能跑的轻量门禁必须重跑 —— 树变了, 之前的绿不作数。
+post_merge_checks() {
+  info "合并后自检 (生成物一致性 + 轻量门禁)"
+  local failed=0
+
+  if [[ -f "$REPO/Cargo.lock" ]]; then
+    if (cd "$REPO" && cargo metadata --locked --format-version 1 >/dev/null 2>&1); then
+      echo "  ok   cargo metadata --locked (锁与清单一致)"
+    else
+      echo "  FAIL Cargo.lock 与合并后的清单不一致 —— 请跑: cargo metadata --format-version 1 >/dev/null" >&2
+      failed=1
+    fi
+  fi
+
+  if [[ -f "$REPO/docs/ledger/dependency-licenses.md" ]]; then
+    if (cd "$REPO" && python3 scripts/gates/license_inventory.py --check >/dev/null 2>&1); then
+      echo "  ok   依赖许可清单与依赖图一致"
+    else
+      echo "  FAIL 许可清单已漂移 —— 请跑: python3 scripts/gates/license_inventory.py" >&2
+      failed=1
+    fi
+  fi
+
+  if [[ $failed -eq 0 ]]; then
+    info "自检通过。下一步: 推送 main → 读 CI 判决 (scripts/dev/ci-verdict.sh); 未读的判决等于 pending。"
+  else
+    info "自检未通过 (见上面的 FAIL)。**先修再推** —— 推上去只会让 CI 也红一次。"
+  fi
+  return $failed
 }
 
 case "${1:-}" in

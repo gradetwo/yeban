@@ -97,6 +97,10 @@ scripts/dev/worktree.sh rm model-core --purge   # 显式废弃：删树 + 删分
 政策：**工作线只需保证自己分支上自洽**（自己能过 `--check`）；**集成者在每次改动依赖图的合并之后
 统一重生成一次**。工作线不需要预测 main 的未来状态，也不应该手工合并这两个文件。
 
+这条政策已经固化进工具：`scripts/dev/worktree.sh land <line>` 在合并成功后会自动跑一次
+**合并后自检**（`cargo metadata --locked` + `license_inventory.py --check`），任一项不过就提示**先修再推**；
+若合并本身冲突，它会直接打印上面三步的处置命令而不是让你手工合并生成物。
+
 ---
 
 ## 2. 单次变更的固定动作（顺序不能换）
