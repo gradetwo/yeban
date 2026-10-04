@@ -25,7 +25,8 @@
 | `MUST-GATE-008` | `.yeban.lock` OS 建议锁 + `PROJECT_LOCKED` | **部分** | Unix 已由 `crates/yeban-mcp/src/domain/lock.rs` + `tests/lock_advisory.rs`（15 条，含跨进程 `Command` + 文件握手 + `SIGKILL` 崩溃自愈）验证，CI run 37232643213 绿。**但新增的 `windows` 手动门禁首次执行（run 37235205697）就抓到真实缺陷**：`LockFileEx` 锁的是字节区间且**强制**，导致**持锁后读锁元数据**必然失败（OS error 33）⇒ 影响"报告持有者 PID"这条路径。已交给 `line/store-container` 修（`LockGuard` 自带元数据 + 读在加锁前 + 容忍读不到）|
 | `MUST-GATE-009` | MCP 严格默认安全 | **部分** | `crates/yeban-mcp/src/security.rs` + `transport/http.rs`（默认关/只绑环回并回读断言/`0600`/`ui:inject` 先于 token 硬禁，112 判据）；`crates/yeban-ui-mcp/src/service.rs` 同模型（52+5 判据）；**缺**发行物层面的"默认关"断言 |
 | `MUST-GATE-010` | 10,000 步 `proptest` 逆向守恒 | **已接线** | `crates/yeban-model/src/ops.rs` 的 `state_tree_is_conserved_under_inverse_application`：CI 上 `sequence_steps()` 取 `CI_SEQUENCE_STEPS = 10_000`，32 个 case，逐字节守恒断言 |
-| `MUST-GATE-011` | 格式解析零崩溃（`cargo-fuzz` 千万次） | **部分** | **第一次真的跑起来了**：手动档 `fuzz` 在修掉 fuzz 目标自身的 `E0382`（它从未编译过）后，90 秒实跑 run 37235776161 = **success**，libFuzzer 覆盖率 `cov 142→237+`、语料 `1→9+`、**零崩溃**；fuzz 独立 workspace 现在有 `Cargo.lock`（可复现）。**离"千万次"还很远** ⇒ 仍未达标 |
+| `MUST-GATE-011` | 格式解析零崩溃（`cargo-fuzz` 千万次） | **部分** | **第一次真的跑起来了**：手动档 `fuzz` 在修掉 fuzz 目标自身的 `E0382`（它从未编译过）后，90 秒实跑 run 37235776161 = **success**，实测 **947 850 次执行 / 10 415 exec/s / cov 670 / 语料 1125**、**零崩溃**；fuzz 独立 workspace 现在有 `Cargo.lock`（可复现）。**"千万次"按实测速率约需 16 分钟**（90 秒 ≈ 95 万次）⇒
+下次手动触发把 `fuzz_seconds` 提到 ≈1000 即可真正达标；本次仍记为部分 |
 | `MUST-GATE-012` | 快照退役队列零泄漏 | **部分** | `crates/yeban-engine/src/snapshot.rs` 的退役队列与"主线程 Drop"判据；**高频/长时间交换压测**未做 |
 | `MUST-GATE-013` | 仓库不含 ASIO SDK | **已接线** | 守卫 `G07`（`scripts/guards/policy_check.py` 的 ASIO 专有代码扫描），每次 `run-gates.sh light` 都跑 |
 | `MUST-GATE-014` | 323 款采样署名全匹配 | **PENDING** | `assets/samples/ATTRIBUTION.md` 已写口径，但 `assets/samples/` **目录为空**（样本未入库）；`validate_schemas.py --repo-assets` 能对账"登记了什么"，**登记本身**需要人类的产品/授权决定 |
