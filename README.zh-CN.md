@@ -108,7 +108,7 @@ yeban/
 ├── scripts/
 │   ├── dev/                        # cargo-local.sh / worktree.sh / ci-verdict.sh / changed-crates.py
 │   ├── gates/                      # run-gates.sh / validate_schemas.py
-│   ├── guards/                     # policy_check.py — 12 条机械红线守卫
+│   ├── guards/                     # policy_check.py — 13 条机械红线守卫
 │   └── brand/                      # render-logo.sh
 ├── docs/
 │   ├── YEBAN_*.md                  # 四份 Normative 规范

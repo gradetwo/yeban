@@ -81,7 +81,7 @@ yeban/
 ├── scripts/
 │   ├── dev/                    # cargo wrapper, worktree lifecycle, CI verdict reader, change planner
 │   ├── gates/                  # gate runner, schema validation, licence inventory
-│   ├── guards/                 # 12 mechanical red-line guards
+│   ├── guards/                 # 13 mechanical red-line guards
 │   └── brand/                  # brand asset regeneration
 ├── docs/                       # see docs/README.md for the authority ranking
 │   ├── YEBAN_*.md              # the four normative specifications
@@ -125,7 +125,7 @@ Nothing is "green" unless a GitHub Actions run says so. Local green is a hint; a
 **Automatic** (`.github/workflows/ci.yml`, on push/PR, plus manual dispatch):
 
 - `plan` — derives the affected crate set from the diff (including downstream dependents)
-- `checks` — `cargo fmt --check`, 12 mechanical red-line guards, JSON Schema validity,
+- `checks` — `cargo fmt --check`, 13 mechanical red-line guards, JSON Schema validity,
   dependency-licence inventory drift, cross-language contract reconciliation (Rust samples ↔ Python `jsonschema`)
 - `rust` — matrix over affected crates: `clippy --all-targets --locked -D warnings` + `test`
 - `lockfile` — `Cargo.lock` committed and consistent (`cargo metadata --locked`)

@@ -22,12 +22,17 @@ on:
           - inventory
           - all-features
           - bench
+          - fuzz
           - determinism
           - pending
       crate:
         description: "all-features 档位下的单个 crate (留空 = 整个工作区)"
         type: string
         default: ""
+      fuzz_seconds:
+        description: 'fuzz 档位的单目标最长运行秒数 (MUST-GATE-011 要求"千万次变异", 60s 只是冒烟)'
+        type: number
+        default: 60
 
 concurrency:
   group: gates-manual-${{ github.ref }}
@@ -70,7 +75,7 @@ jobs:
           | MUST-GATE-008 | `.yeban.lock` 并发 `PROJECT_LOCKED` | PENDING | 需锁实现 |
           | MUST-GATE-009 | MCP 默认安全 (绑定/Token/ui:inject) | PENDING | 需 `yeban-mcp` HTTP 形态 |
           | MUST-GATE-010 | proptest 10,000 步撤销守恒 | PENDING | 需 `Op` 全变体实现 |
-          | MUST-GATE-011 | cargo-fuzz 千万次变异 | PENDING | 需 SFZ/JSON 解析器 |
+          | MUST-GATE-011 | cargo-fuzz 千万次变异 | **已接线 (手动档)** | `Gates (手动)` → `gate=fuzz`；目标在 `crates/yeban-sfz/fuzz/`，**尚未真实执行过** |
           | MUST-GATE-013 | 仓库无 ASIO SDK | 已接线 | ci.yml `checks` (守卫 G07) |
           | MUST-GATE-014 | 323 款采样指纹对账 | PENDING | 需资产清单落地 |
           | MUST-GATE-015 | Golden 图来自 Tier-1 软件光栅化 | PENDING | 需 `yeban-ui-test-port` |
@@ -154,6 +159,36 @@ jobs:
             echo "(Apple M2 Pro 12 核 / Ryzen 7 7840HS)。GitHub 托管 runner 频率不固定,"
             echo "因此本 job 的读数**不能**用来判定基准是否达标, 只能验证基准代码可跑。"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 模糊测试 (MUST-GATE-011): 独立 fuzz workspace, 需要 nightly + cargo-fuzz
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: fuzz (cargo-fuzz, ${{ inputs.fuzz_seconds }}s)
+    if: inputs.gate == 'fuzz'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 nightly 与 cargo-fuzz
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --locked
+      - name: 跑 SFZ 解析器模糊测试 (零崩溃 = 通过)
+        working-directory: crates/yeban-sfz
+        run: |
+          set -euo pipefail
+          # cargo-fuzz 是独立 workspace (自带 [workspace]), 因此这里有它自己的 target/。
+          cargo +nightly fuzz run sfz_parse -- -max_total_time=${{ inputs.fuzz_seconds }} -print_final_stats=1
+      - name: 失败时保留语料 (崩溃样本是最有价值的产物)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: crates/yeban-sfz/fuzz/artifacts
+          if-no-files-found: warn
+          retention-days: 30
 
   # ---------------------------------------------------------------------------
   # 确定性对账 (L1/L2): 目前无渲染器, 明确列为 PENDING

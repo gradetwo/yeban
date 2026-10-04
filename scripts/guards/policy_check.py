@@ -359,6 +359,55 @@ def g12_no_tool_cache_in_tree() -> list[Violation]:
     return bad
 
 
+def g13_workflows_are_valid() -> list[Violation]:
+    """[CI 可用性] 所有 workflow 必须是合法 YAML, 且每个 job 都有 runs-on, 每个 workflow 都有触发条件。
+
+    为什么值得机械化: 我自己在给手动档加 fuzz 档位时, 把一段含双引号的说明写进了双引号字符串,
+    YAML 直接解析失败 —— 而这种错误在 GitHub 上表现为"整个 workflow 不出现/不触发",
+    排查起来比编译错误贵得多。判据必须在本地就能变红。
+
+    PyYAML 只在开发机/CI 上装 (python3 -c "import yaml"); 装不到时本守卫**跳过并出声**,
+    而不是假装通过 —— 静默跳过等于假绿。
+    """
+    bad: list[Violation] = []
+    wf_dir = REPO / ".github" / "workflows"
+    if not wf_dir.is_dir():
+        bad.append(("G13", ".github/workflows", "缺少 workflow 目录"))
+        return bad
+    try:
+        import yaml  # noqa: PLC0415
+    except ImportError:
+        print("       (提示: 未安装 PyYAML, G13 未执行 —— 请 pip install pyyaml)")
+        return bad
+
+    files = sorted(wf_dir.glob("*.yml"))
+    if not files:
+        bad.append(("G13", ".github/workflows", "没有任何 .yml workflow"))
+    for path in files:
+        try:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            first = str(exc).splitlines()[0]
+            bad.append(("G13", rel(path), f"YAML 解析失败: {first}"))
+            continue
+        if not isinstance(doc, dict):
+            bad.append(("G13", rel(path), "顶层不是映射"))
+            continue
+        triggers = doc.get("on", doc.get(True))
+        if not triggers:
+            bad.append(("G13", rel(path), "缺少触发条件 (on:)"))
+        jobs = doc.get("jobs") or {}
+        if not jobs:
+            bad.append(("G13", rel(path), "没有任何 job"))
+        for name, job in jobs.items():
+            if not isinstance(job, dict):
+                bad.append(("G13", f"{rel(path)}::{name}", "job 不是映射"))
+                continue
+            if "runs-on" not in job and "uses" not in job:
+                bad.append(("G13", f"{rel(path)}::{name}", "job 缺少 runs-on"))
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -372,6 +421,7 @@ GUARDS = {
     "G10": ("[deny.toml] 禁止通配版本", g10_no_wildcard_versions),
     "G11": ("[宪章 2] 引擎层零 web/wasm 依赖", g11_no_web_wasm_engine),
     "G12": ("[仓库卫生] 工具缓存与 CI 日志 zip 不入库", g12_no_tool_cache_in_tree),
+    "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
 }
 
 

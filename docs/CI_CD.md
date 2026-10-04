@@ -107,7 +107,7 @@ sudo apt-get install -y --no-install-recommends \
 一句话版本：
 
 - **已接线**：fmt、clippy `-D warnings`、单元/属性测试、cargo-deny、确定性 `Cargo.lock`、
-  12 条机械红线守卫（HashMap / GUI 依赖 / `0.0.0.0` / 大文件 / ASIO / 通配版本 / workspace 继承 / 工具缓存不入库…）、
+  13 条机械红线守卫（HashMap / GUI 依赖 / `0.0.0.0` / 大文件 / ASIO / 通配版本 / workspace 继承 / 工具缓存不入库 / workflow YAML 合法…）、
   JSON Schema 契约、工具链漂移断言。
 - **PENDING**：实时回调零分配（MUST-GATE-001/012）、L1 bit-exact（002）、L2 跨架构（003）、
   Zip-Slip 与解压炸弹（006/007）、`.yeban.lock` 并发（008）、MCP 默认安全（009）、
