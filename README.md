@@ -102,9 +102,12 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-> **Honest status.** The real-time engine does not make sound yet (Phase 2 in progress) and the app starts with a
-> demo project. For exactly what is verified — and what is still `PENDING` — see
-> [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md). Nothing here is claimed to be playable.
+> **Honest status.** The real-time engine **does produce audio now** (it synthesises the MIDI notes of a project
+> deterministically — 102 398 / 102 400 non-zero samples for a three-note fixture, bit-identical across runs, and the
+> zero-allocation real-time window still holds). What it does **not** do yet: no filter/timbre parameters, no bus
+> limiter, no pan law, no transport, no sound-card path in those criteria — and the app still starts with a demo
+> project. For exactly what is verified — and what is still `PENDING` — see
+> [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md).
 
 ### Working on the code
 

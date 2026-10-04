@@ -109,9 +109,11 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-> **诚实状态**：实时引擎**还不能发声**（Phase 2 进行中），主窗口启动时用的是演示工程。
-> "到底什么算已验证、什么仍是 `PENDING`"请看 [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md)。
-> 本文档**不声称**任何功能已经可演奏。
+> **诚实状态**：实时引擎**现在已经能产生音频**了（它确定性地合成工程里的 MIDI 音符 —— 三个音符的夹具实测
+> **102 398 / 102 400 个非零样本**、两次运行逐位相同，且实时窗口的**零分配**约束仍然成立）。
+> 它还**不做**：滤波器/音色参数、母线限制器、声相定律、走带控制，这些判据里也**还没有声卡路径**；
+> 主窗口启动时用的仍是演示工程。"到底什么算已验证、什么仍是 `PENDING`"请看
+> [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md)。
 
 ### 参与开发
 
