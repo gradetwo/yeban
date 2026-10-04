@@ -28,6 +28,9 @@
 | [adr/](./adr) | Architecture Decision Record。规范之间冲突、或规范未定义时必须做的裁决，全部留痕 |
 | [DEVELOPMENT_LEDGER.md](./DEVELOPMENT_LEDGER.md) | 测量账本：每个关键数字、它的测法、测量时刻；以及尚未验证的 `pending` 清单 |
 | [ledger/legacy-reuse-audit.md](./ledger/legacy-reuse-audit.md) | 对 `groove` / `synth` 两个历史代码库的复用审计（结论 + 许可风险） |
+| [ledger/gate-status.md](./ledger/gate-status.md) | **"现在到底什么算绿"的唯一去处**：`MUST-GATE-001..015` 与 `BASELINE-001..006` 逐条给出状态 + 可复跑证据 + 还差什么。由 `scripts/gates/check_gate_status.py` 机械守卫 |
+| [ledger/human-decisions.md](./ledger/human-decisions.md) | **需要人类裁决的唯一入口**：`HD-01..HD-40`，每项含选项 / 建议 / 不决定的后果（含"当前处置"，因此不构成单点阻塞）。由 `scripts/gates/check_decisions.py` 机械守卫 |
+| [ledger/](./ledger) | 各工作线的实测台账（`*-notes.md`）：上游 API 核验、口径表、注入→变红记录、本机 vs CI 的分界、pending/needs |
 
 ## 效力顺序
 
