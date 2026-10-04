@@ -91,6 +91,13 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: 安装 Linux 桌面构建依赖 (Slint / winit 需要)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            pkg-config libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
       - name: 安装钉死工具链
         run: |
           set -euo pipefail

@@ -42,6 +42,11 @@ allow = [
     "CC0-1.0",
     "CC-BY-4.0",
     "OFL-1.1",
+    # BSL-1.0 (Boost Software License 1.0): OSI 认证 + FSF Free/Libre + 宽松 + GPLv3 兼容
+    # (无任何额外限制)。它由 clipboard-win / error-code 引入, 来源链路是
+    # arboard(剪贴板) <- winit/slint, 且仅在 Windows 目标上参与编译。
+    # 不属于 AGENTS.md §2 红线 2 禁止的"非商业限制/专有不可再分发/与 GPLv3 不兼容"任何一类。
+    "BSL-1.0",
 ]
 # 注意: CC-BY-NC-* / CC-Sampling-Plus / 任何"非商业"或"不可再分发"许可**永远不进白名单**
 # [AGENTS.md §2 红线 2]。历史项目 groove 的采样清单曾主动接受 CC-BY-NC —— 绝不移植

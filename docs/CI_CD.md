@@ -80,6 +80,26 @@ GH_TOKEN=... scripts/dev/ci-verdict.sh --logs <run-id>   # 拉失败 job 的原�
 截图 artifact 的意义：**"没在渲染器里看过"就是没验证过**。有了 artifact，任何人（包括下一个 Agent）
 都能事后回看版面，而不是只能相信断言。
 
+## 3.2 Linux runner 的系统前置依赖（Slint 相关）
+
+引入 Slint 之后，**编译阶段**就需要系统库：`yeslogic-fontconfig-sys` 的 build script 用 pkg-config 找
+fontconfig，缺了它会在"编译依赖"时直接红 —— 那不是代码错，而是 runner 缺系统库。
+
+因此 `.github/workflows/ci.yml` 的 `rust` 矩阵腿与 `gates-manual.yml` 的 `all-features` 档位都会先执行：
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+  pkg-config libfontconfig1-dev libfreetype-dev \
+  libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+```
+
+另外两处只有 Slint 才会触发的合规现实（都已在 main 上处理）：
+
+| 现象 | 原因 | 处置 |
+| :--- | :--- | :--- |
+| `cargo deny` 报 `BSL-1.0` 被拒 | `clipboard-win` / `error-code`（← `arboard` ← winit/slint 剪贴板，Windows 目标） | BSL-1.0 是 OSI + FSF 认证的宽松许可、GPLv3 兼容，已加入 `deny.toml` 白名单并注明来源链路 |
+| 依赖包数量从 62 跳到 ~579 | Slint + winit + fontique 的传递依赖 | 许可清单重新生成（`scripts/gates/license_inventory.py`），`--check` 会在漂移时变红 |
+
 ## 4. 已接线 vs PENDING
 
 完整的 `MUST-GATE-001..015` 与 `BASELINE-001..006` 状态表在
