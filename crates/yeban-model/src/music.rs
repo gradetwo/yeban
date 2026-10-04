@@ -63,6 +63,42 @@ pub enum CurveType {
     SCurve,
 }
 
+impl CurveType {
+    /// 把归一化位置 `t ∈ [0,1]` 映射为归一化插值权重 `u ∈ [0,1]`。
+    ///
+    /// 这是夜半**唯一**的曲线口径：自动化泳道求值（`AutomationLane::value_at`）与
+    /// 滑音/弯音求值都调这一个函数，下游（渲染 / 引擎 / 界面）**不得**各写一份
+    /// （两份实现必然漂移，见 ADR-0001 D28）。
+    ///
+    /// ## 公式（规范只给了四个名字，没有给公式 —— 口径由本线裁决并钉在判据里）
+    ///
+    /// | 变体 | `u(t)` |
+    /// | :--- | :--- |
+    /// | `Linear` | `t` |
+    /// | `Exponential` | `t²` |
+    /// | `Logarithmic` | `t·(2−t)` |
+    /// | `SCurve` | `t²·(3−2t)` |
+    ///
+    /// 三个非平凡形状只用 `+` `-` `*`：**没有超越函数**，因此逐位可复现
+    /// （`ARCH-DET-001`；按 ADR-0001 D32 的分类属于"IEEE 精确类"，跨架构**零容差**）。
+    /// 四者都满足 `u(0)=0`、`u(1)=1`、单调不减，因此曲线**精确穿过两个端点**，
+    /// 不会在采样点上产生跳变。
+    ///
+    /// `t` 越界一律钳到 `[0,1]`。求值入口不会产生 `NaN`（插值分母 `span > 0`），
+    /// 而若调用方硬塞 `NaN`，它会原样传出 `NaN` —— 这比"悄悄当成 0"更诚实：
+    /// 模型层绝不把非有限值修成一个看起来合法的数值。
+    #[must_use]
+    pub fn ease(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => t,
+            Self::Exponential => t * t,
+            Self::Logarithmic => t * (2.0 - t),
+            Self::SCurve => t * t * (3.0 - 2.0 * t),
+        }
+    }
+}
+
 /// 滑音配置 [MODEL-AST-005]。
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlideConfig {

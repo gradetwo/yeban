@@ -30,8 +30,6 @@
 //! `op_variants_match_ops_schema_exactly` 与
 //! `origin_variants_match_ops_schema_origin_one_of`。
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::ModelError;
@@ -325,6 +323,29 @@ pub enum Op {
         /// 删除前的点。
         previous_point: AutomationPoint,
     },
+    /// 新增或整体替换一条自动化泳道（含其采样点、读开关、写模式与取值域）。
+    ///
+    /// `old_lane == None` 表示**新建**；其逆操作是 [`Op::RemoveAutomationLane`]。
+    ///
+    /// 为什么必须有这个变体：在它出现之前，"一条泳道"只能被采样点**隐式**携带
+    /// —— `SetAutomationPoint` 会在目标上自动建一条默认泳道，而没有任何变体能把
+    /// "这条泳道是否参与播放（`read_enabled`）/ 录制写模式 / 取值域"表达出来。
+    /// 于是规范要求的"自动化曲线"在操作日志层不可表达（与 ADR-0001 D12/D27 同一族）。
+    SetAutomationLane {
+        /// 自动化泳道目标（同时是泳道的键与身份）。
+        target: AutomationTarget,
+        /// 修改前的泳道（`None` 表示原先没有这条泳道）。
+        old_lane: Option<AutomationLane>,
+        /// 修改后的泳道。
+        new_lane: AutomationLane,
+    },
+    /// 删除一条自动化泳道（自带撤销载荷）。
+    RemoveAutomationLane {
+        /// 自动化泳道目标。
+        target: AutomationTarget,
+        /// 删除前的完整泳道。
+        previous_lane: AutomationLane,
+    },
     /// 新增、更新或清空一个曲式段落。
     ///
     /// `old_section == None` 且 `new_section` 存在表示**新建**；
@@ -452,6 +473,8 @@ impl Op {
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
             Self::RemoveAutomationPoint { .. } => "RemoveAutomationPoint",
+            Self::SetAutomationLane { .. } => "SetAutomationLane",
+            Self::RemoveAutomationLane { .. } => "RemoveAutomationLane",
             Self::SetSection { .. } => "SetSection",
             Self::RemoveSection { .. } => "RemoveSection",
             Self::SetScene { .. } => "SetScene",
@@ -790,6 +813,46 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetAutomationLane {
+                target,
+                old_lane,
+                new_lane,
+            } => {
+                if new_lane.target != *target {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // 与"隐式泳道"逐位不可区分的泳道**不允许被显式写入**：
+                // 它的存亡由采样点决定（`SetAutomationPoint` 自动建、`RemoveAutomationPoint`
+                // 自动回收），一旦允许显式创建，撤销就无法判定它该不该存在
+                // （实测：该泳道被点填满又清空后会被自动回收，于是它的逆操作
+                //  `RemoveAutomationLane` 找不到泳道而失败）。
+                if new_lane.is_implicit() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                doc.track(&target.track_id())?;
+                new_lane.validate()?;
+                if doc.automation_lane(target) != old_lane.as_ref() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::RemoveAutomationLane {
+                target,
+                previous_lane,
+            } => {
+                doc.track(&target.track_id())?;
+                if previous_lane.is_implicit() {
+                    // 同上的镜像：隐式形状的泳道不由本变体负责（它压根不该被持久化）。
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                let current = doc
+                    .automation_lane(target)
+                    .ok_or(ModelError::OpStateMismatch { op: self.name() })?;
+                if current != previous_lane {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetSection {
                 section_id,
                 old_section,
@@ -1073,6 +1136,29 @@ impl Op {
                 old_point: None,
                 new_point: *previous_point,
             },
+            Self::SetAutomationLane {
+                target,
+                old_lane,
+                new_lane,
+            } => match old_lane {
+                Some(previous) => Self::SetAutomationLane {
+                    target: *target,
+                    old_lane: Some(new_lane.clone()),
+                    new_lane: previous.clone(),
+                },
+                None => Self::RemoveAutomationLane {
+                    target: *target,
+                    previous_lane: new_lane.clone(),
+                },
+            },
+            Self::RemoveAutomationLane {
+                target,
+                previous_lane,
+            } => Self::SetAutomationLane {
+                target: *target,
+                old_lane: None,
+                new_lane: previous_lane.clone(),
+            },
             Self::SetSection {
                 section_id,
                 old_section,
@@ -1275,30 +1361,44 @@ impl Op {
                 new_point,
                 ..
             } => {
-                let track = doc.track_mut(&automation_track_id(target))?;
-                let lane =
-                    track
-                        .automation_lanes
-                        .entry(*target)
-                        .or_insert_with(|| AutomationLane {
-                            target: *target,
-                            points: BTreeMap::new(),
-                        });
+                let track = doc.track_mut(&target.track_id())?;
+                let lane = track
+                    .automation_lanes
+                    .entry(*target)
+                    .or_insert_with(|| AutomationLane::implicit(*target));
                 lane.points.insert(*point_id, *new_point);
                 Ok(())
             }
             Self::RemoveAutomationPoint {
                 target, point_id, ..
             } => {
-                let track = doc.track_mut(&automation_track_id(target))?;
+                let track = doc.track_mut(&target.track_id())?;
                 let mut drop_lane = false;
                 if let Some(lane) = track.automation_lanes.get_mut(target) {
                     lane.points.remove(point_id);
-                    drop_lane = lane.points.is_empty();
+                    // 只回收"与隐式泳道逐位不可区分"的泳道 —— 这正是
+                    // `SetAutomationPoint` 自动创建的那一种，于是自动建/自动收**精确互逆**。
+                    // 带读写模式或取值域的泳道即使空着也保留（否则它的属性会在
+                    // "移空最后一个点 → 撤销"这一步丢失）。
+                    drop_lane = lane.is_implicit();
                 }
                 if drop_lane {
                     track.automation_lanes.remove(target);
                 }
+                Ok(())
+            }
+            Self::SetAutomationLane {
+                target, new_lane, ..
+            } => {
+                doc.track_mut(&target.track_id())?
+                    .automation_lanes
+                    .insert(*target, new_lane.clone());
+                Ok(())
+            }
+            Self::RemoveAutomationLane { target, .. } => {
+                doc.track_mut(&target.track_id())?
+                    .automation_lanes
+                    .remove(target);
                 Ok(())
             }
             Self::SetSection {
@@ -1339,20 +1439,11 @@ impl Op {
     }
 }
 
-/// 取出自动化目标所属的音轨身份。
-#[must_use]
-fn automation_track_id(target: &AutomationTarget) -> EntityId {
-    match target {
-        AutomationTarget::TrackVolume { track_id }
-        | AutomationTarget::TrackPan { track_id }
-        | AutomationTarget::SendGain { track_id, .. }
-        | AutomationTarget::DeviceParam { track_id, .. }
-        | AutomationTarget::Macro { track_id, .. } => *track_id,
-    }
-}
-
 /// 读取 [`AutomationTarget`] 指向的当前参数值。
-fn read_param(doc: &YebanProjectV1, target: AutomationTarget) -> Result<f32, ModelError> {
+pub(crate) fn read_param(
+    doc: &YebanProjectV1,
+    target: AutomationTarget,
+) -> Result<f32, ModelError> {
     match target {
         AutomationTarget::TrackVolume { track_id } => Ok(doc.track(&track_id)?.volume_db),
         AutomationTarget::TrackPan { track_id } => Ok(doc.track(&track_id)?.pan),
@@ -1504,10 +1595,10 @@ fn read_automation_point<'a>(
     target: &AutomationTarget,
     point_id: &EntityId,
 ) -> Result<Option<&'a AutomationPoint>, ModelError> {
-    let track = doc.track(&automation_track_id(target))?;
-    Ok(track
-        .automation_lanes
-        .get(target)
+    // 音轨必须存在（`TrackNotFound`），否则"点不存在"会掩盖"目标根本不存在"。
+    doc.track(&target.track_id())?;
+    Ok(doc
+        .automation_lane(target)
         .and_then(|lane| lane.points.get(point_id)))
 }
 
@@ -1519,6 +1610,7 @@ mod tests {
         ClipContent, ClipPoolEntry, LoopConfig, ProjectAudioConfig, RoutingKind, TrackKind,
     };
     use proptest::prelude::*;
+    use std::collections::BTreeMap;
     use std::str::FromStr;
 
     /// 本机默认的操作序列长度（CI 上自动提到 [`CI_SEQUENCE_STEPS`]）。
@@ -1586,6 +1678,27 @@ mod tests {
         }
     }
 
+    /// ops 夹具里那条音量泳道的**完整形状**。
+    ///
+    /// `showcase_ops()` 的 `RemoveAutomationLane` 必须携带与它逐位相同的撤销载荷，
+    /// 因此这里只留一份定义（两份必然漂移）。
+    fn fixture_volume_lane(lead_id: EntityId) -> AutomationLane {
+        let target = AutomationTarget::TrackVolume { track_id: lead_id };
+        AutomationLane {
+            target,
+            points: BTreeMap::from([(
+                fixture_id(80),
+                AutomationPoint {
+                    id: fixture_id(80),
+                    tick: 0,
+                    value: -6.0,
+                    curve: crate::music::CurveType::Linear,
+                },
+            )]),
+            ..AutomationLane::implicit(target)
+        }
+    }
+
     /// 一份"五脏俱全"但体积很小的文档，供属性测试与逐变体测试使用。
     fn fixture_document() -> YebanProjectV1 {
         let f = fixture();
@@ -1621,18 +1734,7 @@ mod tests {
         });
         lead.automation_lanes.insert(
             AutomationTarget::TrackVolume { track_id: f.lead },
-            AutomationLane {
-                target: AutomationTarget::TrackVolume { track_id: f.lead },
-                points: BTreeMap::from([(
-                    fixture_id(80),
-                    AutomationPoint {
-                        id: fixture_id(80),
-                        tick: 0,
-                        value: -6.0,
-                        curve: crate::music::CurveType::Linear,
-                    },
-                )]),
-            },
+            fixture_volume_lane(f.lead),
         );
         lead.clips.insert(
             f.placement,
@@ -1782,10 +1884,21 @@ mod tests {
             color: None,
         };
         let target_volume = AutomationTarget::TrackVolume { track_id: f.lead };
+        let target_pan = AutomationTarget::TrackPan { track_id: f.lead };
         let target_param = AutomationTarget::DeviceParam {
             track_id: f.lead,
             slot_index: 0,
             param_index: 0,
+        };
+        // 新建一条**显式**泳道（带写模式与取值域 ⇒ 与隐式泳道可区分）。
+        let new_lane = AutomationLane {
+            target: target_pan,
+            read_enabled: true,
+            write_mode: crate::project::AutomationWriteMode::Touch,
+            domain: Some(
+                crate::project::AutomationValueDomain::new(-24.0, 6.0).expect("常量端点必然有限"),
+            ),
+            ..AutomationLane::implicit(target_pan)
         };
 
         vec![
@@ -1966,6 +2079,15 @@ mod tests {
                     curve: crate::music::CurveType::Linear,
                 },
             },
+            Op::SetAutomationLane {
+                target: target_pan,
+                old_lane: None,
+                new_lane: new_lane.clone(),
+            },
+            Op::RemoveAutomationLane {
+                target: target_volume,
+                previous_lane: fixture_volume_lane(f.lead),
+            },
             Op::SetSection {
                 section_id: f.section,
                 old_section: Some(SectionV3 {
@@ -2069,6 +2191,8 @@ mod tests {
             "SetMacro",
             "SetAutomationPoint",
             "RemoveAutomationPoint",
+            "SetAutomationLane",
+            "RemoveAutomationLane",
             "SetSection",
             "RemoveSection",
             "SetScene",
@@ -2269,15 +2393,48 @@ mod tests {
             .collect()
     }
 
+    /// **本线新增、契约里暂时还没有**的 `Op` 变体（显式欠账清单）。
+    ///
+    /// `schemas/ops.schema.json` 是**契约**：本线（`line/model-automation`）按工作线纪律
+    /// **禁改** `schemas/**`，它由集成者与契约线共同拥有。于是这两个变体此刻只存在于
+    /// 枚举里，契约的 `op.oneOf` 仍是 27 个分支。
+    ///
+    /// 这份清单是**机器校验的欠账**，而不是"把判据放松"：
+    /// `op_variants_match_ops_schema_exactly` 断言
+    /// `enum − contract == PENDING_CONTRACT_OPS`（且两集合不相交）。因此
+    ///
+    /// - 契约补上这两个分支 ⇒ 差集变空 ≠ 本清单 ⇒ **判据立刻红并指名"清空本清单"**
+    ///   （欠账不会腐烂成静默漂移，也不需要谁记得它）；
+    /// - 枚举再多出一个未登记的变体 ⇒ 差集 ≠ 本清单 ⇒ 红；
+    /// - 契约少一个分支（枚举有、契约没有、又不在本清单） ⇒ 红。
+    ///
+    /// 集成者把两个分支加进 `schemas/ops.schema.json` 的 `op.oneOf` 后，
+    /// **同时**把这里清成空数组即可（`needs` 里已点名）。
+    const PENDING_CONTRACT_OPS: [&str; 2] = ["RemoveAutomationLane", "SetAutomationLane"];
+
+    /// [`PENDING_CONTRACT_OPS`] 的集合形态。
+    fn pending_contract_ops() -> std::collections::BTreeSet<String> {
+        PENDING_CONTRACT_OPS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    }
+
     /// 每个 `Op` 变体的 JSON 形状必须与 `schemas/ops.schema.json` **一一对应**。
     ///
     /// 这条判据**直接读契约文件**：不再手抄一份变体名清单（第二份事实源会在契约改动后
     /// 变成谎言 —— `project.rs` 里那版手抄表就是前车之鉴）。
-    /// 由于契约的 23 个分支各自 `required` 一个互不相同的键，`oneOf` 的
+    /// 由于契约的每个分支各自 `required` 一个互不相同的键，`oneOf` 的
     /// "恰好匹配一个"在 JSON 层面等价于"`op` 对象恰好 1 个键，且键名 == 变体名"。
     #[test]
     fn op_variants_match_ops_schema_exactly() {
         let contract = schema_op_variant_names();
+        let pending = pending_contract_ops();
+        assert!(
+            contract.is_disjoint(&pending),
+            "契约已经补上了 {pending:?} 中的分支 —— 请把 PENDING_CONTRACT_OPS 清空, \
+             否则这条判据会一直假装契约仍缺这两个变体"
+        );
         assert_eq!(
             contract.len(),
             27,
@@ -2301,8 +2458,13 @@ mod tests {
             assert_eq!(back, op, "{name} 必须能往返");
         }
         assert_eq!(
-            implemented, contract,
-            "实现与 schemas/ops.schema.json 的 op.oneOf 必须一一对应"
+            implemented,
+            contract
+                .union(&pending)
+                .cloned()
+                .collect::<std::collections::BTreeSet<String>>(),
+            "实现必须与 schemas/ops.schema.json 的 op.oneOf **加上显式欠账 {}** 一一对应",
+            PENDING_CONTRACT_OPS.len()
         );
     }
 
@@ -2338,12 +2500,24 @@ mod tests {
             }
         }
         let contract = schema_op_variant_names();
+        let pending = pending_contract_ops();
+        // 双向漂移都必须红。唯一的**显式**例外是 PENDING_CONTRACT_OPS（本线禁改
+        // `schemas/**` 造成的已知欠账）：差集必须**恰好等于**那份清单，
+        // 多一个、少一个、或契约补上后没清空清单，都会在这里变红。
         assert_eq!(
-            declared,
-            contract,
-            "Op 的**全部**变体(name() 是穷举的)必须与 schemas/ops.schema.json 的 op.oneOf 一一对应;\n\
-             只在枚举里而契约缺失: {:?}\n只在契约里而枚举缺失: {:?}",
+            declared
+                .difference(&contract)
+                .cloned()
+                .collect::<std::collections::BTreeSet<String>>(),
+            pending,
+            "枚举里多出来的变体必须**恰好**是 PENDING_CONTRACT_OPS;\n\
+             若契约已补齐, 请把该清单清空;\n\
+             只在枚举里而契约缺失: {:?}",
             declared.difference(&contract).collect::<Vec<_>>(),
+        );
+        assert!(
+            contract.difference(&declared).next().is_none(),
+            "只在契约里而枚举缺失: {:?}",
             contract.difference(&declared).collect::<Vec<_>>(),
         );
     }
@@ -2697,7 +2871,7 @@ mod tests {
             *counter += 1;
             fixture_id(*counter + 10_000)
         };
-        let kind = rng.below(23);
+        let kind = rng.below(24);
         let midi_clip = || {
             doc.clip_pool
                 .values()
@@ -3091,6 +3265,46 @@ mod tests {
                     return Op::RemoveScene {
                         scene_id,
                         previous_scene,
+                    };
+                }
+            }
+            22 => {
+                // 泳道增改：目标固定用 `TrackPan`（与 16/17 的 `TrackVolume` 分开，
+                // 两条泳道的生成序列互不干扰）。写模式**恒定非 Off** ⇒ 新泳道绝不与
+                // 隐式泳道逐位不可区分（否则前置条件会拒绝），且与任何旧状态都不同。
+                if let Some(track_id) = rng.pick(&doc.tracks, 8) {
+                    let target = AutomationTarget::TrackPan { track_id };
+                    let existing = doc.tracks[&track_id].automation_lanes.get(&target).cloned();
+                    let mut new_lane = existing
+                        .clone()
+                        .unwrap_or_else(|| AutomationLane::implicit(target));
+                    new_lane.write_mode = match new_lane.write_mode {
+                        crate::project::AutomationWriteMode::Touch => {
+                            crate::project::AutomationWriteMode::Latch
+                        }
+                        _ => crate::project::AutomationWriteMode::Touch,
+                    };
+                    return Op::SetAutomationLane {
+                        target,
+                        old_lane: existing,
+                        new_lane,
+                    };
+                }
+            }
+            23 => {
+                let candidate = doc.tracks.values().find_map(|track| {
+                    track.automation_lanes.iter().find_map(|(target, lane)| {
+                        if lane.is_implicit() {
+                            None
+                        } else {
+                            Some((*target, lane.clone()))
+                        }
+                    })
+                });
+                if let Some((target, previous_lane)) = candidate {
+                    return Op::RemoveAutomationLane {
+                        target,
+                        previous_lane,
                     };
                 }
             }

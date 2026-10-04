@@ -606,7 +606,184 @@ impl AutomationPoint {
     }
 }
 
-/// 自动化泳道（一个目标一条）。
+/// 自动化取值的**单位**（由 [`AutomationTarget`] 派生，不单独存储）。
+///
+/// 为什么不把单位存进泳道：单位是**目标语义**的一部分（音量/发送增益必然是 dB、
+/// 声相必然是双极、宏必然是 0..=1），把它再抄一份到泳道上只会造出两份会漂移的
+/// 事实源（同 ADR-0001 D28 的理由）。规范没有给这个枚举命名，裁决见
+/// `docs/ledger/model-automation-notes.md`。
+#[derive(
+    Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+pub enum AutomationUnit {
+    /// 分贝 (dB)。
+    Decibels,
+    /// 归一化 0.0..=1.0。
+    Normalized,
+    /// 双极 -1.0..=1.0。
+    Bipolar,
+    /// 目标自有单位（设备参数：模型不知道它的量纲，取域也不可知）。
+    #[default]
+    Native,
+}
+
+impl AutomationUnit {
+    /// 界面轴标签用的符号；未知/无量纲返回空串。
+    #[must_use]
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Decibels => "dB",
+            Self::Normalized | Self::Bipolar | Self::Native => "",
+        }
+    }
+}
+
+/// 自动化**取值域**：闭区间 `[min, max]`（单位见泳道目标派生的 [`AutomationUnit`]）。
+///
+/// ## 为什么字段私有、`Deserialize` 手写
+///
+/// `min > max` 的区间是一个**无法求值的状态**：按界面轴去缩放会把整条曲线画反，
+/// 按引擎去钳位会把所有值钳到一端。模型层没有（也不希望新增）一个"区间反了"的
+/// `ModelError` 变体 —— 新增变体会让下游 `yeban-mcp` 的
+/// `code_for_model` 穷举 match 编译失败。于是这里把该状态**做成不可表示**：
+/// 字段私有 + 构造与反序列化都把两端点按定义排序，`min <= max` 与有限性因此是
+/// 类型不变量，而不是一条需要报错的检查。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutomationValueDomain {
+    min: f32,
+    max: f32,
+}
+
+impl AutomationValueDomain {
+    /// 由两个端点构造：端点按定义**排序**为闭区间 `[min, max]`（这不是"修正输入"，
+    /// 而是本区间的定义 —— 区间与端点的书写顺序无关）。
+    ///
+    /// # Errors
+    ///
+    /// 任一端点非有限 → [`ModelError::NonFiniteValue`]（非有限值无法确定性序列化）。
+    pub fn new(first: f32, second: f32) -> Result<Self, ModelError> {
+        if !first.is_finite() {
+            return Err(ModelError::NonFiniteValue {
+                field: "automation.lane.domain.min",
+                value: f64::from(first),
+            });
+        }
+        if !second.is_finite() {
+            return Err(ModelError::NonFiniteValue {
+                field: "automation.lane.domain.max",
+                value: f64::from(second),
+            });
+        }
+        Ok(Self {
+            min: first.min(second),
+            max: first.max(second),
+        })
+    }
+
+    /// 取值域下界（恒 `<= max`）。
+    #[must_use]
+    pub const fn min(self) -> f32 {
+        self.min
+    }
+
+    /// 取值域上界（恒 `>= min`）。
+    #[must_use]
+    pub const fn max(self) -> f32 {
+        self.max
+    }
+
+    /// 区间宽度（恒 `>= 0`）。
+    #[must_use]
+    pub fn span(self) -> f32 {
+        self.max - self.min
+    }
+
+    /// 常量端点的内部构造：调用者保证 `min <= max` 且两者有限。
+    pub(crate) fn pinned(min: f32, max: f32) -> Self {
+        debug_assert!(min.is_finite() && max.is_finite() && min <= max);
+        Self { min, max }
+    }
+}
+
+impl serde::Serialize for AutomationValueDomain {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("AutomationValueDomain", 2)?;
+        state.serialize_field("min", &self.min)?;
+        state.serialize_field("max", &self.max)?;
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AutomationValueDomain {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Repr {
+            min: f32,
+            max: f32,
+        }
+        let repr = Repr::deserialize(deserializer)?;
+        Self::new(repr.min, repr.max).map_err(serde::de::Error::custom)
+    }
+}
+
+/// 自动化**写模式**（录制时如何把参数动作写进泳道）。
+///
+/// 规范四份正文都没有给"读/写模式"命名或定义（实测：只有 `CurveType`/`AutomationLane`
+/// 这些类型名），因此这是本线的工程裁决，代价与依据记在
+/// `docs/ledger/model-automation-notes.md`。`Off` 是默认值：旧工程读到的是"不录制"，
+/// 这是唯一安全的默认（默认"录制"会凭空产生写入）。
+#[derive(
+    Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+pub enum AutomationWriteMode {
+    /// 不录制。
+    #[default]
+    Off,
+    /// 走带时只要参数被改动就写入（写到底）。
+    Write,
+    /// 仅在该参数正被手动触碰时写入（松手即停）。
+    Touch,
+    /// 一直写入，直到显式停止（松手不停）。
+    Latch,
+}
+
+impl AutomationWriteMode {
+    /// 是否为 `Off`（`serde` 的 `skip_serializing_if` 需要 `&self` 形式）。
+    #[must_use]
+    pub const fn is_off(&self) -> bool {
+        matches!(self, Self::Off)
+    }
+}
+
+/// `bool` 字段的默认值 `true`（serde 的 `default = "..."` 需要具名函数）。
+fn default_true() -> bool {
+    true
+}
+
+/// `bool` 的 `skip_serializing_if` 谓词：`true` 是默认值，因此不写进 JSON。
+///
+/// 这条不只是省字节：它让**旧工程再导出后的字节与原文一致**
+/// （新字段在默认值上完全隐身），于是"旧文档 → 读 → 写"不产生任何格式漂移。
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// 自动化泳道（一个目标一条）[MODEL-AST-002]。
+///
+/// ## 泳道身份 = `AutomationTarget`
+///
+/// 泳道**没有**第二个身份字段：它在 `TrackV3::automation_lanes` 里的键就是
+/// [`AutomationTarget`]，并且结构体里那份 `target` 必须与键一致（否则
+/// [`ModelError::AutomationLaneTargetMismatch`]）。刻意不引入 `id: EntityId`：
+/// 两个身份必然漂移（ADR-0001 D28 的同一理由），而寻址/撤销/下游调用全都按目标走。
+///
+/// ## 向后兼容
+///
+/// 三个新字段全部 `#[serde(default)]`（`read_enabled` 缺失即 `true`、`write_mode`
+/// 缺失即 `Off`、`domain` 缺失即 `None`），且**在默认值上不序列化**：没有这些字段的
+/// 旧工程能原样读入，再导出时字节不变。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AutomationLane {
     /// 该泳道控制的目标。
@@ -614,6 +791,65 @@ pub struct AutomationLane {
     /// 自动化点集合，键为点身份（`BTreeMap` 保证迭代顺序确定）[MODEL-AST-003]。
     #[serde(default)]
     pub points: BTreeMap<EntityId, AutomationPoint>,
+    /// **读**开关：走带/离线渲染是否应用本泳道。`false` 表示泳道被关掉
+    /// （求值入口返回"无自动化值"，而不是返回曲线上的值）。
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub read_enabled: bool,
+    /// **写**模式（录制）。
+    #[serde(default, skip_serializing_if = "AutomationWriteMode::is_off")]
+    pub write_mode: AutomationWriteMode,
+    /// 该泳道的显式取值域覆盖；`None` 表示取目标的固有值域
+    /// （见 `AutomationLane::effective_domain`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<AutomationValueDomain>,
+}
+
+impl AutomationLane {
+    /// 隐式泳道的规范形状：`SetAutomationPoint` 首次触碰某目标时创建的那一条。
+    ///
+    /// 这个形状是"隐式"的判据（[`AutomationLane::is_implicit`]）：它**不允许被持久化**
+    /// —— 增删采样点会自动创建/回收它，因此它存不存在完全由文档里有没有点决定。
+    #[must_use]
+    pub fn implicit(target: AutomationTarget) -> Self {
+        Self {
+            target,
+            points: BTreeMap::new(),
+            read_enabled: true,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        }
+    }
+
+    /// 是否与隐式泳道**逐位不可区分**（无点 + 全默认属性）。
+    ///
+    /// 这样的泳道不会被持久化：`SetAutomationLane` 拒绝创建它
+    /// （否则撤销无法判定泳道该不该存在），`RemoveAutomationPoint` 在点被移空时回收它。
+    #[must_use]
+    pub fn is_implicit(&self) -> bool {
+        self.points.is_empty()
+            && self.read_enabled
+            && self.write_mode.is_off()
+            && self.domain.is_none()
+    }
+
+    /// 校验泳道自身：采样点的键/身份一致、取值有限。
+    ///
+    /// # Errors
+    ///
+    /// 键与 `point.id` 不一致 → [`ModelError::EntityKeyMismatch`]；
+    /// 取值非有限 → [`ModelError::NonFiniteValue`]。
+    pub fn validate(&self) -> Result<(), ModelError> {
+        for (point_id, point) in &self.points {
+            if *point_id != point.id {
+                return Err(ModelError::EntityKeyMismatch {
+                    key: *point_id,
+                    embedded: point.id,
+                });
+            }
+            point.validate()?;
+        }
+        Ok(())
+    }
 }
 
 /// `BTreeMap<AutomationTarget, AutomationLane>` 的 JSON 形态：按键升序的数组。
@@ -929,15 +1165,7 @@ impl TrackV3 {
                     embedded: format!("{:?}", lane.target),
                 });
             }
-            for (point_id, point) in &lane.points {
-                if *point_id != point.id {
-                    return Err(ModelError::EntityKeyMismatch {
-                        key: *point_id,
-                        embedded: point.id,
-                    });
-                }
-                point.validate()?;
-            }
+            lane.validate()?;
         }
         for (placement_id, placement) in &self.clips {
             if *placement_id != placement.id {
