@@ -215,6 +215,7 @@ midly = { workspace = true, features = ["std"] }
 | **needs** | 工程 ULID 在 BWF 里的规范落点 | `bext` 没有 ULID 字段；当前写进 32 字节的 `OriginatorReference`。更规范的落点是 BS.2088 的 `axml` 里的 `<ULID>`；若后续实现 `axml`，应两者都写以保持向后兼容。**需人类裁决** |
 | **needs** | 与 `yeban-engine` 的样本源接口对齐 | 目前是 `AudioSource` trait（本 crate 定义）。engine 线落地后应对齐/复用它的渲染图接口，避免两套 trait |
 | pending | `midi` 未导出拍号变更链、调号、滑音、弯音曲线、连击、触发概率 < 1.0、歌词/音素 | `micro_timing_ticks` 已并入起始 tick；其余登记为后续切片 |
+| **已知边界（集成者要求在账本登记）** | `latency_samples == 0` **与"该设备真的是零延迟"在数据模型上无法区分** | 模型层把 0 定义为"未上报"（`#[serde(default)]` 的必然结果），但从一个已经保存的工程里读回时，0 既可能表示"设备作者没写"，也可能表示"这个设备确实不引入延迟"。两者在 PDC 数学上必须同样处理（按 0 参与求和、不做补偿），因此**不影响正确性**，只影响"能不能告警"。若要区分，需要把字段改成 `Option<u32>`（`None` = 未上报）。本线不擅自改 model；已作为已知边界上报 |
 | pending | `bext` v0 的读取 | 字段表未核验，读到即报 `UnsupportedBextVersion(0)` |
 | pending | [BASELINE-001] "≥ 100× 实时" 基准 | 需要 `criterion` + 基准机；本线未做 |
 | pending | 真实工程的 32 轨参考工程 A 端到端渲染 | 本线的端到端判据用 **32 轨星形图 + 常量源**，不是真实乐器链 |
@@ -328,6 +329,13 @@ ui 依赖 model…）都会撞上同一堵墙。建议在合并本线之前先�
 
 **教训**：这两条都属于"判据写错而不是代码写错"，而本机因为不编译这几个文件所以**无法发现**。
 反过来说，CI 的 `left/right` 原始输出足以让修复变成确定性的（不需要猜），这也是值得记下来的经验。
+
+### 第 5 轮 —— rebase 到 main `4d739e1` 后（本轮的最终判决见文末）
+
+第 4 轮之后 rust 腿已全绿；剩下的 `deny` 是**纯 staleness**：集成者在 main `4d739e1`
+按本线上报的两条建议放行了 `[bans] allow-wildcard-paths = true`（ADR D21）与
+`[licenses] allow += "Unlicense"`（ADR D20）。本线 rebase 到 `4d739e1` 即可。
+本线**不需要**自研 SMF 编解码器（集成者按建议 1 处理，并记录了否决"自研"的理由）。
 
 ### 第 3 轮及以前的修复清单
 
