@@ -12,13 +12,13 @@ SKILL 讲"为什么"，这里讲"怎么敲"。
    本机只允许：`cargo fmt`、**单个无重依赖 crate** 的 `clippy/test`、全部守卫脚本。
 2. **只有 CI 的判决算"绿"。** 本地绿是参考；未读取的 CI 判决一律记为 `pending`，不许写成"通过"。
 
-这两条不是自律要求，是被脚本机械执行的：
+这两条不是自律要求，是被脚本机械执行的。**"哪些活能在本机跑"必须由依赖图决定，不由自觉决定** —— `yeban-mcp` 自己的清单里一个重依赖都没有，但它依赖 `yeban-render` ⇒ 传递拉进 `rayon`/`hound`/`midly`；只看本 crate 清单的实现会**在本机真的编译**它们（由 `line/mcp-render` 的 needs-7 发现，第 7 轮已修）：
 
 | 工具 | 作用 |
 | :--- | :--- |
 | `scripts/dev/cargo-local.sh` | 本机 cargo 包装器：拒绝 `--workspace`/`--all`，重定向 `CARGO_HOME` 到工作区内 |
 | `scripts/gates/run-gates.sh light` | 格式 + 13 条机械红线守卫 + 文档链接门禁 + 许可清单检查，零编译，任何机器都能跑 |
-| `scripts/gates/run-gates.sh crate <name>` | 在 light 基础上加该 crate 的 clippy/test；**若该 crate 含重依赖则自动拒绝并交给 CI** |
+| `scripts/gates/run-gates.sh crate <name>` | 在 light 基础上加该 crate 的 clippy/test；**若该 crate（传递地）含重依赖则自动拒绝并交给 GitHub CI**（判定见 `scripts/dev/heavy-deps.py`：0=含重依赖 / 1=不含 / 2=无法判定⇒保守跳过）。重依赖**挂在 feature 后面**的 crate（如 `yeban-engine` 的 cpal）不跳过，而是自动改用 `--no-default-features` 的**本机轻量变体**真跑（D19） |
 | `scripts/gates/run-gates.sh full` | 全量门禁；只允许在 CI 上跑（本机需 `YEBAN_ALLOW_HEAVY=1` 显式放行） |
 | `scripts/dev/ci-verdict.sh [branch]` | 把 CI 判决读回来（公开仓库匿名 REST API 即可） |
 
