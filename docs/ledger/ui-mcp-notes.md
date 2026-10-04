@@ -356,7 +356,37 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
 | 轮次 | 头部 | run id | 结论 |
 | :--- | :--- | ---: | :--- |
 | 1 | `bd8f845` | `37228953183` | **failure**：`rust (workspace 全量)` 腿 red（`checks` / `deny` / `lockfile` / `plan` 绿）。**只有 2 条 clippy**，都在 lib 目标 |
-| 2 | 见 §7.1 | 见 §7.1 | 见 §7.1 |
+| 2 | `aa094b9` | `37229440567` | **全绿**：`plan` / `checks` / `deny` / `lockfile` / **`rust (yeban-ui-mcp)`**(1m22s) 全部 ✓；`rust (workspace 全量)` 按计划**跳过**（0s，窄运行由 per-crate 腿覆盖） |
+
+### 7.0 第 2 轮的**原始日志证据**（`rust (yeban-ui-mcp)`，job `111515847392`）
+
+```text
+clippy (-D warnings)   Finished `dev` profile ... in 27.14s        <- 零告警
+test                   running 52 tests
+test                   test result: ok. 52 passed; 0 failed; ...   <- 单元判据
+test                   running 5 tests
+test                   test result: ok. 5 passed; 0 failed; ...    <- tests/contract.rs
+test                   running 0 tests                             <- doc-tests
+```
+
+读数要点（这三条都**只有 CI 能给出**）：
+
+1. **`cargo clippy -p yeban-ui-mcp --all-targets -- -D warnings` 真的跑了且零告警** ——
+   本机跑不了 clippy（要编译 Slint），这是第一次真判决。
+2. **`transport/http.rs` 真的被编译并跑了判据**（日志里可见
+   `transport::http::tests::protocol_errors_have_explicit_statuses ... ok` 与
+   `transport::tests::enabling_http_without_the_feature_is_an_explicit_error ... ok`）
+   ⇒ 那条 `[dev-dependencies] yeban-mcp = { features = ["mcp-http"] }` +
+   `cfg(any(feature, test))` 的取舍**在 CI 上成立**（默认 release 构建仍然没有它，
+   由 `Cargo.toml` 的 `default = []` 与 `[features]` 的开关判据钉住）。
+3. **集成判据 5 条也真的跑了**，其中包括 `fingerprint_matches_the_tier1_renderer` ——
+   它链接的是**真** `yeban_ui_test_port::render`（Slint），
+   因此"本 crate 的 FNV-1a 与 Tier-1 渲染器逐位一致"这条**现在是 CI 证明的**，
+   本机那次只是 shim（见 §4.1 的诚实边界）。
+
+> `rust (workspace 全量)` 这一行是**被跳过**的（0s），不是"跑过且绿"。
+> 跳过是 `plan` 的显式设计：窄运行（只碰少数 crate）走矩阵腿，宽运行才走 workspace 腿
+> （与 `ui-test-port` notes §12 记录的行为一致）。本 crate 的 per-crate 腿是真跑且绿的。
 
 ### 7.1 第 1 轮实测（逐条留痕）
 
