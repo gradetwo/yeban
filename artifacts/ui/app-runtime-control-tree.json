@@ -1,0 +1,1237 @@
+{
+  "ai-rail": {
+    "id": "ai-rail",
+    "role": "complementary",
+    "label": "AI 协作栏: 意图生成与声学诊断",
+    "bounds": {
+      "x": 1640,
+      "y": 48,
+      "width": 280,
+      "height": 583
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "ai-rail-diagnose-button": {
+    "id": "ai-rail-diagnose-button",
+    "role": "button",
+    "label": "声学诊断",
+    "bounds": {
+      "x": 1648,
+      "y": 152,
+      "width": 272,
+      "height": 64
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "ai-rail-intent-button": {
+    "id": "ai-rail-intent-button",
+    "role": "button",
+    "label": "用自然语言描述编曲意图",
+    "bounds": {
+      "x": 1648,
+      "y": 80,
+      "width": 272,
+      "height": 64
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "ai-rail-musical-pr-button": {
+    "id": "ai-rail-musical-pr-button",
+    "role": "button",
+    "label": "打开 AI 编曲提案审核抽屉",
+    "bounds": {
+      "x": 1648,
+      "y": 224,
+      "width": 272,
+      "height": 28
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "arrangement-loop-brace": {
+    "id": "arrangement-loop-brace",
+    "role": "slider",
+    "label": "循环选区",
+    "bounds": {
+      "x": 648,
+      "y": 68,
+      "width": 480,
+      "height": 22
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "arrangement-playhead": {
+    "id": "arrangement-playhead",
+    "role": "slider",
+    "label": "走带光标",
+    "bounds": {
+      "x": 768,
+      "y": 68,
+      "width": 1,
+      "height": 563
+    },
+    "dynamic_region": true,
+    "parent": null
+  },
+  "arrangement-ruler": {
+    "id": "arrangement-ruler",
+    "role": "text",
+    "label": "小节与拍标尺",
+    "bounds": {
+      "x": 408,
+      "y": 68,
+      "width": 1232,
+      "height": 22
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header": {
+    "id": "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
+    "role": "list-item",
+    "label": "剪辑 鼓 包头",
+    "bounds": {
+      "x": 432,
+      "y": 94,
+      "width": 240,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "clip-01J8Z5Q0R7K3M9X2V4B6N8P1G6-header": {
+    "id": "clip-01J8Z5Q0R7K3M9X2V4B6N8P1G6-header",
+    "role": "list-item",
+    "label": "剪辑 贝斯 包头",
+    "bounds": {
+      "x": 572,
+      "y": 150,
+      "width": 240,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "clip-01J8Z5Q0R7K3M9X2V4B6N8P1H3-header": {
+    "id": "clip-01J8Z5Q0R7K3M9X2V4B6N8P1H3-header",
+    "role": "list-item",
+    "label": "剪辑 铺底 包头",
+    "bounds": {
+      "x": 712,
+      "y": 206,
+      "width": 240,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "console-maximize-button": {
+    "id": "console-maximize-button",
+    "role": "button",
+    "label": "最大化 / 还原底部控制台",
+    "bounds": {
+      "x": 1892,
+      "y": 639,
+      "width": 20,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "console-tab-rail": {
+    "id": "console-tab-rail",
+    "role": "tab-list",
+    "label": "底部控制台标签导轨",
+    "bounds": {
+      "x": 0,
+      "y": 635,
+      "width": 1920,
+      "height": 421
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect": {
+    "id": "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
+    "role": "list-item",
+    "label": "音符 01J8Z5Q0R7K3M9X2V4B6N8P1A2",
+    "bounds": {
+      "x": 68,
+      "y": 697,
+      "width": 66,
+      "height": 12
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "note-01J8Z5Q0R7K3M9X2V4B6N8P1A3-rect": {
+    "id": "note-01J8Z5Q0R7K3M9X2V4B6N8P1A3-rect",
+    "role": "list-item",
+    "label": "音符 01J8Z5Q0R7K3M9X2V4B6N8P1A3",
+    "bounds": {
+      "x": 144,
+      "y": 711,
+      "width": 66,
+      "height": 12
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "note-01J8Z5Q0R7K3M9X2V4B6N8P1B0-rect": {
+    "id": "note-01J8Z5Q0R7K3M9X2V4B6N8P1B0-rect",
+    "role": "list-item",
+    "label": "音符 01J8Z5Q0R7K3M9X2V4B6N8P1B0",
+    "bounds": {
+      "x": 220,
+      "y": 725,
+      "width": 66,
+      "height": 12
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "note-01J8Z5Q0R7K3M9X2V4B6N8P1C7-rect": {
+    "id": "note-01J8Z5Q0R7K3M9X2V4B6N8P1C7-rect",
+    "role": "list-item",
+    "label": "音符 01J8Z5Q0R7K3M9X2V4B6N8P1C7",
+    "bounds": {
+      "x": 296,
+      "y": 739,
+      "width": 66,
+      "height": 12
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "note-01J8Z5Q0R7K3M9X2V4B6N8P1D4-rect": {
+    "id": "note-01J8Z5Q0R7K3M9X2V4B6N8P1D4-rect",
+    "role": "list-item",
+    "label": "音符 01J8Z5Q0R7K3M9X2V4B6N8P1D4",
+    "bounds": {
+      "x": 372,
+      "y": 753,
+      "width": 66,
+      "height": 12
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "note-01J8Z5Q0R7K3M9X2V4B6N8P1E1-rect": {
+    "id": "note-01J8Z5Q0R7K3M9X2V4B6N8P1E1-rect",
+    "role": "list-item",
+    "label": "音符 01J8Z5Q0R7K3M9X2V4B6N8P1E1",
+    "bounds": {
+      "x": 448,
+      "y": 767,
+      "width": 66,
+      "height": 12
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "note-suggestion-overlay-rect": {
+    "id": "note-suggestion-overlay-rect",
+    "role": "list-item",
+    "label": "AI 建议音符 (待采纳)",
+    "bounds": {
+      "x": 524,
+      "y": 725,
+      "width": 66,
+      "height": 12
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll": {
+    "id": "piano-roll",
+    "role": "region",
+    "label": "虚拟化钢琴卷帘",
+    "bounds": {
+      "x": 0,
+      "y": 663,
+      "width": 1920,
+      "height": 393
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-grid": {
+    "id": "piano-roll-grid",
+    "role": "region",
+    "label": "音符网格画布",
+    "bounds": {
+      "x": 56,
+      "y": 691,
+      "width": 1864,
+      "height": 365
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-keys": {
+    "id": "piano-roll-keys",
+    "role": "list",
+    "label": "钢琴键列",
+    "bounds": {
+      "x": 0,
+      "y": 691,
+      "width": 56,
+      "height": 365
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-playhead": {
+    "id": "piano-roll-playhead",
+    "role": "slider",
+    "label": "卷帘走带光标",
+    "bounds": {
+      "x": 236,
+      "y": 691,
+      "width": 1,
+      "height": 365
+    },
+    "dynamic_region": true,
+    "parent": null
+  },
+  "piano-roll-status": {
+    "id": "piano-roll-status",
+    "role": "text",
+    "label": "卷帘吸附与音域状态",
+    "bounds": {
+      "x": 272,
+      "y": 667,
+      "width": 220,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-tool-eraser-button": {
+    "id": "piano-roll-tool-eraser-button",
+    "role": "button",
+    "label": "橡皮工具",
+    "bounds": {
+      "x": 216,
+      "y": 667,
+      "width": 48,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-tool-knife-button": {
+    "id": "piano-roll-tool-knife-button",
+    "role": "button",
+    "label": "剪刀工具",
+    "bounds": {
+      "x": 112,
+      "y": 667,
+      "width": 48,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-tool-pencil-button": {
+    "id": "piano-roll-tool-pencil-button",
+    "role": "button",
+    "label": "铅笔工具",
+    "bounds": {
+      "x": 60,
+      "y": 667,
+      "width": 48,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-tool-select-button": {
+    "id": "piano-roll-tool-select-button",
+    "role": "button",
+    "label": "选择工具",
+    "bounds": {
+      "x": 8,
+      "y": 667,
+      "width": 48,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-tool-velocity-button": {
+    "id": "piano-roll-tool-velocity-button",
+    "role": "button",
+    "label": "力度工具",
+    "bounds": {
+      "x": 164,
+      "y": 667,
+      "width": 48,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "piano-roll-velocity-lane": {
+    "id": "piano-roll-velocity-lane",
+    "role": "region",
+    "label": "力度泳道",
+    "bounds": {
+      "x": 0,
+      "y": 1012,
+      "width": 1920,
+      "height": 44
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "section-0-card": {
+    "id": "section-0-card",
+    "role": "list-item",
+    "label": "章节 Intro",
+    "bounds": {
+      "x": 408,
+      "y": 48,
+      "width": 156,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "section-1-card": {
+    "id": "section-1-card",
+    "role": "list-item",
+    "label": "章节 Verse",
+    "bounds": {
+      "x": 568,
+      "y": 48,
+      "width": 156,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "section-2-card": {
+    "id": "section-2-card",
+    "role": "list-item",
+    "label": "章节 Chorus",
+    "bounds": {
+      "x": 728,
+      "y": 48,
+      "width": 156,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "section-3-card": {
+    "id": "section-3-card",
+    "role": "list-item",
+    "label": "章节 Outro",
+    "bounds": {
+      "x": 888,
+      "y": 48,
+      "width": 156,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar": {
+    "id": "sidebar",
+    "role": "complementary",
+    "label": "左侧资源浏览器与资产库",
+    "bounds": {
+      "x": 0,
+      "y": 48,
+      "width": 240,
+      "height": 583
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-category-0-button": {
+    "id": "sidebar-category-0-button",
+    "role": "tab",
+    "label": "资源分类 0",
+    "bounds": {
+      "x": 8,
+      "y": 120,
+      "width": 60,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-category-1-button": {
+    "id": "sidebar-category-1-button",
+    "role": "tab",
+    "label": "资源分类 1",
+    "bounds": {
+      "x": 72,
+      "y": 120,
+      "width": 60,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-category-2-button": {
+    "id": "sidebar-category-2-button",
+    "role": "tab",
+    "label": "资源分类 2",
+    "bounds": {
+      "x": 136,
+      "y": 120,
+      "width": 60,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-collapse-button": {
+    "id": "sidebar-collapse-button",
+    "role": "button",
+    "label": "收起左侧资源栏",
+    "bounds": {
+      "x": 210,
+      "y": 53,
+      "width": 22,
+      "height": 22
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-0": {
+    "id": "sidebar-item-0",
+    "role": "list-item",
+    "label": "Studio Grand 三角钢琴",
+    "bounds": {
+      "x": 8,
+      "y": 148,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-1": {
+    "id": "sidebar-item-1",
+    "role": "list-item",
+    "label": "Analog Brass 合成铜管",
+    "bounds": {
+      "x": 8,
+      "y": 176,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-2": {
+    "id": "sidebar-item-2",
+    "role": "list-item",
+    "label": "Night Pad 夜色铺底",
+    "bounds": {
+      "x": 8,
+      "y": 204,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-3": {
+    "id": "sidebar-item-3",
+    "role": "list-item",
+    "label": "Sub Bass 低频",
+    "bounds": {
+      "x": 8,
+      "y": 232,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-4": {
+    "id": "sidebar-item-4",
+    "role": "list-item",
+    "label": "Drum Kit 909 鼓组",
+    "bounds": {
+      "x": 8,
+      "y": 260,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-5": {
+    "id": "sidebar-item-5",
+    "role": "list-item",
+    "label": "String Ensemble 弦乐",
+    "bounds": {
+      "x": 8,
+      "y": 288,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-6": {
+    "id": "sidebar-item-6",
+    "role": "list-item",
+    "label": "Tape Choir 磁带人声",
+    "bounds": {
+      "x": 8,
+      "y": 316,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-item-7": {
+    "id": "sidebar-item-7",
+    "role": "list-item",
+    "label": "SFZ · 323 款采样预置",
+    "bounds": {
+      "x": 8,
+      "y": 344,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "sidebar-search-field": {
+    "id": "sidebar-search-field",
+    "role": "text-input",
+    "label": "搜索资源",
+    "bounds": {
+      "x": 8,
+      "y": 88,
+      "width": 232,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "splitter-workspace-console": {
+    "id": "splitter-workspace-console",
+    "role": "slider",
+    "label": "主工作区与底部控制台的分割线 (220–600px)",
+    "bounds": {
+      "x": 0,
+      "y": 631,
+      "width": 1920,
+      "height": 4
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "status-bar": {
+    "id": "status-bar",
+    "role": "content-info",
+    "label": "状态栏",
+    "bounds": {
+      "x": 0,
+      "y": 1056,
+      "width": 1920,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "status-bar-chord": {
+    "id": "status-bar-chord",
+    "role": "text",
+    "label": "实时和弦识别",
+    "bounds": {
+      "x": 236,
+      "y": 1056,
+      "width": 96,
+      "height": 24
+    },
+    "dynamic_region": true,
+    "parent": null
+  },
+  "status-bar-device": {
+    "id": "status-bar-device",
+    "role": "text",
+    "label": "硬件声卡采样率与性能状态",
+    "bounds": {
+      "x": 1652,
+      "y": 1056,
+      "width": 256,
+      "height": 24
+    },
+    "dynamic_region": true,
+    "parent": null
+  },
+  "status-bar-selection": {
+    "id": "status-bar-selection",
+    "role": "text",
+    "label": "选区信息",
+    "bounds": {
+      "x": 8,
+      "y": 1056,
+      "width": 220,
+      "height": 24
+    },
+    "dynamic_region": true,
+    "parent": null
+  },
+  "status-bar-shortcut-tip": {
+    "id": "status-bar-shortcut-tip",
+    "role": "text",
+    "label": "快捷键提示",
+    "bounds": {
+      "x": 344,
+      "y": 1056,
+      "width": 480,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "tab-devices-button": {
+    "id": "tab-devices-button",
+    "role": "tab",
+    "label": "设备效果链",
+    "bounds": {
+      "x": 232,
+      "y": 639,
+      "width": 104,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "tab-mixer-button": {
+    "id": "tab-mixer-button",
+    "role": "tab",
+    "label": "调音台",
+    "bounds": {
+      "x": 120,
+      "y": 639,
+      "width": 104,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "tab-piano-roll-button": {
+    "id": "tab-piano-roll-button",
+    "role": "tab",
+    "label": "钢琴卷帘",
+    "bounds": {
+      "x": 8,
+      "y": 639,
+      "width": 104,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-0-header": {
+    "id": "track-0-header",
+    "role": "list-item",
+    "label": "轨道 鼓",
+    "bounds": {
+      "x": 240,
+      "y": 90,
+      "width": 168,
+      "height": 54
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-0-mute-button": {
+    "id": "track-0-mute-button",
+    "role": "button",
+    "label": "轨道 鼓 静音",
+    "bounds": {
+      "x": 248,
+      "y": 116,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-0-solo-button": {
+    "id": "track-0-solo-button",
+    "role": "button",
+    "label": "轨道 鼓 独奏",
+    "bounds": {
+      "x": 274,
+      "y": 116,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-1-header": {
+    "id": "track-1-header",
+    "role": "list-item",
+    "label": "轨道 贝斯",
+    "bounds": {
+      "x": 240,
+      "y": 146,
+      "width": 168,
+      "height": 54
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-1-mute-button": {
+    "id": "track-1-mute-button",
+    "role": "button",
+    "label": "轨道 贝斯 静音",
+    "bounds": {
+      "x": 248,
+      "y": 172,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-1-solo-button": {
+    "id": "track-1-solo-button",
+    "role": "button",
+    "label": "轨道 贝斯 独奏",
+    "bounds": {
+      "x": 274,
+      "y": 172,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-2-header": {
+    "id": "track-2-header",
+    "role": "list-item",
+    "label": "轨道 铺底",
+    "bounds": {
+      "x": 240,
+      "y": 202,
+      "width": 168,
+      "height": 54
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-2-mute-button": {
+    "id": "track-2-mute-button",
+    "role": "button",
+    "label": "轨道 铺底 静音",
+    "bounds": {
+      "x": 248,
+      "y": 228,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-2-solo-button": {
+    "id": "track-2-solo-button",
+    "role": "button",
+    "label": "轨道 铺底 独奏",
+    "bounds": {
+      "x": 274,
+      "y": 228,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-3-header": {
+    "id": "track-3-header",
+    "role": "list-item",
+    "label": "轨道 主音",
+    "bounds": {
+      "x": 240,
+      "y": 258,
+      "width": 168,
+      "height": 54
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-3-mute-button": {
+    "id": "track-3-mute-button",
+    "role": "button",
+    "label": "轨道 主音 静音",
+    "bounds": {
+      "x": 248,
+      "y": 284,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-3-solo-button": {
+    "id": "track-3-solo-button",
+    "role": "button",
+    "label": "轨道 主音 独奏",
+    "bounds": {
+      "x": 274,
+      "y": 284,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-4-header": {
+    "id": "track-4-header",
+    "role": "list-item",
+    "label": "轨道 弦乐",
+    "bounds": {
+      "x": 240,
+      "y": 314,
+      "width": 168,
+      "height": 54
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-4-mute-button": {
+    "id": "track-4-mute-button",
+    "role": "button",
+    "label": "轨道 弦乐 静音",
+    "bounds": {
+      "x": 248,
+      "y": 340,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-4-solo-button": {
+    "id": "track-4-solo-button",
+    "role": "button",
+    "label": "轨道 弦乐 独奏",
+    "bounds": {
+      "x": 274,
+      "y": 340,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-5-header": {
+    "id": "track-5-header",
+    "role": "list-item",
+    "label": "轨道 打击",
+    "bounds": {
+      "x": 240,
+      "y": 370,
+      "width": 168,
+      "height": 54
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-5-mute-button": {
+    "id": "track-5-mute-button",
+    "role": "button",
+    "label": "轨道 打击 静音",
+    "bounds": {
+      "x": 248,
+      "y": 396,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "track-5-solo-button": {
+    "id": "track-5-solo-button",
+    "role": "button",
+    "label": "轨道 打击 独奏",
+    "bounds": {
+      "x": 274,
+      "y": 396,
+      "width": 22,
+      "height": 18
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-ai-drawer-button": {
+    "id": "transport-ai-drawer-button",
+    "role": "button",
+    "label": "AI 协作栏抽屉 (Cmd/Ctrl + 反斜杠)",
+    "bounds": {
+      "x": 1864,
+      "y": 8,
+      "width": 32,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-ai-proposal-badge": {
+    "id": "transport-ai-proposal-badge",
+    "role": "button",
+    "label": "AI 编曲提案待审查",
+    "bounds": {
+      "x": 588,
+      "y": 8,
+      "width": 120,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-bpm-field": {
+    "id": "transport-bpm-field",
+    "role": "text-input",
+    "label": "速度 BPM",
+    "bounds": {
+      "x": 120,
+      "y": 8,
+      "width": 96,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-branch-button": {
+    "id": "transport-branch-button",
+    "role": "combobox",
+    "label": "当前分支",
+    "bounds": {
+      "x": 372,
+      "y": 8,
+      "width": 128,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-commit-button": {
+    "id": "transport-commit-button",
+    "role": "button",
+    "label": "提交当前编辑为一个 Commit",
+    "bounds": {
+      "x": 508,
+      "y": 8,
+      "width": 32,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-play-button": {
+    "id": "transport-play-button",
+    "role": "button",
+    "label": "播放 / 暂停 (Space)",
+    "bounds": {
+      "x": 8,
+      "y": 8,
+      "width": 32,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-record-button": {
+    "id": "transport-record-button",
+    "role": "button",
+    "label": "录音",
+    "bounds": {
+      "x": 80,
+      "y": 8,
+      "width": 32,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-revert-button": {
+    "id": "transport-revert-button",
+    "role": "button",
+    "label": "回滚到上一个 Commit",
+    "bounds": {
+      "x": 544,
+      "y": 8,
+      "width": 32,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-stop-button": {
+    "id": "transport-stop-button",
+    "role": "button",
+    "label": "停止 (回到起始点)",
+    "bounds": {
+      "x": 44,
+      "y": 8,
+      "width": 32,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-timecode": {
+    "id": "transport-timecode",
+    "role": "text",
+    "label": "主时间码",
+    "bounds": {
+      "x": 224,
+      "y": 8,
+      "width": 128,
+      "height": 32
+    },
+    "dynamic_region": true,
+    "parent": null
+  },
+  "transport-view-arrangement-button": {
+    "id": "transport-view-arrangement-button",
+    "role": "tab",
+    "label": "Arrangement 时间轴 (F6)",
+    "bounds": {
+      "x": 1712,
+      "y": 8,
+      "width": 104,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-view-session-button": {
+    "id": "transport-view-session-button",
+    "role": "tab",
+    "label": "Session 触发矩阵 (F5)",
+    "bounds": {
+      "x": 1616,
+      "y": 8,
+      "width": 92,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "transport-view-toggle-button": {
+    "id": "transport-view-toggle-button",
+    "role": "button",
+    "label": "切换 Session / Arrangement (Tab, 仅画布聚焦时)",
+    "bounds": {
+      "x": 1824,
+      "y": 8,
+      "width": 32,
+      "height": 32
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "velocity-0-bar": {
+    "id": "velocity-0-bar",
+    "role": "slider",
+    "label": "力度条 0",
+    "bounds": {
+      "x": 98,
+      "y": 1028,
+      "width": 6,
+      "height": 24
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "velocity-1-bar": {
+    "id": "velocity-1-bar",
+    "role": "slider",
+    "label": "力度条 1",
+    "bounds": {
+      "x": 174,
+      "y": 1035,
+      "width": 6,
+      "height": 17
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "velocity-2-bar": {
+    "id": "velocity-2-bar",
+    "role": "slider",
+    "label": "力度条 2",
+    "bounds": {
+      "x": 250,
+      "y": 1025,
+      "width": 6,
+      "height": 27
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "velocity-3-bar": {
+    "id": "velocity-3-bar",
+    "role": "slider",
+    "label": "力度条 3",
+    "bounds": {
+      "x": 326,
+      "y": 1039,
+      "width": 6,
+      "height": 13
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "velocity-4-bar": {
+    "id": "velocity-4-bar",
+    "role": "slider",
+    "label": "力度条 4",
+    "bounds": {
+      "x": 402,
+      "y": 1032,
+      "width": 6,
+      "height": 20
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "velocity-5-bar": {
+    "id": "velocity-5-bar",
+    "role": "slider",
+    "label": "力度条 5",
+    "bounds": {
+      "x": 478,
+      "y": 1037,
+      "width": 6,
+      "height": 15
+    },
+    "dynamic_region": false,
+    "parent": null
+  },
+  "workspace-arrangement-canvas": {
+    "id": "workspace-arrangement-canvas",
+    "role": "main",
+    "label": "Arrangement 线性编曲时间轴",
+    "bounds": {
+      "x": 240,
+      "y": 48,
+      "width": 1400,
+      "height": 583
+    },
+    "dynamic_region": false,
+    "parent": null
+  }
+}
