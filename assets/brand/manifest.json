@@ -1,0 +1,238 @@
+{
+  "$schema": "../schemas/assets.manifest.schema.json",
+  "category": "brand",
+  "version": "1.0.0",
+  "items": [
+    {
+      "id": "brand-png-yeban-dark-128.png",
+      "name": "yeban-dark-128.png",
+      "relative_path": "assets/brand/png/yeban-dark-128.png",
+      "sha256": "f891597e81c2e99922cb34a8e00418f9052de44bc7ba24b30d8cc7f78eae9cee",
+      "size_bytes": 9464,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-dark-256.png",
+      "name": "yeban-dark-256.png",
+      "relative_path": "assets/brand/png/yeban-dark-256.png",
+      "sha256": "b9e7f4534cda2292f26371428ded9f9db8e637c88bd088aea192930e5541b54b",
+      "size_bytes": 23297,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-dark-32.png",
+      "name": "yeban-dark-32.png",
+      "relative_path": "assets/brand/png/yeban-dark-32.png",
+      "sha256": "394a1a4dcea5588ac0ead59ec5b6fd17df2f1c90be795c5693ecf66d5bb91b04",
+      "size_bytes": 1311,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-dark-512.png",
+      "name": "yeban-dark-512.png",
+      "relative_path": "assets/brand/png/yeban-dark-512.png",
+      "sha256": "687472df0afcf35805aa35eb527823a09415f3059393d305092a6b440ed75028",
+      "size_bytes": 54847,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-dark-64.png",
+      "name": "yeban-dark-64.png",
+      "relative_path": "assets/brand/png/yeban-dark-64.png",
+      "sha256": "39aef4df0ed11a32f78c844c4bd30db2775ff3005877b589b2c5514cafaa5e92",
+      "size_bytes": 3362,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-light-128.png",
+      "name": "yeban-light-128.png",
+      "relative_path": "assets/brand/png/yeban-light-128.png",
+      "sha256": "472aaf848824219f833ac2d64133a5988765a6410897bb5aa61fc14473c7da41",
+      "size_bytes": 8943,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-light-256.png",
+      "name": "yeban-light-256.png",
+      "relative_path": "assets/brand/png/yeban-light-256.png",
+      "sha256": "8c49371e6b6949486d7b88a55779fe6d59a7ff077dd3ede9fe4b43f44301144e",
+      "size_bytes": 21319,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-light-32.png",
+      "name": "yeban-light-32.png",
+      "relative_path": "assets/brand/png/yeban-light-32.png",
+      "sha256": "c1b5545fadbf9ef71c3a1712033aedbce89d99ad12ba84fd25af5b11318bf80e",
+      "size_bytes": 1228,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-light-512.png",
+      "name": "yeban-light-512.png",
+      "relative_path": "assets/brand/png/yeban-light-512.png",
+      "sha256": "003f03344a1995e3edf2c5ab69112bb8baa3586d9ee2856f577a83bf9aced753",
+      "size_bytes": 48208,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-png-yeban-light-64.png",
+      "name": "yeban-light-64.png",
+      "relative_path": "assets/brand/png/yeban-light-64.png",
+      "sha256": "8f2ad4a587def8cfbadc5275faa492c3664304adc9c1aa1b7aa46b421360e22f",
+      "size_bytes": 3210,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-dark-128.svg",
+      "name": "yeban-dark-128.svg",
+      "relative_path": "assets/brand/yeban-dark-128.svg",
+      "sha256": "cb1d1a53f28d9958a404cdd6fe3e4f70a72c8711438fc03a75b4b0be6e6e9a48",
+      "size_bytes": 1408,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-dark-256.svg",
+      "name": "yeban-dark-256.svg",
+      "relative_path": "assets/brand/yeban-dark-256.svg",
+      "sha256": "3b82603e2ff5eec37a80c82528b501417c0d61dad13af036593e1cd9f916df96",
+      "size_bytes": 1556,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-dark-32.svg",
+      "name": "yeban-dark-32.svg",
+      "relative_path": "assets/brand/yeban-dark-32.svg",
+      "sha256": "5562dbdb9b258e8cf30f21685e4d6bcf5ad12227efcf6d7164d23c837a48979b",
+      "size_bytes": 996,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-dark-512.svg",
+      "name": "yeban-dark-512.svg",
+      "relative_path": "assets/brand/yeban-dark-512.svg",
+      "sha256": "f77e5c7bfc5d50fa1fa9b6c8b70b2062937df2c46bad562d7b1124c106025b1a",
+      "size_bytes": 1556,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-dark-64.svg",
+      "name": "yeban-dark-64.svg",
+      "relative_path": "assets/brand/yeban-dark-64.svg",
+      "sha256": "bf00b11e58b797d1f42fb6d1088598b996f45b842ad8b304a44a3aef58dd208a",
+      "size_bytes": 1106,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-light-128.svg",
+      "name": "yeban-light-128.svg",
+      "relative_path": "assets/brand/yeban-light-128.svg",
+      "sha256": "4d6559ca1fff459de5710355f52b8fa346d896344043594e634be05f356b5f75",
+      "size_bytes": 1357,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-light-256.svg",
+      "name": "yeban-light-256.svg",
+      "relative_path": "assets/brand/yeban-light-256.svg",
+      "sha256": "cd529aa66a8d0ead65c3688feafbc19041a9f34ad0d93ab64b53ae911ba41d91",
+      "size_bytes": 1505,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-light-32.svg",
+      "name": "yeban-light-32.svg",
+      "relative_path": "assets/brand/yeban-light-32.svg",
+      "sha256": "afd3e3a47ba38ef3c488ebc481125f210670e42edc808912455c8a211dd87bf3",
+      "size_bytes": 945,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-light-512.svg",
+      "name": "yeban-light-512.svg",
+      "relative_path": "assets/brand/yeban-light-512.svg",
+      "sha256": "27d764e722564a02ef543bd868103dcb80c4242d1c934f37b74b9cb2e46b41cc",
+      "size_bytes": 1505,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban-light-64.svg",
+      "name": "yeban-light-64.svg",
+      "relative_path": "assets/brand/yeban-light-64.svg",
+      "sha256": "87185accc470c661278683ed2e8bfdc5264d91fe5ef7fe750123ca0f64c1885d",
+      "size_bytes": 1055,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
+      "id": "brand-yeban.svg",
+      "name": "yeban.svg",
+      "relative_path": "assets/brand/yeban.svg",
+      "sha256": "d8de766b5326abf624e3209e8c747939e5d4cc7048122103a255ea813291d935",
+      "size_bytes": 13095,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    }
+  ]
+}

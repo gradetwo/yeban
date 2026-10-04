@@ -132,7 +132,7 @@ jobs:
           # 新增一个这样的 crate 就在这里加一行 —— 否则它的契约只是"定义了没人用的类型"。
           cargo run -p yeban-model --locked --example export_schema_samples -- --out target/schema-samples
           cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples
-          python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
+          python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/schema-samples
 
   # ---------------------------------------------------------------------------
   # 每个受影响 crate 一条矩阵腿: clippy -D warnings + test

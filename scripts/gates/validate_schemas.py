@@ -33,6 +33,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import pathlib
 import json
 import sys
 from pathlib import Path
@@ -53,8 +55,119 @@ def load_json(path: Path) -> object:
         return json.load(fh)
 
 
+def rel(path: pathlib.Path) -> str:
+    """相对仓库根的路径(报告里用; 绝对路径太长且会暴露本机目录结构)。"""
+    try:
+        return str(path.resolve().relative_to(REPO.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
+    """校验仓库里**自己的**资产清单, 并逐项重算 SHA-256 与磁盘字节对账。
+
+    为什么需要这一步: `--samples-dir` 只校验 Rust 侧导出的样本, 而 `assets/**/manifest.json`
+    是**仓库自带的**清单 —— 在此之前它们**从来没有被任何门禁读过**
+    （`validate_schemas.py` 只把 `assets.manifest.schema.json` 当 schema 校验了语法）。
+    于是"资产必须登记许可与 SHA-256"(AGENTS.md 红线 9)这条纪律**没有任何机械保护**:
+    清单可以写错、可以漏项、可以指向不存在的文件, 而全部门禁依旧绿。
+
+    这里做两件事:
+    1. 用 `assets.manifest.schema.json` 校验清单**本身**的结构;
+    2. **逐项重算 SHA-256 与 size_bytes**, 与磁盘上的真实字节比对 —— 这是"登记"与"事实"的对账。
+    """
+    from jsonschema import Draft202012Validator
+
+    schema = schemas.get("assets.manifest.schema.json")
+    if schema is None:
+        problems.append("缺少 assets.manifest.schema.json, 无法校验资产清单")
+        return
+    validator = Draft202012Validator(schema)
+    manifests = sorted(
+        path
+        for path in (REPO / "assets").rglob("*.json")
+        if path.name.lower() == "manifest.json" or path.name == "MANIFEST.json"
+    )
+    if not manifests:
+        problems.append("assets/ 下没有任何清单文件 —— 红线 9 的'登记'没有载体")
+        return
+    for manifest_path in manifests:
+        try:
+            doc = load_json(manifest_path)
+        except Exception as error:  # noqa: BLE001 - 报告并继续, 不因一个坏文件中断全部
+            problems.append(f"{rel(manifest_path)}: 无法解析为 JSON: {error}")
+            continue
+        if "sub_manifests" in doc:
+            # 根清单是**指针式**文档: 它自己不列条目, 而是指向各分类清单。
+            # 但仍必须校验结构 + 确认被指向的清单真的存在(否则"登记"指向空气)。
+            errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
+            for err in errors[:5]:
+                where = "/".join(str(p) for p in err.path) or "<根>"
+                problems.append(f"{rel(manifest_path)}: 违反 assets.manifest.schema.json @ {where}: {err.message}")
+            missing = [
+                entry.get("manifest")
+                for entry in doc.get("sub_manifests", [])
+                if entry.get("manifest") and not (REPO / entry["manifest"]).is_file()
+            ]
+            for target in missing:
+                problems.append(f"{rel(manifest_path)}: 指向不存在的子清单: {target}")
+            pointer_count = len(doc.get("sub_manifests", []))
+            if not missing:
+                print(f"[ok] {rel(manifest_path)}: 指针式清单, {pointer_count} 个子清单均存在")
+            continue
+        if "category" not in doc:
+            print(f"[skip] {rel(manifest_path)}: 无 category, 不作为清单校验")
+            continue
+        errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
+        if errors:
+            for err in errors[:5]:
+                where = "/".join(str(p) for p in err.path) or "<根>"
+                problems.append(f"{rel(manifest_path)}: 违反 assets.manifest.schema.json @ {where}: {err.message}")
+            continue
+        items = doc.get("items", [])
+        if not items:
+            problems.append(f"{rel(manifest_path)}: items 为空 —— 清单存在但没有登记任何资产")
+            continue
+        checked = 0
+        optional_missing = 0
+        for item in items:
+            rel_path = item.get("relative_path", "")
+            # 路径口径 = **仓库根**相对(与根清单的 sub_manifests 一致), 见 schema 的 description。
+            target = REPO / rel_path
+            if not target.is_file():
+                if item.get("optional") is True:
+                    # optional=true = 官方仓库不随包分发(例如大权重), 登记义务仍已完成。
+                    optional_missing += 1
+                    continue
+                problems.append(f"{rel(manifest_path)}: 条目 {item.get('id')} 指向不存在的文件: {rel_path}")
+                continue
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            if digest != item.get("sha256"):
+                problems.append(
+                    f"{rel(manifest_path)}: 条目 {item.get('id')} 的 SHA-256 与磁盘不符 "
+                    f"(清单 {str(item.get('sha256'))[:12]}…, 实际 {digest[:12]}…) —— 文件被改过而清单没更新"
+                )
+                continue
+            size = item.get("size_bytes")
+            actual_size = target.stat().st_size
+            if isinstance(size, int) and size != actual_size:
+                problems.append(
+                    f"{rel(manifest_path)}: 条目 {item.get('id')} 的 size_bytes 不符 "
+                    f"(清单 {size}, 实际 {actual_size})"
+                )
+                continue
+            checked += 1
+        note = f"(另有 {optional_missing} 项 optional 资产未随仓库分发)" if optional_missing else ""
+        print(f"[ok] {rel(manifest_path)}: {checked}/{len(items)} 条资产的 SHA-256 与磁盘一致{note}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="校验 schemas/ 与 Rust 产出的样本")
+    parser.add_argument(
+        "--repo-assets",
+        action="store_true",
+        help="校验 assets/**/manifest.json(结构 + 逐项 SHA-256/大小与磁盘对账)",
+    )
     parser.add_argument("--samples-dir", default=None, help="Rust 侧导出的样本目录")
     args = parser.parse_args()
 
@@ -96,6 +209,9 @@ def main() -> int:
                 problems.append(f"{path.name}: $id `{schema_id}` 与 {ids[schema_id]} 重复")
             ids[schema_id] = path.name
         print(f"[ok] {path.name}: 合法 JSON Schema ({doc.get('title', '?')})")
+
+    if args.repo_assets:
+        verify_repo_asset_manifests(schemas, problems)
 
     if args.samples_dir:
         samples_dir = (REPO / args.samples_dir).resolve()

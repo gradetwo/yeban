@@ -4,27 +4,67 @@
   "title": "AssetsManifest",
   "description": "Schema for asset attribution and provenance manifests in Yeban DAW",
   "type": "object",
-  "required": ["category", "version"],
+  "required": [
+    "category",
+    "version"
+  ],
   "properties": {
-    "category": { "type": "string" },
-    "version": { "type": "string" },
+    "category": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
     "items": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "name", "relative_path", "sha256", "license", "commercial_usable"],
+        "required": [
+          "id",
+          "name",
+          "relative_path",
+          "sha256",
+          "license",
+          "commercial_usable"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "relative_path": { "type": "string" },
-          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-          "size_bytes": { "type": "integer" },
-          "license": { "type": "string" },
-          "author": { "type": "string" },
-          "source_url": { "type": "string" },
-          "commercial_usable": { "type": "boolean" },
-          "attribution_required": { "type": "boolean" },
-          "optional": { "type": "boolean" }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "资产相对**仓库根**的路径(与根清单里 sub_manifests 的 manifest/attribution_doc 同一口径)。例: assets/brand/yeban-512.svg。由 scripts/gates/validate_schemas.py --repo-assets 逐项重算 SHA-256 对账。"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "该文件字节的 SHA-256(小写十六进制)。**必须与磁盘一致** —— 门禁会重算比对; 文件变更而清单未更新会被判为红。官方仓库不随包分发的大权重(optional=true)可登记其**预期**摘要, 此时门禁不因文件缺失而报错, 但会明确打印未随仓库分发的条数。"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "license": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "source_url": {
+            "type": "string"
+          },
+          "commercial_usable": {
+            "type": "boolean"
+          },
+          "attribution_required": {
+            "type": "boolean"
+          },
+          "optional": {
+            "type": "boolean",
+            "description": "true = 官方仓库**不随包分发**该资产(例如 18MB 的神经网络权重), 由用户按 source_url 自行获取。清单仍必须登记其许可与预期 SHA-256 —— 这是登记义务, 不是打包义务。"
+          }
         }
       }
     }

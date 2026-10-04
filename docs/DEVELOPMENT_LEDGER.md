@@ -635,3 +635,24 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - `longest_path_frames = 0`：参考工程里没有设备上报延迟（`DeviceDefinition::latency_samples` 全为 0），
   与 `ARCH-PDC-001` 的保守默认（未上报 ⇒ 不补偿）一致。
 
+### 资产清单此前**从未被任何门禁读过**（红线 9 的"登记"没有机械保护）
+
+- **实测发现**：`validate_schemas.py` 只把 `assets.manifest.schema.json` 当 **schema 语法**校验，
+  **没有任何一步**去读仓库里 `assets/**/manifest.json`；`policy_check.py` 也只读 crate 的 `Cargo.toml`。
+  于是"资产必须登记许可与 SHA-256"（AGENTS.md 红线 9）在**代码层面完全没有保护**：
+  清单可以漏项、可以写错摘要、可以指向不存在的文件，而全部门禁依旧绿。
+  顺带暴露两个真实缺陷：
+  1. `assets/brand/` 下 **21 个图形资产从未登记**（我在本轮才补上 `assets/brand/manifest.json`）；
+  2. `assets/models/MANIFEST.json` 的 `relative_path` 写作 `assets/models/basic_pitch.onnx` ——
+     而 `assets/brand/` 若按"assets 相对"理解就会与之冲突。**路径口径此前没有文档**，
+     现已在 schema 的三条 `description` 里钉死：**`relative_path` 一律相对仓库根**
+     （与根清单里 `sub_manifests.manifest` / `attribution_doc` 同一口径）。
+- **本轮落地**：`validate_schemas.py --repo-assets`（已接进 `ci.yml` 的 `checks` 步）：
+  · 校验每份清单的结构（对 `assets.manifest.schema.json`）；
+  · **逐项重算 SHA-256 与 `size_bytes`，与磁盘真实字节对账**；
+  · 指针式根清单（`sub_manifests`）改为校验"被指向的子清单确实存在"而不是"items 为空"；
+  · `optional: true` 的条目（例如 18MB 的 ONNX 权重）在文件缺失时**不算错**，但会打印
+    "另有 N 项 optional 资产未随仓库分发" —— 登记义务与打包义务被区分开。
+- **反证（全部用退出码，不看交错的文本）**：干净 → `0`；改动一个资产的字节 → `1`（报"SHA-256 与磁盘不符"）；
+  清单登记一个不存在的文件 → `1`（报"指向不存在的文件"）；还原 → `0`。
+
