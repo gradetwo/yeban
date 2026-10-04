@@ -23,9 +23,11 @@
 //! 2) 快照：begin_block() 无锁切换 [ARCH-RT-002]；revision 变化时
 //!       a) 重设电平弹道系数；b) 声部池对齐到新轨道集合 + 游标校正（只增不减）
 //! 3) 渲染 + 电平：对快照里**每条非母线轨**
-//!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch
-//!         →  MeterBank::measure(...)  →  汇入母线块
-//!    然后对母线（stereo-linked）MeterBank::measure_bus_stereo(block)
+//!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch（声相之前、单声道）
+//!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
+//!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
+//!    然后 **BusLimiter::apply(block)**                    ← 母线峰值限制（前瞻 33 帧）
+//!    再对母线（stereo-linked）MeterBank::measure_bus_stereo(block)   ← **限制之后**的读数
 //!    最后播放头前进 frames（**每量子一次**，与轨道数无关）
 //! 4) 发布：**每量子恰好一次** meters.publish(本量子的全部帧) [ARCH-UI-002, ROAD-M2-008]
 //! 5) end_block() 公布读者进度
@@ -45,7 +47,8 @@
 //! YebanProjectV1 ──(控制线程投影, snapshot::project_schedules)──► NoteSchedule
 //!   clips → ClipPlacement → clip_pool(Midi) → MidiNote ──(tick → sample)──►
 //!     ScheduledNote { start_sample, end_sample, phase_inc, freq_hz, gain }
-//! ──(RT: 游标触发 → 定长声部池 → 整数相位波表读数)──► track_scratch
+//! ──(RT: 游标触发 → 定长声部池 → 整数相位波表读数 → 声部低通)──► track_scratch
+//! ──(声相增益)──► 母线 L/R ──(前瞻峰值限制器)──► AudioBlock ──► cpal / NullBackend
 //! ```
 //!
 //! 实时侧仍然是零分配/零锁/零 I/O：声部池是 `[TrackSlot; 16]`（每槽 16 个声部），
@@ -79,13 +82,15 @@
 use std::sync::Arc;
 
 use rtrb::Producer;
+use yeban_model::EntityId;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
+use crate::mixer::{BusLimiter, PanLaw};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::snapshot::{EngineSnapshot, SnapshotReader, SnapshotSlot};
-use crate::synth::SynthEngine;
+use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
 
 // 编译期钉住块长是规范允许的取值 [ARCH-DET-001, MODEL-AST-002]。
 const _: () = crate::block::assert_supported_frames::<DEFAULT_BLOCK_FRAMES>();
@@ -124,12 +129,19 @@ pub struct EngineStats {
     pub scheduled_notes: u64,
     /// 当前快照构造时因容量上限丢弃的音符条数。
     pub note_schedule_drops: u64,
-    /// 声部池累计**硬窃取**次数（[ARCH-RT-004] 的快速淡出尚未接入）。
-    pub voice_steals: u64,
     /// 因声部池轨道槽耗尽而未参与合成的轨道次数。
     pub track_drops: u64,
     /// 累计触发过的音符数。
     pub notes_triggered: u64,
+    /// 声部池累计**软窃取**次数（每次伴随 3 ms 淡出 [ARCH-RT-004]）。
+    pub voice_steals: u64,
+    /// 母线限制器**累计压过的样本数**（[ARCH-DSP-001]；0 = 从未越过阈值）。
+    ///
+    /// 它是"限制器真的接在母线上"的结构性证据：只断言"峰值 ≤ 阈值"在
+    /// **从未越过阈值**的夹具上会永真（假绿），因此把"压了多少个样本"暴露出来。
+    pub limiter_gain_reductions: u64,
+    /// 母线限制器累计的**最大**瞬时压限量（1.0 − 最小增益；0 = 从未压过）。
+    pub limiter_max_reduction: f32,
     /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
     ///
     /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
@@ -155,6 +167,21 @@ pub struct EngineRuntime {
     bank: MeterBank<SCRATCH_METERS>,
     /// 声部池 + 播放头（**真的合成**：见 [`crate::synth`]）。
     synth: SynthEngine,
+    /// 母线峰值限制器（前瞻式，立体声联动）[ARCH-DSP-001]。
+    ///
+    /// 位置：**逐轨汇流之后、母线电平之前** ⇒ 母线电平读数（[`EngineStats::meter_frames`]）
+    /// 就是**限制后**的读数，而逐轨电平仍是**声相之前**的单声道读数。
+    limiter: BusLimiter,
+    /// 本快照武装的声相衰减律（`audio_config.pan_law` 的投影）。
+    armed_pan_law: PanLaw,
+    /// 本快照武装的每轨声相增益 `(左, 右)`（构造期算好，实时侧只做乘法）。
+    armed_pan_gains: [(EntityId, f32, f32); MAX_TRACK_SLOTS],
+    /// 本快照武装的声相增益条数（前 `n` 项有效）。
+    armed_pan_slots: usize,
+    /// 累计被限制器压过的样本数（与 [`EngineStats::limiter_gain_reductions`] 同源）。
+    limiter_gain_reductions: u64,
+    /// 累计最大压限量（与 [`EngineStats::limiter_max_reduction`] 同源）。
+    limiter_max_reduction: f32,
     /// 已按哪一份快照的采样率/块长设置过弹道系数。
     armed_revision: Option<u64>,
     quanta: u64,
@@ -197,6 +224,16 @@ impl EngineRuntime {
             bank: MeterBank::new(),
             // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
             synth: SynthEngine::new(48_000),
+            limiter: BusLimiter::new(),
+            armed_pan_law: PanLaw::default(),
+            armed_pan_gains: [(
+                EntityId::default(),
+                core::f32::consts::FRAC_1_SQRT_2,
+                core::f32::consts::FRAC_1_SQRT_2,
+            ); MAX_TRACK_SLOTS],
+            armed_pan_slots: 0,
+            limiter_gain_reductions: 0,
+            limiter_max_reduction: 0.0,
             armed_revision: None,
             quanta: 0,
             events_applied: 0,
@@ -257,8 +294,31 @@ impl EngineRuntime {
             voice_steals: self.synth.voice_steals(),
             track_drops: self.synth.track_drops(),
             notes_triggered: self.synth.notes_triggered(),
+            limiter_gain_reductions: self.limiter_gain_reductions,
+            limiter_max_reduction: self.limiter_max_reduction,
             quanta_per_second: self.armed_quanta_per_second,
         }
+    }
+
+    /// 本快照武装的**声相增益表**（诊断/判据用；`(轨道, 左, 右)`，前
+    /// [`Self::armed_pan_slot_count`] 项有效）。
+    ///
+    /// 存在的理由与 `quanta_per_second` 同族：把"武装进去的那个数"变成**可读**的，
+    /// 判据就不必从音频输出反推。实测价值：本线第一次接入声相时，"右声道拿到的
+    /// 增益也是 1.0"这个 bug 用输出反推查了很久（`cos/sin` 与快照投影各自都对，
+    /// 错在武装表），可读的武装表一句话就定位了。
+    #[must_use]
+    pub fn armed_pan_gain(&self, track: &EntityId) -> Option<(f32, f32)> {
+        self.armed_pan_gains[..self.armed_pan_slots]
+            .iter()
+            .find(|(id, _, _)| id == track)
+            .map(|(_, left, right)| (*left, *right))
+    }
+
+    /// 武装表里的轨道条数。
+    #[must_use]
+    pub const fn armed_pan_slot_count(&self) -> usize {
+        self.armed_pan_slots
     }
 
     /// 播放头当前所在的绝对样本位置（0 = 工程 tick 0）。
@@ -299,6 +359,17 @@ impl EngineRuntime {
     }
 
     /// 渲染一个量子（**实时路径**：零分配、零锁、零 I/O）。
+    ///
+    /// ## 声相增益表为什么要在这里"先拷到栈上"
+    ///
+    /// 武装发生在**本函数内部**（快照修订变化时），而逐轨循环既要可变借用 `synth`、
+    /// 又要读 `self` 的字段 —— 因此先把表拷成栈上的定长数组（`MAX_TRACK_SLOTS` = 16、
+    /// 每项 24 字节 ⇒ 384 字节，`Copy`、无分配）。
+    ///
+    /// ⚠ 第一版是把拷贝放在**调用本函数之前**（另一个包装函数里）。那是一个**真 bug**：
+    /// 武装发生在拷贝之后 ⇒ 第 1 个量子永远用**构造期的初值**（全居中），
+    /// 于是"全左时右声道静音"这条判据实测拿到 `peak_r == peak_l`。
+    /// 判据抓住了它（见 `docs/ledger/engine-mix-notes.md` 的事故记录）。
     fn render_block(&mut self, frames: usize) {
         let Self {
             snapshot,
@@ -310,6 +381,9 @@ impl EngineRuntime {
             track_scratch,
             bank,
             synth,
+            limiter,
+            limiter_gain_reductions,
+            limiter_max_reduction,
             armed_revision,
             armed_scheduled_notes,
             armed_note_schedule_drops,
@@ -321,6 +395,13 @@ impl EngineRuntime {
             meter_capacity_drops,
             ..
         } = self;
+
+        // 本量子的声相增益表（栈上定长；在下面的分支里可能被本次武装刷新）。
+        // 只拷**已武装的**那几项 ⇒ 未武装的槽位保持"查不到 ⇒ 居中"的语义，
+        // 同时避免把上一份快照的残留增益带进来。
+        let mut pan_gains = [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS];
+        pan_gains[..self.armed_pan_slots]
+            .copy_from_slice(&self.armed_pan_gains[..self.armed_pan_slots]);
 
         *quanta = quanta.wrapping_add(1);
         let quantum = *quanta;
@@ -363,10 +444,29 @@ impl EngineRuntime {
                 synth.begin_snapshot(
                     current.sample_rate(),
                     current.tracks().keys().filter(|id| **id != master),
+                    current.tones().iter().filter(|(id, _)| **id != master),
                 );
                 synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
                 *armed_scheduled_notes = current.scheduled_notes() as u64;
                 *armed_note_schedule_drops = current.note_schedule_drops();
+
+                // --- 2c) 声相增益：在**构造期语义**下算一次（`cos`/`sin` 属超越函数类,
+                // 不进逐样本路径）。`pan_law` 与 `pan` 在整份快照的生命周期内不变。
+                // 表先写进 `self`（权威副本，诊断可读），再刷新栈上那份 —— 顺序无所谓，
+                // 但**必须在本量子的逐轨循环之前**（第一版的顺序错误见函数文档）。
+                self.armed_pan_law = current.pan_law();
+                self.armed_pan_slots = 0;
+                for (id, params) in current.tracks() {
+                    if *id == master || self.armed_pan_slots >= MAX_TRACK_SLOTS {
+                        continue;
+                    }
+                    let (gain_l, gain_r) = params.pan_gains(self.armed_pan_law);
+                    let slot = self.armed_pan_slots;
+                    self.armed_pan_gains[slot] = (*id, gain_l, gain_r);
+                    self.armed_pan_slots += 1;
+                }
+                pan_gains[..self.armed_pan_slots]
+                    .copy_from_slice(&self.armed_pan_gains[..self.armed_pan_slots]);
             }
 
             block.silence();
@@ -400,13 +500,36 @@ impl EngineRuntime {
                 } else {
                     *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
                 }
-                // 汇入立体声母线（占位：等增益写两声道，见 sum_into_bus 的说明）。
-                sum_into_bus(block, &track_scratch[..frames]);
+                // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
+                // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
+                // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
+                // 而不是静音 —— 宁可声相不准，也不要一条轨无声。
+                let (gain_l, gain_r) = pan_gains.iter().find(|(id, _, _)| *id == track).map_or(
+                    (
+                        core::f32::consts::FRAC_1_SQRT_2,
+                        core::f32::consts::FRAC_1_SQRT_2,
+                    ),
+                    |(_, l, r)| (*l, *r),
+                );
+                sum_into_bus(block, &track_scratch[..frames], gain_l, gain_r);
             }
             // 播放头前进：**每个量子一次**（与轨道数无关）。
             synth.advance(frames);
 
-            // --- 3b) 母线：立体声联动电平 ---
+            // --- 3b) 母线限制器（[ARCH-DSP-001]）：逐轨汇流之后、母线电平之前 ---
+            // 前瞻式峰值限制、立体声联动、逐样本确定（`mixer` 模块文档 §2–§4）。
+            let before = limiter.reduction_count();
+            limiter.apply(block, frames);
+            let reduced = limiter.reduction_count().saturating_sub(before);
+            if reduced > 0 {
+                *limiter_gain_reductions = limiter_gain_reductions.wrapping_add(reduced);
+            }
+            let reduction = 1.0 - limiter.gain();
+            if reduction > *limiter_max_reduction {
+                *limiter_max_reduction = reduction;
+            }
+
+            // --- 3c) 母线：立体声联动电平（**限制之后**） ---
             if produced < scratch_meters.len() {
                 scratch_meters[produced] =
                     bank.measure_bus_stereo(master, quantum, block.left(), block.right());
@@ -430,18 +553,25 @@ impl EngineRuntime {
     }
 }
 
-/// 占位母线汇流：把单声道轨渲染结果等增益写入左右两声道。
+/// 母线汇流：把一条轨的**单声道、声相之前**渲染结果按声相增益写进左右两声道。
 ///
-/// ⚠ 这**不是**声相定律：等功率声相、发送/辅助汇流、PDC 对齐都属于混音台切片
-/// （见 notes 的 pending）。现在轨道渲染是**真实样本**，因此这一步在数值上不再
-/// 是恒等变换 —— 它把每条轨的单声道结果等增益复制到 L/R（等价于"声相居中"），
-/// 于是 `TrackParams::pan` 与 `audio_config.pan_law` 目前都**不影响输出**。
-fn sum_into_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, mono: &[f32]) {
+/// `(gain_l, gain_r)` 由 [`crate::mixer::pan_gains`] 在**构造期**算出
+/// （`cos`/`sin` 属超越函数类，不进实时路径），实时侧这里只做两次乘加。
+/// 居中（默认律）时 `(√2/2, √2/2)` ⇒ 每声道 −3.01 dB，与 `yeban-mcp` 的离线渲染同口径。
+///
+/// 仍然是**占位**的部分（本切片没做，见 notes 的 needs）：发送/辅助汇流、
+/// 路由边的 `gain_db`（`RoutingEdge::gain_db` 目前被忽略）、PDC 延迟线对齐。
+fn sum_into_bus(
+    block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    mono: &[f32],
+    gain_l: f32,
+    gain_r: f32,
+) {
     // 两个切片都由 `stereo_mut()` 按有效帧数给出, `zip` 天然按较短者截断。
     let (left, right) = block.stereo_mut();
     for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono) {
-        *l += *m;
-        *r += *m;
+        *l += *m * gain_l;
+        *r += *m * gain_r;
     }
 }
 
@@ -818,11 +948,11 @@ mod tests {
     fn sum_into_bus_is_additive_and_bounded_by_valid_frames() {
         let mut block = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
         block.set_frames(4);
-        sum_into_bus(&mut block, &[0.25, -0.5, 1.0, 0.0]);
+        sum_into_bus(&mut block, &[0.25, -0.5, 1.0, 0.0], 1.0, 1.0);
         assert_eq!(block.left(), &[0.25f32, -0.5, 1.0, 0.0][..]);
         assert_eq!(block.right(), &[0.25f32, -0.5, 1.0, 0.0][..]);
         // 超长输入只按有效帧数累加, 不越界
-        sum_into_bus(&mut block, &[1.0; DEFAULT_BLOCK_FRAMES]);
+        sum_into_bus(&mut block, &[1.0; DEFAULT_BLOCK_FRAMES], 1.0, 1.0);
         assert_eq!(block.left()[0], 1.25);
         assert_eq!(block.left().len(), 4);
     }

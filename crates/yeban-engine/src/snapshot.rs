@@ -74,8 +74,9 @@ use yeban_model::{
 };
 
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
+use crate::mixer::{PanLaw, pan_gains};
 use crate::synth::{
-    MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, tick_to_sample, velocity_gain,
+    MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, ToneParams, tick_to_sample, velocity_gain,
 };
 
 /// 退役队列默认容量（条）。一帧 60Hz 内被替换的快照远不会超过这个数。
@@ -183,6 +184,19 @@ impl TrackParams {
     pub const fn latency_samples(&self) -> u32 {
         self.latency_samples
     }
+
+    /// 本轨的声相增益 `(左, 右)`：由 `pan` 与**声相定律**在**构造期**算出。
+    ///
+    /// 为什么在这里算而不是在实时侧算：`cos`/`sin` 属 [ADR-0001 D32] 的
+    /// **超越函数类**（4096 ulp 预算），实时侧只允许 IEEE 精确类乘法。
+    /// 实时侧因此只读这两个已算好的 `f32`（见 [`crate::mixer::pan_gains`]）。
+    ///
+    /// 口径（默认律 `ConstantPowerMinus3dB`）：`cos θ` / `sin θ`、`θ = (pan+1)·π/4`；
+    /// 居中 ⇒ `(√2/2, √2/2)`（每声道 −3.01 dB）。详见 [`crate::mixer`] 模块文档 §1。
+    #[must_use]
+    pub fn pan_gains(&self, law: PanLaw) -> (f32, f32) {
+        pan_gains(self.pan, law)
+    }
 }
 
 /// 不可变引擎快照：音频线程在每个渲染量子边界读取的唯一权威运行态
@@ -205,6 +219,20 @@ pub struct EngineSnapshot {
     /// 实时侧只读它、不构造它：tick → 样本的换算、`probability` 触发判定、
     /// 力度/音量增益全部在**控制线程**算完（见 [`crate::synth`] 模块文档 §1）。
     schedules: BTreeMap<EntityId, NoteSchedule>,
+    /// 每轨的**音色参数**（四极低通的三个旋钮）[ARCH-DSP-001, ROAD-M2-006]。
+    ///
+    /// ⚠ **引擎侧临时形状**：`yeban-model` 还没有"乐器参数 → 音频线程"的投影，
+    /// 因此这里由 [`ToneParams::from_devices`] 从 `TrackV3.devices` 的
+    /// `InternalInstrument` 设备的 `params` 里抽取。
+    /// 它**不是**模型的第二份定义，等模型线补齐后应整体删除
+    /// （见 `docs/ledger/engine-mix-notes.md` 的 needs 与 [`crate::synth::ToneParams`]）。
+    tones: BTreeMap<EntityId, ToneParams>,
+    /// 声相衰减律（`audio_config.pan_law` 的投影）[MODEL-AST-002]。
+    ///
+    /// 模型层已有这个枚举，但**快照此前没有投影它**（`line/engine-sound` 的 needs N4）。
+    /// 投影进来之后，"声相定律影响输出"才是端到端可判据的；曲线本身仍在构造期
+    /// 展开成两个 `f32`（[`TrackParams::pan_gains`]），实时侧只做乘法。
+    pan_law: PanLaw,
     /// 当前快照里已调度的音符总条数（诊断/判据用）。
     scheduled_notes: usize,
     /// 因 [`MAX_NOTES_PER_TRACK`] 容量上限而被丢弃的音符条数（构造期计数）。
@@ -252,8 +280,10 @@ impl EngineSnapshot {
         project.routing_graph.validate()?;
 
         let mut tracks: BTreeMap<EntityId, TrackParams> = BTreeMap::new();
+        let mut tones: BTreeMap<EntityId, ToneParams> = BTreeMap::new();
         for (id, track) in &project.tracks {
             tracks.insert(*id, TrackParams::from_track(track, latencies.get(id)));
+            tones.insert(*id, ToneParams::from_devices(&track.devices));
         }
         let block = project.audio_config.block_size.frames() as usize;
         let (schedules, dropped) = project_schedules(project);
@@ -267,7 +297,12 @@ impl EngineSnapshot {
             &project.routing_graph,
             latencies,
         )
-        .map(|snapshot| snapshot.with_schedules(schedules, dropped))
+        .map(|snapshot| {
+            snapshot
+                .with_schedules(schedules, dropped)
+                .with_tones(tones)
+                .with_pan_law(PanLaw::from_model(project.audio_config.pan_law))
+        })
     }
 
     /// 低层构造：显式给出全部字段（离线渲染器与测试用）。
@@ -300,6 +335,8 @@ impl EngineSnapshot {
             master,
             tracks,
             schedules: BTreeMap::new(),
+            tones: BTreeMap::new(),
+            pan_law: PanLaw::default(),
             scheduled_notes: 0,
             note_schedule_drops: 0,
             pdc,
@@ -319,6 +356,22 @@ impl EngineSnapshot {
         self.scheduled_notes = schedules.values().map(NoteSchedule::len).sum();
         self.note_schedule_drops = dropped;
         self.schedules = schedules;
+        self
+    }
+
+    /// 附上每轨的音色参数（**引擎侧临时形状**，见 [`crate::synth::ToneParams`]）。
+    ///
+    /// 不在表里的轨道在实时侧退回**旁通** ⇒ 逐位不变（这是默认口径）。
+    #[must_use]
+    pub fn with_tones(mut self, tones: BTreeMap<EntityId, ToneParams>) -> Self {
+        self.tones = tones;
+        self
+    }
+
+    /// 覆盖声相衰减律（**投影自 `audio_config.pan_law`**；低层构造默认默认律）。
+    #[must_use]
+    pub const fn with_pan_law(mut self, law: PanLaw) -> Self {
+        self.pan_law = law;
         self
     }
 
@@ -374,6 +427,26 @@ impl EngineSnapshot {
     #[must_use]
     pub fn schedule(&self, id: &EntityId) -> Option<&NoteSchedule> {
         self.schedules.get(id)
+    }
+
+    /// 全部音轨的**音色参数**（`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    ///
+    /// ⚠ **引擎侧临时形状**：见字段文档与 [`crate::synth::ToneParams`]。
+    #[must_use]
+    pub const fn tones(&self) -> &BTreeMap<EntityId, ToneParams> {
+        &self.tones
+    }
+
+    /// 单轨的音色参数（没有该轨时为 `None` ⇒ 实时侧按旁通处理）。
+    #[must_use]
+    pub fn tone(&self, id: &EntityId) -> Option<&ToneParams> {
+        self.tones.get(id)
+    }
+
+    /// 声相衰减律（`audio_config.pan_law` 的投影）。
+    #[must_use]
+    pub const fn pan_law(&self) -> PanLaw {
+        self.pan_law
     }
 
     /// 本快照已调度的音符总条数。

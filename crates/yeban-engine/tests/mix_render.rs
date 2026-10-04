@@ -1,0 +1,258 @@
+//! `line/engine-mix` 的端到端判据（一）：**声相定律与母线限制器**。
+//! [ARCH-DSP-001, MODEL-AST-002, ARCH-RT-001, ARCH-DET-001]
+//!
+//! 全部判据在 **`--no-default-features`（不编译 cpal）** 下运行 —— 与
+//! `synth_render.rs` 一样，这是本机与 CI 的主路径，不需要声卡。
+//!
+//! | 编号 | 判据 | 怎么变红（注入） |
+//! | :--- | :--- | :--- |
+//! | M1 | 居中等功率：左/右有效值相等，且**恰好**是"全左"的 √2/2 | 把声相改回等增益复制 |
+//! | M2 | 左/右声相增益落在 `cos θ`/`sin θ` 上（含全左时右声道**逐位**静音） | 声相取反 / 忽略 `pan` |
+//! | M3 | 声相是全链路的**标量**变换（中心 = 硬左 × √2/2，逐样本同容差） | 逐样本加噪/加抖动 |
+//! | M4 | 过阈值夹具经母线限制器后峰值 **≤ 天花板**，且限制器**确实压过**样本 | 把阈值乘 10 / 摘掉限制器 |
+//! | M5 | 未过阈值的工程**逐位**不被篡改（`reductions == 0` + 两次渲染逐位一致） | 在母线里加抖动/旁路重采样 |
+//! | M6 | 同输入两次渲染**逐位相同**（含混音链全部器件） | 引入真熵源 |
+//! | M7 | 静音工程（含音色/声相配置）仍然**逐位**静音 | 限制器直流泄漏 / 滤波器自激 |
+//!
+//! 判据的**实测数字**与口径表见 `docs/ledger/engine-mix-notes.md`。
+
+mod support;
+
+use support::{MixSpec, NoteSpec, empty_project, render, rms_peak, tuned_project};
+
+/// 声相定律的声明值：等功率 −3 dB 居中 ⇒ `cos(π/4) = sin(π/4) = √2/2`。
+const CENTRE_GAIN: f64 = core::f64::consts::FRAC_1_SQRT_2;
+
+/// M1 + M3：**居中等功率**，且中心是"全左"的 `√2/2` 标量缩放。
+///
+/// ⚠ 夹具必须整体**低于限制器阈值**（这里用 −6 dB）：一个力度 127 的音符在全左时
+/// 峰值实测 **0.90005** —— 恰好越过阈值，于是"全左"那一版被限制器压了、
+/// "居中"那一版没有，两者的比值就不再是 `√2/2`（第一版实测 0.7126 > 0.7071）。
+/// 这条不是噪声，是**限制器的非线性**：判据若不断言"整段在透明区"，它测的是
+/// 两个不同增益下的比值，而不是声相定律。
+#[test]
+fn centre_pan_is_equal_power_and_exactly_half_sqrt_two_of_hard_left() {
+    // 同一个音符（力度 127、−6 dB）在三个声相位置各渲染一次。
+    let notes = [NoteSpec::at(0, 960, 69, 127)];
+    let quiet = |pan: f32| MixSpec {
+        volume_db: -6.0,
+        ..MixSpec::pan(pan)
+    };
+    let centre = render(&tuned_project(&notes, quiet(0.0)).project, 120);
+    let left = render(&tuned_project(&notes, quiet(-1.0)).project, 120);
+    let right = render(&tuned_project(&notes, quiet(1.0)).project, 120);
+
+    let (centre_l, _) = rms_peak(&centre.left);
+    let (centre_r, _) = rms_peak(&centre.right);
+    let (hard_l, _) = rms_peak(&left.left);
+    let (hard_r, _) = rms_peak(&right.right);
+
+    println!(
+        "[engine-mix] M1 rms centre_l={centre_l:.6} centre_r={centre_r:.6} \
+         hard_l={hard_l:.6} hard_r={hard_r:.6} ratio={:.6}",
+        centre_l / hard_l
+    );
+
+    assert!(hard_l > 0.01, "夹具必须真的出声");
+    assert!(
+        centre.peak() < yeban_engine::mixer::LIMITER_THRESHOLD
+            && left.peak() < yeban_engine::mixer::LIMITER_THRESHOLD,
+        "夹具必须整体低于阈值（否则比值测的是限制器的非线性，而不是声相定律）: \
+         centre={} hard_left={}",
+        centre.peak(),
+        left.peak()
+    );
+    assert_eq!(centre.stats.limiter_gain_reductions, 0);
+    assert_eq!(left.stats.limiter_gain_reductions, 0);
+    assert!(
+        (centre_l - centre_r).abs() <= 1e-12,
+        "居中必须左右**完全**对称: {centre_l} vs {centre_r}"
+    );
+    // 声相是全链路的标量：居中 = 全左 × √2/2（容差只吸收 f32 乘法与 f64 求和）。
+    let ratio = centre_l / hard_l;
+    assert!(
+        (ratio - CENTRE_GAIN).abs() < 1e-6,
+        "居中的有效值必须是全左的 √2/2 = {CENTRE_GAIN}, 实际比值 {ratio}"
+    );
+    let ratio_right = hard_r / hard_l;
+    assert!(
+        (ratio_right - 1.0).abs() < 1e-6,
+        "全左与全右必须对称（比值 1.0）, 实际 {ratio_right}"
+    );
+}
+
+/// M2：左/右声相增益落在声明的 `cos θ` / `sin θ` 曲线上；全左时右声道**逐位**静音。
+#[test]
+fn pan_gains_follow_the_declared_cosine_sine_curve() {
+    let notes = [NoteSpec::at(0, 960, 69, 127)];
+    let quiet = |pan: f32| MixSpec {
+        volume_db: -6.0,
+        ..MixSpec::pan(pan)
+    };
+    let hard_left = render(&tuned_project(&notes, quiet(-1.0)).project, 60);
+
+    // 1) 全左 ⇒ 右声道**逐位**为 0（`x * 0.0f32` 对有限 x 恒为 +0.0）。
+    assert!(
+        hard_left.right.iter().all(|sample| *sample == 0.0),
+        "全左时右声道必须逐位静音"
+    );
+    assert!(
+        hard_left.left.iter().any(|sample| *sample != 0.0),
+        "全左时左声道必须出声"
+    );
+
+    // 2) 全右 ⇒ 左声道只剩 `cos(π/2) ≈ -4.37e-8` 的**浮点残差**（不是逐位 0）：
+    //    等功率曲线的两个端点是 `cos(0)=1 / sin(0)=0` 与 `cos(π/2)` / `sin(π/2)=1`，
+    //    而 `cos(π/2)` 在 f32 里是 −4.371139e-8 而不是 0。判据因此断言**残差量级**
+    //    （≤ 1e-7 × 全幅）而不是逐位相等 —— 那是数学事实，不是实现缺陷。
+    let hard_right = render(&tuned_project(&notes, quiet(1.0)).project, 60);
+    let (hard_l, _) = rms_peak(&hard_left.left);
+    let (residual, _) = rms_peak(&hard_right.left);
+    let nz = hard_right.left.iter().filter(|s| **s != 0.0).count();
+    println!("[engine-mix] M2 hard-right left residual rms={residual:e} (nonzero={nz})");
+    assert!(
+        residual / hard_l < 1e-7,
+        "全右时左声道必须只剩浮点残差（实测比值 {}）",
+        residual / hard_l
+    );
+    // 对称性：抓"左右写反"的注入 —— 全右的**右**声道必须与全左的**左**声道同量级。
+    let (hard_r, _) = rms_peak(&hard_right.right);
+    assert!(
+        (hard_r / hard_l - 1.0).abs() < 1e-6,
+        "全左/全右必须对称: {hard_l} vs {hard_r}"
+    );
+
+    // 3) 中心：`cos(π/4) = sin(π/4) = √2/2` ⇒ 左样本 = 全左样本 × √2/2。
+    let centre = render(&tuned_project(&notes, quiet(0.0)).project, 60);
+    let mut worst = 0.0f64;
+    for (centre_sample, hard_sample) in centre.left.iter().zip(hard_left.left.iter()) {
+        let expected = f64::from(*hard_sample) * CENTRE_GAIN;
+        worst = worst.max((f64::from(*centre_sample) - expected).abs());
+    }
+    println!("[engine-mix] M2 worst |centre - hard_left*√2/2| = {worst:e}");
+    assert!(
+        worst < 1e-6,
+        "居中样本必须等于全左样本 × √2/2（最大偏差 {worst:e}）"
+    );
+
+    // 4) 中右（pan = 0.5）：θ = 3π/8 ⇒ (cos, sin) 比值 = tan(3π/8)。
+    let half_right = render(&tuned_project(&notes, quiet(0.5)).project, 60);
+    let (l, _) = rms_peak(&half_right.left);
+    let (r, _) = rms_peak(&half_right.right);
+    let expected_ratio = (3.0 * core::f64::consts::FRAC_PI_8).tan();
+    let ratio = r / l;
+    assert!(
+        (ratio - expected_ratio).abs() / expected_ratio < 1e-5,
+        "pan=0.5 的左右比应为 tan(3π/8) = {expected_ratio:.6}, 实际 {ratio:.6}"
+    );
+}
+
+/// M4：过阈值的夹具经**母线限制器**后峰值不超过天花板，且限制器确实压过样本。
+///
+/// 夹具：一个四分音符（力度 127）**不加增益**时峰值约 0.711（声相居中 = −3 dB），
+/// 因此这里给 +6 dB 音量把它推到阈值之上。
+#[test]
+fn bus_limiter_caps_an_over_threshold_fixture() {
+    let notes = [NoteSpec::at(0, 960, 69, 127)];
+    let rendered = render(&tuned_project(&notes, MixSpec::volume(6.0)).project, 120);
+    let peak = rendered.peak();
+
+    println!(
+        "[engine-mix] M4 peak={peak:.6} reductions={} ceiling={:.3}",
+        rendered.stats.limiter_gain_reductions,
+        yeban_engine::mixer::LIMITER_CEILING,
+    );
+
+    assert!(
+        rendered.stats.limiter_gain_reductions > 0,
+        "夹具没有驱动限制器（reductions = 0）—— 这条判据会变成永真"
+    );
+    assert!(
+        rendered.stats.limiter_max_reduction > 0.0,
+        "最大压限量必须为正（否则'压过'只是计数错觉）"
+    );
+    assert!(
+        peak <= yeban_engine::mixer::LIMITER_CEILING,
+        "限制后的峰值 {peak} 超过天花板 {}",
+        yeban_engine::mixer::LIMITER_CEILING
+    );
+    assert!(peak > 0.8, "峰值被压得太狠（{peak}）—— 弹道或阈值写错了");
+}
+
+/// M5：**未过阈值**的工程逐位不被篡改（限制器在 1.0 增益下是恒等映射）。
+///
+/// 判别力来源：`reductions == 0` 是**结构性**证据（限制器一次也没压），
+/// 加上"两次渲染逐位一致"（排除抖动/重采样之类的隐性改写）。
+#[test]
+fn sub_threshold_projects_are_not_touched_by_the_limiter() {
+    let notes = [NoteSpec::at(0, 960, 69, 100)];
+    // −12 dB ⇒ 峰值约 0.18，远低于 0.9 阈值。
+    let quiet = tuned_project(&notes, MixSpec::volume(-12.0));
+    let first = render(&quiet.project, 120);
+    let second = render(&quiet.project, 120);
+
+    println!(
+        "[engine-mix] M5 peak={:.6} reductions={} ceiling={:.3}",
+        first.peak(),
+        first.stats.limiter_gain_reductions,
+        yeban_engine::mixer::LIMITER_CEILING,
+    );
+
+    assert!(first.peak() > 0.05, "夹具必须真的出声");
+    assert!(
+        first.peak() < yeban_engine::mixer::LIMITER_THRESHOLD,
+        "夹具必须整体低于阈值（否则这条判据测的是另一件事）"
+    );
+    assert_eq!(
+        first.stats.limiter_gain_reductions, 0,
+        "未过阈值的工程不得被限制器改写任何一个样本"
+    );
+    assert_eq!(first.stats.limiter_max_reduction, 0.0);
+    assert_eq!(
+        first.left_bits(),
+        second.left_bits(),
+        "未过阈值的工程两次渲染必须逐位相同"
+    );
+}
+
+/// M6：**确定性** —— 同输入两次独立装配 + 渲染必须逐位相同（含声相/限制器/滤波器）。
+#[test]
+fn mix_chain_is_byte_deterministic() {
+    let notes = [
+        NoteSpec::at(0, 480, 60, 127),
+        NoteSpec::at(960, 960, 67, 64),
+        NoteSpec::at(2400, 480, 72, 32),
+    ];
+    let fixture = tuned_project(&notes, MixSpec::tone(1_200.0, 0.3));
+    let first = render(&fixture.project, 200);
+    let second = render(&fixture.project, 200);
+
+    assert!(first.nonzero() > 0, "对照渲染必须真的出声");
+    assert_eq!(first.left_bits(), second.left_bits(), "左声道必须逐位相同");
+    assert_eq!(first.right, second.right, "右声道必须逐位相同");
+    assert_eq!(
+        first.stats.voice_steals, second.stats.voice_steals,
+        "窃取次数必须确定"
+    );
+}
+
+/// M7：静音工程（**带音色与声相配置**）仍然逐位静音。
+///
+/// 这条比 `synth_render.rs` 的 J6 更强：它同时压住"滤波器自激/直流泄漏"
+/// 与"限制器释放尾巴"两种可能的非零来源。
+#[test]
+fn silent_projects_stay_bit_silent_through_the_mix_chain() {
+    let silent = render(&empty_project(), 32);
+    assert_eq!(silent.nonzero(), 0, "空工程必须逐位静音");
+    assert_eq!(silent.stats.limiter_gain_reductions, 0);
+
+    // 有轨道、有音色配置、但**没有音符**：滤波器与限制器都接在链路上。
+    let bare = tuned_project(&[], MixSpec::tone(200.0, 0.9));
+    let rendered = render(&bare.project, 64);
+    assert_eq!(rendered.nonzero(), 0, "无音符工程必须逐位静音");
+    assert_eq!(
+        rendered.stats.limiter_gain_reductions, 0,
+        "静音不得驱动限制器"
+    );
+    assert_eq!(rendered.peak(), 0.0);
+}
