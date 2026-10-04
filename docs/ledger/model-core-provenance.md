@@ -204,6 +204,23 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
 #    -> 仅 writer_version 一项类型分歧（见 D1）
 ```
 
+### CI 判决（GitHub Actions，`line/model-core`）
+
+- **run**: `37217900378` · CI · push · **conclusion: success**（全部 27 个 job 绿，
+  含 `rust (yeban-model)` 42s、`checks (fmt/红线守卫/schema)` 14s、`lockfile` 12s、`deny` 47s）
+- 该 run 的 `plan` 步骤因为首推分支的 `github.event.before` 是全零 sha 而保守退化为
+  **全工作区矩阵**（27 个 crate 全跑），仍然全绿。
+- `rust (yeban-model)` 的 test 步骤日志:
+
+  ```text
+  test ops::tests::state_tree_is_conserved_under_reverse_undo ... ok
+  test result: ok. 76 passed; 0 failed; ... finished in 10.65s
+  ```
+
+  GitHub Actions 默认设置 `CI=true`，因此这次跑的正是 **10,000 步**的操作序列
+  （本机小档 256 步时整套测试仅 0.02s，10.65s 的量级本身就证明大档被启用）。
+- 判决读取方式: `bash scripts/dev/ci-verdict.sh line/model-core`（不是"本地绿"）。
+
 ### 判据"先能变红"的三条实证（改坏 → 变红 → 改回）
 
 1. **逆操作正确性（状态守恒）**
@@ -243,8 +260,8 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
 
 ## 5. 边界（这次**没有**证明什么）
 
-1. **没有 CI 判决**：本文件的全部"绿"都来自本机；真正的判决以 `line/model-core` 的
-   GitHub Actions run 为准（`scripts/dev/ci-verdict.sh line/model-core`）。
+1. **CI 判决只覆盖这一次推送**：run `37217900378` 全绿，但它证明的是"这次提交在本机纪律下可编译、
+   可过门禁"；本文件中"未证明"的其余各条（容器、迁移、基准、fuzz、跨架构对账）依旧没有证明。
 2. **`project.schema.json` 未 100% 通过**：`writer_version` 一项类型分歧（D1）。
    `validate_schemas.py --samples-dir` 因此是红的；CI 的 `checks` job 目前**不带**
    `--samples-dir`，所以这条不会让 CI 变红 —— 但这是"CI 没查"，不是"满足契约"。
