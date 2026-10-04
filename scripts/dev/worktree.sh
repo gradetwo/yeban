@@ -39,14 +39,21 @@ cmd_add() {
   git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch" && die "分支已存在: $branch"
 
   info "创建工作线 $branch (基于 $base) -> $path"
-  git -C "$REPO" worktree add -b "$branch" "$path" "$base"
+  # --no-track 是**必须的**: 以 origin/main 为起点建分支时, git 默认会把上游设成 origin/main,
+  # 于是在这条工作树里裸跑 `git push` 会试图推 **main**(push.default=upstream)。
+  # 工作线真实踩到过这个坑(`line/render-master -> main (non-fast-forward)` 被拒)。
+  git -C "$REPO" worktree add --no-track -b "$branch" "$path" "$base"
+  # 明确把上游指向自己的远端分支: 这样裸 git push 推的是 line/<line>(不存在则在远端创建),
+  # 而不是 main。安全失败的语义也优于误推 main。
+  git -C "$REPO" config "branch.$branch.remote" origin
+  git -C "$REPO" config "branch.$branch.merge" "refs/heads/$branch"
   cat <<EOF
 
 工作线已就绪: $path
   进入:  cd $path
   门禁:  bash scripts/dev/cargo-local.sh test -p <crate>     # 轻量 crate
          bash scripts/gates/run-gates.sh light               # 格式 + 红线守卫
-  推送:  git push -u origin $branch                            # CI 自动触发
+  推送:  git push                                              # 上游已指向 origin/$branch (裸 push 不会误推 main)
   落地:  scripts/dev/worktree.sh land $line
 EOF
 }

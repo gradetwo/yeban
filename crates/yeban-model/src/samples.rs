@@ -159,6 +159,9 @@ pub fn filled_project() -> YebanProjectV1 {
                 unit: Some("%".to_owned()),
             },
         ],
+        // 非零延迟: 让 ARCH-PDC-001 的字段在规范样本里被真正覆盖 (0 表示"未上报")。
+        // 32 采样点 = 内部合成器的块处理延迟, 会被关键路径分析用于插入延迟线。
+        latency_samples: 32,
     }];
     lead.macros = vec![MacroParameter {
         name: "Brightness".to_owned(),

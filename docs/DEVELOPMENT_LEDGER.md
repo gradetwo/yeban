@@ -286,3 +286,39 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 - **顺带**：G13 在装不到 PyYAML 时**出声跳过**而不是静默通过 —— 静默跳过等于假绿，
   这与 MUST-GATE-015 禁止用不渲染像素的后端产出 Golden 图是同一个道理。
 
+### L10 — 工作树里的裸 `git push` 会推到 **main**
+
+- **现象**：`scripts/dev/worktree.sh add <line>` 用 `git worktree add -b <branch> <path> origin/main` 建线。
+  以**远程跟踪分支**为起点时，git 默认把新分支的上游设成 `origin/main`
+  （`branch.<name>.merge = refs/heads/main`），而仓库的 `push.default = upstream` ——
+  于是在任意 `line/*` 工作树里裸跑 `git push` 会试图推 **main**。
+  `line/render-master` 真实撞上：`line/render-master -> main (non-fast-forward)` 被拒（幸好是 non-fast-forward）。
+- **发现方式**：不是我自己发现的 —— 是 `render-master` 工作线在汇报里点出来的（与 L7 同一模式：
+  多线 + 诚实汇报能抓到集成者看不见的坑）。
+- **规则**：**任何"从远程跟踪分支建分支"的工具，都必须显式声明上游**，并验证"裸 push 会去哪"。
+  一条 `git push` 打错目标，代价可能是整个 main 被覆盖。
+- **已落地**：`worktree.sh add` 改为 `git worktree add --no-track`，并显式设置
+  `branch.<name>.remote=origin` / `branch.<name>.merge=refs/heads/<branch>`。
+  实测：新建工作线后 `git push --dry-run` 的输出是 `line/smoketest -> line/smoketest`（而不是 main）。
+
+### L11 — CI 的"新分支首次推送"既慢又走偏
+
+- **现象**：新分支首次推送时 `github.event.before` 是全零 SHA。此前 workflow 把它当作"base 缺失"，
+  于是计划器保守回退成 **workspace_wide**，23 条矩阵腿**各自**装一次 apt（fontconfig/freetype/x11/wayland/GL/ALSA）、
+  装一次工具链、解析一次依赖 —— 同一份工作被做了 23 遍。
+  另外 `--force-full` 最初被实现成"把 base 挪到 HEAD~1"，结果计划器推导出"无受影响 crate"，rust 腿**整条被跳过却报 success**。
+- **规则**：**保守回退也要挑对基线**。新分支一定是从 `main` 切出来的，所以基线应当是 `origin/main`，
+  而不是"放弃推导"或"上一个提交"。
+- **已落地**：① 全零/缺失 base → `git fetch origin main` 后用 `origin/main` 作基线（只跑这条线真正碰到的 crate）；
+  ② 真需要全量时用 `--force-full`（直接返回全部成员），不再挪用 base；
+  ③ **宽运行改单腿**：`workspace_wide` 时跑一条 `rust-workspace`（`clippy --workspace` + `test --workspace`），
+  而不是 23 条各自装环境的矩阵腿；窄运行仍用矩阵（快反馈）。
+
+### 本轮新增的实现测量
+
+| 项 | 值 | 说明 |
+| :--- | :--- | :--- |
+| `DeviceDefinition::latency_samples` | 已落地（`ARCH-PDC-001` 点名要求的字段） | `#[serde(default)]` 取 0 = "未上报"；填充样本给 32；新增 2 条判据（旧文档缺字段可读 + 非零往返）；`yeban-model` 87 测试全绿 |
+| 引擎/离线渲染的 PDC 归属 | 裁决见 ADR-0001 **D19** | engine 暴露 cpal-free 模块 + `device` feature；render 以 `default-features = false` 消费 |
+| 新分支 CI 成本 | 宽运行从 23 条腿 → **1 条** | 见 L11 |
+

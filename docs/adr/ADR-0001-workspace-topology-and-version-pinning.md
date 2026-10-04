@@ -105,6 +105,25 @@
 - **代价**：在 `yeban-ui-test-port` 落地前，"UI 变更必须双重验证"（DoD 6）无法闭环 ——
   当前界面只是**编译通过**，从未被渲染器或人眼看过。
 
+### D19 — 实时引擎与离线渲染**共用 PDC 算法**，但离线侧不得被迫拖入 cpal
+
+- **问题**（由 `line/render-master` 实测暴露）：`ARCH-PDC-001/002` 要求"实时引擎与 Rayon 离线渲染
+  共用同一 PDC 算法"。但该算法的天然宿主是 `yeban-engine`，而 `yeban-engine` 依赖 `cpal`；
+  若 `yeban-render` 直接依赖 `yeban-engine`，一个纯离线渲染器就会被迫编译声卡驱动栈。
+- **裁决**：
+  1. `yeban-engine` 把**拓扑排序 + 关键路径延迟 + 环形延迟线**做成**不引用 cpal 的公共模块**
+     （模块内不得出现设备 I/O；这样它可以被无 cpal 的构建消费）；
+  2. `yeban-engine` 用 cargo feature 把设备 I/O 隔开：`default = ["device"]`，`device = ["dep:cpal"]`；
+  3. `yeban-render` 以 `yeban-engine = { workspace = true, default-features = false }` 依赖它，
+     于是离线渲染拿到同一份算法而不编译 cpal。
+- **过渡期**：在 engine 提供该模块之前，`yeban-render` 自带一份**最小同构实现**（纯函数、零依赖），
+  并配"等价性判据"防漂移；engine 落地后**必须把 render 侧那份退役**改为复用
+  （登记在 `docs/ledger/render-master-notes.md` 的 needs 里，集成者负责在合并顺序上保证这一点）。
+- **否决的备选**：把 PDC 放进 `yeban-model`（那是数据模型，放图算法会让"模型"变成杂物间）；
+  新建 `yeban-graph` crate（为约 200 行代码多一个 crate，等出现第三个消费者再考虑）。
+- **前提修正**：`ARCH-PDC-001` 明写 `DeviceDefinition::latency_samples`，但该字段此前**并不存在**。
+  已按规范补上（`yeban-model`，`#[serde(default)]` 取 0 表示"未上报"，填充样本里给 32 采样点做覆盖）。
+
 ---
 
 ## D5 的落地细节（版本钉死）

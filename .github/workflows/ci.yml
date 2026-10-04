@@ -67,8 +67,13 @@ jobs:
             # 而不是把 base 挪到 HEAD~1 (那样只会推导出"无受影响 crate"并把 rust 腿跳过)。
             EXTRA="--force-full"
           fi
-          if [ -z "${BASE_SHA:-}" ]; then
-            BASE="HEAD~1"
+          ZERO="0000000000000000000000000000000000000000"
+          if [ -z "${BASE_SHA:-}" ] || [ "${BASE_SHA:-}" = "$ZERO" ]; then
+            # 新分支的首次推送: github.event.before 是全零 sha (GitHub 的语义).
+            # 不能因此放弃推导 —— 新分支总是从 main 切出来的, 所以拿 origin/main 当基线,
+            # 这样只跑"这条线真正碰到的那一族", 而不是 23 个 crate 全跑一遍。
+            git fetch --no-tags origin main
+            BASE="origin/main"
           else
             BASE="$BASE_SHA"
           fi
@@ -132,7 +137,9 @@ jobs:
   rust:
     name: rust (${{ matrix.crate }})
     needs: plan
-    if: needs.plan.outputs.crates != '["none"]'
+    # 窄运行 (只碰到少数 crate) 才用矩阵: 快反馈、只装一次该 crate 需要的东西。
+    # 宽运行走下面的 rust-workspace 单腿 —— 23 条腿各自装 apt/工具链/解析依赖是纯浪费。
+    if: needs.plan.outputs.workspace_wide != 'true' && needs.plan.outputs.crates != '["none"]'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -181,6 +188,55 @@ jobs:
             echo "### 门禁未通过 — ${{ matrix.crate }}"
             echo '```text'
             tail -80 /tmp/gate.log 2>/dev/null || echo "(没有捕获到日志)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 宽运行: 一次把整个工作区跑完 (等价于 23 条矩阵腿, 但只装一次环境)
+  # ---------------------------------------------------------------------------
+  rust-workspace:
+    name: rust (workspace 全量)
+    needs: plan
+    if: needs.plan.outputs.workspace_wide == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Linux 桌面构建依赖 (Slint / winit / cpal 需要)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            pkg-config libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
+            libasound2-dev
+
+      - name: 安装钉死工具链
+        run: |
+          set -euo pipefail
+          rustup show
+          rustc --version
+
+      - name: clippy --workspace (-D warnings)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
+
+      - name: test --workspace
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test --workspace --all-targets --locked 2>&1 | tee -a /tmp/gate.log
+
+      - name: 失败摘要
+        if: failure()
+        run: |
+          {
+            echo "### 工作区全量门禁未通过"
+            echo '```text'
+            tail -120 /tmp/gate.log 2>/dev/null || echo "(没有捕获到日志)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

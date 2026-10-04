@@ -431,6 +431,18 @@ pub struct DeviceDefinition {
     /// 参数列表。
     #[serde(default)]
     pub params: Vec<ParameterValue>,
+    /// 本设备引入的处理延迟（采样点）[ARCH-PDC-001]。
+    ///
+    /// 规范原文要求"每个插件与内置设备必须精确上报其引入的处理延迟"。PDC 的正确性完全依赖
+    /// 这个数字：非实时线程对 `RoutingGraph` 做关键路径分析得到 `L_max`，再给每个分支插入
+    /// `D_i = L_max - L_i` 的延迟线，使所有分支在汇合点相位对齐 —— 少报或漏报都会造成
+    /// 相位错位，而这种错位用耳朵听不出来、只能靠机械对账发现。
+    ///
+    /// `#[serde(default)]` 是刻意的：缺失时取 `0`，这样旧文档仍可读（见 docs/adr/ADR-0001 D3 的
+    /// 版本门策略：能安全默认的字段就不该让读者失败）。**但 0 必须被理解为"未上报"**，
+    /// 因此设备作者有义务显式声明真实值；PDC 侧的判据会检查"非零延迟设备是否被正确对齐"。
+    #[serde(default)]
+    pub latency_samples: u32,
 }
 
 impl Default for DeviceDefinition {
@@ -441,6 +453,7 @@ impl Default for DeviceDefinition {
             kind: DeviceKind::default(),
             bypassed: false,
             params: Vec::new(),
+            latency_samples: 0,
         }
     }
 }
@@ -2093,6 +2106,42 @@ mod tests {
         let json = serde_json::to_string_pretty(&project).expect("serialize");
         let back: YebanProjectV1 = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, project);
+    }
+
+    /// [ARCH-PDC-001] `latency_samples` 缺失时必须安全默认为 0（旧文档仍可读），
+    /// 非零值必须能往返 —— 这两个方向都要机械判据，否则"向后兼容"只是口头承诺。
+    #[test]
+    fn device_latency_samples_defaults_to_zero_and_round_trips() {
+        // 方向一: 旧文档没有该字段 -> 读成 0, 不报错
+        let legacy = r#"{
+            "id": "00000000000000000000000000",
+            "name": "Legacy Device",
+            "kind": "InternalInstrument"
+        }"#;
+        let device: DeviceDefinition =
+            serde_json::from_str(legacy).expect("缺少 latency_samples 的旧设备必须仍可读");
+        assert_eq!(device.latency_samples, 0);
+        assert_eq!(device.validate(), Ok(()));
+
+        // 方向二: 非零值往返不丢
+        let mut with_latency = device.clone();
+        with_latency.latency_samples = 1024;
+        let json = serde_json::to_string(&with_latency).expect("serialize");
+        let back: DeviceDefinition = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, with_latency);
+        assert!(
+            json.contains("\"latency_samples\":1024"),
+            "非零延迟必须真的被序列化出来: {json}"
+        );
+
+        // 填充样本必须覆盖非零情形, 否则"字段可用"这件事没有样本证据
+        let filled = crate::samples::filled_project();
+        let any_nonzero = filled
+            .tracks
+            .values()
+            .flat_map(|track| track.devices.iter())
+            .any(|d| d.latency_samples > 0);
+        assert!(any_nonzero, "填充样本里至少要有一个非零延迟设备");
     }
 
     #[test]
