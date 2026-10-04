@@ -102,6 +102,12 @@ jobs:
           python3 -m pip install --quiet 'jsonschema>=4.24'
           python3 scripts/gates/validate_schemas.py
 
+      - name: 依赖许可清单漂移检查
+        run: |
+          set -euo pipefail
+          # 加依赖/升版本后忘了重新生成清单 -> 变红 (文档不得与真实依赖图脱节)
+          python3 scripts/gates/license_inventory.py --check
+
       - name: 跨语言契约对账 (Rust 样本 ↔ Python jsonschema)
         run: |
           set -euo pipefail
