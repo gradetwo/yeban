@@ -791,7 +791,7 @@ mod tests {
 
         let unmasked = ssim::ssim(&first, &jittered).expect("同尺寸可算");
         assert!(
-            u64::from(biggest.area()) * 100 >= FIXTURE_SIZE.pixel_count() * 10,
+            biggest.area() * 100 >= FIXTURE_SIZE.pixel_count() * 10,
             "用于'必须被检出'断言的动态区应占画面 ≥10% (实测 {} px / {} px) —— 否则该断言在 SSIM 口径下无意义",
             biggest.area(),
             FIXTURE_SIZE.pixel_count()
