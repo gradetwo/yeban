@@ -1,0 +1,197 @@
+// 夜半 (Yeban) — 左侧资源栏 / 浏览器 (240px, 折叠态 36px 图标导轨)
+//
+// 规范来源 (Normative):
+//   - [UI-GRID-001] UI/UX 规范 §1.1: LEFT BROWSER & ASSET LIBRARY (240px) ——
+//     乐器 / 采样 / 预置模板 / 折叠展开
+//   - [UI-GRID-002] §1.2: 1366–1919 断点把左侧收成 36px 图标导轨
+//   - [UI-GRID-002] §1.2: 左抽屉展开/收起快捷键 Cmd/Ctrl + Alt + B (映射在 src/input.rs)
+//   - [UI-TEST-001] §12.2: `tab-{name}-button` 是**控制台标签**专用族, 因此这里的
+//     分类标签用 `sidebar-category-{i}-button`, 不污染 `tab-` 前缀 (elements.rs 的
+//     覆盖判据就是靠这个前缀成立的)。
+//
+// 数据流方向: 只读 + 通知。折叠状态住在 app.slint 的 MainWindow。
+// 资源树条目是**演示数据**: 真实资源索引要等扫描器落地 (见 notes 的 pending)。
+
+import { Tokens, UiText } from "tokens.slint";
+
+export component Sidebar inherits Rectangle {
+    in property <bool> compact: false;
+    in property <string> search-hint: "搜索乐器 / 采样 / 预置";
+    // 演示数据: 8 个条目。真实数据来自资源扫描器, 现在只画骨架。
+    in property <[string]> items: [
+        "Studio Grand 三角钢琴",
+        "Analog Brass 合成铜管",
+        "Night Pad 夜色铺底",
+        "Sub Bass 低频",
+        "Drum Kit 909 鼓组",
+        "String Ensemble 弦乐",
+        "Tape Choir 磁带人声",
+        "SFZ · 323 款采样预置"
+    ];
+
+    callback toggle-collapse();
+
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.line;
+    clip: true;
+
+    accessible-role: complementary;
+    accessible-id: "sidebar";
+    accessible-label: "左侧资源浏览器与资产库";
+
+    // ---------------------------------------------------------------- 标题行
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 32px;
+        background: Tokens.bg-panel-alt;
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 40px;
+            height: parent.height;
+            text: "资源库";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-md;
+            visible: !root.compact;
+        }
+
+        // 折叠 / 展开
+        Rectangle {
+            x: root.width - 30px;
+            y: 5px;
+            width: 22px;
+            height: 22px;
+            background: collapse_area.pressed ? Tokens.bg-raised : Tokens.bg-panel;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "sidebar-collapse-button";
+            accessible-label: root.compact ? "展开左侧资源栏" : "收起左侧资源栏";
+            accessible-expandable: true;
+            accessible-expanded: !root.compact;
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.compact ? "»" : "«";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                horizontal-alignment: center;
+            }
+
+            collapse_area := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.toggle-collapse(); }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- 搜索框
+    // 文本输入框: 规范 §7.2 的 IME 合成态防护针对的就是这类控件。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 40px;
+        width: parent.width - 8px;
+        height: 24px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.line-strong;
+        visible: !root.compact;
+        accessible-role: text-input;
+        accessible-id: "sidebar-search-field";
+        accessible-label: "搜索资源";
+        accessible-placeholder-text: root.search-hint;
+        accessible-value: "";
+        accessible-read-only: false;
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: root.search-hint;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+
+    // ---------------------------------------------------------------- 分类标签
+    // 三类资源: 乐器 / 采样 / 预置模板 (规范 §1.1 的左栏四行)
+    for category_index in 3 : Rectangle {
+        x: Tokens.space-4 + 64px * category_index;
+        y: 72px;
+        width: 60px;
+        height: 20px;
+        background: category_index == 0 ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-sm;
+        visible: !root.compact;
+        accessible-role: tab;
+        accessible-id: "sidebar-category-" + category_index + "-button";
+        accessible-label: "资源分类 " + category_index;
+        accessible-item-index: category_index;
+        accessible-item-count: 3;
+        accessible-item-selectable: true;
+        accessible-item-selected: category_index == 0;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: category_index == 0 ? "乐器" : (category_index == 1 ? "采样" : "预置");
+            color: category_index == 0 ? Tokens.gold-bright : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+    }
+
+    // ---------------------------------------------------------------- 资源条目
+    for item_index in 8 : Rectangle {
+        x: Tokens.space-4;
+        y: 100px + 28px * item_index;
+        width: parent.width - 8px;
+        height: 24px;
+        background: item_index == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel;
+        border-radius: Tokens.radius-sm;
+        clip: true;
+        accessible-role: list-item;
+        accessible-id: "sidebar-item-" + item_index;
+        accessible-label: root.compact ? "" : root.items[item_index];
+        accessible-item-index: item_index;
+        accessible-item-count: 8;
+        accessible-item-selectable: true;
+        accessible-item-selected: item_index == 0;
+
+        // 折叠态只画一个 24px 的图标位, 不画文字
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: root.items[item_index];
+            color: item_index == 0 ? Tokens.gold-bright : Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            visible: !root.compact;
+        }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "" + item_index;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+            visible: root.compact;
+        }
+    }
+}

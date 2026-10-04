@@ -1,0 +1,353 @@
+// 夜半 (Yeban) — 主窗口容器: 全局网格 (48 / 240 / 280 / 4 / 24) + 多标签导轨
+//
+// 规范来源 (Normative):
+//   - [UI-GRID-001] UI/UX 规范 §1.1 网格布局拓扑:
+//       顶栏 48px | 左资源栏 240px | 主工作区 (弹性) | 右 AI 协作栏 280px
+//       4px splitter | 底部控制台 | 24px 状态栏
+//   - [UI-GRID-002] §1.2 响应式断点:
+//       ≥1920 全展开; 1366–1919 左栏收成 36px 图标导轨 + 右栏变抽屉;
+//       splitter 拖拽硬限 220–600px
+//   - [UI-GRID-003] §1.3 / [ARCH-UI-001] 保留模式与局部脏矩形 —— 由 Slint 后端负责,
+//     UI 侧不写任何全屏重绘逻辑
+//   - [UI-GRID-004] §1.4 120 FPS + VSync; 主渲染线程与实时音频线程物理隔离 [ARCH-TOP-002]:
+//     UI 动画与绘制负载绝不穿透阻塞音频渲染回调
+//   - [ARCH-UI-003] §1.3 无头模式运行配置 —— 见 src/main.rs 对 `SLINT_BACKEND=headless`
+//     这个"规范与 Slint 1.18.1 实测不一致"之处的记录
+//   - [UI-TEST-003] §12.1 无头启动 —— 无头路径不构造本组件, 见 src/main.rs
+//   - [UI-MCP-002] §12.5 高频刷新区域 (时间码 / 电平 / 走带光标) 由
+//     src/elements.rs 的 `is_dynamic_region()` 登记, 供截图比对时遮罩
+//   - ADR-0001 D2: UI 文件清单以 UI/UX §8 的 11 个 `.slint` 为准, 另加 status_bar.slint
+//     与 tokens.slint (主题层, 规范缺口)
+//
+// 中段:底部控制台的弹性比 = 3:2, 即各占弹性区的 60% / 40%, 落在规范的
+// 55–65% / 35–45% 区间正中 (弹性区 = 窗口高 - 48 - 4 - 24)。
+//
+// 布局策略: 外层用 VerticalLayout / HorizontalLayout 表达规范的网格 (这是 UI-GRID-001 的
+// 明文要求); 组件**内部**一律绝对定位 —— DAW 的坐标是可断言的几何事实, 用布局反而会
+// 让 `absolute-position` 随字体度量漂移, 破坏截图回归与元素包围盒断言。
+//
+// 数据流方向: MainWindow 是唯一写者。子组件只读 + 发回调。
+
+import { Tokens, UiText } from "tokens.slint";
+import { Transport } from "transport.slint";
+import { StatusBar } from "status_bar.slint";
+import { Sidebar } from "sidebar.slint";
+import { SessionView } from "workspace/session_view.slint";
+import { ArrangementView } from "workspace/arrangement_view.slint";
+import { ConsoleTabs } from "console/console_tabs.slint";
+import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
+import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
+
+// 右侧 AI 协作栏 (280px) 的内容。被实例化两次 (常驻列 / compact 抽屉),
+// 两者的 visible 条件互斥, 因此无障碍树里同一时刻只有一个 `ai-rail`。
+component AiRail inherits Rectangle {
+    callback open-musical-pr();
+    callback run-acoustic-diagnosis();
+
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.line;
+    clip: true;
+
+    accessible-role: complementary;
+    accessible-id: "ai-rail";
+    accessible-label: "AI 协作栏: 意图生成与声学诊断";
+
+    UiText {
+        x: Tokens.space-4;
+        y: Tokens.space-3;
+        width: parent.width - 8px;
+        height: 20px;
+        text: "AI 协作";
+        color: Tokens.gold;
+        font-size: Tokens.font-size-lg;
+    }
+
+    Rectangle {
+        x: Tokens.space-4;
+        y: 32px;
+        width: parent.width - 8px;
+        height: 64px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.ai-suggestion;
+        clip: true;
+        accessible-role: button;
+        accessible-id: "ai-rail-intent-button";
+        accessible-label: "用自然语言描述编曲意图";
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "意图生成:\n描述你想要的段落…";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+
+    Rectangle {
+        x: Tokens.space-4;
+        y: 104px;
+        width: parent.width - 8px;
+        height: 64px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line-strong;
+        clip: true;
+        accessible-role: button;
+        accessible-id: "ai-rail-diagnose-button";
+        accessible-label: "声学诊断";
+        accessible-checkable: true;
+        accessible-checked: false;
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "声学诊断:\n掩蔽 / 相位 / 动态范围";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.run-acoustic-diagnosis(); }
+        }
+    }
+
+    Rectangle {
+        x: Tokens.space-4;
+        y: 176px;
+        width: parent.width - 8px;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "ai-rail-musical-pr-button";
+        accessible-label: "打开 AI 编曲提案审核抽屉";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "审查提案 (Musical PR)";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.open-musical-pr(); }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    // [UI-GRID-002] 1366–1919 断点。宿主 Rust 按 §1.2 的规则写入 (见 main.rs 的
+    // `DemoScene::compact()`); 真实屏幕尺寸探测 + 缩放比换算待接线, 见 notes 的 pending。
+    in property <bool> compact: false;
+
+    in-out property <bool> playing: false;
+    in-out property <bool> arrangement-view: true;
+    in-out property <int> console-tab: 0;
+    in-out property <bool> console-expanded: true;
+    in-out property <bool> sidebar-collapsed: false;
+    in-out property <bool> ai-drawer-open: false;
+    in-out property <bool> musical-pr-open: false;
+    in-out property <bool> undo-tree-open: false;
+
+    in-out property <string> timecode: "001.01.000";
+    in-out property <string> bpm-display: "120.00";
+    in-out property <string> branch-name: "main";
+
+    // 键盘/菜单入口: src/input.rs 判定后由宿主调用对应的 invoke_*。
+    callback toggle-play();
+    callback toggle-view();
+    callback toggle-sidebar();
+    callback toggle-ai-drawer();
+    callback toggle-undo-tree();
+    callback open-musical-pr();
+    callback accept-ai-proposal();
+    callback reject-ai-proposal();
+    callback run-acoustic-diagnosis();
+
+    title: "夜半 Yeban";
+    // 演示窗口落在 §1.2 的"全展开"档 (≥1920×1080): 左栏 240 + 主区 + 右栏 280,
+    // 中段与底部控制台各占弹性区的 60% / 40% (规范要 55–65% / 35–45%)。
+    // 与 `DemoScene::demo()` 的 viewport_width/height 保持一致 —— 不一致会让
+    // `compact` 的取值和实际窗口宽度对不上。
+    width: 1920px;
+    height: 1080px;
+    background: Tokens.bg-void;
+
+    // =====================================================================
+    // 外壳网格 [UI-GRID-001]
+    // =====================================================================
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+
+        // ---------------------------------------------------------- 48px 顶栏
+        Transport {
+            playing: root.playing;
+            timecode: root.timecode;
+            bpm-display: root.bpm-display;
+            branch-name: root.branch-name;
+            arrangement-view: root.arrangement-view;
+            ai-drawer-open: root.ai-drawer-open;
+
+            toggle-play => {
+                root.playing = !root.playing;
+                root.toggle-play();
+            }
+            toggle-view => {
+                root.arrangement-view = !root.arrangement-view;
+                root.toggle-view();
+            }
+            show-session => { root.arrangement-view = false; }
+            show-arrangement => { root.arrangement-view = true; }
+            toggle-ai-drawer => {
+                root.ai-drawer-open = !root.ai-drawer-open;
+                root.toggle-ai-drawer();
+            }
+        }
+
+        // ------------------------------------------- 中段 (弹性区的 60%)
+        HorizontalLayout {
+            vertical-stretch: Tokens.workspace-stretch;
+
+            // 240px 左资源栏 (compact 时 36px 图标导轨)
+            Sidebar {
+                compact: root.compact || root.sidebar-collapsed;
+                min-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
+                max-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
+
+                toggle-collapse => {
+                    root.sidebar-collapsed = !root.sidebar-collapsed;
+                    root.toggle-sidebar();
+                }
+            }
+
+            // 主工作区: 双视图同构投射, 同一时刻只显示一个 [规范 §2.1]
+            Rectangle {
+                horizontal-stretch: 1;
+                clip: true;
+                background: Tokens.bg-shell;
+
+                SessionView {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    visible: !root.arrangement-view;
+                }
+
+                ArrangementView {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    visible: root.arrangement-view;
+                }
+            }
+
+            // 280px 右 AI 协作栏 (compact 时宽度归零, 改由下面的抽屉承担)
+            AiRail {
+                visible: !root.compact;
+                min-width: root.compact ? 0px : Tokens.right-rail-width;
+                max-width: root.compact ? 0px : Tokens.right-rail-width;
+
+                open-musical-pr => { root.musical-pr-open = true; root.open-musical-pr(); }
+                run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
+            }
+        }
+
+        // ---------------------------------------------------------- 4px splitter
+        // [UI-GRID-002] 拖拽范围硬限 220–600px; 真实的拖拽 + 双击居中
+        // 需要指针捕获状态机 (规范 §6.1), 本骨架只登记几何与语义值。
+        Rectangle {
+            min-height: Tokens.splitter-height;
+            max-height: Tokens.splitter-height;
+            background: Tokens.line-strong;
+
+            accessible-role: slider;
+            accessible-id: "splitter-workspace-console";
+            accessible-label: "主工作区与底部控制台的分割线 (220–600px)";
+            accessible-orientation: horizontal;
+            accessible-value-minimum: 220;
+            accessible-value-maximum: 600;
+            accessible-value-step: 1;
+            accessible-value: "320";
+        }
+
+        // --------------------------------------- 底部控制台 (弹性区的 40%)
+        ConsoleTabs {
+            vertical-stretch: Tokens.console-stretch;
+            active-tab: root.console-tab;
+
+            select-piano-roll => { root.console-tab = 0; }
+            select-mixer => { root.console-tab = 1; }
+            select-devices => { root.console-tab = 2; }
+        }
+
+        // ---------------------------------------------------------- 24px 状态栏
+        StatusBar { }
+    }
+
+    // =====================================================================
+    // 覆盖层 (不是布局子元素, 因此可以绝对定位且不影响网格)
+    // =====================================================================
+
+    // compact 断点: 右栏变抽屉 (Cmd/Ctrl + 反斜杠 呼出)
+    AiRail {
+        x: root.width - Tokens.right-rail-width;
+        y: 0;
+        width: Tokens.right-rail-width;
+        height: root.height;
+        visible: root.compact && root.ai-drawer-open;
+
+        open-musical-pr => { root.musical-pr-open = true; root.open-musical-pr(); }
+        run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
+    }
+
+    // AI 编曲提案审核抽屉 (§10 Musical PR)
+    MusicalPrDrawer {
+        x: root.width - 360px;
+        y: 0;
+        width: 360px;
+        height: root.height;
+        visible: root.musical-pr-open;
+
+        accept => {
+            root.accept-ai-proposal();
+            root.musical-pr-open = false;
+        }
+        reject => {
+            root.reject-ai-proposal();
+            root.musical-pr-open = false;
+        }
+        close => { root.musical-pr-open = false; }
+    }
+
+    // 全屏可视化 DAG 时光机 (Cmd/Ctrl + Shift + H)
+    UndoTreeModal {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        visible: root.undo-tree-open;
+
+        close => { root.undo-tree-open = false; }
+    }
+}

@@ -1,0 +1,152 @@
+// 夜半 (Yeban) — 设计令牌 (Design Tokens)
+//
+// 为什么需要这个文件: UI/UX 规范定义了**网格几何** (§1) 与 **视觉 Diff 语义色** (§10.2),
+// 但没有定义字体栈 / CJK 回退 / 间距 / 圆角 / 字号 scale —— 这是规范缺口 (见 ADR-0001 的
+// "规范缺口与冲突" 与 docs/ledger/ui-shell-notes.md 的 needs 清单)。本文件把这些数值
+// 集中成**唯一事实源**, 每一条都标注出处, 后续要么被提升为 ADR, 要么被推翻。
+//
+// 规范来源 (Normative):
+//   - [UI-GRID-001] docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md §1.1 网格拓扑
+//   - [UI-GRID-002] 同上一节 §1.2 响应式断点 (≥1920 全展开 / 1366–1919 折叠) 与 splitter 极值
+//   - [UI-A11Y-004] 同上 §7.4 色盲友好与高对比度
+//   - 同上 §10.2 视觉化差异表现 (新增 #22c55e / 删除 #ef4444 / 微调 #f59e0b)
+//   - [UI-MCP-002] 同上 §12.5 动态区域遮罩 (遮罩色 #000000)
+//   - 品牌色: assets/brand/README.md「品牌色（从母版 SVG 中提取，非目测）」
+//
+// 颜色字面量的写法: 只用**不透明的 6 位** `#rrggbb`。
+// 原因: Slint 的 8 位十六进制通道顺序在 1.18.1 的文档里没有一句话写死 (文档只写
+// "Color literals follow the syntax of CSS"), 而透明/半透明需求在 DAW 里到处都是;
+// 与其赌通道顺序, 不如把 alpha 一律留在使用点用 `.with-alpha()` / `opacity:` 表达。
+// 核验记录: https://docs.slint.dev/latest/docs/slint/reference/property-types/colors-and-brushes/
+
+export global Tokens {
+    // =====================================================================
+    // 1. 网格几何 [UI-GRID-001] —— 规范正文的像素值, 一个都不许改
+    // =====================================================================
+    out property <length> top-bar-height: 48px;
+    out property <length> left-rail-width: 240px;
+    // [UI-GRID-002] 1366–1919 断点: 左栏收成 36px 图标导轨
+    out property <length> left-rail-collapsed-width: 36px;
+    out property <length> right-rail-width: 280px;
+    out property <length> splitter-height: 4px;
+    out property <length> status-bar-height: 24px;
+
+    // [UI-GRID-002] splitter 拖拽极值保护 (双击居中留待手势状态机落地)
+    out property <length> splitter-min-height: 220px;
+    out property <length> splitter-max-height: 600px;
+
+    // [UI-GRID-002] 断点阈值 (以逻辑像素计; 物理像素→逻辑像素换算在宿主 Rust 侧做)
+    out property <int> breakpoint-full-hd: 1920;
+    out property <int> breakpoint-min: 1366;
+
+    // 中段与底部控制台的弹性比 3:2 = 60% / 40%, 落在规范的 55–65% / 35–45% 区间正中
+    out property <float> workspace-stretch: 3.0;
+    out property <float> console-stretch: 2.0;
+
+    // =====================================================================
+    // 2. 间距 scale (规范缺口, 本文件首次登记)
+    // =====================================================================
+    out property <length> space-0: 0px;
+    out property <length> space-1: 2px;
+    out property <length> space-2: 4px;
+    out property <length> space-3: 6px;
+    out property <length> space-4: 8px;
+    out property <length> space-5: 12px;
+    out property <length> space-6: 16px;
+    out property <length> space-7: 24px;
+
+    // =====================================================================
+    // 3. 圆角 scale (规范缺口)
+    // =====================================================================
+    out property <length> radius-none: 0px;
+    out property <length> radius-sm: 2px;
+    out property <length> radius-md: 4px;
+    out property <length> radius-lg: 8px;
+
+    // =====================================================================
+    // 4. 字号 scale (规范缺口)
+    // =====================================================================
+    out property <length> font-size-xs: 10px;
+    out property <length> font-size-sm: 11px;
+    out property <length> font-size-md: 12px;
+    out property <length> font-size-lg: 13px;
+    out property <length> font-size-xl: 16px;
+
+    // =====================================================================
+    // 5. 字体栈 (规范缺口) —— 系统字体 + CJK 回退, 不打包任何字体文件
+    // =====================================================================
+    out property <string> font-ui: "Inter, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Noto Sans, Helvetica Neue, Arial, sans-serif";
+    out property <string> font-mono: "SF Mono, Menlo, Consolas, Noto Sans Mono CJK SC, monospace";
+
+    // =====================================================================
+    // 6. 品牌色 · 深色 (默认主题) —— assets/brand/README.md
+    // =====================================================================
+    // 背景: 径向渐变 #151D38 → #060A14 (这里登记渐变的两端与一个中间面板色)
+    out property <color> bg-void: #060a14;
+    out property <color> bg-shell: #0d1326;
+    out property <color> bg-panel: #151d38;
+    out property <color> bg-panel-alt: #1b2447;
+    out property <color> bg-raised: #232f5c;
+
+    // 主金: 线性渐变 #F7E6B0 → #E2C77E → #B8933E
+    out property <color> gold-bright: #f7e6b0;
+    out property <color> gold: #e2c77e;
+    out property <color> gold-deep: #b8933e;
+
+    // 文字/墨色与次级灰蓝
+    out property <color> ink-0: #f0ebe3;
+    out property <color> ink-1: #c8c2b8;
+    out property <color> ink-2: #5a6b8a;
+
+    // 分隔线与栅格 (来自同色系的低对比派生, 便于保持 AAA 对比预算)
+    out property <color> line: #1e2745;
+    out property <color> line-strong: #2c3a63;
+
+    // =====================================================================
+    // 7. 品牌色 · 浅色 (登记在册; 运行时切换机制仍是待决项, 见 notes 的 needs)
+    // =====================================================================
+    out property <color> light-bg-page: #fdfcfa;
+    out property <color> light-bg-panel: #f0ebe3;
+    out property <color> light-ink-0: #1a2340;
+    out property <color> light-ink-1: #2a3a5c;
+    out property <color> light-ink-2: #8a7e6e;
+    out property <color> light-line: #d9d2c6;
+
+    // =====================================================================
+    // 8. 视觉 Diff 语义色 [UI-A11Y-004 / 规范 §10.2] —— **必须与几何/纹理冗余编码成对使用**
+    //    新增: 亮绿 + 右上角 `+` 徽章 (纯实心填充)
+    //    删除: 柔和粉红 + 45° 斜线阴影 + 删除线
+    //    微调: 琥珀黄 + 虚线加粗描边 + 方向箭头
+    //    遮罩: 纯黑 (无头截图比对前把高频刷新区域置为它) [UI-MCP-002]
+    // =====================================================================
+    out property <color> diff-added: #22c55e;
+    out property <color> diff-removed: #ef4444;
+    out property <color> diff-tweaked: #f59e0b;
+    out property <color> mask-black: #000000;
+
+    // AI 建议层 (规范 §9.1): 45% 半透明 + 虚线霓虹紫描边。
+    // 这里只登记色相; 45% 由使用点的 `.with-alpha(0.45)` 表达。
+    out property <color> ai-suggestion: #a855f7;
+
+    // =====================================================================
+    // 9. 状态色 (走带/录音/告警) —— 规范未定义, 登记待决
+    // =====================================================================
+    out property <color> record-red: #d94a4a;
+    out property <color> ok-green: #3fa96a;
+    out property <color> warn-amber: #d9a441;
+}
+
+// 全部文本图元的统一起点: 一处固定字体栈与默认墨色, 免得 40 个 Text 各写一遍。
+// 用法: `UiText { text: "…"; font-size: Tokens.font-size-md; }`
+export component UiText inherits Text {
+    font-family: Tokens.font-ui;
+    color: Tokens.ink-0;
+    vertical-alignment: center;
+}
+
+// 等宽图元: 时间码 / BPM / 频率数值 —— 数字跳动时不许抖宽度。
+export component UiMonoText inherits Text {
+    font-family: Tokens.font-mono;
+    color: Tokens.ink-0;
+    vertical-alignment: center;
+}

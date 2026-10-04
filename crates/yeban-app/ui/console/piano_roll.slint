@@ -1,0 +1,225 @@
+// 夜半 (Yeban) — 虚拟化 MIDI 钢琴卷帘 (底部控制台 Tab 1)
+//
+// 规范来源 (Normative):
+//   - 规范 §3.1: Slint 硬件加速视口裁剪 + R-Tree 空间索引 (本骨架**没有**实现)
+//   - 规范 §3.2: 坐标系双向转换与 960 PPQ 吸附对齐 (本骨架**没有**实现)
+//   - 规范 §3.3: 视听反馈引擎与多工具交互矩阵 (1 选择 / 2 铅笔 / 3 剪刀 / 4 力度 / 5 橡皮擦)
+//   - 规范 §3.5: 全键盘音符微调
+//   - [UI-TEST-001] §12.2: `note-{ulid}-rect` 语义 ID
+//   - [UI-MCP-002] §12.5: 走带光标与力度条属高频刷新区域
+//
+// 本文件是**静态骨架 + 演示数据**。视口裁剪、R-Tree、坐标映射、吸附、工具状态机全部未实现,
+// 它们依赖 `yeban-model` 的 960 PPQ 与 `yeban-render` 的波形/像素管线。
+
+import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+
+export component PianoRoll inherits Rectangle {
+    // 演示用 ULID —— 必须与 crates/yeban-app/src/scene.rs 的 DEMO_NOTE_ULIDS 逐字一致。
+    // 重复是已知的临时状态, 见 notes 的 pending (模型线落地后改成 ModelRc 单向注入)。
+    in property <[string]> note-ulids: [
+        "01J8Z5Q0R7K3M9X2V4B6N8P1A2",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1A3",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1B0",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1C7",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1D4",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1E1"
+    ];
+    in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
+    in property <[string]> tool-labels: ["选择", "铅笔", "剪刀", "力度", "橡皮"];
+    in property <int> active-tool: 1;
+
+    in property <bool> show-velocity-lane: true;
+    // 十二平均律一个八度里的白键位置 (C C# D D# E F F# G G# A A# B)。
+    // 用「查表 + 取模」而不是 5 个 `||` 串起来的黑键判断: Slint 的 `&&` / `||`
+    // 在优先级表里是 **non-associative**, 串联不安全 (见 reference/language/operators)。
+    in property <[bool]> white-key-pattern: [
+        true, false, true, false, true, true, false, true, false, true, false, true
+    ];
+    // 力度是 0.0–1.0 的归一化值; 0–127 的量化与 960 PPQ 的对齐归模型层。
+    in property <[float]> velocities: [0.85, 0.6, 0.95, 0.45, 0.7, 0.55];
+
+    background: Tokens.bg-void;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "piano-roll";
+    accessible-label: "虚拟化钢琴卷帘";
+
+    // ---------------------------------------------------------------- 工具矩阵 (§3.3)
+    // 与 src/input.rs 的 1..5 数字键是同一份状态: 键盘改 active-tool, 这里只读。
+    for tool_index in 5 : Rectangle {
+        x: Tokens.space-4 + 52px * tool_index;
+        y: Tokens.space-2;
+        width: 48px;
+        height: 20px;
+        background: root.active-tool == tool_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-sm;
+        accessible-role: button;
+        accessible-id: "piano-roll-tool-" + root.tool-names[tool_index] + "-button";
+        accessible-label: root.tool-labels[tool_index] + "工具";
+        accessible-item-index: tool_index;
+        accessible-item-count: 5;
+        accessible-checkable: true;
+        accessible-checked: root.active-tool == tool_index;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "" + (tool_index + 1) + " " + root.tool-labels[tool_index];
+            color: root.active-tool == tool_index ? Tokens.gold-bright : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    UiMonoText {
+        x: 272px;
+        y: Tokens.space-2;
+        width: 220px;
+        height: 20px;
+        text: "吸附 1/16 · PPQ 960 · 显示 C2 – C7";
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        accessible-role: text;
+        accessible-id: "piano-roll-status";
+        accessible-label: "卷帘吸附与音域状态";
+    }
+
+    // ---------------------------------------------------------------- 琴键列
+    Rectangle {
+        x: 0;
+        y: 28px;
+        width: 56px;
+        height: parent.height - 28px;
+        background: Tokens.bg-panel;
+        accessible-role: list;
+        accessible-id: "piano-roll-keys";
+        accessible-label: "钢琴键列";
+
+        for key_index in 16 : Rectangle {
+            x: 0;
+            y: 14px * key_index;
+            width: parent.width;
+            height: 13px;
+            background: root.white-key-pattern[key_index.mod(12)] ? Tokens.ink-0 : Tokens.bg-void;
+            border-width: 1px;
+            border-color: Tokens.line;
+        }
+    }
+
+    // ---------------------------------------------------------------- 卷帘网格
+    Rectangle {
+        x: 56px;
+        y: 28px;
+        width: parent.width - 56px;
+        height: parent.height - 28px;
+        background: Tokens.bg-shell;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "piano-roll-grid";
+        accessible-label: "音符网格画布";
+
+        // 横向音高车道
+        for lane_index in 16 : Rectangle {
+            x: 0;
+            y: 14px * lane_index;
+            width: parent.width;
+            height: 13px;
+            background: root.white-key-pattern[lane_index.mod(12)] ? Tokens.bg-shell : Tokens.line;
+        }
+
+        // 纵向小节线 (960 PPQ 下的 1/16 网格等模型线落地)
+        for grid_index in 16 : Rectangle {
+            x: 60px * grid_index;
+            y: 0;
+            width: 1px;
+            height: parent.height;
+            background: grid_index.mod(4) == 0 ? Tokens.line-strong : Tokens.line;
+        }
+
+        // ------------------------------------------------------------ 音符图元
+        // [UI-TEST-001] `note-{ulid}-rect`
+        for note_index in 6 : Rectangle {
+            x: Tokens.space-5 + 76px * note_index;
+            y: 14px * note_index + 6px;
+            width: 66px;
+            height: 12px;
+            background: Tokens.gold;
+            border-radius: Tokens.radius-sm;
+            accessible-role: list-item;
+            accessible-id: "note-" + root.note-ulids[note_index] + "-rect";
+            accessible-label: "音符 " + root.note-ulids[note_index];
+            accessible-item-index: note_index;
+            accessible-item-count: 6;
+            accessible-item-selectable: true;
+            accessible-item-selected: note_index == 0;
+        }
+
+        // AI 建议层预览 (§9.1): 45% 半透明 + 虚线霓虹紫描边 + 置信度徽章。
+        // 骨架里只画一个静态示意块, 采纳/放弃由 Esc / Shift+Enter 驱动 (src/input.rs)。
+        Rectangle {
+            x: Tokens.space-5 + 76px * 6;
+            y: 14px * 2 + 6px;
+            width: 66px;
+            height: 12px;
+            background: Tokens.ai-suggestion.with-alpha(0.45);
+            border-width: 1px;
+            border-color: Tokens.ai-suggestion;
+            border-radius: Tokens.radius-sm;
+            accessible-role: list-item;
+            accessible-id: "note-suggestion-overlay-rect";
+            accessible-label: "AI 建议音符 (待采纳)";
+            accessible-item-selectable: true;
+            accessible-item-selected: false;
+        }
+    }
+
+    // ---------------------------------------------------------------- 力度泳道 (§3.3 力度工具)
+    Rectangle {
+        x: 0;
+        y: parent.height - 44px;
+        width: parent.width;
+        height: 44px;
+        background: Tokens.bg-panel;
+        visible: root.show-velocity-lane;
+        accessible-role: region;
+        accessible-id: "piano-roll-velocity-lane";
+        accessible-label: "力度泳道";
+
+        for velocity_index in 6 : Rectangle {
+            x: 56px + Tokens.space-5 + 76px * velocity_index + 30px;
+            y: parent.height - 4px - 28px * root.velocities[velocity_index];
+            width: 6px;
+            height: 28px * root.velocities[velocity_index];
+            background: Tokens.gold-deep;
+            border-radius: Tokens.radius-sm;
+            accessible-role: slider;
+            accessible-id: "velocity-" + velocity_index + "-bar";
+            accessible-label: "力度条 " + velocity_index;
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 127;
+            accessible-value-step: 1;
+            accessible-value: "100";
+        }
+    }
+
+    // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
+    Rectangle {
+        x: 56px + 60px * 3;
+        y: 28px;
+        width: 1px;
+        height: parent.height - 28px;
+        background: Tokens.gold-bright;
+        accessible-role: slider;
+        accessible-id: "piano-roll-playhead";
+        accessible-label: "卷帘走带光标";
+        accessible-value-minimum: 0;
+        accessible-value-maximum: 9999;
+        accessible-value-step: 1;
+        accessible-value: "3";
+    }
+}

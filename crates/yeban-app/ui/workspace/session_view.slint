@@ -1,0 +1,198 @@
+// 夜半 (Yeban) — Session View: 垂直剪辑矩阵 + 场景一键激发
+//
+// 规范来源 (Normative):
+//   - 规范 §2.3: 垂直轨道列 (Vertical Track Columns) + Scene Launch 列 + 量化触发
+//   - 规范 §2.2: Back to Arrangement 按钮在 Session 模式下浮现, 点击让播放权平滑回归时间轴
+//   - [UI-GRID-002] §1.2: 断点折叠时主工作区占最高展示优先级
+//   - [UI-TEST-001] §12.2: 语义 Element ID。本文件用 `slot-…` / `scene-launch-…`,
+//     `clip-{ulid}-header` 归 arrangement_view.slint (那里才是剪辑包头所在的层)
+//
+// 静态骨架 + 演示数据: 没有接 `EngineSnapshot`, 没有量化触发状态机, 没有拖拽。
+// 触发/量化/Back-to-Arrangement 的引擎侧语义等 `yeban-engine` 落地。
+
+import { Tokens, UiText } from "../tokens.slint";
+
+export component SessionView inherits Rectangle {
+    // 场景名 —— 演示数据
+    in property <[string]> scenes: ["Intro", "Verse", "Chorus", "Drop"];
+    // 轨道名 —— 演示数据
+    in property <[string]> tracks: ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
+
+    callback back-to-arrangement();
+
+    background: Tokens.bg-void;
+    clip: true;
+
+    accessible-role: main;
+    accessible-id: "workspace-session-canvas";
+    accessible-label: "Session 触发矩阵";
+
+    // ------------------------------------------------------------ 轨道包头行
+    for track_index in 6 : Rectangle {
+        x: 8px + 128px * track_index;
+        y: 0;
+        width: 120px;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-sm;
+        clip: true;
+        accessible-role: list-item;
+        accessible-id: "session-track-" + track_index + "-header";
+        accessible-label: root.tracks[track_index];
+        accessible-item-index: track_index;
+        accessible-item-count: 6;
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: root.tracks[track_index];
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+    }
+
+    // ------------------------------------------------------------ 剪辑插槽矩阵
+    for track_index in 6 : Rectangle {
+        x: 8px + 128px * track_index;
+        y: 32px;
+        width: 120px;
+        height: 68px * 4;
+        background: Tokens.bg-shell;
+        border-radius: Tokens.radius-sm;
+
+        // 纵向轨道列: 每条轨道 4 个插槽 (对应 4 个场景)
+        for scene_index in 4 : Rectangle {
+            x: 0;
+            y: 68px * scene_index;
+            width: parent.width;
+            height: 64px;
+            background: (track_index + scene_index).mod(3) == 0 ? Tokens.bg-raised : Tokens.bg-panel;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+            accessible-role: list-item;
+            accessible-id: "slot-" + track_index + "-" + scene_index + "-cell";
+            accessible-label: root.tracks[track_index] + " · " + root.scenes[scene_index];
+            accessible-item-index: scene_index;
+            accessible-item-count: 4;
+            accessible-item-selectable: true;
+            accessible-item-selected: (track_index + scene_index).mod(3) == 0;
+
+            UiText {
+                x: Tokens.space-3;
+                y: Tokens.space-3;
+                width: parent.width - 12px;
+                height: 16px;
+                text: root.scenes[scene_index];
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+
+            // 空插槽的提示位 (双击创建新 Clip 的手势随后续切片落地)
+            UiText {
+                x: Tokens.space-3;
+                y: 26px;
+                width: parent.width - 12px;
+                height: 16px;
+                text: (track_index + scene_index).mod(3) == 0 ? "已装载" : "空插槽";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ Scene Launch 列
+    Rectangle {
+        x: 8px + 128px * 6;
+        y: 0;
+        width: 104px;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-sm;
+        accessible-role: text;
+        accessible-id: "scene-launch-column-header";
+        accessible-label: "场景一键激发列";
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "场景";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-sm;
+        }
+    }
+
+    for scene_index in 4 : Rectangle {
+        x: 8px + 128px * 6;
+        y: 32px + 68px * scene_index;
+        width: 104px;
+        height: 64px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+        accessible-role: button;
+        accessible-id: "scene-launch-" + scene_index + "-button";
+        accessible-label: "激发场景 " + root.scenes[scene_index];
+        accessible-item-index: scene_index;
+        accessible-item-count: 4;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.scenes[scene_index];
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+    }
+
+    // ------------------------------------------------------------ Back to Arrangement
+    // 规范 §2.2: 仅在 Session 即兴触发后浮现。骨架里先常驻 (状态机等引擎)。
+    Rectangle {
+        x: 8px + 128px * 6;
+        y: 32px + 68px * 4 + 8px;
+        width: 104px;
+        height: 28px;
+        background: back_area.pressed ? Tokens.bg-raised : Tokens.bg-void;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.record-red;
+        accessible-role: button;
+        accessible-id: "session-back-to-arrangement-button";
+        accessible-label: "返回编曲 (Back to Arrangement)";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "→ 编曲";
+            color: Tokens.record-red;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        back_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.back-to-arrangement(); }
+        }
+    }
+}

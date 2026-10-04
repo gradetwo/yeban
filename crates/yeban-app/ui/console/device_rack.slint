@@ -1,0 +1,226 @@
+// 夜半 (Yeban) — 设备效果链与 4 段 EQ (底部控制台 Tab 3)
+//
+// 规范来源 (Normative):
+//   - 规范 §5.1: 交互式 4 段参数均衡器 (Interactive 4-Band Parametric EQ)
+//   - 规范 §5.3 [v2.0.0]: 商业插件卡片与原生视窗呼出 —— **未实现**, 本版本不做插件宿主 UI
+//   - [UI-NOTE-004]: 编曲辅助 (视觉反馈) —— 频响曲线属视觉反馈层
+//   - [UI-MCP-002] §12.5: 频响曲线会随参数每帧变化 → 无头截图比对时必须遮罩
+//
+// 静态骨架: 频响曲线是纯色占位块。真正的曲线要用 `Path` 元素把 biquad 幅频响应画出来,
+// 而 4 段 EQ 的传递函数住在 `yeban-dsp` —— 现在画一条假的曲线只会制造"看起来对"的假象,
+// 所以这里明确留空并登记为 pending。
+
+import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+
+export component DeviceRack inherits Rectangle {
+    in property <[string]> device-names: ["EQ 4 段", "Compressor", "Space Reverb"];
+    in property <[string]> band-names: ["low", "low-mid", "high-mid", "high"];
+    in property <[string]> band-labels: ["低频", "低中", "高中", "高频"];
+    in property <[float]> band-gains: [0.62, 0.48, 0.44, 0.58];
+
+    background: Tokens.bg-void;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "device-rack";
+    accessible-label: "设备效果链";
+
+    // ---------------------------------------------------------------- 频响曲线区
+    Rectangle {
+        x: Tokens.space-4;
+        y: Tokens.space-4;
+        width: 420px;
+        height: 160px;
+        background: Tokens.bg-shell;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line-strong;
+        clip: true;
+        accessible-role: image;
+        accessible-id: "device-rack-eq-curve";
+        accessible-label: "4 段 EQ 频响曲线 (占位, 曲线未实现)";
+
+        // 频响网格
+        for eq_grid_index in 8 : Rectangle {
+            x: 52px * eq_grid_index;
+            y: 0;
+            width: 1px;
+            height: parent.height;
+            background: Tokens.line;
+        }
+        for eq_row_index in 4 : Rectangle {
+            x: 0;
+            y: 40px * eq_row_index;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.line;
+        }
+
+        // 0 dB 基准线
+        Rectangle {
+            x: 0;
+            y: 80px;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.gold-deep;
+        }
+
+        UiMonoText {
+            x: Tokens.space-3;
+            y: Tokens.space-2;
+            width: 200px;
+            height: 16px;
+            text: "+12 dB / 0 / -12 dB · 20 Hz – 20 kHz";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+
+    // ---------------------------------------------------------------- 4 段 EQ 旋钮
+    for band_index in 4 : Rectangle {
+        x: 460px + 96px * band_index;
+        y: Tokens.space-4;
+        width: 88px;
+        height: 76px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: slider;
+        accessible-id: "device-rack-eq-" + root.band-names[band_index] + "-knob";
+        accessible-label: root.band-labels[band_index] + " 增益";
+        accessible-value-minimum: -12;
+        accessible-value-maximum: 12;
+        accessible-value-step: 0.1;
+        accessible-value: "0.0 dB";
+
+        UiText {
+            x: 0;
+            y: Tokens.space-2;
+            width: parent.width;
+            height: 16px;
+            text: root.band-labels[band_index];
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        // 旋钮本体 (旋转手势状态机 §6 未实现, 因此只画静态指示)
+        Rectangle {
+            x: 30px;
+            y: 24px;
+            width: 28px;
+            height: 28px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-md;
+            border-width: 2px;
+            border-color: Tokens.gold-deep;
+
+            // 增益指示线: 位置由演示增益驱动 (-12 dB 在底, +12 dB 在顶)
+            Rectangle {
+                x: 13px;
+                y: 2px + 16px * (1.0 - root.band-gains[band_index]);
+                width: 2px;
+                height: 8px;
+                background: Tokens.gold-bright;
+            }
+        }
+
+        UiMonoText {
+            x: 0;
+            y: 56px;
+            width: parent.width;
+            height: 16px;
+            text: "0.0 dB";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+    }
+
+    // ---------------------------------------------------------------- 设备卡片链
+    for device_index in 3 : Rectangle {
+        x: Tokens.space-4;
+        y: 176px + 40px * device_index;
+        width: 420px;
+        height: 36px;
+        background: device_index == 0 ? Tokens.bg-raised : Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: device_index == 0 ? Tokens.gold-deep : Tokens.line;
+        clip: true;
+        accessible-role: list-item;
+        accessible-id: "device-" + device_index + "-card";
+        accessible-label: "设备 " + root.device-names[device_index];
+        accessible-item-index: device_index;
+        accessible-item-count: 3;
+        accessible-item-selectable: true;
+        accessible-item-selected: device_index == 0;
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 96px;
+            height: parent.height;
+            text: root.device-names[device_index];
+            color: device_index == 0 ? Tokens.gold-bright : Tokens.ink-1;
+            font-size: Tokens.font-size-md;
+            overflow: elide;
+        }
+
+        // 旁通开关
+        Rectangle {
+            x: parent.width - 44px;
+            y: 8px;
+            width: 36px;
+            height: 20px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line-strong;
+            accessible-role: switch;
+            accessible-id: "device-" + device_index + "-bypass-switch";
+            accessible-label: "旁通 " + root.device-names[device_index];
+            accessible-checkable: true;
+            accessible-checked: false;
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "BYP";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    // 插件宿主卡片 [v2.0.0] —— 明确未实现, 只登记占位卡片与 ID
+    Rectangle {
+        x: Tokens.space-4;
+        y: 176px + 40px * 3;
+        width: 420px;
+        height: 36px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+        accessible-role: list-item;
+        accessible-id: "device-plugin-host-placeholder-card";
+        accessible-label: "商业插件宿主卡片 (v2.0.0, 未实现)";
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "商业插件宿主 [v2.0.0 · 未实现]";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+    }
+}

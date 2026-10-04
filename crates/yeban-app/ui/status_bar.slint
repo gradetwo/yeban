@@ -1,0 +1,84 @@
+// 夜半 (Yeban) — 底部状态与提示栏 (24px)
+//
+// 规范来源 (Normative):
+//   - [UI-GRID-001] UI/UX 规范 §1.1: STATUS & TOOLTIP BAR (24px) ——
+//     选区信息 / 实时和弦识别 / 快捷键提示 / 硬件声卡采样率与性能状态
+//   - [UI-A11Y-003] §7.3: 屏读器要能朗读"当前音轨名称、推子分贝值、BPM 与光标小节拍号"
+//   - [UI-A11Y-004] §7.4: 高对比度下仍可读 (低对比灰蓝在 AAA 预算内选值)
+//
+// 本文件是 ADR-0001 D2 为了承载 24px 状态栏而**新增**的组件 (UI/UX §8 的清单里没有它,
+// architecture §8 的 4 文件清单里也没有)。裁决留痕见 ADR-0001 D2 与 notes。
+//
+// 数据流方向: 只读。所有值都是**演示数据**, 由 app.slint 的 MainWindow 传入。
+
+import { Tokens, UiText, UiMonoText } from "tokens.slint";
+
+export component StatusBar inherits Rectangle {
+    in property <string> selection: "选区 1.1.000 – 5.4.480";
+    in property <string> chord: "Cmaj7";
+    in property <string> tip: "空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听";
+    in property <string> device: "48 kHz / 24-bit · DSP 3.2% · 目标 120 FPS";
+
+    min-height: Tokens.status-bar-height;
+    max-height: Tokens.status-bar-height;
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.line;
+
+    accessible-role: content-info;
+    accessible-id: "status-bar";
+    accessible-label: "状态栏";
+
+    UiMonoText {
+        x: Tokens.space-4;
+        y: 0;
+        width: 220px;
+        height: parent.height;
+        text: root.selection;
+        color: Tokens.ink-1;
+        font-size: Tokens.font-size-xs;
+        accessible-role: text;
+        accessible-id: "status-bar-selection";
+        accessible-label: "选区信息";
+    }
+
+    UiText {
+        x: 236px;
+        y: 0;
+        width: 96px;
+        height: parent.height;
+        text: "和弦 " + root.chord;
+        color: Tokens.gold;
+        font-size: Tokens.font-size-xs;
+        accessible-role: text;
+        accessible-id: "status-bar-chord";
+        accessible-label: "实时和弦识别";
+    }
+
+    UiText {
+        x: 344px;
+        y: 0;
+        width: 480px;
+        height: parent.height;
+        text: root.tip;
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        accessible-role: text;
+        accessible-id: "status-bar-shortcut-tip";
+        accessible-label: "快捷键提示";
+    }
+
+    UiMonoText {
+        x: root.width - 268px;
+        y: 0;
+        width: 256px;
+        height: parent.height;
+        text: root.device;
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        horizontal-alignment: right;
+        accessible-role: text;
+        accessible-id: "status-bar-device";
+        accessible-label: "硬件声卡采样率与性能状态";
+    }
+}
