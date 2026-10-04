@@ -247,9 +247,19 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: 列出 PENDING
+      - name: 校验门禁状态表本身没有腐烂
+        run: python3 scripts/gates/check_gate_status.py
+      - name: 渲染门禁状态表 (单一事实源) + 列出账本里仍未闭环的 PENDING
         run: |
           set -euo pipefail
-          # 单一事实源: 工作区里所有尚未接线 PENDING 标记
-          grep -rn "PENDING" docs/DEVELOPMENT_LEDGER.md | head -40 >> "$GITHUB_STEP_SUMMARY" || true
-          echo "完整清单见 docs/DEVELOPMENT_LEDGER.md"
+          {
+            echo "## 门禁状态 (来自 docs/ledger/gate-status.md)"
+            echo ""
+            cat docs/ledger/gate-status.md
+            echo ""
+            echo "---"
+            echo "## 账本里仍未闭环的 PENDING (原始留痕, 供交叉核对)"
+            echo '```text'
+            grep -rn "PENDING" docs/DEVELOPMENT_LEDGER.md | head -40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

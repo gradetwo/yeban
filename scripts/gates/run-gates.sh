@@ -55,7 +55,8 @@ gate_guards() {
 
 gate_docs() {
   step "文档链接与 README 双语契约"
-  run "docs" python3 scripts/gates/check_docs_links.py
+  run "docs" python3 scripts/gates/check_gate_status.py
+  python3 scripts/gates/check_docs_links.py
 }
 
 gate_schemas() {
