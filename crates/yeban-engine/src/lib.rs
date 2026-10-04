@@ -16,9 +16,10 @@
 //! | [`block`] | 固定块长 `AudioBlock` 与栈上 `[f32; N]` 缓冲约定 | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-007] |
 //! | [`fpu`] | FTZ / DAZ 浮点环境开关（x86 MXCSR / aarch64 FPCR） | [ARCH-RT-003]、[ROAD-M2-003] |
 //! | [`graph`] | `RoutingGraph` 拓扑排序、关键路径 `L_max`、`D_i` 分配、环形延迟线 | [ARCH-PDC-001]、[ROAD-M2-004] |
+//! | [`level`] | 电平口径（峰值/峰值保持/RMS/平滑/dBFS/钳位/取最新）——零依赖纯计算 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
-//! | [`meter`] | VU / 峰值电平独立高容量 SPSC，UI 60Hz 批量抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
+//! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`rt`] | 渲染量子驱动（`EngineRuntime`），**不依赖 cpal** | [ARCH-TOP-002]、[ARCH-RT-001] |
 //! | `device` | cpal 宿主、配置协商、`NullBackend`（**feature `device`**） | [ARCH-TOP-002]、[ROAD-M2-001] |
 //!
@@ -54,9 +55,10 @@
 //! ## 设计边界（本切片**没有**证明的东西）
 //!
 //! 1. **声部合成尚未接入**：`EngineRuntime::process_quantum` 目前只做
-//!    "参数/事件出队 → 快照切换 → 清空输出块 → 电平上报"，
+//!    "参数/事件出队 → 快照切换 → 渲染（占位静音）→ 逐轨/母线电平计量与发布"，
 //!    真正的乐器/效果渲染留给 `yeban-sfz` / `yeban-dsp` 的后续切片。
-//!    因此本 crate 现在**不能**发声。
+//!    因此本 crate 现在**不能**发声：电平计算本身是真实的（口径见 [`level`]），
+//!    但端到端喂进去的是占位静音 ⇒ 发布出来的电平恒为静音。
 //! 2. **实时线程优先级**（[ROAD-M2-001]）未实现，理由见 `device` 模块文档与
 //!    `docs/ledger/engine-rt-notes.md` §4：cpal 0.18 的 `realtime` feature 只覆盖
 //!    WASAPI / AAudio / PipeWire / JACK，macOS 与 Linux-ALSA 路径没有开关，
@@ -85,6 +87,7 @@ pub mod block;
 pub mod device;
 pub mod fpu;
 pub mod graph;
+pub mod level;
 pub mod meter;
 pub mod ring;
 pub mod rt;
@@ -100,6 +103,7 @@ pub const IMPLEMENTED_SPEC_IDS: &[&str] = &[
     "ARCH-PDC-001", // 延迟上报与关键路径对齐
     "ARCH-PDC-002", // 环形延迟线（时延预算的补偿实现）
     "ARCH-TOP-002", // 线程模型与通信隔离
+    "ARCH-UI-002",  // 电平独立 SPSC + 真峰值/RMS 计量 + UI 取最新
     "ARCH-DET-001", // L1：固定 128 采样块长
     "ROAD-M2-001",  // 音频调度核心（宿主部分）
     "ROAD-M2-002",  // 双缓冲快照原子交换
