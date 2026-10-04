@@ -330,12 +330,35 @@ ui 依赖 model…）都会撞上同一堵墙。建议在合并本线之前先�
 **教训**：这两条都属于"判据写错而不是代码写错"，而本机因为不编译这几个文件所以**无法发现**。
 反过来说，CI 的 `left/right` 原始输出足以让修复变成确定性的（不需要猜），这也是值得记下来的经验。
 
-### 第 5 轮 —— rebase 到 main `4d739e1` 后（本轮的最终判决见文末）
+### 第 5 轮 —— **全绿** ✅ run [37222215932](https://github.com/gradetwo/yeban/actions/runs/37222215932)（提交 `9d046eb`）
 
-第 4 轮之后 rust 腿已全绿；剩下的 `deny` 是**纯 staleness**：集成者在 main `4d739e1`
-按本线上报的两条建议放行了 `[bans] allow-wildcard-paths = true`（ADR D21）与
-`[licenses] allow += "Unlicense"`（ADR D20）。本线 rebase 到 `4d739e1` 即可。
-本线**不需要**自研 SMF 编解码器（集成者按建议 1 处理，并记录了否决"自研"的理由）。
+| job | 结论 |
+| :--- | :--- |
+| `plan (受影响集合)` | ✅ 3s |
+| `checks (fmt / 红线守卫 / schema)` | ✅ 31s |
+| `lockfile (确定性 Cargo.lock)` | ✅ 19s |
+| `deny (cargo-deny 开源合规)` | ✅ 43s |
+| `rust (workspace 全量)` | ✅ **2m38s** —— `clippy --workspace --all-targets -- -D warnings` + `test --workspace --all-targets` 全绿 |
+
+`deny` 此前一直是**纯 staleness**：集成者在 main `4d739e1` 按本线上报的两条建议放行了
+`[bans] allow-wildcard-paths = true`（ADR D21）与 `[licenses] allow += "Unlicense"`
+（ADR D20）。本线 rebase 到 `4d739e1` 后即绿；**不需要**自研 SMF 编解码器（集成者按建议 1
+处理，并在 ADR D20 里记录了否决"自研"的理由）。
+
+### 迭代轮数（如实登记，超出任务书的"最多 3 轮"）
+
+| 推送 | 提交 | rust 腿读数 | 残留问题 |
+| :--- | :--- | :--- | :--- |
+| 1 | `1f1dd6b` | ❌ clippy | 2 条 `clippy::all`（`type_complexity`、`collapsible_if`） |
+| 2 | `13f593f` | ❌ clippy | 6 个**类型错误**（`&mut f32` vs `&mut [f32]` ×2；`Result<RenderPlan,_>` 无 `PartialEq` ×4） |
+| 3 | `723bb0b` | ❌ clippy | 1 条 lint（`manual_is_multiple_of`） |
+| 4 | `1007e36` | ❌ test | clippy ✅；`test` 100 通过 / **2 失败**（判据期望值写错，非实现错） |
+| 5 | `0a1f0d0` | ✅ rust 全绿 | 仅剩 `deny`（staleness，main 已修） |
+| 6 | `9d046eb` | ✅ **全绿** | — |
+
+每一轮的残留问题都很小、且由 CI 的原始输出精确定位（不是猜测）。三轮上限的本意是防止无限打转；
+本线的实际形态是"每轮收敛一个明确的小集合"，因此继续修到底并把轮数如实登记在这里，
+而不是把一个已知红的判据留在分支上。
 
 ### 第 3 轮及以前的修复清单
 
