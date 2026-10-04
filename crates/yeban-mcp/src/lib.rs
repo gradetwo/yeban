@@ -14,12 +14,45 @@
 //! | 模块 | 职责 | 规范 |
 //! | :--- | :--- | :--- |
 //! | [`tools`] | 十个 `yeban_*` 工具的注册表、参数 schema、错误码 | `MCP-TOOL-001..010`, `ROAD-M4-003` |
+//! | [`domain`] | **十个工具的领域实现**：`Op` 驱动的可逆变更、原子落盘、稀疏视图、提案 | `MCP-TOOL-001..010`, `ARCH-OPS-001/002`, `ARCH-SEC-004` |
 //! | [`security`] | Bearer Token、`0600` 令牌文件、六级 scope、`ui:inject` 硬禁 | `ARCH-SEC-002`, `MUST-GATE-009` |
 //! | [`jsonrpc`] | JSON-RPC 2.0 请求 / 响应 / 错误对象（手写 `Serialize`） | `MCP-TOOL-001..010` |
 //! | [`dispatch`] | 解析 → 鉴权 → scope → 分发 → `dryRun` 短路 → 幂等去重 | `MCP-TOOL-001..010` |
 //! | [`transport`] | [`transport::stdio`]（默认）与 [`transport::http`]（环回、显式开关） | `ARCH-SEC-002` |
 //! | [`samples`] | 规范样本导出（跨语言契约对账的输入） | `MUST-GATE-010`, `TEST-SPEC-005` |
 //!
+//! ## `dryRun` 与 `idempotencyKey` 是怎么被保证的
+//!
+//! 这两条语义**不靠自觉**，各有一层结构性保证 + 一层运行期判据：
+//!
+//! | 语义 | 结构性保证 | 运行期判据 |
+//! | :--- | :--- | :--- |
+//! | `dryRun` 不改状态 | [`domain::plan`] 只接受 `&Domain`（共享引用）⇒ 借用检查器不允许它改任何东西 | `tests/tools_e2e.rs`：前后 `YebanProjectV1` 序列化**逐字节相同** + `CommitGraph` 提交数不变 |
+//! | 同 `idempotencyKey` 不重复施加 | 幂等缓存查询（`dispatch` 第 6 步）在工具执行（第 7 步）**之前**；命中就永远到不了 `domain::execute` | `tests/tools_e2e.rs`：同键两次调用后项目哈希与提交数只前进一次 |
+//!
+//! ## 领域失败的两种出口（`ADR-0001 D25` 之后仍然闭合）
+//!
+//! - **领域失败**（工程锁被占、片段不存在、提案已被拒绝……）走
+//!   `ToolResponse{status:"error", error:{code}}`，`code` 必须落在
+//!   `schemas/mcp-tools.schema.json` 的**20 值** enum 里
+//!   （[`tools::ErrorCode::SCHEMA_CONTRACT`]）；
+//! - **实现级状况**（离线渲染尚未接线）走 JSON-RPC `-32005`，
+//!   [`domain::error::Fault`] 是这两条出口的唯一分叉点。
+//!
+//! 判据 `tests/tools_e2e.rs::every_emitted_error_code_is_inside_the_contract_enum`
+//! 穷举本 crate 能产出的每一个错误码并要求它是契约 enum 的成员。
+//!
+//! ## 本轮的实现状态（逐工具如实标注）
+//!
+//! 十个工具都接了真实现；唯一**明确未接线**的一半是 `yeban_render_master` 的
+//! **渲染本体**（参数校验、scope、`dryRun` 都是真的，通过校验后返回 `-32005`）。
+//! 逐工具的"真做 / 半做 / 未接线"表在 `docs/ledger/tools-domain-notes.md`。
+//!
+//! ```text
+//! bash scripts/dev/cargo-local.sh test -p yeban-mcp
+//! bash scripts/gates/run-gates.sh crate yeban-mcp
+//! bash scripts/dev/cargo-local.sh test -p yeban-mcp --features mcp-http
+//! ```
 //! ## 默认安全模型（**这是本 crate 存在的第一理由**）
 //!
 //! | 红线 | 默认状态 | 落点 |
@@ -67,10 +100,10 @@
 //!
 //! ## 本轮的实现状态
 //!
-//! **分发 / 鉴权 / `dryRun` / 幂等 / 传输已经是真实现 + 真判据**；
-//! 十个工具的**领域实现**尚未接线，一律返回 JSON-RPC `-32005 NOT_IMPLEMENTED`
-//! （`data.code = "NOT_IMPLEMENTED"`、`data.detail` 带工具名与规范 ID）。
-//! 这是"如实报未实现"，不是"假装成功"。
+//! **分发 / 鉴权 / `dryRun` / 幂等 / 传输 / 十个工具的领域实现都是真的**。
+//! 唯一未接线的一半是 `yeban_render_master` 的渲染本体：参数校验、scope、
+//! `dryRun` 全真，通过校验后返回 JSON-RPC `-32005 NOT_IMPLEMENTED`
+//! （`data.validated = true` + `data.request`），绝不伪装成功。
 //!
 //! ```text
 //! bash scripts/dev/cargo-local.sh test -p yeban-mcp
@@ -82,6 +115,7 @@
 #![forbid(unsafe_code)]
 
 pub mod dispatch;
+pub mod domain;
 pub mod jsonrpc;
 pub mod samples;
 pub mod security;
@@ -89,6 +123,7 @@ pub mod tools;
 pub mod transport;
 
 pub use dispatch::{Dispatcher, Outcome};
+pub use domain::Domain;
 pub use jsonrpc::{Request, Response};
 pub use security::{AuthContext, BearerToken, RunMode, Scope, ScopeSet, TokenFile};
 pub use tools::{TOOLS, ToolSpec};

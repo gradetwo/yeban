@@ -7,33 +7,41 @@
 //! 2. token 鉴权             缺 token / 错 token / 形状非法 → 401 (硬拒, 不回退放开)
 //! 3. 工具解析               name 不在契约枚举 → -32004
 //! 4. scope 检查 + 生产硬禁   ui:inject 在生产模式 → 403 (且**不依赖** token 是否正确)
-//! 5. dryRun 短路            只校验 + 返回"将要做什么", 不改状态、不记幂等
+//! 5. dryRun 短路            走 domain::plan(&Domain) —— 只读, 不改状态、不记幂等
 //! 6. 幂等去重               相同 idempotencyKey → 复用首次结果 (换当前 id 回显)
-//! 7. 工具执行               本轮一律 -32005 NOT_IMPLEMENTED (诚实状态)
+//! 7. 工具执行               domain::execute(&mut Domain) —— 真实现
 //! ```
 //!
 //! 第 2 步在第 3 步之前是**刻意的**：未鉴权的调用方不该能通过错误码差异
 //! （`-32004` vs `-32001`）探测出本机注册了哪些工具。
 //!
-//! ## 为什么"尚未实现"走 JSON-RPC 错误而不是 `ToolResponse`
+//! ## 领域状态住在 [`Dispatcher`] 里
 //!
-//! `schemas/mcp-tools.schema.json` 的 `ToolResponse.error.code` 是一个**闭合**的
+//! [`Dispatcher`] 持有一个 [`crate::domain::Domain`]（活跃工程 + 提交图谱 + 提案记录）。
+//! 形态 A 的内嵌使用方通过 [`Dispatcher::domain_mut`] 注入已经打开的工程
+//! （[`crate::domain::Domain::open_in_memory`]），形态 B 的二进制走 `yeban_open_project`。
+//!
+//! ## 两种失败，两条出口
+//!
+//! `schemas/mcp-tools.schema.json` 的 `ToolResponse.error.code` 是一个**闭合**
 //! enum（ADR-0001 D25 之后是联集 20 值），**领域失败**才走 `ToolResponse`。
-//! `NOT_IMPLEMENTED` 不在那个 enum 里，而且不该在 —— 它不是领域失败，是"这条能力
-//! 还没接线"。所以本模块对**实现级**状况一律返回 JSON-RPC 错误对象 `-32005`，
+//! **实现级**状况（如渲染器尚未接线）走 JSON-RPC 错误对象 `-32005`，
 //! 绝不伪造一个契约里不存在的 `ToolResponse.error.code`
-//! （见 [`crate::tools::ErrorCode`] 的说明与 `docs/ledger/mcp-core-notes.md` §2 M10）。
+//! （见 [`crate::domain::error::Fault`] 与 `docs/ledger/mcp-core-notes.md` §2 M10）。
 //!
 //! ## 幂等去重
 //!
 //! 键是 `arguments.idempotencyKey`（空字符串按"未提供"处理 —— 契约没有给它
 //! `minLength`，把一个空串当成"必须去重"会让所有老客户端莫名其妙命中同一条缓存）。
 //! 缓存是 `BTreeMap`（红线 4 的确定性精神），因此缓存快照的顺序逐字节稳定。
+//! 幂等缓存存的是**首次执行的完整结果**，因此"同 key 不重复施加"是结构性的：
+//! 第 6 步在第 7 步之前，命中缓存就永远走不到 `domain::execute`。
 
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
+use crate::domain::{self, Domain};
 use crate::jsonrpc::{self, ErrorObject, Id, Request, Response};
 use crate::security::{
     AuthContext, BearerToken, Channel, Denial, RunMode, ScopeSet, authenticate, authorize,
@@ -110,8 +118,13 @@ impl CachedOutcome {
     }
 }
 
-/// 分发器：持有期望的 Bearer Token、授予的作用域、运行模式与幂等缓存。
-#[derive(Clone, Debug)]
+/// 分发器：持有期望的 Bearer Token、授予的作用域、运行模式、**领域会话状态**
+/// 与幂等缓存。
+///
+/// **刻意不实现 `Clone`**：领域会话（活跃工程 + 提交图谱 + 提案记录 + `.yeban.lock`
+/// RAII 守卫）一旦被克隆就是两个会各自释放锁、各自累积幂等缓存的"会话"，
+/// 那不是复制，那是分叉。需要一个干净的会话就 `Dispatcher::new`。
+#[derive(Debug)]
 pub struct Dispatcher {
     expected_token: BearerToken,
     granted: ScopeSet,
@@ -119,10 +132,11 @@ pub struct Dispatcher {
     idempotency: BTreeMap<String, CachedOutcome>,
     handled: u64,
     replayed: u64,
+    domain: Domain,
 }
 
 impl Dispatcher {
-    /// 构造。
+    /// 构造（领域会话为空：没有活跃工程）。
     #[must_use]
     pub fn new(expected_token: BearerToken, granted: ScopeSet, mode: RunMode) -> Self {
         Self {
@@ -132,7 +146,20 @@ impl Dispatcher {
             idempotency: BTreeMap::new(),
             handled: 0,
             replayed: 0,
+            domain: Domain::new(),
         }
+    }
+
+    /// 领域会话状态（只读）。
+    #[must_use]
+    pub const fn domain(&self) -> &Domain {
+        &self.domain
+    }
+
+    /// 领域会话状态（可变）：形态 A 的内嵌使用方用它注入已打开的工程 /
+    /// 注入时钟（`Domain::open_in_memory`、`Domain::set_now_ms`）。
+    pub const fn domain_mut(&mut self) -> &mut Domain {
+        &mut self.domain
     }
 
     /// 期望的令牌。
@@ -295,11 +322,17 @@ impl Dispatcher {
         if let Err(denial) = authorize(&self.expected_token, context, call.tool.scope) {
             return denied(&denial);
         }
-        // 5. dryRun 短路: 不执行、不记幂等。
+        // 5. dryRun 短路: 只读规划, 不执行、不记幂等。
+        //
+        // `domain::preview` 拿到的是 `&Domain`（共享引用）—— "dryRun 不改状态"
+        // 因此是借用检查器保证的, 不靠自觉。运行期判据在 `tests/tools_e2e.rs`。
         if call.is_dry_run() {
-            return (200, Ok(dry_run_result(&call)));
+            return match dry_run_result(&self.domain, &call) {
+                Ok(result) => (200, Ok(result)),
+                Err(error) => (http_status_for(&error), Err(error)),
+            };
         }
-        // 6. 幂等去重。
+        // 6. 幂等去重: 命中缓存 ⇒ 永远走不到第 7 步 (因此不会重复施加副作用)。
         if let Some(key) = call.idempotency_key()
             && let Some(cached) = self.idempotency.get(key)
         {
@@ -307,8 +340,8 @@ impl Dispatcher {
             let id = request.response_id();
             return (cached.http_status, Ok(replay_value(cached, id)));
         }
-        // 7. 执行。
-        let payload = execute(&call);
+        // 7. 执行: 真的做事 (打开/保存/查询/提案/合并/渲染参数校验)。
+        let payload = domain::execute(&mut self.domain, &call);
         let status = match &payload {
             Ok(_) => 200,
             Err(error) => http_status_for(error),
@@ -340,7 +373,24 @@ fn replay_value(cached: &CachedOutcome, id: Id) -> Value {
 }
 
 /// `dryRun` 的结果：`ToolResponse` 形状（`status: success`），`data` 说明"将要做什么"。
-fn dry_run_result(call: &ToolCall) -> Value {
+///
+/// 信封里的 `dryRun` / `tool` / `specId` / `sideEffect` / `wouldChangeState` /
+/// `requiredScope` / `arguments` 全部从**注册表**派生（唯一事实源 = [`crate::tools::TOOLS`]）；
+/// 真正的差异预览来自 [`crate::domain::preview`]（只读计算，改不了状态）。
+///
+/// 领域合法性不通过时返回**带内的** `ToolResponse{status:"error"}` ——
+/// "只做参数与领域合法性校验"是 `dryRun` 的规范定义
+/// （[`crate::tools::COMMON_PARAMS`] 里 `dryRun` 的 `doc`），
+/// 因此"没有活跃工程"这类领域失败必须如实报出来，而不是伪造一个成功预览。
+///
+/// # Errors
+///
+/// 只有实现级状况（`Fault::Impl`）才返回 `Err`。
+fn dry_run_result(domain: &Domain, call: &ToolCall) -> Result<Value, ErrorObject> {
+    let preview = match domain::preview(domain, call) {
+        Ok(preview) => preview,
+        Err(fault) => return fault.into_result(),
+    };
     let mut data = Map::new();
     data.insert(DRY_RUN_FLAG.to_owned(), Value::from(true));
     data.insert("tool".to_owned(), Value::from(call.tool.name));
@@ -361,20 +411,9 @@ fn dry_run_result(call: &ToolCall) -> Value {
         "arguments".to_owned(),
         Value::Object(call.domain_arguments()),
     );
-    crate::tools::ToolResponse::success(Value::Object(data)).to_value()
-}
-
-/// 工具的真实执行。
-///
-/// **本轮的诚实状态**：分发 / 鉴权 / `dryRun` / 幂等已经是真实现 + 真判据；
-/// 十个工具的领域实现尚未接线，因此一律返回 `-32005 NOT_IMPLEMENTED`，
-/// 并且把工具名与规范 ID 放进错误对象的 `data` 里（可机械对账，见
-/// `docs/ledger/mcp-core-notes.md` §4 的 pending 清单）。
-fn execute(call: &ToolCall) -> Result<Value, ErrorObject> {
-    Err(ErrorObject::not_implemented(
-        call.tool.name,
-        call.tool.spec_id,
-    ))
+    data.insert("stateUnchanged".to_owned(), Value::from(true));
+    data.insert("preview".to_owned(), preview);
+    Ok(crate::tools::ToolResponse::success(Value::Object(data)).to_value())
 }
 
 /// 把拒绝理由变成"状态码 + JSON-RPC 错误对象"。
@@ -430,6 +469,32 @@ mod tests {
 
     fn bearer(dispatcher: &Dispatcher) -> String {
         format!("Bearer {}", dispatcher.expected_token().expose())
+    }
+
+    /// 一个**保证不存在**的工程路径（父目录也不建）—— 用来把"真落盘"变成
+    /// 一个确定性的 `IO_ERROR`，而不是依赖 `/tmp` 是否可写。
+    fn unique_project_path() -> std::path::PathBuf {
+        use std::sync::OnceLock;
+        static PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            std::env::temp_dir()
+                .join(format!(
+                    "yeban-mcp-dispatch-{}-{}",
+                    std::process::id(),
+                    crate::security::BearerToken::generate().token.expose()
+                ))
+                .join("demo.yeban")
+        })
+        .clone()
+    }
+
+    /// 往分发器里注入一份确定性的规范工程（不碰文件系统）。
+    fn seed_project(dispatcher: &mut Dispatcher, path: std::path::PathBuf) {
+        dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+        dispatcher
+            .domain_mut()
+            .open_in_memory(path, yeban_model::samples::filled_project(), false)
+            .expect("注入规范工程");
     }
 
     #[test]
@@ -550,8 +615,13 @@ mod tests {
             Some(&auth),
             &call("yeban_save_project", serde_json::json!({})),
         );
-        // 有权限 ⇒ 走到执行 (尚未实现)。
-        assert_eq!(save.error_code(), Some(jsonrpc::NOT_IMPLEMENTED));
+        // 有权限 ⇒ 真的走到领域实现。没有活跃工程 ⇒ **带内** ToolResponse 领域失败
+        // （不是 JSON-RPC 错误：契约要求领域失败走 `ToolResponse.error.code`）。
+        assert_eq!(save.http_status, 200);
+        assert_eq!(save.error_code(), None, "领域失败不得伪装成 JSON-RPC 错误");
+        let result = save.response.expect("响应").result.expect("result");
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["error"]["code"], "NO_ACTIVE_PROJECT");
 
         let query = dispatcher.handle_line(
             Channel::Http,
@@ -564,6 +634,7 @@ mod tests {
     #[test]
     fn dry_run_short_circuits_without_recording_idempotency() {
         let mut dispatcher = dispatcher();
+        seed_project(&mut dispatcher, unique_project_path());
         let auth = bearer(&dispatcher);
         let outcome = dispatcher.handle_line(
             Channel::Http,
@@ -581,6 +652,9 @@ mod tests {
         assert_eq!(result["data"]["specId"], "MCP-TOOL-002");
         assert_eq!(result["data"]["wouldChangeState"], true);
         assert_eq!(result["data"]["sideEffect"], "disk");
+        assert_eq!(result["data"]["stateUnchanged"], true);
+        assert_eq!(result["data"]["preview"]["atomic"], true);
+        assert_eq!(result["data"]["preview"]["wouldSkip"], false, "force=true");
         // 领域实参保留, 公共参数被剥掉。
         assert_eq!(result["data"]["arguments"]["force"], true);
         assert!(result["data"]["arguments"].get("dryRun").is_none());
@@ -590,6 +664,8 @@ mod tests {
         assert_eq!(dispatcher.replayed(), 0);
 
         // 同键的真调用必须真的执行 (不被 dryRun 的缓存顶掉)。
+        // 目标父目录不存在 ⇒ 领域失败 IO_ERROR —— 这条路径只有真的走到
+        // `domain::execute` 才可能产生。
         let real = dispatcher.handle_line(
             Channel::Http,
             Some(&auth),
@@ -598,14 +674,42 @@ mod tests {
                 serde_json::json!({"force": true, "idempotencyKey": "k-dry"}),
             ),
         );
-        assert_eq!(real.error_code(), Some(jsonrpc::NOT_IMPLEMENTED));
+        assert_eq!(real.error_code(), None);
+        let result = real.response.expect("响应").result.expect("result");
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["error"]["code"], "IO_ERROR");
         assert_eq!(dispatcher.idempotency_len(), 1);
+    }
+
+    #[test]
+    fn dry_run_reports_domain_failures_in_band_instead_of_faking_success() {
+        // 没有活跃工程时, `save_project` 的 dryRun 必须如实报 NO_ACTIVE_PROJECT ——
+        // 规范对 dryRun 的定义是"只做参数与领域合法性校验"。
+        let mut dispatcher = dispatcher();
+        let auth = bearer(&dispatcher);
+        let outcome = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &call(
+                "yeban_save_project",
+                serde_json::json!({"dryRun": true, "idempotencyKey": "k"}),
+            ),
+        );
+        assert_eq!(outcome.http_status, 200);
+        assert_eq!(outcome.error_code(), None);
+        let result = outcome.response.expect("响应").result.expect("result");
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["error"]["code"], "NO_ACTIVE_PROJECT");
+        assert_eq!(dispatcher.idempotency_len(), 0, "dryRun 仍然不写缓存");
     }
 
     #[test]
     fn read_only_tool_dry_run_says_state_is_unchanged() {
         let mut dispatcher = dispatcher();
+        seed_project(&mut dispatcher, unique_project_path());
         let auth = bearer(&dispatcher);
+        let commits_before = dispatcher.domain().commit_count();
+        let digest_before = dispatcher.domain().project_digest();
         let outcome = dispatcher.handle_line(
             Channel::Http,
             Some(&auth),
@@ -617,11 +721,17 @@ mod tests {
         let result = outcome.response.expect("响应").result.expect("result");
         assert_eq!(result["data"]["wouldChangeState"], false);
         assert_eq!(result["data"]["sideEffect"], "read-only");
+        assert_eq!(result["data"]["stateUnchanged"], true);
+        assert!(result["data"]["preview"]["result"]["project"].is_object());
+        // 只读工具: dryRun 之后状态必须**逐项**不变。
+        assert_eq!(dispatcher.domain().commit_count(), commits_before);
+        assert_eq!(dispatcher.domain().project_digest(), digest_before);
     }
 
     #[test]
     fn idempotency_replays_the_same_result_with_the_current_id() {
         let mut dispatcher = dispatcher();
+        seed_project(&mut dispatcher, unique_project_path());
         let auth = bearer(&dispatcher);
         let first_line = serde_json::json!({
             "jsonrpc": "2.0", "id": "first", "method": "tools/call",
@@ -630,6 +740,7 @@ mod tests {
         })
         .to_string();
         let first = dispatcher.handle_line(Channel::Http, Some(&auth), &first_line);
+        // 参数校验已通过 ⇒ 这一半未接线 ⇒ 实现级 -32005（绝不是伪装的 ToolResponse）。
         assert_eq!(first.error_code(), Some(jsonrpc::NOT_IMPLEMENTED));
         assert_eq!(dispatcher.idempotency_len(), 1);
         assert_eq!(dispatcher.idempotency_keys(), vec!["k1"]);
@@ -699,7 +810,10 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_tools_report_the_spec_id_and_are_not_faked() {
+    fn all_ten_tools_reach_the_domain_and_no_blanket_not_implemented_remains() {
+        // 本轮之前: 十个工具一律 -32005。现在: 每一个都进**领域实现**,
+        // 结果要么是带内 ToolResponse（成功或领域失败）, 要么是 -32005 那条
+        // **参数校验已通过**的渲染器（唯一未接线的一半）。
         let mut dispatcher = dispatcher();
         let auth = bearer(&dispatcher);
         for spec in &crate::tools::TOOLS {
@@ -711,22 +825,58 @@ mod tests {
             let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
             assert_eq!(
                 outcome.error_code(),
-                Some(jsonrpc::NOT_IMPLEMENTED),
-                "{} 的领域实现尚未接线, 不得假装成功",
+                None,
+                "{} 不得再返回 JSON-RPC 层错误 (领域失败走 ToolResponse)",
                 spec.name
             );
-            assert_eq!(outcome.http_status, 501);
-            let error = outcome.response.expect("响应").error.expect("错误");
-            let data = error.data.expect("data");
-            assert_eq!(data["code"], "NOT_IMPLEMENTED");
-            assert_eq!(
-                data["detail"],
-                format!(
-                    "`{}` ({}) 的真实领域实现待 MCP-TOOL 能力切片接线",
-                    spec.name, spec.spec_id
-                )
+            let result = outcome
+                .response
+                .clone()
+                .expect("响应")
+                .result
+                .expect("必须是 result 而不是 JSON-RPC error");
+            assert!(
+                matches!(result["status"].as_str(), Some("success" | "error")),
+                "{} 必须产出契约形状的 ToolResponse: {result}",
+                spec.name
             );
+            // 领域失败时错误码必须落在契约 enum 内。
+            if let Some(error) = result.get("error") {
+                let code = error["code"].as_str().unwrap_or_default();
+                assert!(
+                    crate::tools::ErrorCode::SCHEMA_CONTRACT
+                        .iter()
+                        .any(|known| known.as_str() == code),
+                    "{} 的错误码必须落在契约 enum 里: {error}",
+                    spec.name
+                );
+            }
         }
+    }
+
+    #[test]
+    fn the_only_implementation_level_code_left_is_the_unwired_renderer() {
+        let mut dispatcher = dispatcher();
+        seed_project(&mut dispatcher, unique_project_path());
+        let auth = bearer(&dispatcher);
+        // 好参数 + 有工程 ⇒ 参数校验通过 ⇒ 实现级 -32005, 且 `data` 带规范 ID。
+        let outcome = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &call(
+                "yeban_render_master",
+                serde_json::json!({"format": "wav", "sampleRate": 48000}),
+            ),
+        );
+        assert_eq!(outcome.http_status, 501);
+        assert_eq!(outcome.error_code(), Some(jsonrpc::NOT_IMPLEMENTED));
+        let error = outcome.response.expect("响应").error.expect("错误");
+        let data = error.data.expect("data");
+        assert_eq!(data["code"], "NOT_IMPLEMENTED");
+        assert_eq!(data["tool"], "yeban_render_master");
+        assert_eq!(data["specId"], "MCP-TOOL-008");
+        assert_eq!(data["validated"], true);
+        assert_eq!(data["request"]["wired"], false);
     }
 
     /// 为每个工具造一份最小合法实参（只为走到执行分支）。
@@ -850,7 +1000,12 @@ mod tests {
             None,
             &call("yeban_query_project", serde_json::json!({})),
         );
-        assert_eq!(outcome.error_code(), Some(jsonrpc::NOT_IMPLEMENTED));
+        // 无头 stdio 通道不带 Authorization 头也走到领域实现；
+        // 没有活跃工程 ⇒ 带内 NO_ACTIVE_PROJECT（不是 401、不是 -32005）。
+        assert_eq!(outcome.http_status, 200);
+        assert_eq!(outcome.error_code(), None);
+        let result = outcome.response.expect("响应").result.expect("result");
+        assert_eq!(result["error"]["code"], "NO_ACTIVE_PROJECT");
     }
 
     #[test]

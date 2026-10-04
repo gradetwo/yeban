@@ -29,6 +29,14 @@ mcp-http = []
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# 领域实现的**执行引擎**: `Op`(23 变体 + 自包含逆操作)、`CommitGraph`、
+# `YebanProjectV1::validate()`、`AssetHash::of_bytes`(SHA-256 摘要)。
+# 十个 Intent 工具不复制一份数据模型, 也不自己写第二套逆操作
+# (见 src/domain/mod.rs 的"逆操作的唯一来源"一节)。
+#
+# 依赖方向: yeban-mcp -> yeban-model。yeban-model 是纯数据模型 (零 GUI、零系统库),
+# 因此本 crate 的"本机可编译"属性没有被削弱。
+yeban-model.workspace = true
 
 [lints]
 workspace = true

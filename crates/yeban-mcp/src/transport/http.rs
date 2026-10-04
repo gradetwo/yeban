@@ -691,6 +691,21 @@ mod tests {
         HttpServer::bind_loopback(dispatcher(RunMode::Production)).expect("绑定环回")
     }
 
+    /// 一个**注入了工程**的环回服务（渲染器那半未接线时才可能拿到 501）。
+    fn loopback_server_with_project() -> HttpServer {
+        let mut dispatcher = dispatcher(RunMode::Production);
+        dispatcher.domain_mut().set_now_ms(0);
+        dispatcher
+            .domain_mut()
+            .open_in_memory(
+                std::path::PathBuf::from("/tmp/yeban-http-tests/demo.yeban"),
+                yeban_model::samples::filled_project(),
+                false,
+            )
+            .expect("注入规范工程");
+        HttpServer::bind_loopback(dispatcher).expect("绑定环回")
+    }
+
     /// 组装一个请求报文。
     fn request(authorization: Option<&str>, body: &str) -> String {
         let mut head = format!(
@@ -948,8 +963,19 @@ mod tests {
     }
 
     #[test]
-    fn not_implemented_tools_map_to_501() {
-        let server = loopback_server();
+    fn unwired_renderer_maps_to_501_only_after_parameter_validation() {
+        let server = loopback_server_with_project();
+        // 坏参数 ⇒ **带内**领域失败 (200), 校验先于未接线。
+        let bad = server.handle_text(&request(
+            Some(&bearer(&server)),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_render_master","arguments":{"format":"mp3","sampleRate":48000}}}"#,
+        ));
+        assert_eq!(bad.status, 200);
+        let value: Value = serde_json::from_str(&bad.body).expect("JSON");
+        assert!(value.get("error").is_none(), "领域失败必须带内传递");
+        assert_eq!(value["result"]["error"]["code"], "INVALID_PARAMETER_RANGE");
+
+        // 好参数 ⇒ 参数校验通过 ⇒ 实现级 -32005 ⇒ HTTP 501。
         let response = server.handle_text(&request(
             Some(&bearer(&server)),
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_render_master","arguments":{"format":"wav","sampleRate":48000}}}"#,
@@ -957,6 +983,7 @@ mod tests {
         assert_eq!(response.status, 501);
         let value: Value = serde_json::from_str(&response.body).expect("JSON");
         assert_eq!(value["error"]["code"], crate::jsonrpc::NOT_IMPLEMENTED);
+        assert_eq!(value["error"]["data"]["validated"], true);
     }
 
     #[test]
