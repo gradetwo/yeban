@@ -30,10 +30,15 @@ on:
         description: "all-features 档位下的单个 crate (留空 = 整个工作区)"
         type: string
         default: ""
+      fuzz_runs:
+        description: 'fuzz 档位的执行次数上限 (MUST-GATE-011 的"千万次"数的是**执行次数**, 不是秒数)'
+        required: false
+        type: string
+        default: "10000000"
       fuzz_seconds:
-        description: 'fuzz 档位的单目标最长运行秒数 (MUST-GATE-011 要求"千万次变异", 60s 只是冒烟)'
+        description: 'fuzz 档位的单目标最长运行秒数 (作为 fuzz_runs 的**安全上限**; 60s 只是冒烟)'
         type: number
-        default: 60
+        default: 7200
 
 concurrency:
   group: gates-manual-${{ github.ref }}
@@ -196,10 +201,14 @@ jobs:
   # 模糊测试 (MUST-GATE-011): 独立 fuzz workspace, 需要 nightly + cargo-fuzz
   # ---------------------------------------------------------------------------
   fuzz:
-    name: fuzz (cargo-fuzz, ${{ inputs.fuzz_seconds }}s)
+    name: fuzz (cargo-fuzz, ${{ inputs.fuzz_runs }} 次执行 / 上限 ${{ inputs.fuzz_seconds }}s)
     if: inputs.gate == 'fuzz'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 为什么是 180 而不是 90: 实测稳态速率随语料增长而下降
+    # (90s 那轮 10 415 exec/s → 1000s 那轮 3 519 → 3300s 那轮 2 126),
+    # 按 ~2 000 exec/s 估, 一千万次约需 85 分钟 —— 90 分钟会**卡在边界上**,
+    # 于是"跑没跑完"变成运气。留足余量, 让判决只取决于执行次数。
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: 安装 nightly 与 cargo-fuzz
@@ -212,7 +221,12 @@ jobs:
         run: |
           set -euo pipefail
           # cargo-fuzz 是独立 workspace (自带 [workspace]), 因此这里有它自己的 target/。
-          cargo +nightly fuzz run sfz_parse -- -max_total_time=${{ inputs.fuzz_seconds }} -print_final_stats=1
+          # `-runs=N` 才是规范说的"千万次变异"的直接映射: libFuzzer 跑满 N 次执行后停下并打印统计。
+          # `-max_total_time` 仍然给, 但只是**安全上限**(卡住/异常慢时不至于占满 runner)。
+          cargo +nightly fuzz run sfz_parse -- \
+            -runs=${{ inputs.fuzz_runs }} \
+            -max_total_time=${{ inputs.fuzz_seconds }} \
+            -print_final_stats=1
       - name: 失败时保留语料 (崩溃样本是最有价值的产物)
         if: failure()
         uses: actions/upload-artifact@v4
