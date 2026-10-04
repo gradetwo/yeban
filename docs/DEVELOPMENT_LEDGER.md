@@ -698,3 +698,17 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **规则**：枚举 → 契约/协议 的映射表**必须穷举、禁止 `_`**。扩容时的编译错误是**设计好的**提醒，
   不是需要绕过的障碍。新增变体时要顺手在映射里写清"为什么归到这一类"。
 
+### L20 — "本地能跑"会对**目标 job 的供给**视而不见（一次真实的 CI 红）
+
+- **经过**：`line/ui-mcp` 请求我在 `ci.yml` 的跨语言对账步骤加一行
+  `cargo run -p yeban-ui-mcp --example export_ui_samples`。我在**本机**原样复现了三段导出 + 对账（exit=0）后加上，
+  结果 `checks` 跳红：`failed to run custom build command for yeslogic-fontconfig-sys`。
+- **原因**：`yeban-ui-mcp` 经 `yeban-ui-test-port` 依赖 **Slint**，而 `checks` 是**刻意最轻的一跳**（不装系统库）。
+  本机与装了系统库的 runner 都能过 ⇒ **"本地能跑"完全掩盖了这个约束**。
+- **规则**：往某个 job 加步骤之前，先问"**这个 job 装了什么**"，而不是"我这儿能不能跑"。
+  判断依据是**该 job 的 steps**（有没有 apt/系统库/工具链），不是本地环境。这与 L12/L18 同族：
+  **环境差异会把"通过"变成只在某个环境里的通过。**
+- **处置**：撤回那一行，并在原位写下完整理由（含 run id），避免后人再次"顺手加回来"。
+  该样本的同一份对账已由 `crates/yeban-ui-mcp/tests/contract.rs` 在 crate 内执行；
+  若将来确实需要 Python 侧独立确认，应把它放在**装了系统库的 workspace 腿**上，而不是 `checks`。
+
