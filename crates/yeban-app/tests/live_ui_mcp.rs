@@ -566,7 +566,6 @@ fn mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
 #[test]
 fn mixer_meter_labels_match_the_injected_frames() {
     let project = demo_project();
-    let view = ViewState::from_project(&project).expect("投影");
     let ids = track_ids(&project);
     assert!(ids.len() >= 3, "演示工程至少 3 条非主总线轨道");
 
