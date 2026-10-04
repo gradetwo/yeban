@@ -96,7 +96,7 @@ pub use png::{PngError, REPO_MAX_FILE_BYTES, encode_rgb8, encode_rgb8_limited, e
 pub use port::{KeyCode, Operation, Permission, PointerButton, PortError, UiTestPort, authorize};
 pub use render::{
     GoldenEvidence, LivePort, RenderError, Tier1Window, artifact_dir, compare_with_dynamic_masking,
-    golden_evidence, report_capability, report_evidence, write_artifact,
+    golden_evidence, report_capability, report_evidence, report_line, write_artifact,
 };
 // 注意：**不**把 `ssim::ssim` 函数提升到 crate 根 —— 那会让根作用域同时出现模块 `ssim`
 // 与函数 `ssim`（虽然分属类型/值两个命名空间，可以编译，但对读者是纯粹的困惑）。

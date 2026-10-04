@@ -63,6 +63,29 @@ yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
 ui-test-port = ["dep:yeban-ui-test-port"]
 
+# ---------------------------------------------------------------------------
+# dev-dependencies: 让真实界面的 Tier-1 判据**真的被执行**
+# ---------------------------------------------------------------------------
+# 为什么需要这一条 (实测, 不是偏好):
+#   1. `src/test_port_adapter.rs` 同时是 `[[test]] test_port_adapter` 的源码, 而那个目标
+#      挂在 `required-features = ["ui-test-port"]` 后面 —— 该 feature 默认关闭,
+#      且 CI 目前没有任何一步启用它 (集成者按纪律暂时移除了那一步);
+#   2. 后果: 那条判据**从未被编译过**。commit 66b002c / run 37223586792 的实测是
+#      `cargo test -p yeban-app --features ui-test-port` 直接编译失败 (8 处错误);
+#   3. 于是新增 `tests/real_ui_tier1.rs`: 一个**自动发现**的集成测试目标,
+#      `cargo test -p yeban-app --all-targets` 一定会跑它。它用 `#[path]` 引入同一份判据源码,
+#      依赖只可能来自这里。
+#
+# 为什么不违反"内省能力不进默认构建" (AGENTS.md §2 红线 6 的精神):
+#   dev-dependencies **只**参与 test/example/bench 目标的构建, 不参与 `cargo build`
+#   (含 `--release`)。核验命令 (零编译):
+#       cargo tree -p yeban-app -e normal --locked     # 不应出现 yeban-ui-test-port
+#
+# 与上面那个 optional 依赖的关系: 同一个包在两个 dep 段里各出现一次是 Cargo 支持的写法
+# (feature 仍能把它拉进 lib/bin 的构建图; 这里只是让测试目标无论如何都拿得到它)。
+[dev-dependencies]
+yeban-ui-test-port = { path = "../yeban-ui-test-port" }
+
 # 无头控件树断言 + Tier-1 截图比对。**不放进 default**:
 # 一个 `[[test]]` 目标 (src/test_port_adapter.rs) 通过 `required-features` 挂在它后面。
 [[test]]

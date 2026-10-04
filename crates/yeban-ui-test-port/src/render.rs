@@ -318,7 +318,7 @@ pub fn golden_evidence(image: &Rgb8Image) -> Result<GoldenEvidence, RenderError>
     })
 }
 
-/// 把一行证据写进**进程级 stderr**（绕过 `cargo test` 对 `eprintln!` 的捕获）。
+/// 把一行诊断写进**进程级 stderr**（绕过 `cargo test` 对 `eprintln!` 的捕获）。
 ///
 /// 为什么需要它：libtest 默认捕获 `print!`/`eprintln!` 的**宏**输出，**通过的测试什么都不打印**。
 /// 于是一份"尺寸非零 / 非全黑"的实测数字就只存在于无人能看到的缓冲区里 —— 那等于没有证据
@@ -326,8 +326,10 @@ pub fn golden_evidence(image: &Rgb8Image) -> Result<GoldenEvidence, RenderError>
 /// 这里除了 `eprintln!` 之外，再往 `/dev/stderr` 写一份：Linux 上它指向进程 fd 2，
 /// **不经过** std 的输出捕获，因此会直接进入 CI 日志。
 /// 其它平台（如 Windows 没有 `/dev/stderr`）退化成只走 `eprintln!`，不报错、不影响判据。
-pub fn report_evidence(evidence: &GoldenEvidence) {
-    let line = evidence.summary();
+///
+/// 它是 [`report_evidence`] / [`report_capability`] 的**唯一出口**：这两条只是加上各自的
+/// 前缀/格式，因此"数字在通过的测试里也看得见"这件事只有一处实现。
+pub fn report_line(line: &str) {
     eprintln!("{line}");
     if let Ok(mut fd) = std::fs::File::create("/dev/stderr") {
         use std::io::Write as _;
@@ -336,18 +338,17 @@ pub fn report_evidence(evidence: &GoldenEvidence) {
     }
 }
 
+/// 把一行证据写进进程级 stderr（理由见 [`report_line`]）。
+pub fn report_evidence(evidence: &GoldenEvidence) {
+    report_line(&evidence.summary());
+}
+
 /// 把一条"能力不可用"的诊断写进进程级 stderr（同 [`report_evidence`] 的理由）。
 ///
 /// 机器可读前缀 `RUNTIME-TREE-CAPABILITY:` 让 CI 日志可以被 grep 出来，
 /// 而不是靠人读散文。
 pub fn report_capability(detail: &str) {
-    let line = format!("RUNTIME-TREE-CAPABILITY: {detail}");
-    eprintln!("{line}");
-    if let Ok(mut fd) = std::fs::File::create("/dev/stderr") {
-        use std::io::Write as _;
-        let _ = fd.write_all(line.as_bytes());
-        let _ = fd.write_all(b"\n");
-    }
+    report_line(&format!("RUNTIME-TREE-CAPABILITY: {detail}"));
 }
 
 /// FNV-1a 64 位指纹（零依赖、逐位确定）。用于给 Golden 一个稳定的短标识，**不是**安全摘要。
