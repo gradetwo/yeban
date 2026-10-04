@@ -23,6 +23,7 @@ on:
           - all-features
           - bench
           - fuzz
+          - arm
           - windows
           - determinism
           - pending
@@ -60,37 +61,32 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: 渲染门禁清单
+      - name: 渲染门禁清单（自动取自唯一事实源）
         run: |
           set -euo pipefail
-          cat >> "$GITHUB_STEP_SUMMARY" <<'TABLE'
-          ### 门禁清单 (MUST-GATE 体系)
-
-          | 门禁 | 内容 | 状态 | 运行位置 |
-          | :--- | :--- | :--- | :--- |
-          | MUST-GATE-004 | `cargo deny check` 开源合规 | 已接线 | ci.yml (每次推送) |
-          | MUST-GATE-005 (前半) | 确定性 Cargo.lock + `--locked` 解析 | 已接线 | ci.yml (每次推送) |
-          | AGENTS.md DoD 1 | fmt + clippy --all-targets -D warnings | 已接线 | ci.yml (受影响 crate 矩阵) |
-          | AGENTS.md DoD 2 | 单元/属性测试 | 已接线 | ci.yml (受影响 crate 矩阵) |
-          | 红线守卫 G01–G11 | HashMap/GUI 依赖/0.0.0.0/大文件/ASIO/通配版本 | 已接线 | ci.yml `checks` |
-          | Schema 契约 | schemas/*.json 合法性 + 样本对账 | 已接线 | ci.yml `checks` |
-          | MUST-GATE-001/012 | 实时回调零分配 (分配 Hook) | PENDING | 需 `yeban-engine` 实现后接线 |
-          | MUST-GATE-002 | L1 bit-exact WAV SHA-256 | PENDING | 需 `yeban-render` + 锁定 ISA |
-          | MUST-GATE-003 | L2 跨架构 < 1e-6 对账 | PENDING | 需 x86_64 + AArch64 双 runner |
-          | MUST-GATE-006/007 | Zip-Slip 与解压炸弹 | PENDING | 需 `.yeban` 容器实现 |
-          | MUST-GATE-008 | `.yeban.lock` 并发 `PROJECT_LOCKED` | PENDING | 需锁实现 |
-          | MUST-GATE-009 | MCP 默认安全 (绑定/Token/ui:inject) | PENDING | 需 `yeban-mcp` HTTP 形态 |
-          | MUST-GATE-010 | proptest 10,000 步撤销守恒 | PENDING | 需 `Op` 全变体实现 |
-          | MUST-GATE-011 | cargo-fuzz 千万次变异 | **已接线 (手动档)** | `Gates (手动)` → `gate=fuzz`；目标在 `crates/yeban-sfz/fuzz/`，**尚未真实执行过** |
-          | MUST-GATE-013 | 仓库无 ASIO SDK | 已接线 | ci.yml `checks` (守卫 G07) |
-          | MUST-GATE-014 | 323 款采样指纹对账 | PENDING | 需资产清单落地 |
-          | MUST-GATE-015 | Golden 图来自 Tier-1 软件光栅化 | PENDING | 需 `yeban-ui-test-port` |
-          | BASELINE-001..006 | 性能基准线 | PENDING | 需固定频率基准机 (M2 Pro / Ryzen 7840HS) |
-
-          **本机不跑重活**: 开发机是 Apple M2, 全量构建/基准/模糊测试一律在 CI 上执行
-          (docs/DEV_WORKFLOW.md)。基准门禁需要固定频率的参考硬件, GitHub 托管 runner
-          频率不固定, 因此 BASELINE 系列必须等自托管 runner 就位后再接线。
-          TABLE
+          {
+            echo "### 手动档门禁"
+            echo
+            echo "| 档位 | 用途 |"
+            echo "| :--- | :--- |"
+            echo "| \`inventory\` | 这份清单 + 门禁状态表自检 |"
+            echo "| \`all-features\` | 单 crate 的全 feature 组合编译与 clippy |"
+            echo "| \`bench\` | BASELINE-001 渲染吞吐 + BASELINE-004 单步撤销 p99 |"
+            echo "| \`fuzz\` | MUST-GATE-011：按**执行次数**（默认一千万次）跑 cargo-fuzz |"
+            echo "| \`windows\` | 平台分支真编译真跑（LockFileEx 等） |"
+            echo "| \`arm\` | MUST-GATE-003：x86_64 ↔ aarch64 的 L1 收据对账 |"
+            echo "| \`determinism\` | 跨次运行的确定性复跑 |"
+            echo "| \`pending\` | 剩余 PENDING 门禁的现状快照 |"
+            echo
+            # 状态表是唯一事实源: 直接生成, 不再手抄（手抄那份曾与它分叉好几轮）。
+            python3 scripts/gates/check_gate_status.py --summary
+            echo
+            echo "**本机不跑重活**: 开发机是 Apple M2，全量构建/基准/模糊测试一律在 CI 上执行"
+            echo "（\`docs/DEV_WORKFLOW.md\`）。BASELINE 系列需要固定频率的参考硬件，"
+            echo "GitHub 托管 runner 频率不固定，因此那几条必须等参考机就位后再谈达标。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # 同时自检: 状态表腐烂就红。
+          python3 scripts/gates/check_gate_status.py
 
   # ---------------------------------------------------------------------------
   # 全 feature 组合编译: 只有手动档才跑 (很慢), 但能拦住 feature 门后的编译错误
@@ -198,6 +194,109 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # MUST-GATE-003: L2 跨架构对账 (x86_64 ↔ aarch64)
+  #
+  # 为什么现在能做了: 规范要求"跨架构 < 1e-6"，此前缺的**不是硬件** —— GitHub 对公开仓库
+  # 提供 ARM runner（`ubuntu-24.04-arm`）。缺的是**可跨机比较的产物**，它由 `line/l1-digest` 交付
+  # （`export_l1_receipt` / `compare_l1_receipts`）。
+  #
+  # 判决完全由比较器的退出码给出: 0 = L1-bit-exact 或 L2-within-budget; 1 = 超预算; 2 = 收据缺失/不可比。
+  # 两种口径各跑一次: 纯 IEEE 类（应当**逐位相同**）与带增益的超越函数类（只要求落在预算内）。
+  # ---------------------------------------------------------------------------
+  arm-receipts:
+    name: arm 收据 (${{ matrix.arch }})
+    if: inputs.gate == 'arm'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具链漂移断言
+        run: |
+          set -euo pipefail
+          want="$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | head -1 | cut -d'"' -f2)"
+          got="$(rustc --version | awk '{print $2}')"
+          [ "$want" = "$got" ] || { echo "::error::工具链漂移"; exit 1; }
+          echo "arch=$(uname -m) rustc=$got"
+
+      - name: 导出 L1 收据（IEEE 精确类：期望跨架构逐位相同）
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo run --release -p yeban-render --locked --example export_l1_receipt -- \
+            --out receipt-${{ matrix.arch }}-exact.txt 2>&1 | tee /tmp/arm.log
+
+      - name: 导出 L1 收据（超越函数类：只要求落在预算内）
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo run --release -p yeban-render --locked --example export_l1_receipt -- \
+            --gain-db 3 --out receipt-${{ matrix.arch }}-gain3.txt 2>&1 | tee -a /tmp/arm.log
+
+      - name: 上传收据（证据）
+        uses: actions/upload-artifact@v4
+        with:
+          name: l1-receipts-${{ matrix.arch }}
+          path: receipt-*.txt
+          if-no-files-found: error
+
+  arm-compare:
+    name: arm 对账 (MUST-GATE-003)
+    needs: arm-receipts
+    if: inputs.gate == 'arm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取回两份收据
+        uses: actions/download-artifact@v4
+        with:
+          pattern: l1-receipts-*
+          merge-multiple: true
+          path: receipts
+
+      - name: 对账（退出码即结论）
+        run: |
+          set -euo pipefail
+          {
+            echo "### MUST-GATE-003 跨架构对账"
+            echo
+            echo '```text'
+            ls -l receipts
+            echo
+            echo "--- IEEE 精确类（期望 L1-bit-exact）---"
+            # ⚠ 不管道给 head/tail（L6）: 管道的退出码会掩盖判决。
+            cargo run --release -p yeban-render --locked --example compare_l1_receipts -- \
+              receipts/receipt-x86_64-exact.txt receipts/receipt-aarch64-exact.txt 2>&1 | tee /tmp/cmp-exact.log
+            echo
+            echo "--- 超越函数类（期望 L2-within-budget）---"
+            cargo run --release -p yeban-render --locked --example compare_l1_receipts -- \
+              receipts/receipt-x86_64-gain3.txt receipts/receipt-aarch64-gain3.txt 2>&1 | tee /tmp/cmp-gain3.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 失败摘要
+        if: failure()
+        run: |
+          {
+            echo "### arm 对账未通过"
+            echo '```text'
+            tail -60 /tmp/cmp-exact.log /tmp/cmp-gain3.log 2>/dev/null || true
+            echo '```'
+            echo "退出码 1 = 超出预算（D32: IEEE 精确类零容差 / 超越函数类 1e-6 与 4096 ulp）;"
+            echo "退出码 2 = 收据缺失或不可比。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # 模糊测试 (MUST-GATE-011): 独立 fuzz workspace, 需要 nightly + cargo-fuzz
   # ---------------------------------------------------------------------------
   fuzz:

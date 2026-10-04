@@ -25,11 +25,58 @@ MUST_GATES = [f"MUST-GATE-{index:03d}" for index in range(1, 16)]
 BASELINES = [f"BASELINE-{index:03d}" for index in range(1, 7)]
 VALID_STATUS = ("已接线", "部分", "PENDING")
 
+#: 门禁的"要求"列（`--summary` 用；由 `main` 从表里填充）。
+REQUIREMENTS: dict[str, str] = {}
+
 #: 证据列里必须出现这类可复跑的东西之一, 否则不算证据。
 EVIDENCE_HINTS = ("run ", "cargo ", "run-gates", "scripts/", "crates/", "docs/", "policy_check", "validate_schemas")
 
 
+def emit_summary(rows: dict[str, tuple[str, str]]) -> None:
+    """把表格渲染成 markdown, 供 CI 的 job summary 使用。
+
+    为什么要有这个: `gates-manual.yml` 的 `inventory` 作业原先**手抄**了一份门禁清单,
+    它与本表逐渐分叉(手抄那份到第 6 轮还在说 MUST-GATE-001/002/003… 是 PENDING,
+    而本表早已是"已接线/部分")。**同一事实出现两处, 必然有一处是错的。**
+    现在 inventory 直接调用本脚本生成, 手抄那份不再存在。
+    """
+    print("### 门禁清单（**自动取自** `docs/ledger/gate-status.md`，唯一事实源）")
+    print()
+    print("| 门禁 | 内容 | 状态 |")
+    print("| :--- | :--- | :--- |")
+    for ident, (status, _) in rows.items():
+        requirement = REQUIREMENTS.get(ident, "")
+        print(f"| `{ident}` | {requirement} | {status} |")
+    print()
+    print("> 逐条证据（可复跑的 run id / 命令）见 `docs/ledger/gate-status.md`；")
+    print("> 本表由 `scripts/gates/check_gate_status.py --summary` 生成，**不再手抄**。")
+
+
+def parse_rows(text: str) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """从状态表文本里解析出 `{编号: (状态, 证据)}` 与 `{编号: 要求}`。"""
+    rows: dict[str, tuple[str, str]] = {}
+    requirements: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        ident = cells[0].strip("`")
+        if re.fullmatch(r"(MUST-GATE|BASELINE)-[0-9]{3}", ident):
+            rows[ident] = (cells[2], cells[3])
+            requirements.setdefault(ident, cells[1][:60])
+    return rows, requirements
+
+
 def main() -> int:
+    if "--summary" in sys.argv:
+        # 供 CI 的 job summary 使用: **直接取自唯一事实源**, 不再手抄。
+        rows, requirements = parse_rows(TABLE.read_text(encoding="utf-8"))
+        REQUIREMENTS.update(requirements)
+        emit_summary(rows)
+        return 0
+
     if not TABLE.is_file():
         print(f"缺少门禁状态表: {TABLE}", file=sys.stderr)
         return 1
