@@ -33,6 +33,12 @@ device = ["dep:cpal"]
 cpal = { workspace = true, optional = true }
 rtrb.workspace = true
 thiserror.workspace = true
+# 电平口径（峰值/峰值保持/RMS/平滑 RMS/dBFS/钳位/取最新 + 4× 真峰值）的**唯一实现**。
+# 它从本 crate 的 `src/level.rs` 上移到 `yeban-dsp`（纯数学、零重依赖），engine 只做
+# `pub use` 再导出，绝不保留第二份实现 [ARCH-UI-002, ROAD-M2-008]。依赖形态写
+# `workspace = true`（继承出来是 `*` + path），由 ADR-0001 D21 的
+# `allow-wildcard-paths = true` 放行 —— 与下面的 `yeban-model` 同一条裁决。
+yeban-dsp.workspace = true
 # 路由与轨道参数的唯一权威事实源 (RoutingGraph / TrackV3 / YebanProjectV1 /
 # DeviceDefinition::latency_samples) [MODEL-AST-004, ARCH-PDC-001]。
 #

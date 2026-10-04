@@ -1,363 +1,42 @@
-//! 电平计量原语：峰值保持、RMS 一阶平滑、dBFS 换算、输入钳位与"取最新"判据。
-//! [ARCH-UI-002, ROAD-M2-008]
+//! 电平口径的**再导出**：实现已上移到 `yeban-dsp`。[ARCH-UI-002, ROAD-M2-008]
 //!
-//! ## 为什么单独一个模块
+//! ## 这一层还剩什么
 //!
-//! [ARCH-UI-002] 要求实时线程压入的是**真峰值与 RMS 电平**。真值 = 一套可复算的
-//! DSP 口径，而不是"把样本绝对值取个 max"。本模块把口径做成**零依赖纯函数/纯状态机**：
+//! **只剩 `pub use`。** 峰值、峰值保持（20 dB/s 指数释放）、块 RMS、平滑 RMS
+//! （τ = 300 ms 一阶低通）、dBFS 换算、静音下限、`NaN`/`±∞` 钳位、`supersedes`
+//! 取最新判据、以及 4× 真峰值检测器，全部住在 `yeban_dsp::meter`。
 //!
-//! - 不引用 `rtrb` / `yeban_model` / cpal，也不引用本 crate 的其它模块；
-//! - 因此可以**脱离重依赖**单独编译与运行：
-//!   `rustc --edition 2024 --test -D warnings crates/yeban-engine/src/level.rs`；
-//! - 实时路径（[`crate::rt`]）与 UI 侧（[`crate::meter`]）都只调用这里。
+//! 为什么搬：那是**纯数学**（无队列、无线程、无设备、无模型类型），属于
+//! `yeban-dsp` 的职责；上移之后混音台、母带、导出都能复用同一份口径，
+//! 而不是各自再实现一遍。engine 只保留"实时侧状态 + 发布"（[`crate::meter`] 的
+//! `MeterBank`/`MeterFrame`/SPSC 与 [`crate::rt`] 的每量子一次批量发布）。
 //!
-//! ## 口径（这就是判据要钉住的东西）
+//! ## 为什么保留这个模块而不是把路径改掉
 //!
-//! | 量 | 定义 | 单位 |
-//! | :--- | :--- | :--- |
-//! | 峰值 `peak` | 本量子内 `max abs(x)`，样本先经 [`sanitize_sample`] | 线性幅度（1.0 = 0 dBFS） |
-//! | 峰值保持 `peak_hold` | `max(peak, peak_hold × release)`，`release` = 每量子乘子 | 线性幅度 |
-//! | RMS `rms` | `sqrt(mean(x²))`，本量子独立计算（不跨量子） | 线性幅度 |
-//! | 平滑 RMS `rms_smoothed` | 对**均方**做一阶低通后开方：`ms ← c·ms + (1-c)·mean(x²)` | 线性幅度 |
-//! | dBFS | `20·log10(幅度)`；`幅度 ≤ 0` ⇒ 负无穷 | dBFS |
+//! `crate::level::*` 是引擎内部与既有判据（`src/meter.rs`、`src/rt.rs`、
+//! `tests/meter_rt_contract.rs`）的公共面。保留模块名 + 再导出，
+//! 让"搬家"对调用方**完全透明**：一行调用都不用改。
 //!
-//! **时间常数（默认值，见常量）**：峰值释放 **20 dB/s**（每秒恰好降 20 dB）；
-//! 平滑 RMS 一阶低通时间常数 **τ = 300 ms**。两者都按**每量子**折算，
-//! 折算基准为 `quanta_per_second = sample_rate / block_frames`
-//! （规范默认 48 000 / 128 = 375 Hz）。快照切换时重算一次，见 [`crate::rt`]。
+//! ## 没有第二份实现（机械可查）
 //!
-//! **为什么是 20 dB/s / 300 ms**：20 dB/s 是业界峰值表的常见回落速率
-//! （1 秒回落一个数量级，既不会"钉死"也不会闪得看不清）；300 ms 接近 VU 的
-//! 积分观感，用于 RMS 平滑。它们是**选择**而不是规范硬性数字，因此以常量 +
-//! 文档的形式公开，允许后续线按 UI 观感调整（调整必须同步改本表的判据）。
+//! - 编译期：[`tests::engine_level_is_literally_the_dsp_type`] 把 engine 路径下的类型
+//!   赋给 dsp 路径下的类型，并用 `core::ptr::fn_addr_eq` 比较函数指针地址 ——
+//!   若引擎私藏一份自己的 `LevelDetector`/`sanitize_sample`，本文件**编译不过**；
+//! - 源码期：[`tests::engine_level_module_has_no_second_implementation`] 用
+//!   `include_str!` 读出本文件自身的源码，断言其中不存在实现记号
+//!   （`struct`/`impl`/`fn` 定义），只有 `pub use`。
 //!
-//! ## 输入钳位（去爆音/防污染）
-//!
-//! 实时路径可能拿到 `NaN` / `±∞`（数值爆炸、未初始化内存读入、上游 bug）。
-//! 若原样进入电平，UI 曲线会被 `NaN` 永久污染（`NaN` 参与比较恒为假，
-//! 峰值保持会卡死在 `NaN`）。因此：
-//!
-//! - `NaN` → `0.0`（当作静音）；
-//! - `±∞` 与超过 [`MAX_LINEAR_MAGNITUDE`] 的有限值 → 钳到 `±MAX_LINEAR_MAGNITUDE`
-//!   （4× 满量程 = +24.08 dBFS）；
-//! - 结果保证是**有限**数，[`LevelReading::is_sane`] 可判。
-//!
-//! 这是**输入侧的数值卫生**，不是 [ARCH-DSP-001] 的语音偷取淡出/参数平滑
-//! ——后者属于声部合成切片，本模块不做任何 DSP 处理。
+//! 上移的逐位不变证据（285 个 `f32` 位模式）在
+//! `yeban_dsp::meter::tests::frozen_pre_hoist_table_is_reproduced_bit_for_bit` 与
+//! 本文件的 [`tests::frozen_level_table_through_the_engine_path`] 两处。
 
-/// 静音下限（dBFS）。UI 需要有限值做柱高映射时用它替代负无穷。
-pub const SILENCE_FLOOR_DBFS: f32 = -120.0;
-
-/// 线性幅度上限（4× 满量程 = +24.08 dBFS）。`NaN`/`±∞` 与越界有限值都被钳到这里。
-pub const MAX_LINEAR_MAGNITUDE: f32 = 16.0;
-
-/// 默认峰值释放速率（dB/s）：每秒回落 20 dB。
-pub const DEFAULT_PEAK_DECAY_DB_PER_SEC: f32 = 20.0;
-
-/// 默认平滑 RMS 一阶低通时间常数（秒）。
-pub const DEFAULT_RMS_TIME_CONSTANT_SEC: f32 = 0.3;
-
-/// 默认折算基准（量子/秒）：48 000 Hz ÷ 128 帧 = 375 Hz [ARCH-DET-001]。
-pub const DEFAULT_QUANTA_PER_SECOND: f32 = 375.0;
-
-/// 把单个样本钳到有限、有界的线性幅度（**不做任何分配**）。
-///
-/// `NaN` ⇒ `0.0`；`±∞` 与越界值 ⇒ `±` [`MAX_LINEAR_MAGNITUDE`]。
-#[must_use]
-pub fn sanitize_sample(sample: f32) -> f32 {
-    if sample.is_nan() {
-        0.0
-    } else if sample.is_infinite() {
-        if sample > 0.0 {
-            MAX_LINEAR_MAGNITUDE
-        } else {
-            -MAX_LINEAR_MAGNITUDE
-        }
-    } else {
-        sample.clamp(-MAX_LINEAR_MAGNITUDE, MAX_LINEAR_MAGNITUDE)
-    }
-}
-
-/// 线性幅度 → dBFS。`幅度 ≤ 0`（含 `NaN`）返回负无穷（**不是** `NaN`）。
-#[must_use]
-pub fn dbfs(amplitude: f32) -> f32 {
-    if amplitude > 0.0 {
-        20.0 * amplitude.log10()
-    } else {
-        f32::NEG_INFINITY
-    }
-}
-
-/// 线性幅度 → dBFS，并按下限钳位（UI 柱高用）。
-#[must_use]
-pub fn dbfs_clamped(amplitude: f32, floor_dbfs: f32) -> f32 {
-    let value = dbfs(amplitude);
-    if value < floor_dbfs {
-        floor_dbfs
-    } else {
-        value
-    }
-}
-
-/// "取最新"判据：候选帧的量子序号是否**不早于**已持有的值。
-///
-/// `>=` 而不是 `>`：同一量子的重复投递是幂等的，直接覆盖不会引入回退，
-/// 而 `>` 会让"同一量子内先到的帧"永远无法被修正。
-#[must_use]
-pub const fn supersedes(candidate_quantum: u64, held_quantum: u64) -> bool {
-    candidate_quantum >= held_quantum
-}
-
-/// 一个量子内的电平原语读数（线性幅度，全部有限）。
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct LevelReading {
-    /// 本量子瞬时峰值。
-    pub peak: f32,
-    /// 峰值保持（带指数释放）。
-    pub peak_hold: f32,
-    /// 本量子 RMS。
-    pub rms: f32,
-    /// 平滑 RMS（均方做一阶低通后开方）。
-    pub rms_smoothed: f32,
-}
-
-impl LevelReading {
-    /// 全静音读数（四项都是 `0.0`，**不是** `NaN`）。
-    #[must_use]
-    pub const fn silence() -> Self {
-        Self {
-            peak: 0.0,
-            peak_hold: 0.0,
-            rms: 0.0,
-            rms_smoothed: 0.0,
-        }
-    }
-
-    /// 四项是否都是有限数（`NaN`/`±∞` 一律为假）。
-    #[must_use]
-    pub fn is_sane(&self) -> bool {
-        self.peak.is_finite()
-            && self.peak_hold.is_finite()
-            && self.rms.is_finite()
-            && self.rms_smoothed.is_finite()
-    }
-
-    /// 峰值 dBFS（`peak ≤ 0` ⇒ 负无穷）。
-    #[must_use]
-    pub fn peak_dbfs(&self) -> f32 {
-        dbfs(self.peak)
-    }
-
-    /// 峰值保持 dBFS。
-    #[must_use]
-    pub fn peak_hold_dbfs(&self) -> f32 {
-        dbfs(self.peak_hold)
-    }
-
-    /// 平滑 RMS 的 dBFS。
-    #[must_use]
-    pub fn rms_dbfs(&self) -> f32 {
-        dbfs(self.rms_smoothed)
-    }
-}
-
-/// 单节点电平检测器：**有状态**的峰值保持 + 平滑 RMS（零分配、零锁、零 I/O）。
-///
-/// 状态只有一个量子深度的推进：每个量子调一次
-/// [`analyze`](Self::analyze) / [`analyze_stereo`](Self::analyze_stereo)。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LevelDetector {
-    /// 每量子峰值释放乘子（0..=1）。
-    peak_release: f32,
-    /// 每量子均方一阶低通系数（0..=1）。
-    rms_coeff: f32,
-    /// 峰值保持状态（线性）。
-    peak_hold: f32,
-    /// 平滑均方状态（线性平方域）。
-    mean_square: f32,
-}
-
-impl Default for LevelDetector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LevelDetector {
-    /// **无弹道**检测器：峰值保持只升不降，平滑 RMS 等于本量子块 RMS。
-    ///
-    /// 用途：离线分析/测试里想要"本块读数"而不想要历史；以及定长数组的 `const` 初值
-    /// （未激活槽）。它是**合法**配置，不是占位魔法：`peak_release = 1`（不释放）、
-    /// `rms_coeff = 0`（不平滑）。
-    #[must_use]
-    pub const fn silent() -> Self {
-        Self {
-            peak_release: 1.0,
-            rms_coeff: 0.0,
-            peak_hold: 0.0,
-            mean_square: 0.0,
-        }
-    }
-
-    /// 按默认口径（375 量子/s、20 dB/s、τ=300 ms）新建。
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_ballistics(
-            DEFAULT_QUANTA_PER_SECOND,
-            DEFAULT_PEAK_DECAY_DB_PER_SEC,
-            DEFAULT_RMS_TIME_CONSTANT_SEC,
-        )
-    }
-
-    /// 按显式弹道参数新建。
-    ///
-    /// - `quanta_per_second` 非法（非有限或 ≤ 0）⇒ 退回 [`DEFAULT_QUANTA_PER_SECOND`]；
-    /// - `peak_decay_db_per_second < 0` ⇒ 当作 0（不释放）；
-    /// - `rms_time_constant_seconds ≤ 0` ⇒ 当作一量子（系数 0，即不平滑）。
-    #[must_use]
-    pub fn with_ballistics(
-        quanta_per_second: f32,
-        peak_decay_db_per_second: f32,
-        rms_time_constant_seconds: f32,
-    ) -> Self {
-        let mut detector = Self {
-            peak_release: 1.0,
-            rms_coeff: 0.0,
-            peak_hold: 0.0,
-            mean_square: 0.0,
-        };
-        detector.set_ballistics(
-            quanta_per_second,
-            peak_decay_db_per_second,
-            rms_time_constant_seconds,
-        );
-        detector
-    }
-
-    /// 重设弹道系数（**保留**当前电平状态）。快照切换时调用一次。
-    ///
-    /// 内部只做 `powf`/`exp`，不分配、不加锁、不阻塞 —— 可在实时路径调用。
-    pub fn set_ballistics(
-        &mut self,
-        quanta_per_second: f32,
-        peak_decay_db_per_second: f32,
-        rms_time_constant_seconds: f32,
-    ) {
-        let qps = if quanta_per_second.is_finite() && quanta_per_second > 0.0 {
-            quanta_per_second
-        } else {
-            DEFAULT_QUANTA_PER_SECOND
-        };
-        let decay = if peak_decay_db_per_second.is_finite() {
-            peak_decay_db_per_second.max(0.0)
-        } else {
-            DEFAULT_PEAK_DECAY_DB_PER_SEC
-        };
-        let tau = if rms_time_constant_seconds.is_finite() && rms_time_constant_seconds > 0.0 {
-            rms_time_constant_seconds
-        } else {
-            1.0 / qps
-        };
-        // 1 秒后的幅度乘子 = 10^(-decay/20) ⇒ 每量子乘子取 qps 次根。
-        self.peak_release = 10f32.powf(-decay / 20.0 / qps).clamp(0.0, 1.0);
-        // 一阶低通：y ← c·y + (1-c)·x，c = exp(-1/(τ·qps))。
-        self.rms_coeff = (-1.0 / (tau * qps)).exp().clamp(0.0, 1.0);
-    }
-
-    /// 按 `sample_rate / block_frames` 重设弹道（沿用默认 dB/s 与 τ）。
-    pub fn set_quanta_per_second(&mut self, quanta_per_second: f32) {
-        self.set_ballistics(
-            quanta_per_second,
-            DEFAULT_PEAK_DECAY_DB_PER_SEC,
-            DEFAULT_RMS_TIME_CONSTANT_SEC,
-        );
-    }
-
-    /// 清空电平状态（系数保留）。
-    pub fn reset(&mut self) {
-        self.peak_hold = 0.0;
-        self.mean_square = 0.0;
-    }
-
-    /// 当前峰值保持（线性）。
-    #[must_use]
-    pub const fn peak_hold(&self) -> f32 {
-        self.peak_hold
-    }
-
-    /// 当前平滑均方（线性平方域）。
-    #[must_use]
-    pub const fn mean_square(&self) -> f32 {
-        self.mean_square
-    }
-
-    /// 分析一个**单声道**量子。
-    ///
-    /// 空切片等价于静音块：峰值 0、RMS 0，但峰值保持与平滑 RMS 仍在衰减
-    /// （这正是"没有信号时表针要落下来"的语义）。
-    pub fn analyze(&mut self, samples: &[f32]) -> LevelReading {
-        let mut peak = 0.0f32;
-        let mut sum_squares = 0.0f64;
-        for &raw in samples {
-            let sample = sanitize_sample(raw);
-            let magnitude = sample.abs();
-            if magnitude > peak {
-                peak = magnitude;
-            }
-            sum_squares += f64::from(sample) * f64::from(sample);
-        }
-        let mean_square = mean_of_squares(sum_squares, samples.len());
-        self.commit(peak, mean_square)
-    }
-
-    /// 分析一个**立体声联动**量子：峰值取两声道最大绝对值，
-    /// 均方按两声道平均（每声道各计一次分母）。
-    ///
-    /// 长度不等时按较短者工作（实时尾块可能出现），**不 panic**。
-    pub fn analyze_stereo(&mut self, left: &[f32], right: &[f32]) -> LevelReading {
-        let frames = left.len().min(right.len());
-        let mut peak = 0.0f32;
-        let mut sum_squares = 0.0f64;
-        for index in 0..frames {
-            let l = sanitize_sample(left[index]);
-            let r = sanitize_sample(right[index]);
-            let magnitude = l.abs().max(r.abs());
-            if magnitude > peak {
-                peak = magnitude;
-            }
-            sum_squares += f64::from(l) * f64::from(l) + f64::from(r) * f64::from(r);
-        }
-        let mean_square = mean_of_squares(sum_squares, frames.saturating_mul(2));
-        self.commit(peak, mean_square)
-    }
-
-    /// 把本量子的 `peak` 与 `mean_square` 推进状态机并产出读数。
-    fn commit(&mut self, peak: f32, mean_square: f32) -> LevelReading {
-        self.peak_hold = (self.peak_hold * self.peak_release).max(peak);
-        self.mean_square = self.rms_coeff * self.mean_square + (1.0 - self.rms_coeff) * mean_square;
-        if !self.peak_hold.is_finite() {
-            self.peak_hold = 0.0;
-        }
-        if !self.mean_square.is_finite() {
-            self.mean_square = 0.0;
-        }
-        LevelReading {
-            peak,
-            peak_hold: self.peak_hold,
-            rms: mean_square.max(0.0).sqrt(),
-            rms_smoothed: self.mean_square.max(0.0).sqrt(),
-        }
-    }
-}
-
-/// 均方：`sum_squares / count`；`count == 0` 时返回 `0.0`（**不是** `0/0 = NaN`）。
-fn mean_of_squares(sum_squares: f64, count: usize) -> f32 {
-    if count == 0 {
-        0.0
-    } else {
-        (sum_squares / count as f64) as f32
-    }
-}
+// 电平口径的唯一实现住在 yeban-dsp；这里只做转发（含真峰值能力）。
+pub use yeban_dsp::meter::{
+    DEFAULT_PEAK_DECAY_DB_PER_SEC, DEFAULT_QUANTA_PER_SECOND, DEFAULT_RMS_TIME_CONSTANT_SEC,
+    LevelDetector, LevelReading, MAX_LINEAR_MAGNITUDE, SILENCE_FLOOR_DBFS,
+    TRUE_PEAK_LATENCY_SAMPLES, TRUE_PEAK_PHASES, TRUE_PEAK_TAPS, TruePeakDetector, dbfs,
+    dbfs_clamped, sanitize_sample, supersedes,
+};
 
 #[cfg(test)]
 mod tests {
@@ -649,5 +328,159 @@ mod tests {
         let reading = detector.analyze(&[]);
         assert!(reading.is_sane());
         assert_eq!(reading.peak_hold, 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // 上移的机械证据（类型归属 + 无第二份实现 + 冻结数值表）
+    // -----------------------------------------------------------------------
+
+    /// 判据：engine 的 `level` 项与 dsp 的项**是同一个东西**（不是同构复制品）。
+    ///
+    /// 这是编译期判据：类型赋值要求两侧是**同一个**类型；函数指针用地址比较。
+    /// 注入：在 engine 里偷偷加回一份自己的检测器类型或采样钳位函数
+    /// ⇒ 类型赋值与 `fn_addr_eq` 双双编译失败/变红。
+    #[test]
+    fn engine_level_is_literally_the_dsp_type() {
+        // 类型同一性（编译期）：dsp 类型的变量可以直接由 engine 路径构造。
+        let detector: yeban_dsp::meter::LevelDetector = LevelDetector::new();
+        let reading: yeban_dsp::meter::LevelReading = detector.clone().analyze(&[0.5f32; 8]);
+        let _: yeban_dsp::meter::TruePeakDetector = TruePeakDetector::new();
+        assert!(reading.is_sane());
+
+        // 函数同一性（地址相等）：这些**必须**是同一个函数项，而不是两份同构实现。
+        let engine_sanitize: fn(f32) -> f32 = sanitize_sample;
+        let dsp_sanitize: fn(f32) -> f32 = yeban_dsp::meter::sanitize_sample;
+        assert!(core::ptr::fn_addr_eq(engine_sanitize, dsp_sanitize));
+
+        let engine_dbfs: fn(f32) -> f32 = dbfs;
+        let dsp_dbfs: fn(f32) -> f32 = yeban_dsp::meter::dbfs;
+        assert!(core::ptr::fn_addr_eq(engine_dbfs, dsp_dbfs));
+
+        let engine_clamped: fn(f32, f32) -> f32 = dbfs_clamped;
+        let dsp_clamped: fn(f32, f32) -> f32 = yeban_dsp::meter::dbfs_clamped;
+        assert!(core::ptr::fn_addr_eq(engine_clamped, dsp_clamped));
+
+        let engine_supersedes: fn(u64, u64) -> bool = supersedes;
+        let dsp_supersedes: fn(u64, u64) -> bool = yeban_dsp::meter::supersedes;
+        assert!(core::ptr::fn_addr_eq(engine_supersedes, dsp_supersedes));
+
+        // 常量同一性（编译期）。
+        const _: () = assert!(SILENCE_FLOOR_DBFS == yeban_dsp::meter::SILENCE_FLOOR_DBFS);
+        const _: () = assert!(MAX_LINEAR_MAGNITUDE == yeban_dsp::meter::MAX_LINEAR_MAGNITUDE);
+        const _: () =
+            assert!(DEFAULT_QUANTA_PER_SECOND == yeban_dsp::meter::DEFAULT_QUANTA_PER_SECOND);
+    }
+
+    /// 判据：**engine 侧没有第二份实现**（源码级机械检查）。
+    ///
+    /// `include_str!("level.rs")` 读到本文件自身的源码；断言其中不出现实现记号。
+    /// 记号用 `concat!` 拼出来，避免判据自己的字面量命中自己。
+    ///
+    /// 注入：把 `yeban_dsp` 的实现复制进本文件（例如加回检测器类型的定义）
+    /// ⇒ 本判据立即变红。
+    #[test]
+    fn engine_level_module_has_no_second_implementation() {
+        let source = include_str!("level.rs");
+        // 记号带 `(` 或 ` {`：只有"定义形式"才命中 —— 调用点、测试名与文档提及
+        // 都不会误命中（测试名里的下划线后缀因此是安全的）。
+        let forbidden = [
+            concat!("struct", " LevelDetector", " {"),
+            concat!("struct", " LevelReading", " {"),
+            concat!("struct", " TruePeakDetector", " {"),
+            concat!("impl", " LevelDetector"),
+            concat!("impl", " LevelReading"),
+            concat!("impl", " TruePeakDetector"),
+            concat!("fn", " sanitize_sample("),
+            concat!("fn", " dbfs("),
+            concat!("fn", " dbfs_clamped("),
+            concat!("fn", " supersedes("),
+            concat!("fn", " mean_of_squares("),
+            concat!("const", " TRUE_PEAK_KERNEL"),
+        ];
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "engine 的 level.rs 里出现了实现记号 `{needle}` —— 上移之后这里只允许 `pub use`"
+            );
+        }
+        assert!(
+            source.contains("pub use yeban_dsp::meter::"),
+            "engine 的 level.rs 必须是 dsp 的再导出"
+        );
+    }
+
+    /// 判据：搬迁前的关键数值经 **engine 路径**仍然逐位一致。
+    ///
+    /// 这是 `yeban-engine/src/level.rs`（main `b014e8f`）上实测冻结的位模式子集；
+    /// 完整 285 条的对照在 `yeban_dsp::meter::tests`。
+    #[test]
+    fn frozen_level_table_through_the_engine_path() {
+        // 纯函数：钳位 / dBFS / 取最新（位模式来自搬迁前实测）。
+        assert_eq!(sanitize_sample(f32::NAN).to_bits(), 0x0000_0000);
+        assert_eq!(sanitize_sample(f32::INFINITY).to_bits(), 0x4180_0000);
+        assert_eq!(sanitize_sample(f32::NEG_INFINITY).to_bits(), 0xc180_0000);
+        assert_eq!(sanitize_sample(1.0e30).to_bits(), 0x4180_0000);
+        assert_eq!(sanitize_sample(-1.0e30).to_bits(), 0xc180_0000);
+        assert_eq!(sanitize_sample(0.25).to_bits(), 0x3e80_0000);
+        assert_eq!(sanitize_sample(-0.0).to_bits(), 0x8000_0000);
+        assert_eq!(dbfs(1.0).to_bits(), 0x0000_0000);
+        assert_eq!(dbfs(0.5).to_bits(), 0xc0c0_a8c2);
+        assert_eq!(dbfs(0.0).to_bits(), 0xff80_0000);
+        assert_eq!(dbfs(f32::NAN).to_bits(), 0xff80_0000);
+        assert_eq!(dbfs(16.0).to_bits(), 0x41c0_a8c2);
+        assert_eq!(dbfs_clamped(0.0, -120.0).to_bits(), 0xc2f0_0000);
+        assert_eq!(dbfs_clamped(1.0e-9, -120.0).to_bits(), 0xc2f0_0000);
+        assert_eq!(dbfs_clamped(1.0, -120.0).to_bits(), 0x0000_0000);
+        assert!(supersedes(7, 7) && supersedes(8, 7) && !supersedes(6, 7));
+        assert_eq!(DEFAULT_QUANTA_PER_SECOND.to_bits(), 0x43bb_8000);
+
+        // 满幅正弦（10 周期 / 4800 点）经 engine 路径的完整读数。
+        let samples: Vec<f32> = (0..4800)
+            .map(|index| {
+                let phase = 10.0 * std::f32::consts::TAU * index as f32 / 4800.0;
+                phase.sin()
+            })
+            .collect();
+        let reading = LevelDetector::new().analyze(&samples);
+        assert_eq!(reading.peak.to_bits(), 0x3f80_0000);
+        assert_eq!(reading.peak_hold.to_bits(), 0x3f80_0000);
+        assert_eq!(reading.rms.to_bits(), 0x3f35_04f3);
+        assert_eq!(reading.rms_smoothed.to_bits(), 0x3d88_3b02);
+        assert_eq!(reading.peak_dbfs().to_bits(), 0x0000_0000);
+        assert_eq!(reading.peak_hold_dbfs().to_bits(), 0x0000_0000);
+        assert_eq!(reading.rms_dbfs().to_bits(), 0xc1bc_5432);
+
+        // 峰值保持的 1 量子释放乘子与平滑均方的一量子系数（内部弹道系数）。
+        let mut detector = LevelDetector::new();
+        let _ = detector.analyze(&[1.0f32; 64]);
+        assert_eq!(detector.analyze(&[]).peak_hold.to_bits(), 0x3f7e_6ed4);
+        let mut detector = LevelDetector::new();
+        let one = detector.analyze(&[1.0f32; 64]);
+        assert_eq!(one.rms_smoothed.to_bits(), 0x3dc0_a8b6);
+        assert_eq!(detector.mean_square().to_bits(), 0x3c10_fd80);
+
+        // 静音 / 空块的边界。
+        let mut detector = LevelDetector::new();
+        let silence = detector.analyze(&[0.0f32; 128]);
+        assert!(silence.is_sane());
+        assert_eq!(silence.peak.to_bits(), 0x0000_0000);
+        assert_eq!(silence.rms.to_bits(), 0x0000_0000);
+        assert_eq!(silence.peak_dbfs(), f32::NEG_INFINITY);
+        assert_eq!(detector.analyze(&[]).rms.to_bits(), 0x0000_0000);
+        assert_eq!(detector.analyze_stereo(&[], &[]).rms.to_bits(), 0x0000_0000);
+
+        // 真峰值上移之后同样可从 engine 路径使用。
+        let mut true_peak = TruePeakDetector::new();
+        let block: Vec<f32> = (0..1024)
+            .map(|i| {
+                let phase =
+                    std::f32::consts::FRAC_PI_4 + std::f32::consts::FRAC_PI_2 * (i % 4) as f32;
+                phase.sin()
+            })
+            .collect();
+        let sample_peak = block.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let measured = true_peak.process(&block);
+        assert!(sample_peak < 0.72);
+        assert!(measured > 0.999, "真峰值应抓到采样点之间的过冲: {measured}");
     }
 }
