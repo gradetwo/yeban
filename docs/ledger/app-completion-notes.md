@@ -220,7 +220,16 @@ Tier-1 运行时控件树的**内容**、`track-{i}-color-swatch` 到底在不�
 | 轮 | commit | run | 结论 | 说明 |
 | :-- | :--- | :--- | :--- | :--- |
 | 1（代码净判决） | `b9b0bab` | [37235793566](https://github.com/gradetwo/yeban/actions/runs/37235793566) | **success（本线的净判决）** | `checks` / `lockfile` / `plan` / `deny` 全绿；**`rust (yeban-app)` = success（3m41s）**：`cargo clippy -p yeban-app --all-targets --locked -- -D warnings` 零告警，`cargo test -p yeban-app --all-targets --locked` 四个目标是 **`67 passed`**（lib：`bridge`/`scene`/`elements`/`open`/`input`，本线新增 8 条）、**`0 passed`**（bin）、**`2 passed`**（本线新增的集成目标 `tests/open_project_file.rs`）、**`9 passed`**（Tier-1，含本线追加的色标与音符几何断言）、**`4 passed`**（`tests/live_ui_mcp.rs`）。`rust (workspace 全量)` 被 `plan` **跳过**（受影响集合只有 `yeban-app` + 一份 docs 文件）—— 因此"全量腿也绿"**不**由本线这一轮证明（§7 needs-6）。 |
-| 2（docs-only） | `pending` | `pending` | pending | 只改本文件 ⇒ 按设计跳过 rust 腿；本线的**代码判决锚定在 `b9b0bab` / run 37235793566**。 |
+| 2（docs-only） | `8283230` | [37236114455](https://github.com/gradetwo/yeban/actions/runs/37236114455) | **success** | 只改本文件 ⇒ `plan` 判"受影响集合为空"，两条 `rust` 腿都按设计**跳过**（`-`，不是 failure）；`checks` / `lockfile` / `deny` 绿。这一轮**没有**代码读数（设计如此）。 |
+
+### 5.0 本文件自身提交的读数纪律
+
+- **代码判决锚定 `b9b0bab` / run 37235793566**（那是唯一一轮 `rust (yeban-app)` 真跑的判决）。
+- 本文件后续的 docs-only 提交不再逐轮追记判决 —— 它们按设计不触发 `rust` 腿，
+  逐轮记只会让表格无限增长（`app-binding` §6.3 有同款结论）。本轮追记所在的提交
+  自身也是 docs-only：它的判决只可能覆盖 `checks` / `lockfile` / `deny` / `plan`，
+  不能当作代码读数。
+
 
 ### 5.1 CI 实测数字（run 37235793566 的 `rust (yeban-app)` 腿）
 
