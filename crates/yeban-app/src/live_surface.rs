@@ -265,7 +265,15 @@ struct LiveAdminSurface {
 
 impl LiveAdminSurface {
     /// 重抓运行时控件树（几何 / 可见性变了之后必须做，否则 `ui/tree` 还是旧的）。
+    ///
+    /// **先做一次渲染再抓树**：Slint 的几何与 `visible` 是在渲染（布局）之后才更新的，
+    /// 而 `tree_from_element_root` 的遍历是"几何裁剪相交"的结论（不可见的分支不进树，
+    /// 见 `[ARCH-UI-005]` 的实测）。少了这一步，属性刚改完就抓树可能拿到**上一帧**的
+    /// 可见性 —— 既有判据（`test_port_adapter.rs` 的"换工程 ⇒ 换树"）用的也是
+    /// "改属性 → `capture()` → `refresh_tree()`"的顺序，这里把那次 `capture()` 收进来，
+    /// 让"改完立刻抓"与"抓之前截一张"不再有语义差别。抓帧失败不影响重抓（界面没坏）。
     fn refresh_tree(&mut self) -> Result<usize, LiveWiringError> {
+        let _ = self.inner.port().window().capture();
         Ok(self
             .inner
             .port_mut()
