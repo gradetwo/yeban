@@ -205,12 +205,29 @@ impl EngineSnapshot {
     /// `revision` 是模型层的提交版本号（单调递增），用于让 UI/日志判断"音频线程是否
     /// 已经追上"。
     ///
+    /// 节点延迟**自动**从模型读取（[`LatencyTable::from_project`]，即
+    /// `DeviceDefinition::latency_samples` 之和）[ARCH-PDC-001]。
+    /// 需要注入测量值/构造合成场景时用 [`from_project_with_latencies`](Self::from_project_with_latencies)。
+    ///
     /// # Errors
     ///
     /// - [`SnapshotError::NoMasterBus`]：工程没有可用的主总线节点；
     /// - [`SnapshotError::Pdc`]：路由图成环 / 边端点缺失；
     /// - [`SnapshotError::Model`]：`RoutingGraph::validate()` 失败。
-    pub fn from_project(
+    pub fn from_project(project: &YebanProjectV1, revision: u64) -> Result<Self, SnapshotError> {
+        let latencies = LatencyTable::from_project(project);
+        Self::from_project_with_latencies(project, revision, &latencies)
+    }
+
+    /// 同 [`from_project`](Self::from_project)，但延迟表由调用方显式提供。
+    ///
+    /// 用途：离线对账时注入实测延迟、测试时构造"只有一条支路有延迟"的合成场景。
+    /// 生产路径应当用 [`from_project`](Self::from_project)，避免出现第二个延迟事实源。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`from_project`](Self::from_project)。
+    pub fn from_project_with_latencies(
         project: &YebanProjectV1,
         revision: u64,
         latencies: &LatencyTable,
@@ -582,7 +599,7 @@ impl SnapshotReader {
             unsafe {
                 Arc::increment_strong_count(current);
                 let new = Arc::from_raw(current);
-                let old = std::mem::replace(&mut self.held, Some(new));
+                let old = self.held.replace(new);
                 self.held_addr = current as usize;
                 self.switches = self.switches.saturating_add(1);
                 if let Some(old) = old {
@@ -723,8 +740,7 @@ mod tests {
     #[test]
     fn project_projection_carries_track_params_and_pdc() {
         let project = simple_project();
-        let snapshot =
-            EngineSnapshot::from_project(&project, 7, &LatencyTable::new()).expect("投影成功");
+        let snapshot = EngineSnapshot::from_project(&project, 7).expect("投影成功");
         assert_eq!(snapshot.revision(), 7);
         assert_eq!(snapshot.sample_rate(), 48_000);
         assert_eq!(snapshot.block_frames(), 256, "BlockSize 默认是 256");
@@ -747,7 +763,7 @@ mod tests {
         // 默认空工程的 master_bus_track_id 是 nil ULID
         let project = YebanProjectV1::default();
         assert_eq!(
-            EngineSnapshot::from_project(&project, 0, &LatencyTable::new()),
+            EngineSnapshot::from_project(&project, 0),
             Err(SnapshotError::NoMasterBus)
         );
 
@@ -756,7 +772,7 @@ mod tests {
         let master = project.master_bus_track_id;
         project.routing_graph.nodes.retain(|node| *node != master);
         assert_eq!(
-            EngineSnapshot::from_project(&project, 0, &LatencyTable::new()),
+            EngineSnapshot::from_project(&project, 0),
             Err(SnapshotError::NoMasterBus)
         );
     }
@@ -787,7 +803,7 @@ mod tests {
             routing_graph: routing,
             ..YebanProjectV1::default()
         };
-        match EngineSnapshot::from_project(&project, 0, &LatencyTable::new()) {
+        match EngineSnapshot::from_project(&project, 0) {
             Err(SnapshotError::Pdc(PdcError::Cycle { nodes })) => {
                 let expected: BTreeSet<EntityId> = [a, b].into_iter().collect();
                 assert_eq!(nodes.into_iter().collect::<BTreeSet<_>>(), expected);
@@ -958,6 +974,135 @@ mod tests {
         assert_eq!(snapshot.revision(), 3);
         // 只有 getter、没有 setter：字段全私有，编译期即不可变。
         assert_eq!(snapshot.channels(), 2);
+    }
+
+    /// 判据 (i)：**延迟的唯一来源是模型的 `DeviceDefinition::latency_samples`**
+    /// [ARCH-PDC-001]，`yeban-engine` 不再自造第二个事实源。
+    ///
+    /// 构造两条并联支路：`heavy` 的设备链有 32 采样延迟，`light` 没有；
+    /// PDC 必须把 `light` 补 32 采样，`heavy` 补 0。
+    #[test]
+    fn pdc_reads_device_latency_samples_from_the_model() {
+        use yeban_model::{DeviceDefinition, DeviceKind};
+
+        let heavy = EntityId::new();
+        let light = EntityId::new();
+        let master = EntityId::new();
+        let mut routing = RoutingGraph {
+            nodes: vec![heavy, light, master],
+            ..RoutingGraph::default()
+        };
+        for (source, destination) in [(heavy, master), (light, master)] {
+            let id = EntityId::new();
+            routing.edges.insert(
+                id,
+                RoutingEdge {
+                    id,
+                    source_node: source,
+                    destination_node: destination,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            );
+        }
+        let mut tracks = BTreeMap::new();
+        tracks.insert(
+            heavy,
+            TrackV3 {
+                id: heavy,
+                devices: vec![DeviceDefinition {
+                    kind: DeviceKind::ExternalEffect,
+                    latency_samples: 32,
+                    ..DeviceDefinition::default()
+                }],
+                ..TrackV3::default()
+            },
+        );
+        tracks.insert(
+            light,
+            TrackV3 {
+                id: light,
+                ..TrackV3::default()
+            },
+        );
+        let project = YebanProjectV1 {
+            master_bus_track_id: master,
+            routing_graph: routing,
+            tracks,
+            ..YebanProjectV1::default()
+        };
+
+        let snapshot = EngineSnapshot::from_project(&project, 1).expect("投影成功");
+        assert_eq!(
+            snapshot.pdc().total_latency(),
+            32,
+            "L_max 由 32 采样的设备决定"
+        );
+        assert_eq!(snapshot.pdc().compensation(&heavy), Some(0));
+        assert_eq!(snapshot.pdc().compensation(&light), Some(32));
+        // 投影出来的轨道参数也带上该延迟（供实时侧做诊断/UI）
+        assert_eq!(
+            snapshot.track(&heavy).map(|p| p.latency_samples()),
+            Some(32)
+        );
+        assert_eq!(snapshot.track(&light).map(|p| p.latency_samples()), Some(0));
+    }
+
+    /// 旁通设备的延迟**不计入**（它不在信号路径上）。
+    #[test]
+    fn bypassed_devices_do_not_contribute_latency() {
+        use yeban_model::{DeviceDefinition, DeviceKind};
+
+        let track = EntityId::new();
+        let master = EntityId::new();
+        let mut routing = RoutingGraph {
+            nodes: vec![track, master],
+            ..RoutingGraph::default()
+        };
+        let id = EntityId::new();
+        routing.edges.insert(
+            id,
+            RoutingEdge {
+                id,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        let mut tracks = BTreeMap::new();
+        tracks.insert(
+            track,
+            TrackV3 {
+                id: track,
+                devices: vec![
+                    DeviceDefinition {
+                        kind: DeviceKind::ExternalEffect,
+                        latency_samples: 64,
+                        bypassed: true,
+                        ..DeviceDefinition::default()
+                    },
+                    DeviceDefinition {
+                        kind: DeviceKind::InternalEffect,
+                        latency_samples: 8,
+                        ..DeviceDefinition::default()
+                    },
+                ],
+                ..TrackV3::default()
+            },
+        );
+        let project = YebanProjectV1 {
+            master_bus_track_id: master,
+            routing_graph: routing,
+            tracks,
+            ..YebanProjectV1::default()
+        };
+        let snapshot = EngineSnapshot::from_project(&project, 1).expect("投影成功");
+        assert_eq!(
+            snapshot.pdc().total_latency(),
+            8,
+            "只有未旁通的那个设备贡献延迟"
+        );
     }
 
     #[test]

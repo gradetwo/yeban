@@ -20,7 +20,21 @@
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC，UI 60Hz 批量抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`rt`] | 渲染量子驱动（`EngineRuntime`），**不依赖 cpal** | [ARCH-TOP-002]、[ARCH-RT-001] |
-//! | [`device`] | cpal 宿主、配置协商、`NullBackend` | [ARCH-TOP-002]、[ROAD-M2-001] |
+//! | `device` | cpal 宿主、配置协商、`NullBackend`（**feature `device`**） | [ARCH-TOP-002]、[ROAD-M2-001] |
+//!
+//! ## Cargo features：设备 I/O 与 PDC 算法必须能分开消费
+//!
+//! [docs/adr/ADR-0001 D19] 裁决：PDC 算法（[`graph`]）**不得**引用 cpal，
+//! 这样纯离线渲染器 `yeban-render` 可以 `default-features = false` 依赖本 crate，
+//! 拿到同一份拓扑排序 + 关键路径 + 环形延迟线，而不被拖入整条声卡驱动栈。
+//!
+//! | feature | 默认 | 作用 |
+//! | :--- | :---: | :--- |
+//! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
+//!
+//! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `ring` / `snapshot` /
+//! `meter` / `rt` —— 也就是说"PDC 算法 + 快照交换 + SPSC + 渲染量子驱动"全部可用，
+//! 只是没有声卡。
 //!
 //! ## 线程拓扑（[ARCH-TOP-002]）
 //!
@@ -49,7 +63,7 @@
 //!    自行写 `pthread_setschedparam` 需要新的 `libc` 依赖（属于依赖图裁决）。
 //! 3. **独占模式**（WASAPI Exclusive）cpal 0.18 无 API；`ShareMode::RequireExclusive`
 //!    会返回明确错误而不是假装成功。
-//! 4. **采样格式**只支持 `f32`（协商失败会返回 [`device::DeviceError`]），
+//! 4. **采样格式**只支持 `f32`（协商失败会返回 `device::DeviceError`），
 //!    `i16`/`u16` 的 `FromSample` 转换路径留给后续切片。
 //! 5. **PDC 的节点延迟来源**：规范 [ARCH-PDC-001] 要求
 //!    `DeviceDefinition::latency_samples`，而 `yeban-model` 当前**没有**该字段，
@@ -67,6 +81,7 @@
 // 加 forbid —— 但 guard G03 的名单里也没有它, 见 scripts/guards/policy_check.py。
 
 pub mod block;
+#[cfg(feature = "device")]
 pub mod device;
 pub mod fpu;
 pub mod graph;

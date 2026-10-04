@@ -12,31 +12,34 @@ publish.workspace = true
 name = "yeban_engine"
 path = "src/lib.rs"
 
+# 设备 I/O 与 PDC 算法必须能被分开消费 [docs/adr/ADR-0001 D19]:
+#   - `graph`(PDC 拓扑排序 + 关键路径 + 环形延迟线) **不得**引用 cpal,
+#     因此 `yeban-render` 可以 `default-features = false` 依赖本 crate,
+#     拿到同一份算法而不被拖入整条声卡驱动栈;
+#   - 真实设备路径(device/rt 的 cpal 部分) 由 `device` feature 承载, 默认开启。
+[features]
+default = ["device"]
+# 打开 cpal 声卡宿主 (`src/device.rs` 与 `src/rt.rs` 里的设备相关部分)。
+device = ["dep:cpal"]
+
 [dependencies]
-# 全部来自根 [workspace.dependencies] 的登记版本, 本 crate **不**自带版本号,
-# 也**不**需要 hoist (见 docs/ledger/engine-rt-notes.md §1)。
+# 版本全部来自根 [workspace.dependencies] 的登记, 本 crate **不**自带版本号, 也不需要 hoist。
 #
 # cpal / rtrb 是本 crate 的"重依赖": 本机 (M2) 不编译, 一律交给 CI。
 # 注意: scripts/gates/run-gates.sh 的重依赖正则只认 `cpal = ...` 这种字面形式,
-# 认不出 `cpal.workspace = true` —— 因此**不要**在本机跑
+# 认不出 `cpal = { workspace = true, ... }` —— 因此**不要**在本机跑
 # `run-gates.sh crate yeban-engine` (它不会被自动跳过)。
-# 见 docs/ledger/engine-rt-notes.md §5「门禁缺口」。
-cpal.workspace = true
+# 见 docs/ledger/engine-rt-notes.md §5「门禁缺口 1」。
+cpal = { workspace = true, optional = true }
 rtrb.workspace = true
 thiserror.workspace = true
-# 路由与轨道参数的唯一权威事实源 (RoutingGraph / TrackV3 / YebanProjectV1) [MODEL-AST-004]。
+# 路由与轨道参数的唯一权威事实源 (RoutingGraph / TrackV3 / YebanProjectV1 /
+# DeviceDefinition::latency_samples) [MODEL-AST-004, ARCH-PDC-001]。
 #
-# 注意这里**不是** `yeban-model.workspace = true` —— 原因是机械的, 不是偏好:
-#   根 `[workspace.dependencies]` 把内部 crate 登记为**纯 path**(`yeban-model = { path = ... }`,
-#   没有 `version`), Cargo 因此给成员依赖解析出 `req = "*"`;
-#   而 `deny.toml` 的 `[bans] wildcards = "deny"` 会把 `*` 判为 MUST-GATE-004 失败。
-#   本 crate 是**第一个**跨成员依赖的工作线, 所以这个冲突第一次暴露。
-# 处置: 按工作线纪律"根里没有的依赖 → 在自己 crate 写显式版本 + 记 TODO(hoist)",
-#       这里写显式版本; **集成者**只需在根里给内部 crate 补上 `version = "0.0.1"`,
-#       本行即可还原为 `yeban-model.workspace = true`。
-# TODO(hoist): 根 `[workspace.dependencies]` 的 `yeban-model` 补 `version = "0.0.1"`。
-# 详见 docs/ledger/engine-rt-notes.md §1 与 §4 needs 清单。
-yeban-model = { path = "../yeban-model", version = "0.0.1" }
+# 这里可以直接写 `workspace = true`（继承出来是 `*`）是因为集成者已按 ADR-0001 D21
+# 在 `deny.toml` 里放行了"带 path 的通配版本"(`allow-wildcard-paths = true`)。
+# 在此之前（D21 落地前），本 crate 作为第一个跨成员依赖被迫写过显式 `version = "0.0.1"`。
+yeban-model.workspace = true
 
 [lints]
 workspace = true

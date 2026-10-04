@@ -12,7 +12,8 @@
 //! ## 本模块是 `unsafe` 的**白名单**地点之一
 //!
 //! [AGENTS.md §2 红线 8] 要求 `unsafe` 必须带 `// SAFETY:` 证明。本模块只有两类操作：
-//! 读写 CPU 控制寄存器（x86 用 `core::arch` 内建，aarch64 用 `mrs`/`msr` 内联汇编）。
+//! 读写 CPU 控制寄存器（x86 用 `stmxcsr`/`ldmxcsr`，aarch64 用 `mrs`/`msr`，都是内联汇编；
+//! 不用 `core::arch::_mm_getcsr/_mm_setcsr` —— 它们自 Rust 1.75 起已 deprecated）。
 //! 两者都**不触碰内存**、不产生别名、不改变栈，唯一的副作用是当前线程的浮点舍入行为
 //! ——这正是本模块的语义。控制寄存器是**线程局部**状态（POSIX 规定新线程继承创建者
 //! 的浮点环境），因此必须在音频回调**线程内部**调用，而不是在打开设备的主线程上调用。
@@ -21,8 +22,8 @@
 //!
 //! | 目标 | 实现 | 说明 |
 //! | :--- | :--- | :--- |
-//! | `x86_64` | `_mm_getcsr` / `_mm_setcsr` | SSE 是 x86-64 架构基线，无需运行期探测 |
-//! | `x86` | 同上 + `is_x86_feature_detected!("sse")` | 无 SSE 时置位会 `SIGILL`，故先探测 |
+//! | `x86_64` | 内联汇编 `stmxcsr` / `ldmxcsr` | SSE 是 x86-64 架构基线，无需运行期探测 |
+//! | `x86` | 同上 + `is_x86_feature_detected!("sse")` | 无 SSE 时执行会 `SIGILL`，故先探测 |
 //! | `aarch64` | `mrs fpcr` / `msr fpcr` | AArch64 的浮点/AdvSIMD 是 ABI 强制项 |
 //! | 其它 | **安全空实现** | 返回 [`FtzDazOutcome::Unsupported`]，绝不 panic、不动寄存器 |
 //!
@@ -100,7 +101,7 @@ mod imp_x86 {
     /// MXCSR 的 DAZ 位（bit 6）。
     pub(super) const DAZ: u32 = 1 << 6;
 
-    /// 32 位 x86 上 SSE 可选：无 SSE 就没有 MXCSR，写它会触发非法指令异常。
+    /// 32 位 x86 上 SSE 可选：无 SSE 就没有 MXCSR，执行 `stmxcsr` 会触发非法指令异常。
     /// x86_64 上 SSE 是架构基线，恒为 `true`。
     #[cfg(target_arch = "x86")]
     fn mxcsr_available() -> bool {
@@ -112,35 +113,56 @@ mod imp_x86 {
         true
     }
 
-    // 每个架构分支都是函数的**尾表达式**（返回 bool / Option<bool>），
-    // 不是带 `return` 的语句块 —— 后者会让函数体尾部类型变成 `()` 而编译失败。
+    /// 读 MXCSR（`stmxcsr`）。
+    ///
+    /// 用内联汇编而不是 `core::arch::x86_64::_mm_getcsr`：后者自 Rust 1.75 起被标记为
+    /// **deprecated**（"use inline assembly instead"），而本仓库把 `-D warnings` 作为
+    /// DoD，因此必须走汇编。这也正是官方推荐的替代做法。
+    fn read_mxcsr() -> u32 {
+        let mut csr: u32 = 0;
+        // SAFETY: `stmxcsr [mem]` 把 32 位 MXCSR 写入给定地址。
+        // - 目标是我们自己的栈上局部变量 `csr`（`&raw mut` 取地址 ⇒ 编译器会把它落实在内存里，
+        //   不会只留在寄存器里）；写入宽度 32 位与 `u32` 完全一致，不越界。
+        // - 不声明 `nomem`：该指令**写内存**，必须让编译器知道内存被改过（否则 `csr` 的读取
+        //   可能被优化成常量）。
+        // - `nostack` 是准确的：汇编本身不压栈/弹栈；`preserves_flags` 也准确 ——
+        //   `stmxcsr` 不修改 EFLAGS。
+        // - 对 MXCSR 的读写只影响**当前线程**的浮点环境，不产生跨线程别名。
+        unsafe {
+            core::arch::asm!(
+                "stmxcsr [{ptr}]",
+                ptr = in(reg) &raw mut csr,
+                options(nostack, preserves_flags)
+            );
+        }
+        csr
+    }
+
+    /// 写 MXCSR（`ldmxcsr`）。
+    fn write_mxcsr(value: u32) {
+        // SAFETY: `ldmxcsr [mem]` 从给定地址读 32 位写入 MXCSR。
+        // - 源是函数参数 `value` 的地址（`&raw const` ⇒ 编译器会把它落实在内存里）；
+        //   读取宽度 32 位与 `u32` 一致。
+        // - **故意不声明 `nomem` 也不声明 `readonly`**：这条汇编没有输出操作数，
+        //   若把它标记成"无内存副作用"，LLVM 就有权把它当死代码删掉 ——
+        //   那会让 FTZ/DAZ 的设置**静默失效**。保留未建模的内存副作用即禁止消除。
+        // - `nostack` / `preserves_flags` 是准确的（`ldmxcsr` 不压栈、不改 EFLAGS）。
+        // - 只影响当前线程的浮点环境；不动内存所有权、不产生别名。
+        unsafe {
+            core::arch::asm!(
+                "ldmxcsr [{ptr}]",
+                ptr = in(reg) &raw const value,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+
     pub(super) fn enable() -> FtzDazOutcome {
         if !mxcsr_available() {
             return FtzDazOutcome::Unsupported;
         }
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: `_mm_getcsr` / `_mm_setcsr` 读写 MXCSR 控制寄存器。
-            // - 无内存操作数：不解引用任何指针、不产生别名、不违反借用规则。
-            // - SSE 在 x86-64 上是架构基线（SysV / Windows ABI 都要求），
-            //   因此相应 `target_feature` 恒成立，不会 SIGILL。
-            // - 只做按位或置位 FTZ/DAZ，保留调用方已有的舍入模式与异常屏蔽位。
-            unsafe {
-                let csr = core::arch::x86_64::_mm_getcsr();
-                core::arch::x86_64::_mm_setcsr(csr | FTZ | DAZ);
-            }
-        }
-        #[cfg(target_arch = "x86")]
-        {
-            // SAFETY: 与 x86_64 分支同理；调用前的 `mxcsr_available()` 已确认本 CPU
-            // 支持 SSE（即 MXCSR 存在），所以这两条内建不会触发非法指令异常。
-            unsafe {
-                let csr = core::arch::x86::_mm_getcsr();
-                core::arch::x86::_mm_setcsr(csr | FTZ | DAZ);
-            }
-        }
-
+        // 只做按位或置位 FTZ/DAZ，保留调用方已有的舍入模式与异常屏蔽位。
+        write_mxcsr(read_mxcsr() | FTZ | DAZ);
         FtzDazOutcome::Applied
     }
 
@@ -148,50 +170,18 @@ mod imp_x86 {
         if !mxcsr_available() {
             return false;
         }
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: 同 enable() 的 x86_64 分支；这里做按位与取反，同样不触碰内存。
-            unsafe {
-                let csr = core::arch::x86_64::_mm_getcsr();
-                let was_enabled = csr & (FTZ | DAZ) != 0;
-                core::arch::x86_64::_mm_setcsr(csr & !(FTZ | DAZ));
-                was_enabled
-            }
-        }
-        #[cfg(target_arch = "x86")]
-        {
-            // SAFETY: 同 enable() 的 x86 分支。
-            unsafe {
-                let csr = core::arch::x86::_mm_getcsr();
-                let was_enabled = csr & (FTZ | DAZ) != 0;
-                core::arch::x86::_mm_setcsr(csr & !(FTZ | DAZ));
-                was_enabled
-            }
-        }
+        let csr = read_mxcsr();
+        let was_enabled = csr & (FTZ | DAZ) != 0;
+        write_mxcsr(csr & !(FTZ | DAZ));
+        was_enabled
     }
 
     pub(super) fn enabled() -> Option<bool> {
         if !mxcsr_available() {
             return None;
         }
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: 只读 MXCSR；无内存操作、无别名、无副作用。
-            unsafe {
-                let csr = core::arch::x86_64::_mm_getcsr();
-                Some(csr & (FTZ | DAZ) == (FTZ | DAZ))
-            }
-        }
-        #[cfg(target_arch = "x86")]
-        {
-            // SAFETY: 只读 MXCSR，且已确认 CPU 支持 SSE。
-            unsafe {
-                let csr = core::arch::x86::_mm_getcsr();
-                Some(csr & (FTZ | DAZ) == (FTZ | DAZ))
-            }
-        }
+        let csr = read_mxcsr();
+        Some(csr & (FTZ | DAZ) == (FTZ | DAZ))
     }
 }
 

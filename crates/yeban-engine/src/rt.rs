@@ -31,7 +31,6 @@
 use std::sync::Arc;
 
 use rtrb::Producer;
-use yeban_model::EntityId;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
@@ -247,7 +246,7 @@ mod tests {
     use crate::ring::event_channel;
     use crate::snapshot::retire_channel;
     use std::collections::BTreeMap;
-    use yeban_model::{RoutingEdge, RoutingGraph, RoutingKind};
+    use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind};
 
     fn simple_snapshot(revision: u64) -> EngineSnapshot {
         let master = EntityId::new();
@@ -313,10 +312,14 @@ mod tests {
     }
 
     /// 编译期判据：渲染驱动必须能 move 进 cpal 的回调闭包（`D: Send + 'static`）。
+    ///
+    /// `NullBackend` 属于 `device` feature（它的配置类型含 cpal 类型），
+    /// 因此那条断言按 feature 门控 [ADR-0001 D19]。
     #[test]
     fn runtime_is_send_so_it_can_move_into_the_audio_callback() {
         fn assert_send<T: Send>() {}
         assert_send::<EngineRuntime>();
+        #[cfg(feature = "device")]
         assert_send::<crate::device::NullBackend>();
     }
 

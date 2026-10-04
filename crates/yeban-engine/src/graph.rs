@@ -29,18 +29,21 @@
 //! 输出纯数据。`yeban-render` 的 Rayon 离线母带渲染器直接复用它，从而保证
 //! "实时与离线绝对相位对齐"（规范 §3.4 第 3 条）。
 //!
-//! ## 规范缺口：节点延迟的来源
+//! ## 节点延迟的来源（模型层字段，不再自造第二个事实源）
 //!
 //! [ARCH-PDC-001] 要求"每个插件与内置设备必须精确上报其引入的处理延迟
-//! (`DeviceDefinition::latency_samples`)"。但 `yeban-model` 的
-//! [`yeban_model::DeviceDefinition`] **当前没有** `latency_samples` 字段，
-//! 因此延迟由调用方通过 [`LatencyTable`] 显式提供。
-//! 详见 `docs/ledger/engine-rt-notes.md` 的 needs 清单。
+//! (`DeviceDefinition::latency_samples`)"。该字段已由集成者按规范补进
+//! `yeban-model`（`#[serde(default)]`，缺失取 `0` 表示**未上报**），
+//! 因此本 crate 用 [`LatencyTable::from_project`] / [`LatencyTable::from_tracks`]
+//! 从**设备链**汇总每个节点的自身延迟：未旁通设备的 `latency_samples` 饱和求和。
+//!
+//! [`LatencyTable`] 仍然可以显式注入（[`PdcPlan::compute`] 接收它），
+//! 供离线对账/测量注入使用；但**默认路径**永远走模型字段。
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
-use yeban_model::{EntityId, RoutingGraph};
+use yeban_model::{EntityId, RoutingGraph, TrackV3, YebanProjectV1};
 
 /// PDC 计算的错误类型。
 ///
@@ -126,19 +129,40 @@ impl LatencyTable {
         self.entries.iter()
     }
 
-    /// 从工程音轨集合投影出延迟表。
+    /// 从整个工程投影出延迟表 [ARCH-PDC-001]。
     ///
-    /// **当前实现返回全零表**，因为 `yeban_model::DeviceDefinition` 尚未提供
-    /// `latency_samples`（[ARCH-PDC-001] 的规范缺口，见模块文档）。函数签名先立起来，
-    /// 等模型层补上字段后只需改这里一行，调用方无感。
+    /// 这是**唯一**的延迟来源：`DeviceDefinition::latency_samples`（模型层的权威字段）。
+    /// 本 crate 不再自造第二个事实源。
     #[must_use]
-    pub fn from_tracks(tracks: &BTreeMap<EntityId, yeban_model::TrackV3>) -> Self {
+    pub fn from_project(project: &YebanProjectV1) -> Self {
+        Self::from_tracks(&project.tracks)
+    }
+
+    /// 从工程音轨集合投影出延迟表 [ARCH-PDC-001]。
+    ///
+    /// 节点的自身延迟 = 该节点设备链上所有**未旁通**设备的 `latency_samples` **之和**
+    /// （饱和相加，避免恶意工程用 `u32::MAX` 造出回绕）。
+    ///
+    /// 两个刻意的语义决定：
+    ///
+    /// 1. **旁通设备不计入**：`bypassed == true` 表示该设备不在信号路径上，
+    ///    它对相位没有贡献。若将来发现某些宿主仍然报告旁通设备的延迟，只改这一处。
+    /// 2. **`0` 被当作"未上报"而不是"零延迟"**：模型层的文档明写
+    ///    `DeviceDefinition::latency_samples` 缺失时取 `0` 且 `0` 意为"未上报"。
+    ///    本函数不做任何推断——它只把上报值加起来。因此"设备作者漏报"表现为
+    ///    PDC 仍然按 0 对齐（相位可能错），这是**上游数据问题**，由模型侧的
+    ///    校验/样本填充覆盖，而不是在这里猜。
+    #[must_use]
+    pub fn from_tracks(tracks: &BTreeMap<EntityId, TrackV3>) -> Self {
         let mut table = Self::new();
-        for id in tracks.keys() {
-            // TODO(model): [ARCH-PDC-001] 要求 `device.latency_samples`，
-            // yeban-model 暂无该字段 —— 目前每个节点的处理延迟恒为 0
-            // （即"设备链不引入延迟"），这是**待补的缺口**而不是设计选择。
-            table.set(*id, 0);
+        for (id, track) in tracks {
+            let mut node_latency = 0u32;
+            for device in &track.devices {
+                if !device.bypassed {
+                    node_latency = node_latency.saturating_add(device.latency_samples);
+                }
+            }
+            table.set(*id, node_latency);
         }
         table
     }
@@ -853,24 +877,52 @@ mod tests {
         assert!(table.is_empty(), "显式置 0 等价于未登记（语义：延迟为 0）");
     }
 
+    /// 判据 (i)：延迟表从模型的 `DeviceDefinition::latency_samples` 汇总而来
+    /// [ARCH-PDC-001]，且**旁通设备不计入**、`0` 被当作"未上报"。
     #[test]
-    fn latency_table_from_tracks_is_all_zero_pending_model_gap() {
-        use yeban_model::{DeviceDefinition, DeviceKind, TrackV3};
+    fn latency_table_sums_model_device_latency_and_skips_bypassed() {
+        use yeban_model::{DeviceDefinition, DeviceKind};
         let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
         let id = EntityId::new();
         let mut track = TrackV3 {
             id,
             ..TrackV3::default()
         };
+        // 串联两个设备: 32 + 8 = 40
         track.devices.push(DeviceDefinition {
             kind: DeviceKind::InternalEffect,
+            latency_samples: 32,
+            ..DeviceDefinition::default()
+        });
+        track.devices.push(DeviceDefinition {
+            kind: DeviceKind::ExternalEffect,
+            latency_samples: 8,
+            ..DeviceDefinition::default()
+        });
+        // 旁通设备即使上报了延迟也不计入
+        track.devices.push(DeviceDefinition {
+            kind: DeviceKind::ExternalEffect,
+            latency_samples: 4096,
+            bypassed: true,
             ..DeviceDefinition::default()
         });
         tracks.insert(id, track);
+
+        // 另一条轨道: 所有设备都是 0（= 未上报）⇒ 该节点延迟为 0
+        let silent = EntityId::new();
+        let mut silent_track = TrackV3 {
+            id: silent,
+            ..TrackV3::default()
+        };
+        silent_track.devices.push(DeviceDefinition {
+            kind: DeviceKind::InternalInstrument,
+            ..DeviceDefinition::default()
+        });
+        tracks.insert(silent, silent_track);
+
         let table = LatencyTable::from_tracks(&tracks);
-        // TODO(model): [ARCH-PDC-001] 需要 DeviceDefinition::latency_samples;
-        // 字段落地前这里恒为 0 —— 本测试把这个"待补"事实钉住, 免得被误读成"已实现"。
-        assert_eq!(table.get(&id), 0);
-        assert!(table.is_empty(), "全零表不保留条目（set(_, 0) == 未登记）");
+        assert_eq!(table.get(&id), 40, "32 + 8（旁通的 4096 不计入）");
+        assert_eq!(table.get(&silent), 0, "未上报 ⇒ 0");
+        assert_eq!(table.len(), 1, "0 不保留条目（set(_, 0) == 未登记）");
     }
 }
