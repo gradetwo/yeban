@@ -1,9 +1,14 @@
 # 夜半 (Yeban) 专业桌面 DAW UI/UX 布局与交互重构设计规范 (Pure Rust + Slint 极速版)
 
 > **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`  
-> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev5, LEGAL.md`  
+> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev6, ROADMAP v3.0-rev6, LEGAL.md`  
 > **修订记录 (Revision Log)**：  
-> - `v3.0-rev5` (2026-10-04)：**开源合规与技术纠偏升级**。正式更名为“夜半 (Yeban)”，确立整体以 GPLv3 许可证在 GitHub 开源；修复 LaTeX 坐标转换公式的转义符渲染兼容性；更新 Slint 无头启动参数为标准 `SLINT_BACKEND=headless`；阐明 Slint 内嵌 MCP 基于 HTTP JSON-RPC 与内部 Protobuf `IntrospectionState` / `ElementHandle` API 运作机制；将“对标”规范化为“设计参考 / 架构借鉴”；crate 名称统一为 `yeban-*`。  
+> - `v3.0-rev6` (2026-10-04)：**视觉回归鲁棒性与 UI MCP 权限分层落地 (依据全量专家评审)**。  
+>   1. **动态区域自动遮罩 (Masking)**：对 VU 电平表、走带指针、RTA 频谱与时间码实施动态遮罩，杜绝高频刷新引发的视觉回归测试误报；  
+>   2. **断言优先级重构**：确立“控件树 JSON 几何与属性断言为主、像素级 SSIM 为辅”的自测原则；  
+>   3. **UI MCP 三级权限分层**：设立 ReadOnly（只读内省）、Interactive（事件注入）与 Administrative（系统管理）三级权限；  
+>   4. **分平台 Golden 基准**：针对 Linux、macOS 与 Windows 字体与抗锯齿差异，独立维护平台特定基准图像。  
+> - `v3.0-rev5` (2026-10-04)：开源合规与技术纠偏升级，更名为“夜半 (Yeban)”，确立整体以 GPLv3 许可证在 GitHub 开源。  
 > - `v3.0-rev4` (2026-10-04)：**新增 Slint 无头运行与 AI 视觉内省交互规范**。增设 §12 专门规范 Slint 软件光栅化无头模式（`SLINT_BACKEND=headless-software`）、内嵌 MCP 服务器远程内省协议（UI 控件树查询、事件模拟注入）以及基于无头 Framebuffer 截图的 AI 自动化视觉回归断言体系。  
 > - `v3.0-rev3` (2026-10-04)：**重大技术架构转型**。彻底放弃 Web/HTML5 Canvas/DOM 方案，全线重构为 **Slint 原生桌面声明式矢量界面体系**；深度融合 Slint 响应式属性与高性能自定义渲染，交付恒定 120 FPS 视网膜高清响应；全面消除按键冲突；保留 FL Studio 式卷帘心流与色盲安全三向 Diff 审查体系。  
 > - `v3.0-rev2` (2026-10-04)：依据设计评审完成快捷键冲突解耦与无障碍补全。  
@@ -334,17 +339,21 @@ crates/yeban-app/ui/
 2. **无物理窗口保障**：
    - `SLINT_BACKEND=headless`（支持 `headless-software` 软件光栅化模式，测试环境亦可借助 `i-slint-backend-testing`）激活无窗口渲染管线，无需 DISPLAY 环境变量，无需启动 Xvfb 虚拟 X11 即可正常完成全部 Slint 声明式组件的布局计算与像素绘制。
 
-### 12.2 UI 元素树远程内省协议 (Widget Tree Introspection)
-Slint 内嵌 MCP 服务器基于 HTTP 上的 JSON-RPC 暴露接口，底层依托 Slint 内部基于 Protobuf 的 `IntrospectionState` 与 `ElementHandle` API 体系运作。AI Agent 访问 `http://localhost:9315` 发送 JSON-RPC 请求，审查当前 Slint 界面的层级结构与渲染几何：
+### 12.2 UI 元素树远程内省协议与权限分层 (Widget Tree Introspection & Permission Tiers)
+Slint 内嵌 MCP 服务器基于 HTTP 上的 JSON-RPC 暴露接口，底层依托 Slint 内部基于 Protobuf 的 `IntrospectionState` 与 `ElementHandle` API 体系运作。为保障自动化运行时的安全性与合规性，确立三级权限隔离：
 
-1. **控件树遍历与属性查询**：
+1. **三级安全权限模型 (Permission Tiers)**：
+   - **`ReadOnly` (默认只读层)**：仅允许控件树结构检索、响应式属性读取与无头 Framebuffer 截图捕获，严禁触发状态写操作与事件模拟，适用于 CI 常态化静态健康检查；
+   - **`Interactive` (用例交互层)**：允许调用模拟指针移动/点击/拖拽与键盘按键分发接口，用于驱动自动化端到端测试用例；
+   - **`Administrative` (系统管理层)**：允许切换工作区主视图、强制执行工程保存与重载音频引擎，仅限受信任的自动化调度脚本通过会话 Token 显式启用。
+2. **控件树遍历与属性查询**：
    - 支持根据 `id`、类型（如 `PianoRollNote`、`MixerFader`、`TrackHeader`）检索对应元素的物理坐标 `(x, y, width, height)`、层级深度、可见性（`visible`）与使能状态（`enabled`）；
    - 支持读取当前绑定的响应式属性值（例如推子分贝值、选中的音符 ULID、当前激活的选项卡）。
-2. **布局有效性断言**：
+3. **布局有效性断言**：
    - AI Agent 算法自动遍历所有子节点包围盒，检测是否存在异常重叠（如音符方块重叠）、文字截断（Text Overflow）、按钮尺寸小于最小可触控尺寸（44×44px）等缺陷。
 
 ### 12.3 交互事件模拟注入 (Simulated User Event Injection)
-AI Agent 可借助 Slint 内嵌 MCP 发起精准的模拟用户交互，无需物理外设：
+在 `Interactive` 权限下，AI Agent 可借助 Slint 内嵌 MCP 发起精准的模拟用户交互，无需物理外设：
 
 1. **鼠标指针事件**：
    - `slint_dispatch_pointer_down(x, y, button)`：在指定像素坐标触发鼠标按下；
@@ -354,8 +363,14 @@ AI Agent 可借助 Slint 内嵌 MCP 发起精准的模拟用户交互，无需�
    - `slint_dispatch_key_press(key_code)`：分发 `Tab`（视图瞬切）、`Shift+Enter`（采纳 AI 提案）、`Esc`（放弃草稿）等全局与局部热键。
 
 ### 12.4 无头高保真截屏与像素级视觉回归测试 (Visual Regression Testing)
+
 1. **帧缓冲截图转储**：
-   - AI Agent 调用 Slint MCP 的 `slint_capture_screenshot` 接口，渲染引擎将当前内存 Framebuffer 编码为 PNG 二进制流并返回；
-2. **像素级视觉断言流程**：
-   - 提取最新截图与 Golden 基准图像进行结构相似性（SSIM）比对；
-   - 阈值设定：要求全屏渲染差异像素占比 < 0.1%，若出现异常布局断层自动阻断流水线并保存差异差分热力图（Diff Heatmap），供 AI Agent 分析并自主修改 `.slint` 声明式样式。
+   - AI Agent 调用 Slint MCP 的 `slint_capture_screenshot` 接口，渲染引擎将当前内存 Framebuffer 编码为 PNG 二进制流并返回。
+2. **动态区域自动遮罩 (Dynamic Region Masking, MUST)**：
+   - **核心痛点**：实时走带光标位置、VU 电平表跳变、RTA 频谱分析柱与微秒级时间码在播放时每帧变化，若直接全屏比对会导致测试用例因时间抖动产生 100% 假阳性误报；
+   - **遮罩规范**：图像比对算法在执行 SSIM 计算前，必须根据元素树元数据，自动获取上述高频刷新组件的矩形包围盒，并在比对矩阵中将其坐标区域强制置为纯黑（`#000000`）或完全排除，仅比对静态界面排布与音符几何。
+3. **断言优先级策略 (Assertion Priority Strategy)**：
+   - 确立“**控件树 JSON 几何与属性断言为主，像素级截图 SSIM 为辅**”的工程原则；
+   - 优先通过元素树 JSON 校验音符数量、坐标区间、选中状态及层级可见性；仅在验证深浅主题色值、矢量图标渲染与字体排版时触发 SSIM 像素比对。
+4. **分平台 Golden 截图基准库 (Per-Platform Golden Baselines)**：
+   - 因 Linux (FreeType)、macOS (CoreText) 与 Windows (DirectWrite) 系统的底层字体光栅化与亚像素抗锯齿算法存在微弱渲染差异，CI 视觉回归测试严禁跨平台混用同一张 Golden 图，必须按操作系统架构独立维护基准图集，基准误差阈值设定为 SSIM ≥ 0.999（像素差异占比 < 0.1%）。
