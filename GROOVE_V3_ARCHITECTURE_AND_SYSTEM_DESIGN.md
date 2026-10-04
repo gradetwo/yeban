@@ -2,10 +2,10 @@
 
 > **项目全称**：夜半 (Yeban) / Yeban DAW  
 > **开源许可证**：GNU General Public License v3.0 (GPLv3) 附 CLAP 插件加载附加许可 (GPLv3 §7)  
-> **规范版本**：`v3.0-rev7` (2026-10-04)  
+> **规范版本**：`v1.0.0-rev1` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`  
 > **规范状态**：Normative Specification（权威实现基准）  
 > **Supersedes**：所有历史 Groove Lab / Groove V1/V2/V3 设计草案、技术备忘与互相矛盾的旧版定义  
-> **Depends-on**：ARCHITECTURE v3.0-rev7, ROADMAP v3.0-rev7, LEGAL.md, CONTRIBUTING.md  
+> **Depends-on**：ROADMAP v1.0.0, LEGAL.md, CONTRIBUTING.md, AGENTS.md  
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
@@ -16,6 +16,10 @@
 
 > **修订记录 (Revision Log)**：  
 
+> - `v1.0.0-rev1` (2026-10-04)：**语义化版本重构 (Semantic Versioning Alignment)**。  
+>   1. **版本体系从零起步**：基于纯血从头研发模式，研发版本自 `v0.0.1` 起步；  
+>   2. **核心首发版本重定位**：原规划中的 `v3.0` 正式确立为首发生产版本 **`v1.0.0`**（工业基石与纯血原生首发版）；  
+>   3. **演进里程碑对齐**：外部协同平移为 **`v1.1.0`**（原 V3.1），轻量音源平移为 **`v1.2.0`**（原 V3.2），声学自动驾驶平移为 **`v1.5.0`**（原 V3.5），商业隔离插件宿主平移为 **`v2.0.0`**（原 V4.0）。  
 > - `v3.0-rev7` (2026-10-04)：**开源前阻断项清零与 AI Agent 机器可执行化重构 (依据权威专家评审 P0 意见)**。  
 >   1. **全域需求规范 ID 落地**：全面引入 `ARCH-TOP-*`、`ARCH-SEC-*`、`ARCH-RT-*`、`ARCH-DET-*`、`ARCH-PDC-*`、`MODEL-*`、`MCP-*` 机器可追溯编号，构建规格到测试的确定性映射；  
 >   2. **Slint 官方能力解耦与自研兜底**：建立“Slint 上游能力核验与自研兜底状态表”，全面由自研 `yeban-ui-test-port` / `yeban-ui-mcp` 抽象层接管，彻底解除对未核实上游内部特性的硬编码假设；  
@@ -1069,14 +1073,14 @@ yeban/
     ├── yeban-decode/               # [引擎核心] 基于 symphonia 的全格式解码与 rubato 重采样 (零 GUI 依赖)
     ├── yeban-render/               # [引擎核心] Rayon 多核并行离线母带渲染器与 RF64/MIDI 导出 (零 GUI 依赖)
     ├── yeban-mcp/                  # [业务服务] 兼具库 (供 yeban-app 内嵌) 与独立二进制 (stdio 批处理) (零 GUI 依赖)
-    ├── yeban-services/             # [V3.1 外部协同] 外部专业音频软件 (iZotope RX) 联动与 Ping 延迟校准
-    ├── yeban-plugin-host/          # [V4.0 崩溃隔离宿主] 跨进程独立崩溃隔离商业插件宿主 (clack + POSIX shm)
+    ├── yeban-services/             # [v1.1.0 外部协同] 外部专业音频软件 (iZotope RX) 联动与 Ping 延迟校准
+    ├── yeban-plugin-host/          # [v2.0.0 崩溃隔离宿主] 跨进程独立崩溃隔离商业插件宿主 (clack + POSIX shm)
     │   ├── Cargo.toml
     │   └── src/
     │       ├── lib.rs              # 宿主进程间通信中枢
     │       ├── shm_bridge.rs       # POSIX shm 环形音频帧交换
     │       └── sandbox_worker.rs   # 独立子进程插件加载与崩溃看门狗
-    └── yeban-vst/                  # [V4.0 反向插件] 基于 nih-plug 将 yeban-dsp 反向打包为 VST3/CLAP 插件
+    └── yeban-vst/                  # [v2.0.0 反向插件] 基于 nih-plug 将 yeban-dsp 反向打包为 VST3/CLAP 插件
 ```
 
 > **`Cargo.lock` 纳入版本控制铁律 (MUST)**：因工作区包含可直接分发的可执行程序（`crates/yeban-app` 与 `crates/yeban-mcp`），`Cargo.lock` 必须强制纳入 Git 跟踪管理，确保构建 100% 可重现，满足 GPLv3 源码追溯与可验证分发要求。
@@ -1085,7 +1089,7 @@ yeban/
 
 ## 9. 面向未来的预留接口与解耦规范 (Extensibility & Future-Proofing)
 
-### 9.1 跨进程崩溃隔离商业插件宿主 (`yeban-plugin-host`) [V4.0]
+### 9.1 跨进程崩溃隔离商业插件宿主 (`yeban-plugin-host`) [v2.0.0]
 - **[ARCH-PLUG-001] 架构澄清：崩溃隔离宿主 (Crash Isolation Host)**：
   - 本模块定位为**进程级崩溃隔离宿主**，旨在防范第三方专有插件发生段错误（SIGSEGV）、空指针异常或内存泄漏时拖垮 DAW 宿主主进程；
   - **明确声明**：该模块**非操作系统级安全沙箱 (Not an OS Security Sandbox)**，不防范恶意插件对宿主环境发起提权反弹 Shell 攻击，仅提供进程边界防护与稳定性看门狗；
@@ -1095,10 +1099,10 @@ yeban/
 - **POSIX `shm_open` / Windows MMF 共享内存通信**：宿主与插件独立 worker 进程间通过共享内存交换 32-bit Float 音频采样块与 MIDI 事件，往返时延 **< 0.3ms**；
 - **绝对崩溃防护与热重启**：第三方插件段错误崩溃仅导致独立 worker 退出，主工程 100% 稳定运行，界面弹出原地一键热重启并恢复崩溃前参数。
 
-### 9.2 外部专业桌面软件双向热重载 (iZotope RX / Melodyne) [V3.1]
+### 9.2 外部专业桌面软件双向热重载 (iZotope RX / Melodyne) [v1.1.0]
 - **[ARCH-EXT-001] 外部编辑器文件监听热重载**：制作人右键选中音频选区选择“在外部编辑器中编辑”，系统导出广播级 BWF 临时文件并启动跨平台文件监听（`notify` crate）；外部软件修改保存后，系统通过文件修改事件与内容 SHA-256 哈希校验自动捕获（目标响应延迟 ≤ 500ms），裁去保护静音区并以新 Take 泳道热重载回时间轴。
 
-### 9.3 模拟硬件效果器回路与一键 Ping 自动延迟校准 (Ping ADC) [V3.1]
+### 9.3 模拟硬件效果器回路与一键 Ping 自动延迟校准 (Ping ADC) [v1.1.0]
 - **[ARCH-EXT-002] 硬件插入校准**：插入 `ExternalHardwareInsert` 设备，发射 MLS（最大长度序列）声学脉冲测算往返样本延迟，内核自动**超前延迟其他所有并行数字音轨（PDC 自动延迟补偿）**，确保绝对零相位抵消。
 
 ### 9.4 Linux Wayland 窗口定位降级规范

@@ -28,10 +28,10 @@
 
 | 规范文档 | 核心职责与涵盖内容 | 规范版本 |
 | :--- | :--- | :---: |
-| [**系统架构与拓扑设计规范 (ARCHITECTURE)**](file:///home/crow/work/agy/review/GROOVE_V3_ARCHITECTURE_AND_SYSTEM_DESIGN.md) | 双 MCP 运行拓扑闭环、`.yeban.lock` OS 排他锁、960 PPQ AST、`BTreeMap` 确定性状态、`RoutingGraph` 单一声学权威、实时音频退役回收队列、内部 PDC 延迟补偿、5.0ms 时延预算、RF64 写入器、Zip-Slip 安全防御、Ops Log 撤销树 (`ARCH-*`, `MODEL-*`, `MCP-*`) | `v3.0-rev7` |
-| [**工程重构实施路线图 (ROADMAP)**](file:///home/crow/work/agy/review/GROOVE_V3_ENGINEERING_IMPLEMENTATION_ROADMAP.md) | Phase -1 开源合规大扫除、Phase 0 九大技术 Spike 准入验证、Phase 1~4 能力切片推进蓝图、RSK-01 ~ RSK-34 风险登记册、质量门禁体系 (`ROAD-*`, `MUST-GATE-*`, `BASELINE-*`) | `v3.0-rev7` |
-| [**行业深度调研与开源战略 (BENCHMARK)**](file:///home/crow/work/agy/review/GROOVE_V3_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md) | 关键事实核验状态表、六大顶级 DAW 解构、Web DAW 物理局限剖析、Slint 选型决策论证、Rust 音频军火库盘点、ASIO 隔离审计、AI 权重合规、工业融合架构蓝图与 L1/L2 确定性分级契约 | `v3.0-rev7` |
-| [**桌面 UI/UX 布局与交互设计规范 (UI/UX)**](file:///home/crow/work/agy/review/GROOVE_V3_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md) | Slint 声明式视网膜高清自适应网格、Session/Arrangement 双视图同构、10 万音符虚拟化钢琴卷帘、A/B 盲听（2048 采样预滚）、色盲安全视觉 Diff、无头视觉回归动态区域遮罩、UI MCP 三级权限分层 (`UI-*`) | `v3.0-rev7` |
+| [**系统架构与拓扑设计规范 (ARCHITECTURE)**](file:///home/crow/work/agy/review/GROOVE_V3_ARCHITECTURE_AND_SYSTEM_DESIGN.md) | 双 MCP 运行拓扑闭环、`.yeban.lock` OS 排他锁、960 PPQ AST、`BTreeMap` 确定性状态、`RoutingGraph` 单一声学权威、实时音频退役回收队列、内部 PDC 延迟补偿、5.0ms 时延预算、RF64 写入器、Zip-Slip 安全防御、Ops Log 撤销树 (`ARCH-*`, `MODEL-*`, `MCP-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
+| [**工程重构实施路线图 (ROADMAP)**](file:///home/crow/work/agy/review/GROOVE_V3_ENGINEERING_IMPLEMENTATION_ROADMAP.md) | Phase -1 开源合规大扫除、Phase 0 九大技术 Spike 准入验证、Phase 1~4 能力切片推进蓝图、RSK-01 ~ RSK-34 风险登记册、质量门禁体系 (`ROAD-*`, `MUST-GATE-*`, `BASELINE-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
+| [**行业深度调研与开源战略 (BENCHMARK)**](file:///home/crow/work/agy/review/GROOVE_V3_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md) | 关键事实核验状态表、六大顶级 DAW 解构、Web DAW 物理局限剖析、Slint 选型决策论证、Rust 音频军火库盘点、ASIO 隔离审计、AI 权重合规、工业融合架构蓝图与 L1/L2 确定性分级契约 | `v1.0.0-rev1` (起步自 `v0.0.1`) |
+| [**桌面 UI/UX 布局与交互设计规范 (UI/UX)**](file:///home/crow/work/agy/review/GROOVE_V3_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md) | Slint 声明式视网膜高清自适应网格、Session/Arrangement 双视图同构、10 万音符虚拟化钢琴卷帘、A/B 盲听（2048 采样预滚）、色盲安全视觉 Diff、无头视觉回归动态区域遮罩、UI MCP 三级权限分层 (`UI-*`) | `v1.0.0-rev1` (起步自 `v0.0.1`) |
 
 ---
 
@@ -86,9 +86,9 @@ yeban/
     ├── yeban-mcp/                  # [业务服务] 兼具库 (供 yeban-app 活会话挂载) 与独立二进制 (stdio 批处理)
     ├── yeban-ui-test-port/         # [测试核心] Slint 无头自动化测试端口与语义控件树内省抽屉 (零物理窗口)
     ├── yeban-ui-mcp/               # [测试服务] 基于 JSON-RPC 的 UI 自动化测试与无头截图 MCP 适配层
-    ├── yeban-services/             # [V3.1 外部协同] 外部专业音频软件 (iZotope RX) 联动与 Ping 延迟校准
-    ├── yeban-plugin-host/          # [V4.0 崩溃隔离宿主] 跨进程独立崩溃隔离商业插件宿主 (clack + POSIX shm)
-    └── yeban-vst/                  # [V4.0 反向插件] 基于 nih-plug 将 yeban-dsp 反向打包为 VST3/CLAP 插件
+    ├── yeban-services/             # [v1.1.0 外部协同] 外部专业音频软件 (iZotope RX) 联动与 Ping 延迟校准
+    ├── yeban-plugin-host/          # [v2.0.0 崩溃隔离宿主] 跨进程独立崩溃隔离商业插件宿主 (clack + POSIX shm)
+    └── yeban-vst/                  # [v2.0.0 反向插件] 基于 nih-plug 将 yeban-dsp 反向打包为 VST3/CLAP 插件
 ```
 
 ### AI Agent 双 MCP 自动化开发与无头自测流水线

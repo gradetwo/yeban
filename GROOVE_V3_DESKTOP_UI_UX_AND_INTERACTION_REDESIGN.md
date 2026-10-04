@@ -2,9 +2,9 @@
 
 > **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`  
 > **规范状态**：Normative UI/UX Specification (规范性设计文件)  
-> **版本**：`v3.0-rev7` (2026-10-04)  
-> **替代关系**：`Supersedes: GROOVE_V3_WEB_UI_UX_AND_INTERACTION_REDESIGN.md, GROOVE_V3_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md (v3.0-rev6 及更早版本)`  
-> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev7, ROADMAP v3.0-rev7, LEGAL.md, AGENTS.md`  
+> **版本**：`v1.0.0-rev1` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`  
+> **替代关系**：`Supersedes: GROOVE_V3_WEB_UI_UX_AND_INTERACTION_REDESIGN.md, GROOVE_V3_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md (v3.0-rev7 及更早版本)`  
+> **文档依赖**：`Depends-on: ARCHITECTURE v1.0.0, ROADMAP v1.0.0, LEGAL.md, AGENTS.md`  
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
@@ -14,7 +14,11 @@
 > 4. **零人力工时评估 (Zero Human Staffing Estimation)**：**彻底废除所有传统软件工程的人工人力、人月、人天及工时评估**。以可机械化断言的控件树属性、无头截图 SSIM 及 120 FPS 响应作为唯一交互验收标准。
 
 > **修订记录 (Revision Log)**：  
->
+
+> - `v1.0.0-rev1` (2026-10-04)：**语义化版本重构 (Semantic Versioning Alignment)**。  
+>   1. **版本体系从零起步**：确立全新从头研发模式，工程起步版本为 `v0.0.1`；  
+>   2. **核心首发版本重定位**：原规划中的 `v3.0` 正式确立为首发生产版本 **`v1.0.0`**（工业基石与纯血原生首发版）；  
+>   3. **交互特性标签对齐**：外部协同标记为 **`v1.1.0`**（原 V3.1），四维宏控与 SVS 歌词标记为 **`v1.5.0` / `v2.0.0`**（原 V3.5/V4.0），商业插件呼出标记为 **`v2.0.0`**（原 V4.0）。  
 > - `v3.0-rev7` (2026-10-04)：**全量需求编号体系与自研 UI 测试抽象落地 (依据开源合规与专家终审意见)**。  
 >   1. **全量注入规范需求 ID**：全面确立并注入 `UI-GRID-001`~`004`、`UI-NOTE-001`~`005`、`UI-TEST-001`~`003`、`UI-A11Y-001`~`004` 与 `UI-MCP-001`~`003` 唯一需求索引；  
 >   2. **架构收敛与 Slint 自研兜底**：将 Slint 未经充分验证的内部 MCP 与特定 headless 模式收敛为基于 `yeban-ui-test-port` / `yeban-ui-mcp` 的统一自研抽象层，明确 Slint 官方特性实测验证矩阵；  
@@ -47,7 +51,7 @@
 8. [Slint 组件树架构与 Rust 状态绑定规范](#8-slint-组件树架构与-rust-状态绑定规范)
 9. [面向未来人机共创的前端交互规范 (Future Extensible UI Interactions)](#9-面向未来人机共创的前端交互规范-future-extensible-ui-interactions)
 10. [编曲时光机、AI 提案审查与视觉 Diff 交互规范 (Arrangement Time Machine & Musical PR)](#10-编曲时光机ai-提案审查与视觉-diff-交互规范-arrangement-time-machine--musical-pr)
-11. [音轨外部软件与服务集成交互规范 (Track External Services UI/UX) [V3.1]](#11-音轨外部软件与服务集成交互规范-track-external-services-uiux-v31)
+11. [音轨外部软件与服务集成交互规范 (Track External Services UI/UX) [v1.1.0]](#11-音轨外部软件与服务集成交互规范-track-external-services-uiux-v110)
 12. [Slint 无头模式运行与 AI 视觉内省交互规范 (Headless UI & MCP Introspection)](#12-slint-无头模式运行与-ai-视觉内省交互规范-headless-ui--mcp-introspection)
 
 ---
@@ -235,7 +239,7 @@ graph TD
   - 按住 `Cmd/Ctrl + 点击`：执行**叠加 Solo（Additive Solo）**；
   - 右键标记 **Solo Safe（安全独奏监听）**：豁免静音（常用于 Aux Return 混响总线）。
 
-### 5.3 商业插件卡片与原生视窗呼出 [V4.0]
+### 5.3 商业插件卡片与原生视窗呼出 [v2.0.0]
 - 在设备链插入 VST3 / CLAP 商业插件后，机架卡片顶部提供 **“打开官方原厂界面 ↗”** 按钮；
 - 宿主进程直接调用 OS 原生视窗（Win32 HWND / macOS NSWindow / Linux X11）呈现官方界面；
 - **沙盒防崩溃热重启**：第三方插件发生段错误时，界面弹出原地热重启提示，保障工程不闪退。
@@ -351,10 +355,10 @@ crates/yeban-app/ui/
 - **视觉特征**：AI 生成的旋律在卷帘与时间轴上呈现为 **45% 半透明、虚线霓虹紫描边** 的音符图形块，右上角标注置信度徽章（如 `Copilot 94%`）；
 - **快捷键交互**：按下 **`Shift+Enter`** 原子采纳建议瞬时转为正式音符；按 `Esc` 放弃。
 
-### 9.2 语义声学四维宏控滚轮 [V3.5]
+### 9.2 语义声学四维宏控滚轮 [v1.5.0]
 - 通道条提供 Air（空气感）、Punch（打击感）、Warmth（模拟温暖度）、Nostalgia（复古）四个专业阻尼宏旋钮；拉动宏旋钮时，所有受控底层的 EQ 频点与压缩比率手柄浮现半透明幽灵联动轮廓。
 
-### 9.3 歌词与音素轨道 [V3.5/V4.0]
+### 9.3 歌词与音素轨道 [v1.5.0 / v2.0.0]
 - 歌词轨道支持与音符自动对齐，底层音素集合直接绑定 SVS 引擎定义的声学集合（汉语拼音声母/韵母或 X-SAMPA 音素标准），支持音素时值边界拖拽微调。
 
 ---
@@ -377,7 +381,7 @@ crates/yeban-app/ui/
 
 ---
 
-## 11. 音轨外部软件与服务集成交互规范 (Track External Services UI/UX) [V3.1]
+## 11. 音轨外部软件与服务集成交互规范 (Track External Services UI/UX) [v1.1.0]
 
 ### 11.1 外部音频编辑器双向集成与文件监听 (External Audio Editor Hot Reload)
 1. **右键启动**：快捷键 `Alt+E` 或右键“在外部编辑器中编辑”，系统导出带时间戳的 BWF 文件并启动外部专业软件（iZotope RX / Melodyne）；

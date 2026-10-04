@@ -2,10 +2,10 @@
 
 > **项目全称**：夜半 (Yeban) / Yeban DAW  
 > **开源许可证**：GNU General Public License v3.0 (GPLv3) 附 CLAP 插件加载附加许可 (GPLv3 §7)  
-> **规范版本**：`v3.0-rev7` (2026-10-04)  
+> **规范版本**：`v1.0.0-rev1` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`  
 > **规范状态**：Normative Engineering Plan（工程实施路线基准）  
 > **Supersedes**：所有历史 Groove Lab / Groove V1/V2/V3 路线图、工期估算与过渡计划  
-> **Depends-on**：ARCHITECTURE v3.0-rev7, LEGAL.md, CONTRIBUTING.md, AGENTS.md  
+> **Depends-on**：ARCHITECTURE v1.0.0, LEGAL.md, CONTRIBUTING.md, AGENTS.md  
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
@@ -16,7 +16,12 @@
 
 > **修订记录 (Revision Log)**：  
 
-> - `v3.0-rev7` (2026-10-04)：**开源前阻断项清零、AI Agent 机器可执行化重构与风险登记册扩容 (依据权威专家评审 P0 意见)**。  
+> - `v1.0.0-rev1` (2026-10-04)：**语义化版本重构 (Semantic Versioning Alignment)**。  
+>   1. **版本体系从零起步**：确立全新从头研发原则，项目起步版本为 `v0.0.1`；  
+>   2. **核心首发版本重定位**：原规划中的 `v3.0` 正式确立为首发生产版本 **`v1.0.0`**（工业基石与纯血原生首发版）；  
+>   3. **后续演进里程碑平移**：原 `V3.1` 平移为 **`v1.1.0`**，原 `V3.2` 平移为 **`v1.2.0`**，原 `V3.5` 平移为 **`v1.5.0`**，原 `V4.0` 平移为 **`v2.0.0`**；  
+>   4. **研发能力切片编号重构**：Phase -1 (`v0.0.1`) ➔ Phase 0 (`v0.1.0`) ➔ Phase 1 (`v0.2.0`) ➔ Phase 2 (`v0.4.0`) ➔ Phase 3 (`v0.6.0`) ➔ Phase 4 (`v0.8.0` ➔ `v1.0.0` GA)。  
+> - `v3.0-rev7` (2026-10-04)：开源前阻断项清零、AI Agent 机器可执行化重构与风险登记册扩容 (依据权威专家评审 P0 意见)。  
 >   1. **全域需求规范 ID 落地**：全面引入 `ROAD-M-1-*`、`ROAD-M0-*`、`ROAD-M1-*`、`ROAD-M2-*`、`ROAD-M3-*`、`ROAD-M4-*`、`MUST-GATE-001`~`014` 与 `BASELINE-001`~`006`；  
 >   2. **明确人类审查关卡边界**：在 Phase -1 中确立三项必要人类法务与商标审核节点（法务确认 GPLv3 §7 措辞、USPTO/商标查重核验、公开发布前合规核验签名）；  
 >   3. **Spike 体系精准化**：Spike 5 修正为自研 `yeban-ui-test-port` / `yeban-ui-mcp` 抽象层验证，Spike 8 锁定自定义 `Platform + SoftwareRenderer` 无头截图兜底，新增 Spike 9（EngineSnapshot 高频原子交换与退役队列内存回收压测）；  
@@ -48,29 +53,30 @@
    - 5.2 [核心质量验收指标矩阵 (Single Source of Truth)](#52-核心质量验收指标矩阵-single-source-of-truth)
    - 5.3 [门禁分级分类机制 (Must-Gates, Baseline Targets, Specialized Tests)](#53-门禁分级分类机制-must-gates-baseline-targets-specialized-tests)
 6. [质量保障体系与自动化测试规范 (Quality Assurance & Automation)](#6-质量保障体系与自动化测试规范-quality-assurance--automation)
-7. [未来演进里程碑与预留接口落地规范 (V3.0 ~ V4.0 Evolution Roadmap)](#7-未来演进里程碑与预留接口落地规范-v30--v40-evolution-roadmap)
+6. [质量保障体系与自动化测试规范 (Quality Assurance & Automation)](#6-质量保障体系与自动化测试规范-quality-assurance--automation)
+7. [未来演进里程碑与预留接口落地规范 (v1.0.0 ~ v2.0.0 Evolution Roadmap)](#7-未来演进里程碑与预留接口落地规范-v100--v200-evolution-roadmap)
 
 ---
 
 ## 1. 重构实施总体里程碑 (Milestones Overview)
 
-本项目研发采用 **AI Agent 全自主驱动开发（Autonomous AI Agent Development）** 范式。废除传统软件工程的人力人月估算，全流程划分为 6 个循序渐进的**端到端能力切片（Capability Slices）**。每个里程碑均由 AI Agent 自动生成代码、运行单元测试、模糊测试与性能打点，唯有达到机械化质量门禁方可推进至下一阶段。
+本项目研发采用 **AI Agent 全自主驱动开发（Autonomous AI Agent Development）** 范式。废除传统软件工程的人力人月估算，全流程划分为 6 个循序渐进的**端到端能力切片（Capability Slices）**。项目版本自 `v0.0.1` 从头起算，最终交付首个正式生产版本 `v1.0.0`。每个里程碑均由 AI Agent 自动生成代码、运行单元测试、模糊测试与性能打点，唯有达到机械化质量门禁方可推进至下一阶段。
 
 ```
-AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace)
+AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace, v0.0.1 ➔ v1.0.0)
 ================================================================================================
-[Milestone -1] Phase -1: 开源合规审查与仓库大扫除 (Open-Source Compliance & Sanitization)
+[Milestone -1] Phase -1: 开源合规审查与仓库大扫除 (Open-Source Compliance) [v0.0.1 初始骨架]
                └─ GPLv3 许可证 + CLAP §7 豁免 ➔ LEGAL.md 声明 ➔ VST3 3.8.0+ MIT ➔ 资产与依赖清洗
-[Milestone 0]  Phase 0: 原生引擎与 Slint 架构可行性验证 (Spikes 1~9 Go / No-Go 准入)
+[Milestone 0]  Phase 0: 原生引擎与 Slint 架构可行性验证 (Spikes 1~9 准入) [v0.1.0 架构准入]
                └─ cpal 驱动 ➔ 无锁 SPSC ➔ Slint 120 FPS ➔ 撤销树 ➔ 无头/双 MCP ➔ 卷帘压测 ➔ .yeban.lock ➔ 快照压测
-[Milestone 1]  Phase 1: 960 PPQ 数据模型、操作日志撤销树与存储引擎
+[Milestone 1]  Phase 1: 960 PPQ 数据模型、操作日志撤销树与存储引擎 [v0.2.0 模型基座]
                └─ yeban-model (ULID + BTreeMap) ➔ 领域操作日志 ➔ 本地 .yeban 容器 (Zip-Slip防御) ➔ 导入器
-[Milestone 2]  Phase 2: cpal 原生低时延音频管线与首个发声切片
+[Milestone 2]  Phase 2: cpal 原生低时延音频管线与首个发声切片 [v0.4.0 核心发声]
                └─ 实时声学线程调度 ➔ 预分配 Voice Pool ➔ SFZ v2 引擎 ➔ PDC 内部对齐 ➔ 零堆分配发声
-[Milestone 3]  Phase 3: Slint 120 FPS 编曲工作区与 A/B 盲听切片
+[Milestone 3]  Phase 3: Slint 120 FPS 编曲工作区与 A/B 盲听切片 [v0.6.0 交互呈现]
                └─ Slint 虚拟化卷帘与时间轴 ➔ Session/Arrangement 双视图 ➔ 提案分支切换 ➔ 30ms A/B 盲听
-[Milestone 4]  Phase 4: Yeban Intent API v2、Rayon 离线母带、GPLv3 分发与门禁切流
-               └─ 双 MCP 服务 (HTTP attach + stdio CLI) ➔ Rayon 极速母带 ➔ 实验性 ALS 导出 ➔ 生产切流
+[Milestone 4]  Phase 4: Yeban Intent API v2、Rayon 离线母带、GPLv3 分发与生产切流 [v0.8.0 ➔ v1.0.0 GA]
+               └─ 双 MCP 服务 (HTTP attach + stdio CLI) ➔ Rayon 极速母带 ➔ 实验性 ALS 导出 ➔ 正式交付 v1.0.0
 ================================================================================================
 ```
 
@@ -78,7 +84,7 @@ AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace)
 
 ## 2. 代码资产分类处置清单 (Demolition & Asset Migration)
 
-### 2.1 彻底淘汰的历史 Web 与过渡包袱 (Retire on V3 Parity Gate)
+### 2.1 彻底淘汰的历史 Web 与过渡包袱 (Retire on v1.0.0 Parity Gate)
 全量淘汰原有 Web 架构相关代码，包括所有前端 React 组件、TypeScript 类型与转码补丁：
 
 | 原仓库废弃路径 | 废弃原因分析 | 替代方案 (Pure Rust) | 处置策略 |
@@ -163,7 +169,7 @@ AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace)
 
 #### 目标与交付物
 1. **[ROAD-M1-001] 建立权威数据总线 (`crates/yeban-model`)**：
-   - 确立 `YebanProjectV3` 顶层文档，统一采用 960 PPQ 整数 Tick 时钟；
+   - 确立 `YebanProjectDocument`（`schema_version` 自 1.0.0 起步）顶层文档，统一采用 960 PPQ 整数 Tick 时钟；
    - 实体强制采用有序 **`EntityId(Ulid)`** 标识（Crockford Base32 编码），集合全面使用 `BTreeMap` 键控，消除哈希随机序；
    - 彻底解耦 `ProjectDocument`（持久化文档）、`SessionRuntimeState`（挥发性运行时状态）与 `LocalMachineConfig`（本机路径与凭据指针）。
 2. **[ROAD-M1-002] 唯一声学路由真理源 (`RoutingGraph`)**：
@@ -177,8 +183,8 @@ AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace)
    - 落地标准 `.yeban` 本地 ZIP 归档容器与内容寻址池（CAS）；
    - **安全强化**：严格实现 Zip-Slip 路径规范化校验与解压炸弹（Decompression Bomb）体积/比率上限拦截；
    - 实施临时文件落盘 + `fsync` + 原子重命名替换策略，确保硬断电零工程损坏。
-5. **[ROAD-M1-005] V1/V2 数据迁移器**：
-   - 交付 `crates/yeban-model/src/migration/` 模块，将历史工程无损升格为合法 V3 AST。
+5. **[ROAD-M1-005] 历史数据迁移器**：
+   - 交付 `crates/yeban-model/src/migration/` 模块，将历史工程无损升格为合法 v1.0.0 AST。
 6. **[ROAD-M1-006] 属性测试自动化验证 (`proptest`)**：
    - 覆盖 10,000 步随机操作序列，验证应用与逆操作后状态完全守恒。
 
@@ -306,7 +312,7 @@ flowchart TD
 | **RSK-25** | 本地不受信恶意进程探测并窃取 MCP 会话 Token | 低 | 高 | Token 文件权限锁定为 POSIX `0600` / Windows 仅当前用户；网络强制且仅绑定 `127.0.0.1` | 检测到无 Authorization 请求尝试 |
 | **RSK-26** | 大体积工程 ZIP 打包落盘引发瞬时 I/O 阻塞主线程 | 中 | 中 | 工程落盘移交独立后台 I/O 线程池异步执行；音频与 UI 线程零磁盘 I/O 阻塞 | UI 帧耗时突增 > 16.6ms |
 | **RSK-27** | 历史残留 Web / Wasm 依赖被意外引入 PR | 低 | 高 | `deny.toml` 禁用 `wasm-bindgen`、`web-sys`、`js-sys`；CI 检测到 Web 依赖直接阻断 | 构建清单出现 Web 专用 crate |
-| **RSK-28** | 专有商业 CLAP/VST3 插件段错误崩溃拖垮宿主进程 | 中 | 高 | V4.0 前通过弹窗提示；V4.0 全面交付独立子进程隔离宿主 (`crates/yeban-plugin-host`) | 子进程 SIGSEGV 信号捕获 |
+| **RSK-28** | 专有商业 CLAP/VST3 插件段错误崩溃拖垮宿主进程 | 中 | 高 | v2.0.0 前通过弹窗提示；v2.0.0 全面交付独立子进程隔离宿主 (`crates/yeban-plugin-host`) | 子进程 SIGSEGV 信号捕获 |
 | **RSK-29** | 极速 BPM 变动（如 20 跳转至 999）导致乐理与时钟 Tick 溢出 | 低 | 中 | BPM 硬限制于 20.0 ~ 300.0 区间；时间转换采用 `u64` 整数防溢出计算 | BPM 越界输入被拒绝 |
 | **RSK-30** | A/B 盲听交叉淡化在高能量低频信号下产生短暂正相位叠加破音 | 低 | 中 | 交叉淡化采用精确等功率正弦/余弦曲线（$\sin^2 + \cos^2 = 1$），总线挂载真峰值限制器兜底 | 交叉淡化瞬间触发峰值红灯 |
 | **RSK-31** | 自动化包络点密集轰炸导致实时插值计算过载 | 中 | 中 | 实施 Ramer-Douglas-Peucker 算法对冗余自动化点在线抽取；最低采样间隔限制为 16 采样点 | 单一自动化曲线点数 > 100,000 |
@@ -327,7 +333,7 @@ flowchart TD
 
 ### 5.2 核心质量验收指标矩阵 (Single Source of Truth)
 
-| 指标编号 | 评估维度 | 指标项目 | 测量方法与测试规程 | V3 原生桌面目标基准 | 关联门禁阶段 |
+| 指标编号 | 评估维度 | 指标项目 | 测量方法与测试规程 | v1.0.0 原生桌面目标基准 | 关联门禁阶段 |
 | :--- | :--- | :--- | :--- | :--- | :---: |
 | **[BASELINE-001]** | **离线母带渲染** | 32 轨参考工程 A 导出速度 | `yeban-render` 多线程并行导出 24-bit 48kHz WAV | **≥ 100× 真实时间** (180s 工程 ≤ 1.8s) | Phase 4 |
 | - | **离线母带渲染** | 32 轨参考工程 B (SFZ) | `yeban-render` 结合 NVMe 磁盘读取并行导出母带 | **≥ 30× 真实时间** (180s 工程 ≤ 6.0s) | Phase 4 |
@@ -403,24 +409,24 @@ AI Agent 必须执行八重自动化质量保障防线：
 
 ---
 
-## 7. 未来演进里程碑与预留接口落地规范 (V3.0 ~ V4.0 Evolution Roadmap)
+## 7. 未来演进里程碑与预留接口落地规范 (v1.0.0 ~ v2.0.0 Evolution Roadmap)
 
 ```
 +----------------------------------------------------------------------------------------------------+
-|                         夜半 (Yeban) 原生演进全周期路线图 (V3.0 ➔ V3.1 ➔ V3.2 ➔ V3.5 ➔ V4.0)          |
+|               夜半 (Yeban) 原生演进全周期路线图 (v0.0.1 ➔ v1.0.0 ➔ v1.1.0 ➔ v1.2.0 ➔ v1.5.0 ➔ v2.0.0)      |
 +----------------------------------------------------------------------------------------------------+
-| [V3.0 工业基石与纯血原生重构]                                                                        |
+| [v1.0.0 工业基石与纯血原生首发版 (原规划 V3.0)]                                                       |
 | - Slint 现代化原生桌面 GUI (120 FPS 响应，<35MB 极轻量常驻内存)                                       |
 | - cpal 极低时延声卡驱动与无锁 SPSC 声学调度管线，集成退役回收队列与内部 PDC 拓扑                       |
 | - 统一 960 PPQ 数据总线与 ULID BTreeMap 结构，RoutingGraph 单一声学权威，操作日志非线性撤销树         |
 | - 内置 323 款 SFZ 原声乐器引擎 + 纯 Rust 建模合成器 (PolySynth, GS-1, 808/909)                        |
 | - 双形态 Yeban Intent API v2 (桌面内嵌 HTTP attach + 独立 CLI) 与走带不停 30ms 等功率 A/B 盲听        |
-| - 实验性 Ableton ALS 导出 (带映射损失对照表与音频冻结兜底)，V1/V2 一次性导入器                         |
+| - 实验性 Ableton ALS 导出 (带映射损失对照表与音频冻结兜底)，历史工程导入器                             |
 | - GPLv3 完整开源发布，附带 CLAP 插件加载豁免条款与 assets/samples/ATTRIBUTION.md 完备声明             |
 |                                                                                                    |
 |                                         │                                                          |
 |                                         ▼                                                          |
-| [V3.1 专业桌面外接总线与高级版本合流]                                                                |
+| [v1.1.0 专业桌面外接总线与高级版本合流 (原规划 V3.1)]                                                 |
 | - 落地三向合并冲突解析 UI、按音轨 Cherry-pick (带依赖闭包校验) 与完整视觉 Diff                         |
 | - 音轨通用外部软件与服务集成总线 (`crates/yeban-services`)                                            |
 | - 外部专业音频编辑器双向热重载 (iZotope RX / Melodyne)                                               |
@@ -428,14 +434,14 @@ AI Agent 必须执行八重自动化质量保障防线：
 |                                                                                                    |
 |                                         │                                                          |
 |                                         ▼                                                          |
-| [V3.2 开放音源与轻量格式扩展]                                                                        |
+| [v1.2.0 开放音源与轻量格式扩展 (原规划 V3.2)]                                                         |
 | - 接入 SoundFont 2 (SF2) / SF3 经典通用 GM 音色库解析器                                              |
 | - 接入 Decent Sampler (.dspreset) 现代开源音色库解析器 (直接支持 Pianobook 社区海量免费资产)           |
 | - 外置非加密 Kontakt (.nki) 与 EXS24 音色区位映射 (Keyzones / Velocity Layers) 转换工具               |
 |                                                                                                    |
 |                                         │                                                          |
 |                                         ▼                                                          |
-| [V3.5 闭环声学自动驾驶与本地多 Agent 实时协作]                                                        |
+| [v1.5.0 闭环声学自动驾驶与本地多 Agent 实时协作 (原规划 V3.5)]                                         |
 | - 闭环自动驾驶母带：基于标准化 AcousticProfileReport 形成自诊断反馈调节回路                           |
 | - 语义声学四维滚轮 (Air, Punch, Warmth, Nostalgia) 宏控联动                                         |
 | - 实时 AI 建议伴随层 (Suggestion Overlay，按 Shift+Enter 瞬时转正)                                   |
@@ -443,7 +449,7 @@ AI Agent 必须执行八重自动化质量保障防线：
 |                                                                                                    |
 |                                         │                                                          |
 |                                         ▼                                                          |
-| [V4.0 商业 VST3/CLAP 崩溃隔离宿主与神经音频革命]                                                     |
+| [v2.0.0 商业 VST3/CLAP 崩溃隔离宿主与神经音频革命 (原规划 V4.0)]                                      |
 | - 商业插件跨进程独立崩溃隔离宿主 (`crates/yeban-plugin-host`，非操作系统级安全沙箱)，基于 `clack` / POSIX shm 实现崩溃完全隔离|
 | - 商业插件原生 OS 视窗呼出 (Win32 HWND / macOS NSWindow / Linux X11)                                 |
 | - 本地神经歌声合成 (SVS)：本地打字即唱，支持真实发音、滑音与微表情包络推理                            |

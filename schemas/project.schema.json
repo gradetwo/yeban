@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yeban.org/schemas/project.schema.json",
-  "title": "YebanProjectV3",
-  "description": "Authoritative persistent document schema for Yeban DAW v3.0",
+  "title": "YebanProjectDocument",
+  "description": "Authoritative persistent document schema for Yeban DAW v1.0.0 (development started from v0.0.1)",
   "type": "object",
   "required": [
     "schema_version",

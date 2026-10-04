@@ -20,7 +20,7 @@
 | **`biquad`** | `^0.4` | `MIT` | 通道条二阶 IIR 滤波拓扑计算 | 否 | 是 | 是 | 否 | 极低 | 宽松 MIT 许可，保留声明。 |
 | **`signalsmith-stretch`** | `^0.1` | `MIT` | 瞬态保持时间弹性拉伸 (Time-Stretching) | 否 | 是 | 是 | 否 | 极低 | 宽松 MIT 许可，替代存在传染性或商业限制的 Rubber Band。 |
 | **`rstar`** | `^0.12` | `MIT` OR `Apache-2.0` | 钢琴卷帘 10 万音符 R*-Tree 视口裁剪 | 否 | 是 | 是 | 否 | 极低 | 宽松双协议，保留声明。 |
-| **`yrs`** | `^0.18` | `MIT` | [V3.5] Rust Yjs CRDT 多人/多 Agent 协同 | 否 | 是 | 是 | 是 | 极低 | 预留特性，宽松 MIT 许可。 |
+| **`yrs`** | `^0.18` | `MIT` | [v1.5.0] Rust Yjs CRDT 多人/多 Agent 协同 | 否 | 是 | 是 | 是 | 极低 | 预留特性，宽松 MIT 许可。 |
 | **`clack`** | `^0.3` | `MIT` OR `Apache-2.0` | `yeban-plugin-host` CLAP 宿主桥接 | 否 | 是 | 是 | 是 | 极低 | 现代开源友好协议；结合项目 GPLv3 §7 例外条款加载第三方插件。 |
 | **`vst3-sys`** | `^0.6` | `GPL-3.0-only` | `yeban-plugin-host` VST3 FFI 绑定 | 否 | 是 | 是 | 是 | 低 | 自身以 GPLv3 发布，与夜半许可证天然兼容；对应 VST3 SDK 3.8.0+ 已为 MIT。默认作为实验特性关闭。 |
 | **`nih-plug`** | Git锁定 | `GPL-3.0` OR `MPL-2.0` | `yeban-vst` 反向插件打包导出 | 否 | 是 | 是 | 是 | 低 | 物理隔离于外围独立 crate，默认不包含在主执行程序中。 |

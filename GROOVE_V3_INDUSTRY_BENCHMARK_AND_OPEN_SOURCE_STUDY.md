@@ -2,9 +2,9 @@
 
 > **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3 附 CLAP 插件加载附加许可 (GPLv3 §7) | 仓库：`https://github.com/yeban/yeban`  
 > **文档状态**：Informative / Research（事实调研与生态战略参考）  
-> **规范版本**：`v3.0-rev7` (2026-10-04)  
+> **规范版本**：`v1.0.0-rev1` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`  
 > **Supersedes**：所有历史 Groove Lab / Groove V1/V2/V3 行业调研与竞品分析备忘录  
-> **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev7, ROADMAP v3.0-rev7, LEGAL.md, CONTRIBUTING.md, THIRD_PARTY_LICENSES.md`  
+> **文档依赖**：`Depends-on: ARCHITECTURE v1.0.0, ROADMAP v1.0.0, LEGAL.md, CONTRIBUTING.md, THIRD_PARTY_LICENSES.md`  
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
@@ -15,6 +15,10 @@
 
 > **修订记录 (Revision Log)**：  
 
+> - `v1.0.0-rev1` (2026-10-04)：**语义化版本重构 (Semantic Versioning Alignment)**。  
+>   1. **版本体系从零起步**：确立全新从头研发原则，项目起步版本为 `v0.0.1`；  
+>   2. **核心首发版本重定位**：原规划中的 `v3.0` 正式确立为首发生产版本 **`v1.0.0`**（工业基石与纯血原生首发版）；  
+>   3. **竞品追溯与工业蓝图版本平移**：追溯矩阵与技术蓝图中的版本标签平移为 `v1.0.0`、`v1.1.0`、`v1.2.0`、`v1.5.0` 与 `v2.0.0`。  
 > - `v3.0-rev7` (2026-10-04)：**开源前阻断项清零、事实核验状态表建立与风控矩阵扩容 (依据权威专家评审 P0 意见)**。  
 >   1. **确立 Informative / Research 参考性状态**：明确与 Normative 规范文件的职能边界；  
 >   2. **建立“关键事实核验状态表”**：逐项厘清 Slint 官方能力、VST3 SDK 3.8.0+ MIT 切换、nih-plug 边界、Basic Pitch/DeepFilterNet 模型定位与 signalsmith-stretch 许可；  
@@ -159,7 +163,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **底层架构语言** | C++ | Java / C++ | 纯 C / C++ | Delphi / C++ | C++ | **纯 Rust 编译 (Zero-unsafe 哲学)** |
 | **GUI 渲染框架** | 自研矢量 C++ | Java / OpenGL | 自研 Win32 / GDI / SWELL | 自研 Delphi / Direct2D | 自研 C++ 矢量引擎 | **Slint 响应式矢量引擎 (FemtoVG/Skia/OpenGL)** |
-| **插件防崩溃沙盒**| ❌ 无 (单进程) | ✅ 3级进程隔离沙盒 | ⚠️ 独立进程桥 (可选) | ❌ 无 (易闪退) | ❌ 无 | **✅ 共享内存崩溃隔离宿主 (`yeban-plugin-host` [V4.0])** |
+| **插件防崩溃沙盒**| ❌ 无 (单进程) | ✅ 3级进程隔离沙盒 | ⚠️ 独立进程桥 (可选) | ❌ 无 (易闪退) | ❌ 无 | **✅ 共享内存崩溃隔离宿主 (`yeban-plugin-host` [v2.0.0])** |
 | **版本管理能力** | ❌ 仅另存为 | ❌ 仅本地历史 | ❌ 无内置分支图 | ❌ 无 | ⚠️ Scratch Pad (草稿箱) | **✅ 领域操作日志 + 匿名撤销树 + 分支 A/B 盲听** |
 | **钢琴卷帘交互** | 良好 | 优秀 (MPE 支持) | 一般 (需大量定制) | 行业标杆 (Ghost/Slide) | 良好 (智能工具) | **基于 FL 交互设计参考 + Slint 120 FPS 原生卷帘** |
 | **音轨路由模型** | 固定分轨 | 灵活 (Grid 模块) | 万能音轨 (64通道/轨) | 通道需手动连线 | 传统分轨 + 自动化车道 | **统一有向无环图 RoutingGraph + ULID BTreeMap** |
@@ -254,7 +258,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 
 ### 5.3 专有采样格式清理与外置转换规范
 * 明确清理并彻底移除原代码中涉及 Kontakt NKI、Logic EXS24 等专有加密/私有格式的直接内核支持；
-* 后续在 [V3.2] 阶段仅提供独立外置的区位映射转换工具（Keyzone Converter），确保核心代码库绝对纯净。
+* 后续在 [v1.2.0] 阶段仅提供独立外置的区位映射转换工具（Keyzone Converter），确保核心代码库绝对纯净。
 
 ---
 
@@ -298,12 +302,12 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 
 | 行业痛点与缺陷来源 | 核心病灶剖析 | 夜半 (Yeban) 原生架构应对决策 | 对应规范章节 | 落地交付版本 |
 | :--- | :--- | :--- | :--- | :---: |
-| **Ableton / FL 插件连带闪退** | 宿主与插件处于同一进程，插件崩溃直接拉崩工程 | 跨进程独立崩溃隔离宿主 (`yeban-plugin-host`)，内存共享无锁环形缓冲 | ARCH §9.1 | V4.0 |
-| **传统 DAW 线性撤销历史丢失** | 撤销后一旦执行新编辑，跳过的操作分支被彻底截断 | 基于领域操作日志（Ops Log）的匿名分叉撤销树，历史永久可回退 | ARCH §6 | V3.0 |
-| **Web DAW 纯 JS GC 爆音与高延迟** | 垃圾回收阻塞主线程，音频时延 > 100ms | **放弃 Web，全栈转型 Slint + cpal 原生引擎**，硬件回路延迟 ≤ 5ms | ARCH §0/§3, ROADMAP §3 | V3.0 |
-| **传统 DAW 启动缓慢且占用巨大** | 笨重的框架与动态脚本虚拟机（几百 MB） | Slint + 纯 Rust 原生单二进制，冷启动 ≤ 100ms，常驻内存 ≤ 35MB | ROADMAP §5 | V3.0 |
-| **AI 编曲机械填音消耗海量 Token** | MCP 每次传递数千个离散音符，耗时长且极易超限 | 声明式乐理与曲式意图 API (Yeban Intent API v2)，单次交互 JSON 载荷 ≤ 4KB，Token 开销中位数 ≤ 600 Tokens (参考基准) | ARCH §7 | V3.0 |
-| **双 MCP 状态脱节与并发读写冲突** | 独立进程 stdio 与活 GUI 会话脱节，并发读写损坏工程 | 进程内 HTTP 挂载 (127.0.0.1+Token) + 独立 CLI + `.yeban.lock` 排他文件锁 | ARCH §0.3/§7.1 | V3.0 |
+| **Ableton / FL 插件连带闪退** | 宿主与插件处于同一进程，插件崩溃直接拉崩工程 | 跨进程独立崩溃隔离宿主 (`yeban-plugin-host`)，内存共享无锁环形缓冲 | ARCH §9.1 | v2.0.0 |
+| **传统 DAW 线性撤销历史丢失** | 撤销后一旦执行新编辑，跳过的操作分支被彻底截断 | 基于领域操作日志（Ops Log）的匿名分叉撤销树，历史永久可回退 | ARCH §6 | v1.0.0 |
+| **Web DAW 纯 JS GC 爆音与高延迟** | 垃圾回收阻塞主线程，音频时延 > 100ms | **放弃 Web，全栈转型 Slint + cpal 原生引擎**，硬件回路延迟 ≤ 5ms | ARCH §0/§3, ROADMAP §3 | v1.0.0 |
+| **传统 DAW 启动缓慢且占用巨大** | 笨重的框架与动态脚本虚拟机（几百 MB） | Slint + 纯 Rust 原生单二进制，冷启动 ≤ 100ms，常驻内存 ≤ 35MB | ROADMAP §5 | v1.0.0 |
+| **AI 编曲机械填音消耗海量 Token** | MCP 每次传递数千个离散音符，耗时长且极易超限 | 声明式乐理与曲式意图 API (Yeban Intent API v2)，单次交互 JSON 载荷 ≤ 4KB，Token 开销中位数 ≤ 600 Tokens (参考基准) | ARCH §7 | v1.0.0 |
+| **双 MCP 状态脱节与并发读写冲突** | 独立进程 stdio 与活 GUI 会话脱节，并发读写损坏工程 | 进程内 HTTP 挂载 (127.0.0.1+Token) + 独立 CLI + `.yeban.lock` 排他文件锁 | ARCH §0.3/§7.1 | v1.0.0 |
 
 ---
 
@@ -327,9 +331,9 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 |                                                                                                        |
 |  [ 生态资产与开源集成 (Ecosystem & Open Source) ]                                                       |
 |  ├─ 纯 Rust 解码与重采样 ──────────► 集成 symphonia (全格式解码) + rubato (Sinc 多相滤波重采样)         |
-|  ├─ 采样音源矩阵全平权 ────────────► 原生支持 323 款 SFZ 资产 + [V3.2] SF2 + [V3.2] Decent Sampler     |
-|  ├─ 商业插件生态全面拥抱 ──────────► [V4.0] VST3 (3.8.0+ MIT) / CLAP 商业插件隔离原生视窗与状态热重启   |
-|  └─ 开源音频 AI 原生流水线 ────────► [V3.0] Basic Pitch (本地扒带) + [V3.1] DeepFilterNet (近线降噪)    |
+|  ├─ 采样音源矩阵全平权 ────────────► 原生支持 323 款 SFZ 资产 + [v1.2.0] SF2 + [v1.2.0] Decent Sampler |
+|  ├─ 商业插件生态全面拥抱 ──────────► [v2.0.0] VST3 (3.8.0+ MIT) / CLAP 商业插件隔离原生视窗与状态热重启 |
+|  └─ 开源音频 AI 原生流水线 ────────► [v1.0.0] Basic Pitch (本地扒带) + [v1.1.0] DeepFilterNet (近线降噪) |
 |                                                                                                        |
 |  ====================================================================================================  |
 |  [ 夜半 (Yeban) 核心技术目标能力 (Core Target Capabilities) ]                                          |
