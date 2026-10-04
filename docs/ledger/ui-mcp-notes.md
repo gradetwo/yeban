@@ -216,8 +216,29 @@ rustc --edition 2024 --test --crate-name yeban_ui_mcp -D warnings -D rust_2018_i
 CARGO_MANIFEST_DIR=$PWD/crates/yeban-ui-mcp /tmp/uimcp-probe/uimcp_tests
 ```
 
-**结果：`52 passed; 0 failed`，`-D warnings` 零告警**（含 `#![deny(missing_docs)]` /
-`rust_2018_idioms` / clippy 无法在本机跑）。
+上面这条命令后来扩成了**五步**（第 1 轮 CI 之后补的，因为第 1 轮的两条 clippy 都红在
+"只被测试用到的导入"与"`x % n == 0`"这类**只有非测试库目标才会暴露**的问题上）：
+
+```text
+(1) lib 目标, feature OFF   —— 模拟默认 release 构建（不该编译任何 http 代码）
+(2) lib 目标, feature ON    —— 含 http 模块与 serve_forever
+(3) 单元判据 (--test)       —— 52 条
+(4) 集成判据 tests/contract.rs —— 5 条（见下面的 shim 说明）
+(5) example export_ui_samples —— 可执行文件真的构建出来
+```
+
+**结果：`52 passed; 0 failed` + 集成 5 条全过，五个目标都 `-D warnings` 零告警**
+（含 `#![deny(missing_docs)]` / `rust_2018_idioms`；clippy 本身本机跑不了）。
+
+**这一步的战果（"本机探针第二次救场"）**：`(4)` 立刻抓到 `tests/contract.rs` 里
+`repo_root` 从未使用（`-D dead-code` ⇒ CI 必红）。第 1 轮 CI 的 `rust` 腿只跑到 lib 就停了，
+`tests/contract.rs` **从未被编译过** —— 如果我没有把探针扩到 `(4)`，这条会留到第 2 轮才暴露。
+`(1)`/`(2)` 则是"feature 开关两侧都要能编译"的机械检查。
+
+⚠ **`(4)` 的诚实边界**：`tests/contract.rs::fingerprint_matches_the_tier1_renderer` 需要
+`yeban_ui_test_port::render::fnv1a64`，而那份文件依赖 Slint。本机探针为此加了一个
+**shim**（照抄同一份 FNV-1a 实现）。因此本机这条只证明**类型正确 + 断言形状成立**，
+"两份实现是否真的逐位一致"由 CI 用**真** `render.rs` 判 —— 报告里按这个口径写。
 
 **验证范围声明（重要）**：这 52 条覆盖 Base64 / 控件树投影 / 方法注册表 / 参数校验 /
 管线与授权 / 三个传输 / 样本导出与**跨语言对账** / 像素证据与遮罩。
@@ -272,6 +293,24 @@ bash scripts/dev/cargo-local.sh build -p yeban-mcp --features mcp-http   # 供�
 
 ---
 
+### 4.4 本机**原样复现** CI 的跨语言对账序列（含 `--locked`）
+
+```bash
+rm -rf target/schema-samples
+bash scripts/dev/cargo-local.sh run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples
+#   -> 13 份（11 契约实例 + 2 文档样本）
+/tmp/uimcp-probe/export_ui_samples --out target/schema-samples
+#   -> 3 份 .meta. + "同前缀真实例 11 份 (对账脚本的前缀守卫会用到它们)"
+python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
+#   -> 16 份样本全部 [ok]/[skip] 正确, "契约校验通过 (4 份 schema)。" exit=0
+```
+
+> 注：集成者提到的 `--repo-assets` 开关**在本分支的 `validate_schemas.py` 里还不存在**
+> （usage 只有 `--samples-dir`），所以这里用的是本分支该脚本的原样命令。
+> 产物落在 `target/`（`.gitignore` 已忽略），**不进仓库**。
+
+---
+
 ## 5. 注入 → 变红 → 还原（**6 条，全部真做过**）
 
 方法：把源文件备份到 `/tmp/uimcp-backup/`，注入后用零 Slint 探针重新编译并跑全部 52 条判据，
@@ -316,18 +355,42 @@ bash scripts/dev/cargo-local.sh build -p yeban-mcp --features mcp-http   # 供�
 
 | 轮次 | 头部 | run id | 结论 |
 | :--- | :--- | ---: | :--- |
-| 1 | 见 §9 的提交 | 见 §7.1 | 见 §7.1 |
+| 1 | `bd8f845` | `37228953183` | **failure**：`rust (workspace 全量)` 腿 red（`checks` / `deny` / `lockfile` / `plan` 绿）。**只有 2 条 clippy**，都在 lib 目标 |
+| 2 | 见 §7.1 | 见 §7.1 | 见 §7.1 |
 
-### 7.1 第 1 轮
+### 7.1 第 1 轮实测（逐条留痕）
 
-- 状态：**见本文件提交之后的读数**（写入判决会让头部前进一格；本文件是文档改动，
-  不影响 `checks` 的 fmt/守卫/契约对账，也不影响 `rust` 腿的 clippy/test）。
-- 集成者需要先加的那一行见 §8 needs-0：**不加也能过**（本线的样本是 `.meta.`，
-  但"只导出本线样本"会让 `checks` 腿在对账时**红**）——也就是说，
-  **如果集成者把 `export_ui_samples` 接进 CI，必须接在 `export_mcp_samples` 之后**；
-  如果**不**接，本线的样本导出就等于没有对账入口（判据
-  `tests/contract.rs::samples_reconcile_with_the_domain_contract` 仍然会在
-  `rust` 腿里自己跑一次对账，因此"不接 CI"的代价只是少一处独立确认，而不是空转）。
+```text
+error: unused import: `INVALID_PARAMS`   --> crates/yeban-ui-mcp/src/service.rs:64:35
+error: manual implementation of `.is_multiple_of()` --> crates/yeban-ui-mcp/src/base64.rs:100:8
+error: could not compile `yeban-ui-mcp` (lib) due to 2 previous errors
+```
+
+两条都属于**"只有非测试库目标才会暴露"**的类别 —— 这正是本机探针原来只跑 `--test` 时
+看不见的那一半（见 §4.1 的五步版）：
+
+1. `INVALID_PARAMS` 只在 `#[cfg(test)]` 里被断言用到 ⇒ 非测试 lib 里是未使用导入。
+   修法：从**非测试**导入里删掉它，在 `mod tests` 里显式 `use yeban_mcp::jsonrpc::INVALID_PARAMS;`
+   —— **不是**为了消警告而把它硬塞进某个分支。
+2. `raw.len() % 4 != 0` ⇒ `!raw.len().is_multiple_of(4)`（这条 lint 已经咬过 `decode` /
+   `render` 两条线，属于高频）。
+
+**修完之后的动作（按集成者要求）**：`gh run view 37228953183 --log-failed` 全文抓了一遍，
+确认 clippy 只报了这两条、没有第三条被前两条遮住（`could not compile (lib) due to 2 previous errors`
+与日志里两条诊断一一对应）；同时把本机探针从 3 步扩成 **5 步**（含 lib 的 feature OFF/ON
+与 `tests/contract.rs`），扩完**立刻抓到第三条**：`tests/contract.rs` 里 `repo_root` 是
+死代码（`-D dead-code` ⇒ CI 必红）—— 这条在第 1 轮的 CI 里根本没机会暴露，因为
+rust 腿在 lib 就停了（见 §4.1）。
+
+### 7.2 needs-0（样本导出接 CI）与判决的关系
+
+**不加那一行也能过**：本线样本是 `.meta.`，`checks` 腿不加这行时根本看不到它们
+（`--samples-dir target/schema-samples` 里只有 model + mcp 的样本）。
+代价是：`rust` 腿的 `tests/contract.rs::samples_reconcile_with_the_domain_contract`
+**自己会跑一次**同样的对账（它调 `yeban_mcp::samples::export_all` + 本线的导出到临时目录），
+所以"不接 CI"只是少一处**独立**确认，而不是空转。
+**若集成者要接**，位置必须在 `export_mcp_samples` **之后**（顺序由前缀守卫决定，
+见 §8 needs-0）。
 
 ---
 

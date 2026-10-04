@@ -97,7 +97,7 @@ pub fn encode(bytes: &[u8]) -> String {
 /// 长度不是 4 的倍数、出现字母表外的字符、或 `=` 位置非法。
 pub fn decode(text: &str) -> Result<Vec<u8>, Base64Error> {
     let raw = text.as_bytes();
-    if raw.len() % 4 != 0 {
+    if !raw.len().is_multiple_of(4) {
         return Err(Base64Error::BadLength { actual: raw.len() });
     }
     let mut out = Vec::with_capacity(raw.len() / 4 * 3);

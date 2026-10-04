@@ -60,9 +60,7 @@
 use serde_json::{Map, Value};
 
 use yeban_mcp::dispatch::Outcome;
-use yeban_mcp::jsonrpc::{
-    self, ErrorObject, FORBIDDEN, INVALID_PARAMS, Id, NOT_IMPLEMENTED, Request, Response,
-};
+use yeban_mcp::jsonrpc::{self, ErrorObject, FORBIDDEN, Id, NOT_IMPLEMENTED, Request, Response};
 use yeban_mcp::security::{
     AuthContext, BearerToken, Channel, Denial, RunMode, ScopeSet, authenticate, authorize,
 };
@@ -696,6 +694,7 @@ pub fn http_status_for(error: &ErrorObject) -> u16 {
 mod tests {
     use super::*;
     use crate::testing::*;
+    use yeban_mcp::jsonrpc::INVALID_PARAMS;
     use yeban_mcp::security::Scope;
     use yeban_ui_test_port::image::{Rgb8Image, Size};
     use yeban_ui_test_port::port::Permission;

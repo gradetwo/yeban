@@ -12,13 +12,6 @@
 
 use std::path::PathBuf;
 
-/// 仓库根。
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-}
-
 /// 每个判据独立的临时目录。
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
