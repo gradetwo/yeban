@@ -326,3 +326,19 @@ test result: ok. 84 passed; 0 failed           ← 默认 feature(含 device 的
   已有的模式（同仓库、同作者、同一许可），**没有复制其它项目的代码**；
 - `dbfs`/`sanitize`/`supersedes` 是十行以内的纯函数；
 - 未引入任何新依赖，因此**不新增** `THIRD_PARTY_LICENSES.md` 条目，也不需要 hoist。
+
+---
+
+## 追加（集成者代记）：**MN1 已由 `line/dsp-level` 关闭**
+
+- **MN1「把电平纯计算上移到 `yeban-dsp`」→ 已完成**：`crates/yeban-dsp/src/meter.rs`（新，含 285 条冻结位模式）+
+  `loudness.rs`（BS.1770-4 K 加权 + 无门限 LUFS 最小子集）；`crates/yeban-engine/src/level.rs` 退化为纯 `pub use`。
+  **调用方改动量为 0**，engine 侧的实时状态（`MeterFrame`/`MeterBank`/SPSC/`MeterBoard`）与"每量子一次批量发布"留在原处。
+- **engine 没有第二份实现的机械证据**：源码扫描（`include_str!` + 实现记号）+ 类型/函数地址比较（`fn_addr_eq`）+ 行为冻结表。
+- **结构性读数与本文档上一轮**逐字相同**：`quanta=10242 publishes=10242 frames=40968 capacity_drops=0`、
+  105 行 `allocations=0 deallocations=0`。⇒ 搬迁**没有**改变实时侧行为。
+- 该线另外新增了 4× 真峰值与 LUFS 最小子集，并在 CI 上被**自己写的逐位判据**抓到 1 ULP 的跨架构差异
+  （`f32::log10` 不保证正确舍入）⇒ 已升级为 **ADR-0001 D32**（按运算类别分策）。
+- 仍未做（转记）：峰值保持"钉住时间"（须独立类型，不得改 `LevelDetector` 否则破坏逐位契约）、
+  多声道独立电平、UI 侧消费、真峰值倍数（4× 在 0.4·fs 欠读 0.44 dB）、其它采样率的 K 加权系数。
+
