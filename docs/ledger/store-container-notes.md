@@ -387,7 +387,13 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
 | 第 1 轮（容器接线 + 16 条判据 + 5 次注入） | [`37235708211`](https://github.com/gradetwo/yeban/actions/runs/37235708211) | `aeae45c` | **全绿**：`plan` 4s（判定只影响 `yeban-mcp`）/ `checks` 51s / `deny` 43s / `lockfile` 16s / **`rust (yeban-mcp)` 49s** 全部 ✓；`rust (workspace 全量)` 0s skipped |
-| 第 2 轮（I/O 层大小闸门 + Windows 锁修复 + 判据 17/18 + 注入 F/G） | 见提交信息 / `ci-verdict.sh` 读数 | 见该次提交 | 见该次运行的 `rust (yeban-mcp)` 腿；**Windows 由集成者的 `gates-manual` `windows` 门禁复核** |
+| 第 2 轮（I/O 层大小闸门 + Windows 锁修复 + 判据 17/18 + 注入 F/G） | [`37236063605`](https://github.com/gradetwo/yeban/actions/runs/37236063605) | `f926e55` | **全绿**：`plan` 4s / `checks` 35s / `deny` 47s / `lockfile` 20s / **`rust (yeban-mcp)` 54s** 全部 ✓；`rust (workspace 全量)` skipped（`plan` 判定只影响 `yeban-mcp`） |
+| 第 3 轮（本文件 + 台账整理，**纯文档**） | 见提交信息 / `ci-verdict.sh` 读数 | 见该次提交 | 本提交只改 `docs/ledger/**`，不动 `crates/**`；按纪律仍然读回判决（读数记在给集成者的汇报里） |
+
+> **Windows 腿不在这张表里**：`windows` 是集成者新增的 `gates-manual` 手动门禁
+> （`gh workflow run gates-manual.yml -f gate=windows`），本线**没有权限也没有本机条件**跑它
+> （`rustup target list --installed` 无 windows target）。本线交付的是"让那次门禁变绿的修复"，
+> 真读数由集成者复跑后记录。**在拿到那次读数之前，Windows 侧一律记为 pending。**
 
 > 本文件自身是**文档改动**：记录判决的这一次提交会再前进一格。它只改
 > `docs/ledger/store-container-notes.md`，不触碰任何 `crates/**`，因此不影响 §6 的任何判据；
@@ -404,12 +410,12 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | boundary-1 | `project.assets`（元数据索引）与容器 `assets/{sha256}`（字节）**不做交叉校验** | 见 §2.4。模型层没有 blob 存储；会话 CAS 池是"容器里有什么"的唯一事实源。真资产库接线时必须补"索引 ↔ 池"对账判据 |
 | boundary-2 | 跨进程/跨会话的**字节确定性**不成立 | 提交身份是 `EntityId::new()`（ULID，随机，`CommitDraft` 由调用方提供 id 是**有意**的设计）。判据 4 因此断言的是**同一会话内**两次落盘逐字节相同；容器写入器本身的确定性由容器线的 `write_is_deterministic` 承担 |
 | boundary-3 | **`fsync` 的移除在本机不可观测**（注入 D 零变红） | 断电/崩溃后的持久性是**进程外**性质，`std::fs` 没有可注入的 fsync 探针，本机与 CI 都无法用判据钉住"真的 fsync 了"。本线的证据是"三阶段协议**只有一个**入口 `write_project_atomic`，且它在 `rename` 之前调用 `sync_all`"这条结构事实 + 代码审查。要机械钉住需要 `strace`/`dtruss` 级别的系统调用观测（登记为 pending） |
-| boundary-8 | **Windows 分支本机无法编译** | 本机（macOS）没有 `x86_64-pc-windows-*` 的 std（`rustup target list --installed` 只有 darwin/linux/wasm）⇒ `src/domain/lock.rs` 的 `#[cfg(windows)]` 代码与 `tests/lock_advisory.rs` 的 Windows 断言**只能**由集成者的 `windows` 手动门禁编译/执行。本线的 Windows 侧结论**必须**以那次门禁的读数为准，不得由本机"看起来对"替代 |
-| boundary-9 | **持锁期间读锁文件在 Windows 上不可用**（平台事实，不是缺陷） | `LockFileEx` 是强制字节区间锁 ⇒ 持有者活着时，任何其它句柄（含同进程）读 `.yeban.lock` 都被 OS 拒绝。因此**跨进程**诊断在 Windows 上拿不到持有者 PID；唯一可靠来源是**持有者自己进程内**的 `Domain::lock_holder()`。要在 Windows 上跨进程看持有者，需要 `LockFileEx` 之外的通道（例如另写一份 non-locked 的审计文件）—— 未做，登记为 needs-5 |
 | boundary-4 | 只测到"资产 = 4 KiB 随机字节" | 没有测大资产（GB 级）与真实音频（FLAC/WAV）。容器线的上限判据用"声明 2 GB + 实际小字节"钉住阈值本身 |
 | boundary-5 | `put_asset` 只进**内存**池 | 没有磁盘级 CAS（`assets/{sha256}` 落盘池）、没有 GC/去重策略、没有"引用计数"；一次会话里放进池但从不被工程引用的资产**照样会被写进容器**（池是权威） |
 | boundary-6 | 兼容路径读裸 JSON 时**没有**迁移提示（只有 `format: "bare-json"`） | 见 §4.2 的删除条件 3 |
 | boundary-7 | 打开容器时**不恢复**提案表（`proposals`） | `Proposal` 记录是 MCP 会话态（`ARCH-OPS-002` 的 DAG 才是持久化层）；容器里只有 `history.dag`。`ai/proposal-*` 分支与提交都在 DAG 里，记录不在 |
+| boundary-8 | **Windows 分支本机无法编译** | 本机（macOS）没有 `x86_64-pc-windows-*` 的 std（`rustup target list --installed` 只有 darwin/linux/wasm）⇒ `src/domain/lock.rs` 的 `#[cfg(windows)]` 代码与 `tests/lock_advisory.rs` 的 Windows 断言**只能**由集成者的 `windows` 手动门禁编译/执行。本线的 Windows 侧结论**必须**以那次门禁的读数为准，不得由本机"看起来对"替代 |
+| boundary-9 | **持锁期间读锁文件在 Windows 上不可用**（平台事实，不是缺陷） | `LockFileEx` 是强制字节区间锁 ⇒ 持有者活着时，任何其它句柄（含同进程）读 `.yeban.lock` 都被 OS 拒绝。因此**跨进程**诊断在 Windows 上拿不到持有者 PID；唯一可靠来源是**持有者自己进程内**的 `Domain::lock_holder()`。要在 Windows 上跨进程看持有者，需要 `LockFileEx` 之外的通道（例如另写一份 non-locked 的审计文件）—— 未做，登记为 needs-5 |
 
 ### needs（需要裁决 / 需要别的所有者接线）
 
@@ -464,4 +470,5 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 /Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/tests/tools_e2e.rs             (修改: 2 条判据按新语义改写)
 /Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/tests/lock_advisory.rs         (修改: 2 条判据改走守卫 + 1 条平台感知判据)
 /Users/crow/work/music/yeban/.worktrees/store-container/docs/ledger/store-container-notes.md            (本文件)
+/Users/crow/work/music/yeban/.worktrees/store-container/docs/ledger/lock-advisory-notes.md              (追加一节: Windows 强制锁与持有者诊断的平台差异)
 ```
