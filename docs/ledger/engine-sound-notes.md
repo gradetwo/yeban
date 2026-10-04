@@ -269,6 +269,51 @@ engine 侧需要的接口（预留形状, 尚未实现）:
 | **N5** | 乐器/音色参数的形状：`DeviceDefinition::params`（字符串键值对）如何投影成音频线程可读的定长参数集？ | 没有它，合成器只能有一个内置波表音色（本切片即如此） |
 | **N6** | SFZ 采样解码依赖（symphonia/hound）与重采样（rubato）的依赖裁决 + 样本资产的许可证/SHA-256 登记 | AGENTS.md §2 红线 2 与红线 9；见 §5.3 |
 | **N7** | 跨架构 L1 对账：本线的逐样本路径全部是 IEEE 精确类，建议在 CI 上补"aarch64 vs x86_64 逐位对账"（现有 `frozen_level_table` 是电平线的同类判据） | 需要 CI 改动（**本线不动 `ci.yml`**，按纪律写进 needs） |
+| **N8** | **CI 的"受影响集合"计划器认不出 `workspace = true` 形式的下游依赖** ⇒ 公共 API 的破坏性改动可能不被拦下 | 见下方 §6.1：本线实测复现，属于 `scripts/dev/changed-crates.py` **与 `.github/**`**（红线：本线禁改），必须由集成者处置 |
+
+### 6.1 N8 的实测复现（`line/engine-sound` 推送后立刻发现）
+
+推送后 CI 的 `plan (受影响集合)` 只选出 `["yeban-engine", "yeban-sfz"]`
+（本地重跑 `python3 scripts/dev/changed-crates.py --base origin/main --head HEAD`
+得到同一结果：`reason = "11 个文件改动, 命中 2 个 crate, 含下游共 2 个"`），
+于是 `rust (yeban-app)` **没有进 matrix**，`rust (workspace 全量)` 也被 `workspace_wide=false` 跳过。
+
+根因（读代码得出，不是猜）：
+
+```python
+# scripts/dev/changed-crates.py::dependents_of
+if f'"{parent}/{crate}"' in text or f'path = "{parent}/{crate}"' in text:
+```
+
+它只在**成员自己的** `Cargo.toml` 里找内联的 `path = "crates/<name>"` 字面量。
+而 ADR-0001 **D21** 之后，跨成员依赖的推荐写法就是
+
+```toml
+# crates/yeban-app/Cargo.toml
+yeban-engine = { workspace = true }      # ← 路径住在根 [workspace.dependencies]
+```
+
+路径因此不在成员清单里，计划器**看不见这条边**。实测受影响的边至少有
+`yeban-app → yeban-engine`、`yeban-app → yeban-model`、`yeban-engine → yeban-dsp`、
+`yeban-engine → yeban-model`、`yeban-mcp/yeban-decode → yeban-model` 等等
+（`grep -rn 'yeban-.*\.workspace = true' crates/*/Cargo.toml` 可复现清单）。
+
+**本轮为什么没有出事**：本切片的公共 API 改动是**纯增量**的
+（新增 `EngineSnapshot::with_schedules`/`schedules`/`schedule`/`scheduled_notes`/
+`note_schedule_drops`、新增 `pub mod synth`、`EngineStats` 只**增加**字段、
+`from_parts` 签名不变、删除的 `render_track_into` 是私有函数），
+因此"没被 CI 编译到的下游"仍然是源码兼容的 —— 这一点由人工逐条核对
+`crates/yeban-app/src/engine_host.rs` 与 `src/live_surface.rs` / `src/meters.rs`
+的调用点确认（只用到 `from_project` / `tracks()` / `channels()` /
+`block_size_matches_enum()` / `EngineRuntime::new` / `process_quantum` / `stats()`，
+全部未变）。
+
+**为什么必须修**：下一个改 `yeban-model` 或 `yeban-engine` 公共 API 的切片，
+只要不是"纯增量"，就会在 **`rust (workspace 全量)` 被跳过**的情况下拿到一个全绿的判决 ——
+这正是"本地绿/CI 绿不等于没坏"的另一种形态。处置选项（由集成者裁决）：
+(a) `dependents_of` 直接读 `cargo metadata` 的 `resolve` 图；
+(b) 或退一步：把 `workspace_wide` 改成"任一 engine/model 公共 crate 被改动即为真"。
+本线**没有**动 `.github/**` 与 `scripts/**`（红线），只登记在此。
 
 ---
 
@@ -325,4 +370,23 @@ S1/S2/S4/S5/S6/S7 全部原样保持绿。
 | `bash scripts/gates/run-gates.sh light` | 绿（fmt + 13 条红线守卫 + 文档链接 + 依赖许可清单） |
 | `run-gates.sh crate yeban-engine` | **未跑**：本机禁止（cpal 重依赖），交给 CI |
 | `cargo test --workspace` / benchmark / fuzz | **未跑**（纪律禁止） |
-| CI 判决 | 见提交说明与 `scripts/dev/ci-verdict.sh` 的读数（本文件不预写结论） |
+
+### 9.1 CI 判决（**已读回**，不是 pending）
+
+```text
+run id  : 37243099566   （line/engine-sound，push 触发）
+结论    : completed / success —— 所有被调度到的 job 全绿
+  ✓ lockfile (确定性 Cargo.lock)           17s
+  ✓ checks (fmt / 红线守卫 / schema)        28s
+  ✓ plan (受影响集合)                        6s
+  ✓ deny (cargo-deny 开源合规)              59s
+  ✓ rust (yeban-engine)                    48s   ← clippy -D warnings + test，**默认 feature（含 cpal）**
+  ✓ rust (yeban-sfz)                       31s
+  - rust (workspace 全量)                        ← 被 plan 跳过（见 N8）
+  - windows (yeban-mcp / yeban-model 平台分支)    ← 与本改动无关
+```
+
+读法：`rust (yeban-engine)` 用的是 `cargo clippy -p yeban-engine --all-targets --locked -- -D warnings`
+与 `cargo test -p yeban-engine --all-targets`（工作流原文，**默认 feature**），
+所以这一条同时给出了"默认 feature（cpal 在编）下 clippy 零告警 + 全部目标测试通过"的
+平台判决 —— 本机无法编译的那一侧由它覆盖。**`workspace 全量` 被跳过**是 N8 的直接后果。
