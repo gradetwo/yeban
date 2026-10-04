@@ -124,10 +124,29 @@ def main() -> int:
         action="store_true",
         help="把结果写进 $GITHUB_OUTPUT / $GITHUB_STEP_SUMMARY (CI 用)",
     )
+    parser.add_argument(
+        "--force-full",
+        action="store_true",
+        help="不做差异推导, 直接返回全部成员 (手动档要真跑全量时用)",
+    )
     args = parser.parse_args()
     gho = args.github_output
 
     members = all_members()
+
+    if args.force_full:
+        # 真实教训: 手动档最初用 `--base HEAD~1` 想"强制全量", 那只把差异缩到最后一个提交,
+        # 结果 plan 推导出"无受影响 crate", rust 矩阵**被跳过**却报 success ——
+        # 一个声称跑全量、实际什么都没跑的手动档, 比没有这个档位更危险。
+        emit(
+            {
+                "crates": members,
+                "workspace_wide": True,
+                "reason": "--force-full: 跳过差异推导, 强制全部成员",
+            },
+            gho,
+        )
+        return 0
 
     try:
         files = changed_files(args.base, args.head)

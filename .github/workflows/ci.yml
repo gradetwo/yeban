@@ -61,15 +61,21 @@ jobs:
           FORCE_FULL: ${{ inputs.force_full }}
         run: |
           set -euo pipefail
-          if [ "${FORCE_FULL:-false}" = "true" ] || [ -z "${BASE_SHA:-}" ]; then
+          EXTRA=""
+          if [ "${FORCE_FULL:-false}" = "true" ]; then
+            # 手动档要求真跑全量: 必须让**计划器**返回全部成员,
+            # 而不是把 base 挪到 HEAD~1 (那样只会推导出"无受影响 crate"并把 rust 腿跳过)。
+            EXTRA="--force-full"
+          fi
+          if [ -z "${BASE_SHA:-}" ]; then
             BASE="HEAD~1"
           else
             BASE="$BASE_SHA"
           fi
-          echo "diff base = $BASE"
+          echo "diff base = $BASE  extra = ${EXTRA:-<none>}"
           # 首次推送时 github.event.before 是全零 sha; 脚本会保守回退全量。
           # 逻辑住在脚本里而不是这里, 因此它可以在本机被测 (SKILL 规则 3)。
-          python3 scripts/dev/changed-crates.py --base "$BASE" --head HEAD --github-output
+          python3 scripts/dev/changed-crates.py --base "$BASE" --head HEAD $EXTRA --github-output
 
   # ---------------------------------------------------------------------------
   # 便宜且永远要跑的门禁: 格式 / 机械红线 / JSON Schema 契约

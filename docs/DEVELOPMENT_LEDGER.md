@@ -255,3 +255,17 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
   **不重写已推送的历史**。若人类要求彻底清除，需要一次 `git filter-repo` + 强制推送（会打乱所有克隆与 CI 记录），
   列入 `ROAD-M-1-005` 的历史清理项一并决定。
 
+### L8 — 我写的"强制全量"手动档其实什么都没跑，而且报了 success
+
+- **现象**：`ci.yml` 的 `workflow_dispatch` 有 `force_full` 输入，我把它实现成"把 diff base 挪到 `HEAD~1`"。
+  在 tip 上跑（run 37219162892）时，`HEAD~1..HEAD` 只有一个 `docs/adr/**` 提交，
+  于是计划器推导出"无受影响 crate"，`rust` 矩阵**整条被跳过**，而整个 run 仍然报 **success**（5 个 job：plan/checks/lockfile/deny + 1 skipped）。
+- **为什么危险**：一个"声称跑全量、实际什么都没跑"的档位，比没有这个档位更糟 ——
+  它会在需要"tip 全量绿"的场合给出一个假的绿。这跟 SKILL 规则 2（判据必须能失败）是同一类错误的另一面：
+  **判据必须能真的执行**。
+- **修复**：计划器新增 `--force-full`，直接返回**全部成员**（实测 0 → 23 个 crate）；
+  workflow 在该输入为真时传这个开关，而不是挪 base。本机两种模式已对账：
+  `HEAD~1 差异 -> 0 crates` vs `--force-full -> 23 crates, workspace_wide=true`。
+- **规则**：任何"手动触发"的开关都要在本机看到它**真的改变了被测集合**，再相信它的判决。
+  只看 run 的 conclusion 会被"跳过也算成功"骗过去。
+
