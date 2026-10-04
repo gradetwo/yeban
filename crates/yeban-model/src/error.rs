@@ -5,6 +5,8 @@
 
 use thiserror::Error;
 
+use crate::ids::{AssetHash, EntityId};
+
 /// `yeban-model` 的统一错误类型。
 ///
 /// 只派生 `PartialEq` 而不派生 `Eq`：`ProbabilityOutOfRange` 携带 `f32`，而 `f32`
@@ -80,5 +82,239 @@ pub enum ModelError {
         required: u32,
         /// 本读取器版本。
         actual: u32,
+    },
+
+    /// 速度 (BPM) 越界 (允许 20.0..=999.0，且必须有限)。
+    #[error("bpm {value} out of range 20.0..=999.0")]
+    BpmOutOfRange {
+        /// 实际收到的速度值。
+        value: f64,
+    },
+
+    /// 拍号分子越界 (允许 1..=32)。
+    #[error("time signature numerator {value} out of range 1..=32")]
+    TimeSignatureNumeratorOutOfRange {
+        /// 实际收到的分子。
+        value: u8,
+    },
+
+    /// 拍号分母不在允许集合 `{1,2,4,8,16,32}` 中。
+    #[error("time signature denominator {value} is not one of 1,2,4,8,16,32")]
+    TimeSignatureDenominatorUnsupported {
+        /// 实际收到的分母。
+        value: u8,
+    },
+
+    /// 采样率不在规范允许集合 `{44100,48000,88200,96000,192000}` 中。
+    #[error("sample rate {value} is not one of 44100,48000,88200,96000,192000")]
+    SampleRateUnsupported {
+        /// 实际收到的采样率 (Hz)。
+        value: u32,
+    },
+
+    /// 缓冲区长度不在规范允许集合 `{64,128,256,512,1024}` 中。
+    #[error("block size {value} is not one of 64,128,256,512,1024")]
+    BlockSizeUnsupported {
+        /// 实际收到的缓冲区长度 (frames)。
+        value: u32,
+    },
+
+    /// 浮点字段不是有限值 (`NaN` / `±Inf` 一律拒绝：它们无法确定性地序列化)。
+    #[error("{field} must be finite, got {value}")]
+    NonFiniteValue {
+        /// 字段名 (规范字段路径)。
+        field: &'static str,
+        /// 实际收到的值。
+        value: f64,
+    },
+
+    /// 声相越界 (允许 -1.0..=1.0)。
+    #[error("pan {value} out of range -1.0..=1.0")]
+    PanOutOfRange {
+        /// 实际收到的声相值。
+        value: f32,
+    },
+
+    /// 同一集合中出现了重复身份。
+    #[error("duplicate entity id `{id}`")]
+    DuplicateEntityId {
+        /// 冲突的身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的音轨。
+    #[error("track `{id}` not found")]
+    TrackNotFound {
+        /// 缺失的音轨身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的片段池条目。
+    #[error("clip `{id}` not found in clip pool")]
+    ClipNotFound {
+        /// 缺失的片段身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的音符。
+    #[error("note `{id}` not found")]
+    NoteNotFound {
+        /// 缺失的音符身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的片段摆放 (placement)。
+    #[error("clip placement `{id}` not found")]
+    ClipPlacementNotFound {
+        /// 缺失的摆放身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的路由边。
+    #[error("routing edge `{id}` not found")]
+    RoutingEdgeNotFound {
+        /// 缺失的路由边身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的路由节点。
+    #[error("routing node `{id}` not found in routing graph")]
+    RoutingNodeNotFound {
+        /// 缺失的路由节点身份。
+        id: EntityId,
+    },
+
+    /// 设备插槽下标越界。
+    #[error("device slot index {index} out of range (0..={len})")]
+    DeviceSlotOutOfRange {
+        /// 请求的插槽下标。
+        index: usize,
+        /// 当前设备链长度。
+        len: usize,
+    },
+
+    /// 参数下标越界。
+    #[error("parameter index {index} out of range (len {len})")]
+    ParamIndexOutOfRange {
+        /// 请求的参数下标。
+        index: usize,
+        /// 该设备的参数个数。
+        len: usize,
+    },
+
+    /// 宏下标越界。
+    #[error("macro index {index} out of range (len {len})")]
+    MacroIndexOutOfRange {
+        /// 请求的宏下标。
+        index: usize,
+        /// 该音轨的宏个数。
+        len: usize,
+    },
+
+    /// 引用了不存在的自动化点。
+    #[error("automation point `{id}` not found")]
+    AutomationPointNotFound {
+        /// 缺失的自动化点身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的曲式段落。
+    #[error("section `{id}` not found")]
+    SectionNotFound {
+        /// 缺失的段落身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的场景。
+    #[error("scene `{id}` not found")]
+    SceneNotFound {
+        /// 缺失的场景身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的提交。
+    #[error("commit `{id}` not found in commit graph")]
+    CommitNotFound {
+        /// 缺失的提交身份。
+        id: EntityId,
+    },
+
+    /// 引用了不存在的分支。
+    #[error("branch `{name}` not found")]
+    BranchNotFound {
+        /// 缺失的分支名。
+        name: String,
+    },
+
+    /// 集合键与实体内部身份不一致。
+    #[error("collection key `{key}` does not match embedded entity id `{embedded}`")]
+    EntityKeyMismatch {
+        /// 集合键。
+        key: EntityId,
+        /// 实体内部携带的身份。
+        embedded: EntityId,
+    },
+
+    /// 资产集合的键与 `AssetMetadata.hash` 不一致。
+    #[error("asset key `{key}` does not match embedded hash `{embedded}`")]
+    AssetKeyMismatch {
+        /// 集合键（内容哈希）。
+        key: AssetHash,
+        /// 元数据内部携带的哈希。
+        embedded: AssetHash,
+    },
+
+    /// 自动化泳道的键与其 `target` 不一致。
+    #[error("automation lane key `{key}` does not match embedded target `{embedded}`")]
+    AutomationLaneTargetMismatch {
+        /// 集合键（目标调试形式）。
+        key: String,
+        /// 泳道内部携带的目标调试形式。
+        embedded: String,
+    },
+
+    /// `master_bus_track_id` 指向的音轨不是 `Master` 类型。
+    #[error("master bus track `{id}` must have kind `Master`")]
+    MasterBusKindMismatch {
+        /// 被引用的音轨身份。
+        id: EntityId,
+    },
+
+    /// 该操作要求 MIDI 片段，但目标是音频片段（或反之）。
+    #[error("clip `{id}` does not hold the content kind required by this operation")]
+    ClipContentKindMismatch {
+        /// 片段身份。
+        id: EntityId,
+    },
+
+    /// 宏位置越界 (允许 0.0..=1.0)。
+    #[error("macro value {value} out of range 0.0..=1.0")]
+    MacroValueOutOfRange {
+        /// 实际收到的宏位置。
+        value: f32,
+    },
+
+    /// 宏到参数的映射深度越界 (允许 0.0..=1.0)。
+    #[error("macro mapping depth {value} out of range 0.0..=1.0")]
+    MacroDepthOutOfRange {
+        /// 实际收到的映射深度。
+        value: f32,
+    },
+
+    /// 操作载荷与文档当前状态不一致。
+    ///
+    /// 两种触发场景：`Op::apply` 时"载荷里的旧值与文档不符"（拒绝执行），
+    /// 以及 `Op::invert` 时"该操作并未作用于给定文档"（拒绝把撤销打错文档）。
+    #[error("`{op}` does not match the document state (payload / post-condition mismatch)")]
+    OpStateMismatch {
+        /// `Op` 的 JSON 变体名，便于日志定位。
+        op: &'static str,
+    },
+
+    /// 该自动化目标不能被当前操作寻址。
+    #[error("automation target cannot be addressed by this operation: {detail}")]
+    AutomationTargetNotApplicable {
+        /// 人话解释（例如"发送增益必须走 SetRoutingGain 以保留 Option 语义"）。
+        detail: &'static str,
     },
 }

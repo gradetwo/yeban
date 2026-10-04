@@ -30,8 +30,26 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod commit;
 pub mod error;
 pub mod ids;
+pub mod music;
+pub mod ops;
+pub mod project;
 
+pub use commit::{
+    ANONYMOUS_BRANCH_PREFIX, BranchHead, Commit, CommitGraph, SNAPSHOT_INTERVAL,
+    snapshot_due_at_depth,
+};
 pub use error::ModelError;
 pub use ids::{AssetHash, ContentHash, EntityId, PPQ, ULID_TEXT_LEN};
+pub use music::{CurveType, MidiNote, SlideConfig};
+pub use ops::{Op, OpOrigin, StampedOp};
+pub use project::{
+    AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, BitDepth, BlockSize,
+    ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, LaunchQuantization,
+    LoopConfig, MIN_READER_VERSION, MacroMapping, MacroParameter, MediaKind, PanLaw,
+    ParameterValue, ProjectAudioConfig, ProjectMetadata, READER_SCHEMA_VERSION, RoutingEdge,
+    RoutingGraph, RoutingKind, SCHEMA_VERSION, SampleRate, SceneV3, SectionV3, TimeSignature,
+    TrackKind, TrackV3, TransportConfig, YebanProjectV1,
+};

@@ -1,0 +1,2844 @@
+//! 强类型可逆领域操作日志 [ARCH-OPS-001, ROAD-M1-003]。
+//!
+//! 所有改变工程文档的动作都被捕获为不可变、强类型、**自包含逆操作**的 [`StampedOp`]。
+//!
+//! ## 三条设计约束
+//!
+//! 1. **实时 DSP 事件不是 Op**：`OpOrigin` 严格排除播放/自动化播放这类瞬态渲染流，
+//!    数据模型只受版本化领域操作驱动（`ARCH-OPS-001`）。
+//! 2. **删除类 Op 自带撤销载荷**：`DeleteNote` 携带 `previous_note`、`RemoveTrack`
+//!    携带 `previous_track`…… 撤销因此**不需要**回放历史，单步撤销是 O(log n) 的。
+//! 3. **可达性可判定**：[`Op::precondition`] 是只读的"本操作在当前文档上是否可应用"，
+//!    [`Op::apply`] 先查前置条件再落盘，[`Op::invert`] 则用逆操作的前置条件反查
+//!    "这个 Op 真的作用在这份文档上了吗" —— 于是撤销**不可能**被误打到错误的文档上。
+//!
+//! ## 规范缺口留痕（本线补齐，需集成者/人类确认）
+//!
+//! 架构 §6.1 给出的 `Op` 全集**无法表达"删除曲式段落 / 删除场景"**：`SetSection`
+//! 用 `old_section: Option<SectionV3>` 表示"新建"，但 `old_section == None` 时
+//! 它的逆操作必须是删除，而全集里没有对应的变体 —— 这会让
+//! `MUST-GATE-010`（状态树逆向幂等性）在"新建段落"这一步必然失败。
+//! 因此本模块补上 [`Op::RemoveSection`] 与 [`Op::RemoveScene`] 两个变体，
+//! 它们是 `SetSection { old_section: None }` / `SetScene { old_scene: None }` 的逆。
+//! 同一原因，`schemas/ops.schema.json` 的 `oneOf` 也未覆盖全部变体，
+//! 详见 `docs/ledger/model-core-provenance.md`。
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::ModelError;
+use crate::ids::EntityId;
+use crate::music::MidiNote;
+use crate::project::{
+    AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, DeviceDefinition,
+    RoutingEdge, SceneV3, SectionV3, TrackV3, YebanProjectV1,
+};
+
+/// 操作来源 [ARCH-OPS-001]。
+///
+/// 严格排除实时 DSP 播放事件：自动化**播放**属于瞬态渲染流，
+/// 绝不进入持久化 Op 日志。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum OpOrigin {
+    /// 用户界面直接操作。
+    UserUi,
+    /// MIDI 硬件输入。
+    MidiInput,
+    /// MCP 代理提案（保留提案身份与代理名，便于审计与一键回滚定位）。
+    McpProposal {
+        /// 提案身份。
+        proposal_id: EntityId,
+        /// 提交提案的代理名。
+        agent_name: String,
+    },
+    /// 撤销/重做自身产生的操作。
+    UndoRedo,
+    /// 自动化录制（录制结束后的**落盘**动作，不是实时播放）。
+    AutomationRecord,
+    /// 外部工程/格式导入。
+    Import,
+    /// 历史数据迁移器产生。
+    Migration,
+}
+
+/// 带来源与时间戳的操作日志条目 [ARCH-OPS-001]。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct StampedOp {
+    /// 操作来源。
+    pub origin: OpOrigin,
+    /// Unix 毫秒时间戳（由调用方提供，模型层不自取时钟以保证可测试性）。
+    pub timestamp: u64,
+    /// 领域操作本体。
+    pub op: Op,
+}
+
+impl StampedOp {
+    /// 构造一条带戳操作。
+    #[must_use]
+    pub const fn new(origin: OpOrigin, timestamp: u64, op: Op) -> Self {
+        Self {
+            origin,
+            timestamp,
+            op,
+        }
+    }
+
+    /// 构造一条用户界面来源的操作。
+    #[must_use]
+    pub const fn user_ui(timestamp: u64, op: Op) -> Self {
+        Self::new(OpOrigin::UserUi, timestamp, op)
+    }
+
+    /// 应用本体操作。
+    ///
+    /// # Errors
+    ///
+    /// 前置条件不成立时返回对应 [`ModelError`]。
+    pub fn apply(&self, doc: &mut YebanProjectV1) -> Result<(), ModelError> {
+        self.op.apply(doc)
+    }
+
+    /// 应用本体操作的逆操作（单步撤销）。
+    ///
+    /// # Errors
+    ///
+    /// 逆操作不可构造或不可应用时返回对应 [`ModelError`]。
+    pub fn apply_inverse(&self, doc: &mut YebanProjectV1) -> Result<(), ModelError> {
+        self.op.apply_inverse(doc)
+    }
+}
+
+/// 强类型可逆领域操作全集 [ARCH-OPS-001, ROAD-M1-003]。
+///
+/// 每个**删除/移除**类变体都自带 `previous_*` 撤销载荷，
+/// 因此撤销不需要回溯历史，也不会因为历史分支被 GC 而失效。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum Op {
+    /// 在片段中插入音符。
+    AddNote {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 被插入的音符。
+        note: MidiNote,
+    },
+    /// 删除音符（自带撤销载荷）。
+    DeleteNote {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 被删除的音符身份。
+        note_id: EntityId,
+        /// 删除前的完整音符。
+        previous_note: MidiNote,
+    },
+    /// 平移音符（tick 与音高增量）。
+    MoveNote {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 音符身份。
+        note_id: EntityId,
+        /// tick 增量（可为负）。
+        delta_tick: i64,
+        /// 半音增量（可为负）。
+        delta_pitch: i8,
+    },
+    /// 修改音符力度。
+    ModifyNoteVelocity {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 音符身份。
+        note_id: EntityId,
+        /// 修改前力度。
+        old_vel: u8,
+        /// 修改后力度。
+        new_vel: u8,
+    },
+    /// 在音轨时间轴上摆放片段。
+    AddClipPlacement {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 摆放内容。
+        placement: ClipPlacement,
+    },
+    /// 移除摆放（自带撤销载荷）。
+    RemoveClipPlacement {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 摆放身份。
+        placement_id: EntityId,
+        /// 移除前的摆放。
+        previous_placement: ClipPlacement,
+    },
+    /// 平移摆放。
+    MoveClipPlacement {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 摆放身份。
+        placement_id: EntityId,
+        /// 平移前起点。
+        old_start_tick: u64,
+        /// 平移后起点。
+        new_start_tick: u64,
+    },
+    /// 新增音轨。
+    AddTrack {
+        /// 被新增的音轨。
+        track: TrackV3,
+    },
+    /// 移除音轨（自带撤销载荷）。
+    RemoveTrack {
+        /// 音轨身份。
+        track_id: EntityId,
+        /// 移除前的完整音轨。
+        previous_track: TrackV3,
+    },
+    /// 连接一条路由边。
+    ConnectRouting {
+        /// 被连接的路由边。
+        edge: RoutingEdge,
+    },
+    /// 断开路由边（自带撤销载荷）。
+    DisconnectRouting {
+        /// 路由边身份。
+        edge_id: EntityId,
+        /// 断开前的完整边。
+        previous_edge: RoutingEdge,
+    },
+    /// 设置路由边增益（保留 `Option` 语义：`None` 表示单位增益）。
+    SetRoutingGain {
+        /// 路由边身份。
+        edge_id: EntityId,
+        /// 修改前增益。
+        old_gain_db: Option<f32>,
+        /// 修改后增益。
+        new_gain_db: Option<f32>,
+    },
+    /// 在设备链插槽插入设备。
+    InsertDevice {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 插槽下标（`0..=len`，等于 `len` 表示追加到链尾）。
+        slot_index: usize,
+        /// 被插入的设备。
+        device: DeviceDefinition,
+    },
+    /// 移除设备（自带撤销载荷）。
+    RemoveDevice {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 插槽下标。
+        slot_index: usize,
+        /// 移除前的完整设备。
+        previous_device: DeviceDefinition,
+    },
+    /// 设置参数值。
+    ///
+    /// 目标为 [`AutomationTarget::SendGain`] 时**拒绝**：发送增益必须走
+    /// [`Op::SetRoutingGain`]，否则 `None`（单位增益）与 `Some(0.0)` 无法区分，
+    /// 撤销将无法精确还原。
+    SetParam {
+        /// 参数寻址目标。
+        target: AutomationTarget,
+        /// 修改前数值。
+        old_val: f32,
+        /// 修改后数值。
+        new_val: f32,
+    },
+    /// 设置宏位置。
+    SetMacro {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 宏下标。
+        macro_index: usize,
+        /// 修改前位置 0.0..=1.0。
+        old_val: f32,
+        /// 修改后位置 0.0..=1.0。
+        new_val: f32,
+    },
+    /// 新增或更新一个自动化点。
+    SetAutomationPoint {
+        /// 自动化泳道目标。
+        target: AutomationTarget,
+        /// 自动化点身份。
+        point_id: EntityId,
+        /// 修改前的点（`None` 表示该点原先不存在）。
+        old_point: Option<AutomationPoint>,
+        /// 修改后的点。
+        new_point: AutomationPoint,
+    },
+    /// 删除自动化点（自带撤销载荷）。
+    RemoveAutomationPoint {
+        /// 自动化泳道目标。
+        target: AutomationTarget,
+        /// 自动化点身份。
+        point_id: EntityId,
+        /// 删除前的点。
+        previous_point: AutomationPoint,
+    },
+    /// 新增、更新或清空一个曲式段落。
+    ///
+    /// `old_section == None` 且 `new_section` 存在表示**新建**；
+    /// 其逆操作是 [`Op::RemoveSection`]（见模块级"规范缺口留痕"）。
+    SetSection {
+        /// 段落身份。
+        section_id: EntityId,
+        /// 修改前的段落。
+        old_section: Option<SectionV3>,
+        /// 修改后的段落。
+        new_section: SectionV3,
+    },
+    /// 删除曲式段落（自带撤销载荷）。
+    ///
+    /// 本变体是对架构 §6.1 全集的补齐：没有它，`SetSection { old_section: None }`
+    /// 不可逆，`MUST-GATE-010` 必然失败。
+    RemoveSection {
+        /// 段落身份。
+        section_id: EntityId,
+        /// 删除前的段落。
+        previous_section: SectionV3,
+    },
+    /// 新增、更新或清空一个场景。
+    SetScene {
+        /// 场景身份。
+        scene_id: EntityId,
+        /// 修改前的场景。
+        old_scene: Option<SceneV3>,
+        /// 修改后的场景。
+        new_scene: SceneV3,
+    },
+    /// 删除场景（自带撤销载荷）。与 [`Op::RemoveSection`] 同因补齐。
+    RemoveScene {
+        /// 场景身份。
+        scene_id: EntityId,
+        /// 删除前的场景。
+        previous_scene: SceneV3,
+    },
+    /// 原子批处理：整体成功或整体不生效。
+    Batch {
+        /// 子操作（按顺序应用）。
+        ops: Vec<Op>,
+        /// 批次描述（用于界面显示与审计）。
+        description: String,
+    },
+}
+
+/// 判断两个 `f32` 是否**逐位**相同（避免 `NaN`/`-0.0` 带来的语义歧义）。
+#[must_use]
+fn same_f32(left: f32, right: f32) -> bool {
+    left.to_bits() == right.to_bits()
+}
+
+/// 判断两个增益 `Option<f32>` 是否逐位相同。
+#[must_use]
+fn same_gain(left: Option<f32>, right: Option<f32>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(a), Some(b)) => same_f32(a, b),
+        _ => false,
+    }
+}
+
+/// 计算平移后的 tick；越出 `u64` 表示非法。
+#[must_use]
+fn shifted_tick(start_tick: u64, delta_tick: i64) -> Option<u64> {
+    let shifted = i128::from(start_tick) + i128::from(delta_tick);
+    if shifted < 0 || shifted > i128::from(u64::MAX) {
+        None
+    } else {
+        u64::try_from(shifted).ok()
+    }
+}
+
+/// 计算平移后的音高；越出 `0..=127` 表示非法。
+#[must_use]
+fn shifted_pitch(pitch: u8, delta_pitch: i8) -> Option<u8> {
+    let shifted = i16::from(pitch) + i16::from(delta_pitch);
+    if (0..=127).contains(&shifted) {
+        u8::try_from(shifted).ok()
+    } else {
+        None
+    }
+}
+
+/// 只读查询片段中的音符。
+fn find_note<'a>(
+    doc: &'a YebanProjectV1,
+    clip_id: &EntityId,
+    note_id: &EntityId,
+) -> Result<Option<&'a MidiNote>, ModelError> {
+    doc.note(clip_id, note_id).map(Some).or_else(|error| {
+        if matches!(error, ModelError::NoteNotFound { .. }) {
+            Ok(None)
+        } else {
+            Err(error)
+        }
+    })
+}
+
+impl Op {
+    /// `Op` 的 JSON 变体名（与 `schemas/ops.schema.json` 的键一致）。
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::AddNote { .. } => "AddNote",
+            Self::DeleteNote { .. } => "DeleteNote",
+            Self::MoveNote { .. } => "MoveNote",
+            Self::ModifyNoteVelocity { .. } => "ModifyNoteVelocity",
+            Self::AddClipPlacement { .. } => "AddClipPlacement",
+            Self::RemoveClipPlacement { .. } => "RemoveClipPlacement",
+            Self::MoveClipPlacement { .. } => "MoveClipPlacement",
+            Self::AddTrack { .. } => "AddTrack",
+            Self::RemoveTrack { .. } => "RemoveTrack",
+            Self::ConnectRouting { .. } => "ConnectRouting",
+            Self::DisconnectRouting { .. } => "DisconnectRouting",
+            Self::SetRoutingGain { .. } => "SetRoutingGain",
+            Self::InsertDevice { .. } => "InsertDevice",
+            Self::RemoveDevice { .. } => "RemoveDevice",
+            Self::SetParam { .. } => "SetParam",
+            Self::SetMacro { .. } => "SetMacro",
+            Self::SetAutomationPoint { .. } => "SetAutomationPoint",
+            Self::RemoveAutomationPoint { .. } => "RemoveAutomationPoint",
+            Self::SetSection { .. } => "SetSection",
+            Self::RemoveSection { .. } => "RemoveSection",
+            Self::SetScene { .. } => "SetScene",
+            Self::RemoveScene { .. } => "RemoveScene",
+            Self::Batch { .. } => "Batch",
+        }
+    }
+
+    /// 只读前置条件检查：本操作能否作用在 `doc` 上。
+    ///
+    /// 逆操作的可应用性也用它判定，因此 [`Op::invert`] 能可靠地拒绝
+    /// "把一个 Op 的逆操作打到另一份文档上"。
+    ///
+    /// # Errors
+    ///
+    /// 引用缺失、载荷与文档状态不一致、或数值非法时返回对应 [`ModelError`]。
+    pub fn precondition(&self, doc: &YebanProjectV1) -> Result<(), ModelError> {
+        match self {
+            Self::AddNote {
+                track_id,
+                clip_id,
+                note,
+            } => {
+                doc.track(track_id)?;
+                note.validate()?;
+                if find_note(doc, clip_id, &note.id)?.is_some() {
+                    return Err(ModelError::DuplicateEntityId { id: note.id });
+                }
+                Ok(())
+            }
+            Self::DeleteNote {
+                track_id,
+                clip_id,
+                note_id,
+                previous_note,
+            } => {
+                doc.track(track_id)?;
+                let current = doc.note(clip_id, note_id)?;
+                if current != previous_note {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::MoveNote {
+                track_id,
+                clip_id,
+                note_id,
+                delta_tick,
+                delta_pitch,
+            } => {
+                doc.track(track_id)?;
+                let current = doc.note(clip_id, note_id)?;
+                if shifted_tick(current.start_tick, *delta_tick).is_none() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if shifted_pitch(current.pitch, *delta_pitch).is_none() {
+                    return Err(ModelError::PitchOutOfRange {
+                        value: u16::from(current.pitch),
+                    });
+                }
+                Ok(())
+            }
+            Self::ModifyNoteVelocity {
+                track_id,
+                clip_id,
+                note_id,
+                old_vel,
+                new_vel,
+            } => {
+                doc.track(track_id)?;
+                let current = doc.note(clip_id, note_id)?;
+                if current.velocity != *old_vel {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if *new_vel > crate::music::MIDI_VELOCITY_MAX {
+                    return Err(ModelError::VelocityOutOfRange {
+                        value: u16::from(*new_vel),
+                    });
+                }
+                Ok(())
+            }
+            Self::AddClipPlacement {
+                track_id,
+                placement,
+            } => {
+                let track = doc.track(track_id)?;
+                placement.validate()?;
+                if !doc.clip_pool.contains_key(&placement.clip_id) {
+                    return Err(ModelError::ClipNotFound {
+                        id: placement.clip_id,
+                    });
+                }
+                if track.clips.contains_key(&placement.id) {
+                    return Err(ModelError::DuplicateEntityId { id: placement.id });
+                }
+                Ok(())
+            }
+            Self::RemoveClipPlacement {
+                track_id,
+                placement_id,
+                previous_placement,
+            } => {
+                let track = doc.track(track_id)?;
+                let current = track
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                if current != previous_placement {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::MoveClipPlacement {
+                track_id,
+                placement_id,
+                old_start_tick,
+                ..
+            } => {
+                let track = doc.track(track_id)?;
+                let current = track
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                if current.start_tick != *old_start_tick {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::AddTrack { track } => {
+                track.validate()?;
+                if doc.tracks.contains_key(&track.id) {
+                    return Err(ModelError::DuplicateEntityId { id: track.id });
+                }
+                Ok(())
+            }
+            Self::RemoveTrack {
+                track_id,
+                previous_track,
+            } => {
+                if *track_id == doc.master_bus_track_id && !track_id.is_nil() {
+                    // 移除主总线会让 `master_bus_track_id` 悬空，破坏文档自洽性。
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                let current = doc.track(track_id)?;
+                if current != previous_track {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::ConnectRouting { edge } => {
+                edge.validate()?;
+                for endpoint in [edge.source_node, edge.destination_node] {
+                    if !doc.routing_graph.nodes.contains(&endpoint) {
+                        return Err(ModelError::RoutingNodeNotFound { id: endpoint });
+                    }
+                }
+                if doc.routing_graph.edges.contains_key(&edge.id) {
+                    return Err(ModelError::DuplicateEntityId { id: edge.id });
+                }
+                Ok(())
+            }
+            Self::DisconnectRouting {
+                edge_id,
+                previous_edge,
+            } => {
+                let current = doc
+                    .routing_graph
+                    .edges
+                    .get(edge_id)
+                    .ok_or(ModelError::RoutingEdgeNotFound { id: *edge_id })?;
+                if current != previous_edge {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetRoutingGain {
+                edge_id,
+                old_gain_db,
+                new_gain_db,
+            } => {
+                let current = doc
+                    .routing_graph
+                    .edges
+                    .get(edge_id)
+                    .ok_or(ModelError::RoutingEdgeNotFound { id: *edge_id })?;
+                if !same_gain(current.gain_db, *old_gain_db) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                if let Some(gain_db) = new_gain_db
+                    && !gain_db.is_finite()
+                {
+                    return Err(ModelError::NonFiniteValue {
+                        field: "routing.edge.gain_db",
+                        value: f64::from(*gain_db),
+                    });
+                }
+                Ok(())
+            }
+            Self::InsertDevice {
+                track_id,
+                slot_index,
+                device,
+            } => {
+                let track = doc.track(track_id)?;
+                if *slot_index > track.devices.len() {
+                    return Err(ModelError::DeviceSlotOutOfRange {
+                        index: *slot_index,
+                        len: track.devices.len(),
+                    });
+                }
+                device.validate()?;
+                if track
+                    .devices
+                    .iter()
+                    .any(|existing| existing.id == device.id)
+                {
+                    return Err(ModelError::DuplicateEntityId { id: device.id });
+                }
+                Ok(())
+            }
+            Self::RemoveDevice {
+                track_id,
+                slot_index,
+                previous_device,
+            } => {
+                let track = doc.track(track_id)?;
+                let current =
+                    track
+                        .devices
+                        .get(*slot_index)
+                        .ok_or(ModelError::DeviceSlotOutOfRange {
+                            index: *slot_index,
+                            len: track.devices.len(),
+                        })?;
+                if current != previous_device {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetParam {
+                target,
+                old_val,
+                new_val,
+            } => {
+                let current = read_param(doc, *target)?;
+                if !same_f32(current, *old_val) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                validate_param_value(*target, *new_val)
+            }
+            Self::SetMacro {
+                track_id,
+                macro_index,
+                old_val,
+                new_val,
+            } => {
+                let current = read_macro(doc, track_id, *macro_index)?;
+                if !same_f32(current, *old_val) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                validate_macro_value(*new_val)
+            }
+            Self::SetAutomationPoint {
+                target,
+                point_id,
+                old_point,
+                new_point,
+            } => {
+                if new_point.id != *point_id {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                new_point.validate()?;
+                let current = read_automation_point(doc, target, point_id)?;
+                if current != old_point.as_ref() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::RemoveAutomationPoint {
+                target,
+                point_id,
+                previous_point,
+            } => {
+                let current = read_automation_point(doc, target, point_id)?
+                    .ok_or(ModelError::AutomationPointNotFound { id: *point_id })?;
+                if current != previous_point {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetSection {
+                section_id,
+                old_section,
+                new_section,
+            } => {
+                if new_section.id != *section_id {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                new_section.validate()?;
+                if doc.sections.get(section_id) != old_section.as_ref() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::RemoveSection {
+                section_id,
+                previous_section,
+            } => {
+                let current = doc
+                    .sections
+                    .get(section_id)
+                    .ok_or(ModelError::SectionNotFound { id: *section_id })?;
+                if current != previous_section {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetScene {
+                scene_id,
+                old_scene,
+                new_scene,
+            } => {
+                if new_scene.id != *scene_id {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                new_scene.validate()?;
+                if doc.scenes.get(scene_id) != old_scene.as_ref() {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::RemoveScene {
+                scene_id,
+                previous_scene,
+            } => {
+                let current = doc
+                    .scenes
+                    .get(scene_id)
+                    .ok_or(ModelError::SceneNotFound { id: *scene_id })?;
+                if current != previous_scene {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            // 批量的前置条件刻意是"真空真"：原子性由 `commit` 在克隆体上
+            // 整体模拟成功后一次性提交来保证（见 `Op::commit`），
+            // 在这里重复模拟只会让每次 `apply` 多做一次全文档克隆。
+            Self::Batch { .. } => Ok(()),
+        }
+    }
+
+    /// 应用本操作。
+    ///
+    /// 先做完整的前置条件检查，再落盘；`Batch` 在克隆体上整体模拟成功后
+    /// **一次性提交**，因此天然是原子的（`ARCH-OPS-002` 的"AI 提案一键撤销"）。
+    ///
+    /// # Errors
+    ///
+    /// 前置条件不成立时返回对应 [`ModelError`]，且**不改变**文档。
+    pub fn apply(&self, doc: &mut YebanProjectV1) -> Result<(), ModelError> {
+        self.precondition(doc)?;
+        self.commit(doc)
+    }
+
+    /// 构造本操作的逆操作。
+    ///
+    /// `doc` 用于校验"本操作确实已经作用在这份文档上"（例如 `DeleteNote`
+    /// 要求音符此刻**不存在**、`AddTrack` 要求音轨此刻**存在**且内容一致）。
+    /// 校验失败即返回错误，绝不把撤销打到错误的文档上。
+    ///
+    /// # Errors
+    ///
+    /// - 逆操作在给定文档上不可应用 → 返回对应的具体 [`ModelError`]；
+    /// - 增量取反溢出 (`i64::MIN` / `i8::MIN`) → [`ModelError::OpStateMismatch`]。
+    pub fn invert(&self, doc: &YebanProjectV1) -> Result<Self, ModelError> {
+        let inverse = self.structural_inverse()?;
+        // `Batch` 的子操作后置条件由逆批次自身的 `apply` 逐步校验（见 `precondition`）。
+        if !matches!(self, Self::Batch { .. }) {
+            inverse.precondition(doc)?;
+        }
+        Ok(inverse)
+    }
+
+    /// 应用逆操作（等价于 `self.invert(doc)?.apply(doc)`）。
+    ///
+    /// # Errors
+    ///
+    /// 逆操作不可构造或不可应用时返回对应 [`ModelError`]。
+    pub fn apply_inverse(&self, doc: &mut YebanProjectV1) -> Result<(), ModelError> {
+        let inverse = self.invert(doc)?;
+        inverse.apply(doc)
+    }
+
+    /// 纯结构化逆操作：只使用本操作自带的载荷，不读文档。
+    fn structural_inverse(&self) -> Result<Self, ModelError> {
+        let inverse = match self {
+            Self::AddNote {
+                track_id,
+                clip_id,
+                note,
+            } => Self::DeleteNote {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note_id: note.id,
+                previous_note: note.clone(),
+            },
+            Self::DeleteNote {
+                track_id,
+                clip_id,
+                previous_note,
+                ..
+            } => Self::AddNote {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note: previous_note.clone(),
+            },
+            Self::MoveNote {
+                track_id,
+                clip_id,
+                note_id,
+                delta_tick,
+                delta_pitch,
+            } => Self::MoveNote {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                delta_tick: delta_tick
+                    .checked_neg()
+                    .ok_or(ModelError::OpStateMismatch { op: self.name() })?,
+                delta_pitch: delta_pitch
+                    .checked_neg()
+                    .ok_or(ModelError::OpStateMismatch { op: self.name() })?,
+            },
+            Self::ModifyNoteVelocity {
+                track_id,
+                clip_id,
+                note_id,
+                old_vel,
+                new_vel,
+            } => Self::ModifyNoteVelocity {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                old_vel: *new_vel,
+                new_vel: *old_vel,
+            },
+            Self::AddClipPlacement {
+                track_id,
+                placement,
+            } => Self::RemoveClipPlacement {
+                track_id: *track_id,
+                placement_id: placement.id,
+                previous_placement: *placement,
+            },
+            Self::RemoveClipPlacement {
+                track_id,
+                previous_placement,
+                ..
+            } => Self::AddClipPlacement {
+                track_id: *track_id,
+                placement: *previous_placement,
+            },
+            Self::MoveClipPlacement {
+                track_id,
+                placement_id,
+                old_start_tick,
+                new_start_tick,
+            } => Self::MoveClipPlacement {
+                track_id: *track_id,
+                placement_id: *placement_id,
+                old_start_tick: *new_start_tick,
+                new_start_tick: *old_start_tick,
+            },
+            Self::AddTrack { track } => Self::RemoveTrack {
+                track_id: track.id,
+                previous_track: track.clone(),
+            },
+            Self::RemoveTrack { previous_track, .. } => Self::AddTrack {
+                track: previous_track.clone(),
+            },
+            Self::ConnectRouting { edge } => Self::DisconnectRouting {
+                edge_id: edge.id,
+                previous_edge: *edge,
+            },
+            Self::DisconnectRouting { previous_edge, .. } => Self::ConnectRouting {
+                edge: *previous_edge,
+            },
+            Self::SetRoutingGain {
+                edge_id,
+                old_gain_db,
+                new_gain_db,
+            } => Self::SetRoutingGain {
+                edge_id: *edge_id,
+                old_gain_db: *new_gain_db,
+                new_gain_db: *old_gain_db,
+            },
+            Self::InsertDevice {
+                track_id,
+                slot_index,
+                device,
+            } => Self::RemoveDevice {
+                track_id: *track_id,
+                slot_index: *slot_index,
+                previous_device: device.clone(),
+            },
+            Self::RemoveDevice {
+                track_id,
+                slot_index,
+                previous_device,
+            } => Self::InsertDevice {
+                track_id: *track_id,
+                slot_index: *slot_index,
+                device: previous_device.clone(),
+            },
+            Self::SetParam {
+                target,
+                old_val,
+                new_val,
+            } => Self::SetParam {
+                target: *target,
+                old_val: *new_val,
+                new_val: *old_val,
+            },
+            Self::SetMacro {
+                track_id,
+                macro_index,
+                old_val,
+                new_val,
+            } => Self::SetMacro {
+                track_id: *track_id,
+                macro_index: *macro_index,
+                old_val: *new_val,
+                new_val: *old_val,
+            },
+            Self::SetAutomationPoint {
+                target,
+                point_id,
+                old_point,
+                new_point,
+            } => match old_point {
+                Some(previous) => Self::SetAutomationPoint {
+                    target: *target,
+                    point_id: *point_id,
+                    old_point: Some(*new_point),
+                    new_point: *previous,
+                },
+                None => Self::RemoveAutomationPoint {
+                    target: *target,
+                    point_id: *point_id,
+                    previous_point: *new_point,
+                },
+            },
+            Self::RemoveAutomationPoint {
+                target,
+                point_id,
+                previous_point,
+            } => Self::SetAutomationPoint {
+                target: *target,
+                point_id: *point_id,
+                old_point: None,
+                new_point: *previous_point,
+            },
+            Self::SetSection {
+                section_id,
+                old_section,
+                new_section,
+            } => match old_section {
+                Some(previous) => Self::SetSection {
+                    section_id: *section_id,
+                    old_section: Some(new_section.clone()),
+                    new_section: previous.clone(),
+                },
+                None => Self::RemoveSection {
+                    section_id: *section_id,
+                    previous_section: new_section.clone(),
+                },
+            },
+            Self::RemoveSection {
+                section_id,
+                previous_section,
+            } => Self::SetSection {
+                section_id: *section_id,
+                old_section: None,
+                new_section: previous_section.clone(),
+            },
+            Self::SetScene {
+                scene_id,
+                old_scene,
+                new_scene,
+            } => match old_scene {
+                Some(previous) => Self::SetScene {
+                    scene_id: *scene_id,
+                    old_scene: Some(new_scene.clone()),
+                    new_scene: previous.clone(),
+                },
+                None => Self::RemoveScene {
+                    scene_id: *scene_id,
+                    previous_scene: new_scene.clone(),
+                },
+            },
+            Self::RemoveScene {
+                scene_id,
+                previous_scene,
+            } => Self::SetScene {
+                scene_id: *scene_id,
+                old_scene: None,
+                new_scene: previous_scene.clone(),
+            },
+            Self::Batch { ops, description } => {
+                let mut inverted = Vec::with_capacity(ops.len());
+                for op in ops.iter().rev() {
+                    inverted.push(op.structural_inverse()?);
+                }
+                Self::Batch {
+                    ops: inverted,
+                    description: description.clone(),
+                }
+            }
+        };
+        Ok(inverse)
+    }
+
+    /// 落盘：前置条件已成立，这里只做结构变更。
+    fn commit(&self, doc: &mut YebanProjectV1) -> Result<(), ModelError> {
+        match self {
+            Self::AddNote { clip_id, note, .. } => doc.insert_note(clip_id, note.clone()),
+            Self::DeleteNote {
+                clip_id, note_id, ..
+            } => doc.remove_note(clip_id, note_id).map(|_removed| ()),
+            Self::MoveNote {
+                clip_id,
+                note_id,
+                delta_tick,
+                delta_pitch,
+                ..
+            } => {
+                let note = doc.note_mut(clip_id, note_id)?;
+                if let Some(start_tick) = shifted_tick(note.start_tick, *delta_tick) {
+                    note.start_tick = start_tick;
+                }
+                if let Some(pitch) = shifted_pitch(note.pitch, *delta_pitch) {
+                    note.pitch = pitch;
+                }
+                Ok(())
+            }
+            Self::ModifyNoteVelocity {
+                clip_id,
+                note_id,
+                new_vel,
+                ..
+            } => {
+                doc.note_mut(clip_id, note_id)?.velocity = *new_vel;
+                Ok(())
+            }
+            Self::AddClipPlacement {
+                track_id,
+                placement,
+            } => {
+                doc.track_mut(track_id)?
+                    .clips
+                    .insert(placement.id, *placement);
+                Ok(())
+            }
+            Self::RemoveClipPlacement {
+                track_id,
+                placement_id,
+                ..
+            } => {
+                doc.track_mut(track_id)?.clips.remove(placement_id);
+                Ok(())
+            }
+            Self::MoveClipPlacement {
+                track_id,
+                placement_id,
+                new_start_tick,
+                ..
+            } => {
+                if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
+                    placement.start_tick = *new_start_tick;
+                }
+                Ok(())
+            }
+            Self::AddTrack { track } => doc.insert_track(track.clone()),
+            Self::RemoveTrack { track_id, .. } => doc.remove_track(track_id).map(|_removed| ()),
+            Self::ConnectRouting { edge } => {
+                let graph = &mut doc.routing_graph;
+                if graph.edges.insert(edge.id, *edge).is_none() {
+                    Ok(())
+                } else {
+                    Err(ModelError::DuplicateEntityId { id: edge.id })
+                }
+            }
+            Self::DisconnectRouting { edge_id, .. } => {
+                doc.routing_graph.edges.remove(edge_id);
+                Ok(())
+            }
+            Self::SetRoutingGain {
+                edge_id,
+                new_gain_db,
+                ..
+            } => {
+                if let Some(edge) = doc.routing_graph.edges.get_mut(edge_id) {
+                    edge.gain_db = *new_gain_db;
+                }
+                Ok(())
+            }
+            Self::InsertDevice {
+                track_id,
+                slot_index,
+                device,
+            } => {
+                doc.track_mut(track_id)?
+                    .devices
+                    .insert(*slot_index, device.clone());
+                Ok(())
+            }
+            Self::RemoveDevice {
+                track_id,
+                slot_index,
+                ..
+            } => {
+                doc.track_mut(track_id)?.devices.remove(*slot_index);
+                Ok(())
+            }
+            Self::SetParam {
+                target, new_val, ..
+            } => write_param(doc, *target, *new_val),
+            Self::SetMacro {
+                track_id,
+                macro_index,
+                new_val,
+                ..
+            } => {
+                let track = doc.track_mut(track_id)?;
+                if let Some(macro_parameter) = track.macros.get_mut(*macro_index) {
+                    macro_parameter.value = *new_val;
+                }
+                Ok(())
+            }
+            Self::SetAutomationPoint {
+                target,
+                point_id,
+                new_point,
+                ..
+            } => {
+                let track = doc.track_mut(&automation_track_id(target))?;
+                let lane =
+                    track
+                        .automation_lanes
+                        .entry(*target)
+                        .or_insert_with(|| AutomationLane {
+                            target: *target,
+                            points: BTreeMap::new(),
+                        });
+                lane.points.insert(*point_id, *new_point);
+                Ok(())
+            }
+            Self::RemoveAutomationPoint {
+                target, point_id, ..
+            } => {
+                let track = doc.track_mut(&automation_track_id(target))?;
+                let mut drop_lane = false;
+                if let Some(lane) = track.automation_lanes.get_mut(target) {
+                    lane.points.remove(point_id);
+                    drop_lane = lane.points.is_empty();
+                }
+                if drop_lane {
+                    track.automation_lanes.remove(target);
+                }
+                Ok(())
+            }
+            Self::SetSection {
+                section_id,
+                new_section,
+                ..
+            } => {
+                doc.sections.insert(*section_id, new_section.clone());
+                Ok(())
+            }
+            Self::RemoveSection { section_id, .. } => {
+                doc.sections.remove(section_id);
+                Ok(())
+            }
+            Self::SetScene {
+                scene_id,
+                new_scene,
+                ..
+            } => {
+                doc.scenes.insert(*scene_id, new_scene.clone());
+                Ok(())
+            }
+            Self::RemoveScene { scene_id, .. } => {
+                doc.scenes.remove(scene_id);
+                Ok(())
+            }
+            Self::Batch { ops, .. } => {
+                // 原子性：在克隆体上整体应用成功后再一次性提交。
+                // 任何子操作失败都不会污染 `doc`（`ARCH-OPS-002` 的原子回滚语义）。
+                let mut probe = doc.clone();
+                for op in ops {
+                    op.apply(&mut probe)?;
+                }
+                *doc = probe;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// 取出自动化目标所属的音轨身份。
+#[must_use]
+fn automation_track_id(target: &AutomationTarget) -> EntityId {
+    match target {
+        AutomationTarget::TrackVolume { track_id }
+        | AutomationTarget::TrackPan { track_id }
+        | AutomationTarget::SendGain { track_id, .. }
+        | AutomationTarget::DeviceParam { track_id, .. }
+        | AutomationTarget::Macro { track_id, .. } => *track_id,
+    }
+}
+
+/// 读取 [`AutomationTarget`] 指向的当前参数值。
+fn read_param(doc: &YebanProjectV1, target: AutomationTarget) -> Result<f32, ModelError> {
+    match target {
+        AutomationTarget::TrackVolume { track_id } => Ok(doc.track(&track_id)?.volume_db),
+        AutomationTarget::TrackPan { track_id } => Ok(doc.track(&track_id)?.pan),
+        AutomationTarget::SendGain { .. } => Err(ModelError::AutomationTargetNotApplicable {
+            detail: "send gain must be edited via Op::SetRoutingGain to preserve Option semantics",
+        }),
+        AutomationTarget::DeviceParam {
+            track_id,
+            slot_index,
+            param_index,
+        } => {
+            let track = doc.track(&track_id)?;
+            let device = track
+                .devices
+                .get(slot_index)
+                .ok_or(ModelError::DeviceSlotOutOfRange {
+                    index: slot_index,
+                    len: track.devices.len(),
+                })?;
+            let param = device
+                .params
+                .get(param_index)
+                .ok_or(ModelError::ParamIndexOutOfRange {
+                    index: param_index,
+                    len: device.params.len(),
+                })?;
+            Ok(param.value)
+        }
+        AutomationTarget::Macro {
+            track_id,
+            macro_index,
+        } => read_macro(doc, &track_id, macro_index),
+    }
+}
+
+/// 写入 [`AutomationTarget`] 指向的参数值。
+fn write_param(
+    doc: &mut YebanProjectV1,
+    target: AutomationTarget,
+    value: f32,
+) -> Result<(), ModelError> {
+    match target {
+        AutomationTarget::TrackVolume { track_id } => {
+            doc.track_mut(&track_id)?.volume_db = value;
+            Ok(())
+        }
+        AutomationTarget::TrackPan { track_id } => {
+            doc.track_mut(&track_id)?.pan = value;
+            Ok(())
+        }
+        AutomationTarget::SendGain { .. } => Err(ModelError::AutomationTargetNotApplicable {
+            detail: "send gain must be edited via Op::SetRoutingGain to preserve Option semantics",
+        }),
+        AutomationTarget::DeviceParam {
+            track_id,
+            slot_index,
+            param_index,
+        } => {
+            let track = doc.track_mut(&track_id)?;
+            let slot_count = track.devices.len();
+            let device =
+                track
+                    .devices
+                    .get_mut(slot_index)
+                    .ok_or(ModelError::DeviceSlotOutOfRange {
+                        index: slot_index,
+                        len: slot_count,
+                    })?;
+            let param_count = device.params.len();
+            let param =
+                device
+                    .params
+                    .get_mut(param_index)
+                    .ok_or(ModelError::ParamIndexOutOfRange {
+                        index: param_index,
+                        len: param_count,
+                    })?;
+            param.value = value;
+            Ok(())
+        }
+        AutomationTarget::Macro {
+            track_id,
+            macro_index,
+        } => {
+            let track = doc.track_mut(&track_id)?;
+            let macro_count = track.macros.len();
+            let macro_parameter =
+                track
+                    .macros
+                    .get_mut(macro_index)
+                    .ok_or(ModelError::MacroIndexOutOfRange {
+                        index: macro_index,
+                        len: macro_count,
+                    })?;
+            macro_parameter.value = value;
+            Ok(())
+        }
+    }
+}
+
+/// 校验参数写入值是否落在该目标允许的范围内。
+fn validate_param_value(target: AutomationTarget, value: f32) -> Result<(), ModelError> {
+    if !value.is_finite() {
+        return Err(ModelError::NonFiniteValue {
+            field: "param.value",
+            value: f64::from(value),
+        });
+    }
+    match target {
+        AutomationTarget::TrackPan { .. } => {
+            if !(-1.0..=1.0).contains(&value) {
+                return Err(ModelError::PanOutOfRange { value });
+            }
+            Ok(())
+        }
+        AutomationTarget::Macro { .. } => validate_macro_value(value),
+        _ => Ok(()),
+    }
+}
+
+/// 读取宏位置。
+fn read_macro(
+    doc: &YebanProjectV1,
+    track_id: &EntityId,
+    macro_index: usize,
+) -> Result<f32, ModelError> {
+    let track = doc.track(track_id)?;
+    track
+        .macros
+        .get(macro_index)
+        .map(|macro_parameter| macro_parameter.value)
+        .ok_or(ModelError::MacroIndexOutOfRange {
+            index: macro_index,
+            len: track.macros.len(),
+        })
+}
+
+/// 校验宏位置范围。
+fn validate_macro_value(value: f32) -> Result<(), ModelError> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(ModelError::MacroValueOutOfRange { value });
+    }
+    Ok(())
+}
+
+/// 读取自动化点（`Ok(None)` 表示该目标/点当前不存在）。
+fn read_automation_point<'a>(
+    doc: &'a YebanProjectV1,
+    target: &AutomationTarget,
+    point_id: &EntityId,
+) -> Result<Option<&'a AutomationPoint>, ModelError> {
+    let track = doc.track(&automation_track_id(target))?;
+    Ok(track
+        .automation_lanes
+        .get(target)
+        .and_then(|lane| lane.points.get(point_id)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::music::splitmix64;
+    use crate::project::{
+        ClipContent, ClipPoolEntry, LoopConfig, ProjectAudioConfig, RoutingKind, TrackKind,
+    };
+    use proptest::prelude::*;
+    use std::str::FromStr;
+
+    /// 本机默认的操作序列长度（CI 上自动提到 [`CI_SEQUENCE_STEPS`]）。
+    const LOCAL_SEQUENCE_STEPS: usize = 256;
+
+    /// CI 上的操作序列长度（`MUST-GATE-010` 要求 10,000 步）。
+    const CI_SEQUENCE_STEPS: usize = 10_000;
+
+    /// 构造确定性的规范 ULID 文本。
+    fn fixture_id(index: u128) -> EntityId {
+        EntityId::from_str(&format!("01J8ZQ{index:020}")).expect("canonical fixture ulid")
+    }
+
+    /// 操作序列长度：`YEBAN_PROPTEST_CASES` > `CI` > 本机默认。
+    fn sequence_steps() -> usize {
+        if let Ok(raw) = std::env::var("YEBAN_PROPTEST_CASES")
+            && let Ok(parsed) = raw.parse::<usize>()
+            && parsed > 0
+        {
+            return parsed;
+        }
+        if std::env::var_os("CI").is_some() {
+            CI_SEQUENCE_STEPS
+        } else {
+            LOCAL_SEQUENCE_STEPS
+        }
+    }
+
+    /// 固定夹具用的身份常量。
+    struct Fixture {
+        master: EntityId,
+        lead: EntityId,
+        bass: EntityId,
+        clip: EntityId,
+        audio_clip: EntityId,
+        note: EntityId,
+        edge: EntityId,
+        device: EntityId,
+        placement: EntityId,
+        section: EntityId,
+        scene: EntityId,
+    }
+
+    fn fixture() -> Fixture {
+        Fixture {
+            master: fixture_id(1),
+            lead: fixture_id(2),
+            bass: fixture_id(3),
+            clip: fixture_id(10),
+            audio_clip: fixture_id(11),
+            note: fixture_id(20),
+            edge: fixture_id(30),
+            device: fixture_id(40),
+            placement: fixture_id(50),
+            section: fixture_id(60),
+            scene: fixture_id(70),
+        }
+    }
+
+    fn empty_midi_clip(id: EntityId) -> ClipPoolEntry {
+        ClipPoolEntry {
+            id,
+            name: "Clip".to_owned(),
+            content: ClipContent::default(),
+        }
+    }
+
+    /// 一份"五脏俱全"但体积很小的文档，供属性测试与逐变体测试使用。
+    fn fixture_document() -> YebanProjectV1 {
+        let f = fixture();
+        let mut lead = TrackV3 {
+            id: f.lead,
+            name: "Lead".to_owned(),
+            kind: TrackKind::Midi,
+            volume_db: -3.0,
+            pan: -0.25,
+            ..TrackV3::default()
+        };
+        lead.devices.push(DeviceDefinition {
+            id: f.device,
+            name: "PolySynth".to_owned(),
+            params: vec![
+                crate::project::ParameterValue {
+                    name: "cutoff".to_owned(),
+                    value: 1200.0,
+                    unit: Some("Hz".to_owned()),
+                },
+                crate::project::ParameterValue {
+                    name: "reso".to_owned(),
+                    value: 0.3,
+                    unit: None,
+                },
+            ],
+            ..DeviceDefinition::default()
+        });
+        lead.macros.push(crate::project::MacroParameter {
+            name: "Brightness".to_owned(),
+            value: 0.5,
+            ..crate::project::MacroParameter::default()
+        });
+        lead.automation_lanes.insert(
+            AutomationTarget::TrackVolume { track_id: f.lead },
+            AutomationLane {
+                target: AutomationTarget::TrackVolume { track_id: f.lead },
+                points: BTreeMap::from([(
+                    fixture_id(80),
+                    AutomationPoint {
+                        id: fixture_id(80),
+                        tick: 0,
+                        value: -6.0,
+                        curve: crate::music::CurveType::Linear,
+                    },
+                )]),
+            },
+        );
+        lead.clips.insert(
+            f.placement,
+            ClipPlacement {
+                id: f.placement,
+                clip_id: f.clip,
+                start_tick: 0,
+                duration_ticks: 3840,
+                loop_config: LoopConfig::default(),
+                muted: false,
+            },
+        );
+
+        let mut clip = empty_midi_clip(f.clip);
+        if let Some(notes) = clip.content.notes_mut() {
+            notes.insert(f.note, MidiNote::new(f.note, 0, 60, 480));
+            let second = fixture_id(21);
+            notes.insert(second, MidiNote::new(second, 960, 64, 480));
+        }
+
+        let audio_clip = ClipPoolEntry {
+            id: f.audio_clip,
+            name: "Kick".to_owned(),
+            content: ClipContent::Audio {
+                asset: crate::ids::AssetHash::of_bytes(b"kick"),
+                gain_db: 0.0,
+            },
+        };
+
+        let project = YebanProjectV1 {
+            audio_config: ProjectAudioConfig::default(),
+            id: fixture_id(999),
+            title: "Ops Fixture".to_owned(),
+            tracks: BTreeMap::from([
+                (
+                    f.master,
+                    TrackV3 {
+                        id: f.master,
+                        name: "Master".to_owned(),
+                        kind: TrackKind::Master,
+                        ..TrackV3::default()
+                    },
+                ),
+                (f.lead, lead),
+                (
+                    f.bass,
+                    TrackV3 {
+                        id: f.bass,
+                        name: "Bass".to_owned(),
+                        kind: TrackKind::Audio,
+                        ..TrackV3::default()
+                    },
+                ),
+            ]),
+            master_bus_track_id: f.master,
+            routing_graph: crate::project::RoutingGraph {
+                nodes: vec![f.master, f.lead, f.bass],
+                edges: BTreeMap::from([(
+                    f.edge,
+                    RoutingEdge {
+                        id: f.edge,
+                        source_node: f.lead,
+                        destination_node: f.master,
+                        kind: RoutingKind::TrackToBus,
+                        gain_db: None,
+                    },
+                )]),
+            },
+            sections: BTreeMap::from([(
+                f.section,
+                SectionV3 {
+                    id: f.section,
+                    name: "Intro".to_owned(),
+                    start_tick: 0,
+                    end_tick: 3840,
+                    color: None,
+                },
+            )]),
+            scenes: BTreeMap::from([(
+                f.scene,
+                SceneV3 {
+                    id: f.scene,
+                    name: "Scene 1".to_owned(),
+                    tempo: None,
+                    color: None,
+                },
+            )]),
+            clip_pool: BTreeMap::from([(f.clip, clip), (f.audio_clip, audio_clip)]),
+            ..YebanProjectV1::default()
+        };
+        project.validate().expect("夹具文档必须合法");
+        project
+    }
+
+    /// 覆盖**每一个**变体的操作脚本（含 `Batch`）。
+    ///
+    /// 每个操作都针对同一个初始文档构造，测试逐个"应用 → 求逆 → 撤销"，
+    /// 因此脚本可以一次性生成。
+    fn showcase_ops() -> Vec<Op> {
+        let f = fixture();
+        let fresh_note = fixture_id(500);
+        let fresh_track = fixture_id(501);
+        let fresh_placement = fixture_id(502);
+        let fresh_edge = fixture_id(503);
+        let fresh_device = fixture_id(504);
+        let fresh_point = fixture_id(505);
+        let fresh_section = fixture_id(506);
+        let fresh_scene = fixture_id(507);
+
+        let new_placement = ClipPlacement {
+            id: fresh_placement,
+            clip_id: f.clip,
+            start_tick: 1920,
+            duration_ticks: 960,
+            loop_config: LoopConfig::default(),
+            muted: false,
+        };
+        let new_edge = RoutingEdge {
+            id: fresh_edge,
+            source_node: f.bass,
+            destination_node: f.master,
+            kind: RoutingKind::TrackToBus,
+            gain_db: Some(-6.0),
+        };
+        let new_device = DeviceDefinition {
+            id: fresh_device,
+            name: "Insert".to_owned(),
+            ..DeviceDefinition::default()
+        };
+        let new_point = AutomationPoint {
+            id: fresh_point,
+            tick: 1920,
+            value: 0.0,
+            curve: crate::music::CurveType::Linear,
+        };
+        let new_section = SectionV3 {
+            id: fresh_section,
+            name: "Drop".to_owned(),
+            start_tick: 3840,
+            end_tick: 7680,
+            color: None,
+        };
+        let new_scene = SceneV3 {
+            id: fresh_scene,
+            name: "Scene 2".to_owned(),
+            tempo: Some(140.0),
+            color: None,
+        };
+        let target_volume = AutomationTarget::TrackVolume { track_id: f.lead };
+        let target_param = AutomationTarget::DeviceParam {
+            track_id: f.lead,
+            slot_index: 0,
+            param_index: 0,
+        };
+
+        vec![
+            Op::AddNote {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note: MidiNote::new(fresh_note, 480, 67, 240),
+            },
+            Op::DeleteNote {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                previous_note: MidiNote::new(f.note, 0, 60, 480),
+            },
+            Op::MoveNote {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                delta_tick: 240,
+                delta_pitch: 2,
+            },
+            Op::ModifyNoteVelocity {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_vel: 100,
+                new_vel: 64,
+            },
+            Op::AddClipPlacement {
+                track_id: f.bass,
+                placement: new_placement,
+            },
+            Op::RemoveClipPlacement {
+                track_id: f.lead,
+                placement_id: f.placement,
+                previous_placement: ClipPlacement {
+                    id: f.placement,
+                    clip_id: f.clip,
+                    start_tick: 0,
+                    duration_ticks: 3840,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                },
+            },
+            Op::MoveClipPlacement {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_start_tick: 0,
+                new_start_tick: 960,
+            },
+            Op::AddTrack {
+                track: TrackV3 {
+                    id: fresh_track,
+                    name: "Pad".to_owned(),
+                    ..TrackV3::default()
+                },
+            },
+            Op::RemoveTrack {
+                track_id: f.bass,
+                previous_track: TrackV3 {
+                    id: f.bass,
+                    name: "Bass".to_owned(),
+                    kind: TrackKind::Audio,
+                    ..TrackV3::default()
+                },
+            },
+            Op::ConnectRouting { edge: new_edge },
+            Op::DisconnectRouting {
+                edge_id: f.edge,
+                previous_edge: RoutingEdge {
+                    id: f.edge,
+                    source_node: f.lead,
+                    destination_node: f.master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            },
+            Op::SetRoutingGain {
+                edge_id: f.edge,
+                old_gain_db: None,
+                new_gain_db: Some(-3.0),
+            },
+            Op::InsertDevice {
+                track_id: f.bass,
+                slot_index: 0,
+                device: new_device.clone(),
+            },
+            Op::RemoveDevice {
+                track_id: f.lead,
+                slot_index: 0,
+                previous_device: DeviceDefinition {
+                    id: f.device,
+                    name: "PolySynth".to_owned(),
+                    params: vec![
+                        crate::project::ParameterValue {
+                            name: "cutoff".to_owned(),
+                            value: 1200.0,
+                            unit: Some("Hz".to_owned()),
+                        },
+                        crate::project::ParameterValue {
+                            name: "reso".to_owned(),
+                            value: 0.3,
+                            unit: None,
+                        },
+                    ],
+                    ..DeviceDefinition::default()
+                },
+            },
+            Op::SetParam {
+                target: target_volume,
+                old_val: -3.0,
+                new_val: -9.0,
+            },
+            Op::SetParam {
+                target: target_param,
+                old_val: 1200.0,
+                new_val: 2400.0,
+            },
+            Op::SetMacro {
+                track_id: f.lead,
+                macro_index: 0,
+                old_val: 0.5,
+                new_val: 0.75,
+            },
+            Op::SetAutomationPoint {
+                target: target_volume,
+                point_id: fixture_id(80),
+                old_point: Some(AutomationPoint {
+                    id: fixture_id(80),
+                    tick: 0,
+                    value: -6.0,
+                    curve: crate::music::CurveType::Linear,
+                }),
+                new_point: AutomationPoint {
+                    id: fixture_id(80),
+                    tick: 0,
+                    value: -12.0,
+                    curve: crate::music::CurveType::SCurve,
+                },
+            },
+            Op::SetAutomationPoint {
+                target: target_volume,
+                point_id: fresh_point,
+                old_point: None,
+                new_point,
+            },
+            Op::RemoveAutomationPoint {
+                target: target_volume,
+                point_id: fixture_id(80),
+                previous_point: AutomationPoint {
+                    id: fixture_id(80),
+                    tick: 0,
+                    value: -6.0,
+                    curve: crate::music::CurveType::Linear,
+                },
+            },
+            Op::SetSection {
+                section_id: f.section,
+                old_section: Some(SectionV3 {
+                    id: f.section,
+                    name: "Intro".to_owned(),
+                    start_tick: 0,
+                    end_tick: 3840,
+                    color: None,
+                }),
+                new_section: SectionV3 {
+                    id: f.section,
+                    name: "Intro A".to_owned(),
+                    start_tick: 0,
+                    end_tick: 1920,
+                    color: None,
+                },
+            },
+            Op::SetSection {
+                section_id: fresh_section,
+                old_section: None,
+                new_section,
+            },
+            Op::RemoveSection {
+                section_id: f.section,
+                previous_section: SectionV3 {
+                    id: f.section,
+                    name: "Intro".to_owned(),
+                    start_tick: 0,
+                    end_tick: 3840,
+                    color: None,
+                },
+            },
+            Op::SetScene {
+                scene_id: f.scene,
+                old_scene: Some(SceneV3 {
+                    id: f.scene,
+                    name: "Scene 1".to_owned(),
+                    tempo: None,
+                    color: None,
+                }),
+                new_scene: SceneV3 {
+                    id: f.scene,
+                    name: "Scene 1".to_owned(),
+                    tempo: Some(120.0),
+                    color: None,
+                },
+            },
+            Op::SetScene {
+                scene_id: fresh_scene,
+                old_scene: None,
+                new_scene,
+            },
+            Op::RemoveScene {
+                scene_id: f.scene,
+                previous_scene: SceneV3 {
+                    id: f.scene,
+                    name: "Scene 1".to_owned(),
+                    tempo: None,
+                    color: None,
+                },
+            },
+            Op::Batch {
+                ops: vec![
+                    Op::ModifyNoteVelocity {
+                        track_id: f.lead,
+                        clip_id: f.clip,
+                        note_id: f.note,
+                        old_vel: 100,
+                        new_vel: 90,
+                    },
+                    Op::SetRoutingGain {
+                        edge_id: f.edge,
+                        old_gain_db: None,
+                        new_gain_db: Some(-4.0),
+                    },
+                ],
+                description: "AI 提案".to_owned(),
+            },
+        ]
+    }
+
+    #[test]
+    fn every_variant_is_covered_by_the_showcase_script() {
+        let names: Vec<&str> = showcase_ops().iter().map(Op::name).collect();
+        for expected in [
+            "AddNote",
+            "DeleteNote",
+            "MoveNote",
+            "ModifyNoteVelocity",
+            "AddClipPlacement",
+            "RemoveClipPlacement",
+            "MoveClipPlacement",
+            "AddTrack",
+            "RemoveTrack",
+            "ConnectRouting",
+            "DisconnectRouting",
+            "SetRoutingGain",
+            "InsertDevice",
+            "RemoveDevice",
+            "SetParam",
+            "SetMacro",
+            "SetAutomationPoint",
+            "RemoveAutomationPoint",
+            "SetSection",
+            "RemoveSection",
+            "SetScene",
+            "RemoveScene",
+            "Batch",
+        ] {
+            assert!(names.contains(&expected), "脚本缺少变体 {expected}");
+        }
+    }
+
+    #[test]
+    fn every_variant_applies_and_inverts_exactly() {
+        let mut doc = fixture_document();
+        for op in showcase_ops() {
+            let snapshot = doc.clone();
+            op.apply(&mut doc)
+                .unwrap_or_else(|error| panic!("{} 应用失败: {error}", op.name()));
+            assert_ne!(doc, snapshot, "{} 必须真的改变文档", op.name());
+            let inverse = op
+                .invert(&doc)
+                .unwrap_or_else(|error| panic!("{} 求逆失败: {error}", op.name()));
+            inverse
+                .apply(&mut doc)
+                .unwrap_or_else(|error| panic!("{} 的逆操作应用失败: {error}", op.name()));
+            assert_eq!(doc, snapshot, "{} 的逆操作必须精确还原", op.name());
+            doc.validate()
+                .unwrap_or_else(|error| panic!("{} 撤销后文档必须仍合法: {error}", op.name()));
+        }
+    }
+
+    #[test]
+    fn inverted_batch_is_applied_in_reverse_order() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let snapshot = doc.clone();
+        let batch = Op::Batch {
+            ops: vec![
+                Op::AddNote {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note: MidiNote::new(fixture_id(600), 0, 60, 240),
+                },
+                Op::AddNote {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note: MidiNote::new(fixture_id(601), 240, 62, 240),
+                },
+            ],
+            description: "two notes".to_owned(),
+        };
+        batch.apply(&mut doc).expect("apply");
+        assert_eq!(
+            doc.clip_pool[&f.clip].content.notes().expect("midi").len(),
+            4
+        );
+        let inverse = batch.invert(&doc).expect("invert");
+        match &inverse {
+            Op::Batch { ops, .. } => {
+                assert_eq!(ops.len(), 2);
+                assert!(matches!(ops[0], Op::DeleteNote { .. }));
+                assert_eq!(ops[0].name(), "DeleteNote");
+            }
+            other => panic!("批量的逆必须是批量, 实际 {}", other.name()),
+        }
+        inverse.apply(&mut doc).expect("apply inverse");
+        assert_eq!(doc, snapshot);
+    }
+
+    #[test]
+    fn batch_is_atomic_when_a_sub_op_fails() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let snapshot = doc.clone();
+        let batch = Op::Batch {
+            ops: vec![
+                Op::AddNote {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note: MidiNote::new(fixture_id(610), 0, 60, 240),
+                },
+                // 第二个子操作必然失败（音符不存在）
+                Op::ModifyNoteVelocity {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note_id: fixture_id(611),
+                    old_vel: 0,
+                    new_vel: 1,
+                },
+            ],
+            description: "must roll back".to_owned(),
+        };
+        assert!(batch.apply(&mut doc).is_err());
+        assert_eq!(doc, snapshot, "批量失败必须整体不生效 (原子性)");
+    }
+
+    #[test]
+    fn op_variant_json_keys_match_ops_schema() {
+        // `schemas/ops.schema.json` 的 oneOf 里列出的变体名（手抄自契约文件）。
+        const SCHEMA_LISTED: [&str; 14] = [
+            "AddNote",
+            "DeleteNote",
+            "MoveNote",
+            "AddClipPlacement",
+            "RemoveClipPlacement",
+            "MoveClipPlacement",
+            "AddTrack",
+            "RemoveTrack",
+            "ConnectRouting",
+            "DisconnectRouting",
+            "SetRoutingGain",
+            "SetParam",
+            "SetMacro",
+            "Batch",
+        ];
+        let mut seen: Vec<&str> = Vec::new();
+        for op in showcase_ops() {
+            let name = op.name();
+            seen.push(name);
+            let value = serde_json::to_value(&op).expect("serialize");
+            let object = value.as_object().expect("externally tagged object");
+            assert_eq!(object.len(), 1, "{name} 必须是单键外部标签");
+            assert!(object.contains_key(name), "{name} 的 JSON 键必须同名");
+            let back: Op = serde_json::from_value(value).expect("deserialize");
+            assert_eq!(back, op, "{name} 必须能往返");
+        }
+        for listed in SCHEMA_LISTED {
+            assert!(
+                seen.contains(&listed),
+                "ops.schema.json 列出的 `{listed}` 未被任何变体实现"
+            );
+        }
+        // 契约缺口（已留痕，不得静默）：
+        for missing in [
+            "ModifyNoteVelocity",
+            "InsertDevice",
+            "RemoveDevice",
+            "SetAutomationPoint",
+            "RemoveAutomationPoint",
+            "SetSection",
+            "RemoveSection",
+            "SetScene",
+            "RemoveScene",
+        ] {
+            assert!(
+                seen.contains(&missing) && !SCHEMA_LISTED.contains(&missing),
+                "`{missing}` 是 ops.schema.json 缺口的一部分, 必须被本测试显式列出"
+            );
+        }
+    }
+
+    #[test]
+    fn origin_variants_round_trip() {
+        for origin in [
+            OpOrigin::UserUi,
+            OpOrigin::MidiInput,
+            OpOrigin::McpProposal {
+                proposal_id: fixture_id(1),
+                agent_name: "claude".to_owned(),
+            },
+            OpOrigin::UndoRedo,
+            OpOrigin::AutomationRecord,
+            OpOrigin::Import,
+            OpOrigin::Migration,
+        ] {
+            let json = serde_json::to_string(&origin).expect("serialize");
+            let back: OpOrigin = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, origin);
+        }
+        let stamped = StampedOp::user_ui(42, showcase_ops()[0].clone());
+        let json = serde_json::to_string(&stamped).expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        for key in ["origin", "timestamp", "op"] {
+            assert!(value.get(key).is_some(), "StampedOp 缺键 {key}");
+        }
+        let back: StampedOp = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, stamped);
+    }
+
+    #[test]
+    fn stale_payloads_are_rejected_before_mutating() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let snapshot = doc.clone();
+
+        let stale_delete = Op::DeleteNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            previous_note: MidiNote::new(f.note, 0, 61, 480),
+        };
+        assert_eq!(
+            stale_delete.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "DeleteNote" })
+        );
+
+        let stale_velocity = Op::ModifyNoteVelocity {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            old_vel: 99,
+            new_vel: 50,
+        };
+        assert_eq!(
+            stale_velocity.apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "ModifyNoteVelocity"
+            })
+        );
+        assert_eq!(doc, snapshot, "失败的 apply 绝不能改文档");
+    }
+
+    #[test]
+    fn out_of_range_payloads_are_rejected() {
+        let f = fixture();
+        let mut doc = fixture_document();
+
+        let bad_velocity = Op::ModifyNoteVelocity {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            old_vel: 100,
+            new_vel: 200,
+        };
+        assert_eq!(
+            bad_velocity.apply(&mut doc),
+            Err(ModelError::VelocityOutOfRange { value: 200 })
+        );
+
+        let bad_pitch = Op::MoveNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            delta_tick: 0,
+            delta_pitch: 100,
+        };
+        assert_eq!(
+            bad_pitch.apply(&mut doc),
+            Err(ModelError::PitchOutOfRange { value: 60 })
+        );
+
+        let underflow = Op::MoveNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            delta_tick: -1,
+            delta_pitch: 0,
+        };
+        assert_eq!(
+            underflow.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "MoveNote" })
+        );
+
+        let bad_cutoff = Op::SetParam {
+            target: AutomationTarget::DeviceParam {
+                track_id: f.lead,
+                slot_index: 0,
+                param_index: 0,
+            },
+            old_val: 1200.0,
+            new_val: f32::INFINITY,
+        };
+        assert!(matches!(
+            bad_cutoff.apply(&mut doc),
+            Err(ModelError::NonFiniteValue { .. })
+        ));
+
+        let bad_slot = Op::SetParam {
+            target: AutomationTarget::DeviceParam {
+                track_id: f.lead,
+                slot_index: 7,
+                param_index: 0,
+            },
+            old_val: 0.0,
+            new_val: 0.0,
+        };
+        assert!(matches!(
+            bad_slot.apply(&mut doc),
+            Err(ModelError::DeviceSlotOutOfRange { index: 7, .. })
+        ));
+
+        let send_gain = Op::SetParam {
+            target: AutomationTarget::SendGain {
+                track_id: f.lead,
+                edge_id: f.edge,
+            },
+            old_val: 0.0,
+            new_val: -3.0,
+        };
+        assert!(matches!(
+            send_gain.apply(&mut doc),
+            Err(ModelError::AutomationTargetNotApplicable { .. })
+        ));
+
+        let bad_macro = Op::SetMacro {
+            track_id: f.lead,
+            macro_index: 0,
+            old_val: 0.5,
+            new_val: 1.5,
+        };
+        assert_eq!(
+            bad_macro.apply(&mut doc),
+            Err(ModelError::MacroValueOutOfRange { value: 1.5 })
+        );
+
+        let bad_pan = Op::SetParam {
+            target: AutomationTarget::TrackPan { track_id: f.lead },
+            old_val: -0.25,
+            new_val: 2.0,
+        };
+        assert_eq!(
+            bad_pan.apply(&mut doc),
+            Err(ModelError::PanOutOfRange { value: 2.0 })
+        );
+
+        assert_eq!(doc, fixture_document(), "全部失败路径都不得改文档");
+    }
+
+    #[test]
+    fn removing_the_master_bus_track_is_refused() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let op = Op::RemoveTrack {
+            track_id: f.master,
+            previous_track: doc.tracks[&f.master].clone(),
+        };
+        assert_eq!(
+            op.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "RemoveTrack" })
+        );
+    }
+
+    #[test]
+    fn invert_rejects_an_op_that_never_touched_this_document() {
+        let f = fixture();
+        let doc = fixture_document();
+        // 这份文档里并没有 fresh_note，因此 `AddNote` 的逆（DeleteNote）不可应用。
+        let never_applied = Op::AddNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note: MidiNote::new(fixture_id(900), 0, 60, 240),
+        };
+        assert_eq!(
+            never_applied.invert(&doc),
+            Err(ModelError::NoteNotFound {
+                id: fixture_id(900)
+            })
+        );
+
+        // 已应用的 `AddNote` 求逆必须成功。
+        let mut applied = doc.clone();
+        never_applied.apply(&mut applied).expect("apply");
+        assert!(never_applied.invert(&applied).is_ok());
+    }
+
+    #[test]
+    fn apply_inverse_is_exactly_equivalent_to_invert_then_apply() {
+        let f = fixture();
+        let mut direct = fixture_document();
+        let mut staged = fixture_document();
+        let op = Op::SetRoutingGain {
+            edge_id: f.edge,
+            old_gain_db: None,
+            new_gain_db: Some(-1.5),
+        };
+        op.apply(&mut direct).expect("apply");
+        op.apply(&mut staged).expect("apply");
+        op.apply_inverse(&mut direct).expect("apply_inverse");
+        let inverse = op.invert(&staged).expect("invert");
+        inverse.apply(&mut staged).expect("apply");
+        assert_eq!(direct, staged);
+        assert_eq!(direct, fixture_document());
+    }
+
+    /// 固定种子的确定性 PRNG：同一种子恒产生同一序列（测试可复现）。
+    struct StableRng(u64);
+
+    impl StableRng {
+        fn new(seed: u64) -> Self {
+            Self(splitmix64(seed ^ 0x5945_4241_4E00_5EED))
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.0 = splitmix64(self.0);
+            self.0
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            if bound <= 1 {
+                0
+            } else {
+                let bound = u64::try_from(bound).unwrap_or(u64::MAX);
+                usize::try_from(self.next_u64() % bound).unwrap_or(0)
+            }
+        }
+
+        /// 在 `0..=255` 上取一个随机字节。
+        fn byte(&mut self) -> u8 {
+            u8::try_from(self.below(256)).unwrap_or(0)
+        }
+
+        /// 从集合的前 `window` 个键里挑一个（O(window)，避免每步遍历整张表）。
+        fn pick<K: Ord + Copy, V>(&mut self, map: &BTreeMap<K, V>, window: usize) -> Option<K> {
+            if map.is_empty() {
+                return None;
+            }
+            let bound = map.len().min(window.max(1));
+            map.keys().nth(self.below(bound)).copied()
+        }
+    }
+
+    /// 片段内的音符数量（非 MIDI 片段计 0）。
+    fn notes_count(entry: &ClipPoolEntry) -> usize {
+        entry.content.notes().map_or(0, BTreeMap::len)
+    }
+
+    /// 从节点切片里挑一个（O(window)）。
+    fn pick_node(rng: &mut StableRng, nodes: &[EntityId]) -> Option<EntityId> {
+        if nodes.is_empty() {
+            return None;
+        }
+        let bound = nodes.len().min(8);
+        nodes.get(rng.below(bound)).copied()
+    }
+
+    /// 文档规模上限：属性测试要跑 10,000 步，实体无限增长会让
+    /// `Batch` 的原子克隆与 `validate` 变成瓶颈，因此给"新增类"操作设上限。
+    fn has_room(doc: &YebanProjectV1) -> bool {
+        doc.tracks.len() < 32
+            && doc.clip_pool.len() < 16
+            && doc.sections.len() < 16
+            && doc.scenes.len() < 16
+            && doc.routing_graph.edges.len() < 32
+    }
+
+    /// 生成一个**保证可应用**的操作（载荷全部取自当前文档）。
+    fn generate_op(rng: &mut StableRng, doc: &YebanProjectV1, counter: &mut u128) -> Op {
+        let fresh = |counter: &mut u128| {
+            *counter += 1;
+            fixture_id(*counter + 10_000)
+        };
+        let kind = rng.below(23);
+        let midi_clip = || {
+            doc.clip_pool
+                .values()
+                .find(|entry| entry.content.notes().is_some())
+                .map(|entry| entry.id)
+        };
+        let a_note = || {
+            doc.clip_pool
+                .values()
+                .filter_map(|entry| entry.content.notes())
+                .flat_map(BTreeMap::iter)
+                .next()
+        };
+
+        match kind {
+            0 => {
+                let room = has_room(doc)
+                    && doc
+                        .clip_pool
+                        .values()
+                        .map(notes_count)
+                        .all(|count| count < 64);
+                if room
+                    && let Some(clip_id) =
+                        midi_clip().or_else(|| doc.clip_pool.keys().next().copied())
+                {
+                    let track_id = rng.pick(&doc.tracks, 8).unwrap_or(doc.master_bus_track_id);
+                    return Op::AddNote {
+                        track_id,
+                        clip_id,
+                        note: MidiNote::new(fresh(counter), u64::from(rng.byte()) * 240, 60, 240),
+                    };
+                }
+            }
+            1 => {
+                if let (Some(clip_id), Some((note_id, note))) = (midi_clip(), a_note()) {
+                    let track_id = rng.pick(&doc.tracks, 8).unwrap_or(doc.master_bus_track_id);
+                    return Op::DeleteNote {
+                        track_id,
+                        clip_id,
+                        note_id: *note_id,
+                        previous_note: note.clone(),
+                    };
+                }
+            }
+            2 => {
+                if let (Some(clip_id), Some((note_id, note))) = (midi_clip(), a_note()) {
+                    let track_id = rng.pick(&doc.tracks, 8).unwrap_or(doc.master_bus_track_id);
+                    let delta_pitch = if note.pitch < 64 { 1_i8 } else { -1 };
+                    // 夹住下界：start_tick + delta_tick 必须 >= 0，否则 Op 不可应用。
+                    let floor = -i64::try_from(note.start_tick).unwrap_or(i64::MAX);
+                    let delta_tick = (i64::from(rng.byte()) - 128).max(floor);
+                    return Op::MoveNote {
+                        track_id,
+                        clip_id,
+                        note_id: *note_id,
+                        delta_tick,
+                        delta_pitch,
+                    };
+                }
+            }
+            3 => {
+                if let (Some(clip_id), Some((note_id, note))) = (midi_clip(), a_note()) {
+                    let track_id = rng.pick(&doc.tracks, 8).unwrap_or(doc.master_bus_track_id);
+                    return Op::ModifyNoteVelocity {
+                        track_id,
+                        clip_id,
+                        note_id: *note_id,
+                        old_vel: note.velocity,
+                        new_vel: rng.byte() % 128,
+                    };
+                }
+            }
+            4 => {
+                if has_room(doc)
+                    && let (Some(track_id), Some(clip_id)) =
+                        (rng.pick(&doc.tracks, 8), rng.pick(&doc.clip_pool, 8))
+                {
+                    let id = fresh(counter);
+                    return Op::AddClipPlacement {
+                        track_id,
+                        placement: ClipPlacement {
+                            id,
+                            clip_id,
+                            start_tick: u64::from(rng.byte()) * 240,
+                            duration_ticks: 960,
+                            loop_config: LoopConfig::default(),
+                            muted: false,
+                        },
+                    };
+                }
+            }
+            5 => {
+                let candidate = doc
+                    .tracks
+                    .values()
+                    .find(|track| !track.clips.is_empty())
+                    .and_then(|track| {
+                        track
+                            .clips
+                            .values()
+                            .next()
+                            .map(|placement| (track.id, *placement))
+                    });
+                if let Some((track_id, placement)) = candidate {
+                    return Op::RemoveClipPlacement {
+                        track_id,
+                        placement_id: placement.id,
+                        previous_placement: placement,
+                    };
+                }
+            }
+            6 => {
+                let candidate = doc
+                    .tracks
+                    .values()
+                    .find(|track| !track.clips.is_empty())
+                    .and_then(|track| {
+                        track
+                            .clips
+                            .values()
+                            .next()
+                            .map(|placement| (track.id, placement.id, placement.start_tick))
+                    });
+                if let Some((track_id, placement_id, start_tick)) = candidate {
+                    return Op::MoveClipPlacement {
+                        track_id,
+                        placement_id,
+                        old_start_tick: start_tick,
+                        new_start_tick: start_tick + 480,
+                    };
+                }
+            }
+            7 => {
+                if has_room(doc) {
+                    return Op::AddTrack {
+                        track: TrackV3 {
+                            id: fresh(counter),
+                            name: "Generated".to_owned(),
+                            kind: TrackKind::Midi,
+                            ..TrackV3::default()
+                        },
+                    };
+                }
+            }
+            8 => {
+                let removable = doc
+                    .tracks
+                    .values()
+                    .find(|track| {
+                        track.id != doc.master_bus_track_id && track.kind != TrackKind::Master
+                    })
+                    .cloned();
+                if let Some(track) = removable {
+                    return Op::RemoveTrack {
+                        track_id: track.id,
+                        previous_track: track,
+                    };
+                }
+            }
+            9 => {
+                if has_room(doc)
+                    && let (Some(source), Some(destination)) = (
+                        pick_node(rng, &doc.routing_graph.nodes),
+                        pick_node(rng, &doc.routing_graph.nodes),
+                    )
+                {
+                    let id = fresh(counter);
+                    return Op::ConnectRouting {
+                        edge: RoutingEdge {
+                            id,
+                            source_node: source,
+                            destination_node: destination,
+                            kind: RoutingKind::SendToAux,
+                            gain_db: Some(-6.0),
+                        },
+                    };
+                }
+            }
+            10 => {
+                if let Some(edge_id) = rng.pick(&doc.routing_graph.edges, 8) {
+                    let edge = doc.routing_graph.edges[&edge_id];
+                    return Op::DisconnectRouting {
+                        edge_id,
+                        previous_edge: edge,
+                    };
+                }
+            }
+            11 => {
+                if let Some(edge_id) = rng.pick(&doc.routing_graph.edges, 8) {
+                    let gain = doc.routing_graph.edges[&edge_id].gain_db;
+                    let new_gain = Some(f32::from(rng.byte()) - 12.0);
+                    return Op::SetRoutingGain {
+                        edge_id,
+                        old_gain_db: gain,
+                        new_gain_db: new_gain,
+                    };
+                }
+            }
+            12 => {
+                if has_room(doc)
+                    && let Some(track_id) = rng.pick(&doc.tracks, 8)
+                {
+                    let len = doc.tracks[&track_id].devices.len();
+                    let slot_index = rng.below(len + 1);
+                    return Op::InsertDevice {
+                        track_id,
+                        slot_index,
+                        device: DeviceDefinition {
+                            id: fresh(counter),
+                            name: "Generated".to_owned(),
+                            ..DeviceDefinition::default()
+                        },
+                    };
+                }
+            }
+            13 => {
+                let candidate = doc
+                    .tracks
+                    .values()
+                    .find(|track| !track.devices.is_empty())
+                    .and_then(|track| {
+                        track
+                            .devices
+                            .first()
+                            .map(|device| (track.id, device.clone()))
+                    });
+                if let Some((track_id, previous_device)) = candidate {
+                    return Op::RemoveDevice {
+                        track_id,
+                        slot_index: 0,
+                        previous_device,
+                    };
+                }
+            }
+            14 => {
+                if let Some(track_id) = rng.pick(&doc.tracks, 8) {
+                    let track = &doc.tracks[&track_id];
+                    let target = match rng.below(3) {
+                        0 if !track.devices.is_empty() && !track.devices[0].params.is_empty() => {
+                            AutomationTarget::DeviceParam {
+                                track_id,
+                                slot_index: 0,
+                                param_index: 0,
+                            }
+                        }
+                        1 if !track.macros.is_empty() => AutomationTarget::Macro {
+                            track_id,
+                            macro_index: 0,
+                        },
+                        2 => AutomationTarget::TrackPan { track_id },
+                        _ => AutomationTarget::TrackVolume { track_id },
+                    };
+                    if let Ok(old_val) = read_param(doc, target) {
+                        let new_val = match target {
+                            AutomationTarget::TrackPan { .. } => 0.5,
+                            AutomationTarget::Macro { .. } => 0.25,
+                            _ => f32::from(rng.byte()) - 24.0,
+                        };
+                        return Op::SetParam {
+                            target,
+                            old_val,
+                            new_val,
+                        };
+                    }
+                }
+            }
+            15 => {
+                let candidate = doc
+                    .tracks
+                    .values()
+                    .find(|track| !track.macros.is_empty())
+                    .map(|track| (track.id, track.macros[0].value));
+                if let Some((track_id, old_val)) = candidate {
+                    return Op::SetMacro {
+                        track_id,
+                        macro_index: 0,
+                        old_val,
+                        new_val: 0.5,
+                    };
+                }
+            }
+            16 => {
+                if let Some(track_id) = rng.pick(&doc.tracks, 8) {
+                    let target = AutomationTarget::TrackVolume { track_id };
+                    let existing = doc.tracks[&track_id]
+                        .automation_lanes
+                        .get(&target)
+                        .and_then(|lane| lane.points.values().next().copied());
+                    let (point_id, old_point) = match existing {
+                        Some(point) => (point.id, Some(point)),
+                        None => (fresh(counter), None),
+                    };
+                    return Op::SetAutomationPoint {
+                        target,
+                        point_id,
+                        old_point,
+                        new_point: AutomationPoint {
+                            id: point_id,
+                            tick: u64::from(rng.byte()) * 240,
+                            value: 0.5,
+                            curve: crate::music::CurveType::Linear,
+                        },
+                    };
+                }
+            }
+            17 => {
+                let candidate = doc.tracks.values().find_map(|track| {
+                    track.automation_lanes.iter().find_map(|(target, lane)| {
+                        lane.points.values().next().map(|point| (*target, *point))
+                    })
+                });
+                if let Some((target, previous_point)) = candidate {
+                    return Op::RemoveAutomationPoint {
+                        target,
+                        point_id: previous_point.id,
+                        previous_point,
+                    };
+                }
+            }
+            18 => {
+                if let Some(section_id) = rng.pick(&doc.sections, 8) {
+                    let previous = doc.sections[&section_id].clone();
+                    return Op::SetSection {
+                        section_id,
+                        old_section: Some(previous.clone()),
+                        new_section: SectionV3 {
+                            id: previous.id,
+                            name: previous.name.clone(),
+                            start_tick: previous.start_tick,
+                            end_tick: previous.end_tick + 960,
+                            color: previous.color.clone(),
+                        },
+                    };
+                }
+                if has_room(doc) {
+                    let id = fresh(counter);
+                    return Op::SetSection {
+                        section_id: id,
+                        old_section: None,
+                        new_section: SectionV3 {
+                            id,
+                            name: "Generated".to_owned(),
+                            start_tick: 0,
+                            end_tick: 960,
+                            color: None,
+                        },
+                    };
+                }
+            }
+            19 => {
+                if let Some(section_id) = rng.pick(&doc.sections, 8) {
+                    let previous_section = doc.sections[&section_id].clone();
+                    return Op::RemoveSection {
+                        section_id,
+                        previous_section,
+                    };
+                }
+            }
+            20 => {
+                if let Some(scene_id) = rng.pick(&doc.scenes, 8) {
+                    let previous = doc.scenes[&scene_id].clone();
+                    return Op::SetScene {
+                        scene_id,
+                        old_scene: Some(previous.clone()),
+                        new_scene: SceneV3 {
+                            id: previous.id,
+                            name: previous.name.clone(),
+                            tempo: Some(120.0),
+                            color: previous.color.clone(),
+                        },
+                    };
+                }
+                if has_room(doc) {
+                    let id = fresh(counter);
+                    return Op::SetScene {
+                        scene_id: id,
+                        old_scene: None,
+                        new_scene: SceneV3 {
+                            id,
+                            name: "Generated".to_owned(),
+                            tempo: None,
+                            color: None,
+                        },
+                    };
+                }
+            }
+            21 => {
+                if let Some(scene_id) = rng.pick(&doc.scenes, 8) {
+                    let previous_scene = doc.scenes[&scene_id].clone();
+                    return Op::RemoveScene {
+                        scene_id,
+                        previous_scene,
+                    };
+                }
+            }
+            _ => {
+                if has_room(doc)
+                    && rng.below(4) == 0
+                    && let (Some(track_id), Some(clip_id)) = (rng.pick(&doc.tracks, 8), midi_clip())
+                {
+                    return Op::Batch {
+                        ops: vec![Op::AddNote {
+                            track_id,
+                            clip_id,
+                            note: MidiNote::new(fresh(counter), 0, 72, 120),
+                        }],
+                        description: "generated batch".to_owned(),
+                    };
+                }
+            }
+        }
+
+        // 兜底：`SetRoutingGain`（只要有一条边就必然可应用），否则新增音轨。
+        if let Some(edge_id) = rng.pick(&doc.routing_graph.edges, 8) {
+            let gain = doc.routing_graph.edges[&edge_id].gain_db;
+            return Op::SetRoutingGain {
+                edge_id,
+                old_gain_db: gain,
+                new_gain_db: Some(-1.0),
+            };
+        }
+        Op::AddTrack {
+            track: TrackV3 {
+                id: fresh(counter),
+                name: "Fallback".to_owned(),
+                ..TrackV3::default()
+            },
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            max_shrink_iters: 64,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// [MUST-GATE-010, ROAD-M1-006, TEST-SPEC-001] 状态树逆向幂等性。
+        ///
+        /// 随机生成 `sequence_steps()` 步**保证可应用**的领域操作并逐步 apply，
+        /// 然后按逆序逐步 undo，断言文档与初始状态**逐字节严格守恒**。
+        /// 序列长度由 `YEBAN_PROPTEST_CASES` 控制（CI 上自动取 10,000）。
+        #[test]
+        fn state_tree_is_conserved_under_reverse_undo(seed in any::<u64>()) {
+            let steps = sequence_steps();
+            let initial = fixture_document();
+            let mut doc = initial.clone();
+            let mut rng = StableRng::new(seed);
+            let mut counter: u128 = 0;
+            let mut applied: Vec<Op> = Vec::with_capacity(steps);
+
+            for step in 0..steps {
+                let op = generate_op(&mut rng, &doc, &mut counter);
+                op.apply(&mut doc).unwrap_or_else(|error| {
+                    panic!("第 {step} 步生成的 {} 必须可应用: {error}", op.name())
+                });
+                if step % 64 == 0 {
+                    doc.validate().unwrap_or_else(|error| {
+                        panic!("第 {step} 步 ({}) 之后文档必须合法: {error}", op.name())
+                    });
+                }
+                applied.push(op);
+            }
+            prop_assert_eq!(applied.len(), steps);
+
+            for (index, op) in applied.iter().rev().enumerate() {
+                let inverse = op.invert(&doc).unwrap_or_else(|error| {
+                    panic!("撤销第 {index} 步 ({}) 时求逆失败: {error}", op.name())
+                });
+                inverse.apply(&mut doc).unwrap_or_else(|error| {
+                    panic!("撤销第 {index} 步 ({}) 时逆操作失败: {error}", op.name())
+                });
+            }
+            doc.validate().expect("撤销到底后文档必须仍然合法");
+            prop_assert_eq!(&doc, &initial);
+        }
+    }
+}
