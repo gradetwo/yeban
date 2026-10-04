@@ -90,8 +90,14 @@ fontconfig，缺了它会在"编译依赖"时直接红 —— 那不是代码错
 ```bash
 sudo apt-get install -y --no-install-recommends \
   pkg-config libfontconfig1-dev libfreetype-dev \
-  libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+  libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
+  libasound2-dev fonts-noto-cjk
 ```
+
+- `libasound2-dev`：`yeban-engine` 经 `cpal` 链接 ALSA。
+- `fonts-noto-cjk`：**运行时环境依赖，不是仓库资产**（见 ADR-0001 D24）。没有它，中文会渲染成豆腐块，
+  而 Golden 会"稳定地"记录这个错误（比随机失败更危险）。实测：无字体时汉字区域墨迹 24 px，
+  装上后 648 px，`cjk_ink >= 150` 已成为判据。
 
 另外两处只有 Slint 才会触发的合规现实（都已在 main 上处理）：
 
@@ -99,6 +105,39 @@ sudo apt-get install -y --no-install-recommends \
 | :--- | :--- | :--- |
 | `cargo deny` 报 `BSL-1.0` 被拒 | `clipboard-win` / `error-code`（← `arboard` ← winit/slint 剪贴板，Windows 目标） | BSL-1.0 是 OSI + FSF 认证的宽松许可、GPLv3 兼容，已加入 `deny.toml` 白名单并注明来源链路 |
 | 依赖包数量从 62 跳到 ~579 | Slint + winit + fontique 的传递依赖 | 许可清单重新生成（`scripts/gates/license_inventory.py`），`--check` 会在漂移时变红 |
+
+## 3.3 跨语言契约对账（`checks` 腿）
+
+`checks` 腿里有一步把 **Rust 侧写出的字节** 与 **Python 侧读的契约** 对账：
+
+```bash
+cargo run -p yeban-model --example export_schema_samples -- --out target/schema-samples
+cargo run -p yeban-mcp   --example export_mcp_samples   -- --out target/schema-samples
+python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/schema-samples
+```
+
+三条容易踩的规则（都付过学费）：
+
+1. **新增一个带 JSON 契约的 crate，就要在这里加一行导出**，否则它的契约"只是定义了一堆没人引用的类型"。
+2. **契约的根必须真的约束样本**。`mcp-tools.schema.json` 的根曾经不引用 `definitions`，
+   于是 `{"anything":[1,2,3]}` 都能通过 —— 那是**空转的假绿**（ADR-0001 D25）。
+   自查方式：**喂一个故意非法的样本，确认它被拒**。
+3. **文档样本用 `.meta.json` 后缀**：注册表快照/缺口清单这类"统计"不是契约实例，
+   用同一套 `oneOf` 根校验它们属于类型错误。校验器会跳过 `.meta.` 并**要求每个前缀至少 1 份真实例**
+   （否则"全是 meta"= 该契约没有对账）。
+
+`--repo-assets` 是另一件事：它读**仓库自己的** `assets/**/manifest.json`，校验结构并**逐项重算 SHA-256
+与 `size_bytes` 和磁盘对账**。此前这些清单**从未被任何门禁读过**（红线 9 的"登记"没有机械保护）。
+`optional: true` 的条目（例如 18MB 的 ONNX 权重）在文件缺失时不算错，但会打印"未随仓库分发"的条数。
+
+## 3.4 无头 UI 截图与基准读数（artifact / job summary）
+
+- `rust` 矩阵腿与 `rust (workspace 全量)` 腿都会上传 `target/ui-test-port/` 作为 artifact
+  （`ui-screenshots-*`，保留 30 天）。**没有它，"界面被渲染器看过"只能停在"断言通过"这一层。**
+- 手动档 `bench` 会跑 `cargo run --release -p yeban-render --example bench_render`，
+  把 `BENCH …` 行写进 job summary。**托管 runner 的读数只能给数量级**，
+  不能用来判定 `BASELINE-001` 的"≥100× 实时"是否达标；DoD 4 的"衰退 ≤3%"需要**可比固定硬件**，
+  在本 CI 上**不可判定**（记为 pending）。不要把读数读成"通过"。
 
 ## 4. 已接线 vs PENDING
 
@@ -108,11 +147,12 @@ sudo apt-get install -y --no-install-recommends \
 
 - **已接线**：fmt、clippy `-D warnings`、单元/属性测试、cargo-deny、确定性 `Cargo.lock`、
   13 条机械红线守卫（HashMap / GUI 依赖 / `0.0.0.0` / 大文件 / ASIO / 通配版本 / workspace 继承 / 工具缓存不入库 / workflow YAML 合法…）、
-  JSON Schema 契约、工具链漂移断言。
+  JSON Schema 契约（含 `.meta.` 约定与承重根）、**资产清单 + 逐项 SHA-256 对账**、工具链漂移断言、
+  无头 UI 截图 artifact、`BASELINE-001` 的数量级测量入口。
 - **PENDING**：实时回调零分配（MUST-GATE-001/012）、L1 bit-exact（002）、L2 跨架构（003）、
   Zip-Slip 与解压炸弹（006/007）、`.yeban.lock` 并发（008）、MCP 默认安全（009）、
   10,000 步撤销守恒（010）、cargo-fuzz（011）、采样指纹（014）、Golden 图来源（015）、
-  以及全部 BASELINE 性能线。
+  以及**除 `BASELINE-001` 数量级读数之外**的全部 BASELINE 性能线（含 DoD 4 的 3% 回归阈值）。
 
 PENDING 的共同原因只有两类：**被验证的功能还没实现**，或**需要固定频率的参考硬件**。
 在条件具备之前，这些门禁明确"不通过"，而不是用一个永远绿的假 job 冒充通过。
