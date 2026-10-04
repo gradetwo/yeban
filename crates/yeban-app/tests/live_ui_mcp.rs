@@ -389,6 +389,7 @@ use yeban_app::open::open_project_file;
 use yeban_engine::meter::{MeterFrame, meter_channel};
 use yeban_model::ids::EntityId;
 use yeban_model::project::YebanProjectV1;
+use yeban_ui_mcp::tree::UiTree;
 use yeban_ui_test_port::tree::ControlTree;
 
 /// 装配选项：判据只调三个旋钮（权限 / 控制台 Tab / 每个引擎代的量子数）。
@@ -408,10 +409,22 @@ fn channel_strips(tree: &ControlTree) -> usize {
         .count()
 }
 
-/// 取某个语义 ID 的运行时标签。找不到就是失败 —— 判据里"找不到"从来不是通过。
+/// 取某个语义 ID 在**执行面**控件树（`ControlTree`）里的标签。
+///
+/// 两个助手对应两条**不同的**树类型：`ControlTree` 是 `LivePort` 内省出来的那棵树
+/// （`LiveUi::tree_snapshot`），`UiTree` 是 `ui/tree` 把同一棵树投影成线格式的结果。
+/// 判据两边都用，所以类型必须分开写 —— 混用是编译错误（CI 第一次就把这一条抓住了）。
 fn label_of(tree: &ControlTree, id: &str) -> String {
     tree.find_by_id(id)
         .unwrap_or_else(|| panic!("运行时控件树里没有 `{id}`"))
+        .label
+        .clone()
+}
+
+/// 取某个语义 ID 在**控制面**投影（`ui/tree` 的 `UiTree`）里的标签。
+fn label_in(tree: &UiTree, id: &str) -> String {
+    tree.find(id)
+        .unwrap_or_else(|| panic!("`ui/tree` 的投影里没有 `{id}`"))
         .label
         .clone()
 }
@@ -601,7 +614,7 @@ fn mixer_meter_labels_match_the_injected_frames() {
         ("track-2-meter", "峰值 -120.0 RMS -120.0 dBFS"),
         ("mixer-master-meter", "峰值 0.0 RMS 0.0 dBFS"),
     ] {
-        let label = label_of(&tree, id);
+        let label = label_in(&tree, id);
         assert!(
             label.ends_with(expected),
             "`{id}` 的标签 {label:?} 必须以 {expected:?} 结尾（dBFS 必须进控件树）"
@@ -609,9 +622,9 @@ fn mixer_meter_labels_match_the_injected_frames() {
     }
     report_line(&format!(
         "[app-mixer] 注入电平: track-0-meter={:?} track-1-meter={:?} track-2-meter={:?}",
-        label_of(&tree, "track-0-meter"),
-        label_of(&tree, "track-1-meter"),
-        label_of(&tree, "track-2-meter")
+        label_in(&tree, "track-0-meter"),
+        label_in(&tree, "track-1-meter"),
+        label_in(&tree, "track-2-meter")
     ));
 
     // `ui/node` 走的是同一条入口（找不到 / 标签不含期望文本都会显式报错）。
@@ -667,7 +680,7 @@ fn hostile_levels_never_render_as_nan_in_the_control_tree() {
     let mut plane = live.into_control_plane(Permission::ReadOnly);
     let (tree, tree_json) = plane.plane().tree().expect("ui/tree");
     for id in ["track-0-meter", "track-1-meter", "mixer-master-meter"] {
-        let label = label_of(&tree, id);
+        let label = label_in(&tree, id);
         assert!(
             !label.contains("NaN"),
             "`{id}` 的标签里出现了 NaN: {label:?}"
@@ -678,7 +691,7 @@ fn hostile_levels_never_render_as_nan_in_the_control_tree() {
         );
     }
     assert_eq!(
-        label_of(&tree, "track-0-meter"),
+        label_in(&tree, "track-0-meter"),
         "轨道 鼓 电平表 峰值 -120.0 RMS -120.0 dBFS"
     );
     assert!(!tree_json.contains("NaN"), "整棵树的线上文本里都不许有 NaN");
@@ -832,7 +845,7 @@ fn admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
     let mut plane = live.into_control_plane(Permission::Administrative);
     let (before, _) = plane.plane().tree().expect("ui/tree");
     assert_eq!(
-        label_of(&before, "track-0-meter"),
+        label_in(&before, "track-0-meter"),
         "轨道 鼓 电平表 峰值 0.0 RMS 0.0 dBFS",
         "重建之前 UI 显示的是注入的那一帧"
     );
@@ -878,12 +891,12 @@ fn admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
     // ---- 副作用：电平回到下限（新引擎的读数取代了注入的那一帧） ----
     let (after, _) = plane.plane().tree().expect("ui/tree");
     assert_eq!(
-        label_of(&after, "track-0-meter"),
+        label_in(&after, "track-0-meter"),
         "轨道 鼓 电平表 峰值 -120.0 RMS -120.0 dBFS",
         "引擎换代之后旧读数必须作废（电平回到下限）"
     );
     assert_eq!(
-        label_of(&after, "mixer-master-meter"),
+        label_in(&after, "mixer-master-meter"),
         "主控电平表 峰值 -120.0 RMS -120.0 dBFS"
     );
 
@@ -969,7 +982,7 @@ fn production_mode_rejects_the_three_admin_actions_by_scope() {
     // 副作用一个都没有：文件没被写、视图没被切、树还是那棵树。
     assert!(!path.exists(), "生产模式下 `ui/force_save` 不得写任何文件");
     let (after, _) = plane.plane().tree().expect("ui/tree");
-    assert_eq!(after.len(), before.len());
+    assert_eq!(after.count, before.count, "拒绝前后运行时树规模不变");
     assert!(after.find("workspace-arrangement-canvas").is_some());
     assert!(after.find("workspace-session-canvas").is_none());
 }

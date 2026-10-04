@@ -283,8 +283,9 @@ impl LiveAdminSurface {
 
     /// 引擎重建（`ui/reload_engine` 与 `apply_project` 共用同一条路径）。
     fn rebuild_engine(&mut self) -> Result<yeban_app::engine_host::EngineRebuild, LiveWiringError> {
-        let rebuild = self.engine.reload(&self.project, self.engine_quanta)?;
-        Ok(rebuild)
+        self.engine
+            .reload(&self.project, self.engine_quanta)
+            .map_err(LiveWiringError::from)
     }
 
     /// 一轮电平消费：抽干 → 对齐工程 → 注入 Slint → 重抓树。
@@ -540,6 +541,10 @@ impl LiveUi {
     /// §12.3 的三级闸门与 §7.2 的作用域集合（映射在 `yeban_ui_mcp::live` 里，只有一处）。
     #[must_use]
     pub fn into_control_plane(self, permission: Permission) -> LiveControlPlane {
+        // 投影与注册表在**把执行面移进 `Box` 之前**取出：它们只有执行面里的那一份
+        // （`apply_project` 换掉的也是它）。顺序反了就是 E0382（CI 第一次抓到的就是这条）。
+        let view = self.surface.view.clone();
+        let registry = self.surface.registry.clone();
         let plane = match permission {
             Permission::ReadOnly => ControlPlane::read_only(Box::new(self.surface)),
             // 交互 / 管理两级都需要测试模式：`ui:inject` 在生产模式被硬禁
@@ -551,11 +556,10 @@ impl LiveUi {
                 ControlPlane::administrative_for_tests(Box::new(self.surface))
             }
         };
-        // 投影与注册表从**执行面**取（唯一的那一份，`apply_project` 换掉的也是它）。
         LiveControlPlane {
-            view: self.surface.view.clone(),
-            registry: self.surface.registry.clone(),
             plane,
+            view,
+            registry,
             scene: self.scene,
             reference: self.reference,
         }
@@ -710,7 +714,7 @@ pub fn build_live_ui_with(
         window,
         registry,
         project: project.clone(),
-        view: view.clone(),
+        view,
         save_path: options.save_path.clone(),
         meters: MeterRuntime::empty(),
         engine: EngineHost::new(),
