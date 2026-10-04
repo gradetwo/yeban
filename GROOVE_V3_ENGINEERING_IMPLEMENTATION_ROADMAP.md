@@ -4,7 +4,16 @@
 > **开源许可证**：GNU General Public License v3.0 (GPLv3) 带 CLAP 插件加载附加许可 (GPLv3 §7)  
 > **规范版本**：`v3.0-rev6` (2026-10-04)  
 > **Depends-on**：ARCHITECTURE v3.0-rev6, LEGAL.md, CONTRIBUTING.md  
+
+> [!IMPORTANT]
+> ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
+> 1. **开源与许可协议 (GPLv3)**：本项目在 GitHub 全面开源，遵循 **GNU General Public License v3.0 (GPLv3)** 协议，附带 GPLv3 §7 允许的 CLAP 专有插件动态加载例外条款。第三方基于本项目 Fork 并闭源分发须自行向 SixtyFPS GmbH 获取 Slint 商业许可；
+> 2. **原生桌面技术栈 (Slint + Rust)**：纯血 **Slint 响应式矢量 GUI + 纯 Rust 低时延实时音频引擎**。坚决**不做任何 Web / Wasm / AudioWorklet 版本**，彻底摆脱浏览器沙盒与 JavaScript GC 爆音；
+> 3. **AI Agent 自主研发范式 (Autonomous AI Agent Development)**：本套实施路线图专供 **自主 AI Agent** 自动化分解、实现、回归测试与代码交付，是全周期自驱动推进指南；
+> 4. **零人力工时评估 (Zero Human Staffing Estimation)**：**彻底废除所有传统软件工程的人工人力、人月、人天及工时评估**。全流程划分为纯机器度量的端到端能力切片（Capability Slices），以八重质量门禁（Quality Gates）自动化阻断或通行。
+
 > **修订记录 (Revision Log)**：  
+
 > - `v3.0-rev6` (2026-10-04)：**系统闭环、合规前置与门禁体系全量落地 (依据全量专家评审)**。  
 >   1. **增设 Phase -1 (开源合规前置审查与仓库大扫除)**：确立 GPLv3 + §7 CLAP 豁免、Slint 双授权声明、锁定 VST3 SDK 3.8.0+ MIT 路径、清理专有格式（NKI/EXS24/RVC）与历史大文件治理；  
 >   2. **扩充 Phase 0 技术验证 (Spikes 1~8)**：增设 Spike 6（10 万音符虚拟化钢琴卷帘渲染基准）、Spike 7（双 MCP 活会话同步与 `.yeban.lock` 排他文件锁 PoC）、Spike 8（自定义 `Platform + SoftwareRenderer` 无头截图兜底 PoC）；  

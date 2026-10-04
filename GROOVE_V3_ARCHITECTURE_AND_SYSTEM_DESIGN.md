@@ -4,7 +4,16 @@
 > **开源许可证**：GNU General Public License v3.0 (GPLv3) 带 CLAP 插件加载附加许可 (GPLv3 §7)  
 > **规范版本**：`v3.0-rev6` (2026-10-04)  
 > **Depends-on**：ARCHITECTURE v3.0-rev6, LEGAL.md  
+
+> [!IMPORTANT]
+> ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
+> 1. **开源与许可协议 (GPLv3)**：本项目在 GitHub 全面开源，遵循 **GNU General Public License v3.0 (GPLv3)** 协议，附带 GPLv3 §7 允许的 CLAP 专有插件动态加载例外条款。第三方基于本项目 Fork 并闭源分发须自行向 SixtyFPS GmbH 获取 Slint 商业许可；
+> 2. **原生桌面技术栈 (Slint + Rust)**：纯血 **Slint 响应式矢量 GUI + 纯 Rust 低时延实时音频引擎**。坚决**不做任何 Web / Wasm / AudioWorklet 版本**，彻底摆脱浏览器沙盒与 JavaScript GC 爆音；
+> 3. **AI Agent 自主研发范式 (Autonomous AI Agent Development)**：本套设计文档专供 **自主 AI Agent** 消费、理解、编码实施与自动化回归自测，是机器可执行的权威工程基准；
+> 4. **零人力工时评估 (Zero Human Staffing Estimation)**：**彻底废除所有传统软件工程的人工人力、人月、人天及工时评估**。全周期以可机械化度量的能力切片（Capability Slices）和八重自动化质量门禁（Quality Gates）为唯一推进与验收标尺。
+
 > **修订记录 (Revision Log)**：  
+
 > - `v3.0-rev6` (2026-10-04)：**系统闭环、数据模型与实时安全深度修正 (依据全量专家评审)**。  
 >   1. **双 MCP 进程与状态拓扑闭环 (P0-1)**：确立 `yeban-mcp` 双重形态（活会话内嵌 Streamable HTTP 服务 + 独立批处理 CLI 二进制），引入 `.yeban.lock` 项目文件锁与 Model 唯一写者 Actor 并发模型，彻底解决进程间状态不同步与并发冲突；  
 >   2. **Slint 无头与内省三层兜底体系 (P0-2)**：修正 Rust API 规范（`slint::testing::*`），建立自定义 `Platform + SoftwareRenderer` 无头截图、`i-slint-backend-testing` CI 断言与自研 `yeban-ui-mcp` 适配层的三层工程兜底；  

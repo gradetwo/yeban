@@ -2,7 +2,16 @@
 
 > **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`  
 > **文档依赖**：`Depends-on: ARCHITECTURE v3.0-rev6, ROADMAP v3.0-rev6, LEGAL.md, CONTRIBUTING.md`  
+
+> [!IMPORTANT]
+> ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
+> 1. **开源与许可协议 (GPLv3)**：本项目在 GitHub 全面开源，遵循 **GNU General Public License v3.0 (GPLv3)** 协议，附带 GPLv3 §7 允许的 CLAP 专有插件动态加载例外条款。第三方基于本项目 Fork 并闭源分发须自行向 SixtyFPS GmbH 获取 Slint 商业许可；
+> 2. **原生桌面技术栈 (Slint + Rust)**：纯血 **Slint 响应式矢量 GUI + 纯 Rust 低时延实时音频引擎**。坚决**不做任何 Web / Wasm / AudioWorklet 版本**，彻底摆脱浏览器沙盒与 JavaScript GC 爆音；
+> 3. **AI Agent 自主研发范式 (Autonomous AI Agent Development)**：本调研与生态战略直接作为 **自主 AI Agent** 进行技术选型、依赖管理与架构融合的决策输入库；
+> 4. **零人力工时评估 (Zero Human Staffing Estimation)**：**彻底废除所有传统软件工程的人工人力、人月、人天及工时评估**。以可验证的机器基准指标和开源合规检查为唯一研发准绳。
+
 > **修订记录 (Revision Log)**：  
+
 > - `v3.0-rev6` (2026-10-04)：**系统闭环、许可隔离与工业蓝图精准收敛 (依据全量专家评审)**。  
 >   1. **事实纠偏与语言客观化**：彻底剔除“全行业最强”、“神级”、“降维突破”等非客观形容词，全面转换为量化工程指标与可验证技术目标；  
 >   2. **开源合规与专有驱动隔离**：锁定 VST3 SDK 3.8.0+ MIT 依赖路径；明确 Steinberg ASIO SDK 专有协议属性（禁止入库，Windows 默认首选 WASAPI 独占流，ASIO 仅限用户本地动态装载）；  
