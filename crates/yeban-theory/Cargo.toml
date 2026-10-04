@@ -1,6 +1,9 @@
 [package]
 name = "yeban-theory"
-description = "159 种流派规则、和弦走向展开与声部连接算法"
+# 规范（架构 §8 / ROAD-M4-003）把这一层描述为 "159 种流派规则"。本 crate 当前
+# 实际登记 182 条（见 `docs/ledger/theory-core-notes.md` 的来源与许可清单），
+# 因此描述写成"流派规则库"而不写死一个会过期的数字。
+description = "流派规则库、和弦走向展开与声部连接算法"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +16,17 @@ name = "yeban_theory"
 path = "src/lib.rs"
 
 [dependencies]
+# 全部走工作区登记的版本（根 `Cargo.toml` 是版本决策的唯一事实源）。
+# 本 crate 刻意只依赖轻量库：不引入 slint / cpal / symphonia / rayon
+# [ARCH-TOP-003, AGENTS.md 红线 3]，因此本机可以随意 clippy/test。
+thiserror.workspace = true
+# 十二平均律频率统一走纯 Rust `libm`，与 [ARCH-DET-001] 的 L1 确定性要求一致
+# （标准库 `powf` 会落到各平台 libm，末位可能不同）。
+libm.workspace = true
+
+[dev-dependencies]
+# 属性测试只保留 std feature（根清单的解释：纯数据模型不需要 fork/timeout）。
+proptest.workspace = true
 
 [lints]
 workspace = true
