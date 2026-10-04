@@ -354,7 +354,8 @@ arguments.path 存在        → 原样使用（空串/纯空白 ⇒ INVALID_PAR
 
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
-| 第 2 轮（本文件 + `tools-domain-notes.md` 的 008 行） | 见提交信息 / `ci-verdict.sh` 读数 | — | 见下一条推送后的读数（预期只影响 `checks` 腿） |
+| 第 2 轮（本文件 + `tools-domain-notes.md` 的 008 行） | [`37239360533`](https://github.com/gradetwo/yeban/actions/runs/37239360533) | `c7c765c` | **全绿** ✅：`plan` 6s / `checks` 37s / `lockfile` 17s / `deny` 52s；`rust` 两腿被受影响集合计划器**跳过（0s）** —— 这正是"只改 `docs/ledger/**` ⇒ 不需要编译"的正确读数 |
+| 第 3 轮（本行自身的判决） | `bash scripts/dev/ci-verdict.sh --list` 的最新一次 | — | 本提交同样只改 `docs/ledger/**`，预期与第 2 轮同形（只跑 `plan`/`checks`/`lockfile`/`deny`）。**判决链到此为止**：再记录一次就会无限递归，因此这一行按仓库惯例只指向 `ci-verdict` 的读数 |
 
 ---
 
