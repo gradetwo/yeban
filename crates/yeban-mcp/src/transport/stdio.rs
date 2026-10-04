@@ -121,7 +121,14 @@ mod tests {
 
         let second: serde_json::Value = serde_json::from_str(&lines[1]).expect("JSON");
         assert_eq!(second["id"], "two");
-        assert_eq!(second["error"]["code"], crate::jsonrpc::NOT_IMPLEMENTED);
+        // stdio 通道不需要 Authorization 头 ⇒ 请求真的走到了领域实现,
+        // 拿到的是**带内** ToolResponse（没有活跃工程）, 而不是鉴权拒绝。
+        assert!(second.get("error").is_none(), "stdio 不该被鉴权拒绝");
+        assert_eq!(second["result"]["status"], "error");
+        assert_eq!(
+            second["result"]["error"]["code"], "NO_ACTIVE_PROJECT",
+            "领域失败必须走 ToolResponse.error.code（契约 enum 之内）"
+        );
     }
 
     #[test]

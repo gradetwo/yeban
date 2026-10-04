@@ -251,10 +251,20 @@ pub fn error_codes_sample() -> Value {
     Value::Object(root)
 }
 
-/// **真实管线**产出的 `ToolResponse`（`yeban_save_project` 的 `dryRun` 结果）。
+/// **真实管线**产出的 `ToolResponse`（`yeban_query_project` 的 `dryRun` 结果）。
 ///
 /// 走的是 [`crate::dispatch::Dispatcher::handle_line`]，与线上完全同一条路径；
-/// 令牌在响应里不出现，因此样本逐字节稳定。
+/// 令牌在响应里不出现，工程由 [`crate::domain::Domain::open_in_memory`] 注入
+/// （不碰文件系统、不用随机 ULID 装配载荷），因此样本逐字节稳定。
+///
+/// 为什么是"只读工具 + 内存工程"：
+///
+/// - `dryRun` 现在会**真的做领域合法性校验**（规范对它的定义是
+///   "只做参数与领域合法性校验"）。没有活跃工程时 `yeban_save_project` 的
+///   `dryRun` 会如实返回 `NO_ACTIVE_PROJECT` —— 那也是一份合法的 `ToolResponse`，
+///   但用它当样本会让"成功形状"从未被契约覆盖；
+/// - 因此注入一份确定性的规范工程，再对只读工具做 `dryRun`：
+///   成功形状 + 真实差异预览（`projectDigestBefore/After`、`commitCount*`）都被覆盖。
 #[must_use]
 pub fn dry_run_response_sample() -> Value {
     use crate::dispatch::Dispatcher;
@@ -263,13 +273,27 @@ pub fn dry_run_response_sample() -> Value {
     let token = BearerToken::generate().token;
     let authorization = format!("Bearer {}", token.expose());
     let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(0);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(
+            PathBuf::from("/tmp/yeban-sample/demo.yeban"),
+            yeban_model::samples::filled_project(),
+            true,
+        )
+        .expect("规范样本工程必须通过结构校验");
     let line = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "sample-dry-run",
         "method": "tools/call",
         "params": {
-            "name": "yeban_save_project",
-            "arguments": {"force": true, "dryRun": true}
+            "name": "yeban_query_project",
+            "arguments": {
+                "limit": 3,
+                "offset": 0,
+                "fields": ["title", "bpm", "tracks.name"],
+                "dryRun": true
+            }
         }
     })
     .to_string();
@@ -617,9 +641,20 @@ mod tests {
         check_tool_response_instance(RESPONSE_DRY_RUN_FILE, &sample).expect("必须自洽");
         assert_eq!(sample["status"], "success");
         assert_eq!(sample["data"]["dryRun"], true);
-        assert_eq!(sample["data"]["tool"], "yeban_save_project");
-        assert_eq!(sample["data"]["specId"], "MCP-TOOL-002");
+        assert_eq!(sample["data"]["tool"], "yeban_query_project");
+        assert_eq!(sample["data"]["specId"], "MCP-TOOL-004");
+        assert_eq!(
+            sample["data"]["wouldChangeState"], false,
+            "只读工具的 dryRun 不改变状态"
+        );
+        assert_eq!(sample["data"]["stateUnchanged"], true);
         assert!(sample["data"]["arguments"].is_object());
+        assert!(sample["data"]["preview"]["projectDigestBefore"].is_string());
+        assert_eq!(
+            sample["data"]["preview"]["commitCountBefore"],
+            sample["data"]["preview"]["commitCountAfter"],
+            "只读工具不得改变提交数"
+        );
         // 逐字节稳定: 令牌不参与响应, 两次生成完全一致。
         assert_eq!(sample, dry_run_response_sample());
 

@@ -208,6 +208,9 @@ fn execute(config: &Config) -> Result<(), Failure> {
     };
 
     let mut dispatcher = Dispatcher::new(token, granted, mode);
+    // 领域层刻意不自取时钟（模型层同样如此：`Commit::created_at` 与 `StampedOp::timestamp`
+    // 由调用方提供，以便可测试）。形态 B 在这里注入一次系统时间。
+    dispatcher.domain_mut().set_now_ms(now_ms());
     match startup {
         HttpStartup::Enabled => serve_http(dispatcher),
         HttpStartup::Disabled => {
@@ -224,6 +227,15 @@ fn execute(config: &Config) -> Result<(), Failure> {
             Ok(())
         }
     }
+}
+
+/// 当前 Unix 毫秒时间（读不到系统时钟就退化成 0，而不是 panic）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |delta| {
+            u64::try_from(delta.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// 启动环回 HTTP 传输（形态 A）。
