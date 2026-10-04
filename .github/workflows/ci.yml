@@ -132,10 +132,14 @@ jobs:
           # 新增一个这样的 crate 就在这里加一行 —— 否则它的契约只是"定义了没人用的类型"。
           cargo run -p yeban-model --locked --example export_schema_samples -- --out target/schema-samples
           cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples
-          # ui-mcp 的 3 份样本**全是** .meta. 文档样本(UI 控制面是 JSON-RPC, schemas/ 里没有它的 schema;
-          # 把它们包成 ToolResponse 正是 mcp-core 被 D25 纠正的那个类型错误)。
-          # 顺序不可反: 前缀守卫要求 `mcp-tools` 前缀至少有一份**契约实例**, 那由上一行提供。
-          cargo run -p yeban-ui-mcp --locked --example export_ui_samples -- --out target/schema-samples
+          # ⚠ 这里**故意没有** `export_ui_samples`(yeban-ui-mcp):
+          # 该 crate 经 yeban-ui-test-port 依赖 Slint ⇒ 导出样本会在这个 job 里触发
+          # `yeslogic-fontconfig-sys` 的 build script, 而本 job **刻意不装系统库**(它是最轻的一跳)。
+          # 实测(ci run 37230347559): 加了那一行 ⇒ checks 红在 fontconfig; 而它在**有**系统库的
+          # runner 与本机都能过 —— 也就是说“本地能跑”完全掩盖了这个约束。
+          # 且 ui-mcp 的 3 份样本**全是 .meta. 文档样本**(控制面是 JSON-RPC, schemas/ 没有它的 schema),
+          # 价值很低; 同一份对账已由 `crates/yeban-ui-mcp/tests/contract.rs` 在 crate 内跑过。
+          # ⇒ 不值得为 3 份文档样本把一个 GUI 工具链搬进这个 job。要改就走 workspace 腿。
           python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/schema-samples
 
   # ---------------------------------------------------------------------------
