@@ -472,6 +472,16 @@ impl ElementRegistry {
                 &format!("轨道 {} 独奏", track.name),
                 false,
             );
+            // 轨道色标：标签携带**规范化**的 `#RRGGBB`（非法 / 缺失已在投影层回退）。
+            // 它让"投影 ↔ 控件树"的色标一致性在纯 Rust 侧与 Tier-1 运行时树两侧都能断言
+            // （`[UI-A11Y-004]` 的色标纪律；见 docs/ledger/app-completion-notes.md §2）。
+            registry.add(
+                &format!("track-{track_index}-color-swatch"),
+                ElementKind::Image,
+                "workspace/arrangement_view.slint",
+                &format!("轨道色标 {}", track.color_hex),
+                false,
+            );
         }
         for (clip_index, clip) in view.clips.iter().enumerate() {
             registry.add(
@@ -973,6 +983,7 @@ mod tests {
                 "solo-button",
                 "channel-strip",
                 "meter",
+                "color-swatch",
             ] {
                 let id = format!("track-{track_index}-{suffix}");
                 assert!(registry.contains(&id), "缺少语义元素 `{id}` [UI-TEST-001]");
@@ -1350,6 +1361,62 @@ mod tests {
                 !filled.contains(&format!("note-{ulid}-rect")),
                 "演示音符 `{ulid}` 不该出现在 filled_project 的注册表里"
             );
+        }
+    }
+
+    /// 判据: **轨道色标在投影与控件树两侧一致**（app-completion ②）。
+    ///
+    /// 三条断言：
+    /// 1. 每条非主总线轨道都有 `track-{i}-color-swatch`，角色是 `image`；
+    /// 2. 它的标签里带**规范化**的 `#RRGGBB`，且与 `ViewState::track_color_labels()` 逐项相等；
+    /// 3. 缺色 / 非法色的轨道用的是回退色（不是空串、不是演示色）。
+    #[test]
+    fn track_color_swatches_carry_the_projected_hex() {
+        let filled =
+            ViewState::from_project(&yeban_model::samples::filled_project()).expect("投影");
+        let registry = ElementRegistry::from_view(&filled);
+        assert_eq!(
+            registry
+                .with_prefix("track-")
+                .filter(|meta| meta.id.ends_with("-color-swatch"))
+                .count(),
+            filled.tracks.len(),
+            "色标元素数必须等于轨道数"
+        );
+        let labels = filled.track_color_labels();
+        for (index, label) in labels.iter().enumerate() {
+            let meta = registry
+                .get(&format!("track-{index}-color-swatch"))
+                .unwrap_or_else(|| panic!("缺少 track-{index}-color-swatch"));
+            assert_eq!(meta.kind, ElementKind::Image, "色标角色必须是 image");
+            assert_eq!(meta.component, "workspace/arrangement_view.slint");
+            assert!(
+                meta.label.contains(label),
+                "色标标签必须携带投影的规范化色标: {} vs {label}",
+                meta.label
+            );
+            assert!(
+                label.starts_with('#') && label.len() == 7,
+                "色标形态: {label}"
+            );
+        }
+        // filled_project 的 Lead 轨是 `#FF8800`；演示工程的空色轨必须回退。
+        assert_eq!(labels[0], "#FF8800");
+        let demo = ElementRegistry::demo();
+        let demo_view = ViewState::demo();
+        for (index, track) in demo_view.tracks.iter().enumerate() {
+            let meta = demo
+                .get(&format!("track-{index}-color-swatch"))
+                .unwrap_or_else(|| panic!("缺少演示色标 {index}"));
+            let expected = track.color_hex.clone();
+            assert!(meta.label.contains(&expected));
+            if track.color.is_none() {
+                assert_eq!(
+                    expected,
+                    crate::bridge::DEFAULT_TRACK_COLOR_HEX,
+                    "缺色轨道必须回退到文档常量"
+                );
+            }
         }
     }
 

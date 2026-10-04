@@ -207,6 +207,15 @@ export component MainWindow inherits Window {
     // 钢琴卷帘的音符身份与力度（`MidiNote::id` / `MidiNote::velocity` ÷ 127）
     in property <[string]> note-ulids: [];
     in property <[float]> note-velocities: [];
+    // 卷帘音符的位置（x / y / 宽，逻辑像素）—— 由 `start_tick` / `pitch` 整数派生，
+    // 见 `src/bridge.rs` 的 `NoteView`（界面不做任何位置算术）。
+    in property <[length]> note-positions: [];
+    in property <[length]> note-ys: [];
+    in property <[length]> note-widths: [];
+    // 轨道色标：`[color]` = 解析后的 RGB；`track-color-labels` = 同一个色的 `#RRGGBB` 文本
+    // （进无障碍标签，让色标在控件树里可读）。
+    in property <[color]> track-colors: [];
+    in property <[string]> track-color-labels: [];
 
     title: root.window-title;
     // 演示窗口落在 §1.2 的"全展开"档 (≥1920×1080): 左栏 240 + 主区 + 右栏 280,
@@ -302,6 +311,8 @@ export component MainWindow inherits Window {
                     clip-widths: root.clip-widths;
                     clip-lanes: root.clip-lanes;
                     bar-positions: root.bar-positions;
+                    track-colors: root.track-colors;
+                    track-color-labels: root.track-color-labels;
                 }
             }
 
@@ -340,6 +351,9 @@ export component MainWindow inherits Window {
             active-tab: root.console-tab;
             note-ulids: root.note-ulids;
             note-velocities: root.note-velocities;
+            note-positions: root.note-positions;
+            note-ys: root.note-ys;
+            note-widths: root.note-widths;
 
             select-piano-roll => { root.console-tab = 0; }
             select-mixer => { root.console-tab = 1; }

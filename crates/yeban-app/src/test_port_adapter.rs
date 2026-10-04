@@ -24,7 +24,7 @@
 //! ## 本文件证明什么 / 不证明什么
 //!
 //! 证明（`cargo test -p yeban-app`，零 feature）：
-//! - 184 条注册表条目能被**无损**适配成语义控件树（ID / 角色 / 标签 / 动态标记逐条对齐）；
+//! - 全部注册表条目能被**无损**适配成语义控件树（ID / 角色 / 标签 / 动态标记逐条对齐）；
 //! - 13 个 `.slint` 真的能被 **Tier-1 软件光栅化**渲染出**非零、非全黑**的像素，
 //!   且三个不同状态（默认 Arrangement / compact 断点 / Session 视图）都渲染得出差异；
 //! - `[UI-TEST-001]` 的运行时控件树与静态注册表的**双向覆盖关系**被实测钉住
@@ -38,6 +38,9 @@
 //!   `track-{i}-header` / `section-{i}-card` / `clip-{ulid}-header` 携带的是**工程的**
 //!   名称与身份（`Lead` / `Intro` / 工程的摆放 ULID），而演示夹具的名字（`鼓`/`贝斯`）
 //!   一个都不出现；随后在**同一实例**上换回演示工程，断言截图逐字节变化。
+//! - **app-completion 追加**：轨道色标（`track-{i}-color-swatch` 的标签 == 投影的
+//!   `#RRGGBB`，缺色轨道是回退色）与卷帘音符的**位置排序**（x 随 `start_tick` 严格递增、
+//!   y 随 `pitch` 严格递减 —— 索引布局会让 y 与 pitch 同向，因此这条能直接抓住回退）。
 //!
 //! 不证明：像素**长什么样**（没有基准图，`[UI-MCP-003]` 的分平台 Golden 需要人类先提交基准）；
 //! 也不证明"UI 没有视觉缺陷" —— 它证明的是"UI 真的被渲染过、而且树和像素来自同一个实例"。
@@ -1197,6 +1200,75 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
         );
         assert_eq!(node.role.as_str(), "list-item", "轨道包头角色漂移: {id}");
     }
+    // ---- 方向 1b: **轨道色标**同时在控件树里可读（app-completion ②） ----
+    //
+    // `track-{i}-color-swatch` 的标签携带投影解析后的规范化 `#RRGGBB`：
+    // 所以"界面画的颜色"与"自动化读到的色标"是同一个值，而不是两处各写一份。
+    for (index, track) in project_view.tracks.iter().enumerate() {
+        let id = format!("track-{index}-color-swatch");
+        let node = runtime
+            .find_by_id(&id)
+            .unwrap_or_else(|| panic!("缺少轨道色标 `{id}`"));
+        assert_eq!(node.role.as_str(), "image", "色标角色漂移: {id}");
+        assert!(
+            node.label.contains(&track.color_hex),
+            "`{id}` 的标签 {:?} 必须含投影的规范化色标 {:?}",
+            node.label,
+            track.color_hex
+        );
+        observe(&format!(
+            "[model-binding] 工程字段 TrackV3::color[{}]={:?} -> 控件树 {id}.label={:?}",
+            index, track.color, node.label
+        ));
+    }
+
+    // ---- 方向 1c: **音符位置**来自 tick / 音高，而不是循环下标（app-completion ①） ----
+    //
+    // 这条断言的口径是**排序关系**而不是绝对像素（绝对像素由纯 Rust 判据钉住）：
+    // - x 随 `start_tick` 严格递增（`tick_to_px` 的作用）；
+    // - y 随 `pitch` 严格**递减**（音高越高越靠上）。
+    // 旧的索引布局（`y: 14px * note_index + 6px`）会让 y 与 pitch **同向**，
+    // 因此这条判据能直接抓住"退回索引布局"。
+    {
+        let mut rows: Vec<(u64, u8, i32, i32)> = Vec::new();
+        for note in &project_view.notes {
+            let id = format!("note-{}-rect", note.id);
+            let node = runtime
+                .find_by_id(&id)
+                .unwrap_or_else(|| panic!("缺少音符 `{id}`"));
+            let bounds = node
+                .bounds
+                .unwrap_or_else(|| panic!("运行时的 `{id}` 必须有几何包围盒"));
+            rows.push((note.start_tick, note.pitch, bounds.x, bounds.y));
+            observe(&format!(
+                "[model-binding] 工程字段 MidiNote(start={}, pitch={}) -> 控件树 {id} bounds=({}, {})",
+                note.start_tick, note.pitch, bounds.x, bounds.y
+            ));
+        }
+        assert!(rows.len() >= 2, "filled_project 必须有多个音符才能判排序");
+        let mut by_tick = rows.clone();
+        by_tick.sort_by_key(|row| row.0);
+        for pair in by_tick.windows(2) {
+            assert!(
+                pair[0].2 < pair[1].2,
+                "音符 x 必须随 start_tick 严格递增（{} → {}）",
+                pair[0].2,
+                pair[1].2
+            );
+        }
+        let mut by_pitch = rows;
+        by_pitch.sort_by_key(|row| row.1);
+        for pair in by_pitch.windows(2) {
+            assert!(
+                pair[0].3 > pair[1].3,
+                "音符 y 必须随音高严格递减（音高 {} → {} 的 y: {} → {}）—— 索引布局会相反",
+                pair[0].1,
+                pair[1].1,
+                pair[0].3,
+                pair[1].3
+            );
+        }
+    }
     for (index, section) in project_view.sections.iter().enumerate() {
         let id = format!("section-{index}-card");
         let node = runtime
@@ -1375,6 +1447,45 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
     }
     assert_eq!(project_view.tracks.len(), 3);
     assert_eq!(demo_view.tracks.len(), 6);
+    // 色标族规模 == 工程轨道规模（两侧都判），且**缺色**轨道的标签是回退色。
+    for (tree, view, label) in [
+        (&runtime, &project_view, "filled_project"),
+        (&demo_runtime, &demo_view, "demo_project"),
+    ] {
+        assert_eq!(
+            family_count(tree, "track-", "-color-swatch"),
+            view.tracks.len(),
+            "{label}: 色标元素数必须等于工程的轨道数"
+        );
+        for (index, track) in view.tracks.iter().enumerate() {
+            let id = format!("track-{index}-color-swatch");
+            let node = tree
+                .find_by_id(&id)
+                .unwrap_or_else(|| panic!("{label}: 缺少 `{id}`"));
+            assert!(
+                node.label.contains(&track.color_hex),
+                "{label}: `{id}` 的标签 {:?} 必须含 {:?}",
+                node.label,
+                track.color_hex
+            );
+            if track.color.is_none() {
+                assert!(
+                    node.label
+                        .contains(yeban_app::bridge::DEFAULT_TRACK_COLOR_HEX),
+                    "{label}: 缺色轨道 `{id}` 必须用文档回退色"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        demo_view
+            .tracks
+            .iter()
+            .filter(|track| track.color.is_none())
+            .count(),
+        3,
+        "演示工程有 3 条缺色轨道 —— 回退路径必须真的被执行到"
+    );
     assert!(
         !runtime.contains("track-3-header"),
         "filled_project 只有 3 条非主总线轨道 ⇒ 工程驱动的树里不该有 `track-3-header`"

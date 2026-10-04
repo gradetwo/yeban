@@ -8,8 +8,9 @@
 //   - [UI-TEST-001] §12.2: `note-{ulid}-rect` 语义 ID
 //   - [UI-MCP-002] §12.5: 走带光标与力度条属高频刷新区域
 //
-// 本文件是**静态骨架 + 演示数据**。视口裁剪、R-Tree、坐标映射、吸附、工具状态机全部未实现,
-// 它们依赖 `yeban-model` 的 960 PPQ 与 `yeban-render` 的波形/像素管线。
+// 本文件是**静态骨架 + 由投影注入的数据**。视口裁剪、R-Tree、吸附、工具状态机仍未实现；
+// 音符的坐标映射（`[UI-NOTE-002]`）**已落地在投影层**：x / y / 宽来自 `src/bridge.rs`
+// 的整数 tick / 音高换算，本文件只消费注入数组（见 `note-positions` 的注释）。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
@@ -21,6 +22,17 @@ export component PianoRoll inherits Rectangle {
     // **片段池里的全部 MIDI 音符**，而不是"当前编辑片段"的音符 —— 后者的作用域属于
     // 会话运行态（`MODEL-ISO-001`），还没有对应的状态容器。
     in property <[string]> note-ulids: [];
+    // 音符位置 —— **全部**由 `src/bridge.rs` 从 `MidiNote::start_tick` / `pitch` 整数推导，
+    // 这里只做"取数组下标"，不做任何位置算术（`[UI-NOTE-002]` 的投影侧落地）：
+    //   `note-positions[i]` = `tick_to_px(start_tick)`（整数除法，逻辑像素）
+    //   `note-ys[i]`        = `PITCH_LANE_HEIGHT_PX × pitch_lane(pitch) + NOTE_INSET_Y_PX`
+    //   `note-widths[i]`    = 结束 tick 的像素 − 起始 tick 的像素（有 1px 地板）
+    // 上一版这里是 `x: Tokens.space-5 + 76px * note_index` / `y: 14px * note_index + 6px`
+    // —— 音符的**索引**而不是工程的 tick。那条布局已被判据
+    // `bridge::slint_text_contracts_for_colors_and_pitch_lanes` 明文禁止。
+    in property <[length]> note-positions: [];
+    in property <[length]> note-ys: [];
+    in property <[length]> note-widths: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
     in property <[string]> tool-labels: ["选择", "铅笔", "剪刀", "力度", "橡皮"];
     in property <int> active-tool: 1;
@@ -142,9 +154,9 @@ export component PianoRoll inherits Rectangle {
         // ------------------------------------------------------------ 音符图元
         // [UI-TEST-001] `note-{ulid}-rect`
         for note_ulid[note_index] in root.note-ulids : Rectangle {
-            x: Tokens.space-5 + 76px * note_index;
-            y: 14px * note_index + 6px;
-            width: 66px;
+            x: Tokens.space-5 + root.note-positions[note_index];
+            y: root.note-ys[note_index];
+            width: root.note-widths[note_index];
             height: 12px;
             background: Tokens.gold;
             border-radius: Tokens.radius-sm;
@@ -190,7 +202,7 @@ export component PianoRoll inherits Rectangle {
 
         // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见 arrangement_view.slint 的注释。
         for _[velocity_index] in root.note-ulids : Rectangle {
-            x: 56px + Tokens.space-5 + 76px * velocity_index + 30px;
+            x: 56px + Tokens.space-5 + root.note-positions[velocity_index] + 30px;
             y: parent.height - 4px - 28px * root.velocities[velocity_index];
             width: 6px;
             height: 28px * root.velocities[velocity_index];
