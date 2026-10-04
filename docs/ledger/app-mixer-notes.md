@@ -298,7 +298,9 @@ lib 目标，我把探针扩成 lib(OFF)/lib(ON)/单元判据三步 —— 第�
 
 ## 8. pending（未证实的、已知的债）
 
-1. **本线的 CI 判决** —— 见 §9；未读回来之前一律记 `pending`。
+1. **本线的 CI 判决**：**已读到** —— 第 3 轮 `9aa31ca` / run 37239806512 = **success**
+   （`rust (yeban-app)` 3m54s，91 + 12 条判据全绿）。见 §9；第 1/2 轮的两个红点与两次被取消的
+   run 都如实记在那里（"没有判决"≠"判决是绿的"）。**仍 pending 的**是 §9.2 那三条覆盖面。
 2. **含 Slint 的编译从未在本机发生过** ⇒ `.slint` 的语法/类型、`host.rs` / `live_surface.rs`
    的编译正确性**只由 CI 判**（§5.2 列了逐条）。
 3. **`.slint` 的 `accessible-value` 类型**：本线沿用既有写法（一律**字符串**），
@@ -314,9 +316,64 @@ lib 目标，我把探针扩成 lib(OFF)/lib(ON)/单元判据三步 —— 第�
 
 ## 9. CI 判决（读到什么写什么，**只有 CI 的判决算数**）
 
+读取方式：`bash scripts/dev/ci-verdict.sh line/app-mixer`（**只有 CI 的判决算数**）。
+
 | 轮 | commit | run id | 结论 | 关键读数 |
 | :-- | :--- | :--- | :--- | :--- |
-| — | （待填） | — | **pending** | 推送后由 `bash scripts/dev/ci-verdict.sh line/app-mixer` 读回 |
+| 0a | `34e12f6` | [37239031615](https://github.com/gradetwo/yeban/actions/runs/37239031615) | **cancelled**（被下一次推送取代） | 这一轮 `plan` 选了**全量腿**（`Cargo.lock` 命中 ROOT_TRIGGERS）—— 下一次推送进来时被 `concurrency.cancel-in-progress` 取消。**没有判决**（与「判决是绿的」完全不同，L23/L26 同族） |
+| 0b | `bd9fbb6` | [37239146417](https://github.com/gradetwo/yeban/actions/runs/37239146417) | **cancelled** | 同上（1m20s 时被取代） |
+| 1 | `c1e6067` | [37239212929](https://github.com/gradetwo/yeban/actions/runs/37239212929) | **failure**：`rust (yeban-app)` exit 101 | `checks` / `lockfile` / `deny` / `plan` 绿；`plan` 这次选**窄腿**（`rust (yeban-app)`），`rust (workspace 全量)` 按设计跳过。红点**全在 clippy 的类型检查阶段**（测试没跑到）：10 处 `E0308`（把 `ui/tree` 的 `UiTree` 传给了只接受执行面 `ControlTree` 的助手）、2 处 `E0599`（`UiTree` 没有 `len()`）、1 处 `E0382`（`into_control_plane` 把执行面移进 `Box` 之后才借 `registry`）。**全部是"只有含 Slint 的那一半能判"的类型错** —— 与 §5.2 的清单逐条吻合 |
+| 2 | `72af95b` | [37239546917](https://github.com/gradetwo/yeban/actions/runs/37239546917) | **failure**：只剩 1 条 clippy | `-D unused-variables`：`mixer_meter_labels_match_the_injected_frames` 里一个没用到的 `let view = …`（残留，与"视图真的切了"无关 —— 那条断言在判据 8 里）。**这一轮同时证明了**：`.slint` 全部编译通过、`host.rs` / `live_surface.rs` / `test_port_adapter.rs` / 全部测试目标都过了类型检查（第 1 轮的 13 处全修对了） |
+| 3 | `9aa31ca` | [37239806512](https://github.com/gradetwo/yeban/actions/runs/37239806512) | ✅ **success（本线的净判决）** | `plan` / `checks` / `lockfile` / `deny` 全绿；**`rust (yeban-app)` = success（3m54s）**：`clippy -p yeban-app --all-targets --locked -- -D warnings` 零告警，随后 `cargo test -p yeban-app --all-targets --locked` 三个目标 = **`91 passed`**（单元：`bridge`/`scene`/`elements`/`input`/`meters`/`engine_host`/`save` 等）、**`0 passed`**（bin）、**`12 passed`**（Tier-1 端到端判据 —— 既有 4 条 + 本线新增 8 条）。`rust (workspace 全量)` 被 `plan` **跳过**（受影响集合只有 `yeban-app`） |
+
+### 9.1 第 3 轮（净判决）的**原始读数**（从 job 日志抓取）
+
+```text
+running 91 tests   -> test result: ok. 91 passed; 0 failed
+running 0 tests    -> test result: ok. 0 passed
+running 12 tests   -> test result: ok. 12 passed; 0 failed     # tests/live_ui_mcp.rs（含 8 条新增）
+
+[app-mixer] 注入电平: track-0-meter="轨道 鼓 电平表 峰值 0.0 RMS 0.0 dBFS"
+                      track-1-meter="轨道 贝斯 电平表 峰值 -6.0 RMS -12.0 dBFS"
+                      track-2-meter="轨道 铺底 电平表 峰值 -120.0 RMS -120.0 dBFS"
+[app-mixer] 换工程: 通道条 6 -> 3, 像素指纹 e0c9f4e1761fb1b5 -> 9fcb57f0c0e4b184
+[app-mixer] ui/coverage(混音台可见): 注册表 147 / 运行时 87 / 未登记 0 / 缺失 60
+[app-mixer] ui/force_save: 6149 字节 -> …/live-admin.yeban（可被 open_project_file 读回）
+[app-mixer] ui/reload_engine: gen=1 rev=1 tracks=7 quanta=4 publishes=4 frames=28 visibleQuantum=4
+[app-mixer] 生产模式拒绝 `ui/switch_main_view`: 需要 app:admin, 当前 ui:read,ui:screenshot
+[app-mixer] 生产模式拒绝 `ui/force_save`: 需要 app:save, 当前 ui:read,ui:screenshot
+[app-mixer] 生产模式拒绝 `ui/reload_engine`: 需要 app:reload-engine, 当前 ui:read,ui:screenshot
+[live-port] surface=tier1-live-port 树 82 节点 (source=runtime) 查 `track-0-header` -> role=list-item label="轨道 Lead"
+[live-port] ui/screenshot: 1920x1080 maskDynamic=true regions=6 maskEffective=true 非黑 2054848/2073600 (99.1%)
+            颜色 2648 种 PNG 6222418 字节 指纹 7ab5c46212b9f827 IHDR 1920x1080
+[live-port] ui/coverage: 注册表 147 / 运行时 82 / 注册表有而运行时无 65 / 运行时有而注册表无 0
+```
+
+**"电平真的被消费"的机械链条（CI 实测，逐环可复核）**：
+
+| 环 | 事实 | 出处 |
+| :-- | :--- | :--- |
+| 注入 | `MeterFrame::new(ids[1], 5, 0.5, 0.25)`（线性幅度） | `tests/live_ui_mcp.rs` 判据 6 |
+| 换算 | `20·log10(0.5) = −6.0206` dBFS（峰值）、`20·log10(0.25) = −12.0412` dBFS（RMS） | `crates/yeban-app/src/meters.rs` |
+| 属性 | `track-1-meter` 的 **`accessible-label`** = `"轨道 贝斯 电平表 峰值 -6.0 RMS -12.0 dBFS"`（`accessible-value` 同时是 `"-6.0 dBFS"`） | 上面那行 `[app-mixer] 注入电平…` |
+| 几何 | 同一个 `Rectangle` 的柱高 = `100px × track-meter-levels[1]`（峰值 0.5 ⇒ 柱高 ≈ 0.95） | `ui/console/mixer_console.slint` |
+| 截图区域 | 混音台（控制台 Tab 1）的通道条 1 的 VU 柱 —— 该矩形登记为**动态区**（`track-{i}-meter` 的 `dynamic_region = true`），因此在 `ui/screenshot`（`maskDynamic` 默认 true）里被置黑；**6 个动态区全部置黑成功**（`regions=6 maskEffective=true`）。要人眼看那根柱子就取 `maskDynamic: false` 的原始帧 | `[live-port] ui/screenshot: …` |
+
+> ⚠ **诚实边界**：`maskDynamic` 默认 true ⇒ 上面那张 1920×1080 截图里 VU 柱是**黑的**（这是
+> `[UI-MCP-002]` 的 MUST）。所以"电平真的被消费"的**文字证据**是 `accessible-label`，
+> **像素证据**是柱高几何 + 动态区遮罩生效；要看那根柱子本身需要一次 `maskDynamic: false` 的调用
+> （本线的判据 6 就是这么取节点的）。
+
+### 9.2 这一轮**没有**覆盖到的（下一轮/集成者）
+
+1. **`rust (workspace 全量)` 被 `plan` 跳过**（受影响集合 = `yeban-app`）⇒ `yeban-ui-mcp` 的
+   **单元判据**（68 条）在 CI 上这一轮没有跑；它只是作为 `yeban-app` 的 dev-dependency 被
+   **编译**（日志里有 `Checking yeban-ui-mcp v0.0.1`）。本机真跑的证据在 §5.1。
+   要拿 CI 读数需要一次触碰 `crates/yeban-ui-mcp/**` 的推送，或手动档
+   `gates-manual.yml` 的 `all-features`（`cargo clippy -p yeban-ui-mcp --all-features --all-targets --locked`）。
+2. **两次被 `concurrency` 取消的 run**（§9 第 0a/0b 行）：那两轮里有一次选的是**全量腿**，
+   但判决**不存在** —— 记在这里而不是写成"绿"（L23/L26）。
+3. **`main` 与集成**:本线只保证 `line/app-mixer` 的判决；合并之后的全量腿读数归集成者。
 
 ---
 
