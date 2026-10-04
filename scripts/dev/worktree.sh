@@ -75,15 +75,40 @@ cmd_rm() {
   local line="${1:-}"; local purge="${2:-}"
   [[ -n "$line" ]] || die "用法: worktree.sh rm <line> [--purge]"
   local branch="line/$line" path="$WT_ROOT/$line"
+  # 安全检查**放在最前面**: 被拒绝时应当"什么都没发生"(否则会留下半成品状态)。
+  local tip=""
+  if [[ "$purge" == "--purge" || "$purge" == "--force-purge" ]] && git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch"; then
+    tip="$(git -C "$REPO" rev-parse --short "$branch")"
+    if ! git -C "$REPO" merge-base --is-ancestor "$branch" "$MAIN_BRANCH" 2>/dev/null && [[ "$purge" != "--force-purge" ]]; then
+      die "分支 $branch (tip $tip) 尚未合并进 $MAIN_BRANCH —— --purge 会永久丢掉它。先 land, 或确属废弃时用 --force-purge。"
+    fi
+  fi
   info "移除工作树 $path"
   git -C "$REPO" worktree remove "$path" ${purge:+--force} 2>/dev/null || git -C "$REPO" worktree remove --force "$path"
   git -C "$REPO" worktree prune
-  if [[ "$purge" == "--purge" ]]; then
-    info "删除分支 $branch (显式废弃)"
+  if [[ "$purge" == "--purge" || "$purge" == "--force-purge" ]]; then
+    [[ -n "$tip" ]] || tip="$(git -C "$REPO" rev-parse --short "$branch" 2>/dev/null || echo unknown)"
+    # 纪律由脚本机械执行(不靠自觉): 删分支前必须"已归档"。
+    # 这条是踩出来的 —— 我曾对 tools-domain 直接 --purge, 结果**忘了先打归档标签**,
+    # 只剩一个恰好可达于 main 的提交号才没丢。未合并的分支若这样删就永久丢了, 所以上面先拒一次。
+    if ! git -C "$REPO" merge-base --is-ancestor "$branch" "$MAIN_BRANCH" 2>/dev/null; then
+      warn "分支 $branch (tip $tip) 未合并且被 --force-purge 显式废弃 —— 工作不会进入 main"
+    fi
+    # 先保全再删除: 没有归档标签就自动补一个(幂等)。标签指向分支 tip, 删除分支后仍可追溯。
+    if ! git -C "$REPO" rev-parse -q --verify "refs/tags/line-archive/$line" >/dev/null; then
+      info "自动补归档标签 line-archive/$line @ $tip (先保全再删除)"
+      git -C "$REPO" tag -a "line-archive/$line" "$branch" \
+        -m "工作线 $line (tip $tip) 的工作树与分支已退役; 代码是否已并入 $MAIN_BRANCH 见 git merge-base --is-ancestor"
+    fi
+    info "删除分支 $branch (已归档)"
     git -C "$REPO" branch -D "$branch"
   else
     info "分支 $branch 保留 (未合并的工作不应静默消失)"
   fi
+}
+
+warn() {
+  printf '%s\n' "${YELLOW:-}[warn]${RESET:-} $*" >&2
 }
 
 cmd_land() {
