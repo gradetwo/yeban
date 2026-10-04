@@ -1,0 +1,4 @@
+# cargo-fuzz 是独立 workspace：不要把它生成的 target/ 与语料提交进来。
+/target
+/artifacts
+/coverage
