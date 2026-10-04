@@ -91,5 +91,19 @@
   "stack.slint_role": "Declarative vector GUI with hardware-accelerated rendering",
   "stack.subtitle": "Each choice records what it replaces and under which licence.",
   "stack.symphonia_role": "Format-agnostic decoding",
-  "stack.title": "Technology foundation"
+  "stack.title": "Technology foundation",
+  "nav.quickstart": "Quick start",
+  "quickstart.title": "Quick start",
+  "quickstart.subtitle": "Requirements → build → run. Everything below is copy-pasteable.",
+  "quickstart.req_title": "Requirements",
+  "quickstart.req_rust": "Rust 1.99.0 — pinned by rust-toolchain.toml; rustup installs it automatically (rustfmt and clippy are pinned too)",
+  "quickstart.req_os": "macOS (Apple Silicon / Intel), Linux (X11 or Wayland), Windows",
+  "quickstart.req_linux": "Linux build deps: pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev",
+  "quickstart.req_macos": "macOS build deps: Xcode Command Line Tools (xcode-select --install)",
+  "quickstart.req_display": "A real display is needed for the GUI window; --headless needs none (that is what CI uses)",
+  "quickstart.note_title": "Honest status",
+  "quickstart.note": "The real-time engine does not make sound yet (Phase 2 in progress) and the app starts with a demo project. For what is verified and what is still PENDING, see docs/ledger/gate-status.md in the repository.",
+  "quickstart.build_title": "Build",
+  "quickstart.run_title": "Run",
+  "quickstart.test_title": "Test"
 }

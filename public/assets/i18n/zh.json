@@ -91,5 +91,19 @@
   "stack.slint_role": "声明式矢量 GUI，硬件加速渲染",
   "stack.subtitle": "每一个选型都写明了它替换掉了什么，以及许可证是什么。",
   "stack.symphonia_role": "全格式解码",
-  "stack.title": "技术基座"
+  "stack.title": "技术基座",
+  "nav.quickstart": "快速开始",
+  "quickstart.title": "快速开始",
+  "quickstart.subtitle": "环境要求 → 构建 → 运行。下面的命令都可以直接复制粘贴。",
+  "quickstart.req_title": "环境要求",
+  "quickstart.req_rust": "Rust 1.99.0（由 rust-toolchain.toml 钉死，rustup 会自动安装；rustfmt 与 clippy 组件同样钉住）",
+  "quickstart.req_os": "macOS（Apple Silicon / Intel）、Linux（X11 或 Wayland）、Windows",
+  "quickstart.req_linux": "Linux 构建依赖：pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev",
+  "quickstart.req_macos": "macOS 构建依赖：Xcode Command Line Tools（xcode-select --install）",
+  "quickstart.req_display": "打开主窗口需要真实显示器；--headless 不需要（CI 用的就是它）",
+  "quickstart.note_title": "诚实状态",
+  "quickstart.note": "实时引擎还不能发声（Phase 2 进行中），主窗口启动时用的是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。",
+  "quickstart.build_title": "构建",
+  "quickstart.run_title": "运行",
+  "quickstart.test_title": "测试"
 }

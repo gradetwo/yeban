@@ -50,6 +50,7 @@
     </a>
 
     <nav class="site-nav" aria-label="Primary">
+      <a href="#quickstart" data-i18n="nav.quickstart">快速开始</a>
       <a href="#features" data-i18n="nav.features">特性</a>
       <a href="#stack" data-i18n="nav.stack">技术基座</a>
       <a href="#roadmap" data-i18n="nav.roadmap">路线图</a>
@@ -114,6 +115,50 @@
           <dd data-i18n="hero.meta_license_value">GPLv3 + CLAP 例外</dd>
         </div>
       </dl>
+    </div>
+  </section>
+
+
+  <section id="quickstart" class="section section-alt">
+    <div class="wrap">
+      <header class="section-head">
+        <h2 data-i18n="quickstart.title">快速开始</h2>
+        <p data-i18n="quickstart.subtitle">环境要求 → 构建 → 运行。下面的命令都可以直接复制粘贴。</p>
+      </header>
+
+      <div class="cards cards-2">
+        <article class="card">
+          <h3 data-i18n="quickstart.req_title">环境要求</h3>
+          <ul class="qs-list">
+            <li data-i18n="quickstart.req_rust">Rust 1.99.0（由 rust-toolchain.toml 钉死，rustup 会自动安装；rustfmt 与 clippy 组件同样钉住）</li>
+            <li data-i18n="quickstart.req_os">macOS（Apple Silicon / Intel）、Linux（X11 或 Wayland）、Windows</li>
+            <li data-i18n="quickstart.req_linux">Linux 构建依赖：pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev</li>
+            <li data-i18n="quickstart.req_macos">macOS 构建依赖：Xcode Command Line Tools（xcode-select --install）</li>
+            <li data-i18n="quickstart.req_display">打开主窗口需要真实显示器；--headless 不需要（CI 用的就是它）</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3 data-i18n="quickstart.note_title">诚实状态</h3>
+          <p class="qs-note" data-i18n="quickstart.note">实时引擎还不能发声（Phase 2 进行中），主窗口启动时用的是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。</p>
+        </article>
+      </div>
+
+      <h3 class="qs-sub" data-i18n="quickstart.build_title">构建</h3>
+      <pre class="code-block"><code>git clone https://github.com/gradetwo/yeban.git
+cd yeban
+cargo build --release                     # 构建整个工作区（首次需要几分钟）
+cargo build --release -p yeban-app        # 只构建桌面 GUI 二进制</code></pre>
+
+      <h3 class="qs-sub" data-i18n="quickstart.run_title">运行</h3>
+      <pre class="code-block"><code>cargo run --release -p yeban-app                     # 打开桌面主窗口
+cargo run --release -p yeban-app -- --headless       # 无需显示器：打印 headless ok 后退出 0
+cargo run --release -p yeban-app -- --dump-elements  # 打印语义控件树，不建窗口
+cargo run --release -p yeban-mcp                     # Intent API v2 的 stdio 形态（MCP 服务）</code></pre>
+
+      <h3 class="qs-sub" data-i18n="quickstart.test_title">测试</h3>
+      <pre class="code-block"><code>cargo test --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings</code></pre>
     </div>
   </section>
 
