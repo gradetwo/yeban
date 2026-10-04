@@ -18,8 +18,9 @@ use yeban_engine::ring::event_channel;
 use yeban_engine::rt::{EngineRuntime, EngineStats};
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
 use yeban_model::{
-    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, RoutingEdge,
-    RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
+    ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
+    MidiNote, ParameterValue, RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3,
+    YebanProjectV1,
 };
 
 /// 判据用的采样率/速度：`1 tick = 60 × 48000 / (120 × 960) = 25` 样本。
@@ -62,6 +63,69 @@ impl NoteSpec {
     }
 }
 
+/// 夹具的**混音参数**（`line/engine-mix` 新增：声相与音色之前，夹具没有这两项）。
+///
+/// 默认值刻意取"与 `line/engine-sound` 的夹具完全一致"（音量 0 dB、声相居中、
+/// 无设备链 ⇒ 音色旁通），这样既有的 9 条 `synth_render` 判据的**输入**没有被改动，
+/// 只有输出因为声相定律/限制器而改变（见台账 §3 的口径变化表）。
+#[derive(Clone, Copy, Debug)]
+pub struct MixSpec {
+    /// 音量 (dB)。
+    pub volume_db: f32,
+    /// 声相 -1.0..=1.0（0 = 居中）。
+    pub pan: f32,
+    /// 滤波器截止频率 (Hz)；`None` = 不挂乐器设备（音色旁通）。
+    pub cutoff_hz: Option<f32>,
+    /// 共振（0..1）。
+    pub resonance: f32,
+}
+
+impl Default for MixSpec {
+    fn default() -> Self {
+        Self {
+            volume_db: 0.0,
+            pan: 0.0,
+            cutoff_hz: None,
+            resonance: 0.0,
+        }
+    }
+}
+
+impl MixSpec {
+    /// 只改音量。
+    #[must_use]
+    pub const fn volume(volume_db: f32) -> Self {
+        Self {
+            volume_db,
+            pan: 0.0,
+            cutoff_hz: None,
+            resonance: 0.0,
+        }
+    }
+
+    /// 只改声相。
+    #[must_use]
+    pub const fn pan(pan: f32) -> Self {
+        Self {
+            volume_db: 0.0,
+            pan,
+            cutoff_hz: None,
+            resonance: 0.0,
+        }
+    }
+
+    /// 挂一个带截止频率的内置乐器设备（⇒ 声部滤波器启用）。
+    #[must_use]
+    pub const fn tone(cutoff_hz: f32, resonance: f32) -> Self {
+        Self {
+            volume_db: 0.0,
+            pan: 0.0,
+            cutoff_hz: Some(cutoff_hz),
+            resonance,
+        }
+    }
+}
+
 /// 一个夹具工程的句柄。
 #[derive(Clone, Debug)]
 pub struct Fixture {
@@ -97,6 +161,48 @@ pub fn bare_track_project() -> Fixture {
 #[must_use]
 pub fn note_project(notes: &[NoteSpec]) -> Fixture {
     build(notes, TrackKind::Midi, false)
+}
+
+/// 同 [`note_project`]，但轨道带上混音参数（音量 / 声相 / 内置乐器音色）。
+///
+/// 音色走的是**引擎侧临时形状**：`InternalInstrument` 设备的 `params` 里出现
+/// `cutoff_hz` / `resonance` 即被 [`yeban_engine::synth::ToneParams::from_devices`] 采纳
+/// （见该类型与台账 §5 的 needs）。模型的 `DeviceKind` 里没有"合成器"这一档，
+/// 因此夹具用"内置乐器 + 约定参数名"表达，而不是去改模型。
+#[must_use]
+pub fn tuned_project(notes: &[NoteSpec], mix: MixSpec) -> Fixture {
+    let mut fixture = note_project(notes);
+    let track = fixture.track;
+    let entry = fixture
+        .project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨");
+    entry.volume_db = mix.volume_db;
+    entry.pan = mix.pan;
+    if let Some(cutoff_hz) = mix.cutoff_hz {
+        let device = EntityId::new();
+        entry.devices = vec![DeviceDefinition {
+            id: device,
+            name: "Hollow".to_owned(),
+            kind: DeviceKind::InternalInstrument,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "cutoff_hz".to_owned(),
+                    value: cutoff_hz,
+                    unit: Some("Hz".to_owned()),
+                },
+                ParameterValue {
+                    name: "resonance".to_owned(),
+                    value: mix.resonance,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    fixture
 }
 
 /// 主总线 + 一条**音频**轨 + 一个 `ClipContent::Audio` 摆放（采样播放未接入 ⇒ 静音）。
@@ -423,4 +529,104 @@ pub fn zero_crossings(samples: &[f32]) -> usize {
         .windows(2)
         .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
         .count()
+}
+
+// ---------------------------------------------------------------------------
+// `line/engine-mix` 新增：声部级夹具（不经过模型 → 快照的投影）
+// ---------------------------------------------------------------------------
+
+/// 直接驱动 [`yeban_engine::synth::SynthEngine`] 的最小夹具。
+///
+/// 用途：声部窃取淡出、声部滤波器这些**声部级**行为在端到端路径上很难构造
+/// （要撞复音上限、要挂设备链），而它们又是本线的核心判据。这里给出一个
+/// **不经过模型投影**的入口：调度表由调用方手搓，音色由 `tones` 给。
+///
+/// 仍然走产品路径的**合成**部分：`begin_snapshot` → `render_track` →
+/// 逐样本（整数相位 + ADSR + 可选滤波器）。只有"tick → 样本"这一步是手写的，
+/// 因为那一部分的判据已经由 `synth_render.rs`（J3/J9）覆盖。
+pub struct SynthRig {
+    /// 被测合成器。
+    pub engine: yeban_engine::synth::SynthEngine,
+    /// 该轨身份。
+    pub track: EntityId,
+    /// 采样率。
+    pub sample_rate: f32,
+}
+
+impl SynthRig {
+    /// 组装：48 kHz、一条轨、给定音色。
+    #[must_use]
+    pub fn new(tones: &yeban_engine::synth::ToneParams) -> Self {
+        let track = EntityId::new();
+        let mut engine = yeban_engine::synth::SynthEngine::new(48_000);
+        engine.begin_snapshot(48_000, &[track], [(&track, tones)]);
+        Self {
+            engine,
+            track,
+            sample_rate: 48_000.0,
+        }
+    }
+
+    /// 渲染一段（`quanta` 个 128 帧量子），返回单声道样本。
+    #[must_use]
+    pub fn render(
+        &mut self,
+        schedule: &yeban_engine::synth::NoteSchedule,
+        quanta: usize,
+    ) -> Vec<f32> {
+        let mut out = vec![0.0f32; 128];
+        let mut rendered = Vec::with_capacity(quanta * 128);
+        for _ in 0..quanta {
+            self.engine
+                .render_track(self.track, Some(schedule), &mut out);
+            self.engine.advance(128);
+            rendered.extend_from_slice(&out);
+        }
+        rendered
+    }
+}
+
+/// 造一个已调度音符（48 kHz、力度 127、`gain` 由调用方给）。
+#[must_use]
+pub fn scheduled(
+    start_sample: u64,
+    end_sample: u64,
+    pitch: u8,
+    gain: f32,
+    sample_rate: f32,
+) -> yeban_engine::synth::ScheduledNote {
+    let freq = yeban_dsp_note_to_hz(pitch);
+    yeban_engine::synth::ScheduledNote::new(
+        start_sample,
+        end_sample,
+        pitch,
+        127,
+        freq,
+        gain,
+        sample_rate,
+    )
+}
+
+/// 等程律频率（夹具用；与 `yeban_dsp::math::note_to_hz` 同式）。
+#[must_use]
+pub fn yeban_dsp_note_to_hz(pitch: u8) -> f32 {
+    440.0 * 2.0f32.powf((f32::from(pitch) - 69.0) / 12.0)
+}
+
+/// 相邻样本的**最大**位移（爆音判据的核心读数）。
+#[must_use]
+pub fn max_step(samples: &[f32]) -> f32 {
+    samples
+        .windows(2)
+        .fold(0.0f32, |worst, pair| worst.max((pair[1] - pair[0]).abs()))
+}
+
+/// 一次渲染里某个位置的**最大**相邻位移（用于"窃取发生处"的局部读数）。
+#[must_use]
+pub fn max_step_in(samples: &[f32], from: usize, to: usize) -> f32 {
+    let to = to.min(samples.len());
+    if from >= to {
+        return 0.0;
+    }
+    max_step(&samples[from..to])
 }

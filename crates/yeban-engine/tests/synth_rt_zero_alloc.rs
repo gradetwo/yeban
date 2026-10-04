@@ -24,7 +24,7 @@ use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
 
 mod support;
 
-use support::{NoteSpec, note_project};
+use support::{MixSpec, NoteSpec, note_project, tuned_project};
 
 /// 包住 [`System`] 的计数型分配器。
 struct CountingAllocator;
@@ -208,6 +208,88 @@ fn main() -> ExitCode {
         failures.push("filled_project 的快照没有调度任何音符".to_owned());
     }
 
+    // ---- 场景 4：**整条混音链**（滤波器 + 声相 + 母线限制器）仍然零分配 ----
+    //
+    // 为什么必须单独一个场景：前三个场景里母线是"等增益复制 + 不压限"的，
+    // 声部滤波器也从未被调用。本线的三个新器件（声部低通、声相增益、前瞻限制器）
+    // 都在实时路径上，**必须**单独证明它们不分配。
+    //
+    // 夹具设计（每一项都对应一个器件）：
+    //   * 256 个交叠音符（沿用 `saturated_notes`）⇒ 整个窗口有声部在跑；
+    //   * `+6 dB` 音量 ⇒ 峰值约 1.42 > 阈值 0.9 ⇒ **限制器真的在工作**；
+    //   * `pan = -1.0` ⇒ 右声道应当**逐位静音**（声相定律真的在线）；
+    //   * `cutoff = 2 kHz` ⇒ 声部低通真的被调用；
+    //   * 另外再叠 40 个**同时起音**的长音符 ⇒ 逼出声部窃取淡出（池只有 16 声部）。
+    let mut mix_notes = saturated_notes();
+    mix_notes.extend((0..40u64).map(|index| NoteSpec::at(0, 96_000, 48 + (index % 12) as u8, 100)));
+    let mix_fixture = tuned_project(
+        &mix_notes,
+        MixSpec {
+            volume_db: 6.0,
+            pan: -1.0,
+            cutoff_hz: Some(2_000.0),
+            resonance: 0.4,
+        },
+    );
+    let mix_snapshot =
+        EngineSnapshot::from_project(&mix_fixture.project, 1).expect("混音链夹具必须能编译成快照");
+    let mix_slot = SnapshotSlot::new(mix_snapshot);
+    let (mix_retire, _mix_queue) = retire_channel(8);
+    let (_sender, mix_receiver) = event_channel(64);
+    let (mix_publisher, _mix_collector) = meter_channel(8192);
+    let mut mix_runtime = EngineRuntime::new(&mix_slot, mix_retire, mix_receiver, mix_publisher);
+    let mut mix_output = vec![0.0f32; 128 * 2];
+    mix_runtime.process_quantum(&mut mix_output, 2);
+
+    let mut mix_nan = 0usize;
+    let (allocations, deallocations) =
+        measure("mix chain (filter+pan+limiter+steal) 2_000 quanta", || {
+            for _ in 0..2_000 {
+                mix_runtime.process_quantum(&mut mix_output, 2);
+                for sample in &mix_output {
+                    if sample.is_nan() {
+                        mix_nan += 1;
+                    }
+                }
+            }
+        });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "混音链在实时窗口内分配/释放了内存: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    if mix_nan != 0 {
+        failures.push(format!("混音链输出了 {mix_nan} 个 NaN 样本"));
+    }
+    let mix_stats = mix_runtime.stats();
+    if mix_stats.limiter_gain_reductions == 0 {
+        failures.push(
+            "混音链夹具没有驱动限制器（reductions = 0）—— 这条零分配判据没有覆盖限制器".to_owned(),
+        );
+    }
+    if mix_stats.voice_steals == 0 {
+        failures.push("混音链夹具没有触发声部窃取 —— 淡出路径没有被这条零分配判据覆盖".to_owned());
+    }
+    // 声相真的在线：全左 ⇒ 右声道必须**逐位**静音。
+    let right_nonzero = mix_output
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .filter(|sample| **sample != 0.0)
+        .count();
+    if right_nonzero != 0 {
+        failures.push(format!(
+            "全左声相下右声道仍有 {right_nonzero} 个非零样本 —— 声相定律没有生效"
+        ));
+    }
+    println!(
+        "[engine-mix/J5] 混音链: quanta={} reductions={} steals={} 最大压限={:.4} 右声道非零={right_nonzero}",
+        mix_stats.quanta,
+        mix_stats.limiter_gain_reductions,
+        mix_stats.voice_steals,
+        mix_stats.limiter_max_reduction,
+    );
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -222,7 +304,7 @@ fn main() -> ExitCode {
     if failures.is_empty() {
         println!(
             "[engine-sound/J5] ok: 10,000 量子（音符铺满窗口）+ 63 次快照交换 + \
-             filled_project 4,000 量子，实时窗口内零分配零释放"
+             filled_project 4,000 量子 + 2,000 量子整条混音链，实时窗口内零分配零释放"
         );
         ExitCode::SUCCESS
     } else {

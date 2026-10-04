@@ -99,6 +99,7 @@ pub mod fpu;
 pub mod graph;
 pub mod level;
 pub mod meter;
+pub mod mixer;
 pub mod ring;
 pub mod rt;
 pub mod snapshot;
