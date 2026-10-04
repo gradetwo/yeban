@@ -65,6 +65,26 @@ gh_logs() {
   gh run view "$run_id" --repo "$REPO_SLUG" --log-failed || gh run view "$run_id" --repo "$REPO_SLUG" --log
 }
 
+# 判决必须属于**分支 tip** 的 SHA —— 否则"读到的绿"是别的提交的绿。
+#
+# 为什么必须机械化: `ci.yml` 有 `concurrency.cancel-in-progress`, 于是**快速连续推送**会让
+# 中间那些 SHA 的 run 被取消(甚至从列表里消失)。此时"某个 run 是绿的"与"我的代码被验证过"
+# 是两件事 —— 我本人差点据此把一条未经 CI 验证的线合并进 main(第 4 轮, live-port)。
+assert_verdict_matches_tip() {
+  local branch="$1" sha="$2"
+  local tip
+  tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch" 2>/dev/null \
+    || git -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" 2>/dev/null || echo "")
+  [[ -n "$tip" ]] || return 0
+  if [[ "${tip:0:8}" != "${sha:0:8}" ]]; then
+    printf '\033[31m警告:\033[0m 这个判决属于 %s，而 %s 的 tip 是 %s\n' "${sha:0:8}" "$branch" "${tip:0:8}" >&2
+    printf '  ⇒ 它\033[1m不能\033[0m当作 tip 的判决。大概率是 tip 的 run 仍排队/被 concurrency 取消。\n' >&2
+    printf '  ⇒ 请等 tip 自己的 run，或重推一次触发。\033[1m未验证 ≠ 通过。\033[0m\n' >&2
+    return 2
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------- REST path
 
 latest_run_id() {
@@ -171,11 +191,15 @@ for r in json.load(sys.stdin)["workflow_runs"]:
       prepare_gh
       rid=$(gh run list --repo "$REPO_SLUG" --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId')
       [[ -n "$rid" ]] || die "分支 $branch 上没有任何 workflow run (还没推送, 或仓库地址不对: $REPO_SLUG)"
+      run_sha=$(gh run view "$rid" --repo "$REPO_SLUG" --json headSha --jq '.headSha')
       gh_show "$rid"
+      assert_verdict_matches_tip "$branch" "$run_sha" || exit $?
     else
       rid=$(latest_run_id "$branch")
       [[ -n "$rid" ]] || die "分支 $branch 上没有任何 workflow run (还没推送, 或仓库地址不对: $REPO_SLUG)"
+      run_sha=$(api "$API/actions/runs/$rid" | python3 -c 'import json,sys; print(json.load(sys.stdin)["head_sha"])')
       print_run "$rid"
+      assert_verdict_matches_tip "$branch" "$run_sha" || exit $?
     fi
     ;;
 esac

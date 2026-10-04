@@ -394,6 +394,42 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
 
+**当前进度快照（2026-10-05，第 4 轮结束时）**：
+- 已落地 **16 条工作线**（`line-archive/*` 共 16 个标签：model-core / theory-core / dsp-core / ui-shell /
+  sfz-core / engine-rt / render-master / ui-test-port / mcp-core / decode-core / app-introspect /
+  tools-domain / app-binding / ui-mcp / container / lock-advisory；`live-port` 待合并）。
+- **13 个 crate 有真实实现**；`services`(v1.1.0) / `plugin-host`(v2.0.0) / `vst`(v2.0.0) 的空壳是
+  **规范安排的版本阶段，不是欠债**（见 `docs/ledger/gate-status.md` §C.4）。
+- **门禁状态表**：`docs/ledger/gate-status.md` 是"现在到底什么算绿"的单一事实源，
+  由 `scripts/gates/check_gate_status.py` 机械守卫（21 条门禁必须齐全、非 PENDING 必须带可复跑证据）。
+  第 4 轮把 **`MUST-GATE-006`(Zip-Slip) / `007`(解压炸弹) / `008`(OS 建议锁)** 三条从 PENDING 转为已接线，
+  并补上 **`MUST-GATE-001` 缺失的运行期断言**（零分配实测：10,000 量子 + 63 次快照交换 `allocations=0 deallocations=0`）。
+- **仍未闭环的大项**：`MUST-GATE-003`(跨架构 L2) / `011`(fuzz 从未跑) / `014`(采样未入库，需人类决定)；
+  `BASELINE-002..006`（001 只有数量级读数）；Windows 上的锁分支从未编译；容器 deflate 未支持。
+- **下一批自然候选**：把 `yeban-mcp/domain/store.rs` 接到 `.yeban` 容器（D30 已留接缝）、
+  卷帘 MIDI 音符的 tick 位置、`.yeban` 加载接到 app、混音台通道条 + 电平 SPSC（`ARCH-UI-002`）、
+  Windows 锁分支、MCP `render_master` 的渲染本体。
+
+## 7. 工作线合并台账 (Merge Ledger)
+
+`scripts/dev/worktree.sh land` 会用统一的 `merge(<line>): 工作线落地` 作为合并提交信息（自动化优先），
+因此**每条工作线的详细内容摘要记在这里**，不依赖提交信息的措辞。顺序 = 合并顺序。
+
+| 工作线 | 合并提交 | 内容摘要 |
+| :--- | :--- | :--- |
+| `engine-rt` | `35ee5ab` | 实时引擎核心: 定长块/快照退役回收/内部 PDC/FTZ-DAZ/批量 SPSC/cpal 宿主+NullBackend; 按 D19 切分 device feature; 延迟改从 DeviceDefinition::latency_samples 读取 |
+| `render-master` | `136c791` | 离线母带渲染: 拓扑分层 Rayon 并行 + 按 EntityId 字典序确定性串行归约; 自研 RF64/BW64+bext; TPDF 抖动; SMF 0/1 导出; pdc.rs 最小同构实现(待 engine 提供公共签名后按 D19 退役) |
+| `ui-test-port` | `7d3b31e` | Tier-1 无头软件光栅化 + 语义控件树 + 动态遮罩 SSIM(≥0.98) + 三级权限; app 侧窄口子适配器(默认关闭 feature) |
+| `mcp-core` | `60424a3` | Yeban Intent API v2 工具层: 10 个工具注册表与契约逐条对账、JSON-RPC 2.0、六级 scope 纯函数判定、`ui:inject` 生产硬禁、256-bit Bearer token + 0600 落盘、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0)、`dryRun`/`idempotencyKey` 真实现；十个工具的领域实现未接线(返回 -32005 NOT_IMPLEMENTED)；108 条判据 |
+
+| `mcp-core` | `6a860b1` | Yeban Intent API v2 工具层: 10 工具注册表与契约逐条对账(含联集 20 错误码与双射守卫)、JSON-RPC 2.0、六级 scope 纯函数、`ui:inject` 生产硬禁(先于 token 校验)、256-bit Bearer token + 0600 落盘(读到 644 直接拒)、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0, 绑定后回读 `local_addr()` 断言 `is_loopback()`)、`dryRun`/`idempotencyKey` 真实现; 112 条判据; **十工具领域实现未接线(-32005)** |
+| `app-introspect` | `b581795` | 真实界面的 Tier-1 内省: 适配器修到可编译 + 用**自动发现**测试目标让判据进入默认门禁; 产出三张 1920×1080 真实界面截图(100% 非黑, 2973/2784/2811 色)与运行时控件树; 控件树 184 注册 / 95 运行时 / 未注册 0; 动态区遮罩后 SSIM 精确 1.0; 中文非 tofu 判据(24px→648px) |
+
+| `decode-core` | `805fcf9` | 离线解码 + 重采样: symphonia 0.6.1 解码(WAV 8/16/24/32-bit + F32 + FLAC)、rubato 5.0.1 sinc 重采样、内容寻址不可变资产、尺寸/防挂死预算(检查全在分配之前 + `try_reserve` + `checked_mul`)、**主动加 `#![forbid(unsafe_code)]`**; CI 上 68 条单测 + clippy 全绿; **OGG/Vorbis 与 ADPCM 只有代码路径没有字节级夹具；基准打点缺失 ⇒ DoD 4 无法判定(不是通过)** |
+
+已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
+远程当前只剩 `main` 与 `website`。
+
 **当前进度快照（2026-10-05，本轮结束时）**：
 - 已落地 **13 条工作线**（`line-archive/{model-core, theory-core, dsp-core, ui-shell, sfz-core, engine-rt, render-master, ui-test-port, mcp-core, decode-core, app-introspect, tools-domain, app-binding, ui-mcp}` —— 共 14 个标签），远程只剩 `main` + `website`。
 - **13 个 crate 有真实实现**：`model`(89 测试) / `theory`(93) / `dsp`(108) / `sfz`(58) / `app`(53+9) /
@@ -818,4 +854,21 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   这与 L18（没编到的目标不可见）、L20（job 供给差异）、L12（门禁空跑）同族：
   **先确认你测的是你以为的那个东西。**
 - **顺带的价值**：这条修法本身也让"只能有一个 `#[test]`"的限制消失 —— 单线程进程里可以顺序跑任意多个场景。
+
+### L23 — "有个 run 是绿的" ≠ "我的代码被验证过"：`concurrency.cancel-in-progress` 会吃掉中间的 SHA
+
+- **经过**：第 4 轮我准备合并 `line/live-port` 时按惯例去读判决，发现该分支**只有一次 run 的记录**，
+  而它是**纯文档回填**提交（`plan` 判定无受影响 crate ⇒ **两条 rust 腿都跳过**）。
+  代码提交（`22766ab` / `f43d90e`）**根本没有留下任何完成的 run** ——
+  原因是 `ci.yml` 里有 `concurrency: cancel-in-progress: true`（多线并行时最省算力的规则），
+  快速连续推送会把中间 SHA 的运行**取消掉**，而取消的 run 会从列表里淡出。
+- **危险之处**：如果我只看"这个分支最新的 run 是 success"就合并，那么合并的是一份
+  **从未被 CI 编译过**的代码 —— 而记录上却写着"CI 绿"。这是 L12/L18/L20/L22 同族的另一个面：
+  **把"某个东西绿了"当成"我要的东西绿了"。**
+- **已落地（机械化）**：`scripts/dev/ci-verdict.sh` 新增 `assert_verdict_matches_tip`：
+  读到 run 之后**强制比对 `head_sha` 与分支 tip**，不一致就打印警告并**以退出码 2 失败**
+  （两条取数路径 gh / REST 都接上了）。注入实测：故意传一个不匹配的 SHA → 退出码 **2**，
+  并明确写出"**未验证 ≠ 通过**"。
+- **规则**：读判决时必须回答两个问题 ——① 这个 run 属于**哪个 SHA**？② **两条 rust 腿真的跑了吗**
+  （还是被 `plan` 按受影响集合跳过了）？只回答"结论是 success"是不够的。
 
