@@ -10,7 +10,8 @@
   - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` `ROAD-M4-004/005/006`、`ROAD-M-1-004`
   - `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md`
     **D19**（render 不拖 cpal）、**D25**（错误码联集 20 值）、**D26**（`symphonia`/`rubato` 的真实 API）、
-    **D30**（`.yeban` 容器：资产字节住在容器里）、**D32**（跨架构位精确**按运算类别分策**）
+    **D30**（`.yeban` 容器：资产字节住在容器里）、**D32**（跨架构位精确**按运算类别分策**）、
+    **D43**（1.0.0 之前没有历史包袱；自查见 §3.4）
   - `schemas/mcp-tools.schema.json`（承重契约：工具名 / `dryRun` / `idempotencyKey` / `error.code` 联集）
   - 前置台账：`docs/ledger/mcp-render-notes.md`（本线接手它的 `needs-1` / `needs-2`）、
     `docs/ledger/decode-core-notes.md`（`yeban-decode` 的能力与边界）、
@@ -138,6 +139,30 @@
 | 素材字节 | 会话 CAS 池里的字节，**且** SHA-256 与工程声明的哈希一致 | 池里没有字节但索引里有 ⇒ 登记 `audioClips` + 静音（裸 JSON 兼容路径的形态）；索引里也没有 ⇒ `assetMissing` |
 | 摆放语义 | `start_tick`（tick→帧）、`duration_ticks`（**硬切**边界）、`muted`、片段 `gain_db`、音轨 `volume_db`/`pan`/`mute`/`solo`/`solo_safe` | `loop_config` 的重复（登记 `clipLoopRepetition`，与 MIDI 同一条）；交叉淡化（模型里没有这个字段，不发明） |
 | 延迟 | 音轨设备链的 `latency_samples` → PDC（与 MIDI 同表） | 资产自带的延迟字段（模型里不存在）；编码器延迟裁剪由本线做，`yeban-decode` 不做 |
+
+### 3.4 与 `ADR-0001` **D43**（1.0.0 之前没有历史包袱）的关系
+
+集成者通报 D43 之后，本线逐条自查（**结论：本线没有为"兼容"保留任何东西**）：
+
+| D43 的问题 | 本线的回答 |
+| :--- | :--- |
+| 你在改 `store.rs` 的**读取分派**吗？ | **没有。** 本线一个字节都没动 `store.rs`（裸 JSON 兼容路径仍原样保留），因此 `mcp-no-compat` 那条线不会被两条写者撞车 |
+| `unsupported` 矩阵里有"为以后兼容而留"的键吗？ | **没有。** 13 个既有键一个都没动；本线唯一涉及的是 `audioClips`，它是**当前会话真的缺资产载荷**时的诚实信号（见下），不是"以后再说" |
+| 新增了 `#[serde(default)]` 吗？ | **没有。** 本线不改模型层，也不新增任何 serde 属性 |
+| 有没有"为了旧文件能读"的分支？ | **没有。** 唯一的向后兼容形状是 §3.2 最后两行的 `audioClips`，它的触发条件是**会话里没有字节**，而不是"文档版本旧" |
+
+**`audioClips` 为什么不是"为兼容而留"**：它描述的是一个**运行时事实** —— 工程声明了这个
+资产、而本次会话的 CAS 池里没有它的字节，于是这些摆放**没有进母带**。删掉这个键就会
+把"这一段没渲染"变成"看不出来" —— 那违反 D43 保留的那条红线（**诚实性**：真不支持的
+必须在响应里如实说）。它会在下面两件事都发生之后**自然消失**（届时应当由
+`mcp-no-compat` 线连同分支一起删除）：
+
+1. `store.rs` 的裸 JSON 读取分派被 D43 删掉（容器成为唯一格式）；**且**
+2. `Domain::open_in_memory` 这条"只注入工程、不注入资产载荷"的会话种子路径也被收掉
+   （否则内存夹具 / 内存会话仍然会有"声明了但没有字节"的形态）。
+
+在那之前删掉它，只会把 `yeban_model::samples::filled_project()`（仓库自己的规范样本工程）
+变成**渲染必然失败**的工程 —— 那是拿诚实换整洁。这一条已登记为 §9 的 **needs-7**。
 
 ### 3.3 仍然 `unsupported` 的键（**没有任何一条被本线悄悄去掉**）
 
@@ -373,6 +398,7 @@ rayon/symphonia/rubato 重跑同一批判据。
 | **needs-4** | **编码器延迟裁剪的规范落点** | 需要裁决 | `yeban-decode` 的边界是"只记录不裁剪"，本线在渲染侧裁剪并报告。若要统一（gapless 语义属于导入还是渲染），需要一条 ADR |
 | **needs-5** | **`run-gates.sh crate yeban-mcp` 在本机会真编译重依赖** | 门禁口径 | 承接 `mcp-render-notes` 的 needs-7（`HD-39`）。本线新增的 `yeban-decode` 边让本机编译更贵（symphonia+rubato），这条更值得修 |
 | **needs-6** | **音频片段的性能读数**（解码/重采样/逐块拷贝的吞吐） | 未打点 | 没有 `criterion`；`BASELINE-*` 仍与本线无关 |
+| **needs-7** | **`audioClips` 键在 D43 之后的归属** | 跨线 + 需要裁决 | 当 `mcp-no-compat` 删掉裸 JSON 读取分派、且 `Domain::open_in_memory` 也不再产生"有声明无载荷"的会话时，§3.4 那条分支与 `audioClips` 键应当**一起删除**（并把它改成 `assetMissing` 硬错误）。本线**不在**别人的文件里做这件事，也不在触发条件成立之前提前删 |
 
 ### pending
 
