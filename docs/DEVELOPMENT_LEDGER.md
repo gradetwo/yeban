@@ -1349,8 +1349,10 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 
 | HD | 要做什么 | 地盘 | 状态 |
 | :--- | :--- | :--- | :--- |
+| HD-20 | **删除裸 JSON 兼容读路径**（`yeban-mcp` 的 `bare-json` + `yeban-app` 的 `DocumentFormat::ProjectJson`）；容器成为唯一格式 | `yeban-app`（**进行中**：`line/app-no-compat`） / `yeban-mcp`（排队：等 `audio-render` 让出） | 进行中 + 排队 |
+| D43-收紧 | **`yeban-model` 的 40 处 `#[serde(default)]` 逐项复审**（必需 ⇒ 要求它；天然可选 ⇒ 保留）+ 随之**收紧 `schemas/project.schema.json`** | `yeban-model`（**进行中**：`line/model-no-compat`） / `schemas/**`（集成者） | 进行中 |
 | HD-21 | 新增 JSON-RPC **`-32010 ACTION_FAILED`**（"已接线但执行失败"档）并把管理动作的失败如实归到它 | `yeban-ui-mcp` + `yeban-mcp` | **排队**（等 `engine-mix` / `audio-render` 让出这两处） |
-| HD-23 | `history.dag` 加**版本信封** | `yeban-mcp` | 排队 |
+| HD-23 | `history.dag` 版本信封 —— **D43 之后判定为不必要**（版本只用于**拒绝不匹配**，不用于兼容多版本） | — | **已关闭**（依 D43） |
 | HD-24 | `MAX_PCM_BYTES` 提高或改**流式**（现 2 GiB：96 kHz 立体声 ≈46 min） | `yeban-decode` | 排队 |
 | HD-26 | 真峰值过采样 **4× → 8×/16×**（4× 在 0.4·fs 欠读 0.44 dB） | `yeban-dsp` | 排队 |
 | HD-27 | LUFS **门限/窗口**切片 + 其它采样率的 K 加权系数 | `yeban-dsp` | 排队 |
