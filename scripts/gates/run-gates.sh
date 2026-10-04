@@ -19,6 +19,12 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 
+# 环境自适应 (受限沙箱里自动切换 CARGO_HOME/RUSTUP_TOOLCHAIN; 普通终端不改任何东西)。
+# 之前这里直接调 `cargo`, 于是工作线在本机跑门禁时会卡在 fmt 那一步报权限错误 ——
+# 那属于"工具摩擦变成阻塞", 必须消灭。
+# shellcheck source=../dev/local-env.sh
+source "$REPO/scripts/dev/local-env.sh"
+
 MODE="${1:-light}"
 shift || true
 

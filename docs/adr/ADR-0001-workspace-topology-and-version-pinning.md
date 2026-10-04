@@ -21,6 +21,38 @@
 | D8 | `ROAD-M-1-006` 正文列 4 条人类审核项，修订记录说"三项" | 按正文的 **4 条**执行（法务 GPLv3 §7 措辞、ASIO 法务确认、商标查重、BDFL 发布签名） | 正文比修订摘要详细，且 4 条都真实存在。代价：发布前的人类工作量按 4 条计 |
 | D9 | Phase 0 的 9 个 Spike 放哪 | 独立 `spikes/spike-0N-*/` 成员 crate，**各自一个目录，永不共享文件** | 9 条工作线可以真正并行（SKILL：一个文件只能有一个写者）。代价：spike 代码不进产品 crate，验证结论需被"汲取"进 `crates/` 后 spike 才能退役 |
 
+### D10（补充）— `schemas/*.json` 与规范冲突时，以**规范**为准，改契约
+
+`schemas/` 是机器校验契约，它必须描述我们真正要的东西。当契约与规范/ADR 冲突时：
+
+1. **收紧**契约到规范要求的形状（不是放宽成 union 去兼容一个从未存在过的历史格式）；
+2. 在契约里留下指向裁决的注释或 description；
+3. 把冲突本身记进本 ADR（不许悄悄改一边）。
+
+### D11 — `writer_version` 是语义版本字符串，不是整数
+
+- **冲突**：`schemas/project.schema.json` 原本声明 `writer_version: integer`；架构 §2.2 与 D3 裁决它是
+  形如 `"0.0.1"` 的**字符串**。`yeban-model` 的规范样本对账实测：只有这一项红，其余 required/pattern/range/enum 全过。
+- **裁决**：契约改为 `type: string` + semver 形状的 `pattern`（**不是** `["integer","string"]`）。
+- **代价**：若真有外部整数版本号文档，需要迁移器（`ROAD-M1-005` 预留了 `src/migration/`）。
+
+### D12 — `Op` 全集补两个删除变体：`RemoveSection` / `RemoveScene`
+
+- **缺口**：架构 §6.1 用 `SetSection { old_section: Option<_> }` 表达"新建"（`None`），但全集中**没有**
+  删除段落/场景的变体 ⇒ 新建这一步的逆操作无法表达 ⇒ `MUST-GATE-010`（10,000 步撤销守恒）必然失败。
+- **裁决**：补 `Op::RemoveSection` / `Op::RemoveScene`，语义完全由 `SetSection` 的逆定义（无自由度）。
+- **同步**：`schemas/ops.schema.json` 的 `op.oneOf` 由 14 个变体补齐到 **23 个**（覆盖架构 §6.1 全集 + 这两个）。
+- **待人类批准**：这是对规范 Op 全集的**扩展**，需要回写进架构 §6.1。Agent 不擅自改规范正文。
+
+### D13 — `OpOrigin::McpProposal` 用**外部标签对象**序列化
+
+- **冲突**：`schemas/ops.schema.json` 原本把 `origin` 声明为 7 值字符串 enum，但 `McpProposal` 携带
+  `{ proposal_id, agent_name }` 结构化载荷。
+- **裁决**：`origin` 的契约改为 `oneOf`：6 个单元变体仍是纯字符串（`"UserUi"` …），
+  `McpProposal` 序列化为外部标签对象 `{"McpProposal":{"proposal_id":"…","agent_name":"…"}}`。
+  这既保留了 serde 的默认（externally tagged）行为，也让契约与实现一致。
+- **代价**：消费方必须按 `oneOf` 处理两种形状；换来的是不丢载荷。
+
 ---
 
 ## D5 的落地细节（版本钉死）
@@ -57,7 +89,7 @@
 
 ## 待人类批准/补充
 
-1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1` 与 D7 的 PENDING 策略）；
+1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1`、D7 的 PENDING 策略、D12 对 `Op` 全集的扩展）；
 2. `ROAD-M-1-006` 的 4 条人类审核（法务措辞、ASIO、商标、发布签名）——Agent 不得代签；
 3. 自托管固定频率 runner 的预算与接入时间（决定 BASELINE 与确定性门禁何时接线）；
 4. `website` 分支的 Cloudflare 凭据（`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`）。

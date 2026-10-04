@@ -4,31 +4,292 @@
   "title": "StampedOp",
   "description": "Domain reversible operation log entry with provenance origin",
   "type": "object",
-  "required": ["origin", "timestamp", "op"],
+  "required": [
+    "origin",
+    "timestamp",
+    "op"
+  ],
   "properties": {
     "origin": {
-      "type": "string",
-      "enum": ["UserUi", "MidiInput", "McpProposal", "UndoRedo", "AutomationRecord", "Import", "Migration"]
+      "description": "Op provenance. Unit variants serialize as plain strings; McpProposal carries {proposal_id, agent_name} and serializes as an externally tagged object.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "UserUi",
+            "MidiInput",
+            "UndoRedo",
+            "AutomationRecord",
+            "Import",
+            "Migration"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "McpProposal"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "McpProposal": {
+              "type": "object",
+              "required": [
+                "proposal_id",
+                "agent_name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "proposal_id": {
+                  "type": "string",
+                  "description": "EntityId, 26-char Crockford Base32"
+                },
+                "agent_name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
     },
-    "timestamp": { "type": "integer" },
+    "timestamp": {
+      "type": "integer"
+    },
     "op": {
       "type": "object",
       "oneOf": [
-        { "required": ["AddNote"], "properties": { "AddNote": { "type": "object" } } },
-        { "required": ["DeleteNote"], "properties": { "DeleteNote": { "type": "object" } } },
-        { "required": ["MoveNote"], "properties": { "MoveNote": { "type": "object" } } },
-        { "required": ["AddClipPlacement"], "properties": { "AddClipPlacement": { "type": "object" } } },
-        { "required": ["RemoveClipPlacement"], "properties": { "RemoveClipPlacement": { "type": "object" } } },
-        { "required": ["MoveClipPlacement"], "properties": { "MoveClipPlacement": { "type": "object" } } },
-        { "required": ["AddTrack"], "properties": { "AddTrack": { "type": "object" } } },
-        { "required": ["RemoveTrack"], "properties": { "RemoveTrack": { "type": "object" } } },
-        { "required": ["ConnectRouting"], "properties": { "ConnectRouting": { "type": "object" } } },
-        { "required": ["DisconnectRouting"], "properties": { "DisconnectRouting": { "type": "object" } } },
-        { "required": ["SetRoutingGain"], "properties": { "SetRoutingGain": { "type": "object" } } },
-        { "required": ["SetParam"], "properties": { "SetParam": { "type": "object" } } },
-        { "required": ["SetMacro"], "properties": { "SetMacro": { "type": "object" } } },
-        { "required": ["Batch"], "properties": { "Batch": { "type": "object" } } }
-      ]
+        {
+          "required": [
+            "AddNote"
+          ],
+          "properties": {
+            "AddNote": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "DeleteNote"
+          ],
+          "properties": {
+            "DeleteNote": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "MoveNote"
+          ],
+          "properties": {
+            "MoveNote": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "ModifyNoteVelocity"
+          ],
+          "properties": {
+            "ModifyNoteVelocity": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "AddClipPlacement"
+          ],
+          "properties": {
+            "AddClipPlacement": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveClipPlacement"
+          ],
+          "properties": {
+            "RemoveClipPlacement": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "MoveClipPlacement"
+          ],
+          "properties": {
+            "MoveClipPlacement": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "AddTrack"
+          ],
+          "properties": {
+            "AddTrack": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveTrack"
+          ],
+          "properties": {
+            "RemoveTrack": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "ConnectRouting"
+          ],
+          "properties": {
+            "ConnectRouting": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "DisconnectRouting"
+          ],
+          "properties": {
+            "DisconnectRouting": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetRoutingGain"
+          ],
+          "properties": {
+            "SetRoutingGain": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "InsertDevice"
+          ],
+          "properties": {
+            "InsertDevice": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveDevice"
+          ],
+          "properties": {
+            "RemoveDevice": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetParam"
+          ],
+          "properties": {
+            "SetParam": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetMacro"
+          ],
+          "properties": {
+            "SetMacro": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetAutomationPoint"
+          ],
+          "properties": {
+            "SetAutomationPoint": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveAutomationPoint"
+          ],
+          "properties": {
+            "RemoveAutomationPoint": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetSection"
+          ],
+          "properties": {
+            "SetSection": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveSection"
+          ],
+          "properties": {
+            "RemoveSection": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetScene"
+          ],
+          "properties": {
+            "SetScene": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveScene"
+          ],
+          "properties": {
+            "RemoveScene": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "Batch"
+          ],
+          "properties": {
+            "Batch": {
+              "type": "object"
+            }
+          }
+        }
+      ],
+      "description": "Domain reversible operation. oneOf must cover every Op variant: exactly one branch may match."
     }
   }
 }
