@@ -191,6 +191,42 @@ test result: ok. 66 passed; 0 failed            # 原 52 条 + 本线新增 14 �
 3. 像素是 `Rgb8Image` 手绘的（真 PNG 编码器），**不是**软件光栅化的产物
    ⇒ `[MUST-GATE-015]` 的"真正被渲染过"只有 CI 能判（这正是 `app-introspect` 那条线已有的能力）。
 
+### 3.3 **CI 上的实测数字（真实界面，run 37233109787）**
+
+> 这是本工作线的**核心证据**：同一个 `probe` 代码，执行面换成 `LivePort<MainWindow>`
+> 之后在真实界面上的读数。取自 `rust (workspace 全量)` 腿的 `test --workspace` 日志
+> （`tests/live_ui_mcp.rs`：`running 4 tests` → **`4 passed`**）。
+
+```text
+[live-port] surface=tier1-live-port 树 79 节点 (source=runtime)
+            查 `track-0-header` -> role=list-item label="轨道 Lead" (期望含 "Lead")
+[live-port] ui/screenshot: 1920x1080 maskDynamic=true regions=6 maskEffective=true
+            非黑 2054848/2073600 (99.1%) 颜色 2642 种 PNG 6222418 字节 (解码 6222418 字节)
+            指纹 91e06ec5d83fadd3 IHDR 1920x1080
+[live-port] 未遮罩帧: 指纹 a360802d81461bee 非黑 2073600 (100%) 颜色 2825 种; 与窗口直抓帧一致
+[live-port] ui/coverage: 注册表 132 / 运行时 79 / 注册表有而运行时无 53 / 运行时有而注册表无 0
+[live-port] ui/methods: service="yeban-ui-mcp" surface="tier1-live-port" mode="test" injectAllowed=true
+[live-port] 截图产物: target/ui-test-port/live-port-filled-project-unmasked-1920x1080.png
+[live-port] 遮罩帧产物: target/ui-test-port/live-port-filled-project-masked-1920x1080.png
+[live-port] 控件树产物: target/ui-test-port/live-port-control-tree.json
+```
+
+| 证据 | 数字 | 它排除了什么 |
+| :--- | :--- | :--- |
+| 控件树里的**工程数据** | `track-0-header.label == "轨道 Lead"`（`Lead` 是 `filled_project()` 的轨道名；`aria` 前缀 `轨道 ` 来自 `arrangement_view.slint`） | "控件树读的是演示常量" |
+| 族规模 == 工程规模 | `track-*-header=3` / `section-*-card=2` / `clip-*-header=2`（与 `view.tracks/sections/clips` 逐项相等） | "界面里还写着 `for … in 6`" |
+| 语义 ID 可寻址 | 79 个运行时节点；4 个**工程音符 ULID** 与 2 个**工程剪辑摆放 ULID** 逐个可查 | "`{ulid}` 段来自界面字面量" |
+| **AI 拿到的像素 == 窗口的像素** | 未遮罩帧指纹 **`a360802d81461bee`** == 同一轮 `[model-binding]` 判据里**直接** `port.window().capture()` 的指纹；也 == `app-binding-notes.md` §5.1 记录的同一工程/同一视图的 Tier-1 指纹 | "控制面自己渲染了第二份像素"（两条独立代码路径给出同一串字节） |
+| 遮罩真的改字节 | 遮罩帧 `91e06ec5d83fadd3` ≠ 未遮罩 `a360802d81461bee`；`maskEffective=true`、6 个动态区（与 `app-introspect-notes.md` §6.1 实测的"运行时动态区 6 个"**一致**） | "证据说遮了、发出去的图没遮" |
+| `[MUST-GATE-015]` 两条门槛 | 1920×1080（IHDR 也是 1920×1080）、非黑 **99.1%**（未遮罩 100%）、颜色 **2642** 种、PNG **6222418** 字节（stored deflate 定长） | "尺寸为零 / 全黑帧" |
+| `visible: false` 的过滤 | 注册表 132 / 运行时 79 / 缺失 **53** / **未登记 0** | "注册表有而运行时无"是**必然**的（`[ARCH-UI-005]`），且运行时里没有未登记 ID |
+| 事件注入这条路 | `ui/methods` 报 `mode="test"` / `injectAllowed=true`（判据 4 在同一轮里 200 通过了 `ui/dispatch_pointer_move`） | "测试模式也注不进去" |
+| 生产硬禁 | 判据 3 在同一轮里拿到 `403` + `kind == "forbidden-in-production"` | "真实执行面上能绕过 §12.3" |
+
+**artifact**：`ui-screenshots-workspace`（CI 上传 30 天）里新增
+`live-port-filled-project-unmasked-1920x1080.png`、`live-port-filled-project-masked-1920x1080.png`、
+`live-port-control-tree.json` —— 人眼可复核。
+
 ---
 
 ## 4. 两半的判据清单
@@ -305,7 +341,43 @@ bash /Users/crow/work/music/.live-port-harness/clippy.sh
 | 轮 | commit | run id | 结论 |
 | :--- | :--- | :--- | :--- |
 | 1 | `9ddac1a` | [37232856705](https://github.com/gradetwo/yeban/actions/runs/37232856705) | **failure**：`plan` / `checks` / `lockfile` / `deny` 全绿；`rust (workspace 全量)` 的 **clippy 死了 1 条**（本线的）：`crates/yeban-app/tests/../src/live_surface.rs:215` `error: method \`scene\` is never used`。⇒ `test --workspace` **没有跑到**本线的 4 条端到端判据（这一轮没有代码读数）。`rust (${{ matrix.crate }})` 按计划跳过（0s）。 |
-| 2 | `pending` | `pending` | `pending` |
+| 2 | `9403282` | [37233109787](https://github.com/gradetwo/yeban/actions/runs/37233109787) | **failure（唯一的红点不是本线的）**：`plan` / `checks` / `lockfile` / `deny` 绿；`rust (workspace 全量)` 的 **clippy 零告警**（本线第 1 轮那条死代码已删），`test --workspace` 跑到了本线的全部判据 —— **`tests/live_ui_mcp.rs`：`running 4 tests` → `4 passed`（10.07s）**，读数见 §3.3。红的唯一一条是 **`crates/yeban-engine/tests/rt_zero_alloc.rs:121`**：`[MUST-GATE-001] 10_000 quanta: allocations=9 deallocations=3` ⇒ `left: 9 / right: 0`。该文件由 **origin/main 的 `384ea92`** 引入（不是本线；`git diff --name-only 384ea92 HEAD` 里没有 `crates/yeban-engine/**`）。主分支自己那一轮（run 37232665652 @ `384ea92`）走的是 **per-crate 矩阵腿**、该判据**过**；本线这一轮因为是全量腿（`Cargo.lock` 命中 `ROOT_TRIGGERS`）而把它放进了 `--workspace` 的供给里，于是**同一个测试二进制给出了不同结果** —— 见 §6.2（这是给集成者的 needs，不是本线的红点）。 |
+| 3 | `f43d90e` | `pending` | `pending`（rebase 到 `afb6204` 后重跑：`container` + `lock-advisory` 已落地；`384ea92..afb6204` **未改** `Cargo.lock` / 许可清单，因此本线的锁与清单**无冲突**、无需重新生成） |
+
+### 6.2 第 2 轮的读数：本线全绿，唯一的红点在 **main 自己**的新判据上
+
+本线这一轮的**全部**读数都是绿的：
+
+```text
+clippy --workspace --all-targets -- -D warnings     # 零告警（第 1 轮那条死代码已删）
+Running tests/live_ui_mcp.rs (target/debug/deps/live_ui_mcp-20496409d54ffd09)
+running 4 tests
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.07s
+```
+
+红色的唯一一条**不在本线的 diff 里**：
+
+```text
+Running tests/rt_zero_alloc.rs (target/debug/deps/rt_zero_alloc-c32d96ca0f652cd9)
+test real_time_path_allocates_and_frees_nothing ... FAILED
+[MUST-GATE-001] 10_000 quanta: allocations=9 deallocations=3
+panicked at crates/yeban-engine/tests/rt_zero_alloc.rs:121:5: 实时回调窗口内发生了 9 次堆分配
+```
+
+判定"是不是我的错"的方法（与 `app-introspect-notes.md` §6 的读法相同）：
+
+| 事实 | 出处 |
+| :--- | :--- |
+| 该文件由 origin/main 的 `384ea92` 引入，不是本线 | `git log --oneline -1 -- crates/yeban-engine/tests/rt_zero_alloc.rs` → `384ea92 test(engine): 补上 MUST-GATE-001 缺失的运行期断言` |
+| 本线的提交**没有**碰 `crates/yeban-engine/**` | `git diff --name-only 384ea92 HEAD` → 只有本线那 10 个文件 |
+| main 自己那一轮是**矩阵腿**（该判据单独跑）⇒ 过 | run 37232665652 @ `384ea92` = success |
+| 本线这一轮是**全量腿**（`Cargo.lock` 命中 `ROOT_TRIGGERS`）⇒ 同一个测试二进制报 9 次分配 | 本 run 的 `test --workspace` |
+
+⇒ 结论：**同一个测试二进制在两条腿里给出不同结果**，这是一个与"谁改了什么"无关的
+供给/环境差异（或该计数型全局分配器判据在负载下不稳）。**它归 engine 线 / 集成者**，
+本线不改别的 crate（`AGENTS.md` §2 与工作线纪律）。
+本线在 §8 把它登记成 needs（带两个 run id），并在第 3 轮 rebase 到 `afb6204` 后重跑 ——
+若它不再红，说明"本线全绿 + 该红点不可复现"；若它仍红，那也已经有充分证据说它与本线无关。
 
 ### 6.1 第 1 轮的两条读数（都值得写下来）
 
@@ -354,6 +426,8 @@ bash /Users/crow/work/music/.live-port-harness/clippy.sh
    而且"控制面与 GUI 事件循环如何共用线程"需要一个显式的设计裁决。
 2. **【人类裁决】`docs/ledger/dependency-licenses.md` 又被本线重新生成**
    （只有 `Cargo.lock` 的 SHA-256 一行变化）。多线并行时这是冲突热点。
+   （第 3 轮 rebase 到 `afb6204` 之后**无冲突**：`384ea92..afb6204` 没有改 `Cargo.lock`，
+   因此本线的锁与清单原样有效，已由 `run-gates.sh light` 的 `license_inventory.py --check` 复核。）
 3. **【人类裁决】`ControlPlane` 的公开构造点是否要收窄**：目前
    `read_only` / `interactive_for_tests` / `with_scopes` 三个都是公开的。
    `interactive_for_tests` 的名字是刻意的（`ui:inject` 在生产模式硬禁），
@@ -365,7 +439,16 @@ bash /Users/crow/work/music/.live-port-harness/clippy.sh
    标为**已完成**。
 5. **【集成者】`docs/ledger/ui-mcp-notes.md` §8 needs-3 可以关掉**：那两行已经落地在
    `crates/yeban-app/src/live_surface.rs`（并且是**唯一**一处）。
-6. **【人类裁决】`--test-threads=1` 下的平台约束**：4 条 CI 判据各装一次平台，
+6. **【集成者 / engine 线】`[MUST-GATE-001]` 的计数型全局分配器判据在**全量腿**下报红**：
+   `crates/yeban-engine/tests/rt_zero_alloc.rs`（origin/main `384ea92` 新增）在
+   run [37233109787](https://github.com/gradetwo/yeban/actions/runs/37233109787) 的
+   `test --workspace --all-targets` 里实测 `allocations=9 deallocations=3`
+   （`rt_zero_alloc.rs:121` ⇒ `left: 9 / right: 0`），而同一判据在 main 自己的
+   per-crate 矩阵腿（run 37232665652 @ `384ea92`）里是**过**的。触发本线这一轮走全量腿的
+   原因是本线的 `Cargo.lock` 变化命中 `scripts/dev/changed-crates.py` 的 `ROOT_TRIGGERS`。
+   两个 run id 都在这里，便于复核"同一个测试二进制在两条腿里结果不同"。
+   本线**不改** `crates/yeban-engine/**`（别的 crate 不是本线的地盘）。
+7. **【人类裁决】`--test-threads=1` 下的平台约束**：4 条 CI 判据各装一次平台，
    这是 libtest 默认（一测一线程）下的正确用法。要不要在 CI 里显式钉住默认线程数，
    或把这条约束变成一条判据（例如检测"同线程第二次 `set_platform`"并给出可读的错误），
    需要一次取舍（既有债务，本线只登记）。
