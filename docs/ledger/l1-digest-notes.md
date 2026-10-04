@@ -414,6 +414,17 @@ clippy-driver --edition 2024 --test -D warnings -D clippy::all -D clippy::dbg_ma
 **这一轮没有证明的**：任何**跨架构**读数 —— `MUST-GATE-003` 需要两份不同 `target_triple`
 的真实收据，那要等 §11 的 `arm` 腿落地。
 
+### 第 2 轮（文档提交 `6982828`）—— run [37243008800](https://github.com/gradetwo/yeban/actions/runs/37243008800)：**全绿 ✅**
+
+纯 `docs/**` 变更：`plan` ✅5s / `lockfile` ✅17s / `deny` ✅40s / `checks` ✅38s；
+`rust (...)` / `windows (...)` 三条腿被计划器正确 **skipped**（没有受影响 crate）。
+`checks` 通过即证明本文件（`docs/ledger/l1-digest-notes.md`）没有引入坏链接、且 fmt 仍然干净。
+
+> **记账纪律**：本文件随文档提交一起推送，而每次推送都会触发新的 run ——
+> 若要求"把每一次判决都回写进本文件"，就会变成"回写→推送→新 run→再回写"的无限循环。
+> 因此本线在第 2 轮之后**停止回写**：第 2 轮之后的那次推送（第 3 轮，仍是纯文档记账）
+> 的判决由本线的最终报告给出，不回写到这里。
+
 ---
 
 ## 13. 修改文件的绝对路径清单
