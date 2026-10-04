@@ -1,0 +1,221 @@
+// 夜半 (Yeban) — 多轨调音台与 VU 电平表 (底部控制台 Tab 2)
+//
+// 规范来源 (Normative):
+//   - 规范 §5.2: 调音台通道条 (Pro Channel Strip & Metering)
+//   - [UI-TEST-001] §12.2: `track-{track_index}-fader` 是**推子**的语义 ID 约定
+//   - [UI-MCP-002] §12.5: VU 电平表是每帧跳变的高频刷新区域, 无头截图比对前必须被遮罩
+//   - [ARCH-UI-002]: 电平必须经 SPSC 无锁通道解耦, UI 侧不许反压音频线程 ——
+//     本骨架**没有**任何通道: 电平是静态演示值, 接真实电平表要等 `yeban-engine`。
+//
+// 数据流方向: 只读。levels 是 0.0–1.0 的归一化推子位置, 分贝换算归模型层。
+
+import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+
+export component MixerConsole inherits Rectangle {
+    in property <[string]> tracks: ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
+    in property <[float]> levels: [0.72, 0.55, 0.48, 0.62, 0.35, 0.40];
+    in property <[string]> db-labels: ["-3.2", "-6.0", "-8.4", "-4.8", "-12.0", "-10.6"];
+    in property <[float]> master-level: [0.80];
+    in property <string> master-db: "-1.2";
+
+    background: Tokens.bg-void;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "mixer-console";
+    accessible-label: "多轨调音台总控";
+
+    // ---------------------------------------------------------------- 通道条
+    for track_index in 6 : Rectangle {
+        x: Tokens.space-4 + 104px * track_index;
+        y: Tokens.space-4;
+        width: 96px;
+        height: parent.height - 16px;
+        background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+        accessible-role: groupbox;
+        accessible-id: "track-" + track_index + "-channel-strip";
+        accessible-label: "通道条 " + root.tracks[track_index];
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: 20px;
+            text: root.tracks[track_index];
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+
+        UiMonoText {
+            x: Tokens.space-3;
+            y: 22px;
+            width: parent.width - 8px;
+            height: 16px;
+            text: "PAN C";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        // VU 电平表 (高频刷新 → 遮罩) [UI-MCP-002]
+        Rectangle {
+            x: Tokens.space-3;
+            y: 46px;
+            width: 10px;
+            height: 120px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: progress-indicator;
+            accessible-id: "track-" + track_index + "-meter";
+            accessible-label: "轨道 " + root.tracks[track_index] + " 电平表";
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 1;
+            accessible-value-step: 0.01;
+            accessible-value: root.db-labels[track_index];
+
+            Rectangle {
+                x: 1px;
+                y: parent.height - 4px - 116px * root.levels[track_index];
+                width: parent.width - 2px;
+                height: 116px * root.levels[track_index];
+                background: Tokens.ok-green;
+                border-radius: Tokens.radius-sm;
+            }
+        }
+
+        // 推子导轨
+        Rectangle {
+            x: 30px;
+            y: 46px;
+            width: 6px;
+            height: 120px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+        }
+
+        // 推子帽 —— [UI-TEST-001] `track-{track_index}-fader`
+        Rectangle {
+            x: 22px;
+            y: 46px + 104px * (1.0 - root.levels[track_index]);
+            width: 22px;
+            height: 16px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            accessible-role: slider;
+            accessible-id: "track-" + track_index + "-fader";
+            accessible-label: "轨道 " + root.tracks[track_index] + " 推子";
+            accessible-orientation: vertical;
+            accessible-value-minimum: -60;
+            accessible-value-maximum: 6;
+            accessible-value-step: 0.1;
+            accessible-value: root.db-labels[track_index] + " dB";
+        }
+
+        UiMonoText {
+            x: Tokens.space-3;
+            y: 172px;
+            width: parent.width - 8px;
+            height: 16px;
+            text: root.db-labels[track_index] + " dB";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+    }
+
+    // ---------------------------------------------------------------- 主控通道条
+    Rectangle {
+        x: root.width - 112px;
+        y: Tokens.space-4;
+        width: 104px;
+        height: parent.height - 16px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+        accessible-role: groupbox;
+        accessible-id: "mixer-master-strip";
+        accessible-label: "主控通道条";
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: 20px;
+            text: "MASTER";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-sm;
+        }
+
+        Rectangle {
+            x: Tokens.space-3;
+            y: 46px;
+            width: 12px;
+            height: 120px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: progress-indicator;
+            accessible-id: "mixer-master-meter";
+            accessible-label: "主控电平表";
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 1;
+            accessible-value-step: 0.01;
+            accessible-value: "0.80";
+
+            Rectangle {
+                x: 1px;
+                y: parent.height - 4px - 116px * root.master-level[0];
+                width: parent.width - 2px;
+                height: 116px * root.master-level[0];
+                background: Tokens.warn-amber;
+                border-radius: Tokens.radius-sm;
+            }
+        }
+
+        Rectangle {
+            x: 34px;
+            y: 46px;
+            width: 6px;
+            height: 120px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+        }
+
+        Rectangle {
+            x: 26px;
+            y: 46px + 104px * (1.0 - root.master-level[0]);
+            width: 22px;
+            height: 16px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.gold;
+            accessible-role: slider;
+            accessible-id: "mixer-master-fader";
+            accessible-label: "主控推子";
+            accessible-orientation: vertical;
+            accessible-value-minimum: -60;
+            accessible-value-maximum: 6;
+            accessible-value-step: 0.1;
+            accessible-value: root.master-db + " dB";
+        }
+
+        UiMonoText {
+            x: Tokens.space-3;
+            y: 172px;
+            width: parent.width - 8px;
+            height: 16px;
+            text: root.master-db + " dB";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+    }
+}

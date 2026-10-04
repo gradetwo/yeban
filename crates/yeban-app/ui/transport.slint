@@ -1,0 +1,444 @@
+// 夜半 (Yeban) — 顶栏走带控制条 (48px)
+//
+// 规范来源 (Normative):
+//   - [UI-GRID-001] UI/UX 规范 §1.1: TOP CONTROL BAR (48px) = 走带 / BPM /
+//     [Branch: main ▼] / [Commit ↺ ↻] / [🟣 AI提案 (1)] / 视图切换
+//   - [UI-GRID-002] §1.2: F5/F6 与视图切换按钮的双通道
+//   - [UI-TEST-001] §12.2: 语义 Element ID —— 本文件用 `transport-…` 族
+//   - [UI-A11Y-003] §7.3: 无障碍树暴露 (accessible-role / -label / -value)
+//
+// 架构约束 [ARCH-UI-002]: UI 线程绝不直接读音频实时上下文 —— 实时线程只往无锁 Meter SPSC
+// 压 60Hz 电平, UI 侧批量出队更新 Slint Properties。本文件出现的所有数值都是**演示数据**,
+// 没有任何一处读取真实引擎状态。真实绑定要等 `yeban-engine` 的 `EngineSnapshot` 落地 ——
+// 见 docs/ledger/ui-shell-notes.md 的 pending 清单。
+//
+// 数据流方向 (与 app.slint 的契约): 子组件只"读" (in property) 和"通知" (callback),
+// 绝不写自己的状态。唯一写者是 app.slint 的 MainWindow —— 这样不会出现
+// 「外部 binding + 组件内部赋值」的冲突, 也不需要双向绑定。
+//
+// BPM 为什么是 string 而不是 float: 这是**显示值**。数字→字符串的格式化 (小数位、
+// 千分位、本地化) 属于模型层的职责; UI 层只画它拿到的字符串。避免在 .slint 里做
+// 未核验过的 float→string 隐式转换。
+
+import { Tokens, UiText, UiMonoText } from "tokens.slint";
+
+export component Transport inherits Rectangle {
+    in property <bool> playing: false;
+    in property <string> timecode: "001.01.000";
+    in property <string> bpm-display: "120.00";
+    in property <string> branch-name: "main";
+    in property <bool> arrangement-view: true;
+    in property <bool> ai-drawer-open: false;
+
+    callback toggle-play();
+    callback toggle-view();
+    callback show-session();
+    callback show-arrangement();
+    callback toggle-ai-drawer();
+
+    min-height: Tokens.top-bar-height;
+    max-height: Tokens.top-bar-height;
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.line;
+
+    // ---------------------------------------------------------------- 走带
+    // 播放 / 暂停 — [UI-A11Y-001] Space
+    Rectangle {
+        x: Tokens.space-4;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: play_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-play-button";
+        accessible-label: "播放 / 暂停 (Space)";
+        accessible-checkable: true;
+        accessible-checked: root.playing;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.playing ? "‖" : "▶";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xl;
+            horizontal-alignment: center;
+        }
+
+        play_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.toggle-play(); }
+        }
+    }
+
+    // 停止 — 回到起始点
+    Rectangle {
+        x: 44px;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: stop_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-stop-button";
+        accessible-label: "停止 (回到起始点)";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "■";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-lg;
+            horizontal-alignment: center;
+        }
+
+        stop_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+    }
+
+    // 录音 — 规范未定义快捷键, 只登记控件与 ID
+    Rectangle {
+        x: 80px;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: rec_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-record-button";
+        accessible-label: "录音";
+        accessible-checkable: true;
+        accessible-checked: false;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "●";
+            color: Tokens.record-red;
+            font-size: Tokens.font-size-lg;
+            horizontal-alignment: center;
+        }
+
+        rec_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+    }
+
+    // ---------------------------------------------------------------- BPM
+    // 参数敲入类控件: 规范 §7.2 明文要求这类控件挂 is_composing 防护。
+    // 这里先用 role=text-input 占位; 真正的 Slint TextInput 与数值校验随模型线落地。
+    Rectangle {
+        x: 120px;
+        y: Tokens.space-4;
+        width: 96px;
+        height: 32px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line-strong;
+        accessible-role: text-input;
+        accessible-id: "transport-bpm-field";
+        accessible-label: "速度 BPM";
+        accessible-value: root.bpm-display;
+        accessible-read-only: false;
+
+        UiMonoText {
+            x: Tokens.space-4;
+            y: 0;
+            width: 44px;
+            height: parent.height;
+            text: "BPM";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        UiMonoText {
+            x: 48px;
+            y: 0;
+            width: 40px;
+            height: parent.height;
+            text: root.bpm-display;
+            color: Tokens.gold;
+            font-size: Tokens.font-size-lg;
+            horizontal-alignment: right;
+        }
+    }
+
+    // 时间码液晶屏 — [UI-MCP-002] 高频刷新区域, 无头截图比对前必须被动态遮罩
+    Rectangle {
+        x: 224px;
+        y: Tokens.space-4;
+        width: 128px;
+        height: 32px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line-strong;
+        accessible-role: text;
+        accessible-id: "transport-timecode";
+        accessible-label: "主时间码";
+
+        UiMonoText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: root.timecode;
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-lg;
+        }
+    }
+
+    // 竖分隔线 (纯装饰, 不挂无障碍属性)
+    Rectangle {
+        x: 360px;
+        y: Tokens.space-5;
+        width: 1px;
+        height: 24px;
+        background: Tokens.line-strong;
+    }
+
+    // ------------------------------------------------- 分支 / 提交 / 回滚
+    Rectangle {
+        x: 372px;
+        y: Tokens.space-4;
+        width: 128px;
+        height: 32px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: combobox;
+        accessible-id: "transport-branch-button";
+        accessible-label: "当前分支";
+        accessible-value: root.branch-name;
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 24px;
+            height: parent.height;
+            text: "分支: " + root.branch-name;
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-md;
+        }
+    }
+
+    // Commit — 规范 ASCII 图的 ↺
+    Rectangle {
+        x: 508px;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: commit_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-commit-button";
+        accessible-label: "提交当前编辑为一个 Commit";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "↺";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-lg;
+            horizontal-alignment: center;
+        }
+
+        commit_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+    }
+
+    // 回滚 — 规范 ASCII 图的 ↻
+    Rectangle {
+        x: 544px;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: revert_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-revert-button";
+        accessible-label: "回滚到上一个 Commit";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "↻";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-lg;
+            horizontal-alignment: center;
+        }
+
+        revert_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+    }
+
+    // ------------------------------------------------- AI 提案徽章 (§10 时光机入口)
+    Rectangle {
+        x: 588px;
+        y: Tokens.space-4;
+        width: 120px;
+        height: 32px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.ai-suggestion;
+        accessible-role: button;
+        accessible-id: "transport-ai-proposal-badge";
+        accessible-label: "AI 编曲提案待审查";
+        accessible-value: "1";
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "AI提案 (待审查)";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-md;
+        }
+    }
+
+    // ------------------------------------------------- 视图切换 [UI-GRID-002]
+    Rectangle {
+        x: root.width - 304px;
+        y: Tokens.space-4;
+        width: 92px;
+        height: 32px;
+        background: !root.arrangement-view ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: tab;
+        accessible-id: "transport-view-session-button";
+        accessible-label: "Session 触发矩阵 (F5)";
+        accessible-item-selected: !root.arrangement-view;
+        accessible-item-selectable: true;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "Session";
+            color: !root.arrangement-view ? Tokens.gold-bright : Tokens.ink-2;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+
+        view_session_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.show-session(); }
+        }
+    }
+
+    Rectangle {
+        x: root.width - 208px;
+        y: Tokens.space-4;
+        width: 104px;
+        height: 32px;
+        background: root.arrangement-view ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: tab;
+        accessible-id: "transport-view-arrangement-button";
+        accessible-label: "Arrangement 时间轴 (F6)";
+        accessible-item-selected: root.arrangement-view;
+        accessible-item-selectable: true;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "Arrangement";
+            color: root.arrangement-view ? Tokens.gold-bright : Tokens.ink-2;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+
+        view_arr_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.show-arrangement(); }
+        }
+    }
+
+    // Tab 键在画布聚焦时切换视图 (键盘映射住在 src/input.rs, 这里只是可点等价物)
+    Rectangle {
+        x: root.width - 96px;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: toggle_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-view-toggle-button";
+        accessible-label: "切换 Session / Arrangement (Tab, 仅画布聚焦时)";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "⇄";
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-lg;
+            horizontal-alignment: center;
+        }
+
+        toggle_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.toggle-view(); }
+        }
+    }
+
+    // ------------------------------------------------- 右侧 AI 协作栏抽屉开关
+    Rectangle {
+        x: root.width - 56px;
+        y: Tokens.space-4;
+        width: 32px;
+        height: 32px;
+        background: drawer_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-ai-drawer-button";
+        accessible-label: "AI 协作栏抽屉 (Cmd/Ctrl + 反斜杠)";
+        accessible-expandable: true;
+        accessible-expanded: root.ai-drawer-open;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "AI";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+
+        drawer_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.toggle-ai-drawer(); }
+        }
+    }
+}

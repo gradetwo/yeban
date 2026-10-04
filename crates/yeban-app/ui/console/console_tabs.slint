@@ -1,0 +1,131 @@
+// 夜半 (Yeban) — 底部控制台 Tab 导轨 (底部控制台占弹性区 35–45%)
+//
+// 规范来源 (Normative):
+//   - [UI-GRID-001] UI/UX 规范 §1.1: BOTTOM CONSOLE (动态伸缩, 占比 35% - 45%) ——
+//     [Tab 1: 虚拟化钢琴卷帘] [Tab 2: 调音台总控] [Tab 3: 设备效果链]
+//   - [UI-TEST-001] §12.2: **控制台标签**的语义 ID 约定是 `tab-{tab_name}-button`。
+//     这个族由元素注册表判据强制覆盖 (src/elements.rs 的
+//     `console_tab_buttons_cover_every_declared_tab`), 所以新增标签必须同时改
+//     `root.tab-names`, 否则测试变红。
+//
+// 数据流方向: `active-tab` 是 in (只读); 点击只发回调, 由 MainWindow 决定新值。
+
+import { Tokens, UiText } from "../tokens.slint";
+import { PianoRoll } from "piano_roll.slint";
+import { MixerConsole } from "mixer_console.slint";
+import { DeviceRack } from "device_rack.slint";
+
+export component ConsoleTabs inherits Rectangle {
+    in property <int> active-tab: 0;
+    // tab_name 就是语义 ID 里的 {tab_name}, 只允许小写与连字符
+    in property <[string]> tab-names: ["piano-roll", "mixer", "devices"];
+    in property <[string]> tab-labels: ["钢琴卷帘", "调音台", "设备效果链"];
+
+    callback select-piano-roll();
+    callback select-mixer();
+    callback select-devices();
+
+    min-height: 32px;
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.line;
+    clip: true;
+
+    accessible-role: tab-list;
+    accessible-id: "console-tab-rail";
+    accessible-label: "底部控制台标签导轨";
+
+    // ---------------------------------------------------------------- Tab 导轨
+    for tab_index in 3 : Rectangle {
+        x: Tokens.space-4 + 112px * tab_index;
+        y: Tokens.space-2;
+        width: 104px;
+        height: 20px;
+        background: root.active-tab == tab_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-sm;
+        clip: true;
+        accessible-role: tab;
+        accessible-id: "tab-" + root.tab-names[tab_index] + "-button";
+        accessible-label: root.tab-labels[tab_index];
+        accessible-item-index: tab_index;
+        accessible-item-count: 3;
+        accessible-item-selectable: true;
+        accessible-item-selected: root.active-tab == tab_index;
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.tab-labels[tab_index];
+            color: root.active-tab == tab_index ? Tokens.gold-bright : Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                if tab_index == 0 {
+                    root.select-piano-roll();
+                } else if tab_index == 1 {
+                    root.select-mixer();
+                } else {
+                    root.select-devices();
+                }
+            }
+        }
+    }
+
+    // 最大化 / 还原底部控制台 [UI-A11Y-001] Cmd/Ctrl + Alt + M 的可点等价物
+    Rectangle {
+        x: root.width - 28px;
+        y: Tokens.space-2;
+        width: 20px;
+        height: 20px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-sm;
+        accessible-role: button;
+        accessible-id: "console-maximize-button";
+        accessible-label: "最大化 / 还原底部控制台";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "⤢";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+        }
+    }
+
+    // ---------------------------------------------------------------- Tab 内容
+    // 三个页面同尺寸叠放, 靠 visible 切换 (父级不是布局, 所以隐藏不影响排版)。
+    PianoRoll {
+        x: 0;
+        y: 28px;
+        width: parent.width;
+        height: root.height - 28px;
+        visible: root.active-tab == 0;
+    }
+
+    MixerConsole {
+        x: 0;
+        y: 28px;
+        width: parent.width;
+        height: root.height - 28px;
+        visible: root.active-tab == 1;
+    }
+
+    DeviceRack {
+        x: 0;
+        y: 28px;
+        width: parent.width;
+        height: root.height - 28px;
+        visible: root.active-tab == 2;
+    }
+}

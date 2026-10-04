@@ -1,0 +1,279 @@
+// 夜半 (Yeban) — Arrangement View: 轨道包头 + 绝对时间轴
+//
+// 规范来源 (Normative):
+//   - 规范 §2.1: 双视图是同构投射, 编辑都归约成原子 Op (本骨架尚未接 Op 日志)
+//   - 规范 §4.2: 标尺与循环选区 (True Audio Loop Brace)
+//   - 规范 §4.3: 章节卡片层 (Song Form & Section Track)
+//   - [UI-TEST-001] §12.2: 语义 Element ID —— `clip-{ulid}-header` 与 `track-{i}-header`
+//     就落在这个文件; `track-{i}-fader` 归 console/mixer_console.slint
+//   - [UI-MCP-002] §12.5: 走带光标属高频刷新区域, 无头截图比对前必须动态遮罩
+//
+// 静态骨架 + 演示数据: 没有波形金字塔, 没有 R-Tree 视口裁剪, 没有拖拽/吸附。
+// 那些是 [UI-NOTE-001..005] 的范围, 需要 `yeban-render` 与 `yeban-model` 先落地。
+
+import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+
+export component ArrangementView inherits Rectangle {
+    // 演示用 ULID —— 必须与 crates/yeban-app/src/scene.rs 的 DEMO_CLIP_ULIDS 逐字一致。
+    // 这个"两处写同一份常量"的重复是**已知的临时状态**, 见 notes 的 pending:
+    // 模型线落地后改成 Rust 侧 ModelRc 单向注入, 这里只留空数组。
+    in property <[string]> clip-ulids: [
+        "01J8Z5Q0R7K3M9X2V4B6N8P1F9",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1G6",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1H3"
+    ];
+    in property <[string]> tracks: ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
+    in property <[string]> sections: ["Intro", "Verse", "Chorus", "Outro"];
+
+    background: Tokens.bg-void;
+    clip: true;
+
+    accessible-role: main;
+    accessible-id: "workspace-arrangement-canvas";
+    accessible-label: "Arrangement 线性编曲时间轴";
+
+    // ---------------------------------------------------------------- 章节卡片层 (§4.3)
+    for section_index in 4 : Rectangle {
+        x: 168px + 160px * section_index;
+        y: 0;
+        width: 156px;
+        height: 20px;
+        background: section_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel;
+        border-radius: Tokens.radius-sm;
+        clip: true;
+        accessible-role: list-item;
+        accessible-id: "section-" + section_index + "-card";
+        accessible-label: "章节 " + root.sections[section_index];
+        accessible-item-index: section_index;
+        accessible-item-count: 4;
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: root.sections[section_index];
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+    }
+
+    // ---------------------------------------------------------------- 小节 / 拍标尺 (§4.2)
+    Rectangle {
+        x: 168px;
+        y: 20px;
+        width: parent.width - 168px;
+        height: 22px;
+        background: Tokens.bg-panel;
+        accessible-role: text;
+        accessible-id: "arrangement-ruler";
+        accessible-label: "小节与拍标尺";
+
+        for bar_index in 16 : Rectangle {
+            x: 120px * bar_index;
+            y: 0;
+            width: 1px;
+            height: parent.height;
+            background: bar_index.mod(4) == 0 ? Tokens.line-strong : Tokens.line;
+        }
+
+        // 循环选区把手 (True Audio Loop Brace) —— 只画骨架, 拖拽未实现
+        Rectangle {
+            x: 120px * 2;
+            y: 0;
+            width: 120px * 4;
+            height: parent.height;
+            background: Tokens.bg-raised;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            accessible-role: slider;
+            accessible-id: "arrangement-loop-brace";
+            accessible-label: "循环选区";
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 9999;
+            accessible-value-step: 1;
+            accessible-value: "2 - 6";
+        }
+    }
+
+    // ---------------------------------------------------------------- 轨道包头列
+    for track_index in 6 : Rectangle {
+        x: 0;
+        y: 42px + 56px * track_index;
+        width: 168px;
+        height: 54px;
+        background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+        accessible-role: list-item;
+        accessible-id: "track-" + track_index + "-header";
+        accessible-label: "轨道 " + root.tracks[track_index];
+        accessible-item-index: track_index;
+        accessible-item-count: 6;
+        accessible-item-selectable: true;
+        accessible-item-selected: false;
+
+        UiText {
+            x: Tokens.space-4;
+            y: Tokens.space-2;
+            width: 96px;
+            height: 18px;
+            text: root.tracks[track_index];
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-md;
+            overflow: elide;
+        }
+
+        // 静音
+        Rectangle {
+            x: Tokens.space-4;
+            y: 26px;
+            width: 22px;
+            height: 18px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-mute-button";
+            accessible-label: "轨道 " + root.tracks[track_index] + " 静音";
+            accessible-checkable: true;
+            accessible-checked: false;
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "M";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
+        // 独奏
+        Rectangle {
+            x: 34px;
+            y: 26px;
+            width: 22px;
+            height: 18px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-solo-button";
+            accessible-label: "轨道 " + root.tracks[track_index] + " 独奏";
+            accessible-checkable: true;
+            accessible-checked: false;
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "S";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
+        UiMonoText {
+            x: 120px;
+            y: 26px;
+            width: 40px;
+            height: 18px;
+            text: "-6.0";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: right;
+        }
+    }
+
+    // ---------------------------------------------------------------- 时间轴车道 + 剪辑
+    for lane_index in 6 : Rectangle {
+        x: 168px;
+        y: 42px + 56px * lane_index;
+        width: parent.width - 168px;
+        height: 54px;
+        background: lane_index.mod(2) == 0 ? Tokens.bg-shell : Tokens.bg-void;
+        border-width: 1px;
+        border-color: Tokens.line;
+    }
+
+    for clip_index in 3 : Rectangle {
+        x: 168px + 24px + 140px * clip_index;
+        y: 42px + 56px * clip_index + 4px;
+        width: 240px;
+        height: 46px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        // 剪辑包头 —— [UI-TEST-001] `clip-{ulid}-header`
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: 18px;
+            background: Tokens.bg-raised;
+            accessible-role: list-item;
+            accessible-id: "clip-" + root.clip-ulids[clip_index] + "-header";
+            accessible-label: "剪辑 " + root.tracks[clip_index] + " 包头";
+            accessible-item-index: clip_index;
+            accessible-item-count: 3;
+            accessible-item-selectable: true;
+            accessible-item-selected: false;
+
+            UiMonoText {
+                x: Tokens.space-3;
+                y: 0;
+                width: parent.width - 8px;
+                height: parent.height;
+                text: root.clip-ulids[clip_index];
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+        }
+
+        // 波形占位块 (真实波形金字塔等 yeban-render)
+        Rectangle {
+            x: Tokens.space-3;
+            y: 24px;
+            width: parent.width - 12px;
+            height: 16px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-sm;
+        }
+    }
+
+    // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
+    // 高频刷新区域: 无头截图比对前必须按这个 ID 的包围盒置黑。
+    Rectangle {
+        x: 168px + 120px * 3;
+        y: 20px;
+        width: 1px;
+        height: parent.height - 20px;
+        background: Tokens.gold-bright;
+        accessible-role: slider;
+        accessible-id: "arrangement-playhead";
+        accessible-label: "走带光标";
+        accessible-value-minimum: 0;
+        accessible-value-maximum: 9999;
+        accessible-value-step: 1;
+        accessible-value: "3";
+    }
+}

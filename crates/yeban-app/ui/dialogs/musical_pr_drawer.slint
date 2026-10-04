@@ -1,0 +1,319 @@
+// 夜半 (Yeban) — AI 编曲提案审核抽屉 (Musical PR Drawer)
+//
+// 规范来源 (Normative):
+//   - 规范 §9.1: AI 建议层交互 (45% 半透明 + 虚线霓虹紫描边 + 置信度徽章)
+//   - 规范 §10: 编曲时光机与 AI 提案审查 (Musical PR)
+//   - [UI-A11Y-004] / 规范 §10.2: 视觉 Diff **严禁只靠红绿色相**, 必须叠加几何/纹理冗余编码 ——
+//     新增=实心+`+` 徽章; 删除=斜线纹理+贯穿删除线; 微调=虚线描边+方向箭头。
+//     本文件用**矩形图元**而不是特殊 border-style 来表达这些纹理 (Slint 1.18 的
+//     `border-style` 只有 solid, 虚线要用图元拼)。
+//   - [UI-TEST-001] §12.2: 语义 Element ID
+//
+// 静态骨架 + 演示数据: 没有真实 AI 提案数据源, 没有采纳/放弃的 Ops 归约。
+// `Shift+Enter` 采纳 / `Esc` 放弃的键盘路径住在 src/input.rs, 这里只提供可点等价物。
+
+import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+
+export component MusicalPrDrawer inherits Rectangle {
+    in property <int> proposal-count: 3;
+    in property <[string]> proposal-labels: [
+        "Verse 第 3 小节加入上行贝斯线",
+        "Chorus 第 2 拍删除重叠和弦音",
+        "Drop 段微调铺底音高 -2 半音"
+    ];
+    in property <[string]> proposal-kinds: ["新增", "删除", "微调"];
+    in property <[string]> confidences: ["94%", "88%", "76%"];
+
+    callback accept();
+    callback reject();
+    callback close();
+
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.ai-suggestion;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "musical-pr-drawer";
+    accessible-label: "AI 编曲提案审核抽屉";
+
+    // ---------------------------------------------------------------- 抽屉头
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 36px;
+        background: Tokens.bg-panel-alt;
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 76px;
+            height: parent.height;
+            text: "AI 编曲提案 (" + root.proposal-count + ")";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-lg;
+        }
+
+        Rectangle {
+            x: parent.width - 28px;
+            y: 8px;
+            width: 20px;
+            height: 20px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "musical-pr-close-button";
+            accessible-label: "关闭提案抽屉";
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "×";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-lg;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.close(); }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- 差异语义图例
+    // [UI-A11Y-004] 色相 + 几何双编码, 每一条都在图例里显式展示。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 44px;
+        width: parent.width - 8px;
+        height: 68px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+
+        accessible-role: text;
+        accessible-id: "musical-pr-diff-legend";
+        accessible-label: "视觉差异图例: 新增 / 删除 / 微调";
+
+        // 新增: 实心亮绿 + 右上角 `+`
+        Rectangle {
+            x: Tokens.space-4;
+            y: Tokens.space-4;
+            width: 56px;
+            height: 16px;
+            background: Tokens.diff-added;
+            border-radius: Tokens.radius-sm;
+        }
+        UiText {
+            x: 64px;
+            y: Tokens.space-4;
+            width: 80px;
+            height: 16px;
+            text: "+ 新增";
+            color: Tokens.diff-added;
+            font-size: Tokens.font-size-xs;
+        }
+
+        // 删除: 粉红底 + 45° 斜线纹理 + 贯穿删除线
+        Rectangle {
+            x: Tokens.space-4;
+            y: 28px;
+            width: 56px;
+            height: 16px;
+            background: Tokens.diff-removed;
+            border-radius: Tokens.radius-sm;
+        }
+        for hatch_index in 5 : Rectangle {
+            x: Tokens.space-4 + 11px * hatch_index;
+            y: 28px;
+            width: 1px;
+            height: 16px;
+            background: Tokens.bg-void;
+        }
+        Rectangle {
+            x: Tokens.space-4;
+            y: 35px;
+            width: 56px;
+            height: 1px;
+            background: Tokens.bg-void;
+        }
+        UiText {
+            x: 64px;
+            y: 28px;
+            width: 80px;
+            height: 16px;
+            text: "删除";
+            color: Tokens.diff-removed;
+            font-size: Tokens.font-size-xs;
+        }
+
+        // 微调: 琥珀黄 + 虚线描边 + 方向箭头
+        Rectangle {
+            x: 152px;
+            y: Tokens.space-4;
+            width: 56px;
+            height: 16px;
+            background: Tokens.bg-void;
+            border-width: 1px;
+            border-color: Tokens.diff-tweaked;
+            border-radius: Tokens.radius-sm;
+        }
+        for dash_index in 5 : Rectangle {
+            x: 156px + 11px * dash_index;
+            y: Tokens.space-4;
+            width: 5px;
+            height: 1px;
+            background: Tokens.diff-tweaked;
+        }
+        UiText {
+            x: 216px;
+            y: Tokens.space-4;
+            width: 96px;
+            height: 16px;
+            text: "↑ 微调";
+            color: Tokens.diff-tweaked;
+            font-size: Tokens.font-size-xs;
+        }
+
+        UiMonoText {
+            x: 152px;
+            y: 28px;
+            width: parent.width - 160px;
+            height: 16px;
+            text: "遮罩 #000000 (无头截图动态区域)";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+
+    // ---------------------------------------------------------------- 提案列表
+    for proposal_index in 3 : Rectangle {
+        x: Tokens.space-4;
+        y: 124px + 56px * proposal_index;
+        width: parent.width - 8px;
+        height: 48px;
+        background: proposal_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+        accessible-role: list-item;
+        accessible-id: "musical-pr-proposal-" + proposal_index + "-item";
+        accessible-label: root.proposal_kinds[proposal_index] + ": " + root.proposal_labels[proposal_index];
+        accessible-item-index: proposal_index;
+        accessible-item-count: 3;
+        accessible-item-selectable: true;
+        accessible-item-selected: false;
+
+        // 置信度徽章 (§9.1)
+        Rectangle {
+            x: 6px;
+            y: 6px;
+            width: 36px;
+            height: 16px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.ai-suggestion;
+
+            UiMonoText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.confidences[proposal_index];
+                color: Tokens.ai-suggestion;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+        }
+
+        UiText {
+            x: 48px;
+            y: 4px;
+            width: parent.width - 56px;
+            height: 18px;
+            text: root.proposal_kinds[proposal_index] + " · " + root.proposal_labels[proposal_index];
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+
+        UiMonoText {
+            x: 48px;
+            y: 26px;
+            width: parent.width - 56px;
+            height: 16px;
+            text: "轨道 " + proposal_index + " · 小节 " + (proposal_index + 1);
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+
+    // ---------------------------------------------------------------- 采纳 / 放弃
+    Rectangle {
+        x: Tokens.space-4;
+        y: parent.height - 40px;
+        width: (parent.width - 16px) / 2;
+        height: 28px;
+        background: Tokens.bg-raised;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.diff-added;
+        accessible-role: button;
+        accessible-id: "musical-pr-accept-button";
+        accessible-label: "采纳提案 (Shift+Enter)";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "采纳 (Shift+Enter)";
+            color: Tokens.diff-added;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.accept(); }
+        }
+    }
+
+    Rectangle {
+        x: Tokens.space-4 + (parent.width - 16px) / 2 + Tokens.space-2;
+        y: parent.height - 40px;
+        width: (parent.width - 16px) / 2;
+        height: 28px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.diff-removed;
+        accessible-role: button;
+        accessible-id: "musical-pr-reject-button";
+        accessible-label: "放弃提案 (Esc)";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "放弃 (Esc)";
+            color: Tokens.diff-removed;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.reject(); }
+        }
+    }
+}

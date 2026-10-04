@@ -1,0 +1,147 @@
+// 夜半 (Yeban) — 全屏可视化 DAG 编曲时光机弹窗 (Undo Tree Modal)
+//
+// 规范来源 (Normative):
+//   - 规范 §10: 编曲时光机 (Arrangement Time Machine) —— 全屏可视化 DAG 版本图谱
+//   - [UI-A11Y-001] §7.1: `Cmd/Ctrl + Shift + H` 呼出
+//   - [UI-A11Y-003] §7.3: 模态对话框要实现**焦点闭环 (Focus Trap)**, 关闭时焦点复位到
+//     触发控件 —— 本骨架**没有**实现焦点闭环 (见 notes 的 pending: 需要 `FocusScope` +
+//     宿主侧焦点保存/恢复, 依赖 Slint 焦点 API 的进一步核验)
+//   - [UI-TEST-001] §12.2: 语义 Element ID (`undo-tree-node-{i}`)
+//
+// 静态骨架 + 演示数据: 节点是硬编码的 6 个提交, 没有任何来自 `ARCH-OPS-001` 领域操作日志
+// 的真实 DAG。真正的时光机要在 Ops Log + 提交图谱落地之后才能画。
+
+import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+
+export component UndoTreeModal inherits Rectangle {
+    in property <int> node-count: 6;
+    in property <[string]> node-labels: ["c0 初始", "c1 鼓组", "c2 贝斯", "c3 铺底", "c4 主音", "c5 AI 提案"];
+
+    callback close();
+
+    // 遮罩层色 —— [UI-MCP-002] 里被"置黑"的正是这个颜色, 两者同源。
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "undo-tree-modal";
+    accessible-label: "编曲版本时光机图谱";
+
+    // ---------------------------------------------------------------- 弹窗面板
+    Rectangle {
+        x: (root.width - 720px) / 2;
+        y: (root.height - 360px) / 2;
+        width: 720px;
+        height: 360px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "undo-tree-panel";
+        accessible-label: "版本图谱面板";
+
+        UiText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 96px;
+            height: 24px;
+            text: "编曲时光机 · 版本 DAG";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        UiMonoText {
+            x: Tokens.space-6;
+            y: 34px;
+            width: parent.width - 96px;
+            height: 16px;
+            text: "分支 main · 6 个可回滚节点 · 回滚基于领域操作日志逆向重放";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        // 关闭 (§7.3 要求的焦点复位未实现 —— 见文件头)
+        Rectangle {
+            x: parent.width - 36px;
+            y: Tokens.space-4;
+            width: 24px;
+            height: 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "undo-tree-close-button";
+            accessible-label: "关闭时光机";
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "×";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xl;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.close(); }
+            }
+        }
+
+        // ------------------------------------------------------------ DAG 节点
+        for node_index in 6 : Rectangle {
+            x: Tokens.space-6 + 108px * node_index;
+            y: 100px + 44px * node_index.mod(2);
+            width: 100px;
+            height: 40px;
+            background: node_index == 0 ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: node_index == 0 ? Tokens.gold : Tokens.line-strong;
+            clip: true;
+            accessible-role: list-item;
+            accessible-id: "undo-tree-node-" + node_index;
+            accessible-label: root.node-labels[node_index];
+            accessible-item-index: node_index;
+            accessible-item-count: 6;
+            accessible-item-selectable: true;
+            accessible-item-selected: node_index == 0;
+
+            UiText {
+                x: Tokens.space-2;
+                y: 0;
+                width: parent.width - 4px;
+                height: parent.height;
+                text: root.node_labels[node_index];
+                color: node_index == 0 ? Tokens.gold-bright : Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        // 节点之间的边 (DAG 的 E 只用直线段示意; 真实分叉/合并要等 Ops Log 图谱)
+        for edge_index in 5 : Rectangle {
+            x: Tokens.space-6 + 100px + 108px * edge_index;
+            y: 118px + 44px * edge_index.mod(2);
+            width: 8px;
+            height: 2px;
+            background: Tokens.line-strong;
+        }
+
+        UiMonoText {
+            x: Tokens.space-6;
+            y: parent.height - 32px;
+            width: parent.width - 32px;
+            height: 20px;
+            text: "点击任意节点回滚 (未实现) · Esc 关闭";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+}
