@@ -408,3 +408,24 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
   "DAW 界面被渲染器看过"仍然**不成立**。
 - **SSIM 的量化限定**见 ADR-0001 D23（0.98 对细长条/等亮度换色几乎免疫）。
 
+### 待修复：真实界面的内省判据**编译不过**（已开工作线，main 暂不启用该步）
+
+- **实测**（commit `66b002c`，run 37223586792 的 workspace 腿）：
+  `cargo test -p yeban-app --features ui-test-port` 直接编译失败：
+  ```
+  error[E0425]: cannot find value `image` in this scope            ×6
+  error[E0425]: cannot find function `report_evidence` in this scope
+  error[E0425]: cannot find function `report_capability` in this scope
+  ```
+  `report_evidence` / `report_capability` 确实是 `yeban_ui_test_port::render` 的**公开项**
+  （`render.rs:329` / `343`），所以至少缺一个 `use`；`image` 是一个未绑定的局部值。
+- **含义**：`crates/yeban-app/src/test_port_adapter.rs`（505 行）**从未被编译过** ——
+  它挂在 `required-features = ["ui-test-port"]` 后面，而此前 CI 从不启用该 feature。
+  也就是说 AGENTS.md §3 DoD 6 的"UI 变更双重验证"在**真实界面**上至今没有任何判据在执行。
+- **处置（不假装绿，也不让 main 长期红）**：
+  1. main 的 CI **暂时移除**该步骤，并在 `ci.yml` 原位留下完整说明（含恢复指引）；
+  2. 缺口登记在本节 + ADR-0001 D22；
+  3. 开工作线 `app-introspect` 把适配器修到能编译、能产出**真实界面**（13 个 `.slint`）的
+     Tier-1 截图与控件树；绿了之后由集成者**重新加回** `ci.yml` 的那一步。
+- **恢复命令**（原样）：`cargo test -p yeban-app --features ui-test-port --locked`
+
