@@ -389,6 +389,8 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 | `mcp-core` | `6a860b1` | Yeban Intent API v2 工具层: 10 工具注册表与契约逐条对账(含联集 20 错误码与双射守卫)、JSON-RPC 2.0、六级 scope 纯函数、`ui:inject` 生产硬禁(先于 token 校验)、256-bit Bearer token + 0600 落盘(读到 644 直接拒)、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0, 绑定后回读 `local_addr()` 断言 `is_loopback()`)、`dryRun`/`idempotencyKey` 真实现; 112 条判据; **十工具领域实现未接线(-32005)** |
 | `app-introspect` | `b581795` | 真实界面的 Tier-1 内省: 适配器修到可编译 + 用**自动发现**测试目标让判据进入默认门禁; 产出三张 1920×1080 真实界面截图(100% 非黑, 2973/2784/2811 色)与运行时控件树; 控件树 184 注册 / 95 运行时 / 未注册 0; 动态区遮罩后 SSIM 精确 1.0; 中文非 tofu 判据(24px→648px) |
 
+| `decode-core` | `805fcf9` | 离线解码 + 重采样: symphonia 0.6.1 解码(WAV 8/16/24/32-bit + F32 + FLAC)、rubato 5.0.1 sinc 重采样、内容寻址不可变资产、尺寸/防挂死预算(检查全在分配之前 + `try_reserve` + `checked_mul`)、**主动加 `#![forbid(unsafe_code)]`**; CI 上 68 条单测 + clippy 全绿; **OGG/Vorbis 与 ADPCM 只有代码路径没有字节级夹具；基准打点缺失 ⇒ DoD 4 无法判定(不是通过)** |
+
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
 
@@ -510,3 +512,17 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 **规则**：判据若必须执行，就**不能**只靠 `required-features` 挂着 —— 要么放进**自动发现**的测试目标
 （该线的做法：`tests/real_ui_tier1.rs` + `#[path]` 引入同一份源码，并用 `[dev-dependencies]` 保证默认就编译），
 要么在 CI 里显式启用该 feature。**"绿着跳过"与 L12"门禁空跑"、D25"契约空转"是同一族错误。**
+
+### `decode-core` 的边界与两条待裁决（照实登记）
+
+- **本机 vs CI**：本机只跑过**零依赖层**（尺寸/长度契约/夹具生成）**27 条 + 4 次注入变红**；
+  经过 symphonia/rubato 的 27 条集成判据**本机从未编译过**（重依赖禁本机），全部由 CI 执行（该轮 68 passed）。
+- **上游 API 与规范不一致**（ADR-0001 **D26**）：`rubato 5.0.1` 没有 `SincFixedIn`/`FftFixedIn`/`FastFixedIn`；
+  `symphonia 0.6` 的 EOF 是 `Ok(None)`、类型改名 `GenericAudioBufferRef`、`MediaSource` 无 blanket impl。
+- **待裁决（不阻塞）**：
+  1. `MAX_PCM_BYTES = 2 GiB` 是否够 —— 按该线换算：96 kHz 立体声 ≈ 46 分钟、96 kHz 8 声道 ≈ 11.6 分钟；
+     与 `ARCH-SEC-003` 的"单条目"口径相关。
+  2. `audio-codec-algorithms` 的 `0BSD OR Apache-2.0` 目前走 OR 的 Apache 分支通过（**不需要**改 `deny.toml`）；
+     若人类要求显式列 `0BSD`，那属 `deny.toml` 改动。
+- **未做**：流式哈希/流式解码（当前受 2 GiB 内存上限约束）；ID3 / Vorbis comment 元数据接入；
+  `Track::delay/padding` 只记录未裁剪；跨架构 L2 对账按 D7 保持 PENDING。

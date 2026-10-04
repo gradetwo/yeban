@@ -231,6 +231,28 @@
 ④ 另加一条判据在"根开始引用 definitions"的那一刻变红，提醒升级口径。
 集成者这次修复会**故意**触发那条提醒判据 —— 那是它按设计工作，不是回归。
 
+### D26 — `symphonia 0.6` / `rubato 5.0` 的实际 API 与规范引用的版本**不一致**
+
+`line/decode-core` 按"先核验再写"的纪律读了 docs.rs 与本地 registry 里的**真实源码**，
+发现规范点名的 API 在钉死的版本里并不存在（与 D18/D22 同一族：**规范引用了旧版上游**）：
+
+| 规范/直觉里的名字 | 0.6.1 / 5.0.1 的实际形态 |
+| :--- | :--- |
+| `rubato::SincFixedIn` / `FftFixedIn` / `FastFixedIn` | **不存在**。实际是 `Async::new_sinc` / `Async::new_poly`、`Fft`（需 `fft_resampler` feature）、`Slip` |
+| `Resampler::process` 的"输出帧数" | `process_all_into_buffer` 返回 `(usize, usize)`，第二个是 `ceil(ratio × input_len)` 而**不是**实际写入帧数（源码 `lib.rs:330/398`）⇒ 必须按 expected 帧取有效区 |
+| `symphonia` 的 `AudioBufferRef` | 0.6 改名为 `GenericAudioBufferRef` |
+| `symphonia` 的 `next_packet` | EOF 是 **`Ok(None)`**（不是 `Err(UnexpectedEof)`） |
+| `MediaSource` 的 `Read + Seek` | **没有** blanket impl；只有 `File` 与 `Cursor`（内存/自定义源要走 `Cursor`） |
+
+- **裁决**：以**实际版本**为准实现（已落地），并把差异写成 ADR + 台账；规范的措辞需要人类按此修订
+  （规范修订属人类职责，Agent 不擅改 `docs/YEBAN_*.md`）。
+- **顺带两个真实的"挂死"坑**（该线逐行读上游源码发现，比断言失败值钱得多）：
+  1. **截断的 RIFF/WAVE 会让解封装器"不报错也不推进"** —— `read_boxed_slice` 对 EOF 是**截短返回**，
+     而边界用的是**声明**长度 ⇒ 解码循环会永久空转，CI 直接挂到 60 分钟超时。
+     该线因此加了 `IdleGuard`（连续 N 个包不推进就报错），并有判据。
+  2. **RIFF 奇数长度块必须补一个不计入块长度的填充字节**，否则 `ChunksReader` 在末尾吃 `UnexpectedEof`
+     —— 表现为"两个位深测试莫名失败"。8-bit / 24-bit 夹具极易凑出奇数长度。
+
 ---
 
 ## D5 的落地细节（版本钉死）
