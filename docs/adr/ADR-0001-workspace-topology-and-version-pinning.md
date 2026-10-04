@@ -255,6 +255,31 @@
   2. **RIFF 奇数长度块必须补一个不计入块长度的填充字节**，否则 `ChunksReader` 在末尾吃 `UnexpectedEof`
      —— 表现为"两个位深测试莫名失败"。8-bit / 24-bit 夹具极易凑出奇数长度。
 
+### D27 — 扩 `Op` 全集：补 `AddClip`/`RemoveClip` 与 `AddRoutingNode`/`RemoveRoutingNode`
+
+- **问题（`line/tools-domain` 实测发现）**：规范 §7.2 要求 `yeban_propose_section` 产出"声部连接 + 配器骨架"，
+  但在本裁决之前，`Op` 全集**表达不出来**：
+  · `AddClipPlacement` 的前置条件是"片段**已经在** `clip_pool` 里"，而**没有任何变体能把条目放进池子**；
+  · `ConnectRouting` 的前置条件是"两端**已经在** `routing_graph.nodes` 里"，同样**没有任何变体能把节点放进去**。
+  于是那条工具只能返回 `data.unwired = ["clipPoolEntries","routingEdges"]`。这是**规范要求的能力在操作日志层缺失**，
+  与 D12（补 `RemoveSection`/`RemoveScene`）同一族。
+- **裁决**：`Op` 从 23 个变体扩到 **27** 个：
+  · `AddClip { clip }` / `RemoveClip { clip_id, previous_clip }`（后者前置：片段存在且**无摆放引用** → `ClipInUse`）；
+  · `AddRoutingNode { node }` / `RemoveRoutingNode { node }`（后者前置：节点存在且**无边引用** → `RoutingNodeInUse`）。
+  · 节点按**字典序**插入，因此 `nodes` 恒有序 ⇒ 增删互为逆操作且**不需要额外载荷**（可逐字节还原）。
+  · 新增 `ModelError::ClipInUse` / `ModelError::RoutingNodeInUse` 两个具体错误（不用笼统的 `OpStateMismatch`）。
+  同步扩展 `schemas/ops.schema.json` 的 `op.oneOf`（23 → 27 个分支）。
+- **顺带修掉一条判据的盲区（值得单列）**：原有的
+  `op_variants_match_ops_schema_exactly` 比较的是 **`showcase_ops()` 与契约**。
+  于是"给 `Op` 加了变体、但既没加进 `showcase_ops()` 也没加进契约"这种情况**两边都看不见、判据全绿** ——
+  而它正是这次漂移的形态（`Op` 缺 4 个变体而所有判据都是绿的）。
+  新增判据 `every_op_variant_is_declared_in_the_contract`：利用 `name()` 的 `match self` **是穷举的**
+  （少一个变体就编译不过）这一事实，从源码抽取 `Self::<Variant>` 作为**枚举全集**，与契约做双向断言。
+  实测：从契约删掉一个分支 → 判据立刻红并指名 `只在枚举里而契约缺失: ["AddRoutingNode"]`。
+- **代价**：`Op` 是持久化契约的一部分 ⇒ 老文档不受影响（新变体只是**新增**可表达的操作）；
+  但**任何按 23 个变体写死的外部实现都要跟到 27**（本仓库的 `samples.rs` 里那处计数断言已经因此红过一次，
+  按"改了计数就要重跑派生该计数的判据"的既有纪律修正）。
+
 ---
 
 ## D5 的落地细节（版本钉死）

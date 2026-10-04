@@ -177,6 +177,22 @@ pub enum ModelError {
         id: EntityId,
     },
 
+    /// 片段仍被摆放引用，不能从片段池移除 [ARCH-OPS-001]。
+    #[error("clip `{clip_id}` is still referenced by {placement_count} placement(s)")]
+    ClipInUse {
+        /// 片段身份。
+        clip_id: EntityId,
+        /// 仍引用它的摆放数量。
+        placement_count: usize,
+    },
+    /// 路由节点仍被路由边引用，不能移除 [ARCH-OPS-001]。
+    #[error("routing node `{node}` is still referenced by {edge_count} edge(s)")]
+    RoutingNodeInUse {
+        /// 节点身份。
+        node: EntityId,
+        /// 仍引用它的边数量。
+        edge_count: usize,
+    },
     /// 引用了不存在的路由节点。
     #[error("routing node `{id}` not found in routing graph")]
     RoutingNodeNotFound {

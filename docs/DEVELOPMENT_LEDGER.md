@@ -656,3 +656,23 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **反证（全部用退出码，不看交错的文本）**：干净 → `0`；改动一个资产的字节 → `1`（报"SHA-256 与磁盘不符"）；
   清单登记一个不存在的文件 → `1`（报"指向不存在的文件"）；还原 → `0`。
 
+### D27 的实测与反证（`Op` 从 23 扩到 27）
+
+- **为什么要扩**：`line/tools-domain` 在实现 `yeban_propose_section` 时发现规范 §7.2 的"声部连接 + 配器骨架"
+  在 `Op` 层**不可表达** —— `AddClipPlacement` 要求片段已在 `clip_pool`、`ConnectRouting` 要求节点已在
+  `routing_graph.nodes`，而**没有任何变体能把它们放进去**。它没有擅自改 `yeban-model`（不在它的地盘），
+  而是如实上报并给出证据，这是正确处置。
+- **新增 4 个变体 + 2 个具体错误**（`ClipInUse` / `RoutingNodeInUse`），`schemas/ops.schema.json` 的
+  `op.oneOf` 同步 23 → 27。节点按字典序插入 ⇒ 增删互为逆且无需载荷（逐字节可还原）。
+- **新判据**（`clip_pool_and_routing_node_ops_are_guarded_and_reversible`）同时钉住两件事：
+  ① 破坏性尝试**被拒**（被摆放引用的片段、被边引用的节点、重复加入）；
+  ② 正向能力**真的可用**：`新建片段 → 摆放 → 逐级撤销`后**逐字节**回到原状
+  （在 D27 之前这一链在 `Op` 层根本无法表达）。
+- **反证（都用退出码/判据名）**：从契约删掉 `AddRoutingNode` 分支 → 全集判据红并指名
+  `只在枚举里而契约缺失: ["AddRoutingNode"]`；把守卫改成放行 → 守卫判据红
+  （`被摆放引用的片段必须拒绝移除`）；还原后 **89 passed / 0 failed**。
+- **一条判据盲区被补上**：原 `op_variants_match_ops_schema_exactly` 只比较 `showcase_ops()` 与契约，
+  因此"**枚举里加了、两处都没同步**"这种漂移**完全不可见**（正是本次的形态）。
+  新增 `every_op_variant_is_declared_in_the_contract`：借 `name()` 的 `match self` 必须穷举这一事实，
+  从源码抽取枚举全集与契约做双向断言。**这是一条"元判据"：它防的是判据本身漏掉一整个变体。**
+

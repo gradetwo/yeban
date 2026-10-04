@@ -38,8 +38,8 @@ use crate::error::ModelError;
 use crate::ids::EntityId;
 use crate::music::MidiNote;
 use crate::project::{
-    AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, DeviceDefinition,
-    RoutingEdge, SceneV3, SectionV3, TrackV3, YebanProjectV1,
+    AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, ClipPoolEntry,
+    DeviceDefinition, RoutingEdge, SceneV3, SectionV3, TrackV3, YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -184,6 +184,24 @@ pub enum Op {
         /// 移除前的摆放。
         previous_placement: ClipPlacement,
     },
+    /// 把片段放进片段池。
+    ///
+    /// 为什么必须有这个变体：`AddClipPlacement` 要求片段**已经在** `clip_pool` 里，
+    /// 而在本变体出现之前**没有任何 `Op` 能把条目放进池子** ⇒ "新建一个片段"
+    /// 在操作日志层不可表达（由 `line/tools-domain` 实测发现，见 ADR-0001 D27）。
+    AddClip {
+        /// 被新增的片段池条目。
+        clip: ClipPoolEntry,
+    },
+    /// 从片段池移除片段（自带撤销载荷）。
+    ///
+    /// 前置条件：片段存在、且**没有任何摆放引用它**（否则那些摆放会悬空 → [`ModelError::ClipInUse`]）。
+    RemoveClip {
+        /// 片段身份。
+        clip_id: EntityId,
+        /// 移除前的完整条目。
+        previous_clip: ClipPoolEntry,
+    },
     /// 平移摆放。
     MoveClipPlacement {
         /// 目标音轨。
@@ -218,6 +236,23 @@ pub enum Op {
         edge_id: EntityId,
         /// 断开前的完整边。
         previous_edge: RoutingEdge,
+    },
+    /// 把节点加入路由图。
+    ///
+    /// 为什么必须有这个变体：`ConnectRouting` 要求两端**已经在** `routing_graph.nodes` 里，
+    /// 而在本变体出现之前**没有任何 `Op` 能把节点放进去** ⇒ 声部连接在操作日志层不可表达
+    /// （由 `line/tools-domain` 实测发现，见 ADR-0001 D27）。
+    /// 节点按**字典序**插入，因此 `nodes` 恒有序 ⇒ 增删互为逆操作且无需额外载荷。
+    AddRoutingNode {
+        /// 节点身份（音轨或总线）。
+        node: EntityId,
+    },
+    /// 从路由图移除节点。
+    ///
+    /// 前置条件：节点存在、且**没有任何边引用它**（否则返回 [`ModelError::RoutingNodeInUse`]）。
+    RemoveRoutingNode {
+        /// 节点身份。
+        node: EntityId,
     },
     /// 设置路由边增益（保留 `Option` 语义：`None` 表示单位增益）。
     SetRoutingGain {
@@ -399,6 +434,10 @@ impl Op {
             Self::DeleteNote { .. } => "DeleteNote",
             Self::MoveNote { .. } => "MoveNote",
             Self::ModifyNoteVelocity { .. } => "ModifyNoteVelocity",
+            Self::AddClip { .. } => "AddClip",
+            Self::RemoveClip { .. } => "RemoveClip",
+            Self::AddRoutingNode { .. } => "AddRoutingNode",
+            Self::RemoveRoutingNode { .. } => "RemoveRoutingNode",
             Self::AddClipPlacement { .. } => "AddClipPlacement",
             Self::RemoveClipPlacement { .. } => "RemoveClipPlacement",
             Self::MoveClipPlacement { .. } => "MoveClipPlacement",
@@ -559,6 +598,54 @@ impl Op {
                 let current = doc.track(track_id)?;
                 if current != previous_track {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::AddClip { clip } => {
+                if doc.clip_pool.contains_key(&clip.id) {
+                    return Err(ModelError::DuplicateEntityId { id: clip.id });
+                }
+                Ok(())
+            }
+            Self::RemoveClip { clip_id, .. } => {
+                if !doc.clip_pool.contains_key(clip_id) {
+                    return Err(ModelError::ClipNotFound { id: *clip_id });
+                }
+                let placement_count = doc
+                    .tracks
+                    .values()
+                    .flat_map(|track| track.clips.values())
+                    .filter(|placement| placement.clip_id == *clip_id)
+                    .count();
+                if placement_count > 0 {
+                    return Err(ModelError::ClipInUse {
+                        clip_id: *clip_id,
+                        placement_count,
+                    });
+                }
+                Ok(())
+            }
+            Self::AddRoutingNode { node } => {
+                if doc.routing_graph.nodes.contains(node) {
+                    return Err(ModelError::DuplicateEntityId { id: *node });
+                }
+                Ok(())
+            }
+            Self::RemoveRoutingNode { node } => {
+                if !doc.routing_graph.nodes.contains(node) {
+                    return Err(ModelError::RoutingNodeNotFound { id: *node });
+                }
+                let edge_count = doc
+                    .routing_graph
+                    .edges
+                    .values()
+                    .filter(|edge| edge.source_node == *node || edge.destination_node == *node)
+                    .count();
+                if edge_count > 0 {
+                    return Err(ModelError::RoutingNodeInUse {
+                        node: *node,
+                        edge_count,
+                    });
                 }
                 Ok(())
             }
@@ -893,6 +980,17 @@ impl Op {
             Self::RemoveTrack { previous_track, .. } => Self::AddTrack {
                 track: previous_track.clone(),
             },
+            Self::AddClip { clip } => Self::RemoveClip {
+                clip_id: clip.id,
+                // `ClipPoolEntry` 含 `String`/`BTreeMap`, 不是 `Copy` ⇒ 逆操作必须克隆
+                // (与 `ClipPlacement` 那类 `Copy` 载荷不同)。
+                previous_clip: clip.clone(),
+            },
+            Self::RemoveClip { previous_clip, .. } => Self::AddClip {
+                clip: previous_clip.clone(),
+            },
+            Self::AddRoutingNode { node } => Self::RemoveRoutingNode { node: *node },
+            Self::RemoveRoutingNode { node } => Self::AddRoutingNode { node: *node },
             Self::ConnectRouting { edge } => Self::DisconnectRouting {
                 edge_id: edge.id,
                 previous_edge: *edge,
@@ -1038,6 +1136,25 @@ impl Op {
     /// 落盘：前置条件已成立，这里只做结构变更。
     fn commit(&self, doc: &mut YebanProjectV1) -> Result<(), ModelError> {
         match self {
+            Self::AddClip { clip } => {
+                doc.clip_pool.insert(clip.id, clip.clone());
+                Ok(())
+            }
+            Self::RemoveClip { clip_id, .. } => {
+                doc.clip_pool.remove(clip_id);
+                Ok(())
+            }
+            Self::AddRoutingNode { node } => {
+                let nodes = &mut doc.routing_graph.nodes;
+                // 按字典序插入 ⇒ `nodes` 恒有序, 于是增删互为逆且无需载荷。
+                let position = nodes.partition_point(|existing| existing < node);
+                nodes.insert(position, *node);
+                Ok(())
+            }
+            Self::RemoveRoutingNode { node } => {
+                doc.routing_graph.nodes.retain(|existing| existing != node);
+                Ok(())
+            }
             Self::AddNote { clip_id, note, .. } => doc.insert_note(clip_id, note.clone()),
             Self::DeleteNote {
                 clip_id, note_id, ..
@@ -1735,6 +1852,30 @@ mod tests {
                     ..TrackV3::default()
                 },
             },
+            Op::AddClip {
+                clip: empty_midi_clip(fresh_placement),
+            },
+            Op::RemoveClip {
+                clip_id: f.audio_clip,
+                // 必须是夹具文档里**真实存在**的那一条(名字/内容/资产哈希都要对得上),
+                // 否则"应用后取逆"还原不出原文档 —— 这正是 `every_variant_applies_and_inverts_exactly` 抓到的。
+                previous_clip: ClipPoolEntry {
+                    id: f.audio_clip,
+                    name: "Kick".to_owned(),
+                    content: ClipContent::Audio {
+                        asset: crate::ids::AssetHash::of_bytes(b"kick"),
+                        gain_db: 0.0,
+                    },
+                },
+            },
+            Op::AddRoutingNode {
+                node: fresh_placement,
+            },
+            Op::RemoveRoutingNode {
+                // `f.bass` 在夹具的 `routing_graph.nodes` 里, 且**没有任何边引用它**
+                // (唯一的边是 lead → master) —— 这正是 `RemoveRoutingNode` 的前置条件。
+                node: f.bass,
+            },
             Op::ConnectRouting { edge: new_edge },
             Op::DisconnectRouting {
                 edge_id: f.edge,
@@ -1938,6 +2079,79 @@ mod tests {
         }
     }
 
+    /// 新增两个"池/图成员"变体后，规范 §7.2 的"新建片段 → 摆放 → 撤销"整链必须真的走得通，
+    /// 且**每一步的破坏性尝试都要被拒绝**（[ARCH-OPS-001]，ADR-0001 D27）。
+    ///
+    /// 这条判据的价值在于：它同时钉住"能力**可表达**"与"悬空引用**不被允许**"——
+    /// 前者是这条 ADR 存在的理由，后者是它不引入新破绽的保证。
+    #[test]
+    fn clip_pool_and_routing_node_ops_are_guarded_and_reversible() {
+        let f = fixture();
+        let mut doc = fixture_document();
+
+        // ① 仍被摆放引用的片段不能移除。
+        let error = Op::RemoveClip {
+            clip_id: f.clip,
+            previous_clip: empty_midi_clip(f.clip),
+        }
+        .apply(&mut doc)
+        .expect_err("被摆放引用的片段必须拒绝移除");
+        assert!(
+            matches!(error, ModelError::ClipInUse { placement_count, .. } if placement_count >= 1),
+            "期望 ClipInUse, 实际 {error:?}"
+        );
+
+        // ② 仍被路由边引用的节点不能移除。
+        let error = Op::RemoveRoutingNode { node: f.lead }
+            .apply(&mut doc)
+            .expect_err("被边引用的节点必须拒绝移除");
+        assert!(
+            matches!(error, ModelError::RoutingNodeInUse { edge_count, .. } if edge_count >= 1),
+            "期望 RoutingNodeInUse, 实际 {error:?}"
+        );
+
+        // ③ 重复加入要被拒(池与图各一次)。
+        let error = Op::AddRoutingNode { node: f.master }
+            .apply(&mut doc)
+            .expect_err("重复节点必须被拒");
+        assert!(matches!(error, ModelError::DuplicateEntityId { .. }));
+        let error = Op::AddClip {
+            clip: empty_midi_clip(f.clip),
+        }
+        .apply(&mut doc)
+        .expect_err("重复片段必须被拒");
+        assert!(matches!(error, ModelError::DuplicateEntityId { .. }));
+
+        // ④ 正向能力: 新建片段 → 摆放 → 逐级撤销 → **逐字节**回到原状。
+        //    在 D27 之前这一步在 `Op` 层根本无法表达(没有任何变体能把片段放进池子)。
+        let mut chain = fixture_document();
+        let before = serde_json::to_string(&chain).expect("serialize");
+        let fresh_clip = fixture_id(600);
+        let add_clip = Op::AddClip {
+            clip: empty_midi_clip(fresh_clip),
+        };
+        add_clip.apply(&mut chain).expect("新建片段");
+        let place = Op::AddClipPlacement {
+            track_id: f.bass,
+            placement: ClipPlacement {
+                id: fixture_id(601),
+                clip_id: fresh_clip,
+                start_tick: 0,
+                duration_ticks: 960,
+                loop_config: LoopConfig::default(),
+                muted: false,
+            },
+        };
+        place.apply(&mut chain).expect("摆放新建的片段");
+        place.apply_inverse(&mut chain).expect("撤销摆放");
+        add_clip.apply_inverse(&mut chain).expect("撤销新建片段");
+        assert_eq!(
+            serde_json::to_string(&chain).expect("serialize"),
+            before,
+            "新建片段 → 摆放 → 全链撤销必须逐字节回到原状"
+        );
+    }
+
     #[test]
     fn every_variant_applies_and_inverts_exactly() {
         let mut doc = fixture_document();
@@ -2066,8 +2280,8 @@ mod tests {
         let contract = schema_op_variant_names();
         assert_eq!(
             contract.len(),
-            23,
-            "op.oneOf 必须覆盖 23 个变体, 实际 {}: {contract:?}",
+            27,
+            "op.oneOf 必须覆盖 27 个变体, 实际 {}: {contract:?}",
             contract.len()
         );
 
@@ -2089,6 +2303,48 @@ mod tests {
         assert_eq!(
             implemented, contract,
             "实现与 schemas/ops.schema.json 的 op.oneOf 必须一一对应"
+        );
+    }
+
+    /// **枚举全集**必须与契约一致 —— 补上 `op_variants_match_ops_schema_exactly` 的盲区。
+    ///
+    /// 为什么需要这条：那条判据比较的是 `showcase_ops()` 与契约。
+    /// 于是"给 `Op` 加了一个变体，但既没加进 `showcase_ops()` 也没加进契约"这种情况
+    /// **两边都看不见，判据全绿** —— 而它恰恰是最危险的漂移
+    /// （`line/tools-domain` 实测：`Op` 全集缺 `AddClip`/`AddRoutingNode` 等 4 个变体，
+    /// 导致规范 §7.2 的"声部连接"在操作日志层**不可表达**，而所有判据都是绿的）。
+    ///
+    /// 做法：`name()` 里的 `match self` 是**穷举**的（少一个变体就编译不过），
+    /// 因此从源码里抽取 `Self::<Variant>` 就是枚举全集 —— 这是不用过程宏也能拿到全集的唯一办法。
+    #[test]
+    fn every_op_variant_is_declared_in_the_contract() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ops.rs"),
+        )
+        .expect("读取 ops.rs");
+        let start = source
+            .find("pub const fn name(&self)")
+            .expect("找到 name()");
+        let body = &source[start..];
+        let end = body.find("\n    }").expect("name() 的结尾");
+        let mut declared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for chunk in body[..end].split("Self::").skip(1) {
+            let name: String = chunk
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if !name.is_empty() {
+                declared.insert(name);
+            }
+        }
+        let contract = schema_op_variant_names();
+        assert_eq!(
+            declared,
+            contract,
+            "Op 的**全部**变体(name() 是穷举的)必须与 schemas/ops.schema.json 的 op.oneOf 一一对应;\n\
+             只在枚举里而契约缺失: {:?}\n只在契约里而枚举缺失: {:?}",
+            declared.difference(&contract).collect::<Vec<_>>(),
+            contract.difference(&declared).collect::<Vec<_>>(),
         );
     }
 

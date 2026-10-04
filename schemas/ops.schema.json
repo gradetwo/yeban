@@ -287,6 +287,46 @@
               "type": "object"
             }
           }
+        },
+        {
+          "required": [
+            "AddClip"
+          ],
+          "properties": {
+            "AddClip": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveClip"
+          ],
+          "properties": {
+            "RemoveClip": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveRoutingNode"
+          ],
+          "properties": {
+            "RemoveRoutingNode": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "AddRoutingNode"
+          ],
+          "properties": {
+            "AddRoutingNode": {
+              "type": "object"
+            }
+          }
         }
       ],
       "description": "Domain reversible operation. oneOf must cover every Op variant: exactly one branch may match."
