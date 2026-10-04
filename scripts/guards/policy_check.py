@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -421,6 +423,44 @@ def g13_workflows_are_valid() -> list[Violation]:
     return bad
 
 
+def g14_shell_scripts_are_portable() -> list[Violation]:
+    """[本地门禁可移植性] 仓库里的 shell 脚本必须在**最老的 bash**上也成立。
+
+    为什么值得机械化（实测事故）: 我给 `run-gates.sh` 加"重依赖在 feature 后面则走轻量变体"时,
+    顺手用了 `declare -A` 关联数组 —— 开发机 macOS 自带的是 **bash 3.2**, 它**没有关联数组**:
+    `${ARR[yeban-engine]}` 会被当成**算术下标**去求值 `yeban`, 于是报
+    `yeban: unbound variable`。**而 `bash -n` 语法检查照样通过** —— 也就是说,
+    "语法没问题"完全掩盖了"在这个 shell 上跑不起来"。
+
+    人类负责人的交互 shell 是 **zsh**(Ghostty), 但仓库脚本是被 `bash script.sh`、
+    CI 的 `shell: bash`、以及各种 shebang 调用的 —— 调用者用什么 shell 不该决定脚本能不能跑。
+    判据: ① 不得出现 `declare -A`/关联数组用法; ② 每个 `*.sh` 都能被 `bash -n` 解析。
+    """
+    bad: list[Violation] = []
+    bash = shutil.which("bash")
+    for path in sorted(REPO.rglob("*.sh")):
+        parts = path.relative_to(REPO).parts
+        if ".worktrees" in parts or "target" in parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "declare -A" in stripped or "typeset -A" in stripped:
+                bad.append((
+                    "G14",
+                    f"{rel(path)}:{lineno}",
+                    "关联数组在 bash 3.2 上不存在（开发机就是 3.2）；用 case 表达同一件事",
+                ))
+        if bash is None:
+            continue
+        result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True)
+        if result.returncode != 0:
+            bad.append(("G14", rel(path), f"bash -n 失败: {result.stderr.strip()[:120]}"))
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -435,6 +475,7 @@ GUARDS = {
     "G11": ("[宪章 2] 引擎层零 web/wasm 依赖", g11_no_web_wasm_engine),
     "G12": ("[仓库卫生] 工具缓存与 CI 日志 zip 不入库", g12_no_tool_cache_in_tree),
     "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
+    "G14": ("[本地门禁可移植性] shell 脚本 bash 3.2 兼容(禁关联数组)且 bash -n 可解析", g14_shell_scripts_are_portable),
 }
 
 

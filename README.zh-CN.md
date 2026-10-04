@@ -121,7 +121,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 第一次提交前请读 [`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md)；在笔记本上请用本地门禁而不是全量构建：
 
 ```bash
-bash scripts/gates/run-gates.sh light        # fmt + 13 条机械红线守卫 + 文档 + 许可清单
+bash scripts/gates/run-gates.sh light        # fmt + 14 条机械红线守卫 + 文档 + 许可清单
 bash scripts/dev/cargo-local.sh test -p yeban-model   # 刻意拒绝 --workspace（本机不跑重活）
 ```
 
@@ -191,7 +191,7 @@ yeban/
 ├── scripts/
 │   ├── dev/                        # cargo-local.sh / worktree.sh / ci-verdict.sh / changed-crates.py
 │   ├── gates/                      # run-gates.sh / validate_schemas.py
-│   ├── guards/                     # policy_check.py — 13 条机械红线守卫
+│   ├── guards/                     # policy_check.py — 14 条机械红线守卫
 │   └── brand/                      # render-logo.sh
 ├── docs/
 │   ├── YEBAN_*.md                  # 四份 Normative 规范

@@ -146,7 +146,7 @@ python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/sch
 一句话版本：
 
 - **已接线**：fmt、clippy `-D warnings`、单元/属性测试、cargo-deny、确定性 `Cargo.lock`、
-  13 条机械红线守卫（HashMap / GUI 依赖 / `0.0.0.0` / 大文件 / ASIO / 通配版本 / workspace 继承 / 工具缓存不入库 / workflow YAML 合法…）、
+  14 条机械红线守卫（HashMap / GUI 依赖 / `0.0.0.0` / 大文件 / ASIO / 通配版本 / workspace 继承 / 工具缓存不入库 / workflow YAML 合法…）、
   JSON Schema 契约（含 `.meta.` 约定与承重根）、**资产清单 + 逐项 SHA-256 对账**、工具链漂移断言、
   无头 UI 截图 artifact、`BASELINE-001` 的数量级测量入口。
 - **PENDING**：实时回调零分配（MUST-GATE-001/012）、L1 bit-exact（002）、L2 跨架构（003）、
