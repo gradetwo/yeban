@@ -191,9 +191,10 @@ job 来跑上面的命令。`.github/**` 属于集成者独占文件，本条工
 | 6 | `round_robin_selection_is_deterministic_and_cycles` | 把 `target` 写死为 1（忽略 `occurrence`） | **红**（第 2 次触发返回 k1 而非 k2） |
 | 7 | `capacity_is_never_exceeded` | 池满时 `slots.push` 而不是窃取 | **红**（容量从 8 涨到 200） |
 | 8 | `fixed_malformed_corpus_never_panics` | 在 `parse_text` 里对 `sample=` 输入 `panic!` | **红** |
+| 9 | `region_inherits_group_values_even_when_a_later_group_header_intervenes`、`region_inherits_default_path_across_a_later_control_header` | **不是注入，是真实缺陷**：`finalize_region` 原本只在下一个 `<region>` 段头触发，中途的 `<group>`/`<control>` 会清空继承表 → 先写的 region 被整段丢弃（`len() == 1` 而非 2） | **红**（先写判据 → 红 → 修 `switch_scope` 让归约先于任何作用域切换 → 绿） |
 
-绿色基线（还原后，`cargo test -p yeban-sfz`）：**25 lib + 16 include_sandbox + 12 malformed_inputs
-+ 3 doc-tests = 56 全绿**；`clippy -p yeban-sfz --all-targets -- -D warnings` 零告警。
+绿色基线（还原后，`cargo test -p yeban-sfz`）：**27 lib + 16 include_sandbox + 12 malformed_inputs
++ 3 doc-tests = 58 全绿**；`clippy -p yeban-sfz --all-targets -- -D warnings` 零告警。
 
 判据 → 报告里承诺的 5 条 (a)…(e) 的对应关系：
 
@@ -211,6 +212,8 @@ job 来跑上面的命令。`.github/**` 属于集成者独占文件，本条工
 - (e) 任意字节输入不 panic → `fixed_malformed_corpus_never_panics`（注入 8）、
   `random_bytes_never_panic`、`structured_random_input_never_panics_and_is_deterministic`；
   cargo-fuzz 目标另计（pending）
+- (f) 附加：作用域归约顺序正确性（真实缺陷回归）→ 注入 9 的两条
+  `region_inherits_*` 测试
 
 ### 未证明的部分（诚实记账）
 
@@ -245,4 +248,7 @@ job 来跑上面的命令。`.github/**` 属于集成者独占文件，本条工
 | 「RT 零分配」分配器计数证明 | pending | 集成者裁决（是否引入计数依赖） |
 | 第 6 节的 8 项歧义裁决 | needs | 人类 / BDFL |
 | `<master>` 四级继承、调制 opcode、`trigger`/`off_*` | pending | 后续切片（ROAD-M2-006 起） |
-| `docs/DEVELOPMENT_LEDGER.md` 登记本次测量（上限口径、56 条测试） | needs | 集成者（该文件集成者独占） |
+| `docs/DEVELOPMENT_LEDGER.md` 登记本次测量（上限口径、58 条测试） | needs | 集成者（该文件集成者独占） |
+| **门禁缺口**：`scripts/gates/run-gates.sh crate <name>` **不跑** `license_inventory.py --check` 与 `validate_schemas.py`，只有 CI 的 `checks` job 跑。本次加 `thiserror` 依赖就因此先红了一次（见下）。建议集成者把 `license_inventory.py --check` 并入 `run-gates.sh light`。 | needs | 集成者（`scripts/**` 集成者独占） |
+| `docs/ledger/dependency-licenses.md` 是**生成物**：加依赖后必须重跑 `python3 scripts/gates/license_inventory.py`。本次已重跑并随提交更新（`thiserror` 直接依赖者增加 `yeban-sfz` + `Cargo.lock` 哈希）。多条工作线同时加依赖时此文件必冲突，建议集成者按「合并后统一重生成」处理。 | needs | 集成者 |
+| `.gitignore` **没有忽略 `/.cache/`**：`scripts/dev/ci-verdict.sh` 在 `~/.cache` 不可写时会把 `XDG_CACHE_HOME` 指到工作区内的 `.cache/`，于是 `gh` 会把 run 日志 zip（约 0.5 MB/个）落在这里；一旦 `git add -A` 就会误入库。本次已删掉误入的 zip（amend 修正）。建议集成者在根 `.gitignore` 增加 `/.cache/`。 | needs | 集成者 |

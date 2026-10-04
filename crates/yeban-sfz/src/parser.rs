@@ -876,6 +876,11 @@ impl<'a> Parser<'a> {
 
     /// 切换当前作用域。`name` 可能来自宏替换后的临时缓冲，因此只读不存。
     fn switch_scope(&mut self, name: &str, line_no: usize) -> Result<(), SfzError> {
+        // 关键顺序：**先**离开 region 作用域（归约尚未完成的 `<region>`），再切换。
+        // 否则后续的 `<group>` / `<global>` / `<control>` 会清空继承表，
+        // 让尚未归约的 region 要么丢掉继承值、要么被整段丢弃（回归判据：
+        // `region_inherits_group_values_even_when_a_later_group_header_intervenes`）。
+        self.finalize_region()?;
         match Header::from_name(name) {
             Some(Header::Control) => {
                 // ARIA 语义：新的 `<control>` 会重置 `default_path`。
@@ -892,7 +897,6 @@ impl<'a> Parser<'a> {
                 self.scope = Scope::Group;
             }
             Some(Header::Region) => {
-                self.finalize_region()?;
                 if self.regions.len() >= self.limits.max_regions {
                     return Err(SfzError::TooManyRegions {
                         limit: self.limits.max_regions,

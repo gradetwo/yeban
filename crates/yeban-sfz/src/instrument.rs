@@ -477,8 +477,8 @@ pub(crate) fn build_region<'a>(
     let hichan = read_u8(&scopes, "hichan", 1, 16, 16)?;
 
     // ---- 循环 ----
-    let loop_start = read_u32(&scopes, "loop_start", "loopstart", 0)?;
-    let loop_end = read_u32(&scopes, "loop_end", "loopend", 0)?;
+    let loop_start = read_u32(&scopes, "loop_start", Some("loopstart"), 0)?;
+    let loop_end = read_u32(&scopes, "loop_end", Some("loopend"), 0)?;
     let loop_mode = match scopes.get("loop_mode").or_else(|| scopes.get("loopmode")) {
         Some(value) => value.as_option(LoopMode::OPTIONS, LoopMode::ALLOWED)?,
         None => LoopMode::NoLoop,
@@ -497,10 +497,10 @@ pub(crate) fn build_region<'a>(
     };
 
     // ---- 轮替 / 分组 ----
-    let seq_position = read_u32(&scopes, "seq_position", "seq_position", 1)?;
-    let seq_length = read_u32(&scopes, "seq_length", "seq_length", 1)?;
-    let group = read_u32(&scopes, "group", "polyphony_group", 0)?;
-    let off_by = read_u32(&scopes, "off_by", "offby", 0)?;
+    let seq_position = read_u32(&scopes, "seq_position", None, 1)?;
+    let seq_length = read_u32(&scopes, "seq_length", None, 1)?;
+    let group = read_u32(&scopes, "group", Some("polyphony_group"), 0)?;
+    let off_by = read_u32(&scopes, "off_by", Some("offby"), 0)?;
 
     // ---- keyswitch ----
     let sw_last = match scopes.get("sw_last") {
@@ -632,10 +632,13 @@ fn read_i32(
 fn read_u32(
     scopes: &Scopes<'_, '_>,
     name: &'static str,
-    alias: &'static str,
+    alias: Option<&'static str>,
     fallback: u32,
 ) -> Result<u32, SfzError> {
-    match scopes.get(name).or_else(|| scopes.get(alias)) {
+    let value = scopes
+        .get(name)
+        .or_else(|| alias.and_then(|alias| scopes.get(alias)));
+    match value {
         Some(value) => Ok(value.as_int(0, i64::from(u32::MAX))? as u32),
         None => Ok(fallback),
     }
@@ -718,6 +721,35 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(absolute.regions()[0].sample_path(), "/abs/kick.wav");
+    }
+
+    #[test]
+    fn region_inherits_group_values_even_when_a_later_group_header_intervenes() {
+        // 回归判据：`<region>` 的归约必须发生在**离开 region 作用域时**，
+        // 而不是等下一个 `<region>` 段头 —— 否则中途的 `<group>` 清空 group 表，
+        // 会让尚未归约的 region 丢掉继承值。
+        let instrument = parse_text(
+            "<group>key=36\n<region>sample=a.wav\n<group>key=48\n<region>sample=b.wav\n",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 2);
+        assert_eq!(instrument.regions()[0].lokey, 36);
+        assert_eq!(instrument.regions()[0].hikey, 36);
+        assert_eq!(instrument.regions()[1].lokey, 48);
+        assert_eq!(instrument.regions()[1].hikey, 48);
+    }
+
+    #[test]
+    fn region_inherits_default_path_across_a_later_control_header() {
+        let instrument = parse_text(
+            "<control>\ndefault_path=A/\n<region>sample=a.wav\n<control>\ndefault_path=B/\n<region>sample=b.wav\n",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 2);
+        assert_eq!(instrument.regions()[0].sample_path(), "A/a.wav");
+        assert_eq!(instrument.regions()[1].sample_path(), "B/b.wav");
     }
 
     #[test]
