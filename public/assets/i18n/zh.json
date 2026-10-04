@@ -52,7 +52,7 @@
   "nav.theme_light": "浅色",
   "notfound.back": "返回首页",
   "notfound.body": "你要找的页面不在这里。",
-  "notfound.title": "页面不存在",
+  "notfound.title": "404 · 页面不存在",
   "oss.agent_body": "规范、门禁与开发纪律都以机器可执行的形式存在：需求编号、可失败的判据、以及明确禁止 Agent 触碰的法务文件。",
   "oss.agent_title": "为人机协作写的工程契约",
   "oss.audit_body": "每个依赖都要通过白名单许可检查；非商业限制（如 CC-BY-NC）、专有不可再分发、与 GPLv3 不兼容的许可证一律被自动化门禁拦下。",

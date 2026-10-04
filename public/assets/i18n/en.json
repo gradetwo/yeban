@@ -52,7 +52,7 @@
   "nav.theme_light": "Light",
   "notfound.back": "Back to home",
   "notfound.body": "The page you are looking for is not here.",
-  "notfound.title": "Page not found",
+  "notfound.title": "404 · Page not found",
   "oss.agent_body": "Specifications, gates and working discipline all exist in machine-executable form: requirement IDs, criteria that can fail, and legal files agents must never touch.",
   "oss.agent_title": "An engineering contract written for human–AI collaboration",
   "oss.audit_body": "Every dependency must pass an allow-list licence check. Non-commercial restrictions, proprietary non-redistributable terms and GPLv3-incompatible licences are blocked by an automated gate.",

@@ -104,6 +104,9 @@ async function main() {
       // DPR 1: 截图只用于人工/机器回看版面, 不需要 2x 体积
       deviceScaleFactor: 1,
       reducedMotion: "reduce",
+      // 显式钉死 locale: CI 的 navigator.language 是 en-US, 若不钉死,
+      // 名为 *-zh 的截图实际拍的是英文 (第一版就踩了这个坑)
+      locale: lang === "en" ? "en-US" : "zh-CN",
     });
     const page = await context.newPage();
     const consoleErrors = [];
@@ -119,7 +122,7 @@ async function main() {
 
   // --- A1/A2/A3/A7: 深色自动模式 -------------------------------------------
   {
-    const { context, page, consoleErrors, failedRequests } = await newPage({ dark: true });
+    const { context, page, consoleErrors, failedRequests } = await newPage({ dark: true, lang: "zh" });
     if (consoleErrors.length) fail("A1", `深色模式控制台错误: ${consoleErrors.join(" | ")}`);
     if (failedRequests.length) fail("A1", `深色模式请求失败: ${failedRequests.join(" | ")}`);
 
@@ -174,7 +177,7 @@ async function main() {
 
   // --- A6: 移动端无横向溢出 ------------------------------------------------
   {
-    const { context, page } = await newPage({ dark: true, viewport: { width: 390, height: 844 } });
+    const { context, page } = await newPage({ dark: true, lang: "zh", viewport: { width: 390, height: 844 } });
     const overflow = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
@@ -188,11 +191,12 @@ async function main() {
 
   // --- A8: 404 页面 -------------------------------------------------------
   {
-    const { context, page } = await newPage({ dark: true });
-    const resp = await page.goto(`${base}/definitely-not-a-page`, { waitUntil: "networkidle" });
+    const { context, page } = await newPage({ dark: true, lang: "zh" });
+    const resp = await page.goto(`${base}/definitely-not-a-page?lang=zh`, { waitUntil: "networkidle" });
     const status = resp ? resp.status() : 0;
     if (status !== 404) fail("A8", `未知路径应返回 404, 实际 ${status}`);
     const notFoundText = (await page.textContent("h1")).trim();
+    // 两种语言的 notfound.title 都必须含 "404" —— 404 页面理应把 404 说出来
     if (!notFoundText.includes("404")) fail("A8", `404 页 h1 不含 404: ${notFoundText}`);
     await page.screenshot({ path: join(OUT, "notfound-dark-zh.png"), fullPage: true });
     await context.close();
