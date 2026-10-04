@@ -12,7 +12,23 @@ publish.workspace = true
 name = "yeban_mcp"
 path = "src/lib.rs"
 
+[[bin]]
+name = "yeban-mcp"
+path = "src/bin/yeban-mcp.rs"
+
+[features]
+# 红线 [AGENTS.md §2 红线 6 / MUST-GATE-009]: `mcp-http` **绝不**进 default。
+# 默认构建里不会链接任何网络监听代码; 要开必须显式 `--features mcp-http`,
+# 并且运行时**再**给一次 `--enable-mcp-http` —— 两道开关, 见 src/transport/mod.rs。
+default = []
+# Streamable HTTP JSON-RPC 传输 (形态 A: 内嵌于 yeban-app)。零新增依赖:
+# std::net::TcpListener + 线程手写最小 HTTP/1.1。
+mcp-http = []
+
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
