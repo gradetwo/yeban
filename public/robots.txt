@@ -1,0 +1,5 @@
+# 夜半 (Yeban) 官网
+User-agent: *
+Allow: /
+
+Sitemap: https://yeban.wangda.today/sitemap.xml

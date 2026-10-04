@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="256" height="256">
+  <defs>
+    <radialGradient id="d256-bg" cx="50%" cy="35%" r="80%">
+      <stop offset="0%" stop-color="#151D38"/>
+      <stop offset="100%" stop-color="#060A14"/>
+    </radialGradient>
+    <linearGradient id="d256-gold" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#F7E6B0"/>
+      <stop offset="45%" stop-color="#E2C77E"/>
+      <stop offset="100%" stop-color="#B8933E"/>
+    </linearGradient>
+    <mask id="d256-moon">
+      <rect width="400" height="400" fill="white"/>
+      <circle cx="232" cy="162" r="76" fill="black"/>
+    </mask>
+  </defs>
+  <rect width="400" height="400" rx="76" fill="url(#d256-bg)"/>
+  <g fill="none" stroke="url(#d256-gold)" stroke-linecap="round">
+    <path d="M 267.2 112.8 A 95 95 0 0 1 267.2 247.2" stroke-width="2.6" opacity="0.88"/>
+    <path d="M 284.9 95.1  A 120 120 0 0 1 284.9 264.9" stroke-width="2.4" opacity="0.52"/>
+    <path d="M 302.5 77.5  A 145 145 0 0 1 302.5 282.5" stroke-width="2.2" opacity="0.26"/>
+  </g>
+  <circle cx="200" cy="180" r="80" fill="url(#d256-gold)" mask="url(#d256-moon)"/>
+  <text x="200" y="356" text-anchor="middle" font-family="'Noto Serif SC','Songti SC','SimSun','STSong',Georgia,serif" font-size="38" fill="#E8D5A3" letter-spacing="14" font-weight="400">夜半</text>
+  <text x="200" y="384" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#5A6B8A" letter-spacing="7">YEBAN</text>
+</svg>

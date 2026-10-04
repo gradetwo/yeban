@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-Hans" data-theme="dark" data-theme-pref="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>夜半 Yeban — 纯血 Rust 原生专业 DAW</title>
+<meta name="description" content="夜半 (Yeban) 是一台从零设计的原生桌面数字音频工作站：Slint 声明式矢量界面 + 纯 Rust 低时延实时音频引擎，960 PPQ 整数时钟，GPLv3 开源。">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#060A14" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#FDFCFA" media="(prefers-color-scheme: light)">
+<meta name="author" content="Yeban project contributors">
+<link rel="canonical" href="https://yeban.wangda.today/">
+<link rel="alternate" hreflang="zh-Hans" href="https://yeban.wangda.today/">
+<link rel="alternate" hreflang="en" href="https://yeban.wangda.today/?lang=en">
+<link rel="alternate" hreflang="x-default" href="https://yeban.wangda.today/">
+<link rel="icon" type="image/svg+xml" href="/assets/brand/yeban-dark-64.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/png/yeban-dark-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/css/site.css">
+<!--
+  主题必须在样式表生效前决定, 否则会闪一下浅色 (FOUC)。
+  这段脚本是**内联**的, 因为它必须在首次绘制前同步执行。
+-->
+<script>
+(function () {
+  var KEY = "yeban-theme";
+  var pref = "auto";
+  try { pref = localStorage.getItem(KEY) || "auto"; } catch (e) { pref = "auto"; }
+  if (pref !== "auto" && pref !== "light" && pref !== "dark") { pref = "auto"; }
+  var dark = pref === "dark" || (pref === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  var root = document.documentElement;
+  root.setAttribute("data-theme-pref", pref);
+  root.setAttribute("data-theme", dark ? "dark" : "light");
+})();
+</script>
+</head>
+<body>
+<a class="skip-link" href="#main" data-i18n="a11y.skip">跳到主要内容</a>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/" aria-label="Yeban">
+      <img class="logo logo-dark" src="/assets/brand/yeban-dark-64.svg" width="40" height="40" alt="" data-i18n-attr="alt:a11y.logo">
+      <img class="logo logo-light" src="/assets/brand/yeban-light-64.svg" width="40" height="40" alt="" data-i18n-attr="alt:a11y.logo">
+      <span class="brand-text">
+        <span class="brand-name" data-i18n="brand.name">夜半</span>
+        <span class="brand-sub">Yeban DAW</span>
+      </span>
+    </a>
+
+    <nav class="site-nav" aria-label="Primary">
+      <a href="#features" data-i18n="nav.features">特性</a>
+      <a href="#stack" data-i18n="nav.stack">技术基座</a>
+      <a href="#roadmap" data-i18n="nav.roadmap">路线图</a>
+      <a href="#opensource" data-i18n="nav.opensource">开源</a>
+      <a href="#contact" data-i18n="nav.contact">联系</a>
+    </nav>
+
+    <div class="controls">
+      <div class="segmented" role="group" data-i18n-attr="aria-label:a11y.theme_group">
+        <button type="button" data-theme-set="auto" data-i18n="nav.theme_auto" aria-pressed="false">自动</button>
+        <button type="button" data-theme-set="light" data-i18n="nav.theme_light" aria-pressed="false">浅色</button>
+        <button type="button" data-theme-set="dark" data-i18n="nav.theme_dark" aria-pressed="false">深色</button>
+      </div>
+      <div class="segmented" role="group" data-i18n-attr="aria-label:a11y.lang_group">
+        <button type="button" data-lang-set="zh" data-i18n="lang.zh" aria-pressed="false">中文</button>
+        <button type="button" data-lang-set="en" data-i18n="lang.en" aria-pressed="false">EN</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <p class="badge" data-i18n="hero.badge">开发中 · Phase 0 可行性验证</p>
+        <h1 data-i18n="hero.title">把编曲交还给音乐，把确定性交还给工程</h1>
+        <p class="lede" data-i18n="hero.subtitle">夜半是一台从零设计的原生桌面 DAW。</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/gradetwo/yeban" rel="noopener">
+            <span data-i18n="hero.cta_github">在 GitHub 上查看</span>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/gradetwo/yeban/blob/main/docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md" rel="noopener">
+            <span data-i18n="hero.cta_docs">阅读架构规范</span>
+          </a>
+        </div>
+      </div>
+
+      <div class="hero-art" aria-hidden="true">
+        <img class="logo logo-dark hero-logo" src="/assets/brand/yeban-dark-512.svg" width="320" height="320" alt="">
+        <img class="logo logo-light hero-logo" src="/assets/brand/yeban-light-512.svg" width="320" height="320" alt="">
+      </div>
+    </div>
+
+    <div class="wrap">
+      <dl class="meta-grid">
+        <div class="meta">
+          <dt data-i18n="hero.meta_latency">端到端回路时延预算</dt>
+          <dd data-i18n="hero.meta_latency_value">≤ 5.5 ms</dd>
+        </div>
+        <div class="meta">
+          <dt data-i18n="hero.meta_clock">整数时钟精度</dt>
+          <dd data-i18n="hero.meta_clock_value">960 PPQ</dd>
+        </div>
+        <div class="meta">
+          <dt data-i18n="hero.meta_frame">界面渲染目标</dt>
+          <dd data-i18n="hero.meta_frame_value">120 FPS</dd>
+        </div>
+        <div class="meta">
+          <dt data-i18n="hero.meta_license">开源许可</dt>
+          <dd data-i18n="hero.meta_license_value">GPLv3 + CLAP 例外</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="features" class="section">
+    <div class="wrap">
+      <header class="section-head">
+        <h2 data-i18n="features.title">为什么再造一台 DAW</h2>
+        <p data-i18n="features.subtitle">四个不可协商的工程决定。</p>
+      </header>
+      <div class="cards">
+        <article class="card">
+          <h3 data-i18n="features.f1_title">原生桌面，不要 Web</h3>
+          <p data-i18n="features.f1_body">彻底的 Slint 矢量界面 + cpal 直驱声卡。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="features.f2_title">960 PPQ 整数时钟</h3>
+          <p data-i18n="features.f2_body">所有时间都是整数 tick。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="features.f3_title">确定性是可验证的</h3>
+          <p data-i18n="features.f3_body">持久化状态一律使用有序容器。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="features.f4_title">为 AI 协同而设计的接口</h3>
+          <p data-i18n="features.f4_body">只绑环回、默认关闭、逐请求鉴权。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="features.f5_title">活着的版本图谱</h3>
+          <p data-i18n="features.f5_body">撤销是领域操作日志的逆向重放。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="features.f6_title">开源到底，且许可清楚</h3>
+          <p data-i18n="features.f6_body">整体以 GPLv3 发布。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="stack" class="section section-alt">
+    <div class="wrap">
+      <header class="section-head">
+        <h2 data-i18n="stack.title">技术基座</h2>
+        <p data-i18n="stack.subtitle">每一个选型都写明了它的角色与许可。</p>
+      </header>
+      <div class="table-scroll">
+        <table class="stack-table">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="stack.col_tech">组件</th>
+              <th scope="col" data-i18n="stack.col_role">在夜半中的角色</th>
+              <th scope="col" data-i18n="stack.col_license">许可</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row"><code>Slint</code></th><td data-i18n="stack.slint_role">声明式矢量 GUI</td><td>GPLv3 / 商业双轨</td></tr>
+            <tr><th scope="row"><code>cpal</code></th><td data-i18n="stack.cpal_role">跨平台声卡直驱</td><td>Apache-2.0</td></tr>
+            <tr><th scope="row"><code>rtrb</code></th><td data-i18n="stack.rtrb_role">无锁通道</td><td>MIT / Apache-2.0</td></tr>
+            <tr><th scope="row"><code>symphonia</code></th><td data-i18n="stack.symphonia_role">全格式解码</td><td>MPL-2.0</td></tr>
+            <tr><th scope="row"><code>rubato</code></th><td data-i18n="stack.rubato_role">多相重采样</td><td>MIT</td></tr>
+            <tr><th scope="row"><code>Rayon</code></th><td data-i18n="stack.rayon_role">离线渲染并行</td><td>MIT / Apache-2.0</td></tr>
+            <tr><th scope="row"><code>clack</code></th><td data-i18n="stack.clack_role">CLAP 插件宿主</td><td>MIT / Apache-2.0</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="roadmap" class="section">
+    <div class="wrap">
+      <header class="section-head">
+        <h2 data-i18n="roadmap.title">路线图</h2>
+        <p data-i18n="roadmap.subtitle">以可机械度量的能力切片推进。</p>
+      </header>
+      <ol class="timeline">
+        <li class="tl-item">
+          <span class="tl-tag" data-i18n="roadmap.status_done">已完成基础</span>
+          <h3><code>v0.0.1</code> <span data-i18n="roadmap.p1_title">Phase -1 · 开源合规大扫除</span></h3>
+          <p data-i18n="roadmap.p1_body">许可白名单、依赖审计、法务与商标核验。</p>
+        </li>
+        <li class="tl-item is-current">
+          <span class="tl-tag" data-i18n="roadmap.status_current">进行中</span>
+          <h3><code>v0.1.0</code> <span data-i18n="roadmap.p2_title">Phase 0 · 九大可行性验证</span></h3>
+          <p data-i18n="roadmap.p2_body">驱动时延、无锁通道、渲染帧率。</p>
+        </li>
+        <li class="tl-item">
+          <span class="tl-tag" data-i18n="roadmap.status_planned">计划中</span>
+          <h3><code>v0.2.0</code> <span data-i18n="roadmap.p3_title">Phase 1 · 数据模型与存储</span></h3>
+          <p data-i18n="roadmap.p3_body">工程容器、原子保存、文件锁。</p>
+        </li>
+        <li class="tl-item">
+          <span class="tl-tag" data-i18n="roadmap.status_planned">计划中</span>
+          <h3><code>v0.4.0</code> <span data-i18n="roadmap.p4_title">Phase 2 · 实时音频管线</span></h3>
+          <p data-i18n="roadmap.p4_body">声卡直驱、内部延迟补偿。</p>
+        </li>
+        <li class="tl-item">
+          <span class="tl-tag" data-i18n="roadmap.status_planned">计划中</span>
+          <h3><code>v0.6.0</code> <span data-i18n="roadmap.p5_title">Phase 3 · 编曲工作区</span></h3>
+          <p data-i18n="roadmap.p5_body">双视图同构、虚拟化卷帘。</p>
+        </li>
+        <li class="tl-item">
+          <span class="tl-tag" data-i18n="roadmap.status_planned">计划中</span>
+          <h3><code>v1.0.0</code> <span data-i18n="roadmap.p6_title">Phase 4 · 意图接口与母带导出</span></h3>
+          <p data-i18n="roadmap.p6_body">双协议自动化闭环、离线母带。</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="opensource" class="section section-alt">
+    <div class="wrap">
+      <header class="section-head">
+        <h2 data-i18n="oss.title">开源与治理</h2>
+        <p data-i18n="oss.subtitle">自由软件的承诺要落到可执行的机制上。</p>
+      </header>
+      <div class="cards cards-2">
+        <article class="card">
+          <h3 data-i18n="oss.gpl_title">GPLv3 + CLAP 例外</h3>
+          <p data-i18n="oss.gpl_body">项目整体以 GPLv3 开源。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="oss.audit_title">机械化的依赖审计</h3>
+          <p data-i18n="oss.audit_body">每个依赖都要通过白名单许可检查。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="oss.agent_title">为人机协作写的工程契约</h3>
+          <p data-i18n="oss.agent_body">规范、门禁与开发纪律都以机器可执行的形式存在。</p>
+        </article>
+        <article class="card">
+          <h3 data-i18n="oss.docs_title">公开的设计过程</h3>
+          <p data-i18n="oss.docs_body">架构规范、工程路线图与调研报告都在仓库中公开。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="contact" class="section">
+    <div class="wrap">
+      <header class="section-head">
+        <h2 data-i18n="contact.title">联系</h2>
+        <p data-i18n="contact.subtitle">欢迎讨论架构、门禁与音频工程。</p>
+      </header>
+      <dl class="contact-grid">
+        <div>
+          <dt data-i18n="contact.email_label">邮箱</dt>
+          <dd><a href="mailto:yeban@wangda.today">yeban@wangda.today</a></dd>
+        </div>
+        <div>
+          <dt data-i18n="contact.repo_label">源码仓库</dt>
+          <dd><a href="https://github.com/gradetwo/yeban" rel="noopener">github.com/gradetwo/yeban</a></dd>
+        </div>
+        <div>
+          <dt data-i18n="contact.site_label">本网站</dt>
+          <dd><a href="https://yeban.wangda.today">yeban.wangda.today</a></dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p class="footer-brand" data-i18n="brand.tagline">纯血 Rust 原生专业数字音频工作站</p>
+    <p class="footer-license" data-i18n="footer.license">以 GNU GPLv3 发布，附 GPLv3 §7 CLAP 插件例外条款</p>
+    <p class="footer-meta">
+      <span>© <span id="year">2026</span> <span data-i18n="footer.copyright">夜半 (Yeban) 项目贡献者</span></span>
+    </p>
+    <p class="footer-note" data-i18n="footer.note">本页面为纯静态站点，不使用 Cookie、不加载第三方脚本。</p>
+  </div>
+</footer>
+
+<script src="/assets/js/theme.js" defer></script>
+<script src="/assets/js/i18n.js" defer></script>
+<script src="/assets/js/site.js" defer></script>
+</body>
+</html>

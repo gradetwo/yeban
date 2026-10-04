@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  社交分享图 (Open Graph) 的可编辑母版。由 scripts/render-brand-assets.sh 光栅化为 og.png (1200x630)。
+  左: 月牙与声波标志; 右: 中英文名与一句话定位。字体使用品牌字体栈 (PingFang SC / Songti SC / Noto Serif SC)。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <radialGradient id="og-bg" cx="72%" cy="8%" r="96%">
+      <stop offset="0%" stop-color="#1B2547"/>
+      <stop offset="55%" stop-color="#0C1223"/>
+      <stop offset="100%" stop-color="#05080F"/>
+    </radialGradient>
+    <linearGradient id="og-gold" x1="15%" y1="0%" x2="85%" y2="100%">
+      <stop offset="0%" stop-color="#F7E6B0"/>
+      <stop offset="45%" stop-color="#E2C77E"/>
+      <stop offset="100%" stop-color="#B8933E"/>
+    </linearGradient>
+    <mask id="og-moon">
+      <rect width="400" height="400" fill="white"/>
+      <circle cx="232" cy="162" r="76" fill="black"/>
+    </mask>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#og-bg)"/>
+
+  <!-- 标志: 平移到左侧, 去掉圆角底 (背景已自带) -->
+  <g transform="translate(70, 115)">
+    <g transform="scale(1.0)">
+      <g fill="none" stroke="url(#og-gold)" stroke-linecap="round">
+        <path d="M 267.2 112.8 A 95 95 0 0 1 267.2 247.2" stroke-width="2.6" opacity="0.88"/>
+        <path d="M 284.9 95.1  A 120 120 0 0 1 284.9 264.9" stroke-width="2.4" opacity="0.52"/>
+        <path d="M 302.5 77.5  A 145 145 0 0 1 302.5 282.5" stroke-width="2.2" opacity="0.26"/>
+      </g>
+      <circle cx="200" cy="180" r="80" fill="url(#og-gold)" mask="url(#og-moon)"/>
+    </g>
+  </g>
+
+  <!-- 文案: 右侧 -->
+  <g font-family="'PingFang SC','Songti SC','Noto Serif SC','Microsoft YaHei',serif">
+    <text x="520" y="250" font-size="96" fill="#F0EBE3" letter-spacing="16">夜半</text>
+    <text x="524" y="300" font-family="Helvetica,Arial,sans-serif" font-size="26" fill="#E2C77E" letter-spacing="18">YEBAN</text>
+    <text x="524" y="368" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="30" fill="#CDD6E6">纯血 Rust 原生专业数字音频工作站</text>
+    <text x="524" y="410" font-family="Helvetica,Arial,sans-serif" font-size="22" fill="#9AA7C0">Slint vector UI · 960 PPQ integer clock · GPLv3</text>
+  </g>
+
+  <line x1="524" y1="452" x2="1120" y2="452" stroke="#B8933E" stroke-opacity="0.45" stroke-width="2"/>
+  <text x="524" y="492" font-family="Helvetica,Arial,sans-serif" font-size="22" fill="#8A7E6E" letter-spacing="1">yeban.wangda.today</text>
+  <text x="1120" y="492" text-anchor="end" font-family="Helvetica,Arial,sans-serif" font-size="20" fill="#5A6B8A">github.com/gradetwo/yeban</text>
+</svg>

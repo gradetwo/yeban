@@ -1,0 +1,16 @@
+{
+  "name": "夜半 Yeban — 纯血 Rust 原生专业 DAW",
+  "short_name": "夜半 Yeban",
+  "description": "Slint 声明式矢量界面 + 纯 Rust 低时延实时音频引擎的现代桌面数字音频工作站",
+  "lang": "zh-Hans",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#060A14",
+  "theme_color": "#060A14",
+  "icons": [
+    { "src": "/assets/brand/png/yeban-dark-128.png", "sizes": "128x128", "type": "image/png" },
+    { "src": "/assets/brand/png/yeban-dark-256.png", "sizes": "256x256", "type": "image/png" },
+    { "src": "/assets/brand/png/yeban-dark-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

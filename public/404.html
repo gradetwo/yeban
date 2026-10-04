@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-Hans" data-theme="dark" data-theme-pref="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 — 夜半 Yeban</title>
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="/assets/brand/yeban-dark-64.svg">
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  var pref = "auto";
+  try { pref = localStorage.getItem("yeban-theme") || "auto"; } catch (e) { pref = "auto"; }
+  if (["light", "dark"].indexOf(pref) < 0) pref = "auto";
+  var dark = pref === "dark" || (pref === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme-pref", pref);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+})();
+</script>
+</head>
+<body>
+<main class="wrap" style="padding: 12vh 22px; text-align: center;">
+  <img class="logo" src="/assets/brand/yeban-dark-256.svg" width="128" height="128" alt="" style="border-radius: 22%;">
+  <h1 style="margin-top: 28px;" data-i18n="notfound.title">页面不存在</h1>
+  <p class="lede" style="margin: 0 auto 28px;" data-i18n="notfound.body">你要找的页面不在这里。</p>
+  <p><a class="btn btn-primary" href="/" data-i18n="notfound.back">返回首页</a></p>
+</main>
+<script src="/assets/js/i18n.js" defer></script>
+</body>
+</html>

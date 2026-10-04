@@ -1,0 +1,96 @@
+# 夜半官网 (yeban.wangda.today) —— 构建校验与 Cloudflare Workers 部署
+#
+# 站点源码住在**专用分支 `website`**(orphan 分支, 根目录即站点)。
+# 这个文件在 main 与 website 上各存一份, 目的:
+#   - website 分支上的那份负责 `push` 到 website 时自动部署 (GitHub 的 push 事件
+#     只读取被推送 ref 里的 workflow 文件);
+#   - main 上的这份让 `workflow_dispatch` 出现在 Actions 界面里, 并且可以
+#     显式 checkout website 分支后做同样的校验与部署。
+#
+# 部署凭据 (由仓库管理员配置, 未配置时部署步骤会**优雅跳过**而不是报红):
+#   - secrets.CLOUDFLARE_API_TOKEN
+#   - secrets.CLOUDFLARE_ACCOUNT_ID
+# wrangler.toml 里的自定义域 / account 由管理员按需填写。
+
+name: Site (yeban.wangda.today)
+
+on:
+  push:
+    branches:
+      - website
+    paths:
+      - "public/**"
+      - "scripts/**"
+      - "wrangler.toml"
+      - "package.json"
+      - ".github/workflows/site-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "要部署的分支/ref"
+        type: string
+        default: website
+      deploy:
+        description: "校验通过后是否真的部署"
+        type: boolean
+        default: true
+
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (站点契约)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 站点静态契约检查
+        run: node scripts/check-site.mjs
+
+  deploy:
+    name: deploy (wrangler)
+    needs: check
+    if: github.event_name == 'push' || inputs.deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 部署到 Cloudflare Workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            {
+              echo "### 已跳过部署 (缺少 Cloudflare 凭据)"
+              echo ""
+              echo "请在仓库 Settings → Secrets and variables → Actions 配置:"
+              echo "- \`CLOUDFLARE_API_TOKEN\` (权限: Workers Scripts:Edit, Account Settings:Read)"
+              echo "- \`CLOUDFLARE_ACCOUNT_ID\`"
+              echo ""
+              echo "配置完成后重跑本 workflow 即可发布到 yeban.wangda.today。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::缺少 Cloudflare 凭据, 跳过部署"
+            exit 0
+          fi
+          npx --yes wrangler@4 deploy
