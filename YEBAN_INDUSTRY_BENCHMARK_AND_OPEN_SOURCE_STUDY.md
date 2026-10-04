@@ -1,10 +1,9 @@
 # 夜半 (Yeban) 专业桌面 DAW 行业顶级软件深度调研与开源生态融合战略 (Slint + Pure Rust 原生桌面版)
 
-> **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3 附 CLAP 插件加载附加许可 (GPLv3 §7) | 仓库：`https://github.com/yeban/yeban`  
-> **文档状态**：Informative / Research（事实调研与生态战略参考）  
-> **规范版本**：`v1.0.0-rev1` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`  
-> **Supersedes**：所有历史 Groove Lab / Groove V1/V2/V3 行业调研与竞品分析备忘录  
-> **文档依赖**：`Depends-on: ARCHITECTURE v1.0.0, ROADMAP v1.0.0, LEGAL.md, CONTRIBUTING.md, THIRD_PARTY_LICENSES.md`  
+> **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3 附 CLAP 插件加载附加许可 (GPLv3 §7) | 仓库：`https://github.com/yeban/yeban`
+> **文档状态**：Informative / Research（事实调研与生态战略参考）
+> **规范版本**：`v1.0.0-rev2` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`
+> **文档依赖**：`Depends-on: ARCHITECTURE v1.0.0, ROADMAP v1.0.0, LEGAL.md, CONTRIBUTING.md, THIRD_PARTY_LICENSES.md`
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
@@ -13,23 +12,29 @@
 > 3. **AI Agent 自主研发范式 (Autonomous AI Agent Development)**：本调研与生态战略直接作为 **自主 AI Agent** 进行技术选型、依赖管理与架构融合的决策输入库；
 > 4. **零人力工时评估 (Zero Human Staffing Estimation)**：**彻底废除所有传统软件工程的人工人力、人月、人天及工时评估**。以可验证的机器基准指标和开源合规检查为唯一研发准绳。
 
-> **修订记录 (Revision Log)**：  
+> **修订记录 (Revision Log)** ：
 
-> - `v1.0.0-rev1` (2026-10-04)：**语义化版本重构 (Semantic Versioning Alignment)**。  
->   1. **版本体系从零起步**：确立全新从头研发原则，项目起步版本为 `v0.0.1`；  
->   2. **核心首发版本重定位**：原规划中的 `v3.0` 正式确立为首发生产版本 **`v1.0.0`**（工业基石与纯血原生首发版）；  
->   3. **竞品追溯与工业蓝图版本平移**：追溯矩阵与技术蓝图中的版本标签平移为 `v1.0.0`、`v1.1.0`、`v1.2.0`、`v1.5.0` 与 `v2.0.0`。  
-> - `v3.0-rev7` (2026-10-04)：**开源前阻断项清零、事实核验状态表建立与风控矩阵扩容 (依据权威专家评审 P0 意见)**。  
->   1. **确立 Informative / Research 参考性状态**：明确与 Normative 规范文件的职能边界；  
->   2. **建立“关键事实核验状态表”**：逐项厘清 Slint 官方能力、VST3 SDK 3.8.0+ MIT 切换、nih-plug 边界、Basic Pitch/DeepFilterNet 模型定位与 signalsmith-stretch 许可；  
->   3. **知识产权与许可证矩阵全量扩容**：补齐 Skia、FemtoVG、Noto Sans CJK 开源字体、Lucide 图标集与 159 种世界音乐乐理规则库许可审计；  
->   4. **彻底清理残留夸大修辞**：消除所有非量化形容词，全面转换为工业级性能基准与工程事实。  
-> - `v3.0-rev6` (2026-10-04)：系统闭环、许可隔离与工业蓝图精准收敛。  
-> - `v3.0-rev5` (2026-10-04)：开源合规与合规审计升级，更名为“夜半 (Yeban)”，确立整体以 GPLv3 许可证在 GitHub 开源，建立 CLAP §7 例外与 Slint 双授权声明。  
-> - `v3.0-rev4` (2026-10-04)：增补 Slint 无头架构与内嵌 MCP 内省技术优势。  
-> - `v3.0-rev3` (2026-10-04)：重大技术架构转型，彻底放弃 Web 路线，确立 Slint GUI + Pure Rust 原生桌面 DAW 路线。  
+> - `v1.0.0-rev2` (2026-10-04)：**外部事实核验与调研结论修正**。
+>   1. **关键事实核验状态表全面更新**：逐项核实 Slint Testing Backend 行为边界、VST3 SDK 3.8.0+ MIT 许可生效、ASIO SDK GPLv3 选项、`nih-plug` maintenance mode、DeepFilterNet MIT/Apache-2.0 双许可、Basic Pitch ONNX 模型 Apache-2.0 等；
+>   2. **Slint 无头能力描述修正**：区分 `i-slint-backend-testing`（内部 crate，不渲染像素，仅属性断言）与 `SoftwareRenderer`（Tier 1 视觉截图方案）的职能边界；
+>   3. **nih-plug 维护状态风险标记**：确认 `nih-plug` 处于 maintenance mode，新增风险条目 RSK-35；
+>   4. **ASIO 策略更新**：反映 ASIO SDK 已提供 GPLv3 开源选项，但保持默认 WASAPI 策略并补充法务确认要求；
+>   5. **DeepFilterNet 许可修正**：确认为 MIT/Apache-2.0 双许可，非单一 MIT。
+> - `v1.0.0-rev1` (2026-10-04)：**语义化版本重构 (Semantic Versioning Alignment)**。
+>   1. **版本体系从零起步**：确立全新从头研发原则，项目起步版本为 `v0.0.1`；
+>   2. **核心首发版本重定位**：原规划中的 `v3.0` 正式确立为首发生产版本 **`v1.0.0`**（工业基石与纯血原生首发版）；
+>   3. **竞品追溯与工业蓝图版本平移**：追溯矩阵与技术蓝图中的版本标签平移为 `v1.0.0`、`v1.1.0`、`v1.2.0`、`v1.5.0` 与 `v2.0.0`。
+> - `v3.0-rev7` (2026-10-04)：**开源前阻断项清零、事实核验状态表建立与风控矩阵扩容 (依据权威专家评审 P0 意见)** 。
+>   1. **确立 Informative / Research 参考性状态**：明确与 Normative 规范文件的职能边界；
+>   2. **建立"关键事实核验状态表"** ：逐项厘清 Slint 官方能力、VST3 SDK 3.8.0+ MIT 切换、nih-plug 边界、Basic Pitch/DeepFilterNet 模型定位与 signalsmith-stretch 许可；
+>   3. **知识产权与许可证矩阵全量扩容**：补齐 Skia、FemtoVG、Noto Sans CJK 开源字体、Lucide 图标集与 159 种世界音乐乐理规则库许可审计；
+>   4. **彻底清理残留夸大修辞**：消除所有非量化形容词，全面转换为工业级性能基准与工程事实。
+> - `v3.0-rev6` (2026-10-04)：系统闭环、许可隔离与工业蓝图精准收敛。
+> - `v3.0-rev5` (2026-10-04)：开源合规与合规审计升级，更名为"夜半 (Yeban)"，确立整体以 GPLv3 许可证在 GitHub 开源，建立 CLAP §7 例外与 Slint 双授权声明。
+> - `v3.0-rev4` (2026-10-04)：增补 Slint 无头架构与内嵌 MCP 内省技术优势。
+> - `v3.0-rev3` (2026-10-04)：重大技术架构转型，彻底放弃 Web 路线，确立 Slint GUI + Pure Rust 原生桌面 DAW 路线。
 
-> **调研目的**：深入解构全球顶级商业 DAW 与工业级音频工具的设计哲学、技术实现、优缺点与商业护城河；全面盘点开源世界中成熟的音频宿主、Rust 原生音频生态（Crates）、Slint 原生 GUI 表现力、采样引擎与音频 AI 模型，为夜半 (Yeban) 确立“**汲取行业顶级精髓、规避历史遗留痛点、最大化复用 Rust 开源生态、打造高确定性与高内省性的纯血原生桌面差异化优势**”的实施指南。
+> **调研目的**：深入解构全球顶级商业 DAW 与工业级音频工具的设计哲学、技术实现、优缺点与商业护城河；全面盘点开源世界中成熟的音频宿主、Rust 原生音频生态（Crates）、Slint 原生 GUI 表现力、采样引擎与音频 AI 模型，为夜半 (Yeban) 确立"**汲取行业顶级精髓、规避历史遗留痛点、最大化复用 Rust 开源生态、打造高确定性与高内省性的纯血原生桌面差异化优势**"的实施指南。
 
 ---
 
@@ -79,12 +84,20 @@
 | 调研对象 / 技术声明 | 原始假设 / 历史表述 | 独立查证与核验结论 | 状态标记 | 落地规范影响 |
 | :--- | :--- | :--- | :---: | :--- |
 | **Slint 上游 MCP / 测试能力** | 假定 `slint/mcp` 与 `SLINT_MCP_PORT` 已稳定可用 | 官方 Testing 后端与自定义 Platform 稳定；官方内嵌 MCP 尚处实验性，未作为正式语义发布 | ⚠️ 部分核实 (已兜底) | 架构解除对其强依赖，采用自研 `yeban-ui-test-port` 适配层与 Tier 1 软件光栅化兜底 |
-| **VST3 SDK 开源许可** | 历史表述双许可存在 GPL 传染风险 | Steinberg 于 2025 年 10 月正式将 VST3 SDK 3.8.0 切换为 MIT 许可 | ✅ 已核实 | 锁定依赖版本 ≥ 3.8.0，优先走 MIT 路径彻底消除上游传染风险 |
-| **nih-plug 宿主功能** | 假定可直接作为 DAW 插件宿主框架 | `nih-plug` 定位为**音频插件开发框架**，非插件宿主（Host） | ✅ 已纠正 | 宿主端采用 `clack` (CLAP) 与 `vst3-sys` (VST3)，`nih-plug` 仅用于对外反向打包 |
-| **Spotify Basic Pitch** | 假定可直接在轻量环境下高精度转录 | 模型约 30MB，基于轻量 CNN 架构，Apache-2.0 协议，支持 ONNX 跨平台推理 | ✅ 已核实 | 集成于 `yeban-services` 作为本地扒带工具，模型权重独立分发 |
-| **DeepFilterNet** | 假定可用于通用母带降噪 | 主要面向全频带语音增强（Speech Enhancement），非乐器母带降噪 | ✅ 已核实 | 精准定位于人声音轨近线修复与播客语音处理，非全曲母带工具 |
+| **Slint Testing Backend 行为** | 假定 `i-slint-backend-testing` 可用于视觉截图 | **⚠️ 关键修正**：该 crate 为 Slint 内部 crate，不遵循 semver；Testing Backend **默认不渲染像素**，文本以固定字号测量，仅适用于属性断言与逻辑测试，**不可用于视觉回归截图** | ⚠️ 已修正 | 视觉回归 Golden 图必须由 Tier 1 软件光栅化（`SoftwareRenderer` + Framebuffer 捕获）产出；Testing Backend 仅用于属性断言 |
+| **VST3 SDK 开源许可** | 历史表述双许可存在 GPL 传染风险 | Steinberg 于 2025 年 10 月 20 日正式将 VST3 SDK 3.8.0 切换为 MIT 许可；GPLv3 与专有双许可已终止 | ✅ 已核实 | 锁定依赖版本 ≥ 3.8.0，优先走 MIT 路径彻底消除上游传染风险 |
+| **ASIO SDK 开源状态** | 假定可直接随源码分发 | Steinberg 于 2025 年 10 月将 ASIO SDK 扩展为 **GPLv3 开源许可**（与原有专有许可并存）。GPLv3 版本对闭源分发不适用，但夜半以 GPLv3 发布可合规使用。**仍严禁将 ASIO SDK 头文件与源码打包入仓库** | ✅ 已核实 (策略修订) | 夜半以 GPLv3 发布可合规使用 ASIO GPLv3 版本，但为降低 Windows 用户构建门槛，官方默认仍首选 WASAPI 独占模式；ASIO 支持作为可选特性，须法务确认 |
+| **nih-plug 维护状态** | 假定可直接作为长期稳定的插件框架 | **⚠️ 关键发现**：`nih-plug` 处于 **maintenance mode**（维护模式），核心开发者已转向其他项目。社区 fork（如 `glittercowboy/nih-plug`）仍在活跃维护 | ⚠️ 需关注 | `yeban-vst` 模块须评估社区 fork 或自研最小 VST3/CLAP 包装层；锁定当前稳定版本并监控上游活跃度 (RSK-35) |
+| **Spotify Basic Pitch** | 假定可直接在轻量环境下高精度转录 | 模型约 230KB（ONNX 格式），基于轻量 CNN 架构，**Apache-2.0 协议**，支持 ONNX 跨平台推理，商业使用 OK | ✅ 已核实 | 集成于 `yeban-services` 作为本地扒带工具，模型权重独立分发 |
+| **DeepFilterNet** | 假定可用于通用母带降噪 | 主要面向全频带语音增强（Speech Enhancement），非乐器母带降噪。**许可为 MIT/Apache-2.0 双许可** | ✅ 已核实 | 精准定位于人声音轨近线修复与播客语音处理，非全曲母带工具 |
 | **signalsmith-stretch** | 替代 Rubber Band 避免 GPL 传染 | MIT 许可证，C++20/Rust 绑定，瞬态保留与共振峰平移优秀，商业友好 | ✅ 已核实 | 作为系统唯一内置音频弹性拉伸与变调算法，替代双许可的 Rubber Band |
-| **ASIO SDK 再分发** | 假定可直接随源码分发 | 专有协议，不可自由再分发 | ✅ 已核实 | 严格隔离，源码包与 Git 仓库 100% 剔除 ASIO，Windows 默认 WASAPI 独占 |
+| **rstar R*-Tree** | 空间索引用于钢琴卷帘视口裁剪 | MIT / Apache-2.0 双许可，纯 safe Rust 实现，支持自定义点类型与批量加载 | ✅ 已核实 | 用于钢琴卷帘 100,000+ 音符的 $O(\log N)$ 视口裁剪 |
+| **yrs CRDT** | Rust Yjs 端口用于多 Agent 协同 | 维护活跃（y-crdt 组织），与 Yjs 二进制协议兼容，支持跨语言互操作 | ✅ 已核实 | 作为 v1.5.0 局域网多人 + 多 Agent 实时无冲突协同编曲的技术基础 |
+| **cpal 音频 I/O** | 跨平台音频 I/O 库 | 版本 0.15+，RustAudio 组织维护，支持 ALSA/CoreAudio/WASAPI/JACK，安全策略文件已部署 | ✅ 已核实 | 作为系统唯一跨平台音频硬件 I/O 抽象层 |
+| **rtrb SPSC 队列** | 实时安全 SPSC 环形缓冲 | 版本 0.3.3+，Apache-2.0，支持 `no_std`，提供 `bulk_push`/`bulk_pop` 批量 API | ✅ 已核实 | 作为 UI 线程与音频线程间唯一无锁通信渠道 |
+| **symphonia 解码** | 纯 Rust 全格式解码 | 版本 0.6.x，MPL-2.0 许可，支持 AAC/FLAC/MP3/Vorbis/ALAC 等，MSRV 1.85 | ✅ 已核实 | 作为 `yeban-decode` 的核心解码引擎 |
+| **rubato 重采样** | 高保真采样率转换 | 版本 0.x，MIT 许可，设计时考虑实时安全性，避免处理中分配 | ✅ 已核实 | 作为采样率自适应重采样的核心库 |
+| **midir MIDI I/O** | 跨平台实时 MIDI 处理 | 版本 0.10+，MIT 许可，ALSA/WinMM/CoreMIDI 后端，支持虚拟端口与 SysEx | ✅ 已核实 | 作为物理 MIDI 输入直连的底层库 |
 
 ---
 
@@ -92,68 +105,68 @@
 
 ### 1.1 Ableton Live 12: 双视图同构与即兴机架标杆
 * **产品地位**：全球电子音乐、Hip-Hop、舞台演出（Live Performance）与现代编曲的事实标准。
-* **核心优势（学习目标）**：
+* **核心优势（学习目标）** ：
   1. **Session View 与 Arrangement View 双视图体系**：基于卡片网格的 Clip Launcher 与线性时间轴无缝映射，按下 `Tab` 键实现视图零时延切换；
-  2. **Device Rack（设备机架并行链）**：支持将合成器与效果器打包为 Rack，并可在内部创建多个平行 Chain，通过 Macro 旋钮实现多参数联动；
+  2. **Device Rack（设备机架并行链）** ：支持将合成器与效果器打包为 Rack，并可在内部创建多个平行 Chain，通过 Macro 旋钮实现多参数联动；
   3. **Warp 弹性音频引擎**：提供 Beats、Tones、Texture、Complex 等多种声学拉伸算法，支持瞬态切片与节拍吸附。
-* **核心缺陷（规避目标）**：
+* **核心缺陷（规避目标）** ：
   - **单进程连带闪退**：缺乏独立的沙盒隔离，第三方插件发生内存段错误（SIGSEGV）时整个 Live 会直接崩溃；
   - **无原生版本分支与协作能力**：工程文件（`.als`）本质为 Gzip 压缩的 XML，无法进行语义化 Git Diff；
   - **单步撤销栈线性受限**：不支持分支撤销树，撤销后若进行新编辑，被跳过的历史操作永久丢失。
 
 ### 1.2 Bitwig Studio 5: 模块化解耦与沙盒宿主之王
 * **产品地位**：由 Ableton 前核心工程师离职创立，以模块化架构与沙盒防护著称的现代化宿主。
-* **核心优势（学习目标）**：
-  1. **工业级沙盒化插件防护 (Crash-Proof Sandboxing)**：每个第三方 VST/CLAP 插件均运行在独立子进程中。支持按插件或按供应商隔离，插件崩溃时工程完全不卡顿、不闪退，界面直接提供热重启按钮；
+* **核心优势（学习目标）** ：
+  1. **工业级沙盒化插件防护 (Crash-Proof Sandboxing)** ：每个第三方 VST/CLAP 插件均运行在独立子进程中。支持按插件或按供应商隔离，插件崩溃时工程完全不卡顿、不闪退，界面直接提供热重启按钮；
   2. **The Grid 模块化声音设计**：基于有向无环图（DAG）的完全模块化声音引擎，原生支持多音符 MPE 维度；
   3. **CLAP 格式核心联合倡导者**：推动摆脱 Steinberg VST3 的历史许可束缚，实现多线程共享与更低的时钟抖动。
-* **核心缺陷（规避目标）**：
+* **核心缺陷（规避目标）** ：
   - 原声乐器资产库体量不及 Kontakt 与 Logic Pro；
   - 复杂工程多进程 IPC 调度存在固有系统开销。
 
 ### 1.3 Apple Logic Pro 11: 极致生态资产与原生 AI 伴奏
 * **产品地位**：苹果生态旗舰，流行音乐唱片工业、影视配乐与商业录音棚的核心工具。
-* **核心优势（学习目标）**：
+* **核心优势（学习目标）** ：
   1. **海量顶级开箱即用音色资产**：70GB+ 的 Factory Sound Library（Alchemy 合成器、Studio Strings、Sculpture 物理建模）；
-  2. **AI Session Players (伴奏乐手矩阵)**：提供 Drummer、Bass Player、Keyboard Player，制作人调节参数，AI 自适应演奏富有动态的人性化声部；
-  3. **内置 Stem Splitter (音源分轨)**：直接基于 CoreML 实现人声、鼓、贝斯、乐器的 4-Stem 分离。
-* **核心缺陷（规避目标）**：
+  2. **AI Session Players (伴奏乐手矩阵)** ：提供 Drummer、Bass Player、Keyboard Player，制作人调节参数，AI 自适应演奏富有动态的人性化声部；
+  3. **内置 Stem Splitter (音源分轨)** ：直接基于 CoreML 实现人声、鼓、贝斯、乐器的 4-Stem 分离。
+* **核心缺陷（规避目标）** ：
   - **生态严密闭环**：强力绑定 macOS 与 iPadOS，100% 无法在 Windows 或 Linux 端运行；
   - **插件格式单一**：仅支持 Apple AUv2/AUv3，不支持 VST3 与 CLAP。
 
 ### 1.4 Cockos REAPER 7: 极致性能、万能路由与脚本哲学
 * **产品地位**：全球独立音乐人、游戏音频工程师与工业声学工程师高度推崇的高性能 DAW。
-* **核心优势（学习目标）**：
+* **核心优势（学习目标）** ：
   1. **极致轻量与闪电启动**：安装包仅约 15MB，冷启动迅速，多核 CPU 调度性能极为优异；
-  2. **万能音轨模型（Universal Track Architecture）**：没有音频轨/MIDI轨/总线轨的刻意划分，单轨支持高达 64 个内部物理音频通道；
+  2. **万能音轨模型（Universal Track Architecture）** ：没有音频轨/MIDI轨/总线轨的刻意划分，单轨支持高达 64 个内部物理音频通道；
   3. **JSFX 实时编译脚本效果器**：支持用户用轻量类 C 脚本直接编写实时 DSP，边播放边热编译生效。
-* **核心缺陷（规避目标）**：
+* **核心缺陷（规避目标）** ：
   - 默认 UI 学习曲线陡峭；
   - 零内置原声乐器音色库，高度依赖第三方音源；
   - 无 Session View 卡片式即兴触发矩阵。
 
 ### 1.5 FL Studio 24: 钢琴卷帘之巅与步进编曲心流
 * **产品地位**：全球嘻哈、EDM 与卧室制作人占有率第一。
-* **核心优势（学习目标）**：
-  1. **高度流畅的钢琴卷帘交互 (Piano Roll UX)**：Ghost Notes（幽灵透视）、Quick Strum（扫弦拟真）、Stamp Chords（和弦印章）、Slide Notes（变频滑音包络）；
+* **核心优势（学习目标）** ：
+  1. **高度流畅的钢琴卷帘交互 (Piano Roll UX)** ：Ghost Notes（幽灵透视）、Quick Strum（扫弦拟真）、Stamp Chords（和弦印章）、Slide Notes（变频滑音包络）；
   2. **Pattern + Channel Rack 步进鼓机**：制作节奏律动效率极高。
-* **核心缺陷（规避目标）**：
+* **核心缺陷（规避目标）** ：
   - 通道架、调音台与播放列表（Playlist）早期属于三层分离架构，大型工程连线复杂度高；
   - 早期自动化包络线散落在时间轴上，缺乏轨道专属自动化车道。
 
 ### 1.6 PreSonus Studio One 7: 一体化拖拽与集成母带工程
 * **产品地位**：现代主流流行音乐制作新星，吸收了多个传统 DAW 的设计优势。
-* **核心优势（学习目标）**：
-  1. **全局拖拽交互 (Drag-and-Drop Everything)**：拖拽乐器直接建轨；拖拽效果器至轨道直接插入；拖拽音频至采样器自动切片；
-  2. **编曲轨道与草稿箱 (Arranger Track & Scratch Pads)**：支持宏观调整段落结构并在并行的草稿箱试验编曲方案；
-  3. **原生母带发布项目页 (Project Page)**：混音完稿后直通母带处理与 DDP / 数字发行镜像生成。
+* **核心优势（学习目标）** ：
+  1. **全局拖拽交互 (Drag-and-Drop Everything)** ：拖拽乐器直接建轨；拖拽效果器至轨道直接插入；拖拽音频至采样器自动切片；
+  2. **编曲轨道与草稿箱 (Arranger Track & Scratch Pads)** ：支持宏观调整段落结构并在并行的草稿箱试验编曲方案；
+  3. **原生母带发布项目页 (Project Page)** ：混音完稿后直通母带处理与 DDP / 数字发行镜像生成。
 
 ### 1.7 Web DAW 的物理局限与全面转型原生桌面之必然
 Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览器开箱即用，但在专业音频工业级领域存在无法逾越的**物理天花板**：
 1. **浏览器沙盒与第三方商业插件物理绝缘**：无法直接 `dlopen` 加载本地 C++ 编写的 VST3 / CLAP 动态库，专业混音师依赖的 Kontakt 7、Serum、FabFilter 等大件完全无法使用；
 2. **音频硬件与驱动受限**：Web Audio API 无法接管专有硬件 ASIO 或 CoreAudio 独占流，输入输出往返延迟难以压缩至专业监听所需的 5ms 以内；
 3. **内存与存储物理限制**：32 位 Wasm 内存上限（4GB）无法容纳多层立体声大体积管弦音色库；
-4. **决策结论**：**夜半 (Yeban) 全面放弃 Web/Wasm 架构，转型为纯 Rust 原生桌面 DAW（Slint + Native Audio Engine）**，直面 REAPER、Bitwig 与 Ableton Live，打造高确定性、低时延的专业级编曲生产力工具。
+4. **决策结论**：**夜半 (Yeban) 全面放弃 Web/Wasm 架构，转型为纯 Rust 原生桌面 DAW（Slint + Native Audio Engine）** ，直面 REAPER、Bitwig 与 Ableton Live，打造高确定性、低时延的专业级编曲生产力工具。
 
 ---
 
@@ -187,11 +200,13 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 
 ### 2.2 为什么选择 Slint 构筑下一代专业 DAW 界面
 1. **纯 Rust 编译与零开销绑定**：Slint 编译器（`slint-build`）直接将 `.slint` 界面定义编译为高效的 Rust 结构体与 Native 机器码，无动态脚本虚拟机开销；
-2. **保留模式局部渲染 (Dirty Region Repaint)**：专业编曲软件在播放期间，仅走带指针和电平表需要 60/120 FPS 高频更新，钢琴卷帘与其他静止面板保持休眠，相比即时模式 GUI（egui）节约 90% 以上的无谓 CPU 消耗；
+2. **保留模式局部渲染 (Dirty Region Repaint)** ：专业编曲软件在播放期间，仅走带指针和电平表需要 60/120 FPS 高频更新，钢琴卷帘与其他静止面板保持休眠，相比即时模式 GUI（egui）节约 90% 以上的无谓 CPU 消耗；
 3. **原生硬件加速**：支持基于 FemtoVG、Skia 与 OpenGL 的纯硬件加速后端，音符图元与波形在视网膜屏幕上极致丝滑；
 4. **极速冷启动与极低资源占用**：单执行文件冷启动就绪 ≤ 100ms，常驻空闲内存 ≤ 35MB；
-5. **原生无头模式与 Testing 模拟后端 (Headless & Testing Backends)**：Slint 原生提供 `SLINT_BACKEND=headless-software` 软件光栅化渲染器与 `i-slint-backend-testing` 测试专用后端，彻底打破传统 GUI 框架（如 JUCE / Qt）对 X11、Wayland 或物理显示器的强依赖，使完整的 DAW 界面在无头 Linux 服务器或 GitHub Actions CI/CD 容器中可零障碍运行；
-6. **内嵌 MCP 远程内省协议 (Built-in Introspection MCP for AI Agents)**：Slint 官方支持编译期 `--features slint/mcp` 与运行期 `SLINT_MCP_PORT`，原生内嵌基于 HTTP JSON-RPC 的内省服务器。AI Agent 无需侵入业务代码即可远程遍历 UI 控件树（查询音轨、音符矩形坐标）、注入交互事件并导出高保真无头截屏，赋予纯 Rust DAW 前所未有的 AI 全自主测试与视觉验证闭环能力。
+5. **原生无头模式与 Testing 模拟后端 (Headless & Testing Backends)** ：Slint 原生提供 `SLINT_BACKEND=headless-software` 软件光栅化渲染器与 `i-slint-backend-testing` 测试专用后端，彻底打破传统 GUI 框架（如 JUCE / Qt）对 X11、Wayland 或物理显示器的强依赖，使完整的 DAW 界面在无头 Linux 服务器或 GitHub Actions CI/CD 容器中可零障碍运行；
+   - **⚠️ 关键行为区分**：`i-slint-backend-testing` 为 Slint 内部 crate，不遵循 semver，必须精确版本匹配；且**默认不渲染像素**，文本以固定字号测量，仅适用于组件属性断言与逻辑测试。**视觉回归截图必须走 `SoftwareRenderer` + Framebuffer 捕获方案**；
+6. **内嵌 MCP 远程内省协议 (Built-in Introspection MCP for AI Agents)** ：Slint 官方支持编译期 `--features slint/mcp` 与运行期 `SLINT_MCP_PORT`，原生内嵌基于 HTTP JSON-RPC 的内省服务器。AI Agent 无需侵入业务代码即可远程遍历 UI 控件树（查询音轨、音符矩形坐标）、注入交互事件并导出高保真无头截屏，赋予纯 Rust DAW 前所未有的 AI 全自主测试与视觉验证闭环能力；
+   - **⚠️ 实验性状态**：该 MCP 功能尚处实验性，未列入正式语义稳定保障范围。夜半以自研 `yeban-ui-test-port` / `yeban-ui-mcp` 作为主方案，Slint MCP 仅作为参考或备选。
 
 ---
 
@@ -201,8 +216,8 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 * **项目特点**：由 Tracktion Software 开源的商业级 DAW 引擎骨架（支持商业产品 Waveform）[9]。
 * **技术价值与借鉴点**：
   - **Edit / Track / Clip 数据树结构**：其内部 `te::Edit` 统领全工程、音频片段作为轻量引用的设计为现代编曲软件所推崇；
-  - **基于图的音频拓扑 (`tracktion_graph`)**：演进为高效的有向无环音频计算图，支持多线程并行拓扑排序与计算；
-  - **自动插件延迟补偿 (PDC)**：严密追踪链路上每个处理节点的延迟样本并对齐时间线。
+  - **基于图的音频拓扑 (`tracktion_graph`)** ：演进为高效的有向无环音频计算图，支持多线程并行拓扑排序与计算；
+  - **自动插件延迟补偿 (PDC)** ：严密追踪链路上每个处理节点的延迟样本并对齐时间线。
 
 ### 3.2 Ardour 8 (C++)
 * **项目特点**：开源社区历史最悠久、工程度最高的跨平台专业数字音频工作站（Paul Davis 主导）[10]。
@@ -220,29 +235,30 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 ## 4. Rust 原生顶级音频武器库盘点与集成评估
 
 ### 4.1 插件格式与宿主桥接: clack, vst3-sys, nih-plug 与 ASIO 隔离
-1. **CLAP 宿主实现 (`clack`)**：基于纯 Rust 实现的 CLAP 插件与宿主桥接库，作为 `crates/yeban-plugin-host` 首选的第三方插件加载框架。针对宿主加载专有 CLAP 插件的法律边界，夜半项目在根目录 `LICENSE` 中显式附加了 GPLv3 第 7 条允许的附加许可（CLAP 例外条款），允许宿主动态加载商业独立模块而无需迫使该插件受 GPLv3 约束；
-2. **VST3 宿主绑定 (`vst3-sys`) 与 SDK 3.8.0+ 版本锁定**：Steinberg 已于 2025 年 10 月将 VST3 SDK 从 GPLv3/专有双许可正式切换为 MIT 许可证（版本 3.8.0）。夜半项目锁定最低依赖版本为 VST3 SDK 3.8.0+，优先选择 MIT 路径彻底消除上游许可证传染风险。Rust 绑定层 `vst3-sys` 以 GPLv3 发布，与本项目 GPLv3 许可证天然契合，配合跨进程沙盒加载 VST3 商业大件；
-3. **Steinberg ASIO SDK 专有隔离策略**：ASIO SDK 采用专有不可再分发许可证，严禁纳入夜半开源 Git 仓库。Windows 平台默认首选免驱动低延迟 WASAPI 独占模式；ASIO 支持作为独立可选动态加载扩展，仅在用户本地持有 Steinberg 合法 SDK 时按需配置编译；
-4. **插件反向导出与依赖隔离 (`nih-plug`)**：`nih-plug` 采用 GPL-3.0 / MPL-2.0 双许可。夜半项目将其完全隔离在专用的外接桥接 crate `crates/yeban-vst` 中，并设计细分 Cargo features（`vst3` 与 `clap`），默认不启用 `vst3`，并在 `cargo-deny` 的 `deny.toml` 中精细化配置排除规则，确保 `yeban-dsp` 等核心模块的纯粹性与安全性。
+1. **CLAP 宿主实现 (`clack`)** ：基于纯 Rust 实现的 CLAP 插件与宿主桥接库，作为 `crates/yeban-plugin-host` 首选的第三方插件加载框架。针对宿主加载专有 CLAP 插件的法律边界，夜半项目在根目录 `LICENSE` 中显式附加了 GPLv3 第 7 条允许的附加许可（CLAP 例外条款），允许宿主动态加载商业独立模块而无需迫使该插件受 GPLv3 约束；
+2. **VST3 宿主绑定 (`vst3-sys`) 与 SDK 3.8.0+ 版本锁定**：Steinberg 已于 **2025 年 10 月 20 日**将 VST3 SDK 从 GPLv3/专有双许可正式切换为 **MIT 许可证**（版本 3.8.0）。GPLv3 与专有双许可已终止。夜半项目锁定最低依赖版本为 VST3 SDK 3.8.0+，优先选择 MIT 路径彻底消除上游许可证传染风险。Rust 绑定层 `vst3-sys` 以 GPLv3 发布，与本项目 GPLv3 许可证天然契合，配合跨进程沙盒加载 VST3 商业大件；
+3. **Steinberg ASIO SDK 开源状态与隔离策略（修订）** ：Steinberg 已于 2025 年 10 月将 ASIO SDK 扩展为 **GPLv3 开源许可**（与原有专有许可并存）。夜半项目以 GPLv3 发布，在法务确认后可合规使用 ASIO GPLv3 版本。但为降低 Windows 用户的构建门槛与二进制分发复杂度，**官方默认构建仍首选免驱动低延迟 WASAPI 独占模式**；ASIO 支持作为独立可选动态加载扩展，须在法务确认 GPLv3 条款兼容性后按需配置编译。**仍严禁将 ASIO SDK 头文件与源码打包入仓库**；
+4. **插件反向导出与依赖隔离 (`nih-plug`)** ：`nih-plug` 采用 GPL-3.0 / MPL-2.0 双许可。夜半项目将其完全隔离在专用的外接桥接 crate `crates/yeban-vst` 中，并设计细分 Cargo features（`vst3` 与 `clap`），默认不启用 `vst3`，并在 `cargo-deny` 的 `deny.toml` 中精细化配置排除规则，确保 `yeban-dsp` 等核心模块的纯粹性与安全性。
+   - **⚠️ 维护状态风险**：`nih-plug` 当前处于 **maintenance mode**，核心开发者已转向其他项目。社区 fork（如 `glittercowboy/nih-plug`）仍在活跃维护。夜半须在 v2.0.0 前评估社区 fork 的维护状态，或自研最小 VST3/CLAP 包装层，或锁定当前稳定版本并仅在必要时打补丁（RSK-35）。
 
 ### 4.2 跨平台硬件音频 IO: cpal, rodio 与 rtrb
-1. **`cpal` (Cross-Platform Audio Library)**：驱动本地 Native 二进制的物理音频输出，支持 macOS (CoreAudio)、Windows (WASAPI / ASIO)、Linux (ALSA / JACK / PipeWire)，提供统一全平台声卡抽象；
+1. **`cpal` (Cross-Platform Audio Library)** ：驱动本地 Native 二进制的物理音频输出，支持 macOS (CoreAudio)、Windows (WASAPI / ASIO)、Linux (ALSA / JACK / PipeWire)，提供统一全平台声卡抽象；
 2. **`rtrb` / 原生无锁环形队列**：实现 UI 线程与实时音频线程之间 < 0.05ms 的无锁 SPSC 事件传递。主线程与实时音频线程之间批量数据交换强制遵循 `rtrb` 批量 API（`bulk_push` / `bulk_pop` 结合栈分配 `[f32; 128]`），严禁单样本循环调用；
 3. **退役回收队列**：音频线程向主线程通过专门的 `rtrb::Producer<Arc<EngineSnapshot>>` 释放旧引擎快照，彻底消灭音频线程堆内存释放（Zero dealloc）。
 
 ### 4.3 纯 Rust 解码与文件 IO: symphonia, hound, midly, RF64
-1. **`symphonia`**：纯 Rust 媒体解封装与音频解码库，零 C 依赖，全格式支持（WAV, FLAC, MP3, AAC-LC, OGG 等）[4]；
+1. **`symphonia`** ：纯 Rust 媒体解封装与音频解码库，零 C 依赖，全格式支持（WAV, FLAC, MP3, AAC-LC, OGG 等）[4]。版本 0.6.x，MPL-2.0 许可；
 2. **自研 RF64 / BW64 写入器**：支持突破 4GB 极限的 EBU Tech 3306 广播级 WAV 写入，内嵌 BEXT 块与 TPDF 高精抖动算法；
-3. **`hound`**：极速标准 PCM WAV 读写库；
-4. **`midly`**：零堆内存分配（Zero-Allocation）的高性能 Standard MIDI (SMF 0/1) 解析器与序列化器。
+3. **`hound`** ：极速标准 PCM WAV 读写库；
+4. **`midly`** ：零堆内存分配（Zero-Allocation）的高性能 Standard MIDI (SMF 0/1) 解析器与序列化器。
 
 ### 4.4 高性能采样率转换与 DSP: rubato, fundsp, biquad
-1. **`rubato`**：基于 Sinc 插值与多相滤波的高保真采样率重采样库，信噪比高于 140dB；
-2. **`fundsp`** 与 **`biquad`**：高精度二阶双极点 IIR 滤波器库，直接用于调音台参数均衡器与滤波器拓扑。
+1. **`rubato`** ：基于 Sinc 插值与多相滤波的高保真采样率重采样库，设计时考虑实时安全性，避免处理中分配；
+2. **`fundsp`** 与 **`biquad`** ：高精度二阶双极点 IIR 滤波器库，直接用于调音台参数均衡器与滤波器拓扑。
 
 ### 4.5 空间几何、版本图谱与实时协同: rstar, yrs
-1. **`rstar`**：基于 R*-Tree 空间树算法的 2D 矩形检索库，为钢琴卷帘 10 万个音符提供 $O(\log N)$ 视口裁剪；
-2. **`yrs` (Yjs in Rust)**：高性能 CRDT 协同算法库，作为后续多人 + 多 Agent 实时协作的技术预留。
+1. **`rstar`** ：基于 R*-Tree 空间树算法的 2D 矩形检索库（MIT / Apache-2.0 双许可），为钢琴卷帘 10 万个音符提供 $O(\log N)$ 视口裁剪；
+2. **`yrs` (Yjs in Rust)** ：高性能 CRDT 协同算法库，与 Yjs 二进制协议兼容，作为后续多人 + 多 Agent 实时协作的技术预留。
 
 ---
 
@@ -253,8 +269,8 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 * **夜半 (Yeban) 策略**：全量 323 款原声乐器资产均基于 SFZ。`crates/yeban-sfz` 采用纯 Rust 零拷贝解析与静态预分配语音池，在底层音频线程以绝对零 GC、零堆分配运行，支持 5.0ms 升余弦声部平滑窃取。
 
 ### 5.2 SoundFont 2 (SF2/SF3) 与 Decent Sampler
-* **SoundFont 2 (SF2)**：集成轻量二进制 GM 音色库解析器；
-* **Decent Sampler (.dspreset)**：支持 Pianobook 社区主流的开源采样库。
+* **SoundFont 2 (SF2)** ：集成轻量二进制 GM 音色库解析器；
+* **Decent Sampler (.dspreset)** ：支持 Pianobook 社区主流的开源采样库。
 
 ### 5.3 专有采样格式清理与外置转换规范
 * 明确清理并彻底移除原代码中涉及 Kontakt NKI、Logic EXS24 等专有加密/私有格式的直接内核支持；
@@ -268,10 +284,10 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 * 作为原生异步外部流水线，支持调用本地 Python / ONNX Sidecar 或云端 API 快速分离伴奏、人声与鼓组。
 
 ### 6.2 音频转 MIDI (Audio-to-MIDI): Spotify Basic Pitch 与 CREPE
-* 基于轻量 ONNX 运行时在本地快速转录多音符和弦与滑音包络，采用宽松开源协议（Apache-2.0），模型权重独立分发。
+* 基于轻量 ONNX 运行时在本地快速转录多音符和弦与滑音包络。**Basic Pitch 采用 Apache-2.0 协议**，模型约 230KB（ONNX 格式），商业使用 OK。模型权重独立分发。
 
 ### 6.3 智能音频降噪: DeepFilterNet
-* 德国埃尔朗根-纽伦堡大学开源的低延迟纯 Rust 语音降噪库 [8]，集成于 `crates/yeban-services` 作为人声音轨近线修复工具。
+* 德国埃尔朗根-纽伦堡大学开源的低延迟语音降噪库 [8]，**采用 MIT/Apache-2.0 双许可**。集成于 `crates/yeban-services` 作为人声音轨近线修复工具。
 
 ---
 
@@ -281,18 +297,23 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 | :--- | :--- | :--- | :--- |
 | **`Slint`** | GPLv3 / 商业双轨 | `yeban-app` 桌面 UI 宿主 | **夜半自身完全合规**：夜半项目整体以 GPLv3 发布，完全符合 Slint GPLv3 授权条款。**第三方 Fork 合规限制**：任何基于夜半代码 fork 并希望以闭源或非 GPLv3 兼容协议分发的第三方，无法继续使用 GPLv3 模式下的 Slint，须自行向 SixtyFPS GmbH 获取商业许可；夜半项目不提供 Slint 商业许可的任何担保或转授。 |
 | **`Skia` / `FemtoVG`** | BSD-3-Clause / Apache-2.0 | Slint 硬件加速与离屏渲染后端 | 零风险，宽松开源协议，完全允许商业与开源集成，无传染性。 |
-| **`VST3 SDK`** | MIT (自 3.8.0 起) | `yeban-plugin-host` 插件桥接 | Steinberg 已于 2025 年 10 月将 VST3 SDK 切换为 MIT 许可证。夜半锁定依赖版本为 VST3 SDK 3.8.0+，消除上游 GPL 传染风险；`vst3-sys` Rust 绑定层以 GPLv3 发布，与夜半许可证天然兼容。 |
-| **`Steinberg ASIO SDK`** | 专有许可 (Proprietary) | 仅 Windows 可选扩展 | **严禁入库**：禁止将 ASIO SDK 头文件与源码打包入仓库；Windows 首选开源友好 WASAPI 独占驱动；ASIO 支持作为独立动态加载模块，仅限用户本地编译。 |
+| **`VST3 SDK`** | MIT (自 3.8.0 起) | `yeban-plugin-host` 插件桥接 | Steinberg 已于 2025 年 10 月 20 日将 VST3 SDK 切换为 MIT 许可证。GPLv3 与专有双许可已终止。夜半锁定依赖版本为 VST3 SDK 3.8.0+，消除上游 GPL 传染风险；`vst3-sys` Rust 绑定层以 GPLv3 发布，与夜半许可证天然兼容。 |
+| **`Steinberg ASIO SDK`** | GPLv3 / 专有双许可 | 仅 Windows 可选扩展 | Steinberg 已于 2025 年 10 月将 ASIO SDK 扩展为 GPLv3 开源许可。夜半以 GPLv3 发布，在法务确认后可合规使用。**仍严禁将 ASIO SDK 头文件与源码打包入仓库**；Windows 默认首选开源友好 WASAPI 独占驱动；ASIO 支持作为独立动态加载模块，须法务确认后启用。 |
 | **`clack` (CLAP)** | MIT / Apache-2.0 | `yeban-plugin-host` CLAP 宿主 | 极低（现代开放友好许可）。针对宿主加载专有 CLAP 插件的法律争议，夜半在 `LICENSE` 中显式附加了 GPLv3 §7 允许的 CLAP 专有插件动态加载例外条款。 |
-| **`nih-plug`** | GPL-3.0 / MPL-2.0 | `yeban-vst` (对外插件包装) | 物理隔离于独立 crate `yeban-vst`；拆分独立 Cargo features（`vst3` 与 `clap`），默认不启用 `vst3`；在 `cargo-deny` 的 `deny.toml` 中精细化配置排除规则，确保 `yeban-dsp` 等核心库保持纯粹。 |
+| **`nih-plug`** | GPL-3.0 / MPL-2.0 | `yeban-vst` (对外插件包装) | 物理隔离于独立 crate `yeban-vst`；拆分独立 Cargo features（`vst3` 与 `clap`），默认不启用 `vst3`；在 `cargo-deny` 的 `deny.toml` 中精细化配置排除规则。**⚠️ 维护模式风险**：`nih-plug` 处于 maintenance mode，须评估社区 fork 或自研最小包装层 (RSK-35)。 |
 | **`symphonia`** | MPL-2.0 | `yeban-decode` 全局解码 | 低，作为独立 crate 引用，不修改其内部源码，符合 MPL-2.0 隔离要求。 |
 | **`hound`, `midly`** | MIT / Apache-2.0 | WAV 读写与 MIDI 解析 | 零风险，直接静态编译。 |
 | **`rubato`, `biquad`** | MIT | 重采样与参数滤波 | 零风险，直接静态编译。 |
 | **`signalsmith-stretch`** | MIT | 弹性拉伸与变调 | 零风险（采用宽松 MIT 替代 GPL 的 Rubber Band）。 |
+| **`rstar`** | MIT / Apache-2.0 | 钢琴卷帘空间索引 | 零风险，宽松双许可，纯 safe Rust 实现。 |
+| **`yrs` (Yjs Rust)** | MIT | 多 Agent 协同编曲 (v1.5.0) | 零风险，宽松 MIT 许可，与 Yjs 二进制协议兼容。 |
+| **`rtrb`** | Apache-2.0 | SPSC 无锁环形队列 | 零风险，Apache-2.0 宽松许可，实时安全。 |
+| **`cpal`** | Apache-2.0 / MIT | 跨平台音频 I/O | 零风险，宽松双许可，RustAudio 组织维护。 |
+| **`midir`** | MIT | 物理 MIDI 输入 | 零风险，宽松 MIT 许可。 |
 | **`Noto Sans CJK` / 开源字体** | SIL Open Font License 1.1 | 界面中英文字符渲染 | 零风险，符合开源字体分发要求，字体许可声明保存于 `assets/fonts/LICENSES.md`。 |
 | **`Lucide Icons` 图标集** | ISC / MIT | 界面矢量控件图标 | 零风险，宽松协议，内联嵌入 Slint 资源编译。 |
-| **AI 模型权重 (Basic Pitch)** | Apache-2.0 | `crates/yeban-services` | 零风险，模型权重与推理代码均遵循 Apache-2.0，支持商业化，模型元数据记录于 `assets/models/MANIFEST.json`。 |
-| **AI 降噪模型 (DeepFilterNet)** | MIT / Apache-2.0 | `crates/yeban-services` | 零风险，语音近线降噪模型采用宽松协议，独立打包分发。 |
+| **AI 模型权重 (Basic Pitch)** | Apache-2.0 | `crates/yeban-services` | 零风险，模型权重与推理代码均遵循 Apache-2.0，支持商业化，模型约 230KB (ONNX)，模型元数据记录于 `assets/models/MANIFEST.json`。 |
+| **AI 降噪模型 (DeepFilterNet)** | MIT / Apache-2.0 双许可 | `crates/yeban-services` | 零风险，语音近线降噪模型采用宽松双许可，独立打包分发。 |
 | **323 款内置 SFZ 采样** | CC-BY / CC0 / MIT 等 | 官方开箱即用音色资产库 | 建立全量采样 Attribution 清单 (`assets/samples/ATTRIBUTION.md`) 与 CI 资产指纹自动化审计，确保无专有未授权资产混入。 |
 | **159 种流派规则与和弦走向** | CC0 / Public Domain (公有领域) | `crates/yeban-theory` 乐理库 | 零风险，传统音乐理论与数学比例属于公有领域，规则编码归属于夜半原创代码。 |
 
@@ -304,7 +325,7 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 | :--- | :--- | :--- | :--- | :---: |
 | **Ableton / FL 插件连带闪退** | 宿主与插件处于同一进程，插件崩溃直接拉崩工程 | 跨进程独立崩溃隔离宿主 (`yeban-plugin-host`)，内存共享无锁环形缓冲 | ARCH §9.1 | v2.0.0 |
 | **传统 DAW 线性撤销历史丢失** | 撤销后一旦执行新编辑，跳过的操作分支被彻底截断 | 基于领域操作日志（Ops Log）的匿名分叉撤销树，历史永久可回退 | ARCH §6 | v1.0.0 |
-| **Web DAW 纯 JS GC 爆音与高延迟** | 垃圾回收阻塞主线程，音频时延 > 100ms | **放弃 Web，全栈转型 Slint + cpal 原生引擎**，硬件回路延迟 ≤ 5ms | ARCH §0/§3, ROADMAP §3 | v1.0.0 |
+| **Web DAW 纯 JS GC 爆音与高延迟** | 垃圾回收阻塞主线程，音频时延 > 100ms | **放弃 Web，全栈转型 Slint + cpal 原生引擎**，硬件回路延迟 ≤ 5.5ms | ARCH §0/§3, ROADMAP §3 | v1.0.0 |
 | **传统 DAW 启动缓慢且占用巨大** | 笨重的框架与动态脚本虚拟机（几百 MB） | Slint + 纯 Rust 原生单二进制，冷启动 ≤ 100ms，常驻内存 ≤ 35MB | ROADMAP §5 | v1.0.0 |
 | **AI 编曲机械填音消耗海量 Token** | MCP 每次传递数千个离散音符，耗时长且极易超限 | 声明式乐理与曲式意图 API (Yeban Intent API v2)，单次交互 JSON 载荷 ≤ 4KB，Token 开销中位数 ≤ 600 Tokens (参考基准) | ARCH §7 | v1.0.0 |
 | **双 MCP 状态脱节与并发读写冲突** | 独立进程 stdio 与活 GUI 会话脱节，并发读写损坏工程 | 进程内 HTTP 挂载 (127.0.0.1+Token) + 独立 CLI + `.yeban.lock` 排他文件锁 | ARCH §0.3/§7.1 | v1.0.0 |
@@ -343,7 +364,6 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 |  4. 双 MCP 协同与全自主开发闭环 ────► 活会话 HTTP 挂载 + 独立 stdio CLI + 自研 UI 测试端点，实现 AI 自测闭环 |
 +────────────────────────────────────────────────────────────────────────────────────────────────────────+
 ```
-
 ---
 
 ## 10. 参考资料与权威来源 (References)
@@ -351,10 +371,19 @@ Web 音乐创作先驱（如 BandLab [1]、Soundtrap [2]）虽然实现了浏览
 1. **BandLab Community Milestones**: BandLab officially announced passing 100 million registered creators globally in 2023. Source: [BandLab Press Release (2023)](https://blog.bandlab.com) (Accessed: 2026-10-04).
 2. **Soundtrap Ownership History**: Soundtrap was acquired by Spotify in November 2017 and subsequently acquired back by its original founders in June 2023. Source: [Music Business Worldwide (June 2023)](https://www.musicbusinessworldwide.com) (Accessed: 2026-10-04).
 3. **Zrythm Architectural Evolution**: Zrythm development transitioned from pure C / GTK4 toward modern C++20 (`libzrythm`) for core engine maintainability. Source: [Zrythm Source Repository](https://gitlab.zrythm.org/zrythm/zrythm) (Accessed: 2026-10-04).
-4. **Symphonia Media Demuxer & Decoder**: Pure Rust decoding library supporting MP3, AAC-LC, FLAC, PCM/WAV, Vorbis. Source: [Symphonia GitHub](https://github.com/pdeljanov/Symphonia) (Accessed: 2026-10-04).
+4. **Symphonia Media Demuxer & Decoder**: Pure Rust decoding library supporting MP3, AAC-LC, FLAC, PCM/WAV, Vorbis. Version 0.6.x, MPL-2.0. Source: [Symphonia GitHub](https://github.com/pdeljanov/Symphonia) (Accessed: 2026-10-04).
 5. **SFZ Format Specification**: Open standard originally designed by René Ceballos (rgc:audio), actively maintained by community contributors. Source: [SFZ Format Official](https://sfzformat.com) (Accessed: 2026-10-04).
-6. **Slint GUI Framework**: Next-generation declarative native GUI toolkit for Rust, C++, and JS. Source: [Slint Official Documentation](https://slint.dev) (Accessed: 2026-10-04).
-7. **Spotify Basic Pitch**: Lightweight polyphonic audio-to-MIDI transcription system with pitch bend detection. Source: [Spotify Basic Pitch Repository](https://github.com/spotify/basic-pitch) (Accessed: 2026-10-04).
-8. **DeepFilterNet**: Full-band speech enhancement using deep filtering in Rust. Source: [DeepFilterNet Repository, FAU Erlangen-Nürnberg](https://github.com/Rikorose/DeepFilterNet) (Accessed: 2026-10-04).
+6. **Slint GUI Framework**: Next-generation declarative native GUI toolkit for Rust, C++, and JS. Testing Backend (`i-slint-backend-testing`) 为内部 crate，不遵循 semver，Testing Backend 默认不渲染像素。Source: [Slint Official Documentation](https://slint.dev) (Accessed: 2026-10-04).
+7. **Spotify Basic Pitch**: Lightweight polyphonic audio-to-MIDI transcription system with pitch bend detection. ONNX 模型约 230KB，Apache-2.0 协议。Source: [Spotify Basic Pitch Repository](https://github.com/spotify/basic-pitch) (Accessed: 2026-10-04).
+8. **DeepFilterNet**: Full-band speech enhancement using deep filtering in Rust. MIT/Apache-2.0 双许可。Source: [DeepFilterNet Repository, FAU Erlangen-Nürnberg](https://github.com/Rikorose/DeepFilterNet) (Accessed: 2026-10-04).
 9. **Tracktion Engine**: Commercial-grade open-source DAW framework with `tracktion_graph`. Source: [Tracktion Engine GitHub](https://github.com/Tracktion/tracktion_engine) (Accessed: 2026-10-04).
 10. **Ardour Digital Audio Workstation**: Professional open-source DAW by Paul Davis et al. Source: [Ardour Source Code & Manual](https://ardour.org) (Accessed: 2026-10-04).
+11. **Steinberg VST 3.8.0 Release Notes**: VST 3 is now open source, released under the MIT license (Version 3.8.0, 2025/10/20). Source: [Steinberg VST 3 Developer Portal](https://steinbergmedia.github.io/vst3_dev_portal/pages/Versions/Version+3.8.0.html) (Accessed: 2026-10-04).
+12. **Steinberg ASIO SDK Open Source**: ASIO SDK is now available under GPLv3 open-source license in addition to the proprietary licensing model. Source: [Steinberg ASIO SDK Open](https://www.steinberg.net/developers/asiosdk-open/) (Accessed: 2026-10-04).
+13. **nih-plug Repository**: Rust VST3 and CLAP plugin framework. Note: NIH-plug is currently in maintenance mode; check out community fork. Source: [nih-plug GitHub](https://github.com/robbert-vdh/nih-plug) (Accessed: 2026-10-04).
+14. **rtrb SPSC Ring Buffer**: A realtime-safe single-producer single-consumer ring buffer. Version 0.3.3, Apache-2.0. Source: [rtrb crates.io](https://crates.io/crates/rtrb) (Accessed: 2026-10-04).
+15. **rstar R*-Tree**: Flexible R*-tree spatial index. MIT/Apache-2.0. Source: [rstar GitHub](https://github.com/georust/rstar) (Accessed: 2026-10-04).
+16. **yrs CRDT**: Rust port of Yjs. MIT license. Source: [y-crdt GitHub](https://github.com/y-crdt/y-crdt) (Accessed: 2026-10-04).
+17. **rubato Resampling**: Flexible audio sample rate conversion library for Rust. MIT. Source: [rubato GitHub](https://github.com/HEnquist/rubato) (Accessed: 2026-10-04).
+18. **cpal Audio I/O**: Low-level cross-platform audio I/O library in pure Rust. Version 0.15, Apache-2.0/MIT. Source: [cpal GitHub](https://github.com/RustAudio/cpal) (Accessed: 2026-10-04).
+19. **midir MIDI I/O**: Cross-platform realtime MIDI processing in Rust. MIT. Source: [midir GitHub](https://github.com/Boddlnagg/midir) (Accessed: 2026-10-04).
