@@ -12,16 +12,23 @@
 //!    [`Op::apply`] 先查前置条件再落盘，[`Op::invert`] 则用逆操作的前置条件反查
 //!    "这个 Op 真的作用在这份文档上了吗" —— 于是撤销**不可能**被误打到错误的文档上。
 //!
-//! ## 规范缺口留痕（本线补齐，需集成者/人类确认）
+//! ## 规范缺口与裁决（已由 ADR-0001 留痕）
 //!
 //! 架构 §6.1 给出的 `Op` 全集**无法表达"删除曲式段落 / 删除场景"**：`SetSection`
 //! 用 `old_section: Option<SectionV3>` 表示"新建"，但 `old_section == None` 时
 //! 它的逆操作必须是删除，而全集里没有对应的变体 —— 这会让
 //! `MUST-GATE-010`（状态树逆向幂等性）在"新建段落"这一步必然失败。
 //! 因此本模块补上 [`Op::RemoveSection`] 与 [`Op::RemoveScene`] 两个变体，
-//! 它们是 `SetSection { old_section: None }` / `SetScene { old_scene: None }` 的逆。
-//! 同一原因，`schemas/ops.schema.json` 的 `oneOf` 也未覆盖全部变体，
-//! 详见 `docs/ledger/model-core-provenance.md`。
+//! 它们是 `SetSection { old_section: None }` / `SetScene { old_scene: None }` 的逆；
+//! 裁决记录见 `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md`
+//! **D12**（补两个删除变体，并把 `schemas/ops.schema.json` 的 `op.oneOf` 补齐到 23 个）
+//! 与 **D13**（`origin` 改为 `oneOf`：6 个单元变体是纯字符串，
+//! `McpProposal` 是外部标签对象，保留 `{proposal_id, agent_name}` 载荷）。
+//! 更早的冲突实测留痕见 `docs/ledger/model-core-provenance.md`。
+//!
+//! 本模块的契约一致性有两条**直接读契约文件**的判据（不手抄第二份事实源）：
+//! `op_variants_match_ops_schema_exactly` 与
+//! `origin_variants_match_ops_schema_origin_one_of`。
 
 use std::collections::BTreeMap;
 
@@ -2016,59 +2023,132 @@ mod tests {
         assert_eq!(doc, snapshot, "批量失败必须整体不生效 (原子性)");
     }
 
+    /// `crates/yeban-model/../../schemas/<name>`。
+    fn schema_path(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("schemas")
+            .join(name)
+    }
+
+    /// 解析 `schemas/ops.schema.json`。
+    fn ops_schema() -> serde_json::Value {
+        let path = schema_path("ops.schema.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("读取 {} 失败: {error}", path.display()));
+        serde_json::from_str(&text).expect("ops.schema.json 必须是合法 JSON")
+    }
+
+    /// 契约里 `op.oneOf[*].required[0]` 声明的变体清单。
+    fn schema_op_variant_names() -> std::collections::BTreeSet<String> {
+        ops_schema()["properties"]["op"]["oneOf"]
+            .as_array()
+            .expect("op.oneOf 必须是数组")
+            .iter()
+            .map(|branch| {
+                branch["required"][0]
+                    .as_str()
+                    .expect("每个分支必须 required 一个变体键")
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// 每个 `Op` 变体的 JSON 形状必须与 `schemas/ops.schema.json` **一一对应**。
+    ///
+    /// 这条判据**直接读契约文件**：不再手抄一份变体名清单（第二份事实源会在契约改动后
+    /// 变成谎言 —— `project.rs` 里那版手抄表就是前车之鉴）。
+    /// 由于契约的 23 个分支各自 `required` 一个互不相同的键，`oneOf` 的
+    /// "恰好匹配一个"在 JSON 层面等价于"`op` 对象恰好 1 个键，且键名 == 变体名"。
     #[test]
-    fn op_variant_json_keys_match_ops_schema() {
-        // `schemas/ops.schema.json` 的 oneOf 里列出的变体名（手抄自契约文件）。
-        const SCHEMA_LISTED: [&str; 14] = [
-            "AddNote",
-            "DeleteNote",
-            "MoveNote",
-            "AddClipPlacement",
-            "RemoveClipPlacement",
-            "MoveClipPlacement",
-            "AddTrack",
-            "RemoveTrack",
-            "ConnectRouting",
-            "DisconnectRouting",
-            "SetRoutingGain",
-            "SetParam",
-            "SetMacro",
-            "Batch",
-        ];
-        let mut seen: Vec<&str> = Vec::new();
+    fn op_variants_match_ops_schema_exactly() {
+        let contract = schema_op_variant_names();
+        assert_eq!(
+            contract.len(),
+            23,
+            "op.oneOf 必须覆盖 23 个变体, 实际 {}: {contract:?}",
+            contract.len()
+        );
+
+        let mut implemented: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for op in showcase_ops() {
             let name = op.name();
-            seen.push(name);
+            implemented.insert(name.to_owned());
             let value = serde_json::to_value(&op).expect("serialize");
             let object = value.as_object().expect("externally tagged object");
-            assert_eq!(object.len(), 1, "{name} 必须是单键外部标签");
+            assert_eq!(
+                object.len(),
+                1,
+                "{name} 必须是单键外部标签 (oneOf 恰好匹配一个)"
+            );
             assert!(object.contains_key(name), "{name} 的 JSON 键必须同名");
             let back: Op = serde_json::from_value(value).expect("deserialize");
             assert_eq!(back, op, "{name} 必须能往返");
         }
-        for listed in SCHEMA_LISTED {
-            assert!(
-                seen.contains(&listed),
-                "ops.schema.json 列出的 `{listed}` 未被任何变体实现"
-            );
-        }
-        // 契约缺口（已留痕，不得静默）：
-        for missing in [
-            "ModifyNoteVelocity",
-            "InsertDevice",
-            "RemoveDevice",
-            "SetAutomationPoint",
-            "RemoveAutomationPoint",
-            "SetSection",
-            "RemoveSection",
-            "SetScene",
-            "RemoveScene",
+        assert_eq!(
+            implemented, contract,
+            "实现与 schemas/ops.schema.json 的 op.oneOf 必须一一对应"
+        );
+    }
+
+    /// `OpOrigin` 的两种形状必须与契约的 `origin.oneOf` 对应（ADR-0001 D13）。
+    #[test]
+    fn origin_variants_match_ops_schema_origin_one_of() {
+        let schema = ops_schema();
+        let unit_names: std::collections::BTreeSet<String> =
+            schema["properties"]["origin"]["oneOf"][0]["enum"]
+                .as_array()
+                .expect("origin.oneOf[0].enum 必须是数组")
+                .iter()
+                .map(|name| name.as_str().expect("enum 元素是字符串").to_owned())
+                .collect();
+
+        let mut serialized_units: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for origin in [
+            OpOrigin::UserUi,
+            OpOrigin::MidiInput,
+            OpOrigin::UndoRedo,
+            OpOrigin::AutomationRecord,
+            OpOrigin::Import,
+            OpOrigin::Migration,
         ] {
-            assert!(
-                seen.contains(&missing) && !SCHEMA_LISTED.contains(&missing),
-                "`{missing}` 是 ops.schema.json 缺口的一部分, 必须被本测试显式列出"
-            );
+            let value = serde_json::to_value(&origin).expect("serialize");
+            let name = value
+                .as_str()
+                .expect("单元变体必须序列化为纯字符串 (契约 oneOf 的字符串分支)")
+                .to_owned();
+            serialized_units.insert(name);
+            let back: OpOrigin = serde_json::from_value(value).expect("deserialize");
+            assert_eq!(back, origin);
         }
+        assert_eq!(
+            serialized_units, unit_names,
+            "单元来源变体必须与契约 origin.oneOf[0].enum 一一对应"
+        );
+
+        // McpProposal 必须落在契约的第二个分支：外部标签对象 + 恰好两个载荷键。
+        let proposal = serde_json::to_value(OpOrigin::McpProposal {
+            proposal_id: fixture_id(1),
+            agent_name: "claude".to_owned(),
+        })
+        .expect("serialize");
+        let object = proposal.as_object().expect("McpProposal 必须是对象");
+        assert_eq!(object.len(), 1, "McpProposal 必须是单键外部标签");
+        let payload = object
+            .get("McpProposal")
+            .and_then(serde_json::Value::as_object)
+            .expect("载荷必须是对象");
+        let contract_payload: std::collections::BTreeSet<String> =
+            schema["properties"]["origin"]["oneOf"][1]["properties"]["McpProposal"]["required"]
+                .as_array()
+                .expect("契约必须声明 McpProposal 的 required")
+                .iter()
+                .map(|key| key.as_str().expect("键名是字符串").to_owned())
+                .collect();
+        let actual_payload: std::collections::BTreeSet<String> = payload.keys().cloned().collect();
+        assert_eq!(actual_payload, contract_payload);
     }
 
     #[test]

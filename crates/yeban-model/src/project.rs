@@ -27,13 +27,18 @@
 //!    [MODEL-AST-003]；`routing_graph.edges` 是 JSON **数组**（契约要求），
 //!    内存中仍是 `BTreeMap`，序列化时按键升序展开为数组（见 [`RoutingGraph`]）。
 //!
-//! ### 已知契约冲突（本线不得私自改写 `schemas/`，故留痕待裁决）
+//! ### 契约冲突的裁决（已闭合）
 //!
-//! `schemas/project.schema.json` 把 `writer_version` 声明为 `integer`，
-//! 而 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §2.2 与
-//! `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md` D3 裁决它是
-//! **应用语义版本字符串**。本实现按 ADR（更晚、更专门的裁决）与架构正文取 `String`。
-//! 详细留痕见 `docs/ledger/model-core-provenance.md`。
+//! 本模块第一版实测出唯一的契约分歧：`schemas/project.schema.json` 曾把
+//! `writer_version` 声明为 `integer`，而架构 §2.2 与 ADR-0001 D3 裁决它是
+//! **应用语义版本字符串**。裁决结果是契约改为 `type: string` + semver `pattern`
+//! （ADR-0001 **D11**），因此现在实现与契约**零分歧**。
+//!
+//! 这条"零分歧"不是靠人盯：`implementation_matches_the_schema_type_table_exactly`
+//! **直接读真实的 `schemas/project.schema.json`**（`schema_top_level_types()`），
+//! 逐键比较 serde 实际输出的 JSON 类型。手抄一份"契约类型表"曾经让第二份事实源
+//! 在契约修好后变成谎言 —— 现在只剩一个事实源。
+//! 冲突的实测留痕见 `docs/ledger/model-core-provenance.md`。
 
 use std::collections::BTreeMap;
 
@@ -1568,37 +1573,9 @@ impl YebanProjectV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
-
-    /// 构造确定性的规范 ULID 文本（前 6 位固定，余下 20 位十进制序号）。
-    pub(crate) fn fixture_id(index: u128) -> EntityId {
-        EntityId::from_str(&format!("01J8ZQ{index:020}")).expect("canonical fixture ulid")
-    }
-
-    fn master_track(id: EntityId) -> TrackV3 {
-        TrackV3 {
-            id,
-            name: "Master".to_owned(),
-            kind: TrackKind::Master,
-            ..TrackV3::default()
-        }
-    }
-
-    fn midi_track(id: EntityId) -> TrackV3 {
-        TrackV3 {
-            id,
-            name: "Lead".to_owned(),
-            ..TrackV3::default()
-        }
-    }
-
-    fn midi_clip(id: EntityId) -> ClipPoolEntry {
-        ClipPoolEntry {
-            id,
-            name: "Clip".to_owned(),
-            content: ClipContent::default(),
-        }
-    }
+    // 样本夹具的唯一事实源在 `crate::samples`（同一个 `filled_project` 也被
+    // `examples/export_schema_samples.rs` 使用，避免"测试一套、导出另一套"）。
+    use crate::samples::{filled_project, fixture_id, master_track, midi_clip, midi_track};
 
     #[test]
     fn schema_version_is_one_per_adr_0001_d3() {
@@ -2111,7 +2088,7 @@ mod tests {
 
     #[test]
     fn project_serde_round_trip_preserves_everything() {
-        let project = filled_sample_document();
+        let project = filled_project();
         assert_eq!(project.validate(), Ok(()), "{:?}", project.validate());
         let json = serde_json::to_string_pretty(&project).expect("serialize");
         let back: YebanProjectV1 = serde_json::from_str(&json).expect("deserialize");
@@ -2188,281 +2165,6 @@ mod tests {
             end_tick: 0,
         };
         assert_eq!(disabled.validate(), Ok(()));
-    }
-
-    /// 构造一个把全部子类型都填满的规范样本（样本 JSON 必须逐字节稳定）。
-    pub(crate) fn filled_sample_document() -> YebanProjectV1 {
-        let master_id = fixture_id(1);
-        let lead_id = fixture_id(2);
-        let bass_id = fixture_id(3);
-        let aux_id = fixture_id(4);
-
-        let mut lead = midi_track(lead_id);
-        lead.volume_db = -3.0;
-        lead.pan = -0.25;
-        lead.color = Some("#FF8800".to_owned());
-        lead.devices = vec![DeviceDefinition {
-            id: fixture_id(20),
-            name: "Yeban PolySynth".to_owned(),
-            kind: DeviceKind::InternalInstrument,
-            bypassed: false,
-            params: vec![
-                ParameterValue {
-                    name: "cutoff".to_owned(),
-                    value: 1200.0,
-                    unit: Some("Hz".to_owned()),
-                },
-                ParameterValue {
-                    name: "resonance".to_owned(),
-                    value: 0.35,
-                    unit: Some("%".to_owned()),
-                },
-            ],
-        }];
-        lead.macros = vec![MacroParameter {
-            name: "Brightness".to_owned(),
-            value: 0.5,
-            mappings: vec![MacroMapping {
-                target: AutomationTarget::DeviceParam {
-                    track_id: lead_id,
-                    slot_index: 0,
-                    param_index: 0,
-                },
-                depth: 0.8,
-            }],
-        }];
-        lead.automation_lanes.insert(
-            AutomationTarget::TrackVolume { track_id: lead_id },
-            AutomationLane {
-                target: AutomationTarget::TrackVolume { track_id: lead_id },
-                points: BTreeMap::from([
-                    (
-                        fixture_id(40),
-                        AutomationPoint {
-                            id: fixture_id(40),
-                            tick: 0,
-                            value: -6.0,
-                            curve: CurveType::Linear,
-                        },
-                    ),
-                    (
-                        fixture_id(41),
-                        AutomationPoint {
-                            id: fixture_id(41),
-                            tick: 3840,
-                            value: 0.0,
-                            curve: CurveType::SCurve,
-                        },
-                    ),
-                ]),
-            },
-        );
-
-        let clip_id = fixture_id(10);
-        let mut clip = midi_clip(clip_id);
-        if let Some(notes) = clip.content.notes_mut() {
-            for (index, (start_tick, pitch)) in [(0_u64, 60_u8), (960, 64), (1920, 67), (2880, 72)]
-                .into_iter()
-                .enumerate()
-            {
-                let note_id = fixture_id(100 + index as u128);
-                notes.insert(
-                    note_id,
-                    MidiNote {
-                        probability: if index == 3 { Some(0.75) } else { None },
-                        ratchet: if index == 1 { Some(2) } else { None },
-                        micro_timing_ticks: if index == 2 { Some(-12) } else { None },
-                        syllable: Some(["do", "re", "mi", "fa"][index].to_owned()),
-                        ..MidiNote::new(note_id, start_tick, pitch, 480)
-                    },
-                );
-            }
-        }
-
-        let audio_clip_id = fixture_id(11);
-        let audio_clip = ClipPoolEntry {
-            id: audio_clip_id,
-            name: "Kick".to_owned(),
-            content: ClipContent::Audio {
-                asset: AssetHash::of_bytes(b"yeban-kick-sample"),
-                gain_db: -1.5,
-            },
-        };
-
-        let placement_id = fixture_id(50);
-        lead.clips.insert(
-            placement_id,
-            ClipPlacement {
-                id: placement_id,
-                clip_id,
-                start_tick: 0,
-                duration_ticks: 3840,
-                loop_config: LoopConfig {
-                    enabled: true,
-                    start_tick: 0,
-                    end_tick: 3840,
-                },
-                muted: false,
-            },
-        );
-        let audio_placement_id = fixture_id(51);
-        let mut bass = TrackV3 {
-            id: bass_id,
-            name: "Bass".to_owned(),
-            kind: TrackKind::Audio,
-            volume_db: -6.0,
-            pan: 0.0,
-            mute: false,
-            solo: false,
-            solo_safe: true,
-            folder_id: None,
-            color: Some("#3366FF".to_owned()),
-            ..TrackV3::default()
-        };
-        bass.clips.insert(
-            audio_placement_id,
-            ClipPlacement {
-                id: audio_placement_id,
-                clip_id: audio_clip_id,
-                start_tick: 1920,
-                duration_ticks: 960,
-                loop_config: LoopConfig::default(),
-                muted: false,
-            },
-        );
-
-        let aux = TrackV3 {
-            id: aux_id,
-            name: "Aux Reverb".to_owned(),
-            kind: TrackKind::AuxReturn,
-            volume_db: -9.0,
-            ..TrackV3::default()
-        };
-
-        let lead_to_master = fixture_id(60);
-        let bass_to_master = fixture_id(61);
-        let lead_to_aux = fixture_id(62);
-        let mut edges = BTreeMap::new();
-        for (id, source, destination, kind, gain_db) in [
-            (
-                lead_to_master,
-                lead_id,
-                master_id,
-                RoutingKind::TrackToBus,
-                None,
-            ),
-            (
-                bass_to_master,
-                bass_id,
-                master_id,
-                RoutingKind::TrackToBus,
-                None,
-            ),
-            (
-                lead_to_aux,
-                lead_id,
-                aux_id,
-                RoutingKind::SendToAux,
-                Some(-12.0),
-            ),
-        ] {
-            edges.insert(
-                id,
-                RoutingEdge {
-                    id,
-                    source_node: source,
-                    destination_node: destination,
-                    kind,
-                    gain_db,
-                },
-            );
-        }
-
-        let asset_hash = AssetHash::of_bytes(b"yeban-kick-sample");
-        YebanProjectV1 {
-            schema_version: SCHEMA_VERSION,
-            min_reader_version: MIN_READER_VERSION,
-            writer_version: DEFAULT_WRITER_VERSION.to_owned(),
-            id: fixture_id(999),
-            title: "Yeban Model Core Sample".to_owned(),
-            author: "Yeban Project Contributors".to_owned(),
-            bpm: 128.0,
-            time_signature: TimeSignature {
-                numerator: 4,
-                denominator: 4,
-            },
-            audio_config: ProjectAudioConfig {
-                sample_rate: SampleRate::Hz48000,
-                block_size: BlockSize::Frames256,
-                bit_depth: BitDepth::Float32,
-                pan_law: PanLaw::ConstantPowerMinus3dB,
-            },
-            rng_seed: DEFAULT_RNG_SEED,
-            metadata: ProjectMetadata {
-                description: "Cross-implementation schema sample".to_owned(),
-                created_at_unix_ms: 1_760_000_000_000,
-                modified_at_unix_ms: 1_760_000_000_000,
-                tags: vec!["sample".to_owned(), "schema".to_owned()],
-            },
-            transport: TransportConfig {
-                metronome_enabled: false,
-                count_in_bars: 2,
-                launch_quantization: LaunchQuantization::Bar,
-            },
-            sections: BTreeMap::from([
-                (
-                    fixture_id(70),
-                    SectionV3 {
-                        id: fixture_id(70),
-                        name: "Intro".to_owned(),
-                        start_tick: 0,
-                        end_tick: 7680,
-                        color: Some("#22AA88".to_owned()),
-                    },
-                ),
-                (
-                    fixture_id(71),
-                    SectionV3 {
-                        id: fixture_id(71),
-                        name: "Drop".to_owned(),
-                        start_tick: 7680,
-                        end_tick: 15360,
-                        color: None,
-                    },
-                ),
-            ]),
-            tracks: BTreeMap::from([
-                (master_id, master_track(master_id)),
-                (lead_id, lead),
-                (bass_id, bass),
-                (aux_id, aux),
-            ]),
-            master_bus_track_id: master_id,
-            routing_graph: RoutingGraph {
-                nodes: vec![lead_id, bass_id, aux_id, master_id],
-                edges,
-            },
-            scenes: BTreeMap::from([(
-                fixture_id(80),
-                SceneV3 {
-                    id: fixture_id(80),
-                    name: "Scene 1".to_owned(),
-                    tempo: Some(128.0),
-                    color: None,
-                },
-            )]),
-            clip_pool: BTreeMap::from([(clip_id, clip), (audio_clip_id, audio_clip)]),
-            assets: BTreeMap::from([(
-                asset_hash.clone(),
-                AssetMetadata {
-                    hash: asset_hash,
-                    original_path: "samples/kick.wav".to_owned(),
-                    byte_len: 44_100,
-                    media_kind: MediaKind::Audio,
-                    license: "CC0-1.0".to_owned(),
-                },
-            )]),
-        }
     }
 
     /// 读取 `schemas/project.schema.json` 里每个顶层键声明的 JSON 类型。
@@ -2552,42 +2254,29 @@ mod tests {
         );
     }
 
-    /// 样本导出：`scripts/gates/validate_schemas.py` 约定前缀 `project.<name>.json`。
+    /// 样本导出：走 `crate::samples::export_all`（与
+    /// `examples/export_schema_samples.rs` **同一个**入口），命名遵循
+    /// `scripts/gates/validate_schemas.py` 的 `project.<name>.json` / `ops.<name>.json` 前缀约定。
     #[test]
     fn export_schema_samples_to_target() {
-        let dir = samples_dir();
-        std::fs::create_dir_all(&dir).expect("create samples dir");
-
-        let default_document = YebanProjectV1::default();
-        assert_eq!(default_document.validate(), Ok(()));
-
-        let filled_document = filled_sample_document();
-        assert_eq!(filled_document.validate(), Ok(()));
-        assert_eq!(filled_document.check_readable(), Ok(()));
-
-        for (name, document) in [
-            ("project.default.json", &default_document),
-            ("project.filled.json", &filled_document),
-        ] {
-            let mut json = serde_json::to_string_pretty(document).expect("serialize");
-            json.push('\n');
-            std::fs::write(dir.join(name), json).expect("write sample");
+        let dir = crate::samples::default_out_dir();
+        let written = crate::samples::export_all(&dir).expect("导出规范样本");
+        assert_eq!(written.len(), 4, "必须导出 4 份样本: {written:?}");
+        for path in &written {
+            assert!(path.is_file(), "{} 必须存在", path.display());
         }
 
-        // 两次导出必须逐字节相同（样本是 CI 对账口径，不能漂移）。
-        let first = std::fs::read_to_string(dir.join("project.filled.json")).expect("read");
-        let mut again = serde_json::to_string_pretty(&filled_sample_document()).expect("serialize");
-        again.push('\n');
-        assert_eq!(first, again, "样本导出必须逐字节稳定");
+        // 两次导出必须逐字节相同（样本是跨语言对账口径，不能漂移）。
+        let before = read_all(&written);
+        let again = crate::samples::export_all(&dir).expect("再次导出规范样本");
+        assert_eq!(before, read_all(&again), "样本导出必须逐字节稳定");
     }
 
-    /// 样本目录：`<repo>/target/schema-samples`（可用 `CARGO_TARGET_DIR` 覆盖）。
-    fn samples_dir() -> std::path::PathBuf {
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-            || manifest_dir.join("..").join("..").join("target"),
-            std::path::PathBuf::from,
-        );
-        target.join("schema-samples")
+    /// 读出一批样本文件的内容（顺序与传入一致）。
+    fn read_all(paths: &[std::path::PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .map(|path| std::fs::read_to_string(path).expect("read sample"))
+            .collect()
     }
 }
