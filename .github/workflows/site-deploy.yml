@@ -59,9 +59,43 @@ jobs:
       - name: 站点静态契约检查
         run: node scripts/check-site.mjs
 
+  # 在真实浏览器里核验主题/语言/响应式, 并把截图作为 artifact 留下。
+  # 这一步补上"静态检查证明不了的事": 页面在渲染器里到底长什么样。
+  visual:
+    name: visual (Chromium 核验 + 截图)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装 Playwright (版本钉在 package.json)
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --no-package-lock
+          npx playwright install --with-deps chromium
+
+      - name: 浏览器端到端核验
+        run: node scripts/visual-check.mjs
+
+      - name: 上传截图 (便于事后回看, 不必只听断言)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-screenshots
+          path: artifacts/screenshots
+          if-no-files-found: warn
+          retention-days: 30
+
   deploy:
     name: deploy (wrangler)
-    needs: check
+    needs: [check, visual]
     if: github.event_name == 'push' || inputs.deploy
     runs-on: ubuntu-latest
     timeout-minutes: 20

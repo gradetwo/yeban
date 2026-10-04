@@ -8,8 +8,14 @@
     "check": "node scripts/check-site.mjs",
     "preview": "npx --yes wrangler@4 dev",
     "deploy": "npx --yes wrangler@4 deploy",
-    "dry-run": "npx --yes wrangler@4 deploy --dry-run"
+    "dry-run": "npx --yes wrangler@4 deploy --dry-run",
+    "visual": "node scripts/visual-check.mjs"
   },
   "license": "GPL-3.0-only",
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
 }
