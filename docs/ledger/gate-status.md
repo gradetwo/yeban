@@ -15,7 +15,7 @@
 
 | ID | 要求 | 状态 | 证据 / 为什么还不到 |
 | :--- | :--- | :--- | :--- |
-| `MUST-GATE-001` | 实时回调零分配/零释放/零 I/O/零锁 | **部分** | `crates/yeban-engine/src/block.rs`（`AudioBlock<128>` 内联）与 `ring.rs`（每块恰好一次批量 SPSC）有结构性判据；**规范点名的"CI 运行时内存分配 Hook 断言"未接线** —— 仓库里没有任何 `GlobalAlloc`/alloc-hook（grep 为空） |
+| `MUST-GATE-001` | 实时回调零分配/零释放/零 I/O/零锁 | **部分** | 运行期断言已补上：`crates/yeban-engine/tests/rt_zero_alloc.rs` 用**计数型全局分配器**（`ARMED` 开关只统计窗口内）跑 10,000 个量子 + 63 次快照交换，断言 `allocations == 0 && deallocations == 0`；结构性判据仍在 `crates/yeban-engine/src/block.rs`/`ring.rs`。**仍缺**：零锁等待与零阻塞 I/O 的运行期断言（当前只有"代码里没写"）|
 | `MUST-GATE-002` | 同平台离线母带 bit-exact（L1） | **部分** | `crates/yeban-render/src/render.rs` 的"同种子两次渲染逐字节相同"与"1/2/4/8 线程 digest 相同"判据；`BASELINE-001` 实测 run 37228045430 里 `threads=1` 与 `auto` digest 相同；**跨机器**的 SHA-256 全同尚未做成门禁 |
 | `MUST-GATE-003` | 跨架构 L2 一致性（< 1e-6） | **PENDING** | 需要 x86_64 与 AArch64 两条真跑后对账；ADR-0001 D7 明确未具备条件前保持 PENDING，**不得**用单架构读数冒充 |
 | `MUST-GATE-004` | `cargo-deny` 100% 通过 | **已接线** | CI `deny` 腿四项全跑（advisories/bans/licenses/sources）；本地 `scripts/gates/run-gates.sh deny` |
