@@ -261,7 +261,7 @@ Windows 断言"持锁期间其它句柄读**必须被拒**、快照 `availabilit
 | 15 | `every_container_rejection_stays_inside_the_contract_enum` | 5 类畸形容器逐个打开，错误码**全部**在 `ErrorCode::SCHEMA_CONTRACT`（20 值）内 |
 | 16 | `corrupt_history_dag_is_refused_instead_of_silently_dropping_history` | 坏 `history.dag` JSON / 无 `main` 分支 ⇒ 打开即 `IO_ERROR` |
 | 17 | `store.rs::oversized_files_are_refused_before_they_are_read_into_memory`（lib 单元判据） | 用**可注入的紧上限**在小文件上触发 `MUST-GATE-007` 的 I/O 层闸门：`IO_ERROR` + `category=archive-bomb`；同一份字节在宽松上限下**不**命中这道闸门（证明拒绝来自文件大小，而不是"反正会失败"） |
-| 18 | `lock_advisory.rs::holder_metadata_while_locked_is_platform_specific` | 平台感知：Unix 持锁时其它句柄**可读**（且磁盘内容 == 守卫携带的那一份）；Windows 持锁时读**被拒** ⇒ `holderMetadata = "unavailable-on-this-platform"`；占用者路径两个平台都必须是带内 `PROJECT_LOCKED` + `holder` 是字符串 |
+| 18 | `lock_advisory.rs::holder_metadata_while_locked_is_platform_specific` | 平台感知：Unix 持锁时其它句柄**可读**（且磁盘内容 == 守卫携带的那一份）；Windows 持锁时读**被拒** ⇒ `holderMetadata = "unavailable-on-this-platform"`；占用者路径两个平台都必须是带内 `PROJECT_LOCKED` + `holder` 是字符串；外加一条**平台无关**断言 `guard.holder_snapshot().readable()` —— 钉住"快照读发生在 `try_lock` **之前**"（这条的证伪能力只在 Windows 上成立：Unix 挪了读取时机也读得到） |
 
 **"新写的判据真的被编译/执行了吗"（集成者点名的问题）**：`crates/yeban-mcp/Cargo.toml`
 **没有** `[[test]]` 段、**没有** `required-features` ⇒ 测试目标全部由 cargo 默认自动发现并执行；
@@ -388,7 +388,9 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | :--- | ---: | :--- | :--- |
 | 第 1 轮（容器接线 + 16 条判据 + 5 次注入） | [`37235708211`](https://github.com/gradetwo/yeban/actions/runs/37235708211) | `aeae45c` | **全绿**：`plan` 4s（判定只影响 `yeban-mcp`）/ `checks` 51s / `deny` 43s / `lockfile` 16s / **`rust (yeban-mcp)` 49s** 全部 ✓；`rust (workspace 全量)` 0s skipped |
 | 第 2 轮（I/O 层大小闸门 + Windows 锁修复 + 判据 17/18 + 注入 F/G） | [`37236063605`](https://github.com/gradetwo/yeban/actions/runs/37236063605) | `f926e55` | **全绿**：`plan` 4s / `checks` 35s / `deny` 47s / `lockfile` 20s / **`rust (yeban-mcp)` 54s** 全部 ✓；`rust (workspace 全量)` skipped（`plan` 判定只影响 `yeban-mcp`） |
-| 第 3 轮（本文件 + 台账整理，**纯文档**） | 见提交信息 / `ci-verdict.sh` 读数 | 见该次提交 | 本提交只改 `docs/ledger/**`，不动 `crates/**`；按纪律仍然读回判决（读数记在给集成者的汇报里） |
+| 第 3 轮（本文件 + 台账整理，**纯文档**） | [`37236169584`](https://github.com/gradetwo/yeban/actions/runs/37236169584) | `667d057` | **全绿**：`plan` 4s（正确判定"没有受影响的 crate"）/ `checks` 33s / `deny` 42s / `lockfile` 17s ✓；`rust (workspace 全量)` 与 `rust (matrix)` 均 skipped —— **纯文档提交不会让代码判据重跑**，这是 `plan` 腿的设计意图 |
+| 第 4 轮（判据 18 补一条"快照读在加锁之前"的断言） | [`37236253818`](https://github.com/gradetwo/yeban/actions/runs/37236253818) | `a321cc8` | **全绿**：`plan` 4s / `checks` 32s / `deny` 42s / `lockfile` 19s / **`rust (yeban-mcp)` 50s** ✓；`rust (workspace 全量)` skipped |
+| 第 5 轮（本文件，**纯文档**） | 见提交信息 / `ci-verdict.sh` 读数 | 见该次提交 | 同第 3 轮：只改 `docs/ledger/**`，预期 `plan` 判定无受影响 crate、`rust` 腿 skipped |
 
 > **Windows 腿不在这张表里**：`windows` 是集成者新增的 `gates-manual` 手动门禁
 > （`gh workflow run gates-manual.yml -f gate=windows`），本线**没有权限也没有本机条件**跑它
