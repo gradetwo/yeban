@@ -138,7 +138,10 @@ fn main() {
         for (index, node) in source_nodes.iter().enumerate() {
             // 每条轨道给不同的相位步长, 让各轨的运算不完全相同(避免分支预测过于乐观)。
             let step = 1 + (index as u64 % 97);
-            sources.insert(*node, Box::new(ToneSource::new(0x1234_5678 + index as u64, step)));
+            sources.insert(
+                *node,
+                Box::new(ToneSource::new(0x1234_5678 + index as u64, step)),
+            );
         }
 
         let started = Instant::now();
