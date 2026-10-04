@@ -2465,24 +2465,40 @@ mod tests {
         }
     }
 
-    /// `schemas/project.schema.json` 对顶层必填键声明的 JSON 类型（手抄自契约文件）。
+    /// 读取 `schemas/project.schema.json` 里每个顶层键声明的 JSON 类型。
     ///
-    /// 改 `schemas/project.schema.json` 必须同步这张表，否则
-    /// `only_writer_version_diverges_from_the_schema_type_table` 会变红 —— 这正是
-    /// "契约漂移必须显式留痕"的机械执行方式。
-    const SCHEMA_TOP_LEVEL_TYPES: [(&str, &str); 11] = [
-        ("schema_version", "integer"),
-        ("min_reader_version", "integer"),
-        ("writer_version", "integer"),
-        ("id", "string"),
-        ("title", "string"),
-        ("bpm", "number"),
-        ("time_signature", "object"),
-        ("audio_config", "object"),
-        ("tracks", "object"),
-        ("clip_pool", "object"),
-        ("routing_graph", "object"),
-    ];
+    /// 这里**故意不手抄**契约：手抄出来的第二份事实源会在契约改动后变成谎言
+    /// （第一版就是手抄表 + 断言"分歧恰好是 writer_version 一项"，而契约修好之后
+    /// 那张表仍在宣称契约写的是 `integer`）。现在这份测试直接读真实契约文件，
+    /// 于是"实现与契约的类型分歧"这件事只有一个事实源。
+    fn schema_top_level_types() -> std::collections::BTreeMap<String, String> {
+        let path = schema_path("project.schema.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("读取 {} 失败: {err}", path.display()));
+        let schema: serde_json::Value = serde_json::from_str(&text).expect("schema 必须是合法 JSON");
+        let mut out = std::collections::BTreeMap::new();
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("schema 必须有 properties 对象");
+        for (key, spec) in properties {
+            // 只比较**直接声明 type** 的键；用 oneOf/anyOf 表达的键交给真正的
+            // jsonschema 对账 (scripts/gates/validate_schemas.py) 去管。
+            if let Some(type_name) = spec.get("type").and_then(serde_json::Value::as_str) {
+                out.insert(key.clone(), type_name.to_owned());
+            }
+        }
+        out
+    }
+
+    /// `schemas/` 目录：`<repo>/schemas/<name>`。
+    fn schema_path(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("schemas")
+            .join(name)
+    }
 
     /// `serde_json::Value` 的 JSON Schema 类型名。
     fn json_type(value: &serde_json::Value) -> &'static str {
@@ -2502,25 +2518,36 @@ mod tests {
         }
     }
 
-    /// 与 `schemas/project.schema.json` 的类型分歧**必须恰好只有一项**：
-    /// `writer_version`（契约写 `integer`，ADR-0001 D3 与架构 §2.2 写语义版本字符串）。
+    /// 实现的序列化结果与 `schemas/project.schema.json` 的顶层类型**必须完全一致**。
     ///
-    /// 这条断言把"分歧不能悄悄变大"变成机械判据：任何**新增**的顶层类型漂移都会变红。
+    /// 历史：这条判据最初手抄了一张契约类型表，并断言"分歧恰好只有 `writer_version` 一项"
+    /// （当时契约写 `integer`，而 ADR-0001 D3 裁定它是语义版本字符串）。
+    /// 契约已按 D11 收紧为 `string`，于是那项"已留痕的分歧"**不再存在**，
+    /// 本判据随之改为直接读契约文件并断言**零分歧** —— 契约再漂移就立刻变红。
     #[test]
-    fn only_writer_version_diverges_from_the_schema_type_table() {
+    fn implementation_matches_the_schema_type_table_exactly() {
         let value = serde_json::to_value(YebanProjectV1::default()).expect("to_value");
         let mut divergences: Vec<String> = Vec::new();
-        for (key, expected) in SCHEMA_TOP_LEVEL_TYPES {
-            let actual = json_type(&value[key]);
+        let table = schema_top_level_types();
+        assert!(
+            table.contains_key("writer_version"),
+            "契约必须声明 writer_version 的类型"
+        );
+        for (key, expected) in &table {
+            let Some(actual_value) = value.get(key) else {
+                divergences.push(format!("{key}: 契约要求但实现未序列化"));
+                continue;
+            };
+            let actual = json_type(actual_value);
             if actual != expected {
                 divergences.push(format!("{key}: schema={expected}, actual={actual}"));
             }
         }
         assert_eq!(
             divergences,
-            vec!["writer_version: schema=integer, actual=string".to_owned()],
-            "与 schemas/project.schema.json 的类型分歧必须恰好是已留痕的 writer_version 一项 \
-             (见 docs/ledger/model-core-provenance.md)"
+            Vec::<String>::new(),
+            "实现与 schemas/project.schema.json 的顶层类型出现分歧；\
+             要么改实现，要么改契约并在 docs/adr/ADR-0001 留痕（不许两边各说各话）"
         );
     }
 
