@@ -391,3 +391,35 @@ testing backend 的能力；能力缺失时出声跳过"。本线**采纳前两�
    **验证办法**：跑一次 app 侧端到端判据，看它打印的
    `观察值: 运行时树里 track-*-header = …` 是否为 0（该观察值**故意不是断言**，
    因为断言一个尚未核验的上游行为会制造假红）。
+
+---
+
+## 12. CI 判决（逐轮，全部用 `scripts/dev/ci-verdict.sh` 读回）
+
+| 轮 | commit | run | 结论 | 红了什么 / 修了什么 |
+| :-- | :--- | :--- | :--- | :--- |
+| 1 | `634fc8d` | 37221312616 / 37221429630 | **failure** | `deny`：`error[wildcard]`（path 依赖被 Cargo 隐式补 `*`，当时 main 还没 D21）；`rust (yeban-ui-test-port)`：`clippy::chunks_exact_to_as_chunks` ×5 + `clippy::doc_overindented_list_items` —— 这两条由本机 clippy 探针提前抓到并在轮 2 前修掉 |
+| 2 | `10b46e1` | 37221429630 | **failure（只剩 1 条）** | `deny` 仍是 wildcard（main 未修）：**已由 ADR-0001 D21 在 main 放行**；`clippy` 死在 `use of deprecated constant … 'PortFixture' doesn't inherit Window` |
+| 3 | `2580f93` | 37221680724 | **failure（1 条测试）** | 夹具改 `inherits Window` 后 **clippy 全过、crate 编译通过、46/47 测试通过**；唯一红：`ControlTree { nodes: {} }`（控件树为空） |
+| 4 | `378a3b7`（rebase 到 main） | 37222243555 | **failure（1 条测试）** | debug info 修好后**控件树/遮罩/两次截图逐字节相同全部通过**；唯一红是"未遮罩的抖动必须被检出"（SSIM 对窄条不敏感，见 §2 第 29 条） |
+| 5 | `517ce47` | 37222689697 | **failure（clippy 1 条）** | 我自己新增测试里的一处 `clippy::useless_conversion`（`Rect::area()` 已是 `u64`） |
+| 6 | `b8d7fc0` | **37222873022** | **success** | `plan` / `checks` / `lockfile` / `deny` / **`rust (yeban-ui-test-port)`** 全绿；`rust (workspace 全量)` 按设计跳过（per-crate 腿已覆盖）。日志：`running 47 tests` → `test result: ok. 47 passed; 0 failed` |
+
+第 6 轮（成功）的 job 日志里，`report_evidence` 打印的实测证据：
+
+```text
+Tier-1 Golden: 200x120 (24000 px), 非黑 24000 (100%), 颜色 62 种, PNG 72193 字节, 指纹 7b25ded60810171f
+test render::tests::tier1_software_renderer_produces_a_non_black_png_and_a_verified_control_tree ... ok
+```
+
+读法：`gh run view --job 111496589158 --log`（或 `scripts/dev/ci-verdict.sh --logs <run-id>`，
+后者只对失败的 job 有内容）。
+
+**必须说清的一点（诚实记账）**：这一轮 `rust (workspace 全量)` 是**被跳过**的，不是"跑过且绿"。
+它被跳过是因为 `plan` 推导出的受影响集合已经由 per-crate 腿覆盖（main 的 CI 改造之后，
+"真全量"才会只跑那一条腿）。本工作线自己的 crate 腿 `rust (yeban-ui-test-port)` 是**真跑且绿**的：
+clippy `-D warnings` 与 47 条测试（含 Tier-1 端到端判据）都在这一轮真的执行了。
+
+**仍然未被任何 CI 轮次执行过的**（见 §5 / §10）：
+`cargo test -p yeban-app --features ui-test-port --test test_port_adapter` ——
+两条 app 侧判据（Tier-1 渲染真实主窗口 + 运行时控件树交叉核对）。
