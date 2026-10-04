@@ -978,6 +978,11 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `std::fs` 只在 `#[cfg(unix)]` 的令牌文件测试里用到(权限位 / 落盘)。
+    // **必须有 cfg**: 否则 Windows 上这条 import 是未使用的, 而 CI 用 `-D warnings` 跑 clippy
+    // ⇒ Windows 侧编译失败(实测: run 37236922758 的 windows job, `unused import: std::fs`)。
+    // 这类"只在某个平台用得上的 import"只有真在另一个平台编译才会暴露。
+    #[cfg(unix)]
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
