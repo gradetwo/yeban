@@ -59,7 +59,8 @@ export component SessionView inherits Rectangle {
     }
 
     // ------------------------------------------------------------ 剪辑插槽矩阵
-    for [track_index] in root.tracks : Rectangle {
+    // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见 arrangement_view.slint 的注释。
+    for _[track_index] in root.tracks : Rectangle {
         x: 8px + 128px * track_index;
         y: 32px;
         width: 120px;

@@ -188,7 +188,8 @@ export component PianoRoll inherits Rectangle {
         accessible-id: "piano-roll-velocity-lane";
         accessible-label: "力度泳道";
 
-        for [velocity_index] in root.note-ulids : Rectangle {
+        // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见 arrangement_view.slint 的注释。
+        for _[velocity_index] in root.note-ulids : Rectangle {
             x: 56px + Tokens.space-5 + 76px * velocity_index + 30px;
             y: parent.height - 4px - 28px * root.velocities[velocity_index];
             width: 6px;

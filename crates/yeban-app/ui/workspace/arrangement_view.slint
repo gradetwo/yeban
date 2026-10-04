@@ -91,7 +91,10 @@ export component ArrangementView inherits Rectangle {
         accessible-label: "小节与拍标尺";
 
         // 小节线位置由投影给出（一小节 = 960 PPQ × 分子 × 4 ÷ 分母 tick）。
-        for [bar_index] in root.bar-positions : Rectangle {
+        // `for _[i] in <model>`：**必须**有声明标识符（`_` 即可）。Slint 1.18.1 不接受
+        // 只有索引的 `for [i] in <model>`（上游 parser 的 doc 注释里有，真实语法没有）。
+        // 实测解析错误见 docs/ledger/app-binding-notes.md（CI run 37228953370）。
+        for _[bar_index] in root.bar-positions : Rectangle {
             x: root.bar-positions[bar_index];
             y: 0;
             width: 1px;
@@ -224,7 +227,8 @@ export component ArrangementView inherits Rectangle {
 
     // ---------------------------------------------------------------- 时间轴车道 + 剪辑
     // 每条非主总线轨道一条车道 —— 车道数 = 工程里的轨道数。
-    for [lane_index] in root.tracks : Rectangle {
+    // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见本文件标尺那处的注释。
+    for _[lane_index] in root.tracks : Rectangle {
         x: 168px;
         y: 42px + 56px * lane_index;
         width: parent.width - 168px;

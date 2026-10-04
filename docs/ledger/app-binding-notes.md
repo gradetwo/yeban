@@ -166,6 +166,16 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 2. **Rust setter ↔ `.slint` 属性名对账**：`host.rs` 里 22 个 `ui.set_*` 调用
    全部能在 `MainWindow` 找到同名 kebab-case 属性（无多无缺）；`ui/` 下**已无内联演示 ULID**
    （`grep 01J8Z5Q0R7K3M9X2V4B6N8P` 无命中）。
+3. **命令行纯函数对账**（`$H/cli_check.rs`）：把 `main.rs` 里的 `parse_sample` 与
+   `first_unknown_arg` **逐字**切出来编译执行，10 条判据全过。它抓到过一个真实的手滑：
+   最初的"未知参数"扫描写成"任何不以 `--` 开头的参数"，于是 `yeban-app filled`
+   （漏了 `--project-sample`）会被静默忽略并按默认样本启动 GUI。
+   变异对照（把实现换回朴素版）⇒ 判据立刻红。
+4. **`for` 形式对账**（`$H/slint_propcheck.py` 的追加检查，**第 1 轮 CI 变红之后补的**）：
+   统计 `plain` / `item_and_index` / `index_only` 三种形态，并把 `index_only`
+   （只有索引的 `for [i] in model`）判为**编译不过**。实测：`plain=17`、
+   `item_and_index=11`、`index_only=0`。该检查能**复现**第 1 轮的失败
+   （把 `for _[bar_index]` 改回 `for [bar_index]` ⇒ 立刻报红）。
 
 ---
 
@@ -202,7 +212,44 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 
 > 未读到的判决一律记 `pending`。
 
-（待第 1 轮 run 读回后回填。）
+| 轮 | commit | run | 结论 | 说明 |
+| :-- | :--- | :--- | :--- | :--- |
+| 1 | `1fd3f23` | [37228953370](https://github.com/gradetwo/yeban/actions/runs/37228953370) | **failure（唯一的红点是我的，已定位并修掉）** | `checks` / `plan` / `lockfile` / `deny` 全绿；`rust (workspace 全量)` 的 `clippy --workspace -D warnings` 死在 **`build.rs` 的 Slint 编译**：`session_view.slint:62` / `arrangement_view.slint:94` / `piano_roll.slint:191` 三处 `for [idx] in <model>`（**只有索引**的循环）→ `Parse error` + `Syntax error: expected ';'`（同一文件后面的 "expected a top-level item" 是级联）。`rust (${{ matrix.crate }})` 被 plan 判为"受影响 crate 集合为空"而跳过（`.github/workflows/ci.yml` 的矩阵腿在 `rust (workspace 全量)` 变红时不会给出独立读数）。 |
+
+### 6.1 第 1 轮暴露的上游事实（**新发现，值得写进 ADR-0001 D18 一族**）
+
+**Slint 1.18.1 不接受"只有索引"的 `for [idx] in <model>`。**
+
+- **症状**（可复现）：`for [bar_index] in root.bar-positions : Rectangle {` →
+  `ui/workspace/arrangement_view.slint:94: Parse error` 与
+  `94:59: Syntax error: expected ';'`；解析器随后把后续元素当成顶层项，于是同一个文件里
+  出现第二条"expected a top-level item such as a component, a struct, or a global"（**级联，不是第二个错**）。
+- **为什么之前会写错**：`i-slint-compiler-1.18.1/parser/element.rs:307-312` 的
+  `parser_test` doc 注释里**明文列了** `for [idx] in mm: Elem { }` 这一形态。
+  但那只是解析器的语法糖注释，**真实语法要求先有声明标识符**：
+  `parse_repeated_element` 里 `DeclaredIdentifier` 与 `RepeatedIndex` 虽然都是可选的
+  （`object_tree.rs:2941-2952` 用 `unwrap_or_default()`），但发布版的行为是
+  "只有索引" 直接语法错误。
+- **上游的正向证据**（写代码前应当先查它）：`tests/syntax/basic/for.slint:20` 用的是
+  `for xx[idx] in zz: Hello {`；`tests/syntax/layout/grid_layout_properties.slint:121/146/164`
+  用的是 `for _[idx] in 5: Text {` —— 也就是说**声明标识符可以是 `_`**。
+  整个 `tests/syntax/` 里**没有**任何 `for [idx] in ...` 的用例。
+- **本线的修法**：四处 `for [x] in model` → `for _[x] in model`（语义完全不变：
+  `_[idx]` 里的 `idx` 就是索引，0 起）。
+- **教训（与方法论有关）**：parser 的 `parser_test` doc 注释**不是**语法契约；
+  要判断一个写法能不能编译，应当去读 `tests/syntax/**` 的**可编译夹具**，
+  或者用发布版编译器真跑。本机不编译 Slint，所以本线把这条降级成一条**文本层静态检查**
+  （§4.4 第 3 条），它能复现第 1 轮的失败。
+
+### 6.2 同一轮里被解析错误"盖住"的东西（尚未有读数，交给第 2 轮）
+
+第 1 轮止步于**解析**，因此下面这些**还没有 CI 读数**，第 2 轮才会真正判：
+
+- `.slint` 的语义与类型检查（`[length]` 数组属性、`root.<数组>.length`、数组属性转发、
+  `168px + <length>`、`56px * root.clip-lanes[i]`）；
+- `host.rs` / `main.rs` / `test_port_adapter.rs` 的 `clippy -D warnings` 与编译；
+- 运行时控件树的内容、Tier-1 像素（尺寸 / 非黑 / 颜色数 / PNG 字节）、
+  以及 §5 那张"模型数据到达像素"的证据表。
 
 ---
 

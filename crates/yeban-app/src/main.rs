@@ -180,10 +180,7 @@ fn main() -> ExitCode {
     if wants_headless(&args) {
         return run_headless(&args, sample);
     }
-    if let Some(unknown) = args
-        .iter()
-        .find(|arg| !arg.starts_with("--") && !is_sample_value(arg))
-    {
+    if let Some(unknown) = first_unknown_arg(&args) {
         eprintln!("yeban-app: 无法识别的参数 `{unknown}`\n\n{USAGE}");
         return ExitCode::from(2);
     }
@@ -213,9 +210,26 @@ fn parse_sample(args: &[String]) -> Result<Sample, String> {
     Ok(sample)
 }
 
-/// `--project-sample` 的取值本身不是"无法识别的参数"。
-fn is_sample_value(arg: &str) -> bool {
-    matches!(arg, "default" | "demo" | "filled")
+/// 第一个"不是选项、也不是 `--project-sample` 的取值"的参数。
+///
+/// 为什么不能写成"任何不以 `--` 开头的参数"：`--project-sample filled` 里的 `filled`
+/// 也不以 `--` 开头。这里的扫描**跳过被选项消费掉的那一格**，因此
+/// `yeban-app filled`（漏了选项名）会正确地被当成无法识别的参数并退出 2，
+/// 而不是静默地按默认样本启动 GUI。
+fn first_unknown_arg(args: &[String]) -> Option<&String> {
+    let mut cursor = 0;
+    while cursor < args.len() {
+        let arg = &args[cursor];
+        if arg == "--project-sample" {
+            cursor += 2; // 跳过选项本身与它的取值
+            continue;
+        }
+        if !arg.starts_with("--") {
+            return Some(arg);
+        }
+        cursor += 1;
+    }
+    None
 }
 
 /// 判断是否要求无头运行: `--headless`、`--dump-elements`, 或 `SLINT_BACKEND=headless`。
