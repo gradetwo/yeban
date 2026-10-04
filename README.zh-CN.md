@@ -42,6 +42,63 @@
 
 ---
 
+---
+
+## 🚀 快速开始
+
+> **环境要求 → 构建 → 运行**，顺序如下。下面的命令都可以直接复制粘贴。
+
+### 环境要求
+
+| | |
+| :--- | :--- |
+| **Rust** | **1.99.0** —— 由 [`rust-toolchain.toml`](rust-toolchain.toml) 钉死，`rustup` 会自动安装；`rustfmt` + `clippy` 组件同样被钉住。 |
+| **操作系统** | macOS（Apple Silicon / Intel）、Linux（X11 或 Wayland）、Windows。 |
+| **Linux 构建依赖** | `pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev`（Debian/Ubuntu 包名；Slint / winit / cpal 链接时需要）。 |
+| **macOS 构建依赖** | Xcode Command Line Tools：`xcode-select --install`。 |
+| **显示器** | 打开主窗口需要真实显示器；`--headless` 不需要（CI 用的就是它）。 |
+
+### 构建
+
+```bash
+git clone https://github.com/gradetwo/yeban.git
+cd yeban
+cargo build --release                     # 构建整个工作区（Slint + winit + cpal，首次需要几分钟）
+cargo build --release -p yeban-app        # 只构建桌面 GUI 二进制
+```
+
+### 运行
+
+```bash
+cargo run --release -p yeban-app                     # 打开桌面主窗口
+cargo run --release -p yeban-app -- --headless       # 无需显示器：打印 headless ok 后退出 0
+cargo run --release -p yeban-app -- --dump-elements  # 打印语义控件树，不建窗口
+cargo run --release -p yeban-mcp                     # Intent API v2 的 stdio 形态（MCP 服务）
+cargo run --release -p yeban-mcp -- --enable-mcp-http --features mcp-http   # 仅环回 HTTP（127.0.0.1 + 动态端口）
+```
+
+### 测试
+
+```bash
+cargo test --workspace                                  # 单元 + 集成判据（约 1,100 条）
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+> **诚实状态**：实时引擎**还不能发声**（Phase 2 进行中），主窗口启动时用的是演示工程。
+> "到底什么算已验证、什么仍是 `PENDING`"请看 [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md)。
+> 本文档**不声称**任何功能已经可演奏。
+
+### 参与开发
+
+本仓库由**多条并行工作线**推进（git worktree + 一文件一写者），且**只有 CI 的判决算数**。
+第一次提交前请读 [`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md)；在笔记本上请用本地门禁而不是全量构建：
+
+```bash
+bash scripts/gates/run-gates.sh light        # fmt + 13 条机械红线守卫 + 文档 + 许可清单
+bash scripts/dev/cargo-local.sh test -p yeban-model   # 刻意拒绝 --workspace（本机不跑重活）
+```
+
 ## 📚 核心系统架构与设计规范索引
 
 | 规范文档 | 核心职责与涵盖内容 | 规范版本 |

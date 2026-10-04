@@ -34,6 +34,64 @@
 
 ---
 
+---
+
+## Quick start
+
+> **Requirements → build → run**, in that order. Everything below is copy-pasteable.
+
+### Requirements
+
+| | |
+| :--- | :--- |
+| **Rust** | **1.99.0** — pinned by [`rust-toolchain.toml`](rust-toolchain.toml); `rustup` installs it automatically. Components `rustfmt` + `clippy` are pinned too. |
+| **OS** | macOS (Apple Silicon / Intel), Linux (X11 or Wayland), Windows. |
+| **Linux build deps** | `pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev` (Debian/Ubuntu names; needed to link Slint, winit and cpal). |
+| **macOS build deps** | Xcode Command Line Tools: `xcode-select --install`. |
+| **Display** | A real display is needed for the GUI window. `--headless` runs without one (that is what CI uses). |
+
+### Build
+
+```bash
+git clone https://github.com/gradetwo/yeban.git
+cd yeban
+cargo build --release                     # builds the whole workspace (Slint + winit + cpal: a few minutes the first time)
+cargo build --release -p yeban-app        # just the desktop GUI binary
+```
+
+### Run
+
+```bash
+cargo run --release -p yeban-app                     # open the desktop main window
+cargo run --release -p yeban-app -- --headless       # no display needed: prints `headless ok` and exits 0
+cargo run --release -p yeban-app -- --dump-elements  # print the semantic control tree, no window
+cargo run --release -p yeban-mcp                     # Intent API v2 over stdio (the MCP server)
+cargo run --release -p yeban-mcp -- --enable-mcp-http --features mcp-http   # loopback-only HTTP (127.0.0.1, dynamic port)
+```
+
+### Test
+
+```bash
+cargo test --workspace                                  # unit + integration criteria (≈1,100 of them)
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+> **Honest status.** The real-time engine does not make sound yet (Phase 2 in progress) and the app starts with a
+> demo project. For exactly what is verified — and what is still `PENDING` — see
+> [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md). Nothing here is claimed to be playable.
+
+### Working on the code
+
+This repository is built by **many parallel work lines** (git worktree + one writer per file), and the **only**
+verdict that counts is CI. Read [`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md) before your first commit; on a
+laptop use the local guards instead of a full workspace build:
+
+```bash
+bash scripts/gates/run-gates.sh light        # fmt + 13 mechanical red-line guards + docs + licence inventory
+bash scripts/dev/cargo-local.sh test -p yeban-model   # refuse --workspace on purpose (no heavy CPU locally)
+```
+
 ## The four core mandates
 
 1. **Open source under GPLv3.** The whole project is released under GPLv3 with the §7 additional permission that
