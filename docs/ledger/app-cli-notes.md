@@ -109,7 +109,9 @@ exported: path=… lines=… bytes=… temp=…
 来源说明（**务必按这个口径引用**）：下面的片段来自 `crates/yeban-app/src/cli.rs` 与 `main.rs` 的
 **同一条代码路径**，但被测进程是**本机零 Slint 探针二进制**（`/tmp/app-cli-harness/probe.rs`，
 与 `main.rs` 的无窗口分发逐行同构）—— 因为本机不允许编译 Slint。
-**真二进制那一半由 CI 的 `cargo test --workspace --all-targets` 跑 `crates/yeban-app/tests/cli_contract.rs` 判决。**
+**真二进制那一半由 CI 判决，而且判决已经读回来了**（见 §4.1 的 CI 行与 §9 item 1）：
+run `37242779089` 的 `rust (yeban-app)` job 里有一行原始日志
+`Running tests/cli_contract.rs (target/debug/deps/cli_contract-…)` → `test result: ok. 12 passed; 0 failed`。
 
 ```text
 $ yeban-app --version
@@ -184,6 +186,7 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
 | 同上的一半的 clippy（`-D warnings -D clippy::all`） | `bash /tmp/app-cli-harness/clippy.sh` | ✅ **零告警** |
 | `tests/cli_contract.rs`（12 条，被测进程 = 本机探针二进制） | `bash /tmp/app-cli-harness/verify.sh` | ✅ **12 passed; 0 failed** |
 | 门禁 light | `bash scripts/gates/run-gates.sh light` | ✅ **门禁通过 (mode=light)** |
+| **真二进制**判据（CI 唯一能判的那一半） | `cargo test -p yeban-app --all-targets --locked`（CI run **37242779089** 的 `rust (yeban-app)` job，3m56s） | ✅ **`tests/cli_contract.rs`: 12 passed; 0 failed**（CI 日志原文）；同 job 里 lib 单元判据 `110 passed; 0 failed`；`cargo clippy -p yeban-app --all-targets -- -D warnings` 零告警 |
 
 > 探针用 `env CARGO_PKG_VERSION=<根 Cargo.toml 里读出的 workspace 版本>` 编译 —— 生产构建里这个值由
 > Cargo 从**同一份清单**注入，因此 `env!("CARGO_PKG_VERSION")` 在两条路上是同一个事实源。
@@ -384,12 +387,15 @@ SLINT_BACKEND=headless yeban-app --headless
 
 ## 9. pending（未证实 / 已知的债）
 
-1. **真二进制的判决尚未读回**：本机跑的是同构探针进程 + `cargo test --targets` 的 CI 腿；
-   在 `ci-verdict.sh` 给出绿之前，`tests/cli_contract.rs` 的 12 条一律记 **pending**。
-2. `tests/cli_contract.rs` 里 `CARGO_BIN_EXE_yeban-app` 的可获得性：
-   Cargo 文档口径是"integration test 构建时设置"，本机无法验证（不编译 Slint）⇒
-   若 CI 报"environment variable not defined"，退路是把那 12 条改写成对 `cli::run_batch` 的直接调用
-   （逻辑已由单元判据覆盖）并另开一个 `[[bin]]` 冒烟步骤。**先看判决，不预先改。**
+1. ~~**真二进制的判决尚未读回**~~ **已读回**：`bash scripts/dev/ci-verdict.sh line/app-cli` ⇒
+   run **37242779089**（commit `e63cf24`）= **success**；`rust (yeban-app)` job（ID 111554655614，3m56s）绿，
+   日志里 `Running tests/cli_contract.rs` ⇒ `test result: ok. 12 passed; 0 failed`，lib 单元判据 `110 passed; 0 failed`。
+   ✔ 这条不再是 pending —— 真二进制与 `CARGO_BIN_EXE_yeban-app` 的可获得性都由该 job 证实。
+   （本台账这次修订是**纯文档**后续提交；判据、代码与 `Cargo.lock` 一字未动，因此不改变上面那次判决的适用范围。）
+2. ~~`CARGO_BIN_EXE_yeban-app` 的可获得性~~ **已由 run 37242779089 证实**：该 job 的
+   `cargo clippy -p yeban-app --all-targets -- -D warnings` 与 `cargo test … --all-targets` 都编译并执行了
+   `tests/cli_contract.rs`，`env!("CARGO_BIN_EXE_yeban-app")` 正常注入（`env!` 的编译期语义因此被真实验证过）。
+   无需 `option_env!` 退路。
 3. `--export-elements` 的格式稳定性：本线承诺"与 `--dump-elements` 逐行相同"，
    但 `elements::dump_lines()` 的行格式由 app 侧自定（`[UI-TEST-001]` 只约束 ID 形状）⇒
    行格式变化会同时影响两处（同源，故不会互相漂移）。
