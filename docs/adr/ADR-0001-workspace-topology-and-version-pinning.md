@@ -124,6 +124,29 @@
 - **前提修正**：`ARCH-PDC-001` 明写 `DeviceDefinition::latency_samples`，但该字段此前**并不存在**。
   已按规范补上（`yeban-model`，`#[serde(default)]` 取 0 表示"未上报"，填充样本里给 32 采样点做覆盖）。
 
+### D20 — 依赖许可白名单接纳 `Unlicense`（Proposed，待人类法务追认）
+
+- **背景**：`midly`（规范 §4 指定的 SMF 0/1 零堆分配编解码库）**只有** `Unlicense`，
+  不像多数 crate 那样带 `MIT/Apache` 兜底分支，因此被 `cargo deny` 逐条拒绝。
+- **裁决**：加入白名单。判定依据：Unlicense 是 OSI 认证 + FSF Free/Libre + 公有领域等效奉献 +
+  与 GPLv3 兼容（无任何额外限制），不属于 AGENTS.md §2 红线 2 禁止的三类。
+- **考虑过的替代**：自研 SMF 编解码器（约 180 行，可让 `yeban-render` 的 MIDI 模块零第三方依赖）。
+  **否决**：SMF 的运行状态、VLQ 边界、tempo map 语义是"领域早已定型"的东西，
+  自研等于把一个小问题变成长期维护问题（SKILL「不要重新发明已定型的东西」）。
+- **诚实声明**：与 D17 一样，这是 Agent（集成者）提出的白名单扩张，状态 `Proposed`，人类可否决；
+  否决时改为自研 SMF 编解码器。
+
+### D21 — 内部 path 依赖豁免通配检查（否则每条线都撞同一堵墙）
+
+- **问题**：`[bans] wildcards = "deny"` 会拒绝"成员依赖另一个成员"——因为
+  `[workspace.dependencies]` 里的内部条目只写 `path` 不写 `version`，继承出来的要求是 `*`。
+  实测（隔离沙盒复现）：`yeban-render → yeban-model/dsp` 与 `yeban-app → yeban-ui-test-port`
+  两条线**同时**被这一条拦下，而这是 Phase 2/3 几乎每条线都要写的依赖形态。
+- **裁决**：`[bans] allow-wildcard-paths = true`。**只**放行带 `path` 的 `*`；registry 依赖仍必须写真实版本。
+- **否决定的替代**：给内部条目补 `version = "0.0.1"` —— 否决，因为 `^0.0.1` 不匹配 `0.1.0`，
+  工作区每次升版都要回头改一堆内部依赖，属于把一次性麻烦换成长期麻烦。
+  （成员全部 `publish = false`，不存在"发布时需要版本"的诉求。）
+
 ---
 
 ## D5 的落地细节（版本钉死）
@@ -161,7 +184,7 @@
 ## 待人类批准/补充
 
 1. 本 ADR 全部裁决（尤其 D3 的 `schema_version = 1`、D7 的 PENDING 策略、D12 对 `Op` 全集的扩展、
-   D16 的窗函数口径、D17 的 BSL-1.0 接纳）；
+   D16 的窗函数口径、D17 的 BSL-1.0 与 D20 的 Unlicense 接纳）；
 2. `ROAD-M-1-006` 的 4 条人类审核（法务措辞、ASIO、商标、发布签名）——Agent 不得代签；
 2b. **规范措辞修订**：`SLINT_BACKEND=headless` 与 `slint::testing::*` 两处在 `ARCH-UI-003/005` 与
    UI/UX §12.1 中与上游 1.18.1 不符（ADR-0001 D18），需要人类改写规范正文；

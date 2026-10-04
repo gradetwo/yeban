@@ -47,6 +47,11 @@ allow = [
     # arboard(剪贴板) <- winit/slint, 且仅在 Windows 目标上参与编译。
     # 不属于 AGENTS.md §2 红线 2 禁止的"非商业限制/专有不可再分发/与 GPLv3 不兼容"任何一类。
     "BSL-1.0",
+    # Unlicense: OSI 认证 + FSF Free/Libre + 公有领域等效奉献 + 与 GPLv3 兼容(无额外限制)。
+    # 来源是 midly —— 规范 §4 指定的 SMF 0/1 零堆分配编解码库。它**只有** Unlicense,
+    # 不像多数 crate 那样带 MIT/Apache 兜底分支, 所以必须显式列出(否则被逐条拒绝)。
+    # 同样是 Proposed 状态, 见 docs/adr/ADR-0001 D20。
+    "Unlicense",
 ]
 # 注意: CC-BY-NC-* / CC-Sampling-Plus / 任何"非商业"或"不可再分发"许可**永远不进白名单**
 # [AGENTS.md §2 红线 2]。历史项目 groove 的采样清单曾主动接受 CC-BY-NC —— 绝不移植
@@ -70,6 +75,14 @@ license-files = [
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
+# workspace **内部** path 依赖不写版本号是正当的: 成员一律 publish = false, 版本由
+# [workspace.package] 统一继承, 写死 `version = "0.0.1"` 反而会在工作区升版时变成陷阱
+# (^0.0.1 不匹配 0.1.0)。
+# 若不豁免, 任何"成员依赖另一个成员"的写法都会被 `wildcards = "deny"` 拦下 —— 而 Phase 2/3
+# 的几乎每条工作线都要这么写(engine→dsp、render→model/dsp、app→ui-test-port…), 会变成
+# 一根卡住所有线的独木桥。该豁免**只**放行带 `path` 的 `*`; registry 依赖仍必须写真实版本。
+# 见 docs/adr/ADR-0001 D21。
+allow-wildcard-paths = true
 
 # 明确禁用的高风险库
 deny = [
