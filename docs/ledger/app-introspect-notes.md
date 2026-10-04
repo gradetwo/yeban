@@ -106,6 +106,21 @@ $ cargo tree -p yeban-app -e dev,normal --locked | grep -n yeban-ui-test-port
 所以**规范不能把"控件树 = 声明的元素全集"当真**；`yeban-ui-test-port` 的静态注册表正是为此存在的
 （无窗口也能跑，覆盖全集），两者必须交叉核对而不是二选一。
 
+### 字体链的两条新发现（第 3 轮实测 + 源码核对，直接关系到 ADR-0001 D24 的前提）
+
+| # | 结论 | 出处 |
+| :-- | :--- | :--- |
+| B1 | **`font-family` 的逗号列表在 Slint 1.18.1 里不是"回退链"**：Parley 路径把整个字符串当成**一个** family 名查询（`FontFamilyName::named(family.as_str())`），后面只跟两个**泛型**回退（`SansSerif` → `SystemUi`）。也就是说 `tokens.slint` 里那条 `"Inter, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, …"` 只有"整串匹配"才会被当成一个字体名 —— 它一个都不匹配，真正生效的是"泛型回退 + 按 script 的系统回退" | `i-slint-core-1.18.1/textlayout/sharedparley/shaping.rs:86-105`；`i-slint-common-1.18.1/sharedfontique.rs:188-192`（`FALLBACK_FAMILIES = [SansSerif, SystemUi]`）；`i-slint-compiler-1.18.1/builtin_elements.rs:1067`（`in property <string> font-family`） |
+| B2 | 字体集合**带系统字体**（`fontique::CollectionOptions { system_fonts: true }`），因此 Linux 上走 fontconfig 的系统回退：**装了 CJK 字体就有字形，没装就整片不画**。第 1 轮（没装 `fonts-noto-cjk`）实测"汉字什么都不画"、第 3 轮（装了）实测"汉字正常"，正是这条的对照实验 | `i-slint-common-1.18.1/sharedfontique.rs:21`；两轮 CI 的真实截图（§6.2 / §6.4） |
+
+**对 D24 的影响（如实登记）**：D24 的结论（用系统字体栈 + 分平台 Golden + 不捆绑 CJK 字体）
+**成立**，但它的**理由之一**（"回退链已在 `tokens.slint` 落地"）在 Slint 1.18.1 上**不成立**：
+那条链不是链，只是"一个名字 + 两个泛型"。因此"汉字能不能画出来"完全取决于
+**系统里有没有覆盖该 script 的字体**（Linux: fontconfig 里有没有 `Noto Sans CJK`）。
+本线的 D24 判据（§6.2）恰好把这件事变成了**可测**的：它红就说明"系统里没有 CJK 字体"，
+与"回退链写得好不好"无关。建议 D24 补一句修正（§8 第 9 条 / §10 第 5 条）。
+
+
 ---
 
 ## 4. `[UI-TEST-001]` 的实测判据形状（按事实写，不为了让数字好看而放宽）
@@ -231,17 +246,19 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 | :-- | :--- | :--- | :--- | :--- |
 | 1 | `53e2f93` | [37224871698](https://github.com/gradetwo/yeban/actions/runs/37224871698) | **success** | `plan` / `checks` / `lockfile` / `deny` / `rust (yeban-ui-test-port)` / **`rust (yeban-app)`** 全绿；`rust (workspace 全量)` 按设计跳过。`rust (yeban-app)` 真的执行了本线的判据：`running 8 tests` → `test result: ok. 8 passed`，并产出 artifact **`ui-screenshots-yeban-app`**（§6.1 的数字来自这一轮） |
 | 2 | `c667fa2` | [37225490791](https://github.com/gradetwo/yeban/actions/runs/37225490791) | **failure（2 条，1 条是我的、1 条是 main 的）** | ① **我的**：`rust (workspace 全量)` 的 `clippy --workspace -D warnings` 死在 `error: constant TOKEN_BG_PANEL_ALT is never used` —— 第 2 轮我把对照元素从"Musical PR 卡"换成了 `status-bar-chord`，那个色值常量就没人用了。`test --workspace` 因此没跑，**CJK 数字与 D24 判据这一轮没有结果**。② **main 的**：`checks` 的"跨语言契约对账"死在 `no example target named export_mcp_samples in yeban-mcp package` —— D25 的 ci.yml 步骤先落地、mcp-core 的 example 后落地，`origin/main` 当时自己是红的（376… 见下），与本线无关。 |
-| 3 | 见下 | `pending` | `pending` | 修掉 ①（把 `TOKEN_BG_PANEL_ALT` 用起来：多打印一块"混合卡"的墨迹），并 rebase 到已经补上 `export_mcp_samples` 的 `origin/main`（`101380c`）⇒ ② 也应消失 |
+| 3 | `5815b8e` | [37225850785](https://github.com/gradetwo/yeban/actions/runs/37225850785) | **failure（残留全部不是本线的）** | `clippy --workspace -D warnings` **绿**（第 2 轮那条未使用常量已修）⇒ `test --workspace` 真的跑到本线的判据：**`running 8 tests` → `test result: ok. 8 passed`**，含新的 D24 墨迹判据（§6.4）。红的两个 job 都不是本线的：① `rust (workspace 全量)` 的 `test --workspace` 死在 **`crates/yeban-mcp/tests/contract.rs`** 的 2 条契约测试（D25 schema 联集 vs mcp 注册表，属 mcp-core 线）；② `checks` 的"跨语言契约对账"同源。两处都在本线 diff 之外（`git diff --name-only origin/main HEAD` 只有本线 6 个文件） |
+| 4 | 见下 | `pending` | `pending` | 纯 notes 提交（docs-only ⇒ plan 判 `crates: []`，只跑 `checks`）：把第 3 轮数字与 B1/B2 两条字体发现写进账本 |
 
 **第 2 轮的教训（写给后来的本机验证）**：本机 harness **抓不到"未使用常量"这类错误** ——
 它只按名字抽取出"被判据引用到的"函数/常量，未被引用的项根本不会进 harness，
 于是 `dead_code` 只在 CI 的 `-D warnings` 下暴露。这类"编译期才成立"的约束只有 CI 能判
 （与本仓库既有的"只有 CI 能抓"清单同类：`clippy::chunks_exact_to_as_chunks`、`error[wildcard]`）。
 
-**main 变红时的读法（本线第 2 轮实测）**：`checks` 里的"跨语言契约对账"步骤引用了
-`cargo run -p yeban-mcp --example export_mcp_samples`，而该 example 当时只在 mcp-core 那条线的
-分支上。判定"是不是我的错"的方法：`git ls-tree -r --name-only origin/main -- <路径>` +
-`git log --oneline origin/main`（本线就是这么判定 ② 不是自己的）。
+**main 变红时的读法（本线第 2/3 轮实测）**：判定"是不是我的错"的方法 ——
+`git diff --name-only origin/main HEAD`（本线只有 6 个文件）+ `git log --oneline origin/main` +
+`gh run view --log-failed` 里的报错路径。第 3 轮的两个红点都落在 `crates/yeban-mcp/` 与
+`schemas/`，与本线无关。
+
 
 
 ### 6.1 第 1 轮的实测数字（`gh run view --job 111502378733 --log` 取回）
@@ -325,17 +342,53 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 但**不能**逐字形比对（那需要一份人类批准的参考图样，D24 原文的"与已知 tofu 图样比对"）。
 另外它**不**覆盖 `font-ui` 回退链里"用了哪个字体"（PingFang vs Noto 的字形差异只能由分平台 Golden 管）。
 
-### 6.3 第 3 轮要验的三件事（第 2 轮因 clippy 提前中止，所以顺延）
+### 6.3 第 3 轮要验的三件事（**已全部验证**）
 
 1. **rebase 到含 D24 的 main** ⇒ 该 job 的 apt 步骤装上 `fonts-noto-cjk`
-   ⇒ 汉字第一次真的被栅格化 ⇒ **三个状态的像素指纹必然与第 1 轮不同**
-   （第 1 轮 `5e6020089976cb69` / `06bce1e2e0f6cec6` / `14559b0cb92839d6`）。
-   指纹变了本身就是"字体确实生效"的证据；若指纹**没变**，说明装字体那一步无效（要查 apt 步骤）。
-2. **新判据必须绿**：`cjk_ink >= 150` 且 `cjk_ink > reference_ink`（§6.2 两侧的余量）。
-3. **`clippy --workspace -D warnings` 绿**（第 2 轮就是死在这里 —— 未使用常量）。
+   ⇒ 汉字第一次真的被栅格化 ⇒ **三个状态的像素指纹必然与第 1 轮不同** —— **实测正是如此**（§6.4）。
+2. **新判据必须绿**：`cjk_ink >= 150` 且 `cjk_ink > reference_ink` —— **实测 648 ≥ 150 且 648 > 213** ✓。
+3. **`clippy --workspace -D warnings` 绿** —— **实测绿**（第 2 轮死在这里的未使用常量已修）。
 
-若第 3 轮仍然红：**残留一定不是本线的**（读法见上面"main 变红时的读法"），
-此时本线的正确处置是**如实报告 + 不动别人独占的文件**，而不是去改 `.github/**` 或 `crates/yeban-mcp/**`。
+### 6.4 第 3 轮的实测数字：D24 的字体安装**真的生效**，而且判据把它变成了可测的
+
+```text
+[D24] 汉字墨迹: 声学诊断卡(12 汉字+3 ASCII) 648 px (包围盒 Rect{1654,174,99,21}, 颜色 181);
+     对照 status-bar-chord(2 汉字+5 ASCII) 213 px (包围盒 Rect{240,1063,51,11}, 颜色 136);
+     意图生成卡(14 汉字+2 ASCII) 638 px; 混合卡 Musical PR(4 汉字+12 ASCII) 564 px; 下限 150 px
+状态 A (Arrangement / 全展开): 1920x1080, 非黑 2073600 (100%), 颜色 2973 种, PNG 6222418 字节, 指纹 d112dc495785a95a
+状态 A 两次截图逐字节相同: true
+状态 B (Arrangement / compact): 颜色 2784 种, 指纹 ac7b4fe101ef217e
+状态 C (Session / 全展开): 颜色 2811 种, 指纹 0f90993cfb31caa0
+控件树计数: 注册表 184 / 运行时 95 / 未登记 0 / 缺失 89;  关键单例覆盖率 39/39 = 100%
+重复族: track-*-header=6, clip-*-header=3, section-*-card=4, tab-*-button=3, sidebar-item-*=8,
+        piano-roll-tool-*-button=5, velocity-*-bar=6, note-*-rect=7
+运行时动态区 6 个 = 18752 px = 0.9043%;  [UI-MCP-003] 抖动未遮罩 0.991518 / 遮罩后 1.000000;
+静态回归 1400x583@(240,48) 亮度 17.02 填白: 未遮罩 0.636255 / 遮罩后 0.636324
+```
+
+**两侧对照（这就是 D24 那条判据的承重证据）**：
+
+| 指标 | 第 1 轮（无 `fonts-noto-cjk`） | 第 3 轮（有） | 变化 |
+| :--- | :--- | :--- | :--- |
+| 声学诊断卡墨迹 | 24 px | **648 px** | **27×** |
+| 意图生成卡墨迹 | 6 px | **638 px** | **106×** |
+| 对照 `status-bar-chord` 墨迹 | 119 px | 213 px | 1.8×（它只有 2 个汉字） |
+| 状态 A 颜色数 | 2349 | 2973 | +624 种（汉字字形带来的新灰阶） |
+| 状态 A 指纹 | `5e6020089976cb69` | `d112dc495785a95a` | **变了** ⇒ 像素确实被字体改变 |
+| 状态 B 指纹 | `06bce1e2e0f6cec6` | `ac7b4fe101ef217e` | 变了 |
+| 状态 C 指纹 | `14559b0cb92839d6` | `0f90993cfb31caa0` | 变了 |
+| 控件树 | 184 / 95 / 0 / 89 | 184 / 95 / 0 / 89 | **完全一致** ⇒ 树不受字体影响（应当如此） |
+
+本机对"有 CJK 字体"的预测是 ≈590 px（§6.2），实测 **648 px** —— 误差 10%，
+说明那套"用 FreeType + 真实 CJK 字体量同串"的估算口径是可用的。
+
+**人眼复核（本线自己也做了）**：第 3 轮的 `ui-screenshots-workspace` 里，Session 视图那张
+现在满屏中文且**没有一个豆腐块**：资源库 / 乐器 / 采样 / 预置 / 三角钢琴 / 夜色铺底 / 低频 /
+909 鼓组 / 弦乐 / 磁带人声 / 分支: main / AI提案 (待审查) / 鼓 贝斯 铺底 主音 弦乐 打击 /
+Intro Verse Chorus Drop / 已装 空插槽 / 场景 / + 新增 / 意图生成 / 声学诊断 / 审查提案 /
+钢琴卷帘 调音台 设备效果链 / 1 选择 2 铅笔 3 剪刀 4 力度 5 橡皮 / 吸附 1/16 · PPQ 960 · 显示 C2 – C7 /
+选区 和弦 空格 播放/暂停 目标 120 FPS。
+
 
 ---
 
@@ -372,11 +425,16 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
    因此只能做**人眼复核**，不能直接当基准图 —— 这是 D24"分平台 Golden"的直接后果。
 6. ~~重复族语义寻址的定论~~ —— **已由第 1 轮 CI 实测关闭**：`for` 循环的每个实例都能被语义 ID
    寻址（6/3/4/8/5 个），`[UI-TEST-001]` 的三个族全都可用（见 §6.1）。
-7. **D24「与已知 tofu 图样比对」这一层还没做**：§6.2 的判据证明"汉字被画出来了"，
+7. **D24「与已知 tofu 图样比对」这一层还没做**：§6.2/§6.4 的判据证明"汉字被画出来了"，
    但**不能**逐字形比对。要真正区分"正确字形"与"错误的回退字形（例如全部落到某个只有
    假名的字体）"，需要一份**人类批准**的参考图样 + 分平台基准（与 needs 4 是同一件事的两面）。
-8. **`fonts-noto-cjk` 的安装效果本身要由本线第 2 轮 CI 来证**（D24 自己写的 pending）。
-   §6.3 给了判定方法：三个状态的像素指纹必须与第 1 轮**不同**，且新判据必须绿。
+8. ~~`fonts-noto-cjk` 的安装效果要由本线第 3 轮 CI 来证~~ —— **已验证**（§6.4：
+   诊断卡墨迹 24 → 648 px、颜色数 +624、三个状态的指纹全变），并且这件事现在有**判据**盯着
+   （D24 墨迹判据 + 对照判据）。
+9. **D24 的前提需要一处修正**（新发现，见 §3 B1）：Slint 1.18.1 **不把 `font-family` 的逗号列表
+   当回退链**（整串被当成一个 family 名 + 两个泛型回退）。所以"汉字能不能画出来"取决于
+   **系统里有没有覆盖 CJK 的字体**，而不是 `tokens.slint` 里那条链写得好不好。
+   D24 的结论不变，但理由要改；本线已把这件事变成可测判据，建议集成者据此修 D24 的措辞。
 
 ## 9. pending（未证实的、已知的债）
 
@@ -401,7 +459,15 @@ rustc --edition 2024 --crate-type rlib --crate-name yeban_app \
 4. **hoist → `docs/DEV_WORKFLOW.md`**（可选）：`required-features` 目标在 CI 里"绿着跳过"是
    一类系统性盲区（本线实测踩到）。建议在"多线纪律"里加一句：**判据必须挂在 CI 会执行的目标上**，
    否则它等于注释。
-5. **hoist → ADR-0001 D24 的执行段**：`fonts-noto-cjk` 的安装效果已由本线第 2 轮给出判定方法
-   （指纹必须变 + 墨迹从 24 px 变成数百 px）。建议把这组数字写进 D24，作为"环境依赖真的生效"
-   的可核验判据。
+5. **hoist → ADR-0001 D24 的执行段**：`fonts-noto-cjk` 的安装效果已由本线第 3 轮**实测验证**
+   （§6.4：墨迹 24 → 648 px、指纹全变），并且有了判据。建议把这组数字写进 D24，
+   同时按 §3 B1 修正"回退链已在 `tokens.slint` 落地"这条理由（Slint 1.18.1 不把逗号列表当链）。
+6. **hoist → `docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md` 的 §8/§12.5（规范措辞）**：
+   规范写"CI 需打包 Noto Sans CJK 字体并配置字体降级链"——**降级链的那一半在 Slint 1.18.1 上
+   无法按 CSS 语义实现**（B1），规范的措辞应当改成"CI 环境必须安装覆盖 CJK 的系统字体，
+   应用依赖系统的 script 级回退"。属规范级修订，需集成者/人类裁决。
+7. **hoist → `docs/DEVELOPMENT_LEDGER.md`**：第 3 轮的两个红点（`crates/yeban-mcp/tests/contract.rs`
+   2 条 + `checks` 的跨语言契约对账）是 **mcp-core/D25 的残留**，与本线无关；
+   本线在 `rust (workspace 全量)` 里的判据是**全绿**的（`running 8 tests` → `8 passed`）。
+
 
