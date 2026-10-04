@@ -655,18 +655,24 @@ fn save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original() 
         .collect();
     assert!(leftovers.is_empty(), "临时文件必须被清理: {leftovers:?}");
 
-    // 权限恢复之后, 同一次保存必须成功, 且字节真的变了。
+    // 权限恢复之后, 同一次保存必须成功, 且磁盘上真的换成了**容器字节**。
     let saved = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
     assert_eq!(saved["data"]["saved"], true, "{saved}");
     assert_eq!(saved["data"]["atomic"], true);
-    let after = fs::read_to_string(&path).expect("读回");
-    assert_ne!(after, original, "成功保存必须写出新内容");
     assert_eq!(
-        after,
-        project_bytes(&dispatcher),
-        "磁盘字节必须等于内存工程"
+        saved["data"]["format"], "yeban-container",
+        "ARCH-SEC-003: 落盘形态必须是容器"
+    );
+    let after = fs::read(&path).expect("读回");
+    assert_ne!(after, original.as_bytes(), "成功保存必须写出新内容");
+    assert_eq!(
+        &after[..4],
+        b"PK\x03\x04",
+        "ARCH-SEC-003: 容器必须以 ZIP 本地文件头开始"
     );
     assert!(!dispatcher.domain().is_dirty(), "保存后未保存标记必须清掉");
+    // 完整的"保存 → 重新打开 → 工程逐字节相同 + 资产哈希对得上"在本文件的
+    // 兄弟文件 `tests/container_store.rs` 里（它专测容器接线）。
 }
 
 #[test]
@@ -1235,7 +1241,7 @@ fn open_save_close_round_trip_preserves_bytes_on_disk() {
     assert_eq!(skipped["data"]["skipped"], true);
     assert_eq!(skipped["data"]["saved"], false);
 
-    // 真改一次工程再保存 ⇒ 磁盘字节改变。
+    // 真改一次工程再保存 ⇒ 磁盘字节改变（且形态从裸 JSON 夹具换成容器）。
     let track = macro_track(&dispatcher);
     let proposal = propose_macro(&mut dispatcher, &auth, &track, 0.85);
     call(
@@ -1246,7 +1252,14 @@ fn open_save_close_round_trip_preserves_bytes_on_disk() {
     );
     let saved = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
     assert_eq!(saved["data"]["saved"], true, "{saved}");
-    assert_ne!(fs::read_to_string(&path).expect("读"), original);
+    let after = fs::read(&path).expect("读");
+    assert_ne!(after, original.as_bytes(), "保存必须写出新内容");
+    assert_eq!(
+        &after[..4],
+        b"PK\x03\x04",
+        "ARCH-SEC-003: `yeban_save_project` 写出的是 ZIP 容器, 不再是裸 JSON"
+    );
+    assert_eq!(saved["data"]["format"], "yeban-container");
 
     // 关闭 ⇒ 释放锁 + 清空会话。
     let closed = call(
