@@ -19,7 +19,9 @@
 | :--- | :--- |
 | 第 1 轮 | 交付全量实现 + 108 条判据；**实测出两处契约缺陷**（错误码 enum 装不下规范并集、schema 根不引用 `definitions`）并如实登记为待裁决；CI run **37225147123 全绿**（checks / deny / lockfile / rust workspace 全量） |
 | 集成者 | 按 **ADR-0001 D25** 在 main 修好契约（错误码联集 20 值 + 根 `oneOf($ref ToolCall, $ref ToolResponse)`），并把 mcp 样本导出接进 `ci.yml` |
-| 第 2 轮（本轮） | rebase 到 main；**判据从"钉住缺口"升级成"实现集合 == 契约集合"**；目录样本改成 `ToolResponse` 形状（新根下裸对象会被拒）；新增"故意违法样本必须让契约变红"的**承重**判据；110 条判据全绿 |
+| 第 2 轮 | rebase 到 main；**判据从"钉住缺口"升级成"实现集合 == 契约集合"**；新增"故意违法样本必须让契约变红"的**承重**判据；CI run `37225665357` 全绿 |
+| 集成者 | 承重的根立刻暴露一个**类型错误**：我把"注册表快照/错误码清单"当成了契约实例去对账。集成者按 `5319041` 引入 **`.meta.` 约定**（文档样本跳过对账 + "每个前缀至少一份真实例"守卫）并做了最小改名 |
+| 第 3 轮（本轮） | 以 main 为准：**撤回"把目录样本包成 `ToolResponse`"这个处置**（清单本来就不是实例），改用 `.meta.` + 两道自己的守卫；补一份**真实管线产出**的 `ToolResponse` 实例（覆盖根 `oneOf` 的第二个分支）；112 条判据全绿 |
 
 ---
 
@@ -35,7 +37,7 @@
 | `src/transport/http.rs` | `ARCH-SEC-002`、`MUST-GATE-009`、`ROAD-M4-001` | `TcpListener::bind(127.0.0.1:0)` + 线程手写最小 HTTP/1.1（`POST` only、`Content-Length` 必填、超长拒绝、Bearer 校验） |
 | `src/transport/mod.rs` | `MUST-GATE-009` | 两道开关的纯函数判定（编译期 feature + 运行期显式开关） |
 | `src/bin/yeban-mcp.rs` | `ROAD-M4-002` | 双形态 CLI：stdio 批处理 / `--print-token` / `--enable-mcp-http`；退出码 0/1/2 |
-| `src/samples.rs` + `examples/export_mcp_samples.rs` | `MUST-GATE-010`、`TEST-SPEC-005` | 12 份规范样本导出（**非测试**入口，与 `yeban-model` 同一做法） |
+| `src/samples.rs` + `examples/export_mcp_samples.rs` | `MUST-GATE-010`、`TEST-SPEC-005` | 13 份样本导出（**非测试**入口，与 `yeban-model` 同一做法）：11 份**契约实例**（10 × `ToolCall` + 1 份真实管线产出的 `ToolResponse`）+ 2 份 `.meta.` **文档样本** |
 | `tests/contract.rs` | `MCP-TOOL-001..010`、`MUST-GATE-010` | 直接读 `schemas/mcp-tools.schema.json` 的**承重**判据（集合相等 + 根 `oneOf` + 故意违法样本必红） |
 | `src/lib.rs` | — | 模块地图 + 默认安全模型 + 契约对账现状 + 实现状态 |
 
@@ -156,6 +158,39 @@ CI 默认档位不传 `--all-features`（见 `.github/workflows/ci.yml` 的 `rus
 - 契约 − 表格 == 那 4 个 schema 原有码（`ENTITY_NOT_FOUND` / `INVALID_PARAMETER_RANGE` /
   `PERMISSION_DENIED` / `ROUTING_CYCLE_DETECTED`），清单是实测常量。
 
+### M12 —— 撤回"把目录样本包成 `ToolResponse`"，改用 `.meta.` 约定
+
+第 2 轮我为了让两份目录样本通过 D25 的新根，把它们包成了
+`{"status":"success","data":{…}}`。**这个处置是错的**，集成者在 `5319041` 指出并纠正：
+
+> 注册表快照与错误码清单**本来就不是** `ToolCall` / `ToolResponse` 的实例；
+> 拿 `oneOf` 根去校验"清单/快照"属于**类型错误**。
+
+正解是 `.meta.` 命名约定（`validate_schemas.py`，集成者的文件）：
+`<prefix>.<name>.meta.json` = **文档样本**，显式 `[skip]`，不对账 schema。
+本轮已按 main 侧为准撤回包装，两份目录样本回到裸对象。
+
+### M13 —— `.meta.` 是命名约定而不是 schema 能力 ⇒ 本 crate 自己补两道守卫
+
+谁都能把一份**本该对账的实例**改名成 `.meta.` 来逃逸。集成者的脚本守卫挡得住
+**整段逃逸**（每个前缀至少一份实例），挡不住 **部分逃逸**（11 份实例里混 1 份 meta）。
+因此本 crate 承担更硬的那一半（`tests/contract.rs`）：
+
+1. `exported_instance_set_is_exactly_the_tool_set`：非 meta 的实例文件名集合必须**穷举且一一对应**
+   —— `{mcp-tools.call.<tool>.json}`（10）**∪** `{mcp-tools.response.dry-run.json}`（1）；
+   少一份、多一份、把一份改名成 `.meta.`、或者删掉那份 `ToolResponse` 实例，四种都会红。
+   文档样本集合也同样穷举（只允许那两份）。
+2. `check_document_sample`（`samples.rs`）：文档样本顶层**不许**出现 `name` / `arguments` /
+   `status` 这三个实例判别键 —— 堵住"用 `.meta.` 藏实例"最直接的那种。
+
+### M14 —— 补一份**真实管线**产出的 `ToolResponse` 实例
+
+D25 的根是 `oneOf(ToolCall, ToolResponse)`。第 2 轮的样本目录里**全是** `ToolCall`，
+也就是说**第二个分支从未被任何样本覆盖** —— 这正是集成者在 `ci.yml` 里警告的
+"契约定义了没人用的类型"。本轮补上 `mcp-tools.response.dry-run.json`：
+它由 [`crate::dispatch::Dispatcher::handle_line`] 的 `dryRun` 短路**真实产出**（不是手写形状），
+因此它同时钉住"实现产出的 `ToolResponse` 必须被契约接受"。
+
 ---
 
 ## 3. 契约实测与发现
@@ -199,7 +234,7 @@ REJECT | 未知工具名仍被拒        ({"name":"yeban_not_a_tool","arguments"
 REJECT | 两个形状都像 (oneOf 必须恰好一个)
 ```
 
-### 3.2 schema 根：从"空转"变**承重**（ADR-0001 D25）
+### 3.2 schema 根：从"空转"变**承重**（ADR-0001 D25）+ `.meta.` 约定（`5319041`）
 
 第 1 轮实测：根只有 `$id` / `$schema` / `definitions` / `description` / `title` / `type`，
 **没有** `properties` / `$ref` / `allOf`。Draft 2020-12 下"任意对象"都通过根校验：
@@ -211,26 +246,35 @@ REJECT | 两个形状都像 (oneOf 必须恰好一个)
 ```
 
 **D25 把根改成 `oneOf($ref ToolCall, $ref ToolResponse)`**，契约因此真的在判定。
-本轮随之做了两件必要修改：
+承重的根立刻又暴露了一个**类型错误**：注册表快照与错误码清单本来就不是契约实例，
+用 `oneOf` 根去校验它们属于用错类型（第 2 轮我试图把它们包成 `ToolResponse` 来绕开，
+那是**错误的处置** —— 见 M12）。正解是集成者在 `5319041` 引入的 `.meta.` 约定。
 
-1. **目录样本必须改成 `ToolResponse` 形状**：`mcp-tools.registry.json` 与
-   `mcp-tools.error-codes.json` 原本是裸对象（`{"count":…}` / `{"all":[…]}`），
-   在新根下**会被拒**。现在都包成 `{"status":"success","data":{…}}`
-   （`oneOf` 下它们只匹配 `ToolResponse`）。这不是妥协，是契约变承重后的直接后果，
-   而且用 4 条判据钉住（`both_catalogue_samples_are_tool_responses` 等）。
-2. **判据从"提醒"变成"守卫"**：
-   - `contract_root_is_one_of_tool_call_and_tool_response`（结构事实：
-     根只有 `oneOf`，两个分支分别 `$ref` 到 `ToolCall` / `ToolResponse`）；
-   - `contract_rejects_a_deliberately_invalid_sample`（**真跑**
-     `validate_schemas.py --samples-dir`：12 份合法样本必须全过；
-     混进 `{"anything":[1,2,3]}` 必须变红；未知工具名的 `ToolCall` 也必须变红）；
-   - `exported_call_samples_are_contract_shaped_tool_calls` 里加了一条 `oneOf` 语义断言：
-     每份样本必须**恰好**是两种形状之一（`name`/`arguments` 与 `status` 不能同时出现）。
+现在样本目录的分工（13 份）：
 
-> ⚠ 诚实边界：`contract_rejects_a_deliberately_invalid_sample` 需要 `python3 + jsonschema`。
-> CI 的 **rust 矩阵腿**不装 jsonschema（只有 `checks` job 装），因此缺依赖时它会打印
-> **响亮的 SKIP** 而不是伪造绿。真正的跨语言对账在 `checks` job 里跑 ——
-> 那里既装了 jsonschema，也已被集成者接上 mcp 样本导出（§4.2）。
+| 类别 | 文件 | 对账 |
+| :--- | :--- | :--- |
+| 契约实例 | `mcp-tools.call.<tool>.json` ×10（`ToolCall`） | 必须通过根 `oneOf` |
+| 契约实例 | `mcp-tools.response.dry-run.json`（**真实管线**产出的 `ToolResponse`） | 必须通过根 `oneOf` |
+| 文档样本 | `mcp-tools.registry.meta.json`、`mcp-tools.error-codes.meta.json` | 显式 `[skip]` |
+
+**三道判据把这件事钉住**：
+
+1. `contract_root_is_one_of_tool_call_and_tool_response` —— 结构事实（根只有 `oneOf`，
+   两个分支分别 `$ref` 到 `ToolCall` / `ToolResponse`）；
+2. `contract_rejects_a_deliberately_invalid_sample` —— **真跑** `validate_schemas.py --samples-dir`：
+   11 份合法实例必须全过；混进 `{"anything":[1,2,3]}` 或未知工具名必须变红；
+   **并且实测出**"把违法实例改名成 `.meta.` 之后脚本会跳过它"这个缺口（有意保留，
+   由第 3 条判据接住）；
+3. `exported_instance_set_is_exactly_the_tool_set` —— 双射守卫（见 M13）。
+
+> ⚠ 两个诚实边界：
+> (a) `contract_rejects_a_deliberately_invalid_sample` 需要 `python3 + jsonschema`。
+> CI 的 **rust 矩阵腿**不装 jsonschema（只有 `checks` job 装），缺依赖时它会打印
+> **响亮的 SKIP** 而不是伪造绿；真跑在 `checks` 腿。
+> (b) `.meta.` 只挡"整段逃逸"，**部分逃逸**由本 crate 的双射判据挡（M13）；
+> 这条缺口在 `contract_rejects_a_deliberately_invalid_sample` 里被**实测写死**，
+> 免得后人以为 `.meta.` 是安全的。
 
 ### 3.3 G04 是**文本**守卫，不是语义守卫
 
@@ -283,19 +327,25 @@ bash scripts/dev/cargo-local.sh fmt --all --check                               
 
 ```bash
 bash scripts/dev/cargo-local.sh run -p yeban-mcp --example export_mcp_samples -- --out target/schema-samples
-python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples
-# -> 12/12 样本 [ok] 通过 mcp-tools.schema.json；契约校验通过 (4 份 schema)
-
-# 反证: 故意违法的样本必须变红
-python3 -c "import json;json.dump({'anything':[1,2,3]},open('target/schema-samples/mcp-tools.bogus.json','w'))"
-python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   # exit 1
-#   - mcp-tools.bogus.json: 违反 mcp-tools.schema.json @ <根>: ... is not valid under any of the given schemas
+# -> 导出 13 份样本
+python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   # exit=0
+#   [skip] mcp-tools.error-codes.meta.json: 文档样本(.meta.), 不对账 schema
+#   [skip] mcp-tools.registry.meta.json: 文档样本(.meta.), 不对账 schema
+#   [ok] mcp-tools.call.yeban_*.json ×10: 通过 mcp-tools.schema.json
+#   [ok] mcp-tools.response.dry-run.json: 通过 mcp-tools.schema.json      <- 根 oneOf 的第二分支
 ```
 
+三条**反证**（都是实测，退出码为准，不看文本交错）：
+
+| # | 构造 | 期望 | 实测 |
+| :--- | :--- | :--- | :--- |
+| 1 | 混入非法实例 `{"anything":[1,2,3]}` | 红 | `exit=1` ✅ |
+| 2 | 只留 `.meta.` 文档样本 | 红（脚本守卫："该契约等于没有对账"） | `exit=1`，指名 `前缀 mcp-tools 只有 .meta.` ✅ |
+| 3 | **部分逃逸**：把 1 份实例改名成 `.meta.` 并塞进非法内容 | 脚本看不见（**已知缺口**） | `exit=0` ⚠ —— 由本 crate 的双射判据接住（§M13） |
+
 CI 侧：集成者已在 `ci.yml` 的 `checks` job 里接上
-`cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples`
-（在 model 那条之后、`validate_schemas.py --samples-dir` 之前）。
-**这条对账现在是承重的**：`FILE_NOT_FOUND` / `DISK_FULL` 一类领域失败码不再被误判为非法。
+`cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples`。
+`checks` 腿**装了 jsonschema**，因此这条对账在 CI 上是真跑（run `37225665357` 的原始日志见 §7）。
 
 ### 4.3 二进制形态实跑（stdio + 环回 HTTP）
 
@@ -344,24 +394,26 @@ stderr: 处理 5 行, 写出 4 条响应 (跳过 0 个空行, 模式 production)
 | **E** | 幂等重放分支改成永不命中（`None::<&CachedOutcome>`） | `dispatch::idempotency_replays_the_same_result_with_the_current_id`、`dispatch::distinct_keys_do_not_collide_and_cache_is_ordered` | ✅ |
 | **F** | `ToolCall::is_dry_run` 改成永远读不到 `dryRun` | `dispatch::dry_run_short_circuits_without_recording_idempotency`、`dispatch::read_only_tool_dry_run_says_state_is_unchanged` | ✅ |
 | **G** | 把契约联集里的 `DISK_FULL` 换成重复的 `BUSY`（模拟契约/实现漂移） | `implementation_error_codes_equal_the_contract_enum_exactly`（`assertion left == right failed`） | ✅ |
-| **H** | 注册表样本退回裸对象（去掉 `ToolResponse` 外壳） | `samples::both_catalogue_samples_are_tool_responses`、`samples::registry_sample_lists_every_tool_and_the_two_common_params`、`samples::export_writes_twelve_byte_stable_samples`、`samples::export_to_target_feeds_the_python_reconciliation` | ✅ |
+| **H** | 把文档样本包成 `ToolResponse`（第 2 轮的错误处置，本轮已撤回） | `samples::catalogue_samples_are_documents_not_instances`、`samples::registry_sample_lists_every_tool_and_the_two_common_params`、`samples::error_codes_sample_matches_the_union_contract` | ✅ |
+| **I** | `check_instance_set` 改成永远 `Ok(())`（即关掉双射守卫） | `exported_instance_set_is_exactly_the_tool_set`（`改名逃逸必须被双射守卫抓到`） | ✅ |
 
-G/H 是**本轮新增**的两条：它们钉住的正是"契约变成承重之后"才会犯的错
-（实现与契约枚举漂移、样本形状不再匹配根 `oneOf`）。
+G/H/I 是**第 2/3 轮新增**的三条：它们钉住的正是"契约变成承重之后"才会犯的错
+（实现与契约枚举漂移、样本形状不再匹配根 `oneOf`、以及用 `.meta.` 逃逸对账）。
+H 的注入内容随本轮处置的改变而更新（现在是"把文档样本包成 `ToolResponse`"）。
 
-### 4.5 判据清单（按主题，共 110 条）
+### 4.5 判据清单（按主题，共 112 条）
 
 | 主题 | 条数 | 代表判据 |
 | :--- | ---: | :--- |
 | 工具注册表 / 参数 / 副作用 | 8 | `registry_has_exactly_ten_tools_in_spec_order`、`per_tool_error_codes_cover_every_documented_code_exactly` |
-| 契约对账（读 `schemas/`） | 14 | `tool_name_sets_are_equal_and_in_the_same_order`、`implementation_error_codes_equal_the_contract_enum_exactly`、`contract_rejects_a_deliberately_invalid_sample` |
+| 契约对账（读 `schemas/`） | 16 | `tool_name_sets_are_equal_and_in_the_same_order`、`implementation_error_codes_equal_the_contract_enum_exactly`、`contract_rejects_a_deliberately_invalid_sample`、`exported_instance_set_is_exactly_the_tool_set` |
 | token 生成 / 文件权限 | 11 | `generated_token_is_256_bit_hex`、`token_file_with_loose_permissions_is_refused`、`debug_format_never_leaks_the_token` |
 | scope / `ui:inject` | 7 | `ui_inject_is_forbidden_in_production`、`app_admin_never_implies_ui_scopes` |
 | JSON-RPC | 9 | `id_is_echoed_verbatim_for_all_three_kinds`、`error_object_carries_code_message_and_data` |
 | 分发 / dryRun / 幂等 | 17 | `dry_run_short_circuits_without_recording_idempotency`、`idempotency_replays_the_same_result_with_the_current_id` |
 | stdio 传输 | 4 | `skips_blank_lines_and_reports_parse_errors_on_their_own_line` |
 | HTTP 传输 | 21 | `missing_token_is_rejected_with_401`、`end_to_end_over_a_real_loopback_socket`、`stream_path_checks_method_before_content_length` |
-| 样本导出 | 9 | `export_writes_twelve_byte_stable_samples`、`error_codes_sample_matches_the_union_contract`、`both_catalogue_samples_are_tool_responses` |
+| 样本导出 | 10 | `export_writes_twelve_byte_stable_samples`、`dry_run_response_sample_is_a_contract_valid_tool_response`、`catalogue_samples_are_documents_not_instances` |
 
 ### 4.6 CI 判决
 
@@ -387,16 +439,19 @@ G/H 是**本轮新增**的两条：它们钉住的正是"契约变成承重之�
 | P9 | 非 Unix 平台只有"明确 `UnsupportedPlatform`"，没有 ACL 实现 | 规范要求"Windows ACL 仅限当前用户"；本线在非 Unix 上是**明确拒绝**而非静默放过 |
 | P10 | D25 保留的 4 个 schema 原有码（`ROUTING_CYCLE_DETECTED` / `ENTITY_NOT_FOUND` / `INVALID_PARAMETER_RANGE` / `PERMISSION_DENIED`）**是否全都留着**由人类一并裁决 | ADR 原文已写明；本线按 D25 现状实现，并把这 4 个钉成实测常量 |
 | P11 | `contract_rejects_a_deliberately_invalid_sample` 在缺 `jsonschema` 的环境里是**响亮的 SKIP** | CI 的 `rust` 腿没有 jsonschema；真跑在 `checks` 腿（已接线） |
+| P12 | `.meta.` 约定的**部分逃逸**（11 份实例里混 1 份 meta）脚本侧看不见 | 已由本 crate 的双射判据接住并有注入判据（M-9/I）；这条记在这里是因为"守卫在哪一侧"必须写清楚，而不是因为它没被挡 |
 
 ---
 
 ## 6. 一句话总结
 
 > 第 1 轮实测出的两处契约缺陷（错误码 enum 装不下规范并集、schema 根不引用 `definitions`）
-> 已由集成者按 **ADR-0001 D25** 修好，本轮的判据也从"钉住缺口 / 提醒升级"升级成
-> **"实现集合 == 契约集合"与"故意违法样本必须让契约变红"** —— 契约现在是承重的，
-> 而"它是否承重"本身也有判据。仍然需要人类追认的只剩 D25 里的两处取舍：
-> 联集 20 值这个扩法，以及 4 个 schema 原有码是否全部保留。
+> 已由集成者按 **ADR-0001 D25** 修好；第 2 轮我把判据从"钉住缺口 / 提醒升级"升级成
+> **"实现集合 == 契约集合"与"故意违法样本必须让契约变红"**；第 3 轮又把两处**我自己的**
+> 处置纠正回来：清单/快照不是契约实例（改用集成者的 `.meta.` 约定，而不是把它们伪装成
+> `ToolResponse`），并补了一份真实管线产出的 `ToolResponse` 实例让根 `oneOf` 的两个分支
+> 都被覆盖。`.meta.` 的**部分逃逸**缺口由本 crate 的双射判据接住，且有注入判据证明它不空转。
+> 仍然需要人类追认的只剩 D25 里的两处取舍：联集 20 值这个扩法，以及 4 个 schema 原有码是否全部保留。
 
 ---
 
@@ -408,6 +463,7 @@ G/H 是**本轮新增**的两条：它们钉住的正是"契约变成承重之�
 | :--- | ---: | :--- | :--- |
 | 第 1 轮（D25 修复前） | `37225147123` | `7d0b0c4` | **全绿**：`plan` / `checks` / `deny` / `lockfile` / `rust (workspace 全量)` 全部 ✓ |
 | 第 2 轮（rebase + D25 升级） | `37225665357` | `b8f61f7` | **全绿**：同上五个 job 全部 ✓（`rust (matrix)` 0s 跳过，改动是 workspace 宽，走了 `rust-workspace` 腿 4m8s） |
+| 第 3 轮（`.meta.` 口径 + 双射守卫 + ToolResponse 实例） | 见 §7.1 | — | **见 §7.1** |
 
 **关键证据 —— 跨语言对账这次真的在 CI 里跑了**（`checks` job 的原始日志）：
 
@@ -422,6 +478,11 @@ target/schema-samples/mcp-tools.call.yeban_open_project.json
 [ok] mcp-tools.call.yeban_edit_notes.json: 通过 mcp-tools.schema.json
 … (12/12 全过)
 ```
+
+### 7.1 第 3 轮
+
+- 状态：见提交信息 / 集成者处的 `ci-verdict.sh` 读数（本文件为文档改动，写入判决会让头部前进一格）。
+- 读取方式：`bash scripts/dev/ci-verdict.sh --watch line/mcp-core`
 
 > 本文件自身是**文档改动**，因此"记录判决"这个动作会让头部前进一格。
 > 表中第 2 轮的结论对应的是**紧邻本节的代码头部** `b8f61f7`；

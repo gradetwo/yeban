@@ -250,6 +250,7 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
 
     let mut call_samples = 0;
     let mut response_samples = 0;
+    let mut meta_samples = 0;
     for path in &written {
         let name = path
             .file_name()
@@ -264,9 +265,20 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
         let value: Value = serde_json::from_str(&text).expect("样本必须是 JSON");
         assert!(value.is_object(), "schema 的根要求 object: {name}");
 
-        // 根的 oneOf 语义: 每份样本必须**恰好**是两种形状之一, 不能两边都像。
         let looks_like_call = value.get("name").is_some() || value.get("arguments").is_some();
         let looks_like_response = value.get("status").is_some();
+
+        if name.contains(".meta.") {
+            // 文档样本: 顶层是清单/快照, **不许**长得像契约实例 (否则就是在用 .meta. 藏实例)。
+            assert!(
+                !looks_like_call && !looks_like_response,
+                "文档样本 `{name}` 顶层出现了契约实例的判别键"
+            );
+            meta_samples += 1;
+            continue;
+        }
+
+        // 根的 oneOf 语义: 契约实例必须**恰好**是两种形状之一, 不能两边都像。
         assert!(
             looks_like_call ^ looks_like_response,
             "样本 `{name}` 必须恰好是 ToolCall 或 ToolResponse 之一"
@@ -301,12 +313,98 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
     assert_eq!(
         call_samples,
         tools::TOOL_COUNT,
-        "每个工具一份 ToolCall 样本"
+        "每个工具一份 ToolCall 契约实例"
     );
     assert_eq!(
-        response_samples, 2,
-        "注册表与错误码目录各一份 ToolResponse 样本"
+        response_samples, 1,
+        "根 oneOf 的第二个分支必须至少被一份真实例覆盖"
     );
+    assert_eq!(meta_samples, 2, "注册表与错误码目录各一份 .meta. 文档样本");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 实例文件名 ↔ 契约实例集合的**双射**校验。
+///
+/// `.meta.` 是"不对账 schema"的**命名约定**, 不是 schema 能力 —— 谁都能把一份本该对账的
+/// 实例改名成 `.meta.` 来逃逸。脚本侧的守卫只挡得住"整段逃逸"(每个前缀至少一份真实例);
+/// 这条纯函数挡住"部分逃逸": 非 meta 的实例集合必须**恰好**是
+/// `{mcp-tools.call.<tool>.json | tool ∈ 契约工具集} ∪ {mcp-tools.response.dry-run.json}`。
+fn check_instance_set(names: &[String]) -> Result<(), String> {
+    let mut expected: Vec<String> = tools::TOOLS
+        .iter()
+        .map(|spec| yeban_mcp::samples::call_file(spec.name))
+        .collect();
+    expected.push(yeban_mcp::samples::RESPONSE_DRY_RUN_FILE.to_owned());
+
+    let mut instances: Vec<String> = names
+        .iter()
+        .filter(|name| !name.contains(".meta."))
+        .cloned()
+        .collect();
+    instances.sort();
+    expected.sort();
+    if instances != expected {
+        return Err(format!(
+            "契约实例集合与工具集合不是双射: 实例={instances:?}, 期望={expected:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn exported_instance_set_is_exactly_the_tool_set() {
+    let dir = std::env::temp_dir().join(format!("yeban-mcp-bij-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let written = yeban_mcp::samples::export_all(&dir).expect("导出样本");
+    let names: Vec<String> = written
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    check_instance_set(&names).expect("非 meta 的实例集合必须穷举且与工具集合一一对应");
+
+    // 文档样本集合也穷举 (多一份 .meta. 可能是逃逸的前奏)。
+    let mut meta: Vec<String> = names
+        .iter()
+        .filter(|name| name.contains(".meta."))
+        .cloned()
+        .collect();
+    meta.sort();
+    assert_eq!(
+        meta,
+        vec![
+            yeban_mcp::samples::ERROR_CODES_FILE.to_owned(),
+            yeban_mcp::samples::REGISTRY_FILE.to_owned(),
+        ],
+        "文档样本只允许这两份"
+    );
+
+    // 反例 1: 把一份实例改名成 .meta. —— 脚本侧的"每个前缀至少一份实例"守卫**挡不住**
+    // 这种部分逃逸(还剩 10 份实例)。这正是本判据存在的理由。
+    let victim = names
+        .iter()
+        .position(|name| name.starts_with(yeban_mcp::samples::CALL_FILE_PREFIX))
+        .expect("至少有一份 ToolCall 实例");
+    let mut escaped = names.clone();
+    escaped[victim] = escaped[victim].replace(".json", ".meta.json");
+    let error = check_instance_set(&escaped).expect_err("改名逃逸必须被双射守卫抓到");
+    assert!(error.contains("双射"), "{error}");
+
+    // 反例 2: 少一份实例。
+    let mut missing = names.clone();
+    missing.remove(victim);
+    assert!(check_instance_set(&missing).is_err());
+
+    // 反例 3: 多一份"契约里没有的工具"的实例。
+    let mut extra = names.clone();
+    extra.push("mcp-tools.call.yeban_not_a_tool.json".to_owned());
+    assert!(check_instance_set(&extra).is_err());
+
+    // 反例 4: 把 ToolResponse 实例删掉 ⇒ 根 oneOf 的第二个分支就没人覆盖了。
+    let mut no_response = names.clone();
+    no_response.retain(|name| name != yeban_mcp::samples::RESPONSE_DRY_RUN_FILE);
+    assert!(check_instance_set(&no_response).is_err());
+
     std::fs::remove_dir_all(&dir).ok();
 }
 
