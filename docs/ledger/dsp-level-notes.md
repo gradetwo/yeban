@@ -304,7 +304,7 @@ rms_coeff         = exp(−1 / (τ · qps))             // τ = 300 ms @375 ⇒ 
 | :--- | :--- |
 | `bash scripts/dev/cargo-local.sh test -p yeban-dsp` | ✅ **142 passed**（+ 3 doc-test） |
 | `bash scripts/dev/cargo-local.sh clippy -p yeban-dsp --all-targets -- -D warnings` | ✅ 0 告警 |
-| `bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --all-targets` | ✅ **77 passed** + 2 个 `harness=false` 目标 ok（`rt_zero_alloc`、`meter_rt_contract`） |
+| `bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --all-targets` | ✅ **77 passed** + 2 个 `harness=false` 目标 ok（`rt_zero_alloc`、`meter_rt_contract`）；CI 默认 feature 实测 **87 passed**（见 §7.4） |
 | `bash scripts/dev/cargo-local.sh clippy -p yeban-engine --no-default-features --all-targets -- -D warnings` | ✅ 0 告警 |
 | `bash scripts/gates/run-gates.sh crate yeban-dsp` | ✅ 通过（**真编译真跑**：`clippy[yeban-dsp] ok` + `test[yeban-dsp]` 142+3，**不是 SKIP**） |
 | `bash scripts/gates/run-gates.sh light` | ✅ fmt + 13 条守卫 + 文档门禁（50 个 md / 136 链接）+ 许可清单 |
@@ -349,7 +349,21 @@ rms_coeff         = exp(−1 / (τ · qps))             // τ = 300 ms @375 ⇒ 
 | 轮 | commit | run id | 结论 | 关键读数 |
 | :-: | :--- | :--- | :--- | :--- |
 | 1 | `79c9c37` | `37238420778` | ❌ **红**：`checks`/`lockfile`/`deny`/`plan` 全绿，`rust (workspace 全量)` 的 `clippy --workspace -D warnings` **绿**，但 `test --workspace` **红** | `crates/yeban-dsp/src/meter.rs:1621`：`db.fract_1_sqrt2 漂移: 实测 0xc040a8c3 (-3.0103004), 搬迁前 0xc040a8c2 (-3.0103002)`；`test result: FAILED. 141 passed; 1 failed`。**285 条里只有 1 条**、且只差 **1 ulp** —— 这正是 `log10` 跨架构不保证正确舍入 |
-| 2 | 本提交 | 见下 | — | 判据改为按运算类别分策（§3.1.1）：IEEE 精确类逐位、超越函数类 4096 ulp；本地重跑 5 条注入确认仍然全红 |
+| 2 | `a5b9c7d` | `37238844191` | ✅ **全绿** | `checks` ✓ 36s、`lockfile` ✓ 18s、`deny` ✓ 48s、`plan` ✓ 6s、**`rust (yeban-dsp)` ✓ 33s**、**`rust (yeban-engine)` ✓ 44s**（默认 feature，含 cpal/device）；`rust (workspace 全量)` 被 `plan` 按受影响集合跳过。判据改为按运算类别分策（§3.1.1）；本地重跑 5 条注入确认仍然全红 |
+
+CI（x86_64 Linux）上与代码同源的关键读数（从 job 日志抓取）：
+
+```text
+rust (yeban-dsp)     test result: ok. 142 passed; 0 failed     ← 含 285 条冻结表（分策）
+rust (yeban-engine)  test result: ok.  87 passed; 0 failed     ← 默认 feature: 77 + 10 条 device 门控
+[meter-rt] S1 汇总: quanta=10242 publishes=10242 frames=40968 capacity_drops=0
+[ARCH-UI-002] ok: 真峰值/RMS 计量 + 每量子一次批量发布 + UI 取最新 + 10,000 量子零分配
+[MUST-GATE-001] ok: 10,000 量子 + 63 次快照交换，实时窗口内零分配零释放
+（allocations=0 deallocations=0 共 105 行，与本机一致）
+```
+
+`87 = 77 + 10`：本机（`--no-default-features`）跑不到的 10 条 `device` 门控判据由 CI 补齐，
+本机预测与 CI 实测一致。
 
 > **这是本线最有价值的一次 CI 反馈**：`ci.yml` 的 workspace 腿（不是 per-crate 腿）
 > 跑了 x86_64，把"我在 aarch64 上冻结的位模式"与"跨架构可复现"之间的差距**具体化**成一条 1 ulp 的断言。
