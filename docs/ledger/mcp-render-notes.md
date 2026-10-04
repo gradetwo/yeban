@@ -340,9 +340,21 @@ arguments.path 存在        → 原样使用（空串/纯空白 ⇒ INVALID_PAR
 
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
-| 第 1 轮 | 见提交信息 / `ci-verdict.sh` 读数 | — | 见下文补记 |
+| 第 1 轮（真渲染接线 + 判据 + 注入演练） | [`37239023316`](https://github.com/gradetwo/yeban/actions/runs/37239023316) | `f11de2c` | **全绿** ✅：`plan (受影响集合)` 4s / `checks (fmt / 红线守卫 / schema)` 36s / `lockfile (确定性 Cargo.lock)` 18s / `deny (cargo-deny 开源合规)` 44s / **`rust (workspace 全量)` 4m20s** 全部 ✓（`rust (${{ matrix.crate }})` 0s 跳过：本改动是 workspace 宽，走全量腿） |
 
-补记待填：本轮推送后由 `ci-verdict.sh` 读回。
+**这一轮读数里最有价值的一条**：`rust (workspace 全量)` 跑的是**真实** `yeban-render`
+（Rayon 调度器 + PDC 延迟线），也就是说 §6.2 里"本机替身与真实实现对单源夹具逐字节等价"
+的**论证**，由这一轮 CI 用**真实实现**验证了：§3.3 里那两个**钉死的常量哈希**
+（`masterDigest=b242d510…eefb`、RIFF `sha256=b9472fcd…9cc4`）在 CI 上原样通过 ——
+即合成 → 母带增益 → 抖动 → 24-bit → 容器这条链在 macOS 本机与 Linux runner **逐位相同**
+（`ARTIFACT`/`BASELINE-001` 之外，本线不声明任何性能读数）。
+
+> 本文件自身是**文档改动**：记录判决的这一次提交会再前进一格。它只改 `docs/ledger/**`，
+> 不触碰任何 `crates/**`，因此不影响 §5 的任何判据；但按纪律仍然读回判决（见下表）。
+
+| 轮次 | run id | 头部 | 结论 |
+| :--- | ---: | :--- | :--- |
+| 第 2 轮（本文件 + `tools-domain-notes.md` 的 008 行） | 见提交信息 / `ci-verdict.sh` 读数 | — | 见下一条推送后的读数（预期只影响 `checks` 腿） |
 
 ---
 
