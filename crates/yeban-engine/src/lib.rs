@@ -16,7 +16,7 @@
 //! | [`block`] | 固定块长 `AudioBlock` 与栈上 `[f32; N]` 缓冲约定 | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-007] |
 //! | [`fpu`] | FTZ / DAZ 浮点环境开关（x86 MXCSR / aarch64 FPCR） | [ARCH-RT-003]、[ROAD-M2-003] |
 //! | [`graph`] | `RoutingGraph` 拓扑排序、关键路径 `L_max`、`D_i` 分配、环形延迟线 | [ARCH-PDC-001]、[ROAD-M2-004] |
-//! | [`level`] | 电平口径（峰值/峰值保持/RMS/平滑/dBFS/钳位/取最新）——零依赖纯计算 | [ARCH-UI-002]、[ROAD-M2-008] |
+//! | [`level`] | **再导出** `yeban_dsp::meter` 的电平口径（峰值/峰值保持/RMS/平滑/dBFS/钳位/取最新/真峰值）——本 crate 不再持有实现 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
@@ -36,6 +36,10 @@
 //! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `ring` / `snapshot` /
 //! `meter` / `rt` —— 也就是说"PDC 算法 + 快照交换 + SPSC + 渲染量子驱动"全部可用，
 //! 只是没有声卡。
+//!
+//! **电平口径不在这条 feature 切分的两侧**：它已经上移到零重依赖的 `yeban-dsp`
+//! （`yeban_dsp::meter`），本 crate 的 [`level`] 只剩 `pub use`。因此无论 `device`
+//! 开或关，电平读数都是同一份实现；混音台/母带/导出也可以直接复用，不必拖入 cpal。
 //!
 //! ## 线程拓扑（[ARCH-TOP-002]）
 //!

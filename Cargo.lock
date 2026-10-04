@@ -6211,6 +6211,7 @@ dependencies = [
  "cpal",
  "rtrb",
  "thiserror 2.0.21",
+ "yeban-dsp",
  "yeban-model",
 ]
 
