@@ -25,8 +25,8 @@ const USAGE: &str = "\
 用法: export_mcp_samples [--out <dir>]
 
 把 yeban-mcp 的规范样本写到 <dir>:
-  mcp-tools.registry.json        十个工具的注册表快照
-  mcp-tools.error-codes.json     错误码全集 + 契约缺口清单
+  mcp-tools.registry.meta.json        十个工具的注册表快照
+  mcp-tools.error-codes.meta.json     错误码全集 + 契约缺口清单
   mcp-tools.call.<tool>.json     每个工具一份规范 ToolCall (10 份)
 
 不传 --out 时写到 <repo>/target/schema-samples。

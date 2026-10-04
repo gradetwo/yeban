@@ -11,8 +11,8 @@
 //!
 //! | 文件 | 内容 | 为什么 |
 //! | :--- | :--- | :--- |
-//! | `mcp-tools.registry.json` | 十个工具的注册表快照（含 scope / 副作用 / 参数 / 错误码） | 工具名集合、`dryRun`、`idempotencyKey` 的机器可读清单 |
-//! | `mcp-tools.error-codes.json` | 错误码全集 + **契约缺口清单** | 让"schema 的 7 个 enum 装不下表格的 16 个错误码"这件事可被机器读到 |
+//! | `mcp-tools.registry.meta.json`（文档样本，非契约实例） | 十个工具的注册表快照（含 scope / 副作用 / 参数 / 错误码） | 工具名集合、`dryRun`、`idempotencyKey` 的机器可读清单 |
+//! | `mcp-tools.error-codes.meta.json`（文档样本，非契约实例） | 错误码全集 + **契约缺口清单** | 让"schema 的 7 个 enum 装不下表格的 16 个错误码"这件事可被机器读到 |
 //! | `mcp-tools.call.<tool>.json` ×10 | 每个工具一份**规范 `ToolCall`** | 每个工具名都要被契约的 enum 认下来 |
 //!
 //! ## ⚠ 一个必须说清楚的限制：本 schema 的根是"空"的
@@ -47,10 +47,10 @@ pub const SAMPLES_DIR_NAME: &str = "schema-samples";
 pub const FILE_PREFIX: &str = "mcp-tools";
 
 /// 注册表样本文件名。
-pub const REGISTRY_FILE: &str = "mcp-tools.registry.json";
+pub const REGISTRY_FILE: &str = "mcp-tools.registry.meta.json";
 
 /// 错误码样本文件名。
-pub const ERROR_CODES_FILE: &str = "mcp-tools.error-codes.json";
+pub const ERROR_CODES_FILE: &str = "mcp-tools.error-codes.meta.json";
 
 /// `ToolCall` 样本的文件名前缀。
 pub const CALL_FILE_PREFIX: &str = "mcp-tools.call.";

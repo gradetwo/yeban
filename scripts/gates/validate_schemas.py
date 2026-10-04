@@ -12,6 +12,14 @@
      这是**跨实现交叉验证**: serde 写的字节与 Python jsonschema 读的契约必须一致。
 
 样本命名约定 (前缀决定用哪份 schema):
+
+    <prefix>.<name>.json          契约实例 —— 会拿去与 <prefix> 对应的 schema 对账
+    <prefix>.<name>.meta.json     文档样本 —— 顶层是统计/清单/快照, **跳过**对账
+
+⚠ 为什么需要 `.meta.`: 有些样本的价值是"把契约缺口机器可读地记下来"(例如错误码并集的缺项清单),
+它**本来就不是**契约实例。用同一套 `oneOf` 根去校验它属于类型错误。
+但 `.meta.` 必须配一条守卫: **每个前缀至少要有一份真实例**, 否则"全是 meta"意味着该契约
+一份都没对账 —— 那是"判据跑起来了但什么都没检查"的假绿(见 docs/DEVELOPMENT_LEDGER.md)。
     project.<name>.json   -> schemas/project.schema.json
     ops.<name>.json       -> schemas/ops.schema.json
     mcp-tools.<name>.json -> schemas/mcp-tools.schema.json
@@ -99,7 +107,19 @@ def main() -> int:
                 problems.append(
                     f"样本目录为空: {samples_dir} —— Rust 侧应导出规范样本, 否则这条判据是空转"
                 )
-            for sample in samples:
+            meta_samples = [s for s in samples if ".meta." in s.name]
+            real_samples = [s for s in samples if ".meta." not in s.name]
+            for sample in meta_samples:
+                print(f"[skip] {sample.name}: 文档样本(.meta.), 不对账 schema")
+            # 守卫: 每个前缀都必须有真实例, 否则该契约无对账
+            real_prefixes = {s.name.split(".", 1)[0] for s in real_samples}
+            for prefix in sorted({s.name.split(".", 1)[0] for s in samples} - real_prefixes):
+                problems.append(
+                    f"前缀 `{prefix}` 只有 .meta. 文档样本, 没有任何真实例 —— "
+                    "该契约等于没有对账(全是 meta 就是假绿)"
+                )
+
+            for sample in real_samples:
                 prefix = sample.name.split(".", 1)[0]
                 schema_name = SAMPLE_SCHEMA_MAP.get(prefix)
                 if schema_name is None:
