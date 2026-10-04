@@ -202,6 +202,20 @@ impl Domain {
             .map(|lock| lock.guard.mode())
     }
 
+    /// 当前会话**持有的锁**里那份持有者元数据（内存会话时为 `None`）。
+    ///
+    /// 这是"谁持有这个工程"的**唯一**跨平台可靠来源：它住在守卫（内存）里，
+    /// 而不是"现场去读 `.yeban.lock`"。后者在 Windows 上必然失败 —— `LockFileEx`
+    /// 是**强制**字节区间锁，持锁期间连本进程的另一个句柄都读不到那个文件
+    /// （见 `src/domain/lock.rs` 的平台矩阵与 `docs/ledger/store-container-notes.md`）。
+    #[must_use]
+    pub fn lock_holder(&self) -> Option<&store::LockMetadata> {
+        self.active
+            .as_ref()
+            .and_then(|active| active.lock.as_ref())
+            .and_then(|lock| lock.guard.holder())
+    }
+
     /// 提交总数（`dryRun` "状态未变" 判据的一半）。
     #[must_use]
     pub fn commit_count(&self) -> usize {

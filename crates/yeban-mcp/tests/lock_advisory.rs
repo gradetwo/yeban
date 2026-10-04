@@ -417,23 +417,137 @@ fn taking_over_a_stale_lock_rewrites_the_metadata() {
         "success"
     );
 
-    let (text, after) = read_metadata(&project);
-    let after = after.unwrap_or_else(|| panic!("接管后锁内容必须可解析: {text}"));
+    // 接管之后的持有者元数据**从会话持有的守卫里读**（内存里那一份）——
+    // Windows 的 `LockFileEx` 是强制锁, 持锁期间从另一个句柄读锁文件会被 OS 拒绝。
+    let after = dispatcher
+        .domain()
+        .lock_holder()
+        .expect("接管后守卫必须携带新持有者的元数据")
+        .clone();
     assert_eq!(after.pid, std::process::id(), "PID 必须被换成新持有者");
     assert_eq!(after.lock_mode, "ExclusiveWrite");
     assert_eq!(
         after.project_path,
         project.display().to_string(),
-        "锁内容必须记录被锁的工程路径: {text}"
+        "锁内容必须记录被锁的工程路径"
     );
-    assert!(
-        after.started_at > 1,
-        "接管必须刷新时间戳（旧值是 1）: {text}"
-    );
+    assert!(after.started_at > 1, "接管必须刷新时间戳（旧值是 1）");
+    // Unix 附加: `flock` 是建议锁 ⇒ 磁盘上的内容**也**必须被重写过
+    // （证明守卫携带的那一份不是只活在内存里）。Windows 上这条读不到 —— 见
+    // `holder_metadata_while_locked_is_platform_specific`。
+    #[cfg(unix)]
+    {
+        let (text, on_disk) = read_metadata(&project);
+        let on_disk = on_disk.unwrap_or_else(|| panic!("接管后锁内容必须可解析: {text}"));
+        assert_eq!(on_disk.pid, std::process::id());
+        assert_eq!(on_disk.lock_mode, "ExclusiveWrite");
+        assert_eq!(
+            on_disk.project_path,
+            project.display().to_string(),
+            "锁文件必须记录被锁的工程路径: {text}"
+        );
+        assert_eq!(on_disk, after, "磁盘内容必须等于守卫携带的元数据");
+    }
     // 心跳阈值常量按规范 §0.2 钉住（它们只用于诊断，见 lock.rs 模块头）。
     assert_eq!(yeban_mcp::domain::lock::HEARTBEAT_INTERVAL_SECS, 3);
     assert_eq!(yeban_mcp::domain::lock::STALE_HEARTBEAT_SECS, 15);
     assert!(after.heartbeat_age_secs() < yeban_mcp::domain::lock::STALE_HEARTBEAT_SECS);
+}
+
+/// **持有者元数据在"持锁期间"的可读性是平台事实**（不是实现选择）。
+///
+/// 背景：CI 的 `windows` 手动门禁第一次执行就红了 —— 原因是
+/// `fs::read_to_string(guard.path())` 在**持锁时**读锁文件：
+///
+/// - Unix：`std::fs::File::try_lock` = `flock(2)`，**建议锁** ⇒ 其它句柄照样能读；
+/// - Windows：`std::fs::File::try_lock` = `LockFileEx`，锁的是**字节区间**且**强制** ⇒
+///   其它句柄（**含同一进程的另一个句柄**）对该区间的读写被 OS 拒绝（`os error 33`）。
+///
+/// 因此本判据**按平台断言两种不同的行为**，并同时钉住修复后的设计：
+/// "持有者是谁"一律从 [`yeban_mcp::domain::lock::LockGuard::holder`] 读（内存里那一份），
+/// 两个平台行为一致。**不删断言、不两边都跳过** —— 那会把真实差异藏起来。
+#[test]
+fn holder_metadata_while_locked_is_platform_specific() {
+    use yeban_mcp::domain::lock::{LockMode, acquire, read_snapshot};
+
+    let scratch = Scratch::new("holder-view");
+    let project = scratch.project("demo.yeban");
+    let guard = acquire(&project, LockMode::ExclusiveWrite).expect("首次加锁");
+
+    // ① 平台无关：守卫**自己携带**它写入的元数据 ⇒ 任何平台都能报告持有者。
+    let holder = guard.holder().expect("排他守卫必须携带自己写入的元数据");
+    assert_eq!(holder.pid, std::process::id());
+    assert_eq!(holder.lock_mode, "ExclusiveWrite");
+    assert_eq!(guard.mode(), LockMode::ExclusiveWrite);
+
+    // ② 平台相关：**另一个句柄**能不能读到锁文件内容。
+    let other_handle = fs::read_to_string(guard.path());
+    #[cfg(unix)]
+    {
+        let text = other_handle.expect("flock 是建议锁 ⇒ 持锁期间其它句柄必须仍可读");
+        assert_eq!(
+            text,
+            holder.to_json(),
+            "磁盘内容必须等于守卫携带的元数据（证明它确实被写进了文件）"
+        );
+        assert!(read_snapshot(&project).readable(), "Unix 上快照必须可读");
+        assert_eq!(read_snapshot(&project).availability(), "available");
+    }
+    #[cfg(windows)]
+    {
+        assert!(
+            other_handle.is_err(),
+            "LockFileEx 是强制锁 ⇒ 持锁期间其它句柄读**必须**被拒; \
+             若这里变绿, 说明诊断路径的假设（持有者可读）需要重写, 而不是这条判据该删"
+        );
+        let snapshot = read_snapshot(&project);
+        assert!(!snapshot.readable(), "Windows 上快照读不到是**预期**");
+        assert_eq!(
+            snapshot.availability(),
+            "unavailable-on-this-platform",
+            "读不到必须给出**平台口径**, 而不是含糊的 None"
+        );
+        assert_eq!(snapshot.metadata(), None);
+        assert!(
+            snapshot
+                .holder_text()
+                .contains("unavailable-on-this-platform"),
+            "给人看的文本必须说明原因: {}",
+            snapshot.holder_text()
+        );
+    }
+    // 其它平台（wasm 等）：`acquire` 会显式 `UnsupportedPlatform`，这里只让变量不空悬。
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = other_handle;
+    }
+
+    // ③ 平台无关：**占用者路径**必须产出 `PROJECT_LOCKED` 且**可读性口径**明确，
+    //    而且**不 panic、不把打开操作判失败**（这正是 Windows 上退化后必须保住的性质）。
+    let (mut blocked, blocked_auth) = dispatcher();
+    let locked = open(&mut blocked, &blocked_auth, &project, false);
+    assert_eq!(locked["error"]["code"], "PROJECT_LOCKED", "{locked}");
+    assert_eq!(
+        locked["error"]["data"]["advisoryLockHeld"], true,
+        "{locked}"
+    );
+    let availability = locked["error"]["data"]["holderMetadata"]
+        .as_str()
+        .unwrap_or_else(|| panic!("PROJECT_LOCKED 必须披露持有者元数据的可读性: {locked}"));
+    assert!(
+        availability == "available" || availability == "unavailable-on-this-platform",
+        "可读性口径只能是这两个值之一: {availability}"
+    );
+    assert!(
+        locked["error"]["data"]["holder"].is_string(),
+        "holder 必须始终是一个字符串（读不到时说明原因）: {locked}"
+    );
+    #[cfg(unix)]
+    assert_eq!(availability, "available", "{locked}");
+    #[cfg(windows)]
+    assert_eq!(availability, "unavailable-on-this-platform", "{locked}");
+
+    drop(guard);
 }
 
 #[test]
@@ -599,11 +713,23 @@ fn a_sigkilled_holder_releases_the_advisory_lock_and_can_be_taken_over() {
     );
     assert_eq!(reopened["data"]["tookOverStaleLock"], true, "{reopened}");
 
-    // 接管之后锁内容必须是**新**持有者的（不是那个已经被 SIGKILL 的 PID）。
-    let (_, meta) = read_metadata(&project);
-    let meta = meta.expect("接管后的元数据");
+    // 接管之后持有者必须是**新**持有者（不是那个已经被 SIGKILL 的 PID）。
+    // 从守卫里读（内存），而不是持锁后去读锁文件 —— 后者在 Windows 上必然被拒。
+    let meta = recovered
+        .domain()
+        .lock_holder()
+        .expect("接管后守卫必须携带元数据")
+        .clone();
     assert_eq!(meta.pid, std::process::id());
     assert_ne!(meta.pid, holder.pid, "陈旧 PID 必须被覆盖");
+    // Unix 附加：磁盘上的陈旧内容也必须被重写（Windows 读不到，见平台矩阵）。
+    #[cfg(unix)]
+    {
+        let (text, on_disk) = read_metadata(&project);
+        let on_disk = on_disk.unwrap_or_else(|| panic!("接管后锁内容必须可解析: {text}"));
+        assert_eq!(on_disk.pid, std::process::id());
+        assert_ne!(on_disk.pid, holder.pid, "陈旧 PID 必须被覆盖: {text}");
+    }
     let _ = holder.child.wait();
 }
 

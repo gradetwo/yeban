@@ -70,7 +70,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use yeban_model::container::{
-    ContainerError, ContainerLimits, read_project_container, write_project_container,
+    ContainerError, ContainerLimits, MAX_ENTRY_NAME_BYTES, read_project_container,
+    write_project_container,
 };
 use yeban_model::{AssetHash, CommitGraph, EntityId, YebanProjectV1};
 
@@ -81,8 +82,8 @@ use crate::jsonrpc::{ErrorObject, NOT_IMPLEMENTED};
 use crate::tools::ErrorCode;
 
 pub use super::lock::{
-    HEARTBEAT_INTERVAL_SECS, LOCK_SUFFIX, LockGuard, LockMetadata, LockMode, STALE_HEARTBEAT_SECS,
-    hostname, lock_path, read_metadata,
+    HEARTBEAT_INTERVAL_SECS, LOCK_SUFFIX, LockFileSnapshot, LockGuard, LockMetadata, LockMode,
+    STALE_HEARTBEAT_SECS, hostname, lock_path, read_metadata, read_snapshot,
 };
 
 /// 临时文件名的前缀字符（隐藏文件，且带 `.tmp-` 标记）。
@@ -346,10 +347,13 @@ pub fn acquire_lock(project_path: &Path, read_only: bool) -> Result<AcquiredLock
 /// | `WouldBlock` | `ToolResponse.error.code = PROJECT_LOCKED` | 唯一的锁领域码（`ADR-0001 D25` 联集） |
 /// | `UnsupportedPlatform` | JSON-RPC `-32005`（实现级） | 不是领域失败；契约 enum 里**没有**也不该有"平台不支持" |
 /// | `Io` | `IO_ERROR` / `FILE_NOT_FOUND` / `DISK_FULL` | 复用既有 `io::ErrorKind` 映射 |
+///
+/// `WouldBlock` **带走加锁前读到的**锁文件快照：诊断持有者时**不能**在失败后再去读一次
+/// —— Windows 的 `LockFileEx` 是强制锁，那一次读必然失败（见 `lock.rs` 的平台矩阵）。
 #[must_use]
 pub fn lock_fault(project_path: &Path, error: LockError) -> Fault {
     match error {
-        LockError::WouldBlock => locked_fault(project_path),
+        LockError::WouldBlock { snapshot } => locked_fault_with_snapshot(project_path, &snapshot),
         LockError::UnsupportedPlatform { os, spec_id } => Fault::implementation(
             ErrorObject::new(
                 NOT_IMPLEMENTED,
@@ -370,11 +374,28 @@ pub fn lock_fault(project_path: &Path, error: LockError) -> Fault {
     }
 }
 
-/// `PROJECT_LOCKED` 的载荷（带持有者元数据 + 建议锁诊断，便于人眼排查）。
+/// `PROJECT_LOCKED` 的载荷（best-effort 读一次持有者元数据）。
+///
+/// ⚠ 这个便利入口在 Windows 上读不到持有者内容（强制锁）—— 需要精确口径时用
+/// [`locked_fault_with_snapshot`]，它接受**加锁前**读到的快照。
 #[must_use]
 pub fn locked_fault(project_path: &Path) -> Fault {
+    locked_fault_with_snapshot(project_path, &read_snapshot(project_path))
+}
+
+/// `PROJECT_LOCKED` 的载荷（带持有者元数据 + 建议锁诊断，便于人眼排查）。
+///
+/// `holderMetadata` 明确区分三种情况，**不把"读不到"糊成"没有持有者"**：
+///
+/// | 值 | 含义 |
+/// | :--- | :--- |
+/// | `available` | 读到了锁文件内容（Unix 恒成立） |
+/// | `unavailable-on-this-platform` | 平台不允许看：Windows 的 `LockFileEx` 是强制锁 |
+/// | `unavailable` | 其它读失败（权限、文件刚被删） |
+#[must_use]
+pub fn locked_fault_with_snapshot(project_path: &Path, snapshot: &LockFileSnapshot) -> Fault {
     let lock = lock_path(project_path);
-    let (holder, parsed) = read_metadata(project_path);
+    let parsed = snapshot.metadata();
     let heartbeat_age = parsed
         .as_ref()
         .map(LockMetadata::heartbeat_age_secs)
@@ -387,7 +408,10 @@ pub fn locked_fault(project_path: &Path) -> Fault {
         ),
         serde_json::json!({
             "lockFile": lock.display().to_string(),
-            "holder": holder,
+            "holder": snapshot.holder_text(),
+            // 诊断信息的**可读性口径**（平台事实, 不是错误）:
+            // "我看不到持有者" 与 "没有持有者" 是两件事, 不能糊成一个 null。
+            "holderMetadata": snapshot.availability(),
             "holderPid": parsed.as_ref().map(|meta| meta.pid),
             "holderMode": parsed.as_ref().map(|meta| meta.lock_mode.clone()),
             "heartbeatAgeSecs": heartbeat_age,
@@ -397,7 +421,56 @@ pub fn locked_fault(project_path: &Path) -> Fault {
     )
 }
 
-/// **读取并校验**一个工程文件（容器优先，裸 JSON 兼容）。
+/// 容器**文件**大小的上限（`MUST-GATE-007` 在 I/O 层的落点）。
+///
+/// `ContainerLimits` 全部是"**解压后**体积 / 比率"的闸门，它们只在**字节已经进了内存**
+/// 之后才生效（`read_container` 的入参是 `&[u8]`）。于是存在一个明显的绕过：
+/// 先给一个 500 GB 的 `.yeban`，`fs::read` 会在任何闸门生效之前把进程 OOM 掉。
+/// 防炸弹不该有一个"比你想象的更早"的入口，因此在读盘之前先按**文件字节数**拦一道。
+///
+/// 上界取"解压总量上限 + 全部元数据开销的宽松上界"：
+///
+/// ```text
+/// max_total_bytes
+///   + max_entries × (MAX_ENTRY_NAME_BYTES + 128) × 2   // local header 一份 + central directory 一份
+///   + 4096                                             // EOCD（本实现不写注释字段）
+/// ```
+///
+/// `stored` 子集里"压缩后字节 == 数据区长度"，所以合法容器的文件大小确实落在
+/// `max_total_bytes` 附近，这个上界不会误伤任何**本实现写得出**的容器。
+///
+/// 固定余量刻意取得**小**（4 KiB 而不是 1 MiB）：判据要在可注入的紧上限下用几十 KB
+/// 的文件触发这道闸门（`oversized_files_are_refused_before_they_are_read_into_memory`），
+/// 余量一大就只能靠真造 8 GB 文件来测 —— 那就等于测不了。
+#[must_use]
+pub fn max_container_file_bytes(limits: &ContainerLimits) -> u64 {
+    let entries = u64::try_from(limits.max_entries).unwrap_or(u64::MAX);
+    let per_entry_metadata = (MAX_ENTRY_NAME_BYTES as u64 + 128) * 2;
+    limits
+        .max_total_bytes
+        .saturating_add(entries.saturating_mul(per_entry_metadata))
+        .saturating_add(4_096)
+}
+
+/// 文件**太大，连读都不读**（`MUST-GATE-007` 的 I/O 层闸门）。
+fn oversized_file_fault(path: &Path, len: u64, max: u64) -> Fault {
+    Fault::domain_with_data(
+        ErrorCode::IoError,
+        format!(
+            "`{}` 有 {len} 字节, 超过容器文件上限 {max} 字节 —— 在读进内存之前就拒绝 (MUST-GATE-007)",
+            path.display()
+        ),
+        serde_json::json!({
+            "specId": "MUST-GATE-007",
+            "category": ContainerRejection::ArchiveBomb.as_str(),
+            "fileBytes": len,
+            "maxFileBytes": max,
+            "path": path.display().to_string(),
+        }),
+    )
+}
+
+/// **读取并校验**一个工程文件（容器优先，裸 JSON 兼容），使用规范默认上限。
 ///
 /// 判定只看前 4 字节的 ZIP 魔数（[`CONTAINER_MAGIC`]）：
 ///
@@ -415,30 +488,60 @@ pub fn locked_fault(project_path: &Path) -> Fault {
 ///
 /// - 不是普通文件 → `FILE_NOT_FOUND`；
 /// - 读失败 → `IO_ERROR`（`DISK_FULL` 等由 [`super::error::code_for_io`] 判定）；
+/// - 文件超过 [`max_container_file_bytes`] → `IO_ERROR`（`category = archive-bomb`）；
 /// - 容器被拒（Zip-Slip / 炸弹 / 不支持的压缩法 / 篡改 / 布局不符）→ `IO_ERROR`
 ///   （载荷带 `category` / `specId`，见 [`container_fault`]）；
 /// - 裸 JSON 路径的 UTF-8 / JSON / 版本门 / 结构校验失败 → `IO_ERROR` / `CONFLICT`。
 pub fn load_project(path: &Path) -> Result<LoadedProject, Fault> {
+    load_project_with_limits(path, &ContainerLimits::default())
+}
+
+/// 同 [`load_project`]，但上限**可注入**（判据要在小文件上触发"文件过大"这一道）。
+///
+/// # Errors
+///
+/// 同 [`load_project`]。
+pub fn load_project_with_limits(
+    path: &Path,
+    limits: &ContainerLimits,
+) -> Result<LoadedProject, Fault> {
     if !path.is_file() {
         return Err(Fault::domain(
             ErrorCode::FileNotFound,
             format!("工程文件不存在或不是普通文件: {}", path.display()),
         ));
     }
+    // 第一道：声明大小（fail-fast，不碰磁盘内容）。
+    let max_file = max_container_file_bytes(limits);
+    let declared = fs::metadata(path)
+        .map_err(|error| from_io(&format!("读取元数据 {}", path.display()), &error))?
+        .len();
+    if declared > max_file {
+        return Err(oversized_file_fault(path, declared, max_file));
+    }
     let bytes =
         fs::read(path).map_err(|error| from_io(&format!("读取 {}", path.display()), &error))?;
     let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    // 第二道：实际读到的字节数（`metadata` 与 `read` 之间有 TOCTOU 窗口，文件可以变大）。
+    if len > max_file {
+        return Err(oversized_file_fault(path, len, max_file));
+    }
     if looks_like_container(&bytes) {
-        load_container(path, &bytes, len)
+        load_container(path, &bytes, len, limits)
     } else {
         load_bare_json(path, &bytes, len)
     }
 }
 
 /// 容器形态的加载（`ARCH-SEC-003`）。
-fn load_container(path: &Path, bytes: &[u8], len: u64) -> Result<LoadedProject, Fault> {
-    let archive = read_project_container(bytes, &ContainerLimits::default())
-        .map_err(|error| container_fault(path, &error))?;
+fn load_container(
+    path: &Path,
+    bytes: &[u8],
+    len: u64,
+    limits: &ContainerLimits,
+) -> Result<LoadedProject, Fault> {
+    let archive =
+        read_project_container(bytes, limits).map_err(|error| container_fault(path, &error))?;
     // 版本门与结构校验：与裸 JSON 路径**逐字相同**（兼容 ≠ 放宽）。
     archive
         .project
@@ -672,16 +775,27 @@ mod tests {
             .expect("首次加锁")
             .guard;
         assert!(guard.path().is_file());
-        let holder = fs::read_to_string(guard.path()).expect("读锁元数据");
-        assert!(
-            holder.contains("\"lock_mode\": \"ExclusiveWrite\""),
-            "{holder}"
-        );
-        assert_eq!(
-            read_metadata(&project).1.map(|meta| meta.pid),
-            Some(std::process::id()),
-            "锁内容必须记录真实持有者 PID"
-        );
+        // 持有者元数据必须**从守卫本身**读（内存里那一份）：
+        // Windows 的 `LockFileEx` 是**强制**锁，"持锁后再读锁文件"必然失败
+        // （`os error 33`），Unix 的 `flock` 是建议锁所以能读 —— 这条差异有专门判据
+        // （`tests/lock_advisory.rs::holder_metadata_while_locked_is_platform_specific`），
+        // 这里只断言**两个平台都成立**的那一半。
+        let holder = guard.holder().expect("排他守卫必须携带自己写入的元数据");
+        assert_eq!(holder.pid, std::process::id());
+        assert_eq!(holder.lock_mode, "ExclusiveWrite");
+        assert_eq!(holder.project_path, project.display().to_string());
+        // Unix 附加：建议锁不阻止其它句柄 ⇒ 磁盘内容**也**必须是我们的
+        // （证明"守卫携带的那一份"确实被写进了文件，而不是只活在内存里）。
+        #[cfg(unix)]
+        {
+            let on_disk = fs::read_to_string(guard.path()).expect("flock 建议锁: 持锁时仍可读");
+            assert_eq!(holder.to_json(), on_disk, "磁盘内容必须与守卫携带的一致");
+            assert_eq!(
+                read_metadata(&project).1.map(|meta| meta.pid),
+                Some(std::process::id()),
+                "锁内容必须记录真实持有者 PID"
+            );
+        }
         // 第二次加锁必须被内核拦下 (不是"文件存在" —— 是建议锁)。
         let second = acquire_lock(&project, false).expect_err("锁被占用");
         assert_eq!(second.domain_code(), Some(ErrorCode::ProjectLocked));
@@ -815,6 +929,45 @@ mod tests {
         let dir = scratch("isdir");
         let fault = load_project(&dir).expect_err("目录不是工程文件");
         assert_eq!(fault.domain_code(), Some(ErrorCode::FileNotFound));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn oversized_files_are_refused_before_they_are_read_into_memory() {
+        // `MUST-GATE-007` 在 **I/O 层**的落点：`ContainerLimits` 全是"解压后体积"的闸门，
+        // 它们只在字节已经进了内存之后才生效 —— 所以"先给一个巨大文件"曾是一个绕过窗口。
+        // 判据用**可注入的紧上限**在几十 KB 的文件上触发它（不可能真造 8 GB）。
+        let dir = scratch("oversized");
+        let path = dir.join("huge.yeban");
+        let tight = ContainerLimits {
+            max_entry_bytes: 8,
+            max_total_bytes: 8,
+            max_ratio: 1,
+            max_entries: 1,
+        };
+        let cap = max_container_file_bytes(&tight);
+        assert!(
+            cap < 64 * 1024,
+            "紧上限必须小到能用小文件触发闸门, 实际 {cap}"
+        );
+        fs::write(&path, vec![b'x'; usize::try_from(cap).unwrap() + 1]).expect("写超限文件");
+
+        let fault = load_project_with_limits(&path, &tight).expect_err("超限文件必须被拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::IoError));
+        let value = fault.into_result().expect("领域失败是带内响应");
+        assert_eq!(value["error"]["data"]["category"], "archive-bomb");
+        assert_eq!(value["error"]["data"]["specId"], "MUST-GATE-007");
+        assert_eq!(value["error"]["data"]["fileBytes"], cap + 1);
+
+        // 同一份字节在**宽松**上限下不会被这道闸门拦（它落到"不是合法 JSON"这条路上,
+        // 因此没有 `category`）⇒ 证明上面的拒绝确实来自**文件大小**这一道,
+        // 而不是"这个文件反正会失败"。
+        let loose = load_project(&path).expect_err("不是合法工程");
+        let loose_value = loose.into_result().expect("带内");
+        assert!(
+            loose_value["error"]["data"]["category"].is_null(),
+            "宽松上限下不该命中容器分类闸门: {loose_value}"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

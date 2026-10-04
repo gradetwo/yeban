@@ -29,7 +29,11 @@
 `yeban_open_project` 按 **ZIP 魔数**判定并读回容器（`history.dag` 与 CAS 资产池都恢复），
 **`ARCH-SEC-004` 的三阶段原子落盘一字未改**（唯一入口 `store::write_project_atomic`）。
 容器线的 **`needs-2`（"把 MCP 的读写换成容器 API"）关闭**；裸 JSON 只保留为**有删除条件的读兼容路径**。
-16 条新判据全部本机真跑，5 次注入中 **4 次让判据变红**、1 次（去掉 `fsync`）**如实记录为"本机不可观测"**。
+17 条新判据全部本机真跑（16 条容器 + 1 条"文件太大就不读"），
+**7 次注入中 6 次让判据变红**、1 次（去掉 `fsync`）**如实记录为"本机不可观测"**。
+另外修掉了 `windows` 手动门禁第一次执行抓到的**真实跨平台缺陷**：
+Windows 的 `LockFileEx` 是**强制**字节区间锁 ⇒ "持锁后再去读 `.yeban.lock`"必然失败
+（§2.7、§5.3）。
 
 ---
 
@@ -41,6 +45,8 @@
 | [`../../crates/yeban-mcp/src/domain/mod.rs`](../../crates/yeban-mcp/src/domain/mod.rs) | `MCP-TOOL-001/002`、`ARCH-OPS-002`、`ARCH-SEC-003` | `Active` 增会话 CAS 池 `assets: BTreeMap<AssetHash, Vec<u8>>`；`Plan::Open(Box<OpenRequest>)` 携带形态/历史/资产；`Plan::Save.bytes: Vec<u8>`（容器字节）；`reset_history(SessionSeed)` 恢复 `history.dag`；`Domain::{put_asset, asset, asset_hashes, asset_count}`；`Plan::planned_commit_count`（预览不再用 `+1` 近似历史恢复） |
 | [`../../crates/yeban-mcp/tests/container_store.rs`](../../crates/yeban-mcp/tests/container_store.rs) | `ARCH-SEC-003/004`、`ARCH-OPS-002`、`MUST-GATE-006/007`、`MODEL-AST-007` | **16 条端到端判据**（§5） |
 | [`../../crates/yeban-mcp/tests/tools_e2e.rs`](../../crates/yeban-mcp/tests/tools_e2e.rs) | `ARCH-SEC-004`、`MCP-TOOL-002` | **2 条既有判据按新语义改写**（见 §2.6，公开改写、不是静默变绿） |
+| [`../../crates/yeban-mcp/src/domain/lock.rs`](../../crates/yeban-mcp/src/domain/lock.rs) | `ARCH-SEC-001`、`MUST-GATE-008` | **Windows 跨平台缺陷修复**：`LockGuard` 携带自己写入的元数据（`guard.holder()`）；`LockError::WouldBlock` 携带**加锁前**读到的 `LockFileSnapshot`；`read_metadata` 不再 panic（"读不到"是**平台事实**）；新增 `Domain::lock_holder()` |
+| [`../../crates/yeban-mcp/tests/lock_advisory.rs`](../../crates/yeban-mcp/tests/lock_advisory.rs) | `MUST-GATE-008` | **2 条既有判据**改为从守卫读元数据（磁盘读取收进 `#[cfg(unix)]`）+ **1 条新的平台感知判据**（§5.3） |
 
 **改动到的共享文件**：**无**。根 `Cargo.toml`、`.github/**`、`scripts/**`、`deny.toml`、
 `docs/DEVELOPMENT_LEDGER.md`、`docs/adr/**`、`docs/YEBAN_*.md`、`schemas/**`、其它 `crates/**`、
@@ -80,6 +86,7 @@ load_project(path)
 | 判定方式 | 只有一条路径：UTF-8 + JSON | **ZIP 魔数**（4 字节）决定走哪条；扩展名/大小都不参与 |
 | 版本门 + `validate()` | `check_readable()` → `validate()` | **同一对调用、同一顺序、同一错误映射**（兼容 ≠ 放宽） |
 | 容器安全 | 不适用 | `MUST-GATE-006/007` 在**内容解读之前**生效（模型层的判定顺序即契约） |
+| **读盘之前的**文件大小闸门 | 无（`fs::read` 直接把整份文件读进内存） | `MUST-GATE-007` 在 **I/O 层**的落点：`metadata().len()` 与 `read()` 后的实际长度各判一次（TOCTOU），超过 `store::max_container_file_bytes(limits)` 即 `IO_ERROR` + `category=archive-bomb`，**一个字节都不读进内存**。理由：`ContainerLimits` 全是"解压后体积"的闸门，只在字节已进内存后生效 ⇒ "先给一个 500 GB 的文件"曾是绕过窗口 |
 | 响应新增字段 | — | `format`、`historyRestored`、`historyCommits`、`assets` |
 
 ### 2.3 `history.dag` 的口径（本线的裁决）
@@ -135,6 +142,39 @@ load_project(path)
 | `tools_e2e.rs::open_save_close_round_trip_preserves_bytes_on_disk` | 同上 | 保存后磁盘字节 ≠ 原裸 JSON 且以 ZIP 魔数开头；完整容器往返在判据 2/9 |
 
 其余 23 条 `tools_e2e` 判据**未改**（它们的夹具是裸 JSON ⇒ 走兼容路径，语义不变）。
+
+### 2.7 锁：**持锁期间"谁能读锁文件"是两个平台最尖锐的差异**（Windows 缺陷修复）
+
+**实测来源**：集成者新加的 `windows` 手动门禁（`windows-latest` 跑 `yeban-model` + `yeban-mcp`
+全部测试与 clippy）**第一次执行就红**（CI run `37235205697`）：
+
+```text
+thread 'domain::store::tests::exclusive_lock_is_atomic_and_released_on_drop' panicked at store.rs:314:
+读锁元数据: Os { code: 33, kind: Uncategorized,
+  message: "The process cannot access the file because another process has locked a portion of the file." }
+```
+
+**根因（不是测试写错，是设计假设不成立）**：Unix 上 `File::try_lock` 是 `flock(2)` —— **建议锁**，
+别的句柄照样能读；Windows 上是 `LockFileEx` —— 锁的是**字节区间**且**强制**，
+被锁区间对**其它句柄**（**含同一进程里的另一个句柄**）的读写都被 OS 拒绝。
+于是"**持锁后再去读锁文件**"这个动作在 Windows 上必然失败，测试只是第一个撞上它的地方。
+
+**修复（三条，落在 `src/domain/lock.rs`）**：
+
+| # | 做法 | 为什么 |
+| :--- | :--- | :--- |
+| 1 | `LockGuard` **携带自己写入的元数据** + `guard.holder()` 访问器 | 诊断路径不再需要"持锁再读文件"；两个平台行为**一致**，Unix 侧还少一次 I/O |
+| 2 | "读持有者信息"发生在**尝试加锁之前**（`LockFileSnapshot`），`LockError::WouldBlock` **带走**这份快照 | 对**别人的**持有者，Windows 上这份快照同样是"读不到" —— 那是 OS 强制的；但至少"读的时机"不再错 |
+| 3 | **容忍"元数据读不到"**：不 panic、不把打开判失败；`PROJECT_LOCKED` 载荷新增 `holderMetadata` 口径：`available` / `unavailable-on-this-platform` / `unavailable` | "我看不到持有者"与"没有持有者"是**两件事**；把它们糊成一个 `null` 才是真缺陷 |
+
+**新增的平台感知判据**（`tests/lock_advisory.rs::holder_metadata_while_locked_is_platform_specific`）：
+Unix 断言"持锁期间其它句柄**仍可读**且磁盘内容 == 守卫携带的那一份"；
+Windows 断言"持锁期间其它句柄读**必须被拒**、快照 `availability == "unavailable-on-this-platform"`"。
+**两个平台都断言，不删断言、不两边都跳过** —— 把真实差异藏起来才是把方向做反。
+
+`Domain::lock_holder()` 是这个性质在会话层的出口：接管/诊断一律走它，
+不再有"持锁 → 回读锁文件"的调用点（`grep -rn read_metadata crates/yeban-mcp` 的余量全部在
+"尚未加锁"或 `#[cfg(unix)]` 里）。
 
 ---
 
@@ -220,6 +260,13 @@ load_project(path)
 | 14 | `container_without_history_dag_is_refused_as_a_layout_error` | 缺 `history.dag` ⇒ `IO_ERROR` + `container-layout` |
 | 15 | `every_container_rejection_stays_inside_the_contract_enum` | 5 类畸形容器逐个打开，错误码**全部**在 `ErrorCode::SCHEMA_CONTRACT`（20 值）内 |
 | 16 | `corrupt_history_dag_is_refused_instead_of_silently_dropping_history` | 坏 `history.dag` JSON / 无 `main` 分支 ⇒ 打开即 `IO_ERROR` |
+| 17 | `store.rs::oversized_files_are_refused_before_they_are_read_into_memory`（lib 单元判据） | 用**可注入的紧上限**在小文件上触发 `MUST-GATE-007` 的 I/O 层闸门：`IO_ERROR` + `category=archive-bomb`；同一份字节在宽松上限下**不**命中这道闸门（证明拒绝来自文件大小，而不是"反正会失败"） |
+| 18 | `lock_advisory.rs::holder_metadata_while_locked_is_platform_specific` | 平台感知：Unix 持锁时其它句柄**可读**（且磁盘内容 == 守卫携带的那一份）；Windows 持锁时读**被拒** ⇒ `holderMetadata = "unavailable-on-this-platform"`；占用者路径两个平台都必须是带内 `PROJECT_LOCKED` + `holder` 是字符串 |
+
+**"新写的判据真的被编译/执行了吗"（集成者点名的问题）**：`crates/yeban-mcp/Cargo.toml`
+**没有** `[[test]]` 段、**没有** `required-features` ⇒ 测试目标全部由 cargo 默认自动发现并执行；
+`cargo test -p yeban-mcp --test container_store -- --list` 实测 **16 个 `test`**（逐个列出），
+`--test lock_advisory --list` 实测 **14 个**（含新增的平台感知判据）。不是"挂在 feature 后面从没编译到"。
 
 **判据 8 的独立核验**：另外手工验证过"这份脚本真的会红" ——
 把一份 `{"schema_version":1,"bpm":1.0}` 当 `project.bogus.json` 交给同一命令，
@@ -238,15 +285,24 @@ load_project(path)
 | **C** | `decode_history_dag` 把 JSON 解析错误**吞掉**（当作"没有历史"） | `corrupt_history_dag_is_refused_instead_of_silently_dropping_history` → `15 passed; 1 failed` | ✅ 16/16 |
 | **D** | `write_then_replace` 里**去掉 `file.sync_all()?`** | **零条变红**（`155 + 16 + 15 + 13 + 25` 全绿）——**如实记录**：断电/崩溃后的持久性在进程内**不可观测**，见 §9 boundary-3 | ✅ 16/16 |
 | **E** | `looks_like_container` 恒返回 `false`（永远走裸 JSON 兼容路径） | 9 条：`corrupt_history_dag_*`、`crc_tampered_*`、`container_without_history_dag_*`、`assets_round_trip_*`、`unsupported_compression_*`、`zip_slip_*`、`bare_json_projects_*`、`save_then_open_round_trips_*`、`save_then_open_restores_*` → `7 passed; 9 failed` | ✅ 16/16 |
+| **F** | `load_project_with_limits` 里**关掉 I/O 层的文件大小闸门**（两道都去掉） | `store::tests::oversized_files_are_refused_before_they_are_read_into_memory` → `155 passed; 1 failed` | ✅ 156/156 |
+| **G** | `acquire` **不把元数据放进守卫**（退回"持锁后再读锁文件"的老假设） | **lib**：`exclusive_lock_is_atomic_and_released_on_drop`；**`--test lock_advisory`（必须单独跑）**：`holder_metadata_while_locked_is_platform_specific`、`taking_over_a_stale_lock_rewrites_the_metadata`、`a_sigkilled_holder_releases_the_advisory_lock_and_can_be_taken_over`（共 4 条） | ✅ 全绿 |
+| **B（复跑）** | 在**加上 I/O 闸门与 Windows 修复之后**重跑 B | 仍然 7 条红 ⇒ 之前的注入结论没有因为后续改动而过时 | ✅ 16/16 |
 
-还原校验：
+**方法学留痕（又是 L12/L15 同族）**：注入 G 的第一遍 `cargo test -p yeban-mcp` 只看到
+**lib 的 1 条红**就停了 —— `cargo` 在第一个失败的目标之后**不会继续跑集成目标**。
+必须显式 `--test lock_advisory` 才拿到真结论（3 条）。只报 lib 那一条会把红面写成 1/4。
+
+还原校验（`store.rs` / `mod.rs` 在 A–E 那一轮；`lock.rs` 在加上 Windows 修复的那一轮）：
 
 ```text
-$ shasum -a 256 crates/yeban-mcp/src/domain/{store,mod}.rs /tmp/store-container-backup/*.rs
-9ae69f2f6ca3c864ed0312a62b5cd2a900408a3fa2e8b9cfe92317fe0168a705  crates/yeban-mcp/src/domain/store.rs
-7852d17a08a6841e7942222f505b0b6e4bf10c71237b99f63add97a414bc7a52  crates/yeban-mcp/src/domain/mod.rs
-7852d17a08a6841e7942222f505b0b6e4bf10c71237b99f63add97a414bc7a52  /tmp/store-container-backup/mod.rs
-9ae69f2f6ca3c864ed0312a62b5cd2a900408a3fa2e8b9cfe92317fe0168a705  /tmp/store-container-backup/store.rs
+$ shasum -a 256 crates/yeban-mcp/src/domain/{store,mod,lock}.rs /tmp/store-container-backup/*.rs
+033348e99d1c9db29ec720dcef5e008b177f4b07a35576cb6568d6d9fafcf158  crates/yeban-mcp/src/domain/store.rs
+af0bea8035320bf3f95f7bea19863c866a0e69cfd713f087db18e238881b1156  crates/yeban-mcp/src/domain/mod.rs
+88c2946479d3c96284ba11ee97333541a15dbbaf69b8ebfb13c265e7130e0917  crates/yeban-mcp/src/domain/lock.rs
+88c2946479d3c96284ba11ee97333541a15dbbaf69b8ebfb13c265e7130e0917  /tmp/store-container-backup/lock.rs
+af0bea8035320bf3f95f7bea19863c866a0e69cfd713f087db18e238881b1156  /tmp/store-container-backup/mod.rs
+033348e99d1c9db29ec720dcef5e008b177f4b07a35576cb6568d6d9fafcf158  /tmp/store-container-backup/store.rs
 ```
 
 ---
@@ -304,12 +360,12 @@ c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193  -
 
 ```text
 $ bash scripts/gates/run-gates.sh crate yeban-mcp          # exit 0
-  lib          155 passed   (基线 152 → +3: store.rs 的容器往返/兼容/截断/分类判据)
-  container_store 16 passed (本轮新增)
-  contract        15 passed
-  lock_advisory   13 passed
-  tools_e2e       25 passed (其中 2 条按新语义改写, 见 §2.6)
-  合计 224 条
+  lib             156 passed  (基线 152 → +4: 容器往返/兼容/截断/分类 + I/O 层大小闸门)
+  container_store  16 passed  (本轮新增)
+  contract         15 passed
+  lock_advisory    14 passed  (13 → +1: 持锁期间元数据可读性的平台感知判据)
+  tools_e2e        25 passed  (其中 2 条按新语义改写, 见 §2.6)
+  合计 226 条
 $ bash scripts/dev/cargo-local.sh clippy -p yeban-mcp --all-targets -- -D warnings   # exit 0
 $ bash scripts/dev/cargo-local.sh fmt -p yeban-mcp --check                          # exit 0
 $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.json>    # exit 0（判据 8 内置）
@@ -330,7 +386,8 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
-| 第 1 轮（容器接线 + 16 条判据 + 5 次注入） | 见提交信息 / `ci-verdict.sh` 读数 | 见下 | 见下 |
+| 第 1 轮（容器接线 + 16 条判据 + 5 次注入） | [`37235708211`](https://github.com/gradetwo/yeban/actions/runs/37235708211) | `aeae45c` | **全绿**：`plan` 4s（判定只影响 `yeban-mcp`）/ `checks` 51s / `deny` 43s / `lockfile` 16s / **`rust (yeban-mcp)` 49s** 全部 ✓；`rust (workspace 全量)` 0s skipped |
+| 第 2 轮（I/O 层大小闸门 + Windows 锁修复 + 判据 17/18 + 注入 F/G） | 见提交信息 / `ci-verdict.sh` 读数 | 见该次提交 | 见该次运行的 `rust (yeban-mcp)` 腿；**Windows 由集成者的 `gates-manual` `windows` 门禁复核** |
 
 > 本文件自身是**文档改动**：记录判决的这一次提交会再前进一格。它只改
 > `docs/ledger/store-container-notes.md`，不触碰任何 `crates/**`，因此不影响 §6 的任何判据；
@@ -347,6 +404,8 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | boundary-1 | `project.assets`（元数据索引）与容器 `assets/{sha256}`（字节）**不做交叉校验** | 见 §2.4。模型层没有 blob 存储；会话 CAS 池是"容器里有什么"的唯一事实源。真资产库接线时必须补"索引 ↔ 池"对账判据 |
 | boundary-2 | 跨进程/跨会话的**字节确定性**不成立 | 提交身份是 `EntityId::new()`（ULID，随机，`CommitDraft` 由调用方提供 id 是**有意**的设计）。判据 4 因此断言的是**同一会话内**两次落盘逐字节相同；容器写入器本身的确定性由容器线的 `write_is_deterministic` 承担 |
 | boundary-3 | **`fsync` 的移除在本机不可观测**（注入 D 零变红） | 断电/崩溃后的持久性是**进程外**性质，`std::fs` 没有可注入的 fsync 探针，本机与 CI 都无法用判据钉住"真的 fsync 了"。本线的证据是"三阶段协议**只有一个**入口 `write_project_atomic`，且它在 `rename` 之前调用 `sync_all`"这条结构事实 + 代码审查。要机械钉住需要 `strace`/`dtruss` 级别的系统调用观测（登记为 pending） |
+| boundary-8 | **Windows 分支本机无法编译** | 本机（macOS）没有 `x86_64-pc-windows-*` 的 std（`rustup target list --installed` 只有 darwin/linux/wasm）⇒ `src/domain/lock.rs` 的 `#[cfg(windows)]` 代码与 `tests/lock_advisory.rs` 的 Windows 断言**只能**由集成者的 `windows` 手动门禁编译/执行。本线的 Windows 侧结论**必须**以那次门禁的读数为准，不得由本机"看起来对"替代 |
+| boundary-9 | **持锁期间读锁文件在 Windows 上不可用**（平台事实，不是缺陷） | `LockFileEx` 是强制字节区间锁 ⇒ 持有者活着时，任何其它句柄（含同进程）读 `.yeban.lock` 都被 OS 拒绝。因此**跨进程**诊断在 Windows 上拿不到持有者 PID；唯一可靠来源是**持有者自己进程内**的 `Domain::lock_holder()`。要在 Windows 上跨进程看持有者，需要 `LockFileEx` 之外的通道（例如另写一份 non-locked 的审计文件）—— 未做，登记为 needs-5 |
 | boundary-4 | 只测到"资产 = 4 KiB 随机字节" | 没有测大资产（GB 级）与真实音频（FLAC/WAV）。容器线的上限判据用"声明 2 GB + 实际小字节"钉住阈值本身 |
 | boundary-5 | `put_asset` 只进**内存**池 | 没有磁盘级 CAS（`assets/{sha256}` 落盘池）、没有 GC/去重策略、没有"引用计数"；一次会话里放进池但从不被工程引用的资产**照样会被写进容器**（池是权威） |
 | boundary-6 | 兼容路径读裸 JSON 时**没有**迁移提示（只有 `format: "bare-json"`） | 见 §4.2 的删除条件 3 |
@@ -360,6 +419,8 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | needs-2 | 裸 JSON 兼容路径的**删除时点**（§4.2 三条） | 需要人类裁决 | 建议在 v1.0 冻结后一个发布周期内删除，并把它写成 ADR |
 | needs-3 | `container-notes.md` §1 的 "38 个变体"应为 **45** | 文档陈旧 | 该文件属容器线/集成者；本线不擅改，只在此登记实测计数 |
 | needs-4 | `history.dag` 是否需要**版本字段** | 规范缺口 | 现在是裸 `CommitGraph` JSON；`Op`/`Commit` 变体扩张时旧 `history.dag` 的可读性靠 `serde` 默认值。建议将来加一层 `{"version":1,"graph":{…}}` 信封（会让本线的判据 3/16 需要同步） |
+| needs-5 | Windows 上**跨进程**看持有者（boundary-9） | 能力缺口（平台限制） | `LockFileEx` 强制锁让我们读不到别人的锁文件。建议：另写一份**不加锁**的审计文件（`<name>.lock.holder`），或在 ADR 里把"Windows 上不接受跨进程持有者诊断"写成正式口径。两条都需要人类裁决 |
+| needs-6 | `docs/ledger/lock-advisory-notes.md` 的 pending P1（"Windows 分支从未编译过"） | 已被本线关闭一半 | 本线**改了代码**让 Windows 语义成立，并加了平台感知判据；但**真判决**在集成者复跑 `gates-manual` 的 `windows` 门禁之后。该台账已由本线追加一节说明（不覆盖原结论） |
 
 ### pending
 
@@ -367,6 +428,7 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | :--- | :--- | :--- |
 | P1 | 容器线的 `needs-2`（MCP 读写换成容器 API） | **本轮关闭** |
 | P2 | `fsync` 的机械观测（boundary-3） | **仍 pending**（需要系统调用级追踪；本机与 CI 都不做） |
+| P5 | Windows 分支的真编译/真执行（boundary-8） | **本线已修，待集成者复跑 `gates-manual` 的 `windows` 门禁**；本机做不到（无 Windows target） |
 | P3 | 真资产库（磁盘 CAS）接线 | **仍 pending**（needs-1 / boundary-5） |
 | P4 | `tools-domain-notes.md` 的 `boundary-4`（"工程文件是裸 JSON"） | **本轮过时**：写已经是容器；读仍兼容裸 JSON。读该台账时以本文件为准 |
 
@@ -384,8 +446,11 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 > **`ARCH-SEC-004` 的三阶段原子落盘一字未改**，并由"只读目录下失败且原容器逐字节不变"+
 > "inode 变化"两条判据证明。容器层的 45 个错误**全部**映射到 `IO_ERROR`（`D25` 联集内），
 > 分类与规范 ID 进 `data`，**不发明新码**。裸 JSON 只保留为**有删除条件**的读兼容路径。
-> 5 次注入里 4 次让判据变红（原地写 2 条 / 裸 JSON 7 条 / 吞掉 history 错误 1 条 / 关掉容器分派 9 条），
-> 第 5 次（去掉 `fsync`）**零变红**，如实登记为本机不可观测的边界。
+> 7 次注入里 6 次让判据变红（原地写 2 条 / 裸 JSON 7 条 / 吞掉 history 错误 1 条 / 关掉容器分派 9 条 /
+> 关掉 I/O 层大小闸门 1 条 / 拿掉守卫携带的元数据 4 条），第 7 次（去掉 `fsync`）**零变红**，
+> 如实登记为本机不可观测的边界。另外把 `windows` 门禁抓到的真实跨平台缺陷（`LockFileEx` 强制锁
+> ⇒ 持锁后读锁文件必然失败）修成"守卫携带元数据 + 加锁前读快照 + 容忍读不到"，
+> 并把"Unix 可读 / Windows 不可读"这条**平台差异**做成了**两个平台都断言**的判据。
 
 ---
 
@@ -395,6 +460,8 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 /Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/src/domain/store.rs            (修改)
 /Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/src/domain/mod.rs              (修改)
 /Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/tests/container_store.rs       (新增, 16 条判据)
+/Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/src/domain/lock.rs             (修改: Windows 强制锁 → 守卫携带元数据)
 /Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/tests/tools_e2e.rs             (修改: 2 条判据按新语义改写)
+/Users/crow/work/music/yeban/.worktrees/store-container/crates/yeban-mcp/tests/lock_advisory.rs         (修改: 2 条判据改走守卫 + 1 条平台感知判据)
 /Users/crow/work/music/yeban/.worktrees/store-container/docs/ledger/store-container-notes.md            (本文件)
 ```

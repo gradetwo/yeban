@@ -268,3 +268,51 @@ try_lock()/try_lock_shared()  失败 -> 返回 Err, **不删锁文件**（失败
 | `run-gates.sh light` | ✅ 全绿 | — |
 | Windows / wasm 平台 | ❌ 做不到 | 需要 `windows-latest` job（P1） |
 | 全量 workspace / benchmark / fuzz | ❌ 按纪律不跑 | 交 CI |
+
+---
+
+## 追加（`line/store-container` 代记）：**Windows 强制锁**与"持锁期间谁能读锁文件"
+
+> 本节由 `line/store-container`（`crates/yeban-mcp/**` 的当前所有者）追加，**不修改**上文任何原结论。
+> 上文 P1 / boundary-A 说"Windows 分支从未编译过/跑过" —— 那仍然是**当时的**事实；本节记录的是
+> 集成者新增的 `windows` 手动门禁**第一次真跑**之后发生的事。
+
+### 实测：`windows` 门禁第一次执行就抓到真实缺陷（CI run `37235205697`）
+
+```text
+thread 'domain::store::tests::exclusive_lock_is_atomic_and_released_on_drop' panicked at store.rs:314:
+读锁元数据: Os { code: 33, kind: Uncategorized,
+  message: "The process cannot access the file because another process has locked a portion of the file." }
+```
+
+**根因（设计假设不成立，不是测试写错）**：
+
+| | Unix（`flock(2)`） | Windows（`LockFileEx`） |
+| :--- | :--- | :--- |
+| 锁的性质 | **建议锁**：不阻止其它句柄 `read`/`write` | **强制锁**：锁的是**字节区间**，其它句柄（**含同一进程的另一个句柄**）的读写被 OS 拒绝 |
+| 持锁期间**另一个句柄**读锁文件 | 成功 | **失败**（`ERROR_LOCK_VIOLATION` / `os error 33`） |
+| 通过**持锁句柄**写元数据 | 成功 | 成功（锁的所有者可以读写自己的区间） |
+| 持有者诊断的可靠来源 | 磁盘内容 **或** 守卫访问器 | **只能**是守卫访问器（内存里那一份） |
+
+### 已落地的三条修法（`crates/yeban-mcp/src/domain/lock.rs`）
+
+1. `LockGuard` **携带它写入的元数据** + `LockGuard::holder()`：诊断与判据**不再**"持锁再读文件"，
+   两个平台行为一致（Unix 侧还少一次 I/O）；
+2. **"读持有者信息"发生在尝试加锁之前**：`LockFileSnapshot` 先读一次，
+   `LockError::WouldBlock { snapshot }` 把这份快照带给调用方（对**别人的**持有者，Windows 上
+   这份快照同样是"读不到" —— 那是 OS 强制的，不是我们能绕的）；
+3. **容忍"读不到"**：不 panic、不把打开判失败；`PROJECT_LOCKED` 载荷新增
+   `holderMetadata ∈ {available, unavailable-on-this-platform, unavailable}`。
+   "我看不到持有者"与"没有持有者"是两件事，糊成一个 `null` 才是缺陷。
+
+配套：`Domain::lock_holder()`（会话层出口）；`store::locked_fault_with_snapshot()`；
+判据 `tests/lock_advisory.rs::holder_metadata_while_locked_is_platform_specific`
+（Unix 断言可读、Windows 断言被拒，**两边都断言，不删也不跳过**）。
+
+### 对上文 pending 的影响
+
+| # | 上文的结论 | 现在 |
+| :--- | :--- | :--- |
+| **P1** | Windows 分支从未编译/跑过 | **门禁已存在并已真跑过一次**（抓到本节缺陷）。修复后的代码由集成者复跑 `gates-manual` 的 `windows` 门禁复核；**在拿到那次读数之前，本项仍是 pending** |
+| **boundary-A** | Windows 真机验证 | 同 P1。另新增一条平台事实：**跨进程**读持有者信息在 Windows 上不可用（`LockFileEx` 强制锁）⇒ 记录为 `needs-5`（`docs/ledger/store-container-notes.md` §8） |
+| **boundary-C / D** | 心跳不是判据 / `DISK_FULL` 只有映射判据 | **不变** |
