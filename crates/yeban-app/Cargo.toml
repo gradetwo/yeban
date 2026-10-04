@@ -39,6 +39,37 @@ slint = { workspace = true, features = [
     "renderer-software",
 ] }
 
+# ---------------------------------------------------------------------------
+# ui-test-port: 无头 UI 自动化测试端口 (默认**关闭**)
+# ---------------------------------------------------------------------------
+# 依赖方向 (架构规范 §8 的 crate 清单): yeban-app --(feature)--> yeban-ui-test-port。
+# 反向依赖会成环, 所以控件树的**数据模型**住在 test-port 侧, 适配器住在 app 侧
+# (src/test_port_adapter.rs)。
+#
+# 为什么默认关闭: `AGENTS.md` §2 红线 6 的精神是"测试/内省能力不进默认构建"。
+# 本 crate 的测试端口会把 Slint 的 Testing Backend (官方**内部** crate) 拉进依赖图,
+# 而 release 二进制不需要它。因此它只能被显式 `--features ui-test-port` 打开。
+# 只写 `path`(+`optional`), **不写 version** —— 成员清单里不出现版本号是本仓库的规则
+# (ADR-0001 D5: 版本唯一事实源是根 `[workspace.dependencies]`)。
+#
+# 注意: Cargo 会给这种依赖隐式补一个 `*` 版本需求, 而 `deny.toml` 的
+# `[bans] wildcards = "deny"` 默认会因此报 `error[wildcard]`(实测踩过: CI run 37221429630)。
+# 这条现在由 ADR-0001 **D21** 的 `[bans] allow-wildcard-paths = true` 豁免 ——
+# 该豁免只放行"带 path 的 `*`", registry 依赖仍必须写真实版本。需要真正发布本 crate 时,
+# 再由集成者把它连同版本一起登记进根 `[workspace.dependencies]`。
+yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
+
+[features]
+# `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
+ui-test-port = ["dep:yeban-ui-test-port"]
+
+# 无头控件树断言 + Tier-1 截图比对。**不放进 default**:
+# 一个 `[[test]]` 目标 (src/test_port_adapter.rs) 通过 `required-features` 挂在它后面。
+[[test]]
+name = "test_port_adapter"
+path = "src/test_port_adapter.rs"
+required-features = ["ui-test-port"]
+
 [build-dependencies]
 # slint-build 的 `compat-1-18` 是**强制特性**: 缺了它 crate 自己会 compile_error!。
 # 根里 default-features = false 关掉了它, 所以这里必须补回来。

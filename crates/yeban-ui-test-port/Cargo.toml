@@ -7,12 +7,65 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+# build.rs 编译 Tier-1 测试夹具 ui/fixture.slint (含 debug info, 见 build.rs 的注释)。
+build = "build.rs"
 
 [lib]
 name = "yeban_ui_test_port"
 path = "src/lib.rs"
 
 [dependencies]
+# 版本唯一事实源仍是根 Cargo.toml 的 [workspace.dependencies] (ADR-0001 D5) —— 本文件不写版本号。
+#
+# ---------------------------------------------------------------------------
+# slint: 只要 Tier-1 软件光栅化需要的那几个 feature
+# ---------------------------------------------------------------------------
+# 根里 slint 是 `default-features = false`, 所以**必要 feature 必须在这层显式补回**。
+# 核验来源 (2026-10-05, 上游源码 + docs.rs):
+#   1. `compat-1-2` 是**强制**的: slint-1.18.1/lib.rs:209-213 有
+#      `#[cfg(not(feature = "compat-1-18"))] compile_error!(...)`, 而
+#      `compat-1-2 = ["compat-1-18"]` (slint-1.18.1/Cargo.toml:110-113)。
+#      <https://docs.rs/crate/slint/1.18.1/source/src/lib.rs>
+#   2. `std`: 桌面测试进程; `SharedPixelBuffer`/`String`/`Result` 都要它。
+#   3. `renderer-software`: 打开 `slint::platform::software_renderer` 模块
+#      (其中 `MinimalSoftwareWindow` / `SoftwareRenderer` / `TargetPixel`) ——
+#      `[MUST-GATE-015]` 唯一允许的 Golden 产出路径。
+#      <https://docs.rs/slint/1.18.1/slint/platform/software_renderer/index.html>
+#
+# **明确不启用** (每一条都是省下来的编译时间与系统库前置):
+#   - `backend-default` / `renderer-femtovg`: 那是 winit + OpenGL 的物理窗口路径。
+#     本 crate 的目标恰恰是"无显示器也能截图", 引入它只会带来 libx11/libwayland/libgl 前置。
+#   - `accessibility` (accesskit): 已核验 **不需要** —— `ElementHandle::accessible_id()`
+#     走的是 `ItemRc::accessible_string_property`, 而 `i-slint-core-1.18.1/item_tree.rs`
+#     里这条路径没有任何 `cfg(feature = "accessibility")` 门
+#     (源码: <https://docs.rs/i-slint-core/1.18.1/src/i_slint_core/item_tree.rs.html>)。
+#   - `renderer-skia`: 拖入 LLVM/clang, 与本机纪律冲突 (ADR-0001 D18)。
+slint = { workspace = true, features = ["std", "compat-1-2", "renderer-software"] }
+
+# ---------------------------------------------------------------------------
+# i-slint-backend-testing: 控件树/属性断言 (Tier-2)
+# ---------------------------------------------------------------------------
+# 官方**内部** crate, 不遵循 semver ⇒ 根里已钉成 `=1.18.1` 精确同版本, 这里继承即可。
+# 它**不渲染像素**, 因此只用于 [UI-TEST-001] 的控件树断言与 [ARCH-UI-005] 的属性断言;
+# Golden 截图一律走上面的软件光栅化路径 ([MUST-GATE-015])。
+#
+# 为什么**不做成可选 feature**: 这个 crate 存在的唯一目的就是无头 UI 测试,
+# Testing Backend 是它的组成部分而不是"可选的增强"。做成可选会让 `inspect.rs` /
+# `render::LivePort` 全都要 cfg 分叉, 而没有任何调用方需要"没有测试后端的测试端口"。
+# 上游它的 `default` feature 集为空, 根里的 `default-features = false` 是等价写法。
+i-slint-backend-testing = { workspace = true }
+
+# 控件树 JSON 序列化 (dump_json / from_json)。两者都已在根 [workspace.dependencies] 登记。
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+# slint-build 的 `compat-1-18` 是**强制特性**: 缺了它 crate 自己会 compile_error!。
+# 根里 slint-build 是 `default-features = false`, 所以这里必须补回来。
+# 出处: <https://docs.rs/slint-build/1.18.1/slint_build/> 的 "Feature flags" 一节,
+#       以及 slint-build-1.18.1 源码 src/lib.rs 的 compile_error! 分支。
+# (与 crates/yeban-app/Cargo.toml 的 build-dependencies 完全同款)
+slint-build = { workspace = true, features = ["compat-1-18"] }
 
 [lints]
 workspace = true

@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `f61642f86869fd8b`
+- `Cargo.lock` SHA-256（前 16 位）: `c3c858c685efdc6e`
 - 外部依赖包数: **597**（不含 23 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -235,7 +235,7 @@
 | `hybrid-array` | `0.4.15` | `MIT OR Apache-2.0` | 传递 | — |
 | `i-slint-backend-linuxkms` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `i-slint-backend-selector` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
-| `i-slint-backend-testing` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
+| `i-slint-backend-testing` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-ui-test-port` |
 | `i-slint-backend-winit` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `i-slint-common` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `i-slint-compiler` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
@@ -442,10 +442,10 @@
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `sctk-adwaita` | `0.10.1` | `MIT` | 传递 | — |
 | `semver` | `1.0.28` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-model` |
+| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-ui-test-port` |
 | `serde_core` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_derive` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-model` |
+| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-ui-test-port` |
 | `serde_repr` | `0.1.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-render` |
@@ -461,8 +461,8 @@
 | `skia-safe` | `0.153.3` | `MIT` | 传递 | — |
 | `skrifa` | `0.44.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `slab` | `0.4.12` | `MIT` | 传递 | — |
-| `slint` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-app` |
-| `slint-build` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-app` |
+| `slint` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-app`, `yeban-ui-test-port` |
+| `slint-build` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 直接 | `yeban-app`, `yeban-ui-test-port` |
 | `slint-macros` | `1.18.1` | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 传递 | — |
 | `slotmap` | `1.1.1` | `Zlib` | 传递 | — |
 | `smallvec` | `1.16.2` | `MIT OR Apache-2.0` | 传递 | — |
