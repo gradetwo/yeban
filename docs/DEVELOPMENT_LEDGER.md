@@ -3898,3 +3898,46 @@ Completed full-workspace verdicts on main now number **eight**: `37283699896` @ 
 
 Still open, and unchanged by this round: `BASELINE-003`'s actual bar is the 100 000-note scene, which the fixture-based test
 does not measure.
+
+### Round 151: D56 spec - the on-demand diagnostic bundle, from both UI and MCP
+
+负责人指令（原文）：「UI和MCP都要有采集调试信息及相关文件然后压缩包导出的功能，在遇到特殊问题时候，手工调用后采集信息回来复现和排查」。
+
+叫它 **D56**。它是一条**交付要求**，不是待决事项；规格如下，实现者不需要再问。
+
+**触发方式（两边都要，且都是手工）**
+- UI：一个菜单/命令项「导出诊断包」，必须带稳定元素 ID（`diagnostics-export-action`），并走既有 `Operation`/权限层，
+  这样无头端口可以断言它（`AGENTS.md` DoD 第 6 条）。
+- MCP：**第 16 个** `yeban_*` 工具 `yeban_export_diagnostics`，入参只有可选的输出目录；
+  返回 `{ path, bytes, sha256, entries: [...] }`。工具数从 15 变 **16**，故 stdio 判据的 `>= 15` 下限仍成立，
+  但 D46 的名字清单应加上它（否则"工具集扩张"这条会悄悄失真）。
+
+**打包格式与依赖**：**不改依赖图** —— 根清单**本来就**声明了 `zip = 8.6.0` 与 `flate2 = 1.1.10`
+（与 `signalsmith-stretch` 同样是原作者预留）。故用 `zip` 写真 `.zip`。零新增依赖。
+
+**内容（每条都要，缺一条即为不完整）**
+1. `MANIFEST.txt`：每项的相对路径、字节数、**sha256**；外加 bundle 自身的 schema 版本与生成时间（UTC）。
+2. `env.txt`：OS/内核、架构、Rust 工具链版本（`rustc -Vv` 的等价信息）、本包版本（`CARGO_PKG_VERSION`）、
+   启用的 cargo features、构建 profile（debug/release）。
+3. `git.txt`：`git rev-parse HEAD`、分支、`git status --porcelain`（若有 git）；无 git 时写明"不可用"，**不得**留空。
+4. `engine-state.json`：引擎/会话快照（既有投影即可），足以复现"当时处于什么状态"。
+5. `logs/`：本进程日志的**环形缓冲**副本（若尚未有环形缓冲，则写明"本版本无日志环"，并把它列为后续项 —— 不许假称有）。
+6. `project/`：**仅在用户显式勾选时**才包含工程文件（默认不含）。默认不含是隐私决定，写进 UI 的勾选项文案。
+7. `config.json`：本机配置层（`MODEL-ISO-001` 的第三层），**脱敏**后写入。
+8. `crashes/`：若存在崩溃报告/上次异常退出标记，一并纳入。
+
+**脱敏（必须机械可验证）**：`$HOME` 的绝对路径替换为 `$HOME`；用户名、设备序列号、MCP token 一律不写。
+判据：对 bundle 内**所有**文件做一次扫描，断言其中不出现 `$HOME` 的真实字符串与 `token`/`secret` 字面值。
+
+**落盘与命名**：默认写到 `artifact_dir()` 之外的**用户可寻址**目录（例如 `~/Downloads` 或用户选定路径，由 UI 对话框决定）；
+文件名 `yeban-diagnostics-<UTC时间戳>-<短sha>.zip`，**确定性可排序**。MCP 侧默认写到传入目录，未传则写到当前工作目录。
+
+**判据（每条都要能失败）**
+1. `diagnostics_bundle_contains_the_required_entries`：断言 zip 内**至少**有上面 1–4、7 各项（5/6/8 视存在性）。
+2. `manifest_sha256_matches_every_entry`：逐项重算 sha256 与 MANIFEST 比对。
+3. `bundle_is_redacted`：上面那条机械扫描。
+4. `ui_action_and_mcp_tool_share_one_implementation`：UI 的 `Operation` 与 MCP 工具必须走**同一**采集函数
+   （D45 的"共用同一实现"原则），判据为：两条入口各调一次，产出的 MANIFEST 除时间戳/路径外逐字段一致。
+5. 牙测：把一个条目从采集列表里去掉，判据 1 必须红。
+
+**不做的事**：不采集音频内容；不自动上传（本功能只落盘，联网须另行裁决）；不改默认 release 的 feature 开关。
