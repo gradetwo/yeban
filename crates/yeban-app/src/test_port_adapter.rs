@@ -1697,9 +1697,17 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
         lanes_in(&runtime),
         "两个工程的泳道数必须有差别（1 vs 3），否则「泳道跟着工程走」没有被测到"
     );
+    // 读关的设备参数泳道**属于**演示工程（`demo_project` 的轨道 0 有两条带），
+    // 而 `filled_project` 只有一条音量泳道 —— 两个方向都断言。
+    // 实测教训：这条断言的第一版把两个树写反了（对 `demo_runtime` 断言"不得出现"），
+    // CI run 37249203359 当场把它抓成红（`test_port_adapter.rs:1700`）。
     assert!(
-        !demo_runtime.contains("track-0-automation-device-0-0-lane"),
-        "读关的设备参数泳道只属于演示工程，不得出现在 filled_project 的树里"
+        demo_runtime.contains("track-0-automation-device-0-0-lane"),
+        "演示工程有读关的设备参数泳道 ⇒ 必须在演示树里"
+    );
+    assert!(
+        !runtime.contains("track-0-automation-device-0-0-lane"),
+        "`filled_project` 只有一条音量泳道 ⇒ 设备参数泳道不得出现在它的树里"
     );
     observe(&format!(
         "[model-binding] 切换后运行时控件树 {} 条; 工程驱动的树 {} 条 —— 两者必须不同",
