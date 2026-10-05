@@ -5907,3 +5907,32 @@ round 231: read the actual output shape before trusting a filter.
 adding `[UI-NOTE-005]` as a phase item means deciding whether it is in scope for Phase 4 - both are small but they are the kind of
 change that should be made deliberately rather than appended to a reconnaissance round. Recorded here so the gap is not lost, with
 the concrete next action: register 005 (and name 002) in the tables, with 005's status set honestly to "not implemented".
+
+### Round 241: CI has stopped draining entirely - measured, with the consequence for this session's verdicts
+
+Measured twice, minutes apart, rather than inferred from a single glance:
+
+| time (UTC) | queued runs | oldest queued age | in progress |
+| :--- | :--- | :--- | :--- |
+| 19:36 | 8 | 4.1 min | 0 |
+| 19:40 | 12 (all workflows) | **8.3 min** | **0** |
+
+So the backlog is not draining slowly - **nothing is starting at all**. Every run created between 19:31 and 19:40 is still `queued`, and
+a full repository listing shows no run in progress and no other workflow occupying a slot. This is not the push-rate problem of round
+229 (which was measured as self-inflicted and would still drain); it is a stall on the runner side or a repository-level limit I
+cannot see or change from here.
+
+**Consequences, stated plainly**:
+1. **No CI verdict is obtainable right now.** Every "queued" read from the last several rounds was accurate and also unavoidable -
+   there was never a result to read.
+2. Everything since the last read verdict (`2df5741`, thirty-one completed full-workspace successes) has **local verification only**:
+   188 lib criteria, the feature-gated UI criteria, `light`, and the seven-check wiring guard.
+3. **Cancelling runs no longer helps** - round 231's reasoning assumed runs would start if the queue were shorter, and the
+   measurement above shows the constraint is not queue length. Cancelling the eight most recent runs there therefore cost
+   per-commit attribution for nothing gained; that is worth admitting rather than leaving as an unexplained act.
+4. **Pushing more commits has no effect either way** while this persists, so the sensible behaviour is to stop pushing and let the
+   work sit verified locally - which is what the last few rounds have done.
+
+**What I cannot determine from here**: whether this is a spending limit, a runner shortage, or an account-level constraint. The
+observable facts are the two rows of the table above; naming a cause beyond them would be the kind of guess this ledger exists to
+avoid. If the负责人 wants it settled, the account's Actions page (or a support request) is where that information lives.
