@@ -93,6 +93,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # 同时自检: 状态表腐烂就红。
           python3 scripts/gates/check_gate_status.py
+      - name: 采样登记与字节自洽（登记式入库的当前形态：只证明清单自洽）
+        run: |
+          set -euo pipefail
+          # 8.9 MB 的 assets/samples/manifest.json 是**生成物**，此前生成器/校验器只以附录形式
+          # 嵌在一条线的台账里（needs N3）⇒ **生成物没有生成器、登记没有校验器**。
+          # 本步骤把"哪些 optional 未分发 / 哪些应分发却缺 / 哪些字节不符"分门别类讲清楚。
+          # ⚠ 它**不**联网下载素材：真字节全量校验需要一个**联网**的手动档 job（仍记 needs）。
+          python3 scripts/dev/verify-samples-bytes.py
+
       - name: 证据审计（被引用的 CI run id 是否真的存在）
         run: |
           set -euo pipefail
