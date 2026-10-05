@@ -82,7 +82,12 @@ fn tool_name_count_equals_the_contract_enum_length() {
         contract.len(),
         tools::TOOL_COUNT
     );
-    assert_eq!(contract.len(), 10, "MCP-TOOL-001..010 是十个工具");
+    // 10 = 规范表格的 MCP-TOOL-001..010；+2 = ADR-0001 D45/D46 的扩展（yeban_undo/yeban_redo）。
+    assert_eq!(
+        contract.len(),
+        tools::DOCUMENTED_TOOL_COUNT + 2,
+        "规范十个工具 + D45/D46 的两条扩展"
+    );
     assert_eq!(tools::TOOLS.len(), contract.len());
 }
 
@@ -451,7 +456,7 @@ fn contract_rejects_a_deliberately_invalid_sample() {
     let _ = std::fs::remove_dir_all(&dir);
     yeban_mcp::samples::export_all(&dir).expect("导出样本");
 
-    // (1) 12 份合法样本必须**全部通过**根校验。
+    // (1) 全部合法样本必须**全部通过**根校验（每个工具一份 ToolCall + 一份 ToolResponse）。
     let clean = run_validate_schemas(&dir);
     assert!(
         clean.status.success(),
@@ -521,6 +526,71 @@ fn run_validate_schemas(dir: &std::path::Path) -> std::process::Output {
 // ---------------------------------------------------------------------------
 // 判据 7: 红线自身的机器化自查
 // ---------------------------------------------------------------------------
+
+/// 扩展工具（`yeban_undo` / `yeban_redo`）的实参约束必须与 Rust 注册表**逐字段一致**。
+///
+/// 为什么需要这条：`definitions.ExtensionToolArguments` 是契约文件里唯一一节
+/// **手写**的逐工具参数约束（其余工具的 `inputSchema` 由注册表派生）。
+/// 手写就有漂移风险 —— 于是这条判据把两边的 `steps` 声明逐个字段对账，
+/// 让"注册表改了、契约没跟上"立刻变红。
+#[test]
+fn extension_argument_constraints_match_the_registry() {
+    let root = contract();
+    let wiring = root["definitions"]["ToolCall"]["allOf"]
+        .as_array()
+        .expect("ToolCall.allOf 必须存在（扩展工具的实参约束靠 if/then 接线）");
+    assert_eq!(wiring.len(), 2, "恰好两条扩展的 if/then");
+    for (index, tool) in ["yeban_undo", "yeban_redo"].iter().enumerate() {
+        let branch = &wiring[index];
+        assert_eq!(
+            branch["if"]["properties"]["name"]["const"], *tool,
+            "第 {index} 条 if 必须判 `{tool}`"
+        );
+        let reference = branch["then"]["properties"]["arguments"]["$ref"]
+            .as_str()
+            .expect("then 必须 $ref 到扩展参数定义");
+        assert_eq!(
+            reference,
+            format!("#/definitions/ExtensionToolArguments/$defs/{tool}")
+        );
+
+        let declared =
+            &root["definitions"]["ExtensionToolArguments"]["$defs"][*tool]["properties"]["steps"];
+        let spec = tools::tool(tool).unwrap_or_else(|| panic!("`{tool}` 必须注册"));
+        let param = spec.param("steps").expect("注册表必须声明 `steps`");
+        assert_eq!(
+            declared["type"], param.json_type,
+            "`{tool}.steps` 的 JSON 类型必须与注册表一致"
+        );
+        assert_eq!(
+            declared["minimum"], 1,
+            "`{tool}.steps` 的下界必须是 1（0 是非法的显式取值）"
+        );
+        assert!(
+            !param.required,
+            "`{tool}.steps` 在注册表里必须是可选参数（缺省 1）"
+        );
+        assert!(
+            !spec
+                .required_params()
+                .iter()
+                .any(|required| required.name == "steps"),
+            "`{tool}` 的必填参数里不该出现 steps"
+        );
+        assert_eq!(
+            spec.side_effect,
+            tools::SideEffect::ProjectState,
+            "撤销/重做改变内存中的权威工程状态"
+        );
+    }
+    // 12 个工具里只有这两个带 `steps`。
+    let with_steps: Vec<&str> = tools::TOOLS
+        .iter()
+        .filter(|spec| spec.param("steps").is_some())
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(with_steps, vec!["yeban_undo", "yeban_redo"]);
+}
 
 #[test]
 fn manifest_default_features_do_not_enable_mcp_http() {

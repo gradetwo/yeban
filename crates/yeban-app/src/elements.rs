@@ -844,6 +844,16 @@ impl ElementRegistry {
             "关闭时光机",
             false,
         );
+        // ADR-0001 D45: 弹窗里**真的执行撤销**的那个按钮。
+        // 它的"能不能撤"由宿主从模型读数注入（`host::apply_undo`），因此它不是
+        // 自成一体的演示部件 —— 但也不是 `track-*` 那类"每个实体一个 ID"的族。
+        registry.add(
+            "undo-tree-undo-button",
+            ElementKind::Button,
+            "dialogs/undo_tree_modal.slint",
+            "撤销一步 (Cmd+Z)",
+            false,
+        );
 
         registry
     }

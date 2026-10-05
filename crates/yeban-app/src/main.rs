@@ -53,6 +53,16 @@
 //!
 //! 注：`--open` **不改变**上面这条结论 —— 它读文件、投影、注入，走的都是纯 Rust 层；
 //! GUI 路径仍然需要一个真显示器。
+//!
+//! ## 撤销入口（ADR-0001 **D45**）
+//!
+//! 界面侧的撤销**只有一条路**：`Cmd+Z` / 时光机弹窗的"撤销一步" → [`yeban_app::undo::UndoPort`]
+//! → `crate::undo_session`（**与 MCP 的 `yeban_undo` 是同一份源码**，用 `#[path]` 引入）
+//! → `CommitGraph::undo_with`。因此"人按 `Cmd+Z` 与 AI 发工具调用"改的是同一串字节。
+//!
+//! 键盘那一跳（OS 键事件 → `input.rs` 的策略表）**本进程还没有事件源**：
+//! [`yeban_app::undo::perform_key`] 已经把"解析结果 → 工程回退"整条链做完并可判据化，
+//! 缺的只是把键事件喂进来（Slint 不暴露物理扫描码，见台账的 needs）。
 
 use std::cell::RefCell;
 use std::process::ExitCode;
@@ -62,6 +72,7 @@ use yeban_app::cli::{self, Options};
 use yeban_app::engine_host::EngineHost;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
+use yeban_app::undo::{UndoPort, UndoSession};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -125,6 +136,33 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 把这一代停在 `Stopped`，与界面的初始 `playing: false` 一致 ——
     // 这一步是**引擎侧的动作**（真的过无锁通道、真的在量子边界生效），
     // 不是把界面属性改一下了事。
+    // 撤销会话（会话运行态）[ADR-0001 D45 / MODEL-ISO-001]。
+    // 打开一个工程 = **新会话**：游标与活跃分支都从头开始，因此撤销不可能跨越打开边界。
+    // `history.dag` 的**图谱**恢复由 `--open` 的容器层负责，这里只接当前这一份工程。
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        });
+    let undo_source = match &loaded.source {
+        cli::ProjectSource::File { path, .. } => path.display().to_string(),
+        cli::ProjectSource::Sample(sample) => format!("sample:{}", sample.name()),
+    };
+    let undo_session = match UndoSession::open(
+        undo_source,
+        "yeban-app",
+        loaded.archive.project.clone(),
+        now_ms,
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            return Err(cli::CliError::Ui {
+                detail: format!("撤销会话无法初始化: {error}"),
+            });
+        }
+    };
+    let undo_port = Rc::new(UndoPort::new(undo_session));
+
     let mut engine = EngineHost::new();
     if let Err(error) = engine.reload(&loaded.archive.project, 0) {
         // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
@@ -138,6 +176,15 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::apply_transport(&ui, engine.borrow().transport());
 
     wire_callbacks(&ui, &engine);
+    // 撤销的两条界面入口（弹窗开关 + "撤销一步"按钮）都汇到**同一个** `UndoPort`。
+    host::wire_undo(&ui, &undo_port);
+    // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
+    host::apply_undo(&ui, &undo_port);
+    let undo_display = undo_port.display();
+    cli::emit(&[format!(
+        "撤销: 可撤销 {} 步 · 已撤销 {} 步 · 分支 {} · 实现 = undo_session (与 MCP 的 yeban_undo 同一份源码)",
+        undo_display.undoable, undo_display.undone, undo_display.branch
+    )]);
 
     // 用 UFCS 而不是 `ui.run()`: `run()` 是 `slint::ComponentHandle` 的**trait 方法**,
     // 直接调用要求该 trait 在作用域内; 而显式 `use slint::ComponentHandle;` 在生成代码
@@ -158,7 +205,11 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
 /// → `EngineRuntime` 的量子边界。显示态（`playing` / `timecode`）由
 /// `host::apply_transport` 从**引擎读数**回写，界面不再自己翻转状态。
 ///
-/// 其余七个回调**仍然故意什么都不做**, 只打一行 stderr。原因不是省事:
+/// **撤销两条也已经真的接线**（ADR-0001 D45）：`toggle-undo-tree` 与时光机的
+/// "撤销一步"按钮由 [`host::wire_undo`] 接到 [`yeban_app::undo::UndoPort`]，
+/// 动作真的会走 `CommitGraph::undo_with`，显示态由 `host::apply_undo` 从模型读数回写。
+///
+/// 其余六个回调**仍然故意什么都不做**, 只打一行 stderr。原因不是省事:
 /// Op 归约、AI 采纳的语义都住在 `yeban-engine` / `yeban-model`,
 /// 在这里写一个"看起来在工作"的本地状态翻转, 只会制造"UI 已经通了"的假象。
 ///
@@ -169,7 +220,6 @@ fn wire_callbacks(ui: &yeban_app::ui::MainWindow, engine: &Rc<RefCell<EngineHost
     ui.on_toggle_view(|| trace("toggle-view"));
     ui.on_toggle_sidebar(|| trace("toggle-sidebar"));
     ui.on_toggle_ai_drawer(|| trace("toggle-ai-drawer"));
-    ui.on_toggle_undo_tree(|| trace("toggle-undo-tree"));
     ui.on_open_musical_pr(|| trace("open-musical-pr"));
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
     ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));

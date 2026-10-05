@@ -164,6 +164,14 @@ export component MainWindow inherits Window {
     in-out property <bool> ai-drawer-open: false;
     in-out property <bool> musical-pr-open: false;
     in-out property <bool> undo-tree-open: false;
+    // ---- 撤销能力的显示态（**模型读数**，唯一写者 = src/host.rs 的 apply_undo）------
+    // 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由 `undo_session::UndoDisplay`
+    // 从 `CommitGraph` + `UndoCursor` 读出（ADR-0001 D45）。界面不自己推断。
+    in-out property <bool> undo-can-undo: false;
+    in-out property <bool> undo-can-redo: false;
+    in-out property <int> undo-depth: 0;
+    in-out property <int> undo-undone: 0;
+    in-out property <int> undo-commit-count: 0;
 
     in-out property <string> timecode: "001.01.000";
     in-out property <string> bpm-display: "120.00";
@@ -178,6 +186,8 @@ export component MainWindow inherits Window {
     callback toggle-sidebar();
     callback toggle-ai-drawer();
     callback toggle-undo-tree();
+    // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
+    callback undo-step();
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
@@ -492,6 +502,14 @@ export component MainWindow inherits Window {
         height: root.height;
         visible: root.undo-tree-open;
 
+        // 显示态 = 模型读数（宿主注入；界面只显示）。
+        can-undo: root.undo-can-undo;
+        undo-depth: root.undo-depth;
+        undone-depth: root.undo-undone;
+        commit-count: root.undo-commit-count;
+        branch-name: root.branch-name;
+
+        undo-step => { root.undo-step(); }
         close => { root.undo-tree-open = false; }
     }
 }

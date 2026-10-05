@@ -23,7 +23,9 @@
             "yeban_set_macro",
             "yeban_render_master",
             "yeban_merge_proposal",
-            "yeban_reject_proposal"
+            "yeban_reject_proposal",
+            "yeban_undo",
+            "yeban_redo"
           ]
         },
         "arguments": {
@@ -38,7 +40,47 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_undo"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_undo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_redo"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_redo"
+              }
+            }
+          }
+        }
+      ]
     },
     "ToolResponse": {
       "type": "object",
@@ -90,6 +132,55 @@
               ]
             },
             "message": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ExtensionToolArguments": {
+      "title": "ExtensionToolArguments",
+      "description": "ADR-0001 D46 说\"十工具是起点不是上限, 扩充时必须同步本契约\"。本节的**两条**扩展工具(D45 的撤销入口)因此在这里逐条声明实参约束 —— 含 `steps` 的类型 / 上下界 / 缺省值。判据 tests/contract.rs::extension_argument_constraints_match_the_registry 要求本节与 Rust 注册表(crate::tools::TOOLS)的声明**逐字段一致**, 因此这里不是第二份会漂移的手写 schema。",
+      "type": "object",
+      "$defs": {
+        "yeban_undo": {
+          "title": "yeban_undo",
+          "type": "object",
+          "description": "撤销最近 N 步领域操作 (默认 1)。与 UI 的 Cmd+Z 共用 crate::undo_session 的实现。",
+          "properties": {
+            "steps": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 1,
+              "description": "撤销/重做步数; 一次提交算一步 (Op::Batch 整批算一步)。缺省 = 1, 即一次 Cmd+Z / Cmd+Shift+Z。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          }
+        },
+        "yeban_redo": {
+          "title": "yeban_redo",
+          "type": "object",
+          "description": "重做最近 N 步被撤销的领域操作 (默认 1)。与 UI 的 Cmd+Shift+Z 共用同一实现。",
+          "properties": {
+            "steps": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 1,
+              "description": "撤销/重做步数; 一次提交算一步 (Op::Batch 整批算一步)。缺省 = 1, 即一次 Cmd+Z / Cmd+Shift+Z。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
               "type": "string"
             }
           }

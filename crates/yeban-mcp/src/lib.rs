@@ -132,6 +132,7 @@ pub mod samples;
 pub mod security;
 pub mod tools;
 pub mod transport;
+pub mod undo_session;
 
 pub use dispatch::{Dispatcher, Outcome};
 pub use domain::Domain;
