@@ -7009,3 +7009,22 @@ multi-file move of exactly the shape that produced four separate pieces of damag
 
 **Status of the objective's MIDI item, precisely**: capability exists and is standards-checked (`to_smf_bytes` with byte-level VLQ/chunk
 verification); what is missing is its reachability from MCP, and the blocker is one crate boundary that this plan moves.
+
+### Round 284: two prerequisites for the split, read so that execution is purely mechanical
+
+The last two facts the plan needed, and both remove an expected edit:
+
+| fact | consequence for the split |
+| :--- | :--- |
+| root `Cargo.toml` declares `members = ["crates/*", "spikes/*"]` | a new `crates/yeban-midi/` is **auto-included** - no root manifest edit, so the change cannot accidentally disturb the workspace's membership |
+| `crates/yeban-render/src/lib.rs:74` is exactly `pub mod midi;` | the re-export is a **one-line** replacement (`pub use yeban_midi::midi;`), which is what keeps `yeban_render::midi::X` resolving for the app and its criteria |
+| `yeban-render/Cargo.toml` uses `version.workspace = true` / `edition.workspace = true` | the new crate's manifest should follow the same inheritance pattern, so it needs no pinned versions |
+
+**Execution recipe, complete**: create `crates/yeban-midi/Cargo.toml` (package name `yeban-midi`, lib name `yeban_midi`, `version.workspace` /
+`edition.workspace`, dependencies `yeban-model.workspace = true` and `midly = { workspace = true, features = ["std"] }`); `git mv`
+`crates/yeban-render/src/midi.rs` into the new crate's `src/`; give the new crate a `lib.rs` declaring `pub mod midi;`; replace render's
+line 74 with the re-export and add the dependency to render's manifest; then `cargo check -p yeban-render -p yeban-app` and the test sweep.
+
+**Why this is recorded rather than executed now**: the recipe is four edits plus verification, which is small - but my remaining session budget
+is not enough to do it AND verify it, and a half-applied crate move is precisely the failure this session has recorded four times. The recipe
+above is written so that the next execution is a read-free sequence of mechanical steps, and so that a reviewer can check each one.
