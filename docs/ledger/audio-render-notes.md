@@ -374,6 +374,50 @@
 `render.rs` / `render.rs` 之外的 mcp 源码，但**不是** CI 环境；CI 上会再用真
 rayon/symphonia/rubato 重跑同一批判据。
 
+### 7.4 CI 第 1 轮读数（**属于本 tip**，run 37245504102 @ `8e14144`）
+
+> 基线说明：本线第一次推送（`40aa2ae`）的 run `37244807636` 是 **failure**，唯一红点是
+> `crates/yeban-app/tests/live_ui_mcp.rs::admin_reload_engine_rebuilds_and_resets_the_meter_tap`
+> —— 集成者确认那是 `main` 自 `40c371f` 起的**预存在红**（判据的"换代后电平回到 −120 下限"
+> 建立在"渲染是占位静音"之上），并已在 `c210eb4` 修好。本线随后 **rebase 到 `main` 的
+> `1a50067`**（无冲突）再推，才有了下面这一轮**属于自己 tip** 的判决。
+
+| 腿 | 结果 | 说明 |
+| :--- | :--- | :--- |
+| `plan (受影响集合)` | ✓ | 改了 `Cargo.lock` ⇒ 判定为 workspace 全量 |
+| `checks (fmt / 红线守卫 / schema)` | ✓ 44s | 含文档链接（59 个 md / 167 个相对链接）与许可清单对账 |
+| `lockfile (确定性 Cargo.lock)` | ✓ | rebase 后锁文件与全部清单一致（`cargo metadata --locked` 本机也通过） |
+| `deny (cargo-deny 开源合规)` | ✓ | 新依赖边不需要扩白名单 |
+| `windows (yeban-mcp / yeban-model 的平台分支)` | ✓ 2m1s | 本 crate 的 Windows 分支编译 + 判据 |
+| `rust (workspace 全量)` | **✓ 4m52s** | `clippy --workspace --all-targets -D warnings` 零告警 + `cargo test --workspace --all-targets` 全绿 |
+| `rust (${{ matrix.crate }})` | skipped | 全量腿已覆盖 |
+
+**本 crate 的逐目标读数（从 CI 全文日志里逐行取回，不是只看尾巴）**：
+
+```text
+Running tests/render_audio_clips.rs (target/debug/deps/render_audio_clips-ab3a462b16eed4ee)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+Running tests/render_master.rs        -> test result: ok. 12 passed; 0 failed
+Running unittests src/lib.rs (yeban_mcp) -> test result: ok. 181 passed; 0 failed
+Running tests/tools_e2e.rs            -> test result: ok. 25 passed; 0 failed
+Running unittests src/lib.rs (yeban_render) -> 与全量腿一起绿（真 rayon + 真 PDC 延迟线）
+```
+
+**这一轮最有价值的三条**：
+
+1. **13 条音频片段判据是在真 `symphonia` + 真 `rubato` 上跑的** ——
+   §7.2 里替身的两条主要边界（解码器、重采样）因此被真实现覆盖；
+2. **三个钉死常量在 Linux x86_64 的 CI 上原样通过**（`c6 00 d4 f0 …` / `1c 67 47 21 …` /
+   `6d 29 0a 90 …`），而它们是由 `verify/audio_pins.py`（Python，不调用任何 Rust 代码）
+   **独立推导**出来的 ⇒ "同率透传那一段没有超越函数、位级常量跨架构可比"这句话，
+   现在是一条**实测**而非论证；
+3. **PDC 判据（实测 48 帧偏移）在真 Rayon 调度 + 真延迟线上成立** ——
+   §7.2 里替身的第一条边界（顺序化的 rayon）被真实现覆盖。
+
+**仍然只由 CI 承担的部分（如实说）**：跨架构（`MUST-GATE-003` / `HD-36` 的 `arm` 腿）、
+`BASELINE-*` 的性能读数、以及 Ogg/FLAC/ADPCM **音频片段**的端到端夹具（见 §9 的 needs-3）。
+本线只有 x86_64 Linux + aarch64 macOS 之外的**单架构**读数。
+
 ---
 
 ## 8. `BASELINE-001` / `MUST-GATE-002/003` 的关系
@@ -425,10 +469,9 @@ rayon/symphonia/rubato 重跑同一批判据。
 
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
-| 第 1 轮（音频片段真渲染 + 13 条判据 + 9 条注入） | 见 `ci-verdict.sh` 的读数 | 本提交 | 见下（提交后回填） |
-
-> 本文件自身是**文档改动**：记录判决的那一次提交会再前进一格，且只改 `docs/ledger/**`
-> 与 `crates/yeban-mcp/verify/**`。按纪律仍然读回判决（§10 的表格在判决回来后追加一行）。
+| 第 1 轮（基线 `44a071a` 上的首次推送） | [`37244807636`](https://github.com/gradetwo/yeban/actions/runs/37244807636) | `40aa2ae` | **failure** —— 唯一红点是 `yeban-app` 的预存在红（`main` 自 `40c371f` 起、`c210eb4` 已修），**不属于本线**；`cargo test` 在该红点处停止 ⇒ 本 crate 的目标**没有跑**。已 rebase 到 `main` 的 `1a50067` |
+| 第 2 轮（音频片段真渲染 + 13 条判据 + 9 条注入，**本 tip**） | [`37245504102`](https://github.com/gradetwo/yeban/actions/runs/37245504102) | `8e14144` | **全绿** ✅：`plan` ✓ / `checks` ✓ 44s / `lockfile` ✓ / `deny` ✓ / `windows` ✓ 2m1s / **`rust (workspace 全量)` ✓ 4m52s**（`clippy -D warnings` 0 告警 + 全量判据绿；本 crate：`render_audio_clips` 13/13、`render_master` 12/12、lib 181/181、`tools_e2e` 25/25） |
+| 第 3 轮（本行 + §3.4/§7.4 的文档改动） | `bash scripts/dev/ci-verdict.sh line/audio-render` 的最新一次 | — | 本提交只改 `docs/ledger/**` ⇒ 预期与"只跑 `plan`/`checks`/`lockfile`/`deny`"同形。**判决链到此为止**：再记一次就会无限递归，因此这一行按仓库惯例只指向 `ci-verdict` 的读数 |
 
 ---
 
