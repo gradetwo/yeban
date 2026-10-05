@@ -56,13 +56,21 @@ def main() -> int:
     wanted = [s for s in args.only.split(",") if s] or sorted(first_item)
 
     fetcher = load_fetcher()
-    direct, stripped, broken, offline, unregistered = [], [], [], [], []
+    direct, stripped, broken, offline, unregistered, archive_form = [], [], [], [], [], []
     for iid in wanted:
         inst, item = instruments.get(iid), first_item.get(iid)
         if not inst or not item:
             continue
         repo, pin = inst.get("repo"), inst.get("pin")
         if not repo or not pin:
+            # ⚠ **archive 形态不是"缺登记"**（我第二版把它报成"缺 repo/pin（无法判定）"，**错了**）:
+            # 实测 `freepats-drawbar-organ` / `freepats-percussive-organ` 的 `provenance_form` 是 `archive`
+            # —— 它们以 `.tar.xz` 分发（`source_url` 指向 freepats.zenvoid.org），**本来就没有 git repo**，
+            # 而清单里 `archive{asset,url,bytes,sha256}` 是齐的（`docs/ledger/samples-attribution-notes.md:42,44` 早有记载）。
+            # ⇒ 正确归类是「**不进 git 取回路径**」：它们的复核走 archive 自己的 bytes/sha256，而不是 raw.githubusercontent。
+            if str(inst.get("provenance_form") or "") == "archive":
+                archive_form.append(iid)
+                continue
             # ⚠ **缺登记 ≠ 映射错**: 实测 `freepats-drawbar-organ` / `freepats-percussive-organ`
             # 两个乐器的 `repo` 与 `pin` **都是 null** ⇒ 结构上**根本无法**推导上游地址、也就无法复核。
             # 第一版把它们当"真缺陷(404)"报（因为 URL 变成了 `.../None/None/...`）—— 那是**归因错位**：
@@ -102,10 +110,15 @@ def main() -> int:
     print(f"  剥离后可取回: {len(stripped)}  -> {stripped}")
     print(f"  仍取不回   : {len(broken)}  -> {broken}")
     print(f"  连接失败   : {len(offline)}  -> {offline[:5]}")
-    print(f"  **缺 repo/pin（无法判定）**: {len(unregistered)}  -> {unregistered}")
-    if stripped:
+    print(f"  archive 形态（不走 git 取回）: {len(archive_form)}  -> {archive_form}")
+    print(f"  缺 repo/pin 且非 archive（无法判定）: {len(unregistered)}  -> {unregistered}")
+    # ⚠ 只列**尚未登记**的：否则会诱人重复添加（表里已有的条目再报一次毫无价值，还可能被改错段数）。
+    todo = [(iid, n) for iid, n in stripped if fetcher.UPSTREAM_STRIP.get(iid) != n]
+    if not todo:
+        print("\nUPSTREAM_STRIP 已覆盖全部「剥离后可取回」的乐器（无新增建议）。")
+    if todo:
         print("\n建议加入 UPSTREAM_STRIP（段数已按 fetch-samples 的口径归一化；**仅凭这里的实测**）:")
-        for iid, n in stripped:
+        for iid, n in todo:
             print(f'    "{iid}": {n},')
     if broken:
         print("\n[失败] 以下乐器的首个条目在 0..2 段剥离内都无法取回（真缺陷，需人工核对上游布局）:", file=sys.stderr)
