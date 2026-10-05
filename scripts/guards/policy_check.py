@@ -512,6 +512,25 @@ def g13_workflows_are_valid() -> list[Violation]:
     return bad
 
 
+def _g14_python_syntax_ok() -> list[Violation]:
+    """G14 的另一半: `scripts/**/*.py` 必须能被 `ast.parse` 解析。
+
+    为什么加它（实测事故）: 我在会话里**第六次**把 ASCII 双引号写进双引号 Python 字符串,
+    于是新建的工具脚本直接 `SyntaxError` —— 而当时**没有任何本地判据**会因此变红,
+    只有"跑到那个脚本"才会发现。G14 已经对 shell 脚本做 `bash -n`, 这一半是它的对称物:
+    工具脚本的语法错误必须在 `light` 阶段就被抓住。
+    """
+    import ast  # noqa: PLC0415
+
+    bad: list[Violation] = []
+    for path in sorted((REPO / "scripts").rglob("*.py")):
+        try:
+            ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as exc:
+            bad.append(("G14", f"{rel(path)}:{exc.lineno}", f"Python 语法错误: {exc.msg}"))
+    return bad
+
+
 def g14_shell_scripts_are_portable() -> list[Violation]:
     """[本地门禁可移植性] 仓库里的 shell 脚本必须在**最老的 bash**上也成立。
 
@@ -565,7 +584,7 @@ def g14_shell_scripts_are_portable() -> list[Violation]:
         result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True)
         if result.returncode != 0:
             bad.append(("G14", rel(path), f"bash -n 失败: {result.stderr.strip()[:120]}"))
-    return bad
+    return bad + _g14_python_syntax_ok()
 
 
 GUARDS = {
