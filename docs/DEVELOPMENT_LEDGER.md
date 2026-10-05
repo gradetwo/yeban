@@ -4887,3 +4887,34 @@ where the clipping already lives. That is also more consistent with the file's o
 position arithmetic.
 
 I reverted the four touched files and re-verified: `cargo check -p yeban-app --all-targets` = Finished, working tree clean.
+
+### Round 194: session consolidation - what is closed, what is pending, and exactly how to finish it
+
+**Closed and CI-verified**
+
+| item | evidence |
+| :--- | :--- |
+| `MUST-GATE-001/002/005/009/012` | 已接线; `MUST-GATE-005` re-verified after the DSP dependency; L1 digest comparison still passes |
+| `MUST-GATE-014` | 已接线 (ruling B): 1584 files in-repo, sha256 mismatches 0, required-but-missing 0 |
+| `BASELINE-001/002/004/005` | 已接线 (`BASELINE-005` per `HD-46`: per-direction host-reported values, not summed, re-test noted) |
+| **D56** (diagnostic bundle from UI and MCP) | shared `yeban-diagnostics` crate; MCP tool 16 (`yeban_export_diagnostics`) green on Linux **and** Windows; schema/contract wiring; criteria 1/2/3/5; UI action + button + registry + host binding; criterion 4 as a mechanical check; goldens unaffected |
+| `ROAD-M3-002` first slices | projection clipping (`notes_visible_in`, `VisibleNotes` with **six** arrays), host consumption at `host.rs:130-140`, **viewport-relative positions** so a non-zero scroll renders correctly, all with criteria |
+| process | `CI_CD.md` eight traps; G13 step-observability; G14 Python syntax half; generated handoff snapshot + freshness check; `DEV_WORKFLOW.md` English commits, blocking allowed, report style, self-decision delegation, `--all-targets` rule; `light` now clippy-checks touched light crates |
+
+**Pending, with the exact next action**
+
+1. **`BASELINE-003`'s scrolling number.** Run `37354752002` @ `09ebd12` (scrolling + viewport-relative positions) was in progress
+   at the time of writing. Read it with
+   `gh run view <id> --log | grep -a 帧数`, then add it to the row beside the static reading (p50 9.507 ms / p99 10.244 ms). The
+   scroll speed is fixed in code as one screen per second (`viewport_width/120` px per frame) - quote it with the number.
+2. **The official reading** must come from the reference machine under `HD-45`, not from the hosted runner
+   (`spikes/README.md` line 36). The gate as written runs on `ubuntu-latest`; if the reference machine is to produce the verdict,
+   the gate needs a self-hosted runner, which `HD-38` recorded as unbudgeted - so this is a sequencing decision, not a coding one.
+3. **`BASELINE-006`** stays PENDING by the human's own deferral (`HD-47`/`HD-48`); do not re-ask.
+4. Legal files and the website remain the human's tracks.
+
+**Traps that cost real rounds in this session, so the next reader does not repeat them**: a signature or enum change ripples to
+targets `--lib` does not cover (use `--all-targets`); heavy crates are skipped by `light`'s clippy step, so CI is the only place
+that sees some lints; `steps=0` successes are empty greens; `grep` for common words matches crate names (`thiserror`,
+`static_assertions`); a run id must not go through a float template; and counting session rounds is not measuring elapsed time -
+the clock is. All of these are in the ledger with the runs that proved them.
