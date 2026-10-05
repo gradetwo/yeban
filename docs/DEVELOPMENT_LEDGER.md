@@ -5287,3 +5287,18 @@ and `37359240575` @ `44f7c0d` (the lane-count guard extension) - the latter is t
 from a fresh checkout.
 
 Completed full-workspace verdicts on main now number **seventeen**.
+
+### Round 211: verdict 18 - the backend口径 and variance record is green
+
+Run **`37359088127` @ `d45030e` = completed success** with the `checks` leg at 12 steps. It covers the entry that turned the
+software-rasterisation inference into an observed fact (`slint_backend=<unset>` plus a GPU-less headless runner) and recorded that
+two runs at the same scrolling口径 differ by more than the distance to the 8.3 ms bar.
+
+That the two are in one commit is deliberate: the口径 fact tells a reader what the numbers are, and the variance tells them how much
+a single number can mean - neither is complete without the other, and both belong next to the readings they qualify.
+
+Still queued: `37359240575` @ `44f7c0d`, the first run to exercise the extended viewport-bounds guard (lane-count consistency) from
+a fresh checkout. Its result is unread, so the guard's CI-side behaviour is not yet verified - `light` proves it locally, and the
+distinction is one this session has been careful about throughout.
+
+Completed full-workspace verdicts on main now number **eighteen**.
