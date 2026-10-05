@@ -13,6 +13,8 @@ name = "yeban_render"
 path = "src/lib.rs"
 
 [dependencies]
+# SMF 编解码（下移出的独立 crate; 本行只为保持 `yeban_render::midi::*` 可用）。
+yeban-midi = { path = "../yeban-midi" }
 # 路由图与 EntityId 的唯一事实源 [MODEL-AST-001/004]。渲染层不复制数据模型。
 yeban-model.workspace = true
 # 共用纯数学 DSP 原语: 确定性 xorshift RNG 与标量块混音 [ARCH-RT-001] [ARCH-DET-001]。

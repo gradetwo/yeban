@@ -3,8 +3,8 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `85c2d778802b80b8`
-- 外部依赖包数: **632**（不含 24 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `26f41b8cd912c9aa`
+- 外部依赖包数: **632**（不含 25 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
@@ -327,7 +327,7 @@
 | `memchr` | `2.8.3` | `Unlicense OR MIT` | 传递 | — |
 | `memmap2` | `0.9.11` | `MIT OR Apache-2.0` | 传递 | — |
 | `memoffset` | `0.9.1` | `MIT` | 传递 | — |
-| `midly` | `0.5.3` | `Unlicense` | 直接 | `yeban-render` |
+| `midly` | `0.5.3` | `Unlicense` | 直接 | `yeban-midi`, `yeban-render` |
 | `minimal-lexical` | `0.2.1` | `MIT/Apache-2.0` | 传递 | — |
 | `miniz_oxide` | `0.8.9` | `MIT OR Zlib OR Apache-2.0` | 传递 | — |
 | `miniz_oxide` | `0.9.1` | `MIT OR Zlib OR Apache-2.0` | 传递 | — |

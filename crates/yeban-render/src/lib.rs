@@ -71,13 +71,16 @@
 #![deny(missing_docs)]
 
 pub mod dither;
-pub mod midi;
+// 账本第 283/284 轮：编解码已**下移**到独立 crate `yeban-midi`（MCP 也能依赖它, 见该 crate 的文档）。
+// 这里**再导出**同一个模块 ⇒ `yeban_render::midi::*` 的既有调用方（app 与其判据）一行不改。
+pub use yeban_midi::midi;
 pub mod pdc;
 pub mod render;
 pub mod rf64;
 pub mod rng;
 pub mod sum;
-pub mod vlq;
+// 与 `midi` 同理：VLQ 编解码随 SMF 一起下移到 `yeban-midi`，此处再导出以保持路径可用。
+pub use yeban_midi::vlq;
 pub mod wav;
 
 #[cfg(test)]

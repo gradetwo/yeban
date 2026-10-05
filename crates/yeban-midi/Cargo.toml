@@ -1,0 +1,21 @@
+[package]
+name = "yeban-midi"
+description = "夜半 (Yeban) 的 SMF（标准 MIDI 文件）编解码：`midly` 之上的导出与回读，含独立 VLQ/chunk 字节级核验。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_midi"
+path = "src/lib.rs"
+
+[dependencies]
+# 纯数据模型（零 GUI、零系统库）。本 crate **只**需要它 + `midly` ⇒ 因此 MCP 也能依赖它。
+yeban-model.workspace = true
+midly = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

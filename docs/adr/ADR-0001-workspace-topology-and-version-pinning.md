@@ -496,7 +496,7 @@ UI 的 `undo_tree_modal` 唯一 callback 是 `close`，MCP/ui-mcp 里 `undo|redo
 
 两个候选中选定 **app CLI**（不扩 `yeban_render_master` 的 `format` 参数）。
 理由：导出是**离线批处理**语义，与 CLI 的定位一致；避免把工具参数面撑成"什么都能导出"。
-⇒ `crates/yeban-render/src/midi.rs`（此前**零消费者**）由此获得第一个出口；
+⇒ `crates/yeban-midi/src/midi.rs`（此前**零消费者**）由此获得第一个出口；
 **不允许**两侧各造一份导出实现。
 
 ## D48 — `ui/*` 引入 `dryRun` 与 IME 状态位（**Accepted 2026-10-05**）

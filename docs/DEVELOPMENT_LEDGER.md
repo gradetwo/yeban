@@ -1782,7 +1782,7 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
      `mcp-render-notes.md:325` 也停在旧结论。
   3. **十个 MCP 工具的"独立进程 + stdio"没有端到端判据**：`grep -rn "CARGO_BIN_EXE_yeban-mcp" crates/` 命中 **0**，
      而同仓库的 app CLI **有**（`crates/yeban-app/tests/cli_contract.rs:35`）。⇒ `ROAD-M4-002` 的"已完成"不覆盖二进制入口。
-  4. **MIDI 0/1 导出（`crates/yeban-render/src/midi.rs`）零消费者**：`grep -rn "yeban_render::midi\|render::midi" crates/*/src crates/*/tests` 命中 0，
+  4. **MIDI 0/1 导出（`crates/yeban-midi/src/midi.rs`）零消费者**：`grep -rn "yeban_render::midi\|render::midi" crates/*/src crates/*/tests` 命中 0，
      界面无导出控件、十工具无 MIDI 导出位 ⇒ **实现了但没有任何出口**（它同时是 `.als` 导出的唯一前置能力）。
   5. **`yeban-theory` 与 `yeban-sfz` 两个成品 crate 零工作区消费者**：`grep -rn "yeban-theory" crates/*/Cargo.toml Cargo.toml`
      只命中自身与根清单登记行。后果最具体的是 `yeban-theory`：`crates/yeban-mcp/src/domain/section.rs:45` 自己写了一张 4 行
@@ -6738,7 +6738,7 @@ Read the module before planning the move, and the two facts together decide it:
 
 | fact | evidence |
 | :--- | :--- |
-| the SMF encoder is ALREADY shared and single | `export_midi.rs`'s own doc: it does only two things - read `yeban-model`'s structures and assemble `yeban_render::midi`'s public input types; the bytes come from `MidiExport::to_smf_bytes` in `crates/yeban-render/src/midi.rs` (midly encoding plus this crate's independent byte-level VLQ/chunk checks) |
+| the SMF encoder is ALREADY shared and single | `export_midi.rs`'s own doc: it does only two things - read `yeban-model`'s structures and assemble `yeban_render::midi`'s public input types; the bytes come from `MidiExport::to_smf_bytes` in `crates/yeban-midi/src/midi.rs` (midly encoding plus this crate's independent byte-level VLQ/chunk checks) |
 | but `yeban-render` carries the audio stack | its dependencies include **`yeban-dsp`**, **`hound`**, plus `midly`, `rayon`, `sha2`, `libm`, `yeban-model` |
 
 So the good news is that no second encoder needs writing - the discipline this session keeps applying already holds. The blocking fact is that
@@ -6987,7 +6987,7 @@ Round 282 removed the "wait for CI" argument, and the dependency rule makes the 
 
 | fact | value |
 | :--- | :--- |
-| the encoder's size | `crates/yeban-render/src/midi.rs`, **1150 lines**, single file |
+| the encoder's size | `crates/yeban-midi/src/midi.rs`, **1150 lines**, single file |
 | its public surface | `MidiExportTrack`, `MidiTempo`, `MidiFormat`, `MidiExport` (+ `to_smf_bytes`), `MidiError`, `ParsedNote`, `ParsedMidi`, `TrackChunk`, `track_chunks()`, `parse_smf()` - it encodes AND parses |
 | its dependencies | `std`, `midly`, `yeban_model` - **no `dsp`, no `hound`**, which is exactly why it can be light |
 | its users | `yeban-app` via `yeban_render::midi::{…}` (`export_midi.rs`, `cli_contract.rs`) |
@@ -7022,7 +7022,7 @@ The last two facts the plan needed, and both remove an expected edit:
 
 **Execution recipe, complete**: create `crates/yeban-midi/Cargo.toml` (package name `yeban-midi`, lib name `yeban_midi`, `version.workspace` /
 `edition.workspace`, dependencies `yeban-model.workspace = true` and `midly = { workspace = true, features = ["std"] }`); `git mv`
-`crates/yeban-render/src/midi.rs` into the new crate's `src/`; give the new crate a `lib.rs` declaring `pub mod midi;`; replace render's
+`crates/yeban-midi/src/midi.rs` into the new crate's `src/`; give the new crate a `lib.rs` declaring `pub mod midi;`; replace render's
 line 74 with the re-export and add the dependency to render's manifest; then `cargo check -p yeban-render -p yeban-app` and the test sweep.
 
 **Why this is recorded rather than executed now**: the recipe is four edits plus verification, which is small - but my remaining session budget

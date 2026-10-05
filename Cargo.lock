@@ -6395,6 +6395,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yeban-midi"
+version = "0.0.1"
+dependencies = [
+ "midly",
+ "yeban-model",
+]
+
+[[package]]
 name = "yeban-model"
 version = "0.0.1"
 dependencies = [
@@ -6422,6 +6430,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "yeban-dsp",
+ "yeban-midi",
  "yeban-model",
 ]
 

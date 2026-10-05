@@ -380,7 +380,7 @@ ui 依赖 model…）都会撞上同一堵墙。建议在合并本线之前先�
 /Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-render/src/rf64.rs
 /Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-render/src/dither.rs
 /Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-render/src/wav.rs
-/Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-render/src/midi.rs
+/Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-midi/src/midi.rs
 /Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-render/src/vlq.rs
 /Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-render/src/sum.rs
 /Users/crow/work/music/yeban/.worktrees/render-master/crates/yeban-render/src/rng.rs

@@ -1,6 +1,6 @@
 # app-export-midi 工作线台账（`--export-midi`：MIDI 导出的**第一个出口**）
 
-> **一句话**：`crates/yeban-render/src/midi.rs`（SMF 0/1 导出与严格回读）此前**零消费者**
+> **一句话**：`crates/yeban-midi/src/midi.rs`（SMF 0/1 导出与严格回读）此前**零消费者**
 > （`grep -rn "yeban_render::midi\|render::midi" crates/*/src crates/*/tests` 命中 0），
 > 本线给它接上**第一个出口** = app CLI `--export-midi <path>`，即
 > ADR-0001 **D47** 的裁决原文：**MIDI 导出的唯一出口 = app CLI `--export-midi`**
@@ -15,7 +15,7 @@
 
 | 规范 / 裁决 | 落点 | 判据（见 §4） |
 | :--- | :--- | :--- |
-| `[ARCH-FMT-001 §5.5]`（SMF 0/1 导出） | [`crates/yeban-render/src/midi.rs`](../../crates/yeban-render/src/midi.rs) 的**既有**编码器（本线**未改**该文件） | ② ③ ④ + 该文件自带的 12 条（本机真跑） |
+| `[ARCH-FMT-001 §5.5]`（SMF 0/1 导出） | [`crates/yeban-midi/src/midi.rs`](../../crates/yeban-midi/src/midi.rs) 的**既有**编码器（本线**未改**该文件） | ② ③ ④ + 该文件自带的 12 条（本机真跑） |
 | `[MODEL-AST-001]`（960 PPQ 整数时钟） | `MThd` 的时间分度 = `yeban_model::PPQ`，并与 `yeban_render::midi::DEFAULT_PPQ` 对账 | ③（含漂移 ⇒ 拒绝导出） |
 | `[MODEL-AST-003]`（`BTreeMap` 确定性 / 红线 4） | 轨道 / 摆放 / 音符一律按身份升序展开 | ④（逐字节确定性） |
 | `[ARCH-SEC-004]`（原子落盘） | 复用 `save::write_file_atomically`（**没有**第二份原子写入） | ⑥ |
@@ -245,7 +245,7 @@ exit=5          # 精确到"哪一步、哪个路径"; 不留半个文件, 不�
 
 | # | 注入（任务指定的形态） | 改法 | 实测红点 |
 | :-- | :--- | :--- | :--- |
-| A | **把 PPQ 写成 480**（应让 ③ 红） | `crates/yeban-render/src/midi.rs` 的 `pub const DEFAULT_PPQ: u16 = 960` → `480` | `export_midi::tests::ppq_header_is_the_project_ppq_and_the_encoder_default_agrees`: `left: 480, right: 960`（"编码器默认 PPQ 必须等于工程 PPQ (960)"）；连带 `ppq_drift_between_model_and_encoder_is_rejected_by_construction`: `left: 480, right: 480`。**总读数 105 passed / 17 failed**（导出被 `PpqMismatch` 拒绝 ⇒ 所有走导出路径的判据一起红，这正是"拒绝而不是偷偷换算"的形态）。真进程：`export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary` **FAILED**（13 passed / 1 failed）。**`midi.rs` 自带的 18 条仍绿** —— 它们用符号常量而非字面量，这是"只有 app 侧那条断言钉住 960"的诚实读数 |
+| A | **把 PPQ 写成 480**（应让 ③ 红） | `crates/yeban-midi/src/midi.rs` 的 `pub const DEFAULT_PPQ: u16 = 960` → `480` | `export_midi::tests::ppq_header_is_the_project_ppq_and_the_encoder_default_agrees`: `left: 480, right: 960`（"编码器默认 PPQ 必须等于工程 PPQ (960)"）；连带 `ppq_drift_between_model_and_encoder_is_rejected_by_construction`: `left: 480, right: 480`。**总读数 105 passed / 17 failed**（导出被 `PpqMismatch` 拒绝 ⇒ 所有走导出路径的判据一起红，这正是"拒绝而不是偷偷换算"的形态）。真进程：`export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary` **FAILED**（13 passed / 1 failed）。**`midi.rs` 自带的 18 条仍绿** —— 它们用符号常量而非字面量，这是"只有 app 侧那条断言钉住 960"的诚实读数 |
 | B | **把 tick 换算改成"beat 取整"**（应让 ② 红） | `export_midi.rs` 的 `start_tick: placement.start_tick + note.start_tick` → `raw / PPQ * PPQ`（960 tick = 一拍） | `export_midi::tests::exported_notes_match_the_demo_fixture_note_by_note`: 逐音符 diff 原文 `left: [… (0,64,100,0,480), (0,72,100,960,480), (0,76,100,1920,480) …]` vs `right: [… (0,64,100,480,480), (0,72,100,1440,480), (0,76,100,2400,480) …]`（480→0 / 1440→960 / 2400→1920）；`placement_start_is_added_to_the_note_tick` 与 `cli::tests::export_midi_writes_a_parseable_smf_whose_notes_match_the_project` 同红。**总读数 119 passed / 3 failed**。真进程：B12 **FAILED**（13 / 1） |
 
 还原复核：`md5` 与注入前逐字节一致
