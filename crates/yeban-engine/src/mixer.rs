@@ -37,18 +37,28 @@
 //! （`src/domain/render.rs::pan_gains`）与 `docs/ledger/mcp-render-notes.md` 已经
 //! 落地的同一口径 —— **本模块刻意抄它，不另立第二套定义**。
 //!
-//! ⚠ **规范缺口（已登记 needs，不在本切片发明答案）**：`PanLaw` 的另三个变体
-//! （`Linear` / `ConstantPowerMinus4_5dB` / `ConstantPowerMinus6dB`）在规范里只有
-//! 枚举名、没有给出**曲线定义**（尤其"−4.5 dB / −6 dB"指的是**居中衰减**还是
-//! 曲线的另一族形状）。若按"等功率 + 居中额外 −4.5/−6 dB"读，居中增益会是
-//! `(0.75, 0.75)` / `(0.5, 0.5)`；若按"同一个 `cos/sin` 曲线、只是标签不同"读，
-//! 三个"等功率"变体就是同一条曲线。本切片**不猜**：
+//! ⚠ **另三个变体明确未实现**（[ADR-0001 **D43**]：1.0.0 之前不留历史包袱、
+//! 也不为"猜一个合理的值"写代码）。`PanLaw` 的四个变体在规范里**只有枚举名**、
+//! 没有曲线定义：
 //!
-//! - 默认律（也是模型层的 `#[default]`）按上面的表**已实现**；
-//! - 另三个变体走 [`pan_gains`] 的 `match`：`ConstantPowerMinus4_5dB` /
-//!   `ConstantPowerMinus6dB` / `Linear` 目前**与默认律同曲线**，`needs` 里逐条
-//!   写明"缺的是哪一条定义"。这样"实现"与"待裁决"在同一处可见，
-//!   而不是悄悄塞一个数字进去。
+//! | 变体 | 缺什么定义 | 本模块的处置 |
+//! | :--- | :--- | :--- |
+//! | `ConstantPowerMinus3dB`（模型层 `#[default]`） | —— | **已实现**：上表 |
+//! | `Linear` | 居中给 `(0.5, 0.5)`（−6.02 dB）还是 `(1, 1)`（不衰减） | **未实现** |
+//! | `ConstantPowerMinus4_5dB` | "−4.5 dB"指居中额外衰减，还是另一族曲线？ | **未实现** |
+//! | `ConstantPowerMinus6dB` | 同上（若指居中衰减 ⇒ `(0.5, 0.5)`） | **未实现** |
+//!
+//! "未实现"的具体含义（它是**响亮**的，不是静默的）：
+//!
+//! - [`pan_gains`] 的 `match` **逐变体显式列出**三个未实现分支，每个分支上方写明
+//!   "缺的是哪一条定义"，并**回落到默认律的曲线**（**不是**回落到 line 之前的
+//!   "等增益复制" —— 那会让电平涨 3 dB，是更坏的行为）；
+//! - 判据 `unimplemented_pan_laws_fall_back_to_the_documented_curve` 把这件事
+//!   **钉死**：三个变体与默认律**输出相同**（一个断言），并且
+//!   `yeban_model::PanLaw` 有第四个变体时 `from_model` 是**穷举 match**
+//!   ⇒ 编译失败而不是悄悄归类；
+//! - 台账 §1.3 与 needs N1 记着"缺的是哪一条定义"。补齐定义时只改
+//!   [`pan_gains`] 一个函数（增益在构造期算，实时侧不受影响）。
 //!
 //! ## 2. 母线限制器：为什么是**前瞻式**（look-ahead）而不是反馈式
 //!
@@ -225,20 +235,6 @@ impl PanLaw {
             yeban_model::PanLaw::ConstantPowerMinus6dB => Self::ConstantPowerMinus6dB,
         }
     }
-
-    /// 居中（`pan == 0`）时单个声道的增益。
-    ///
-    /// 默认律是 `cos(π/4) = √2/2 ≈ 0.70710678`（−3.01 dB）。另三个变体目前同值。
-    #[must_use]
-    pub fn centre_gain(self) -> f32 {
-        match self {
-            // 三者共用同一条 `cos/sin` 曲线（缺"居中额外衰减量"的裁决）。
-            Self::Linear
-            | Self::ConstantPowerMinus3dB
-            | Self::ConstantPowerMinus4_5dB
-            | Self::ConstantPowerMinus6dB => core::f32::consts::FRAC_1_SQRT_2,
-        }
-    }
 }
 
 /// 声相增益：`(左, 右)`，由 `pan ∈ [-1, 1]` 与衰减律给出。
@@ -259,11 +255,16 @@ pub fn pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
     };
     // θ = (pan + 1) · π/4：pan = -1 ⇒ 0（全左），pan = 0 ⇒ π/4（居中），pan = +1 ⇒ π/2（全右）。
     let angle = (clamped + 1.0) * core::f32::consts::FRAC_PI_4;
-    // 当前四个变体共用同一条等功率曲线（`centre_gain` 是"居中口径"的唯一事实源，
-    // 将来补 `Linear`/`−4.5 dB`/`−6 dB` 的曲线时只改这里与那个函数）。
-    let (left, right) = (angle.cos(), angle.sin());
-    let _ = law;
-    (left, right)
+    match law {
+        PanLaw::ConstantPowerMinus3dB => (angle.cos(), angle.sin()),
+        // ⚠ 未实现：缺"居中给 (0.5, 0.5)（−6.02 dB）还是 (1, 1)（不衰减）"的定义。
+        // 回落到**默认律的曲线**（而不是 line 之前的等增益复制 —— 那会涨 3 dB）。
+        PanLaw::Linear => (angle.cos(), angle.sin()),
+        // ⚠ 未实现：缺"−4.5 dB 指居中额外衰减，还是另一族曲线"的定义。
+        PanLaw::ConstantPowerMinus4_5dB => (angle.cos(), angle.sin()),
+        // ⚠ 未实现：同上（若指居中衰减 ⇒ 居中 `(0.5, 0.5)`）。
+        PanLaw::ConstantPowerMinus6dB => (angle.cos(), angle.sin()),
+    }
 }
 
 /// 母线**前瞻式峰值限制器**（立体声联动）。
@@ -563,6 +564,30 @@ mod tests {
                 "pan {pan}: 增益平方和应恒为 1, 实际 {power}"
             );
             pan += 0.1;
+        }
+    }
+
+    /// **判据**：三个**未实现**的衰减律显式回落到默认律的曲线（不是等增益复制）。
+    ///
+    /// [ADR-0001 D43]：不猜语义，但也不许"悄悄用另一种曲线"。这条判据把回落**钉死**：
+    /// 谁改 [`pan_gains`] 的 `match` 让某个未实现分支走了别的形状，它就变红；
+    /// 补齐定义之后，把对应分支改成真曲线、并把这条判据的期望一并改掉即可。
+    #[test]
+    fn unimplemented_pan_laws_fall_back_to_the_documented_curve() {
+        for pan in [-1.0f32, -0.5, 0.0, 0.5, 1.0] {
+            let expected = pan_gains(pan, PanLaw::ConstantPowerMinus3dB);
+            for law in [
+                PanLaw::Linear,
+                PanLaw::ConstantPowerMinus4_5dB,
+                PanLaw::ConstantPowerMinus6dB,
+            ] {
+                let actual = pan_gains(pan, law);
+                assert_eq!(
+                    (actual.0.to_bits(), actual.1.to_bits()),
+                    (expected.0.to_bits(), expected.1.to_bits()),
+                    "pan={pan} law={law:?} 必须显式回落到默认律（不得静默换成别的曲线）"
+                );
+            }
         }
     }
 

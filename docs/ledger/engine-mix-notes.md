@@ -96,20 +96,31 @@ AudioBlock<128> ──► cpal / NullBackend
 3. **全右 ⇒ 左声道只剩 `cos(π/2)` 的浮点残差**：rms 1.32e-8，是"全左"的 2.2e-8 倍。
    这是数学事实（`cos(π/2)` 在 f32 里不是 0），判据因此断言**残差量级**而不是逐位相等。
 
-### 1.3 ⚠ 规范缺口（不猜，登记为 needs）
+### 1.3 ⚠ 另三个变体**明确未实现**（[ADR-0001 D43]：不留历史包袱，也不猜语义）
 
-`PanLaw` 的另三个变体在规范里**只有枚举名**：
+`PanLaw` 的另三个变体在规范里**只有枚举名、没有曲线定义**：
 
-| 变体 | 缺什么 | 当前处置 |
+| 变体 | 缺什么定义 | 当前处置 |
 | :--- | :--- | :--- |
-| `Linear` | "居中给 `(0.5, 0.5)`（−6.02 dB）"还是"不衰减 `(1, 1)`" | 与默认律同曲线（`match` 里显式列出，不是通配） |
+| `Linear` | "居中给 `(0.5, 0.5)`（−6.02 dB）"还是"不衰减 `(1, 1)`" | **未实现**，显式回落到**默认律的曲线** |
 | `ConstantPowerMinus4_5dB` | "−4.5 dB"指**居中额外衰减**（⇒ 居中 `(0.75, 0.75)`）还是另一族曲线 | 同上 |
 | `ConstantPowerMinus6dB` | 同上（⇒ 居中 `(0.5, 0.5)`） | 同上 |
 
-**为什么这样处置**：任何一种读法都会**改变居中电平**，而默认工程（夹具与
-`filled_project`）都是居中的 ⇒ 猜错会让所有既有电平读数整体偏移 3 dB。
-`yeban-engine::mixer::PanLaw::from_model` 是**穷举 match**（没有 `_` 兜底分支）
-⇒ 模型层将来新增变体时这里会**编译失败**，而不是悄悄当成默认律。
+**"未实现"是响亮的，不是静默的**（这条按 [D43] 重写过一次）：
+
+1. `pan_gains` 的 `match` **逐变体显式列出**三个未实现分支，每个分支上方写明
+   "缺的是哪一条定义"；回落到**默认律曲线**而**不是** line 之前的"等增益复制"
+   —— 后者会让电平涨 3 dB，是更坏的行为；
+2. 判据 `unimplemented_pan_laws_fall_back_to_the_documented_curve` 把回落**钉死**
+   （三个变体与默认律输出**逐位相同**，5 个 `pan` 位置扫描）；
+3. `PanLaw::from_model` 是**穷举 match**（没有 `_` 兜底）⇒ 模型层新增变体时
+   这里**编译失败**，而不是悄悄归类。
+
+**为什么不干脆实现它们**：任何一种读法都会**改变居中电平**（0 / 3 / 4.5 / 6 dB），
+而默认工程（夹具与 `filled_project`）都是居中的 ⇒ 猜错会让**所有既有电平读数**
+整体偏移 —— 那种错不会 panic、也不会让判据变红，只会让表头和导出慢慢不准
+（与 `engine-meters-notes.md` 的"设备缓冲 ≠ 处理量子"同族）。
+补齐定义时只需改 `pan_gains` 一个函数（增益在构造期算，实时侧不受影响）。
 
 ---
 
@@ -462,7 +473,7 @@ TrackV3.devices[?]                          TrackV3.instrument: Option<Instrumen
 
 | # | 事项 | 为什么需要裁决 |
 | :--- | :--- | :--- |
-| **N1** | **`PanLaw` 的曲线定义**：`Linear` / `ConstantPowerMinus4_5dB` / `ConstantPowerMinus6dB` 各自在 `pan = 0` 处给什么？（见 §1.3） | 任何读法都会整体改变居中电平（3 dB 量级）；本线只实现了默认律 |
+| **N1** | **`PanLaw` 的曲线定义**：`Linear` / `ConstantPowerMinus4_5dB` / `ConstantPowerMinus6dB` 各自在 `pan = 0` 处给什么？（见 §1.3） | 任何读法都会整体改变居中电平（3 dB 量级）；本线只实现默认律，另三个**显式未实现 + 回落 + 判据钉死**（按 D43 不留"猜一个值"的分支） |
 | **N2** | **限制器延迟的回填口径**：33 帧是记在**母线节点**的 `LatencyTable` 上，还是记在"引擎输出的固定延迟"上？ | 决定 PDC 补偿要不要给其它分支插 33 帧延迟线；也决定"引擎延迟"是否要在 UI 披露 |
 | **N3** | **真峰值 vs 样本峰值**：母线限制器按哪个口径？（`HD-26` 已经裁决 4× 过采样，但那是**计量**口径） | 若要拦 inter-sample peak，需要 4× 过采样 + 更多延迟（预算从 0.688 ms 变成 > 1 ms） |
 | **N4** | **窃取淡出：3 ms 指数（`ARCH-RT-004`）还是 5 ms 升余弦（`ARCH-DSP-001`）？** | 两处规范措辞冲突（见 §5.4）；本线按 `ARCH-RT-004` 实现，改写规范正文需要人类 |
@@ -513,6 +524,23 @@ clippy + test；`workspace 全量` 是否进 matrix 取决于 `scripts/dev/chang
 
 ### 9.2 CI 判决（**已读回**，不是 pending）
 
+**代码 tip（含 D43 的声相律重写）的判决 —— 这是本线的最终判决**：
+
+```text
+run id  : 37245444263   （line/engine-mix, push 触发, tip bb97bb6）
+结论    : failure —— 4 绿 1 红 3 跳过（红点与上一轮**完全相同**：crates/yeban-app 侧）
+  ✓ lockfile (确定性 Cargo.lock)     19s
+  ✓ checks (fmt / 红线守卫 / schema)  41s
+  ✓ deny (cargo-deny)                50s
+  ✓ plan (受影响集合)                 5s
+  ✓ rust (yeban-engine)              52s  ← clippy -D warnings + test，**默认 feature（含 cpal）**
+  ✗ rust (yeban-app)                 3m49s ← clippy ✓ / test ✗（1 红；`live_ui_mcp.rs:892`）
+  - windows (yeban-mcp / yeban-model)
+  - rust (workspace 全量)
+```
+
+**该 tip 之前的代码判决**（D43 重写前，功能等价）：
+
 ```text
 run id  : 37244879720   （line/engine-mix, push 触发, tip 9b03ca7）
 结论    : failure —— 5 绿 1 红 2 跳过
@@ -525,6 +553,10 @@ run id  : 37244879720   （line/engine-mix, push 触发, tip 9b03ca7）
   - rust (workspace 全量)                  ← 被 plan 跳过
   - windows (yeban-mcp / yeban-model)      ← 与本改动无关
 ```
+
+**本轮一次的另一次判决（纯文档推送）**：`run 37245222923` — `conclusion=success`，
+但 `rust (${{ matrix.crate }})` 被 plan 跳过（改动只含 markdown）⇒ 它**只**证明
+fmt/守卫/schema/deny/lockfile 绿，**不**构成对代码的判决（L23/L26）。
 
 **红点原文**（`ci-verdict.sh --logs 37244879720` 摘录）：
 
