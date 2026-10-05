@@ -86,6 +86,30 @@ pub const HEADLESS_HANDSHAKE: &str = "headless ok";
 /// 无头路径的边界声明行（**不许**让 `headless ok` 看着像"UI 已验证"）。
 const HEADLESS_BOUNDARY: &str = "headless: 未构造 MainWindow, 未初始化 Slint 后端, 未渲染任何像素 —— 控件树断言需要 crates/yeban-ui-test-port 的 testing backend";
 
+/// `--headless-idle` 的握手行 —— 与 [`HEADLESS_HANDSHAKE`] **刻意不同**。
+///
+/// 为什么不复用 `headless ok`：那一行是**契约**，它出现 = "这个进程一个 Slint 对象都没构造"
+/// （见它自己的文档）。`--headless-idle` **真的**构造了 `MainWindow` 并逐行光栅化过一帧，
+/// 让它打同一行就是一句假话 —— 而 CI 脚本只认那个字面值，会把差别吃掉。
+pub const HEADLESS_IDLE_HANDSHAKE: &str = "headless-idle ok";
+
+/// `--headless-idle` 的边界声明行（说清它**做**了什么、**没做**什么）。
+///
+/// 做：装自研软件平台（`MinimalSoftwareWindow` + `SoftwareRenderer`）、构造真 `MainWindow`、
+/// 逐行光栅化一帧当见证、空闲 N 秒。
+/// 没做：**没有 OS 窗口**（因而也不需要显示器）、没进阻塞事件循环、没连声卡 / 没建引擎、
+/// 没做运行时控件树遍历（那需要 `crates/yeban-ui-test-port` 的 testing backend）。
+pub const HEADLESS_IDLE_BOUNDARY: &str = "headless-idle: 已构造真 MainWindow + 逐行光栅化一帧; 未创建 OS 窗口 \
+(平台 = MinimalSoftwareWindow/SoftwareRenderer)、未进阻塞事件循环、未连声卡/未建引擎; \
+运行时控件树遍历仍属 yeban-ui-test-port 的 testing backend";
+
+/// `--idle-seconds` 的上限（秒）。
+///
+/// 它是**护栏**而不是能力上限：`crates/yeban-app/tests/cli_contract.rs` 的 `RUN_TIMEOUT`
+/// 是 120 秒，这里取 60 秒 —— 于是"有人把秒数敲成 3600"会变成一条**用法错误**，
+/// 而不是一次"CI 卡住几十分钟"。
+pub const MAX_IDLE_SECONDS: u32 = 60;
+
 // ---------------------------------------------------------------------------
 // 用法与版本
 // ---------------------------------------------------------------------------
@@ -125,6 +149,15 @@ pub fn usage_text() -> String {
                            选择\"没有 --open 时\"用哪个工程 (默认 default);
                            empty = 真的 0 轨空工程 (规范 空工程空闲常驻内存 [BASELINE-002]
                            所指的那个对象); 重复给以最后一个为准
+  --headless-idle          无窗口模式下**真的**构造 Slint 控件树: 自研软件平台
+                           (MinimalSoftwareWindow + SoftwareRenderer, 不需要显示器),
+                           逐行光栅化一帧当见证, 空闲 N 秒后退出 (N 由 --idle-seconds 给)。
+                           这是 [BASELINE-002] 那句 空工程空闲常驻内存 要量的**对象**
+                           (--headless 一个 Slint 对象都不构造); 与 --headless 同时给
+                           = 只走本模式 (它是更强的形态), 握手行换成 {idle_handshake}。
+  --idle-seconds <N>        --headless-idle 的空闲秒数 (整数 1..={max_idle});
+                           只对 --headless-idle 有意义, 单独给 = 用法错误 (退出码 {usage});
+                           重复给以最后一个为准
 
 运行形态:
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
@@ -132,6 +165,9 @@ pub fn usage_text() -> String {
   任一\"无窗口开关\"(--headless / --dump-elements / --export-elements /
   --export-midi / --print-shortcuts / --save-as) 都不构造窗口、不进事件循环,
   并打印握手行 `{handshake}`。
+  `--headless-idle` 是**另一档**: 它同样不创建 OS 窗口、不进阻塞事件循环, 但它**会**
+  构造一个软件窗口 + 真控件树并光栅化一帧, 因此握手行是 `{idle_handshake}`
+  (与 `{handshake}` 刻意不同 —— 后者的语义是\"一个 Slint 对象都没构造\")。
   `--help` / `--version` 是短路命令, 不打印握手行。
 
 组合语义 (都是有意的, 不是碰巧):
@@ -148,6 +184,12 @@ pub fn usage_text() -> String {
   --help / -h, --version / -V  短路: 出现即打印并退出 {ok}, 其余参数(含未知参数)不再检查
   --open / --save-as / --export-elements / --export-midi
                                各只能给一次; 重复给 = 用法错误 (退出码 {usage})
+  --headless-idle 与 --save-as / --export-elements / --export-midi /
+  --dump-elements / --print-shortcuts
+                               不能组合 = 用法错误 (退出码 {usage}): 那会把写盘 / 导出
+                               **静默**丢掉, 而本模式的输出契约只有一条 —— 建树 + 空闲 + 读数
+  --headless-idle 与 --idle-seconds
+                               必须成对; 缺一个 = 用法错误 (退出码 {usage}), 绝不默认空闲时长
 
 环境变量:
   SLINT_BACKEND=headless   与 --headless 等价 (yeban 自研哨兵值; Slint 1.18.1 无此后端)
@@ -155,7 +197,8 @@ pub fn usage_text() -> String {
 退出码:
   {ok} 成功 (含 --help / --version / 无头自检完成)
   {ui} 界面路径失败 (无法创建窗口 / 事件循环异常 / 工程无法投影成界面)
-  {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本)
+  {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本 /
+      --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
@@ -165,7 +208,9 @@ pub fn usage_text() -> String {
 
 示例 (全部已在真二进制上跑过):
   yeban-app --headless
+  yeban-app --headless --project-sample empty
   yeban-app --open song.yeban --headless
+  yeban-app --headless-idle --idle-seconds 2 --project-sample empty
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
@@ -173,6 +218,8 @@ pub fn usage_text() -> String {
   yeban-app --version
 ",
         handshake = HEADLESS_HANDSHAKE,
+        idle_handshake = HEADLESS_IDLE_HANDSHAKE,
+        max_idle = MAX_IDLE_SECONDS,
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -289,14 +336,32 @@ pub struct Options {
     pub save_as: Option<PathBuf>,
     /// `--project-sample <default|filled|empty>`。
     pub sample: Sample,
+    /// `--headless-idle`：无窗口模式下**真的构造 Slint 控件树**并空闲 N 秒。
+    ///
+    /// 与 [`Self::headless`] 的关系：两者都是无窗口路径，但 `--headless` 走
+    /// [`run_batch`]（**零 Slint 对象**），而本开关走 `crate::headless_idle::run`
+    /// （真 `MainWindow` + 自研软件平台 + 逐行光栅化一帧）。同时给两者 ⇒ 只走后者
+    /// （它是**更强**的形态：报告行完全一样，只是握手行换成
+    /// [`HEADLESS_IDLE_HANDSHAKE`]）。
+    pub headless_idle: bool,
+    /// `--idle-seconds <N>`：`--headless-idle` 的空闲秒数（整数 `1..=`[`MAX_IDLE_SECONDS`]）。
+    ///
+    /// 与 `--headless-idle` **必须成对**：只给一个 = 用法错误。这条不是形式主义 ——
+    /// 少了它就无法区分"空闲 0 秒"与"参数没生效"，而 `BASELINE-002` 的读数正建立在
+    /// "空闲了多少秒"这件事上（判据 ③ 要证空闲期间读数不再攀升）。
+    pub idle_seconds: Option<u32>,
 }
 
 impl Options {
-    /// 是否是**无窗口**路径（不构造窗口、不进事件循环）。
+    /// 是否是**无窗口**路径（不创建 OS 窗口、不进事件循环）。
     ///
     /// 语义表（`--help` 的"组合语义"一节与判据都按这张表）：
     /// `--help` / `--version` / `--headless` / `--dump-elements` / `--print-shortcuts` /
     /// `--export-elements` / `--export-midi` / `--save-as` 各自都能单独把进程推离 GUI 路径。
+    ///
+    /// `--headless-idle` **也**在这一档里（它确实不建 OS 窗口），但它是**唯一**
+    /// 会构造 Slint 对象的无窗口开关 ⇒ `main.rs` 必须在 `wants_gui()` 之前先看它，
+    /// 而 [`run_batch`] 见到它会明确报错而不是静默降级（见那里的守卫）。
     #[must_use]
     pub fn batch(&self) -> bool {
         self.help
@@ -307,6 +372,7 @@ impl Options {
             || self.export_elements.is_some()
             || self.export_midi.is_some()
             || self.save_as.is_some()
+            || self.headless_idle
     }
 
     /// 是否要真的开窗口。
@@ -322,9 +388,14 @@ impl Options {
     /// `--save-as` **不**需要投影：保存只依赖 `YebanProjectV1`。
     /// 于是"工程能存下来、但投影成界面会失败"这种情况会**如实保存并只在需要投影的
     /// 命令上失败**，而不是让保存被一个与它无关的理由（画不出来）挡住。
+    ///
+    /// `--headless-idle` 需要投影：它的见证行里带 `view-counts` 的 `elements=`
+    /// （复用既有的无头内省），而且它**必须**真的建树 —— 一个不投影的"空闲模式"
+    /// 只会量到一个空进程。
     #[must_use]
     pub fn needs_projection(&self) -> bool {
         self.headless
+            || self.headless_idle
             || self.dump_elements
             || self.print_shortcuts
             || self.export_elements.is_some()
@@ -344,6 +415,21 @@ pub enum ParseError {
     DuplicateOption(&'static str),
     /// `--project-sample` 的取值不在允许集合里。
     UnknownSample(String),
+    /// `--headless-idle` 没配 `--idle-seconds`。
+    ///
+    /// 为什么是错误而不是"默认空闲 1 秒"：默认值会让"参数没生效"与"空闲 0 秒"长得一样，
+    /// 而 `BASELINE-002` 的判据 ③（空闲期间读数不攀升）正是靠"空闲了多久"来定阈值的。
+    IdleSecondsMissing,
+    /// `--idle-seconds` 给了，但没有 `--headless-idle`（它只对这一档有意义）。
+    IdleSecondsWithoutHeadlessIdle,
+    /// `--idle-seconds` 的取值不是 `1..=`[`MAX_IDLE_SECONDS`] 的整数。
+    IdleSecondsInvalid(String),
+    /// `--headless-idle` 与一个会写盘 / 导出的开关同时给。
+    ///
+    /// 语义上不是"不能做"，而是**不能静默丢掉**：本模式的输出契约只有一条
+    /// （建树 + 空闲 + 读数），如果接受这些组合，`--save-as` / `--export-*` 就会被
+    /// 悄悄忽略 —— 那正是本仓库最忌讳的一类假绿。要保存就先跑一次不带本开关的命令。
+    IdleConflict(&'static str),
 }
 
 impl ParseError {
@@ -367,6 +453,25 @@ impl fmt::Display for ParseError {
                 formatter,
                 "未知的工程样本 `{sample}` (可用: default|demo|filled|empty)"
             ),
+            Self::IdleSecondsMissing => write!(
+                formatter,
+                "`--headless-idle` 必须配 `--idle-seconds <N>` (不设默认: 否则 \
+                 \"参数没生效\" 与 \"空闲 0 秒\" 无法区分)"
+            ),
+            Self::IdleSecondsWithoutHeadlessIdle => write!(
+                formatter,
+                "`--idle-seconds` 只对 `--headless-idle` 有意义 (本仓库不静默忽略参数)"
+            ),
+            Self::IdleSecondsInvalid(value) => write!(
+                formatter,
+                "`--idle-seconds` 的取值 `{value}` 非法 (需要 1..={MAX_IDLE_SECONDS} 的整数; \
+                 上限是护栏: tests/cli_contract.rs 的子进程超时是 120 秒)"
+            ),
+            Self::IdleConflict(other) => write!(
+                formatter,
+                "`--headless-idle` 不能与 `{other}` 组合 —— 本模式的输出契约只有 \
+                 \"建树 + 空闲 + 读数\", 接受它会把 {other} 静默丢掉"
+            ),
         }
     }
 }
@@ -383,7 +488,9 @@ impl std::error::Error for ParseError {}
 ///   把工程写到奇怪地方的一类 bug）；
 /// - 位置参数（不以 `-` 开头）与未知开关一律 [`ParseError::UnknownArgument`]；
 /// - `--open` / `--save-as` / `--export-elements` 各只能给一次（重复 = 目标不明确）；
-/// - `--project-sample` 重复给以最后一个为准（沿用旧行为）。
+/// - `--project-sample` 重复给以最后一个为准（沿用旧行为）；
+/// - `--headless-idle` 与 `--idle-seconds` 必须**成对**，且不得与会写盘 / 导出的开关
+///   同给（那会把后者静默丢掉，见 [`ParseError::IdleConflict`]）。
 ///
 /// # Errors
 ///
@@ -456,6 +563,16 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--headless-idle" => {
+                reject_inline("--headless-idle", inline)?;
+                options.headless_idle = true;
+                cursor += 1;
+            }
+            "--idle-seconds" => {
+                let value = take_value("--idle-seconds", inline, args, &mut cursor)?;
+                // 重复给以最后一个为准（与 `--project-sample` 同款）。
+                options.idle_seconds = Some(parse_idle_seconds(&value)?);
+            }
             "--project-sample" => {
                 let value = take_value("--project-sample", inline, args, &mut cursor)?;
                 options.sample = match value.as_str() {
@@ -468,7 +585,41 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             other => return Err(ParseError::UnknownArgument(other.to_owned())),
         }
     }
+    // 成对性与组合性在这里**一次**判完（解析循环里判会让"后给的开关覆盖前者"这类
+    // 顺序问题变成第二个事实源）。
+    match (options.headless_idle, options.idle_seconds) {
+        (true, None) => return Err(ParseError::IdleSecondsMissing),
+        (false, Some(_)) => return Err(ParseError::IdleSecondsWithoutHeadlessIdle),
+        _ => {}
+    }
+    if options.headless_idle {
+        for (given, name) in [
+            (options.dump_elements, "--dump-elements"),
+            (options.print_shortcuts, "--print-shortcuts"),
+            (options.export_elements.is_some(), "--export-elements"),
+            (options.export_midi.is_some(), "--export-midi"),
+            (options.save_as.is_some(), "--save-as"),
+        ] {
+            if given {
+                return Err(ParseError::IdleConflict(name));
+            }
+        }
+    }
     Ok(options)
+}
+
+/// `--idle-seconds` 的取值：`1..=`[`MAX_IDLE_SECONDS`] 的**整数**秒。
+///
+/// 明确拒绝小数（`1.5`）：空闲时长的判据是"两次读数是否相等"，秒级整数足够，
+/// 而多一种数值形态就多一处"看起来生效其实被截断"的余地。
+fn parse_idle_seconds(value: &str) -> Result<u32, ParseError> {
+    let seconds: u32 = value
+        .parse()
+        .map_err(|_| ParseError::IdleSecondsInvalid(value.to_owned()))?;
+    if seconds == 0 || seconds > MAX_IDLE_SECONDS {
+        return Err(ParseError::IdleSecondsInvalid(value.to_owned()));
+    }
+    Ok(seconds)
 }
 
 /// 不接受取值的开关若写成 `--flag=value` 就是用法错误。
@@ -634,6 +785,13 @@ pub enum CliError {
         /// 导出层的原样裁决（含 `yeban-render` 编码器的拒绝原因）。
         source: MidiExportError,
     },
+    /// `--headless-idle` 被送进了**零 Slint 依赖**的 [`run_batch`]。
+    ///
+    /// 这一档存在的唯一理由是**防假绿**：该开关的语义是"**真的**构造 Slint 控件树"，
+    /// 而 [`run_batch`] 一个 Slint 对象都不构造。若它在这里被静默执行，
+    /// `BASELINE-002` 就会拿到一个"看着成功、其实没建树"的读数 ——
+    /// 那正是本工作线要消灭的那种绿。正确入口是 `crate::headless_idle::run`。
+    HeadlessIdleNotBatch,
 }
 
 impl CliError {
@@ -641,7 +799,7 @@ impl CliError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Projection { .. } | Self::Ui { .. } => EXIT_UI,
+            Self::Projection { .. } | Self::Ui { .. } | Self::HeadlessIdleNotBatch => EXIT_UI,
             Self::Open { .. } => EXIT_OPEN,
             Self::Save { .. } => EXIT_SAVE,
             Self::Export { .. } | Self::ExportMidi { .. } => EXIT_EXPORT,
@@ -674,6 +832,11 @@ impl fmt::Display for CliError {
                     path.display()
                 )
             }
+            Self::HeadlessIdleNotBatch => write!(
+                formatter,
+                "`--headless-idle` 不能走 run_batch: 那条路径零 Slint 依赖, \
+                 一个控件树对象都不构造 ⇒ 读数会假绿; 正确入口是 crate::headless_idle::run"
+            ),
         }
     }
 }
@@ -685,7 +848,7 @@ impl std::error::Error for CliError {
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
-            Self::Ui { .. } => None,
+            Self::Ui { .. } | Self::HeadlessIdleNotBatch => None,
         }
     }
 }
@@ -848,6 +1011,105 @@ pub fn view_report(view: &ViewState) -> Vec<String> {
     )]
 }
 
+/// `--headless-idle` 的**见证读数**（由 Slint 侧测出，格式留在这里 —— 与其它报告行同源）。
+///
+/// 为什么要有这个结构：`BASELINE-002` 的判据不能只是"进程跑完了"。它必须能回答
+/// "**真的**建了控件树吗、建的是哪个尺寸的窗口、有没有真的光栅化出像素"。
+/// 这里的每个字段都是**当场量出来的**事实：
+///
+/// - `windows_created`：平台 `create_window_adapter` 被调用了几次（由平台自己数，
+///   不是猜的）。0 ⇒ Slint 根本没要窗口，也就没有控件树；
+/// - `rendered` + `lines` + `non_black_pixels`：逐行光栅化的结果。**像素是伪造不了的**：
+///   只有真的存在一棵被布局过的控件树，`SoftwareRenderer` 才吐得出非零行数与非黑像素；
+/// - `elements`：复用 [`view_report`] 的**同一份**注册表读数（`--headless` 也有这一行），
+///   因此这个"元素数"在同一命令的两个模式之间**可比**；
+/// - `width` / `height`：窗口物理尺寸，来自 `DemoScene` 的视口（与 GUI / Tier-1 端口同源）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleWitness {
+    /// 平台被要求创建窗口适配器的次数（应当恰好 1）。
+    pub windows_created: usize,
+    /// 窗口物理宽度。
+    pub width: u32,
+    /// 窗口物理高度。
+    pub height: u32,
+    /// 本次是否真的发生了重绘（`draw_if_needed` 的返回值）。
+    pub rendered: bool,
+    /// 逐行光栅化回调被调用的行数（应当等于 `height`）。
+    pub lines: u64,
+    /// 光栅化后非黑（RGB 非全零）的像素数。
+    pub non_black_pixels: u64,
+    /// 出现过的不同颜色数（> 1 ⇒ 不是一块纯色，说明真的画了多个图元）。
+    pub distinct_colors: usize,
+    /// 投影侧的元素数（与 `view-counts:` 的 `elements=` 同一份注册表）。
+    pub elements: usize,
+}
+
+impl IdleWitness {
+    /// 是否是**非平凡**的见证：窗口恰好一个、尺寸非零、真的光栅化出非黑像素。
+    ///
+    /// 这条方法就是"防空转"的机械判据 —— 真二进制判据与 CI 都问它，而不是各自写一套阈值。
+    #[must_use]
+    pub fn is_non_trivial(&self) -> bool {
+        self.windows_created == 1
+            && self.width > 0
+            && self.height > 0
+            && self.rendered
+            && self.lines == u64::from(self.height)
+            && self.non_black_pixels > 0
+    }
+
+    /// 非黑像素占全窗口的**千分比**（整数，避免浮点格式漂移）。
+    #[must_use]
+    pub fn non_black_permille(&self) -> u64 {
+        let total = u64::from(self.width) * u64::from(self.height);
+        if total == 0 {
+            return 0;
+        }
+        self.non_black_pixels.saturating_mul(1000) / total
+    }
+}
+
+/// 见证行（`headless-idle-witness:`）—— 一行 `key=value`，机器可读。
+#[must_use]
+pub fn idle_witness_line(witness: &IdleWitness) -> String {
+    format!(
+        "headless-idle-witness: windows-created={} size={}x{} rendered={} lines={} \
+         non-black-pixels={} non-black-permille={} distinct-colors={} elements={}",
+        witness.windows_created,
+        witness.width,
+        witness.height,
+        witness.rendered,
+        witness.lines,
+        witness.non_black_pixels,
+        witness.non_black_permille(),
+        witness.distinct_colors,
+        witness.elements,
+    )
+}
+
+/// `--headless-idle` 的空闲读数（`headless-idle-idle:` 一行）。
+///
+/// `elapsed-ms` 是**实测**墙钟时间（不是 `seconds × 1000`）—— 判据 ③ 要比较"空闲 N 秒"
+/// 与"空闲 M 秒"两档，若把请求值原样回显，这一行就只是把输入抄了一遍，什么也没证明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleReport {
+    /// 请求的空闲秒数。
+    pub seconds: u32,
+    /// 实测的空闲墙钟毫秒数。
+    pub elapsed_ms: u128,
+    /// 空闲期间睡过的 tick 数。
+    pub ticks: u64,
+}
+
+/// 空闲行（`headless-idle-idle:`）。
+#[must_use]
+pub fn idle_report_line(report: &IdleReport) -> String {
+    format!(
+        "headless-idle-idle: seconds={} elapsed-ms={} ticks={}",
+        report.seconds, report.elapsed_ms, report.ticks
+    )
+}
+
 /// 把一行文本转成"引号包裹 + 最小转义"的形式（见 [`project_report`] 的格式说明）。
 #[must_use]
 pub fn quoted(text: &str) -> String {
@@ -993,6 +1255,12 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     }
     if options.version {
         return Ok(vec![version_text()]);
+    }
+    if options.headless_idle {
+        // 防假绿守卫，**不是**形式主义：本函数的模块文档第一句就是"零 Slint 依赖"，
+        // 而 `--headless-idle` 的全部价值在于"真的建了控件树"。放它过去 ⇒
+        // `BASELINE-002` 会拿到一个"命令成功、但一个 Slint 对象都没构造"的读数。
+        return Err(CliError::HeadlessIdleNotBatch);
     }
 
     let loaded = load_project(options)?;
@@ -1196,6 +1464,8 @@ mod tests {
             "--print-shortcuts",
             "--project-sample",
             "--headless",
+            "--headless-idle",
+            "--idle-seconds",
             "--help",
             "--version",
         ] {
@@ -1899,7 +2169,7 @@ mod tests {
         assert!(base.wants_gui(), "无参数 = GUI");
         assert!(!base.needs_projection());
 
-        let cases: [(Options, bool, bool); 9] = [
+        let cases: [(Options, bool, bool); 10] = [
             (
                 Options {
                     headless: true,
@@ -1976,10 +2246,195 @@ mod tests {
                 false,
                 false,
             ),
+            (
+                // `--headless-idle` = 无窗口 + **需要**投影（见证行里有 `elements=`）。
+                Options {
+                    headless_idle: true,
+                    idle_seconds: Some(2),
+                    ..base.clone()
+                },
+                false,
+                true,
+            ),
         ];
         for (options, gui, projection) in cases {
             assert_eq!(options.wants_gui(), gui, "{options:?}");
             assert_eq!(options.needs_projection(), projection, "{options:?}");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 43: --headless-idle / --idle-seconds 的**成对性**与**不许静默丢参数**
+    //           (含 ① 合法组合被解析 / ② 只给一个 = 用法错误 / ③ 值域护栏 /
+    //            ④ 与写盘开关同给 = 用法错误而不是静默忽略)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn headless_idle_is_paired_with_idle_seconds_and_never_silently_ignores_an_option() {
+        let args = |raw: &[&str]| {
+            raw.iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // ① 合法组合（本线的取样形态：空工程 + 2 秒空闲）。
+        let parsed = parse(&args(&[
+            "--headless-idle",
+            "--idle-seconds",
+            "2",
+            "--project-sample",
+            "empty",
+        ]))
+        .expect("合法组合必须被接受");
+        assert!(parsed.headless_idle);
+        assert_eq!(parsed.idle_seconds, Some(2));
+        assert_eq!(parsed.sample, Sample::Empty);
+        assert!(parsed.batch() && !parsed.wants_gui(), "{parsed:?}");
+        assert!(parsed.needs_projection(), "见证行里有 elements= ⇒ 必须投影");
+
+        // ② 成对性：只给一个 = 用法错误（不设默认空闲时长）。
+        assert_eq!(
+            parse(&args(&["--headless-idle"])),
+            Err(ParseError::IdleSecondsMissing)
+        );
+        assert_eq!(
+            parse(&args(&["--idle-seconds", "2"])),
+            Err(ParseError::IdleSecondsWithoutHeadlessIdle)
+        );
+        // 取值写法两种都要认（`--opt value` / `--opt=value`）。
+        assert_eq!(
+            parse(&args(&["--headless-idle", "--idle-seconds=3"]))
+                .expect("内联取值")
+                .idle_seconds,
+            Some(3)
+        );
+        // 不接受取值的开关写成 `--flag=value` 仍是错误。
+        assert_eq!(
+            parse(&args(&["--headless-idle=1", "--idle-seconds", "2"])),
+            Err(ParseError::UnexpectedValue("--headless-idle"))
+        );
+
+        // ③ 值域：0 / 超上限 / 小数 / 非数字 / 负数都必须是用法错误。
+        for bad in ["0", "61", "1.5", "abc", "-1", ""] {
+            assert_eq!(
+                parse(&args(&["--headless-idle", "--idle-seconds", bad])),
+                Err(ParseError::IdleSecondsInvalid(bad.to_owned())),
+                "`--idle-seconds {bad}` 必须被拒"
+            );
+        }
+        // 上限本身合法（护栏只挡笔误）。
+        assert_eq!(
+            parse(&args(&["--headless-idle", "--idle-seconds", "60"]))
+                .expect("上限合法")
+                .idle_seconds,
+            Some(MAX_IDLE_SECONDS)
+        );
+
+        // ④ 与写盘 / 导出开关同给 = 用法错误（否则它们会被**静默**丢掉）。
+        for (extra, name) in [
+            (vec!["--dump-elements"], "--dump-elements"),
+            (vec!["--print-shortcuts"], "--print-shortcuts"),
+            (vec!["--export-elements", "e.txt"], "--export-elements"),
+            (vec!["--export-midi", "m.mid"], "--export-midi"),
+            (vec!["--save-as", "b.yeban"], "--save-as"),
+        ] {
+            let mut raw = vec!["--headless-idle", "--idle-seconds", "1"];
+            raw.extend(extra.iter().copied());
+            assert_eq!(
+                parse(&args(&raw)),
+                Err(ParseError::IdleConflict(name)),
+                "{raw:?} 必须被拒"
+            );
+        }
+        // `--headless` 同时给是**允许**的（它是更弱的形态，报告行完全一样）。
+        let both = parse(&args(&[
+            "--headless",
+            "--headless-idle",
+            "--idle-seconds",
+            "1",
+        ]))
+        .expect("--headless 可以与 --headless-idle 同给");
+        assert!(both.headless && both.headless_idle);
+
+        // ⑤ 防假绿：`--headless-idle` 绝不许走零 Slint 的 run_batch。
+        assert!(matches!(
+            run_batch(&parsed),
+            Err(CliError::HeadlessIdleNotBatch)
+        ));
+        assert_eq!(CliError::HeadlessIdleNotBatch.exit_code(), EXIT_UI);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 44: 见证行 / 空闲行是**可判**的（字段齐全, 空转会被判红）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn idle_witness_is_non_trivial_and_its_lines_are_machine_readable() {
+        let witness = IdleWitness {
+            windows_created: 1,
+            width: 1920,
+            height: 1080,
+            rendered: true,
+            lines: 1080,
+            non_black_pixels: 500_000,
+            distinct_colors: 42,
+            elements: 99,
+        };
+        assert!(witness.is_non_trivial(), "{witness:?}");
+        // 500_000 * 1000 / (1920 * 1080) = 241.1 ⇒ 241‰
+        assert_eq!(witness.non_black_permille(), 241);
+
+        let line = idle_witness_line(&witness);
+        assert!(line.starts_with("headless-idle-witness:"));
+        assert_eq!(field(&line, "windows-created").as_deref(), Some("1"));
+        assert_eq!(field(&line, "size").as_deref(), Some("1920x1080"));
+        assert_eq!(field(&line, "rendered").as_deref(), Some("true"));
+        assert_eq!(field(&line, "lines").as_deref(), Some("1080"));
+        assert_eq!(field(&line, "non-black-pixels").as_deref(), Some("500000"));
+        assert_eq!(field(&line, "distinct-colors").as_deref(), Some("42"));
+        // 见证行里的 elements= 与 view-counts 是同一份注册表读数 ⇒ 同一命令两模式可比。
+        assert_eq!(field(&line, "elements").as_deref(), Some("99"));
+
+        // 每一条"空转"都要被这条判据抓住（否则它只是个好看的字符串）。
+        for degenerate in [
+            IdleWitness {
+                windows_created: 0,
+                ..witness
+            },
+            IdleWitness {
+                rendered: false,
+                ..witness
+            },
+            IdleWitness {
+                lines: 0,
+                ..witness
+            },
+            IdleWitness {
+                non_black_pixels: 0,
+                ..witness
+            },
+            IdleWitness {
+                height: 0,
+                ..witness
+            },
+        ] {
+            assert!(!degenerate.is_non_trivial(), "{degenerate:?} 必须判红");
+        }
+
+        let idle = idle_report_line(&IdleReport {
+            seconds: 2,
+            elapsed_ms: 2004,
+            ticks: 200,
+        });
+        assert!(idle.starts_with("headless-idle-idle:"));
+        assert_eq!(field(&idle, "seconds").as_deref(), Some("2"));
+        assert_eq!(field(&idle, "elapsed-ms").as_deref(), Some("2004"));
+        assert_eq!(field(&idle, "ticks").as_deref(), Some("200"));
+
+        // 用法文本必须把这两个开关与它自己的握手行写出来。
+        let usage = usage_text();
+        for needle in ["--headless-idle", "--idle-seconds", HEADLESS_IDLE_HANDSHAKE] {
+            assert!(usage.contains(needle), "用法文本缺少 `{needle}`");
         }
     }
 

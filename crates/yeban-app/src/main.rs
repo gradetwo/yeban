@@ -8,6 +8,7 @@
 //! | `yeban-app --open <path>` | **打开一个真实的工程文档**（`.yeban` 容器 —— 唯一工程格式），把它作为当前工程驱动界面 |
 //! | `yeban-app --headless`（或 `SLINT_BACKEND=headless`） | **不构造任何 Slint 组件**，打印 `headless ok` 与工程读数后退出 0 |
 //! | `yeban-app --headless --open <path>` | 无显示器环境下的"打开这个工程"自检：真的读文件、真的投影、打印读数 |
+//! | `yeban-app --headless-idle --idle-seconds N` | **真的构造 Slint 控件树**（自研软件平台 = `MinimalSoftwareWindow` + `SoftwareRenderer`，不需要显示器）、逐行光栅化一帧当见证、空闲 N 秒后退出 —— `[BASELINE-002]` 那句"**空**工程空闲常驻内存"要量的对象（住在 [`yeban_app::headless_idle`]） |
 //! | `yeban-app --save-as <path>` | 把当前工程**原子**写成 `.yeban` 容器（`[ARCH-SEC-004]`），不构造窗口 |
 //! | `yeban-app --export-midi <path>` | 把当前工程导出成标准 MIDI 文件（SMF 1，ADR-0001 **D47** 指定的唯一出口），字节出自 `yeban-render` 的**唯一** SMF 编码器 |
 //! | `yeban-app --dump-elements` / `--export-elements <path>` | 语义元素清单打到 stdout / 原子写到文件 |
@@ -94,7 +95,14 @@ fn main() -> ExitCode {
         options.headless = true;
     }
 
-    if options.wants_gui() {
+    // 三条路径，判定顺序是**承重**的：
+    //   `--headless-idle` 也在 `batch()` 里（它确实不建 OS 窗口），但它是唯一
+    //   **会构造 Slint 对象**的无窗口开关 ⇒ 必须在 `wants_gui()` 之前先分流出去，
+    //   而且绝不能落到 `run_batch`（那会静默降级成"不建树"，让 `BASELINE-002` 假绿；
+    //   `run_batch` 自己也有一道守卫兜底）。
+    if options.headless_idle {
+        cli::finish(yeban_app::headless_idle::run(&options))
+    } else if options.wants_gui() {
         cli::finish(run_gui(&options))
     } else {
         cli::finish(cli::run_batch(&options))
