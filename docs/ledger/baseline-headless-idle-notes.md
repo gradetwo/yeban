@@ -180,16 +180,21 @@ $M --label idle6-empty      --timeout 180 -- $APP --project-sample empty --headl
 
 ---
 
-## 9. 净行数（相对 main `fe58fad`）
+## 9. 净行数（相对 main `fe58fad`，取自 `git diff --numstat`）
 
 | 文件 | 变更 |
 | :--- | ---: |
-| `crates/yeban-app/src/headless_idle.rs`（新增） | +264 |
-| `crates/yeban-app/src/cli.rs` | +467 / −8 |
-| `crates/yeban-app/tests/cli_contract.rs` | +173 / −1 |
-| `crates/yeban-app/src/lib.rs` | +1 |
-| `crates/yeban-app/src/main.rs` | +10 / −4 |
-| **合计** | **+915 / −13**（含本文件另计） |
+| `crates/yeban-app/src/cli.rs` | +461 / −6 |
+| `crates/yeban-app/src/headless_idle.rs`（新增） | +268 / −0 |
+| `crates/yeban-app/tests/cli_contract.rs` | +171 / −2 |
+| `crates/yeban-app/src/main.rs` | +9 / −1 |
+| `crates/yeban-app/src/lib.rs` | +1 / −0 |
+| `docs/ledger/baseline-headless-idle-notes.md`（新增，本文件） | +195 / −0 |
+| **合计** | **+1105 / −9**（`git show --stat` 同一读法） |
+
+> ⚠ 本表在提交后**本地修正过一次**（初版把 `--stat` 的合计数与 `--numstat` 的加减数混用了）。
+> 上表是 `git diff --numstat HEAD~1 HEAD` 的逐字读数；那一处修正**没有**随本次推送
+> （等判决期间不推送，见下）。
 
 **CI 判决**：本轮推送后由集成者读回（本文件**不**在同一提交里追写判决 ——
 「等判决期间不推送」是 `docs/CI_CD.md` 的纪律，追写会触发新 run 把在飞证据掐掉）。
