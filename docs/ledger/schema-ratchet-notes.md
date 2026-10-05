@@ -328,12 +328,12 @@ test result: ok. 9 passed; 0 failed; 1 ignored
 > `cargo-local.sh` 打印 `工作区=/Users/crow/work/music/yeban/.worktrees/schema-ratchet` ——
 > 这是"跑的是本工作树、不是主仓"的机械证据（账本 **L30** 的实测事故就是主仓绝对路径）。
 
-### 8.2 本机**未能**跑（**不是绿**，按 pending 处理）
+### 8.2 本机**未能**跑 —— **已由 CI 判绿**（不是本机绿）
 
-| 项 | 原因 | 谁来做 |
+| 项 | 本机原因 | CI 判决（run `37249460339`） |
 | :--- | :--- | :--- |
-| `run-gates.sh full`（`--workspace` / `cargo deny` / Windows 分支） | 本机纪律禁止全量构建 | **CI** |
-| 下游 6 个 crate（`yeban-app` / `yeban-render` / `yeban-engine` / `yeban-mcp` / `yeban-decode` / `yeban-ui-mcp`）的编译与测试 | 全部含重依赖 | **CI** |
+| `run-gates.sh full`（`--workspace` / `cargo deny`） | 本机纪律禁止全量构建 | ✅ `deny` 41s、`checks`（含 schema 校验）34s |
+| 下游 6 个 crate（`yeban-app` / `yeban-render` / `yeban-engine` / `yeban-mcp` / `yeban-decode` / `yeban-ui-mcp`）+ 本线新判据的 workspace 编译 | 全部含重依赖 | ✅ `rust (workspace 全量)` 5m5s、`windows (yeban-mcp / yeban-model 平台分支)` 2m10s |
 
 ---
 
@@ -382,7 +382,7 @@ test result: ok. 9 passed; 0 failed; 1 ignored
 
 | 项 | 状态 |
 | :--- | :--- |
-| 本分支最终 tip 的 CI 判决 | 见 §12（`scripts/dev/ci-verdict.sh line/schema-ratchet`） |
+| 本分支最终 tip 的 CI 判决 | ✅ **已读回**：run `37249460339` = success（tip `21df0af`，含 `rust (workspace 全量)`） |
 | `line/model-schema-d43` 进 `main` | ✅ 已完成（`29b988d`，run 37248121161 success） |
 
 ---
@@ -392,7 +392,7 @@ test result: ok. 9 passed; 0 failed; 1 ignored
 | 文件 | 变更 | 行数（相对 `origin/main`） |
 | :--- | :--- | :--- |
 | `crates/yeban-model/tests/schema_ratchet.rs` | **新增**（9 条判据 + 1 条 `#[ignore]` + 两套 walker + 路径工具 + §5.4 豁免常量 + 已清空的过渡登记常量） | **+1374** |
-| `docs/ledger/schema-ratchet-notes.md` | **新增**（本文件） | **+358**（回填判决后略有增加） |
+| `docs/ledger/schema-ratchet-notes.md` | **新增**（本文件；含判决回填） | **+428** |
 | `schemas/**` / 根 `Cargo.toml` / `Cargo.lock` / `.github/**` / `scripts/**` / `deny.toml` / `docs/DEVELOPMENT_LEDGER.md` / `docs/adr/**` / 其它 `crates/**` | **零改动**（`git status` + `git diff --stat` 复核） | 0 |
 
 零新增依赖（只用已有的 `serde_json` / `serde` + 标准库）。
@@ -403,9 +403,26 @@ test result: ok. 9 passed; 0 failed; 1 ignored
 
 - 提交 1（代码 + 初版 notes）：`e5a37bd`（对着**收紧前**的契约；`run-gates.sh crate` / `light` 均绿）。
 - 合并：`6425252` merge `origin/main` `0ef7eb2`（把契约收紧与 `main` 的其它 6 个提交收进来，无冲突）。
-- 提交 2（本文件改成**最终形态**口径 + 退役过渡登记表 + §5.1 的 A/B/C/D 注入实测）。
-- **CI 判决**（`bash scripts/dev/ci-verdict.sh line/schema-ratchet`）见下方回填。
+- 提交 2（本文件改成**最终形态**口径 + 退役过渡登记表 + §5.1 的 A/B/C/D 注入实测）：`21df0af`。
+- **CI 判决（已读回，不是 pending）**：`bash scripts/dev/ci-verdict.sh line/schema-ratchet`
+  ⇒ **run `37249460339` = ✓ success**（该 run 的 head 就是本线最终 tip `21df0af`）。
 
 ```text
-（判决回填区：run id / 结论 / 哪些腿跑了）
+✓ line/schema-ratchet CI · 37249460339
+✓ lockfile (确定性 Cargo.lock)              in 17s
+✓ deny (cargo-deny 开源合规)                in 41s
+✓ checks (fmt / 红线守卫 / schema)          in 34s
+✓ plan (受影响集合)                          in 4s
+✓ windows (yeban-mcp / yeban-model 平台分支) in 2m10s
+✓ rust (workspace 全量)                     in 5m5s
 ```
+
+⇒ 本机**跑不了**的那两条（`rust (workspace 全量)` = 下游 6 个重依赖 crate 的编译与测试、
+`deny` / `checks` 里的 `validate_schemas.py`）**由 CI 判了，全绿**。
+本线的 9 条新判据在 `rust (workspace 全量)` 这条腿里被真编译真跑过（`--workspace --all-targets`）。
+
+> 说明：第一次推送的 run `37248646547` 被本线第二次推送**取代**（GitHub 的
+> `Canceling since a higher priority waiting request …` —— 它的 `rust (*)` 腿是被取消的，
+> **不是失败**）。最终判决以上面这个 run 为准。
+> 本文件回填判决的这一次提交是 **docs-only**（不动任何代码/契约），因此 `37249460339`
+> 对本线代码仍然有效。
