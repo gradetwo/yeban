@@ -18,8 +18,13 @@
 //! 2. **确定性状态** [MODEL-AST-003]: 持久化 AST 实体集合严禁 `HashMap` / `HashSet`，
 //!    一律 `BTreeMap`，以保障跨进程、跨重启的迭代顺序一致。
 //! 3. **内存安全** [AGENTS.md §2 红线 8]: 本 crate `#![forbid(unsafe_code)]`。
-//! 4. **三层状态物理隔离** [MODEL-ISO-001]: 持久化文档 (`ProjectDocument`)、
-//!    会话运行态 (`SessionRuntimeState`)、本机配置 (`LocalMachineConfig`) 三者不得混用。
+//! 4. **三层状态物理隔离** [MODEL-ISO-001]: 持久化文档
+//!    ([`project::YebanProjectV1`])、会话运行态 ([`session::SessionRuntimeState`])、
+//!    本机配置 ([`local_config::LocalMachineConfig`]) 三者**必须**放在三个模块里、
+//!    永不互相嵌套。会话态刻意**不实现** `Serialize`（"严禁持久化存入 Commit"是
+//!    类型层事实，不是注释）；本机配置落在工程之外（`~/.yeban/config.json`，`0600`），
+//!    凭据只以 [`local_config::SecretRef`] 指针形式出现。常驻判据见
+//!    `crates/yeban-model/tests/model_isolation.rs`。
 //!
 //! ## 版本
 //!
@@ -35,10 +40,12 @@ pub mod commit;
 pub mod container;
 pub mod error;
 pub mod ids;
+pub mod local_config;
 pub mod music;
 pub mod ops;
 pub mod project;
 pub mod samples;
+pub mod session;
 
 pub use automation::{NOMINAL_GAIN_MAX_DB, NOMINAL_GAIN_MIN_DB};
 pub use commit::{
@@ -50,6 +57,12 @@ pub use container::{
 };
 pub use error::ModelError;
 pub use ids::{AssetHash, ContentHash, EntityId, PPQ, ULID_TEXT_LEN};
+pub use local_config::{
+    AudioPortBinding, DEFAULT_SECRET_BACKEND, EditorRole, ExternalEditor, KNOWN_SECRET_BACKENDS,
+    LOCAL_CONFIG_DIR_NAME, LOCAL_CONFIG_FILE_NAME, LOCAL_CONFIG_VERSION, LocalConfigError,
+    LocalMachineConfig, MAX_SECRET_REF_LEN, SecretMaterial, SecretRef, SecretStore,
+    SecretStoreError, UnavailableSecretStore, load_default, secret_store_for,
+};
 pub use music::{CurveType, MidiNote, SlideConfig};
 pub use ops::{Op, OpOrigin, StampedOp};
 pub use project::{
@@ -62,3 +75,6 @@ pub use project::{
     TransportConfig, YebanProjectV1,
 };
 pub use samples::{SampleExportError, export_all, export_to_default_dir};
+pub use session::{
+    PluginProcess, SessionRuntimeState, SessionStateError, TaskId, TaskKind, TaskProgress, WindowId,
+};
