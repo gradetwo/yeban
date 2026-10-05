@@ -7251,3 +7251,31 @@ without losing its criteria" means as a fact rather than as a plausible reading 
 shape as the round-278 widening (checking the dependents) and the round-279 quantification (measuring the flake rate) - in each case the first
 measurement was directionally right and the second made it precise. Three instances in one session suggests the habit is worth naming: after an
 aggregate check passes, ask what a SPECIFIC count would have to show for the aggregate to be misleading, then get that count.
+
+
+### Round 294: four attempts at the mapping move, all reverted - and the exact remaining obstacle, now known
+
+Attempts 3 and 4 got the **library** half right (round 290's structure-aware deletion works: every removed item goes together with the doc block
+above it), and both were stopped by the **kept tests**, not by the move:
+
+| attempt | what failed | what it revealed |
+| :--- | :--- | :--- |
+| 3 | 1 error in `yeban-midi (lib test)` | I had taken only the LAST `#[cfg(test)]` block; the file has more, so an app-coupled test module stayed in the shared crate |
+| 4 | missing `DEFAULT_PPQ`, `PPQ`, then `ClipPlacement` in the app's kept tests | the tests rely on the ORIGINAL file's whole `use` set, which the wrapper's minimal imports do not provide |
+
+**So the obstacle is precise now**: the mapping's tests exercise both the shared mapping and the app's writer, and they were written against the
+original module's imports. Moving the file splits the code but not the tests' import needs.
+
+**The clean fix, recorded for the next attempt**: keep the original `use` block in the app wrapper (the tests need it) and add
+`#[allow(unused_imports)]` scoped to the test module - or, better, give the test module its own `use` lines covering what it references, which is
+the idiomatic Rust answer and avoids a blanket allow. Either way the next attempt starts from the import list rather than discovering it one name at
+a time, which is what attempts 3 and 4 did.
+
+**Both attempts auto-reverted on a failed build, so the tree is green** (`light` passes, `yeban-app` and `yeban-midi` compile, the whole-workspace
+sweep stands at 1788).
+
+**Honest judgement on cost**: four attempts - two by line number, two structural - to move one file, with the ledger getting a better recipe each
+time and no broken tree at any point. The revert-on-failure discipline is what kept it cheap; the cost was rounds, not correctness. What I would do
+differently is the thing round 290 already said: **compile FIRST and fix what the compiler names**, rather than pre-deleting spans and guessing
+which ones are safe - attempts 3 and 4 each did that for the library and then stopped short at the tests, which is one step more of the same
+method applied to the other half of the file.
