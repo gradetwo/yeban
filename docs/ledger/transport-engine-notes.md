@@ -271,6 +271,8 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out
 | `bash scripts/gates/run-gates.sh crate yeban-app` | **SKIP**（脚本判定"含重依赖，本机不编译，交给 CI"）—— 即 `yeban-app` 的**门禁档**只有 CI 能判；本线额外跑的是它的 `cargo test`（§6.2） |
 | `bash scripts/dev/cargo-local.sh fmt --all` | 已跑 |
 
+CI 那一侧的判决读数见 §6.4（run `37253348002`，失败 job 数 0）。
+
 ### 6.2 ⚠ 一次**越过 M2 纪律**的动作（如实登记，不掩饰）
 
 `yeban-app` 含 Slint ⇒ 传递重依赖 ⇒ 按纪律本机只跑引擎那一侧。但本线**额外**在本机跑了：
@@ -299,6 +301,25 @@ CARGO_TARGET_DIR=/Users/crow/work/music/yeban/target bash scripts/dev/cargo-loca
 - `cargo test -p yeban-app --features ui-test-port`（`[[test]] test_port_adapter` 那个入口；
   本线跑的是自动发现的 `tests/real_ui_tier1.rs`，两者共用同一份判据源码）；
 - Tier-1 Golden/SSIM 分平台基准（需人类先提交基准，本线不产出基准图）。
+
+### 6.4 CI 判决（**已读回**，不是 pending）
+
+```text
+$ bash scripts/dev/ci-verdict.sh line/transport-engine
+✓ line/transport-engine CI · 37253348002   (head 69c153d)
+  ✓ lockfile (确定性 Cargo.lock)            20s
+  ✓ deny (cargo-deny 开源合规)              46s
+  ✓ checks (fmt / 红线守卫 / schema)        40s
+  ✓ plan (受影响集合)                        6s
+  ✓ rust (yeban-app)                      3m59s     ← Slint 重依赖那条腿（本机纪律不该跑的那一侧）
+  ✓ rust (yeban-engine)                     44s
+  - windows / rust (workspace 全量)          0s      （受影响集合判定为不需要）
+失败 job 数: 0
+```
+
+也就是说：`yeban-engine`（含 `device` feature 的 cpal 路径与三个 `harness = false` 探针）与
+`yeban-app`（Slint + Tier-1 软件光栅化 + `ui-screenshots-yeban-app` 产物）两条腿都由
+**CI 判决为绿**；本机的"参考绿"（§6.1 / §6.2）不是绿的定义，CI 的这一次才是。
 
 ---
 
