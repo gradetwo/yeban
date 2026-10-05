@@ -5746,3 +5746,28 @@ that resolves the target clip) and the refusal path becomes a creation path.
 consistent with how other commits are timestamped, and record the choice next to the call rather than deriving it silently. A
 monotonic counter would be better for ordering two edits inside one millisecond, but no existing code path does that and inventing a
 second time source is the larger risk.
+
+### Round 235: clip_at_tick needs one read before it can be written - and the two candidate routes are not equivalent
+
+The decision from round 234 ("the clip on the current track containing the clicked tick") needs a query that does not exist, and my
+first read showed why it is not a one-liner: `ClipPoolEntry` carries `{ id, name, content }` - **no tick range**. The range lives
+wherever the clip is PLACED, so the query has to go through the track's placements rather than the pool.
+
+Two routes, and this is the part worth writing down because they are NOT equivalent:
+
+1. **Through the model**: read the placement type (track -> placements with a start/end tick -> clip id) and query it in tick space.
+   This is the authoritative version: it answers exactly the question the decision was written in.
+2. **Through the projection**: `ViewState` already injects `clip_ulids`, `clip_positions`, `clip_widths` and `clip_lanes`, so
+   "the clip whose pixel range contains the clicked x on the current lane" is computable with data already on hand - and it matches
+   what the user SEES.
+
+**The口径 risk that forbids mixing them**: route 2 uses pixels, and it is not yet established whether `clip_positions` are absolute
+or already offset by the arrangement's own scroll (the roll's scroll is a separate quantity - round 440 made note positions
+viewport-relative, and the clip arrays were not part of that change). Adding a scroll offset that is already baked in, or omitting
+one that is not, would put the note in the neighbouring clip - a plausible, hard-to-see error of exactly the kind this session keeps
+recording.
+
+**So the next slice starts with one read**: the placement type (route 1), plus a check of whether the clip arrays are scrolled (route
+2). Whichever is chosen, the criterion is the same and is stated in the decision: a tick inside a clip returns that clip; a tick in a
+gap returns None; and - if route 2 is chosen - the same tick under two different scroll values must resolve to the same clip, which is
+the test that would catch a double-counted offset.
