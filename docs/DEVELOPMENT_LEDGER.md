@@ -3556,3 +3556,22 @@ The set of completed full-workspace verdicts on main is now **five**: `372836998
 
 Why the `checks` leg matters here specifically: the guard I added is what would have caught the four unreadable-output steps,
 so its own green run is the criterion's first CI validation - and it arrives together with the fixes it demanded.
+
+### Round 128: regression-checking my own workflow edits - determinism lane still green
+
+Round 126 rewrote the summary handling inside four steps (`bench::测量结果 + 口径声明`, `windows::结果摘要`,
+`determinism::未接线说明`, `site-deploy::deploy`). A mechanical edit to a workflow step is exactly the kind of change that
+"yaml parses + light green" does **not** validate, so I dispatched one of the modified lanes:
+
+```
+gh workflow run gates-manual.yml -f gate=determinism
+run 37306372290 = completed success   (determinism (PENDING) = success steps=3)
+```
+
+=> the `determinism` lane's output handling survived the rewrite. Its job name literally reads `determinism (PENDING)`,
+which is honest labelling of a lane whose full implementation is still pending - the run being green means the lane ran, not
+that the gate is complete.
+
+**Still to check**: the `windows` lane, whose step was rewritten the same way but which compiles on a Windows runner and is
+therefore a heavier dispatch. Recorded as an outstanding verification rather than assumed from the determinism result - the
+two steps were edited independently, so one green does not certify the other.
