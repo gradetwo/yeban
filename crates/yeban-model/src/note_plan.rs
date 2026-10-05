@@ -37,3 +37,42 @@ pub fn plan_to_add_note(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::EntityId;
+    use crate::music::{DEFAULT_VELOCITY, MidiNote};
+    use crate::ops::Op;
+
+    #[test]
+    fn the_pencil_plan_and_the_mcp_shaped_build_produce_the_same_op() {
+        // `D45`–`D55` 要求「撤销入口 UI+MCP 两侧同接、**共用同一实现**」。两侧的**入口**不同
+        // （UI 从点击得到 plan；MCP 从载荷得到**显式字段**, 并可带 velocity 与校验），
+        // 但产出的 `Op` 必须**是同一个**。本判据把这句话变成可复跑的事实。
+        let track_id = EntityId::new();
+        let clip_id = EntityId::new();
+        let note_id = EntityId::new();
+        let plan = NotePlan {
+            start_tick: 960,
+            pitch: 64,
+            duration_ticks: 480,
+        };
+        let from_plan = plan_to_add_note(plan, track_id, clip_id, note_id);
+        // MCP 的构造形状（`yeban-mcp/src/domain/notes.rs`）：`MidiNote::new` + 显式 `Op::AddNote`。
+        let from_fields = Op::AddNote {
+            track_id,
+            clip_id,
+            note: MidiNote::new(note_id, plan.start_tick, plan.pitch, plan.duration_ticks),
+        };
+        assert_eq!(
+            from_plan, from_fields,
+            "UI 的包装器必须与 MCP 的显式构造产生**同一个** Op（否则「共用同一实现」只是说法）"
+        );
+        // 并钉住"UI 的力度取默认值"这一语义（MCP 可显式给别的值, 那是它更丰富的地方）。
+        assert_eq!(
+            MidiNote::new(note_id, 960, 64, 480).velocity,
+            DEFAULT_VELOCITY
+        );
+    }
+}
