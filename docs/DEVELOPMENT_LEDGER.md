@@ -3872,3 +3872,29 @@ for i in 0..600 {
 Residual gap, stated plainly: this proves the **timing path** and gives a real p50/p99/max on the fixture. The **10 万音符**
 scene (the gate's actual bar) still needs `yeban-app`'s real view, because the fixture is not the piano roll. So this is
 progress on `BASELINE-003`, not its closure, and the round must not be reported as closing it.
+
+### Round 150: the concurrency fix holds, and the frame-time test is green on CI
+
+Dispatch on the tip (event `workflow_dispatch`, so it is not confusable with the queued push runs):
+
+Run **`37330049671` @ `1cd47a5` = completed success**:
+
+| leg | verdict |
+| :--- | :--- |
+| **`rust (workspace 全量)`** | **success `steps=10`** - includes the new frame-rate timing test |
+| `windows (yeban-mcp / yeban-model)` | success `steps=9` |
+| `checks` / `plan` / `deny` / `lockfile` | success (12 / 5 / 6 / 6) |
+| `rust (${{ matrix.crate }})` | skipped by design |
+
+**Two things are established here.** First, the frame-rate timing criterion added in round 149 compiles and passes on CI as
+part of the workspace leg. Second, and more important operationally: this dispatch **ran to completion**. The immediately
+preceding dispatch (`37329844372`) and the push run for `8eed2a0` (`37329846495`) had both come back `completed cancelled`
+with every leg empty. The only change between them is the round-149 group expression that gives every main run its own
+concurrency group, so the fix is confirmed by the contrast rather than by argument.
+
+Completed full-workspace verdicts on main now number **eight**: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`,
+`37293138132` @ `f859ef6`, `37300697464` @ `2c4d285`, `37305461525` @ `f3a86d2`, `37308086599` @ `8038fdc`,
+`37324066103` @ `dad0cfb`, `37330049671` @ `1cd47a5`.
+
+Still open, and unchanged by this round: `BASELINE-003`'s actual bar is the 100 000-note scene, which the fixture-based test
+does not measure.
