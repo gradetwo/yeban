@@ -25,6 +25,10 @@ pub mod l1_receipt;
 #[allow(dead_code)]
 #[path = "reference_project_a.rs"]
 pub mod reference_project_a;
+// L1 摘要记录（`MUST-GATE-002` 的载体）。零第三方依赖 ⇒ 也可被 `rustc --test` 单独跑。
+#[allow(dead_code)]
+#[path = "l1_digest_record.rs"]
+pub mod l1_digest_record;
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -304,4 +308,132 @@ pub fn rustc_identity() -> (Option<String>, Option<String>) {
         _ => None,
     };
     (host, version)
+}
+
+// ---------------------------------------------------------------------------
+// L1 摘要记录（`MUST-GATE-002`）的共享装配器
+// ---------------------------------------------------------------------------
+
+/// 摘要记录里"与机器有关"的元数据（**仅记录**字段的取值来源）。
+///
+/// 为什么要显式传进来：`host_name` / `generated_at_utc` 这类字段在判据里必须**可注入**，
+/// 否则"改了非参与字段仍然绿"这条判据就只能靠改文件来做（那就不是判据了）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DigestMetadata {
+    /// 基准指令集记号（如 `baseline` / `baseline+neon,aes`）。
+    pub isa_features: String,
+    /// 宿主名（**仅记录**）。
+    pub host_name: String,
+    /// 宿主 OS 版本（**仅记录**）。
+    pub host_os_version: String,
+    /// 生成时刻（**仅记录**）。
+    pub generated_at_utc: String,
+    /// 备注（**仅记录**）。
+    pub notes: String,
+}
+
+/// 把一次真实渲染读数装配成 [`DigestRecord`]（`export_l1_digest` 与
+/// `tests/l1_digest_parity.rs` **共用这一份** —— 判据与生成器不许各写一份）。
+///
+/// 它同时完成"无损自证"：编码出的 WAV 的 `data` 载荷必须逐字节等于样本位型串接，
+/// 且三段哈希（位型 / 载荷 / 从容器里取回的载荷）必须全同。做不到就返回 `Err`，
+/// 绝不产出一份口径可疑的摘要。
+///
+/// # Errors
+///
+/// 声道数超出 `u16`、容器载荷与位型不一致、任一哈希不自洽时返回说明。
+pub fn digest_record_from_reading(
+    reading: &Reading,
+    scope: l1_digest_record::DigestScope,
+    metadata: &DigestMetadata,
+) -> Result<(l1_digest_record::DigestRecord, Vec<u8>), String> {
+    use l1_digest_record::{
+        DIGEST_INPUT, DigestEnvelope, DigestRecord, PlatformIdentity, RenderParams, SAMPLE_FORMAT,
+        SCHEMA, WAV_ENCODING, encode_wav_f32_le, hex_lower, pcm_bits_bytes, sample_digest_of,
+        sha256, wav_data_payload,
+    };
+
+    let receipt = &reading.receipt;
+    let fingerprint = &receipt.fingerprint;
+    let channels = u16::try_from(fingerprint.channels)
+        .map_err(|_| format!("声道数 {} 超出 u16", fingerprint.channels))?;
+    let samples = &reading.samples;
+    let payload = pcm_bits_bytes(samples);
+    let wav = encode_wav_f32_le(samples, channels, fingerprint.sample_rate);
+    let sample_digest = sample_digest_of(samples);
+    let payload_digest = hex_lower(&sha256(&payload));
+    let extracted = wav_data_payload(&wav)?;
+    if extracted != payload.as_slice() {
+        return Err(format!(
+            "容器的 data 载荷 ({} 字节) 与位型串接 ({} 字节) 不同: 摘要口径无法自证无损",
+            extracted.len(),
+            payload.len()
+        ));
+    }
+    let extracted_digest = hex_lower(&sha256(extracted));
+    if extracted_digest != sample_digest || payload_digest != sample_digest {
+        return Err(format!(
+            "无损自证失败: 位型={sample_digest} 载荷={payload_digest} 取出={extracted_digest}"
+        ));
+    }
+
+    let mut latency: BTreeMap<String, u32> = BTreeMap::new();
+    for (node, frames) in &fingerprint.latency {
+        latency.insert(node.clone(), *frames);
+    }
+    // ⚠ `rustc -vV` 只跑**一次**：三次调用不仅慢，还可能在不同时刻拿到不同结果。
+    let (host, version) = rustc_identity();
+    let host = host.unwrap_or_default();
+    // `rustc_identity` 的第二个返回值形如 `"1.99.0 (b940084d7 2026-09-28)"`；
+    // 锁定工具链的钥匙是它开头的**发布号**，构建元数据只做记录。
+    let (release, commit, commit_date) = l1_digest_record::split_rustc_version(version.as_deref());
+
+    let record = DigestRecord {
+        schema: SCHEMA.to_owned(),
+        params: RenderParams {
+            fixture: fingerprint.fixture.clone(),
+            seed: fingerprint.seed,
+            sample_rate: fingerprint.sample_rate,
+            channels: fingerprint.channels,
+            frames: fingerprint.frames,
+            tracks: fingerprint.tracks,
+            block_size: fingerprint.block_size,
+            gain_db: fingerprint.gain.to_token(),
+            threads: fingerprint.threads.to_token(),
+            latency,
+        },
+        platform: PlatformIdentity {
+            target_arch: receipt.toolchain.target_arch.clone(),
+            target_os: receipt.toolchain.target_os.clone(),
+            target_env: receipt.toolchain.target_env.clone(),
+            target_endian: receipt.toolchain.target_endian.clone(),
+            target_pointer_width: receipt.toolchain.target_pointer_width.clone(),
+            target_triple: receipt.toolchain.target_triple.clone(),
+            // 锁定工具链的钥匙：解析后的**发布号**（不是 `rustc -vV` 的全文行）。
+            rustc_release: release,
+            rustc_host: host,
+            rustc_commit: commit,
+            rustc_commit_date: commit_date,
+            isa_features: metadata.isa_features.clone(),
+        },
+        envelope: DigestEnvelope {
+            algorithm: "sha256".to_owned(),
+            input: DIGEST_INPUT.to_owned(),
+            sample_format: SAMPLE_FORMAT.to_owned(),
+            wav_encoding: WAV_ENCODING.to_owned(),
+            scope,
+            wav_bytes: wav.len() as u64,
+        },
+        digest: sample_digest.clone(),
+        sample_digest,
+        rustc_version: receipt.toolchain.rustc_version.clone(),
+        host_name: metadata.host_name.clone(),
+        host_os_version: metadata.host_os_version.clone(),
+        generated_at_utc: metadata.generated_at_utc.clone(),
+        notes: metadata.notes.clone(),
+    };
+    record
+        .validate()
+        .map_err(|error| format!("摘要记录自洽性检查失败: {error}"))?;
+    Ok((record, wav))
 }
