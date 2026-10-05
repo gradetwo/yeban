@@ -16,6 +16,7 @@
 //! | [`block`] | 固定块长 `AudioBlock` 与栈上 `[f32; N]` 缓冲约定 | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-007] |
 //! | [`fpu`] | FTZ / DAZ 浮点环境开关（x86 MXCSR / aarch64 FPCR） | [ARCH-RT-003]、[ROAD-M2-003] |
 //! | [`graph`] | `RoutingGraph` 拓扑排序、关键路径 `L_max`、`D_i` 分配、环形延迟线 | [ARCH-PDC-001]、[ROAD-M2-004] |
+//! | [`latency`] | `BASELINE-005` 的**纯计算**一半：标称时延换算、回调抖动统计、机器可读行、以及"没测到 ≠ 达标"的判定（**零 cpal 依赖**，可用 `rustc --test` 单跑） | [BASELINE-005]、[ARCH-PDC-002] |
 //! | [`level`] | **再导出** `yeban_dsp::meter` 的电平口径（峰值/峰值保持/RMS/平滑/dBFS/钳位/取最新/真峰值）——本 crate 不再持有实现 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
@@ -34,9 +35,14 @@
 //! | :--- | :---: | :--- |
 //! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
 //!
-//! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `ring` / `snapshot` /
-//! `meter` / `synth` / `rt` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
-//! + 渲染量子驱动"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
+//! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `latency` / `ring` /
+//! `snapshot` / `meter` / `synth` / `rt` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
+//! + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
+//!
+//! ⚠ [`latency`] 是 `BASELINE-005` 的**工具**那一半，**不是**门禁本身：门禁要求的是
+//! **硬件往返时延**，而本 crate 在任何环境下都无法测它（cpal 0.18.2 不暴露硬件时延 API，
+//! 且没有物理回环）。因此 [`latency::Verdict::WithinTarget`] 在没有回环证据时**不可达** ——
+//! 这是刻意的，详见 `docs/ledger/audio-latency-notes.md`。
 //!
 //! **电平口径不在这条 feature 切分的两侧**：它已经上移到零重依赖的 `yeban-dsp`
 //! （`yeban_dsp::meter`），本 crate 的 [`level`] 只剩 `pub use`。因此无论 `device`
@@ -77,10 +83,12 @@
 //!    会返回明确错误而不是假装成功。
 //! 4. **采样格式**只支持 `f32`（协商失败会返回 `device::DeviceError`），
 //!    `i16`/`u16` 的 `FromSample` 转换路径留给后续切片。
-//! 5. **PDC 的节点延迟来源**：规范 [ARCH-PDC-001] 要求
-//!    `DeviceDefinition::latency_samples`，而 `yeban-model` 当前**没有**该字段，
-//!    因此延迟目前由 [`graph::LatencyTable`] 显式提供（`from_tracks` 返回全零）。
-//!    这是**规范缺口**，已登记在 notes 的 needs 清单。
+//! 5. **PDC 的节点延迟来源**：规范 [ARCH-PDC-001] 要求的
+//!    `DeviceDefinition::latency_samples` **已经存在于 `yeban-model`**，
+//!    而且是**必需字段** [ADR-0001 D43]（**缺字段由反序列化直接报错**）
+//!    ⇒ "未上报"这个状态不存在，读到的 `0` 就是"真的零延迟"。
+//!    [`graph::LatencyTable::from_project`] / `from_tracks` 直接按设备链汇总它
+//!    ⇒ **默认路径不再需要外部注入**。
 //!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3（`ARCH-RT-001..005`、
@@ -97,6 +105,7 @@ pub mod block;
 pub mod device;
 pub mod fpu;
 pub mod graph;
+pub mod latency;
 pub mod level;
 pub mod meter;
 pub mod mixer;
