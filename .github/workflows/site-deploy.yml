@@ -89,7 +89,8 @@ jobs:
               echo "- \`CLOUDFLARE_ACCOUNT_ID\`"
               echo ""
               echo "配置完成后重跑本 workflow 即可发布到 yeban.wangda.today。"
-            } >> "$GITHUB_STEP_SUMMARY"
+            } 2>&1 | tee /tmp/部署到-Cloudflare-Workers-summary.txt
+          cat /tmp/部署到-Cloudflare-Workers-summary.txt >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::缺少 Cloudflare 凭据, 跳过部署"
             exit 0
           fi

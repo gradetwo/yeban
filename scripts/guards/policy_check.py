@@ -486,6 +486,29 @@ def g13_workflows_are_valid() -> list[Violation]:
                 continue
             if "runs-on" not in job and "uses" not in job:
                 bad.append(("G13", f"{rel(path)}::{name}", "job 缺少 runs-on"))
+
+            # 步骤级观测性（第 126 轮加入，源自两次实测事故）:
+            # **总是运行**的步骤若把 stdout 只重定向进 `$GITHUB_STEP_SUMMARY`，那它的产物在
+            # `gh run view --log` 里**一个字都看不到** —— 失败时无从定位（`pending` 档就这样黑了很久）。
+            # `if: failure()` 的"失败摘要"步骤不在此列: 它们抄的是失败步骤**自己日志里已有**的内容。
+            for step in job.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                run = step.get("run")
+                if not isinstance(run, str) or "GITHUB_STEP_SUMMARY" not in run:
+                    continue
+                if "failure()" in str(step.get("if", "")):
+                    continue
+                if "tee" in run:
+                    continue
+                bad.append(
+                    (
+                        "G13",
+                        f"{rel(path)}::{name}::{step.get('name', '?')}",
+                        "总是运行的步骤把输出只送进 step summary(日志里看不到); "
+                        "先 `} 2>&1 | tee <file>`, 再把同一份字节 cat 进 summary",
+                    )
+                )
     return bad
 
 

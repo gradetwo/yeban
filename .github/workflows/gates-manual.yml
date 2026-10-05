@@ -352,7 +352,8 @@ jobs:
             echo '不要把它读成"通过"或"不通过"。'
             echo ''
             echo '**复跑方式**: cargo run --release -p yeban-render --example bench_render -- <轨数> <秒数>'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee /tmp/测量结果-and-口径声明-summary.txt
+          cat /tmp/测量结果-and-口径声明-summary.txt >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # ---------------------------------------------------------------------------
@@ -539,7 +540,8 @@ jobs:
             echo '```text'
             grep -E 'test result: ok|test result: FAILED' /tmp/model.log /tmp/mcp.log 2>/dev/null || echo '(没有捕获到测试结果)'
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee /tmp/结果摘要-summary.txt
+          cat /tmp/结果摘要-summary.txt >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # 确定性对账 (L1/L2): 目前无渲染器, 明确列为 PENDING
@@ -564,7 +566,8 @@ jobs:
             echo "3. L2 需要 x86_64 与 AArch64 两个 runner 同时产出并对账 (< 1e-6)。"
             echo ""
             echo "登记位置: docs/DEVELOPMENT_LEDGER.md 的 pending 清单。"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee /tmp/未接线说明-summary.txt
+          cat /tmp/未接线说明-summary.txt >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::determinism 门禁尚未接线 (PENDING), 详见 job summary"
 
   # ---------------------------------------------------------------------------

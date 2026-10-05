@@ -3508,3 +3508,31 @@ the log, which matters because the inventory lane is the one that renders the si
 
 Both observability fixes (pending, round 123; inventory, round 124) are therefore verified by a CI verdict and by reading the
 artifact the fix was supposed to expose - not merely by "yaml parses and light is green".
+
+### Round 126: prevention - G13 now enforces step observability, and it immediately found 4 real sites (my earlier count was wrong)
+
+The two hand-fixes (rounds 123-124) treated symptoms. This round makes the rule mechanical, inside the **existing** G13 so
+the guard count stays 14:
+
+> an **always-run** step whose stdout is redirected only into `$GITHUB_STEP_SUMMARY` is flagged: tee to a file first, then
+> `cat` the identical bytes into the summary. Steps guarded by `if: failure()` are exempt, because they duplicate text the
+> failing step has already written to its own log.
+
+Run against the repository it flagged **4 sites** - all genuine:
+
+```
+gates-manual.yml::bench::测量结果 + 口径声明
+gates-manual.yml::windows::结果摘要
+gates-manual.yml::determinism::未接线说明
+site-deploy.yml::deploy::部署到 Cloudflare Workers
+```
+
+**My round-124 classification was wrong about two of them.** I had called `windows::结果摘要` and `determinism::未接线说明`
+"`if: failure()` duplicates"; the guard reads the YAML properly and shows they are always-run. My earlier scan looked
+*backwards* for the most recent `if: failure()` line rather than at the step's own `if:`, so it attributed a previous step's
+guard to them - the third time this session that a hand-rolled scan mis-described the thing it was scanning (rounds 92, 100,
+now 126). The mechanical check got it right on its first run, which is the argument for writing guards rather than reading
+files.
+
+All four are now fixed with the same pattern, and G13 passes: `守卫全部通过 (14 条)`. The guard's tooth evidence is that it
+**found four real instances before the fix** and none after - not a synthetic injection.
