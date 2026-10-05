@@ -6800,3 +6800,26 @@ temptation after finding one defect is to assume a pattern: this session found t
 MORE than exists - `ROAD-M3-002`'s row and `[UI-NOTE-002]`/`[UI-NOTE-005]` being unnamed) and exactly one of this one (a PENDING row claiming
 LESS than exists). Four data points, two directions, all now corrected - and the useful generalisation is simply that both directions happen
 and are cheap to check, not that either table is unreliable.
+
+### Round 276: verified the cost I claimed for the yeban-midi split, and it sharpens the argument for waiting
+
+Round 273 said a new crate "touches the vendor/deny/licence inventory" as an assumed cost. Checking rather than asserting:
+
+| claim | verification |
+| :--- | :--- |
+| a vendor check exists | `scripts/gates/check_vendor.sh` |
+| a licence inventory gate exists | `scripts/gates/license_inventory.py`, wired as `gate_license_inventory` in `run-gates.sh:88-90` |
+| it is not part of the light tier | the function is invoked at `run-gates.sh:184/191/204` (heavier modes); the `light` runs this session printed fmt / clippy-changed / handoff-snapshot / diagnostics-single-implementation / viewport-bounds-wiring / feature-alignment / phase-status / gate-status / mcp-dependency-direction - and no `licenses` line |
+
+**So the cost is real but tiered**: a new `yeban-midi` crate would require regenerating the vendor check and the licence inventory, and that
+lands in the CI tier rather than in `light` - which means local iteration stays fast, and the parts that must be re-verified land exactly where
+verification is currently impossible.
+
+**That sharpens the recommendation rather than weakening it**: splitting the crate is still the right answer (it is the same move that worked for
+`NotePlan`, and it is what makes "两侧同接、共用同一实现" true for MIDI export), but doing it while CI cannot run means the licence and vendor
+regeneration would ship unverified - which is precisely the class of change this session has refused to make near its end. So the ordering is:
+**ruling first, then the split, then the vendor/licence regeneration, then the MCP tool** - and if the负责人 prefers, the split can be done
+immediately after CI resumes with no further decisions needed.
+
+**This is the third time this session that checking a claimed cost changed how the work should be sequenced** (rounds 271 and 273 were the
+others); the habit is cheap and the corrections have all been in the direction of doing less, sooner.
