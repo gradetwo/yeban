@@ -4338,3 +4338,25 @@ Completed full-workspace verdicts on main now number **nine**: `37283699896` @ `
 **D56 status now**: the shared collector (`yeban-diagnostics`), the MCP tool (`yeban_export_diagnostics`, the sixteenth) and the
 schema/contract wiring are done and CI-verified. Still open: the UI entry point (the other half of criterion 4), criteria 1/2/3/5
 (required entries, per-entry sha256, redaction scan, tooth test), and the manual gate that would collect the numbers.
+
+### Round 167: D56 criteria 1/2/3/5 are CI-verified - tenth completed full-workspace verdict
+
+Run **`37339256381` @ `2be3236` = completed success**:
+
+| leg | verdict |
+| :--- | :--- |
+| **`rust (workspace 全量)`** | **success `steps=10`** (`steps > 0` - the new criteria really ran) |
+| **`windows (yeban-mcp / yeban-model)`** | **success `steps=9`** |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` |
+| `plan` / `lockfile` / `deny` | success |
+
+So the bundle contract tests - required entries present (including the privacy default that no `project/` entry appears),
+per-entry sha256 with the reverse direction checked, redaction scanned across every file, and the tooth test that deleting an
+entry must be noticed - hold on both platforms, not just locally.
+
+Completed full-workspace verdicts on main now number **ten**: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`,
+`37293138132` @ `f859ef6`, `37300697464` @ `2c4d285`, `37305461525` @ `f3a86d2`, `37308086599` @ `8038fdc`,
+`37324066103` @ `dad0cfb`, `37330049671` @ `1cd47a5`, `37338111044` @ `99b4d56`, `37339256381` @ `2be3236`.
+
+**D56 remaining**: the UI entry point (the other half of criterion 4, which requires the UI Operation and the MCP tool to call
+one implementation and produce manifests equal except timestamp and path), and optionally a manual gate to collect bundles.
