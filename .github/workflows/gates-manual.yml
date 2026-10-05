@@ -71,6 +71,10 @@ jobs:
   # ---------------------------------------------------------------------------
   inventory:
     name: inventory (门禁清单)
+    # ⚠ 本档是重档（cargo vendor --full + 按 pin 取回 + L1 采集 + 证据审计）。
+    # 第一版没有 if ⇒ **每次派发任何档都会连带跑它**，在并发只有 1–2 的环境里等于
+    # 拖延你真正要跑的那个档。⇒ 只在「显式 gate=inventory」或「定时触发」时运行。
+    if: inputs.gate == 'inventory' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
