@@ -407,11 +407,52 @@ Slint 生成绑定**类型检查了一遍。本线靠它一次抓出两处真错
 | 4（修复，**代码 tip**） | `1fbc99f` | 见 §7.1 | — | 把那条断言改成"两个方向都断言"（更强），并在本机真实平台上把整条 `test` 腿跑绿（154/154）。 |
 | 5（docs-only） | 本文件所在提交 | 见 §7.1 | — | 只改本文件 ⇒ `plan` 判"受影响集合为空"，`rust` 腿按设计**跳过**；这一轮**没有**代码读数（与 `app-binding` §6.3 / `app-completion` §5.0 同款结论）。 |
 
-### 7.1 读数（待填）
+### 7.1 读数（**净判决**）
 
-> 本节在本文件提交时按实际读回的判决填写；**未读回前一律 `pending`**。
+`scripts/dev/ci-verdict.sh line/app-automation-ui` 读回，退出码 **0**（判决属于分支 tip）：
 
----
+```text
+✓ line/app-automation-ui CI · 37250016613          （tip 22aeebc；代码 tip = 1fbc99f）
+✓ checks (fmt / 红线守卫 / schema)  ✓ deny  ✓ lockfile  ✓ plan
+✓ rust (yeban-app) in 4m2s        ← 唯一的代码读数
+- rust (workspace 全量) 0s        ← plan 判"受影响集合只有 yeban-app"⇒ 按设计跳过
+- windows (…) 0s
+```
+
+`rust (yeban-app)` 的实测（CI 日志原文）：
+
+```text
+clippy (-D warnings): 绿
+test result: ok. 119 passed; 0 failed      # lib（含本线 9 条 automation::tests）
+test result: ok.   0 passed; 0 failed      # bin
+test result: ok.  12 passed; 0 failed      # tests/cli_contract.rs
+test result: ok.  12 passed; 0 failed      # tests/live_ui_mcp.rs
+test result: ok.   2 passed; 0 failed      # tests/open_project_file.rs
+test result: ok.   9 passed; 0 failed      # tests/real_ui_tier1.rs（Tier-1）
+控件树计数: 注册表 214 条 / 运行时 104 条 / 运行时有而注册表无 0 条 / 注册表有而运行时无 110 条
+运行时有而注册表无(必须为空): []
+重复族实测: track-*-automation-*-lane=3 (工程里 3 条)
+可见重复族样本: 12/12 [..., "track-0-automation-volume-lane", "track-0-automation-device-0-0-lane", ...]
+[automation] 工程泳道 track-0-automation-volume-lane     -> "鼓 · 音量 自动化 -3.2 dB · 录制臂 触碰"
+[automation] 工程泳道 track-0-automation-device-0-0-lane -> "鼓 · cutoff 自动化 读关闭（静态 1200.000）"
+[automation] 工程泳道 track-1-automation-pan-lane        -> "贝斯 · 声相 自动化 -1.000 · 录制臂 写入"
+[automation] filled_project 泳道 track-0-automation-volume-lane -> "Lead · 音量 自动化 -6.0 dB · 录制臂 触碰"
+[model-binding] 状态 A (filled_project): 颜色 3134 种, PNG 6222418 字节, 指纹 298e1f535401d09d
+[model-binding] 状态 B (demo_project):   颜色 3808 种, PNG 6222418 字节, 指纹 1e3d7a35856c00a1
+[UI-MCP-003] 抖动未遮罩 0.991552 / 遮罩后 1.000000; 静态回归 0.635925 / 遮罩后 0.635952
+[D24] 汉字墨迹 648 px（下限 150）
+```
+
+**结构类读数与 §4.1 的本机真跑逐字相同**（注册表 214 / 运行时 104 / 未登记 0 / 泳道 3 /
+四条标签）—— 这正好是"同一份投影在两种平台上给出同一棵树"的证据。
+**像素指纹不同**（本机 `2d60ff7a14e24f18` / `4627e91eb2d87ded` vs CI `298e1f535401d09d` /
+`1e3d7a35856c00a1`）：光栅化环境不同（macOS 本机 vs Ubuntu runner 的字体栈），
+因此本仓库不写死指纹、只断言"换工程 ⇒ 换指纹"（`[UI-MCP-003]` 的分平台 Golden 仍需人类提交基准）。
+
+> **锚定说明**：`22aeebc` 是第 5 轮（docs-only）的提交；本轮 `rust (yeban-app)` **真的跑了** ——
+> 因为这次 push 同时带了 `1fbc99f`（改 `crates/yeban-app/**`），`plan` 按 push 的提交区间
+> 算出受影响集合含 `yeban-app`。因此这一轮的绿覆盖了代码 tip `1fbc99f`。
+> 若之后再推 docs-only，`rust` 腿会按设计跳过（那时不能把新一轮当成代码读数）。
 
 ## 8. 未实现项（如实登记，**不是**静默降级）
 
@@ -478,5 +519,5 @@ crates/yeban-app/ui/workspace/arrangement_view.slint|  101 ++
 docs/ledger/app-automation-ui-notes.md              | 本文件
 ```
 
-`Cargo.toml` / `Cargo.lock` **逐字节未变**（零新增依赖）；根级共享文件、其它 `crates/**`、
+`Cargo.toml` / `Cargo.lock` **逐字节未变**（零新增依赖；实测 `git diff 42442af..HEAD -- Cargo.lock Cargo.toml` 为空）；根级共享文件、其它 `crates/**`、
 `schemas/**`、法务文件全部未动。
