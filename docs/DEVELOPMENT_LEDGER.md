@@ -3809,3 +3809,30 @@ through `yeban-model` (`Op::AddNote`, or a fixture generator if a batch path exi
 `request_redraw(); capture();` for 600 frames while advancing the scroll by 1/120 s, time each frame, print
 p50/p99/max plus the witness, and compare against p99 <= 8.3 ms and memory < 25 MB. Local checks must include clippy (round
 144's lesson), and the verdict comes from a manual `fps` gate rather than `ci.yml`.
+
+### Round 148: frame-rate harness - the exact constructor, so the example is a one-shot write
+
+Round 145 found the API surface and where the example belongs. This round closes the last gap: **how a component is bound to
+the timed window**. From `crates/yeban-ui-test-port/src/render.rs`:
+
+```rust
+LivePort::new(size, permission, registry_or_none, || Ok(PortFixture::new()?))?
+//   -> 装平台 -> 建组件 -> ui.show() -> window.resize(size) -> 抓控件树
+let window = port.window();          // 计时用的就是它
+window.request_redraw();             // 每帧: 请求重绘
+let image = window.capture()?;       // 每帧: 抓像素(计时区间)
+```
+
+Three facts that shape the implementation:
+
+1. **`Tier1Window::install` 设的是进程/线程级的 Slint platform**（`set_platform`），源码注释明说"每个**线程**只能成功一次"。
+   所以 example 里**只能装一次**：一次 `LivePort::new`，然后在这一个窗口上循环 600 帧。
+2. 夹具组件名是 **`PortFixture`**（`crates/yeban-ui-test-port/ui/fixture.slint:33`，`export component PortFixture inherits Window`）。
+   它是**夹具**，不是应用的钢琴卷帘 —— 所以这个 example 先证明"计时路径成立"，10 万音符场景要放在 `yeban-app`
+   （那里有真实视图与模型），或由 `yeban-app` 提供组件后复用同一计时循环。
+3. 计时区间应当是 `request_redraw()` + `capture()` 这一对，因为 `capture` 才真正把缓冲区光栅化出来；
+   只计 `request_redraw` 会量到什么都不做。
+
+**因此下一步没有未知量了**：写 `crates/yeban-ui-test-port/examples/frame_time.rs`（或 `yeban-app` 下的对应 example），
+`LivePort::new(...)` 一次，循环 600 帧计时，打印 p50/p99/max 与 `golden_evidence(&image).summary()` 见证，
+然后本机 `test` + `clippy`（`light` 现已自动含改动涉及的 clippy），最后用手动档 `fps` 取判决。
