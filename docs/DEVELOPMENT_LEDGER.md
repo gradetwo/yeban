@@ -3203,3 +3203,15 @@ gave the crossover directly, on the same machine and load (~3.8):
 **Deliberately not changed this round**: the fix needs the render crate's layer/block decomposition understood end to end,
 and a bit-exactness-preserving redesign is not something to attempt with the context left in this session. Recording the
 measurement is the valuable half; a half-understood parallel rewrite is the failure mode this project keeps paying for.
+
+### Round 111: the MCP handshake and notification work is CI-verified on Linux
+
+Run **`37301917661` @ `f08520c` = completed success**, and the legs that matter actually ran:
+**`rust (yeban-mcp)` = success `steps=10`**, `rust (yeban-ui-mcp)` = success `steps=10`,
+`windows (yeban-mcp / yeban-model)` = success `steps=8`, plus `checks` / `lockfile` / `deny` / `plan` all success
+(the workspace-wide leg was skipped by design for this narrow change set).
+
+So the handshake implementation and the flipped criterion
+(`initialize_handshake_over_stdio_succeeds`, which replaced the earlier negative assertion about `-32601`) are verified by
+a CI verdict, not merely by a local run. The follow-up commit `cb49b78` (the notification criterion) was read separately and
+its run was still pending at that moment - reported as pending rather than assumed green.
