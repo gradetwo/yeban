@@ -7209,3 +7209,25 @@ record is the command and the total - so if a future reader needs the per-crate 
 
 **Also noted**: `target` grew again during the sweep (7.6 GB free afterwards, from 9.0 GB). The increment is modest, but round 289's disk-full
 incident makes it worth watching: this kind of full sweep costs several GB each time it runs.
+
+
+### Round 292: the new crate is not in the architecture document's layer lists - a registration gap, recorded not patched
+
+`yeban-midi` exists, is depended on by `yeban-render` and `yeban-mcp`, and is mentioned in the ledger and the ADR's paths - but the **Normative**
+architecture document's crate enumerations do not list it: `YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:76` (the headless-engine independence rule,
+which names the non-UI crates), and the layer table around `:141`/`:149` (which name `yeban-model`, `yeban-dsp`, `yeban-theory`, `yeban-render`,
+`yeban-engine`, …) both predate the split.
+
+**This is the same class as rounds 240/537/539** - a table or document that no longer matches the tree - and it is recorded rather than patched for a
+specific reason: the file is **Normative**, so an edit to its crate lists is a statement about the intended topology, not a bookkeeping fix. Adding
+`yeban-midi` to [ARCH-TOP-003]'s list asserts that a MIDI codec crate is part of the headless-engine set, which is true and is also a claim about
+layering that belongs in the same breath as the rule it extends (does the rule's intent cover "pure format crates" as a category, or should the
+list stay explicit?). That is a small documentation decision, and the honest move is to name it.
+
+**What makes it worth recording now rather than later**: the document is the one a future contributor reads to learn where a crate belongs, and it
+currently has no slot for a crate like this - so the next person adding a pure-format crate will hit the same question. Two lines in the ledger
+now save that.
+
+**Concrete next action**: add `yeban-midi` to the crate lists at `:76` and the layer table near `:141`/`:149`, with one clause saying why a
+pure-format crate is headless (it depends only on `yeban-model` + `midly`), or - if the负责人 prefers - record the category rule instead of the
+instance.
