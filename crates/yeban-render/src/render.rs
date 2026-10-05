@@ -674,7 +674,13 @@ impl RenderPlan {
         }
 
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(self.options.threads.unwrap_or(0))
+            // `None`（auto）解析为 **1 线程**，依据是**实测扫描**而不是直觉：在参考机（M2 Max）上以
+            // tracks=4/8/16/32/64、各 30 秒扫过两种模式，**并行在每一个尺寸都更慢**（1.9–4.4×；
+            // 32 轨时 auto 95.5× vs 单线程 229.3×），说明这条路是**开销/带宽受限**而非粒度受限 ——
+            // 为一个 ~130 ms 的顺序任务转 12 个线程、还要做固定顺序合并（为保 bit-exact），是亏本买卖。
+            // 因此默认不再启用并行；要用多核请显式 `with_threads(n)`，其逐字节等价性由 lib.rs 的
+            // 1/2/4/8 线程等价判据守着。等有人**量出**真正的交叉点再改回按阈值启用。
+            .num_threads(self.options.threads.unwrap_or(1))
             .build()
             .map_err(|error| RenderError::ThreadPool(error.to_string()))?;
 
