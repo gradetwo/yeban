@@ -591,7 +591,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  goldens (生成分平台基准图集):
+  goldens:
+    name: goldens (生成分平台基准图集)
     if: inputs.gate == 'goldens'
     runs-on: ubuntu-latest
     timeout-minutes: 60
