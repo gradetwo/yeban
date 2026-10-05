@@ -147,7 +147,7 @@
 | Rayon 多核分层并行母带渲染 + 主总线字典序单线程归约 | 已实现｜`crates/yeban-render/src/render.rs:676,706`（`rayon::ThreadPoolBuilder` + `par_iter_mut`，按 `RoutingGraph` 分层）；确定性归约 `crates/yeban-render/src/sum.rs:59,81`（`fixed_order` / `reduce_ordered`）；判据 `crates/yeban-render/tests/l1_digest_contract.rs`；`ROAD-M4-004/005` | 无｜`grep -rn "render\|export\|bounce" crates/yeban-app/ui/` 无导出控件 | 有｜`yeban_render_master`（`format`/`sampleRate`/`normalize`/`path`） | 原因：GUI 导出面未做（无菜单、无对话框）；计划：`yeban-app` 或控制面接 `yeban-render`；另注 `BASELINE-001` 的"≥100× 实时"读数（单线程 106.3× / Rayon 135.9×）**只能算数量级**，达标判定要在规范指定参考机上复跑（`HD-38`）；状态：PENDING |
 | RF64 / BW64 写入器 + BEXT 元数据 | 已实现｜`crates/yeban-render/src/rf64.rs`（bext 固定前缀 602 字节，v1/v2 读写）；`ROAD-M4-006` | 无｜无格式选择控件 | 有｜`yeban_render_master` 的 `format`（白名单 `wav` / `rf64` / `bw64`，`crates/yeban-mcp/src/domain/render.rs:183`） | 原因：**有意不做** —— 格式是渲染参数，界面不造第二份白名单；计划：无；状态：有意不做 |
 | TPDF 抖动与位深量化 | 已实现｜`crates/yeban-render/src/dither.rs` + `rng.rs`（`dither_rng_for` 由 `project.rng_seed` 派生） | 无｜无 | 部分｜渲染路径**恒开**（`crates/yeban-mcp/src/domain/render.rs:168,694`，响应里报 `dither = "TPDF (ARCH-FMT-001)"`），**没有**开关参数 | 原因：`ARCH-FMT-001` 要求抖动是渲染固有步骤，**不该**由调用方关掉；计划：无；状态：有意不做 |
-| MIDI 0/1 导出（SMF，`midly` 编码 + 自研 VLQ 回读） | 已实现｜`crates/yeban-render/src/midi.rs`（含 `MThd`/`MTrk` 字节级独立核对） | 无｜无导出控件 | 无｜十工具没有 MIDI 导出位 | 原因：规范 §7.2 的十个工具里没有 MIDI 导出；计划：**需要人类裁决**是否扩工具集；状态：人类决策中 |
+| MIDI 0/1 导出（SMF，`midly` 编码 + 自研 VLQ 回读） | 已实现｜`crates/yeban-render/src/midi.rs`（含 `MThd`/`MTrk` 字节级独立核对）；**出口已接**：`crates/yeban-app/src/export_midi.rs`（新增 829 行映射层）+ CLI `yeban-app --export-midi <path>`（判据 `tests/cli_contract.rs` B12/B13；CI run 37254761445 ✓） | 无｜GUI 仍无导出控件（**有意**：D47 把导出定为 CLI/离线语义，不扩 `render_master` 参数） | 无｜十工具仍无 MIDI 导出位（**有意**，同 D47） | 原因：曾经的依据是「规范 §7.2 的十个工具里没有 MIDI 导出」；计划：已由 `ADR-0001 D47` 裁决 —— **唯一出口 = app CLI `--export-midi`**（`crates/yeban-app/src/export_midi.rs`，run 37254761445 = success）；状态：有意不做（**MCP/UI 两列的有意缺席**：导出是离线批处理语义，D47 明文不扩工具参数面与 GUI） |
 | 实验性 `.als` 导出（`experimental-als-export`） | 无｜`grep -rn "experimental-als-export" Cargo.toml crates/*/Cargo.toml` 命中 0；`grep -rin "export_als\|AlsExport" crates/ --include=*.rs` 命中 0（`docs/ledger/phase-status.md` §6 `ROAD-M4-007`） | 无｜无 | 无｜无 | 原因：完全未实现；前置能力已在（`crates/yeban-render/src/midi.rs` + 音频片段进母带的通路）；计划：`[ARCH-FMT-002]` 线，需先有 `flate2` 特性门；状态：未到期 |
 
 ## 12. 分组 J —— 界面与交互
@@ -266,6 +266,8 @@
   并保留"设备机架仍用演示常量"那半句。
 
 ### 错位 5（**三方覆盖缺口**）：MIDI 0/1 导出**系统有、UI 没有、MCP 没有** —— 三侧只有一侧知道它存在
+
+> ✅ **已裁决并落地一半（2026-10-05）**：`ADR-0001 **D47**` 把 MIDI 导出的**唯一出口**定为 `yeban-app --export-midi`（离线批处理语义），**有意不扩** `render_master` 的参数面 —— `line/app-export-midi` 已交付（`export_midi.rs` 829 行 + CLI + B12/B13 真二进制判据，run **37254761445** = success）。⇒ 本节对 MIDI 的判断改为：**系统有出口、UI/MCP 有意不加**；`.als` 导出（`ROAD-M4-007`）仍 PENDING。
 
 - **功能**：SMF 导出（`midly` 编码 + 自研 VLQ 回读，`ARCH-FMT-001 §5.5`）。
 - **证据**：`crates/yeban-render/src/midi.rs`（模块头逐条写明能力与边界）；
