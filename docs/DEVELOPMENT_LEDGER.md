@@ -2602,3 +2602,23 @@ run **`37284571290` @ `77d201f` = completed success**：`rust (workspace 全量)
 **这一裁决正好对应本会话最后阶段的实况**: 我在等后台取回剩余 436 条文本类素材（进度每轮增长、未卡住），
 又在等 `MUST-GATE-014` 的口径核实 —— 这两件事都**不该**用"开新线/缩范围/造产物"来伪装成进展。
 
+
+### Round 89: diagnosing the (slow) text-class fetch — evidence, not a guess
+
+Question: is the background fetch job stalled? Measured answer (python over the manifest, run by the integrator):
+
+```
+missing text-class: 221   (was 250 one round earlier -> still progressing, just slowly)
+top instruments: karoryfer-black-and-blue-basses 36, karoryfer-meatbass 34, karoryfer-bear-sax 32,
+                 karoryfer-bigcat-cello 24, karoryfer-string-cyborgs 18, vcsl 17
+missing whose instrument has no repo/pin: 4  {freepats-drawbar-organ: 2, freepats-percussive-organ: 2}
+```
+
+Conclusions with evidence:
+1. The job is **not stalled**: the missing count fell 250 -> 221, and the fetcher walks items in `size_bytes` order, so it is
+   currently inside the large `karoryfer-*` / `vcsl` instruments.
+2. Exactly **4** of the missing text-class items belong to instruments whose manifest `repo`/`pin` are `null`
+   (the two `archive`-form FreePats organs). Those are **structurally unfetchable over git** and will end as `skipped`
+   — consistent with the earlier upstream-mapping audit that classified them as `archive` provenance, not as a defect.
+3. Therefore the on-disk text-class total will asymptote at **1588 - 4 = 1584**, not 1588. Any future "did we get all of them?"
+   check must compare against 1584 (or read the job's own summary line).
