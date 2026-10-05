@@ -142,6 +142,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     let (min_tick, max_tick) = view.visible_tick_range(scroll_x, viewport_width);
     ui.set_roll_min_tick(tick_to_i32_saturating(min_tick));
     ui.set_roll_max_tick(tick_to_i32_saturating(max_tick));
+    // 纵向：泳道数 16 与 `piano_roll.slint` 的 `for lane_index in 16` 一致（第 202 轮记录了它的来源问题）。
+    let (min_pitch, max_pitch) = view.visible_pitch_range(ROLL_LANE_COUNT);
+    ui.set_roll_min_pitch(i32::from(min_pitch));
+    ui.set_roll_max_pitch(i32::from(max_pitch));
     ui.set_note_ulids(strings(&visible.ulids));
     ui.set_note_velocities(lengths(&visible.velocities));
     ui.set_note_positions(lengths(&visible.positions));
@@ -454,6 +458,11 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
         }
     }
 }
+
+/// 卷帘当前绘制的泳道数（与 `piano_roll.slint` 的 `for lane_index in 16` 必须一致）。
+///
+/// 它是**固定值**，因为卷帘目前没有纵向滚动/缩放模型；若将来有，它必须由 `.slint` 上报（账本第 202 轮）。
+const ROLL_LANE_COUNT: i32 = 16;
 
 /// `[UI-NOTE-001]` tick 值转为界面的 `i32` 属性：**饱和**而非回绕。
 ///
