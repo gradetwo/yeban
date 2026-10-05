@@ -5411,3 +5411,16 @@ defensible is mixing them.
 **The rule for anyone touching this**: the mapping functions stay pure (tick <-> pixel, pitch <-> lane); the offset belongs to the
 clipping path; the gutter belongs to the view's layout. If a change needs the gutter inside a mapping, it must first REMOVE the
 layout term, never add both.
+
+### Round 218: [UI-NOTE-002] is fully judged on BOTH axes - it is not an open gap
+
+Round 217 established the x half; this closes the question for the y half, by reading rather than assuming:
+
+| axis | criterion |
+| :--- | :--- |
+| x: tick <-> pixel | the round-trip contract at `bridge.rs:28-29` (`tick_to_px(px_to_tick(p)?)? == p`) exercised by the test at `bridge.rs:2178-2198` |
+| y: pitch <-> lane | boundary pitches at `bridge.rs:2723-2725` (`pitch_lane(0) == PITCH_LANE_COUNT-1`, `PITCH_LANE_BASE-1` likewise, `u8::MAX -> 0`), **monotonicity** at `:2717-2718` (`pitch_lane(pitch+1) == pitch_lane(pitch)-1`), and non-negativity at `:2710` |
+
+So the spec's coordinate section has mechanical coverage on both axes, and the feature-alignment row's claim that coordinate mapping "landed in the projection" is backed by criteria rather than by assertion. **`[UI-NOTE-002]` therefore does not belong on any list of open gaps** - the open items in `ROAD-M3-002` are exactly three: the R-Tree index, the batch draw path, and the tool state machine.
+
+**Why this is worth recording at all**: the previous consolidation (round 214) listed "the coordinate mapping" together with the rest of `[UI-NOTE-001/003]` in one row, and a reader could reasonably have assumed the whole row was unfinished. Recording which half is judged and how keeps the remaining work from looking larger than it is - and the same discipline applies in the other direction, which is why "ROAD-M3-002's three remaining gaps" is stated as a number rather than as a range.
