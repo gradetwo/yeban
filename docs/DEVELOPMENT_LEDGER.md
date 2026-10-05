@@ -3536,3 +3536,23 @@ files.
 
 All four are now fixed with the same pattern, and G13 passes: `守卫全部通过 (14 条)`. The guard's tooth evidence is that it
 **found four real instances before the fix** and none after - not a synthetic injection.
+
+### Round 127: fifth completed full-workspace verdict, covering the guard extension and the four workflow fixes
+
+Run **`37305461525` @ `f3a86d2` = completed success**:
+
+| leg | verdict |
+| :--- | :--- |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` - the new G13 step-observability rule ran **green on CI** |
+| **`rust (workspace 全量)`** | **success `steps=10`** |
+| `windows (yeban-mcp / yeban-model)` | success `steps=8` |
+| `plan` / `deny` / `lockfile` | success |
+| `rust (${{ matrix.crate }})` | skipped by design (the workspace leg covers it) |
+
+The `scripts/**` touch forced the workspace-wide plan, so this is a full-tree verdict rather than a narrow one.
+
+The set of completed full-workspace verdicts on main is now **five**: `37283699896` @ `aac62e8`,
+`37284571290` @ `77d201f`, `37293138132` @ `f859ef6`, `37300697464` @ `2c4d285`, `37305461525` @ `f3a86d2`.
+
+Why the `checks` leg matters here specifically: the guard I added is what would have caught the four unreadable-output steps,
+so its own green run is the criterion's first CI validation - and it arrives together with the fixes it demanded.
