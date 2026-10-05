@@ -3836,3 +3836,39 @@ Three facts that shape the implementation:
 **因此下一步没有未知量了**：写 `crates/yeban-ui-test-port/examples/frame_time.rs`（或 `yeban-app` 下的对应 example），
 `LivePort::new(...)` 一次，循环 600 帧计时，打印 p50/p99/max 与 `golden_evidence(&image).summary()` 见证，
 然后本机 `test` + `clippy`（`light` 现已自动含改动涉及的 clippy），最后用手动档 `fps` 取判决。
+
+### Round 149: frame-rate harness - the fixture is test-only, so the criterion lands as a test (decision made, no ruling needed)
+
+Last unknown resolved by reading `crates/yeban-ui-test-port/src/lib.rs` and `src/render.rs`: the fixture component is **not**
+part of the crate's public API. `lib.rs` has no `include_modules`; the only use is `use fixture_ui::PortFixture;` at
+`render.rs:642`, i.e. **inside the test module**.
+
+**Decision (mine, under the 第 146 轮 delegation - it touches no red line and needs no new dependency):** implement the
+frame-rate criterion as a **test inside that same module**, not as an `examples/` binary. Reasons:
+
+1. It can see `PortFixture` without widening the crate's public API (the alternative - `pub use` the fixture - would expose a
+   test fixture as library surface for no other purpose).
+2. `cargo test -- --nocapture` prints the numbers, which is exactly what a manual gate needs to collect.
+3. The timing loop is then covered by the same `cargo-local.sh test` + `light` (now clippy-inclusive) path as every other
+   criterion in this crate, so a regression cannot slip through the local loop.
+
+**Shape of the test** (600 frames, bar from the gate row):
+
+```rust
+let port = LivePort::<PortFixture>::new(Size::new(1920, 1080), Permission::Interactive, None, PortFixture::new)?;
+let window = port.window();
+let mut frames = Vec::with_capacity(600);
+for i in 0..600 {
+    // 每帧把滚动推进 1/120 秒（10 万音符场景由 yeban-app 提供组件后复用同一循环）
+    let t = Instant::now();
+    window.request_redraw();
+    let image = window.capture()?;
+    frames.push(t.elapsed().as_secs_f64() * 1000.0);
+    let _ = golden_evidence(&image)?.summary();   // 见证: 帧确实有内容
+}
+// p50 / p99 / max, 对照 p99 <= 8.3 ms
+```
+
+Residual gap, stated plainly: this proves the **timing path** and gives a real p50/p99/max on the fixture. The **10 万音符**
+scene (the gate's actual bar) still needs `yeban-app`'s real view, because the fixture is not the piano roll. So this is
+progress on `BASELINE-003`, not its closure, and the round must not be reported as closing it.
