@@ -4133,3 +4133,33 @@ which is what makes D56's criterion 4 true rather than intended. Tests then exte
 
 Remaining after that, unchanged: the UI command with its stable element id, the shared-implementation criterion (both entry
 points invoked once, manifests equal except timestamp and path), the redaction-scan criterion, and the tooth test.
+
+### Round 159: D56 step 2 - the domain architecture is plan/apply, so the write is now three files
+
+`crates/yeban-mcp/src/domain/` is a **directory**, not a file (my round-158 greps for `domain.rs` matched nothing because of
+that). Its layout: `mod.rs` plus one module per domain area (`import_audio.rs`, `engine_state.rs`, `automation.rs`, `notes.rs`,
+`render.rs`, `section.rs`, `store.rs`, `view.rs`, ...). The entry point is two-phase:
+
+```rust
+pub fn execute(domain: &mut Domain, call: &ToolCall) -> Result<Value, ErrorObject> {   // mod.rs:2215
+    let planned = match plan(domain, call) { Ok(p) => p, Err(fault) => return fault.into_result() };
+    match apply(domain, planned) { Ok(response) => Ok(response.to_value()), Err(fault) => fault.into_result() }
+}
+```
+
+So adding the sixteenth tool is a **three-file** write with nothing left to discover:
+
+1. `tools.rs` - the four coupled edits from round 158 (bump `TOOL_COUNT` 15→16 and `EXTENSION_TOOL_COUNT` 5→6, extend
+   `EXTENSION_NAMES`, add the `ToolSpec` to `TOOLS`).
+2. `domain/mod.rs` - add the tool to the `plan` match (and to `apply` if the response needs post-processing). This is where
+   `yeban_engine::diagnostics::export_diagnostics` is called, which is what makes D56 criterion 4 literally true: one function,
+   two entry points.
+3. a new `domain/diagnostics.rs` - the domain-specific handler, following the shape of `import_audio.rs` and `engine_state.rs`.
+   Whether the archive write belongs in `plan` or `apply` must be decided by reading one of those two modules' shape, because
+   `plan` is documented as producing a *planned* change and exporting a zip is a side effect rather than a project mutation -
+   that single read is the only thing still open, and it is a design question rather than a discovery.
+
+**Honest note on pace**: this is the third reconnaissance round for D56 step 2 (rounds 157, 158, 159). Each removed a real
+unknown - the registration shape, the counts, the dispatch site, and now the plan/apply split - and none of them produced code.
+I am choosing reconnaissance over writing because my remaining context cannot produce and verify a three-file change, and an
+unverifiable edit violates the standing discipline. If a fresh context takes over, the three files above are the whole task.
