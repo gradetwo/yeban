@@ -5302,3 +5302,25 @@ a fresh checkout. Its result is unread, so the guard's CI-side behaviour is not 
 distinction is one this session has been careful about throughout.
 
 Completed full-workspace verdicts on main now number **eighteen**.
+
+### Round 212: HD-49 is an instance of a documented project-wide constraint, not a one-gate problem
+
+Read the manual gate's own inventory output rather than reasoning about it: the `pending` gate prints, verbatim, that the BASELINE
+series **requires fixed-frequency reference hardware**, and that GitHub's hosted runners do not have a fixed frequency, so "those
+entries can only be discussed as met once the reference machine is in place" (`.github/workflows/gates-manual.yml`, the inventory
+step's summary text).
+
+That reframes the pending decision. HD-49 is not "how do we judge BASELINE-003"; it is the first instance of "how does this project
+judge ANY of the BASELINE series", and the same reasoning applies to `BASELINE-001` (offline render throughput), `BASELINE-002`
+(peak RSS) and the rest. Their gate table status of 已接线 means the **mechanism** exists and runs - it does not mean the **numbers**
+have been judged, and on hosted hardware they cannot be.
+
+**Why this belongs in the record and not just in the workflow file**: it changes the shape of the human's decision. Option (a) is
+not "spend money to make one gate pass"; it is "supply the machine the project has already documented as the precondition for
+judging the whole BASELINE series". Option (b) - accept hosted readings with the limitation written down - would not merely settle
+BASELINE-003; it would set the precedent for every other BASELINE entry, which is why it should be an explicit ruling rather than a
+convenience.
+
+**What is NOT claimed here**: that BASELINE-001/002/004/005 are in doubt. Their mechanisms are wired and CI-verified; what is
+unestablished for them is the same thing as for BASELINE-003 - a reference-machine reading. I have not re-measured them and this
+entry does not pretend otherwise.
