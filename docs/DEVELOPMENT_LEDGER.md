@@ -5481,3 +5481,14 @@ explains why CI has stayed green: the gate judges on Linux, where the baselines 
 **What this does NOT mean**: that the recent commits broke anything. The Linux verdicts are the gate, they are green, and the
 clipboard of evidence (round 189) already established that the golden suites render small fixtures whose notes fit the viewport, so
 clipping changes nothing in those scenes.
+
+### Round 221: verdict 21
+
+Run @ `5e08ffb` (the round-219 handoff entry) = **completed success**. Completed full-workspace verdicts on main: **twenty-one**.
+
+Still queued or in progress at this point: `c3bab2b` (snapping), `b4422ca`, `21b508a` (tool matrix), `6fbedc0` (stale-macOS record) and
+`c165722` (the macOS baseline removal). Their verdicts are unread, so for those commits only the local evidence stands: `light`, the
+`--all-targets` clippy, and - for `c165722` - the feature-gated UI criteria at 16 passed / 0 failed / 1 ignored after the removal.
+
+The queue is deep because each verified slice was pushed immediately. That remains the deliberate tradeoff: an unread verdict is
+recoverable, unpushed work is not, provided the two are never conflated.
