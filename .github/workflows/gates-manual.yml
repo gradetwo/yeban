@@ -119,6 +119,26 @@ jobs:
             cargo run --release --locked -p yeban-render --example export_l1_digest -- --out /tmp/l1-digest-linux.json --pretty
           echo '--- 供采集的单行记录（复制下面这一行） ---'
           python3 -c "import json,pathlib;print(json.dumps(json.loads(pathlib.Path('/tmp/l1-digest-linux.json').read_text()),ensure_ascii=False,separators=(',',':')))"
+          echo '--- 同平台比对（Linux 参考摘要 vs 本次产出）---'
+          # 规范要的是"同平台的两台机器/两次独立产出"：这里把**本次 CI 产出**与**已提交的 Linux 参考**对账。
+          # 退出码: 0 = 同平台+锁工具链+参与字段逐字段相同（PASS）; 1 = 硬红; 2 = 无法判定（不可比）。
+          # ⚠ 明确要求"不能是 2"：否则这一步会退化成 SKIP 而看起来"通过"（本仓库最忌的那类假绿）。
+          set +e
+          cargo run --release --locked -p yeban-render --example compare_l1_digests -- \
+            /tmp/l1-digest-linux.json crates/yeban-render/tests/data/l1-digest-reference-linux.json
+          rc=$?
+          set -e
+          echo "compare exit=$rc"
+          if [ "$rc" -eq 0 ]; then
+            echo "同平台比对 PASS（MUST-GATE-002 在 Linux + 锁工具链下真实成立）"
+          elif [ "$rc" -eq 2 ]; then
+            echo "::error::比对返回 2（无法判定）—— 不许把 SKIP 当通过"
+            exit 1
+          else
+            echo "::error::同平台比对硬红（exit=$rc）"
+            exit 1
+          fi
+
 
       - name: 采样按 pin 取回并逐字节校验（联网, 有界；证明登记可复核）
         run: |
