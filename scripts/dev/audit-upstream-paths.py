@@ -62,7 +62,15 @@ def main() -> int:
         if not inst or not item:
             continue
         repo, pin = inst.get("repo"), inst.get("pin")
-        rel = (item.get("relative_path") or "").replace("assets/samples/", "", 1)
+        rel = item.get("relative_path") or ""
+        # ⚠ **口径必须与 `fetch-samples.py` 的 `UPSTREAM_STRIP` 一致**：
+        # 先按乐器根（`relative_root`，两种形态都要归一化）剥掉，剩下的才是"上游路径"；
+        # `strip=0` 就是取回脚本的默认推导。**第一版只减了 `assets/samples/`、没减乐器根 ⇒ 段数差一**，
+        # 于是它对 22 个"其实已正确"的乐器报出"建议剥离 1 段" —— 若照抄进 `UPSTREAM_STRIP`，
+        # 会把一个**真实存在**的目录段多剥掉 ⇒ 全部 404。（这类"会给出危险建议的仪器"比没有仪器更糟。）
+        root = (inst.get("relative_root") or inst.get("prefix") or "").strip("/")
+        root = root if root.startswith("assets/samples/") else f"assets/samples/{root}"
+        rel = rel[len(root) + 1:] if rel.startswith(root + "/") else rel.replace("assets/samples/", "", 1)
         parts = rel.split("/")
         codes = []
         for strip in STRIP_CANDIDATES:
@@ -88,7 +96,7 @@ def main() -> int:
     print(f"  仍取不回   : {len(broken)}  -> {broken}")
     print(f"  连接失败   : {len(offline)}  -> {offline[:5]}")
     if stripped:
-        print("\n建议加入 UPSTREAM_STRIP（**仅凭这里的实测**）:")
+        print("\n建议加入 UPSTREAM_STRIP（段数已按 fetch-samples 的口径归一化；**仅凭这里的实测**）:")
         for iid, n in stripped:
             print(f'    "{iid}": {n},')
     if broken:
