@@ -7231,3 +7231,23 @@ now save that.
 **Concrete next action**: add `yeban-midi` to the crate lists at `:76` and the layer table near `:141`/`:149`, with one clause saying why a
 pure-format crate is headless (it depends only on `yeban-model` + `midly`), or - if the负责人 prefers - record the category rule instead of the
 instance.
+
+
+### Round 293: the post-split arithmetic closes - 125 became 107 + 18
+
+Round 291 warned that a stable total "would not distinguish the same 1788 in different places from 1788 with two swapped". That caveat is now closed
+by counting the two crates involved:
+
+| crate | criteria | note |
+| :--- | :--- | :--- |
+| `yeban-render` | **107** | was **125** before the split (rounds 278/281) |
+| `yeban-midi` | **18** | the moved `midi`/`vlq` tests |
+| **107 + 18** | **125** | exactly the pre-split figure |
+
+So the moved tests are demonstrably running under the new crate, and the same number of them exists as before - which is what "the module moved
+without losing its criteria" means as a fact rather than as a plausible reading of a total.
+
+**Why this is worth an entry of its own**: round 291 recorded a real limitation of aggregate evidence, and the fix was one command. It is the same
+shape as the round-278 widening (checking the dependents) and the round-279 quantification (measuring the flake rate) - in each case the first
+measurement was directionally right and the second made it precise. Three instances in one session suggests the habit is worth naming: after an
+aggregate check passes, ask what a SPECIFIC count would have to show for the aggregate to be misleading, then get that count.
