@@ -4048,3 +4048,29 @@ evidence so far is local (`check`, `clippy -D warnings`, `light`).
 **Action**: dispatch `ci.yml` on the current tip (which contains the code, since every later commit touched docs only) and read
 the crate legs specifically. Until that verdict is read, D56 step 1 stays unverified on CI regardless of how the ledger's
 previous paragraph reads.
+
+### Round 156: D56 step 1 is genuinely CI-verified now, with crate evidence rather than an empty green
+
+Dispatch on the tip, read **specifically** for crate evidence (the correction from round 155 applied):
+
+Run **`37332094472` @ `f25b488` = completed success**:
+
+| leg | verdict | evidence value |
+| :--- | :--- | :--- |
+| **`rust (workspace 全量)`** | **success `steps=10`** | **`steps > 0`** - the collector compiles and its tests run on CI |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` | fmt, guards, schema, licence inventory all accept it |
+| `windows (yeban-mcp / yeban-model)` | success `steps=9` | the platform leg is fine too |
+| `plan` / `lockfile` / `deny` | success (5 / 6 / 6) | build plan, lock determinism, licence compliance |
+| `rust (${{ matrix.crate }})` | skipped | by design; the workspace leg covers it |
+
+**Why this entry is written differently from round 154**: that one cited a run whose only non-skipped legs were `plan`, `deny`,
+`lockfile` and `checks`, with every crate leg at `steps=0` - an empty green that proves nothing about code. Here the workspace
+leg reports **`steps=10`**, so the code really was compiled and executed. The distinction is the whole point: same word
+"success", opposite evidential value.
+
+**So D56 step 1 is complete and verified**: the shared collector exists in `yeban-engine` (the single implementation D56's
+criterion 4 requires), adds no dependency, and is green locally (`check`, `clippy -D warnings`, `fmt`, `light`) and on CI
+(workspace leg).
+
+Still outstanding for D56, unchanged: the MCP tool `yeban_export_diagnostics` (tool 16), the UI command with its stable element
+id, the shared-implementation criterion, the redaction-scan criterion and the tooth test.
