@@ -449,6 +449,62 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// 规则（账本第 234/237 轮）：音符进"**点击 tick 所在片段**"、落在"**摆放该片段的轨道**"；
 /// **位置不在任何片段内 ⇒ 拒绝**（不新建片段）。撤销与提交图由 `commit_ops` 提供, 无需另写反向逻辑。
 /// `grid` 取 1/16（240 tick）作为当前吸附口径 —— 吸附设置将来若可配, 它应来自配置而不是这里。
+/// 把一次点击解析成**待提交的操作**，纯函数以便判据（`wire_roll_edit` 只负责把它接到端口）。
+///
+/// 返回 `None` 的三种情形都是**决定**而非意外（第 234/237 轮）：工具不是铅笔；点击处吸附不出计划；
+/// **位置不在任何片段内**（拒绝, 不新建片段）。返回 `Some(op)` 表示"应当提交这一个操作"。
+#[must_use]
+pub fn pencil_op_for(
+    project: &yeban_model::YebanProjectV1,
+    scroll_x: f32,
+    x: f32,
+    y: f32,
+    grid_ticks: u64,
+    active_tool: i32,
+) -> Option<yeban_model::ops::Op> {
+    if active_tool != i32::from(PENCIL_TOOL_DIGIT) {
+        return None;
+    }
+    let view = ViewState::from_project(project).ok()?;
+    let plan = view.pencil_plan(scroll_x, x, y, grid_ticks)?;
+    let mut target: Option<(yeban_model::EntityId, yeban_model::EntityId)> = None;
+    for (track_id, track) in &project.tracks {
+        let triples: Vec<(u64, u64, yeban_model::EntityId)> = track
+            .clips
+            .values()
+            .map(|placement| {
+                (
+                    placement.start_tick,
+                    placement.duration_ticks,
+                    placement.clip_id,
+                )
+            })
+            .collect();
+        if let Some(clip_id) = crate::bridge::clip_at_tick(&triples, plan.start_tick) {
+            target = Some((*track_id, clip_id));
+            break;
+        }
+    }
+    let (track_id, clip_id) = target?;
+    Some(crate::bridge::plan_to_add_note(
+        plan,
+        track_id,
+        clip_id,
+        yeban_model::EntityId::new(),
+    ))
+}
+
+/// 铅笔工具的**数字键值**（与 `active-tool` 及 `Tool::from_digit` 同一口径）。
+pub const PENCIL_TOOL_DIGIT: u8 = 2;
+
+/// 当前吸附网格（tick）：1/16 = 240。将来若可配, 应由配置注入而不是在这里长第二个真相源。
+pub const ROLL_SNAP_GRID_TICKS: u64 = 240;
+
+/// `[UI-NOTE-003]` 把卷帘的点击接到**撤销端口**上（目前只接铅笔的工具语义）。
+///
+/// 解析本身在 [`pencil_op_for`] 里（纯函数, 有判据）；这里只做三件事: 读界面状态、
+/// 交给端口提交（`commit_ops` ⇒ 撤销与提交图随之而来）、重新投影让新音符出现。
+/// **拒绝**的情形（工具不对 / 吸附不出计划 / 位置不在任何片段内）在这里就是"什么都不做"。
 pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
     let port = Rc::clone(port);
@@ -457,49 +513,19 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
-        // 只在铅笔时动作：工具由卷帘按钮设置, 镜像到窗口后宿主可读（账本第 258 轮）。
-        let pencil_digit = i32::from(yeban_app_wire_pencil_digit());
-        if ui.get_active_tool() != pencil_digit {
-            return;
-        }
         let scroll = ui.get_roll_scroll_x();
         let width = slint::ComponentHandle::window(&ui).size().width as f32;
-        let project = port.project();
-        let Ok(view) = ViewState::from_project(&project) else {
+        let Some(op) = pencil_op_for(
+            &port.project(),
+            scroll,
+            x,
+            y,
+            ROLL_SNAP_GRID_TICKS,
+            ui.get_active_tool(),
+        ) else {
+            // 工具不对、吸附不出计划、或位置不在任何片段内 ⇒ **拒绝**（第 234 轮的决定）。
             return;
         };
-        let Some(plan) = view.pencil_plan(scroll, x, y, ROLL_SNAP_GRID_TICKS) else {
-            return;
-        };
-        // 解析片段与所属轨道（同一次扫描）。
-        let mut target: Option<(yeban_model::EntityId, yeban_model::EntityId)> = None;
-        for (track_id, track) in &project.tracks {
-            let triples: Vec<(u64, u64, yeban_model::EntityId)> = track
-                .clips
-                .values()
-                .map(|placement| {
-                    (
-                        placement.start_tick,
-                        placement.duration_ticks,
-                        placement.clip_id,
-                    )
-                })
-                .collect();
-            if let Some(clip_id) = crate::bridge::clip_at_tick(&triples, plan.start_tick) {
-                target = Some((*track_id, clip_id));
-                break;
-            }
-        }
-        let Some((track_id, clip_id)) = target else {
-            // 拒绝：位置不在任何片段内（第 234 轮的决定）。**不**新建片段。
-            eprintln!(
-                "铅笔：{tick} 处没有片段, 编辑被拒绝",
-                tick = plan.start_tick
-            );
-            return;
-        };
-        let op =
-            crate::bridge::plan_to_add_note(plan, track_id, clip_id, yeban_model::EntityId::new());
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
@@ -515,14 +541,6 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
         }
     });
 }
-
-/// 铅笔工具的**数字键值**（`Tool::from_digit` 的入参）—— 与 `active-tool` 的口径一致。
-const fn yeban_app_wire_pencil_digit() -> u8 {
-    2
-}
-
-/// 当前吸附网格（tick）：1/16 = 240。将来若可配, 应由配置注入。
-const ROLL_SNAP_GRID_TICKS: u64 = 240;
 
 /// 撤销动作之后把界面拉回**模型读数**（显示态）+ **投影**（工程画面）。
 ///
@@ -707,5 +725,56 @@ mod tests {
             super::tick_to_i32_saturating(u32::MAX as u64) > 0,
             "不得为负"
         );
+    }
+}
+
+#[cfg(test)]
+mod pencil_op_tests {
+    use super::*;
+    use yeban_model::samples::filled_project;
+
+    #[test]
+    fn the_pencil_resolution_refuses_the_wrong_tool_and_positions_outside_every_clip() {
+        // 判据: 三种**拒绝**都是决定（第 234/237 轮）, 不是意外。
+        let project = filled_project();
+        let grid = ROLL_SNAP_GRID_TICKS;
+        // ① 工具不是铅笔（选择工具 = 1）⇒ None。
+        assert!(
+            pencil_op_for(&project, 0.0, 100.0, 100.0, grid, 1).is_none(),
+            "选择工具下点击**不得**产生编辑"
+        );
+        // ② 位置远在所有片段之外 ⇒ None（**拒绝而不是新建片段**）。
+        assert!(
+            pencil_op_for(
+                &project,
+                0.0,
+                1.0e6,
+                100.0,
+                grid,
+                i32::from(PENCIL_TOOL_DIGIT)
+            )
+            .is_none(),
+            "片段之外的点击必须被拒绝"
+        );
+        // ③ 片段内**存在**能给出操作的位置 ⇒ Some, 且目标片段正是该位置所属的片段。
+        // 不假设坐标映射的名字（第一版写 `view.tick_to_px` 并不存在）⇒ 扫描 x, 断言**存在性**。
+        let clip_id = project
+            .tracks
+            .values()
+            .find_map(|track| track.clips.values().next().map(|p| p.clip_id))
+            .expect("夹具里至少有一条带片段的轨道");
+        let digit = i32::from(PENCIL_TOOL_DIGIT);
+        let hit = (0..240)
+            .map(|step| 10.0 * f32::from(u8::try_from(step).unwrap_or(0)))
+            .find_map(|x| pencil_op_for(&project, 0.0, x, 100.0, grid, digit));
+        match hit {
+            Some(yeban_model::ops::Op::AddNote {
+                clip_id: target, ..
+            }) => {
+                assert_eq!(target, clip_id, "必须落在点击位置所属的片段里");
+            }
+            Some(other) => panic!("铅笔必须产生 AddNote, 实际是 {other:?}"),
+            None => panic!("片段所在区域**必须**存在能给出操作的点击位置"),
+        }
     }
 }
