@@ -33,7 +33,7 @@
 //! [`OpOrigin::McpEdit`]（"MCP 代理的直接编辑"）。此前借的 `Import`
 //! （"外部工程/格式导入"）描述的不是"代理直接改活跃工程"这件事。
 //! `agent_name` 取 [`super::AGENT_NAME`]（与 `UndoState.author` 同源）。
-//! 契约 `origin.oneOf` 尚未承认该分支 ⇒ 见 `docs/ledger/op-origin-mcp-notes.md` 的 needs。
+//! 契约**已承认**该分支（`origin.oneOf[2]` = `McpEdit`，第 82 轮起）。
 //!
 //! ### 撤销**不**回收 CAS 池里的字节（如实登记的边界）
 //!

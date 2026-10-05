@@ -203,3 +203,13 @@ for r in json.load(sys.stdin)["workflow_runs"]:
     fi
     ;;
 esac
+
+# ── 集成者纪律（第 82 轮起，实测换来的）────────────────────────────────────────
+# 1) **在飞时不要推送**：`ci.yml` 的 `concurrency: cancel-in-progress` 会把正在跑的 run 掐掉。
+#    实测代价：我一边等 workspace 全量测试的判决、一边推了一条文档提交 ⇒ 唯一那条证据 run 变成 `cancelled`。
+# 2) **docs-only 的 success 不是证据**：`plan` 判受影响 crate 集合为空 ⇒ `rust`/`windows` 腿 `steps=0` 跳过。
+#    读判决必须看各腿的 `conclusion` **与 `steps` 数**。
+# 3) **"挂住的绿"的可靠判据**是 job 的 `steps[].started_at` 是否还在前进 —— 只看 `updatedAt` 或
+#    "最后一步的名字是不是 Post Run …" 都会误判（未开始的步骤也会那样显示）。
+# 4) 要**逼出 workspace 全量**判决：让 `plan` 判 `workspace_wide`（改根级触发器 `Cargo.toml`/`schemas/**`/`scripts/**` 等）。
+

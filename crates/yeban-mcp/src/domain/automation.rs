@@ -43,7 +43,7 @@
 //! 此前借用 [`OpOrigin::AutomationRecord`]（"自动化写入的落盘动作"）的写法已删除。
 //! **作者**字段仍是 `yeban-mcp`（`UndoState.author`），因此不存在"伪装成用户操作"。
 //!
-//! ⚠ **契约欠账**：`schemas/ops.schema.json` 的 `origin.oneOf` 尚未承认 `McpEdit`
+//! **契约已承认**（第 82 轮起）：`schemas/ops.schema.json` 的 `origin.oneOf[2]` 就是 `McpEdit`
 //! （`additionalProperties: false`），本线禁改 `schemas/**` ⇒ 漂移由
 //! `yeban-model` 的显式欠账清单 `PENDING_CONTRACT_ORIGINS` 机械钉住；
 //! 契约侧请求见 `docs/ledger/op-origin-mcp-notes.md`。
@@ -285,7 +285,7 @@ impl AutomationEdit {
             "origin": {
                 "kind": "McpEdit",
                 "author": super::AGENT_NAME,
-                "note": "MCP 直接编辑 (不创建提案) ⇒ OpOrigin::McpEdit; 契约 origin.oneOf 尚未承认该分支 (needs)",
+                "note": "MCP 直接编辑 (不创建提案) ⇒ OpOrigin::McpEdit",
             },
         }))
     }
