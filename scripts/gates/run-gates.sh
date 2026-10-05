@@ -54,7 +54,7 @@ gate_guards() {
 }
 
 gate_docs() {
-  step "文档契约（链接 / 规范 ID / ID 字典 / 决策清单 / 门禁状态表）"
+  step "文档契约（链接 / 规范 ID / ID 字典 / 决策清单 / 门禁状态表 / 阶段状态表 / 三方对齐矩阵）"
   # ⚠ 每一条都必须走 `run` —— 裸调用会被**后面成功的命令**屏蔽。
   # 实测（由 `line/phase-status` 发现并复现）: 在 `check_gate_status.py` 之后插一条 `sys.exit(3)`,
   # `light` 仍 **EXIT=0** 且打印"门禁通过" —— 因为本函数只有 `set -uo pipefail`（无 `-e`）,
@@ -65,6 +65,8 @@ gate_docs() {
   run "decisions" python3 scripts/gates/check_decisions.py
   run "gate-status" python3 scripts/gates/check_gate_status.py
   run "phase-status" python3 scripts/gates/check_phase_status.py
+  # 三方对齐矩阵（系统 / UI / MCP）：漏点名一个工具或方法、发明一个名字、汇总与逐行不符都变红。
+  run "feature-alignment" python3 scripts/gates/check_feature_alignment.py
   run "docs" python3 scripts/gates/check_docs_links.py
 }
 

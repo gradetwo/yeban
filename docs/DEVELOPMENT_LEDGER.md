@@ -1745,3 +1745,60 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   3. **CI 的 `checks` job 从不调用 `run-gates.sh`** ⇒ 我新加的守卫**默认不在 CI 里跑**。
      已在 checks job 里逐条直调六条文档契约守卫（`set -e` 下逐个检查退出码）。
 
+### 第 20 轮：三方对齐矩阵（系统 / UI / MCP）—— `docs/ledger/feature-alignment.md`
+
+- **新增** `docs/ledger/feature-alignment.md`（66 行功能）：**"三方暴露"的单一事实源**。
+  一行一个功能，四列回答"系统实现了没有（crate / 文件 / 规范 ID）/ UI 暴露了没有（元素 ID 前缀 / `.slint` / `ui/*` 方法）/ MCP 暴露了没有（工具名 + 参数名）/ 错位的原因·计划·状态"。
+  实测分类：**三方齐全 21 / 系统+UI（MCP 无）8 / 系统+MCP（UI 无）14 / 仅系统 10 / 仅计划 7 / UI 或 MCP 独有 6**。
+- **分工（四张表互不复制）**：本表管**三方暴露**（`feature-alignment.md`）、`gate-status.md` 管**发布门禁**、
+  `phase-status.md` 管**阶段项**、`human-decisions.md` 管**待人类裁决**。某个能力"做到哪一步"本表**不复制**，
+  只引用 `ROAD-*` / `MUST-GATE-*` / `HD-*` 编号。
+- **机械守卫** `scripts/gates/check_feature_alignment.py`（照 `check_gate_status.py` / `check_phase_status.py` 的结构），四条判据：
+  ① **正向完整性**：`schemas/mcp-tools.schema.json` 的每一个 `yeban_*` 工具（10 个）与
+  `crates/yeban-ui-mcp/src/methods.rs` 的每一条 `ui/*` 方法（14 条）都必须被点名；
+  ② **反向硬规则**：表里出现的工具名/方法名必须真的在 `crates/` 里 grep 得到（同 `spec_id_audit.py` 的"不得发明 ID"）；
+  ③ **结构**：每行五列非空、状态词 ∈ 七个允许值、凡"无/部分/计划"的行必须按序写全 `原因：…；计划：…；状态：…`；
+  ④ **汇总对账**：§1 的六类计数与合计必须与逐行统计逐一相等。
+  **注入实测 5 条全部 exit 1 并还原**（md5 前后一致 `3a62df05…`）：删一行、清空一条"无"的原因、
+  发明一个工具名（`yeban_undo`/`yeban_redo`）、只改汇总数字（21→20）、以及删掉唯一点名 `yeban_close_project` 的那一行
+  （证明判据 ① 真的会点名漏掉的工具）。
+- **接入**：`scripts/gates/run-gates.sh` 的 `light` 档（**走 `run`**，不裸调用 —— 裸调用会被后面成功的命令屏蔽）
+  + `.github/workflows/ci.yml` 的 `checks` job（逐条直调、`set -e` 下检查退出码）+ `docs/README.md` 索引一行。
+- **建表过程中发现的错位（每条都有当场可复核的证据）**：
+  1. **撤销/重做：有能力、有判据、零调用者（最严重）**。系统侧完整 —— `crates/yeban-model/src/commit.rs:505`（`CommitGraph::undo`）、
+     `:521`（`undo_with`）、`:533`（`apply_inverse`，在 `#[cfg(test)]`（`commit.rs:568`）**之前** ⇒ 是生产代码），
+     `crates/yeban-model/src/ops.rs:112,954`，时延判据 `BASELINE-004`（p99 **0.084 µs**，`gate-status.md:44`）。
+     但 `grep -rn "UndoCursor" crates/` 只命中 `crates/yeban-model/` 自己 ⇒ **`yeban-model` 之外零调用者**；
+      UI 侧 `crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 的**唯一** callback 是 `close`（只展示，不操作），
+     `main.rs:146` 的快捷键派发未接线；MCP 侧 `tools.rs` 与 `schemas/mcp-tools.schema.json` 里 `undo|redo` **0 命中**，
+     `crates/yeban-ui-mcp/src/methods.rs` 也 0。⇒ 从进度表/门禁表/控件树/覆盖率**四个视角看它都是"有"**，
+     但用户按 `Cmd+Z` 不动作、AI 也没有任何方法撤销一次误操作。**建议新开一条线同时接 UI 与 MCP（共用同一个 `undo_with`）**。
+  2. **`yeban_propose_section` 在为一个已经能表达的能力上报 `unwired`**：`crates/yeban-mcp/src/domain/section.rs:8-16,109-110`
+     仍断言"`Op` 全集没有 `AddClip`/`RemoveClip`/`AddRoutingNode`/`RemoveRoutingNode`"，
+     而 `crates/yeban-model/src/ops.rs:190,197` 等四个变体**已存在**（`HD-12` 已裁决、提交 `4190651` 是 HEAD 祖先）。
+     ⇒ 规范 §7.2 的"声部连接"至今没产出，而阻塞理由**已经不成立**（假阻塞）；台账 `tools-domain-notes.md:55,231` 与
+     `mcp-render-notes.md:325` 也停在旧结论。
+  3. **十个 MCP 工具的"独立进程 + stdio"没有端到端判据**：`grep -rn "CARGO_BIN_EXE_yeban-mcp" crates/` 命中 **0**，
+     而同仓库的 app CLI **有**（`crates/yeban-app/tests/cli_contract.rs:35`）。⇒ `ROAD-M4-002` 的"已完成"不覆盖二进制入口。
+  4. **MIDI 0/1 导出（`crates/yeban-render/src/midi.rs`）零消费者**：`grep -rn "yeban_render::midi\|render::midi" crates/*/src crates/*/tests` 命中 0，
+     界面无导出控件、十工具无 MIDI 导出位 ⇒ **实现了但没有任何出口**（它同时是 `.als` 导出的唯一前置能力）。
+  5. **`yeban-theory` 与 `yeban-sfz` 两个成品 crate 零工作区消费者**：`grep -rn "yeban-theory" crates/*/Cargo.toml Cargo.toml`
+     只命中自身与根清单登记行。后果最具体的是 `yeban-theory`：`crates/yeban-mcp/src/domain/section.rs:45` 自己写了一张 4 行
+     `STYLE_PRESETS` 常量表，而 `crates/yeban-theory/src/genre.rs` 的规则库没人调用 ⇒ **同一语义的第二份实现**隐患。
+  6. **"系统有 + UI 有控件"但回调一律未接线**：`crates/yeban-app/src/main.rs:141-151` 把 9 个回调（走带播放、撤销树、
+     AI 提案采纳/拒绝、声学诊断……）全部指向 `trace()`，后者只打一行 stderr。⇒ 控件树与截图看起来"已暴露"，
+     点下去什么都不发生；任何"以控件树存在为证据"的暴露度统计都会把它判成"有"（本表因此记 `部分` 并点名行号）。
+  7. **`ui/*` 与 `yeban_*` 的功能面几乎不相交**：`crates/yeban-ui-mcp/src/methods.rs` 的 14 条方法里只有
+     `ui/force_save` / `ui/switch_main_view` 摸到领域状态；十工具里没有任何一条能读 UI（依赖方向见
+     `crates/yeban-ui-mcp/Cargo.toml` 的注释）。⇒ 今天的"双 MCP"实际是两个互不相识的端点，
+     `ROAD-M4-008` 的"AI 改模型 → 界面跟着变"没有载体（与 `ROAD-M4-001` 的 app↔`yeban-mcp` 依赖边缺失同一件事）。
+  8. 另有三条**文档级**漂移（不是代码缺陷，但会让人重复规划已完成的工作）：
+     `docs/ledger/app-binding-notes.md` §8 #5 与 `app-completion-notes.md` §6 #7 仍说"自动化曲线未进视图"，
+     而 `crates/yeban-app/ui/workspace/arrangement_view.slint:53-72` + `elements.rs:503` 已经接了
+     （`app-automation-ui-notes.md` §9 needs-2 已请求关闭但未回写）；以及 `app-binding-notes.md` §8 #1 的"音符 tick 位置仍是索引布局"
+     已被 `piano_roll.slint:12-14` 与 `app-completion-notes.md` §7 needs-3 推翻。
+- **本机 vs CI 的严格区分**：以上**全部**是本机在 worktree `feature-alignment`（基线 `92a31c7`）上
+  读代码 / grep / 读台账得到的静态事实；本机**没有**跑任何 `cargo build` / `test` / `clippy`（重依赖交给 CI）。
+  "系统有"的判据是**源码在**（文件/类型/字符串/测试名），不是"CI 上跑绿了"。
+  判决由 `bash scripts/dev/ci-verdict.sh line/feature-alignment` 读回，**未读回之前一律记 `pending`**。
+
