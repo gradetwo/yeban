@@ -6565,3 +6565,30 @@ progress, repository Actions verifiably enabled, billing endpoints unreadable wi
 are the ONLY source of green, so the correct description of everything above is "locally verified", and the three items only the负责人 can
 unblock are: the CI stall itself, HD-49 (the BASELINE-003 verdict口径), and N2's shape (Slint's KeyEvent has no physical code, so the
 shortcuts cannot be wired as designed without choosing an option).
+
+### Round 267: the loudness tool's semantics are in the spec, and they confirm the query-shaped design
+
+Read the requirement instead of inventing one, and it settles both the tool's meaning and its shape:
+
+| source | requirement |
+| :--- | :--- |
+| `YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1013` and `YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:236` | 主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与响度范围, plus true-peak and RMS meters |
+| `YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:459` | broadcast `bext` metadata carries **EBU R128 响度元数据** |
+| `YEBAN_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md:226` | 完全符合 **EBU R128 与 ITU-R BS.1770-4** 的响度计算与真峰值积分标准 |
+
+Two consequences, both of which turn my round-265 inference into a requirement-backed design:
+
+1. **the measurement is a master-bus value the engine owns** - Momentary, Short-term and Integrated are windows over a signal the engine is
+   already producing, and the app's `meters.rs`/`host.rs` already read them. So the MCP tool is a QUERY of that state, exactly the shape
+   `yeban_query_engine_state` uses, and MCP must not compute LUFS itself (its Cargo.toml forbids pulling the audio stack in);
+2. **the tool must expose the same windows the spec names** - Integrated as the headline number, Momentary/Short-term as the live ones, plus
+   LRA and true peak - rather than a single "loudness" scalar, because a single number would not let a client distinguish "the mix is
+   -14 LUFS integrated" from "it is momentarily clipping".
+
+**Where a TARGET belongs, and where it does not**: the objective's phrase is 响度目标 (target). A target is a project/export SETTING (what the
+user wants, e.g. a streaming loudness), while the measurement is engine state. Keeping them separate matters: a tool that returned
+"target met" would conflate a user intention with a measurement, and the spec's own tables treat the meter values as readings, not verdicts.
+
+**Consequence for the remaining work**: the loudness item needs (a) a reading of what the engine currently exposes for LUFS / LRA / true peak
+(the next read), and only then (b) a query-shaped MCP tool whose parameters mirror the spec's named windows. It does not need a new
+measurement implementation, and it must not grow one inside MCP.
