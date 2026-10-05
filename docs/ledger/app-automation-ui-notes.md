@@ -32,7 +32,7 @@
 
 | 交付物 | 规范 ID | 本线做了什么 |
 | :--- | :--- | :--- |
-| `crates/yeban-app/src/automation.rs`（**新建**，1467 行） | `[MODEL-AST-001]` `[MODEL-AST-002]` `[MODEL-AST-003]` `[ARCH-DET-001]` `[UI-NOTE-002]` `[UI-TEST-001]` `[MODEL-ISO-001]` | **零 Slint** 的自动化投影层：目标 / 单位 / 值域（含自适应）/ 采样点顶点 / 缓动折线 / `Path` 指令 / 读·写显示态 / 元素 ID / 无障碍标签；9 条本机可跑判据（含 3 处注入的靶子） |
+| `crates/yeban-app/src/automation.rs`（**新建**，1651 行） | `[MODEL-AST-001]` `[MODEL-AST-002]` `[MODEL-AST-003]` `[ARCH-DET-001]` `[UI-NOTE-002]` `[UI-TEST-001]` `[MODEL-ISO-001]` | **零 Slint** 的自动化投影层：目标 / 单位 / 值域（含自适应）/ 采样点顶点 / 缓动折线 / `Path` 指令 / 读·写显示态 / 元素 ID / 无障碍标签；9 条本机可跑判据（含 4 处注入的靶子） |
 | `crates/yeban-app/src/bridge.rs` | `[UI-GRID-001]` `[MODEL-AST-002]` | `ViewState::automation_lanes`（权威投影产物）+ 9 个平行数组访问器 + `from_project_with_zoom_and_cursor`（走带位置的接线点）+ `canonical_lines` 的泳道/顶点明细（确定性可比较的字节） |
 | `crates/yeban-app/src/host.rs` | ADR-0001 **D28**（唯一注入点） | 9 个 `ui.set_automation_*` / `set_automation_path_commands`；**没有第二份注入实现** |
 | `crates/yeban-app/ui/workspace/arrangement_view.slint` | `[UI-TEST-001]` `[UI-NOTE-002]` | 自动化曲线层：`Path`（SVG `commands` + 显式 `viewbox` + `fit: ImageFill.fill`）+ 轴文本 + 角标；元素 ID 由三段字面量拼出 |
@@ -174,41 +174,74 @@ accessible-id: "track-" + root.automation-lane-track-indexes[lane_index]
 
 ## 4. 控件树属性 → 数值 → 截图区域
 
-### 4.1 属性与数值（三个工程，两种读法）
+### 4.1 属性与数值（**真实运行时控件树**，本机真跑）
 
-| 元素 ID | 角色 | `accessible-label`（实测，本机真跑） |
-| :--- | :--- | :--- |
-| `track-0-automation-volume-lane` | `image` | `鼓 · 音量 自动化 -3.2 dB · 录制臂 触碰`（演示工程；`-3.2` = `tick 0` 处的值，也是 `FADER_DB_LABELS[0]`） |
-| `track-0-automation-device-0-0-lane` | `image` | `鼓 · cutoff 自动化 读关闭（静态 1200.000）`（**自适应值域** `[200.0, 4000.0]` + 读关） |
-| `track-1-automation-pan-lane` | `image` | `贝斯 · 声相 自动化 -1.000 · 录制臂 写入` |
-| `track-0-automation-volume-lane`（`filled_project`） | `image` | `Lead · 音量 自动化 -6.0 dB · 录制臂 触碰`（显式取值域 `[-60, 12]`、`SCurve` 段） |
+下表是 `target/ui-test-port/app-introspect-observations.txt` 里的原文（本机在**真实
+`i-slint-backend-testing` 平台 + 软件光栅化**上跑出来的观察值，不是投影字段的转述）：
+
+```text
+控件树计数: 注册表 214 条 / 运行时 104 条 / 运行时有而注册表无 0 条 / 注册表有而运行时无 110 条
+重复族实测: track-*-automation-*-lane=3 (工程里 3 条)
+可见重复族里可被语义 ID 寻址的样本: 12/12 [..., "track-0-automation-volume-lane",
+                                            "track-0-automation-device-0-0-lane", ...]
+[automation] 工程泳道 track-0-automation-volume-lane  -> label="鼓 · 音量 自动化 -3.2 dB · 录制臂 触碰"
+[automation] 工程泳道 track-0-automation-device-0-0-lane -> label="鼓 · cutoff 自动化 读关闭（静态 1200.000）"
+[automation] 工程泳道 track-1-automation-pan-lane      -> label="贝斯 · 声相 自动化 -1.000 · 录制臂 写入"
+[automation] filled_project 泳道 track-0-automation-volume-lane -> label="Lead · 音量 自动化 -6.0 dB · 录制臂 触碰"
+```
+
+| 元素 ID | 角色 | 运行时 `accessible-label`（实测） | 它证明了什么 |
+| :--- | :--- | :--- | :--- |
+| `track-0-automation-volume-lane` | `image` | `鼓 · 音量 自动化 -3.2 dB · 录制臂 触碰` | 单位（`dB`）+ **模型入口在 tick 0 的值**（也是 `FADER_DB_LABELS[0]`）+ 写模式 |
+| `track-0-automation-device-0-0-lane` | `image` | `鼓 · cutoff 自动化 读关闭（静态 1200.000）` | **读关可区分** + 自适应值域 + "退回静态值"（模型文档 §2.1 的 `Ok(None)` 分支） |
+| `track-1-automation-pan-lane` | `image` | `贝斯 · 声相 自动化 -1.000 · 录制臂 写入` | 另一条轨道、双极单位、另一种写模式 |
+| `track-0-automation-volume-lane`（`filled_project`） | `image` | `Lead · 音量 自动化 -6.0 dB · 录制臂 触碰` | 换工程 ⇒ 换标签（不是演示数据） |
 
 - 数值来源：`automation_value_at(target, cursor_tick)`；静态投影的 `cursor_tick` 是
   `AUTOMATION_CURSOR_TICK = 0`（走带位置属会话运行态 `[MODEL-ISO-001]`，本线不发明；
   需要真实播放头时走 `ViewState::from_project_with_zoom_and_cursor`）。
-- 读关的泳道**在标签里可区分**（`读关闭`），并且**曲线照样画**（关掉的是"应用"，不是"显示"）。
-- 单位进标签（`dB`）与轴文本（`dB [-60.0, 12.0]` / `[200.0, 4000.0] 自适应`）。
+- **未登记 0 条**：运行时树里的每一个元素都在注册表里 —— 包括本线新增的泳道
+  （判据 ⑦ 的运行时侧因此是实测的，不是推断的）。
 
-### 4.2 曲线在画面上的区域（由投影的 `band_y` / `band_height` 决定）
+### 4.2 曲线在画面上的区域（**运行时 `bounds` 实测** + 像素验证）
 
-`ArrangementView` 的工作区原点 = 左栏 240px + 顶栏 48px；时间轴相对原点再偏移 `168px`
-（轨道包头列宽，与 clips / notes 同款）。曲线带的画布相对 y 由 §2.2 的公式给出：
+`target/ui-test-port/app-runtime-control-tree.json` 里这些元素的真实包围盒（1920×1080 窗口）：
 
-| 工程 | 泳道（带序） | 画布相对 y | 高度 | 曲线 x 范围（画布相对，tpp = 30） |
-| :--- | :--- | :--- | :--- | :--- |
-| `demo_project` | `鼓 · 音量`（带 0） | `44 … 96` | 52 | `0 … tick_to_px(3840) = 128` |
-| `demo_project` | `鼓 · cutoff`（带 1） | `70 … 96` | 26 | `0 … 128` |
-| `demo_project` | `贝斯 · 声相`（带 0，轨道 1） | `100 … 152` | 52 | `0 … tick_to_px(2880) = 96` |
-| `filled_project` | `Lead · 音量`（带 0） | `44 … 96` | 52 | `0 … tick_to_px(3840) = 128` |
+| 元素 | `bounds`（绝对像素） | 与投影的关系 |
+| :--- | :--- | :--- |
+| `workspace-arrangement-canvas` | `x=240 y=48 w=1400 h=583` | 工作区原点（左栏 240 + 顶栏 48） |
+| `track-0-header` | `x=240 y=90 w=168 h=54` | 车道顶沿 = 画布 y **42** ⇒ 常量 `TRACK_LANE_TOP_PX = 42.0` 实测吻合 |
+| `track-0-automation-volume-lane`（演示） | `x=408 y=92 w=1232 h=26` | 画布 y **44**、高 **26** = `(56 − 2×2) / 2`（该轨道两条带） |
+| `track-0-automation-device-0-0-lane` | `x=408 y=118 w=1232 h=26` | 画布 y **70** = 第二条带（键序等分） |
+| `track-1-automation-pan-lane` | `x=408 y=148 w=1232 h=52` | 画布 y **100**、高 **52** = `56 − 2×2`（该轨道一条带） |
 
-⇒ 绝对区域 = 上述 y 加上 `48px`（顶栏）、x 加上 `240px + 168px = 408px`：
-`filled_project` 的音量曲线落在 **x ∈ [408, 536]、y ∈ [92, 144]** 这一块矩形里。
+⇒ 投影算出的 `band_y` / `band_height`（§2.2 的公式，本机判据逐位断言）与**真实渲染出来的
+包围盒逐像素吻合**；x 恒为 `240 + 168 = 408`（时间轴偏移 168px，与 clips / notes 同款）。
 
-> **口径（不夸大）**：上表是**投影算出来的**几何（本机判据逐位断言），
-> 不是从 CI 截图里量出来的。Tier-1 判据断言的是"这些元素在运行时树里、标签正确"
-> （能被内省遍历本身要求元素几何非空且与裁剪区相交），**没有**断言绝对像素坐标 ——
-> 那属于 `[UI-MCP-003]` 的分平台 Golden，需要人类先提交基准图。
-> 截图落 `target/ui-test-port/`（`yeban_ui_test_port::artifact_dir()`），**不入库**。
+**像素验证**（`app-model-driven-filled-project-1920x1080.png`，泳道 `(408,92,1232,52)`）：
+描边色 `Tokens.gold-bright`（`#f7e6b0`）在带内共 **64** 列有像素、x 覆盖 `1 … 125`
+（= 画布相对 `0 … 128`，即 `tick_to_px(0..3840)`）；把每列的平均 y 与"**模型值 → y 映射**"
+逐点比较：
+
+```text
+ x   tick   实测y  模型y   模型值(dB)
+32    960   12.00  12.32   -5.062
+64   1920   11.00  10.83   -3.000
+80   2400   10.00  10.04   -1.898
+112  3360    9.00   8.85   -0.258
+最大偏差 = 0.72 px（52px 带高，实测 64 列样本）
+```
+
+- 0.72px 的偏差与 1.5px 描边的抗锯齿同量级 ⇒ **曲线画在投影算出的坐标上**。
+- **诚实边界**：这一条**不能**证明"值来自模型入口而不是线性插值" —— 对这条泳道
+  （`SCurve`、值域 `[-60, 12]`、跨度 3840 tick），`SCurve` 与线性插值的**像素**差最大只有
+  `6 dB × max|u(t) − t| / 72 dB × 52 px ≈ 0.42 px`，**亚像素、区分不了**。
+  那条结论由**数值判据 ⑧**承担（`SCurve` 四分之一点 `u = 0.15625` vs 线性 `0.25`，
+  在自适应量程 `[0, 1]` 下相差 ≈ 4.9px）—— 与 ADR-0001 **D23**"SSIM / 像素只对足够大的
+  差异敏感"是同一个口径。
+- 截图（7 张 PNG）与控件树 JSON 都落 `target/ui-test-port/`（`yeban_ui_test_port::artifact_dir()`），
+  **不入库**；本机额外裁了一张曲线局部图 `target/ui-test-port/automation-curve-crop-filled.png`
+  （同样是构建产物，仅供人眼复核）。
 
 ### 4.3 CI 侧新增的断言（Tier-1，见 §5.3）
 
@@ -235,7 +268,11 @@ H=/Users/crow/work/music/.app-automation-ui-harness
 source "$WT/scripts/dev/local-env.sh"
 bash "$WT/scripts/dev/cargo-local.sh" build -p yeban-model --locked      # 5.63s
 DEPS="$WT/target/debug/deps"
+# `-C debug-assertions=on -C overflow-checks=on`：与 cargo 的 dev profile 对齐。
+# **这一条不是装饰**：本线的一个真缺陷（`span × step` 溢出 ⇒ panic）只在开着
+# overflow-checks 时才复现 —— 裸 `rustc` 默认**关**，会让那条判据静默通过（见 §5.2 注入 D）。
 CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warnings \
+  -C debug-assertions=on -C overflow-checks=on \
   --crate-name yeban_app_local -L dependency="$DEPS" \
   --extern yeban_model="$DEPS/libyeban_model-610f97ad4a2723a8.rlib" "$H/lib.rs" -o "$H/run"
 "$H/run"          # test result: ok. 52 passed; 0 failed（其中 automation:: 9 条）
@@ -246,7 +283,7 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 | ① | `automation::tests::lane_count_follows_the_project` | ① 泳道元素数 == 工程里的泳道数 | `filled_project` 1 条 / 演示 3 条 == 两个工程 `automation_lanes` 的条目总数；元素 ID 唯一、格式良好、由 `(轨道序号, 目标键)` 唯一决定；空工程 0 条 |
 | ② | `automation::tests::vertices_follow_the_points_in_tick_order` | ② 顶点数与采样点数一致且 x 单调（tick 有序） | `points.len() == 模型条目数`、tick 非递减；`samples` tick **严格**递增；每个采样点 tick 都在折线上；`x == tick_to_px(tick)` 逐位；**同 tick 两点** ⇒ `points` 两个顶点（同 x）、`samples` 一个顶点（胜者 == 入口） |
 | ③ | `automation::tests::value_to_pixel_mapping_is_exact_and_adapts_when_the_domain_is_unknown` | ③ 纵轴映射正确（两个已知点 → y 的像素关系，含自适应） | `[-60,12]×52px`：`-60 → y 52`、`12 → y 0`、`-24 → y 26`、`-42 → y 39`；值域外**只钳像素不钳值**；退化区间 ⇒ 带正中且 `NaN` 不扩散；**自适应**：`DeviceParam`（模型里唯一没有固有值域的目标）⇒ `[200.0, 200.0]`（单点）/ `[0.0, 1.0]`，轴文本带「自适应」；显式取值域**不**被判为自适应 |
-| ④ | `automation::tests::empty_single_point_and_absurd_lanes_behave_explicitly` | ④ 空泳道/单点泳道不 panic 且行为明确 | 空泳道：0 顶点、`commands == ""`、`value_at_cursor == None`、标签 `无采样点`；单点 `(1920, -7.5)`：2 个折线顶点（`0` 起保持 + 采样点）、处处 `-7.5`；**越界 tick ⇒ `Err(PixelOverflow)`**（与 clips 同一条政策：不饱和/不回绕/不 panic）；`tpp = 0 ⇒ Err(ZeroTicksPerPixel)` |
+| ④ | `automation::tests::empty_single_point_and_absurd_lanes_behave_explicitly` | ④ 空泳道/单点泳道不 panic 且行为明确 | 空泳道：0 顶点、`commands == ""`、`value_at_cursor == None`、标签 `无采样点`；单点 `(1920, -7.5)`：2 个折线顶点（`0` 起保持 + 采样点）、处处 `-7.5`；**越界 tick ⇒ `Err(PixelOverflow)`**（不饱和/不回绕/不 panic）；`tpp = 0 ⇒ Err(ZeroTicksPerPixel)`；**荒谬跨度**（`tpp = 2^62` + 采样点 `0` 与 `2^63`）⇒ `Ok`、`samples` 恰好 `[0, 2^63÷8, 2^63]`（溢出的 `step` 被显式跳过）、每个顶点仍来自求值入口 |
 | ⑤ | `automation::tests::read_disabled_lanes_are_distinguishable` | ⑤ `read_enabled=false` 的泳道在控件树里可区分 | 标签含 `读关闭`、角标含 `读关`、`value_at_cursor == None`（**界面没有自己判断读开关**：入口同样返回 `None`）、写模式 `Off` 时无录制臂角标；读开的泳道标签/角标里不得出现任何读关标记；`Touch` ⇒ `录制臂 触碰` 进标签 |
 | ⑥ | `automation::tests::switching_the_project_changes_the_lanes` | ⑥ 换工程 ⇒ 泳道随之变化 | 演示 3 条 / `filled_project` 1 条，ID 集合不同；`filled` 恰好 `["track-0-automation-volume-lane"]`；空工程 0 条 |
 | ⑦ | `automation::tests::registry_carries_one_element_per_lane` | ⑦ 注册表与控件树双向一致（未登记 0） | 注册表里 `-automation-…-lane` 条目数 == 泳道数；每条的角色 `image`、`component` 正确、标签与投影**逐字相等**、**不是**动态遮罩区；全部属于 `MODEL_DRIVEN_FAMILIES`（负向断言因此覆盖它们） |
@@ -254,18 +291,54 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 | ⑧ | `automation::tests::drawn_values_come_from_the_model_evaluation_entry` | ⑧ 一个已知 tick 的曲线值 == `automation_value_at` 的返回值 | 每个 `points` tick 的胜者 == `lane.value_at`；每个 `samples` 顶点 == `automation_value_at`（逐位）；`tick = 1920` ⇒ `-24.0`（== 入口）；**`SCurve` 的四分之一点** `250 ⇒ 0.15625` 且与线性插值 `0.25` 相差 `> 0.05`；自适应量程下 `y == (1 − 0.15625) × 带高`；`path_commands` 的顶点数与坐标可逐位复原（`{:.2}` 容差 0.0051） |
 | ⑨ | `automation::tests::lane_element_ids_match_the_slint_template` | （判据的载体） | `.slint` 非注释代码里必须含三段字面量组合、`42px + 56px * track_index`、`commands: root.automation-path-commands[lane_index]`、`viewbox-width: parent.width / 1px`、`fit: ImageFill.fill` |
 
-### 5.2 注入 ▸ 变红 ▸ 还原（3 次，全部本机真跑）
+### 5.2 注入 ▸ 变红 ▸ 还原（4 次，全部本机真跑）
 
 变异只作用在 harness 里的**副本**（`$H/mut/<name>/`），仓库文件全程未改动
-（注入前后 `git status --short` 都只有本线的 8 个文件）；每次注入后都重跑仓库原件确认恢复为绿。
+（注入前后 `git status --short` 都只有本线的文件）；**四份副本都按当前源重建**
+（不是早期版本的残留），并且编译时开着 `-C overflow-checks=on`。
 
-| # | 注入（任务书建议的形态） | 变红的判据 | 结果 |
+| # | 注入（任务书建议的形态） | 变红的判据（实测全表） | 结果 |
 | :-- | :--- | :--- | :--- |
-| A | 在投影里**另写一份线性插值**（仍然调用模型入口，但丢弃结果、忽略 `curve`） | `automation::tests::drawn_values_come_from_the_model_evaluation_entry`（**1 红**） | `51 passed; 1 failed` |
-| B | `x` 换算改成**索引布局**（`40.0 × index`，第二套换算） | `automation::tests::vertices_follow_the_points_in_tick_order`（**1 红**） | `51 passed; 1 failed` |
-| C | 把 `effective_domain()` **写死**成音量量程（禁用自适应） | `value_to_pixel_mapping_is_exact_and_adapts_when_the_domain_is_unknown` + `drawn_values_come_from_the_model_evaluation_entry`（**2 红**） | `50 passed; 2 failed` |
+| A | 投影里**另写一份线性插值**（仍然调模型入口，但丢弃结果、忽略 `curve`） | `drawn_values_come_from_the_model_evaluation_entry`（判据 ⑧）、`empty_single_point_and_absurd_lanes_behave_explicitly`（判据 ④ 也断言了入口一致性） | `50 passed; 2 failed` |
+| B | `x` 换算改成**索引布局**（`40.0 × index`，第二套换算） | `vertices_follow_the_points_in_tick_order`（判据 ②）、`empty_single_point_and_absurd_lanes_behave_explicitly`（判据 ④ 断言了 `x == tick_to_px(tick)`） | `50 passed; 2 failed` |
+| C | `effective_domain()` **写死**成音量量程（禁用自适应） | `value_to_pixel_mapping_is_exact_and_adapts_when_the_domain_is_unknown`（判据 ③）、`drawn_values_…`（⑧ 的自适应 `y`）、`empty_single_point_…`（④ 的自适应量程） | `49 passed; 3 failed` |
+| **D** | **`span × step` 退回裸乘法**（去掉 `checked_mul`） | `empty_single_point_and_absurd_lanes_behave_explicitly`（判据 ④）—— 以 **`attempt to multiply with overflow` panic** 变红 | `51 passed; 1 failed` |
 
-> 三条注入分别打在"求值""换算""量程"上，正好是 §2 的三条口径。**还原后 52 条全绿**。
+> 三条注入打在"求值""换算""量程"三条口径上；**第四条（D）打的是真缺陷**：
+> 注入 D 的第一版**没有变红**，因为判据 ④ 当时把荒谬采样点放在 `u64::MAX`,
+> 于是 `point_vertices` 的 `tick_to_px` 先返回 `Err`、`sample_vertices`
+> **根本没被调用** —— 那条断言看着在测"不 panic"，其实什么都没测。
+> 把采样点改成 `tpp = 2^62` 下的 `[0, 2^63]`（两个端点都还在 u32 像素内 ⇒ 细采样真的执行）
+> 之后，注入 D 立刻以溢出 panic 变红。**"判据要能失败"这条又一次抓住了作者自己**。
+> 还原后 52 条全绿。
+
+### 5.2b 真红记录（**不是注入**：CI 抓到了作者写反的断言）
+
+`run 37249203359`（tip `1609d58`）的 `rust (yeban-app)` 只红了一条，原文：
+
+```text
+thread 'criteria::project_projection_reaches_the_control_tree_and_the_pixels' panicked
+  at crates/yeban-app/tests/../src/test_port_adapter.rs:1700:5:
+读关的设备参数泳道只属于演示工程，不得出现在 filled_project 的树里
+test result: FAILED. 8 passed; 1 failed
+```
+
+**归属（三种可能里选哪条，及依据）**：
+
+| 可能 | 裁决 | 依据 |
+| :--- | :--- | :--- |
+| ① 投影真的违反了不变量（把设备参数泳道投进了 `filled_project`） | **否** | 同一条判据在更前面已经断言过 `lanes_in(&runtime) == 1`（`filled` 只有 `track-0-automation-volume-lane`）并通过了；纯 Rust 判据 `switching_the_project_changes_the_lanes` 也断言 `filled` 的泳道 ID 恰好是那一条。投影是对的。 |
+| ② 那条假设过时了（`filled_project` 现在**本来就有**一条读关的设备参数泳道） | **否** | `yeban_model::samples::filled_project()` 里只有 1 条 `TrackVolume` 泳道（`read_enabled = true`、`write_mode = Touch`），没有设备参数泳道；假设没有过时。 |
+| ③ **第三条路：断言本身把两棵树写反了** | **是** | 那一行断言的是 `!demo_runtime.contains("track-0-automation-device-0-0-lane")`，而提示文本写的是"不得出现在 `filled_project` 的树里" —— **变量是演示树、语义是工程 A 的树**。演示工程（`demo_project` 的轨道 0 有 device ⇒ 有读关的设备参数泳道）**本来就应该有它**，所以这条断言从写下的那一刻起就必红。 |
+
+**修法**（不是删断言，而是变成**更强**的两条）：两个方向都断言 ——
+演示树**必须**含 `track-0-automation-device-0-0-lane`、`filled_project` 的树**必须不**含它；
+并在代码里留下这次教训的注释。它们由同一组实测数字支撑（§4.1：演示树里该元素的
+标签是 `鼓 · cutoff 自动化 读关闭（静态 1200.000）`，而 `filled` 的树里只有一条音量泳道）。
+
+> 与 `app-binding` §4.2 的"额外证据"同款：**判据真的能失败**，这次是它抓住了作者自己。
+> 本线随后把 CI 的 `test` 腿在本机（真实 Slint 平台 + 暖 target）整跑了一遍：
+> **154 passed / 0 failed**（§6.1 行 5），因此这一次的修复不是"猜着修的"。
 
 ### 5.3 交给 CI 的（本机**没有**验证）
 
@@ -284,10 +357,11 @@ CARGO_MANIFEST_DIR="$WT/crates/yeban-app" rustc --edition 2024 --test -D warning
 
 | # | 手段 | 命令 | 实测 |
 | :-- | :--- | :--- | :--- |
-| 1 | **零 Slint 纯逻辑判据** | `rustc --edition 2024 --test -D warnings`（§5.1） | `52 passed; 0 failed`（其中 9 条是本线新增） |
+| 1 | **零 Slint 纯逻辑判据** | `rustc --edition 2024 --test -D warnings -C debug-assertions=on -C overflow-checks=on`（§5.1） | `52 passed; 0 failed`（其中 9 条是本线新增）；**开着 overflow-checks** 才复现得了 §5.2 的注入 D |
 | 2 | **`.slint` 独立类型检查**（本线新手法，§6.2） | `$H/slintcheck/check ui/app.slint` | `SLINT OK`（13 个 `.slint` 全在该图里） |
 | 3 | **clippy 全目标（含 `--all-targets`）** | `CARGO_TARGET_DIR=<主仓暖 target> cargo-local.sh clippy -p yeban-app --all-targets --locked -- -D warnings` | `Finished` 退出码 0（零告警）；期间 `build.rs` **真的**把 `ui/app.slint` 编译了一遍，`host.rs` 的 9 个新 setter 与生成绑定对上了 |
 | 4 | 轻量门禁 | `bash scripts/gates/run-gates.sh light` | `门禁通过 (mode=light)`（fmt / 14 条守卫 / 文档 / 许可清单） |
+| **5** | **真实平台整跑**（CI 的 `test` 腿等价命令，复用暖 target） | `CARGO_TARGET_DIR=<暖 target> cargo-local.sh test -p yeban-app --all-targets --locked` | **154 passed / 0 failed**：lib **119**（含本线 9 条）+ bin 0 + `cli_contract` 12 + `live_ui_mcp` 12 + `open_project_file` 2 + **`real_ui_tier1` 9**（Tier-1：软件光栅化 + 真实控件树内省；含本线新增的全部泳道断言） |
 
 ### 6.2 本机新添的两种机械证据（值得 hoist）
 
@@ -327,8 +401,11 @@ Slint 生成绑定**类型检查了一遍。本线靠它一次抓出两处真错
 
 | 轮 | commit | run | 结论 | 说明 |
 | :-- | :--- | :--- | :--- | :--- |
-| 1（代码） | `6713f92` | — | **被第 2 轮取代** | 推送后本机又补了一条"同 tick 多点"的判据（把 `points` 与入口的对账口径从"每个顶点"改成"每个 tick 的胜者"，并新增同 tick 覆盖），因此**没有**等这一轮的判决就前进了 tip —— 见第 2 轮。 |
-| 2（代码，**净判决**） | `d9d65b5` | — | 见 §7.1 | 工作线代码 tip；`rust (yeban-app)` 腿是唯一的代码读数 |
+| 1（代码） | `6713f92` | [37248336525](https://github.com/gradetwo/yeban/actions/runs/37248336525) | **被第 5 轮取代** | `checks` / `deny` / `lockfile` 绿，`plan` 与 `rust (yeban-app)` 已起；本机随后修了一个真缺陷（`span × step` 溢出）与一条**假判据**。 |
+| 2（判据加固） | `d9d65b5` | — | **被第 5 轮取代** | 补"同 tick 多点"判据；同轮发现 `checked_mul` 缺口。 |
+| 3（代码） | `1609d58` | [37249203359](https://github.com/gradetwo/yeban/actions/runs/37249203359) | **failure（`rust (yeban-app)`：Tier-1 8 绿 / 1 红）** | `clippy -D warnings` 绿、lib `119 passed`；红的是**我写反的一条断言**（§5.2b，`test_port_adapter.rs:1700`）。CI 一次就定位到行号与消息。 |
+| 4（修复，**代码 tip**） | `1fbc99f` | 见 §7.1 | — | 把那条断言改成"两个方向都断言"（更强），并在本机真实平台上把整条 `test` 腿跑绿（154/154）。 |
+| 5（docs-only） | 本文件所在提交 | 见 §7.1 | — | 只改本文件 ⇒ `plan` 判"受影响集合为空"，`rust` 腿按设计**跳过**；这一轮**没有**代码读数（与 `app-binding` §6.3 / `app-completion` §5.0 同款结论）。 |
 
 ### 7.1 读数（待填）
 
@@ -370,7 +447,15 @@ Slint 生成绑定**类型检查了一遍。本线靠它一次抓出两处真错
    （`§6.2`）：① 直接链 `libslint_build` 得到一个秒级 `.slint` 类型检查器；
    ② `CARGO_TARGET_DIR` 指向暖 target 跑 `clippy --all-targets`。两条都**不**跑 codegen、
    都**不**跑光栅化，因此都**不能**替代 CI 的 `cargo test` —— 但能在推送前拦住
-   "语法 / 类型 / lint"这一整类浪费轮次的红点。本线实测抓到 2 处真错。
+   "语法 / 类型 / lint"这一整类浪费轮次的红点。本线实测抓到 **3 处真错**
+   （`!(span > 0.0)` 的 clippy 违规、`f32` vs `Option<f32>` 的类型错、
+   `span × step` 的溢出 panic）。
+   **并与既有的 `rustc --test` 手法合并一条必要修正**：本机的 `rustc` 直接调用
+   **默认关掉** `debug-assertions` / `overflow-checks`，而 cargo 的 dev profile **开着** ——
+   因此"本机真跑全绿"与"CI 真跑"在**溢出与 `debug_assert!`** 这两类上口径不同。
+   本线的真缺陷（`attempt to multiply with overflow`）正是靠补齐
+   `-C debug-assertions=on -C overflow-checks=on` 才复现出来的。建议把这条写进方法论：
+   **任何用裸 `rustc` 跑的判据都要显式补这两个 flag**。
 6. **hoist → ADR-0001**：可复用约束两条 —— ① "曲线类图元必须显式给 `viewbox` + `fit`
    才谈得上"坐标 == 投影的像素""（不写就变成 scale-to-fit，纵轴量程失效）；
    ② "投影给界面的几何必须是**非零面积**的"（0 面积元素会被上游裁剪语义过滤掉，
