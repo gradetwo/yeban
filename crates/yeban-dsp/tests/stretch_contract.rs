@@ -42,7 +42,11 @@ fn stream(input: &[f32], semitones: f32) -> Vec<f32> {
     stretch.set_transpose_factor_semitones(semitones, None);
     let mut out = Vec::with_capacity(input.len());
     let mut buf = [0.0_f32; BLOCK];
-    for chunk in input.chunks_exact(BLOCK) {
+    // clippy(-D warnings) 在本机没跑、在 CI 上拦下了 `chunks_exact(常量)`:
+    //   error: using `chunks_exact` with a constant chunk size
+    // 它建议的就是 `as_chunks`（Rust 1.88 起稳定，本仓工具链 1.99）。
+    let (blocks, _rest) = input.as_chunks::<BLOCK>();
+    for chunk in blocks {
         stretch.process(chunk, &mut buf);
         out.extend_from_slice(&buf);
     }
