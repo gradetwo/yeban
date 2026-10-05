@@ -1296,6 +1296,55 @@ fn runtime_control_tree_cross_check_against_the_registry() {
 /// `GLOBAL_CONTEXT` 是 thread-local `OnceCell`），而 libtest 默认一个测试一个线程。
 /// 在同一个活窗口上先注入工程 A、截图、再注入工程 B、再截图，既省一次平台安装，
 /// 又让"像素差异"这一条断言**排除了字体/后端等环境差异**（同一进程、同一后端、同一字体）。
+/// `[BASELINE-003]` 帧率判据：**10 万音符**滚动下的单帧耗时分布（p50 / p99 / max）+ 非平凡见证。
+///
+/// **口径**：`ci.yml` **不**断言帧率（托管 runner 读数不算, 见 `spikes/README.md` 第 36 行）；
+/// 判决走**手动档 `fps`**, 依 `HD-45`。
+#[test]
+fn frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness() {
+    const FRAMES: usize = 600;
+    let project = yeban_model::samples::project_with_notes(100_000);
+    let project_view = ViewState::from_project(&project).expect("10 万音符工程必须能投影");
+    let scene = DemoScene::from_view(&project_view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let registry = registry_to_tree(&ElementRegistry::from_view(&project_view))
+        .expect("注册表必须能适配");
+    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
+        host::build_main_window(&project_view, &scene)
+    })
+    .expect("Tier-1 平台 + 10 万音符主窗口");
+
+    let note_count: usize = project
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes())
+        .map(std::collections::BTreeMap::len)
+        .sum();
+
+    let mut samples: Vec<f64> = Vec::with_capacity(FRAMES);
+    let mut min_evidence = usize::MAX;
+    for _ in 0..FRAMES {
+        let start = std::time::Instant::now();
+        port.window().request_redraw();
+        let image = port.window().capture().expect("每帧都应能抓到像素");
+        samples.push(start.elapsed().as_secs_f64() * 1000.0);
+        let evidence = golden_evidence(&image).expect("见证");
+        min_evidence = min_evidence.min(evidence.summary().len());
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).expect("无 NaN"));
+    let pct = |q: f64| samples[((samples.len() as f64 - 1.0) * q).round() as usize];
+    eprintln!(
+        "BASELINE-003(10万音符) 帧数={FRAMES} 音符={note_count} p50={:.3}ms p99={:.3}ms max={:.3}ms 见证字符数下限={min_evidence}",
+        pct(0.50),
+        pct(0.99),
+        samples[samples.len() - 1]
+    );
+
+    assert_eq!(samples.len(), FRAMES, "必须采满 {FRAMES} 帧");
+    assert_eq!(note_count, 100_000, "场景必须是 10 万音符, 不是近似值");
+    assert!(min_evidence > 0, "每帧见证都必须有内容");
+}
+
 #[test]
 fn project_projection_reaches_the_control_tree_and_the_pixels() {
     let project = yeban_model::samples::filled_project();

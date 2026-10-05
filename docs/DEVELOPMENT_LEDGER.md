@@ -4559,3 +4559,30 @@ feature/cfg gate, then either place the timing case where it will run, or add it
 
 Everything else for BASELINE-003 is in place: the 100 000-note fixture with its exact-count criterion (`d329697`), and the timing
 loop whose pattern is proven in `yeban-ui-test-port`'s `frame_time` test.
+
+### Round 175: correction - the 100k timing test DOES run; my `--lib` flag was the error, and the heavy local build belongs to CI
+
+Round 174 concluded "the test compiled but never ran" and reverted it. **That conclusion was wrong**, and the cause was my own
+command: `src/test_port_adapter.rs` is declared in `Cargo.toml` as a **`[[test]]` target** (with
+`required-features = ["ui-test-port"]`), i.e. an integration-test target - so `cargo test -p yeban-app --lib ...` could never
+contain it. The correct invocation is:
+
+```
+cargo test -p yeban-app --features ui-test-port --test test_port_adapter <name> -- --nocapture
+```
+
+Both parts are required: without the feature the target refuses to build ("target `test_port_adapter` in package `yeban-app`
+requires the features: `ui-test-port`"), and without `--test test_port_adapter` the lib target is searched instead.
+
+I re-added the test (same body as round 174) and started the local run - then **stopped it**: the feature pulls Slint's Testing
+Backend, which is exactly the heavy compilation `AGENTS.md` §5.2 forbids on this machine ("本机禁止: ... Slint / cpal /
+symphonia 等重依赖编译; 这些一律交给 GitHub Actions"). The run had been going more than ten minutes without finishing.
+
+So the pattern for this item is: write it locally (type-checked by `cargo check --all-targets`, which is not a run), then let
+**CI** execute it, and read the p50/p99 from the CI log - the numbers only matter as evidence for the manual `fps` gate anyway,
+under `HD-45`.
+
+**Lesson, and it is the third instance of one shape**: my instrument was wrong, not the code. Rounds 158 (`domain.rs` vs the
+`domain/` directory), 174 (`--lib` vs a `[[test]]` target) and the earlier `head`-truncated test output all had the same
+structure - a wrong measurement tool, reported as a property of the code. The remedy that keeps working: when a command returns
+"nothing matched", suspect the command before suspecting the artefact.
