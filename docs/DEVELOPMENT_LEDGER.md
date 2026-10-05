@@ -6049,3 +6049,36 @@ MainWindow, and set it where `SelectTool` is handled - the second of which requi
 **And it raises the honesty bar for the work item itself**: an untested keyboard path that silently does nothing is precisely the class
 of thing this session has recorded repeatedly ("looks wired, is not"), and the fix must come with a criterion - press the digit through
 the input path, read the property back, assert it changed - or the repair is itself unverifiable.
+
+### Round 247: measured - the dispatcher exists, but the EDITING actions have no handlers at all
+
+Round 246 found `SelectTool` unhandled; this measures the boundary instead of generalising from one case. Counting references to each
+action OUTSIDE `input.rs` (which is where the policy table lives):
+
+| action | handler references outside input.rs |
+| :--- | :--- |
+| `Undo` | **11** |
+| `Redo` | **4** |
+| `PlayPause` | **4** |
+| `DeleteSelection` | **0** |
+| `SelectTool` | **0** |
+| `TogglePencilTool` | **0** |
+
+So the dispatcher **exists** - undo, redo and transport are executed - and the actions that are missing handlers are precisely the
+**editing** ones: delete the selection, choose a tool, toggle the pencil. That matches `UndoPort::commit_ops`'s own doc comment, which
+called itself the future editing entry point and noted "编辑侧见台账的未实现项" (the editing side is an unimplemented item in the
+ledger). The policy half of the input layer is written; the execution half was left for later, and "later" has not happened for these
+three.
+
+**Why this is the right size of finding rather than a sweeping claim**: I have NOT shown that every editing action is unwired - only
+these three, measured. `DeleteSelection` appearing with zero handlers is consistent with the same gap, but the claim I can stand
+behind is the table above, not "the editing side is missing".
+
+**Consequences for step 2 and beyond**:
+1. part (a) is now precisely "create the `SelectTool` handler", and the same handler location is where `TogglePencilTool` and
+   `DeleteSelection` belong - one dispatcher, three missing arms;
+2. the tool shortcut defect from round 246 is one instance of a three-action gap, which means fixing only the pencil's needs (a) while
+   leaving two documented shortcuts dead - and the ledger should say which of the three are fixed and which are not, per action rather
+   than per feature;
+3. the criterion shape is settled by the measurement: whatever handler is added must be observable from outside `input.rs`, i.e. it
+   must set state that a test can read back, or the "0 handlers" count simply becomes a "1 handler that does nothing".
