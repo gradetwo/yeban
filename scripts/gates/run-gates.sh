@@ -58,6 +58,7 @@ gate_docs() {
   run "docs" python3 scripts/gates/spec_id_audit.py --check
   python3 scripts/gates/check_decisions.py
   python3 scripts/gates/check_gate_status.py
+  run "phase-status" python3 scripts/gates/check_phase_status.py
   python3 scripts/gates/check_docs_links.py
 }
 

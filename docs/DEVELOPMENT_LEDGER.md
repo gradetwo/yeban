@@ -1657,3 +1657,56 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   而那其实属于**类型** `&[&str]` ⇒ 报告"声明 0 个 ID"（而实际有三个 crate 声明了一堆）。
   这正是"**审计器必须读产物、别读你以为的位置**"的又一例（与 schema 棘轮那条提醒同源）。
 
+### 新增：**阶段状态表** + 它的机械守卫 —— "Phase 2 还剩几项"从此有人能回答
+
+- **问题**（这条是补一个真实的空缺，不是补文档）：项目的目标措辞是"按 Phase -1 → Phase 0 → Phase 1 →
+  Phase 2 → Phase 3 → Phase 4 **逐阶段交付**"，但仓库里**没有一份"每个阶段项现在什么状态"的单一事实源** ——
+  现状散在路线图 §3、本账本、`gate-status.md` 与 **37 份**工作线台账里。
+  后果与 `gate-status.md` 当初的处境相同：不是"少一条判据"，而是**没人能一眼回答"Phase 2 还剩几项"**。
+- **交付**：`docs/ledger/phase-status.md` —— 路线图 §3 的 **46** 个 `ROAD-*` 项**逐项一行**
+  （ID / 要求要点 / 状态 / 证据或为什么还不到 / 备注）+ 逐阶段汇总计数。
+  状态词与 `gate-status.md` **同一套**（`已完成` / `部分` / `PENDING`）。
+- **分工声明**（写在该文件顶部，这是三张表不互相矛盾的关键）：
+  本表管**阶段项**、`gate-status.md` 管**发布门禁**、`human-decisions.md` 管**待人类裁决**；
+  某个 `ROAD-*` 等价于某条门禁时**只引用门禁 ID**，**不复制第二份状态**
+  （例：`ROAD-M1-006` ↔ `MUST-GATE-010`、`ROAD-M1-004` ↔ `MUST-GATE-006/007`、
+  `ROAD-M2-002` ↔ `MUST-GATE-012`、`ROAD-M3-007` ↔ `MUST-GATE-015`、`ROAD-M4-009` ↔ `MUST-GATE-005`）。
+- **守卫**：`scripts/gates/check_phase_status.py`（照 `check_gate_status.py` 的结构写），
+  在 `run-gates.sh light` 里加了**一行**调用。它查六件事：
+  ① 路线图里的**每一个** `ROAD-*` 在表里出现**恰好一次**；② 状态只能是那三个词；
+  ③ 证据列必须含**可复跑**的痕迹（run id / `cargo ` / `bash ` / `scripts/` / `crates/` / `docs/`）；
+  ④ `PENDING` 必须写清**为什么**（不许把"没查"写成 `PENDING`）；
+  ⑤ **反向**查"表里有、路线图里没有"的编号（凭空发明 = 硬错误，`AGENTS.md` §4.1）；
+  ⑥ 末尾的**逐阶段汇总计数**与表格**逐行统计对账**（数字要么能被命令复核、要么别写）。
+- **实测（本机）**：`python3 scripts/gates/check_phase_status.py`
+  ⇒ `[ok] phase-status.md: 46 项阶段要求, 已完成 14 / 部分 25 / PENDING 7`。
+  独立复核（不用守卫）：`grep -cE '^\| \`ROAD-' docs/ledger/phase-status.md` ⇒ `46`；
+  逐阶段 `6 / 9 / 6 / 8 / 7 / 10`；状态计数 `grep … | sort | uniq -c` ⇒ `14 / 25 / 7`。
+- **注入 → 变红 → 还原（4 条，全部字节级还原，md5 `9f2d2ea3c5495f59007426eb3e18f9a2`）**：
+  ① 删掉一行 ⇒ `ROAD-M2-005 不在表里 —— 有阶段项没人管`；
+  ② 把状态改成"大概完成了" ⇒ `状态 … 不是 ('已完成','部分','PENDING') 之一`；
+  ③ 加一个 `ROAD-M9-999` ⇒ `在表里但**路线图里不存在** —— 凭空发明的编号是硬错误`；
+  ④ **只**把汇总里一个数字改掉 ⇒ `汇总的 Phase 2 与表格不符`。
+  其中 ① 还在**门禁层**复跑过：注入后 `bash scripts/gates/run-gates.sh light` ⇒ `EXIT=1` +
+  `FAIL phase-status (exit=1)`；还原后同一命令 ⇒ `EXIT=0` + `[ok]`。
+- **⚠ 顺带抓到的两个真问题（都不在本线的可改范围 ⇒ 记 needs，不夹带修）**：
+  1. **`gate_docs()` 里的裸 `python3` 调用其实不阻断门禁**。`run-gates.sh` 只有 `set -uo pipefail`
+     （**没有** `-e`），而 `check_decisions.py` / `check_gate_status.py` / `check_docs_links.py`
+     都是**裸调用**；`gate_docs()` 的返回值只等于**最后一条**命令的退出码，而 `light` 分支的最后一句是
+     `gate_license_inventory`。**实测**：在 `check_gate_status.py` 后面插一条
+     `python3 -c "import sys; sys.exit(3)"`，`run-gates.sh light` 仍然 **EXIT=0** 并打印"门禁通过"。
+     这与该文件头部"所有命令的退出码都被**显式检查**…任何一步红就立刻以非零码退出"的自我承诺
+     **直接矛盾**（L12"门禁空跑"的同族）。本线**只加一行**，且**故意走 `run`**
+     （`run "phase-status" python3 …`）以确保自己这条真能阻断；其余三条是否也改为 `run`
+     由集成者裁决 —— 改了会当场暴露新的红，那正是要的。
+  2. **`gate-status.md` 的 `MUST-GATE-010` 行引用的测试名已经漂移**：表里写
+     `state_tree_is_conserved_under_inverse_application`，而 `grep -rn "inverse_application" crates/`
+     命中 **0**；仓库里真实存在的是 `crates/yeban-model/src/ops.rs:3364` 的
+     `state_tree_is_conserved_under_reverse_undo`。`gate-status.md` 不在本线可改范围 ⇒ 记 needs。
+     根因值得记：**那张表的守卫只查"有没有证据"，查不出"证据里的名字对不对"** ——
+     "可复跑的证据"要真能跑起来，才算证据（本表的守卫同样只做到"形态合格"，
+     真正跑得起来仍要人看；这一点如实写在两边的措辞里）。
+- **本机 vs CI 的严格区分**：上面**全部**是**本机**读数。`run-gates.sh light` 通过**不是**判决 ——
+  只有 CI 的判决算数（`docs/CI_CD.md` §3）；本轮的判决由
+  `bash scripts/dev/ci-verdict.sh line/phase-status` 读回，**未读回之前一律记 `pending`**。
+
