@@ -6429,3 +6429,33 @@ and its payoff is structural rather than visible, so doing it badly is worse tha
 **Consequence for the ledger's own accuracy**: until that move happens, the honest statement is that the UI side has the only
 implementation of the pencil construction, MCP has none, and D45-D55's "两侧同接" is **partially** delivered - implemented on one side,
 with the shared-home decision now made and recorded.
+
+### Round 262: correcting round 261 - MCP DOES have note editing; the gap is duplication of the construction
+
+Round 261 wrote that "the UI side has the only implementation, MCP has none". Reading `tools.rs` falsifies the second half: there is already
+a tool for exactly this -
+
+| | |
+| :--- | :--- |
+| name | **`yeban_edit_notes`** (`tools.rs:529`) |
+| summary | "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验" |
+| params | `trackId`, `clipId`, `ops` (a `NoteOp` list), optional `idempotencyKey` |
+| errors | `ClipNotFound`, `OutOfRange` |
+| handler | `domain/mod.rs:1233` -> `plan_edit_notes(domain, call)` |
+| helper module | `notes` - "`yeban_edit_notes` 的 `NoteOp` -> `Op` 编译 + 发声数校验" (`domain/mod.rs:31`) |
+
+So MCP can add, delete and modify notes today. **What is missing is not a tool but the sharing**: MCP compiles its own `NoteOp` list into
+`Op`s, and the UI's pencil builds an `Op` through `plan_to_add_note`. Both are correct in isolation; the requirement in D45-D55 is that
+they be the SAME construction, and right now they are two.
+
+**Why the round-261 move still stands and now looks better justified**: putting `plan_to_add_note` in `yeban-model` is what makes the
+sharing possible at all - an MCP-side `NoteOp` "add" can call it, and could not have called anything in `yeban-app` without violating the
+dependency direction. The move was made for a reason that survives the correction; only my estimate of the remaining work was wrong.
+
+**The next step, now specific**: read the "add" arm of MCP's note compilation (`crates/yeban-mcp/src/domain/notes.rs` and its caller
+`plan_edit_notes`) and make it delegate to `yeban_model::note_plan::plan_to_add_note`, with a criterion asserting the MCP path and the UI
+path produce the **same** `Op` for the same inputs - which is the only way "共用同一实现" is checkable rather than claimed.
+
+**The lesson, again of the same family**: I asserted an absence ("MCP has none") from a dependency reading plus an inference, without
+grepping the tool registry that was one command away. Rounds 240/246/261 each recorded a version of this; the reliable habit is to grep
+for the capability before declaring it missing.
