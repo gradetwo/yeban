@@ -1558,3 +1558,22 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   它就会在某次操作后悄悄变成谎言，而**引用它的人（包括我自己）会继续当真**。
   ⇒ 凡是写进口径的事实，要么能被一条命令复核，要么就别写成事实。
 
+### 第 13 轮：契约与实现的**必需性对齐**（`schemas/project.schema.json` 收紧）
+
+- 合并 `line/model-schema-d43`（CI run **37248121161** @ 9d60b82 = **success**）。
+  这一笔把我第 10 轮**错误声称过**的那件事真正做完了（当轮已按 L31 更正）。
+- **改动**：只动 `schemas/project.schema.json`（**+924 行**）—— 根 `required` **11 → 18 键**，
+  并补齐此前**根本不在 schema 里**的对象（`devices`/`macros`/`automation_lanes`/`clip_pool.content`/
+  `sections`/`scenes`/`assets`/`routing_graph.edges` 等）。
+- **两条同样重要的方向**（这是本笔的价值所在，而不是"字段变多了"）：
+  · **该收紧的收紧**：`tracks` 的 `solo_safe`/`devices`/`macros`/`automation_lanes`/`clips`、`transport` 三项、
+    `metadata` 两项、`clips.loop_config`、`notes` 五项、`assets` 五项 … 都进了 `required`；
+  · **该豁免的豁免**：§5.4 的 **18 项**（`Option::None` 或空集 + `skip_serializing_if`，
+    例如 `folder_id`/`color`/`domain`/`unit`/`gain_db`）**一律不进 `required`** ——
+    实测抽查三项确认不在（把语义上可选的字段收紧成必需**就是 bug**，这一侧比收紧更容易出错）。
+- **核心判据（合并后本机复跑）**：`export_schema_samples` + `validate_schemas.py --repo-assets --samples-dir`
+  = **契约校验通过（4 份 schema）** ⇒ **收紧之后本写入器自己的输出仍被判为合法** ——
+  这就是"required 不能比实现更紧"的机械形式。模型侧 6 组测试全绿（含 8 条 `no_compat` 判据）。
+- **下一步（已在跑）**：`line/schema-ratchet` 把这条对账做成**常设棘轮**（两个方向：契约不能更紧、
+  契约不能更松），这样"实现与契约再次漂移"将**不可能悄悄发生**。
+
