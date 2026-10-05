@@ -2481,3 +2481,30 @@ merge run `37282047399` 被 `cancel-in-progress` 收掉、`37282122759` 是 docs
 **生产响应载荷里的一句假话** —— 它说"契约 `origin.oneOf` 尚未承认该分支 (needs)"，而契约**已经承认**
 （`McpEdit` 分支已入 `schemas/ops.schema.json`）⇒ 客户端拿到的 `note` 是错的；同文件 `:46`、`import_audio.rs:36` 同病。
 
+### 第 82 轮：`MUST-GATE-012` 的镜像漂移**根治**（真漂，不是读数时刻）—— 并解答 N6（那条"消失的 stash"是我弹的）
+
+**判决**: `line/engine-mirror-race` run **`37281806141` = success**（真腿：`rust (yeban-engine)` **9 步 0 失败**、
+`rust (yeban-app)` 9 步 0 失败；`workspace 全量`/`windows` 按受影响集合**跳过**，非凑绿）。
+`land` 逐字检查（`land=0` + `Merge made`）；main 里 `pushed` 记账命中 **27** 处；许可一致、`light` ✓。
+
+**定位（推翻我给它的假设方向）**: **镜像真的永久漂了**，不是"两处读数不在同一静止时刻"。
+比较点本来就是静止点（音频线程退出循环后读镜像 → 主线程 `join` → 读权威）。
+漂移窗口: `note_drain(taken, remaining)` 的 `remaining` 在调用点求值（`snapshot.rs:1023`），
+到 `pending.store(remaining)`（`:850`）之间隔着两条 `saturating_bump` CAS 循环 ⇒ 窗口里落进的 `note_push` `+1`
+被**永久盖掉**；覆写只在**下一次** drain 自愈 ⇒ 只有最后一轮 drain 的漂移能活到静止点（**512 尾段积压 + 1 = 513**，与 CI 逐位吻合）。
+
+**修法**: `pending` ⇒ `pushed`（成功入队 `fetch_add`），`pending() = pushed.saturating_sub(drained)`，**取消覆写**
+⇒ 按构造**不存在**能丢 `+1` 的窗口；`push` 顺序钉死（先入环、后记账）；更正 `rt.rs`/`snapshot.rs` 里"覆写⇒自愈"的**错误承诺**。
+**静止点口径**: 复用 engine-stats 的 `join` 后静止时刻，只补两件证明静止 —— `Arc::strong_count(accounting)==1`（生产端已不存在）+ 静止点前后双读逐项相等。
+
+**见证/判据/注入**: ①非平凡（精确待回收 513~514、`pushed=10512 drained=9999`）；②静止为真（`双读相等=true 生产端强引用=1`）；
+③**零容差**（等号）+ 结构等式 `pushed − drained == 精确待回收`。注入 3 组（还原后 `sha256` 逐字节相同）:
+I1 少记一次 ⇒ `镜像=511 权威=512`；I2 多记一次 ⇒ `镜像=515 权威=514`；I3 忠实再现第一版覆写竞态 ⇒ 库内见证第 1 个样本即红。
+行内还抓到并修掉**判据自身的一个状态机缺陷**（"停下"与"收工"同值且初值即 quit ⇒ 生产者线程直接退出；改**代际回执**后带 4 个 CPU 打满进程连跑 **60/60** 绿，**没有放宽断言**）。
+
+**N6 解答（它担心误弹了别的线的 stash 后那条 stash 消失）**: **那是我弹的，没有丢东西。**
+我在第 164 轮为了核实而**在 `origin-contract` 的工作树里** `git stash pop stash@{0}`（0 冲突）→
+复跑 `cargo-local.sh test -p yeban-model`（lib **110 passed / 0 failed**）→ 提交为 `6f771a7` → 已并行入 main（`84eae35`）。
+⇒ 该 stash 从列表消失是因为**它被正常弹出并落实为提交**。教训（写入纪律）: **弹 stash 前先核对 `On <branch>` 与文件清单**
+（跨工作树共享同一个 `.git`，`stash@{n}` 是仓库级的，很容易弹错别人的那条）。
+
