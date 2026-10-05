@@ -110,6 +110,10 @@ jobs:
           python3 scripts/dev/verify-samples-bytes.py
 
       - name: 证据审计（被引用的 CI run id 是否真的存在）
+        env:
+          # ⚠ 没有 token 时 `gh api` 一律失败 ⇒ 脚本会把"读不到"当"不存在"（首次派发手动档时就是这样：
+          # 75 个 run id 全报不可读、整步红、**连带后面的检查全都没跑到**）。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # 本仓库的口径是"每个结论都要有可复跑的判决"。但**引用一个 run id 不等于**那个判决支持你说的话 ⇒

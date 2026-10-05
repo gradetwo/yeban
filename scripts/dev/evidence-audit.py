@@ -61,7 +61,24 @@ def run_info(ident: str) -> dict | None:
     }
 
 
+def gh_available() -> bool:
+    """`gh` 是否**已认证**。未认证时它仍然存在, 但每个请求都会失败 —— 那属于"无法判定", 不是"证据不存在"。
+
+    实测教训: 我首次派发手动档 `inventory` 时没有给 token, 于是 75 个 run id 全报"不可读",
+    整步红, **后面的检查（含新加的 cargo vendor）一个都没跑到**。所以这里必须先分清
+    "没判定" 与 "判失败" —— 与 `check_vendor.sh` 里那条修正是同一条纪律。
+    """
+    out = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, check=False)
+    return out.returncode == 0
+
+
 def main() -> int:
+    if not gh_available():
+        print(
+            "[unknown] `gh` 未认证 —— 本环境无法核对被引用的 run id（**不是**失败）。\n"
+            "          CI 里请给该步骤 `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`; 本地请 `gh auth login`。"
+        )
+        return 2
     runs = cited_runs()
     if not runs:
         print("[ok] 证据审计: 文档里没有引用任何 run id")
