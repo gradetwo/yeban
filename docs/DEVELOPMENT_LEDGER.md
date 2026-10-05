@@ -6703,3 +6703,31 @@ the plan (round 247's action handlers, this one), and both were found by greppin
 and may be absent (no measurement yet), so the struct's derives and the field types will need a deliberate choice then - `Option<f32>`-shaped
 reads would keep "not measured yet" distinguishable from "measured silence", which is exactly the distinction the spec's metering section
 cares about.
+
+### Round 272: the injection has no injector - the MCP server is a separate process and cannot see the engine
+
+The read round 271 asked for, and it turns the loudness item into a question rather than a task:
+
+| fact | evidence |
+| :--- | :--- |
+| the MCP server is its own binary | `crates/yeban-mcp/Cargo.toml` declares `[[bin]] name = "yeban-mcp"` at `src/bin/yeban-mcp.rs`, entry `fn main` at line 152 |
+| nothing in production fills `EngineReadings` | the only call sites of `set_engine_readings` are in `crates/yeban-mcp/tests/extension_tools.rs` (round 271) |
+
+So `EngineReadings` is documented as "宿主注入的引擎读数镜像" - a HOST-injected mirror - and **no host injects it**. For the standalone stdio
+server that is structural rather than an oversight: the engine runs in the application process, and a separate MCP process has no route to its
+readings unless something deliberately creates one (the app pushing them over the protocol, a shared file/socket, or the server being
+embedded in the app process instead of run standalone).
+
+**Why this matters more than the loudness fields**: any attempt to add loudness to a mirror nobody fills would produce a field that is
+permanently absent in production - the exact "looks wired, is not" failure this session has recorded four times now. And the underlying
+question is not mine to answer by invention: **how is the MCP server supposed to learn engine state at all?** The options are architectural
+(app-embedded server; a push channel over stdio/MCP notifications; a shared snapshot file), they differ in trust and lifecycle, and the
+normative documents this session has read do not settle it - which makes it a genuine candidate for a负责人 ruling alongside HD-49 and N2.
+
+**What is NOT in doubt**: the loudness values themselves are already computed to spec (round 268), their home in the reported shape is
+already designed (round 270), and the criteria are cheap (silence → floor, full-scale tone → known LUFS within tolerance, true peak matches
+the detector). The blockers are entirely about **who is allowed to hand engine state to an MCP client**, which is a security-adjacent
+question and therefore one to ask rather than assume.
+
+**Consequence for the objective's wording**: "MCP 工具集扩张（… 响度目标）" cannot be completed by adding a tool, because the tool's data
+source does not exist in production. The honest status is: **blocked on the injection question**, not on implementation.
