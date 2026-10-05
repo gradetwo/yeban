@@ -23,6 +23,9 @@ default = ["device"]
 device = ["dep:cpal"]
 
 [dependencies]
+# [D56 诊断包] 两者都是根清单**早已预留**的依赖（零新增）。
+zip.workspace = true
+sha2.workspace = true
 # 版本全部来自根 [workspace.dependencies] 的登记, 本 crate **不**自带版本号, 也不需要 hoist。
 #
 # cpal / rtrb 是本 crate 的"重依赖": 本机 (M2) 不编译, 一律交给 CI。

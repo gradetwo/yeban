@@ -109,6 +109,7 @@
 pub mod block;
 #[cfg(feature = "device")]
 pub mod device;
+pub mod diagnostics;
 pub mod fpu;
 pub mod graph;
 pub mod latency;
