@@ -58,6 +58,12 @@
 //! 判据 ⑪ 要求"实时窗口**跨**一个外线程"的同时读数仍然无歧义，而全局武装会让
 //! 外线程的分配被算进实时窗口（又一次"判据测错对象"）。
 //!
+//! 判据 ⑫（`line/engine-stats` 新增）把同一套仪器对准**控制面的读取路径**：
+//! `EngineStats` 现在带着退役队列的原子量（`pending`/`drained`/释放线程归属），
+//! 控制面要在 60Hz 循环里每帧读它 ⇒ 必须证明"读它也**不**引入分配/锁/I-O"，
+//! 否则"控制面能看见"就要拿渲染路径来换。⑫b 同时实测**注入口径**：
+//! `Vec::new()` 不分配（无效注入），`Vec::with_capacity(1)` 才分配（有效注入）。
+//!
 //! # 本判据怎么变红（④ 组注入，实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4）
 //!
 //! | # | 注入点（`crates/yeban-engine/src/`） | 变红的判据 |
@@ -131,6 +137,8 @@ const METER_DRAIN_ROUNDS: u64 = 1_000;
 const AUTOMATION_QUANTA: u64 = 2_000;
 /// ⑥ 混音链场景的量子数。
 const MIX_QUANTA: u64 = 2_000;
+/// ⑫ 控制面读取 `EngineStats` 的窗口：每量子读一次（读数路径不许引入分配/锁/I-O）。
+const STATS_QUANTA: u64 = 2_000;
 /// ⑪ 外线程活动窗口内的量子数（窗口**跨**外线程的 3 次加锁 + 2 次真实 I/O）。
 const ATTRIBUTION_QUANTA: u64 = 400;
 /// 外线程的阻塞加锁次数（判据 ⑪ 要求它们落在 `foreign_*` 桶里）。
@@ -427,7 +435,8 @@ impl Report {
         if self.failures() == 0 {
             println!(
                 "[MUST-GATE-001] ok: 六场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链）\
-                 四元组全 0；探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
+                 四元组全 0；控制面读取 EngineStats 的读取路径同样全 0；探针有牙（正对照 + 注入）；\
+                 线程归属与外线程活动已对账"
             );
             ExitCode::SUCCESS
         } else {
@@ -1258,6 +1267,81 @@ fn thread_attribution(report: &mut Report, witness: &Arc<WitnessSink>) {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 ⑫ 控制面读取 EngineStats 的**读取路径**：无锁、零分配、零 I/O
+// ---------------------------------------------------------------------------
+
+/// `[MUST-GATE-001]` 的延伸：**读**引擎健康读数这件事本身不许把实时路径拖下水。
+///
+/// 背景（`needs` N2/N5 的落地）：`EngineStats` 现在多了退役队列的
+/// `pending` / `drained` / `pruned` 与"释放线程归属"（跨线程原子量）。
+/// 控制面要在 60Hz 循环里每帧读它 —— 如果读它需要加锁或分配，那么"控制面能看见"
+/// 就会以"渲染路径被 Q 读者拖慢"为代价。因此这里断言：**每量子读一次 `stats()`**
+/// 的窗口里四元组仍全 0，且探针位置见证照旧成立（`visits == quanta`）。
+///
+/// ⚠ 本判据的**注入口径**（实测，见 notes 注入 E3）：让读取路径变红的是
+/// `Vec::with_capacity(1)`（真的分配），**不是** `Vec::new()` —— 后者容量为 0、
+/// 不触碰分配器。这条实测写进 ⑫b，避免后人照着"加一次 `Vec::new()`"去做无效注入。
+fn stats_read_path(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+    rig.step();
+
+    let mut last = rig.stats();
+    let mut scenario = Scenario::new("⑫统计面读取");
+    let reading = window(|| {
+        for _ in 0..STATS_QUANTA {
+            rig.step();
+            // 真的读一次（`black_box` 防优化掉），并断言**只读**：读数不回退。
+            let stats = std::hint::black_box(rig.stats());
+            assert!(
+                stats.quanta >= last.quanta,
+                "读 stats() 不得让引擎读数回退（{} < {}）",
+                stats.quanta,
+                last.quanta
+            );
+            last = stats;
+        }
+    });
+    scenario.absorb(STATS_QUANTA, &reading);
+    scenario.note(format!(
+        "窗口内读了 {} 次 stats()（含退役队列原子量）；最后 quanta={} retire_pending={} \
+         release_thread_is_main={} foreign_drains={}",
+        STATS_QUANTA,
+        last.quanta,
+        last.retire_pending,
+        last.release_thread_is_main,
+        last.foreign_drains
+    ));
+    report.scenario(
+        "⑫",
+        "控制面读取 EngineStats：每量子读一次，四元组仍全 0（无锁 / 零分配 / 零 I-O）",
+        &scenario,
+    );
+
+    // ---- ⑫b：注入口径实测（哪种注入真的能让 ⑫ 变红）----
+    let vec_new = window(|| {
+        std::hint::black_box(Vec::<u8>::new());
+    });
+    let vec_capacity = window(|| {
+        std::hint::black_box(Vec::<u8>::with_capacity(1));
+    });
+    report.assert(
+        "⑫b",
+        "注入口径：`Vec::new()` **不分配**（无效注入），`Vec::with_capacity(1)` 分配 1 次（有效注入）",
+        vec_new.quad.allocations == 0
+            && vec_new.quad.deallocations == 0
+            && vec_capacity.quad.allocations == 1
+            && vec_capacity.quad.deallocations == 1,
+        format!(
+            "`Vec::new()` 窗口[{}]；`Vec::with_capacity(1)` 窗口[{}]",
+            vec_new.quad.describe(),
+            vec_capacity.quad.describe()
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 仪器自检（"一个永远不会红的测量工具比没有测量更糟"）
 // ---------------------------------------------------------------------------
 
@@ -1327,6 +1411,7 @@ fn main() -> ExitCode {
     scenario_mix_chain(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
+    stats_read_path(&mut report);
 
     // 见证文件是临时产物：读完就删（不留垃圾，也不进仓库）。
     let _ = std::fs::remove_file(&witness.path);

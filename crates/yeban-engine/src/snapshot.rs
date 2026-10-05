@@ -15,8 +15,16 @@
 //! | 角色 | 线程 | 做的事 |
 //! | :--- | :--- | :--- |
 //! | [`SnapshotSlot::publish`] | Model 线程（非实时） | 构造新快照、原子换指针、把旧 `Arc` 移入待回收清单 |
-//! | [`SnapshotReader`] | cpal 回调线程 | 无锁读指针、`Arc` 克隆、把旧 `Arc` push 进退役队列 |
+//! | [`SnapshotReader`] | cpal 回调线程 | 无锁读指针、`Arc` 克隆、把旧 `Arc` push 进退役队列（[`RetireProducer`]） |
 //! | [`RetireQueue::drain`] + [`SnapshotSlot::prune`] | 主线程 60Hz | 出队并 **Drop**；释放写者侧待回收清单 |
+//!
+//! ## 控制面看得到的退役健康读数
+//!
+//! [`RetireQueue`] 的 `pending` / `drained` / `foreign_drains` / 释放线程归属现在记在一个
+//! 与 [`RetireProducer`]（音频线程侧）**共享的** [`RetireAccounting`] 上（全是原子量，
+//! 无锁、零分配）⇒ 渲染驱动可以把它们直接读进 [`crate::rt::EngineStats`]，
+//! 控制面因此能看见"退役队列积压了多少 / 释放是不是集中在同一个线程"。
+//! 语义、单调性与重置语义见 `docs/ledger/engine-stats-notes.md`。
 //!
 //! ## 无锁指针交换的**内存回收安全证明**（本模块唯一的 `unsafe` 依据）
 //!
@@ -719,30 +727,213 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
     (schedules, dropped)
 }
 
+/// 饱和自增（**不回绕**）：到 `u64::MAX` 就停住，返回新值。
+///
+/// 为什么不用 `fetch_add`：`AtomicU64` 没有饱和加法，而"计数溢出回绕"会把一条
+/// "健康读数"变成一条**看似回到 0 的谎报**（`docs/ledger/engine-stats-notes.md` §判据⑥）。
+/// CAS 循环无锁、无分配 —— 它只在**控制线程**的 `drain`/`prune` 路径上跑（不在渲染热路径）。
+fn saturating_bump(counter: &AtomicU64, delta: u64) -> u64 {
+    if delta == 0 {
+        return counter.load(Ordering::Acquire);
+    }
+    // 手写 CAS 循环（而不是 `fetch_update`）：它是 stable 上恒久可用的形式，
+    // 不受某一个工具链版本对 `fetch_update` 改名/弃用的影响（本仓库钉 1.99.0）。
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        let next = current.saturating_add(delta);
+        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return next,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+/// 退役队列的**跨线程记账**：控制线程写（`drain`），音频线程与任意读者只读。
+///
+/// 存在的理由（[MUST-GATE-012] 的观测面，`needs` N2/N5 的落地）：
+/// [`RetireQueue`] 自己的计数只有**队列持有者**（控制线程）读得到，而"控制面必须能看见的
+/// 引擎健康读数"要能从**渲染驱动**（[`crate::rt::EngineRuntime::stats`]）读到 ——
+/// 而驱动只拿得到生产端。于是把计数放进一个与 [`RetireProducer`] 共享的 `Arc` 结构：
+///
+/// | 字段 | 谁写 | 语义 | 单调性 |
+/// | :--- | :--- | :--- | :--- |
+/// | `pending` | 音频线程 `push` 成功（+1）/ 控制线程 `drain` 后**覆写**为实际剩余 | 队列当前占用（跨线程镜像） | **量规**（可升可降） |
+/// | `drained` | 控制线程 `drain` | 累计真正出队并 `Drop` 的条数 | 单调不减（饱和） |
+/// | `drain_calls` | 控制线程 `drain` | 累计**非空** `drain` 调用次数 | 单调不减（饱和） |
+/// | `foreign_drains` | 控制线程 `drain` | 在释放归属线程之外发生的非空 `drain` 次数 | 单调不减（饱和） |
+/// | `release_thread_is_owner` | 控制线程**首个**非空 `drain` | 首个执行释放的线程是否即归属线程 | 只可能 `true → false` |
+///
+/// **零锁、零分配**：全是原子 `load`/`store`/CAS。`pending` 的 `+1` 用一次 `fetch_add`
+/// （占用以队列容量为界 ⇒ 永不可能回绕），累计量用饱和 CAS（[`saturating_bump`]）。
+#[derive(Debug)]
+pub struct RetireAccounting {
+    /// **释放归属线程**：创建退役队列的那个线程（控制线程 = 60Hz 排空循环所在线程）。
+    ///
+    /// 之后**不可变**（因此共享它不需要原子量）。它是
+    /// [`release_thread_is_owner`](Self::release_thread_is_owner) 的比较基准，
+    /// 与 `gate-snapshot-churn` 判据里的 `queue.release_thread() == Some(main_thread)` 同口径
+    /// （那条工作线的 harness 正是在主线程上建队列 ⇒ 两者逐项一致）。
+    owner_thread: ThreadId,
+    pending: AtomicU64,
+    drained: AtomicU64,
+    drain_calls: AtomicU64,
+    foreign_drains: AtomicU64,
+    release_thread_is_owner: AtomicBool,
+}
+
+impl RetireAccounting {
+    fn new(owner_thread: ThreadId) -> Self {
+        Self {
+            owner_thread,
+            pending: AtomicU64::new(0),
+            drained: AtomicU64::new(0),
+            drain_calls: AtomicU64::new(0),
+            foreign_drains: AtomicU64::new(0),
+            // **vacuous 真**：还没有任何非空 `drain` ⇒ 没有观测到"外来释放"。
+            // 这与"首个 drain 的线程不是归属线程 ⇒ 立刻置假"合起来给出完整语义。
+            release_thread_is_owner: AtomicBool::new(true),
+        }
+    }
+
+    /// 队列当前占用的跨线程镜像（控制线程上请用精确读 [`RetireQueue::pending`]）。
+    #[must_use]
+    pub fn pending(&self) -> u64 {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    /// 累计真正出队并 `Drop` 的旧快照条数。
+    #[must_use]
+    pub fn drained(&self) -> u64 {
+        self.drained.load(Ordering::Acquire)
+    }
+
+    /// 累计**非空** `drain` 调用次数（结构性判据：60Hz 排空循环真的在跑）。
+    #[must_use]
+    pub fn drain_calls(&self) -> u64 {
+        self.drain_calls.load(Ordering::Acquire)
+    }
+
+    /// 在**释放归属线程之外**发生的非空 `drain` 次数（`> 0` = 释放没有集中在一个线程）。
+    #[must_use]
+    pub fn foreign_drains(&self) -> u64 {
+        self.foreign_drains.load(Ordering::Acquire)
+    }
+
+    /// 首个执行释放的线程是否就是**释放归属线程**（[`Self::owner_thread`]）。
+    ///
+    /// 尚无任何非空 `drain` 时为 `true`（vacuously：没有观测到外来释放）。
+    #[must_use]
+    pub fn release_thread_is_owner(&self) -> bool {
+        self.release_thread_is_owner.load(Ordering::Acquire)
+    }
+
+    /// 释放归属线程（退役队列的创建线程）。
+    #[must_use]
+    pub fn owner_thread(&self) -> ThreadId {
+        self.owner_thread
+    }
+
+    /// 音频线程侧：一次成功的 `push` ⇒ 占用 +1（单次原子 RMW，无锁无分配）。
+    fn note_push(&self) {
+        // 占用以队列容量为界 ⇒ 这里**不可能**回绕；刻意不用 CAS 循环，
+        // 让渲染路径上的这条记账保持"一条指令"。
+        self.pending.fetch_add(1, Ordering::Release);
+    }
+
+    /// 控制线程侧：一次非空 `drain` 的完整记账（**唯一写者**）。
+    ///
+    /// `remaining` 是出队**之后**队列的真实剩余（`consumer.slots()`）—— 用**覆写**
+    /// 而不是"减法"自愈任何漂移，也让 `pending` 镜像与控制线程的精确读收敛。
+    fn note_drain(&self, taken: usize, remaining: usize) {
+        saturating_bump(&self.drain_calls, 1);
+        saturating_bump(&self.drained, taken as u64);
+        self.pending.store(remaining as u64, Ordering::Release);
+    }
+
+    /// 控制线程侧：钉住**首个**释放线程的归属（只可能 `true → false`）。
+    fn note_release_thread(&self, is_owner: bool) {
+        if !is_owner {
+            self.release_thread_is_owner.store(false, Ordering::Release);
+        }
+    }
+
+    /// 控制线程侧：一次来自"非首个释放线程"的非空 `drain`。
+    fn note_foreign_drain(&self) {
+        saturating_bump(&self.foreign_drains, 1);
+    }
+}
+
+/// 退役队列的**生产端**（音频线程持有）。
+///
+/// 它是 `rtrb::Producer<Arc<EngineSnapshot>>` 的薄包装，唯一多出来的是与
+/// [`RetireQueue`] 共享的 [`RetireAccounting`] —— 于是
+/// [`crate::rt::EngineRuntime`] 只要拿到生产端，就能把退役队列的
+/// `pending` / `drained` / 释放线程归属读进 [`crate::rt::EngineStats`]，
+/// **控制面不需要额外接线**（[`retire_channel`] 的每个调用点一个字都不用改）。
+pub struct RetireProducer {
+    inner: rtrb::Producer<Arc<EngineSnapshot>>,
+    accounting: Arc<RetireAccounting>,
+}
+
+impl RetireProducer {
+    /// 把旧快照推进退役队列；队列满时把值**原样退回**（调用方据此寄存到 `stash`）。
+    ///
+    /// 实时路径：一次 `rtrb` 的 `push` + 成功时一次 `Relaxed/Release` 原子加。
+    ///
+    /// # Errors
+    ///
+    /// 队列满时返回 [`rtrb::PushError::Full`]，其中带着**未被消费的值**。
+    pub fn push(
+        &mut self,
+        snapshot: Arc<EngineSnapshot>,
+    ) -> Result<(), rtrb::PushError<Arc<EngineSnapshot>>> {
+        let result = self.inner.push(snapshot);
+        if result.is_ok() {
+            self.accounting.note_push();
+        }
+        result
+    }
+
+    /// 与 [`RetireQueue`] 共享的跨线程记账（只读）。
+    #[must_use]
+    pub fn accounting(&self) -> &Arc<RetireAccounting> {
+        &self.accounting
+    }
+}
+
+impl core::fmt::Debug for RetireProducer {
+    /// 手写 `Debug`：`rtrb::Producer` 的可调试性不构成本模块的契约，这里只暴露记账句柄。
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("RetireProducer")
+            .field("accounting", &self.accounting)
+            .finish_non_exhaustive()
+    }
+}
+
 /// 退役回收队列的消费端（**主线程**持有）。
 ///
 /// 音频线程把旧快照 push 进来；主线程以 60Hz `drain` 并在这里真正 **Drop**
 /// [ARCH-RT-002]。因此"释放快照"这件事永远不会发生在音频线程上。
+///
+/// 计数（`dropped` / `drain_calls` / `foreign_drains`）住在共享的
+/// [`RetireAccounting`] 上（音频线程侧的 [`crate::rt::EngineStats`] 读得到）；
+/// 只有"首个释放线程的**身份**"（[`Self::release_thread`]）留在这里 ——
+/// `ThreadId` 在 stable 上无法放进原子量（`as_u64` 不稳定）。
 #[derive(Debug)]
 pub struct RetireQueue {
     consumer: rtrb::Consumer<Arc<EngineSnapshot>>,
-    drained: u64,
-    drops: u64,
+    accounting: Arc<RetireAccounting>,
     /// **释放线程**：第一次真正出队（`take > 0`）的线程。`None` = 还没回收过。
     ///
     /// [MUST-GATE-012] 要求旧快照"在主线程 60Hz 循环中释放"；本字段把
     /// "哪个线程执行了 `Drop`"变成可读事实（配合 [`release_probe`] 的逐线程计数）。
     release_thread: Option<ThreadId>,
-    /// 在 `release_thread` **之外**的线程上发生的非空 `drain` 次数。
-    ///
-    /// `> 0` 即证明"释放没有集中在同一个线程"⇒ 违反 [MUST-GATE-012] 的主线程释放契约。
-    /// 它**不** panic：实时/关流路径上宁可继续也不中断（红线 7 的精神），
-    /// 由判据把它读出来变红。
-    foreign_drains: u64,
 }
 
 impl RetireQueue {
-    /// 当前排队待回收的条数。
+    /// 当前排队待回收的条数（**控制线程上的精确读**；跨线程镜像见
+    /// [`RetireAccounting::pending`]）。
     #[must_use]
     pub fn pending(&self) -> usize {
         self.consumer.slots()
@@ -750,14 +941,14 @@ impl RetireQueue {
 
     /// 累计已回收（Drop）的快照数。
     #[must_use]
-    pub const fn dropped(&self) -> u64 {
-        self.drops
+    pub fn dropped(&self) -> u64 {
+        self.accounting.drained()
     }
 
-    /// 累计 drain 调用次数。
+    /// 累计非空 `drain` 调用次数。
     #[must_use]
-    pub const fn drain_calls(&self) -> u64 {
-        self.drained
+    pub fn drain_calls(&self) -> u64 {
+        self.accounting.drain_calls()
     }
 
     /// 实际执行过释放的**线程**（首次非空 `drain` 的线程）。`None` = 从未真正回收。
@@ -766,12 +957,27 @@ impl RetireQueue {
         self.release_thread
     }
 
+    /// 首个执行释放的线程是否就是**创建本队列的那个线程**（释放归属线程）。
+    ///
+    /// 与 `gate-snapshot-churn` 判据的 `queue.release_thread() == Some(main_thread)`
+    /// **同一口径**（那条 harness 在主线程上建队列）⇒ 两个读数逐项一致。
+    #[must_use]
+    pub fn release_thread_is_main(&self) -> bool {
+        self.accounting.release_thread_is_owner()
+    }
+
     /// 在 [`release_thread`](Self::release_thread) 之外的线程上发生的非空 `drain` 次数。
     ///
     /// [MUST-GATE-012] 判据要求它恒为 `0`（所有旧快照都在**同一个主线程**上释放）。
     #[must_use]
-    pub const fn foreign_drains(&self) -> u64 {
-        self.foreign_drains
+    pub fn foreign_drains(&self) -> u64 {
+        self.accounting.foreign_drains()
+    }
+
+    /// 与 [`RetireProducer`] 共享的跨线程记账（只读）。
+    #[must_use]
+    pub fn accounting(&self) -> &Arc<RetireAccounting> {
+        &self.accounting
     }
 
     /// 一次性出队至多 `max` 条并 **Drop**，返回实际回收条数。
@@ -784,22 +990,28 @@ impl RetireQueue {
         if take == 0 {
             return 0;
         }
-        self.drained = self.drained.saturating_add(1);
         // [MUST-GATE-012] 记账**释放线程**：第一次真正出队时钉住，之后再从别的线程出队
         // 就记一次 `foreign_drains`（判据据此变红）。
         let here = std::thread::current().id();
         match self.release_thread {
-            None => self.release_thread = Some(here),
-            Some(owner) if owner != here => {
-                self.foreign_drains = self.foreign_drains.saturating_add(1);
+            None => {
+                self.release_thread = Some(here);
+                // **首个**释放线程的归属：与 `foreign_drains` 是两个不同的判据 ——
+                // 首个 drain 就跑在外线程时 `foreign_drains` 仍是 0，只有这条布尔量抓得住。
+                self.accounting
+                    .note_release_thread(here == self.accounting.owner_thread());
             }
+            Some(owner) if owner != here => self.accounting.note_foreign_drain(),
             Some(_) => {}
         }
         let chunk = match self.consumer.read_chunk(take) {
             Ok(chunk) => chunk,
             // slots() 与 read_chunk 之间没有别的消费者，这里理论上不可达；
             // 真发生了也只是"这一轮少回收一点"，下一轮再来 —— 不 panic。
-            Err(_) => return 0,
+            Err(_) => {
+                self.accounting.note_drain(0, self.consumer.slots());
+                return 0;
+            }
         };
         let mut count = 0usize;
         for snapshot in chunk {
@@ -807,23 +1019,29 @@ impl RetireQueue {
             drop(snapshot);
             count += 1;
         }
-        self.drops = self.drops.saturating_add(count as u64);
+        // 计数与占用镜像一次记完（`pending` 被**覆写**为真实剩余 ⇒ 自愈漂移）。
+        self.accounting.note_drain(count, self.consumer.slots());
         count
     }
 }
 
-/// 建立退役队列：`Producer` 给音频线程，[`RetireQueue`] 给主线程。
+/// 建立退役队列：[`RetireProducer`] 给音频线程，[`RetireQueue`] 给主线程。
+///
+/// 两者共享同一个 [`RetireAccounting`]（在**本调用所在的线程**上创建 ⇒ 该线程
+/// 就是"释放归属线程"，见 [`RetireAccounting::owner_thread`]）。
 #[must_use]
-pub fn retire_channel(capacity: usize) -> (rtrb::Producer<Arc<EngineSnapshot>>, RetireQueue) {
+pub fn retire_channel(capacity: usize) -> (RetireProducer, RetireQueue) {
     let (producer, consumer) = rtrb::RingBuffer::<Arc<EngineSnapshot>>::new(capacity.max(1));
+    let accounting = Arc::new(RetireAccounting::new(std::thread::current().id()));
     (
-        producer,
+        RetireProducer {
+            inner: producer,
+            accounting: Arc::clone(&accounting),
+        },
         RetireQueue {
             consumer,
-            drained: 0,
-            drops: 0,
+            accounting,
             release_thread: None,
-            foreign_drains: 0,
         },
     )
 }
@@ -845,6 +1063,12 @@ pub struct SnapshotSlot {
     /// 已被 `ptr` 淘汰、但在读者确认之前必须保持存活的强引用。
     pending: Mutex<Vec<(u64, Arc<EngineSnapshot>)>>,
     published: AtomicU64,
+    /// 累计由 [`prune`](Self::prune) 释放的写者侧强引用条数（[MUST-GATE-012] 的观测面）。
+    ///
+    /// 它补上退役回收的另一半：退役队列回收的是"读者曾经持有的那一份"，`prune` 回收的是
+    /// "写者 anchor 淘汰下来的那一份"；两者都是同一个快照的强引用。控制面需要看到
+    /// **两条**回收路径都在动，否则"队列空了"可能只是"写者侧清单在涨"。
+    pruned: AtomicU64,
 }
 
 // 线程安全说明：`SnapshotSlot` 的每个字段都是 `Send + Sync` —— `AtomicPtr`/`AtomicU64`/
@@ -865,6 +1089,7 @@ impl SnapshotSlot {
             reader_attached: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
             published: AtomicU64::new(1),
+            pruned: AtomicU64::new(0),
         })
     }
 
@@ -921,6 +1146,12 @@ impl SnapshotSlot {
         lock(&self.pending).len()
     }
 
+    /// 累计由 [`prune`](Self::prune) 释放的写者侧强引用条数（单调不减，饱和）。
+    #[must_use]
+    pub fn pruned(&self) -> u64 {
+        self.pruned.load(Ordering::Acquire)
+    }
+
     /// 释放所有已被读者确认淘汰的强引用，返回释放条数（**主线程 60Hz** 调用）。
     ///
     /// 这是"内存回收"发生的地方；音频线程只 `push`，从不 `drop` [ARCH-RT-002]。
@@ -930,11 +1161,15 @@ impl SnapshotSlot {
         if !self.reader_attached.load(Ordering::Acquire) {
             // 没有在册读者 ⇒ 没有任何在途指针解引用 ⇒ 全部可以立即释放。
             pending.clear();
+            // 释放条数在 `pending` 被清空**之前**取（`before`），且必须记进**饱和**累计量。
+            saturating_bump(&self.pruned, before as u64);
             return before;
         }
         let done = self.reader_done.load(Ordering::Acquire);
         pending.retain(|(retired_at, _)| *retired_at > done);
-        before - pending.len()
+        let released = before - pending.len();
+        saturating_bump(&self.pruned, released as u64);
+        released
     }
 }
 
@@ -951,7 +1186,7 @@ impl SnapshotSlot {
 /// ```
 pub struct SnapshotReader {
     slot: Arc<SnapshotSlot>,
-    retire: rtrb::Producer<Arc<EngineSnapshot>>,
+    retire: RetireProducer,
     held: Option<Arc<EngineSnapshot>>,
     /// 当前持有快照的**地址**（不保存裸指针：裸指针 `*const T` 是 `!Send`，
     /// 而整个读者必须能 move 进 cpal 的回调线程）。地址比较与指针比较语义相同，
@@ -967,7 +1202,7 @@ pub struct SnapshotReader {
 impl SnapshotReader {
     /// 在册化一个读者。**必须在音频线程启动前调用一次**。
     #[must_use]
-    pub fn attach(slot: &Arc<SnapshotSlot>, retire: rtrb::Producer<Arc<EngineSnapshot>>) -> Self {
+    pub fn attach(slot: &Arc<SnapshotSlot>, retire: RetireProducer) -> Self {
         // 先复位进度再登记: 顺序无关紧要（见模块文档的证明），
         // 但"先保守后激进"更不容易出错。
         slot.reader_done.store(0, Ordering::Release);
@@ -1050,6 +1285,20 @@ impl SnapshotReader {
     #[must_use]
     pub const fn stash_events(&self) -> u64 {
         self.stash_events
+    }
+
+    /// 与 [`RetireQueue`] 共享的退役队列记账（跨线程只读；[`crate::rt::EngineStats`] 读它）。
+    #[must_use]
+    pub fn retire_accounting(&self) -> &Arc<RetireAccounting> {
+        self.retire.accounting()
+    }
+
+    /// 写者侧待回收清单**累计**释放条数（= [`SnapshotSlot::pruned`]）。
+    ///
+    /// 渲染驱动把这条读数并进 [`crate::rt::EngineStats::retire_pruned`]。
+    #[must_use]
+    pub fn pruned(&self) -> u64 {
+        self.slot.pruned()
     }
 
     /// 把旧快照推进退役队列；队列满则寄存到 `stash`（下次块边界重试）。
@@ -1656,5 +1905,84 @@ mod tests {
             before_here + 1,
             "别的线程的释放不许污染本线程的计数（否则判据会把音频线程的 0 读错）"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 跨线程退役记账（`needs` N2/N5）：判据⑥ 的"大数行为"在这里断言
+    // -----------------------------------------------------------------------
+
+    /// 判据⑥（计数不饱和/不溢出）：累计量在 `u64::MAX` 附近必须**饱和**，不得回绕。
+    ///
+    /// "回绕成 0"会把一条健康读数变成**谎报**（"从没释放过"）—— 这正是
+    /// `saturating_bump` 存在的理由。两条断言：① 饱和加法本身；② 队列真的 drain 一次
+    /// 之后累计量停在 `u64::MAX`（用私有字段预置大数，这是**测试专用**的注入点）。
+    #[test]
+    fn retire_counters_saturate_instead_of_wrapping() {
+        let counter = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(saturating_bump(&counter, 5), u64::MAX);
+        assert_eq!(
+            saturating_bump(&counter, 5),
+            u64::MAX,
+            "已饱和 ⇒ 仍然是 MAX"
+        );
+        assert_eq!(counter.load(Ordering::Acquire), u64::MAX);
+        assert_eq!(saturating_bump(&counter, 0), u64::MAX, "0 增量是纯读");
+
+        // 队列级：预置成 `u64::MAX - 1`，再真的回收 2 条 ⇒ 停在 `u64::MAX`（不是 1）。
+        let (mut producer, mut queue) = retire_channel(4);
+        producer
+            .push(Arc::new(snapshot_with(128, 1)))
+            .expect("容量 4 有空间");
+        producer
+            .push(Arc::new(snapshot_with(128, 2)))
+            .expect("容量 4 有空间");
+        queue
+            .accounting
+            .drained
+            .store(u64::MAX - 1, Ordering::Release);
+        queue
+            .accounting
+            .drain_calls
+            .store(u64::MAX - 1, Ordering::Release);
+        assert_eq!(queue.drain(4), 2);
+        assert_eq!(queue.dropped(), u64::MAX, "饱和，而不是回绕成 1");
+        assert_eq!(queue.drain_calls(), u64::MAX);
+        assert_eq!(queue.foreign_drains(), 0);
+        // 再排一次空队列 ⇒ 非空 drain 计数不动（结构性判据不受空转影响）。
+        assert_eq!(queue.drain(4), 0);
+        assert_eq!(queue.drain_calls(), u64::MAX);
+    }
+
+    /// 判据⑥ 的另一半：写者侧 `prune` 的累计量同样饱和（它走的是同一条饱和加法）。
+    #[test]
+    fn slot_pruned_counter_saturates_instead_of_wrapping() {
+        let slot = SnapshotSlot::new(snapshot_with(128, 0));
+        slot.publish(snapshot_with(128, 1));
+        slot.publish(snapshot_with(128, 2));
+        assert_eq!(slot.pending_len(), 2, "没有在册读者 ⇒ 两项都可回收");
+        slot.pruned.store(u64::MAX - 1, Ordering::Release);
+        assert_eq!(slot.prune(), 2);
+        assert_eq!(slot.pruned(), u64::MAX, "饱和，而不是回绕成 1");
+        assert_eq!(slot.prune(), 0);
+        assert_eq!(slot.pruned(), u64::MAX);
+    }
+
+    /// 判据⑥ 的"量规不回绕"：`pending` 是跨线程镜像，且被 `drain` **覆写**为真实剩余
+    /// ⇒ 即使镜像被人工弄脏，下一次 `drain` 就自愈（控制面不会长期读到一个偏大的积压）。
+    #[test]
+    fn retire_pending_mirror_is_overwritten_by_drain_and_self_heals() {
+        let (mut producer, mut queue) = retire_channel(8);
+        producer
+            .push(Arc::new(snapshot_with(128, 1)))
+            .expect("容量 8 有空间");
+        assert_eq!(queue.accounting().pending(), 1, "push 成功 ⇒ 镜像 +1");
+        // 人工弄脏镜像（模拟"曾经漂移"）：drain 必须用真实剩余把它盖掉。
+        queue.accounting.pending.store(999, Ordering::Release);
+        assert_eq!(queue.accounting().pending(), 999);
+        assert_eq!(queue.drain(8), 1);
+        assert_eq!(queue.accounting().pending(), 0, "排空后镜像 = 真实剩余 = 0");
+        assert_eq!(queue.pending(), 0);
+        assert_eq!(queue.accounting().drained(), 1);
+        assert_eq!(queue.accounting().drain_calls(), 1);
     }
 }

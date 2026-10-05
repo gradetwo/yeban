@@ -19,6 +19,11 @@
 //! | 释放发生在**主线程** | ① 实时线程 `EngineSnapshot` 析构计数 `== 0`；② 归属窗口内"全局释放数 == 主线程释放数"；③ `RetireQueue::release_thread() == 主线程` 且 `foreign_drains == 0` | `snapshot::release_probe` + 分配器 |
 //! | 60Hz 循环排空 | 节拍 = 每 **5 个量子**（128 帧 × 5 ÷ 48 kHz = **13.3 ms**，标称 75 Hz）；实测**平均**间隔 ≤ 6 个量子 = 16.0 ms ≤ 16.67 ms（⇒ 实际不慢于 60 Hz）；`pending` 有界并最终 `== 0` | `RetireQueue::drain` + `AUDIO_QUANTA` 音频时钟 |
 //! | 零泄漏 | **等式**：`创建数 == 释放数 + 存活数`，且 `queue.pending() == 0 && slot.pending_len() == 0` | `release_probe::total()` 差值 |
+//! | 控制面**看得见**这些读数 | `EngineStats` 的退役镜像与队列/槽的权威读数**逐项相等**（`pending`/`drained`/`drain_calls`/`pruned`/释放线程归属/`foreign_drains`/`stash`） | 音频线程退出循环后读一次 `EngineStats`（此刻主线程阻塞在 `join` ⇒ 同一静止时刻）+ 队列自身的读数 |
+//!
+//! `line/engine-stats` 落地的就是最后一行：`needs` N2（`stash_events` 进统计面）与
+//! N5（释放线程归属进统计面）在这里被**逐项对账**（不是"大概一致"）。
+//! 语义与 needs 见 `docs/ledger/engine-stats-notes.md`。
 //!
 //! # 为什么必须 `harness = false`
 //!
@@ -229,6 +234,24 @@ struct AudioReport {
     transport_commands: u64,
     transport_quanta: u64,
     elapsed_ms: u128,
+    /// **`EngineStats` 的退役读数镜像**（`line/engine-stats` 的交付：`needs` N2/N5）。
+    ///
+    /// 它在音频线程**退出循环之后**读一次（此时主线程正阻塞在 `join` 上，
+    /// 也就是说：镜像与队列/槽的权威读数**处于同一个静止时刻**）⇒ 下面的逐项对账
+    /// 是等号，而不是"差不多"。
+    mirror: RetireMirror,
+}
+
+/// `EngineStats` 里的退役队列 / 释放线程读数（与队列自身的读数逐项对账）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RetireMirror {
+    pending: u64,
+    drained: u64,
+    drain_calls: u64,
+    pruned: u64,
+    release_thread_is_main: bool,
+    foreign_drains: u64,
+    stash_events: u64,
 }
 
 /// 一轮压测的全部读数 + 该轮的失败项。
@@ -273,6 +296,9 @@ struct RoundReport {
     slot_pending: usize,
     release_thread_is_main: bool,
     foreign_drains: u64,
+    /// 音频线程读到的 `EngineStats` 退役读数镜像（与 `queue_*` / `release_thread_is_main`
+    /// / `foreign_drains` **逐项对账**；见 `run_round` 里的对账块）。
+    mirror: RetireMirror,
     /// 最后一个"应该什么都不剩"的窗口的读数。
     quiet_window: AllocWindow,
     quiet_released: u64,
@@ -407,6 +433,15 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
             let window = close_alloc_window();
             let stats = runtime.stats();
             let stash_events = runtime.snapshot_stash_events();
+            let mirror = RetireMirror {
+                pending: stats.retire_pending,
+                drained: stats.retire_drained,
+                drain_calls: stats.retire_drain_calls,
+                pruned: stats.retire_pruned,
+                release_thread_is_main: stats.release_thread_is_main,
+                foreign_drains: stats.foreign_drains,
+                stash_events: stats.snapshot_stash_events,
+            };
             let quanta = AUDIO_QUANTA.load(Ordering::Acquire);
             // 读者退场：`SnapshotReader::drop` 把 `held` / `stash` 交还给各自的最后持有者。
             // 这一步**仍在快照析构窗口内** ⇒ 任何"在音频线程上释放快照"的实现都会被抓到
@@ -424,6 +459,7 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
                 transport_commands: stats.transport_commands,
                 transport_quanta: stats.transport_quanta,
                 elapsed_ms: elapsed.as_millis(),
+                mirror,
             }
         })
     };
@@ -524,6 +560,52 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
     report.audio = audio;
     report.swaps = spec.swaps;
     report.publishes = scheduled;
+
+    // ---- `EngineStats` 镜像与队列/槽的权威读数**逐项对账**（`line/engine-stats` 的判据 ③）----
+    //
+    // 时刻：音频线程已退出（它在那之前读了镜像），主线程还没做任何 prune/drain ⇒
+    // 此刻 `queue.pending()/dropped()/drain_calls()/foreign_drains()` 与 `slot.pruned()`
+    // 相对镜像那次读取**一个字都没动** ⇒ 下面每一项都必须是**等号**。
+    // 这就是 N5 的"释放线程归属进 EngineStats"与 `gate-snapshot-churn` 探针同口径的证据。
+    let pending_after_audio = queue.pending() as u64;
+    let pruned_after_audio = slot.pruned();
+    let mirror = report.audio.mirror;
+    let mirror_checks: [(&str, u64, u64); 5] = [
+        ("retire_pending", mirror.pending, pending_after_audio),
+        ("retire_drained", mirror.drained, queue.dropped()),
+        (
+            "retire_drain_calls",
+            mirror.drain_calls,
+            queue.drain_calls(),
+        ),
+        ("retire_pruned", mirror.pruned, pruned_after_audio),
+        (
+            "foreign_drains",
+            mirror.foreign_drains,
+            queue.foreign_drains(),
+        ),
+    ];
+    for (label, mirrored, authoritative) in mirror_checks {
+        if mirrored != authoritative {
+            failures.push(format!(
+                "EngineStats 镜像与队列读数不一致：{label} 镜像={mirrored} 权威={authoritative}"
+            ));
+        }
+    }
+    if mirror.release_thread_is_main != (queue.release_thread() == Some(main_thread)) {
+        failures.push(format!(
+            "EngineStats 的释放线程归属与队列自身的判据不一致：镜像={} 队列={:?}（主线程={main_thread:?}）",
+            mirror.release_thread_is_main,
+            queue.release_thread()
+        ));
+    }
+    if mirror.stash_events != report.audio.stash_events {
+        failures.push(format!(
+            "EngineStats 的 stash 计数与 EngineRuntime::snapshot_stash_events() 不一致：{} vs {}",
+            mirror.stash_events, report.audio.stash_events
+        ));
+    }
+    report.mirror = mirror;
 
     // ---- 主线程归属窗口（拆成两步，"释放发生在哪个线程"才是**精确**的）----
     //
@@ -842,7 +924,8 @@ fn main() -> ExitCode {
              drain_calls={} drained(churn)={} pruned(churn)={} max_pending_before_drain={} \
              max_quanta_between_drains={} tick_triggers={} backlog={} \
              prune(pruned={} released={} watched={} alloc={}) drain(drained={} released={} watched={} alloc={}) \
-             created={} released={} live={} queue_pending={} slot_pending={} release_thread_is_main={} foreign_drains={}",
+             created={} released={} live={} queue_pending={} slot_pending={} release_thread_is_main={} foreign_drains={} \
+             stats_mirror(pending={} drained={} drain_calls={} pruned={} release_thread_is_main={} foreign_drains={} stash={})",
             report.label,
             report.swaps,
             report.publishes,
@@ -877,6 +960,13 @@ fn main() -> ExitCode {
             report.slot_pending,
             report.release_thread_is_main,
             report.foreign_drains,
+            report.mirror.pending,
+            report.mirror.drained,
+            report.mirror.drain_calls,
+            report.mirror.pruned,
+            report.mirror.release_thread_is_main,
+            report.mirror.foreign_drains,
+            report.mirror.stash_events,
         );
 
         for failure in &report.failures {

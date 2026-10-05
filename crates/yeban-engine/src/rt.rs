@@ -88,7 +88,6 @@
 
 use std::sync::Arc;
 
-use rtrb::Producer;
 use yeban_model::EntityId;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
@@ -97,7 +96,7 @@ use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::mixer::{BusLimiter, PanLaw};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::rt_probe::{self, RtDiagEvent};
-use crate::snapshot::{EngineSnapshot, SnapshotReader, SnapshotSlot};
+use crate::snapshot::{RetireProducer, SnapshotReader, SnapshotSlot};
 use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
 use crate::transport::{
     Transport, TransportEffect, TransportMirror, TransportReading, TransportState,
@@ -172,6 +171,82 @@ pub struct EngineStats {
     pub transport_commands: u64,
     /// 累计在**推进状态**下处理过的量子数（停住时不自增）。
     pub transport_quanta: u64,
+    /// 因**退役队列满**而被迫把旧快照寄存到读者手里的累计次数
+    /// （[`EngineRuntime::snapshot_stash_events`] 进统计面的那一份；`> 0` = 曾追不上写者）。
+    ///
+    /// 语义见 [`Self::is_snapshot_lagging`] / [`Self::stash_events_since_last_read`]。
+    pub snapshot_stash_events: u64,
+    /// 退役队列当前待回收条数的**跨线程镜像**（**量规**：可升可降）。
+    ///
+    /// 精确读在控制线程上是 `RetireQueue::pending()`；这一份来自
+    /// [`crate::snapshot::RetireAccounting`]，因此渲染驱动与音频线程也看得到。
+    /// 控制线程每次 `drain` 之后会把它**覆写**为真实剩余 ⇒ 漂移自愈。
+    pub retire_pending: u64,
+    /// 累计真正出队并 `Drop` 的旧快照条数（`= RetireQueue::dropped()`；单调不减，饱和）。
+    pub retire_drained: u64,
+    /// 累计**非空** `drain` 调用次数（`= RetireQueue::drain_calls()`；结构性判据：
+    /// 控制面的 60Hz 排空循环是否真的在排空，而不是"空转但不为空"）。
+    pub retire_drain_calls: u64,
+    /// 累计由写者侧清单 `SnapshotSlot::prune()` 释放的强引用条数（单调不减，饱和）。
+    ///
+    /// 它与 [`Self::retire_drained`] 是退役回收的**两条**路径：读者交回的那一份 vs
+    /// 写者 anchor 淘汰的那一份。只看一条会把"另一条在涨"误读成健康。
+    pub retire_pruned: u64,
+    /// **释放线程归属**：首个执行退役释放的线程是否就是创建退役队列的那个线程
+    /// （= 控制线程 / 释放归属线程；尚无释放时为 `true`）。
+    ///
+    /// 与 [`EngineRuntime::snapshot_stash_events`] 同族的健康读数：`false` = 旧快照的
+    /// `Drop` 没有集中在控制线程上（[MUST-GATE-012] 的硬要求）。
+    pub release_thread_is_main: bool,
+    /// 在释放归属线程**之外**发生的非空 `drain` 次数（`> 0` = 释放不集中；要求恒为 0）。
+    ///
+    /// 与 [`Self::release_thread_is_main`] 是两个不同的判据：首个 `drain` 就跑在外线程时
+    /// 这个数是 0、而归属布尔量已经是 `false`。
+    pub foreign_drains: u64,
+}
+
+impl EngineStats {
+    /// **"追不上"的累计判定**：自进程开始以来，是否至少发生过一次
+    /// "退役队列满 ⇒ 读者停止切换快照、把旧快照寄存"（[`Self::snapshot_stash_events`] `> 0`）。
+    ///
+    /// `true` 的含义**不是**"当前很慢"，而是"本进程的拓扑更新至少被推迟过一次"——
+    /// 因为该状态在设计上是**粘滞**的：读者会一直用旧快照，直到控制面排空退役队列。
+    ///
+    /// **控制面应当据此降速**（`docs/ledger/engine-stats-notes.md` 的 needs）：
+    /// ① 停止/降低 `SnapshotSlot::publish` 的频率；② 立刻 `RetireQueue::drain` + `prune`；
+    /// ③ 提示"引擎拓扑更新被推迟"，而不是继续按原速率发布。
+    /// 需要"这一段采样窗口里是否又追不上"的**增量**判定时用
+    /// [`Self::stash_events_since_last_read`] / [`Self::is_snapshot_lagging_since`]。
+    #[must_use]
+    pub const fn is_snapshot_lagging(&self) -> bool {
+        self.snapshot_stash_events > 0
+    }
+
+    /// **自上次读取以来**新增的 stash 次数（增量；`previous` 是上一次的 `EngineStats`）。
+    ///
+    /// 语义：`self.snapshot_stash_events - previous.snapshot_stash_events`（饱和减法，
+    /// 因此读到更旧的快照时给出 `0` 而不是回绕）。
+    /// 控制面的 60Hz 循环每次读 `stats()` 时把上一帧留着，比较这个增量即可得到
+    /// "**这 16.7 ms 内**引擎有没有被退役积压逼停"——这正是降速决策需要的信号；
+    /// 只看累计量无法区分"很久以前抖过一次"和"现在正在抖"。
+    #[must_use]
+    pub const fn stash_events_since_last_read(&self, previous: &Self) -> u64 {
+        self.snapshot_stash_events
+            .saturating_sub(previous.snapshot_stash_events)
+    }
+
+    /// 采样窗口内的"追不上"判定：`self` 相对 `previous` 新增了至少一次 stash。
+    #[must_use]
+    pub const fn is_snapshot_lagging_since(&self, previous: &Self) -> bool {
+        self.stash_events_since_last_read(previous) > 0
+    }
+
+    /// 退役队列是否仍有待回收（背压还在；**量规**，与 [`Self::is_snapshot_lagging`] 不同：
+    /// 它可以自行回落，而 lagging 是粘滞的）。
+    #[must_use]
+    pub const fn has_retire_backlog(&self) -> bool {
+        self.retire_pending > 0
+    }
 }
 
 /// 渲染驱动：音频回调持有的全部可变状态。
@@ -237,10 +312,14 @@ impl EngineRuntime {
     /// `slot` / `retire` 来自 [`SnapshotSlot`] 与 [`crate::snapshot::retire_channel`]；
     /// `events` / `meters` 来自 [`crate::ring::event_channel`] 与 [`crate::meter::meter_channel`]。
     /// 全部通道都必须在**打开设备之前**建立（回调内不允许分配）。
+    ///
+    /// `retire` 是 [`RetireProducer`]（`rtrb::Producer` 的薄包装）：它带着退役队列的
+    /// 跨线程记账 ⇒ [`Self::stats`] 能直接报出退役队列的 `pending` / `drained` /
+    /// 释放线程归属，**控制面不需要额外接线**（`retire_channel` 的调用点一字未改）。
     #[must_use]
     pub fn new(
         slot: &Arc<SnapshotSlot>,
-        retire: Producer<Arc<EngineSnapshot>>,
+        retire: RetireProducer,
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Self {
@@ -315,9 +394,18 @@ impl EngineRuntime {
         // 帧边界对齐的交错缓冲不会留下尾巴；非对齐的残余保持 cpal 预填的静音。
     }
 
-    /// 当前累计统计。
+    /// 当前累计统计（**只读快照**：无锁、零分配；读它不会影响渲染路径）。
+    ///
+    /// 它把控制面必须能看见的**引擎健康读数**一并交出（`needs` N2/N5）：
+    /// [`EngineStats::snapshot_stash_events`]（"追不上"）、
+    /// [`EngineStats::retire_pending`] / [`EngineStats::retire_drained`] /
+    /// [`EngineStats::retire_pruned`]（退役回收的两条路径）、
+    /// [`EngineStats::release_thread_is_main`] / [`EngineStats::foreign_drains`]
+    /// （"释放发生在哪个线程"）。判定见 [`EngineStats::is_snapshot_lagging`] 与
+    /// [`EngineStats::stash_events_since_last_read`]。
     #[must_use]
     pub fn stats(&self) -> EngineStats {
+        let retire = self.snapshot.retire_accounting();
         EngineStats {
             quanta: self.quanta,
             events_applied: self.events_applied,
@@ -343,6 +431,13 @@ impl EngineRuntime {
             position_frames: self.transport.position_frames(),
             transport_commands: self.transport.commands_applied(),
             transport_quanta: self.transport.quanta_played(),
+            snapshot_stash_events: self.snapshot.stash_events(),
+            retire_pending: retire.pending(),
+            retire_drained: retire.drained(),
+            retire_drain_calls: retire.drain_calls(),
+            retire_pruned: self.snapshot.pruned(),
+            release_thread_is_main: retire.release_thread_is_owner(),
+            foreign_drains: retire.foreign_drains(),
         }
     }
 
@@ -362,6 +457,10 @@ impl EngineRuntime {
     ///
     /// 它**不是**释放违规（强引用仍然在读者手里），但会让"高频交换压测"被队列容量打折
     /// ⇒ [MUST-GATE-012] 的判据要求压测期间恒为 `0`。
+    ///
+    /// 同一个数已经进了统计面（[`EngineStats::snapshot_stash_events`]）；控制面应当用
+    /// [`EngineStats::is_snapshot_lagging`] / [`EngineStats::stash_events_since_last_read`]
+    /// 判定并**降速**（见 `docs/ledger/engine-stats-notes.md` 的 needs）。
     #[must_use]
     pub const fn snapshot_stash_events(&self) -> u64 {
         self.snapshot.stash_events()
@@ -720,7 +819,7 @@ mod tests {
     use crate::graph::LatencyTable;
     use crate::meter::meter_channel;
     use crate::ring::event_channel;
-    use crate::snapshot::{TrackParams, retire_channel};
+    use crate::snapshot::{EngineSnapshot, TrackParams, retire_channel};
     use std::collections::BTreeMap;
     use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
 
@@ -826,8 +925,14 @@ mod tests {
     }
 
     fn rig() -> Rig {
+        rig_with_retire_capacity(16)
+    }
+
+    /// 指定**退役队列容量**的装配：容量 1 是"制造追不上"的标准夹具
+    /// （读者一旦要交回第二份旧快照就必须寄存 ⇒ 停止切换）。
+    fn rig_with_retire_capacity(retire_capacity: usize) -> Rig {
         let slot = SnapshotSlot::new(simple_snapshot(1));
-        let (retire, queue) = retire_channel(16);
+        let (retire, queue) = retire_channel(retire_capacity);
         let (sender, receiver) = event_channel(64);
         let (publisher, collector) = meter_channel(256);
         let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
@@ -1124,5 +1229,292 @@ mod tests {
         let mut empty: [f32; 0] = [];
         rig.runtime.process_quantum(&mut empty, 2);
         assert_eq!(rig.runtime.stats().quanta, 1, "空缓冲不产生量子");
+    }
+
+    // -----------------------------------------------------------------------
+    // 控制面健康读数（`needs` N2/N5 的落地）：判据 ①~⑥
+    // -----------------------------------------------------------------------
+    //
+    // 交付清单与读数见 `docs/ledger/engine-stats-notes.md`。这里的判据刻意都用
+    // **既有夹具**（`rig()` / `rig_with_retire_capacity` / 既有 60Hz 排空语义），
+    // 注入记录（3 组）也在那份 notes 里。
+
+    /// ⑥ 计数的"大数行为"必须**写明并断言**（不是靠"跑不到那么大"）。
+    ///
+    /// `quanta` / `events_applied` / `meter_frames` 等既有计数是结构性计数，
+    /// 用 `wrapping_add`（u64 全宽）；本 crate 钉死 `DEFAULT_BLOCK_FRAMES = 128`
+    /// ⇒ 48 kHz 下**每秒恰好 375 个量子**。这个编译期断言说明：即使 24 小时不停
+    /// 渲染，回绕也需要 **> 10 亿年** ⇒ `wrapping_add` 与饱和加法在物理上等价。
+    const _: () = {
+        let quanta_per_second: u64 = 375;
+        let seconds_per_year: u64 = 365 * 24 * 60 * 60;
+        let years_to_wrap: u64 = u64::MAX / quanta_per_second / seconds_per_year;
+        assert!(years_to_wrap > 1_000_000_000);
+    };
+
+    /// 判据 ①：正常播放（队列容量充足、控制面照常排空）⇒ `stash == 0`、判定为不 lagging，
+    /// 且两条回收路径（读者交回的 `drain` / 写者 anchor 淘汰的 `prune`）**都真的在动**。
+    #[test]
+    fn stats_report_a_healthy_retire_pipeline_during_normal_playback() {
+        let mut rig = rig();
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        let before = rig.runtime.stats();
+
+        for revision in 2..=5u64 {
+            rig.slot.publish(simple_snapshot(revision));
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        // 主线程 60Hz 排空语义：drain（读者交回的那一份）+ prune（写者 anchor 淘汰的那一份）。
+        let drained = rig.queue.drain(16);
+        let pruned = rig.slot.prune();
+        let stats = rig.runtime.stats();
+
+        assert_eq!(stats.snapshot_switches, 4, "4 次发布 = 4 次切换");
+        assert_eq!(drained, 4, "每次切换都把上一份交回退役队列");
+        assert_eq!(pruned, 4, "写者侧清单同步回收");
+        assert_eq!(stats.retire_drained, 4);
+        assert_eq!(stats.retire_drain_calls, 1, "非空 drain 恰好一次");
+        assert_eq!(stats.retire_pruned, 4);
+        assert_eq!(stats.retire_pending, 0, "排空后队列空");
+        assert!(!stats.has_retire_backlog());
+
+        assert_eq!(stats.snapshot_stash_events, 0, "正常路径不得出现寄存");
+        assert!(!stats.is_snapshot_lagging());
+        assert_eq!(stats.stash_events_since_last_read(&before), 0);
+        assert!(!stats.is_snapshot_lagging_since(&before));
+        assert!(stats.release_thread_is_main, "本线程建队列、本线程 drain");
+        assert_eq!(stats.foreign_drains, 0);
+    }
+
+    /// 判据 ②：**制造追不上**（既有夹具：容量 1 的退役队列 + 控制面不排空）。
+    ///
+    /// 实测语义（这就是 `line/gate-snapshot-churn` 注入 I2 的那个行为）：
+    /// 队列满 ⇒ 读者把旧快照寄存进 `stash` 并**停止切换快照**，
+    /// 控制侧"追上新 revision"**静默失败** —— 现在这件事在 [`EngineStats`] 里可判定。
+    #[test]
+    fn stats_flag_snapshot_lagging_when_the_reader_cannot_keep_up() {
+        let mut rig = rig_with_retire_capacity(1);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        let healthy = rig.runtime.stats();
+        assert_eq!(healthy.snapshot_stash_events, 0);
+
+        for revision in 2..=6u64 {
+            rig.slot.publish(simple_snapshot(revision));
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let lagging = rig.runtime.stats();
+
+        assert_eq!(
+            lagging.snapshot_stash_events, 1,
+            "容量 1 + 不排空 ⇒ 恰好发生一次寄存（第二次开始连寄存都做不了，只能停切换）"
+        );
+        assert!(lagging.is_snapshot_lagging(), "累计判定必须为真");
+        assert_eq!(lagging.stash_events_since_last_read(&healthy), 1);
+        assert!(lagging.is_snapshot_lagging_since(&healthy));
+        assert_eq!(lagging.retire_pending, 1, "退役队列被那一份寄存占满");
+        assert!(lagging.has_retire_backlog());
+        // **控制面看不见的那件事**：读者停在 revision 3，而槽里已经是 6 ——
+        // 而且音频线程**不会**报错：`stash_events` 是唯一的可见信号。
+        assert_eq!(rig.runtime.revision(), Some(3), "寄存之后读者停止切换");
+        assert_ne!(rig.runtime.revision(), Some(6));
+
+        // 控制面**降速**：先排空一次 ⇒ 读者恢复推进并最终追上最新 revision。
+        assert_eq!(rig.queue.drain(1), 1);
+        rig.runtime.process_quantum(&mut out, 2);
+        let recovered = rig.runtime.stats();
+        assert_eq!(
+            rig.runtime.revision(),
+            Some(6),
+            "排空之后追上了最新 revision"
+        );
+        assert!(
+            recovered.snapshot_stash_events >= lagging.snapshot_stash_events,
+            "累计量绝不回退"
+        );
+        assert_eq!(
+            recovered.snapshot_stash_events, 2,
+            "容量 1 时'追上'本身还要再寄存一次（读者必须交回滞留的那一份）—— \
+             所以说降速 = 排空 + 延后发布，不是'排一次就够'"
+        );
+        assert_eq!(recovered.retire_drained, 1);
+    }
+
+    /// 判据 ② 的边界：读到一个**更旧**的基线时，增量读数不得回绕（饱和减法语义）。
+    #[test]
+    fn stash_delta_readings_never_underflow_on_a_stale_baseline() {
+        let mut rig = rig_with_retire_capacity(1);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        for revision in 2..=4u64 {
+            rig.slot.publish(simple_snapshot(revision));
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let lagging = rig.runtime.stats();
+        assert!(lagging.is_snapshot_lagging());
+
+        let cold = EngineStats::default();
+        assert_eq!(
+            lagging.stash_events_since_last_read(&cold),
+            lagging.snapshot_stash_events
+        );
+        assert_eq!(
+            cold.stash_events_since_last_read(&lagging),
+            0,
+            "更旧的基线 ⇒ 0（不是 u64 回绕）"
+        );
+        assert!(!cold.is_snapshot_lagging_since(&lagging));
+        assert!(!cold.is_snapshot_lagging());
+    }
+
+    /// 判据 ③：`EngineStats` 的退役读数与**队列自己的**读数**逐项一致**
+    /// （与 `gate-snapshot-churn` 的 `release_thread_is_main` / `foreign_drains` 同口径）。
+    #[test]
+    fn stats_retire_readings_match_the_queue_item_by_item() {
+        let mut rig = rig_with_retire_capacity(8);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        for revision in 2..=6u64 {
+            rig.slot.publish(simple_snapshot(revision));
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let drained = rig.queue.drain(2);
+        let pruned = rig.slot.prune();
+        let stats = rig.runtime.stats();
+        let main = std::thread::current().id();
+
+        assert_eq!(drained, 2);
+        assert!(pruned >= 1, "写者侧清单也必须真的回收（实际 {pruned}）");
+        assert_eq!(stats.retire_drained, rig.queue.dropped(), "累计回收条数");
+        assert_eq!(stats.retire_drain_calls, rig.queue.drain_calls());
+        assert_eq!(stats.retire_pending, rig.queue.pending() as u64);
+        assert_eq!(stats.retire_pruned, rig.slot.pruned());
+        assert_eq!(
+            stats.release_thread_is_main,
+            rig.queue.release_thread_is_main(),
+            "两个读数必须同一个口径"
+        );
+        assert_eq!(
+            stats.release_thread_is_main,
+            rig.queue.release_thread() == Some(main),
+            "与 gate-snapshot-churn 的判据逐字相同"
+        );
+        assert_eq!(stats.foreign_drains, rig.queue.foreign_drains());
+        assert_eq!(stats.snapshot_stash_events, 0);
+        assert_eq!(
+            stats.snapshot_stash_events,
+            rig.runtime.snapshot_stash_events()
+        );
+        assert!(stats.release_thread_is_main && stats.foreign_drains == 0);
+    }
+
+    /// 判据 ③ 的**反例**（同时是注入判据的靶子）：队列在 A 线程建、**首个**释放发生在
+    /// B 线程 ⇒ `release_thread_is_main == false`，而 `foreign_drains` 仍然是 `0`
+    /// （它数的是"非首个释放线程"，不是"非归属线程"）。
+    ///
+    /// 这条反例证明两件事：① 归属布尔量**不是** `foreign_drains == 0` 的别名；
+    /// ② 把 `release_thread_is_main` 写死为 `true` 会被本判据抓住（notes 的注入 E2；
+    /// 正常路径的判据**抓不住**它 —— 两边会一起撒谎）。
+    #[test]
+    fn stats_report_a_foreign_release_thread_while_foreign_drains_stays_zero() {
+        let Rig {
+            slot,
+            queue,
+            runtime,
+            ..
+        } = rig();
+        let mut runtime = runtime;
+        let mut queue = queue;
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        runtime.process_quantum(&mut out, 2);
+        slot.publish(simple_snapshot(2));
+        runtime.process_quantum(&mut out, 2);
+        assert_eq!(queue.pending(), 1, "队列里有一条待回收");
+
+        // 首个非空 drain 交给**另一个线程**：`release_thread != owner_thread`。
+        let (drained, mut queue) = std::thread::spawn(move || {
+            let count = queue.drain(8);
+            (count, queue)
+        })
+        .join()
+        .expect("排空线程不 panic");
+        assert_eq!(drained, 1);
+
+        let main = std::thread::current().id();
+        assert_ne!(queue.release_thread(), Some(main), "首个释放线程是外线程");
+        assert!(!queue.release_thread_is_main(), "归属不成立");
+        assert_eq!(
+            queue.foreign_drains(),
+            0,
+            "`foreign_drains` 只数'非首个释放线程'上的 drain ⇒ 首个外线程 drain 不算"
+        );
+        let stats = runtime.stats();
+        assert!(!stats.release_thread_is_main, "统计面必须看见归属被破坏");
+        assert_eq!(stats.foreign_drains, 0);
+        assert_eq!(stats.retire_drained, 1);
+        assert_eq!(stats.retire_pending, 0);
+
+        // 再在主线程排空一次 ⇒ 这一次相对"首个释放线程"属于外来 ⇒ `foreign_drains == 1`。
+        slot.publish(simple_snapshot(3));
+        runtime.process_quantum(&mut out, 2);
+        assert_eq!(queue.drain(8), 1);
+        let after = runtime.stats();
+        assert_eq!(
+            after.foreign_drains, 1,
+            "主线程这次 drain 相对首个释放线程是外来"
+        );
+        assert_eq!(after.foreign_drains, queue.foreign_drains());
+        assert!(!after.release_thread_is_main, "归属一旦被破坏不会自愈");
+        assert_eq!(after.retire_drained, 2);
+    }
+
+    /// 判据 ⑤：`stats()` 是**只读快照**——同一瞬间两次读取完全相等；
+    /// 引擎继续跑之后，累计量只增不减；`retire_pending` 是**量规**（明确可回落）。
+    #[test]
+    fn stats_are_snapshots_and_never_go_backwards_between_reads() {
+        let mut rig = rig();
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        let idle = rig.runtime.stats();
+        assert_eq!(idle, rig.runtime.stats(), "读 stats() 不改变引擎状态");
+
+        for revision in 2..=4u64 {
+            rig.slot.publish(simple_snapshot(revision));
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let backed_up = rig.runtime.stats();
+        assert!(
+            backed_up.retire_pending >= 3,
+            "3 份旧快照还在队列里（实际 {}）",
+            backed_up.retire_pending
+        );
+        assert!(backed_up.has_retire_backlog());
+
+        let drained = rig.queue.drain(16);
+        assert_eq!(drained, 3);
+        rig.slot.prune();
+        // 引擎继续跑一个量子（**没有**新发布 ⇒ 不再切换、不再入队）。
+        rig.runtime.process_quantum(&mut out, 2);
+        let after_drain = rig.runtime.stats();
+
+        // ---- 累计量：单调不减（这是"不回退"的主体）----
+        assert!(after_drain.quanta > backed_up.quanta);
+        assert!(after_drain.snapshot_switches >= backed_up.snapshot_switches);
+        assert!(after_drain.events_applied >= backed_up.events_applied);
+        assert!(after_drain.meter_frames >= backed_up.meter_frames);
+        assert!(after_drain.retire_drained >= backed_up.retire_drained);
+        assert!(after_drain.retire_drain_calls >= backed_up.retire_drain_calls);
+        assert!(after_drain.retire_pruned >= backed_up.retire_pruned);
+        assert!(after_drain.snapshot_stash_events >= backed_up.snapshot_stash_events);
+        // ---- 量规：明确可回落（这就是那条"明确的重置语义"）----
+        assert_eq!(idle.retire_pending, 0);
+        assert_eq!(after_drain.retire_pending, 0, "排空让量规回落");
+        assert!(!after_drain.has_retire_backlog());
+        // ---- 增量读数与累计量自洽 ----
+        assert_eq!(
+            after_drain.stash_events_since_last_read(&idle),
+            after_drain.snapshot_stash_events - idle.snapshot_stash_events
+        );
     }
 }
