@@ -78,6 +78,8 @@ def main() -> int:
         todo = present
 
     fetched = verified = skipped = mismatched = 0
+    not_found = 0
+    not_found_ids: list[str] = []
     offline = False
     for item in todo:
         target = REPO / item.get("relative_path", "")
@@ -95,10 +97,18 @@ def main() -> int:
             try:
                 with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310 (受信坐标来自清单)
                     data = response.read()
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
-                print(f"[unknown] 取回失败（网络/沙箱？）: {item.get('id')} — {exc}", file=sys.stderr)
+            except urllib.error.HTTPError as exc:
+                # ⚠ **404 ≠ 离线**: 它说明"由清单推导出的上游戏路径不对/该 pin 上没有这个文件" ——
+                # 那是**清单或推导口径的问题**（实测: `karoryfer-meatbass/Meatbass/GUI/aria_info.xml` 就是 404），
+                # 而**不是**"这个环境判不了"。第一版把它当 offline 并 `break`，于是**整批中断**、
+                # 手动档整步红 —— 一个坏路径拖垮了 200 个文件的校验（这是"假红"的又一变体）。
+                not_found += 1
+                not_found_ids.append(item.get("id"))
+                continue
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                print(f"[unknown] 取回失败（连接/沙箱？）: {item.get('id')} — {exc}", file=sys.stderr)
                 offline = True
-                break
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             fetched += 1
@@ -116,16 +126,30 @@ def main() -> int:
             )
 
     print(
-        f"fetch-samples: 取回 {fetched} | 校验通过 {verified} | 不符 {mismatched} | 跳过 {skipped}"
+        f"fetch-samples: 取回 {fetched} | 校验通过 {verified} | 不符 {mismatched} | "
+        f"上游 404（路径推不出来）{not_found} | 跳过 {skipped}"
         f"（清单共 {len(items)} 项，磁盘上原有 {len(present)} 项）"
     )
+    if not_found_ids:
+        # 这是**要修的清单/推导问题**，不是"环境判不了" ⇒ 报出来让人去修，且**不阻断校验通过的部分**。
+        print(
+            "  ⚠ 以下条目的上游路径推导不出（404）—— 清单没有登记上游路径，上游路径是**推导**的，"
+            "这些条目需要人工核对该 pin 上的真实路径:",
+            file=sys.stderr,
+        )
+        for ident in not_found_ids[:10]:
+            print(f"      - {ident}", file=sys.stderr)
     if mismatched:
         return 1
-    if verified == 0:
-        print("[unknown] 一个文件都没校验到（离线？还是清单里没有可取回的坐标？）", file=sys.stderr)
+    if verified == 0 and offline:
+        print("[unknown] 一个文件都没校验到且出现连接错误（离线/沙箱？）", file=sys.stderr)
+        return 2
+    if not_found:
+        # 有 404：**部分条目无法校验** ⇒ 既不是全绿也不是判失败 ⇒ 记 2（无法判定），但要人看见原因。
+        print(f"[unknown] 有 {not_found} 条因 404 无法校验（见上）; 其余 {verified} 条已通过", file=sys.stderr)
         return 2
     if offline:
-        print(f"[unknown] 网络中断，已校验 {verified} 个（不是全部）", file=sys.stderr)
+        print(f"[unknown] 出现连接错误，已校验 {verified} 个（不是全部）", file=sys.stderr)
         return 2
     return 0
 
