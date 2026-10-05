@@ -8074,3 +8074,27 @@ still prefer to make - and, as round 327 recorded, that choice changes neither t
 
 **Status**: tree green and clean; CI green through `e3f3268` (later runs still queued at the time of writing); the mapping layer and the MCP export tool remain
 the outstanding work, with `N-MCP-MIDI-1` recording the recipe.
+
+
+### Round 332: measuring the MCP tool set - five of the objective's six are already in place
+
+Enumerated the registry instead of relying on the running list in my own notes, and the picture is much better than "MCP tools owed" suggested. The sixteen
+registered tools include:
+
+| objective's item | tool | status |
+| :--- | :--- | :--- |
+| 自动化泳道 | `yeban_edit_automation` | **already present** |
+| 音频导入 | `yeban_import_audio` | **already present** |
+| 设备与引擎 | `yeban_query_engine_state` | **already present** (and now carries the loudness keys) |
+| 响度目标 | same tool | **closed this session on the tool side (round 331)** |
+| 撤销入口 | `yeban_undo` / `yeban_redo` | **already present** |
+| MIDI 导出 | - | **the only gap**, and it is the one blocked on the mapping move |
+
+**So the MCP expansion is 5 of 6, not a list.** The single missing tool is `yeban_export_midi`, whose spec is already decided (delegate to the shared mapping,
+registry count 16 -> 17, in-memory round-trip criterion via `parse_smf`), and which is blocked by exactly one thing: the mapping layer still living in
+`yeban-app`, registered as `N-MCP-MIDI-1`.
+
+**Why this matters for the session's accounting**: I have been reporting "MCP tools owed" as a plural gap, which understated what earlier work delivered and
+overstated what remains. The accurate statement is one tool, one prerequisite, and a recipe for the prerequisite.
+
+**Status**: tree green and clean; CI green through `b0019b0`/`f48f516` (later runs queued); tool count verified at 16 by counting registry entries.
