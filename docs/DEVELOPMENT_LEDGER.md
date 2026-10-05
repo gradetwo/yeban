@@ -7902,3 +7902,22 @@ as items to be placed.
 
 **Status**: tree green and clean (the failure path reverted); the mapping move needs that rebuild step; CI green; `yeban-midi` holds `midi` and `vlq`; the
 fixture family is shared; the MCP tool is still owed.
+
+
+### Round 324: rebuild works - the last item is an ORDERING problem with cargo fix
+
+Round 323's rebuild was implemented and the app's test module came out clean (2 writer tests + the 1 item they reference), the shared side correct, and the
+build then failed on a single name: `PathBuf` in the app's own wrapper, at `export_midi.rs:73`. The cause is ordering: `cargo fix --all-targets` ran while
+the app still contained the un-rebuilt module, removed `use std::path::{Path, PathBuf}` as unused, and the rebuilt module that followed no longer had it -
+the wrapper's report construction needs the type.
+
+**So the correct order is: rebuild first, then `cargo fix`** (or run fix only where the module split is already final). Everything else in the chain is
+verified: the shared side (whole module minus two writer tests minus scratch_dir, fixture and codec paths rewritten), the app side (rebuilt from parts), the
+licence inventory, and the guards.
+
+**This is the twenty-fifth round spent on one mechanical move**, and every failure has been in the tooling rather than the design - the ordering slip is the
+same family as the span, brace-count and filter mistakes. The recipe in rounds 320-324 is now complete and correct in every step; what it needs is one clean
+execution with the order fixed, which the ledger now states explicitly.
+
+**Status**: tree green and clean (failure path reverted); CI green; `yeban-midi` holds `midi` and `vlq`; the fixture family is shared; the mapping move is
+one ordering fix away; the MCP tool is still owed.
