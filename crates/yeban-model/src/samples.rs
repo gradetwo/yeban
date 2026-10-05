@@ -200,9 +200,10 @@ pub fn filled_project() -> YebanProjectV1 {
                     },
                 ),
             ]),
-            // 规范样本刻意**显式**给出三个新字段：它们是"自动化泳道"规范形状的一部分
-            // （读开关 / 写模式 / 取值域）。旧工程可以完全没有它们（见
-            // `tests/automation.rs` 的旧工程兼容判据）。
+            // 规范样本刻意**显式**给出三个字段：它们都是"自动化泳道"规范形状的一部分
+            // （读开关 / 写模式 / 取值域）。ADR-0001 D43 之后 `read_enabled` / `write_mode`
+            // / `points` 是**必需**的（缺键即 `missing field`），只有 `domain` 是
+            // `Option<T>` 语义默认。严格性判据见 `tests/no_compat.rs`。
             read_enabled: true,
             write_mode: AutomationWriteMode::Touch,
             domain: Some(AutomationValueDomain::new(-60.0, 12.0).expect("音量取值域端点必然有限")),

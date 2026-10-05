@@ -145,6 +145,16 @@ impl Default for SlideConfig {
 ///
 /// 所有字段都是持久化文档的一部分；集合概不使用哈希容器，
 /// 本结构本身不持有任何集合（`pitch_bend_curve` 是**有序** `Vec`，按 tick 升序）。
+///
+/// ## 表现力字段的 `#[serde(default)]` 是**语义**，不是兼容 [ADR-0001 D43]
+///
+/// - `probability` / `ratchet` / `micro_timing_ticks` / `slide` / `syllable` 是
+///   `Option<T>`：`None` 是模型自己定义的一等状态（"必然触发"/"等价于 1"/"无偏移"/
+///   "无滑音"/"无歌词"），D43 第 2 条明确豁免；
+/// - `pitch_bend_curve` / `phonemes` 与 `skip_serializing_if = "Vec::is_empty"` **对偶**：
+///   空集在序列化时本来就不落盘（稀疏编码，每个音符省几十字节），因此"缺键"与本写入器
+///   自己的输出逐字节一致 —— 若这里要求必需，本写入器写出的文档就会被本读取器拒绝。
+///   这对字段的宽容读是**格式自身的对偶性**，与"为了旧文件还能读"无关。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MidiNote {
     /// 音符身份 [MODEL-AST-001]。
