@@ -3766,3 +3766,22 @@ main: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`, `37293138132` @ `f85
 **Incident worth recording**: the push-triggered run for `883cfe1` (the commit that actually added the CI steps) came back
 `completed cancelled`, so the libclang change had no verdict of its own until this dispatch. Cause not established; the
 dispatch sidesteps it, and the empty-green behaviour of docs-only tips is the reason a dispatch was needed anyway.
+
+### Round 144: ARCH-DSP-004's criterion is CI-verified on two platforms
+
+Run **`37327961606` @ `2ffe6e6` = completed success**, and the two legs that mattered both went green:
+
+| leg | verdict | what it proves |
+| :--- | :--- | :--- |
+| **`rust (yeban-dsp)`** | **success `steps=10`** | the four stretch criteria pass on Linux, and `clippy -D warnings` accepts the test target |
+| **`windows (...)`** | **success `steps=9`** | the same test target compiles and passes on Windows, i.e. through the C++/bindgen path there |
+| `rust (yeban-app / yeban-ui-mcp / yeban-mcp)` | success `steps=10` each | nothing else regressed |
+| `checks` / `lockfile` / `deny` / `plan` | success | guards, licence compliance and lock determinism hold |
+
+The previous run (`37327050901` @ `0f5d4ab`) had failed on exactly these two legs, with
+`error: using chunks_exact with a constant chunk size` from clippy. The fix (as_chunks) is one line; the value of the round
+is the record that **my local loop had skipped clippy**, which AGENTS.md DoD item 1 requires, and that `run-gates.sh light`
+does not cover it.
+
+So `ARCH-DSP-004` now has: the dependency (HD-44 = A, three conditions closed in round 141) **and** a criterion that runs on
+Linux and Windows in CI. It is no longer an unsupported claim in either direction.
