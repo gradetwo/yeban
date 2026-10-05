@@ -103,8 +103,9 @@ pub fn ops_to_value(ops: &[Op]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 显式再列一遍父模块的**私有** `use`（`use super::*` 在跨模块可见性上有歧义时更稳）。
-    use super::section_build::BuildCode;
+    // 显式再列一遍父模块的**私有** `use`：`BuildCode` 住在兄弟模块 `domain::section_build`，
+    // 而 `section` 自己在文件顶部只做了一个私有 `use`（跨模块可见性上显式更稳）。
+    use super::super::section_build::BuildCode;
     use yeban_model::samples::filled_project;
 
     use crate::tools::ErrorCode;

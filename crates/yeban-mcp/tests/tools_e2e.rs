@@ -1770,9 +1770,9 @@ fn propose_section_same_idempotency_key_does_not_duplicate_the_skeleton() {
     let second = call(&mut dispatcher, &auth, "yeban_propose_section", arguments);
     assert_eq!(second["replayed"], true, "第二次必须命中幂等缓存: {second}");
     assert_eq!(
-        second["response"]["data"]["proposal"]["proposalId"],
+        second["response"]["result"]["data"]["proposal"]["proposalId"],
         first["data"]["proposal"]["proposalId"],
-        "重放必须返回**同一条**提案"
+        "重放必须返回**同一条**提案: {second}"
     );
     assert_eq!(
         dispatcher.domain().proposal_count(),
