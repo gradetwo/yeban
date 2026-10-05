@@ -412,6 +412,36 @@ pub fn timecode_for_ticks(grid: Option<TimecodeGrid>, ticks: u64) -> String {
     }
 }
 
+/// `[ROAD-M3-002]` 裁剪后的**全部平行数组**（**同一索引集**）。
+///
+/// 平行数组各裁各的会让下标错位（位置取第 3 个、音高取第 5 个 ⇒ 画出错误的音符），
+/// 所以一次取走一份，由本结构保证四个长度相等。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisibleNotes {
+    /// 音符块左沿 x。
+    pub positions: Vec<f32>,
+    /// 音符块宽。
+    pub widths: Vec<f32>,
+    /// 音符块顶沿 y。
+    pub ys: Vec<f32>,
+    /// 音高车道索引。
+    pub rows: Vec<i32>,
+}
+
+impl VisibleNotes {
+    /// 可见音符数（四个数组长度相同，故用一个函数报告）。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// 是否为空。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+}
+
 /// 视图里的一个轨道（**不是**模型实体 —— 它是投影结果，可以带界面派生字段）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackView {
@@ -929,6 +959,26 @@ impl ViewState {
             .filter(|(_, note)| note.x + note.width >= left && note.x <= right)
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// 取可见窗口内的音符（四个平行数组共用**同一**索引集）。
+    #[must_use]
+    pub fn visible_notes(&self, scroll_x: f32, viewport_width: f32) -> VisibleNotes {
+        let indices = self.notes_visible_in(scroll_x, viewport_width);
+        let mut out = VisibleNotes {
+            positions: Vec::with_capacity(indices.len()),
+            widths: Vec::with_capacity(indices.len()),
+            ys: Vec::with_capacity(indices.len()),
+            rows: Vec::with_capacity(indices.len()),
+        };
+        for index in indices {
+            let note = &self.notes[index];
+            out.positions.push(note.x);
+            out.widths.push(note.width);
+            out.ys.push(note.y);
+            out.rows.push(note.row);
+        }
+        out
     }
 
     /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
@@ -2368,6 +2418,28 @@ mod tests {
     /// 逐音符断言 `x == tick_to_px(start_tick)`、`width == max(1, tick_to_px(end) - x)`。
     /// `ticks_per_pixel` 覆盖 **非 2 的幂**（3 / 7 / 30）与极端缩放（1 / 960）：
     /// 这一族数字就是"不许用浮点算位置"的探针（30 与 7 都除不尽）。
+    #[test]
+    fn visible_notes_keeps_the_parallel_arrays_aligned() {
+        // 判据: 四个平行数组**同长**, 且第 k 个可见音符的每个字段都等于源 `notes[idx[k]]` 的同名字段。
+        // 若有人改成"每个数组各自裁剪", 下标错位会让这条红。
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        // 窗口取**首个音符的位置**起 400px：保证非空, 否则判据无从检验（实测 (200,400) 在该夹具下是空的）。
+        let first = view.note_positions()[0];
+        let idx = view.notes_visible_in(first, 400.0);
+        let vis = view.visible_notes(first, 400.0);
+        assert!(!idx.is_empty(), "该窗口应有音符, 否则本判据没有意义");
+        assert_eq!(vis.len(), idx.len(), "可见数必须等于索引集长度");
+        assert_eq!(vis.positions.len(), vis.widths.len());
+        assert_eq!(vis.positions.len(), vis.ys.len());
+        assert_eq!(vis.positions.len(), vis.rows.len());
+        for (k, i) in idx.iter().enumerate() {
+            assert_eq!(vis.positions[k], view.notes[*i].x);
+            assert_eq!(vis.widths[k], view.notes[*i].width);
+            assert_eq!(vis.ys[k], view.notes[*i].y);
+            assert_eq!(vis.rows[k], view.notes[*i].row);
+        }
+    }
+
     #[test]
     fn notes_visible_in_matches_a_brute_force_window_and_actually_clips() {
         // 判据 1: 与**暴力过滤**逐项相同（不是"大约"）。
