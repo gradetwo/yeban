@@ -231,3 +231,30 @@ yeban/
 但 `scripts/**` 会被 CI 的 `checks` job 真的执行，`.github/**` 更是直接决定 CI 行为。
 **一次推送 = 一批改动。**
 
+### 开线三步（缺一步就会出事）
+
+**① 写 brief → ② 建工作树 → ③ 启动 subagent。** 顺序不能颠倒，也不能省第 ② 步。
+- 第 ② 步的命令是 `bash scripts/dev/worktree.sh add <line> origin/main`。
+  我第 34 轮开 `transport-engine` 时只做了 ①③，**忘了 ②** —— 幸好该线的工作树在我检查前已由别处补上，
+  但那次如果我据此判断"线没起来"，就会得出**完全错误**的结论（我当时的输出确实写着"无树"）。
+- ⇒ **状态检查必须区分"工作树不存在"与"检查写错了"**：先 `git worktree list` 看**注册表**，
+  再 `cd` 进去看分支/脏树 —— 单看某一个路径的 `cd` 失败不足以断言"线不存在"。
+
+### 工作树卫生（与分支卫生配套，第 35 轮清理）
+
+**已退役的线不该留工作树目录**。实测积了两个：`.worktrees/engine-mix`（**已注册**、分支 `line/engine-mix`、
+干净、已并入 main）与 `.worktrees/model-no-compat`（**未注册**的残留目录、停在 `main`、干净）。
+两者都已清理，现在工作树 = `main` + 两条活跃线 + `website`。
+**清理前必须逐条确认**（这一条是血的教训，见"land 准入检查"）：① 分支**已并入 main**；
+② `git status --short` **干净**；③ **没有未读判决**；④ 若是"未注册的残留目录"，先用
+`git worktree list --porcelain | grep -c <名字>` 确认它**不在注册表里**再删。
+
+**退役一条线 = 四件事，缺一件就会留下不一致**（第 36 轮补上的第 ④ 件）：
+① `land`（合并进 main）；② 打 `line-archive/<line>` 标签；③ 删本地分支 + 工作树；
+④ **`git push origin --tags`**（否则归档标签只在本地，而它正是"删掉分支后历史仍在"的唯一凭据）。
+实测两处漏洞：`line/engine-mix` **已合并却从未打归档标签**（我正在清理工作树时才发现，已补 `8b36e30`）；
+`line-archive/phase-status` 与 `line-archive/schema-ratchet` **打了但从未推送**（远程没有）。
+⇒ 现在归档标签 **40 个**（远程与本地一致），本地 `line/*` 分支只剩**活跃线**。
+**核对口径**（三方一致才算干净）：`git worktree list | grep -c 'line/'` == `git branch --list 'line/*' | wc -l`
+== 远程 `line/*` 的条数。
+

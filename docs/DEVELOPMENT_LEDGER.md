@@ -1804,3 +1804,23 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   "系统有"的判据是**源码在**（文件/类型/字符串/测试名），不是"CI 上跑绿了"。
   判决由 `bash scripts/dev/ci-verdict.sh line/feature-alignment` 读回，**未读回之前一律记 `pending`**。
 
+### 第 41 轮：人类负责人裁决六项工程决策（**D45–D50**），并解开三方表里最严重的错位
+
+| # | 裁决 | 影响 |
+| :--- | :--- | :--- |
+| 1 | **撤销入口 UI+MCP 两侧同接，共用同一实现** | 错位 ① 有了处置方向；**禁止**两侧各写一份（否则又是一份第二语义） |
+| 2 | **扩充 MCP 工具集/参数**（自动化泳道、设备与引擎、音频导入、MIDI 导出、响度目标） | 十工具是起点不是上限；扩时必须同步 `schemas/mcp-tools.schema.json` + 守 `D25` |
+| 3 | **MIDI 导出出口 = app CLI `--export-midi`** | `yeban-render/src/midi.rs`（零消费者）获得第一个出口；不扩 `render_master` 参数 |
+| 4 | **`ui/*` 引入 `dryRun` 与 IME 状态位** | 与领域侧 `dryRun` 语义**必须对齐**（同一个词同一个意思） |
+| 5 | **`yeban-theory` 接线** | 7 040 行的零依赖边 crate 开始被消费；关闭 `tools-domain-notes` needs-6 |
+| 6 | **`HD-38`：不投入自托管 runner；托管 runner 不限量使用** | **额度无限 ≠ 并发无限**（实测 `in_progress` 长期 1–2）⇒ L32 继续有效，**理由从"省钱"改为"判决归属"**（被取消的运行等于没有判决） |
+
+**并行约束（排期必须遵守，先说清再动手）**：`yeban-mcp` 现被 `propose-section` 占着，
+而 **#1 / #2 / #5 三条都碰 `yeban-mcp`** ⇒ 这三条**必须串行**；`yeban-engine` 被 `transport-engine` 占着
+⇒ 涉及引擎的接线也要等。**因此现在能并行开的是 #3（`yeban-app`+`yeban-render`）与 #4（`yeban-ui-mcp`）**，
+#1 排在 `propose-section` 让出 `yeban-mcp` 之后。
+
+**波次计划**：**Wave A（现在）** = #3 + #4；**Wave B** = #1（撤销，mcp+app 共用实现，等 propose-section 让位）；
+**Wave C** = #2（工具集扩张，含 schema，mcp+schemas）；**Wave D** = #5（theory 接线）。
+每波都要求：**一次推完**（L32）、判据含注入、**同一实现不许有两份**。
+

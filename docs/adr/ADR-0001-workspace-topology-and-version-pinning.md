@@ -267,7 +267,13 @@
   但在本裁决之前，`Op` 全集**表达不出来**：
   · `AddClipPlacement` 的前置条件是"片段**已经在** `clip_pool` 里"，而**没有任何变体能把条目放进池子**；
   · `ConnectRouting` 的前置条件是"两端**已经在** `routing_graph.nodes` 里"，同样**没有任何变体能把节点放进去**。
-  于是那条工具只能返回 `data.unwired = ["clipPoolEntries","routingEdges"]`。这是**规范要求的能力在操作日志层缺失**，
+  于是那条工具只能返回 `data.unwired = ["clipPoolEntries","routingEdges"]`。
+
+  > ✅ **已解决（2026-10-05，`line/propose-section`）**：该限制已解除 —— `yeban_propose_section` 现在用
+  > `Op::Batch[SetSection, AddClip×N, AddTrack×N, AddClipPlacement×N, AddRoutingNode×N(+1), ConnectRouting×N]`
+  > **真的**生成章节骨架与声部连接，`data.unwired == []`，且它是**从真实 `opKinds` 推导**出来的（`draft_unwired`），
+  > 不是写死的。上面这句"只能返回 unwired"读起来像现状，**按 D43 在此更正为"当时的问题陈述"**。
+  > 证据：CI run **37253125714** = success；逆操作**逐字节**回退（sha256 `0218fa7d…` 调用前后相同）。这是**规范要求的能力在操作日志层缺失**，
   与 D12（补 `RemoveSection`/`RemoveScene`）同一族。
 - **裁决**：`Op` 从 23 个变体扩到 **27** 个：
   · `AddClip { clip }` / `RemoveClip { clip_id, previous_clip }`（后者前置：片段存在且**无摆放引用** → `ClipInUse`）；
@@ -471,3 +477,46 @@
 5. `LEGAL.md` / `GOVERNANCE.md` 里 6 处失效的 `file:///home/crow/work/agy/review/...` 绝对链接
    （AGENTS.md §2 红线 1 禁止 Agent 修改这些文件，因此 `scripts/gates/check_docs_links.py`
    对它们**只告警不阻断**，等人类负责人修复）。
+
+## D45 — 撤销入口：**UI 与 MCP 两侧同接，共用同一实现**（**Accepted 2026-10-05**）
+
+`line/feature-alignment` 的错位 ①：模型有**生产级**撤销实现（`commit.rs:505` `CommitGraph::undo`、`:521` `undo_with`、
+`:533` `op.apply_inverse`）且有 `BASELINE-004` 的时延判据，但 `UndoCursor` 的调用者**只在 `yeban-model` 内部**；
+UI 的 `undo_tree_modal` 唯一 callback 是 `close`，MCP/ui-mcp 里 `undo|redo` **0 命中**。
+⇒ **裁决**：两侧**都接**，且**共用同一个实现**（`CommitGraph::undo_with` + 会话态游标）——
+**不允许** UI 与 MCP 各写一份撤销逻辑（那会立刻产生第二份语义，与 D44 的一体化原则冲突）。
+
+## D46 — 扩充 MCP 工具集/参数（**Accepted 2026-10-05**）
+
+方向：**自动化泳道、设备与引擎、音频导入、MIDI 导出、响度目标**。
+⇒ 十工具是**起点不是上限**；扩充时必须同步 `schemas/mcp-tools.schema.json`（契约是唯一权威定义），
+并遵守 `D25`（错误码联集，不发明新码）与 `MUST-GATE` 的既有门禁。
+
+## D47 — MIDI 导出的**唯一出口** = app CLI `--export-midi`（**Accepted 2026-10-05**）
+
+两个候选中选定 **app CLI**（不扩 `yeban_render_master` 的 `format` 参数）。
+理由：导出是**离线批处理**语义，与 CLI 的定位一致；避免把工具参数面撑成"什么都能导出"。
+⇒ `crates/yeban-render/src/midi.rs`（此前**零消费者**）由此获得第一个出口；
+**不允许**两侧各造一份导出实现。
+
+## D48 — `ui/*` 引入 `dryRun` 与 IME 状态位（**Accepted 2026-10-05**）
+
+`yeban-ui-mcp` 的控制方法增加 **`dryRun`**（只回报"将要发生什么"、不改状态）与 **IME 状态位**
+（`is_composing` 防护可被 AI 观测）。⇒ 与领域侧 `yeban_*` 工具的 `dryRun` 语义**对齐**（同一个词必须同一个意思）。
+
+## D49 — `yeban-theory` 接线（**Accepted 2026-10-05**）
+
+`yeban-theory`（**7 040 行**）此前**零依赖边**；`yeban-mcp` 的 `section.rs:45` 自造了 4 行 `STYLE_PRESETS`。
+⇒ **接线**：由 MCP 侧（或引擎侧）**按需**消费 `yeban-theory` 的既有能力，并**关闭**
+`docs/ledger/tools-domain-notes.md` 的 needs-6。接线时**不许**把 theory 的逻辑复制一份到 mcp。
+
+## D50 — `HD-38`（自托管 runner 预算）：**不投入自托管，托管 runner 不限量使用**（**Accepted 2026-10-05**）
+
+人类负责人裁决：**这是开源项目，GitHub CI/CD 额度无限** ⇒ **不因省钱而牺牲开发与测试进度**。
+- 因此 **`HD-38` 关闭**（不采购/不自建自托管 runner）；
+- **但**：额度无限 ≠ **并发无限**（实测 `in_progress` 长期只有 1–2，且 `fuzz` 这类长作业会占满它）。
+  ⇒ **L32 的"一次推送 = 一批改动"继续有效**，理由从"省钱"改成"**判决归属**"：
+  被 `cancel-in-progress` 取消的运行**等于没有判决**（第 19 轮 28 个提交没有判决就是这么来的）。
+- `BASELINE-003/005` 仍然缺**参考硬件 + 声学回环口径**，这与 CI 额度无关（托管 runner 没有声卡），
+  继续记 PENDING 并等人类资产/裁决。
+
