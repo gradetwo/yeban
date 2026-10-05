@@ -5337,3 +5337,38 @@ is not a guard. The distinction is the same one this session has had to draw rep
 
 The workspace and windows legs of that run were still in progress when this entry was written, so the run is not yet a completed
 full-workspace verdict; what is established is the part the guard belongs to.
+
+### Round 214: consolidation after round 194 - what changed since, and the exact next actions
+
+Round 194 consolidated the session; this is the update, because rounds 195-213 added facts that change what a new reader should do.
+
+**Gates.** Unchanged in status: the five target MUST-GATEs and MUST-GATE-014 are 已接线 with CI evidence; `BASELINE-006` stays
+PENDING by the human's own deferral (HD-47/HD-48); `BASELINE-003` is PENDING pending **HD-49**.
+
+**HD-49 is now the single open decision, and it is series-wide.** Read from the manual gate's own text: the BASELINE series needs
+fixed-frequency reference hardware, which hosted runners are not. So HD-49 is not "how do we judge BASELINE-003" but "how does this
+project judge any BASELINE entry". Recommendation in the row is (a), supply the reference machine; (b) would set the precedent for
+the whole series; (c) leaves it PENDING.
+
+**Three口径 gaps are recorded for BASELINE-003, all in its gate row**: the old crammed fixture (round 184), the static viewport
+(round 187), and software rasterisation - now an observed fact rather than an inference, because `slint_backend=<unset>` and the
+hosted runner has no GPU (round 209). The readings: 170.915 ms before clipping, 9.507 ms static after, and two scrolling runs at
+6.477/9.831 ms and 8.450/8.802 ms - **the last two disagree by more than the distance to the 8.3 ms bar**, which is the strongest
+evidence that no single hosted number is a verdict.
+
+**ROAD-M3-002's first three slices are in, each with criteria**: projection clipping over six parallel arrays; host consumption;
+viewport-relative positions. Also in: an x-sorted binary index (no new dependency - `rstar` is absent from Cargo.lock and adopting it
+would touch deny/vendor/licence), the four viewport bound properties with a saturating u8/u64 -> i32 conversion, a visible pitch
+range judged in BOTH directions, and the roll's first input path (a drag callback the host consumes). **Still missing, and named in
+the matrix row**: the R-Tree itself, the batch draw path, and the tool state machine.
+
+**Step 4 (batch drawing) is deliberately not started.** Round 205's reason still holds with more force after round 206: Slint 1.18
+exposes renderers but no batch-draw callback, the gate measures the software rasteriser, and rewriting the renderer before HD-49 is
+settled would change the artefact under measurement and make any "faster" claim unverifiable.
+
+**Mechanical checks added this stretch**: `check_viewport_bounds_wiring.py` (bounds declared, written AND read, plus lane-count
+consistency - tooth-tested, CI-verified in run `37359240575`'s checks leg), wired into `light`. Its own two failures while being
+written are recorded: a doubled-escape regex, and searching app.slint for a loop that lives in piano_roll.slint.
+
+**Verdicts**: completed full-workspace successes on main now number **eighteen**; `37359240575` @ `44f7c0d` was still running its
+workspace and windows legs when this was written, and would be the nineteenth.
