@@ -6275,3 +6275,30 @@ which is why it is not being started at this point in the session, and why sayin
 
 **What stays true from round 254**: however the keyboard source is added, the goal is N2 - give `InputContext` a reader on the GUI path
 - and the three dead actions (tool selection, pencil toggle, delete selection) are consequences of that, not separate features.
+
+### Round 256: N2's exact API surface is now known, so the next attempt cannot guess
+
+Read from the Slint compiler's builtin elements rather than from memory: the key callback is
+
+```slint
+callback key-pressed(event: KeyEvent) -> EventResult;
+```
+
+declared on a focusable element (`builtin_elements.rs:1417-1422`, alongside `key-released`, `capture-key-pressed`,
+`capture-key-released` and `focus-on-tab-navigation`). So the event-source half of N2 has a concrete shape:
+
+1. a `FocusScope` in the window (or on the roll) whose `key-pressed(event) => { root.key-action(...); return accept; }` forwards the
+   event to the host as a callback;
+2. the host registers that callback, calls the existing `input::resolve`/`dispatch_key` path with the key, and applies the result -
+   which for `UiAction::SelectTool` means setting the mirrored `active-tool` property, and for Undo/Redo means the existing
+   `perform_key` chain;
+3. a criterion: press a digit through the input path, read the property back, assert it changed (round 246 established this is
+   required, because the shortcut is silent today).
+
+**Why this is worth recording rather than implementing immediately**: my last three design attempts for this same slice were each
+corrected by one more read (rounds 249/250/251), so the value of having the API in writing is that the next attempt starts from facts.
+What remains unknown is small and local - which element should hold the `FocusScope` (window-level versus roll-level) and how the
+existing `input::resolve` expects its key argument - and both are single reads.
+
+**Session state**: this is where the work stands; the CI stall (rounds 241/242) still prevents any new verdict, and HD-49 is still the
+one open decision. Everything since verdict 31 is locally verified only, and the newest commit's criterion (round 557) is among that.
