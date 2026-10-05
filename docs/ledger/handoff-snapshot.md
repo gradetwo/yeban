@@ -4,7 +4,7 @@
 
 ## 门禁（`docs/ledger/gate-status.md`）
 
-- 已接线 **17** · 部分 **1** · PENDING **3**（共 21 条）
+- 已接线 **18** · 部分 **0** · PENDING **3**（共 21 条）
 
 ## 阶段项（`docs/ledger/phase-status.md`）
 
@@ -12,7 +12,6 @@
 
 ## 仍未闭环的门禁（逐条）
 
-- `MUST-GATE-014` — **部分**（理由见 `gate-status.md` 对应行）
 - `BASELINE-003` — **PENDING**（理由见 `gate-status.md` 对应行）
 - `BASELINE-005` — **PENDING**（理由见 `gate-status.md` 对应行）
 - `BASELINE-006` — **PENDING**（理由见 `gate-status.md` 对应行）
