@@ -94,6 +94,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # 同时自检: 状态表腐烂就红。
           python3 scripts/gates/check_gate_status.py
+      - name: MUST-GATE-009 发行物层面的"危险能力默认关"断言
+        run: |
+          set -euo pipefail
+          # 进程内已有 112 条判据（默认关/只绑环回/0600/ui:inject 硬禁）；缺的是**产物级**：
+          # 默认构建出来的那个二进制，到底有没有把网络监听代码链进去？⇒ 不问源码，**问产物**。
+          cargo build -p yeban-mcp --locked
+          bash scripts/gates/check_release_defaults.sh
+
       - name: MUST-GATE-005 源码分发包完备性（含真跑 cargo vendor --locked，联网）
         run: |
           set -euo pipefail
