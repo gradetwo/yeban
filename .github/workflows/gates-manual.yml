@@ -284,35 +284,26 @@ jobs:
           # 为什么用 example 而不是 criterion: 见 crates/yeban-render/examples/bench_render.rs 的文件头
           # (零新增依赖 + 可被门禁直接调用 + 判据跑在 debug 断言与并行测试里, 量不出有意义的数)。
           cargo run --release -p yeban-render --locked --example bench_render -- 32 30 2>&1 | tee /tmp/bench.log
-      - name: 'BASELINE-002 峰值常驻内存 (空/演示工程)'
+      - name: 'BASELINE-002 峰值常驻内存（空工程 + 真 MainWindow；目标 ≤ 35 MB）'
         run: |
           set -euo pipefail
-          set -o pipefail
+          # 口径交给 scripts/gates/measure_baseline_002.sh（**本机可复跑**，已在集成者机器上用 debug 二进制跑过）:
+          #   ① 空工程 + --headless          = 进程地板（零 Slint 对象）
+          #   ② 空工程 + --headless-idle     = **规范所指的对象**（真 MainWindow + 逐行光栅化一帧后空闲）
+          #   ③ 6 轨演示 + --headless-idle   = 对照（证明读数随对象变化，不是常数/仪器地板）
+          #   ④ 见证行（windows-created/rendered/像素/颜色/elements）抄进 step summary
+          # TIMEOUT 给大: 冷 runner 上 release 构建 yeban-app(+Slint) 可能远超 300s（这正是上一版直接失败的原因）
           {
             echo "### BASELINE-002 峰值常驻内存（目标 ≤ 35 MB）"
             echo
             echo '```text'
-            # ① 进程地板：**空**工程 + 零 Slint 对象（--headless 不构造 MainWindow）
-            python3 scripts/gates/measure_rss.py --label app-empty-headless --timeout 300 -- \
-              cargo run --release -p yeban-app --locked -- --headless --project-sample empty 2>&1 | tee -a /tmp/bench.log
-            # ② **规范所指的对象**：空工程 + 真 MainWindow（逐行光栅化一帧）后空闲 5 秒
-            #    —— 这才是「空工程空闲常驻内存」的读数；--headless 那条只是地板
-            python3 scripts/gates/measure_rss.py --label app-empty-headless-idle --timeout 300 -- \
-              cargo run --release -p yeban-app --locked -- --headless-idle --idle-seconds 5 --project-sample empty 2>&1 | tee -a /tmp/bench.log
-            # ③ 对照：6 轨演示工程（证明读数**随对象变化**，不是常数/仪器地板）
-            python3 scripts/gates/measure_rss.py --label app-demo-headless-idle --timeout 300 -- \
-              cargo run --release -p yeban-app --locked -- --headless-idle --idle-seconds 5 --project-sample default 2>&1 | tee -a /tmp/bench.log
-            # ④ 见证：证明 ② 真的建了控件树（不是空转）—— 抄进 step summary 供人读
-            echo "--- 见证（windows/rendered/pixels/colors/elements） ---"
-            cargo run --release -p yeban-app --locked -- --headless-idle --idle-seconds 1 --project-sample empty 2>&1 \
-              | grep -E 'headless-idle-witness|view-counts' | tee -a /tmp/bench.log || true
-            # ② 模型层参考点：证明"模型本身的开销"远小于门禁阈值（对照用，不是达标依据）
+            TIMEOUT=900 bash scripts/gates/measure_baseline_002.sh -- \
+              cargo run --release -p yeban-app --locked -- 2>&1 | tee -a /tmp/bench.log
+            echo
+            echo "### 模型层参考点（对照用，不是达标依据）"
             python3 scripts/gates/measure_rss.py --label model-export-samples --timeout 300 -- \
               cargo run --release -p yeban-model --locked --example export_schema_samples 2>&1 | tee -a /tmp/bench.log
             echo '```'
-            echo
-            echo "**诚实边界**：读数取自 \`resource.getrusage(RUSAGE_CHILDREN).ru_maxrss\`（子进程峰值高水位）；"
-            echo "托管 runner 的绝对值只能给数量级，**达标判定必须在规范指定的参考机上复跑同一条命令**。"
           } | tee /tmp/rss-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: 'BASELINE-004 单步撤销时延 (p99)'
