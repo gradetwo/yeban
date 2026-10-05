@@ -68,7 +68,7 @@
 | 文档 | `docs/ledger/audio-render-notes.md`（needs-7 状态更新） | +11 / −3 | +8 |
 | 文档 | `docs/ledger/mcp-render-notes.md`（一行订正） | +1 / −1 | 0 |
 | 文档 | `docs/ledger/human-decisions.md`（HD-20 标"已完成"） | +1 / −1 | 0 |
-| 文档 | 本台账（新增） | +358 / −0 | +358 |
+| 文档 | 本台账（新增） | +397 / −0 | +397 |
 
 **口径说明（防止误读）**：**生产代码净 −5 行**。这个数字比"感觉上删掉的量"小，
 原因是同一次改动里**新写了大量文档**（模块头的 D43 判定顺序、`has_zip_signature` 的三签名理由、
@@ -304,7 +304,44 @@ $ bash /tmp/mcp-store-harness/run.sh    # test result: ok. 57 passed; 0 failed
 
 ### 7.3 门禁与 CI 判决
 
-（提交后回填：`run-gates.sh light` 读数、`git diff --cached --stat`、CI run id 与逐 job 结果。）
+**提交前 `run-gates.sh light`**：✅ `门禁通过 (mode=light)`（fmt / 14 条红线守卫 /
+文档链接与 README 双语契约 / 依赖许可清单漂移，全绿）。
+
+**提交**：`0be9921`（代码 + 判据 + 文档**同一个提交**）——
+本线**只推了一次**，因此不存在"连续推送取消上一轮 run"的风险（L23/L26）；
+这也与已合并的 `app-no-compat`（同样只推一次）保持一致。**本节的 run id 是事后
+补记**（docs-only 提交），因此**代码判决**必须看下面这个 SHA 的 run，而不是分支最新 tip。
+
+**CI 判决**：run **`37247658327`**（branch `line/mcp-no-compat`，`head_sha=0be9921`，
+与推送 tip **逐字节相同**——`gh run view --json headSha` 实测） = ✅ **success**。
+逐 job（原始读数）：
+
+| job | 结果 | 时间 | 关键读数 |
+| :--- | :--- | :--- | :--- |
+| `lockfile`（确定性 `Cargo.lock`） | ✅ | 18s | 依赖图**零变化**（与 §9 一致） |
+| `checks`（fmt / 红线守卫 / schema） | ✅ | 39s | 与 §7.1 的 fmt 一致 |
+| `plan`（受影响集合） | ✅ | 6s | 只派发 `yeban-mcp` / `yeban-ui-mcp` / `windows` 三条腿 |
+| `deny`（cargo-deny 开源合规） | ✅ | 43s | **零新增依赖**（§9） |
+| **`rust (yeban-mcp)`** | ✅ | 54s | ID `111569209073`：clippy `-D warnings` 零告警；**集成测试真的执行了**（本机做不到，见 §7.2） |
+| `windows (yeban-mcp / yeban-model 的平台分支)` | ✅ | 1m44s | `MUST-GATE-008` 的 Windows 强制锁分支 |
+| `rust (yeban-ui-mcp)` | ✅ | 1m50s | 下游消费者照常 |
+| `rust (workspace 全量)` | skip | 0s | 按受影响集合推导，**不是**失败 |
+
+`rust (yeban-mcp)` job 的**逐套件**实测（`test result:` 原始行）：
+
+```text
+unittests src/lib.rs                      183 passed; 0 failed     # 含本线新增/反转的 store 单元判据
+unittests src/bin/yeban-mcp.rs              0 passed; 0 failed
+tests/container_store.rs                   18 passed; 0 failed     # 16 条旧 + 判据 17/18；判据 7 已反转
+tests/contract.rs                          25 passed; 0 failed
+tests/lock_advisory.rs                     14 passed; 0 failed     # 夹具已改为真容器
+tests/render_audio_clips.rs                13 passed; 0 failed     # audioClips 键保留
+tests/render_master.rs                     12 passed; 0 failed
+tests/tools_e2e.rs                         15 passed; 0 failed     # 夹具已改为真容器
+unittests examples/export_mcp_samples.rs    0 passed; 0 failed
+```
+
+⇒ **本机只做了类型检查的 5 个集成测试目标，在 CI 上被真执行并且全绿**（§7.2 的缺口已闭合）。
 
 ---
 
@@ -330,8 +367,10 @@ $ bash /tmp/mcp-store-harness/run.sh    # test result: ok. 57 passed; 0 failed
 
 ### 8.3 pending
 
-- CI 判决 run id：**待回填**（§7.3）。
-- 本机**未执行**的集成测试绿：**待 CI**（§7.2）——本机只做了类型检查。
+- CI 判决 run id：**已读回** —— **`37247658327`（代码 tip `0be9921`）= ✅ success**（§7.3）。
+  ⚠ 本台账的 run id 是**事后 docs-only 补记**，那个提交的 run 会按受影响集合**跳过 rust 腿** ⇒
+  **代码判决一律以 `0be9921` 的 run 为准**（L23：某个 run 绿 ≠ 我的代码被验证过）。
+- 本机**未执行**的集成测试：**已由 CI 关闭**（§7.3 的逐套件读数）——本机只做了类型检查。
 
 ---
 

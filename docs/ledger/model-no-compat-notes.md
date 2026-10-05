@@ -285,6 +285,17 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 | `properties.assets.additionalProperties.required` | `["hash","original_path","byte_len","media_kind","license"]` | JSON 对象键是 64 位小写 hex SHA-256 |
 | `properties.routing_graph.properties.edges.items.required` | `["id","source_node","destination_node","kind"]` | 现在是 `{"type":"object"}` 空壳；**`gain_db` 不得进** |
 
+> ## ✅ 本节已**执行完毕**（集成者注，2026-10-05，依 L31）
+>
+> `schemas/project.schema.json` 的收紧**已落地**：分支 `line/model-schema-d43` @ **`9d60b827`**，
+> CI run **37248121161 = success**（含 `rust (workspace 全量)` 真跑），已合并进 main。
+> 结果：根 `required` **11 → 18 键**；补齐 `metadata`/`transport`/`sections`/`scenes`/`assets` +
+> `tracks[*].{color,devices,macros,automation_lanes,clips}` + `clip_pool[*]`（原空壳）+ `routing_graph.edges[*]`；
+> 各对象 required 共 **23 个路径**；**§5.4 的 18 项豁免由机器审计逐条确认未进任何 required**。
+> 合并后复跑核心判据：`export_schema_samples` + `validate_schemas.py --repo-assets --samples-dir` **通过**。
+>
+> ⇒ **下面这一节保留为"当时的清单"（历史原样），不再是待办。**
+
 ### 5.3 schema 里**根本不存在**、需要新增 `properties` 的对象
 
 以下对象在 `schemas/project.schema.json` 里连 `properties` 都没有（因此"改 required"无从下手，必须新增）：
