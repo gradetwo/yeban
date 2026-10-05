@@ -217,6 +217,7 @@ exit=5          # 精确到"哪一步、哪个路径"; 不留半个文件, 不�
 | ④ clippy（两个探针 crate，`-D warnings -D clippy::all`，探针根**不再** allow `clippy::all`） | `bash /tmp/app-export-midi-harness/clippy.sh` | ✅ **零告警**（§5-7：这条一度是空转的，已修） |
 | ⑤ `cargo fmt --all --check` | `bash scripts/dev/cargo-local.sh fmt --all --check` | ✅ 通过 |
 | ⑥ 门禁 light（**无管道**，直接读退出码） | `bash scripts/gates/run-gates.sh light` | ✅ **门禁通过 (mode=light)**，`exit=0` |
+| ⑦ **CI**：`rust (yeban-app)` 的 `clippy -D warnings` + `test`（真 Slint 二进制） | run **37254761445** 的 job `111589386432`（4m8s） | ✅ **两个步骤都 success**；`137 passed` / `14 passed`（含 B12/B13）见 §10.2 |
 
 **本线新增 / 修改的判据**（编号沿用 `cli.rs` 的顺序，接在 41 之后）：
 
@@ -398,12 +399,12 @@ $ python3 scripts/gates/license_inventory.py                  # 锁哈希列随�
 
 | # | 事项 | 为什么还没关 |
 | :-- | :--- | :--- |
-| 1 | **CI 判决**（run id + 逐 job 读数） | 本机绿不是绿（`docs/CI_CD.md`）；判决由 `scripts/dev/ci-verdict.sh line/app-export-midi` 读回后填。**第一次读数已回**：见 §10 |
-| 2 | 真二进制（含 Slint）的 `cargo test -p yeban-app --all-targets --locked` | 本机不编 Slint（§5-1） |
-| 3 | `cargo clippy -p yeban-app --all-targets --locked -D warnings` | 同上；本机只跑了零 Slint 半边的 clippy |
-| 4 | `cargo test -p yeban-render --all-targets --locked`（整 crate） | 本机不编 `rayon` / `hound` / `sha2`；本机只真跑 `vlq.rs` + `midi.rs` |
-| 5 | `lockfile` job（`cargo metadata --locked`） | 本机跑过 `cargo metadata --offline`（生成锁）；`--locked` 版由 CI 复核（**37254414896 已 ✓**） |
-| 6 | 与 `theory-wiring` 线的锁合并 | 两条线都改 `Cargo.lock`；谁后合并谁重生成（D51） |
+| 1 | **CI 判决**（run id + 逐 job 读数） | **已读回**：run 37254414896 = failure（clippy::filter_next，已修）；run **37254761445 = ✓ 全绿**（tip `bb0d336`）。见 §10 |
+| 2 | 真二进制（含 Slint）的 `cargo test -p yeban-app --all-targets --locked` | **已关**：run 37254761445 的 `rust (yeban-app)` `test` 步骤 success（137 / 14 / 12 / 2 / 9 passed） |
+| 3 | `cargo clippy -p yeban-app --all-targets --locked -D warnings` | **已关**：同一 job 的 `clippy (-D warnings)` 步骤 success |
+| 4 | `cargo test -p yeban-render --all-targets --locked`（整 crate） | **继承 main**：`crates/yeban-render` 本线一行未改（`git diff b7a45ae HEAD -- crates/yeban-render` = 空）⇒ 本线没有为它制造新证据；本机真跑了它的 `vlq.rs` + `midi.rs`（18 passed） |
+| 5 | `lockfile` job（`cargo metadata --locked`） | **已关**：两次 run 都 success（37254414896 / 37254761445） |
+| 6 | 与 `theory-wiring` 线的锁合并 | 两条线都改 `Cargo.lock`；谁后合并谁重生成（D51）。**本线未做**：这是合并期的事，不归本线 |
 
 ---
 
@@ -421,7 +422,36 @@ $ python3 scripts/gates/license_inventory.py                  # 锁哈希列随�
 | `rust (workspace 全量)` | ❌ **failure** | **`clippy --workspace (-D warnings)`** 红：`clippy::filter_next`（§5-7 的详细根因与修法） |
 | `rust (${{ matrix.crate }})` | — skipped | `workspace_wide = true` ⇒ 窄矩阵腿按设计跳过（`.github/workflows/ci.yml:170`） |
 
-### 10.2 第二次推送（修 `clippy::filter_next` + 探针去 allow）⇒ 见提交信息里的 run id
+### 10.2 第二次推送：run **37254761445**（tip `bb0d336`）⇒ **✓ 全绿**
 
-> 本节的判读口径与 `docs/CI_CD.md` 一致：**未读取的判决记为 pending**，
-> 不把"本机绿"或"上一个 run 的绿"当成这次的绿。
+| job | 结论 | 说明 |
+| :--- | :--- | :--- |
+| `lockfile (确定性 Cargo.lock)` | ✅ success（20s） | `cargo metadata --locked` 通过 |
+| `checks (fmt / 红线守卫 / schema)` | ✅ success（44s） | 格式 / 14 条守卫 / schema / 文档契约 / 许可清单 / 跨语言对账 |
+| `deny (cargo-deny 开源合规)` | ✅ success（42s） | 无新外部依赖 ⇒ 策略不变 |
+| `plan (受影响集合)` | ✅ success（6s） | 本次 delta = `crates/yeban-app/**` + `docs/**` ⇒ 窄运行 |
+| `rust (yeban-app)` | ✅ **success（4m8s）** | 步骤 `clippy (-D warnings)` = success、`test` = success ⇒ **含 Slint 的真二进制**在本 run 里被编译、链接、跑过 |
+| `rust (workspace 全量)` | — skipped（0s） | 窄运行按设计跳过（`ci.yml:170`） |
+| `windows (…)` | — skipped（0s） | 未受影响 |
+
+`rust (yeban-app)` 的 `test` 步骤原始读数（`gh run view --job=… --log` 逐行）：
+
+```text
+test result: ok. 137 passed; 0 failed   # lib 单元判据（含 13 条 export_midi::tests + 5 条 cli::tests::export_midi*）
+test result: ok.  14 passed; 0 failed   # tests/cli_contract.rs（真二进制 B1–B13，含 B12/B13）
+test result: ok.  12 passed; 0 failed   # tests/real_ui_tier1.rs
+test result: ok.   2 passed; 0 failed / 9 passed; 0 failed   # 其余目标
+```
+
+逐条点名（CI 日志原文，全部 `... ok`）：`export_midi::tests::ppq_header_is_the_project_ppq_and_the_encoder_default_agrees`、
+`exported_notes_match_the_demo_fixture_note_by_note`、`exported_bytes_round_trip_through_the_smf_reader`、
+`two_exports_of_the_same_project_are_byte_identical`、`cli::tests::export_midi_on_a_non_container_exits_three_and_writes_nothing`、
+`cli::tests::export_midi_into_an_unwritable_path_exits_five_without_a_half_file`、
+`export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary`、
+`export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing`。
+
+> **口径声明（不许含糊）**：上面这个绿是 tip `bb0d336` 的判决。
+> 本文件随后又追加了 §10 这一段（**docs-only**）⇒ 段落后那个 tip 的 code 判决**继承**本 run
+> （`crates/**` 的字节没有变，`changed-crates.py` 会把它算成窄运行）。
+> `yeban-render` 在本线**一行未改**（`git diff b7a45ae HEAD -- crates/yeban-render` = 空），
+> 因此它的整 crate clippy/test 判决**继承 main**（`b7a45ae`），本线没有为它制造新的证据。
