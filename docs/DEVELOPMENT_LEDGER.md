@@ -4410,3 +4410,35 @@ have added a `MethodSpec` that nothing consumes.
 Honest note on pace: this is the fourth reconnaissance round for the UI half (168, 169, and the two greps inside them). Each
 removed a real unknown and none produced code. D56's other four parts are done and CI-verified, so the remaining work is this
 one crate.
+
+### Round 170: D56 UI half - the real path is UiAction -> port, and the Operation enum is a tested contract
+
+The bindings in `crates/yeban-app/src/host.rs` are uniform, e.g.:
+
+```rust
+let port = Rc::clone(port);
+let weak = slint::ComponentHandle::as_weak(ui);
+ui.on_undo_step(move || { port.perform(UiAction::Undo); refresh_undo(&weak, &port, true); });
+```
+
+So the UI does **not** call an implementation directly: it performs a **`UiAction`** on a **port**, and the port is the thing that
+carries the work. The element-ID registry follows a fixed shape too (`elements.rs`):
+
+```rust
+registry.add("transport-play-button", ElementKind::Button, "transport.slint", "播放 / 暂停 (Space)", false);
+```
+
+**Consequence for D56, and it changes the estimate again**: the UI half is not "bind a callback that calls the collector". It is
+
+1. a new action variant on the UI action enum (which `yeban-app` maps onto the port),
+2. the port-side handler for it, which is where `yeban_diagnostics::export_diagnostics` gets called - and that is the true
+   "one implementation" point for D56 criterion 4,
+3. the element ID + `registry.add(...)` entry, the menu item in a `.slint` file, and the `ui.on_...` binding in `host.rs`.
+
+**Why this needs care rather than speed**: the port's action/`Operation` enum is part of a **tested contract** (it lives in
+`yeban-ui-test-port`, whose tests assert the action set), so adding a variant ripples into tests exactly as the `Plan` enum did in
+the MCP side - and that ripple cost several CI rounds there. Doing it blind in the remaining context would repeat that.
+
+**Position after five reconnaissance rounds on this item (168-170)**: the UI half is the only D56 part left, and it is now fully
+mapped: action variant -> port handler -> `registry.add` -> `.slint` item -> `host.rs` binding, with the tested action set and
+`yeban-app/Cargo.toml`'s missing `yeban-diagnostics` line as the two known ripple sites.
