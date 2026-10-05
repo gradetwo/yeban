@@ -4706,3 +4706,32 @@ concrete and ordered:
 (a) wire `host.rs:130-140` to push the six clipped arrays (needs the scroll offset - still the open read),
 (b) re-run `gh workflow run gates-manual.yml -f gate=fps` and compare,
 (c) once clipping is consumed, take the official reading on the reference machine under HD-45 rather than the hosted runner.
+
+### Round 183: consuming the clipping needs TWO inputs that do not exist yet - here are the options, with a recommendation
+
+Reading rather than guessing, as promised in round 181:
+
+1. **No scroll offset exists anywhere.** `grep` for `scroll-x` / `scroll_x` / `viewport-x` / `Flickable` across
+   `crates/yeban-app/ui/console/piano_roll.slint` and `crates/yeban-app/src/host.rs` returns **nothing**. The roll is drawn from
+   injected arrays with no notion of a window position.
+2. **`apply_view` has no viewport width.** Its signature is `pub fn apply_view(ui: &MainWindow, view: &ViewState)` (host.rs:105),
+   called from two places (435, 482). The scene carries `viewport_width` (the timing test uses it, and it derives from the
+   compact/expanded breakpoint), but the injection path never sees it.
+
+So the projection's clipping API (rounds 409-411) cannot be consumed until those inputs are supplied. Three ways, with the
+trade-offs as I see them:
+
+| option | shape | cost |
+| :--- | :--- | :--- |
+| **A (recommended first step)** | keep `scroll_x = 0` and give `apply_view` the viewport width, taken from the scene the caller already has (`DemoScene::from_view`) | small; the roll draws the FIRST screenful correctly and correctly draws **nothing beyond it**, which is a real behavioural change (today it draws everything) |
+| B | store the viewport width in `ViewState` (projection) so `apply_view` needs no new parameter | touches the projection's construction and every fixture; more ripple than A |
+| C | expose `scroll-x` and the width as `.slint` properties on the roll and read them back in the host, re-injecting on change | the end state, but it needs A or B first to have anything to re-inject, plus a change-notification path and headless test hooks |
+
+**Recommendation: A, then C.** A is a genuine step because clipping to the visible window is exactly what the gate needs, and a
+non-scrolling measurement (600 frames of the same viewport, which is what the fps gate does today) would show the improvement
+immediately. C is what makes scrolling honest, and it needs the project's existing port/testing machinery to assert that
+scroll-x changes what is injected.
+
+**Explicitly not decided here**: whether A alone is enough to bring the p99 under 8.3 ms. Round 182 measured ~171 ms/frame with
+everything drawn; clipping to one screenful should cut that by the ratio of visible to total notes, but that is a prediction to
+be measured by re-running the gate, not a claim.
