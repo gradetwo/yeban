@@ -7319,3 +7319,26 @@ presumed.
 `yeban-render` (re-export) and `yeban-mcp` (for the coming tool), and appears in the licence inventory. The **mapping layer** (`export_from_project`)
 has NOT moved, which is what the five reverted attempts were about - so the MCP tool is still owed, and the next attempt should use ordinary edits
 with a compile between them (round 295).
+
+
+### Round 297: cleaning target/debug - what is actually useless, measured
+
+The disk filled to 100% during round 289's verification, so `target/debug` was cleaned and the split between useless and load-bearing artifacts measured:
+
+| target | size | verdict |
+| :--- | :--- | :--- |
+| `deps/*.o` | **~6.8 GiB** across 127,271 files | **deleted** - intermediate objects left over after linking; nothing references them once the binary or rlib exists |
+| `deps/*` executables (test/example binaries, no extension, +x) | **~2.7 GiB** across 187 files | **deleted** - each `--tests` sweep in this session produced a new set; the old ones are never re-executed |
+| `incremental/` | **1.2 GiB** | **deleted** - pure incremental cache, rebuilt on the next compile |
+| `examples/` | **152 MiB** | **deleted** - example binaries, rebuildable on demand |
+| `deps/*.rlib` | 3.5 GiB | **kept** - needed for linking; deleting forces every dependency to be recompiled |
+| `deps/*.rmeta` | 1.2 GiB | **kept** - needed for `cargo check` speed; deleting does the same |
+| `build/` | 1.2 GiB | **kept** - build-script outputs; deleting is safe but re-runs every build script (slint, cpal, …) |
+
+**Result: `target` went from 20 GiB to 8.2 GiB, freeing ~10.9 GiB**, and the verification after the deletion is what makes it trustworthy rather
+than merely plausible: `cargo check -p yeban-midi -p yeban-model` finished in **1.84 s**, i.e. the rlib/rmeta state survived and nothing needs
+recompiling. A cleanup that broke incremental state would have shown up as a long rebuild here.
+
+**The rule this yields for this project**: `.o` files, test/example executables, `incremental/` and `examples/` are disposable; `deps/*.rlib`,
+`deps/*.rmeta` and `build/` are the ones worth keeping, because their deletion converts seconds into minutes. The 15 GiB inside `deps` was mostly
+the first category, which is why `du -sh target` alone never showed where the space was.
