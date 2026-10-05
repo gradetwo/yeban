@@ -5981,3 +5981,31 @@ reason round 239 rejected passing the port into the builder.
 reachability requirement in each of the last three rounds, so the honest statement is that **step 2 is a multi-round change**, not a
 next-round one: it touches input state, the undo port, the projection and a UI criterion, and each of the four has needed its own read
 first. Being explicit about that is better than three more rounds of "nearly ready".
+
+### Round 244: the active tool is UI-internal, and a comment claims a wiring that does not exist
+
+The last unknown from round 243, read rather than guessed: the active tool lives at `piano_roll.slint:45` as
+`in property <int> active-tool: 1;` - and its neighbouring comment says "与 `src/input.rs` 的 1..5 数字键是**同一份状态**: 键盘改
+active-tool, 这里只读".
+
+**The code does not do that.** `grep -n 'active-tool' ui/app.slint src/host.rs` returns **nothing**: the property is not mirrored on
+MainWindow, the host never sets it and never reads it, so nothing outside `PianoRoll` can see or change the tool. The comment describes
+an intended wiring, and it is the second time this session that a comment asserted a coupling the code does not have (the first was
+`accessible-item-selected: note_index == 0`, which claimed the first note was always selected - round 504).
+
+**Consequences for step 2, which are now completely enumerated**:
+1. the tool state must become **observable from Rust** before any handler can ask "is the pencil active?" - i.e. the property needs
+   mirroring to MainWindow (the same three-level pattern as `note-selected`, rounds 502-504) **and** the digit keys in `input.rs` must
+   actually set it, which today they cannot;
+2. that also makes the comment true, which is a small but real repair: a comment that describes a coupling is a claim, and this
+   session's discipline is that claims are either true or corrected.
+
+**So step 2 is now four parts, each with its own read done**: (a) mirror `active-tool` to MainWindow and have the digit keys set it;
+(b) `wire_roll_edit(ui, port, context)` with the pencil branch; (c) `clip_at_tick` + owning-track resolution + `op` + `commit_ops` +
+reproject; (d) a UI criterion that clicks, asserts the note count rose by exactly one, and that undo reverses it. Every unknown that
+was blocking it has been resolved into one of those four; none of them requires a further read, which is the first time that has been
+true for this slice.
+
+**Not started, and the honest reason is capacity, not uncertainty**: the session's context is nearly spent, and (c) mutates the model
+and (d) judges that mutation - exactly the pair that should not be written at the end of a long session, as rounds 520 and 521 showed
+when hurrying produced a chained gate-and-commit and an unscoped text replacement. The four parts above are the handover.
