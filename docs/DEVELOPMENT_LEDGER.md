@@ -7492,3 +7492,24 @@ them. That is the fourth instrument lesson of the same family (rounds 231/240/27
 
 **Status unchanged**: tree green and clean; the mapping move's todo is one line of diagnosis (find the `+1` in the generated `export.rs`); `yeban-midi`
 holds `midi` and `vlq`; the MCP tool is owed; CI green through `108ed5a`.
+
+
+### Round 305: the +1 diagnosed - my `use` filter only removes the FIRST line of a multi-line use
+
+The line-by-line balance print located both defects, and neither is subtle once visible:
+
+1. **the generated text starts with `};`** - because the filter `not l.startswith("use ")` removes only the **first** line of a multi-line `use`
+   statement. `use yeban_render::midi::{ ... };` spans several lines, so its tail (`MidiError,`, `DEFAULT_PPQ,`, `};`) survived into the output. That
+   single leftover is the -1 that made the pre-flight refuse, and it explains several earlier failures whose messages pointed at unrelated lines.
+2. **a second `export_project_to_file` is still present** in the generated body, so the deletion span did not cover the writer - the span ended at the
+   first line that is exactly `}` **after** the signature, which is not the function's closing brace.
+
+**So the generator's two fixes are both about spans rather than about Rust**: strip whole `use` statements (multi-line aware, e.g. by scanning to the
+terminating `;`), and compute the writer's span by brace matching from its opening `{` instead of scanning for a bare `}`. Both are a few lines, and
+the pre-flight will then confirm balance before anything is written.
+
+**What the pre-flight earned here**: eight attempts reached the compiler and had to be reverted; the last two never touched the tree, and this round
+produced the *diagnosis* of the imbalance from a read-only script. The pattern to keep is exactly that - **inspect the generated text as data before
+treating it as source**.
+
+**Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool still owed; CI green through `299a77b`.
