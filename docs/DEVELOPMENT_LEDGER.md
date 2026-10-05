@@ -6592,3 +6592,30 @@ user wants, e.g. a streaming loudness), while the measurement is engine state. K
 **Consequence for the remaining work**: the loudness item needs (a) a reading of what the engine currently exposes for LUFS / LRA / true peak
 (the next read), and only then (b) a query-shaped MCP tool whose parameters mirror the spec's named windows. It does not need a new
 measurement implementation, and it must not grow one inside MCP.
+
+### Round 268: the measurement already exists to spec - so the loudness tool's minimal path is a field in reported engine state
+
+The read round 267 asked for, and it removes almost all of the work:
+
+| capability | where it already is |
+| :--- | :--- |
+| K 加权 + **门限积分 LUFS** + 瞬时/短时窗口 (BS.1770-4, 44.1/48/88.2/96 kHz, −70 LUFS / −10 LU gates) | `crates/yeban-dsp/src/loudness.rs`, indexed in `yeban-dsp/src/lib.rs:41,66` |
+| **真峰值** | `crates/yeban-engine/src/level.rs` (`TruePeakDetector`, with its latency/phases/taps constants) |
+
+So the spec's requirement (round 267) is **already implemented**, at the standards it names, and nothing about the MCP item needs a new
+measurement. What it needs is a way for MCP to READ values without gaining an audio-stack dependency - and the architecture already has that
+shape: MCP queries **reported engine state** (`yeban_query_engine_state`).
+
+**Therefore the minimal, rule-respecting path is**: the engine already computes LUFS windows and true peak, so those values should appear as
+fields in the state that MCP queries - one struct, one producer, one criterion - rather than MCP calling into `yeban-dsp` (forbidden by its
+own Cargo.toml) or re-implementing the maths (which would be a second implementation of a standards-conformant measurement, the exact thing
+this session keeps finding and refusing).
+
+**The next read is therefore narrow and specific**: what the engine-state report currently contains and whether the loudness/true-peak values
+are already among its fields, or whether they exist only inside the engine's own meter plumbing (`meters.rs` / `level.rs`) and would need to
+be surfaced. Either way the change is additive and stays on the reporting side.
+
+**Why this is recorded rather than implemented in this round**: the same reason as the two structural items in round 266 - a change to the
+reported-state struct touches the engine's producer side and every consumer and criterion, and the CI stall means a hosted verdict would not
+arrive even if the local ones passed. The value of this entry is that the NEXT attempt starts from "add fields to a struct that already
+exists", not from "implement EBU R128".
