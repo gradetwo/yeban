@@ -5492,3 +5492,28 @@ Still queued or in progress at this point: `c3bab2b` (snapping), `b4422ca`, `21b
 
 The queue is deep because each verified slice was pushed immediately. That remains the deliberate tradeoff: an unread verdict is
 recoverable, unpushed work is not, provided the two are never conflated.
+
+### Round 223: exact recipe for the host side of the click wiring, with every anchor
+
+The three parts the click needs are built and judged: `hit_test_visible` (round 495), `Selection` (round 496), and
+`Selection::flags_for` (round 497). The callback is declared and forwarded (round 498). What remains is the host, and here is the
+whole of it - recorded because a half-wired input path is worse than none, which is the reason it was not started at the end of a
+long session.
+
+1. **state**: in `build_main_window_with_console_tab`, beside the existing `Rc<RefCell<f32>>` scroll holder, add
+   `Rc<RefCell<Selection>>` and keep the existing `Rc<ViewState>` snapshot (already there for the scroll handler) - the click
+   handler needs the same two things the scroll handler has.
+2. **handler**: `ui.on_clicked(move |x, y| { ... })`, where `x`/`y` arrive as `f32` (the `length` parameters surface as floats, as
+   `scroll-requested`'s `delta` did). Inside: read the scroll value and the view, call
+   `view.hit_test_visible(scroll, window_width, x, y, NOTE_HEIGHT)` - `NOTE_HEIGHT` must come from `piano_roll.slint`'s note
+   rectangle rather than being guessed (the note height is currently a parameter exactly so this stays honest) - then
+   `selection.select_only(ulid)` on a hit, where the ulid comes from `view.notes[index].id`, or `selection.clear()` on nothing.
+3. **injection**: add `in-out property <[bool]> note-selected: [];` to `MainWindow` **and** to `PianoRoll`, forward it in
+   `app.slint` and `console_tabs.slint` (the same three-level chain as `scroll-x` and `clicked`), set it in `apply_view` from
+   `selection.flags_for(&visible.ulids)`, and use it in the roll's note rectangle for the selected border/colour.
+4. **criterion**: the cheapest honest one is at the projection/host boundary - `flags_for` already has its own - plus a UI-level
+   test asserting that after a synthetic click the injected `note-selected` has exactly one `true` at the clicked note's index. That
+   belongs in `test_port_adapter.rs`, which this session proved can be run locally with `--features ui-test-port`.
+5. **remember the three traps already recorded**: the gutter must stay in the layout (round 217), the six-plus-one arrays must share
+   one index set (round 181), and a bounds/lane count duplicated in two places needs a guard (rounds 196/487) - the `note-selected`
+   array is a candidate for the same guard once it exists.
