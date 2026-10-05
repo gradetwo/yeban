@@ -3010,3 +3010,34 @@ suspicion was the single real defect it led me to find.
 hardware-independent one is `ROAD-M4-002`'s missing end-to-end test: **spawn the `yeban-mcp` binary and speak stdio**
 (one `tools/list` + one real call), since `CARGO_BIN_EXE_yeban-mcp` has zero hits today. That is the next thing worth
 building.
+
+### Round 103: `ROAD-M4-002`'s stdio test - third line to produce nothing; downgraded to a written-down pending
+
+The hygiene pass (round 102) surfaced this task from the row's own text: `grep -rn 'CARGO_BIN_EXE_yeban-mcp' crates/` has
+**0 hits**, so no test ever spawns the MCP binary - what exists is `serve_lines`' unit behaviour, not "a real MCP client
+speaking stdio to the process". I opened `line/mcp-stdio-e2e` with a brief quoting that row, plus a **minimum acceptance
+set** (spawn the binary; `initialize` + `tools/list`; one real call; notes count as a delivery).
+
+**Result: 0 changed / 0 commits across three rounds, then a hard "land it now, minimum scope, notes are acceptable"
+message, and still 0 changed / 0 commits** - i.e. no file was ever written, so there was **nothing to take over**.
+Takeover would have meant writing the test from scratch against a transport I have not read, which my remaining context
+cannot do responsibly. I stopped the line instead of nudging a fourth time (round 100's lesson: a nudge is not a result).
+
+**This is the third line this session to produce nothing** (the other two were the two `BASELINE-002` measurement lines).
+The pattern that *does* produce deliveries is the one used for `baseline-empty-sample` and `baseline-headless-idle`: a
+**single-item scope with the exact file/flag named**, plus "land first". The pattern that fails is a scope that still
+requires reading an unfamiliar subsystem before the first write.
+
+**Downgraded to a pending with the spec written down** so it is not lost and does not need re-deriving:
+
+| what | detail |
+| :--- | :--- |
+| task | integration test in `crates/yeban-mcp/tests/` that spawns `env!("CARGO_BIN_EXE_yeban-mcp")` |
+| handshake | write `initialize`, then `tools/list` as JSON-RPC lines on stdio; assert the tool list is non-empty (≥15 if that is what the crate exposes) |
+| tooth | one **real** tool call whose response is asserted, chosen to need no external file/network |
+| must go red if | the binary path is wrong, or the tool name is wrong (state which assertion fails) |
+| local check | `bash scripts/dev/cargo-local.sh test -p yeban-mcp` |
+| CI expectation | the `rust (yeban-mcp)` leg must run it (report per-leg `steps`; `steps=0` is not a verdict) |
+
+**Next-worker note**: read `crates/yeban-mcp/src/`'s stdio/transport framing **first**, before promising a test shape -
+that reading step is precisely where this line stalled.
