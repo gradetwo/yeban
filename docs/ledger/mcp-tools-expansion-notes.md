@@ -235,6 +235,17 @@ rustc --edition 2024 -D warnings /tmp/yeban-audit/local_audit.rs -o /tmp/yeban-a
 
 ---
 
+### N-MCP-MIDI-1（**新增，账本第 320–326 轮**）：MIDI 导出工具的**唯一**前置 = 映射层下移
+
+| 项 | 状态 |
+| :--- | :--- |
+| **已完成** | SMF 编解码器与 VLQ 助手已下移到 `crates/yeban-midi`（**双平台 CI 绿** ✓）；`yeban-mcp` 已依赖它（依赖方向守卫允许 ✓）；app 的夹具家族（`demo_*` 6 个）已下移到 `yeban-model::samples`（**492 passed** ✓）|
+| **仍缺** | 映射层 `export_from_project`（829 行）仍在 `yeban-app`：MCP 侧遵守依赖方向 ⇒ **够不到它** ⇒ 工具无法与 CLI 共用同一实现 |
+| **配方（已完备，勿再发明）** | 用**编译器引导的普通编辑**：`git mv` 该文件 ⇒ `cargo check` ⇒ **只修编译器打印的那一个错误** ⇒ 再 check。**不要**一次性算整个变换（跨度/过滤/重建/导入修剪都失败过 26 轮 ✗）；生成器 `scripts/dev/extract-midi-mapping.py` 与其预检可作为参照，但同样以编译器为准 |
+| **为什么是 pending 而不是继续重试** | 该循环**必然经过中间红色状态**，与本线"每条命令以绿色收尾"的做法冲突；按目标纪律，阻塞点**降级为 pending** 并**交接配方** |
+
+**工具本体的剩余工作**（映射层到位后即可做，均已定）：`yeban_export_midi` 规格进 `tools.rs`（**计数 16 → 17**）· 处理委派给共享映射 · **判据**：建工程 ⇒ 调共享映射 ⇒ **`parse_smf` 内存内读回对比**（不碰文件系统 ⇒ 规避第 279 轮的锁测试抖动）· 同步 `feature-alignment.md` 的 MCP 计数。
+
 ## 7. 本机门禁的**唯一**红点：`feature-alignment`（集成者的文件）
 
 ```text
