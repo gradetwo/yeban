@@ -37,8 +37,9 @@ use l1_digest_record::{
     CrossPlatform, DigestEnvelope, DigestRecord, DigestScope, JudgeError, Participation,
     PlatformIdentity, RenderParams, SCHEMA, WAV_HEADER_BYTES, Verdict, compared_fields,
     encode_wav_f32_le, format_utc, hex_lower, judge, judge_policy, latency_token, parse,
-    participation_of, pcm_bits_bytes, recorded_only_fields, report, sample_digest_of, sha256,
-    split_rustc_version, to_json, to_json_line, to_pretty_json, wav_data_payload,
+    participation_of, pcm_bits_bytes, recorded_only_fields, report, same_platform,
+    sample_digest_of, sha256, split_rustc_version, to_json, to_json_line, to_pretty_json,
+    wav_data_payload,
 };
 
 // ---------------------------------------------------------------------------
@@ -583,11 +584,37 @@ fn cross_platform_policy_is_explicit_and_distinguishable() {
     let samples = synthetic_master();
     let local = build(&samples, |_| {});
     let mut foreign = local.clone();
-    foreign.platform.target_arch = "x86_64".to_owned();
-    foreign.platform.target_os = "linux".to_owned();
-    foreign.platform.target_triple = "x86_64-unknown-linux-gnu".to_owned();
-    foreign.platform.rustc_host = "x86_64-unknown-linux-gnu".to_owned();
+    // ⚠ 异平台按**编译期事实**取反构造，不许写死 —— run 37267482265 就是因为把异平台写死成
+    // `x86_64-unknown-linux-gnu`，而 CI 恰好就是那个平台，于是"异平台"不异了。
+    let foreign_arch = if cfg!(target_arch = "x86_64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    let foreign_triple = if cfg!(target_arch = "x86_64") {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    };
+    foreign.platform.target_arch = foreign_arch.to_owned();
+    foreign.platform.target_os = if cfg!(target_arch = "x86_64") {
+        "macos".to_owned()
+    } else {
+        "linux".to_owned()
+    };
+    foreign.platform.target_env = if cfg!(target_arch = "x86_64") {
+        String::new()
+    } else {
+        "gnu".to_owned()
+    };
+    foreign.platform.target_triple = foreign_triple.to_owned();
+    foreign.platform.rustc_host = foreign_triple.to_owned();
     foreign.validate().expect("只改平台身份仍然是自洽的记录");
+    assert_ne!(foreign_arch, std::env::consts::ARCH, "异平台必须真的不同");
+    assert!(
+        !same_platform(&foreign.platform, &local.platform),
+        "异平台必须真的不同"
+    );
 
     // 默认策略 = 规范口径。
     let default = judge(&foreign, &local).expect("可比");

@@ -107,6 +107,44 @@ fn local_record(threads: Threads, notes: &str) -> (DigestRecord, Vec<u8>) {
     .expect("摘要记录必须能自证无损")
 }
 
+/// **编译期常量**：一个与本机平台**必然不同**的平台身份（按 `target_arch` 取反）。
+///
+/// ⚠ 实测教训（run 37267482265）：第一版把"另一个平台"**写死**成 `x86_64-unknown-linux-gnu`，
+/// 而 CI 的 runner **恰恰就是**那个平台 ⇒ `same_platform` 为真 ⇒ 判据 ⑪ 在 Linux 上拿到 `PASS`
+/// 而它期待 `SKIP`。**"造一个异平台"必须相对本机来构造** —— 而且"本机"是**编译期事实**，
+/// 所以用 `cfg!` 在编译期取反，比运行时比较更不容易想错。下面两条常量断言把"它真的不同"钉死。
+const FOREIGN_ARCH: &str = if cfg!(target_arch = "x86_64") {
+    "aarch64"
+} else {
+    "x86_64"
+};
+const FOREIGN_TRIPLE: &str = if cfg!(target_arch = "x86_64") {
+    "aarch64-apple-darwin"
+} else {
+    "x86_64-unknown-linux-gnu"
+};
+
+/// 把一份记录的平台身份**改写**成上面那个异平台（其余字段原样不动）。
+fn foreign_platform_from(
+    local: &DigestRecord,
+) -> export_pipeline::l1_digest_record::PlatformIdentity {
+    let mut platform = local.platform.clone();
+    platform.target_arch = FOREIGN_ARCH.to_owned();
+    platform.target_os = if cfg!(target_arch = "x86_64") {
+        "macos".to_owned()
+    } else {
+        "linux".to_owned()
+    };
+    platform.target_env = if cfg!(target_arch = "x86_64") {
+        String::new()
+    } else {
+        "gnu".to_owned()
+    };
+    platform.target_triple = FOREIGN_TRIPLE.to_owned();
+    platform.rustc_host = FOREIGN_TRIPLE.to_owned();
+    platform
+}
+
 /// 读参考摘要（**一个字节都不改**地解析）。
 fn reference() -> DigestRecord {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(REFERENCE);
@@ -541,16 +579,18 @@ fn the_archived_reference_is_self_consistent() {
 #[test]
 fn cross_platform_policy_is_explicit_and_never_dresses_up_skip_as_pass() {
     let (local, _) = local_record(Threads::Auto, "判据 ⑪ 基线");
-    // 造一个"另一个平台"的记录：只改平台身份（模拟 x86_64-linux）。
     let mut foreign = local.clone();
-    foreign.platform.target_arch = "x86_64".to_owned();
-    foreign.platform.target_os = "linux".to_owned();
-    foreign.platform.target_triple = "x86_64-unknown-linux-gnu".to_owned();
-    foreign.platform.rustc_host = "x86_64-unknown-linux-gnu".to_owned();
+    foreign.platform = foreign_platform_from(&local);
     foreign.validate().expect("自洽");
-    assert_ne!(
-        foreign.digest, "",
-        "读数仍然是同一个 —— 这条判据要测的是**平台身份**的影响"
+    // 两条常量断言：异平台必须真的与**本机**不同（这是本判据的前提，必须被钉住）。
+    assert_ne!(FOREIGN_ARCH, std::env::consts::ARCH);
+    assert!(
+        !judge(&foreign, &local).expect("可比").same_platform,
+        "这条判据要的正是'平台不同'这个前提; 构造出的平台必须与本机不同"
+    );
+    assert_eq!(
+        foreign.digest, local.digest,
+        "只改平台身份 —— 读数必须仍是同一个, 否则测的就不是平台身份的影响"
     );
 
     // 1. 默认策略 ⇒ SKIP。

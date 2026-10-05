@@ -306,6 +306,10 @@ bash scripts/dev/cargo-local.sh test -p yeban-render
 **I3 是"判据 ⑥ 真的绿"的反向证明**：把非参与字段**升级**为参与后，"改了宿主名仍然绿"立刻变红
 ⇒ 未注入时的绿不是因为它恒绿。
 
+**另一条同类教训（run 37267482265）**：判据 ⑪ 需要"一个与本机不同的平台"，第一版把它**写死**成
+`x86_64-unknown-linux-gnu` —— CI 的 runner 恰好就是那个平台 ⇒ 异平台不异、判决变成 `Pass`。
+现在改成 `cfg!(target_arch = "x86_64")` 的**编译期取反**，并把"它真的不同"写成断言。
+
 **关于覆盖面的如实边界（第一版**曾经**踩到）**：判据 ⑤/⑥ 的第一版拿**仓库里的参考摘要**当基线去做"同平台"
 注入，于是它们在 CI（Linux）上必然退化成 `SKIP` 并断言失败 —— run **37267073019** 就是这么红的
 （`assertion failed: judgement.same_platform && judgement.toolchain_locked`，2 条）。
@@ -439,10 +443,34 @@ bash scripts/dev/cargo-local.sh test -p yeban-render
 修法见 §6（判据改为以本机读数为基线 + 新增判据 ⑪ 覆盖跨平台策略），并已在本机用
 "把参考摘要的平台身份临时换成 `x86_64-unknown-linux-gnu`"复现了 CI 场景（13 passed / 0 failed）。
 
-### 第 2 轮（修复提交）—— 见本线的最终报告
+### 第 2 轮（修复提交 `098b288`）—— run [37267482265](https://github.com/gradetwo/yeban/actions/runs/37267482265)：**红（1 个 job，但换了一条判据）**
+
+| job | 结论 | 意义 |
+| :--- | :--- | :--- |
+| 其余全部 | ✅ | 与第 1 轮相同（锁文件无漂移、格式/守卫/文档全过） |
+| `rust (yeban-render)` | ❌ **failure** | `102 passed` + `10 passed` 绿，判据 ⑤/⑥ 的修复生效（它们不再红了），但**新增的判据 ⑪** 红：`12 passed / 1 failed`，`cross_platform_policy_...` 拿到 `Verdict::Pass` 而它期待 `Skip` |
+
+**这一轮抓到的是一条更"好笑"但同样真实的缺陷**：判据 ⑪ 需要"一个与本机不同的平台"，
+第一版把它**写死**成 `x86_64-unknown-linux-gnu` —— 而 CI 的 runner **恰恰就是**那个平台，
+于是"异平台"不异、`same_platform` 为真、`judge` 返回 `Pass`。
+**教训**：**"造一个异平台"必须相对本机（编译期事实）构造**，不能写死一个具体平台。
+
+修法：`FOREIGN_ARCH` / `FOREIGN_TRIPLE` 改成 `cfg!(target_arch = "x86_64")` 的**编译期取反**，
+并加两条断言把"它真的不同"钉住（`assert_ne!(FOREIGN_ARCH, std::env::consts::ARCH)`、
+`assert!(!same_platform(...))`）。两条判据（端到端 + 纯逻辑）都已同步。
+
+**CI 前提的手推核对**（本机没有 x86_64 宿主，因此把 `cfg!` 的两条分支各推一遍）：
+
+```text
+host=x86_64   -> FOREIGN_ARCH=aarch64  FOREIGN_TRIPLE=aarch64-apple-darwin    same_platform=False ✓
+host=aarch64  -> FOREIGN_ARCH=x86_64   FOREIGN_TRIPLE=x86_64-unknown-linux-gnu same_platform=False ✓
+```
+
+### 第 3 轮（本文件随修复一起提交）—— 见本线的最终报告
 
 - 判决：由本线的最终报告给出（`bash scripts/dev/ci-verdict.sh line/gate-cross-machine-digest`）。
-  本机侧的等价证据是 §5 的三条命令 + §6 的三条注入 + §4.1 的跨机同 digest 复核。
+  本机侧的等价证据是 §5 的三条命令 + §6 的三条注入 + §4.1 的跨机同 digest 复核 +
+  "把参考摘要换成 Linux 平台身份"的模拟（判据 ① SKIP + 探针 `PASS-CROSS-PLATFORM`，13 passed / 0 failed）。
 
 > **记账纪律**：本文件随代码提交一起推送，而每次推送都会触发新的 run ——
 > 若要求"把每一次判决都回写进本文件"，就会变成"回写→推送→新 run→再回写"的无限循环。
