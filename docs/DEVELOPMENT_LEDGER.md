@@ -4997,3 +4997,32 @@ machine is a MacBook Pro M2 Max, while these numbers come from a shared hosted U
 hardware, measured **conservatively** (the case includes `capture()` readback cost that a real display path need not pay per
 frame), is a plausible near-miss rather than a definite failure. That is a hypothesis about hardware, not a claim: only the
 reference-machine run under `HD-45` can settle it, and round 195 documents exactly how.
+
+### Round 199: the roll has NO interaction at all - the scroll gesture is its first input path, and here is the plan
+
+Reconnaissance result, which is stronger than expected: `crates/yeban-app/ui/console/piano_roll.slint` contains **no** `TouchArea`,
+**no** `pointer-event`, **no** `Flickable` and **no** `callback` whatsoever. The roll is a pure display surface, so "add a scroll
+gesture" means adding the component's **first** input handling, not extending an existing one.
+
+**What already exists to build on** (so this is not a greenfield design):
+- `host.rs` already uses `Rc<RefCell<..>>` as UI-thread mutable state in the documented sense (see the comment at host.rs:272:
+  single-threaded shared mutability, explicitly NOT an RT lock) and `wire_input`/`wire_transport` are the established wiring
+  functions (host.rs:335, 282);
+- `apply_view(ui, view, viewport_width, scroll_x)` already takes the offset, and host.rs:137 marks the one place that currently
+  passes `0.0` because no offset source exists;
+- the projection already clips and returns **viewport-relative** positions (rounds 440/449), so a new offset only has to reach the
+  same parameter - no position contract changes are needed.
+
+**Plan, in dependency order** (deliberately NOT started this round, because a half-wired input path is worse than none):
+1. `piano_roll.slint`: add `callback scroll-requested(int);` (delta in logical px, integer to keep the interface float-free) and a
+   `TouchArea` over the lanes whose pointer handler emits the horizontal delta while a button is held;
+2. forward that callback through `ConsoleTabs` (console_tabs.slint) and `MainWindow` (app.slint) - the same three-level chain that
+   round 192 fell foul of, now known;
+3. `host.rs`: hold `scroll_x` in an `Rc<RefCell<..>>` following the existing pattern, register `on_scroll_requested` to clamp and
+   accumulate the delta, and re-`apply_view` with the new value - which is what makes the clip and the offset move together;
+4. criterion: a test that a scroll callback actually changes what `apply_view` injects (the projection-level half already exists as
+   `scrolling_never_selects_an_empty_window_across_the_gates_600_frames`, but nothing yet ties the callback to the injection).
+
+**Explicitly rejected alternative**: wrapping the lanes in a Slint `Flickable`. It would take over the offset itself, which conflicts
+with the host-owned offset the projection now assumes - the two would double-count and the notes would drift. Choosing one owner is
+the point; the host owns it because the clipping lives there.
