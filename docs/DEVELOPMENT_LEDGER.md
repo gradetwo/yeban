@@ -2833,3 +2833,31 @@ green covers that work rather than merely the docs.
 
 The `156d7bd` run is a textbook **empty green** (docs-only tip -> `plan` derives no crate -> every crate leg is `steps=0`).
 Recorded here rather than counted, exactly as the CI discipline in `docs/CI_CD.md` requires.
+
+### Round 97: `ROAD-M-1-005`'s history-cleanliness half is verified by measurement (red line 9)
+
+`ROAD-M-1-005` reads: "`assets/samples/ATTRIBUTION.md` 核验 323 款素材 + **清理 Git 历史 >10MB 大文件**". The second half
+is red line 9 ("no unregistered >10 MB binaries") and it is mechanically checkable, so I checked it instead of assuming:
+
+```
+git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' \
+  | awk '$1=="blob" && $2>10485760'      -> (no output; ZERO blobs > 10 MB)
+```
+
+Largest blobs actually present in history (for the record):
+
+| size | path |
+| ---: | :--- |
+| 8.49 MB | `assets/samples/manifest.json` (two historical revisions) |
+| 5.93 MB | `artifacts/ui/app-main-window-session-full-1920x1080.png` |
+| 5.93 MB | `artifacts/ui/app-main-window-arrangement-full-1920x1080.png` |
+| 5.93 MB | `artifacts/ui/app-main-window-arrangement-compact-1920x1080.png` |
+
+⇒ There is **no >10 MB blob to clean**: the "清理" half of this item is satisfied *by measurement*, not by an act.
+**Scope of the claim (honest)**: `git rev-list --objects --all` covers every ref, so this rules out reachable large
+blobs; it does not inspect unreachable/dangling objects, which are not part of any published history.
+
+**Queued improvement (not done this round)**: turn this one-off measurement into a **mechanical guard** so red line 9 is
+enforced continuously rather than re-measured by hand. It is deliberately *not* being added now: registering a new guard
+changes the guard counts that the doc-contract guards assert (`scripts/guards/policy_check.py` + the doc-contract step),
+so it needs to be done as a coherent edit (guard + docs + counts together), not squeezed into the end of a round.
