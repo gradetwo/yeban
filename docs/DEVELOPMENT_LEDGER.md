@@ -2979,3 +2979,34 @@ look for an explicit unmet clause (未做到 / 尚未 / 不达标 / 换成结构
 
 So the backlog is **not** "23 wrongly-labelled rows"; it is "23 rows to read in full", of which at least one (this one) is
 already correct. The audit continues row by row, and the count of genuine defects will be whatever the reading shows.
+
+### Round 102: the status-hygiene pass is COMPLETE - the ledger does NOT over-report "partial" (my round-100 suspicion is refuted)
+
+I classified all 34 partial/PENDING rows by reading their **full** reason text (the round-100 scan had only seen 78 chars):
+
+| outcome | rows |
+| :--- | ---: |
+| contains an explicit unmet clause (未做到 / 尚未 / 不达标 / 缺什么 ...) => **correct partial** | 27 |
+| no such clause by regex, but justified in other words (checked individually) | 6 |
+| **genuine labelling defect (criterion met, nothing unmet named)** | **1** (`ROAD-M1-001`, relabelled in round 101 with quoted checks) |
+
+The six rows my regex could not classify were each read and are all correct as written:
+- `ROAD-M-1-003` - "**没有依赖可锁**" (VST3 is v2.0.0; `[dependencies]` is empty) => nothing to pin;
+- `ROAD-M-1-005` - I verified **both** halves myself this session (zero >10 MB blobs in all history; `ATTRIBUTION.md`
+  covers 30/30 and declares the 293-item gap in its own section 0), so the residual is a declared acquisition gap;
+- `ROAD-M0-008`, `ROAD-M3-007`, `ROAD-M4-002` - each opens with "**为什么是「部分」而不是「已完成」（集成者复核后下调）**"
+  and then names **缺什么**:
+  * `M0-008` / `M3-007`: there is **no `tests/golden/` baseline set**, so "matches the baseline" has never been asserted -
+    blocked on the human-provided cross-platform Goldens (`UI-MCP-003`);
+  * `M4-002`: `grep -rn 'CARGO_BIN_EXE_yeban-mcp' crates/` = **0 hits** => **no test ever spawns the binary**; what is
+    verified is `serve_lines`' unit behaviour, not "a real MCP client speaking stdio to the process".
+
+**Verdict.** "27 partial / 7 PENDING" is an **accurate** description of the table, not an inflated one: 33 of 34 rows are
+correctly labelled, one was fixed, and the deliberate downgrades are documented with what is missing. My round-100
+hypothesis ("the ledger over-reports partial") was **too broad and is hereby retracted**; the useful residue of that
+suspicion was the single real defect it led me to find.
+
+**Handoff-quality by-product.** Those downgrade rows hand the next worker a precise task list. The most actionable
+hardware-independent one is `ROAD-M4-002`'s missing end-to-end test: **spawn the `yeban-mcp` binary and speak stdio**
+(one `tools/list` + one real call), since `CARGO_BIN_EXE_yeban-mcp` has zero hits today. That is the next thing worth
+building.
