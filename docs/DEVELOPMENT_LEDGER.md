@@ -7377,3 +7377,24 @@ read - which is the correct state for work that was never committed.
 **What remains locally-only**: nothing currently in the tree - `git status` is clean and every commit in the last 25 runs is green. The session's
 earlier locally-verified-only window (19:31Z - 20:21Z, rounds 241-291) is closed by these verdicts arriving afterwards, since the runs were queued
 rather than cancelled.
+
+
+### Round 299: sixth attempt, reverted - the failure is always in the generation, never in the design
+
+Attempt 6 used verbatim `use` lines (avoiding round 295's fabricated import block) and still failed, this time because the generated file has a `//!`
+inner doc comment in the middle (the original had two `//!` blocks and my reconstruction put the second one after items). That is the sixth failure
+and the sixth time the cause was **how I generate the file**, not what the move requires:
+
+| attempt | failure |
+| :--- | :--- |
+| 1-2 | orphaned `///` doc comments left where deleted items had been |
+| 3 | only the LAST `#[cfg(test)]` block was moved, so an app-coupled test module stayed in the shared crate |
+| 4 | the app's kept tests lost `DEFAULT_PPQ`/`PPQ`/`ClipPlacement` because the wrapper's imports were minimal |
+| 5 | an unbalanced brace in my reconstructed import block |
+| 6 | a `//!` inner doc comment left mid-file by the reconstruction |
+
+**So the conclusion is now firmly evidence-backed, not a preference**: this move must be done as **ordinary edits with a compile between them** -
+move the file, then fix each error where the compiler points, one at a time. Six automated reconstructions, zero successes; the design has needed no
+revision since round 287. The session should stop generating this file, and the next attempt should spend its rounds on small hand edits instead.
+
+**The tree is green** after each auto-revert, and CI is back (round 298), so the next attempt can be verified by CI as well as locally.
