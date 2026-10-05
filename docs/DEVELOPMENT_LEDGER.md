@@ -6384,3 +6384,23 @@ That closes the enumeration: nothing about the pencil's wiring is unknown now. T
 what hurrying produces (a gate chained with a commit; an unscoped text replacement that corrupted two unrelated lines), and the CI stall
 (round 241 onwards, still 0 runs in progress) means the criterion could not be checked the way the project requires even after writing
 it.
+
+### Round 260: where the MCP parity work goes - the registry is tools.rs, the dispatch is dispatch.rs
+
+Reconnaissance for step 3 (MCP 同接 of the same note construction), so the next attempt starts at a known place rather than exploring:
+`crates/yeban-mcp/src/tools.rs` holds the tool registry and `crates/yeban-mcp/src/dispatch.rs` the dispatch, with per-domain logic in
+`crates/yeban-mcp/src/domain/*.rs` (automation, diagnostics, import_audio, engine_state, ids, lock, macros, extension_audit, ...) and the
+note/clip vocabulary reaching into those modules.
+
+**What "MCP 同接" must mean concretely, given what the UI side now does**: the tool should reach the SAME construction the pencil uses -
+`plan_to_add_note` over a `NotePlan`, committed through `commit_ops` - so that the two entry points cannot drift (which is the whole
+point of D45-D55's "两侧同接、共用同一实现"). A second implementation of "build an AddNote op" in the MCP crate would satisfy the letter
+of "MCP can add notes" while violating the reason it was requested.
+
+**What is still unknown, and it is one read**: whether `plan_to_add_note` and `NotePlan` are reachable from the MCP crate's dependency set
+(they live in `yeban-app::bridge`, and the MCP crate may not depend on `yeban-app` - if it does not, the shared piece has to move to a
+crate both can use, which is a structural decision rather than a copy). That single fact decides the shape of the whole step, so it is the
+first thing to check next round.
+
+**Also counted, because a new tool moves guards**: the feature-alignment table's MCP count (16 tools) and the registry's own criteria both
+need updating when a tool is added - round 240/537/539 showed how easily those counters drift out of step.
