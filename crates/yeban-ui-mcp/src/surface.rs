@@ -29,6 +29,8 @@ use yeban_ui_test_port::image::Rgb8Image;
 use yeban_ui_test_port::png::{self, REPO_MAX_FILE_BYTES};
 use yeban_ui_test_port::port::{PortError, UiTestPort};
 
+use crate::ime::ImeState;
+
 /// 单帧截图的像素证据（`[MUST-GATE-015]`：尺寸非零且非全黑）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShotEvidence {
@@ -128,6 +130,137 @@ pub trait UiSurface: UiTestPort {
     /// 两次调用各报了什么。因此命名是 `take_*`。
     fn take_admin_report(&mut self) -> Option<AdminReport> {
         None
+    }
+
+    /// `[UI-A11Y-002]` 的 **IME 合成态读数**（`is_composing`）。默认 `None` = 这个执行面
+    /// 没有 IME 状态机 ⇒ 服务层**如实报** `-32005 NOT_IMPLEMENTED`，而不是编一个 `false`。
+    ///
+    /// 真实载体必须由执行面交出**它自己那一份**状态（`crates/yeban-app/src/live_surface.rs`
+    /// 持 `Rc<RefCell<InputContext>>`，与按键处置共用同一个对象）——**不是**在这里新造一个
+    /// 影子变量。理由与判据见 [`crate::ime`]。
+    fn ime_state(&self) -> Option<ImeState> {
+        None
+    }
+
+    /// `dryRun=true` 时"**将要发生什么**"的只读影响预览（ADR-0001 **D48**）。
+    ///
+    /// 语义（与领域侧的 `domain::preview` 同族，`crates/yeban-mcp/src/domain/mod.rs:1620`）：
+    ///
+    /// - **只读**：签名是 `&self` ⇒ 借用检查器不允许它改任何东西（"dryRun 不改状态"
+    ///   因此不是靠自觉，与领域侧 `dryRun` 走 `&Domain` 同一套保证）；
+    /// - **真校验**：`Err` 表示"这次真调用**一定会失败**"——服务层把它映射成与真调用
+    ///   **同一个**错误码（领域侧的口径是"dryRun 只做参数与领域合法性校验"，
+    ///   因此"没有活跃工程 / 未配置保存路径"这类失败必须如实报，不许伪造一个成功预览）；
+    /// - `Ok(None)` = 这个执行面给不出影响预览（服务层如实报 `preview.effect = null`，
+    ///   不编造"大概会这样"）。
+    ///
+    /// `method` 是线格式方法名（`ui/*`），`arguments` 是**归一化后的实参**
+    /// （不含 `dryRun` 自身与 `_` 保留键，见 [`crate::dry_run::normalized_arguments`]）。
+    /// 实参以 [`PreviewArguments`] 交出（**不是** `serde_json::Value`）、影响以
+    /// [`PreviewEffect`] 交出 —— 与 [`ReportValue`] 同一个理由：接线方（`yeban-app`）
+    /// **不依赖 `serde_json`**，不该为了报一句"arrangement-view 会变成 false"而多一个依赖。
+    ///
+    /// # Errors
+    ///
+    /// 执行面判定"这次真调用会失败"时返回它自己的 [`PortError`]。
+    fn preview_effect(
+        &self,
+        method: &str,
+        arguments: &PreviewArguments,
+    ) -> Result<Option<PreviewEffect>, PortError> {
+        let _ = (method, arguments);
+        Ok(None)
+    }
+}
+
+/// `dryRun` 预览的**只读实参视图**（`name` → 归一化后的值）。
+///
+/// 内部持有 `serde_json::Value`，但**一个字段都不公开**：接线方只能通过
+/// [`PreviewArguments::text`] / [`PreviewArguments::number`] /
+/// [`PreviewArguments::is_true`] 取值，因此不需要 `serde_json` 出现在它的依赖里。
+/// 理由与 [`ReportValue`] 的文件级注释逐字相同。
+#[derive(Debug, Clone, Default)]
+pub struct PreviewArguments {
+    entries: Vec<(String, Value)>,
+}
+
+impl PreviewArguments {
+    /// 由归一化后的实参构造（**唯一**的构造点，在服务层）。
+    #[must_use]
+    pub fn from_arguments(arguments: &Map<String, Value>) -> Self {
+        Self {
+            entries: arguments
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        }
+    }
+
+    /// 取一个字符串实参。
+    #[must_use]
+    pub fn text(&self, name: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(key, _)| key == name)
+            .and_then(|(_, value)| value.as_str())
+    }
+
+    /// 取一个数值实参。
+    #[must_use]
+    pub fn number(&self, name: &str) -> Option<f64> {
+        self.entries
+            .iter()
+            .find(|(key, _)| key == name)
+            .and_then(|(_, value)| value.as_f64())
+    }
+
+    /// 取一个布尔实参。
+    #[must_use]
+    pub fn is_true(&self, name: &str) -> Option<bool> {
+        self.entries
+            .iter()
+            .find(|(key, _)| key == name)
+            .and_then(|(_, value)| value.as_bool())
+    }
+
+    /// 实参个数（判据用）。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否没有实参。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// `dryRun` 的**只读影响预览**：有序字段表。
+///
+/// 有序（`Vec` 而不是 `Map`）的理由与 [`AdminReport`] 逐字相同：它进响应、日志与
+/// artifact，键序必须稳定（`[MODEL-AST-003]` 确定性的精神）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewEffect {
+    /// 有序字段。
+    pub fields: Vec<(&'static str, ReportValue)>,
+}
+
+impl PreviewEffect {
+    /// 组装。
+    #[must_use]
+    pub fn new(fields: Vec<(&'static str, ReportValue)>) -> Self {
+        Self { fields }
+    }
+
+    /// 线格式（唯一转换点）：`{"<field>": …}`。
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        let mut root = Map::new();
+        for (name, value) in &self.fields {
+            root.insert((*name).to_owned(), value.to_json());
+        }
+        Value::Object(root)
     }
 }
 
@@ -554,5 +687,43 @@ mod tests {
             read_only.dispatch_key_press(yeban_ui_test_port::port::KeyCode::Tab),
             Err(PortError::PermissionDenied { .. })
         ));
+    }
+
+    /// 判据 6（ADR-0001 **D48** / `[UI-A11Y-002]`）: 适配器的两个新钩子**不编造事实** ——
+    /// 没有 IME 状态就没有（`None`，服务层据此报 `-32005`），给不出影响预览就没有
+    /// （`Ok(None)` ⇒ 线上 `effect: null`）。一个"默认返回 `false` / `{}`"的实现会把
+    /// "这个执行面没这能力"伪装成"有，只是值是空的"。
+    #[test]
+    fn port_adapter_never_invents_ime_state_or_preview_effects() {
+        use crate::testing::{FakeSurface, fixture_tree, shared};
+        use yeban_ui_test_port::port::Permission;
+
+        let adapter = PortAdapter::new(
+            FakeSurface {
+                state: shared(Permission::Administrative),
+                tree: fixture_tree(),
+            },
+            "tier1-live-port",
+            |port: &FakeSurface| port.capture_image(),
+        );
+        // `PortAdapter` 只转发 `UiTestPort`；IME 状态与 dryRun 预览由**接线方**
+        // （`yeban-app` 的 `LiveAdminSurface`）提供，因此这里必须是"没有"。
+        assert!(
+            adapter.ime_state().is_none(),
+            "适配器不得凭空造一个 IME 状态"
+        );
+        let arguments = PreviewArguments::default();
+        assert!(arguments.is_empty());
+        assert_eq!(arguments.len(), 0);
+        assert!(arguments.text("view").is_none());
+        assert!(arguments.number("x").is_none());
+        assert!(arguments.is_true("dryRun").is_none());
+        assert!(
+            adapter
+                .preview_effect(crate::methods::METHOD_FORCE_SAVE, &arguments)
+                .expect("默认实现不报错")
+                .is_none(),
+            "适配器不得凭空造一个影响预览"
+        );
     }
 }

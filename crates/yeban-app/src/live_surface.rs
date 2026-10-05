@@ -99,7 +99,9 @@
 #[path = "registry_tree.rs"]
 mod registry_tree;
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use registry_tree::control_tree_from_registry;
 
@@ -109,15 +111,19 @@ use yeban_app::bridge::{BridgeError, ViewState};
 use yeban_app::elements::ElementRegistry;
 use yeban_app::engine_host::{EngineHost, EngineHostError};
 use yeban_app::host;
+use yeban_app::input::{Focus, InputContext, Modifiers, PhysicalKey, Resolution};
 use yeban_app::meters::{MeterRuntime, MeterSnapshot};
 use yeban_app::save::{SaveError, save_project_file};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_engine::meter::MeterCollector;
 use yeban_model::YebanProjectV1;
+use yeban_ui_mcp::ime::{ImeFocus, ImeState};
 use yeban_ui_mcp::live::ControlPlane;
-use yeban_ui_mcp::surface::{AdminReport, PortAdapter, ReportValue, UiSurface};
-use yeban_ui_test_port::port::{Permission, PointerButton, PortError, UiTestPort};
+use yeban_ui_mcp::surface::{
+    AdminReport, PortAdapter, PreviewArguments, PreviewEffect, ReportValue, UiSurface,
+};
+use yeban_ui_test_port::port::{KeyCode, Permission, PointerButton, PortError, UiTestPort};
 use yeban_ui_test_port::render::{LivePort, RenderError};
 use yeban_ui_test_port::tree::{ControlTree, TreeError};
 use yeban_ui_test_port::{Rgb8Image, Size};
@@ -246,6 +252,21 @@ impl From<EngineHostError> for LiveWiringError {
 /// | `ui/switch_main_view` | `MainWindow.arrangement-view = view == "arrangement"` | 重抓控件树后 `workspace-session-canvas` / `workspace-arrangement-canvas` 互换；回执里带回读值 |
 /// | `ui/force_save` | `save::save_project_file`（临时文件 → `sync_all` → 原子重命名） | 磁盘上真的出现可被 `open_project_file` 读回的容器；回执里有 `bytes` / `saveEpoch` |
 /// | `ui/reload_engine` | `EngineHost::reload`（新快照 + 新队列 + 推 N 个量子） | **新**的电平队列被采纳 ⇒ 混音台电平回到下限；回执里有 `generation` / `quanta` / `meterFrames` |
+///
+/// ## `[UI-A11Y-002]` 的 `is_composing` 防护住在哪里（本文件与 `input.rs` 的分工）
+///
+/// | 问题 | 答案 |
+/// | :--- | :--- |
+/// | 状态机在哪 | `yeban_app::input::InputContext`（`src/input.rs`，纯 Rust、22 条判据） |
+/// | 本文件持有什么 | **同一个** `Rc<RefCell<InputContext>>`（与 `window.clone_strong()` 同构：共享，不是复制） |
+/// | 谁观测它 | `UiSurface::ime_state` → `ui/property {"name":"isComposing"}`（`[UI-A11Y-002]`） |
+/// | 谁用它做判断 | `UiSurface::preview_effect` 的按键分支：`InputContext::resolve` 回答"这一键会被怎么处置" |
+/// | 生产驱动点 | Slint 平台 IME 事件 → [`LiveUi::input_context`] → `begin_composition` / `end_composition` / `set_focus` |
+///
+/// **不做什么（刻意的）**：本文件**不**改 `dispatch_key_press` 的分发行为 ——
+/// §7.2 的"彻底拦截冒泡分发"约束的是 **Slint 控件层**（真实用户的按键），
+/// 而 UI 测试端口注入的按键本来就是拿来**验证**那条防护的（注入被吞掉就测不了了）。
+/// 注入路径上 IME 状态的正确用法是**先问后做**：`dryRun` 回报"这一键会被输入法吞掉"。
 struct LiveAdminSurface {
     inner: LiveSurface,
     /// 活窗口的强引用（`clone_strong`）。改视图 / 注入电平 / 重抓树都走它。
@@ -261,6 +282,77 @@ struct LiveAdminSurface {
     engine_quanta: u64,
     save_epoch: u64,
     report: Option<AdminReport>,
+    /// `[UI-A11Y-002]` 的 IME 状态机 —— **唯一**的一份（观测与按键预览共用它）。
+    input: Rc<RefCell<InputContext>>,
+}
+
+/// `yeban_app::input::Focus` → 线格式的 [`ImeFocus`]（**唯一**的映射点）。
+const fn ime_focus_of(focus: Focus) -> ImeFocus {
+    match focus {
+        Focus::MainCanvas => ImeFocus::MainCanvas,
+        Focus::TextInput => ImeFocus::TextInput,
+        Focus::Other => ImeFocus::Other,
+    }
+}
+
+/// `yeban_ui_test_port::port::KeyCode` → 状态机的物理键 + 修饰键。
+///
+/// `None` = 这个 `key_code` 在 `[UI-A11Y-001]` 的扫描码表里没有对应（例如裸修饰键
+/// `Shift`/`Ctrl`）：宿主直接丢弃、不进状态机（`input.rs` 的边界），
+/// 因此它的"处置"是 `pass-through`（不冒充成一个动作）。
+fn physical_key_of(key: KeyCode) -> Option<(PhysicalKey, Modifiers)> {
+    let bare = Modifiers::none();
+    let mapped = match key {
+        KeyCode::Tab => (PhysicalKey::Tab, bare),
+        KeyCode::Escape => (PhysicalKey::Escape, bare),
+        KeyCode::Return => (PhysicalKey::Enter, bare),
+        KeyCode::Space => (PhysicalKey::Space, bare),
+        KeyCode::Backspace => (PhysicalKey::Backspace, bare),
+        // `Shift+Enter` 是**一个 chord**（§12.4 明文），按 Shift 按下的 Enter 解析。
+        KeyCode::ShiftEnter => (PhysicalKey::Enter, Modifiers::shift()),
+        KeyCode::Character(ch) => match ch.to_ascii_lowercase() {
+            'b' => (PhysicalKey::KeyB, bare),
+            'z' => (PhysicalKey::KeyZ, bare),
+            'h' => (PhysicalKey::KeyH, bare),
+            'd' => (PhysicalKey::KeyD, bare),
+            'm' => (PhysicalKey::KeyM, bare),
+            '[' => (PhysicalKey::BracketLeft, bare),
+            ']' => (PhysicalKey::BracketRight, bare),
+            digit @ '1'..='5' => (PhysicalKey::Digit(digit as u8 - b'0'), bare),
+            _ => return None,
+        },
+        KeyCode::Shift | KeyCode::Control => return None,
+    };
+    Some(mapped)
+}
+
+/// 一次注入按键的**只读处置结论**（`[UI-A11Y-002]`）。
+///
+/// 取值来自 [`yeban_ui_mcp::ime`] 的**唯一**词表（不是在这里手写字符串）：
+/// 零 Slint 假面报的 `resolution` 用的是同一批常量，因此"同一个词"不会在两个
+/// 执行面上分叉。
+fn key_resolution(state: &InputContext, key: KeyCode) -> &'static str {
+    match physical_key_of(key) {
+        Some((physical, modifiers)) => match state.resolve(physical, modifiers) {
+            Resolution::ConsumedByIme => yeban_ui_mcp::ime::RESOLUTION_CONSUMED_BY_IME,
+            Resolution::Action(_) => yeban_ui_mcp::ime::RESOLUTION_ACTION,
+            Resolution::PassThrough => yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH,
+        },
+        // 不在 `[UI-A11Y-001]` 的扫描码表里 ⇒ 不归 DAW 管（窗口仍然会收到它）。
+        None => yeban_ui_mcp::ime::RESOLUTION_PASS_THROUGH,
+    }
+}
+
+/// `ui/switch_main_view` 的视图名 → `arrangement-view` 布尔（**唯一**的映射点）。
+///
+/// 预览与真动作都走它：两处各写一遍 `match` 迟早会出现"预览说 arrangement、
+/// 真做却写了 session"这种谁都没写错的漂移。
+fn arrangement_view_of(view: &str) -> Option<bool> {
+    match view {
+        "arrangement" => Some(true),
+        "session" => Some(false),
+        _ => None,
+    }
 }
 
 impl LiveAdminSurface {
@@ -332,16 +424,12 @@ impl LiveAdminSurface {
     /// 名字与 trait 方法（`UiTestPort::switch_main_view_impl`）刻意不同：trait 里那一份
     /// 只是三行委托，语义主体在这里 —— 同名会让"哪一份在跑"变成读者要猜的事。
     fn apply_main_view(&mut self, view: &str) -> Result<(), PortError> {
-        let arrangement = match view {
-            "arrangement" => true,
-            "session" => false,
-            other => {
-                // 参数白名单（`methods::VIEW`）已经拦下非法值（`-32602`）；
-                // 这里是**纵深防御**：执行面自己也不接受没定义过的视图名。
-                return Err(PortError::Rejected {
-                    message: format!("未知主视图 `{other}`（合法值: arrangement, session）"),
-                });
-            }
+        let Some(arrangement) = arrangement_view_of(view) else {
+            // 参数白名单（`methods::VIEW`）已经拦下非法值（`-32602`）；
+            // 这里是**纵深防御**：执行面自己也不接受没定义过的视图名。
+            return Err(PortError::Rejected {
+                message: format!("未知主视图 `{view}`（合法值: arrangement, session）"),
+            });
         };
         self.window.set_arrangement_view(arrangement);
         let nodes = self.refresh_tree().map_err(wiring_rejected)?;
@@ -514,6 +602,98 @@ impl UiSurface for LiveAdminSurface {
     fn take_admin_report(&mut self) -> Option<AdminReport> {
         self.report.take()
     }
+
+    /// `[UI-A11Y-002]`：读的是 `LiveAdminSurface` 持有的**那一个** `InputContext`，
+    /// 不是新造的影子变量（`Rc` 共享，见本文件的接线表）。
+    fn ime_state(&self) -> Option<ImeState> {
+        let input = self.input.borrow();
+        Some(ImeState {
+            composing: input.is_composing(),
+            focus: ime_focus_of(input.focus()),
+        })
+    }
+
+    /// `dryRun` 的只读影响预览（ADR-0001 **D48**）。
+    ///
+    /// 每一条都**只读**（`&self`）：没有 `set_arrangement_view`、没有写盘、没有 `EngineHost::reload`。
+    /// `Err` 表示"这次真调用一定会失败"，且消息与对应的 `*_impl` **逐字相同** ——
+    /// 领域侧的口径是"dryRun 只做参数与领域合法性校验、失败如实报"，UI 侧照做。
+    fn preview_effect(
+        &self,
+        method: &str,
+        arguments: &PreviewArguments,
+    ) -> Result<Option<PreviewEffect>, PortError> {
+        let effect = match method {
+            yeban_ui_mcp::methods::METHOD_SWITCH_MAIN_VIEW => {
+                let view = arguments.text("view").unwrap_or_default();
+                let Some(arrangement) = arrangement_view_of(view) else {
+                    return Err(PortError::Rejected {
+                        message: format!("未知主视图 `{view}`（合法值: arrangement, session）"),
+                    });
+                };
+                PreviewEffect::new(vec![
+                    ("view", ReportValue::Text(view.to_owned())),
+                    ("arrangementView", ReportValue::Bool(arrangement)),
+                    // 当前读数（只读回读；判据会断言"预览说的"就是"真做之后的"）。
+                    (
+                        "currentArrangementView",
+                        ReportValue::Bool(self.window.get_arrangement_view()),
+                    ),
+                ])
+            }
+            yeban_ui_mcp::methods::METHOD_FORCE_SAVE => {
+                if self.save_path.is_none() {
+                    // 与 `save_now` **同一句话**：dryRun 不许把注定失败的保存说成成功预览。
+                    return Err(PortError::Rejected {
+                        message: "未配置保存路径（`LiveWiringOptions::save_path`）；\
+                                  `ui/force_save` 不会假装写过一个不存在的文件"
+                            .to_owned(),
+                    });
+                }
+                PreviewEffect::new(vec![
+                    (
+                        "saveEpoch",
+                        ReportValue::Uint(self.save_epoch.saturating_add(1)),
+                    ),
+                    // 容器布局：`project.json` + `history.dag`（见 `crate::save` 的边界）。
+                    ("containerEntries", ReportValue::Uint(2)),
+                ])
+            }
+            yeban_ui_mcp::methods::METHOD_RELOAD_ENGINE => PreviewEffect::new(vec![
+                (
+                    "generation",
+                    ReportValue::Uint(self.engine.generation().saturating_add(1)),
+                ),
+                ("quanta", ReportValue::Uint(self.engine_quanta)),
+                ("tracks", ReportValue::Uint(self.view.tracks.len() as u64)),
+            ]),
+            yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS => {
+                let raw = arguments.text("keyCode").unwrap_or_default();
+                // 键名解析与真调用**同一条**（拼错的键在参数/执行面阶段就会被拒，
+                // 走不到这里；这里如实报"这条注入在当前 IME/焦点状态下会被怎么处置"）。
+                let Ok(key) = KeyCode::parse(raw) else {
+                    return Ok(None);
+                };
+                let input = self.input.borrow();
+                PreviewEffect::new(vec![
+                    ("keyCode", ReportValue::Text(key.as_str())),
+                    ("isComposing", ReportValue::Bool(input.is_composing())),
+                    (
+                        "focus",
+                        ReportValue::Text(ime_focus_of(input.focus()).as_str().to_owned()),
+                    ),
+                    (
+                        "resolution",
+                        ReportValue::Text(key_resolution(&input, key).to_owned()),
+                    ),
+                ])
+            }
+            // 指针事件的影响只有窗口自己知道 ⇒ 如实报 `None`（服务层写成 `effect: null`），
+            // 不编造一份"大概会这样"。
+            _ => return Ok(None),
+        };
+        Ok(Some(effect))
+    }
 }
 
 /// 装配好的**真实界面 + 真实执行面**。
@@ -603,6 +783,19 @@ impl LiveUi {
     /// 投影失败 / 注册表适配失败 / 引擎换代失败。
     pub fn apply_project(&mut self, project: &YebanProjectV1) -> Result<(), LiveWiringError> {
         self.surface.apply_project(project)
+    }
+
+    /// `[UI-A11Y-002]` 的 IME 状态机句柄 —— **唯一**的那一份（与执行面的观测位、
+    /// 按键处置共用同一个对象；`Rc` 共享，不是复制）。
+    ///
+    /// 用途有两个，都不新造状态：
+    /// 1. **生产驱动点**：Slint 平台的 IME 事件（`is_composing` 变化 / 焦点变化）
+    ///    调 `begin_composition` / `end_composition` / `set_focus`；
+    /// 2. **判据的驱动点**：判据要用"真的"状态机把合成态打开/关掉，再看
+    ///    `ui/property` 的 `isComposing` 有没有跟着变（`tests/live_ui_mcp.rs`）。
+    #[must_use]
+    pub fn input_context(&self) -> Rc<RefCell<InputContext>> {
+        Rc::clone(&self.surface.input)
     }
 }
 
@@ -721,6 +914,8 @@ pub fn build_live_ui_with(
         engine_quanta: options.engine_quanta,
         save_epoch: 0,
         report: None,
+        // `[UI-A11Y-002]` 的启动态：画布聚焦、非合成（与 `InputContext::new()` 一致）。
+        input: Rc::new(RefCell::new(InputContext::new())),
     };
     Ok(LiveUi {
         reference,

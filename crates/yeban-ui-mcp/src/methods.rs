@@ -45,6 +45,9 @@ use serde_json::{Map, Value};
 use yeban_mcp::security::Scope;
 use yeban_ui_test_port::port::Operation;
 
+use crate::dry_run::DRY_RUN_PARAM;
+use crate::ime::IME_FIELD;
+
 /// 方法名：能力发现（列出本服务的方法集）。
 pub const METHOD_METHODS: &str = "ui/methods";
 /// 方法名：读控件树。
@@ -150,7 +153,7 @@ const PROPERTY_NAME: ParamSpec = ParamSpec {
     json_type: "string",
     required: true,
     allowed: None,
-    description: "属性名（`yeban_ui_test_port::inspect::property_of` 支持的清单）",
+    description: "属性名（`yeban_ui_test_port::inspect::property_of` 支持的清单 + 本控制面的虚拟属性 `isComposing` = `[UI-A11Y-002]` 的 IME 合成态, 返回原生布尔）",
 };
 const MASK_DYNAMIC: ParamSpec = ParamSpec {
     name: "maskDynamic",
@@ -225,6 +228,23 @@ const VIEW: ParamSpec = ParamSpec {
     // 控制面没实现主视图切换 —— 而它已经实现了（`crates/yeban-app/src/live_surface.rs`）。
     allowed: Some(&["arrangement", "session"]),
     description: "目标主视图名（`arrangement` = 线性编曲 / `session` = 触发矩阵）",
+};
+/// **`dryRun`（先问后做）** 的参数声明 —— ADR-0001 **D48**。
+///
+/// 名字取自 [`DRY_RUN_PARAM`]，而它是 `yeban_mcp::tools::DRY_RUN_PARAM` 的**再导出**
+/// （`crates/yeban-mcp/src/tools.rs:37`）⇒ "同一个词"由编译器保证，不是靠注释约定。
+/// 默认 `false`，与领域侧逐字一致（判据 [crate::dry_run] 的
+/// `dry_run_defaults_to_false_exactly_like_the_domain`）。
+///
+/// **只出现在会改状态的方法上**（`mutating == true` 的 7 条）：只读方法收到它会被
+/// 未知参数规则**响亮拒绝**（`-32602`），而不是静默忽略 —— 理由见 [crate::dry_run] 的模块头。
+const DRY_RUN: ParamSpec = ParamSpec {
+    name: DRY_RUN_PARAM,
+    json_type: "boolean",
+    required: false,
+    allowed: None,
+    description: "只读模拟校验（默认 false）: 与 `yeban_*` 工具同义 —— 只回报**将要发生什么**, \
+                  不改任何状态、不消耗任何权限/幂等键",
 };
 
 /// 全部方法，**注册表顺序 = 文档顺序**（不依赖任何容器迭代顺序）。
@@ -309,7 +329,7 @@ pub const METHODS: [MethodSpec; 14] = [
         spec_ids: &["UI-TEST-002", "UI-MCP-001"],
         scope: Scope::UiInject,
         port_operation: Some(Operation::DispatchPointer),
-        params: &[ELEMENT_ID, X_OFFSET, Y_OFFSET, BUTTON],
+        params: &[ELEMENT_ID, X_OFFSET, Y_OFFSET, BUTTON, DRY_RUN],
         signature: "UI/UX §12.4: dispatch_pointer_down(element_id, x_offset, y_offset, button)",
         description: "在目标语义元素内的指定偏移处注入鼠标按下",
         mutating: true,
@@ -319,7 +339,7 @@ pub const METHODS: [MethodSpec; 14] = [
         spec_ids: &["UI-TEST-002", "UI-MCP-001"],
         scope: Scope::UiInject,
         port_operation: Some(Operation::DispatchPointer),
-        params: &[X_ABS, Y_ABS],
+        params: &[X_ABS, Y_ABS, DRY_RUN],
         signature: "UI/UX §12.4: dispatch_pointer_move(x, y)",
         description: "注入鼠标移动到窗口坐标",
         mutating: true,
@@ -329,18 +349,19 @@ pub const METHODS: [MethodSpec; 14] = [
         spec_ids: &["UI-TEST-002", "UI-MCP-001"],
         scope: Scope::UiInject,
         port_operation: Some(Operation::DispatchPointer),
-        params: &[BUTTON],
+        params: &[BUTTON, DRY_RUN],
         signature: "UI/UX §12.4: dispatch_pointer_up(button)",
         description: "注入鼠标释放（复用最后一次按下/移动的位置）",
         mutating: true,
     },
     MethodSpec {
         name: METHOD_DISPATCH_KEY_PRESS,
-        spec_ids: &["UI-TEST-002", "UI-MCP-001"],
+        spec_ids: &["UI-TEST-002", "UI-MCP-001", "UI-A11Y-002"],
         scope: Scope::UiInject,
         port_operation: Some(Operation::DispatchKey),
-        params: &[KEY_CODE],
-        signature: "UI/UX §12.4: dispatch_key_press(key_code)",
+        params: &[KEY_CODE, DRY_RUN],
+        signature: "UI/UX §12.4: dispatch_key_press(key_code)；UI/UX §7.2 [UI-A11Y-002]: \
+                    合成态 (is_composing == true) 下彻底拦截单键快捷键的冒泡分发",
         description: "注入键盘按键（`Tab` / `Shift+Enter` / `Esc` 等）",
         mutating: true,
     },
@@ -349,7 +370,7 @@ pub const METHODS: [MethodSpec; 14] = [
         spec_ids: &["UI-MCP-001", "ARCH-UI-004"],
         scope: Scope::AppAdmin,
         port_operation: Some(Operation::SwitchMainView),
-        params: &[VIEW],
+        params: &[VIEW, DRY_RUN],
         signature: "UI/UX §12.3 [UI-MCP-001] Administrative: 允许切换工作区主视图",
         description: "切换工作区主视图（Administrative 层）",
         mutating: true,
@@ -359,7 +380,7 @@ pub const METHODS: [MethodSpec; 14] = [
         spec_ids: &["UI-MCP-001", "ARCH-SEC-002"],
         scope: Scope::AppSave,
         port_operation: Some(Operation::ForceSave),
-        params: NO_PARAMS,
+        params: &[DRY_RUN],
         signature: "UI/UX §12.3 [UI-MCP-001] Administrative: 强制执行工程保存",
         description: "强制执行工程保存（Administrative 层；scope `app:save`）",
         mutating: true,
@@ -369,7 +390,7 @@ pub const METHODS: [MethodSpec; 14] = [
         spec_ids: &["UI-MCP-001", "ARCH-SEC-002"],
         scope: Scope::AppReloadEngine,
         port_operation: Some(Operation::ReloadEngine),
-        params: NO_PARAMS,
+        params: &[DRY_RUN],
         signature: "UI/UX §12.3 [UI-MCP-001] Administrative: 重载音频引擎",
         description: "重载音频引擎（Administrative 层；scope `app:reload-engine`）",
         mutating: true,
@@ -378,6 +399,20 @@ pub const METHODS: [MethodSpec; 14] = [
 
 /// 方法总数（注册表长度，供判据与文档引用）。
 pub const METHOD_COUNT: usize = METHODS.len();
+
+impl MethodSpec {
+    /// 本方法是否声明了 **`dryRun`**（ADR-0001 **D48**）。
+    ///
+    /// **从参数表派生**（`params` 里有 [`DRY_RUN_PARAM`] 就是有），不另建一张"哪些方法支持
+    /// dryRun"的表 —— 两张表必然会漂移，而漂移的方向恰好是"`ui/methods` 说有、执行分支说没有"。
+    ///
+    /// 判据 `every_mutating_method_declares_dry_run_and_no_read_only_method_does` 钉住
+    /// `supports_dry_run() == mutating`。
+    #[must_use]
+    pub fn supports_dry_run(&self) -> bool {
+        self.params.iter().any(|param| param.name == DRY_RUN_PARAM)
+    }
+}
 
 /// 按名字取方法声明。
 #[must_use]
@@ -550,6 +585,13 @@ pub fn catalogue() -> Value {
                 Value::from(spec.port_operation.map_or("<none>", Operation::as_str)),
             );
             tool.insert("mutating".to_owned(), Value::from(spec.mutating));
+            // 能力发现（ADR-0001 D48 的可发现性要求）：调用方**不用读文档**就能知道
+            // 哪些方法支持"先问后做"。字段名与领域侧 `tools/list` 的
+            // `annotations.dryRunSupported` **逐字相同**（`crates/yeban-mcp/src/tools.rs:636`）。
+            tool.insert(
+                "dryRunSupported".to_owned(),
+                Value::from(spec.supports_dry_run()),
+            );
             tool.insert("signature".to_owned(), Value::from(spec.signature));
             tool.insert("description".to_owned(), Value::from(spec.description));
             tool.insert(
@@ -587,6 +629,10 @@ pub fn catalogue() -> Value {
         "reservedParamPrefix".to_owned(),
         Value::from(RESERVED_PARAM_PREFIX.to_string()),
     );
+    // 与领域侧注册表样本的 `dryRunParam` 同名同义（`crates/yeban-mcp/src/samples.rs:138`）。
+    root.insert("dryRunParam".to_owned(), Value::from(DRY_RUN_PARAM));
+    // `[UI-A11Y-002]` 的 IME 合成态（`ui/property` 的虚拟属性名）。
+    root.insert("imeProperty".to_owned(), Value::from(IME_FIELD));
     root.insert("methods".to_owned(), Value::Array(methods));
     Value::Object(root)
 }
@@ -594,6 +640,8 @@ pub fn catalogue() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::ime::VIRTUAL_PROPERTIES;
 
     /// 判据 1: 方法名唯一、非空、形如 `ui/<小写下划线>`；注册表顺序 == 文档顺序。
     #[test]
@@ -672,28 +720,29 @@ mod tests {
         }
     }
 
-    /// 判据 3: §12.4 点名的四个注入方法**逐字**存在，且参数与规范签名一一对应。
+    /// 判据 3: §12.4 点名的四个注入方法**逐字**存在，且参数与规范签名一一对应
+    /// （`dryRun` 是 ADR-0001 D48 追加的**可选**公共参数，排在规范参数之后）。
     #[test]
     fn spec_event_injection_methods_match_section_12_4() {
         for (name, params, signature_fragment) in [
             (
                 METHOD_DISPATCH_POINTER_DOWN,
-                &["elementId", "xOffset", "yOffset", "button"][..],
+                &["elementId", "xOffset", "yOffset", "button", "dryRun"][..],
                 "dispatch_pointer_down(element_id, x_offset, y_offset, button)",
             ),
             (
                 METHOD_DISPATCH_POINTER_MOVE,
-                &["x", "y"][..],
+                &["x", "y", "dryRun"][..],
                 "dispatch_pointer_move(x, y)",
             ),
             (
                 METHOD_DISPATCH_POINTER_UP,
-                &["button"][..],
+                &["button", "dryRun"][..],
                 "dispatch_pointer_up(button)",
             ),
             (
                 METHOD_DISPATCH_KEY_PRESS,
-                &["keyCode"][..],
+                &["keyCode", "dryRun"][..],
                 "dispatch_key_press(key_code)",
             ),
         ] {
@@ -710,9 +759,106 @@ mod tests {
                     .map(|param| param.name)
                     .collect::<Vec<_>>(),
                 params,
-                "{name} 的参数必须与规范签名一一对应"
+                "{name} 的参数必须与规范签名一一对应（dryRun 排最后）"
             );
-            assert!(spec.params.iter().all(|param| param.required));
+            assert!(
+                spec.params
+                    .iter()
+                    .filter(|param| param.name != DRY_RUN_PARAM)
+                    .all(|param| param.required),
+                "{name}: 规范点名的参数全部必填; 只有 dryRun 可选"
+            );
+            assert!(spec.supports_dry_run(), "{name} 会改状态 ⇒ 必须有 dryRun");
+        }
+    }
+
+    /// 判据 6（**ADR-0001 D48**）: `dryRun` 的**可发现性**与**适用范围**。
+    ///
+    /// - 会改状态的 7 条方法**全部**声明 `dryRun`，且它是**可选布尔**；
+    /// - 只读的 7 条方法**一条都不声明**（只读没有副作用可短路，见 [`crate::dry_run`]）；
+    /// - `ui/methods` 的自描述里能**直接看出**哪些方法支持它（`dryRunSupported` +
+    ///   顶层 `dryRunParam`），调用方不必读文档。
+    ///
+    /// 注入验证（把 `ui/force_save` 的 `params` 改回 `NO_PARAMS`，或把
+    /// `supports_dry_run` 改成 `true`）会让本判据变红。
+    #[test]
+    fn every_mutating_method_declares_dry_run_and_no_read_only_method_does() {
+        let mut with = Vec::new();
+        let mut without = Vec::new();
+        for spec in &METHODS {
+            assert_eq!(
+                spec.supports_dry_run(),
+                spec.mutating,
+                "{}: `mutating` 与 `dryRun` 支持必须同时成立（D48 只给会改状态的方法）",
+                spec.name
+            );
+            if spec.mutating {
+                let param = spec
+                    .params
+                    .iter()
+                    .find(|param| param.name == DRY_RUN_PARAM)
+                    .unwrap_or_else(|| panic!("{} 会改状态却没有 dryRun", spec.name));
+                assert_eq!(param.json_type, "boolean", "{}", spec.name);
+                assert!(
+                    !param.required,
+                    "{} 的 dryRun 必须可选（默认 false）",
+                    spec.name
+                );
+                assert!(param.allowed.is_none(), "{}: 布尔参数不做白名单", spec.name);
+                with.push(spec.name);
+            } else {
+                without.push(spec.name);
+            }
+        }
+        assert_eq!(with.len(), 7, "会改状态的方法: {with:?}");
+        assert_eq!(without.len(), 7, "只读方法: {without:?}");
+        assert_eq!(with.len() + without.len(), METHOD_COUNT);
+
+        // 可发现性：`ui/methods` 的清单里逐条能看出支持与否。
+        let snapshot = catalogue();
+        assert_eq!(snapshot["dryRunParam"], DRY_RUN_PARAM);
+        assert_eq!(snapshot["imeProperty"], IME_FIELD);
+        let listed = snapshot["methods"].as_array().expect("数组");
+        assert_eq!(listed.len(), METHOD_COUNT);
+        for (spec, entry) in METHODS.iter().zip(listed) {
+            assert_eq!(
+                entry["dryRunSupported"],
+                Value::from(spec.mutating),
+                "{} 的可发现性旗标错了",
+                spec.name
+            );
+            let declared = entry["params"]
+                .as_array()
+                .expect("数组")
+                .iter()
+                .any(|param| param["name"] == DRY_RUN_PARAM);
+            assert_eq!(
+                declared, spec.mutating,
+                "{} 的参数表与旗标不一致",
+                spec.name
+            );
+        }
+    }
+
+    /// 判据 7: 虚拟属性（IME）在 `ui/property` 的参数描述里**被点名** —— 否则
+    /// 调用方只能靠猜"这个控制面支不支持读 `isComposing`"。
+    ///
+    /// 描述是 `&'static str`（不能在运行时 format），因此这里用**判据**把
+    /// "描述必须列出每一个虚拟属性"钉住：把 `IME_FIELD` 改名而忘了改描述，本判据变红。
+    #[test]
+    fn property_name_description_lists_every_virtual_property() {
+        let property = method(METHOD_PROPERTY).expect("注册表里有");
+        let name = property
+            .params
+            .iter()
+            .find(|param| param.name == "name")
+            .expect("有 `name` 参数");
+        for virtual_property in VIRTUAL_PROPERTIES {
+            assert!(
+                name.description.contains(virtual_property),
+                "`ui/property` 的 `name` 描述必须点名虚拟属性 `{virtual_property}`: {}",
+                name.description
+            );
         }
     }
 
