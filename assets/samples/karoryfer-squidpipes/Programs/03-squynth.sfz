@@ -1,0 +1,127 @@
+<control>
+label_cc1=Flavor
+label_cc14=Enrich
+label_cc15=Detune
+label_cc100=Attack time
+label_cc101=Hold time
+label_cc102=Sustain level
+label_cc103=Decay time
+label_cc104=Release time
+label_cc111=Vibrato to pitch
+label_cc112=Vibrato speed
+label_cc113=Vibrato to cutoff
+label_cc114=Vibrato to volume
+label_cc115=Vibrato delay
+label_cc116=Vibrato fade
+label_cc117=Unsteadiness
+label_cc120=Filter cutoff
+label_cc121=Resonance
+label_cc124=Veltrack
+label_cc125=Pluck
+label_cc126=Filter attack
+label_cc127=Filter decay
+
+set_cc1=63
+set_cc11=100
+set_cc13=100
+set_cc12=12
+set_cc102=63
+set_cc103=51
+set_cc104=31
+set_cc112=40
+set_cc120=127
+set_cc127=40
+
+<global>
+bend_down=-2400
+bend_up=2400
+off_mode=normal
+
+//AHDSR
+ampeg_attack=0.002
+ampeg_sustain=0
+ampeg_release=0.002
+ampeg_attack_oncc100=0.5 
+ampeg_hold_oncc101=1 
+ampeg_decay_oncc102=10
+ampeg_sustain_oncc103=100
+ampeg_release_oncc104=2
+
+//Filter
+//Lowpass filter
+cutoff=120
+cutoff_cc120=13200
+fil_keytrack=100
+resonance=0
+resonance_cc121=12
+var01_cutoff=6000 //Velocity track
+var01_mod=mult
+var01_oncc131=1
+var01_oncc124=1
+cutoff_cc124=-3000
+//Pluck envelope
+fileg_depth=0
+fileg_depthcc125=8400
+fileg_sustain=0
+fileg_attack=0
+fileg_attackcc126=0.5
+fileg_decay=0.001
+fileg_decaycc127=2
+
+//Vibrato and humanization setup
+lfo01_pitch_oncc111=22 //Vibrato LFO
+lfo01_freq=1
+lfo01_freq_oncc112=11
+lfo01_delay_oncc115=0.500
+lfo01_fade_oncc116=0.500
+lfo01_volume_oncc114=6
+//Wobble
+lfo01_cutoff=0
+lfo01_cutoff_oncc113=3600
+
+
+lfo02_wave=1 //Second LFO to make things wobblier
+lfo02_phase=0
+lfo02_phase_oncc135=1 //Phase randomized
+lfo02_freq=0.01 //Basically no movement at very slow speeds, just randomization
+lfo02_freq_oncc117=1 //Max rate is not very high, so it doesn't sound too obvious
+lfo02_pitch_oncc117=6 //Slight pitch wobbliness
+lfo02_freq_lfo01_oncc117=3 //Affect the rate of the other LFO for unsteady vibrato
+
+lfo03_wave=1 //And a third LFO for secondhand complex wobbliness
+lfo03_phase=0.4
+lfo03_phase_oncc135=0.179 //Different phase response to random than the second LFO
+lfo03_freq=0.5
+lfo03_freq_oncc117=-0.4
+lfo03_freq_lfo2_oncc117=1
+lfo03_pitch_oncc117=-4
+
+
+<master>
+offset_random=28925
+xfout_locc1=80
+#include "mappings/long_clean_ext.sfz"
+
+<master>
+offset_random=35387
+lfo01_pitch_oncc111=-17 //Vibrato LFO less
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=-22
+#include "mappings/long_clean_t1_ext.sfz"
+
+
+<master>
+offset_random=48254
+lfo01_pitch_oncc111=-19 //Vibrato LFO less
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=22
+#include "mappings/long_clean_t2_ext.sfz"
+
+<master>
+offset_random=15235
+lfo01_pitch_oncc111=0 //Vibrato LFO none
+lfo01_volume_oncc114=-6 //Tremolo LFO reverse
+xfin_locc1=0
+#include "mappings/long_dirty_ext.sfz"

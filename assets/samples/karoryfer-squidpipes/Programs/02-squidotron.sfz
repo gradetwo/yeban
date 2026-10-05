@@ -1,0 +1,125 @@
+<control>
+label_cc1=Flavor
+label_cc11=Long vol
+label_cc12=Short vol
+label_cc14=Enrich
+label_cc15=Detune
+label_cc100=Attack time
+label_cc104=Release time
+label_cc111=Vibrato to pitch
+label_cc112=Vibrato speed
+label_cc114=Vibrato to volume
+label_cc115=Vibrato delay
+label_cc116=Vibrato fade
+label_cc117=Unsteadiness
+label_cc120=Filter cutoff
+
+set_cc1=63
+set_cc11=100
+set_cc14=100
+set_cc12=12
+set_cc104=31
+set_cc112=40
+set_cc120=127
+
+<global>
+ampeg_release_oncc104=1
+fil_type=lpf_1p
+cutoff=250
+cutoff_oncc120=6000
+bend_down=-2400
+bend_up=2400
+
+//Vibrato and humanization setup
+lfo01_pitch_oncc111=22 //Vibrato LFO
+lfo01_freq=1.4 //Any slower than this sounds really lousy
+lfo01_freq_oncc112=8.6 //faster is just silly
+lfo01_delay_oncc115=0.500
+lfo01_fade_oncc116=0.500
+lfo01_volume_oncc114=6
+
+lfo02_wave=1 //Second LFO to make things wobblier
+lfo02_phase=0
+lfo02_phase_oncc145=1 //Phase randomized
+lfo02_freq=0.01 //Basically no movement at very slow speeds, just randomization
+lfo02_freq_oncc117=1 //Max rate is not very high, so it doesn't sound too obvious
+lfo02_pitch_oncc117=6 //Slight pitch wobbliness
+lfo02_freq_lfo01_oncc117=3 //Affect the rate of the other LFO for unsteady vibrato
+
+lfo03_wave=1 //And a third LFO for secondhand complex wobbliness
+lfo03_phase=0.4
+lfo03_phase_oncc145=0.179 //Different phase response to random than the second LFO
+lfo03_freq=0.5
+lfo03_freq_oncc117=-0.4
+lfo03_freq_lfo2_oncc117=1
+lfo03_pitch_oncc117=-4
+
+
+<master>
+ampeg_attack_oncc100=0.4
+amp_veltrack=0
+amplitude_oncc11=100
+xfout_locc1=80
+#include "mappings/long_clean.sfz"
+
+<master>
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=-17 //Vibrato LFO less
+amp_veltrack=0
+amplitude_oncc11=100
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=-22
+#include "mappings/long_clean_t1.sfz"
+
+
+<master>
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=-19 //Vibrato LFO less
+amp_veltrack=0
+amplitude_oncc11=100
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=22
+#include "mappings/long_clean_t2.sfz"
+
+
+
+<master>
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=0 //Vibrato LFO none
+lfo01_volume_oncc114=-6 //Tremolo LFO reverse
+amp_veltrack=0
+amplitude_oncc11=100
+xfin_locc1=0
+#include "mappings/long_dirty.sfz"
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+xfout_locc1=80
+#include "mappings/short_clean.sfz"
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=22
+#include "mappings/short_clean_t1.sfz"
+
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=22
+#include "mappings/short_clean_t2.sfz"
+
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+xfin_locc1=0
+#include "mappings/short_dirty.sfz"
