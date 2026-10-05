@@ -53,6 +53,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="最多取回多少个文件（按 size_bytes 升序，取最小）")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument(
+        "--tolerate-404",
+        action="store_true",
+        help="把上游 404 记为警告而不是失败（临时：清单尚未登记上游路径，见 needs）",
+    )
     args = parser.parse_args()
 
     if not MANIFEST.is_file():
@@ -145,9 +150,18 @@ def main() -> int:
         print("[unknown] 一个文件都没校验到且出现连接错误（离线/沙箱？）", file=sys.stderr)
         return 2
     if not_found:
-        # 有 404：**部分条目无法校验** ⇒ 既不是全绿也不是判失败 ⇒ 记 2（无法判定），但要人看见原因。
-        print(f"[unknown] 有 {not_found} 条因 404 无法校验（见上）; 其余 {verified} 条已通过", file=sys.stderr)
-        return 2
+        # 404 = 清单/推导口径的问题，要人修；但它不该把「其余 N 条已通过」一起判死。
+        # ⚠ 默认仍记 2（无法判定）；--tolerate-404 是临时开关（清单尚未登记上游路径期间），
+        # 且必须打警告并点名，否则等于把缺陷藏起来 —— 那就成了我在别处反复禁止的假绿。
+        if args.tolerate_404:
+            print(
+                f"::warning::有 {not_found} 条因 404 无法校验（清单未登记上游路径，见 needs）; "
+                f"其余 {verified} 条已通过",
+                file=sys.stderr,
+            )
+        else:
+            print(f"[unknown] 有 {not_found} 条因 404 无法校验（见上）; 其余 {verified} 条已通过", file=sys.stderr)
+            return 2
     if offline:
         print(f"[unknown] 出现连接错误，已校验 {verified} 个（不是全部）", file=sys.stderr)
         return 2
