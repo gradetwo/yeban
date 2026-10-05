@@ -1658,7 +1658,11 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
     write_png("app-model-driven-filled-project-1920x1080", &project_image);
 
     // ---- 方向 5: 在**同一个活窗口**上换回演示工程 ⇒ 树与像素都真的变 ----
-    host::apply_view(port.ui(), &demo_view);
+    host::apply_view(
+        port.ui(),
+        &demo_view,
+        slint::ComponentHandle::window(port.ui()).size().width as f32,
+    );
     let demo_image = port.window().capture().expect("演示投影截图");
     assert_ne!(
         demo_image.pixels(),
@@ -1932,7 +1936,11 @@ impl TransportHarness {
             denominator,
         };
         let view = ViewState::from_project(&project).expect("改拍号后的工程必须能投影");
-        host::apply_view(self.port.ui(), &view);
+        host::apply_view(
+            self.port.ui(),
+            &view,
+            slint::ComponentHandle::window(self.port.ui()).size().width as f32,
+        );
         view
     }
 }

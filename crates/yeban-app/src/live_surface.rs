@@ -403,7 +403,11 @@ impl LiveAdminSurface {
     fn apply_project(&mut self, project: &YebanProjectV1) -> Result<(), LiveWiringError> {
         let view = ViewState::from_project(project)?;
         let registry = control_tree_from_registry(&ElementRegistry::from_view(&view))?;
-        host::apply_view(&self.window, &view);
+        host::apply_view(
+            &self.window,
+            &view,
+            slint::ComponentHandle::window(&self.window).size().width as f32,
+        );
         self.project = project.clone();
         self.view = view;
         self.registry = registry;
