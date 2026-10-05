@@ -5026,3 +5026,29 @@ gesture" means adding the component's **first** input handling, not extending an
 **Explicitly rejected alternative**: wrapping the lanes in a Slint `Flickable`. It would take over the offset itself, which conflicts
 with the host-owned offset the projection now assumes - the two would double-count and the notes would drift. Choosing one owner is
 the point; the host owns it because the clipping lives there.
+
+### Round 200: the undo-resets-scroll defect, recorded with the exact minimal fix and the call sites
+
+Found by me in round 199 and set aside deliberately: `refresh_undo` re-injects the roll at offset `0.0`, so **undoing an edit
+scrolls the piano roll back to the start**. That is a real user-visible defect, not a theoretical one, and it is not fixed yet.
+
+**Why it was not fixed on the spot**: the offset lives in an `Rc<RefCell<f32>>` created **inside**
+`build_main_window_with_console_tab`, while the code that would need it - `refresh_undo` (host.rs:429) and its caller `wire_undo`
+(host.rs:399) - sits outside that scope. Threading it through means changing signatures, and this session has already paid CI
+rounds twice for exactly that class of change. Recording it with the fix is better than half-doing it.
+
+**The minimal fix, with every site named** (the ripple is smaller than it first looked - `wire_undo` has exactly ONE real caller):
+
+1. promote the offset to a tiny owning type so it can travel:
+   `pub struct RollScroll(Rc<RefCell<f32>>)` with `new`, `get() -> f32`, `advance(delta) -> f32` (the clamp logic already
+   extracted as `advance_scroll`, which has its own criterion);
+2. `build_main_window_with_console_tab(view, scene, console_tab, scroll: &RollScroll)` - and check its callers, which include the
+   UI test targets, with `--all-targets` per the round-186 rule;
+3. `wire_undo(ui, port, scroll: &RollScroll)` - its only call site is `crates/yeban-app/src/main.rs:199`;
+4. `refresh_undo(weak, port, reproject, scroll)`, whose two call sites are host.rs:405 and host.rs:420, passes
+   `scroll.get()` to `apply_view` instead of `0.0`;
+5. criterion: after `advance` to a non-zero offset and a simulated refresh, the injected positions must be the shifted ones -
+   this is the first test that would tie the offset to undo rather than to the gesture.
+
+**Not** chosen: a `thread_local!` holding the offset, which would avoid the signature change. It would work, but it hides UI state
+in a global and the project's own discipline keeps injected state explicit; a small owning type is the honest version.
