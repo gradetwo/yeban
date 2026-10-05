@@ -1,0 +1,22 @@
+[package]
+name = "yeban-diagnostics"
+description = "按需诊断包: 采集调试信息 + 相关文件并导出 zip (ADR-0001 D56)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_diagnostics"
+path = "src/lib.rs"
+
+[dependencies]
+# 两个依赖**全部**是根清单早已预留的 ⇒ 零新增外部 crate。
+# 本 crate 刻意**不**依赖音频/引擎栈: MCP 侧只需要采集器, 不该为此拖进 ALSA (第 165 轮的教训)。
+zip.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

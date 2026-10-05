@@ -2,7 +2,7 @@
 //!
 //! 两阶段契约照 `import_audio`（`plan` 校验 + 组装，`apply` 执行副作用）：
 //! - [`plan`] **不**需要活跃工程：出问题时常常连工程都打不开，日志与环境信息恰恰最该能采。
-//! - [`apply`] 调 `yeban_engine::diagnostics::export_diagnostics`（**同一实现**，D56 判据 4）。
+//! - [`apply`] 调 `yeban_diagnostics::export_diagnostics`（**同一实现**，D56 判据 4）。
 //!
 //! 隐私默认：`project/` 为空即不含工程；`config.json` 在本版本里**写明不可用**而不是留空（不留"看起来有"）。
 use serde_json::{Map, Value, json};
@@ -87,14 +87,14 @@ pub fn apply(
     // 隐私默认：不含工程文件。用户要带工程时应走 UI 的勾选项，而不是这个默认路径。
     let project_files: Vec<(String, Vec<u8>)> = Vec::new();
 
-    let inputs = yeban_engine::diagnostics::BundleInputs {
+    let inputs = yeban_diagnostics::BundleInputs {
         state_json: state_json.as_deref(),
         config_json: Some(&config_json),
         logs: &logs,
         crashes: &crashes,
         project: &project_files,
     };
-    let report = yeban_engine::diagnostics::export_diagnostics(&out_dir, inputs)
+    let report = yeban_diagnostics::export_diagnostics(&out_dir, inputs)
         .map_err(|e| Fault::domain(ErrorCode::IoError, format!("导出诊断包失败: {e}")))?;
 
     let entries: Vec<Value> = report

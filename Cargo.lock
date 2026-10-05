@@ -6353,6 +6353,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yeban-diagnostics"
+version = "0.0.1"
+dependencies = [
+ "sha2",
+ "zip",
+]
+
+[[package]]
 name = "yeban-dsp"
 version = "0.0.1"
 dependencies = [
@@ -6365,11 +6373,9 @@ version = "0.0.1"
 dependencies = [
  "cpal",
  "rtrb",
- "sha2",
  "thiserror 2.0.21",
  "yeban-dsp",
  "yeban-model",
- "zip",
 ]
 
 [[package]]
@@ -6381,7 +6387,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "yeban-decode",
- "yeban-engine",
+ "yeban-diagnostics",
  "yeban-model",
  "yeban-render",
  "yeban-theory",

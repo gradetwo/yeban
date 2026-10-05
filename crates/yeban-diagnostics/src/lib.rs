@@ -115,16 +115,14 @@ fn env_txt() -> Vec<u8> {
     s.push_str(&format!("os={}\n", std::env::consts::OS));
     s.push_str(&format!("arch={}\n", std::env::consts::ARCH));
     s.push_str(&format!("family={}\n", std::env::consts::FAMILY));
-    s.push_str(&format!("pkg=yeban-engine {}\n", env!("CARGO_PKG_VERSION")));
-    s.push_str(&format!("profile={profile}\n"));
     s.push_str(&format!(
-        "features={}\n",
-        if cfg!(feature = "default") {
-            "default"
-        } else {
-            "custom"
-        }
+        "pkg=yeban-diagnostics {}\n",
+        env!("CARGO_PKG_VERSION")
     ));
+    s.push_str(&format!("profile={profile}\n"));
+    // **故意不写** features: 运行时无法内省启用的 cargo features,
+    // 而 `cfg!(feature = "default")` 会触发 `unexpected_cfgs`（-D warnings 下即失败）。
+    s.push_str("features=<not introspectable at runtime>\n");
     s.into_bytes()
 }
 
