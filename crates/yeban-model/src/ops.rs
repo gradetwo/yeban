@@ -26,16 +26,20 @@
 //! `McpProposal` 是外部标签对象，保留 `{proposal_id, agent_name}` 载荷）。
 //! 更早的冲突实测留痕见 `docs/ledger/model-core-provenance.md`。
 //!
-//! **`McpEdit` 的契约欠账（`line/op-origin-mcp`，2026-10-05）**：`OpOrigin` 新增
-//! [`OpOrigin::McpEdit`]（MCP 直接编辑的作者标签），而 `schemas/**` 由契约线独占 ⇒
-//! `origin.oneOf` 此刻只有 `McpProposal` 一个对象分支。这份漂移**不是静默的**：
-//! 测试里的 `PENDING_CONTRACT_ORIGINS` 显式登记了它，判据断言
-//! "枚举里的对象标签 − 契约里的对象标签 **恰好等于**这份清单"，契约一旦补上就立刻
-//! 变红要求清空。追平原委与影响面见 `docs/ledger/op-origin-mcp-notes.md`。
+//! **`McpEdit` 的契约（`line/origin-contract`，追平 `line/op-origin-mcp`）**：
+//! `OpOrigin` 在 `line/op-origin-mcp` 新增了 [`OpOrigin::McpEdit`]（MCP 直接编辑的作者标签），
+//! 而那条线禁改 `schemas/**` ⇒ 漂移当时由测试里的 `PENDING_CONTRACT_ORIGINS` 机械钉住。
+//! 现在 `schemas/ops.schema.json` 的 `origin.oneOf` 已在**末尾**补上 `McpEdit` 对象分支
+//! （`additionalProperties: false`，只许 `agent_name`），该清单因此清空。
+//! 为什么必须"末尾"：两条判据按下标读契约 —— `oneOf[0]` 是单元枚举、`oneOf[1]` 是
+//! `McpProposal`（其载荷键在 `oneOf[1].properties.McpProposal.required` 硬编码核对）。
+//! 插到前面会让这两处读到错的形状（实测：106 passed / 3 failed）。追平原委与证据见
+//! `docs/ledger/origin-contract-notes.md`。
 //!
 //! 本模块的契约一致性有两条**直接读契约文件**的判据（不手抄第二份事实源）：
 //! `op_variants_match_ops_schema_exactly` 与
-//! `origin_variants_match_ops_schema_origin_one_of`。
+//! `origin_variants_match_ops_schema_origin_one_of`（另有
+//! `mcp_edit_origin_shape_matches_its_contract_branch` 逐字段核对新分支的载荷）。
 
 use serde::{Deserialize, Serialize};
 
@@ -72,10 +76,11 @@ pub enum OpOrigin {
     /// [`OpOrigin::AutomationRecord`]（"自动化录制落盘"）与 [`OpOrigin::Import`]
     /// （"外部工程/格式导入"）—— 两档描述的都不是"代理直接改活跃工程"这件事。
     ///
-    /// ⚠ **契约欠账**：`schemas/ops.schema.json` 的 `origin.oneOf` 目前只有
-    /// `McpProposal` 一个对象分支（`additionalProperties: false`），本变体尚未被它承认。
-    /// 本线禁改 `schemas/**`，因此这份漂移由测试里的显式欠账清单
-    /// `PENDING_CONTRACT_ORIGINS` 机械钉住（见 `ops.rs` 的 origin 判据），need 交集成者。
+    /// ⚠ **契约已追平**（`line/origin-contract`）：`schemas/ops.schema.json` 的
+    /// `origin.oneOf` 末尾已有 `McpEdit` 对象分支（`additionalProperties: false`，
+    /// 只许 `agent_name`）—— 与 [`OpOrigin::McpProposal`] 并列的第二个对象标签。
+    /// 追平前这份漂移由测试里的 `PENDING_CONTRACT_ORIGINS` 机械钉住，现已清空；
+    /// 逐字段对照与三条判据的真实要求见 `docs/ledger/origin-contract-notes.md`。
     McpEdit {
         /// 执行直接编辑的代理名。
         agent_name: String,
@@ -2644,8 +2649,13 @@ mod tests {
     /// - 谁再往枚举里加一个对象标签而没登记 ⇒ 红；
     /// - 契约多出一个枚举里没有的对象分支 ⇒ 红。
     ///
+    /// **已清空**：`line/origin-contract` 已在 `schemas/ops.schema.json` 的
+    /// `origin.oneOf` 末尾补上 `McpEdit` 对象分支（`additionalProperties: false`，
+    /// 只许 `agent_name`），并追平了 `docs/ledger/origin-contract-notes.md` 里的三处改动。
+    /// 与 `PENDING_CONTRACT_OPS` 一样保留**空数组**：下一次谁在枚举里加了对象标签
+    /// 又来不及改契约，就往这里加一个名字，棘轮会替他记住。
     /// 给契约线的请求原文见 `docs/ledger/op-origin-mcp-notes.md` 的 needs 节。
-    const PENDING_CONTRACT_ORIGINS: [&str; 1] = ["McpEdit"];
+    const PENDING_CONTRACT_ORIGINS: [&str; 0] = [];
 
     /// [`PENDING_CONTRACT_ORIGINS`] 的集合形态。
     fn pending_contract_origins() -> std::collections::BTreeSet<String> {
@@ -2809,6 +2819,126 @@ mod tests {
                 .collect();
         let actual_payload: std::collections::BTreeSet<String> = payload.keys().cloned().collect();
         assert_eq!(actual_payload, contract_payload);
+    }
+
+    /// `McpEdit` 的载荷形状必须与契约分支**逐字段**一致（任务书判据 ①③）。
+    ///
+    /// 为什么单开一条判据，而不是并进上面那条：
+    /// `origin_variants_match_ops_schema_origin_one_of` 只把对象分支当作**标签**核对
+    /// （`oneOf[*].required[0]` 的集合差），它对"标签带的载荷"只有一处硬编码检查 ——
+    /// 而且只查 `McpProposal`（`oneOf[1].properties.McpProposal.required`，只看键集合，
+    /// 不看 `additionalProperties`，也不看类型）。于是契约若被写成
+    /// `{"McpEdit": {"type": "object"}}`（没有 `required`、没有
+    /// `additionalProperties: false`），上面那条**依然全绿** —— 而契约 ① 的牙齿正是
+    /// "只许 `agent_name`"。本判据：
+    ///
+    /// 1. 按**标签名**定位分支（不写下标 —— 上面那条按下标读契约的教训见本模块头部：
+    ///    把新分支插到 `oneOf[0]` 位置实测 106 passed / 3 failed，两条判据读到错的形状）；
+    /// 2. 分支与载荷**两处** `additionalProperties` 都必须为 `false`；
+    /// 3. `serde_json` 实测载荷的键集合 == 契约载荷的 `required` == 契约载荷声明的
+    ///    `properties`（三个集合相等 ⇒ 既没有"实现多写一个字段"，也没有"契约声明了
+    ///    一个实现不写的字段"）；
+    /// 4. 值的类型也与契约一致（`string`），并能往返。
+    #[test]
+    fn mcp_edit_origin_shape_matches_its_contract_branch() {
+        let origin = OpOrigin::McpEdit {
+            agent_name: "yeban-mcp".to_owned(),
+        };
+        let value = serde_json::to_value(&origin).expect("serialize");
+        assert_eq!(
+            serde_json::to_string(&origin).expect("serialize"),
+            "{\"McpEdit\":{\"agent_name\":\"yeban-mcp\"}}",
+            "McpEdit 的线上字节（serde_json 实测）必须与契约分支允许的形状一致"
+        );
+
+        let schema = ops_schema();
+        let branch = schema["properties"]["origin"]["oneOf"]
+            .as_array()
+            .expect("origin.oneOf 必须是数组")
+            .iter()
+            .find(|branch| branch["required"][0].as_str() == Some("McpEdit"))
+            .expect("契约必须有一个 `required` 恰好是 [\"McpEdit\"] 的对象分支");
+        assert_eq!(branch["type"], "object", "McpEdit 必须是外部标签对象分支");
+        assert_eq!(
+            branch["required"],
+            serde_json::json!(["McpEdit"]),
+            "分支的标签键必须恰好是 McpEdit"
+        );
+        assert_eq!(
+            branch["additionalProperties"],
+            serde_json::json!(false),
+            "分支只许 `McpEdit` 一个键（additionalProperties: false，不许放宽）"
+        );
+
+        let payload = &branch["properties"]["McpEdit"];
+        assert_eq!(
+            payload["additionalProperties"],
+            serde_json::json!(false),
+            "McpEdit 载荷只许 `agent_name` 一个字段（additionalProperties: false，不许放宽）"
+        );
+        assert_eq!(
+            payload["required"],
+            serde_json::json!(["agent_name"]),
+            "McpEdit 载荷必须 required 恰好 [`agent_name`]"
+        );
+        // 载荷字段的**形状**（名字 → 类型）必须恰好是 `{agent_name: string}`。
+        // 只比"名字 + type"，不比整段子 schema：`description` 是给人看的文档，
+        // 不改变线上形状（`McpProposal.proposal_id` 同样带 description）。
+        let contract_types: std::collections::BTreeMap<String, String> = payload["properties"]
+            .as_object()
+            .expect("契约必须声明载荷的 properties")
+            .iter()
+            .map(|(name, spec)| {
+                (
+                    name.clone(),
+                    spec["type"]
+                        .as_str()
+                        .expect("每个载荷字段都要声明 type")
+                        .to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            contract_types,
+            std::collections::BTreeMap::from([("agent_name".to_owned(), "string".to_owned())]),
+            "McpEdit 载荷声明的字段形状必须恰好是「一个 string 型的 agent_name」"
+        );
+
+        let object = value.as_object().expect("McpEdit 必须是单键外部标签对象");
+        assert_eq!(object.len(), 1, "McpEdit 必须是单键外部标签: {value}");
+        let serialized_payload = object
+            .get("McpEdit")
+            .and_then(serde_json::Value::as_object)
+            .expect("载荷必须是对象");
+        let serialized_keys: std::collections::BTreeSet<String> =
+            serialized_payload.keys().cloned().collect();
+        let contract_required: std::collections::BTreeSet<String> = payload["required"]
+            .as_array()
+            .expect("契约必须声明载荷的 required")
+            .iter()
+            .map(|key| key.as_str().expect("键名是字符串").to_owned())
+            .collect();
+        let contract_declared: std::collections::BTreeSet<String> = payload["properties"]
+            .as_object()
+            .expect("契约必须声明载荷的 properties")
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(
+            serialized_keys, contract_required,
+            "serde 实测载荷键必须与契约 required **逐字段一致**（实测输出 {value}）"
+        );
+        assert_eq!(
+            contract_declared, contract_required,
+            "契约声明的载荷字段必须与 required 一致（不许声明一个谁都不会写的字段）"
+        );
+        assert!(
+            serialized_payload["agent_name"].is_string(),
+            "agent_name 必须是字符串（契约 type: string），实际 {value}"
+        );
+
+        let back: OpOrigin = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back, origin, "McpEdit 必须能往返");
     }
 
     #[test]
