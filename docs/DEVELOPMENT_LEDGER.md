@@ -7759,3 +7759,24 @@ inherited damage from the previous one. The one time it was missing (round 315) 
 which is why the pattern is now unconditional in the command rather than tucked inside the success branch.
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed; the fixture move needs one `cargo fix` run.
+
+
+### Round 317: cargo fix removed an import the TESTS still need - so the tests should import it
+
+The family move plus `cargo fix` produced a new and instructive failure: `cargo fix --lib` removed `use yeban_model::ids::EntityId` because the **library**
+no longer used it, and the build then failed at `bridge.rs:2886` and `:2922` - inside the **test module**, which does use it. `cargo fix` ran with
+`--lib`, so it never saw the test build.
+
+**So the last step is not "remove the import" but "move the import into the test module"**: the tests that need `EntityId` should import it themselves, and
+then the top-level import is genuinely unused and can go. That is also the idiomatic arrangement - a test module declaring what it uses rather than
+inheriting the file's imports.
+
+**Recorded because it is the fourth distinct layout lesson of this move** (insert before the test module; delete the duplicate helper; the tests carry
+their own imports; and now that `cargo fix` is scoped per-target and will happily break the other target). Together they say the same thing in different
+ways: in Rust, **where** a line goes - before or after a test module, in the lib or in the tests - is part of whether it compiles, so a move has to be
+planned per target, not per file.
+
+**Four attempts this round, all reverted cleanly by the unconditional failure path**; the tree is green at HEAD, CI is green, and the move needs exactly
+one more edit: the test module imports `EntityId` for itself.
+
+**Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
