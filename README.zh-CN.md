@@ -50,6 +50,11 @@
 
 ### 环境要求
 
+- **C++ 编译器与 LLVM/libclang。** `yeban-dsp` 依赖 `signalsmith-stretch`：它的构建脚本用 `cc` 编 C++ 源码，
+  用 `bindgen` 生成 FFI 绑定。所以你需要 C++ 工具链**以及**可被发现的 `libclang`（Linux：`clang libclang-dev`；
+  macOS：Xcode 命令行工具；Windows：LLVM，并把 `LIBCLANG_PATH` 指向含 `libclang.dll` 的目录）。
+  最快的自检命令是 `cargo build -p yeban-dsp`。
+
 | | |
 | :--- | :--- |
 | **Rust** | **1.99.0** —— 由 [`rust-toolchain.toml`](rust-toolchain.toml) 钉死，`rustup` 会自动安装；`rustfmt` + `clippy` 组件同样被钉住。 |
