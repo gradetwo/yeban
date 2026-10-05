@@ -3175,3 +3175,31 @@ Second run of all three benchmarks on the same machine (records the numbers rath
 **Method note (this project keeps re-learning it)**: L31 says conclusions must be reproducible. Reading each benchmark twice
 cost about two minutes and turned "a number" into "a number with a spread and a risk", which is what a gate decision
 actually needs.
+
+### Round 110: workload sweep - the parallel path is uniformly slower, and at 32 tracks it misses the spec bar
+
+Attribution before code (round-86 discipline). The bench prints both threading modes in one run, so sweeping the workload
+gave the crossover directly, on the same machine and load (~3.8):
+
+| tracks (30 s) | single-thread | Rayon auto | ratio |
+| ---: | ---: | ---: | ---: |
+| 4 | 1082.9x | 348.5x | 3.1x faster single |
+| 8 | 541.4x | 151.8x | 3.6x |
+| 16 | 482.3x | 109.9x | 4.4x |
+| **32** | 241.5x | **89.7x** | 2.7x |
+| 64 | 123.4x | 63.4x | 1.9x |
+
+**Three conclusions, each from the table.**
+1. The parallel path is **not** merely "slow below a threshold": it is **uniformly slower at every size tested**, by
+   1.9x-4.4x. A threshold tweak would therefore not fix it.
+2. The spec's "offline render >= 100x realtime" is **reliably met only by the single-thread path**. On this run the Rayon
+   path measured **89.7x at 32 tracks - below the bar** - and the two earlier rounds were only 101.3x/102.0x, i.e. inside
+   the noise band of the bar. Any statement that `BASELINE-001` is met **must name the threading mode**, or it may be
+   resting on a setting that goes red on a busier machine.
+3. Before touching the parallel decomposition, note the red line it must not break: `crates/yeban-render/src/lib.rs`
+   asserts that 1 / 2 / 4 threads produce **byte-identical** output. So the fix space is "parallel decomposition or an
+   honest auto policy", not "loosen determinism".
+
+**Deliberately not changed this round**: the fix needs the render crate's layer/block decomposition understood end to end,
+and a bit-exactness-preserving redesign is not something to attempt with the context left in this session. Recording the
+measurement is the valuable half; a half-understood parallel rewrite is the failure mode this project keeps paying for.
