@@ -34,6 +34,8 @@ export component PianoRoll inherits Rectangle {
     // `[ROAD-M3-002]` 滚动手势：本组件**只报告增量**, 偏移由宿主拥有并重新注入
     // （见账本第 199 轮：Flickable 会与宿主拥有的偏移双重计算, 故不用）。
     callback scroll-requested(length);
+    // `[UI-NOTE-003]` 左键单击：只**报告坐标**, 命中与选区由 Rust 侧决定（账本第 495/496 轮）。
+    callback clicked(length, length);
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
@@ -249,6 +251,8 @@ export component PianoRoll inherits Rectangle {
                 root.drag-last-x = self.mouse-x;
             } else if event.kind == PointerEventKind.up {
                 root.dragging = false;
+                // 抬起即视为一次单击（拖拽手势已在 move 里报告过增量）。
+                root.clicked(self.mouse-x, self.mouse-y);
             } else if event.kind == PointerEventKind.move && root.dragging {
                 root.scroll-requested(root.drag-last-x - self.mouse-x);
                 root.drag-last-x = self.mouse-x;
