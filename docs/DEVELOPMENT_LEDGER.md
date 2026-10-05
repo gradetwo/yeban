@@ -2412,3 +2412,25 @@ CAS 池字节不是 Op 载荷 ⇒ 撤销 `AddClip` 不回收池内字节；响�
 
 **⇒ 需要负责人决策的只有一句**: 选 **A/B/C**（或给一个字节上限）。
 机制侧已闭环（登记可复核 200/200 通过、30 乐器映射审计进 CI、archive 形态单独归类），**只差"入库多少真字节"**。
+
+### 第 79 轮：契约追平 `OpOrigin::McpEdit` 落地 + **三处我自己的错**（都被实测推翻）
+
+**判决**: `line/origin-contract` run **`37281860473` = completed success**（真腿：`rust (workspace 全量)` steps=9、`windows` steps=7）。
+`land` 逐字检查（`land=0` + `Merge made`）；产物复核 **`"McpEdit"` = 2**（`schemas/ops.schema.json`）、
+**`PENDING_CONTRACT_ORIGINS: [&str; 0] = []` = 2**（欠账清单清空）。⇒ 契约与代码**不再漂移**。
+
+**我这一轮被迫更正的三个错（都是"先断言、后核实"）**:
+1. **"三条判据还拴着别的东西"——错。** 真相是三条判据都**按下标**读契约（`oneOf[0].enum` 是单元枚举、
+   `oneOf[1].properties.McpProposal.required` 是载荷键），而我把 `McpEdit` 分支**插在了 `oneOf` 的下标 0**
+   ⇒ 三条判据在**同一个** `.expect("origin.oneOf[0].enum 必须是数组")` 上 panic（**不是** `assert_eq` 的 left/right）。
+   **同一段 JSON 追加到末尾即成绿** ⇒ **判据没写错，是我的插入位置错了**。
+2. **"我把 `op_variants_match_ops_schema_exactly` 列进红名单"——转述滑了一格。** 该判据只读 `op.oneOf`，一个字都不读 `origin`。
+   ⇒ 我把自己的失败清单**转述得比实测更宽**。
+3. **"`ci.yml` 没有显式 timeout ⇒ 默认 6 小时"——错。** 实测每个 job 本来就有：`rust-workspace 90` / `windows 60` / `rust 60` /
+   `deny 20` / `checks 15` / `lockfile 15` / `plan 10`（分钟）⇒ "挂住的绿"最坏占 **90 分钟**。我的补丁是**空操作**（先跑验证才发现，故未写进仓库）。
+
+**同时确认了一个新的 CI 形态（"挂住的绿"）**: 代码轮 `37281451537` 的 `plan`/`deny`/`lockfile`/`checks` 四腿 success，
+但 `rust (workspace 全量)` 与 `windows` **停在 `Post Run actions/checkout@v4`（post-job 清理）**，整轮 `updatedAt` 不再前进
+⇒ **不是慢，是清理被孤儿进程挡住**（日志里出现过 `Cleaning up orphan processes`）；`gh run cancel` 对它**长时间不响应**。
+处置：`cancel`（会最终落地为 `cancelled`）+ 推新提交（`cancel-in-progress` 顺带收掉），**不把挂起当通过**。
+
