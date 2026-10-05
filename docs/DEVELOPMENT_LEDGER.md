@@ -7671,3 +7671,22 @@ they verify.
 fixture** between it and completion. Reverted so the tree stays green; nothing about the design remains open.
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
+
+
+### Round 313: the fixture moved, but it drags a helper - one name left
+
+Moving `demo_project` into `yeban-model::samples` worked mechanically (7,218 bytes, extracted by brace matching with its doc block, `yeban_model::` paths
+rewritten to `crate::`, and the app re-exporting it so callers are unchanged), and the check then named the single thing left:
+
+    error[E0425]: cannot find function `demo_id` in this scope
+      --> crates/yeban-model/src/samples.rs:948:21
+
+So the fixture depends on an app-side helper, `demo_id` - the same shape as round 305's `vlq` and round 303's `use` block: **an item move drags whatever
+it calls**, and the compiler names each one in turn. The fix is to move `demo_id` alongside `demo_project` (it is a pure id-constructor and belongs with
+the fixture), then re-run the check.
+
+**Why this is recorded rather than retried immediately**: it is the same one-name-at-a-time discovery the session has now seen four times, and the
+honest reading is that the remaining work is a short sequence of exactly those small moves - `demo_id`, then the generator run, then the test split -
+each verifiable by a compile. Nothing about the design is open, and each attempt reverts cleanly, so the tree has never been left red.
+
+**Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
