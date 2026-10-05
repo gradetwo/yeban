@@ -6731,3 +6731,29 @@ question and therefore one to ask rather than assume.
 
 **Consequence for the objective's wording**: "MCP 工具集扩张（… 响度目标）" cannot be completed by adding a tool, because the tool's data
 source does not exist in production. The honest status is: **blocked on the injection question**, not on implementation.
+
+### Round 273: MIDI export hits the same wall - the encoder lives in a crate MCP must not depend on
+
+Read the module before planning the move, and the two facts together decide it:
+
+| fact | evidence |
+| :--- | :--- |
+| the SMF encoder is ALREADY shared and single | `export_midi.rs`'s own doc: it does only two things - read `yeban-model`'s structures and assemble `yeban_render::midi`'s public input types; the bytes come from `MidiExport::to_smf_bytes` in `crates/yeban-render/src/midi.rs` (midly encoding plus this crate's independent byte-level VLQ/chunk checks) |
+| but `yeban-render` carries the audio stack | its dependencies include **`yeban-dsp`**, **`hound`**, plus `midly`, `rayon`, `sha2`, `libm`, `yeban-model` |
+
+So the good news is that no second encoder needs writing - the discipline this session keeps applying already holds. The blocking fact is that
+the crate holding it also depends on `yeban-dsp` and `hound`, and `yeban-mcp`'s own Cargo.toml says "**轻量 crate**: 不拖音频栈进 MCP".
+
+**The options, and the one I would recommend**:
+1. **split a small MIDI crate** (`yeban-midi`, depending only on `yeban-model` + `midly`): the encoder moves there, `yeban-render` re-exports or
+   uses it, and `yeban-mcp` depends on it - one implementation, both consumers, no audio stack in MCP. **Recommended**, because it is the same
+   move that already worked for `NotePlan`/`plan_to_add_note` (round 261) and it is what "两侧同接、共用同一实现" means structurally. Its cost
+   is real and is why it is not done in this round: a new crate touches the vendor/deny/licence inventory and every workspace manifest.
+2. **MCP asks the app to export** (the tool requests, the app writes): avoids a new crate, but reproduces round 272's unsolved question -
+   how does the server reach the application process at all - and adds an asynchronous round trip to a tool that could be pure.
+3. **MCP writes SMF itself**: refused. That is the second implementation of a format the project already encodes with byte-level checks, and
+   the exact thing this session has spent rounds refusing elsewhere.
+
+**Honest status of the objective's MCP scope, for the record**: 自动化泳道 / 设备与引擎 / 音频导入 are present; **MIDI 导出** and **响度目标**
+are both blocked on architecture rather than implementation - one on splitting a lightweight crate, the other on who may hand engine state to
+an MCP client. Neither is blocked on effort or knowledge, and both options are written down with costs, so a ruling can be quick.
