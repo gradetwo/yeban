@@ -5799,3 +5799,29 @@ recoverable from the click alone today.
 backwards-compatible only in name. Round 234's clip rule still stands; what changed is that it needs this second sentence before it
 can be implemented, and I would have discovered that mid-implementation if I had not checked first - which is the argument for
 checking a decision's nouns before writing code against it.
+
+### Round 237: I take the track-source decision too - option 1, recorded with its cost
+
+Round 236 found that "the current track" does not exist and left two options. Under the same standing instruction as round 234 (decide
+what I can, do not block, record it so it is overturnable), I am taking option 1:
+
+**Decision**: the pencil first resolves the CLIP from the clicked tick (`clip_at_tick`, round 529), then resolves the TRACK as the one
+whose placements contain that clip. If no track places the clip, the edit is refused, the same way a missing clip refuses it.
+
+**This redefines the sentence I wrote in round 234, and I am saying so rather than pretending it is the same rule**: "the clip on the
+current track containing the clicked tick" becomes "the track that owns the clip containing the clicked tick". The set of reachable
+edits is the same; the sentence is not.
+
+**Why option 1 and not a new current-track concept**: the click already carries a position, and that position already determines the
+clip; deriving the track from it needs no new UI concept, no new selection model, and no new MCP surface. Option 2 would introduce a
+second, independent selection state whose interaction with the note selection I built in rounds 495-505 the spec does not describe,
+and inventing that interaction is a larger product decision than the one being solved here.
+
+**Cost, stated as the practice requires**: with option 1 the pencil cannot place a note on a track that has no clip under the cursor,
+and a user who has selected a track cannot draw on it from an empty area. That is the same limitation round 234 already accepted for
+clips, now extended to tracks - and if the product later wants "draw on the track I am working on", option 2 is additive: a
+current-track concept would simply take precedence in this resolution order, so nothing decided here has to be undone.
+
+**What remains before the wiring can be written**: one read - where a track keeps its placements (the `TrackV3` field name), which the
+`ClipPlacement` read already narrowed (the struct exists at `project.rs:1066` with `clip_id`, `start_tick`, `duration_ticks`), but
+not the collection that holds it. Round 235's rule applies: read it, do not guess it.
