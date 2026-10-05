@@ -6082,3 +6082,38 @@ behind is the table above, not "the editing side is missing".
    than per feature;
 3. the criterion shape is settled by the measurement: whatever handler is added must be observable from outside `input.rs`, i.e. it
    must set state that a test can read back, or the "0 handlers" count simply becomes a "1 handler that does nothing".
+
+### Round 248: consolidation after round 214 - the newer findings a reader needs before touching the roll
+
+Round 214 and 219 consolidated earlier work; this gathers what rounds 240-247 added, because several of them change what a new
+reader should believe about the roll.
+
+**Tracking repairs (both complete, both guarded)**: `[UI-NOTE-002]` was implemented and judged but named nowhere - the row now says
+`[UI-NOTE-001/002/003]` (round 537). `[UI-NOTE-005]` (full keyboard note manipulation) was neither implemented nor registered; it now
+has a row with 系统=计划, UI=无, MCP=无, classified 仅计划, status PENDING, with re-runnable absence evidence (round 539).
+
+**Three defects found while preparing step 2, all measured rather than suspected**:
+1. the tool keyboard shortcuts `1`-`5` do nothing: `Action::SelectTool(Tool)` is produced by the digit keys and handled nowhere
+   (round 246);
+2. the same is true of `TogglePencilTool` and `DeleteSelection`, while `Undo` (11 references outside input.rs), `Redo` (4) and
+   `PlayPause` (4) ARE handled - so the input layer's policy half is written and the execution half is missing precisely for the
+   editing actions (round 247);
+3. `piano_roll.slint`'s `active-tool` is UI-internal and its comment claims a coupling to `input.rs` that the code does not have; the
+   host never reads or writes the property (round 244).
+
+**Step 2 (the pencil actually creating a note) is now fully specified with no design decisions left**: (a) create the missing
+`SelectTool` handler and mirror `active-tool` to MainWindow, with a criterion that presses the key and reads the property back; (b)
+`wire_roll_edit(ui, &Rc<UndoPort>, &Rc<RefCell<InputContext>>)` holding the pencil branch; (c) resolve the clip with `clip_at_tick`,
+resolve the owning track from the same scan, build `Op::AddNote` via `plan_to_add_note`, commit with
+`commit_ops(SystemTime::now() ms, ..)`, reproject; (d) a UI criterion asserting the clip's note count rose by exactly ONE and that
+undo reverses it. Rules settled on the way: the note goes to the clip containing the clicked tick on the track that owns that clip
+(rounds 234/237), and a position inside no clip is REFUSED rather than creating one.
+
+**The block on going further is stated honestly and is not a design gap**: the session's remaining capacity, plus the CI stall below.
+(c) mutates the model and (d) judges that mutation - the pair that rounds 520 and 521 showed should not be written while hurrying.
+
+**CI status at this point**: the runner side has stopped starting runs entirely - 12 queued across all workflows, 0 in progress, the
+oldest over eight minutes and not moving (round 241), with repository Actions verifiably enabled and the billing endpoints unreadable
+with this token (round 242). Until it resumes, **no new work can be verified by the project's own standard** (ci.yml +
+gates-manual.yml), and everything since verdict 31 is locally verified only: 188 lib criteria, the feature-gated UI criteria, `light`,
+and the seven-check wiring guard.
