@@ -3151,3 +3151,27 @@ the MCP stdio judge and the G13 job-id rule - i.e. the whole of this session's c
 
 (Also noted for completeness: `1586957`, a phase-status-only commit, was still `pending` when read; a docs-only tip cannot
 produce crate evidence and will not be counted as one regardless of how it concludes.)
+
+### Round 109: the reference-machine verdicts are reproducible - and BASELINE-001's Rayon path has only ~1-2% margin
+
+Second run of all three benchmarks on the same machine (records the numbers rather than asserting they hold):
+
+| gate | round 1 | round 2 | verdict |
+| :--- | :--- | :--- | :--- |
+| `BASELINE-001` single-thread | 231.6x (wall 129 ms) | **220.9x** (wall 135 ms) | in target, 2.2x margin |
+| `BASELINE-001` Rayon auto | 102.0x (wall 294 ms) | **101.3x** (wall 296 ms) | in target, **~1.3-2% margin** |
+| `BASELINE-001` digest | `b5c46af24593ad2c...` | `b5c46af24593ad2c...` | **identical across rounds** (determinism holds) |
+| `BASELINE-004` p99 (4 scenarios) | 0.125 / 0.125 / 0.084 / 2.708 us | 0.125 / 0.125 / **0.125** / **2.750** us | in target, ~74x margin |
+
+**Two findings worth acting on, neither of which a single run could have shown.**
+1. **The Rayon path barely passes** the spec's >=100x bar (101.3x, then 102.0x). A slightly noisier machine or a busier
+   runner would fail it while the single-thread path passes comfortably. Any claim that "BASELINE-001 is met" must
+   therefore name **which threading mode** it refers to.
+2. **Single-thread is ~2.2x FASTER than Rayon auto on this workload** (129 ms versus 294 ms). Parallel scheduling overhead
+   exceeds the benefit at 32 tracks / 30 s, so the "auto" default is the *slower* choice here. Under the round-86
+   performance discipline this is a concrete, small-investment/large-payoff candidate: either the auto path should not
+   engage below a work threshold, or the parallel split should be coarser.
+
+**Method note (this project keeps re-learning it)**: L31 says conclusions must be reproducible. Reading each benchmark twice
+cost about two minutes and turned "a number" into "a number with a spread and a risk", which is what a gate decision
+actually needs.
