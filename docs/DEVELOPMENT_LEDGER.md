@@ -7302,3 +7302,20 @@ been settled since round 287 and has not needed revision once.
 That is four to six small ordinary edits with a compile between them, which is exactly how the `NotePlan`/`plan_to_add_note` move went in round 261 -
 one item at a time, compiler-guided. The lesson from five failures is not that the move is hard; it is that **bulk text generation is the wrong tool
 for Rust source whose doc comments and imports are load-bearing**, and I reached for it five times.
+
+
+### Round 296: the split's bookkeeping is complete - the licence inventory names the new crate as a direct dependent
+
+Checked the one bookkeeping artifact that the split could have left stale: `docs/ledger/dependency-licenses.md` now records `midly 0.5.3 (Unlicense)`
+as a **direct** dependency of **`yeban-midi`, `yeban-render`** (line 330), which is exactly right - before the split only `yeban-render` held it, and
+now both do because the re-export means render still compiles against it. Twenty-two `yeban-*` entries are listed, and `yeban-midi` is among them.
+
+**Why this was worth one command**: the inventory is generated, and generated artifacts silently lag real changes unless something forces them to be
+regenerated - the thing that forced it was the gate failing twice during the split (rounds 283 and 624), which is the guard doing its job. Checking
+the RESULT rather than assuming the regeneration was correct is the small extra step, and it closes the split's bookkeeping as verified rather than
+presumed.
+
+**Status of the split, stated once**: `yeban-midi` exists, holds the SMF codec and VLQ helper, compiles, has 18 criteria, is depended on by
+`yeban-render` (re-export) and `yeban-mcp` (for the coming tool), and appears in the licence inventory. The **mapping layer** (`export_from_project`)
+has NOT moved, which is what the five reverted attempts were about - so the MCP tool is still owed, and the next attempt should use ordinary edits
+with a compile between them (round 295).
