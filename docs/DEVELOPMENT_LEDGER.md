@@ -7715,3 +7715,25 @@ renamed), so for one moment the tree had duplicated definitions - and the auto-r
 revert-on-failure pattern has contained a half-applied edit, and it is the reason the tree has never been left red.
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
+
+
+### Round 315: a process defect in my own command - the failure branch did not revert
+
+Round 314's family move was attempted twice. The first attempt compiled cleanly (`cargo check` Finished) and was then refused by the gate for a real
+reason: appending the functions to `samples.rs` puts them **after that file's test module**, which clippy rejects as "items after a test module". So
+far so normal.
+
+**The defect was mine**: that command's `if green then commit else print` branch **had no revert**, unlike every earlier attempt - so the half-applied
+state (functions appended in the wrong place, `bridge.rs` already stripped) stayed in the tree, and the next attempt read it as "0 functions to move"
+and produced a confused result. `git checkout -- .` restored HEAD, and both crates compile again.
+
+**Two lessons, both about the harness rather than the code**:
+1. **every attempt must revert on the failure path**, not only on the path where a commit is skipped - the earlier rounds' auto-revert was inside the
+   compile-check branch, and moving it out of that branch is what broke;
+2. **a failed attempt must not be re-run against its own leftovers** - reading `0 functions to move` should have stopped the script immediately rather
+   than continuing to edit.
+
+**What is unchanged**: the family move itself works (it compiled), the fix is to insert **before** `samples.rs`'s test module, and the fixture's home is
+settled. Round 314's decision stands; only the execution needs the corrected insertion point and an unconditional revert.
+
+**Status**: tree green and clean at HEAD; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
