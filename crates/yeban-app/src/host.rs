@@ -136,6 +136,8 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
     // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
     let visible = view.visible_notes(scroll_x, viewport_width);
+    // 把偏移**留在界面对象上**：撤销刷新要复用同一个值（账本第 200/201 轮）。
+    ui.set_roll_scroll_x(scroll_x);
     ui.set_note_ulids(strings(&visible.ulids));
     ui.set_note_velocities(lengths(&visible.velocities));
     ui.set_note_positions(lengths(&visible.positions));
@@ -436,7 +438,11 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
         return;
     }
     match ViewState::from_project(&port.project()) {
-        Ok(view) => apply_view(&ui, &view, ui.window().size().width as f32, 0.0),
+        Ok(view) => {
+            // 复用当前偏移：撤销**不应**把卷帘滚回起点（账本第 200 轮记录的缺陷）。
+            let scroll_x = ui.get_roll_scroll_x();
+            apply_view(&ui, &view, ui.window().size().width as f32, scroll_x)
+        }
         Err(error) => {
             // 投影失败**出声**：工程已经在内存里回退了，但这一帧画不出来。
             // 静默吞掉会让"撤销没反应"变成一个查不出的现象。

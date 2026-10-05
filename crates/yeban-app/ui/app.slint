@@ -273,6 +273,9 @@ export component MainWindow inherits Window {
     // 见 `src/bridge.rs` 的 `NoteView`（界面不做任何位置算术）。
     /// `[ROAD-M3-002]` 卷帘滚动手势（由宿主接管并重新注入）。
     callback scroll-requested(length);
+    /// `[ROAD-M3-002]` 卷帘当前水平偏移（逻辑像素）。
+    /// 用 `<float>` 而非 `<length>`：宿主只需读写一个数，避免 `f32 -> Length` 转换与组件链转发。
+    in-out property <float> roll-scroll-x: 0.0;
     in property <[length]> note-positions: [];
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
