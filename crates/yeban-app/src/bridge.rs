@@ -49,7 +49,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use yeban_model::ids::EntityId;
+
+// 账本第 261 轮：这两个已**下移**到 `yeban-model`（MCP 与 UI 共用同一实现, 且不违反依赖方向）。
 use yeban_model::music::MidiNote;
+pub use yeban_model::note_plan::{NotePlan, plan_to_add_note};
 use yeban_model::project::{
     ClipContent, ClipPlacement, ClipPoolEntry, SceneV3, SectionV3, TimeSignature, TrackKind,
     TrackV3, YebanProjectV1,
@@ -344,38 +347,10 @@ pub fn clip_at_tick(
 /// 不需要另写一份反向逻辑; 而 UI 与 MCP 只要都调用本函数, 就**共用同一实现**（目标里"撤销入口两侧同接"的实质）。
 /// `note_id` 由调用方给出（通常是 `EntityId::new()`）, 便于判据与重放。
 #[must_use]
-pub fn plan_to_add_note(
-    plan: NotePlan,
-    track_id: yeban_model::ids::EntityId,
-    clip_id: yeban_model::ids::EntityId,
-    note_id: yeban_model::ids::EntityId,
-) -> yeban_model::ops::Op {
-    yeban_model::ops::Op::AddNote {
-        track_id,
-        clip_id,
-        note: yeban_model::music::MidiNote::new(
-            note_id,
-            plan.start_tick,
-            plan.pitch,
-            plan.duration_ticks,
-        ),
-    }
-}
-
 /// `[UI-NOTE-003]` 铅笔（或双击）要创建的**音符参数**：起点、音高、时值。
 ///
 /// 这是"决策"的结果, 还不是模型改动 —— 真正的插入必须经过撤销与 MCP（下一层），
 /// 于是那一层拿到的是一个**已经定好**的三元组, 不需要再猜任何东西。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotePlan {
-    /// 起始 tick（已按吸附网格对齐）。
-    pub start_tick: u64,
-    /// 音高（由点击所在泳道反推）。
-    pub pitch: u8,
-    /// 时值：规范规定"默认 1 拍" ⇒ 取工程的 `ppq`。
-    pub duration_ticks: u64,
-}
-
 /// `[UI-NOTE-003]` 力度车道的**几何**（界面侧的值集中在这里, 免得命中测试去猜）。
 ///
 /// 数值来自 `piano_roll.slint` 的柱体：`x: 56px + Tokens.space-5 + note-positions[i] + 30px`、
