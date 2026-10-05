@@ -73,6 +73,11 @@ def upstream_url(instrument: dict, item: dict) -> str | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--only-ext",
+        default="",
+        help="只取回这些扩展名（逗号分隔，例如 .sfz,.xml,.txt）—— 供人类裁决的「定义与文本类」入库范围使用",
+    )
     parser.add_argument("--limit", type=int, default=0, help="最多取回多少个文件（按 size_bytes 升序，取最小）")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--check-only", action="store_true")
@@ -100,6 +105,11 @@ def main() -> int:
             present.append(item)
 
     todo = items if args.all else sorted(items, key=lambda i: i.get("size_bytes", 0))
+    if args.only_ext:
+        exts = tuple(e.strip().lower() for e in args.only_ext.split(",") if e.strip())
+        before = len(todo)
+        todo = [i for i in todo if str(i.get("relative_path", "")).lower().endswith(exts)]
+        print(f"only-ext 过滤: {before} -> {len(todo)} 条（{args.only_ext}）")
     if args.limit:
         todo = todo[: args.limit]
     if args.check_only:
