@@ -113,6 +113,13 @@ jobs:
           python3 -m pip install --quiet 'jsonschema>=4.24'
           python3 scripts/gates/validate_schemas.py
 
+      - name: 采样登记的自洽与**仓库内真实字节**校验
+        run: |
+          set -euo pipefail
+          # 登记式入库（items[].optional=true）下，绝大多数文件**不随仓库分发**；
+          # 但仓库内**已有的**字节必须逐项对账 —— 否则「登记」只是清单，不是证据。
+          python3 scripts/dev/verify-samples-bytes.py
+
       - name: 文档契约（链接 / 规范 ID / ID 字典 / 决策清单 / 门禁状态表 / 阶段状态表 / 三方对齐矩阵）
         run: |
           set -euo pipefail
