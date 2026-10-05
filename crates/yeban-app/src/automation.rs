@@ -939,6 +939,95 @@ mod tests {
                 point.tick
             );
         }
+        // `points` 与求值入口的**精确**口径：模型允许同一 tick 有多个采样点，而
+        // `value_at` 的裁决是 `(tick, point_id)` 最大者胜出。因此按 tick 取"后写者"
+        // （= 最大 point_id）与入口对账，而不是逐个顶点断言（那样在同 tick 多点时会假红）。
+        let mut winners: BTreeMap<u64, f32> = BTreeMap::new();
+        for vertex in &lane.points {
+            winners.insert(vertex.tick, vertex.value);
+        }
+        for (tick, value) in &winners {
+            assert_eq!(
+                Some(*value),
+                project
+                    .automation_lane(&volume)
+                    .expect("泳道")
+                    .value_at(*tick),
+                "每个 tick 的胜者必须逐位等于 `lane.value_at`"
+            );
+        }
+
+        // ---- 同一 tick 上的两个采样点：`points` 两个顶点、`samples` 一个顶点 ----
+        //
+        // 这条覆盖"同 tick 的确定胜者"在**投影侧**的形态：折线的 `tick` 严格递增
+        // （同一个 tick 只能画一个顶点），而采样点计数仍按模型给的条目数。
+        {
+            let mut project = demo_project();
+            let track_id = *project
+                .tracks
+                .keys()
+                .find(|id| **id != project.master_bus_track_id)
+                .expect("非主总线轨道");
+            let target = AutomationTarget::TrackVolume { track_id };
+            let track = project.tracks.get_mut(&track_id).expect("轨道存在");
+            track.automation_lanes.clear();
+            let mut points: BTreeMap<EntityId, AutomationPoint> = BTreeMap::new();
+            for (tail, value) in [("Z1", -20.0_f32), ("Z2", -10.0_f32)] {
+                let point_id = tid(tail);
+                points.insert(
+                    point_id,
+                    AutomationPoint {
+                        id: point_id,
+                        tick: 960,
+                        value,
+                        curve: CurveType::Linear,
+                    },
+                );
+            }
+            track.automation_lanes.insert(
+                target,
+                AutomationLane {
+                    target,
+                    points,
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+            let lanes = project_lanes(&project, DEFAULT_TICKS_PER_PIXEL).expect("投影");
+            let lane = lanes
+                .iter()
+                .find(|lane| lane.target == target)
+                .expect("泳道");
+            assert_eq!(
+                lane.point_count(),
+                2,
+                "同 tick 的两个采样点都要在 `points` 里"
+            );
+            let at_960: Vec<f32> = lane
+                .points
+                .iter()
+                .filter(|vertex| vertex.tick == 960)
+                .map(|vertex| vertex.x)
+                .collect();
+            assert_eq!(at_960.len(), 2);
+            assert_eq!(at_960[0], at_960[1], "同一个 tick ⇒ 同一个 x");
+            let drawn: Vec<&AutomationVertex> = lane
+                .samples
+                .iter()
+                .filter(|vertex| vertex.tick == 960)
+                .collect();
+            assert_eq!(drawn.len(), 1, "折线在同一个 tick 上只能有一个顶点");
+            let entry = project
+                .automation_value_at(&target, 960)
+                .expect("目标存在")
+                .expect("有点 ⇒ 有值");
+            assert_eq!(drawn[0].value, entry);
+            assert!(
+                (entry + 10.0).abs() < f32::EPSILON,
+                "胜者必须是 `point_id` 更大者（实测 {entry}）"
+            );
+        }
         for lane in &ViewState::demo().automation_lanes {
             for vertex in lane.points.iter().chain(lane.samples.iter()) {
                 #[allow(clippy::cast_precision_loss)]
