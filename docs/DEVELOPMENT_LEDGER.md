@@ -2330,3 +2330,25 @@ audit exit=0
 **留下的 needs（它没自己开，正确）**: `OpOrigin` 缺 `McpEdit`（借 `AutomationRecord`/`Import`，**不许在 MCP 线加 model 枚举变体**）；
 CAS 池字节不是 Op 载荷 ⇒ 撤销 `AddClip` 不回收池内字节；响度目标 `BASELINE-006` 的 Token 口径已由负责人延后 ⇒ 本轮不做；无"放置片段"工具（`Op::AddClipPlacement` 未接线）。
 
+### 第 75 轮：`baseline-memory` 当场更正了**我任务书里的两处事实错误**（都属"看起来有"）
+
+我给该线的任务书里写了两句"事实"，它**逐条跑命令核实后都推翻了**：
+
+**① 不存在 `scripts/gates/check_memory_baseline.sh`。** 我凭记忆/转述写了这个文件名（任务书里还用引号标为"原话"），
+而实际存在的是 **`scripts/gates/measure_rss.py`**（`grep -rn measure_rss .github/ scripts/ docs/` 只命中该文件 + 手动档 bench 的两条调用 + 台账）。
+⇒ **又一次"把转述当成了产物"**（与本会话那族同源：白名单没人读、手动档步骤没被加进去、`land` 拒绝执行而我照旧提交"已合并"）。
+
+**② 73.25 MB 不是 app 的读数，是"故意分配 ~73 MB"的注入对照。** `448f865` 的提交信息与账本 `:1519` 逐字写着
+"同一工具对**一个故意分配 ~73 MB 的命令**报 73.25 MB → over-target ⇒ 它证明了自己有判别力"。
+而我据此写了"**对照用例约 73.25 MB，超目标 ⇒ 需要真正的工程优化**" —— **把注射器当成了病人**。
+⇒ 教训：**读到"某数超阈"时，先确认那个数是"被测对象"还是"标定仪器用的对照"**。
+
+**③ 该线真跑的第一条读数**（复用主仓 debug 缓存、未做任何编译）:
+`measure_rss.py --label probe-prebuilt-debug -- target/debug/yeban-app --headless` ⇒
+**`peak_rss_mb=11.33 target_mb=35.0 child_exit=0 verdict=within-target`**。
+但它同时指出一个**比"超没超"更要紧的口径问题**（这是本线真正的靶）:
+`--headless` 在 `main.rs:97-101` 走 `cli::run_batch`，**一个 Slint 对象都不构造**（该文件模块文档自述）
+⇒ 11.33 MB 量的是"进程骨架 + 模型 + 演示工程投影"，**不是**规范那句"空工程空闲常驻内存"
+（真实 DAW 的常驻集里 Slint 组件树/字形缓存/渲染上下文那一大块**完全没被覆盖**）。
+⇒ 所以"**达标**"这个词现在**不能**用；`BASELINE-002` 的真实状态是"**量法尚未覆盖规范所指的对象**"。
+
