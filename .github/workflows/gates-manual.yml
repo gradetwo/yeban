@@ -34,6 +34,7 @@ on:
           - windows
           - determinism
           - pending
+          - goldens
       crate:
         description: "all-features 档位下的单个 crate (留空 = 整个工作区)"
         type: string
