@@ -155,6 +155,66 @@ fn write_png(name: &str, image: &Rgb8Image) {
     let path = yeban_ui_test_port::write_artifact(name, image)
         .unwrap_or_else(|err| panic!("写 Tier-1 截图 `{name}` 失败: {err}"));
     observe(&format!("截图产物: {}", path.display()));
+    regenerate_golden_if_asked(name, image);
+    assert_matches_golden(name, image);
+}
+
+/// `[UI-MCP-003]` / `[ROAD-M0-008]` / `[ROAD-M3-007]` 的**视觉回归判据**。
+///
+/// 口径：把刚渲染的帧与 `tests/golden/<platform>/<name>.png` **逐字节**比对。
+/// 之所以能逐字节：本仓的 PNG 编码器是自研的 **stored-deflate**（无压缩、无时间戳、无随机化），
+/// 且第 104 轮已实测「同一条 Tier-1 路径再生成 ⇒ 3/3 张 sha256 逐字节相同」。
+///
+/// **偏严**是有意的：动态区域（VU 表、走带光标）一旦进入这些场景，就必须改成「解码 + 遮罩 + 像素容差」，
+/// 那需要把 `crates/yeban-ui-test-port/src/png.rs` 里现在位于 `#[cfg(test)] mod tests` 的解码器提到公共位置 ——
+/// 这条限制写在 `tests/golden/macos/MANIFEST.txt` 与账本里，不靠"没人发现"。
+///
+/// **平台无基准时不许静默通过**：打印一行显式声明（"未被判定"而非"通过"），与 `golden.rs` 对
+/// `PlatformTag::Other` 的既有规定一致。
+fn assert_matches_golden(name: &str, image: &Rgb8Image) {
+    if std::env::var("YEBAN_WRITE_GOLDEN").ok().as_deref() == Some("1") {
+        return; // 刚写完基准, 不和自己比
+    }
+    let tag = yeban_ui_test_port::golden::PlatformTag::current();
+    let path = yeban_ui_test_port::golden::golden_path(tag, name)
+        .unwrap_or_else(|err| panic!("Golden 路径拼装失败: {err}"));
+    if !path.exists() {
+        observe(&format!(
+            "[UI-MCP-003] 平台 `{}` 无基准 `{name}` ⇒ 视觉回归**未被判定**（不等于通过）",
+            tag.as_str()
+        ));
+        return;
+    }
+    let want = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("读基准 `{}` 失败: {err}", path.display()));
+    let got = yeban_ui_test_port::png::encode_rgb8(image);
+    assert!(
+        got == want,
+        "[UI-MCP-003] `{name}` 与基准不一致：基准 {} 字节 / 当前 {} 字节（{}）",
+        want.len(),
+        got.len(),
+        path.display()
+    );
+    observe(&format!("[UI-MCP-003] `{name}` 与基准逐字节一致 ✓"));
+}
+
+/// `[UI-MCP-003]` Golden 基准的**再生成开关**。
+///
+/// 只有显式设 `YEBAN_WRITE_GOLDEN=1` 时才写基准 —— 否则"跑一次测试"就会把基准悄悄改成当前实现的样子，
+/// 那是**最隐蔽的一种假绿**（判据永远绿，因为它每次都拿刚渲染的结果当期望值）。
+fn regenerate_golden_if_asked(name: &str, image: &Rgb8Image) {
+    if std::env::var("YEBAN_WRITE_GOLDEN").ok().as_deref() != Some("1") {
+        return;
+    }
+    let tag = yeban_ui_test_port::golden::PlatformTag::current();
+    let path = yeban_ui_test_port::golden::golden_path(tag, name)
+        .unwrap_or_else(|err| panic!("Golden 路径拼装失败: {err}"));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).unwrap_or_else(|err| panic!("建 golden 目录失败: {err}"));
+    }
+    let bytes = yeban_ui_test_port::png::encode_rgb8(image);
+    std::fs::write(&path, bytes).unwrap_or_else(|err| panic!("写 Golden 基准失败: {err}"));
+    observe(&format!("Golden 基准(再生成): {}", path.display()));
 }
 
 /// 两个矩形的交集面积（无交集或退化时为 0）。用于判断"这个候选静态区被动态遮罩盖掉了多少"。
