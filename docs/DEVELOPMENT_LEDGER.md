@@ -5110,3 +5110,26 @@ from the name alone. That is precisely the "looks like it is there" failure this
 **Also worth recording**: with the horizontal half done, the culling core's tick query is now expressible, but a rectangle query
 (which is what `locate_in_envelope_intersecting` takes) needs BOTH axes - so the R-Tree step genuinely waits on the pitch bounds
 rather than merely being tidier with them.
+
+### Round 203: step 2 decision - no new dependency; make the existing query logarithmic instead
+
+The spec names `R-Tree locate_in_envelope_intersecting`, which is `rstar`'s API. Checked before assuming availability: **`rstar` is
+not in `Cargo.lock`** (656 packages, no match), so adopting it is a NEW external dependency with three consequences this project
+gates explicitly: `deny.toml` keeps a strict license allowlist (a new license would have to be added, and `unused-allowed-license`
+is set to `allow`), `MUST-GATE-002`'s vendored offline package would have to carry it, and the license inventory would need
+regenerating. None of that is wrong - but it is a dependency change, and the objective at hand is Phase-4 close-out, not a library
+adoption.
+
+**Decision (mine, under the round-146 delegation): implement the envelope query with no new dependency first.** The viewport
+filters on ONE axis (x/tick), so an x-sorted index plus a binary search gives the same `[log n + k]` behaviour for the query the
+gate actually makes, behind the SAME function contract (`notes_visible_in` / `visible_notes`). That means:
+- zero new crates, so no `deny`/vendor/inventory work and no CI rounds spent on them;
+- the existing criteria become the acceptance test for free, because
+  `notes_visible_in_matches_a_brute_force_window_and_actually_clips` compares the result against brute force **item by item** -
+  swapping a linear scan for an index must not change a single index in the output;
+- the 100 000-note clipping criterion still measures that the window selects a small fraction.
+
+**And the honest limitation, recorded now rather than later**: an x-sorted interval index is NOT an R-Tree and does not give a
+general 2-D envelope query. When the pitch axis becomes a real viewport dimension (round 202's dependency), the 2-D case returns -
+at which point `rstar` becomes the natural choice and this round's decision should be revisited rather than defended. What is
+gained now is that the query stops being linear without paying a dependency for a shape the data does not yet have.
