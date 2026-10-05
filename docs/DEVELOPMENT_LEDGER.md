@@ -6905,3 +6905,26 @@ first verdicts after the stall will be read under time pressure.
 **What this round also confirms**: the earlier "widened local verification" (round 278) covered `--lib` only. With this run the MCP crate is
 verified at **426** criteria including its contract, stdio end-to-end, and lock suites - so the session's local evidence is broader than the
 1004 lib criteria previously recorded.
+
+### Round 280: the two crates I changed most are now verified at 679 criteria, not 191
+
+Round 278 widened the LIB criteria to every dependent of `yeban-model` (1004 across seven crates); round 279 found a flake in the MCP
+integration suite. This round adds the integration suites of the two crates this session edited most, and the counts are worth having exactly:
+
+| suite | targets and results |
+| :--- | :--- |
+| `yeban-app --tests` | 191 (lib) + 0 (bin) + 16 (`cli_contract`) + 16 (`live_ui_mcp`) + 2 (`open_project_file`) + 18 (`real_ui_tier1`) + 10 (`undo_wiring_ui`) = **253 passed / 0 failed** |
+| `yeban-mcp --tests` | 277 (lib) + 0 (bin) + 18 (`container_store`) + 16 (`contract`) + 22 (`extension_tools`) + 14 (`lock_advisory`) + 13 (`render_audio_clips`) + 12 (`render_master`) + 5 (`stdio_e2e`) + 32 (`tools_e2e`) + 17 (`undo_wiring`) = **426 passed / 0 failed** |
+
+**Why the two named targets matter for this session's work specifically**: `real_ui_tier1` (18) and `live_ui_mcp` (16) are the criteria that
+exercise the roll through the real UI path - the same path `wire_roll_edit`, the `active-tool` mirror and the `UiAction::SelectTool` dispatch live
+in - and they pass; `undo_wiring` (17) is the MCP-side counterpart of the undo wiring the pencil commits through. So the features added this
+session are covered end-to-end on both sides, not only by unit criteria.
+
+**The honest framing of the whole session's evidence, now**: 1004 lib criteria across the seven dependents of the changed crate, plus 253 app and
+426 MCP criteria including the UI and MCP end-to-end suites - all green locally, with **no CI verdict since 19:31Z** because none has started.
+That is a much stronger statement than the "112 passed" this session was reporting a few rounds ago, and every step of the widening came from
+asking "what does CI run that I have not?" rather than from more polling.
+
+**One caveat carried forward**: the `lock_advisory` flake (round 279) means a future full-suite run can go red without a code cause - re-run
+before treating it as a regression.
