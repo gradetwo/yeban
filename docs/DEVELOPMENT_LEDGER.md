@@ -4497,3 +4497,35 @@ Completed full-workspace verdicts on main now number **eleven**: `37283699896` @
 callback, forwarding at both instantiation sites, registry entry, host binding) and the regenerated goldens are all done and
 CI-verified. **One item remains**: criterion 4's test - invoke the UI entry point and the MCP tool once each and assert their
 MANIFEST entry lists are equal except for the timestamp and the output path.
+
+### Round 173: D56 is CLOSED - all seven parts done and CI-verified (twelfth completed full-workspace verdict)
+
+Run **`37343557523` @ `c5628c5` = completed success**:
+
+| leg | verdict |
+| :--- | :--- |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` - includes criterion 4's mechanical check |
+| **`rust (workspace 全量)`** | **success `steps=10`** |
+| `windows (yeban-mcp / yeban-model)` | success `steps=9` |
+| `plan` / `lockfile` / `deny` | success |
+
+**D56, the human instruction "UI and MCP must both be able to collect debug information and related files and export them as an
+archive, invoked by hand when a problem needs reproducing", is complete:**
+
+| part | evidence |
+| :--- | :--- |
+| shared collector, no new dependencies | `crates/yeban-diagnostics` (zip, sha2 only - both pre-declared); CI-verified |
+| MCP tool (the sixteenth) | `yeban_export_diagnostics`, schema/contract wiring included; green on Linux **and** Windows |
+| criteria 1/2/3/5 | `tests/bundle_contract.rs`: required entries, per-entry sha256 both directions, redaction scan, tooth test |
+| UI action + surface | `UiAction::ExportDiagnostics`, button `diagnostics-export-action` in `app.slint`, forwarding at both AiRail sites, registry entry, `host.rs` binding |
+| criterion 4 | `scripts/gates/check_diagnostics_single_implementation.py` (with its own tooth test) |
+| visual regression | Linux goldens regenerated through the `goldens` manual gate; workspace leg green |
+
+The feature-alignment matrix row moved from 待接线 to **三方齐全**, and its summary counters with it (系统+MCP(UI 无) 15→14,
+三方齐全 25→26) - the guard validates those numbers, so the promotion is mechanical rather than a claim.
+
+Completed full-workspace verdicts on main now number **twelve**, the twelfth being `37343557523` @ `c5628c5`.
+
+**Remaining in the objective** (nothing blocked, nothing awaiting a ruling): `BASELINE-003`'s real bar - the 100 000-note
+scrolling scene - which needs `yeban-app`'s real view wired into the timing loop already in place (spec at round 136, wiring at
+rounds 145/148/149), and `BASELINE-006`, which the human deferred via HD-47/HD-48.
