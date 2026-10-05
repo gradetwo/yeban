@@ -5189,3 +5189,33 @@ is: settle the verdict口径, then make the draw change behind a criterion (the 
 **What would make step 4 startable**: either (a) a decision on the verdict口径, or (b) a criterion that pins the drawn result
 independently of the renderer - for example the golden-image comparison already in place, which would catch a batch path that draws
 the wrong pixels, plus a frame-time measurement from the same gate.
+
+### Round 206: what step 4 really is - a backend/renderer question, not a missing batch-draw API
+
+Round 205 left an honest caveat ("not proof of absence") because my grep had looked in a directory that does not exist: the
+`slint-1.18.1` crate keeps its sources at the TOP level (`lib.rs`, no `src/`). Re-checked against the real layout, and the picture
+changes:
+
+**Verified API facts** (`slint-1.18.1/lib.rs`):
+- the crate re-exports RENDERERS - `i_slint_renderer_femtovg::FemtoVGOpenGLRenderer as FemtoVGRenderer`, `FemtoVGWGPURenderer`,
+  and the Skia WGPU variants (`SkiaWGPURenderer`, `SkiaWGPU29Renderer`, `SkiaWGPU30Renderer`);
+- it re-exports a `graphics` module (`i_slint_core::graphics`, including `BorrowedOpenGLTextureBuilder` and the wgpu api modules);
+- it does **not** expose a user-supplied batch-rectangle draw callback. The spec's "Slint FemtoVG / Skia / OpenGL 硬件绘制回调"
+  describes the engine's **internal** pipeline, which a program reaches by choosing a renderer and feeding it ordinary elements -
+  not by handing it a drawing closure.
+
+**Second verified fact, and it matters more for the gate**: the repository documents `SLINT_BACKEND` (backends `qt` / `winit` /
+`linuxkms`, with renderer suffixes such as `-software` / `-skia`) in `main.rs` and `lib.rs`, but a search across `*.rs`, `*.yml` and
+`*.sh` finds **no workflow that sets it**. So the fps gate runs with Slint's default choice, and on a headless hosted Linux runner
+that means the **software** rasteriser; a GPU renderer is not merely unconfigured there, it is unavailable.
+
+**Consequence for `BASELINE-003`, stated as a strong inference with its test named rather than as a measured fact**: the recorded
+p99 9.83 ms is very probably a **software-rasterisation** figure. The spec's <= 2 ms budget assumes the GPU path. If so, the gate
+has never measured the path the spec budgets for - which is a口径 gap of the same kind as the static/scrolling one, and it
+**strengthens the case for the human's option (a)** (budget a runner on the reference M2 Max, where Metal/GPU rendering exists):
+the reference machine is not just faster hardware, it is the only place where the spec's rendering path is reachable at all. Settling
+it is cheap: log the chosen backend and renderer in the gate, and read it back with the numbers.
+
+**And one more command-hygiene data point** - the fifth of its kind in this session: my round-205 grep returned nothing because the
+path was wrong, not because the API was absent. `ls` before `grep` on an unfamiliar crate layout would have prevented a caveat I
+then had to retract.
