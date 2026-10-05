@@ -7342,3 +7342,38 @@ recompiling. A cleanup that broke incremental state would have shown up as a lon
 **The rule this yields for this project**: `.o` files, test/example executables, `incremental/` and `examples/` are disposable; `deps/*.rlib`,
 `deps/*.rmeta` and `build/` are the ones worth keeping, because their deletion converts seconds into minutes. The 15 GiB inside `deps` was mostly
 the first category, which is why `du -sh target` alone never showed where the space was.
+
+
+### Round 298: CI RECOVERED - the stall ended and every recent verdict is green, heavy legs included
+
+Measured at 22:46Z: the last 80 CI runs are all `completed` with 0 in progress, i.e. the runner side recovered and drained the backlog it had been
+holding since 19:31Z. Reading the verdicts:
+
+| run | sha | conclusion |
+| :--- | :--- | :--- |
+| 37381952482 | `3a53e5a` (docs: cleanup record) | **success** - heavy legs `skipped` because `plan` saw a docs-only change |
+| 37370540703 | `9e29d45` (**the yeban-midi split**) | **success** - and this one MATTERS |
+| the 23 runs before it | `5ff1554` … `b06cf40` | **all success** |
+
+**The empty-green check, which is why the split's run was read separately**: the tip run's `rust`/`windows` legs are `skipped` with `steps=0`, which is
+the "empty green" pattern this session recorded - except here it is CORRECT, because `plan` determined the commit touched documentation only. The
+discipline is to read a run that touched CODE, so `9e29d45` was opened and its legs are:
+
+| leg | result |
+| :--- | :--- |
+| `lockfile` | success, 6 steps |
+| `checks` (fmt / 红线守卫 / schema) | success, 12 steps |
+| `deny` (cargo-deny) | success, 6 steps |
+| `plan` | success, 5 steps |
+| **`rust (workspace 全量)`** | **success, 10 steps** |
+| **`windows` (yeban-mcp / yeban-model 平台分支)** | **success, 9 steps** |
+| `rust (matrix)` | skipped, 0 - superseded by the workspace leg by design |
+
+**What this changes for the session's claims**: the caveat that "everything since verdict 31 is locally verified only" is now **lifted for the
+commits that have verdicts** - the `yeban-midi` split (midi.rs + vlq.rs moved, render re-exporting, licence inventory regenerated) is verified **on
+both platforms**, and the MCP dependency on it is verified with it. The five reverted mapping attempts never landed, so they carry no verdict to
+read - which is the correct state for work that was never committed.
+
+**What remains locally-only**: nothing currently in the tree - `git status` is clean and every commit in the last 25 runs is green. The session's
+earlier locally-verified-only window (19:31Z - 20:21Z, rounds 241-291) is closed by these verdicts arriving afterwards, since the runs were queued
+rather than cancelled.
