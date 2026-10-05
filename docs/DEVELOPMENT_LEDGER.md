@@ -4977,3 +4977,23 @@ convert into an official reading when a suitable runner is available (`HD-38` re
 **One more honest caveat, already in the runbook**: the case times `request_redraw() + capture()`, i.e. rasterize AND read the frame
 back, so it is conservative - it can only overstate frame time. A 1.18x overage on a conservative measure is therefore not evidence
 that the real display path misses 120 FPS, nor that it meets it.
+
+### Round 198: my decision on BASELINE-003's verdict口径 - keep PENDING, and I decline to relax the rule myself
+
+The three readings are in (round 197), the criterion and the gate work, and what remains is only *who* is allowed to pronounce the
+verdict. Under the round-146 delegation I considered taking that decision myself and **decided not to**, for reasons that are about
+the rules rather than about convenience:
+
+- **Option "judge from the hosted readings" is refused.** It would require relaxing `spikes/README.md` line 36 plus `HD-45`, and the
+  standing instruction allows changing a rule only when the benefit far exceeds the cost. Here the cost is that the gate's verdict
+  becomes **less valid** (hosted hardware is explicitly not the reference environment), and the benefit is... a verdict that would
+  be **negative anyway**: p99 9.831 ms against an 8.3 ms bar. So there is no easy pass to gain, and the change would trade
+  validity for nothing. Benefit < cost ⇒ refuse.
+- **Option "budget a self-hosted runner" is not mine to take**: it spends money, and `HD-38` already recorded that as unbudgeted.
+- So the honest state is **PENDING**, with the reason sharpened to name the decision rather than the work.
+
+**One substantive argument in favour of getting the reference-machine reading** rather than writing the gate off: the reference
+machine is a MacBook Pro M2 Max, while these numbers come from a shared hosted Ubuntu runner. A 1.18x overage on slower shared
+hardware, measured **conservatively** (the case includes `capture()` readback cost that a real display path need not pay per
+frame), is a plausible near-miss rather than a definite failure. That is a hypothesis about hardware, not a claim: only the
+reference-machine run under `HD-45` can settle it, and round 195 documents exactly how.
