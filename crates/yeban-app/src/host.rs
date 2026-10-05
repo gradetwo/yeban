@@ -44,10 +44,10 @@ use std::rc::Rc;
 
 use slint::{ModelRc, SharedString, VecModel};
 use yeban_engine::transport::TransportReading;
-use yeban_model::PPQ;
 
 use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, ViewState};
 use crate::engine_host::EngineHost;
+use crate::input::{Focus, InputContext};
 use crate::meters::{MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
 use crate::ui::MainWindow;
@@ -105,6 +105,15 @@ fn to_color(color: RgbColor) -> slint::Color {
 pub fn apply_view(ui: &MainWindow, view: &ViewState) {
     ui.set_window_title(view.title.clone().into());
     ui.set_bpm_display(view.bpm_display.clone().into());
+    // 时间码的拍号网格：**唯一**的注入点（本函数）。`None`（模型层拒绝该拍号）
+    // 一律写 0，`apply_transport` 见到 0 就如实退回 tick 文本 —— 见 `timecode_grid_of`。
+    let grid = view.timecode_grid();
+    ui.set_timecode_ticks_beat(
+        grid.map_or(0, |grid| i32::try_from(grid.ticks_per_beat()).unwrap_or(0)),
+    );
+    ui.set_timecode_ticks_bar(
+        grid.map_or(0, |grid| i32::try_from(grid.ticks_per_bar()).unwrap_or(0)),
+    );
     ui.set_track_names(strings(&view.track_names()));
     ui.set_track_volumes(strings(&view.track_volumes()));
     ui.set_track_volume_fractions(lengths(&view.track_volume_fractions()));
@@ -198,25 +207,6 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     ui.set_master_meter_level(snapshot.master_level());
 }
 
-/// 一拍里的 tick 数（[MODEL-AST-001] 的 960 PPQ）。
-///
-/// 时间码的**拍号**假定 4/4：`TimeSignature` 已经在模型里，但它**没有**被投影进
-/// `ViewState`（登记为 needs）—— 在拿到它之前按 4/4 格式化，而不是编一个"已支持拍号"的假象。
-const BEATS_PER_BAR: u64 = 4;
-
-/// tick → 时间码文本（`BBB.BB.TTT`：小节.拍.拍内 tick，全部 **1 起 / 0 起**按 `SESSION_TIMECODE` 口径）。
-///
-/// 纯函数、只做整数除法 —— 因此"显示的时间码来自引擎读数"这件事可以被机械断言：
-/// 输入是 `TransportReading::position_ticks`，输出是界面上的字符串。
-#[must_use]
-pub fn timecode_for_ticks(ticks: u64) -> String {
-    let ticks_per_bar = PPQ * BEATS_PER_BAR;
-    let bar = ticks / ticks_per_bar + 1;
-    let beat = (ticks % ticks_per_bar) / PPQ + 1;
-    let in_beat = ticks % PPQ;
-    format!("{bar:03}.{beat:02}.{in_beat:03}")
-}
-
 /// 把**引擎的**走带读数注入界面（`playing` 显示态 + 时间码）。
 ///
 /// 这是全仓库**唯一**写 `playing` 的地方 —— 界面的 `toggle-play` 处理器**不再自己翻转**
@@ -227,10 +217,41 @@ pub fn timecode_for_ticks(ticks: u64) -> String {
 /// TransportMirror(原子读数) --(host::apply_transport)--> MainWindow.playing / .timecode
 /// ```
 ///
-/// `timecode` 用的是引擎读数（[`TransportReading::position_ticks`]），不是界面自己算的。
+/// `timecode` 用的是引擎读数（[`TransportReading::position_ticks`]）**配上投影的拍号网格**：
+/// 位置来自引擎，单拍 / 单小节的 tick 数来自工程投影（[`ViewState::timecode_grid`]，
+/// 由 [`apply_view`] 钉在窗口上）。界面侧没有任何拍号算术，也没有 4/4 的默认假设。
+///
+/// ## 写死的拍号是怎么被删掉的（本线的核心修复）
+///
+/// 上一版这里调用 `timecode_for_ticks(ticks)`，而它的拍号是从
+/// `const BEATS_PER_BAR: u64 = 4;` 来的 —— 那行常量的注释写着"`TimeSignature` **没有**被
+/// 投影进 `ViewState`（登记为 needs）"，**与事实相反**：`ViewState` 早就带着
+/// `time_signature_numerator/denominator`（`bridge.rs`）与 `bar_length_ticks`。
+/// 结果是 3/4、6/8 工程的时间码**静默算错**。现在的链路：
+///
+/// ```text
+/// YebanProjectV1 --(bridge::ViewState)--> numerator/denominator --(apply_view)-->
+/// MainWindow.timecode-ticks-{beat,bar} --(apply_transport)--> bridge::timecode_for_ticks
+/// ```
+///
+/// 唯一的换算实现在 [`crate::bridge::timecode_for_ticks`]（投影层、零 Slint），
+/// 本文件只做"把投影算好的两个整数读出来、把算好的字符串写回去"。
 pub fn apply_transport(ui: &MainWindow, reading: TransportReading) {
     ui.set_playing(reading.state.is_running());
-    ui.set_timecode(timecode_for_ticks(reading.position_ticks).into());
+    let grid = timecode_grid_of(ui);
+    ui.set_timecode(crate::bridge::timecode_for_ticks(grid, reading.position_ticks).into());
+}
+
+/// 从窗口上**投影注入的**两个整数重建时间码网格（唯一读点）。
+///
+/// 两个 `0`（= 模型层拒绝该拍号 ⇒ [`apply_view`] 写的就是 0）以及任何畸形组合
+/// 都会退化成 `None`，于是 [`crate::bridge::timecode_for_ticks`] 如实写 `tick N` ——
+/// 不会退回写死的 4/4。
+fn timecode_grid_of(ui: &MainWindow) -> Option<crate::bridge::TimecodeGrid> {
+    crate::bridge::TimecodeGrid::from_injected(
+        ui.get_timecode_ticks_beat(),
+        ui.get_timecode_ticks_bar(),
+    )
 }
 
 /// 把 `MainWindow` 的**走带回调**接到引擎（[`crate::engine_host::EngineHost`]）。
@@ -281,6 +302,55 @@ pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
         } else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
         }
+    });
+}
+
+/// 把界面的**输入法事件源**接到 `[UI-A11Y-002]` 的状态机上（§7.2）。
+///
+/// ## 接的是什么（上游核验，不是猜的）
+///
+/// | 环节 | 事实 | 出处 |
+/// | :--- | :--- | :--- |
+/// | 平台 → Slint | winit 的 `Ime::Preedit` 变成 `KeyEventType::UpdateComposition` | `i-slint-backend-winit-1.18.1/winitwindowadapter.rs:1429` |
+/// | Slint → `.slint` | `TextInput.preedit-text` 被写成候选词 | `i-slint-compiler-1.18.1/builtin_elements.rs:2323`（`out property <string> preedit-text`） |
+/// | `.slint` → 宿主 | `changed preedit-text` / `changed has-focus` 调本函数的两个回调 | `ui/transport.slint` 的 `bpm-input` |
+/// | 宿主 → 状态机 | [`InputContext::begin_composition`] / [`InputContext::end_composition`] / [`InputContext::set_focus`] | 本函数 |
+///
+/// **不新造状态机**：合成态的唯一载体是 [`InputContext`]（`src/input.rs`，纯 Rust、
+/// 22 条判据），本函数只把事件翻成它的三个既有入口。
+///
+/// ## 为什么"焦点"也要接
+///
+/// `is_composing` 只有在**文本域聚焦**时才有意义：焦点离开时输入法会把候选词上屏 /
+/// 取消，`preedit-text` 被清空 —— 但"清空事件"本身可能因为窗口失活而**永远不来**
+/// （`i-slint-core` 的 `FocusOut` 直接 `preedit_text.set(Default::default())`，
+/// 而那一刻我们的回调确实会跑；可"平台根本没通知"的情况仍然存在）。
+/// `InputContext::set_focus` 自带"离开文本域 ⇒ 合成态清零"这条既有语义
+/// （`src/input.rs` 的 `leaving_the_text_field_ends_composition`），因此焦点事件是
+/// 合成态的**兜底清零**：不然一次丢事件就会把后续所有单键热键永久吞掉。
+pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
+    // 合成：preedit 有内容 ⇒ 开始合成；preedit 清空（上屏 / 取消）⇒ 结束合成。
+    let composing = Rc::clone(&context);
+    ui.on_ime_composition_changed(move |composing_now| {
+        let mut context = composing.borrow_mut();
+        if composing_now {
+            context.begin_composition();
+        } else {
+            context.end_composition();
+        }
+    });
+    // 焦点：文本域 ⇄ 画布。`set_focus` 会在离开文本域时顺手结束合成态。
+    let focused = context;
+    ui.on_ime_focus_changed(move |focused_now| {
+        let mut context = focused.borrow_mut();
+        context.set_focus(if focused_now {
+            Focus::TextInput
+        } else {
+            // 本装配里只有 BPM 一个敲入控件，因此"失焦"的落点就是画布
+            // （`InputContext::new()` 的启动态）。将来有第二个敲入控件时，
+            // 这里必须改成"问焦点系统当前焦点是谁"，而不是假定画布。
+            Focus::MainCanvas
+        });
     });
 }
 

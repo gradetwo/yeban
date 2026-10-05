@@ -790,12 +790,24 @@ impl LiveUi {
     ///
     /// 用途有两个，都不新造状态：
     /// 1. **生产驱动点**：Slint 平台的 IME 事件（`is_composing` 变化 / 焦点变化）
-    ///    调 `begin_composition` / `end_composition` / `set_focus`；
-    /// 2. **判据的驱动点**：判据要用"真的"状态机把合成态打开/关掉，再看
-    ///    `ui/property` 的 `isComposing` 有没有跟着变（`tests/live_ui_mcp.rs`）。
+    ///    调 `begin_composition` / `end_composition` / `set_focus`
+    ///    —— 本线已由 [`crate::host::wire_input`] 在装配时接好（`.slint` 的
+    ///    `TextInput` 事件源 → 回调 → 这个对象），因此生产路径不再需要外部驱动；
+    /// 2. **判据的驱动点**：需要直接读/写这一个对象时用（`tests/live_ui_mcp.rs`）。
     #[must_use]
     pub fn input_context(&self) -> Rc<RefCell<InputContext>> {
         Rc::clone(&self.surface.input)
+    }
+
+    /// 活窗口句柄（共享，不是复制：`LiveAdminSurface.window` 是 `clone_strong` 的同一份）。
+    ///
+    /// 判据用它**在真正的 Slint 事件源上注入**：调用 `.slint` 声明的回调
+    /// （`invoke_ime_composition_changed` / `invoke_ime_focus_changed`），
+    /// 而不是绕过事件源去写 [`Self::input_context`] 那个对象 —— 否则
+    /// "回调 → 状态机"这一段接线就没有被判据覆盖（本线补的正是这一段）。
+    #[must_use]
+    pub fn ui(&self) -> &MainWindow {
+        &self.surface.window
     }
 }
 
@@ -902,6 +914,14 @@ pub fn build_live_ui_with(
     // `F = fn(..)` 属于**强制转换点**，写出来比让读者猜推断结果更清楚。
     let capture: fn(&LivePort<MainWindow>) -> Result<Rgb8Image, PortError> = capture_tier1;
     let surface: LiveSurface = PortAdapter::new(port, "tier1-live-port", capture);
+    // `[UI-A11Y-002]` 的启动态：画布聚焦、非合成（与 `InputContext::new()` 一致）。
+    let input = Rc::new(RefCell::new(InputContext::new()));
+    // **事件源接线（本线补的那一半）**：`.slint` 的 `TextInput.preedit-text` /
+    // `has-focus` 变化 → `MainWindow.ime-composition-changed` / `ime-focus-changed`
+    // → `host::wire_input` → 上面那**同一个** `InputContext`。
+    // 与 `input_context()` / `ui/property {"name":"isComposing"}` 共享同一个 `Rc`，
+    // 因此"界面上的合成态"与"界面看到的合成态"不可能各说各话（不新造状态机）。
+    host::wire_input(&window, Rc::clone(&input));
     let admin = LiveAdminSurface {
         inner: surface,
         window,
@@ -914,8 +934,7 @@ pub fn build_live_ui_with(
         engine_quanta: options.engine_quanta,
         save_epoch: 0,
         report: None,
-        // `[UI-A11Y-002]` 的启动态：画布聚焦、非合成（与 `InputContext::new()` 一致）。
-        input: Rc::new(RefCell::new(InputContext::new())),
+        input,
     };
     Ok(LiveUi {
         reference,

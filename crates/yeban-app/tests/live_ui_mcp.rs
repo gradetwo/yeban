@@ -1237,6 +1237,113 @@ fn ime_composition_is_observable_on_the_live_window() {
     );
 }
 
+/// 判据 14b（`[UI-A11Y-002]` §7.2，**本线新增的那一半**）：合成态的**事件源**。
+///
+/// 判据 14 证明的是"状态机可观测"，它直接写 `input_context()` 那个对象 ——
+/// 也就是说 `.slint` 一侧到底有没有事件源，它**证明不了**（这正是上一版 `transport.slint`
+/// 只写着"先用 role=text-input 占位"时留下的缺口）。
+///
+/// 本判据从**事件源那一侧**驱动：`ui/transport.slint` 的 `bpm-input`
+/// （真 `TextInput`）在 `changed preedit-text` / `changed has-focus` 里调用的两个回调，
+/// 由 `host::wire_input` 接到**同一个** `InputContext`。链路因此是：
+///
+/// ```text
+/// Slint TextInput.preedit-text --changed--> MainWindow.ime-composition-changed
+///   --host::wire_input--> InputContext --ui/property--> isComposing
+/// ```
+///
+/// ⚠ **诚实边界**：上游有信号（`preedit-text`，出处见 `ui/transport.slint` 的注释），
+/// 但 Slint 1.18.1 **没有公开的 preedit 注入面**（`WindowEvent` 没有合成变体、
+/// `InternalKeyEvent`/`KeyEventType` 未被再导出、`process_key_input` 是 `pub(crate)`），
+/// 因此判据只能驱动到 `.slint` 回调这一格。原因与取舍写在
+/// `docs/ledger/app-projection-notes.md` 的 needs 里，本判据的 `report_line` 也会打印它。
+#[test]
+fn ime_composition_flows_from_the_slint_event_source_into_the_control_plane() {
+    let project = demo_project();
+    let ui = build_live_ui(&project, Permission::Interactive).expect("装配");
+    // 先取窗口强引用（`clone_strong` 是共享而不是复制），再交出控制面 ——
+    // 事件源驱动点必须与观测点指向**同一个活窗口**。
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let mut plane = ui.into_control_plane(Permission::Interactive);
+
+    let read = |plane: &mut LiveControlPlane| {
+        let call = plane.plane().try_line(
+            r#"{"jsonrpc":"2.0","id":83,"method":"ui/property","params":{"elementId":"transport-bpm-field","name":"isComposing"}}"#,
+        );
+        assert!(!call.is_error(), "读 IME 位必须成功: {call:?}");
+        call.result.expect("有 result")
+    };
+    let press_space = |plane: &mut LiveControlPlane| {
+        let call = plane.plane().try_line(
+            r#"{"jsonrpc":"2.0","id":84,"method":"ui/dispatch_key_press","params":{"keyCode":"Space","dryRun":true}}"#,
+        );
+        assert!(!call.is_error(), "dryRun 必须成功: {call:?}");
+        call.result.expect("有 result")["preview"]["effect"]["resolution"].clone()
+    };
+
+    // ① 起点：画布焦点、非合成。
+    let idle = read(&mut plane);
+    assert_eq!(idle["value"], false);
+    assert_eq!(idle["focus"], "main-canvas");
+    assert_eq!(press_space(&mut plane), "action");
+
+    // ② 焦点进入敲入控件（`bpm-input` 的 `changed has-focus`）⇒ 焦点分类跟着变。
+    window.invoke_ime_focus_changed(true);
+    let focused = read(&mut plane);
+    assert_eq!(
+        focused["focus"], "text-input",
+        "Slint 的焦点事件必须真的进状态机（不是影子变量）"
+    );
+
+    // ③ 合成开始（`changed preedit-text`：候选词非空）⇒ 位变 true。
+    window.invoke_ime_composition_changed(true);
+    let composing = read(&mut plane);
+    assert_eq!(composing["value"], true, "合成态必须由**事件源**点亮");
+    assert_ne!(composing["value"], idle["value"], "两态必须可区分");
+
+    // ④ **行为断言**：合成中的 Space 被输入法吞掉（§7.2 MUST），不是"元素存在"。
+    assert_eq!(
+        press_space(&mut plane),
+        "consumed-by-ime",
+        "合成态下裸快捷键必须被吞掉"
+    );
+
+    // ⑤ 上屏 / 取消（preedit 清空）⇒ 位回落。
+    window.invoke_ime_composition_changed(false);
+    let ended = read(&mut plane);
+    assert_eq!(ended["value"], false, "合成结束必须回落");
+    assert_eq!(ended["value"], idle["value"]);
+    // 焦点**仍在**敲入控件 ⇒ 裸快捷键交给文本控件（`input.rs` 的既有语义：
+    // 文本域里连非合成态的裸快捷键都不冒泡成 DAW 动作）—— 这不是"吞键"，是"打字"。
+    assert_eq!(
+        press_space(&mut plane),
+        "pass-through",
+        "焦点在敲入控件时 Space 必须交给文本控件（不是 DAW 动作）"
+    );
+
+    // ⑥ 失焦 ⇒ 焦点回画布、裸快捷键恢复；**合成中失焦**也必须清零（既有语义的兜底）。
+    window.invoke_ime_focus_changed(false);
+    let canvas = read(&mut plane);
+    assert_eq!(canvas["focus"], "main-canvas");
+    assert_eq!(canvas["value"], false);
+    assert_eq!(
+        press_space(&mut plane),
+        "action",
+        "焦点回到画布 ⇒ Space 必须恢复成走带动作（否则守卫会永久吞键）"
+    );
+    window.invoke_ime_composition_changed(true);
+    assert_eq!(read(&mut plane)["value"], true);
+    window.invoke_ime_focus_changed(false);
+    let blurred = read(&mut plane);
+    assert_eq!(blurred["focus"], "main-canvas");
+    assert_eq!(blurred["value"], false, "合成中失焦必须结束合成态");
+    report_line(
+        "[ui-mcp-dryrun-ime] Slint 事件源 → InputContext → isComposing: \
+         false→true→false 全部对得上; 合成中 Space=consumed-by-ime, 文本域聚焦时 Space=pass-through, \
+         焦点回画布后 Space=action; SKIP: 平台级 preedit 注入在 Slint 1.18.1 无公开入口（见 ledger needs）",
+    );
+}
+
 /// 判据 15（D48）：`dryRun` 对"注定失败的真调用"**如实报错** —— 与真调用同码、同话、同 data。
 ///
 /// 未配置保存路径（`LiveWiringOptions::save_path = None`）时 `ui/force_save` 会报

@@ -313,6 +313,105 @@ pub fn bar_length_ticks(time_signature: TimeSignature) -> Result<u64, BridgeErro
         .ok_or(BridgeError::BarLengthOverflow)
 }
 
+/// 时间码的**格式化网格**（拍号 → 每拍 / 每小节的 tick 数）。
+///
+/// `[MODEL-ISO-001]` 把走带位置划给**会话运行态**（`SessionRuntimeState`），
+/// 因此 `tick → 小节.拍.tick` 是"会话读数 × 工程拍号"的乘积：位置来自引擎，
+/// 拍号来自工程，**换算只有这一处**（本模块零 Slint ⇒ 判据能在本机真跑）。
+///
+/// 拍号 → 每小节 tick 的算术**不再重写一遍**：直接调用模型层的唯一权威
+/// [`yeban_model::SessionRuntimeState::ticks_per_bar`]（`[MODEL-AST-001]`）。
+/// 模型拒绝的拍号（分子/分母为 0，或分母不整除全音符）在这里同样是 `None` ——
+/// 于是"引擎给了 tick、但没有合法的拍号网格"这种情况会**如实**退回 tick 文本
+/// （[`timecode_for_ticks`]），而不是按 4/4 编一个看起来正常的假读数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimecodeGrid {
+    /// 一拍（一个分母音符）的 tick 数。
+    ticks_per_beat: u64,
+    /// 一小节的 tick 数（`ticks_per_beat × 分子`，**精确**，见 [`Self::from_time_signature`]）。
+    ticks_per_bar: u64,
+}
+
+impl TimecodeGrid {
+    /// 从拍号（分子 / 分母）推出网格；模型层拒绝该拍号时返回 `None`。
+    ///
+    /// `SessionRuntimeState::ticks_per_bar` 已经校验过 `(4 × PPQ) % 分母 == 0`，
+    /// 因此 `ticks_per_bar / 分子` **整除**（一拍就是一个分母音符）：不取整、
+    /// 不做浮点，拍与拍之间等宽。
+    #[must_use]
+    pub fn from_time_signature(numerator: u8, denominator: u8) -> Option<Self> {
+        let ticks_per_bar =
+            yeban_model::SessionRuntimeState::ticks_per_bar(numerator, denominator)?;
+        // `numerator != 0` 由上面的 `Some` 保证（模型对 0 分子返回 `None`）。
+        let ticks_per_beat = ticks_per_bar.checked_div(u64::from(numerator))?;
+        if ticks_per_beat == 0 {
+            return None;
+        }
+        Some(Self {
+            ticks_per_beat,
+            ticks_per_bar,
+        })
+    }
+
+    /// 从**已经投影出来的两个整数**重建网格。
+    ///
+    /// 存在的理由：注入面（Slint 的 `int` 属性）只搬整数，而唯一的格式化实现要的是
+    /// [`Self`]。畸形输入（0 / 负数 / 一拍比一小节还长）一律 `None` ⇒ 退回 tick 文本，
+    /// 不 panic、不 wrap（`[ARCH-UI-002]`：UI 侧不做算术，只搬运投影算好的数）。
+    #[must_use]
+    pub fn from_injected(ticks_per_beat: i32, ticks_per_bar: i32) -> Option<Self> {
+        let ticks_per_beat = u64::try_from(ticks_per_beat).ok()?;
+        let ticks_per_bar = u64::try_from(ticks_per_bar).ok()?;
+        if ticks_per_beat == 0 || ticks_per_bar < ticks_per_beat {
+            return None;
+        }
+        Some(Self {
+            ticks_per_beat,
+            ticks_per_bar,
+        })
+    }
+
+    /// 一拍的 tick 数。
+    #[must_use]
+    pub const fn ticks_per_beat(self) -> u64 {
+        self.ticks_per_beat
+    }
+
+    /// 一小节的 tick 数。
+    #[must_use]
+    pub const fn ticks_per_bar(self) -> u64 {
+        self.ticks_per_bar
+    }
+
+    /// tick → 时间码文本（`BBB.BB.TTT`：小节.**拍**.拍内 tick，全部 1 起 / 0 起，
+    /// 与 `SESSION_TIMECODE` 的口径一致）。
+    ///
+    /// 纯整数除法（`[MODEL-AST-001]`）：`ticks_per_beat != 0` 与
+    /// `ticks_per_bar >= ticks_per_beat` 由两个构造器保证，因此这里不可能除零，
+    /// 也不需要 `Result`。
+    #[must_use]
+    pub fn timecode_at(self, ticks: u64) -> String {
+        let bar = ticks / self.ticks_per_bar + 1;
+        let in_bar = ticks % self.ticks_per_bar;
+        let beat = in_bar / self.ticks_per_beat + 1;
+        let in_beat = in_bar % self.ticks_per_beat;
+        format!("{bar:03}.{beat:02}.{in_beat:03}")
+    }
+}
+
+/// `[MODEL-AST-001]` tick → 时间码文本的**唯一实现**（网格来自投影，见 [`TimecodeGrid`]）。
+///
+/// `grid` 为 `None`（= 模型层拒绝这个拍号）时**如实**退回 tick 文本：宁可显示
+/// `tick 8000`，也不按写死的 4/4 编一个"看起来对"的小节读数 —— 那正是本线修掉的
+/// 缺陷（上一版 `src/host.rs` 把 `4` 刻在常量 `BEATS_PER_BAR` 里）。
+#[must_use]
+pub fn timecode_for_ticks(grid: Option<TimecodeGrid>, ticks: u64) -> String {
+    match grid {
+        Some(grid) => grid.timecode_at(ticks),
+        None => format!("tick {ticks}"),
+    }
+}
+
 /// 视图里的一个轨道（**不是**模型实体 —— 它是投影结果，可以带界面派生字段）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackView {
@@ -705,6 +804,26 @@ impl ViewState {
     #[must_use]
     pub fn empty() -> Self {
         Self::from_project(&YebanProjectV1::default()).expect("空工程必须能投影")
+    }
+
+    /// 走带时间码的格式化网格（由**工程拍号**推出的 `[TimecodeGrid]`）。
+    ///
+    /// 这是"tick → `小节.拍.tick`"的唯一语义入口：引擎给位置，工程给拍号，
+    /// 换算在 [`TimecodeGrid`] 里。若模型层拒绝这个拍号 ⇒ `None`
+    /// （[`timecode_for_ticks`] 会如实退回 tick 文本，不按 4/4 编造读数）。
+    #[must_use]
+    pub fn timecode_grid(&self) -> Option<TimecodeGrid> {
+        TimecodeGrid::from_time_signature(
+            self.time_signature_numerator,
+            self.time_signature_denominator,
+        )
+    }
+
+    /// 走带位置（tick）在这份投影下的时间码读数 —— 判据与宿主共用同一个入口，
+    /// 因此"界面上显示的读数"与"投影算出的读数"不可能各说各话。
+    #[must_use]
+    pub fn timecode_at(&self, ticks: u64) -> String {
+        timecode_for_ticks(self.timecode_grid(), ticks)
     }
 
     /// 非主总线轨道的名称（`[UI-GRID-001]` 轨道包头列的文本源）。
@@ -1742,6 +1861,134 @@ mod tests {
     /// 把 `[&str; N]` 常量提升成可与 `Vec<String>` 比较的形态。
     fn owned(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// 判据 1b（`[MODEL-AST-001]`）：时间码的**唯一实现**在多种拍号下的读数。
+    ///
+    /// 期望值是**手算表**（不是拿实现算一遍再和实现比）：一拍 = 一个分母音符
+    /// （`4 × 960 ÷ 分母`），一小节 = 分子 × 一拍。三种拍号 + 三个位置覆盖
+    /// "小节进位 / 拍进位 / 拍内 tick"三件不同的事。
+    #[test]
+    fn timecode_is_formatted_from_the_time_signature_not_from_four_four() {
+        let cases: &[(u8, u8, u64, &str)] = &[
+            // 4/4：一拍 960，一小节 3840
+            (4, 4, 0, "001.01.000"),
+            (4, 4, 960, "001.02.000"),
+            (4, 4, 3_840, "002.01.000"),
+            (4, 4, 8_000, "003.01.320"),
+            // 3/4：一拍 960，一小节 2880（同一 tick 的读数与 4/4 **不同**）
+            (3, 4, 960, "001.02.000"),
+            (3, 4, 3_840, "002.02.000"),
+            (3, 4, 8_000, "003.03.320"),
+            // 6/8：一拍 480（八分音符），一小节 2880
+            (6, 8, 960, "001.03.000"),
+            (6, 8, 3_840, "002.03.000"),
+            (6, 8, 8_000, "003.05.320"),
+            // 7/8：一拍 480，一小节 3360
+            (7, 8, 3_359, "001.07.479"),
+            (7, 8, 3_360, "002.01.000"),
+        ];
+        for &(numerator, denominator, ticks, expected) in cases {
+            let grid = TimecodeGrid::from_time_signature(numerator, denominator)
+                .unwrap_or_else(|| panic!("{numerator}/{denominator} 必须能推出网格"));
+            assert_eq!(
+                grid.timecode_at(ticks),
+                expected,
+                "{numerator}/{denominator} 的 tick {ticks}"
+            );
+            assert_eq!(
+                timecode_for_ticks(Some(grid), ticks),
+                expected,
+                "唯一实现与网格的读数必须一致"
+            );
+        }
+
+        // 网格的两个整数与模型层的权威算术逐项相等（不重写模型算术的直接证据）。
+        for (numerator, denominator) in [(4, 4), (3, 4), (6, 8), (7, 8), (5, 16), (2, 2)] {
+            let grid = TimecodeGrid::from_time_signature(numerator, denominator).expect("网格");
+            let model_bar = yeban_model::SessionRuntimeState::ticks_per_bar(numerator, denominator)
+                .expect("模型必须也接受这个拍号");
+            assert_eq!(grid.ticks_per_bar(), model_bar);
+            assert_eq!(grid.ticks_per_beat() * u64::from(numerator), model_bar);
+        }
+    }
+
+    /// 判据 1c：**同一个 tick 位置在两种拍号下的读数必须不同**（两个方向）——
+    /// 这是"时间码真的读了拍号"的最小可判别形式。
+    #[test]
+    fn the_reading_at_one_tick_depends_on_the_time_signature_in_both_directions() {
+        let four_four = TimecodeGrid::from_time_signature(4, 4).expect("4/4");
+        let three_four = TimecodeGrid::from_time_signature(3, 4).expect("3/4");
+        let tick = 3_840_u64;
+        assert_eq!(four_four.timecode_at(tick), "002.01.000");
+        assert_eq!(three_four.timecode_at(tick), "002.02.000");
+        assert_ne!(four_four.timecode_at(tick), three_four.timecode_at(tick));
+        // 反向：把两个网格对调，差异必须仍然成立（不是单向的巧合）。
+        assert_ne!(three_four.timecode_at(tick), four_four.timecode_at(tick));
+    }
+
+    /// 判据 1d：**投影的读数**（`ViewState::timecode_at`）与工程拍号一致，
+    /// 且模型层拒绝的拍号**如实**退回 tick 文本，不谎报 4/4。
+    #[test]
+    fn the_projection_reading_follows_the_project_time_signature_and_degrades_honestly() {
+        for (numerator, denominator, ticks, expected) in [
+            (4_u8, 4_u8, 8_000_u64, "003.01.320"),
+            (3, 4, 8_000, "003.03.320"),
+            (6, 8, 8_000, "003.05.320"),
+        ] {
+            let mut project = filled_project();
+            project.time_signature = TimeSignature {
+                numerator,
+                denominator,
+            };
+            let view = ViewState::from_project(&project).expect("投影");
+            assert_eq!(view.timecode_at(ticks), expected);
+        }
+
+        // 退化拍号（分母不能整除全音符 ⇒ 模型层 `ticks_per_bar` 拒绝）：
+        // `ViewState` 仍然能投影（`bar_length_ticks` 只拒绝 0 分母），
+        // 但时间码**退回 tick 文本** —— 不按写死的 4/4 编一个假的小节读数。
+        let mut degenerate = filled_project();
+        degenerate.time_signature = TimeSignature {
+            numerator: 4,
+            denominator: 7,
+        };
+        let view = ViewState::from_project(&degenerate).expect("退化拍号仍能投影");
+        assert_eq!(view.timecode_grid(), None, "模型拒绝的拍号必须如实报 None");
+        assert_eq!(view.timecode_at(8_000), "tick 8000");
+        assert_eq!(timecode_for_ticks(None, 8_000), "tick 8000");
+        // 反向对照：4/4 下**不是**这个文本（否则上面的断言可能因为恒等而空过）。
+        assert_ne!(
+            timecode_for_ticks(TimecodeGrid::from_time_signature(4, 4), 8_000),
+            "tick 8000"
+        );
+    }
+
+    /// 判据 1e：注入面（两个 `int`）的往返 —— 投影 → 窗口 → 重建 → 同一个读数。
+    ///
+    /// `from_injected` 是 `host::apply_transport` 唯一的重建入口，因此它的
+    /// 边界（0 / 负数 / 一拍比一小节还长）必须**退化成 `None`**（⇒ tick 文本），
+    /// 而不是 panic 或 wrap。
+    #[test]
+    fn the_injected_grid_round_trips_and_degenerates_safely() {
+        let grid = TimecodeGrid::from_time_signature(3, 4).expect("3/4");
+        let rebuilt = TimecodeGrid::from_injected(
+            i32::try_from(grid.ticks_per_beat()).expect("i32"),
+            i32::try_from(grid.ticks_per_bar()).expect("i32"),
+        )
+        .expect("往返必须成功");
+        assert_eq!(rebuilt, grid);
+        assert_eq!(rebuilt.timecode_at(3_840), "002.02.000");
+
+        // 0（= 没有网格 / 模型拒绝该拍号）与畸形值一律退化。
+        assert_eq!(TimecodeGrid::from_injected(0, 0), None);
+        assert_eq!(TimecodeGrid::from_injected(960, 0), None);
+        assert_eq!(TimecodeGrid::from_injected(-960, 3_840), None);
+        assert_eq!(
+            TimecodeGrid::from_injected(4_800, 3_840),
+            None,
+            "一拍不能比一小节还长"
+        );
     }
 
     /// 判据 1: **同一工程两次投影逐字节相同**（`ARCH-DET-001` 的界面侧版本）。
