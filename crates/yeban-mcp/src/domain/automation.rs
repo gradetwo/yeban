@@ -257,7 +257,8 @@ impl AutomationEdit {
 
         Ok(serde_json::json!({
             "trackId": self.track_id.to_canonical_string(),
-            "target": serde_json::to_value(&self.target).unwrap_or(Value::Null),
+            // `AutomationTarget` 是 `Copy` ⇒ 按值传（clippy `needless_borrows_for_generic_args`）。
+            "target": serde_json::to_value(self.target).unwrap_or(Value::Null),
             "targetLabel": self.target_label.clone(),
             "laneKind": self.lane_kind.as_str(),
             "readOnly": self.is_read_only(),

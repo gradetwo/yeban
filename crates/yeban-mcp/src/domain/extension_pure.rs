@@ -117,7 +117,8 @@ pub fn target_label(
     macro_index: u64,
 ) -> String {
     match kind {
-        LaneKind::TrackVolume | LaneKind::TrackPan => format!("{track_id}"),
+        // `format!("{track_id}")`（单变量、无其他文本）会被 clippy 判成 `useless_format`。
+        LaneKind::TrackVolume | LaneKind::TrackPan => track_id.to_string(),
         LaneKind::SendGain => format!("{track_id}->{}", edge_id.unwrap_or("")),
         LaneKind::DeviceParam => format!("{track_id}#{slot_index}:{param_index}"),
         LaneKind::Macro => format!("{track_id}@{macro_index}"),

@@ -327,3 +327,39 @@ let source_ref = format!("asset:{}", hash.as_str());   // ⚠ AssetHash 不是 C
 > 本机 25 条零依赖判据 + 4 条文本守卫 + 契约静态对账全绿，**仍然**漏掉一个
 > `E0382`。所以"文本级守卫"能替代的只是"能从源码文本判定的性质"，**不能**替代类型检查；
 > 类型错误只能在 CI 上被抓到（这也是 `AGENTS.md` §5 把重依赖 crate 交给 CI 的代价之一）。
+
+### 9.2 第 2 轮：`run 37274788668`（commit `ab9738c`）—— **红**（两条 clippy，已修）
+
+| job | 结果 | 红在哪一步 |
+| :--- | :--- | :--- |
+| `plan` / `deny` / `lockfile` | ✅ | — |
+| `checks` | ❌ | 仍是三方对齐矩阵（集成者的表，§7） |
+| `rust (yeban-mcp)` | ❌ | `cargo clippy -p yeban-mcp --all-targets -- -D warnings` |
+| `windows` | ❌ | 同两条 clippy |
+| `rust (yeban-ui-mcp)` | ❌ | **同两条**（`yeban-ui-mcp` 依赖 `yeban-mcp` ⇒ 它的 lib 被一起编） |
+| `rust (workspace 全量)` | skipped | 依赖腿失败 |
+
+原文（两条，都在 `clippy::all` 里）：
+
+```text
+error: the borrowed expression implements the required traits
+   --> crates/yeban-mcp/src/domain/automation.rs:260:44
+    |   "target": serde_json::to_value(&self.target)...
+    |                                            ^^^^^^^^^^^^ help: change this to: `self.target`
+    = help: ... clippy::needless_borrows_for_generic_args
+
+error: useless use of `format!`
+   --> crates/yeban-mcp/src/domain/extension_pure.rs:120:55
+    |        LaneKind::TrackVolume | LaneKind::TrackPan => format!("{track_id}"),
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`
+    = help: ... clippy::useless_format
+```
+
+处置（两条都是"语义不变、写法更直白"）：`AutomationTarget` 是 `Copy` ⇒ `to_value(self.target)`；
+`format!("{track_id}")` ⇒ `track_id.to_string()`。
+
+> 方法论读数（第二轮）：这一轮红的是 **`clippy::all` 的写法级 lint** —— 本机的
+> `cargo fmt --check` / 零依赖 `rustc -D warnings` / 契约静态对账**都覆盖不到**它，
+> 因为本机根本没有 clippy 跑在这个 crate 上（含重依赖 ⇒ SKIP）。这也是把
+> `yeban-mcp` 的 clippy 交给 CI 的代价，只能靠"少写会被 lint 的写法"来降低频率：
+> 本线在这一轮之后把**新写的 `format!("{x}")` 与 `to_value(&copy)` 全部清掉**。
