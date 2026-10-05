@@ -3941,3 +3941,37 @@ does not measure.
 5. 牙测：把一个条目从采集列表里去掉，判据 1 必须红。
 
 **不做的事**：不采集音频内容；不自动上传（本功能只落盘，联网须另行裁决）；不改默认 release 的 feature 开关。
+
+### Round 152: D56 step 1 - implementation recipe (both crates pre-declared; one unknown left, to be settled by compiling)
+
+Facts established by reading the root manifest and the local registry:
+
+| need | status |
+| :--- | :--- |
+| zip writing | `zip = { version = "8.6.0", default-features = false }` **already declared** (根清单第 78 行) - zero new dependency |
+| deflate backend | `flate2 = { version = "1.1.10", default-features = false }` **already declared** (第 79 行) |
+| sha256 | `sha2 = { version = "0.11.0" }` **already declared** (第 47 行) - so per-entry hashing needs no new crate either |
+| zip 8 API shape | **NOT yet verified**: no `zip-8*` directory exists under `CARGO_HOME/registry/src`, i.e. the crate has never been built here. The API must be confirmed by compiling (the v2+ shape is `ZipWriter::new(w)` / `start_file(name, options)` / `finish()`), and that is the one remaining unknown for step 1 |
+
+**Where the shared implementation goes**: `yeban-engine` (a new `diagnostics` module). Reasons: both surfaces already depend on
+the engine, and the engine crates must stay GUI-free (red line 3), which this module satisfies - it touches only `std`, `zip`,
+`sha2` and `serde_json`. D56's criteria require the UI `Operation` and the MCP tool to call **one** function, and the engine is
+the only crate both can reach without either depending on the other.
+
+**Signature to implement** (the shape the criteria need):
+
+```rust
+pub struct BundleInputs<'a> {          // 采集内容由调用方提供, 采集器不猜
+    pub state_json: Option<&'a str>,   // engine-state.json
+    pub config_json: Option<&'a str>,  // config.json(已脱敏)
+    pub logs: &'a [(String, Vec<u8>)], // logs/
+    pub crashes: &'a [(String, Vec<u8>)],
+    pub project: &'a [(String, Vec<u8>)], // 默认空 = 不含工程(隐私默认)
+}
+pub struct BundleReport { pub path: PathBuf, pub bytes: u64, pub sha256: String, pub entries: Vec<BundleEntry> }
+pub fn export_diagnostics(out_dir: &Path, inputs: BundleInputs<'_>) -> Result<BundleReport, DiagError>;
+```
+
+`MANIFEST.txt` is written from the same list of entries that are written into the zip, so the sha256 criterion compares against
+what was actually emitted rather than against a second, separately built list. Round 151 fixed the contents, the redaction rule
+and the five criteria; this round fixes the home, the dependencies and the interface.
