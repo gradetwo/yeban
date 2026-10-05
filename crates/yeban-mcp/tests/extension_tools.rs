@@ -726,6 +726,7 @@ fn engine_state_reads_three_single_sources() {
         .set_engine_readings(Some(EngineReadings {
             sample_rate: 48_000,
             buffer_frames: 128,
+            ..EngineReadings::default()
         }));
     dispatcher.domain_mut().session_mut().seek_ticks(3_840);
     dispatcher.domain_mut().session_mut().play();
@@ -798,6 +799,7 @@ fn engine_state_is_read_only_and_never_touches_the_session_or_the_mirror() {
     let readings = EngineReadings {
         sample_rate: 48_000,
         buffer_frames: 256,
+        ..EngineReadings::default()
     };
     dispatcher.domain_mut().set_engine_readings(Some(readings));
     dispatcher.domain_mut().session_mut().seek_ticks(960);
@@ -832,6 +834,7 @@ fn dry_run_leaves_every_state_bit_identical() {
         .set_engine_readings(Some(EngineReadings {
             sample_rate: 48_000,
             buffer_frames: 64,
+            ..EngineReadings::default()
         }));
     dispatcher.domain_mut().session_mut().seek_ticks(1_920);
     let digest_before = dispatcher.domain().project_digest();

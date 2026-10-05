@@ -35,12 +35,37 @@ use super::error::Fault;
 use crate::tools::ErrorCode;
 
 /// 宿主注入的**引擎读数镜像**（只读快照，见模块文档的"为什么不是第二份状态"）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EngineReadings {
     /// 引擎当前**实际运行**的采样率（与工程的采样率对账用）。
     pub sample_rate: u32,
     /// 当前音频回调的缓冲帧数（`yeban-engine` 的设备协商结果）。
     pub buffer_frames: u32,
+    /// `[ARCH-UI-002]` 主母线**积分**响度（LUFS）。`None` = **尚未测量**（独立 stdio 服务器今天即此 ⇒ 如实报 `null`）。
+    pub integrated_lufs: Option<f32>,
+    /// 瞬时窗口 LUFS。
+    pub momentary_lufs: Option<f32>,
+    /// 短时窗口 LUFS。
+    pub short_term_lufs: Option<f32>,
+    /// 响度范围（LRA，LU）。
+    pub loudness_range_lu: Option<f32>,
+    /// 真峰值（dBFS）。
+    pub true_peak_dbfs: Option<f32>,
+}
+
+impl Default for EngineReadings {
+    /// 全部读数**缺席**（与"测得静音"区分开 —— 账本第 327/328 轮）。
+    fn default() -> Self {
+        Self {
+            sample_rate: 0,
+            buffer_frames: 0,
+            integrated_lufs: None,
+            momentary_lufs: None,
+            short_term_lufs: None,
+            loudness_range_lu: None,
+            true_peak_dbfs: None,
+        }
+    }
 }
 
 /// 会话读数的 JSON 形态。
@@ -246,6 +271,7 @@ mod tests {
             Some(EngineReadings {
                 sample_rate: 44_100,
                 buffer_frames: 128,
+                ..EngineReadings::default()
             }),
         );
         assert_eq!(with["bufferFrames"], 128);
@@ -259,6 +285,7 @@ mod tests {
             Some(EngineReadings {
                 sample_rate: 48_000,
                 buffer_frames: 256,
+                ..EngineReadings::default()
             }),
         );
         assert_eq!(matching["sampleRateMatchesMirror"], true);
