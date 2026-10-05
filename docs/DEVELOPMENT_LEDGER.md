@@ -7884,3 +7884,21 @@ cleanup once the tests are trimmed. What remained was my own copy not deleting f
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; the fixture family is shared; the mapping move needs the two-sided trim; the
 MCP tool is still owed.
+
+
+### Round 323: the app-side trim must REBUILD, not filter - the same wrong tool one last time
+
+Round 322's symmetric trim was implemented and the **app** side came out unbalanced ("unexpected closing delimiter" at export_midi.rs:89), because my trim
+was a **line filter**: it kept every line whose index was in a keep-set, and the keep-set included a blanket rule for lines that are just `}` - so closing
+braces of DELETED test blocks survived while their bodies did not.
+
+The fix is not another filter rule; it is to **rebuild** the app's test module from its parts, in this order: the module header (`#[cfg(test)] mod tests {`,
+`use super::*;`), the two writer test blocks verbatim, whichever non-test items those two reference, and the closing brace. Everything else is simply not
+included, so there is nothing to filter and no way for a stray brace to survive.
+
+**This is the same lesson as round 321 in the other direction**: there, transforming the whole container beat item detection; here, filtering lines beats
+neither - the reliable operation is to **assemble the target from named parts**. Both failures came from treating source as text to be pruned rather than
+as items to be placed.
+
+**Status**: tree green and clean (the failure path reverted); the mapping move needs that rebuild step; CI green; `yeban-midi` holds `midi` and `vlq`; the
+fixture family is shared; the MCP tool is still owed.
