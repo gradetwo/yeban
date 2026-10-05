@@ -1459,7 +1459,10 @@ fn resolve_asset(
 }
 
 /// `PcmFormat` → 稳定的短名（响应用）。
-fn pcm_format_name(format: yeban_decode::PcmFormat) -> &'static str {
+///
+/// `pub(crate)`：`yeban_import_audio` 也用它，**不**复制第二份格式名表
+/// （名字表一多就必然有一份会漂移）。
+pub(crate) fn pcm_format_name(format: yeban_decode::PcmFormat) -> &'static str {
     use yeban_decode::PcmFormat as P;
     match format {
         P::U8 => "u8",
@@ -1503,7 +1506,10 @@ fn decode_fault(hash: &AssetHash, error: &DecodeError) -> Fault {
 }
 
 /// `DecodeError` 的稳定分类名（响应用；不随 `Display` 的措辞漂移）。
-fn decode_error_class(error: &DecodeError) -> &'static str {
+///
+/// `pub(crate)`：`yeban_import_audio` 的错误分类复用这一份（判据
+/// `import_and_render_agree_on_the_decode_error_vocabulary` 钉住两侧同词）。
+pub(crate) fn decode_error_class(error: &DecodeError) -> &'static str {
     match error {
         DecodeError::Io(_) => "io",
         DecodeError::UnsupportedFormat => "unsupportedFormat",

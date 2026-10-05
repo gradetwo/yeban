@@ -57,11 +57,14 @@ pub const DRY_RUN_PARAM: &str = "dryRun";
 /// 每个工具都必须支持的"幂等重放"参数名。
 pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45 的 2 条扩展）。
-pub const TOOL_COUNT: usize = 12;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
+pub const TOOL_COUNT: usize = 15;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
+
+/// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条。
+pub const EXTENSION_TOOL_COUNT: usize = 5;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -69,6 +72,18 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// `MCP-TOOL-` 族只有 `001..010`（`AGENTS.md` §4.1 的 `MODEL-AST-006` 先例：
 /// 不得凭空发明编号）。
 pub const EXTENSION_SPEC_ID_PREFIX: &str = "MCP-TOOL-EXT-";
+
+/// 扩展工具名，**注册顺序**（D45 的撤销入口在前，D46 的三类能力在后）。
+///
+/// 这是扩展段的**唯一清单**：判据、契约对账与样本导出都从它派生，
+/// 因此"注册表里多了一条但清单没跟上"会立刻变红。
+pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
+    "yeban_undo",
+    "yeban_redo",
+    "yeban_edit_automation",
+    "yeban_query_engine_state",
+    "yeban_import_audio",
+];
 
 /// 规范 ID 前缀。
 pub const SPEC_ID_PREFIX: &str = "MCP-TOOL-";
@@ -626,6 +641,127 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         params: &[param("steps", "integer", false, "重做步数 (默认 1)")],
         errors: &[ErrorCode::IndexOutOfBounds, ErrorCode::NoActiveProject],
     },
+    // ---- ADR-0001 D46 的三类扩展能力（每类一个工具，全部**真做事**） ----
+    //
+    // 三个工具的错误码都落在 **D25 的 20 值联集**里（判据
+    // `tests/contract.rs::extension_tools_only_declare_codes_inside_the_d25_union`）：
+    // 既有十工具的"表格 16 码"口径**没有**被放宽 —— 这一列的口径是"本工具真的会产出哪些码"。
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-AUTOMATION",
+        name: "yeban_edit_automation",
+        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)",
+        scope: Scope::AppAdmin,
+        // 按**最坏情况**声明：给了 `point` 就改工程状态。只读调用在响应里如实标
+        // `readOnly: true`（不给 `point` 时一位都不改）。
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param(
+                "trackId",
+                "string",
+                true,
+                "目标音轨 EntityId (26 字符 ULID)",
+            ),
+            param(
+                "lane",
+                "string",
+                true,
+                "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro (与 project.json 同一份词汇表; 不接受别名)",
+            ),
+            param("edgeId", "string", false, "SendGain 必需: 路由边 EntityId"),
+            param(
+                "slotIndex",
+                "integer",
+                false,
+                "DeviceParam: 设备链插槽下标 (默认 0)",
+            ),
+            param(
+                "paramIndex",
+                "integer",
+                false,
+                "DeviceParam: 参数下标 (默认 0)",
+            ),
+            param("macroIndex", "integer", false, "Macro: 宏下标 (默认 0)"),
+            param(
+                "ticks",
+                "array",
+                false,
+                "要读取自动化值的 tick 列表 (保持给定顺序; 最多 256 个)",
+            ),
+            param(
+                "point",
+                "object",
+                false,
+                "要写入的一个点 {tick, value, curve?}; 缺省 = 只读调用 (一位都不改)",
+            ),
+            param(
+                "pointId",
+                "string",
+                false,
+                "点的显式 EntityId; 缺省由 (目标, tick) 确定性派生 (同一 tick 重复写 = 更新同一点)",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::TrackNotFound,
+            ErrorCode::EntityNotFound,
+            ErrorCode::IndexOutOfBounds,
+            ErrorCode::OutOfRange,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::Conflict,
+        ],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-ENGINE-STATE",
+        name: "yeban_query_engine_state",
+        summary: "查询某轨的设备链与引擎/会话读数 (采样率/缓冲/走带位置/是否播放)",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ReadOnly,
+        params: &[param(
+            "trackId",
+            "string",
+            false,
+            "要展开设备链的音轨 EntityId; 缺省只报引擎与会话读数",
+        )],
+        errors: &[ErrorCode::NoActiveProject, ErrorCode::TrackNotFound],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-IMPORT-AUDIO",
+        name: "yeban_import_audio",
+        summary: "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目 (走 yeban-decode + Op)",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param("name", "string", true, "片段显示名"),
+            param(
+                "assetHash",
+                "string",
+                false,
+                "已在会话 CAS 池 (assets/{sha256}) 里的资产哈希; 与 `path` 恰好给一个",
+            ),
+            param(
+                "path",
+                "string",
+                false,
+                "磁盘音频文件路径 (WAV/FLAC/OGG); 与 `assetHash` 恰好给一个",
+            ),
+            param("gainDb", "number", false, "片段增益 (dB); 默认 0.0"),
+            param(
+                "clipId",
+                "string",
+                false,
+                "片段的显式 EntityId; 缺省由 (来源, 名字, 增益) 确定性派生",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::EntityNotFound,
+            ErrorCode::FileNotFound,
+            ErrorCode::IoError,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::RenderFailed,
+            ErrorCode::Conflict,
+        ],
+    },
 ];
 
 /// 按名查找工具（`const` 数组上的线性查找；10 个元素，无需哈希表）。
@@ -935,14 +1071,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_the_documented_tools_then_the_two_extensions() {
+    fn registry_has_the_documented_tools_then_the_extensions() {
         assert_eq!(TOOLS.len(), TOOL_COUNT);
-        // 前 10 个必须是规范编号（顺序即契约顺序）；后 2 个是 ADR-0001 D45/D46 的扩展。
+        // 前 10 个必须是规范编号（顺序即契约顺序）；其后全是 ADR-0001 D45/D46 的扩展。
         assert_eq!(DOCUMENTED_TOOL_COUNT, 10);
-        assert_eq!(TOOL_COUNT, DOCUMENTED_TOOL_COUNT + 2, "恰好两条扩展");
+        assert_eq!(
+            TOOL_COUNT,
+            DOCUMENTED_TOOL_COUNT + EXTENSION_TOOL_COUNT,
+            "规格表十个 + D45/D46 的扩展"
+        );
+        assert_eq!(
+            EXTENSION_TOOL_COUNT,
+            EXTENSION_NAMES.len(),
+            "扩展清单必须与常量同步"
+        );
         let expected_ids: Vec<String> = (1..=DOCUMENTED_TOOL_COUNT)
             .map(|index| format!("{SPEC_ID_PREFIX}{index:03}"))
-            .chain(["yeban_undo", "yeban_redo"].iter().map(|name| {
+            .chain(EXTENSION_NAMES.iter().map(|name| {
                 let spec = tool(name).expect("扩展工具必须注册");
                 spec.spec_id.to_owned()
             }))
@@ -1004,9 +1149,13 @@ mod tests {
     }
 
     #[test]
-    fn per_tool_error_codes_cover_every_documented_code_exactly() {
-        // 每个工具声明的错误码都必须是"规范表格 16 个"里的。
-        for spec in &TOOLS {
+    fn documented_tools_error_codes_cover_the_table_exactly() {
+        // ⚠ 口径：这一条只管**规范表格的十个工具**。它们声明的错误码必须是
+        // "架构 §7.2 表格 16 个"里的，且那 16 个**全部**至少被一个文档工具声明（不多不少）。
+        // 扩展工具（D45/D46）另有口径：只要求落在 D25 的 20 值联集里 ——
+        // 见下一条判据与 `tests/contract.rs`。
+        let documented_tools: Vec<&ToolSpec> = TOOLS.iter().take(DOCUMENTED_TOOL_COUNT).collect();
+        for spec in &documented_tools {
             assert!(!spec.errors.is_empty(), "{} 必须声明错误码", spec.name);
             for code in spec.errors {
                 assert!(
@@ -1016,14 +1165,16 @@ mod tests {
                 );
             }
         }
-        // 16 个文档错误码**全部**至少被一个工具声明（不多不少）。
+        // 16 个文档错误码**全部**至少被一个文档工具声明（不多不少）。
         for code in ErrorCode::DOCUMENTED_TOOL_CODES {
             assert!(
-                !tools_declaring(code).is_empty(),
-                "文档错误码 {code} 没有任何工具声明 —— 说明契约里有一条没落地"
+                documented_tools
+                    .iter()
+                    .any(|spec| spec.errors.contains(&code)),
+                "文档错误码 {code} 没有任何文档工具声明 —— 说明契约里有一条没落地"
             );
         }
-        let mut declared: Vec<&str> = TOOLS
+        let mut declared: Vec<&str> = documented_tools
             .iter()
             .flat_map(|spec| spec.errors.iter().map(|code| code.as_str()))
             .collect();
@@ -1036,7 +1187,36 @@ mod tests {
         documented.sort_unstable();
         assert_eq!(
             declared, documented,
-            "工具声明的错误码集合必须与表格完全一致"
+            "文档工具声明的错误码集合必须与表格完全一致"
+        );
+    }
+
+    #[test]
+    fn extension_tools_only_declare_codes_inside_the_d25_union() {
+        // ADR-0001 D25：错误码只允许取自 20 值联集，**不许发明新码**。
+        // 这条判据对本 crate 的**每一个**工具成立（含文档十工具），因此将来谁在
+        // 扩展工具上写一个 `NO_HISTORY` 这种码，这里立刻红。
+        for spec in &TOOLS {
+            assert!(!spec.errors.is_empty(), "{} 必须声明错误码", spec.name);
+            for code in spec.errors {
+                assert!(
+                    code.is_schema_contract(),
+                    "{} 声明了 D25 联集之外的错误码 {code}",
+                    spec.name
+                );
+            }
+        }
+        // 扩展工具确实用到了 schema 独有码（说明它们不是"照抄十工具那一列"）。
+        let extension_codes: Vec<ErrorCode> = TOOLS
+            .iter()
+            .skip(DOCUMENTED_TOOL_COUNT)
+            .flat_map(|spec| spec.errors.iter().copied())
+            .collect();
+        assert!(
+            extension_codes
+                .iter()
+                .any(|code| ErrorCode::SCHEMA_ONLY.contains(code)),
+            "扩展工具应当用到 schema 独有码 (ENTITY_NOT_FOUND / INVALID_PARAMETER_RANGE)"
         );
     }
 
@@ -1130,7 +1310,20 @@ mod tests {
             .filter(|spec| !spec.side_effect.is_side_effecting())
             .map(|spec| spec.name)
             .collect();
-        assert_eq!(read_only, vec!["yeban_query_project"]);
+        assert_eq!(
+            read_only,
+            vec!["yeban_query_project", "yeban_query_engine_state"],
+            "只读工具必须显式分类为 read-only"
+        );
+        assert_eq!(
+            tool("yeban_edit_automation").expect("存在").side_effect,
+            SideEffect::ProjectState,
+            "自动化编辑会写一个点 (按最坏情况声明)"
+        );
+        assert_eq!(
+            tool("yeban_import_audio").expect("存在").side_effect,
+            SideEffect::ProjectState
+        );
         assert_eq!(
             tool("yeban_render_master").expect("存在").side_effect,
             SideEffect::Disk

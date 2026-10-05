@@ -38,8 +38,13 @@
 //! | [`render_clip_math`] | 音频片段装配的**零第三方依赖**纯逻辑（帧落位、增益合成、声道矩阵、重采样判定、延迟裁剪、魔数嗅探），本机可单独验证 |
 //! | [`ids`] | 确定性夹具身份（让 `dryRun` 预览与真调用逐字节相同） |
 
+pub mod automation;
+pub mod automation_audit;
+pub mod engine_state;
 pub mod error;
+pub mod extension_pure;
 pub mod ids;
+pub mod import_audio;
 pub mod lock;
 pub mod macros;
 pub mod notes;
@@ -58,7 +63,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use yeban_model::{
-    AssetHash, CommitDraft, CommitGraph, EntityId, Op, OpOrigin, StampedOp, YebanProjectV1,
+    AssetHash, CommitDraft, CommitGraph, EntityId, Op, OpOrigin, SessionRuntimeState, StampedOp,
+    YebanProjectV1,
 };
 
 use crate::jsonrpc::ErrorObject;
@@ -125,7 +131,8 @@ struct SessionSeed {
     assets: BTreeMap<AssetHash, Vec<u8>>,
 }
 
-/// 领域会话状态：活跃工程 + 提交图谱 + 提案记录 + **撤销会话态** + 注入的时钟。
+/// 领域会话状态：活跃工程 + 提交图谱 + 提案记录 + **撤销会话态** + 注入的时钟
+/// + **第 2 层会话运行态** + 宿主注入的引擎镜像。
 ///
 /// **刻意不实现 `Clone`**：它内涵 `.yeban.lock` 的 RAII 守卫与提交图谱，
 /// 克隆会产出两个独立的写者。
@@ -140,6 +147,27 @@ pub struct Domain {
     /// 整体重置，它也不会进 `project.json` 或 `history.dag`（模型层把这点做成了类型事实：
     /// `UndoCursor` 不实现 `Serialize`）。
     undo: undo_session::UndoState,
+    /// **第 2 层：会话运行态**（`MODEL-ISO-001`）—— 走带位置 / 播放状态 / 长任务进度 /
+    /// 插件进程 / 打开的视窗。
+    ///
+    /// 为什么不自己造一份：这一层的**模型类型**已经存在
+    /// （`yeban_model::SessionRuntimeState`，且**不实现 `Serialize`** ⇒ 结构上不可能
+    /// 落盘），MCP 侧再造一个"会话态结构体"就是第二份真相。
+    ///
+    /// ## 关于 `session.undo_cursor`（这里**不是**第二个游标）
+    ///
+    /// 撤销游标的权威是 [`Domain::undo`]（`undo_session::UndoState`，它内部持有的
+    /// 就是模型 `UndoCursor`）。`SessionRuntimeState::undo_cursor` 是模型层对**同一件事**
+    /// 的读法，因此 [`Domain::sync_session`] 在**唯一**的可变入口
+    /// [`apply`] 结束时把它单向同步成权威值 —— 两处不可能漂移（判据
+    /// `session_mirror_never_drifts_from_the_undo_authority` 逐次工具调用核对）。
+    session: SessionRuntimeState,
+    /// 宿主注入的**引擎读数镜像**（只读快照；见 [`engine_state`] 的模块文档）。
+    ///
+    /// 本 crate **不依赖** `yeban-engine`（零新增依赖），因此缓冲帧数只能由宿主
+    /// （形态 A 的 `yeban-app`）通过 [`Domain::set_engine_readings`] 交进来；
+    /// 没有注入时读数是 `null` + `bufferSource: "unavailable"`。
+    engine: Option<engine_state::EngineReadings>,
     now_ms: u64,
 }
 
@@ -158,8 +186,42 @@ impl Domain {
             graph: CommitGraph::new(),
             proposals: BTreeMap::new(),
             undo: undo_session::UndoState::new(AGENT_NAME),
+            session: SessionRuntimeState::new(),
+            engine: None,
             now_ms: 0,
         }
+    }
+
+    /// 会话运行态（只读）[`MODEL-ISO-001` 第 2 层]。
+    #[must_use]
+    pub const fn session(&self) -> &SessionRuntimeState {
+        &self.session
+    }
+
+    /// 会话运行态的**注入口**（宿主与判据用：定位播放头、起停走带）。
+    pub const fn session_mut(&mut self) -> &mut SessionRuntimeState {
+        &mut self.session
+    }
+
+    /// 宿主注入的引擎读数镜像（`None` = 没注入，读数如实为 `null`）。
+    #[must_use]
+    pub const fn engine_readings(&self) -> Option<engine_state::EngineReadings> {
+        self.engine
+    }
+
+    /// 注入 / 清除引擎读数镜像。
+    ///
+    /// **只对宿主开放**：没有任何工具的 `apply` 会碰它（判据
+    /// `tools_never_write_the_engine_mirror` 用"调用前后镜像逐位相同"钉住）。
+    pub const fn set_engine_readings(&mut self, readings: Option<engine_state::EngineReadings>) {
+        self.engine = readings;
+    }
+
+    /// 把模型会话态里那份**撤销游标镜像**同步成权威值（见 [`Domain::session`]）。
+    ///
+    /// 只在 [`apply`]（唯一会改变状态的入口）结束时调用，因此不存在"某条路径忘了同步"。
+    fn sync_session(&mut self) {
+        self.session.undo_cursor = self.undo.cursor();
     }
 
     /// 注入时钟（Unix 毫秒）。
@@ -437,6 +499,10 @@ impl Domain {
             assets: seed.assets,
             lock: seed.lock,
         });
+        // 打开工程会重建撤销会话态（游标可能被 `align_with` 推导出来），
+        // 因此模型会话态里那份镜像必须跟着走 —— 否则"打开一个带历史的工程"之后
+        // 两处游标立刻不一致。
+        self.sync_session();
         Ok(())
     }
 
@@ -559,6 +625,21 @@ pub enum Plan {
         /// 重做前的活跃分支。
         branch: String,
     },
+    /// `yeban_edit_automation` [ADR-0001 **D46** 第 1 类能力]
+    EditAutomation {
+        /// 只读规划的产物（读的读数 + 将要写入的那个点）。
+        edit: Box<automation::AutomationEdit>,
+    },
+    /// `yeban_query_engine_state` [ADR-0001 **D46** 第 2 类能力]（**只读**）
+    EngineState {
+        /// 已经组装好的读数（`apply` 原样返回，一位都不改）。
+        data: Value,
+    },
+    /// `yeban_import_audio` [ADR-0001 **D46** 第 3 类能力]
+    ImportAudio {
+        /// 只读规划的产物（片段条目 + 需要登记进 CAS 池的字节）。
+        import: Box<import_audio::AudioImport>,
+    },
 }
 
 impl Plan {
@@ -576,6 +657,9 @@ impl Plan {
             Self::RenderMaster { .. } => "render",
             Self::Undo { .. } => "undo",
             Self::Redo { .. } => "redo",
+            Self::EditAutomation { .. } => "edit_automation",
+            Self::EngineState { .. } => "engine_state",
+            Self::ImportAudio { .. } => "import_audio",
         }
     }
 
@@ -584,15 +668,21 @@ impl Plan {
     /// `Open` 的增量是**变量**（恢复的 `history.dag` 有多少条提交就装多少条），
     /// 因此它的预测值由 [`Plan::planned_commit_count`] 单独给出，不在这里。
     #[must_use]
-    pub const fn commit_delta(&self) -> usize {
+    pub fn commit_delta(&self) -> usize {
         match self {
             Self::Propose { .. } | Self::Merge { .. } => 1,
+            // 只写一个点的自动化编辑 = 一条提交；只读调用（没有 `point`）= 0。
+            Self::EditAutomation { edit } => usize::from(edit.write.is_some()),
+            // 真登记才提交；幂等命中（内容已存在）一位都不改。
+            Self::ImportAudio { import } => usize::from(import.op.is_some()),
             Self::Open(..)
             | Self::Save { .. }
             | Self::Close { .. }
             | Self::Query { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
+            // 引擎/会话读数是**只读**的。
+            | Self::EngineState { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
             | Self::Undo { .. }
             | Self::Redo { .. } => 0,
@@ -656,12 +746,41 @@ impl Plan {
                     .map(Some)
                     .map_err(undo_refusal_to_fault)
             }
+            // 差异预览的**模拟**：写入一个自动化点 / 登记一个音频片段。
+            // 两者都只走 `Op::apply`（模型自己的实现），因此预览不可能与真做漂移；
+            // 只读调用（没有点 / 幂等命中）返回 `None` ⇒ "工程内容不变"。
+            Self::EditAutomation { edit } => {
+                let ops = edit.ops();
+                if ops.is_empty() {
+                    return Ok(None);
+                }
+                let current = domain.active_project().ok_or_else(no_active_project)?;
+                let mut simulated = current.clone();
+                Op::Batch {
+                    ops,
+                    description: "dryRun edit_automation".to_owned(),
+                }
+                .apply(&mut simulated)
+                .map_err(|failure| error::from_model("自动化写入模拟", &failure))?;
+                Ok(Some(simulated))
+            }
+            Self::ImportAudio { import } => {
+                let Some(op) = import.op.as_ref() else {
+                    return Ok(None);
+                };
+                let current = domain.active_project().ok_or_else(no_active_project)?;
+                let mut simulated = current.clone();
+                op.apply(&mut simulated)
+                    .map_err(|failure| error::from_model("音频登记模拟", &failure))?;
+                Ok(Some(simulated))
+            }
             Self::Save { .. }
             | Self::Close { .. }
             | Self::Query { .. }
             | Self::Propose { .. }
             | Self::Reject { .. }
-            | Self::RenderMaster { .. } => Ok(None),
+            | Self::RenderMaster { .. }
+            | Self::EngineState { .. } => Ok(None),
         }
     }
 
@@ -868,6 +987,39 @@ impl Plan {
                     ),
                 );
             }
+            // 自动化编辑：预览与真做**共用** `AutomationEdit::data()`，
+            // 因此"预览说的"与"真做的"逐字段相同（判据在 `tests/extension_tools.rs`）。
+            Self::EditAutomation { edit } => {
+                let data = edit.data()?;
+                if let Value::Object(fields) = data {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("wouldApply".to_owned(), Value::from(edit.write.is_some()));
+            }
+            // 引擎/会话读数：预览 = 真做（只读工具没有任何差异可预览）。
+            // 与上面两个计划**同一个做法**：把 `data` 的键合并进预览，因此
+            // "预览与真做逐字段一致"这条判据能用同一段代码对三个工具成立。
+            Self::EngineState { data } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("readOnly".to_owned(), Value::from(true));
+                preview.insert("result".to_owned(), data.clone());
+            }
+            // 音频导入：与自动化编辑同一个做法（共用 `AudioImport::data()`）。
+            Self::ImportAudio { import } => {
+                let data = import.data()?;
+                if let Value::Object(fields) = data {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("wouldApply".to_owned(), Value::from(import.op.is_some()));
+            }
         }
 
         // 差异预览的公共部分：工程内容摘要 + 提交数（**预测**，不是实测）。
@@ -899,7 +1051,11 @@ impl Plan {
             "commitCountAfter".to_owned(),
             Value::from(self.planned_commit_count(domain)),
         );
-        preview.insert("wouldApply".to_owned(), Value::from(true));
+        // 计划自己的口径优先：只读调用（不给 `point` / 幂等命中）在各自的臂里已经写了
+        // `wouldApply: false` —— 无条件覆盖成 `true` 会让预览对**只读调用**撒谎。
+        preview
+            .entry("wouldApply".to_owned())
+            .or_insert(Value::from(true));
         Ok(Value::Object(preview))
     }
 }
@@ -1063,6 +1219,9 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_reject_proposal" => plan_reject(domain, call),
         "yeban_undo" => plan_undo(domain, call),
         "yeban_redo" => plan_redo(domain, call),
+        "yeban_edit_automation" => plan_edit_automation(domain, call),
+        "yeban_query_engine_state" => plan_query_engine_state(domain, call),
+        "yeban_import_audio" => plan_import_audio(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -1411,6 +1570,56 @@ fn proposal_not_found(id: &EntityId) -> Fault {
 }
 
 // ---------------------------------------------------------------------------
+// ADR-0001 D46 的三类扩展能力的 plan（只读）
+// ---------------------------------------------------------------------------
+
+/// `yeban_edit_automation` [ADR-0001 **D46** 第 1 类能力]。
+///
+/// 读的一半走**唯一求值入口**（`automation_value_at`），写的一半走
+/// [`Op::SetAutomationPoint`]；两者都在 [`automation::plan`] 里完成（因此 `dryRun`
+/// 拿到的是**同一份**规划数据）。
+fn plan_edit_automation(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let track_id = arg_id(call, "trackId")?;
+    let edit = automation::plan(project, &call.arguments, track_id)?;
+    Ok(Plan::EditAutomation {
+        edit: Box::new(edit),
+    })
+}
+
+/// `yeban_query_engine_state` [ADR-0001 **D46** 第 2 类能力]（**只读**）。
+///
+/// 三份状态的来源见 [`engine_state`] 的模块文档：采样率读工程、走带读
+/// `SessionRuntimeState`、缓冲读宿主注入的镜像。本函数**不**碰文件系统、**不**改状态。
+fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let track_id = match call.arguments.get("trackId") {
+        Some(_) => Some(arg_id(call, "trackId")?),
+        None => None,
+    };
+    let data = engine_state::snapshot(
+        project,
+        domain.session(),
+        domain.engine_readings(),
+        domain.undo_state().undone(),
+        track_id,
+    )?;
+    Ok(Plan::EngineState { data })
+}
+
+/// `yeban_import_audio` [ADR-0001 **D46** 第 3 类能力]。
+///
+/// 资产池的读法**复用** [`render::AssetStore`]（[`Domain`] 自己实现它），
+/// 因此"池里有什么字节"只有一个事实源。
+fn plan_import_audio(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let import = import_audio::plan(project, domain, &call.arguments)?;
+    Ok(Plan::ImportAudio {
+        import: Box::new(import),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // apply：可变
 // ---------------------------------------------------------------------------
 
@@ -1425,6 +1634,15 @@ fn proposal_not_found(id: &EntityId) -> Fault {
 /// 领域失败 → [`Fault::Domain`]（走 `ToolResponse`）；
 /// 实现级状况 → [`Fault::Impl`]（走 JSON-RPC 错误对象）。
 pub fn apply(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
+    let outcome = apply_inner(domain, plan);
+    // 会话运行态里那份**撤销游标镜像**在唯一可变入口处同步（见 `Domain::session`）。
+    // 放在这里而不是每个 `apply_*` 里：漏一处就会漂移，而这里是**唯一**的入口。
+    domain.sync_session();
+    outcome
+}
+
+/// [`apply`] 的本体（同步会话态的那一步在外面，见上）。
+fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
     match plan {
         Plan::Open(request) => apply_open(domain, *request),
         Plan::Save {
@@ -1455,6 +1673,10 @@ pub fn apply(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::RenderMaster { artifact } => apply_render(*artifact),
         Plan::Undo { steps, .. } => apply_undo(domain, steps),
         Plan::Redo { steps, .. } => apply_redo(domain, steps),
+        Plan::EditAutomation { edit } => automation::apply(domain, &edit),
+        // 只读：`plan` 已经把读数组装好了，`apply` 原样返回（一位都不改）。
+        Plan::EngineState { data } => Ok(ToolResponse::success(data)),
+        Plan::ImportAudio { import } => import_audio::apply(domain, &import),
     }
 }
 
