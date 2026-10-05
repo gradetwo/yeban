@@ -971,6 +971,17 @@ pub fn wiring_fixture(project: &YebanProjectV1) -> Option<WiringFixture> {
 /// 一份待扫描的源码（路径 + 内容）。
 pub type SourceFile = (String, String);
 
+/// 这个路径是不是**本共享实现自己**（两个 crate 下都成立）。
+///
+/// ⚠ 必须**平台无关**地比：Windows 的 `Path::display()` 用 `\` 作分隔符，
+/// 直接用 `ends_with("src/undo_session.rs")` 在 Windows 上会漏判 ——
+/// 于是守卫会把自己的两处生产命中（`invert(` 与 `.undo_with(`）当成"第二份实现"。
+/// 这正是 CI 的 windows 腿在 run 37268427827 抓到的红点。
+fn is_the_shared_session(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.ends_with("src/undo_session.rs")
+}
+
 /// 取一份源码的**生产区**（`#[cfg(test)]` 属性**行**之前的全部内容）。
 ///
 /// 判据必须只看生产代码：本仓库的判据都写在文件尾部的 `#[cfg(test)] mod tests` 里，
@@ -997,10 +1008,9 @@ fn production_region(text: &str) -> String {
 /// 因此测试里为了对账而调用 `apply_inverse` 不会被误伤。
 #[must_use]
 pub fn scan_second_undo_implementations(sources: &[SourceFile]) -> Vec<String> {
-    const SELF_MARKER: &str = "src/undo_session.rs";
     let mut violations = Vec::new();
     for (path, text) in sources {
-        if path.ends_with(SELF_MARKER) {
+        if is_the_shared_session(path) {
             continue;
         }
         let production = production_region(text);
@@ -1617,7 +1627,7 @@ mod tests {
         // **扫描结果**里找自己 —— 两个 crate 下都成立。
         let me = sources
             .iter()
-            .find(|(path, _)| path.ends_with("src/undo_session.rs"))
+            .find(|(path, _)| is_the_shared_session(path))
             .map(|(_, text)| text.clone())
             .expect("共享实现必须在扫描集合里");
         let production = production_region(&me);
@@ -1666,7 +1676,19 @@ mod tests {
         )];
         assert!(scan_second_undo_implementations(&in_tests).is_empty());
 
-        // 反例 4: 注释里提到这些词不算违规（文档要能解释为什么不许写）。
+        // 反例 4（Windows 形态）：路径用反斜杠时，**本文件自己**必须仍被认出来。
+        // 这条回归是 CI 的 windows 腿在 run 37268427827 抓到的真实缺陷：
+        // `ends_with("src/undo_session.rs")` 在 `…\\src\\undo_session.rs` 上漏判。
+        let windows_self: Vec<SourceFile> = vec![(
+            "D:\\a\\yeban\\yeban\\crates\\yeban-mcp\\src\\undo_session.rs".to_owned(),
+            "let n = graph.undo_with(&mut project, &head, &mut cursor, 1).unwrap();\n".to_owned(),
+        )];
+        assert!(
+            scan_second_undo_implementations(&windows_self).is_empty(),
+            "Windows 路径形态下也必须认出本共享实现"
+        );
+
+        // 反例 5: 注释里提到这些词不算违规（文档要能解释为什么不许写）。
         let comments = vec![(
             "crates/yeban-app/src/undo.rs".to_owned(),
             "//! 本模块不写 apply_inverse，撤销一律走 undo_session\n".to_owned(),

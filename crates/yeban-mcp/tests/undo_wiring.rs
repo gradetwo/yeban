@@ -580,6 +580,12 @@ fn undo_does_not_cross_a_project_open_boundary() {
         assert_eq!(saved["status"], "success", "{saved}");
     } // Drop ⇒ 释放 `.yeban.lock`
 
+    // B 的一份**副本**，给第二段用。必须在这里拷：Windows 的 `LockFileEx` 是**强制**
+    // 字节区间锁，B 一旦被下面的 `open_project` 打开，另一个句柄连读都读不到
+    // （见 `domain/mod.rs` 的 `lock_holder` 文档与 `docs/ledger/lock-advisory-notes.md`）。
+    let path_c = dir.join("c.yeban");
+    std::fs::copy(&path_b, &path_c).expect("拷贝容器");
+
     // 域 A：在自己的工程上撤销一步（游标真的前移了）。
     let (mut dispatcher, auth) = new_dispatcher();
     seed(&mut dispatcher, "first-project");
@@ -628,9 +634,6 @@ fn undo_does_not_cross_a_project_open_boundary() {
     // 强形态 2：在 A 上"撤销后继续编辑"会派生**匿名分支**；打开 B 时活跃分支必须回到
     // `main` —— 否则 B 的图谱里根本没有那条匿名分支，打开会变成一条硬错误
     // （会话态泄漏成"打不开工程"，比"多撤一步"更严重）。
-    // 用 B 的一份**副本**（同一个路径上有活动锁，`ARCH-SEC-001` 只允许一个写者）。
-    let path_c = dir.join("c.yeban");
-    std::fs::copy(&path_b, &path_c).expect("拷贝容器");
     let (mut forked, forked_auth) = new_dispatcher();
     seed(&mut forked, "anon-project");
     let first = edit_velocity(&mut forked, &forked_auth, 42);

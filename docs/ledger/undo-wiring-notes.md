@@ -333,8 +333,40 @@ undo_does_not_cross_a_project_open_boundary ... FAILED
 
 **只有 CI 能判的**（本机**没有**做，也不该做）：`cargo clippy --workspace --all-targets`、
 `cargo test --workspace --all-targets`、`cargo deny check`、跨平台（windows/macos 矩阵）、
-fuzz、benchmark。本次判决以 `scripts/dev/ci-verdict.sh line/undo-wiring` 读回的 run id 为准
-（本线**只推一次**：判决读数写在推完之后的汇报里，不另开回填提交）。
+fuzz、benchmark。
+
+### 8.1 CI 判决与"CI 抓到本机抓不到的东西"的如实记录
+
+第一次推送的判决：`line/undo-wiring` CI **run 37268427827**（`ci-verdict.sh` 读回）。
+
+| Job | 结果 | 归因 |
+| :--- | :--- | :--- |
+| `plan` / `lockfile` / `deny` | ✅ | 零新增依赖（`Cargo.lock` 的 diff 为空） |
+| `checks` | ❌ | **基础设施**：`安装钉死工具链` 一步 `error sending request for url https://static.rust-lang.org/dist/channel-rust-1.99.0.toml`（下载失败，与代码无关）。该步之后的门禁（含已知的 `feature-alignment`，见 needs-1）**没有跑到** |
+| `windows` | ❌ | **本线的真缺陷**：`undo_session::tests::no_second_undo_implementation_exists_in_the_workspace` 红 —— 见下 |
+| `rust`（workspace 全量） | 读回时仍在跑 | — |
+
+**Windows 那条红是本线自己的 bug，已修**（这正是"只有 CI 能判"的价值）：
+
+```
+thread 'undo_session::tests::no_second_undo_implementation_exists_in_the_workspace' panicked at crates\yeban-mcp\src\undo_session.rs:1607:9:
+生产代码里出现了第二份撤销实现:
+D:\a\yeban\yeban\crates\yeban-mcp\..\..\crates\yeban-mcp\src\undo_session.rs:398 出现 `invert(` —— 生产代码里不许有第二份反向应用实现
+D:\a\yeban\yeban\crates\yeban-mcp\..\..\crates\yeban-mcp\src\undo_session.rs:634 出现 `.undo_with(` —— 生产代码只允许调用 undo_session 的入口
+```
+
+根因：守卫用 `path.ends_with("src/undo_session.rs")` 判断"这是不是本文件"，
+而 Windows 的 `Path::display()` 用 `\` 作分隔符 ⇒ **漏判自己** ⇒ 把自己的两处生产命中
+（只读推导用的 `invert(`、唯一执行者 `.undo_with(`）当成了第二份实现。
+修法：`is_the_shared_session` 先把分隔符归一化；
+并新增**本机就能跑**的回归判据（把 Windows 形态的路径显式喂给纯函数扫描器）。
+
+顺带在同一次修复里处置了第二个"只在 Windows 才会炸"的点：判据 ⑫ 里
+`std::fs::copy(路径 B → 路径 C)` 原本发生在 B 已被 `open_project` 打开之后 ——
+而 Windows 的 `LockFileEx` 是**强制**字节区间锁，持锁期间另一个句柄连读都读不到
+（本仓库 `domain/mod.rs` 的 `lock_holder` 文档实测过）。改成"任何打开之前先拷贝"。
+
+⇒ 因此本线**推了两次**：第一次是交付本体，第二次是 CI 抓到的上述修复（不是反复试错）。
 
 **如实登记的新增编译成本**：本线新增 3 个源文件（共享实现 1 710 行、UI 端口 650 行、
 两份端到端判据 1 252 行）⇒ 增量重编 `yeban-mcp` lib+tests 约 **8 s**、
