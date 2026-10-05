@@ -7513,3 +7513,22 @@ produced the *diagnosis* of the imbalance from a read-only script. The pattern t
 treating it as source**.
 
 **Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool still owed; CI green through `299a77b`.
+
+
+### Round 306: attempt 11's pre-flight refused again, and the last fix is one branch
+
+Attempt 11 implemented round 305's two fixes (strip whole multi-line `use` statements; brace-match the writer's span) and the pre-flight refused with
+`export.rs +2` - a **different** imbalance, which is progress in kind if not in outcome.
+
+The cause is visible in the code I just wrote: `drop_item` brace-matches **every** match, but `Save(SaveError),` is a **brace-less** item. Its
+"first `{` at or after the line" is therefore the opening brace of the **next** item - the `impl Display` following it - so the pairing removed a
+range that starts in the wrong place and ends somewhere else. The fix is one branch:
+
+    if the item's line ends with ',' or ';' (a variant or statement):   delete just that line (+ its doc)
+    otherwise (it has a body):                                          brace-match from its opening '{'
+
+**Why the pre-flight is now the most valuable thing in this sub-task**: attempts 1-8 reached the compiler and were reverted; 9, 10 and 11 never
+touched the tree, and each refusal **named the file and the exact imbalance**, turning what had been a debugging loop into a sequence of one-line
+diagnoses. The generator now fails before it can damage anything.
+
+**Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool still owed; CI green through `a4e4ef0`.
