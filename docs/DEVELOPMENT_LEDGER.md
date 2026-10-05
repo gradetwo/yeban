@@ -4946,3 +4946,34 @@ limitation written down). This is the procedure, so nobody has to reverse-engine
 frame back - which includes the readback cost that a real display path would not pay on every frame. That makes the measurement
 **conservative** (it can only overstate frame time), and saying so is better than letting a reader assume it is a pure render
 timing.
+
+### Round 197: the SCROLLING reading - p99 9.831 ms, within 1.18x of the bar on a hosted runner
+
+Run **`37354752002` @ `09ebd12` = completed success** (8 steps), from the gate's own command:
+
+```
+BASELINE-003(10万音符) 帧数=600 音符=100000 p50=6.477ms p99=9.831ms max=18.136ms 见证字符数下限=122
+```
+
+**All three readings now available**, each with its口径:
+
+| reading | fixture | viewport | p50 | p99 | max |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| round 182 | crammed (all notes in 3840 ticks) | static, no clipping | 170.915 ms | 178.527 ms | 267.726 ms |
+| round 192 | long timeline (24M ticks) | **static**, clipping consumed | 9.507 ms | 10.244 ms | 32.015 ms |
+| **round 197** | long timeline | **scrolling** (1 screen/s), clipping + relative positions | **6.477 ms** | **9.831 ms** | **18.136 ms** |
+
+**What changed between 182 and the last two**: clipping is consumed by the host (rounds 409-413) - the lever that took p50 from ~171 ms
+to single-digit ms. Against the gate's bar (`p99 <= 8.3 ms`) the scrolling reading is **1.18x over**, versus 21x before clipping.
+
+**What must NOT be read from this table**: that scrolling is cheaper than static. The two runs are separate hosted jobs that may have
+landed on different hardware, and 6.477 vs 9.507 ms is well within the noise such a comparison has. The defensible statement is that
+both口径 sit in the same single-digit-millisecond regime, on hosted hardware, with the scrolling one at 1.18x the bar.
+
+**And the standing limit still applies**: these are hosted `ubuntu-latest` numbers. `spikes/README.md` line 36 and `HD-45` reserve
+the frame-rate verdict for the reference machine, so this is magnitude evidence - which is exactly what round 195's runbook exists to
+convert into an official reading when a suitable runner is available (`HD-38` recorded self-hosted as unbudgeted).
+
+**One more honest caveat, already in the runbook**: the case times `request_redraw() + capture()`, i.e. rasterize AND read the frame
+back, so it is conservative - it can only overstate frame time. A 1.18x overage on a conservative measure is therefore not evidence
+that the real display path misses 120 FPS, nor that it meets it.
