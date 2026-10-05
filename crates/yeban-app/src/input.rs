@@ -300,6 +300,15 @@ impl Selection {
     pub fn remove(&mut self, id: &str) {
         self.ids.remove(id);
     }
+
+    /// 由**可见 ULID 列表**算出与之**逐项对齐**的选中标志。
+    ///
+    /// 为什么放在这里: 注入给界面的六个平行数组必须**同一个索引集**（账本第 181 轮），
+    /// 选中标志是第七个; 让它在**同一口径**下生成, 界面就只做"取下标", 不做任何匹配。
+    #[must_use]
+    pub fn flags_for(&self, visible_ulids: &[String]) -> Vec<bool> {
+        visible_ulids.iter().map(|id| self.contains(id)).collect()
+    }
 }
 
 /// 卷帘工具矩阵 (规范 §3.3 / `[UI-NOTE-003]`)。
@@ -733,6 +742,31 @@ mod tests {
     }
 
     // ---------------------------------------------------------------- 工具矩阵
+    #[test]
+    fn selection_flags_align_with_the_visible_slice_and_not_with_the_selection() {
+        // 判据: 标志与**可见切片**逐项对齐（同长 + 逐项相等）; 选区里**不可见**的 id 不得凭空出现;
+        // 空切片 ⇒ 空标志（否则界面会读到错位的下标）。
+        let visible = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut sel = Selection::new();
+        assert_eq!(
+            sel.flags_for(&visible),
+            vec![false, false, false],
+            "空选区全为 false"
+        );
+        sel.select_only("b");
+        assert_eq!(sel.flags_for(&visible), vec![false, true, false]);
+        sel.insert("c");
+        assert_eq!(sel.flags_for(&visible), vec![false, true, true]);
+        // 选中一个**不在可见切片里**的 id ⇒ 对标志毫无影响（它只是看不见而已）。
+        sel.insert("zzz");
+        assert_eq!(sel.flags_for(&visible), vec![false, true, true]);
+        // 顺序必须**按切片**而不是按选区（BTreeSet 的顺序不能泄漏到标志里）。
+        let reordered = vec!["c".to_string(), "a".to_string(), "b".to_string()];
+        assert_eq!(sel.flags_for(&reordered), vec![true, false, true]);
+        // 空切片 ⇒ 空标志。
+        assert!(sel.flags_for(&[]).is_empty());
+    }
+
     #[test]
     fn selection_replaces_on_click_and_clears_on_empty() {
         // 判据（规范"选择工具 · 左键单击"列）: 单击音符 ⇒ 选区**只有**它（替换, 不是累加）;
