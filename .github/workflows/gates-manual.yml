@@ -167,6 +167,26 @@ jobs:
           # 为什么用 example 而不是 criterion: 见 crates/yeban-render/examples/bench_render.rs 的文件头
           # (零新增依赖 + 可被门禁直接调用 + 判据跑在 debug 断言与并行测试里, 量不出有意义的数)。
           cargo run --release -p yeban-render --locked --example bench_render -- 32 30 2>&1 | tee /tmp/bench.log
+      - name: 'BASELINE-002 峰值常驻内存 (空/演示工程)'
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          {
+            echo "### BASELINE-002 峰值常驻内存（目标 ≤ 35 MB）"
+            echo
+            echo '```text'
+            # ① 主程序：加载演示工程后的峰值 RSS（托管 runner 上只能给**数量级**）
+            python3 scripts/gates/measure_rss.py --label app-headless-demo --timeout 300 -- \
+              cargo run --release -p yeban-app --locked -- --headless 2>&1 | tee -a /tmp/bench.log
+            # ② 模型层参考点：证明"模型本身的开销"远小于门禁阈值（对照用，不是达标依据）
+            python3 scripts/gates/measure_rss.py --label model-export-samples --timeout 300 -- \
+              cargo run --release -p yeban-model --locked --example export_schema_samples 2>&1 | tee -a /tmp/bench.log
+            echo '```'
+            echo
+            echo "**诚实边界**：读数取自 \`resource.getrusage(RUSAGE_CHILDREN).ru_maxrss\`（子进程峰值高水位）；"
+            echo "托管 runner 的绝对值只能给数量级，**达标判定必须在规范指定的参考机上复跑同一条命令**。"
+          } | tee /tmp/rss-summary.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: 'BASELINE-004 单步撤销时延 (p99)'
         run: |
           set -euo pipefail
