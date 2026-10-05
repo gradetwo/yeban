@@ -2681,3 +2681,36 @@ archive-form items (predicted in round 89, confirmed here).
 
 **Lesson**: the discipline earns its keep when applied to *our own tooling*, not just to the DAW. The measurable structure
 here was "one request at a time", and the fix cost ~20 lines.
+
+### Round 91: the bench lane's BASELINE-002 step FAILED — reverted, diagnosis recorded, better fix queued
+
+**What happened.** I rewrote the manual lane's `BASELINE-002` step so CI would measure the object the spec names
+(empty project + `--headless-idle`, i.e. a real `MainWindow`) instead of only `--headless` on the demo project.
+I dispatched the `bench` gate: run **`37292000410` = completed failure**, step
+`BASELINE-002 峰值常驻内存 (空/演示工程)` = exit 1.
+
+**The failure shape (evidence).** In `gh run view 37292000410 --log-failed`, the step's script is echoed under the
+`Run` group, then `shell: /usr/bin/bash -e {0}` / `env:` / `##[endgroup]`, and **0.07 s later** `##[error]Process
+completed with exit code 1` — with **no command output at all**. That is not a normal command failure; it is a death
+before the first `echo` produced visible output.
+
+**What I ruled out (each with a command, not a guess).**
+- **Not a syntax error**: I extracted the step's exact `run:` body from the YAML and ran `bash -n` on it -> OK.
+- **Not the block/pipeline structure**: I re-ran the same body locally with the heavy commands replaced by stubs
+  (`echo FAKE-*`), with `GITHUB_STEP_SUMMARY` set -> `exit 0`, and the summary tail printed correctly.
+=> The structure is sound; a **command inside the block** fails on the runner (or dies without emitting output).
+
+**Most likely cause (hypothesis, explicitly NOT yet verified).** The step now invokes `cargo run --release -p yeban-app`
+**four times**, and each `measure_rss.py` call carries `--timeout 300`. On a cold runner the **release build of the app
+plus Slint** plausibly exceeds that budget, and the harness then reports a bare non-zero exit. I am labelling this a
+hypothesis because I have not yet read a log line that proves it (the step emitted nothing).
+
+**What I did about it now.** Reverted `.github/workflows/gates-manual.yml` to the previously known-good step, so the
+lane is **not left red** while the real fix is prepared. The reverted file parses (`yaml.safe_load` OK).
+
+**Next step (queued, not yet done).** Move the measurement into a **script** under `scripts/gates/` (integrator turf)
+that: builds/downloads the binary **once** and reuses it for every reading (no four `cargo run --release` invocations);
+takes the binary path via an argument so it is **locally testable against the debug binary**; prints per-run diagnostics
+so a future failure is self-explaining; and only then have the workflow call it. Wiring CI to measure a new object
+without a locally reproducible script was the mistake — the same "instrument first, then trust" lesson this session
+keeps paying for.
