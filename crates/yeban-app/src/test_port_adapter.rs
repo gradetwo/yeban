@@ -1309,7 +1309,7 @@ fn frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness() {
     let size = Size::new(scene.viewport_width, scene.viewport_height);
     let registry =
         registry_to_tree(&ElementRegistry::from_view(&project_view)).expect("注册表必须能适配");
-    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
+    let port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
         host::build_main_window(&project_view, &scene)
     })
     .expect("Tier-1 平台 + 10 万音符主窗口");
