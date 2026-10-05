@@ -138,6 +138,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     let visible = view.visible_notes(scroll_x, viewport_width);
     // 把偏移**留在界面对象上**：撤销刷新要复用同一个值（账本第 200/201 轮）。
     ui.set_roll_scroll_x(scroll_x);
+    // `[UI-NOTE-001]` 步骤 ①：把裁剪窗口换算成 tick 上下界并发布（音高上下界待做, 见账本第 201 轮）。
+    let (min_tick, max_tick) = view.visible_tick_range(scroll_x, viewport_width);
+    ui.set_roll_min_tick(tick_to_i32_saturating(min_tick));
+    ui.set_roll_max_tick(tick_to_i32_saturating(max_tick));
     ui.set_note_ulids(strings(&visible.ulids));
     ui.set_note_velocities(lengths(&visible.velocities));
     ui.set_note_positions(lengths(&visible.positions));
@@ -451,6 +455,15 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
     }
 }
 
+/// `[UI-NOTE-001]` tick 值转为界面的 `i32` 属性：**饱和**而非回绕。
+///
+/// 天真的 `as i32` 会把超过 `i32::MAX` 的 tick 变成**负数** —— 视口下界变负会让裁剪核心
+/// 得到一个自相矛盾的范围，而且不会报错。饱和到 `i32::MAX` 至少是"很大"，语义上仍然单调。
+#[must_use]
+fn tick_to_i32_saturating(tick: u64) -> i32 {
+    i32::try_from(tick).unwrap_or(i32::MAX)
+}
+
 /// `[ROAD-M3-002]` 卷帘滚动的**状态推进**：把一次手势增量并入当前偏移。
 ///
 /// 抽成纯函数是为了可判据（回调本身需要 UI 线程与真实指针事件）；下限 0 表示**不滚到时间轴之前**。
@@ -540,5 +553,19 @@ mod tests {
             "负偏移必须被夹到 0"
         );
         assert!((advance_scroll(8.0, -100.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tick_to_i32_saturating_does_not_wrap() {
+        // 牙: 超过 i32::MAX 的 tick 必须**饱和**, 不得变成负数（`as i32` 会回绕成负）。
+        assert_eq!(super::tick_to_i32_saturating(0), 0);
+        assert_eq!(super::tick_to_i32_saturating(24_000_000), 24_000_000);
+        assert_eq!(super::tick_to_i32_saturating(i32::MAX as u64), i32::MAX);
+        assert_eq!(super::tick_to_i32_saturating(i32::MAX as u64 + 1), i32::MAX);
+        assert_eq!(super::tick_to_i32_saturating(u64::MAX), i32::MAX);
+        assert!(
+            super::tick_to_i32_saturating(u32::MAX as u64) > 0,
+            "不得为负"
+        );
     }
 }
