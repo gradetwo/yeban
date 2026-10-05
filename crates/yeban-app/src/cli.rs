@@ -121,9 +121,10 @@ pub fn usage_text() -> String {
                            字节由 yeban-render 的**唯一** SMF 编码器产出 (ADR-0001 D47),
                            与 --export-elements / --save-as 共用同一份**原子**落盘实现
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
-  --project-sample <default|filled>
+  --project-sample <default|filled|empty>
                            选择\"没有 --open 时\"用哪个工程 (默认 default);
-                           重复给以最后一个为准
+                           empty = 真的 0 轨空工程 (规范 空工程空闲常驻内存 [BASELINE-002]
+                           所指的那个对象); 重复给以最后一个为准
 
 运行形态:
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
@@ -201,16 +202,29 @@ pub fn version_text() -> String {
 
 /// `--project-sample` 可选的内置工程样本。
 ///
-/// 两个样本走的是**同一条**投影 + 注入路径（`bridge::from_project` → `host::apply_view`），
+/// 三个样本走的是**同一条**投影 + 注入路径（`bridge::from_project` → `host::apply_view`），
 /// 区别只在"哪个 `YebanProjectV1`"。这就是本工作线的验收形态：换工程 ⇒ 换像素，
 /// 中间没有任何"演示数据分支"。
+///
+/// `empty` 存在的理由（`BASELINE-002`）：规范的判据句是"**空**工程空闲常驻内存 ≤ 35 MB"，
+/// 而 `default` 是 6 轨演示夹具、`filled` 更重 —— 两者都**不是**规范所指的那个对象。
+/// 没有 `empty` 时，`scripts/gates/measure_rss.py` 量不到规范的对象；有了它，
+/// 集成者可以在**同一条命令**上分别打 `default` / `empty` 两个标签读数（见
+/// `docs/ledger/baseline-memory-notes.md`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Sample {
-    /// 演示夹具（`bridge::demo_project()`）。
+    /// 演示夹具（`bridge::demo_project()`，6 条普通轨 + 主总线）。
     #[default]
     Default,
     /// `yeban-model` 的规范级丰富样本（`samples::filled_project()`）。
     Filled,
+    /// `yeban-model` 的规范级**空**工程样本（`samples::default_project()`）。
+    ///
+    /// 逐项事实（由判据 `empty_sample_is_a_zero_track_project_with_witness` 钉住）：
+    /// `tracks` 为空、`master_bus_track_id` 为 nil、无片段 / 场景 / 段落 / 资产 / `history.dag`。
+    /// 它在模型侧**合法且可读**（`YebanProjectV1::validate()` 接受 0 轨工程），因此
+    /// app 侧不需要任何"空工程特例" —— 停用某个样本就等于没量到这个对象。
+    Empty,
 }
 
 impl Sample {
@@ -220,6 +234,21 @@ impl Sample {
         match self {
             Self::Default => "default",
             Self::Filled => "filled",
+            Self::Empty => "empty",
+        }
+    }
+
+    /// 报告行里对"这是哪种内置工程"的措辞。
+    ///
+    /// `empty` **不**沿用 `default` 那句"内置演示工程"：它真的是 0 轨空工程，
+    /// 输出里不能出现与事实相反的描述（本仓库的第一条纪律是不写假话）。
+    /// `default` / `filled` 的措辞保持**逐字不变** —— 改它们要同步
+    /// `tests/cli_contract.rs` 与其它工作线的账本，超出本线范围。
+    #[must_use]
+    pub const fn origin_label(self) -> &'static str {
+        match self {
+            Self::Empty => "内置空工程 0 轨",
+            Self::Default | Self::Filled => "内置演示工程",
         }
     }
 
@@ -229,6 +258,7 @@ impl Sample {
         match self {
             Self::Default => crate::bridge::demo_project(),
             Self::Filled => yeban_model::samples::filled_project(),
+            Self::Empty => yeban_model::samples::default_project(),
         }
     }
 }
@@ -257,7 +287,7 @@ pub struct Options {
     pub open: Option<PathBuf>,
     /// `--save-as <path>`：把当前工程原子落盘到这里。
     pub save_as: Option<PathBuf>,
-    /// `--project-sample <default|filled>`。
+    /// `--project-sample <default|filled|empty>`。
     pub sample: Sample,
 }
 
@@ -335,7 +365,7 @@ impl fmt::Display for ParseError {
             }
             Self::UnknownSample(sample) => write!(
                 formatter,
-                "未知的工程样本 `{sample}` (可用: default|demo|filled)"
+                "未知的工程样本 `{sample}` (可用: default|demo|filled|empty)"
             ),
         }
     }
@@ -431,6 +461,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.sample = match value.as_str() {
                     "default" | "demo" => Sample::Default,
                     "filled" => Sample::Filled,
+                    "empty" => Sample::Empty,
                     other => return Err(ParseError::UnknownSample(other.to_owned())),
                 };
             }
@@ -513,6 +544,9 @@ impl ProjectSource {
     ///
     /// 样本那一行**必须**明写"未读任何文件"：`--save-as` 不带 `--open` 时，
     /// 用户最容易误以为"它保存的是某个默认工程文件"。
+    ///
+    /// "哪种内置工程"的措辞由 [`Sample::origin_label`] 给（`empty` = 0 轨空工程，
+    /// 不是演示工程）。
     #[must_use]
     pub fn report_line(&self) -> String {
         match self {
@@ -521,8 +555,9 @@ impl ProjectSource {
                 path.display()
             ),
             Self::Sample(sample) => format!(
-                "project-source: sample={} (内置演示工程; 未给 --open ⇒ 未读任何文件)",
-                sample.name()
+                "project-source: sample={} ({}; 未给 --open ⇒ 未读任何文件)",
+                sample.name(),
+                sample.origin_label()
             ),
         }
     }
@@ -535,7 +570,11 @@ impl ProjectSource {
                 format!("{} (format={DOCUMENT_FORMAT})", path.display())
             }
             Self::Sample(sample) => {
-                format!("sample={} (内置演示工程, 不是从文件打开的)", sample.name())
+                format!(
+                    "sample={} ({}, 不是从文件打开的)",
+                    sample.name(),
+                    sample.origin_label()
+                )
             }
         }
     }
@@ -1642,6 +1681,77 @@ mod tests {
         assert_ne!(filled_project, read_back);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 37b: `--project-sample empty` = 真的 0 轨空工程（BASELINE-002 的取样对象）
+    // ------------------------------------------------------------------
+
+    /// `BASELINE-002` 判据句是"**空**工程空闲常驻内存 ≤ 35 MB"。本判据钉住两件事：
+    ///
+    /// ① `empty` 样本**真的是**空工程（0 轨 —— 不是"某个更小的演示工程"）；
+    /// ② 无头路径**真的把它打印出来**（`project-counts:` 的轨道数是见证），
+    ///    且与 `default` 的读数**不同**（否则就是空转，读数函数返回常数也能"绿"）。
+    #[test]
+    fn empty_sample_is_a_zero_track_project_with_witness() {
+        let empty = Sample::Empty.project();
+        assert_eq!(Sample::Empty.name(), "empty", "命令行取值必须是 `empty`");
+        assert_eq!(
+            empty,
+            YebanProjectV1::default(),
+            "empty 必须就是模型侧的规范空工程样本（不是另一份手写夹具）"
+        );
+        assert!(empty.tracks.is_empty(), "empty 的轨道集合必须为空");
+        assert!(
+            empty.master_bus_track_id.is_nil(),
+            "0 轨工程没有主总线身份（validate 的 0 轨分支要求它是 nil）"
+        );
+        assert!(
+            empty.clip_pool.is_empty() && empty.scenes.is_empty() && empty.sections.is_empty(),
+            "空工程不许夹带片段 / 场景 / 段落"
+        );
+        empty
+            .validate()
+            .expect("0 轨空工程必须通过模型层校验（合法且可读）");
+
+        // 对照：`default` = 6 条普通轨 + 主总线（`tracks-all` **含**主总线 ⇒ 7）。
+        let demo = Sample::Default.project();
+        assert_eq!(demo.tracks.len(), 7, "演示夹具的轨道数变了 ⇒ 本判据需同步");
+        assert_eq!(demo.tracks.len() - 1, 6, "default 的普通轨必须是 6 条");
+
+        // 见证：同一条无头命令分别打两个样本的读数。
+        let report = |sample: &str| {
+            let options = parse(&[
+                "--project-sample".to_owned(),
+                sample.to_owned(),
+                "--headless".to_owned(),
+            ])
+            .expect("解析");
+            joined(&run_batch(&options).expect("无头自检必须成功"))
+        };
+        let empty_text = report("empty");
+        assert!(
+            empty_text.contains("project-counts: tracks-all=0 master-track=0"),
+            "empty 的轨道数见证必须是 0（tracks-all 含主总线 ⇒ 普通轨 = 0）:\n{empty_text}"
+        );
+        assert!(
+            empty_text.contains("project-source: sample=empty (内置空工程 0 轨"),
+            "来源行必须如实说明这是空工程（不许写成演示工程）:\n{empty_text}"
+        );
+        assert!(
+            empty_text.contains("view-counts: tracks=0 master=0"),
+            "0 轨空工程必须**能**被投影（不是被特判跳过、也不是投影失败被吞掉）:\n{empty_text}"
+        );
+
+        let demo_text = report("default");
+        assert!(
+            demo_text.contains("project-counts: tracks-all=7 master-track=1"),
+            "default 的对照读数必须是 7（6 普通 + 1 主总线）:\n{demo_text}"
+        );
+        assert_ne!(
+            empty_text, demo_text,
+            "两个样本必须给出不同的读数（相同 ⇒ 模式没生效，见证是空转）"
+        );
     }
 
     // ------------------------------------------------------------------

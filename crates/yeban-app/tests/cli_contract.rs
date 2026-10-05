@@ -242,6 +242,57 @@ fn slint_backend_headless_sentinel_alone_keeps_the_window_closed() {
     );
 }
 
+/// 判据 B3b: `--project-sample empty` 在**真二进制**上是 0 轨，`default` 是 6 条普通轨。
+///
+/// 为什么这条必须走真二进制：`BASELINE-002` 的读数是**进程级**的
+/// （`scripts/gates/measure_rss.py -- <本二进制> --project-sample empty --headless`），
+/// 所以"取样对象真的是空工程"必须在同一条进程命令上被钉住 —— 单元判据证明不了 argv 与
+/// 二进制一致。`tracks-all` **含**主总线，因此普通轨数 = `tracks-all - master-track`。
+#[test]
+fn empty_sample_reports_zero_tracks_and_default_reports_six() {
+    let empty = invoke(&["--project-sample", "empty", "--headless"]);
+    assert_eq!(empty.code, 0, "stderr={}", empty.stderr);
+    let counts = line_with(&empty.stdout, "project-counts:").expect("必须有 project-counts 行");
+    assert_eq!(
+        field(counts, "tracks-all").as_deref(),
+        Some("0"),
+        "empty 必须真的是 0 轨: {counts}"
+    );
+    assert_eq!(
+        field(counts, "master-track").as_deref(),
+        Some("0"),
+        "0 轨工程没有主总线: {counts}"
+    );
+    assert!(
+        empty.stdout.contains("project-source: sample=empty"),
+        "来源必须明写是 empty 样本:\n{}",
+        empty.stdout
+    );
+    assert!(
+        empty.stdout.contains("内置空工程 0 轨"),
+        "输出不许把 0 轨空工程说成演示工程:\n{}",
+        empty.stdout
+    );
+
+    let demo = invoke(&["--project-sample", "default", "--headless"]);
+    assert_eq!(demo.code, 0, "stderr={}", demo.stderr);
+    let counts = line_with(&demo.stdout, "project-counts:").expect("必须有 project-counts 行");
+    let all: usize = field(counts, "tracks-all")
+        .expect("tracks-all")
+        .parse()
+        .expect("轨道数必须是整数");
+    let master: usize = field(counts, "master-track")
+        .expect("master-track")
+        .parse()
+        .expect("主总线计数必须是整数");
+    assert_eq!(master, 1, "default 必须有主总线: {counts}");
+    assert_eq!(all - master, 6, "default 必须是 6 条普通轨: {counts}");
+    assert_ne!(
+        empty.stdout, demo.stdout,
+        "两个样本的读数不许相同（相同 ⇒ 见证是空转）"
+    );
+}
+
 /// 判据 B3: `--open` 真容器 ⇒ 打印的读数与工程一致（轨道 / 音符 / 历史 / 资产）。
 #[test]
 fn open_reports_the_real_project_counts() {

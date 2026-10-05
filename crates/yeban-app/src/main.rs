@@ -12,7 +12,7 @@
 //! | `yeban-app --export-midi <path>` | 把当前工程导出成标准 MIDI 文件（SMF 1，ADR-0001 **D47** 指定的唯一出口），字节出自 `yeban-render` 的**唯一** SMF 编码器 |
 //! | `yeban-app --dump-elements` / `--export-elements <path>` | 语义元素清单打到 stdout / 原子写到文件 |
 //! | `yeban-app --print-shortcuts` | 快捷键策略表（供 CI 与人类核对） |
-//! | `yeban-app --project-sample <default\|filled>` | 选择"没有 `--open` 时"用哪个工程（默认 `default` = `bridge::demo_project()`） |
+//! | `yeban-app --project-sample <default\|filled\|empty>` | 选择"没有 `--open` 时"用哪个工程（默认 `default` = `bridge::demo_project()`，6 轨；`empty` = 真的 0 轨空工程，即 `BASELINE-002` 所指的那个对象） |
 //! | `yeban-app --version` / `--help` | 真实版本 / 完整用法（含全部开关、组合语义、退出码） |
 //!
 //! 命令行语法、用法文本、报告格式与退出码**全部**住在 `yeban_app::cli`（零 Slint 依赖），
