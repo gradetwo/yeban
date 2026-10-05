@@ -197,6 +197,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::wire_input(&ui, Rc::clone(&input));
     // 撤销的两条界面入口（弹窗开关 + "撤销一步"按钮）都汇到**同一个** `UndoPort`。
     host::wire_undo(&ui, &undo_port);
+    // `[UI-NOTE-003]` 卷帘编辑入口（铅笔）：与撤销端口共用同一实现 ⇒ 可撤销是构造上的。
+    host::wire_roll_edit(&ui, &undo_port);
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
     host::apply_undo(&ui, &undo_port);
     let undo_display = undo_port.display();

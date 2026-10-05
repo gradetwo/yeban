@@ -444,6 +444,86 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
     }
 }
 
+/// `[UI-NOTE-003]` 卷帘的**编辑入口**（目前只接铅笔）：把一次点击变成**可撤销**的模型操作。
+///
+/// 规则（账本第 234/237 轮）：音符进"**点击 tick 所在片段**"、落在"**摆放该片段的轨道**"；
+/// **位置不在任何片段内 ⇒ 拒绝**（不新建片段）。撤销与提交图由 `commit_ops` 提供, 无需另写反向逻辑。
+/// `grid` 取 1/16（240 tick）作为当前吸附口径 —— 吸附设置将来若可配, 它应来自配置而不是这里。
+pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let port = Rc::clone(port);
+    ui.on_clicked(move |x, y| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 只在铅笔时动作：工具由卷帘按钮设置, 镜像到窗口后宿主可读（账本第 258 轮）。
+        let pencil_digit = i32::from(yeban_app_wire_pencil_digit());
+        if ui.get_active_tool() != pencil_digit {
+            return;
+        }
+        let scroll = ui.get_roll_scroll_x();
+        let width = slint::ComponentHandle::window(&ui).size().width as f32;
+        let project = port.project();
+        let Ok(view) = ViewState::from_project(&project) else {
+            return;
+        };
+        let Some(plan) = view.pencil_plan(scroll, x, y, ROLL_SNAP_GRID_TICKS) else {
+            return;
+        };
+        // 解析片段与所属轨道（同一次扫描）。
+        let mut target: Option<(yeban_model::EntityId, yeban_model::EntityId)> = None;
+        for (track_id, track) in &project.tracks {
+            let triples: Vec<(u64, u64, yeban_model::EntityId)> = track
+                .clips
+                .values()
+                .map(|placement| {
+                    (
+                        placement.start_tick,
+                        placement.duration_ticks,
+                        placement.clip_id,
+                    )
+                })
+                .collect();
+            if let Some(clip_id) = crate::bridge::clip_at_tick(&triples, plan.start_tick) {
+                target = Some((*track_id, clip_id));
+                break;
+            }
+        }
+        let Some((track_id, clip_id)) = target else {
+            // 拒绝：位置不在任何片段内（第 234 轮的决定）。**不**新建片段。
+            eprintln!(
+                "铅笔：{tick} 处没有片段, 编辑被拒绝",
+                tick = plan.start_tick
+            );
+            return;
+        };
+        let op =
+            crate::bridge::plan_to_add_note(plan, track_id, clip_id, yeban_model::EntityId::new());
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        if port
+            .commit_ops(now_ms, "pencil: add note", vec![op])
+            .is_err()
+        {
+            return;
+        }
+        // 重新投影, 让新音符出现在界面上（与 `refresh_undo` 同一手法）。
+        if let Ok(refreshed) = ViewState::from_project(&port.project()) {
+            apply_view(&ui, &refreshed, width, scroll);
+        }
+    });
+}
+
+/// 铅笔工具的**数字键值**（`Tool::from_digit` 的入参）—— 与 `active-tool` 的口径一致。
+const fn yeban_app_wire_pencil_digit() -> u8 {
+    2
+}
+
+/// 当前吸附网格（tick）：1/16 = 240。将来若可配, 应由配置注入。
+const ROLL_SNAP_GRID_TICKS: u64 = 240;
+
 /// 撤销动作之后把界面拉回**模型读数**（显示态）+ **投影**（工程画面）。
 ///
 /// `reproject` 为 `false` 时只回写显示态：`toggle-undo-tree` 不改工程，
