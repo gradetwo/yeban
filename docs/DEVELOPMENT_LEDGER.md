@@ -5535,3 +5535,29 @@ thing three times. What matters is that the queue is being read back, not that e
 Still queued or in progress at this point: `855b43d` (hit testing), `6f02dd8` (selection flags), `13e04e5` (selection model),
 `6aac172` (click callback declaration) and `46e1e0a` (the host-wiring recipe). For those five, only the local evidence stands:
 `light`, the `--all-targets` clippy, and 183 passing lib criteria.
+
+### Round 225: the note-selected injection attempt failed and was reverted - with the two facts the next attempt needs
+
+Attempted the recipe from round 223 (step 3) in one pass across three `.slint` files. It failed, I reverted the three files, and the
+tree is green with a clean working tree. Recording exactly what is known and what is not, because the honest version here is more
+useful than a tidy one:
+
+**Fact 1 - the note element already has border properties.** My patch was defensive: it looked for the note rectangle's
+`height: 12px;` and only inserted `border-width` / `border-color` lines if the block had none. It reported "块内已有 border-, 未改样式",
+so the selected state CANNOT be expressed by adding border lines - the existing border expression is what must become conditional, or
+the selection needs a different visual channel (an overlay rectangle on top of the note). That is a read-before-write task.
+
+**Fact 2 - I do not know why the build broke.** Slint failed at `app.slint:504:33`, and my grep pattern for the error text did not
+capture it, so the cause is genuinely unknown rather than diagnosed. What I did instead was revert, because a broken `.slint` blocks
+the whole crate and this session's standing rule is that an unverified change must not be left in the tree. Saying "unknown" is the
+honest report; inventing a cause from the line number would not be.
+
+**What the next attempt must do differently**: (a) read the FULL Slint error before patching - run
+`cargo check -p yeban-app` and look at the text, not a filtered subset; (b) read the note rectangle's existing `border-*` lines and
+the `Tokens` it uses before deciding how selection is drawn; (c) add the property level by level - roll, then ConsoleTabs, then
+MainWindow - compiling after each, since the three-level chain has now broken the build twice in this session (rounds 192 and 225)
+and a staged compile is what catches it at the level that is wrong.
+
+**State after the revert**: working tree clean, HEAD unchanged from `c0e8ec3`, `cargo check -p yeban-app --all-targets` Finished,
+and the end-to-end click criterion from round 501 still passing (it observes `selected-note-count`, which does not depend on this
+visual array).
