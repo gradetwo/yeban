@@ -151,6 +151,29 @@ jobs:
           fi
 
 
+      - name: 上游映射审计（30 个乐器，各自首个条目 HEAD；证明"推导路径"不是只在本机成立）
+        run: |
+          set -euo pipefail
+          # 为什么需要它: 清单的 `relative_path` 是**仓库内**路径，上游路径是**推导**的，两者不保证一一对应
+          # （实测 `karoryfer-meatbass` / `karoryfer-emilyguitar` 上游少一层目录）。本步骤逐个乐器验一次，
+          # 把"映射对不对"从"我本机跑过"变成 **CI 每次都判**。
+          # 退出码: 0 = 全部可取回或已登记剥离; 1 = 有乐器在 0..2 段剥离内都取不回（真缺陷）;
+          #         2 = 全部/部分缺 repo/pin 且非 archive 形态（**无法判定**，不是判失败）。
+          set +e
+          python3 scripts/dev/audit-upstream-paths.py
+          rc=$?
+          set -e
+          echo "audit exit=$rc"
+          if [ "$rc" -eq 0 ]; then
+            echo "上游映射审计通过（26 直接 + 2 已登记剥离 + 2 archive 形态）"
+          elif [ "$rc" -eq 2 ]; then
+            echo "::error::审计返回 2（无法判定）—— 缺 repo/pin 的乐器要人补登记，不许当通过"
+            exit 1
+          else
+            echo "::error::上游映射审计发现真缺陷（exit=$rc）"
+            exit 1
+          fi
+
       - name: 采样按 pin 取回并逐字节校验（联网, 有界；证明登记可复核）
         run: |
           set -euo pipefail
