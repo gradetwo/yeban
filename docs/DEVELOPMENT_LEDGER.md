@@ -4274,3 +4274,42 @@ showed them as untracked files that a careless `git add -A` would have landed. F
 tool's default when no `outDir` is given) should write into a temporary directory, and the crate directory must be asserted
 clean. Until that is done, any run of this test suite leaves artifacts behind, which is exactly the kind of thing the
 repository's "no unregistered binaries" red line exists to prevent.
+
+### Round 165: the D56 MCP tool is red on CI - because yeban-mcp -> yeban-engine drags the ALSA audio stack into MCP
+
+Verdict read (run `37335559150` @ `c0d6780`): **completed failure**
+
+| leg | verdict |
+| :--- | :--- |
+| `checks (fmt / 红线守卫 / schema)` | **failure `steps=12`** |
+| `windows (yeban-mcp / yeban-model)` | **failure `steps=9`** |
+| `rust (workspace 全量)` | **failure `steps=10`** |
+| `plan` / `deny` / `lockfile` | success |
+
+The `checks` log names the cause outright:
+
+```
+error: failed to run custom build command for `alsa-sys v0.4.0`
+  thread 'main' panicked at .../alsa-sys-0.4.0/... pkg_config::Error
+```
+
+**Diagnosis**: my new dependency edge `yeban-mcp -> yeban-engine` pulls the engine's audio stack (cpal/alsa) into the MCP crate,
+so any leg that builds `yeban-mcp` now needs ALSA development files. Locally that is invisible because macOS has no ALSA; on
+Linux the step fails at `pkg_config`. So the failure is not a missing package to be papered over - it is a **design smell**:
+the MCP side needed only the ~200-line collector, and I reached it by depending on a whole audio engine.
+
+**Decision (mine, under the round-146 delegation): fix the structure, not the CI image.** Move the collector into its own
+lightweight crate `crates/yeban-diagnostics` whose only dependencies are `zip`, `sha2` and `serde_json` (all already declared
+in the root manifest, so still zero new external crates). Then:
+- `yeban-app` and `yeban-mcp` both depend on `yeban-diagnostics` - which is also the cleanest way to satisfy D56 criterion 4
+  (one implementation, two entry points), because the shared crate is *smaller* than either surface;
+- `yeban-mcp` drops its `yeban-engine` edge again, so MCP stops needing ALSA at all;
+- the engine keeps its own audio dependencies where they belong.
+
+The alternative - adding `libasound2-dev` to more CI steps - was rejected: it would make the MCP crate's build require an audio
+device library for a feature that only writes a zip, and would leave the design smell in place.
+
+Recorded for the next round: create the crate (Cargo.toml + lib.rs, moving `crates/yeban-engine/src/diagnostics.rs`), add it
+to the workspace members and to both dependents, remove it from `yeban-engine`, re-run `cargo-local.sh test` for the three
+crates, then clippy, then `light` (unfiltered), then commit and dispatch. The D56 criteria 1/2/3/5 and the UI entry point remain
+open as before.
