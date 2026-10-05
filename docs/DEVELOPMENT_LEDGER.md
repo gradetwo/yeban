@@ -5593,3 +5593,31 @@ column was not checked.
 Verdict 29 is recorded here rather than in its own commit, applying the round-222 rule: the run @ `6aac172` (the click callback
 declaration) = **completed success**, so the three-level click chain is CI-verified. Completed full-workspace verdicts on main:
 **twenty-nine**. Still unread: `c0e8ec3` in progress plus `660e583`, `87cb35a`, `0ac4930`, `2df5741`, `6ff0628` queued.
+
+### Round 229: the queue is NOT congested - measured, and it corrects my own framing from round 227
+
+Round 227 said "the queue stays roughly constant rather than draining" and implied the runners were the constraint. Measuring the
+age of each queued run instead of assuming:
+
+```
+ae27ada queued       0.2 min
+6ff0628 queued       1.4 min
+2df5741 queued       1.7 min
+0ac4930 queued       2.1 min
+87cb35a queued       3.0 min
+660e583 queued       4.7 min
+c0e8ec3 in_progress  7.3 min
+```
+
+Every queued run is minutes old, i.e. it is one of MY recent pushes - GitHub is not backed up at all. The real arithmetic is the
+other way round: a full CI run takes about **26 minutes** of wall clock (measured in round 209 from a run's create-to-complete
+time), while I have been pushing roughly once a minute. A backlog therefore grows about **26x faster than it drains**, and no amount
+of runner capacity would fix that - only a lower push rate would.
+
+**Corrected guidance, which supersedes the round-222 wording**: pushing more often than once per CI cycle (~26 minutes) guarantees a
+growing backlog. Either batch changes to that cadence, or push more often and accept the backlog knowingly - but do not describe the
+backlog as congestion, because the measurement says it is self-inflicted. This is the third time in this session that measuring
+rather than narrating changed the conclusion (rounds 180 and 209 were the others).
+
+I am recording this as a standalone commit rather than folding it into the next code change, deliberately breaking my own round-222
+batching rule: an unrecorded measurement is lost when a session ends, and the run this commit costs is worth less than that.
