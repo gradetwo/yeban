@@ -6676,3 +6676,30 @@ which is the one fact that could still widen the change).
 **Not done in this round for the same reason as the last four**: my session budget is nearly spent and the CI stall means even correct local
 criteria would receive no hosted verdict. Recording the three-edit shape is worth more than starting it badly - and it means a successor can
 do it in one focused pass rather than re-deriving what the injection pattern is.
+
+### Round 271: the engine-readings mirror is never injected in production - and that reorders the loudness work
+
+The read round 270 asked for, with a result that changes the order of the work rather than its size:
+
+`EngineReadings` lives in MCP's `Domain` and is filled only through `set_engine_readings`. Searching every `.rs` under `crates/` for that
+setter and for `EngineReadings {` finds exactly **four** call sites, and **all four are in `crates/yeban-mcp/tests/extension_tools.rs`**.
+There is no production caller: the mirror that `query_engine_state` is supposed to report is, outside tests, never populated.
+
+**Consequences, and the order they imply**:
+1. adding loudness and true-peak fields to a struct that production never fills would produce **fields that are always absent in the real
+   server** - the same "looks wired, is not" shape this session has recorded in the roll's tool state, the keyboard path and
+   `accessible-item-selected`. So it must NOT be done first;
+2. the correct first step is therefore **wiring the injection in production** - whoever owns the MCP server must read the engine's
+   `sample_rate`/`buffer_frames` (and later the loudness values) and call `set_engine_readings`. That is a separate, findable task: the
+   server binary is the thing to look at, and this session has not yet read it;
+3. only after that do the loudness fields make sense, and they stay the three-edit change round 270 described - they just land on a struct
+   that is actually populated.
+
+**What this says about the round-270 estimate**: the shape was right and the cost was understated, not wrong - one extra wiring step whose
+necessity was invisible until the setter's callers were counted. That is the second time in three rounds that counting a call site changed
+the plan (round 247's action handlers, this one), and both were found by grepping for the caller rather than by reading the definition.
+
+**Also worth flagging for whoever wires it**: `EngineReadings` is `Copy` + `Eq` with two `u32` fields today. Loudness values are floating-point
+and may be absent (no measurement yet), so the struct's derives and the field types will need a deliberate choice then - `Option<f32>`-shaped
+reads would keep "not measured yet" distinguishable from "measured silence", which is exactly the distinction the spec's metering section
+cares about.
