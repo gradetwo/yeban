@@ -7420,3 +7420,21 @@ generated in bulk. This is the method round 290 prescribed and rounds 294/295/29
 
 **State**: tree green and clean (`git status` empty, `light` passes, CI green through `44e0c95`). `yeban-midi` holds the codec and VLQ helper; the
 mapping layer and the MCP tool remain owed.
+
+
+### Round 301: the cleanup verified end to end - 1788 green after re-linking, and the disk pressure is gone
+
+Round 297 deleted `deps/*.o` (~6.8 GiB across 127,271 files), the test/example executables (~2.7 GiB, 187 files), `incremental/` and `examples/`, and
+verified only that `cargo check` stayed fast. The stronger verification is a full test run, since that forces every deleted artifact to be
+re-created:
+
+**1788 passed / 0 failed, with zero crates exiting non-zero** - identical to rounds 281 and 291, so the cleanup removed only disposable artifacts
+and the link/compile state was reconstructed correctly. This closes the cleanup as verified rather than plausible.
+
+**And the disk situation resolved itself**: free space went from 25 GiB to **149 GiB** between rounds, i.e. something outside this session released a
+large amount (the earlier 100%-full readings were not solely this workspace's build output). Worth recording because round 289's disk-full incident
+looked like a workspace problem - and the workspace part was real and fixable (20 GiB -> 8.2 GiB of target), but the system-wide pressure had
+another cause that has since cleared.
+
+**Consequence**: the environment is no longer a constraint, so future attempts at the mapping move can afford the generate-compile-fix loop's
+rebuild costs without watching disk.
