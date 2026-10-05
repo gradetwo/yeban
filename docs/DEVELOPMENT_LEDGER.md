@@ -6404,3 +6404,28 @@ first thing to check next round.
 
 **Also counted, because a new tool moves guards**: the feature-alignment table's MCP count (16 tools) and the registry's own criteria both
 need updating when a tool is added - round 240/537/539 showed how easily those counters drift out of step.
+
+### Round 261: the MCP parity question is answered, and the answer is a move down into yeban-model
+
+The read round 260 called decisive: `crates/yeban-mcp/Cargo.toml` depends on `yeban-diagnostics`, `yeban-model`, `yeban-theory` and small
+utility crates - and **not on `yeban-app`**. Its own comment states the rule rather than merely obeying it:
+
+> 依赖方向: yeban-mcp -> yeban-model. yeban-model 是纯数据模型 (零 GUI、零系统库).
+
+So `plan_to_add_note`, `NotePlan` and `clip_at_tick` - which live in `yeban-app::bridge` - are unreachable from MCP, and reaching them by
+adding `yeban-app` to MCP's dependencies would **violate the project's stated direction** (it would pull a GUI-bearing crate into the
+lightweight MCP side, which its own comment singles out as the thing to avoid).
+
+**Therefore the shared implementation must move DOWN, not sideways**: `NotePlan`, `plan_to_add_note` and `clip_at_tick` are pure model-
+domain logic - a plan is (start tick, pitch, duration), a placement lookup is a BTreeMap scan, and an `Op` is model vocabulary - so they
+belong in `yeban-model`, where both consumers already depend. `yeban-app` then uses them from there instead of owning them, and no second
+implementation is written. That is the only shape that satisfies "两侧同接、共用同一实现" without breaking the dependency rule.
+
+**What this implies for the work, and why it is not started at this point in the session**: the move touches `yeban-model`'s public API,
+every call site in `yeban-app` (the host's pencil path, the bridge criteria, the port criterion), and possibly the wiring guards that
+watch file/line anchors. It is a multi-file refactor with the same shape as the ones that cost this session rounds 520/521 when hurried -
+and its payoff is structural rather than visible, so doing it badly is worse than doing it later.
+
+**Consequence for the ledger's own accuracy**: until that move happens, the honest statement is that the UI side has the only
+implementation of the pencil construction, MCP has none, and D45-D55's "两侧同接" is **partially** delivered - implemented on one side,
+with the shared-home decision now made and recorded.
