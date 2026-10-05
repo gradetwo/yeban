@@ -6757,3 +6757,27 @@ the crate holding it also depends on `yeban-dsp` and `hound`, and `yeban-mcp`'s 
 **Honest status of the objective's MCP scope, for the record**: 自动化泳道 / 设备与引擎 / 音频导入 are present; **MIDI 导出** and **响度目标**
 are both blocked on architecture rather than implementation - one on splitting a lightweight crate, the other on who may hand engine state to
 an MCP client. Neither is blocked on effort or knowledge, and both options are written down with costs, so a ruling can be quick.
+
+### Round 274: checked the other PENDING rows for the same staleness - ROAD-M0-006 was the exception, not the pattern
+
+Round 594 corrected `ROAD-M0-006`, whose reason cited "未实现" for work that exists. The obvious follow-up question is whether the rest of the
+table has the same problem, so the seven PENDING rows and the 部分 rows were read against the tree:
+
+| row | reason | verdict |
+| :--- | :--- | :--- |
+| `ROAD-M-1-003` (VST3 version lock) | "没有依赖可锁" - `crates/yeban-vst/Cargo.toml` has an empty `[dependencies]`, description marks `[v2.0.0]` | **current** |
+| `ROAD-M-1-005` (attribution + git history) | 部分, with the attribution file's size and its process described | **current** |
+| `ROAD-M-1-006` (4 legal reviews) | none done, "连可签的草稿都还没有", citing `human-decisions.md` HD-34 | **current** (and it is the负责人's track) |
+| `ROAD-M0-001` (cpal stability) | 部分, with the structural capability now living in `yeban-engine/src/device.rs` | **current** |
+| `ROAD-M0-003` (Slint 120 FPS + <25MB) | PENDING: the spike is a shell and "CI 上无法可靠验证"(帧率需固定刷新率/无噪声机器) | **current** - and the same hardware dependency as HD-49 |
+| `ROAD-M1-005` (migration module) | "模块不存在" with `ls` proof | **current** |
+| `ROAD-M0-006` | corrected in round 594 | - |
+
+**So the tables are accurate now, and `ROAD-M0-006` was a single stale row rather than a symptom.** That distinction matters for how the
+finding is used: it means the project's tracking is generally trustworthy, and the right response to a specific contradiction is to correct
+that row - not to distrust the table wholesale or to re-verify all of it every session. (The opposite error, a table claiming MORE than
+exists, was found earlier in the session at `ROAD-M3-002` and `[UI-NOTE-002/005]`; both were corrected in the same spirit.)
+
+**Two rows share one real constraint, now stated in both places**: `ROAD-M0-003` and `ROAD-M0-006` both need a fixed-refresh-rate, low-noise
+machine for their headline numbers - i.e. the same thing HD-49 is waiting for. When that decision lands, both rows move together, and the
+BASELINE-series readings become meaningful in the same step.
