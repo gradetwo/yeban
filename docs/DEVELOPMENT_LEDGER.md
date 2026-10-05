@@ -5424,3 +5424,25 @@ Round 217 established the x half; this closes the question for the y half, by re
 So the spec's coordinate section has mechanical coverage on both axes, and the feature-alignment row's claim that coordinate mapping "landed in the projection" is backed by criteria rather than by assertion. **`[UI-NOTE-002]` therefore does not belong on any list of open gaps** - the open items in `ROAD-M3-002` are exactly three: the R-Tree index, the batch draw path, and the tool state machine.
 
 **Why this is worth recording at all**: the previous consolidation (round 214) listed "the coordinate mapping" together with the rest of `[UI-NOTE-001/003]` in one row, and a reader could reasonably have assumed the whole row was unfinished. Recording which half is judged and how keeps the remaining work from looking larger than it is - and the same discipline applies in the other direction, which is why "ROAD-M3-002's three remaining gaps" is stated as a number rather than as a range.
+
+### Round 219: verdict 20, a three-deep queue, and the state the next reader inherits
+
+Run **`37359857251` @ `35b5c84` = completed success** - the [UI-NOTE-002] gutter-trap record. Completed full-workspace verdicts on
+main now number **twenty**.
+
+Three runs were queued behind it when this was written (`37360189430` @ `c3bab2b`, the snapping commit; `37360247079` @ `b4422ca`;
+`37360424743` @ `21b508a`, the tool-matrix commit). Their results are unread, so nothing is claimed for those three commits beyond
+the local `light` pass and the `--all-targets` clippy - which is exactly the distinction this session has kept having to draw. The
+queue is a consequence of pushing each verified slice promptly rather than batching, which is the tradeoff I chose and would choose
+again: unread verdicts are better than unpushed work, as long as they are not mistaken for verified ones.
+
+**State the next reader inherits**, all of it local-verified and partly CI-verified:
+- gates: the five target MUST-GATEs plus MUST-GATE-014 wired; `BASELINE-001/002/004/005` wired; `BASELINE-003` PENDING on **HD-49**;
+  `BASELINE-006` PENDING by the human's deferral;
+- `ROAD-M3-002`: clipping, host consumption, viewport-relative positions, x-sorted index, four bound properties, both-axes
+  coordinate criteria, grid snapping, and the tool matrix (mode/cursor/click classification) are in - each with criteria. Open:
+  the R-Tree index, the batch draw path, and turning tool classifications into model edits (which must go through undo AND MCP to
+  keep the three-way alignment the matrix guard enforces);
+- five ledger guards plus the mechanical checks run in `light`; the newest, `check_viewport_bounds_wiring.py`, is tooth-tested and
+  CI-verified;
+- everything measured, decided or learned is in this ledger; the single human decision outstanding is HD-49, with ADR-0002 attached.
