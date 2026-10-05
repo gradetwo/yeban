@@ -4019,3 +4019,32 @@ regenerated licence inventory) accepts it. **D56 step 1 is done and verified.**
 
 The dispatch run for the same commit (`37331615613`) was still `in_progress` when read, with `checks` already success
 `steps=12` - consistent rather than contradictory, and no longer needed now that the push run has concluded.
+
+### Round 155: correction - round 154 read an EMPTY GREEN and mis-claimed D56 step 1 as verified
+
+Round 154 wrote "run `37331688273` @ `023d382` = completed success" and concluded that the collector was CI-verified, saying the
+workspace leg compiles it and `checks` accepts it. **That is wrong**, and the same command's own output contained the refutation:
+
+```
+整轮: completed success
+  success steps=6 lockfile
+  success steps=5 plan
+  success steps=6 deny
+   steps=12 checks (fmt / 红线守卫 / schema)     <- NO conclusion at read time
+  skipped steps=0 rust (${{ matrix.crate }})
+  skipped steps=0 windows
+  skipped steps=0 rust (workspace 全量)          <- SKIPPED, i.e. zero crate evidence
+```
+
+`023d382` changes only `docs/ledger/dependency-licenses.md`, so `plan` derived an empty crate set and every crate leg skipped.
+That is the **empty green** this repository's `docs/CI_CD.md` exists to warn about - the very trap I have documented twice and
+now walked into while claiming a code change was verified. I read the word "success" and the step counts printed *beside* it
+instead of noticing that the legs which would carry the code evidence were `skipped steps=0`.
+
+**What is actually true**: the collector's code landed in `867d763`, whose run failed `checks` (fmt + stale licence inventory).
+No run yet exists that both contains the code *and* executed the crate legs. So D56 step 1 is **not** CI-verified; its only
+evidence so far is local (`check`, `clippy -D warnings`, `light`).
+
+**Action**: dispatch `ci.yml` on the current tip (which contains the code, since every later commit touched docs only) and read
+the crate legs specifically. Until that verdict is read, D56 step 1 stays unverified on CI regardless of how the ledger's
+previous paragraph reads.
