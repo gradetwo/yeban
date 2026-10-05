@@ -3595,3 +3595,25 @@ rather than quietly counted as done.
 
 **Net effect**: the observability rule (G13, round 126) is in force, its four violations are fixed, and three of those fixes
 have now been exercised end-to-end by the lanes they belong to.
+
+### Round 130: sixth completed full-workspace verdict - and it covers the two new guards and the repaired gate row
+
+Run **`37308086599` @ `8038fdc` = completed success**:
+
+| leg | verdict |
+| :--- | :--- |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` - guards **and** doc-contract green with the repaired `MUST-GATE-014` row |
+| **`rust (workspace 全量)`** | **success `steps=10`** |
+| `windows (yeban-mcp / yeban-model)` | success `steps=8` |
+| `plan` / `deny` / `lockfile` | success |
+| `rust (${{ matrix.crate }})` | skipped by design |
+
+The `scripts/**` touch forced the workspace-wide plan again, so this is a full-tree verdict covering: the G14 Python-syntax
+half, the G13 step-observability rule, the four workflow fixes they demanded, the generated handoff snapshot, and the
+corrected gate row.
+
+Completed full-workspace verdicts on main now number **six**: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`,
+`37293138132` @ `f859ef6`, `37300697464` @ `2c4d285`, `37305461525` @ `f3a86d2`, `37308086599` @ `8038fdc`.
+
+Worth noting for the record: this verdict also confirms the doc-contract guard accepts the row I rebuilt after finding that
+my own summary number had drifted from the table for about twenty rounds - so the repaired state is not merely locally green.
