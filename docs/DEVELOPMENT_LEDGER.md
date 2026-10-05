@@ -3041,3 +3041,33 @@ requires reading an unfamiliar subsystem before the first write.
 
 **Next-worker note**: read `crates/yeban-mcp/src/`'s stdio/transport framing **first**, before promising a test shape -
 that reading step is precisely where this line stalled.
+
+### Round 104: reference machine designated (MacBook Pro M2 Max) => BASELINE-001/002/004 all measured IN TARGET, and the MCP stdio judge is written
+
+**Human ruling**: the reference machine is this **MacBook Pro M2 Max / Mac14,5 / 12 cores** (the spec names a 12-core
+M2 Pro / Ryzen 7840HS class). With that, the three "partial" gates stop being partial for want of an environment:
+
+| gate | spec bar | reference-machine reading | verdict |
+| :--- | :--- | :--- | :--- |
+| `BASELINE-001` | offline render >= 100x realtime | 32 tracks / 30 s: **231.6x** single-thread, **102.0x** Rayon-auto; **identical digest** `b5c46af2...d298f` in both modes | **in target** (auto has ~2% margin) |
+| `BASELINE-002` | empty project idle <= 35 MB | **25.91 MB** (release; empty + `--headless-idle` with a real `MainWindow`), floor 7.92 MB, 6-track demo 26.72 MB, witness `windows-created=1 rendered=true non-black-pixels=2073600` | **in target** |
+| `BASELINE-004` | single-step undo p99 <= 0.2 ms | p99: 0.125 / 0.125 / 0.084 / **2.708** us across four scenarios | **in target** (~74x margin) |
+
+**Honest boundaries kept**: the machine was **not idle** during these runs (load averages 9.32 and 8.73 for 001/002, 2.45
+for 004), which makes the figures *conservative*, not optimistic; and the earlier 34.38 MB figure for `BASELINE-002` was
+**debug**, which is why it must not be quoted as the release result.
+
+**`ROAD-M4-002`'s missing judge is now written and green**: `crates/yeban-mcp/tests/stdio_e2e.rs` spawns
+`env!("CARGO_BIN_EXE_yeban-mcp")` and speaks line-delimited JSON-RPC over stdio. Four assertions, all passing locally:
+1. `tools_list_over_stdio_is_real` - real process, real stdout, **12** contract tools, three names spot-checked;
+2. `open_then_query_over_stdio_succeeds` - writes a **real container** project (`write_project_container`, the same
+   fixture path the existing tests use), opens it and queries it over stdio, asserting `status=success` + a `data` payload;
+3. `unknown_path_is_refused_has_teeth` - a missing path must come back as `FILE_NOT_FOUND`, so #2 cannot be a false green;
+4. `initialize_is_not_implemented_yet` - a **deliberate negative assertion**: the binary's dispatch answers the MCP
+   handshake `initialize` with `-32601 方法 initialize 不存在`. Whoever implements the handshake will turn this red, which
+   forces the ledger row to be updated rather than quietly going green.
+
+**New finding this round**: that handshake gap is real and previously only implicit in prose. `tools/list` works, calls
+work, but a stock MCP client (which sends `initialize` first) would not get past its first request. `ROAD-M4-002` therefore
+stays **部分** - its stated gap (the spawn/tools-list/real-call judge) is closed, but the row's phrase "a real MCP client
+speaks stdio" is not yet true end-to-end, and the new test now pins exactly which byte of the protocol is missing.
