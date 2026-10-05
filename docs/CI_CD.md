@@ -170,3 +170,27 @@ PENDING 的共同原因只有两类：**被验证的功能还没实现**，或**
 4. **缓存别落进仓库**：`gh run view --log` 会在 `XDG_CACHE_HOME` 下落 `gh/run-log-*.zip`；
    相对路径会把它们写进仓库，而 `G12` 扫**文件系统**会一票否决。⇒ 一律用**仓库外绝对路径**。
 
+### 第五个坑：**"挂住的绿"（本仓已复现两次）**
+
+**症状**：`gh run view <id> --json status,conclusion` 长时间返回 `in_progress` / 空 conclusion，
+`updatedAt` **不再前进**，且某条腿停在 **`Post Run actions/checkout@v4 [pending]`**（post-job 清理）。
+`gh run cancel` 会**长时间不响应**（post-cleanup 阶段收不到取消），最终才落为 `cancelled`。
+
+**实测两次**（都不是失败，只是挂住）：
+- `line/origin-contract` 的 `6f771a7` 轮：`rust (workspace 全量)` 与 `windows`；
+- `line/engine-mirror-race` 的 `37281806141` 轮：**`rust (yeban-app)`**（同轮 `rust (yeban-engine)` 已 success）。
+
+**判定**：**不是"慢"，是 post-job 清理被孤儿进程挡住** —— 某个测试**派生的子进程仍持有 stdout/stderr**，
+Actions 的清理会一直等它 ⇒ 作业既不成功也不失败，判决要等**作业超时**（`rust` 作业 `timeout-minutes: 60`）。
+（同一现象在日志里还会表现为 `Cleaning up orphan processes`。）
+
+**处置（按序）**：
+1. **不要**把它当成"还在跑"继续等；先看 `updatedAt` 与最后一步是不是 `Post Run …`；
+2. `gh run cancel <id>`；若取消不落地，**推一个新提交**（`concurrency: cancel-in-progress` 会顺带收掉挂起那次）；
+3. **根因修复**（已列为待办的独立任务）：找出**泄漏子进程的测试**（`yeban-app` 与 workspace 全量测试里
+   凡是 `Command::spawn` / 线程 / Slint 事件循环处），判据必须是"**测试结束后没有存活子进程持有 stdout**"
+   —— **不许**用 `#[ignore]` 或缩短超时来掩盖。
+
+**为什么值得单列**：它直接吃掉本项目的**判决带宽**（一次挂起 = 最多 60 分钟没有判决），
+而本项目的核心纪律是"**未读回的判决等于没有判决**"。
+

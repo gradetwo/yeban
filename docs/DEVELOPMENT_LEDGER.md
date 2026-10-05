@@ -2434,3 +2434,16 @@ CAS 池字节不是 Op 载荷 ⇒ 撤销 `AddClip` 不回收池内字节；响�
 ⇒ **不是慢，是清理被孤儿进程挡住**（日志里出现过 `Cleaning up orphan processes`）；`gh run cancel` 对它**长时间不响应**。
 处置：`cancel`（会最终落地为 `cancelled`）+ 推新提交（`cancel-in-progress` 顺带收掉），**不把挂起当通过**。
 
+### 第 80 轮：**"挂住的绿"复现两次 ⇒ 判为可复现的既有缺陷**（不是 runner 抖动）
+
+第二次实测（`line/engine-mirror-race` 的 run `37281806141`）:
+```
+updatedAt = 2026-10-05T08:09:28Z        ← 不再前进
+IN-PROGRESS rust (yeban-app): Post Run actions/checkout@v4 [pending]
+```
+同轮 `rust (yeban-engine)` 已 **success `steps=10`**（它的修法与静止点等号判据在 CI 上真跑通过）。
+
+⇒ 与 `line/origin-contract` 的 `6f771a7` 轮（`rust (workspace 全量)` + `windows` 停在 post-cleanup）**同一形态**。
+判定: **某个测试派生的子进程仍持有 stdout/stderr ⇒ post-job 清理一直等它** ⇒ 作业既不成功也不失败，
+判决要等**作业超时**（`rust` 作业 60 分钟）。**处置与根因修复已写入 `docs/CI_CD.md` 的"第五个坑"。**
+
