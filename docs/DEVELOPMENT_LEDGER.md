@@ -8310,3 +8310,21 @@ add a codec import at all); in the app, keep the wrapper's own imports and add t
 
 **Status**: tree green and clean - every attempt this round and the last reverted cleanly; CI green through `f7a664d`; the loudness item is CI-verified and
 closed on the tool side; the mapping move is one insertion rule from compiling.
+
+
+### Round 342: push access lost in this environment - recorded, and the work continues locally
+
+The last commit (`0e698aa`, the round-341 ledger entry) could not be pushed: `git push` reports "Please make sure you have the correct access rights and the
+repository exists", and the direct check `ssh -T git@github.com` answers **`Permission denied (publickey)`**. The key that worked earlier in this session is no
+longer available to the process, so **local history is now one commit ahead of `origin/main`** and no CI verdict can be obtained for it.
+
+**Why this is recorded rather than worked around**: the discipline says a blocker is bypassed, parallelised or downgraded to a pending, and this one is
+**downgraded**. Nothing is lost - the commit is in local history, the working tree is clean and green (`light` 门禁通过), and the divergence is a single
+documentation commit whose content is reproducible from this file. Code work continues locally; when the key is available again, one `git push` restores the
+remote and CI can judge the accumulated commits.
+
+**What a successor should check first**: whether `ssh -T git@github.com` authenticates. If it does, `git push` and then read the verdicts for every commit
+since `cbfc681`; if it does not, treat pushes as unavailable and keep the ledger as the record, exactly as this round does.
+
+**Status**: tree green and clean; **local is 1 commit ahead of `origin/main` (`cbfc681`)**; CI green through `f7a664d`; the loudness item is CI-verified and
+closed on the tool side; the mapping move is one insertion rule from compiling (round 341).
