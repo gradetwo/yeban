@@ -396,13 +396,22 @@ panicked at crates\yeban-model\tests\model_isolation.rs:651:34:
 或把判据改成"仅 Unix 执行"（那会让 Windows 侧的路径语义**永远无人验证** ——
 而它恰恰是刚刚真实出事的地方）。
 
-修复后的判决读取命令与结论：
+修复后的判决（**已用 `ci-verdict.sh` 读回，不是预写**）：
+
+| run id | tip | 结论 |
+| :--- | :--- | :--- |
+| 37268168161 | `35f8ad0` | **RED**（`windows` 腿 3 条 `local_config*`，根因=夹具写死 macOS 路径） |
+| **37268589046** | **`4d497ef`** | **GREEN** —— `checks` / `deny` / `lockfile` / `plan` / **`windows`** / 7 条 `rust` 腿**全部 ✓**（windows 腿 2m1s，`rust (yeban-model)` 1m7s） |
+
+读取命令：
 
 ```text
-bash scripts/dev/ci-verdict.sh line/model-session-state
+bash scripts/dev/ci-verdict.sh --watch line/model-session-state
 ```
 
-⇒ 修复提交推送后由该命令读回；**未读回的一律记 `pending`，本文件不预写"通过"**。
+**登记这次判决的文档提交本身又会产生一个新 tip**，它的判决在本文件落笔时是 `pending`；
+按纪律**不预写"通过"**，需要时用同一条命令读回即可。`rust (workspace 全量)` 一直是 `-`（skipped）：
+该腿只在宽运行时才跑，本线是窄运行。
 
 ## 10. 修改文件与净行数
 
