@@ -147,7 +147,7 @@ pub fn build_receipt(options: &FixtureOptions) -> Result<Reading, String> {
     //
     // 本夹具是星形图（每条轨道 → Master，无中间总线），因此关键路径就是
     // "某条轨道自己的累计延迟"：`pdc::plan` 的 `arrival[master]` 取各入边
-    // `output_latency` 的最大值，而 Master 自身未上报延迟（记 0）。这与
+    // `output_latency` 的最大值，而 Master 自身没有延迟（必需字段，值就是 0）。这与
     // `RenderPlan::longest_path_frames()` 是**两个独立实现**，必须给出同一个数；
     // 不等时 `Receipt::validate` 会拒绝这份收据。
     let pdc_expected_frames = source_nodes
