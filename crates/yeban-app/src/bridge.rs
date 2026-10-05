@@ -317,6 +317,20 @@ pub fn tick_to_px(tick: u64, ticks_per_pixel: u64) -> Result<u32, BridgeError> {
     u32::try_from(tick / ticks_per_pixel).map_err(|_| BridgeError::PixelOverflow { tick })
 }
 
+/// `[UI-NOTE-003]` 铅笔（或双击）要创建的**音符参数**：起点、音高、时值。
+///
+/// 这是"决策"的结果, 还不是模型改动 —— 真正的插入必须经过撤销与 MCP（下一层），
+/// 于是那一层拿到的是一个**已经定好**的三元组, 不需要再猜任何东西。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotePlan {
+    /// 起始 tick（已按吸附网格对齐）。
+    pub start_tick: u64,
+    /// 音高（由点击所在泳道反推）。
+    pub pitch: u8,
+    /// 时值：规范规定"默认 1 拍" ⇒ 取工程的 `ppq`。
+    pub duration_ticks: u64,
+}
+
 /// `[UI-NOTE-003]` 力度车道的**几何**（界面侧的值集中在这里, 免得命中测试去猜）。
 ///
 /// 数值来自 `piano_roll.slint` 的柱体：`x: 56px + Tokens.space-5 + note-positions[i] + 30px`、
@@ -340,11 +354,16 @@ impl ViewState {
     /// 只做**决策**（纯函数, 可判据）：真正的模型突变要经过撤销与 MCP, 属于下一层。
     /// `None` 表示"这里画不了"（y 落在 16 条泳道之外, 或 x 出界）。tick 已按 `grid_ticks` 吸附。
     #[must_use]
-    pub fn pencil_plan(&self, scroll_x: f32, x: f32, y: f32, grid_ticks: u64) -> Option<(u64, u8)> {
+    pub fn pencil_plan(&self, scroll_x: f32, x: f32, y: f32, grid_ticks: u64) -> Option<NotePlan> {
         let lane = lane_at_y(y)?;
         let pitch = pitch_for_lane(lane)?;
-        let tick = self.snapped_tick_at(scroll_x, x, grid_ticks);
-        Some((tick, pitch))
+        let start_tick = self.snapped_tick_at(scroll_x, x, grid_ticks);
+        Some(NotePlan {
+            start_tick,
+            pitch,
+            // 规范 `[UI-NOTE-003]`：双击创建"**默认 1 拍**"音符 ⇒ 时值 = 工程的 `ppq`（不是硬编码 960）。
+            duration_ticks: self.ppq,
+        })
     }
 
     /// `[UI-NOTE-003]` **力度柱命中**：车道内的点落在哪个音符的力度柱上。
@@ -2731,15 +2750,15 @@ mod tests {
         let mut planned = 0_usize;
         for lane in 0..PITCH_LANE_COUNT {
             let y = pitch_lane_y(pitch_for_lane(lane).expect("车道有效")) + 1.0;
-            let (tick, pitch) = view
+            let plan = view
                 .pencil_plan(0.0, 480.0, y, grid)
                 .expect("车道内必能规划");
             assert_eq!(
-                pitch_lane(pitch),
+                pitch_lane(plan.pitch),
                 lane,
                 "规划出的音高必须落在被点的那条泳道"
             );
-            assert_eq!(tick % grid, 0, "规划的 tick 必须是网格倍数");
+            assert_eq!(plan.start_tick % grid, 0, "规划的 tick 必须是网格倍数");
             planned += 1;
         }
         assert_eq!(planned, PITCH_LANE_COUNT as usize, "16 条泳道都要能规划");
