@@ -27,7 +27,10 @@ on:
 
 concurrency:
   # 同一分支的新推送取消旧运行 —— 多线并行时这是最省算力的一条规则
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # ⚠ main 上让**每次 run 自成一组**（带上 run_id）：否则同一分组里"只允许一个排队 run",
+  # 连推或派发会互相顶掉 —— 实测 86c38fd / b73cab5 / 8eed2a0 三条 push run 与我自己派发的
+  # 37329844372 全部 `completed cancelled`, 腿全空。分支上仍按老办法(refl+共享组)省算力。
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.run_id || 'shared' }}
   # ⚠ main 上**不**取消在飞 run: 实测最近 40 条 main run 里 workspace 腿有 10 条连续 cancelled,
   # 而其余 success 多为 docs-only(crate 腿 steps=0 skipped) ⇒ main 的重腿长期没有完成态判决,
   # 「绿」的集合里混进大量零 crate 证据的 success(「空心绿」的系统性版本)。
