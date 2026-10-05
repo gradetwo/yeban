@@ -88,8 +88,8 @@ struct Active {
     saved_digest: String,
     /// 会话 CAS 资产池（`assets/{sha256}` 的**字节**，`BTreeMap` 保证键序确定）。
     ///
-    /// 打开容器时由 `assets/{sha256}` 填充；打开裸 JSON 兼容路径时为空
-    /// （裸 JSON 里**没有**资产字节，只有 `project.assets` 这一份元数据索引）。
+    /// 打开工程时由容器里的 `assets/{sha256}` 填充；`open_in_memory` 注入的会话
+    /// （夹具 / 测试）没有载荷字节，因此池为空、只有 `project.assets` 那份元数据索引。
     /// 保存时整体交给 `write_project_container` 逐条重算 SHA-256。
     assets: BTreeMap<AssetHash, Vec<u8>>,
     /// 持有的锁（内存会话没有工程文件时为 `None`）。
@@ -404,7 +404,7 @@ impl Domain {
 /// `yeban_open_project` 的**已校验**打开请求（[`plan_open`] 的产物）。
 ///
 /// 收成一个结构体而不是 9 个 `Plan::Open` 字段：打开一个容器要携带的东西是
-/// "工程 + 形态 + 历史 + 资产池"四类，平铺进枚举变体会让每一处 `match` 都变成
+/// "工程 + 历史 + 资产池"三类，平铺进枚举变体会让每一处 `match` 都变成
 /// 一长串 `..`。结构体也让"打开时必须一起决定的事"在类型上绑在一起。
 #[derive(Debug)]
 pub struct OpenRequest {
@@ -416,13 +416,11 @@ pub struct OpenRequest {
     pub project: Box<YebanProjectV1>,
     /// 工程内容的规范化摘要。
     pub digest: String,
-    /// 磁盘上的文件字节数（容器形态下是容器字节数）。
+    /// 磁盘上的文件字节数（**容器字节**）。
     pub bytes: u64,
     /// 是否已经打开了同一个工程（幂等）。
     pub already_open: bool,
-    /// 磁盘形态（容器 / 裸 JSON 兼容路径）。
-    pub format: store::ProjectFormat,
-    /// `history.dag` 恢复出的提交图谱（裸 JSON / 空图谱为 `None`）。
+    /// `history.dag` 恢复出的提交图谱（空图谱为 `None`）。
     pub history: Option<Box<CommitGraph>>,
     /// `assets/{sha256}` 解出的会话 CAS 资产池。
     pub assets: BTreeMap<AssetHash, Vec<u8>>,
@@ -593,11 +591,8 @@ impl Plan {
                 );
                 preview.insert("readOnly".to_owned(), Value::from(request.read_only));
                 preview.insert("bytes".to_owned(), Value::from(request.bytes));
-                preview.insert("format".to_owned(), Value::from(request.format.as_str()));
-                preview.insert(
-                    "container".to_owned(),
-                    Value::from(request.format.is_container()),
-                );
+                // `format` 只有一个取值（`ADR-0001 D43`）：常量，不是枚举。
+                preview.insert("format".to_owned(), Value::from(store::DOCUMENT_FORMAT));
                 preview.insert(
                     "historyCommits".to_owned(),
                     Value::from(
@@ -626,10 +621,7 @@ impl Plan {
             } => {
                 preview.insert("path".to_owned(), Value::from(path.display().to_string()));
                 preview.insert("bytes".to_owned(), Value::from(bytes.len()));
-                preview.insert(
-                    "format".to_owned(),
-                    Value::from(store::ProjectFormat::Container.as_str()),
-                );
+                preview.insert("format".to_owned(), Value::from(store::DOCUMENT_FORMAT));
                 preview.insert("containerEntries".to_owned(), Value::from(2 + assets));
                 preview.insert("assets".to_owned(), Value::from(*assets));
                 preview.insert("historyCommits".to_owned(), Value::from(*history_commits));
@@ -887,8 +879,8 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 
 /// `yeban_open_project`。
 ///
-/// 读盘一律走 [`store::load_project`]（容器优先，裸 JSON 兼容路径），
-/// 工程**形态 / 历史 / CAS 资产池**一并进入 [`OpenRequest`]。
+/// 读盘一律走 [`store::load_project`]（**只接受 `.yeban` 容器**，`ADR-0001 D43`），
+/// 工程**历史 / CAS 资产池**一并进入 [`OpenRequest`]。
 fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let path =
         PathBuf::from(arg_str(call, "path").ok_or_else(|| {
@@ -927,7 +919,6 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         digest,
         bytes: loaded.bytes,
         already_open,
-        format: loaded.format,
         history: loaded.graph.map(Box::new),
         assets: loaded.assets,
     })))
@@ -1225,8 +1216,8 @@ fn apply_render(artifact: render::RenderArtifact) -> Result<ToolResponse, Fault>
 
 /// `yeban_open_project` 的施加。
 ///
-/// 容器形态会**恢复** `history.dag`（提交图谱）与 `assets/{sha256}`（CAS 池）；
-/// 裸 JSON 兼容路径两者都为空（那份文件里没有它们）。
+/// 打开一份 `.yeban` 容器会**恢复** `history.dag`（提交图谱）与
+/// `assets/{sha256}`（CAS 池）—— `ADR-0001 D43` 之后这是唯一的读路径。
 fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse, Fault> {
     let OpenRequest {
         path,
@@ -1235,7 +1226,6 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         digest,
         bytes,
         already_open,
-        format,
         history,
         assets,
     } = request;
@@ -1254,7 +1244,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
             "advisoryLock": true,
             "tookOverStaleLock": false,
             "bytes": bytes,
-            "format": format.as_str(),
+            "format": store::DOCUMENT_FORMAT,
             "historyRestored": false,
             "assets": asset_count,
             "projectDigest": digest,
@@ -1286,8 +1276,8 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         "tookOverStaleLock": took_over_stale_lock,
         "lockFile": store::lock_path(&path).display().to_string(),
         "bytes": bytes,
-        // 磁盘形态 + 容器里另外两类条目的实际装载量（如实上报，不假装）。
-        "format": format.as_str(),
+        // 形态（唯一取值）+ 容器里另外两类条目的实际装载量（如实上报，不假装）。
+        "format": store::DOCUMENT_FORMAT,
         "historyRestored": history_commits > 0,
         "historyCommits": domain.commit_count(),
         "assets": domain.asset_count(),
@@ -1326,7 +1316,7 @@ fn apply_save(
             "reason": "内存状态与磁盘一致; 传 force: true 可强制落盘",
             "path": path.display().to_string(),
             "bytes": bytes.len(),
-            "format": store::ProjectFormat::Container.as_str(),
+            "format": store::DOCUMENT_FORMAT,
             "projectDigest": digest,
         })));
     }
@@ -1339,7 +1329,7 @@ fn apply_save(
         "skipped": false,
         "atomic": true,
         // 落盘形态与容器里的条目数（2 = project.json + history.dag，其余是资产）。
-        "format": store::ProjectFormat::Container.as_str(),
+        "format": store::DOCUMENT_FORMAT,
         "path": path.display().to_string(),
         "bytes": bytes.len(),
         "assets": domain.asset_count(),

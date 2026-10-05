@@ -46,7 +46,7 @@
 //!
 //! | 键 | 含义 |
 //! | :--- | :--- |
-//! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（裸 JSON 兼容路径与内存注入夹具就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。容器形态下索引与字节必然同时存在，因此这一项在真实容器工程上**不会**出现 |
+//! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链的**参数**（滤波器/音色）没有求值；只有 `latency_samples` 进了 PDC |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
@@ -132,13 +132,18 @@
 //! | 输出目录不可写 / 磁盘满 / 目标父目录不存在 | `IO_ERROR` / `DISK_FULL`（带内，来自 `store` 的既有映射） |
 //!
 //! **缺资产为什么不一律报错**：`assets` 索引（工程文档里的声明）与会话 CAS 池
-//! （容器里的 `assets/{sha256}` 字节）在 `.yeban` 容器形态下必然同时存在
-//! （`store` 读写双向校验），而在**裸 JSON 兼容路径**与**内存注入夹具**
-//! （`yeban_model::samples::filled_project()`）里，索引在、字节不在 —— 那是
-//! "这份文档格式本来就不携带资产载荷"，不是工程损坏。因此口径是：
-//! **索引也没有 ⇒ 明确的 `assetMissing` 错误**；索引有而字节不在 ⇒
-//! 按老语义登记 `audioClips` + 静音（并在 `data.audio.assets[]` 里写
-//! `bytesPresent = false`）。两条路都**不静默**。
+//! （容器里的 `assets/{sha256}` 字节）在读 `.yeban` 容器时必然同时存在
+//! （`store` 读写双向校验），而在**内存注入的会话**
+//! （`Domain::open_in_memory` + `yeban_model::samples::filled_project()`）里，
+//! 索引在、字节不在 —— 那是"这条会话种子路径本来就不携带资产载荷"，不是工程损坏。
+//! 因此口径是：**索引也没有 ⇒ 明确的 `assetMissing` 错误**；索引有而字节不在 ⇒
+//! 登记 `audioClips` + 静音（并在 `data.audio.assets[]` 里写 `bytesPresent = false`）。
+//! 两条路都**不静默**。
+//!
+//! `ADR-0001 D43` 删掉裸 JSON 兼容读路径之后，**唯一**还能造出"有声明无载荷"的路径
+//! 就是 `open_in_memory`（内存注入的判据夹具）。只要它还在，`audioClips` 就**不是**
+//! 可删的死键 —— 删掉它会把一个"渲染必然失败"的工程交出去。触发条件与归属登记在
+//! `docs/ledger/audio-render-notes.md` §needs-7。
 //!
 //! `BUSY` 在当前架构下**仍然不可达**：领域状态单线程同步，一次 `tools/call` 完整跑完
 //! 才返回，不存在"已经有一个渲染在跑"的窗口。这是登记，不是遗漏。

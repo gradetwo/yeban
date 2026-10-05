@@ -20,6 +20,12 @@
 > **容器错误怎么映射进契约错误码**、**裸 JSON 兼容路径何时可以删**、
 > **每条判据怎么变红（含注入记录）**、**哪些东西明确没做**。
 
+> ⚠ **2026-10-04 后续（`line/mcp-no-compat`，`ADR-0001 D43`）**：本文件 §4 描述的
+> "裸 JSON 兼容读路径"与其**删除条件**已经被**执行** —— D43 判定 1.0.0 之前不存在
+> 兼容需求，因此不是"满足条件之后再删"，而是**取消条件、直接删除**。
+> 现状以 [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md) 为准；本文件里
+> "裸 JSON 仍可读"的陈述均已过时（保留为历史记录，并在相应小节加了标记）。
+
 ---
 
 ## 0. 一句话结论
@@ -28,7 +34,9 @@
 条目 = `project.json` + `history.dag` + `assets/{sha256}`），
 `yeban_open_project` 按 **ZIP 魔数**判定并读回容器（`history.dag` 与 CAS 资产池都恢复），
 **`ARCH-SEC-004` 的三阶段原子落盘一字未改**（唯一入口 `store::write_project_atomic`）。
-容器线的 **`needs-2`（"把 MCP 的读写换成容器 API"）关闭**；裸 JSON 只保留为**有删除条件的读兼容路径**。
+容器线的 **`needs-2`（"把 MCP 的读写换成容器 API"）关闭**。
+（**2026-10-04 更新**：当时保留的"有删除条件的裸 JSON 读兼容路径"已被 `line/mcp-no-compat`
+按 D43 **删除** —— 容器是**唯一**工程格式，见 [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md)。）
 17 条新判据全部本机真跑（16 条容器 + 1 条"文件太大就不读"），
 **7 次注入中 6 次让判据变红**、1 次（去掉 `fsync`）**如实记录为"本机不可观测"**。
 另外修掉了 `windows` 手动门禁第一次执行抓到的**真实跨平台缺陷**：
@@ -41,7 +49,7 @@ Windows 的 `LockFileEx` 是**强制**字节区间锁 ⇒ "持锁后再去读 `.
 
 | 文件 | 规范 ID | 本轮的改动 |
 | :--- | :--- | :--- |
-| [`../../crates/yeban-mcp/src/domain/store.rs`](../../crates/yeban-mcp/src/domain/store.rs) | `ARCH-SEC-003`、`ARCH-SEC-004`、`ARCH-OPS-002`、`MUST-GATE-006/007` | `load_project`（ZIP 魔数判定：容器优先 / 裸 JSON 兼容）、`ProjectFormat`、`LoadedProject`、`container_bytes`（工程 + DAG + CAS 池 → 容器字节）、`ContainerRejection` 五分类 + `container_fault`（45 个容器错误 → `IO_ERROR` 的唯一映射）、`write_project_atomic` 入参 `&str → &[u8]`（协议不变） |
+| [`../../crates/yeban-mcp/src/domain/store.rs`](../../crates/yeban-mcp/src/domain/store.rs) | `ARCH-SEC-003`、`ARCH-SEC-004`、`ARCH-OPS-002`、`MUST-GATE-006/007` | `load_project`（ZIP 魔数判定：容器优先 / 裸 JSON 兼容；**`ProjectFormat` 与裸 JSON 分支已于 2026-10-04 由 `mcp-no-compat` 按 D43 删除**）、`LoadedProject`、`container_bytes`（工程 + DAG + CAS 池 → 容器字节）、`ContainerRejection` 五分类 + `container_fault`（45 个容器错误 → `IO_ERROR` 的唯一映射）、`write_project_atomic` 入参 `&str → &[u8]`（协议不变） |
 | [`../../crates/yeban-mcp/src/domain/mod.rs`](../../crates/yeban-mcp/src/domain/mod.rs) | `MCP-TOOL-001/002`、`ARCH-OPS-002`、`ARCH-SEC-003` | `Active` 增会话 CAS 池 `assets: BTreeMap<AssetHash, Vec<u8>>`；`Plan::Open(Box<OpenRequest>)` 携带形态/历史/资产；`Plan::Save.bytes: Vec<u8>`（容器字节）；`reset_history(SessionSeed)` 恢复 `history.dag`；`Domain::{put_asset, asset, asset_hashes, asset_count}`；`Plan::planned_commit_count`（预览不再用 `+1` 近似历史恢复） |
 | [`../../crates/yeban-mcp/tests/container_store.rs`](../../crates/yeban-mcp/tests/container_store.rs) | `ARCH-SEC-003/004`、`ARCH-OPS-002`、`MUST-GATE-006/007`、`MODEL-AST-007` | **16 条端到端判据**（§5） |
 | [`../../crates/yeban-mcp/tests/tools_e2e.rs`](../../crates/yeban-mcp/tests/tools_e2e.rs) | `ARCH-SEC-004`、`MCP-TOOL-002` | **2 条既有判据按新语义改写**（见 §2.6，公开改写、不是静默变绿） |
@@ -75,10 +83,17 @@ Windows 的 `LockFileEx` 是**强制**字节区间锁 ⇒ "持锁后再去读 `.
 ### 2.2 加载（`yeban_open_project`）
 
 ```text
+【本线当轮】
 load_project(path)
   ├─ bytes.starts_with(b"PK\x03\x04")  ⇒ read_project_container(bytes, ContainerLimits::default())
   │                                       ⇒ check_readable() → validate() → decode_history_dag()
   └─ 否则                               ⇒ UTF-8 → serde_json → check_readable() → validate()
+
+【2026-10-04 起（D43，line/mcp-no-compat）—— 当前实现】
+load_project(path)
+  ├─ read_project_container 成功 ⇒ check_readable() → validate() → decode_history_dag()
+  ├─ 失败且有 ZIP 结构          ⇒ container_fault        （"你的 .yeban 坏了"）
+  └─ 失败且没有 ZIP 结构        ⇒ not_a_container_fault  （"你给的不是 .yeban 容器"）
 ```
 
 | | 改动前 | 改动后 |
@@ -209,32 +224,43 @@ Windows 断言"持锁期间其它句柄读**必须被拒**、快照 `availabilit
 
 ---
 
-## 4. 裸 JSON 兼容路径：策略与**删除条件**
+## 4. 裸 JSON 兼容路径：策略 → **已删除**（2026-10-04，D43）
 
-### 4.1 策略
+### 4.1 当轮的策略（历史）
 
 | 问题 | 裁决 |
 | :--- | :--- |
-| 读 | **兼容**：没有 ZIP 魔数就按"UTF-8 + `serde_json` + 版本门 + `validate()`"读。响应里 `format: "bare-json"` **如实披露**，调用方永远知道自己在兼容路径上 |
-| 写 | **不兼容**：保存一律产出容器（判据 7 钉住："写一律产出容器，读才需要兼容"） |
-| 为什么保留 | 本仓库**全部既有夹具**（`tools_e2e.rs`、`lock_advisory.rs`、`samples` 导出探针）与任何"容器接线之前写出的 `.yeban`"都是裸 JSON。直接不兼容 = 一次性废掉既有判据与用户文件，而"读旧、写新"是零代价的迁移路径 |
-| 为什么不是永久承诺 | 兼容路径是**双份解析逻辑**（两份失败模式、两份错误消息）；它只该活到"没有裸 JSON 输入"为止 |
+| 读 | **兼容**：没有 ZIP 魔数就按"UTF-8 + `serde_json` + 版本门 + `validate()`"读；响应里 `format: "bare-json"` **如实披露** |
+| 写 | **不兼容**：保存一律产出容器 |
+| 为什么保留 | 当时仓库里全部既有夹具与"容器接线之前写出的 `.yeban`"都是裸 JSON；"读旧、写新"被视为零代价迁移路径 |
+| 为什么不是永久承诺 | 兼容路径是**双份解析逻辑**（两份失败模式、两份错误消息）；只该活到"没有裸 JSON 输入"为止 |
 
-### 4.2 删除条件（**三条同时满足**才可删）
+### 4.2 三条删除条件（**已作废，不是被满足**）
 
-1. **没有生产者**：仓库里不再有任何测试/脚本/示例**写出**裸 JSON 工程文件
-   （`grep -rn "to_string_pretty(&project)" crates/yeban-mcp/tests` 与
-   `crates/yeban-model/src/samples.rs` 的导出路径都已改成容器或删掉）；
-2. **没有消费者**：`schemas/project.schema.json` 仍然是工程文档契约（它不会变），
-   但**不再有**"外部工具直接写裸 JSON 给 MCP 打开"的用法（需要人类确认；
-   `tools-domain-notes.md` 的 `needs-3` 把这条记为分工问题）；
-3. **有一次迁移窗口**：至少一个发布周期里，打开裸 JSON 时返回**显式的迁移提示**
-   （现在只有 `format: "bare-json"`，没有警告级提示）。
+| # | 条件（原文） | 2026-10-04 的处置 |
+| :-- | :--- | :--- |
+| 1 | 没有生产者：不再有测试/脚本写出裸 JSON | **已满足**：本批把 `tools_e2e.rs` / `lock_advisory.rs` / `container_store.rs` 的夹具全部改成写真容器 |
+| 2 | 没有消费者：不再有"外部工具直接写裸 JSON 给 MCP 打开" | **不需要**：D43 判定 1.0.0 之前不存在兼容需求 |
+| 3 | 有一次迁移窗口（迁移提示） | **不需要**：D43 明确"发现问题或更优解**直接推翻**"，不做过渡承诺 |
 
-删的时候要一起删：`store::load_bare_json`、`ProjectFormat::BareJson`、
-`tests/container_store.rs::bare_json_projects_still_open_on_the_compat_path`、
-`tools_e2e.rs` 的裸 JSON 夹具（改成 `store::container_bytes` 写夹具），
-以及本节的"删除条件"本身。
+**裁决依据**：`docs/adr/ADR-0001-workspace-topology-and-version-pinning.md` **D43** ——
+「1.0.0 之前不存在历史包袱 / 旧版本兼容；凡是"为了读旧文件/旧格式"而存在的分支，
+一律删除，而不是"保留 + 记删除条件"」。同一件事在 `yeban-app` 侧先删
+（`OpenError::NotAYebanContainer`，`docs/ledger/app-no-compat-notes.md`），
+本 crate 侧保持一致语义。
+
+### 4.3 删除清单（执行记录）
+
+删掉：`store::load_bare_json`、`ProjectFormat`（含 `BareJson` 变体 / `as_str` / `is_container`）、
+`LoadedProject::format`、`OpenRequest::format`、`looks_like_container` 的**分派用途**、
+dryRun 预览里的 `container` 布尔；`tests/container_store.rs::bare_json_projects_still_open_on_the_compat_path`
+**反转**为 `bare_json_project_is_refused_precisely`。
+逐项与净行数、判据反转、注入记录见 [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md)。
+
+**保留**（D43 不解除）：容器侧全部安全闸门与错误分类（Zip-Slip / 炸弹 / 上限 / CRC /
+ZIP64 / 多卷 / 缺件 / 容器内坏 JSON）、版本门与 `validate()` 的顺序与映射、
+`ARCH-SEC-004` 的原子落盘协议、`has_zip_signature` 的**诊断分档**用途
+（"你给的不是 `.yeban`" vs "你的 `.yeban` 坏了"）。
 
 ---
 
@@ -250,7 +276,7 @@ Windows 断言"持锁期间其它句柄读**必须被拒**、快照 `availabilit
 | 4 | `two_forced_saves_of_the_same_session_are_byte_identical` | 同输入两次保存字节相同（`ARCH-DET-001`） |
 | 5 | `save_into_a_read_only_directory_keeps_the_original_container_bytes` | 失败 ⇒ `IO_ERROR`、原容器**逐字节不变**、无 `.tmp-` 残留；恢复权限后成功 |
 | 6 | `save_replaces_the_target_inode_instead_of_truncating_it` | 落盘是"新文件 + `rename`"（inode 变化），不是原地截断写 |
-| 7 | `bare_json_projects_still_open_on_the_compat_path` | 兼容路径活着且**披露形态**；写一律产出容器 |
+| 7 | ~~`bare_json_projects_still_open_on_the_compat_path`~~ | **已废弃（2026-10-04, D43）**：裸 JSON 不再有读路径；判据**反转**为 `bare_json_project_is_refused_precisely`（见 [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md)） |
 | 8 | `container_project_json_is_accepted_by_the_project_schema` | 从磁盘容器里**原样**取出 `project.json`，交给 `validate_schemas.py --samples-dir`（Python jsonschema **独立实现**）通过；并断言脚本**真的**校验了这一份（防空转） |
 | 9 | `assets_round_trip_with_content_addressing` | `assets/{sha256}` 条目名 = 字节 SHA-256；模型层 `read_project_container` 再验一遍；关闭重开后池一致；再保存仍写回 |
 | 10 | `truncated_container_is_refused_instead_of_loading_half_a_project` | 截断 ⇒ `IO_ERROR`，不留下活跃工程 |
@@ -288,6 +314,10 @@ Windows 断言"持锁期间其它句柄读**必须被拒**、快照 `availabilit
 | **F** | `load_project_with_limits` 里**关掉 I/O 层的文件大小闸门**（两道都去掉） | `store::tests::oversized_files_are_refused_before_they_are_read_into_memory` → `155 passed; 1 failed` | ✅ 156/156 |
 | **G** | `acquire` **不把元数据放进守卫**（退回"持锁后再读锁文件"的老假设） | **lib**：`exclusive_lock_is_atomic_and_released_on_drop`；**`--test lock_advisory`（必须单独跑）**：`holder_metadata_while_locked_is_platform_specific`、`taking_over_a_stale_lock_rewrites_the_metadata`、`a_sigkilled_holder_releases_the_advisory_lock_and_can_be_taken_over`（共 4 条） | ✅ 全绿 |
 | **B（复跑）** | 在**加上 I/O 闸门与 Windows 修复之后**重跑 B | 仍然 7 条红 ⇒ 之前的注入结论没有因为后续改动而过时 | ✅ 16/16 |
+
+> **2026-10-04 注**：下表的注入 **B** 与 **E** 作用在"裸 JSON 兼容分支 /
+> `looks_like_container` 分派"上，这两处已随 D43 删除 ⇒ **不可复现**（保留为历史证据）。
+> 删除之后的注入→变红记录见 [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md)。
 
 **方法学留痕（又是 L12/L15 同族）**：注入 G 的第一遍 `cargo test -p yeban-mcp` 只看到
 **lib 的 1 条红**就停了 —— `cargo` 在第一个失败的目标之后**不会继续跑集成目标**。
@@ -414,7 +444,7 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | boundary-3 | **`fsync` 的移除在本机不可观测**（注入 D 零变红） | 断电/崩溃后的持久性是**进程外**性质，`std::fs` 没有可注入的 fsync 探针，本机与 CI 都无法用判据钉住"真的 fsync 了"。本线的证据是"三阶段协议**只有一个**入口 `write_project_atomic`，且它在 `rename` 之前调用 `sync_all`"这条结构事实 + 代码审查。要机械钉住需要 `strace`/`dtruss` 级别的系统调用观测（登记为 pending） |
 | boundary-4 | 只测到"资产 = 4 KiB 随机字节" | 没有测大资产（GB 级）与真实音频（FLAC/WAV）。容器线的上限判据用"声明 2 GB + 实际小字节"钉住阈值本身 |
 | boundary-5 | `put_asset` 只进**内存**池 | 没有磁盘级 CAS（`assets/{sha256}` 落盘池）、没有 GC/去重策略、没有"引用计数"；一次会话里放进池但从不被工程引用的资产**照样会被写进容器**（池是权威） |
-| boundary-6 | 兼容路径读裸 JSON 时**没有**迁移提示（只有 `format: "bare-json"`） | 见 §4.2 的删除条件 3 |
+| boundary-6 | ~~兼容路径读裸 JSON 时**没有**迁移提示~~ | **已消除（2026-10-04, D43）**：兼容路径整体删除；非容器文件得到**精确拒绝**（`not_a_container_fault`），而不再是"被兼容地读进来" |
 | boundary-7 | 打开容器时**不恢复**提案表（`proposals`） | `Proposal` 记录是 MCP 会话态（`ARCH-OPS-002` 的 DAG 才是持久化层）；容器里只有 `history.dag`。`ai/proposal-*` 分支与提交都在 DAG 里，记录不在 |
 | boundary-8 | **Windows 分支本机无法编译** | 本机（macOS）没有 `x86_64-pc-windows-*` 的 std（`rustup target list --installed` 只有 darwin/linux/wasm）⇒ `src/domain/lock.rs` 的 `#[cfg(windows)]` 代码与 `tests/lock_advisory.rs` 的 Windows 断言**只能**由集成者的 `windows` 手动门禁编译/执行。本线的 Windows 侧结论**必须**以那次门禁的读数为准，不得由本机"看起来对"替代 |
 | boundary-9 | **持锁期间读锁文件在 Windows 上不可用**（平台事实，不是缺陷） | `LockFileEx` 是强制字节区间锁 ⇒ 持有者活着时，任何其它句柄（含同进程）读 `.yeban.lock` 都被 OS 拒绝。因此**跨进程**诊断在 Windows 上拿不到持有者 PID；唯一可靠来源是**持有者自己进程内**的 `Domain::lock_holder()`。要在 Windows 上跨进程看持有者，需要 `LockFileEx` 之外的通道（例如另写一份 non-locked 的审计文件）—— 未做，登记为 needs-5 |
@@ -424,7 +454,7 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | # | 项 | 性质 | 建议 |
 | :--- | :--- | :--- | :--- |
 | needs-1 | 容器里的**资产索引 ↔ 池**一致性（boundary-1） | 跨层缺口 | 资产库/应用层落地后，在 `load_project` / `container_bytes` 加双向对账（含"索引里有但容器没有"与"容器有但索引没有"两侧），并同步 `assets.manifest.schema.json` 的口径 |
-| needs-2 | 裸 JSON 兼容路径的**删除时点**（§4.2 三条） | 需要人类裁决 | 建议在 v1.0 冻结后一个发布周期内删除，并把它写成 ADR |
+| needs-2 | ~~裸 JSON 兼容路径的删除时点~~ | **已裁决并执行** | 2026-10-04 负责人依 D43 裁决：**取消删除条件、直接删除**。执行记录见 [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md)（`yeban-app` 侧同批删除） |
 | needs-3 | `container-notes.md` §1 的 "38 个变体"应为 **45** | 文档陈旧 | 该文件属容器线/集成者；本线不擅改，只在此登记实测计数 |
 | needs-4 | `history.dag` 是否需要**版本字段** | 规范缺口 | 现在是裸 `CommitGraph` JSON；`Op`/`Commit` 变体扩张时旧 `history.dag` 的可读性靠 `serde` 默认值。建议将来加一层 `{"version":1,"graph":{…}}` 信封（会让本线的判据 3/16 需要同步） |
 | needs-5 | Windows 上**跨进程**看持有者（boundary-9） | 能力缺口（平台限制） | `LockFileEx` 强制锁让我们读不到别人的锁文件。建议：另写一份**不加锁**的审计文件（`<name>.lock.holder`），或在 ADR 里把"Windows 上不接受跨进程持有者诊断"写成正式口径。两条都需要人类裁决 |
@@ -438,7 +468,7 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 | P2 | `fsync` 的机械观测（boundary-3） | **仍 pending**（需要系统调用级追踪；本机与 CI 都不做） |
 | P5 | Windows 分支的真编译/真执行（boundary-8） | **本线已修，待集成者复跑 `gates-manual` 的 `windows` 门禁**；本机做不到（无 Windows target） |
 | P3 | 真资产库（磁盘 CAS）接线 | **仍 pending**（needs-1 / boundary-5） |
-| P4 | `tools-domain-notes.md` 的 `boundary-4`（"工程文件是裸 JSON"） | **本轮过时**：写已经是容器；读仍兼容裸 JSON。读该台账时以本文件为准 |
+| P4 | `tools-domain-notes.md` 的 `boundary-4`（"工程文件是裸 JSON"） | **已彻底过时（2026-10-04）**：写是容器，读也只接受容器（裸 JSON 读路径已删）。读该台账时以本文件 + [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md) 为准 |
 
 ### TODO(hoist)
 
@@ -453,7 +483,8 @@ $ python3 scripts/gates/validate_schemas.py --samples-dir <容器里的 project.
 > 资产 SHA-256 == 条目名），`yeban_open_project` 按 **ZIP 魔数**判定并恢复 `history.dag` 与 CAS 资产池；
 > **`ARCH-SEC-004` 的三阶段原子落盘一字未改**，并由"只读目录下失败且原容器逐字节不变"+
 > "inode 变化"两条判据证明。容器层的 45 个错误**全部**映射到 `IO_ERROR`（`D25` 联集内），
-> 分类与规范 ID 进 `data`，**不发明新码**。裸 JSON 只保留为**有删除条件**的读兼容路径。
+> 分类与规范 ID 进 `data`，**不发明新码**。（**2026-10-04 更新**：裸 JSON 读兼容路径已按 D43
+> **删除**，容器成为**唯一**工程格式 —— 见 [`mcp-no-compat-notes.md`](mcp-no-compat-notes.md)。）
 > 7 次注入里 6 次让判据变红（原地写 2 条 / 裸 JSON 7 条 / 吞掉 history 错误 1 条 / 关掉容器分派 9 条 /
 > 关掉 I/O 层大小闸门 1 条 / 拿掉守卫携带的元数据 4 条），第 7 次（去掉 `fsync`）**零变红**，
 > 如实登记为本机不可观测的边界。另外把 `windows` 门禁抓到的真实跨平台缺陷（`LockFileEx` 强制锁

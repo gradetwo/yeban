@@ -16,6 +16,7 @@
 //! 负责把目录（含只读目录）恢复权限并删除 —— **绝不污染仓库**
 //! （`docs/DEVELOPMENT_LEDGER.md` L16）。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +28,7 @@ use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::jsonrpc::ErrorObject;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{ErrorCode, TOOLS};
+use yeban_model::YebanProjectV1;
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -62,16 +64,24 @@ impl Scratch {
         self.join(name).display().to_string()
     }
 
-    /// 写一份**确定的**工程文件，返回 `(路径, 文本, 摘要)`。
-    fn write_project(&self, name: &str) -> (PathBuf, String, String) {
-        let project = yeban_model::samples::filled_project();
-        let mut text = serde_json::to_string_pretty(&project).expect("序列化");
-        text.push('\n');
+    /// 写一份**真容器**工程文件（`ADR-0001 D43`：容器是唯一工程格式）。
+    ///
+    /// 旧夹具写裸 JSON，那条读路径已随 D43 删除 —— 本夹具现在与生产写出路径
+    /// （`store::container_bytes`）同形：`project.json` + 空 `history.dag`。
+    /// 返回 `(路径, 容器字节)`。
+    fn write_project(&self, name: &str) -> (PathBuf, Vec<u8>) {
+        let bytes = container_fixture(&yeban_model::samples::filled_project());
         let path = self.join(name);
-        fs::write(&path, &text).expect("写工程");
-        let digest = digest(&text);
-        (path, text, digest)
+        fs::write(&path, &bytes).expect("写容器工程");
+        (path, bytes)
     }
+}
+
+/// 工程 → **真容器**字节（`project.json` + 空 `history.dag`，无资产）。
+fn container_fixture(project: &YebanProjectV1) -> Vec<u8> {
+    let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
+    yeban_model::container::write_project_container(project, &history, &BTreeMap::new())
+        .expect("写真容器")
 }
 
 impl Drop for Scratch {
@@ -200,7 +210,7 @@ fn hold_exclusive_advisory_lock(lock: &Path) -> fs::File {
 
 /// 打开一份最新写入的工程，返回 `(路径, 打开响应)`。
 fn open(scratch: &Scratch, dispatcher: &mut Dispatcher, auth: &str) -> (PathBuf, Value) {
-    let (path, _text, _digest) = scratch.write_project("demo.yeban");
+    let (path, _bytes) = scratch.write_project("demo.yeban");
     let opened = call(
         dispatcher,
         auth,
@@ -618,7 +628,7 @@ fn save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original() 
 
     let scratch = Scratch::new("readonly-dir");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, original, _digest) = scratch.write_project("demo.yeban");
+    let (path, original) = scratch.write_project("demo.yeban");
     call(
         &mut dispatcher,
         &auth,
@@ -644,7 +654,7 @@ fn save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original() 
 
     assert_domain_error(&saved, "IO_ERROR", "只读目录下的保存");
     // 核心: 原文件**逐字节不变**（注入"直接截断写"会让这条变红）。
-    let after = fs::read_to_string(&path).expect("原文件必须还在");
+    let after = fs::read(&path).expect("原文件必须还在");
     assert_eq!(after, original, "失败的保存破坏了原文件");
     // 也不许留下临时文件。
     let leftovers: Vec<String> = fs::read_dir(&scratch.dir)
@@ -664,7 +674,7 @@ fn save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original() 
         "ARCH-SEC-003: 落盘形态必须是容器"
     );
     let after = fs::read(&path).expect("读回");
-    assert_ne!(after, original.as_bytes(), "成功保存必须写出新内容");
+    assert_ne!(after, original, "成功保存必须写出新内容");
     assert_eq!(
         &after[..4],
         b"PK\x03\x04",
@@ -823,7 +833,7 @@ fn exercised_error_codes() -> Vec<String> {
             "yeban_open_project",
             json!({ "path": scratch.dir.display().to_string() }),
         ));
-        // 坏 JSON。
+        // 非容器文件（`ADR-0001 D43` 之后没有裸 JSON 读路径）⇒ `IO_ERROR`。
         let broken = scratch.join("broken.yeban");
         fs::write(&broken, "{ oops").expect("写坏文件");
         record(&call(
@@ -832,12 +842,15 @@ fn exercised_error_codes() -> Vec<String> {
             "yeban_open_project",
             json!({ "path": broken.display().to_string() }),
         ));
-        // 结构非法（bpm 越界）的工程。
+        // 结构非法（bpm 越界）的工程：**包进真容器**，这样被考的是工程的
+        // 版本门 / `validate()`（`OUT_OF_RANGE`），而不是"容器边界"。
         let invalid = scratch.join("invalid.yeban");
         let mut value =
             serde_json::to_value(yeban_model::samples::filled_project()).expect("序列化");
         value["bpm"] = Value::from(1.0);
-        fs::write(&invalid, serde_json::to_string(&value).expect("序列化")).expect("写");
+        let invalid_project: YebanProjectV1 =
+            serde_json::from_value(value).expect("反序列化回工程");
+        fs::write(&invalid, container_fixture(&invalid_project)).expect("写容器");
         record(&call(
             &mut dispatcher,
             &auth,
@@ -846,7 +859,7 @@ fn exercised_error_codes() -> Vec<String> {
         ));
 
         // 打开一个合法工程。
-        let (path, _text, _digest) = scratch.write_project("ok.yeban");
+        let (path, _bytes) = scratch.write_project("ok.yeban");
         let opened = call(
             &mut dispatcher,
             &auth,
@@ -864,7 +877,7 @@ fn exercised_error_codes() -> Vec<String> {
         );
         // 同一个路径 ⇒ 幂等分支（不加锁）；换一个**真正被占用**的路径才拿 PROJECT_LOCKED。
         assert_eq!(locked["status"], "success");
-        let (other_path, _text, _digest) = scratch.write_project("other.yeban");
+        let (other_path, _bytes) = scratch.write_project("other.yeban");
         // 手工造一个**真的被建议锁持有**的锁文件（模拟另一个进程持有排他锁）。
         // 注意不能只写一个 JSON 文件: 那在新语义下是"崩溃遗留 ⇒ 可接管"。
         let _holder =
@@ -1217,7 +1230,7 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
 fn open_save_close_round_trip_preserves_bytes_on_disk() {
     let scratch = Scratch::new("round-trip");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, original, _digest) = scratch.write_project("demo.yeban");
+    let (path, original) = scratch.write_project("demo.yeban");
     let opened = call(
         &mut dispatcher,
         &auth,
@@ -1233,7 +1246,7 @@ fn open_save_close_round_trip_preserves_bytes_on_disk() {
     assert_eq!(skipped["data"]["skipped"], true);
     assert_eq!(skipped["data"]["saved"], false);
 
-    // 真改一次工程再保存 ⇒ 磁盘字节改变（且形态从裸 JSON 夹具换成容器）。
+    // 真改一次工程再保存 ⇒ 磁盘字节改变（含新提交，容器字节必然不同）。
     let track = macro_track(&dispatcher);
     let proposal = propose_macro(&mut dispatcher, &auth, &track, 0.85);
     call(
@@ -1245,11 +1258,11 @@ fn open_save_close_round_trip_preserves_bytes_on_disk() {
     let saved = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
     assert_eq!(saved["data"]["saved"], true, "{saved}");
     let after = fs::read(&path).expect("读");
-    assert_ne!(after, original.as_bytes(), "保存必须写出新内容");
+    assert_ne!(after, original, "保存必须写出新内容");
     assert_eq!(
         &after[..4],
         b"PK\x03\x04",
-        "ARCH-SEC-003: `yeban_save_project` 写出的是 ZIP 容器, 不再是裸 JSON"
+        "ARCH-SEC-003: `yeban_save_project` 写出的必须是 ZIP 容器（D43 之后唯一工程格式）"
     );
     assert_eq!(saved["data"]["format"], "yeban-container");
 
@@ -1275,7 +1288,7 @@ fn opening_a_locked_project_is_project_locked_and_leaves_it_alone() {
     // 而不是手写一个 JSON 文件（手写文件在新语义下恰好是"崩溃遗留 ⇒ 可接管"）。
     let scratch = Scratch::new("locked");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, original, _digest) = scratch.write_project("demo.yeban");
+    let (path, original) = scratch.write_project("demo.yeban");
     let lock = PathBuf::from(format!("{}.lock", path.display()));
     let other_opener = hold_exclusive_advisory_lock(&lock);
 
@@ -1296,7 +1309,7 @@ fn opening_a_locked_project_is_project_locked_and_leaves_it_alone() {
         "PROJECT_LOCKED 的载荷必须说明占用来自内核建议锁: {outcome}"
     );
     assert!(dispatcher.domain().active_project().is_none());
-    assert_eq!(fs::read_to_string(&path).expect("读"), original);
+    assert_eq!(fs::read(&path).expect("读"), original);
 
     // 只读打开也要观察到排他锁（读者与写者互斥）。
     let read_only = call(
@@ -1329,7 +1342,7 @@ fn only_one_project_can_be_active_at_a_time() {
     let scratch = Scratch::new("single-active");
     let (mut dispatcher, auth) = dispatcher();
     open(&scratch, &mut dispatcher, &auth);
-    let (second, _text, _digest) = scratch.write_project("second.yeban");
+    let (second, _bytes) = scratch.write_project("second.yeban");
     let outcome = call(
         &mut dispatcher,
         &auth,
@@ -1441,9 +1454,9 @@ fn routing_cycles_are_refused_before_arranging() {
             "kind": "TrackToBus",
         }));
     }
-    let text = serde_json::to_string_pretty(&value).expect("序列化");
+    let cyclic: YebanProjectV1 = serde_json::from_value(value).expect("反序列化回工程");
     let path = scratch.join("cyclic.yeban");
-    fs::write(&path, &text).expect("写工程");
+    fs::write(&path, container_fixture(&cyclic)).expect("写容器工程");
     // 模型层不判环 ⇒ 这份工程是"合法"的, 因此能打开。
     let auth = format!("Bearer {}", dispatcher.expected_token().expose());
     let opened = call(
@@ -1702,7 +1715,7 @@ fn spec_ids_in_responses_match_the_registry() {
 fn save_refuses_a_read_only_session() {
     let scratch = Scratch::new("read-only-session");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, original, _digest) = scratch.write_project("demo.yeban");
+    let (path, original) = scratch.write_project("demo.yeban");
     let opened = call(
         &mut dispatcher,
         &auth,
@@ -1724,7 +1737,7 @@ fn save_refuses_a_read_only_session() {
         json!({ "force": true }),
     );
     assert_domain_error(&saved, "IO_ERROR", "只读会话落盘");
-    assert_eq!(fs::read_to_string(&path).expect("读"), original);
+    assert_eq!(fs::read(&path).expect("读"), original);
 
     // 读者在场 ⇒ 排他写者必须被内核挡住（这正是"只读"应有的语义）。
     let blocked = call(

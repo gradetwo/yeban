@@ -1,5 +1,5 @@
-//! 工程文件读写（`.yeban` **ZIP 容器** + 裸 JSON 兼容路径）、**原子落盘**与
-//! `.yeban.lock` 排他锁 [ARCH-SEC-001, ARCH-SEC-003, ARCH-SEC-004]。
+//! 工程文件读写（`.yeban` **ZIP 容器**是**唯一**工程格式）、**原子落盘**与
+//! `.yeban.lock` 排他锁 [ARCH-SEC-001, ARCH-SEC-003, ARCH-SEC-004, ADR-0001 D43]。
 //!
 //! ## 落盘格式：`ARCH-SEC-003` 的容器（本模块的字节来源）
 //!
@@ -18,19 +18,26 @@
 //! [`serialize_project`] 的规范化 JSON 为准 —— 它是"工程内容"的稳定指纹，
 //! 与落盘容器字节解耦。这样"容器字节变了"与"工程内容变了"是两个可分别讨论的量。
 //!
-//! ## 读：先看 ZIP 魔数，否则按裸 JSON（**兼容路径，有删除条件**）
+//! ## 读：`.yeban` 容器是**唯一**格式（`ADR-0001 D43`）
+//!
+//! 本模块曾经有一条"裸 JSON 兼容读路径"：字节没有 ZIP 魔数就按 UTF-8 +
+//! `serde_json` 读。D43 明确"1.0.0 之前没有历史包袱与兼容需求，发现问题或更优解
+//! **直接推翻**"，于是它连同形态枚举、错误分类与"看起来像 ZIP 就绝不掉进 JSON 分支"
+//! 的补丁式判断**整段删除**（判据**反转**，见 `tests/container_store.rs`）。
+//! `yeban-app` 侧的同一条路径已先删（`OpenError::NotAYebanContainer`，台账
+//! `docs/ledger/app-no-compat-notes.md`）—— 两侧语义一致：**非容器文件 = 明确的
+//! 拒绝 + 精确原因**，既不是"打开成空工程"，也不是泛化的"未知格式"。
 //!
 //! ```text
 //! load_project(path)
-//!   ├─ bytes.starts_with(b"PK\x03\x04")  ⇒ read_project_container(...)  【权威格式】
-//!   └─ 否则                               ⇒ UTF-8 + serde_json          【兼容路径】
+//!   ├─ read_project_container(bytes) 成功 ⇒ 版本门 + validate()      【唯一被接受的形态】
+//!   ├─ 失败且字节有 ZIP 结构（PK\x03\x04 / PK\x05\x06 / PK\x07\x08）
+//!   │                                     ⇒ container_fault          【"你的 .yeban 坏了"】
+//!   └─ 失败且连 ZIP 结构都没有             ⇒ not_a_container_fault    【"你给的不是 .yeban 容器"】
 //! ```
 //!
-//! 兼容路径存在的唯一理由是"本仓库在容器接线之前写出的夹具与工程文件都是裸 JSON"；
-//! 它由 `tests/container_store.rs::bare_json_projects_still_open_on_the_compat_path` 正面钉住，
-//! 删除条件写在 `docs/ledger/store-container-notes.md`（**不是**永久兼容承诺）。
-//! 两条路径共用**同一段**版本门（`check_readable`）与结构校验（`validate`）：
-//! 兼容不等于放宽。
+//! 分档只服务**诊断**，不服务兼容：截断的 `.yeban` 前 4 字节仍是 `PK\x03\x04`，
+//! 因此落在"坏了"那一档，拿到精确的容器裁决。**没有任何路径会返回空工程。**
 //!
 //! ## 原子落盘的三阶段（`ARCH-SEC-004` 的原文）
 //!
@@ -48,11 +55,12 @@
 //!
 //! ## 容器错误 → 契约错误码：**只用一个已存在的码**
 //!
-//! `ADR-0001 D25` 的 20 值联集是工具级错误码的**唯一**来源。容器层的 45 个
-//! [`ContainerError`] 变体全部映射到 [`ErrorCode::IoError`]（`IO_ERROR`），
-//! 分类（路径穿越 / 解压炸弹 / 不支持的压缩法 / 结构畸形 / 布局不符）与规范 ID
-//! 走 `error.data.{category, specId, containerError}`，**不发明新码**
-//! （见 [`container_fault`] 与 [`container_rejection`] 的穷举匹配）。
+//! `ADR-0001 D25` 的 20 值联集是工具级错误码的**唯一**来源。容器层的全部
+//! [`ContainerError`] 变体（以及"这份字节根本不是 `.yeban` 容器"这件事）都映射到
+//! [`ErrorCode::IoError`]（`IO_ERROR`），分类（路径穿越 / 解压炸弹 / 不支持的压缩法 /
+//! 结构畸形 / 布局不符）与规范 ID 走 `error.data.{category, specId, containerError}`，
+//! **不发明新码**（见 [`container_fault`] / [`not_a_container_fault`] 与
+//! [`container_rejection`] 的穷举匹配）。
 //!
 //! ## 锁：本模块的职责边界
 //!
@@ -91,9 +99,8 @@ pub const TEMP_INFIX: &str = ".tmp-";
 
 /// `.yeban` 容器的 ZIP 本地文件头签名（`PK\x03\x04`）。
 ///
-/// 这是"是不是容器"的**唯一**判据：不用扩展名、不用文件大小、不用试探解析。
-/// ZIP 的其它结构签名（空归档的 EOCD `PK\x05\x06`、跨卷 `PK\x07\x08`）都不是
-/// 本实现产出的 `.yeban` 的开头，因此不列入。
+/// 这是"本实现写出的容器长什么样"的**唯一**判据：不用扩展名、不用文件大小、
+/// 不用试探解析。它是 [`has_zip_signature`] 三签名里的第一个。
 pub const CONTAINER_MAGIC: [u8; 4] = *b"PK\x03\x04";
 
 /// 内容摘要（SHA-256 十六进制）—— 直接复用 `yeban-model` 的 CAS 哈希实现。
@@ -102,51 +109,42 @@ pub fn digest_of(bytes: &[u8]) -> String {
     AssetHash::of_bytes(bytes).as_str().to_owned()
 }
 
-/// 工程文件在磁盘上的形态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectFormat {
-    /// `ARCH-SEC-003` 的 ZIP 容器（本实现写出的唯一形态）。
-    Container,
-    /// **兼容路径**：容器接线之前写出的裸 `YebanProjectV1` JSON（只读仍支持）。
-    BareJson,
-}
+/// `yeban_open_project` / `yeban_save_project` 响应里 `format` 的**唯一**取值。
+///
+/// `ADR-0001 D43` 之后 `.yeban` 容器是唯一的工程格式，这里刻意**没有**一个
+/// "文档形态"枚举：一个只剩单个变体的枚举只会邀请人再往里面塞一个变体回来。
+/// 常量把"读法只有一条"写死成事实 —— 判据据此断言报告里**不可能**出现第二个值。
+/// `yeban-app` 侧的同名常量 `open::DOCUMENT_FORMAT` 是同一件事
+/// （见 `docs/ledger/app-no-compat-notes.md`）。
+pub const DOCUMENT_FORMAT: &str = "yeban-container";
 
-impl ProjectFormat {
-    /// 规范字符串（进响应载荷，让调用方**看得见**自己开的是哪种形态）。
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Container => "yeban-container",
-            Self::BareJson => "bare-json",
-        }
-    }
-
-    /// 是否是容器形态。
-    #[must_use]
-    pub const fn is_container(self) -> bool {
-        matches!(self, Self::Container)
-    }
-}
-
-/// 一次加载的完整结果（工程 + 形态 + 容器里另外两类条目）。
+/// 一次加载的完整结果（工程 + 容器里另外两类条目）。
 #[derive(Debug, Clone)]
 pub struct LoadedProject {
     /// 已通过版本门与 `validate()` 的工程文档。
     pub project: YebanProjectV1,
-    /// 磁盘形态。
-    pub format: ProjectFormat,
-    /// 文件字节数（容器形态下是**容器字节**，不是 `project.json` 的长度）。
+    /// 文件字节数（**容器字节**，不是 `project.json` 的长度）。
     pub bytes: u64,
-    /// `history.dag` 解析出的提交图谱；兼容路径或空图谱为 `None`。
+    /// `history.dag` 解析出的提交图谱；空图谱为 `None`。
     pub graph: Option<CommitGraph>,
-    /// `assets/{sha256}` 解出的 CAS 资产池（键序确定）；兼容路径为空。
+    /// `assets/{sha256}` 解出的 CAS 资产池（键序确定）；没有资产时为空。
     pub assets: BTreeMap<AssetHash, Vec<u8>>,
 }
 
-/// 这份字节看起来是一个 `.yeban` 容器吗（只看 ZIP 魔数）。
+/// 这份字节有没有 ZIP 结构（三种签名：local header / EOCD / data descriptor）。
+///
+/// **不是格式探测，也不是为兼容而写的护栏**：旧实现用它决定"要不要掉进裸 JSON
+/// 分支"，那条分支已按 `ADR-0001 D43` 删除。它现在只服务一件事 —— 把拒绝分成
+/// "**你给的不是 `.yeban` 容器**"（[`not_a_container_fault`]）与"**你的 `.yeban`
+/// 坏了**"（[`container_fault`]）两档，而不是把两者糊成一句"无法识别的文件"。
+/// 截断的 `.yeban` 前 4 字节仍是 [`CONTAINER_MAGIC`]，因此落在"坏了"那一档，
+/// 拿到的是精确的容器裁决 —— 这与 `yeban-app` 的 `has_zip_signature` 逐条同义。
 #[must_use]
-pub fn looks_like_container(bytes: &[u8]) -> bool {
-    bytes.starts_with(&CONTAINER_MAGIC)
+pub fn has_zip_signature(bytes: &[u8]) -> bool {
+    const SIGNATURES: [&[u8; 4]; 3] = [&CONTAINER_MAGIC, b"PK\x05\x06", b"PK\x07\x08"];
+    SIGNATURES
+        .iter()
+        .any(|signature| bytes.starts_with(signature.as_slice()))
 }
 
 /// 容器层拒绝的五种性质（**全部**出口都是 [`ErrorCode::IoError`]）。
@@ -280,6 +278,34 @@ pub fn container_fault(path: &Path, error: &ContainerError) -> Fault {
             path.display(),
             rejection.as_str(),
             rejection.spec_id()
+        ),
+        serde_json::json!({
+            "specId": rejection.spec_id(),
+            "category": rejection.as_str(),
+            "containerError": format!("{error:?}"),
+            "path": path.display().to_string(),
+        }),
+    )
+}
+
+/// **不是 `.yeban` 容器**的精确拒绝（`ADR-0001 D43`）。
+///
+/// 语义与 `yeban-app` 的 `OpenError::NotAYebanContainer` **一致**
+/// （见 `docs/ledger/app-no-compat-notes.md`）：裸 `project.json`、随机字节、空文件
+/// 都走这一支，**一个都不会被"顺手当成工程打开"**，也绝不退化成"打开成空工程"。
+///
+/// 载荷携带容器层的**原裁决**（通常是 [`ContainerError::EocdNotFound`]）与分类：
+/// "不是容器"这件事本身也有一个精确原因，把它吞掉换成一句"无法识别的文件"
+/// 就是在丢信息。错误码仍然只能是 [`ErrorCode::IoError`]（`ADR-0001 D25` 的联集里
+/// 没有"非容器"这种容器内部码，诊断走 `data`）。
+#[must_use]
+pub fn not_a_container_fault(path: &Path, error: &ContainerError) -> Fault {
+    let rejection = container_rejection(error);
+    Fault::domain_with_data(
+        ErrorCode::IoError,
+        format!(
+            "`{}` 不是 `.yeban` 容器 (容器裁决: {error})",
+            path.display()
         ),
         serde_json::json!({
             "specId": rejection.spec_id(),
@@ -470,19 +496,23 @@ fn oversized_file_fault(path: &Path, len: u64, max: u64) -> Fault {
     )
 }
 
-/// **读取并校验**一个工程文件（容器优先，裸 JSON 兼容），使用规范默认上限。
+/// **读取并校验**一个工程文件（只接受 `.yeban` 容器），使用规范默认上限。
 ///
-/// 判定只看前 4 字节的 ZIP 魔数（[`CONTAINER_MAGIC`]）：
+/// `ADR-0001 D43` 之后容器是**唯一**工程格式，判定顺序是契约的一部分
+/// （见 [`has_zip_signature`] 与 [`not_a_container_fault`]）：
 ///
 /// ```text
-/// PK\x03\x04  ⇒ read_project_container(...)  容器：先过 MUST-GATE-006/007，再解 §5.3 布局
-/// 否则        ⇒ UTF-8 + serde_json           兼容路径：容器接线之前的裸 JSON
+/// read_project_container(bytes) 成功 ⇒ 版本门 + validate()        【唯一被接受的形态】
+/// 失败且字节有 ZIP 结构              ⇒ container_fault           【"你的 .yeban 坏了"】
+/// 失败且连 ZIP 结构都没有            ⇒ not_a_container_fault     【"你给的不是 .yeban 容器"】
 /// ```
 ///
-/// 两条路径**共用**同一段版本门与结构校验（顺序与错误码都不变）：
+/// 版本门与结构校验的顺序（与错误码）没有变：
 ///
 /// 1. [`YebanProjectV1::check_readable`] → `CONFLICT` 等（`from_model` 的唯一映射）；
 /// 2. [`YebanProjectV1::validate`] → `OUT_OF_RANGE` / `CONFLICT` 等。
+///
+/// **任何失败路径都不返回空工程 / 默认工程。**
 ///
 /// # Errors
 ///
@@ -491,7 +521,9 @@ fn oversized_file_fault(path: &Path, len: u64, max: u64) -> Fault {
 /// - 文件超过 [`max_container_file_bytes`] → `IO_ERROR`（`category = archive-bomb`）；
 /// - 容器被拒（Zip-Slip / 炸弹 / 不支持的压缩法 / 篡改 / 布局不符）→ `IO_ERROR`
 ///   （载荷带 `category` / `specId`，见 [`container_fault`]）；
-/// - 裸 JSON 路径的 UTF-8 / JSON / 版本门 / 结构校验失败 → `IO_ERROR` / `CONFLICT`。
+/// - 不是 `.yeban` 容器（裸 JSON / 随机字节 / 空文件）→ `IO_ERROR`
+///   （载荷携带容器原裁决，见 [`not_a_container_fault`]）；
+/// - 容器内工程的版本门 / 结构校验失败 → `CONFLICT` / `OUT_OF_RANGE` 等。
 pub fn load_project(path: &Path) -> Result<LoadedProject, Fault> {
     load_project_with_limits(path, &ContainerLimits::default())
 }
@@ -526,23 +558,27 @@ pub fn load_project_with_limits(
     if len > max_file {
         return Err(oversized_file_fault(path, len, max_file));
     }
-    if looks_like_container(&bytes) {
-        load_container(path, &bytes, len, limits)
-    } else {
-        load_bare_json(path, &bytes, len)
-    }
+    load_container(path, &bytes, len, limits)
 }
 
-/// 容器形态的加载（`ARCH-SEC-003`）。
+/// 容器形态的加载 —— **唯一**的加载路径（`ARCH-SEC-003`）。
+///
+/// 失败分两档（`ADR-0001 D43`）：有 ZIP 结构 ⇒ 原样上报容器裁决（截断 / CRC /
+/// Zip-Slip / 炸弹 / 缺件 / 容器内坏 JSON 都拿到精确分类）；连 ZIP 结构都没有
+/// ⇒ [`not_a_container_fault`]（"你给的不是 `.yeban` 容器"）。
 fn load_container(
     path: &Path,
     bytes: &[u8],
     len: u64,
     limits: &ContainerLimits,
 ) -> Result<LoadedProject, Fault> {
-    let archive =
-        read_project_container(bytes, limits).map_err(|error| container_fault(path, &error))?;
-    // 版本门与结构校验：与裸 JSON 路径**逐字相同**（兼容 ≠ 放宽）。
+    let archive = match read_project_container(bytes, limits) {
+        Ok(archive) => archive,
+        Err(error) if !has_zip_signature(bytes) => {
+            return Err(not_a_container_fault(path, &error));
+        }
+        Err(error) => return Err(container_fault(path, &error)),
+    };
     archive
         .project
         .check_readable()
@@ -554,7 +590,6 @@ fn load_container(
     let graph = decode_history_dag(path, &archive.history_dag)?;
     Ok(LoadedProject {
         project: archive.project,
-        format: ProjectFormat::Container,
         bytes: len,
         graph,
         assets: archive.assets.into_iter().collect(),
@@ -604,41 +639,6 @@ fn decode_history_dag(path: &Path, raw: &[u8]) -> Result<Option<CommitGraph>, Fa
         ));
     }
     Ok(Some(graph))
-}
-
-/// **兼容路径**：裸 `YebanProjectV1` JSON（容器接线之前写出的夹具与工程文件）。
-fn load_bare_json(path: &Path, bytes: &[u8], len: u64) -> Result<LoadedProject, Fault> {
-    let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
-        Fault::domain(
-            ErrorCode::IoError,
-            format!(
-                "工程文件既不是 .yeban 容器, 也不是合法 UTF-8: {}",
-                path.display()
-            ),
-        )
-    })?;
-    let project: YebanProjectV1 = serde_json::from_str(&text).map_err(|error| {
-        Fault::domain(
-            ErrorCode::IoError,
-            format!(
-                "工程文件既不是 .yeban 容器 (缺 ZIP 魔数), 也不是合法的 YebanProjectV1 JSON ({}): {error}",
-                path.display()
-            ),
-        )
-    })?;
-    project
-        .check_readable()
-        .map_err(|error| super::error::from_model("工程版本门", &error))?;
-    project
-        .validate()
-        .map_err(|error| super::error::from_model("工程结构校验", &error))?;
-    Ok(LoadedProject {
-        project,
-        format: ProjectFormat::BareJson,
-        bytes: len,
-        graph: None,
-        assets: BTreeMap::new(),
-    })
 }
 
 /// 把工程序列化成**规范化文本**（美化 JSON + 结尾换行）。
@@ -886,7 +886,6 @@ mod tests {
 
         let loaded = load_project(&path).expect("读回");
         assert_eq!(loaded.project, model);
-        assert_eq!(loaded.format, ProjectFormat::Container);
         assert_eq!(loaded.bytes as usize, bytes.len());
         assert!(loaded.graph.is_none(), "空图谱写出的 DAG 读回是 None");
         assert!(loaded.assets.is_empty());
@@ -897,30 +896,127 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// `ADR-0001 D43`：裸 JSON 不再有读路径 —— 必须被**精确拒绝**，
+    /// 而**同一份 JSON 包进真容器仍然能读**（证明拒绝的是容器边界，不是内容）。
     #[test]
-    fn bare_json_is_still_readable_on_the_compat_path() {
-        let dir = scratch("compat");
+    fn bare_json_is_refused_as_not_a_container_and_the_same_json_in_a_container_still_opens() {
+        let dir = scratch("no-compat");
         let path = dir.join("demo.yeban");
         let model = yeban_model::samples::filled_project();
         let text = serialize_project(&model).expect("序列化");
         fs::write(&path, &text).expect("写裸 JSON");
 
-        let loaded = load_project(&path).expect("兼容路径必须仍能打开");
-        assert_eq!(loaded.format, ProjectFormat::BareJson);
+        let fault = load_project(&path).expect_err("裸 JSON 必须被明确拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::IoError));
+        let value = fault.into_result().expect("领域失败是带内响应");
+        assert_eq!(value["error"]["code"], "IO_ERROR");
+        assert_eq!(value["error"]["data"]["category"], "malformed-container");
+        assert_eq!(value["error"]["data"]["specId"], "ARCH-SEC-003");
+        assert_eq!(value["error"]["data"]["containerError"], "EocdNotFound");
+        let message = value["error"]["message"].as_str().expect("message");
+        assert!(message.contains("不是 `.yeban` 容器"), "{message}");
+        assert!(message.contains("end-of-central-directory"), "{message}");
+
+        // **强对照**：同一份 JSON 字节原样包进真容器 ⇒ 能打开。
+        let bytes = yeban_model::container::write_container(&[
+            yeban_model::container::ContainerEntry::new(
+                yeban_model::container::PROJECT_JSON_NAME,
+                text.clone().into_bytes(),
+            ),
+            yeban_model::container::ContainerEntry::new(
+                yeban_model::container::HISTORY_DAG_NAME,
+                serde_json::to_vec(&CommitGraph::new()).expect("空图谱"),
+            ),
+        ])
+        .expect("写真容器");
+        write_project_atomic(&path, &bytes).expect("保存容器");
+        let loaded = load_project(&path).expect("容器里的同一份工程必须能读");
         assert_eq!(loaded.project, model);
-        assert_eq!(loaded.bytes as usize, text.len());
-        assert!(loaded.graph.is_none());
-        assert!(loaded.assets.is_empty());
+        assert_eq!(loaded.bytes as usize, bytes.len());
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// 空文件 / 随机字节 / 垃圾文本 / 坏 JSON：**各有**明确且精确的错误
+    /// （不是泛化的"未知格式"，更不是"打开成空工程"）。
     #[test]
-    fn corrupt_json_is_refused_with_an_io_error() {
-        let dir = scratch("corrupt");
-        let path = dir.join("demo.yeban");
-        fs::write(&path, "{not json").expect("写坏文件");
-        let fault = load_project(&path).expect_err("必须拒绝");
+    fn empty_random_and_garbage_files_are_refused_precisely() {
+        let dir = scratch("non-container");
+        let model = yeban_model::samples::filled_project();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty.yeban", Vec::new()),
+            ("random.yeban", vec![0xAB; 64]),
+            ("garbage.yeban", b"not a zip at all".to_vec()),
+            ("corrupt.yeban", b"{not json".to_vec()),
+        ];
+        for (name, bytes) in cases {
+            let path = dir.join(name);
+            fs::write(&path, &bytes).expect("写非容器");
+            let fault = load_project(&path).expect_err("非容器必须被拒绝");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::IoError), "{name}");
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["code"], "IO_ERROR", "{name}");
+            assert_eq!(
+                value["error"]["data"]["category"], "malformed-container",
+                "{name}: {value}"
+            );
+            assert_eq!(
+                value["error"]["data"]["specId"], "ARCH-SEC-003",
+                "{name}: {value}"
+            );
+            let message = value["error"]["message"].as_str().expect("message");
+            assert!(message.contains("不是 `.yeban` 容器"), "{name}: {message}");
+        }
+        // 反面对照：真容器仍然能读（拒绝不是"这个目录里的东西都读不了"）。
+        let path = dir.join("good.yeban");
+        let bytes = container_bytes(&path, &model, &CommitGraph::new(), &BTreeMap::new())
+            .expect("容器字节");
+        fs::write(&path, &bytes).expect("写容器");
+        assert!(load_project(&path).is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 容器侧的**炸弹 / 上限闸门**在删掉兼容路径之后一个都没松：
+    /// 真容器 + 可注入的紧上限 ⇒ 命中**容器层**（不是 I/O 层）的 `MUST-GATE-007`。
+    #[test]
+    fn container_bomb_gates_still_fire_after_the_compat_path_is_gone() {
+        let dir = scratch("bomb");
+        let path = dir.join("bomb.yeban");
+        let model = yeban_model::samples::filled_project();
+        let bytes = container_bytes(&path, &model, &CommitGraph::new(), &BTreeMap::new())
+            .expect("容器字节");
+        fs::write(&path, &bytes).expect("写容器");
+
+        // `max_entry_bytes = 64`：`project.json` 远大于它 ⇒ 条目声明的解压体积越界。
+        // 文件大小闸门刻意放宽（`max_total_bytes` 远大于容器），所以命中的只能是
+        // **容器层**那一道 —— 载荷里没有 `fileBytes` 就是证据。
+        let tight = ContainerLimits {
+            max_entry_bytes: 64,
+            max_total_bytes: 1 << 20,
+            max_ratio: 1_000,
+            max_entries: 8,
+        };
+        assert!(
+            max_container_file_bytes(&tight) > u64::try_from(bytes.len()).unwrap(),
+            "本判据必须让文件大小闸门放行, 才能证明容器层闸门真的在"
+        );
+        let fault = load_project_with_limits(&path, &tight).expect_err("容器层炸弹闸门必须生效");
         assert_eq!(fault.domain_code(), Some(ErrorCode::IoError));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["category"], "archive-bomb");
+        assert_eq!(value["error"]["data"]["specId"], "MUST-GATE-007");
+        assert!(
+            value["error"]["data"]["fileBytes"].is_null(),
+            "拒绝必须来自容器层的条目体积闸门, 不是 I/O 层的文件大小闸门: {value}"
+        );
+        assert!(
+            value["error"]["data"]["containerError"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("EntryTooLarge")),
+            "诊断必须指名是条目解压体积: {value}"
+        );
+
+        // 同一份字节在默认上限下能读 ⇒ 上面拒绝的确实是**注入的紧上限**。
+        assert!(load_project(&path).is_ok());
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -959,16 +1055,38 @@ mod tests {
         assert_eq!(value["error"]["data"]["specId"], "MUST-GATE-007");
         assert_eq!(value["error"]["data"]["fileBytes"], cap + 1);
 
-        // 同一份字节在**宽松**上限下不会被这道闸门拦（它落到"不是合法 JSON"这条路上,
-        // 因此没有 `category`）⇒ 证明上面的拒绝确实来自**文件大小**这一道,
-        // 而不是"这个文件反正会失败"。
+        // 同一份字节在**宽松**上限下不会被这道闸门拦：它会落到"不是 `.yeban` 容器"
+        // 那一条路上，载荷里**没有** `fileBytes` ⇒ 证明上面的拒绝确实来自**文件大小**
+        // 这一道，而不是"这个文件反正会失败"。
         let loose = load_project(&path).expect_err("不是合法工程");
         let loose_value = loose.into_result().expect("带内");
+        assert_eq!(
+            loose_value["error"]["data"]["category"], "malformed-container",
+            "{loose_value}"
+        );
         assert!(
-            loose_value["error"]["data"]["category"].is_null(),
-            "宽松上限下不该命中容器分类闸门: {loose_value}"
+            loose_value["error"]["data"]["fileBytes"].is_null(),
+            "宽松上限下不该命中文件大小闸门: {loose_value}"
+        );
+        assert!(
+            loose_value["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("不是 `.yeban` 容器")),
+            "{loose_value}"
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn zip_signature_tiers_non_containers_from_broken_containers() {
+        // `has_zip_signature` 只服务**诊断分档**（D43 之后不再服务兼容分支）：
+        // 有 ZIP 结构的失败报容器裁决，没有的报"不是 `.yeban` 容器"。
+        assert!(has_zip_signature(&CONTAINER_MAGIC));
+        assert!(has_zip_signature(b"PK\x05\x06"));
+        assert!(has_zip_signature(b"PK\x07\x08"));
+        assert!(!has_zip_signature(&[]));
+        assert!(!has_zip_signature(b"{\n  \"bpm\": 120.0\n}"));
+        assert!(!has_zip_signature(b"not a zip at all"));
     }
 
     #[test]
@@ -981,6 +1099,21 @@ mod tests {
         fs::write(&path, &bytes[..bytes.len() / 2]).expect("写半截容器");
         let fault = load_project(&path).expect_err("截断的容器必须被拒绝");
         assert_eq!(fault.domain_code(), Some(ErrorCode::IoError));
+        let value = fault.into_result().expect("带内");
+        // 截断的容器前 4 字节仍是 `PK\x03\x04` ⇒ 它落在"**你的 `.yeban` 坏了**"
+        // 那一档（精确容器裁决），而不是"你给的不是 `.yeban` 容器"。
+        assert_eq!(value["error"]["data"]["category"], "malformed-container");
+        assert_eq!(value["error"]["data"]["specId"], "ARCH-SEC-003");
+        assert!(
+            value["error"]["data"]["containerError"].is_string(),
+            "必须携带精确的容器裁决: {value}"
+        );
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("不是可接受的 .yeban 容器")),
+            "截断的 `.yeban` 必须报容器裁决, 而不是「不是我们的文件」: {value}"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1031,5 +1164,27 @@ mod tests {
             assert_eq!(value["error"]["data"]["category"], expected.as_str());
             assert_eq!(value["error"]["data"]["specId"], expected.spec_id());
         }
+
+        // "不是 `.yeban` 容器"这一档同样只能用一个**已存在的**契约码，
+        // 并且必须携带容器的原裁决（`ADR-0001 D25` + D43）。
+        let not_a_container =
+            not_a_container_fault(Path::new("/tmp/bare.yeban"), &ContainerError::EocdNotFound);
+        assert_eq!(
+            not_a_container.domain_code(),
+            Some(ErrorCode::IoError),
+            "非容器拒绝不许发明新码"
+        );
+        let value = not_a_container.into_result().expect("带内");
+        assert_eq!(value["error"]["code"], "IO_ERROR");
+        assert_eq!(value["error"]["data"]["category"], "malformed-container");
+        assert_eq!(value["error"]["data"]["specId"], "ARCH-SEC-003");
+        assert_eq!(value["error"]["data"]["containerError"], "EocdNotFound");
+        assert_eq!(value["error"]["data"]["path"], "/tmp/bare.yeban");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("不是 `.yeban` 容器")),
+            "{value}"
+        );
     }
 }

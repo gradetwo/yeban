@@ -43,6 +43,7 @@
 //! **绝不污染仓库**（`docs/DEVELOPMENT_LEDGER.md` L16）。
 //! 子进程继承同一目录；父进程 `Child::kill()` 后一定 `wait()` 收尸，不留僵尸。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -96,12 +97,17 @@ impl Scratch {
     }
 
     /// 写一份**确定的**工程文件（`tools_e2e.rs` 用同一份夹具数据）。
+    ///
+    /// `ADR-0001 D43`：容器是唯一工程格式，因此夹具写的是**真容器**字节
+    /// （旧夹具写裸 JSON，那条读路径已删除）。
     fn project(&self, name: &str) -> PathBuf {
         let project = yeban_model::samples::filled_project();
-        let mut text = serde_json::to_string_pretty(&project).expect("序列化");
-        text.push('\n');
+        let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
+        let bytes =
+            yeban_model::container::write_project_container(&project, &history, &BTreeMap::new())
+                .expect("写真容器");
         let path = self.join(name);
-        fs::write(&path, &text).expect("写工程");
+        fs::write(&path, &bytes).expect("写容器工程");
         path
     }
 }
