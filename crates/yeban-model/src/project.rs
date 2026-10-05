@@ -39,6 +39,20 @@
 //! 逐键比较 serde 实际输出的 JSON 类型。手抄一份"契约类型表"曾经让第二份事实源
 //! 在契约修好后变成谎言 —— 现在只剩一个事实源。
 //! 冲突的实测留痕见 `docs/ledger/model-core-provenance.md`。
+//!
+//! ## 反序列化的宽容度（ADR-0001 D43 第 2 条）
+//!
+//! 本模块**不再**为了"旧文件还能读"而宽容。`#[serde(default)]` 只允许出现在两类位置：
+//!
+//! 1. `Option<T>` —— `None` 是模型自己定义的一等状态（"派生自目标"/"未标注"/"单位增益"…），
+//!    这是**语义**而非兼容；
+//! 2. 自由文本注记（`description` / `author`）与注记列表（`tags`）—— 空串/空集就是
+//!    "没有注记"的确定编码，不参与工程语义。
+//!
+//! 其余字段一律**必需**：缺键 ⇒ `serde` 的 `missing field` 错误（响亮失败）。
+//! 配套约束：必需字段**不得**同时 `skip_serializing_if` 到默认值上，否则本写入器产出的
+//! 文档（省略了默认值）会被本读取器拒绝 —— **宽容读与省略写必须成对取消**。
+//! 逐项复审表见 `docs/ledger/model-no-compat-notes.md`。
 
 use std::collections::BTreeMap;
 
@@ -313,15 +327,24 @@ pub struct ProjectAudioConfig {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectMetadata {
     /// 作品描述。
+    ///
+    /// `#[serde(default)]` 是**语义**而非兼容 [ADR-0001 D43]: 描述是自由文本注记,
+    /// 空串就是它在定义上的"没有描述"状态, 既不伪造事实也不改变工程行为。
     #[serde(default)]
     pub description: String,
     /// 创建时间 (Unix 毫秒)。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]: `0` 与"1970-01-01 创建"这一**真实**时间戳不可区分,
+    /// 默认值销毁的是"未知"这一信息本身。
     pub created_at_unix_ms: u64,
     /// 最后修改时间 (Unix 毫秒)。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]: 同 `created_at_unix_ms`, `0` 会伪装成真实时间戳。
     pub modified_at_unix_ms: u64,
     /// 自由标签。
+    ///
+    /// `#[serde(default)]` 是**语义** [ADR-0001 D43]: 空集就是"没有标签", 是注记字段的
+    /// 确定编码, 不参与任何工程行为。
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -346,16 +369,18 @@ pub enum LaunchQuantization {
 ///
 /// 有意**不含** `bpm`/`time_signature`（顶层唯一权威）与播放头位置
 /// （属于 `MODEL-ISO-001` 的挥发性运行态，严禁持久化）。
+///
+/// 三个字段全部**必需** [ADR-0001 D43]：它们都是"会改变走带/录音行为"的配置 ——
+/// 缺 `metronome_enabled` 会静默关掉节拍器、缺 `count_in_bars` 会静默取消预备拍、
+/// 缺 `launch_quantization` 会静默换成一小节量化。这里的默认值不是"空值"，
+/// 而是**伪造一个作者从未做过的选择**。
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TransportConfig {
     /// 节拍器是否默认开启。
-    #[serde(default)]
     pub metronome_enabled: bool,
     /// 录音前的预备小节数。
-    #[serde(default)]
     pub count_in_bars: u8,
     /// 场景启动的默认量化。
-    #[serde(default)]
     pub launch_quantization: LaunchQuantization,
 }
 
@@ -395,6 +420,9 @@ pub struct ParameterValue {
     /// 当前值（必须有限）。
     pub value: f32,
     /// 物理单位（如 `dB` / `Hz` / `%`）。
+    ///
+    /// `None` 是**一等状态**（"无量纲/未标注"），故保留 `#[serde(default)]`
+    /// [ADR-0001 D43 第 2 条对 `Option<T>` 的明确豁免]，并与 `skip_serializing_if` 对偶。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
 }
@@ -426,10 +454,14 @@ pub struct DeviceDefinition {
     /// 设备类型。
     pub kind: DeviceKind,
     /// 是否旁通。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺了它，一个被旁通的设备会被静默接回信号链 ——
+    /// 这是"听得出、但读文件时看不见"的行为反转。
     pub bypassed: bool,
     /// 参数列表。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：这是设备参数的**唯一**载体，缺了它等于把所有参数值
+    /// 静默丢成空集（`Vec` 的默认值在这里不是"没有参数"，而是"参数丢了"）。
     pub params: Vec<ParameterValue>,
     /// 本设备引入的处理延迟（采样点）[ARCH-PDC-001]。
     ///
@@ -438,10 +470,10 @@ pub struct DeviceDefinition {
     /// `D_i = L_max - L_i` 的延迟线，使所有分支在汇合点相位对齐 —— 少报或漏报都会造成
     /// 相位错位，而这种错位用耳朵听不出来、只能靠机械对账发现。
     ///
-    /// `#[serde(default)]` 是刻意的：缺失时取 `0`，这样旧文档仍可读（见 docs/adr/ADR-0001 D3 的
-    /// 版本门策略：能安全默认的字段就不该让读者失败）。**但 0 必须被理解为"未上报"**，
-    /// 因此设备作者有义务显式声明真实值；PDC 侧的判据会检查"非零延迟设备是否被正确对齐"。
-    #[serde(default)]
+    /// **必需** [ADR-0001 D43]：本字段曾经 `#[serde(default)]`，理由写的是"这样旧文档仍可读"。
+    /// 1.0.0 之前没有任何旧文档，于是那条理由只剩下坏处：`0` 与"这台设备零延迟"这一
+    /// **合法**上报值不可区分，缺字段会被静默读成"零延迟设备"，而 PDC 的相位对齐恰恰
+    /// 依赖这个数字。缺字段 ⇒ 响亮失败。
     pub latency_samples: u32,
 }
 
@@ -545,16 +577,17 @@ impl MacroMapping {
 }
 
 /// 宏参数。
+///
+/// 三个字段全部**必需** [ADR-0001 D43]：`name` 是实体的标签（与 `TrackV3::name` /
+/// `DeviceDefinition::name` 这两个无默认值的同族字段一致）、`value` 是宏当前取值、
+/// `mappings` 是宏的全部去向 —— 缺任何一个都会静默改变宏的行为。
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct MacroParameter {
     /// 宏名。
-    #[serde(default)]
     pub name: String,
     /// 宏当前位置 0.0..=1.0。
-    #[serde(default)]
     pub value: f32,
     /// 映射列表。
-    #[serde(default)]
     pub mappings: Vec<MacroMapping>,
 }
 
@@ -585,7 +618,9 @@ pub struct AutomationPoint {
     /// 参数值（必须有限）。
     pub value: f32,
     /// 到下一个点的曲线形状。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：默认 `Linear` 会**伪造一条作者没画过的曲线**，
+    /// 而曲线形状直接改变求值结果（渲染/引擎都按它插值）。
     pub curve: CurveType,
 }
 
@@ -732,8 +767,11 @@ impl<'de> serde::Deserialize<'de> for AutomationValueDomain {
 ///
 /// 规范四份正文都没有给"读/写模式"命名或定义（实测：只有 `CurveType`/`AutomationLane`
 /// 这些类型名），因此这是本线的工程裁决，代价与依据记在
-/// `docs/ledger/model-automation-notes.md`。`Off` 是默认值：旧工程读到的是"不录制"，
-/// 这是唯一安全的默认（默认"录制"会凭空产生写入）。
+/// `docs/ledger/model-automation-notes.md`。
+///
+/// `Off` 仍是 `Default` 的派生值（用于内存构造），但 [ADR-0001 D43] 之后它**不再**是
+/// 反序列化的兜底：`AutomationLane::write_mode` 缺失即报错。"不录制"是唯一的**安全**
+/// 默认（默认"录制"会凭空产生写入），但它仍然是一个**选择**，必须被显式写出。
 #[derive(
     Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
@@ -750,24 +788,11 @@ pub enum AutomationWriteMode {
 }
 
 impl AutomationWriteMode {
-    /// 是否为 `Off`（`serde` 的 `skip_serializing_if` 需要 `&self` 形式）。
+    /// 是否为 `Off`（隐式泳道的判据之一：`Off` 的泳道不参与 `is_implicit` 的判定）。
     #[must_use]
     pub const fn is_off(&self) -> bool {
         matches!(self, Self::Off)
     }
-}
-
-/// `bool` 字段的默认值 `true`（serde 的 `default = "..."` 需要具名函数）。
-fn default_true() -> bool {
-    true
-}
-
-/// `bool` 的 `skip_serializing_if` 谓词：`true` 是默认值，因此不写进 JSON。
-///
-/// 这条不只是省字节：它让**旧工程再导出后的字节与原文一致**
-/// （新字段在默认值上完全隐身），于是"旧文档 → 读 → 写"不产生任何格式漂移。
-fn is_true(value: &bool) -> bool {
-    *value
 }
 
 /// 自动化泳道（一个目标一条）[MODEL-AST-002]。
@@ -779,27 +804,38 @@ fn is_true(value: &bool) -> bool {
 /// [`ModelError::AutomationLaneTargetMismatch`]）。刻意不引入 `id: EntityId`：
 /// 两个身份必然漂移（ADR-0001 D28 的同一理由），而寻址/撤销/下游调用全都按目标走。
 ///
-/// ## 向后兼容
+/// ## 字段的必需性 [ADR-0001 D43]
 ///
-/// 三个新字段全部 `#[serde(default)]`（`read_enabled` 缺失即 `true`、`write_mode`
-/// 缺失即 `Off`、`domain` 缺失即 `None`），且**在默认值上不序列化**：没有这些字段的
-/// 旧工程能原样读入，再导出时字节不变。
+/// - `read_enabled` / `write_mode` / `points` **必需**：它们曾经的 `#[serde(default)]`
+///   唯一理由就是"旧工程可读"，而 `read_enabled = true` / `write_mode = Off` 本身就是
+///   完整表达，写出来零成本。缺字段 ⇒ 响亮失败，绝不静默补一个开关状态。
+///   与之配套，二者**不再** `skip_serializing_if`：否则本写入器写出的文档（默认值被省略）
+///   会被本读取器拒绝 —— 宽容读与省略写必须同时取消。
+/// - `domain` 保留 `#[serde(default)]`：它是 `Option<T>`，`None` 是**一等语义**
+///   （"派生自目标"，见 [`AutomationLane::effective_domain`]），不是兼容让步。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AutomationLane {
     /// 该泳道控制的目标。
     pub target: AutomationTarget,
     /// 自动化点集合，键为点身份（`BTreeMap` 保证迭代顺序确定）[MODEL-AST-003]。
-    #[serde(default)]
+    ///
+    /// **必需**：空泳道的确定编码是 `{}`（本写入器总是写出它），缺键意味着文件被截断。
     pub points: BTreeMap<EntityId, AutomationPoint>,
     /// **读**开关：走带/离线渲染是否应用本泳道。`false` 表示泳道被关掉
     /// （求值入口返回"无自动化值"，而不是返回曲线上的值）。
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    ///
+    /// **必需**：开关状态不许被默认值伪造 —— 缺 `read_enabled` 的文档会被静默当成
+    /// "读打开"，于是被作者关掉的自动化悄悄生效。
     pub read_enabled: bool,
     /// **写**模式（录制）。
-    #[serde(default, skip_serializing_if = "AutomationWriteMode::is_off")]
+    ///
+    /// **必需**：`Off` 是一个**选择**（"不录制"），不是一个可以省略的空值。
     pub write_mode: AutomationWriteMode,
     /// 该泳道的显式取值域覆盖；`None` 表示取目标的固有值域
     /// （见 `AutomationLane::effective_domain`）。
+    ///
+    /// `None` 是**一等语义**（"派生自目标"，信息不丢失），故保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<AutomationValueDomain>,
 }
@@ -899,13 +935,16 @@ mod automation_lane_map {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LoopConfig {
     /// 是否启用循环。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺了它会把一个打开的循环静默变成关闭。
     pub enabled: bool,
     /// 循环起点 (tick)。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺了它会把循环区间静默搬到 tick 0。
     pub start_tick: u64,
     /// 循环终点 (tick)。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：`0` 与一个真实的循环终点不可区分。
     pub end_tick: u64,
 }
 
@@ -929,7 +968,9 @@ pub struct ClipPoolEntry {
     /// 片段身份。
     pub id: EntityId,
     /// 显示名。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：片段标签是实体自身的一部分（同族字段
+    /// `TrackV3::name` / `DeviceDefinition::name` 都没有默认值）。
     pub name: String,
     /// 片段内容。
     pub content: ClipContent,
@@ -941,7 +982,9 @@ pub enum ClipContent {
     /// MIDI 片段：音符集合，键为音符身份（`BTreeMap`）[MODEL-AST-003, MODEL-AST-005]。
     Midi {
         /// 音符集合。
-        #[serde(default)]
+        ///
+        /// **必需** [ADR-0001 D43]：这是音符的**唯一**载体，缺键等于静默丢掉整个片段
+        /// 的音乐内容（空片段的确定编码是 `{}`）。
         notes: BTreeMap<EntityId, MidiNote>,
     },
     /// 音频片段：内容寻址的资产引用 + 增益。
@@ -949,7 +992,11 @@ pub enum ClipContent {
         /// 资产哈希（CAS 键）[MODEL-AST-007]。
         asset: AssetHash,
         /// 片段增益 (dB)。
-        #[serde(default)]
+        ///
+        /// **必需** [ADR-0001 D43]：`0.0` 是一个**真实增益**（单位增益），不是一个
+        /// "未填"标记 —— 缺字段会让一个 -1.5 dB 的片段静默变成 0 dB。
+        /// 对比 [`RoutingEdge::gain_db`]：那里"单位增益"被显式建模成 `Option::None`，
+        /// 是**语义**；这里的裸 `f32` 只能靠"必须写出来"来消除同样的歧义。
         gain_db: f32,
     },
 }
@@ -1026,10 +1073,13 @@ pub struct ClipPlacement {
     /// 摆放时值 (tick)，必须非零。
     pub duration_ticks: u64,
     /// 循环配置。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：这是一个**子结构**，默认值会凭空造出一个"循环关闭、
+    /// 区间 0..0"的配置，而不是表达"作者没配置循环"。
     pub loop_config: LoopConfig,
     /// 是否静音。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺了它会把一个静音的摆放静默放出来（可听的行为反转）。
     pub muted: bool,
 }
 
@@ -1081,29 +1131,42 @@ pub struct TrackV3 {
     /// 独奏。
     pub solo: bool,
     /// 独奏安全（不被其它轨的 solo 静音）。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：它改变 solo 的混音结果，且与同族字段
+    /// `mute` / `solo`（都无默认值）对称 —— 三个混音开关要么都写，要么都别写。
     pub solo_safe: bool,
     /// 所属折叠文件夹（**仅界面语义**）。
+    ///
+    /// `None` 是**一等状态**（"不折叠进任何文件夹"），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_id: Option<EntityId>,
     /// 界面色标。
+    ///
+    /// `None` 是**一等状态**（"用主题默认色"），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// 设备链（有序）。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：设备链是音轨内容的一部分，缺键等于静默清空整条链。
     pub devices: Vec<DeviceDefinition>,
     /// 宏。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：同上，缺键等于静默清空全部宏（连同它们的映射）。
     pub macros: Vec<MacroParameter>,
     /// 自动化泳道集合（`BTreeMap`，键为目标）[MODEL-AST-003]。
     ///
     /// JSON 形态是**按键升序的数组**：`serde_json` 的对象键必须是字符串，
     /// 而 [`AutomationTarget`] 是结构化枚举（序列化为对象），无法直接当键。
     /// 详见 `automation_lane_map`。
-    #[serde(default, with = "automation_lane_map")]
+    ///
+    /// **必需** [ADR-0001 D43]：缺键等于静默清空整条音轨的自动化。
+    #[serde(with = "automation_lane_map")]
     pub automation_lanes: BTreeMap<AutomationTarget, AutomationLane>,
     /// 时间轴摆放集合（`BTreeMap`，键为摆放身份）[MODEL-AST-003]。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺键等于静默清空整条音轨的所有摆放。
     pub clips: BTreeMap<EntityId, ClipPlacement>,
 }
 
@@ -1427,6 +1490,13 @@ pub struct AssetMetadata {
 /// `routing_graph` 见 [`RoutingGraph`]。
 ///
 /// **没有顶层 `sample_rate`**：采样率唯一来源是 `audio_config.sample_rate`。
+///
+/// ## 反序列化严格性 [ADR-0001 D43]
+///
+/// 顶层每一个键都**必需**：本写入器总是写出全部顶层键，因此"缺键"不可能来自本写入器
+/// —— 它只可能来自被截断或异源的文件，必须**响亮失败**而不是被默认值悄悄补全。
+/// 唯一例外是 [`YebanProjectV1::author`]（自由文本注记，空串即"未署名"，
+/// 是**语义**默认而非兼容）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct YebanProjectV1 {
     /// 文档 schema 版本（本写入器产出 [`SCHEMA_VERSION`] = 1）。
@@ -1440,6 +1510,9 @@ pub struct YebanProjectV1 {
     /// 作品标题（顶层唯一权威）。
     pub title: String,
     /// 作者。
+    ///
+    /// `#[serde(default)]` 是**语义** [ADR-0001 D43]: 署名是自由文本注记, 空串是
+    /// "未署名"的确定编码, 不参与任何工程行为。
     #[serde(default)]
     pub author: String,
     /// 速度 20.0..=999.0（顶层唯一权威）。
@@ -1449,34 +1522,48 @@ pub struct YebanProjectV1 {
     /// 音频配置 —— **采样率与声相律的唯一来源**。
     pub audio_config: ProjectAudioConfig,
     /// 确定性随机种子（`probability` 触发判定等算法的跨机一致性）[MODEL-AST-005]。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：它决定 `probability` 的触发判定，缺字段会让同一份乐谱
+    /// 在"默认种子"下静默换一套触发结果 —— 这是听得出、读文件时看不见的行为漂移。
     pub rng_seed: u64,
     /// 工程元数据。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：整个子结构都不许被默认值顶替（否则创建/修改时间会被
+    /// 伪造成 1970）。
     pub metadata: ProjectMetadata,
     /// 传输控制配置。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：走带/录音配置必须被显式陈述（见 [`TransportConfig`]）。
     pub transport: TransportConfig,
     /// 曲式段落集合。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺键等于静默清空全部段落。
     pub sections: BTreeMap<EntityId, SectionV3>,
     /// 音轨集合 [MODEL-AST-003]。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：契约（`schemas/project.schema.json`）早已把 `tracks`
+    /// 列为 required，此前的 `#[serde(default)]` 让实现**静默违反自己的契约**；
+    /// 而且缺键等于静默清空整首曲子的音轨。
     pub tracks: BTreeMap<EntityId, TrackV3>,
     /// 主总线音轨身份。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：这是唯一声学出口的身份，缺字段会静默退化成 nil。
     pub master_bus_track_id: EntityId,
     /// 唯一声学路由真理源 [MODEL-AST-004]。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：契约已列为 required；缺键等于静默清空全部路由。
     pub routing_graph: RoutingGraph,
     /// 场景集合。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺键等于静默清空全部场景。
     pub scenes: BTreeMap<EntityId, SceneV3>,
     /// 片段池。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：契约已列为 required；缺键等于静默清空整个片段池。
     pub clip_pool: BTreeMap<EntityId, ClipPoolEntry>,
     /// 资产索引（键为内容哈希）。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：缺键等于静默丢掉整份资产索引。
     pub assets: BTreeMap<AssetHash, AssetMetadata>,
 }
 
@@ -2336,31 +2423,58 @@ mod tests {
         assert_eq!(back, project);
     }
 
-    /// [ARCH-PDC-001] `latency_samples` 缺失时必须安全默认为 0（旧文档仍可读），
-    /// 非零值必须能往返 —— 这两个方向都要机械判据，否则"向后兼容"只是口头承诺。
+    /// [ARCH-PDC-001, ADR-0001 D43] `bypassed` / `params` / `latency_samples` 现在**必需**。
+    ///
+    /// 本判据是旧判据（"缺 `latency_samples` 读成 0"）的**反向**：D43 之后
+    /// 缺失必须响亮失败，而**显式** `0` 仍然是合法的"零延迟设备"上报值，必须能往返。
     #[test]
-    fn device_latency_samples_defaults_to_zero_and_round_trips() {
-        // 方向一: 旧文档没有该字段 -> 读成 0, 不报错
-        let legacy = r#"{
+    fn device_latency_bypass_and_params_are_required_and_round_trip() {
+        let full = r#"{
             "id": "00000000000000000000000000",
-            "name": "Legacy Device",
-            "kind": "InternalInstrument"
+            "name": "Device",
+            "kind": "InternalInstrument",
+            "bypassed": false,
+            "params": [],
+            "latency_samples": 1024
         }"#;
-        let device: DeviceDefinition =
-            serde_json::from_str(legacy).expect("缺少 latency_samples 的旧设备必须仍可读");
-        assert_eq!(device.latency_samples, 0);
+        let device: DeviceDefinition = serde_json::from_str(full).expect("完整设备必须可读");
+        assert_eq!(device.latency_samples, 1024);
         assert_eq!(device.validate(), Ok(()));
 
-        // 方向二: 非零值往返不丢
-        let mut with_latency = device.clone();
-        with_latency.latency_samples = 1024;
-        let json = serde_json::to_string(&with_latency).expect("serialize");
-        let back: DeviceDefinition = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back, with_latency);
+        // 三个字段各自缺失都必须被单独拒绝（不是"读成 0 / 空集"）。
+        for (missing, partial) in [
+            (
+                "latency_samples",
+                r#"{"id":"00000000000000000000000000","name":"D","kind":"InternalInstrument","bypassed":false,"params":[]}"#,
+            ),
+            (
+                "bypassed",
+                r#"{"id":"00000000000000000000000000","name":"D","kind":"InternalInstrument","params":[],"latency_samples":0}"#,
+            ),
+            (
+                "params",
+                r#"{"id":"00000000000000000000000000","name":"D","kind":"InternalInstrument","bypassed":false,"latency_samples":0}"#,
+            ),
+        ] {
+            let error =
+                serde_json::from_str::<DeviceDefinition>(partial).expect_err("缺必需字段必须失败");
+            let expected = format!("missing field `{missing}`");
+            assert!(
+                error.to_string().contains(&expected),
+                "错误必须点名 {expected}, 实测: {error}"
+            );
+        }
+
+        // **显式** 0 是合法上报值（零延迟设备），必需性不等于"必须非零"。
+        let mut zero = device.clone();
+        zero.latency_samples = 0;
+        let json = serde_json::to_string(&zero).expect("serialize");
         assert!(
-            json.contains("\"latency_samples\":1024"),
-            "非零延迟必须真的被序列化出来: {json}"
+            json.contains("\"latency_samples\":0"),
+            "显式 0 必须真的被序列化出来: {json}"
         );
+        let back: DeviceDefinition = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, zero);
 
         // 填充样本必须覆盖非零情形, 否则"字段可用"这件事没有样本证据
         let filled = crate::samples::filled_project();
