@@ -94,12 +94,12 @@ fn call_tool(dispatcher: &mut Dispatcher, name: &str, arguments: Value) -> Value
     response.result.expect("result")
 }
 
-/// 一次 `tools/call` 的原始 `Outcome`（用来断言 JSON-RPC 层错误）。
-fn call_tool_raw(
-    dispatcher: &mut Dispatcher,
-    name: &str,
-    arguments: Value,
-) -> (u16, Option<i64>, Value) {
+/// 一次 `tools/call` 的 **JSON-RPC 层**读数：`(http 状态, JSON-RPC 错误码)`。
+///
+/// 刻意**只**回这两个标量：判据要断言的是"坏参数走既有的 `-32602`、不是新码"，
+/// 而 `jsonrpc::ErrorObject` **没有** `to_value`（`Id::to_value` 才是那个名字）——
+/// 与其在这里再拼一份 JSON 形状（那是第 N 份会漂移的表示），不如不要它。
+fn call_tool_raw(dispatcher: &mut Dispatcher, name: &str, arguments: Value) -> (u16, Option<i64>) {
     let auth = bearer(dispatcher);
     let line = serde_json::json!({
         "jsonrpc": "2.0",
@@ -113,12 +113,10 @@ fn call_tool_raw(
     let status = outcome.http_status;
     let code = outcome.error_code();
     let response = outcome.response.expect("响应");
-    let payload = response
-        .result
-        .clone()
-        .or_else(|| response.error.as_ref().map(|error| error.to_value()))
-        .expect("result 或 error");
-    (status, code, payload)
+    // 带内失败（领域失败）不带 JSON-RPC 错误对象；实现级状况才带。
+    let looks_like_failure = response.result.is_some() || response.error.is_some();
+    assert!(looks_like_failure, "响应必须要么带 result 要么带 error");
+    (status, code)
 }
 
 /// 工程的**规范化字节**（`undo_session` 的同一口径；逐字节回退判据用它）。
@@ -395,7 +393,22 @@ fn automation_write_lands_in_the_project_and_undo_restores_byte_for_byte() {
     );
     assert_eq!(undone["status"], "success", "{undone}");
     assert_eq!(project_bytes(&dispatcher), before, "撤销必须逐字节回退");
-    assert_eq!(dispatcher.domain().commit_count(), commits_before);
+    // ⚠ 撤销**只移动游标, 不回退提交图谱**（`Plan::commit_delta` 对 Undo/Redo 恒为 0）:
+    // 那次写入的提交仍在 DAG 里, 只是不再被应用。第一版这里写成"回到 commits_before"
+    // 是错的 —— CI 用 `left: 2, right: 1` 把它抓出来了。
+    assert_eq!(
+        dispatcher.domain().commit_count(),
+        commits_before + 1,
+        "撤销不动提交图谱（只动游标）"
+    );
+    assert_eq!(
+        undone["data"]["undoneTotal"], 1,
+        "游标确实前进了一步: {undone}"
+    );
+    assert_eq!(
+        undone["data"]["after"]["canRedo"], true,
+        "撤销之后必须可以重做: {undone}"
+    );
 
     // 重做再把同一个点写回来（同一实现、同一载荷）。
     let redone = call_tool(
@@ -929,14 +942,10 @@ fn preview_keys(tool: &str) -> &'static [&'static str] {
 
 #[test]
 fn dry_run_preview_equals_the_real_call_for_all_three_tools() {
-    let project = filled_project();
-    let track = lead_track(&project);
+    let track = lead_track(&filled_project());
     let bytes = wav_s16(48_000, &[0, 1, -1, 0]);
     let path = write_audio_fixture("preview", &bytes);
 
-    // 同一起点跑两次：一次 dryRun（只读预览），一次真调用。
-    let mut preview_run = dispatcher_with_project(project.clone());
-    let mut real_run = dispatcher_with_project(project);
     let cases: Vec<(&str, Value)> = vec![
         (
             "yeban_edit_automation",
@@ -961,6 +970,11 @@ fn dry_run_preview_equals_the_real_call_for_all_three_tools() {
         ),
     ];
     for (name, arguments) in cases {
+        // ⚠ **每个用例各自一对分发器**：第一版在循环外只建一对, 于是第一个用例的**真调用**
+        // （写一个点）让两侧工程分叉, 后面两个用例的摘要必然不等 —— CI 用 `left/right`
+        // 两个不同 digest 把它抓出来了。夹具的起点必须在**每个用例**上重新对齐。
+        let mut preview_run = dispatcher_with_project(filled_project());
+        let mut real_run = dispatcher_with_project(filled_project());
         let mut dry_arguments = arguments.clone();
         dry_arguments[tools::DRY_RUN_PARAM] = Value::from(true);
         let dry = call_tool(&mut preview_run, name, dry_arguments);
@@ -1127,14 +1141,14 @@ fn bad_and_unknown_parameters_only_use_codes_inside_d25() {
     }
 
     // 参数形状错（类型不对 / 拼错的键）走既有 JSON-RPC 码（-32602），**不**是新码。
-    let (status, code, _) = call_tool_raw(
+    let (status, code) = call_tool_raw(
         &mut dispatcher,
         "yeban_edit_automation",
         serde_json::json!({"trackId": track.to_canonical_string(), "lane": 7}),
     );
     assert_eq!(status, 400);
     assert_eq!(code, Some(yeban_mcp::jsonrpc::INVALID_PARAMS));
-    let (status, code, _) = call_tool_raw(
+    let (status, code) = call_tool_raw(
         &mut dispatcher,
         "yeban_edit_automation",
         serde_json::json!({
@@ -1265,6 +1279,39 @@ fn no_second_automation_evaluation_in_production_sources() {
         yeban_mcp::undo_session::scan_second_undo_implementations(&all),
         Vec::<String>::new()
     );
+}
+
+/// 每个源文件都必须被 `mod` 声明（**CI 实测抓过一次**：`extension_audit.rs` 写好了
+/// 却没进 `domain/mod.rs`，于是 `tests/extension_tools.rs` 的 import 直接 `E0432`）。
+///
+/// 为什么"本机能跑"这件事对这条特别重要：本机不编译这个含重依赖的 crate，
+/// 而"文件在、模块不在"恰好是**只有编译才会发现**的错误。文本守卫把它提前到本机。
+#[test]
+fn every_source_file_is_declared_as_a_module() {
+    let mcp = yeban_mcp::undo_session::read_rust_sources(&[repo_path("crates/yeban-mcp/src")]);
+    assert_eq!(
+        extension_audit::scan_orphan_modules(&mcp),
+        Vec::<String>::new(),
+        "有源文件没有被 `mod` 声明 —— 它不在 crate 里, 任何 import 都会 E0432"
+    );
+    // 反向：守卫**确实**抓得住孤儿（否则这条判据是空转的）。
+    let injected = vec![
+        (
+            "crates/yeban-mcp/src/lib.rs".to_owned(),
+            "pub mod domain;\n".to_owned(),
+        ),
+        (
+            "crates/yeban-mcp/src/domain/mod.rs".to_owned(),
+            "pub mod error;\n".to_owned(),
+        ),
+        (
+            "crates/yeban-mcp/src/domain/injected_orphan.rs".to_owned(),
+            "pub fn f() {}\n".to_owned(),
+        ),
+    ];
+    let found = extension_audit::scan_orphan_modules(&injected);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("injected_orphan"), "{found:?}");
 }
 
 #[test]

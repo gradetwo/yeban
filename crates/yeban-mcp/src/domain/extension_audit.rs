@@ -417,6 +417,88 @@ pub fn scan_error_code_vocabulary(sources: &[(String, String)], schema_text: &st
     violations
 }
 
+/// crate 根文件（不由 `mod` 声明引入）。
+pub const CRATE_ROOT_FILES: [&str; 2] = ["lib.rs", "main.rs"];
+
+/// 守卫 ④：**孤儿模块**（一个 `.rs` 文件谁都没声明）。
+///
+/// ## 为什么需要它（CI 实测抓过一次）
+///
+/// `crates/yeban-mcp/src/domain/extension_audit.rs` 写完、本机的**裸 `rustc` 脚手架**
+/// 用它跑通了 7 条判据，但它**没有被 `domain/mod.rs` 声明** —— 于是：
+///
+/// - crate 里根本不存在 `yeban_mcp::domain::extension_audit`；
+/// - 判据 `tests/extension_tools.rs` 一 import 就 `error[E0432]: unresolved import`；
+/// - **只有 CI 能发现**（本机不编译这个含重依赖的 crate），代价是一整轮判决。
+///
+/// 因此把"每个源文件都被声明"做成文本守卫：它能在**本机**（裸 `rustc`）跑，
+/// 把一个"编译期才能发现的错误"提前成"提交前就能发现的错误"。
+///
+/// ## 规则
+///
+/// 1. 只看传进来的源码（调用方传 `src/` 下的文件；`bin/` 与 crate 根跳过 ——
+///    它们由 cargo 直接编译，不由 `mod` 引入）；
+/// 2. 模块名 = 文件名去掉 `.rs`；`mod.rs` 取其**父目录名**（`domain/mod.rs` → `domain`）；
+/// 3. 只要**任何**一份源码里有一行（生产区）**恰好**是下列四种之一，就算被声明：
+///    `mod <name>;` / `pub mod <name>;` / `pub(crate) mod <name>;` / `pub(super) mod <name>;`
+///    —— 用"整行精确匹配"而不是 `contains`，因为注释掉的 `// pub mod x;` 与文档里的
+///    同名字符串都**不算**声明（判据 `a_commented_out_declaration_does_not_count` 钉住）。
+///
+/// 返回违规清单（空 = 干净）。
+#[must_use]
+pub fn scan_orphan_modules(sources: &[(String, String)]) -> Vec<String> {
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    for (_, text) in sources {
+        let production = production_region(text);
+        for line in production.lines() {
+            let code = line.trim();
+            for prefix in ["mod ", "pub mod ", "pub(crate) mod ", "pub(super) mod "] {
+                if let Some(rest) = code.strip_prefix(prefix)
+                    && let Some(name) = rest.strip_suffix(';')
+                    && !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                {
+                    declared.insert(name.to_owned());
+                }
+            }
+        }
+    }
+
+    let mut violations = Vec::new();
+    for (path, _) in sources {
+        let normalized = path.replace('\\', "/");
+        if normalized.contains("/bin/") {
+            continue;
+        }
+        let Some(file_name) = normalized.rsplit('/').next() else {
+            continue;
+        };
+        if CRATE_ROOT_FILES.contains(&file_name) || !file_name.ends_with(".rs") {
+            continue;
+        }
+        let module = if file_name == "mod.rs" {
+            // `…/domain/mod.rs` → `domain`
+            let mut parts = normalized.rsplit('/');
+            let _ = parts.next();
+            match parts.next() {
+                Some(parent) if !parent.is_empty() => parent.to_owned(),
+                _ => continue,
+            }
+        } else {
+            file_name.trim_end_matches(".rs").to_owned()
+        };
+        if !declared.contains(&module) {
+            violations.push(format!(
+                "{path} 是**孤儿模块**：没有任何 `mod {module};` 声明它 —— \
+                 crate 里不存在这个模块, 任何 import 都会 E0432（写下来之后必须同步声明）"
+            ));
+        }
+    }
+    violations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +508,92 @@ mod tests {
             .iter()
             .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn an_undeclared_module_is_an_orphan_and_a_declared_one_is_clean() {
+        // 孤儿：文件在, 但没有任何 `mod` 声明它（本线 CI 实测踩过的那一条）。
+        let orphan = sources(&[
+            ("crates/yeban-mcp/src/lib.rs", "pub mod domain;\n"),
+            ("crates/yeban-mcp/src/domain/mod.rs", "pub mod error;\n"),
+            (
+                "crates/yeban-mcp/src/domain/extension_audit.rs",
+                "pub fn f() {}\n",
+            ),
+        ]);
+        let found = scan_orphan_modules(&orphan);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("extension_audit"), "{found:?}");
+        assert!(found[0].contains("E0432"), "{found:?}");
+
+        // 声明了就干净（四种前缀都算）。
+        for prefix in ["mod ", "pub mod ", "pub(crate) mod ", "pub(super) mod "] {
+            let declaration = format!("{prefix}extension_audit;");
+            let clean = sources(&[
+                ("crates/yeban-mcp/src/lib.rs", "pub mod domain;\n"),
+                (
+                    "crates/yeban-mcp/src/domain/mod.rs",
+                    &format!("{declaration}\n"),
+                ),
+                (
+                    "crates/yeban-mcp/src/domain/extension_audit.rs",
+                    "pub fn f() {}\n",
+                ),
+            ]);
+            assert_eq!(
+                scan_orphan_modules(&clean),
+                Vec::<String>::new(),
+                "前缀 `{prefix}` 应当被认成声明"
+            );
+        }
+    }
+
+    #[test]
+    fn crate_roots_and_bin_files_are_not_orphans() {
+        let batch = sources(&[
+            ("crates/yeban-mcp/src/lib.rs", "pub mod tools;\n"),
+            ("crates/yeban-mcp/src/bin/yeban-mcp.rs", "fn main() {}\n"),
+            ("crates/yeban-mcp/src/tools.rs", "pub fn f() {}\n"),
+        ]);
+        assert_eq!(scan_orphan_modules(&batch), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_commented_out_declaration_does_not_count() {
+        let batch = sources(&[
+            ("crates/yeban-mcp/src/lib.rs", "pub mod domain;\n"),
+            (
+                "crates/yeban-mcp/src/domain/mod.rs",
+                "// pub mod extension_audit;\n//! pub mod extension_audit;\n",
+            ),
+            (
+                "crates/yeban-mcp/src/domain/extension_audit.rs",
+                "pub fn f() {}\n",
+            ),
+        ]);
+        let found = scan_orphan_modules(&batch);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("extension_audit"), "{found:?}");
+    }
+
+    #[test]
+    fn a_mod_rs_file_is_declared_by_its_parent_directory_name() {
+        let batch = sources(&[
+            ("crates/yeban-mcp/src/lib.rs", "pub mod domain;\n"),
+            ("crates/yeban-mcp/src/domain/mod.rs", "pub mod error;\n"),
+            ("crates/yeban-mcp/src/domain/error.rs", "pub fn f() {}\n"),
+        ]);
+        assert_eq!(scan_orphan_modules(&batch), Vec::<String>::new());
+
+        // 少了 `pub mod domain;` ⇒ `domain/mod.rs` 就是孤儿。
+        let broken = sources(&[
+            ("crates/yeban-mcp/src/lib.rs", "pub mod tools;\n"),
+            ("crates/yeban-mcp/src/domain/mod.rs", "pub mod error;\n"),
+            ("crates/yeban-mcp/src/domain/error.rs", "pub fn f() {}\n"),
+        ]);
+        let found = scan_orphan_modules(&broken);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("mod domain;"), "{found:?}");
     }
 
     /// 一份**最小但结构真实**的 tools.rs 片段（够 `parse_self_array` / `as_str` 用）。

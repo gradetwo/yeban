@@ -772,7 +772,9 @@ mod tests {
     #[test]
     fn same_identity_with_different_content_is_a_conflict() {
         let project = filled_project();
-        let bytes = b"a".to_vec();
+        // ⚠ 必须是**真音频**：`plan` 会真的解码池里的字节（源若不是音频 ⇒ RENDER_FAILED，
+        // 那条路径由 `a_non_audio_file_is_a_decode_failure_with_a_classification` 覆盖）。
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]);
         let hash = AssetHash::of_bytes(&bytes);
         let pool = pool_of(&bytes);
         let first = plan(

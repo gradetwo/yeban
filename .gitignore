@@ -33,3 +33,6 @@ Thumbs.db
 # (踩过的坑: 上一次我用 `"artifacts/" not in t` 判断是否已存在, 而文件里有 `/docs/ledger/artifacts/`,
 #  子串命中导致规则**根本没写进去**, 随后 `git add -A` 把 18 MB 截图提交了 —— 见账本 L16。)
 artifacts/
+
+# gh / cargo 等工具的缓存（含 CI 日志 zip）——绝不入库；G12 会一票否决
+.cache/

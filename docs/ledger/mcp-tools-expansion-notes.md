@@ -363,3 +363,189 @@ error: useless use of `format!`
 > 因为本机根本没有 clippy 跑在这个 crate 上（含重依赖 ⇒ SKIP）。这也是把
 > `yeban-mcp` 的 clippy 交给 CI 的代价，只能靠"少写会被 lint 的写法"来降低频率：
 > 本线在这一轮之后把**新写的 `format!("{x}")` 与 `to_value(&copy)` 全部清掉**。
+
+### 9.3 第 3 轮（**手动档**）：`Gates (手动)` gate=windows `run 37275584648`（main, 含已合并的 D46）—— **红**
+
+为什么用**手动档**取判决：`line/mcp-tools-expansion` 合并进 main 之后，`c6b7336` 那次 main 运行被
+"更高优先级的等待请求"**取消**（`Canceling since a higher priority waiting request for
+ci-CI-refs/heads/main exists`），而紧接着的 main 运行（HEAD 是 docs-only 提交）在 `plan` 阶段
+判出"没有 Rust crate 受影响"⇒ **三个 Rust 腿被 skip**。也就是说：**合并后的代码一次都没被编译过**。
+处置：派发 `gates-manual.yml` 的 `windows` 档（它跑的正是我需要的三条：
+`cargo test -p yeban-model`、`cargo test -p yeban-mcp --all-targets`、
+`cargo clippy -p yeban-model -p yeban-mcp --all-targets -- -D warnings`）。
+
+| 步骤 | 结果 |
+| :--- | :--- |
+| `yeban-model` 测试 | ✅ |
+| `yeban-mcp 全部目标` | ❌ |
+| `clippy (-D warnings)` | skipped（前一步已红） |
+
+原文两条：
+
+```text
+error[E0432]: unresolved import `yeban_mcp::domain::extension_audit`
+  --> crates\yeban-mcp\tests\extension_tools.rs:36:43
+36 | use yeban_mcp::domain::{automation_audit, extension_audit};
+   |                                           ^^^^^^^^^^^^^^^ no `extension_audit` in `domain`
+
+error[E0599]: no method named `to_value` found for reference `&ErrorObject`
+   --> crates\yeban-mcp\tests\extension_tools.rs:118:63
+118 |         .or_else(|| response.error.as_ref().map(|error| error.to_value()))
+    |                                                               ^^^^^^^^ method not found in `&ErrorObject`
+```
+
+第 1 条是**漏声明**：`domain/extension_audit.rs` 文件在、本机裸 `rustc` 也能跑，但它**没有**
+`pub mod extension_audit;` ⇒ crate 里根本不存在这个模块，任何 import 都 E0432。
+第 2 条是**名字想当然**：`to_value` 是 `Id::to_value`，`ErrorObject` 没有它。
+
+### 9.4 修复（分支 `line/mcp-tools-expansion-fix`，commit `8ba68af`）
+
+1. `domain/mod.rs` 补 `pub mod extension_audit;` + 把 6 个新模块补进模块地图表；
+2. `tests/extension_tools.rs::call_tool_raw` 的返回从"三件套（含拼出来的 JSON-RPC 错误体）"
+   收敛成 `(http 状态, JSON-RPC 错误码)` —— 判据只需要这两个标量，顺手消掉一份会漂移的第三种表示；
+3. **把这一条缺口变成"本机可跑"的守卫**：`extension_audit::scan_orphan_modules`（零依赖纯函数）
+   要求每个 `src/**/*.rs` 都被 `mod <name>;` / `pub mod …` / `pub(crate) mod …` / `pub(super) mod …`
+   **整行**声明（`lib.rs` / `main.rs` / `bin/` 跳过；`mod.rs` 取父目录名；注释掉的声明不算）。
+   判据 `tests/extension_tools.rs::every_source_file_is_declared_as_a_module` 把它钉在真实源码上，
+   本机脚手架也跑它 ⇒ 注入 5（把 `pub mod extension_audit;` 拿掉）当场把**这一轮的失败模式**
+   变成一条本机可见的红点：
+   `… 是孤儿模块：没有任何 `mod extension_audit;` 声明它 —— crate 里不存在这个模块, 任何 import 都会 E0432`
+
+### 9.5 第 4 轮：`run 37275980542`（`line/mcp-tools-expansion-fix`, commit `8ba68af`）—— **红（两类，均已定位）**
+
+| job | 结果 |
+| :--- | :--- |
+| `plan` / `checks` / `deny` / `lockfile` / `rust (yeban-ui-mcp)` | ✅ |
+| `rust (yeban-mcp)` | ❌ `cargo test --lib`：`273 passed; 2 failed` |
+| `windows` | ❌ 同上（`270 passed; 2 failed`） |
+
+**关键进展**：这一轮 **clippy 全绿**（两个平台的 clippy 步骤都跑过了）且 crate 编译通过 ⇒
+第 2 轮的两条 clippy 与第 3 轮的两条编译错误都已被证伪。红的是两条**测试**：
+
+```text
+---- domain::import_audio::tests::same_identity_with_different_content_is_a_conflict stdout ----
+thread '…' panicked at crates/yeban-mcp/src/domain/import_audio.rs:771:10:
+规划: Domain { code: RenderFailed, message: "资产 ca978112… 解码失败: unrecognised or unsupported container format", … }
+
+---- domain::tests::every_tool_has_a_plan_arm_and_no_not_implemented_report stdout ----
+thread '…' panicked at crates/yeban-mcp/src/domain/mod.rs:2349:13:
+少了 yeban_edit_automation 的用例
+```
+
+- 前者是**判据自己的夹具错了**：它拿 `AssetHash::of_bytes(b"a")` 当音频（`plan` 会真的解码 ⇒
+  `RENDER_FAILED`）。处置：夹具换成**真 WAV**（`wav_s16`），冲突语义不变。
+- 后者是**既有判据**（`domain/mod.rs` 的逐工具用例表，要求每个注册工具都有用例且"其余工具必须规划成功"）。
+  处置：补三条用例（自动化/引擎读数**只读**规划成功；音频导入指向一份**真 WAV**，会真的解码 + 过 `PcmBudget`）
+  + 一个 `wav_fixture()` 夹具。
+
+> 第四轮读数：**"本机不编译"的代价是"夹具错误只能等 CI 告诉你"**。两次红（3、4 轮）分别对应
+> "忘了声明模块"（已升级成本机文本守卫）与"夹具拿假字节当音频"（工具**真的**解码是设计的一部分,
+> 因此夹具必须真）。后者没有可机械化的守卫 —— 它属于"判据的语义正确性", 只能靠人读，
+> 但至少可以把它变成一条**明确的纪律**：*凡是会被工具解码/解析的输入, 夹具必须是真格式*。
+
+### 9.6 第 5 轮：`run 37276360545`（commit `1a5d358`）—— **红一条**（夹具污染了别人的前提）
+
+| job | 结果 |
+| :--- | :--- |
+| `plan` / `checks` / `deny` / `lockfile` / `rust (yeban-ui-mcp)` | ✅ |
+| **clippy（两个平台）** | ✅ **全绿** —— 第 2 轮的两条 clippy 已被证伪 |
+| `rust (yeban-mcp)` | ❌ `271 passed; 1 failed`（第 4 轮的两条已消失） |
+| `windows` | ❌ 同一条 |
+
+```text
+---- domain::tests::save_without_changes_is_skipped_unless_forced stdout ----
+thread '…' panicked at crates/yeban-mcp/src/domain/mod.rs:2501:9:
+assertion `left == right` failed
+  left: String("success")
+ right: "error"
+```
+
+根因是**本线的夹具改了别的判据依赖的前提**：那个既有判据断言"`force: true` 撞 `IO_ERROR`"，
+依据是 `unique_path()` 的**父目录不存在**；而本线为了放真 WAV 用了
+`unique_path().with_file_name("fixture.wav")` + `create_dir_all(父目录)` —— 目录被建出来之后，
+那次保存就**成功了**（测试并行 ⇒ 只在夹具先跑时红，本轮正好碰上）。
+
+处置：`wav_fixture()` 改用**自己的独占临时目录**（`yeban-mcp-unit-wav-<pid>-<ulid>/fixture.wav`）。
+
+> 纪律（新增）：**判据的夹具不得改动别的判据依赖的路径/文件前提**。夹具必须落在自己的独占目录里；
+> 共享一个"保证不存在"的路径是跨判据耦合，且因为测试并行而在 CI 上表现为**随机红**。
+
+### 9.7 第 6 轮：`run 37276699906`（commit `cc22e9b`）—— **红两条（都是本线判据自己的错）**
+
+| 目标 | 结果 |
+| :--- | :--- |
+| `--lib`（单元判据） | ✅ **`275 passed; 0 failed`**（前五轮的红全部消失） |
+| `--test contract` | ✅ `18 passed` |
+| 另一个测试目标 | ✅ `16 passed` |
+| `--test extension_tools`（本线 12 条判据） | ❌ `18 passed; 2 failed` |
+| clippy / checks / deny / lockfile / `rust (yeban-ui-mcp)` | ✅ |
+
+```text
+---- automation_write_lands_in_the_project_and_undo_restores_byte_for_byte ----
+panicked at crates/yeban-mcp/tests/extension_tools.rs:373:5:
+assertion `left == right` failed   left: 2   right: 1
+
+---- dry_run_preview_equals_the_real_call_for_all_three_tools ----
+panicked at crates/yeban-mcp/tests/extension_tools.rs:835:9:
+`yeban_query_engine_state` 真做之后的实测摘要必须等于预览里的预测
+  left: String("0b2c3f5a…")  right: String("960f03a2…")
+```
+
+两条都是**判据自己写错了**，不是实现错了：
+
+1. **撤销不回退提交图谱**。第一版断言"撤销后 `commit_count` 回到写之前" —— 但
+   `undo_session::undo` 只**移动游标**（`Plan::commit_delta` 对 Undo/Redo 恒为 0），那次写入的提交
+   仍在 DAG 里。改成断言"提交数保持 +1"并加断言 `undoneTotal == 1` / `after.canRedo == true`
+   （这两条才是撤销真正改变的东西）。
+2. **夹具起点没有按用例重新对齐**。第一版在循环外只建一对分发器，而第一个用例的**真调用**会写一个
+   自动化点 ⇒ 两侧工程在第二个用例（引擎读数）之前就分叉了，摘要必然不等。
+   改成**每个用例各自一对分发器**（起点逐用例重新对齐）。
+
+> 第六轮的读数：**"判据写错"与"实现写错"必须分开归因**。这一轮没有一行实现代码需要改 ——
+> 两次红都是判据对运行期语义的误解（撤销的图语义、夹具的状态隔离）。
+> 这类错误同样只有 CI 能抓（本机不编译），但它的处置**不是**改实现, 而是把误解放进注释,
+> 让下一个读判据的人不必再踩一次。
+
+### 9.8 第 7 轮：`run 37277069499`（commit `5f679e1`）—— ✅ **success（Linux + Windows 双绿）**
+
+| job | 结果 |
+| :--- | :--- |
+| `plan` / `checks`（fmt + 14 条机械守卫 + 6 条文档守卫 + schema） / `deny` / `lockfile` | ✅ |
+| `rust (yeban-mcp)` — `cargo clippy -p yeban-mcp --all-targets -- -D warnings` | ✅ `Finished dev profile in 12.32s`（零告警） |
+| `rust (yeban-mcp)` — 测试 | ✅ 逐目标全绿（见下表） |
+| `windows (yeban-mcp / yeban-model 的平台分支)` | ✅（含 Windows 上的 `.yeban.lock` 分支 + 同一套测试） |
+| `rust (yeban-ui-mcp)` | ✅ |
+| `rust (workspace 全量)` | skipped（受影响集合只含 yeban-mcp / yeban-ui-mcp / yeban-model） |
+
+逐个测试目标的读数（Linux 腿，原文行）：
+
+| 目标 | 结果 |
+| :--- | :--- |
+| `unittests src/lib.rs` | **`275 passed; 0 failed`** |
+| `unittests src/bin/yeban-mcp.rs` | `0 passed`（bin 无单测） |
+| `tests/container_store.rs` | `18 passed; 0 failed` |
+| `tests/contract.rs` | `16 passed; 0 failed` |
+| **`tests/extension_tools.rs`** | **`20 passed; 0 failed`** ← 本线 12 条判据（①..⑧）的实现 |
+| `tests/lock_advisory.rs` | `14 passed; 0 failed` |
+| `tests/render_audio_clips.rs` | `13 passed; 0 failed` |
+| `tests/render_master.rs` | `12 passed; 0 failed` |
+| `tests/tools_e2e.rs` | `32 passed; 0 failed` |
+| `tests/undo_wiring.rs` | `17 passed; 0 failed` |
+| `examples/export_mcp_samples.rs` | `0 passed`（示例无单测） |
+
+**至此：本线交付的"真做事 / `dryRun` / 幂等 / 错误码 / 可发现 / 无第二份实现 / 十工具不受影响"
+全部由 CI 判决（不是本机自述）。** 七轮判决的轨迹（每一轮的红都留了原文与归因）：
+
+| 轮 | run | 结论 | 红点归属 |
+| ---: | :--- | :--- | :--- |
+| 1 | 37274474454 | ❌ | 实现：`E0382`（`AssetHash` 非 `Copy`） |
+| 2 | 37274788668 | ❌ | 实现：两条 `clippy::all`（`needless_borrows` / `useless_format`） |
+| 3 | 37275584648（手动档） | ❌ | 实现：漏 `pub mod extension_audit;` + `ErrorObject::to_value` 不存在 |
+| 4 | 37275980542 | ❌ | 判据夹具：拿假字节当音频 + 逐工具用例表缺三条 |
+| 5 | 37276360545 | ❌ | 判据夹具：WAV 夹具污染了别人的"父目录不存在"前提 |
+| 6 | 37276699906 | ❌ | 判据语义：撤销不回退提交图谱 + 预览夹具未按用例对齐 |
+| 7 | **37277069499** | ✅ | —— |
+
+> 第七轮的读数：**本机覆盖不到的每一类错误, 都在 CI 上各红了一次**（类型、lint、模块声明、
+> 夹具真实格式、夹具隔离、运行期图语义）。四类里有三类随后被**机械化**（`scan_orphan_modules`、
+> "夹具必须真格式/独占目录"的纪律、判据注释里的图语义），下次同类错误会在本机或判据里先红。
