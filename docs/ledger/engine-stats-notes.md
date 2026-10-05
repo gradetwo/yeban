@@ -69,7 +69,7 @@
 | 字段 | 类型 | 含义 | 单位 | 谁写（源） | 单调性 / 重置语义 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `snapshot_stash_events` | `u64` | 退役队列满 ⇒ 读者把旧快照寄存进 `stash` 并**停止切换快照**的累计次数 | 次 | 音频线程（`SnapshotReader::retire_or_stash`，`saturating_add`） | **单调不减（饱和）**；无重置 |
-| `retire_pending` | `u64` | 退役队列**当前**待回收条数（跨线程镜像） | 条 | 音频线程 push 成功（+1）；控制线程 `drain` 后**覆写**为真实剩余 | **量规**（可升可降）；这就是"明确的重置语义" |
+| `retire_pending` | `u64` | 退役队列**当前**待回收条数（跨线程镜像） | 条 | 音频线程 push 成功（`pushed` +1）；**由 `pushed.saturating_sub(drained)` 之差得到**（⚠ 不再覆写） | **量规**（可升可降）；这就是"明确的重置语义" |
 | `retire_drained` | `u64` | 累计真正出队并 `Drop` 的旧快照条数（`= RetireQueue::dropped()`） | 条 | 控制线程 `drain`（饱和 CAS） | 单调不减（饱和）；无重置 |
 | `retire_drain_calls` | `u64` | 累计**非空** `drain` 调用次数（空转不算 ⇒ 是"60Hz 循环真的在排空"的结构性判据） | 次 | 控制线程 `drain`（饱和 CAS） | 单调不减（饱和）；无重置 |
 | `retire_pruned` | `u64` | 累计由写者侧 `SnapshotSlot::prune()` 释放的强引用条数（退役回收的**另一条**路径） | 条 | 控制线程 `prune`（饱和 CAS） | 单调不减（饱和）；无重置 |
@@ -100,7 +100,7 @@
 | 量 | 大数行为 | 为什么这样选 |
 | :--- | :--- | :--- |
 | `snapshot_stash_events` / `retire_drained` / `retire_drain_calls` / `retire_pruned` / `foreign_drains` | **饱和**（`u64::MAX` 停住，不回绕） | 回绕会把"释放过多少"变成**谎报 0**；饱和是可判定的边界 |
-| `retire_pending` | `push` 成功用一次 `fetch_add`（占用以队列容量为界 ⇒ 不可能回绕）；`drain` 后**覆写**为真实剩余 | 渲染路径上只花一条原子指令；覆写让镜像**自愈**漂移 |
+| `retire_pending` | `push` 成功用一次 `fetch_add`（占用以队列容量为界 ⇒ 不可能回绕）；**由 `pushed.saturating_sub(drained)` 之差得到**（不再覆写）| 渲染路径上只花一条原子指令；⚠ **原「覆写 ⇒ 镜像自愈漂移」的说法已被证伪**：覆写窗口（`note_drain` 的 `remaining` 求值 → `pending.store`）之间落进的 `+1` 会被**永久盖掉**（见账本第 82 轮 `MUST-GATE-012` 的根治）|
 | 既有 `quanta` / `events_applied` / `meter_frames` … | `wrapping_add`（u64 全宽） | 它们是"有没有在跑"的结构性计数；`DEFAULT_BLOCK_FRAMES = 128` ⇒ 48 kHz 下**每秒恰好 375 个量子**，回绕需要 **> 10 亿年**（**编译期断言** `rt.rs` 的 `const _`，实测通过） |
 
 ---
@@ -366,3 +366,5 @@ bash scripts/gates/run-gates.sh crate yeban-engine
 # 轻量门禁（零编译）
 bash scripts/gates/run-gates.sh light
 ```
+
+> **集成者更正（第 82 轮）**：本文件原写的「`drain` 后覆写为真实剩余 ⇒ 覆写让镜像自愈漂移」是**错的** —— 覆写窗口会永久盖掉窗口内落进的 `+1`，这正是 `MUST-GATE-012` 两次 CI 红（`镜像=512 权威=513`）的根因。现实现改为 `pushed`（`fetch_add`）+ `pending() = pushed.saturating_sub(drained)`，**按构造无丢 `+1` 的窗口**。本文件已按新实现更正两处字段描述；app 侧**不要**再依赖「下一次 `drain` 会自愈 `retire_pending`」（N3）。
