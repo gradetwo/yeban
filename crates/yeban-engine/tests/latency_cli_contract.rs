@@ -119,7 +119,32 @@ fn assert_verdict_matches_exit(run: &Run) {
     );
     assert!(!fields.loopback, "工具声称用了回环");
     assert!(!fields.nominal_io_sum_is_roundtrip, "把标称合计当成了往返");
+    assert!(!fields.driver_io_sum_is_roundtrip, "把驱动侧合计当成了往返");
     assert_eq!(fields.baseline, "005");
+    // 驱动侧时延字段的自洽性：报了就必须是**数字**且非负；没报就必须是
+    // `none` / `unreported-or-zero` 字面量，**不许**是 0.0000。
+    let line = bench_line(&run.stdout).expect("有 BENCH 行");
+    assert!(
+        !line.contains("driver_out_latency_p99_ms=0.0000"),
+        "把'主机不报'写成 0.0000 就是制造假绿: {line}"
+    );
+    if let Some(p99) = fields.driver_out_latency_p99_ms {
+        assert!(
+            fields.driver_out_latency_reported,
+            "有数就必须 reported=true"
+        );
+        assert!(p99 >= 0.0, "驱动侧输出时延不许为负: {p99}");
+    }
+    if let Some(p99) = fields.driver_in_latency_p99_ms {
+        assert!(fields.driver_in_latency_reported);
+        assert!(p99 >= 0.0, "驱动侧输入时延不许为负: {p99}");
+    }
+    if !fields.driver_out_latency_reported {
+        assert_eq!(fields.driver_out_latency_p99_ms, None);
+    }
+    if !fields.driver_in_latency_reported {
+        assert_eq!(fields.driver_in_latency_p99_ms, None);
+    }
 }
 
 /// 判据 1 + 4：真实二进制下的无冒充达标 + 边界必须打印。
@@ -175,10 +200,21 @@ examples）。用 `cargo test -p yeban-engine` 或 `--all-targets` 可覆盖这�
             result.stdout.contains("DOES-NOT-MEASURE:"),
             "args={args:?} 没有打印 DOES-NOT-MEASURE 边界"
         );
-        assert!(
-            result.stdout.contains("cpal 0.18.2"),
-            "args={args:?} 没有点名 cpal 缺少硬件时延 API"
-        );
+        // 只要工具给出了"没有回环证据"这个理由，就必须同时点名 cpal 的 API 缺口
+        // （`--force-no-device` 走的是 NO-DEVICE 理由，不该被这条误伤）。
+        if result.stdout.contains("NO-LOOPBACK:") {
+            assert!(
+                result.stdout.contains("cpal 0.18.2"),
+                "args={args:?} 给了 NO-LOOPBACK 理由却没点名 cpal 的 API 缺口"
+            );
+        }
+        // 无设备时也必须说清"这不是达标"。
+        if result.stdout.contains("NO-DEVICE:") {
+            assert!(
+                result.stdout.contains("NOT a pass and NOT 0 ms"),
+                "args={args:?} 的 NO-DEVICE 文案没说清不是达标"
+            );
+        }
     }
 }
 

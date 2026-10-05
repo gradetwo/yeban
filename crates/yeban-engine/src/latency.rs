@@ -1,5 +1,6 @@
 //! `BASELINE-005`（音频硬件往返时延，目标 `≤ 5.5 ms`）的**机器**那一半：
-//! 标称时延换算、回调调度抖动统计、机器可读行、以及**把"测不到"与"达标"分开**的判定。
+//! 标称时延换算、**主机报告的驱动侧时延**、回调调度抖动统计、机器可读行、
+//! 以及**把"测不到"与"达标"分开**的判定。
 //!
 //! 本模块**零依赖**（不引用 cpal / rtrb / yeban-model，也不引用本 crate 其它模块）
 //! ⇒ 可以用 `rustc --edition 2024 --test -D warnings crates/yeban-engine/src/latency.rs`
@@ -13,18 +14,36 @@
 //! | 量 | 本模块能算吗 | 它是什么 |
 //! | :--- | :---: | :--- |
 //! | 标称时延 `nominal_ms` | ✅ | 设备报告的**缓冲帧数 ÷ 采样率**。**不是**往返时延 |
+//! | 主机报的驱动侧时延 `distribution_ms` | ✅ | 输出：`playback − callback`；输入：`callback − capture`。**主机自己算的预测值** |
 //! | 回调调度抖动 `jitter_stats` | ✅ | **CPU 侧**回调到达间隔与标称周期的偏差。**不是**往返时延 |
-//! | 声学 / DAC-ADC 往返 | ❌ | 需要**物理回环**（输出接输入）或厂商 API |
+//! | 声学 / DAC-ADC 往返 | ❌ | 需要**物理回环**（输出接输入），或人类按 ADR 裁决"原生 API 口径"是否等价 |
 //!
-//! cpal **0.18.2 不暴露任何硬件时延查询 API**（已按 crate 源码核对：`src/traits.rs` 的
-//! `DeviceTrait` 只有 `buffer_size()` / `now()`，全 crate 里 `latency` 一词只出现在
-//! 错误文案与文档注释里）。macOS 的 `kAudioDevicePropertyLatency` /
-//! `kAudioStreamPropertyLatency`、WASAPI 的 `IAudioClient::GetStreamLatency`、
-//! ALSA 的 `snd_pcm_delay` 都要另写 FFI（= 新依赖裁决，不在本工作线权限内）。
+//! ## ⚠ 关于 cpal 的准确说法（本线第一版说错过，这里更正并留痕）
+//!
+//! `cpal 0.18.2` **没有**显式的时延查询 API（`DeviceTrait` 只有 `buffer_size()` / `now()`），
+//! 但它**并非不携带硬件时延信息**：每个**输出**回调收到的
+//! `OutputStreamTimestamp::playback` 是"现在写入的数据**预计**被播放的时刻"，
+//! 每个**输入**回调收到的 `InputStreamTimestamp::capture` 是"这批数据被采到的时刻"。
+//! 两者都是**主机自己**用厂商 API 算出来的：
+//!
+//! | 主机 | `playback` 的算法（cpal 0.18.2 源码） | 因此在算谁的账 |
+//! | :--- | :--- | :--- |
+//! | CoreAudio (macOS) | `device_buffer_frames + kAudioDevicePropertyLatency + kAudioDevicePropertySafetyOffset` | 设备缓冲 + 设备时延 + 安全偏移 |
+//! | WASAPI (Windows) | `buffered_frames + stream.stream_latency` | 已提交未消费帧 + `IAudioClient::GetStreamLatency` |
+//! | ALSA (Linux) | `delay_frames`（PCM 状态里的 delay） | `snd_pcm_delay` 一族 |
+//! | PulseAudio | `elapsed + 估算的流时延` | 流时延估计（**是估计值**） |
+//! | PipeWire / JACK / ASIO / AAudio | 各自的流时间 + 缓冲 | 厂商/服务器报的值 |
+//!
+//! ⇒ 所以 `playback − callback`（输出）与 `callback − capture`（输入）是**可测的**，
+//! 而且**不需要任何新依赖**。但它**仍然不是**"实测往返"：
+//! ① 它是**主机/驱动的预测**，不是测出来的声学量；
+//! ② 方向分开、**故意不给合计**（合计会变成"看起来达标的总数"）；
+//! ③ 有些主机压根不报（`playback == callback`）⇒ 此时必须报 `unreported-or-zero`，
+//!    **不许**当成 0 ms 时延。
 //!
 //! ⇒ 因此 [`verdict_for`] 有一条**不可绕过**的规则：
 //! **没有回环证据时，`verdict` 永远不可能是 [`Verdict::WithinTarget`]**，
-//! 无论标称值多好看、无论有没有设备。这就是"宁可少宣称"的机械形式。
+//! 无论标称值、驱动侧值或抖动多好看。这就是"宁可少宣称"的机械形式。
 //!
 //! 本模块的判定与解析都被 `.github` 之外可跑的判据盯着（见文件末尾 `mod tests` 与
 //! `crates/yeban-engine/tests/latency_cli_contract.rs`）。
@@ -136,8 +155,21 @@ pub const NO_DEVICE_REASON: &str = "no audio device reported by this host: nothi
 this is NOT a pass and NOT 0 ms";
 
 /// "有设备但无回环"的精确文案。
-pub const NO_LOOPBACK_REASON: &str = "no loopback evidence: cpal 0.18.2 exposes no hardware \
-roundtrip latency API, and this tool does not capture from a physical output->input loopback";
+pub const NO_LOOPBACK_REASON: &str = "no loopback evidence: cpal 0.18.2 has no explicit latency \
+query API, and although each callback carries a host-computed playback/capture instant that we DO \
+report, that is a driver-side prediction, not an acoustic DAC-ADC roundtrip (which needs a \
+physical output->input loopback)";
+
+/// 输出侧驱动时延的推导口径（进机器可读行，让读数字的人知道这个数**是从哪来的**）。
+pub const DRIVER_OUT_LATENCY_SOURCE: &str = "playback_minus_callback";
+
+/// 输入侧驱动时延的推导口径。
+pub const DRIVER_IN_LATENCY_SOURCE: &str = "callback_minus_capture";
+
+/// 主机**不报**驱动时延（`playback == callback`）时的字段值。
+///
+/// ⚠ 这个字面量**故意**不是一个数字：`0` 与"没报"是两件事，混淆它们就是制造假绿。
+pub const DRIVER_LATENCY_UNREPORTED: &str = "unreported-or-zero";
 
 /// 标称单方向时延（毫秒）= `buffer_frames / sample_rate_hz * 1000`。
 ///
@@ -219,6 +251,57 @@ pub fn jitter_stats(intervals_ns: &[u64], nominal_period_ns: u64) -> Option<Jitt
         max_ms: max / 1_000_000.0,
         mean_ms: sum / n as f64 / 1_000_000.0,
     })
+}
+
+/// 一串毫秒读数的分布（**不是**相对某个周期的偏差，与 [`JitterStats`] 区分开）。
+///
+/// 用途：主机报告的驱动侧时延（输出 `playback − callback`、输入 `callback − capture`）
+/// 与"标称周期"无关，因此不能套 [`JitterStats`] 的口径（它减掉了一个标称周期）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MsDistribution {
+    /// 参与统计的样本个数。
+    pub samples: usize,
+    /// 中位数。
+    pub p50_ms: f64,
+    /// p99。
+    pub p99_ms: f64,
+    /// 最大值。
+    pub max_ms: f64,
+    /// 算术平均。
+    pub mean_ms: f64,
+}
+
+/// 由一串**纳秒读数**算毫秒分布（最近秩百分位，口径与 [`percentile_nearest_rank`] 同源）。
+///
+/// 返回 `None` 当 `values_ns` 为空（**"没采到"和"全是 0"是两件事**）。
+#[must_use]
+pub fn distribution_ms(values_ns: &[u64]) -> Option<MsDistribution> {
+    if values_ns.is_empty() {
+        return None;
+    }
+    let mut values: Vec<f64> = values_ns
+        .iter()
+        .map(|value| *value as f64 / 1_000_000.0)
+        .collect();
+    let sum: f64 = values.iter().sum();
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    let n = values.len();
+    Some(MsDistribution {
+        samples: n,
+        p50_ms: percentile_nearest_rank(&values, 50.0)?,
+        p99_ms: percentile_nearest_rank(&values, 99.0)?,
+        max_ms: *values.last()?,
+        mean_ms: sum / n as f64,
+    })
+}
+
+/// 判断一个驱动侧时延分布是不是"主机压根没报"（所有样本都恰好是 0）。
+///
+/// ⚠ 这是**无法区分**"真的是 0"与"主机不报"时唯一诚实的表达方式 ⇒ 见
+/// [`DRIVER_LATENCY_UNREPORTED`]。
+#[must_use]
+pub fn driver_latency_unreported(distribution: &MsDistribution) -> bool {
+    distribution.max_ms == 0.0
 }
 
 /// 把设备数 / 证据等级 / 实测往返数变成判定。
@@ -333,6 +416,12 @@ pub struct CallbackReport {
     pub backend_errors: u64,
     /// 抖动统计；一次间隔都没采到（或只采到一次回调）时为 `None`。
     pub stats: Option<JitterStats>,
+    /// **主机报告的驱动侧时延**分布：
+    /// 输出方向 = `playback − callback`，输入方向 = `callback − capture`。
+    ///
+    /// `None` = 一次都没采到；`Some` 且 [`driver_latency_unreported`] 为真 =
+    /// 主机把 `playback` 与 `callback` 报成同一时刻（**"不报"，不是"0 ms"**）。
+    pub driver_latency: Option<MsDistribution>,
 }
 
 /// 一次完整运行的报告：**有设备/没设备、有回环/没回环都走这一个类型**。
@@ -416,7 +505,9 @@ impl Report {
     /// ⚠ 注意本行**没有** `roundtrip_ms` 这种"看起来达标的总数"字段：
     /// 实测往返只出现在 `measured_roundtrip_ms=`，且在本工具的路径上恒为 `none`。
     /// `nominal_io_sum_ms` 是**标称输入 + 标称输出**的和，随行的
-    /// `nominal_io_sum_is_roundtrip=false` 明确声明它**不是**往返时延。
+    /// `nominal_io_sum_is_roundtrip=false` 明确声明它**不是**往返时延；
+    /// `driver_out_latency_*` / `driver_in_latency_*` 是**主机报告的驱动侧时延**，
+    /// **故意不给合计** —— 一个"输入+输出+驱动"的总数正是最容易被误读成达标的形状。
     #[must_use]
     pub fn bench_line(&self) -> String {
         let input = self.nominal_of(Direction::Input);
@@ -429,6 +520,28 @@ impl Report {
             match self.callback_of(direction).and_then(|item| item.stats) {
                 Some(stats) => format!("{:.4}", pick(&stats)),
                 None => "none".to_owned(),
+            }
+        };
+        // 驱动侧时延字段：none（没采到）/ unreported-or-zero（主机不报）/ 数值。
+        let driver = |direction: Direction, pick: fn(&MsDistribution) -> f64| -> String {
+            match self
+                .callback_of(direction)
+                .and_then(|item| item.driver_latency)
+            {
+                None => "none".to_owned(),
+                Some(distribution) if driver_latency_unreported(&distribution) => {
+                    DRIVER_LATENCY_UNREPORTED.to_owned()
+                }
+                Some(distribution) => format!("{:.4}", pick(&distribution)),
+            }
+        };
+        let driver_reported = |direction: Direction| -> String {
+            match self
+                .callback_of(direction)
+                .and_then(|item| item.driver_latency)
+            {
+                None => "none".to_owned(),
+                Some(distribution) => (!driver_latency_unreported(&distribution)).to_string(),
             }
         };
         let callbacks = |direction: Direction| -> String {
@@ -453,7 +566,15 @@ callbacks_out={callbacks_out} callbacks_in={callbacks_in} \
 backend_errors_out={errors_out} backend_errors_in={errors_in} \
 jitter_out_p50_ms={out_p50} jitter_out_p99_ms={out_p99} jitter_out_max_ms={out_max} \
 jitter_in_p50_ms={in_p50} jitter_in_p99_ms={in_p99} jitter_in_max_ms={in_max} \
-loopback=false driver_reported_extra_latency_ms=unknown",
+driver_out_latency_source={DRIVER_OUT_LATENCY_SOURCE} \
+driver_out_latency_reported={driver_out_reported} \
+driver_out_latency_p50_ms={driver_out_p50} driver_out_latency_p99_ms={driver_out_p99} \
+driver_out_latency_max_ms={driver_out_max} \
+driver_in_latency_source={DRIVER_IN_LATENCY_SOURCE} \
+driver_in_latency_reported={driver_in_reported} \
+driver_in_latency_p50_ms={driver_in_p50} driver_in_latency_p99_ms={driver_in_p99} \
+driver_in_latency_max_ms={driver_in_max} \
+driver_io_sum_is_roundtrip=false loopback=false",
             label = sanitize_label(&self.label),
             verdict = self.verdict().as_str(),
             evidence = self.evidence.as_str(),
@@ -483,6 +604,14 @@ loopback=false driver_reported_extra_latency_ms=unknown",
             in_p50 = jitter(Direction::Input, |stats| stats.p50_ms),
             in_p99 = jitter(Direction::Input, |stats| stats.p99_ms),
             in_max = jitter(Direction::Input, |stats| stats.max_ms),
+            driver_out_reported = driver_reported(Direction::Output),
+            driver_out_p50 = driver(Direction::Output, |distribution| distribution.p50_ms),
+            driver_out_p99 = driver(Direction::Output, |distribution| distribution.p99_ms),
+            driver_out_max = driver(Direction::Output, |distribution| distribution.max_ms),
+            driver_in_reported = driver_reported(Direction::Input),
+            driver_in_p50 = driver(Direction::Input, |distribution| distribution.p50_ms),
+            driver_in_p99 = driver(Direction::Input, |distribution| distribution.p99_ms),
+            driver_in_max = driver(Direction::Input, |distribution| distribution.max_ms),
         )
     }
 
@@ -494,12 +623,16 @@ loopback=false driver_reported_extra_latency_ms=unknown",
         let mut out = String::new();
         out.push_str(
             "MEASURES: nominal per-direction latency (device-reported buffer frames / sample rate); \
-device-reported actual buffer frames after opening; callback arrival jitter (p50/p99/max) on this CPU\n",
+device-reported actual buffer frames after opening; host-reported driver-side latency \
+(output playback-minus-callback, input callback-minus-capture) as p50/p99/max; callback arrival \
+jitter (p50/p99/max) on this CPU\n",
         );
         out.push_str(
-            "DOES-NOT-MEASURE: acoustic / DAC-ADC roundtrip. That needs a physical output->input \
-loopback or a vendor API (CoreAudio kAudioDevicePropertyLatency, WASAPI \
-IAudioClient::GetStreamLatency, ALSA snd_pcm_delay). cpal 0.18.2 exposes none of these.\n",
+            "DOES-NOT-MEASURE: the acoustic / DAC-ADC roundtrip itself. The playback/capture instants \
+are the HOST's own prediction (CoreAudio folds in kAudioDevicePropertyLatency + safety offset, \
+WASAPI IAudioClient::GetStreamLatency, ALSA the PCM delay, PulseAudio an estimate) - they are not \
+a measured loop. A real roundtrip needs a physical output->input loopback (or an ADR ruling that \
+the native-API figures count for BASELINE-005).\n",
         );
         // 只有"有设备但没回环"才谈得上"没有回环证据"；没有设备时理由是 NO-DEVICE。
         if self.device_count() > 0 && self.evidence == Evidence::NominalOnly {
@@ -570,6 +703,44 @@ jitter=unmeasured kind=cpu-scheduling-not-roundtrip\n",
                     errors = callback.backend_errors,
                 )),
             }
+            match callback.driver_latency {
+                Some(distribution) if driver_latency_unreported(&distribution) => {
+                    out.push_str(&format!(
+                        "DRIVER-LATENCY direction={direction} source={source} reported=false \
+value={DRIVER_LATENCY_UNREPORTED} note=the-host-reported-playback-equals-callback-so-this-is-\
+NOT-zero-latency\n",
+                        direction = callback.direction.as_str(),
+                        source = match callback.direction {
+                            Direction::Input => DRIVER_IN_LATENCY_SOURCE,
+                            Direction::Output => DRIVER_OUT_LATENCY_SOURCE,
+                        },
+                    ))
+                }
+                Some(distribution) => out.push_str(&format!(
+                    "DRIVER-LATENCY direction={direction} source={source} reported=true \
+samples={samples} p50_ms={p50:.4} p99_ms={p99:.4} max_ms={max:.4} mean_ms={mean:.4} \
+kind=host-reported-driver-side-not-acoustic\n",
+                    direction = callback.direction.as_str(),
+                    source = match callback.direction {
+                        Direction::Input => DRIVER_IN_LATENCY_SOURCE,
+                        Direction::Output => DRIVER_OUT_LATENCY_SOURCE,
+                    },
+                    samples = distribution.samples,
+                    p50 = distribution.p50_ms,
+                    p99 = distribution.p99_ms,
+                    max = distribution.max_ms,
+                    mean = distribution.mean_ms,
+                )),
+                None => out.push_str(&format!(
+                    "DRIVER-LATENCY direction={direction} source={source} reported=none \
+value=none kind=host-reported-driver-side-not-acoustic\n",
+                    direction = callback.direction.as_str(),
+                    source = match callback.direction {
+                        Direction::Input => DRIVER_IN_LATENCY_SOURCE,
+                        Direction::Output => DRIVER_OUT_LATENCY_SOURCE,
+                    },
+                )),
+            }
         }
         for note in &self.notes {
             out.push_str(&format!("NOTE: {note}\n"));
@@ -627,6 +798,17 @@ pub struct BenchFields {
     pub jitter_out_p99_ms: Option<f64>,
     /// `jitter_in_p99_ms=`；`none` ⇒ `None`。
     pub jitter_in_p99_ms: Option<f64>,
+    /// `driver_out_latency_p99_ms=`；`none` ⇒ `None`，
+    /// 字面 `unreported-or-zero` ⇒ [`BenchFields::driver_out_latency_reported`] 为 `false`。
+    pub driver_out_latency_p99_ms: Option<f64>,
+    /// `driver_out_latency_reported=`；`none`（没采到）也记 `false`。
+    pub driver_out_latency_reported: bool,
+    /// `driver_in_latency_p99_ms=`；`none` ⇒ `None`。
+    pub driver_in_latency_p99_ms: Option<f64>,
+    /// `driver_in_latency_reported=`。
+    pub driver_in_latency_reported: bool,
+    /// `driver_io_sum_is_roundtrip=`（恒为 `false` —— 驱动侧**故意不给合计**）。
+    pub driver_io_sum_is_roundtrip: bool,
 }
 
 /// 严格解析机器可读行：首 token 必须是 `BENCH`，其余每个 token 必须是 `key=value`，
@@ -667,6 +849,11 @@ pub fn parse_bench_line(line: &str) -> Option<BenchFields> {
         loopback: lookup(&pairs, "loopback")? == "true",
         jitter_out_p99_ms: number_field(&pairs, "jitter_out_p99_ms")?,
         jitter_in_p99_ms: number_field(&pairs, "jitter_in_p99_ms")?,
+        driver_out_latency_p99_ms: driver_number_field(&pairs, "driver_out_latency_p99_ms")?,
+        driver_out_latency_reported: lookup(&pairs, "driver_out_latency_reported")? == "true",
+        driver_in_latency_p99_ms: driver_number_field(&pairs, "driver_in_latency_p99_ms")?,
+        driver_in_latency_reported: lookup(&pairs, "driver_in_latency_reported")? == "true",
+        driver_io_sum_is_roundtrip: lookup(&pairs, "driver_io_sum_is_roundtrip")? == "true",
     })
 }
 
@@ -683,6 +870,16 @@ fn lookup<'a>(pairs: &[(&'a str, &'a str)], key: &str) -> Option<&'a str> {
 fn number_field(pairs: &[(&str, &str)], key: &str) -> Option<Option<f64>> {
     match lookup(pairs, key)? {
         "none" => Some(None),
+        raw => Some(Some(raw.parse::<f64>().ok()?)),
+    }
+}
+
+/// 读**驱动侧时延**字段：`none`（没采到）与 [`DRIVER_LATENCY_UNREPORTED`]（主机不报）
+/// 都 → `None`。**这两个字面量都不是数字**，所以谁也不能把它们当成 0 ms。
+fn driver_number_field(pairs: &[(&str, &str)], key: &str) -> Option<Option<f64>> {
+    match lookup(pairs, key)? {
+        "none" => Some(None),
+        DRIVER_LATENCY_UNREPORTED => Some(None),
         raw => Some(Some(raw.parse::<f64>().ok()?)),
     }
 }
@@ -894,12 +1091,15 @@ mod tests {
                     callbacks: 4,
                     backend_errors: 0,
                     stats: Some(normal),
+                    // 主机报的驱动侧时延：2.5 / 2.9 ms
+                    driver_latency: distribution_ms(&[2_500_000, 2_500_000, 2_900_000, 2_500_000]),
                 },
                 CallbackReport {
                     direction: Direction::Input,
                     callbacks: 2,
                     backend_errors: 0,
                     stats: Some(normal),
+                    driver_latency: distribution_ms(&[1_000_000, 1_000_000]),
                 },
             ],
             evidence: Evidence::NominalOnly,
@@ -922,8 +1122,137 @@ mod tests {
         assert!(!fields.loopback, "本工具不声称回环");
         assert!(fields.jitter_out_p99_ms.expect("有输出抖动") >= 0.0);
         assert!(fields.jitter_in_p99_ms.expect("有输入抖动") >= 0.0);
-        // 有了设备也**不能**判达标（没有回环证据）。
+        // 驱动侧时延：**有数字**、来源被写进行里、且**绝不是**往返。
+        assert!(fields.driver_out_latency_reported, "驱动侧输出时延应被报出");
+        let driver_out = fields.driver_out_latency_p99_ms.expect("有输出驱动时延");
+        assert!(
+            (driver_out - 2.9).abs() < 1e-9,
+            "driver_out p99={driver_out}"
+        );
+        assert!((fields.driver_in_latency_p99_ms.expect("有输入驱动时延") - 1.0).abs() < 1e-9);
+        assert!(
+            line.contains("driver_out_latency_source=playback_minus_callback"),
+            "行里必须写清驱动侧时延的推导口径"
+        );
+        assert!(line.contains("driver_in_latency_source=callback_minus_capture"));
+        assert!(
+            !fields.driver_io_sum_is_roundtrip,
+            "驱动侧合计不许被当成往返"
+        );
+        // ⚠ 关键：**有驱动侧读数也不允许判定达标** —— 它是主机预测，不是声学往返。
         assert!(!report.verdict().is_pass());
+        assert_eq!(report.verdict(), Verdict::UnmeasurableWithoutLoopback);
+    }
+
+    /// 判据②附带（新）：[`distribution_ms`] 的纯计算口径。
+    #[test]
+    fn driver_latency_distribution_is_exact_on_handmade_values() {
+        // 2.5 / 2.5 / 2.5 / 2.9 ms ⇒ 升序 [2.5,2.5,2.5,2.9]
+        let distribution =
+            distribution_ms(&[2_500_000, 2_500_000, 2_500_000, 2_900_000]).expect("非空");
+        assert_eq!(distribution.samples, 4);
+        // p50 = ceil(0.5*4)=2 ⇒ 下标 1 ⇒ 2.5
+        assert!((distribution.p50_ms - 2.5).abs() < 1e-12);
+        // p99 = ceil(0.99*4)=4 ⇒ 下标 3 ⇒ 2.9
+        assert!((distribution.p99_ms - 2.9).abs() < 1e-12);
+        assert!((distribution.max_ms - 2.9).abs() < 1e-12);
+        assert!((distribution.mean_ms - 2.6).abs() < 1e-12);
+        assert!(!driver_latency_unreported(&distribution));
+        assert_eq!(distribution_ms(&[]), None, "没采到 ≠ 0 ms");
+    }
+
+    /// 判据⑥补充：**"主机不报"绝不能变成"0 ms"**，更不能变成达标。
+    #[test]
+    fn unreported_driver_latency_is_not_zero_and_never_a_pass() {
+        // 主机把 playback 与 callback 报成同一时刻 ⇒ 全是 0 样本。
+        let all_zero = distribution_ms(&[0, 0, 0]).expect("非空");
+        assert!(
+            driver_latency_unreported(&all_zero),
+            "全 0 必须判为 unreported"
+        );
+        let report = Report {
+            label: "driver-unreported".to_owned(),
+            requested_frames: 64,
+            target_ms: TARGET_ROUNDTRIP_MS,
+            devices: vec![device(Direction::Output, 0)],
+            nominals: Vec::new(),
+            callbacks: vec![CallbackReport {
+                direction: Direction::Output,
+                callbacks: 3,
+                backend_errors: 0,
+                stats: None,
+                driver_latency: Some(all_zero),
+            }],
+            evidence: Evidence::NominalOnly,
+            measured_roundtrip_ms: None,
+            notes: Vec::new(),
+        };
+        let line = report.bench_line();
+        assert!(
+            line.contains(&format!(
+                "driver_out_latency_p99_ms={DRIVER_LATENCY_UNREPORTED}"
+            )),
+            "主机不报时必须写字面 unreported-or-zero，不许写 0.0000: {line}"
+        );
+        assert!(
+            !line.contains("driver_out_latency_p99_ms=0.0000"),
+            "把'不报'写成 0.0000 就是制造假绿"
+        );
+        let fields = parse_bench_line(&line).expect("可解析");
+        assert!(!fields.driver_out_latency_reported);
+        assert_eq!(fields.driver_out_latency_p99_ms, None);
+        assert!(!report.verdict().is_pass(), "主机不报 ≠ 达标");
+        // 人类可读行也必须出声。
+        let summary = report.human_summary();
+        assert!(summary.contains(DRIVER_LATENCY_UNREPORTED));
+        assert!(
+            summary.contains("NOT-zero-latency"),
+            "必须明确说'这不是 0 ms 时延'"
+        );
+    }
+
+    /// 判据⑥补充：**驱动侧时延再小也不构成达标**（它是主机预测，不是声学往返）。
+    #[test]
+    fn a_tiny_driver_latency_still_cannot_satisfy_the_baseline() {
+        let tiny = distribution_ms(&[1, 1, 1]).expect("非空"); // 3 ns ≈ 0.000003 ms
+        let report = Report {
+            label: "driver-tiny".to_owned(),
+            requested_frames: 64,
+            target_ms: TARGET_ROUNDTRIP_MS,
+            devices: vec![device(Direction::Output, 0), device(Direction::Input, 1)],
+            nominals: Vec::new(),
+            callbacks: vec![
+                CallbackReport {
+                    direction: Direction::Output,
+                    callbacks: 3,
+                    backend_errors: 0,
+                    stats: None,
+                    driver_latency: Some(tiny),
+                },
+                CallbackReport {
+                    direction: Direction::Input,
+                    callbacks: 3,
+                    backend_errors: 0,
+                    stats: None,
+                    driver_latency: Some(tiny),
+                },
+            ],
+            evidence: Evidence::NominalOnly,
+            measured_roundtrip_ms: None,
+            notes: Vec::new(),
+        };
+        assert_eq!(
+            report.verdict(),
+            Verdict::UnmeasurableWithoutLoopback,
+            "驱动侧读数（无论多小）都不许把判定变成达标"
+        );
+        assert!(!report.verdict().is_pass());
+        // 而且行里**故意没有**驱动侧合计字段（合计最像"达标总数"）。
+        let line = report.bench_line();
+        assert!(
+            !line.contains("driver_io_sum_ms"),
+            "不许出现驱动侧合计字段（避免看起来达标的总数）"
+        );
     }
 
     /// 判据⑤反面：解析器**有判别力**（坏行必须被拒），不是恒绿。
@@ -932,7 +1261,10 @@ mod tests {
         let good = "BENCH baseline=005 label=x verdict=no-device evidence=nominal-only devices=0 \
 measured_roundtrip_ms=none target_ms=5.5000 nominal_out_ms=none nominal_in_ms=none \
 nominal_io_sum_ms=none nominal_io_sum_is_roundtrip=false loopback=false \
-jitter_out_p99_ms=none jitter_in_p99_ms=none";
+jitter_out_p99_ms=none jitter_in_p99_ms=none \
+driver_out_latency_p99_ms=none driver_out_latency_reported=false \
+driver_in_latency_p99_ms=none driver_in_latency_reported=false \
+driver_io_sum_is_roundtrip=false";
         assert!(parse_bench_line(good).is_some());
         // 前缀不对
         assert!(parse_bench_line(&good.replacen("BENCH", "BENCHMARK", 1)).is_none());
@@ -1034,6 +1366,7 @@ jitter_out_p99_ms=none jitter_in_p99_ms=none";
                 callbacks: 2000,
                 backend_errors: 0,
                 stats: jitter_stats(&[1_000_000, 1_050_000], 1_000_000),
+                driver_latency: distribution_ms(&[3_000_000, 3_100_000]),
             }],
             evidence: Evidence::NominalOnly,
             measured_roundtrip_ms: None,
@@ -1054,6 +1387,16 @@ jitter_out_p99_ms=none jitter_in_p99_ms=none";
         assert!(stats.p50_ms >= 0.0 && stats.p99_ms >= 0.0 && stats.max_ms >= 0.0);
         assert!(stats.p99_ms >= stats.p50_ms, "p99 不该小于 p50");
         assert!(stats.max_ms >= stats.p99_ms, "max 不该小于 p99");
+        // 驱动侧时延同样要打印且非负。
+        assert!(summary.contains("DRIVER-LATENCY direction=output"));
+        assert!(summary.contains("kind=host-reported-driver-side-not-acoustic"));
+        let driver = report
+            .callback_of(Direction::Output)
+            .and_then(|item| item.driver_latency)
+            .expect("有驱动侧时延");
+        assert!((driver.p50_ms - 3.0).abs() < 1e-9);
+        assert!((driver.max_ms - 3.1).abs() < 1e-9);
+        assert!(driver.p50_ms >= 0.0 && driver.max_ms >= driver.p50_ms);
     }
 
     /// 阈值与门禁号的字面量被规范钉死 —— 改它们必须改规范。

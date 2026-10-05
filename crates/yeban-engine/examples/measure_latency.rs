@@ -12,22 +12,33 @@
 //!
 //! 1. **标称时延**：设备报告的缓冲帧数 ÷ 采样率，输入/输出**分别**给（`NOMINAL` 行）；
 //! 2. **后端报告的实际缓冲帧数**：打开流之后 `DeviceTrait::buffer_size()` 的回读；
-//! 3. **回调调度抖动**（**CPU 侧**）：真的跑 2 秒输出流 + 输入流，统计每次回调到达间隔
+//! 3. **主机报告的驱动侧时延**（`DRIVER-LATENCY` 行）：输出 `playback − callback`、
+//!    输入 `callback − capture`，给 p50 / p99 / max / mean。
+//!    这是**真的**：cpal 每个回调都带着主机用厂商 API 算出来的时刻 ——
+//!    CoreAudio 折入 `kAudioDevicePropertyLatency` + `kAudioDevicePropertySafetyOffset`
+//!    （见 `cpal-0.18.2/src/host/coreaudio/macos/device.rs` 的
+//!    `get_device_extra_latency_frames`），WASAPI 用
+//!    `buffered_frames + IAudioClient::GetStreamLatency`，ALSA 用 PCM delay，
+//!    PulseAudio 用自己的时延估计（**是估计值**）。
+//! 4. **回调调度抖动**（**CPU 侧**）：真的跑 2 秒输出流 + 输入流，统计每次回调到达间隔
 //!    与标称周期的偏差的 p50 / p99 / max / mean（`CALLBACK` 行）。
 //!
 //! **不能测**（因此本工具**永远**不会宣布达标）：
 //!
-//! - **真正的声学 / DAC-ADC 往返时延**需要**物理回环**（输出接输入，或 BlackHole/Loopback
-//!   这类虚拟设备）或**厂商 API**（CoreAudio `kAudioDevicePropertyLatency` /
-//!   `kAudioStreamPropertyLatency`、WASAPI `IAudioClient::GetStreamLatency`、
-//!   ALSA `snd_pcm_delay`）。
-//! - **cpal 0.18.2 一个都不暴露**：`DeviceTrait` 只有 `buffer_size()` 与 `now()`；
-//!   整个 crate 里 `latency` 一词只出现在错误文案与文档注释里（已按 `cpal-0.18.2/src/`
-//!   逐文件核对）。厂商 API 需要新的 FFI 依赖 ⇒ 属**依赖图裁决**，不在本工作线权限内。
+//! - **真正的声学 / DAC-ADC 往返时延**：`playback`/`capture` 是**主机自己的预测**，
+//!   不是测出来的声学量。真正的往返需要**物理回环**（输出接输入，或
+//!   BlackHole/Loopback 这类虚拟设备）并做采集比对。
+//! - **cpal 0.18.2 没有显式的时延查询 API**（`DeviceTrait` 只有 `buffer_size()` / `now()`）——
+//!   但这**不等于**"拿不到硬件时延"：上面第 3 条就是证据。想直接调
+//!   `kAudioDevicePropertyLatency` / `IAudioClient::GetStreamLatency` / `snd_pcm_delay`
+//!   仍然需要新写 FFI（= **依赖图裁决**），只是本工具已经不必走那条路。
+//! - ⚠ **本线第一版把上面这条说错过**（写成"cpal 一个都不暴露"），已在核对
+//!   `cpal-0.18.2/src/` 源码后更正并留痕，见 `docs/ledger/audio-latency-notes.md` §1.1。
 //!
 //! ⇒ 所以本工具**没有** `roundtrip_ms` 这种"看起来达标的总数"字段：实测往返只出现在
-//! `measured_roundtrip_ms=`，且在本工具的路径上恒为 `none`；判定由
-//! [`yeban_engine::latency::verdict_for`] 给出，**没有回环证据时 `within-target` 不可达**。
+//! `measured_roundtrip_ms=`，且在本工具的路径上恒为 `none`；驱动侧时延**故意不给合计**
+//! （合计最像"达标总数"）。判定由 [`yeban_engine::latency::verdict_for`] 给出，
+//! **没有回环证据时 `within-target` 不可达**。
 //!
 //! # 退出码（"没测到"必须区别于"达标"）
 //!
@@ -94,9 +105,10 @@ mod imp {
     use yeban_engine::device::{EngineConfig, STREAM_OPEN_TIMEOUT, ShareMode, negotiate};
     use yeban_engine::graph::LatencyTable;
     use yeban_engine::latency::{
-        CallbackReport, DeviceReport, Direction, EXIT_TOOL_DISABLED, EXIT_USAGE, Evidence,
-        JitterStats, NO_DEVICE_REASON, NominalReport, Report, TARGET_ROUNDTRIP_MS, exit_code_for,
-        jitter_stats, nominal_ms, parse_bench_line,
+        CallbackReport, DRIVER_IN_LATENCY_SOURCE, DRIVER_OUT_LATENCY_SOURCE, DeviceReport,
+        Direction, EXIT_TOOL_DISABLED, EXIT_USAGE, Evidence, JitterStats, NO_DEVICE_REASON,
+        NominalReport, Report, TARGET_ROUNDTRIP_MS, distribution_ms, driver_latency_unreported,
+        exit_code_for, jitter_stats, nominal_ms, parse_bench_line,
     };
     use yeban_engine::meter::meter_channel;
     use yeban_engine::ring::event_channel;
@@ -205,18 +217,23 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
         count: AtomicUsize,
         write_index: AtomicUsize,
         intervals_ns: Box<[AtomicU64]>,
+        driver_index: AtomicUsize,
+        driver_ns: Box<[AtomicU64]>,
         errors: AtomicU64,
     }
 
     impl CallbackClock {
         fn new() -> Arc<Self> {
             let intervals: Vec<AtomicU64> = (0..MAX_CALLBACKS).map(|_| AtomicU64::new(0)).collect();
+            let driver: Vec<AtomicU64> = (0..MAX_CALLBACKS).map(|_| AtomicU64::new(0)).collect();
             Arc::new(Self {
                 last_ns: AtomicU64::new(0),
                 seen: AtomicBool::new(false),
                 count: AtomicUsize::new(0),
                 write_index: AtomicUsize::new(0),
                 intervals_ns: intervals.into_boxed_slice(),
+                driver_index: AtomicUsize::new(0),
+                driver_ns: driver.into_boxed_slice(),
                 errors: AtomicU64::new(0),
             })
         }
@@ -237,6 +254,18 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
             self.last_ns.store(now, Ordering::Relaxed);
         }
 
+        /// 记一次**主机报告的驱动侧时延**（实时路径，纳秒）。
+        ///
+        /// 输出方向传 `playback − callback`，输入方向传 `callback − capture`
+        /// （都用 `as_nanos()` 的饱和减法预先算好）。
+        fn record_driver_latency(&self, delta_ns: u64) {
+            let index = self.driver_index.load(Ordering::Relaxed);
+            if index < self.driver_ns.len() {
+                self.driver_ns[index].store(delta_ns, Ordering::Relaxed);
+                self.driver_index.store(index + 1, Ordering::Relaxed);
+            }
+        }
+
         /// 非实时线程上的抽干。
         fn drain(&self) -> Vec<u64> {
             let count = self
@@ -244,6 +273,18 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
                 .load(Ordering::Relaxed)
                 .min(self.intervals_ns.len());
             self.intervals_ns[..count]
+                .iter()
+                .map(|slot| slot.load(Ordering::Relaxed))
+                .collect()
+        }
+
+        /// 驱动侧时延样本的抽干。
+        fn drain_driver(&self) -> Vec<u64> {
+            let count = self
+                .driver_index
+                .load(Ordering::Relaxed)
+                .min(self.driver_ns.len());
+            self.driver_ns[..count]
                 .iter()
                 .map(|slot| slot.load(Ordering::Relaxed))
                 .collect()
@@ -262,10 +303,16 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
         }
     }
 
+    /// `later − earlier`，单位纳秒，**饱和**（时钟不单调时给 0，不 panic）。
+    fn delta_ns(later: cpal::StreamInstant, earlier: cpal::StreamInstant) -> u64 {
+        u64::try_from(later.as_nanos().saturating_sub(earlier.as_nanos())).unwrap_or(u64::MAX)
+    }
+
     /// 一个方向跑完流之后的原始读数（统计留到 [`summarize`] 里算，避免两处逻辑）。
     struct StreamRun {
         invocations: usize,
         intervals_ns: Vec<u64>,
+        driver_ns: Vec<u64>,
         backend_errors: u64,
         sample_rate_hz: u32,
         negotiated_frames: Option<u32>,
@@ -500,6 +547,40 @@ nominal=none (no guess)",
                 nominal_period_ns(run.sample_rate_hz, frames),
             )
         };
+        // 主机报告的驱动侧时延（输出 playback−callback / 输入 callback−capture）。
+        let driver_latency = distribution_ms(&run.driver_ns);
+        match driver_latency {
+            Some(distribution) if driver_latency_unreported(&distribution) => notes.push(format!(
+                "{}: the host reported {} == {} for every callback -> driver-side latency is \
+UNREPORTED on this host; that is NOT 0 ms",
+                direction.as_str(),
+                match direction {
+                    Direction::Input => "callback",
+                    Direction::Output => "playback",
+                },
+                match direction {
+                    Direction::Input => "capture",
+                    Direction::Output => "callback",
+                },
+            )),
+            Some(distribution) => notes.push(format!(
+                "{}: driver-side latency is the HOST's own prediction ({}), p50={:.4} ms \
+p99={:.4} ms max={:.4} ms; it is NOT an acoustic roundtrip and it is NOT summed with the other \
+direction on purpose",
+                direction.as_str(),
+                match direction {
+                    Direction::Input => DRIVER_IN_LATENCY_SOURCE,
+                    Direction::Output => DRIVER_OUT_LATENCY_SOURCE,
+                },
+                distribution.p50_ms,
+                distribution.p99_ms,
+                distribution.max_ms,
+            )),
+            None => notes.push(format!(
+                "{}: no callback carried a playback/capture instant -> driver-side latency unmeasured",
+                direction.as_str()
+            )),
+        }
         (
             nominal,
             CallbackReport {
@@ -507,6 +588,7 @@ nominal=none (no guess)",
                 callbacks: run.invocations,
                 backend_errors: run.backend_errors,
                 stats,
+                driver_latency,
             },
         )
     }
@@ -553,8 +635,14 @@ nominal=none (no guess)",
                 .build_output_stream::<f32, _, _>(
                     stream_config,
                     move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-                        // 真实回调：先记时刻（零分配），再走引擎自己的渲染量子路径。
-                        callback_clock.record(info.timestamp().callback);
+                        // 真实回调：先记时刻与**主机报的驱动侧时延**（零分配），
+                        // 再走引擎自己的渲染量子路径。
+                        let stamp = info.timestamp();
+                        callback_clock.record(stamp.callback);
+                        // `playback` = 主机预计"现在写入的数据被播放"的时刻
+                        // （CoreAudio 折入了 kAudioDevicePropertyLatency + 安全偏移）。
+                        callback_clock
+                            .record_driver_latency(delta_ns(stamp.playback, stamp.callback));
                         runtime.process_quantum(data, channels);
                     },
                     {
@@ -573,6 +661,7 @@ nominal=none (no guess)",
         }
         Ok(finish(
             clock.drain(),
+            clock.drain_driver(),
             clock.invocations(),
             clock.errors(),
             negotiated,
@@ -605,7 +694,12 @@ nominal=none (no guess)",
                 .build_input_stream::<f32, _, _>(
                     stream_config,
                     move |_data: &[f32], info: &cpal::InputCallbackInfo| {
-                        callback_clock.record(info.timestamp().callback);
+                        let stamp = info.timestamp();
+                        callback_clock.record(stamp.callback);
+                        // `capture` = 主机认为"这批数据被 ADC 采到"的时刻
+                        // ⇒ `callback − capture` 是输入侧的驱动时延。
+                        callback_clock
+                            .record_driver_latency(delta_ns(stamp.callback, stamp.capture));
                     },
                     {
                         let error_clock = Arc::clone(&clock);
@@ -623,6 +717,7 @@ nominal=none (no guess)",
         }
         Ok(finish(
             clock.drain(),
+            clock.drain_driver(),
             clock.invocations(),
             clock.errors(),
             negotiated,
@@ -632,6 +727,7 @@ nominal=none (no guess)",
 
     fn finish(
         intervals_ns: Vec<u64>,
+        driver_ns: Vec<u64>,
         invocations: usize,
         backend_errors: u64,
         negotiated: yeban_engine::device::NegotiatedConfig,
@@ -641,6 +737,7 @@ nominal=none (no guess)",
         StreamRun {
             invocations,
             intervals_ns,
+            driver_ns,
             backend_errors,
             sample_rate_hz: negotiated.sample_rate,
             negotiated_frames: negotiated_frames(negotiated.buffer_size),
@@ -748,8 +845,9 @@ nominal=none (no guess)",
         }
 
         notes.push(
-            "verdict is unmeasurable-without-loopback because cpal 0.18.2 exposes no hardware \
-roundtrip latency API and no physical loopback was used"
+            "verdict is unmeasurable-without-loopback: the DRIVER-LATENCY rows are the host's own \
+playback/capture prediction (not an acoustic roundtrip), cpal 0.18.2 has no explicit hardware \
+latency query API, and no physical output->input loopback was used"
                 .to_owned(),
         );
 
