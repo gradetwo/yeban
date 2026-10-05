@@ -3117,3 +3117,23 @@ Why this mattered enough to mechanise: Python's YAML parser is content with a no
 (and therefore `light`, and therefore every local claim of greenness) accepted a workflow that **GitHub refused to
 dispatch at all**. The failure mode is "locally green, globally dead", which is the same family as the empty-green and
 hung-green traps already recorded in `docs/CI_CD.md`.
+
+### Round 107: `ROAD-M0-008` relabelled to 已完成 - and three of my own row-editing errors, caught by the guard
+
+`ROAD-M0-008` ("`SoftwareRenderer` 出 1920x1080 像素级一致 PNG") was 部分 for exactly one stated reason: the repo had no
+baseline set, so "matches the baseline" had never been asserted. That reason is now gone - baselines exist for **both**
+platforms, the criterion is wired, CI witnessed 5 comparisons and 0 non-judgments, and the tooth test showed it fails on a
+corrupted baseline. The row now records that evidence and keeps the remaining boundary explicit: the byte-exact criterion
+tolerates **no** dynamic region, so VU/transport-cursor scenes will require decoding plus `apply_masks` masking.
+
+**Three self-inflicted errors in the edit, each caught mechanically rather than by review.**
+1. I indexed the split row wrongly (`split("|")` yields `['', id, desc, status, reason, '']`, so `[3]` is the status, not
+   the reason) and overwrote the description with the new reason text.
+2. I then rebuilt the row with **three** content cells instead of four, which left the row malformed so the guard simply
+   **skipped it** - the totals read 45 rows and 13 done, i.e. my "improvement" silently made the table smaller.
+3. The original row carried **two** reason cells, so my first patch left stale text contradicting the new status right
+   next to it ("为什么是「部分」而不是「已完成」" beside **已完成**).
+
+All three were caught by `phase-status`'s summary-consistency check (`汇总的合计与表格不符：写的是 14/25/7（共 46），逐行统计是
+13/25/7（共 45）`), which is exactly the doc-contract guard earning its keep. Final state: Phase 0 = 1/6/2, total =
+**已完成 14 / 部分 25 / PENDING 7（共 46）**, `门禁通过 (mode=light)`.

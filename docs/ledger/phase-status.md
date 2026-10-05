@@ -53,7 +53,7 @@
 | `ROAD-M0-005` | Spike 5：自研 `yeban-ui-test-port` 无头内省；可启动、JSON-RPC ≤15ms、截图 ≤50ms | **部分** | **已做到**：`crates/yeban-ui-test-port/` 真落地（`tree`/`render`/`mask`/`ssim`/`golden`/`png`/`inspect` 模块，43 条判据本机绿，`docs/ledger/ui-test-port-notes.md` §6/§8）；无头启动 + 控件树 + 截图端到端在 CI 跑（`crates/yeban-app/tests/live_ui_mcp.rs`，run 37233532606 `rust (workspace 全量)` = success），引用 `MUST-GATE-015`（**已接线**）。**未做到**：Go 的两条**时延**读数 —— `docs/ledger/ui-test-port-notes.md` 全文没有 "≤15ms / ≤50ms" 的实测数字 | 功能面比 spike 要求做得更多（像素 + 遮罩 + SSIM），**唯独时延口径没有读数** |
 | `ROAD-M0-006` | Spike 6：10 万密集音符虚拟化卷帘；稳定 120 FPS（单帧 ≤8.3ms）、无内存泄漏 | **PENDING** | 未实现：`crates/yeban-app/ui/console/piano_roll.slint:4,11` 明文"规范 §3.1 的 Slint 硬件加速视口裁剪 + R-Tree 空间索引**本骨架没有实现**"、"视口裁剪、R-Tree、吸附、工具状态机仍未实现"；`spikes/README.md` §现状"**未开始**（依赖 `yeban-app` 卷帘真正接上模型数据）"。120 FPS 关联 `BASELINE-003`（**PENDING**） | 与 `ROAD-M3-002` 是同一件事的两个阶段视角：本项是 spike 的**通过判据**，那条是**交付物** |
 | `ROAD-M0-007` | Spike 7：双 MCP 活会话挂载 + `.yeban.lock`；外部 Agent attach 并驱动 UI 刷新；并发得 `PROJECT_LOCKED` | **部分** | **已做到（两半各有独立证据）**：①活会话 attach + 驱动 UI 刷新 —— `crates/yeban-app/tests/live_ui_mcp.rs` 的 4 条端到端（建立 LivePort → `ui/tree` 拉元素树 → 按语义 ID 查节点 → `ui/screenshot`），CI run 37233532606 = success、run 37229660272 `rust (yeban-app)` = success；②并发 `PROJECT_LOCKED` —— `crates/yeban-mcp/tests/lock_advisory.rs`（跨进程 `Command` + 文件握手 + `SIGKILL` 崩溃自愈），CI run 37232643213 = success，引用 `MUST-GATE-008`（**已接线**）。**未做到**：spike 原文的"**进程内内嵌 Streamable HTTP MCP** 与独立 stdio CLI 互斥访问同一工程文件"这一**跨形态**互斥没有端到端判据 —— `crates/yeban-app` 不依赖 `yeban-mcp`（`grep -n "yeban-mcp" crates/yeban-app/Cargo.toml` 命中 0），域侧 HTTP 形态没嵌进 app | ⚠ `docs/ledger/live-port-notes.md` §3.3 把 **run 37233109787** 记为该节读数来源，但那个 run 的 `rust (workspace 全量)` = **failure**（`gh run view 37233109787`）；同一份代码的净绿判决是 **run 37233532606**。本表按后者引用 |
-| `ROAD-M0-008` | Spike 8：定制 Platform 软件无头渲染兜底；`SoftwareRenderer` 出 1920x1080 像素级一致 PNG；testing backend 只做属性断言 | **部分** | **为什么是「部分」而不是「已完成」（集成者复核后下调，2026-10-05）**：本项要求 `SoftwareRenderer` 出 **1920×1080 像素级一致** 的 PNG；而仓库里**没有** `tests/golden/` 基准图集（`artifacts/ui/*.png` 是构建产物、已 gitignore）⇒ **「与基准一致」这件事没有被断言过**，现在断言的是「非零尺寸 + 非黑 + 控件树可读」。**缺什么**：人类提供分平台 Golden 基准（`UI-MCP-003`）后，把「一致」写成判据。 ⇒ 原证据（仍然有效，只是不足以支撑「已完成」）：①像素路径自研、**不用** `i-slint-backend-testing` 出图：`crates/yeban-ui-test-port/src/render.rs:6,10,129`（自研 `Platform` → `MinimalSoftwareWindow` → `SoftwareRenderer`）；②内部 crate 的三条边界已核验并登记：`Cargo.toml:68` 精确版本 `i-slint-backend-testing = { version = "=1.18.1" }`，"入口名不是规范写的那个 / 不渲染像素 / 遍历需 `SLINT_EMIT_DEBUG_INFO`"见 `docs/ledger/ui-test-port-notes.md` §1 第 13/22/27 条；③真实界面 1920×1080 **非黑 100%**，CI run 37229660272 = success（artifact `ui-screenshots-*`），引用 `MUST-GATE-015`（**已接线**） | **本行是"已完成"里最弱的一个**：仓库里**没有** `tests/golden/` 基准图集（`ls tests/golden` ⇒ No such file），所以 CI 目前断言的是"由 Tier-1 产出 + 尺寸非零 + 非全黑"，**不是**逐像素基准比对。`src/ssim.rs`（阈值 0.98）已实现且口径写死（notes §3），但基准图尚未入库 |
+| `ROAD-M0-008` | Spike 8：定制 Platform 软件无头渲染兜底；`SoftwareRenderer` 出 1920x1080 像素级一致 PNG；testing backend 只做属性断言 | **已完成** | **第 107 轮改判（集成者复核后上调）**: 此前记「部分」的**唯一**理由是「仓库里没有基准图集 ⇒ 『与基准一致』这件事没有被断言过」。该理由**已被消除**：① `crates/yeban-app/tests/golden/` 下已入库 **macos 与 linux 两套**基准（各 5 张，分平台生成；实测两套同名图**逐字节全不同**，故必须分平台）；② 判据已接线：渲染 → `png::encode_rgb8` → **逐字节**比对基准，不一致即红并给出两侧字节数，平台无基准时打印「未被判定」而非通过（`assert_matches_golden`，`crates/yeban-app/src/test_port_adapter.rs`）；③ **CI 见证**：run `37299800916` 的 UI 制品里 `与基准逐字节一致 ✓` **5 行、`未被判定` 0 行** ⇒ Linux 上真的比对了；④ **判据有牙**：改动某张基准第 5000 字节 ⇒ 该测试 FAIL 并点名场景，还原后复绿。**仍然存在的边界（不许当作已覆盖）**: 逐字节口径**不容忍动态区域** —— VU 表/走带光标进入这些场景时，必须改成「解码 + `apply_masks` 遮罩 + 像素容差」，而那需要把 `crates/yeban-ui-test-port/src/png.rs` 里现位于 `#[cfg(test)] mod tests` 的解码器提到公共位置。 |
 | `ROAD-M0-009` | Spike 9：EngineSnapshot 高频原子交换；音频线程零 dealloc、队列不溢出、内存平稳 | **部分** | **已做到**：退役回收队列的结构与判据齐 —— `crates/yeban-engine/tests/rt_zero_alloc.rs` 用计数型全局分配器跑 10,000 量子 + 63 次快照交换，断言 `allocations == 0 && deallocations == 0`；另有 `crates/yeban-engine/tests/meter_rt_contract.rs`（7 场景 / 10,242 量子，含真实电平路径），引用 `MUST-GATE-001`（**部分**）。**未做到**：spike 要的**高频/长时间**压测（每秒 10,000 次参数/拓扑变更 + 内存曲线平坦）—— `MUST-GATE-012` = **部分**，其证据列明文"高频/长时间交换压测未做" | 本项与 `ROAD-M2-002`、`MUST-GATE-012` 是同一件事的三个视角；门禁状态以 `gate-status.md` 为准 |
 
 ## 3. Phase 1 —— 960 PPQ 数据模型、操作日志撤销树与存储引擎
@@ -113,12 +113,12 @@
 > 不一致即红。改表必须同步改这里（数字要么能被命令复核，要么别写）。
 
 - Phase -1：已完成 2 / 部分 2 / PENDING 2（共 6 项）
-- Phase 0：已完成 0 / 部分 7 / PENDING 2（共 9 项）
+- Phase 0：已完成 1 / 部分 6 / PENDING 2（共 9 项）
 - Phase 1：已完成 5 / 部分 0 / PENDING 1（共 6 项）
 - Phase 2：已完成 2 / 部分 6 / PENDING 0（共 8 项）
 - Phase 3：已完成 0 / 部分 6 / PENDING 1（共 7 项）
 - Phase 4：已完成 4 / 部分 5 / PENDING 1（共 10 项）
-- **合计：已完成 13 / 部分 26 / PENDING 7（共 46 项）**
+- **合计：已完成 14 / 部分 25 / PENDING 7（共 46 项）**
 
 **怎么读这张表**（避免三种常见误读）：
 
