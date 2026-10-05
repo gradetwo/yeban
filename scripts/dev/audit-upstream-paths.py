@@ -56,12 +56,19 @@ def main() -> int:
     wanted = [s for s in args.only.split(",") if s] or sorted(first_item)
 
     fetcher = load_fetcher()
-    direct, stripped, broken, offline = [], [], [], []
+    direct, stripped, broken, offline, unregistered = [], [], [], [], []
     for iid in wanted:
         inst, item = instruments.get(iid), first_item.get(iid)
         if not inst or not item:
             continue
         repo, pin = inst.get("repo"), inst.get("pin")
+        if not repo or not pin:
+            # ⚠ **缺登记 ≠ 映射错**: 实测 `freepats-drawbar-organ` / `freepats-percussive-organ`
+            # 两个乐器的 `repo` 与 `pin` **都是 null** ⇒ 结构上**根本无法**推导上游地址、也就无法复核。
+            # 第一版把它们当"真缺陷(404)"报（因为 URL 变成了 `.../None/None/...`）—— 那是**归因错位**：
+            # 前者要人去补登记，后者要人去核对布局，是两种不同的活。
+            unregistered.append(iid)
+            continue
         rel = item.get("relative_path") or ""
         # ⚠ **口径必须与 `fetch-samples.py` 的 `UPSTREAM_STRIP` 一致**：
         # 先按乐器根（`relative_root`，两种形态都要归一化）剥掉，剩下的才是"上游路径"；
@@ -95,6 +102,7 @@ def main() -> int:
     print(f"  剥离后可取回: {len(stripped)}  -> {stripped}")
     print(f"  仍取不回   : {len(broken)}  -> {broken}")
     print(f"  连接失败   : {len(offline)}  -> {offline[:5]}")
+    print(f"  **缺 repo/pin（无法判定）**: {len(unregistered)}  -> {unregistered}")
     if stripped:
         print("\n建议加入 UPSTREAM_STRIP（段数已按 fetch-samples 的口径归一化；**仅凭这里的实测**）:")
         for iid, n in stripped:
@@ -102,6 +110,13 @@ def main() -> int:
     if broken:
         print("\n[失败] 以下乐器的首个条目在 0..2 段剥离内都无法取回（真缺陷，需人工核对上游布局）:", file=sys.stderr)
         return 1
+    if unregistered:
+        print(
+            f"\n[unknown] 有 {len(unregistered)} 个乐器**缺 repo/pin** ⇒ 结构上无法复核（要人去补登记，不是判失败）: "
+            f"{unregistered}",
+            file=sys.stderr,
+        )
+        return 2
     if offline:
         print(f"\n[unknown] 有 {len(offline)} 个乐器因连接失败无法判定（不是判失败）", file=sys.stderr)
         return 2

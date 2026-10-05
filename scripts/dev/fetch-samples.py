@@ -42,6 +42,8 @@ MANIFEST = REPO / "assets" / "samples" / "manifest.json"
 # 本表只是把已**实测确认**的映射写下来，避免那条 404 继续以「无法判定」的身份占用 `--tolerate-404`。
 UPSTREAM_STRIP: dict[str, int] = {
     "karoryfer-meatbass": 1,  # 上游无 `Meatbass/` 这一层（API 实测：唯一命中是 `GUI/aria_info.xml`）
+    # 由 `scripts/dev/audit-upstream-paths.py` 全量审计（30 个乐器逐个 HEAD）实测得到:
+    "karoryfer-emilyguitar": 1,
 }
 
 
