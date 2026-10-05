@@ -8013,3 +8013,26 @@ in-memory assertion that makes "not measured yet" a checked property rather than
 
 **Status**: tree green and clean; CI green; the loudness contract is decided and its implementation fully scoped; the mapping move remains registered as
 `N-MCP-MIDI-1`.
+
+
+### Round 329: stopping the loudness-field edit too - the recipe should use the measured LINE NUMBERS, not patterns
+
+Two attempts at the five-step edit failed in the same way: my "insert `..EngineReadings::default()` at every construction site" pass matched the **struct
+definition** on the first attempt and the **`Default` impl's own `Self { ... }` literal** on the second, producing "non-item in item list". Both failure paths
+reverted, so the tree is green.
+
+**The better recipe is already in the ledger**: round 328 measured the five sites as *lines* (`engine_state.rs:246`, `:259`; `extension_tools.rs:726`, `:798`,
+`:832`). Inserting at those five line numbers, bottom-up so the earlier numbers stay valid, cannot mis-fire - whereas pattern-matching on `EngineReadings {`
+cannot distinguish a construction from the type's own definition or its `Default` body. That is the same lesson as round 323 (assemble by position/named
+parts, do not filter by shape) applied to insertion instead of deletion.
+
+**So the item stands at**: contract decided (round 327), edit scoped to five sites in two files (round 328), and the struct change itself written and verified
+in the first attempt of this round (fields, derive without `Eq`, `Default`) - the only part that failed was the mechanical insertion at the five call sites,
+twice, for the same reason.
+
+**What I am doing about the pattern rather than the instance**: three items now sit at "one mechanical step from done" (the mapping move, this field edit, and
+the MCP tool behind the first). The common factor is not the code but my habit of writing one-shot transforms. The rule this session has now earned: **when a
+transform touches N known locations, address them by their measured positions and do them one at a time**, and let the compiler confirm - which is exactly what
+`N-MCP-MIDI-1` records and what this round should have followed.
+
+**Status**: tree green and clean; CI green; loudness contract decided and struct changed; five call sites remain; mapping move registered as `N-MCP-MIDI-1`.
