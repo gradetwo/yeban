@@ -7964,3 +7964,27 @@ never acts on a stale reading.
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; the fixture family is shared; the mapping layer and the MCP export tool
 remain owed, with the recipe and the CI-verified groundwork in place.
+
+
+### Round 327: I take the loudness data-source decision - and Option semantics remove the architecture question
+
+Round 272 left the loudness item blocked on "who may hand engine state to an MCP client", with three architectures (app-embedded server, app-pushed snapshot,
+shared file). Under the standing instruction to decide what I can and record it, I am deciding the **contract** rather than the transport, which dissolves the
+blocker:
+
+**Decision**: the loudness values are **host-injected readings**, exactly like the existing `sample_rate`/`buffer_frames`, and they are typed **`Option`** -
+`integrated_lufs`, `momentary_lufs`, `short_term_lufs`, `loudness_range_lu`, `true_peak_dbfs`, each `Option<f32>`. The tool reports the spec's named windows
+when the embedding host has them and **`null`** when it does not (which is the case for the standalone stdio server today, documented rather than hidden).
+
+**Why this is the right shape rather than a compromise**: the three architectures were only in conflict about **when** values arrive; none of them changes what
+the tool's contract should be. With `Option` fields, "not measured yet" and "measured silence" stay distinguishable (round 271's point), the standalone server
+is honest instead of reporting fabricated zeros, and **whichever transport is chosen later needs no change to the tool or its criteria**. That converts an
+architectural ruling into an implementation detail - the better trade, and it is mine to make.
+
+**What remains for the item, in order**: (1) extend `EngineReadings` with those five `Option` fields and update the struct's derives (it is `Copy + Eq` with
+two `u32`s today; floats need `PartialEq` and drop `Eq` - a deliberate, visible change); (2) surface them in `query_engine_state`'s payload; (3) a criterion
+asserting `null` when unset and echo-when-set; (4) the engine-side producer stays a **needs** entry, because filling them requires the transport choice the
+负责人 may still prefer to make.
+
+**Status**: tree green and clean; CI green; this decision unblocks the tool's contract while leaving the transport open, with the reasoning recorded so it can
+be overturned.
