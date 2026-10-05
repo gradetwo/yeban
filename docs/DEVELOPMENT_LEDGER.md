@@ -5848,3 +5848,32 @@ caught it myself while doing an unrelated read, which is the argument for keepin
 
 **Nothing to change in the code**: `clip_at_tick` takes triples, its criterion passes, and the caller's mapping is one line. What I am
 correcting is the record, so that "no Default" does not become a fact someone relies on later.
+
+### Round 239: where the pencil handler must live, chosen to avoid a signature ripple
+
+Writing the wiring needs two things the click handler does not currently have: the **project** (to scan `track.clips` for the owning
+track) and a way to **commit** the op. Both are reachable only through `UndoPort` (`project()` at undo.rs:216, `commit_ops` at 259), and
+the port is not in the builder - it arrives later via `wire_undo`. Two placements are possible:
+
+**(a) pass the port into `build_main_window_with_console_tab`.** Clean in the abstract, but it changes a signature with callers in
+`main.rs` and in the UI test targets - the ripple that has already cost this session CI rounds twice (rounds 185 and 192), for a
+function that does not otherwise need the port.
+
+**(b) handle the click inside `wire_undo(ui, port)`.** That function already has the port, already re-projects from it in
+`refresh_undo`, and the two values the handler also needs are obtainable without new state: the scroll offset is already a property on
+MainWindow (`roll-scroll-x`, round 456 - added exactly so paths outside the builder could read it), and the view comes from
+`ViewState::from_project(&port.project())`, the same call `refresh_undo` already makes.
+
+**Chosen: (b).** It adds no parameter to anything, it puts the edit next to the code that already owns the undo semantics, and it uses
+`roll-scroll-x` for the purpose it was introduced for - which is a small confirmation that the round-456 decision was the right shape.
+
+**What the handler will do, in order**, once written: read `roll-scroll-x` and the window width; project from the port; compute the
+clicked tick with `snapped_tick_at`; resolve the clip via `clip_at_tick` over every track's placements; resolve the owning track from
+the same scan; **refuse with a visible message** when either resolution fails (rounds 234/237); otherwise build `plan_to_add_note`,
+call `commit_ops(now_ms, "pencil: add note", vec![op])` with the `SystemTime::now()` milliseconds decided in round 234, and re-project
+so the new note appears.
+
+**Not started**, and the reason is the same as round 232's: this is the first UI change that MUTATES THE MODEL, so it wants a full
+verification budget - including a UI-level criterion that clicks, asserts the note count rose by exactly one and that the edit is
+visible to undo - rather than whatever is left at the end of a long session. The design above is the part that costs nothing to hand
+over.
