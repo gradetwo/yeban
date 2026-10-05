@@ -1765,3 +1765,27 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   证据链短一环就是"部分"，**哪怕东西确实已经在跑**。把"部分"写成"已完成"会污染整张表，
   而这张表现在是 46 项阶段要求的唯一事实源。
 
+### 第 21 轮：为"三方对齐表"先做**独立地面真值**（抓到一条硬错位：撤销无人能调）
+
+为了能**独立复核**那张三方对齐表（而不是"表里写着有就算有"），我先自己把两个协议面的**地面真值**建起来：
+- **10 个 MCP 工具**在源码里**全部存在**（`query_project`/`open_project`/`save_project`/`set_macro`/`render_master`
+  在 `dispatch.rs` 里有字面量；`close_project`/`edit_notes`/`propose_section`/`merge_proposal`/`reject_proposal`
+  经**枚举 serde 名**分派 ⇒ 字面量不在 `dispatch.rs`，**这不代表缺失**）；
+- **14 个 `ui/*` 方法**在 `service.rs`/`methods.rs` 里**全部有 handler**。
+⇒ 结论：**错位不在"协议接线"，而在"能力覆盖"**（系统能做、面上碰不到）。这个区分很重要 ——
+否则那张表会被一堆"看起来缺了其实只是分派方式不同"的假缺口淹没。
+
+**抓到的一条硬错位（撤销/重做）**：
+- **系统 = 有且完整**：`ops.rs` 的 `apply_inverse`/`structural_inverse`（10 处）、`commit.rs` 的提交图（9 处），
+  且 `BASELINE-004` 专门测了单步撤销时延（p99 0.084–1.834 µs）；
+- **UI = 只有展示**：`ui/dialogs/undo_tree_modal.slint` 的**唯一 callback 是 `close`**（元素已登记、
+  状态位也在），**没有任何地方真的执行撤销**；
+- **MCP = 无**：`tools.rs` 与 `mcp-tools.schema.json` 里 `undo|redo` **0 命中**；`ui-mcp` 的 `methods.rs` 也是 **0**；
+- **最硬的一条证据**：`grep -rn 'apply_inverse' crates/ --include='*.rs' | grep -v tests` 剩下的**全部是测试** ——
+  我核对了 `yeban-mcp/src/domain/mod.rs:2060` 那处，该文件 `#[cfg(test)]` 从 **1634 行**开始 ⇒ **它在测试模块内**。
+  ⇒ **生产代码里没有任何一条路径会执行撤销**。
+
+**这条的意义**：它不是"没做"，而是**做了、判据齐、却没有任何界面或协议能调用** ——
+正是那张表要暴露的那一类错位。已把完整证据交给 `line/feature-alignment` 进表，并建议开一条后续线
+**同时**接 UI（弹窗真的触发撤销）与 MCP（工具/方法），状态记 PENDING 待排期。
+
