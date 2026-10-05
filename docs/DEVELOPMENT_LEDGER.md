@@ -5957,3 +5957,27 @@ statement I make about recent commits must say "locally verified" rather than "v
 (a) keep producing locally-verified work, (b) keep reading back whatever verdicts do appear, and (c) tell the负责人 that the cause is
 outside my reach - which is what this entry does. Guessing "it is probably the spending limit" would be exactly the class of unfounded
 claim this session has recorded nine times.
+
+### Round 243: step 2 needs three things in one place, and they live in three different places today
+
+Trying to start the wiring made its shape concrete, and the shape is the problem: the pencil handler needs **three** things at once.
+
+| needed | where it lives now |
+| :--- | :--- |
+| the **active tool** (to act only for the pencil) | pressed-digit handling exists in `input.rs` (`Key::Digit(digit) => Tool::from_digit(digit)`, line ~416) but `InputContext` exposes only accessors (`focus()`, `is_composing()`) - the tool state is not among the fields this session has read |
+| the **port** (for `project()` and `commit_ops`) | `wire_undo(ui, &Rc<UndoPort>)`, called from `main.rs:199` |
+| the **scroll offset and view** | `roll-scroll-x` on MainWindow (round 456) and `ViewState::from_project(&port.project())` - both reachable from the port |
+
+**Round 239's choice of `wire_undo` is therefore not quite enough**: it has the port and can get the scroll and the view, but not the
+active tool, so it cannot decide whether the click is a pencil action.
+
+**The design that does work**: a NEW wire function that takes both the port and the input context -
+`wire_roll_edit(ui, &Rc<UndoPort>, &Rc<RefCell<InputContext>>)` - registered from `main.rs`, where both already exist (the input
+context is created at `main.rs:196`, the port is wired at 199). That is additive: no existing signature changes, which is the whole
+reason round 239 rejected passing the port into the builder.
+
+**What is still missing before it can be written**: one read - where the active tool actually lives and how it is read back (a
+`.slint` property, a field on a state struct, or the input context's private state behind an accessor). I have now found one more
+reachability requirement in each of the last three rounds, so the honest statement is that **step 2 is a multi-round change**, not a
+next-round one: it touches input state, the undo port, the projection and a UI criterion, and each of the four has needed its own read
+first. Being explicit about that is better than three more rounds of "nearly ready".
