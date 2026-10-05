@@ -7798,3 +7798,22 @@ assertions read**, which in this codebase means the demo fixtures and the consta
 for `crate::` references) rather than discover it one error at a time.
 
 **Status**: tree green and clean; the mapping move is one constant away; CI green; `yeban-midi` holds `midi` and `vlq`; MCP tool still owed.
+
+
+### Round 319: `DEMO_NOTES` is defined INSIDE the test module - and my splitter only carried `#[test]` items
+
+Grepped instead of guessing, and the answer is exact: `DEMO_NOTES` is **not** an app-side constant at all. It is declared **inside the test module itself**
+(`crates/yeban-app/src/export_midi.rs:340`, `const DEMO_NOTES: [(u64, u8); 6]`), and the domain tests assert against it. My splitter walked the test
+module block by block starting at each `#[test]`, so it carried the test functions and **left the constant behind**.
+
+**So the last defect is in my splitter, not in the code**: a test module's **non-test items** (constants, helpers, small fixtures) that its tests read must
+travel with the tests that read them. The fix is to carry the module's leading non-`#[test]` items along with the domain tests on the shared side - or,
+more simply, to move the **whole test module** except the two writer tests, which is what the classification already implies.
+
+**This closes the diagnosis chain of the mapping move**, and the chain is worth reading as a whole because each link was found by a tool rather than
+reasoned about: multi-line `use` blocks (303), a sibling module `vlq` (305), the app-coupled tests (310), the fixture (312), its helpers (313-314), the
+duplicate helper (316), the import each target needs (317), the fixture path (318), and now the test module's own constants (319). The move is not hard;
+it has a **dependency closure**, and the compiler enumerates it one name per attempt - which is why computing that closure up front (grep the tests for
+`crate::` references and for local `const`/`fn` declarations) is the efficient way to finish it.
+
+**Status**: tree green and clean; the mapping move needs one splitter fix; CI green; `yeban-midi` holds `midi` and `vlq`; MCP tool still owed.
