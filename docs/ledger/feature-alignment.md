@@ -1,4 +1,4 @@
-# 三方对齐矩阵（系统 / UI / MCP，66 行）
+# 三方对齐矩阵（系统 / UI / MCP，67 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 UI 侧暴露了没有、在 MCP 侧暴露了没有，三者错位在哪、为什么、谁来补、什么时候补"**。
@@ -30,13 +30,13 @@
 - 判定顺序：`计划` 或三侧全空 ⇒ **仅计划**；`系统=无` 且任一侧暴露 ⇒ **UI 或 MCP 独有**；
   `系统有` 且两侧都暴露 ⇒ **三方齐全**；只有 UI 暴露 ⇒ **系统+UI**；只有 MCP 暴露 ⇒ **系统+MCP**；否则 ⇒ **仅系统**。
 
-- 三方齐全：22 行
+- 三方齐全：23 行
 - 系统+UI（MCP 无）：8 行
 - 系统+MCP（UI 无）：13 行
 - 仅系统：10 行
 - 仅计划（系统也未实现）：7 行
 - UI 或 MCP 独有（系统没有）：6 行
-- **合计：66 行**
+- **合计：67 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -100,6 +100,7 @@
 | 功能 | 系统（实现/计划 + 证据） | UI 暴露（有/无 + 载体） | MCP 暴露（有/无 + 工具·参数） | 缺口：原因 / 计划 / 状态 |
 | :--- | :--- | :--- | :--- | :--- |
 | 参数自动化平滑（`ARCH-DSP-001`，τ≈5ms 一阶低通 + 吸附） | 部分｜原语已实现 `crates/yeban-dsp/src/smoothing.rs`（`ParamSmoother`）；音频路径**无消费者**（`grep -rn "ParamSmoother" crates/*/src` 除该文件外命中 0）；`docs/ledger/phase-status.md` §4 `ROAD-M2-006` 引 `D44①`"参数平滑仍未实现"；自动化**录制**（`OpOrigin::AutomationRecord` 在 `crates/yeban-model/src/ops.rs:48`）无写入路径 | 无｜无平滑时间常数相关控件（自动化泳道的写模式角标只显示模式） | 无｜十个工具都没有自动化面；`yeban_set_macro`（`trackId`/`macroIndex`/`value`）只写目标值，不暴露平滑参数 | 原因：设备链参数求值接口未落地（`docs/ledger/mcp-render-notes.md` needs-3）；计划：engine 线出参数求值 / 自动化曲线求值接口；状态：PENDING |
+| 撤销 / 重做（`yeban_undo` / `yeban_redo` + UI 入口） | 已实现｜`crates/yeban-model/src/commit.rs:505,523`（`undo` / `undo_with`，**生产代码**）+ `ops.rs` 的逆操作原语；`BASELINE-004` 有单步撤销时延判据（p99 0.084 µs）；游标属 `MODEL-ISO-001` 的**会话运行态**（`SessionRuntimeState::undo_cursor`，**不落盘**） | 有｜`crates/yeban-app/src/undo.rs` + `ui/dialogs/undo_tree_modal.slint` 的动作 + `Cmd+Z` 派发（D45 接线） | 有｜`yeban_undo` / `yeban_redo`（`schemas/mcp-tools.schema.json` 已登记；共用 `crates/yeban-mcp/src/undo_session.rs` 的**同一份**实现，含 `dryRun`） | 原因：此前**模型有生产级实现、域外零调用者**（`UndoCursor` 只在 `yeban-model` 内出现；UI 弹窗唯一 callback 是 `close`；MCP/ui-mcp 里 `undo` / `redo` 0 命中）；计划：已由 `ADR-0001 D45` 裁决「UI+MCP 两侧同接、共用同一实现」并由本线落地；状态：三方齐全 |
 | 自动化泳道（多泳道 + 曲线 + 单位轴标签） | 已实现｜`crates/yeban-model/src/automation.rs`；接线在 `crates/yeban-app/src/automation.rs`（`project_lanes_at_cursor`） | 有｜`crates/yeban-app/ui/workspace/arrangement_view.slint:53-72`（9 个平行数组由 `src/automation.rs` 单一事实源派生）+ `crates/yeban-app/src/elements.rs:503` 的 `track-{i}-automation-{key}-lane` | 无｜十工具与 `ui/*` 14 条方法都没有自动化泳道的读写面（AI 只能经 `ui/tree` 读到标签文本） | 原因：`schemas/mcp-tools.schema.json` 的 10 个工具**枚举是规范定的**，里面没有自动化工具；计划：**需要人类裁决**是否扩工具集（`HD-*` 报给负责人）；状态：人类决策中 |
 | 宏与级联映射（`MacroMapping`） | 已实现｜`crates/yeban-model/src/ops.rs` 的 `Op::SetMacro` + `crates/yeban-mcp/src/domain/macros.rs` | 无｜`TrackV3::macros` 未进视图（`crates/yeban-app/src/bridge.rs` 无 macros 投影，`docs/ledger/app-mixer-notes.md` §7 #4） | 有｜`yeban_set_macro`（`trackId`/`macroIndex`/`value`） | 原因：UI 侧设备机架仍由演示常量驱动（`crates/yeban-app/ui/console/device_rack.slint` + `scene::DEVICE_NAMES`）；计划：`[UI-NOTE-004]` 设备机架改由 `TrackV3::devices` / `macros` 驱动；状态：PENDING |
 
