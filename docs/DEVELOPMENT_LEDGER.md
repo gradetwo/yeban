@@ -5717,3 +5717,32 @@ and the ledger is where they are visible. The first is the kind of question wort
 under the clicked tick on the current track, and refuse (with a message) when that position has no clip", because refusing is
 recoverable while silently creating a clip is not - but that is a recommendation, not a decision I am taking unilaterally on a
 user-visible behaviour.
+
+### Round 234: I take the clip-target decision under the round-146 delegation (overturnable, recorded)
+
+Round 233 left one question blocking the pencil's wiring: which clip receives a note drawn at the snap grid. Under the负责人's standing
+instruction ("decide what you can yourself; do not block on me; push other work while undecided"), and because the spec does not
+decide it, I am taking it rather than waiting - with the reasoning and the overturn path written down, so it is a decision on the
+record and not a silent assumption.
+
+**Decision**: a pencil-drawn note goes into the clip on the current track that CONTAINS the clicked tick. If the clicked position is
+not inside any clip on that track, the edit is REFUSED with a visible message and no model change.
+
+**Why this one, over the alternatives it beat**:
+- versus "the currently selected clip": the click already carries a position, and ignoring it would place notes in a clip the user
+  did not point at - a surprise that is easy to create and hard to explain;
+- versus "create a clip when none exists": silently materialising a model object from a drawing gesture is the less recoverable
+  behaviour of the two. A refusal is undoable by doing something else; an unwanted clip has to be found and deleted, and it changes
+  the project's structure rather than its content;
+- it also matches the spec's own wording: [UI-NOTE-003] says "draw a note at the snap grid", which presumes a grid that exists
+  inside something - not a grid that creates containers.
+
+**Cost of the decision, stated as the ADR practice requires**: a user cannot start a new region by drawing, so the first note in an
+empty area needs a clip-creation gesture that does not exist yet. That is a real limitation, and it is the price of never
+materialising structure from a drawing gesture; if the负责人 prefers the other trade, this rule flips in one place (the function
+that resolves the target clip) and the refusal path becomes a creation path.
+
+**`now_ms`**: the second unknown from round 233, decided the same way - use `SystemTime::now()` milliseconds since the epoch,
+consistent with how other commits are timestamped, and record the choice next to the call rather than deriving it silently. A
+monotonic counter would be better for ordering two edits inside one millisecond, but no existing code path does that and inventing a
+second time source is the larger risk.
