@@ -4854,3 +4854,36 @@ offset and gestures), and is not needed to make scrolling truthful.
 **Why this ordering matters**: clipping without an offset draws the visible window at the wrong place once the offset is non-zero
 (the notes are positioned absolutely, so a clipped set starting mid-timeline would render off-screen). Adding the subtraction is
 therefore not cosmetic - it is the part that makes `scroll_x != 0` render correctly rather than merely be measured.
+
+### Round 192: the static-viewport number improved ~18x, and option B was reverted in favour of a simpler design
+
+**The measurement** (run `37353169531` @ `44421ff`, hosted module, corrected long-timeline fixture, clipping consumed, static
+viewport):
+
+```
+BASELINE-003(10万音符) 帧数=600 音符=100000 p50=9.507ms p99=10.244ms max=32.015ms 见证字符数下限=122
+```
+
+Compare with round 182's pre-clipping, crammed-fixture reading: p50 **170.915 ms**, p99 **178.527 ms**. So consuming the clipping
+and fixing the fixture together moved p50 from ~171 ms to **~9.5 ms**, an improvement of roughly **18x**, and p99 now sits at
+**10.244 ms against the 8.3 ms bar** - a factor of 1.23 rather than 21.
+
+**What that number is and is not**: the fixture now spans 24 million ticks, so a 1920px window selects about 1% of the notes, and
+the harness asserts exactly 100 000 notes with a non-empty witness every frame. But it is a **hosted `ubuntu-latest` reading with a
+static viewport**: by the standing rule (`spikes/README.md` line 36, `HD-45`) it cannot decide the gate, and per round 187 the
+spec asks for a SCROLLING scene. It is therefore the shape of the problem, and a strong sign that clipping is the right lever -
+not a pass.
+
+**Option B attempted and reverted.** The three-edit plan from round 191 ran into the component chain: the property has to be
+declared in `PianoRoll`, forwarded by `ConsoleTabs` (console_tabs.slint:149) and by `MainWindow` (app.slint:274/486), and only
+then can the host set it - and `slint_build` rejected my first attempt with "Unknown property scroll-x in ConsoleTabs", the same
+component-boundary trap as round 171. On the Rust side, `set_scroll_x` needs an f32 -> `Length` conversion and neither
+`slint::Length` nor `slint::lengths::LogicalLength` resolved in the budget available.
+
+**The simpler design that replaces it** (mine, and it removes both problems): have the projection return positions **relative to
+the viewport** - i.e. shift by `-scroll_x` inside the clipped result - so the `.slint` needs no scroll property, no forwarding
+chain and no `Length` conversion. `x: Tokens.space-5 + root.note-positions[i]` then stays exactly as written, and the offset lives
+where the clipping already lives. That is also more consistent with the file's own contract, which says the `.slint` does no
+position arithmetic.
+
+I reverted the four touched files and re-verified: `cargo check -p yeban-app --all-targets` = Finished, working tree clean.
