@@ -2432,6 +2432,23 @@ mod tests {
     /// `ticks_per_pixel` 覆盖 **非 2 的幂**（3 / 7 / 30）与极端缩放（1 / 960）：
     /// 这一族数字就是"不许用浮点算位置"的探针（30 与 7 都除不尽）。
     #[test]
+    fn scrolling_never_selects_an_empty_window_across_the_gates_600_frames() {
+        // 门禁用例每帧把滚动推进 `viewport_width/120` px（1 屏/秒）。若某个窗口被裁空,
+        // 那一帧的见证断言（`min_evidence > 0`）会红 —— 这条判据在**投影层**先把它挡掉,
+        // 不必等 27 分钟的 CI 作业。
+        let project = yeban_model::samples::project_with_notes(100_000);
+        let view = ViewState::from_project_with_zoom(&project, 120).expect("投影");
+        let width = 1920.0_f32;
+        for frame in 0..600 {
+            let scroll = frame as f32 * (width / 120.0);
+            assert!(
+                !view.visible_notes(scroll, width).is_empty(),
+                "第 {frame} 帧的窗口被裁空了 (scroll={scroll}) —— 门禁的见证断言会红"
+            );
+        }
+    }
+
+    #[test]
     fn clipping_selects_a_small_fraction_of_the_100k_scene() {
         // 判据: 在**真实滚动场景**下, 1920px 窗口只应选中极小比例的音符。
         // 为什么这条必须有: 第 184 轮发现早先的夹具把 10 万音符挤在约 128px 内 ⇒ 裁剪一个都裁不掉,
