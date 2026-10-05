@@ -7842,3 +7842,26 @@ my tooling (string surgery, span arithmetic, brace counting, item detection) rat
 step 1 removes the machinery that kept breaking.
 
 **Session state**: tree green and clean; CI green; whole-workspace sweep 1788 passed; disk 147 GiB free; everything else recorded in rounds 240-319.
+
+
+### Round 321: whole-module copy works - two cosmetic fixes left
+
+Round 320's step 1 was executed (copy the app's entire test module, then delete the two writer tests from the shared copy - no item detection at all) and it
+reached the finish line with exactly two trivial items:
+
+    error[E0433]: cannot find module or crate `yeban_render` in this scope   --> export.rs:298
+    error: empty lines after doc comment                                      --> export.rs:690
+
+The first is one leftover path inside a moved test (its `yeban_render::...` reference needs the same rewrite the generator applies to the library body - my
+copy step applied the rewrite to the module too, but one occurrence used a different spelling); the second is a doc comment whose following blank line was
+created by deleting a block.
+
+**So the recommended finishing sequence is unchanged and now two lines long**: in the shared copy, rewrite the remaining `yeban_render` path to
+`crate::midi`, and remove the blank line that the two deleted writer tests left after a doc comment; then `cargo fix --lib -p yeban-midi`, regenerate the
+licence inventory, `cargo test -p yeban-app -p yeban-midi --tests`, `run-gates.sh light`.
+
+**What the round confirms about method**: the whole-module copy is the right approach - it produced the largest single step forward (both crates' code
+complete, two cosmetic errors left) precisely because it removed the per-item machinery that had failed a dozen times. The lesson generalises past this
+task: when a mechanical transform keeps failing on ITEM detection, transform the WHOLE container and then delete the exceptions.
+
+**Status**: tree green and clean; mapping move two lines from done; CI green; yeban-midi holds midi and vlq; MCP tool still owed.
