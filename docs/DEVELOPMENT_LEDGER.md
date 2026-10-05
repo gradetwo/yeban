@@ -3330,3 +3330,27 @@ work anyway, is a losing trade.
 **Deliberately not done**: option 1 changes a public default's performance behaviour, which is a product decision rather than
 a cleanup; and my remaining context cannot carry the redesign in option 3 safely. The measurement plus this attribution is
 what makes the decision cheap for whoever takes it - which is the point of writing it down.
+
+### Round 118: correcting my own tool-count error, and turning the D46 expansion into a criterion
+
+While cross-checking the ledgers against the binary I caught a mistake of mine. I had written "12 contract tools" into the
+ledger and put `assert!(tools.len() >= 12, ...)` into the stdio test. The actual count is **15**, verified twice:
+
+```
+第 1 次: 15 个      第 2 次: 15 个
+yeban_open_project yeban_save_project yeban_close_project yeban_query_project yeban_propose_section yeban_edit_notes
+yeban_set_macro yeban_render_master yeban_merge_proposal yeban_reject_proposal yeban_undo yeban_redo
+yeban_edit_automation yeban_query_engine_state yeban_import_audio
+```
+
+The last three are exactly the **D46 expansion** tools, so the ledger's "10 -> 15" claim was right all along and my "12" was
+the outlier. Most likely cause: I read a truncated pipe (`head`/`tail`) during an early manual run and then trusted my own
+note instead of re-measuring - the same "trusting a remembered number" failure this ledger logs repeatedly, this time about
+my own output.
+
+**Fix, in two parts.** (1) The test now asserts `>= 15` with a comment recording that the earlier `>= 12` came from my
+miscount. (2) It also spot-checks the three D46 tools (`yeban_edit_automation`, `yeban_query_engine_state`,
+`yeban_import_audio`), which converts "the expansion landed" from a **ledger claim** into a **criterion**: removing any of
+those tools now fails the stdio end-to-end suite rather than only contradicting a document.
+
+`cargo-local.sh test -p yeban-mcp --test stdio_e2e` = 5 passed after the change.

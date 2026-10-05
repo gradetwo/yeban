@@ -5,7 +5,7 @@
 //! **不是**「一个真实的 MCP 客户端通过 stdio 与它对话」。
 //!
 //! 四层, 每层都有一条会红的断言:
-//! 1. `tools_list_over_stdio_is_real` —— 真进程、真 stdout 上取到工具数组(≥12), 且点名工具在场;
+//! 1. `tools_list_over_stdio_is_real` —— 真进程、真 stdout 上取到工具数组(**≥15**), 且点名工具在场;
 //! 2. `open_then_query_over_stdio_succeeds` —— 写一份**真容器**工程, 经 stdio 打开并查询, 断言 `status=success` + `data`;
 //! 3. `unknown_path_is_refused_has_teeth` —— 路径不存在时必须得到 `FILE_NOT_FOUND`(判据有牙: 否则 2 可能是假绿);
 //! 4. `initialize_is_not_implemented_yet` —— **故意**的负向断言, 记录仍然存在的缺口: 二进制 dispatch 不实现 MCP 握手
@@ -80,9 +80,19 @@ fn tools_list_over_stdio_is_real() {
     let r = res.first().expect("至少一行响应");
     assert_eq!(r["id"], 2, "响应必须回显请求 id: {r}");
     let tools = r["result"]["tools"].as_array().expect("tools 必须是数组");
-    assert!(tools.len() >= 12, "契约工具应 ≥12 个, 实际 {}", tools.len());
+    // 15 = D46 扩张后的契约工具数（账本记 10 → 15）。此前的 `>= 12` 是**我数错**的结果：
+    // 我早先手工跑时读到 12（截断的管道输出），而实测两次都是 15 —— 见账本第 118 轮的更正。
+    assert!(tools.len() >= 15, "契约工具应 ≥15 个, 实际 {}", tools.len());
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    for want in ["yeban_open_project", "yeban_query_project", "yeban_undo"] {
+    // D46 扩张进来的三个（编辑自动化 / 引擎状态 / 音频导入）也点名，让"扩张已落地"成为判据而非台账声明。
+    for want in [
+        "yeban_open_project",
+        "yeban_query_project",
+        "yeban_undo",
+        "yeban_edit_automation",
+        "yeban_query_engine_state",
+        "yeban_import_audio",
+    ] {
         assert!(
             names.contains(&want),
             "工具 {want} 不在 tools/list 里: {names:?}"
