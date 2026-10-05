@@ -6823,3 +6823,25 @@ immediately after CI resumes with no further decisions needed.
 
 **This is the third time this session that checking a claimed cost changed how the work should be sequenced** (rounds 271 and 273 were the
 others); the habit is cheap and the corrections have all been in the direction of doing less, sooner.
+
+### Round 277: the CI backlog is deepening, not merely stalled - forty queued, zero started in 35 minutes
+
+Round 241 measured the stall (12 queued, 0 in progress, oldest 8 minutes). Re-measured now, and the number has grown rather than cleared:
+
+| metric | round 241 (19:40Z) | now (20:19Z) |
+| :--- | :--- | :--- |
+| queued runs | 12 | **40** (the whole 40-item window) |
+| in progress | 0 | **0** |
+| oldest queued, within the window | 8.3 min | **35.5 min** (created 19:44:18Z; the 19:31 batch has since fallen outside the window) |
+
+**So this is not a slow drain - it is a stopped drain with an accumulating queue.** Every commit since verdict 31 is stacked in it, which is
+why the practical situation is unchanged: nothing can be verified by the project's standard until starts resume, and pushing more has no
+effect in either direction.
+
+**What the trend adds to the earlier reading**: the natural assumption on first seeing a queue is "it will catch up". Forty runs and zero
+starts in thirty-five minutes is the evidence that it will not, and it justifies the decision taken several rounds ago - stop pushing, keep
+the work locally verified, and record rather than guess at the cause. The earlier measurements said this; the trend makes it conclusive.
+
+**Unchanged and worth repeating once**: repository Actions is verifiably enabled (`allowed_actions: "all"`), and the billing endpoints answer
+410/404 to this token, so the cause is outside what this session can observe or change. The four rulings still outstanding are the CI stall
+itself, HD-49, N2's shape, and the two MCP architectural questions.
