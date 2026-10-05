@@ -8144,3 +8144,30 @@ plus its two writer tests. Both sides' contents and the public surface are enume
 
 **Status**: tree green and clean; all CI verdicts green through `f7a664d`'s predecessor `40fc9f3`; the loudness item is CI-verified; the mapping move is fully
 specified; the MCP export tool follows it.
+
+
+### Round 335: the Path/PathBuf contradiction resolved - and it was the last unknown of the move
+
+Measured the actual uses instead of reasoning about the diagnostic, and the answer is clean:
+
+| line | use | side it belongs to |
+| :--- | :--- | :--- |
+| `:54` | `use std::path::{Path, PathBuf};` | **both** |
+| `:75` | `pub path: PathBuf` — a field of `MidiExportReport` | **shared** (`MidiExportReport` moves) |
+| `:312` | `path: impl AsRef<Path>` — parameter of `export_project_to_file` | **app** (the writer stays) |
+| `:332` | `use std::path::PathBuf;` inside the test module | **app** (with `scratch_dir`) |
+| `:353` | `fn scratch_dir(tag: &str) -> PathBuf` | **app** |
+
+**So the shared file needs `PathBuf` (not "unused"!), and the app needs `Path` plus `PathBuf` for its own tests.** Round 325's "unused import: PathBuf" diagnostic belonged to
+a mid-transform state, not to the finished split - which is exactly why round 326's removal broke `export.rs:70`. The contradiction between those two rounds is
+now explained by measurement rather than argued away, and it was the last genuinely open question about the move's contents:
+
+**Final contents of the move, complete**:
+* **shared** (`yeban-midi/src/export.rs`): the mapping, `MidiExportReport` (`PathBuf` field), the domain error variants, `deny`/`tempo_map`/`smf_ppq`/
+  `denominator_pow2`/`track_notes`, imports from `crate::midi` and `use std::path::PathBuf`, plus the eleven domain tests and the module-level items they read.
+* **app** (`yeban-app/src/export_midi.rs`): the three public items the CLI uses (`MidiExportError` with `Export`/`Encode`/`Save`, a re-export of
+  `MidiExportReport`, and `export_project_to_file`), `use std::path::{Path, PathBuf}`, `use crate::save::{SaveError, write_file_atomically}`, the two writer
+  tests and `scratch_dir`.
+
+**Status**: tree green and clean; CI green through `f7a664d`; the loudness item is CI-verified; the mapping move now has **no unknown at all** - contents, imports,
+test split and public surface are all measured.
