@@ -292,9 +292,20 @@ jobs:
             echo "### BASELINE-002 峰值常驻内存（目标 ≤ 35 MB）"
             echo
             echo '```text'
-            # ① 主程序：加载演示工程后的峰值 RSS（托管 runner 上只能给**数量级**）
-            python3 scripts/gates/measure_rss.py --label app-headless-demo --timeout 300 -- \
-              cargo run --release -p yeban-app --locked -- --headless 2>&1 | tee -a /tmp/bench.log
+            # ① 进程地板：**空**工程 + 零 Slint 对象（--headless 不构造 MainWindow）
+            python3 scripts/gates/measure_rss.py --label app-empty-headless --timeout 300 -- \
+              cargo run --release -p yeban-app --locked -- --headless --project-sample empty 2>&1 | tee -a /tmp/bench.log
+            # ② **规范所指的对象**：空工程 + 真 MainWindow（逐行光栅化一帧）后空闲 5 秒
+            #    —— 这才是「空工程空闲常驻内存」的读数；--headless 那条只是地板
+            python3 scripts/gates/measure_rss.py --label app-empty-headless-idle --timeout 300 -- \
+              cargo run --release -p yeban-app --locked -- --headless-idle --idle-seconds 5 --project-sample empty 2>&1 | tee -a /tmp/bench.log
+            # ③ 对照：6 轨演示工程（证明读数**随对象变化**，不是常数/仪器地板）
+            python3 scripts/gates/measure_rss.py --label app-demo-headless-idle --timeout 300 -- \
+              cargo run --release -p yeban-app --locked -- --headless-idle --idle-seconds 5 --project-sample default 2>&1 | tee -a /tmp/bench.log
+            # ④ 见证：证明 ② 真的建了控件树（不是空转）—— 抄进 step summary 供人读
+            echo "--- 见证（windows/rendered/pixels/colors/elements） ---"
+            cargo run --release -p yeban-app --locked -- --headless-idle --idle-seconds 1 --project-sample empty 2>&1 \
+              | grep -E 'headless-idle-witness|view-counts' | tee -a /tmp/bench.log || true
             # ② 模型层参考点：证明"模型本身的开销"远小于门禁阈值（对照用，不是达标依据）
             python3 scripts/gates/measure_rss.py --label model-export-samples --timeout 300 -- \
               cargo run --release -p yeban-model --locked --example export_schema_samples 2>&1 | tee -a /tmp/bench.log
