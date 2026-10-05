@@ -5517,3 +5517,21 @@ long session.
 5. **remember the three traps already recorded**: the gutter must stay in the layout (round 217), the six-plus-one arrays must share
    one index set (round 181), and a bounds/lane count duplicated in two places needs a guard (rounds 196/487) - the `note-selected`
    array is a candidate for the same guard once it exists.
+
+### Round 224: verdicts 22-24, recorded as a batch
+
+Three more completed full-workspace successes, read in one pass:
+
+| run @ commit | what it covered |
+| :--- | :--- |
+| `6fbedc0` | the stale-macOS-baseline record (round 220) |
+| `7144632` | the round-221 verdict entry |
+| `c98035b` | the push-rhythm guidance in DEV_WORKFLOW.md (round 222) |
+
+Completed full-workspace verdicts on main now number **twenty-four**. Recording them as a batch rather than one entry each is the
+push-rhythm rule applied to the ledger as well: the entries are bookkeeping, and three single-verdict entries would say the same
+thing three times. What matters is that the queue is being read back, not that each reading gets its own heading.
+
+Still queued or in progress at this point: `855b43d` (hit testing), `6f02dd8` (selection flags), `13e04e5` (selection model),
+`6aac172` (click callback declaration) and `46e1e0a` (the host-wiring recipe). For those five, only the local evidence stands:
+`light`, the `--all-targets` clippy, and 183 passing lib criteria.
