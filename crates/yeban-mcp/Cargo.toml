@@ -26,6 +26,8 @@ default = []
 mcp-http = []
 
 [dependencies]
+# [D56] 诊断包采集器（同一实现的两个入口之一）。
+yeban-engine = { path = "../yeban-engine" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -6381,6 +6381,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "yeban-decode",
+ "yeban-engine",
  "yeban-model",
  "yeban-render",
  "yeban-theory",

@@ -4190,3 +4190,34 @@ That settles every open item from rounds 157-159. The write is:
 
 Then the criteria: required entries present, per-entry sha256 recomputed and matched, and the redaction scan. The UI-side half of
 D56 criterion 4 comes after that, and the tooth test after that.
+
+### Round 162: D56 step 2 wiring attempt - the module compiles, the scripted wiring broke a file and was reverted
+
+State now on disk (committed with this entry): `crates/yeban-mcp/src/domain/diagnostics.rs` exists and compiles, and
+`crates/yeban-mcp/Cargo.toml` gained the `yeban-engine` path dependency that the module needs. **The module is INERT**: `mod
+diagnostics;` was not added, so nothing declares it, nothing calls it, and `yeban_export_diagnostics` is **not** a registered
+tool. This entry says so explicitly so the file cannot be mistaken for working functionality.
+
+What went right, step by step, all verified by the compiler rather than by reading:
+1. the module needed `ErrorCode` from `crate::tools`, not `domain::error` (`E0603`);
+2. `ErrorCode::InternalError` does not exist - the right variant for I/O failure is `ErrorCode::IoError` (`E0599`, three uses);
+3. `yeban-mcp` did **not** depend on `yeban-engine` at all, so the shared collector was unreachable from the MCP side until the
+   path dependency was added.
+
+What went wrong: adding the `Plan::Diagnostics` variant made **four** exhaustive matches on `Plan` fail (`op()`, `commit_delta()`,
+`project_after()`, `describe()` - `E0004` at 662/685/734/808). I then patched all four **with a script** that located
+`project_after`'s end by searching for the first `\n    }\n`, which is not that function's end. The result was a syntax error at
+line 802 plus five type errors, i.e. a broken file.
+
+**I reverted `domain/mod.rs` to HEAD immediately** rather than leaving a broken tree, and re-verified: `cargo check -p
+yeban-mcp` = `Finished` with no diagnostics.
+
+**Lesson, and it is the second time this session**: scripted insertion into a function body is not safe when the end of that
+function is located by pattern. The four arms are individually simple (`op() => "diagnostics"`; `commit_delta() => 0`;
+`project_after() => Ok(None)` **copied from the existing read-only `Query` arm, which the compiler confirmed is `Ok(None)`**;
+`describe() => {}`), but they must be applied with the enclosing function read in full, or one arm at a time with a compile
+after each.
+
+**So D56 step 2 is: module written and compiling, wiring 0 of 5 done, tool not registered, no criteria yet.** The brief in
+`docs/ledger/d56-implementation-brief.md` remains the correct plan, now with the extra knowledge that four `Plan` matches must
+each gain an arm.
