@@ -1916,13 +1916,15 @@ fn propose_section_outputs_track_the_inputs() {
     assert!(!pitches_c.is_empty(), "生成的片段必须带音符");
     assert_eq!(pitches_c.len(), pitches_d.len());
     assert_ne!(pitches_c, pitches_d, "D minor 必须整体移调");
+    // 口径：**等音类移调**（音级 +2）—— 逐音高类相差 2，且相对音程保持不变。
+    // 不是"音级相同"（那是没移调），也不是"绝对音高 +2"（八度折叠会让它不成立）。
     for (index, pitch) in pitches_c.iter().enumerate() {
+        let delta = (u16::from(pitches_d[index]) + 12 - u16::from(*pitch)) % 12;
         assert_eq!(
-            pitch % 12,
-            pitches_d[index] % 12,
-            "移调保音级（第 {index} 音）"
+            delta, 2,
+            "D minor = C minor 整体 +2 半音（第 {index} 音: {pitch} → {}）",
+            pitches_d[index]
         );
-        assert_ne!(pitch, &pitches_d[index], "D minor 不得与 C minor 同音高");
     }
 }
 
