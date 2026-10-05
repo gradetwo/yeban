@@ -5372,3 +5372,15 @@ written are recorded: a doubled-escape regex, and searching app.slint for a loop
 
 **Verdicts**: completed full-workspace successes on main now number **eighteen**; `37359240575` @ `44f7c0d` was still running its
 workspace and windows legs when this was written, and would be the nineteenth.
+
+### Round 216: verdict 19 - the second consolidation entry is green
+
+Run **`37359553995` @ `a2f5b78` = completed success**. It covers the round-214 consolidation, which is the entry that gathers what
+rounds 195-213 changed: the three BASELINE-003口径 gaps, the series-wide scope of HD-49, ROAD-M3-002's landed slices and its three
+remaining gaps, and the decision to leave step 4 unstarted until the口径 is settled.
+
+Also queued or running at the time of writing: `37359778518` @ `187c561` (ADR-0002, queued) and `37359240575` @ `44f7c0d`, which was
+still in progress - an unusually long run, and worth noting as such rather than glossed over: it was dispatched before several later
+commits and its workspace leg may simply be queued behind them. Its conclusion is unread, so nothing is claimed about it.
+
+Completed full-workspace verdicts on main now number **nineteen**.
