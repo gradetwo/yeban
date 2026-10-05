@@ -7438,3 +7438,22 @@ another cause that has since cleared.
 
 **Consequence**: the environment is no longer a constraint, so future attempts at the mapping move can afford the generate-compile-fix loop's
 rebuild costs without watching disk.
+
+
+### Round 302: the pre-flight check worked - it stopped a bad write before it happened
+
+Round 301's decision was to stop generating; the one thing not yet tried was generating **with a check on the generated text before writing it**, so
+attempt 9 added exactly that: before any file is written, assert that each generated file has **balanced braces** and that no `//!` appears after the
+first documentation block. Both preconditions come straight from the eight earlier failures.
+
+The check ran and **refused the write**: `export_midi.rs` was **+1 unbalanced**, so nothing was written, the tree was untouched, and no revert was
+needed. That is a materially different outcome from rounds 289-300, where every attempt reached the compiler and had to be rolled back.
+
+**Why this is worth recording even though the move is still not done**: it converts the failure mode from "the compiler tells me after the tree is
+dirty" into "the generator tells me before the tree changes", and it identifies the defect precisely - `+1`, not "somewhere in 562 lines". The next
+step is therefore well-defined: find the one unmatched brace in the wrapper I build (its block structure is `impl Display { fn fmt { match { } } }`,
+`impl Error {}`, `impl From { fn from { } }`, `fn export_project_to_file { Ok(...) }`), fix it in the generator, and the pre-flight will let the write
+through.
+
+**Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; the mapping layer and the MCP tool remain owed; CI is green through
+`d4262af`.
