@@ -29,7 +29,8 @@
 //! | [`store`] | 工程文件读取、**原子落盘**（临时文件 + `fsync` + `rename`）、`.yeban.lock` |
 //! | [`view`] | `yeban_query_project` 的字段选择器与分页 |
 //! | [`notes`] | `yeban_edit_notes` 的 `NoteOp` → `Op` 编译 + 发声数校验 |
-//! | [`section`] | `yeban_propose_section` 的章节骨架 + 环路判定 |
+//! | [`section`] | `yeban_propose_section` 的**契约适配层**（`BuildFault` → `Fault`、`Op` → JSON） |
+//! | [`section_build`] | `yeban_propose_section` 的**零重依赖**骨架生成器（段落 / 片段池条目 / 摆放 / 声部连接），本机可单独验证 |
 //! | [`macros`] | `yeban_set_macro` 的宏与级联自动化展开 |
 //! | [`proposal`] | 提案记录（Musical PR 的可追溯性） |
 //! | [`render`] | `yeban_render_master` 的参数校验 **+ 真渲染**（`yeban-render` 接线、原子落盘） |
@@ -47,6 +48,7 @@ pub mod render;
 pub mod render_clip_math;
 pub mod render_math;
 pub mod section;
+pub mod section_build;
 pub mod store;
 pub mod view;
 
@@ -678,6 +680,11 @@ impl Plan {
                 );
                 preview.insert("opCount".to_owned(), Value::from(draft.ops.len()));
                 preview.insert("ops".to_owned(), draft_ops_value(draft));
+                // "将要做什么"的**派生**清单（从同一份 `ops` 数出来, 因此不可能漂移）。
+                preview.insert(
+                    "willCreate".to_owned(),
+                    section_build::summarize_ops(&draft.ops),
+                );
             }
             Self::Merge {
                 proposal_id,
@@ -1385,6 +1392,9 @@ fn apply_propose(domain: &mut Domain, draft: ProposalDraft) -> Result<ToolRespon
         "{PROPOSAL_BRANCH_PREFIX}{}",
         proposal_id.to_canonical_string()
     );
+    // "将要新建哪些实体"的派生清单：与 `dryRun` 预览同源（同一个 `summarize_ops`），
+    // 因此"预览说的"与"提交的"不可能漂移。
+    let will_create = section_build::summarize_ops(&draft.ops);
     let stamped: Vec<StampedOp> = draft
         .ops
         .iter()
@@ -1438,14 +1448,33 @@ fn apply_propose(domain: &mut Domain, draft: ProposalDraft) -> Result<ToolRespon
         "projectUnchanged": true,
         "projectDigest": project_digest,
         "unwired": unwired,
+        "willCreate": will_create,
         "proposal": detail,
     })))
 }
 
 /// 提案类工具里**明确没接线**的那部分（如实上报，不藏在错误码后面）。
+///
+/// ## 它是**推导**出来的，不是硬编码的声明
+///
+/// `yeban_propose_section` 曾经在这里写死 `["clipPoolEntries","routingEdges"]`，
+/// 理由是"`Op` 全集没有 `AddClip`/`AddRoutingNode`"。那个理由在 `ADR-0001` **D27**
+/// （`Op` 23 → 27，2026-10-04 追认）之后**已经不成立** —— 写死的声明于是变成了
+/// 一条**过期的自我限制**：Agent 会相信它，然后绕开 `Op` 日志（丢掉撤销语义）。
+///
+/// 现在改成从提案**真实的 `opKinds`** 推导
+/// （[`section_build::unwired_for_section_op_kinds`]）：代码真的生成了片段与声部连接，
+/// 响应就报空；哪一天某条相位被删掉，响应会**自己**把对应的键报回来。
 fn draft_unwired(detail: &Value) -> Vec<&'static str> {
     match detail.get("kind").and_then(Value::as_str) {
-        Some("section") => vec!["clipPoolEntries", "routingEdges"],
+        Some("section") => {
+            let kinds: Vec<&str> = detail
+                .get("opKinds")
+                .and_then(Value::as_array)
+                .map(|kinds| kinds.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            section_build::unwired_for_section_op_kinds(&kinds)
+        }
         _ => Vec::new(),
     }
 }
