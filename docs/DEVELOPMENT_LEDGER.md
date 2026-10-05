@@ -7601,3 +7601,27 @@ exactly one failing site named - the wrapper's imports.
 
 **Session state**: tree green and clean; CI green through `4947ae8`; `yeban-midi` holds the codec and VLQ helper (18 criteria, both platforms);
 mapping layer and MCP tool owed; disk 149 GiB free; whole-workspace sweep 1788 passed.
+
+
+### Round 310: the failing site is fully diagnosed - the app's kept tests are not all writer tests
+
+Attempt 17 persisted the generator as `scripts/dev/extract-midi-mapping.py` (with the pre-flight inside it) so the remaining work is two commands, and
+then read the compiler's output **without truncation** - which is what earlier rounds got wrong. The errors are now unambiguous and all in the **app's
+kept test module**:
+
+| error | cause |
+| :--- | :--- |
+| `no variant named PpqMismatch / NoMidiContent / DanglingClip for enum export_midi::MidiExportError` | those variants live in the **shared** domain error, which moved; the app's enum keeps only `Export`/`Encode`/`Save` |
+| `cannot find function denominator_pow2` | the helper moved to the shared crate with the mapping |
+
+**So the conclusion is not "fix imports" but "the test module must be split"**: the app's tests exercise **both** the domain mapping (variants, helpers)
+and the writer, and only the writer's tests belong beside `export_project_to_file`. The domain tests belong in `yeban-midi` next to the code they test -
+which is the same principle round 288 applied to the note-construction criteria.
+
+**The recipe is therefore now**: run the generator (it passes its own pre-flight and writes the four files), then **move the domain tests into
+`yeban-midi`** and leave the writer's tests in the app, then `cargo test`. The failing site is named, the generator is durable, and the pre-flight
+guards the tree.
+
+**Attempt 17 reverted** so the tree stays green; the generator persists as a committed script, which is the one durable gain of the round.
+
+**Status**: tree green and clean; CI green through `24d6f2d`; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
