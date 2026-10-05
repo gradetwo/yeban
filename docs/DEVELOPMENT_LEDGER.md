@@ -7279,3 +7279,26 @@ time and no broken tree at any point. The revert-on-failure discipline is what k
 differently is the thing round 290 already said: **compile FIRST and fix what the compiler names**, rather than pre-deleting spans and guessing
 which ones are safe - attempts 3 and 4 each did that for the library and then stopped short at the tests, which is one step more of the same
 method applied to the other half of the file.
+
+
+### Round 295: fifth attempt, reverted - and the conclusion is to stop generating splices
+
+Attempt 5 kept the original `use` block in the app wrapper as round 294 prescribed, and failed for a **new** reason: the generated `export.rs` had an
+unbalanced brace at line 59. That is not a defect in the code or in the plan - it is a defect **in my one-shot text splice**, which reconstructed
+import lines, dropped items and re-emitted the body in a single pass with string surgery. A human doing the same move in an editor would never have
+produced it, because the editor would not silently mis-join two import blocks.
+
+**So the conclusion is to stop this approach, not to refine it.** Five attempts (two by line number, two structure-aware, one import-preserving)
+all reverted cleanly, and every failure was in the **mechanics of automated splicing** rather than in the understanding of the split: the design has
+been settled since round 287 and has not needed revision once.
+
+**What the next attempt should be, and it is deliberately dumb**:
+1. `git mv` the file into `yeban-midi/src/export.rs` - no deletions, no splicing;
+2. run `cargo check` and fix the errors **in place, one at a time, with ordinary edits** (the compiler names each: the `crate::save` import, the
+   `Save` variant with its doc, the two `Self::Save` arms, the writer with its doc, and whatever the tests then need);
+3. keep the app's tests where they are by giving the test module its own imports;
+4. add the wrapper and verify.
+
+That is four to six small ordinary edits with a compile between them, which is exactly how the `NotePlan`/`plan_to_add_note` move went in round 261 -
+one item at a time, compiler-guided. The lesson from five failures is not that the move is hard; it is that **bulk text generation is the wrong tool
+for Rust source whose doc comments and imports are load-bearing**, and I reached for it five times.
