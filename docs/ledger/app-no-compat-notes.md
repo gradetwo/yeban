@@ -191,7 +191,7 @@ exit=3
 | 零 Slint 半边单元判据（cli/bridge/scene/elements/input/open/save） | `bash /tmp/app-no-compat-harness/run.sh` | ✅ `RUN_EXIT=0` → **95 passed; 0 failed** |
 | `tests/cli_contract.rs` 12 条，被测进程 = 本机同构探针二进制 | `bash /tmp/app-no-compat-harness/verify.sh` | ✅ `VERIFY_EXIT=0` → **12 passed; 0 failed** |
 | clippy（`-D warnings -D clippy::all`，直接调 `clippy-driver`、不经管道） | 见 `clippy.sh` 的等价直调 | ✅ `CLIPPY_DIRECT_EXIT=0`，零输出 = 零告警 |
-| 门禁 light | `bash scripts/gates/run-gates.sh light` | ✅（见提交信息 / CI） |
+| 门禁 light | `bash scripts/gates/run-gates.sh light` | ✅ `GATES_EXIT=0` → `门禁通过 (mode=light)`（fmt / 红线守卫 / 文档链接 / 依赖许可清单漂移全绿） |
 
 ### 6.2 交给 CI 判（本机**不能**判）
 
@@ -203,9 +203,18 @@ exit=3
 
 ### 6.3 CI 判决
 
-- **pending**：本台账落笔时尚未推送 / 尚未读回。推送后用
-  `bash scripts/dev/ci-verdict.sh line/app-no-compat` 读回，run id 与结论回填到本节
-  （未读回的判决按 `docs/DEV_WORKFLOW.md` §5 记 `pending`，**不写成"通过"**）。
+- **run `37245680897`（branch `line/app-no-compat`，commit `6a43a44`）= ✅ success**（读回方式：
+  `bash scripts/dev/ci-verdict.sh --watch line/app-no-compat`）。逐 job：
+  - ✅ `lockfile`（17s）、✅ `checks`（fmt / 红线守卫 / schema，38s）、✅ `deny`（cargo-deny，45s）、
+    ✅ `plan`（受影响集合，7s）；
+  - ✅ **`rust (yeban-app)`（ID 111563025107，4m6s）** —— 原始日志实测：
+    lib 单元判据 `test result: ok. 110 passed; 0 failed`；
+    `Running tests/cli_contract.rs` ⇒ `test result: ok. 12 passed; 0 failed`
+    （**这就是本线"真二进制退出码 + 反转后的 B10 + 扩容后的 B4"的判据**，
+    本机那一半用的是同构探针，只有这里才是链接后的产物）；
+  - `rust (workspace 全量)` / `windows` 按受影响集合推导 **skip**（0s），符合"只跑受影响集合"。
+- 说明：本线**只推了一次**（代码 + 文档同一提交），因此不存在"连续推送取消上一轮 run"的风险
+  （L23/L26）。
 
 ---
 
@@ -228,6 +237,6 @@ exit=3
 
 ### 7.3 pending
 
-- CI 判决 run id（§6.3）；
+- ~~CI 判决 run id~~ **已读回**：run `37245680897` = ✅ success（见 §6.3）。
 - `docs/ledger/app-cli-notes.md` 里 app-cli 线**历史**的 CI run `37242779089` 与本线无关，
   仅作为那份台账的历史证据保留。
