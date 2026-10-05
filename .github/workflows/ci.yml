@@ -113,13 +113,13 @@ jobs:
           python3 -m pip install --quiet 'jsonschema>=4.24'
           python3 scripts/gates/validate_schemas.py
 
-      - name: 文档契约（链接 / 规范 ID / ID 字典 / 决策清单 / 门禁状态表 / 阶段状态表）
+      - name: 文档契约（链接 / 规范 ID / ID 字典 / 决策清单 / 门禁状态表 / 阶段状态表 / 三方对齐矩阵）
         run: |
           set -euo pipefail
           # 为什么**逐条列出**而不是调用 `run-gates.sh light`: CI 的 checks job 从来只直调脚本
           # （实测 `grep -rn "run-gates" .github/workflows/` = 0 命中）⇒ 新加的守卫**默认不会在 CI 里跑**,
           # 于是"本地绿"与"CI 绿"覆盖的判据不同。这条由 `line/phase-status` 指出, 现在补齐。
-          # 六条都必须**逐个退出码检查**（用 `set -e` 直调; 不要指望 shell 函数返回值替你传递失败 ——
+          # 七条都必须**逐个退出码检查**（用 `set -e` 直调; 不要指望 shell 函数返回值替你传递失败 ——
           # 本地 `run-gates.sh` 就曾在这一点上把三条守卫的失败屏蔽掉）。
           python3 scripts/gates/check_docs_links.py
           python3 scripts/gates/spec_id_audit.py --check
@@ -127,6 +127,9 @@ jobs:
           python3 scripts/gates/check_decisions.py
           python3 scripts/gates/check_gate_status.py
           python3 scripts/gates/check_phase_status.py
+          # 三方对齐矩阵: schemas 的每个 yeban_* 工具与 methods.rs 的每条 ui/* 方法都必须被点名;
+          # 表里不许出现 crates/ 里 grep 不到的名字; 汇总计数必须与逐行统计相等。
+          python3 scripts/gates/check_feature_alignment.py
 
       - name: 依赖许可清单漂移检查
         run: |

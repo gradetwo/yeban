@@ -1745,167 +1745,62 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   3. **CI 的 `checks` job 从不调用 `run-gates.sh`** ⇒ 我新加的守卫**默认不在 CI 里跑**。
      已在 checks job 里逐条直调六条文档契约守卫（`set -e` 下逐个检查退出码）。
 
-### 第 20 轮：把三条"已完成"**主动下调**为"部分"（表格的诚实性高于好看的数字）
 
-- **来源**：`line/phase-status` 自己在表里就标注了"**本行是'已完成'里最弱的一个**"（它把弱点写在行内，
-  没有藏起来——这点值得肯定）。我作为集成者复核后认为：**证据弱于要求 ⇒ 状态必须是"部分"**，
-  所以把那三条从"已完成"下调（并保留原证据，只是把它标记为"不足以支撑已完成"）：
-  1. **`ROAD-M0-008`**：要求 `SoftwareRenderer` 出 **1920×1080 像素级一致** 的 PNG；
-     而仓库里**没有** `tests/golden/` 基准图集（`artifacts/ui/*.png` 是构建产物、已 gitignore）⇒
-     **"与基准一致"从未被断言过**，现在断言的是"非零尺寸 + 非黑 + 控件树可读"。⇒ 部分（缺人类提供的分平台 Golden）。
-  2. **`ROAD-M3-007`**：动态遮罩与"Golden 必须走 Tier-1 软光栅化"的**规则**都在，但同样**没有基准图集** ⇒
-     只有"截图能产出"、没有"与基准比对"。⇒ 部分。
-  3. **`ROAD-M4-002`**：二进制 / stdio / `.yeban.lock` 三件都在，但 `grep -rn 'CARGO_BIN_EXE_yeban-mcp' crates/`
-     **0 命中** ⇒ **没有任何测试 spawn 过这个二进制**；现在验证的是 `serve_lines` 的单元行为，不是
-     "真实 MCP 客户端通过 stdio 与它对话"。⇒ 部分。
-- **汇总同步**：`已完成 14 → 11`、`部分 25 → 28`（Phase 0 1→0、Phase 3 1→0、Phase 4 4→3）。
-  **守卫当场对账通过**（它会把顶部汇总与逐行统计比对）—— 这正是把"数字"交给机械复核的价值：
-  我改了三行却忘了改汇总的话，它会立刻红。
-- **规则（再次确认）**：状态词只有三个，**"已完成"意味着"要求被完整满足且有可复跑证据"**；
-  证据链短一环就是"部分"，**哪怕东西确实已经在跑**。把"部分"写成"已完成"会污染整张表，
-  而这张表现在是 46 项阶段要求的唯一事实源。
 
-### 第 21 轮：为"三方对齐表"先做**独立地面真值**（抓到一条硬错位：撤销无人能调）
+### 第 20 轮：三方对齐矩阵（系统 / UI / MCP）—— `docs/ledger/feature-alignment.md`
 
-为了能**独立复核**那张三方对齐表（而不是"表里写着有就算有"），我先自己把两个协议面的**地面真值**建起来：
-- **10 个 MCP 工具**在源码里**全部存在**（`query_project`/`open_project`/`save_project`/`set_macro`/`render_master`
-  在 `dispatch.rs` 里有字面量；`close_project`/`edit_notes`/`propose_section`/`merge_proposal`/`reject_proposal`
-  经**枚举 serde 名**分派 ⇒ 字面量不在 `dispatch.rs`，**这不代表缺失**）；
-- **14 个 `ui/*` 方法**在 `service.rs`/`methods.rs` 里**全部有 handler**。
-⇒ 结论：**错位不在"协议接线"，而在"能力覆盖"**（系统能做、面上碰不到）。这个区分很重要 ——
-否则那张表会被一堆"看起来缺了其实只是分派方式不同"的假缺口淹没。
-
-**抓到的一条硬错位（撤销/重做）**：
-- **系统 = 有且完整**：`ops.rs` 的 `apply_inverse`/`structural_inverse`（10 处）、`commit.rs` 的提交图（9 处），
-  且 `BASELINE-004` 专门测了单步撤销时延（p99 0.084–1.834 µs）；
-- **UI = 只有展示**：`ui/dialogs/undo_tree_modal.slint` 的**唯一 callback 是 `close`**（元素已登记、
-  状态位也在），**没有任何地方真的执行撤销**；
-- **MCP = 无**：`tools.rs` 与 `mcp-tools.schema.json` 里 `undo|redo` **0 命中**；`ui-mcp` 的 `methods.rs` 也是 **0**；
-- **最硬的一条证据**：`grep -rn 'apply_inverse' crates/ --include='*.rs' | grep -v tests` 剩下的**全部是测试** ——
-  我核对了 `yeban-mcp/src/domain/mod.rs:2060` 那处，该文件 `#[cfg(test)]` 从 **1634 行**开始 ⇒ **它在测试模块内**。
-  ⇒ **生产代码里没有任何一条路径会执行撤销**。
-
-**这条的意义**：它不是"没做"，而是**做了、判据齐、却没有任何界面或协议能调用** ——
-正是那张表要暴露的那一类错位。已把完整证据交给 `line/feature-alignment` 进表，并建议开一条后续线
-**同时**接 UI（弹窗真的触发撤销）与 MCP（工具/方法），状态记 PENDING 待排期。
-
-### 第 23 轮：对齐表的第一条产出 —— 一条**代码级假阻塞**（我独立复核为真）
-
-- `line/feature-alignment` 的草稿（66 行 / 13 组 / + 汇总 + 约定 + **错位清单**）已落盘。它报的**错位 1** 我逐条复核为**真**：
-  · **报告缺口的代码**：`crates/yeban-mcp/src/domain/section.rs:109` 在响应里写
-    `"unwired": ["clipPoolEntries", "routingEdges"]`，模块头（`:8-16`）还断言"没有 `AddClip`/`AddRoutingNode` 等变体"；
-  · **反证**：`crates/yeban-model/src/ops.rs` 里 `AddClip`、`RemoveClip`、`AddRoutingNode`、`RemoveRoutingNode`
-    **四个变体都在**（29 变体中的四个），而 `HD-12`（= `ADR-0001 D27`）已在 **2026-10-04 追认**。
-  · ⇒ **阻塞理由已经不成立**：这不是"做不了"，而是**代码里留着一句过期的自我否定**。
-- **为什么这类错位比"少个按钮"严重**：
-  ① 规范 §7.2 要求的"声部连接"**至今没产出**，而它本可以产出；
-  ② AI Agent 拿到 `unwired` 会**相信它**，然后绕路（例如直接改工程文件），**绕开 `Op` 日志的撤销语义** ——
-     这与 D43 之前那类"为兼容而保留的假前提"是同一族：**过期的自我限制会主动误导下一个读者**；
-  ③ 台账（`tools-domain-notes.md` / `mcp-render-notes.md`）也停在旧结论上，不点出来下一轮还会有人照它判断。
-- **处置**：新开 `line/propose-section`（`yeban-mcp` 当前空闲）——
-  用 `Op::AddClip` + `Op::AddRoutingNode` 真正生成章节骨架与声部连接，**删掉 `unwired` 上报与模块头的旧假设**，
-  并让判据覆盖"骨架真的被写进工程 + 连接真的存在 + 逆操作可回退"，同一次提交回写那两份台账。
-  这正是"三方对齐表"应有的产出：**它不只是描述现状，而是把"假阻塞"变成一条可执行的修复**。
-
-### 第 24 轮：下一波排期（**记录决策，不抢跑**）
-
-现在有两条线在跑（`feature-alignment` 建表+守卫；`propose-section` 拆假阻塞）。下面是我**基于已核实的地面真值**
-排出来的下一波，并写明**为什么现在不开**（抢占队列 / 同文件两写者）：
-
-| 候选线 | 依据（已核实的错位） | 地盘 | 为什么现在不开 |
-| :--- | :--- | :--- | :--- |
-| **`undo-wiring`** | **系统有完整逆操作 + 提交图 + `BASELINE-004` 时延判据，但生产代码里没有任何路径会执行撤销**（`apply_inverse` 在测试之外 0 命中；UI 的 `undo_tree_modal` 唯一 callback 是 `close`；MCP/ui-mcp 里 `undo\|redo` 0 命中） | `yeban-app` + `yeban-mcp` | **`yeban-mcp` 现在被 `propose-section` 占着** ⇒ 开了就是同文件两写者 |
-| **`transport-engine`** | 走带**只有配置数据**（`TransportConfig`），没有走带引擎（`fn stop` 0 命中）；UI 有控件但后端未接 | `yeban-engine` + `yeban-app` | 引擎空闲、app 空闲，但它**依赖"撤销/走带的会话语义"先定**（`MODEL-ISO-001` 三层状态），否则会造出第二个事实源 |
-| **`recording` / `autosave` / `.als 导出`** | 三条都是 **0 命中**（`struct Recorder`/`fn record`/`autosave`/`export_als`） | 各自 crate | 规范把它们排在更后的阶段（`ARCH-REC-*`/`ARCH-SYS-*`/`ARCH-FMT-002`）⇒ **未到期**，不抢跑 |
-| **`plugins`（VST3/CLAP）** | `services` 10 行 / `vst` 11 行 / `plugin-host` 12 行 —— 规范安排的 **v1.1.0 / v2.0.0** | 三个空壳 crate | **未到期**（规范明确分阶段） |
-
-**排期原则**（与目标里"不允许单点阻塞"配套）：**同一 crate 同时只有一条线**；
-"未到期"的东西不抢先做（那会用假进度污染 `phase-status` 的 PENDING 语义）；
-**每一条线都必须来自一条已核实的错位或缺口**，而不是"看起来该做了"。
-
-### 第 25–26 轮：**等待也是动作**（CI 未周转时不制造队列压力）
-
-- 两轮里 main 的 `8529b31` 长时间处于"排队 → 运行"，我没有推任何东西 —— 按 **L32**，
-  此刻推送会**取消它**、把 main 推回"没有判决"的状态（第 19 轮那次 28 个提交没有判决就是这么来的）。
-  **等待不是空转**：在"唯一判决来源是 CI"的项目里，**保护判决的完整性**本身就是推进的一部分。
-- 最终 `8529b31` = **success**（覆盖：三条"已完成"下调为"部分"、`run-gates.sh` 的守卫屏蔽修复进 CI、
-  `BASELINE-005` 工具就绪、`HD-26/HD-27` 标记落地）。
-- 本轮的自我提醒：我数"对齐表有多少行"时用了 `grep -c '^| \`` ⇒ 得 10，而实际是 **66 行** ——
-  **口径错了，数字就没意义**。已按自己立的规矩作废那个数（"数字要么能被命令复核，要么别写"）。
-
-### 第 27 轮：`line/feature-alignment` 交付 —— **它修正了我的一处证据措辞**（我接受）
-
-- **它对我的修正（成立，我已复核）**：我第 21 轮写"**生产代码里没有任何一条路径会执行撤销**" —— **不准确**。
-  事实是：`crates/yeban-model/src/commit.rs:505` 的 `pub fn undo`、`:523` 的 `pub fn undo_with`
-  都在 `#[cfg(test)]`（`:568`）**之前** ⇒ 它们**是生产代码**；`UndoCursor` 也只在 `yeban-model` 内部出现。
-  ⇒ 准确说法是：**模型里有生产级的撤销实现，但 `yeban-model` 之外零调用者**。
-  **错位判断不变**（UI 只有展示、MCP/ui-mcp 里 `undo|redo` 0 命中），但**证据措辞必须改** ——
-  这正是我要求别人做的事（L31：每一句"已完成/不存在"都要对应一条当场跑过的命令），所以我自己也要照办。
-- **它另外发现的五个错位（每条都带可复核命令）**：
-  1. **`section.rs` 的假阻塞**（同上一条那族）—— 我已开 `line/propose-section` 修；
-  2. **`CARGO_BIN_EXE_yeban-mcp` 0 命中** ⇒ `ROAD-M4-002` 缺"二进制真能被 spawn + stdio"的判据
-     （与我的独立核查一致，且我已把该行下调为"部分"）；
-  3. **零消费者 ×3**：`yeban-render/src/midi.rs` 全仓 0 引用；`yeban-theory` / `yeban-sfz` 无工作区依赖边。
-     后果最具体的是 `yeban-theory`：`domain/section.rs:45` 自己写了 4 行 `STYLE_PRESETS` 常量表，
-     而 `yeban-theory/src/genre.rs` **没人调用** ⇒ **同一语义的第二份实现隐患**（这正是红线纪律要避免的）；
-  4. **回调 9 个全未接线**（`main.rs:141-151` 全指向只打 stderr 的 `trace()`）⇒
-     控件树/截图/`ui/coverage` **四视角看都"有"，点下去不动作**。
-     ⚠ **重要方法论警告**：任何以"控件树里存在某元素"为证据的暴露度统计都会**误判**成"UI 已暴露"；
-  5. **`ui/*` 与 `yeban_*` 功能面几乎不相交**（14 条 `ui/*` 里只有 `force_save`/`switch_main_view` 摸到领域状态）⇒
-     今天的"双 MCP"是**两个互不相识的端点**，`ROAD-M4-008` 的"AI 改模型 ⇒ 界面跟着变"**没有载体**。
-- **顺手修掉三处会让人重复规划的文档漂移**：`app-binding-notes.md` §8#5 与 `app-completion-notes.md` §6#7
-  仍写"自动化曲线未进视图"，而 `arrangement_view.slint` 已有 27 处 `automation` 引用、`elements.rs:503` 已登记每泳道元素 ⇒
-  两处均已更正（保留"当时"表述）；`app-binding-notes.md` §8#1 的"音符仍是索引布局"同样被
-  `bridge.rs:41,791` + `piano_roll.slint` 推翻，一并更正。
-
-### 第 28 轮：把错位 5 从"没有载体"精确成"**只有手动/拉取式载体，没有推送式通知**"
-
-`line/feature-alignment` 的错位 5 说："`ui/*` 与 `yeban_*` 功能面几乎不相交 ⇒ `ROAD-M4-008`
-（'AI 改模型 ⇒ 界面跟着变'）没有载体"。我去查了**载体机制是否存在**，结论比"没有"更精确：
-
-| 机制 | 实测 | 含义 |
-| :--- | :--- | :--- |
-| `notify` / `subscribe` / `changed_since` / `reload_if_changed` | 在 `yeban-mcp` / `yeban-ui-mcp` / `yeban-app` 三个 crate 里 **0 文件命中** | **没有推送式变更通知** |
-| `watch` / `revision` / `generation` | 各 2–3 文件命中（都在**锁/存储**一侧，不是跨端点的变更流） | 有版本/世代概念，但**没有跨端点契约** |
-| `ui/reload_engine` / `admin_reload_engine` | 存在（`engine_host.rs` 是它的落地） | **有手动拉取式载体**：人可以"重建引擎"从而看到最新状态 |
-
-⇒ **精确说法**：`ROAD-M4-008` 今天只有**手动/拉取式载体**（`ui/reload_engine` + 引擎重建时重新读工程），
-**没有推送式通知**（没有"工程被 MCP 改动 ⇒ 界面自动刷新"的机制）。
-**这一条的价值**：它把"缺一个机制"变成"**缺一个可写进规范的跨端点契约**"——
-`revision`/`generation` 已经在存储侧存在，缺的是"**把它暴露成一个端点间可订阅的东西**"。
-⇒ 记为 **PENDING（Phase 4 收口项）**，并作为 `undo-wiring` 之后那一波的候选（它与 `ROAD-M4-001` 同根：
-"双 MCP"要真的成为一个闭环，必须先有"变更如何传播"的契约，而**不是先加工具**）。
-
-### 第 30 轮：为什么"只改文档/守卫"的一轮也会跑全量 CI（**设计如此，但要为排期所用**）
-
-观察到 `line/feature-alignment` 的 `9440bb0`（文档 + 一个守卫脚本 + CI 接线）触发了
-`rust (workspace 全量)` + `windows` 两条重腿。查 `scripts/dev/changed-crates.py` 确认这是**刻意的**：
-`scripts/` 与 `.github/` 在"**影响面 = 全部**"的清单里（`:42,:44`），注释写明理由 ——
-"`workspace_wide = true`，让 CI 退回全量 —— **宁可多跑，不可漏跑**"。
-
-- **结论**：凡改动 `.github/**` 或 `scripts/**`（守卫、门禁、工作流）的提交，**必然**拉着 23 个 crate 跑全量
-  （≈5 分钟）+ windows 腿。这不是浪费，而是**正确的保守**：CI 的行为本身就是被测对象。
-- **对排期的含义（与 L32 合并使用）**：这类"基础设施/守卫"改动应当**攒批**推 ——
-  一条线在一个提交里同时交付"代码 + 守卫 + CI 接线"是**最优**（一次全量覆盖全部）；
-  而把它们拆成三个小提交，会付**三次**全量的钱，还会互相取消（L32）。
-  `feature-alignment` 与 `phase-status` 两条线都做对了这一点（代码+守卫+接线同一提交）。
-
-### 第 31 轮：把"零消费者"错位查清 —— 哪些是**刻意有界**的，哪些是**真闲置**
-
-对齐线报到"零消费者 ×3"（`yeban-render/src/midi.rs`、`yeban-theory`、`yeban-sfz`）。我去逐条查清**性质**，
-因为"没人调用"有两种完全不同的含义：
-
-| 对象 | 实测 | 性质 |
-| :--- | :--- | :--- |
-| `section.rs:45` 的 `STYLE_PRESETS`（4 行本地表） | 其文档**明写**"表的机制是承重的（未知预设必须 `STYLE_NOT_FOUND`），内容是**可替换**的：换成 `yeban-theory`/`yeban-services` 的预设库时**改这一处即可**" | **刻意有界的替换点**（不是无意的重复实现）—— 而且它**主动登记了**替换路径，做法正确 |
-| `yeban-theory`（**7 040 行**） | `grep -rn 'yeban-theory' crates/*/Cargo.toml` ⇒ **只有它自己的 Cargo.toml** ⇒ **零依赖边**；它的公开面是 `GenreRule`/`GenreLibrary` 与 `SOURCE_*` 出处常量 | **真闲置**：一个 7 千行的 crate 没有任何消费者 ⇒ `phase-status` 里与它相关的"已完成"要重新审视（"实现了"不等于"被使用"） |
-| `yeban-render/src/midi.rs` | `yeban_render::midi` 全仓 0 引用 | **真闲置**（导出 MIDI 的能力没有出口） |
-| `yeban-sfz` | 无工作区依赖边 | **真闲置**（引擎只在接口层预留；素材受 `HD-31` 人类决策阻塞） |
-
-- **处置**：已给 `line/propose-section` 一条明确边界 —— **不要**顺手去接 `yeban-theory`
-  （会同时改依赖图与 `Cargo.lock`，超出它的地盘；且 `GenreRule` 的语义与"声部名预设"未必对得上），
-  但**必须**在自己的 notes 里如实写明"骨架仍用本地 4 行表"并把"是否改从 `yeban-theory` 取"作为 **needs** 上交。
-- **新增一条判据思路（记下来，下一波用）**：`IMPLEMENTED_SPEC_IDS` 只证明"实现了"，
-  **不证明"被使用"**。⇒ 将来审计"系统能力"时，"**是否存在依赖边/调用点**"应当与"是否有实现"**分开记**，
-  否则 `phase-status` 会把"写好了但没人用"记成"已完成"。这正是本轮从"零消费者"里学到的东西。
+- **新增** `docs/ledger/feature-alignment.md`（66 行功能）：**"三方暴露"的单一事实源**。
+  一行一个功能，四列回答"系统实现了没有（crate / 文件 / 规范 ID）/ UI 暴露了没有（元素 ID 前缀 / `.slint` / `ui/*` 方法）/ MCP 暴露了没有（工具名 + 参数名）/ 错位的原因·计划·状态"。
+  实测分类：**三方齐全 21 / 系统+UI（MCP 无）8 / 系统+MCP（UI 无）14 / 仅系统 10 / 仅计划 7 / UI 或 MCP 独有 6**。
+- **分工（四张表互不复制）**：本表管**三方暴露**（`feature-alignment.md`）、`gate-status.md` 管**发布门禁**、
+  `phase-status.md` 管**阶段项**、`human-decisions.md` 管**待人类裁决**。某个能力"做到哪一步"本表**不复制**，
+  只引用 `ROAD-*` / `MUST-GATE-*` / `HD-*` 编号。
+- **机械守卫** `scripts/gates/check_feature_alignment.py`（照 `check_gate_status.py` / `check_phase_status.py` 的结构），四条判据：
+  ① **正向完整性**：`schemas/mcp-tools.schema.json` 的每一个 `yeban_*` 工具（10 个）与
+  `crates/yeban-ui-mcp/src/methods.rs` 的每一条 `ui/*` 方法（14 条）都必须被点名；
+  ② **反向硬规则**：表里出现的工具名/方法名必须真的在 `crates/` 里 grep 得到（同 `spec_id_audit.py` 的"不得发明 ID"）；
+  ③ **结构**：每行五列非空、状态词 ∈ 七个允许值、凡"无/部分/计划"的行必须按序写全 `原因：…；计划：…；状态：…`；
+  ④ **汇总对账**：§1 的六类计数与合计必须与逐行统计逐一相等。
+  **注入实测 5 条全部 exit 1 并还原**（md5 前后一致 `3a62df05…`）：删一行、清空一条"无"的原因、
+  发明一个工具名（`yeban_undo`/`yeban_redo`）、只改汇总数字（21→20）、以及删掉唯一点名 `yeban_close_project` 的那一行
+  （证明判据 ① 真的会点名漏掉的工具）。
+- **接入**：`scripts/gates/run-gates.sh` 的 `light` 档（**走 `run`**，不裸调用 —— 裸调用会被后面成功的命令屏蔽）
+  + `.github/workflows/ci.yml` 的 `checks` job（逐条直调、`set -e` 下检查退出码）+ `docs/README.md` 索引一行。
+- **建表过程中发现的错位（每条都有当场可复核的证据）**：
+  1. **撤销/重做：有能力、有判据、零调用者（最严重）**。系统侧完整 —— `crates/yeban-model/src/commit.rs:505`（`CommitGraph::undo`）、
+     `:521`（`undo_with`）、`:533`（`apply_inverse`，在 `#[cfg(test)]`（`commit.rs:568`）**之前** ⇒ 是生产代码），
+     `crates/yeban-model/src/ops.rs:112,954`，时延判据 `BASELINE-004`（p99 **0.084 µs**，`gate-status.md:44`）。
+     但 `grep -rn "UndoCursor" crates/` 只命中 `crates/yeban-model/` 自己 ⇒ **`yeban-model` 之外零调用者**；
+      UI 侧 `crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 的**唯一** callback 是 `close`（只展示，不操作），
+     `main.rs:146` 的快捷键派发未接线；MCP 侧 `tools.rs` 与 `schemas/mcp-tools.schema.json` 里 `undo|redo` **0 命中**，
+     `crates/yeban-ui-mcp/src/methods.rs` 也 0。⇒ 从进度表/门禁表/控件树/覆盖率**四个视角看它都是"有"**，
+     但用户按 `Cmd+Z` 不动作、AI 也没有任何方法撤销一次误操作。**建议新开一条线同时接 UI 与 MCP（共用同一个 `undo_with`）**。
+  2. **`yeban_propose_section` 在为一个已经能表达的能力上报 `unwired`**：`crates/yeban-mcp/src/domain/section.rs:8-16,109-110`
+     仍断言"`Op` 全集没有 `AddClip`/`RemoveClip`/`AddRoutingNode`/`RemoveRoutingNode`"，
+     而 `crates/yeban-model/src/ops.rs:190,197` 等四个变体**已存在**（`HD-12` 已裁决、提交 `4190651` 是 HEAD 祖先）。
+     ⇒ 规范 §7.2 的"声部连接"至今没产出，而阻塞理由**已经不成立**（假阻塞）；台账 `tools-domain-notes.md:55,231` 与
+     `mcp-render-notes.md:325` 也停在旧结论。
+  3. **十个 MCP 工具的"独立进程 + stdio"没有端到端判据**：`grep -rn "CARGO_BIN_EXE_yeban-mcp" crates/` 命中 **0**，
+     而同仓库的 app CLI **有**（`crates/yeban-app/tests/cli_contract.rs:35`）。⇒ `ROAD-M4-002` 的"已完成"不覆盖二进制入口。
+  4. **MIDI 0/1 导出（`crates/yeban-render/src/midi.rs`）零消费者**：`grep -rn "yeban_render::midi\|render::midi" crates/*/src crates/*/tests` 命中 0，
+     界面无导出控件、十工具无 MIDI 导出位 ⇒ **实现了但没有任何出口**（它同时是 `.als` 导出的唯一前置能力）。
+  5. **`yeban-theory` 与 `yeban-sfz` 两个成品 crate 零工作区消费者**：`grep -rn "yeban-theory" crates/*/Cargo.toml Cargo.toml`
+     只命中自身与根清单登记行。后果最具体的是 `yeban-theory`：`crates/yeban-mcp/src/domain/section.rs:45` 自己写了一张 4 行
+     `STYLE_PRESETS` 常量表，而 `crates/yeban-theory/src/genre.rs` 的规则库没人调用 ⇒ **同一语义的第二份实现**隐患。
+  6. **"系统有 + UI 有控件"但回调一律未接线**：`crates/yeban-app/src/main.rs:141-151` 把 9 个回调（走带播放、撤销树、
+     AI 提案采纳/拒绝、声学诊断……）全部指向 `trace()`，后者只打一行 stderr。⇒ 控件树与截图看起来"已暴露"，
+     点下去什么都不发生；任何"以控件树存在为证据"的暴露度统计都会把它判成"有"（本表因此记 `部分` 并点名行号）。
+  7. **`ui/*` 与 `yeban_*` 的功能面几乎不相交**：`crates/yeban-ui-mcp/src/methods.rs` 的 14 条方法里只有
+     `ui/force_save` / `ui/switch_main_view` 摸到领域状态；十工具里没有任何一条能读 UI（依赖方向见
+     `crates/yeban-ui-mcp/Cargo.toml` 的注释）。⇒ 今天的"双 MCP"实际是两个互不相识的端点，
+     `ROAD-M4-008` 的"AI 改模型 → 界面跟着变"没有载体（与 `ROAD-M4-001` 的 app↔`yeban-mcp` 依赖边缺失同一件事）。
+  8. 另有三条**文档级**漂移（不是代码缺陷，但会让人重复规划已完成的工作）：
+     `docs/ledger/app-binding-notes.md` §8 #5 与 `app-completion-notes.md` §6 #7 仍说"自动化曲线未进视图"，
+     而 `crates/yeban-app/ui/workspace/arrangement_view.slint:53-72` + `elements.rs:503` 已经接了
+     （`app-automation-ui-notes.md` §9 needs-2 已请求关闭但未回写）；以及 `app-binding-notes.md` §8 #1 的"音符 tick 位置仍是索引布局"
+     已被 `piano_roll.slint:12-14` 与 `app-completion-notes.md` §7 needs-3 推翻。
+- **本机 vs CI 的严格区分**：以上**全部**是本机在 worktree `feature-alignment`（基线 `92a31c7`）上
+  读代码 / grep / 读台账得到的静态事实；本机**没有**跑任何 `cargo build` / `test` / `clippy`（重依赖交给 CI）。
+  "系统有"的判据是**源码在**（文件/类型/字符串/测试名），不是"CI 上跑绿了"。
+  判决由 `bash scripts/dev/ci-verdict.sh line/feature-alignment` 读回，**未读回之前一律记 `pending`**。
 
