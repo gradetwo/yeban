@@ -20,7 +20,7 @@
     "Apache-2.0"
   ],
   "licence_whitelist_source":   "docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:390 (MUST-GATE-014: 仅限 CC0/CC-BY/MIT)",
-  "licence_whitelist_enforced_by_gate":   false,
+  "licence_whitelist_enforced_by_gate":   true,
   "licence_whitelist_enforcement_note":   "**已知缺口**: scripts/gates/validate_schemas.py 只校验结构 + SHA-256/大小 + 未登记文件, **不读** licence, 也不读根清单的 allowed_licenses(全仓库无任何代码读它们)。实测: 注入一条 license=CC-BY-NC-SA 的 item 后 --repo-assets 依旧绿。补上这条机械判据需要改 scripts/(集成者独占), 见 notes §needs N2。",
   "counts":   {
     "instruments_upstream": 33,

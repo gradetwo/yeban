@@ -1861,3 +1861,32 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 ⇒ 规则：**没有冲突就不要 `--ours`/`--theirs`**；合并后必须让工具的**自检**说话，
 而不是"我跑过 cargo metadata 了"（跑一次成功不等于状态一致 —— 这次第一次跑就"成功"了，因为脚本会顺手改写锁）。
 
+### 第 43 轮：素材登记线落地（D54）+ 我自己修掉一个**红线级的门禁空洞**
+
+`line/samples-attribution`（CI run **37256429601 = success**）按 D54 复用了 `groove` 的登记：
+**登记 30 款**（27 CC0 + 3 CC-BY，从 33 款里过滤掉 CC-BY-NC-SA 非商用 / CC-Sampling-Plus 不在白名单），
+**20 594 个文件**、`items[].optional=true` 的**登记式**入库（仓库只增 **8.5 MB**，**音频字节 0**）。
+**它没有把 30 写成 323**：`323 − 30 = 293` 在清单 `counts`、`ATTRIBUTION.md` §0、根清单**三处一致**。
+
+**它交回一个负结果，我据此修掉了一个红线级空洞（needs N2）**：
+> 注入一条结构合法的 `license: CC-BY-NC-SA`（**非商用**）条目后，`--repo-assets` **仍然 EXIT=0** ——
+> 因为 `grep -c license scripts/gates/validate_schemas.py` = **0**：**全仓没有任何代码读许可字段**。
+> 也就是说：**今天往 `items[]` 塞非商用素材，所有门禁全绿。**
+
+- **我已修**（`scripts/**` 是我的地盘）：`--repo-assets` 现在逐条校验子清单声明的 `licence_whitelist` 与
+  `commercial_usable`，并与**根清单**该 category 的 `allowed_licenses` **交叉对账**（两处声明不能各说各话）；
+  清单里的 `licence_whitelist_enforced_by_gate` 由 `false` 改为 `true`。
+- **注入实测**：塞入 `INJECT-nc`/`CC-BY-NC-SA`/`commercial_usable=false` ⇒ **真实 exit=1**，两条精确点名
+  （"许可 'CC-BY-NC-SA' 不在白名单 [...] 内（红线 2: 许可合规）"、"标了 commercial_usable=false 却仍被登记"）；
+  还原后 `cmp` 逐字节一致、恢复通过。
+  ⚠ **我在这条验证上差点自己骗自己**：第一次我把 `validate_schemas.py ... | tail -3`，`$?` 取到的是 **`tail` 的**退出码，
+  于是"看起来 exit=0"。**这正是 L6 那一族**（把门禁管道给 `tail`）—— 我把它写进规则却在验证自己的修复时又犯了一次。
+- **一条只写在清单里、没人读的白名单等于没有**；同理，`licence_whitelist_enforced_by_gate` 这种"自我声明"
+  必须**真的被门禁读**才有意义（否则它只是一句好听的注释）。
+
+**其余 needs 的处置**：**N1** Unlicense（steel drum）**不入库** —— 规范白名单只写 CC0/CC-BY/MIT，
+扩大白名单属**规范级裁决**，不由我顺手放宽（已记 PENDING）；**N6** `CC-BY-3.0` 确认加入白名单（Salamander Grand Piano
+上游即 CC-BY-3.0 Unported，且它已通过新增的交叉对账）；**N3** 把生成器/校验器从台账附录提升到 `scripts/dev/` +
+可选联网手动档 = 记 PENDING；**N4/N5**（293 款素材来源、分发形态）属人类（`HD-31`）；
+`LEGAL.md:80` 的过期绝对路径按 **D55** 延后到 1.0.0 之后。
+

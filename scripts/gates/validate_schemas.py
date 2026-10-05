@@ -183,6 +183,53 @@ def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
         if not items:
             problems.append(f"{rel(manifest_path)}: items 为空 —— 清单存在但没有登记任何资产")
             continue
+        # ⚠ 许可白名单**必须被机械执行**（needs N2，2026-10-05）。
+        # 实测过这个洞: 往 items[] 里塞一条结构合法的 `CC-BY-NC-SA`（**非商用**）条目,
+        # `--repo-assets` 仍然 EXIT=0 —— 因为当时**全仓没有任何代码读 `license`/`allowed_licenses`**。
+        # 红线 2 是"许可合规", 而一条只写在清单里、没人读的白名单等于没有。
+        # ⇒ 口径: 用**子清单自己声明的** `licence_whitelist` 逐条判, 并要求它与根清单该 category
+        #   的 `allowed_licenses` **一致或为其子集**（两处声明不能各说各话）。
+        whitelist = doc.get("licence_whitelist")
+        if whitelist is not None:
+            # ⚠ 不依赖作用域里的 `root_doc`（它只在处理根清单时被赋值, 子清单轮次可能是 None ——
+            # 第一版就踩了这个坑）。这里**自己加载**根清单, 让校验与调用顺序无关。
+            root_manifest = REPO / "assets" / "manifest.json"
+            root_of_truth = root_doc
+            if not isinstance(root_of_truth, dict) and root_manifest.is_file():
+                try:
+                    root_of_truth = json.loads(root_manifest.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    root_of_truth = None
+            root_lists = {
+                entry.get("category"): entry.get("allowed_licenses")
+                for entry in (root_of_truth or {}).get("sub_manifests", [])
+            }
+            root_allowed = root_lists.get(doc.get("category"))
+            if root_allowed is not None:
+                extra = sorted(set(whitelist) - set(root_allowed))
+                if extra:
+                    problems.append(
+                        f"{rel(manifest_path)}: 子清单的 licence_whitelist 含根清单 "
+                        f"allowed_licenses 之外的许可 {extra} —— 两处声明不一致"
+                    )
+            for item in items:
+                licence = item.get("license") or item.get("licence")
+                if licence is None:
+                    problems.append(
+                        f"{rel(manifest_path)}: 条目 {item.get('id')} 没有声明许可 —— "
+                        "素材没有许可是不能用分发的"
+                    )
+                    continue
+                if licence not in whitelist:
+                    problems.append(
+                        f"{rel(manifest_path)}: 条目 {item.get('id')} 的许可 {licence!r} "
+                        f"不在白名单 {whitelist} 内（红线 2: 许可合规）"
+                    )
+                if item.get("commercial_usable") is False:
+                    problems.append(
+                        f"{rel(manifest_path)}: 条目 {item.get('id')} 标了 commercial_usable=false "
+                        "却仍被登记为可分发素材"
+                    )
         checked = 0
         optional_missing = 0
         for item in items:
