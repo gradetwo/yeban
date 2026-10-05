@@ -4471,3 +4471,29 @@ callback outward - is possible in Slint but needs `in-out`/forwarding syntax and
 **Lesson**: in a `.slint` file, component boundaries matter more than line proximity. My anchor was the *nearest similar
 widget*, which sat in a different component from the one the Rust side binds. The next reader should grep `^component ` first -
 that one command would have prevented this round.
+
+### Round 172: the D56 UI surface is CI-green - eleventh completed full-workspace verdict
+
+Run **`37342505669` @ `5a1570b` = completed success**:
+
+| leg | verdict |
+| :--- | :--- |
+| **`rust (workspace 全量)`** | **success `steps=10`** - includes the golden comparison, now matching the regenerated Linux baselines |
+| `windows (yeban-mcp / yeban-model)` | success `steps=9` |
+| `checks` / `plan` / `lockfile` / `deny` | success (12 / 5 / 6 / 6) |
+| `rust (${{ matrix.crate }})` | skipped by design |
+
+The sequence for this one is worth keeping: the button changed pixels, the `[UI-MCP-003]` criterion caught it in the workspace leg
+**with equal byte counts on both sides** (proving it compares bytes, not sizes), I regenerated the baselines through the manual
+`goldens` gate that had been built earlier for exactly this case, verified the new manifest against the files three ways
+(5/5 sha256 present, 4 distinct images as expected, 0 identical to the macOS namesakes), and only then did the leg go green.
+
+Completed full-workspace verdicts on main now number **eleven**: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`,
+`37293138132` @ `f859ef6`, `37300697464` @ `2c4d285`, `37305461525` @ `f3a86d2`, `37308086599` @ `8038fdc`,
+`37324066103` @ `dad0cfb`, `37330049671` @ `1cd47a5`, `37338111044` @ `99b4d56`, `37339256381` @ `2be3236`,
+`37342505669` @ `5a1570b`.
+
+**D56 status**: collector, MCP tool (tool 16), schema/contract wiring, criteria 1/2/3/5, the UI action, the UI surface (button,
+callback, forwarding at both instantiation sites, registry entry, host binding) and the regenerated goldens are all done and
+CI-verified. **One item remains**: criterion 4's test - invoke the UI entry point and the MCP tool once each and assert their
+MANIFEST entry lists are equal except for the timestamp and the output path.
