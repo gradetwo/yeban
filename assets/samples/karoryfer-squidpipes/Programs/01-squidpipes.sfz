@@ -1,0 +1,368 @@
+<control>
+label_cc1=Flavor
+label_cc11=Long vol
+label_cc12=Short vol
+label_cc13=Drone
+label_cc14=Enrich
+label_cc15=Detune
+label_cc100=Attack time
+label_cc104=Release time
+label_cc111=Vibrato to pitch
+label_cc112=Vibrato speed
+label_cc114=Vibrato to volume
+label_cc115=Vibrato delay
+label_cc116=Vibrato fade
+label_cc117=Unsteadiness
+label_cc120=Filter cutoff
+label_cc124=Glide time
+label_cc125=Glide xfade
+
+set_cc1=63
+set_cc11=100
+set_cc13=100
+set_cc14=80
+set_cc12=12
+set_cc104=31
+set_cc112=40
+set_cc116=30
+set_cc120=127
+set_cc125=50
+
+
+
+<global>
+//Keyswitches for the drones
+sw_lokey=29
+sw_hikey=42
+sw_default=31
+
+ampeg_release_oncc104=1
+fil_type=lpf_1p
+cutoff=250
+cutoff_oncc120=6000
+bend_down=-2400
+bend_up=2400
+off_mode=normal
+
+//Vibrato and humanization setup
+lfo01_pitch_oncc111=22 //Vibrato LFO
+lfo01_freq=1.4 //Any slower than this sounds really lousy
+lfo01_freq_oncc112=8.6 //faster is just silly
+lfo01_delay_oncc115=0.500
+lfo01_fade_oncc116=0.500
+lfo01_volume_oncc114=6
+
+lfo02_wave=1 //Second LFO to make things wobblier
+lfo02_phase=0
+lfo02_phase_oncc135=1 //Phase randomized
+lfo02_freq=0.01 //Basically no movement at very slow speeds, just randomization
+lfo02_freq_oncc117=1 //Max rate is not very high, so it doesn't sound too obvious
+lfo02_pitch_oncc117=6 //Slight pitch wobbliness
+lfo02_freq_lfo01_oncc117=3 //Affect the rate of the other LFO for unsteady vibrato
+
+lfo03_wave=1 //And a third LFO for secondhand complex wobbliness
+lfo03_phase=0.4
+lfo03_phase_oncc135=0.179 //Different phase response to random than the second LFO
+lfo03_freq=0.5
+lfo03_freq_oncc117=-0.4
+lfo03_freq_lfo2_oncc117=1
+lfo03_pitch_oncc117=-4
+
+eg06_sustain=1 //Pitch envelope setup for legato slides
+eg06_level0=-1
+eg06_time0=0
+eg06_pitch_oncc140=100
+eg06_time1=0
+eg06_level1=0 //When this is 0, the envelope really does nothing
+//eg06_time1_oncc124 needs to be set for the legato regions - but we don't want it on for all regions so the default is 0
+
+//First mappings with default 0 glide time
+
+<master>
+ampeg_attack_oncc100=0.4
+amp_veltrack=0
+amplitude_oncc11=100
+xfout_locc1=80
+trigger=first
+group=1
+off_by=1
+#include "mappings/long_clean.sfz"
+
+<master>
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=-17 //Vibrato LFO less
+amp_veltrack=0
+amplitude_oncc11=100
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=-22
+trigger=first
+group=2
+off_by=2
+#include "mappings/long_clean_t1.sfz"
+
+
+<master>
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=-19 //Vibrato LFO less
+amp_veltrack=0
+amplitude_oncc11=100
+amplitude_oncc14=100
+xfout_locc1=80
+tune_cc15=22
+trigger=first
+group=3
+off_by=3
+#include "mappings/long_clean_t2.sfz"
+
+
+
+<master>
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=0 //Vibrato LFO none
+lfo01_volume_oncc114=-6 //Tremolo LFO reverse
+amp_veltrack=0
+amplitude_oncc11=100
+xfin_locc1=0
+trigger=first
+group=4
+off_by=4
+#include "mappings/long_dirty.sfz"
+
+//Legato mappings with glide times
+
+<master>
+offset=20000
+ampeg_attack_oncc125=0.2
+ampeg_attack_oncc100=0.4
+amp_veltrack=0
+amplitude_oncc11=100
+xfout_locc1=80
+trigger=legato
+eg06_time1_oncc124=0.3
+ampeg_attack_oncc125=0.5
+group=1
+off_by=1
+#include "mappings/long_clean.sfz"
+
+<master>
+offset=20000
+ampeg_attack_oncc125=0.2
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=-17 //Vibrato LFO less
+amp_veltrack=0
+amplitude_oncc11=100
+amplitude_oncc13=100
+xfout_locc1=80
+tune_cc15=-22
+trigger=legato
+eg06_time1_oncc124=0.3
+ampeg_attack_oncc125=0.5
+group=2
+off_by=2
+#include "mappings/long_clean_t1.sfz"
+
+
+<master>
+offset=20000
+ampeg_attack_oncc125=0.2
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=-19 //Vibrato LFO less
+amp_veltrack=0
+amplitude_oncc11=100
+amplitude_oncc13=100
+xfout_locc1=80
+tune_cc15=22
+trigger=legato
+eg06_time1_oncc124=0.3
+ampeg_attack_oncc125=0.5
+group=3
+off_by=3
+#include "mappings/long_clean_t2.sfz"
+
+
+
+<master>
+ampeg_attack_oncc125=0.2
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=0 //Vibrato LFO none
+lfo01_volume_oncc114=-6 //Tremolo LFO reverse
+amp_veltrack=0
+amplitude_oncc11=100
+xfin_locc1=0
+trigger=legato
+ampeg_attack_oncc125=0.5
+group=4
+off_by=4
+#include "mappings/long_dirty.sfz"
+
+//Shorts
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+xfout_locc1=80
+trigger=first
+#include "mappings/short_clean.sfz"
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+amplitude_oncc13=100
+xfout_locc1=80
+tune_cc15=22
+trigger=first
+#include "mappings/short_clean_t1.sfz"
+
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+amplitude_oncc13=100
+xfout_locc1=80
+tune_cc15=22
+trigger=first
+#include "mappings/short_clean_t2.sfz"
+
+
+<master>
+ampeg_attack_oncc100=0.1
+amplitude_oncc12=100
+xfin_locc1=0
+trigger=first
+#include "mappings/short_dirty.sfz"
+
+//Drone regions
+
+<master>
+offset=30000
+offset_random=38543
+ampeg_release=0.5
+ampeg_attack_oncc100=0.4
+pitch_keytrack=0
+amp_veltrack=0
+lfo01_pitch_oncc111=0
+lfo01_volume_oncc114=0
+amplitude_oncc13=100
+xfout_locc1=80
+bend_down=0
+bend_up=0
+group=5
+off_by=5
+lokey=43
+hikey=84
+<region>
+sw_last=29 sample=*silence sw_label=None
+<region>
+sw_last=31 sample=../Samples/long_clean/g4_long_clean.wav sw_label=G
+<region>
+sw_last=32 sample=../Samples/long_clean/ab4_long_clean.wav sw_label=Ab
+<region>
+sw_last=33 sample=../Samples/long_clean/a4_long_clean.wav sw_label=A
+<region>
+sw_last=34 sample=../Samples/long_clean/bb4_long_clean.wav sw_label=Bb
+<region>
+sw_last=35 sample=../Samples/long_clean/b4_long_clean.wav sw_label=B
+<region>
+sw_last=36 sample=../Samples/long_clean/c5_long_clean.wav sw_label=C
+<region>
+sw_last=37 sample=../Samples/long_clean/db5_long_clean.wav sw_label=Db
+<region>
+sw_last=38 sample=../Samples/long_clean/d5_long_clean.wav sw_label=D
+<region>
+sw_last=39 sample=../Samples/long_clean/eb5_long_clean.wav sw_label=Eb
+<region>
+sw_last=40 sample=../Samples/long_clean/e5_long_clean.wav sw_label=E
+<region>
+sw_last=41 sample=../Samples/long_clean/f5_long_clean.wav sw_label=F
+<region>
+sw_last=42 sample=../Samples/long_clean/gb5_long_clean.wav sw_label=Gb
+
+
+
+
+<master>
+offset=30000
+offset_random=12358
+ampeg_release=0.5
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=0
+lfo01_volume_oncc114=0
+amp_veltrack=0
+pitch_keytrack=0
+amplitude_oncc14=100
+amplitude_oncc13=100
+xfout_locc1=80
+tune_cc15=22
+group=7
+off_by=7
+lokey=43
+hikey=84
+transpose=1
+<region>
+sw_last=31 transpose=2 sample=../Samples/long_clean/a4_long_clean.wav sw_label=G
+<region>
+sw_last=32 sample=../Samples/long_clean/g4_long_clean.wav sw_label=Ab
+<region>
+sw_last=33 sample=../Samples/long_clean/ab4_long_clean.wav sw_label=A
+<region>
+sw_last=34 sample=../Samples/long_clean/a4_long_clean.wav sw_label=Bb
+<region>
+sw_last=35 sample=../Samples/long_clean/bb4_long_clean.wav sw_label=B
+<region>
+sw_last=36 sample=../Samples/long_clean/b4_long_clean.wav sw_label=C
+<region>
+sw_last=37 sample=../Samples/long_clean/c5_long_clean.wav sw_label=Db
+<region>
+sw_last=38 sample=../Samples/long_clean/db5_long_clean.wav sw_label=D
+<region>
+sw_last=39 sample=../Samples/long_clean/d5_long_clean.wav sw_label=Eb
+<region>
+sw_last=40 sample=../Samples/long_clean/eb5_long_clean.wav sw_label=E
+<region>
+sw_last=41 sample=../Samples/long_clean/e5_long_clean.wav sw_label=F
+<region>
+sw_last=42 sample=../Samples/long_clean/f5_long_clean.wav sw_label=Gb
+
+
+
+<master>
+offset_random=45433
+offset=30000
+ampeg_release=0.5
+ampeg_attack_oncc100=0.4
+lfo01_pitch_oncc111=0
+lfo01_volume_oncc114=0
+amp_veltrack=0
+pitch_keytrack=0
+amplitude_oncc13=100
+xfin_locc1=0
+group=8
+off_by=8
+lokey=43
+hikey=84
+transpose=2
+<region>
+sw_last=31 transpose=1 sample=../Samples/long_dirty/ab4_long_dirty.wav sw_label=G
+<region>
+sw_last=32 transpose=1 sample=../Samples/long_dirty/a4_long_dirty.wav sw_label=Ab
+<region>
+sw_last=33 sample=../Samples/long_dirty/g4_long_dirty.wav sw_label=A
+<region>
+sw_last=34 sample=../Samples/long_dirty/ab4_long_dirty.wav sw_label=Bb
+<region>
+sw_last=35 sample=../Samples/long_dirty/a4_long_dirty.wav sw_label=B
+<region>
+sw_last=36 sample=../Samples/long_dirty/bb4_long_dirty.wav sw_label=C
+<region>
+sw_last=37 sample=../Samples/long_dirty/b4_long_dirty.wav sw_label=Db
+<region>
+sw_last=38 sample=../Samples/long_dirty/c5_long_dirty.wav sw_label=D
+<region>
+sw_last=39 sample=../Samples/long_dirty/db5_long_dirty.wav sw_label=Eb
+<region>
+sw_last=40 sample=../Samples/long_dirty/d5_long_dirty.wav sw_label=E
+<region>
+sw_last=41 sample=../Samples/long_dirty/eb5_long_dirty.wav sw_label=F
+<region>
+sw_last=42 sample=../Samples/long_dirty/e5_long_dirty.wav sw_label=Gb
