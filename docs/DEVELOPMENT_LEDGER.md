@@ -4163,3 +4163,30 @@ So adding the sixteenth tool is a **three-file** write with nothing left to disc
 unknown - the registration shape, the counts, the dispatch site, and now the plan/apply split - and none of them produced code.
 I am choosing reconnaissance over writing because my remaining context cannot produce and verify a three-file change, and an
 unverifiable edit violates the standing discipline. If a fresh context takes over, the three files above are the whole task.
+
+### Round 160: D56 step 2 - the last design question answered (archive write belongs in `apply`)
+
+Reading `crates/yeban-mcp/src/domain/import_audio.rs` gives the two-phase contract concretely:
+
+```rust
+pub fn plan(...)   -> ...                    // line 247: 校验 + 组装出一个类型化的"计划"
+pub fn apply(domain: &mut super::Domain, import: &AudioImport) -> Result<ToolResponse, Fault>   // line 471: 真正执行
+```
+
+**Decision**: for `yeban_export_diagnostics`, `plan` performs validation plus assembly (check that the directory argument is
+usable, gather the entries to include: `env.txt`/`git.txt` are produced by the engine collector itself, while
+`engine-state.json`, `config.json`, `logs/`, `crashes/` and `project/` come from the domain), and **`apply` performs the
+archive write**. Rationale: `apply` is where the pipeline puts side effects, and writing a zip is a side effect even though it
+is not a project mutation - which is exactly why the tool's `side_effect` stays `ReadOnly` (it does not touch project state)
+while the write still happens in the phase that is allowed to touch the outside world.
+
+That settles every open item from rounds 157-159. The write is:
+
+| file | change |
+| :--- | :--- |
+| `crates/yeban-mcp/src/tools.rs` | `TOOL_COUNT` 15→16; `EXTENSION_TOOL_COUNT` 5→6; add the name to `EXTENSION_NAMES`; add the `ToolSpec` to `TOOLS` |
+| `crates/yeban-mcp/src/domain/mod.rs` | add the tool to the `plan` match and to the `apply` match |
+| `crates/yeban-mcp/src/domain/diagnostics.rs` (new) | `plan` (validate + assemble) and `apply` (call `yeban_engine::diagnostics::export_diagnostics`, map to `ToolResponse`) |
+
+Then the criteria: required entries present, per-entry sha256 recomputed and matched, and the redaction scan. The UI-side half of
+D56 criterion 4 comes after that, and the tooth test after that.
