@@ -5133,3 +5133,33 @@ gate actually makes, behind the SAME function contract (`notes_visible_in` / `vi
 general 2-D envelope query. When the pitch axis becomes a real viewport dimension (round 202's dependency), the 2-D case returns -
 at which point `rstar` becomes the natural choice and this round's decision should be revisited rather than defended. What is
 gained now is that the query stops being linear without paying a dependency for a shape the data does not yet have.
+
+### Round 204: fourteenth full-workspace verdict - the gesture, the undo fix and the new properties are all CI-green
+
+Run **`37356508209` @ `7f34b57` = completed success**, every leg green:
+
+| leg | verdict |
+| :--- | :--- |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` |
+| **`rust (workspace 全量)`** | **success `steps=10`** |
+| `windows (yeban-mcp / yeban-model)` | success `steps=9` |
+| `plan` / `lockfile` / `deny` | success (5 / 6 / 6) |
+
+What this verdict covers, which is more than one commit: the roll's first input path (the `scroll-requested` callback plus its
+`TouchArea`, round 199/453), the host taking ownership of the offset (round 454), and the **undo no longer resetting the scroll**
+(round 456). Three separate changes that all touch the UI test targets and the goldens, verified in one run.
+
+**The prediction I flagged is confirmed**: when committing `7f34b57` I said no visual change was expected, because
+`roll-scroll-x` has no consumers in the `.slint` and the projection already returns viewport-relative positions. The workspace
+leg's `test --workspace` step passed, so the visual-regression criterion is satisfied - the property really is inert with respect
+to pixels. That is the third prediction in this session whose outcome I recorded either way, and the first of them to come out as
+predicted without qualification.
+
+**One gap carried forward, stated because it is easy to mistake for completion**: the four viewport bound properties
+(`roll-min-tick`, `roll-max-tick`, `roll-min-pitch`, `roll-max-pitch`) are **written** by `apply_view` and **read by nothing**.
+They are outputs of the host, not inputs to it, so the spec's diagram ("viewport properties change, then the culling core reacts")
+is satisfied in the reverse direction: the gesture is the trigger and the host computes the bounds. Making them inputs as well
+would require the zoom/pan UI that does not exist yet; until then, what would genuinely consume them is a criterion asserting the
+published bounds agree with the injected content, which belongs in the UI test target and therefore runs only in CI.
+
+Completed full-workspace verdicts on main now number **fourteen**.
