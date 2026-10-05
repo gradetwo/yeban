@@ -271,6 +271,8 @@ export component MainWindow inherits Window {
     in property <[float]> note-velocities: [];
     // 卷帘音符的位置（x / y / 宽，逻辑像素）—— 由 `start_tick` / `pitch` 整数派生，
     // 见 `src/bridge.rs` 的 `NoteView`（界面不做任何位置算术）。
+    /// `[ROAD-M3-002]` 卷帘滚动手势（由宿主接管并重新注入）。
+    callback scroll-requested(length);
     in property <[length]> note-positions: [];
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
@@ -482,6 +484,7 @@ export component MainWindow inherits Window {
             note-ulids: root.note-ulids;
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
+            scroll-requested(d) => { root.scroll-requested(d); }
             note-ys: root.note-ys;
             note-widths: root.note-widths;
             // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。

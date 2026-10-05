@@ -26,6 +26,8 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> note-ulids: [];
     in property <[float]> note-velocities: [];
     in property <[length]> note-positions: [];
+    // 透传卷帘的滚动手势。
+    callback scroll-requested(length);
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     // 调音台通道条（Tab 2）的**透传**属性 —— 本组件不解释它们：
@@ -147,6 +149,7 @@ export component ConsoleTabs inherits Rectangle {
         note-ulids: root.note-ulids;
         velocities: root.note-velocities;
         note-positions: root.note-positions;
+        scroll-requested(d) => { root.scroll-requested(d); }
         note-ys: root.note-ys;
         note-widths: root.note-widths;
     }

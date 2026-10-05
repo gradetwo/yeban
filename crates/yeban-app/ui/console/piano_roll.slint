@@ -31,6 +31,9 @@ export component PianoRoll inherits Rectangle {
     // —— 音符的**索引**而不是工程的 tick。那条布局已被判据
     // `bridge::slint_text_contracts_for_colors_and_pitch_lanes` 明文禁止。
     in property <[length]> note-positions: [];
+    // `[ROAD-M3-002]` 滚动手势：本组件**只报告增量**, 偏移由宿主拥有并重新注入
+    // （见账本第 199 轮：Flickable 会与宿主拥有的偏移双重计算, 故不用）。
+    callback scroll-requested(length);
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
@@ -232,5 +235,24 @@ export component PianoRoll inherits Rectangle {
         accessible-value-maximum: 9999;
         accessible-value-step: 1;
         accessible-value: "3";
+    }
+
+    // 覆盖泳道的输入面：按住并水平拖动 ⇒ 报告水平增量（向右拖 ⇒ 内容左移 ⇒ 偏移增加）。
+    property <length> drag-last-x: 0px;
+    property <bool> dragging: false;
+    TouchArea {
+        // 本版本 `PointerEvent` **没有** `delta-x`（编译期报 "Cannot access the field 'delta-x'"），
+        // 本版本的 `PointerEvent` 也**没有** `position`，位置只能取 `TouchArea` 自己的 `mouse-x`。用 `last - now` 表示"向右拖 ⇒ 内容左移 ⇒ 偏移增加"。
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.dragging = true;
+                root.drag-last-x = self.mouse-x;
+            } else if event.kind == PointerEventKind.up {
+                root.dragging = false;
+            } else if event.kind == PointerEventKind.move && root.dragging {
+                root.scroll-requested(root.drag-last-x - self.mouse-x);
+                root.drag-last-x = self.mouse-x;
+            }
+        }
     }
 }
