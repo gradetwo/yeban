@@ -42,7 +42,7 @@ use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, WindowFu
 use crate::asset::{DecodeFacts, DecodedAsset, PcmFormat};
 use crate::duration::Reconciliation;
 use crate::error::{DecodeError, DecodeResult};
-use crate::limits::{self, LimitViolation};
+use crate::limits::{self, LimitViolation, PcmBudget};
 
 /// sinc 滤波器抽头数 —— 与上游构造参数里的字面量 `256` 是同一个被钉死的值。
 ///
@@ -67,23 +67,47 @@ pub const MAX_RELATIVE_RATIO: f64 = 1.0;
 /// 见模块文档的延迟语义一节。
 pub const PREFILL_FRAMES: u64 = 0;
 
-/// 把一段交织 `f32` 从 `in_rate` 转换到 `out_rate`。
+/// 把一段交织 `f32` 从 `in_rate` 转换到 `out_rate`（使用[默认预算][PcmBudget::default]）。
+///
+/// 这是给"只做一次转换、不关心预算口径"的调用方（例如 `yeban-mcp` 的
+/// `yeban_render_master`）准备的薄入口：它**不是**兼容层 —— 它走的是同一个
+/// [`PcmBudget`]，只是填默认值，与 `DecodeOptions::default()` 填默认预算是同一件事。
+/// 需要按工程调预算的调用方请用 [`resample_interleaved_with_budget`]。
 ///
 /// 返回值长度满足 [`limits::resample_len_contract`]；`in_rate == out_rate` 时是**恒等**
 /// （原样返回，不做任何滤波），因此"同率转换"是零成本的，也天然确定。
 ///
 /// # Errors
 ///
-/// - 采样率为 0 或超出 [`limits::MAX_SAMPLE_RATE`]；
-/// - `samples.len()` 不是 `channels` 的整数倍；
-/// - 输出会超出 PCM 预算；
-/// - 重采样器构造或处理失败；
-/// - 输出帧数落在长度契约之外（这会是一条真正的实现缺陷）。
+/// 同 [`resample_interleaved_with_budget`]。
 pub fn resample_interleaved(
     samples: &[f32],
     channels: u16,
     in_rate: u32,
     out_rate: u32,
+) -> DecodeResult<Vec<f32>> {
+    resample_interleaved_with_budget(samples, channels, in_rate, out_rate, &PcmBudget::default())
+}
+
+/// 把一段交织 `f32` 从 `in_rate` 转换到 `out_rate`，所有资源上限走 `budget`。
+///
+/// 为什么重采样也要走预算：上采样会让长度翻倍（48k → 192k 是 4×），输出缓冲是**新**
+/// 分配的一份完整 PCM。若这里继续用写死的常量，调用方给 `decode` 的预算就在重采样这一
+/// 步被悄悄绕过 —— `HD-24` 改建后所有使用点必须走同一个 [`PcmBudget`]。
+///
+/// # Errors
+///
+/// - 采样率为 0 或超出 [`PcmBudget::max_sample_rate`]；
+/// - `samples.len()` 不是 `channels` 的整数倍；
+/// - 输出会超出 [`PcmBudget::max_pcm_bytes`] 或 [`PcmBudget::max_duration_secs`]；
+/// - 重采样器构造或处理失败；
+/// - 输出帧数落在长度契约之外（这会是一条真正的实现缺陷）。
+pub fn resample_interleaved_with_budget(
+    samples: &[f32],
+    channels: u16,
+    in_rate: u32,
+    out_rate: u32,
+    budget: &PcmBudget,
 ) -> DecodeResult<Vec<f32>> {
     if channels == 0 {
         return Err(DecodeError::Budget(LimitViolation::ZeroChannels));
@@ -91,10 +115,10 @@ pub fn resample_interleaved(
     if in_rate == 0 || out_rate == 0 {
         return Err(DecodeError::Budget(LimitViolation::ZeroSampleRate));
     }
-    if out_rate > limits::MAX_SAMPLE_RATE || in_rate > limits::MAX_SAMPLE_RATE {
+    if out_rate > budget.max_sample_rate || in_rate > budget.max_sample_rate {
         return Err(DecodeError::Budget(LimitViolation::SampleRateTooHigh {
             rate: in_rate.max(out_rate),
-            limit: limits::MAX_SAMPLE_RATE,
+            limit: budget.max_sample_rate,
         }));
     }
     let channels_usize = usize::from(channels);
@@ -112,9 +136,11 @@ pub fn resample_interleaved(
     }
     let frames_u64 = u64::try_from(frames).unwrap_or(u64::MAX);
 
-    // 恒等路径：不做滤波，逐样本原样返回（位模式完全相同）。
+    // 恒等路径：不做滤波，逐样本原样返回（位模式完全相同）—— 但它**仍然复制一整份
+    // PCM**（`samples.to_vec()`），所以同样要过预算。
     if in_rate == out_rate {
         limits::check_resampled_len(frames_u64, out_rate, in_rate, frames_u64)?;
+        limits::check_layout(channels, out_rate, frames_u64, budget)?;
         return Ok(samples.to_vec());
     }
 
@@ -143,7 +169,7 @@ pub fn resample_interleaved(
         channels,
         out_rate,
         u64::try_from(needed_frames).unwrap_or(u64::MAX),
-        limits::MAX_PCM_BYTES,
+        budget,
     )?;
 
     // `try_reserve` 而不是 `vec![0.0; n]`：分配失败要变成错误，不能 abort。
@@ -200,7 +226,7 @@ pub fn resample_interleaved(
         channels,
         out_rate,
         u64::try_from(produced).unwrap_or(u64::MAX),
-        limits::MAX_PCM_BYTES,
+        budget,
     )?;
 
     Ok(output)
@@ -222,14 +248,31 @@ pub fn resample_interleaved(
 ///
 /// 见 [`resample_interleaved`]。
 pub fn resample_asset(asset: &DecodedAsset, out_rate: u32) -> DecodeResult<DecodedAsset> {
+    resample_asset_with_budget(asset, out_rate, &PcmBudget::default())
+}
+
+/// 把一个解码出的资产整体转换到 `out_rate`，资源上限走 `budget`。
+///
+/// 语义与 [`resample_asset`] 完全一致，只是预算可配置：上采样会把长度放大
+/// （48k → 192k 是 4×），因此转换后的新资产同样必须过 `budget` 的两道长度闸门。
+///
+/// # Errors
+///
+/// 见 [`resample_interleaved_with_budget`]。
+pub fn resample_asset_with_budget(
+    asset: &DecodedAsset,
+    out_rate: u32,
+    budget: &PcmBudget,
+) -> DecodeResult<DecodedAsset> {
     if out_rate == asset.sample_rate() {
         return Ok(asset.clone());
     }
-    let samples = resample_interleaved(
+    let samples = resample_interleaved_with_budget(
         asset.samples(),
         asset.channels(),
         asset.sample_rate(),
         out_rate,
+        budget,
     )?;
     let frames = u64::try_from(samples.len() / usize::from(asset.channels())).unwrap_or(u64::MAX);
     let converted = DecodedAsset::new(
@@ -250,7 +293,7 @@ pub fn resample_asset(asset: &DecodedAsset, out_rate: u32) -> DecodeResult<Decod
         converted.channels(),
         converted.sample_rate(),
         frames,
-        limits::MAX_PCM_BYTES,
+        budget,
     )?;
     Ok(converted)
 }
@@ -463,5 +506,121 @@ mod tests {
         assert_eq!(same.pcm_hash(), asset.pcm_hash());
         assert_eq!(same.facts(), asset.facts());
         assert_eq!(same.samples(), asset.samples());
+    }
+
+    /// 判据 ⑧（上游口径）：裸入口就是"默认预算入口"，两者结果逐位相同。
+    #[test]
+    fn the_plain_entry_points_are_the_default_budget_entry_points() {
+        let input = dc(1_024, 2, 0.25);
+        assert_eq!(
+            resample_interleaved(&input, 2, 48_000, 96_000).unwrap(),
+            resample_interleaved_with_budget(&input, 2, 48_000, 96_000, &PcmBudget::default())
+                .unwrap()
+        );
+        let bytes = wav_f32(2_048, 2, 48_000, 0.25);
+        let asset = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        assert_eq!(
+            resample_asset(&asset, 96_000).unwrap().samples(),
+            resample_asset_with_budget(&asset, 96_000, &PcmBudget::default())
+                .unwrap()
+                .samples()
+        );
+    }
+
+    /// 判据 ④/⑧：重采样**真的**走调用方的预算，而不是写死的常量。
+    #[test]
+    fn the_resampler_budget_is_the_callers_budget_not_a_hard_coded_cap() {
+        let input = dc(48_000, 1, 1.0); // 1 秒 @48k 单声道
+        assert!(resample_interleaved(&input, 1, 48_000, 44_100).is_ok());
+
+        // 只够"理想输出"的预算会被拒：闸门判定的是**实际要分配的**输出缓冲
+        // （`process_all_needed_output_len`，含滤波器延迟/余量），不是理想长度。
+        let ideal_only = PcmBudget::new(u64::MAX, 44_100 * 4, 64, 768_000, 60);
+        let err =
+            resample_interleaved_with_budget(&input, 1, 48_000, 44_100, &ideal_only).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DecodeError::Budget(LimitViolation::PcmBudgetExceeded { .. })
+            ),
+            "expected a budget refusal, got {err}"
+        );
+        assert!(err.to_string().contains("PCM budget"), "got {err}");
+
+        // 给足余量后同一份输入必须成功 ⇒ 上面红的是预算，不是参数写错。
+        let roomy = PcmBudget::new(u64::MAX, 8 * 1024 * 1024, 64, 768_000, 60);
+        let out = resample_interleaved_with_budget(&input, 1, 48_000, 44_100, &roomy).unwrap();
+        limits::check_resampled_len(48_000, 44_100, 48_000, u64::try_from(out.len()).unwrap())
+            .expect("length contract");
+
+        // 采样率闸门也走调用方的预算（默认预算是 768 kHz）。
+        assert!(matches!(
+            resample_interleaved_with_budget(
+                &input,
+                1,
+                48_000,
+                44_100,
+                &PcmBudget::new(u64::MAX, 1 << 30, 64, 44_100, 60)
+            ),
+            Err(DecodeError::Budget(
+                LimitViolation::SampleRateTooHigh { .. }
+            ))
+        ));
+    }
+
+    /// 判据 ⑤/⑧：重采样输出的**时长闸门**与字节预算各自独立。
+    #[test]
+    fn the_resampled_length_gate_is_independent_of_the_byte_budget() {
+        // 2 秒 @48k 单声道 ⇒ 96k 输出 2 秒（约 192000 帧）。字节预算宽到用不完。
+        let input = dc(96_000, 1, 0.5);
+        let by_time = PcmBudget::new(u64::MAX, !3u64, 64, 192_000, 1);
+        let err =
+            resample_interleaved_with_budget(&input, 1, 48_000, 96_000, &by_time).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DecodeError::Budget(LimitViolation::DurationTooLong { .. })
+            ),
+            "expected DurationTooLong, got {err}"
+        );
+        assert!(
+            resample_interleaved_with_budget(&input, 1, 48_000, 96_000, &PcmBudget::default())
+                .is_ok()
+        );
+    }
+
+    /// 判据 ⑧：恒等路径（`in_rate == out_rate`）同样要过预算 —— 它仍会复制一整份 PCM。
+    #[test]
+    fn the_identity_path_still_obeys_the_budget() {
+        let input = dc(48_000, 1, 0.25);
+        let tiny = PcmBudget::new(u64::MAX, 8, 1, 96_000, 60);
+        assert!(matches!(
+            resample_interleaved_with_budget(&input, 1, 48_000, 48_000, &tiny),
+            Err(DecodeError::Budget(
+                LimitViolation::PcmBudgetExceeded { .. }
+            ))
+        ));
+        assert_eq!(
+            resample_interleaved_with_budget(&input, 1, 48_000, 48_000, &PcmBudget::default())
+                .unwrap()
+                .len(),
+            input.len()
+        );
+    }
+
+    /// 判据 ⑧：`resample_asset_with_budget` 把同一预算应用到"转换后的新资产"。
+    #[test]
+    fn resample_asset_with_budget_refuses_output_over_the_budget() {
+        let bytes = wav_f32(12_000, 2, 48_000, 0.5);
+        let asset = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        // 48k → 96k 输出翻倍：只够原始长度的预算必须被拒。
+        let small = PcmBudget::new(u64::MAX, 12_000 * 2 * 4, 64, 96_000, 60);
+        assert!(matches!(
+            resample_asset_with_budget(&asset, 96_000, &small),
+            Err(DecodeError::Budget(_))
+        ));
+        let converted = resample_asset_with_budget(&asset, 96_000, &PcmBudget::default()).unwrap();
+        assert_eq!(converted.sample_rate(), 96_000);
+        assert!(converted.frame_count() >= 24_000);
     }
 }

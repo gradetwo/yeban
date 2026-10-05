@@ -292,11 +292,14 @@ pub fn import_bytes(
     Ok(ImportedAsset { index, decoded })
 }
 
-/// 从磁盘路径导入：先把文件读进内存（受 `max_input_bytes` 约束）以计算摘要，再解码。
+/// 从磁盘路径导入：先把文件读进内存（受 [`PcmBudget::max_input_bytes`] 约束）以计算摘要，再解码。
 ///
 /// 为什么不流式哈希：`AssetHash::of_bytes` 的契约是"对完整字节做 SHA-256"，
 /// 而流式哈希需要在解码器之外再维护一份 `sha2::Sha256` 状态机。当前口径是
-/// **2 GiB 以内走内存**，超过上限直接拒绝 —— 见 notes 的 `needs` 条目。
+/// **预算之内走内存**（默认预算见 [`limits::PcmBudget::default`]，推导依据见模块文档），
+/// 超过上限直接拒绝 —— 见 notes 的 `needs` 条目。
+///
+/// [`PcmBudget::max_input_bytes`]: crate::limits::PcmBudget::max_input_bytes
 ///
 /// # Errors
 ///
@@ -307,11 +310,11 @@ pub fn import_path(
     options: &DecodeOptions,
 ) -> DecodeResult<ImportedAsset> {
     let declared_len = std::fs::metadata(path)?.len();
-    limits::check_input_len(declared_len, options.max_input_bytes)?;
+    limits::check_input_len(declared_len, &options.budget)?;
     let bytes = std::fs::read(path)?;
     // 文件可能在元数据检查之后变大：读到之后再核一次，绝不"先读了再说"。
     let actual_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    limits::check_input_len(actual_len, options.max_input_bytes)?;
+    limits::check_input_len(actual_len, &options.budget)?;
     let original_path = path.to_string_lossy().into_owned();
     import_bytes(&bytes, &original_path, license, options)
 }
@@ -462,7 +465,10 @@ mod tests {
     fn import_never_decodes_bytes_that_are_over_budget() {
         let bytes = fixture(&[1, 2, 3, 4], 1);
         let strict = DecodeOptions {
-            max_input_bytes: 8,
+            budget: crate::limits::PcmBudget {
+                max_input_bytes: 8,
+                ..crate::limits::PcmBudget::default()
+            },
             ..DecodeOptions::default()
         };
         assert!(import_bytes(&bytes, "big.wav", "CC0-1.0", &strict).is_err());
