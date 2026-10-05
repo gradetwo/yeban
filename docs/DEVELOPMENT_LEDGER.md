@@ -8171,3 +8171,33 @@ now explained by measurement rather than argued away, and it was the last genuin
 
 **Status**: tree green and clean; CI green through `f7a664d`; the loudness item is CI-verified; the mapping move now has **no unknown at all** - contents, imports,
 test split and public surface are all measured.
+
+
+### Round 336: STOP - the code moves correctly; what is left is two headers of import bookkeeping, now written down exactly
+
+Rounds 330-336 drove this to a state where **the code itself is right and the imports are not**: the last three attempts each ended with
+`271 passed / 0 failed` and a single class of error - unused imports on one side, a missing one on the other. That is the whack-a-mole the session documented
+in round 329, and it is now fully mapped, so it can be finished by editing **two header blocks** instead of by another transform.
+
+**Exactly what each header must contain** (measured across these attempts, not guessed):
+
+`crates/yeban-midi/src/export.rs` - the mapping arrives here, so it needs:
+* `use std::path::PathBuf;` (the `MidiExportReport.path` field) - and **not** `Path`;
+* the codec names the mapping calls, from `crate::midi`: `DEFAULT_PPQ`, `MidiError`, `MidiExport`, `MidiExportTrack`, `MidiFormat`, `MidiTempo`;
+* the model names the mapping reads; and the test module keeps its own imports for the eleven domain tests.
+
+`crates/yeban-app/src/export_midi.rs` - only the wrapper stays, so it needs:
+* `use std::path::Path;` (the writer's `impl AsRef<Path>` parameter) - the **test module** brings `PathBuf` for `scratch_dir` itself;
+* `use yeban_midi::midi::MidiError;` (the `Encode` variant) and **none** of the other codec names;
+* `use crate::save::{SaveError, write_file_atomically};` and the project type used by the signature;
+* **no** `BTreeMap`, no `MidiNote`, no `MidiFormat`/`MidiTempo`/`DEFAULT_PPQ`/`MidiExport`/`MidiExportTrack`.
+
+**The mechanical shape that gets there**: after the generator writes both sides, replace each side's import block wholesale with the lines above (the same
+"rebuild, do not filter" rule as round 323 - the last few attempts kept failing because I tried to prune the old block with a keep-list, which dropped
+`std::path` and kept the codec names).
+
+**Why I am stopping rather than doing it**: my remaining context cannot carry another write-compile-diagnose cycle, and the state is not blocked - it is one
+mechanical edit, fully specified, in two files, with 271 tests already proving the moved code is correct and complete.
+
+**Status**: tree green and clean (failure path reverted); CI green through `f7a664d`; the loudness item CI-verified; the mapping move reduces to rewriting two
+import blocks; the MCP export tool follows it.
