@@ -13,9 +13,16 @@
     "bpm",
     "time_signature",
     "audio_config",
+    "rng_seed",
+    "metadata",
+    "transport",
+    "sections",
     "tracks",
+    "master_bus_track_id",
+    "routing_graph",
+    "scenes",
     "clip_pool",
-    "routing_graph"
+    "assets"
   ],
   "properties": {
     "schema_version": {
@@ -125,6 +132,96 @@
     "rng_seed": {
       "type": "integer"
     },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "created_at_unix_ms",
+        "modified_at_unix_ms"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modified_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "required": [
+        "metronome_enabled",
+        "count_in_bars",
+        "launch_quantization"
+      ],
+      "properties": {
+        "metronome_enabled": {
+          "type": "boolean"
+        },
+        "count_in_bars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "launch_quantization": {
+          "type": "string",
+          "enum": [
+            "Off",
+            "Bar",
+            "TwoBars",
+            "FourBars",
+            "EightBars"
+          ]
+        }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "description": "BTreeMap of EntityId to SectionV3",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "start_tick",
+          "end_tick"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "description": "ULID in Crockford Base32 (26 chars)"
+          },
+          "name": {
+            "type": "string"
+          },
+          "start_tick": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_tick": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
     "tracks": {
       "type": "object",
       "description": "BTreeMap of EntityId to TrackV3",
@@ -137,11 +234,18 @@
           "volume_db",
           "pan",
           "mute",
-          "solo"
+          "solo",
+          "solo_safe",
+          "devices",
+          "macros",
+          "automation_lanes",
+          "clips"
         ],
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "description": "ULID in Crockford Base32 (26 chars)"
           },
           "name": {
             "type": "string"
@@ -177,13 +281,525 @@
               "string",
               "null"
             ]
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "kind",
+                "bypassed",
+                "params",
+                "latency_samples"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                  "description": "ULID in Crockford Base32 (26 chars)"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "InternalInstrument",
+                    "InternalEffect",
+                    "ExternalInstrument",
+                    "ExternalEffect"
+                  ]
+                },
+                "bypassed": {
+                  "type": "boolean"
+                },
+                "params": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "value"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "number"
+                      },
+                      "unit": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "latency_samples": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "macros": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "value",
+                "mappings"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "mappings": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "target",
+                      "depth"
+                    ],
+                    "properties": {
+                      "target": {
+                        "description": "结构化枚举（exactly one variant key）",
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "TrackVolume"
+                            ],
+                            "properties": {
+                              "TrackVolume": {
+                                "type": "object",
+                                "required": [
+                                  "track_id"
+                                ],
+                                "properties": {
+                                  "track_id": {
+                                    "type": "string",
+                                    "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                                    "description": "ULID in Crockford Base32 (26 chars)"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "TrackPan"
+                            ],
+                            "properties": {
+                              "TrackPan": {
+                                "type": "object",
+                                "required": [
+                                  "track_id"
+                                ],
+                                "properties": {
+                                  "track_id": {
+                                    "type": "string",
+                                    "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                                    "description": "ULID in Crockford Base32 (26 chars)"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "SendGain"
+                            ],
+                            "properties": {
+                              "SendGain": {
+                                "type": "object",
+                                "required": [
+                                  "track_id",
+                                  "edge_id"
+                                ],
+                                "properties": {
+                                  "track_id": {
+                                    "type": "string",
+                                    "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                                    "description": "ULID in Crockford Base32 (26 chars)"
+                                  },
+                                  "edge_id": {
+                                    "type": "string",
+                                    "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                                    "description": "ULID in Crockford Base32 (26 chars)"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "DeviceParam"
+                            ],
+                            "properties": {
+                              "DeviceParam": {
+                                "type": "object",
+                                "required": [
+                                  "track_id",
+                                  "slot_index",
+                                  "param_index"
+                                ],
+                                "properties": {
+                                  "track_id": {
+                                    "type": "string",
+                                    "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                                    "description": "ULID in Crockford Base32 (26 chars)"
+                                  },
+                                  "slot_index": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "param_index": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "Macro"
+                            ],
+                            "properties": {
+                              "Macro": {
+                                "type": "object",
+                                "required": [
+                                  "track_id",
+                                  "macro_index"
+                                ],
+                                "properties": {
+                                  "track_id": {
+                                    "type": "string",
+                                    "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                                    "description": "ULID in Crockford Base32 (26 chars)"
+                                  },
+                                  "macro_index": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "depth": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "automation_lanes": {
+            "type": "array",
+            "description": "BTreeMap of AutomationTarget to AutomationLane, 序列化为数组",
+            "items": {
+              "type": "object",
+              "required": [
+                "target",
+                "points",
+                "read_enabled",
+                "write_mode"
+              ],
+              "properties": {
+                "target": {
+                  "description": "结构化枚举（exactly one variant key）",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "TrackVolume"
+                      ],
+                      "properties": {
+                        "TrackVolume": {
+                          "type": "object",
+                          "required": [
+                            "track_id"
+                          ],
+                          "properties": {
+                            "track_id": {
+                              "type": "string",
+                              "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                              "description": "ULID in Crockford Base32 (26 chars)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "TrackPan"
+                      ],
+                      "properties": {
+                        "TrackPan": {
+                          "type": "object",
+                          "required": [
+                            "track_id"
+                          ],
+                          "properties": {
+                            "track_id": {
+                              "type": "string",
+                              "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                              "description": "ULID in Crockford Base32 (26 chars)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "SendGain"
+                      ],
+                      "properties": {
+                        "SendGain": {
+                          "type": "object",
+                          "required": [
+                            "track_id",
+                            "edge_id"
+                          ],
+                          "properties": {
+                            "track_id": {
+                              "type": "string",
+                              "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                              "description": "ULID in Crockford Base32 (26 chars)"
+                            },
+                            "edge_id": {
+                              "type": "string",
+                              "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                              "description": "ULID in Crockford Base32 (26 chars)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "DeviceParam"
+                      ],
+                      "properties": {
+                        "DeviceParam": {
+                          "type": "object",
+                          "required": [
+                            "track_id",
+                            "slot_index",
+                            "param_index"
+                          ],
+                          "properties": {
+                            "track_id": {
+                              "type": "string",
+                              "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                              "description": "ULID in Crockford Base32 (26 chars)"
+                            },
+                            "slot_index": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "param_index": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "Macro"
+                      ],
+                      "properties": {
+                        "Macro": {
+                          "type": "object",
+                          "required": [
+                            "track_id",
+                            "macro_index"
+                          ],
+                          "properties": {
+                            "track_id": {
+                              "type": "string",
+                              "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                              "description": "ULID in Crockford Base32 (26 chars)"
+                            },
+                            "macro_index": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                "points": {
+                  "type": "object",
+                  "description": "BTreeMap of EntityId to AutomationPoint",
+                  "additionalProperties": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "tick",
+                      "value",
+                      "curve"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                        "description": "ULID in Crockford Base32 (26 chars)"
+                      },
+                      "tick": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "value": {
+                        "type": "number"
+                      },
+                      "curve": {
+                        "type": "string",
+                        "enum": [
+                          "Linear",
+                          "Exponential",
+                          "Logarithmic",
+                          "SCurve"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "read_enabled": {
+                  "type": "boolean"
+                },
+                "write_mode": {
+                  "type": "string",
+                  "enum": [
+                    "Off",
+                    "Write",
+                    "Touch",
+                    "Latch"
+                  ]
+                },
+                "domain": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "min",
+                        "max"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "min": {
+                          "type": "number"
+                        },
+                        "max": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "clips": {
+            "type": "object",
+            "description": "BTreeMap of EntityId to ClipPlacement",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "id",
+                "clip_id",
+                "start_tick",
+                "duration_ticks",
+                "loop_config",
+                "muted"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                  "description": "ULID in Crockford Base32 (26 chars)"
+                },
+                "clip_id": {
+                  "type": "string",
+                  "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                  "description": "ULID in Crockford Base32 (26 chars)"
+                },
+                "start_tick": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "duration_ticks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "loop_config": {
+                  "type": "object",
+                  "required": [
+                    "enabled",
+                    "start_tick",
+                    "end_tick"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "start_tick": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "end_tick": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "muted": {
+                  "type": "boolean"
+                }
+              }
+            }
           }
         }
       }
     },
-    "clip_pool": {
-      "type": "object",
-      "description": "BTreeMap of EntityId to ClipPoolEntry"
+    "master_bus_track_id": {
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "description": "ULID in Crockford Base32 (26 chars)"
     },
     "routing_graph": {
       "type": "object",
@@ -201,7 +817,308 @@
         "edges": {
           "type": "array",
           "items": {
-            "type": "object"
+            "type": "object",
+            "required": [
+              "id",
+              "source_node",
+              "destination_node",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                "description": "ULID in Crockford Base32 (26 chars)"
+              },
+              "source_node": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                "description": "ULID in Crockford Base32 (26 chars)"
+              },
+              "destination_node": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                "description": "ULID in Crockford Base32 (26 chars)"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "TrackToBus",
+                  "BusToMaster",
+                  "SendToAux",
+                  "Sidechain"
+                ]
+              },
+              "gain_db": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "scenes": {
+      "type": "object",
+      "description": "BTreeMap of EntityId to SceneV3",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "description": "ULID in Crockford Base32 (26 chars)"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tempo": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 20.0,
+            "maximum": 999.0
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "clip_pool": {
+      "type": "object",
+      "description": "BTreeMap of EntityId to ClipPoolEntry",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "content"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "description": "ULID in Crockford Base32 (26 chars)"
+          },
+          "name": {
+            "type": "string"
+          },
+          "content": {
+            "description": "外部标签枚举（exactly one variant key）",
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "Midi"
+                ],
+                "properties": {
+                  "Midi": {
+                    "type": "object",
+                    "required": [
+                      "notes"
+                    ],
+                    "properties": {
+                      "notes": {
+                        "type": "object",
+                        "description": "BTreeMap of EntityId to MidiNote",
+                        "additionalProperties": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "start_tick",
+                            "duration_ticks",
+                            "pitch",
+                            "velocity"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                              "description": "ULID in Crockford Base32 (26 chars)"
+                            },
+                            "start_tick": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "duration_ticks": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "pitch": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 127
+                            },
+                            "velocity": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 127
+                            },
+                            "probability": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0.0,
+                              "maximum": 1.0
+                            },
+                            "ratchet": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 1,
+                              "maximum": 16
+                            },
+                            "micro_timing_ticks": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": -240,
+                              "maximum": 240
+                            },
+                            "slide": {
+                              "oneOf": [
+                                {
+                                  "type": "null"
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "duration_ticks",
+                                    "target_pitch",
+                                    "curve"
+                                  ],
+                                  "properties": {
+                                    "duration_ticks": {
+                                      "type": "integer",
+                                      "minimum": 0
+                                    },
+                                    "target_pitch": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 127
+                                    },
+                                    "curve": {
+                                      "type": "string",
+                                      "enum": [
+                                        "Linear",
+                                        "Exponential",
+                                        "Logarithmic",
+                                        "SCurve"
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            "pitch_bend_curve": {
+                              "type": "array",
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer"
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              }
+                            },
+                            "syllable": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "phonemes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "Audio"
+                ],
+                "properties": {
+                  "Audio": {
+                    "type": "object",
+                    "required": [
+                      "asset",
+                      "gain_db"
+                    ],
+                    "properties": {
+                      "asset": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": "SHA-256 content hash, lowercase hex"
+                      },
+                      "gain_db": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "description": "BTreeMap of AssetHash to AssetMetadata",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "hash",
+          "original_path",
+          "byte_len",
+          "media_kind",
+          "license"
+        ],
+        "properties": {
+          "hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "SHA-256 content hash, lowercase hex"
+          },
+          "original_path": {
+            "type": "string"
+          },
+          "byte_len": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "media_kind": {
+            "type": "string",
+            "enum": [
+              "Audio",
+              "Midi",
+              "ImpulseResponse"
+            ]
+          },
+          "license": {
+            "type": "string"
           }
         }
       }
