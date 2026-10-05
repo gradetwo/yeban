@@ -12,6 +12,13 @@
 name: Gates (手动)
 
 on:
+  schedule:
+    # 每天 03:17 UTC 自动跑一次 inventory 档。为什么需要它：该档的步骤（cargo vendor --full、
+    # 按 pin 取回并校验采样、L1 摘要采集、证据审计、分支卫生、MUST-GATE-005/009 的产物级断言）
+    # 此前只在人手派发时才跑 —— 于是「写进去的检查从没执行过」这类错在本项目里反复发生（实测三次）。
+    # 定时触发把「记得派发」变成机器的事；inventory 档没有 if 条件 ⇒ 定时触发即运行它。
+    # 注意它不含 fuzz/bench/arm 这类重档（那些仍需人手选择，见 inputs.gate）。
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       gate:
