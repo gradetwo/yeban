@@ -284,3 +284,24 @@ GitHub 的报错是
 机械判据第一次跑就对了，而我的手读错了两次。凡是**可机械判定**的规则，就该落进 `scripts/guards/`，
 而不是靠下一次仔细阅读。
 
+### 第九个坑：连着推几次，**排队中**的 run 会被后一条顶掉（`cancel-in-progress: false` 也拦不住）
+
+实测：短时间内连续推 `86c38fd`、`b73cab5`、`8eed2a0`，`gh run list` 显示
+
+```
+a5005b5 pending             37329677215
+b73cab5 completed cancelled 37329482641
+86c38fd completed cancelled 37329251252
+264a5d6 in_progress         37329115946
+```
+
+**先排除了一个假说**：不是手动档踩自动档。`ci.yml` 的分组是 `ci-${{ github.workflow }}-${{ github.ref }}`，
+`gates-manual.yml` 的分组自带档位键，两者**不同**，不会互相取消。
+
+**真因**：GitHub 的 concurrency 在同一分组里**只允许一个排队中的 run**。`cancel-in-progress: false`
+保护的是**已经开始跑**的那条（所以 `264a5d6` 能 `in_progress` 继续），但**前一条还在排队、后一条又进来**时，
+排队的那条会被取消 —— 它从未开始，所以腿全是空的。
+
+⇒ **操作后果**：连推几笔后，**只有最后一笔**会真正跑完。想拿到某一笔的判决时，别指望它的自动 run 还活着：
+用 `workflow_dispatch` 在**当前 tip** 上派发一次（本会话已多次这样做，这也是为什么"派发"比"等推送触发"更可靠）。
+
