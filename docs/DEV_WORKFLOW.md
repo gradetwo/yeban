@@ -195,3 +195,13 @@ yeban/
 
 此外 `AGENTS.md` §2 红线 1 规定：未经人类负责人明确书面指示，Agent **不得**修改
 `LICENSE`、`LEGAL.md`、`SECURITY.md`、`TRADEMARK.md`、`GOVERNANCE.md`、`NOTICE.md`。
+
+### 口径数字必须可机械复核
+
+**规则**：账本/状态表里写下的**数字类事实**（有几条工作线、几个 crate 有实现、门禁分布、远程有哪些分支…）
+必须能被**一条只读命令**重新导出，否则它们会在我看不到的地方变成谎言。
+- `bash scripts/dev/project-counters.sh` —— 治理计数（crate 规模 / ADR / 教训 / 归档标签 / 守卫 / 台账 / 提交 / 远程分支 / 门禁分布）；
+- `bash scripts/dev/branch-hygiene.sh` —— "已合并的 `line/*` 是否还留在 origin"；
+- `python3 scripts/gates/check_gate_status.py --summary` —— 门禁状态表（唯一事实源）。
+实测漂移三次（归档标签 20→33、真有实现的 crate 13→11、"远程只剩 main+website"而实际 12 条待清），
+所以这条不是洁癖：**人写的口径会漂移，机器写的不会。**

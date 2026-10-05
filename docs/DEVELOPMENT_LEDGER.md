@@ -394,6 +394,53 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
 已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
 远程当前只剩 `main` 与 `website`。
 
+**当前进度快照（2026-10-05，第 14 轮）**：
+
+> ⚠ **本节的每一个数字都由 `bash scripts/dev/project-counters.sh` 重新导出**（只读命令）。
+> 为什么改成这样：这些数字**漂移过三次** —— 归档标签写着 20 而实际 33、有真实实现的 crate 写着 13 而实际 **11**、
+> "远程只剩 `main` 与 `website`"而实际积了 12 条已合并的 `line/*`。
+> ⇒ 我自己的规则是"**凡是写进口径的事实, 要么能被一条命令复核, 要么就别写成事实**"。
+
+- **代码规模**：`crates/` 共 **14** 个，其中 **11 个有真实实现**（合计约 **90 565 行** `src`），
+  **3 个是规范安排的版本阶段空壳**（`services` 10 行 / `vst` 11 行 / `plugin-host` 12 行 —— v1.1.0 / v2.0.0）。
+- **治理规模**：ADR 裁决 **D1–D44**、账本教训 **31 条**、归档工作线标签 **33 个**、
+  门禁守卫 **14 条**（G01–G14）、台账文件 **37 份**、提交 **268 个**（数字随每次提交变化，跑上面的命令取最新）。
+- **远程**：`main` + `website` + **当前活跃的工作线**（由 `branch-hygiene.sh` 保证"已合并的 `line/*` 不留在 origin"）。
+- **门禁状态**（单一事实源 `docs/ledger/gate-status.md`，由 `check_gate_status.py` 守卫）：
+  当前分布 **8 已接线 / 9 部分 / 4 PENDING**（21 条）；`003` 已由 `arm` 手动门禁闭环（两架构 digest 逐字节相同）、
+  `011` 仍差"千万次"那一轮、`014` 仍缺素材（机器已就绪）、`005` 有了测量工具但需硬件。
+- **能力切片（累计，按阶段）**：
+  · **Phase -1/0**：仓库大扫除、九大 Spike、四条门禁族（守卫/契约/文档/许可）全部机械执行；
+  · **Phase 1（模型）**：`Op` 全集 **29 变体**且逐字节真逆、自动化泳道 + **唯一求值入口**、
+    `#[serde(default)]` 收敛到 **18 处**（其余为必需）、契约 `required` 与实现必需性**对齐**（根 18 键 / 23 路径）；
+  · **Phase 2（引擎）**：**真的出声**（确定性合成：三音符夹具 102 398/102 400 非零样本、两次渲染逐位相同）、
+    混音链（常量功率声相 / 前瞻母线限制器 / 梯形滤波 / 3 ms 窃取淡出）、**零分配窗口**在多场景下仍成立、
+    电平口径在 `yeban-dsp`（285 条冻结位模式逐位不变）；
+  · **Phase 3（界面）**：卷帘音符 **tick 位置**、轨道色标、`.yeban` 打开、混音台通道条消费真实电平、
+    三个管理动作真接线（切视图/保存/重建引擎）；
+  · **Phase 4（MCP）**：**十个工具全部真做事** —— `render_master` 真渲染（含音频片段解码/重采样/PDC）、
+    容器成为**唯一**工程格式（D43 两刀删掉裸 JSON 兼容路径）。
+
+## 7. 工作线合并台账 (Merge Ledger)
+
+`scripts/dev/worktree.sh land` 会用统一的 `merge(<line>): 工作线落地` 作为合并提交信息（自动化优先），
+因此**每条工作线的详细内容摘要记在这里**，不依赖提交信息的措辞。顺序 = 合并顺序。
+
+| 工作线 | 合并提交 | 内容摘要 |
+| :--- | :--- | :--- |
+| `engine-rt` | `35ee5ab` | 实时引擎核心: 定长块/快照退役回收/内部 PDC/FTZ-DAZ/批量 SPSC/cpal 宿主+NullBackend; 按 D19 切分 device feature; 延迟改从 DeviceDefinition::latency_samples 读取 |
+| `render-master` | `136c791` | 离线母带渲染: 拓扑分层 Rayon 并行 + 按 EntityId 字典序确定性串行归约; 自研 RF64/BW64+bext; TPDF 抖动; SMF 0/1 导出; pdc.rs 最小同构实现(待 engine 提供公共签名后按 D19 退役) |
+| `ui-test-port` | `7d3b31e` | Tier-1 无头软件光栅化 + 语义控件树 + 动态遮罩 SSIM(≥0.98) + 三级权限; app 侧窄口子适配器(默认关闭 feature) |
+| `mcp-core` | `60424a3` | Yeban Intent API v2 工具层: 10 个工具注册表与契约逐条对账、JSON-RPC 2.0、六级 scope 纯函数判定、`ui:inject` 生产硬禁、256-bit Bearer token + 0600 落盘、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0)、`dryRun`/`idempotencyKey` 真实现；十个工具的领域实现未接线(返回 -32005 NOT_IMPLEMENTED)；108 条判据 |
+
+| `mcp-core` | `6a860b1` | Yeban Intent API v2 工具层: 10 工具注册表与契约逐条对账(含联集 20 错误码与双射守卫)、JSON-RPC 2.0、六级 scope 纯函数、`ui:inject` 生产硬禁(先于 token 校验)、256-bit Bearer token + 0600 落盘(读到 644 直接拒)、stdio 与 feature-gated HTTP(手写最小 HTTP/1.1, 只绑 127.0.0.1:0, 绑定后回读 `local_addr()` 断言 `is_loopback()`)、`dryRun`/`idempotencyKey` 真实现; 112 条判据; **十工具领域实现未接线(-32005)** |
+| `app-introspect` | `b581795` | 真实界面的 Tier-1 内省: 适配器修到可编译 + 用**自动发现**测试目标让判据进入默认门禁; 产出三张 1920×1080 真实界面截图(100% 非黑, 2973/2784/2811 色)与运行时控件树; 控件树 184 注册 / 95 运行时 / 未注册 0; 动态区遮罩后 SSIM 精确 1.0; 中文非 tofu 判据(24px→648px) |
+
+| `decode-core` | `805fcf9` | 离线解码 + 重采样: symphonia 0.6.1 解码(WAV 8/16/24/32-bit + F32 + FLAC)、rubato 5.0.1 sinc 重采样、内容寻址不可变资产、尺寸/防挂死预算(检查全在分配之前 + `try_reserve` + `checked_mul`)、**主动加 `#![forbid(unsafe_code)]`**; CI 上 68 条单测 + clippy 全绿; **OGG/Vorbis 与 ADPCM 只有代码路径没有字节级夹具；基准打点缺失 ⇒ DoD 4 无法判定(不是通过)** |
+
+已退役的工作线统一打 `line-archive/<name>` 标签后删除分支（先保全再删除，SKILL 的明确纪律）；
+远程当前只剩 `main` 与 `website`。
+
 **当前进度快照（2026-10-05，第 5 轮结束时）**：
 - 已落地 **20 条工作线**（`line-archive/*` 共 **20** 个标签：model-core / theory-core / dsp-core / ui-shell /
   sfz-core / engine-rt / render-master / ui-test-port / mcp-core / decode-core / app-introspect / tools-domain /
