@@ -20,6 +20,13 @@
 //! | 60Hz 循环排空 | 节拍 = 每 **5 个量子**（128 帧 × 5 ÷ 48 kHz = **13.3 ms**，标称 75 Hz）；实测**平均**间隔 ≤ 6 个量子 = 16.0 ms ≤ 16.67 ms（⇒ 实际不慢于 60 Hz）；`pending` 有界并最终 `== 0` | `RetireQueue::drain` + `AUDIO_QUANTA` 音频时钟 |
 //! | 零泄漏 | **等式**：`创建数 == 释放数 + 存活数`，且 `queue.pending() == 0 && slot.pending_len() == 0` | `release_probe::total()` 差值 |
 //! | 控制面**看得见**这些读数 | `EngineStats` 的退役镜像与队列/槽的权威读数**逐项相等**（`pending`/`drained`/`drain_calls`/`pruned`/释放线程归属/`foreign_drains`/`stash`） | 音频线程退出循环后读一次 `EngineStats`（此刻主线程阻塞在 `join` ⇒ 同一静止时刻）+ 队列自身的读数 |
+//! | （`line/engine-mirror-race`）**镜像不漂** | ① 静止点上 `镜像 == 权威`（逐项**等号**，无容差）；② 静止点前后各读一次全套读数 ⇒ 必须逐项相等（"静止"是**测出来**的）；③ 见证：精确待回收 ≥ 尾段积压、`drained`/`drain_calls`/`pruned` 严格 > 0；④ `pushed − drained == 精确待回收` | 静止点上 `Arc::strong_count(accounting) == 1`（生产端已不存在）+ `RetireAccounting` 的两个单调量 |
+//!
+//! ⚠ 判据 ① 是**本线修掉的那个真 bug** 的守门人：第一版 `RetireAccounting` 把
+//! `pending` 做成"`drain` 后覆写为真实剩余"的量规，而那个覆写与音频线程的 `+1`
+//! **不原子** ⇒ 静止点上镜像会**永久**少记一条（CI 原文：
+//! `EngineStats 镜像与队列读数不一致：retire_pending 镜像=512 权威=513`）。
+//! 定位证据 / 修法 / 注入见 `docs/ledger/engine-mirror-race-notes.md`。
 //!
 //! `line/engine-stats` 落地的就是最后一行：`needs` N2（`stash_events` 进统计面）与
 //! N5（释放线程归属进统计面）在这里被**逐项对账**（不是"大概一致"）。
@@ -43,7 +50,10 @@
 //! 2. 让主线程**不排空**（删掉 60Hz 排空）⇒ 轮末 `pending != 0`、对账等式破（存在活的快照）；
 //! 3. 让**别的线程**调用 `drain` ⇒ `foreign_drains > 0`；归属窗口的
 //!    "全局释放数 == 主线程释放数"也会破；
-//! 4. 在 `process_quantum` 调用树里加一次 `Vec::with_capacity(1)` ⇒ `allocations > 0`。
+//! 4. 在 `process_quantum` 调用树里加一次 `Vec::with_capacity(1)` ⇒ `allocations > 0`；
+//! 5. （`line/engine-mirror-race`）让**记账少记一次**（`note_push` 第一次不加）
+//!    ⇒ 静止点判据 ①/④ 当场红（镜像 511 vs 权威 512）；把**记账多记一次**则反向红。
+//!    两个方向的注入记录见 `docs/ledger/engine-mirror-race-notes.md`。
 //!
 //! # 窗口边界（如实登记）
 //!
@@ -299,6 +309,13 @@ struct RoundReport {
     /// 音频线程读到的 `EngineStats` 退役读数镜像（与 `queue_*` / `release_thread_is_main`
     /// / `foreign_drains` **逐项对账**；见 `run_round` 里的对账块）。
     mirror: RetireMirror,
+    /// 静止点见证（`line/engine-mirror-race`）：
+    /// ① 静止点前后两次全套读数是否**逐项相等**（真的静止）；
+    /// ② 静止点上 `RetireAccounting` 的 `Arc` 强引用数（必须为 1 ⇒ 生产者端已不存在）；
+    /// ③ 静止点上队列的**精确**待回收条数（判据 ③ 的非平凡见证）。
+    static_double_read_equal: bool,
+    static_producer_ends: usize,
+    static_exact_pending: usize,
     /// 最后一个"应该什么都不剩"的窗口的读数。
     quiet_window: AllocWindow,
     quiet_released: u64,
@@ -606,6 +623,97 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
         ));
     }
     report.mirror = mirror;
+
+    // ---- 静止点见证（判据 ②）：证明"同一静止时刻"不是嘴上说的 ----
+    //
+    // `line/engine-mirror-race` 新增。上面那次对账的前提是"镜像与权威读数处在同一个
+    // 静止时刻"。本线先把那个前提**测出来**，再谈等号：
+    //
+    //   ① 生产端**已经不存在**：`RetireAccounting` 的 `Arc` 只有队列这一端
+    //      （音频线程退出时 `EngineRuntime` 析构把 `RetireProducer` 丢了）
+    //      ⇒ 静止点之后**不可能**再有 push，这是结构事实而不是调度猜测；
+    //   ② 静止点前后各读一次**全套读数**，两次必须逐项相等
+    //      （中间刻意让出 CPU 若干次：真有在飞的 push/drain，这两次就会不同）。
+    //
+    // ⚠ 第一版（`line/engine-stats`）在这里只写了"音频线程已退出"就断言"同一静止时刻"。
+    // 静止点本身没错（`join` 之后确实没有写者），错的是**镜像**：它会在静止点上
+    // **永久**漂（见 `src/snapshot.rs` 的 `RetireAccounting` 窗口图与
+    // `docs/ledger/engine-mirror-race-notes.md`）。所以判据 ① 的等号是抓真 bug 的那一条，
+    // 判据 ② 只是把"这两个数真的是同一时刻的"钉死。
+    let snapshot_readings = |queue: &yeban_engine::snapshot::RetireQueue,
+                             slot: &SnapshotSlot|
+     -> (u64, u64, u64, u64, u64, u64, u64) {
+        (
+            queue.pending() as u64,
+            queue.dropped(),
+            queue.drain_calls(),
+            queue.foreign_drains(),
+            slot.pruned(),
+            queue.accounting().pushed(),
+            queue.accounting().pending(),
+        )
+    };
+    let static_read_a = snapshot_readings(&queue, &slot);
+    for _ in 0..64 {
+        std::hint::spin_loop();
+    }
+    std::thread::yield_now();
+    let static_read_b = snapshot_readings(&queue, &slot);
+    report.static_double_read_equal = static_read_a == static_read_b;
+    if !report.static_double_read_equal {
+        failures.push(format!(
+            "静止点前后两次读数不相等（静止是假的）：第一次={static_read_a:?} 第二次={static_read_b:?}"
+        ));
+    }
+    report.static_producer_ends = Arc::strong_count(queue.accounting());
+    if report.static_producer_ends != 1 {
+        failures.push(format!(
+            "静止点上还有 {} 个 `RetireAccounting` 强引用（应为 1 = 只剩队列这一端）—— 生产者可能还在",
+            report.static_producer_ends
+        ));
+    }
+    // 静止点上的**精确**待回收条数（判据 ③ 的非平凡见证用它，也就是 `pending_after_audio`）。
+    report.static_exact_pending = queue.pending();
+
+    // ---- 判据 ③：见证 —— 参与比较的值必须是**非平凡**的 ----
+    //
+    // "两个 0 相等"和"两个空集合相等"永远为真；没有这条，①的等号可能是**空转的绿**。
+    // 这里要求：精确待回收条数 ≥ 尾段积压条数（512 次"只发布不排空"必然制造这么多条），
+    // 且累计出队 / 非空 drain 次数 / prune 条数都**严格大于 0**。
+    if report.static_exact_pending < spec.backlog as usize {
+        failures.push(format!(
+            "见证不成立：静止点精确待回收 {} 条 < 尾段积压 {} 条 —— 压测没造出非平凡值",
+            report.static_exact_pending, spec.backlog
+        ));
+    }
+    if mirror.drained == 0 || mirror.drain_calls == 0 || mirror.pruned == 0 {
+        failures.push(format!(
+            "见证不成立：镜像里的 drained={} / drain_calls={} / pruned={} 有 0 —— 比较的是空读数",
+            mirror.drained, mirror.drain_calls, mirror.pruned
+        ));
+    }
+    // 同一个静止点上，"入队数 − 出队数"必须**自己**也等于精确读数
+    // （这是镜像的构造等式；它把"少记/多记一次"这类真错直接变成红）。
+    let pushed_now = queue.accounting().pushed();
+    let drained_now = queue.accounting().drained();
+    if pushed_now.saturating_sub(drained_now) != pending_after_audio {
+        failures.push(format!(
+            "静止点上入队/出队账不平：pushed={pushed_now} − drained={drained_now} ≠ 精确待回收={pending_after_audio}"
+        ));
+    }
+    println!(
+        "[MUST-GATE-012] 静止点见证「{}」: 精确待回收={} 镜像={} pushed={} drained={} drain_calls={} pruned={} \
+         双读相等={} 生产端强引用={}",
+        report.label,
+        report.static_exact_pending,
+        mirror.pending,
+        pushed_now,
+        drained_now,
+        queue.drain_calls(),
+        pruned_after_audio,
+        report.static_double_read_equal,
+        report.static_producer_ends,
+    );
 
     // ---- 主线程归属窗口（拆成两步，"释放发生在哪个线程"才是**精确**的）----
     //

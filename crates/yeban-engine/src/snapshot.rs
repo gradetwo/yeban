@@ -757,13 +757,40 @@ fn saturating_bump(counter: &AtomicU64, delta: u64) -> u64 {
 ///
 /// | 字段 | 谁写 | 语义 | 单调性 |
 /// | :--- | :--- | :--- | :--- |
-/// | `pending` | 音频线程 `push` 成功（+1）/ 控制线程 `drain` 后**覆写**为实际剩余 | 队列当前占用（跨线程镜像） | **量规**（可升可降） |
+/// | `pushed` | 音频线程 `push` 成功（+1，一次 `fetch_add`） | 累计**成功入队**的条数 | 单调不减（占用以队列容量为界 ⇒ 不会回绕） |
 /// | `drained` | 控制线程 `drain` | 累计真正出队并 `Drop` 的条数 | 单调不减（饱和） |
 /// | `drain_calls` | 控制线程 `drain` | 累计**非空** `drain` 调用次数 | 单调不减（饱和） |
 /// | `foreign_drains` | 控制线程 `drain` | 在释放归属线程之外发生的非空 `drain` 次数 | 单调不减（饱和） |
 /// | `release_thread_is_owner` | 控制线程**首个**非空 `drain` | 首个执行释放的线程是否即归属线程 | 只可能 `true → false` |
 ///
-/// **零锁、零分配**：全是原子 `load`/`store`/CAS。`pending` 的 `+1` 用一次 `fetch_add`
+/// # 为什么 `pending` 是**两个单调量之差**，而不是一个被 `drain` 覆写的量规
+///
+/// 第一版（`line/engine-stats`）把 `pending` 做成了一个量规：`push` 成功 `+1`，
+/// `drain` 之后**覆写**为"出队后的真实剩余"。那个覆写与音频线程的 `+1` **不是原子的**：
+///
+/// ```text
+///   控制线程                                    音频线程
+///   ────────────────────────────────────────    ─────────────────────────
+///   ① 求值实参 self.consumer.slots() = R
+///      （此后还要跑两条饱和 CAS 才 store）
+///                                              ② inner.push(X)   ← 环里有 X 了
+///                                              ③ note_push()     ← 量规 +1
+///   ④ pending.store(R)                        ← ② 的 +1 被**永久盖掉**
+/// ```
+///
+/// ① 与 ④ 之间隔着 `drain_calls` / `drained` 两条 CAS 循环（[`saturating_bump`]），
+/// 在两条线程抢同一条缓存行时这是一个**几百纳秒**的窗口 —— 于是镜像会**永久**少记一条，
+/// 而"静止点上镜像 == 权威"的判据当场变红（CI 实测 `retire_pending 镜像=512 权威=513`）。
+///
+/// 修法：两个方向都做成**只增不减**的计数（`pushed` / `drained`），
+/// [`pending`](Self::pending) 取 `pushed.saturating_sub(drained)` —— 没有任何
+/// "读旧值再覆写"的步骤，于是**不存在**能丢掉一次 `+1` 的窗口；静止点上它与
+/// `Consumer::slots()` 恒等。代价是失去"覆写自愈"：那个自愈只在**下一次** drain 生效，
+/// 而"最后一轮 drain 之后到静止点之间"根本没有下一次 —— 所以它不是保险，是缺陷来源。
+/// 现在改成"按构造不可能漂"，并由 `snapshot_retire_churn` 的静止点判据 + 本模块的
+/// 并发见证单测（`pending_mirror_stays_exact_while_a_drain_races_a_push`）钉住。
+///
+/// **零锁、零分配**：全是原子 `load`/`store`/CAS。`pushed` 的 `+1` 用一次 `fetch_add`
 /// （占用以队列容量为界 ⇒ 永不可能回绕），累计量用饱和 CAS（[`saturating_bump`]）。
 #[derive(Debug)]
 pub struct RetireAccounting {
@@ -774,7 +801,12 @@ pub struct RetireAccounting {
     /// 与 `gate-snapshot-churn` 判据里的 `queue.release_thread() == Some(main_thread)` 同口径
     /// （那条工作线的 harness 正是在主线程上建队列 ⇒ 两者逐项一致）。
     owner_thread: ThreadId,
-    pending: AtomicU64,
+    /// 累计**成功入队**的条数（音频线程一次 `fetch_add`；只增不减）。
+    pushed: AtomicU64,
+    /// 累计**真正出队并 `Drop`** 的条数（控制线程饱和加法；只增不减）。
+    ///
+    /// `pending()` = `pushed - drained`：两者都是单调量 ⇒ 差值不会因为一次
+    /// 并发 `push` + `drain` 的交错而**永久**偏掉（见结构体文档的窗口图）。
     drained: AtomicU64,
     drain_calls: AtomicU64,
     foreign_drains: AtomicU64,
@@ -785,7 +817,7 @@ impl RetireAccounting {
     fn new(owner_thread: ThreadId) -> Self {
         Self {
             owner_thread,
-            pending: AtomicU64::new(0),
+            pushed: AtomicU64::new(0),
             drained: AtomicU64::new(0),
             drain_calls: AtomicU64::new(0),
             foreign_drains: AtomicU64::new(0),
@@ -795,10 +827,23 @@ impl RetireAccounting {
         }
     }
 
-    /// 队列当前占用的跨线程镜像（控制线程上请用精确读 [`RetireQueue::pending`]）。
+    /// 队列当前占用的跨线程镜像 = **成功入队数 − 已出队数**（控制线程上请用精确读
+    /// [`RetireQueue::pending`]）。
+    ///
+    /// 两个操作数都只增不减 ⇒ 静止点上它与 `Consumer::slots()` **恒等**；
+    /// 并发窗口里它可能瞬时差 1（环里已经放进去、`+1` 还没落地），那是**量规**的正常语义，
+    /// 不是漂移（漂移的定义是"静止点上仍然不等"）。
     #[must_use]
     pub fn pending(&self) -> u64 {
-        self.pending.load(Ordering::Acquire)
+        self.pushed
+            .load(Ordering::Acquire)
+            .saturating_sub(self.drained.load(Ordering::Acquire))
+    }
+
+    /// 累计**成功入队**的旧快照条数（只增不减；[`pending`](Self::pending) 的被减数）。
+    #[must_use]
+    pub fn pushed(&self) -> u64 {
+        self.pushed.load(Ordering::Acquire)
     }
 
     /// 累计真正出队并 `Drop` 的旧快照条数。
@@ -833,21 +878,25 @@ impl RetireAccounting {
         self.owner_thread
     }
 
-    /// 音频线程侧：一次成功的 `push` ⇒ 占用 +1（单次原子 RMW，无锁无分配）。
+    /// 音频线程侧：一次成功的 `push` ⇒ **成功入队数 +1**（单次原子 RMW，无锁无分配）。
+    ///
+    /// ⚠ 严格发生在 `rtrb::Producer::push` **之后**（见 [`RetireProducer::push`]）：
+    /// 于是"环里有这一条"永远**不晚于**"记账里有这一条"。反过来的顺序会让
+    /// `drain` 在 `+1` 落地前就消费掉它，从而制造**永久**的多记（下面 `pending()`
+    /// 的 `saturating_sub` 只能把瞬时负数夹成 0，夹不回那一笔）。
     fn note_push(&self) {
         // 占用以队列容量为界 ⇒ 这里**不可能**回绕；刻意不用 CAS 循环，
         // 让渲染路径上的这条记账保持"一条指令"。
-        self.pending.fetch_add(1, Ordering::Release);
+        self.pushed.fetch_add(1, Ordering::Release);
     }
 
     /// 控制线程侧：一次非空 `drain` 的完整记账（**唯一写者**）。
     ///
-    /// `remaining` 是出队**之后**队列的真实剩余（`consumer.slots()`）—— 用**覆写**
-    /// 而不是"减法"自愈任何漂移，也让 `pending` 镜像与控制线程的精确读收敛。
-    fn note_drain(&self, taken: usize, remaining: usize) {
+    /// `taken` 是本次真正出队并 `Drop` 的条数。**没有**"覆写剩余量"这一步：
+    /// 剩余量由 `pending()` 从两个单调量算出来（见结构体文档的窗口图）。
+    fn note_drain(&self, taken: usize) {
         saturating_bump(&self.drain_calls, 1);
         saturating_bump(&self.drained, taken as u64);
-        self.pending.store(remaining as u64, Ordering::Release);
     }
 
     /// 控制线程侧：钉住**首个**释放线程的归属（只可能 `true → false`）。
@@ -878,7 +927,8 @@ pub struct RetireProducer {
 impl RetireProducer {
     /// 把旧快照推进退役队列；队列满时把值**原样退回**（调用方据此寄存到 `stash`）。
     ///
-    /// 实时路径：一次 `rtrb` 的 `push` + 成功时一次 `Relaxed/Release` 原子加。
+    /// 实时路径：一次 `rtrb` 的 `push` + 成功时一次 `Release` 原子加
+    /// （**入队数** +1；顺序刻意是"先入环、后记账"，见 `RetireAccounting::note_push`）。
     ///
     /// # Errors
     ///
@@ -1008,10 +1058,11 @@ impl RetireQueue {
             Ok(chunk) => chunk,
             // slots() 与 read_chunk 之间没有别的消费者，这里理论上不可达；
             // 真发生了也只是"这一轮少回收一点"，下一轮再来 —— 不 panic。
-            Err(_) => {
-                self.accounting.note_drain(0, self.consumer.slots());
-                return 0;
-            }
+            //
+            // 记账：**什么都不记**（一条都没出队）。这与 `take == 0` 的早退口径一致：
+            // `drain_calls` 数的是"**非空** drain 调用"。旧实现在这里记一次 `drain_calls`，
+            // 与它自己的字段语义矛盾（见 `RetireAccounting` 的字段表）。
+            Err(_) => return 0,
         };
         let mut count = 0usize;
         for snapshot in chunk {
@@ -1019,8 +1070,9 @@ impl RetireQueue {
             drop(snapshot);
             count += 1;
         }
-        // 计数与占用镜像一次记完（`pending` 被**覆写**为真实剩余 ⇒ 自愈漂移）。
-        self.accounting.note_drain(count, self.consumer.slots());
+        // 只记"取走了几条"；占用镜像由 `RetireAccounting::pending()` 从
+        // 两个单调量算出来（**没有**覆写，见结构体文档里的窗口图）。
+        self.accounting.note_drain(count);
         count
     }
 }
@@ -1967,22 +2019,176 @@ mod tests {
         assert_eq!(slot.pruned(), u64::MAX);
     }
 
-    /// 判据⑥ 的"量规不回绕"：`pending` 是跨线程镜像，且被 `drain` **覆写**为真实剩余
-    /// ⇒ 即使镜像被人工弄脏，下一次 `drain` 就自愈（控制面不会长期读到一个偏大的积压）。
+    /// 判据⑥ 的"量规不回绕"：`pending` 是跨线程镜像，但它是
+    /// **两个单调量之差**（`pushed − drained`）而不是一个被覆写的量规
+    /// ⇒ 它既不会回绕，也**没有**能丢掉一次 `+1` 的窗口（见 `RetireAccounting` 文档）。
+    ///
+    /// ⚠ 这条测试是**改口径**过的：第一版叫
+    /// `retire_pending_mirror_is_overwritten_by_drain_and_self_heals`，断言
+    /// "人工把镜像写成 999 ⇒ 下一次 drain 用真实剩余盖掉"。那个"自愈"正是 CI 变红的机制
+    /// （覆写与音频线程的 `+1` 不原子 ⇒ 永久少记一条）；现在改成断言**按构造成立的不变量**。
     #[test]
-    fn retire_pending_mirror_is_overwritten_by_drain_and_self_heals() {
+    fn retire_pending_mirror_is_the_difference_of_two_monotonic_counters() {
         let (mut producer, mut queue) = retire_channel(8);
         producer
             .push(Arc::new(snapshot_with(128, 1)))
             .expect("容量 8 有空间");
-        assert_eq!(queue.accounting().pending(), 1, "push 成功 ⇒ 镜像 +1");
-        // 人工弄脏镜像（模拟"曾经漂移"）：drain 必须用真实剩余把它盖掉。
-        queue.accounting.pending.store(999, Ordering::Release);
-        assert_eq!(queue.accounting().pending(), 999);
+        assert_eq!(queue.accounting().pending(), 1, "push 成功 ⇒ 入队数 +1");
+        assert_eq!(queue.accounting().pushed(), 1);
+        assert_eq!(queue.accounting().drained(), 0);
         assert_eq!(queue.drain(8), 1);
-        assert_eq!(queue.accounting().pending(), 0, "排空后镜像 = 真实剩余 = 0");
-        assert_eq!(queue.pending(), 0);
+        assert_eq!(queue.accounting().pending(), 0, "出队 1 ⇒ 差值为 0");
+        assert_eq!(queue.accounting().pushed(), 1);
         assert_eq!(queue.accounting().drained(), 1);
+        assert_eq!(queue.pending(), 0);
         assert_eq!(queue.accounting().drain_calls(), 1);
+
+        // 一个"入队数不动、出队数被人工抬高"的越界状态只会把量规夹到 0（饱和减法），
+        // 绝不会**回绕成 u64::MAX** —— 控制面不会读到一个天文数字的积压。
+        queue.accounting.drained.store(u64::MAX, Ordering::Release);
+        assert_eq!(queue.accounting().pending(), 0, "饱和减法，不回绕");
+    }
+
+    /// **见证（判据 ③ 的库内版本）**：`drain` 与 `push` **真并发**之后，
+    /// 每个**静止点**上 `RetireAccounting::pending()` 必须与精确读数
+    /// （`Consumer::slots()`）**逐项相等**。
+    ///
+    /// # 为什么这条是"注入 ⇒ 变红"的宿主
+    ///
+    /// 它每个 epoch 取一个静止点样本（本机实跑 `EPOCHS` 个），所以"镜像少记/多记一次"
+    /// 这类注入**必定**在某个样本上暴露。判据本身**不含任何容差**：静止点上必须是等号。
+    ///
+    /// # 静止点协议（每个 epoch）—— 用**代际回执**，不用"睡一会儿"
+    ///
+    /// ```text
+    ///   主线程（drain 侧）                            生产者线程（push 侧）
+    ///   ─────────────────────────────────────────     ────────────────────────────────
+    ///   ① 清掉上一轮尾巴（此刻生产者已回执 ⇒ 静止）
+    ///   ② base_pushed = pushed；base_ack = ack
+    ///   ③ cmd = PUSH
+    ///                                                 ④ 连续 push，直到 cmd != PUSH
+    ///   ⑤ 等 pushed > base_pushed（本轮真推了）
+    ///   ⑥ queue.drain(全部)        ← 与 ④ 真并发
+    ///   ⑦ cmd = PARK
+    ///                                                 ⑧ 退出 push 循环，ack += 1（Release）
+    ///   ⑨ 等 ack > base_ack（Acquire）⇒ ⑧ 之后不可能再有 push
+    ///   ⑩ 静止点：pending() == consumer.slots()
+    /// ```
+    ///
+    /// 为什么必须是**代际**回执（`ack` 只增不减）而不是一个布尔"停/走"状态：
+    /// 第一版把"停下"与"收工"写成**同一个**状态值 ⇒ 生产者在每个 epoch 结束时都可能
+    /// 直接**退出线程**，下一轮的"等环里有货"就会空转到断言红（本机实测：
+    /// 带负载连跑 14 次复现，`snapshot.rs:2139:17: 生产者没有开始 push`）。
+    /// 那是**判据自己的状态机**缺陷，不是被测对象的漂移 —— 修法是**加回执世代**，
+    /// 不是把断言放宽。
+    ///
+    /// ⑧→⑨ 的 Release/Acquire 把"生产者已经停下"变成**可判定**的事实：Acquire 载入
+    /// `ack` 与生产者的 Release 存储同步 ⇒ 生产者在 ⑧ 之前的**全部** `+1` 都对本线程可见。
+    #[test]
+    fn pending_mirror_stays_exact_at_every_quiescent_point_while_drain_races_push() {
+        use std::sync::atomic::{AtomicU8, AtomicU64};
+
+        const EPOCHS: usize = 400;
+        const PUSH: u8 = 1;
+        const PARK: u8 = 2;
+        const QUIT: u8 = 3;
+
+        let payload = Arc::new(snapshot_with(128, 7));
+        let (mut producer, mut queue) = retire_channel(1024);
+        let accounting = Arc::clone(queue.accounting());
+        let cmd = Arc::new(AtomicU8::new(PARK));
+        let ack = Arc::new(AtomicU64::new(0));
+
+        let producer_thread = {
+            let cmd = Arc::clone(&cmd);
+            let ack = Arc::clone(&ack);
+            let payload = Arc::clone(&payload);
+            std::thread::spawn(move || -> u64 {
+                let mut pushed = 0u64;
+                loop {
+                    // 等命令：**只有 QUIT 才退出**；PARK 只是"回到等待位"（不是收工）。
+                    loop {
+                        match cmd.load(Ordering::Acquire) {
+                            PUSH => break,
+                            QUIT => {
+                                ack.fetch_add(1, Ordering::Release);
+                                return pushed;
+                            }
+                            _ => std::hint::spin_loop(),
+                        }
+                    }
+                    // 连续 push，直到主线程把命令改成 PARK（或 QUIT）。
+                    while cmd.load(Ordering::Acquire) == PUSH {
+                        if producer.push(Arc::clone(&payload)).is_ok() {
+                            pushed += 1;
+                        }
+                    }
+                    // 回执：主线程据此判定"此刻没有在飞的 push"。
+                    ack.fetch_add(1, Ordering::Release);
+                }
+            })
+        };
+
+        let mut samples = 0usize;
+        let mut non_zero_samples = 0usize;
+        let mut max_exact = 0usize;
+        let mut base_ack = 0u64;
+        for _ in 0..EPOCHS {
+            // ① 上一轮已回执 ⇒ 生产者停在等待位；清掉上一轮的尾巴，
+            //    让本轮的 push 一定推得进环（否则"等 pushed 增长"会假红）。
+            queue.drain(usize::MAX);
+            let base_pushed = accounting.pushed();
+            // ②③ 发令：生产者开始连续 push。
+            cmd.store(PUSH, Ordering::Release);
+            // ⑤ 等**本代**真的发生了一次入队（否则这次 drain 没有并发可言，见证是空话）。
+            let mut spins = 0u64;
+            while accounting.pushed() == base_pushed {
+                std::hint::spin_loop();
+                spins += 1;
+                assert!(spins < 1_000_000_000, "生产者没有开始 push");
+            }
+            // ⑥ 与生产者**真并发**的一次排空（判据的被测对象就是这个交错）。
+            queue.drain(usize::MAX);
+            // ⑦⑨ 令其停下，并等到**本代**的回执（`ack > base_ack`）。
+            cmd.store(PARK, Ordering::Release);
+            let mut spins = 0u64;
+            while ack.load(Ordering::Acquire) <= base_ack {
+                std::hint::spin_loop();
+                spins += 1;
+                assert!(spins < 1_000_000_000, "生产者没有回执静止");
+            }
+            base_ack = ack.load(Ordering::Acquire);
+            // ⑩ 静止点。
+            let exact = queue.pending();
+            let mirrored = accounting.pending();
+            samples += 1;
+            if exact > 0 {
+                non_zero_samples += 1;
+            }
+            max_exact = max_exact.max(exact);
+            assert_eq!(
+                mirrored, exact as u64,
+                "静止点上镜像必须与精确读数相等（第 {samples} 个样本）"
+            );
+            // 结构等式：入队 − 出队 == 精确占用。
+            assert_eq!(
+                accounting.pushed() - accounting.drained(),
+                exact as u64,
+                "静止点上 pushed − drained 必须等于精确占用（第 {samples} 个样本）"
+            );
+        }
+        // 收工：QUIT 是**唯一**能让生产者退出的命令；join 之后再验一次静止点。
+        cmd.store(QUIT, Ordering::Release);
+        let pushed_total = producer_thread.join().expect("生产者线程不该 panic");
+        assert!(pushed_total > 0, "生产者一条都没推进去 ⇒ 见证是空的");
+        assert_eq!(samples, EPOCHS, "样本数必须真的是 {EPOCHS} 个");
+        assert!(
+            non_zero_samples > 0,
+            "所有样本的精确读数都是 0 ⇒ 比较的是两个 0（假绿）"
+        );
+        assert!(max_exact > 0, "精确读数从来没到过 0 以上");
+        assert_eq!(accounting.pending(), queue.pending() as u64, "收尾静止点");
+        assert!(accounting.pushed() >= pushed_total);
+        assert!(accounting.drained() > 0, "一次都没出队 ⇒ 并发交错没被覆盖");
     }
 }
