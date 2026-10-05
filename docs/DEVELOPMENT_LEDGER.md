@@ -8098,3 +8098,29 @@ registry count 16 -> 17, in-memory round-trip criterion via `parse_smf`), and wh
 overstated what remains. The accurate statement is one tool, one prerequisite, and a recipe for the prerequisite.
 
 **Status**: tree green and clean; CI green through `b0019b0`/`f48f516` (later runs queued); tool count verified at 16 by counting registry entries.
+
+
+### Round 333: all verdicts green, and the mapping move's app-coupling closure enumerated to the line
+
+Two results worth recording together, because between them they say both "what is verified" and "what is left".
+
+**All CI verdicts read back and green**: `b0019b0`, `f48f516`, `146e33c`, `98f3a22` (the loudness criterion, the only code commit among them) and `40fc9f3` are all
+`completed success`. The loudness item is therefore CI-verified, not merely locally verified - and `rust (yeban-mcp)` ran with **10 steps**, i.e. it was a real
+run rather than an empty green.
+
+**The app-coupling closure of `export_midi.rs` is exactly five things**, measured by grepping rather than remembered:
+
+| line | coupling |
+| :--- | :--- |
+| `:63` | `use crate::save::{SaveError, write_file_atomically};` |
+| `:124` | the `Save(SaveError)` variant |
+| `:149`, `:158` | the two `Self::Save(...)` arms (Display, Error::source) |
+| `:316` | the `write_file_atomically(...)` call inside `export_project_to_file` |
+| `:378`+ | the tests' `crate::bridge::demo_project()` calls (now `yeban_model::samples::demo_project` on the shared side) |
+
+**So the move is fully specified**: keep exactly those five couplings in `yeban-app`, move everything else, and the shared side is `yeban-midi::export` with
+its `MidiError`/`MidiFormat`/`DEFAULT_PPQ` imports from `crate::midi`. That is the whole closure - no discovery needed, which is what the twenty-six rounds of
+tooling slips failed to establish.
+
+**Status**: tree green and clean; **all CI verdicts green**; loudness item CI-verified; the MIDI export tool needs only the mapping move plus its own spec
+(registry 16 -> 17, in-memory round-trip criterion).
