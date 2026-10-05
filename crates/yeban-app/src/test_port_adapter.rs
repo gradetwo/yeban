@@ -1348,6 +1348,15 @@ fn frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness() {
     let project = yeban_model::samples::project_with_notes(100_000);
     let project_view = ViewState::from_project(&project).expect("10 万音符工程必须能投影");
     let scene = DemoScene::from_view(&project_view);
+    // 口径行（账本第 206 轮）：数字必须与**它的 backend 口径**一起被读, 否则无法判断量的是软件还是 GPU 路径。
+    // `SLINT_BACKEND` 未设置时打印 `<unset>` —— 这是事实; "未设置 ⇒ 默认后端"是推论, 由读的人结合 runner 判断。
+    // 公开 API 里**没有**查询当前 backend/renderer 名字的入口（本轮查过, 未找到）, 所以这里只报环境, 不假装知道更多。
+    println!(
+        "BASELINE-003 口径: slint_backend={} 尺寸={}x{}",
+        std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "<unset>".to_string()),
+        scene.viewport_width,
+        scene.viewport_height,
+    );
     let size = Size::new(scene.viewport_width, scene.viewport_height);
     let registry =
         registry_to_tree(&ElementRegistry::from_view(&project_view)).expect("注册表必须能适配");
