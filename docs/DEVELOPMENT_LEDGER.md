@@ -7555,3 +7555,25 @@ nonzero and my remaining context is nearly nil.
 
 **Session state at this point**: tree green and clean; CI recovered and green through `a4e4ef0`; `yeban-midi` holds the SMF codec and VLQ helper
 (18 criteria, CI-verified on both platforms); the mapping layer and the MCP tool are owed; disk 149 GiB free; whole-workspace sweep 1788 passed.
+
+
+### Round 308: the +1 is NOT in the code body - the pre-flight is flagging its own prefix
+
+Round 307's prescribed read-only diagnostic was run, and it settles the question in the opposite direction from every assumption so far: the generated
+**body** (`lib`, i.e. everything the shared crate will actually compile) has **final brace balance +0** - it is correct. Every function, impl, enum and
+`for`/`if` block closes exactly, and the two span fixes from rounds 305/306 are visibly working (the writer appears once, the `use` statements are
+gone).
+
+So the pre-flight's `+1` comes from the **prefix it builds**: the leading `//!` documentation block plus the single-line `use` statements. That is the
+third false positive from the same approximation - the counter strips `//` comments and string literals, but the prefix's documentation contains
+Rust code samples (in fenced blocks) whose braces are text, not syntax.
+
+**Consequence, and it is good news**: the generator's body is right, so the remaining work is to make the pre-flight's brace check apply to the
+**code segments only** (or to strip fenced code blocks and `///`/`//!` text before counting). That is a few lines in the checker, not in the
+generator - and once it is done the write should go through, because the thing being written is already balanced.
+
+**Honest note on method**: three of the last four rounds were spent on the checker rather than the check. The pre-flight has prevented three bad writes,
+which justifies it, but it has also produced three false positives - a reminder that a validator needs its own tests, or at least its own scepticism,
+before its verdicts are trusted.
+
+**Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed; CI green through `7b73906`.
