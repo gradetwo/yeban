@@ -3975,3 +3975,25 @@ pub fn export_diagnostics(out_dir: &Path, inputs: BundleInputs<'_>) -> Result<Bu
 `MANIFEST.txt` is written from the same list of entries that are written into the zip, so the sha256 criterion compares against
 what was actually emitted rather than against a second, separately built list. Round 151 fixed the contents, the redaction rule
 and the five criteria; this round fixes the home, the dependencies and the interface.
+
+### Round 153: `867d763` is red on CI exactly where I found it locally - and 023d382's verdict is still queued
+
+Read back (run `37331546677`, push):
+
+| leg | verdict for `867d763` |
+| :--- | :--- |
+| **`checks (fmt / 红线守卫 / schema)`** | **failure `steps=12`** |
+| `deny` / `plan` / `lockfile` | success |
+| `rust (workspace 全量)` / `windows` | still running when read |
+
+That failure is **the same defect I had already found and fixed locally**: unformatted code plus a licence inventory that did not
+yet include `zip` and `sha2`. `023d382` carries the fix. So the CI verdict and my local finding agree, which is the useful part:
+the licence gate really does catch an un-regenerated inventory, and it is not a formality.
+
+**Honest status of the two commits**: `867d763` = red (superseded by the fix). `023d382` = the dispatch run `37331615613` was
+still **queued** when read, so its verdict remains **unread**, and per the standing discipline an unread verdict is not a pass.
+The next round must read it before treating D56 step 1 as verified on CI.
+
+Note on cost, recorded because it is a direct consequence of round 149's fix: `867d763` produced **two** concurrent push runs
+(`37331546677`, `37331537178`). Giving each main run its own group stops cancellations, but it also stops de-duplication, so
+duplicate runs each consume a full CI run. That is the accepted trade - verdicts over compute - but it should be watched.
