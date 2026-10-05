@@ -2306,3 +2306,27 @@ audit exit=0
 同一次 `inventory` 也让 `MUST-GATE-005`（vendor 618 crate/795M）、`MUST-GATE-009`（产物级默认关）、
 证据审计与分支卫生一起复跑了一遍。
 
+### 第 74 轮：**D46 MCP 工具集扩张落地** —— 12 → 15 个工具
+
+**判决**: run **37275144131 = success**；`land` 输出逐字检查（`land=0` + `Merge made`），产物复核
+`grep -c yeban_edit_automation schemas/mcp-tools.schema.json` = **5**；main 上 `check_feature_alignment.py` 通过
+（**反向检查**：表里点名的工具必须在 `crates/` 里存在 —— 所以我是在**它的分支**上补表，顺序才对）。
+
+**新增三工具**（契约**只新增**；**未**加 MIDI 导出工具，遵守 `D47`）:
+- `yeban_edit_automation`：读写同一条泳道；**求值必须走唯一入口** `automation_value_at`（禁第二份求值，判据有牙）；写走 `Op`、可逆。
+- `yeban_query_engine_state`：**只读**（`SessionRuntimeState` + `audio_config.sample_rate` + `TrackV3::devices`）；
+  形态 B（stdio 二进制）无引擎进程 ⇒ `bufferFrames` 为 `null`（如实登记）。
+- `yeban_import_audio`：走既有 CAS 池 + `Op::AddClip`；**UI 侧仍无**导入入口（app 侧 `decode_path`/`yeban_decode` 零命中），
+  三方对齐矩阵如实写 `无` + `原因/计划/状态：待接线`。
+
+**该线的自证**: 三模块 `rustc --test -D warnings` ⇒ `9/9/7 passed`；裸 rustc 脚手架把 4 条**文本守卫**跑在**真实源码**上 ⇒ `CLEAN`；
+**4 条注入 → 红 → 逐字节还原**；契约↔注册表静态对账 ALL CONSISTENT。
+
+**它前两轮的红（都在 CI，只有 CI 能抓）**: ① `E0382 borrow of moved value: hash`（`import_audio.rs:293`）；
+② `clippy::needless_borrows_for_generic_args`（`automation.rs:260`）+ `clippy::useless_format`（`extension_pure.rs:120`）。
+⇒ 再次实证"**本机绿是参考，CI 判决才算数**"（本机 `yeban-mcp` 含重依赖 ⇒ crate 档 SKIP）。
+`checks` 那次红**是我的文件**（三方对齐矩阵未点名新工具）—— 与 `undo-wiring` 同因，是本会话**第二次由我造成的"线红"**。
+
+**留下的 needs（它没自己开，正确）**: `OpOrigin` 缺 `McpEdit`（借 `AutomationRecord`/`Import`，**不许在 MCP 线加 model 枚举变体**）；
+CAS 池字节不是 Op 载荷 ⇒ 撤销 `AddClip` 不回收池内字节；响度目标 `BASELINE-006` 的 Token 口径已由负责人延后 ⇒ 本轮不做；无"放置片段"工具（`Op::AddClipPlacement` 未接线）。
+
