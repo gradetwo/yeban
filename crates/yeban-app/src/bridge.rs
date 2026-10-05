@@ -317,6 +317,27 @@ pub fn tick_to_px(tick: u64, ticks_per_pixel: u64) -> Result<u32, BridgeError> {
     u32::try_from(tick / ticks_per_pixel).map_err(|_| BridgeError::PixelOverflow { tick })
 }
 
+/// `[UI-NOTE-003]`（第 234 轮的决定）**点击 tick 落在哪个片段**。
+///
+/// 只接收**摆放切片**（`ClipPlacement`），因此不假定摆放住在工程的哪一层 —— 调用方传 `track.clips` 的值即可。
+/// 区间取**半开** `[start_tick, start_tick + duration_ticks)`：正好落在末尾**不算**在内（与"时长"的直觉一致）。
+/// 多个摆放重叠时返回**迭代顺序里最后一个**（重叠不是常规情形, 但必须有确定行为而不是随机的）。
+/// 没有任何片段包含它 ⇒ `None`，调用方据此**拒绝编辑**而不是凭空造一个片段。
+#[must_use]
+pub fn clip_at_tick(
+    placements: &[(u64, u64, yeban_model::ids::EntityId)],
+    tick: u64,
+) -> Option<yeban_model::ids::EntityId> {
+    let mut hit = None;
+    for (start_tick, duration_ticks, clip_id) in placements {
+        let end = start_tick.saturating_add(*duration_ticks);
+        if tick >= *start_tick && tick < end {
+            hit = Some(*clip_id);
+        }
+    }
+    hit
+}
+
 /// `[UI-NOTE-003]` 把**铅笔决策**变成一个**可撤销的**模型操作（`Op::AddNote`）。
 ///
 /// 为什么是这一层: `Op` 自带 `apply_inverse`（`yeban-model/src/ops.rs`），所以"画一个音符"**构造上就可撤销**,
@@ -2745,6 +2766,31 @@ mod tests {
             vis.len(),
             total
         );
+    }
+
+    #[test]
+    fn clip_at_tick_is_half_open_and_refuses_gaps() {
+        // 判据（第 234 轮规则的直接后果）: 半开区间; 末尾**不算**在内; 空隙 ⇒ None;
+        // 空摆放 ⇒ None（调用方据此**拒绝**编辑, 而不是造片段）。
+        let id_a = yeban_model::ids::EntityId::new();
+        let id_b = yeban_model::ids::EntityId::new();
+        let placements = vec![(960_u64, 960_u64, id_a), (4_800, 480, id_b)];
+        assert_eq!(clip_at_tick(&placements, 960), Some(id_a), "起点算在内");
+        assert_eq!(
+            clip_at_tick(&placements, 1_919),
+            Some(id_a),
+            "末端前一 tick 在内"
+        );
+        assert_eq!(
+            clip_at_tick(&placements, 1_920),
+            None,
+            "末端**不算**在内（半开）"
+        );
+        assert_eq!(clip_at_tick(&placements, 0), None, "第一个片段之前是空隙");
+        assert_eq!(clip_at_tick(&placements, 3_000), None, "两段之间是空隙");
+        assert_eq!(clip_at_tick(&placements, 4_800), Some(id_b));
+        assert_eq!(clip_at_tick(&placements, u64::MAX), None);
+        assert_eq!(clip_at_tick(&[], 960), None, "空摆放必须拒绝而不是猜");
     }
 
     #[test]
