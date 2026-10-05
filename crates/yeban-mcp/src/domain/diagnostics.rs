@@ -15,7 +15,7 @@ use super::{ToolResponse, require_active};
 /// `plan` 的产物：已校验的输出目录 + 要在 `apply` 阶段采集的内容。
 #[derive(Debug, Clone)]
 pub struct DiagnosticsExport {
-    /// 输出目录；`None` 表示用进程当前目录。
+    /// 输出目录；`None` 表示用**系统临时目录**（不写当前目录，免得污染仓库）。
     pub out_dir: Option<std::path::PathBuf>,
 }
 
@@ -54,10 +54,12 @@ pub fn apply(
     domain: &mut super::Domain,
     planned: &DiagnosticsExport,
 ) -> Result<ToolResponse, Fault> {
+    // 缺省写到**系统临时目录**, 不写进程当前目录: 后者会让任何"无参调用"的测试
+    // 把 zip 产物落进仓库（实测: 两条测试各留一个包在 crate 目录里）。
+    // 响应里始终给出完整路径, 所以人/agent 仍然找得到它。
     let out_dir = match &planned.out_dir {
         Some(p) => p.clone(),
-        None => std::env::current_dir()
-            .map_err(|e| Fault::domain(ErrorCode::IoError, format!("取当前目录失败: {e}")))?,
+        None => std::env::temp_dir(),
     };
     if !out_dir.is_dir() {
         std::fs::create_dir_all(&out_dir).map_err(|e| {

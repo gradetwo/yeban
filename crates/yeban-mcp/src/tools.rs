@@ -773,7 +773,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             "outDir",
             "string",
             false,
-            "输出目录; 缺省为进程当前目录",
+            "输出目录; 缺省为系统临时目录 (响应里给出完整路径)",
         )],
         errors: &[ErrorCode::IoError, ErrorCode::InvalidParameterRange],
     },

@@ -1262,6 +1262,11 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_import_audio",
             json!({ "name": "Imported", "path": scratch.text("missing.wav") }),
         ),
+        // [D56] 诊断导出：`outDir` 指到 scratch 内, 免得把测试产物写进仓库。
+        (
+            "yeban_export_diagnostics",
+            json!({ "outDir": scratch.text("diag-out") }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

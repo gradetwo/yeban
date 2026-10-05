@@ -398,7 +398,7 @@
           "properties": {
             "outDir": {
               "type": "string",
-              "description": "输出目录; 缺省为进程当前目录。"
+              "description": "输出目录; 缺省为系统临时目录 (响应里给出完整路径)。"
             },
             "dryRun": {
               "type": "boolean",
