@@ -113,6 +113,38 @@ pub fn pitch_lane(pitch: u8) -> i32 {
     PITCH_LANE_COUNT - 1 - offset
 }
 
+/// `[UI-NOTE-002/003]` **泳道 → 音高**（[`pitch_lane`] 的反向）。
+///
+/// 铅笔要"在某个位置画出音符"就得先回答"这一行是哪个音高"。由 `pitch_lane` 的定义反推：
+/// `offset = PITCH_LANE_COUNT - 1 - lane`，`pitch = PITCH_LANE_BASE + offset`。
+/// 最下面一条泳道对应 `PITCH_LANE_BASE + 15`；比它更低的音高**画不出来**（车道只有 16 条）——
+/// 这不是缺陷而是当前截图的事实, 判据里以"往返"为准。
+#[must_use]
+pub fn pitch_for_lane(lane: i32) -> Option<u8> {
+    if lane < 0 || lane >= PITCH_LANE_COUNT {
+        return None;
+    }
+    let offset = PITCH_LANE_COUNT - 1 - lane;
+    let base = i32::from(PITCH_LANE_BASE);
+    u8::try_from(base + offset).ok()
+}
+
+/// `[UI-NOTE-002/003]` **y → 泳道**：`pitch_lane_y` 的反向, 供铅笔/力度工具把点击落到某一行。
+///
+/// y 是相对卷帘顶边的逻辑像素；落在 16 条泳道之外（含负数）返回 `None`。
+#[must_use]
+pub fn lane_at_y(y: f32) -> Option<i32> {
+    if !y.is_finite() {
+        return None;
+    }
+    let lane = ((y - NOTE_INSET_Y_PX) / PITCH_LANE_HEIGHT_PX).floor();
+    if lane < 0.0 || lane >= PITCH_LANE_COUNT as f32 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Some(lane as i32)
+}
+
 /// 音高 → 音符块顶边的相对 y（逻辑像素）。整数车道索引经**一次**乘法得到，不做累加。
 #[must_use]
 pub fn pitch_lane_y(pitch: u8) -> f32 {
@@ -301,6 +333,18 @@ pub struct VelocityLaneGeometry {
 }
 
 impl ViewState {
+    /// `[UI-NOTE-003]` **铅笔的决策**：在视口坐标 `(x, y)` 处画音符, 应当落在哪个 **(tick, pitch)**。
+    ///
+    /// 只做**决策**（纯函数, 可判据）：真正的模型突变要经过撤销与 MCP, 属于下一层。
+    /// `None` 表示"这里画不了"（y 落在 16 条泳道之外, 或 x 出界）。tick 已按 `grid_ticks` 吸附。
+    #[must_use]
+    pub fn pencil_plan(&self, scroll_x: f32, x: f32, y: f32, grid_ticks: u64) -> Option<(u64, u8)> {
+        let lane = lane_at_y(y)?;
+        let pitch = pitch_for_lane(lane)?;
+        let tick = self.snapped_tick_at(scroll_x, x, grid_ticks);
+        Some((tick, pitch))
+    }
+
     /// `[UI-NOTE-003]` **力度柱命中**：车道内的点落在哪个音符的力度柱上。
     ///
     /// 力度工具的左键单击是"选中对应音符的底部力度柱" ⇒ 先要知道点到的是哪根柱。
@@ -2656,6 +2700,47 @@ mod tests {
             vis.len(),
             total
         );
+    }
+
+    #[test]
+    fn lane_and_pitch_are_inverses_and_the_pencil_plan_agrees_with_both() {
+        // 判据: ① `pitch_for_lane(pitch_lane(p))` 回到**同一泳道**（在 16 条内）;
+        // ② `lane_at_y(pitch_lane_y(p))` 也回到同一泳道 —— 两条反向路径必须一致;
+        // ③ 泳道外 ⇒ None; ④ 铅笔规划出的音高, 其泳道必须正是点击 y 所在的那条;
+        // ⑤ 规划出的 tick 必须是网格倍数。
+        for pitch in 0..=u8::MAX {
+            let lane = pitch_lane(pitch);
+            if let Some(back) = pitch_for_lane(lane) {
+                assert_eq!(pitch_lane(back), lane, "泳道往返不一致: pitch={pitch}");
+            }
+            assert_eq!(
+                lane_at_y(pitch_lane_y(pitch)),
+                Some(lane),
+                "y 反推的泳道与 pitch_lane 不一致: pitch={pitch}"
+            );
+        }
+        assert_eq!(pitch_for_lane(-1), None);
+        assert_eq!(pitch_for_lane(PITCH_LANE_COUNT), None);
+        assert_eq!(lane_at_y(-100.0), None);
+        assert_eq!(lane_at_y(10_000.0), None);
+
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        let grid = 240_u64;
+        let mut planned = 0_usize;
+        for lane in 0..PITCH_LANE_COUNT {
+            let y = pitch_lane_y(pitch_for_lane(lane).expect("车道有效")) + 1.0;
+            let (tick, pitch) = view
+                .pencil_plan(0.0, 480.0, y, grid)
+                .expect("车道内必能规划");
+            assert_eq!(
+                pitch_lane(pitch),
+                lane,
+                "规划出的音高必须落在被点的那条泳道"
+            );
+            assert_eq!(tick % grid, 0, "规划的 tick 必须是网格倍数");
+            planned += 1;
+        }
+        assert_eq!(planned, PITCH_LANE_COUNT as usize, "16 条泳道都要能规划");
     }
 
     #[test]
