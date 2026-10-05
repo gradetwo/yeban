@@ -37,11 +37,18 @@
 //! | [`render_math`] | 渲染的**零第三方依赖**纯逻辑（tick→帧、归一化、包络、日历），本机可单独验证 |
 //! | [`render_clip_math`] | 音频片段装配的**零第三方依赖**纯逻辑（帧落位、增益合成、声道矩阵、重采样判定、延迟裁剪、魔数嗅探），本机可单独验证 |
 //! | [`ids`] | 确定性夹具身份（让 `dryRun` 预览与真调用逐字节相同） |
+//! | [`automation`] | `yeban_edit_automation`：泳道读（唯一求值入口）+ 写一个点（`Op`，可逆） |
+//! | [`automation_audit`] | **零依赖**审计：生产代码里不许有第二份自动化求值，本机可单独验证 |
+//! | [`engine_state`] | `yeban_query_engine_state`：设备链 + 引擎/会话读数（只读） |
+//! | [`import_audio`] | `yeban_import_audio`：`yeban-decode` + `PcmBudget` + `Op::AddClip` |
+//! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
+//! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 
 pub mod automation;
 pub mod automation_audit;
 pub mod engine_state;
 pub mod error;
+pub mod extension_audit;
 pub mod extension_pure;
 pub mod ids;
 pub mod import_audio;

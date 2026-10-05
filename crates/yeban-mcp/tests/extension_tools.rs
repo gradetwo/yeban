@@ -93,12 +93,12 @@ fn call_tool(dispatcher: &mut Dispatcher, name: &str, arguments: Value) -> Value
     response.result.expect("result")
 }
 
-/// 一次 `tools/call` 的原始 `Outcome`（用来断言 JSON-RPC 层错误）。
-fn call_tool_raw(
-    dispatcher: &mut Dispatcher,
-    name: &str,
-    arguments: Value,
-) -> (u16, Option<i64>, Value) {
+/// 一次 `tools/call` 的 **JSON-RPC 层**读数：`(http 状态, JSON-RPC 错误码)`。
+///
+/// 刻意**只**回这两个标量：判据要断言的是"坏参数走既有的 `-32602`、不是新码"，
+/// 而 `jsonrpc::ErrorObject` **没有** `to_value`（`Id::to_value` 才是那个名字）——
+/// 与其在这里再拼一份 JSON 形状（那是第 N 份会漂移的表示），不如不要它。
+fn call_tool_raw(dispatcher: &mut Dispatcher, name: &str, arguments: Value) -> (u16, Option<i64>) {
     let auth = bearer(dispatcher);
     let line = serde_json::json!({
         "jsonrpc": "2.0",
@@ -112,12 +112,10 @@ fn call_tool_raw(
     let status = outcome.http_status;
     let code = outcome.error_code();
     let response = outcome.response.expect("响应");
-    let payload = response
-        .result
-        .clone()
-        .or_else(|| response.error.as_ref().map(|error| error.to_value()))
-        .expect("result 或 error");
-    (status, code, payload)
+    // 带内失败（领域失败）不带 JSON-RPC 错误对象；实现级状况才带。
+    let looks_like_failure = response.result.is_some() || response.error.is_some();
+    assert!(looks_like_failure, "响应必须要么带 result 要么带 error");
+    (status, code)
 }
 
 /// 工程的**规范化字节**（`undo_session` 的同一口径；逐字节回退判据用它）。
@@ -979,14 +977,14 @@ fn bad_and_unknown_parameters_only_use_codes_inside_d25() {
     }
 
     // 参数形状错（类型不对 / 拼错的键）走既有 JSON-RPC 码（-32602），**不**是新码。
-    let (status, code, _) = call_tool_raw(
+    let (status, code) = call_tool_raw(
         &mut dispatcher,
         "yeban_edit_automation",
         serde_json::json!({"trackId": track.to_canonical_string(), "lane": 7}),
     );
     assert_eq!(status, 400);
     assert_eq!(code, Some(yeban_mcp::jsonrpc::INVALID_PARAMS));
-    let (status, code, _) = call_tool_raw(
+    let (status, code) = call_tool_raw(
         &mut dispatcher,
         "yeban_edit_automation",
         serde_json::json!({
@@ -1117,6 +1115,39 @@ fn no_second_automation_evaluation_in_production_sources() {
         yeban_mcp::undo_session::scan_second_undo_implementations(&all),
         Vec::<String>::new()
     );
+}
+
+/// 每个源文件都必须被 `mod` 声明（**CI 实测抓过一次**：`extension_audit.rs` 写好了
+/// 却没进 `domain/mod.rs`，于是 `tests/extension_tools.rs` 的 import 直接 `E0432`）。
+///
+/// 为什么"本机能跑"这件事对这条特别重要：本机不编译这个含重依赖的 crate，
+/// 而"文件在、模块不在"恰好是**只有编译才会发现**的错误。文本守卫把它提前到本机。
+#[test]
+fn every_source_file_is_declared_as_a_module() {
+    let mcp = yeban_mcp::undo_session::read_rust_sources(&[repo_path("crates/yeban-mcp/src")]);
+    assert_eq!(
+        extension_audit::scan_orphan_modules(&mcp),
+        Vec::<String>::new(),
+        "有源文件没有被 `mod` 声明 —— 它不在 crate 里, 任何 import 都会 E0432"
+    );
+    // 反向：守卫**确实**抓得住孤儿（否则这条判据是空转的）。
+    let injected = vec![
+        (
+            "crates/yeban-mcp/src/lib.rs".to_owned(),
+            "pub mod domain;\n".to_owned(),
+        ),
+        (
+            "crates/yeban-mcp/src/domain/mod.rs".to_owned(),
+            "pub mod error;\n".to_owned(),
+        ),
+        (
+            "crates/yeban-mcp/src/domain/injected_orphan.rs".to_owned(),
+            "pub fn f() {}\n".to_owned(),
+        ),
+    ];
+    let found = extension_audit::scan_orphan_modules(&injected);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("injected_orphan"), "{found:?}");
 }
 
 #[test]
