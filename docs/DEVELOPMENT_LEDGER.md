@@ -8124,3 +8124,23 @@ tooling slips failed to establish.
 
 **Status**: tree green and clean; **all CI verdicts green**; loudness item CI-verified; the MIDI export tool needs only the mapping move plus its own spec
 (registry 16 -> 17, in-memory round-trip criterion).
+
+
+### Round 334: the wrapper's API contract confirmed from its callers - the move is now specified end to end
+
+Grepped the callers rather than trusting the module's own shape, and the contract is exactly three public items:
+
+    crates/yeban-app/src/cli.rs:55    use crate::export_midi::{MidiExportError, MidiExportReport, export_project_to_file};
+    crates/yeban-app/src/cli.rs:786   source: MidiExportError,        // must implement std::error::Error
+    crates/yeban-app/src/cli.rs:2616  let error = crate::export_midi::export_project_to_file(...)
+
+**So the rebuild has a fixed target**: `MidiExportError` (with `Display` and `Error`, plus the `Save` variant that cli.rs:786's context formats), a re-export of
+`MidiExportReport`, and `export_project_to_file`. Nothing else in the app touches the module, which is why the wrapper can be rebuilt from named parts without
+inventing anything.
+
+**With round 333's five couplings and this round's three call sites, the mapping move has no unknowns left**: keep the save import, the `Save` variant, its two
+match arms and the atomic-write call in the app; move everything else to `yeban_midi::export` with `crate::midi` imports; rebuild the app module as the wrapper
+plus its two writer tests. Both sides' contents and the public surface are enumerated, and the compiler is needed only to confirm, not to discover.
+
+**Status**: tree green and clean; all CI verdicts green through `f7a664d`'s predecessor `40fc9f3`; the loudness item is CI-verified; the mapping move is fully
+specified; the MCP export tool follows it.
