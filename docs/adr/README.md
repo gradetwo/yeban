@@ -15,3 +15,4 @@ Architecture Decision Record。当 Normative 规范之间冲突、或规范对�
 | 编号 | 标题 | 状态 |
 | :--- | :--- | :--- |
 | [ADR-0001](./ADR-0001-workspace-topology-and-version-pinning.md) | 工作区拓扑、命名与版本钉死 | Proposed |
+| [ADR-0002](./ADR-0002-baseline-verdict-hardware.md) | BASELINE 系列的判定硬件（参考机 vs 托管 runner） | Proposed（待 HD-49）|
