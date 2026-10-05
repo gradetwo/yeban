@@ -87,6 +87,18 @@ def main() -> int:
     if "flags_for_ids(" not in host:
         problems.append("host.rs 未用 flags_for_ids ⇒ 标志可能与可见集错位")
 
+    # 第八处：`active-tool` 的三级镜像 + 宿主可读（第 258/561 轮）。
+    # ⚠ 检查必须带**冒号**：第一版用裸名字, 于是 `active-tool-REMOVED` 也命中 ⇒ 守卫**无牙**（牙测当场发现）。
+    # 与 `note-selected` 同一理由: 三级链掉一级只有在"属性被引用"时才编译报错, 而"处处声明却从不读"也不会被发现。
+    if "in property <int> active-tool:" not in roll:
+        problems.append("active-tool 未在 piano_roll.slint 声明（三级链缺一级）")
+    if "in-out property <int> active-tool:" not in tabs:
+        problems.append("active-tool 未在 console_tabs.slint 声明（三级链缺一级）")
+    if "in-out property <int> active-tool:" not in slint:
+        problems.append("active-tool 未在 app.slint 声明（三级链缺一级）")
+    if "get_active_tool(" not in host and "get_active_tool(" not in crit:
+        problems.append("没有任何地方读 get_active_tool( ⇒ 镜像了但没人用（第 244 轮的缺口会重现）")
+
     if problems:
         print("[FAIL] viewport-bounds-wiring:")
         for p in problems:
@@ -94,7 +106,7 @@ def main() -> int:
         return 1
     print(
         f"[ok] viewport-bounds-wiring: {len(BOUNDS)} 个视口边界在三处齐全,"
-        f"泳道数一致 ({lane_ok}), 音符框高一致 ({height_ok}), note-selected 三级齐全"
+        f"泳道数一致 ({lane_ok}), 音符框高一致 ({height_ok}), note-selected 三级齐全, active-tool 三级可达"
     )
     return 0
 
