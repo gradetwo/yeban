@@ -8055,3 +8055,22 @@ rounds were missing - a real, specific, fixable finding rather than another tool
 
 **Status**: tree green and clean (failure path reverted); CI green; loudness contract, struct, call sites and payload landed; the criterion needs one
 tolerance-based comparison.
+
+
+### Round 331: the loudness item is CLOSED on the tool side - it reaches clients through the existing engine tool
+
+Verified rather than assumed: `yeban_query_engine_state` (`crates/yeban-mcp/src/tools.rs:84`, handler at `:716`, registry entry at `:1335`) is the tool that
+carries the engine payload, and the five loudness keys now live in that payload (`engine_value`). So the item needs **no new tool and no registry-count
+change** - the readings reach clients through the surface that already exists, which is the right shape: the objective's "响度目标" is a **target read from the
+engine mirror**, not a separate command.
+
+**Closed, with evidence at each step**: the contract is decided (Option-typed host-injected readings, round 327); the struct carries the five fields with a
+derive that dropped `Eq` and a `Default` meaning "not measured" (`e3f3268`); the five construction sites use `..EngineReadings::default()`; the payload
+publishes `integratedLufs`/`momentaryLufs`/`shortTermLufs`/`loudnessRangeLu`/`truePeakDbfs` (`b0019b0`); and the criterion asserts null-when-absent,
+null-when-unmeasured and echo-within-tolerance (`98f3a22`, 278 MCP lib tests green).
+
+**What remains is not this item**: the engine-side **producer** stays a needs entry, because filling the readings requires the transport choice the负责人 may
+still prefer to make - and, as round 327 recorded, that choice changes neither the tool nor its criteria.
+
+**Status**: tree green and clean; CI green through `e3f3268` (later runs still queued at the time of writing); the mapping layer and the MCP export tool remain
+the outstanding work, with `N-MCP-MIDI-1` recording the recipe.
