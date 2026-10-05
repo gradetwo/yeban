@@ -308,7 +308,8 @@ CARGO_MANIFEST_DIR=$PWD/crates/yeban-ui-mcp /tmp/uimcp-probe2/uimcp_tests
 | 轮次 | run id | tip | 判决 | 读数 |
 | :--- | ---: | :--- | :--- | :--- |
 | 1 | [37254896937](https://github.com/gradetwo/yeban/actions/runs/37254896937) | 本线第 1 次推送 | **红** | `rust (yeban-ui-mcp)` clippy 2 条 + `rust (yeban-app)` 的 `live_ui_mcp` 1 条（§5.1）；`checks` / `deny` / `plan` / `lockfile` 绿 |
-| 2 | **pending** | §5.1 的三处修复 | 未读回 | 推送后用 `bash scripts/dev/ci-verdict.sh line/ui-mcp-dryrun-ime` 读回 |
+| 2 | [37255336054](https://github.com/gradetwo/yeban/actions/runs/37255336054) | `e8ce77c`（§5.1 的三处修复） | **绿** | `✓ rust (yeban-app)` 4m5s / `✓ rust (yeban-ui-mcp)` 2m12s / `✓ checks` / `✓ deny` / `✓ lockfile` / `✓ plan`；`windows` 与 `rust (workspace 全量)` 不在受影响集合（0s skipped）。读回命令 `bash scripts/dev/ci-verdict.sh line/ui-mcp-dryrun-ime`（退出码 0；`--list` 同一行 `success`） |
+| 3 | 见下一段 | **只改本文档**的补记（把上面那行判决写回台账） | 未读回 | 该提交不含任何源码/判据改动，但按 L32"未读回的判决记为 pending"，它的判决仍以 CI 为准 |
 
 `bash scripts/dev/ci-verdict.sh line/ui-mcp-dryrun-ime` 读回；**未读回之前一律记 `pending`**。
 本文件的读数只覆盖 §6.1，任何"CI 通过"的说法都必须带上 run id。
