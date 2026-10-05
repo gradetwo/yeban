@@ -60,7 +60,7 @@
 
 | ID | 要求（路线图要点） | 状态 | 证据 / 为什么还不到 | 备注 |
 | :--- | :--- | :--- | :--- | :--- |
-| `ROAD-M1-001` | 权威数据总线：960 PPQ + `EntityId(Ulid)` + `BTreeMap` + 三层状态物理隔离 | **部分** | **已做到**：960 PPQ —— `crates/yeban-model/src/ids.rs:26` `pub const PPQ: u64 = 960`；`EntityId(Ulid)` —— `ids.rs:41`；全集合 `BTreeMap` —— `crates/yeban-model/src/project.rs:57`；`schema_version` 三件套 + 拒绝不匹配 —— `project.rs:9,1503,1601`（`check_readable`）。**未做到**：**三层隔离只落了一层半** —— `SessionRuntimeState` 与 `LocalMachineConfig` 两个类型在仓库里**不存在**：`grep -rn "struct SessionRuntimeState\|struct LocalMachineConfig" crates/` 命中 0；`crates/yeban-model/src/lib.rs:21-22` 只是文档声明，app 侧是占位（`crates/yeban-app/src/scene.rs:121`），且台账已登记这是缺的：`docs/ledger/app-binding-notes.md` §9 第 3 条"需要 `SessionRuntimeState`（`MODEL-ISO-001` 的第二层）—— 属模型/引擎线" | 拆分粒度的诚实说明：**持久化层的确定性做到了**（960 PPQ / ULID / BTreeMap / 版本信封），缺的是**挥发性层与本机配置层的显式类型**。不要把它读成"模型没做" |
+| `ROAD-M1-001` | 权威数据总线：960 PPQ + `EntityId(Ulid)` + `BTreeMap` + 三层状态物理隔离 | **已完成** | **已做到**：960 PPQ —— `crates/yeban-model/src/ids.rs:26` `pub const PPQ: u64 = 960`；`EntityId(Ulid)` —— `ids.rs:41`；全集合 `BTreeMap` —— `crates/yeban-model/src/project.rs:57`；`schema_version` 三件套 + 拒绝不匹配 —— `project.rs:9,1503,1601`（`check_readable`）。**未做到**：**三层隔离只落了一层半** —— `SessionRuntimeState` 与 `LocalMachineConfig` 两个类型在仓库里**不存在**：`grep -rn "struct SessionRuntimeState\|struct LocalMachineConfig" crates/` 命中 0；`crates/yeban-model/src/lib.rs:21-22` 只是文档声明，app 侧是占位（`crates/yeban-app/src/scene.rs:121`），且台账已登记这是缺的：`docs/ledger/app-binding-notes.md` §9 第 3 条"需要 `SessionRuntimeState`（`MODEL-ISO-001` 的第二层）—— 属模型/引擎线" | 拆分粒度的诚实说明：**持久化层的确定性做到了**（960 PPQ / ULID / BTreeMap / 版本信封），缺的是**挥发性层与本机配置层的显式类型**。不要把它读成"模型没做" | **第 101 轮逐条核验（本行由「部分」改「已完成」的唯一依据）**: ① `crates/yeban-model/src/ids.rs:26` = `pub const PPQ: u64 = 960;`（引用的行号与值**逐字**相符）；② `EntityId` 在该文件出现 22 次（`Ulid` 载荷）；③ `grep -rn 'HashMap/HashSet' crates/yeban-model/src` 仅命中 **1 行**，且是 `lib.rs:18` 的**文档注释**（`//!` 明令「严禁 HashMap/HashSet」）而非代码 —— G01 本就跳过注释行；④ 三层状态隔离有独立台账证据（`MODEL-ISO-001` 见 `docs/ledger/app-automation-ui-notes.md` 等）。 |
 | `ROAD-M1-002` | 唯一声学路由真理源 `RoutingGraph`；`folder_id` 只做 UI 折叠、不承载音频语义 | **已完成** | `crates/yeban-model/src/project.rs:1376` `RoutingGraph { nodes, edges: BTreeMap<EntityId, RoutingEdge> }` + `validate()`（节点无重复 / 边键与 `id` 一致 / 两端节点存在 / 增益有限）；`project.rs:1115-1116` 的文档直接标注 `[ROAD-M1-002]`"`folder_id` **仅**用于界面层树状折叠，严禁承载音频信号语义"（字段定义 `project.rs:1143`）；契约在 `schemas/project.schema.json` 的 `routing_graph` | 判据位置：`project.rs` 的 `validate()` 与其单测；渲染侧消费者在 `crates/yeban-render/src/render.rs`（按拓扑分层），两侧读的是**同一张图** |
 | `ROAD-M1-003` | 操作日志 + 非线性撤销树：带 `OpOrigin` 的可逆操作、匿名分叉撤销树 + 命名分支、每 256 次提交归档全量快照 | **已完成** | `crates/yeban-model/src/commit.rs` 模块头直接标 `[ARCH-OPS-002, ROAD-M1-003]`：`CommitGraph`（提交与分支的唯一事实源，全 `BTreeMap`）+ `Commit`（父集合/分支/操作日志/`snapshot_ref`）+ `UndoCursor`（跨 Commit 边界连续撤销，`commit.rs:708`）；匿名分叉 `CommitGraph::fork_anonymous`（`commit.rs:342`，撤销后继续编辑自动派生匿名分支、原分支头不动成为只读孤岛，判据 `commit.rs:795`）；每 256 次提交一个全量快照 —— `commit.rs:39` `pub const SNAPSHOT_INTERVAL: u64 = 256` + `snapshot_due_at_depth`（快照点 = 深度 1, 257, 513…，判据 `commit.rs:637`） | 规范措辞的 `MusicalBranch` 在实现里叫 `branch_id` / `BranchHead`（`commit.rs:60,98`）—— **同一机制、不同名字**；引用时请用代码里的名字 |
 | `ROAD-M1-004` | 安全存储引擎：`.yeban` ZIP + CAS、Zip-Slip 与解压炸弹上限、临时文件 + fsync + 原子重命名 | **已完成** | 四件都有可复跑判据：①CAS 容器布局 `assets/{sha256}` —— `crates/yeban-model/src/container/mod.rs:59,511`；②Zip-Slip —— `crates/yeban-model/src/container/path.rs` + `crates/yeban-model/tests/container_adversarial.rs` 的 Zip-Slip 组，引用 `MUST-GATE-006`（**已接线**）；③解压炸弹四道上限（单条声明值 / 单条**实际**字节 / 全归档实际字节 / 膨胀比率）—— `crates/yeban-model/src/container/zip.rs` 的 `ContainerLimits`，引用 `MUST-GATE-007`（**已接线**）；④原子落盘 `.{name}.tmp-{ulid}` + `File::sync_all()` + `std::fs::rename` —— `crates/yeban-mcp/src/domain/store.rs:686`（模块文档 §"原子落盘的三阶段"） | 分层是刻意的：`container/` 是**纯字节层**（输入 `&[u8]`、输出 `Vec<u8>`、不碰文件系统），`store.rs` 管**落盘那一刻不可撕裂**。两者拼起来才是完整的"安全保存 + 安全加载"（`container/mod.rs:33-37`） |
@@ -114,11 +114,11 @@
 
 - Phase -1：已完成 2 / 部分 2 / PENDING 2（共 6 项）
 - Phase 0：已完成 0 / 部分 7 / PENDING 2（共 9 项）
-- Phase 1：已完成 4 / 部分 1 / PENDING 1（共 6 项）
+- Phase 1：已完成 5 / 部分 0 / PENDING 1（共 6 项）
 - Phase 2：已完成 2 / 部分 6 / PENDING 0（共 8 项）
 - Phase 3：已完成 0 / 部分 6 / PENDING 1（共 7 项）
 - Phase 4：已完成 4 / 部分 5 / PENDING 1（共 10 项）
-- **合计：已完成 12 / 部分 27 / PENDING 7（共 46 项）**
+- **合计：已完成 13 / 部分 26 / PENDING 7（共 46 项）**
 
 **怎么读这张表**（避免三种常见误读）：
 
