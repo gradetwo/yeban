@@ -322,7 +322,7 @@ arguments.path 存在        → 原样使用（空串/纯空白 ⇒ INVALID_PAR
 | ~~**needs-1**~~ | ~~**音频片段渲染**（`ClipContent::Audio` 的 CAS 资产）~~ | **已关闭**（`line/audio-render`，`44a071a` 之后） | 解码 → 延迟裁剪 → `rubato` 重采样 → `AudioClipSource`；台账 [`audio-render-notes.md`](audio-render-notes.md) |
 | ~~**needs-2**~~ | ~~**重采样**（`sampleRate` ≠ 工程采样率）~~ | **已关闭**（`line/audio-render`） | `yeban_decode::resample_interleaved`（sinc/BlackmanHarris2/256/1024）；响应写清口径，按 `D32` **不**作跨架构位级承诺 |
 | **needs-3** | **设备链 DSP / 自动化求值** | 引擎层 | 需要 engine 线的参数求值与自动化曲线求值接口；本线只把 `latency_samples` 接进 PDC |
-| **needs-4** | `Op` 全集缺 `AddClip`/`AddRoutingNode`（承接 `tools-domain` 的 needs-1） | 规范缺口 | 与 `yeban_propose_section` 的"配器骨架"同一个缺口；本线未触碰 |
+| ~~**needs-4**~~ | ~~`Op` 全集缺 `AddClip`/`AddRoutingNode`（承接 `tools-domain` 的 needs-1）~~ | **已关闭**（`ADR-0001` **D27** 追认 `Op` 23 → 27；下游接线由 `line/propose-section` 于 2026-10-05 完成） | `yeban_propose_section` 现在真的产出骨架与声部连接（`AddClip` + `AddClipPlacement` + `AddRoutingNode` + `ConnectRouting`），`data.unwired` 改为从真实 `opKinds` 推导（为空）。台账 [`propose-section-notes.md`](propose-section-notes.md) |
 | **needs-5** | `bext` v2 响度哨兵 / 工程 ULID 的规范落点（承接 `render-master` 的 needs） | 需要人类裁决（EBU Tech 3285 PDF 不可机读） | 本线沿用 `Loudness::UNKNOWN` 与 `OriginatorReference`，并把 `CodingHistory` 换成**真实**参数（不再写 `<sample_rate>` 字面量） |
 | **needs-6** | `yeban-mcp` 的**性能回归**（`BASELINE-001` 之外：单次渲染时延） | 未打点 | 本线没有 `criterion`；若要门禁化，需要固定硬件 |
 | **needs-7** | `run-gates.sh crate yeban-mcp` 在本机会编译 `rayon/hound/midly` | 门禁口径 | 建议给 `run-gates.sh` 的 `heavy_deps_of` 增加"**传递**重依赖"识别（现在只看本 crate 清单），否则本线每次本机门禁都会真编译重依赖 —— 与 AGENTS.md §5.2 的纪律冲突 |

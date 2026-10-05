@@ -16,6 +16,17 @@
 > 本文件回答四个问题：**十个工具各自到底做到哪一步**、**`dryRun`/幂等怎么被证明**、
 > **哪些东西明确没做**、**需要谁裁决什么**。
 
+> ## 追加（2026-10-05，`line/propose-section`）：`MCP-TOOL-005` 的**假阻塞已拆**
+>
+> 本文件下面关于 `yeban_propose_section` 的"表达不出来 / `unwired`"结论**已经过期**：
+> `Op` 全集早在 `ADR-0001` **D27**（= `HD-12`，2026-10-04 追认）就从 23 扩到 **27**，
+> `AddClip`/`RemoveClip`/`AddRoutingNode`/`RemoveRoutingNode` **四个变体都在**
+> `crates/yeban-model/src/ops.rs`。`line/propose-section` 据此把"章节配器骨架 + 声部连接"
+> **真的**生成出来（`AddClip` + `AddClipPlacement` + `AddRoutingNode` + `ConnectRouting`），
+> 并把 `data.unwired` 从"写死的声明"改成"从真实 `opKinds` 推导"（代码真的做了 ⇒ 报空；
+> 哪条相位被删掉 ⇒ 响应自己把键报回来）。**下面涉及 `MCP-TOOL-005` 的行已就地改写，其余行未动。**
+> 详细账目（真实 JSON 增量、逆操作 sha256、3 次注入）：`docs/ledger/propose-section-notes.md`。
+
 ---
 
 ## 1. 落地清单（文件 ↔ 规范 ID）
@@ -27,7 +38,8 @@
 | `src/domain/store.rs` | `ARCH-SEC-004`、`ARCH-SEC-001` | 工程文件读取、**原子落盘**（同目录临时文件 + `sync_all` + `rename`）、`.yeban.lock` 原子创建/释放、SHA-256 摘要 |
 | `src/domain/view.rs` | `MCP-TOOL-004` | 字段选择器白名单 + 分页（实体索引**不含音符**） |
 | `src/domain/notes.rs` | `MCP-TOOL-006` | `NoteOp`（4 种 `kind`）→ `Op` 编译、音域/发声数校验 |
-| `src/domain/section.rs` | `MCP-TOOL-005` | 风格预设 → 段落 + 声部音轨骨架；**DFS 着色判环**（模型层不判环） |
+| `src/domain/section.rs` | `MCP-TOOL-005` | **契约适配层**：`BuildFault` → `Fault`（7 个类别穷举映射进 D25 契约 enum）、`Op` → JSON（旧模块头的"表达不出来"断言与写死 `unwired` 的 `preview()` 已删，`ADR-0001` D43） |
+| `src/domain/section_build.rs` | `MCP-TOOL-005`、`ARCH-OPS-001/002` | **零重依赖**骨架生成器：`AddClip` ×N + `AddTrack` ×N + `AddClipPlacement` ×N + `AddRoutingNode` ×N(+1) + `ConnectRouting` ×N → 单一 `Op::Batch`；**DFS 着色判环**（模型层不判环）；缺材料/缺主总线 ⇒ 明确错误。本机可用裸 `rustc --edition 2024 --test` 真跑（脚手架 `verify/section_pure.rs`） |
 | `src/domain/macros.rs` | `MCP-TOOL-007` | 宏旋钮 + 按 `MacroMapping` 级联 S 曲线自动化点 |
 | `src/domain/proposal.rs` | `MCP-TOOL-005/006/007/009/010`、`ARCH-OPS-002` | 提案记录（状态、基于哪个提交、op 清单、合并/拒绝留痕） |
 | `src/domain/render.rs` | `MCP-TOOL-008` | 渲染参数校验（`format` 白名单 + 走模型层 `SampleRate::from_hz`）；**渲染本体已由 `line/mcp-render` 接线** |
@@ -52,7 +64,7 @@
 | `MCP-TOOL-002` | `yeban_save_project` | **真做** | `ARCH-SEC-004` 三阶段原子落盘（同目录临时文件 + `File::sync_all` + `rename`）；失败**不破坏原文件**且清理临时文件；`ENOSPC`/`StorageFull`/`QuotaExceeded` → `DISK_FULL`；无改动默认跳过、`force: true` 强制落盘；只读会话拒绝落盘 | 未做"CAS 资产池"（裸 JSON 里没有资产字节）；`DISK_FULL` 只有**映射判据**（用合成 `io::Error` 钉住），没有真把磁盘写满（做不到，见 §5 boundary-2） |
 | `MCP-TOOL-003` | `yeban_close_project` | **真做** | `saveFirst`（缺省 `true`）先原子保存再释放；`Drop` 释放 `.yeban.lock`；已关闭再关 → `NO_ACTIVE_PROJECT`；只读会话不尝试保存 | — |
 | `MCP-TOOL-004` | `yeban_query_project` | **真做** | 字段选择器**白名单**（24 个，非法 → `INVALID_FIELD_SELECTOR` + 可选清单）；分页 `limit`/`offset`（默认 100 / 上限 1000 且夹紧上报）；实体索引只带 `{kind,id,name}` ⇒ 响应体积与音符数**解耦** | 选择器语法是白名单，不是自由 JSONPath（这是有意的，见 `view.rs` 模块头） |
-| `MCP-TOOL-005` | `yeban_propose_section` | **半做** | 4 个风格预设（未知 → `STYLE_NOT_FOUND`）；`bars` 1..=64（越界 → `OUT_OF_RANGE`）；调式写法校验；段落起点接在最后一个段落之后；每个声部一条 MIDI 音轨；**整批 op 在克隆体上模拟后才建提案**；现有路由图成环 → `CYCLE_DETECTED` | §7.2 的"**声部连接**"与"配器骨架里的**片段**"没有产出：`ARCH-OPS-001` 的 `Op` 全集**没有** `AddClip`/`RemoveClip` 与 `AddRoutingNode`，而 `Op::ConnectRouting` 的前置条件要求两端已在 `routing_graph.nodes` 里 ⇒ **表达不出来**。响应里用 `data.unwired = ["clipPoolEntries","routingEdges"]` 明示（见 §5 needs-1） |
+| `MCP-TOOL-005` | `yeban_propose_section` | **真做**（`line/propose-section` 接线后） | 4 个风格预设（未知 → `STYLE_NOT_FOUND`）；`bars` 1..=64（越界 → `OUT_OF_RANGE`）；调式写法校验（**且真的进输出**：等音类移调到主音，超界八度折叠）；段落起点接在最后一个段落之后；每个声部一条 MIDI 音轨 + **一条真实片段池条目**（`AddClip`，内容取自工程里已有的 MIDI 材料，按 `BTreeMap` 键序轮转）+ **一条覆盖整段的摆放**（`AddClipPlacement`）；**声部连接真的产出**（`AddRoutingNode` + `ConnectRouting`，`TrackToBus`，`gain_db: None`）；缺材料 → `CLIP_NOT_FOUND`（带 `missing`/`why`）；缺主总线 → `TRACK_NOT_FOUND`；现有路由图成环 → `CYCLE_DETECTED`；**整批 `Op::Batch` 在克隆体上模拟 + `validate()` 后才建提案**，逆操作逐字节可回退 | 已**不再**有"表达不出来"的缺口（`ADR-0001` D27）。剩下的**如实缩水**：① 调式只用了主音音级，**没有用调式音阶结构**（`D dorian` 与 `D minor` 产物相同，需 `yeban-theory::scale` 语义）；② 声部音轨没有设备/乐器（骨架发不出声）；③ 材料装配算法（轮转 + 移调）是本地裁决；④ `clip_pool` 为空时无路可走 —— **没有任何 MCP 工具能创建片段池条目**（见 §5 needs-1 / needs-8）。详细账目：`docs/ledger/propose-section-notes.md` |
 | `MCP-TOOL-006` | `yeban_edit_notes` | **真做** | 4 种 `NoteOp`（`add`/`delete`/`move`/`velocity`）→ `Op` 编译；`Delete` 的 `previous_note` 从当前文档读取；音域 `0..=127`（含平移后）→ `OUT_OF_RANGE`；**发声数峰值 > 32** → `OUT_OF_RANGE`（带 peak/limit）；音符不存在 → `ENTITY_NOT_FOUND`；产物是提案（可逆、可审查） | `NoteOp` 的 JSON 形状没有契约（§5 needs-2）；"发声数"上限 32 是本地常量 |
 | `MCP-TOOL-007` | `yeban_set_macro` | **半做** | 音轨 → `TRACK_NOT_FOUND`；宏下标 → `INDEX_OUT_OF_BOUNDS`（带 `macroCount`）；值域 `0.0..=1.0` 且有限 → `OUT_OF_RANGE`；`Op::SetMacro` 的 `old_val` 从文档读；按每个 `MacroMapping` 展开 2 个 S 曲线自动化点（起点 → 一小节后） | **级联点的物理量纲**：`MacroMapping` 只有 `depth`，参数真实值域（dB/Hz/%）住在设备层 ⇒ 写的是**归一化值**，响应里 `normalized: true`（见 §5 needs-4） |
 | `MCP-TOOL-008` | `yeban_render_master` | **真做（渲染本体已由 `line/mcp-render` 接线）** | `format` 白名单（`wav`/`rf64`/`bw64`）；`sampleRate` 走**模型层** `SampleRate::from_hz` 允许集合；`normalize` 缺省 `false`；无活跃工程 → `NO_ACTIVE_PROJECT`；**真调用 `yeban-render`**：`track_latencies(DeviceDefinition::latency_samples)` → `RenderPlan::compile_with_latencies` → 逐源节点注入 MIDI 合成源 → `execute` → Master 增益/峰值归一化 → TPDF 抖动 → 24-bit → RIFF/RF64/BW64 + `bext` → **原子落盘**（同目录 tmp + `fsync` + rename）；响应给出实测 帧数/声道/采样率/字节数/SHA-256/块数/最长延迟路径；`dryRun` 走同一条**只读**渲染路径（不落盘、目录为空）| **能力边界**（只要工程里出现就进响应 `unsupported`）：设备链 DSP（`deviceChainDsp`，只有延迟进了 PDC）、外部插件、自动化曲线、循环重复、`ratchet`/`probability`/弯音/滑音/歌词；采样率 ≠ 工程采样率 ⇒ 由 `rubato` sinc 重采样（**已接线**，`line/audio-render`）；音频片段（`ClipContent::Audio`）**真渲染**（解码 → 延迟裁剪 → 重采样 → 落位 → 门控 → PDC），`audioClips` 只在"工程声明了资产而会话池里没有字节"时登记；`sfzSampler` 在本模型 `DeviceKind` 里**没有变体**。`BUSY` 在当前单线程同步架构下**不可达**（登记，不是遗漏）。台账：`docs/ledger/mcp-render-notes.md`、`docs/ledger/audio-render-notes.md` |
@@ -60,8 +72,9 @@
 | `MCP-TOOL-010` | `yeban_reject_proposal` | **真做** | 未知提案 → `PROPOSAL_NOT_FOUND`（带 `proposalId`）；已拒绝再拒 → `alreadyRejected`（幂等）；已合并再拒 → `CONFLICT`；**记录保留**（`status`/`resolvedAt`/`resolution` = 拒绝原因）⇒"拒绝也必须可追溯"；拒绝**不改工程字节** | 未真正"释放无用内存快照"（`CommitGraph` 没有 GC API） |
 
 **一句话**：**十个工具现在全部真的做事** —— 原来的 1 处未接线（`render_master` 的渲染本体）
-已由 `line/mcp-render` 接线；剩下的缩水只有 `open_project` / `propose_section` / `set_macro`
-的各项（见上表那三行，逐条写了缩水在哪）。
+已由 `line/mcp-render` 接线；`propose_section` 的"配器骨架 + 声部连接"已由 `line/propose-section`
+接线（`Op` 侧的前提是 `ADR-0001` D27 把全集从 23 扩到 27）；剩下的缩水只有
+`open_project` / `set_macro` 的各项（见上表那两行，逐条写了缩水在哪）。
 上一线的 **P1**（"十工具一律 `-32005 NOT_IMPLEMENTED`"）**关闭**，且**本 crate 的工具路径上
 不再有任何实现级 `-32005` 出口**（只剩"本平台没有 OS 建议锁"这一条，
 见 `docs/ledger/lock-advisory-notes.md`）。`yeban_render_master` 的能力边界与实测数字见
@@ -185,6 +198,19 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 而它依赖表里确实只有 `serde`/`serde_json`/`sha2`/`thiserror`/`ulid`（纯 Rust）。
 因此本线的 `clippy -D warnings` 与全部测试都是**本机实测**，不是"留给 CI"。
 
+> ⚠ **2026-10-05（`line/propose-section`）读数更新**：本节上一段的"没有被 SKIP"**已经过期**。
+> `yeban-mcp` 现在还有一个 `line/mcp-render` 接进来的 `yeban-render`（rayon/hound/midly）
+> 与 `yeban-decode`（symphonia/rubato）⇒ 本机执行
+> `bash scripts/gates/run-gates.sh crate yeban-mcp` 得到的是
+> `SKIP yeban-mcp 含重依赖, 本机不编译 (交给 GitHub CI)`。
+> `line/propose-section` 因此把"骨架生成"抽成 **零重依赖模块** `src/domain/section_build.rs`，
+> 在本机用裸 rustc 真跑（`bash scripts/dev/cargo-local.sh build -p yeban-model` +
+> `rustc --edition 2024 --test -D warnings crates/yeban-mcp/verify/section_pure.rs
+> --extern yeban_model=… --extern serde_json=… -L dependency=target/debug/deps`
+> ⇒ **25 passed; 0 failed**，另跑 `clippy-driver -D clippy::all` ⇒ exit 0）。
+> `crate yeban-mcp` 的 clippy 与端到端判据**只有 CI 判决算数**
+> （严格区分见 `docs/ledger/propose-section-notes.md` §7）。
+
 ### 4.2 注入 → 变红 → 还原（**每条都真做过，退出码为准**）
 
 方法：把 `dispatch.rs` / `store.rs` / `tools.rs` 备份到 `/tmp/td-drill/`，
@@ -202,6 +228,21 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 `cargo test` 在第一个失败的目标之后就停了，因此集成目标**根本没跑**。
 如果就此写成"e2e 判据也红了"，那就是 L12/L15 同族的假读数。第二遍显式 `--test tools_e2e` 才拿到真结论。
 
+> **2026-10-05 追加（`line/propose-section`，3 条）**：本机编不动 `yeban-mcp` 整个 crate，
+> 因此注入取在**零重依赖**的 `section_build.rs` 上，用裸 rustc 脚手架取证
+> （备份 → Python 精确替换 → 重编译重跑 → 还原后 **sha256 比对**确认逐字节回到原状）。
+>
+> | # | 注入 | 变红的判据（实测） | 还原 |
+> | :--- | :--- | :--- | :--- |
+> | **E** | 骨架生成改成**空操作**（不加 `AddClip`） | `10 passed; 15 failed` —— `skeleton_and_voice_routing_really_exist_after_applying`、`unwired_is_derived_from_the_real_ops`（`unwired` **自己**报回 `clipPoolEntries`）、`op_summary_matches_the_real_delta`、`skeleton_ids_are_never_nil_and_are_distinct` … | ✅ `25 passed; 0 failed`（sha256 `e00772…` 与备份一致） |
+> | **F** | **连接生成整段删掉**（不加路由节点、不加路由边） | `20 passed; 5 failed` —— `skeleton_and_voice_routing_really_exist_after_applying`、`unwired_is_derived_from_the_real_ops`（报回 `routingEdges`）、`routing_edges_are_never_cyclic`、`a_master_bus_missing_from_the_node_table_is_added_once`、`an_existing_master_bus_node_is_not_added_twice` | ✅ 同上 |
+> | **G** | 把 `unwired` **加回来**（恒返回两个旧键） | `24 passed; 1 failed` —— 精确红一条：`unwired_is_derived_from_the_real_ops` | ✅ 同上 |
+>
+> **诚实区分**：E/F/G 变红的是**本机**判据；CI 侧对应的机械保护是
+> `tests/tools_e2e.rs::propose_section_creates_a_real_section_and_is_deterministic` 里的
+> `assert_eq!(first["data"]["unwired"], json!([]))`（本机跑不了，由 CI 判）。
+
+
 ### 4.3 交给 CI 的部分
 
 - `rust (workspace)` 全量腿：本机**不能**跑（`--workspace` 被 `cargo-local.sh` 直接拒绝）。
@@ -216,7 +257,7 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 
 | # | 边界 | 说明 |
 | :--- | :--- | :--- |
-| boundary-1 | `Op` 全集的**表达力缺口**已实测，但只在本线内部规避 | 见 needs-1 / needs-5 |
+| boundary-1 | ~~`Op` 全集的**表达力缺口**已实测，但只在本线内部规避~~ ⇒ **已关闭**（2026-10-05，`line/propose-section`） | 缺口本身由 `ADR-0001` **D27**（`Op` 23 → 27）关闭；`line/propose-section` 完成**下游接线**：`AddClip` + `AddClipPlacement` + `AddRoutingNode` + `ConnectRouting` 真的产出骨架与声部连接，`unwired` 改为推导（见 needs-1） |
 | boundary-2 | `DISK_FULL` 只有**映射判据** | 真把磁盘写满需要 root 挂 tmpfs；本机与 CI 都不做。判据用合成 `io::Error`（`StorageFull`/`QuotaExceeded`/`ENOSPC`）钉住映射函数 |
 | boundary-3 | `.yeban.lock` 只有"原子创建 + 存在即拒" | 没有 `fcntl`/`LockFileEx` 建议锁、没有心跳/陈旧锁抢占。**崩溃会留下永久锁**（规范允许 CLI `--force-unlock`，本线未实现） |
 | boundary-4 | 工程文件是**裸 JSON** | `ARCH-SEC-003` 要求 ZIP 容器（`project.json` + `history.dag` + `assets/{sha256}`，含 Zip-Slip 与解压炸弹防御）。任务书指定用 `YebanProjectV1` JSON；容器属于别的所有者 |
@@ -228,12 +269,14 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 
 | # | 项 | 性质 | 建议 |
 | :--- | :--- | :--- | :--- |
-| **needs-1** | `ARCH-OPS-001` 的 `Op` 全集缺 **`AddClip`/`RemoveClip`** 与 **`AddRoutingNode`/`RemoveRoutingNode`** | **规范缺口**（实测：`Op::AddClipPlacement` 的前置条件要求片段已在 `clip_pool`；`Op::ConnectRouting` 要求两端已在 `routing_graph.nodes`，而没有任何变体能把它们放进去） | 要落地 §7.2 的"章节配器骨架 + 声部连接"，必须先按 ADR 补 4 个变体（并同步 `schemas/ops.schema.json` 的 `op.oneOf`）。本线**不改**规范/schema，只在响应里上报 `unwired` |
+| ~~**needs-1**~~ | ~~`ARCH-OPS-001` 的 `Op` 全集缺 **`AddClip`/`RemoveClip`** 与 **`AddRoutingNode`/`RemoveRoutingNode`**~~ ⇒ **已关闭**（2026-10-05） | **规范缺口已裁决并落地**：`ADR-0001` **D27**（= `HD-12`，2026-10-04 追认）把全集扩到 **27** 并同步了 `schemas/ops.schema.json`；本线（`line/propose-section`）把 `yeban_propose_section` 的骨架与声部连接**真的**接上，`unwired` 改为**从真实 `opKinds` 推导**（代码做了 ⇒ 报空）。真实 JSON 增量 / 逆操作 sha256 / 3 次注入见 `docs/ledger/propose-section-notes.md` |
+| **needs-8** | `clip_pool` 的**材料创建**没有任何工具 | 真实能力缺口（`line/propose-section` 实测） | `yeban_propose_section` 现在要求 `clip_pool` 里至少有一条"MIDI 且至少一个音符"的材料，否则如实报 `CLIP_NOT_FOUND`（`data.missing = "usableClipPoolEntries"`）。但 `Op::AddClip` 虽然存在，**没有任何 MCP 工具**能让 Agent 把片段放进池子（`yeban_edit_notes` 需要已存在的 `clipId`）⇒ 空池工程做不了配器。建议：在 §7.2 层面给"创建片段"一个工具形状，或明确"配器前必须由导入/人工路径准备材料" |
+| **needs-9** | 风格/声部表与**调式语义**是否应从 `yeban-theory` 取 | 集成者要求登记（本线**未接线**） | 现状：风格/声部仍是本地 4 行表；`scale` 只用**主音音级**做移调（`D dorian` ≡ `D minor`）。`yeban-theory` 里有真语义：`GenreLibrary::{get,ids,search}`、`GenreRule::{primary_scale,sketch,chords}`、`scale::{Scale::parse,ScaleKind,Scale::pitch_classes,Scale::contains,Scale::degree_of,Scale::diatonic_triads}`、`progression::{Progression::parse,expand}`、`voice_leading::*`。接线会改 `crates/yeban-mcp/Cargo.toml` 的依赖边并动 `Cargo.lock`（本线禁改，且 `yeban-theory` 目前**零消费者**）。留给集成者排期 |
 | **needs-2** | `NoteOp` 的 JSON 形状**没有契约** | 规范缺口（`schemas/mcp-tools.schema.json` 把 `ops` 声明为无约束数组；§7.2 只写 `Vec<NoteOp>`） | 本线定义了 `add`/`delete`/`move`/`velocity` 四种 `kind`（见 `domain/notes.rs` 模块头）。建议集成者把它固化成 schema `$defs`，否则第二个实现会漂移 |
 | **needs-3** | `.yeban` **ZIP 容器**（`ARCH-SEC-003`）归谁 | 分工不清 | 容器 = `project.json` + `history.dag` + CAS 资产。本线只做 `project.json` 那半。建议明确给 `yeban-model` 或 `yeban-app` 所有，并把 MCP 层的读写换成容器 API |
 | **needs-4** | 宏级联的**物理量纲** | 跨层缺口 | `MacroMapping.depth` 是归一化的；参数 min/max 住在设备/参数层而 `ParameterValue` 不携带它们。本线写归一化值并标 `normalized: true`；设备层提供值域解析后必须改成 `false` |
 | **needs-5** | `CommitGraph` 缺 **`create_branch(parent)`** 与 **多父合并提交** API | 模型层 API 缺口 | 现状：`fork_anonymous` 强制 `anon-` 前缀；`append` 永远单父。建议补两个 API，让"Musical PR"的 DAG 关系由 `CommitGraph` 而不是 MCP 层的 `Proposal` 记录承担 |
-| **needs-6** | 风格预设表 / 音阶表 / 发声数上限 32 / `bars` 上限 64 | 本地决策（规范未给） | 机制是承重的（未知 → `STYLE_NOT_FOUND` / `OUT_OF_RANGE`），表的内容可替换：接线 `yeban-theory`/`yeban-services` 的预设库时只改 `domain/section.rs` 的常量 |
+| **needs-6** | 风格预设表 / 音阶表 / 发声数上限 32 / `bars` 上限 64 | 本地决策（规范未给） | 机制是承重的（未知 → `STYLE_NOT_FOUND` / `OUT_OF_RANGE`），表的内容可替换：接线 `yeban-theory`/`yeban-services` 的预设库时只改 `domain/section_build.rs` 的常量（**2026-10-05 注**：常量随生成器从 `section.rs` 搬到 `section_build.rs`；可行性见 needs-9） |
 | **needs-7** | 工程文件的**扩展名/锁文件命名** | 本地决策 | 锁文件 = `<工程文件名>.lock`（`demo.yeban` → `demo.yeban.lock`）。规范 §0.2 只写 `.yeban.lock` 这个后缀 |
 
 ### pending
@@ -292,6 +335,20 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 | 轮次 | run id | 头部 | 结论 |
 | :--- | ---: | :--- | :--- |
 | 第 1 轮补记（本文件 + §7） | 见提交信息 / `ci-verdict.sh` 读数 | — | 见该次运行的 `checks` 腿 |
+
+> **2026-10-05 追加（`line/propose-section`）：`MCP-TOOL-005` 接线后的判决**
+> （`bash scripts/dev/ci-verdict.sh --watch line/propose-section`）
+>
+> | 轮次 | run id | 头部 | 结论 |
+> | :--- | ---: | :--- | :--- |
+> | 第 1 轮 | `37252440015` | `4a29c9c` | **X**：`rust (yeban-mcp)` / `windows (yeban-mcp …)` 的 `clippy (-D warnings)` 红 —— `error[E0432]: unresolved import super::section_build`（本线把 `mod tests` 里的相对路径写错）；`checks` / `deny` / `lockfile` / `plan` / `rust (yeban-ui-mcp)` ✓ |
+> | 第 2 轮 | `37252843215` | `39bfce0` | **X**：clippy 全绿；`tools_e2e` **30 passed; 1 failed** —— 本线判据 ⑦ 的**断言口径写反**（`D minor` 相对 `C minor` 是 +2 半音，我却断言"音级相同"）。同轮 `lib 204 passed`、`contract 18 passed`、其余 4 个测试二进制全绿 |
+> | 第 3 轮 | **`37253125714`** | **`05b1a94`** | ✅ **全绿**：`checks` / `deny` / `lockfile` / `plan` / `rust (yeban-mcp)` 1m2s / `windows (yeban-mcp …)` 2m6s / `rust (yeban-ui-mcp)` 2m4s 全部 ✓；`rust (workspace 全量)` 按受影响集合跳过 |
+>
+> ① 两次红都是**本线自己**的编译/断言错误（不是别人台账的锅），逐条留痕在
+> `docs/ledger/propose-section-notes.md` §10；② "本机不可编译 ⇒ 只能靠 CI" 这段代价是
+> **如实的**：`run-gates.sh crate yeban-mcp` 在本机 SKIP，两次自伤都发生在
+> **本机编不到**的那两个文件里（`section.rs` 的测试模块、`tools_e2e.rs` 的断言）。
 
 ---
 

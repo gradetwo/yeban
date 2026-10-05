@@ -222,6 +222,45 @@ fn open(scratch: &Scratch, dispatcher: &mut Dispatcher, auth: &str) -> (PathBuf,
     (path, opened)
 }
 
+/// 把**任意**一份工程写成真容器并返回路径（用于构造"缺件"这类负样本）。
+fn write_project_of(scratch: &Scratch, name: &str, project: &YebanProjectV1) -> PathBuf {
+    let path = scratch.join(name);
+    fs::write(&path, container_fixture(project)).expect("写容器工程");
+    path
+}
+
+/// 一份**合法但没有可用配器材料**的工程：只剩音频条目，指向被删条目的摆放一并删掉。
+///
+/// 它必须能通过 `open` 的 `validate()`，否则测的就不是"缺材料"而是"工程坏了"。
+fn project_without_midi_material() -> YebanProjectV1 {
+    let mut project = yeban_model::samples::filled_project();
+    project
+        .clip_pool
+        .retain(|_, entry| entry.content.notes().is_none());
+    let remaining: Vec<yeban_model::EntityId> = project.clip_pool.keys().copied().collect();
+    for track in project.tracks.values_mut() {
+        track
+            .clips
+            .retain(|_, placement| remaining.contains(&placement.clip_id));
+    }
+    project.validate().expect("负样本自身必须合法");
+    project
+}
+
+/// 合并之后，某章节**第一个**声部片段（`BTreeMap` 键序）的排序音高表。
+fn generated_pitches(dispatcher: &Dispatcher, prefix: &str) -> Vec<u8> {
+    let project = dispatcher.domain().active_project().expect("工程");
+    let mut pitches: Vec<u8> = project
+        .clip_pool
+        .values()
+        .filter(|entry| entry.name.starts_with(prefix))
+        .find_map(|entry| entry.content.notes())
+        .map(|notes| notes.values().map(|note| note.pitch).collect())
+        .unwrap_or_default();
+    pitches.sort_unstable();
+    pitches
+}
+
 /// 取一个带宏的音轨身份。
 fn macro_track(dispatcher: &Dispatcher) -> String {
     dispatcher
@@ -1380,11 +1419,51 @@ fn propose_section_creates_a_real_section_and_is_deterministic() {
     );
     assert_eq!(first["status"], "success", "{first}");
     assert_eq!(first["data"]["projectUnchanged"], true);
+    // 判据 ⑧：曾经的假阻塞声明（`ADR-0001` D27 之后已不成立）必须消失，
+    // 且它是**从真实 opKinds 推导**出来的 —— op 在，响应就不许喊缺。
     assert_eq!(
         first["data"]["unwired"],
-        json!(["clipPoolEntries", "routingEdges"]),
-        "声部连接与片段池在 Op 全集里不可表达 —— 必须如实上报"
+        json!([]),
+        "片段池与声部连接都已由 AddClip/AddRoutingNode/ConnectRouting 接线: {first}"
     );
+    let kinds: Vec<String> = first["data"]["proposal"]["opKinds"]
+        .as_array()
+        .expect("opKinds")
+        .iter()
+        .map(|kind| kind.as_str().expect("名字").to_owned())
+        .collect();
+    for required in [
+        "AddClip",
+        "AddTrack",
+        "AddClipPlacement",
+        "AddRoutingNode",
+        "ConnectRouting",
+    ] {
+        assert!(
+            kinds.iter().any(|kind| kind.as_str() == required),
+            "缺少 {required}: {kinds:?}"
+        );
+    }
+    // "将要做什么"的派生清单与真实 op 数量一致。
+    assert_eq!(
+        first["data"]["willCreate"]["opCount"], first["data"]["proposal"]["opCount"],
+        "{first}"
+    );
+    assert_eq!(
+        first["data"]["willCreate"]["clipPoolEntries"]
+            .as_array()
+            .map(Vec::len),
+        Some(4),
+        "synthwave 4 个声部 ⇒ 4 条片段池条目: {first}"
+    );
+    assert_eq!(
+        first["data"]["willCreate"]["routingEdges"]
+            .as_array()
+            .map(Vec::len),
+        Some(4),
+        "4 条声部连接: {first}"
+    );
+
     let second = call(&mut dispatcher, &auth, "yeban_propose_section", arguments);
     assert_eq!(
         op_bodies(&first["data"]["proposal"]),
@@ -1427,6 +1506,426 @@ fn propose_section_creates_a_real_section_and_is_deterministic() {
         .count();
     assert_eq!(parts, 4, "synthwave 预设有 4 个声部: {parts}");
     project.validate().expect("合并后必须合法");
+}
+
+/// 判据 ① + ②：合并之后工程里**真的**多出骨架（段落 / 片段池条目 / 摆放）与
+/// 声部连接（路由节点 / 路由边，含方向与类型）。
+#[test]
+fn propose_section_merge_writes_the_skeleton_and_the_voice_routing() {
+    let scratch = Scratch::new("skeleton");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let before = dispatcher.domain().active_project().cloned().expect("工程");
+    let bus = before.master_bus_track_id;
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Drop", "stylePreset": "cinematic-orchestral", "bars": 6 }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "骨架" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher.domain().active_project().expect("工程");
+
+    // ① 骨架：段落 / 片段池条目 / 摆放 / 音轨的具体增量。
+    assert_eq!(after.sections.len(), before.sections.len() + 1);
+    assert_eq!(
+        after.clip_pool.len(),
+        before.clip_pool.len() + 3,
+        "3 个声部"
+    );
+    assert_eq!(after.tracks.len(), before.tracks.len() + 3);
+    let mut new_tracks = 0;
+    for (id, track) in &after.tracks {
+        if before.tracks.contains_key(id) {
+            assert!(before.tracks[id].clips == track.clips, "既有音轨不得被改");
+            continue;
+        }
+        new_tracks += 1;
+        assert_eq!(track.kind, yeban_model::TrackKind::Midi);
+        assert!(track.name.starts_with("Drop · "), "{}", track.name);
+        assert_eq!(track.clips.len(), 1, "每个声部恰好一个摆放");
+        let placement = track.clips.values().next().expect("摆放");
+        let entry = after.clip_pool.get(&placement.clip_id).expect("片段池条目");
+        assert!(
+            !before.clip_pool.contains_key(&placement.clip_id),
+            "摆放必须指向**新**条目"
+        );
+        assert!(
+            entry.content.notes().is_some_and(|notes| !notes.is_empty()),
+            "配器骨架的片段必须带真实材料"
+        );
+        assert_eq!(placement.start_tick, 15_360, "接在最后一个段落之后");
+        assert_eq!(placement.duration_ticks, 3_840 * 6);
+    }
+    assert_eq!(new_tracks, 3);
+
+    // ② 声部连接：节点集合 + 边的方向与类型。
+    let new_nodes: Vec<_> = after
+        .routing_graph
+        .nodes
+        .iter()
+        .filter(|node| !before.routing_graph.nodes.contains(node))
+        .collect();
+    assert_eq!(new_nodes.len(), 3, "每个声部一个路由节点");
+    let new_edges: Vec<_> = after
+        .routing_graph
+        .edges
+        .iter()
+        .filter(|(id, _)| !before.routing_graph.edges.contains_key(id))
+        .map(|(_, edge)| edge)
+        .collect();
+    assert_eq!(new_edges.len(), 3, "每个声部一条声部连接");
+    for edge in &new_edges {
+        assert_eq!(
+            edge.kind,
+            yeban_model::RoutingKind::TrackToBus,
+            "声部 → 总线的类型"
+        );
+        assert_eq!(edge.destination_node, bus, "方向: 声部 → 主总线");
+        assert!(new_nodes.contains(&&edge.source_node), "{edge:?}");
+        assert_eq!(edge.gain_db, None, "单位增益 = None");
+    }
+    after.validate().expect("合并后必须合法");
+}
+
+/// 判据 ③：把提案批次的 op **逐条逆过来**，工程逐字节回到调用前。
+#[test]
+fn propose_section_ops_are_reversible_byte_for_byte() {
+    let scratch = Scratch::new("section-reverse");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let before = dispatcher.domain().active_project().cloned().expect("工程");
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Verse", "stylePreset": "lofi-beats", "bars": 4, "scale": "D dorian" }),
+    );
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let record = {
+        use std::str::FromStr as _;
+        let id = yeban_model::EntityId::from_str(&proposal_id).expect("ULID");
+        dispatcher.domain().proposal(&id).expect("提案记录").clone()
+    };
+    assert!(
+        record
+            .ops
+            .iter()
+            .any(|stamped| stamped.op.name() == "AddClip")
+    );
+    assert!(
+        record
+            .ops
+            .iter()
+            .any(|stamped| stamped.op.name() == "ConnectRouting")
+    );
+
+    call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "骨架" }),
+    );
+    let after = dispatcher.domain().active_project().cloned().expect("工程");
+    assert_ne!(after, before, "合并必须真的改工程");
+
+    // 用 **model 的 invert** 逐步回滚（本 crate 不写第二套逆操作）。
+    let mut undone = after;
+    for stamped in record.ops.iter().rev() {
+        stamped
+            .apply_inverse(&mut undone)
+            .expect("逆操作必须可构造可施加");
+    }
+    assert_eq!(
+        serde_json::to_string(&undone).expect("序列化"),
+        serde_json::to_string(&before).expect("序列化"),
+        "invert 之后必须回到合并前的逐字节状态"
+    );
+}
+
+/// 判据 ④：`dryRun` 预览给出"将要做什么"，且工程一个字节都不动。
+#[test]
+fn propose_section_dry_run_previews_without_touching_bytes() {
+    let scratch = Scratch::new("section-preview");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let before = project_bytes(&dispatcher);
+    let commits_before = dispatcher.domain().commit_count();
+    let proposals_before = dispatcher.domain().proposal_count();
+
+    let planned = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({
+            "sectionName": "Intro", "stylePreset": "acoustic-folk", "bars": 2,
+            "scale": "G major", "dryRun": true
+        }),
+    );
+    assert_eq!(planned["status"], "success", "{planned}");
+    assert_eq!(planned["data"]["dryRun"], true);
+    assert_eq!(planned["data"]["stateUnchanged"], true);
+    let preview = &planned["data"]["preview"];
+    assert_eq!(preview["kind"], "section");
+    assert_eq!(preview["willCreate"]["opCount"], preview["opCount"]);
+    assert_eq!(
+        preview["willCreate"]["tracks"].as_array().map(Vec::len),
+        Some(3),
+        "acoustic-folk 3 个声部: {planned}"
+    );
+    assert_eq!(
+        preview["willCreate"]["sections"][0]["name"], "Intro",
+        "{planned}"
+    );
+    assert!(
+        preview["ops"].as_array().is_some_and(|ops| !ops.is_empty()),
+        "预览必须给出完整 op 载荷"
+    );
+
+    assert_eq!(project_bytes(&dispatcher), before, "dryRun 不得改工程字节");
+    assert_eq!(dispatcher.domain().commit_count(), commits_before);
+    assert_eq!(dispatcher.domain().proposal_count(), proposals_before);
+}
+
+/// 判据 ⑤：片段池缺件 ⇒ **明确**的 `CLIP_NOT_FOUND`（不是 panic、不是空工程、不是 unwired）。
+#[test]
+fn propose_section_without_usable_material_is_a_clear_clip_not_found() {
+    let scratch = Scratch::new("section-no-material");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = write_project_of(&scratch, "naked.yeban", &project_without_midi_material());
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+    let before = project_bytes(&dispatcher);
+
+    let outcome = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Chorus", "stylePreset": "lofi-beats", "bars": 4 }),
+    );
+    assert_domain_error(&outcome, "CLIP_NOT_FOUND", "没有可用材料");
+    assert_eq!(
+        outcome["error"]["data"]["missing"], "usableClipPoolEntries",
+        "{outcome}"
+    );
+    assert!(
+        outcome["error"]["data"]["why"].is_string(),
+        "必须说明缺什么: {outcome}"
+    );
+    assert_eq!(outcome["error"]["data"]["requiredParts"], 3);
+    assert!(
+        outcome["data"].get("unwired").is_none(),
+        "不许用 unwired 含糊带过: {outcome}"
+    );
+    assert_eq!(project_bytes(&dispatcher), before, "失败不得改工程");
+    assert_eq!(dispatcher.domain().proposal_count(), 0, "失败不得留下提案");
+}
+
+/// 判据 ⑥：同一个 `idempotencyKey` 重复调用 ⇒ 不重复生成（复用既有幂等层）。
+#[test]
+fn propose_section_same_idempotency_key_does_not_duplicate_the_skeleton() {
+    let scratch = Scratch::new("section-idem");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let tracks_before = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .tracks
+        .len();
+    let arguments = json!({
+        "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 4,
+        "idempotencyKey": "section-idem-1"
+    });
+
+    let first = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        arguments.clone(),
+    );
+    assert_eq!(first["status"], "success", "{first}");
+    assert!(first.get("replayed").is_none(), "第一次不该是重放: {first}");
+    let second = call(&mut dispatcher, &auth, "yeban_propose_section", arguments);
+    assert_eq!(second["replayed"], true, "第二次必须命中幂等缓存: {second}");
+    assert_eq!(
+        second["response"]["result"]["data"]["proposal"]["proposalId"],
+        first["data"]["proposal"]["proposalId"],
+        "重放必须返回**同一条**提案: {second}"
+    );
+    assert_eq!(
+        dispatcher.domain().proposal_count(),
+        1,
+        "不得产生第二条提案"
+    );
+
+    let proposal_id = first["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "骨架" }),
+    );
+    assert_eq!(
+        merged["data"]["appliedOps"], first["data"]["proposal"]["opCount"],
+        "{merged}"
+    );
+    let project = dispatcher.domain().active_project().expect("工程");
+    let parts = project
+        .tracks
+        .values()
+        .filter(|track| track.name.starts_with("Chorus · "))
+        .count();
+    assert_eq!(
+        parts, 4,
+        "重复调用 + 合并之后仍然只有 4 个声部（不是 8）: {parts}"
+    );
+    assert_eq!(project.tracks.len(), tracks_before + 4);
+}
+
+/// 判据 ⑦：章节名 / 风格 / 小节数 / 调式**真的**影响了输出。
+#[test]
+fn propose_section_outputs_track_the_inputs() {
+    // 两个独立的会话（同一份样本工程），避免两次合并互相冲突。
+    let scratch_a = Scratch::new("section-inputs-c");
+    let (mut dispatcher_a, auth_a) = dispatcher();
+    open(&scratch_a, &mut dispatcher_a, &auth_a);
+    let scratch_b = Scratch::new("section-inputs-d");
+    let (mut dispatcher_b, auth_b) = dispatcher();
+    open(&scratch_b, &mut dispatcher_b, &auth_b);
+
+    let c_minor = call(
+        &mut dispatcher_a,
+        &auth_a,
+        "yeban_propose_section",
+        json!({ "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8, "scale": "C minor" }),
+    );
+    let d_minor = call(
+        &mut dispatcher_b,
+        &auth_b,
+        "yeban_propose_section",
+        json!({ "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8, "scale": "D minor" }),
+    );
+    assert_ne!(
+        op_bodies(&c_minor["data"]["proposal"]),
+        op_bodies(&d_minor["data"]["proposal"]),
+        "调式必须真的进输出（移调 + 确定性身份）"
+    );
+    assert_eq!(
+        c_minor["data"]["proposal"]["ops"][0]["op"]["SetSection"]["new_section"]["name"],
+        "Chorus"
+    );
+    assert_eq!(
+        c_minor["data"]["proposal"]["ops"][0]["op"]["SetSection"]["new_section"]["end_tick"],
+        d_minor["data"]["proposal"]["ops"][0]["op"]["SetSection"]["new_section"]["end_tick"],
+        "同样的 bars ⇒ 同样的跨度"
+    );
+
+    // 声部名与数量由风格预设决定。
+    let lofi = call(
+        &mut dispatcher_b,
+        &auth_b,
+        "yeban_propose_section",
+        json!({ "sectionName": "Verse", "stylePreset": "lofi-beats", "bars": 4 }),
+    );
+    assert_eq!(
+        lofi["data"]["willCreate"]["tracks"]
+            .as_array()
+            .expect("tracks")
+            .iter()
+            .filter_map(|track| track["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["Verse · Keys", "Verse · Bass", "Verse · Drums"],
+        "{lofi}"
+    );
+
+    // 小节数 → 段落跨度与摆放时值（同一份工程上的第二条提案）。
+    let long = call(
+        &mut dispatcher_b,
+        &auth_b,
+        "yeban_propose_section",
+        json!({ "sectionName": "Long", "stylePreset": "lofi-beats", "bars": 16 }),
+    );
+    let short_span = lofi["data"]["willCreate"]["sections"][0]["endTick"]
+        .as_u64()
+        .expect("endTick")
+        - lofi["data"]["willCreate"]["sections"][0]["startTick"]
+            .as_u64()
+            .expect("startTick");
+    let long_span = long["data"]["willCreate"]["sections"][0]["endTick"]
+        .as_u64()
+        .expect("endTick")
+        - long["data"]["willCreate"]["sections"][0]["startTick"]
+            .as_u64()
+            .expect("startTick");
+    assert_eq!(long_span, short_span * 4, "16 小节 = 4 × 4 小节");
+    assert_eq!(
+        long["data"]["willCreate"]["placements"]
+            .as_array()
+            .expect("placements")
+            .iter()
+            .map(|placement| placement["durationTicks"].as_u64().expect("时值"))
+            .collect::<Vec<_>>(),
+        vec![long_span; 3],
+        "每个声部的摆放覆盖整个段落"
+    );
+
+    // 合并两侧的 C / D minor 提案，用**工程里的音高**证明移调真的发生了。
+    for (dispatcher, auth, response) in [
+        (&mut dispatcher_a, &auth_a, &c_minor),
+        (&mut dispatcher_b, &auth_b, &d_minor),
+    ] {
+        let proposal_id = response["data"]["proposal"]["proposalId"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        let merged = call(
+            dispatcher,
+            auth,
+            "yeban_merge_proposal",
+            json!({ "proposalId": proposal_id, "commitMessage": "骨架" }),
+        );
+        assert_eq!(merged["status"], "success", "{merged}");
+    }
+    let pitches_c = generated_pitches(&dispatcher_a, "Chorus · ");
+    let pitches_d = generated_pitches(&dispatcher_b, "Chorus · ");
+    assert!(!pitches_c.is_empty(), "生成的片段必须带音符");
+    assert_eq!(pitches_c.len(), pitches_d.len());
+    assert_ne!(pitches_c, pitches_d, "D minor 必须整体移调");
+    // 口径：**等音类移调**（音级 +2）—— 逐音高类相差 2，且相对音程保持不变。
+    // 不是"音级相同"（那是没移调），也不是"绝对音高 +2"（八度折叠会让它不成立）。
+    for (index, pitch) in pitches_c.iter().enumerate() {
+        let delta = (u16::from(pitches_d[index]) + 12 - u16::from(*pitch)) % 12;
+        assert_eq!(
+            delta, 2,
+            "D minor = C minor 整体 +2 半音（第 {index} 音: {pitch} → {}）",
+            pitches_d[index]
+        );
+    }
 }
 
 #[test]
