@@ -54,12 +54,18 @@ gate_guards() {
 }
 
 gate_docs() {
-  step "文档链接与 README 双语契约"
-  run "docs" python3 scripts/gates/spec_id_audit.py --check
-  python3 scripts/gates/id_dictionary_audit.py
-  python3 scripts/gates/check_decisions.py
-  python3 scripts/gates/check_gate_status.py
-  python3 scripts/gates/check_docs_links.py
+  step "文档契约（链接 / 规范 ID / ID 字典 / 决策清单 / 门禁状态表）"
+  # ⚠ 每一条都必须走 `run` —— 裸调用会被**后面成功的命令**屏蔽。
+  # 实测（由 `line/phase-status` 发现并复现）: 在 `check_gate_status.py` 之后插一条 `sys.exit(3)`,
+  # `light` 仍 **EXIT=0** 且打印"门禁通过" —— 因为本函数只有 `set -uo pipefail`（无 `-e`）,
+  # 返回值等于**最后一条命令**的退出码 ⇒ **三条守卫根本没能阻断门禁**（与该文件头部的自我承诺矛盾, L12 同族）。
+  # ⇒ 凡是"守卫", 都必须把自己的失败**记进计数器**, 而不是靠 shell 的返回码传递。
+  run "spec-ids" python3 scripts/gates/spec_id_audit.py --check
+  run "id-dictionary" python3 scripts/gates/id_dictionary_audit.py
+  run "decisions" python3 scripts/gates/check_decisions.py
+  run "gate-status" python3 scripts/gates/check_gate_status.py
+  run "phase-status" python3 scripts/gates/check_phase_status.py
+  run "docs" python3 scripts/gates/check_docs_links.py
 }
 
 gate_schemas() {
