@@ -4586,3 +4586,18 @@ under `HD-45`.
 `domain/` directory), 174 (`--lib` vs a `[[test]]` target) and the earlier `head`-truncated test output all had the same
 structure - a wrong measurement tool, reported as a property of the code. The remedy that keeps working: when a command returns
 "nothing matched", suspect the command before suspecting the artefact.
+
+### Round 177: the 100k timing loop in a debug CI build does not finish - the measurement behind the `#[ignore]`
+
+The datapoint, recorded because it is the justification rather than a guess: run **`37348640469` @ `34cdc73` was still
+`in_progress` after more than 40 minutes**, with `checks`, `windows`, `deny`, `plan` and `lockfile` all green and only
+`rust (workspace 全量)` outstanding at `steps=9`. That run predates the `#[ignore]` marker, so its workspace leg was executing
+the 600-frame × 100 000-note software-rasterization loop in a **debug** build.
+
+Consequence: the marker added in `6c58f55` is not a workaround for impatience - the loop genuinely cannot finish there, and it
+should not: `spikes/README.md` line 36 forbids judging frame rate from hosted-runner numbers. The verdict belongs to the manual
+`fps` gate, which will run the test explicitly with `--release --ignored --nocapture` on a machine whose readings `HD-45` makes
+admissible.
+
+Dispatched run **`37350525943` @ `6c58f55`** to confirm that the default workspace pass is back to a normal duration with the
+test ignored; its verdict is **unread**.
