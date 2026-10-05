@@ -48,6 +48,22 @@ slint = { workspace = true, features = [
 yeban-model = { workspace = true }
 
 # ---------------------------------------------------------------------------
+# yeban-render: SMF (MIDI) 导出的**唯一**编码器, app-export-midi 工作线
+# ---------------------------------------------------------------------------
+# 为什么 app 需要它: ADR-0001 **D47** 的裁决是"MIDI 导出的唯一出口 = app CLI
+# `--export-midi`"(不扩 `yeban_render_master` 的 format 参数)。而 SMF 的编码器只有一份
+# ——`crates/yeban-render/src/midi.rs`(含 `midly` 编码 + 自研 VLQ/chunk 字节级核对)。
+# 因此 app 侧**只**做"工程 → `MidiExport`"的映射(`src/export_midi.rs`), 字节由那一个
+# 编码器产出; 在这里再写一份编码器是明令禁止的。
+#
+# 这是一条**工作区内**依赖边(D51): 没有引入任何新的外部 crate —— `yeban-render` 早已
+# 是 workspace 成员, 它的 `midly`/`rayon`/`hound` 早已在 `Cargo.lock` 里。它给
+# `Cargo.lock` 带来的变化只有 `yeban-app` 依赖列表里的一行(由 `cargo metadata` 机械生成,
+# 见 docs/ledger/app-export-midi-notes.md §6 的原始 diff)。
+# 只写 `{ workspace = true }`, 不写 version(ADR-0001 D5/D21)。
+yeban-render = { workspace = true }
+
+# ---------------------------------------------------------------------------
 # yeban-engine: 实时引擎的**只读消费面** (电平 SPSC + 快照), app-mixer 工作线
 # ---------------------------------------------------------------------------
 # 为什么 app 需要它: `[ARCH-UI-002]` 要求"实时线程以 60Hz 向无锁 Meter SPSC 压入真峰值
