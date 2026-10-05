@@ -56,12 +56,8 @@ pub fn apply(
 ) -> Result<ToolResponse, Fault> {
     let out_dir = match &planned.out_dir {
         Some(p) => p.clone(),
-        None => std::env::current_dir().map_err(|e| {
-            Fault::domain(
-                ErrorCode::IoError,
-                format!("取当前目录失败: {e}"),
-            )
-        })?,
+        None => std::env::current_dir()
+            .map_err(|e| Fault::domain(ErrorCode::IoError, format!("取当前目录失败: {e}")))?,
     };
     if !out_dir.is_dir() {
         std::fs::create_dir_all(&out_dir).map_err(|e| {
@@ -98,9 +94,8 @@ pub fn apply(
         crashes: &crashes,
         project: &project_files,
     };
-    let report = yeban_engine::diagnostics::export_diagnostics(&out_dir, inputs).map_err(|e| {
-        Fault::domain(ErrorCode::IoError, format!("导出诊断包失败: {e}"))
-    })?;
+    let report = yeban_engine::diagnostics::export_diagnostics(&out_dir, inputs)
+        .map_err(|e| Fault::domain(ErrorCode::IoError, format!("导出诊断包失败: {e}")))?;
 
     let entries: Vec<Value> = report
         .entries

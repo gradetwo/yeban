@@ -32,11 +32,11 @@
 
 - 三方齐全：25 行
 - 系统+UI（MCP 无）：8 行
-- 系统+MCP（UI 无）：14 行
+- 系统+MCP（UI 无）：15 行
 - 仅系统：10 行
 - 仅计划（系统也未实现）：7 行
 - UI 或 MCP 独有（系统没有）：6 行
-- **合计：70 行**
+- **合计：71 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -103,6 +103,7 @@
 | `yeban_edit_automation` | 已实现｜`crates/yeban-model` 的 `automation_value_at`（**唯一求值入口**）+ `Op::SetAutomationPoint` / `Op::SetAutomationLane` | 有｜`crates/yeban-app/src/automation.rs`（泳道 → 折线投影，含细采样） | 有｜`crates/yeban-mcp/src/domain/automation.rs`（读写同一条泳道；写走 `Op`，可逆） | 原因：AI 侧此前只能看见自动化而不能读写，泳道求值只有界面在用；计划：由 `ADR-0001 D46` 裁决的工具集扩张落地；注：求值必须走 `automation_value_at`（禁第二份求值，判据有牙）；状态：三方齐全 |
 | `yeban_query_engine_state` | 已实现｜`SessionRuntimeState`（`MODEL-ISO-001` 第 2 层）+ `project.audio_config.sample_rate` + `TrackV3::devices`；缓冲帧数住在 `yeban-engine` | 有｜`crates/yeban-app/src/engine_host.rs`（走带 / seek / play）+ `meters.rs` | 有｜`crates/yeban-mcp/src/domain/engine_state.rs`（只读；缓冲走宿主注入的镜像） | 原因：引擎运行态此前只在界面/宿主进程内可读，AI 侧看不见；计划：D46 落地；注：形态 B（stdio 二进制）没有引擎进程 ⇒ `bufferFrames` 只能为 null（已如实写在契约与台账）；状态：三方齐全 |
 | `yeban_import_audio` | 已实现｜`yeban-decode`（解码 + `PcmBudget`）+ `Op::AddClip` | 无｜`crates/yeban-app/src` 里没有音频导入路径（`decode_path` 与 `yeban_decode` 在 app 侧均零命中；`bridge.rs` 的音频片段是夹具假哈希） | 有｜`crates/yeban-mcp/src/domain/import_audio.rs`（走既有 CAS 池 + `Op`） | 原因：UI 侧从来没有导入音频文件的入口，`yeban-decode` 此前只被 MCP 的渲染片段路径消费；计划：UI 接一条导入动作（同一个 `Op::AddClip` + 同一份 CAS 池）；状态：待接线 |
+| `yeban_export_diagnostics`（诊断包导出，**D56**） | 已实现｜`crates/yeban-engine/src/diagnostics.rs`（采集 env/git/状态/配置 + zip + 逐项 sha256 + 脱敏）与 `crates/yeban-mcp/src/domain/diagnostics.rs`（领域接线） | 无｜尚无 UI 入口（D56 第 3 步；判据 4 要求两入口调同一函数） | 有｜`yeban_export_diagnostics`（可选 `outDir`，缺省写当前目录） | 原因：UI 入口未实现（D56 第 3 步）；计划：接 UI 命令并让两入口调同一函数，同时把测试输出改到临时目录并断言 crate 目录干净；状态：待接线 |
 | 撤销 / 重做（`yeban_undo` / `yeban_redo` + UI 入口） | 已实现｜`crates/yeban-model/src/commit.rs:505,525`（`undo` / `undo_with`，**生产代码**）+ `ops.rs` 的逆操作原语；`BASELINE-004` 有单步撤销时延判据（p99 0.084 µs）；游标属 `MODEL-ISO-001` 的**会话运行态**（`SessionRuntimeState::undo_cursor`，**不落盘**） | 有｜`crates/yeban-app/src/undo.rs` + `ui/dialogs/undo_tree_modal.slint` 的动作 + `Cmd+Z` 派发（D45 接线） | 有｜`yeban_undo` / `yeban_redo`（`schemas/mcp-tools.schema.json` 已登记；共用 `crates/yeban-mcp/src/undo_session.rs` 的**同一份**实现，含 `dryRun`） | 原因：此前**模型有生产级实现、域外零调用者**（`UndoCursor` 只在 `yeban-model` 内出现；UI 弹窗唯一 callback 是 `close`；MCP/ui-mcp 里 `undo` / `redo` 0 命中）；计划：已由 `ADR-0001 D45` 裁决「UI+MCP 两侧同接、共用同一实现」并由本线落地；状态：三方齐全 |
 | 自动化泳道（多泳道 + 曲线 + 单位轴标签） | 已实现｜`crates/yeban-model/src/automation.rs`；接线在 `crates/yeban-app/src/automation.rs`（`project_lanes_at_cursor`） | 有｜`crates/yeban-app/ui/workspace/arrangement_view.slint:53-72`（9 个平行数组由 `src/automation.rs` 单一事实源派生）+ `crates/yeban-app/src/elements.rs:503` 的 `track-{i}-automation-{key}-lane` | 无｜十工具与 `ui/*` 14 条方法都没有自动化泳道的读写面（AI 只能经 `ui/tree` 读到标签文本） | 原因：`schemas/mcp-tools.schema.json` 的 10 个工具**枚举是规范定的**，里面没有自动化工具；计划：**需要人类裁决**是否扩工具集（`HD-*` 报给负责人）；状态：人类决策中 |
 | 宏与级联映射（`MacroMapping`） | 已实现｜`crates/yeban-model/src/ops.rs` 的 `Op::SetMacro` + `crates/yeban-mcp/src/domain/macros.rs` | 无｜`TrackV3::macros` 未进视图（`crates/yeban-app/src/bridge.rs` 无 macros 投影，`docs/ledger/app-mixer-notes.md` §7 #4） | 有｜`yeban_set_macro`（`trackId`/`macroIndex`/`value`） | 原因：UI 侧设备机架仍由演示常量驱动（`crates/yeban-app/ui/console/device_rack.slint` + `scene::DEVICE_NAMES`）；计划：`[UI-NOTE-004]` 设备机架改由 `TrackV3::devices` / `macros` 驱动；状态：PENDING |

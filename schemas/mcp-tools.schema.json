@@ -28,7 +28,8 @@
             "yeban_redo",
             "yeban_edit_automation",
             "yeban_query_engine_state",
-            "yeban_import_audio"
+            "yeban_import_audio",
+            "yeban_export_diagnostics"
           ]
         },
         "arguments": {
@@ -136,6 +137,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_import_audio"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_export_diagnostics"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_export_diagnostics"
               }
             }
           }
@@ -370,6 +390,24 @@
           "required": [
             "name"
           ]
+        },
+        "yeban_export_diagnostics": {
+          "title": "yeban_export_diagnostics",
+          "type": "object",
+          "description": "把调试信息与相关文件采集并导出成 zip 诊断包 (人工触发, 供复现排查)。与 UI 的「导出诊断包」共用 crate::domain::diagnostics 的实现 (D56)。",
+          "properties": {
+            "outDir": {
+              "type": "string",
+              "description": "输出目录; 缺省为进程当前目录。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          }
         }
       }
     }

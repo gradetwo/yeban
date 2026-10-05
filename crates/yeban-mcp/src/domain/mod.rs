@@ -46,6 +46,7 @@
 
 pub mod automation;
 pub mod automation_audit;
+pub mod diagnostics;
 pub mod engine_state;
 pub mod error;
 pub mod extension_audit;
@@ -551,6 +552,11 @@ pub struct OpenRequest {
 pub enum Plan {
     /// `yeban_open_project`
     Open(Box<OpenRequest>),
+    /// `yeban_export_diagnostics`
+    Diagnostics {
+        /// 已校验的输出目录（`plan` 的产物）。
+        export: Box<diagnostics::DiagnosticsExport>,
+    },
     /// `yeban_save_project`
     Save {
         /// 目标路径。
@@ -658,6 +664,7 @@ impl Plan {
             Self::Save { .. } => "save",
             Self::Close { .. } => "close",
             Self::Query { .. } => "query",
+            Self::Diagnostics { .. } => "diagnostics",
             Self::Propose { .. } => "propose",
             Self::Merge { .. } => "merge",
             Self::Reject { .. } => "reject",
@@ -686,6 +693,7 @@ impl Plan {
             | Self::Save { .. }
             | Self::Close { .. }
             | Self::Query { .. }
+            | Self::Diagnostics { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
             // 引擎/会话读数是**只读**的。
@@ -784,6 +792,7 @@ impl Plan {
             Self::Save { .. }
             | Self::Close { .. }
             | Self::Query { .. }
+            | Self::Diagnostics { .. }
             | Self::Propose { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
@@ -867,6 +876,8 @@ impl Plan {
                     Value::from(domain.active_path().is_some() && !domain.is_read_only()),
                 );
             }
+            // 诊断导出没有工程差异可预览；顶部的 `plan` 键已足够。
+            Self::Diagnostics { .. } => {}
             Self::Query { data } => {
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert(
@@ -1229,6 +1240,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_edit_automation" => plan_edit_automation(domain, call),
         "yeban_query_engine_state" => plan_query_engine_state(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
+        "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -1618,6 +1630,15 @@ fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fau
 ///
 /// 资产池的读法**复用** [`render::AssetStore`]（[`Domain`] 自己实现它），
 /// 因此"池里有什么字节"只有一个事实源。
+/// `yeban_export_diagnostics`：**不**要求活跃工程 —— 出问题时常常连工程都打不开，
+/// 而日志与环境信息恰恰最该能采。
+fn plan_export_diagnostics(_domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let export = diagnostics::plan(&call.arguments)?;
+    Ok(Plan::Diagnostics {
+        export: Box::new(export),
+    })
+}
+
 fn plan_import_audio(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let import = import_audio::plan(project, domain, &call.arguments)?;
@@ -1684,6 +1705,7 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         // 只读：`plan` 已经把读数组装好了，`apply` 原样返回（一位都不改）。
         Plan::EngineState { data } => Ok(ToolResponse::success(data)),
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
+        Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
     }
 }
 
@@ -2404,6 +2426,8 @@ mod tests {
                     "path": wav_fixture().display().to_string(),
                 }),
             ),
+            // [D56] 诊断导出：空参数合法（缺省写到当前目录），因此走 `_` 分支的"规划必须成功"。
+            ("yeban_export_diagnostics", serde_json::json!({})),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(

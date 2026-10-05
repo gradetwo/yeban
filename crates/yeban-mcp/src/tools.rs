@@ -58,13 +58,13 @@ pub const DRY_RUN_PARAM: &str = "dryRun";
 pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 15;
+pub const TOOL_COUNT: usize = 16;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 
 /// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条。
-pub const EXTENSION_TOOL_COUNT: usize = 5;
+pub const EXTENSION_TOOL_COUNT: usize = 6;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -83,6 +83,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_edit_automation",
     "yeban_query_engine_state",
     "yeban_import_audio",
+    "yeban_export_diagnostics",
 ];
 
 /// 规范 ID 前缀。
@@ -762,6 +763,20 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::Conflict,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-DIAGNOSTICS",
+        name: "yeban_export_diagnostics",
+        summary: "把调试信息与相关文件采集并导出成 zip 诊断包 (人工触发, 供复现排查)",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ReadOnly,
+        params: &[param(
+            "outDir",
+            "string",
+            false,
+            "输出目录; 缺省为进程当前目录",
+        )],
+        errors: &[ErrorCode::IoError, ErrorCode::InvalidParameterRange],
+    },
 ];
 
 /// 按名查找工具（`const` 数组上的线性查找；10 个元素，无需哈希表）。
@@ -1312,7 +1327,14 @@ mod tests {
             .collect();
         assert_eq!(
             read_only,
-            vec!["yeban_query_project", "yeban_query_engine_state"],
+            // ⚠ 顺序 = `TOOLS` 数组顺序（规范 10 个在前, 扩展在后）,
+            // 因为 `assert_eq!` 比较 Vec 顺序。`yeban_export_diagnostics` 是扩展,
+            // 所以排在这两个文档工具**之后**。
+            vec![
+                "yeban_query_project",
+                "yeban_query_engine_state",
+                "yeban_export_diagnostics"
+            ],
             "只读工具必须显式分类为 read-only"
         );
         assert_eq!(
