@@ -3137,3 +3137,17 @@ tolerates **no** dynamic region, so VU/transport-cursor scenes will require deco
 All three were caught by `phase-status`'s summary-consistency check (`汇总的合计与表格不符：写的是 14/25/7（共 46），逐行统计是
 13/25/7（共 45）`), which is exactly the doc-contract guard earning its keep. Final state: Phase 0 = 1/6/2, total =
 **已完成 14 / 部分 25 / PENDING 7（共 46）**, `门禁通过 (mode=light)`.
+
+### Round 108: fourth completed full-workspace verdict on main (2c4d285), covering this round's criterion work
+
+Run **`37300697464` @ `2c4d285` = completed success**, with **`rust (workspace 全量)` = success `steps=10`** and
+`windows` = success `steps=8`; `plan` / `checks` / `deny` / `lockfile` all success, matrix leg skipped by design. The
+`scripts/**` touch is what forced the workspace-wide plan, which is exactly why the G13 hardening could be verified with a
+full-tree verdict rather than a narrow one.
+
+The set of completed full-workspace verdicts on main is now four: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`,
+`37293138132` @ `f859ef6`, and `37300697464` @ `2c4d285`. The latest one covers the golden baselines, the golden criterion,
+the MCP stdio judge and the G13 job-id rule - i.e. the whole of this session's closing work rather than a docs-only tip.
+
+(Also noted for completeness: `1586957`, a phase-status-only commit, was still `pending` when read; a docs-only tip cannot
+produce crate evidence and will not be counted as one regardless of how it concludes.)
