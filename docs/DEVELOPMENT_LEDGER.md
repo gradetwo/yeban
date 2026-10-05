@@ -7780,3 +7780,21 @@ planned per target, not per file.
 one more edit: the test module imports `EntityId` for itself.
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
+
+
+### Round 318: the moved tests also need the app's demo CONSTANTS - the same family lesson once more
+
+The mapping move is now one step from compiling: the generator writes both sides, the pre-flight passes, the split puts 2 tests in the app and 11 in
+`yeban-midi`, the fixture path is right, and each test module imports what it uses. The remaining errors are two references to **`DEMO_NOTES`**, an
+app-side constant the domain tests read.
+
+So the moved tests depend on the app's **demo constants** as well as its **demo fixture** - the same family relationship that took rounds 313-316 to
+work through for `demo_project` and its helpers. The fix is the same shape: move `DEMO_NOTES` (and anything it drags) into `yeban-model::samples`
+beside the fixture, and have the app re-export it.
+
+**The generalisable observation, now that it has happened three times**: a library test cannot simply be relocated - it carries **whatever its
+assertions read**, which in this codebase means the demo fixtures and the constants they are checked against. Moving the mapping therefore has a
+**closure** of dependencies, and the compiler enumerates it one name per attempt. The efficient move is to compute that closure first (grep the tests
+for `crate::` references) rather than discover it one error at a time.
+
+**Status**: tree green and clean; the mapping move is one constant away; CI green; `yeban-midi` holds `midi` and `vlq`; MCP tool still owed.
