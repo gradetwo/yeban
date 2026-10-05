@@ -12,9 +12,9 @@
 
 ## 仍未闭环的门禁（逐条）
 
-- `BASELINE-003` — **PENDING**（理由见 `gate-status.md` 对应行）
-- `BASELINE-005` — **PENDING**（理由见 `gate-status.md` 对应行）
-- `BASELINE-006` — **PENDING**（理由见 `gate-status.md` 对应行）
+- `BASELINE-003` — **PENDING**。理由：**第 114 轮补（负责人指定参考机之后，本门禁的处境更明确了）**: 负责人指定参考机 = **MacBook Pro M2 Max / Mac14,5**。但本机**不满足本门禁自己的前提**：面板是 **Built-in Liquid Retina XDR**（Mac14,5 = 14 寸 ProMotion），`ioreg` 显示 `APTLimitRefreshRate = No` ⇒
+- `BASELINE-005` — **PENDING**。理由：**第 115 轮补（本机实测，供负责人裁决口径）**: 在参考机（M2 Max）上跑交付的工具 `cargo run --release -p yeban-engine --example measure_latency`：**5 个设备**（3 出 2 入，含 MacBook Pro Speakers / External Headphones / MacBook Pro Microphone
+- `BASELINE-006` — **PENDING**。理由：需要"生成 16 小节段落"的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**，且 Token 口径需人类裁决用哪个 tokenizer
 
 ## 仍未闭环的阶段项（逐条）
 
@@ -50,6 +50,10 @@
 - `ROAD-M4-007` — **PENDING**
 - `ROAD-M4-008` — **部分**
 - `ROAD-M4-010` — **部分**
+
+## 待人类决策（未闭环的门禁里, 属于负责人裁决的那几条）
+
+逐条见上面「仍未闭环的门禁」。每条都写明选项。请负责人选一条。
 
 ## 读这份快照的纪律
 

@@ -20,9 +20,9 @@ OUT = pathlib.Path(
 )
 
 
-def rows(path: pathlib.Path) -> list[tuple[str, str]]:
+def rows(path: pathlib.Path) -> list[tuple[str, str, str]]:
     """抽出台账里 `| `ID` | ... | **状态** | ... |` 形式的 (id, 状态)。"""
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.startswith("| `"):
             continue
@@ -42,13 +42,15 @@ def rows(path: pathlib.Path) -> list[tuple[str, str]]:
             if status:
                 break
         if status:
-            out.append((ident, status))
+            reason = cells[-1] if len(cells) > 3 else ""
+            reason = " ".join(reason.split())[:200]
+            out.append((ident, status, reason))
     return out
 
 
-def summarize(items: list[tuple[str, str]]) -> dict[str, int]:
+def summarize(items: list[tuple[str, str, str]]) -> dict[str, int]:
     d: dict[str, int] = {}
-    for _, s in items:
+    for _i, s, _r in items:
         d[s] = d.get(s, 0) + 1
     return d
 
@@ -78,14 +80,18 @@ def main() -> int:
         "## 仍未闭环的门禁（逐条）",
         "",
     ]
-    for ident, status in gates:
+    for ident, status, reason in gates:
         if status != "已接线":
-            lines.append(f"- `{ident}` — **{status}**（理由见 `gate-status.md` 对应行）")
+            lines.append(f"- `{ident}` — **{status}**。理由：{reason}")
     lines += ["", "## 仍未闭环的阶段项（逐条）", ""]
-    for ident, status in phases:
+    for ident, status, _reason in phases:
         if status != "已完成":
             lines.append(f"- `{ident}` — **{status}**")
     lines += [
+        "",
+        "## 待人类决策（未闭环的门禁里, 属于负责人裁决的那几条）",
+        "",
+        "逐条见上面「仍未闭环的门禁」。每条都写明选项。请负责人选一条。",
         "",
         "## 读这份快照的纪律",
         "",
