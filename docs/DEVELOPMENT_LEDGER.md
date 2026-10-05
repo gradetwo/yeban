@@ -2816,3 +2816,20 @@ reproducible locally *and* in CI.
 ⇒ The productive next moves are therefore: (a) obtain reference-hardware runs (needs the human / an external machine), or
 (b) keep the partial status with the magnitude evidence recorded as such - which is exactly what the ledger now says.
 Chasing "more measurement plumbing" for these two would be motion without progress.
+
+### Round 96: third completed full-workspace verdict on main (and one more empty-green identified)
+
+Reading the push-triggered `ci.yml` runs I had left unread:
+
+| run | tip | verdict | crate legs |
+| :--- | :--- | :--- | :--- |
+| `37293138132` | `f859ef6` | **completed success** | **`rust (workspace 全量)` = success `steps=10`**, `windows` = success `steps=8` |
+| `37293903751` | `156d7bd` | completed success | matrix + workspace + windows **all skipped `steps=0`** => **empty green, not evidence** |
+
+So the set of **completed full-workspace verdicts on main** is now three: `37283699896` @ `aac62e8`,
+`37284571290` @ `77d201f`, and `37293138132` @ `f859ef6`. The third one matters specifically because `f859ef6` is the
+tip that contains the locally-tested `measure_baseline_002.sh` plus the `bench`-lane wiring, so the workspace-wide leg
+green covers that work rather than merely the docs.
+
+The `156d7bd` run is a textbook **empty green** (docs-only tip -> `plan` derives no crate -> every crate leg is `steps=0`).
+Recorded here rather than counted, exactly as the CI discipline in `docs/CI_CD.md` requires.
