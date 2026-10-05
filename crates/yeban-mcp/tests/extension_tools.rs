@@ -5,6 +5,7 @@
 //! | # | 判据 | 本文件的用例 |
 //! | :--- | :--- | :--- |
 //! | ① | 每个新工具**真做事**（读类：改模型 ⇒ 读数变；写类：工程真的变了 + 逆操作逐字节回退） | `automation_read_follows_the_model_through_the_unique_entry`、`automation_write_lands_in_the_project_and_undo_restores_byte_for_byte`、`import_audio_registers_a_clip_and_undo_restores_byte_for_byte`、`engine_state_reads_three_single_sources` |
+//! | ① | **来源标签如实**：两个直接编辑工具的落盘作者是 `OpOrigin::McpEdit`（不再是借来的 `AutomationRecord` / `Import`），且响应的来源块点名新变体 | `direct_edits_are_authored_by_the_mcp_edit_origin_in_the_persisted_log`、`direct_edit_origins_in_production_sources_are_the_mcp_edit_variant` |
 //! | ② | `dryRun=true` ⇒ 状态一位不变 + 预览与真做一致 | `dry_run_leaves_every_state_bit_identical`、`dry_run_preview_equals_the_real_call_for_all_three_tools` |
 //! | ③ | 未知/坏参数 ⇒ **既有**错误码（不发明新码） | `bad_and_unknown_parameters_only_use_codes_inside_d25`、`error_code_vocabulary_is_the_contract_enum_exactly` |
 //! | ④ | 幂等键：同键重复调用不重复生效 | `the_same_idempotency_key_never_applies_twice` |
@@ -38,8 +39,8 @@ use yeban_mcp::security::{BearerToken, Channel, RunMode, Scope, ScopeSet};
 use yeban_mcp::tools::{self, ErrorCode};
 use yeban_model::samples::filled_project;
 use yeban_model::{
-    AssetHash, AutomationPoint, AutomationTarget, ClipContent, CurveType, EntityId, SampleRate,
-    SessionRuntimeState, YebanProjectV1,
+    AssetHash, AutomationPoint, AutomationTarget, ClipContent, CommitGraph, CurveType, EntityId,
+    Op, OpOrigin, SampleRate, SessionRuntimeState, YebanProjectV1,
 };
 
 // ---------------------------------------------------------------------------
@@ -122,6 +123,28 @@ fn call_tool_raw(dispatcher: &mut Dispatcher, name: &str, arguments: Value) -> (
 fn project_bytes(dispatcher: &Dispatcher) -> Vec<u8> {
     let project = dispatcher.domain().active_project().expect("活跃工程");
     yeban_mcp::undo_session::canonical_project_bytes(project).expect("规范化字节")
+}
+
+/// 从**落盘的** `history.dag` 里读出每条 `StampedOp` 的作者标签与 Op 本体。
+///
+/// 这是"来源标签"最硬的观测面：读的是真的写进容器的那份 `StampedOp`，
+/// 而不是内存里的某个响应字段或一句手抄的字符串。
+fn persisted_origins(path: &std::path::Path) -> Vec<(OpOrigin, Op)> {
+    let bytes = std::fs::read(path).expect("读容器字节");
+    let archive = yeban_model::container::read_project_container(
+        &bytes,
+        &yeban_model::container::ContainerLimits::default(),
+    )
+    .expect("容器必须可读");
+    let graph: CommitGraph =
+        serde_json::from_slice(&archive.history_dag).expect("history.dag 必须是 CommitGraph JSON");
+    let mut rows = Vec::new();
+    for commit in graph.commits.values() {
+        for stamped in &commit.ops {
+            rows.push((stamped.origin.clone(), stamped.op.clone()));
+        }
+    }
+    rows
 }
 
 /// 样本里那条带设备的音轨（`filled_project` 的 lead）。
@@ -395,6 +418,131 @@ fn automation_write_lands_in_the_project_and_undo_restores_byte_for_byte() {
     );
     assert_eq!(redone["status"], "success", "{redone}");
     assert_eq!(project_bytes(&dispatcher), after, "重做必须逐字节复原");
+}
+
+// ---------------------------------------------------------------------------
+// ① 来源标签：MCP **直接编辑**的作者是 `OpOrigin::McpEdit`（不是借来的变体）
+// ---------------------------------------------------------------------------
+
+/// **落盘日志**里两个直接编辑工具的作者标签必须是 `McpEdit`。
+///
+/// ⚠ 见证（`MUST-GATE-001` 的 I4 教训）：这条判据**先**证明日志里真的躺着这两次编辑的
+/// `Op` 本体（`SetAutomationPoint` / `AddClip`），**再**断言它们的 `origin`。
+/// 否则"在空集合上断言"会让判据在写路径整个断掉时**仍然是绿的**。
+///
+/// 观测面是容器里的 `history.dag`（`StampedOp` 的持久化形态），
+/// 不是响应的 `origin.kind` —— 后者是给人看的标签，前者才是被审计的作者。
+#[test]
+fn direct_edits_are_authored_by_the_mcp_edit_origin_in_the_persisted_log() {
+    let dir = std::env::temp_dir().join(format!(
+        "yeban-mcp-ext-origin-log-{}-{}",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    std::fs::create_dir_all(&dir).expect("建目录");
+    let path = dir.join("demo.yeban");
+
+    let project = filled_project();
+    let track = lead_track(&project);
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(path.clone(), project, false)
+        .expect("注入规范工程");
+
+    let audio = wav_s16(48_000, &[0, 1_000, -1_000, 0]);
+    let audio_path = write_audio_fixture("origin-log", &audio);
+
+    // 两次**直接编辑**（都不创建提案）：写一个自动化点 + 导入一份音频。
+    let edit = call_tool(
+        &mut dispatcher,
+        "yeban_edit_automation",
+        serde_json::json!({
+            "trackId": track.to_canonical_string(),
+            "lane": "TrackVolume",
+            "point": {"tick": 1920, "value": -18.0, "curve": "SCurve"},
+        }),
+    );
+    assert_eq!(edit["status"], "success", "{edit}");
+    // 判据 ⑤（来源 → 审计显示）：响应里的来源块必须点名新变体，且不再出现借来的名字。
+    assert_eq!(edit["data"]["origin"]["kind"], "McpEdit", "{edit}");
+    assert_eq!(edit["data"]["origin"]["author"], "yeban-mcp", "{edit}");
+    assert_ne!(edit["data"]["origin"]["kind"], "AutomationRecord");
+
+    let imported = call_tool(
+        &mut dispatcher,
+        "yeban_import_audio",
+        serde_json::json!({
+            "name": "Kick",
+            "path": audio_path.display().to_string(),
+        }),
+    );
+    assert_eq!(imported["status"], "success", "{imported}");
+    assert_eq!(
+        dispatcher.domain().commit_count(),
+        3,
+        "根提交 + 两次直接编辑"
+    );
+
+    // 落盘 —— 作者标签的权威形态在 `history.dag` 里。
+    let saved = call_tool(
+        &mut dispatcher,
+        "yeban_save_project",
+        serde_json::json!({"force": true}),
+    );
+    assert_eq!(saved["status"], "success", "{saved}");
+
+    let rows = persisted_origins(&path);
+    // 见证 1: 日志非空。
+    assert!(!rows.is_empty(), "落盘日志不得为空 —— 否则下面的断言是空转");
+    // 见证 2: 两次编辑的 **Op 本体**都在日志里。
+    let automation = rows
+        .iter()
+        .find(|(_, op)| {
+            matches!(op, Op::Batch { ops, .. }
+                if ops.iter().any(|inner| matches!(inner, Op::SetAutomationPoint { .. })))
+        })
+        .unwrap_or_else(|| panic!("日志里必须有这次自动化编辑: {rows:?}"));
+    assert!(
+        matches!(automation.0, OpOrigin::McpEdit { .. }),
+        "自动化直接编辑的作者必须是 McpEdit, 实际 {:?}",
+        automation.0
+    );
+    let clip = rows
+        .iter()
+        .find(|(_, op)| {
+            matches!(op, Op::Batch { ops, .. }
+                if ops.iter().any(|inner| matches!(inner, Op::AddClip { .. })))
+        })
+        .unwrap_or_else(|| panic!("日志里必须有这次音频导入: {rows:?}"));
+    assert!(
+        matches!(clip.0, OpOrigin::McpEdit { .. }),
+        "音频直接导入的作者必须是 McpEdit, 实际 {:?}",
+        clip.0
+    );
+
+    // 作者名如实（与 `UndoState.author` 同源），且日志里不得再借那两个变体。
+    for (origin, _) in &rows {
+        if let OpOrigin::McpEdit { agent_name } = origin {
+            assert_eq!(agent_name, "yeban-mcp");
+        }
+    }
+    assert!(
+        !rows
+            .iter()
+            .any(|(origin, _)| matches!(origin, OpOrigin::AutomationRecord | OpOrigin::Import)),
+        "MCP 直接编辑不得再借 AutomationRecord/Import; 实际作者: {:?}",
+        rows.iter()
+            .map(|(origin, _)| origin.clone())
+            .collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+    if let Some(parent) = audio_path.parent() {
+        std::fs::remove_dir_all(parent).ok();
+    }
 }
 
 #[test]
@@ -1173,6 +1321,42 @@ fn the_write_paths_commit_through_the_single_undo_entry() {
         extension_audit::scan_write_paths(&mcp),
         Vec::<String>::new(),
         "写类扩展工具必须经过 undo_session::commit（否则不可撤销）"
+    );
+}
+
+#[test]
+fn direct_edit_origins_in_production_sources_are_the_mcp_edit_variant() {
+    let mcp = yeban_mcp::undo_session::read_rust_sources(&[repo_path("crates/yeban-mcp/src")]);
+    assert_eq!(
+        extension_audit::scan_direct_edit_origins(&mcp),
+        Vec::<String>::new(),
+        "直接编辑的来源标签必须是 OpOrigin::McpEdit（不得再借 AutomationRecord/Import）"
+    );
+    // 反向：守卫**确实**抓得住注入（否则这条判据是空转的）。
+    let injected = vec![
+        (
+            "crates/yeban-mcp/src/domain/automation.rs".to_owned(),
+            "fn apply() {\n    let request = CommitRequest {\n        \
+             origin: OpOrigin::AutomationRecord,\n    };\n}\n"
+                .to_owned(),
+        ),
+        (
+            "crates/yeban-mcp/src/domain/import_audio.rs".to_owned(),
+            "fn apply() {\n    let request = CommitRequest {\n        \
+             origin: OpOrigin::Import,\n    };\n}\n"
+                .to_owned(),
+        ),
+    ];
+    let found = extension_audit::scan_direct_edit_origins(&injected);
+    assert!(
+        found
+            .iter()
+            .any(|line| line.contains("OpOrigin::AutomationRecord")),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().any(|line| line.contains("OpOrigin::Import")),
+        "{found:?}"
     );
 }
 
