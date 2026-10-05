@@ -1995,3 +1995,23 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 **开线之前先把"它到底有没有"查清楚**（`grep` + "谁在调用它" + "有没有判据"三问）。
 已写进 `DEV_WORKFLOW` 的开线清单。
 
+### 第 50 轮：为 `MUST-GATE-002` 的**唯一缺口**准备闭环路径（并说明为什么现在不动手）
+
+`line/gate-cross-machine-digest` 已交付（分支上，未合并）：
+- **recorder**：`crates/yeban-render/examples/export_l1_digest.rs`（产出"L1 摘要记录"）。
+- **comparator**：`crates/yeban-render/examples/compare_l1_digests.rs`，用法
+  `compare_l1_digests [--cross-platform] <摘要A> <摘要B>`；退出码 **0 = 同平台+锁工具链+参与字段逐字段相同（`PASS`）
+  / 显式 `--cross-platform` 且读数逐字节相同（`PASS-CROSS-PLATFORM`）**、1 = 硬红（同平台却不一致、或摘要被篡改）、
+  2 = 无法判定（平台不可比、参数错、读不到文件）。
+- 参考摘要 + 判据在 `crates/yeban-render/tests/l1_digest_parity.rs`（其平台身份与本机不一致时**如实 SKIP，退出码 2**）。
+
+**唯一缺口**（该线自己在报告里点名的）：**同平台的第二份记录**。今天参考摘要是 **macOS/aarch64** 上采集的，
+而 CI 跑 **Linux x86_64** ⇒ CI 上判据 ① 只能 SKIP。⇒ 闭环路径是**两步**（都在我这边）：
+1. 手动档加一步：`cargo run -p yeban-render --example export_l1_digest -- <out>` 产出 **Linux** 记录并打印到 job summary；
+2. 我把它**提交为**第二份参考（注明来源 run id / 工具链 / 平台），再让判据在 CI 上对账 ⇒ 同平台（Linux）**PASS**。
+
+**为什么这一轮不直接加那一步**：`export_l1_digest` 目前**只存在于该线的分支上**，未合并 ⇒
+我现在把它写进 `.github/workflows/**` 会让 **CI 立刻红**（"找不到 example"）。⇒ **等该线合并后再接**。
+**这条正是我这几轮反复立的规矩的又一次应用**：**不要在被测对象还不存在时先写判据** ——
+否则门禁会因为"引用了不存在的东西"而红，红的原因与被测能力无关（与"手动档没 token ⇒ 整步红"同族）。
+
