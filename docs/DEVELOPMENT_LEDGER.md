@@ -7737,3 +7737,25 @@ and produced a confused result. `git checkout -- .` restored HEAD, and both crat
 settled. Round 314's decision stands; only the execution needs the corrected insertion point and an unconditional revert.
 
 **Status**: tree green and clean at HEAD; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
+
+
+### Round 316: the family move is one unused import away - and the fix is `cargo fix`
+
+Attempt with the corrections got the furthest yet: **tests 492 passed / 0 failed**, `light` 门禁通过, and a single error left:
+
+    error: unused import: `yeban_model::ids::EntityId`
+      --> crates/yeban-app/src/bridge.rs:51:5
+
+The moved fixture was that import's only user, so the import is now dead - and the idiomatic fix is not another hand edit but **`cargo fix`**, which
+removes unused imports mechanically and is exactly the tool for compiler-named cleanup. That is the last step of this move.
+
+**Two things the attempts established, now recorded so they are not re-learned**:
+1. bridge.rs's `master_track` must be **DELETED, not moved** - `yeban-model::samples` already defines one, and moving it produced a duplicate-definition
+   error. What looked like a helper to move was a helper to delete;
+2. the moved functions must be inserted **before** `samples.rs`'s test module (appending after it is clippy's "items after a test module").
+
+**And the revert discipline paid off three times in this round alone** (rounds 314-316): each attempt that failed left the tree green, so no attempt
+inherited damage from the previous one. The one time it was missing (round 315) the next attempt read a half-applied tree and produced a confused result -
+which is why the pattern is now unconditional in the command rather than tucked inside the success branch.
+
+**Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed; the fixture move needs one `cargo fix` run.
