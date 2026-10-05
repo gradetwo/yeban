@@ -72,6 +72,8 @@ gate_docs() {
   run "handoff-snapshot" python3 scripts/gates/check_handoff_snapshot.py
   run "diagnostics-single-impl" python3 scripts/gates/check_diagnostics_single_implementation.py
   run "viewport-bounds-wiring" python3 scripts/gates/check_viewport_bounds_wiring.py
+  # `yeban-mcp` 的依赖方向规则（它自己的 Cargo.toml 写着"不拖音频栈进 MCP"）。
+  run "mcp-dependency-direction" python3 scripts/gates/check_mcp_dependency_direction.py
 }
 
 gate_schemas() {
