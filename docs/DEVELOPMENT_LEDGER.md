@@ -2447,3 +2447,37 @@ IN-PROGRESS rust (yeban-app): Post Run actions/checkout@v4 [pending]
 判定: **某个测试派生的子进程仍持有 stdout/stderr ⇒ post-job 清理一直等它** ⇒ 作业既不成功也不失败，
 判决要等**作业超时**（`rust` 作业 60 分钟）。**处置与根因修复已写入 `docs/CI_CD.md` 的"第五个坑"。**
 
+### 第 81 轮：**更正第 79 轮的落地判据**（我引错了 run id，且把一条 `cancelled` 的代码 run 说成了 success）
+
+`line/origin-contract` 用逐腿 `steps` 实测**更正了我**（该文件的更正由我落账）:
+
+| run | tip | 整轮 | 真腿 |
+| :--- | :--- | :--- | :--- |
+| `37281280119` | `ef19ab5`（notes-only） | success | lockfile 6 / checks 12 / deny 6 / plan 5；`rust`·`windows`·`matrix` = **skipped steps=0** |
+| **`37281451537`** | **`6f771a7`（代码）** | **cancelled** | plan 5 / deny 6 / lockfile 6 / checks 12 success；**`windows` = success steps=8（有效 7）**；**`rust (workspace 全量)` = cancelled steps=10（有效 9）** |
+| `37281860473` | `dd50cdb`（**纯文档**附录） | success | `rust`·`windows`·`matrix` = **skipped steps=0** —— **那条 run 里没有任何 crate 腿** |
+
+**我在第 79 轮写的是**：「判决 `37281860473` = completed success（真腿：`rust (workspace 全量)` steps=9、`windows` steps=7）」。
+**实际是把两条 run 拼在了一起**：用一条 **docs-only 的 success** 去背书一条 **`cancelled` 的代码 run** 的真腿数。
+⇒ 这正是我在同一条账里点名批评的错（**把转述写得比实测更宽**）的**当场复现**。**更正**：落地判据应写
+「代码 run `37281451537`（`6f771a7`）的 `windows` 腿 = **success**（steps=8，有效 7）；其 `rust (workspace 全量)` 腿 = **cancelled**（我 `gh run cancel` 时它正在 `test --workspace` 中）」。
+（提交 `6f771a7` 本身与其 `land` 结果不受影响：产物复核 `"McpEdit"`=2、清单空=2、`light` ✓ 仍然成立。）
+
+**第 79 轮"挂住的绿"的判据也要更正（至少 contract 那一例）**：逐腿时间戳显示
+`windows` 腿 `Post Run` 08:07:38 **success**、`rust (workspace 全量)` 的 `test` **一直跑到 08:09:24 才被取消**
+（`clippy --workspace -D warnings` 已 success）⇒ **它不是挂在 post-job 清理，而是一条正常在跑的 workspace 测试被我提前取消**；
+`updatedAt` 停在 08:05:39 更像是 **GitHub API 字段滞后**。
+⇒ 该形态的判据必须换成「**job 的 `steps[].started_at` 也不再前进**」，**只看 `updatedAt` 会误判**。
+（`engine-mirror-race` 的 `37281806141` 观测到的 `rust (yeban-app): Post Run … [pending]` 是否属同一形态，待其 attempt 结论。）
+
+**由此暴露的真实缺口（比上面两条更要紧）**：**main 里落地的这段代码，Linux `cargo test --workspace` 从未完成过** ——
+merge run `37282047399` 被 `cancel-in-progress` 收掉、`37282122759` 是 docs-only（crate 腿 skipped）。
+现有证据只有：4 条 light 腿 success（含 `checks` 的 fmt/守卫/JSON Schema/跨语言 jsonschema）、
+`clippy --workspace -D warnings` success、**`windows` 腿全绿（含 `yeban-model`/`yeban-mcp` 的 test）**、
+本机 `light` + `test -p yeban-model` 全绿、样本 sha256 逐字节不变。**缺的正是 Linux `test --workspace` 的完成态。**
+该线已 `gh run rerun 37281451537 --failed`（attempt=2 正在跑那条腿）。
+
+**新增 needs（该线报来，现随 `84eae35` 进 main）**：`crates/yeban-mcp/src/domain/automation.rs:288` 是
+**生产响应载荷里的一句假话** —— 它说"契约 `origin.oneOf` 尚未承认该分支 (needs)"，而契约**已经承认**
+（`McpEdit` 分支已入 `schemas/ops.schema.json`）⇒ 客户端拿到的 `note` 是错的；同文件 `:46`、`import_audio.rs:36` 同病。
+
