@@ -4442,3 +4442,32 @@ the MCP side - and that ripple cost several CI rounds there. Doing it blind in t
 **Position after five reconnaissance rounds on this item (168-170)**: the UI half is the only D56 part left, and it is now fully
 mapped: action variant -> port handler -> `registry.add` -> `.slint` item -> `host.rs` binding, with the tested action set and
 `yeban-app/Cargo.toml`'s missing `yeban-diagnostics` line as the two known ripple sites.
+
+### Round 171: D56 UI surface - the ai-rail callbacks belong to a NESTED component, so a button placed there cannot be bound from host.rs
+
+I wrote all four remaining D56 UI edits (callback, button, `registry.add` entry, `host.rs` binding) and the build failed with:
+
+```
+error[E0599]: no method named `on_export_diagnostics` found for reference `&MainWindow`
+   --> crates/yeban-app/src/host.rs:406:12
+```
+
+Cause, established by reading the component boundaries: `crates/yeban-app/ui/app.slint` line 43 is
+`component AiRail inherits Rectangle {`, and the callbacks I copied (`run-acoustic-diagnosis` at line 44,
+`open-musical-pr` at line 45) belong to **AiRail**, not to the window. `export component MainWindow inherits Window` starts
+at line **184**. `host.rs` binds callbacks on **MainWindow**, which is why `on_export_diagnostics` does not exist - I had
+declared the callback inside a nested component. A grep for the sibling bindings confirms the mismatch: `host.rs` contains no
+`on_run_acoustic_diagnosis` at all, i.e. those AiRail callbacks are not bound from there.
+
+**I reverted the three surface files immediately** (`app.slint`, `elements.rs`, `host.rs`) rather than leave a non-compiling
+tree, and re-verified `cargo check -p yeban-app` = Finished. The Rust-side action committed as `ef1c384`
+(`UiAction::ExportDiagnostics` + its `perform`/`name` arms + the shared `unavailable_config_json`) is unaffected and stays.
+
+**Correct plan for the next attempt**: declare `callback export-diagnostics();` inside **MainWindow** (line 184 onward) and
+place the button inside MainWindow's own tree, then add the `registry.add` entry (the ID must exist somewhere in `app.slint`,
+which is what that table checks) and the `host.rs` binding. The alternative - keeping the button in AiRail and forwarding the
+callback outward - is possible in Slint but needs `in-out`/forwarding syntax and is more surface area than moving one button.
+
+**Lesson**: in a `.slint` file, component boundaries matter more than line proximity. My anchor was the *nearest similar
+widget*, which sat in a different component from the one the Rust side binds. The next reader should grep `^component ` first -
+that one command would have prevented this round.
