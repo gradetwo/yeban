@@ -5771,3 +5771,31 @@ recording.
 2). Whichever is chosen, the criterion is the same and is stated in the decision: a tick inside a clip returns that clip; a tick in a
 gap returns None; and - if route 2 is chosen - the same tick under two different scroll values must resolve to the same clip, which is
 the test that would catch a double-counted offset.
+
+### Round 236: my own round-234 decision was under-specified - "the current track" does not exist
+
+Checked before wiring, and the check falsifies part of my own decision: there is **no current-track concept** anywhere in the app -
+`grep -i` for current_track / selected_track / active_track over `crates/yeban-app/src/*.rs` and `ui/app.slint` returns nothing. Round
+234's rule said "the clip on the current track containing the clicked tick", and the first half of that sentence refers to something
+the product does not have.
+
+This is worth stating plainly rather than quietly substituting an assumption, because the decision is on the record as a decision:
+it was **under-specified**, and the missing half is not a detail - it is what determines which track receives a new note.
+
+**What the data actually supports**, as far as this session has read it: a note view knows its **clip** (`ClipPoolEntry::id`, per the
+`NoteView` doc) but not its track; the roll's arrays carry pitch lanes, not track lanes; and the projection's clip arrays do carry a
+lane, which is a lane in the ARRANGEMENT, not necessarily a track identity in the roll's sense. So "the track you clicked in" is not
+recoverable from the click alone today.
+
+**The two honest options**, neither taken unilaterally this round:
+1. **derive the track from what the click already resolves to**: resolve the clip first (which the click's tick does support), then
+   ask the model which track places that clip. Cost: unambiguous, no new UI concept - but it silently defines "current track" as
+   "the track that owns the clip under the cursor", which is a different sentence from the one I wrote in round 234;
+2. **introduce a real current-track concept** (selection in the arrangement or track headers). Cost: a new UI concept with its own
+   selection model, MCP exposure and criteria - the honest version if the product wants "draw on the track I am working on"
+   regardless of where the clip is.
+
+**What I will not do**: pick one and describe the pencil as working, because the two produce different products and the difference is
+backwards-compatible only in name. Round 234's clip rule still stands; what changed is that it needs this second sentence before it
+can be implemented, and I would have discovered that mid-implementation if I had not checked first - which is the argument for
+checking a decision's nouns before writing code against it.
