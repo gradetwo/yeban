@@ -5324,3 +5324,16 @@ convenience.
 **What is NOT claimed here**: that BASELINE-001/002/004/005 are in doubt. Their mechanisms are wired and CI-verified; what is
 unestablished for them is the same thing as for BASELINE-003 - a reference-machine reading. I have not re-measured them and this
 entry does not pretend otherwise.
+
+### Round 213: the extended guard is CI-verified, and that closes the loop round 210 left open
+
+Run `37359240575` @ `44f7c0d`: the **`checks` leg = success, 12 steps**. That leg is where the ledger guards run, so the extended
+`check_viewport_bounds_wiring.py` - which now also requires the roll's drawn lane count to equal the host's `ROLL_LANE_COUNT` -
+passes from a fresh checkout, not merely from my working tree.
+
+Why this was worth reading rather than assuming: round 210 recorded `light` green for the same commit, and `light` runs the script
+too, but locally and in a tree where the file had just been edited by hand. A guard that only works in the tree where it was written
+is not a guard. The distinction is the same one this session has had to draw repeatedly between "it passes here" and "it is verified".
+
+The workspace and windows legs of that run were still in progress when this entry was written, so the run is not yet a completed
+full-workspace verdict; what is established is the part the guard belongs to.
