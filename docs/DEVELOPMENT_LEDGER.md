@@ -4757,3 +4757,29 @@ Two of my measurement instruments failed in this round in the same way, and both
 - `grep 'assertion'` matched `static_assertions` for the same reason.
 The precise patterns that actually found the cause were `E0061` and `could not compile`. Recorded because I have now written
 four entries about instruments misleading me; crate names that contain the words I search for are a new variant.
+
+### Round 188: consuming the clipping is CI-green - thirteenth completed full-workspace verdict, and my golden prediction did NOT come true
+
+Run **`37353063191` @ `44421ff` = completed success**, every leg green:
+
+| leg | verdict |
+| :--- | :--- |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` |
+| **`rust (workspace 全量)`** | **success `steps=10`** |
+| `windows (yeban-mcp / yeban-model)` | success `steps=9` |
+| `plan` / `lockfile` / `deny` | success (5 / 6 / 6) |
+
+The step detail matters more than the whole-run word: inside the workspace leg, step 5 `clippy --workspace (-D warnings)` **and**
+step 6 `test --workspace` are both **success**, and step 8 (failure summary) is skipped - i.e. nothing failed. So the host's
+clipping consumption (rounds 409-413) is verified on CI, including the possibility I flagged when committing `9d64894`.
+
+**My prediction was wrong, and the reason is worth keeping**: I warned that the golden baselines would probably need regenerating
+because fewer notes are drawn. They did not. The explanation, stated as the likely one rather than as a read fact: the golden
+suites render the small demo/filled fixtures, not the 100 000-note project, and a small project's notes fit inside the 1920px
+window, so clipping removes nothing from those scenes and the pixels are unchanged. That is checkable in one read of
+`tests/real_ui_tier1.rs` and is the next thing to confirm before repeating the claim in either direction.
+
+Completed full-workspace verdicts on main now number **thirteen**, the thirteenth being `37353063191` @ `44421ff`.
+
+Still in flight: the fps gate on the same commit (`37353169531`), whose number will be the first measurement taken on the
+corrected long-timeline fixture - and which, per round 187, measures a STATIC viewport rather than the spec's scrolling scene.
