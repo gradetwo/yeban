@@ -32,9 +32,10 @@
 //! ## 节点延迟的来源（模型层字段，不再自造第二个事实源）
 //!
 //! [ARCH-PDC-001] 要求"每个插件与内置设备必须精确上报其引入的处理延迟
-//! (`DeviceDefinition::latency_samples`)"。该字段已由集成者按规范补进
-//! `yeban-model`（`#[serde(default)]`，缺失取 `0` 表示**未上报**），
-//! 因此本 crate 用 [`LatencyTable::from_project`] / [`LatencyTable::from_tracks`]
+//! (`DeviceDefinition::latency_samples`)"。该字段在 `yeban-model` 里是**必需字段**
+//! [ADR-0001 D43]：**缺字段由反序列化直接报错**，因此不存在"未上报"这个状态 ——
+//! 读到的 `0` **就是**"这台设备真的零延迟"。
+//! 本 crate 用 [`LatencyTable::from_project`] / [`LatencyTable::from_tracks`]
 //! 从**设备链**汇总每个节点的自身延迟：未旁通设备的 `latency_samples` 饱和求和。
 //!
 //! [`LatencyTable`] 仍然可以显式注入（[`PdcPlan::compute`] 接收它），
@@ -147,11 +148,10 @@ impl LatencyTable {
     ///
     /// 1. **旁通设备不计入**：`bypassed == true` 表示该设备不在信号路径上，
     ///    它对相位没有贡献。若将来发现某些宿主仍然报告旁通设备的延迟，只改这一处。
-    /// 2. **`0` 被当作"未上报"而不是"零延迟"**：模型层的文档明写
-    ///    `DeviceDefinition::latency_samples` 缺失时取 `0` 且 `0` 意为"未上报"。
-    ///    本函数不做任何推断——它只把上报值加起来。因此"设备作者漏报"表现为
-    ///    PDC 仍然按 0 对齐（相位可能错），这是**上游数据问题**，由模型侧的
-    ///    校验/样本填充覆盖，而不是在这里猜。
+    /// 2. **`0` 就是"真的零延迟"**：`DeviceDefinition::latency_samples` 是**必需字段**
+    ///    [ADR-0001 D43]，**缺字段由 `yeban-model` 在反序列化时报错** ⇒ "未上报"这个状态
+    ///    不存在，本函数没有必要（也没有能力）去区分"漏报"与"零延迟"。
+    ///    它只做一件事：把设备链上的上报值加起来。
     #[must_use]
     pub fn from_tracks(tracks: &BTreeMap<EntityId, TrackV3>) -> Self {
         let mut table = Self::new();
@@ -878,7 +878,8 @@ mod tests {
     }
 
     /// 判据 (i)：延迟表从模型的 `DeviceDefinition::latency_samples` 汇总而来
-    /// [ARCH-PDC-001]，且**旁通设备不计入**、`0` 被当作"未上报"。
+    /// [ARCH-PDC-001]，且**旁通设备不计入**；`0` 就是"真的零延迟"
+    /// （必需字段 [ADR-0001 D43]，缺字段由模型层反序列化报错）。
     #[test]
     fn latency_table_sums_model_device_latency_and_skips_bypassed() {
         use yeban_model::{DeviceDefinition, DeviceKind};
@@ -908,7 +909,7 @@ mod tests {
         });
         tracks.insert(id, track);
 
-        // 另一条轨道: 所有设备都是 0（= 未上报）⇒ 该节点延迟为 0
+        // 另一条轨道: 设备显式上报 0（= 真的零延迟）⇒ 该节点延迟为 0
         let silent = EntityId::new();
         let mut silent_track = TrackV3 {
             id: silent,
@@ -922,7 +923,7 @@ mod tests {
 
         let table = LatencyTable::from_tracks(&tracks);
         assert_eq!(table.get(&id), 40, "32 + 8（旁通的 4096 不计入）");
-        assert_eq!(table.get(&silent), 0, "未上报 ⇒ 0");
+        assert_eq!(table.get(&silent), 0, "真的零延迟 ⇒ 0");
         assert_eq!(table.len(), 1, "0 不保留条目（set(_, 0) == 未登记）");
     }
 }

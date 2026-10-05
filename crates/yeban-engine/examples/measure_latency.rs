@@ -11,7 +11,7 @@
 //! **能测**（本工具真的输出数字）：
 //!
 //! 1. **标称时延**：设备报告的缓冲帧数 ÷ 采样率，输入/输出**分别**给（`NOMINAL` 行）；
-//! 2. **后端报告的实际缓冲帧数**：打开流之后 `DeviceTrait::buffer_size()` 的回读；
+//! 2. **后端报告的实际缓冲帧数**：打开流之后从**流**上回读 `StreamTrait::buffer_size()`；
 //! 3. **主机报告的驱动侧时延**（`DRIVER-LATENCY` 行）：输出 `playback − callback`、
 //!    输入 `callback − capture`，给 p50 / p99 / max / mean。
 //!    这是**真的**：cpal 每个回调都带着主机用厂商 API 算出来的时刻 ——
@@ -28,7 +28,8 @@
 //! - **真正的声学 / DAC-ADC 往返时延**：`playback`/`capture` 是**主机自己的预测**，
 //!   不是测出来的声学量。真正的往返需要**物理回环**（输出接输入，或
 //!   BlackHole/Loopback 这类虚拟设备）并做采集比对。
-//! - **cpal 0.18.2 没有显式的时延查询 API**（`DeviceTrait` 只有 `buffer_size()` / `now()`）——
+//! - **cpal 0.18.2 没有显式的时延查询 API**（`DeviceTrait` 上没有 `buffer_size()`/`now()`；
+//!   这两个在 `StreamTrait` 上）——
 //!   但这**不等于**"拿不到硬件时延"：上面第 3 条就是证据。想直接调
 //!   `kAudioDevicePropertyLatency` / `IAudioClient::GetStreamLatency` / `snd_pcm_delay`
 //!   仍然需要新写 FFI（= **依赖图裁决**），只是本工具已经不必走那条路。
@@ -479,7 +480,7 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
     /// 把一个方向的原始读数变成"标称时延 + 回调抖动"，并把**每一个**不确定点写成 NOTE。
     ///
     /// 帧数的选择口径（**先看后端回读，再退到请求值，都没有就 `none`**）：
-    /// 1. `DeviceTrait::buffer_size()` 的回读 —— 后端报告的实际值，最可信；
+    /// 1. `StreamTrait::buffer_size()`（**开流之后从流上**）的回读 —— 后端报告的实际值，最可信；
     /// 2. 我们请求的 `BufferSize::Fixed(n)`（且协商接受）—— 请求值，不是回读值；
     /// 3. 都没有 ⇒ 标称 `none`、抖动周期用 `--frames`（并**明说**这是假设）。
     fn summarize(
@@ -655,7 +656,9 @@ direction on purpose",
             stream
                 .play()
                 .map_err(|error| format!("output play: {error}"))?;
-            reported_frames = device.buffer_size().ok();
+            // ⚠ `buffer_size()` 挂在 **`StreamTrait`**（流）上，不是 `DeviceTrait`（设备）——
+            // 必须**开流之后**从流上回读。CI 的第一次编译就是这么红掉的。
+            reported_frames = stream.buffer_size().ok();
             std::thread::sleep(Duration::from_secs_f64(seconds));
             let _ = stream.pause();
         }
@@ -711,7 +714,9 @@ direction on purpose",
             stream
                 .play()
                 .map_err(|error| format!("input play: {error}"))?;
-            reported_frames = device.buffer_size().ok();
+            // ⚠ `buffer_size()` 挂在 **`StreamTrait`**（流）上，不是 `DeviceTrait`（设备）——
+            // 必须**开流之后**从流上回读。CI 的第一次编译就是这么红掉的。
+            reported_frames = stream.buffer_size().ok();
             std::thread::sleep(Duration::from_secs_f64(seconds));
             let _ = stream.pause();
         }

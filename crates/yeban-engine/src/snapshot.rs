@@ -121,9 +121,10 @@ impl TrackParams {
     /// 从模型层音轨投影（**只读**，不改动模型）。
     ///
     /// `latency_samples` 由调用方提供：模型层的
-    /// `DeviceDefinition::latency_samples` **已经存在**，[`crate::graph::LatencyTable`]
-    /// 按设备链汇总它并把结果作为这里的入参传入 ⇒ 本函数自身不需要（也不应该）再认识
-    /// 设备链，延迟的**唯一事实源**留在 [`crate::graph`]。
+    /// `DeviceDefinition::latency_samples` **已经存在**（且是**必需字段** [ADR-0001 D43]），
+    /// [`crate::graph::LatencyTable`] 按设备链汇总它并把结果作为这里的入参传入
+    /// ⇒ 本函数自身不需要（也不应该）再认识设备链，延迟的**唯一事实源**留在
+    /// [`crate::graph`]。
     #[must_use]
     pub fn from_track(track: &TrackV3, latency_samples: u32) -> Self {
         Self {

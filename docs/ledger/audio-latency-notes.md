@@ -46,7 +46,7 @@
 | 2 | 默认输入/输出配置：通道数、采样率、`f32` 格式 | ✅ | `default_input_config()` / `default_output_config()` | `DEVICE` 行（人读） |
 | 3 | 设备报告的缓冲区间 `min..=max`，或 `Unknown` | ✅ | `supported_*_configs()` → `SupportedBufferSize` | `DEVICE` 行（人读） |
 | 4 | 协商结果：`BufferSize::Fixed(n)` 还是 `Default` | ✅ | `device::negotiate()`（与本 crate 真实路径**同一份**纯函数） | 间接（标称行） |
-| 5 | 后端报告的实际缓冲帧数 | ✅ | `DeviceTrait::buffer_size()`（打开流之后回读） | `buffer_frames_reported=` |
+| 5 | 后端报告的实际缓冲帧数 | ✅ | **`StreamTrait::buffer_size()`**（挂在**流**上，必须打开流之后回读；`DeviceTrait` 上**没有**这个方法） | `buffer_frames_reported=` |
 | 6 | **标称时延**（输入、输出**分别**）= 帧数 ÷ 采样率 | ✅ | 第 5 项（拿不到就退到请求的 `Fixed(n)`；都没有 ⇒ `none`） | `nominal_out_ms=` / `nominal_in_ms=` |
 | 7 | **主机报告的驱动侧输出时延** = `playback − callback` | ✅ | 每个**输出**回调的 `OutputStreamTimestamp::playback`；主机折入了设备缓冲 + 设备时延 + 安全偏移（见 §1.1） | `driver_out_latency_p50/p99/max_ms` |
 | 8 | **主机报告的驱动侧输入时延** = `callback − capture` | ✅ | 每个**输入**回调的 `InputStreamTimestamp::capture` | `driver_in_latency_p50/p99/max_ms` |
@@ -182,6 +182,7 @@ cargo run --release -p yeban-engine --example measure_latency -- --force-no-devi
 | ⑤ | `the_convenience_flag_never_changes_the_machine_readable_verdict` | 开关不改判定、不改行 | ✅ | ✅ |
 | ⑤ | `labels_are_sanitized_so_the_line_stays_parseable` | 标签规范化（空白/`=`/非 ASCII） | ✅ | ✅ |
 | ⑤ | `usage_errors_exit_two_and_help_exits_zero`（运行期） | 用法错误 ⇒ 2；`--help` ⇒ 0；都不输出读数 | SKIP(loud) | ✅ |
+| ⑤ | `allow_unmeasurable_changes_the_exit_code_but_not_the_verdict`（运行期） | 便利开关只改退出码（3→0），`BENCH` 行**逐字节不变** | SKIP(loud) | ✅ |
 | ⑤ | `unreported_driver_latency_is_not_zero_and_never_a_pass` | **新增**：主机不报（全 0 样本）⇒ 字面 `unreported-or-zero`，**绝不写 `0.0000`**，人读行必须说"这不是 0 ms 时延" | ✅ | ✅ |
 | ⑥ | `nominal_values_can_never_satisfy_the_baseline` | **没有回环证据 ⇒ 永不达标**（连 0.001 ms 的"标称"也不行） | ✅ | ✅ |
 | ⑥ | `loopback_evidence_is_the_only_route_to_a_pass` | 只有回环证据能到达标/超目标，且 5.5 ms 边界精确（`≤`） | ✅ | ✅ |
@@ -191,7 +192,7 @@ cargo run --release -p yeban-engine --example measure_latency -- --force-no-devi
 
 **本机实测（M2）**：
 - `rustc --edition 2024 --test -D warnings` → **18 passed; 0 failed**；
-- `cargo test -p yeban-engine --no-default-features`（仓库内轻量变体）→ 库 **116 passed**
+- `cargo test -p yeban-engine --no-default-features`（仓库内轻量变体）→ 库 **119 passed**
   （含这 18 条）+ `latency_cli_contract` **5 passed**（4 条**响亮 SKIP**：本机 variant 不带 cpal）；
 - `/tmp` 副本 + cpal API 仿真桩（`device` feature 打开，见 §3.5）→
   `cargo clippy -p yeban-engine --all-targets -- -D warnings` **绿**；
@@ -227,7 +228,7 @@ cargo clippy -p yeban-engine --all-targets -- -D warnings   # 副本内，device
 ```
 
 于是**真实的** `device.rs` 与 `examples/measure_latency.rs` 被真正编译 + lint 了一遍。
-它当场抓到 **4 类必然/可能让 CI 变红的缺陷**：
+它当场抓到 **4 类缺陷**：
 
 1. `E0596`：移进 `FnMut` 回调的 `EngineRuntime` 没声明 `mut`（**真 cpal 下也必然红**）；
 2. `clippy::collapsible_if`（edition 2024 的 let-chain，**必然红**）；
@@ -238,8 +239,24 @@ cargo clippy -p yeban-engine --all-targets -- -D warnings   # 副本内，device
 4. `E0308`：判据里 `bench_line(run)` 传错了参数（这是**判据自己**的 bug，
    说明这一层对测试代码也有效）。
 
-⚠ **边界**：仿真桩没有真后端，只证明"**能编译、能被 lint**"，**不证明**任何运行时行为，
-也不证明真 cpal 的编译能过。
+⚠ **边界（这一条被 CI 亲手证明了，不是理论担忧）**：仿真桩没有真后端，只证明"**能编译、
+能被 lint**"，**不证明**任何运行时行为，也**不证明真 cpal 的编译能过**。
+本线第一次推送（`9e765a6`/`087622d`，run **37249056627**）的 `rust (yeban-engine)` 腿
+**在 clippy 上红了 45 秒**：
+
+```text
+error[E0599]: no method named `buffer_size` found for reference `&cpal::Device`
+   --> crates/yeban-engine/examples/measure_latency.rs:658:38
+   --> crates/yeban-engine/examples/measure_latency.rs:714:38
+```
+
+**根因**：我把 `buffer_size()` / `now()` 当成了 `DeviceTrait`（设备）的方法，
+实际它们在 **`StreamTrait`（流）** 上。**仿真桩为什么没抓到？** 因为我是照着
+**同一个错误理解**写的桩 —— 桩把 `buffer_size` 也放在了 `DeviceTrait` 上，
+于是"错的代码"配"错的桩"，两边一致地错，双双通过。
+⇒ 这是"**自造契约验证自造代码**"的固有盲区：**必须真 cpal 编译才能证伪**。
+已修正：① 两处改调 `stream.buffer_size()`；② 桩也一并改对（`buffer_size`/`now` 移到
+`StreamTrait`），以免再骗自己。**这一条应该被当成"本机仿真桩的价值上限"的实测证据。**
 
 **第二层：真二进制跑两条路径**
 
@@ -384,29 +401,40 @@ BENCH baseline=005 label=fake-device verdict=unmeasurable-without-loopback evide
 | 4 | 在 `docs/ledger/gate-status.md` 的 `BASELINE-005` 行补一句"工具已就绪（标称 + 驱动侧 + 抖动），门禁本体仍需裁决或回环" | 集成者 | 本线不得编辑该文件 |
 | 5 | 若要让 CI 在**有设备**的机器上跑（self-hosted runner），需要确认许可与设备独占策略 | 人类 | 共享模式会被 OS 混音器影响，读数口径不同 |
 
-### 7.4 顺手修的过时口径（**只改注释，算术一行未动**）
+### 7.4 顺手修的过时口径（**只改注释/测试消息，算术一行未动**）
 
 集成者转达"`DeviceDefinition::latency_samples` 在 D43 后变成必需字段，`0` 就是真零延迟"，
-并要求更正 `crates/yeban-engine/src/graph.rs` 里"`0` = 未上报"的措辞。
-**核对后本线没有改 `graph.rs`**，因为在本工作树的 `main`（`2f79c09`）上该前提**不成立**：
+要求更正 `crates/yeban-engine/src/graph.rs` 里"`0` = 未上报"的措辞。
+
+**第一次核对：前提不成立（但我看的是旧基线）。** 本工作树建于 `2f79c09`，当时
+`yeban-model` 里字段仍是 `#[serde(default)]`、文档仍写"0 = 未上报"，且有现役判据
+`device_latency_samples_defaults_to_zero_and_round_trips` 断言旧文档缺该字段必须仍可读。
+于是我**拒绝**改 `graph.rs` 并回告集成者（判断"改了会写成假的"）。
+
+**第二次核对：集成者是对的，我的基线旧了。** 按集成者要求
+`git fetch origin main && git merge origin/main`（合入 `0ef7eb2`，含 `line/model-no-compat`
+的 `4505cc1`）之后，**在本机复跑**得到：
 
 ```bash
-$ sed -n '441,446p' crates/yeban-model/src/project.rs      # 非本线地盘
-    /// `#[serde(default)]` 是刻意的：缺失时取 `0`，这样旧文档仍可读…**但 0 必须被理解为"未上报"**
-    #[serde(default)]
-    pub latency_samples: u32,
+$ grep -n -B4 'pub latency_samples' crates/yeban-model/src/project.rs
+473-    /// **必需** [ADR-0001 D43]：本字段曾经 `#[serde(default)]`…缺字段会被静默读成
+474-    /// "零延迟设备"，而 PDC 的相位对齐恰恰依赖这个数字。缺字段 ⇒ 响亮失败。
+477:    pub latency_samples: u32,          # 没有 #[serde(default)]
 $ bash scripts/dev/cargo-local.sh test -p yeban-model latency_samples
-test project::tests::device_latency_samples_defaults_to_zero_and_round_trips ... ok
+running 0 tests                        # 那条"缺字段读成 0"的判据**已经不存在**（被原地反转/删除）
 ```
 
-⇒ 字段仍是 `#[serde(default)]`，模型层文档仍写"0 = 未上报"，且有**现役判据**
-`device_latency_samples_defaults_to_zero_and_round_trips` 断言"旧文档缺该字段必须仍可读"。
-所以 `graph.rs` 的 `0` = 未上报**在今天仍然准确**，改了反而会写成假的；已回告集成者。
+⇒ **必需字段、`0` 就是真零延迟**。于是按集成者的要求改了 `graph.rs` 的 **5 处**
+（模块文档、`from_tracks` 的语义决定第 2 条、判据 (i) 的文档、测试里的两处消息）。
 
-**本线确实修掉的**（这些才是真过时 —— 它们说"`yeban-model` 里还没有该字段"）：
-`crates/yeban-engine/src/lib.rs` 的"设计边界 §5"、`crates/yeban-engine/src/snapshot.rs` 的
-`TrackParams::from_track` 文档。改后措辞为"字段**已经存在**，[`graph`] 按设备链汇总它"，
-并把"0 = 未上报 vs 真零延迟不可区分"这一**仍存在的**语义缺口如实写明（它属模型层裁决）。
+> ⚠ **教训（L30 的另一面，值得记下来）**：本机真跑**必须同时回答"我跑的是哪个树/哪个基线"**。
+> 我第一次的 `sed`/`cargo test` 读数**本身没错**，错的是它描述的是**旧 main**。
+> 在两棵树并行演进的仓库里，"我看过了"只有绑定到具体 commit 才有意义。
+
+**同时修掉的另一类真过时**（两次核对都成立的）：`crates/yeban-engine/src/lib.rs` 的
+"设计边界 §5"与 `crates/yeban-engine/src/snapshot.rs` 的 `TrackParams::from_track` 文档
+曾写"`yeban-model` 里还没有该字段"—— 该字段早已存在。改后措辞为
+"字段**已经存在**且是**必需字段** [ADR-0001 D43]，[`graph`] 按设备链汇总它"。
 
 ---
 
@@ -419,6 +447,7 @@ test project::tests::device_latency_samples_defaults_to_zero_and_round_trips ...
 | `crates/yeban-engine/tests/latency_cli_contract.rs` | **新增**：跑真二进制的运行期契约判据（5 条） |
 | `crates/yeban-engine/src/lib.rs` | **改动**：注册 `pub mod latency;`、模块地图一行、边界说明，并更正"模型层没有 `latency_samples`"的过时口径 |
 | `crates/yeban-engine/src/snapshot.rs` | **改动**：`TrackParams::from_track` 的文档更正（同上，**纯措辞**） |
+| `crates/yeban-engine/src/graph.rs` | **改动**：5 处"`0` = 未上报"的措辞更正为"必需字段 [D43]，`0` 就是真零延迟"（**纯注释/测试消息，算术未动**；依据见 §7.4） |
 | `docs/ledger/audio-latency-notes.md` | **新增**：本文件 |
 
 **没有**改动：根 `Cargo.toml` / `Cargo.lock`（零新增依赖）、`.github/**`、`scripts/**`、`deny.toml`、

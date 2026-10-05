@@ -84,13 +84,11 @@
 //! 4. **采样格式**只支持 `f32`（协商失败会返回 `device::DeviceError`），
 //!    `i16`/`u16` 的 `FromSample` 转换路径留给后续切片。
 //! 5. **PDC 的节点延迟来源**：规范 [ARCH-PDC-001] 要求的
-//!    `DeviceDefinition::latency_samples` **已经存在于 `yeban-model`**
-//!    （`#[serde(default)] pub latency_samples: u32`），[`graph`] 的
+//!    `DeviceDefinition::latency_samples` **已经存在于 `yeban-model`**，
+//!    而且是**必需字段** [ADR-0001 D43]（**缺字段由反序列化直接报错**）
+//!    ⇒ "未上报"这个状态不存在，读到的 `0` 就是"真的零延迟"。
 //!    [`graph::LatencyTable::from_project`] / `from_tracks` 直接按设备链汇总它
 //!    ⇒ **默认路径不再需要外部注入**。
-//!    ⚠ 语义仍有缺口：字段带 `#[serde(default)]`，缺失时读成 `0`，而模型层的文档把
-//!    `0` 解释为"**未上报**"（而非"零延迟"）—— 也就是说"漏报"与"真的零延迟"在数据上
-//!    不可区分。这条口径是否要改成"必需字段"属于模型层裁决，本线**不擅自改**。
 //!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3（`ARCH-RT-001..005`、
