@@ -48,6 +48,9 @@ use crate::input::{Action, InputContext, Modifiers, PhysicalKey, Resolution};
 pub enum UiAction {
     /// `[D56]` 人工导出诊断包（把调试信息与相关文件打包, 供复现排查）。
     ExportDiagnostics,
+    /// `[UI-NOTE-003]` 切到某个卷帘工具（**视图状态**；由键盘路径派发，界面侧应用）。
+    /// N2：`InputContext` 在 GUI 路径上还没有读者 ⇒ 本条目前收不到按键（见 app-projection-notes.md）。
+    SelectTool(crate::input::Tool),
     /// `Cmd+Z` / 时光机里的"撤销一步"按钮。
     Undo,
     /// `Cmd+Shift+Z`。
@@ -74,6 +77,7 @@ impl UiAction {
             Self::CloseUndoTree => "close-undo-tree",
             Self::ToggleUndoTree => "toggle-undo-tree",
             Self::ExportDiagnostics => "export-diagnostics",
+            Self::SelectTool(_) => "select-tool",
         }
     }
 }
@@ -89,6 +93,8 @@ pub const fn dispatch_key(action: Action) -> Option<UiAction> {
         Action::Undo => Some(UiAction::Undo),
         Action::Redo => Some(UiAction::Redo),
         Action::OpenTimeMachine => Some(UiAction::OpenUndoTree),
+        // `[UI-NOTE-003]` 工具选择走**同一**唯一下发点；它不改工程, 由宿主的界面侧应用。
+        Action::SelectTool(tool) => Some(UiAction::SelectTool(tool)),
         _ => None,
     }
 }
@@ -282,6 +288,9 @@ impl UndoPort {
         };
 
         let outcome = match action {
+            // `[UI-NOTE-003]` 工具选择是**视图状态**：端口碰不到 Slint, 因此这里只报告结果,
+            // 设置 `active-tool` 属性由宿主的界面侧完成（N2 接线后即可）。
+            UiAction::SelectTool(_) => ActionOutcome::DisplayOnly,
             // [D56] 人工导出诊断包。**不**改工程状态 ⇒ `DisplayOnly`。
             // 调的是与 MCP 工具**同一个** `yeban_diagnostics::export_diagnostics`（判据 4）。
             UiAction::ExportDiagnostics => {
@@ -374,6 +383,22 @@ impl UndoPort {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn select_tool_is_dispatched_and_named_but_carries_no_model_action() {
+        // 判据: 工具选择经**唯一下发点** `dispatch_key` 得到 `UiAction::SelectTool`, 名字固定,
+        // 且端口侧只报显示态（视图状态不进提交图, 也不改工程）。
+        for digit in 1_u8..=5 {
+            let tool = crate::input::Tool::from_digit(digit).expect("1..5 都是工具");
+            let action = crate::input::Action::SelectTool(tool);
+            assert_eq!(
+                dispatch_key(action),
+                Some(UiAction::SelectTool(tool)),
+                "数字键 {digit} 的工具选择必须被下发（N2 接好键盘源后即生效）"
+            );
+            assert_eq!(UiAction::SelectTool(tool).name(), "select-tool");
+        }
+    }
+
     use super::*;
     use yeban_model::samples::filled_project;
     use yeban_model::{OpOrigin, UndoCursor};
