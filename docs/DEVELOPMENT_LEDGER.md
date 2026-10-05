@@ -4735,3 +4735,25 @@ scroll-x changes what is injected.
 **Explicitly not decided here**: whether A alone is enough to bring the p99 under 8.3 ms. Round 182 measured ~171 ms/frame with
 everything drawn; clipping to one screenful should cut that by the ratio of visible to total notes, but that is a prediction to
 be measured by re-running the gate, not a claim.
+
+### Round 185: the fps gate failed for the SAME missed call sites - the harness never ran, and the fixture question is still open
+
+Explained without new speculation: run `37352310778` (fps, old fixture) failed at its test step with
+
+```
+error[E0061]: this function takes 3 arguments but 2 arguments were supplied
+error: could not compile `yeban-app` (test "test_port_adapter") due to 2 previous errors
+```
+
+i.e. exactly the three call sites fixed in `44421ff`. So that run never measured anything - the release build of the feature-gated
+test target stopped at compile time, which is also why the numbers file stayed empty and my watcher reported rc=1.
+
+**Consequence, stated so the next reading is not misread**: the intermediate fps run `37352611282` @ `ce96613` was dispatched
+before the fix too, so it will fail the same way. Only the run dispatched on `44421ff` (pending) can produce numbers, and it is the
+first one that combines the corrected fixture (long timeline) WITH a compiling build.
+
+Two of my measurement instruments failed in this round in the same way, and both cost a run:
+- `grep 'error'` matched the crate name `thiserror`, producing a wall of false positives;
+- `grep 'assertion'` matched `static_assertions` for the same reason.
+The precise patterns that actually found the cause were `E0061` and `could not compile`. Recorded because I have now written
+four entries about instruments misleading me; crate names that contain the words I search for are a new variant.
