@@ -88,3 +88,93 @@ ToolSpec {
 - 提交信息用**英文**。
 - 任何一处不确定就写进账本，不要"看起来有"。
 - 未读回的判决**不是**通过。
+
+---
+
+## 第 161 轮补：接线的**精确锚点**（读完 `domain/mod.rs` 后确定）
+
+`import_audio` 的完整接线模式如下。照抄它，`yeban_export_diagnostics` 就能一次接上。
+
+### A. `domain/import_audio.rs` 的两阶段签名（照抄形状）
+
+```rust
+pub fn plan(project: &YebanProjectV1, assets: &dyn AssetStore, arguments: &Map<String, Value>) -> Result<AudioImport, Fault>
+pub fn apply(domain: &mut super::Domain, import: &AudioImport) -> Result<ToolResponse, Fault>
+```
+
+⇒ 诊断侧对应：
+
+```rust
+pub struct DiagnosticsExport { pub out_dir: PathBuf, /* 组装好的引擎/配置/日志条目 */ }
+pub fn plan(arguments: &Map<String, Value>) -> Result<DiagnosticsExport, Fault>   // 无需工程 ⇒ 不取 project
+pub fn apply(domain: &mut super::Domain, planned: &DiagnosticsExport) -> Result<ToolResponse, Fault>
+```
+
+### B. `Plan` 枚举要加一个变体
+
+现有形状（`domain/mod.rs`，`plan_import_audio` 的返回值）：
+
+```rust
+Plan::ImportAudio { import: Box<AudioImport> }
+```
+
+⇒ 加：
+
+```rust
+Plan::Diagnostics { export: Box<DiagnosticsExport> }
+```
+
+### C. 名字 → 包装函数的 match（`domain/mod.rs:1231`）
+
+```rust
+"yeban_import_audio" => plan_import_audio(domain, call),
+```
+
+⇒ 加一行 `"yeban_export_diagnostics" => plan_export_diagnostics(domain, call),`
+
+### D. 包装函数（`domain/mod.rs:1621`）
+
+```rust
+fn plan_import_audio(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let import = import_audio::plan(project, domain, &call.arguments)?;
+    Ok(Plan::ImportAudio { import: Box::new(import) })
+}
+```
+
+⇒ 诊断的包装函数**不需要** `require_active`（它不读工程）：
+
+```rust
+fn plan_export_diagnostics(_domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let export = diagnostics::plan(&call.arguments)?;
+    Ok(Plan::Diagnostics { export: Box::new(export) })
+}
+```
+
+### E. `apply` 侧
+
+`apply(domain, planned)` 里对 `Plan::ImportAudio { import }` 的分支是唯一改状态的地方。
+
+⇒ 加：
+
+```rust
+Plan::Diagnostics { export } => diagnostics::apply(domain, export),
+```
+
+### F. 文件顶部
+
+按既有写法加 `mod diagnostics;`（与 `mod import_audio;` 同级）。
+
+### 因此最终改动清单（六处，全部有锚点）
+
+| # | 文件 | 改动 |
+| :--- | :--- | :--- |
+| 1 | `domain/diagnostics.rs`（新建）| `DiagnosticsExport` + `plan` + `apply` |
+| 2 | `domain/mod.rs` | `mod diagnostics;` |
+| 3 | `domain/mod.rs` | `Plan::Diagnostics` 变体 |
+| 4 | `domain/mod.rs:1231` 附近 | 名字 → 包装函数 |
+| 5 | `domain/mod.rs:1621` 附近 | 包装函数本体（**不调** `require_active`）|
+| 6 | `domain/mod.rs` 的 `apply` | `Plan::Diagnostics` 分支 |
+
+外加 `tools.rs` 的四处耦合修改（见上）。**没有任何未知量。**
+
