@@ -68,6 +68,7 @@ gate_docs() {
   # 三方对齐矩阵（系统 / UI / MCP）：漏点名一个工具或方法、发明一个名字、汇总与逐行不符都变红。
   run "feature-alignment" python3 scripts/gates/check_feature_alignment.py
   run "docs" python3 scripts/gates/check_docs_links.py
+  run "handoff-snapshot" python3 scripts/gates/check_handoff_snapshot.py
 }
 
 gate_schemas() {

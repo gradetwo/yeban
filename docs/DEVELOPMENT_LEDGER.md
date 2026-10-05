@@ -3617,3 +3617,23 @@ Completed full-workspace verdicts on main now number **six**: `37283699896` @ `a
 
 Worth noting for the record: this verdict also confirms the doc-contract guard accepts the row I rebuilt after finding that
 my own summary number had drifted from the table for about twenty rounds - so the repaired state is not merely locally green.
+
+### Round 131: the generated snapshot is now guarded against drift (its own first catch justified it)
+
+The snapshot caught a real error of mine on its first run (round 127: my reports said "18 已接线 / 0 部分" for about twenty
+rounds while the table said 17 / 1). A generated file only helps if it stays generated, so this round makes that mechanical:
+
+- `scripts/dev/render-handoff.py` now honours `HANDOFF_OUT`, so a checker can render to a temp path;
+- `scripts/gates/check_handoff_snapshot.py` renders fresh, compares **byte for byte** with the committed
+  `docs/ledger/handoff-snapshot.md`, and on mismatch fails with the exact command to fix it;
+- it is wired into `run-gates.sh light` as a **doc-contract** check (`run "handoff-snapshot" ...`), deliberately **not** as a
+  15th red-line guard, so the guard-count assertions in the docs stay valid.
+
+**Tooth test (run, not asserted)**: appending one line to the committed snapshot produced
+`[FAIL] docs/ledger/handoff-snapshot.md 与生成器输出不一致 —— 重新生成: python3 scripts/dev/render-handoff.py`; restoring the
+file returned `[ok] 交接快照与生成器输出逐字节一致`; `run-gates.sh light` reports 门禁通过.
+
+**Self-error caught while building it**: the generator's success message used `OUT.relative_to(REPO)`, which raises
+`ValueError` when `HANDOFF_OUT` points outside the repository - i.e. exactly the temporary-directory case the checker uses.
+The check therefore failed on its first real invocation, pointing at the generator rather than the snapshot. Fixed by falling
+back to printing the absolute path when `relative_to` cannot apply.

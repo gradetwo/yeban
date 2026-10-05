@@ -9,12 +9,15 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-OUT = REPO / "docs" / "ledger" / "handoff-snapshot.md"
+OUT = pathlib.Path(
+    os.environ.get("HANDOFF_OUT", str(REPO / "docs" / "ledger" / "handoff-snapshot.md"))
+)
 
 
 def rows(path: pathlib.Path) -> list[tuple[str, str]]:
@@ -91,8 +94,13 @@ def main() -> int:
         "- 每条「已完成/已接线」的背后应当有一条**可复跑**的命令或 run id；没有就回 `gate-status.md` 要。",
         "",
     ]
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(lines), encoding="utf-8")
-    print(f"已写入 {OUT.relative_to(REPO)}: 门禁 {len(gates)} 条 / 阶段项 {len(phases)} 项")
+    try:
+        shown = OUT.relative_to(REPO)
+    except ValueError:      # HANDOFF_OUT 指向仓库外(检查脚本用临时目录)
+        shown = OUT
+    print(f"已写入 {shown}: 门禁 {len(gates)} 条 / 阶段项 {len(phases)} 项")
     return 0
 
 
