@@ -965,9 +965,13 @@ impl ViewState {
             .collect()
     }
 
-    /// 取可见窗口内的音符（四个平行数组共用**同一**索引集）。
+    /// 取可见窗口内的音符（**六个**平行数组共用**同一**索引集）。
+    ///
+    /// `positions` 是**相对视口**的（已减去 `scroll_x`），因为 `.slint` 契约规定它不做位置算术；
+    /// 与窗口左沿相交但起始更早的音符会得到**负** x（应部分可见），这是正确的。
     #[must_use]
     pub fn visible_notes(&self, scroll_x: f32, viewport_width: f32) -> VisibleNotes {
+        let left = scroll_x.max(0.0);
         let indices = self.notes_visible_in(scroll_x, viewport_width);
         let mut out = VisibleNotes {
             positions: Vec::with_capacity(indices.len()),
@@ -979,7 +983,8 @@ impl ViewState {
         };
         for index in indices {
             let note = &self.notes[index];
-            out.positions.push(note.x);
+            // 相对视口（`scroll_x` 已 clamp 到 >= 0，与裁剪用同一个 left）。
+            out.positions.push(note.x - left);
             out.widths.push(note.width);
             out.ys.push(note.y);
             out.rows.push(note.row);
@@ -2460,7 +2465,8 @@ mod tests {
         assert_eq!(vis.positions.len(), vis.ys.len());
         assert_eq!(vis.positions.len(), vis.rows.len());
         for (k, i) in idx.iter().enumerate() {
-            assert_eq!(vis.positions[k], view.notes[*i].x);
+            // 位置是**相对视口**的 ⇒ 期望值要减去 left（见 `visible_notes` 文档）。
+            assert_eq!(vis.positions[k], view.notes[*i].x - first);
             assert_eq!(vis.widths[k], view.notes[*i].width);
             assert_eq!(vis.ys[k], view.notes[*i].y);
             assert_eq!(vis.rows[k], view.notes[*i].row);

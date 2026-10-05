@@ -134,7 +134,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
     // 六个平行数组（ulids / velocities / positions / widths / ys / rows）必须共用**同一**索引集，
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
-    // 本步先按 `scroll_x = 0`（尚无滚动模型, 见账本第 183 轮）：第一屏正确、屏外正确地不画。
+    // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
     let visible = view.visible_notes(scroll_x, viewport_width);
     ui.set_note_ulids(strings(&visible.ulids));
     ui.set_note_velocities(lengths(&visible.velocities));
