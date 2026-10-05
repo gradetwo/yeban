@@ -35,6 +35,7 @@ on:
           - determinism
           - pending
           - goldens
+          - fps
       crate:
         description: "all-features 档位下的单个 crate (留空 = 整个工作区)"
         type: string
@@ -600,6 +601,43 @@ jobs:
           # （第 107 轮已为 bench 修过同型问题；本行是 `pending` 档那一处）。先 tee 进日志,
           # 再把**同一份字节**追加进 summary —— 格式不变, 但失败/成功都留下可读证据。
           cat /tmp/pending-summary.txt >> "$GITHUB_STEP_SUMMARY"
+
+  fps:
+    name: fps (10 万音符帧率, 手动判决)
+    if: inputs.gate == 'fps'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - name: 系统库 (GUI 链接 / 字体)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev \
+            libgl1-mesa-dev libasound2-dev fonts-noto-cjk
+      - name: 10 万音符帧率 (release + ignored 用例)
+        run: |
+          set -euo pipefail
+          # 为什么用手动档而不是 ci.yml: 帧率判决**不能**用托管 runner 的读数
+          # (spikes/README.md 第 36 行), 且该用例是 600 帧 × 10 万音符的软光栅化循环,
+          # debug 构建跑不完 (实测 run 37348640469 40+ 分钟仍未结束) ⇒ 只在这里跑。
+          # 口径依 HD-45: 接受参考机上自适应刷新率的读数, 局限写进 BASELINE-003 行。
+          LOG=/tmp/fps.log
+          set -o pipefail
+          cargo test -p yeban-app --locked --release --features ui-test-port \
+            --test test_port_adapter \
+            frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness \
+            -- --ignored --nocapture 2>&1 | tee "$LOG"
+          # 先 tee 到日志, 再把**同一份字节**送进 summary —— 否则日志里什么都读不到
+          # (docs/CI_CD.md 第八个坑, 守卫 G13 会拦)。
+          { echo '## BASELINE-003 10 万音符帧率'; grep -a 'BASELINE-003' "$LOG" || echo '(未找到 BASELINE-003 行 —— 用例可能没跑起来)'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: 上传数字日志
+        uses: actions/upload-artifact@v4
+        with:
+          name: fps-log
+          path: /tmp/fps.log
 
   goldens:
     name: goldens (生成分平台基准图集)
