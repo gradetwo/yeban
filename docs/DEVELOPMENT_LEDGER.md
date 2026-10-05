@@ -4811,3 +4811,26 @@ dependency supplied through `[dev-dependencies]` so that release builds are unaf
 100 000-note timing test in that same file IS compiled by CI, and it is `#[ignore]`d, so CI skips it - which is coherent with the
 manual `fps` gate being the only place it runs. It also means the round-176 lesson ("CI's clippy step caught a lint in
 test_port_adapter.rs") and this wiring describe the same mechanism from two sides.
+
+### Round 190: the fps gate now has TWO口径, and the scroll speed is fixed in code
+
+Round 189 confirmed why the goldens were unaffected; this round records the measurement setup that the next two fps numbers belong to, so
+the numbers can be slotted in rather than re-derived.
+
+| run | commit | 口径 | 状态 |
+| :--- | :--- | :--- | :--- |
+| `37353169531` | `44421ff` | 10 万音符（长时轴夹具）+ 裁剪消费，**静态视口**（`scroll_x = 0`）| in progress |
+| `37354082680` | `1ad1474` | 同上，**每帧滚动**：`scroll_x = frame * viewport_width / 120` | pending |
+
+**The scroll speed is a口径 choice and it is written in the code** (`test_port_adapter.rs`, next to the loop): one screen per
+second, i.e. `viewport_width / 120` pixels per frame - 16 px at 1920. The spec (round 136) says "advance the scroll by 1/120 s per
+frame", which is a TIME step; converting it to pixels needs a speed, and a different speed yields different numbers. Recording the
+choice here means a later reader can reproduce the measurement instead of guessing what "1/120 s" meant in pixels.
+
+**Both are indicative only.** The gate runs on a hosted `ubuntu-latest` runner, and the standing rule (`spikes/README.md` line 36
+plus `HD-45`) forbids deciding frame-rate gates from hosted-runner readings. What these two numbers can establish is the SHAPE of
+the problem - whether consuming the clipping moves the static case, and what scrolling costs on top - not whether 120 FPS is met.
+
+**Also worth recording from this round's timing**: two consecutive session rounds were ~26 seconds apart in wall clock
+(18:12:46Z -> 18:13:12Z). My earlier impressions of "these runs are taking forever" were therefore wrong by a wide margin, and
+the runs are simply early. Measuring the clock, not counting rounds, remains the rule (round 180).
