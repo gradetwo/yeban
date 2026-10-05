@@ -96,6 +96,7 @@ use crate::fpu::{self, FtzDazOutcome};
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::mixer::{BusLimiter, PanLaw};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
+use crate::rt_probe::{self, RtDiagEvent};
 use crate::snapshot::{EngineSnapshot, SnapshotReader, SnapshotSlot};
 use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
 use crate::transport::{
@@ -459,6 +460,13 @@ impl EngineRuntime {
     /// 于是"全左时右声道静音"这条判据实测拿到 `peak_r == peak_l`。
     /// 判据抓住了它（见 `docs/ledger/engine-mix-notes.md` 的事故记录）。
     fn render_block(&mut self, frames: usize) {
+        // [MUST-GATE-001] **实时路径探针**：本量子确实经过了探针边界。
+        //
+        // 未武装时只做一次线程局部读取；武装时在此处对 `rt_probe::rt_path_lock()`
+        // 做一次 **非阻塞** 试探（`try_lock`，不等待）并记进判据窗口 ——
+        // 它是"探针真的有牙"的证据（见 `crate::rt_probe` 的模块文档）。
+        // 零分配、零等待、零系统调用。
+        rt_probe::quantum_enter();
         let Self {
             snapshot,
             events,
@@ -587,6 +595,9 @@ impl EngineRuntime {
             if metered_tracks > track_budget {
                 *meter_capacity_drops =
                     meter_capacity_drops.wrapping_add((metered_tracks - track_budget) as u64);
+                // [MUST-GATE-001] 诊断事件必须走 `rt_probe::diag` 这个**唯一**的 I/O 边界，
+                // 否则"实时路径上没有 I/O"就只是"没写"而不是"运行期可判定"。
+                rt_probe::diag(RtDiagEvent::MeterCapacityDrop);
             }
             for id in current.tracks().keys() {
                 if *id == master || produced >= track_budget {
@@ -611,6 +622,7 @@ impl EngineRuntime {
                     produced += 1;
                 } else {
                     *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
+                    rt_probe::diag(RtDiagEvent::MeterCapacityDrop);
                 }
                 // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
                 // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
@@ -655,11 +667,13 @@ impl EngineRuntime {
                 produced += 1;
             } else {
                 *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
+                rt_probe::diag(RtDiagEvent::MeterCapacityDrop);
             }
         } else {
             // 极端情况（写者尚未发布任何快照）：输出静音但绝不 panic。
             block.silence();
             block.set_frames(frames);
+            rt_probe::diag(RtDiagEvent::NoSnapshot);
         }
         snapshot.end_block();
 

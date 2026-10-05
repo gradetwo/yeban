@@ -24,6 +24,7 @@
 //! | [`synth`] | 静态预分配声部池与逐样本合成（**真的出声**：整数相位波表 + ADSR + 力度增益） | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DET-001]、[ROAD-M2-005]、[ROAD-M2-006] |
 //! | [`transport`] | **确定性走带状态机**（960 PPQ 整数 tick：`Play`/`Stop`/`SeekTicks`）+ RT→UI 原子读数镜面 | [ARCH-RT-001]、[ARCH-DET-001]、[MODEL-ISO-001]、[ROAD-M2-001] |
 //! | [`rt`] | 渲染量子驱动（`EngineRuntime`），**不依赖 cpal** | [ARCH-TOP-002]、[ARCH-RT-001] |
+//! | [`rt_probe`] | 实时路径的**可插桩边界**：见证型锁探针 + 单一诊断/I-O 出口 + 线程窗口与外线程计数 | [ARCH-RT-001]、[MUST-GATE-001] |
 //! | `device` | cpal 宿主、配置协商、`NullBackend`（**feature `device`**） | [ARCH-TOP-002]、[ROAD-M2-001] |
 //!
 //! ## Cargo features：设备 I/O 与 PDC 算法必须能分开消费
@@ -37,7 +38,7 @@
 //! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
 //!
 //! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `latency` / `ring` /
-//! `snapshot` / `meter` / `synth` / `rt` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
+//! `snapshot` / `meter` / `synth` / `rt` / `rt_probe` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
 //! + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
 //!
 //! ⚠ [`latency`] 是 `BASELINE-005` 的**工具**那一半，**不是**门禁本身：门禁要求的是
@@ -116,6 +117,7 @@ pub mod meter;
 pub mod mixer;
 pub mod ring;
 pub mod rt;
+pub mod rt_probe;
 pub mod snapshot;
 pub mod synth;
 pub mod transport;
