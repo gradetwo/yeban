@@ -7577,3 +7577,27 @@ which justifies it, but it has also produced three false positives - a reminder 
 before its verdicts are trusted.
 
 **Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed; CI green through `7b73906`.
+
+
+### Round 309: attempts 13-16 - the generator now passes its own check, and the move is close but unlanded
+
+Four more attempts, and the picture is materially different from round 300:
+
+| attempt | outcome |
+| :--- | :--- |
+| 13 | fixed the checker (count code lines only, skipping comment lines and fenced samples) - **the pre-flight passed and the write went through** for the first time |
+| 14 | the compiler named missing imports in the shared file (`MidiFormat`, `MidiError`, `DEFAULT_PPQ`) because the multi-line `use` block was dropped whole; attempt 14 extracted those names into a single-line import |
+| 15 | the same import was wrongly also placed in the shared file as `use yeban_midi::...` (self-reference inside the crate itself) |
+| 16 | split the imports per side (`crate::midi::` for the shared crate, `yeban_midi::midi::` for the wrapper) - the pre-flight passed, the shared crate compiled with **one lint hint left**, and the build stopped at the wrapper's import lines |
+
+**So the state of this sub-task is: the generator is sound, its own check is sound, the shared crate's text is correct, and the wrapper's import lines are
+what still fails.** That is a much smaller and much better-specified gap than round 300's "eight failures, no diagnosis" - and the remaining work is
+plumbing (which names the wrapper actually uses, and whether the originals are now unused) rather than structure.
+
+**Stopping here for this session.** Sixteen attempts is far past the point where the exercise is earning its keep, the design has been settled since
+round 287, and my remaining context cannot carry another diagnose-fix-compile cycle. The tree is green and clean after every attempt, CI is green, and
+the next person has: the recipe (ordinary edits, or this generator), the working pre-flight, the two span fixes, the import handling per side, and
+exactly one failing site named - the wrapper's imports.
+
+**Session state**: tree green and clean; CI green through `4947ae8`; `yeban-midi` holds the codec and VLQ helper (18 criteria, both platforms);
+mapping layer and MCP tool owed; disk 149 GiB free; whole-workspace sweep 1788 passed.
