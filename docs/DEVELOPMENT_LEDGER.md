@@ -3671,3 +3671,24 @@ machine are acceptable). What it lacks now is a **runnable criterion**. Spec fol
 **Why write this instead of building it now**: the work is a new example plus a 100 000-note fixture and a scrolled-frame
 loop; my remaining context cannot produce and verify that safely. This is the same treatment the `auto`-default fix got
 (rounds 116-122): specification first, then a clean one-shot implementation with before/after evidence.
+
+### Round 137: the frame-rate line produced nothing again - stopped, task recorded as pending (spec unchanged at round 136)
+
+`line/baseline-fps` (`f316c0ec`) ran four rounds with **0 changed / 0 commits**, including after a "land first, minimum
+scope, notes count as a delivery" instruction. I stopped it rather than ask a fourth time. There was **nothing to take over**:
+no file was ever written, so I would have had to start from the read-the-render-API step - and my remaining context cannot
+carry that safely.
+
+**This is the fourth line in this session to produce nothing.** The three successful deliveries all had the same shape: a
+**single-item scope naming the exact file or flag**, with "land first". This task's scope, though fully specified, still
+begins with reading an unfamiliar subsystem (`crates/yeban-ui-test-port`'s render API) before the first write - and that is
+where all four stalled lines stalled.
+
+**The task stands as recorded**: round 136 has the bar (100 000 notes, p99 <= 8.3 ms, memory < 25 MB), the location
+(`crates/yeban-ui-test-port/examples/`), the measurement (600 frames, scroll 1/120 s per frame, report p50/p99/max), the
+witness (frames, notes, non-black pixels), the tooth test (render without the virtualized viewport), and the CI rule (no
+assertion in `ci.yml`; a manual `fps` gate instead). Nothing about it needs another ruling - only a worker whose first move
+is to write a file rather than to read a subsystem.
+
+**This session's measured pattern, for the next planner**: "one item + exact file + land first" delivers; "specified but
+requires reading a new subsystem first" does not, four times out of four.
