@@ -7645,3 +7645,29 @@ pre-flight), split the test module by the rule above, and run `cargo test`. Noth
 
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
+
+
+### Round 312: the generator and the test split both work - the last blocker is a fixture
+
+Executed round 311's three steps, and for the first time **everything up to the tests worked**: the generator passed its pre-flight, wrote the four
+files, and the test split put **2 blocks in the app and 11 in `yeban-midi`** exactly as classified. The remaining errors are all one thing:
+
+    error[E0433]: cannot find `bridge` in the crate root
+      --> crates/yeban-midi/src/export.rs:298:30
+        let project = crate::bridge::demo_project();
+
+The moved tests build their input with **`crate::bridge::demo_project()`**, an **app-side fixture**. `yeban-midi` has no `bridge`, and the repo does
+have `yeban_model::samples::filled_project` - so the choice is:
+
+1. **move `demo_project` down** (to `yeban-model`, beside the existing samples) and have the app re-export or call it - keeps the tests' inputs and
+   assertions unchanged, which matters because several of them assert on the fixture's **exact** content (`exported_notes_match_the_demo_fixture_note_by_note`, the round-trip and determinism tests);
+2. **swap in `filled_project`** - cheaper, but it changes what those assertions are asserting, i.e. it would silently weaken tests to make a move
+   compile. That is the failure mode this session has recorded repeatedly, so it is not acceptable as a shortcut.
+
+**Recommended: option 1**, and the reason is the tests themselves - they encode expectations about a specific fixture, so the fixture is part of what
+they verify.
+
+**Where the sub-task now stands**: generator ✓, pre-flight ✓, per-side imports ✓, test classification ✓ (2/11, semantically correct), and **one shared
+fixture** between it and completion. Reverted so the tree stays green; nothing about the design remains open.
+
+**Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
