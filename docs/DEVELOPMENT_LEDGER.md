@@ -2028,3 +2028,33 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   我这一轮**只读到前半段**，而"**只读到一半就改状态**"正是我自己反复禁止的那类错（L31 / 错位 5）。
   ⇒ 记 **待复核**：下一轮把该行**完整读出来**再逐项对——要么升为已完成，要么写明还差什么。
 
+### 交接快照（第 59 轮，供续接者用；**每条都有一条命令可复核**）
+
+**当前 main**: `bf846cb`。**门禁**: 12 已接线 / 6 部分 / 3 PENDING（21 条）。
+**阶段项**: 12 已完成 / 27 部分 / 7 PENDING（46 项，`python3 scripts/gates/check_phase_status.py`）。
+**归档线**: 45+（`git tag -l 'line-archive/*' | wc -l`）。**无遗留**：`bash scripts/dev/branch-hygiene.sh` = `[ok]`。
+
+**在飞（未读回的判决 = 无判决）**:
+- 手动档 **37268741671**（`inventory`）：带 40 分钟超时 + `--tolerate-404` + **L1 同平台比对**（要求退出码 0，返回 2 即判红）。
+- `line/model-session-state`：`MODEL-ISO-001` 两层（`session.rs` / `local_config.rs`）；预审已确认"会话态不进工程"是**类型层强制**；
+  它修掉了"夹具写死 macOS 路径"（Windows 上 `/Applications/...` 不是 absolute ⇒ 它的**生产校验是对的**）。
+- `line/undo-wiring`（D45）：1 提交 + 16 文件；已给过预审意见（`apply_inverse` 15 处要逐个分类 + 一条"独立实现"注入）。
+- `line/gate-snapshot-churn`（MUST-GATE-012）：5 文件。
+
+**下一步（按次序，任一触发即可）**:
+1. 手动档绿 ⇒ `MUST-GATE-002` 证据链闭合（Linux 参考 `.json` 已提交，三次独立采集 digest 相同）；
+2. `model-session-state` 绿 ⇒ `land`；随后可开 **D46 MCP 工具集扩张**（需 `yeban-mcp` 空闲）；
+3. `gate-snapshot-churn` 绿 ⇒ `land`，然后开 **`MUST-GATE-001`**（实时零分配扩场景，需 `yeban-engine` 空闲）；
+4. `undo-wiring` 绿 ⇒ `land`，并**立刻开 D46**（`undo-wiring` 让出 `yeban-mcp` 之后）。
+
+**人类待裁决（6 条）**: `HD-44`（`ARCH-DSP-004` 弹性算法：C++ 绑定 vs 纯 Rust 自研）；
+293 款素材来源（`HD-31` 已裁决"先复用 groove"，但只有 30 款+20 594 文件登记）；
+**golden 基线图**（谁来出、哪些平台 —— `ssim.rs`/`golden.rs` 机制已就绪，只差图）；
+`ui/*` 注入是否也走 IME 防护（`UI-MCP-001` 签名扩张）；双 MCP 依赖边（`ROAD-M4-008` 的推送式通知契约）；
+**清单登记上游路径**（`assets/samples/manifest.json` 目前靠推导，实测 1 条 404）。
+
+**本会话反复验证的三条纪律（值得下一轮继续用）**:
+- **"我改了"要用"产物/解析后的实际值"验证**（YAML 重复键静默覆盖、脚本更早 assert 退出、判据空转、白名单没人读、手动档步骤从没加进去 —— 五种机制同一个错）；
+- **门禁必须区分"没判定"与"判失败"**（假红会让人开始忽略门禁）；
+- **开线前先问三件事**（有没有实现 / 谁在调用 / 有没有判据在断言）—— 否则会开挖重复的线（`golden-compare` 那次）。
+
