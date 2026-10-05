@@ -1053,12 +1053,18 @@ impl SnapshotReader {
     }
 
     /// 把旧快照推进退役队列；队列满则寄存到 `stash`（下次块边界重试）。
+    ///
+    /// 队列满是一条真正的告警（主线程 60Hz 轮询没跟上）⇒ 走
+    /// [`crate::rt_probe::diag`] 这个**唯一**的诊断/I-O 边界：它把"实时路径上想产生 I/O"
+    /// 变成可数的读数（[MUST-GATE-001] 要求实时窗口内 `io_requests == 0`），
+    /// 而不是让调用方各自去 `println!`。
     fn retire_or_stash(&mut self, old: Arc<EngineSnapshot>) {
         match self.retire.push(old) {
             Ok(()) => {}
             Err(rtrb::PushError::Full(arc)) => {
                 self.stash = Some(arc);
                 self.stash_events = self.stash_events.saturating_add(1);
+                crate::rt_probe::diag(crate::rt_probe::RtDiagEvent::SnapshotRetireStash);
             }
         }
     }
