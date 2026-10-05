@@ -3253,3 +3253,25 @@ byte-exact judge covers every committed scene on both platforms.
 **Recorded explicitly** so the distinction is not lost: "the criterion lacks masking" is true; "the criterion is therefore
 unreliable today" does **not** follow, and asserting the second without the first's caveat would be the same
 looks-like-evidence error this ledger keeps logging.
+
+### Round 114: the designated reference machine does NOT satisfy BASELINE-003's own precondition
+
+After the human designated "reference machine = this MacBook Pro M2 Max", the frame-rate gate deserves a second look
+rather than a silent upgrade - and checking the hardware answers it:
+
+```
+system_profiler SPDisplaysDataType:
+  Display Type: Built-in Liquid Retina XDR Display      (Mac14,5 = 14-inch, ProMotion)
+  Resolution:   3024 x 1964 Retina
+  Connection:   Internal
+ioreg: ... "APTLimitRefreshRate" = No ...  (adaptive timing; no fixed refresh rate reported)
+```
+
+⇒ the panel is **adaptive-refresh (ProMotion)** and reports no fixed rate, so this machine **fails the gate's own
+precondition** ("帧率判据需要固定刷新率/无噪声硬件"). Closing `BASELINE-003` with this laptop's numbers would be the same
+class of error as closing it with a hosted runner's numbers - which the gate already forbids in writing.
+
+**Two legitimate ways forward, both requiring something outside my reach**: (1) attach a fixed-refresh external display or
+use a fixed-rate machine, then run the frame-rate criterion; or (2) an explicit human ruling that adaptive-refresh readings
+are acceptable **with that limitation stated in the row**. Until one of those exists, the gate stays PENDING - and now the
+row says *why this specific designated machine does not resolve it*, so nobody has to rediscover it.
