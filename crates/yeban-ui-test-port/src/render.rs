@@ -862,4 +862,50 @@ mod tests {
         eprintln!("Golden 证据: {}", png_path.display());
         eprintln!("控件树 JSON: {}", json_path.display());
     }
+
+    /// `[BASELINE-003 / 第 149 轮定案]` 帧率**计时路径**的判据（TIER-1 夹具）。
+    ///
+    /// **它证明什么**：`request_redraw()` + `capture()` 这一对真能把帧光栅化出来（见证非平凡），
+    /// 并给出真实 p50/p99/max 分布。**它不证明**门禁的 10 万音符门限 —— 夹具不是钢琴卷帘，
+    /// 所以这里**故意不**断言 `p99 <= 8.3ms`（那会是拿夹具冒充门禁）。10 万音符场景由 `yeban-app` 的真实视图提供。
+    #[test]
+    fn frame_time_path_produces_a_real_distribution_and_non_trivial_frames() {
+        const FRAMES: usize = 600;
+        let registry = fixture_registry();
+        // 每个测试跑在自己的线程上 ⇒ 平台可在此线程装一次（上游 MinimalSoftwareWindow 的同一约束）。
+        let port = LivePort::new(
+            FIXTURE_SIZE,
+            Permission::ReadOnly,
+            Some(&registry),
+            PortFixture::new,
+        )
+        .expect("Tier-1 平台 + 组件");
+
+        let window = port.window();
+        let mut samples_ms: Vec<f64> = Vec::with_capacity(FRAMES);
+        let mut witness_non_black_min = usize::MAX;
+        for _ in 0..FRAMES {
+            let start = std::time::Instant::now();
+            window.request_redraw();
+            let image = window.capture().expect("每帧都应能抓到像素");
+            samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+            let evidence = golden_evidence(&image).expect("见证");
+            witness_non_black_min = witness_non_black_min.min(evidence.summary().len());
+        }
+
+        samples_ms.sort_by(|a, b| a.partial_cmp(b).expect("无 NaN"));
+        let p = |q: f64| samples_ms[((samples_ms.len() as f64 - 1.0) * q).round() as usize];
+        let (p50, p99, max) = (p(0.50), p(0.99), samples_ms[samples_ms.len() - 1]);
+        eprintln!(
+            "BASELINE-003(夹具) 帧数={FRAMES} p50={p50:.3}ms p99={p99:.3}ms max={max:.3}ms 见证字符数下限={witness_non_black_min}"
+        );
+
+        assert_eq!(samples_ms.len(), FRAMES, "必须采满 {FRAMES} 帧");
+        // 见证：每帧的 golden 证据都必须有内容，否则"很快"可能来自空帧。
+        assert!(
+            witness_non_black_min > 0,
+            "每帧的 golden 证据都应有内容（下限 {witness_non_black_min}）"
+        );
+        assert!(p50 > 0.0, "p50 必须为正，否则计时路径没有真在工作");
+    }
 }
