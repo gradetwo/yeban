@@ -66,6 +66,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::ThreadId;
 
 use thiserror::Error;
 use yeban_dsp::math::note_to_hz;
@@ -82,6 +83,91 @@ use crate::synth::{
 
 /// 退役队列默认容量（条）。一帧 60Hz 内被替换的快照远不会超过这个数。
 pub const DEFAULT_RETIRE_CAPACITY: usize = 32;
+
+/// `EngineSnapshot` **释放事件**的可观测探针（[MUST-GATE-012] 的运行期判据）。
+///
+/// 规范要求（`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` 的 `[MUST-GATE-012]`）：
+/// 「高频交换压测下，音频线程**无任何堆释放**，所有旧快照均在**主线程 60Hz 循环**中安全释放」。
+///
+/// 这条门禁的核心是**释放发生在哪个线程**。而 [`RetireQueue::drained`] /
+/// [`SnapshotSlot::prune`] 只能证明"谁**调用**了 drain/prune"，证不到"`Drop` 真的跑在哪个线程"
+/// —— 一旦有人把旧 `Arc` 就地 `drop`（而不是推进队列），那两个计数都**不会**变红。
+///
+/// 因此引擎在 [`EngineSnapshot`] 的 `Drop` 里记两个数：
+///
+/// - [`total`](release_probe::total())：进程内**所有**快照析构的累计数（跨线程原子量）。
+///   它让"零泄漏"成为一条**等式**（创建数 = 释放数 + 存活数），而不是"没崩就算过"；
+/// - [`released_by_current_thread`](release_probe::released_by_current_thread())：
+///   **本线程**跑过多少次快照析构（线程局部 `Cell<u64>`，无锁、零分配、无 TLS 析构）。
+///   判据在实时线程窗口内打开 [`watch_current_thread`](release_probe::watch_current_thread())，
+///   于是"音频线程释放了 0 个快照"是**直接测量**，而不是从代码形状推断出来的。
+///
+/// # 成本（为什么可以留在生产代码里）
+///
+/// 一次 [`Cell::get`] + 一次 `Relaxed` 原子加，只在**快照析构**时发生 ——
+/// 而快照只在**拓扑变更**（用户改路由/参数）时才被淘汰，不是每个渲染量子。
+/// 实时热路径（`process_quantum`）不受影响。
+pub mod release_probe {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    thread_local! {
+        /// 本线程是否在观测窗口内（`const` 初始化 ⇒ 无惰性分配、无析构器）。
+        static WATCHING: Cell<bool> = const { Cell::new(false) };
+        /// 本线程在观测窗口内跑过的快照析构次数。
+        static RELEASED_HERE: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// 进程内累计的快照析构次数（所有线程）。
+    static RELEASED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    /// 每次 `EngineSnapshot::drop` 调用一次（由 `impl Drop` 唯一调用点保证）。
+    pub(super) fn note_release() {
+        RELEASED_TOTAL.fetch_add(1, Ordering::Relaxed);
+        // `try_with`（而不是 `with`）：线程 teardown 期间线程局部量可能不可用，
+        // 而此时**不能**从析构里 panic 出去。观测不到就按"没在观测"处理。
+        let _ = WATCHING.try_with(|watching| {
+            if watching.get() {
+                let _ = RELEASED_HERE.try_with(|count| count.set(count.get().saturating_add(1)));
+            }
+        });
+    }
+
+    /// 开始观测**本线程**上的快照析构（窗口之外调用）。
+    ///
+    /// 观测是**线程局部**的：多个线程可以各自开自己的窗口而不会互相污染计数。
+    pub fn watch_current_thread() {
+        let _ = WATCHING.try_with(|watching| watching.set(true));
+    }
+
+    /// 结束观测**本线程**上的快照析构（计数保留，供
+    /// [`released_by_current_thread`](Self::released_by_current_thread()) 读回）。
+    pub fn unwatch_current_thread() {
+        let _ = WATCHING.try_with(|watching| watching.set(false));
+    }
+
+    /// 本线程在最近一次观测窗口里跑过的快照析构次数。
+    ///
+    /// 语义是"本线程释放了几个**快照分配**"（每个 `Arc<EngineSnapshot>` 的最后一个强引用
+    /// 被丢掉时恰好记一次），与"`drain` 返回了几条"不同 —— 后者只是从队列里**取走**。
+    #[must_use]
+    pub fn released_by_current_thread() -> u64 {
+        WATCHING
+            .try_with(|_| RELEASED_HERE.try_with(Cell::get).unwrap_or(0))
+            .unwrap_or(0)
+    }
+
+    /// 清空本线程的观测计数（**不**改变 `WATCHING` 开关）。
+    pub fn reset_current_thread() {
+        let _ = RELEASED_HERE.try_with(|count| count.set(0));
+    }
+
+    /// 进程内累计的快照析构次数（跨线程；用**差值**做单窗口/单轮对账）。
+    #[must_use]
+    pub fn total() -> u64 {
+        RELEASED_TOTAL.load(Ordering::Relaxed)
+    }
+}
 
 /// 快照投影错误。
 #[derive(Debug, Error, PartialEq)]
@@ -506,6 +592,19 @@ impl EngineSnapshot {
     }
 }
 
+/// [MUST-GATE-012] 的**释放线程**观测点：本快照的最后一个强引用被丢掉时记一次账。
+///
+/// 为什么值得有一个手写 `Drop`（而不是只靠 `RetireQueue::dropped()`）：
+/// 队列的 `dropped()` 记的是"主线程**出队**了几条"，而**释放**（`Arc` 强引用归零 ⇒
+/// 真正的 `dealloc`）可能发生在任何人身上。把 `Drop` 变成可观测事件之后，
+/// "音频线程释放 0 个"与"创建数 = 释放数 + 存活数"才是**测出来的**。
+/// 详见 [`release_probe`] 模块文档。
+impl Drop for EngineSnapshot {
+    fn drop(&mut self) {
+        release_probe::note_release();
+    }
+}
+
 /// 把工程的 MIDI 摆放投影成"每轨一份已调度音符表"[ROAD-M2-005, ROAD-M2-006]。
 ///
 /// 这是**控制线程**上的纯投影（允许分配、允许超越函数），实时侧只读结果：
@@ -629,6 +728,17 @@ pub struct RetireQueue {
     consumer: rtrb::Consumer<Arc<EngineSnapshot>>,
     drained: u64,
     drops: u64,
+    /// **释放线程**：第一次真正出队（`take > 0`）的线程。`None` = 还没回收过。
+    ///
+    /// [MUST-GATE-012] 要求旧快照"在主线程 60Hz 循环中释放"；本字段把
+    /// "哪个线程执行了 `Drop`"变成可读事实（配合 [`release_probe`] 的逐线程计数）。
+    release_thread: Option<ThreadId>,
+    /// 在 `release_thread` **之外**的线程上发生的非空 `drain` 次数。
+    ///
+    /// `> 0` 即证明"释放没有集中在同一个线程"⇒ 违反 [MUST-GATE-012] 的主线程释放契约。
+    /// 它**不** panic：实时/关流路径上宁可继续也不中断（红线 7 的精神），
+    /// 由判据把它读出来变红。
+    foreign_drains: u64,
 }
 
 impl RetireQueue {
@@ -650,6 +760,20 @@ impl RetireQueue {
         self.drained
     }
 
+    /// 实际执行过释放的**线程**（首次非空 `drain` 的线程）。`None` = 从未真正回收。
+    #[must_use]
+    pub fn release_thread(&self) -> Option<ThreadId> {
+        self.release_thread
+    }
+
+    /// 在 [`release_thread`](Self::release_thread) 之外的线程上发生的非空 `drain` 次数。
+    ///
+    /// [MUST-GATE-012] 判据要求它恒为 `0`（所有旧快照都在**同一个主线程**上释放）。
+    #[must_use]
+    pub const fn foreign_drains(&self) -> u64 {
+        self.foreign_drains
+    }
+
     /// 一次性出队至多 `max` 条并 **Drop**，返回实际回收条数。
     ///
     /// 使用 `rtrb` 的**批量** API（`Consumer::read_chunk` + `IntoIterator`），
@@ -661,6 +785,16 @@ impl RetireQueue {
             return 0;
         }
         self.drained = self.drained.saturating_add(1);
+        // [MUST-GATE-012] 记账**释放线程**：第一次真正出队时钉住，之后再从别的线程出队
+        // 就记一次 `foreign_drains`（判据据此变红）。
+        let here = std::thread::current().id();
+        match self.release_thread {
+            None => self.release_thread = Some(here),
+            Some(owner) if owner != here => {
+                self.foreign_drains = self.foreign_drains.saturating_add(1);
+            }
+            Some(_) => {}
+        }
         let chunk = match self.consumer.read_chunk(take) {
             Ok(chunk) => chunk,
             // slots() 与 read_chunk 之间没有别的消费者，这里理论上不可达；
@@ -688,6 +822,8 @@ pub fn retire_channel(capacity: usize) -> (rtrb::Producer<Arc<EngineSnapshot>>, 
             consumer,
             drained: 0,
             drops: 0,
+            release_thread: None,
+            foreign_drains: 0,
         },
     )
 }
@@ -1390,5 +1526,129 @@ mod tests {
         assert!(!snapshot.block_size_matches_enum());
         let ok = snapshot_with(64, 0);
         assert!(ok.block_size_matches_enum());
+    }
+
+    /// [MUST-GATE-012] 的**释放线程**记账：非空 `drain` 钉住释放线程，
+    /// 换一个线程出队必须被记成 `foreign_drains`（判据据此变红）。
+    #[test]
+    fn drain_records_the_release_thread_and_flags_foreign_drains() {
+        let (empty_producer, mut queue) = retire_channel(8);
+        assert_eq!(queue.release_thread(), None, "还没回收过就没有释放线程");
+        assert_eq!(queue.drain(8), 0, "空队列不算释放");
+        assert_eq!(queue.release_thread(), None, "空 drain 不许钉住释放线程");
+        drop(empty_producer);
+        drop(queue);
+
+        let (mut producer, mut queue) = retire_channel(8);
+        producer
+            .push(Arc::new(snapshot_with(128, 7)))
+            .expect("有空间");
+        drop(producer);
+
+        let main_thread = std::thread::current().id();
+        assert_eq!(queue.drain(8), 1);
+        assert_eq!(queue.release_thread(), Some(main_thread));
+        assert_eq!(queue.foreign_drains(), 0, "同一个线程出队不算 foreign");
+
+        // 换一个线程出队: 它必须被记一次 foreign（而不是 panic / 静默）。
+        let foreign = std::thread::spawn(move || {
+            let (mut producer, mut queue) = retire_channel(8);
+            producer
+                .push(Arc::new(snapshot_with(128, 8)))
+                .expect("有空间");
+            drop(producer);
+            assert_eq!(queue.release_thread(), None);
+            let released = queue.drain(8);
+            (released, queue.release_thread())
+        })
+        .join()
+        .expect("线程不得 panic");
+        assert_eq!(foreign.0, 1);
+        assert_ne!(
+            foreign.1,
+            Some(main_thread),
+            "释放线程必须是那个**真的**执行了 Drop 的线程"
+        );
+
+        // 同一队列上先主线程、后另一个线程 ⇒ foreign_drains 必须 +1。
+        let (producer, mut queue) = retire_channel(8);
+        let mut producer = producer;
+        producer
+            .push(Arc::new(snapshot_with(128, 9)))
+            .expect("有空间");
+        assert_eq!(queue.drain(8), 1);
+        assert_eq!(queue.release_thread(), Some(main_thread));
+        producer
+            .push(Arc::new(snapshot_with(128, 10)))
+            .expect("有空间");
+        std::thread::scope(|scope| {
+            let queue = &mut queue;
+            scope.spawn(move || {
+                assert_eq!(queue.drain(8), 1, "第二个线程真的回收了一条");
+            });
+        });
+        assert_eq!(queue.foreign_drains(), 1, "换线程出队必须被记账");
+        assert_eq!(queue.release_thread(), Some(main_thread), "释放线程不回退");
+    }
+
+    /// [MUST-GATE-012] 的**零泄漏对账**仪器自检：`release_probe::total()` 必须
+    /// 与"快照分配被真正释放"一一对应，且**逐线程**计数只归属到跑 `drop` 的那个线程。
+    #[test]
+    fn release_probe_counts_every_snapshot_drop_on_the_dropping_thread() {
+        release_probe::reset_current_thread();
+        release_probe::watch_current_thread();
+        let before_total = release_probe::total();
+        let before_here = release_probe::released_by_current_thread();
+
+        let snapshot = Arc::new(snapshot_with(128, 11));
+        // 克隆不增加释放数（同一个分配），最后一个强引用归零才记账。
+        drop(Arc::clone(&snapshot));
+        assert_eq!(
+            release_probe::released_by_current_thread(),
+            before_here,
+            "还有强引用时不得记账"
+        );
+        drop(snapshot);
+        assert_eq!(
+            release_probe::released_by_current_thread(),
+            before_here + 1,
+            "最后一个强引用归零 ⇒ 记账一次"
+        );
+        // `total()` 是**全局**量：libtest 会并行跑别的测试，它们也在丢快照
+        // ⇒ 这里只能断言"至少涨了 1"。**精确对账**在 `harness = false` 的
+        // `tests/snapshot_retire_churn.rs` 里做（那个进程只有本判据的线程）。
+        assert!(
+            release_probe::total() > before_total,
+            "全局释放数必须跟着涨"
+        );
+        release_probe::unwatch_current_thread();
+
+        // 窗口关掉之后不得再计错线程（本线程的计数不动）。
+        drop(snapshot_with(128, 12));
+        assert_eq!(
+            release_probe::released_by_current_thread(),
+            before_here + 1,
+            "关掉窗口后本线程的计数不许继续涨"
+        );
+
+        // 别的线程上的释放必须记在**那个**线程的账上，而不是本线程。
+        let (total_delta, there) = std::thread::spawn(|| {
+            release_probe::watch_current_thread();
+            let before = release_probe::total();
+            drop(snapshot_with(128, 13));
+            (
+                release_probe::total() - before,
+                release_probe::released_by_current_thread(),
+            )
+        })
+        .join()
+        .expect("线程不得 panic");
+        assert!(total_delta >= 1, "全局释放数必须跟着涨");
+        assert_eq!(there, 1, "释放记在了跑 drop 的那个线程上");
+        assert_eq!(
+            release_probe::released_by_current_thread(),
+            before_here + 1,
+            "别的线程的释放不许污染本线程的计数（否则判据会把音频线程的 0 读错）"
+        );
     }
 }

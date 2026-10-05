@@ -354,6 +354,18 @@ impl EngineRuntime {
         &self.transport
     }
 
+    /// 因**退役队列满**而被迫把旧快照寄存在读者手里的次数（[MUST-GATE-012] 的观测面）。
+    ///
+    /// `> 0` 说明主线程的 60Hz 轮询没跟上快照交换速率：读者宁可**晚一个块**再切换拓扑，
+    /// 也绝不在音频线程上释放内存（[ARCH-RT-002]）。
+    ///
+    /// 它**不是**释放违规（强引用仍然在读者手里），但会让"高频交换压测"被队列容量打折
+    /// ⇒ [MUST-GATE-012] 的判据要求压测期间恒为 `0`。
+    #[must_use]
+    pub const fn snapshot_stash_events(&self) -> u64 {
+        self.snapshot.stash_events()
+    }
+
     /// RT → 控制侧的走带读数镜面（原子量；跨线程安全）。
     #[must_use]
     pub const fn transport_mirror(&self) -> &Arc<TransportMirror> {

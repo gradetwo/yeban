@@ -77,3 +77,13 @@ harness = false
 [[test]]
 name = "transport_rt_zero_alloc"
 harness = false
+
+# [MUST-GATE-012] 的**高频交换压测**：≥ 50 000 次快照交换（5 轮 × 10 000）+ 尾段积压。
+# 与上面几个目标的关键差别：这里的音频线程是真的**另一个 OS 线程**，
+# 因此分配计数器**按线程**武装、快照析构**按线程**归账（`snapshot::release_probe`），
+# 并做"创建数 == 释放数 + 存活数"的零泄漏对账。
+# 仍然 `harness = false`（同一个理由：计数型全局分配器是进程全局的，libtest 自己会在
+# 别的线程里分配/释放 ⇒ 窗口数字会被判据自己污染 —— 教训 L22）。
+[[test]]
+name = "snapshot_retire_churn"
+harness = false
