@@ -5267,3 +5267,23 @@ are indicative only - and it means any single hosted number, including the best 
 
 **Fact 3**: the best p99 seen so far is 8.802 ms, i.e. **1.06x** over the bar, on a software rasteriser with the conservative
 `capture()` cost included. Whether the reference machine clears it is exactly what HD-49's option A would answer.
+
+### Round 210: verdicts 16 and 17 - the bookkeeping commits are green too, and the guards ran
+
+Two more completed full-workspace successes, both on commits that were pure bookkeeping, which is worth recording because it means
+the mechanical checks really executed rather than being skipped:
+
+| run | commit | what it covered |
+| :--- | :--- | :--- |
+| `37358821932` | `14ae6f1` | the feature-alignment row moving the viewport-culling capability from 系统=无 to 系统=部分, with the two counters adjusted |
+| `37358966320` | `abbfeef` | HD-49's registration in human-decisions.md, five columns, with the recommendation and consequences |
+
+Both runs passed the `checks` leg (12 steps), which is where the ledger guards live - `check_feature_alignment.py`,
+`check_decisions.py`, `check_gate_status.py`, `check_handoff_snapshot.py`, the new `check_viewport_bounds_wiring.py`, and the rest.
+So a documentation commit that quietly broke a guard would have gone red here; neither did.
+
+**Two further runs were still in flight when this entry was written**: `37359088127` @ `d45030e` (the backend口径/variance record)
+and `37359240575` @ `44f7c0d` (the lane-count guard extension) - the latter is the first run that will exercise the extended guard
+from a fresh checkout.
+
+Completed full-workspace verdicts on main now number **seventeen**.
