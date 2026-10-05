@@ -2767,3 +2767,25 @@ evidence for another's.
 3. Once readable, the real cause was visible in one line: `measure_rss.py ... -- cargo run ... -- --flag` drops the inner
    `--`, so `--headless` was handed to **cargo** ("unexpected argument '--headless' found"). Fixed by building once and
    passing the **binary path**, which also removed the compiler's peak from the measurement window.
+
+### Round 94: my own mis-invocation — `bash` on a Python validator (the check silently did not run)
+
+While committing the bench-green record I ran `bash scripts/gates/check_gate_status.py` instead of `python3 ...`. Bash
+duly executed the file as shell: it emitted a page of `command not found` / `syntax error near unexpected token '('`
+noise and exited non-zero, so **the gate-status validation did not actually run** in that step. Because the command was
+chained with `&&` after other work, the commit still happened - i.e. I very nearly shipped a ledger edit on the strength
+of a check that never executed.
+
+Caught by re-reading the output (the noise was impossible to mistake for `[ok] ...`) and fixed by re-running it properly:
+`python3 scripts/gates/check_gate_status.py` -> `[ok] gate-status.md: 15 条 MUST-GATE + 6 条 BASELINE 均已登记且带证据/原因`, exit 0.
+
+**Rules restated (same family as the session's other self-errors).**
+- Match the interpreter to the file: `scripts/gates/*.py` are **Python**; `scripts/gates/*.sh` are shell.
+- A validator must be read for its **verdict line**, not merely for its exit status inside an `&&` chain; noisy output
+  from the wrong interpreter is not a verdict.
+- When a check's output looks like a different language than expected, treat that as a **failed check**, not as a warning.
+
+**Separately verified in the same window**: the green bench run (`37293151145`) also executes the sibling
+`BASELINE-001` and `BASELINE-004` steps in the same job, and the job concluded success -> those two steps passed as
+written. Their remaining gaps are therefore not "the step is broken" but **what they measure and where** (reference
+machine / release column / the object the spec names), which is the next thing to look at.
