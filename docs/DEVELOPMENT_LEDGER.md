@@ -2622,3 +2622,42 @@ Conclusions with evidence:
    — consistent with the earlier upstream-mapping audit that classified them as `archive` provenance, not as a defect.
 3. Therefore the on-disk text-class total will asymptote at **1588 - 4 = 1584**, not 1588. Any future "did we get all of them?"
    check must compare against 1584 (or read the job's own summary line).
+
+## 8. 裁决执行清单（负责人 2026-10-04 追认全部 42 项之后）
+
+追认不等于"改一句话"。42 项按**载体**分三类，逐条落到下面三张表里（这也是"追认之后还剩什么"的唯一去处）。
+
+### 8.1 已由集成者当场完成（规范措辞类）
+
+| HD | 做了什么 | 证据 |
+| :--- | :--- | :--- |
+| HD-02, HD-04, HD-05, HD-08, HD-09, HD-14, HD-15, HD-16, HD-17, HD-18, HD-19, HD-22, HD-28, HD-29 | 写进**四份 Normative 规范**的"修订记录（Errata）"；`SLINT_BACKEND=headless` 的命令块**就地修正**（Slint 1.18.1 无此后端） | 两份规范各 +errata；路线图 +errata；文档门禁绿 |
+| HD-01, HD-12, HD-42 | `Op` 全集以 **29 变体**写进架构 errata（含棘轮判据的说明） | `schemas/ops.schema.json` 29 分支 + `PENDING_CONTRACT_OPS` 清空 |
+| HD-03, HD-06, HD-10, HD-11, HD-25 | ADR-0001 转 **Accepted**；许可白名单追认 | `grep -c Proposed docs/adr/…` 由 6 → 0（保留历史说明） |
+| HD-07, HD-13, HD-20, HD-35, HD-37, HD-38, HD-39, HD-40, HD-41 | 已是当前实现/政策（保持现状类），逐条标注在决策清单 | `docs/ledger/human-decisions.md` 的 ✅ 标记 |
+| HD-36 | **已执行并已拿到判决**：ARM 跨架构门禁 | run 37244030287 success；`MUST-GATE-003` 转"已接线" |
+
+### 8.2 需要代码/契约 → 建成工作线（排队中）
+
+| HD | 要做什么 | 地盘 | 状态 |
+| :--- | :--- | :--- | :--- |
+| HD-21 | 新增 JSON-RPC **`-32010 ACTION_FAILED`**（"已接线但执行失败"档）并把管理动作的失败如实归到它 | `yeban-ui-mcp` + `yeban-mcp` | **排队**（等 `engine-mix` / `audio-render` 让出这两处） |
+| HD-23 | `history.dag` 加**版本信封** | `yeban-mcp` | 排队 |
+| HD-24 | `MAX_PCM_BYTES` 提高或改**流式**（现 2 GiB：96 kHz 立体声 ≈46 min） | `yeban-decode` | 排队 |
+| HD-26 | 真峰值过采样 **4× → 8×/16×**（4× 在 0.4·fs 欠读 0.44 dB） | `yeban-dsp` | 排队 |
+| HD-27 | LUFS **门限/窗口**切片 + 其它采样率的 K 加权系数 | `yeban-dsp` | 排队 |
+| HD-30 | 容器 **deflate**（裁决为"需要时再做"）⇒ 尚未到期，不排 | `yeban-model` | 未到期 |
+
+### 8.3 人类专属（Agent 不代签、不代购）
+
+| HD | 谁做 | 为什么不能由 Agent 做 |
+| :--- | :--- | :--- |
+| HD-31 | 负责人选定并采购/收集素材；Agent 已备好**机器**（清单 + SHA-256 + 许可/署名对账 + `--repo-assets` 校验） | 素材的**许可与付费**是人的决定；**不许**用自造夹具冒充"323 款采样" |
+| HD-32 | 负责人配置 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` 并接域名 | 凭据不能由 Agent 生成或持有 |
+| HD-33 | 负责人修 `LEGAL.md`/`GOVERNANCE.md` 里 6 处失效 `file://` 链接 | `AGENTS.md` 红线 1 禁止 Agent 改这些文件 |
+| HD-34 | 负责人签署 4 项（法务措辞/ASIO/商标/发布签名）；Agent 可**起草**供签署 | 签署是人的法律责任 |
+| HD-38 | 负责人决定是否投入自托管固定频率 runner 的预算 | 花的是负责人的钱 |
+
+> **本清单的意义**：追认之后，"还剩什么"不再散落在报告里 —— 8.1 已完成、8.2 有明确地盘与排队状态、
+> 8.3 是**只能人做**的事。任何一项都不构成单点阻塞：8.2 的每一项都可以在对应 crate 空出来时立刻开工。
+
