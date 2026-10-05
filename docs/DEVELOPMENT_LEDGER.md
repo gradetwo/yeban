@@ -2951,3 +2951,31 @@ status word left at 部分.
    paying for.
 
 **Not done this round**: the per-row verification pass (it is the next thing, and it must be per-row with quoted evidence).
+
+### Round 101: first row of the hygiene backlog is a CORRECT partial - my round-100 hypothesis was too broad
+
+I opened the backlog by reading `ROAD-M0-002`'s **full** reason (not just its first 78 characters, which is all my
+round-100 scan had seen). Its text is:
+
+> **已做到**: `crates/yeban-engine/src/ring.rs` (`EngineEvent`/`ParamAddress` + `bulk_push_calls`/`bulk_pop_calls` 计数) 与
+> `crates/yeban-engine/src/snapshot.rs` (原子指针 + 纪元握手 + `RetireQueue`)，判据 d1/a1/a2/a3
+> (`docs/ledger/engine-rt-notes.md` §4)，CI run 37221884009 = success。
+> **未做到**: 吞吐与时延读数 —— §4 末注明确把「出队耗时 <0.05ms」改成**结构性断言**（每块恰好一次批量 API），
+> 理由是该线不允许本机重依赖编译、CI runner 墙钟抖动脆弱。
+
+**Conclusion: the row's 部分 label is right, and relabelling it would be a lie.** The spec's criterion is a *latency
+measurement* (<0.05 ms per event); the project deliberately **substituted a structural assertion** for it and documented
+why. "已做到" in this row describes the *structure that exists*; "未做到" names the *unmet criterion*. A hygiene pass that
+only looked for the word 已做到 would have flipped this row to 已完成 and thereby hidden a criterion substitution - the
+worst kind of "看起来有当成有".
+
+**Refined rule for the rest of the backlog (supersedes round 100's framing).** A row is only a labelling defect if its
+reason claims the criterion is met **and** no unmet item is named. The pass must therefore read each reason in full and
+look for an explicit unmet clause (未做到 / 尚未 / 不达标 / 换成结构性断言 / 需参考机 ...). Outcomes:
+1. **correct partial** - an unmet clause is present: leave the status, record that it was checked (this row);
+2. **labelling defect** - no unmet clause and the citations verify: relabel with the quoted checks (round 101's
+   `ROAD-M1-001` was this case);
+3. **unclear** - escalate to the human rather than guess.
+
+So the backlog is **not** "23 wrongly-labelled rows"; it is "23 rows to read in full", of which at least one (this one) is
+already correct. The audit continues row by row, and the count of genuine defects will be whatever the reading shows.
