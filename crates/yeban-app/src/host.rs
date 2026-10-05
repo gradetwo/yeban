@@ -103,7 +103,7 @@ fn to_color(color: RgbColor) -> slint::Color {
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
 /// `project_projection_reaches_the_control_tree_and_the_pixels` 就是靠这一点
 /// 在同一个活窗口上切换两个工程）。
-pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32) {
+pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll_x: f32) {
     ui.set_window_title(view.title.clone().into());
     ui.set_bpm_display(view.bpm_display.clone().into());
     // 时间码的拍号网格：**唯一**的注入点（本函数）。`None`（模型层拒绝该拍号）
@@ -135,7 +135,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32) {
     // 六个平行数组（ulids / velocities / positions / widths / ys / rows）必须共用**同一**索引集，
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
     // 本步先按 `scroll_x = 0`（尚无滚动模型, 见账本第 183 轮）：第一屏正确、屏外正确地不画。
-    let visible = view.visible_notes(0.0, viewport_width);
+    let visible = view.visible_notes(scroll_x, viewport_width);
     ui.set_note_ulids(strings(&visible.ulids));
     ui.set_note_velocities(lengths(&visible.velocities));
     ui.set_note_positions(lengths(&visible.positions));
@@ -436,7 +436,7 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
         return;
     }
     match ViewState::from_project(&port.project()) {
-        Ok(view) => apply_view(&ui, &view, ui.window().size().width as f32),
+        Ok(view) => apply_view(&ui, &view, ui.window().size().width as f32, 0.0),
         Err(error) => {
             // 投影失败**出声**：工程已经在内存里回退了，但这一帧画不出来。
             // 静默吞掉会让"撤销没反应"变成一个查不出的现象。
@@ -483,6 +483,6 @@ pub fn build_main_window_with_console_tab(
     ui.set_playing(false);
     ui.set_console_tab(console_tab);
     ui.set_compact(scene.compact());
-    apply_view(&ui, view, ui.window().size().width as f32);
+    apply_view(&ui, view, ui.window().size().width as f32, 0.0);
     Ok(ui)
 }

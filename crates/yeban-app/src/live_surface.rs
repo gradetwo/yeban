@@ -407,6 +407,7 @@ impl LiveAdminSurface {
             &self.window,
             &view,
             slint::ComponentHandle::window(&self.window).size().width as f32,
+            0.0,
         );
         self.project = project.clone();
         self.view = view;

@@ -1329,7 +1329,13 @@ fn frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness() {
 
     let mut samples: Vec<f64> = Vec::with_capacity(FRAMES);
     let mut min_evidence = usize::MAX;
-    for _ in 0..FRAMES {
+    // 规格（账本第 136 轮）要求 600 帧里**每帧把滚动推进 1/120 秒**。
+    // 口径：把"1/120 秒"折算成**一屏宽的 1/120**（即滚动速度 = 1 屏/秒 = 1920 px/s ⇒ 每帧 16 px）。
+    // 注入**不计入**计时区间 —— 计时区间只含 request_redraw + capture（渲染 + 回读）。
+    let viewport_width = slint::ComponentHandle::window(port.ui()).size().width as f32;
+    for frame in 0..FRAMES {
+        let scroll_x = frame as f32 * (viewport_width / 120.0);
+        host::apply_view(port.ui(), &project_view, viewport_width, scroll_x);
         let start = std::time::Instant::now();
         port.window().request_redraw();
         let image = port.window().capture().expect("每帧都应能抓到像素");
@@ -1662,6 +1668,7 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
         port.ui(),
         &demo_view,
         slint::ComponentHandle::window(port.ui()).size().width as f32,
+        0.0,
     );
     let demo_image = port.window().capture().expect("演示投影截图");
     assert_ne!(
@@ -1940,6 +1947,7 @@ impl TransportHarness {
             self.port.ui(),
             &view,
             slint::ComponentHandle::window(self.port.ui()).size().width as f32,
+            0.0,
         );
         view
     }
