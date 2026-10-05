@@ -7,13 +7,54 @@
 //! （见 `docs/ledger/decode-core-notes.md` §7 的验证范围声明）。
 //!
 //! 规范来源 (Normative):
-//! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §5.3 [ARCH-SEC-003]：单条目的
-//!   "≤ 2 GB"口径被本模块沿用为**输入字节上限**；
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §5.1 [ARCH-DET-001]：重采样必须
 //!   "同输入 → 同输出"，所以长度契约只用**精确有理数整数运算**表达，不引入任何浮点
-//!   或超越函数（`libm` 都不需要）；
+//!   或超越函数（`libm` 都不需要）；同一条契约也是"预算不随运行机器变化"的依据（见下）；
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §10.2 [ARCH-DSP-002]：
-//!   44.1k/48k/96k 互转的输入输出长度关系。
+//!   44.1k/48k/96k 互转的输入输出长度关系；
+//! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §5.3 [ARCH-SEC-003]：不可信输入的
+//!   资源上限**必须仍然生效**（本模块是解码侧的落点）。注意：该条文的"单个解压条目
+//!   ≤ 2 GB"约束的是**容器层**（`yeban-model` 的归档解包），不是解码侧的读缓冲
+//!   —— 两者的信任上下文不同，改建前把同一个数字沿用到解码侧属于口径混淆。
+//!
+//! ## 上限的定性（`HD-24` 结论）：安全闸门 + 内存预算，**不是**实现限制
+//!
+//! 改建前这里是两个写死的 2 GiB 常量；`MAX_PCM_BYTES` 在 96 kHz 立体声下只够约
+//! 46 分钟、96 kHz 8 声道下只够约 11.6 分钟 ⇒ 长工程必撞墙。逐条核对之后，
+//! 它的正确定性是：
+//!
+//! 1. **它是安全闸门** —— 防止不可信输入（畸形声明、炸弹式头字段）把堆吃光，
+//!    所以**不能删**；
+//! 2. **它不是实现限制** —— 没有任何代码路径要求"单个缓冲 ≤ 2 GiB"：PCM 容器是
+//!    `Vec<f32>`（只受地址空间限制）、算术全程 `u64`/`u128` + `checked_mul`、
+//!    `rubato` 只吃切片。2 GiB 是从 [ARCH-SEC-003] 的**归档单条目**上限借来的数字
+//!    （原文自述"同一个数字只在一个地方被裁决"），是**口径一致性**的选择，
+//!    不是从解码行为推导出来的；
+//! 3. 所以正确形态是 [`PcmBudget`]：**显式可配置 + 默认值有依据 + 与"可用内存"相关**。
+//!
+//! ## 默认值怎么来的（可被判据复算）
+//!
+//! 默认预算由**产品要求**推导，而不是拍一个数字：覆盖一次 **96 kHz 立体声 3 小时**
+//! 的整场工程（`HD-24` 点名的长工程场景），并且不小于 **96 kHz 8 声道 30 分钟**；
+//! 两者取字节数较大者。由此得到的三条等价关系（判据逐条复算，见 `#[cfg(test)]`）：
+//!
+//! | 布局 | 同一预算折算的时长 |
+//! | :--- | :--- |
+//! | 96 kHz 立体声 | **3 小时**（定义值） |
+//! | 96 kHz 8 声道 | **45 分钟**（= 3 h × 2/8，改建前只有 11.6 分钟） |
+//! | 48 kHz 立体声 | **6 小时**（字节上允许 6 h，但会被时长闸门卡在 6 h 整） |
+//!
+//! **为什么不自动探测可用内存**：那会让"同输入 → 同输出"（[ARCH-DET-001]）依赖运行
+//! 机器 —— 同一个文件在一台机器上解码成功、在另一台上被预算拒绝，于是资产内容变成
+//! 环境函数。预算值由**调用方**显式给出（应用层最清楚自己有多少内存），本 crate 只
+//! 提供有依据的默认值，以及 [`PcmBudget::for_layout`] 这个"从产品要求反推预算"的构造。
+//!
+//! ## 峰值内存（本模块能证明的上界）
+//!
+//! `check_layout` 通过 ⇒ `frames × channels × 4 ≤ max_pcm_bytes`。解码期峰值 ≈ 1 份
+//! 资产；重采样期峰值 ≈ 资产 + 输出（≈ 2 份，见 [`crate::resample`]）；`pcm_hash`
+//! 另需一份与样本等长的字节缓冲（见 notes 的 `needs`）。因此 `max_pcm_bytes` 是
+//! **单份 PCM** 的预算，不是进程峰值；这一点写在 notes 里，调用方按需放大。
 //!
 //! 边界: 本模块**不做**任何 I/O、不持有缓冲、不知道 symphonia 的存在。它只回答
 //! "这个尺寸/这个长度是否在预算内"。
@@ -21,30 +62,175 @@
 use std::error::Error;
 use std::fmt;
 
-/// 单个输入资产的字节上限：2 GiB。
+// ---------------------------------------------------------------------------
+// 默认预算的**推导输入**（全部是产品要求，不是实现细节）
+// ---------------------------------------------------------------------------
+
+/// 默认预算的第一档参考采样率：96 kHz（`HD-24` 点名的最坏采样率）。
+pub const DEFAULT_REFERENCE_RATE: u32 = 96_000;
+
+/// 默认预算的第一档参考声道数：2（立体声整场工程）。
+pub const DEFAULT_REFERENCE_CHANNELS: u16 = 2;
+
+/// 默认预算的第一档时长要求：3 小时（一次整场录音/工程）。
+pub const DEFAULT_REFERENCE_SECONDS: u64 = 3 * 60 * 60;
+
+/// 默认预算的第二档参考声道数：8（多声道母带/现场分轨）。
+pub const DEFAULT_MULTITRACK_CHANNELS: u16 = 8;
+
+/// 默认预算的第二档时长要求：30 分钟。
+pub const DEFAULT_MULTITRACK_SECONDS: u64 = 30 * 60;
+
+/// 时长闸门的默认值：6 小时。
 ///
-/// 口径直接沿用 [ARCH-SEC-003] 对归档单条目的 2 GB 上限 —— 同一个数字只在一个
-/// 地方被裁决，避免"归档允许 2 GB、解码器允许 20 GB"这种自相矛盾。
-pub const MAX_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// 为什么需要一个**与字节无关**的时长闸门：低采样率 × 少声道的素材"字节便宜、时间
+/// 昂贵"（44.1 kHz 单声道 6 小时只有约 3.8 GiB PCM），单靠字节预算会允许任意长的
+/// 时间轴。6 小时是这样选的：它**故意松于**默认字节预算在 96 kHz 立体声下的 3 小时
+/// （那里字节先跳闸），又**故意紧于**默认字节预算在 44.1 kHz 立体声下的约 6.53 小时
+/// （那里时长先跳闸）。超过 6 小时的素材是有意的例外，应由调用方显式给预算。
+pub const DEFAULT_MAX_DURATION_SECS: u64 = 6 * 60 * 60;
 
-/// 解码后**交织 f32 PCM** 的字节上限：2 GiB。
+/// 容器开销余量：1 MiB。
 ///
-/// 换算成时长（`帧数 = 字节 / (声道 × 4)`）：
-/// - 48 kHz 立体声 ⇒ 约 93 分钟；
-/// - 96 kHz 立体声 ⇒ 约 46 分钟；
-/// - 96 kHz 8 声道 ⇒ 约 11.6 分钟。
+/// 用于把"PCM 字节预算"换算成"输入字节预算"：WAV/RIFF 的块头、FLAC 的元数据块、
+/// Ogg 的页头都远小于这个数（未压缩 WAV 只多 44 字节量级），留 1 MiB 是为了容纳
+/// 合法但啰嗦的元数据块，而不是给"压缩容器比 PCM 还大"这种情况开口子。
+pub const CONTAINER_OVERHEAD_BYTES: u64 = 1024 * 1024;
+
+/// 默认声道数闸门：64。
 ///
-/// 超出即 [`LimitViolation::TooManyFrames`]，**绝不**"先分配再说"。
-pub const MAX_PCM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// 本 crate 启用的容器（WAV/FLAC/Ogg）的常见布局最多到 7.1（8 声道），64 留了 8×
+/// 余量；它同时是"畸形文件声明 65535 声道"在 `frames × channels` 乘法之前的硬上界。
+pub const DEFAULT_MAX_CHANNELS: u16 = 64;
 
-/// 声道数上限（畸形文件常用"声明 65535 声道"制造乘法溢出/OOM）。
-pub const MAX_CHANNELS: u16 = 64;
+/// 默认采样率闸门：768 kHz（DXD 级别之上再留一倍余量）。
+pub const DEFAULT_MAX_SAMPLE_RATE: u32 = 768_000;
 
-/// 采样率上限：768 kHz（DXD 级别之上再留一倍余量）。
-pub const MAX_SAMPLE_RATE: u32 = 768_000;
+/// `seconds` 秒 × `channels` 声道交织 `f32` PCM 的精确字节数。
+///
+/// 全程 `u128` 中间量，因此**不会回绕**；超出 `u64` 或任一参数为 0 时返回 `None`。
+/// 这是默认预算与 [`PcmBudget::for_layout`] 的**唯一**换算函数 —— "为什么是这个数"
+/// 因此可以被判据按同一条公式复算。
+#[must_use]
+pub const fn pcm_bytes_for(seconds: u64, sample_rate: u32, channels: u16) -> Option<u64> {
+    if seconds == 0 || sample_rate == 0 || channels == 0 {
+        return None;
+    }
+    let frames = seconds as u128 * sample_rate as u128;
+    let samples = frames * channels as u128;
+    let bytes = samples * 4; // 交织 f32，每个样本 4 字节
+    if bytes > u64::MAX as u128 {
+        return None;
+    }
+    Some(bytes as u64)
+}
 
-/// 交织 `f32` 样本的总数上限（由 [`MAX_PCM_BYTES`] 换算）。
-pub const MAX_INTERLEAVED_SAMPLES: u64 = MAX_PCM_BYTES / 4;
+/// 一次解码的资源预算（**安全闸门**）。
+///
+/// 这是 `HD-24` 的落地形态：改建前的两个写死常量被删除，所有使用点都必须拿到一个
+/// 显式的预算值。默认值见 [`PcmBudget::default`]（由产品要求推导，见模块文档）。
+///
+/// 语义约定：
+/// - 五道上限（输入字节 / PCM 字节 / 声道数 / 采样率 / 时长）**各自独立**生效，
+///   且判定全部发生在**分配之前**；
+/// - 判定是闭区间：恰好等于上限**通过**，超出一个单位即 [`LimitViolation`]；
+/// - 预算为 0 是合法的（等价于"拒绝一切非空资产"），用于调用方主动收紧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PcmBudget {
+    /// 单个输入容器（磁盘文件/内存切片）的字节上限。
+    pub max_input_bytes: u64,
+    /// 解码后**交织 f32 PCM** 的字节上限。
+    pub max_pcm_bytes: u64,
+    /// 声道数上限。
+    pub max_channels: u16,
+    /// 采样率上限 (Hz)。
+    pub max_sample_rate: u32,
+    /// 单次解码允许的音频时长上限（秒）。与声道数无关，因此能独立约束"低采样率 ×
+    /// 少声道但极长"的素材。
+    pub max_duration_secs: u64,
+}
+
+impl PcmBudget {
+    /// 逐字段构造。
+    #[must_use]
+    pub const fn new(
+        max_input_bytes: u64,
+        max_pcm_bytes: u64,
+        max_channels: u16,
+        max_sample_rate: u32,
+        max_duration_secs: u64,
+    ) -> Self {
+        Self {
+            max_input_bytes,
+            max_pcm_bytes,
+            max_channels,
+            max_sample_rate,
+            max_duration_secs,
+        }
+    }
+
+    /// 交织 `f32` 样本总数上限（由 [`PcmBudget::max_pcm_bytes`] 换算）。
+    #[must_use]
+    pub const fn interleaved_samples_limit(&self) -> u64 {
+        self.max_pcm_bytes / 4
+    }
+
+    /// 由**产品要求**反推一个预算：至少容纳 `seconds` 秒的 `sample_rate` Hz
+    /// `channels` 声道素材。
+    ///
+    /// 返回的预算**恰好**允许该布局（声道数/采样率/时长三个闸门都设成要求值，
+    /// PCM 字节数设成要求值的精确字节数），因此"要求内的素材一定进得来"是构造上
+    /// 成立的，而不是靠调数字。任一参数为 0 或字节数超出 `u64` 时返回 `None`。
+    #[must_use]
+    pub fn for_layout(seconds: u64, sample_rate: u32, channels: u16) -> Option<Self> {
+        let pcm_bytes = pcm_bytes_for(seconds, sample_rate, channels)?;
+        Some(Self {
+            max_input_bytes: pcm_bytes.saturating_add(CONTAINER_OVERHEAD_BYTES),
+            max_pcm_bytes: pcm_bytes,
+            max_channels: channels,
+            max_sample_rate: sample_rate,
+            max_duration_secs: seconds,
+        })
+    }
+}
+
+impl Default for PcmBudget {
+    /// 由两条产品要求推导的默认预算（见模块文档）：
+    /// 96 kHz 立体声 **3 小时** ∪ 96 kHz 8 声道 **30 分钟**，取字节数较大者。
+    ///
+    /// 声道数/采样率/时长三个闸门取 [`DEFAULT_MAX_CHANNELS`] /
+    /// [`DEFAULT_MAX_SAMPLE_RATE`] / [`DEFAULT_MAX_DURATION_SECS`]（对上述两条要求都是
+    /// 宽松的，因此不会误伤要求内的素材）。
+    ///
+    /// 两个要求都是编译期常量，`pcm_bytes_for` 在此不可能失败；真失败了会在第一条
+    /// 判据上炸，而不是静默退化成一个零预算。
+    fn default() -> Self {
+        let reference = pcm_bytes_for(
+            DEFAULT_REFERENCE_SECONDS,
+            DEFAULT_REFERENCE_RATE,
+            DEFAULT_REFERENCE_CHANNELS,
+        )
+        .expect("3 h @ 96 kHz stereo must fit in u64 bytes");
+        let multitrack = pcm_bytes_for(
+            DEFAULT_MULTITRACK_SECONDS,
+            DEFAULT_REFERENCE_RATE,
+            DEFAULT_MULTITRACK_CHANNELS,
+        )
+        .expect("30 min @ 96 kHz 8 ch must fit in u64 bytes");
+        let pcm_bytes = if reference > multitrack {
+            reference
+        } else {
+            multitrack
+        };
+        Self {
+            max_input_bytes: pcm_bytes.saturating_add(CONTAINER_OVERHEAD_BYTES),
+            max_pcm_bytes: pcm_bytes,
+            max_channels: DEFAULT_MAX_CHANNELS,
+            max_sample_rate: DEFAULT_MAX_SAMPLE_RATE,
+            max_duration_secs: DEFAULT_MAX_DURATION_SECS,
+        }
+    }
+}
 
 /// 重采样所用的 sinc 滤波器长度（抽头数）。
 ///
@@ -149,16 +335,27 @@ pub enum LimitViolation {
         /// 生效的上限。
         limit: u32,
     },
-    /// 交织样本总数超过预算。
-    TooManyFrames {
+    /// 时长超过预算（**与字节无关**的独立闸门）。
+    DurationTooLong {
+        /// 帧数。
+        frames: u64,
+        /// 采样率。
+        sample_rate: u32,
+        /// `frames / sample_rate`（整秒，仅用于报错文案）。
+        seconds: u64,
+        /// 生效的时长上限（秒）。
+        limit_secs: u64,
+    },
+    /// 交织样本总数超过 PCM 字节预算（`samples × 4 > max_pcm_bytes`）。
+    PcmBudgetExceeded {
         /// 帧数。
         frames: u64,
         /// 声道数。
         channels: u16,
         /// `frames × channels` 的交织样本数。
         samples: u64,
-        /// 生效的样本数上限。
-        limit: u64,
+        /// 生效的样本数上限（`max_pcm_bytes / 4`）。
+        limit_samples: u64,
     },
     /// `frames × channels` 在 `u64` 里溢出。
     LayoutOverflow {
@@ -191,15 +388,27 @@ impl fmt::Display for LimitViolation {
             Self::SampleRateTooHigh { rate, limit } => {
                 write!(f, "stream declares {rate} Hz, over the {limit} Hz cap")
             }
-            Self::TooManyFrames {
+            Self::DurationTooLong {
+                frames,
+                sample_rate,
+                seconds,
+                limit_secs,
+            } => write!(
+                f,
+                "{frames} frames at {sample_rate} Hz is {seconds} s of audio, \
+                 over the {limit_secs}-second duration cap"
+            ),
+            Self::PcmBudgetExceeded {
                 frames,
                 channels,
                 samples,
-                limit,
+                limit_samples,
             } => write!(
                 f,
-                "{frames} frames x {channels} channels = {samples} interleaved samples, \
-                 over the {limit}-sample budget"
+                "{frames} frames x {channels} channels = {samples} interleaved samples \
+                 ({} bytes of f32 PCM), over the {limit_samples}-sample / {}-byte PCM budget",
+                samples.saturating_mul(4),
+                limit_samples.saturating_mul(4)
             ),
             Self::LayoutOverflow { frames, channels } => write!(
                 f,
@@ -268,10 +477,13 @@ impl Error for LenContractViolation {}
 ///
 /// # Errors
 ///
-/// 超过 `limit` 时返回 [`LimitViolation::InputTooLarge`]。
-pub fn check_input_len(bytes: u64, limit: u64) -> Result<(), LimitViolation> {
-    if bytes > limit {
-        return Err(LimitViolation::InputTooLarge { bytes, limit });
+/// 超过 [`PcmBudget::max_input_bytes`] 时返回 [`LimitViolation::InputTooLarge`]。
+pub fn check_input_len(bytes: u64, budget: &PcmBudget) -> Result<(), LimitViolation> {
+    if bytes > budget.max_input_bytes {
+        return Err(LimitViolation::InputTooLarge {
+            bytes,
+            limit: budget.max_input_bytes,
+        });
     }
     Ok(())
 }
@@ -289,41 +501,56 @@ pub fn interleaved_samples(frames: u64, channels: u16) -> Result<u64, LimitViola
 
 /// 校验一次解码的布局是否在预算内。
 ///
+/// 判定顺序（**每一道闸门各自独立**，任何一道都能单独把输入挡下）：
+/// 声道数为 0 → 声道数超限 → 采样率为 0 → 采样率超限 → 时长超限 → PCM 字节超预算。
+/// 全部用 `u128` 中间量做比较，因此不会先溢出再判定。
+///
 /// # Errors
 ///
-/// 声道数/采样率不合法，或 `frames × channels` 超过 `pcm_bytes_limit / 4` 时返回错误。
+/// 见 [`LimitViolation`]。
 pub fn check_layout(
     channels: u16,
     sample_rate: u32,
     frames: u64,
-    pcm_bytes_limit: u64,
+    budget: &PcmBudget,
 ) -> Result<(), LimitViolation> {
     if channels == 0 {
         return Err(LimitViolation::ZeroChannels);
     }
-    if channels > MAX_CHANNELS {
+    if channels > budget.max_channels {
         return Err(LimitViolation::TooManyChannels {
             channels,
-            limit: MAX_CHANNELS,
+            limit: budget.max_channels,
         });
     }
     if sample_rate == 0 {
         return Err(LimitViolation::ZeroSampleRate);
     }
-    if sample_rate > MAX_SAMPLE_RATE {
+    if sample_rate > budget.max_sample_rate {
         return Err(LimitViolation::SampleRateTooHigh {
             rate: sample_rate,
-            limit: MAX_SAMPLE_RATE,
+            limit: budget.max_sample_rate,
+        });
+    }
+    // 时长闸门：`frames > max_duration_secs × sample_rate` 即超过 [`PcmBudget::max_duration_secs`]
+    // 秒（整数精确，闭区间：恰好等于上限通过）。乘法在 `u128` 里做，不会回绕。
+    let max_frames = u128::from(budget.max_duration_secs) * u128::from(sample_rate);
+    if u128::from(frames) > max_frames {
+        return Err(LimitViolation::DurationTooLong {
+            frames,
+            sample_rate,
+            seconds: frames / u64::from(sample_rate),
+            limit_secs: budget.max_duration_secs,
         });
     }
     let samples = interleaved_samples(frames, channels)?;
-    let limit = pcm_bytes_limit / 4;
-    if samples > limit {
-        return Err(LimitViolation::TooManyFrames {
+    let limit_samples = budget.interleaved_samples_limit();
+    if samples > limit_samples {
+        return Err(LimitViolation::PcmBudgetExceeded {
             frames,
             channels,
             samples,
-            limit,
+            limit_samples,
         });
     }
     Ok(())
@@ -388,78 +615,263 @@ mod tests {
 
     const GIB: u64 = 1024 * 1024 * 1024;
 
+    /// 判据 ①（HD-24 核心）：默认预算是**产品要求的函数**，不是拍出来的数字。
+    ///
+    /// 注入"默认上限 = `u64::MAX`"会在这里的红 —— 这是本线最重要的一条判据。
     #[test]
-    fn size_caps_are_pinned_to_the_documented_numbers() {
-        // 判据 (尺寸上限口径): 改这个数字必须同时改 notes，否则这里先红。
-        assert_eq!(MAX_INPUT_BYTES, 2 * GIB);
-        assert_eq!(MAX_PCM_BYTES, 2 * GIB);
-        assert_eq!(MAX_INTERLEAVED_SAMPLES, 2 * GIB / 4);
-        assert_eq!(MAX_CHANNELS, 64);
-        assert_eq!(MAX_SAMPLE_RATE, 768_000);
-        assert_eq!(SINC_LEN, 256);
-        // 判据 (MUST-GATE-011 防挂死): 不推进包数的闸门必须存在且非零。
-        assert_eq!(MAX_IDLE_PACKETS, 1_024);
+    fn default_budget_is_recomputed_from_the_product_requirements() {
+        let reference = pcm_bytes_for(
+            DEFAULT_REFERENCE_SECONDS,
+            DEFAULT_REFERENCE_RATE,
+            DEFAULT_REFERENCE_CHANNELS,
+        )
+        .expect("3 h @ 96 kHz stereo");
+        let multitrack = pcm_bytes_for(
+            DEFAULT_MULTITRACK_SECONDS,
+            DEFAULT_REFERENCE_RATE,
+            DEFAULT_MULTITRACK_CHANNELS,
+        )
+        .expect("30 min @ 96 kHz 8 ch");
+        let budget = PcmBudget::default();
+        assert_eq!(budget.max_pcm_bytes, reference.max(multitrack));
+        assert_eq!(
+            budget.max_input_bytes,
+            budget.max_pcm_bytes + CONTAINER_OVERHEAD_BYTES
+        );
+        assert_eq!(budget.interleaved_samples_limit(), budget.max_pcm_bytes / 4);
+        assert_eq!(budget.max_channels, DEFAULT_MAX_CHANNELS);
+        assert_eq!(budget.max_sample_rate, DEFAULT_MAX_SAMPLE_RATE);
+        assert_eq!(budget.max_duration_secs, DEFAULT_MAX_DURATION_SECS);
+
+        // "为什么是这个数" 的算术关系（同一预算折算成时长，可逐条复算）：
+        // 96 kHz 立体声 3 小时 ⇔ 96 kHz 8 声道 45 分钟 ⇔ 48 kHz 立体声 6 小时。
+        let stereo_frames = budget.interleaved_samples_limit() / 2;
+        assert_eq!(
+            stereo_frames / u64::from(DEFAULT_REFERENCE_RATE),
+            3 * 60 * 60,
+            "the default must still cover a 3-hour 96 kHz stereo session"
+        );
+        let multitrack_frames = budget.interleaved_samples_limit() / 8;
+        assert_eq!(
+            multitrack_frames / u64::from(DEFAULT_REFERENCE_RATE),
+            45 * 60,
+            "the same budget is 45 minutes of 96 kHz 8-channel (was 11.6 minutes)"
+        );
+        let cd_frames = budget.interleaved_samples_limit() / 2;
+        // 44.1 kHz 立体声：字节上允许约 6.53 小时 ⇒ 6 小时的时长闸门**先**跳闸。
+        assert_eq!(cd_frames / 44_100, 23_510);
+        assert!(6 * 60 * 60 * 44_100 < cd_frames);
+        assert_eq!(
+            48_000 * 6 * 60 * 60,
+            budget.interleaved_samples_limit() / 2,
+            "48 kHz stereo: the byte budget is exactly 6 hours, so the 6-hour \
+             duration gate is the binding one at that layout"
+        );
+
+        // 结构判据：预算必须是"可用的有限值"（用 u128/u64 中间量都算得出来）。
+        assert_ne!(
+            budget.max_pcm_bytes,
+            2 * GIB,
+            "the old hard-coded 2 GiB is gone"
+        );
+        assert!(budget.max_pcm_bytes > 0 && budget.max_pcm_bytes <= u64::MAX / 8);
+        assert!(
+            budget
+                .max_duration_secs
+                .checked_mul(u64::from(budget.max_sample_rate))
+                .is_some()
+        );
     }
 
+    /// 判据 ①（构造侧）：`for_layout` 必须**恰好**容纳它声明的布局。
+    #[test]
+    fn for_layout_admits_exactly_the_requirement_it_was_derived_from() {
+        let budget = PcmBudget::for_layout(3 * 60 * 60, 96_000, 2).expect("a 3-hour stereo layout");
+        assert_eq!(
+            budget.max_pcm_bytes,
+            pcm_bytes_for(3 * 60 * 60, 96_000, 2).unwrap()
+        );
+        let frames = 3 * 60 * 60 * 96_000;
+        assert_eq!(check_layout(2, 96_000, frames, &budget), Ok(()));
+        // `for_layout` 把三道闸门都设在要求值上，因此"多一帧"命中的是**先判定**的那一道
+        // （时长）；要单独验证字节闸门的闭区间，把时长放宽即可。
+        assert!(matches!(
+            check_layout(2, 96_000, frames + 1, &budget),
+            Err(LimitViolation::DurationTooLong { .. } | LimitViolation::PcmBudgetExceeded { .. })
+        ));
+        let bytes_bind_only = PcmBudget {
+            max_duration_secs: 24 * 60 * 60,
+            ..budget
+        };
+        assert_eq!(check_layout(2, 96_000, frames, &bytes_bind_only), Ok(()));
+        assert_eq!(
+            check_layout(2, 96_000, frames + 1, &bytes_bind_only),
+            Err(LimitViolation::PcmBudgetExceeded {
+                frames: frames + 1,
+                channels: 2,
+                samples: (frames + 1) * 2,
+                limit_samples: budget.interleaved_samples_limit(),
+            })
+        );
+        // 退化参数不产生预算，而不是产生一个"几乎放行一切"的预算。
+        assert_eq!(PcmBudget::for_layout(0, 96_000, 2), None);
+        assert_eq!(PcmBudget::for_layout(3_600, 0, 2), None);
+        assert_eq!(PcmBudget::for_layout(3_600, 96_000, 0), None);
+        assert_eq!(PcmBudget::for_layout(u64::MAX, 768_000, 64), None);
+        assert_eq!(pcm_bytes_for(0, 96_000, 2), None);
+        assert_eq!(pcm_bytes_for(u64::MAX, 768_000, 64), None);
+    }
+
+    /// 判据 ③：输入字节闸门是**闭区间** —— 恰好等于上限必须通过。
+    ///
+    /// 注入 `>` → `>=` 会在这里先红。
     #[test]
     fn input_byte_budget_is_enforced() {
-        assert_eq!(check_input_len(0, MAX_INPUT_BYTES), Ok(()));
-        assert_eq!(check_input_len(MAX_INPUT_BYTES, MAX_INPUT_BYTES), Ok(()));
+        let budget = PcmBudget::new(1_024, 4_096, 8, 96_000, 60);
+        assert_eq!(check_input_len(0, &budget), Ok(()));
+        assert_eq!(check_input_len(1_024, &budget), Ok(()));
         assert_eq!(
-            check_input_len(MAX_INPUT_BYTES + 1, MAX_INPUT_BYTES),
+            check_input_len(1_025, &budget),
             Err(LimitViolation::InputTooLarge {
-                bytes: MAX_INPUT_BYTES + 1,
-                limit: MAX_INPUT_BYTES,
+                bytes: 1_025,
+                limit: 1_024,
             })
         );
+        // 默认预算同口径。
+        let default = PcmBudget::default();
+        assert_eq!(check_input_len(default.max_input_bytes, &default), Ok(()));
+        assert!(check_input_len(default.max_input_bytes + 1, &default).is_err());
     }
 
+    /// 判据 ⑤：声道数 / 采样率 / 时长 / PCM 字节四道闸门**各自独立**生效。
+    ///
+    /// 每条断言只让**一道**闸门变紧，其余三道都宽到不可能触发 —— 因此红了就只可能是
+    /// 那一道。
     #[test]
-    fn layout_budget_rejects_degenerate_declarations() {
+    fn every_budget_gate_trips_on_its_own() {
+        let wide = PcmBudget::new(
+            u64::MAX,
+            !3u64,
+            DEFAULT_MAX_CHANNELS,
+            DEFAULT_MAX_SAMPLE_RATE,
+            u64::MAX / u64::from(DEFAULT_MAX_SAMPLE_RATE),
+        );
+        assert_eq!(check_layout(8, 96_000, 96_000, &wide), Ok(()));
+
+        // 声道数闸门。
+        let channels_only = PcmBudget {
+            max_channels: 2,
+            ..wide
+        };
+        assert_eq!(check_layout(2, 48_000, 1, &channels_only), Ok(()));
         assert_eq!(
-            check_layout(0, 48_000, 1, MAX_PCM_BYTES),
+            check_layout(3, 48_000, 1, &channels_only),
+            Err(LimitViolation::TooManyChannels {
+                channels: 3,
+                limit: 2
+            })
+        );
+        // 0 声道与"超上限"是两件事：前者是畸形声明，后者是预算拒绝。
+        assert_eq!(
+            check_layout(0, 48_000, 1, &channels_only),
             Err(LimitViolation::ZeroChannels)
         );
+
+        // 采样率闸门。
+        let rate_only = PcmBudget {
+            max_sample_rate: 48_000,
+            ..wide
+        };
+        assert_eq!(check_layout(2, 48_000, 1, &rate_only), Ok(()));
         assert_eq!(
-            check_layout(65, 48_000, 1, MAX_PCM_BYTES),
-            Err(LimitViolation::TooManyChannels {
-                channels: 65,
-                limit: 64
+            check_layout(2, 48_001, 1, &rate_only),
+            Err(LimitViolation::SampleRateTooHigh {
+                rate: 48_001,
+                limit: 48_000
             })
         );
         assert_eq!(
-            check_layout(2, 0, 1, MAX_PCM_BYTES),
+            check_layout(2, 0, 1, &rate_only),
             Err(LimitViolation::ZeroSampleRate)
         );
+
+        // 时长闸门：字节宽到用不完，唯一可能红的就是时长。
+        let duration_only = PcmBudget {
+            max_duration_secs: 1,
+            ..wide
+        };
+        assert_eq!(check_layout(1, 48_000, 48_000, &duration_only), Ok(()));
         assert_eq!(
-            check_layout(2, 768_001, 1, MAX_PCM_BYTES),
-            Err(LimitViolation::SampleRateTooHigh {
-                rate: 768_001,
-                limit: 768_000
+            check_layout(1, 48_000, 48_001, &duration_only),
+            Err(LimitViolation::DurationTooLong {
+                frames: 48_001,
+                sample_rate: 48_000,
+                seconds: 1,
+                limit_secs: 1
+            })
+        );
+        // 高采样率下同一秒数也是"恰好通过"（时长闸门与采样率无关）。
+        let duration_at_96k = PcmBudget {
+            max_duration_secs: 1,
+            ..wide
+        };
+        assert_eq!(check_layout(1, 96_000, 96_000, &duration_at_96k), Ok(()));
+        assert!(check_layout(1, 96_000, 96_001, &duration_at_96k).is_err());
+
+        // PCM 字节闸门：声道/采样率/时长都宽松，只有字节预算被卡到 1 个样本。
+        let bytes_only = PcmBudget {
+            max_pcm_bytes: 4,
+            ..wide
+        };
+        assert_eq!(check_layout(1, 48_000, 1, &bytes_only), Ok(()));
+        assert_eq!(
+            check_layout(1, 48_000, 2, &bytes_only),
+            Err(LimitViolation::PcmBudgetExceeded {
+                frames: 2,
+                channels: 1,
+                samples: 2,
+                limit_samples: 1
             })
         );
     }
 
+    /// 判据 ③/④：PCM 字节闸门在**默认预算下**闭区间，且**可配置**（小预算立刻生效）。
     #[test]
     fn layout_budget_rejects_an_asset_over_the_pcm_cap() {
+        let budget = PcmBudget::default();
         // 正常的一秒立体声 48k 通过。
-        assert_eq!(check_layout(2, 48_000, 48_000, MAX_PCM_BYTES), Ok(()));
-        // 恰好用满预算通过；再多一帧就被拒绝。
-        let frames = MAX_INTERLEAVED_SAMPLES / 2;
-        assert_eq!(check_layout(2, 48_000, frames, MAX_PCM_BYTES), Ok(()));
-        match check_layout(2, 48_000, frames + 1, MAX_PCM_BYTES) {
-            Err(LimitViolation::TooManyFrames {
+        assert_eq!(check_layout(2, 48_000, 48_000, &budget), Ok(()));
+        // 恰好用满预算通过；再多一帧就被拒绝。用 96 kHz 立体声：字节预算折算 3 小时，
+        // 严格松于 6 小时的时长闸门，因此这条边界红只可能是字节闸门。
+        let frames = budget.interleaved_samples_limit() / 2;
+        assert_eq!(check_layout(2, 96_000, frames, &budget), Ok(()));
+        match check_layout(2, 96_000, frames + 1, &budget) {
+            Err(LimitViolation::PcmBudgetExceeded {
                 frames: f,
                 channels,
-                limit,
-                ..
+                samples,
+                limit_samples,
             }) => {
                 assert_eq!(f, frames + 1);
                 assert_eq!(channels, 2);
-                assert_eq!(limit, MAX_INTERLEAVED_SAMPLES);
+                assert_eq!(samples, (frames + 1) * 2);
+                assert_eq!(limit_samples, budget.interleaved_samples_limit());
             }
-            other => panic!("expected TooManyFrames, got {other:?}"),
+            other => panic!("expected PcmBudgetExceeded, got {other:?}"),
         }
+
+        // 判据 ④：把预算调小 ⇒ 一份**小**素材也会被拒（证明上限真的可配置、真的生效）。
+        let tiny = PcmBudget::new(1_024, 128, 8, 96_000, 60);
+        assert_eq!(check_layout(1, 8_000, 32, &tiny), Ok(()));
+        assert_eq!(
+            check_layout(1, 8_000, 33, &tiny),
+            Err(LimitViolation::PcmBudgetExceeded {
+                frames: 33,
+                channels: 1,
+                samples: 33,
+                limit_samples: 32
+            })
+        );
     }
 
     #[test]
@@ -472,6 +884,26 @@ mod tests {
             })
         );
         assert_eq!(interleaved_samples(4, 2), Ok(8));
+        // 乘法溢出必须被检出，而不是回绕成小值。注意：任何**现实**预算都会先被时长闸门
+        // 拦下（"u64::MAX 帧"首先是一个时长问题），所以这里显式把时长闸门开到 u64::MAX
+        // 才能把 `frames × channels` 的溢出路径单独逼出来 —— 这条断言钉的是
+        // "调用方给了荒唐预算时，乘法仍然不回绕"。
+        let overflowing = PcmBudget::new(u64::MAX, !3u64, 64, u32::MAX, u64::MAX);
+        assert_eq!(
+            check_layout(2, 48_000, u64::MAX, &overflowing),
+            Err(LimitViolation::LayoutOverflow {
+                frames: u64::MAX,
+                channels: 2
+            })
+        );
+    }
+
+    /// 判据 (确定性契约的配置侧)：与预算无关的钉子必须还在。
+    #[test]
+    fn sinc_and_idle_constants_are_pinned() {
+        assert_eq!(SINC_LEN, 256);
+        // 判据 (MUST-GATE-011 防挂死): 不推进包数的闸门必须存在且非零。
+        assert_eq!(MAX_IDLE_PACKETS, 1_024);
     }
 
     #[test]

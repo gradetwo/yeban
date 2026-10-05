@@ -87,7 +87,7 @@
 | 外部插件 | 延迟照算 | 没有宿主、没有参数 ⇒ `externalPlugins` |
 | 自动化 | 工程里的自动化泳道被**如实登记** | 曲线没有求值（连静态值也不代偿） ⇒ `automationLanes` |
 | 循环 | placement 第一遍被渲染 | `loop_config` 的**重复**没有展开 ⇒ `clipLoopRepetition` |
-| 音频片段 | ~~摆放的时序被计入母带长度~~ ⇒ **已由 `line/audio-render` 补全**：真解码 + 重采样 + 落位 + 门控 + PDC（`tests/render_audio_clips.rs` 13 条判据） | `audioClips` 这个键**收窄**为"工程声明了资产、会话 CAS 池里没有字节"（裸 JSON 兼容路径的形态）才会出现；容器形态下不会出现。详见 [`audio-render-notes.md`](audio-render-notes.md) §3 |
+| 音频片段 | ~~摆放的时序被计入母带长度~~ ⇒ **已由 `line/audio-render` 补全**：真解码 + 重采样 + 落位 + 门控 + PDC（`tests/render_audio_clips.rs` 13 条判据） | `audioClips` 这个键**收窄**为"工程声明了资产、会话 CAS 池里没有字节"（**2026-10-04 更新**：裸 JSON 读路径已按 D43 删除，触发形态只剩 `Domain::open_in_memory` 的内存注入会话）才会出现；容器形态下不会出现。详见 [`audio-render-notes.md`](audio-render-notes.md) §3 |
 | `solo` | 源轨规则：`any_solo ⇒ 仅 solo || solo_safe 发声` | 辅助返回**总线**不参与 solo 判定（登记在 §7 边界） |
 | 包络 | 固定 5 ms 起音 / 10 ms 释音（线性） | 工程模型里没有 ADSR 字段可读；这是**本地常量**（`ATTACK_MS`/`RELEASE_MS`） |
 | 位深/声道/采样率 | 24-bit 立体声；采样率由 `rubato` sinc 转（**已接线**，见 [`audio-render-notes.md`](audio-render-notes.md)） | 位深/声道不可配（规范表格也没有这两个参数）；素材 >2 声道会被**拒绝**而不是静默降混 |

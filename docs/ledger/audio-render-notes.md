@@ -62,7 +62,7 @@
                               │    ├ 没有 + 索引里也没有 → RENDER_FAILED      │
                               │    │        (reason = "assetMissing")        │
                               │    └ 没有 + 索引里有     → 登记 audioClips    │
-                              │              + 当静音（裸 JSON / 内存夹具）    │
+                              │              + 当静音（内存注入夹具）    │
                               │ 2. SHA-256(字节) == 声明的哈希?               │
                               │    └ 不等 → RENDER_FAILED                     │
                               │             (reason = "assetHashMismatch")   │
@@ -136,7 +136,7 @@
 | 容器/编解码 | WAV（PCM 8/16/24/32-bit 与 f32、ADPCM）、FLAC、Ogg-Vorbis —— 即 `yeban-decode` 启用的全部 feature | Matroska / AIFF / CAF / ISO-MP4 / MP3 / AAC / ALAC（feature 未启用）；任何解码器认领不了的字节流 |
 | 声道 | 1（复制到立体声母线）、2（恒等）、`asset == 母线`（恒等，理论上） | **>2 声道**（不做静默丢声道的降混，直接拒绝：`reason = "assetChannelLayout"`） |
 | 采样率 | `SampleRate::ALL` 的 5 个率（44.1/48/88.2/96/192 kHz）互转，以及素材的任意率 → 渲染率 | 素材率或目标率 = 0、超出 `limits::MAX_SAMPLE_RATE`（768 kHz）—— 这两种在 `yeban-decode` 层就被拒 |
-| 素材字节 | 会话 CAS 池里的字节，**且** SHA-256 与工程声明的哈希一致 | 池里没有字节但索引里有 ⇒ 登记 `audioClips` + 静音（裸 JSON 兼容路径的形态）；索引里也没有 ⇒ `assetMissing` |
+| 素材字节 | 会话 CAS 池里的字节，**且** SHA-256 与工程声明的哈希一致 | 池里没有字节但索引里有 ⇒ 登记 `audioClips` + 静音（`Domain::open_in_memory` 注入会话的形态）；索引里也没有 ⇒ `assetMissing` |
 | 摆放语义 | `start_tick`（tick→帧）、`duration_ticks`（**硬切**边界）、`muted`、片段 `gain_db`、音轨 `volume_db`/`pan`/`mute`/`solo`/`solo_safe` | `loop_config` 的重复（登记 `clipLoopRepetition`，与 MIDI 同一条）；交叉淡化（模型里没有这个字段，不发明） |
 | 延迟 | 音轨设备链的 `latency_samples` → PDC（与 MIDI 同表） | 资产自带的延迟字段（模型里不存在）；编码器延迟裁剪由本线做，`yeban-decode` 不做 |
 
@@ -163,6 +163,14 @@
 
 在那之前删掉它，只会把 `yeban_model::samples::filled_project()`（仓库自己的规范样本工程）
 变成**渲染必然失败**的工程 —— 那是拿诚实换整洁。这一条已登记为 §9 的 **needs-7**。
+
+> **2026-10-04 状态更新（`line/mcp-no-compat`）**：上面第 1 个条件**已经成立** ——
+> D43 把 `store.rs` 的裸 JSON 读分派删掉了（见 `mcp-no-compat-notes.md`）。
+> 但第 2 个条件**没有成立**：`Domain::open_in_memory` 仍在，而且仍是判据
+> （`tests/render_audio_clips.rs` 判据 9）与规范样本工程的唯一会话种子路径。
+> 因此本线**如实保留** `audioClips` 键：它的触发条件从"裸 JSON 或内存注入"
+> **收窄为只剩"内存注入"**，含义不变（工程声明了资产、会话没有字节 ⇒ 登记 + 静音）。
+> 删键的条件是**两条都成立**；只为"矩阵好看"提前删键会把一个渲染必然失败的工程交出去。
 
 ### 3.3 仍然 `unsupported` 的键（**没有任何一条被本线悄悄去掉**）
 
@@ -442,7 +450,7 @@ Running unittests src/lib.rs (yeban_render) -> 与全量腿一起绿（真 rayon
 | **needs-4** | **编码器延迟裁剪的规范落点** | 需要裁决 | `yeban-decode` 的边界是"只记录不裁剪"，本线在渲染侧裁剪并报告。若要统一（gapless 语义属于导入还是渲染），需要一条 ADR |
 | **needs-5** | **`run-gates.sh crate yeban-mcp` 在本机会真编译重依赖** | 门禁口径 | 承接 `mcp-render-notes` 的 needs-7（`HD-39`）。本线新增的 `yeban-decode` 边让本机编译更贵（symphonia+rubato），这条更值得修 |
 | **needs-6** | **音频片段的性能读数**（解码/重采样/逐块拷贝的吞吐） | 未打点 | 没有 `criterion`；`BASELINE-*` 仍与本线无关 |
-| **needs-7** | **`audioClips` 键在 D43 之后的归属** | 跨线 + 需要裁决 | 当 `mcp-no-compat` 删掉裸 JSON 读取分派、且 `Domain::open_in_memory` 也不再产生"有声明无载荷"的会话时，§3.4 那条分支与 `audioClips` 键应当**一起删除**（并把它改成 `assetMissing` 硬错误）。本线**不在**别人的文件里做这件事，也不在触发条件成立之前提前删 |
+| **needs-7** | **`audioClips` 键在 D43 之后的归属** | 跨线 + 需要裁决 | 当 `mcp-no-compat` 删掉裸 JSON 读取分派、且 `Domain::open_in_memory` 也不再产生"有声明无载荷"的会话时，§3.4 那条分支与 `audioClips` 键应当**一起删除**（并把它改成 `assetMissing` 硬错误）。本线**不在**别人的文件里做这件事，也不在触发条件成立之前提前删。**2026-10-04 更新**：第 1 个条件已由 `line/mcp-no-compat` 完成（裸 JSON 读分派已删，见 `mcp-no-compat-notes.md`）；第 2 个条件（`open_in_memory`）**仍未成立** ⇒ 键与分支**保留**，触发条件收窄为"内存注入的会话" |
 
 ### pending
 

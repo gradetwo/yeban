@@ -2,7 +2,7 @@
 //!
 //! 本文件是本线（`line/model-automation`）交给下游三条线（渲染 / 引擎 / 界面）的
 //! **可执行契约**：数据形状、求值口径（含全部边界）、两个新 `Op` 的真逆、
-//! serde 往返、旧工程兼容、逐位确定性、与 `AutomationTarget` 的对账。
+//! serde 往返、[ADR-0001 D43] 反序列化严格性、逐位确定性、与 `AutomationTarget` 的对账。
 //!
 //! 每条判据的编号与 `docs/ledger/model-automation-notes.md` 的判据表一一对应。
 
@@ -642,7 +642,8 @@ fn value_domain_and_write_mode_json_shape_is_stable() {
         "未知字段必须被拒"
     );
 
-    // 默认值全部**不落盘**：`read_enabled=true` / `write_mode=Off` / `domain=None`。
+    // [ADR-0001 D43] 落盘形状：`read_enabled` / `write_mode` **始终写出**（读侧要求它们
+    // 必需，写侧就不能省略 —— 宽容读与省略写必须成对取消）；只有 `domain=None` 不落盘。
     let (_, f) = fixture();
     let default_shaped = lane(f.volume, vec![point(100, 0, -6.0, CurveType::Linear)]);
     let object = serde_json::to_value(&default_shaped)
@@ -650,8 +651,16 @@ fn value_domain_and_write_mode_json_shape_is_stable() {
         .as_object()
         .cloned()
         .expect("object");
-    assert!(!object.contains_key("read_enabled"), "默认 true 不落盘");
-    assert!(!object.contains_key("write_mode"), "默认 Off 不落盘");
+    assert_eq!(
+        object.get("read_enabled"),
+        Some(&serde_json::json!(true)),
+        "默认 true 也必须落盘（缺键在 D43 之后是硬错误）"
+    );
+    assert_eq!(
+        object.get("write_mode"),
+        Some(&serde_json::json!("Off")),
+        "默认 Off 也必须落盘（缺键在 D43 之后是硬错误）"
+    );
     assert!(!object.contains_key("domain"), "None 不落盘");
     // 非默认值必须落盘。
     let mut explicit = default_shaped.clone();
@@ -672,13 +681,13 @@ fn value_domain_and_write_mode_json_shape_is_stable() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑤ 旧工程兼容
+// ⑤ [ADR-0001 D43] 反序列化严格性（取代旧的"旧工程兼容"判据）
 // ---------------------------------------------------------------------------
 
-/// ⑤a 没有新字段的旧 JSON 能读，且新字段取到正确默认值；
-/// 再导出时**逐字节不变**（新字段在默认值上完全隐身）。
+/// ⑤a 只有 `target` + `points` 的"旧形状"泳道现在**必须被拒**，且错误逐字段点名；
+/// 显式写全两个必需开关的泳道往返后逐字节不变。
 #[test]
-fn legacy_lane_json_reads_with_defaults_and_reserializes_byte_identically() {
+fn lane_missing_read_enabled_write_mode_or_points_is_rejected() {
     let legacy = serde_json::json!({
         "target": { "TrackVolume": { "track_id": id(2).to_string() } },
         "points": {
@@ -686,20 +695,55 @@ fn legacy_lane_json_reads_with_defaults_and_reserializes_byte_identically() {
             id(101).to_string(): { "id": id(101).to_string(), "tick": 3840, "value": 0.0, "curve": "SCurve" }
         }
     });
-    let parsed: AutomationLane = serde_json::from_value(legacy.clone()).expect("旧 JSON 必须可读");
-    assert!(parsed.read_enabled, "缺 read_enabled 必须默认 true");
+
+    // 缺 `read_enabled`：`serde` 按字段声明序报第一个缺失字段。
+    let error = serde_json::from_value::<AutomationLane>(legacy.clone())
+        .expect_err("缺 read_enabled 的旧泳道必须被拒");
+    assert!(
+        error.to_string().contains("missing field `read_enabled`"),
+        "实测: {error}"
+    );
+
+    // 缺 `write_mode`：补齐 `read_enabled` 后错误必须前移到下一个必需字段。
+    let mut with_read = legacy.clone();
+    with_read["read_enabled"] = serde_json::json!(true);
+    let error =
+        serde_json::from_value::<AutomationLane>(with_read).expect_err("缺 write_mode 必须被拒");
+    assert!(
+        error.to_string().contains("missing field `write_mode`"),
+        "实测: {error}"
+    );
+
+    // 缺 `points`：空泳道的确定编码是 `{}`，不能省略键。
+    let mut no_points = legacy.clone();
+    no_points["read_enabled"] = serde_json::json!(true);
+    no_points["write_mode"] = serde_json::json!("Off");
+    no_points.as_object_mut().expect("object").remove("points");
+    let error =
+        serde_json::from_value::<AutomationLane>(no_points).expect_err("缺 points 必须被拒");
+    assert!(
+        error.to_string().contains("missing field `points`"),
+        "实测: {error}"
+    );
+
+    // 写全三个必需字段（`domain` 是 `Option`，可以省略）= 规范形状。
+    let mut full = legacy.clone();
+    full["read_enabled"] = serde_json::json!(true);
+    full["write_mode"] = serde_json::json!("Off");
+    let parsed: AutomationLane =
+        serde_json::from_value(full.clone()).expect("显式写全必需字段的泳道必须可读");
+    assert!(parsed.read_enabled);
     assert_eq!(parsed.write_mode, AutomationWriteMode::Off);
     assert_eq!(parsed.domain, None);
     assert_eq!(parsed.points.len(), 2);
     assert_eq!(
         serde_json::to_value(&parsed).expect("serialize"),
-        legacy,
-        "旧 JSON 再导出必须逐字节不变（默认值不落盘）"
+        full,
+        "完整泳道往返必须逐字节不变"
     );
-    // 旧泳道的有效取值域与单位仍然可判定（从目标派生）。
+    // 取值域与单位仍然从目标派生，求值可用。
     assert_eq!(parsed.effective_domain(), parsed.target.nominal_domain());
     assert_eq!(parsed.unit(), AutomationUnit::Decibels);
-    // 求值可用。
     assert_eq!(
         parsed.value_at(0).map(f32::to_bits),
         Some((-6.0_f32).to_bits())
@@ -710,10 +754,10 @@ fn legacy_lane_json_reads_with_defaults_and_reserializes_byte_identically() {
     );
 }
 
-/// ⑤b 整个**旧工程文档**（`tracks[*].automation_lanes` 里的泳道没有新字段）能读、
-/// 能校验、能求值，且再导出后旧泳道那一段字节不变。
+/// ⑤b 整个**旧工程文档**（`tracks[*].automation_lanes` 里的泳道没有必需字段）
+/// 现在必须被拒 —— 嵌套对象的缺失同样冒泡成 `missing field`，不会被静默补默认。
 #[test]
-fn legacy_project_document_without_the_new_fields_is_still_readable() {
+fn project_document_with_a_legacy_shaped_lane_is_rejected() {
     let (doc, f) = fixture();
     let mut json = serde_json::to_value(&doc).expect("serialize");
     // 手工塞一条"旧形状"的泳道（只有 target + points）进去。
@@ -725,24 +769,12 @@ fn legacy_project_document_without_the_new_fields_is_still_readable() {
         }
     });
     json["tracks"][f.lead.to_string()]["automation_lanes"] =
-        serde_json::Value::Array(vec![legacy_lane.clone()]);
-    let reparsed: YebanProjectV1 = serde_json::from_value(json).expect("旧工程必须可读");
-    assert_eq!(reparsed.validate(), Ok(()));
-    let value = reparsed
-        .automation_value_at(&f.volume, 480)
-        .expect("目标存在")
-        .expect("非空泳道有值");
+        serde_json::Value::Array(vec![legacy_lane]);
+    let error =
+        serde_json::from_value::<YebanProjectV1>(json).expect_err("含旧形状泳道的工程必须被拒");
     assert!(
-        (value - (-6.0)).abs() <= 1e-6,
-        "线性中点必须是 -6.0，实测 {value}"
-    );
-
-    // 再导出后，该泳道那一段必须**逐字节等于**旧形状。
-    let exported = serde_json::to_value(&reparsed).expect("serialize");
-    assert_eq!(
-        exported["tracks"][f.lead.to_string()]["automation_lanes"][0],
-        legacy_lane,
-        "旧泳道再导出必须逐字节不变"
+        error.to_string().contains("missing field `read_enabled`"),
+        "实测: {error}"
     );
 }
 

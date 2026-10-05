@@ -124,7 +124,11 @@
 - **否决的备选**：把 PDC 放进 `yeban-model`（那是数据模型，放图算法会让"模型"变成杂物间）；
   新建 `yeban-graph` crate（为约 200 行代码多一个 crate，等出现第三个消费者再考虑）。
 - **前提修正**：`ARCH-PDC-001` 明写 `DeviceDefinition::latency_samples`，但该字段此前**并不存在**。
-  已按规范补上（`yeban-model`，`#[serde(default)]` 取 0 表示"未上报"，填充样本里给 32 采样点做覆盖）。
+  已按规范补上（`yeban-model`；填充样本里给 32 采样点做覆盖）。
+  ⚠ **D43 之后的更正**：该字段原为 `#[serde(default)]` 取 `0` 表示"未上报"——
+  **这个区分已不存在**（D43：没有兼容需求，缺字段就报错；`0` 就是"真的零延迟"）。
+  因此 `yeban-render` / `yeban-engine` 里几处"`latency_samples == 0` ⇒ 未上报"的**注释**也已过时
+  （算术不受影响，只是措辞；登记为待改的文档项）。
 
 ### D20 — 依赖许可白名单接纳 `Unlicense`（**Accepted 2026-10-04**）
 

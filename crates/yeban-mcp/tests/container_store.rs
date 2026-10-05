@@ -15,22 +15,35 @@
 //! | 4 | `two_forced_saves_of_the_same_session_are_byte_identical` | 同输入两次保存字节相同（`ARCH-DET-001`） |
 //! | 5 | `save_into_a_read_only_directory_keeps_the_original_container_bytes` | 失败**不破坏原文件**、不留临时文件 |
 //! | 6 | `save_replaces_the_target_inode_instead_of_truncating_it` | 真的是 tmp+`rename`，不是原地截断写（unix inode 变化） |
-//! | 7 | `bare_json_projects_still_open_on_the_compat_path` | 裸 JSON 兼容路径活着，且响应**披露**形态 |
+//! | 7 | `bare_json_project_is_refused_precisely` | 裸 JSON **不再有读路径**（`ADR-0001 D43`）：`IO_ERROR` + `containerError=EocdNotFound` + 精确文案；**同一份 JSON 包进真容器仍能打开**（拒绝的是容器边界，不是内容） |
 //! | 8 | `container_project_json_is_accepted_by_the_project_schema` | 容器里的 `project.json` 被 `schemas/project.schema.json` 接受（Python jsonschema 独立对账） |
 //! | 9 | `assets_round_trip_with_content_addressing` | `assets/{sha256}` 的条目名 = 字节的 SHA-256；往返后池内容一致 |
-//! | 10 | `truncated_container_is_refused_instead_of_loading_half_a_project` | 截断 → `IO_ERROR`，不静默加载半个工程 |
-//! | 11 | `crc_tampered_container_is_refused_instead_of_loading_it` | 篡改 → `IO_ERROR`，不静默加载 |
+//! | 10 | `truncated_container_is_refused_instead_of_loading_half_a_project` | 截断 → `IO_ERROR` + 精确容器裁决，不静默加载半个工程 |
+//! | 11 | `crc_tampered_container_is_refused_instead_of_loading_it` | 篡改数据字节（CRC）→ `IO_ERROR`，不静默加载 |
 //! | 12 | `zip_slip_entry_name_is_refused_with_a_contract_error_code` | `MUST-GATE-006` → `IO_ERROR` + `category=path-traversal` |
 //! | 13 | `unsupported_compression_is_refused_with_a_contract_error_code` | deflate 不被静默跳过 → `IO_ERROR` + `category=unsupported-container-feature` |
 //! | 14 | `container_without_history_dag_is_refused_as_a_layout_error` | §5.3 布局缺失 → `IO_ERROR` + `category=container-layout` |
 //! | 15 | `every_container_rejection_stays_inside_the_contract_enum` | 全部容器失败码都落在 `ADR-0001 D25` 的 20 值联集里 |
 //! | 16 | `corrupt_history_dag_is_refused_instead_of_silently_dropping_history` | 坏 `history.dag` / 无 `main` 分支的 DAG 必须在打开时就被拒绝 |
+//! | 17 | `non_container_inputs_are_refused_without_an_empty_project` | 空文件 / 随机字节 / 垃圾文本各有**精确**错误；"几乎合法但缺件"的容器必须报错，**不存在打开成空工程的路径** |
+//! | 18 | `central_directory_tampering_is_refused_too` | 只改 central directory 的条目名（local 不变）⇒ `LocalCentralMismatch` ⇒ `IO_ERROR` |
+//!
+//! lib 单元判据（`src/domain/store.rs`；本机可 `rustc --test` 真跑，见台账 §本机真跑）：
+//!
+//! | # | 判据 | 钉住的事实 |
+//! | :--- | :--- | :--- |
+//! | 19 | `store.rs::bare_json_is_refused_as_not_a_container_and_the_same_json_in_a_container_still_opens` | 反转后的裸 JSON 判据 + 强对照（同字节进容器仍可读） |
+//! | 20 | `store.rs::empty_random_and_garbage_files_are_refused_precisely` | 非容器四例都得到"不是 `.yeban` 容器" + `EocdNotFound` |
+//! | 21 | `store.rs::container_bomb_gates_still_fire_after_the_compat_path_is_gone` | 真容器 + 紧上限 ⇒ 命中**容器层**的 `MUST-GATE-007`（载荷无 `fileBytes` ⇒ 不是 I/O 层那道） |
+//! | 22 | `store.rs::oversized_files_are_refused_before_they_are_read_into_memory` | I/O 层文件大小闸门仍生效（`MUST-GATE-007` 的早期落点） |
+//! | 23 | `store.rs::zip_signature_tiers_non_containers_from_broken_containers` | 三签名分档只服务诊断（不服务兼容分支） |
 //!
 //! 临时目录纪律：全部落在 `std::env::temp_dir()/<唯一子目录>`，`Drop` 负责恢复权限并删除
 //! （`docs/DEVELOPMENT_LEDGER.md` L16）—— **绝不污染仓库**。
 //!
 //! 会"显式 skip"的一处（**不会伪装成通过**）：判据 8 需要 `python3` + `jsonschema`。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -58,7 +71,7 @@ use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::container::{
     ContainerEntry, ContainerLimits, HISTORY_DAG_NAME, PROJECT_JSON_NAME, read_container,
-    read_project_container, write_container,
+    read_project_container, write_container, write_project_container,
 };
 use yeban_model::{AssetHash, YebanProjectV1};
 
@@ -147,15 +160,20 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -
     outcome.unwrap_or_else(|error| panic!("{name} 不该有 JSON-RPC 层错误: {error:?}"))
 }
 
-/// 写一份**裸 JSON** 工程夹具（容器接线之前的格式 —— 兼容路径的输入）并打开它。
+/// 把一份工程序列化成**真容器**字节（`project.json` + 空 `history.dag`，无资产）。
 ///
-/// 返回 `(路径, 打开响应)`。
-fn open_bare_json(scratch: &Scratch, dispatcher: &mut Dispatcher, auth: &str) -> (PathBuf, Value) {
+/// `ADR-0001 D43` 之后容器是**唯一**工程格式，因此所有"打开一份工程"的夹具都必须
+/// 写容器 —— 裸 JSON 已经没有读路径了（判据 7 正面钉住这件事）。
+fn container_fixture(project: &YebanProjectV1) -> Vec<u8> {
+    let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
+    write_project_container(project, &history, &BTreeMap::new()).expect("写真容器")
+}
+
+/// 写一份**真容器**工程夹具并打开它。返回 `(路径, 打开响应)`。
+fn open_container(scratch: &Scratch, dispatcher: &mut Dispatcher, auth: &str) -> (PathBuf, Value) {
     let project = yeban_model::samples::filled_project();
-    let mut text = serde_json::to_string_pretty(&project).expect("序列化");
-    text.push('\n');
     let path = scratch.join("demo.yeban");
-    fs::write(&path, &text).expect("写裸 JSON 工程");
+    fs::write(&path, container_fixture(&project)).expect("写容器工程");
     let opened = call(
         dispatcher,
         auth,
@@ -164,8 +182,8 @@ fn open_bare_json(scratch: &Scratch, dispatcher: &mut Dispatcher, auth: &str) ->
     );
     assert_eq!(opened["status"], "success", "{opened}");
     assert_eq!(
-        opened["data"]["format"], "bare-json",
-        "裸 JSON 夹具必须走兼容路径: {opened}"
+        opened["data"]["format"], "yeban-container",
+        "容器是唯一工程格式: {opened}"
     );
     (path, opened)
 }
@@ -244,7 +262,7 @@ fn repo_root() -> PathBuf {
 fn save_writes_a_standard_container_with_the_zip_magic() {
     let scratch = Scratch::new("magic");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, _opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
 
     // 改一处内容（让"未保存标记"为真，走真落盘路径）。
     let track = macro_track(&dispatcher);
@@ -287,7 +305,7 @@ fn save_writes_a_standard_container_with_the_zip_magic() {
 fn save_then_open_round_trips_the_project_byte_for_byte() {
     let scratch = Scratch::new("roundtrip");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, _opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
 
     // 改一处，保存，记下内存工程的规范化文本。
     let track = macro_track(&dispatcher);
@@ -335,7 +353,7 @@ fn save_then_open_round_trips_the_project_byte_for_byte() {
 fn save_then_open_restores_the_commit_graph_from_history_dag() {
     let scratch = Scratch::new("history");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, _opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
     let track = macro_track(&dispatcher);
     propose_and_merge(&mut dispatcher, &auth, &track);
     // 根提交 + 提案提交 + 合并提交。
@@ -382,7 +400,7 @@ fn save_then_open_restores_the_commit_graph_from_history_dag() {
 fn two_forced_saves_of_the_same_session_are_byte_identical() {
     let scratch = Scratch::new("determinism");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, _opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
     let track = macro_track(&dispatcher);
     propose_and_merge(&mut dispatcher, &auth, &track);
 
@@ -422,7 +440,7 @@ fn save_into_a_read_only_directory_keeps_the_original_container_bytes() {
 
     let scratch = Scratch::new("readonly-container");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, _opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
     // 先成功保存一次，得到一份**真实存在**的容器。
     let saved = call(
         &mut dispatcher,
@@ -476,7 +494,7 @@ fn save_replaces_the_target_inode_instead_of_truncating_it() {
 
     let scratch = Scratch::new("inode");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, _opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
     let before = fs::metadata(&path).expect("原文件元数据").ino();
 
     let saved = call(
@@ -494,53 +512,84 @@ fn save_replaces_the_target_inode_instead_of_truncating_it() {
 }
 
 // ---------------------------------------------------------------------------
-// 判据 7：裸 JSON 兼容路径
+// 判据 7：裸 JSON 被**精确拒绝**（`ADR-0001 D43`），且"同内容进容器仍可读"
 // ---------------------------------------------------------------------------
 
+/// **判据反转，不是删除**：旧判据断言"裸 JSON 能打开"，现在断言"**必须被明确拒绝**"。
+///
+/// 强对照：把**同一份 JSON 字节**原样包进真容器 ⇒ 仍能打开 —— 拒绝的是**容器边界**，
+/// 不是"这份工程内容不行"。错误命名与语义与 `yeban-app` 的
+/// `OpenError::NotAYebanContainer` 一致（`docs/ledger/app-no-compat-notes.md`）。
 #[test]
-fn bare_json_projects_still_open_on_the_compat_path() {
-    let scratch = Scratch::new("compat");
+fn bare_json_project_is_refused_precisely() {
+    let scratch = Scratch::new("no-compat");
     let (mut dispatcher, auth) = dispatcher();
-    // `open_bare_json` 已经断言了打开响应里的 `format == "bare-json"`。
-    let (path, opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
-    assert_eq!(
-        opened["data"]["historyRestored"], false,
-        "裸 JSON 里没有 history.dag: {opened}"
-    );
-    assert_eq!(opened["data"]["assets"], 0, "{opened}");
+    let project = yeban_model::samples::filled_project();
+    let mut text = serde_json::to_string_pretty(&project).expect("序列化");
+    text.push('\n');
+    let path = scratch.join("bare.yeban");
+    fs::write(&path, &text).expect("写裸 JSON 工程");
 
-    // 真落盘一次 ⇒ 同一个路径变成容器。
-    let saved = call(
-        &mut dispatcher,
-        &auth,
-        "yeban_save_project",
-        json!({ "force": true }),
-    );
-    assert_eq!(saved["data"]["saved"], true, "{saved}");
-    assert_eq!(&fs::read(&path).expect("字节")[..4], b"PK\x03\x04");
-    call(
-        &mut dispatcher,
-        &auth,
-        "yeban_close_project",
-        json!({ "saveFirst": false }),
-    );
-
-    // 再打开必须报容器形态 —— 兼容路径只影响**读**，写一律产出容器。
-    let reopened = call(
+    let refused = call(
         &mut dispatcher,
         &auth,
         "yeban_open_project",
         json!({ "path": path.display().to_string() }),
     );
-    assert_eq!(reopened["status"], "success", "{reopened}");
+    assert_eq!(refused["status"], "error", "{refused}");
+    assert_eq!(refused["error"]["code"], "IO_ERROR", "{refused}");
     assert_eq!(
-        reopened["data"]["format"], "yeban-container",
-        "写一律产出容器, 读才需要兼容: {reopened}"
+        refused["error"]["data"]["category"], "malformed-container",
+        "{refused}"
     );
     assert_eq!(
-        reopened["data"]["projectDigest"], saved["data"]["projectDigest"],
-        "形态变了, 工程内容不该变"
+        refused["error"]["data"]["specId"], "ARCH-SEC-003",
+        "{refused}"
     );
+    assert_eq!(
+        refused["error"]["data"]["containerError"], "EocdNotFound",
+        "必须携带容器层的原裁决: {refused}"
+    );
+    let message = refused["error"]["message"].as_str().expect("message");
+    assert!(message.contains("不是 `.yeban` 容器"), "{message}");
+    assert!(message.contains("end-of-central-directory"), "{message}");
+    assert!(message.contains("bare.yeban"), "{message}");
+    // 拒绝**不能**留下活跃工程，也不能改写调用方的文件。
+    assert!(
+        dispatcher.domain().active_project().is_none(),
+        "失败的打开不得留下活跃工程"
+    );
+    assert_eq!(fs::read_to_string(&path).expect("原文件"), text);
+
+    // 强对照：同一份 JSON 字节进真容器 ⇒ 能打开，摘要一致。
+    let wrapping = write_container(&[
+        ContainerEntry::new(PROJECT_JSON_NAME, text.clone().into_bytes()),
+        ContainerEntry::new(
+            HISTORY_DAG_NAME,
+            serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱"),
+        ),
+    ])
+    .expect("写真容器");
+    fs::write(&path, &wrapping).expect("写容器");
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+    assert_eq!(
+        opened["data"]["format"],
+        yeban_mcp::domain::store::DOCUMENT_FORMAT,
+        "容器是唯一格式: {opened}"
+    );
+    assert_eq!(
+        opened["data"]["projectDigest"],
+        AssetHash::of_bytes(text.as_bytes()).as_str(),
+        "同内容进容器后 `projectDigest` 必须与裸 JSON 文本一致: {opened}"
+    );
+    assert_eq!(opened["data"]["historyRestored"], false, "{opened}");
+    assert_eq!(opened["data"]["assets"], 0, "{opened}");
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +600,7 @@ fn bare_json_projects_still_open_on_the_compat_path() {
 fn container_project_json_is_accepted_by_the_project_schema() {
     let scratch = Scratch::new("schema");
     let (mut dispatcher, auth) = dispatcher();
-    let (path, _opened) = open_bare_json(&scratch, &mut dispatcher, &auth);
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
     let saved = call(
         &mut dispatcher,
         &auth,
@@ -728,6 +777,26 @@ fn truncated_container_is_refused_instead_of_loading_half_a_project() {
         "截断的容器绝不能被静默加载: {outcome}"
     );
     assert_eq!(outcome["error"]["code"], "IO_ERROR", "{outcome}");
+    // 截断的容器前 4 字节仍是 `PK\x03\x04` ⇒ 走"**你的 `.yeban` 坏了**"那一档，
+    // 拿到精确的容器裁决（而不是被糊成"不是我们的文件"）。
+    assert_eq!(
+        outcome["error"]["data"]["category"], "malformed-container",
+        "{outcome}"
+    );
+    assert_eq!(
+        outcome["error"]["data"]["specId"], "ARCH-SEC-003",
+        "{outcome}"
+    );
+    assert!(
+        outcome["error"]["data"]["containerError"].is_string(),
+        "截断必须携带精确的容器裁决: {outcome}"
+    );
+    assert!(
+        outcome["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("不是可接受的 .yeban 容器")),
+        "截断的 `.yeban` 必须报容器裁决: {outcome}"
+    );
     assert!(
         dispatcher.domain().active_project().is_none(),
         "失败的打开不得留下半个活跃工程"
@@ -963,6 +1032,118 @@ fn corrupt_history_dag_is_refused_instead_of_silently_dropping_history() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 17：非容器输入各有精确错误，且**不存在打开成空工程的路径**
+// ---------------------------------------------------------------------------
+
+/// 裸 JSON / 空文件 / 随机字节 / 垃圾文本 ⇒ 都是"不是 `.yeban` 容器" + 精确原因；
+/// "几乎合法但缺件"的容器（只有 `history.dag`）⇒ **报错**，绝不是空工程。
+#[test]
+fn non_container_inputs_are_refused_without_an_empty_project() {
+    let scratch = Scratch::new("non-container");
+    let (mut dispatcher, auth) = dispatcher();
+
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("empty.yeban", Vec::new()),
+        ("random.yeban", vec![0xAB; 64]),
+        ("garbage.yeban", b"not a zip at all".to_vec()),
+        (
+            "bare.yeban",
+            serde_json::to_vec(&yeban_model::samples::filled_project()).expect("工程 JSON"),
+        ),
+    ];
+    for (name, bytes) in cases {
+        let path = scratch.join(name);
+        fs::write(&path, &bytes).expect("写非容器");
+        let refused = call(
+            &mut dispatcher,
+            &auth,
+            "yeban_open_project",
+            json!({ "path": path.display().to_string() }),
+        );
+        assert_eq!(refused["status"], "error", "{name}: {refused}");
+        assert_eq!(refused["error"]["code"], "IO_ERROR", "{name}: {refused}");
+        assert_eq!(
+            refused["error"]["data"]["category"], "malformed-container",
+            "{name}: {refused}"
+        );
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("不是 `.yeban` 容器")),
+            "{name}: 拒绝文案必须精确说明「不是容器」, 而不是泛化的「未知格式」: {refused}"
+        );
+        assert!(
+            dispatcher.domain().active_project().is_none(),
+            "{name}: 失败的打开不得留下活跃工程（不存在「打开成空工程」的路径）"
+        );
+    }
+
+    // "几乎合法但缺件"：只有 `history.dag` 的容器 ⇒ `MissingProjectJson`，不是空工程。
+    let partial = write_container(&[ContainerEntry::new(
+        HISTORY_DAG_NAME,
+        serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱"),
+    )])
+    .expect("写缺件容器");
+    let refused = open_bytes(&scratch, &mut dispatcher, &auth, "partial.yeban", &partial);
+    assert_container_error(
+        &refused,
+        "container-layout",
+        "ARCH-SEC-003",
+        "缺 project.json 的容器必须报错, 不能返回空工程",
+    );
+    assert!(
+        refused["error"]["data"]["containerError"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("MissingProjectJson")),
+        "诊断必须指名缺哪一件: {refused}"
+    );
+    assert!(
+        dispatcher.domain().active_project().is_none(),
+        "缺件容器不得留下活跃工程"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 18：central directory 被篡改（local header 不变）⇒ 逐条不一致 ⇒ 拒绝
+// ---------------------------------------------------------------------------
+
+#[test]
+fn central_directory_tampering_is_refused_too() {
+    let scratch = Scratch::new("central-tamper");
+    let (mut dispatcher, auth) = dispatcher();
+    let mut bytes = minimal_container(&yeban_model::samples::filled_project(), &[]);
+
+    // 只改 **central directory** 里的 `project.json` 名字（local header 里仍是原名）。
+    // 两边不一致 ⇒ 模型层按 `LocalCentralMismatch` 拒绝（ZIP 的经典攻击面：
+    // 不同解包器"以谁为准"不同 ⇒ 同一个归档读出不同文件）。
+    patch_bytes_after_first_signature(
+        &mut bytes,
+        b"PK\x01\x02",
+        46,
+        PROJECT_JSON_NAME.as_bytes(),
+        b"qroject.json",
+    );
+
+    let refused = open_bytes(&scratch, &mut dispatcher, &auth, "cd.yeban", &bytes);
+    assert_container_error(
+        &refused,
+        "malformed-container",
+        "ARCH-SEC-003",
+        "central directory 与 local header 不一致必须被拒绝",
+    );
+    assert!(
+        refused["error"]["data"]["containerError"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("LocalCentralMismatch")),
+        "诊断必须指名两处不一致: {refused}"
+    );
+    assert!(
+        dispatcher.domain().active_project().is_none(),
+        "被篡改的容器不得留下活跃工程"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 字节级助手
 // ---------------------------------------------------------------------------
 
@@ -992,6 +1173,30 @@ fn replace_all(bytes: &mut [u8], needle: &[u8], replacement: &[u8]) {
         }
     }
     assert!(hits > 0, "必须命中至少一处");
+}
+
+/// 只改**第一处** `signature` 之后的固定偏移处的等长字节（其它出现处不动）。
+///
+/// 用来制造"central directory 与 local header 不一致"：只动 CD 那一处的条目名。
+fn patch_bytes_after_first_signature(
+    bytes: &mut [u8],
+    signature: &[u8; 4],
+    offset: usize,
+    needle: &[u8],
+    replacement: &[u8],
+) {
+    assert_eq!(needle.len(), replacement.len(), "替换必须等长");
+    let start = bytes
+        .windows(4)
+        .position(|window| window == signature.as_slice())
+        .unwrap_or_else(|| panic!("签名 {signature:?} 一处都没命中"));
+    let at = start + offset;
+    assert_eq!(
+        &bytes[at..at + needle.len()],
+        needle,
+        "签名后 offset={offset} 处必须是 {needle:?}"
+    );
+    bytes[at..at + needle.len()].copy_from_slice(replacement);
 }
 
 /// 在**每一处** `signature` 之后的固定偏移处写一个 u16（小端）。

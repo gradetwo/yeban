@@ -336,7 +336,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
     }
 }
 
-/// 会话 CAS 池：`bytes` 为 `None` 时是空池（"裸 JSON / 内存注入"形态）。
+/// 会话 CAS 池：`bytes` 为 `None` 时是空池（"内存注入的会话"形态）。
 fn pool(fixture: &Fixture) -> BTreeMap<AssetHash, Vec<u8>> {
     let mut pool = BTreeMap::new();
     if let Some(bytes) = &fixture.bytes {
@@ -849,9 +849,9 @@ fn bytes_that_do_not_match_the_declared_hash_are_rejected() {
 
 /// 判据 9 [口径]：工程**声明**了资产、会话池里没有字节 ⇒ 登记 `audioClips` + 静音。
 ///
-/// 这是"裸 JSON 兼容路径 / 内存注入夹具"的形态（那份文档格式本来就不携带资产载荷，
-/// 见 `store-container-notes.md`）。口径的选择写成判据：**不假装渲染过**，
-/// 也不把它当成工程损坏（工程确实声明了它）。
+/// 这是 `Domain::open_in_memory` 注入的会话的形态（那条种子路径本来就不携带资产
+/// 载荷；`ADR-0001 D43` 之后**没有**第二条路能造出这种会话）。口径的选择写成判据：
+/// **不假装渲染过**，也不把它当成工程损坏（工程确实声明了它）。
 #[test]
 fn a_declared_asset_without_payload_is_registered_rather_than_faked() {
     let scratch = Scratch::new("absent-payload");

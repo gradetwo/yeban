@@ -205,20 +205,26 @@ impl UndoCursor {
 ///
 /// 三个集合全部是 `BTreeMap`（红线 4 / [MODEL-AST-003]），
 /// 因此迭代顺序、序列化字节与跨进程行为都是确定的。
+///
+/// ## 三个集合全部**必需** [ADR-0001 D43]
+///
+/// `history.dag` 由本写入器整份写出，缺键不可能来自本写入器：它只意味着文件被截断。
+/// 缺 `commits` / `branches` 会把"整条撤销历史"静默读成空图谱；缺 `depths`（深度缓存）
+/// 虽然可以重新推导，但缺键会让 [`CommitGraph::depth_of`] 退化成误导性的
+/// [`ModelError::CommitNotFound`] —— 要求显式写出才能得到**精确**的错误。
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct CommitGraph {
     /// 提交集合，键为提交身份。
-    #[serde(default)]
     pub commits: BTreeMap<EntityId, Commit>,
     /// 分支集合，键为分支名。
-    #[serde(default)]
     pub branches: BTreeMap<String, BranchHead>,
     /// 深度缓存（根为 1），键为提交身份。
     ///
     /// 缓存的是 DAG 的**因果序号**，由 [`CommitGraph::genesis`] /
     /// [`CommitGraph::append`] / [`CommitGraph::fork_anonymous`] 在写入时维护，
     /// 避免每次撤销都遍历整条祖先链。
-    #[serde(default)]
+    ///
+    /// **必需** [ADR-0001 D43]：本写入器总是写出它，缺键只意味着文件被截断。
     pub depths: BTreeMap<EntityId, u64>,
 }
 

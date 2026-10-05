@@ -338,7 +338,8 @@ impl RenderOutput {
 /// 语义与规范一致:
 ///
 /// - 只有**未旁通**的设备计入 (`bypassed == true` 的插件不产生延迟);
-/// - `latency_samples == 0` 在模型层的定义是"**未上报**", 不是"零延迟"。本函数把它
+/// - `latency_samples` 是**必需字段**（ADR-0001 D43 之后不再有"取 0 表示未上报"这个区分：
+///   缺字段会直接报错）。因此 `0` 的含义就是**真的零延迟**，本函数把它
 ///   当 0 参与求和 —— 这是**保守**的: 少补只会少对齐, 不会造成相位错误; 而凭空发明一个
 ///   延迟才是错的。设备作者有义务显式声明真实值
 ///   (见 `DeviceDefinition::latency_samples` 的文档)。
@@ -414,8 +415,8 @@ impl RenderPlan {
     /// - **覆盖/替身入口**（测试用固定延迟; 将来引入外部沙盒插件时, 其真实延迟可能
     ///   来自运行时握手而不是工程文档）。
     ///
-    /// [`Self::compile`] 等价于传一张空表 —— 那表示"所有节点都未上报延迟", 于是
-    /// `L_max = 0`、没有任何补偿延迟。**这是刻意的保守默认**: 未上报时不做对齐,
+    /// [`Self::compile`] 等价于传一张空表 —— 那表示"所有节点都是零延迟", 于是
+    /// `L_max = 0`、没有任何补偿延迟。**这是刻意的保守默认**: 没有延迟信息时不做对齐,
     /// 而不是猜一个值。
     ///
     /// # Errors
@@ -1287,7 +1288,7 @@ mod tests {
 
     /// 判据: `track_latencies` 累加未旁通设备的延迟, 并跳过旁通设备。
     ///
-    /// 语义要点: `latency_samples == 0` 是模型层的"未上报", 按 0 参与求和
+    /// 语义要点: `latency_samples` 是必需字段（D43）, `0` 就是零延迟, 按 0 参与求和
     /// (保守做法), 而 `bypassed == true` 的设备**完全不产生延迟**。
     #[test]
     fn track_latencies_sum_unbypassed_devices_only() {
@@ -1319,10 +1320,10 @@ mod tests {
 
         let latencies = track_latencies(&project_tracks);
         assert_eq!(latencies[&chain], 132, "32 + 100, 旁通的 4096 被跳过");
-        assert_eq!(latencies[&bare], 0, "没有设备就是 0（未上报）");
+        assert_eq!(latencies[&bare], 0, "没有设备就是 0（真的零延迟）");
         assert_eq!(latencies.len(), 2);
 
-        // 未上报的默认值必须真的走"零延迟、零补偿"那条保守路径。
+        // 缺省（无设备）必须真的走"零延迟、零补偿"那条保守路径。
         let (routing, master, _) = star_graph(2);
         let plan = RenderPlan::compile_with_latencies(
             &routing,

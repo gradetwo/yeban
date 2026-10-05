@@ -46,17 +46,26 @@
 //! 见 `docs/ledger/decode-core-notes.md` §3。上游的 Matroska、MP3、AAC、ALAC、AIFF、CAF、
 //! ISO-MP4 一律**不启用**。
 //!
-//! ## 尺寸上限（防 OOM，以不可信输入为前提）
+//! ## 资源上限（[`limits::PcmBudget`]）—— **安全闸门 + 内存预算**（`HD-24`）
 //!
-//! | 口径 | 值 | 出处 |
+//! 改建前这里是两个写死的 2 GiB 常量，`MAX_PCM_BYTES` 在 96 kHz 立体声下只够约
+//! 46 分钟（96 kHz 8 声道只有约 11.6 分钟）⇒ 长工程必撞墙。改建后的口径：
+//!
+//! | 口径 | 默认值 | 依据 |
 //! | :--- | :--- | :--- |
-//! | 输入字节 | 2 GiB | 沿用 [ARCH-SEC-003] 的"单条目 ≤ 2 GB" |
-//! | 解码后交织 `f32` PCM | 2 GiB | 见 [`limits::MAX_PCM_BYTES`] |
-//! | 声道数 | 64 | 见 [`limits::MAX_CHANNELS`] |
-//! | 采样率 | 768 kHz | 见 [`limits::MAX_SAMPLE_RATE`] |
+//! | 输入容器字节 | PCM 预算 + 1 MiB | 换算自 PCM 预算 + [`limits::CONTAINER_OVERHEAD_BYTES`] |
+//! | 解码后交织 `f32` PCM | 96 kHz 立体声 **3 小时** = 96 kHz 8 声道 **45 分钟** | 产品要求推导，见 [`limits`] 模块文档 |
+//! | 声道数 | 64 | [`limits::DEFAULT_MAX_CHANNELS`]（7.1 的 8 倍余量，挡畸形声明） |
+//! | 采样率 | 768 kHz | [`limits::DEFAULT_MAX_SAMPLE_RATE`]（DXD 之上再留一倍） |
+//! | 时长 | 6 小时 | [`limits::DEFAULT_MAX_DURATION_SECS`]（低采样率 × 少声道的独立 backstop） |
 //!
-//! 检查发生在**分配之前**，并且一律用 `Vec::try_reserve` 把"分配器拒绝"变成错误而不是
-//! abort —— 畸形输入不能把进程吃掉 [ARCH-SEC-003]。
+//! 四道闸门**各自独立**、全部发生在**分配之前**；判定是闭区间（恰好等于上限通过）。
+//! 预算显式可配置（[`DecodeOptions::budget`]、`resample_interleaved_with_budget`），
+//! 并且一律用 `Vec::try_reserve` 把"分配器拒绝"变成错误而不是 abort —— 畸形输入
+//! 不能把进程吃掉 [ARCH-SEC-003]。
+//!
+//! **为什么不自动探测可用内存**：那会让"同输入 → 同输出"（[ARCH-DET-001]）变成运行
+//! 机器的函数。默认值是**有依据的常量**，应用层按自己的内存情况显式调大/调小。
 //!
 //! ## 不可信输入边界零 panic
 //!
@@ -111,4 +120,8 @@ pub use decode::{
 };
 pub use duration::{Mismatch, Reconciliation, reconcile};
 pub use error::{DecodeError, DecodeResult};
-pub use resample::{resample_asset, resample_interleaved};
+pub use limits::PcmBudget;
+pub use resample::{
+    resample_asset, resample_asset_with_budget, resample_interleaved,
+    resample_interleaved_with_budget,
+};
