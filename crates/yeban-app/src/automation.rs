@@ -496,7 +496,16 @@ fn sample_vertices(
         }
         for step in 1..AUTOMATION_EASE_SAMPLES_PER_SEGMENT {
             // 先乘后除的**整数**运算：不引入浮点漂移（位置一律整数派生）。
-            let offset = span * step / AUTOMATION_EASE_SAMPLES_PER_SEGMENT;
+            // `checked_mul` 是必须的：`AutomationPoint::tick` 是 u64 且模型**不设**上界，
+            // 因此 `span × step` 在 `[0, u64::MAX]` 这种合法（但荒谬）的文档上会溢出 ——
+            // 溢出在 debug/`overflow-checks` 下是 **panic**，而"投影在合法文档上 panic"
+            // 是红线（判据 ④ 的靶子）。溢出即跳过这个细采样点（采样点自身的顶点仍在）。
+            let Some(offset) = span
+                .checked_mul(step)
+                .map(|scaled| scaled / AUTOMATION_EASE_SAMPLES_PER_SEGMENT)
+            else {
+                continue;
+            };
             let Some(tick) = low.tick.checked_add(offset) else {
                 continue;
             };
@@ -1200,6 +1209,92 @@ mod tests {
             project_lanes(&project, DEFAULT_TICKS_PER_PIXEL),
             Err(BridgeError::PixelOverflow { .. })
         ));
+
+        // ---- 两点之间**荒谬跨度**（`0` 与 `2^63`）：既不能 panic，也不能静默饱和 ----
+        //
+        // 这条是判据 ④ 真正的靶子，而且它**必须**能让投影走到"缓动细采样"那一步 ——
+        // 否则它什么都没测（本判据的第一版就是这样：把采样点放在 `u64::MAX`，于是
+        // `point_vertices` 的 `tick_to_px` 先返回 `Err`，`sample_vertices` 根本没被调用）。
+        //
+        // 手法：把缩放取到 `2^62`（`from_project_with_zoom` 是公开面，缩放由界面给），
+        // 两个采样点落在 `0` 与 `2^63` ⇒ `tick_to_px` 分别是 `0` 与 `2`（都在 u32 内，
+        // 于是细采样真的被执行），而 `span × step = 2^63 × 2` **溢出 u64**。
+        // 没有 `checked_mul` 时这是一个 panic（`attempt to multiply with overflow`），
+        // 不是错误返回 —— 而"投影在合法文档上 panic"是红线。
+        //
+        // 目标刻意选 `DeviceParam`（模型里**唯一**没有固有值域的变体）：否则
+        // `TrackVolume` 的固有 `[-60, 12]` 会盖住自适应分支，`domain_min` 就不是曲线的
+        // 最小值了（本判据的第一版正是这样假红的）。
+        const HUGE_TPP: u64 = 1 << 62;
+        let huge_span = 1_u64 << 63;
+        let huge_target = AutomationTarget::DeviceParam {
+            track_id,
+            slot_index: 0,
+            param_index: 0,
+        };
+        {
+            let point_a = tid("W1");
+            let point_b = tid("W2");
+            let mut points: BTreeMap<EntityId, AutomationPoint> = BTreeMap::new();
+            points.insert(
+                point_a,
+                AutomationPoint {
+                    id: point_a,
+                    tick: 0,
+                    value: -6.0,
+                    curve: CurveType::SCurve,
+                },
+            );
+            points.insert(
+                point_b,
+                AutomationPoint {
+                    id: point_b,
+                    tick: huge_span,
+                    value: 0.0,
+                    curve: CurveType::Linear,
+                },
+            );
+            let track = project.tracks.get_mut(&track_id).expect("轨道存在");
+            // 这个测试在开头清空了该轨道的全部泳道，因此这里**新建**一条（不是改一条）。
+            track.automation_lanes.insert(
+                huge_target,
+                AutomationLane {
+                    target: huge_target,
+                    points,
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        }
+        let huge = project_lanes(&project, HUGE_TPP).expect("荒谬跨度必须**返回 Ok**，不得 panic");
+        let lane = huge
+            .iter()
+            .find(|lane| lane.target == huge_target)
+            .expect("泳道");
+        assert_eq!(lane.domain_min, -6.0);
+        assert_eq!(lane.domain_max, 0.0);
+        assert_eq!(lane.points.len(), 2);
+        #[allow(clippy::cast_precision_loss)]
+        let expected_end_x = (huge_span / HUGE_TPP) as f32;
+        assert_eq!(lane.points[1].x, expected_end_x);
+        // `step = 1` 的细采样点还在（`2^63 / 8`），`step = 2..7` 的乘法溢出 ⇒ **被跳过**。
+        assert_eq!(
+            lane.samples.iter().map(|v| v.tick).collect::<Vec<_>>(),
+            vec![0, huge_span / 8, huge_span],
+            "溢出的细采样点必须被显式跳过（而不是回绕成一个假坐标）"
+        );
+        for vertex in &lane.samples {
+            assert_eq!(
+                project
+                    .automation_value_at(&huge_target, vertex.tick)
+                    .expect("目标存在"),
+                Some(vertex.value),
+                "跳过之后剩下的顶点仍然必须来自求值入口: tick={}",
+                vertex.tick
+            );
+        }
+
         // `ticks_per_pixel = 0` 同样是显式错误（不是静默的除零）。
         assert!(matches!(
             project_lanes(&demo_project(), 0),
