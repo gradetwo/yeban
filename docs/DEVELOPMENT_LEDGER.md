@@ -5936,3 +5936,24 @@ cannot see or change from here.
 **What I cannot determine from here**: whether this is a spending limit, a runner shortage, or an account-level constraint. The
 observable facts are the two rows of the table above; naming a cause beyond them would be the kind of guess this ledger exists to
 avoid. If the负责人 wants it settled, the account's Actions page (or a support request) is where that information lives.
+
+### Round 242: two more facts about the stall, and the limit of what I can determine from here
+
+Checked two things that could have explained round 241's stall, and both came back negative - which is information:
+
+1. **Repository Actions is enabled**: `gh api /repos/gradetwo/yeban/actions/permissions` returns
+   `{"enabled": true, "allowed_actions": "all", "sha_pinning_required": false}`. So the stall is NOT the repo being switched off or
+   restricted to a subset of actions.
+2. **The billing/usage endpoints are not readable with this token**: the user-level endpoint answers HTTP 410 ("this endpoint has
+   been moved") and the replacement path answers 404. So I **cannot** confirm or rule out a spending limit, and I am naming that
+   inability rather than papering over it.
+
+The oldest queued run is `37364001688`, created `2026-10-05T19:31:54Z`, still `queued` - by this writing more than ten minutes old with
+**zero** runs started repository-wide.
+
+**What this changes**: nothing about the work, and one thing about my reports. The project's own rule is that `ci.yml` plus
+`gates-manual.yml` are the ONLY source of "green"; while they are not starting, no new work can be verified by that standard, and every
+statement I make about recent commits must say "locally verified" rather than "verified". The remaining actions available to me are
+(a) keep producing locally-verified work, (b) keep reading back whatever verdicts do appear, and (c) tell the负责人 that the cause is
+outside my reach - which is what this entry does. Guessing "it is probably the spending limit" would be exactly the class of unfounded
+claim this session has recorded nine times.
