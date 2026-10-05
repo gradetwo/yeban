@@ -6619,3 +6619,29 @@ be surfaced. Either way the change is additive and stays on the reporting side.
 reported-state struct touches the engine's producer side and every consumer and criterion, and the CI stall means a hosted verdict would not
 arrive even if the local ones passed. The value of this entry is that the NEXT attempt starts from "add fields to a struct that already
 exists", not from "implement EBU R128".
+
+### Round 269: the engine-state report exposes two fields, neither of them loudness - so the work is to surface, not to add elsewhere
+
+The read round 268 narrowed to, and the answer is unambiguous: `crates/yeban-mcp/src/domain/engine_state.rs` reports `sample_rate` and
+`buffer_frames`, and nothing else. So the LUFS windows and the true peak that `yeban-dsp`/`yeban-engine` already compute are NOT reachable
+through the tool that exists for exactly this purpose.
+
+That settles the loudness item's shape with no invention left:
+
+1. the **engine** (which already owns `yeban-dsp::loudness` and `yeban_engine::level::TruePeakDetector`) produces the values - the work is to
+   include them in the state it reports;
+2. **MCP** gains no dependency and does no maths - it reads the fields through the tool it already has, or through a sibling tool whose
+   parameters mirror the spec's named windows (Integrated / Momentary / Short-term / LRA / true peak, round 267);
+3. the **target** (响度目标) stays a setting, not a verdict - the report carries readings;
+4. the **criteria** are the interesting part and are cheap: a criterion that a silent render reports −inf or the floor, a criterion that a
+   full-scale tone reports a known LUFS within tolerance, and one that the reported true peak matches the detector's own value. Those are
+   standards-anchored and do not depend on the CI stall to be written - only to be verified.
+
+**Why it is still not implemented in this round**: the shape is clear but the change spans the engine's producer side, the reported-state
+struct, the MCP tool's parameters, the feature-alignment counters (a new tool or new fields) and its criteria - the same multi-file shape
+that rounds 266/268 declined to rush at the end of a session, and for the same reason: the four hand-made multi-file moves in this session
+each produced damage that only reading caught afterwards.
+
+**What a successor should do first, in one sentence**: add the loudness and true-peak fields to the reported engine state (the engine already
+has the numbers), then decide whether they belong in `yeban_query_engine_state` or in a sibling tool whose parameters name the spec's
+windows.
