@@ -133,13 +133,22 @@ fn unknown_path_is_refused_has_teeth() {
 }
 
 #[test]
-fn initialize_is_not_implemented_yet() {
-    // **故意**的负向断言: 记录「MCP 握手尚未实现」这一仍然存在的缺口。
-    // 谁实现了 initialize, 这条会红 —— 那时请把台账 ROAD-M4-002 一行同步改掉, 而不是删掉本测试。
+fn initialize_handshake_over_stdio_succeeds() {
+    // [ROAD-M4-002] 握手判据：曾经这里是**负向**断言（记录 initialize 返回 -32601 的缺口）；
+    // 缺口补上后翻成正向断言 —— 谁把握手改坏，这条就会红。
     let res = session(&[req(1, "initialize", serde_json::json!({}))]);
     let r = res.first().expect("至少一行响应");
+    assert!(r.get("error").is_none(), "握手不应报错: {r}");
     assert_eq!(
-        r["error"]["code"], -32601,
-        "initialize 目前应报 -32601(方法不存在): {r}"
+        r["result"]["serverInfo"]["name"], "yeban-mcp",
+        "服务器自述: {r}"
+    );
+    assert!(
+        r["result"]["protocolVersion"].as_str().is_some(),
+        "必须给出协议版本: {r}"
+    );
+    assert!(
+        r["result"]["capabilities"]["tools"].is_object(),
+        "必须声明 tools 能力: {r}"
     );
 }

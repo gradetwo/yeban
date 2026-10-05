@@ -53,6 +53,11 @@ pub const METHOD_TOOLS_LIST: &str = "tools/list";
 
 /// MCP 方法名：调用工具。
 pub const METHOD_TOOLS_CALL: &str = "tools/call";
+/// MCP 握手方法名（`[ROAD-M4-002]`）。协议要求客户端的第一条请求就是它。
+pub const METHOD_INITIALIZE: &str = "initialize";
+
+/// 客户端未给 `params.protocolVersion` 时本仓声明的协议版本。
+pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// `dryRun` 结果里标记"这是模拟"的字段名。
 pub const DRY_RUN_FLAG: &str = "dryRun";
@@ -271,6 +276,24 @@ impl Dispatcher {
         }
     }
 
+    /// `[ROAD-M4-002]` MCP 握手响应：协议版本 + 能力 + 服务器自述。
+    ///
+    /// 版本策略：客户端给了 `params.protocolVersion` 就**回显**它（协议允许服务端在回应里确定版本），
+    /// 否则用 [`DEFAULT_PROTOCOL_VERSION`]。**不**在这里编造本仓没有的能力。
+    fn initialize_result(request: &Request) -> Value {
+        let version = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("protocolVersion"))
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_PROTOCOL_VERSION);
+        serde_json::json!({
+            "protocolVersion": version,
+            "capabilities": { "tools": { "listChanged": false } },
+            "serverInfo": { "name": "yeban-mcp", "version": env!("CARGO_PKG_VERSION") },
+        })
+    }
+
     /// 管线本体。
     fn evaluate(
         &mut self,
@@ -288,6 +311,15 @@ impl Dispatcher {
                 (200, Ok(tools::catalog()))
             }
             METHOD_TOOLS_CALL => self.evaluate_tool_call(context, request),
+            METHOD_INITIALIZE => {
+                // 与 tools/list 同一档: 握手不携带领域状态, 但仍要求鉴权。
+                if let Err(denial) =
+                    authenticate(&self.expected_token, context.credential, context.channel)
+                {
+                    return denied(&denial);
+                }
+                (200, Ok(Self::initialize_result(request)))
+            }
             other => {
                 let error = ErrorObject::method_not_found(other);
                 (http_status_for(&error), Err(error))
