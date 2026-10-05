@@ -186,6 +186,61 @@ pub enum PhysicalKey {
     BracketRight,
 }
 
+/// `[UI-NOTE-003]` 左键**单击**在该工具下的语义（规范矩阵的"左键单击"列）。
+///
+/// 只做**分类**：真正作用到模型的编辑要经过撤销与 MCP, 属于后续切片。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolClick {
+    /// 选中音符 / 点空白清除选区。
+    SelectOrClear,
+    /// 在吸附网格处画出音符（配合 [`crate::bridge::snap_tick`]）。
+    DrawNote,
+    /// 沿网格竖线切分。
+    SplitNote,
+    /// 选中该音符的力度柱。
+    SelectVelocity,
+    /// 删除光标下的音符。
+    DeleteNote,
+}
+
+impl Tool {
+    /// 光标样式 —— **逐字**取自规范矩阵的"光标样式"列。
+    #[must_use]
+    pub fn cursor(self) -> &'static str {
+        match self {
+            Self::Select => "default",
+            Self::Pencil => "crosshair",
+            Self::Knife => "col-resize",
+            Self::Velocity => "ns-resize",
+            Self::Eraser => "cell",
+        }
+    }
+
+    /// 左键单击的语义（矩阵的"左键单击"列）。
+    #[must_use]
+    pub fn click(self) -> ToolClick {
+        match self {
+            Self::Select => ToolClick::SelectOrClear,
+            Self::Pencil => ToolClick::DrawNote,
+            Self::Knife => ToolClick::SplitNote,
+            Self::Velocity => ToolClick::SelectVelocity,
+            Self::Eraser => ToolClick::DeleteNote,
+        }
+    }
+
+    /// 五个工具的**全部**取值, 顺序与规范矩阵的行顺序一致（快捷键 `1`..`5`）。
+    #[must_use]
+    pub fn all_in_matrix_order() -> [Self; 5] {
+        [
+            Self::Select,
+            Self::Pencil,
+            Self::Knife,
+            Self::Velocity,
+            Self::Eraser,
+        ]
+    }
+}
+
 /// 卷帘工具矩阵 (规范 §3.3 / `[UI-NOTE-003]`)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -617,6 +672,41 @@ mod tests {
     }
 
     // ---------------------------------------------------------------- 工具矩阵
+    #[test]
+    fn tool_cursor_and_click_match_the_spec_matrix_row_for_row() {
+        // 判据: 光标字符串与"左键单击"语义**逐行**对齐规范 `[UI-NOTE-003]` 的矩阵,
+        // 且与**既有**快捷键映射（`from_digit`）指向同一行 —— 两处若分叉, 用户按键得到的工具
+        // 会与光标/点击语义不符, 而那种错看起来只是"工具怪怪的"。
+        let expected = [
+            (Tool::Select, "default", ToolClick::SelectOrClear),
+            (Tool::Pencil, "crosshair", ToolClick::DrawNote),
+            (Tool::Knife, "col-resize", ToolClick::SplitNote),
+            (Tool::Velocity, "ns-resize", ToolClick::SelectVelocity),
+            (Tool::Eraser, "cell", ToolClick::DeleteNote),
+        ];
+        let matrix = Tool::all_in_matrix_order();
+        assert_eq!(matrix.len(), expected.len(), "工具数必须与矩阵行数一致");
+        for (index, (tool, cursor, click)) in expected.iter().enumerate() {
+            assert_eq!(matrix[index], *tool, "矩阵第 {} 行的工具不对", index + 1);
+            assert_eq!(tool.cursor(), *cursor, "{tool:?} 的光标与规范不一致");
+            assert_eq!(tool.click(), *click, "{tool:?} 的单击语义与规范不一致");
+            // `from_digit` 收的是**数字值**（1..=5），不是 ASCII 字节 —— 我第一次传 `b'1'`（49）得到 None，判据抓到了。
+            let digit = u8::try_from(index).expect("五个工具") + 1;
+            assert_eq!(
+                Tool::from_digit(digit),
+                Some(*tool),
+                "快捷键 {} 与矩阵第 {} 行不是同一个工具",
+                digit,
+                index + 1
+            );
+        }
+        // 光标互不相同 —— 否则用户无法从光标分辨模式。
+        let mut cursors: Vec<&str> = matrix.iter().map(|tool| tool.cursor()).collect();
+        cursors.sort_unstable();
+        cursors.dedup();
+        assert_eq!(cursors.len(), 5, "五种工具的光标必须互不相同");
+    }
+
     #[test]
     fn digits_one_to_five_select_the_five_tools() {
         let expected = [
