@@ -6334,3 +6334,31 @@ against another and cannot be settled by reading more code. I am recording it ra
 if asked: **option 1 for the GUI path, with the physical-code path kept for the headless/port path**, because the UI shortcut is a
 convenience while the port's tests are where key fidelity is actually judged - but that is a recommendation and not a decision I am
 taking unilaterally on a documented discipline.
+
+### Round 258: the N2 ruling does NOT block the pencil - only keyboard tool selection needs it
+
+Round 257 left N2 needing a负责人 ruling, and it is worth separating what that ruling actually gates, because two facts on hand narrow it
+considerably:
+
+| fact | evidence |
+| :--- | :--- |
+| the click path is already wired | one `on_clicked` registration in `host.rs` (round 501), independent of any key event |
+| the tool can be chosen without the keyboard | the roll's five tool buttons set its internal `active-tool`, and mirroring that property to MainWindow makes it readable from the host (part (a)'s first edit, pure `.slint` plus a host read) |
+
+So **keyboard tool selection needs the N2 ruling; the pencil's model edit does not.** The pencil can act on the tool the BUTTONS selected,
+because that state is reachable from the host once the property is mirrored - and only the shortcut path (`1`-`5`) is stuck behind the
+physical-key question.
+
+**Consequences, and this is the useful part**: the remaining `ROAD-M3-002` work can proceed under the delegation without waiting for N2's
+ruling, and without pretending the shortcuts work. The order becomes:
+
+1. mirror `active-tool` to MainWindow (the `note-selected` three-level pattern) - the .slint half of (a), no keyboard involved;
+2. `wire_roll_edit` + `clip_at_tick` + owning track + `plan_to_add_note` + `commit_ops` + reproject - the pencil acts when the mirrored
+   tool is `Pencil`;
+3. criteria: a UI-level one for the pencil (click, note count +1, undo reverses) and a smaller one for the mirror (set the property, read
+   it back);
+4. **N2 remains registered and unimplemented**, with its three shapes recorded in round 257 - the shortcuts stay dead and the ledger says
+   so, rather than the ledger implying they work because the tool state became readable.
+
+**CI at this point**: still zero runs in progress (19:49Z, stalled since 19:31), so even this reframing cannot be validated by the
+project's standard yet.
