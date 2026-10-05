@@ -3102,3 +3102,18 @@ design refuses.
 **Per-platform necessity, now measured rather than assumed**: all five Linux images differ byte-for-byte from their macOS
 namesakes (CoreText vs FreeType/fontconfig). The Linux MANIFEST states its honest environment caveat - the Linux reference
 is the hosted `ubuntu-latest` runner class, not a human-designated machine.
+
+### Round 106: G13 now catches the failure it had missed (invalid job ids)
+
+The hole found in round 105 is closed: `g13_workflows_are_valid` now checks every job **key** against GitHub's rule
+`[A-Za-z_][A-Za-z0-9_-]{0,99}`, with the incident written into the guard's own message ("中文/空格/括号请写在 name: 里 ——
+否则整个 workflow 无法派发").
+
+**Tooth test (run, not asserted)**: injecting `goldens 中文:` as a job key produced
+`[FAIL] G13 [CI 可用性] workflow YAML 合法且 job 完整 (1 处) - ...::goldens 中文: job id 不合法(...)`; restoring the file
+returned `门禁通过 (mode=light)`.
+
+Why this mattered enough to mechanise: Python's YAML parser is content with a non-ASCII mapping key, so the previous G13
+(and therefore `light`, and therefore every local claim of greenness) accepted a workflow that **GitHub refused to
+dispatch at all**. The failure mode is "locally green, globally dead", which is the same family as the empty-green and
+hung-green traps already recorded in `docs/CI_CD.md`.

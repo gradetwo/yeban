@@ -466,6 +466,21 @@ def g13_workflows_are_valid() -> list[Violation]:
         if not jobs:
             bad.append(("G13", rel(path), "没有任何 job"))
         for name, job in jobs.items():
+            # job **键**（id）必须是 GitHub 允许的字符集。实测事故: 我把 `goldens (生成分平台基准图集)` 当成 job 键,
+            # python 的 yaml 解析器照样通过、run-gates.sh light 也全绿, 但 GitHub **拒绝派发整个 workflow**:
+            #   "The identifier 'goldens (生成分平台基准图集)' is invalid. IDs may only contain alphanumeric
+            #    characters, '_', and '-'"
+            # 「本地绿、却根本发不出去」正是本仓库最怕的一类假绿, 所以这里按 GitHub 的规则机械判定。
+            # 中文只能出现在 `name:` 里。
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,99}", str(name)):
+                bad.append(
+                    (
+                        "G13",
+                        f"{rel(path)}::{name}",
+                        "job id 不合法(GitHub 只允许 [A-Za-z_][A-Za-z0-9_-]{0,99}); "
+                        "中文/空格/括号请写在 name: 里 —— 否则整个 workflow 无法派发",
+                    )
+                )
             if not isinstance(job, dict):
                 bad.append(("G13", f"{rel(path)}::{name}", "job 不是映射"))
                 continue
