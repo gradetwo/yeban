@@ -314,3 +314,12 @@ yeban/
    把挂起当成功 · 写无法当场复核的改动。等待是允许的，**编造进展不是**。
 3. **等待时仍要**：把"在等什么、等到什么程度算解除"写清楚（可复核），并把已完成的实测/裁决记账。
 
+## Commit message language (human ruling, round 256)
+
+**All commit messages must be written in English from now on.** Verbatim ruling: "另外以后commit 都用英文".
+
+- Applies to every future commit in this repository (agent and human alike).
+- Keep the established discipline inside the English text: state what was done, cite the exact command/run id evidence,
+  and explicitly flag anything not verified (unread verdicts stay `pending`; skipped legs are never reported as passing).
+- Existing history is **not** rewritten; Chinese commit messages already in history stay as they are.
+
