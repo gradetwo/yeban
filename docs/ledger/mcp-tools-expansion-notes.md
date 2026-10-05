@@ -284,3 +284,46 @@ FAIL feature-alignment (exit=1)
   的说明段），十工具的 `$defs`/参数**一个字节都没改**；
 - 根 `Cargo.toml` / `Cargo.lock` **未动**（零新增依赖）；`scripts/**`、`.github/**`、
   `docs/adr/**`、`docs/YEBAN_*.md`、README、法务文件、其它 `crates/**` 均未动。
+
+---
+
+## 9. CI 判决留痕
+
+### 9.1 第 1 轮：`run 37274474454`（commit `0958f4b`）—— **红**
+
+| job | 结果 | 红在哪一步 |
+| :--- | :--- | :--- |
+| `plan` / `deny` / `lockfile` | ✅ | — |
+| `checks (fmt / 红线守卫 / schema)` | ❌ | **三方对齐矩阵**（§7：集成者的 `feature-alignment.md` 还没点名三个新工具） |
+| `rust (workspace 全量)` | ❌ | `clippy --workspace --all-targets -- -D warnings` |
+| `windows (yeban-mcp / yeban-model 的平台分支)` | ❌ | `clippy -p yeban-model -p yeban-mcp --all-targets` |
+
+两个 Rust 腿红在**同一条**编译错误原文（本机编不出来 ⇒ 只有 CI 能抓到这一类）：
+
+```text
+error[E0382]: borrow of moved value: `hash`
+  --> crates/yeban-mcp/src/domain/import_audio.rs:293:37
+264 |             let hash = AssetHash::parse(text).map_err(|error| {
+    |                 ---- move occurs because `hash` has type `yeban_model::AssetHash`,
+    |                      which does not implement the `Copy` trait
+292 |                 hash,
+    |                 ---- value moved here
+293 |                 format!("asset:{}", hash.as_str()),
+    |                                     ^^^^^ value borrowed here after move
+help: consider cloning the value if the performance cost is acceptable
+```
+
+处置：把来源标签**在**把 `hash` 移进元组**之前**算好（不 clone）——
+
+```rust
+let source_ref = format!("asset:{}", hash.as_str());   // ⚠ AssetHash 不是 Copy
+(None, facts, hash, source_ref, declared)
+```
+
+并把这条教训写进该处的注释（下次有人"顺手"调整元组顺序会再看到它）。同一批里
+`fmt` / 机械守卫 14 条 / 其余 5 条文档守卫全绿。
+
+> 这一轮同时给出一个方法论读数：**"本机不能编译"的代价是真实的** ——
+> 本机 25 条零依赖判据 + 4 条文本守卫 + 契约静态对账全绿，**仍然**漏掉一个
+> `E0382`。所以"文本级守卫"能替代的只是"能从源码文本判定的性质"，**不能**替代类型检查；
+> 类型错误只能在 CI 上被抓到（这也是 `AGENTS.md` §5 把重依赖 crate 交给 CI 的代价之一）。

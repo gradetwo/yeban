@@ -286,13 +286,10 @@ pub fn plan(
             };
             let facts = decode_and_measure(existing, &format!("资产 {}", hash.as_str()))?;
             let declared = project.assets.contains_key(&hash);
-            (
-                None,
-                facts,
-                hash,
-                format!("asset:{}", hash.as_str()),
-                declared,
-            )
+            // ⚠ `AssetHash` **不是 `Copy`**：来源标签必须在把 `hash` 移进元组**之前**算好
+            // （否则 `hash.as_str()` 就是"borrow of moved value"，CI 的 E0382 实测抓过）。
+            let source_ref = format!("asset:{}", hash.as_str());
+            (None, facts, hash, source_ref, declared)
         }
         ImportSource::DiskPath => {
             let text = path_arg.unwrap_or_default();
