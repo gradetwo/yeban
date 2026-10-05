@@ -3575,3 +3575,23 @@ that the gate is complete.
 **Still to check**: the `windows` lane, whose step was rewritten the same way but which compiles on a Windows runner and is
 therefore a heavier dispatch. Recorded as an outstanding verification rather than assumed from the determinism result - the
 two steps were edited independently, so one green does not certify the other.
+
+### Round 129: all three verifiable rewrites are regression-verified; the fourth is deliberately not exercised
+
+Round 126 rewrote the summary handling of four workflow steps. Each has now been checked by **running its lane**, not by
+re-reading the YAML:
+
+| rewritten step | lane dispatch | verdict |
+| :--- | :--- | :--- |
+| `determinism::未接线说明` | run `37306372290` | **success** (`determinism (PENDING)` steps=3) |
+| `windows::结果摘要` | run `37306494054` | **success** (`windows (锁与模型真编译真跑)` steps=9) |
+| `bench::测量结果 + 口径声明` | run `37306815938` | **success** (`bench (数量级测量)` steps=11) |
+| `site-deploy::deploy` | **not dispatched** | deliberate: dispatching it would attempt a real Cloudflare deploy of the website, which is the human's own deferred track |
+
+**Why the fourth is not "verified by symmetry"**: the three that ran did so because their lanes are safe to trigger; the
+fourth's lane performs an external side effect on a system outside this repository. "The other three were fine" is not
+evidence about it, and pressing deploy to satisfy a checklist would be the wrong trade - so it is recorded as unverified
+rather than quietly counted as done.
+
+**Net effect**: the observability rule (G13, round 126) is in force, its four violations are fixed, and three of those fixes
+have now been exercised end-to-end by the lanes they belong to.
