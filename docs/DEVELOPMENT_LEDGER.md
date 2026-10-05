@@ -6141,3 +6141,26 @@ view-only actions), and a sibling path sets the `active-tool` property when it s
 **Not started**, and the reason remains capacity plus the CI stall: the session is at its context limit, and a UI-level criterion that
 cannot be run in CI right now (rounds 241/242: 12 queued, 0 in progress) would be locally verified only - which is acceptable for
 documentation but weak for the first change that mutates the model.
+
+### Round 250: correcting my own round-249 conclusion - SelectTool SHOULD become a UiAction
+
+Round 249 argued that tool selection "must not become a `UiAction`" because it is view state that would otherwise enter the commit
+graph. Reading the function itself corrects that, and the correction matters because it changes which edit to make:
+
+`undo.rs:87-93` is `pub const fn dispatch_key(action: Action) -> Option<UiAction>`, with arms for `Undo`, `Redo`, `OpenTimeMachine` and
+`_ => None`. Its doc comment states the design intent explicitly: **"main.rs 的按键分发与它共用这一个函数，因此『Cmd+Z 解析对了但没人
+接』这类错位不可能再出现"** - i.e. this is the project's SINGLE dispatch point for keyboard actions.
+
+And `UiAction` is not limited to undoable edits: this session has already worked with `UiAction::ExportDiagnostics` (rounds ~150-160,
+non-mutating) and `UiAction::ToggleUndoTree`. So there is no rule that every `UiAction` must be undoable, and my round-249 claim - that
+a view-state action must stay out of `UiAction` - does not survive contact with the code.
+
+**Corrected shape of (a)**: add `UiAction::SelectTool(Tool)` and an arm in `dispatch_key` (`Action::SelectTool(tool) =>
+Some(UiAction::SelectTool(tool))`), then handle that variant where the host performs UI actions, setting the mirrored `active-tool`
+property. That keeps the single dispatch point the doc comment is proud of, and it is one variant plus one arm plus the property mirror
+- not a new parallel path as round 249 proposed.
+
+**The lesson is the one this session keeps relearning**: I inferred a design rule ("view state must not be a UiAction") from a
+plausible principle instead of checking the existing variants, and two counter-examples were already in code I had read earlier. The
+check that would have prevented it is a one-line grep for `UiAction::` variants - the same shape as round 238's wrong "no Default"
+claim and round 231's wrong reading of a list's order.
