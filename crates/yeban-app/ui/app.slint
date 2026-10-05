@@ -43,6 +43,7 @@ import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 component AiRail inherits Rectangle {
     callback open-musical-pr();
     callback run-acoustic-diagnosis();
+    callback export-diagnostics();
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -118,6 +119,34 @@ component AiRail inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.run-acoustic-diagnosis(); }
+        }
+    }
+
+    Rectangle {
+        x: Tokens.space-4;
+        y: 148px;
+        width: parent.width - 8px;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "diagnostics-export-action";
+        accessible-label: "导出诊断包";
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "导出诊断包 (D56)";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.export-diagnostics(); }
         }
     }
 
@@ -206,6 +235,7 @@ export component MainWindow inherits Window {
     callback accept-ai-proposal();
     callback reject-ai-proposal();
     callback run-acoustic-diagnosis();
+    callback export-diagnostics();
     // `[UI-A11Y-002]` §7.2：BPM 敲入控件里真 `TextInput` 的合成态 / 焦点事件
     // （见 ui/transport.slint 的 `bpm-input`）。宿主 `host::wire_input` 把它翻成
     // `InputContext::begin_composition` / `end_composition` / `set_focus`。
@@ -423,6 +453,7 @@ export component MainWindow inherits Window {
 
                 open-musical-pr => { root.musical-pr-open = true; root.open-musical-pr(); }
                 run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
+                export-diagnostics => { root.export-diagnostics(); }
             }
         }
 
@@ -500,6 +531,7 @@ export component MainWindow inherits Window {
 
         open-musical-pr => { root.musical-pr-open = true; root.open-musical-pr(); }
         run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
+        export-diagnostics => { root.export-diagnostics(); }
     }
 
     // AI 编曲提案审核抽屉 (§10 Musical PR)

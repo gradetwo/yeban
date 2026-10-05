@@ -403,6 +403,13 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
     }
     {
         let port = Rc::clone(port);
+        ui.on_export_diagnostics(move || {
+            // [D56] 与 MCP 工具**同一个**实现（判据 4）；不改工程状态。
+            port.perform(UiAction::ExportDiagnostics);
+        });
+    }
+    {
+        let port = Rc::clone(port);
         let weak = slint::ComponentHandle::as_weak(ui);
         ui.on_undo_step(move || {
             port.perform(UiAction::Undo);

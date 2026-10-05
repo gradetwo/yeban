@@ -362,6 +362,13 @@ impl ElementRegistry {
             false,
         );
         registry.add(
+            "diagnostics-export-action",
+            ElementKind::Button,
+            "app.slint",
+            "导出诊断包 (D56)",
+            false,
+        );
+        registry.add(
             "ai-rail-musical-pr-button",
             ElementKind::Button,
             "app.slint",
