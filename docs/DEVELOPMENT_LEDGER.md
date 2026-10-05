@@ -5052,3 +5052,36 @@ rounds twice for exactly that class of change. Recording it with the fix is bett
 
 **Not** chosen: a `thread_local!` holding the offset, which would avoid the signature change. It would work, but it hides UI state
 in a global and the project's own discipline keeps injected state explicit; a small owning type is the honest version.
+
+### Round 201: the spec's culling architecture read at the source - what [UI-NOTE-001] actually requires, against what is built
+
+Read from `docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md` §3.1 rather than from the skeleton's summary, so the next work is
+spec-anchored:
+
+**`[UI-NOTE-001]` R-Tree Culling Pipeline** requires five things in sequence:
+1. the Slint viewport properties change - `min_tick`, `max_tick`, `min_pitch`, `max_pitch`;
+2. the Rust spatial culling core in `crates/yeban-app` calls **`R-Tree locate_in_envelope_intersecting`** to find intersecting notes;
+3. it extracts the visible primitives as `[x, y, w, h, velocity, color_idx, flags]`;
+4. Slint's FemtoVG / Skia / OpenGL path performs a **hardware draw callback** that batches GPU rectangle and rounded-rect draws in
+   **≤ 2 ms**;
+5. producing 120 FPS.
+And `[UI-NOTE-002]` fixes the coordinate equations: `pixelX = (tick - scrollX) * zoomX + PianoKeyWidth`,
+`pixelY = (MaxKey - pitch) * zoomY - scrollY`.
+
+**Gap analysis against what is now built** (this is the honest part):
+| step | status |
+| :--- | :--- |
+| 1 viewport properties | **missing as properties**: the viewport exists only as a host argument (`viewport_width`, `scroll_x`), not as tick/pitch bounds on the Slint side |
+| 2 spatial index | **missing**: `notes_visible_in` is a linear scan over every note. It is correct and it cut the frame time ~18x, but it is not an R-Tree and does not scale with a logarithmic query |
+| 3 primitive extraction | **partly there**: the projection produces the arrays, but without `color_idx`/`flags` and with a fixed field set rather than a deliberately chosen primitive layout |
+| 4 batch draw callback | **missing**: the roll draws **one Rectangle element per visible note**, which is exactly the architecture the spec replaces |
+| 5 120 FPS | not claimed; the conservative hosted reading is p99 9.83 ms, and the spec's own draw budget is ≤ 2 ms |
+
+**What this means for the reading recorded in round 197**: it was taken with the element-per-note renderer, so it measures the
+current architecture honestly - but it is **not** a measurement of the architecture the spec requires. Anyone comparing p99 9.83 ms
+against "120 FPS" should know that the remaining gap is architectural (batch draw), not merely a tuning margin.
+
+**Next work item, in dependency order**: (a) expose the four viewport bounds as properties, (b) introduce an R-Tree (or a
+beforehand-justified equivalent) behind the same query contract so the projection's criteria still hold, (c) replace the
+per-note elements with a batch draw path, then (d) re-measure. Each step is independently judgeable, which is the reason to do them
+in that order rather than as one change.
