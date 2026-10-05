@@ -194,3 +194,30 @@ Actions 的清理会一直等它 ⇒ 作业既不成功也不失败，判决要�
 **为什么值得单列**：它直接吃掉本项目的**判决带宽**（一次挂起 = 最多 60 分钟没有判决），
 而本项目的核心纪律是"**未读回的判决等于没有判决**"。
 
+## 结构性纪律：别让"绿"里混进没有 crate 证据的 success（实测，2026-10 两个判决）
+
+**背景**：`ci.yml` 的 `concurrency: cancel-in-progress: true`（按 ref）会让**新推送取消在飞的 run**。
+实测 main 最近 40 条 run：`rust (workspace 全量)` 腿有 **10 条连续 `cancelled/steps=10`**；
+而其余 `success` 几乎全是 **docs-only ⇒ crate 腿 `skipped steps=0`**；最近一次该腿真跑完且绿是更早的一条。
+⇒ **"main 绿"这个集合长期混进大量零 crate 证据的 success** —— 这是"空心绿"的**系统性版本**。
+
+**已做的修复**: `ci.yml` 改为 `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`
+—— 分支上仍取消（省额度），**main 上排队等它跑完**（不掐掉证据）。
+
+**要确定性拿到"workspace 全量"判决，只有两条可靠路径**（实测：`rerun` **不是**可靠开关 —— 两次 rerun 一次 wide 一次 narrow）：
+1. **推一个碰 `crates/**` 的提交**（或根级触发器：`Cargo.toml`/`Cargo.lock`/`schemas/**`/`scripts/**`/`.github/**`/`deny.toml`/`rust-toolchain`）
+   ⇒ `plan` 判 `workspace_wide` ⇒ 跑 `rust (workspace 全量)`；
+2. **用 `gates-manual.yml`** 派一发（它的 `cancel-in-progress: false`，不会被别的推送掐掉）。
+
+**读判决的铁律（合起来看）**：
+- 看**各腿**的 `conclusion` **与 `steps` 数**，不只看整轮 `status/conclusion`（`steps=0` 的 success 不是证据）；
+- **"挂住的绿"的可靠判据**是 job 的 `steps[].started_at` 是否还在前进 —— 只看 `updatedAt`、或看"最后一步是不是 `Post Run …`"都会误判
+  （**未开始的步骤也会显示成 `Post Run …[pending]`**）；
+- `gh run cancel` 在 post-job 阶段**长时间不响应**；取消挂起 run 后，同 ref 的新 run 会一直 `queued` 直到它真的被终止；
+- **等判决期间不要推送** —— `cancel-in-progress` 会把证据 run 掐掉（本项目的实测代价：掐掉过**唯一**那条证据）；
+- **`gh` 的日志缓存要落在仓库外**：`XDG_CACHE_HOME=/Users/crow/work/music/.cache gh run view --log`，
+  否则 `.cache/gh/run-log-*.zip` 会落进仓库，被 `G12 [仓库卫生]` 一票否决（它扫**文件系统**，不是索引）。
+
+**两个已确认的完成态判决**（可作为"全量绿"的基线）: `37283699896` @ `aac62e8`、`37284571290` @ `77d201f`
+—— 两者的 `rust (workspace 全量)` 均 **success `steps=10`**、`windows` **success `steps=8`**。
+

@@ -2527,3 +2527,14 @@ I1 少记一次 ⇒ `镜像=511 权威=512`；I2 多记一次 ⇒ `镜像=515 �
 **另一条 CI 结构结论**: **`rerun` 不是"逼出 workspace-wide"的可靠开关**（`37282880060` 落 wide、`37282591016` 落 narrow）
 ⇒ 要**确定性**拿 workspace 全量判决只有两条路：推一个碰 `crates/**`/共享文件的提交，或用 `gates-manual.yml`（其 `cancel-in-progress: false`）。
 
+### 第 84 轮：**第二条全量判决**（`77d201f`）+ CI 结构纪律成章
+
+run **`37284571290` @ `77d201f` = completed success**：`rust (workspace 全量)` = **success `steps=10`**、
+`windows` = success `steps=8`、`plan`/`checks`/`deny`/`lockfile` = success、矩阵腿 skipped（由 workspace 腿覆盖）。
+⇒ 加上 `37283699896` @ `aac62e8`，**"main 有完成态的全量判决"已两次独立确认**，
+且第二次是在**关闭 main 的 `cancel-in-progress` 之后**取得的（该修复本身生效）。
+
+**同时把这几轮的结构性结论写成 `docs/CI_CD.md` 的正文**：空心绿（看 `steps` 数）· 挂住的绿（判据是 `steps[].started_at`）·
+`cancel-in-progress` 吃掉重腿（已修）· 逼出全量判决的两条可靠路径（碰 `crates/**`/根级触发器，或用 `gates-manual.yml`）·
+等判决期间不推送 · 取日志用仓库外路径（G12 扫文件系统）。
+
