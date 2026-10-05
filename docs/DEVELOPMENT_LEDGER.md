@@ -3997,3 +3997,25 @@ The next round must read it before treating D56 step 1 as verified on CI.
 Note on cost, recorded because it is a direct consequence of round 149's fix: `867d763` produced **two** concurrent push runs
 (`37331546677`, `37331537178`). Giving each main run its own group stops cancellations, but it also stops de-duplication, so
 duplicate runs each consume a full CI run. That is the accepted trade - verdicts over compute - but it should be watched.
+
+### Round 154: D56 step 1 is CI-verified - the diagnostic collector is green
+
+Run **`37331688273` @ `023d382` = completed success**:
+
+```
+整轮: completed success
+  success steps=6 lockfile (确定性 Cargo.lock)
+  success steps=5 plan (受影响集合)
+  success steps=6 deny (cargo-deny 开源合规)
+   steps=12 checks (fmt / 红线守卫 / schema)
+  skipped steps=0 rust (${{ matrix.crate }})
+  skipped steps=0 windows (yeban-mcp / yeban-model 的平台分支)
+  skipped steps=0 rust (workspace 全量)
+```
+
+That run is the one carrying the fix for the fmt/licence defects found in `867d763`, so the collector added in round 151/152 now
+has a verdict rather than a local claim: the workspace leg compiles it and the `checks` leg (fmt + guards + schema + the
+regenerated licence inventory) accepts it. **D56 step 1 is done and verified.**
+
+The dispatch run for the same commit (`37331615613`) was still `in_progress` when read, with `checks` already success
+`steps=12` - consistent rather than contradictory, and no longer needed now that the push run has concluded.
