@@ -2369,6 +2369,43 @@ mod tests {
     /// `ticks_per_pixel` 覆盖 **非 2 的幂**（3 / 7 / 30）与极端缩放（1 / 960）：
     /// 这一族数字就是"不许用浮点算位置"的探针（30 与 7 都除不尽）。
     #[test]
+    fn notes_visible_in_matches_a_brute_force_window_and_actually_clips() {
+        // 判据 1: 与**暴力过滤**逐项相同（不是"大约"）。
+        // 判据 2（牙）: 窄窗口必须真的裁掉东西 —— 若实现退化成"全返回", 这一条红。
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        let xs = view.note_positions();
+        let ws = view.note_widths();
+        let total = xs.len();
+        assert!(total > 0, "夹具必须有音符");
+
+        for (scroll, width) in [
+            (0.0_f32, 100.0_f32),
+            (50.0, 200.0),
+            (1000.0, 300.0),
+            (0.0, 10_000.0),
+        ] {
+            let want: Vec<usize> = (0..total)
+                .filter(|&i| {
+                    let left = scroll.max(0.0);
+                    let right = left + width.max(0.0);
+                    xs[i] + ws[i] >= left && xs[i] <= right
+                })
+                .collect();
+            assert_eq!(
+                view.notes_visible_in(scroll, width),
+                want,
+                "窗口 scroll={scroll} width={width} 的裁剪结果与暴力过滤不符"
+            );
+        }
+
+        let narrow = view.notes_visible_in(0.0, 1.0);
+        assert!(
+            narrow.len() < total,
+            "1 像素窗口返回了全部 {total} 个音符 ⇒ 裁剪没有生效"
+        );
+    }
+
+    #[test]
     fn note_positions_are_integer_derived_from_ticks() {
         for project in [demo_project(), filled_project()] {
             for tpp in [1_u64, 3, 7, 30, 32, 120, 960] {
