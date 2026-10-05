@@ -5238,3 +5238,32 @@ came from the software rasteriser, which round 206 could only infer. A backgroun
 parses as `(cd repo && nohup ...) & rest` - so the `cd` belonged to the background job and the `cat`/`git` ran in the parent
 directory. Nothing was corrupted (the writes simply failed), but the fix is to keep backgrounding and repo-relative work in separate
 commands.
+
+### Round 209: the backend口径 is now a FACT, and two runs at the same口径 disagree enough to matter
+
+Run **`37358050020` @ `a7e2cf4` = completed success**. Its output, both lines:
+
+```
+BASELINE-003 口径: slint_backend=<unset> 尺寸=1920x1080
+BASELINE-003(10万音符) 帧数=600 音符=100000 p50=8.450ms p99=8.802ms max=28.292ms 见证字符数下限=122
+```
+
+**Fact 1 - the software-rasterisation inference is confirmed as far as the environment can confirm it.** `SLINT_BACKEND` is
+`<unset>`, so Slint chose its default, and the runner is a headless hosted Linux machine with no GPU. The chosen renderer's *name*
+still is not introspectable (no public API, round 469), but "default backend + no GPU" settles that the recorded times do not come
+from the GPU path the spec's <= 2 ms budget assumes. Round 206's inference is therefore now evidence, not guesswork.
+
+**Fact 2 - two runs at the SAME口径 disagree by more than the margin to the bar.** Same commit family, same scrolling口径, same
+fixture:
+
+| run | p50 | p99 | max |
+| :--- | :--- | :--- | :--- |
+| `37354752002` (round 197) | 6.477 ms | 9.831 ms | 18.136 ms |
+| **`37358050020` (this round)** | **8.450 ms** | **8.802 ms** | 28.292 ms |
+
+p50 moved 30% and p99 moved 10% between two runs of identical code. The bar is 8.3 ms, so this variance is **larger than the
+distance being judged** (8.802 vs 9.831 straddles it). That is the strongest argument yet for the standing rule that hosted readings
+are indicative only - and it means any single hosted number, including the best one, must not be quoted as a verdict.
+
+**Fact 3**: the best p99 seen so far is 8.802 ms, i.e. **1.06x** over the bar, on a software rasteriser with the conservative
+`capture()` cost included. Whether the reference machine clears it is exactly what HD-49's option A would answer.
