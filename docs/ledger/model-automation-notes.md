@@ -24,6 +24,16 @@
 
 本线补的是它们**缺的那一半**：
 
+> ## ⚠ 本节的"三字段可缺省"表述已被 **ADR-0001 D43** 覆盖（集成者注，2026-10-05）
+>
+> 本线落地时把 `read_enabled` / `write_mode` / `domain` 写成"**为了旧工程可读**"的 `#[serde(default)]`；
+> **D43 明确 1.0.0 之前没有兼容需求** ⇒ 前两者已改为**必需**（缺失即报错），
+> `domain` 因为是 `Option<T>`（语义上天然可选）保留 default。详见 `docs/ledger/model-no-compat-notes.md`。
+> 此外，本节引用的"**107+28+50+16 全绿**"是**当时的**读数；模型侧后来新增了判据
+> （`no_compat` 8 条），现行读数是 **107+28+50+16+8**。
+>
+> 以下表格保留为**当时的记录**（历史原样）。
+
 1. 泳道的**读/写模式**与**取值域覆盖**（新字段，全部 `#[serde(default)]` + 默认值不落盘）；
 2. **唯一的求值入口**（`YebanProjectV1::automation_value_at` / `AutomationLane::value_at`）与
    **唯一的曲线口径**（`CurveType::ease`）；
