@@ -70,6 +70,7 @@ gate_docs() {
   run "docs" python3 scripts/gates/check_docs_links.py
   run "clippy-changed" bash scripts/gates/clippy-changed.sh
   run "handoff-snapshot" python3 scripts/gates/check_handoff_snapshot.py
+  run "diagnostics-single-impl" python3 scripts/gates/check_diagnostics_single_implementation.py
 }
 
 gate_schemas() {
