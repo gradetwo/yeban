@@ -2347,7 +2347,7 @@ mod tests {
         let listed = result["methods"].as_array().expect("数组");
         let supporting: Vec<&str> = listed
             .iter()
-            .filter(|entry| entry["dryRunSupported"] == Value::from(true))
+            .filter(|entry| entry["dryRunSupported"].as_bool() == Some(true))
             .map(|entry| entry["name"].as_str().expect("字符串"))
             .collect();
         assert_eq!(supporting.len(), 7, "支持 dryRun 的方法: {supporting:?}");

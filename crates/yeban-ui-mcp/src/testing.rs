@@ -95,7 +95,7 @@ impl Fixture {
             "imeFocus": self.ime_focus.as_str(),
             "calls": self.calls,
             "hasReport": self.report.is_some(),
-            "imageFingerprint": crate::surface::fnv1a64(&self.image.pixels()),
+            "imageFingerprint": crate::surface::fnv1a64(self.image.pixels()),
         })
     }
 }

@@ -1173,10 +1173,15 @@ fn dry_run_leaves_the_live_window_and_the_disk_untouched() {
 #[test]
 fn ime_composition_is_observable_on_the_live_window() {
     let project = demo_project();
-    let ui = build_live_ui(&project, Permission::ReadOnly).expect("装配");
+    // ⚠ 必须是 **Interactive**（= 测试模式）：`ui/dispatch_key_press` 的 `dryRun` 也要过
+    // `ui:inject` 这道闸门 —— CI run 37254896937 就是这么告诉我的：用 `ReadOnly`
+    // （⇒ `RunMode::Production`）时它拿到 `403 forbidden-in-production`。
+    // 那**不是**缺陷，是"dryRun 不绕过授权"这条对齐的直接后果（本机判据
+    // `dry_run_keeps_every_existing_error_code` 的第 ④ 条钉着同一件事）。
+    let ui = build_live_ui(&project, Permission::Interactive).expect("装配");
     // 驱动点：生产上是 Slint 平台的 IME 事件，判据里直接驱动**同一个**对象。
     let input = ui.input_context();
-    let mut plane = ui.into_control_plane(Permission::ReadOnly);
+    let mut plane = ui.into_control_plane(Permission::Interactive);
 
     let read = |plane: &mut LiveControlPlane| {
         let call = plane.plane().try_line(

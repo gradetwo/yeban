@@ -218,7 +218,7 @@ ui/dispatch_key_press {"keyCode":"Space","dryRun":true}
 复跑命令（本机探针，见 §6.1）：
 
 ```bash
-bash /tmp/uimcp-probe2/build.sh                                     # 五步全绿
+bash /tmp/uimcp-probe2/build.sh                                     # 六步全绿（含本机 clippy）
 CARGO_MANIFEST_DIR=$PWD/crates/yeban-ui-mcp /tmp/uimcp-probe2/uimcp_tests
 ```
 
@@ -234,6 +234,28 @@ CARGO_MANIFEST_DIR=$PWD/crates/yeban-ui-mcp /tmp/uimcp-probe2/uimcp_tests
 注入 C 只有 ④ 变红是**设计如此**：本线自己改名时内部仍然自洽（自己产、自己读），
 唯一能发现"与领域侧不同名"的就是那条**跨 crate 比对**的判据 —— 这正是它存在的原因。
 
+### 5.1 CI 第 1 轮的判决与处置（**run 37254896937**，本线第 1 次推送的 tip）
+
+判决：**红**（`rust (yeban-ui-mcp)` 的 clippy 腿；`rust (yeban-app)` 的 `live_ui_mcp` 目标）。
+三条读数与处置（都不是"重跑看看"）：
+
+| # | CI 报的 | 根因 | 处置 |
+| ---: | :--- | :--- | :--- |
+| 1 | `clippy::cmp_owned` @ `service.rs:2350`："this creates an owned instance just for comparison" | `entry["dryRunSupported"] == Value::from(true)` —— 拿 `Value` 与"为比较专门造的" `Value` 比 | 改成 `.as_bool() == Some(true)`（同一断言，不减弱） |
+| 2 | `clippy::needless_borrow` @ `testing.rs:98`："creates a reference which is immediately dereferenced" | `fnv1a64(&self.image.pixels())` —— `pixels()` 已经返回 `&[u8]` | 去掉 `&`。**并把这条重新注入验证本机 clippy 腿**（§6.1，报错逐字相同） |
+| 3 | `live_ui_mcp.rs:1211` 判据 14 失败：`ui/dispatch_key_press {"dryRun":true}` 拿到 **403 `forbidden-in-production`** | 判据用 `Permission::ReadOnly` 装配 ⇒ `RunMode::Production` ⇒ `ui:inject` 被**生产硬禁**。**这不是缺陷，是"`dryRun` 不绕过授权"的直接后果**（本机判据 ⑨ 的第 ④ 条钉着同一件事） | 判据改用 `Permission::Interactive`（测试模式），并在判据注释里写明这次的 403 就是那条性质的**实测证据** |
+
+**同一轮 CI 顺带证实了三件事**（比"绿"更值钱，存档）：
+1. `crates/yeban-app` 侧的新接线**真的编译过**（`Rc<RefCell<InputContext>>`、`ime_state`、
+   `preview_effect`、`physical_key_of` / `key_resolution`）——本机做不到这一步；
+2. 判据 13（`dry_run_leaves_the_live_window_and_the_disk_untouched`）**通过** ⇒ 真实窗口上
+   `ui/tree` 逐字节不变、磁盘无文件、引擎代数只被真调用推进、预览与真调用逐字段一致，
+   其中包括 `preview.effect.resolution == "action"`（真 `InputContext::resolve` 对
+   `Space` + 画布焦点的回答）；
+3. 判据 14 失败在第 1211 行（**按键 dryRun**），而它前面的两次 `ui/property isComposing`
+   读数与 `transport-bpm-field` 的寻址**都已经过了** ⇒ IME 观测位在真窗口上可用、
+   `transport-bpm-field` 确实在运行时树里。
+
 ---
 
 ## 6. 本机真跑 vs CI（严格区分）
@@ -244,7 +266,8 @@ CARGO_MANIFEST_DIR=$PWD/crates/yeban-ui-mcp /tmp/uimcp-probe2/uimcp_tests
 | :--- | :--- |
 | `bash scripts/gates/run-gates.sh light` | **exit 0**；`fmt` / 14 条机械红线守卫 / 规范 ID 审计（40 个 ID 全部存在于规范）/ ID 字典 / 决策清单 / 门禁状态表 / 阶段状态表 / **三方对齐矩阵**（66 行、10 工具、14 方法全部点名）/ 文档链接 / 依赖许可清单（679 行） |
 | `cargo fmt --all`（`scripts/dev/local-env.sh` 提供的 `1.99.0` 工具链） | 只改动了本线 7 个文件，无无关格式漂移 |
-| `/tmp/uimcp-probe2/build.sh`（**零 Slint 探针**） | 五个目标全 `BUILD OK`（`-D warnings -D rust_2018_idioms`，含 `#![deny(missing_docs)]`）：(1) lib feature OFF、(2) lib feature ON、(3) 单元判据、(4) `tests/contract.rs`、(5) `example export_ui_samples` |
+| `/tmp/uimcp-probe2/build.sh`（**零 Slint 探针**） | `BUILD-EXIT=0`：六个目标全过（`-D warnings -D rust_2018_idioms`，含 `#![deny(missing_docs)]`）——(1) lib feature OFF、(2) lib feature ON、(3) 单元判据、(4) `tests/contract.rs`、(5) `example export_ui_samples`、**(6) 本机 clippy**（`clippy-driver` 直接按 rustc 参数跑 lib + 单元判据两个目标） |
+| 本机 clippy 腿（第 1 轮 CI 之后新增，见 §5.1） | `clippy-driver --version` -> `clippy 0.1.99 (b940084d7e 2026-09-28)`。**为什么能在本机跑**：根 `Cargo.toml` 的 `[workspace.lints.clippy]` 是**空的** ⇒ CI 的 `cargo clippy` 用的是 clippy **默认** lint 集，而 `clippy-driver` 以 rustc 参数直接调用时用的是同一套。**实测对账**：把第 1 轮 CI 抓到的 `clippy::needless_borrow`（`testing.rs:98`）重新注入，本机这条腿给出**逐字相同**的错误（同消息、同行列）⇒ 它有牙。**不覆盖**：`--cap-lints`、依赖的 lint、`yeban-app` 的 clippy 目标 |
 | `… /tmp/uimcp-probe2/uimcp_tests` | `**87 passed; 0 failed**`（本线在 `yeban-ui-mcp` 里新增 **19** 条 `#[test]`：`methods.rs` +2 / `service.rs` +9 / `dry_run.rs` +3 / `ime.rs` +4 / `surface.rs` +1；另有 3 条在 `yeban-app` 侧，见 §4.1） |
 | `… /tmp/uimcp-probe2/contract_tests` | `**5 passed; 0 failed**` |
 | `cargo build -p yeban-mcp --features mcp-http`（**在主仓**执行，见下） | 供探针链接的真 rlib（`target/debug/libyeban_mcp.rlib`；9.3 s，其中 `yeban-model`/`yeban-decode`/`yeban-render`/`yeban-mcp` 四个 crate 真的编译了，其余命中缓存） |
@@ -268,8 +291,11 @@ CARGO_MANIFEST_DIR=$PWD/crates/yeban-ui-mcp /tmp/uimcp-probe2/uimcp_tests
 
 ### 6.2 本机**没有跑**的（交给 CI）
 
-- `cargo clippy -p yeban-ui-mcp --all-targets -- -D warnings`（**clippy 本机跑不了**：
-  它要编译 Slint；`run-gates.sh crate yeban-ui-mcp` 见 `slint` 会 `SKIP`）；
+- `cargo clippy -p yeban-ui-mcp --all-targets -- -D warnings` 的 **cargo 那一层**
+  （它要编译 Slint；`run-gates.sh crate yeban-ui-mcp` 见 `slint` 会 `SKIP`）。
+  ⚠ 但 `yeban-ui-mcp` 的 **clippy lint 本身**已由 §6.1 的第 (6) 步在本机覆盖
+  （`clippy-driver` + 默认 lint 集，与 CI 同口径且经注入对账）；未覆盖的只剩
+  `yeban-app` 的 clippy 目标与 `--cap-lints` 之类 cargo 侧设置；
 - `cargo test -p yeban-ui-mcp`（同一原因）与 `--features ui-mcp-http` 的组合；
 - **任何**编译到 `crates/yeban-app/**` 的命令（Slint + Tier-1 平台）⇒ §4.1 的 3 条 CI 判据
   与 `crates/yeban-app/src/live_surface.rs` 的接线**在本机只是"读过 + 手工核对"**
@@ -278,6 +304,11 @@ CARGO_MANIFEST_DIR=$PWD/crates/yeban-ui-mcp /tmp/uimcp-probe2/uimcp_tests
 - `cargo deny` / `--workspace` 全量 / 基准 / 模糊测试。
 
 ### 6.3 判决
+
+| 轮次 | run id | tip | 判决 | 读数 |
+| :--- | ---: | :--- | :--- | :--- |
+| 1 | [37254896937](https://github.com/gradetwo/yeban/actions/runs/37254896937) | 本线第 1 次推送 | **红** | `rust (yeban-ui-mcp)` clippy 2 条 + `rust (yeban-app)` 的 `live_ui_mcp` 1 条（§5.1）；`checks` / `deny` / `plan` / `lockfile` 绿 |
+| 2 | **pending** | §5.1 的三处修复 | 未读回 | 推送后用 `bash scripts/dev/ci-verdict.sh line/ui-mcp-dryrun-ime` 读回 |
 
 `bash scripts/dev/ci-verdict.sh line/ui-mcp-dryrun-ime` 读回；**未读回之前一律记 `pending`**。
 本文件的读数只覆盖 §6.1，任何"CI 通过"的说法都必须带上 run id。
