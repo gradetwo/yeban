@@ -39,6 +39,7 @@
 //! 不等长就会取到别的轨道的值或越界）。因此顺序是"先按新工程重置成静音 → 再由 60Hz 的
 //! [`apply_meters`] 填真实读数"，而不是"只写一次、之后靠运气对齐"。
 
+use slint::ComponentHandle as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -102,7 +103,7 @@ fn to_color(color: RgbColor) -> slint::Color {
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
 /// `project_projection_reaches_the_control_tree_and_the_pixels` 就是靠这一点
 /// 在同一个活窗口上切换两个工程）。
-pub fn apply_view(ui: &MainWindow, view: &ViewState) {
+pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32) {
     ui.set_window_title(view.title.clone().into());
     ui.set_bpm_display(view.bpm_display.clone().into());
     // 时间码的拍号网格：**唯一**的注入点（本函数）。`None`（模型层拒绝该拍号）
@@ -130,13 +131,16 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState) {
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
-    ui.set_note_ulids(strings(&view.note_ulids));
-    ui.set_note_velocities(lengths(&view.note_velocities));
-    // 卷帘音符的位置（x / y / 宽）—— 由 `MidiNote::start_tick` / `pitch` 整数派生，
-    // 界面只做"取数组下标"，不做任何位置算术。
-    ui.set_note_positions(lengths(&view.note_positions()));
-    ui.set_note_widths(lengths(&view.note_widths()));
-    ui.set_note_ys(lengths(&view.note_ys()));
+    // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
+    // 六个平行数组（ulids / velocities / positions / widths / ys / rows）必须共用**同一**索引集，
+    // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
+    // 本步先按 `scroll_x = 0`（尚无滚动模型, 见账本第 183 轮）：第一屏正确、屏外正确地不画。
+    let visible = view.visible_notes(0.0, viewport_width);
+    ui.set_note_ulids(strings(&visible.ulids));
+    ui.set_note_velocities(lengths(&visible.velocities));
+    ui.set_note_positions(lengths(&visible.positions));
+    ui.set_note_widths(lengths(&visible.widths));
+    ui.set_note_ys(lengths(&visible.ys));
     // 轨道色标：解析 / 回退都在投影层完成，这里只转成 Slint 的 `Color`。
     ui.set_track_colors(colors(&view.track_colors()));
     ui.set_track_color_labels(strings(&view.track_color_labels()));
@@ -432,7 +436,7 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
         return;
     }
     match ViewState::from_project(&port.project()) {
-        Ok(view) => apply_view(&ui, &view),
+        Ok(view) => apply_view(&ui, &view, ui.window().size().width as f32),
         Err(error) => {
             // 投影失败**出声**：工程已经在内存里回退了，但这一帧画不出来。
             // 静默吞掉会让"撤销没反应"变成一个查不出的现象。
@@ -479,6 +483,6 @@ pub fn build_main_window_with_console_tab(
     ui.set_playing(false);
     ui.set_console_tab(console_tab);
     ui.set_compact(scene.compact());
-    apply_view(&ui, view);
+    apply_view(&ui, view, ui.window().size().width as f32);
     Ok(ui)
 }
