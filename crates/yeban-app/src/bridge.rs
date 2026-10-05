@@ -283,6 +283,34 @@ pub fn tick_to_px(tick: u64, ticks_per_pixel: u64) -> Result<u32, BridgeError> {
     u32::try_from(tick / ticks_per_pixel).map_err(|_| BridgeError::PixelOverflow { tick })
 }
 
+/// `[UI-NOTE-002/003]` 把 tick **吸附**到网格：四舍五入到最近的 `grid_ticks` 倍数。
+///
+/// 规范要求"960 PPQ 吸附对齐"，且铅笔（"在吸附网格处画出音符"）与剪刀（"沿网格竖线切分"）都以它为前提。
+///
+/// 口径（刻意写明, 因为"四舍五入"在平局处有两种合理读法）：`grid_ticks` 为偶数时存在**正中间**的情况,
+/// 本函数**向更晚的时间（向上）**取整。`grid_ticks == 0` 表示**不吸附**，原样返回（且不除零）。
+/// 结果始终是 `grid_ticks` 的倍数, 且与输入的差不超过半个网格 —— 这两条就是判据里的定义性断言。
+#[must_use]
+pub fn snap_tick(tick: u64, grid_ticks: u64) -> u64 {
+    if grid_ticks == 0 {
+        return tick;
+    }
+    let remainder = tick % grid_ticks;
+    if remainder == 0 {
+        return tick;
+    }
+    let down = tick - remainder;
+    // 判据写成 `rem >= grid - rem`（等价于 `2*rem >= grid`）而**不是** `rem > grid/2`：
+    // ① `grid/2` 在平局时让"向上"落空 —— 实测 `snap_tick(480, 960)` 得 0, 与本函数文档不符（判据抓到的真错）;
+    // ② 用减法而不是 `rem * 2` 可避免 `grid` 很大时的乘法溢出。
+    // 奇数网格下 `rem == grid - rem` 不可能成立, 所以"更近的一侧"自动正确。
+    if remainder >= grid_ticks - remainder {
+        down.saturating_add(grid_ticks)
+    } else {
+        down
+    }
+}
+
 /// `逻辑像素 → tick`：整数乘法，**用 `checked_mul`**。
 ///
 /// # Errors
@@ -2535,6 +2563,42 @@ mod tests {
             vis.len(),
             total
         );
+    }
+
+    #[test]
+    fn snap_tick_is_a_multiple_within_half_a_grid_and_rounds_ties_up() {
+        // 定义性判据（最强的一条）：结果**必然是网格倍数**, 且与输入的差**不超过半个网格**。
+        for grid in [1_u64, 120, 240, 480, 960] {
+            for tick in [
+                0_u64, 1, 119, 120, 121, 239, 240, 479, 480, 481, 959, 960, 961, 12_345,
+            ] {
+                let snapped = snap_tick(tick, grid);
+                assert_eq!(snapped % grid, 0, "tick={tick} grid={grid} ⇒ 结果不是倍数");
+                let diff = tick.abs_diff(snapped);
+                assert!(
+                    diff <= grid / 2,
+                    "tick={tick} grid={grid} ⇒ 偏差 {diff} 超过半个网格"
+                );
+            }
+        }
+        // 已在网格上 ⇒ 不动。
+        assert_eq!(snap_tick(1920, 960), 1920);
+        // 平局 ⇒ **向上**（更晚）—— 这是口径, 不是巧合。
+        assert_eq!(snap_tick(480, 960), 960);
+        // 贴近前一个网格 ⇒ 向下。
+        assert_eq!(snap_tick(100, 960), 0);
+        assert_eq!(snap_tick(860, 960), 960);
+        // 不吸附: 原样返回, 且不除零。
+        assert_eq!(snap_tick(12_345, 0), 12_345);
+        // 大 tick 不回绕。
+        assert!(snap_tick(u64::MAX, 960) >= u64::MAX - 960);
+        // 单调不减: 吸附不能把后面的 tick 拉到前面的前面。
+        let mut previous = 0_u64;
+        for tick in (0..10_000).step_by(37) {
+            let snapped = snap_tick(tick, 240);
+            assert!(snapped >= previous, "tick={tick} ⇒ 非单调");
+            previous = snapped;
+        }
     }
 
     #[test]
