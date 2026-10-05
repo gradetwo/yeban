@@ -4918,3 +4918,31 @@ targets `--lib` does not cover (use `--all-targets`); heavy crates are skipped b
 that sees some lints; `steps=0` successes are empty greens; `grep` for common words matches crate names (`thiserror`,
 `static_assertions`); a run id must not go through a float template; and counting session rounds is not measuring elapsed time -
 the clock is. All of these are in the ledger with the runs that proved them.
+
+### Round 195: runbook for the OFFICIAL BASELINE-003 reading on the reference machine (item 2 of round 194)
+
+The gate as built runs on a hosted `ubuntu-latest` runner, and the standing rule (`spikes/README.md` line 36 plus `HD-45`) says a
+hosted reading cannot decide a frame-rate gate. `HD-38` recorded that a self-hosted runner is unbudgeted, so the official reading
+has to be produced deliberately on the machine `HD-45` names (the M2 Max reference machine, adaptive refresh accepted with the
+limitation written down). This is the procedure, so nobody has to reverse-engineer it:
+
+1. **Build in release, not debug.** `cargo test` defaults to debug and the loop is 600 frames of software rasterization; debug is
+   not the configuration the gate is about. The gate uses `--release` for that reason.
+2. **Run exactly the gate's command** so the numbers are comparable:
+   `cargo test -p yeban-app --locked --release --features ui-test-port --test test_port_adapter
+    frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness -- --ignored --nocapture`
+   Both `--features ui-test-port` and `--test test_port_adapter` are required (round 175); `--ignored` is what lets the heavy case
+   run outside the default pass.
+3. **Record three things together, never the number alone**: the printed line (`帧数=… 音符=… p50=… p99=… max=…`), the scroll
+   speed口径 (one screen per second, i.e. `viewport_width/120` px per frame - fixed in the case), and whether the run was static
+   or scrolling. A number without its口径 is not comparable to the bar of 8.3 ms.
+4. **Judge against p99 <= 8.3 ms** (120 FPS) and state the machine and its refresh characteristics, since `HD-45` accepted adaptive
+   refresh only with that limitation recorded.
+5. **Do not mix machines in one comparison.** The hosted reading (static, p50 9.507 ms / p99 10.244 ms) and a reference-machine
+   reading differ by hardware; quoting them side by side as if they were the same measurement would be exactly the "looks like it
+   is there" failure this ledger keeps recording.
+
+**One honest caveat about the number's meaning**: the case measures `request_redraw()` + `capture()` - i.e. rasterize and read the
+frame back - which includes the readback cost that a real display path would not pay on every frame. That makes the measurement
+**conservative** (it can only overstate frame time), and saying so is better than letting a reader assume it is a pure render
+timing.
