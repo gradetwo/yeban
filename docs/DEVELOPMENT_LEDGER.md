@@ -5693,3 +5693,27 @@ invented.
 **What I did NOT do**: start it. Two process incidents in the last three rounds (a chained gate-and-commit, an unscoped text
 replacement that corrupted unrelated code) are a signal to enter the next slice with a full verification budget rather than at the
 end of a long session. The reconnaissance above is the part that costs nothing to hand over.
+
+### Round 233: step 2 is feasible, and it has two unknowns that must be DECIDED rather than guessed
+
+Read rather than assumed: `UndoPort::commit_ops(&self, now_ms: u64, message: &str, ops: Vec<Op>) -> Result<EntityId,
+UndoRefusal>` exists (`undo.rs:259`), and its own doc comment calls itself "the future EDITING ENTRY POINT" - the model anticipated
+exactly this use. So the pencil's wiring is: `pencil_plan` -> `plan_to_add_note` -> `commit_ops` -> reproject, and undo plus the
+commit graph come along for free.
+
+Two things stand between that sketch and working code, and neither is an implementation detail - both are choices the spec does not
+make:
+
+1. **Which clip receives the new note?** `Op::AddNote` requires `clip_id`, and [UI-NOTE-003] says only "draw a note at the snap grid".
+   The plausible rules are different products, not equivalent ones: the clip under the clicked tick on the current track; the
+   currently selected clip; or a newly created clip when none exists there. Guessing would silently pick a behaviour the负责人 never
+   chose, and it would look right in a demo.
+2. **What is `now_ms`?** `commit_ops` timestamps the commit for the graph. The host needs a clock source; whether to use
+   `SystemTime::now()` or a monotonic counter aligned with the existing snapshot logic is a small decision with a visible
+   consequence (commit ordering in the graph, and whether two edits in the same millisecond are distinguishable).
+
+**What I will NOT do**: invent either rule and present the result as "the pencil works". Both belong in a decision the human can see,
+and the ledger is where they are visible. The first is the kind of question worth one line of ruling - I would default to "the clip
+under the clicked tick on the current track, and refuse (with a message) when that position has no clip", because refusing is
+recoverable while silently creating a clip is not - but that is a recommendation, not a decision I am taking unilaterally on a
+user-visible behaviour.
