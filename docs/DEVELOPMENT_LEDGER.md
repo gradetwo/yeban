@@ -5561,3 +5561,13 @@ and a staged compile is what catches it at the level that is wrong.
 **State after the revert**: working tree clean, HEAD unchanged from `c0e8ec3`, `cargo check -p yeban-app --all-targets` Finished,
 and the end-to-end click criterion from round 501 still passing (it observes `selected-note-count`, which does not depend on this
 visual array).
+
+### Round 226: verdicts 25-26
+
+Runs @ `9aa6292` and `46e1e0a` = **completed success** each. Completed full-workspace verdicts on main: **twenty-six**. No failing run
+existed at the time of reading, so there was nothing to chase - which is itself worth stating, because "no failures found" and "did
+not look for failures" are different claims and only the first one was checked.
+
+Still queued or in progress: `13e04e5` and `6aac172` (the selection model and the click callback), `c0e8ec3` (the end-to-end click),
+plus `660e583`, `87cb35a` and `0ac4930` in the queue. The selection work therefore has local verification only so far: 183 lib
+criteria, the feature-gated UI criterion asserting the flags array, `light`, and the extended guard.
