@@ -7477,3 +7477,18 @@ carrying forward: **validate generated source structurally before writing it**, 
 after the tree is dirty.
 
 **Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool still owed; CI green through `57b6b96`.
+
+
+### Round 304: an instrument slip in the commit message, and why the ledger survived it
+
+Round 303's ledger entry is intact because it was written by Python, but the same text passed to `git commit -m` through a shell heredoc **lost its
+backtick-quoted fragments**: the shell performed command substitution inside the message, so "from `pub fn export_project_to_file(` to the first line
+that is exactly `}`" was recorded as "from  to the first line that is exactly )".
+
+**Why it matters and why it did not**: the durable record is the ledger, and it is correct; the commit message is degraded and still readable, and the
+commit is already pushed, so rewriting history to fix prose would cost more than it is worth. What it does establish is the rule for this repository:
+**commit messages containing backticks must be passed as a file (`-F`) or with the backticks removed**, because `-m` with a heredoc substitutes
+them. That is the fourth instrument lesson of the same family (rounds 231/240/279/282), and like the others the fix is mechanical rather than clever.
+
+**Status unchanged**: tree green and clean; the mapping move's todo is one line of diagnosis (find the `+1` in the generated `export.rs`); `yeban-midi`
+holds `midi` and `vlq`; the MCP tool is owed; CI green through `108ed5a`.
