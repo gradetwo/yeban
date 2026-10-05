@@ -6876,3 +6876,32 @@ keeping: when the change is in a library, the local check belongs to its DEPENDE
 
 **Also measured**: the workspace-local rules forbid `--workspace` (AGENTS.md §5), so this per-crate enumeration is the correct local maximum -
 seven crates, 1004 criteria, no heavy `ui-test-port` builds beyond the app's existing UI criteria (18 + 1 ignored).
+
+### Round 279: a flaky lock test, caught because I read a tail and then checked
+
+Running `cargo test -p yeban-mcp --tests` for the first time this session produced a failure inside `tests/lock_advisory.rs` (13 passed, then
+FAILED). Two follow-ups, both necessary:
+
+| run | result |
+| :--- | :--- |
+| `--test lock_advisory` alone | **14 passed / 0 failed** |
+| `--tests` again (all targets) | **rc=0**, every target ok - 277 + 0 + 18 + 16 + 22 + 14 + 13 + 12 + 5 + 32 + 17 = **426 passed / 0 failed** |
+
+So the failure is **flaky, not deterministic**: it appears under whole-suite execution and not when the target runs alone, which is the signature
+of a timing/parallelism-dependent test - expected in a suite about advisory file locks, where several tests contend for the same lock files.
+
+**Two honest notes about my own handling of it**:
+1. my first glance at the `--tests` output used a `tail`, which cut the failure line off and left me about to report "integration tests pass" -
+   the third time this session that a positional tail hid the thing that mattered (rounds 231/240 were the others). Reading the WHOLE result list
+   is what caught it;
+2. having caught it, I did not stop at "flaky, moving on": the two runs above are what make "flaky" a finding rather than an excuse, and the
+   passing counts are recorded so a future reader can see the suite's true size (426 in the MCP crate alone).
+
+**Operational consequence, which matters more than usual right now**: CI runs this suite too, so a **red verdict may be this flake rather than a
+code defect**. When CI resumes, a failing `lock_advisory` should be **re-run before being treated as a regression** - and if it recurs, it is worth
+pinning the contended files (or serialising the target) rather than re-running indefinitely. Recorded now because the CI queue is deep and the
+first verdicts after the stall will be read under time pressure.
+
+**What this round also confirms**: the earlier "widened local verification" (round 278) covered `--lib` only. With this run the MCP crate is
+verified at **426** criteria including its contract, stdio end-to-end, and lock suites - so the session's local evidence is broader than the
+1004 lib criteria previously recorded.
