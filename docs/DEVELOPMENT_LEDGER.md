@@ -6645,3 +6645,34 @@ each produced damage that only reading caught afterwards.
 **What a successor should do first, in one sentence**: add the loudness and true-peak fields to the reported engine state (the engine already
 has the numbers), then decide whether they belong in `yeban_query_engine_state` or in a sibling tool whose parameters name the spec's
 windows.
+
+### Round 270: the injection mechanism makes the loudness change small AND rule-clean
+
+The read that decides the loudness item's real cost: MCP does not reach into the engine at all. `engine_state.rs` defines
+
+```rust
+/// 宿主注入的**引擎读数镜像**（只读快照，见模块文档的"为什么不是第二份状态"）。
+pub struct EngineReadings { pub sample_rate: u32, pub buffer_frames: u32 }
+```
+
+- a plain struct the HOST fills and MCP reads. Its module documentation already justifies the pattern ("why this is not a second state"),
+so the loudness values have a designed home rather than a workaround:
+
+1. extend `EngineReadings` with the spec's windows (integrated / momentary / short-term / LRA) and true peak - a few fields;
+2. the host fills them where it already fills `sample_rate`/`buffer_frames`, reading them from the engine that already computes them
+   (`yeban-dsp::loudness`, `yeban_engine::level::TruePeakDetector`);
+3. criteria: silence reports the floor, a full-scale tone reports a known LUFS within tolerance, and the reported true peak matches the
+   detector's own value.
+
+**Why this is better news than rounds 268/269 suggested**: the change does not touch the dependency direction (nothing new is depended on -
+the struct is injected), does not need the maths re-implemented (it exists), and does not force a decision about a new tool yet - the fields
+can go into the existing report first and the "sibling tool with named windows" question (round 267) can be answered afterwards with the data
+in hand. It is roughly three edits plus criteria, not a refactor.
+
+**What is still missing is one read, not a design**: where the host fills `sample_rate`/`buffer_frames` today, and whether the engine's
+loudness/true-peak values are reachable at that exact site (the engine owns them, but the meter plumbing may expose them only on another path,
+which is the one fact that could still widen the change).
+
+**Not done in this round for the same reason as the last four**: my session budget is nearly spent and the CI stall means even correct local
+criteria would receive no hosted verdict. Recording the three-edit shape is worth more than starting it badly - and it means a successor can
+do it in one focused pass rather than re-deriving what the injection pattern is.
