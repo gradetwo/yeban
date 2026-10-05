@@ -352,3 +352,4 @@ $ bash scripts/dev/ci-verdict.sh line/transport-engine
 `docs/ledger/feature-alignment.md` 的"走带"行与错位 7 里登记的那条链
 （"控件存在 ≠ 回调接线"）现在有了**动作记录**级证据，而不是控件树级证据。
 节拍器 / count-in / 录音 / 循环 / BPM 自动化仍未实现，逐条登记在 §7。
+> **集成者登记（第 69 轮）**：本条 need 已由 `line/app-projection`（CI run **37273921613 = success**）闭环 —— 时间码已按**投影的** `time_signature` 格式化（唯一换算搬进投影层 `bridge::timecode_for_ticks`/`TimecodeGrid`），Slint 的 `preedit-text`/`has-focus` 事件源已接进 `InputContext`（`ui/property isComposing` 读到同一个实例）。**归因更正**：本条 need 原写「`TimeSignature` 未投影进 `ViewState`」与事实相反 —— 它**早已投影**（`bridge.rs` 三字段 + `bar_length_ticks`）；真缺口是「**投影了但没消费**」。现象成立、理由不成立。
