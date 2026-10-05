@@ -239,13 +239,39 @@ rustc --edition 2024 --test -D warnings crates/yeban-mcp/verify/section_pure.rs 
 
 | 项 | 本机（Apple M2，受限沙箱） | CI |
 | :--- | :--- | :--- |
-| `cargo` 全量 / `clippy -p yeban-mcp` / e2e 判据 | **跑不了**：`yeban-mcp` 传递含 rayon/hound/midly/symphonia/rubato ⇒ `run-gates.sh crate yeban-mcp` **SKIP**（`heavy-deps.py yeban-mcp` exit 0） | `rust (yeban-mcp)` 腿：clippy `--all-targets -D warnings` + 全部 lib/集成判据 |
+| `cargo` 全量 / `clippy -p yeban-mcp` / e2e 判据 | **跑不了**：`yeban-mcp` 传递含 rayon/hound/midly/symphonia/rubato ⇒ `run-gates.sh crate yeban-mcp` **SKIP**（`heavy-deps.py yeban-mcp` exit 0） | `rust (workspace 全量)` 腿（本轮 plan 选了全量腿）：`cargo clippy --workspace --all-targets --locked -- -D warnings` + `cargo test --workspace --all-targets --locked` ⇒ **已由 run 37254805472 关闭** |
 | `src/domain/section_build.rs` 的逻辑与判据 | **真跑**（裸 `rustc --edition 2024 --test -D warnings` + `--extern yeban_theory`）：**32 passed; 0 failed**；`clippy-driver -D clippy::all` 0 告警 | 同一份源文件（CI 也编它） |
-| 本线改到的 lib 层文件（`section.rs` / `samples.rs` / `domain/mod.rs`） | **只做了类型/文本级核对**，未编译 | `rust (yeban-mcp)` 腿编译 + 判据 |
+| 本线改到的 lib 层文件（`section.rs` / `samples.rs` / `domain/mod.rs`） | **只做了类型/文本级核对**，未编译 | 上面的 `clippy --workspace --all-targets` + `test --workspace --all-targets` 覆盖 |
 | `run-gates.sh light` | **真跑**：`门禁通过 (mode=light)`，exit 0 | `checks` 腿跑同一脚本的相应部分 |
-| 判决 | 本机绿**不是**判决 | 判决 = `bash scripts/dev/ci-verdict.sh line/theory-wiring` 读回的 run（下节回填） |
+| 判决 | 本机绿**不是**判决 | 判决 = `bash scripts/dev/ci-verdict.sh --watch line/theory-wiring` 读回的 run —— 见 §7.1 |
 
-**本轮 CI 判决**：**事后补记**（L23/L26 —— 文档提交与代码提交分开推送，见 §9 的提交清单）。
+### 7.1 代码那一轮的判决（**这一轮才算判决**，L23）
+
+```text
+$ bash scripts/dev/ci-verdict.sh --watch line/theory-wiring     # 退出码 0 ⇒ 判决属于本线 tip
+✓ line/theory-wiring CI · 37254805472   (triggered via push; tip = dba2b19)
+✓ lockfile (确定性 Cargo.lock) 16s        ✓ deny (cargo-deny 开源合规) 57s
+✓ plan (受影响集合) 5s                    ✓ checks (fmt / 红线守卫 / schema) 43s
+✓ windows (yeban-mcp / yeban-model 的平台分支) 1m50s
+✓ rust (workspace 全量) 4m13s             - rust (${{ matrix.crate }}) 0s（plan 选了全量腿）
+```
+
+判决 = **`conclusion: success`**，且它覆盖了本线的**全部**判据：
+
+- `plan` 判定"全工作区受影响"（本线动了根 `Cargo.lock` ⇒ 命中 ROOT_TRIGGERS），
+  因此跑的是 `.github/workflows/ci.yml` 的 **`rust (workspace 全量)`** 腿，它的两步是
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` 与
+  `cargo test --workspace --all-targets --locked`（见该 workflow 第 262–271 行）
+  ⇒ **`yeban-mcp` 的 lib 判据 + `tests/tools_e2e.rs` + `section.rs` 判据都真的在 CI 上跑过并全绿**，
+  本机跑不了的那部分（§7 上表"本机跑不了"三行）由此关闭；
+- `windows` 腿也绿（`yeban-mcp` / `yeban-model` 的平台分支）；
+- `checks` 腿跑的是与本机同一条 `run-gates.sh` 相应步骤（fmt / 红线守卫 / schema）。
+
+**文档提交的节奏（L23/L26）**：本节与 `tools-domain-notes.md` 的 needs-6 回填是**代码提交之后**的
+第二个 docs-only 提交，以免 `ci.yml` 的 `concurrency.cancel-in-progress` 把代码那一轮的 run 吃掉。
+⇒ **代码判决一律以 tip `dba2b19` 的 run `37254805472` 为准**；docs-only 那一轮的 run 即使绿，
+也只证明文档不破坏 fmt/守卫/schema（它会按受影响集合跳过 rust 腿），**不构成**对代码的判决。
+
 
 ---
 
@@ -288,11 +314,18 @@ $ git diff --stat Cargo.lock Cargo.toml
 | `Cargo.lock` | +1 | 依赖边（**只**此一行） |
 | `docs/ledger/tools-domain-notes.md` | 1 行 | **needs-6 → 已接线**（就地改写，保留"当时"表述） |
 | `docs/ledger/dependency-licenses.md` | 1 行 | 生成物（`Cargo.lock` 指纹） |
-| `docs/ledger/theory-wiring-notes.md` | 新增（298 行） | 本文件 |
+| `docs/ledger/theory-wiring-notes.md` | 新增（324 行，含 §7.1 回填） | 本文件 |
 
-净行数（`git diff --stat`，**提交前实测**）：**10 files changed, 945 insertions(+), 175 deletions(-)**
-（不含本文件 —— 它是新增未跟踪文件；本文件与 §7 的 run id 属**第二个 docs-only 提交**）。
+净行数：
 
-**提交纪律**：`git add -A` 前先看 `git diff --cached --stat`；代码 + 判据 + 文档（needs-6/本文件）在
-**第一批**推送并等判决，读回 run id 后再用**第二个 docs-only 提交**把 §7 的 run id 与 needs-6 的
-"run id" 回填（L23/L26：避免 `concurrency.cancel-in-progress` 吃掉代码那一轮 run）。
+- **代码提交** `dba2b19`（`git show --stat`）：**11 files changed, 1243 insertions(+), 175 deletions(-)**
+  —— 含本文件的首版（298 行）；
+- 其中的**机械改动**（不含本文件）：**10 files changed, 945 insertions(+), 175 deletions(-)**
+  （`git diff --stat` 提交前实测）；
+- **第二个 docs-only 提交**（本文件 §7.1 与 needs-6 的 run id 回填）：只改
+  `docs/ledger/theory-wiring-notes.md` 与 `docs/ledger/tools-domain-notes.md` 两行。
+
+**提交纪律**（L23/L26/L28）：`git add -A` 前先看 `git diff --cached --stat`（11 个文件，全部在本线地盘内，
+无 `__pycache__` / `*.log` / `*.bak`）；代码 + 判据 + 文档在**第一批**推送（`dba2b19`）并等判决，
+读回 run `37254805472` 后才做**第二个 docs-only 提交**回填 run id，
+以免 `concurrency.cancel-in-progress` 吃掉代码那一轮的 run。
