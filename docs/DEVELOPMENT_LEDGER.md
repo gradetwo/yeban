@@ -4783,3 +4783,31 @@ Completed full-workspace verdicts on main now number **thirteen**, the thirteent
 
 Still in flight: the fps gate on the same commit (`37353169531`), whose number will be the first measurement taken on the
 corrected long-timeline fixture - and which, per round 187, measures a STATIC viewport rather than the spec's scrolling scene.
+
+### Round 189: the golden explanation is CONFIRMED by reading, and the target wiring explains why it could be
+
+Round 188 recorded, as the likely reason the goldens did not change, that the golden suites render small fixtures. Reading
+`crates/yeban-app/tests/real_ui_tier1.rs` settles it, and the file is only 25 lines:
+
+```rust
+#[path = "../src/test_port_adapter.rs"]
+mod criteria;
+```
+
+So that target compiles the SAME criteria source as the `[[test]] name = "test_port_adapter"` target, and those criteria build
+their windows from `filled_project()` / `ViewState::demo()`. A small project's notes fit inside the 1920px window, so clipping
+removes nothing there and the pixels are unchanged - which is exactly why the visual-regression criterion passed on `44421ff`
+while `project_with_notes(100_000)` is clipped to roughly 1%. The prediction was wrong for a checkable reason, now checked.
+
+**A more useful fact from the same header, which I had not known**: the file exists because the criteria would otherwise NEVER
+RUN. `test_port_adapter.rs` is the `[[test]]` target gated behind `required-features = ["ui-test-port"]`, and the header states
+that CI currently has **no step enabling that feature** (the integrator removed it by discipline), so that target was never
+compiled - with `66b002c` / run `37223586792` cited as the time 8 compile errors proved it. The auto-discovered
+`tests/real_ui_tier1.rs` exists to make `cargo test -p yeban-app --all-targets` compile and run the same criteria, with the
+dependency supplied through `[dev-dependencies]` so that release builds are unaffected (verified by
+`cargo tree -p yeban-app -e normal --locked`, which must not list `yeban-ui-test-port`).
+
+**Consequence I should have drawn earlier and now record**: because CI runs those criteria through the dev-dependency path, my
+100 000-note timing test in that same file IS compiled by CI, and it is `#[ignore]`d, so CI skips it - which is coherent with the
+manual `fps` gate being the only place it runs. It also means the round-176 lesson ("CI's clippy step caught a lint in
+test_port_adapter.rs") and this wiring describe the same mechanism from two sides.
