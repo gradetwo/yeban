@@ -317,7 +317,6 @@ CI 侧对应的机械保护是 `tools_e2e.rs::propose_section_creates_a_real_sec
 | **第 3 轮** | **`37253125714`** | **`05b1a94`** | ✅ **success（全绿）**：`checks` 42s / `deny` 47s / `lockfile` 19s / `plan` 6s / `rust (yeban-mcp)` 1m2s / `windows (yeban-mcp / yeban-model 的平台分支)` 2m6s / `rust (yeban-ui-mcp)` 2m4s 全部 ✓；`rust (workspace 全量)` 按受影响集合跳过（`-`） |
 
 ### 10.1 两处"自伤"的归因（值得下一线抄走的教训）
-
 两轮红**都不是**功能错，而是"**本机编译不到的那两个文件**里的低级错误"：
 
 1. **相对路径**：`section.rs` 的 `mod tests` 里我写了
@@ -334,6 +333,19 @@ CI 侧对应的机械保护是 `tools_e2e.rs::propose_section_creates_a_real_sec
 或者把被测逻辑抽到**本机可编译的零重依赖模块**里（本线已经这么做了 —— 19 条判据因此
 在本机就抓住了两次注入，而上面那两条恰恰落在**没抽出去**的薄适配层与端到端判据上）。
 
+### 10.2 台账回写提交自身的判决（"记录判决的提交会再前进一格"）
+
+本文件 §10 的判决回写是**文档改动**，它的提交（`b817a55`）会再前进一格，
+因此按本仓既有纪律（`tools-domain-notes.md` §7 的同一条注记）**再读回一次判决**：
+
+| 轮次 | run id | tip | 结论 |
+| :--- | ---: | :--- | :--- |
+| 第 4 轮（判决回写，仅 `docs/ledger/**`） | **`37253368194`** | `b817a55` | ✅ **success**：`checks`（fmt / 红线守卫 / schema）33s / `deny` 43s / `lockfile` 16s / `plan` 5s 全 ✓；`crates/**` 的三条腿（`rust (yeban-mcp)` / `windows (…)` / `rust (workspace 全量)`）按**受影响集合** 0s 跳过 —— 这是设计如此，不是"没跑" |
+
+**约定**：本文件之后**不再**为"记录上一次判决"再开提交（否则无限回退）。
+后续读数是：① 判决回写提交自己的判决记在**上一段这张表**里；② 再往后的任何提交的判决
+由线主用 `scripts/dev/ci-verdict.sh` 读数并写进**该次提交的信息 / 线报告**。
+
 ---
 
 ## 11. 文件清单与净行数
@@ -347,9 +359,14 @@ CI 侧对应的机械保护是 `tools_e2e.rs::propose_section_creates_a_real_sec
 | `crates/yeban-mcp/verify/section_pure.rs` | **新增**（本机脚手架） | +157 / -0 |
 | `crates/yeban-mcp/src/domain/section.rs` | 重写为适配层 | +147 / -390 |
 | `crates/yeban-mcp/src/domain/mod.rs` | 模块注册 + `draft_unwired` 推导 + `willCreate` | +31 / -2 |
-| `docs/ledger/tools-domain-notes.md` | 仅 `MCP-TOOL-005` 相关行 | +50 / -7 |
+| `docs/ledger/tools-domain-notes.md` | 仅 `MCP-TOOL-005` 相关行 | 见下注 |
 | `docs/ledger/mcp-render-notes.md` | 仅 needs-4 一行 | +1 / -1 |
-| `docs/ledger/propose-section-notes.md` | **新增**（本文件） | 见 `git diff` |
+| `docs/ledger/propose-section-notes.md` | **新增**（本文件） | 见下注 |
+
+> **为什么两个台账文件不写死行数**：它们随"判决回写"继续增长，
+> 而任何在此处写死的数字都会被**写下它的这一次改动**作废（自指）。
+> 精确读数请跑 `git diff 8529b31 <tip> --numstat`（本行付了 3 次判决回写，
+> 其中 `tools-domain-notes.md` 约 +64 / -7）。
 
 **没有**触碰（逐个对照任务书的禁改清单）：任何其它 `crates/**`、`schemas/**`、
 根 `Cargo.toml` / `Cargo.lock`、`.github/**`、`scripts/**`、`deny.toml`、`docs/adr/**`、
