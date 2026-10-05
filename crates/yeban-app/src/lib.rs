@@ -70,6 +70,7 @@ pub mod meters;
 pub mod open;
 pub mod save;
 pub mod scene;
+pub mod undo;
 
 /// `build.rs` 里 `slint_build::compile("ui/app.slint")` 生成的 Slint 组件类型。
 ///

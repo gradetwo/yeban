@@ -51,6 +51,7 @@ use crate::engine_host::EngineHost;
 use crate::meters::{MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
 use crate::ui::MainWindow;
+use crate::undo::{UiAction, UndoPort};
 
 /// `[string]` 属性 ← `&[String]`。
 fn strings(values: &[String]) -> ModelRc<SharedString> {
@@ -283,7 +284,87 @@ pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
     });
 }
 
-/// 构造主窗口：注入**外壳场景**（会话运行态 / 本机视口）+ 投影状态（底部控制台默认 Tab 0）。
+/// 把**撤销的**模型读数注入界面（显示态 + 时光机弹窗开关）。
+///
+/// 与 [`apply_transport`] 同一条纪律：界面**不自己算**"能不能撤销"。
+/// 唯一的事实源是 [`UndoPort::display`]（= `undo_session::UndoDisplay`：
+/// `CommitGraph` + `UndoCursor` 的读数）。
+///
+/// 为什么 `undo-tree-open` 也在这里写：它是**界面运行态**（不是模型读数），
+/// 但它必须与"撤销动作"共用同一个写者，否则弹窗开关就会有两个真相源。
+pub fn apply_undo(ui: &MainWindow, port: &UndoPort) {
+    let display = port.display();
+    let clamp = |value: usize| i32::try_from(value).unwrap_or(i32::MAX);
+    ui.set_undo_tree_open(port.undo_tree_open());
+    ui.set_undo_can_undo(display.can_undo);
+    ui.set_undo_can_redo(display.can_redo);
+    ui.set_undo_depth(clamp(display.undoable));
+    ui.set_undo_undone(clamp(display.undone));
+    ui.set_undo_commit_count(clamp(display.commit_count));
+    ui.set_branch_name(display.branch.into());
+}
+
+/// 把撤销入口接到界面上（`toggle-undo-tree` 与时光机的"撤销一步"按钮）。
+///
+/// 两条回调都汇到**同一个** [`UndoPort::perform`]：
+///
+/// | 界面回调 | 动作 | 工程会不会变 |
+/// | :--- | :--- | :--- |
+/// | `toggle-undo-tree` | `UiAction::ToggleUndoTree` | 不会（只开关弹窗） |
+/// | `undo-step`（弹窗按钮） | `UiAction::Undo` | **会**（走模型的撤销入口） |
+///
+/// 每次动作之后：
+///
+/// 1. 用**模型读数**回写显示态（[`apply_undo`]）；
+/// 2. 工程真的变了就**重新投影**（[`ViewState::from_project`] → [`apply_view`]）——
+///    界面显示的是回退后的那一版工程，而不是"游标动了但画面没动"。
+///
+/// 键盘那条路（`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`）走的是
+/// [`crate::undo::dispatch_key`] + [`crate::undo::perform_key`]：策略表仍然是
+/// `crate::input` 那一份（物理扫描码 + IME 合成态防护），本函数不复制它。
+pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
+    {
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_toggle_undo_tree(move || {
+            port.perform(UiAction::ToggleUndoTree);
+            refresh_undo(&weak, &port, false);
+        });
+    }
+    {
+        let port = Rc::clone(port);
+        let weak = slint::ComponentHandle::as_weak(ui);
+        ui.on_undo_step(move || {
+            port.perform(UiAction::Undo);
+            refresh_undo(&weak, &port, true);
+        });
+    }
+}
+
+/// 撤销动作之后把界面拉回**模型读数**（显示态）+ **投影**（工程画面）。
+///
+/// `reproject` 为 `false` 时只回写显示态：`toggle-undo-tree` 不改工程，
+/// 重新投影一遍是白费（而且 `apply_view` 会重置电平快照）。
+fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool) {
+    let Some(ui) = weak.upgrade() else {
+        debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+        return;
+    };
+    apply_undo(&ui, port);
+    if !reproject {
+        return;
+    }
+    match ViewState::from_project(&port.project()) {
+        Ok(view) => apply_view(&ui, &view),
+        Err(error) => {
+            // 投影失败**出声**：工程已经在内存里回退了，但这一帧画不出来。
+            // 静默吞掉会让"撤销没反应"变成一个查不出的现象。
+            eprintln!("[yeban-app] 撤销后重新投影失败: {error}");
+        }
+    }
+}
+
+/// 构造主窗口：注入**外壳场景**/// 构造主窗口：注入**外壳场景**（会话运行态 / 本机视口）+ 投影状态（底部控制台默认 Tab 0）。
 ///
 /// 这是 `main.rs` 与全部 UI 判据的**唯一**构造入口。
 ///

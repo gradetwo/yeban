@@ -1,0 +1,650 @@
+//! 撤销的**界面侧**入口 —— ADR-0001 **D45** 的"人按 `Cmd+Z` 真的能撤销"这一半。
+//!
+//! ## 三条边界（本模块的设计就是这三条）
+//!
+//! 1. **同一份实现**：本模块用 `#[path]` 引入 `crates/yeban-mcp/src/undo_session.rs`
+//!    —— 与 MCP 侧**字面上同一份源码**（`yeban-mcp` 的 `lib.rs` 也 `pub mod undo_session;`）。
+//!    判据 `undo_session::tests::no_second_undo_implementation_exists_in_the_workspace`
+//!    扫描两个 crate 的生产源码，任何自写的反向应用循环都变红。
+//! 2. **零 Slint 依赖**：本模块只依赖 `std` + `yeban-model`（+ 共享实现）。
+//!    理由不是洁癖：`yeban-app` 一旦编译就要拖 Slint/femtovg/winit 的重依赖，
+//!    而"哪个动作改了工程、改了几步、前后指纹是多少"是**最值得在本机真跑**的东西。
+//!    薄薄一层 Slint 接线因此全部留在 [`crate::host`] 的 `wire_undo` / `apply_undo`。
+//! 3. **每个界面动作都进日志**：所有撤销类 UI 事件都只能走 [`UndoPort::perform`]，
+//!    它把"动作 + 后果 + 游标前后 + 工程指纹前后"记成 [`UiActionRecord`]。
+//!    判据因此可以断言"**点了它 ⇒ 工程真的回退了一版**"，而不是
+//!    "控件树里有这个元素"（三方表的错位 5 明确警告过那种假证据）。
+//!
+//! ## 显示态来自模型读数
+//!
+//! 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由
+//! [`undo_session::UndoDisplay`] 从 `CommitGraph` + `UndoCursor` 读出，
+//! 界面**不自己算**（`views` 只是把读数写进 Slint 属性，见 `host::apply_undo`）。
+//!
+//! ## 会话运行态 [MODEL-ISO-001]
+//!
+//! [`UndoPort`] 里的"时光机弹窗是否打开"是**界面运行态**；游标是**会话运行态**。
+//! 两者都不进 `.yeban`：判据
+//! `crates/yeban-mcp/tests/undo_wiring.rs::the_cursor_never_reaches_the_project_container`
+//! 用容器字节级证据钉住这一点。
+
+#![allow(clippy::module_inception)]
+
+#[path = "../../yeban-mcp/src/undo_session.rs"]
+pub mod undo_session;
+
+use std::cell::{Cell, RefCell};
+
+use yeban_model::{EntityId, Op, YebanProjectV1};
+
+pub use undo_session::{
+    CommitRequest, UndoDisplay, UndoRefusal, UndoSession, UndoState, project_fingerprint,
+};
+
+use crate::input::{Action, InputContext, Modifiers, PhysicalKey, Resolution};
+
+/// 界面上的撤销类动作（**全部**撤销入口都归到这里）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiAction {
+    /// `Cmd+Z` / 时光机里的"撤销一步"按钮。
+    Undo,
+    /// `Cmd+Shift+Z`。
+    Redo,
+    /// 多步撤销（时光机点击某个节点）。
+    UndoMany(usize),
+    /// 打开 / 关闭 / 切换时光机弹窗（只改界面运行态，不动工程）。
+    OpenUndoTree,
+    /// 关闭时光机弹窗。
+    CloseUndoTree,
+    /// 切换时光机弹窗。
+    ToggleUndoTree,
+}
+
+impl UiAction {
+    /// 动作名（进动作日志；判据据它断言"点了哪一个"）。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+            Self::UndoMany(_) => "undo-many",
+            Self::OpenUndoTree => "open-undo-tree",
+            Self::CloseUndoTree => "close-undo-tree",
+            Self::ToggleUndoTree => "toggle-undo-tree",
+        }
+    }
+}
+
+/// 键盘策略表 → 界面动作的**唯一**映射。
+///
+/// `[UI-A11Y-001]` §7.1 的物理扫描码解析住在 [`crate::input`]（纯 Rust、22 条判据），
+/// 这里只把解析结果接到撤销入口上。`main.rs` 的按键分发与它**共用**这一个函数，
+/// 因此"`Cmd+Z` 解析对了但没人接"这类错位不可能再出现。
+#[must_use]
+pub const fn dispatch_key(action: Action) -> Option<UiAction> {
+    match action {
+        Action::Undo => Some(UiAction::Undo),
+        Action::Redo => Some(UiAction::Redo),
+        Action::OpenTimeMachine => Some(UiAction::OpenUndoTree),
+        _ => None,
+    }
+}
+
+/// 键盘事件 → 会话动作：**整条链的唯一落点**。
+///
+/// `context` 就是 `crate::input` 的策略表（物理扫描码绑定 + IME 合成态拦截 +
+/// 焦点规则 `[UI-A11Y-001/002]`），因此本函数**不复制**任何键盘策略：
+/// 它只把策略表判定出的 [`Action`] 交给 [`dispatch_key`]，再落到 [`UndoPort::perform`]。
+///
+/// 返回 `None` = 这个键与撤销无关（调用方应当放行给别的处理器）。
+/// 注意"文本输入框聚焦 + `Cmd+Z`"按规范是 `PassThrough`（给文本框做文本撤销），
+/// 因此那时这里同样返回 `None` —— 那是策略表说的，不是本函数猜的。
+pub fn perform_key(
+    port: &UndoPort,
+    context: &InputContext,
+    key: PhysicalKey,
+    modifiers: Modifiers,
+) -> Option<ActionOutcome> {
+    match context.resolve(key, modifiers) {
+        Resolution::Action(action) => dispatch_key(action).map(|ui_action| port.perform(ui_action)),
+        Resolution::PassThrough | Resolution::ConsumedByIme => None,
+    }
+}
+
+/// 一次动作的后果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActionOutcome {
+    /// 工程**真的**改动了若干步。
+    Changed {
+        /// 实际步数。
+        steps: usize,
+        /// 执行后已撤销的总步数。
+        undone_total: usize,
+        /// 被处理的 op 变体名。
+        op_kinds: Vec<String>,
+    },
+    /// 被拒绝（工程与游标一位不动）。
+    Refused {
+        /// 人话原因（来自 [`UndoRefusal`]）。
+        detail: String,
+    },
+    /// 只改了界面运行态（工程与游标都没动）。
+    DisplayOnly,
+}
+
+impl ActionOutcome {
+    /// `true` = 工程真的被改动了（判据的"真的回退了一版"就是这一条）。
+    #[must_use]
+    pub const fn changed(&self) -> bool {
+        matches!(self, Self::Changed { .. })
+    }
+}
+
+/// 一次界面动作的**记录**（动作日志的一行）。
+///
+/// 这是"接线"的可机械验证证据：判据不需要看控件树，只需要看这一行里
+/// 指纹前后是否真的变了、游标是否真的前移了。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiActionRecord {
+    /// 动作名（[`UiAction::name`]）。
+    pub action: &'static str,
+    /// 后果。
+    pub outcome: ActionOutcome,
+    /// 动作前的工程指纹（模型容器字节的 SHA-256）。
+    pub fingerprint_before: Option<String>,
+    /// 动作后的工程指纹。
+    pub fingerprint_after: Option<String>,
+    /// 动作前已撤销步数。
+    pub undone_before: usize,
+    /// 动作后已撤销步数。
+    pub undone_after: usize,
+    /// 动作后还能撤销几步（模型读数）。
+    pub undoable_after: usize,
+    /// 动作前提交数。
+    pub commits_before: usize,
+    /// 动作后提交数。
+    pub commits_after: usize,
+    /// 动作后时光机弹窗是否打开。
+    pub undo_tree_open: bool,
+}
+
+impl UiActionRecord {
+    /// `true` = 这一次动作**真的**改了工程（逐字节可验证）。
+    #[must_use]
+    pub fn changed_project(&self) -> bool {
+        self.outcome.changed()
+            && self.fingerprint_before.is_some()
+            && self.fingerprint_before != self.fingerprint_after
+    }
+}
+
+/// 界面 → 会话的**唯一**入口。
+///
+/// 为什么用 `RefCell` / `Cell` 而不是 `&mut self`：Slint 的回调是 `Fn`
+/// （`on_toggle_undo_tree(move || …)`），闭包里只能拿到 `Rc<UndoPort>`。
+/// 内部可变性让"回调里调 `perform`"这一件事在类型上成立，而不必把整个端口
+/// 变成 `Rc<RefCell<UndoPort>>`（那会让每次调用都可能撞上借用冲突）。
+#[derive(Debug)]
+pub struct UndoPort {
+    session: RefCell<UndoSession>,
+    actions: RefCell<Vec<UiActionRecord>>,
+    open: Cell<bool>,
+}
+
+impl UndoPort {
+    /// 从一个已打开的会话构造端口。
+    #[must_use]
+    pub fn new(session: UndoSession) -> Self {
+        Self {
+            session: RefCell::new(session),
+            actions: RefCell::new(Vec::new()),
+            open: Cell::new(false),
+        }
+    }
+
+    /// 显示态（**模型读数**：能不能撤 / 还能撤几步 / 已撤几步 / 提交数 / 分支）。
+    #[must_use]
+    pub fn display(&self) -> UndoDisplay {
+        self.session.borrow().display()
+    }
+
+    /// 权威工程的一份拷贝（界面重投影用）。
+    #[must_use]
+    pub fn project(&self) -> YebanProjectV1 {
+        self.session.borrow().project().clone()
+    }
+
+    /// 提交图谱的一份拷贝（**只读**用途：时光机画版本树、保存 `history.dag`）。
+    ///
+    /// 为什么给拷贝而不是 `&CommitGraph`：端口内部用 `RefCell` 持有会话，
+    /// 借出去的引用会与 `perform` 的借用撞车。图谱本身是 `BTreeMap` 集合，
+    /// 拷贝的代价是 O(提交数)。
+    #[must_use]
+    pub fn graph(&self) -> yeban_model::CommitGraph {
+        self.session.borrow().graph().clone()
+    }
+
+    /// 当前工程指纹（模型容器字节的 SHA-256）。
+    #[must_use]
+    pub fn fingerprint(&self) -> Option<String> {
+        self.session.borrow().fingerprint().ok()
+    }
+
+    /// 时光机弹窗是否打开（**界面运行态**，不是模型读数）。
+    #[must_use]
+    pub const fn undo_tree_open(&self) -> bool {
+        self.open.get()
+    }
+
+    /// 动作日志（按发生顺序）。
+    #[must_use]
+    pub fn records(&self) -> Vec<UiActionRecord> {
+        self.actions.borrow().clone()
+    }
+
+    /// 最近一次动作。
+    #[must_use]
+    pub fn last_record(&self) -> Option<UiActionRecord> {
+        self.actions.borrow().last().cloned()
+    }
+
+    /// 未来的**编辑入口**（本线只接线撤销；编辑侧见台账的未实现项）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`undo_session::commit`]。
+    pub fn commit_ops(
+        &self,
+        now_ms: u64,
+        message: &str,
+        ops: Vec<Op>,
+    ) -> Result<EntityId, UndoRefusal> {
+        self.session.borrow_mut().commit(CommitRequest {
+            now_ms,
+            origin: yeban_model::OpOrigin::UserUi,
+            message: message.to_owned(),
+            ops,
+        })
+    }
+
+    /// 执行一个界面动作，并把结果记进动作日志。
+    ///
+    /// **这是所有撤销类 UI 事件的唯一落点**（`main.rs` 的 `Cmd+Z` 与时光机按钮、
+    /// `input.rs` 的策略表都汇到这里）。
+    pub fn perform(&self, action: UiAction) -> ActionOutcome {
+        let before_fingerprint = self.fingerprint();
+        let (undone_before, commits_before) = {
+            let session = self.session.borrow();
+            (session.state().undone(), session.graph().commit_count())
+        };
+
+        let outcome = match action {
+            UiAction::Undo => self.run_undo(1),
+            UiAction::UndoMany(steps) => self.run_undo(steps),
+            UiAction::Redo => self.run_redo(1),
+            UiAction::OpenUndoTree => {
+                self.open.set(true);
+                ActionOutcome::DisplayOnly
+            }
+            UiAction::CloseUndoTree => {
+                self.open.set(false);
+                ActionOutcome::DisplayOnly
+            }
+            UiAction::ToggleUndoTree => {
+                self.open.set(!self.open.get());
+                ActionOutcome::DisplayOnly
+            }
+        };
+
+        let after_fingerprint = self.fingerprint();
+        let (undone_after, undoable_after, commits_after) = {
+            let session = self.session.borrow();
+            let display = session.display();
+            (display.undone, display.undoable, display.commit_count)
+        };
+        self.actions.borrow_mut().push(UiActionRecord {
+            action: action.name(),
+            outcome: outcome.clone(),
+            fingerprint_before: before_fingerprint,
+            fingerprint_after: after_fingerprint,
+            undone_before,
+            undone_after,
+            undoable_after,
+            commits_before,
+            commits_after,
+            undo_tree_open: self.open.get(),
+        });
+        outcome
+    }
+
+    fn run_undo(&self, steps: usize) -> ActionOutcome {
+        let mut session = self.session.borrow_mut();
+        match session.undo_steps(steps) {
+            Ok(outcome) => ActionOutcome::Changed {
+                steps: outcome.steps,
+                undone_total: outcome.undone_total,
+                op_kinds: outcome
+                    .op_kinds
+                    .iter()
+                    .map(|kind| (*kind).to_owned())
+                    .collect(),
+            },
+            Err(refusal) => ActionOutcome::Refused {
+                detail: refusal.to_string(),
+            },
+        }
+    }
+
+    fn run_redo(&self, steps: usize) -> ActionOutcome {
+        let mut session = self.session.borrow_mut();
+        match session.redo_steps(steps) {
+            Ok(outcome) => ActionOutcome::Changed {
+                steps: outcome.steps,
+                undone_total: outcome.undone_total,
+                op_kinds: outcome
+                    .op_kinds
+                    .iter()
+                    .map(|kind| (*kind).to_owned())
+                    .collect(),
+            },
+            Err(refusal) => ActionOutcome::Refused {
+                detail: refusal.to_string(),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yeban_model::samples::filled_project;
+    use yeban_model::{OpOrigin, UndoCursor};
+
+    const NOW: u64 = 1_760_000_000_000;
+
+    fn port() -> UndoPort {
+        let session =
+            UndoSession::open("<判据>", "yeban-app", filled_project(), NOW).expect("打开");
+        UndoPort::new(session)
+    }
+
+    /// 夹具 op（与 MCP 侧同一个 `wiring_fixture`）。
+    fn fixture_op(port: &UndoPort) -> Op {
+        let fixture = undo_session::wiring_fixture(&port.project()).expect("夹具");
+        fixture.op()
+    }
+
+    /// 判据 ⑨（界面侧）：**点了它 ⇒ 工程真的回退了一版**（动作日志断言）。
+    #[test]
+    fn a_ui_action_really_rolls_the_project_back_one_version() {
+        let port = port();
+        let pristine = port.fingerprint().expect("指纹");
+        let op = fixture_op(&port);
+        port.commit_ops(NOW + 1, "判据夹具", vec![op])
+            .expect("提交");
+        let edited = port.fingerprint().expect("指纹");
+        assert_ne!(pristine, edited, "夹具必须真的改了工程");
+        assert_eq!(port.display().undoable, 1, "提交之后可撤 1 步");
+
+        // —— 这就是"点击"：界面动作走的是唯一入口 ——
+        let outcome = port.perform(UiAction::Undo);
+        assert_eq!(
+            outcome,
+            ActionOutcome::Changed {
+                steps: 1,
+                undone_total: 1,
+                op_kinds: vec!["Batch".to_owned()],
+            }
+        );
+        assert_eq!(
+            port.fingerprint().expect("指纹"),
+            pristine,
+            "工程真的回退了一版"
+        );
+
+        let record = port.last_record().expect("动作日志");
+        assert_eq!(record.action, "undo");
+        assert!(record.changed_project(), "动作日志必须证明工程真的变了");
+        assert_eq!(record.fingerprint_before.as_deref(), Some(edited.as_str()));
+        assert_eq!(record.fingerprint_after.as_deref(), Some(pristine.as_str()));
+        assert_eq!(record.undone_before, 0);
+        assert_eq!(record.undone_after, 1);
+        assert_eq!(record.undoable_after, 0);
+        assert_eq!(record.commits_before, record.commits_after, "撤销不动图谱");
+        assert_eq!(port.records().len(), 1);
+    }
+
+    /// 判据 ⑨（界面侧）：重做同样真的改工程。
+    #[test]
+    fn a_redo_action_really_restores_the_edited_bytes() {
+        let port = port();
+        let op = fixture_op(&port);
+        port.commit_ops(NOW + 1, "判据夹具", vec![op])
+            .expect("提交");
+        let edited = port.fingerprint().expect("指纹");
+        port.perform(UiAction::Undo);
+        let outcome = port.perform(UiAction::Redo);
+        assert_eq!(
+            outcome,
+            ActionOutcome::Changed {
+                steps: 1,
+                undone_total: 0,
+                op_kinds: vec!["Batch".to_owned()],
+            }
+        );
+        assert_eq!(port.fingerprint().expect("指纹"), edited);
+        assert!(port.last_record().expect("日志").changed_project());
+    }
+
+    /// 判据 ⑨：没有历史时**拒绝**，且动作日志如实记录"工程没变"。
+    #[test]
+    fn a_refused_ui_action_is_recorded_as_not_changing_the_project() {
+        let port = port();
+        let before = port.fingerprint().expect("指纹");
+        let outcome = port.perform(UiAction::Undo);
+        assert!(
+            matches!(outcome, ActionOutcome::Refused { .. }),
+            "{outcome:?}"
+        );
+        let record = port.last_record().expect("日志");
+        assert!(!record.changed_project(), "拒绝路径不得声称改了工程");
+        assert_eq!(record.fingerprint_before, record.fingerprint_after);
+        assert_eq!(port.fingerprint().expect("指纹"), before);
+        assert_eq!(record.undone_after, 0);
+    }
+
+    /// 判据 ⑨：时光机开关**只**改界面运行态（不碰工程、不碰游标）。
+    #[test]
+    fn the_undo_tree_toggle_only_touches_ui_runtime_state() {
+        let port = port();
+        let before = port.fingerprint().expect("指纹");
+        assert!(!port.undo_tree_open());
+        assert_eq!(
+            port.perform(UiAction::ToggleUndoTree),
+            ActionOutcome::DisplayOnly
+        );
+        assert!(port.undo_tree_open());
+        assert_eq!(
+            port.perform(UiAction::ToggleUndoTree),
+            ActionOutcome::DisplayOnly
+        );
+        assert!(!port.undo_tree_open());
+        assert_eq!(
+            port.perform(UiAction::OpenUndoTree),
+            ActionOutcome::DisplayOnly
+        );
+        assert!(port.undo_tree_open());
+        assert_eq!(
+            port.perform(UiAction::CloseUndoTree),
+            ActionOutcome::DisplayOnly
+        );
+        assert!(!port.undo_tree_open());
+        assert_eq!(port.fingerprint().expect("指纹"), before, "工程一位不动");
+        assert!(!port.last_record().expect("日志").changed_project());
+        assert_eq!(port.records().len(), 4, "四次动作四条记录");
+    }
+
+    /// 判据 ⑨：多步撤销（时光机节点）一次真的回退多步。
+    #[test]
+    fn undo_many_steps_back_in_one_action() {
+        let port = port();
+        let pristine = port.fingerprint().expect("指纹");
+        for step in 0..3_u8 {
+            let op = {
+                let fixture = undo_session::wiring_fixture(&port.project()).expect("夹具");
+                let current = port
+                    .project()
+                    .clip_pool
+                    .get(&fixture.clip_id)
+                    .and_then(|entry| entry.content.notes())
+                    .and_then(|notes| notes.get(&fixture.note_id))
+                    .expect("音符")
+                    .velocity;
+                Op::ModifyNoteVelocity {
+                    track_id: fixture.track_id,
+                    clip_id: fixture.clip_id,
+                    note_id: fixture.note_id,
+                    old_vel: current,
+                    new_vel: 30 + step,
+                }
+            };
+            port.commit_ops(NOW + u64::from(step) + 1, "判据夹具", vec![op])
+                .expect("提交");
+        }
+        assert_eq!(port.display().undoable, 3);
+        let outcome = port.perform(UiAction::UndoMany(3));
+        assert_eq!(
+            outcome,
+            ActionOutcome::Changed {
+                steps: 3,
+                undone_total: 3,
+                op_kinds: vec!["Batch".to_owned(); 3],
+            }
+        );
+        assert_eq!(port.fingerprint().expect("指纹"), pristine);
+        let record = port.last_record().expect("日志");
+        assert_eq!(record.undone_before, 0);
+        assert_eq!(record.undone_after, 3);
+        assert_eq!(record.undoable_after, 0);
+    }
+
+    /// 判据：键盘策略表 → 界面动作的映射（`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`）。
+    #[test]
+    fn key_actions_map_to_the_undo_entry_points() {
+        assert_eq!(dispatch_key(Action::Undo), Some(UiAction::Undo));
+        assert_eq!(dispatch_key(Action::Redo), Some(UiAction::Redo));
+        assert_eq!(
+            dispatch_key(Action::OpenTimeMachine),
+            Some(UiAction::OpenUndoTree)
+        );
+        for other in [Action::PlayPause, Action::Duplicate, Action::Cancel] {
+            assert_eq!(dispatch_key(other), None, "{other:?} 与撤销无关");
+        }
+        // 映射出来的动作真的有效：`Cmd+Z` 的落点能改工程。
+        let port = port();
+        let op = fixture_op(&port);
+        port.commit_ops(NOW + 1, "判据夹具", vec![op])
+            .expect("提交");
+        let pristine = port.fingerprint().expect("指纹");
+        port.perform(UiAction::Undo);
+        assert_eq!(port.display().undone, 1);
+        assert!(port.last_record().expect("日志").changed_project());
+        let _ = pristine;
+    }
+
+    /// 判据 ⑬：动作日志是顺序累积的（同一端口上连按 `Cmd+Z` 逐步回退）。
+    #[test]
+    fn repeated_undo_actions_accumulate_in_the_log() {
+        let port = port();
+        let op = fixture_op(&port);
+        port.commit_ops(NOW + 1, "判据夹具", vec![op])
+            .expect("提交");
+        assert!(port.perform(UiAction::Undo).changed());
+        assert!(matches!(
+            port.perform(UiAction::Undo),
+            ActionOutcome::Refused { .. }
+        ));
+        let records = port.records();
+        assert_eq!(records.len(), 2);
+        assert!(records[0].changed_project());
+        assert!(!records[1].changed_project());
+        assert_eq!(records[1].undone_before, 1, "第二次动作前已经撤了 1 步");
+        assert_eq!(records[1].undone_after, 1);
+    }
+
+    /// 判据 ⑨：键盘那一跳接上策略表之后**真的**回退工程（`Cmd+Z` 整条链）。
+    #[test]
+    fn the_keyboard_chain_really_rolls_the_project_back() {
+        let port = port();
+        let pristine = port.fingerprint().expect("指纹");
+        let op = fixture_op(&port);
+        port.commit_ops(NOW + 1, "判据夹具", vec![op])
+            .expect("提交");
+        assert_ne!(port.fingerprint().expect("指纹"), pristine);
+
+        // 画布聚焦 + `Cmd+Z` ⇒ 真的撤一步。
+        let canvas = InputContext::new(); // 启动态 = 画布聚焦、非合成态
+        let outcome = perform_key(&port, &canvas, PhysicalKey::KeyZ, Modifiers::meta());
+        assert_eq!(
+            outcome,
+            Some(ActionOutcome::Changed {
+                steps: 1,
+                undone_total: 1,
+                op_kinds: vec!["Batch".to_owned()],
+            })
+        );
+        assert_eq!(
+            port.fingerprint().expect("指纹"),
+            pristine,
+            "工程真的回退了"
+        );
+        assert_eq!(port.last_record().expect("日志").action, "undo");
+
+        // `Cmd+Shift+Z` ⇒ 重做回到编辑过的那一版。
+        let outcome = perform_key(&port, &canvas, PhysicalKey::KeyZ, Modifiers::ctrl_shift());
+        assert!(matches!(
+            outcome,
+            Some(ActionOutcome::Changed { steps: 1, .. })
+        ));
+        assert_ne!(
+            port.fingerprint().expect("指纹"),
+            pristine,
+            "重做真的改回来了"
+        );
+
+        // `Cmd+Shift+H` ⇒ 打开时光机（只改界面运行态）。
+        assert_eq!(
+            perform_key(&port, &canvas, PhysicalKey::KeyH, Modifiers::ctrl_shift()),
+            Some(ActionOutcome::DisplayOnly)
+        );
+        assert!(port.undo_tree_open());
+
+        // 与撤销无关的单键 ⇒ 放行。
+        assert_eq!(
+            perform_key(&port, &canvas, PhysicalKey::Space, Modifiers::none()),
+            None
+        );
+        // 文本输入框聚焦 + `Cmd+Z` ⇒ 策略表说 `PassThrough`（给文本框），因此这里放行。
+        let mut composing = InputContext::new();
+        composing.set_focus(crate::input::Focus::TextInput);
+        assert_eq!(
+            perform_key(&port, &composing, PhysicalKey::KeyZ, Modifiers::meta()),
+            None,
+            "文本框里的 Cmd+Z 必须留给文本框（[UI-A11Y-002]）"
+        );
+    }
+
+    /// 判据：会话态是从一份**全新的**会话开始的（打开边界在端口这一层也成立）。
+    #[test]
+    fn a_fresh_port_has_no_history() {
+        let port = port();
+        assert_eq!(port.display().undoable, 0);
+        assert_eq!(port.display().undone, 0);
+        assert!(!port.display().can_undo);
+        assert_eq!(port.display().commit_count, 1, "只有一条根提交");
+        // `UndoCursor` 的存在本身证明"游标是类型上不可序列化的会话态"。
+        let cursor = UndoCursor::new();
+        assert_eq!(cursor.undone(), 0);
+        let _ = OpOrigin::UserUi;
+    }
+}

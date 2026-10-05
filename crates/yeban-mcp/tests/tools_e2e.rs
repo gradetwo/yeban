@@ -1,4 +1,4 @@
-//! **端到端判据**：十个 Intent 工具在真实文件系统上真的做事 [MCP-TOOL-001..010]。
+//! **端到端判据**：Intent 工具在真实文件系统上真的做事 [MCP-TOOL-001..010 + D45/D46 扩展]。
 //!
 //! 这个文件是"从 `-32005 NOT_IMPLEMENTED` 变成真的做事"的**判决书**。
 //! 每一条判据都尽量按"能变红"的方式写：用一个可以被注入破坏的量（字节、计数、
@@ -1187,12 +1187,12 @@ fn not_implemented_never_appears_in_a_tool_response() {
 }
 
 // ---------------------------------------------------------------------------
-// 其它判据：十个工具都真的做事 + 生命周期 + 锁
+// 其它判据：注册表里的工具都真的做事 + 生命周期 + 锁
 // ---------------------------------------------------------------------------
 
 #[test]
 fn no_tool_answers_with_a_blanket_not_implemented() {
-    // 本轮的核心判决: 十个工具没有一个还在一律 -32005。
+    // 本轮的核心判决: 注册表里的每个工具没有一个还在一律 -32005。
     let scratch = Scratch::new("no-blanket");
     let (mut dispatcher, auth) = dispatcher();
     open(&scratch, &mut dispatcher, &auth);
@@ -1241,10 +1241,14 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_reject_proposal",
             json!({ "proposalId": "01J8ZQ00000000000000000009", "reason": "r" }),
         ),
+        // D45 的两条扩展：这一步只要求"走到领域实现"，撤不动是**带内领域失败**
+        // （新会话一条 op 都没提交 ⇒ INDEX_OUT_OF_BOUNDS），不是实现级出口。
+        ("yeban_undo", json!({})),
+        ("yeban_redo", json!({})),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];
-    assert_eq!(arguments.len(), TOOLS.len(), "十个工具都要有用例");
+    assert_eq!(arguments.len(), TOOLS.len(), "每个注册的工具都要有用例");
     for (name, arguments) in arguments {
         let (status, outcome) = call_raw(&mut dispatcher, &auth, name, arguments);
         // 渲染器接线之后, 工具路径上不再有任何实现级出口: 全部必须是带内 ToolResponse。

@@ -63,13 +63,15 @@ use yeban_model::{
 
 use crate::jsonrpc::ErrorObject;
 use crate::tools::{ErrorCode, ToolCall, ToolResponse};
+use crate::undo_session::{self, CommitRequest, UndoRefusal};
 
 use error::Fault;
 use proposal::{Proposal, ProposalDraft, ProposalStatus, draft_ops_value};
 use store::AcquiredLock;
 
 /// 主分支名。
-pub const MAIN_BRANCH: &str = "main";
+/// 主分支名（唯一字面量在 [`crate::undo_session::MAIN_BRANCH`]，这里只是转发）。
+pub const MAIN_BRANCH: &str = undo_session::MAIN_BRANCH;
 
 /// 隔离提案分支名前缀（架构 §7.2：`ai/proposal-{ulid}`）。
 pub const PROPOSAL_BRANCH_PREFIX: &str = "ai/proposal-";
@@ -123,7 +125,7 @@ struct SessionSeed {
     assets: BTreeMap<AssetHash, Vec<u8>>,
 }
 
-/// 领域会话状态：活跃工程 + 提交图谱 + 提案记录 + 注入的时钟。
+/// 领域会话状态：活跃工程 + 提交图谱 + 提案记录 + **撤销会话态** + 注入的时钟。
 ///
 /// **刻意不实现 `Clone`**：它内涵 `.yeban.lock` 的 RAII 守卫与提交图谱，
 /// 克隆会产出两个独立的写者。
@@ -132,6 +134,12 @@ pub struct Domain {
     active: Option<Active>,
     graph: CommitGraph,
     proposals: BTreeMap<EntityId, Proposal>,
+    /// 撤销会话态（游标 + 活跃分支）[`crate::undo_session`]。
+    ///
+    /// **属于会话运行态，不是持久化文档层** [MODEL-ISO-001]：打开 / 关闭工程都会把它
+    /// 整体重置，它也不会进 `project.json` 或 `history.dag`（模型层把这点做成了类型事实：
+    /// `UndoCursor` 不实现 `Serialize`）。
+    undo: undo_session::UndoState,
     now_ms: u64,
 }
 
@@ -149,6 +157,7 @@ impl Domain {
             active: None,
             graph: CommitGraph::new(),
             proposals: BTreeMap::new(),
+            undo: undo_session::UndoState::new(AGENT_NAME),
             now_ms: 0,
         }
     }
@@ -247,6 +256,34 @@ impl Domain {
             .branches
             .get(MAIN_BRANCH)
             .map(|branch| branch.head)
+    }
+
+    /// **活跃**分支头（撤销之后继续编辑会派生匿名分支，因此活跃头可能不在 `main` 上）。
+    ///
+    /// 为什么单独给一个入口：`yeban_propose_section` 的 `baseCommit` 与
+    /// `yeban_merge_proposal` 的"基线是否移动过"都必须看**活跃**头 ——
+    /// 盯着 `main` 会在撤销之后把提案挂到一条只读孤岛上。
+    #[must_use]
+    pub fn active_head(&self) -> Option<EntityId> {
+        self.undo.head(&self.graph).ok()
+    }
+
+    /// 活跃分支名。
+    #[must_use]
+    pub fn active_branch(&self) -> &str {
+        self.undo.branch()
+    }
+
+    /// 撤销会话态（只读）：可撤销 / 可重做 / 提交数等**模型读数**都在这里。
+    #[must_use]
+    pub const fn undo_state(&self) -> &undo_session::UndoState {
+        &self.undo
+    }
+
+    /// 撤销能力的显示态（模型读数）。
+    #[must_use]
+    pub fn undo_display(&self) -> undo_session::UndoDisplay {
+        self.undo.display(&self.graph)
     }
 
     /// 提案记录。
@@ -367,22 +404,30 @@ impl Domain {
     ///
     /// `seed.history` 为 `Some` 时**整体采用**容器里的提交图谱（`ARCH-OPS-002` 的
     /// "编曲时光机"必须跨打开存活）；为 `None` 时按老语义建一条根提交。
+    ///
+    /// **撤销会话态在这里整体重置** —— 这是"撤销不越过工程打开边界"的落点：
+    /// 换一个工程之后，游标与活跃分支都从头开始（判据
+    /// `undo_does_not_cross_a_project_open_boundary`）。
     fn reset_history(&mut self, seed: SessionSeed) -> Result<(), Fault> {
         self.graph = CommitGraph::new();
         self.proposals.clear();
+        self.undo = undo_session::UndoState::new(AGENT_NAME);
         if let Some(history) = seed.history {
             self.graph = history;
+            // 采纳别人的图谱之前先确认它有一条活跃分支（`main`），否则宁可拒绝；
+            // 随后按（文档, 图谱）**推导**游标 —— "撤销 → 保存 → 重开"之后
+            // 重做栈仍然是对的，而游标一个字节都没落盘 [MODEL-ISO-001]。
+            self.undo
+                .align_with(&self.graph, &seed.project)
+                .map_err(undo_refusal_to_fault)?;
         } else {
-            let draft = CommitDraft::new(
-                EntityId::new(),
-                MAIN_BRANCH,
-                AGENT_NAME,
-                format!("open {}", seed.path.display()),
+            undo_session::genesis(
+                &mut self.graph,
+                &mut self.undo,
+                self.now_ms,
+                &format!("open {}", seed.path.display()),
             )
-            .with_created_at(self.now_ms);
-            self.graph
-                .genesis(draft)
-                .map_err(|failure| error::from_model("提交图谱根", &failure))?;
+            .map_err(undo_refusal_to_fault)?;
         }
         self.active = Some(Active {
             path: seed.path,
@@ -492,6 +537,28 @@ pub enum Plan {
         /// 已编码的容器字节 + 全部实测数字。
         artifact: Box<render::RenderArtifact>,
     },
+    /// `yeban_undo` [ADR-0001 **D45**]
+    Undo {
+        /// 请求的步数（已校验 ≥ 1）。
+        steps: usize,
+        /// 只读规划时**模型给出**的可撤销深度（预览与真做共用同一口径）。
+        undoable: usize,
+        /// 将要被撤销的 op 变体名（只读）。
+        op_kinds: Vec<&'static str>,
+        /// 撤销前的活跃分支（若这次撤销之后接着编辑，会派生匿名分支）。
+        branch: String,
+    },
+    /// `yeban_redo` [ADR-0001 **D45**]
+    Redo {
+        /// 请求的步数（已校验 ≥ 1）。
+        steps: usize,
+        /// 只读规划时的可重做深度。
+        redoable: usize,
+        /// 将要被重做的 op 变体名（只读）。
+        op_kinds: Vec<&'static str>,
+        /// 重做前的活跃分支。
+        branch: String,
+    },
 }
 
 impl Plan {
@@ -507,6 +574,8 @@ impl Plan {
             Self::Merge { .. } => "merge",
             Self::Reject { .. } => "reject",
             Self::RenderMaster { .. } => "render",
+            Self::Undo { .. } => "undo",
+            Self::Redo { .. } => "redo",
         }
     }
 
@@ -523,7 +592,10 @@ impl Plan {
             | Self::Close { .. }
             | Self::Query { .. }
             | Self::Reject { .. }
-            | Self::RenderMaster { .. } => 0,
+            | Self::RenderMaster { .. }
+            // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
+            | Self::Undo { .. }
+            | Self::Redo { .. } => 0,
         }
     }
 
@@ -546,11 +618,15 @@ impl Plan {
     /// 施加后工程的形态（`None` 表示"工程内容不变"）。
     ///
     /// 这是 `dryRun` 的**差异预览**：把"将要发生什么"算出来给调用方看，
-    /// 但**不改**真实状态（`Merge` 在克隆体上模拟）。
+    /// 但**不改**真实状态（`Merge` 与撤销 / 重做都在克隆体上模拟）。
+    ///
+    /// 撤销 / 重做的模拟走的就是 [`crate::undo_session`] 里的那个 `undo` / `redo`
+    /// （在克隆体上跑），因此预览与真做**不可能**漂移。
     ///
     /// # Errors
     ///
-    /// `Merge` 的 op 无法整体施加（即真的会冲突）→ `CONFLICT`。
+    /// `Merge` 的 op 无法整体施加（即真的会冲突）→ `CONFLICT`；
+    /// 撤销 / 重做没有可动的东西 → 对应领域失败（`INDEX_OUT_OF_BOUNDS`）。
     pub fn project_after(&self, domain: &Domain) -> Result<Option<YebanProjectV1>, Fault> {
         match self {
             Self::Open(request) => Ok(Some((*request.project).clone())),
@@ -567,6 +643,18 @@ impl Plan {
                         )
                     })?;
                 Ok(Some(simulated))
+            }
+            Self::Undo { steps, .. } => {
+                let current = domain.active_project().ok_or_else(no_active_project)?;
+                undo_session::simulate_undo(domain.graph(), current, domain.undo_state(), *steps)
+                    .map(Some)
+                    .map_err(undo_refusal_to_fault)
+            }
+            Self::Redo { steps, .. } => {
+                let current = domain.active_project().ok_or_else(no_active_project)?;
+                undo_session::simulate_redo(domain.graph(), current, domain.undo_state(), *steps)
+                    .map(Some)
+                    .map_err(undo_refusal_to_fault)
             }
             Self::Save { .. }
             | Self::Close { .. }
@@ -723,6 +811,63 @@ impl Plan {
                     }
                 }
             }
+            Self::Undo {
+                steps,
+                undoable,
+                op_kinds,
+                branch,
+            } => {
+                preview.insert("branch".to_owned(), Value::from(branch.clone()));
+                preview.insert("requestedSteps".to_owned(), Value::from(*steps));
+                preview.insert("undoableSteps".to_owned(), Value::from(*undoable));
+                preview.insert(
+                    "willUndoSteps".to_owned(),
+                    Value::from((*steps).min(*undoable)),
+                );
+                preview.insert(
+                    "opKinds".to_owned(),
+                    Value::Array(op_kinds.iter().map(|kind| Value::from(*kind)).collect()),
+                );
+                preview.insert(
+                    "undoneBefore".to_owned(),
+                    Value::from(domain.undo_state().undone()),
+                );
+                preview.insert(
+                    "undoneAfter".to_owned(),
+                    Value::from(domain.undo_state().undone() + (*steps).min(*undoable)),
+                );
+            }
+            Self::Redo {
+                steps,
+                redoable,
+                op_kinds,
+                branch,
+            } => {
+                preview.insert("branch".to_owned(), Value::from(branch.clone()));
+                preview.insert("requestedSteps".to_owned(), Value::from(*steps));
+                preview.insert("redoableSteps".to_owned(), Value::from(*redoable));
+                preview.insert(
+                    "willRedoSteps".to_owned(),
+                    Value::from((*steps).min(*redoable)),
+                );
+                preview.insert(
+                    "opKinds".to_owned(),
+                    Value::Array(op_kinds.iter().map(|kind| Value::from(*kind)).collect()),
+                );
+                preview.insert(
+                    "undoneBefore".to_owned(),
+                    Value::from(domain.undo_state().undone()),
+                );
+                preview.insert(
+                    "undoneAfter".to_owned(),
+                    Value::from(
+                        domain
+                            .undo_state()
+                            .undone()
+                            .saturating_sub((*steps).min(*redoable)),
+                    ),
+                );
+            }
         }
 
         // 差异预览的公共部分：工程内容摘要 + 提交数（**预测**，不是实测）。
@@ -762,6 +907,47 @@ impl Plan {
 /// `NO_ACTIVE_PROJECT` 的简写。
 fn no_active_project() -> Fault {
     Fault::domain(ErrorCode::NoActiveProject, "当前没有活跃工程")
+}
+
+/// [`UndoRefusal`] → 契约错误码的**唯一**映射 [ADR-0001 **D25**：联集 20 值，不发明新码]。
+///
+/// | 拒绝 | 契约码 | 为什么是它 |
+/// | :--- | :--- | :--- |
+/// | `NoHistory` | `INDEX_OUT_OF_BOUNDS` | D25 的联集里没有 `NO_HISTORY`；"请求的步数超出可回退深度"就是索引/计数越界 |
+/// | `NoRedo` | `INDEX_OUT_OF_BOUNDS` | 同上（重做游标已在头上） |
+/// | `NoBranch` / `NotAtCommitBoundary` / `Model` | `CONFLICT` | 会话状态与操作日志不一致 ⇒ 状态冲突 |
+/// | `Serialization` | `IO_ERROR` | 容器写出失败是 I/O 面的失败 |
+fn undo_refusal_to_fault(refusal: UndoRefusal) -> Fault {
+    match refusal {
+        UndoRefusal::NoHistory { undoable } => Fault::domain_with_data(
+            ErrorCode::IndexOutOfBounds,
+            "没有可撤销的历史",
+            serde_json::json!({ "undoable": undoable, "reason": "no-history" }),
+        ),
+        UndoRefusal::NoRedo => Fault::domain_with_data(
+            ErrorCode::IndexOutOfBounds,
+            "没有可重做的步骤",
+            serde_json::json!({ "redoable": 0, "reason": "no-redo" }),
+        ),
+        UndoRefusal::NoBranch { branch } => Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!("提交图谱里没有分支 `{branch}`"),
+            serde_json::json!({ "branch": branch }),
+        ),
+        UndoRefusal::NotAtCommitBoundary { undone } => Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!("撤销位置 {undone} 不落在提交边界上"),
+            serde_json::json!({ "undone": undone }),
+        ),
+        UndoRefusal::Model { detail } => Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!("模型层拒绝: {detail}"),
+            serde_json::json!({ "model": detail }),
+        ),
+        UndoRefusal::Serialization { detail } => {
+            Fault::domain(ErrorCode::IoError, format!("工程容器写出失败: {detail}"))
+        }
+    }
 }
 
 /// 工程的**摘要**（预览与打开响应共用；不含音符，避免把上下文撑爆）。
@@ -862,7 +1048,7 @@ fn merge_batch(proposal: &Proposal, description: &str) -> Op {
 ///
 /// # Errors
 ///
-/// 见各工具的领域语义。目前十个工具的实现级状况都不在 `plan` 里产生。
+/// 见各工具的领域语义。目前所有工具的实现级状况都不在 `plan` 里产生。
 pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     match call.tool.name {
         "yeban_open_project" => plan_open(domain, call),
@@ -875,6 +1061,8 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_render_master" => plan_render_master(domain, call),
         "yeban_merge_proposal" => plan_merge(domain, call),
         "yeban_reject_proposal" => plan_reject(domain, call),
+        "yeban_undo" => plan_undo(domain, call),
+        "yeban_redo" => plan_redo(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -882,6 +1070,63 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             format!("未接线到领域实现的工具 `{other}`"),
         )),
     }
+}
+
+/// 撤销 / 重做的 `steps` 实参（缺省 1；`0` 是非法的**显式**取值）。
+///
+/// 为什么 `0` 不给"等价于 1"的宽容：Agent 传 0 时最可能的意思是"我不想改任何东西"，
+/// 而"一次 Cmd+Z 至少撤一步"是界面侧的语义。含糊地替它决定一步，不如明确拒绝。
+fn parse_steps(call: &ToolCall) -> Result<usize, Fault> {
+    let raw = arg_u64(call, "steps")?.unwrap_or(1);
+    if raw == 0 {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`steps` 必须 ≥ 1（缺省 = 1）",
+        ));
+    }
+    usize::try_from(raw).map_err(|_| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`steps` 超出 usize 表示范围: {raw}"),
+        )
+    })
+}
+
+/// `yeban_undo` [ADR-0001 **D45**]。
+///
+/// **只读**规划：确认有活跃工程、实参合法、并且**真的有东西可撤**
+/// （否则在这里就报 `INDEX_OUT_OF_BOUNDS`，`dryRun` 因此也能如实回答"撤不动"）。
+/// 真正的逆操作由 [`crate::undo_session::undo`] 里的模型入口施加。
+fn plan_undo(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    require_active(domain)?;
+    let steps = parse_steps(call)?;
+    let undoable = domain
+        .undo_state()
+        .undoable(domain.graph())
+        .map_err(undo_refusal_to_fault)?;
+    let op_kinds = undo_session::undo_op_kinds(domain.graph(), domain.undo_state(), steps)
+        .map_err(undo_refusal_to_fault)?;
+    Ok(Plan::Undo {
+        steps,
+        undoable,
+        op_kinds,
+        branch: domain.active_branch().to_owned(),
+    })
+}
+
+/// `yeban_redo` [ADR-0001 **D45**]。
+fn plan_redo(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    require_active(domain)?;
+    let steps = parse_steps(call)?;
+    let redoable = domain.undo_state().undone();
+    let op_kinds = undo_session::redo_op_kinds(domain.graph(), domain.undo_state(), steps)
+        .map_err(undo_refusal_to_fault)?;
+    Ok(Plan::Redo {
+        steps,
+        redoable,
+        op_kinds,
+        branch: domain.active_branch().to_owned(),
+    })
 }
 
 /// `yeban_open_project`。
@@ -1002,7 +1247,7 @@ fn propose_draft(
     description: String,
     ops: Vec<Op>,
 ) -> Result<Plan, Fault> {
-    let base_commit = domain.main_head().ok_or_else(|| {
+    let base_commit = domain.active_head().ok_or_else(|| {
         Fault::domain(ErrorCode::Conflict, "主分支没有头提交（提交图谱未初始化）")
     })?;
     // 模拟：整批 op 必须能在**当前**工程上干净地施加，否则这个提案不该被创建。
@@ -1208,7 +1453,99 @@ pub fn apply(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
             snapshot,
         } => apply_reject(domain, proposal_id, &reason, &snapshot),
         Plan::RenderMaster { artifact } => apply_render(*artifact),
+        Plan::Undo { steps, .. } => apply_undo(domain, steps),
+        Plan::Redo { steps, .. } => apply_redo(domain, steps),
     }
+}
+
+/// 撤销 / 重做响应里那份**模型读数**（界面与工具同源：`Domain::undo_display`）。
+fn undo_display_value(display: &undo_session::UndoDisplay) -> Value {
+    serde_json::json!({
+        "branch": display.branch,
+        "head": display.head.map(|head| head.to_canonical_string()),
+        "commitCount": display.commit_count,
+        "branchCount": display.branch_count,
+        "undone": display.undone,
+        "undoable": display.undoable,
+        "canUndo": display.can_undo,
+        "canRedo": display.can_redo,
+    })
+}
+
+/// `yeban_undo` 的施加 [ADR-0001 **D45**]。
+///
+/// 逆操作的施加**只有一条路**：`crate::undo_session::undo` → `CommitGraph::undo_with`。
+/// 游标是会话运行态，因此响应里明确标 `cursorPersisted: false`
+/// （判据 `the_cursor_never_reaches_the_project_container` 用逐字节证据钉住它）。
+fn apply_undo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> {
+    let display_before = domain.undo_display();
+    let outcome = {
+        let Domain {
+            active,
+            graph,
+            undo,
+            ..
+        } = domain;
+        let active = active.as_mut().ok_or_else(no_active_project)?;
+        undo_session::undo(graph, &mut active.project, undo, steps)
+            .map_err(undo_refusal_to_fault)?
+    };
+    let display_after = domain.undo_display();
+    let digest = domain.active_project().map_or(Value::Null, |project| {
+        store::serialize_project(project)
+            .ok()
+            .map_or(Value::Null, |json| {
+                Value::from(store::digest_of(json.as_bytes()))
+            })
+    });
+    Ok(ToolResponse::success(serde_json::json!({
+        "undone": true,
+        "requestedSteps": steps,
+        "steps": outcome.steps,
+        "undoneTotal": outcome.undone_total,
+        "opKinds": outcome.op_kinds,
+        "branch": display_after.branch,
+        "projectDigest": digest,
+        "cursorPersisted": false,
+        "before": undo_display_value(&display_before),
+        "after": undo_display_value(&display_after),
+    })))
+}
+
+/// `yeban_redo` 的施加 [ADR-0001 **D45**]：按**正向** `Op::apply` 把刚撤销的 op 再打一次。
+fn apply_redo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> {
+    let display_before = domain.undo_display();
+    let outcome = {
+        let Domain {
+            active,
+            graph,
+            undo,
+            ..
+        } = domain;
+        let active = active.as_mut().ok_or_else(no_active_project)?;
+        undo_session::redo(graph, &mut active.project, undo, steps)
+            .map_err(undo_refusal_to_fault)?
+    };
+    let display_after = domain.undo_display();
+    let digest = domain.active_project().map_or(Value::Null, |project| {
+        store::serialize_project(project)
+            .ok()
+            .map_or(Value::Null, |json| {
+                Value::from(store::digest_of(json.as_bytes()))
+            })
+    });
+    Ok(ToolResponse::success(serde_json::json!({
+        "redone": true,
+        "requestedSteps": steps,
+        "steps": outcome.steps,
+        "undoneTotal": outcome.undone_total,
+        "opKinds": outcome.op_kinds,
+        "branch": display_after.branch,
+        "projectDigest": digest,
+        "cursorPersisted": false,
+        "before": undo_display_value(&display_before),
+        "after": undo_display_value(&display_after),
+    })))
 }
 
 /// `yeban_render_master` 的施加：把**已经渲染好**的容器字节原子落盘。
@@ -1507,55 +1844,73 @@ fn apply_merge(
         .active_project()
         .cloned()
         .ok_or_else(no_active_project)?;
-    let base_moved = domain.main_head() != Some(snapshot.base_commit);
-    let batch = merge_batch(snapshot, commit_message);
-    let mut merged = current;
-    batch.apply(&mut merged).map_err(|failure| {
-        Fault::domain_with_data(
-            ErrorCode::Conflict,
-            format!("提案无法合并到当前工程: {failure}"),
-            serde_json::json!({
-                "proposalId": proposal_id.to_canonical_string(),
-                "model": format!("{failure:?}"),
-                "baseCommitMoved": base_moved,
-            }),
-        )
-    })?;
-    merged
+    // "基线移动过没有"必须看**活跃**头：撤销之后继续合并会派生匿名分支，
+    // 盯着 `main` 会把提案挂到一条只读孤岛上（见 `Domain::active_head`）。
+    let base_moved = domain.active_head() != Some(snapshot.base_commit);
+    let ops: Vec<Op> = snapshot
+        .ops
+        .iter()
+        .map(|stamped| stamped.op.clone())
+        .collect();
+    // 预演一遍（保持既有错误语义：CONFLICT + 结构化 data）。
+    // 真正的施加与提交都交给 `crate::undo_session::commit`（唯一实现）。
+    let mut probe = current;
+    merge_batch(snapshot, commit_message)
+        .apply(&mut probe)
+        .map_err(|failure| {
+            Fault::domain_with_data(
+                ErrorCode::Conflict,
+                format!("提案无法合并到当前工程: {failure}"),
+                serde_json::json!({
+                    "proposalId": proposal_id.to_canonical_string(),
+                    "model": format!("{failure:?}"),
+                    "baseCommitMoved": base_moved,
+                }),
+            )
+        })?;
+    probe
         .validate()
         .map_err(|failure| error::from_model("合并结果校验", &failure))?;
 
-    let merge_commit = domain
-        .graph
-        .append(
-            CommitDraft::new(
-                EntityId::new(),
-                MAIN_BRANCH,
-                AGENT_NAME,
-                commit_message.to_owned(),
-            )
-            .with_created_at(now_ms)
-            .with_ops(vec![StampedOp::new(
-                OpOrigin::McpProposal {
+    let merge_commit = {
+        let Domain {
+            active,
+            graph,
+            undo,
+            ..
+        } = domain;
+        let active = active.as_mut().ok_or_else(no_active_project)?;
+        undo_session::commit(
+            graph,
+            &mut active.project,
+            undo,
+            CommitRequest {
+                now_ms,
+                origin: OpOrigin::McpProposal {
                     proposal_id,
                     agent_name: AGENT_NAME.to_owned(),
                 },
-                now_ms,
-                batch,
-            )]),
+                message: commit_message.to_owned(),
+                ops,
+            },
         )
-        .map_err(|failure| error::from_model("合并提交", &failure))?;
+        .map_err(undo_refusal_to_fault)?
+    };
 
-    let new_digest = store::digest_of(store::serialize_project(&merged)?.as_bytes());
-    if let Some(active) = domain.active.as_mut() {
-        active.project = merged;
-    }
+    let new_digest = domain
+        .active_project()
+        .map(store::serialize_project)
+        .transpose()?
+        .map_or(Value::Null, |json| {
+            Value::from(store::digest_of(json.as_bytes()))
+        });
     if let Some(record) = domain.proposals.get_mut(&proposal_id) {
         record.status = ProposalStatus::Merged;
         record.merge_commit = Some(merge_commit);
         record.resolved_at = Some(now_ms);
         record.resolution = Some(commit_message.to_owned());
     }
+    let branch = domain.active_branch().to_owned();
     let detail = domain
         .proposal(&proposal_id)
         .map(Proposal::detail)
@@ -1568,7 +1923,9 @@ fn apply_merge(
         "projectDigest": new_digest,
         "commit": {
             "id": merge_commit.to_canonical_string(),
-            "branch": MAIN_BRANCH,
+            // 撤销之后继续合并会落在 `anon-<ulid>` 上（模型的 `fork_anonymous`），
+            // 因此这里**如实**报活跃分支，而不是永远写 `main`。
+            "branch": branch,
             "message": commit_message,
             "atomicBatch": true,
         },
@@ -1755,6 +2112,9 @@ mod tests {
                 "yeban_reject_proposal",
                 serde_json::json!({"proposalId": EntityId::new().to_canonical_string(), "reason": "r"}),
             ),
+            // D45 的两条扩展: 刚打开的会话一条 op 都没提交 ⇒ 规划阶段就该报"撤不动"。
+            ("yeban_undo", serde_json::json!({})),
+            ("yeban_redo", serde_json::json!({})),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
@@ -1770,6 +2130,8 @@ mod tests {
             // - merge / reject 用的是随机提案身份 ⇒ PROPOSAL_NOT_FOUND;
             // - open 指向一个磁盘上不存在的路径 ⇒ FILE_NOT_FOUND
             //   （规划阶段真的读盘 —— 那正是"打开"应当做的事）;
+            // - undo / redo 在新会话上没有历史 ⇒ INDEX_OUT_OF_BOUNDS
+            //   （D25 的联集里没有 NO_HISTORY, 且不许发明新码）;
             // - 其余工具必须规划成功 ⇒ 再没有"一律 -32005"这回事。
             match name {
                 "yeban_merge_proposal" | "yeban_reject_proposal" => {
@@ -1779,6 +2141,10 @@ mod tests {
                 "yeban_open_project" => {
                     let fault = outcome.expect_err("路径不存在");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::FileNotFound));
+                }
+                "yeban_undo" | "yeban_redo" => {
+                    let fault = outcome.expect_err("没有历史");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::IndexOutOfBounds));
                 }
                 _ => {
                     outcome.unwrap_or_else(|fault| panic!("{name} 规划失败: {fault:?}"));

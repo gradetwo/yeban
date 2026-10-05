@@ -6,10 +6,22 @@
 //   - [UI-A11Y-003] §7.3: 模态对话框要实现**焦点闭环 (Focus Trap)**, 关闭时焦点复位到
 //     触发控件 —— 本骨架**没有**实现焦点闭环 (见 notes 的 pending: 需要 `FocusScope` +
 //     宿主侧焦点保存/恢复, 依赖 Slint 焦点 API 的进一步核验)
-//   - [UI-TEST-001] §12.2: 语义 Element ID (`undo-tree-node-{i}`)
+//   - [UI-TEST-001] §12.2: 语义 Element ID (`undo-tree-node-{i}` / `undo-tree-undo-button`)
+//   - ADR-0001 **D45**: 弹窗里的动作**真的执行撤销** —— 走 `crate::undo_session`
+//     （与 MCP 的 `yeban_undo` 是**同一份实现**），不再是一个只会打 stderr 的回调。
 //
-// 静态骨架 + 演示数据: 节点是硬编码的 6 个提交, 没有任何来自 `ARCH-OPS-001` 领域操作日志
-// 的真实 DAG。真正的时光机要在 Ops Log + 提交图谱落地之后才能画。
+// ## 显示态全部来自**模型读数**（不是界面自己算的）
+//
+// `can-undo` / `undo-depth` / `undone-depth` / `commit-count` / `branch-name` 由宿主
+// `host::apply_undo` 从 `undo_session::UndoDisplay`（`CommitGraph` + `UndoCursor` 的读数）
+// 写入。界面**不推断**"能不能撤销"，也不知道撤销栈有多深 —— 它只显示。
+//
+// ## 仍然是骨架的部分（如实登记，不假装）
+//
+// 6 个节点的 **DAG 图形**仍是硬编码示意（真实的版本树画法要等匿名分支的可视化；
+// 见 notes 的未实现项）。真正接线的是：
+//   * "撤销一步"按钮 → `undo-step` → 宿主 → `UndoCursor` 真的前移（判据断言工程真的回退）；
+//   * 顶部状态行 → 模型读数（可撤销 N 步 / 活跃分支）。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
@@ -17,7 +29,16 @@ export component UndoTreeModal inherits Rectangle {
     in property <int> node-count: 6;
     in property <[string]> node-labels: ["c0 初始", "c1 鼓组", "c2 贝斯", "c3 铺底", "c4 主音", "c5 AI 提案"];
 
+    // ---- 模型读数（宿主注入；界面不自己算）------------------------------------
+    in property <bool> can-undo: false;
+    in property <int> undo-depth: 0;
+    in property <int> undone-depth: 0;
+    in property <int> commit-count: 0;
+    in property <string> branch-name: "main";
+
     callback close();
+    // D45: 这个回调**真的**执行撤销（宿主 → `UndoPort::perform(UiAction::Undo)`）。
+    callback undo-step();
 
     // 遮罩层色 —— [UI-MCP-002] 里被"置黑"的正是这个颜色, 两者同源。
     background: Tokens.mask-black.with-alpha(0.65);
@@ -53,12 +74,14 @@ export component UndoTreeModal inherits Rectangle {
             font-size: Tokens.font-size-xl;
         }
 
+        // 状态行: **模型读数**（活跃分支 / 可撤销步数 / 已撤销步数）。
         UiMonoText {
             x: Tokens.space-6;
             y: 34px;
             width: parent.width - 96px;
             height: 16px;
-            text: "分支 main · 6 个可回滚节点 · 回滚基于领域操作日志逆向重放";
+            text: "分支 " + root.branch-name + " · 可撤销 " + root.undo-depth + " 步 · 已撤销 "
+                + root.undone-depth + " 步 · 提交 " + root.commit-count + " 条";
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }
@@ -134,12 +157,47 @@ export component UndoTreeModal inherits Rectangle {
             background: Tokens.line-strong;
         }
 
+        // ------------------------------------------------------- 撤销一步（D45）
+        // 与 `Cmd+Z` **同一个落点**（`UndoPort::perform(UiAction::Undo)`）：
+        // 界面动作 → 会话 → `CommitGraph::undo_with`。没有历史可撤时按钮置灰，
+        // 但**仍然**会把动作记进动作日志（判据因此能断言"拒绝也留痕"）。
+        Rectangle {
+            x: Tokens.space-6;
+            y: parent.height - 76px;
+            width: 180px;
+            height: 32px;
+            background: root.can-undo ? Tokens.bg-raised : Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: root.can-undo ? Tokens.gold : Tokens.line-strong;
+            accessible-role: button;
+            accessible-id: "undo-tree-undo-button";
+            accessible-label: "撤销一步 (Cmd+Z)";
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.can-undo ? "撤销一步 (" + root.undo-depth + " 步可撤)" : "无历史可撤";
+                color: root.can-undo ? Tokens.gold-bright : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.undo-step(); }
+            }
+        }
+
         UiMonoText {
             x: Tokens.space-6;
             y: parent.height - 32px;
             width: parent.width - 32px;
             height: 20px;
-            text: "点击任意节点回滚 (未实现) · Esc 关闭";
+            text: "撤销一步与 Cmd+Z 同源 · 节点点击回滚未实现 · Esc 关闭";
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }

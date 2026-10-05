@@ -1,4 +1,4 @@
-//! 十个 `yeban_*` 意图工具的注册表 [MCP-TOOL-001..010, ROAD-M4-003]。
+//! `yeban_*` 意图工具的注册表 [MCP-TOOL-001..010 + `ADR-0001` D45/D46 的两条扩展, ROAD-M4-003]。
 //!
 //! ## 权威契约
 //!
@@ -10,10 +10,28 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
+//! ## 十二个工具 = 规范表格的十个 + 两条**扩展**（ADR-0001 D45 / D46）
+//!
+//! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
+//! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
+//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出两条：
+//!
+//! | 工具 | 作用 | 规范 ID |
+//! | :--- | :--- | :--- |
+//! | `yeban_undo` | 撤销最近 N 步（默认 1），走 [`crate::undo_session`] 的**唯一**实现 | `MCP-TOOL-EXT-UNDO` |
+//! | `yeban_redo` | 重做最近 N 步（默认 1），同一个实现 | `MCP-TOOL-EXT-REDO` |
+//!
+//! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
+//!
+//! `AGENTS.md` §4.1 立过先例（`MODEL-AST-006` 在规范里缺号 ⇒ **不得凭空发明编号**）：
+//! 四份规范里 `MCP-TOOL-` 族**只有** `001..010`，而本线**无权**改 `docs/YEBAN_*.md`。
+//! 因此扩展工具带一个**形态上就不是编号**的 ID（`MCP-TOOL-EXT-*`，没有三位数字后缀），
+//! 并在判据里钉住"规范族恰好是 001..010、扩展 ID 不得伪装成编号"。
+//!
 //! ## 为什么注册表是 `const` 数组而不是 `HashMap`
 //!
 //! 红线 4（`MODEL-AST-003` 的确定性精神）：工具集是**契约**，不是运行时数据。
-//! `const` 数组的顺序即规范顺序（`MCP-TOOL-001` … `MCP-TOOL-010`），
+//! `const` 数组的顺序即规范顺序（`MCP-TOOL-001` … `MCP-TOOL-010`，扩展追加在后），
 //! `tools/list` 的输出因此逐字节稳定，跨进程、跨重启可对账。
 //!
 //! ## 与契约逐条对账的判据
@@ -22,8 +40,8 @@
 //!
 //! - 工具名集合与 `definitions.ToolCall.properties.name.enum` **完全相等**（双向包含 + 计数）；
 //! - 每个工具都声明 `dryRun` 与 `idempotencyKey`；
-//! - 契约里的 7 个错误码全部被 [`ErrorCode`] 覆盖；
-//! - `MCP-TOOL-001..010` 顺序与规范表格一致。
+//! - 契约里的错误码全部被 [`ErrorCode`] 覆盖；
+//! - `MCP-TOOL-001..010` 顺序与规范表格一致，扩展追在其后。
 //!
 //! 新增或漏掉一个工具，上述判据立刻变红。
 
@@ -39,8 +57,18 @@ pub const DRY_RUN_PARAM: &str = "dryRun";
 /// 每个工具都必须支持的"幂等重放"参数名。
 pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 
-/// 工具集规模（10 个 `yeban_*` 工具）。
-pub const TOOL_COUNT: usize = 10;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45 的 2 条扩展）。
+pub const TOOL_COUNT: usize = 12;
+
+/// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
+pub const DOCUMENTED_TOOL_COUNT: usize = 10;
+
+/// 扩展工具的规范 ID 前缀。
+///
+/// ⚠ 刻意**不带**三位数字后缀：`MCP-TOOL-011` 会**伪装成**规范编号，而四份规范里
+/// `MCP-TOOL-` 族只有 `001..010`（`AGENTS.md` §4.1 的 `MODEL-AST-006` 先例：
+/// 不得凭空发明编号）。
+pub const EXTENSION_SPEC_ID_PREFIX: &str = "MCP-TOOL-EXT-";
 
 /// 规范 ID 前缀。
 pub const SPEC_ID_PREFIX: &str = "MCP-TOOL-";
@@ -420,7 +448,7 @@ const fn param(
     }
 }
 
-/// 十个工具，**规范顺序** [MCP-TOOL-001..010]。
+/// 十二个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45 的两条扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
@@ -570,6 +598,33 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param("reason", "string", true, "拒绝原因"),
         ],
         errors: &[ErrorCode::ProposalNotFound],
+    },
+    // ---- ADR-0001 D45/D46 的两条扩展（规范表格里没有，契约 enum 里有） ----
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-UNDO",
+        name: "yeban_undo",
+        summary: "撤销最近 N 步领域操作 (默认 1; 一次提交算一步, 与 UI 的 Cmd+Z 同一实现)",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ProjectState,
+        params: &[param(
+            "steps",
+            "integer",
+            false,
+            "撤销步数 (默认 1; 一次提交算一步)",
+        )],
+        // `INDEX_OUT_OF_BOUNDS` 承担"没有可撤销的历史"（ADR-0001 D25 的联集里没有
+        // 专门的 `NO_HISTORY`，且**不许发明新码**；语义就是"请求的步数超出可回退深度"）。
+        // `NO_ACTIVE_PROJECT` 是没有活跃工程时的领域失败。
+        errors: &[ErrorCode::IndexOutOfBounds, ErrorCode::NoActiveProject],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-REDO",
+        name: "yeban_redo",
+        summary: "重做最近 N 步被撤销的领域操作 (默认 1; 与 UI 的 Cmd+Shift+Z 同一实现)",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ProjectState,
+        params: &[param("steps", "integer", false, "重做步数 (默认 1)")],
+        errors: &[ErrorCode::IndexOutOfBounds, ErrorCode::NoActiveProject],
     },
 ];
 
@@ -880,16 +935,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_exactly_ten_tools_in_spec_order() {
+    fn registry_has_the_documented_tools_then_the_two_extensions() {
         assert_eq!(TOOLS.len(), TOOL_COUNT);
-        let expected_ids: Vec<String> = (1..=TOOL_COUNT)
+        // 前 10 个必须是规范编号（顺序即契约顺序）；后 2 个是 ADR-0001 D45/D46 的扩展。
+        assert_eq!(DOCUMENTED_TOOL_COUNT, 10);
+        assert_eq!(TOOL_COUNT, DOCUMENTED_TOOL_COUNT + 2, "恰好两条扩展");
+        let expected_ids: Vec<String> = (1..=DOCUMENTED_TOOL_COUNT)
             .map(|index| format!("{SPEC_ID_PREFIX}{index:03}"))
+            .chain(["yeban_undo", "yeban_redo"].iter().map(|name| {
+                let spec = tool(name).expect("扩展工具必须注册");
+                spec.spec_id.to_owned()
+            }))
             .collect();
         let actual_ids: Vec<String> = spec_ids().iter().map(|id| (*id).to_owned()).collect();
         assert_eq!(
             actual_ids, expected_ids,
-            "规范 ID 必须是 MCP-TOOL-001..010 顺序"
+            "规范 ID 必须是 MCP-TOOL-001..010 顺序，扩展追在其后"
         );
+        // 扩展 ID **不许**伪装成编号（`MCP-TOOL-011` 是凭空发明的规范编号）。
+        for spec in TOOLS.iter().skip(DOCUMENTED_TOOL_COUNT) {
+            assert!(
+                spec.spec_id.starts_with(EXTENSION_SPEC_ID_PREFIX),
+                "扩展工具的 specId 必须带扩展前缀: {}",
+                spec.spec_id
+            );
+            assert!(
+                !spec
+                    .spec_id
+                    .trim_start_matches(EXTENSION_SPEC_ID_PREFIX)
+                    .chars()
+                    .all(|c| c.is_ascii_digit()),
+                "扩展 ID 不得是纯数字后缀（那会伪装成规范编号）: {}",
+                spec.spec_id
+            );
+        }
         let mut names = tool_names();
         names.sort_unstable();
         names.dedup();
