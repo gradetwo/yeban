@@ -5825,3 +5825,26 @@ current-track concept would simply take precedence in this resolution order, so 
 **What remains before the wiring can be written**: one read - where a track keeps its placements (the `TrackV3` field name), which the
 `ClipPlacement` read already narrowed (the struct exists at `project.rs:1066` with `clip_id`, `start_tick`, `duration_ticks`), but
 not the collection that holds it. Round 235's rule applies: read it, do not guess it.
+
+### Round 238: the read that unblocks step 2 - and a correction to my own round-529 claim
+
+The read round 237 asked for: **`TrackV3.clips: BTreeMap<EntityId, ClipPlacement>`** (`project.rs:1170`). So the track resolution decided
+in round 237 is a scan over `track.clips.values()` for a placement whose `clip_id` matches the clip the tick resolved to, and the
+wiring has nothing left to guess:
+
+    pencil click -> clip_at_tick(triples from every track's placements) -> the track that owns that clip
+                 -> plan_to_add_note(plan, track_id, clip_id, EntityId::new()) -> commit_ops(now_ms, ..) -> reproject
+
+**Correction to my own record**: round 529 justified decoupling `clip_at_tick` from `ClipPlacement` by saying the struct has no
+`Default`. That is **wrong** - `project.rs:1086` is a manual `impl Default for ClipPlacement`, and `project.rs:2318` already uses the
+`..ClipPlacement::default()` pattern, so building one in a criterion would have been easy. The decoupling is still a defensible
+choice (plain triples keep the query independent of the model's field list, and the criterion needs no model knowledge at all), but
+the REASON I wrote down was false, and a false reason in the ledger is worse than no reason because a later reader would act on it.
+
+**What actually happened**: I read the struct's derive list and four fields, saw no `Default` in the derives, and concluded there was
+none - without looking for a manual impl. `grep 'impl Default'` would have settled it in one command. That is the same shape as the
+other instrument mistakes this session: a plausible inference from partial evidence, stated as a fact. The difference here is that I
+caught it myself while doing an unrelated read, which is the argument for keeping the reads close together.
+
+**Nothing to change in the code**: `clip_at_tick` takes triples, its criterion passes, and the caller's mapping is one line. What I am
+correcting is the record, so that "no Default" does not become a fact someone relies on later.
