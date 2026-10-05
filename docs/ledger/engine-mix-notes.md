@@ -524,6 +524,23 @@ clippy + test；`workspace 全量` 是否进 matrix 取决于 `scripts/dev/chang
 
 ### 9.2 CI 判决（**已读回**，不是 pending）
 
+**代码 tip（含 D43 的声相律重写）的判决 —— 这是本线的最终判决**：
+
+```text
+run id  : 37245444263   （line/engine-mix, push 触发, tip bb97bb6）
+结论    : failure —— 4 绿 1 红 3 跳过（红点与上一轮**完全相同**：crates/yeban-app 侧）
+  ✓ lockfile (确定性 Cargo.lock)     19s
+  ✓ checks (fmt / 红线守卫 / schema)  41s
+  ✓ deny (cargo-deny)                50s
+  ✓ plan (受影响集合)                 5s
+  ✓ rust (yeban-engine)              52s  ← clippy -D warnings + test，**默认 feature（含 cpal）**
+  ✗ rust (yeban-app)                 3m49s ← clippy ✓ / test ✗（1 红；`live_ui_mcp.rs:892`）
+  - windows (yeban-mcp / yeban-model)
+  - rust (workspace 全量)
+```
+
+**该 tip 之前的代码判决**（D43 重写前，功能等价）：
+
 ```text
 run id  : 37244879720   （line/engine-mix, push 触发, tip 9b03ca7）
 结论    : failure —— 5 绿 1 红 2 跳过
@@ -536,6 +553,10 @@ run id  : 37244879720   （line/engine-mix, push 触发, tip 9b03ca7）
   - rust (workspace 全量)                  ← 被 plan 跳过
   - windows (yeban-mcp / yeban-model)      ← 与本改动无关
 ```
+
+**本轮一次的另一次判决（纯文档推送）**：`run 37245222923` — `conclusion=success`，
+但 `rust (${{ matrix.crate }})` 被 plan 跳过（改动只含 markdown）⇒ 它**只**证明
+fmt/守卫/schema/deny/lockfile 绿，**不**构成对代码的判决（L23/L26）。
 
 **红点原文**（`ci-verdict.sh --logs 37244879720` 摘录）：
 
