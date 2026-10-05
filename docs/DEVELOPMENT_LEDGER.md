@@ -2538,3 +2538,25 @@ run **`37284571290` @ `77d201f` = completed success**：`rust (workspace 全量)
 `cancel-in-progress` 吃掉重腿（已修）· 逼出全量判决的两条可靠路径（碰 `crates/**`/根级触发器，或用 `gates-manual.yml`）·
 等判决期间不推送 · 取日志用仓库外路径（G12 扫文件系统）。
 
+### 第 85 轮：`BASELINE-002` 的"真实量法"**降级为 pending**（附可直接执行的落点）
+
+**事实**: 我连开两条线做 `BASELINE-002` 的量法补齐，**累计 10+ 轮零产出**：
+`baseline-memory-measure`（范围含 `empty` + `--headless-idle`，已中断）与 `baseline-memory-measure` 复用工作树的窄线
+（`443fe519`，范围只留 `empty`），两者的工作树都是 **0 改动 / 0 提交 / 0 stash**，也没有推送。
+⇒ 按目标里"**任何阻塞点必须绕行、并行化或降级为 `DEVELOPMENT_LEDGER.md` 的 pending`**"，
+**正式降级为 pending**，并**停止重开同类线**（再开只会重复同一失败模式）。
+
+**为什么它值得继续（不是可选项）**: 上一条线（成果已入 main）用消融表证明——
+`--headless` **不构造任何 Slint 对象**（11.14 MB），而**单个真窗口就 55.97 MB**（debug 下已超 35 MB 约 1.6 倍），
+加控件树+一帧 138.52 MB；`footprint` 显示窗口本体是 **Malloc Small 25 MB / 9 region**，而**模型全套 107 条只有 7.72 MB**。
+⇒ 规范那句"**空**工程空闲常驻内存 ≤ 35 MB"目前**既用错了工程样本**（量的是 6 轨演示），**也没覆盖规范所指的对象**（Slint 运行时）。
+
+**可直接执行的落点（四条，零新增依赖）**:
+1. `crates/yeban-app/src/cli.rs` 的 `--project-sample` **加 `empty`**（0 轨空工程）；
+2. 打印**轨道数**作为"模式生效"的**见证**（防空转：0 轨必须是真 0 轨，不是被忽略的参数）；
+3. 用 `scripts/gates/measure_rss.py` 对 `default`(6 轨) 与 `empty` **并排取读数**（脚本归集成者）；
+4. 第二刀：`--headless-idle --idle-seconds N` 走 `MinimalSoftwareWindow`
+   （同款实现见 `crates/yeban-ui-test-port/src/render.rs:129-180`），**见证 = 控件数/窗口数 + 与 `--headless` 的读数差**
+   必须落进 `11.14 → 55.97` 的量级，并用一条判据钉住该量级。
+**注意**: release 列本机不可得（Slint 首次全量构建违反本机纪律）⇒ 如实 SKIP + 记 needs。
+
