@@ -6535,3 +6535,33 @@ format contract and its criteria come with it rather than staying in `yeban-app`
 
 **Both are therefore deliberate pieces of work, not wrappers**, which is the concrete reason they are recorded rather than rushed: one needs
 a decision about where the bytes are produced, the other needs a query-shaped design instead of a measurement.
+
+### Round 266: consolidation after round 248 - what changed, and the three structural items left open
+
+**Landed since round 248** (all locally verified; the CI stall below means nothing after verdict 31 has a hosted verdict):
+- the roll's tool state is readable from Rust (`active-tool` mirrored three levels, guard extended, round 537-539 series);
+- `UiAction::SelectTool` is dispatched at the single dispatch point with its own criterion (round 557);
+- the pencil actually edits the model: `pencil_op_for` resolves a click (refusing a non-pencil tool, a position outside every clip, and a
+  failed snap), `wire_roll_edit` commits through `UndoPort::commit_ops` and re-projects - with criteria for exactly-one-note and for
+  undo-restores (rounds 567-570);
+- `NotePlan` and `plan_to_add_note` moved DOWN into `yeban-model` so MCP and UI can share one construction, with a criterion asserting
+  the UI wrapper and MCP's explicit-field build produce the same `Op` (rounds 261/263/577).
+
+**Three structural items remain open, each with its reason recorded rather than guessed**:
+1. **The note-construction criteria still live in `yeban-app`** and exercise the re-export - honest, but not where the code is. Deliberately
+   not moved at the end of a session, because the last four hand-made moves each produced damage that only reading caught (round 573).
+2. **MIDI export for MCP**: the capability exists at `yeban-app/src/export_midi.rs` and MCP cannot reach it; it is pure model-to-bytes work,
+   so it can descend to a crate MCP may use - provided the format contract and its criteria descend with it (round 265).
+3. **A loudness tool for MCP**: `yeban-dsp` holds the measurement and MCP must NOT gain that dependency, because its own Cargo.toml says
+   "轻量 crate: 不拖音频栈进 MCP". The design the architecture already shows is `query_engine_state`-shaped: query a measurement the engine
+   holds, do not compute one in MCP (round 265).
+
+**What this session would tell its successor to do first**: read `docs/ledger/app-projection-notes.md`'s `needs` and the two status tables
+BEFORE diagnosing anything (rounds 252/253/254 cost ten rounds learning that N2 was already registered), and grep the MCP registry before
+declaring a capability missing (rounds 261/262 were corrected by exactly that).
+
+**Blocking, stated plainly for the last time in this session**: `ci.yml` has not started a run since 19:31Z - twelve-plus queued, zero in
+progress, repository Actions verifiably enabled, billing endpoints unreadable with this token. The project's rule is that those workflows
+are the ONLY source of green, so the correct description of everything above is "locally verified", and the three items only the负责人 can
+unblock are: the CI stall itself, HD-49 (the BASELINE-003 verdict口径), and N2's shape (Slint's KeyEvent has no physical code, so the
+shortcuts cannot be wired as designed without choosing an option).
