@@ -5571,3 +5571,13 @@ not look for failures" are different claims and only the first one was checked.
 Still queued or in progress: `13e04e5` and `6aac172` (the selection model and the click callback), `c0e8ec3` (the end-to-end click),
 plus `660e583`, `87cb35a` and `0ac4930` in the queue. The selection work therefore has local verification only so far: 183 lib
 criteria, the feature-gated UI criterion asserting the flags array, `light`, and the extended guard.
+
+### Round 227: verdicts 27-28
+
+Runs @ `13e04e5` (the selection model) and `6f02dd8` (the aligned flags) = **completed success** each. Completed full-workspace
+verdicts on main: **twenty-eight**. So the selection work is now CI-verified from the model onward, and what remains unread is the
+click path built on top of it: `6aac172` and `c0e8ec3` are in progress, and `660e583`, `87cb35a`, `0ac4930`, `2df5741` are queued.
+
+The pattern is worth naming once: a queued verdict is read back, the queue shrinks by one, and the next commit has usually been
+pushed by then. The queue stays roughly constant rather than draining, which is the direct consequence of the push rhythm recorded in
+round 222 - and the reason the rule there is to batch commits, not to push faster.
