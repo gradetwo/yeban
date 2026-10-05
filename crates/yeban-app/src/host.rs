@@ -39,9 +39,15 @@
 //! 不等长就会取到别的轨道的值或越界）。因此顺序是"先按新工程重置成静音 → 再由 60Hz 的
 //! [`apply_meters`] 填真实读数"，而不是"只写一次、之后靠运气对齐"。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use slint::{ModelRc, SharedString, VecModel};
+use yeban_engine::transport::TransportReading;
+use yeban_model::PPQ;
 
 use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, ViewState};
+use crate::engine_host::EngineHost;
 use crate::meters::{MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
 use crate::ui::MainWindow;
@@ -189,6 +195,92 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     ui.set_master_meter_peak(snapshot.master_peak_label().into());
     ui.set_master_meter_rms(snapshot.master_rms_label().into());
     ui.set_master_meter_level(snapshot.master_level());
+}
+
+/// 一拍里的 tick 数（[MODEL-AST-001] 的 960 PPQ）。
+///
+/// 时间码的**拍号**假定 4/4：`TimeSignature` 已经在模型里，但它**没有**被投影进
+/// `ViewState`（登记为 needs）—— 在拿到它之前按 4/4 格式化，而不是编一个"已支持拍号"的假象。
+const BEATS_PER_BAR: u64 = 4;
+
+/// tick → 时间码文本（`BBB.BB.TTT`：小节.拍.拍内 tick，全部 **1 起 / 0 起**按 `SESSION_TIMECODE` 口径）。
+///
+/// 纯函数、只做整数除法 —— 因此"显示的时间码来自引擎读数"这件事可以被机械断言：
+/// 输入是 `TransportReading::position_ticks`，输出是界面上的字符串。
+#[must_use]
+pub fn timecode_for_ticks(ticks: u64) -> String {
+    let ticks_per_bar = PPQ * BEATS_PER_BAR;
+    let bar = ticks / ticks_per_bar + 1;
+    let beat = (ticks % ticks_per_bar) / PPQ + 1;
+    let in_beat = ticks % PPQ;
+    format!("{bar:03}.{beat:02}.{in_beat:03}")
+}
+
+/// 把**引擎的**走带读数注入界面（`playing` 显示态 + 时间码）。
+///
+/// 这是全仓库**唯一**写 `playing` 的地方 —— 界面的 `toggle-play` 处理器**不再自己翻转**
+/// 那个属性（上一版 `app.slint` 里的 `root.playing = !root.playing;` 是"UI 自造状态"，
+/// 会让"显示"与"引擎"各说各话）。数据流因此是单向的：
+///
+/// ```text
+/// TransportMirror(原子读数) --(host::apply_transport)--> MainWindow.playing / .timecode
+/// ```
+///
+/// `timecode` 用的是引擎读数（[`TransportReading::position_ticks`]），不是界面自己算的。
+pub fn apply_transport(ui: &MainWindow, reading: TransportReading) {
+    ui.set_playing(reading.state.is_running());
+    ui.set_timecode(timecode_for_ticks(reading.position_ticks).into());
+}
+
+/// 把 `MainWindow` 的**走带回调**接到引擎（[`crate::engine_host::EngineHost`]）。
+///
+/// ## 为什么它住在 `host.rs`
+///
+/// ADR-0001 **D28** 的口径是"注入面只有一处"：界面属性由 [`apply_view`] /
+/// [`apply_meters`] 写，而"界面 → 引擎"的走带命令由本函数接线。`main.rs` 与
+/// Tier-1 判据（`src/test_port_adapter.rs` 的 `#[path]` 双目标）**共用这一份实现**，
+/// 因此"命令行看到的界面"与"CI 断言的界面"接到的是同一个引擎。
+///
+/// ## 线程与实时安全
+///
+/// 回调跑在 **UI 线程**：`Rc<RefCell<..>>` 是"单线程内的可变共享"，**不是** RT 锁；
+/// 真正的实时侧（`EngineRuntime::process_quantum`）只从无锁 SPSC 出队。
+/// 回调里不做任何长阻塞等待 —— 它只发 1–2 条命令并推 1 个量子（微秒级）。
+///
+/// ## 状态来源
+///
+/// 每次动作之后都从**引擎读数**回写界面（[`apply_transport`]），因此：
+/// - `toggle-play` 触发引擎状态变化，显示态跟着引擎走；
+/// - 直接改引擎状态（例如测试里的 `host.play()`）之后调用 [`apply_transport`]，
+///   显示态同样跟着变 —— 显示态**没有**自己的状态机。
+pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
+    let toggle = Rc::clone(&engine);
+    // UFCS（而不是 `ui.as_weak()`）：`slint::ComponentHandle` 不在本文件的 import 里，
+    // 与 `main.rs` 的 `slint::ComponentHandle::run(&ui)` 是同一个理由 —— 既拿到方法，
+    // 又不引入一个可能变成 unused import 的 trait（`-D warnings` 下会直接失败）。
+    let toggle_ui = slint::ComponentHandle::as_weak(ui);
+    ui.on_toggle_play(move || {
+        let reading = toggle.borrow_mut().toggle_play();
+        if let Some(ui) = toggle_ui.upgrade() {
+            apply_transport(&ui, reading);
+        } else {
+            // 窗口已经销毁：动作已经发给引擎了（不留半途状态），只是没人可通知。
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+        }
+    });
+
+    let stop = Rc::clone(&engine);
+    let stop_ui = slint::ComponentHandle::as_weak(ui);
+    ui.on_stop(move || {
+        // UI 的"停止"按钮的语义（`transport.slint` 的 accessible-label）是
+        // **停止并回到起始点** ⇒ 引擎侧是 `Stop` + `SeekTicks(0)` 两条命令。
+        let reading = stop.borrow_mut().stop_and_rewind();
+        if let Some(ui) = stop_ui.upgrade() {
+            apply_transport(&ui, reading);
+        } else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+        }
+    });
 }
 
 /// 构造主窗口：注入**外壳场景**（会话运行态 / 本机视口）+ 投影状态（底部控制台默认 Tab 0）。

@@ -20,17 +20,24 @@
 //!
 //! ```text
 //! 1) 事件：每块**一次**批量出队 [ROAD-M2-007]
+//!      走带命令（`EngineEvent::Transport`）在这一步按 FIFO 应用 [crate::transport]：
+//!        Play/Stop/Pause ⇒ 状态切换（位置保留）；SeekTicks(t) ⇒ 位置 = t 且
+//!        合成器播放头对齐到该 tick 的帧位置
 //! 2) 快照：begin_block() 无锁切换 [ARCH-RT-002]；revision 变化时
-//!       a) 重设电平弹道系数；b) 声部池对齐到新轨道集合 + 游标校正（只增不减）
+//!       a) 重设电平弹道系数；b) 声部池对齐到新轨道集合 + 游标校正（只增不减）；
+//!       c) 走带按同一份快照的 `sample_rate` / `bpm` 武装（位置不动 ⇒ 不跳变）
 //! 3) 渲染 + 电平：对快照里**每条非母线轨**
 //!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch（声相之前、单声道）
 //!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
 //!    然后 **BusLimiter::apply(block)**                    ← 母线峰值限制（前瞻 33 帧）
 //!    再对母线（stereo-linked）MeterBank::measure_bus_stereo(block)   ← **限制之后**的读数
-//!    最后播放头前进 frames（**每量子一次**，与轨道数无关）
+//!    最后播放头前进 frames（**每量子一次**，与轨道数无关）；
+//!      **走带停住时**这一步被跳过、逐轨渲染也被跳过（输出静音、不触发音符）——
+//!      电平照常计量，所以"每量子一次批量发布"与走带状态无关
 //! 4) 发布：**每量子恰好一次** meters.publish(本量子的全部帧) [ARCH-UI-002, ROAD-M2-008]
-//! 5) end_block() 公布读者进度
+//! 5) 走带读数：**每量子恰好一次** transport.publish(镜面)（原子 seqlock，无锁无分配）
+//! 6) end_block() 公布读者进度
 //! ```
 //!
 //! **每量子发布帧数 = 非母线轨数 + 1（母线）**。母线同时出现在 `tracks()` 里时
@@ -91,6 +98,9 @@ use crate::mixer::{BusLimiter, PanLaw};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::snapshot::{EngineSnapshot, SnapshotReader, SnapshotSlot};
 use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
+use crate::transport::{
+    Transport, TransportEffect, TransportMirror, TransportReading, TransportState,
+};
 
 // 编译期钉住块长是规范允许的取值 [ARCH-DET-001, MODEL-AST-002]。
 const _: () = crate::block::assert_supported_frames::<DEFAULT_BLOCK_FRAMES>();
@@ -151,6 +161,16 @@ pub struct EngineStats {
     ///
     /// `None` = 还没有任何快照被处理过。
     pub quanta_per_second: Option<f32>,
+    /// 走带状态（[`crate::transport`]；**不是**设备流的播放状态）。
+    pub transport_state: TransportState,
+    /// 走带位置（960 PPQ 整数 tick）。
+    pub position_ticks: u64,
+    /// 走带位置（帧；与 [`Self::rendered_samples`] 同步）。
+    pub position_frames: u64,
+    /// 累计应用的走带命令条数（含幂等的重复 `Play`/`Stop`）。
+    pub transport_commands: u64,
+    /// 累计在**推进状态**下处理过的量子数（停住时不自增）。
+    pub transport_quanta: u64,
 }
 
 /// 渲染驱动：音频回调持有的全部可变状态。
@@ -167,6 +187,16 @@ pub struct EngineRuntime {
     bank: MeterBank<SCRATCH_METERS>,
     /// 声部池 + 播放头（**真的合成**：见 [`crate::synth`]）。
     synth: SynthEngine,
+    /// **走带状态机**（960 PPQ 整数 tick；[`crate::transport`]）[MODEL-ISO-001]。
+    ///
+    /// 它**不在快照里**：快照是不可变的模型投影，而播放头是挥发性会话运行态。
+    /// 位置每量子按整数有理数推进；`Stop` 时冻结且输出静音。
+    transport: Transport,
+    /// RT → 控制侧的走带读数镜面（原子量 + seqlock；无锁、零分配）。
+    ///
+    /// 控制面（`yeban-app::engine_host`）持同一个 `Arc` 的一份克隆读数。
+    /// 实时侧只写不读，因此永远不会被读者阻塞。
+    transport_mirror: Arc<TransportMirror>,
     /// 母线峰值限制器（前瞻式，立体声联动）[ARCH-DSP-001]。
     ///
     /// 位置：**逐轨汇流之后、母线电平之前** ⇒ 母线电平读数（[`EngineStats::meter_frames`]）
@@ -213,7 +243,7 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Self {
-        Self {
+        let runtime = Self {
             snapshot: SnapshotReader::attach(slot, retire),
             events,
             meters,
@@ -224,6 +254,12 @@ impl EngineRuntime {
             bank: MeterBank::new(),
             // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
             synth: SynthEngine::new(48_000),
+            // 走带默认**自由跑**：接入走带之前 `process_quantum` 的语义就是
+            // "快照一发布就从 tick 0 起滚"，因此未收到任何命令时行为逐位不变。
+            // 要"加载即停住"的控制面显式发一条 `Stop`（`yeban-app` 的 GUI 路径
+            // 在 `EngineHost::reload` 之后就这么做；`reload` 自己**不**碰走带状态）。
+            transport: Transport::free_running(48_000, yeban_model::project::DEFAULT_BPM),
+            transport_mirror: Arc::new(TransportMirror::new()),
             limiter: BusLimiter::new(),
             armed_pan_law: PanLaw::default(),
             armed_pan_gains: [(
@@ -246,7 +282,11 @@ impl EngineRuntime {
             armed_quanta_per_second: None,
             armed_scheduled_notes: 0,
             armed_note_schedule_drops: 0,
-        }
+        };
+        // 先发布一次初值：控制面在**第一次量子之前**就能读到"Playing / tick 0"，
+        // 而不是一个与引擎实际状态不符的冷值（`TransportReading::cold`）。
+        runtime.transport.publish(&runtime.transport_mirror);
+        runtime
     }
 
     /// 处理一个（可能是任意长度的）输出缓冲：按 [`DEFAULT_BLOCK_FRAMES`] 切成整量子。
@@ -297,7 +337,33 @@ impl EngineRuntime {
             limiter_gain_reductions: self.limiter_gain_reductions,
             limiter_max_reduction: self.limiter_max_reduction,
             quanta_per_second: self.armed_quanta_per_second,
+            transport_state: self.transport.state(),
+            position_ticks: self.transport.position_ticks(),
+            position_frames: self.transport.position_frames(),
+            transport_commands: self.transport.commands_applied(),
+            transport_quanta: self.transport.quanta_played(),
         }
+    }
+
+    /// 走带状态机的只读视图（**实时侧状态**；同线程判据/诊断用）。
+    ///
+    /// 跨线程读数请用 [`Self::transport_mirror`] —— 直接读 `&Transport` 只有在
+    /// "调用者就是处理量子的那个线程"时才安全（`EngineHost` 的控制面驱动就是这种形态）。
+    #[must_use]
+    pub const fn transport(&self) -> &Transport {
+        &self.transport
+    }
+
+    /// RT → 控制侧的走带读数镜面（原子量；跨线程安全）。
+    #[must_use]
+    pub const fn transport_mirror(&self) -> &Arc<TransportMirror> {
+        &self.transport_mirror
+    }
+
+    /// 控制侧读到的走带读数（**一致的一帧**，无锁）。
+    #[must_use]
+    pub fn transport_reading(&self) -> TransportReading {
+        self.transport_mirror.read()
     }
 
     /// 本快照武装的**声相增益表**（诊断/判据用；`(轨道, 左, 右)`，前
@@ -322,9 +388,19 @@ impl EngineRuntime {
     }
 
     /// 播放头当前所在的绝对样本位置（0 = 工程 tick 0）。
+    ///
+    /// 走带是时钟的**唯一**事实源（[`crate::transport`]）：Running 时两者按同一
+    /// `frames` 前进，因此 `position_samples() == transport().position_frames()`；
+    /// 停住时两者都冻结。
     #[must_use]
     pub const fn position_samples(&self) -> u64 {
         self.synth.position()
+    }
+
+    /// 走带位置（960 PPQ 整数 tick）—— 判据/UI 的权威读数。
+    #[must_use]
+    pub const fn position_ticks(&self) -> u64 {
+        self.transport.position_ticks()
     }
 
     /// 当前快照的模型层版本号（音频线程是否已追上模型线程）。
@@ -381,6 +457,8 @@ impl EngineRuntime {
             track_scratch,
             bank,
             synth,
+            transport,
+            transport_mirror,
             limiter,
             limiter_gain_reductions,
             limiter_max_reduction,
@@ -406,11 +484,20 @@ impl EngineRuntime {
         *quanta = quanta.wrapping_add(1);
         let quantum = *quanta;
 
-        // --- 1) 参数/音符/走带事件：**每块一次**批量出队 [ROAD-M2-007] ---
+        // --- 1) 参数/音符/**走带**事件：每块一次批量出队 [ROAD-M2-007] ---
+        //
+        // 走带命令在**量子边界**按 FIFO 顺序应用 ⇒ "同一输入序列 ⇒ 同一 tick 轨迹"
+        // （确定性来自"命令在哪一个量子生效"只由出队顺序决定，与墙钟无关）。
+        // `SeekTicks` 必须同时把合成器播放头挪到目标位置，否则"定位"只改数字、不出声。
         let mut applied = 0usize;
         events.drain_with(scratch_events, |event| {
             if !event.is_idle() {
                 applied += 1;
+            }
+            if let EngineEvent::Transport { command } = event
+                && let TransportEffect::Seeked { frames, .. } = transport.apply(command)
+            {
+                synth.seek(frames);
             }
         });
         *event_bulk_pops = event_bulk_pops.wrapping_add(1);
@@ -447,6 +534,9 @@ impl EngineRuntime {
                     current.tones().iter().filter(|(id, _)| **id != master),
                 );
                 synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+                // --- 2b') 走带武装：采样率与 BPM 必须来自**同一份快照**（见快照的 `bpm` 字段）。
+                // 位置与状态都不动 ⇒ 换快照 / 改速度不跳变 [ARCH-DET-001]。
+                transport.arm(current.sample_rate(), current.bpm());
                 *armed_scheduled_notes = current.scheduled_notes() as u64;
                 *armed_note_schedule_drops = current.note_schedule_drops();
 
@@ -474,6 +564,11 @@ impl EngineRuntime {
             bank.begin_quantum();
 
             // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
+            //
+            // **走带冻结 ⇒ 输出静音、且不触发任何音符**（`notes` 契约见
+            // `docs/ledger/engine-sound-notes.md` 的 needs N2）。电平仍然照常计量
+            // （静音的读数），因此"每量子恰好一次批量发布"这条结构性契约与走带状态无关。
+            let running = transport.is_playing();
             let metered_tracks = current.tracks().keys().filter(|id| **id != master).count();
             // 给母线留一个槽位, 保证母线永远有电平可发。
             let track_budget = scratch_meters.len().saturating_sub(1);
@@ -486,14 +581,19 @@ impl EngineRuntime {
                     continue;
                 }
                 let track = *id;
-                // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
-                // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
-                // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
-                synth.render_track(
-                    track,
-                    current.schedule(&track),
-                    &mut track_scratch[..frames],
-                );
+                if running {
+                    // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
+                    // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
+                    // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
+                    synth.render_track(
+                        track,
+                        current.schedule(&track),
+                        &mut track_scratch[..frames],
+                    );
+                } else {
+                    // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
+                    track_scratch[..frames].fill(0.0);
+                }
                 if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {
                     scratch_meters[produced] = frame;
                     produced += 1;
@@ -514,7 +614,14 @@ impl EngineRuntime {
                 sum_into_bus(block, &track_scratch[..frames], gain_l, gain_r);
             }
             // 播放头前进：**每个量子一次**（与轨道数无关）。
-            synth.advance(frames);
+            //
+            // 走带是**唯一**的时钟事实源：`Running` 时合成器与走带位置同步前进
+            // （两者的绝对原点都是 tick 0 ⇒ 帧 / tick 两条读数描述同一瞬间）；
+            // `Stopped` 时**两者都不动**（[`Transport::advance_frames`] 恒返回 0）。
+            if running {
+                transport.advance_frames(frames as u64);
+                synth.advance(frames);
+            }
 
             // --- 3b) 母线限制器（[ARCH-DSP-001]）：逐轨汇流之后、母线电平之前 ---
             // 前瞻式峰值限制、立体声联动、逐样本确定（`mixer` 模块文档 §2–§4）。
@@ -550,6 +657,12 @@ impl EngineRuntime {
             *meter_frames = meter_frames.wrapping_add(published as u64);
             *meter_bulk_publishes = meter_bulk_publishes.wrapping_add(1);
         }
+
+        // --- 5) 走带读数发布：**每量子恰好一次**（原子写，无锁无分配） ---
+        //
+        // 无快照时也发布：控制面要能读到"命令已被应用、状态确实变了"，
+        // 而不是靠猜。写者在任何情况下都不会等待读者。
+        transport.publish(transport_mirror.as_ref());
     }
 }
 

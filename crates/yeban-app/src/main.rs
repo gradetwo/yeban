@@ -53,9 +53,12 @@
 //! 注：`--open` **不改变**上面这条结论 —— 它读文件、投影、注入，走的都是纯 Rust 层；
 //! GUI 路径仍然需要一个真显示器。
 
+use std::cell::RefCell;
 use std::process::ExitCode;
+use std::rc::Rc;
 
 use yeban_app::cli::{self, Options};
+use yeban_app::engine_host::EngineHost;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 
@@ -116,7 +119,24 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         }
     };
 
-    wire_callbacks(&ui);
+    // 走带要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁通道 + 量子驱动）。
+    // 用 0 个量子重建（不空转；`reload` **不改**走带状态），随后显式发一条 `Stop`
+    // 把这一代停在 `Stopped`，与界面的初始 `playing: false` 一致 ——
+    // 这一步是**引擎侧的动作**（真的过无锁通道、真的在量子边界生效），
+    // 不是把界面属性改一下了事。
+    let mut engine = EngineHost::new();
+    if let Err(error) = engine.reload(&loaded.archive.project, 0) {
+        // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
+        // 但走带回调会明确报告"没有引擎"，而不是静默地假装在播。
+        cli::emit(&[format!(
+            "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
+        )]);
+    }
+    engine.stop();
+    let engine = Rc::new(RefCell::new(engine));
+    host::apply_transport(&ui, engine.borrow().transport());
+
+    wire_callbacks(&ui, &engine);
 
     // 用 UFCS 而不是 `ui.run()`: `run()` 是 `slint::ComponentHandle` 的**trait 方法**,
     // 直接调用要求该 trait 在作用域内; 而显式 `use slint::ComponentHandle;` 在生成代码
@@ -132,14 +152,19 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
 
 /// 把 `MainWindow` 的回调接到动作上。
 ///
-/// 现在**故意**什么都不做, 只打一行 stderr。原因不是省事:
-/// 走带、Op 归约、AI 采纳的语义都住在 `yeban-engine` / `yeban-model`,
+/// **走带两条已经真的接线**（本切片）：
+/// `toggle-play` / `stop` → [`host::wire_transport`] → `EngineHost` → 无锁事件通道
+/// → `EngineRuntime` 的量子边界。显示态（`playing` / `timecode`）由
+/// `host::apply_transport` 从**引擎读数**回写，界面不再自己翻转状态。
+///
+/// 其余七个回调**仍然故意什么都不做**, 只打一行 stderr。原因不是省事:
+/// Op 归约、AI 采纳的语义都住在 `yeban-engine` / `yeban-model`,
 /// 在这里写一个"看起来在工作"的本地状态翻转, 只会制造"UI 已经通了"的假象。
 ///
 /// 回调跑在 UI 线程上; `[ARCH-TOP-002]` / `[ARCH-RT-001]` 约束的是音频线程,
 /// 所以这里的 `eprintln!` 不触碰红线 —— 但接线真实动作时**仍然不许**做长阻塞等待。
-fn wire_callbacks(ui: &yeban_app::ui::MainWindow) {
-    ui.on_toggle_play(|| trace("toggle-play"));
+fn wire_callbacks(ui: &yeban_app::ui::MainWindow, engine: &Rc<RefCell<EngineHost>>) {
+    host::wire_transport(ui, Rc::clone(engine));
     ui.on_toggle_view(|| trace("toggle-view"));
     ui.on_toggle_sidebar(|| trace("toggle-sidebar"));
     ui.on_toggle_ai_drawer(|| trace("toggle-ai-drawer"));

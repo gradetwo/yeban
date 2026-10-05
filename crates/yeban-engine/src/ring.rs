@@ -70,13 +70,21 @@ impl ParamAddress {
 }
 
 /// 走带（transport）命令。
+///
+/// 语义由 [`crate::transport::Transport`] 定义（960 PPQ 整数 tick）：
+///
+/// - `Play`：进入 `Playing`，**位置保留** ⇒ 停住后再播从停住的地方继续；
+/// - `Stop` / `Pause`：进入 `Stopped`，**位置保留**、时钟冻结、输出静音。
+///   "回到起始点"不是停止的语义 —— 它是 `Stop` 之后的一条 `SeekTicks(0)`
+///   （UI 的停止按钮发的就是这两条，见 `yeban_app::engine_host::EngineHost::stop_and_rewind`）；
+/// - `SeekTicks(t)`：位置**恰好**变成 `t`（960 PPQ），播放状态不变。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportCommand {
-    /// 开始播放。
+    /// 开始播放（从当前位置）。
     Play,
-    /// 停止并回到起始位置。
+    /// 停住（保留当前位置）。
     Stop,
-    /// 暂停（保留当前位置）。
+    /// 暂停（与 [`TransportCommand::Stop`] 在本状态机里是同一件事：保留当前位置）。
     Pause,
     /// 定位到指定 tick（960 PPQ，见 `yeban_model::PPQ`）。
     SeekTicks(u64),
