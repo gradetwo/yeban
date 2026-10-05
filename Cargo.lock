@@ -6334,6 +6334,7 @@ version = "0.0.1"
 dependencies = [
  "slint",
  "slint-build",
+ "yeban-diagnostics",
  "yeban-engine",
  "yeban-model",
  "yeban-render",

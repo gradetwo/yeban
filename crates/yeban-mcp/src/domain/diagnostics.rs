@@ -78,11 +78,8 @@ pub fn apply(
 
     // 本机配置层：本版本**没有**把它暴露给 MCP，故写一条明确的"不可用"记录。
     // 判据要求 `config.json` 在场；写"不可用"是诚实的在场，留空或省略都不是。
-    let config_json = json!({
-        "note": "config layer is not exposed to MCP in this build",
-        "source": "unavailable",
-    })
-    .to_string();
+    // 与 UI 动作共用**同一**函数（D56 判据 4）。
+    let config_json = yeban_diagnostics::unavailable_config_json();
 
     let logs: Vec<(String, Vec<u8>)> = Vec::new();
     let crashes: Vec<(String, Vec<u8>)> = Vec::new();

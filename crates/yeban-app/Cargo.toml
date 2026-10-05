@@ -80,6 +80,8 @@ yeban-render = { workspace = true }
 # (D19 的字面要求)。离线渲染器 `yeban-render` 走的是另一条路
 # (`default-features = false`), 与本条无关。
 yeban-engine = { workspace = true }
+# [D56] 诊断包: UI 与 MCP 调**同一个** `export_diagnostics`。
+yeban-diagnostics = { path = "../yeban-diagnostics" }
 
 # ---------------------------------------------------------------------------
 # ui-test-port: 无头 UI 自动化测试端口 (默认**关闭**)

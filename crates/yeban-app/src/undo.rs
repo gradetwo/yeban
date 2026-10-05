@@ -46,6 +46,8 @@ use crate::input::{Action, InputContext, Modifiers, PhysicalKey, Resolution};
 /// 界面上的撤销类动作（**全部**撤销入口都归到这里）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiAction {
+    /// `[D56]` 人工导出诊断包（把调试信息与相关文件打包, 供复现排查）。
+    ExportDiagnostics,
     /// `Cmd+Z` / 时光机里的"撤销一步"按钮。
     Undo,
     /// `Cmd+Shift+Z`。
@@ -71,6 +73,7 @@ impl UiAction {
             Self::OpenUndoTree => "open-undo-tree",
             Self::CloseUndoTree => "close-undo-tree",
             Self::ToggleUndoTree => "toggle-undo-tree",
+            Self::ExportDiagnostics => "export-diagnostics",
         }
     }
 }
@@ -279,6 +282,21 @@ impl UndoPort {
         };
 
         let outcome = match action {
+            // [D56] 人工导出诊断包。**不**改工程状态 ⇒ `DisplayOnly`。
+            // 调的是与 MCP 工具**同一个** `yeban_diagnostics::export_diagnostics`（判据 4）。
+            UiAction::ExportDiagnostics => {
+                let dir = std::env::temp_dir();
+                let config = yeban_diagnostics::unavailable_config_json();
+                let inputs = yeban_diagnostics::BundleInputs {
+                    config_json: Some(&config),
+                    ..Default::default()
+                };
+                match yeban_diagnostics::export_diagnostics(&dir, inputs) {
+                    Ok(report) => eprintln!("诊断包已写出: {}", report.path.display()),
+                    Err(err) => eprintln!("诊断包导出失败: {err}"),
+                }
+                ActionOutcome::DisplayOnly
+            }
             UiAction::Undo => self.run_undo(1),
             UiAction::UndoMany(steps) => self.run_undo(steps),
             UiAction::Redo => self.run_redo(1),

@@ -252,3 +252,13 @@ pub fn export_diagnostics(
         entries,
     })
 }
+
+/// 本版本**没有**把配置层暴露给采集器时使用的诚实标记。
+///
+/// D56 判据要求 `config.json` **在场**；写"不可用"是在场且诚实，省略或留空都不是。
+/// 两个入口（UI 动作与 MCP 工具）都调用本函数 —— 这就是"同一实现"的一部分，而不是各写一遍字符串。
+#[must_use]
+pub fn unavailable_config_json() -> String {
+    r#"{"note":"config layer is not exposed to this surface in this build","source":"unavailable"}"#
+        .to_owned()
+}
