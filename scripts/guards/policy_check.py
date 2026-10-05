@@ -253,6 +253,57 @@ def g06_large_files_registered() -> list[Violation]:
                 f"{path.stat().st_size} 字节 > 10MB 且不在 LARGE_FILE_ALLOWLIST 中",
             )
         )
+
+    # 历史覆盖: 工作树干净**不代表历史里没有大对象** —— 红线 9 的对象是「已提交的二进制」,
+    # 一次误提交即使在后续提交里删掉, 仍然留在所有 ref 可达的历史中。
+    # 用 `git rev-list --objects --all` + `git cat-file --batch-check` 枚举**所有 ref 可达的 blob**。
+    scanned = 0
+    try:
+        rev = subprocess.run(
+            ["git", "rev-list", "--objects", "--all"],
+            cwd=REPO, capture_output=True, text=True, timeout=300,
+        )
+        if rev.returncode == 0:
+            cat = subprocess.run(
+                ["git", "cat-file", "--batch-check=%(objecttype) %(objectsize) %(rest)"],
+                cwd=REPO, input=rev.stdout, capture_output=True, text=True, timeout=300,
+            )
+            seen: set[str] = set()
+            for line in cat.stdout.splitlines():
+                parts = line.split(" ", 2)
+                if len(parts) < 3 or parts[0] != "blob":
+                    continue
+                scanned += 1
+                try:
+                    size = int(parts[1])
+                except ValueError:
+                    continue
+                if size <= MAX_FILE_BYTES:
+                    continue
+                hist_path = parts[2].strip()
+                if hist_path in LARGE_FILE_ALLOWLIST or hist_path in seen:
+                    continue
+                seen.add(hist_path)
+                bad.append(
+                    (
+                        "G06",
+                        f"history:{hist_path}",
+                        f"历史可达 blob {size} 字节 > 10MB 且不在 LARGE_FILE_ALLOWLIST 中",
+                    )
+                )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # **见证**: 历史扫描必须真的读到非平凡的 blob 数。否则(例如 git 不可用、或扫描逻辑被改坏成永真)
+    # 这条判据会变成"永不报错的空判据" —— 那正是本仓库最怕的假绿。
+    if scanned < 100:
+        bad.append(
+            (
+                "G06",
+                "history-scan",
+                f"历史扫描只读到 {scanned} 个 blob(<100) ⇒ 判据可能空转, 不能当作「红线 9 已满足」的证据",
+            )
+        )
     return bad
 
 

@@ -2891,3 +2891,30 @@ Then I read the document's own scope section, which is the part that actually se
 **Why this mattered to check rather than assert.** My first reading of the item ("核验 323 款素材") suggested the
 document might be failing to list things. The measurement said the opposite, and the document said so itself in its first
 section. Asserting either way without reading §0 would have been wrong in one direction or the other.
+
+### Round 99: red line 9 is now guarded over **history**, not just the working tree (G06 extended, still 14 guards)
+
+`g06_large_files_registered()` only walked the working tree (`REPO.rglob("*")`), so a >10 MB blob committed and later
+deleted would still sit in every ref's history while the guard reported green. Extended instead of adding a 15th guard,
+precisely to avoid churning the guard counts that the doc-contract step asserts (still **14 条**).
+
+**What was added**
+1. history coverage: `git rev-list --objects --all` piped into `git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)'`,
+   flagging any **blob** > 10 MB that is not in `LARGE_FILE_ALLOWLIST` (deduplicated by path, since a path appears once
+   per revision);
+2. a **non-triviality witness**: if the scan parses fewer than 100 blobs, the guard reports a violation
+   ("判据可能空转, 不能当作「红线 9 已满足」的证据"). Without it, a broken scan (git missing, logic rotted to "never
+   fires") would look exactly like a satisfied red line.
+
+**Evidence**
+- `python3 scripts/guards/policy_check.py` -> `守卫全部通过 (14 条)` (so: no >10 MB blob in history, and the witness saw
+  a non-trivial blob count);
+- **tooth test** (the instrument must be able to say *yes*): in a throwaway repo with an 11 MB file committed, the very
+  same pipeline printed `命中: 11000000 字节 big.bin`; the guard's decision is the threshold comparison on that value.
+  The throwaway repo was deleted afterwards;
+- `run-gates.sh light` passed.
+
+**Self-error repeated and caught**: my first version of the patch embedded ASCII double quotes inside a double-quoted
+f-string, which `ast.parse` rejected with a SyntaxError. This is the **third** time in this session that same quoting
+trap has bitten me, and it is written in my own notes ("Python 字符串里不写 ASCII 双引号（用「」）"). Fixed by switching
+the inner quotes to 「」; `ast.parse` then passed before any guard ran.
