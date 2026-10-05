@@ -469,3 +469,39 @@ assertion `left == right` failed
 
 > 纪律（新增）：**判据的夹具不得改动别的判据依赖的路径/文件前提**。夹具必须落在自己的独占目录里；
 > 共享一个"保证不存在"的路径是跨判据耦合，且因为测试并行而在 CI 上表现为**随机红**。
+
+### 9.7 第 6 轮：`run 37276699906`（commit `cc22e9b`）—— **红两条（都是本线判据自己的错）**
+
+| 目标 | 结果 |
+| :--- | :--- |
+| `--lib`（单元判据） | ✅ **`275 passed; 0 failed`**（前五轮的红全部消失） |
+| `--test contract` | ✅ `18 passed` |
+| 另一个测试目标 | ✅ `16 passed` |
+| `--test extension_tools`（本线 12 条判据） | ❌ `18 passed; 2 failed` |
+| clippy / checks / deny / lockfile / `rust (yeban-ui-mcp)` | ✅ |
+
+```text
+---- automation_write_lands_in_the_project_and_undo_restores_byte_for_byte ----
+panicked at crates/yeban-mcp/tests/extension_tools.rs:373:5:
+assertion `left == right` failed   left: 2   right: 1
+
+---- dry_run_preview_equals_the_real_call_for_all_three_tools ----
+panicked at crates/yeban-mcp/tests/extension_tools.rs:835:9:
+`yeban_query_engine_state` 真做之后的实测摘要必须等于预览里的预测
+  left: String("0b2c3f5a…")  right: String("960f03a2…")
+```
+
+两条都是**判据自己写错了**，不是实现错了：
+
+1. **撤销不回退提交图谱**。第一版断言"撤销后 `commit_count` 回到写之前" —— 但
+   `undo_session::undo` 只**移动游标**（`Plan::commit_delta` 对 Undo/Redo 恒为 0），那次写入的提交
+   仍在 DAG 里。改成断言"提交数保持 +1"并加断言 `undoneTotal == 1` / `after.canRedo == true`
+   （这两条才是撤销真正改变的东西）。
+2. **夹具起点没有按用例重新对齐**。第一版在循环外只建一对分发器，而第一个用例的**真调用**会写一个
+   自动化点 ⇒ 两侧工程在第二个用例（引擎读数）之前就分叉了，摘要必然不等。
+   改成**每个用例各自一对分发器**（起点逐用例重新对齐）。
+
+> 第六轮的读数：**"判据写错"与"实现写错"必须分开归因**。这一轮没有一行实现代码需要改 ——
+> 两次红都是判据对运行期语义的误解（撤销的图语义、夹具的状态隔离）。
+> 这类错误同样只有 CI 能抓（本机不编译），但它的处置**不是**改实现, 而是把误解放进注释,
+> 让下一个读判据的人不必再踩一次。

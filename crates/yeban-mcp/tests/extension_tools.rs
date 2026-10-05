@@ -370,7 +370,22 @@ fn automation_write_lands_in_the_project_and_undo_restores_byte_for_byte() {
     );
     assert_eq!(undone["status"], "success", "{undone}");
     assert_eq!(project_bytes(&dispatcher), before, "撤销必须逐字节回退");
-    assert_eq!(dispatcher.domain().commit_count(), commits_before);
+    // ⚠ 撤销**只移动游标, 不回退提交图谱**（`Plan::commit_delta` 对 Undo/Redo 恒为 0）:
+    // 那次写入的提交仍在 DAG 里, 只是不再被应用。第一版这里写成"回到 commits_before"
+    // 是错的 —— CI 用 `left: 2, right: 1` 把它抓出来了。
+    assert_eq!(
+        dispatcher.domain().commit_count(),
+        commits_before + 1,
+        "撤销不动提交图谱（只动游标）"
+    );
+    assert_eq!(
+        undone["data"]["undoneTotal"], 1,
+        "游标确实前进了一步: {undone}"
+    );
+    assert_eq!(
+        undone["data"]["after"]["canRedo"], true,
+        "撤销之后必须可以重做: {undone}"
+    );
 
     // 重做再把同一个点写回来（同一实现、同一载荷）。
     let redone = call_tool(
@@ -779,14 +794,10 @@ fn preview_keys(tool: &str) -> &'static [&'static str] {
 
 #[test]
 fn dry_run_preview_equals_the_real_call_for_all_three_tools() {
-    let project = filled_project();
-    let track = lead_track(&project);
+    let track = lead_track(&filled_project());
     let bytes = wav_s16(48_000, &[0, 1, -1, 0]);
     let path = write_audio_fixture("preview", &bytes);
 
-    // 同一起点跑两次：一次 dryRun（只读预览），一次真调用。
-    let mut preview_run = dispatcher_with_project(project.clone());
-    let mut real_run = dispatcher_with_project(project);
     let cases: Vec<(&str, Value)> = vec![
         (
             "yeban_edit_automation",
@@ -811,6 +822,11 @@ fn dry_run_preview_equals_the_real_call_for_all_three_tools() {
         ),
     ];
     for (name, arguments) in cases {
+        // ⚠ **每个用例各自一对分发器**：第一版在循环外只建一对, 于是第一个用例的**真调用**
+        // （写一个点）让两侧工程分叉, 后面两个用例的摘要必然不等 —— CI 用 `left/right`
+        // 两个不同 digest 把它抓出来了。夹具的起点必须在**每个用例**上重新对齐。
+        let mut preview_run = dispatcher_with_project(filled_project());
+        let mut real_run = dispatcher_with_project(filled_project());
         let mut dry_arguments = arguments.clone();
         dry_arguments[tools::DRY_RUN_PARAM] = Value::from(true);
         let dry = call_tool(&mut preview_run, name, dry_arguments);
