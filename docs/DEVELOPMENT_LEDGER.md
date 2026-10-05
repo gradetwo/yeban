@@ -4529,3 +4529,33 @@ Completed full-workspace verdicts on main now number **twelve**, the twelfth bei
 **Remaining in the objective** (nothing blocked, nothing awaiting a ruling): `BASELINE-003`'s real bar - the 100 000-note
 scrolling scene - which needs `yeban-app`'s real view wired into the timing loop already in place (spec at round 136, wiring at
 rounds 145/148/149), and `BASELINE-006`, which the human deferred via HD-47/HD-48.
+
+### Round 174: BASELINE-003 100k timing case - the test compiled but never RAN, so I reverted it rather than commit a dead test
+
+I wrote the 10 万音符 timing case into `crates/yeban-app/src/test_port_adapter.rs` (mirroring the model-driven projection test at
+line 1296: `project_with_notes(100_000)` → `ViewState::from_project` → `DemoScene::from_view` → `ElementRegistry::from_view` →
+`LivePort::new(..., host::build_main_window)` → 600 次 `request_redraw()` + `capture()` with p50/p99/max and a golden witness).
+
+`cargo check -p yeban-app --all-targets` passed, so the code is type-correct. But running it produced:
+
+```
+test result: ok. 0 passed; 0 failed; ...; 170 filtered out
+```
+
+with the filter `frame_time_under_one_hundred_thousand_notes` - and adding `--features ui-test-port` changed nothing. So the test
+is not in the lib target's test list: **it never ran**.
+
+I then tried to establish why and could not: `grep -n 'mod test_port_adapter' crates/yeban-app/src/*.rs` matches only a
+**comment** in `lib.rs:169`, so the module's compilation entry is somewhere I have not found, and `test_port_adapter.rs` contains
+no `#[cfg(` or `mod tests` lines by my greps either - which contradicts the fact that its tests do compile under
+`--all-targets`.
+
+**Decision**: I reverted the file. A test that compiles but never executes is exactly the "looks like it is there" failure this
+project's discipline forbids, and committing it would have put a fake green in the tree - worse than no test.
+
+**Open question for the next attempt (one read)**: how is `test_port_adapter.rs` included? Find its `mod` declaration and the
+feature/cfg gate, then either place the timing case where it will run, or add it to the target that actually executes these tests
+(the existing golden/tier1 suites run them somehow, for example `tests/real_ui_tier1.rs`).
+
+Everything else for BASELINE-003 is in place: the 100 000-note fixture with its exact-count criterion (`d329697`), and the timing
+loop whose pattern is proven in `yeban-ui-test-port`'s `frame_time` test.
