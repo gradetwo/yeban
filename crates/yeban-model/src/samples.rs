@@ -672,6 +672,367 @@ pub fn project_with_notes(note_count: usize) -> YebanProjectV1 {
     project
 }
 
+/// **演示工程的夹具**：`src/scene.rs` 里原先那组硬编码常量的模型化形态。
+///
+/// 它与 `scene::TRACK_NAMES` / `NOTE_ULIDS` / `CLIP_ULIDS` / `SECTION_NAMES` /
+/// `SCENE_NAMES` / `FADER_DB_LABELS` **逐字对应**，并有判据钉住
+/// （`demo_projection_reproduces_the_scene_constants`）。这样"演示数据"就不再是
+/// 界面里的常量，而是**一个真正的 `YebanProjectV1`** —— 换成
+/// [`crate::samples::filled_project`] 时走的是**同一条**代码路径。
+#[must_use]
+pub fn demo_project() -> YebanProjectV1 {
+    use std::collections::BTreeMap;
+    use std::str::FromStr as _;
+
+    use crate::music::MidiNote;
+    use crate::project::{ClipPoolEntry, LoopConfig, RoutingEdge, RoutingGraph, RoutingKind};
+
+    let master_id = demo_id("M0");
+    let track_ids: [EntityId; 6] = [
+        demo_id("T1"),
+        demo_id("T2"),
+        demo_id("T3"),
+        demo_id("T4"),
+        demo_id("T5"),
+        demo_id("T6"),
+    ];
+    // 与 `scene::TRACK_NAMES` 逐字一致；顺序 = 身份升序（`BTreeMap` 迭代序）。
+    let track_names = ["鼓", "贝斯", "铺底", "主音", "弦乐", "打击"];
+    // 与 `scene::FADER_DB_LABELS` 逐字一致（模型是权威，界面标签由投影生成）。
+    let track_volumes = [-3.2_f32, -6.0, -8.4, -4.8, -12.0, -10.6];
+    let track_kinds = [
+        TrackKind::Midi,
+        TrackKind::Audio,
+        TrackKind::Midi,
+        TrackKind::Midi,
+        TrackKind::Midi,
+        TrackKind::Audio,
+    ];
+    let track_colors = [
+        Some("#f7e6b0"),
+        None,
+        Some("#22aa88"),
+        None,
+        None,
+        Some("#3366ff"),
+    ];
+
+    let midi_clip_id = demo_id("K1");
+    let audio_clip_id = demo_id("K2");
+
+    // 六个音符的身份与 `scene::NOTE_ULIDS` 逐字一致。
+    let note_ids: [EntityId; 6] = [
+        "01J8Z5Q0R7K3M9X2V4B6N8P1A2",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1A3",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1B0",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1C7",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1D4",
+        "01J8Z5Q0R7K3M9X2V4B6N8P1E1",
+    ]
+    .map(|text| EntityId::from_str(text).expect("演示音符 ULID 必须合法"));
+
+    let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+    for (index, note_id) in note_ids.into_iter().enumerate() {
+        let pitch = [60_u8, 64, 67, 72, 74, 76][index];
+        let start = 480 * u64::try_from(index).unwrap_or(0);
+        notes.insert(note_id, MidiNote::new(note_id, start, pitch, 480));
+    }
+
+    let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
+    tracks.insert(master_id, master_track(master_id));
+    for (slot, track_id) in track_ids.into_iter().enumerate() {
+        tracks.insert(
+            track_id,
+            TrackV3 {
+                id: track_id,
+                name: track_names[slot].to_owned(),
+                kind: track_kinds[slot],
+                volume_db: track_volumes[slot],
+                pan: 0.0,
+                mute: slot == 5,
+                solo: slot == 0,
+                solo_safe: false,
+                folder_id: None,
+                color: track_colors[slot].map(str::to_owned),
+                devices: demo_track_devices(slot),
+                macros: Vec::new(),
+                automation_lanes: demo_automation_lanes(slot, track_id),
+                clips: BTreeMap::new(),
+            },
+        );
+    }
+
+    // 三个剪辑摆放：身份与 `scene::CLIP_ULIDS` 逐字一致；一个 MIDI、两个音频。
+    let placements: [(EntityId, EntityId, usize, u64, u64); 3] = [
+        (
+            EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1F9").expect("剪辑 ULID 必须合法"),
+            midi_clip_id,
+            0,
+            0,
+            3840,
+        ),
+        (
+            EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1G6").expect("剪辑 ULID 必须合法"),
+            audio_clip_id,
+            1,
+            1920,
+            960,
+        ),
+        (
+            EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1H3").expect("剪辑 ULID 必须合法"),
+            audio_clip_id,
+            2,
+            5760,
+            3840,
+        ),
+    ];
+    for (placement_id, clip_id, slot, start_tick, duration_ticks) in placements {
+        if let Some(track) = tracks.get_mut(&track_ids[slot]) {
+            track.clips.insert(
+                placement_id,
+                ClipPlacement {
+                    id: placement_id,
+                    clip_id,
+                    start_tick,
+                    duration_ticks,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                },
+            );
+        }
+    }
+
+    // 四个段落 / 四个场景，与 `scene::SECTION_NAMES` / `scene::SCENE_NAMES` 逐字一致。
+    let mut sections: BTreeMap<EntityId, SectionV3> = BTreeMap::new();
+    for (slot, name) in ["Intro", "Verse", "Chorus", "Outro"]
+        .into_iter()
+        .enumerate()
+    {
+        let id = demo_id(["S1", "S2", "S3", "S4"][slot]);
+        let start = 7680 * u64::try_from(slot).unwrap_or(0);
+        sections.insert(
+            id,
+            SectionV3 {
+                id,
+                name: name.to_owned(),
+                start_tick: start,
+                end_tick: start + 7680,
+                // `if` 而不是 `bool::then(..)`：后者会被 `clippy::unnecessary_lazy_evaluations`
+                // 盯上（本仓库在 test_port_adapter.rs 里已踩过一次同类）。
+                color: if slot == 0 {
+                    Some("#22AA88".to_owned())
+                } else {
+                    None
+                },
+            },
+        );
+    }
+    let mut scenes: BTreeMap<EntityId, SceneV3> = BTreeMap::new();
+    for (slot, name) in ["Intro", "Verse", "Chorus", "Drop"].into_iter().enumerate() {
+        let id = demo_id(["C1", "C2", "C3", "C4"][slot]);
+        scenes.insert(
+            id,
+            SceneV3 {
+                id,
+                name: name.to_owned(),
+                tempo: None,
+                color: None,
+            },
+        );
+    }
+
+    // 路由：每条轨道 → 主总线（`RoutingGraph` 是声学连接的唯一真理源，红线见 MODEL-AST-004）。
+    let mut edges: BTreeMap<EntityId, RoutingEdge> = BTreeMap::new();
+    for (slot, track_id) in track_ids.into_iter().enumerate() {
+        let edge_id = demo_id(["R1", "R2", "R3", "R4", "R5", "R6"][slot]);
+        edges.insert(
+            edge_id,
+            RoutingEdge {
+                id: edge_id,
+                source_node: track_id,
+                destination_node: master_id,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+    }
+    let mut nodes = vec![master_id];
+    nodes.extend(track_ids);
+
+    let mut clip_pool: BTreeMap<EntityId, ClipPoolEntry> = BTreeMap::new();
+    clip_pool.insert(
+        midi_clip_id,
+        ClipPoolEntry {
+            id: midi_clip_id,
+            name: "夜色铺底".to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    );
+    clip_pool.insert(
+        audio_clip_id,
+        ClipPoolEntry {
+            id: audio_clip_id,
+            name: "909 鼓组".to_owned(),
+            content: ClipContent::Audio {
+                asset: crate::ids::AssetHash::of_bytes(b"yeban-demo-kick"),
+                gain_db: -1.5,
+            },
+        },
+    );
+
+    YebanProjectV1 {
+        title: "夜半 Yeban".to_owned(),
+        author: "Yeban Project Contributors".to_owned(),
+        bpm: 120.0,
+        id: demo_id("P0"),
+        tracks,
+        master_bus_track_id: master_id,
+        routing_graph: RoutingGraph { nodes, edges },
+        sections,
+        scenes,
+        clip_pool,
+        ..YebanProjectV1::default()
+    }
+}
+
+/// 演示工程的实体身份：`01J8Z5Q0R7K3M9X2V4B6N8P0` + 2 字符尾段。
+///
+/// 前缀与 `scene.rs` 里的演示 ULID 常量同族（`…N8Pxx`），尾段用另一段命名空间
+/// （前导 `0`）以免与音符 / 剪辑常量相撞。
+///
+/// # Panics
+///
+/// 尾段不是合法 Crockford Base32 时 panic（常量错误属编程错误）。
+#[must_use]
+pub fn demo_id(tail: &str) -> EntityId {
+    use std::str::FromStr as _;
+    EntityId::from_str(&format!("01J8Z5Q0R7K3M9X2V4B6N8P0{tail}"))
+        .expect("演示夹具的 ULID 必须是合法 Crockford Base32")
+}
+
+/// 演示夹具的一个自动化采样点（身份与值一起给出，避免键/身份漂移）。
+pub fn demo_point(
+    tail: &str,
+    tick: u64,
+    value: f32,
+    curve: crate::music::CurveType,
+) -> (EntityId, crate::project::AutomationPoint) {
+    let id = demo_id(tail);
+    (
+        id,
+        crate::project::AutomationPoint {
+            id,
+            tick,
+            value,
+            curve,
+        },
+    )
+}
+
+/// 演示夹具的**设备链**：只有轨道 0（`鼓`）挂一个内部合成器。
+///
+/// 它存在的理由是**一条泳道的值域**：`AutomationTarget::DeviceParam` 是模型里唯一
+/// "固有取值域不可知"（`nominal_domain() == None`）的目标，因此只有它能让"按曲线最值
+/// 自适应纵轴"这条路径被真正执行到（见 `crate::automation` 的模块文档与判据 ③）。
+#[must_use]
+pub fn demo_track_devices(slot: usize) -> Vec<crate::project::DeviceDefinition> {
+    if slot != 0 {
+        return Vec::new();
+    }
+    vec![crate::project::DeviceDefinition {
+        id: demo_id("D1"),
+        name: "Yeban PolySynth".to_owned(),
+        kind: crate::project::DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: vec![crate::project::ParameterValue {
+            name: "cutoff".to_owned(),
+            value: 1200.0,
+            unit: Some("Hz".to_owned()),
+        }],
+        latency_samples: 0,
+    }]
+}
+
+/// 演示夹具的**自动化泳道**（`line/app-automation-ui` 补的那一格）。
+///
+/// 三条泳道刻意覆盖三种不同的目标形状，让"人工看一下"也能分辨它们：
+///
+/// | 轨道 | 目标 | 单位 | 取值域 | 读 / 写 | 覆盖的口径 |
+/// | :--- | :--- | :--- | :--- | :--- | :--- |
+/// | 0（`鼓`） | `TrackVolume` | `dB` | **固有** `[-60, 12]` | 读开 / `Touch` | 轴来自目标、录制臂角标 |
+/// | 0（`鼓`） | `DeviceParam(0, 0)` | `Native` | **自适应** `[200, 4000]` | **读关** / `Off` | 值域自适应 + 读关闭可区分 + 同轨多泳道等分 |
+/// | 1（`贝斯`） | `TrackPan` | `Bipolar` | 固有 `[-1, 1]` | 读开 / `Write` | 双极单位、另一条轨道 |
+///
+/// 它们**不是**界面常量：`YebanProjectV1` 是唯一事实源，界面只读投影
+/// （`demo_projection_reproduces_the_scene_constants` 钉住这一点）。
+#[must_use]
+pub fn demo_automation_lanes(
+    slot: usize,
+    track_id: EntityId,
+) -> std::collections::BTreeMap<crate::project::AutomationTarget, crate::project::AutomationLane> {
+    use crate::music::CurveType;
+    use crate::project::{AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode};
+
+    let mut lanes = std::collections::BTreeMap::new();
+    let mut insert = |target: AutomationTarget,
+                      points: Vec<(EntityId, AutomationPoint)>,
+                      read_enabled: bool,
+                      write_mode: AutomationWriteMode| {
+        lanes.insert(
+            target,
+            AutomationLane {
+                target,
+                points: points.into_iter().collect(),
+                read_enabled,
+                write_mode,
+                domain: None,
+            },
+        );
+    };
+    match slot {
+        0 => {
+            insert(
+                AutomationTarget::TrackVolume { track_id },
+                vec![
+                    demo_point("A1", 0, -3.2, CurveType::Linear),
+                    demo_point("A2", 1920, -8.0, CurveType::Logarithmic),
+                    demo_point("A3", 3840, -1.0, CurveType::Linear),
+                ],
+                true,
+                AutomationWriteMode::Touch,
+            );
+            insert(
+                AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index: 0,
+                    param_index: 0,
+                },
+                vec![
+                    demo_point("A4", 0, 200.0, CurveType::Exponential),
+                    demo_point("A5", 960, 1200.0, CurveType::Linear),
+                    demo_point("A6", 3840, 4000.0, CurveType::Linear),
+                ],
+                false,
+                AutomationWriteMode::Off,
+            );
+        }
+        1 => {
+            insert(
+                AutomationTarget::TrackPan { track_id },
+                vec![
+                    demo_point("A7", 0, -1.0, CurveType::Linear),
+                    demo_point("A8", 960, 0.0, CurveType::SCurve),
+                    demo_point("A9", 2880, 1.0, CurveType::Linear),
+                ],
+                true,
+                AutomationWriteMode::Write,
+            );
+        }
+        _ => {}
+    }
+    lanes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
