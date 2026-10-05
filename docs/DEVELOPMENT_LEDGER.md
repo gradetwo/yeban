@@ -3226,3 +3226,30 @@ unfounded claim about notification handling - is verified by a CI verdict rather
 Both MCP rounds this session therefore end with CI verdicts:
 `37301917661` @ `f08520c` (handshake) and `37302014597` @ `cb49b78` (notification), each with `rust (yeban-mcp)` = success
 `steps=10`. The stdio end-to-end suite stands at five criteria, all green locally and on CI.
+
+### Round 113: is the byte-exact criterion sound despite having no masking? - answered from evidence already collected
+
+`ROAD-M3-007` requires "视觉回归自动化：**VU/走带光标动态遮罩** + Headless 断言布局一致性 + Golden 必须走 Tier-1 软光栅化".
+The goldens and the comparison are wired, but the comparison is byte-exact and does **not** mask anything. So the honest
+question is whether the criterion is fragile or merely strict.
+
+**Evidence that already answers it (no new run needed).** The same encoded frame reproduced **byte-for-byte** across:
+- two local regeneration runs (`YEBAN_WRITE_GOLDEN=1`, sha256 unchanged);
+- a local render versus the committed baseline (`一致` witnesses in `target/ui-test-port/app-introspect-observations.txt`);
+- **macOS-local versus Linux-CI**: the CI artifact at `37299800916` reported 5 comparisons, 0 non-judgments, against
+  baselines committed from a **different** run - and for `ROS`-style dynamic content that could not happen.
+
+Two conclusions:
+1. For the **five scenes currently in the set**, the content is deterministic (the harness drives a fixed state), so a
+   byte-exact criterion is **sound** rather than fragile; masking is not needed to make *these* comparisons meaningful.
+2. Masking becomes necessary only when a scene includes genuinely **time-varying** content (an animated VU meter, a moving
+   transport cursor) or when comparing across **different** platforms, which is already handled by per-platform baselines.
+
+**Therefore `ROAD-M3-007` stays 部分 for a forward-looking reason, not a current defect**: the requirement names dynamic
+masking, the mechanism exists (`crates/yeban-ui-test-port/src/mask.rs`), but it is not applied in the golden comparison. The
+honest next step, when someone needs a scene with live VU/cursor, is "mask (or decode) then compare"; until then the
+byte-exact judge covers every committed scene on both platforms.
+
+**Recorded explicitly** so the distinction is not lost: "the criterion lacks masking" is true; "the criterion is therefore
+unreliable today" does **not** follow, and asserting the second without the first's caveat would be the same
+looks-like-evidence error this ledger keeps logging.
