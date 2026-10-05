@@ -2789,3 +2789,30 @@ Caught by re-reading the output (the noise was impossible to mistake for `[ok] .
 `BASELINE-001` and `BASELINE-004` steps in the same job, and the job concluded success -> those two steps passed as
 written. Their remaining gaps are therefore not "the step is broken" but **what they measure and where** (reference
 machine / release column / the object the spec names), which is the next thing to look at.
+
+### Round 95: the three remaining partials share ONE blocker — reference hardware, not missing measurement
+
+I inspected the two bench steps I had assumed were "measuring the old way". They are not:
+
+| gate | step | does it measure the spec's object? |
+| :--- | :--- | :--- |
+| `BASELINE-001` | `cargo run --release -p yeban-render --locked --example bench_render -- 32 30` | **yes** — `bench_render.rs` cites the spec line "离线渲染 ≥ 100× 实时（**参考工程 A：32 轨 → 母线的星形路由**）" and builds exactly that routing |
+| `BASELINE-004` | `cargo run --release -p yeban-model --locked --example bench_undo -- 20000` | **yes** — `bench_undo.rs` cites "单步撤销时延（目标 **p99 ≤ 0.2 ms**）" and measures it over 20 000 steps |
+
+Both files also **declare their own boundary**: neither can serve as a pass/fail verdict, because the spec's thresholds
+must be reproduced on the **named reference hardware** (`BASELINE-005`'s hardware round-trip latency is likewise
+unmeasurable here). Both steps are green in the lane (`37293151145` succeeded), so this is not a broken-step problem.
+
+There is already a real reading on record for `BASELINE-001` (ledger: 32 tracks × 30 s -> single-thread **106×**, Rayon
+**136×** realtime, two runs producing the same digest). So the magnitude bar (≥100×) is met empirically; what is missing
+is the *authoritative* environment.
+
+**Synthesis (the useful part).** `BASELINE-001`, `BASELINE-002` and `BASELINE-004` do **not** have three different gaps.
+They have **one**: the spec names fixed reference hardware (M2 Pro 12-core / Ryzen 7840HS) and each script says in its own
+header that the pass/fail decision requires re-running the same command there. Everything else about them - the object
+measured, the command, the evidence trail, the honest boundaries - is already in place and, for `BASELINE-002`, now
+reproducible locally *and* in CI.
+
+⇒ The productive next moves are therefore: (a) obtain reference-hardware runs (needs the human / an external machine), or
+(b) keep the partial status with the magnitude evidence recorded as such - which is exactly what the ledger now says.
+Chasing "more measurement plumbing" for these two would be motion without progress.
