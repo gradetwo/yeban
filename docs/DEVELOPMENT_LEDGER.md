@@ -2508,3 +2508,22 @@ I1 少记一次 ⇒ `镜像=511 权威=512`；I2 多记一次 ⇒ `镜像=515 �
 ⇒ 该 stash 从列表消失是因为**它被正常弹出并落实为提交**。教训（写入纪律）: **弹 stash 前先核对 `On <branch>` 与文件清单**
 （跨工作树共享同一个 `.git`，`stash@{n}` 是仓库级的，很容易弹错别人的那条）。
 
+### 第 83 轮：**缺口闭合** —— main 当前代码第一次拿到 workspace 全量完成态判决（并修掉让它长期缺席的根因）
+
+**判决**: run **`37283699896` @ `aac62e8` = completed success**，其中
+**`rust (workspace 全量)` = success `steps=10`**（`clippy --workspace -D warnings` + `test --workspace` 均跑完且绿）、
+`windows` = success `steps=8`、`plan`/`checks`/`deny`/`lockfile` = success、矩阵腿 skipped（由 workspace 腿覆盖）。
+⇒ 第 81 轮记下的**唯一缺口**（"main 里落地的代码，Linux `cargo test --workspace` 从未完成过"）**闭合**；
+该 run 覆盖：契约追平 `McpEdit`（`84eae35`）· 引擎镜像漂移根治（`7222164`）· 生产响应假话修正（`aac62e8`）。
+
+**根因（`line/origin-contract` 扫 main 最近 40 条 run 得出，我已核实并修复）**: `ci.yml` 的 `cancel-in-progress: true`（按 ref）
+⇒ workspace 腿有 **10 条连续 `cancelled/steps=10`**，而其余 `success` 几乎全是 **docs-only（crate 腿 `skipped steps=0`）**；
+最近一次 workspace 腿真跑完且绿是更早的 `37272996453`（`c53b7f3`）。⇒ **"main 绿"里长期混进大量零 crate 证据的 success**
+（"空心绿"的**系统性版本**）。**修复**: main 上改为**不取消在飞 run**（`cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`），分支上仍取消。
+
+**我自己的教训**: 这几轮我"一边等 workspace 判决、一边推文档提交"，**每次推送都把在飞的证据 run 掐掉** ——
+其中一次掐掉的正是**唯一**那条证据（`37282880060`）。
+
+**另一条 CI 结构结论**: **`rerun` 不是"逼出 workspace-wide"的可靠开关**（`37282880060` 落 wide、`37282591016` 落 narrow）
+⇒ 要**确定性**拿 workspace 全量判决只有两条路：推一个碰 `crates/**`/共享文件的提交，或用 `gates-manual.yml`（其 `cancel-in-progress: false`）。
+

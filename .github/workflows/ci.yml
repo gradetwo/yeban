@@ -28,7 +28,11 @@ on:
 concurrency:
   # 同一分支的新推送取消旧运行 —— 多线并行时这是最省算力的一条规则
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # ⚠ main 上**不**取消在飞 run: 实测最近 40 条 main run 里 workspace 腿有 10 条连续 cancelled,
+  # 而其余 success 多为 docs-only(crate 腿 steps=0 skipped) ⇒ main 的重腿长期没有完成态判决,
+  # 「绿」的集合里混进大量零 crate 证据的 success(「空心绿」的系统性版本)。
+  # 分支上仍取消(省额度); main 上排队等它跑完。
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
