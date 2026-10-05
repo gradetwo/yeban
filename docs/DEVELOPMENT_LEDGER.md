@@ -5085,3 +5085,28 @@ against "120 FPS" should know that the remaining gap is architectural (batch dra
 beforehand-justified equivalent) behind the same query contract so the projection's criteria still hold, (c) replace the
 per-note elements with a batch draw path, then (d) re-measure. Each step is independently judgeable, which is the reason to do them
 in that order rather than as one change.
+
+### Round 202: why the pitch bounds are NOT published yet - a refusal with a named dependency
+
+`[UI-NOTE-001]` step 1 needs four viewport bounds: `min_tick`, `max_tick`, `min_pitch`, `max_pitch`. Two are now published
+(rounds 201/460). I **declined** to publish the other two, and the reason matters more than the delay:
+
+**There is no viewport pitch source.** The projection has no `pitch_range`, `min_pitch`, `max_pitch` or `lane_count` accessor -
+only `note_ys()`. So the only pitch range available anywhere is "the pitches that happen to occur in the project", which is a
+**different quantity** from "the pitch lanes currently visible". Publishing the former under the spec's `min_pitch`/`max_pitch`
+names would make step 1 **look** complete while giving the future culling core a bound that is wrong in a way no test would catch
+from the name alone. That is precisely the "looks like it is there" failure this ledger keeps recording, so the honest state is
+"two of four, and here is what the other two are waiting for".
+
+**What the pitch bounds actually depend on**, in order:
+1. a vertical extent: the roll's visible height in lanes. That value lives in the `.slint` (`parent.height` and the lane pitch), so
+   it needs an **input path from the .slint to the host** - the same class of path the horizontal gesture just got (a callback),
+   and the same class that did not exist at all before round 199;
+2. a decision on whether the roll gets a **vertical** scroll/zoom model at all. Horizontally the host owns the offset and clamps at
+   0; vertically there is currently no model, no offset and no zoom, so `min_pitch`/`max_pitch` would be constant per window size;
+3. only then can the values be published, and they would be judgeable: the lane range implied by the bounds must agree with the
+   `y` values actually injected, which is the vertical analogue of the tick-space criterion in round 459.
+
+**Also worth recording**: with the horizontal half done, the culling core's tick query is now expressible, but a rectangle query
+(which is what `locate_in_envelope_intersecting` takes) needs BOTH axes - so the R-Tree step genuinely waits on the pitch bounds
+rather than merely being tidier with them.
