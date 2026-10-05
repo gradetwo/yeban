@@ -3275,3 +3275,30 @@ class of error as closing it with a hosted runner's numbers - which the gate alr
 use a fixed-rate machine, then run the frame-rate criterion; or (2) an explicit human ruling that adaptive-refresh readings
 are acceptable **with that limitation stated in the row**. Until one of those exists, the gate stays PENDING - and now the
 row says *why this specific designated machine does not resolve it*, so nobody has to rediscover it.
+
+### Round 115: ran BASELINE-005's delivered tool on the reference machine - the human's ruling now has numbers
+
+The gate is PENDING on a human ruling about "原生 API 口径", so the useful thing I can do is put measurements in front of
+that decision instead of leaving it abstract. One command, on this machine:
+
+```
+host_os=macos   5 devices (3 output, 2 input)
+NOMINAL            buffer 64 frames @ 48 kHz = 1.3333 ms per direction (nominal, NOT roundtrip)
+CALLBACK           output 1491 / input 1500 callbacks, backend_errors=0, jitter p99=0.0000 ms, max 0.0040 / 0.0037 ms
+DRIVER-LATENCY     output p50=p99=4.3750 ms ; input p50=p99=2.3750 ms   (host-reported prediction)
+verdict=unmeasurable-without-loopback (NOT within-target)     exit code 0
+```
+
+**Why the verdict is the honest one**: the driver-latency rows are the HOST's own playback/capture prediction, and the tool
+refuses to present them as an acoustic roundtrip - the spec's bar is <= 5.5 ms **roundtrip**. It also refuses to sum the two
+directions (`driver_io_sum_is_roundtrip=false`), which matters because a naive sum is 6.75 ms and would exceed the bar.
+
+**The ruling is now a three-way choice with numbers attached** (recorded in the gate row): (1) acoustic/electrical
+roundtrip via a **physical loopback cable** - the only measurement that matches the spec's intent and the recommended path,
+needs a cable; (2) accept host-reported driver-side latency (4.375 / 2.375 ms) - then the "may the two directions be summed"
+question must be ruled too, since summing gives 6.75 ms and fails; (3) nominal 1.3333 ms per direction - the weakest option,
+not recommended.
+
+**Positive evidence worth keeping**: callback scheduling is unusually stable on this machine (p99 jitter 0.0000 ms, max
+0.0040 ms, zero backend errors over ~1500 callbacks per direction) - that is evidence *for* the audio engine's practical
+behaviour, independent of which latency口径 is chosen.
