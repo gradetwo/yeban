@@ -348,3 +348,18 @@ yeban/
 
 **同时保留既有纪律**：判决只来自 CI。写清未读回的判决。写清否定性结果。
 
+## 自主决策与"改规则"的授权（负责人裁决，第 146 轮）
+
+裁决原文：「能你自己决策的事情就自己决策，和规则冲突的，考虑修改规则带来的受益和成本，如果受益远大于成本，就修改」。
+
+**含义**：集成者可以自行裁决**不涉及红线**的事项。规则与目标冲突时，先算**受益与成本**。受益远大于成本时，**改规则**，并把改动、理由与证据一起写进账本。
+
+**边界（不得自行改动）**：红线 1 至 9；`AGENTS.md` 的四份 Normative 规范与法务文件；人类已明示的裁决（除非你重新裁决）。
+
+**第一次行使（同一轮）**：`run-gates.sh light` 原先**不含 clippy**，于是我给 `yeban-dsp` 加判据时本机全绿、CI 却因
+`error: using chunks_exact with a constant chunk size` 让 `rust (yeban-dsp)` 与 `windows` **两条腿变红**（run `37327050901`）。
+`AGENTS.md` DoD 第 1 条要求 clippy 零告警，§5.1 允许本机跑无重依赖 crate 的 clippy ⇒ **缺的不是许可，是默认路径**。
+故新增 `scripts/gates/clippy-changed.sh` 并接进 `light`：只对**本次 git 改动涉及且不含重依赖**的 crate 跑
+`clippy --all-targets -- -D warnings`；含重依赖的按既有纪律跳过并注明交给 CI。牙测：向 `yeban-dsp` 注入
+`chunks_exact(常量)` 后该检查报错（与 CI 当时同一条 lint）。
+
