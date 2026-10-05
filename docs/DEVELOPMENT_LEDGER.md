@@ -8224,3 +8224,25 @@ until clean - typically four to six passes for this file, each needing a fresh l
 
 **Status**: tree green and clean (every failed attempt reverted); CI green through `f7a664d`; the loudness item is CI-verified and closed on the tool side; the
 mapping move is fully specified and needs compiler-driven iteration; the MCP export tool follows it.
+
+
+### Round 338: the generator's structure explained - and the last contradiction named precisely
+
+Rounds 325-338 kept producing the same shape: the moved code compiles, then one more import name fails, alternating sides. This round finally read the
+generator's own wiring instead of only its output, and the structure explains the alternation:
+
+* line 116: `lib = [l for i, l in enumerate(body) if i not in drop ...]` - and **`lib` is what goes to the SHARED crate**;
+* so every entry in `drop` is removed **from the shared copy**, which is right for the `Save` variant and `export_project_to_file` (they stay in the app) but
+  **wrong for `MidiExportReport`** - that struct must MOVE, and adding it to `drop` removed it from the shared side, which is exactly what happened on the last
+  attempt (`unused imports: PathBuf and Path` in the shared, because the struct that used `PathBuf` was gone);
+* the app's side is not derived from the old file at all: it is **hand-written in the generator's `wrapper`** (lines 132, 172, 176 re-export and construct
+  `MidiExportReport`), so the earlier "the app still defines the struct" reading was wrong - the app's `:74`/`:78` errors came from the **wrapper's own text**,
+  which needs `PathBuf` and `EntityId` available to it.
+
+**So the one remaining design question in the generator is concrete and small**: the app's hand-written wrapper must import what its own lines use - `Path`,
+`PathBuf`, `MidiError`, `EntityId`, the save functions and the project type - while the shared side must KEEP `MidiExportReport` (never add it to `drop`) and
+import `PathBuf` plus the codec names. Everything else in the generator is verified: the pre-flight passes, both sides are written, the tests split correctly
+(11 + 2), and with the imports right the crates compiled and **271 tests passed**.
+
+**Status**: tree green and clean (every failed attempt reverted, including this round's uncommitted generator edit); CI green through `f7a664d`; the loudness
+item is CI-verified and closed on the tool side; the mapping move needs the wrapper's import list completed by compiler-driven iteration.
