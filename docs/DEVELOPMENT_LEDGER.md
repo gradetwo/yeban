@@ -7690,3 +7690,28 @@ honest reading is that the remaining work is a short sequence of exactly those s
 each verifiable by a compile. Nothing about the design is open, and each attempt reverts cleanly, so the tree has never been left red.
 
 **Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
+
+
+### Round 314: the fixture is a FAMILY - decided to move the whole demo_* set down together
+
+Moving `demo_project` and `demo_id` together revealed two more helpers the fixture calls (`demo_track_devices`, `demo_automation_lanes`), i.e. the
+fixture is not one function plus one helper but a **family** of `demo_*` constructors. Counted them in `bridge.rs` so the next move is planned rather
+than discovered one name at a time.
+
+**Decision: move the whole `demo_*` family into `yeban-model::samples`**, for three reasons:
+
+1. **it is where samples belong** - `samples.rs` already holds `filled_project`, and these are model-level fixtures that build a `YebanProjectV1` with no
+   UI or filesystem involvement;
+2. **it is the only option that keeps the tests honest**: the alternative of rewriting the moved tests against `filled_project` would change what
+   eleven assertions are asserting, which round 312 already rejected as "weakening tests to make a move compile";
+3. **it moves the discovery into one step** - the four rounds spent naming helpers one at a time (`vlq`, `demo_id`, then two more) are the cost of
+   moving items piecemeal, and a family move pays it once.
+
+**What stays in the app**: whatever `demo_*` helper is used **only** by app-side code and by no shared test (the compiler will say so by way of
+dead-code or unresolved-name errors after the move). The app keeps its tests, which use the fixture through the re-export.
+
+**Also learned this round**: my extraction script aborted **after** writing one of the two files (`StopIteration` on a marker that the earlier edit had
+renamed), so for one moment the tree had duplicated definitions - and the auto-revert on a failed compile cleaned it up. That is the third time the
+revert-on-failure pattern has contained a half-applied edit, and it is the reason the tree has never been left red.
+
+**Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
