@@ -8289,3 +8289,24 @@ the app's module must be **rebuilt to the two writer tests** rather than carried
 
 **Status**: tree green and clean (failure path reverted, including this round's uncommitted generator edits - the script parses); CI green through `f7a664d`;
 the loudness item is CI-verified and closed on the tool side; the mapping move needs the test split applied with the wide-import method, in that order.
+
+
+### Round 341: the ordered sequence gets further - the last defect is a DUPLICATE import I introduced
+
+Running the three steps in round 340's order (generate, split the tests, then widen imports) produced a new failure that is purely mine: `E0252: the name
+DEFAULT_PPQ is defined multiple times` and the same for `MidiError` in the shared file. The generator **already** emits its `use crate::midi::{...}` line, and
+my wide-import insertion added a second one, because I inserted the wide set unconditionally instead of only the names that were missing.
+
+**The fix is trivial and specific**: in the shared file, keep the generator's existing midi import and add only `#![allow(unused_imports)]` (there is no need to
+add a codec import at all); in the app, keep the wrapper's own imports and add the allow plus the few names it lacks. In other words, the wide set belongs
+**only where something is missing**, and the allow covers the surplus - duplicating a line is not "wider", it is a syntax error.
+
+**Where the work stands after rounds 320-341**, and this is the honest summary:
+* **Done and verified**: the generator writes both sides behind a working pre-flight; the tests split correctly (11 domain + 2 writer) with the app's module
+  rebuilt from named parts; the shared crate compiles with the wide-import + allow method; `MidiExportReport` belongs on the shared side and must never enter
+  `drop` (round 338); the shared crate's path import is `PathBuf` only (round 335); the app's wrapper needs `Path`, `PathBuf`, `EntityId`, `MidiError` and the
+  save functions (rounds 333-334, 339-340); the ordering is split-then-widen (round 340).
+* **Left**: apply those rules without duplicating a line. The gap is one insertion condition, not a design question.
+
+**Status**: tree green and clean - every attempt this round and the last reverted cleanly; CI green through `f7a664d`; the loudness item is CI-verified and
+closed on the tool side; the mapping move is one insertion rule from compiling.
