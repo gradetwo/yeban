@@ -1038,6 +1038,36 @@ impl ViewState {
         (min.unwrap_or(0), max.unwrap_or(0))
     }
 
+    /// `[UI-NOTE-003]` **命中测试**：可见窗口内某个逻辑像素点落在哪个音符上。
+    ///
+    /// 选择 / 铅笔 / 橡皮擦三个工具都以它为前置（"选中音符"、"在网格处画出"、"删除光标下的音符"）。
+    /// 它落在 **Rust 侧**（而不是给每个音符加一个 `TouchArea`）：后者会让元素数翻倍, 与规范
+    /// 第 3.1 节"批量绘制"的方向相反; 由 Rust 命中, 界面只报告坐标。
+    ///
+    /// 重叠时的取舍**写明**：返回**绘制顺序最后**（下标最大）的那个 —— 后画的在上层, 点到的就是它。
+    /// 参数 `note_height` 由调用方给出（与 `.slint` 里音符框的高度一致）, 以免这里**猜**一个高度。
+    #[must_use]
+    pub fn hit_test_visible(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        x: f32,
+        y: f32,
+        note_height: f32,
+    ) -> Option<usize> {
+        let mut hit: Option<usize> = None;
+        for index in self.notes_visible_in(scroll_x, viewport_width) {
+            let note = &self.notes[index];
+            // 位置是**相对视口**的（与注入的数组同一口径, 见 `visible_notes`）。
+            let left = note.x - scroll_x.max(0.0);
+            let right = left + note.width;
+            if x >= left && x <= right && y >= note.y && y <= note.y + note_height {
+                hit = Some(index);
+            }
+        }
+        hit
+    }
+
     /// `[UI-NOTE-001]` 步骤 ①：当前视口的 **tick 范围**（`[min_tick, max_tick]`）。
     ///
     /// 规范第 3.1 节要求视口以 `min_tick` / `max_tick`（以及音高上下界）暴露给裁剪核心；
@@ -2563,6 +2593,51 @@ mod tests {
             vis.len(),
             total
         );
+    }
+
+    #[test]
+    fn hit_test_finds_the_note_under_a_point_and_only_that_one() {
+        // 判据: ① 音符中心必命中它自己; ② 空白必不命中; ③ 窗口外必不命中;
+        // ④ 重叠时返回**最后绘制**的那个（口径写明在函数文档里）。
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        let width = 1920.0_f32;
+        let height = 6.0_f32;
+        let visible = view.visible_notes(0.0, width);
+        assert!(!visible.is_empty(), "夹具在首个窗口内必须有音符");
+
+        // ① 每个可见音符的中心都必须命中它自己 —— 除非它与**更后**的音符重叠（重叠时以下是"最后者胜"）。
+        let mut checked = 0_usize;
+        for (slot, index) in view.notes_visible_in(0.0, width).iter().enumerate() {
+            let note = &view.notes[*index];
+            let cx = note.x + note.width / 2.0;
+            let cy = note.y + height / 2.0;
+            let got = view
+                .hit_test_visible(0.0, width, cx, cy, height)
+                .expect("中心必命中");
+            let later_overlaps = view.notes[got].x >= note.x && got != *index;
+            assert!(
+                got == *index || later_overlaps,
+                "第 {slot} 个可见音符的中心命中了 {got}, 既不是它自己也没有更后的音符重叠"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "至少检验一个音符");
+
+        // ② 明显空白（远在音符上方/下方）⇒ 不命中。
+        assert_eq!(view.hit_test_visible(0.0, width, 5.0, -50.0, height), None);
+        assert_eq!(
+            view.hit_test_visible(0.0, width, 5.0, 9_999.0, height),
+            None
+        );
+        // ③ 窗口之外 ⇒ 不命中（第 4 参数意义不大, 重点是 x 超出可见集合）。
+        let far = view.notes_visible_in(0.0, width).last().copied();
+        if let Some(last) = far {
+            let beyond = view.notes[last].x + 10_000.0;
+            assert_eq!(
+                view.hit_test_visible(0.0, width, beyond, view.notes[last].y + 1.0, height),
+                None
+            );
+        }
     }
 
     #[test]
