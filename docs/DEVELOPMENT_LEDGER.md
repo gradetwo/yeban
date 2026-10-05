@@ -3490,3 +3490,21 @@ file, then append the identical bytes to the summary.
 **Method note worth keeping**: "13 sites" was the output of a pattern grep; the *risk* was three. Counting hits is not
 assessing severity, and the second pass - classify by guard and by whether the log holds another copy - is what turned a
 13-item chore into one real fix.
+
+### Round 125: the observability fixes are verified on CI (the inventory log now carries the gate table)
+
+Round 124's fix was to the inventory lane's render step, and a fix I cannot observe working is just a claim. So I dispatched
+the gate and read the log:
+
+```
+run 37304922612 = completed success   (inventory (门禁清单) = success steps=13)
+log line now present:
+  ... 渲染门禁清单（自动取自唯一事实源） ... | `MUST-GATE-001` | 实时回调零分配/零释放/零 I/O/零锁 | **已接线** |
+```
+
+Before the change that step's stdout went only into the job summary, so `gh run view --log` showed the script echo and nothing
+else - which is exactly how the `pending` gate's content stayed invisible in round 123. Now the gate table is readable from
+the log, which matters because the inventory lane is the one that renders the single source of truth for what counts as green.
+
+Both observability fixes (pending, round 123; inventory, round 124) are therefore verified by a CI verdict and by reading the
+artifact the fix was supposed to expose - not merely by "yaml parses and light is green".
