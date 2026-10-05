@@ -2058,3 +2058,18 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **门禁必须区分"没判定"与"判失败"**（假红会让人开始忽略门禁）；
 - **开线前先问三件事**（有没有实现 / 谁在调用 / 有没有判据在断言）—— 否则会开挖重复的线（`golden-compare` 那次）。
 
+### 第 61 轮：`MUST-GATE-002` 闭环 + `MODEL-ISO-001` 两层入 main
+
+- **`MUST-GATE-002` 的证据链闭合**（手动档 run **37268741671 = success**，CI 原文）:
+  `compare exit=0` 与 `同平台比对 PASS（MUST-GATE-002 在 Linux + 锁工具链下真实成立）` ⇒
+  **同平台（x86_64-unknown-linux-gnu + rustc 1.99.0）的两次独立产出在 CI 里逐字段对账通过**，
+  而不再是"如实 SKIP"。三次独立采集（macOS / CI-Linux-x86_64 / arm-Linux-aarch64）的 digest 全是 `94074a…2ff8`。
+  ⇒ 该门禁由"部分"升为 **已接线**，且这次是**规范要求的形态**（同平台对账），不是替代口径。
+- **`line/model-session-state` 合并**（run **37268589046 = success**）: 补齐 `MODEL-ISO-001` 缺失的两层 ——
+  `SessionRuntimeState`（播放头 tick / isPlaying / 任务进度 / 插件 PID / 视窗态）与
+  `LocalMachineConfig`（声卡端口绑定 / 外部编辑器路径 / **Token 只存引用**）。
+  **"严禁持久化"是类型层强制的**（该类型**不派生 `Serialize`**、`project.rs` 里 0 命中、无 `HashMap`/`HashSet`）；
+  本机配置落盘在工程之外且 `0600`；密钥 material 不入盘（只有引用名）。
+  该线还修掉了**自己夹具**的平台错误（Windows 上 `/Applications/...` 不是 absolute ⇒ 它的**生产校验是对的**），
+  并新增一条把**平台语义显式断言**的判据 —— 而不是让夹具"碰巧"过。
+
