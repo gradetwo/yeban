@@ -427,15 +427,27 @@ fn hop_samples(sample_rate: f32) -> usize {
 
 /// 走一遍信号，对每个**完整**的 400 ms 块（75% 重叠）回调它的均方 `z`。
 ///
+/// `right == None` 表示**单声道**：只走左声道那套状态，能量是 `Σy²`（通道权重 1，与
+/// [`LoudnessMeter::add_mono`] 同一约定 —— 单声道**不是**"同一个信号喂两个通道"，
+/// 后者会平白多 3.01 dB）。
+///
 /// 零分配：块 = 4 个跳 ⇒ 只需要 4 个 `f64` 的环。不足一个块的尾巴**丢弃**
 /// （与 BS.1770-4 的参考实现一致：门限块必须完整）。
-fn visit_gating_blocks(sample_rate: f32, left: &[f32], right: &[f32], mut visit: impl FnMut(f64)) {
+fn visit_gating_blocks(
+    sample_rate: f32,
+    left: &[f32],
+    right: Option<&[f32]>,
+    mut visit: impl FnMut(f64),
+) {
     let hop = hop_samples(sample_rate);
     if hop == 0 {
         return;
     }
     let block = hop * GATING_HOPS_PER_BLOCK;
-    let frames = left.len().min(right.len());
+    let frames = match right {
+        Some(right) => left.len().min(right.len()),
+        None => left.len(),
+    };
     if frames < block {
         return;
     }
@@ -448,8 +460,17 @@ fn visit_gating_blocks(sample_rate: f32, left: &[f32], right: &[f32], mut visit:
     let mut hop_sum = 0.0f64;
     let mut hop_frames = 0usize;
     for index in 0..frames {
-        let (l, r) = weighting.process_stereo(clean(left[index]), clean(right[index]));
-        hop_sum += l * l + r * r;
+        let energy = match right {
+            Some(right) => {
+                let (l, r) = weighting.process_stereo(clean(left[index]), clean(right[index]));
+                l * l + r * r
+            }
+            None => {
+                let y = weighting.process_mono(clean(left[index]));
+                y * y
+            }
+        };
+        hop_sum += energy;
         hop_frames += 1;
         if hop_frames == hop {
             ring[ring_pos] = hop_sum;
@@ -617,10 +638,13 @@ impl GatedLoudness {
     }
 
     /// 喂入一段**单声道**样本（通道权重 1）。
+    ///
+    /// 单声道**不是**"同一个信号喂两个通道"：后者会平白多 3.01 dB。
+    /// 判据 [`tests::gated_loudness_mono_matches_one_silent_channel`] 钉住这个约定。
     pub fn add_mono(&mut self, samples: &[f32]) {
         for &sample in samples {
             let y = self.k.process_mono(clean(sample));
-            self.push_frame(y, y);
+            self.push_frame(y, None);
         }
     }
 
@@ -631,13 +655,18 @@ impl GatedLoudness {
             let (l, r) = self
                 .k
                 .process_stereo(clean(left[index]), clean(right[index]));
-            self.push_frame(l, r);
+            self.push_frame(l, Some(r));
         }
     }
 
-    /// 推进一帧（K 加权后的 `(l, r)`），必要时结算一个 100 ms 跳与窗口。
-    fn push_frame(&mut self, left: f64, right: f64) {
-        self.hop_sum += left * left + right * right;
+    /// 推进一帧（K 加权后的样本），必要时结算一个 100 ms 跳与窗口。
+    ///
+    /// `right == None` ⇒ 单声道：只累计左声道那一路的能量。
+    fn push_frame(&mut self, left: f64, right: Option<f64>) {
+        self.hop_sum += match right {
+            Some(right) => left * left + right * right,
+            None => left * left,
+        };
         self.hop_frames += 1;
         if self.hop_frames == self.hop_samples {
             self.finish_hop();
@@ -696,9 +725,12 @@ impl GatedLoudness {
     }
 
     /// 按采样率测一段单声道的门限积分响度；采样率不支持 ⇒ `None`。
+    ///
+    /// 单声道口径 = 单通道能量（与 [`LoudnessMeter::add_mono`] 一致），
+    /// **不是**"同一个信号喂两个通道"。
     #[must_use]
     pub fn integrated_mono_at(sample_rate: f32, samples: &[f32]) -> Option<f32> {
-        Self::integrated_stereo_at(sample_rate, samples, samples)
+        Self::integrated_at(sample_rate, samples, None)
     }
 
     /// 按采样率测一段立体声的门限积分响度；采样率不支持 ⇒ `None`。
@@ -707,6 +739,12 @@ impl GatedLoudness {
     /// （例如整段安静于 −70 LUFS，或长度不足 400 ms）⇒ 负无穷。
     #[must_use]
     pub fn integrated_stereo_at(sample_rate: f32, left: &[f32], right: &[f32]) -> Option<f32> {
+        Self::integrated_at(sample_rate, left, Some(right))
+    }
+
+    /// 门限积分的公共实现：`right == None` ⇒ 单声道（单通道能量）。
+    #[must_use]
+    fn integrated_at(sample_rate: f32, left: &[f32], right: Option<&[f32]>) -> Option<f32> {
         coefficients_for(sample_rate)?;
         // 第一遍: 绝对门限筛出 Jg, 并用它的平均响度定出相对门限 Γr。
         let mut gated_sum = 0.0f64;
@@ -1369,6 +1407,65 @@ mod tests {
         quiet.add_stereo(&silence, &silence);
         assert!(!quiet.momentary_lufs().is_nan());
         assert!(!quiet.short_term_lufs().is_nan());
+    }
+
+    /// 判据：**单声道口径 = 单通道能量**（**不是**"同一个信号喂两个通道"）。
+    ///
+    /// 单声道信号喂两遍会平白多 `10·log10(2) = 3.01 dB`。这条判据把**流式**与
+    /// **离线**两条路径都钉住：`add_mono(x)` 的读数必须与 `add_stereo(x, 0)` 逐位相同，
+    /// 且要与上一线的无门限计量器 [`LoudnessMeter::integrated_mono`] 同一约定
+    /// （单声道 −20 dBFS 的 997 Hz 正弦 ⇒ ≈ −23.01 LUFS）。
+    ///
+    /// 注入：把 `push_frame(y, None)` 改回 `push_frame(y, Some(y))`（或把
+    /// `integrated_mono_at` 改成 `integrated_stereo_at(rate, x, x)`）⇒ 读数 +3.01 dB ⇒ 变红。
+    #[test]
+    fn gated_loudness_mono_matches_one_silent_channel() {
+        let tone = sine_997(0.1, 96_000);
+        let silent = vec![0.0f32; tone.len()];
+
+        let mut mono = GatedLoudness::new_48k();
+        mono.add_mono(&tone);
+        let mut one_channel = GatedLoudness::new_48k();
+        one_channel.add_stereo(&tone, &silent);
+        assert_eq!(
+            mono.momentary_lufs().to_bits(),
+            one_channel.momentary_lufs().to_bits(),
+            "单声道流式读数必须与'另一路静音'的立体声读数逐位相同"
+        );
+        assert_eq!(
+            mono.max_short_term_lufs().to_bits(),
+            one_channel.max_short_term_lufs().to_bits()
+        );
+        assert!(
+            (mono.momentary_lufs() + 23.010_3).abs() < 0.05,
+            "单声道 −20 dBFS 正弦的瞬时读数应约 −23.01, 实际 {}",
+            mono.momentary_lufs()
+        );
+
+        let mono_integrated = GatedLoudness::integrated_mono(&tone);
+        let stereo_integrated = GatedLoudness::integrated_stereo(&tone, &silent);
+        assert_eq!(
+            mono_integrated.to_bits(),
+            stereo_integrated.to_bits(),
+            "单声道离线读数必须与'另一路静音'的立体声读数逐位相同"
+        );
+        assert!(
+            (mono_integrated + 23.010_3).abs() < 0.05,
+            "单声道 −20 dBFS 正弦的门限积分应约 −23.01, 实际 {mono_integrated}"
+        );
+        // 与上一线的无门限计量器**同一约定**（它在 one_channel_only_is_three_db_quieter 里钉的也是这个）。
+        let ungated_mono = LoudnessMeter::integrated_mono(&tone);
+        assert!(
+            (mono_integrated - ungated_mono).abs() < 0.05,
+            "单声道口径必须与 LoudnessMeter::integrated_mono 一致: {mono_integrated} vs {ungated_mono}"
+        );
+        // 96 kHz 也要走同一条路（`integrated_mono_at` 不能退化成"喂两遍"）。
+        let tone_96k = sine_at_rate(0.1, 997.0, 96_000.0, 96_000);
+        let silent_96k = vec![0.0f32; tone_96k.len()];
+        let mono_96k = GatedLoudness::integrated_mono_at(96_000.0, &tone_96k).expect("96 kHz");
+        let stereo_96k =
+            GatedLoudness::integrated_stereo_at(96_000.0, &tone_96k, &silent_96k).expect("96 kHz");
+        assert_eq!(mono_96k.to_bits(), stereo_96k.to_bits());
     }
 
     /// 判据：门限计量的**确定性 + 分块不变性**（实时路径会按任意块长喂入）。
