@@ -297,8 +297,13 @@ jobs:
             echo "### BASELINE-002 峰值常驻内存（目标 ≤ 35 MB）"
             echo
             echo '```text'
+            # 先**单独构建一次** release 二进制，再把**二进制路径**交给脚本:
+            #   ① 避免 `measure_rss.py ... -- cargo run ... -- --flag` 这种**嵌套 `--`**（run 37292857462 的失败原因:
+            #      内层 `--` 被吞掉 ⇒ `--headless` 落到 cargo 上 ⇒ "unexpected argument '--headless' found"）;
+            #   ② 顺带把冷 runner 上 release 构建的耗时从测量里摘出去（它不该记进"常驻内存"的读数窗）。
+            cargo build --release -p yeban-app --locked 2>&1 | tee -a /tmp/bench.log
             TIMEOUT=900 bash scripts/gates/measure_baseline_002.sh -- \
-              cargo run --release -p yeban-app --locked -- 2>&1 | tee -a /tmp/bench.log
+              ./target/release/yeban-app 2>&1 | tee -a /tmp/bench.log
             echo
             echo "### 模型层参考点（对照用，不是达标依据）"
             python3 scripts/gates/measure_rss.py --label model-export-samples --timeout 300 -- \
