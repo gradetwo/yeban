@@ -37,11 +37,18 @@
 //! | [`render_math`] | 渲染的**零第三方依赖**纯逻辑（tick→帧、归一化、包络、日历），本机可单独验证 |
 //! | [`render_clip_math`] | 音频片段装配的**零第三方依赖**纯逻辑（帧落位、增益合成、声道矩阵、重采样判定、延迟裁剪、魔数嗅探），本机可单独验证 |
 //! | [`ids`] | 确定性夹具身份（让 `dryRun` 预览与真调用逐字节相同） |
+//! | [`automation`] | `yeban_edit_automation`：泳道读（唯一求值入口）+ 写一个点（`Op`，可逆） |
+//! | [`automation_audit`] | **零依赖**审计：生产代码里不许有第二份自动化求值，本机可单独验证 |
+//! | [`engine_state`] | `yeban_query_engine_state`：设备链 + 引擎/会话读数（只读） |
+//! | [`import_audio`] | `yeban_import_audio`：`yeban-decode` + `PcmBudget` + `Op::AddClip` |
+//! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
+//! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 
 pub mod automation;
 pub mod automation_audit;
 pub mod engine_state;
 pub mod error;
+pub mod extension_audit;
 pub mod extension_pure;
 pub mod ids;
 pub mod import_audio;
@@ -2273,6 +2280,44 @@ mod tests {
         .expect("合法的工具调用")
     }
 
+    /// 一份**真 WAV**（16-bit 单声道 48 kHz, 4 帧）—— `yeban_import_audio` 的规划会真的解码它。
+    ///
+    /// ⚠ 用**自己的独占临时目录**（`unique_path()` 之外的新目录）。CI 实测教训：
+    /// 第一版把它放进了 `unique_path()` 的父目录并 `create_dir_all` —— 于是
+    /// `save_without_changes_is_skipped_unless_forced` 的**前提**（"那个父目录不存在 ⇒
+    /// `force: true` 会撞 `IO_ERROR`"）被本夹具悄悄改掉了，该判据在并行执行下随机变红。
+    /// **夹具不得改动别的判据依赖的路径前提。**
+    fn wav_fixture() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-unit-wav-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("fixture.wav");
+        let samples: [i16; 4] = [0, 1_000, -1_000, 0];
+        let data: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&u32::try_from(36 + data.len()).expect("小").to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // 单声道
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&u32::try_from(data.len()).expect("小").to_le_bytes());
+        bytes.extend_from_slice(&data);
+        std::fs::write(&path, &bytes).expect("写 WAV 夹具");
+        path
+    }
+
     fn domain() -> Domain {
         let mut domain = Domain::new();
         domain.set_now_ms(1_760_000_000_000);
@@ -2337,6 +2382,28 @@ mod tests {
             // D45 的两条扩展: 刚打开的会话一条 op 都没提交 ⇒ 规划阶段就该报"撤不动"。
             ("yeban_undo", serde_json::json!({})),
             ("yeban_redo", serde_json::json!({})),
+            // D46 的三类扩展（`ADR-0001` D46）: 三者都必须**规划成功**。
+            // 自动化那条只读（没有 `point`）; 引擎读数那条只读;
+            // 音频导入那条指向一份**真 WAV**（`plan` 会真的解码 + 过 `PcmBudget`）。
+            (
+                "yeban_edit_automation",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "lane": "TrackVolume",
+                    "ticks": [0, 1920],
+                }),
+            ),
+            (
+                "yeban_query_engine_state",
+                serde_json::json!({"trackId": track.to_canonical_string()}),
+            ),
+            (
+                "yeban_import_audio",
+                serde_json::json!({
+                    "name": "Kick",
+                    "path": wav_fixture().display().to_string(),
+                }),
+            ),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
