@@ -630,3 +630,85 @@ pub fn max_step_in(samples: &[f32], from: usize, to: usize) -> f32 {
     }
     max_step(&samples[from..to])
 }
+
+// ---------------------------------------------------------------------------
+// `line/transport-engine` 新增：走带判据用的装配
+// ---------------------------------------------------------------------------
+
+/// 走带判据的装配：**保留事件生产端**，因此可以在量子之间真的发走带命令。
+///
+/// 与 [`Runtime`] 的区别只有一处：`Runtime` 刻意丢掉生产端（它不需要发命令），
+/// 而走带判据必须能发 —— 走带命令走的是**产品路径**（`EngineEvent::Transport`
+/// → 实时侧在量子边界出队应用），不是"直接调状态机"。两条路径都有判据：
+/// 状态机本身在 `yeban_engine::transport` 的单元判据里，这里测的是**接线**。
+pub struct TransportRig {
+    /// 快照槽（控制线程侧）。
+    pub slot: std::sync::Arc<SnapshotSlot>,
+    /// 退役回收队列（主线程侧）。
+    pub queue: yeban_engine::snapshot::RetireQueue,
+    /// 事件生产端（控制线程侧）。
+    pub sender: yeban_engine::ring::EventSender,
+    /// 实时渲染驱动。
+    pub runtime: EngineRuntime,
+    /// 最近一个量子的交错输出（左/右）。
+    pub output: Vec<f32>,
+}
+
+impl TransportRig {
+    /// 按工程建装配（48 kHz 由 `audio_config` 决定；`quanta` 由调用方逐个驱动）。
+    #[must_use]
+    pub fn new(project: &YebanProjectV1, revision: u64) -> Self {
+        let snapshot = EngineSnapshot::from_project(project, revision).expect("夹具工程必须能编译");
+        let slot = SnapshotSlot::new(snapshot);
+        let (retire, queue) = retire_channel(64);
+        let (sender, receiver) = event_channel(64);
+        let (publisher, _collector) = meter_channel(4096);
+        let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        Self {
+            slot,
+            queue,
+            sender,
+            runtime,
+            output: vec![0.0f32; 128 * 2],
+        }
+    }
+
+    /// 发一批走带命令（**恰好一次**批量 API；返回实际写入条数）。
+    pub fn send(&mut self, commands: &[yeban_engine::ring::TransportCommand]) -> usize {
+        let events: Vec<yeban_engine::ring::EngineEvent> = commands
+            .iter()
+            .map(|command| yeban_engine::ring::EngineEvent::Transport { command: *command })
+            .collect();
+        self.sender.publish(&events)
+    }
+
+    /// 推一个 128 帧的量子（真实运行时量子长度 [ARCH-DET-001]）。
+    pub fn quantum(&mut self) {
+        self.output.fill(0.0);
+        self.runtime.process_quantum(&mut self.output, 2);
+    }
+
+    /// 推 `count` 个量子。
+    pub fn quanta(&mut self, count: usize) {
+        for _ in 0..count {
+            self.quantum();
+        }
+    }
+
+    /// 左声道（本量子）。
+    #[must_use]
+    pub fn left(&self) -> Vec<f32> {
+        self.output
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| pair[0])
+            .collect()
+    }
+
+    /// 本量子两声道里非零样本数（"停住是否真的静音"的读数）。
+    #[must_use]
+    pub fn nonzero(&self) -> usize {
+        self.output.iter().filter(|sample| **sample != 0.0).count()
+    }
+}

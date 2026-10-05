@@ -171,6 +171,9 @@ export component MainWindow inherits Window {
 
     // 键盘/菜单入口: src/input.rs 判定后由宿主调用对应的 invoke_*。
     callback toggle-play();
+    // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
+    // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
+    callback stop();
     callback toggle-view();
     callback toggle-sidebar();
     callback toggle-ai-drawer();
@@ -288,9 +291,15 @@ export component MainWindow inherits Window {
             arrangement-view: root.arrangement-view;
             ai-drawer-open: root.ai-drawer-open;
 
+            // ⚠ 界面**不**自己翻转 `root.playing`：那个属性只有一个写者 ——
+            // `src/host.rs` 的 `apply_transport`（读的是引擎的原子读数）。
+            // 这一版删掉的 `root.playing = !root.playing;` 正是"控件存在 ≠ 回调接线"
+            // 那类假象的来源（`docs/ledger/feature-alignment.md` 错位 7）。
             toggle-play => {
-                root.playing = !root.playing;
                 root.toggle-play();
+            }
+            stop => {
+                root.stop();
             }
             toggle-view => {
                 root.arrangement-view = !root.arrangement-view;

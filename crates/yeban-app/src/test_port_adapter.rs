@@ -78,11 +78,17 @@
 //!   因此断言失败时无法从 JSON 直接映射回源码文件（已登记为 needs）。
 //! - 静态注册表没有几何 ⇒ `bounds` 一律 `None`，`parent` 一律 `None`（不编造层级）。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use yeban_app::bridge::ViewState;
 use yeban_app::elements::{ElementRegistry, is_model_driven_family};
+use yeban_app::engine_host::{EngineHost, TransportActionRecord};
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
+use yeban_engine::ring::TransportCommand;
+use yeban_engine::transport::{TransportReading, TransportState};
 use yeban_ui_test_port::port::{Permission, PortError, UiTestPort};
 use yeban_ui_test_port::tree::{ControlNode, ControlTree, Role, TreeError};
 use yeban_ui_test_port::{
@@ -1718,5 +1724,224 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
         demo_runtime.ids().collect::<Vec<_>>(),
         runtime.ids().collect::<Vec<_>>(),
         "两个工程驱动的语义 ID 集合必须不同"
+    );
+}
+
+// ===========================================================================
+// 走带接线（`line/transport-engine`）：**回调真的驱动引擎**的判据
+// ===========================================================================
+//
+// 这一节回答的是 `docs/ledger/feature-alignment.md` 错位 7 登记的那个方法论问题：
+// 「控件存在 ≠ 回调接线」。「`transport-play-button` 在控件树里」**不是**证据 ——
+// 上一版 `main.rs` 的 9 个回调全部指向只打 stderr 的 `trace()`，控件树、截图、
+// `ui/coverage` 四个视角看都"有"，点下去什么都不动。
+//
+// 因此这里的证据是**动作记录**：一条真的改变过引擎状态、并且被引擎自己的读数
+// （状态 + 位置）确认的命令。判据同时给出**负向对照**（一个没接线的窗口：
+// 同样的 `invoke_toggle_play()` 之后引擎与显示态都必须一位不动）——
+// 没有这个对照，"引擎变了"可能只是夹具自己在动。
+
+/// 走带判据的夹具：真的建一代引擎 + 一个真的活窗口，并把两者按产品路径接起来。
+struct TransportHarness {
+    /// 活窗口（Tier-1 软件光栅化平台，与 `main.rs` 共用 `host::build_main_window`）。
+    port: LivePort<MainWindow>,
+    /// 引擎宿主（UI 线程持有；与 `main.rs` 的 GUI 路径同款）。
+    engine: Rc<RefCell<EngineHost>>,
+}
+
+impl TransportHarness {
+    /// 建夹具：`filled_project` 投影 → 引擎重建（0 量子）→ 活窗口 → 接线。
+    fn new() -> Self {
+        let project = yeban_model::samples::filled_project();
+        let view = ViewState::from_project(&project).expect("filled_project 必须能投影");
+        let scene = DemoScene::from_view(&view);
+        let size = Size::new(scene.viewport_width, scene.viewport_height);
+
+        let mut engine = EngineHost::new();
+        engine.reload(&project, 0).expect("引擎重建");
+        // `reload` **不**改走带状态（它沿用"自由跑"默认值，契约见 `EngineRebuild::transport`）；
+        // "加载即停住"是控制面的显式动作 —— `main.rs` 的 GUI 路径做的是同一件事。
+        assert_eq!(
+            engine.transport().state,
+            TransportState::Playing,
+            "新引擎沿用自由跑的默认值（reload 不碰走带）"
+        );
+        engine.stop();
+        assert_eq!(
+            engine.transport().state,
+            TransportState::Stopped,
+            "显式 Stop 之后必须停在 Stopped, 否则第一次点播放的语义是\"暂停\""
+        );
+        let engine = Rc::new(RefCell::new(engine));
+
+        let port = LivePort::new(size, Permission::Interactive, None, || {
+            host::build_main_window(&view, &scene)
+        })
+        .expect("Tier-1 平台 + 主窗口");
+
+        host::wire_transport(port.ui(), Rc::clone(&engine));
+        // 接线之后先把引擎读数注入一次界面（`main.rs` 的 GUI 路径做的是同一件事）。
+        host::apply_transport(port.ui(), engine.borrow().transport());
+        Self { port, engine }
+    }
+
+    /// 引擎当前读数。
+    fn reading(&self) -> TransportReading {
+        self.engine.borrow().transport()
+    }
+
+    /// 引擎的走带动作日志。
+    fn journal(&self) -> Vec<TransportActionRecord> {
+        self.engine.borrow().transport_journal().to_vec()
+    }
+}
+
+/// 判据 ⑧ + ⑨（**本切片的核心里程碑**）：`toggle-play` / `stop` 两个回调
+/// **真的**驱动引擎走带，而且 `playing` 显示态**双向**跟着引擎走。
+#[test]
+fn transport_callbacks_really_drive_the_engine_and_the_display_follows_it() {
+    let harness = TransportHarness::new();
+    let ui = harness.port.ui();
+
+    // ---- 方向 A：界面回调 ⇒ 引擎状态变化（不是"控件树里有这个元素"）----
+    assert!(!ui.get_playing(), "初始显示态是停住");
+    assert_eq!(harness.reading().state, TransportState::Stopped);
+
+    ui.invoke_toggle_play();
+    let after_play = harness.reading();
+    assert_eq!(
+        after_play.state,
+        TransportState::Playing,
+        "`toggle-play` 必须真的把引擎推进到 Playing"
+    );
+    assert!(ui.get_playing(), "显示态必须跟着引擎变成\"播放中\"");
+    assert!(after_play.position_ticks > 0, "播放必须真的推进 tick");
+    assert_eq!(
+        ui.get_timecode(),
+        host::timecode_for_ticks(after_play.position_ticks),
+        "时间码必须来自引擎读数, 不是界面自己算的"
+    );
+
+    // **动作记录**（注入点）：命令、命令后的引擎状态与位置、推了几个量子。
+    //
+    // 第 0 条是 `EngineHost::reload` 末尾**自动**发的那条 `Stop`（它把新的一代停在
+    // Stopped，与界面初始显示一致）—— 它同样是一次真的、改变过引擎状态的命令，
+    // 所以它**必须**在记录里，而不是被悄悄跳过。
+    let journal = harness.journal();
+    assert_eq!(journal.len(), 2, "reload 的 Stop + 本次点击的 Play");
+    assert_eq!(journal[0].command, TransportCommand::Stop);
+    assert_eq!(journal[0].state_after, TransportState::Stopped);
+    assert_eq!(journal[1].command, TransportCommand::Play);
+    assert_eq!(journal[1].state_after, TransportState::Playing);
+    assert_eq!(journal[1].position_ticks_after, after_play.position_ticks);
+    assert_eq!(journal[1].quanta_pumped, 1, "命令必须在量子边界被应用");
+    observe(&format!(
+        "[transport] toggle-play ⇒ 记录[Play] 状态={:?} tick={} 推量子={} 显示态={} 时间码={}",
+        journal[1].state_after,
+        journal[1].position_ticks_after,
+        journal[1].quanta_pumped,
+        ui.get_playing(),
+        ui.get_timecode(),
+    ));
+
+    // ---- 再点一次 ⇒ 停住（位置保留）----
+    let playing_position = after_play.position_ticks;
+    ui.invoke_toggle_play();
+    let after_stop = harness.reading();
+    assert_eq!(
+        after_stop.state,
+        TransportState::Stopped,
+        "再点一次必须停住"
+    );
+    assert!(!ui.get_playing(), "显示态必须跟着回到停住");
+    assert_eq!(
+        after_stop.position_ticks, playing_position,
+        "引擎的 `Stop` 保留位置（\"回到起点\"是界面停止按钮的语义, 见下一条判据）"
+    );
+    assert_eq!(harness.journal().len(), 3, "reload 的 Stop + Play + Stop");
+
+    // ---- `stop` 回调：停住 + 回到起点（与 `transport.slint` 的 accessible-label 一致）----
+    ui.invoke_stop();
+    let rewound = harness.reading();
+    assert_eq!(rewound.state, TransportState::Stopped);
+    assert_eq!(rewound.position_ticks, 0, "停止按钮必须回到 tick 0");
+    assert_eq!(ui.get_timecode(), "001.01.000");
+    let journal = harness.journal();
+    assert_eq!(journal.len(), 5, "`stop_and_rewind` 是批量里的两条命令");
+    assert_eq!(journal[3].command, TransportCommand::Stop);
+    assert_eq!(journal[4].command, TransportCommand::SeekTicks(0));
+    assert_eq!(journal[4].position_ticks_after, 0);
+    assert_eq!(
+        journal[3].quanta_pumped, 1,
+        "两条命令在**同一个**量子边界一起生效（一次批量推一个量子）"
+    );
+
+    // ---- 方向 B：直接改引擎状态 ⇒ 显示态跟着变（显示态没有自己的状态机）----
+    harness.engine.borrow_mut().play();
+    host::apply_transport(ui, harness.reading());
+    assert!(
+        ui.get_playing(),
+        "引擎进入 Playing ⇒ 显示态必须跟着变（bound 方向的反向）"
+    );
+    harness.engine.borrow_mut().stop_and_rewind();
+    host::apply_transport(ui, harness.reading());
+    assert!(!ui.get_playing(), "引擎回到 Stopped ⇒ 显示态必须跟着回来");
+    assert_eq!(ui.get_timecode(), "001.01.000");
+
+    // 走带推进会让**截图像素**变化（两次截图不同 ⇒ 这条链真的到了像素一侧）。
+    let stopped_shot = harness.port.window().capture().expect("Tier-1 截图");
+    harness.engine.borrow_mut().seek(8_000);
+    host::apply_transport(ui, harness.reading());
+    assert_eq!(ui.get_timecode(), host::timecode_for_ticks(8_000));
+    let moved_shot = harness.port.window().capture().expect("Tier-1 截图");
+    assert_ne!(
+        stopped_shot.pixels(),
+        moved_shot.pixels(),
+        "走带位置到了 8000 tick ⇒ 时间码液晶屏的像素必须变化"
+    );
+    observe(&format!(
+        "[transport] 时间码 0 -> {} 使截图像素变化 ({} 字节 vs {} 字节)",
+        host::timecode_for_ticks(8_000),
+        stopped_shot.pixels().len(),
+        moved_shot.pixels().len(),
+    ));
+}
+
+/// **负向对照**（判据 ⑧ 的判别力证明）：一个**没有接线**的活窗口上，
+/// 同样的 `invoke_toggle_play()` 既不改引擎、也不改显示态。
+///
+/// 这正是上一版 `main.rs` 的形态（`on_toggle_play(|| trace("toggle-play"))`）
+/// 加上 `app.slint` 里那句 `root.playing = !root.playing;` 的合并后果 ——
+/// 界面看起来会"变"，但引擎一位不动。删掉自翻转之后，两个方向都必须**不动**：
+/// 显示态不再是界面自造的，引擎也不会被不存在的手连接线推动。
+#[test]
+fn an_unwired_window_changes_neither_the_engine_nor_the_display() {
+    let harness = TransportHarness::new();
+    let engine = Rc::clone(&harness.engine);
+    let before = engine.borrow().transport();
+    let journal_before = engine.borrow().transport_journal().len();
+
+    let unwired_view =
+        ViewState::from_project(&yeban_model::samples::filled_project()).expect("投影");
+    let unwired_scene = DemoScene::from_view(&unwired_view);
+    let unwired = host::build_main_window(&unwired_view, &unwired_scene)
+        .expect("Tier-1 平台已装好 ⇒ 第二个窗口必须能建");
+    assert!(!unwired.get_playing());
+    unwired.invoke_toggle_play();
+    unwired.invoke_stop();
+
+    assert_eq!(
+        engine.borrow().transport(),
+        before,
+        "未接线的窗口不得改变引擎读数"
+    );
+    assert_eq!(
+        engine.borrow().transport_journal().len(),
+        journal_before,
+        "未接线的窗口不得产生任何动作记录"
+    );
+    assert!(
+        !unwired.get_playing(),
+        "显示态不再由界面自翻转 ⇒ 没接线时它必须保持停住"
     );
 }

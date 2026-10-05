@@ -70,3 +70,10 @@ harness = false
 [[test]]
 name = "synth_rt_zero_alloc"
 harness = false
+
+# 走带（`line/transport-engine`）接入之后的**同一个**运行期断言：窗口里跑的是
+# "命令经无锁 SPSC 出队 → 量子边界应用 → 整数有理数推进 → 原子镜面发布"
+# （外加停住时的静音分支与 seek 的声部释放）。同样 `harness = false`（理由同上）。
+[[test]]
+name = "transport_rt_zero_alloc"
+harness = false

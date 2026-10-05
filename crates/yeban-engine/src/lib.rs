@@ -22,6 +22,7 @@
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`synth`] | 静态预分配声部池与逐样本合成（**真的出声**：整数相位波表 + ADSR + 力度增益） | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DET-001]、[ROAD-M2-005]、[ROAD-M2-006] |
+//! | [`transport`] | **确定性走带状态机**（960 PPQ 整数 tick：`Play`/`Stop`/`SeekTicks`）+ RT→UI 原子读数镜面 | [ARCH-RT-001]、[ARCH-DET-001]、[MODEL-ISO-001]、[ROAD-M2-001] |
 //! | [`rt`] | 渲染量子驱动（`EngineRuntime`），**不依赖 cpal** | [ARCH-TOP-002]、[ARCH-RT-001] |
 //! | `device` | cpal 宿主、配置协商、`NullBackend`（**feature `device`**） | [ARCH-TOP-002]、[ROAD-M2-001] |
 //!
@@ -72,9 +73,13 @@
 //!    3 ms 声部窃取淡出（[ARCH-RT-004]）、声相定律（母线汇流是等增益复制）、
 //!    循环片段展开、采样播放与 `yeban-sfz` 接入。
 //!    详见 [`synth`] 的模块文档 §4 与 `docs/ledger/engine-sound-notes.md`。
-//! 2. **走带是"从 tick 0 播放"**：播放头由 [`rt::EngineRuntime`] 自己持有
-//!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），`process_quantum` 每量子
-//!    前进 `frames`。播放/暂停/定位事件通道属于后续切片。
+//! 2. **走带已实现（本切片）**：播放头由 [`rt::EngineRuntime`] 自己持有
+//!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），每量子按 [`transport`] 的
+//!    整数有理数推进 tick；`Play`/`Stop`/`Pause`/`SeekTicks` 经既有的无锁事件通道
+//!    在量子边界生效，停住时输出静音且时钟冻结。**仍未实现**：节拍器、预备拍
+//!    （count-in）、录音（[`transport::TransportState::Recording`] 已预留但没有入口）、
+//!    循环播放、BPM 自动化、时间码显示（UI 侧只做了"从引擎读数格式化"）。
+//!    边界见 `docs/ledger/transport-engine-notes.md`。
 //! 2. **实时线程优先级**（[ROAD-M2-001]）未实现，理由见 `device` 模块文档与
 //!    `docs/ledger/engine-rt-notes.md` §4：cpal 0.18 的 `realtime` feature 只覆盖
 //!    WASAPI / AAudio / PipeWire / JACK，macOS 与 Linux-ALSA 路径没有开关，
@@ -113,26 +118,28 @@ pub mod ring;
 pub mod rt;
 pub mod snapshot;
 pub mod synth;
+pub mod transport;
 
 /// 本 crate 实现的规范需求 ID（规格 → 测试映射的单一事实源，测试里逐条引用）。
 ///
 /// 与 `docs/ledger/engine-rt-notes.md` §3 的判据表一一对应。
 pub const IMPLEMENTED_SPEC_IDS: &[&str] = &[
-    "ARCH-RT-001",  // 零分配/零锁/零阻塞 I/O + rtrb 批量 API
-    "ARCH-RT-002",  // EngineSnapshot 原子交换 + 退役回收队列
-    "ARCH-RT-003",  // FTZ/DAZ
-    "ARCH-PDC-001", // 延迟上报与关键路径对齐
-    "ARCH-PDC-002", // 环形延迟线（时延预算的补偿实现）
-    "ARCH-TOP-002", // 线程模型与通信隔离
-    "ARCH-UI-002",  // 电平独立 SPSC + 真峰值/RMS 计量 + UI 取最新
-    "ARCH-DET-001", // L1：固定 128 采样块长 + 逐位确定性
-    "ARCH-RT-004",  // 声部窃取（**部分**：静态声部池 + 硬窃取；3ms 淡出待接入）
-    "ROAD-M2-005",  // 静态预分配声部池（SFZ 采样源待接入）
-    "ROAD-M2-006",  // 单轨音符触发稳定发声（内置波表；323 款乐器待接入）
-    "ROAD-M2-001",  // 音频调度核心（宿主部分）
-    "ROAD-M2-002",  // 双缓冲快照原子交换
-    "ROAD-M2-003",  // FTZ/DAZ 强制统一
-    "ROAD-M2-004",  // 内部 PDC 总架构
-    "ROAD-M2-007",  // 批量无锁环形队列
-    "ROAD-M2-008",  // VU/峰值电平独立 SPSC + 60Hz 抽干
+    "ARCH-RT-001",   // 零分配/零锁/零阻塞 I/O + rtrb 批量 API
+    "ARCH-RT-002",   // EngineSnapshot 原子交换 + 退役回收队列
+    "ARCH-RT-003",   // FTZ/DAZ
+    "ARCH-PDC-001",  // 延迟上报与关键路径对齐
+    "ARCH-PDC-002",  // 环形延迟线（时延预算的补偿实现）
+    "ARCH-TOP-002",  // 线程模型与通信隔离
+    "ARCH-UI-002",   // 电平独立 SPSC + 真峰值/RMS 计量 + UI 取最新
+    "ARCH-DET-001",  // L1：固定 128 采样块长 + 逐位确定性
+    "MODEL-ISO-001", // 挥发性走带状态不进模型投影（`transport` 自己持有）
+    "ARCH-RT-004",   // 声部窃取（**部分**：静态声部池 + 硬窃取；3ms 淡出待接入）
+    "ROAD-M2-005",   // 静态预分配声部池（SFZ 采样源待接入）
+    "ROAD-M2-006",   // 单轨音符触发稳定发声（内置波表；323 款乐器待接入）
+    "ROAD-M2-001",   // 音频调度核心（宿主部分）
+    "ROAD-M2-002",   // 双缓冲快照原子交换
+    "ROAD-M2-003",   // FTZ/DAZ 强制统一
+    "ROAD-M2-004",   // 内部 PDC 总架构
+    "ROAD-M2-007",   // 批量无锁环形队列
+    "ROAD-M2-008",   // VU/峰值电平独立 SPSC + 60Hz 抽干
 ];

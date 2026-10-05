@@ -31,6 +31,9 @@ export component Transport inherits Rectangle {
     in property <bool> ai-drawer-open: false;
 
     callback toggle-play();
+    // 停止 = **停住并回到起始点**（引擎侧是 `Stop` + `SeekTicks(0)` 两条命令，
+    // 见 `src/host.rs` 的 `wire_transport`）。它与 `playing` 显示态走同一条注入面。
+    callback stop();
     callback toggle-view();
     callback show-session();
     callback show-arrangement();
@@ -101,6 +104,7 @@ export component Transport inherits Rectangle {
         stop_area := TouchArea {
             width: parent.width;
             height: parent.height;
+            clicked => { root.stop(); }
         }
     }
 

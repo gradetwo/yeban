@@ -41,18 +41,23 @@
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
-use yeban_engine::ring::event_channel;
+use yeban_engine::ring::{EngineEvent, EventSender, TransportCommand, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{
     EngineSnapshot, RetireQueue, SnapshotError, SnapshotSlot, retire_channel,
 };
+use yeban_engine::transport::{TransportMirror, TransportReading, TransportState};
 use yeban_model::project::YebanProjectV1;
 
 /// 退役队列容量（条）。同一次 `reload` 内最多发生一次快照交换，32 条足够。
 const RETIRE_CAPACITY: usize = 32;
 
-/// UI → 引擎事件通道容量（条）。本切片不发事件，但通道必须**在打开设备之前**建立
+/// UI → 引擎事件通道容量（条）。通道必须**在打开设备之前**建立
 /// （`EngineRuntime::new` 的文档要求），所以它在这里就位。
+///
+/// 走带命令经这条通道进引擎（[`EngineHost::send_transport`]）：它是**既有的**
+/// 无锁 SPSC 批量通道（`[ARCH-RT-001]` / `[ROAD-M2-007]`），不是为走带新造的第二条。
+/// 容量 256 远超实际（一次走带动作只发 1–2 条），所以通道**永不成为瓶颈**。
 const EVENT_CAPACITY: usize = 256;
 
 /// 引擎重建失败的原因。
@@ -107,6 +112,11 @@ pub struct EngineRebuild {
     pub meter_frames: u64,
     /// 容量耗尽导致未计量/被淘汰的次数（应为 0）。
     pub meter_capacity_drops: u64,
+    /// 重建之后引擎上报的**走带读数**。
+    ///
+    /// `reload` **不改变**走带状态（见它的第 5 步说明）：新引擎沿用"自由跑"默认值
+    /// ⇒ 这里通常是 `Playing` / tick 0。"加载即停住"由控制面显式调 [`EngineHost::stop`]。
+    pub transport: TransportReading,
     /// 新引擎的电平队列**消费端** —— UI 线程必须采纳它（[`crate::meters::MeterRuntime::adopt`]）。
     pub collector: MeterCollector,
 }
@@ -119,6 +129,25 @@ impl EngineRebuild {
     }
 }
 
+/// 一次走带动作的**记录**（走带接线判据的注入点）。
+///
+/// 它存在的唯一理由是"控件树里有这个元素"**不能**当作"回调接线了"的证据
+/// （`docs/ledger/feature-alignment.md` 错位 7 登记过这个误判）。记录里每一个字段
+/// 都来自**引擎**：命令本身、命令应用之后的状态与位置、为了让它生效推了几个量子。
+///
+/// 它是控制线程的私有缓冲（允许分配），不进实时路径。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransportActionRecord {
+    /// 发出的命令（`Stop`/`Pause` 会展开成一条记录；`stop_and_rewind` 是两条）。
+    pub command: TransportCommand,
+    /// 命令**应用之后**引擎上报的状态。
+    pub state_after: TransportState,
+    /// 命令应用之后引擎上报的位置（960 PPQ tick）。
+    pub position_ticks_after: u64,
+    /// 为了让命令在量子边界生效而推进的量子数（0 = 没有推进）。
+    pub quanta_pumped: u64,
+}
+
 /// 引擎宿主：持有"当前这一代"的全部引擎侧对象。
 ///
 /// 字段全部私有 + 只有 [`EngineHost::reload`] 能换掉它们 —— "换引擎"这条路径只有一条，
@@ -129,6 +158,15 @@ pub struct EngineHost {
     slot: Option<std::sync::Arc<SnapshotSlot>>,
     runtime: Option<EngineRuntime>,
     retire: Option<RetireQueue>,
+    /// UI → 引擎的**唯一**命令生产端（既有无锁 SPSC）。
+    ///
+    /// 它是 `Option` 只因为 `EngineHost::default()` 必须先存在（还没有引擎时没有通道）；
+    /// 一旦 [`EngineHost::reload`] 成功，它就一定在（"有引擎必有通道"）。
+    events: Option<EventSender>,
+    /// RT → UI 的走带读数镜面（与 `EngineRuntime` 里那一份是**同一个** `Arc`）。
+    transport_mirror: Option<std::sync::Arc<TransportMirror>>,
+    /// 走带动作日志（控制线程私有；判据的注入点，见 [`TransportActionRecord`]）。
+    journal: Vec<TransportActionRecord>,
 }
 
 /// 手写 `Debug`：`EngineRuntime` / `SnapshotSlot` 刻意没有 `Debug`（它们持有裸指针与
@@ -182,12 +220,13 @@ impl EngineHost {
         let tracks = snapshot.tracks().len();
         let channels = snapshot.channels().max(1);
 
-        // 第 2 步：四样东西全是新的。
+        // 第 2 步：四样东西全是新的。事件**生产端**保留下来（走带命令从这里进引擎）。
         let slot = SnapshotSlot::new(snapshot);
         let (retire_producer, retire) = retire_channel(RETIRE_CAPACITY);
-        let (_events, event_receiver) = event_channel(EVENT_CAPACITY);
+        let (events, event_receiver) = event_channel(EVENT_CAPACITY);
         let (publisher, collector) = meter_channel(DEFAULT_METER_CAPACITY);
         let mut runtime = EngineRuntime::new(&slot, retire_producer, event_receiver, publisher);
+        let mirror = std::sync::Arc::clone(runtime.transport_mirror());
 
         // 第 3 步：真的推量子。
         //
@@ -209,8 +248,21 @@ impl EngineHost {
         self.slot = Some(slot);
         self.runtime = Some(runtime);
         self.retire = Some(retire);
+        self.events = Some(events);
+        self.transport_mirror = Some(mirror);
         self.generation = revision;
         self.drain_retired();
+
+        // ⚠ 第 5 步**刻意不做**：`reload` 不碰走带状态。
+        //
+        // 为什么不在这里顺手发一条 `Stop`（本线第一版就是这么做的，被既有判据打红）：
+        // `ui/reload_engine` 的契约是"推 `engine_quanta` 个量子"，而让命令在量子边界
+        // 生效必须**再推一个量子**（命令是在 `render_block` 第 1 步出队的）——
+        // 那会让报告里的 `quanta` 比调用方要的多 1（实测红在
+        // `crates/yeban-app/tests/live_ui_mcp.rs` 的 `admin_reload_engine_...`）。
+        // 因此"加载即停住"是**控制面的显式动作**：GUI 路径在 `reload` 之后调
+        // [`EngineHost::stop`]，读回引擎读数再注入界面（见 `src/main.rs`）。
+        let transport = self.transport();
 
         let rebuild = EngineRebuild {
             generation: self.generation,
@@ -220,6 +272,7 @@ impl EngineHost {
             meter_bulk_publishes: stats.meter_bulk_publishes,
             meter_frames: stats.meter_frames,
             meter_capacity_drops: stats.meter_capacity_drops,
+            transport,
             collector,
         };
         debug_assert_eq!(
@@ -227,6 +280,119 @@ impl EngineHost {
             "引擎的结构性契约: 每量子恰好一次电平批量发布 [ROAD-M2-007]"
         );
         Ok(rebuild)
+    }
+
+    // -----------------------------------------------------------------------
+    // 走带（`line/transport-engine`）
+    // -----------------------------------------------------------------------
+
+    /// 当前走带读数（**来自引擎**；还没有引擎时是中性冷值）。
+    ///
+    /// 它读的是 [`TransportMirror`]（原子 seqlock），不是界面自己的状态 ——
+    /// "播放中"这个显示值只有一个事实源。
+    #[must_use]
+    pub fn transport(&self) -> TransportReading {
+        self.transport_mirror
+            .as_ref()
+            .map_or_else(TransportReading::cold, |mirror| mirror.read())
+    }
+
+    /// 走带动作日志（判据的注入点；见 [`TransportActionRecord`]）。
+    #[must_use]
+    pub fn transport_journal(&self) -> &[TransportActionRecord] {
+        &self.journal
+    }
+
+    /// 是否有一代活着的引擎（走带命令只有在这种情况下才发得出去）。
+    #[must_use]
+    pub fn transport_ready(&self) -> bool {
+        self.runtime.is_some() && self.events.is_some()
+    }
+
+    /// 发一批走带命令并**推一个量子**让它们生效，返回命令应用之后的读数。
+    ///
+    /// 为什么"发完还要推量子"：命令是在**量子边界**由实时侧出队应用的
+    /// （`EngineRuntime::render_block` 第 1 步）。没有设备回调时，唯一让边界到来的
+    /// 方式就是控制面显式推量子 —— 这正是本 crate 既有的边界
+    /// （`engine_host.rs` 模块文档："实时线程今天由控制面/测试线程显式驱动"）。
+    /// 真实设备接管之后，这里的推量子会被设备时钟取代，而**命令通道不变**。
+    ///
+    /// 推的量子数是 `1`：走带位置会因此前进一个运行时量子（128 帧）。这是当前
+    /// "没有声卡"形态的**已知代价**，不是走带的语义（写在 notes 的未实现项里）。
+    pub fn send_transport(&mut self, commands: &[TransportCommand]) -> TransportReading {
+        if !self.transport_ready() {
+            return TransportReading::cold();
+        }
+        let events: Vec<EngineEvent> = commands
+            .iter()
+            .map(|command| EngineEvent::Transport { command: *command })
+            .collect();
+        if let Some(sender) = self.events.as_mut() {
+            sender.publish(&events);
+        }
+        let pumped = self.pump(1);
+        let reading = self.transport();
+        for command in commands {
+            self.journal.push(TransportActionRecord {
+                command: *command,
+                state_after: reading.state,
+                position_ticks_after: reading.position_ticks,
+                quanta_pumped: pumped,
+            });
+        }
+        reading
+    }
+
+    /// 推 `quanta` 个运行时量子（每个量子 [`DEFAULT_BLOCK_FRAMES`] 帧），返回实际推进数。
+    ///
+    /// 没有引擎时返回 0（不 panic、不假装推进过）。
+    pub fn pump(&mut self, quanta: u64) -> u64 {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return 0;
+        };
+        let channels = self
+            .slot
+            .as_ref()
+            .map_or(2, |slot| slot.current().channels().max(1));
+        let mut output = vec![0.0_f32; DEFAULT_BLOCK_FRAMES * usize::from(channels)];
+        for _ in 0..quanta {
+            runtime.process_quantum(&mut output, channels);
+        }
+        self.drain_retired();
+        quanta
+    }
+
+    /// 播放（**位置保留** ⇒ 停住之后从这里继续）。
+    pub fn play(&mut self) -> TransportReading {
+        self.send_transport(&[TransportCommand::Play])
+    }
+
+    /// 停住（**位置保留**）。"回到起始点"用 [`Self::stop_and_rewind`]。
+    pub fn stop(&mut self) -> TransportReading {
+        self.send_transport(&[TransportCommand::Stop])
+    }
+
+    /// 停止并回到 tick 0：**一条批量里的两条命令**（`Stop` + `SeekTicks(0)`），
+    /// 因此它们在**同一个量子边界**按 FIFO 一起生效 —— 不存在"停住了但还在半路"的中间态。
+    pub fn stop_and_rewind(&mut self) -> TransportReading {
+        self.send_transport(&[TransportCommand::Stop, TransportCommand::SeekTicks(0)])
+    }
+
+    /// 播放 / 停住的切换（界面 `toggle-play` 的落点）。
+    ///
+    /// 判断依据是**引擎读数**（不是界面属性）：
+    /// 读数说 Playing ⇒ 发 `Stop`；否则发 `Play`。
+    pub fn toggle_play(&mut self) -> TransportReading {
+        if self.transport().state.is_running() {
+            self.stop()
+        } else {
+            self.play()
+        }
+    }
+
+    /// 定位到 `tick`（960 PPQ），播放状态不变。
+    pub fn seek(&mut self, tick: u64) -> TransportReading {
+        self.send_transport(&[TransportCommand::SeekTicks(tick)])
     }
 
     /// 主线程腿：把退役队列里的旧快照真正 **Drop** 掉（[`RetireQueue::drain`]）。

@@ -69,6 +69,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use thiserror::Error;
 use yeban_dsp::math::note_to_hz;
+use yeban_model::project::DEFAULT_BPM;
 use yeban_model::{
     BlockSize, ClipContent, EntityId, ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
 };
@@ -212,6 +213,14 @@ impl TrackParams {
 pub struct EngineSnapshot {
     revision: u64,
     sample_rate: u32,
+    /// 工程速度（BPM）——`YebanProjectV1::bpm` 的投影。
+    ///
+    /// 走带每帧的 tick 增量是 `bpm × 16 / sample_rate`（[`crate::transport`]），
+    /// 而 `sample_rate` 也在这里 —— 两个量必须来自**同一份**快照，否则"换快照时
+    /// 按新速度推进"会出现半更新（用了新的采样率配旧的速度）。
+    /// 速度是**模型字段**（不是运行态），所以放进不可变快照不违反 [MODEL-ISO-001]
+    /// （那条禁的是播放头位置）。
+    bpm: f64,
     block_frames: usize,
     channels: u16,
     master: EntityId,
@@ -304,6 +313,7 @@ impl EngineSnapshot {
                 .with_schedules(schedules, dropped)
                 .with_tones(tones)
                 .with_pan_law(PanLaw::from_model(project.audio_config.pan_law))
+                .with_bpm(project.bpm)
         })
     }
 
@@ -332,6 +342,7 @@ impl EngineSnapshot {
         Ok(Self {
             revision,
             sample_rate,
+            bpm: DEFAULT_BPM,
             block_frames,
             channels,
             master,
@@ -377,6 +388,17 @@ impl EngineSnapshot {
         self
     }
 
+    /// 覆盖工程速度（**投影自 `YebanProjectV1::bpm`**；低层构造默认 120 BPM）。
+    ///
+    /// 非有限值 / 越界值在这里**不被**钳位：钳位是走带侧 [`crate::transport::Transport::arm`]
+    /// 的兜底（它必须对任何输入都不 panic）。快照保留模型给的原值，这样"模型里写了什么"
+    /// 与"引擎看到了什么"是同一份事实。
+    #[must_use]
+    pub const fn with_bpm(mut self, bpm: f64) -> Self {
+        self.bpm = bpm;
+        self
+    }
+
     /// 模型层提交版本号。
     #[must_use]
     pub const fn revision(&self) -> u64 {
@@ -387,6 +409,12 @@ impl EngineSnapshot {
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    /// 工程速度（BPM）——`YebanProjectV1::bpm` 的投影 [MODEL-AST-002]。
+    #[must_use]
+    pub const fn bpm(&self) -> f64 {
+        self.bpm
     }
 
     /// 渲染量子帧数（[ARCH-DET-001] 的 L1 固定块长，默认 128）。
