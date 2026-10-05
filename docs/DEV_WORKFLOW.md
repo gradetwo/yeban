@@ -323,3 +323,28 @@ yeban/
   and explicitly flag anything not verified (unread verdicts stay `pending`; skipped legs are never reported as passing).
 - Existing history is **not** rewritten; Chinese commit messages already in history stay as they are.
 
+## 报告语言与文体（负责人裁决，第 132 轮）
+
+裁决原文：「接下来汇报和需要我做决策都用中文和ASD-STE100格式」。
+
+**适用范围**：给负责人的**汇报**与**待决策请求**。
+
+**语言**：中文。
+
+**文体**：按 ASD-STE100（简化技术英语）的规则写中文。规则如下：
+
+1. 一句一个意思。句子要短。说明句不超过 25 字。指令句不超过 20 字。
+2. 指令句用祈使式。
+3. 用主动语态。不要用被动语态。
+4. 用简单时态。只用现在、过去、将来。不要用完成时。
+5. 一个词只表示一个意思。全篇用同一个词表示同一个东西。
+6. 不用俚语、成语、比喻。
+7. 名词串不超过三个词。
+8. 一段只讲一个主题。一段最多六句。
+9. 复杂信息用纵向列表。
+10. 数字与单位要写全。第一次出现的缩写要先定义。
+11. 不用「可能」「大概」这类模糊词。要写实测值或写明「未测」。
+12. 结论与证据分开写。证据要带命令或 run id。
+
+**同时保留既有纪律**：判决只来自 CI。写清未读回的判决。写清否定性结果。
+
