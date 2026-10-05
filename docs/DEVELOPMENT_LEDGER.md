@@ -6781,3 +6781,22 @@ exists, was found earlier in the session at `ROAD-M3-002` and `[UI-NOTE-002/005]
 **Two rows share one real constraint, now stated in both places**: `ROAD-M0-003` and `ROAD-M0-006` both need a fixed-refresh-rate, low-noise
 machine for their headline numbers - i.e. the same thing HD-49 is waiting for. When that decision lands, both rows move together, and the
 BASELINE-series readings become meaningful in the same step.
+
+### Round 275: the gate table's PENDING reasons are current too - both tables verified, no second stale row
+
+Round 274 checked the phase table after correcting `ROAD-M0-006`; this closes the same loop for `docs/ledger/gate-status.md`, whose two PENDING
+rows carry reasons that still match the tree:
+
+| row | reason given | verdict |
+| :--- | :--- | :--- |
+| `BASELINE-003` (10 万音符滚动帧率) | "帧率判据需要固定刷新率/无噪声硬件（`spikes/README.md` 已登记）；**不得**用托管 runner 读数宣布通过", with the round-114 note recording that the负责人 named a reference machine (M2 Max) - which is exactly what HD-49 is about | **current** |
+| `BASELINE-006` (AI 交互效率: JSON ≤4 KB, Token 中位数 ≤600) | "需要'生成 16 小节段落'的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**，且 Token 口径需人类裁决用哪个 tokenizer" - matching HD-47/HD-48's deferral | **current** |
+
+The table's own legend (line 50) is also accurate: `PENDING` 不等于"没做" - 006/007/008 are in progress, while 003/005/BASELINE-003/005 are
+"当前硬件条件下做不出有意义结论".
+
+**So both status tables passed the check, and the single stale row found this session was `ROAD-M0-006`.** Worth stating because the
+temptation after finding one defect is to assume a pattern: this session found two instances of the OPPOSITE error earlier (tables claiming
+MORE than exists - `ROAD-M3-002`'s row and `[UI-NOTE-002]`/`[UI-NOTE-005]` being unnamed) and exactly one of this one (a PENDING row claiming
+LESS than exists). Four data points, two directions, all now corrected - and the useful generalisation is simply that both directions happen
+and are cheap to check, not that either table is unreliable.
