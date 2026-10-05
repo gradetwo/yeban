@@ -113,29 +113,22 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.clip_pool.*.content.Midi.notes.*.phonemes",
 ];
 
-/// `schemas/project.schema.json` 里**已经登记、尚未收紧**的字段（notes §5.1/§5.2）。
+/// **已退役**的"契约收紧待办"登记表（曾经 = notes §5.1/§5.2 的 12 项）。
 ///
-/// 判据 ⑥ 的语义是"**实现要求但契约没要求**这件事只能等于已登记的待办，且只许缩小"：
-/// 待办集由契约收紧线（`line/model-schema-d43`）负责清空，本线**不改** `schemas/**`。
-/// 因此这里写成 `debt ⊆ PENDING`（单向包含）：收紧线落地后 `debt` 变成空集，
-/// 本判据**依然绿**（不会变成一个跨线的定时炸弹）；而任何**新**的漂移都不在这张表里，
-/// 会当场变红。
-const CONTRACT_TIGHTENING_PENDING: &[&str] = &[
-    // §5.1 根对象还缺的 7 项
-    "#.rng_seed",
-    "#.metadata",
-    "#.transport",
-    "#.sections",
-    "#.master_bus_track_id",
-    "#.scenes",
-    "#.assets",
-    // §5.2 `tracks.additionalProperties` 还缺的 5 项
-    "#.tracks.*.solo_safe",
-    "#.tracks.*.devices",
-    "#.tracks.*.macros",
-    "#.tracks.*.automation_lanes",
-    "#.tracks.*.clips",
-];
+/// 历史：`schemas/project.schema.json` 曾经只 `required` 11 个根键，而实现要求
+/// `rng_seed` / `metadata` / `tracks[*].solo_safe` … —— 那是"实现要求但契约没要求"
+/// （schema 更松 ⇒ 坏文件能过门禁）。本线**只读**契约，所以当时把这份漂移**点名登记**
+/// 在这里，判据 ⑥ 写成 `debt ⊆ PENDING`（单向包含）：契约收紧线落地后 `debt` 变空集，
+/// 判据不会变成跨线的定时炸弹，而**新**漂移不在表里 ⇒ 当场红。
+///
+/// **现在（契约收紧已合并进 `main`；`schemas/project.schema.json` sha256
+/// `5eb3362ab3fb7efc9ee879a173eff30ded48b560ba01e73524114002f0f47e59`，根 `required` 18 键）
+/// 这张表已清空 —— 于是判据 ⑥ 退化成一个**硬等式**：任何
+/// "实现要求但契约没要求"的字段都直接变红，没有豁免余地。**
+///
+/// 若将来真的需要"先登记、后收紧"的过渡期，请把路径加回这里并**在 notes 里写明**
+/// 由哪条线负责清空 —— 但**不要**为了让它绿而放宽本判据。
+const CONTRACT_TIGHTENING_PENDING: &[&str] = &[];
 
 // ---------------------------------------------------------------------------
 // 夹具 / 契约读取
@@ -1025,15 +1018,16 @@ fn contract_required_is_disjoint_from_the_d43_exemption_set() {
 /// - 删掉后**读失败** ⇒ 实现要求它，而契约**没**要求它 ⇒ 一份缺这个字段的文件能通过
 ///   schema 门禁、却在加载时炸掉 —— 这正是"坏文件能过门禁"的形态。
 ///
-/// 这类路径必须全部落在**已登记的收紧待办** [`CONTRACT_TIGHTENING_PENDING`]
-/// （notes §5.1/§5.2，由 `line/model-schema-d43` 负责清空）里。断言写成
-/// `debt ⊆ PENDING`（单向包含）而不是相等：
+/// 这类路径必须全部落在 [`CONTRACT_TIGHTENING_PENDING`] 里。**该表已在契约收紧落地后清空**，
+/// 于是本条判据现在是一个**硬等式**：`debt` 必须为空 —— 任何"实现要求但契约没要求"都当场红。
+/// （若将来需要过渡期，把路径加回该常量并写明由谁清空；**不要**为换绿而放宽本判据。）
 ///
-/// - 收紧线落地后 `debt` 变空集 ⇒ **依然绿**（不会变成一个跨线的定时炸弹）；
-/// - 任何**新**的"实现要求但契约没要求"都不在表里 ⇒ **当场红**。
+/// 为什么断言写成 `debt ⊆ PENDING` 而不是 `debt == PENDING`：`PENDING` 是**只许缩小的上界**，
+/// 不是"应当存在的债务清单" —— 收紧线落地后它变空集，判据**依然绿**（不会变成跨线的定时炸弹），
+/// 而任何**新**漂移都不在表里 ⇒ **当场红**。
 ///
 /// ⚠ 局限：本判据只能判**契约已经声明**的属性。契约里连 `properties` 都没有的字段
-/// （如收紧前的 `metadata` / `devices`）在这里看不见 —— 那是"契约缺失"，只能由收紧线
+/// （如收紧前的 `metadata` / `devices`）在这里看不见 —— 那是"契约缺失"，只能由契约线
 /// 补上属性后才能被这台棘轮盯住（收紧之后它们立刻进 `required`，由判据 ③ 接管）。
 #[test]
 fn reader_required_paths_are_frozen_debt_in_the_contract() {
@@ -1104,24 +1098,15 @@ fn reader_required_paths_are_frozen_debt_in_the_contract() {
          已登记待办: {CONTRACT_TIGHTENING_PENDING:?}"
     );
 
-    let stale: Vec<&&str> = CONTRACT_TIGHTENING_PENDING
-        .iter()
-        .filter(|path| !debt.contains(**path))
-        .collect::<Vec<_>>();
     eprintln!(
         "[schema-ratchet] 方向 B′: 契约声明为可选属性 {} 条（真正判到 {judged} 条，夹具里不落盘 {} 条）; \
-         其中「实现要求」 {} 条: {:?}",
+         其中「实现要求但契约没要求」 {} 条: {:?}; 已登记过渡上限 {} 条",
         candidates.len(),
         unjudged.len(),
         debt.len(),
-        debt
+        debt,
+        CONTRACT_TIGHTENING_PENDING.len()
     );
-    if !stale.is_empty() {
-        eprintln!(
-            "[schema-ratchet] 已登记的收紧待办里这些项**当前不构成漂移**（契约已收紧，或字段不存在）—— \
-             请把 notes §5.1/§5.2 与本常量一起清理: {stale:?}"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
