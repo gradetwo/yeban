@@ -3424,3 +3424,19 @@ test passes explicit thread counts. So the change is not entangled with the bit-
 (before/after bench plus a CI verdict on a code change), and my remaining context cannot carry that safely. Applying a
 one-line performance change and then asserting it helped - without the before/after in hand - is precisely the
 "looks-like-evidence" failure this ledger keeps logging.
+
+### Round 122: the auto-default fix is CI-verified, including the red line
+
+Run **`37304078411` @ `3438f9d` = completed success**, and the leg for the crate I changed was present and green:
+**`rust (yeban-render)` = success `steps=10`**, alongside `rust (yeban-app)` = success `steps=10`,
+`rust (yeban-mcp)` = success `steps=10`, `rust (yeban-ui-mcp)` = success `steps=10`,
+`windows (yeban-mcp / yeban-model)` = success `steps=8`, plus `checks` / `deny` / `lockfile` / `plan`.
+(The workspace-wide leg was skipped by design for this narrow plan.)
+
+That matters specifically because `crates/yeban-render/src/lib.rs` is where the **1/2/4/8-thread byte-equality assertion**
+lives: its own leg running green means the bit-exactness red line survived the change. So the fix is verified on both sides -
+the before/after bench (default 95.5x -> 267.7x) and the determinism guard.
+
+Effect on the gate: the honest caveat recorded earlier ("BASELINE-001 is reliably met only by single-thread, and any claim
+must name the mode") is now **moot in practice**, because the default path IS the fast one. The gate row records both the
+numbers and the CI verdict.
