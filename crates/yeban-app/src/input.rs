@@ -186,6 +186,23 @@ pub enum PhysicalKey {
     BracketRight,
 }
 
+/// `[UI-NOTE-003]` 左键**拖拽**在该工具下的语义（规范矩阵的"左键拖拽"列）。
+///
+/// 与 [`ToolClick`] 一样只做**分类**：真正作用到模型的编辑要经过撤销与 MCP, 属于后续切片。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolDrag {
+    /// 移动音符位置与音高（选择工具；Shift 微移 / Alt 复制是**辅助键**列的事）。
+    MoveNote,
+    /// 保持音高, 横向拖拽改变时值（铅笔）。
+    ResizeDuration,
+    /// 沿时间轴连续划过（多轨切片，剪刀）。
+    SliceAcross,
+    /// 纵向拖拽力度线（力度编辑）。
+    AdjustVelocity,
+    /// 划动连续批量消除（橡皮擦）。
+    EraseSweep,
+}
+
 /// `[UI-NOTE-003]` 左键**单击**在该工具下的语义（规范矩阵的"左键单击"列）。
 ///
 /// 只做**分类**：真正作用到模型的编辑要经过撤销与 MCP, 属于后续切片。
@@ -213,6 +230,18 @@ impl Tool {
             Self::Knife => "col-resize",
             Self::Velocity => "ns-resize",
             Self::Eraser => "cell",
+        }
+    }
+
+    /// 左键拖拽的语义（矩阵的"左键拖拽"列）。
+    #[must_use]
+    pub fn drag(self) -> ToolDrag {
+        match self {
+            Self::Select => ToolDrag::MoveNote,
+            Self::Pencil => ToolDrag::ResizeDuration,
+            Self::Knife => ToolDrag::SliceAcross,
+            Self::Velocity => ToolDrag::AdjustVelocity,
+            Self::Eraser => ToolDrag::EraseSweep,
         }
     }
 
@@ -834,6 +863,22 @@ mod tests {
                 Some(*tool),
                 "快捷键 {} 与矩阵第 {} 行不是同一个工具",
                 digit,
+                index + 1
+            );
+        }
+        // 拖拽列：矩阵第 4 列, 与单击列**同样**逐行断言 —— 两列分属不同行为, 抄错一行同样不会被发现。
+        let drags = [
+            ToolDrag::MoveNote,
+            ToolDrag::ResizeDuration,
+            ToolDrag::SliceAcross,
+            ToolDrag::AdjustVelocity,
+            ToolDrag::EraseSweep,
+        ];
+        for (index, tool) in matrix.iter().enumerate() {
+            assert_eq!(
+                tool.drag(),
+                drags[index],
+                "矩阵第 {} 行的拖拽语义不对",
                 index + 1
             );
         }

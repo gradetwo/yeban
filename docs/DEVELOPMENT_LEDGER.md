@@ -5581,3 +5581,15 @@ click path built on top of it: `6aac172` and `c0e8ec3` are in progress, and `660
 The pattern is worth naming once: a queued verdict is read back, the queue shrinks by one, and the next commit has usually been
 pushed by then. The queue stays roughly constant rather than draining, which is the direct consequence of the push rhythm recorded in
 round 222 - and the reason the rule there is to batch commits, not to push faster.
+
+### Round 228: the drag column of the tool matrix, and verdict 29 recorded with it
+
+`Tool` gained `drag()` returning a new `ToolDrag` classification, matching the matrix's "左键拖拽" column: MoveNote (select),
+ResizeDuration (pencil), SliceAcross (knife), AdjustVelocity (velocity), EraseSweep (eraser). Like `click()`, it is a classification
+only - the model edits it describes must go through undo AND MCP, which is the next slice and not this one. The criterion now asserts
+BOTH columns row for row, because they describe different behaviours and a transposed row would otherwise go unnoticed in whichever
+column was not checked.
+
+Verdict 29 is recorded here rather than in its own commit, applying the round-222 rule: the run @ `6aac172` (the click callback
+declaration) = **completed success**, so the three-level click chain is CI-verified. Completed full-workspace verdicts on main:
+**twenty-nine**. Still unread: `c0e8ec3` in progress plus `660e583`, `87cb35a`, `0ac4930`, `2df5741`, `6ff0628` queued.
