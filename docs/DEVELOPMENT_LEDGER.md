@@ -6164,3 +6164,23 @@ property. That keeps the single dispatch point the doc comment is proud of, and 
 plausible principle instead of checking the existing variants, and two counter-examples were already in code I had read earlier. The
 check that would have prevented it is a one-line grep for `UiAction::` variants - the same shape as round 238's wrong "no Default"
 claim and round 231's wrong reading of a list's order.
+
+### Round 251: (a) has one more obstacle, and it is about who owns the UI
+
+Trying to write (a) surfaced a structural obstacle that the last four rounds of reads had not: `UiAction::perform` lives on the
+**port** (`undo.rs`), and the port cannot touch Slint - it returns an `ActionOutcome` and the caller applies it. So a view-only action
+like `SelectTool` cannot be handled inside `perform`, because that is exactly where the property would have to be set.
+
+The plumbing that CAN do it is the key path in the host: whatever consumes `input::Resolution` for a keypress and turns it into an
+effect. `dispatch_key` (round 250) maps only Undo/Redo/OpenTimeMachine today, and it returns `Option<UiAction>`; a view-only action
+needs a **sibling** treatment at that same site: recognise `Action::SelectTool`, and set the mirrored `active-tool` property directly,
+without routing through `UiAction` or the port at all.
+
+**Correcting myself again, and noticing the pattern**: round 249 said "do not make it a UiAction", round 250 said "make it a UiAction",
+and this round says "recognise it at the key site, outside UiAction". Three positions in three rounds, each from reading one more file.
+The pattern is that I have been designing against an interface I had only partly read, and the honest summary is: **(a)'s placement
+depends on where the host applies key resolutions to the UI, and that site has still not been read**. That is the next read - one
+grep for the consumer of `dispatch_key` or `input::Resolution` in `host.rs`/`main.rs` - and only after it should any edit be written.
+
+Recorded rather than guessed because a fourth guess would be worse than the previous three: the code is small, the reads are cheap, and
+I have now demonstrated three times that skipping one produces a wrong design.
