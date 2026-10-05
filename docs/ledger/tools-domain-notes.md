@@ -336,6 +336,20 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 | :--- | ---: | :--- | :--- |
 | 第 1 轮补记（本文件 + §7） | 见提交信息 / `ci-verdict.sh` 读数 | — | 见该次运行的 `checks` 腿 |
 
+> **2026-10-05 追加（`line/propose-section`）：`MCP-TOOL-005` 接线后的判决**
+> （`bash scripts/dev/ci-verdict.sh --watch line/propose-section`）
+>
+> | 轮次 | run id | 头部 | 结论 |
+> | :--- | ---: | :--- | :--- |
+> | 第 1 轮 | `37252440015` | `4a29c9c` | **X**：`rust (yeban-mcp)` / `windows (yeban-mcp …)` 的 `clippy (-D warnings)` 红 —— `error[E0432]: unresolved import super::section_build`（本线把 `mod tests` 里的相对路径写错）；`checks` / `deny` / `lockfile` / `plan` / `rust (yeban-ui-mcp)` ✓ |
+> | 第 2 轮 | `37252843215` | `39bfce0` | **X**：clippy 全绿；`tools_e2e` **30 passed; 1 failed** —— 本线判据 ⑦ 的**断言口径写反**（`D minor` 相对 `C minor` 是 +2 半音，我却断言"音级相同"）。同轮 `lib 204 passed`、`contract 18 passed`、其余 4 个测试二进制全绿 |
+> | 第 3 轮 | **`37253125714`** | **`05b1a94`** | ✅ **全绿**：`checks` / `deny` / `lockfile` / `plan` / `rust (yeban-mcp)` 1m2s / `windows (yeban-mcp …)` 2m6s / `rust (yeban-ui-mcp)` 2m4s 全部 ✓；`rust (workspace 全量)` 按受影响集合跳过 |
+>
+> ① 两次红都是**本线自己**的编译/断言错误（不是别人台账的锅），逐条留痕在
+> `docs/ledger/propose-section-notes.md` §10；② "本机不可编译 ⇒ 只能靠 CI" 这段代价是
+> **如实的**：`run-gates.sh crate yeban-mcp` 在本机 SKIP，两次自伤都发生在
+> **本机编不到**的那两个文件里（`section.rs` 的测试模块、`tools_e2e.rs` 的断言）。
+
 ---
 
 ## 追加（集成者代记）：`boundary-3` 与 `P6` 已被 `line/lock-advisory` 关闭

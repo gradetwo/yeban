@@ -248,10 +248,11 @@ byte_exact_restore = true
 | `crate yeban-mcp` 的 clippy + 全套测试 | ❌ **本机不跑** | `bash scripts/gates/run-gates.sh crate yeban-mcp` → `SKIP yeban-mcp 含重依赖, 本机不编译 (交给 GitHub CI)` |
 | 格式化 | ✅ 真跑 | `bash scripts/dev/cargo-local.sh fmt --all --check` → exit 0 |
 | 注入 → 变红 → 还原 | ✅ 真跑 | 见 §8 |
-| 端到端判据（`tests/tools_e2e.rs`）+ `src/**` 的单元判据 | ⏳ **CI** | 需要 `yeban-render`/`yeban-decode` 的完整编译 |
+| 端到端判据（`tests/tools_e2e.rs`）+ `src/**` 的单元判据 | ✅ **CI 已判绿** | run **`37253125714`**（tip `05b1a94`）：`rust (yeban-mcp)` 与 `windows (yeban-mcp …)` 两条腿全 ✓ —— 端到端 6 条新判据、`section.rs` 的 7 条适配层判据、`section_build.rs` 的 19 条判据在 Linux 与 Windows 上都真的编译并执行了。逐测试计数来自第 2 轮的日志（`lib 204 passed` / `contract 18 passed` / `tools_e2e 30 passed; 1 failed`），第 3 轮只读回 **job 级**结论（无 token 拉不到成功 job 的原始日志）—— 这是**读数粒度的差别**，不是"看起来绿" |
 
 > `cargo fmt --all --check` 会**解析**全部 Rust 文件（因此能抓住语法级错误），
 > 但**不能**替代类型检查 —— 适配层 / 接线 / 端到端判据的类型正确性由 CI 判决。
+> 本线为此付出了 **2 轮红**（§10.1），两处都在"本机编不到"的文件里。
 
 ---
 
@@ -301,27 +302,57 @@ CI 侧对应的机械保护是 `tools_e2e.rs::propose_section_creates_a_real_sec
 | # | 项 | 状态 |
 | :--- | :--- | :--- |
 | P-1 | `tools-domain-notes.md` 的 **needs-1** / **boundary-1**、`mcp-render-notes.md` 的 **needs-4** | **本线关闭**（同一次提交内回写） |
-| P-2 | CI 判决 | 推送后由 `scripts/dev/ci-verdict.sh` 读回（本文件 §10） |
+| P-2 | CI 判决 | **已读回：run `37253125714` = success**（§10） |
 
 ---
 
 ## 10. CI 判决（读到什么写什么）
 
-- 代码 + 台账提交：`pending`（推送后回填 commit / run id）
-- 本机读数**不是**判决：本机 25 passed + light 门禁通过只说明"生成器这一层与机械红线是绿的"，
-  `yeban-mcp` 的 clippy 与端到端判据必须等 CI。
+读取方式：`bash scripts/dev/ci-verdict.sh --watch line/propose-section`
+
+| 轮次 | run id | tip | 结论 |
+| :--- | ---: | :--- | :--- |
+| 第 1 轮 | `37252440015` | `4a29c9c` | **X** —— 只有 2 个 job 红，都是本线的 `clippy (-D warnings)`：`error[E0432]: unresolved import super::section_build`（`src/domain/section.rs:107`，`mod tests` 里的相对路径写错；`section_build` 是 `section` 的兄弟而不是孩子） |
+| 第 2 轮 | `37252843215` | `39bfce0` | **X** —— clippy 全绿；`tools_e2e` **30 passed; 1 failed**：`propose_section_outputs_track_the_inputs`，`assertion left == right failed: 移调保音级（第 0 音） left: 0 right: 2`（**断言口径写反**：移调行为是对的，`D minor` 就是 `C minor` + 2 个半音）。同轮 Linux 读数：`lib 204 passed` / `contract 18 passed` / `bin 0` / 其余 4 个测试二进制全绿 / `checks` `deny` `lockfile` `plan` `rust (yeban-ui-mcp)` ✓ |
+| **第 3 轮** | **`37253125714`** | **`05b1a94`** | ✅ **success（全绿）**：`checks` 42s / `deny` 47s / `lockfile` 19s / `plan` 6s / `rust (yeban-mcp)` 1m2s / `windows (yeban-mcp / yeban-model 的平台分支)` 2m6s / `rust (yeban-ui-mcp)` 2m4s 全部 ✓；`rust (workspace 全量)` 按受影响集合跳过（`-`） |
+
+### 10.1 两处"自伤"的归因（值得下一线抄走的教训）
+
+两轮红**都不是**功能错，而是"**本机编译不到的那两个文件**里的低级错误"：
+
+1. **相对路径**：`section.rs` 的 `mod tests` 里我写了
+   `use super::section_build::BuildCode;`（想当然地以为 `super` 是 `domain`）。
+   事实：`mod tests` 的 `super` 是 `section`，`super::super` 才是 `domain`。
+   修正后与同文件既有的 `super::super::ids::deterministic_id` 一致。
+2. **断言口径**：我在端到端判据里写了 `pitch % 12 == pitches_d[index] % 12`，
+   而正确口径是 `(d + 12 - c) % 12 == 2`（等音类移调 + 相对音程不变）。
+   错的是判据方向，不是被测代码 —— `section_build.rs` 里那条同类判据用的是
+   "独立算出期望音高表再比对"的口径，本机 25 passed 时就已经是对的。
+
+**教训**：`cargo fmt --all --check` 只能证明"语法能解析"，不能证明"类型/相对路径正确"。
+在"本机不可编译 + CI 并发低"的组合下，**路径与断言口径这两类错误必须靠人眼再过一遍**，
+或者把被测逻辑抽到**本机可编译的零重依赖模块**里（本线已经这么做了 —— 19 条判据因此
+在本机就抓住了两次注入，而上面那两条恰恰落在**没抽出去**的薄适配层与端到端判据上）。
 
 ---
 
 ## 11. 文件清单与净行数
 
-| 文件 | 状态 | 净增/减（`git diff --numstat`，见提交） |
-| :--- | :--- | :--- |
-| `crates/yeban-mcp/src/domain/section_build.rs` | 新增 | 生成器 + 19 条判据 |
-| `crates/yeban-mcp/src/domain/section.rs` | 重写 | 适配层（旧模块头断言与 `preview()` 删除） |
-| `crates/yeban-mcp/src/domain/mod.rs` | 改 | 模块注册 + `draft_unwired` 推导 + `willCreate` |
-| `crates/yeban-mcp/tests/tools_e2e.rs` | 改 | 1 条反转 + 5 条新增 + 3 个夹具 |
-| `crates/yeban-mcp/verify/section_pure.rs` | 新增 | 本机脚手架（`#[path]` 引真实源 + 3 条独立判据） |
-| `docs/ledger/tools-domain-notes.md` | 改 | 仅 `MCP-TOOL-005` 相关行 |
-| `docs/ledger/mcp-render-notes.md` | 改 | 仅 needs-4 一行 |
-| `docs/ledger/propose-section-notes.md` | 新增 | 本文件 |
+`git diff 8529b31 <最终 tip> --numstat` 的读数（本行含 3 个提交：接线 + 2 次 CI 修正）：
+
+| 文件 | 状态 | `+` / `-` |
+| :--- | :--- | ---: |
+| `crates/yeban-mcp/src/domain/section_build.rs` | **新增** | +1420 / -0 |
+| `crates/yeban-mcp/tests/tools_e2e.rs` | 改（1 条反转 + 5 条新增 + 3 个夹具 + CI 修正） | +501 / -2 |
+| `crates/yeban-mcp/verify/section_pure.rs` | **新增**（本机脚手架） | +157 / -0 |
+| `crates/yeban-mcp/src/domain/section.rs` | 重写为适配层 | +147 / -390 |
+| `crates/yeban-mcp/src/domain/mod.rs` | 模块注册 + `draft_unwired` 推导 + `willCreate` | +31 / -2 |
+| `docs/ledger/tools-domain-notes.md` | 仅 `MCP-TOOL-005` 相关行 | +50 / -7 |
+| `docs/ledger/mcp-render-notes.md` | 仅 needs-4 一行 | +1 / -1 |
+| `docs/ledger/propose-section-notes.md` | **新增**（本文件） | 见 `git diff` |
+
+**没有**触碰（逐个对照任务书的禁改清单）：任何其它 `crates/**`、`schemas/**`、
+根 `Cargo.toml` / `Cargo.lock`、`.github/**`、`scripts/**`、`deny.toml`、`docs/adr/**`、
+`docs/YEBAN_*.md`、`docs/DEVELOPMENT_LEDGER.md`、`README*`、法务文件、
+`docs/ledger/{gate-status,human-decisions,phase-status,feature-alignment}.md`。
+`git status --short` 在工作树里只剩（未跟踪的、被 gitignore 的）`target/` 构建缓存。
