@@ -1,0 +1,20 @@
+Golden 基准图集 —— 平台 linux（= PlatformTag::Linux::as_str()）
+生成地点: GitHub Actions `ubuntu-latest`（**托管 runner 就是本平台的基准环境**；Linux 侧没有像 M2 Max 那样
+被负责人点名的本机，故以该 runner 类为准并在下面写明这一点）。
+生成方式: 手动档 `gates-manual.yml` 的 `goldens` 档（`gh workflow run gates-manual.yml -f gate=goldens`），
+run id **37299352691**（conclusion=success）；该档跑 `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`，
+再上传 `crates/yeban-app/tests/golden/linux/` 为 artifact，由集成者复核后入库。
+生成时间(UTC): 2026-10-05T10:56:20Z（入库时间）
+
+**为什么必须分平台**: 本目录 5 张与 macos 目录同名文件**逐字节全部不同** —— macOS 走 CoreText、Linux 走
+FreeType/fontconfig，字形与抗锯齿不同 ⇒ 像素必然不同。拿 macOS 的图当 Linux 基准会得到永远红的假判据。
+
+判据口径: 与 `../macos/MANIFEST.txt` 同 —— 渲染 → `png::encode_rgb8` → **逐字节**比对；不一致即红并给出两侧字节数；
+平台无基准时打印「未被判定」（不等于通过）。
+
+文件	sha256	字节
+app-main-window-arrangement-compact-1920x1080.png	ee70ae4d11727aee4b06334341187f9c32b6fd88f36fcb1ef505f4b0a921e0e1	6222418
+app-main-window-arrangement-full-1920x1080.png	50369515f2d5a2aae14285d592be83fe81f384d68472a791935590a1ab144b43	6222418
+app-main-window-session-full-1920x1080.png	281d4a386aa496b06eb090c212bca533047ec4a433f59b21ebec7c735de58b42	6222418
+app-model-driven-demo-project-1920x1080.png	50369515f2d5a2aae14285d592be83fe81f384d68472a791935590a1ab144b43	6222418
+app-model-driven-filled-project-1920x1080.png	9a421418df128abf72e28e34d9c4e07631fea1320c3e0d6ecd69cde17b800dd9	6222418
