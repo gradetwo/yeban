@@ -8270,3 +8270,22 @@ PathBuf}`, `yeban_model::EntityId`, `yeban_midi::midi::MidiError`, `crate::save:
 file-level `#![allow(unused_imports)]`, keeping `MidiExportReport` OUT of `drop` (round 338) so it stays on the shared side.
 
 **Status**: tree green and clean; the generator parses; CI green through `f7a664d`; the loudness item CI-verified; the mapping move needs that one edit.
+
+
+### Round 340: the wide-import method works on the shared side; the app's allow does not take effect
+
+Applying `#![allow(unused_imports)]` plus a wide import set **symmetrically** moved the failure for the fourth time - and for the first time it moved **off the
+shared crate**: `cargo build` now fails only in `yeban-app`, reporting `BTreeMap` (line 4) and `PathBuf` (line 5) as unused, i.e. the app's own `allow` line is
+**not suppressing** what it should.
+
+**The likely cause, and it is checkable next round**: in this attempt the app's file is the generator's `wrapper` **plus the whole test module** (the test split
+is not applied by the generator - rounds 320-323 did it as a separate step), so the app still contains the thirteen tests including the seven that read the
+mapping's types. An inner attribute cannot rescue a file whose unused imports come from items the transform was supposed to move away. The right order, now
+clear: **apply the test split first**, then the wide imports, then the allow.
+
+**What is established and useful**: (a) the shared crate now compiles with the wide-import + allow method; (b) `MidiExportReport` must stay out of the
+generator's `drop` set (round 338); (c) the wrapper needs `Path`, `PathBuf`, `EntityId`, `MidiError` and the save functions, and the wide set covers them; (d)
+the app's module must be **rebuilt to the two writer tests** rather than carried whole, which is the step this attempt skipped.
+
+**Status**: tree green and clean (failure path reverted, including this round's uncommitted generator edits - the script parses); CI green through `f7a664d`;
+the loudness item is CI-verified and closed on the tool side; the mapping move needs the test split applied with the wide-import method, in that order.
