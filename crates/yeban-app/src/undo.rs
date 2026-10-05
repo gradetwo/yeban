@@ -384,6 +384,51 @@ impl UndoPort {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_planned_note_commits_through_the_port_and_undo_returns_it() {
+        // `[UI-NOTE-003]` 第 259 轮第 4 步的两半: **恰 +1** 与**撤销可反转**。
+        // 直接构造端口（与 main.rs / 本文件既有判据同一手法）, 不需要窗口 —— 判的是**模型侧的提交与逆操作**。
+        let mut project = filled_project();
+        let view = crate::bridge::ViewState::from_project(&project).expect("投影");
+        // 实测教训: `filled_project()` 的**第一条轨道可能没有片段** ⇒ 必须找**第一条有片段的**轨道
+        // （第一版写 `iter().next()` 于是 panic "轨道必须有片段" —— 判据的失败信息是我自己的夹具备注）。
+        let (track_id, clip_id, start_tick) = project
+            .tracks
+            .iter()
+            .find_map(|(track_id, track)| {
+                track
+                    .clips
+                    .values()
+                    .next()
+                    .map(|placement| (*track_id, placement.clip_id, placement.start_tick))
+            })
+            .expect("夹具里至少要有一条带片段的轨道");
+        let count = |project: &yeban_model::YebanProjectV1| {
+            project
+                .clip_pool
+                .get(&clip_id)
+                .and_then(|entry| entry.content.notes())
+                .map_or(0, std::collections::BTreeMap::len)
+        };
+        let before = count(&project);
+        let plan = crate::bridge::NotePlan {
+            start_tick: start_tick + 240,
+            pitch: 64,
+            duration_ticks: view.ppq,
+        };
+        let port = UndoPort::new(
+            UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+        );
+        let op = crate::bridge::plan_to_add_note(plan, track_id, clip_id, EntityId::new());
+        port.commit_ops(NOW, "pencil: add note", vec![op])
+            .expect("提交必须成功");
+        assert_eq!(count(&port.project()), before + 1, "提交后必须**恰 +1**");
+        // 撤销必须回到原值 —— 这是"可撤销是构造上的"这句话的判据。
+        port.perform(UiAction::Undo);
+        assert_eq!(count(&port.project()), before, "撤销后必须回到原值");
+        let _ = &mut project;
+    }
+
+    #[test]
     fn select_tool_is_dispatched_and_named_but_carries_no_model_action() {
         // 判据: 工具选择经**唯一下发点** `dispatch_key` 得到 `UiAction::SelectTool`, 名字固定,
         // 且端口侧只报显示态（视图状态不进提交图, 也不改工程）。
