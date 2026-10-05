@@ -2280,6 +2280,36 @@ mod tests {
         .expect("合法的工具调用")
     }
 
+    /// 一份**真 WAV**（16-bit 单声道 48 kHz, 4 帧）—— `yeban_import_audio` 的规划会真的解码它。
+    ///
+    /// 落在 `unique_path()` 的**同一个独占临时目录**里（不创建工程文件, 只放这份素材）,
+    /// 因此不污染仓库, 也不需要清理（临时目录由 OS 管）。
+    fn wav_fixture() -> PathBuf {
+        let path = unique_path().with_file_name("fixture.wav");
+        std::fs::create_dir_all(path.parent().expect("父目录")).expect("建临时目录");
+        let samples: [i16; 4] = [0, 1_000, -1_000, 0];
+        let data: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&u32::try_from(36 + data.len()).expect("小").to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // 单声道
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&u32::try_from(data.len()).expect("小").to_le_bytes());
+        bytes.extend_from_slice(&data);
+        std::fs::write(&path, &bytes).expect("写 WAV 夹具");
+        path
+    }
+
     fn domain() -> Domain {
         let mut domain = Domain::new();
         domain.set_now_ms(1_760_000_000_000);
@@ -2344,6 +2374,28 @@ mod tests {
             // D45 的两条扩展: 刚打开的会话一条 op 都没提交 ⇒ 规划阶段就该报"撤不动"。
             ("yeban_undo", serde_json::json!({})),
             ("yeban_redo", serde_json::json!({})),
+            // D46 的三类扩展（`ADR-0001` D46）: 三者都必须**规划成功**。
+            // 自动化那条只读（没有 `point`）; 引擎读数那条只读;
+            // 音频导入那条指向一份**真 WAV**（`plan` 会真的解码 + 过 `PcmBudget`）。
+            (
+                "yeban_edit_automation",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "lane": "TrackVolume",
+                    "ticks": [0, 1920],
+                }),
+            ),
+            (
+                "yeban_query_engine_state",
+                serde_json::json!({"trackId": track.to_canonical_string()}),
+            ),
+            (
+                "yeban_import_audio",
+                serde_json::json!({
+                    "name": "Kick",
+                    "path": wav_fixture().display().to_string(),
+                }),
+            ),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
