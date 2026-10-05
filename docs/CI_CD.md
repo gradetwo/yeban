@@ -156,3 +156,17 @@ python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/sch
 
 PENDING 的共同原因只有两类：**被验证的功能还没实现**，或**需要固定频率的参考硬件**。
 在条件具备之前，这些门禁明确"不通过"，而不是用一个永远绿的假 job 冒充通过。
+
+## 读判决时最容易骗过自己的四个坑（实测，都是本项目踩过的）
+
+1. **空心绿**：`plan` 判定受影响 crate 集合为空时（纯文档/资产改动），`rust` 腿会**静默跳过**。
+   此时总 `conclusion=success` **不构成任何代码证据**。⇒ 读判决必须看**各腿**的 `conclusion` 与 `steps`，
+   不只看总结果；必要时用 `python3 scripts/dev/changed-crates.py --base <A> --head <B>` 复核 `plan` 的理由。
+2. **合并 commit 的判决要单独取**：merge commit 常只改受版本控制的文件而 `plan` 未命中 crate ⇒
+   被合并的代码可能**从未被编译过**。落地一条线之后，务必确认"**该 tip 上真的跑过 code 腿**"；
+   必要时像 D46 那次一样派发手动档（`gh workflow run gates-manual.yml -f gate=windows`）取真判决。
+3. **"没判定" ≠ "判失败"**：门禁与脚本的退出码必须是三态（0 通过 / 1 失败 / **2 无法判定**），
+   并把 2 显式判红而不是当成通过（`fetch-samples.py`、`audit-upstream-paths.py`、`check_release_defaults.sh` 都是这么写的）。
+4. **缓存别落进仓库**：`gh run view --log` 会在 `XDG_CACHE_HOME` 下落 `gh/run-log-*.zip`；
+   相对路径会把它们写进仓库，而 `G12` 扫**文件系统**会一票否决。⇒ 一律用**仓库外绝对路径**。
+

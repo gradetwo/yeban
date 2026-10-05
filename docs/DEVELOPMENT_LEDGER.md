@@ -2352,3 +2352,25 @@ CAS 池字节不是 Op 载荷 ⇒ 撤销 `AddClip` 不回收池内字节；响�
 （真实 DAW 的常驻集里 Slint 组件树/字形缓存/渲染上下文那一大块**完全没被覆盖**）。
 ⇒ 所以"**达标**"这个词现在**不能**用；`BASELINE-002` 的真实状态是"**量法尚未覆盖规范所指的对象**"。
 
+### 第 76 轮：**"纯文档改动的绿"是空心绿** —— 我因此在合并 D46 时送进了一个从未编译过的测试文件
+
+**事实链（每一步都有命令可复核）**:
+1. `line/mcp-tools-expansion` 前两轮红（`E0382` + 两条 `clippy::all`），它修在 `c94f11f`；
+2. 我在它的分支上补三方对齐表（`33424e0`，**纯文档**）；
+3. 我读到的"绿"是 run `37275144131` @ `33424e0` —— 而**纯文档改动会让 `plan` 判定受影响 crate 集合为空**
+   （`python3 scripts/dev/changed-crates.py --base … --head …` ⇒ `{"crates": [], "workspace_wide": false, "reason": "改动不落在任何成员 crate 内 (纯文档/资产)"}`）
+   ⇒ **`rust (yeban-mcp)` 腿静默跳过**；
+4. `c94f11f`（真正的代码修复）那一轮 run 很可能被我的推送顶掉（L32）⇒ **它的修复从未被 code-run 验证过**；
+5. 我据此 `land` 了 D46 ⇒ main 上 `crates/yeban-mcp/tests/extension_tools.rs` 引用了**不存在的** `domain::extension_audit`
+   （`extension_audit.rs` 是**孤儿文件**，`domain/mod.rs` 里 `pub mod` 命中 **0**）与不存在的 `ErrorObject::to_value`
+   ⇒ **`yeban-mcp` 的测试在 main 上编不过**，而 `ddd637c` 那次 `success` 同样是 docs-only。
+
+**结论（三条，已成规矩）**:
+- **① 纯文档 tip 上的 `success` 不构成任何代码证据** —— 重腿按设计跳过（`steps=0`），"绿"是空心的；
+- **② 合并前必须确认"该 tip 上真的跑过 code 腿"**（看 `plan` 的理由与各腿 `conclusion`/`steps`，不只看总 `conclusion`）；
+- **③ 合并 commit 的判决要单独取** —— merge commit 若是 docs-only（或只改根级文件而 plan 未命中），
+  被合并的代码可能**一次都没被编译过**。D46 那条线自己在第 3 轮就是**派发手动档 `gate=windows`**（run `37275584648`）才取到真判决。
+- **④ 取 CI 日志必须用仓库外的绝对路径**：`XDG_CACHE_HOME=.cache gh run view --log` 会把
+  `.cache/gh/run-log-*.zip` 落进仓库，而 `G12 [仓库卫生]` 扫的是**文件系统**（不是索引）⇒ 一票否决（实测 5 处）；
+  正确做法 `XDG_CACHE_HOME=/Users/crow/work/music/.cache gh …`；并把 `.cache/` 写进 `.gitignore`。
+
