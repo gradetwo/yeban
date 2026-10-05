@@ -426,6 +426,10 @@ pub struct VisibleNotes {
     pub ys: Vec<f32>,
     /// 音高车道索引。
     pub rows: Vec<i32>,
+    /// `note-{ulid}-rect` 的 `{ulid}` 段（语义元素 ID 的一半）。
+    pub ulids: Vec<String>,
+    /// 归一化力度（0.0..=1.0）。
+    pub velocities: Vec<f32>,
 }
 
 impl VisibleNotes {
@@ -970,6 +974,8 @@ impl ViewState {
             widths: Vec::with_capacity(indices.len()),
             ys: Vec::with_capacity(indices.len()),
             rows: Vec::with_capacity(indices.len()),
+            ulids: Vec::with_capacity(indices.len()),
+            velocities: Vec::with_capacity(indices.len()),
         };
         for index in indices {
             let note = &self.notes[index];
@@ -977,6 +983,8 @@ impl ViewState {
             out.widths.push(note.width);
             out.ys.push(note.y);
             out.rows.push(note.row);
+            out.ulids.push(note.id.clone());
+            out.velocities.push(note.velocity_normalized);
         }
         out
     }
@@ -2437,7 +2445,12 @@ mod tests {
             assert_eq!(vis.widths[k], view.notes[*i].width);
             assert_eq!(vis.ys[k], view.notes[*i].y);
             assert_eq!(vis.rows[k], view.notes[*i].row);
+            assert_eq!(vis.ulids[k], view.notes[*i].id);
+            assert_eq!(vis.velocities[k], view.notes[*i].velocity_normalized);
         }
+        // 六个平行数组**同长**（第 181 轮更正：不是四个）。
+        assert_eq!(vis.positions.len(), vis.ulids.len());
+        assert_eq!(vis.positions.len(), vis.velocities.len());
     }
 
     #[test]
