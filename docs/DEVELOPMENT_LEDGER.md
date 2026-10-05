@@ -5163,3 +5163,29 @@ would require the zoom/pan UI that does not exist yet; until then, what would ge
 published bounds agree with the injected content, which belongs in the UI test target and therefore runs only in CI.
 
 Completed full-workspace verdicts on main now number **fourteen**.
+
+### Round 205: step 4 (batch drawing) is a decision that needs evidence, not an implementation to start blind
+
+`[UI-NOTE-001]` step 4 asks Slint's FemtoVG / Skia / OpenGL path to batch GPU rectangle draws in <= 2 ms. Before implementing
+anything I checked what this Slint version actually exposes, and the check did **not** find a public batch-draw hook: a grep of
+`slint-1.18.1/src/graphics.rs` for `from_rgb8` / `from_rgba8` / `SharedPixelBuffer` returned nothing, which is not proof of absence
+(that file may not be where the re-exports live) but is enough to stop me from claiming availability.
+
+So the mechanisms to evaluate, in the order I would try them - each needing evidence before adoption:
+1. **keep N elements** (today's architecture): 1 element per visible note, ~1% of the notes drawn after clipping. Measured
+   conservatively at p99 9.83 ms on a hosted runner;
+2. **one `Path` element with N sub-paths**, the path string built in Rust each frame: element count drops to 1, but the string is
+   ~40 KB for 1000 rectangles and has to be parsed per frame - plausibly a wash, and it needs measuring rather than assuming;
+3. **one `Image` element fed by a Rust-side rasteriser**: uploads pixels per frame, so it moves work to the CPU and the upload path;
+4. **Slint's internal renderer callback**: what the spec's wording describes, but it is not a documented public API in this
+   version as far as this check could tell.
+
+**Decision deferred, deliberately, and this is the honest reason**: step 4 is a performance rewrite with no acceptance criterion
+that can be evaluated in the current gate setup. `BASELINE-003`'s verdict is already blocked on the human's choice of口径 (round
+198), so rewriting the renderer now would mean changing the very thing under measurement before the measurement's rules are settled
+- and any "it got faster" claim would then be unverifiable against the reference machine that HD-45 requires. The productive order
+is: settle the verdict口径, then make the draw change behind a criterion (the same injected content must be drawn), then measure.
+
+**What would make step 4 startable**: either (a) a decision on the verdict口径, or (b) a criterion that pins the drawn result
+independently of the renderer - for example the golden-image comparison already in place, which would catch a batch path that draws
+the wrong pixels, plus a frame-time measurement from the same gate.
