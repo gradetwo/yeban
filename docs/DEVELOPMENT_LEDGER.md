@@ -5877,3 +5877,33 @@ so the new note appears.
 verification budget - including a UI-level criterion that clicks, asserts the note count rose by exactly one and that the edit is
 visible to undo - rather than whatever is left at the end of a long session. The design above is the part that costs nothing to hand
 over.
+
+### Round 240: two spec sections are not tracked by the project's own tables - one of them entirely unimplemented
+
+Compared the spec's sections against the two tracking tables instead of trusting the summaries:
+
+| | ids |
+| :--- | :--- |
+| defined by the design document | `UI-NOTE-001`, `002`, `003`, `004`, `005` |
+| named in `feature-alignment.md` + `phase-status.md` | `UI-NOTE-001/003` (one row) and `UI-NOTE-004` |
+
+So **`[UI-NOTE-002]` and `[UI-NOTE-005]` are named nowhere in either table**, and the two are not the same kind of gap:
+
+- **`[UI-NOTE-002]` (coordinate mapping, 960-PPQ snapping)** is largely IMPLEMENTED and judged - `tick_to_px`/`px_to_tick` with a
+  round-trip criterion, `pitch_lane`/`pitch_lane_for` both ways, `snap_tick`, `snapped_tick_at` - but its id appears nowhere, so a
+  reader asking "is 002 covered?" finds nothing, and the work looks unattributed. Its content is inside the row labelled
+  `[UI-NOTE-001/003]`, which is how the omission happened: the row groups by capability, and one section got absorbed.
+- **`[UI-NOTE-005]` (full keyboard note manipulation: arrow-key nudge along the grid, Alt for 1-tick, up/down semitone, Shift+up/down
+  octave, Shift+arrows duration, Space/Enter audition)** is **not implemented at all** - and it is also not registered anywhere, so
+  nothing in the ledger would ever report it as outstanding. I have spent this session on the roll's pointer tools and never once
+  noticed this section, which is precisely what an untracked requirement does.
+
+**A measurement-hygiene note on how I found it**: my first check used exact-string greps per id and reported 002/003/005 as absent,
+which was wrong for 003 - the table writes `[UI-NOTE-001/003]`, so an exact match misses it. Searching for the pattern
+`UI-NOTE-[0-9/]*` and comparing the SETS is what produced a conclusion I can stand behind. Same lesson as the run-order mistake in
+round 231: read the actual output shape before trusting a filter.
+
+**What this entry does NOT do**: fix the tables. Adding rows to `feature-alignment.md` means touching its counters and its guard, and
+adding `[UI-NOTE-005]` as a phase item means deciding whether it is in scope for Phase 4 - both are small but they are the kind of
+change that should be made deliberately rather than appended to a reconnaissance round. Recorded here so the gap is not lost, with
+the concrete next action: register 005 (and name 002) in the tables, with 005's status set honestly to "not implemented".
