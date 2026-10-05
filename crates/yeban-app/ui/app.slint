@@ -287,6 +287,9 @@ export component MainWindow inherits Window {
     in-out property <int> selected-note-count: 0;
     /// `[UI-NOTE-003]` 与可见数组**同一索引集**的选中标志（宿主注入；界面只取下标）。
     in-out property <[bool]> note-selected: [];
+    /// `[UI-NOTE-003]` 当前卷帘工具（1..5）。镜像到窗口是为了让**宿主**能读到它：
+    /// 没有这个镜像, 宿主无从知道该按哪个工具的语义处理点击（账本第 258 轮）。
+    in-out property <int> active-tool: 1;
     /// `[UI-NOTE-003]` 当前选中的音符 ULID（**单一事实源**：`apply_view` 每次注入都由它重算标志）。
     in-out property <[string]> selected-ulids: [];
     /// `[UI-NOTE-001]` 步骤 ①（纵向）：可见音高上下界。
@@ -506,6 +509,7 @@ export component MainWindow inherits Window {
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
             note-selected: root.note-selected;
+            active-tool: root.active-tool;
             scroll-requested(d) => { root.scroll-requested(d); }
             clicked(x, y) => { root.clicked(x, y); }
             note-ys: root.note-ys;

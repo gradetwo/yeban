@@ -1378,6 +1378,32 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
 }
 
 #[test]
+fn the_active_tool_is_readable_from_the_host() {
+    // `[UI-NOTE-003]` 第 258 轮：工具状态镜像到窗口后, **宿主必须能读回**它 —— 否则"该执行哪个工具"
+    // 无从判断（这正是把镜像当成前置的原因）。判据只断言镜像这一环: 写入后读回同一个值。
+    let project = yeban_model::samples::filled_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let registry = registry_to_tree(&ElementRegistry::from_view(&view)).expect("注册表必须能适配");
+    let port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台");
+    let ui = port.ui();
+
+    assert_eq!(
+        ui.get_active_tool(),
+        1,
+        "默认必须是选择工具（规范矩阵第 1 行）"
+    );
+    for tool in 1..=5 {
+        ui.set_active_tool(tool);
+        assert_eq!(ui.get_active_tool(), tool, "工具 {tool} 未能在宿主侧读回");
+    }
+}
+
+#[test]
 fn published_viewport_bounds_agree_with_the_window_they_came_from() {
     // `[UI-NOTE-001]` 步骤 ① 的**接线**判据（补第 204 轮记的缺口：属性"写了但没人验证"）。
     // 平台设置必须与同文件其它判据一致：`MainWindow::new()` 在裸环境下会在依赖内部 panic
