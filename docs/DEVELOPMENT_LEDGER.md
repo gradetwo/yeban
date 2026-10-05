@@ -6952,3 +6952,30 @@ sweep narrows the gap; it does not close it.
 
 **Caveats carried**: the `lock_advisory` flake (round 279) means a full run can go red without a code cause, so re-run before calling a red a
 regression; and three crates have zero test targets, which is a fact about coverage rather than a pass.
+
+### Round 282: correcting round 276 - the licence inventory CAN be run locally, so the split is not CI-blocked
+
+Round 276 verified that adding a crate touches the vendor check and the licence inventory, and then concluded that "the parts that must be
+re-verified land exactly where verification is currently impossible". Running them settles it, and half of that conclusion was wrong:
+
+| gate | actual local behaviour |
+| :--- | :--- |
+| `check_vendor.sh` | `[skip] 仓库内没有 vendor/`（发布时由打包流程产出；`--full` 可验证它能被产出）+ 通过 MUST-GATE-005 的可机械判定部分 - rc=0 |
+| `license_inventory.py --check` | **rc=0**, "依赖许可清单与依赖图一致（**693 行**）" |
+
+So the licence inventory is **runnable locally and green** - my "CI tier" framing was accurate about `light` (it is not in that tier) but wrong
+about accessibility, and it led me to advise waiting for CI for something that does not need it. The vendor check's only locally-skipped part is
+the actual `cargo vendor` run, which is a packaging-time step.
+
+**What this changes about the pending `yeban-midi` decision**: the split can be executed AND verified locally except for the parts that genuinely
+need CI (cross-platform legs, cross-machine digest). The licence inventory would be regenerated and checked here; the tests would run here (1788
+criteria, whole workspace); the vendor mechanical check would pass here. So the argument "wait for CI" applies to the cross-platform evidence
+only - and it was my own overstatement that made it sound broader.
+
+**Also measured**: the inventory's size (693 lines) is the concrete scale of what a new crate changes, which is more useful than "touches the
+inventory" as a cost statement.
+
+**Second instrument slip in two commands, recorded for the same reason as the others**: my first licence run printed `rc=$?` **after a pipe
+through `tail`**, so the rc reported was tail's, not Python's - it read green for the wrong reason. Re-running without the pipe (139/… and
+`python rc=0`) is what makes the result trustworthy. Third time this session that reading a slice of the output misrepresented the whole
+(rounds 231/240/279 were the others).
