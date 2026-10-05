@@ -2374,3 +2374,25 @@ CAS 池字节不是 Op 载荷 ⇒ 撤销 `AddClip` 不回收池内字节；响�
   `.cache/gh/run-log-*.zip` 落进仓库，而 `G12 [仓库卫生]` 扫的是**文件系统**（不是索引）⇒ 一票否决（实测 5 处）；
   正确做法 `XDG_CACHE_HOME=/Users/crow/work/music/.cache gh …`；并把 `.cache/` 写进 `.gitignore`。
 
+### 第 77 轮：`OpOrigin::McpEdit` 落地 —— MCP 直接编辑终于有了**准确的作者标签**
+
+**判决**: `line/op-origin-mcp` run **`37280276045` = completed success**，且是**实心绿**（对比第 76 轮那次的空心绿）：
+`rust (yeban-mcp)` **steps=10** · `rust (yeban-ui-mcp)` **steps=10** · **`windows` steps=8** 三条腿**都真有步骤**。
+`land` 输出逐字检查（`land=0` + `Merge made`），产物复核 `grep -c McpEdit crates/yeban-model/src/ops.rs` = **12**。
+
+**交付**: 新变体 `McpEdit { agent_name: String }`（与 `McpProposal { proposal_id, agent_name }` **对称**；
+`agent_name` 复用既有的 `AGENT_NAME`，工具身份已由 commit `message` 承载 ⇒ **不造第二事实源**）。
+40 处 `OpOrigin::` 里**只有 2 处**是借来的来源，都已改掉（`yeban_edit_automation` 曾借 `AutomationRecord`、
+`yeban_import_audio` 曾借 `Import`）；**并更正了 D46 的说法**: D46 的"三个工具借来源"其实是**两处** ——
+第三个 `yeban_query_engine_state` 是只读、无 `origin` 站点（给了 grep 证据）。
+
+**契约影响（它定性正确，needs 交我）**: `OpOrigin` 随 `StampedOp → Commit.ops → CommitGraph → history.dag`
+进**持久化字节**；`schemas/ops.schema.json` 的 `origin.oneOf` 对象分支 `additionalProperties:false` 只认 `McpProposal`
+⇒ 会**拒绝**新变体。它禁改 `schemas/**`，于是用 `PENDING_CONTRACT_ORIGINS = ["McpEdit"]` 把漂移**机械钉死**
+（契约补上就红并指名清空；多登/少登也红）。**needs**: 给 `origin.oneOf` 加 `McpEdit{agent_name}` 分支、
+`history.dag` 旧读者兼容策略、规范 §6.1 代码块同步。
+
+**见证（本项目的硬要求）**: 判据①**先证明**落盘 `history.dag` 里真有 `SetAutomationPoint`/`AddClip` 本体，**再**断言作者 ——
+杜绝"空集合变绿"。**注入**: I1 退回 `AutomationRecord` ⇒ 守卫红；I2 给既有变体 `UndoRedo` 加 `#[serde(rename)]`
+⇒ 冻结字节判据红；两者还原后全绿。四份 `export_schema_samples` sha256 前后**逐字节相同**（本机 `crate yeban-model` lib 107 → 109）。
+
