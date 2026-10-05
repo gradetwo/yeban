@@ -36,6 +36,27 @@ thiserror.workspace = true
 #
 # 依赖方向: yeban-mcp -> yeban-model。yeban-model 是纯数据模型 (零 GUI、零系统库)。
 yeban-model.workspace = true
+# 乐理与流派规则引擎 (`yeban-theory`)。`yeban_propose_section` 的**风格标识**与
+# **音阶语义**按需消费它 (`ADR-0001` **D49**, 关闭
+# `docs/ledger/tools-domain-notes.md` 的 needs-6)：
+#
+# - 风格预设的**合法集合** = `GenreLibrary::ids()`(182 条流派规则)；未知风格仍由
+#   `GenreLibrary::get` 判成 `TheoryError::GenreNotFound` ⇒ 契约码 `STYLE_NOT_FOUND`
+#   的错误语义**没有**放松(判据钉住)；
+# - 调式**语义** = `ScaleKind` / `Scale` 的音级集合，不再是本地 12 行常量表；
+# - 派生的**声部数** = 该流派典型走向里"和弦构成音数"的最大值
+#   (`GenreRule` + `Progression` + `Chord::pitch_classes`)。
+#
+# 本线**不复制** theory 的任何逻辑 (D49 明文)：这里只调用它的公开 API。
+# 依赖方向: yeban-mcp -> yeban-theory。`yeban-theory` 刻意只依赖 `thiserror` + `libm`
+# 两个轻量库 (见它自己的 `Cargo.toml` 注释 / [ARCH-TOP-003])，因此**不改变**
+# "`src/domain/section_build.rs` 是零重依赖模块、本机可用裸 `rustc --test` 真跑"的性质
+# (实测: `cargo-local.sh build -p yeban-theory` 4 秒; 脚手架 **32 passed; 0 failed**, 见
+# `docs/ledger/theory-wiring-notes.md` §5)。
+#
+# 版本仍由根清单 `[workspace.dependencies]` 唯一决定 —— 本线**没有**改根清单的行,
+# 也没有新增任何第三方包 (`Cargo.lock` 只多一条成员间的依赖边)。
+yeban-theory.workspace = true
 # 离线母带渲染器 (Rayon 多核调度 + RF64/BW64 + TPDF 抖动写入器)。
 # `yeban_render_master` 的渲染本体不再返回 -32005, 而是真的调用它。版本仍由根清单
 # 唯一决定, 本线**未改**根 `Cargo.toml`, 也未引入任何新的第三方包。

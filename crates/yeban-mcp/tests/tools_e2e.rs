@@ -404,7 +404,7 @@ fn dry_run_reports_why_it_would_fail_instead_of_pretending_success() {
         ("yeban_query_project", json!({})),
         (
             "yeban_propose_section",
-            json!({ "sectionName": "Chorus", "stylePreset": "lofi-beats", "bars": 4 }),
+            json!({ "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
         ),
         (
             "yeban_edit_notes",
@@ -849,7 +849,7 @@ fn exercised_error_codes() -> Vec<String> {
                     "ops": [{"kind": "delete", "noteId": "01J8ZQ00000000000000000001"}]
                 }),
                 "yeban_propose_section" => json!({
-                    "sectionName": "Chorus", "stylePreset": "lofi-beats", "bars": 8
+                    "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 8
                 }),
                 "yeban_set_macro" => json!({
                     "trackId": "01J8ZQ00000000000000000001", "macroIndex": 0, "value": 0.5
@@ -964,23 +964,25 @@ fn exercised_error_codes() -> Vec<String> {
             json!({ "limit": 0 }),
         ));
         // 章节骨架。
+        // ⚠ `polka` **是** `yeban-theory` 的流派 ID（D49 接线后风格清单 = `GenreLibrary::ids()`），
+        // 因此"未知风格"必须用一个 theory 里真的不存在的名字。
         record(&call(
             &mut dispatcher,
             &auth,
             "yeban_propose_section",
-            json!({ "sectionName": "X", "stylePreset": "polka", "bars": 4 }),
+            json!({ "sectionName": "X", "stylePreset": "yeban_unknown_style", "bars": 4 }),
         ));
         record(&call(
             &mut dispatcher,
             &auth,
             "yeban_propose_section",
-            json!({ "sectionName": "X", "stylePreset": "lofi-beats", "bars": 0 }),
+            json!({ "sectionName": "X", "stylePreset": "lo_fi_hip_hop", "bars": 0 }),
         ));
         record(&call(
             &mut dispatcher,
             &auth,
             "yeban_propose_section",
-            json!({ "sectionName": "X", "stylePreset": "lofi-beats", "bars": 4, "scale": "H minor" }),
+            json!({ "sectionName": "X", "stylePreset": "lo_fi_hip_hop", "bars": 4, "scale": "H minor" }),
         ));
         // 音符编辑。
         record(&call(
@@ -1214,7 +1216,7 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         ("yeban_query_project", json!({})),
         (
             "yeban_propose_section",
-            json!({ "sectionName": "Chorus", "stylePreset": "lofi-beats", "bars": 4 }),
+            json!({ "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
         ),
         (
             "yeban_edit_notes",
@@ -1453,15 +1455,15 @@ fn propose_section_creates_a_real_section_and_is_deterministic() {
         first["data"]["willCreate"]["clipPoolEntries"]
             .as_array()
             .map(Vec::len),
-        Some(4),
-        "synthwave 4 个声部 ⇒ 4 条片段池条目: {first}"
+        Some(3),
+        "synthwave 的走向全是三和弦 ⇒ theory 推出 3 声部 ⇒ 3 条片段池条目: {first}"
     );
     assert_eq!(
         first["data"]["willCreate"]["routingEdges"]
             .as_array()
             .map(Vec::len),
-        Some(4),
-        "4 条声部连接: {first}"
+        Some(3),
+        "3 条声部连接: {first}"
     );
 
     let second = call(&mut dispatcher, &auth, "yeban_propose_section", arguments);
@@ -1504,8 +1506,54 @@ fn propose_section_creates_a_real_section_and_is_deterministic() {
         .values()
         .filter(|track| track.name.starts_with("Chorus · "))
         .count();
-    assert_eq!(parts, 4, "synthwave 预设有 4 个声部: {parts}");
+    assert_eq!(
+        parts, 3,
+        "synthwave 的典型走向全是三和弦 ⇒ 3 个声部: {parts}"
+    );
     project.validate().expect("合并后必须合法");
+}
+
+/// 判据 ③（`line/theory-wiring`，`ADR-0001` D49）：未知风格仍然 ⇒ `STYLE_NOT_FOUND`，
+/// 而且候选清单**就是** `yeban-theory` 的流派 ID 清单 —— 错误语义没有因为换来源而放松。
+#[test]
+fn propose_section_unknown_style_is_rejected_with_the_theory_catalogue() {
+    let scratch = Scratch::new("section-style");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let before = project_bytes(&dispatcher);
+
+    let outcome = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Chorus", "stylePreset": "yeban_unknown_style", "bars": 4 }),
+    );
+    assert_domain_error(&outcome, "STYLE_NOT_FOUND", "未知风格预设");
+    let presets: Vec<&str> = outcome["error"]["data"]["availablePresets"]
+        .as_array()
+        .expect("availablePresets")
+        .iter()
+        .filter_map(|name| name.as_str())
+        .collect();
+    assert!(presets.contains(&"synthwave"), "{presets:?}");
+    assert!(presets.contains(&"lo_fi_hip_hop"), "{presets:?}");
+    assert!(
+        presets.len() > 100,
+        "候选清单必须来自 theory 的整库流派: {}",
+        presets.len()
+    );
+    assert_eq!(project_bytes(&dispatcher), before, "失败不得改工程");
+    assert_eq!(dispatcher.domain().proposal_count(), 0, "失败不得留下提案");
+
+    // 反向：theory 里**存在**的 ID 必须被接受 —— `polka` 曾经被本地 4 行表挡住，
+    // 现在它来自 `GenreLibrary::ids()`。
+    let accepted = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Polka", "stylePreset": "polka", "bars": 2, "dryRun": true }),
+    );
+    assert_eq!(accepted["status"], "success", "{accepted}");
 }
 
 /// 判据 ① + ②：合并之后工程里**真的**多出骨架（段落 / 片段池条目 / 摆放）与
@@ -1522,7 +1570,7 @@ fn propose_section_merge_writes_the_skeleton_and_the_voice_routing() {
         &mut dispatcher,
         &auth,
         "yeban_propose_section",
-        json!({ "sectionName": "Drop", "stylePreset": "cinematic-orchestral", "bars": 6 }),
+        json!({ "sectionName": "Drop", "stylePreset": "orchestral_film_score", "bars": 6 }),
     );
     assert_eq!(created["status"], "success", "{created}");
     let proposal_id = created["data"]["proposal"]["proposalId"]
@@ -1612,7 +1660,7 @@ fn propose_section_ops_are_reversible_byte_for_byte() {
         &mut dispatcher,
         &auth,
         "yeban_propose_section",
-        json!({ "sectionName": "Verse", "stylePreset": "lofi-beats", "bars": 4, "scale": "D dorian" }),
+        json!({ "sectionName": "Verse", "stylePreset": "lo_fi_hip_hop", "bars": 4, "scale": "D dorian" }),
     );
     let proposal_id = created["data"]["proposal"]["proposalId"]
         .as_str()
@@ -1674,7 +1722,7 @@ fn propose_section_dry_run_previews_without_touching_bytes() {
         &auth,
         "yeban_propose_section",
         json!({
-            "sectionName": "Intro", "stylePreset": "acoustic-folk", "bars": 2,
+            "sectionName": "Intro", "stylePreset": "folk", "bars": 2,
             "scale": "G major", "dryRun": true
         }),
     );
@@ -1687,7 +1735,7 @@ fn propose_section_dry_run_previews_without_touching_bytes() {
     assert_eq!(
         preview["willCreate"]["tracks"].as_array().map(Vec::len),
         Some(3),
-        "acoustic-folk 3 个声部: {planned}"
+        "folk 3 个声部: {planned}"
     );
     assert_eq!(
         preview["willCreate"]["sections"][0]["name"], "Intro",
@@ -1722,7 +1770,7 @@ fn propose_section_without_usable_material_is_a_clear_clip_not_found() {
         &mut dispatcher,
         &auth,
         "yeban_propose_section",
-        json!({ "sectionName": "Chorus", "stylePreset": "lofi-beats", "bars": 4 }),
+        json!({ "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
     );
     assert_domain_error(&outcome, "CLIP_NOT_FOUND", "没有可用材料");
     assert_eq!(
@@ -1801,10 +1849,10 @@ fn propose_section_same_idempotency_key_does_not_duplicate_the_skeleton() {
         .filter(|track| track.name.starts_with("Chorus · "))
         .count();
     assert_eq!(
-        parts, 4,
-        "重复调用 + 合并之后仍然只有 4 个声部（不是 8）: {parts}"
+        parts, 3,
+        "重复调用 + 合并之后仍然只有 3 个声部（不是 6）: {parts}"
     );
-    assert_eq!(project.tracks.len(), tracks_before + 4);
+    assert_eq!(project.tracks.len(), tracks_before + 3);
 }
 
 /// 判据 ⑦：章节名 / 风格 / 小节数 / 调式**真的**影响了输出。
@@ -1845,12 +1893,13 @@ fn propose_section_outputs_track_the_inputs() {
         "同样的 bars ⇒ 同样的跨度"
     );
 
-    // 声部名与数量由风格预设决定。
+    // 声部名与数量：名字是本层的**声部角色**词表（theory 没有乐器概念），
+    // 数量由该流派在 theory 里的和弦构成音数推出。
     let lofi = call(
         &mut dispatcher_b,
         &auth_b,
         "yeban_propose_section",
-        json!({ "sectionName": "Verse", "stylePreset": "lofi-beats", "bars": 4 }),
+        json!({ "sectionName": "Verse", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
     );
     assert_eq!(
         lofi["data"]["willCreate"]["tracks"]
@@ -1859,8 +1908,30 @@ fn propose_section_outputs_track_the_inputs() {
             .iter()
             .filter_map(|track| track["name"].as_str())
             .collect::<Vec<_>>(),
-        vec!["Verse · Keys", "Verse · Bass", "Verse · Drums"],
+        vec!["Verse · Bass", "Verse · Alto", "Verse · Soprano"],
         "{lofi}"
+    );
+    // 风格 → 声部数真的来自 theory：`funk` 的走向含七和弦 `I7-IV7` ⇒ 4 声部。
+    let funk = call(
+        &mut dispatcher_b,
+        &auth_b,
+        "yeban_propose_section",
+        json!({ "sectionName": "Funk", "stylePreset": "funk", "bars": 4 }),
+    );
+    assert_eq!(
+        funk["data"]["willCreate"]["tracks"]
+            .as_array()
+            .expect("tracks")
+            .iter()
+            .filter_map(|track| track["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "Funk · Bass",
+            "Funk · Tenor",
+            "Funk · Alto",
+            "Funk · Soprano"
+        ],
+        "{funk}"
     );
 
     // 小节数 → 段落跨度与摆放时值（同一份工程上的第二条提案）。
@@ -1868,7 +1939,7 @@ fn propose_section_outputs_track_the_inputs() {
         &mut dispatcher_b,
         &auth_b,
         "yeban_propose_section",
-        json!({ "sectionName": "Long", "stylePreset": "lofi-beats", "bars": 16 }),
+        json!({ "sectionName": "Long", "stylePreset": "lo_fi_hip_hop", "bars": 16 }),
     );
     let short_span = lofi["data"]["willCreate"]["sections"][0]["endTick"]
         .as_u64()
@@ -1969,7 +2040,7 @@ fn routing_cycles_are_refused_before_arranging() {
         &mut dispatcher,
         &auth,
         "yeban_propose_section",
-        json!({ "sectionName": "Chorus", "stylePreset": "lofi-beats", "bars": 4 }),
+        json!({ "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
     );
     assert_domain_error(&outcome, "CYCLE_DETECTED", "已成环的工程");
     assert!(outcome["error"]["data"]["cycle"].is_array());

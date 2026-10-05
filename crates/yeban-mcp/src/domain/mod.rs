@@ -1729,7 +1729,7 @@ mod tests {
             ("yeban_query_project", serde_json::json!({})),
             (
                 "yeban_propose_section",
-                serde_json::json!({"sectionName": "Chorus", "stylePreset": "lofi-beats", "bars": 8}),
+                serde_json::json!({"sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 8}),
             ),
             (
                 "yeban_edit_notes",
