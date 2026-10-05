@@ -330,4 +330,51 @@ mod tests {
             Some(ErrorCode::NoActiveProject)
         );
     }
+
+    #[test]
+    fn loudness_keys_are_null_when_unset_and_echoed_when_set() {
+        let project = filled_project();
+        let keys = [
+            "integratedLufs",
+            "momentaryLufs",
+            "shortTermLufs",
+            "loudnessRangeLu",
+            "truePeakDbfs",
+        ];
+        // 无镜像：**不知道**，如实 null（不编造 0）。
+        let absent = engine_value(&project, None);
+        for key in keys {
+            assert!(absent[key].is_null(), "{key} 无镜像时必须是 null");
+        }
+        // 有镜像但**尚未测量**：仍为 null —— 与"测得静音"区分（账本第 327/328 轮）。
+        let unmeasured = engine_value(&project, Some(EngineReadings::default()));
+        for key in keys {
+            assert!(unmeasured[key].is_null(), "{key} 未测量时必须是 null");
+        }
+        // 已测量：在**容差内**回显（读数是 `f32`，经载荷成 `f64` 后不保证逐位相等 —— 账本第 330 轮）。
+        let measured = engine_value(
+            &project,
+            Some(EngineReadings {
+                integrated_lufs: Some(-14.0),
+                momentary_lufs: Some(-13.5),
+                short_term_lufs: Some(-13.8),
+                loudness_range_lu: Some(6.0),
+                true_peak_dbfs: Some(-1.0),
+                ..EngineReadings::default()
+            }),
+        );
+        for (key, want) in [
+            ("integratedLufs", -14.0_f64),
+            ("momentaryLufs", -13.5),
+            ("shortTermLufs", -13.8),
+            ("loudnessRangeLu", 6.0),
+            ("truePeakDbfs", -1.0),
+        ] {
+            let got = measured[key].as_f64().expect("读数应是数值");
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{key} 应在容差内回显：got {got}, want {want}"
+            );
+        }
+    }
 }
