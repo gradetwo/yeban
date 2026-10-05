@@ -283,7 +283,53 @@ pub fn tick_to_px(tick: u64, ticks_per_pixel: u64) -> Result<u32, BridgeError> {
     u32::try_from(tick / ticks_per_pixel).map_err(|_| BridgeError::PixelOverflow { tick })
 }
 
+/// `[UI-NOTE-003]` 力度车道的**几何**（界面侧的值集中在这里, 免得命中测试去猜）。
+///
+/// 数值来自 `piano_roll.slint` 的柱体：`x: 56px + Tokens.space-5 + note-positions[i] + 30px`、
+/// `width: 6px`、`y: parent.height - 4px - 28px * velocity`、`height: 28px * velocity`。
+/// 与 `NOTE_HEIGHT_PX` 一样, 这是"两处真相"的候选 ⇒ 改任一处都应由守卫钉住（账本第 196/487/501 轮）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VelocityLaneGeometry {
+    /// 车道容器高度（`.slint` 的 `parent.height`，实测 44px）。
+    pub lane_height: f32,
+    /// 柱体左沿相对车道左沿的偏移（56 + `Tokens.space-5` + 30）。
+    pub offset_x: f32,
+    /// 柱体宽（6px）。
+    pub bar_width: f32,
+    /// 满力度时的柱高（28px）。
+    pub bar_max_height: f32,
+}
+
 impl ViewState {
+    /// `[UI-NOTE-003]` **力度柱命中**：车道内的点落在哪个音符的力度柱上。
+    ///
+    /// 力度工具的左键单击是"选中对应音符的底部力度柱" ⇒ 先要知道点到的是哪根柱。
+    /// 与 [`Self::hit_test_visible`] 同一取舍: 重叠时返回**最后绘制**（下标最大）的那个。
+    /// `geometry` 由调用方给出（值取自 `.slint`）, 见 [`VelocityLaneGeometry`]。
+    #[must_use]
+    pub fn velocity_bar_hit_test(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        x: f32,
+        y: f32,
+        geometry: VelocityLaneGeometry,
+    ) -> Option<usize> {
+        let mut hit: Option<usize> = None;
+        // 力度车道与音符同宽 ⇒ 用**同一**可见窗口（而不是整条时间轴）。
+        for index in self.notes_visible_in(scroll_x, viewport_width) {
+            let note = &self.notes[index];
+            let left = geometry.offset_x + note.x - scroll_x.max(0.0);
+            let top =
+                geometry.lane_height - 4.0 - geometry.bar_max_height * note.velocity_normalized;
+            let height = geometry.bar_max_height * note.velocity_normalized;
+            if x >= left && x <= left + geometry.bar_width && y >= top && y <= top + height {
+                hit = Some(index);
+            }
+        }
+        hit
+    }
+
     /// `[UI-NOTE-002/003]` **视口坐标 → 吸附后的 tick**：编辑工具问"这一点落在哪个网格"的答案。
     ///
     /// 铅笔（"在吸附网格处画出音符"）、剪刀（"沿网格竖线切分"）与选择工具的移动都以此为前提。
@@ -2609,6 +2655,51 @@ mod tests {
             "1920px 窗口应只选中不到 5%: 可见 {} / 总 {}",
             vis.len(),
             total
+        );
+    }
+
+    #[test]
+    fn velocity_bar_hit_test_finds_the_bar_and_ignores_zero_velocity() {
+        // 判据: ① 落在某根柱上 ⇒ 返回该音符; ② 车道内空白 ⇒ None;
+        // ③ 力度 0 的音符**没有可见柱**（高 0）⇒ 点在它该在的横坐标上也不得命中;
+        // ④ 与音符命中同一口径: 重叠取最后绘制者（此处只断言"返回可见集合里的下标"）。
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        let geometry = VelocityLaneGeometry {
+            lane_height: 44.0,
+            offset_x: 56.0 + 8.0 + 30.0,
+            bar_width: 6.0,
+            bar_max_height: 28.0,
+        };
+        let width = 1920.0_f32;
+        let mut hit_count = 0_usize;
+        for index in view.notes_visible_in(0.0, width) {
+            let note = &view.notes[index];
+            let v = note.velocity_normalized;
+            let left = geometry.offset_x + note.x + geometry.bar_width / 2.0;
+            let top = geometry.lane_height - 4.0 - geometry.bar_max_height * v;
+            if v <= 0.0 {
+                // ③ 零力度: 该横坐标上**不应**命中这根柱（高度为 0）。
+                let got = view.velocity_bar_hit_test(0.0, width, left, top, geometry);
+                assert_ne!(got, Some(index), "零力度的音符不该有可命中的柱");
+                continue;
+            }
+            let got = view.velocity_bar_hit_test(0.0, width, left, top + 1.0, geometry);
+            assert!(got.is_some(), "柱内一点必须命中某根柱");
+            let got = got.expect("上面已断言");
+            assert!(
+                view.notes_visible_in(0.0, width).contains(&got),
+                "命中必须落在可见集合内"
+            );
+            hit_count += 1;
+        }
+        assert!(
+            hit_count > 0,
+            "夹具至少要有一个非零力度的可见音符, 否则判据空转"
+        );
+        // ② 车道底部空白（所有柱都在其上）⇒ 不命中。
+        assert_eq!(
+            view.velocity_bar_hit_test(0.0, width, geometry.offset_x, 999.0, geometry),
+            None
         );
     }
 

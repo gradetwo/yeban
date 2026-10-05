@@ -5621,3 +5621,23 @@ rather than narrating changed the conclusion (rounds 180 and 209 were the others
 
 I am recording this as a standalone commit rather than folding it into the next code change, deliberately breaking my own round-222
 batching rule: an unrecorded measurement is lost when a session ends, and the run this commit costs is worth less than that.
+
+### Round 230: velocity-bar hit testing, plus verdicts 30-31 folded in
+
+Read the bar geometry from the `.slint` before writing anything - `x: 56px + Tokens.space-5 + note-positions[i] + 30px`,
+`width: 6px`, `y: parent.height - 4px - 28px * velocity`, `height: 28px * velocity` - and put those values in a
+`VelocityLaneGeometry` struct rather than as loose parameters or, worse, guessed constants. Round 216 refused this same slice
+precisely because the geometry had not been read; reading it first is what made the slice small.
+
+`velocity_bar_hit_test` answers the velocity tool's click ("select the note's bottom velocity bar") with the same overlap rule as
+`hit_test_visible` (last drawn wins) and the same visible-window口径 as the notes. One clarity fix during the round: my first version
+called `notes_visible_in(scroll_x, 0.0_f32.max(f32::MAX))`, which is just `f32::MAX` written obscurely - it now takes
+`viewport_width` like every other query, so the lane and the notes cannot disagree about which notes exist.
+
+The criterion asserts a hit inside a bar lands on a visible note, that empty lane space misses, and - the tooth - that a note with
+ZERO velocity has no hittable bar at its own x, since its bar has zero height. A zero-velocity note that could still be selected
+would be a silent, invisible target.
+
+Verdicts 30-31 folded in per the push-rhythm rule: runs @ `c0e8ec3` (the end-to-end click) and @ `2df5741` = **completed success**
+each, so completed full-workspace verdicts on main number **thirty-one**. The click chain is therefore CI-verified end to end,
+including the feature-gated UI criterion that asserts the flags array.
