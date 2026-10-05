@@ -6209,3 +6209,25 @@ delete) have something to hang from.
 (rounds 249/250/251) without ever asking the prior question - "does a key event reach this code at all?" A one-line grep for where
 Slint key events are handled would have answered it, and the answer was written in a comment I walked past repeatedly. The lesson is
 not "read more"; it is **ask whether the input path exists before designing its branches**.
+
+### Round 253: the gap I spent six rounds discovering was already REGISTERED - read the gap register first
+
+The comment that gave round 252's root cause continued, and its continuation matters more than the finding:
+
+> ⚠ **诚实边界**：在 GUI 路径上，这个状态机目前**还没有读者** —— "Slint 键盘事件 → `input::dispatch_key` → `invoke_*`"那一段仍然没接线
+> （本线只补事件源，不假装守卫已经生效；**消费者缺口记在 `docs/ledger/app-projection-notes.md` 的 needs 里**）
+
+So the keyboard-path gap is not something I found; it is something the project **documented**, with its own register entry, its own
+honesty marker, and an explanation of why the event source was wired without the consumer. I spent rounds 244-252 measuring symptoms
+(dead shortcuts, unhandled actions, a lying comment) and designing three placements, all of which rediscovered the same registered gap
+from the code side.
+
+**The lesson, stated as behaviour and not as regret**: before investigating why a feature does not work, **read the project's own gap
+registers** - `docs/ledger/app-projection-notes.md`'s `needs`, the phase table's PENDING reasons, and the gate table's rows. They exist
+precisely to stop this, and this session has already shown the same pattern twice in the other direction (the phase and feature tables
+under-reporting work, rounds 240/537/539). The asymmetry is instructive: the tables can be stale when they claim MORE than is built,
+and the `needs` register was accurate when it claimed LESS - and I trusted neither.
+
+**What it does not change**: the three symptoms are real, the five shortcuts are still dead, and (a)-(d) of step 2 remain the work. What
+changes is where the work should have started: from the register, which would have told me in one read that the keyboard consumer is a
+known, deliberate gap rather than a bug to diagnose.
