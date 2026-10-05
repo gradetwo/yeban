@@ -93,6 +93,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # 同时自检: 状态表腐烂就红。
           python3 scripts/gates/check_gate_status.py
+      - name: 证据审计（被引用的 CI run id 是否真的存在）
+        run: |
+          set -euo pipefail
+          # 本仓库的口径是"每个结论都要有可复跑的判决"。但**引用一个 run id 不等于**那个判决支持你说的话 ⇒
+          # 机械核对①它是否存在 ②它的结论是什么; 非 success 的逐条列出供人工核对**措辞是否诚实**（L23/L26）。
+          python3 scripts/dev/evidence-audit.py
+
       - name: 远程分支卫生（已合并的工作线分支不应留在 origin）
         run: |
           set -euo pipefail
