@@ -3393,3 +3393,34 @@ So the correction from round 118 is verified where it matters: the suite now ass
 D46 expansion tools (`yeban_edit_automation`, `yeban_query_engine_state`, `yeban_import_audio`), and that assertion passed on
 CI - meaning removing any of those tools would now fail CI rather than merely contradicting a document. My earlier `>= 12`
 floor would have stayed green through such a removal, which is exactly why the wrong number mattered beyond bookkeeping.
+
+### Round 121: the `auto`-default fix is now fully specified and known to be low-risk - deliberately not applied here
+
+Round 116 identified changing what `auto` means as the smallest fix for the Rayon inversion. This round adds the missing
+precondition: **does anything depend on auto being parallel?**
+
+```
+crates/yeban-render/src/render.rs:86    threads: None,        <- RenderOptions::default
+crates/yeban-render/src/render.rs:101   threads: None,        <- the other constructor
+crates/yeban-render/examples/bench_render.rs:87  None => "auto".to_owned()   <- only a LABEL
+crates/yeban-render/src/lib.rs:205      for threads in [1usize, 2, 4] ...     <- tests use EXPLICIT counts
+```
+
+=> Nothing asserts that `None` engages more than one core: the bench merely prints the label, and every equality/determinism
+test passes explicit thread counts. So the change is not entangled with the bit-exactness guarantee.
+
+**Decision-ready spec (all four parts recorded, so the work is minutes rather than a re-investigation):**
+1. **Edit site**: `render.rs:677` currently `.num_threads(self.options.threads.unwrap_or(0))`, where `0` means "rayon
+   default = every core". The policy belongs here (or in a tiny helper next to it), not scattered.
+2. **Chosen policy** (from the round-110 sweep): since the parallel path lost at **every** size measured (1.9x-4.4x, up to
+   64 tracks / 30 s), `None` should resolve to **1 thread** until a crossover is *measured*, with the code comment citing
+   the sweep - or, equivalently, engage multiple threads only above a threshold that today's data says does not exist yet.
+3. **Acceptance evidence**: bench both modes before/after (`bench_render -- 32 30`) showing the default is no longer the
+   slower one; and the existing 1/2/4/8-thread byte-equality test stays green (it is the red line).
+4. **Doc**: `RenderOptions::threads` must say what `None` now means and why, plus the measured reason; and the bench's
+   `"auto"` label should keep matching reality.
+
+**Deliberately not applied in this round**: the edit is one line, but the *evidence* for it has to be produced and read
+(before/after bench plus a CI verdict on a code change), and my remaining context cannot carry that safely. Applying a
+one-line performance change and then asserting it helped - without the before/after in hand - is precisely the
+"looks-like-evidence" failure this ledger keeps logging.
