@@ -3440,3 +3440,27 @@ the before/after bench (default 95.5x -> 267.7x) and the determinism guard.
 Effect on the gate: the honest caveat recorded earlier ("BASELINE-001 is reliably met only by single-thread, and any claim
 must name the mode") is now **moot in practice**, because the default path IS the fast one. The gate row records both the
 numbers and the CI verdict.
+
+### Round 123: the unreadable-output trap exists at 13 sites, not one - fixed the one I hit, recorded the rest
+
+Watching the `pending` gate (run `37304606264` = success) showed its list only in the step summary: the log echoed the script
+and then nothing, exactly the round-107 symptom. Scanning for the pattern found **13 sites** across the workflows:
+
+```
+ci.yml:241, :316, :390
+gates-manual.yml:106 (inventory), :258 (all-features), :317 and :352 (bench), :444 and :456 (arm-compare),
+                  :539 (windows), :564 (determinism), :592 (pending)
+site-deploy.yml:92
+```
+
+Notably `gates-manual.yml:260` already carries a comment recording this very lesson - the fix was applied to the arm-compare
+step and **never generalised**, so eleven other places kept the failure mode.
+
+**Fixed this round**: only the site I actually observed (`pending`, line 592), by teeing to `/tmp/pending-summary.txt` first
+and then `cat`-ing that file into the summary, which keeps the summary's bytes identical (the block emits markdown) while
+making the output readable in the log.
+
+**Deliberately not fixed this round**: the other twelve. Each block has its own output shape (code fences, headers, tables),
+so a blanket rewrite risks changing rendered summaries; and a guard that merely flags the pattern would turn twelve existing
+steps red at once. The honest artefact is the enumerated list above, so each can be converted deliberately - the same
+"enumerate, then convert one at a time" approach that worked for the status-hygiene pass.

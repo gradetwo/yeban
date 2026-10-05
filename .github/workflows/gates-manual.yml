@@ -589,7 +589,11 @@ jobs:
             echo '```text'
             grep -rn "PENDING" docs/DEVELOPMENT_LEDGER.md | head -40 || true
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee /tmp/pending-summary.txt
+          # 观测性: 旧写法把整块输出只送进 step summary ⇒ 日志里看不到它列了什么
+          # （第 107 轮已为 bench 修过同型问题；本行是 `pending` 档那一处）。先 tee 进日志,
+          # 再把**同一份字节**追加进 summary —— 格式不变, 但失败/成功都留下可读证据。
+          cat /tmp/pending-summary.txt >> "$GITHUB_STEP_SUMMARY"
 
   goldens:
     name: goldens (生成分平台基准图集)
