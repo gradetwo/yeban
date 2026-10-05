@@ -4360,3 +4360,28 @@ Completed full-workspace verdicts on main now number **ten**: `37283699896` @ `a
 
 **D56 remaining**: the UI entry point (the other half of criterion 4, which requires the UI Operation and the MCP tool to call
 one implementation and produce manifests equal except timestamp and path), and optionally a manual gate to collect bundles.
+
+### Round 168: D56 UI half - the three edits it needs, with anchors (no code half-written)
+
+Reconnaissance for the last open D56 item (criterion 4's UI half):
+
+1. **`crates/yeban-ui-mcp/src/methods.rs` is the UI-side method surface and it is hand-maintained.** The crate reuses
+   `yeban_mcp`'s constants (e.g. `DRY_RUN_PARAM`, `DRY_RUN_FLAG` in `dry_run.rs`), but grep finds **no** reference to
+   `tools::TOOLS`, `TOOL_COUNT` or `EXTENSION_TOOL_COUNT` anywhere in it - so the catalogue of `MethodSpec` (`method(name)`,
+   `names()`, `catalogue()` at lines 419/425/572) does not derive from the shared registry. Exposing the sixteenth tool to the
+   UI therefore needs an explicit `MethodSpec` entry there, with parameters matching the `ToolSpec` in
+   `yeban-mcp/src/tools.rs` (one optional string `outDir` plus the universal `dryRun`/`idempotencyKey`).
+2. **`crates/yeban-app/src/elements.rs` registers stable element IDs** in a table that pairs an ID with the `.slint` file that
+   carries it (for example `"transport-play-button"` at line 205, and `"undo-tree-modal"` at line 818 paired with
+   `dialogs/undo_tree_modal.slint`). D56's UI command therefore needs: an ID `diagnostics-export-action`, the menu item in a
+   `.slint` file, and the pairing entry.
+3. **Criterion 4's test**: invoke the UI `Operation` and the MCP tool once each, then compare their `MANIFEST.txt` entry lists and
+   assert they are equal except for the timestamp and the output path. The natural home is the crate that already compares the
+   two surfaces (`yeban-ui-mcp`'s tests) because it can reach both.
+
+**Why this is a plan rather than code this round**: each edit needs the surrounding file read in full (my round-162 lesson: a
+scripted insertion whose end is located by pattern broke a file), and my remaining context cannot both write and verify three
+files across two crates. The anchors above remove the reading, not the writing.
+
+Everything else in D56 is done and CI-verified: the shared collector (`yeban-diagnostics`), the MCP tool
+(`yeban_export_diagnostics`, sixteenth, green on Linux and Windows), the schema/contract wiring, and criteria 1/2/3/5.
