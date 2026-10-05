@@ -3215,3 +3215,14 @@ So the handshake implementation and the flipped criterion
 (`initialize_handshake_over_stdio_succeeds`, which replaced the earlier negative assertion about `-32601`) are verified by
 a CI verdict, not merely by a local run. The follow-up commit `cb49b78` (the notification criterion) was read separately and
 its run was still pending at that moment - reported as pending rather than assumed green.
+
+### Round 112: the fifth stdio criterion is CI-verified too
+
+Run **`37302014597` @ `cb49b78` = completed success**: **`rust (yeban-mcp)` = success `steps=10`**,
+`rust (yeban-ui-mcp)` = success `steps=10`, `windows (yeban-mcp / yeban-model)` = success `steps=8`. So
+`notification_produces_no_response_but_the_session_survives` - the criterion I added specifically because I had made an
+unfounded claim about notification handling - is verified by a CI verdict rather than a local run.
+
+Both MCP rounds this session therefore end with CI verdicts:
+`37301917661` @ `f08520c` (handshake) and `37302014597` @ `cb49b78` (notification), each with `rust (yeban-mcp)` = success
+`steps=10`. The stdio end-to-end suite stands at five criteria, all green locally and on CI.
