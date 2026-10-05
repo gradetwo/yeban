@@ -114,6 +114,12 @@ pub fn engine_value(project: &YebanProjectV1, mirror: Option<EngineReadings>) ->
         "bufferFrames": buffer_frames,
         "bufferSource": if mirror.is_some() { "hostEngineMirror" } else { "unavailable" },
         "mirrorPresent": mirror.is_some(),
+        // `[ARCH-UI-002]` 响度读数：**宿主注入**，未测量即 `null`（不编造 0 —— 账本第 327/328 轮）。
+        "integratedLufs": mirror.and_then(|readings| readings.integrated_lufs),
+        "momentaryLufs": mirror.and_then(|readings| readings.momentary_lufs),
+        "shortTermLufs": mirror.and_then(|readings| readings.short_term_lufs),
+        "loudnessRangeLu": mirror.and_then(|readings| readings.loudness_range_lu),
+        "truePeakDbfs": mirror.and_then(|readings| readings.true_peak_dbfs),
         "mirrorSampleRate": mirror_rate,
         "sampleRateMatchesMirror": matches,
     })
