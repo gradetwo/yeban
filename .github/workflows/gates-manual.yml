@@ -53,6 +53,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read   # 证据审计要读本仓库的 workflow runs（少了它会 403 ⇒ 整步红）
 
 env:
   CARGO_TERM_COLOR: always
