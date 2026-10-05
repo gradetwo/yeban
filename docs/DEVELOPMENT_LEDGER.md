@@ -3382,3 +3382,14 @@ could not have shown drift".
 
 (Separately: the CI run for `f8ee529`, the tool-count correction, was still `queued` when read - recorded as pending, not
 assumed green.)
+
+### Round 120: the corrected tool-count criterion is CI-verified
+
+Run **`37303418659` @ `f8ee529` = completed success**:
+**`rust (yeban-mcp)` = success `steps=10`**, `rust (yeban-ui-mcp)` = success `steps=10`,
+`windows (yeban-mcp / yeban-model)` = success `steps=8`, plus `checks` / `lockfile` / `deny` / `plan` all success.
+
+So the correction from round 118 is verified where it matters: the suite now asserts **>= 15** tools and spot-checks the three
+D46 expansion tools (`yeban_edit_automation`, `yeban_query_engine_state`, `yeban_import_audio`), and that assertion passed on
+CI - meaning removing any of those tools would now fail CI rather than merely contradicting a document. My earlier `>= 12`
+floor would have stayed green through such a removal, which is exactly why the wrong number mattered beyond bookkeeping.
