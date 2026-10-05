@@ -1306,6 +1306,54 @@ fn runtime_control_tree_cross_check_against_the_registry() {
 // 所以：CI 默认跳过（`#[ignore]`），判决由**手动档 `fps`** 用 `--release --ignored --nocapture` 显式运行并收集数字，
 // 依 `HD-45`（接受参考机上自适应刷新率的读数）。
 #[test]
+fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
+    // `[UI-NOTE-003]` 选择工具的单击语义, 端到端: 界面报坐标 ⇒ 宿主命中 ⇒ 选区 ⇒ 可观测计数。
+    let project = yeban_model::samples::filled_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let registry = registry_to_tree(&ElementRegistry::from_view(&view)).expect("注册表必须能适配");
+    let port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台");
+    let ui = port.ui();
+
+    assert_eq!(ui.get_selected_note_count(), 0, "初始必须无选中");
+
+    // 取一个可见音符, 在它的中心合成一次点击（位置是**相对视口**的, 与注入数组同一口径）。
+    let scroll = ui.get_roll_scroll_x();
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    let visible = view.visible_notes(scroll, width);
+    assert!(!visible.is_empty(), "夹具在初始窗口内必须有音符");
+    let cx = visible.positions[0] + visible.widths[0] / 2.0;
+    let cy = visible.ys[0] + 3.0;
+    ui.invoke_clicked(cx, cy);
+    assert_eq!(
+        ui.get_selected_note_count(),
+        1,
+        "点在音符上必须选中它（坐标 {cx},{cy}）"
+    );
+
+    // 牙: 点在音符**下半截**（相对顶部 +11px）也必须命中 —— 若宿主的高度常量小于 `.slint` 的
+    // `height: 12px`, 这一条会红（第 501 轮我第一次写 6.0, 只有这条能抓到）。
+    let bottom = view.visible_notes(scroll, width);
+    ui.invoke_clicked(
+        bottom.positions[0] + bottom.widths[0] / 2.0,
+        bottom.ys[0] + 11.0,
+    );
+    assert_eq!(
+        ui.get_selected_note_count(),
+        1,
+        "音符下半截必须可命中（高度常量须与 .slint 的 12px 一致）"
+    );
+
+    // 点明显空白 ⇒ 清空。
+    ui.invoke_clicked(cx, cy - 500.0);
+    assert_eq!(ui.get_selected_note_count(), 0, "点空白必须清空选区");
+}
+
+#[test]
 fn published_viewport_bounds_agree_with_the_window_they_came_from() {
     // `[UI-NOTE-001]` 步骤 ① 的**接线**判据（补第 204 轮记的缺口：属性"写了但没人验证"）。
     // 平台设置必须与同文件其它判据一致：`MainWindow::new()` 在裸环境下会在依赖内部 panic

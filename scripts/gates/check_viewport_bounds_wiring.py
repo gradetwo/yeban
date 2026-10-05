@@ -56,6 +56,22 @@ def main() -> int:
     else:
         lane_ok = m_slint.group(1)
 
+    # 第六处：宿主常量 `NOTE_HEIGHT_PX` 必须等于 `.slint` 里音符矩形的 `height`。
+    # 实测教训（第 501 轮）: 我写了 6.0 而 `.slint` 是 12px, 命中测试于是对下半截无效; 判据没抓到。
+    m_height = re.search(r"width: root\.note-widths\[[^\]]+\];\s*\n\s*height: (\d+)px;", roll)
+    m_const = re.search(r"const NOTE_HEIGHT_PX: f32 = (\d+)\.0;", host)
+    if m_height is None:
+        problems.append("piano_roll.slint 里找不到音符矩形的 `height: <N>px;` ⇒ 本判据失效, 需更新")
+    elif m_const is None:
+        problems.append("host.rs 里找不到 `const NOTE_HEIGHT_PX: f32 = <N>.0;`")
+    elif m_height.group(1) != m_const.group(1):
+        problems.append(
+            f"音符框高不一致: .slint 是 {m_height.group(1)}px, 宿主常量是 {m_const.group(1)}"
+            " ⇒ 命中测试对下半截无效"
+        )
+    else:
+        height_ok = m_height.group(1)
+
     if problems:
         print("[FAIL] viewport-bounds-wiring:")
         for p in problems:
@@ -63,7 +79,7 @@ def main() -> int:
         return 1
     print(
         f"[ok] viewport-bounds-wiring: {len(BOUNDS)} 个视口边界在三处齐全,"
-        f"泳道数一致 ({lane_ok})"
+        f"泳道数一致 ({lane_ok}), 音符框高一致 ({height_ok})"
     )
     return 0
 

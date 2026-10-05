@@ -464,6 +464,12 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
 /// 它是**固定值**，因为卷帘目前没有纵向滚动/缩放模型；若将来有，它必须由 `.slint` 上报（账本第 202 轮）。
 const ROLL_LANE_COUNT: i32 = 16;
 
+/// 卷帘音符矩形的高度（逻辑像素）—— 必须与 `piano_roll.slint` 里音符 `Rectangle` 的 `height` 一致。
+///
+/// 实测教训: 我第一次写 6.0 而 `.slint` 是 `height: 12px` —— 注释声称"两处必须一致", 实际不一致,
+/// 而判据没抓到（它只点了顶部 3px 内）。现在由 `check_viewport_bounds_wiring.py` 机械钉住。
+const NOTE_HEIGHT_PX: f32 = 12.0;
+
 /// `[UI-NOTE-001]` tick 值转为界面的 `i32` 属性：**饱和**而非回绕。
 ///
 /// 天真的 `as i32` 会把超过 `i32::MAX` 的 tick 变成**负数** —— 视口下界变负会让裁剪核心
@@ -524,6 +530,8 @@ pub fn build_main_window_with_console_tab(
     // `[ROAD-M3-002]` 滚动手势（账本第 199 轮）：偏移由**宿主**拥有 —— 因为裁剪也在宿主侧。
     // 卷帘只报告增量, 宿主 clamp + 累加后**重新注入**；不用 `Flickable`, 否则会与宿主偏移双重计算。
     let scroll = std::rc::Rc::new(std::cell::RefCell::new(0.0_f32));
+    // `[UI-NOTE-003]` 选区：点击的**命中与语义**都在 Rust 侧（账本第 495/496 轮），界面只报坐标。
+    let selection = std::rc::Rc::new(std::cell::RefCell::new(crate::input::Selection::new()));
     let view_snapshot = std::rc::Rc::new(view.clone());
     {
         let weak = ui.as_weak();
@@ -542,6 +550,28 @@ pub fn build_main_window_with_console_tab(
             };
             // `Rc<ViewState>` 是不可变共享 ⇒ 直接解引用, 无需 `borrow`。
             apply_view(&ui, &view_snapshot, ui.window().size().width as f32, next);
+        });
+    }
+
+    {
+        let weak = ui.as_weak();
+        let selection = std::rc::Rc::clone(&selection);
+        let view_snapshot = std::rc::Rc::clone(&view_snapshot);
+        ui.on_clicked(move |x, y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let scroll = ui.get_roll_scroll_x();
+            let width = slint::ComponentHandle::window(&ui).size().width as f32;
+            // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
+            let hit = view_snapshot.hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX);
+            let mut sel = selection.borrow_mut();
+            match hit {
+                Some(index) => sel.select_only(&view_snapshot.notes[index].id),
+                None => sel.clear(),
+            }
+            ui.set_selected_note_count(i32::try_from(sel.len()).unwrap_or(i32::MAX));
         });
     }
     Ok(ui)
