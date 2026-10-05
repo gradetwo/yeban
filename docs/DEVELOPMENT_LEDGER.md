@@ -6117,3 +6117,27 @@ oldest over eight minutes and not moving (round 241), with repository Actions ve
 with this token (round 242). Until it resumes, **no new work can be verified by the project's own standard** (ci.yml +
 gates-manual.yml), and everything since verdict 31 is locally verified only: 188 lib criteria, the feature-gated UI criteria, `light`,
 and the seven-check wiring guard.
+
+### Round 249: the dispatcher located, and why SelectTool falls through it
+
+The read that locates (a)'s edit point: `undo.rs:89` maps keyboard actions to UI actions - `Action::Undo => Some(UiAction::Undo)` -
+and that mapping is the reason the three editing actions are dropped rather than mis-executed. The function's return type is
+`Option<UiAction>`, so an action it does not know about yields `None` and is discarded; `SelectTool`, `TogglePencilTool` and
+`DeleteSelection` are exactly such cases (round 247 measured zero handler references for all three).
+
+**This also settles WHERE (a) belongs, which was the last open question**: tool selection is NOT an undoable model edit, so it must not
+become a `UiAction` - pushing it through the undo port would put view state into the commit graph. It belongs in the host's key
+handling, next to the wiring that turns a `Resolution` into an effect: the mapping in `undo.rs` stays as it is (returning `None` for
+view-only actions), and a sibling path sets the `active-tool` property when it sees `Action::SelectTool`.
+
+**So (a) is three additive edits plus a criterion, and now none of them is a question**:
+1. mirror `active-tool` from MainWindow to PianoRoll (the `note-selected` three-level pattern, rounds 502-504);
+2. in the host's key path, set that property for `Action::SelectTool(tool)` - using `Tool`'s own mapping (round 487 established that
+   `Tool` already defines the five tools and their keyboard digits, so no new table is needed);
+3. leave `undo.rs`'s mapping alone, and record why in the commit: a view-state action must not enter the commit graph;
+4. criterion: press the digit through the input path, read the property back, assert it changed - which round 246 established is
+   required, because today the shortcut is silent and therefore invisible to every test.
+
+**Not started**, and the reason remains capacity plus the CI stall: the session is at its context limit, and a UI-level criterion that
+cannot be run in CI right now (rounds 241/242: 12 queued, 0 in progress) would be locally verified only - which is acceptable for
+documentation but weak for the first change that mutates the model.
