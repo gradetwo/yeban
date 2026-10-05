@@ -3717,3 +3717,27 @@ architecture document asks for in section 10.4.
 
 **Not verified, and therefore not claimed**: whether the binding builds with MSVC on the windows-latest leg, and how large the
 self-developed alternative would be. Both need experiments, not reading.
+
+### Round 140: option A's real build cost - it needs bindgen AND libclang, not just "a C++ toolchain"
+
+Round 139 established that `signalsmith-stretch` is a C++ implementation behind a thin Rust wrapper. Reading its build
+dependencies (crates.io API, external data: <https://crates.io/api/v1/crates/signalsmith-stretch/0.1.3/dependencies>) makes
+the prerequisite precise:
+
+| kind | dependency | consequence |
+| :--- | :--- | :--- |
+| build | **`cc ^1`** | compiles the C++ sources -> a **C++ compiler** on every build machine |
+| build | **`bindgen ^0.70`** | generates the FFI bindings -> **`libclang` must be installed and discoverable** |
+| normal | `dasp ^0.11` | small DSP helper crate |
+| dev | `cpal`, `hound`, `clap`, `anyhow`, `oneshot` | test/example only |
+
+So option A is not "add one crate": it adds **a C++ compiler plus an LLVM/libclang installation** to each CI leg. This
+repository's automatic lane runs ubuntu-latest legs plus one windows-latest leg, and has no macOS runner - so the change would
+touch the Linux image setup and the Windows job. `bindgen` is the part that commonly breaks on Windows CI, because it needs
+libclang discoverable (LIBCLANG_PATH) in addition to the compiler.
+
+**This is a cost, not a veto.** It remains licence-clean (MIT) and small (about 588 KB), and the architecture document names
+it in section 10.4. But the honest summary of option A is now: "one crate, two new toolchain prerequisites, on three platform
+targets", and that belongs in the README Requirements and in the CI setup before the crate is added.
+
+**Still not claimed**: whether the Windows leg actually builds with libclang present; that needs a real dispatch, not reading.
