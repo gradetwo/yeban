@@ -42,6 +42,11 @@
 
 ### Requirements
 
+- **A C++ compiler and LLVM/libclang.** `yeban-dsp` depends on `signalsmith-stretch`, whose build script compiles C++
+  sources with `cc` and generates FFI bindings with `bindgen`. So you need a C++ toolchain **and** a discoverable
+  `libclang` (Linux: `clang libclang-dev`; macOS: the Xcode command-line tools; Windows: LLVM, with `LIBCLANG_PATH`
+  pointing at the directory that contains `libclang.dll`). `cargo build -p yeban-dsp` is the quickest check.
+
 | | |
 | :--- | :--- |
 | **Rust** | **1.99.0** — pinned by [`rust-toolchain.toml`](rust-toolchain.toml); `rustup` installs it automatically. Components `rustfmt` + `clippy` are pinned too. |

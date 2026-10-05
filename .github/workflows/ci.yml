@@ -201,6 +201,7 @@ jobs:
             pkg-config libfontconfig1-dev libfreetype-dev \
             libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
             libasound2-dev \
+            clang libclang-dev \
             fonts-noto-cjk
 
       - name: 安装钉死工具链
@@ -260,6 +261,7 @@ jobs:
             pkg-config libfontconfig1-dev libfreetype-dev \
             libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
             libasound2-dev \
+            clang libclang-dev \
             fonts-noto-cjk
 
       - name: 安装钉死工具链
@@ -350,11 +352,27 @@ jobs:
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
-      contains(needs.plan.outputs.crates, 'yeban-model')
+      contains(needs.plan.outputs.crates, 'yeban-model') ||
+      contains(needs.plan.outputs.crates, 'yeban-dsp')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: libclang (bindgen 前置；signalsmith-stretch 的 C++ 绑定需要)
+        shell: pwsh
+        run: |
+          # [ARCH-DSP-004 / HD-44=A] 实测: 该依赖用 cc 编 C++ + bindgen 生成绑定 ⇒ 需要 libclang。
+          # 镜像若已带 LLVM 就复用, 否则用 choco 安装; 无论哪条路都把 LIBCLANG_PATH 导给后续步骤。
+          $candidates = @('C:\Program Files\LLVM\bin', 'C:\Program Files (x86)\LLVM\bin')
+          $found = $candidates | Where-Object { Test-Path (Join-Path $_ 'libclang.dll') } | Select-Object -First 1
+          if (-not $found) {
+            choco install llvm -y --no-progress
+            $found = $candidates | Where-Object { Test-Path (Join-Path $_ 'libclang.dll') } | Select-Object -First 1
+          }
+          if (-not $found) { Write-Error 'libclang.dll 未找到 ⇒ bindgen 会失败'; exit 1 }
+          "LIBCLANG_PATH=$found" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "LIBCLANG_PATH=$found"
 
       - name: 工具链漂移断言 (与 Linux 腿同一个钉死版本)
         shell: bash
@@ -369,14 +387,14 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
 
       - name: test (含 .yeban.lock 的 Windows 分支)
         shell: bash
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test -p yeban-model -p yeban-mcp --all-targets --locked 2>&1 | tee -a /tmp/gate.log
+          cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked 2>&1 | tee -a /tmp/gate.log
 
       - name: 失败摘要
         if: failure()
