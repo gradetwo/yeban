@@ -3,16 +3,16 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `fb271afc0b25cc11`
-- 外部依赖包数: **630**（不含 23 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `d87cdaf505d59cde`
+- 外部依赖包数: **632**（不含 23 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
 
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
-| `MIT OR Apache-2.0` | 292 |
-| `MIT` | 129 |
+| `MIT OR Apache-2.0` | 293 |
+| `MIT` | 130 |
 | `Apache-2.0 OR MIT` | 52 |
 | `Unicode-3.0` | 27 |
 | `Apache-2.0` | 18 |
@@ -471,7 +471,7 @@
 | `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_repr` | `0.1.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-model`, `yeban-render` |
+| `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-engine`, `yeban-model`, `yeban-render` |
 | `shlex` | `1.3.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `shlex` | `2.0.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `signal-hook-registry` | `1.4.8` | `MIT OR Apache-2.0` | 传递 | — |
@@ -546,6 +546,7 @@
 | `tree_magic_mini` | `3.2.2` | `MIT` | 传递 | — |
 | `ttf-parser` | `0.25.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `typed-index-collections` | `3.5.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `typed-path` | `0.12.3` | `MIT OR Apache-2.0` | 传递 | — |
 | `typenum` | `1.20.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `udev` | `0.9.3` | `MIT` | 传递 | — |
 | `uds_windows` | `1.2.1` | `MIT` | 传递 | — |
@@ -675,6 +676,7 @@
 | `zerotrie` | `0.2.5` | `Unicode-3.0` | 传递 | — |
 | `zerovec` | `0.11.8` | `Unicode-3.0` | 传递 | — |
 | `zerovec-derive` | `0.11.6` | `Unicode-3.0` | 传递 | — |
+| `zip` | `8.6.0` | `MIT` | 直接 | `yeban-engine` |
 | `zlib-rs` | `0.6.8` | `Zlib` | 传递 | — |
 | `zmij` | `1.0.23` | `MIT` | 传递 | — |
 | `zune-core` | `0.5.3` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
