@@ -124,6 +124,17 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState) {
     // 轨道色标：解析 / 回退都在投影层完成，这里只转成 Slint 的 `Color`。
     ui.set_track_colors(colors(&view.track_colors()));
     ui.set_track_color_labels(strings(&view.track_color_labels()));
+    // 自动化泳道：9 个平行数组全部来自 `automation.rs` 的投影。顶点已经是逻辑像素、
+    // 数值已经是格式化文本，因此这里只做"数组搬运"——`.slint` 侧零算术。
+    ui.set_automation_lane_target_keys(strings(&view.automation_lane_target_keys()));
+    ui.set_automation_lane_track_indexes(integers(&view.automation_lane_track_indexes()));
+    ui.set_automation_lane_labels(strings(&view.automation_lane_labels()));
+    ui.set_automation_lane_axis_labels(strings(&view.automation_lane_axis_labels()));
+    ui.set_automation_lane_band_ys(lengths(&view.automation_lane_band_ys()));
+    ui.set_automation_lane_band_heights(lengths(&view.automation_lane_band_heights()));
+    ui.set_automation_lane_read_enabled(booleans(&view.automation_lane_read_enabled()));
+    ui.set_automation_lane_badges(strings(&view.automation_lane_badges()));
+    ui.set_automation_path_commands(strings(&view.automation_path_commands()));
     apply_master(ui, view);
     // 电平：先重置成"与当前工程等长的静音"，再由 `apply_meters` 填真实读数（见模块文档）。
     apply_meters(ui, &silent_snapshot(view));

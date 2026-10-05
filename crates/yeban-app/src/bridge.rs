@@ -516,6 +516,14 @@ pub struct ViewState {
     pub note_velocities: Vec<f32>,
     /// 标尺的小节线 x 位置（逻辑像素），至少 [`MIN_BAR_COUNT`] 条。
     pub bar_positions: Vec<f32>,
+    /// 全部自动化泳道（非主总线轨道 → `AutomationTarget::Ord` 序），**含**折线顶点与
+    /// `Path` 指令（见 [`crate::automation::AutomationLaneView`]）。
+    ///
+    /// 这是自动化族唯一的权威投影产物；注入 `.slint` 的 9 个平行数组全部由它派生
+    /// （判据 `automation::vertices_follow_the_points_in_tick_order` 逐项对账）。
+    /// 每一个顶点的值都来自模型的那一个求值入口 —— 本层没有插值实现
+    /// （模块文档与判据 ⑧）。
+    pub automation_lanes: Vec<crate::automation::AutomationLaneView>,
 }
 
 impl ViewState {
@@ -536,6 +544,27 @@ impl ViewState {
     pub fn from_project_with_zoom(
         project: &YebanProjectV1,
         ticks_per_pixel: u64,
+    ) -> Result<Self, BridgeError> {
+        Self::from_project_with_zoom_and_cursor(
+            project,
+            ticks_per_pixel,
+            crate::automation::AUTOMATION_CURSOR_TICK,
+        )
+    }
+
+    /// 投影一个工程、指定缩放，并指定自动化"当前值"的求值 tick。
+    ///
+    /// 走带位置属**会话运行态**（`[MODEL-ISO-001]` 的第二层），不在 `YebanProjectV1` 里，
+    /// 因此静态投影固定用 [`crate::automation::AUTOMATION_CURSOR_TICK`]；需要真实播放头时
+    /// 走这个入口（一条后续线的接线动作，本线只提供可被调用的形状）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。
+    pub fn from_project_with_zoom_and_cursor(
+        project: &YebanProjectV1,
+        ticks_per_pixel: u64,
+        cursor_tick: u64,
     ) -> Result<Self, BridgeError> {
         if ticks_per_pixel == 0 {
             return Err(BridgeError::ZeroTicksPerPixel);
@@ -646,6 +675,11 @@ impl ViewState {
             note_ulids,
             note_velocities,
             bar_positions,
+            automation_lanes: crate::automation::project_lanes_at_cursor(
+                project,
+                ticks_per_pixel,
+                cursor_tick,
+            )?,
         })
     }
 
@@ -830,6 +864,113 @@ impl ViewState {
         self.sections.iter().map(|section| section.width).collect()
     }
 
+    // ------------------------------------------------------------------
+    // 自动化泳道（`TrackV3::automation_lanes` 的消费形态）
+    // ------------------------------------------------------------------
+    //
+    // 9 个平行数组全部由 `self.automation_lanes` 派生 —— 只有一个事实源。
+    // 它们与 `.slint` 的属性**同名**（kebab-case），由 `host::apply_view` 单向注入；
+    // 界面只做"取数组下标"，不做任何算术（位置与值都已经是逻辑像素 / 文本）。
+
+    /// 自动化泳道的目标键（`volume` / `pan` / `send-{edge}` / `device-{slot}-{param}` /
+    /// `macro-{i}`）—— 元素 ID 的第三段，也是 `.slint` 循环的驱动数组。
+    #[must_use]
+    pub fn automation_lane_target_keys(&self) -> Vec<String> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.target_key.clone())
+            .collect()
+    }
+
+    /// 自动化泳道所属的音轨序号（进 `track-{i}-automation-{key}-lane` 的 `{i}` 段）。
+    #[must_use]
+    pub fn automation_lane_track_indexes(&self) -> Vec<i32> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                let index = lane.track_index as i32;
+                index
+            })
+            .collect()
+    }
+
+    /// 泳道的语义元素 ID（`track-{i}-automation-{key}-lane`）。
+    ///
+    /// `.slint` 用三段字面量拼出同一个字符串（`[UI-TEST-001]` 的模板形态要求如此，
+    /// 见 `automation::tests::lane_element_ids_match_the_slint_template`）；这份数组是
+    /// 判据与 `--headless` 导出用的事实源。
+    #[must_use]
+    pub fn automation_lane_element_ids(&self) -> Vec<String> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.element_id.clone())
+            .collect()
+    }
+
+    /// 泳道的无障碍标签（携带单位与当前值，例如 `Lead · 音量 自动化 -6.0 dB`）。
+    #[must_use]
+    pub fn automation_lane_labels(&self) -> Vec<String> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.label.clone())
+            .collect()
+    }
+
+    /// 泳道的轴文本（单位 + 量程，例如 `dB [-60.0, 12.0]`；自适应时带 ` 自适应`）。
+    #[must_use]
+    pub fn automation_lane_axis_labels(&self) -> Vec<String> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.axis_label.clone())
+            .collect()
+    }
+
+    /// 泳道带的顶沿 y（逻辑像素，画布相对）。
+    #[must_use]
+    pub fn automation_lane_band_ys(&self) -> Vec<f32> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.band_y)
+            .collect()
+    }
+
+    /// 泳道带的高度（逻辑像素）。
+    #[must_use]
+    pub fn automation_lane_band_heights(&self) -> Vec<f32> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.band_height)
+            .collect()
+    }
+
+    /// 泳道的读开关（`AutomationLane::read_enabled`）—— 界面据此换描边颜色。
+    #[must_use]
+    pub fn automation_lane_read_enabled(&self) -> Vec<bool> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.read_enabled)
+            .collect()
+    }
+
+    /// 泳道的角标文本（`读关` / `● 触碰` / 组合 / 空串）。
+    #[must_use]
+    pub fn automation_lane_badges(&self) -> Vec<String> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.badge.clone())
+            .collect()
+    }
+
+    /// 折线的 Slint `Path` 指令（局部坐标，`M x y L x y …`；空泳道是空串）。
+    #[must_use]
+    pub fn automation_path_commands(&self) -> Vec<String> {
+        self.automation_lanes
+            .iter()
+            .map(|lane| lane.path_commands.clone())
+            .collect()
+    }
+
     /// 规范行协议：逐字节稳定的投影快照（`BTreeMap` 顺序 + 定点浮点格式化）。
     ///
     /// 存在的意义是把"确定性"变成**可比较的字节**：同一工程的两次投影必须给出
@@ -948,6 +1089,37 @@ impl ViewState {
         }
         for (index, x) in self.bar_positions.iter().enumerate() {
             lines.push(format!("bar index={index} x={x:.6}"));
+        }
+        for lane in &self.automation_lanes {
+            lines.push(format!(
+                "automation-lane index={} id={} target={} track={} unit={:?} domain={:.6}..{:.6} adaptive={} read={} write={:?} cursor={} value={} static={} points={} samples={} band={:.6}+{:.6} path={}",
+                lane.index,
+                lane.element_id,
+                lane.target_key,
+                lane.track_index,
+                lane.unit,
+                lane.domain_min,
+                lane.domain_max,
+                lane.domain_adaptive,
+                lane.read_enabled,
+                lane.write_mode,
+                lane.cursor_tick,
+                lane.value_at_cursor
+                    .map_or_else(|| "-".to_owned(), |value| format!("{value:.6}")),
+                lane.static_value
+                    .map_or_else(|| "-".to_owned(), |value| format!("{value:.6}")),
+                lane.point_count(),
+                lane.sample_count(),
+                lane.band_y,
+                lane.band_height,
+                lane.path_commands,
+            ));
+            for vertex in &lane.samples {
+                lines.push(format!(
+                    "automation-vertex lane={} tick={} value={:.6} x={:.6} y={:.6}",
+                    lane.element_id, vertex.tick, vertex.value, vertex.x, vertex.y
+                ));
+            }
         }
         lines
     }
@@ -1280,9 +1452,9 @@ pub fn demo_project() -> YebanProjectV1 {
                 solo_safe: false,
                 folder_id: None,
                 color: track_colors[slot].map(str::to_owned),
-                devices: Vec::new(),
+                devices: demo_track_devices(slot),
                 macros: Vec::new(),
-                automation_lanes: BTreeMap::new(),
+                automation_lanes: demo_automation_lanes(slot, track_id),
                 clips: BTreeMap::new(),
             },
         );
@@ -1419,6 +1591,134 @@ pub fn demo_project() -> YebanProjectV1 {
         clip_pool,
         ..YebanProjectV1::default()
     }
+}
+
+/// 演示夹具的**设备链**：只有轨道 0（`鼓`）挂一个内部合成器。
+///
+/// 它存在的理由是**一条泳道的值域**：`AutomationTarget::DeviceParam` 是模型里唯一
+/// "固有取值域不可知"（`nominal_domain() == None`）的目标，因此只有它能让"按曲线最值
+/// 自适应纵轴"这条路径被真正执行到（见 `crate::automation` 的模块文档与判据 ③）。
+#[must_use]
+fn demo_track_devices(slot: usize) -> Vec<yeban_model::project::DeviceDefinition> {
+    if slot != 0 {
+        return Vec::new();
+    }
+    vec![yeban_model::project::DeviceDefinition {
+        id: demo_id("D1"),
+        name: "Yeban PolySynth".to_owned(),
+        kind: yeban_model::project::DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: vec![yeban_model::project::ParameterValue {
+            name: "cutoff".to_owned(),
+            value: 1200.0,
+            unit: Some("Hz".to_owned()),
+        }],
+        latency_samples: 0,
+    }]
+}
+
+/// 演示夹具的一个自动化采样点（身份与值一起给出，避免键/身份漂移）。
+fn demo_point(
+    tail: &str,
+    tick: u64,
+    value: f32,
+    curve: yeban_model::music::CurveType,
+) -> (EntityId, yeban_model::project::AutomationPoint) {
+    let id = demo_id(tail);
+    (
+        id,
+        yeban_model::project::AutomationPoint {
+            id,
+            tick,
+            value,
+            curve,
+        },
+    )
+}
+
+/// 演示夹具的**自动化泳道**（`line/app-automation-ui` 补的那一格）。
+///
+/// 三条泳道刻意覆盖三种不同的目标形状，让"人工看一下"也能分辨它们：
+///
+/// | 轨道 | 目标 | 单位 | 取值域 | 读 / 写 | 覆盖的口径 |
+/// | :--- | :--- | :--- | :--- | :--- | :--- |
+/// | 0（`鼓`） | `TrackVolume` | `dB` | **固有** `[-60, 12]` | 读开 / `Touch` | 轴来自目标、录制臂角标 |
+/// | 0（`鼓`） | `DeviceParam(0, 0)` | `Native` | **自适应** `[200, 4000]` | **读关** / `Off` | 值域自适应 + 读关闭可区分 + 同轨多泳道等分 |
+/// | 1（`贝斯`） | `TrackPan` | `Bipolar` | 固有 `[-1, 1]` | 读开 / `Write` | 双极单位、另一条轨道 |
+///
+/// 它们**不是**界面常量：`YebanProjectV1` 是唯一事实源，界面只读投影
+/// （`demo_projection_reproduces_the_scene_constants` 钉住这一点）。
+#[must_use]
+fn demo_automation_lanes(
+    slot: usize,
+    track_id: EntityId,
+) -> std::collections::BTreeMap<
+    yeban_model::project::AutomationTarget,
+    yeban_model::project::AutomationLane,
+> {
+    use yeban_model::music::CurveType;
+    use yeban_model::project::{
+        AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode,
+    };
+
+    let mut lanes = std::collections::BTreeMap::new();
+    let mut insert = |target: AutomationTarget,
+                      points: Vec<(EntityId, AutomationPoint)>,
+                      read_enabled: bool,
+                      write_mode: AutomationWriteMode| {
+        lanes.insert(
+            target,
+            AutomationLane {
+                target,
+                points: points.into_iter().collect(),
+                read_enabled,
+                write_mode,
+                domain: None,
+            },
+        );
+    };
+    match slot {
+        0 => {
+            insert(
+                AutomationTarget::TrackVolume { track_id },
+                vec![
+                    demo_point("A1", 0, -3.2, CurveType::Linear),
+                    demo_point("A2", 1920, -8.0, CurveType::Logarithmic),
+                    demo_point("A3", 3840, -1.0, CurveType::Linear),
+                ],
+                true,
+                AutomationWriteMode::Touch,
+            );
+            insert(
+                AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index: 0,
+                    param_index: 0,
+                },
+                vec![
+                    demo_point("A4", 0, 200.0, CurveType::Exponential),
+                    demo_point("A5", 960, 1200.0, CurveType::Linear),
+                    demo_point("A6", 3840, 4000.0, CurveType::Linear),
+                ],
+                false,
+                AutomationWriteMode::Off,
+            );
+        }
+        1 => {
+            insert(
+                AutomationTarget::TrackPan { track_id },
+                vec![
+                    demo_point("A7", 0, -1.0, CurveType::Linear),
+                    demo_point("A8", 960, 0.0, CurveType::SCurve),
+                    demo_point("A9", 2880, 1.0, CurveType::Linear),
+                ],
+                true,
+                AutomationWriteMode::Write,
+            );
+        }
+        _ => {}
+    }
+    lanes
 }
 
 /// 最小主总线音轨夹具（`TrackKind::Master`）。

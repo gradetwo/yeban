@@ -410,7 +410,7 @@ const MIN_SINGLETON_COVERAGE_PERCENT: usize = 90;
 ///
 /// 这是"不管上游怎么展开 `for`，语义寻址必须至少可用"的最低要求 —— 比"实例数必须等于 N"
 /// 弱，比"整族不判"强。实测计数（含全部实例）作为观察值打印，不进断言。
-const VISIBLE_FAMILY_MEMBERS: [&str; 10] = [
+const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
     "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
     "piano-roll-tool-select-button",
@@ -420,6 +420,10 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 10] = [
     "tab-piano-roll-button",
     "track-0-header",
     "track-0-mute-button",
+    // 自动化泳道（`line/app-automation-ui`）：演示工程里轨道 0 的两条带。
+    // 读开的那条证明"曲线进了控件树"，读关的那条证明"读开关在树里可区分"。
+    "track-0-automation-volume-lane",
+    "track-0-automation-device-0-0-lane",
     "velocity-0-bar",
 ];
 
@@ -844,7 +848,8 @@ fn runtime_control_tree_cross_check_against_the_registry() {
     observe(&format!(
         "重复族实测计数(观察值, 非断言): track-*-header={}, track-*-fader={}, track-*-meter={}, \
          note-*-rect={}, clip-*-header={}, velocity-*-bar={}, section-*-card={}, slot-*-cell={}, \
-         tab-*-button={}, sidebar-item-*={}, piano-roll-tool-*-button={}",
+         tab-*-button={}, sidebar-item-*={}, piano-roll-tool-*-button={}, \
+         track-*-automation-*-lane={} (工程里 {} 条)",
         family("track-", "-header"),
         family("track-", "-fader"),
         family("track-", "-meter"),
@@ -856,6 +861,11 @@ fn runtime_control_tree_cross_check_against_the_registry() {
         family("tab-", "-button"),
         prefix_count("sidebar-item-"),
         family("piano-roll-tool-", "-button"),
+        runtime
+            .with_prefix("track-")
+            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
+            .count(),
+        view.automation_lanes.len(),
     ));
     let family_present: Vec<&str> = VISIBLE_FAMILY_MEMBERS
         .iter()
@@ -971,6 +981,109 @@ fn runtime_control_tree_cross_check_against_the_registry() {
             !runtime.contains(id),
             "不可见的 `{id}` 混进了运行时树 —— `visible: false` 的语义没有被尊重"
         );
+    }
+
+    // ---- 自动化泳道：演示工程的**每一条**泳道都在控件树里，且标签携带单位与当前值 ----
+    //
+    // 这是 `line/app-automation-ui` 要补的那一格："AI 能读到自动化"的机械证据 ——
+    // 不是"画了几条线"，而是"每条曲线都有稳定 ID、标签里是模型入口给出的值"。
+    // 判据的口径（三条独立证据）：
+    //   ① 泳道元素数 == 工程里的泳道数（`automation_lanes` 的条目数）；
+    //   ② 每个元素的 `label` 与投影的 `label` **逐字相等**（单位、读/写状态都在里面）；
+    //   ③ 标签里的数值 == `automation_value_at(target, 投影的求值 tick)` 的返回值 ——
+    //      判据自己调模型的那**一个**入口，因此"第二份插值实现"会当场露馅。
+    {
+        let demo_project = yeban_app::bridge::demo_project();
+        let lanes_in_tree = runtime
+            .with_prefix("track-")
+            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
+            .count();
+        assert_eq!(
+            lanes_in_tree,
+            view.automation_lanes.len(),
+            "控件树里的自动化泳道数必须等于工程里的泳道数"
+        );
+        assert!(
+            !view.automation_lanes.is_empty(),
+            "演示工程必须有自动化泳道，否则本判据无从执行"
+        );
+        for lane in &view.automation_lanes {
+            let node = runtime.find_by_id(&lane.element_id).unwrap_or_else(|| {
+                panic!(
+                    "自动化泳道 `{}` 不在运行时树里（树里的泳道: {:?}）",
+                    lane.element_id,
+                    runtime
+                        .with_prefix("track-")
+                        .filter(|node| node.id.contains("-automation-"))
+                        .map(|node| node.id.clone())
+                        .collect::<Vec<_>>()
+                )
+            });
+            assert_eq!(
+                node.role.as_str(),
+                "image",
+                "泳道角色漂移: {}",
+                lane.element_id
+            );
+            assert_eq!(
+                node.label, lane.label,
+                "控件树标签必须与投影逐字相等（否则 AI 读到的是第二种事实源）"
+            );
+            // ③ 数值来自**唯一求值入口**（判据自己调模型，而不是读投影的字段）。
+            let entry = demo_project
+                .automation_value_at(&lane.target, lane.cursor_tick)
+                .expect("目标的音轨 / 设备 / 宏必须存在");
+            assert_eq!(
+                entry, lane.value_at_cursor,
+                "`automation_value_at` 与投影字段必须一致: {}",
+                lane.element_id
+            );
+            match entry {
+                Some(value) => {
+                    if lane.unit == yeban_model::project::AutomationUnit::Decibels {
+                        assert!(
+                            node.label.contains(&format!("{value:.1} dB")),
+                            "dB 泳道的标签必须携带求值入口给出的值: {} vs {:?}",
+                            value,
+                            node.label
+                        );
+                    } else {
+                        assert!(
+                            node.label
+                                .contains(&yeban_app::automation::value_text(lane.unit, value)),
+                            "标签必须携带求值入口给出的值: {} vs {:?}",
+                            value,
+                            node.label
+                        );
+                    }
+                }
+                None => assert!(
+                    node.label.contains("读关闭") || node.label.contains("无采样点"),
+                    "求值入口说「没有可用自动化值」时，标签必须显式说明: {:?}",
+                    node.label
+                ),
+            }
+            if !lane.read_enabled {
+                assert!(
+                    node.label.contains("读关闭"),
+                    "读关的泳道必须在控件树里可区分: {}= {:?}",
+                    lane.element_id,
+                    node.label
+                );
+            }
+            if !lane.write_mode.is_off() {
+                assert!(
+                    node.label.contains(lane.write_label),
+                    "录制臂必须在控件树里可读: {}= {:?}",
+                    lane.element_id,
+                    node.label
+                );
+            }
+            observe(&format!(
+                "[automation] 工程泳道 {} -> 控件树 {}.label={:?}",
+                lane.element_id, lane.element_id, node.label
+            ));
+        }
     }
 
     // ---- `[UI-MCP-002]`：遮罩必须完全吸收动态抖动 ----
@@ -1308,6 +1421,64 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
         );
     }
 
+    // ---- 方向 1e: **自动化泳道**（`line/app-automation-ui`）真的到达控件树 ----
+    //
+    // 口径与默认视图那条判据完全同源（见 `runtime_control_tree_cross_check_against_the_registry`），
+    // 但这里跑的是 `filled_project()`：它只有 **1** 条音量泳道（`Lead`，显式取值域
+    // `[-60, 12]`，`SCurve`，录制臂 `Touch`），因此它是"换工程 ⇒ 换泳道"的对照物。
+    // 三条断言：
+    //   ① 泳道元素数 == 工程的泳道数；
+    //   ② 标签与投影逐字相等，且携带单位（`dB`）与**模型入口**在该 tick 的值；
+    //   ③ 曲线真的改到了像素（曲线只在自动化泳道 + Path 上画；见下面的截图指纹）。
+    {
+        let lanes_in_tree = runtime
+            .with_prefix("track-")
+            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
+            .count();
+        assert_eq!(
+            lanes_in_tree,
+            project_view.automation_lanes.len(),
+            "控件树里的自动化泳道数必须等于工程里的泳道数"
+        );
+        assert_eq!(
+            project_view.automation_lanes.len(),
+            1,
+            "`filled_project` 有 1 条音量泳道 —— 这条数字是「换工程」判据的对照物"
+        );
+        for lane in &project_view.automation_lanes {
+            let node = runtime
+                .find_by_id(&lane.element_id)
+                .unwrap_or_else(|| panic!("缺少自动化泳道 `{}`", lane.element_id));
+            assert_eq!(node.role.as_str(), "image");
+            assert_eq!(node.label, lane.label);
+            assert!(
+                node.label.contains("dB"),
+                "音量泳道的标签必须携带单位: {:?}",
+                node.label
+            );
+            let entry = project
+                .automation_value_at(&lane.target, lane.cursor_tick)
+                .expect("Lead 轨必须存在")
+                .expect("读开且有点 ⇒ 有值");
+            assert_eq!(Some(entry), lane.value_at_cursor);
+            assert!(
+                node.label.contains(&format!("{entry:.1} dB")),
+                "标签里的值必须等于 `automation_value_at` 的返回值: {} vs {:?}",
+                entry,
+                node.label
+            );
+            assert!(
+                node.label.contains("录制臂 触碰"),
+                "`AutomationWriteMode::Touch` 必须进控件树标签: {:?}",
+                node.label
+            );
+            observe(&format!(
+                "[automation] filled_project 泳道 {} -> 控件树 label={:?}",
+                lane.element_id, node.label
+            ));
+        }
+    }
+
     // ---- 方向 2: 由**投影驱动**的族里不许出现演示夹具的数据 ----
     //
     // 负向断言**只**覆盖"应当由工程驱动"的语义 ID 族。侧栏资源库（`Sub Bass 低频` /
@@ -1504,6 +1675,39 @@ fn project_projection_reaches_the_control_tree_and_the_pixels() {
     assert!(
         demo_runtime.contains("track-3-header"),
         "演示工程有 6 条轨道 ⇒ 演示驱动的树里**必须**有 `track-3-header`"
+    );
+    // ---- 自动化泳道也随工程切换（同一活窗口；判据 ⑥ 的运行时侧） ----
+    let lanes_in = |tree: &ControlTree| -> usize {
+        tree.with_prefix("track-")
+            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
+            .count()
+    };
+    assert_eq!(
+        lanes_in(&runtime),
+        project_view.automation_lanes.len(),
+        "工程 A（filled_project）的泳道数"
+    );
+    assert_eq!(
+        lanes_in(&demo_runtime),
+        demo_view.automation_lanes.len(),
+        "工程 B（demo_project）的泳道数 —— 同一活窗口上换工程必须换泳道"
+    );
+    assert_ne!(
+        lanes_in(&demo_runtime),
+        lanes_in(&runtime),
+        "两个工程的泳道数必须有差别（1 vs 3），否则「泳道跟着工程走」没有被测到"
+    );
+    // 读关的设备参数泳道**属于**演示工程（`demo_project` 的轨道 0 有两条带），
+    // 而 `filled_project` 只有一条音量泳道 —— 两个方向都断言。
+    // 实测教训：这条断言的第一版把两个树写反了（对 `demo_runtime` 断言"不得出现"），
+    // CI run 37249203359 当场把它抓成红（`test_port_adapter.rs:1700`）。
+    assert!(
+        demo_runtime.contains("track-0-automation-device-0-0-lane"),
+        "演示工程有读关的设备参数泳道 ⇒ 必须在演示树里"
+    );
+    assert!(
+        !runtime.contains("track-0-automation-device-0-0-lane"),
+        "`filled_project` 只有一条音量泳道 ⇒ 设备参数泳道不得出现在它的树里"
     );
     observe(&format!(
         "[model-binding] 切换后运行时控件树 {} 条; 工程驱动的树 {} 条 —— 两者必须不同",

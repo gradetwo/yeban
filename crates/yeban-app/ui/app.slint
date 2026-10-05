@@ -218,6 +218,23 @@ export component MainWindow inherits Window {
     in property <[string]> track-color-labels: [];
 
     // =====================================================================
+    // 自动化泳道的注入面（`src/automation.rs` 的投影 → `ArrangementView`）
+    // =====================================================================
+    // 9 个平行数组：每条泳道一个成员。折线顶点与数值都是**投影算好的**逻辑像素 / 文本，
+    // `.slint` 不做任何算术；`accessible-label` 携带单位与当前值，因此"AI/判据能读到
+    // 自动化"有机械证据（不是"画了几条线"）。求值一律走模型的唯一入口，界面与投影层
+    // 都没有第二份插值实现。
+    in property <[string]> automation-lane-target-keys: [];
+    in property <[int]> automation-lane-track-indexes: [];
+    in property <[string]> automation-lane-labels: [];
+    in property <[string]> automation-lane-axis-labels: [];
+    in property <[length]> automation-lane-band-ys: [];
+    in property <[length]> automation-lane-band-heights: [];
+    in property <[bool]> automation-lane-read-enabled: [];
+    in property <[string]> automation-lane-badges: [];
+    in property <[string]> automation-path-commands: [];
+
+    // =====================================================================
     // 混音台电平注入面（[ARCH-UI-002] 的"UI 线程定时器批量出队更新 Slint Properties"）
     // =====================================================================
     // 推子位置（0.0–1.0）由工程的 `TrackV3::volume_db` 派生 —— 与电平柱高是**两个量**：
@@ -340,6 +357,15 @@ export component MainWindow inherits Window {
                     bar-positions: root.bar-positions;
                     track-colors: root.track-colors;
                     track-color-labels: root.track-color-labels;
+                    automation-lane-target-keys: root.automation-lane-target-keys;
+                    automation-lane-track-indexes: root.automation-lane-track-indexes;
+                    automation-lane-labels: root.automation-lane-labels;
+                    automation-lane-axis-labels: root.automation-lane-axis-labels;
+                    automation-lane-band-ys: root.automation-lane-band-ys;
+                    automation-lane-band-heights: root.automation-lane-band-heights;
+                    automation-lane-read-enabled: root.automation-lane-read-enabled;
+                    automation-lane-badges: root.automation-lane-badges;
+                    automation-path-commands: root.automation-path-commands;
                 }
             }
 
