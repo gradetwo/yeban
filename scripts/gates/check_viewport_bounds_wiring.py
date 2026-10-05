@@ -72,6 +72,21 @@ def main() -> int:
     else:
         height_ok = m_height.group(1)
 
+    # 第七处：`note-selected` —— 与可见数组**同一索引集**的第七个数组, 必须三级齐全且宿主真的设置。
+    # 账本第 181/223 轮: 平行数组各写各的会错位; 只有"三处都在"才说明它真的被接上。
+    tabs = (root / "crates/yeban-app/ui/console/console_tabs.slint").read_text(encoding="utf-8")
+    for where, text, needle in (
+        ("piano_roll.slint", roll, "in property <[bool]> note-selected: [];"),
+        ("console_tabs.slint", tabs, "in property <[bool]> note-selected: [];"),
+        ("app.slint", slint, "in-out property <[bool]> note-selected: [];"),
+    ):
+        if needle not in text:
+            problems.append(f"note-selected 未在 {where} 声明（三级链缺一级）")
+    if "set_note_selected(" not in host:
+        problems.append("note-selected 没有任何 set_note_selected( 调用 ⇒ 宿主没注入它")
+    if "flags_for_ids(" not in host:
+        problems.append("host.rs 未用 flags_for_ids ⇒ 标志可能与可见集错位")
+
     if problems:
         print("[FAIL] viewport-bounds-wiring:")
         for p in problems:
@@ -79,7 +94,7 @@ def main() -> int:
         return 1
     print(
         f"[ok] viewport-bounds-wiring: {len(BOUNDS)} 个视口边界在三处齐全,"
-        f"泳道数一致 ({lane_ok}), 音符框高一致 ({height_ok})"
+        f"泳道数一致 ({lane_ok}), 音符框高一致 ({height_ok}), note-selected 三级齐全"
     )
     return 0
 
