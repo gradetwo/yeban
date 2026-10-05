@@ -12,7 +12,7 @@
 
 ## 仍未闭环的门禁（逐条）
 
-- `BASELINE-003` — **PENDING**。理由：**第 114 轮补（负责人指定参考机之后，本门禁的处境更明确了）**: 负责人指定参考机 = **MacBook Pro M2 Max / Mac14,5**。但本机**不满足本门禁自己的前提**：面板是 **Built-in Liquid Retina XDR**（Mac14,5 = 14 寸 ProMotion），`ioreg` 显示 `APTLimitRefreshRate = No` ⇒
+- `BASELINE-003` — **PENDING**。理由：unset> 尺寸=<w>x<h>`（第 469 轮），下次跑档即可把"推断"变成"事实"。（公开 API 里查不到当前 renderer 名字, 故只报环境, 不报猜测值。）**这也加强了待决选项 (a)**：参考机（M2 Max / Metal）是**唯一**能到达规范渲染路径的地方。
 - `BASELINE-006` — **PENDING**。理由：需要"生成 16 小节段落"的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**，且 Token 口径需人类裁决用哪个 tokenizer
 
 ## 仍未闭环的阶段项（逐条）
