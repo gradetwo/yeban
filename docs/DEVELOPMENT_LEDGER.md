@@ -5641,3 +5641,27 @@ would be a silent, invisible target.
 Verdicts 30-31 folded in per the push-rhythm rule: runs @ `c0e8ec3` (the end-to-end click) and @ `2df5741` = **completed success**
 each, so completed full-workspace verdicts on main number **thirty-one**. The click chain is therefore CI-verified end to end,
 including the feature-gated UI criterion that asserts the flags array.
+
+### Round 231: I cleared the queue I had created - and got the order wrong first
+
+The backlog had reached **10 queued runs**, each about 26 minutes, i.e. roughly four hours of CI waiting. Its cause is the one
+round 229 measured, not congestion: I pushed about once a minute while a run takes about 26.
+
+**The reasoning for clearing it, which I still think is right**: history on main is linear, so the NEWEST run's checkout already
+contains every earlier commit's code. Cancelling older queued runs therefore loses no verification of the code - only the
+per-commit attribution, which the ledger records locally anyway. Keeping a run for the tip and dropping the rest is the same
+verification for a fraction of the wall clock.
+
+**What I got wrong**: `gh run list` prints NEWEST FIRST, and I took `head -n (N-2)` as "the older ones". It is the newer ones, so I
+cancelled the eight most recent runs - including the tip `1b32692` - and kept the two oldest. The result was the opposite of the
+intent: for a few minutes the current code had NO run at all. This is the same class as the search-and-substring mistakes recorded
+earlier in this session: I assumed an ordering I have been reading all session instead of checking it, and the output that would
+have told me (`head` of the list) was right there.
+
+**The remedy, done immediately**: dispatched a fresh run for the tip (`37363446822` @ `1b32692`), so the queue is now three runs -
+the tip plus the two oldest - and the code that matters is covered. What is lost is per-commit CI attribution for the eight
+cancelled commits; those carry local verification only (186 lib criteria, the feature-gated UI criteria, `light`, and the six
+ledger guards), which is what the ledger says about them and nothing more.
+
+**Recorded as a behaviour, not just an incident**: before relying on any list's order, print it and read it - the cost here was one
+extra dispatch, but the same assumption made about run ids or step numbers would be worse.
