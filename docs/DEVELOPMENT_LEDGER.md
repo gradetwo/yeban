@@ -4313,3 +4313,28 @@ Recorded for the next round: create the crate (Cargo.toml + lib.rs, moving `crat
 to the workspace members and to both dependents, remove it from `yeban-engine`, re-run `cargo-local.sh test` for the three
 crates, then clippy, then `light` (unfiltered), then commit and dispatch. The D56 criteria 1/2/3/5 and the UI entry point remain
 open as before.
+
+### Round 166: D56 step 2 is CI-verified on Linux AND Windows - the ninth completed full-workspace verdict
+
+Run **`37338111044` @ `99b4d56` = completed success**:
+
+| leg | verdict | what it proves |
+| :--- | :--- | :--- |
+| `checks (fmt / 红线守卫 / schema)` | success `steps=12` | guards, fmt, schema and the regenerated licence inventory all accept the sixteenth tool |
+| **`rust (workspace 全量)`** | **success `steps=10`** | **`steps > 0`** - the tool's code and tests really ran |
+| **`windows (yeban-mcp / yeban-model)`** | **success `steps=9`** | the Windows failure from round 165 is gone |
+| `plan` / `lockfile` / `deny` | success | build plan, lock determinism, licence compliance |
+| `rust (${{ matrix.crate }})` | skipped by design | covered by the workspace leg |
+
+The path to green was three fixes, each one mine: the ALSA design smell (round 165 - fixed by moving the collector into the
+lightweight `yeban-diagnostics` crate), the missing e2e case for the sixteenth tool, and the default output directory writing
+into the repository. All three were found by CI, not by review, and the last two were found **after** I had wrongly reported
+local tests as green because I cut the test output with `head`.
+
+Completed full-workspace verdicts on main now number **nine**: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`,
+`37293138132` @ `f859ef6`, `37300697464` @ `2c4d285`, `37305461525` @ `f3a86d2`, `37308086599` @ `8038fdc`,
+`37324066103` @ `dad0cfb`, `37330049671` @ `1cd47a5`, `37338111044` @ `99b4d56`.
+
+**D56 status now**: the shared collector (`yeban-diagnostics`), the MCP tool (`yeban_export_diagnostics`, the sixteenth) and the
+schema/contract wiring are done and CI-verified. Still open: the UI entry point (the other half of criterion 4), criteria 1/2/3/5
+(required entries, per-entry sha256, redaction scan, tooth test), and the manual gate that would collect the numbers.
