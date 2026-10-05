@@ -283,6 +283,23 @@ pub fn tick_to_px(tick: u64, ticks_per_pixel: u64) -> Result<u32, BridgeError> {
     u32::try_from(tick / ticks_per_pixel).map_err(|_| BridgeError::PixelOverflow { tick })
 }
 
+impl ViewState {
+    /// `[UI-NOTE-002/003]` **视口坐标 → 吸附后的 tick**：编辑工具问"这一点落在哪个网格"的答案。
+    ///
+    /// 铅笔（"在吸附网格处画出音符"）、剪刀（"沿网格竖线切分"）与选择工具的移动都以此为前提。
+    /// 口径：先用**投影自己的** `ticks_per_pixel` 把视口 x 换算成 tick（加上滚动偏移），再吸附；
+    /// 换算出界（非有限、超出 `u32`）时返回 `0` —— 与"视口外"同义, 而不是 panic。
+    #[must_use]
+    pub fn snapped_tick_at(&self, scroll_x: f32, x: f32, grid_ticks: u64) -> u64 {
+        let px = scroll_x.max(0.0) + x.max(0.0);
+        if !px.is_finite() || px > u32::MAX as f32 {
+            return 0;
+        }
+        let tick = px_to_tick(px as u32, self.ticks_per_pixel).unwrap_or(0);
+        snap_tick(tick, grid_ticks)
+    }
+}
+
 /// `[UI-NOTE-002/003]` 把 tick **吸附**到网格：四舍五入到最近的 `grid_ticks` 倍数。
 ///
 /// 规范要求"960 PPQ 吸附对齐"，且铅笔（"在吸附网格处画出音符"）与剪刀（"沿网格竖线切分"）都以它为前提。
@@ -2593,6 +2610,40 @@ mod tests {
             vis.len(),
             total
         );
+    }
+
+    #[test]
+    fn snapped_tick_at_maps_the_viewport_to_grid_multiples() {
+        // 判据: ① 结果是网格倍数（grid>0）; ② 同一 x 在滚动前后**相差**滚动量对应的 tick;
+        // ③ grid=0 ⇒ 不吸附（与 `snap_tick` 同一口径）; ④ 出界不 panic 且给 0。
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        for grid in [0_u64, 120, 240, 960] {
+            for x in [0.0_f32, 37.0, 480.0, 1920.0] {
+                let tick = view.snapped_tick_at(0.0, x, grid);
+                if grid > 0 {
+                    assert_eq!(tick % grid, 0, "grid={grid} x={x} ⇒ 不是网格倍数");
+                }
+            }
+        }
+        // 滚动把同一个 x 推到**更晚**的 tick（单调, 且差值等于滚动像素对应的 tick）。
+        let a = view.snapped_tick_at(0.0, 100.0, 960);
+        let b = view.snapped_tick_at(1920.0, 100.0, 960);
+        assert!(b > a, "滚动后同一 x 必须对应更晚的 tick: {a} vs {b}");
+        let delta_px = 1920_u64;
+        let expected = snap_tick(
+            px_to_tick(100, view.ticks_per_pixel).unwrap()
+                + px_to_tick(u32::try_from(delta_px).unwrap(), view.ticks_per_pixel).unwrap(),
+            960,
+        );
+        assert_eq!(b, expected, "滚动量的换算必须与投影同一口径");
+        // grid=0 ⇒ 与不吸附一致。
+        assert_eq!(
+            view.snapped_tick_at(0.0, 100.0, 0),
+            px_to_tick(100, view.ticks_per_pixel).unwrap()
+        );
+        // 出界: 非有限或超出 u32 ⇒ 0（不 panic）。
+        assert_eq!(view.snapped_tick_at(0.0, f32::INFINITY, 960), 0);
+        assert_eq!(view.snapped_tick_at(0.0, f32::NAN, 960), 0);
     }
 
     #[test]
