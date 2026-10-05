@@ -7817,3 +7817,28 @@ it has a **dependency closure**, and the compiler enumerates it one name per att
 `crate::` references and for local `const`/`fn` declarations) is the efficient way to finish it.
 
 **Status**: tree green and clean; the mapping move needs one splitter fix; CI green; `yeban-midi` holds `midi` and `vlq`; MCP tool still owed.
+
+
+### Round 320: handover note for the mapping move - what is done, what is left, and the honest cost
+
+**Where the move stands**: `yeban-midi` holds the SMF codec (`midi`) and the VLQ helper (`vlq`), both CI-verified on Windows and Linux; the fixture family
+(`demo_project`, `demo_id`, `demo_point`, `demo_track_devices`, `demo_automation_lanes`) lives in `yeban-model::samples` and is re-exported by the app; the
+generator `scripts/dev/extract-midi-mapping.py` writes both sides of the mapping and refuses to write when its own pre-flight fails. The one remaining
+defect is **inside the generator's test splitter**: it must carry the app test module's **non-test items** (`const DEMO_NOTES` and any similar) to the
+shared side along with the eleven domain tests, and my last attempt's detection logic reported "0 segments", i.e. it failed to find an item that exists -
+so the fix is to rewrite that detection, not to add more names.
+
+**The exact recipe for the next attempt**:
+1. copy the whole app test module into `yeban-midi`'s test module **as-is** (every `const`, `fn`, `#[test]`), then delete the two writer tests from the
+   shared copy and keep them in the app - a **whole-module copy minus two tests** needs no item detection at all, which is precisely the machinery that has
+   failed repeatedly;
+2. in the shared copy: rewrite `crate::bridge::demo_project` to `yeban_model::samples::demo_project`, and add `use crate::midi::{parse_smf, track_chunks};`
+   inside the module;
+3. `cargo fix --lib -p yeban-midi`, regenerate the licence inventory, `cargo test -p yeban-app -p yeban-midi --tests`, `run-gates.sh light`.
+
+**The honest cost, because it should be on the record**: this single mechanical move has consumed **more than a dozen rounds**, and **every** failure was in
+my tooling (string surgery, span arithmetic, brace counting, item detection) rather than in the design, which has not needed a single revision since round
+287. The move's dependency closure is small and fully enumerated by now; a reader with the list above can finish it in one sitting, and the recommended
+step 1 removes the machinery that kept breaking.
+
+**Session state**: tree green and clean; CI green; whole-workspace sweep 1788 passed; disk 147 GiB free; everything else recorded in rounds 240-319.
