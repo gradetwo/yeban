@@ -4385,3 +4385,28 @@ files across two crates. The anchors above remove the reading, not the writing.
 
 Everything else in D56 is done and CI-verified: the shared collector (`yeban-diagnostics`), the MCP tool
 (`yeban_export_diagnostics`, sixteenth, green on Linux and Windows), the schema/contract wiring, and criteria 1/2/3/5.
+
+### Round 169: D56 UI half - the anchor is `host.rs`'s callback bindings, and the extensions are NOT surfaced by yeban-ui-mcp
+
+Two structural facts, both verified by grep rather than assumed:
+
+1. **`crates/yeban-ui-mcp` is not the UI surface for the D45/D46 extensions.** Its `MethodSpec` catalogue contains none of the
+   extension tool names (`yeban_query_engine_state`, `yeban_import_audio`, ...), and grepping the whole crate for `undo` or
+   `yeban_import_audio` returns **nothing**. So that crate covers the ten documented tools; the extensions reach the UI another
+   way. My round-168 plan - "add a MethodSpec there" - was aimed at the wrong file.
+2. **The UI-to-implementation binding lives in `crates/yeban-app/src/host.rs`**, which binds Slint callbacks to real work; for
+   example line 407 is `ui.on_undo_step(move || { ... })`. That is the pattern D56's UI command must follow, together with:
+   - the element ID `diagnostics-export-action` in `crates/yeban-app/src/elements.rs` (whose table pairs IDs with the `.slint`
+     file carrying them), and
+   - the menu item itself in a `.slint` file under `crates/yeban-app/ui/` (top-level files there are `app.slint`,
+     `sidebar.slint`, `status_bar.slint`, `tokens.slint`, `transport.slint` plus the `console/dialogs/workspace` directories),
+   - and `crates/yeban-app/Cargo.toml` needs the `yeban-diagnostics` dependency (it already has `yeban-engine`, which no longer
+     contains the collector).
+
+**So the UI half is three edits in ONE crate** (`yeban-app`) plus the dependency line, which is materially simpler than the
+two-crate plan of round 168 - and that correction is worth more than the code would have been, because the earlier plan would
+have added a `MethodSpec` that nothing consumes.
+
+Honest note on pace: this is the fourth reconnaissance round for the UI half (168, 169, and the two greps inside them). Each
+removed a real unknown and none produced code. D56's other four parts are done and CI-verified, so the remaining work is this
+one crate.
