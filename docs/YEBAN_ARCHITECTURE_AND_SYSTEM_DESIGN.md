@@ -73,7 +73,7 @@
   3. **内嵌活会话 MCP 服务 (Embedded MCP Thread)**：提供 Streamable HTTP JSON-RPC 传输，仅绑定 `127.0.0.1` 动态端口，供 AI Agent 实时挂载正在运行的工程。
   4. **cpal 实时音频回调线程 (RT Priority Thread)**：最高实时优先级调度，零堆分配、零阻塞锁、零系统调用，批量消费参数/MIDI SPSC 队列，通过原子指针读取引擎快照。
   5. **后台任务线程池 (Background IO & Render Pool)**：管理 CAS 磁盘读写、自动保存、Rayon 离线母带渲染与工程解压缩。
-- **[ARCH-TOP-003] 无头纯引擎独立性**：所有非 UI crate（`yeban-model`, `yeban-dsp`, `yeban-theory`, `yeban-render`, `yeban-engine`, `yeban-sfz`, `yeban-decode`）严禁引入任何 Slint 或窗口图形依赖，脱离 GUI 可 100% 独立冷启动。
+- **[ARCH-TOP-003] 无头纯引擎独立性**：所有非 UI crate（`yeban-model`, `yeban-dsp`, `yeban-theory`, `yeban-render`, `yeban-engine`, `yeban-sfz`, `yeban-decode`, `yeban-midi`）严禁引入任何 Slint 或窗口图形依赖，脱离 GUI 可 100% 独立冷启动。
 
 ```
 +──────────────────────────────────────────────────────────────────────────────────────────────────────────+
@@ -138,7 +138,7 @@
 ### 0.3 UI 表现层与 Rust 音频引擎深度解耦
 
 夜半 (Yeban) 的核心架构特征在于 **UI 表现层与 Rust 引擎层的完全解耦**：
-- `yeban-model`、`yeban-dsp`、`yeban-theory`、`yeban-render`、`yeban-engine` 等纯 Rust 引擎 crate 本身**绝不依赖任何 GUI 框架或窗口系统库**（零 Slint 引用、零 X11/Wayland/Windows 依赖）。
+- `yeban-model`、`yeban-dsp`、`yeban-theory`、`yeban-render`、`yeban-engine`, `yeban-midi` 等纯 Rust 引擎 crate 本身**绝不依赖任何 GUI 框架或窗口系统库**（零 Slint 引用、零 X11/Wayland/Windows 依赖）。
 - 在无图形界面（Headless）环境下，引擎层可以常态化运行，执行音乐逻辑、处理工程状态、运行离线极速渲染，完全不启动任何窗口系统。
 - Slint 的职责仅为"当且仅当需要 GUI 交互或 UI 视觉验证时，将引擎状态投影并渲染呈现"。
 
