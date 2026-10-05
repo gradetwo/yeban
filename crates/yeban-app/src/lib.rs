@@ -64,6 +64,7 @@ pub mod cli;
 pub mod elements;
 pub mod engine_host;
 pub mod export_midi;
+pub mod headless_idle;
 pub mod host;
 pub mod input;
 pub mod meters;

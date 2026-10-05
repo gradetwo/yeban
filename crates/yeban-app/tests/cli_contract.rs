@@ -15,8 +15,13 @@
 //! ## 只跑"无窗口"参数
 //!
 //! 本文件**绝不**调用不带无窗口开关的命令：那会构造真窗口并进入阻塞事件循环，把 CI 挂死。
-//! 每条调用都带 `--headless` / `--dump-elements` / `--export-elements` / `--export-midi` /
-//! `--save-as` / `--print-shortcuts` / `--help` / `--version` 之一。
+//! 每条调用都带 `--headless` / `--headless-idle` / `--dump-elements` / `--export-elements` /
+//! `--export-midi` / `--save-as` / `--print-shortcuts` / `--help` / `--version` 之一。
+//!
+//! `--headless-idle` 属于允许集合：它**不创建 OS 窗口**（平台是自研的
+//! `MinimalSoftwareWindow` + `SoftwareRenderer`），而且空闲秒数上限（`MAX_IDLE_SECONDS`
+//! = 60）刻意小于本文件的 [`RUN_TIMEOUT`]（120 秒）—— 于是"秒数敲错"会变成一条用法错误，
+//! 而不是一次挂住。
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -290,6 +295,170 @@ fn empty_sample_reports_zero_tracks_and_default_reports_six() {
     assert_ne!(
         empty.stdout, demo.stdout,
         "两个样本的读数不许相同（相同 ⇒ 见证是空转）"
+    );
+}
+
+/// 判据 B3c: `--headless-idle --idle-seconds N` **真的**构造了 Slint 控件树。
+///
+/// 为什么这条必须是**真二进制**判据：`BASELINE-002` 的读数取自
+/// `scripts/gates/measure_rss.py -- <本二进制> --headless-idle --idle-seconds N`，
+/// 所以"这个进程真的建了树"只能在**同一条进程命令**上钉住 —— 单元判据（`cli.rs`）只能
+/// 证明参数被解析、格式化行长什么样。
+///
+/// 见证是**量出来的**，不是断言出来的（见 `src/headless_idle.rs` 的模块文档）：
+/// `windows-created=1`（平台自数）、`rendered=true`、`lines=`（真的光栅化过的行数）、
+/// `non-black-pixels>0` + `distinct-colors>=2`（像素伪造不了）。任何一项退化成 0 / false，
+/// 这条就红 —— 那正是"没建树"与"未生效"两种失败的样子。
+#[test]
+fn headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness() {
+    let empty = invoke(&[
+        "--project-sample",
+        "empty",
+        "--headless-idle",
+        "--idle-seconds",
+        "1",
+    ]);
+    assert_eq!(empty.code, 0, "stderr={}", empty.stderr);
+
+    // 握手行是与 `headless ok` **刻意不同**的一行：后者的语义是"一个 Slint 对象都没构造"，
+    // 而本命令真的建了树 —— 两者都出现才是自相矛盾。
+    assert_eq!(
+        empty.stdout.matches("headless-idle ok").count(),
+        1,
+        "本档的握手行必须恰好一次:\n{}",
+        empty.stdout
+    );
+    assert!(
+        !empty.stdout.contains("headless ok"),
+        "不许打出 `headless ok`（它的语义是零 Slint 对象）:\n{}",
+        empty.stdout
+    );
+
+    // ---- 见证 ----
+    let witness = line_with(&empty.stdout, "headless-idle-witness:")
+        .unwrap_or_else(|| panic!("必须有见证行:\n{}", empty.stdout));
+    assert_eq!(
+        field(witness, "windows-created").as_deref(),
+        Some("1"),
+        "平台必须恰好被要过一个窗口适配器: {witness}"
+    );
+    assert_eq!(
+        field(witness, "rendered").as_deref(),
+        Some("true"),
+        "这一次必须真的发生了重绘: {witness}"
+    );
+    // 尺寸与 GUI / Tier-1 端口同源（`DemoScene` 的视口 = [UI-GRID-002] 的全展开档）。
+    assert_eq!(
+        field(witness, "size").as_deref(),
+        Some("1920x1080"),
+        "{witness}"
+    );
+    let rendered_lines: u64 = field(witness, "lines")
+        .expect("lines")
+        .parse()
+        .expect("lines 必须是整数");
+    let non_black: u64 = field(witness, "non-black-pixels")
+        .expect("non-black-pixels")
+        .parse()
+        .expect("非黑像素数必须是整数");
+    let colors: usize = field(witness, "distinct-colors")
+        .expect("distinct-colors")
+        .parse()
+        .expect("颜色数必须是整数");
+    assert_eq!(
+        rendered_lines, 1080,
+        "逐行光栅化必须覆盖整个窗口高度: {witness}"
+    );
+    assert!(non_black > 0, "见证不许是空转（非黑像素为 0）: {witness}");
+    assert!(
+        colors >= 2,
+        "界面至少应有背景 + 一个图元颜色（>1 才叫真的画了东西）: {witness}"
+    );
+
+    // 见证行里的 `elements=` 与同一命令的 `view-counts:` 必须**同源同值**
+    // （都来自 `ElementRegistry::from_view`）—— 否则这两个读数就没法互相对账。
+    let view = line_with(&empty.stdout, "view-counts:").expect("必须有 view-counts 行");
+    assert_eq!(
+        field(witness, "elements"),
+        field(view, "elements"),
+        "见证行与 view-counts 的元素数必须一致:\n{witness}\n{view}"
+    );
+    let elements: usize = field(witness, "elements")
+        .expect("elements")
+        .parse()
+        .expect("元素数必须是整数");
+    assert!(elements > 0, "非平凡的控件树的元素数必须 > 0: {witness}");
+
+    // ---- 取样对象真的是规范所指的那个（0 轨空工程）----
+    let counts = line_with(&empty.stdout, "project-counts:").expect("必须有 project-counts 行");
+    assert_eq!(
+        field(counts, "tracks-all").as_deref(),
+        Some("0"),
+        "{counts}"
+    );
+    assert!(
+        empty.stdout.contains("project-source: sample=empty"),
+        "来源必须明写 empty:\n{}",
+        empty.stdout
+    );
+
+    // ---- 空闲读数必须是**实测**的（不是把输入抄一遍）----
+    let idle = line_with(&empty.stdout, "headless-idle-idle:").expect("必须有空闲行");
+    assert_eq!(field(idle, "seconds").as_deref(), Some("1"), "{idle}");
+    let elapsed_ms: u128 = field(idle, "elapsed-ms")
+        .expect("elapsed-ms")
+        .parse()
+        .expect("实测毫秒数必须是整数");
+    assert!(
+        (990..30_000).contains(&elapsed_ms),
+        "空闲实测时长应当在请求值附近（1 秒级）: {idle}"
+    );
+    let ticks: u64 = field(idle, "ticks")
+        .expect("ticks")
+        .parse()
+        .expect("tick 数必须是整数");
+    assert!(ticks > 0, "空闲循环必须真的转过: {idle}");
+
+    // ---- 边界行必须说清"没做什么"----
+    assert!(
+        empty.stdout.contains("未创建 OS 窗口"),
+        "必须声明本档没有 OS 窗口:\n{}",
+        empty.stdout
+    );
+
+    // ---- 对照：`--headless` 不许出现任何见证行（那才是"零 Slint 对象"）----
+    let plain = invoke(&["--project-sample", "empty", "--headless"]);
+    assert_eq!(plain.code, 0, "stderr={}", plain.stderr);
+    assert_eq!(
+        plain.stdout.matches("headless ok").count(),
+        1,
+        "{}",
+        plain.stdout
+    );
+    assert!(
+        !plain.stdout.contains("headless-idle-witness:"),
+        "--headless 不该有任何建树见证:\n{}",
+        plain.stdout
+    );
+    assert_ne!(
+        plain.stdout, empty.stdout,
+        "两个模式的输出必须不同（相同 ⇒ 新开关没生效）"
+    );
+
+    // ---- 用法错误档：`--idle-seconds` 单独给必须是退出码 2（真二进制上也不许静默忽略）----
+    let lonely = invoke(&["--idle-seconds", "1"]);
+    assert_eq!(lonely.code, 2, "stderr={}", lonely.stderr);
+    assert!(
+        lonely.stderr.contains("--headless-idle"),
+        "错误信息必须点名正确的搭档:\n{}",
+        lonely.stderr
+    );
+    let unpaired = invoke(&["--headless-idle"]);
+    assert_eq!(unpaired.code, 2, "stderr={}", unpaired.stderr);
+    assert!(
+        unpaired.stderr.contains("--idle-seconds"),
+        "错误信息必须点名缺失的取值:\n{}",
+        unpaired.stderr
     );
 }
 
