@@ -93,6 +93,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # 同时自检: 状态表腐烂就红。
           python3 scripts/gates/check_gate_status.py
+      - name: 远程分支卫生（已合并的工作线分支不应留在 origin）
+        run: |
+          set -euo pipefail
+          # 实测漂移: 第 12 轮发现 origin 上积了 12 条**已合并**的 line/* 分支,
+          # 而账本当时写着"远程只剩 main 与 website"。人写的口径会漂移, 机器写的不会。
+          bash scripts/dev/branch-hygiene.sh
 
   # ---------------------------------------------------------------------------
   # 全 feature 组合编译: 只有手动档才跑 (很慢), 但能拦住 feature 门后的编译错误
