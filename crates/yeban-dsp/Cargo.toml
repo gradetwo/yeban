@@ -13,6 +13,9 @@ name = "yeban_dsp"
 path = "src/lib.rs"
 
 [dependencies]
+# [ARCH-DSP-004 / HD-44=A] 弹性拉伸（C++ 实现 + Rust 包装）。
+# `unsafe` 落在依赖内部，本 crate 的 `#![forbid(unsafe_code)]` 仍成立。
+signalsmith-stretch.workspace = true
 
 [lints]
 workspace = true

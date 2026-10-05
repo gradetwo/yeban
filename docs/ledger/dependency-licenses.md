@@ -3,16 +3,16 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `e0a7bc9dcb16362b`
-- 外部依赖包数: **618**（不含 23 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `fb271afc0b25cc11`
+- 外部依赖包数: **630**（不含 23 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
 
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
-| `MIT OR Apache-2.0` | 282 |
-| `MIT` | 128 |
+| `MIT OR Apache-2.0` | 292 |
+| `MIT` | 129 |
 | `Apache-2.0 OR MIT` | 52 |
 | `Unicode-3.0` | 27 |
 | `Apache-2.0` | 18 |
@@ -22,7 +22,7 @@
 | `MPL-2.0` | 10 |
 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 8 |
 | `MIT OR Apache-2.0 OR Zlib` | 7 |
-| `BSD-3-Clause` | 5 |
+| `BSD-3-Clause` | 6 |
 | `Unlicense OR MIT` | 4 |
 | `Zlib` | 4 |
 | `Apache-2.0/MIT` | 3 |
@@ -99,6 +99,7 @@
 | `autocfg` | `1.5.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `base64` | `0.23.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `bincode` | `2.0.1` | `MIT` | 传递 | — |
+| `bindgen` | `0.70.1` | `BSD-3-Clause` | 传递 | — |
 | `bindgen` | `0.72.1` | `BSD-3-Clause` | 传递 | — |
 | `bit-set` | `0.10.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `bit-vec` | `0.9.1` | `Apache-2.0 OR MIT` | 传递 | — |
@@ -154,7 +155,17 @@
 | `crypto-common` | `0.2.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `ctor` | `0.10.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `cursor-icon` | `1.2.0` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
+| `dasp` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_envelope` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_frame` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_interpolate` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_peak` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_ring_buffer` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_rms` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `dasp_sample` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_signal` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_slice` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `dasp_window` | `0.11.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `data-url` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `derive_more` | `2.1.1` | `MIT` | 传递 | — |
 | `derive_more-impl` | `2.1.1` | `MIT` | 传递 | — |
@@ -464,6 +475,7 @@
 | `shlex` | `1.3.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `shlex` | `2.0.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `signal-hook-registry` | `1.4.8` | `MIT OR Apache-2.0` | 传递 | — |
+| `signalsmith-stretch` | `0.1.3` | `MIT` | 直接 | `yeban-dsp` |
 | `simd-adler32` | `0.3.10` | `MIT` | 传递 | — |
 | `simd_cesu8` | `1.2.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `simdutf8` | `0.1.5` | `MIT OR Apache-2.0` | 传递 | — |
