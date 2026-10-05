@@ -37,8 +37,8 @@ use super::section_build::{BuildCode, BuildFault};
 use crate::tools::ErrorCode;
 
 pub use super::section_build::{
-    MAX_BARS, MAX_PARTS, MODES, NOTE_NAMES, NOTE_PITCH_CLASSES, STYLE_PRESETS, Scale, SectionPlan,
-    TICKS_PER_BAR_4_4, detect_cycle, parse_scale, preset_parts, ticks_per_bar,
+    MAX_BARS, MAX_PARTS, NOTE_NAMES, NOTE_PITCH_CLASSES, Scale, SectionPlan, TICKS_PER_BAR_4_4,
+    available_presets, detect_cycle, mode_names, parse_scale, preset_parts, ticks_per_bar,
     unwired_for_section_op_kinds,
 };
 
@@ -113,26 +113,34 @@ mod tests {
     #[test]
     fn unknown_preset_is_style_not_found() {
         let project = filled_project();
-        let fault = plan(&project, "Chorus", "polka", 8, None).expect_err("未知预设");
+        // `polka` **是** theory 的流派 ID（`GenreLibrary::get("polka")` 成功），
+        // 所以它已经不是"未知预设"的例子了 —— 用一个 theory 里真的不存在的名字。
+        let fault = plan(&project, "Chorus", "yeban_unknown_style", 8, None).expect_err("未知预设");
         assert_eq!(fault.domain_code(), Some(ErrorCode::StyleNotFound));
         let value = fault.into_result().expect("带内");
         assert_eq!(value["error"]["code"], "STYLE_NOT_FOUND");
         assert!(value["error"]["data"]["availablePresets"].is_array());
+        assert_eq!(
+            value["error"]["data"]["stylePresetSource"],
+            "yeban-theory::genre::GenreLibrary::ids"
+        );
     }
 
     #[test]
     fn bars_and_scale_are_validated() {
         let project = filled_project();
-        let fault = plan(&project, "Chorus", "lofi-beats", 0, None).expect_err("bars=0");
+        let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 0, None).expect_err("bars=0");
         assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
         let fault =
-            plan(&project, "Chorus", "lofi-beats", MAX_BARS + 1, None).expect_err("bars 过大");
+            plan(&project, "Chorus", "lo_fi_hip_hop", MAX_BARS + 1, None).expect_err("bars 过大");
         assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, Some("H dorian")).expect_err("音名");
+        let fault =
+            plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("H dorian")).expect_err("音名");
         assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, Some("C bogus")).expect_err("调式");
+        let fault =
+            plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("C bogus")).expect_err("调式");
         assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
-        plan(&project, "Chorus", "lofi-beats", 4, Some("c MINOR")).expect("大小写不敏感");
+        plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("c MINOR")).expect("大小写不敏感");
     }
 
     /// 缺材料必须是**契约内**的 `CLIP_NOT_FOUND`，且 `data` 说明缺什么。
@@ -140,7 +148,7 @@ mod tests {
     fn missing_material_is_clip_not_found() {
         let mut project = filled_project();
         project.clip_pool.clear();
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, None).expect_err("无材料");
+        let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 4, None).expect_err("无材料");
         assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
         let value = fault.into_result().expect("带内");
         assert_eq!(value["error"]["code"], "CLIP_NOT_FOUND");
@@ -169,7 +177,7 @@ mod tests {
             project.routing_graph.edges.insert(edge.id, edge);
         }
         project.validate().expect("模型层不判环, 因此它是'合法'的");
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, None).expect_err("必须拒绝");
+        let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 4, None).expect_err("必须拒绝");
         assert_eq!(fault.domain_code(), Some(ErrorCode::CycleDetected));
         let value = fault.into_result().expect("带内");
         assert_eq!(value["error"]["code"], "CYCLE_DETECTED");
@@ -218,7 +226,7 @@ mod tests {
     #[test]
     fn ops_to_value_keeps_every_payload() {
         let project = filled_project();
-        let planned = plan(&project, "Chorus", "lofi-beats", 2, None).expect("规划");
+        let planned = plan(&project, "Chorus", "lo_fi_hip_hop", 2, None).expect("规划");
         let value = ops_to_value(&planned.ops);
         let array = value.as_array().expect("数组");
         assert_eq!(array.len(), planned.ops.len());

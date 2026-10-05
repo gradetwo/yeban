@@ -6227,6 +6227,7 @@ dependencies = [
  "yeban-decode",
  "yeban-model",
  "yeban-render",
+ "yeban-theory",
 ]
 
 [[package]]

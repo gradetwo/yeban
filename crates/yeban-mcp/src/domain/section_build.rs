@@ -48,8 +48,37 @@
 //!   被多个声部使用时不会出现"两个片段共享同一个音符身份"。
 //!
 //! 这不是"凭空造音乐"：音符、时值、力度、表现力字段都来自工程里**真实存在**的材料，
-//! 本层只做音级平移与身份派生。真正的"写旋律"在 `line/theory-core` 一侧
-//! （它的台账 §pending-5 明确写了"没有把 `yeban_propose_section` 接起来"）。
+//! 本层只做音级平移（含**音阶内收拢**）与身份派生。真正的"写旋律"在
+//! `line/theory-core` 一侧（它的台账 §pending-5 明确写了"没有把 `yeban_propose_section`
+//! 接起来"）。
+//!
+//! ## 乐理语义从哪来（`ADR-0001` **D49** ⇒ 关闭 needs-6）
+//!
+//! 本模块此前把风格表与调式表写成**本地常量**（`STYLE_PRESETS` 4 行 / `MODES` 12 行），
+//! 于是 `scale` 只用到**主音音级**，`D dorian` ≡ `D minor`（`line/propose-section` 的
+//! needs-9 如实登记的缩水）。D49 的裁决是"由 MCP 侧按需消费 `yeban-theory` 的既有能力，
+//! 并按需**不复制**它的逻辑"，因此本模块现在长这样：
+//!
+//! | 语义 | 唯一来源（`yeban-theory`，**只读**） | 本模块做什么 |
+//! | :--- | :--- | :--- |
+//! | 风格预设的**合法集合** | [`GenreLibrary::ids`] / [`GenreLibrary::get`]（182 条流派规则） | 只做"查到就返回、查不到就 `StyleNotFound`"的映射，`availablePresets` 直接回 theory 的清单 |
+//! | 调式（音阶的**内部结构**） | [`ScaleKind::parse`] / [`ScaleKind::name`] | 只做"用户文本 → theory 的 `ScaleKind`"的解析与回显；不再维护第二份调式表 |
+//! | 调式（**音级集合**） | [`TheoryScale::pitch_classes`] / [`TheoryScale::contains`] | 材料音高不在目标音阶里时**收拢**到最近的音阶音（平局优先下行）；这就是 `D dorian` ≠ `D minor` 的来源 |
+//! | 风格 → **声部数** | [`GenreRule::primary_scale`] + [`Progression::parse`] + [`Progression::chords`] + [`Chord::pitch_classes`] | 取该流派**全部典型走向**里和弦构成音数的最大值（三和弦 ⇒ 3，七和弦 ⇒ 4）。"构成音数就是声部数"是**本层的配器政策**（读法），**数据**全部来自 theory |
+//! | 声部**名字** | **没有** —— `yeban-theory` 全 crate 没有乐器/声部命名概念（`grep -rn instrument` 零命中） | 保留本地角色词表 `Bass/Alto/Soprano`、`Bass/Tenor/Alto/Soprano`（低 → 高，与 theory 的声部序一致）。这一条**如实登记为 needs**，不假装它是 theory 给的 |
+//!
+//! 边界声明（**不许**越过的三条）：
+//!
+//! 1. 本模块**不复制** theory 的音阶间隔、和弦公式、走向展开或声部连接逻辑；
+//!    它只调用公开 API（`ScaleKind::parse` 里那张间隔表是 theory 的实现细节）。
+//! 2. 本模块**不改** `crates/yeban-theory/**`。发现它缺能力时写 needs
+//!    （见 `docs/ledger/theory-wiring-notes.md` §6），不动它的源码。
+//! 3. 错误语义**不许**因为换来源而放松：未知风格仍然是 `STYLE_NOT_FOUND`，
+//!    只是判定它的那一次调用从"查本地常量"换成了 `GenreLibrary::get`（判据钉住）。
+//!
+//! 依赖边 `yeban-mcp → yeban-theory` 由 `crates/yeban-mcp/Cargo.toml` 声明；
+//! 判据 ⑥ 用"若未接线则编译失败"的方式证明它真的在（本模块 `use yeban_theory::…`
+//! 一旦失去这条边，`cargo` 与裸 `rustc` 都编不过）。
 
 use std::collections::BTreeMap;
 
@@ -60,6 +89,14 @@ use yeban_model::{
     RoutingEdge, RoutingGraph, RoutingKind, SectionV3, TrackKind, TrackV3, YebanProjectV1,
 };
 
+// `yeban-theory` 的公开面（本模块**只读**它，不复制它的逻辑）。
+// 逐个 API 的签名与用途见 `docs/ledger/theory-wiring-notes.md` §2。
+use yeban_theory::TheoryError;
+use yeban_theory::genre::{GenreLibrary, GenreRule};
+use yeban_theory::pitch::PitchClass;
+use yeban_theory::progression::Progression;
+use yeban_theory::scale::{Scale as TheoryScale, ScaleKind};
+
 use super::ids::deterministic_id;
 
 /// 小节数上限（超过即 `OUT_OF_RANGE`）。
@@ -69,22 +106,29 @@ pub const MAX_BARS: u64 = 64;
 pub const TICKS_PER_BAR_4_4: u64 = PPQ * 4;
 
 /// 每种风格预设的声部数上限（用于生成确定性音轨名）。
+///
+/// 这是**本层的护栏**，不是 theory 的数字：`part_names` 目前只覆盖 3/4 声部，
+/// 超出即 `CONFLICT`（如实上报，不猜名字）。
 pub const MAX_PARTS: usize = 8;
 
-/// 风格预设表：`(预设名, [声部名])`。
+/// 推导声部数时使用的**参考主音**（C）。
 ///
-/// **本地决策**（规范 §7.2 只给了 `stylePreset: String` 与 `STYLE_NOT_FOUND`，
-/// 没有给预设清单）。表的**机制**是承重的（未知预设必须 `STYLE_NOT_FOUND`），
-/// 表的内容是可替换的：换成 `yeban-theory` / `yeban-services` 的预设库时，
-/// 改这一处即可，`plan` 的其余部分不动。
-pub const STYLE_PRESETS: [(&str, &[&str]); 4] = [
-    ("cinematic-orchestral", &["Strings", "Brass", "Percussion"]),
-    ("lofi-beats", &["Keys", "Bass", "Drums"]),
-    ("synthwave", &["Pad", "Lead", "Bass", "Arp"]),
-    ("acoustic-folk", &["Guitar", "Bass", "Percussion"]),
-];
+/// 只需要和弦的**构成音数**，而构成音数由级数后缀（`I` vs `I7`）与和弦性质决定、
+/// 与主音无关（`Progression::chords` 的每个 `ChordKind::intervals` 长度固定）
+/// ⇒ 固定参考主音既确定，又给出与调无关的答案。
+const REFERENCE_TONIC: PitchClass = PitchClass::C;
+
+/// 三声部名（低 → 高）：`Bass / Alto / Soprano`。
+const PARTS_THREE: [&str; 3] = ["Bass", "Alto", "Soprano"];
+
+/// 四声部名（低 → 高）：`Bass / Tenor / Alto / Soprano`。
+const PARTS_FOUR: [&str; 4] = ["Bass", "Tenor", "Alto", "Soprano"];
 
 /// 音名表（含等音写法）。
+///
+/// 这是**输入字母表**（契约的一部分，错误信息里如实列出），不是乐理逻辑：
+/// 每条只是 `letter + accidental → 0..=11` 的映射。音阶的**内部结构**不在这里，
+/// 它在 `yeban-theory` 的 [`ScaleKind`] 里。
 pub const NOTE_NAMES: [&str; 17] = [
     "C", "C#", "DB", "D", "D#", "EB", "E", "F", "F#", "GB", "G", "G#", "AB", "A", "A#", "BB", "B",
 ];
@@ -94,21 +138,73 @@ pub const NOTE_NAMES: [&str; 17] = [
 /// 两张表长度必须相等 —— 判据 `note_names_and_pitch_classes_are_aligned` 钉住这件事。
 pub const NOTE_PITCH_CLASSES: [u8; 17] = [0, 1, 1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 8, 9, 10, 10, 11];
 
-/// 调式表。
-pub const MODES: [&str; 12] = [
-    "major",
-    "minor",
-    "dorian",
-    "phrygian",
-    "lydian",
-    "mixolydian",
-    "locrian",
-    "harmonic minor",
-    "melodic minor",
-    "pentatonic major",
-    "pentatonic minor",
-    "blues",
+/// `yeban-theory` 的**全部** `ScaleKind` 变体 —— 公开调式表的唯一来源。
+///
+/// 名字全部由 `ScaleKind::name()` 给出，本模块**不写第二份调式名表**。
+/// 完整性护栏是 [`canonical_kind`] 的穷尽匹配：theory 新增一个变体时本模块**编译失败**，
+/// 接线者因此必须复核这张表（而不是静默漏掉一个调式）。
+const MODE_KINDS: [ScaleKind; 16] = [
+    ScaleKind::Major,
+    ScaleKind::NaturalMinor,
+    ScaleKind::HarmonicMinor,
+    ScaleKind::MelodicMinor,
+    ScaleKind::Dorian,
+    ScaleKind::Phrygian,
+    ScaleKind::Lydian,
+    ScaleKind::Mixolydian,
+    ScaleKind::Locrian,
+    ScaleKind::PentatonicMajor,
+    ScaleKind::PentatonicMinor,
+    ScaleKind::Blues,
+    ScaleKind::WholeTone,
+    ScaleKind::Chromatic,
+    // 别名（同构于上面的 Major / NaturalMinor，但 `ScaleKind` 里是**独立变体**）。
+    ScaleKind::Ionian,
+    ScaleKind::Aeolian,
 ];
+
+/// theory 把哪个变体当作**规范名**。
+///
+/// `ScaleKind::parse` 的事实行为：`ionian` ⇒ [`ScaleKind::Major`]，
+/// `aeolian` ⇒ [`ScaleKind::NaturalMinor`]（别名不是独立的公开调式）。
+/// **穷尽匹配**是承重的：theory 新增一个 `ScaleKind` 变体 ⇒ 这里编译失败 ⇒
+/// 本模块必须复核 [`MODE_KINDS`] 与 `parse_scale` 的行为，不会静默漂移。
+const fn canonical_kind(kind: ScaleKind) -> ScaleKind {
+    match kind {
+        ScaleKind::Ionian => ScaleKind::Major,
+        ScaleKind::Aeolian => ScaleKind::NaturalMinor,
+        ScaleKind::Major
+        | ScaleKind::NaturalMinor
+        | ScaleKind::HarmonicMinor
+        | ScaleKind::MelodicMinor
+        | ScaleKind::Dorian
+        | ScaleKind::Phrygian
+        | ScaleKind::Lydian
+        | ScaleKind::Mixolydian
+        | ScaleKind::Locrian
+        | ScaleKind::PentatonicMajor
+        | ScaleKind::PentatonicMinor
+        | ScaleKind::Blues
+        | ScaleKind::WholeTone
+        | ScaleKind::Chromatic => kind,
+    }
+}
+
+/// 公开调式名（规范名在前，别名在后；全部来自 `ScaleKind::name()`）。
+#[must_use]
+pub fn mode_names() -> Vec<&'static str> {
+    let mut canonical: Vec<&'static str> = Vec::with_capacity(MODE_KINDS.len());
+    let mut aliases: Vec<&'static str> = Vec::new();
+    for kind in MODE_KINDS {
+        if canonical_kind(kind) == kind {
+            canonical.push(kind.name());
+        } else {
+            aliases.push(kind.name());
+        }
+    }
+    canonical.extend(aliases);
+    canonical
+}
 
 /// 声部音轨的界面色标（确定性；只影响界面表现，不承载音频语义）。
 const COLORS: [&str; 6] = [
@@ -128,7 +224,8 @@ pub enum BuildCode {
     OutOfRange,
     /// `scale` 写法非法 → `INVALID_PARAMETER_RANGE`。
     InvalidParameterRange,
-    /// 预设表自身自相矛盾（声部数为 0 或超过 [`MAX_PARTS`]）→ `CONFLICT`。
+    /// 风格规则自相矛盾：theory 从该流派的规则里推不出可命名的声部数
+    /// （音阶/走向解析失败、给不出和弦、或构成音数没有对应命名）→ `CONFLICT`。
     Conflict,
     /// `clip_pool` 里没有可用材料 → `CLIP_NOT_FOUND`。
     ClipNotFound,
@@ -218,46 +315,167 @@ pub struct SectionPlan {
 }
 
 /// 一个已校验的调性（`"<音名> <调式>"`，大小写不敏感）。
+///
+/// **语义住在 `yeban-theory`**：调式（音阶的内部结构）由 [`ScaleKind`] 承载，
+/// 主音由 theory 的 [`PitchClass`] 承载。本结构只多存一个"用户写的音名"用于回显
+/// 与确定性身份种子 —— 它**不**携带任何音阶知识。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scale {
-    /// 主音音级（0 = C）。
-    pub tonic_pc: u8,
-    /// 归一化后的音名。
+    /// 主音（theory 的 `PitchClass`）。
+    pub tonic: PitchClass,
+    /// 调式（theory 的 `ScaleKind`）。
+    pub kind: ScaleKind,
+    /// 归一化后的音名（大写）。
     pub note: String,
-    /// 归一化后的调式（小写）。
-    pub mode: String,
 }
 
 impl Scale {
-    /// 归一化写法（`"C minor"`）—— 进 `section_id` 的确定性种子与响应。
+    /// theory 的音阶视图：**音级集合**（`pitch_classes` / `contains` / `degree_of`）
+    /// 的唯一来源。本模块的音阶内收拢 ([`snap_into_scale`]) 只问它。
+    #[must_use]
+    pub fn theory_scale(&self) -> TheoryScale {
+        TheoryScale::new(self.tonic, self.kind)
+    }
+
+    /// 归一化写法（`"C natural_minor"`；调式名来自 `ScaleKind::name()`）——
+    /// 进 `section_id` 的确定性种子与响应。
     #[must_use]
     pub fn canonical(&self) -> String {
-        format!("{} {}", self.note, self.mode)
+        format!("{} {}", self.note, self.kind.name())
     }
 }
 
-/// 查风格预设。
+/// 全部可用风格预设 = `yeban-theory` 的流派 ID 清单。
+///
+/// 顺序由 `GenreLibrary::ids()` 决定（它按 `BTreeMap` 键序遍历 ⇒ 字典序、
+/// 跨进程跨平台一致 [MODEL-AST-003]）。本模块**不**再维护自己的预设表。
+#[must_use]
+pub fn available_presets() -> Vec<&'static str> {
+    GenreLibrary::ids()
+}
+
+/// 流派规则 → **声部数**：该流派全部典型走向里"和弦构成音数"的最大值。
+///
+/// 数据全部来自 theory：
+/// `GenreRule::primary_scale`（该流派的音阶）→ `Progression::parse`（真实走向）
+/// → `Progression::chords`（真实和弦）→ `Chord::pitch_classes().len()`（构成音数）。
+///
+/// "构成音数就是声部数"是**本层的配器政策**（读法），不是 theory 的 API：
+/// 三和弦有 3 个构成音 ⇒ 3 声部；七和弦有 4 个 ⇒ 4 声部（theory 自己的
+/// `VoicingConstraints::FOUR_VOICES` 文档也说"4 声部留给需要加九音/七音的进行"）。
+/// theory **没有**"风格 → 声部"的字段（`GenreRule` 只有速度区间 / 拍号 / 典型走向 /
+/// 典型音阶 / 摇摆 / 密度提示 / 来源），所以这条映射的**政策**只能是本层的，
+/// 而它的**数据**一个字节都不来自本地表。
 ///
 /// # Errors
 ///
-/// 未知预设 → [`BuildCode::StyleNotFound`]（`data.availablePresets` 给出全部候选）。
+/// 该流派在 theory 里的音阶/走向解析失败，或给不出任何和弦 → [`BuildCode::Conflict`]
+/// （**不**发明兜底声部数）。
+fn genre_voice_count(rule: &GenreRule) -> Result<usize, BuildFault> {
+    let scale = rule
+        .primary_scale(REFERENCE_TONIC)
+        .map_err(|error| theory_conflict(rule.id, "primary_scale", error))?;
+    let mut max_tones = 0usize;
+    for text in rule.typical_progressions {
+        let progression = Progression::parse(text)
+            .map_err(|error| theory_conflict(rule.id, "Progression::parse", error))?;
+        for chord in progression.chords(&scale) {
+            max_tones = max_tones.max(chord.pitch_classes().len());
+        }
+    }
+    if max_tones == 0 {
+        return Err(BuildFault::domain(
+            BuildCode::Conflict,
+            format!(
+                "流派 `{}` 在 theory 里没有任何可用的和弦材料, 推不出声部数",
+                rule.id
+            ),
+            json!({
+                "stylePreset": rule.id,
+                "typicalProgressions": rule.typical_progressions,
+                "why": "声部数由 theory 的和弦构成音数决定; 拿不到和弦就不猜",
+            }),
+        ));
+    }
+    Ok(max_tones)
+}
+
+/// 声部名（低 → 高），按 theory 推出的声部数选表。
+///
+/// theory **没有**乐器/声部命名概念（全 crate `instrument` 零命中），因此名字是
+/// 本层的角色词表（见模块头表格最后一行，已登记为 needs）。构成音数没有对应命名
+/// 规则时**如实报 `CONFLICT`**，绝不给一个编出来的名字。
+///
+/// # Errors
+///
+/// `count` 不是 3 或 4 → [`BuildCode::Conflict`]。
+fn part_names(style_preset: &str, count: usize) -> Result<&'static [&'static str], BuildFault> {
+    match count {
+        3 => Ok(&PARTS_THREE),
+        4 => Ok(&PARTS_FOUR),
+        other => Err(BuildFault::domain(
+            BuildCode::Conflict,
+            format!(
+                "风格预设 `{style_preset}` 在 theory 里的和弦构成音数是 {other}, \
+                 本层没有 {other} 声部的命名规则"
+            ),
+            json!({
+                "stylePreset": style_preset,
+                "chordTones": other,
+                "namedVoiceCounts": [PARTS_THREE.len(), PARTS_FOUR.len()],
+                "maxParts": MAX_PARTS,
+                "why": "theory 没有乐器/声部命名规则; 本层按'和弦有几个构成音就分几个声部'\
+                        的配器政策命名, 不猜名字",
+            }),
+        )),
+    }
+}
+
+/// 查风格预设：**存在性由 theory 判定**，声部数由 theory 的和弦材料推出。
+///
+/// # Errors
+///
+/// - 未知预设（`GenreLibrary::get` 返回 `TheoryError::GenreNotFound`）→
+///   [`BuildCode::StyleNotFound`]，`data.availablePresets` = theory 的完整清单；
+/// - 该流派的和声材料推不出可命名的声部数 → [`BuildCode::Conflict`]。
 pub fn preset_parts(style_preset: &str) -> Result<&'static [&'static str], BuildFault> {
-    STYLE_PRESETS
-        .iter()
-        .find(|(name, _)| *name == style_preset)
-        .map(|(_, parts)| *parts)
-        .ok_or_else(|| {
-            BuildFault::domain(
-                BuildCode::StyleNotFound,
-                format!("未知风格预设 `{style_preset}`"),
-                json!({
-                    "availablePresets": STYLE_PRESETS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-                }),
-            )
-        })
+    let rule = GenreLibrary::get(style_preset).map_err(|_| {
+        BuildFault::domain(
+            BuildCode::StyleNotFound,
+            format!("未知风格预设 `{style_preset}`"),
+            json!({
+                "availablePresets": available_presets(),
+                "stylePresetSource": "yeban-theory::genre::GenreLibrary::ids",
+                "presetCount": GenreLibrary::len(),
+            }),
+        )
+    })?;
+    let count = genre_voice_count(rule)?;
+    part_names(style_preset, count)
+}
+
+/// theory 的规则在**本层派生**阶段失败（音阶/走向/和弦解析不了）→ `CONFLICT`。
+///
+/// 这是"预设表自相矛盾"这一类失败的新形态：表的内容现在来自 theory，
+/// 于是"表坏了"的判定也必须由 theory 的返回值给出，而不是本层的常量自检。
+fn theory_conflict(style_preset: &str, step: &str, error: TheoryError) -> BuildFault {
+    BuildFault::domain(
+        BuildCode::Conflict,
+        format!("流派 `{style_preset}` 的规则在 theory 的 {step} 阶段失败: {error}"),
+        json!({
+            "stylePreset": style_preset,
+            "theoryStep": step,
+            "theoryError": error.to_string(),
+        }),
+    )
 }
 
 /// 校验调式写法（`"<音名> <调式>"`，大小写不敏感）。
+///
+/// - **音名**：查 [`NOTE_NAMES`]（17 条 ASCII 写法的输入字母表，错误信息里如实列出）；
+/// - **调式**：交给 `ScaleKind::parse` —— 它接受规范名（`natural_minor`）、短名
+///   （`minor`）、中文名（`自然小调`）与常见拼写变体，**语义与接受面都由 theory 决定**，
+///   本模块不维护第二份调式表。
 ///
 /// # Errors
 ///
@@ -268,11 +486,11 @@ pub fn parse_scale(scale: &str) -> Result<Scale, BuildFault> {
         BuildFault::domain(
             BuildCode::InvalidParameterRange,
             format!("`scale` 必须形如 \"C minor\", 实际 `{scale}`"),
-            json!({ "noteNames": NOTE_NAMES, "modes": MODES }),
+            json!({ "noteNames": NOTE_NAMES, "modes": mode_names() }),
         )
     })?;
     let note = note.trim().to_ascii_uppercase();
-    let mode = mode.trim().to_ascii_lowercase();
+    let mode = mode.trim();
     let position = NOTE_NAMES
         .iter()
         .position(|name| *name == note)
@@ -283,18 +501,71 @@ pub fn parse_scale(scale: &str) -> Result<Scale, BuildFault> {
                 json!({ "noteNames": NOTE_NAMES }),
             )
         })?;
-    if !MODES.contains(&mode.as_str()) {
-        return Err(BuildFault::domain(
+    let tonic = PitchClass::new(NOTE_PITCH_CLASSES[position]).map_err(|error| {
+        BuildFault::domain(
+            BuildCode::InvalidParameterRange,
+            format!("音名 `{note}` 映射不到合法音级: {error}"),
+            json!({ "noteNames": NOTE_NAMES, "theoryError": error.to_string() }),
+        )
+    })?;
+    let kind = ScaleKind::parse(mode).map_err(|error| {
+        BuildFault::domain(
             BuildCode::InvalidParameterRange,
             format!("未知调式 `{mode}`"),
-            json!({ "modes": MODES }),
-        ));
+            json!({
+                "modes": mode_names(),
+                "modeSource": "yeban-theory::scale::ScaleKind::parse",
+                "theoryError": error.to_string(),
+            }),
+        )
+    })?;
+    Ok(Scale { tonic, kind, note })
+}
+
+/// 把一个音高**收进**目标音阶：已经在音阶里就原样返回，否则移到最近的音阶音。
+///
+/// 音阶的**内容**（有哪些音级）来自 theory 的 [`TheoryScale`]；"最近 + 平局下行"
+/// 是本层的确定性政策（theory 没有"把外部材料映射进音阶"的 API）。平局优先**下行**
+/// 与降号侧口径一致（例如 `D minor` 里的 `B` : 到 `Bb` 与到 `C` 距离相同 ⇒ 取 `Bb`）。
+///
+/// 八度折叠由 [`shift_bytes`] 保证：结果始终落在 `0..=127`，且音级不丢。
+fn snap_into_scale(pitch: u8, scale: &TheoryScale) -> u8 {
+    let pc = pitch % 12;
+    match PitchClass::new(pc) {
+        Ok(current) if scale.contains(current) => pitch,
+        Ok(_) => {
+            for distance in 1..=6i16 {
+                // 先下行（♭ 侧）后上行：平局因此总是选下行。
+                for offset in [-distance, distance] {
+                    let wrapped = (i16::from(pc) + offset).rem_euclid(12);
+                    let Ok(candidate) = PitchClass::new(u8::try_from(wrapped).unwrap_or(pc)) else {
+                        continue;
+                    };
+                    if scale.contains(candidate) {
+                        return shift_bytes(pitch, offset);
+                    }
+                }
+            }
+            // 任何音阶都至少含一个音级 ⇒ 上面的循环必然提前返回;
+            // 走到这里只可能是 pitch % 12 本身不合法, 那时保守地不动它。
+            pitch
+        }
+        Err(_) => pitch,
     }
-    Ok(Scale {
-        tonic_pc: NOTE_PITCH_CLASSES[position],
-        note,
-        mode,
-    })
+}
+
+/// 把音高整体移动 `offset` 个半音；越界时做**八度折叠**（音级不丢、音域合法）。
+///
+/// 不变量：`shift_bytes(p, k) ≡ p + k (mod 12)` 且结果 ∈ `0..=127`。
+fn shift_bytes(pitch: u8, offset: i16) -> u8 {
+    let mut value = i16::from(pitch) + offset;
+    while value < 0 {
+        value += 12;
+    }
+    while value > 127 {
+        value -= 12;
+    }
+    u8::try_from(value).unwrap_or(pitch)
 }
 
 /// 每小节 tick 数（由工程拍号算出，`960 PPQ`）。
@@ -444,15 +715,22 @@ fn master_bus(project: &YebanProjectV1) -> Result<EntityId, BuildFault> {
     Ok(bus)
 }
 
-/// 按等音类把一条材料的音符移调 `delta` 个半音，并给每个音符派生**新**身份。
+/// 按等音类把一条材料的音符移调 `delta` 个半音（再按需收进目标音阶），
+/// 并给每个音符派生**新**身份。
 ///
-/// 折叠口径：`pitch + delta > 127` 时减一个八度（`delta ∈ 0..=11` 且
-/// `pitch ∈ 0..=127` ⇒ 折叠后必然落在 `0..=126`）。音级因此不丢，音域始终合法。
+/// 两步都是确定性的：
+///
+/// 1. `pitch + delta`，越界时**八度折叠**（`delta ∈ 0..=11`）；
+/// 2. 给了 `scale` 时把结果**收进**该音阶（[`snap_into_scale`]）——
+///    音阶的音级集合来自 `yeban-theory`。这一步正是 `D dorian` ≠ `D minor` 的来源：
+///    材料里的 `B`（音级 11）在 `D minor` 里会被收拢到 `Bb`（音级 10），
+///    在 `D dorian` 里则原样保留。
 fn transposed_notes(
     project: &YebanProjectV1,
     source: EntityId,
     clip_id: EntityId,
     delta: u8,
+    scale: Option<&TheoryScale>,
 ) -> BTreeMap<EntityId, MidiNote> {
     let mut out = BTreeMap::new();
     let Some(notes) = project
@@ -463,10 +741,8 @@ fn transposed_notes(
         return out;
     };
     for (key, note) in notes {
-        let raised = u16::from(note.pitch) + u16::from(delta);
-        let folded = if raised > 127 { raised - 12 } else { raised };
-        // 不变量: delta ∈ 0..=11 且 pitch ∈ 0..=127 ⇒ folded ∈ 0..=126。
-        let pitch = u8::try_from(folded).unwrap_or(note.pitch);
+        let moved = shift_bytes(note.pitch, i16::from(delta));
+        let pitch = scale.map_or(moved, |scale| snap_into_scale(moved, scale));
         let id = deterministic_id(&format!("note:{clip_id}:{key}"));
         let mut copy = note.clone();
         copy.id = id;
@@ -483,12 +759,14 @@ fn transposed_notes(
 ///
 /// # Errors
 ///
-/// - 未知风格预设 → `STYLE_NOT_FOUND`；
+/// - 未知风格预设（`GenreLibrary::get` 判成 `TheoryError::GenreNotFound`）→
+///   `STYLE_NOT_FOUND`（`data.availablePresets` = theory 的完整流派清单）；
 /// - `bars` 为 0 或超过 [`MAX_BARS`] → `OUT_OF_RANGE`；`scale` 写法非法 →
-///   `INVALID_PARAMETER_RANGE`；
+///   `INVALID_PARAMETER_RANGE`（音名查本地字母表，调式由 `ScaleKind::parse` 判）；
 /// - 现有路由图已经成环 → `CYCLE_DETECTED`；
 /// - 没有主总线音轨 → `TRACK_NOT_FOUND`；
 /// - `clip_pool` 里没有可用材料 → `CLIP_NOT_FOUND`（`data.missing` 说明缺什么）；
+/// - 该流派的规则在 theory 里推不出可命名的声部数 → `CONFLICT`；
 /// - 施加到克隆体后模型层校验失败 → [`BuildFault::Model`]。
 pub fn plan(
     project: &YebanProjectV1,
@@ -498,6 +776,7 @@ pub fn plan(
     scale: Option<&str>,
 ) -> Result<SectionPlan, BuildFault> {
     // 1. 参数与工程前置条件（顺序即错误码优先级，判据钉住它）。
+    //    风格与声部数都来自 theory（见 `preset_parts` / `genre_voice_count`）。
     let parts = preset_parts(style_preset)?;
     if parts.is_empty() || parts.len() > MAX_PARTS {
         return Err(BuildFault::domain(
@@ -520,6 +799,8 @@ pub fn plan(
         Some(text) => Some(parse_scale(text)?),
         None => None,
     };
+    // 音阶内收拢用的 theory 视图（材料音高不在音阶里时按它收拢）。
+    let theory_scale = scale.as_ref().map(Scale::theory_scale);
     if let Some(cycle) = detect_cycle(&project.routing_graph) {
         return Err(BuildFault::domain(
             BuildCode::CycleDetected,
@@ -609,17 +890,24 @@ pub fn plan(
         old_section: project.sections.get(&section_id).cloned(),
         new_section: section,
     });
-    // 4a. 片段池条目：内容取自真实材料（可选的等音类移调），身份是确定性派生。
+    // 4a. 片段池条目：内容取自真实材料（等音类移调到目标主音 + 收进 target 音阶），
+    //     身份是确定性派生。
     for part in &part_plans {
         let delta = scale.as_ref().map_or(0, |scale| {
-            (scale.tonic_pc + 12 - part.material.root_pc) % 12
+            (scale.tonic.semitones() + 12 - part.material.root_pc) % 12
         });
         ops.push(Op::AddClip {
             clip: ClipPoolEntry {
                 id: part.clip_id,
                 name: part.name.clone(),
                 content: ClipContent::Midi {
-                    notes: transposed_notes(project, part.material.id, part.clip_id, delta),
+                    notes: transposed_notes(
+                        project,
+                        part.material.id,
+                        part.clip_id,
+                        delta,
+                        theory_scale.as_ref(),
+                    ),
                 },
             },
         });
@@ -812,6 +1100,33 @@ mod tests {
         after
     }
 
+    /// 一份"材料指定"的工程：拿规范样本工程，把**第一条 MIDI 片段**的音符换成给定的
+    /// `(pitch, startTick)` 表；主总线 / 路由图 / 音频条目全部保持原样。
+    ///
+    /// 判据 ① 需要材料里**恰好**含 `B`/`Bb` 这类区分调式的音级（规范样本的三和弦做不到），
+    /// 因此在夹具里构造 —— **不**改 `yeban-model`（它不属本线）。
+    fn project_with_material(notes: &[(u8, u64)]) -> YebanProjectV1 {
+        let mut project = filled_project();
+        let material_id = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_some())
+            .map(|entry| entry.id)
+            .expect("样本工程必须有 MIDI 材料");
+        let entry = project.clip_pool.get_mut(&material_id).expect("材料");
+        let mut replaced = BTreeMap::new();
+        for (index, (pitch, start_tick)) in notes.iter().enumerate() {
+            let id = deterministic_id(&format!("fixture-note:{material_id}:{index}"));
+            replaced.insert(id, MidiNote::new(id, *start_tick, *pitch, 480));
+        }
+        let Some(slot) = entry.content.notes_mut() else {
+            panic!("材料必须是 MIDI 片段");
+        };
+        *slot = replaced;
+        project.validate().expect("夹具工程必须合法");
+        project
+    }
+
     #[test]
     fn note_names_and_pitch_classes_are_aligned() {
         assert_eq!(NOTE_NAMES.len(), NOTE_PITCH_CLASSES.len());
@@ -821,31 +1136,279 @@ mod tests {
         }
     }
 
+    /// 判据 ③：未知风格仍然 ⇒ `STYLE_NOT_FOUND`，而**判它的那一次调用**是 theory 的
+    /// `GenreLibrary::get`，候选清单是 theory 的完整流派表（**错误语义没有放松**）。
     #[test]
     fn unknown_preset_is_style_not_found() {
         let project = filled_project();
-        let fault = plan(&project, "Chorus", "polka", 8, None).expect_err("未知预设");
+        let fault = plan(&project, "Chorus", "yeban_unknown_style", 8, None).expect_err("未知预设");
         assert_eq!(fault.domain_code(), Some(BuildCode::StyleNotFound));
         let BuildFault::Domain { data, .. } = fault else {
             panic!("必须是领域失败");
         };
         assert!(data["availablePresets"].is_array());
+        assert_eq!(
+            data["availablePresets"],
+            json!(GenreLibrary::ids()),
+            "候选清单必须**就是** theory 的流派 ID 清单"
+        );
+        assert_eq!(data["presetCount"], json!(GenreLibrary::len()));
+        assert_eq!(
+            data["stylePresetSource"],
+            json!("yeban-theory::genre::GenreLibrary::ids")
+        );
+        // 反例的另一半: theory 里**存在**的名字不许被本地表挡住。
+        for id in ["polka", "synthwave", "lo_fi_hip_hop", "funk"] {
+            assert!(GenreLibrary::get(id).is_ok(), "{id} 必须是 theory 的流派");
+            assert!(preset_parts(id).is_ok(), "{id} 必须可用作风格预设");
+        }
+    }
+
+    /// 判据 ②：**风格 → 声部**的数据来自 theory 的流派规则。
+    ///
+    /// 声部数 = 该流派全部典型走向里和弦构成音数的最大值 —— 这里用
+    /// `GenreLibrary` / `Progression` / `Chord` **独立算一遍**再比对，
+    /// 因此"把 theory 的查询改成硬编码常量"必然变红（注入记录见台账 §4）。
+    #[test]
+    fn style_to_voices_comes_from_the_theory_genre_rule() {
+        assert_eq!(
+            available_presets(),
+            GenreLibrary::ids(),
+            "风格预设的合法集合就是 theory 的流派 ID 清单"
+        );
+        assert!(
+            available_presets().len() > 100,
+            "theory 登记了整库流派: {}",
+            available_presets().len()
+        );
+        for rule in GenreLibrary::all() {
+            // 用 theory 的原始调用**独立算一遍**（本模块的生产路径是
+            // `genre_voice_count`；这里从 `GenreRule` 的典型走向直接展开）。
+            // 口径：**全部**典型走向里和弦构成音数的最大值（`sketch` 只用第一条，
+            // 而 `funk` 的七和弦在第二条 `I7-IV7` 里 —— 判据与实现都取全量）。
+            let scale = rule.primary_scale(PitchClass::C).expect("theory 音阶");
+            let expected = rule
+                .typical_progressions
+                .iter()
+                .map(|text| Progression::parse(text).expect("theory 走向"))
+                .flat_map(|progression| progression.chords(&scale))
+                .map(|chord| chord.pitch_classes().len())
+                .max()
+                .expect("至少一个和弦");
+            let parts = preset_parts(rule.id).expect("每个 theory 流派都必须是合法预设");
+            assert_eq!(
+                parts.len(),
+                expected,
+                "流派 {} 的声部数必须等于 theory 给的和弦构成音数",
+                rule.id
+            );
+            assert!(!parts.is_empty(), "流派 {} 的声部表不得为空", rule.id);
+        }
+        // 具体读数（theory 全库只有 `funk` 的走向含七和弦 `I7-IV7`）。
+        assert_eq!(preset_parts("funk").expect("funk"), PARTS_FOUR);
+        assert_eq!(preset_parts("synthwave").expect("synthwave"), PARTS_THREE);
+        assert_eq!(preset_parts("lo_fi_hip_hop").expect("lofi"), PARTS_THREE);
+    }
+
+    /// 判据 ⑤：调式语义来自 theory —— 公开调式表逐条可被 `ScaleKind::parse` 往返，
+    /// 别名（theory 的 `aeolian` / 中文名）与规范名指向**同一个** `ScaleKind`。
+    #[test]
+    fn scale_semantics_come_from_theory() {
+        let names = mode_names();
+        assert_eq!(names.len(), MODE_KINDS.len(), "调式表长度必须与变体表一致");
+        let mut seen: Vec<&'static str> = Vec::new();
+        for kind in MODE_KINDS {
+            let name = kind.name();
+            assert!(!seen.contains(&name), "调式名不得重复: {name}");
+            seen.push(name);
+            assert_eq!(
+                ScaleKind::parse(name).expect("theory 必须认自己的规范名"),
+                canonical_kind(kind),
+                "{name} 必须归一到规范变体"
+            );
+        }
+        assert_eq!(
+            mode_names().len(),
+            16,
+            "规范名 + 别名（ionian / aeolian）都要列出来"
+        );
+        // 别名与规范名同构（判定权在 theory 的 `ScaleKind::parse`）。
+        assert_eq!(
+            ScaleKind::parse("aeolian").expect("aeolian"),
+            ScaleKind::NaturalMinor
+        );
+        assert_eq!(
+            ScaleKind::parse("ionian").expect("ionian"),
+            ScaleKind::Major
+        );
+        assert_eq!(
+            ScaleKind::parse("minor").expect("minor"),
+            ScaleKind::NaturalMinor
+        );
+        assert_eq!(
+            ScaleKind::parse("自然小调").expect("中文名"),
+            ScaleKind::NaturalMinor
+        );
+        // 契约口径：大小写不敏感、必须"音名 调式"两段、未知调式仍被拒；
+        // 规范写法由 `ScaleKind::name()` 给出（别名会被 theory 归一）。
+        assert_eq!(
+            parse_scale("c MINOR").expect("大小写不敏感").kind,
+            ScaleKind::NaturalMinor
+        );
+        assert_eq!(
+            parse_scale("c MINOR").expect("大小写不敏感").canonical(),
+            "C natural_minor",
+            "规范调式名来自 ScaleKind::name()"
+        );
+        assert_eq!(
+            parse_scale("C aeolian").expect("别名").canonical(),
+            "C natural_minor",
+            "别名由 theory 归一"
+        );
+        assert_eq!(
+            parse_scale("Db dorian").expect("等音写法").tonic,
+            PitchClass::CS
+        );
+        assert!(parse_scale("Cminor").is_err(), "缺空格");
+        assert!(parse_scale("H dorian").is_err(), "未知音名");
+        assert!(parse_scale("C bogus").is_err(), "未知调式");
+    }
+
+    /// 判据 ①：`D dorian` 与 `D minor` 的输出**不同**，且差异**恰好**是音阶语义
+    /// （第六级 `B` vs `Bb`）造成的 —— 逐音断言。
+    ///
+    /// 材料刻意含 `B`(71) 与 `Bb`(70)：`D minor` 把 `B` 收拢到 `Bb`，
+    /// `D dorian` 原样保留 `B`；其余音（`D`/`F`/`A`）两个音阶都在，逐音相同。
+    #[test]
+    fn dorian_and_minor_differ_exactly_by_the_sixth_degree() {
+        let project =
+            project_with_material(&[(62, 0), (70, 480), (71, 960), (65, 1440), (74, 1920)]);
+        let dorian = plan(&project, "Verse", "lo_fi_hip_hop", 4, Some("D dorian")).expect("dorian");
+        let minor = plan(&project, "Verse", "lo_fi_hip_hop", 4, Some("D minor")).expect("minor");
+
+        // 除音高外的一切都相同：同一批声部/片段/摆放/边的**数量**与 op 种类。
+        assert_eq!(dorian.part_track_ids.len(), minor.part_track_ids.len());
+        assert_eq!(dorian.ops.len(), minor.ops.len());
+        assert_eq!(
+            dorian.ops.iter().map(Op::name).collect::<Vec<_>>(),
+            minor.ops.iter().map(Op::name).collect::<Vec<_>>()
+        );
+        // 未给 scale 时两次调用逐字节相同（差异只可能来自音阶）。
+        let no_scale_a = plan(&project, "Verse", "lo_fi_hip_hop", 4, None).expect("无 scale");
+        let no_scale_b = plan(&project, "Verse", "lo_fi_hip_hop", 4, None).expect("无 scale");
+        assert_eq!(no_scale_a.ops, no_scale_b.ops);
+
+        let dorian_after = applied(&dorian, &project);
+        let minor_after = applied(&minor, &project);
+        let dorian_pitches = sorted_pitches(&dorian_after.clip_pool[&dorian.part_clip_ids[0]]);
+        let minor_pitches = sorted_pitches(&minor_after.clip_pool[&minor.part_clip_ids[0]]);
+        // 材料的最低音是 62 (D) ⇒ 目标主音也是 D ⇒ 移调量 = 0，
+        // 因此这里看到的差异**只**能是音阶内收拢。
+        assert_eq!(dorian_pitches, vec![62, 65, 69, 71, 74], "D dorian 逐音");
+        assert_eq!(minor_pitches, vec![62, 65, 70, 70, 74], "D minor 逐音");
+        let only_dorian: Vec<u8> = dorian_pitches
+            .iter()
+            .copied()
+            .filter(|pitch| !minor_pitches.contains(pitch))
+            .collect();
+        let only_minor: Vec<u8> = minor_pitches
+            .iter()
+            .copied()
+            .filter(|pitch| !dorian_pitches.contains(pitch))
+            .collect();
+        // 差异**恰好**在第六级那一组音级上（A/69、Bb/70、B/71 = 音级 9/10/11）：
+        //   - 材料的 `B`(71) 只在 dorian 里存活（minor 把它收拢成 Bb/70）；
+        //   - 材料的 `Bb`(70) 只在 minor 里存活（dorian 把它收拢成 A/69），
+        //     于是 `Bb` 在 minor 里出现两次（材料原有的 + `B` 收拢来的）。
+        let unique = |pitches: &[u8]| -> Vec<u8> {
+            let mut out: Vec<u8> = Vec::new();
+            for pitch in pitches {
+                if !out.contains(pitch) {
+                    out.push(*pitch);
+                }
+            }
+            out
+        };
+        assert_eq!(unique(&only_dorian), vec![69, 71]);
+        assert_eq!(unique(&only_minor), vec![70]);
+        assert_eq!(only_minor.len(), 2, "minor 里 Bb 出现两次");
+        assert!(
+            only_dorian
+                .iter()
+                .chain(only_minor.iter())
+                .all(|pitch| (9..=11).contains(&(pitch % 12))),
+            "全部差异都必须落在第六级音级 (9=A / 10=Bb / 11=B) 上: {only_dorian:?} {only_minor:?}"
+        );
+        // 两个音阶的交集音（D/F/A）逐音不变 —— 差异不是"整体移调"造成的。
+        let common: Vec<u8> = dorian_pitches
+            .iter()
+            .copied()
+            .filter(|pitch| minor_pitches.contains(pitch))
+            .collect();
+        assert_eq!(common, vec![62, 65, 74]);
+        assert_ne!(
+            dorian.part_clip_ids, minor.part_clip_ids,
+            "音阶语义必须进身份种子"
+        );
+        // 反向读数：材料音级全部落在两个音阶的交集里时，两者逐音相同。
+        let diatonic = project_with_material(&[(62, 0), (65, 480), (69, 960)]);
+        let d_dorian = plan(&diatonic, "Verse", "lo_fi_hip_hop", 4, Some("D dorian")).expect("d");
+        let d_minor = plan(&diatonic, "Verse", "lo_fi_hip_hop", 4, Some("D minor")).expect("m");
+        let borrow = |plan: &SectionPlan, project: &YebanProjectV1| {
+            let after = applied(plan, project);
+            sorted_pitches(&after.clip_pool[&plan.part_clip_ids[0]])
+        };
+        assert_eq!(
+            borrow(&d_dorian, &diatonic),
+            borrow(&d_minor, &diatonic),
+            "D-F-A 是三度音阶的公共音级 ⇒ 收拢后必须相同"
+        );
+    }
+
+    /// 音阶内收拢的口径：不在音阶里的音高移到**最近的音阶音**，平局优先下行；
+    /// 已在音阶里的音高一个字节都不动。
+    #[test]
+    fn material_notes_snap_to_the_nearest_scale_tone() {
+        // 材料: C#5(73, 音级 1)、F#4(66, 音级 6)、D4(62, 音级 2)。
+        // 目标 `D minor` = {2,4,5,7,9,10,0}:
+        //   音级 1 (C#) → 最近的 0(C)/2(D) 等距 ⇒ 下行 C (72)
+        //   音级 6 (F#) → 最近的 5(F)/7(G) 等距 ⇒ 下行 F (65)
+        //   音级 2 (D) 已在音阶里 ⇒ 不动 (62)
+        let project = project_with_material(&[(73, 0), (66, 480), (62, 960)]);
+        let planned = plan(&project, "Verse", "lo_fi_hip_hop", 2, Some("D minor")).expect("规划");
+        let after = applied(&planned, &project);
+        assert_eq!(
+            sorted_pitches(&after.clip_pool[&planned.part_clip_ids[0]]),
+            vec![62, 65, 72]
+        );
+        // 取全集（半音阶）时所有音高原样保留 ⇒ 收拢是"按音阶"而不是"乱移"。
+        let chromatic = project_with_material(&[(73, 0), (66, 480), (62, 960)]);
+        let planned =
+            plan(&chromatic, "Verse", "lo_fi_hip_hop", 2, Some("D chromatic")).expect("规划");
+        let after = applied(&planned, &chromatic);
+        assert_eq!(
+            sorted_pitches(&after.clip_pool[&planned.part_clip_ids[0]]),
+            vec![62, 66, 73]
+        );
     }
 
     #[test]
     fn bars_and_scale_are_validated() {
         let project = filled_project();
-        let fault = plan(&project, "Chorus", "lofi-beats", 0, None).expect_err("bars=0");
+        let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 0, None).expect_err("bars=0");
         assert_eq!(fault.domain_code(), Some(BuildCode::OutOfRange));
         let fault =
-            plan(&project, "Chorus", "lofi-beats", MAX_BARS + 1, None).expect_err("bars 过大");
+            plan(&project, "Chorus", "lo_fi_hip_hop", MAX_BARS + 1, None).expect_err("bars 过大");
         assert_eq!(fault.domain_code(), Some(BuildCode::OutOfRange));
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, Some("H dorian")).expect_err("音名");
+        let fault =
+            plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("H dorian")).expect_err("音名");
         assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, Some("C bogus")).expect_err("调式");
+        let fault =
+            plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("C bogus")).expect_err("调式");
         assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
-        plan(&project, "Chorus", "lofi-beats", 4, Some("c MINOR")).expect("大小写不敏感");
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, Some("Cminor")).expect_err("缺空格");
+        plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("c MINOR")).expect("大小写不敏感");
+        let fault =
+            plan(&project, "Chorus", "lo_fi_hip_hop", 4, Some("Cminor")).expect_err("缺空格");
         assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
     }
 
@@ -855,10 +1418,12 @@ mod tests {
         let first = plan(&project, "Chorus", "synthwave", 8, Some("C minor")).expect("规划");
         let second = plan(&project, "Chorus", "synthwave", 8, Some("C minor")).expect("规划");
         assert_eq!(first, second, "同一请求必须产出同一份规划");
-        assert_eq!(first.part_track_ids.len(), 4);
-        assert_eq!(first.part_clip_ids.len(), 4);
-        assert_eq!(first.placement_ids.len(), 4);
-        assert_eq!(first.routing_edge_ids.len(), 4);
+        // `synthwave` 的典型走向是 `i-VI-III-VII` / `i-VII-VI-VII`（全三和弦）
+        // ⇒ theory 推出的声部数 = 3（判据 ② 另有全库比对）。
+        assert_eq!(first.part_track_ids.len(), 3);
+        assert_eq!(first.part_clip_ids.len(), 3);
+        assert_eq!(first.placement_ids.len(), 3);
+        assert_eq!(first.routing_edge_ids.len(), 3);
         assert_eq!(first.ticks_per_bar, 3840, "样本是 4/4, 960 PPQ");
 
         // 起点接在最后一个段落之后, 且不重叠。
@@ -888,8 +1453,8 @@ mod tests {
         assert_eq!(section.name, "Chorus");
         assert_eq!(section.start_tick, plan.start_tick);
         assert_eq!(section.end_tick, plan.end_tick);
-        assert_eq!(after.clip_pool.len(), project.clip_pool.len() + 4);
-        assert_eq!(after.tracks.len(), project.tracks.len() + 4);
+        assert_eq!(after.clip_pool.len(), project.clip_pool.len() + 3);
+        assert_eq!(after.tracks.len(), project.tracks.len() + 3);
         for (index, clip_id) in plan.part_clip_ids.iter().enumerate() {
             let entry = after.clip_pool.get(clip_id).expect("新片段池条目");
             let notes = entry.content.notes().expect("必须是 MIDI 片段");
@@ -951,7 +1516,7 @@ mod tests {
         let plan = plan(
             &project,
             "Chorus",
-            "cinematic-orchestral",
+            "orchestral_film_score",
             4,
             Some("D dorian"),
         )
@@ -984,7 +1549,7 @@ mod tests {
         let project = filled_project();
         let before = serde_json::to_string(&project).expect("序列化");
         plan(&project, "Chorus", "synthwave", 8, Some("C minor")).expect("规划");
-        plan(&project, "Chorus", "polka", 8, None).expect_err("未知预设");
+        plan(&project, "Chorus", "yeban_unknown_style", 8, None).expect_err("未知预设");
         plan(&project, "Chorus", "synthwave", MAX_BARS + 1, None).expect_err("bars 越界");
         assert_eq!(
             serde_json::to_string(&project).expect("序列化"),
@@ -1022,7 +1587,7 @@ mod tests {
             ("只有音频条目", &audio_only),
             ("只有空 MIDI 条目", &blank),
         ] {
-            let fault = plan(project, "Chorus", "lofi-beats", 4, None).expect_err(label);
+            let fault = plan(project, "Chorus", "lo_fi_hip_hop", 4, None).expect_err(label);
             assert_eq!(
                 fault.domain_code(),
                 Some(BuildCode::ClipNotFound),
@@ -1047,7 +1612,7 @@ mod tests {
     fn missing_master_bus_is_a_clear_track_not_found() {
         let mut project = filled_project();
         project.master_bus_track_id = EntityId::default();
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, None).expect_err("无主总线");
+        let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 4, None).expect_err("无主总线");
         assert_eq!(fault.domain_code(), Some(BuildCode::TrackNotFound));
         let BuildFault::Domain { data, .. } = fault else {
             panic!("必须是领域失败");
@@ -1068,21 +1633,40 @@ mod tests {
         let chorus_after = applied(&chorus, &project);
         assert_eq!(
             chorus_after.tracks[&chorus.part_track_ids[0]].name,
-            "Chorus · Pad"
+            "Chorus · Bass"
         );
         assert_eq!(
             chorus_after.clip_pool[&chorus.part_clip_ids[0]].name,
-            "Chorus · Pad"
+            "Chorus · Bass"
+        );
+        assert_eq!(
+            chorus_after.tracks[&chorus.part_track_ids[2]].name, "Chorus · Soprano",
+            "声部从低到高排列"
         );
 
-        // 风格 → 声部数与声部名。
-        let lofi = plan(&project, "Chorus", "lofi-beats", 8, None).expect("规划");
-        assert_eq!(chorus.part_track_ids.len(), 4, "synthwave 4 声部");
-        assert_eq!(lofi.part_track_ids.len(), 3, "lofi-beats 3 声部");
+        // 风格 → 声部数与声部名（数字来自 theory 的和弦构成音数）。
+        let lofi = plan(&project, "Chorus", "lo_fi_hip_hop", 8, None).expect("规划");
+        let funk = plan(&project, "Chorus", "funk", 8, None).expect("规划");
+        assert_eq!(
+            chorus.part_track_ids.len(),
+            3,
+            "synthwave 的走向全是三和弦 ⇒ 3 声部"
+        );
+        assert_eq!(lofi.part_track_ids.len(), 3, "lo_fi_hip_hop 3 声部");
+        assert_eq!(
+            funk.part_track_ids.len(),
+            4,
+            "funk 的 `I7-IV7` 是七和弦 ⇒ 4 声部"
+        );
         let lofi_after = applied(&lofi, &project);
         assert_eq!(
             lofi_after.tracks[&lofi.part_track_ids[0]].name,
-            "Chorus · Keys"
+            "Chorus · Bass"
+        );
+        let funk_after = applied(&funk, &project);
+        assert_eq!(
+            funk_after.tracks[&funk.part_track_ids[1]].name, "Chorus · Tenor",
+            "四声部才有 Tenor"
         );
 
         // 小节数 → 段落跨度与摆放时值。
@@ -1093,7 +1677,11 @@ mod tests {
         );
         assert_ne!(long.section_id, chorus.section_id);
 
-        // 调式 → 材料按**等音类移调**到该调主音（音级不丢, 音域始终合法）。
+        // 调式 → 材料按等音类移调到该调主音，再**收进**该音阶。
+        // 样本材料是 `C E G C`（60/64/67/72），最低音音级 = 0 ⇒ 移调量 = 主音音级。
+        // 逐音期望（写死，来自 theory 的音级集合，不由实现算）：
+        //   `C minor` = {0,2,3,5,7,8,10}: 60→60, 64(E)→63(Eb, 等距优先下行), 67→67, 72→72
+        //   `D minor` = {2,4,5,7,9,10,0}: 62, 66(F#)→65(F), 69, 74
         let c_minor = plan(&project, "Chorus", "synthwave", 8, Some("C minor")).expect("规划");
         let d_minor = plan(&project, "Chorus", "synthwave", 8, Some("D minor")).expect("规划");
         assert_ne!(
@@ -1102,37 +1690,10 @@ mod tests {
         );
         let c_after = applied(&c_minor, &project);
         let d_after = applied(&d_minor, &project);
-        let source = project
-            .clip_pool
-            .values()
-            .find_map(|entry| entry.content.notes())
-            .expect("材料");
-        let source_root_pc = source
-            .values()
-            .map(|note| note.pitch % 12)
-            .min()
-            .expect("材料最低音的音级");
-        let mut expected_source: Vec<u8> = source.values().map(|note| note.pitch).collect();
-        expected_source.sort_unstable();
         let c_pitches = sorted_pitches(&c_after.clip_pool[&c_minor.part_clip_ids[0]]);
         let d_pitches = sorted_pitches(&d_after.clip_pool[&d_minor.part_clip_ids[0]]);
-        assert_eq!(c_pitches.len(), expected_source.len());
-        // 移调口径（与实现同一条规则, 但用**源材料**独立算一遍）。
-        let fold = |pitch: u8, tonic: u16| -> u8 {
-            let delta = (tonic + 12 - u16::from(source_root_pc)) % 12;
-            let raised = u16::from(pitch) + delta;
-            u8::try_from(if raised > 127 { raised - 12 } else { raised }).expect("合法")
-        };
-        let expected_c: Vec<u8> = expected_source
-            .iter()
-            .map(|pitch| fold(*pitch, 0))
-            .collect();
-        let expected_d: Vec<u8> = expected_source
-            .iter()
-            .map(|pitch| fold(*pitch, 2))
-            .collect();
-        assert_eq!(c_pitches, expected_c, "C minor 的移调口径");
-        assert_eq!(d_pitches, expected_d, "D minor 的移调口径");
+        assert_eq!(c_pitches, vec![60, 63, 67, 72], "C minor 的逐音期望");
+        assert_eq!(d_pitches, vec![62, 65, 69, 74], "D minor 的逐音期望");
         assert_ne!(c_pitches, d_pitches, "调式不同 ⇒ 音高不同");
     }
 
@@ -1188,8 +1749,8 @@ mod tests {
     #[test]
     fn a_second_identical_batch_cannot_be_applied_twice() {
         let project = filled_project();
-        let first = plan(&project, "Chorus", "acoustic-folk", 2, Some("G major")).expect("规划");
-        let second = plan(&project, "Chorus", "acoustic-folk", 2, Some("G major")).expect("规划");
+        let first = plan(&project, "Chorus", "folk", 2, Some("G major")).expect("规划");
+        let second = plan(&project, "Chorus", "folk", 2, Some("G major")).expect("规划");
         assert_eq!(first.ops, second.ops, "确定性身份 ⇒ 逐字节同一批 op");
         let mut after = applied(&first, &project);
         let after_once = serde_json::to_string(&after).expect("序列化");
@@ -1217,7 +1778,7 @@ mod tests {
     #[test]
     fn op_summary_matches_the_real_delta() {
         let project = filled_project();
-        let plan = plan(&project, "Chorus", "lofi-beats", 3, Some("A minor")).expect("规划");
+        let plan = plan(&project, "Chorus", "lo_fi_hip_hop", 3, Some("A minor")).expect("规划");
         let summary = summarize_ops(&plan.ops);
         let after = applied(&plan, &project);
         assert_eq!(summary["opCount"], plan.ops.len());
@@ -1280,7 +1841,7 @@ mod tests {
             project.routing_graph.edges.insert(edge.id, edge);
         }
         project.validate().expect("模型层不判环, 因此它是'合法'的");
-        let fault = plan(&project, "Chorus", "lofi-beats", 4, None).expect_err("必须拒绝");
+        let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 4, None).expect_err("必须拒绝");
         assert_eq!(fault.domain_code(), Some(BuildCode::CycleDetected));
         let BuildFault::Domain { data, .. } = fault else {
             panic!("必须是领域失败");
@@ -1301,7 +1862,7 @@ mod tests {
             .retain(|_, edge| edge.source_node != bus && edge.destination_node != bus);
         project.validate().expect("合法");
 
-        let plan = plan(&project, "Chorus", "lofi-beats", 2, None).expect("规划");
+        let plan = plan(&project, "Chorus", "lo_fi_hip_hop", 2, None).expect("规划");
         assert!(
             plan.added_routing_nodes.contains(&bus),
             "必须补主总线节点: {:?}",
@@ -1368,7 +1929,7 @@ mod tests {
     #[test]
     fn material_content_is_preserved_except_pitch_and_identity() {
         let project = filled_project();
-        let plan = plan(&project, "Chorus", "lofi-beats", 2, None).expect("规划");
+        let plan = plan(&project, "Chorus", "lo_fi_hip_hop", 2, None).expect("规划");
         let after = applied(&plan, &project);
         let source = project
             .clip_pool

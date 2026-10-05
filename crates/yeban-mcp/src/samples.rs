@@ -381,7 +381,7 @@ fn fixture_argument(param: &ParamSpec) -> Value {
         "offset" => Value::from(0),
         "macroIndex" => Value::from(0),
         "sectionName" => Value::from("Chorus"),
-        "stylePreset" => Value::from("cinematic-orchestral"),
+        "stylePreset" => Value::from("orchestral_film_score"),
         "scale" => Value::from("C minor"),
         "commitMessage" => Value::from("AI 提案: 副歌加一层八度"),
         "reason" => Value::from("织体过密"),
