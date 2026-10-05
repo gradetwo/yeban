@@ -7136,3 +7136,31 @@ attempts; if it recurs under CI, treat it as worth investigating rather than dis
 
 **The lesson, third instance of the same family this session**: I attached a causal label ("flaky") to a single observation, the same way rounds
 231/238 attached facts to partial readings. Measuring the rate before naming a cause is the cheap correction, and it took one command.
+
+
+### Round 289: the mapping move was attempted and REVERTED - the moved file carries app-coupled tests
+
+Round 287's recipe was executed (six deletions by line number, the module declaration, a consumer-side wrapper rebuilt from the pre-move body) and
+it got as far as compiling the library. Then the test build failed with **20 errors in `yeban-midi`'s own test module**, and the reason is a gap
+the recipe had not anticipated: **`export_midi.rs`'s tests are coupled to the app** - they use `crate::save`, the writer, and the app-side error
+variant the move deliberately leaves behind. A pure-domain crate cannot host them.
+
+**Reverted** deliberately and cleanly: `git reset --hard` plus removing the untracked moved file, after which `cargo check -p yeban-app -p
+yeban-midi` and the two crates' test suites are green again (271 passed). The tree was never left broken, which is why the attempt was made from a
+clean HEAD with a recorded backup.
+
+**What the attempt established, which is worth more than the revert**:
+1. the recipe was incomplete in **exactly one place** - the tests - and that is now known rather than discovered mid-flight;
+2. the **library half of the move compiles**: the six line-number deletions, the `crate::midi` rewrite, the module declaration and the
+   `From`-based wrapper were all sound; only the test module needed splitting;
+3. the correct recipe is therefore: move the file, trim the six app-coupled spans **and** the app-coupled tests (which belong in `yeban-app`
+   beside the writer they exercise), then add the wrapper.
+
+**A separate environmental finding from this round, recorded because it changes the next attempts**: the disk filled to **117 MiB free (100%)**
+mid-verification, which made `cargo test` print nothing and `fmt` fail - symptoms that look like code failures and were not. `target` was **26
+GB**, of which `target/debug/incremental` was **12 GB**; deleting that restored 9 GB. The lesson is procedural: this session's many per-crate
+sweeps grew the target directory, and a disk-full symptom should be checked (df) before debugging a "failure".
+
+**Honest judgement**: fifth multi-file move this session, and like the previous four it produced damage only a tool caught - here the test build.
+The difference is that the revert path was prepared and used, so the cost was one round rather than a broken tree. An attempt with a known revert
+is cheaper than another round of planning, and the recipe is now one item more complete.
