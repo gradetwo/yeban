@@ -3652,3 +3652,22 @@ The commit changed only `docs/DEV_WORKFLOW.md`, so `plan` derived an empty crate
 **empty green** that `docs/CI_CD.md` warns about: it proves the guards and doc-contract accept the change, and it proves
 nothing about code. It is therefore recorded as evidence for the guards only, and not counted among the full-workspace
 verdicts (which stay at six).
+
+### Round 136: spec for the frame-rate criterion (BASELINE-003), so the next worker builds rather than re-derives
+
+`BASELINE-003` is PENDING. Its hardware objection is gone (负责人裁决 HD-45 = B: adaptive-refresh readings on the reference
+machine are acceptable). What it lacks now is a **runnable criterion**. Spec follows; nothing here needs another ruling.
+
+| part | decision |
+| :--- | :--- |
+| the bar (from the row and `spikes/README.md`) | **10 万音符滚动**, stable **120 FPS**, i.e. **p99 frame time <= 8.3 ms**; and (spike-03) resident memory **< 25 MB** |
+| where | a new example under `crates/yeban-ui-test-port/examples/` (or finish `spikes/spike-06-roll-virtualization`), reusing the existing Tier-1 software path (`MinimalSoftwareWindow` + `SoftwareRenderer`) - **zero new dependencies** |
+| what to measure | build a project with **100 000 notes**, construct the piano-roll view, then rasterize **N = 600 frames** and advance the scroll position by 1/120 s per frame; report **p50 / p99 / max** frame time in ms |
+| witness (must be non-trivial) | print frames rendered, note count, and per-frame non-black pixels - the same shape as `headless-idle-witness` - so a "fast" result cannot come from an empty tree |
+| pass/fail | decided on the **reference machine only** (HD-45). p99 <= 8.3 ms and resident memory < 25 MB. Report both; never substitute a hosted-runner number (`spikes/README.md` line 36 forbids it) |
+| tooth test | render the same view **without** the virtualized viewport (all notes drawn) and show p99 exceeds 8.3 ms - the criterion must be able to fail |
+| CI | do **not** assert in `ci.yml`. Add a manual gate `fps` to `gates-manual.yml` that runs the example and uploads the numbers, so the verdict comes from a deliberate dispatch |
+
+**Why write this instead of building it now**: the work is a new example plus a 100 000-note fixture and a scrolled-frame
+loop; my remaining context cannot produce and verify that safely. This is the same treatment the `auto`-default fix got
+(rounds 116-122): specification first, then a clean one-shot implementation with before/after evidence.
