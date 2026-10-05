@@ -19,6 +19,13 @@
 //! 本文件用**独立参考实现**（另一套算法）做对账：整数有理数版的 tick→帧、
 //! Hinnant 的逆变换 `days_from_civil`、显式分段包络、暴力峰值。
 
+// 本文件是 `rustc --test` 的 **crate root**, 不是库；被包含模块的公开 API
+// 在这里没有"外部消费者", 因此 `dead_code` 会误报。真实的 dead-code 判定由 CI 的
+// `cargo clippy -p yeban-mcp --all-targets -- -D warnings` 在 lib crate 上执行。
+#![allow(dead_code)]
+
+#[path = "../src/domain/render_clip_math.rs"]
+mod render_clip_math;
 #[path = "../src/domain/render_math.rs"]
 mod render_math;
 
@@ -205,5 +212,162 @@ mod tests {
             assert_eq!(frames, i64::from(rate), "1 秒必须是采样率那么多帧");
             assert_eq!(math::ms_to_frames(0, rate), 0);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 音频片段装配的纯逻辑对账（`render_clip_math.rs`）
+// ---------------------------------------------------------------------------
+
+/// 独立参考实现：**整数有理数**版的片段帧区间（不使用被测函数的浮点路径）。
+fn reference_clip_span(
+    start_tick: u64,
+    duration_ticks: u64,
+    ppq: u64,
+    bpm: u64,
+    sample_rate: u32,
+) -> (i64, i64) {
+    let frames = |tick: u64| -> i64 {
+        let numerator = u128::from(tick) * 60 * u128::from(sample_rate);
+        let denominator = u128::from(ppq) * u128::from(bpm);
+        let quotient = (numerator + denominator / 2) / denominator;
+        i64::try_from(quotient).unwrap_or(i64::MAX)
+    };
+    let start = frames(start_tick);
+    let end = frames(start_tick.saturating_add(duration_ticks.max(1)));
+    (start, end.max(start.saturating_add(1)))
+}
+
+/// 独立参考实现：把声道布局写成一张**显式表**（与被测实现的 `if` 链写法不同）。
+fn reference_layout(asset: u16, out: usize) -> Option<&'static str> {
+    match (asset, out) {
+        (0, _) | (_, 0) => None,
+        (a, o) if usize::from(a) == o => Some("identity"),
+        (1, _) => Some("mono-to-all"),
+        (2, 1) => Some("stereo-to-mono"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod clip_reconciliation {
+    use super::render_clip_math as clip;
+
+    /// 对账 1: 片段帧区间 == 整数有理数参考实现（含"至少 1 帧"的下界）。
+    #[test]
+    fn clip_span_matches_the_rational_reference() {
+        let mut checked = 0usize;
+        for bpm in [20u64, 60, 90, 120, 128, 140, 999] {
+            for start in [0u64, 1, 480, 959, 960, 1_920, 7_680] {
+                for duration in [1u64, 2, 240, 480, 960, 1_920, 3_840] {
+                    for rate in [44_100u32, 48_000, 96_000, 192_000] {
+                        let ours = clip::clip_frame_span(start, duration, 960, bpm as f64, rate);
+                        let theirs = super::reference_clip_span(start, duration, 960, bpm, rate);
+                        assert_eq!(ours, theirs, "bpm={bpm} start={start} dur={duration} rate={rate}");
+                        assert!(ours.1 > ours.0, "非零时值必须给出非空区间");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked >= 500, "对账样本太少: {checked}");
+    }
+
+    /// 对账 2: 声道布局矩阵与显式表逐格一致（0..=8 × 0..=8 全矩阵）。
+    #[test]
+    fn channel_layout_agrees_with_the_explicit_table() {
+        for asset in 0u16..=8 {
+            for out in 0usize..=8 {
+                let ours = clip::channel_layout(asset, out).map(clip::ChannelLayout::name);
+                assert_eq!(ours, super::reference_layout(asset, out), "{asset} -> {out}");
+            }
+        }
+    }
+
+    /// 对账 3: 增益合成 —— 静音是 `None`，其余是两级 dB 的**精确和**（f32 加法）。
+    #[test]
+    fn gain_composition_is_exact_and_silence_is_none() {
+        for clip_db in [-60.0f32, -6.0, -0.5, 0.0, 6.0, 12.0] {
+            for track_db in [-12.0f32, 0.0, 3.5] {
+                assert_eq!(
+                    clip::combined_gain_db(clip_db, track_db, true),
+                    Some(clip_db + track_db)
+                );
+                assert_eq!(clip::combined_gain_db(clip_db, track_db, false), None);
+            }
+        }
+        // 非有限输入按"未上报"（0 dB）处理, 与 `db_to_linear` 对非有限输入返回 1.0 的口径一致。
+        assert_eq!(clip::combined_gain_db(f32::NAN, 3.0, true), Some(3.0));
+        assert_eq!(clip::combined_gain_db(3.0, f32::NAN, true), Some(3.0));
+    }
+
+    /// 对账 4: 编码器延迟/填充的裁剪区间与显式参考实现一致（含越界声明）。
+    #[test]
+    fn encoder_trim_matches_the_explicit_reference() {
+        let reference = |frames: u64, delay: Option<u32>, padding: Option<u32>| {
+            let from = u64::from(delay.unwrap_or(0)).min(frames);
+            let to = frames.saturating_sub(u64::from(padding.unwrap_or(0)));
+            if from >= to { None } else { Some((from, to)) }
+        };
+        for frames in [0u64, 1, 2, 100, 44_100] {
+            for delay in [None, Some(0u32), Some(1), Some(64), Some(44_100), Some(1_000_000)] {
+                for padding in [None, Some(0u32), Some(1), Some(64), Some(1_000_000)] {
+                    assert_eq!(
+                        clip::encoder_trim_span(frames, delay, padding),
+                        reference(frames, delay, padding),
+                        "frames={frames} delay={delay:?} padding={padding:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 对账 5: 魔数嗅探的**充要性** —— 只有签名逐字节匹配才会被认领。
+    #[test]
+    fn container_sniff_never_guesses() {
+        // 前缀是合法签名的任意后缀都必须被认领。
+        let mut riff = Vec::from(*b"RIFF");
+        riff.extend_from_slice(&[0, 0, 0, 0]);
+        riff.extend_from_slice(b"WAVE");
+        riff.extend_from_slice(&[0xAB; 37]);
+        assert_eq!(clip::sniff_container(&riff), clip::ContainerSniff::RiffWave);
+        for cut in 0..riff.len() {
+            let prefix = &riff[..cut];
+            if cut >= 12 {
+                assert_eq!(clip::sniff_container(prefix), clip::ContainerSniff::RiffWave);
+            } else {
+                assert_ne!(clip::ContainerSniff::RiffWave, clip::sniff_container(prefix));
+            }
+        }
+        // 用一串"每个字节都试一遍"的构造证明: 不是签名的东西不会被误认。
+        for byte in 0u8..=255 {
+            let probe = [byte; 16];
+            let expected = if probe.starts_with(b"fLaC") {
+                clip::ContainerSniff::Flac
+            } else if probe.starts_with(b"OggS") {
+                clip::ContainerSniff::Ogg
+            } else {
+                clip::ContainerSniff::Unknown
+            };
+            assert_eq!(clip::sniff_container(&probe), expected, "byte {byte}");
+        }
+        assert_eq!(clip::ContainerSniff::RiffWave.name(), "RIFF/WAVE");
+        assert_eq!(clip::ContainerSniff::Ogg.name(), "Ogg");
+        assert_eq!(clip::ContainerSniff::Unknown.name(), "unknown");
+    }
+
+    /// 对账 6: 重采样判定只由"两个率是否相等"决定（与大小无关）。
+    #[test]
+    fn resample_decision_is_symmetric_and_size_independent() {
+        let rates = [0u32, 44_100, 48_000, 88_200, 96_000, 192_000, 768_000];
+        for a in rates {
+            for b in rates {
+                assert_eq!(clip::needs_resample(a, b), a != b, "{a} -> {b}");
+                assert_eq!(clip::needs_resample(a, b), clip::needs_resample(b, a));
+            }
+        }
+        assert!(!clip::SUPPORTED_ASSET_SUMMARY.is_empty());
+        assert!(!clip::UNSUPPORTED_ASSET_SUMMARY.is_empty());
+        assert!(clip::RESAMPLER_SUMMARY.contains("rubato"));
     }
 }

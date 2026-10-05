@@ -520,7 +520,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 true,
                 "输出容器/编码 (wav / rf64 / bw64)",
             ),
-            param("sampleRate", "integer", true, "采样率 (Hz, 必须与工程一致)"),
+            param(
+                "sampleRate",
+                "integer",
+                true,
+                "输出采样率 (Hz); 与工程采样率不一致时由 rubato sinc 重采样 (ARCH-DSP-002)",
+            ),
             param(
                 "normalize",
                 "boolean",

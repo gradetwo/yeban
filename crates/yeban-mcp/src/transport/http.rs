@@ -975,22 +975,31 @@ mod tests {
         assert!(value.get("error").is_none(), "领域失败必须带内传递");
         assert_eq!(value["result"]["error"]["code"], "INVALID_PARAMETER_RANGE");
 
-        // 好参数但**工程采样率不一致**（规范样本工程是 48 kHz, 这里请求 44.1 kHz）:
-        // 重采样器未接线 ⇒ 契约内的 `RENDER_FAILED`（带内 200），
-        // 既不是"假装成功", 也不再是实现级 501。
+        // 好参数 + **工程采样率不一致**（规范样本工程是 48 kHz, 这里请求 44.1 kHz）:
+        // 自 `line/audio-render` 起 rubato sinc 重采样已接线（ARCH-DSP-002 / D26），
+        // 因此这**不再是错误** —— 它必须带内成功, 并如实报告重采样口径。
+        // 上一版的 `RENDER_FAILED` + `data.unwired = "resampler"` 一并退役。
         let mismatched = server.handle_text(&request(
             Some(&bearer(&server)),
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_render_master","arguments":{"format":"wav","sampleRate":44100}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"yeban_render_master","arguments":{"format":"wav","sampleRate":44100,"dryRun":true}}}"#,
         ));
         assert_eq!(mismatched.status, 200, "渲染器已接线, 不再有 501");
         let value: Value = serde_json::from_str(&mismatched.body).expect("JSON");
-        assert!(value.get("error").is_none(), "领域失败必须带内传递");
-        assert_eq!(value["result"]["status"], "error");
-        assert_eq!(value["result"]["error"]["code"], "RENDER_FAILED");
-        assert_eq!(
-            value["result"]["error"]["data"]["unwired"], "resampler",
-            "必须如实说明是什么没接线"
+        assert!(value.get("error").is_none(), "领域结果必须带内传递");
+        assert_eq!(value["result"]["status"], "success", "{value}");
+        // `dryRun` 的实测载荷在 `data.preview` 下（与 `yeban_render_master` 的
+        // 只读规划同一份 `details()`）。
+        let preview = &value["result"]["data"]["preview"];
+        assert_eq!(preview["sampleRate"], 44100);
+        assert_eq!(preview["audio"]["wired"], true);
+        assert!(
+            preview["audio"]["resampler"]["method"]
+                .as_str()
+                .expect("resampler.method")
+                .contains("rubato"),
+            "必须写清用的是哪种重采样: {value}"
         );
+        assert!(preview.get("unwired").is_none());
     }
 
     #[test]

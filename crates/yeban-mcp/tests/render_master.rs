@@ -766,26 +766,40 @@ fn every_impossible_request_returns_a_contract_error_code() {
             json!({"format": "wav", "sampleRate": 12345}),
             "INVALID_PARAMETER_RANGE",
         ),
-        (
-            "采样率与工程不一致 (重采样未接线)",
-            json!({"format": "wav", "sampleRate": 44100}),
-            "RENDER_FAILED",
-        ),
     ];
     for (context, arguments, expected) in cases {
         let result = call(&mut dispatcher, &auth, arguments);
         assert_domain_error(&result, expected, context);
         assert!(!out.exists(), "{context} 失败时不许留下半成品");
     }
-    // 采样率不一致时必须**说清是什么没接线**。
+    // 采样率 ≠ 工程采样率**不再是错误**: rubato sinc 重采样已接线
+    // (ARCH-DSP-002 / ADR-0001 D26, 见 `line/audio-render`)。
+    // 这里断言它真的产出一份 44.1 kHz 母带, 并如实报告重采样口径 ——
+    // 上一版的 `data.unwired = "resampler"` 拒绝必须**退役**。
     let mismatched = call(
         &mut dispatcher,
         &auth,
         json!({"format": "wav", "sampleRate": 44100}),
     );
-    assert_eq!(mismatched["error"]["data"]["unwired"], "resampler");
-    assert_eq!(mismatched["error"]["data"]["projectSampleRate"], 48000);
-    assert_eq!(mismatched["error"]["data"]["requestedSampleRate"], 44100);
+    assert_eq!(mismatched["status"], "success", "{mismatched}");
+    assert_eq!(mismatched["data"]["sampleRate"], 44100);
+    assert_eq!(
+        mismatched["data"]["frames"], 44100,
+        "120 BPM / 960 PPQ / 1920 tick == 1 秒 @ 44.1 kHz"
+    );
+    assert_eq!(mismatched["data"]["durationSeconds"], 1.0);
+    assert_eq!(mismatched["data"]["audio"]["wired"], true);
+    let method = mismatched["data"]["audio"]["resampler"]["method"]
+        .as_str()
+        .expect("resampler.method");
+    assert!(
+        method.contains("rubato"),
+        "必须写清用的是哪种重采样: {method}"
+    );
+    assert!(
+        mismatched["data"].get("unwired").is_none(),
+        "重采样已接线, 不该再出现 `unwired`: {mismatched}"
+    );
 
     // 没有任何内容 ⇒ 0 帧 ⇒ RENDER_FAILED（而不是写一个 0 帧文件冒充成功）。
     let empty = Spec {
