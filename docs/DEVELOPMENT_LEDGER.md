@@ -6362,3 +6362,25 @@ ruling, and without pretending the shortcuts work. The order becomes:
 
 **CI at this point**: still zero runs in progress (19:49Z, stalled since 19:31), so even this reframing cannot be validated by the
 project's standard yet.
+
+### Round 259: the registration point exists - wire_roll_edit goes right after wire_undo
+
+The last unknown for the pencil wiring, read rather than assumed: in `main.rs` the input context is created at line 196 and the undo
+port is wired at 199, so `host::wire_roll_edit(&ui, &undo_port, &input)` has both of its arguments in scope at that point - it is a
+one-line addition immediately after `host::wire_undo(&ui, &undo_port);`, with `host::apply_undo(&ui, &undo_port)` following.
+
+That closes the enumeration: nothing about the pencil's wiring is unknown now. The four parts are, in order of edit:
+
+1. `wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>, context: &Rc<RefCell<InputContext>>)` in `host.rs`, registering `on_clicked`;
+2. inside it: read `ui.get_active_tool()`, return early unless it is the pencil (`Tool::from_digit(2)` -> `Tool::Pencil`); read
+   `ui.get_roll_scroll_x()` and the window width; project from the port; `snapped_tick_at` for the tick; `clip_at_tick` over every
+   track's placements for the clip; the same scan for the owning track; `plan_to_add_note`; `commit_ops(SystemTime::now() ms, ..)`;
+   re-project (the `refresh_undo` pattern);
+3. the registration line in `main.rs` after 199;
+4. a UI criterion: set the tool to the pencil, click inside a clip, assert that clip's note count rose by exactly one, then undo and
+   assert it returns.
+
+**Not started, and the reason is unchanged and specific**: (2) mutates the model and (4) judges that mutation. Rounds 520 and 521 showed
+what hurrying produces (a gate chained with a commit; an unscoped text replacement that corrupted two unrelated lines), and the CI stall
+(round 241 onwards, still 0 runs in progress) means the criterion could not be checked the way the project requires even after writing
+it.
