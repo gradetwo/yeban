@@ -965,6 +965,31 @@ impl ViewState {
             .collect()
     }
 
+    /// `[UI-NOTE-001]` 步骤 ①：当前视口的 **tick 范围**（`[min_tick, max_tick]`）。
+    ///
+    /// 规范第 3.1 节要求视口以 `min_tick` / `max_tick`（以及音高上下界）暴露给裁剪核心；
+    /// 本函数给出水平那一对。它必须与 [`Self::notes_visible_in`] **口径一致** —— 否则"索引说可见、
+    /// 范围说不在"这种自相矛盾会一直藏着（判据就是查这个）。
+    /// 换算失败（`ticks_per_pixel` 为 0 或像素超 `u32`）时退化为 `(0, 0)`，与"没有可见范围"同义。
+    #[must_use]
+    pub fn visible_tick_range(&self, scroll_x: f32, viewport_width: f32) -> (u64, u64) {
+        let left = scroll_x.max(0.0);
+        let right = left + viewport_width.max(0.0);
+        let to_u32 = |px: f32| -> Option<u32> {
+            if px.is_finite() && px >= 0.0 && px <= u32::MAX as f32 {
+                Some(px as u32)
+            } else {
+                None
+            }
+        };
+        let (Some(left_px), Some(right_px)) = (to_u32(left), to_u32(right)) else {
+            return (0, 0);
+        };
+        let min_tick = px_to_tick(left_px, self.ticks_per_pixel).unwrap_or(0);
+        let max_tick = px_to_tick(right_px, self.ticks_per_pixel).unwrap_or(0);
+        (min_tick, max_tick)
+    }
+
     /// 取可见窗口内的音符（**六个**平行数组共用**同一**索引集）。
     ///
     /// `positions` 是**相对视口**的（已减去 `scroll_x`），因为 `.slint` 契约规定它不做位置算术；
@@ -2464,6 +2489,35 @@ mod tests {
             "1920px 窗口应只选中不到 5%: 可见 {} / 总 {}",
             vis.len(),
             total
+        );
+    }
+
+    #[test]
+    fn visible_tick_range_agrees_with_the_clipping_index_set() {
+        // `[UI-NOTE-001]` 步骤 ① 的口径判据：索引集说"可见"的音符, 必须与 tick 范围**重叠**。
+        // 在像素空间比对会退化成同义反复（裁剪本来就是像素比较）, 所以这里比 tick。
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        let width = 1920.0_f32;
+        let mut checked = 0_usize;
+        for scroll in [0.0_f32, 500.0, 2000.0] {
+            let (min_tick, max_tick) = view.visible_tick_range(scroll, width);
+            assert!(min_tick <= max_tick, "范围必须有序: {min_tick}..{max_tick}");
+            for index in view.notes_visible_in(scroll, width) {
+                let note = &view.notes[index];
+                assert!(
+                    note.end_tick >= min_tick && note.start_tick <= max_tick,
+                    "音符 {index} ({start}..{end}) 被判可见, 却与 tick 范围 {min}..{max} 不相交 (scroll={scroll})",
+                    start = note.start_tick,
+                    end = note.end_tick,
+                    min = min_tick,
+                    max = max_tick,
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "三个窗口合计必须至少检验到一个音符, 否则判据空转"
         );
     }
 
