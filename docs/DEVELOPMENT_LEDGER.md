@@ -4625,3 +4625,30 @@ what the gate exists to find out, so the run stands and I will read it rather th
 say so in the gate row rather than keep re-running a measurement whose precondition is missing. That sequencing decision is
 mine to take under the round-146 delegation once the run reports, because it changes what "PENDING" means for this gate: from
 "missing a criterion" to "missing the capability the criterion measures".
+
+### Round 180: CORRECTION - the "40+ minutes" figure in round 177 was never measured; the real elapsed times were minutes
+
+I finally measured instead of estimating, and the estimate was wrong by an order of magnitude:
+
+```
+37350746040 (fps gate):  已耗时 2.7 分钟  (started 17:45:01Z, read at 17:47:40Z)
+37350525943 (ignore CI): 已耗时 4.4 分钟  (started 17:43:15Z, read at 17:47:40Z)
+```
+
+Round 177 asserted "run `37348640469` was still `in_progress` after more than 40 minutes" and used that as the justification for the
+`#[ignore]` marker. **I never measured that elapsed time** - I inferred it from how many session rounds had passed, which is not a
+clock. The same mistake is in the commit message for `626d103`. Both are now corrected here rather than edited away, because the
+error is instructive: a round count is not a duration, and I had already recorded (round 175) that "my instrument was wrong, not
+the code" - this is the same failure with a different instrument.
+
+**What survives, and what does not**:
+- Does NOT survive: "the loop cannot finish in a debug CI build" as a measured claim. It may or may not; nobody has timed it. The
+  fps gate started at 17:45:01Z and was still in its build/test step 2.7 minutes later, which is unremarkable.
+- DOES survive, and is sufficient on its own: `spikes/README.md` line 36 forbids judging frame rate from hosted-runner numbers,
+  so the verdict belongs to a deliberate gate rather than to the default workspace pass; and the gate runs it with `--release`,
+  which is the configuration the gate is about. The `#[ignore]` marker's own comment says exactly those two things - the
+  overstated duration was only in the ledger and the commit message, not in the code.
+
+**Action**: leave the marker (its stated reasons are correct), withdraw the duration claim here, and stop treating round counts
+as elapsed time. If the workspace leg's true duration with the test enabled is wanted, it has to be measured with a timestamp -
+which is what this round did for the first time.
