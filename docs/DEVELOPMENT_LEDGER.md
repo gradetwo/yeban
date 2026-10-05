@@ -5446,3 +5446,38 @@ again: unread verdicts are better than unpushed work, as long as they are not mi
 - five ledger guards plus the mechanical checks run in `light`; the newest, `check_viewport_bounds_wiring.py`, is tooth-tested and
   CI-verified;
 - everything measured, decided or learned is in this ledger; the single human decision outstanding is HD-49, with ADR-0002 attached.
+
+### Round 220: the macOS golden baselines are stale - a trap for anyone running the UI criteria locally
+
+Found by running the feature-gated UI criteria on this machine, which I had not done for a while:
+
+```
+test result: FAILED. 14 passed; 2 failed; 1 ignored
+  project_projection_reaches_the_control_tree_and_the_pixels ... FAILED
+  live_main_window_renders_tier1_pixels_and_enforces_permissions ... FAILED
+```
+
+Both panic at the same line, `test_port_adapter.rs:191`, which is the visual-regression assertion
+(`[UI-MCP-003] ... 与基准不一致`). The failure is real, and **not** caused by the recent commits - the history says why:
+
+| platform baselines | last touched by |
+| :--- | :--- |
+| `tests/golden/macos/` | `eabd5fc` (the commit that first wired the golden judge) |
+| `tests/golden/linux/` | `5a1570b` ("regenerate the Linux baselines for the new D56 UI button") |
+
+So the macOS baselines predate the D56 button, which changed the drawn UI, and only the Linux set was regenerated. On macOS the
+mismatch is therefore **guaranteed**, and it will hit any developer who runs `cargo test -p yeban-app --features ui-test-port
+--test test_port_adapter` locally - which is exactly what I was doing to strengthen the evidence for the queued CI runs. It also
+explains why CI has stayed green: the gate judges on Linux, where the baselines are current.
+
+**Two honest options, neither taken unilaterally in this round**:
+1. **generate macOS baselines too**, which needs a macOS runner in the manual `goldens` gate - a cost decision, and the same
+   family as HD-49 (the project's gates are judged on one platform by design);
+2. **remove the stale macOS baselines**, after which the criterion takes its own documented path for a missing baseline - it
+   reports "视觉回归**未被判定**（不等于通过）" and returns. That is honest, and strictly better than a stale baseline that fails
+   every local macOS run as if the code had regressed. It is also a deletion of tracked files, so it wants a deliberate decision
+   rather than being slipped into a commit.
+
+**What this does NOT mean**: that the recent commits broke anything. The Linux verdicts are the gate, they are green, and the
+clipboard of evidence (round 189) already established that the golden suites render small fixtures whose notes fit the viewport, so
+clipping changes nothing in those scenes.
