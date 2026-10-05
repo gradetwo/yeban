@@ -6184,3 +6184,28 @@ grep for the consumer of `dispatch_key` or `input::Resolution` in `host.rs`/`mai
 
 Recorded rather than guessed because a fourth guess would be worse than the previous three: the code is small, the reads are cheap, and
 I have now demonstrated three times that skipping one produces a wrong design.
+
+### Round 252: the root cause - the keyboard path itself was never wired, and the source says so
+
+The read round 251 promised, and it answers everything the last six rounds have been circling: `main.rs:192` states, in its own comment,
+that the segment **"Slint 键盘事件 → `input::dispatch_key` → `invoke_*`" 那一段仍然没接线** - the keyboard event path itself is not
+connected.
+
+That re-frames every "dead shortcut" observation as one fact rather than three:
+- `SelectTool`, `TogglePencilTool` and `DeleteSelection` have no handlers (round 247 measured 0 references each) **because no key event
+  ever arrives** - not because their arms were forgotten;
+- the `Undo` action's 11 handler references (which made the dispatcher look alive) belong to the **button** path: `host.rs:410`'s table
+  maps `undo-step`(弹窗按钮) to `UiAction::Undo`, and the popup button works while `Cmd+Z` does not;
+- `piano_roll.slint`'s comment claiming "the keyboard changes active-tool" (round 244) is false in the strongest sense: the keyboard
+  changes nothing at all.
+
+**Consequence for (a), and it is a change of scope that must be stated rather than absorbed**: wiring the pencil's tool selection
+cannot be done by adding a `UiAction` arm, because there is nothing upstream to produce a key event for the host to dispatch. The real
+task is to connect Slint key events to the input layer in the first place - one place (the window's key handler), feeding
+`input::resolve`/`dispatch_key`, then applying the result - and only then does any individual action (tool selection, pencil toggle,
+delete) have something to hang from.
+
+**What this says about my own last six rounds**: I measured symptoms accurately and designed three different placements for one fix
+(rounds 249/250/251) without ever asking the prior question - "does a key event reach this code at all?" A one-line grep for where
+Slint key events are handled would have answered it, and the answer was written in a comment I walked past repeatedly. The lesson is
+not "read more"; it is **ask whether the input path exists before designing its branches**.
