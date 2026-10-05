@@ -7457,3 +7457,23 @@ through.
 
 **Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; the mapping layer and the MCP tool remain owed; CI is green through
 `d4262af`.
+
+
+### Round 303: the pre-flight caught a second bad write, and the todo is now one line
+
+Attempt 10 fixed round 302's false positive (the brace counter was counting `{` and `}` inside format strings like `"{e}"`; stripping string
+literals before counting is the fix) and the pre-flight then refused a **different** file: `export.rs` is **+1**, while the app wrapper now passes.
+So the check has now prevented two bad writes, and each time it named the file and the exact imbalance instead of leaving a broken tree to be
+reverted.
+
+**The remaining todo is one line of diagnosis**: print the running brace balance of the generated `export.rs` **line by line** and the `+1` line will
+be visible; the two candidates are the deletion span for the writer (I delete from `pub fn export_project_to_file(` to the first line that is exactly
+`}`) and the `Save`-variant span. Either way it is a small fix in the generator, and the pre-flight will then let the write through - after which the
+compiler gets its turn, with auto-revert still armed.
+
+**What the last two rounds established about method**: the check-then-write order is strictly better than generate-then-revert, and it is cheap -
+about fifteen lines. The eight earlier failures each reached the compiler; the last two never touched the tree. That is the improvement worth
+carrying forward: **validate generated source structurally before writing it**, because the generator knows things the compiler will only report
+after the tree is dirty.
+
+**Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool still owed; CI green through `57b6b96`.
