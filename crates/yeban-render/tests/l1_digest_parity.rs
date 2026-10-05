@@ -54,8 +54,8 @@ mod export_pipeline;
 use std::path::PathBuf;
 
 use export_pipeline::l1_digest_record::{
-    DigestRecord, DigestScope, FieldDiff, Judgement, SCHEMA, Verdict, hex_lower, judge, parse,
-    report, skip_explanation, to_json_line, to_pretty_json,
+    CrossPlatform, DigestRecord, DigestScope, FieldDiff, Judgement, SCHEMA, Verdict, hex_lower,
+    judge, judge_policy, parse, report, skip_explanation, to_json_line, to_pretty_json,
 };
 use export_pipeline::l1_receipt::Threads;
 use export_pipeline::{
@@ -197,6 +197,20 @@ fn local_recomputation_matches_the_archived_reference() {
     }
     // 即使 SKIP，WAV 也必须是真的（判据 ⑧/⑨ 在下面逐条钉住）。
     assert!(!wav.is_empty());
+
+    // 不可比时再做一次**显式跨平台读数探针**并如实打印结果（见判据 ⑪）。
+    if !comparable {
+        let probe = judge_policy(&reference, &local, CrossPlatform::DigestParity);
+        if let Ok(probe) = probe {
+            println!(
+                "[判据11] MUST-GATE-002 跨平台读数探针: verdict={} reason={} digest_equal={} \
+                 (这份观测比同平台更强, 但它**不是**本门禁的通过)",
+                probe.verdict.token(),
+                probe.reason,
+                probe.digest_equal
+            );
+        }
+    }
 }
 
 /// 判据 ②：同一次运行两次渲染 ⇒ 摘要**逐字节相同**（确定性，判据 ⑦ 的真实形态）。
@@ -308,24 +322,34 @@ fn really_rerendering_with_another_seed_changes_the_digest() {
     );
 }
 
-/// 判据 ⑤（注入）：参考摘要的**参与字段**被改（ISA 写错）⇒ **FAIL**。
+/// 判据 ⑤（注入）：**同平台、同锁定工具链下，只有 ISA 不同 ⇒ 硬红**。
+///
+/// ⚠ 这里刻意**用本机读数当基线**再只改一个字段，而**不是**去改那份仓库里的参考摘要：
+/// 参考摘要来自另一台机器（本线是 macOS/arm64，CI 是 Linux/x86_64），
+/// 拿它去做"同平台"注入会在 CI 上退化成 `SKIP` —— 那正是本判据第一版在
+/// run 37267073019 红掉的**真原因**（它写死了"参考摘要与本机同平台"这个不成立的假设）。
+/// 判据要测的是"参与字段的权重"，因此基线必须与比较对象**同平台**。
 #[test]
-fn a_wrong_isa_in_the_reference_is_a_hard_fail() {
-    let reference = reference();
-    let (local, _) = local_record(Threads::Auto, "判据 ⑤");
-    let mut wrong = reference.clone();
+fn a_wrong_isa_on_the_same_platform_is_a_hard_fail() {
+    let (expected, _) = local_record(Threads::Auto, "判据 ⑤ 期望值");
+    let mut wrong = expected.clone();
     // 只改 ISA：其余全部相同 ⇒ 如果判决仍然 PASS，就说明 ISA 根本没参与比对。
-    wrong.platform.isa_features = "x86-64-v3+fma,+avx2".to_owned();
-    assert_ne!(wrong.platform.isa_features, local.platform.isa_features);
-    let judgement = judge(&wrong, &local).expect("可比");
-    assert!(judgement.same_platform && judgement.toolchain_locked);
+    wrong.platform.isa_features = format!("{}-v3+fma", expected.platform.isa_features);
+    assert_ne!(wrong.platform.isa_features, expected.platform.isa_features);
+    let judgement = judge(&expected, &wrong).expect("可比");
+    assert!(
+        judgement.same_platform && judgement.toolchain_locked,
+        "注入后的两份记录必须仍然同平台同锁工具链, 否则判据会退化成 SKIP"
+    );
     assert_eq!(
         judgement.verdict,
         Verdict::Fail,
-        "同平台同工具链下 ISA 不同必须硬红"
+        "同平台同工具链下 ISA 不同必须硬红: {}",
+        describe(&judgement.diffs)
     );
     assert_eq!(judgement.reason, "compared-field-mismatch");
     assert_eq!(judgement.verdict.exit_code(), 1);
+    assert_eq!(judgement.diffs.len(), 1, "只许点名 ISA 一个字段");
     assert!(
         judgement
             .diffs
@@ -334,31 +358,31 @@ fn a_wrong_isa_in_the_reference_is_a_hard_fail() {
     );
 }
 
-/// 判据 ⑤（注入）：参考摘要的**读数**被改 ⇒ `FAIL`，原因码是 `digest-mismatch`。
+/// 判据 ⑤（注入）：**读数被改** ⇒ `FAIL`，原因码是 `digest-mismatch`。
 #[test]
-fn a_tampered_reference_digest_is_a_hard_fail() {
-    let reference = reference();
-    let (local, _) = local_record(Threads::Auto, "判据 ⑤b");
-    let mut tampered = reference.clone();
+fn a_tampered_digest_is_a_hard_fail() {
+    let (expected, _) = local_record(Threads::Auto, "判据 ⑤b 期望值");
+    let mut tampered = expected.clone();
     // `digest` 与 `sample_digest` 必须一起改：无损编码下它们是同一个 SHA-256，
     // 只改一个会让记录**自相矛盾**（那是比"不同"更早的失败，见纯逻辑判据）。
     tampered.digest = "0".repeat(64);
     tampered.sample_digest = "0".repeat(64);
-    let judgement = judge(&tampered, &local).expect("可比");
+    let judgement = judge(&expected, &tampered).expect("可比");
     assert!(judgement.same_platform && judgement.toolchain_locked);
     assert_eq!(judgement.verdict, Verdict::Fail);
     assert_eq!(judgement.reason, "digest-mismatch");
     assert!(!judgement.digest_equal);
+    assert_eq!(judgement.verdict.exit_code(), 1);
 }
 
-/// 判据 ⑥（注入）：参考摘要的**仅记录字段**被改（宿主名 / 时间戳 / 构建元数据）⇒ 仍然 `PASS`。
+/// 判据 ⑥（注入）：**仅记录字段**被改（宿主名 / 时间戳 / 构建元数据 / `threads`）⇒ 仍然 `PASS`。
 ///
 /// 这条与判据 ⑤ 成对：它证明"参与/仅记录"的划分是**真的**，而不是文档里的散文。
+/// 与判据 ⑤ 同理，基线取**本机读数**（同平台）；改的是只该被记录的那一类字段。
 #[test]
-fn recorded_only_changes_in_the_reference_still_pass() {
-    let reference = reference();
-    let (local, _) = local_record(Threads::Auto, "判据 ⑥");
-    let mut touched = reference.clone();
+fn recorded_only_changes_still_pass() {
+    let (expected, _) = local_record(Threads::Auto, "判据 ⑥ 期望值");
+    let mut touched = expected.clone();
     touched.host_name = "a-totally-different-host.local".to_owned();
     touched.host_os_version = "SomeOtherOS 99.9 (riscv64)".to_owned();
     touched.generated_at_utc = "1970-01-01T00:00:01Z".to_owned();
@@ -367,29 +391,25 @@ fn recorded_only_changes_in_the_reference_still_pass() {
     touched.platform.rustc_commit_date = "1999-01-01".to_owned();
     touched.notes = "被改过的备注".to_owned();
     touched.params.threads = "1".to_owned();
-    assert_ne!(to_json_line(&touched), to_json_line(&reference));
-    let judgement = judge(&touched, &local).expect("可比");
-    let comparable = announce("判据6", &judgement);
-    if comparable {
-        assert_eq!(
-            judgement.verdict,
-            Verdict::Pass,
-            "仅记录字段的变化**不许**影响判决: {}",
-            describe(&judgement.diffs)
-        );
-        assert!(judgement.diffs.is_empty());
-        assert!(
-            judgement.recorded_only_differences.len() >= 5,
-            "仅记录字段的差异必须如实报告"
-        );
-    } else {
-        // 不可比时也必须仍然是"不可比"而不是"因为改了宿主名而变红"。
-        assert_eq!(judgement.verdict, Verdict::Skip);
-        assert!(matches!(
-            judgement.reason,
-            "cross-platform" | "toolchain-not-locked"
-        ));
-    }
+    assert_ne!(to_json_line(&touched), to_json_line(&expected));
+    let judgement = judge(&expected, &touched).expect("可比");
+    assert!(
+        judgement.same_platform && judgement.toolchain_locked,
+        "本判据的基线必须与比较对象同平台, 否则它证明不了'仅记录字段不参与'"
+    );
+    assert_eq!(
+        judgement.verdict,
+        Verdict::Pass,
+        "仅记录字段的变化**不许**影响判决: {}",
+        describe(&judgement.diffs)
+    );
+    assert!(judgement.diffs.is_empty(), "参与字段不许有任何差异");
+    assert_eq!(
+        judgement.recorded_only_differences.len(),
+        8,
+        "8 个仅记录字段的差异必须如实报告: {}",
+        describe(&judgement.recorded_only_differences)
+    );
 }
 
 /// 判据 ⑦：生成器**确定性** —— 同输入两次产出逐字节相同（单行 + 多行两种形态）。
@@ -509,4 +529,56 @@ fn the_archived_reference_is_self_consistent() {
             "字段表声称有 `{name}`, 但参考摘要里没有"
         );
     }
+}
+
+/// 判据 ⑪：**显式跨平台策略**的口径不许含糊。
+///
+/// 1. 默认策略下跨平台 ⇒ `SKIP`（退出码 2，**不是**通过）；
+/// 2. 显式 `CrossPlatform::DigestParity` 下跨平台且读数逐字节相同 ⇒ `PASS-CROSS-PLATFORM`
+///    （退出码 0，但记号与 `PASS` **刻意不同**）；
+/// 3. 跨平台且读数**不同** ⇒ 仍然是 `SKIP`（**不许**判 `FAIL` —— 跨平台的差异是
+///    `MUST-GATE-003` 的领域，判红就是假红）。
+#[test]
+fn cross_platform_policy_is_explicit_and_never_dresses_up_skip_as_pass() {
+    let (local, _) = local_record(Threads::Auto, "判据 ⑪ 基线");
+    // 造一个"另一个平台"的记录：只改平台身份（模拟 x86_64-linux）。
+    let mut foreign = local.clone();
+    foreign.platform.target_arch = "x86_64".to_owned();
+    foreign.platform.target_os = "linux".to_owned();
+    foreign.platform.target_triple = "x86_64-unknown-linux-gnu".to_owned();
+    foreign.platform.rustc_host = "x86_64-unknown-linux-gnu".to_owned();
+    foreign.validate().expect("自洽");
+    assert_ne!(
+        foreign.digest, "",
+        "读数仍然是同一个 —— 这条判据要测的是**平台身份**的影响"
+    );
+
+    // 1. 默认策略 ⇒ SKIP。
+    let default = judge(&foreign, &local).expect("可比");
+    assert_eq!(default.verdict, Verdict::Skip);
+    assert_eq!(default.reason, "cross-platform");
+    assert_eq!(default.verdict.exit_code(), 2);
+    assert!(!report(&default).contains("VERDICT PASS"));
+
+    // 2. 显式策略 + 读数相同 ⇒ PASS-CROSS-PLATFORM（退出码 0，记号不同）。
+    let probe = judge_policy(&foreign, &local, CrossPlatform::DigestParity).expect("可比");
+    assert_eq!(probe.verdict, Verdict::PassCrossPlatform);
+    assert_eq!(probe.reason, "cross-platform-digest-identical");
+    assert_eq!(probe.verdict.exit_code(), 0);
+    assert!(probe.digest_equal && probe.sample_digest_equal);
+    let text = report(&probe);
+    assert!(text.starts_with("VERDICT PASS-CROSS-PLATFORM\n"));
+    assert!(!text.contains("VERDICT PASS\n"), "不许冒充普通的 PASS");
+    assert!(text.contains("不是 MUST-GATE-002 的通过"));
+
+    // 3. 显式策略 + 读数不同 ⇒ 仍然 SKIP（不是 FAIL）。
+    let mut different = foreign.clone();
+    different.digest = "0".repeat(64);
+    different.sample_digest = "0".repeat(64);
+    let mismatch = judge_policy(&different, &local, CrossPlatform::DigestParity).expect("可比");
+    assert_eq!(mismatch.verdict, Verdict::Skip);
+    assert_eq!(mismatch.reason, "cross-platform");
+    assert_ne!(mismatch.verdict, Verdict::Fail);
+    assert_eq!(mismatch.verdict.exit_code(), 2);
+    assert!(!mismatch.digest_equal);
 }

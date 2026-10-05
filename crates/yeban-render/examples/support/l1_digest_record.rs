@@ -974,6 +974,26 @@ pub enum Verdict {
     Fail,
     /// 平台不同（或工具链未锁定）⇒ **不可比**。既不是通过也不是失败。
     Skip,
+    /// **显式策略**下允许跨平台比较，且被比对的读数（`digest` + `sample_digest`）
+    /// 在全同的渲染参数上**逐字节相同**。
+    ///
+    /// 它**不是** `MUST-GATE-002` 的"通过"（规范要求的是同平台），而是**比同平台更强**的一条
+    /// 观测：连 ISA 都不同的两台机器都给出同一个 WAV SHA-256。因此它的记号是
+    /// `PASS-CROSS-PLATFORM`（刻意与 `PASS` 区分），并且**只有在调用方显式选择这条策略时**才可能
+    /// 出现（见 [`judge_policy`] / [`CrossPlatform`]）—— 默认策略永远给 `Skip`。
+    PassCrossPlatform,
+}
+
+/// 跨平台比较的策略。默认是**规范口径**（同平台才有结论）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CrossPlatform {
+    /// 规范口径：平台不同 ⇒ [`Verdict::Skip`]（"不可比"，不是通过也不是失败）。
+    #[default]
+    Skip,
+    /// 更强的观测口径：平台不同时，若被比对的读数**逐字节相同** ⇒
+    /// [`Verdict::PassCrossPlatform`]；不同 ⇒ 仍然 `Skip`（**不许**判 `Fail` ——
+    /// 跨平台的差异是 `MUST-GATE-003` 的领域，判红就是假红）。
+    DigestParity,
 }
 
 impl Verdict {
@@ -984,14 +1004,15 @@ impl Verdict {
             Self::Pass => "PASS",
             Self::Fail => "FAIL",
             Self::Skip => "SKIP",
+            Self::PassCrossPlatform => "PASS-CROSS-PLATFORM",
         }
     }
 
-    /// 退出码：`0` = 通过，`1` = 硬红，`2` = 跳过（**不是通过**）。
+    /// 退出码：`0` = 通过（含显式策略下的跨平台读数一致），`1` = 硬红，`2` = 跳过（**不是通过**）。
     #[must_use]
     pub const fn exit_code(self) -> i32 {
         match self {
-            Self::Pass => 0,
+            Self::Pass | Self::PassCrossPlatform => 0,
             Self::Fail => 1,
             Self::Skip => 2,
         }
@@ -1105,6 +1126,24 @@ pub fn toolchain_locked(a: &PlatformIdentity, b: &PlatformIdentity) -> bool {
 /// 见 [`JudgeError`]。
 #[allow(clippy::too_many_lines)]
 pub fn judge(reference: &DigestRecord, local: &DigestRecord) -> Result<Judgement, JudgeError> {
+    judge_policy(reference, local, CrossPlatform::Skip)
+}
+
+/// 带**显式跨平台策略**的判决（`judge` 就是它的 `CrossPlatform::Skip` 形态）。
+///
+/// 为什么要一个显式参数而不是一个布尔：跨平台比较是**另一条口径**（比同平台更强，
+/// 但不属于 `MUST-GATE-002` 的字面要求）。把它做成具名枚举 ⇒ 调用点必须写清楚自己在比什么，
+/// 且默认值永远是规范口径。
+///
+/// # Errors
+///
+/// 见 [`JudgeError`]。
+#[allow(clippy::too_many_lines)]
+pub fn judge_policy(
+    reference: &DigestRecord,
+    local: &DigestRecord,
+    policy: CrossPlatform,
+) -> Result<Judgement, JudgeError> {
     reference
         .validate()
         .map_err(JudgeError::ReferenceMalformed)?;
@@ -1203,8 +1242,16 @@ pub fn judge(reference: &DigestRecord, local: &DigestRecord) -> Result<Judgement
     let digest_equal = reference.digest == local.digest;
     let sample_equal = reference.sample_digest == local.sample_digest;
     let (verdict, reason) = if !platform_match {
-        // 跨平台的哈希差异是**预期**的（MUST-GATE-003 的领域），本门禁比不了。
-        (Verdict::Skip, "cross-platform")
+        // 跨平台的哈希差异是**预期**的（MUST-GATE-003 的领域），默认策略下本门禁比不了。
+        if policy == CrossPlatform::DigestParity && digest_equal && sample_equal {
+            // 显式策略下的**更强观测**：ISA 都不同却给出同一个 WAV SHA-256。
+            (
+                Verdict::PassCrossPlatform,
+                "cross-platform-digest-identical",
+            )
+        } else {
+            (Verdict::Skip, "cross-platform")
+        }
     } else if !locked {
         // 规范要求的是"**锁定**工具链下"的确定性；未锁定的两份读数说明不了任何事。
         (Verdict::Skip, "toolchain-not-locked")
@@ -1294,6 +1341,13 @@ pub fn report(judgement: &Judgement) -> String {
             skip_explanation(judgement.reason)
         );
     }
+    if judgement.verdict == Verdict::PassCrossPlatform {
+        emitln!(
+            out,
+            "note=PASS-CROSS-PLATFORM 是**更强**的观测, 但**不是 MUST-GATE-002 的通过**: {}",
+            skip_explanation(judgement.reason)
+        );
+    }
     out
 }
 
@@ -1308,6 +1362,10 @@ pub fn skip_explanation(reason: &str) -> &'static str {
         "toolchain-not-locked" => {
             "同平台但 rustc 发布号/主机不同; 规范要求的是锁定工具链下的确定性, \
              因此本轮**没有**判定, 请勿记为通过"
+        }
+        "cross-platform-digest-identical" => {
+            "跨平台, 但两份读数逐字节相同 —— 这是比同平台更强的一条观测; \
+             它仍**不是** MUST-GATE-002 的通过(规范要求同平台), 要闭环还需同平台的第二台机器"
         }
         _ => "原因码未知 (这本身就是一个缺陷)",
     }

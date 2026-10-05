@@ -40,8 +40,9 @@
 | `crates/yeban-render/examples/support/l1_digest_record.rs`（**新**） | **L1 摘要记录的口径与判决（纯逻辑，零第三方依赖）**：字段表（参与/仅记录）、JSON 序列化 + 严格解析、三种判决（PASS/FAIL/SKIP）、自带 SHA-256、固定布局 `pcm-f32-le` WAV 容器与无损自证、UTC 时间戳格式化 | `MUST-GATE-002`、`ARCH-DET-001/002` |
 | `crates/yeban-render/examples/export_l1_digest.rs`（**新**） | **摘要生成器**（CLI：一行命令产出可存档 JSON） | `MUST-GATE-002` |
 | `crates/yeban-render/tests/l1_digest_parity.rs`（**新**） | **跨机器对账判据（10 条，真渲染）**：读入仓库内参考摘要 → 本机重算 → 逐字段比对 | `MUST-GATE-002`、`ARCH-DET-001/002` |
+| `crates/yeban-render/examples/compare_l1_digests.rs`（**新**） | **摘要比较器**（CLI：两份摘要 → 判决；`--cross-platform` 显式选择更强的口径） | `MUST-GATE-002` |
 | `crates/yeban-render/tests/data/l1-digest-reference.json`（**新**） | **参考摘要**（可存档的基准记录；来源见 §4） | `MUST-GATE-002` |
-| `crates/yeban-render/examples/support/l1_digest_record_tests.rs`（**新**） | **本机零依赖验证脚手架**（`rustc --test`，19 条判据，**不是** cargo 目标） | — |
+| `crates/yeban-render/examples/support/l1_digest_record_tests.rs`（**新**） | **本机零依赖验证脚手架**（`rustc --test`，20 条判据，**不是** cargo 目标） | — |
 | `crates/yeban-render/examples/support/export_pipeline.rs`（**已改**） | 新增共享装配器 `digest_record_from_reading` + `split_rustc_version`（生成器与判据**同源**，不许各写一份） | `MUST-GATE-002` |
 | `docs/ledger/gate-l1-digest-notes.md`（**新**） | 本文件 | — |
 
@@ -143,6 +144,34 @@ payload sha256 = 94074a0362db6f60c24c3a3f8923fdb0b64ae2bffa8bd92c7b826b84110f2ff
 | **PASS** | `0` | 平台同 + 工具链锁同 + 全部参与字段（含 `digest`）逐字段相同 |
 | **FAIL** | `1` | **平台相同、工具链锁相同，参与字段/读数却不同** ⇒ 硬红，点名差异字段 |
 | **SKIP** | `2` | 平台不同（跨 ISA/OS）⇒ **不可比**；或同平台但工具链未锁定（`reason=toolchain-not-locked`） |
+| **PASS-CROSS-PLATFORM** | `0` | **仅当调用方显式选择** `CrossPlatform::DigestParity` 时：平台不同，但被比对的读数（`digest` + `sample_digest`）在同参数渲染下**逐字节相同**。记号与 `PASS` **刻意不同**；它不是 `MUST-GATE-002` 的通过 |
+
+**跨平台为什么是一个**具名枚举**而不是一个布尔**：跨平台比较是**另一条口径**（比同平台更强，
+但不属于规范的字面要求）。做成 `CrossPlatform::{Skip, DigestParity}` 后，**调用点必须写清楚自己在比什么**，
+且 `Default` 永远是规范口径（`Skip`）⇒ "跨平台读数一致"不可能被静默地当成"同平台通过"。
+
+**比较器 CLI**（两份摘要 → 一个判决，退出码可直接做门禁）：
+
+```bash
+bash scripts/dev/cargo-local.sh run --release -p yeban-render --example compare_l1_digests -- \
+  tests/data/l1-digest-reference.json /tmp/local.json          # 默认（规范口径）
+bash scripts/dev/cargo-local.sh run --release -p yeban-render --example compare_l1_digests -- \
+  --cross-platform tests/data/l1-digest-reference.json /tmp/local.json
+```
+
+本机实测（参考摘要 vs 本机**另一个进程**重新生成的摘要）：
+
+```text
+VERDICT PASS
+reason=digest-identical
+gate=MUST-GATE-002
+exit_code=0
+same_platform=true
+toolchain_locked=true
+compared_fields=26
+compared_field_differences=0
+recorded_only_differences=0
+```
 
 两条最容易撒谎的地方，用类型与退出码堵掉：
 
@@ -211,7 +240,7 @@ CI `ubuntu-24.04-arm` aarch64-linux），用的是同一把种子与同一套夹
 
 ## 5. 判据清单（并明确哪些在本机真跑过）
 
-### 5.1 端到端判据：`crates/yeban-render/tests/l1_digest_parity.rs`（**10 条判据 / 12 个测试函数**，真渲染）
+### 5.1 端到端判据：`crates/yeban-render/tests/l1_digest_parity.rs`（**11 条判据 / 13 个测试函数**，真渲染）
 
 ```bash
 bash scripts/dev/cargo-local.sh test -p yeban-render --test l1_digest_parity
@@ -223,14 +252,15 @@ bash scripts/dev/cargo-local.sh test -p yeban-render --test l1_digest_parity
 | ② | 同一次运行两次渲染 ⇒ 摘要**逐字节相同**（确定性） | `two_real_runs_produce_byte_identical_records` | ✅ |
 | ③ | 线程策略 1/2/4/8/auto ⇒ `digest` **全同** + `threads` 差异不改变判决（`ARCH-DET-002`） | `thread_policy_never_changes_the_digest` | ✅ |
 | ④ | **种子变化必然改变 `digest`**（负向对照，防"digest 是常量"）：种子字段参与比对的形态 + 真实输入扰动（`gain_db`、PDC 注入）必然改变读数 | `a_different_seed_necessarily_changes_the_digest`、`really_rerendering_with_another_seed_changes_the_digest` | ✅ |
-| ⑤ | 参考摘要的**参与字段**被改（ISA 写错 / 读数被改）⇒ **FAIL**（退出码 1）并点名字段 | `a_wrong_isa_in_the_reference_is_a_hard_fail`、`a_tampered_reference_digest_is_a_hard_fail` | ✅ |
-| ⑥ | 参考摘要的**仅记录字段**被改（宿主名 / 时间戳 / 构建元数据 / `threads`）⇒ **仍然 PASS**，且差异如实报告 | `recorded_only_changes_in_the_reference_still_pass` | ✅ PASS（`recorded_only_differences=8`） |
+| ⑤ | **同平台**下**参与字段**被改（ISA 写错 / 读数被改）⇒ **FAIL**（退出码 1）并点名字段 | `a_wrong_isa_on_the_same_platform_is_a_hard_fail`、`a_tampered_digest_is_a_hard_fail` | ✅ |
+| ⑥ | **同平台**下**仅记录字段**被改（宿主名 / 时间戳 / 构建元数据 / `threads`）⇒ **仍然 PASS**，且 8 个差异如实报告 | `recorded_only_changes_still_pass` | ✅ PASS（`recorded_only_differences=8`） |
 | ⑦ | 生成器**确定性**：同输入两次产出逐字节相同（单行 + 多行两形态），且两形态**数据模型相等** | `generation_is_byte_identical_and_round_trips` | ✅ |
 | ⑧ | `digest` **就是** WAV 有效位流的 SHA-256（用 `sha2` **独立复算**，读数不是编的） | `the_digest_is_the_sha256_of_the_wav_bit_stream` | ✅ |
 | ⑨ | WAV 容器能被**独立第三方读取器**（`hound`）读回**同样的样本** | `the_wav_is_readable_by_an_independent_reader` | ✅ |
 | ⑩ | 仓库内参考摘要本身**自洽**（schema / 口径 / 字段表 / 参数全对上） | `the_archived_reference_is_self_consistent` | ✅ |
+| ⑪ | **显式跨平台策略**的口径：默认 ⇒ `SKIP`；显式 + 读数相同 ⇒ `PASS-CROSS-PLATFORM`（记号不同）；显式 + 读数不同 ⇒ 仍然 `SKIP`（**不是** `FAIL`） | `cross_platform_policy_is_explicit_and_never_dresses_up_skip_as_pass` | ✅ |
 
-### 5.2 本机零依赖判据：`examples/support/l1_digest_record_tests.rs`（19 条）
+### 5.2 本机零依赖判据：`examples/support/l1_digest_record_tests.rs`（20 条）
 
 ```bash
 rustc --edition 2024 --test -D warnings -W missing_docs \
@@ -244,9 +274,10 @@ rustc --edition 2024 --test -D warnings -W missing_docs \
 （原因码可区分）、同平台 ISA 不同 ⇒ 硬红、只改 `digest` 不改 `sample_digest` ⇒ 自相矛盾被拒、
 schema 不匹配 ⇒ 明确错误 + 解析器拒绝不认识的版本、JSON 往返与确定性、严格解析（未知字段/坏值/
 自相矛盾**不 panic**）、延迟表键升序确定、`format_utc` 对已知时刻（含 2000/2024 闰年与 2100 非闰年、
-1970 之前）的日历正确、`split_rustc_version` 对退化输入不编造。
+1970 之前）的日历正确、`split_rustc_version` 对退化输入不编造、**跨平台策略的三种口径**
+（默认 SKIP / 显式 PASS-CROSS-PLATFORM / 读数不同仍 SKIP）。
 
-**结果：19 passed / 0 failed。**
+**结果：20 passed / 0 failed。**
 
 ### 5.3 既有判据（未改动，作为本线的回归面）
 
@@ -254,7 +285,7 @@ schema 不匹配 ⇒ 明确错误 + 解析器拒绝不认识的版本、JSON 往
 
 ```bash
 bash scripts/dev/cargo-local.sh test -p yeban-render
-# → 102 passed; 0 failed  /  10 passed; 0 failed  /  12 passed; 0 failed  /  0 passed
+# → 102 passed  /  10 passed  /  13 passed（本线 l1_digest_parity）  /  0 passed；全部 0 failed
 ```
 
 ---
@@ -268,16 +299,31 @@ bash scripts/dev/cargo-local.sh test -p yeban-render
 
 | # | 注入（改哪里） | 锚点命中 | 变红的判据（实测） | 还原后 |
 | :--- | :--- | :--- | :--- | :--- |
-| **I1** | `FIELD_TABLE` 里 `isa_features` 从 `Compared` 降级为 `RecordedOnly` | 1 次 ✓ | 纯逻辑：`a_wrong_isa_on_the_same_platform_is_a_hard_fail` **FAILED**（18/19）；端到端：`a_wrong_isa_in_the_reference_is_a_hard_fail` **FAILED**（11/12，`同平台同工具链下 ISA 不同必须硬红`） | 19/19 + 12/12 ✅ |
-| **I2** | `judge` 里删掉"**平台不同 ⇒ SKIP**"分支（`if !platform_match` → `if false`） | 1 次 ✓ | 纯逻辑：`a_cross_platform_reference_is_skipped_not_failed` **FAILED**（18/19）—— 跨平台被误判成 `PASS`/`FAIL`，而它必须是 `SKIP`（退出码 2） | 19/19 + 12/12 ✅ |
-| **I3** | `FIELD_TABLE` 里 `host_name` 从 `RecordedOnly` 升级为 `Compared` | 1 次 ✓ | 端到端：`recorded_only_changes_in_the_reference_still_pass` **FAILED** + **`local_recomputation_matches_the_archived_reference` 也 FAILED**（10/12）；纯逻辑：`identical_records_pass_even_with_recorded_only_differences` 与 `generation_is_byte_identical_for_the_same_input` **FAILED**（17/19） —— 这正是"改了非参与字段却变红"的**注入方向**，反过来证明**未注入时它是真的绿** | 19/19 + 12/12 ✅ |
+| **I1** | `FIELD_TABLE` 里 `isa_features` 从 `Compared` 降级为 `RecordedOnly` | 1 次 ✓ | 端到端：`a_wrong_isa_on_the_same_platform_is_a_hard_fail` **FAILED**（12/13）；纯逻辑：同名判据 **FAILED**（19/20） | 20/20 + 13/13 ✅ |
+| **I2** | `judge` 里删掉"**平台不同 ⇒ 不可比**"这条分支（`if !platform_match` → `if false`） | 1 次 ✓ | 端到端：`cross_platform_policy_is_explicit_and_never_dresses_up_skip_as_pass` **FAILED**（12/13）—— 跨平台被误判（`SKIP` 的三种口径全废）；纯逻辑：`cross_platform_policy_is_explicit_and_distinguishable` 与 `a_cross_platform_reference_is_skipped_not_failed` **FAILED**（18/20） | 20/20 + 13/13 ✅ |
+| **I3** | `FIELD_TABLE` 里 `host_name` 从 `RecordedOnly` 升级为 `Compared` | 1 次 ✓ | 端到端：`recorded_only_changes_still_pass` **FAILED** + `local_recomputation_matches_the_archived_reference` 也 **FAILED**（11/13）；纯逻辑：`identical_records_pass_even_with_recorded_only_differences` 与 `generation_is_byte_identical_for_the_same_input` **FAILED**（18/20） | 20/20 + 13/13 ✅ |
 
-**I2 的一条诚实说明**：I2 在**本机**只让纯逻辑脚手架变红（端到端 12 条仍全绿），
-因为本机的参考摘要与本机**同平台**（`aarch64-apple-darwin`）⇒ 端到端判据的三条
-"跨平台 ⇒ SKIP" 路径根本没有被走到。这不是判据的漏洞，而是**夹具覆盖面的如实边界**：
-"跨平台 ⇒ SKIP"的可判别性由纯逻辑判据承担（它在 I2 下确实红了）。
-**未注入时**"改了非参与字段仍然绿"（判据 ⑥）在**两条判据上同时**为真：
-纯逻辑的 19 条与端到端的 12 条。
+**I3 是"判据 ⑥ 真的绿"的反向证明**：把非参与字段**升级**为参与后，"改了宿主名仍然绿"立刻变红
+⇒ 未注入时的绿不是因为它恒绿。
+
+**关于覆盖面的如实边界（第一版**曾经**踩到）**：判据 ⑤/⑥ 的第一版拿**仓库里的参考摘要**当基线去做"同平台"
+注入，于是它们在 CI（Linux）上必然退化成 `SKIP` 并断言失败 —— run **37267073019** 就是这么红的
+（`assertion failed: judgement.same_platform && judgement.toolchain_locked`，2 条）。
+**修法**：这两条判据改成**以本机读数当基线、只注入一个字段**（§5.1 判据 ⑤/⑥ 的测试名因此都带
+`on_the_same_platform` / 去掉了 `in_the_reference`），并新增判据 ⑪ 专门覆盖跨平台策略。
+现在"跨平台 ⇒ SKIP"的可判别性由**纯逻辑的 3 条判据**与**端到端的判据 ⑪**共同承担。
+
+**本机如何验证"CI 上不会红"**：把仓库里的参考摘要临时换成一份**平台身份为 `x86_64-unknown-linux-gnu`**
+的副本（读数不变；实测两架构同值），跑端到端判据 ⇒ **13 passed / 0 failed**，其中判据 ① 打印
+
+```text
+[判据1] MUST-GATE-002 VERDICT SKIP   reason=cross-platform ...
+[判据11] MUST-GATE-002 跨平台读数探针: verdict=PASS-CROSS-PLATFORM \
+         reason=cross-platform-digest-identical digest_equal=true (这份观测比同平台更强, 但它**不是**本门禁的通过)
+```
+
+即 **CI（Linux）上这条判据会如实 SKIP + 打印跨平台读数一致的更强观测**，而不是红、也不是假绿。
+（该实验随后**立即还原**参考摘要，`git diff` 为空。）
 
 ---
 
@@ -285,7 +331,7 @@ bash scripts/dev/cargo-local.sh test -p yeban-render
 
 | 类别 | 内容 | 是否证据 |
 | :--- | :--- | :--- |
-| ✅ **本机真跑（真渲染）** | §5.1 的 12 个端到端测试函数（10 条判据）+ §5.2 的 19 条纯逻辑判据 + §5.3 的 122 条既有判据；`clippy -p yeban-render --all-targets -- -D warnings` **0 告警**；`cargo fmt --all --check` **干净**；`run-gates.sh light` **绿** | **是** |
+| ✅ **本机真跑（真渲染）** | §5.1 的 13 个端到端测试函数（11 条判据）+ §5.2 的 20 条纯逻辑判据 + §5.3 的 122 条既有判据；`clippy -p yeban-render --all-targets -- -D warnings` **0 告警**；`cargo fmt --all --check` **干净**；`run-gates.sh light` **绿** | **是** |
 | ⚠️ **本机 `crate` 档被 SKIP** | `run-gates.sh crate yeban-render` 打印 `SKIP yeban-render 含重依赖, 本机不编译` —— **这是脚本的设计**（`rayon`/`hound`/`midly` 在重依赖清单里） | **否**（但本线**手动**跑了同一组 `clippy`+`test` 命令，见上一行） |
 | 🎯 **只有 CI 算数** | 本线的 CI 判决（`ci.yml` 的 `rust (yeban-render)` 腿）。**本机绿只是参考。** | **是** |
 
@@ -364,6 +410,7 @@ bash scripts/dev/cargo-local.sh test -p yeban-render
 /Users/crow/work/music/yeban/.worktrees/gate-cross-machine-digest/crates/yeban-render/examples/support/l1_digest_record_tests.rs    (新，非 cargo 目标)
 /Users/crow/work/music/yeban/.worktrees/gate-cross-machine-digest/crates/yeban-render/examples/support/export_pipeline.rs            (已改：+ digest_record_from_reading / split_rustc_version)
 /Users/crow/work/music/yeban/.worktrees/gate-cross-machine-digest/crates/yeban-render/examples/export_l1_digest.rs                   (新)
+/Users/crow/work/music/yeban/.worktrees/gate-cross-machine-digest/crates/yeban-render/examples/compare_l1_digests.rs                 (新)
 /Users/crow/work/music/yeban/.worktrees/gate-cross-machine-digest/crates/yeban-render/tests/l1_digest_parity.rs                      (新)
 /Users/crow/work/music/yeban/.worktrees/gate-cross-machine-digest/crates/yeban-render/tests/data/l1-digest-reference.json            (新，参考摘要)
 /Users/crow/work/music/yeban/.worktrees/gate-cross-machine-digest/docs/ledger/gate-l1-digest-notes.md                                (新，本文件)
@@ -378,12 +425,24 @@ bash scripts/dev/cargo-local.sh test -p yeban-render
 
 ## 12. CI 判决
 
-### 第 1 轮（代码 + 本文件一起提交）
+### 第 1 轮（提交 `a8bbc09`）—— run [37267073019](https://github.com/gradetwo/yeban/actions/runs/37267073019)：**红（1 个 job）**
 
-- 分支：`line/gate-cross-machine-digest`
-- 提交：见 `git log -1 --format=%H`（本线的唯一一次推送）
+| job | 结论 | 意义 |
+| :--- | :--- | :--- |
+| `plan` / `lockfile` / `checks` / `deny` | ✅ | 受影响集合正确（`yeban-render`）；锁文件无漂移（**零新增依赖**）；格式/守卫/文档/许可清单全过 |
+| `rust (yeban-render)` | ❌ **failure** | `102 passed`（lib）+ `10 passed`（l1_digest_contract）都绿，但 `l1_digest_parity` **10 passed / 2 failed**：`a_wrong_isa_in_the_reference_is_a_hard_fail` 与 `a_tampered_reference_digest_is_a_hard_fail` 断言 `judgement.same_platform && judgement.toolchain_locked` 失败 |
+| `rust (yeban-mcp)` | ✅ | 不涉及本线 |
+
+**这一轮抓到的是真缺陷（不是环境噪声）**：那两条判据把"**本机与参考摘要同平台**"当成了不变量，
+而参考摘要来自 macOS/arm64、CI 跑在 Linux/x86_64 ⇒ `judge` 正确地返回了 `SKIP`，判据却断言 `FAIL`。
+**这恰好是本门禁最核心的那条纪律的反例**：比较器没错，判据写错了口径。
+修法见 §6（判据改为以本机读数为基线 + 新增判据 ⑪ 覆盖跨平台策略），并已在本机用
+"把参考摘要的平台身份临时换成 `x86_64-unknown-linux-gnu`"复现了 CI 场景（13 passed / 0 failed）。
+
+### 第 2 轮（修复提交）—— 见本线的最终报告
+
 - 判决：由本线的最终报告给出（`bash scripts/dev/ci-verdict.sh line/gate-cross-machine-digest`）。
-  本机侧的等价证据是 §5 的那三条命令 + §6 的三条注入。
+  本机侧的等价证据是 §5 的三条命令 + §6 的三条注入 + §4.1 的跨机同 digest 复核。
 
 > **记账纪律**：本文件随代码提交一起推送，而每次推送都会触发新的 run ——
 > 若要求"把每一次判决都回写进本文件"，就会变成"回写→推送→新 run→再回写"的无限循环。

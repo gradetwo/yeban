@@ -34,11 +34,11 @@ mod l1_digest_record;
 use std::collections::BTreeMap;
 
 use l1_digest_record::{
-    DigestEnvelope, DigestRecord, DigestScope, JudgeError, Participation, PlatformIdentity,
-    RenderParams, SCHEMA, WAV_HEADER_BYTES, Verdict, compared_fields, encode_wav_f32_le, format_utc,
-    hex_lower, judge, latency_token, parse, participation_of, pcm_bits_bytes, recorded_only_fields,
-    report, sample_digest_of, sha256, split_rustc_version, to_json, to_json_line,
-    to_pretty_json, wav_data_payload,
+    CrossPlatform, DigestEnvelope, DigestRecord, DigestScope, JudgeError, Participation,
+    PlatformIdentity, RenderParams, SCHEMA, WAV_HEADER_BYTES, Verdict, compared_fields,
+    encode_wav_f32_le, format_utc, hex_lower, judge, judge_policy, latency_token, parse,
+    participation_of, pcm_bits_bytes, recorded_only_fields, report, sample_digest_of, sha256,
+    split_rustc_version, to_json, to_json_line, to_pretty_json, wav_data_payload,
 };
 
 // ---------------------------------------------------------------------------
@@ -571,4 +571,50 @@ fn rustc_version_splitting_never_invents_fields() {
     assert!(commit.is_empty() && date.is_empty());
     let (release, commit, date) = split_rustc_version(None);
     assert!(release.is_empty() && commit.is_empty() && date.is_empty());
+}
+
+/// 判据：**跨平台策略**必须显式、具名，且默认永远是规范口径。
+///
+/// 三条口径：默认 ⇒ `SKIP`（不是通过）；显式 `DigestParity` + 读数相同 ⇒
+/// `PASS-CROSS-PLATFORM`（记号与 `PASS` 不同，退出码 0）；显式 `DigestParity` + 读数不同 ⇒
+/// 仍然 `SKIP`（跨平台差异是 `MUST-GATE-003` 的领域，判红就是假红）。
+#[test]
+fn cross_platform_policy_is_explicit_and_distinguishable() {
+    let samples = synthetic_master();
+    let local = build(&samples, |_| {});
+    let mut foreign = local.clone();
+    foreign.platform.target_arch = "x86_64".to_owned();
+    foreign.platform.target_os = "linux".to_owned();
+    foreign.platform.target_triple = "x86_64-unknown-linux-gnu".to_owned();
+    foreign.platform.rustc_host = "x86_64-unknown-linux-gnu".to_owned();
+    foreign.validate().expect("只改平台身份仍然是自洽的记录");
+
+    // 默认策略 = 规范口径。
+    let default = judge(&foreign, &local).expect("可比");
+    assert_eq!(default.verdict, Verdict::Skip);
+    assert_eq!(default.reason, "cross-platform");
+    assert_eq!(default.verdict.exit_code(), 2);
+    assert!(!report(&default).contains("VERDICT PASS"));
+
+    // 显式策略 + 读数相同。
+    let probe = judge_policy(&foreign, &local, CrossPlatform::DigestParity).expect("可比");
+    assert_eq!(probe.verdict, Verdict::PassCrossPlatform);
+    assert_eq!(probe.reason, "cross-platform-digest-identical");
+    assert_eq!(probe.verdict.exit_code(), 0);
+    let text = report(&probe);
+    assert!(text.starts_with("VERDICT PASS-CROSS-PLATFORM\n"));
+    assert!(!text.contains("VERDICT PASS\n"), "不许冒充普通的 PASS");
+    assert!(text.contains("不是 MUST-GATE-002 的通过"));
+
+    // 显式策略 + 读数不同 ⇒ 仍然 SKIP（不是 FAIL）。
+    let mut different = foreign.clone();
+    different.digest = "0".repeat(64);
+    different.sample_digest = "0".repeat(64);
+    let mismatch = judge_policy(&different, &local, CrossPlatform::DigestParity).expect("可比");
+    assert_eq!(mismatch.verdict, Verdict::Skip);
+    assert_ne!(mismatch.verdict, Verdict::Fail);
+    assert_eq!(mismatch.verdict.exit_code(), 2);
+
+    // 默认值必须是规范口径（不是"更强的那条"）。
+    assert_eq!(CrossPlatform::default(), CrossPlatform::Skip);
 }
