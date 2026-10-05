@@ -3741,3 +3741,28 @@ it in section 10.4. But the honest summary of option A is now: "one crate, two n
 targets", and that belongs in the README Requirements and in the CI setup before the crate is added.
 
 **Still not claimed**: whether the Windows leg actually builds with libclang present; that needs a real dispatch, not reading.
+
+### Round 141: HD-44 = A is verified on CI - the Linux workspace leg and the Windows leg both build the C++ dependency
+
+Manual dispatch on the current tip (all pushes to `docs-only` tips produce empty greens, so a dispatch was the reliable way):
+
+Run **`37324066103` @ `dad0cfb` = completed success**:
+
+| leg | verdict | what it proves |
+| :--- | :--- | :--- |
+| **`rust (workspace 全量)`** | **success `steps=10`** | on Linux, `clang libclang-dev` is sufficient: the C++ sources compile and bindgen finds libclang |
+| **`windows (yeban-mcp / yeban-model 的平台分支)`** | **success `steps=9`** | the Windows leg RAN (its `if:` now also triggers on yeban-dsp) and passed, including the new libclang step - so bindgen worked there too |
+| `checks` / `plan` / `lockfile` / `deny` | success (12 / 5 / 6 / 6) | guards, doc-contract, lock determinism and licence compliance all hold with the new dependency |
+| `rust (${{ matrix.crate }})` | skipped by design | the workspace leg covers it |
+
+The Windows job went from 8 to 9 steps, which is the libclang step I added; had it failed to locate or install libclang, the
+step fails loudly by construction, so its success is the evidence that the prerequisite is satisfiable on that runner.
+
+**All three conditions attached to HD-44 = A are therefore closed**: the README documents the prerequisite (English and
+Chinese), CI installs it on both legs, and both legs build. This is also the **seventh** completed full-workspace verdict on
+main: `37283699896` @ `aac62e8`, `37284571290` @ `77d201f`, `37293138132` @ `f859ef6`, `37300697464` @ `2c4d285`,
+`37305461525` @ `f3a86d2`, `37308086599` @ `8038fdc`, `37324066103` @ `dad0cfb`.
+
+**Incident worth recording**: the push-triggered run for `883cfe1` (the commit that actually added the CI steps) came back
+`completed cancelled`, so the libclang change had no verdict of its own until this dispatch. Cause not established; the
+dispatch sidesteps it, and the empty-green behaviour of docs-only tips is the reason a dispatch was needed anyway.
