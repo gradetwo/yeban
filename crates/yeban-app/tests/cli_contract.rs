@@ -24,7 +24,8 @@
 //! - `[ARCH-SEC-003]` / `[MUST-GATE-006]` / `[MUST-GATE-007]`：容器拒绝的原因必须**原样**转达；
 //! - `[ARCH-UI-003]` / `[UI-TEST-003]`：无头握手行 `headless ok`；
 //! - `[UI-TEST-001]`：`--dump-elements` / `--export-elements` 的语义元素清单；
-//! - `docs/adr/ADR-0001` D28（唯一注入点）/ D30（容器读法歧义一律拒绝）。
+//! - `docs/adr/ADR-0001` D28（唯一注入点）/ D30（容器读法歧义一律拒绝）/
+//!   **D43**（1.0.0 之前没有兼容包袱 ⇒ 裸 `project.json` 读路径已删除，容器是唯一格式）。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -158,6 +159,17 @@ fn help_and_version_are_real_and_short_circuit() {
     for code in ["0", "1", "2", "3", "4", "5"] {
         assert!(help.stdout.contains(code), "用法必须写出退出码 `{code}`");
     }
+    // 兼容读路径已删除（D43）：用法里不能再出现裸 JSON 读法的承诺。
+    assert!(
+        !help.stdout.contains("裸"),
+        "用法不得再提裸 JSON 读法:\n{}",
+        help.stdout
+    );
+    assert!(
+        !help.stdout.contains("project-json"),
+        "用法不得再提第二种种格式:\n{}",
+        help.stdout
+    );
     // 短路命令**不**打印无头握手行（它们没做任何工程工作）。
     // 注意判定口径：用法文本里**本来就提到** `headless ok` 这个字面值，
     // 因此这里断言的是"没有独立成行的那一行"，不是 contains。
@@ -321,12 +333,33 @@ fn broken_inputs_exit_non_zero_without_panicking() {
         "101 是 Rust panic 的退出码 —— 那就是 panic 了"
     );
 
-    // 既不是容器也不是工程 JSON。
+    // 非容器输入：空文件 / 垃圾 / 随机字节 —— 各自**明确拒绝**（退出 3，理由精确），
+    // 既不是"未知格式"，也不是"打开成空工程"。
+    let empty = dir.join("empty.bin");
+    std::fs::write(&empty, b"").expect("写空文件");
     let junk = dir.join("junk.bin");
     std::fs::write(&junk, b"not a zip at all").expect("写垃圾");
-    let run = invoke(&["--open", junk.to_str().expect("utf8"), "--headless"]);
-    assert_eq!(run.code, 3, "stderr={}", run.stderr);
-    assert!(run.stderr.contains("既不是"), "{}", run.stderr);
+    let random = dir.join("random.bin");
+    std::fs::write(&random, [0xAB_u8; 64]).expect("写随机字节");
+    for (label, path) in [("空文件", &empty), ("垃圾", &junk), ("随机字节", &random)] {
+        let run = invoke(&["--open", path.to_str().expect("utf8"), "--headless"]);
+        assert_eq!(run.code, 3, "{label} 必须退出 3; stderr={}", run.stderr);
+        assert!(
+            run.stderr.contains("不是 `.yeban` 容器"),
+            "{label} 必须给出精确理由: {}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains("end-of-central-directory"),
+            "{label} 必须带上容器原裁决: {}",
+            run.stderr
+        );
+        assert!(
+            run.stdout.is_empty(),
+            "{label} 失败不得留下半截输出: {}",
+            run.stdout
+        );
+    }
 
     // 不存在的文件。
     let missing = dir.join("nope.yeban");
@@ -552,9 +585,10 @@ fn save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 判据 B10: `--open` 接受裸 `project.json`，并在输出里**明示**读法。
+/// 判据 B10（**反转**）: 裸 `project.json` 必须被**明确拒绝** —— 容器是唯一工程格式
+/// （ADR-0001 D43）。旧判据在这里断言"能打开 + `format=project-json`"。
 #[test]
-fn open_accepts_a_bare_project_json_and_labels_the_format() {
+fn open_rejects_a_bare_project_json_with_a_precise_reason() {
     use yeban_model::container::{ContainerLimits, read_container};
 
     let dir = scratch_dir("bare");
@@ -570,26 +604,44 @@ fn open_accepts_a_bare_project_json_and_labels_the_format() {
     std::fs::write(&bare, &json).expect("写裸 JSON");
 
     let run = invoke(&["--open", bare.to_str().expect("utf8"), "--headless"]);
-    assert_eq!(run.code, 0, "stderr={}", run.stderr);
-    assert!(
-        run.stdout.contains("format=project-json"),
-        "读法必须明示:\n{}",
+    assert_eq!(
+        run.code, 3,
+        "裸 project.json 必须退出 3; stdout={}",
         run.stdout
     );
-    assert!(run.stdout.contains("history-bytes=0"), "{}", run.stdout);
+    assert!(
+        run.stdout.is_empty(),
+        "失败不得留下半截输出（尤其不许退化成空工程）:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains("不是 `.yeban` 容器"),
+        "理由必须精确:\n{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("end-of-central-directory"),
+        "必须带上容器原裁决:\n{}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("panicked"),
+        "不许 panic: {}",
+        run.stderr
+    );
 
-    // 再把它转成一个**真的** `.yeban` 容器（裸 JSON 不是死路）。
-    let converted = dir.join("converted.yeban");
-    let run = invoke(&[
-        "--open",
-        bare.to_str().expect("utf8"),
-        "--save-as",
-        converted.to_str().expect("utf8"),
-    ]);
-    assert_eq!(run.code, 0, "stderr={}", run.stderr);
-    assert_eq!(
-        yeban_app::open::open_project_file(&converted).expect("读回"),
-        yeban_app::bridge::demo_project()
+    // 拒绝的是**容器边界**，不是内容：同一个真容器照样能打开（它的 project.json 就是上面那份）。
+    let ok = invoke(&["--open", container.to_str().expect("utf8"), "--headless"]);
+    assert_eq!(ok.code, 0, "stderr={}", ok.stderr);
+    assert!(
+        ok.stdout.contains("format=yeban-container"),
+        "唯一的 format 取值:\n{}",
+        ok.stdout
+    );
+    assert!(
+        !ok.stdout.contains("format=project-json"),
+        "兼容读法已被删除:\n{}",
+        ok.stdout
     );
 
     let _ = std::fs::remove_dir_all(&dir);

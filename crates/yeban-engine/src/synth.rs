@@ -77,10 +77,11 @@
 //! `format!`/`println!`/`Mutex::lock`/文件或网络调用。运行期由
 //! `tests/synth_rt_zero_alloc.rs`（计数型全局分配器，`harness = false`）钉住。
 
-use yeban_dsp::envelope::Adsr;
+use yeban_dsp::envelope::{Adsr, AdsrStage, STEAL_RELEASE_SECONDS};
+use yeban_dsp::filter::LadderFilter;
 use yeban_dsp::math::db_to_gain;
 use yeban_dsp::oscillator::{HOLLOW, Wavetable};
-use yeban_model::{EntityId, PPQ};
+use yeban_model::{DeviceDefinition, DeviceKind, EntityId, PPQ};
 
 /// 声部池支持的**轨道槽**上限（定长，构造期确定）。
 ///
@@ -120,6 +121,178 @@ const RELEASE_SECONDS: f32 = 0.05;
 
 /// 采样率下限（Hz），与 `yeban_dsp::MIN_SAMPLE_RATE` 同口径。
 const MIN_SAMPLE_RATE: f32 = 1_000.0;
+
+// ---------------------------------------------------------------------------
+// 音色参数（引擎侧临时形状）
+// ---------------------------------------------------------------------------
+
+/// 滤波器**旁通**时使用的截止频率（Hz）。
+///
+/// 它不参与声音：旁通由 [`ToneParams::bypass`] 决定，`cutoff_hz` 只是为了让
+/// `ToneParams` 的字段在任何状态下都有确定的值（便于 `PartialEq` 与诊断）。
+const TONE_BYPASS_CUTOFF_HZ: f32 = 20_000.0;
+
+/// 内置音色的**引擎侧**参数投影：一个四极梯形低通的三个旋钮。
+///
+/// ## 这是临时形状，不是模型层的第二份定义
+///
+/// [ARCH-DSP-001] 与 `ROAD-M2-006` 要求声部有音色参数，但 `yeban-model` 目前
+/// **没有**"乐器参数 → 音频线程"的投影：`DeviceDefinition::params` 是
+/// `Vec<ParameterValue>`（字符串名 + `f32` 值 + 可选单位），没有"哪个设备是合成器"
+/// 的类型级信息，也没有参数名规范。因此本切片在自己拥有的目录里定义一层
+/// **最小投影**，并把缺的形状登记为 needs（见 `docs/ledger/engine-mix-notes.md`）：
+///
+/// ```text
+/// 现在（引擎侧临时形状）:                   等模型线补齐后:
+/// TrackV3.devices[?]                        TrackV3.instrument: Option<InstrumentDefinition>
+///   kind == InternalInstrument                ├ cutoff_hz: f32
+///   params: [                                ├ resonance: f32
+///     {name:"cutoff_hz",  value: 1200}       └ drive: f32
+///     {name:"resonance",  value: 0.2}
+///     {name:"drive",      value: 0.0}
+///   ]                                       ⇒ 本模块的投影整体删除，改成直读字段
+/// ```
+///
+/// ## 投影规则（完全确定，无猜测）
+///
+/// 1. 只看 [`DeviceKind::InternalInstrument`] 的设备（外部乐器由插件宿主负责，
+///    `External*` 一律忽略）；`bypassed` 的设备整体忽略；
+/// 2. 在**第一个**含 `cutoff_hz` 或 `cutoff` 参数的设备上取值；
+/// 3. 三个参数名（大小写不敏感）：`cutoff_hz`/`cutoff`、`resonance`/`res`、`drive`；
+/// 4. **一个参数都没有 ⇒ [`ToneParams::bypass`]**：这是刻意选的默认值，
+///    因为"模型层没给参数"与"用户把滤波器拧到旁通"在音频上应当同解 ——
+///    这样既有的（无设备链的）工程逐位不变，也避免了给所有轨道硬塞一个未裁决的音色；
+/// 5. 取值在构造期钳制（[`LadderFilter::configure`] 内部再钳一次 Nyquist）：
+///    截止频率 `20 Hz ..= 0.45·fs`、共振/驱动 `0.0 ..= 1.0`；
+/// 6. 非有限值 ⇒ 该参数按默认取（截止 `12 kHz`、共振 `0`、驱动 `0`），绝不 `NaN`。
+///
+/// ## 确定性分类（[ADR-0001 D32]）
+///
+/// 构造期 `LadderFilter::configure` 含 `tan(π·fc/fs)` ⇒ **超越函数类**（4096 ulp 预算）；
+/// 逐样本 `LadderFilter::process` 只有乘加与一次 Padé 除法 ⇒ **IEEE 精确类**。
+/// 因此本切片对跨架构 L1 的强度声明是"系数冻结后逐样本位精确"，
+/// **不是**"整条滤波器链跨架构位精确"（详见 notes 的 D32 分类表）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToneParams {
+    cutoff_hz: f32,
+    resonance: f32,
+    drive: f32,
+    bypass: bool,
+}
+
+impl ToneParams {
+    /// 旁通（**默认**）：渲染路径**完全不经过**滤波器。
+    ///
+    /// 不是"滤波器系数取成透明"——那样状态变量仍会吸收瞬态并染色。
+    /// 旁通是**逐位恒等**的：`render_track` 根本不调用 `process`。
+    #[must_use]
+    pub const fn bypass() -> Self {
+        Self {
+            cutoff_hz: TONE_BYPASS_CUTOFF_HZ,
+            resonance: 0.0,
+            drive: 0.0,
+            bypass: true,
+        }
+    }
+
+    /// 显式配置音色（构造期调用；非有限值退回该参数的默认值）。
+    #[must_use]
+    pub fn new(cutoff_hz: f32, resonance: f32, drive: f32) -> Self {
+        Self {
+            cutoff_hz: if cutoff_hz.is_finite() {
+                cutoff_hz
+            } else {
+                12_000.0
+            },
+            resonance: if resonance.is_finite() {
+                resonance.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            drive: if drive.is_finite() {
+                drive.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            bypass: false,
+        }
+    }
+
+    /// 从模型层的设备链投影（**控制线程**；见本节文档的投影规则）。
+    #[must_use]
+    pub fn from_devices(devices: &[DeviceDefinition]) -> Self {
+        let mut cutoff = None;
+        let mut resonance = None;
+        let mut drive = None;
+        for device in devices {
+            if device.bypassed || device.kind != DeviceKind::InternalInstrument {
+                continue;
+            }
+            let mut device_cutoff = None;
+            let mut device_resonance = None;
+            let mut device_drive = None;
+            for param in &device.params {
+                let name = param.name.to_ascii_lowercase();
+                match name.as_str() {
+                    "cutoff_hz" | "cutoff" => device_cutoff = Some(param.value),
+                    "resonance" | "res" => device_resonance = Some(param.value),
+                    "drive" => device_drive = Some(param.value),
+                    _ => {}
+                }
+            }
+            if device_cutoff.is_none() {
+                // 第一条**没有**截止频率的乐器设备不是"音色来源"⇒ 继续找下一条。
+                continue;
+            }
+            cutoff = device_cutoff;
+            resonance = device_resonance;
+            drive = device_drive;
+            break;
+        }
+        match cutoff {
+            Some(cutoff_hz) => Self::new(cutoff_hz, resonance.unwrap_or(0.0), drive.unwrap_or(0.0)),
+            None => Self::bypass(),
+        }
+    }
+
+    /// 是否旁通。
+    #[must_use]
+    pub const fn is_bypass(&self) -> bool {
+        self.bypass
+    }
+
+    /// 截止频率 (Hz)。
+    #[must_use]
+    pub const fn cutoff_hz(&self) -> f32 {
+        self.cutoff_hz
+    }
+
+    /// 共振（0..1 旋钮值）。
+    #[must_use]
+    pub const fn resonance(&self) -> f32 {
+        self.resonance
+    }
+
+    /// 驱动（0..1 旋钮值）。
+    #[must_use]
+    pub const fn drive(&self) -> f32 {
+        self.drive
+    }
+
+    /// 在给定采样率下武装一个滤波器（**构造期**：含 `tan`，超越函数类）。
+    #[must_use]
+    pub fn filter(&self, sample_rate: f32) -> LadderFilter {
+        let mut filter = LadderFilter::new();
+        filter.configure(sample_rate, self.cutoff_hz, self.resonance, self.drive);
+        filter
+    }
+}
+
+impl Default for ToneParams {
+    fn default() -> Self {
+        Self::bypass()
+    }
+}
 
 /// 构造期算好的**一个已调度音符**（实时侧只读）。
 ///
@@ -295,6 +468,23 @@ impl NoteSchedule {
 }
 
 /// 一个声部的全部状态（定长、`Copy`，构造期确定）。
+///
+/// ## `fade_remaining` / `pending`：3 ms 窃取淡出的两个字段
+///
+/// [ARCH-RT-004] 要求"窃取瞬间对被终止声部强制应用 3ms 快速指数衰减微淡出"。
+/// 本实现把这件事表达成**同一个声部的两段寿命**，而不是另开一个"淡出声部"池
+/// （那需要第二份 `[Voice; 16]` ⇒ 固定内存翻倍，且 polyphony 口径要重新定义）：
+///
+/// ```text
+/// fade_remaining > 0, pending = true   ：旧音符按 STEAL_RELEASE_SECONDS 指数淡出
+///                                        （phase/inc/gain 仍是旧音符的）
+/// fade_remaining 到 0 的那一帧         ：phase = 0、env.reset()+gate_on()、
+///                                        inc/gain 换成新音符 ⇒ 从 0 起 attack
+/// fade_remaining > 0, pending = false  ：抢占了但**没有**接新音符（seek/回收）
+/// ```
+///
+/// 代价：新音符的起音被推迟 ≤ 3 ms（= `STEAL_RELEASE_SECONDS`），
+/// 收益是**不存在**"新音符起音与旧音符淡出"两个瞬态相撞的时刻 —— 那正是爆音的来源。
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     active: bool,
@@ -311,6 +501,18 @@ struct Voice {
     /// 终点（绝对样本位置）。
     end_sample: u64,
     env: Adsr,
+    /// 声部级四极低通（[`ToneParams`]；旁通时**不**被调用）。
+    filter: LadderFilter,
+    /// 本声部是否处于"窃取淡出"窗口内（>0 表示还剩多少帧）。
+    fade_remaining: u32,
+    /// 是否有**已挂起的新音符**（淡出走完立刻起音）。
+    pending: bool,
+    /// 挂起音符的相位增量（`pending` 为真时有效）。
+    note_inc: u32,
+    /// 挂起音符的逐样本增益（`pending` 为真时有效）。
+    note_gain: f32,
+    /// 挂起音符的**起始样本位置**（淡出走完的那一帧赋给 `start_sample`）。
+    note_start: u64,
 }
 
 impl Voice {
@@ -323,10 +525,40 @@ impl Voice {
         start_sample: 0,
         end_sample: 0,
         env: Adsr::new(),
+        filter: LadderFilter::new(),
+        fade_remaining: 0,
+        pending: false,
+        note_inc: 1,
+        note_gain: 0.0,
+        note_start: 0,
     };
 }
 
-/// 一个轨道槽：身份 + 游标 + 定长声部池。
+/// 窃取淡出的默认帧数：`STEAL_RELEASE_SECONDS`（3 ms）× 采样率。
+///
+/// 上限 0.5 s（`sample_rate` 异常大时也不会把声部卡死几秒），下限 1 帧
+/// （0 帧就是硬窃取 —— 那正是本切片要消灭的行为，但**判据要能注入它**，
+/// 因此这个值是通过 [`SynthEngine::set_steal_fade_frames`] 可覆盖的）。
+#[must_use]
+fn steal_fade_frames(sample_rate: f32) -> u32 {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return 1;
+    }
+    let frames = (STEAL_RELEASE_SECONDS * sample_rate).round();
+    if !frames.is_finite() || frames <= 0.0 {
+        return 1;
+    }
+    if frames >= 0.5 * sample_rate {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let capped = (0.5 * sample_rate) as u32;
+        return capped.max(1);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let frames = frames as u32;
+    frames.max(1)
+}
+
+/// 一个轨道槽：身份 + 游标 + 定长声部池 + 本轨音色参数。
 #[derive(Clone, Copy, Debug)]
 struct TrackSlot {
     /// 是否已被某条轨道占用（占用后**不释放**：轨道身份与槽位一一绑定，
@@ -337,6 +569,11 @@ struct TrackSlot {
     id: EntityId,
     /// 下一个待触发音符的下标（只增不减 ⇒ 绝不重复触发）。
     cursor: usize,
+    /// 本轨的音色参数（**构造期**从快照投影进来；渲染路径只读）。
+    tone: ToneParams,
+    /// 本轨音色在当前采样率下的滤波器模板（系数已在构造期算好，
+    /// 触发时按值拷进声部 ⇒ 逐样本路径不含 `tan`）。
+    filter: LadderFilter,
     voices: [Voice; VOICES_PER_TRACK],
 }
 
@@ -348,6 +585,8 @@ impl TrackSlot {
             present: false,
             id: EntityId::default(),
             cursor: 0,
+            tone: ToneParams::bypass(),
+            filter: LadderFilter::new(),
             voices: [Voice::IDLE; VOICES_PER_TRACK],
         }
     }
@@ -364,6 +603,11 @@ pub struct SynthEngine {
     table: Wavetable,
     /// 当前采样率（快照边界更新）。
     sample_rate: f32,
+    /// 窃取淡出帧数（默认 3 ms ⇒ @48k = 144 帧）。
+    ///
+    /// **判据可覆盖**（[`SynthEngine::set_steal_fade_frames`]）：把 0 设进去就回到
+    /// "硬窃取"，那条"淡出后无跳变"的判据必须能对它变红。
+    steal_fade_frames: u32,
     /// 播放头（绝对样本位置）。
     position: u64,
     /// 包络模板：参数只在采样率变化时重算（`exp` 因此不在逐样本路径上）。
@@ -388,6 +632,7 @@ impl SynthEngine {
         Self {
             table: Wavetable::from_recipe(HOLLOW),
             sample_rate,
+            steal_fade_frames: steal_fade_frames(sample_rate),
             position: 0,
             env_template,
             slots: [TrackSlot::empty(); MAX_TRACK_SLOTS],
@@ -409,10 +654,27 @@ impl SynthEngine {
         self.sample_rate
     }
 
-    /// 池满时的**硬窃取**次数（[ARCH-RT-004] 的快速淡出尚未接入）。
+    /// 池满时的**软窃取**次数：每次窃取都给被终止声部套上 3 ms 淡出
+    /// [ARCH-RT-004]。把淡出帧数设为 0（[`Self::set_steal_fade_frames`]）即回到
+    /// 旧行为"硬窃取"，但计数口径不变。
     #[must_use]
     pub const fn voice_steals(&self) -> u64 {
         self.voice_steals
+    }
+
+    /// 当前窃取淡出帧数（默认 3 ms × 采样率）。
+    #[must_use]
+    pub const fn steal_fade_frames(&self) -> u32 {
+        self.steal_fade_frames
+    }
+
+    /// 覆盖窃取淡出帧数（**判据/注入用**；0 = 硬窃取）。
+    ///
+    /// 产物路径不调用它：帧数由采样率与 [`STEAL_RELEASE_SECONDS`] 决定。
+    /// 存在的理由是"淡出后无跳变"这条判据必须能对着**硬窃取**变红 ——
+    /// 否则它可能在"根本没窃取"的夹具上永真。
+    pub fn set_steal_fade_frames(&mut self, frames: u32) {
+        self.steal_fade_frames = frames;
     }
 
     /// 因 [`MAX_TRACK_SLOTS`] 耗尽而未获槽位的轨道次数。
@@ -425,6 +687,44 @@ impl SynthEngine {
     #[must_use]
     pub const fn notes_triggered(&self) -> u64 {
         self.notes_triggered
+    }
+
+    /// 声部池的诊断转储（**仅 debug 构建**；`tests/` 判据用来定位"为什么没有窃取"）。
+    ///
+    /// 返回 `(活跃, end_sample, 包络阶段, 淡出剩余)`。它暴露的是**内部**状态，
+    /// 因此只在 `debug_assertions` 下编译 —— 产物路径上没有这个方法，
+    /// 也就没有"为了测试把内部状态公开成 API"的负担。
+    #[cfg(debug_assertions)]
+    #[must_use]
+    pub fn debug_voice_state(&self, track: EntityId) -> Vec<(bool, u64, AdsrStage, u32)> {
+        self.slots
+            .iter()
+            .find(|slot| slot.assigned && slot.id == track)
+            .map(|slot| {
+                slot.voices
+                    .iter()
+                    .map(|voice| {
+                        (
+                            voice.active,
+                            voice.end_sample,
+                            voice.env.stage(),
+                            voice.fade_remaining,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 当前活跃声部数（**仅 debug 构建**；判据用来做"池真的满了"的覆盖度自检）。
+    #[cfg(debug_assertions)]
+    #[must_use]
+    pub fn debug_active_voices(&self, track: EntityId) -> usize {
+        self.slots
+            .iter()
+            .find(|slot| slot.assigned && slot.id == track)
+            .map(|slot| slot.voices.iter().filter(|voice| voice.active).count())
+            .unwrap_or(0)
     }
 
     /// 内置波表的 mip 级数（诊断用）。
@@ -451,25 +751,50 @@ impl SynthEngine {
 
     /// 快照边界：把轨道槽对齐到新快照的轨道集合，并校准采样率。
     ///
-    /// 规则（三条，缺一不可）：
+    /// 规则（四条，缺一不可）：
     ///
     /// 1. 新快照里存在的轨道 ⇒ 槽位 `present = true`（首次出现则占用一个空槽）；
-    /// 2. 新快照里不存在的轨道 ⇒ `present = false`（游标与声部保留，等它回来时连续）；
-    /// 3. 槽位耗尽 ⇒ 计数、不分配（不 panic、不扩容）。
+    /// 2. 新快照里不存在 ⇒ `present = false`（游标与声部保留，等它回来时连续）；
+    /// 3. 槽位耗尽 ⇒ 计数、不分配（不 panic、不扩容）；
+    /// 4. **音色参数按新快照刷新**：`tones` 给出每轨的 [`ToneParams`]，
+    ///    滤波器系数在此处（构造期语义）按当前采样率算好，逐样本路径不再出现 `tan`。
+    ///    不在 `tones` 里的轨道退回旁通（`tone` 变了才重算系数）。
     ///
-    /// 采样率变化时重算包络模板（`exp` 因此落在"每修订一次"而不是"每样本"）。
-    pub fn begin_snapshot<'a, I>(&mut self, sample_rate: u32, tracks: I)
+    /// 采样率变化时重算包络模板与全部轨道槽的滤波器系数（`exp`/`tan` 因此落在
+    /// "每修订一次"而不是"每样本"）。
+    pub fn begin_snapshot<'a, I, T>(&mut self, sample_rate: u32, tracks: I, tones: T)
     where
         I: IntoIterator<Item = &'a EntityId>,
+        T: IntoIterator<Item = (&'a EntityId, &'a ToneParams)>,
     {
         let sample_rate = sanitise_sample_rate(sample_rate);
-        if sample_rate != self.sample_rate {
+        let sample_rate_changed = sample_rate != self.sample_rate;
+        if sample_rate_changed {
             self.sample_rate = sample_rate;
+            self.steal_fade_frames = steal_fade_frames(sample_rate);
             self.env_template.set_sample_rate(sample_rate);
             self.env_template
                 .set_params(ATTACK_SECONDS, DECAY_SECONDS, SUSTAIN, RELEASE_SECONDS);
         }
 
+        // 先把本快照的每轨音色收进一个**定长数组**（栈上，无分配）：
+        // 轨道槽最多 MAX_TRACK_SLOTS 个，因此"查表"永远不需要分配。
+        let mut wanted: [(EntityId, ToneParams); MAX_TRACK_SLOTS] =
+            [(EntityId::default(), ToneParams::bypass()); MAX_TRACK_SLOTS];
+        let mut wanted_len = 0usize;
+        for (id, tone) in tones {
+            if wanted_len >= MAX_TRACK_SLOTS {
+                break;
+            }
+            wanted[wanted_len] = (*id, *tone);
+            wanted_len += 1;
+        }
+
+        // ⚠ 顺序是**判据的一部分**：先按 `tracks` 完成槽位分配（`slot.id` 写进去），
+        // 再按 `slot.id` 配音色。第一版把音色循环写在分配循环**之前**，
+        // 于是查表用的是**旧 id**：新占用的槽位永远匹配不到自己的音色，
+        // 一路拿 `ToneParams::bypass()` ⇒ 滤波器**从未生效**
+        //（判据 `a_tone_above_the_cutoff_is_attenuated` 实测衰减 0.00 dB 抓到了它）。
         for slot in &mut self.slots {
             slot.present = false;
         }
@@ -491,6 +816,20 @@ impl SynthEngine {
                     self.slots[index].id = *track;
                 }
                 None => self.track_drops = self.track_drops.saturating_add(1),
+            }
+        }
+
+        for slot in &mut self.slots {
+            let tone = wanted[..wanted_len]
+                .iter()
+                .find(|(id, _)| *id == slot.id)
+                .map(|(_, tone)| *tone)
+                .unwrap_or_else(ToneParams::bypass);
+            if sample_rate_changed || tone != slot.tone {
+                slot.tone = tone;
+                // 系数在**构造期**算（`tan`，超越函数类）；旁通时系数无意义但仍算一份，
+                // 让"参数 → 系数"只有一条路径。
+                slot.filter = tone.filter(sample_rate);
             }
         }
     }
@@ -549,6 +888,9 @@ impl SynthEngine {
 
         let position = self.position;
         let end = position.saturating_add(out.len() as u64);
+        let fade_frames = self.steal_fade_frames;
+        let tone_filter = self.slots[index].filter;
+        let tone_bypass = self.slots[index].tone.is_bypass();
         {
             let Self {
                 table,
@@ -569,7 +911,15 @@ impl SynthEngine {
                         break;
                     }
                     if note.end_sample > position {
-                        trigger(slot, note, *sample_rate, table, voice_steals);
+                        trigger(
+                            slot,
+                            note,
+                            *sample_rate,
+                            table,
+                            tone_filter,
+                            fade_frames,
+                            voice_steals,
+                        );
                         *notes_triggered = notes_triggered.saturating_add(1);
                     }
                     slot.cursor += 1;
@@ -589,6 +939,50 @@ impl SynthEngine {
                     if !voice.active || now < voice.start_sample {
                         continue;
                     }
+                    // --- 2a) 窃取淡出：旧音符指数淡出，期满换成挂起的新音符 ---
+                    //
+                    // 输出的是**旧音符**的样本 × 旧增益 × 正在下降的包络
+                    //（`gate = false` ⇒ `Adsr` 走 Release 段，系数已在
+                    // `start_steal_fade` 里覆盖成 3 ms）。新音符的值只在
+                    // `fade_remaining` 归零的那一帧启用。
+                    if voice.fade_remaining > 0 {
+                        voice.fade_remaining -= 1;
+                        let envelope = voice.env.process(false);
+                        if voice.fade_remaining == 0 && voice.pending {
+                            // 新音符从 0 起 attack：相位归零、起始位置改为当前帧、
+                            // 包络 reset + gate_on。新音符**从这一帧**开始发声，
+                            // 而旧音符在上一帧已经衰减到 ≈0（`Adsr` 在 < 1e-4 时归零）
+                            // ⇒ 中间不存在"两个波形的和"。
+                            voice.pending = false;
+                            voice.phase = 0;
+                            voice.inc = voice.note_inc;
+                            voice.gain = voice.note_gain;
+                            voice.start_sample = voice.note_start.max(now);
+                            voice.env.reset();
+                            voice.env.gate_on();
+                        } else {
+                            let samples = table.level_samples(voice.level);
+                            let len = samples.len();
+                            let scaled = u64::from(voice.phase) * len as u64;
+                            let index = (scaled >> 32) as usize;
+                            let first = samples[index];
+                            let next = index + 1;
+                            let second = samples[if next == len { 0 } else { next }];
+                            let fraction =
+                                ((scaled & 0xFFFF_FFFF) >> (32 - FRAC_BITS)) as f32 * FRAC_SCALE;
+                            let mut sample =
+                                (first + (second - first) * fraction) * envelope * voice.gain;
+                            if !tone_bypass {
+                                sample = voice.filter.process(sample);
+                            }
+                            accumulator += sample;
+                            voice.phase = voice.phase.wrapping_add(voice.inc);
+                            if !voice.env.is_active() {
+                                *voice = Voice::IDLE;
+                            }
+                            continue;
+                        }
+                    }
                     let gate = now < voice.end_sample;
                     let envelope = voice.env.process(gate);
                     if !voice.env.is_active() {
@@ -606,7 +1000,13 @@ impl SynthEngine {
                     // 末端回绕用一次比较代替取模（整数, 精确）。
                     let second = samples[if next == len { 0 } else { next }];
                     let fraction = ((scaled & 0xFFFF_FFFF) >> (32 - FRAC_BITS)) as f32 * FRAC_SCALE;
-                    accumulator += (first + (second - first) * fraction) * envelope * voice.gain;
+                    let mut sample = (first + (second - first) * fraction) * envelope * voice.gain;
+                    // 声部级低通。**旁通时一次也不调用** ⇒ 逐位恒等
+                    // （不是"系数取成透明"，那样状态仍会吸收瞬态）。
+                    if !tone_bypass {
+                        sample = voice.filter.process(sample);
+                    }
+                    accumulator += sample;
                     voice.phase = voice.phase.wrapping_add(voice.inc);
                 }
                 *output = accumulator;
@@ -615,48 +1015,118 @@ impl SynthEngine {
     }
 }
 
-/// 触发一个音符：分配声部（无空闲则**硬窃取**最早结束者）。
+/// 触发一个音符：分配声部；池满时按 [ARCH-RT-004] **软窃取**。
 ///
 /// 包络从池里的模板拷贝（参数只在采样率变化时重算），因此这里有 `exp` 的调用点
 /// 只有"采样率变化"那一处 —— 逐样本路径不含超越函数（模块文档 §2）。
+///
+/// ## 窃取算法的三条口径（都是确定性的）
+///
+/// 1. **优先级**（[ARCH-RT-004] 原文："优先窃取处于 Release 阶段尾部、振幅能量
+///    最低（< −60 dBFS）或最早被触发的声音"）：
+///    包络已进入 `Release` 段**或**当前电平 < −60 dBFS（`0.001`）的声部优先；
+///    同档内取 `start_sample` **最小**者（最早触发）；仍然并列 ⇒ 取**下标最小**者。
+///    三级比较合起来是全序 ⇒ 任何平台/编译器下选出同一个声部。
+/// 2. **淡出**：被窃取声部进入 `fade_remaining = steal_fade_frames` 帧的指数淡出
+///    （默认 3 ms），新音符**挂起**在同一槽位上，淡出走完立刻从 0 起 attack。
+///    池满时"旧声部淡出"与"新音符起音"因此**永不同时发声** ⇒ 不可能叠加爆音。
+/// 3. **`fade_frames == 0` 退化为硬窃取**（判据注入用）：不动旧声部，直接覆盖。
+///    这时输出会出现"旧波形硬切到新波形"的样本间跃变 ——
+///    判据 `steal_fade_bounds_the_sample_step` 正是对着这个注入变红的。
+#[allow(clippy::too_many_arguments)]
 fn trigger(
     slot: &mut TrackSlot,
     note: &ScheduledNote,
     sample_rate: f32,
     table: &Wavetable,
+    tone_filter: LadderFilter,
+    fade_frames: u32,
     voice_steals: &mut u64,
 ) {
     let level = table.level_for(note.freq_hz, sample_rate);
-    let mut selected = slot.voices.iter().position(|voice| !voice.active);
-    if selected.is_none() {
-        // 池满：抢占"最早结束"的声部（`end_sample` 相同时取最小下标 ⇒ 确定性）。
-        let mut best = 0usize;
-        for (index, voice) in slot.voices.iter().enumerate() {
-            if voice.end_sample < slot.voices[best].end_sample {
-                best = index;
-            }
-        }
-        selected = Some(best);
-        *voice_steals = voice_steals.saturating_add(1);
-    }
-    let Some(index) = selected else {
+    let fill = |voice: &mut Voice| {
+        let mut env = Adsr::new();
+        env.set_sample_rate(sample_rate);
+        env.set_params(ATTACK_SECONDS, DECAY_SECONDS, SUSTAIN, RELEASE_SECONDS);
+        env.reset();
+        env.gate_on();
+        *voice = Voice {
+            active: true,
+            phase: 0,
+            inc: note.phase_inc,
+            level,
+            gain: note.gain,
+            start_sample: note.start_sample,
+            end_sample: note.end_sample,
+            env,
+            filter: tone_filter,
+            fade_remaining: 0,
+            pending: false,
+            note_inc: note.phase_inc,
+            note_gain: note.gain,
+            note_start: note.start_sample,
+        };
+    };
+
+    if let Some(index) = slot.voices.iter().position(|voice| !voice.active) {
+        fill(&mut slot.voices[index]);
         return;
-    };
-    let mut env = Adsr::new();
-    env.set_sample_rate(sample_rate);
-    env.set_params(ATTACK_SECONDS, DECAY_SECONDS, SUSTAIN, RELEASE_SECONDS);
-    env.reset();
-    env.gate_on();
-    slot.voices[index] = Voice {
-        active: true,
-        phase: 0,
-        inc: note.phase_inc,
-        level,
-        gain: note.gain,
-        start_sample: note.start_sample,
-        end_sample: note.end_sample,
-        env,
-    };
+    }
+
+    // 池满：选一个被终止者（见本节文档 §1）。
+    let mut best = 0usize;
+    for (index, voice) in slot.voices.iter().enumerate() {
+        let candidate = (steal_priority(voice), voice.start_sample, index);
+        let current = (
+            steal_priority(&slot.voices[best]),
+            slot.voices[best].start_sample,
+            best,
+        );
+        if candidate < current {
+            best = index;
+        }
+    }
+    *voice_steals = voice_steals.saturating_add(1);
+
+    let victim = &mut slot.voices[best];
+    if fade_frames == 0 {
+        // 硬窃取（注入路径 / 显式配置）：直接覆盖，不留淡出。
+        fill(victim);
+        return;
+    }
+    if victim.active && victim.fade_remaining == 0 {
+        // 先把旧声部推进淡出（`start_steal_fade` 覆盖 release 为 3 ms 并 gate_off）。
+        victim.env.start_steal_fade();
+        victim.fade_remaining = fade_frames;
+        // 相位/增益/终点仍是**旧音符**的（淡出的是旧声音）。
+    }
+    // 挂起新音符：淡出走完的那一帧换成它（起音从 0 开始）。
+    //
+    // ⚠ **不要**在这里改 `gain`/`start_sample`/`inc`：淡出期间的输出是"旧音符的样本
+    // × 旧音符的增益 × 正在下降的包络"。第一版在这里顺手把它们换成了新音符的值
+    // （`gain = note.gain`、`end_sample = note.end_sample`），再加上 `env.reset()`
+    // 把包络电平清零 ⇒ 被窃取声部**瞬间静音**，3 ms 淡出等于没做
+    // （实测：软窃取与硬窃取的输出只差 1.97，且在触发当帧就分叉）。
+    // 新音符的值先寄存在 `note_*` 字段里，淡出走完的那一帧再启用。
+    victim.pending = true;
+    victim.note_inc = note.phase_inc;
+    victim.note_gain = note.gain;
+    victim.note_start = note.start_sample;
+    victim.end_sample = note.end_sample;
+    victim.level = level;
+}
+
+/// 窃取优先级：`0` = 正在释放（或已低于 −60 dBFS），`1` = 仍在持续发声。
+///
+/// 数字小者优先被窃取。−60 dBFS ≈ `0.001` 是规范原文给的阈值。
+#[must_use]
+fn steal_priority(voice: &Voice) -> u8 {
+    let releasing = matches!(voice.env.stage(), AdsrStage::Release);
+    if releasing || voice.env.value() < 0.001 {
+        0
+    } else {
+        1
+    }
 }
 
 /// 采样率下限钳制（与 `yeban_dsp::MIN_SAMPLE_RATE` 同口径；那个常量不是公共 API）。
@@ -754,7 +1224,7 @@ mod tests {
 
     fn rig(id: EntityId) -> SynthEngine {
         let mut engine = SynthEngine::new(48_000);
-        engine.begin_snapshot(48_000, &[id]);
+        engine.begin_snapshot(48_000, &[id], []);
         engine
     }
 
@@ -899,7 +1369,7 @@ mod tests {
     fn slot_exhaustion_is_counted_and_never_panics() {
         let mut engine = SynthEngine::new(48_000);
         let ids: Vec<EntityId> = (0..MAX_TRACK_SLOTS + 3).map(|_| EntityId::new()).collect();
-        engine.begin_snapshot(48_000, &ids);
+        engine.begin_snapshot(48_000, &ids, []);
         assert_eq!(engine.track_drops(), 3);
         assert_eq!(engine.table_levels(), yeban_dsp::oscillator::LEVELS);
     }
@@ -950,7 +1420,7 @@ mod tests {
         let mut actual = Vec::new();
         for quantum in 0..32 {
             if quantum == 16 {
-                switched.begin_snapshot(48_000, &[id]);
+                switched.begin_snapshot(48_000, &[id], []);
                 switched.align_cursors(std::iter::once((&id, &schedule)));
             }
             actual.extend(render(&mut switched, id, &schedule, 128));

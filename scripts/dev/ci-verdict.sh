@@ -29,7 +29,7 @@ AUTH=()
 
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[1m%s\033[0m\n' "$*"; }
-api() { curl -fsSL "${AUTH[@]}" -H "Accept: application/vnd.github+json" "$@"; }
+api() { curl -fsSL ${AUTH[@]+"${AUTH[@]}"} -H "Accept: application/vnd.github+json" "$@"; }
 current_branch() { git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD; }
 
 has_gh() { command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; }

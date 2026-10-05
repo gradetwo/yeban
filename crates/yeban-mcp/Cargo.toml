@@ -44,6 +44,17 @@ yeban-model.workspace = true
 # 因此 `run-gates.sh crate yeban-mcp` 在本机跑的会是重依赖编译 —— 处置见
 # `docs/ledger/mcp-render-notes.md` §6「本机真跑 vs CI」。
 yeban-render.workspace = true
+# 离线解码与高精重采样 (symphonia / rubato, 见 `line/decode-core` 的台账)。
+# `yeban_render_master` 现在**真的消费** `ClipContent::Audio` 的 CAS 资产字节:
+# 解码 → 编码器延迟裁剪 → 采样率不一致时 rubato sinc 重采样 → AudioClipSource。
+#
+# 边界 [ARCH-TOP-002] / [ARCH-RT-001]: 解码是**离线**路径 (可分配、可阻塞),
+# 且**只**发生在 `render::build` 里 (每个资产一次), 绝不出现在
+# `AudioSource::render_block` 的逐块回调里 —— 后者会被 Rayon 工作线程反复调用。
+#
+# 这条边复用根 `[workspace.dependencies]` 里**已登记**的 `yeban-decode`,
+# 因此 `Cargo.lock` 的包集合不变 (没有新的第三方包), 只有一条成员间的依赖边新增。
+yeban-decode.workspace = true
 # 母带合成里的超越函数 (正弦振荡器 / 等程律频率 / 等功率声相) [ARCH-DET-001]:
 # 规范要求"统一启用纯 Rust libm", 禁止落到宿主 libm —— 否则同一工程的母带会随平台差 LSB。
 libm.workspace = true

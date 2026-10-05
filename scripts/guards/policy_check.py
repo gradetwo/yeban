@@ -453,6 +453,24 @@ def g14_shell_scripts_are_portable() -> list[Violation]:
                     f"{rel(path)}:{lineno}",
                     "关联数组在 bash 3.2 上不存在（开发机就是 3.2）；用 case 表达同一件事",
                 ))
+        # ③ 运行时可移植性: `"${arr[@]}"` 在 bash 3.2 + `set -u` 下、数组为空时会炸。
+        #    注意 `bash -n` **抓不到**它（它是运行时语义, 不是语法）—— 这正是这条检查存在的理由。
+        if re.search(r"set -[a-z]*u", text):
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                for match in re.finditer(r'"\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}"', line):
+                    name = match.group(1)
+                    # 允许两种安全写法: `${arr[@]+"${arr[@]}"}` 或 `"${arr[@]:-}"`
+                    if f'${{{name}[@]+' in line or f'"${{{name}[@]:-}}"' in line:
+                        continue
+                    bad.append((
+                        "G14",
+                        f"{rel(path)}:{lineno}",
+                        f'`"${{{name}[@]}}"` 在 bash 3.2 + set -u 下数组为空时会报 unbound; '
+                        f'写成 `${{{name}[@]+"${{{name}[@]}}"}}`',
+                    ))
         if bash is None:
             continue
         result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True)

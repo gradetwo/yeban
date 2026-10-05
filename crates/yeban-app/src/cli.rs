@@ -53,7 +53,7 @@ use crate::bridge::{BridgeError, ViewState};
 use crate::elements::ElementRegistry;
 use crate::input::{InputContext, Modifiers, PhysicalKey};
 use crate::open::{
-    DocumentFormat, OpenError, OpenedProject, ProjectOpenOptions, open_project_document_file,
+    DOCUMENT_FORMAT, OpenError, OpenedProject, ProjectOpenOptions, open_project_document_file,
 };
 use crate::save::{SaveError, SaveReport, save_archive_file, write_file_atomically};
 
@@ -100,9 +100,10 @@ pub fn usage_text() -> String {
   yeban-app [选项]
 
 打开 / 保存 / 导出:
-  --open <path>            打开一个工程文档并把它作为**当前工程**驱动界面。
-                           接受 `.yeban` 容器或裸 `project.json`; 打不开就报错退出,
-                           绝不退化成空工程。
+  --open <path>            打开一个 `.yeban` 工程容器并把它作为**当前工程**驱动界面。
+                           `.yeban` 容器是**唯一**工程格式 (ADR-0001 D43):
+                           非容器文件 (例如散落的 project.json / 随机字节 / 空文件)
+                           被**明确拒绝**, 打不开就报错退出, 绝不退化成空工程。
   --save-as <path>         把当前工程**原子**落盘成 `.yeban` 容器 ([ARCH-SEC-004]:
                            同目录临时文件 → fsync → rename → 刷目录)。
                            没有 --open 时当前工程 = 内置演示工程, 输出里
@@ -143,8 +144,8 @@ pub fn usage_text() -> String {
   {ok} 成功 (含 --help / --version / 无头自检完成)
   {ui} 界面路径失败 (无法创建窗口 / 事件循环异常 / 工程无法投影成界面)
   {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本)
-  {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 /
-     截断 / CRC 不匹配 / 非法 project.json …)
+  {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
+     容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
   {export} --export-elements 失败
 
@@ -474,8 +475,6 @@ pub enum ProjectSource {
         path: PathBuf,
         /// 实际读入的字节数。
         bytes: u64,
-        /// 识别出的文档形态。
-        format: DocumentFormat,
     },
     /// 来自内置样本（**没有**读任何文件）。
     Sample(Sample),
@@ -484,19 +483,17 @@ pub enum ProjectSource {
 impl ProjectSource {
     /// 第一行报告：文件形态给 `opened: …`，样本形态给 `project-source: …`。
     ///
+    /// `format=` 只有一个取值（[`DOCUMENT_FORMAT`]）：容器是唯一工程格式，报告里
+    /// 不再有"我按哪种格式读的"这种歧义。
+    ///
     /// 样本那一行**必须**明写"未读任何文件"：`--save-as` 不带 `--open` 时，
     /// 用户最容易误以为"它保存的是某个默认工程文件"。
     #[must_use]
     pub fn report_line(&self) -> String {
         match self {
-            Self::File {
-                path,
-                bytes,
-                format,
-            } => format!(
-                "opened: path={} bytes={bytes} format={}",
-                path.display(),
-                format.as_str()
+            Self::File { path, bytes } => format!(
+                "opened: path={} bytes={bytes} format={DOCUMENT_FORMAT}",
+                path.display()
             ),
             Self::Sample(sample) => format!(
                 "project-source: sample={} (内置演示工程; 未给 --open ⇒ 未读任何文件)",
@@ -509,8 +506,8 @@ impl ProjectSource {
     #[must_use]
     pub fn save_origin(&self) -> String {
         match self {
-            Self::File { path, format, .. } => {
-                format!("{} (format={})", path.display(), format.as_str())
+            Self::File { path, .. } => {
+                format!("{} (format={DOCUMENT_FORMAT})", path.display())
             }
             Self::Sample(sample) => {
                 format!("sample={} (内置演示工程, 不是从文件打开的)", sample.name())
@@ -621,7 +618,7 @@ impl std::error::Error for CliError {
 ///
 /// # Errors
 ///
-/// [`CliError::Open`]：读文件失败 / 超过上限 / 容器拒绝 / 既不是容器也不是工程 JSON。
+/// [`CliError::Open`]：读文件失败 / 超过上限 / 不是 `.yeban` 容器 / 容器拒绝。
 pub fn load_project(options: &Options) -> Result<Loaded, CliError> {
     match options.open.as_ref() {
         Some(path) => {
@@ -637,7 +634,6 @@ pub fn load_project(options: &Options) -> Result<Loaded, CliError> {
                 source: ProjectSource::File {
                     path: path.clone(),
                     bytes: opened.file_bytes,
-                    format: opened.format,
                 },
             })
         }
@@ -1279,14 +1275,17 @@ mod tests {
             "必须是**精确**的容器原因: {text}"
         );
 
-        // 不是容器也不是工程 JSON。
+        // 非容器文件：明确拒绝，理由精确（不是"未知格式"、不是空工程）。
         let junk = dir.join("junk.bin");
         std::fs::write(&junk, b"not a zip").expect("写垃圾");
         let error =
             run_batch(&parse(&["--open".to_owned(), junk.display().to_string()]).expect("解析"))
                 .expect_err("垃圾文件必须失败");
         assert_eq!(error.exit_code(), EXIT_OPEN);
-        assert!(error.to_string().contains("既不是"), "实测: {error}");
+        assert!(
+            error.to_string().contains("不是 `.yeban` 容器"),
+            "实测: {error}"
+        );
 
         // 不存在的文件 / 目录：都是精确的 I/O 裁决，都不是 panic。
         let missing = dir.join("nope.yeban");
@@ -1636,11 +1635,11 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // 判据 39: --open 接受裸 project.json（形态**明示**），坏 JSON 精确报错
+    // 判据 39（**反转**）: --open **拒绝**裸 project.json（容器是唯一格式, D43）
     // ------------------------------------------------------------------
 
     #[test]
-    fn open_accepts_a_bare_project_json_document_and_labels_it() {
+    fn open_rejects_a_bare_project_json_document_with_a_precise_reason() {
         use yeban_model::container::read_container;
 
         let dir = scratch_dir("bare");
@@ -1655,7 +1654,8 @@ mod tests {
         let bare = dir.join("project.json");
         std::fs::write(&bare, &json).expect("写裸 JSON");
 
-        let lines = run_batch(
+        // 旧判据在这里断言"能打开 + format=project-json"。反转之后它必须**失败**。
+        let error = run_batch(
             &parse(&[
                 "--open".to_owned(),
                 bare.display().to_string(),
@@ -1663,29 +1663,37 @@ mod tests {
             ])
             .expect("解析"),
         )
-        .expect("裸 project.json 必须能打开");
-        let text = joined(&lines);
-        assert!(text.contains("format=project-json"), "{text}");
+        .expect_err("裸 project.json 必须被明确拒绝");
+        assert_eq!(error.exit_code(), EXIT_OPEN);
+        let text = error.to_string();
+        assert!(text.contains("不是 `.yeban` 容器"), "实测: {text}");
         assert!(
-            text.contains("history-bytes=0"),
-            "裸 JSON 没有提交图谱\n{text}"
+            text.contains("end-of-central-directory"),
+            "必须带上容器的精确原裁决: {text}"
         );
-        assert!(text.contains("asset-blobs=0"), "裸 JSON 没有资产池\n{text}");
 
-        // 把它另存为容器 ⇒ 得到的是一个**真的** `.yeban`（裸 JSON 不是死路）。
-        let converted = dir.join("converted.yeban");
+        // 报告里 `format=` 只可能是一个值（容器）；用法文本里不再有裸 JSON 读法。
+        assert_eq!(DOCUMENT_FORMAT, "yeban-container");
+        let usage = usage_text();
+        assert!(
+            !usage.contains("裸") && !usage.contains("project-json"),
+            "用法不得再提裸 JSON 读法:\n{usage}"
+        );
+
+        // 内容本身没问题：同一份 JSON 在真容器里就能打开（拒绝的是容器边界）。
+        let wrapped = dir.join("wrapped.yeban");
         run_batch(
             &parse(&[
                 "--open".to_owned(),
-                bare.display().to_string(),
+                container.display().to_string(),
                 "--save-as".to_owned(),
-                converted.display().to_string(),
+                wrapped.display().to_string(),
             ])
             .expect("解析"),
         )
-        .expect("转换");
+        .expect("容器必须能打开并另存");
         assert_eq!(
-            crate::open::open_project_file(&converted).expect("读回"),
+            crate::open::open_project_file(&wrapped).expect("读回"),
             project
         );
 
@@ -1804,7 +1812,6 @@ mod tests {
             source: ProjectSource::File {
                 path: PathBuf::from("/tmp/x.yeban"),
                 bytes: 42,
-                format: DocumentFormat::Container,
             },
             ..loaded
         };

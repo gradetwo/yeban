@@ -3,6 +3,18 @@
 - **台账类型**：交付映射 / CLI 语法表 / 实测输出 / 判据清单 / 注入记录 / Quick Start 引用清单 / 未决项（**不是规范**）
 - **工作线**：`line/app-cli`（worktree `yeban/.worktrees/app-cli`，基线 main `b8fe21e`）
 - **所有者目录**：`crates/yeban-app/**`（本台账是唯一新增的共享区文档）
+
+> ## ⚠ 修订（`line/app-no-compat`，main `632b0c0`，2026-10-04）
+>
+> ADR-0001 **D43**（1.0.0 之前没有历史包袱与兼容需求，发现问题 / 更优解直接推翻）落地第一刀：
+> **裸 `project.json` 兼容读路径已删除**，`.yeban` 容器是**唯一**工程格式。
+> - `--open <裸 project.json>` 由"能打开且 `format=project-json`"变成**明确拒绝**（退出码 `3`，
+>   stderr 精确到 ``不是 `.yeban` 容器 (容器裁决: end-of-central-directory record not found)``）；
+> - `format=` 只剩一个取值 `yeban-container`；`--help` 不再提裸 JSON；
+> - 判据 39 / B10 是**反转**（不是删除），证据见 `docs/ledger/app-no-compat-notes.md`。
+>
+> 本台账下列条目已经就地改成新行为；历史记录保留但标注了"已删除"。
+
 - **规范来源 (Normative)**：
   - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md`：§5.3 `[ARCH-SEC-003]`（容器）/ `[ARCH-SEC-004]`（原子落盘）、
     §7 `[ARCH-UI-003]`（无头运行）、§8（crate 拓扑与依赖方向）
@@ -22,7 +34,7 @@
 | :--- | :--- | :--- |
 | `crates/yeban-app/src/cli.rs`（**新增**） | `ARCH-UI-003` `UI-TEST-001` `UI-A11Y-001/002` | 零 Slint 的命令行面：参数解析、用法文本、真实版本、当前工程装载、诚实报告、退出码契约、批处理执行。**全部** CLI 逻辑住在这里，`main.rs` 只剩分发 |
 | `crates/yeban-app/src/main.rs`（改写为分发层） | `ARCH-UI-003` `UI-TEST-003` `ARCH-TOP-002` | `parse` → `SLINT_BACKEND=headless` 哨兵折算 → `wants_gui()` 分流；GUI 路径用 `--open` 的工程经 `host::build_main_window` 注入。模块头那段"SLINT_BACKEND=headless 不存在"的实测说明**原样保留** |
-| `crates/yeban-app/src/open.rs`（新增公开入口 + 变体） | `ARCH-SEC-003` `MUST-GATE-006/007` `MODEL-AST-002` | `DocumentFormat` / `OpenedProject` / `open_project_document_file`：接受 `.yeban` 容器**或**裸 `project.json`；`OpenError::NotAContainerNorJson`；`read_capped` 抽出"读之前按 metadata 判上限 + 读回再判" |
+| `crates/yeban-app/src/open.rs`（新增公开入口 + 变体） | `ARCH-SEC-003` `MUST-GATE-006/007` `MODEL-AST-002` | `OpenedProject` / `open_project_document_file`：打开 `.yeban` 容器；`OpenError::NotAYebanContainer`（**不是容器**）；`read_capped` 抽出"读之前按 metadata 判上限 + 读回再判"。**修订（D43）**：`DocumentFormat` 枚举与裸 `project.json` 路径已删除，`format=` 只剩常量 `DOCUMENT_FORMAT = "yeban-container"` |
 | `crates/yeban-app/src/save.rs`（抽出 + 新增） | `ARCH-SEC-004` | `write_file_atomically`（**唯一**落盘实现）、`save_archive_file`（`history.dag` + 资产池**保真**另存）；`save_project_file` 语义不变（`ui/force_save` 的接线一行未改） |
 | `crates/yeban-app/tests/cli_contract.rs`（**新增**） | `ARCH-SEC-004` `ARCH-SEC-003` `ARCH-UI-003` `UI-TEST-001` | 12 条**真二进制**端到端判据（argv / stdout / stderr / 退出码 / 落盘后果），带 120s 超时护栏（防止某个"无窗口"开关回归后被错误送进事件循环而把 CI 挂死） |
 | `crates/yeban-app/src/lib.rs` | — | 注册 `pub mod cli`；crate 文档补命令行面 |
@@ -30,7 +42,7 @@
 
 **没有**改：根 `Cargo.toml`、`.github/**`、`scripts/**`、`deny.toml`、其它 `crates/**`、`spikes/**`、法务文件、
 `README*.md`、`docs/DEVELOPMENT_LEDGER.md`、`docs/adr/**`、`docs/YEBAN_*.md`、`schemas/**`。
-**没有新增任何第三方依赖**（连 `serde_json` 都没有 —— 裸 JSON 的手法见 §5.1）。
+**没有新增任何第三方依赖**（连 `serde_json` 都没有 —— 旧裸 JSON 手法见 §5.1，**已随 D43 删除**）。
 
 ---
 
@@ -40,7 +52,7 @@
 
 | 开关 | 取值 | 语义 | 退出码 |
 | :--- | :--- | :--- | :--- |
-| `--open <path>` | 路径，**只能给一次** | 打开 `.yeban` 容器或裸 `project.json` 作为**当前工程**。容器拒绝的原因原样上报 | 失败 `3` |
+| `--open <path>` | 路径，**只能给一次** | 打开 `.yeban` 容器作为**当前工程**。容器拒绝的原因原样上报；**不是容器**（裸 `project.json` / 随机字节 / 空文件）⇒ 精确拒绝 | 失败 `3` |
 | `--save-as <path>` | 路径，**只能给一次** | 把当前工程**原子**写成 `.yeban` 容器（同目录临时文件 → `fsync` → `rename` → 刷目录） | 失败 `4` |
 | `--export-elements <path>` | 路径，**只能给一次** | 把语义元素注册表**原子**写到文件（内容与 `--dump-elements` 打到 stdout 的逐行相同） | 失败 `5` |
 | `--dump-elements` | 无 | 元素注册表打到 stdout（每行一个元素，稳定顺序） | 失败 `1`（投影失败）|
@@ -61,6 +73,7 @@
 | `--open a.yeban` | GUI，当前工程 = 打开的那个文件（经 `host.rs` 的**唯一**注入点） |
 | `--headless` | 无窗口：不读任何文件，用演示工程自检，打印 `headless ok` + 读数 |
 | `--headless --open a.yeban` | 无窗口，但**真的**打开文件、真的投影、打印它的读数（无显示器环境的"打开这个工程"自检）|
+| `--open 非容器文件`（裸 `project.json` / 空 / 随机字节） | **明确拒绝**：退出 `3`，stderr = ``不是 `.yeban` 容器 (容器裁决: end-of-central-directory record not found)``；stdout 为空。**没有**任何"打开成空工程"的分支（D43） |
 | `--save-as b.yeban` | 无窗口；**没有** `--open` ⇒ 当前工程 = 内置样本，输出 `project-source: sample=…` 与 `saved: … from=sample=…` **明说** |
 | `--open a --save-as b` | 另存为：**归档保真**（`history.dag` 与资产池一并写出，不是只写 `project.json`） |
 | `--export-elements f` + `--save-as b` | 顺序固定：**先**导出，**再**保存；导出失败 ⇒ 不写工程（退出 `5`） |
@@ -75,7 +88,7 @@
 | `0` | 成功（含 `--help` / `--version` / 无头自检完成） |
 | `1` | 界面路径失败（无法创建窗口 / 事件循环异常 / 工程无法投影成界面） |
 | `2` | 命令行用法错误（未知开关 / 缺取值 / 不支持取值 / 重复 / 未知样本） |
-| `3` | `--open` 失败（读失败 / 超 4 GiB / 容器拒绝：压缩法、Zip-Slip、炸弹、截断、CRC、非法 JSON …） |
+| `3` | `--open` 失败（读失败 / 超 4 GiB / **不是 `.yeban` 容器** / 容器拒绝：压缩法、Zip-Slip、炸弹、截断、CRC、缺件、非法 JSON …） |
 | `4` | `--save-as` 失败（临时文件 / 刷盘 / 重命名任一步失败，或容器写出被拒） |
 | `5` | `--export-elements` 失败 |
 
@@ -88,7 +101,7 @@
 
 ```text
 headless ok
-opened: path=… bytes=… format=yeban-container|project-json      (或 project-source: sample=…)
+opened: path=… bytes=… format=yeban-container                   (或 project-source: sample=…)
 project: id=… bpm=120.00 ts=4/4 title="夜半 Yeban"
 project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=0 asset-blobs=0 history-bytes=0
 view-counts: tracks=6 master=1 clips=3 notes=6 sections=4 scenes=4 elements=211 dynamic-regions=14
@@ -163,9 +176,8 @@ exported: path=/tmp/e.txt lines=211 bytes=28221 temp=e.txt.tmp-01M44JVDS62S0XX2B
 exit=0        # /tmp/e.txt 实测 211 行
 
 $ yeban-app --open /tmp/project.json --headless     # 裸 project.json（从真容器里取出的那一份）
-opened: path=/tmp/project.json bytes=5929 format=project-json
-project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=0 asset-blobs=0 history-bytes=0
-exit=0
+(stderr) yeban-app: 打开 `/tmp/project.json` 失败: `/tmp/project.json` 不是 `.yeban` 容器 (容器裁决: end-of-central-directory record not found)
+exit=3        # stdout 为空：既不是"未知格式"，也不是"打开成空工程"（D43 删掉了兼容读路径）
 
 $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZIP**（D30）
      5929  01-01-1980 00:00   project.json
@@ -198,14 +210,14 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
 | ① 29 / B1 | `--help` 覆盖全部新开关 + 短路 | 用法含每个开关与每个退出码；`--help --bogus` 仍 `0`；不打印握手行（按**独立成行**判定，因为用法文本里本来就引用了它） |
 | ② 30 / B1 | `--version` 与 `Cargo.toml` 一致 | `version_text() == "yeban-app {CARGO_PKG_VERSION}"` **且**直接读根清单的 `[workspace.package] version` 对账 |
 | ③ 31 / B3 | 真容器 ⇒ `--open` 的读数与工程一致 | `tracks-all` / `midi-notes` 由测试**独立数一遍**模型结构再比；`view-counts: notes` 同口径；`history-bytes` / `asset-blobs` / `format=` |
-| ④ 32 / B4 | 截断容器 / 垃圾文件 / 缺失文件 / **目录** | 退出码 `3`；stderr 带**精确**容器原因；stdout 为空；`code != 101`（不是 panic）；**绝不**退化成空工程 |
+| ④ 32 / B4 | 截断容器 / 空文件 / 垃圾 / 随机字节 / 缺失文件 / **目录** | 退出码 `3`；stderr 带**精确**原因（容器裁决或"不是 `.yeban` 容器"）；stdout 为空；`code != 101`（不是 panic）；**绝不**退化成空工程 |
 | ⑤ 33 / B5 | `--save-as` 写出的文件能被 `open_project_file` 读回 | 工程逐字段相等；**归档**（`history.dag` + 资产池）逐字段相等；打印 `bytes=` == 实际落盘字节 |
 | ⑥ 34 / B9 | 只读目录 ⇒ 非零退出 + 原文件未被破坏 | 退出码 `4`；旧文件字节**一字未改**；无临时文件残留（注入 2 证明这条真的能区分"原子替换"与"就地覆盖"） |
 | ⑦ 35 / B5 | 两次 `--save-as` 的确定性 | 两次文件字节 `==`；两次打印的 `bytes=` 相同；两次都用了临时文件（`temp=` 里的 ULID 不同 —— 它是"真的建了临时文件"的痕迹） |
 | ⑧ 36 / B7 | 未知开关 / 缺取值 / 重复 / 未知样本 | 退出码 `2` + stderr 带原因**和**完整用法提示（**不许**静默忽略） |
 | 37 / B6 | `--save-as` 无 `--open` ⇒ 演示工程**并明说** | `project-source: sample=default` + `未读任何文件` + `from=sample=default`；且**不**出现 `view-counts`（保存不需要投影） |
 | 38 / B8 | `--export-elements` 与 `--dump-elements` 同源 | 落盘行集合 == stdout 元素行；`bytes=` == 文件长度；导出失败 ⇒ 退出 `5` 且**不**写工程 |
-| 39 / B10 | 裸 `project.json` | `format=project-json`；`history-bytes=0`；能再另存成**真容器**并读回 |
+| 39 / B10（**反转**） | 裸 `project.json` **被明确拒绝**（D43） | 退出 `3` + stderr ``不是 `.yeban` 容器 (容器裁决: end-of-central-directory record not found)``；stdout 为空；同一份 JSON 的真容器照样能打开（拒绝的是容器边界，不是内容） |
 | 40 | 组合语义表 | 8 种组合的 `wants_gui()` / `needs_projection()` 与 §2.2 逐格一致 |
 | 41 | 报告自描述 | 引号转义；样本来源无 `opened:`；文件来源首行 `opened:` |
 | B2 / B2b | 握手行与哨兵 | `--headless` ⇒ `headless ok` **恰好一行**；`SLINT_BACKEND=headless` **单独**也不开窗口（真进程 + 120s 超时护栏） |
@@ -221,10 +233,14 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
   **没有任何自动化判据覆盖它**（已登记为 needs）。它的报告行与失败诊断复用同一份实现。
 - `cargo clippy -p yeban-app --all-targets -D warnings`（含 Slint 目标）与 `cargo fmt --all --check` 的 CI 版。
 
-### 4.3 注入 → 变红 → 还原（**4 条，全部真做过**）
+### 4.3 注入 → 变红 → 还原（**4 条，全部真做过**；本线追加的 2 条见 `app-no-compat-notes.md` §4）
 
 方法：源文件备份到 `/tmp/app-cli-backup/`，注入后用两条探针重跑，记录红掉的判据名，
 再从备份还原并 `cmp` 逐文件确认 identical（`md5` 亦与注入前一致：`cli.rs ae87a8cf…` / `save.rs db15d03c…` / `open.rs fd24772c…`）。
+**注**：上表的 4 条是 app-cli 线在当时那版代码上做的；`line/app-no-compat` 又对**新代码**做了
+2 条注入（把裸 JSON 分支加回来 / 把容器错误吞成空工程），红点记录与 `md5` 复核见
+[`app-no-compat-notes.md`](app-no-compat-notes.md) §4。上表第 1 条的注入形态（吞错误 ⇒ 空工程）
+在新代码上仍然红（4 条单元 + 2 条真进程），与本线注入 B 同族。
 
 | # | 注入（任务建议的形态） | 改法 | 实测红点 |
 | :-- | :--- | :--- | :--- |
@@ -242,22 +258,30 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
 
 ## 5. 边界（如实登记，**不是**静默降级）
 
-### 5.1 裸 `project.json` 是怎么"顺便"支持的（零新增依赖）
+### 5.1 ~~裸 `project.json` 是怎么"顺便"支持的~~ ⇒ **已删除**（ADR-0001 D43）
 
-`[ARCH-SEC-003]` 认定 `.yeban` 是唯一工程载体，读写都在 `yeban-model::container`。
-本线**没有**引入 `serde_json`（`app-binding-notes.md` §7 第 8 条已经明确 app 不引它），
-也**没有**写第二份 JSON 校验逻辑。做法是：
+**旧行为（历史记录，已不存在）**：`open_project_document_file` 先按容器读；失败时若文件
+"看起来仍像容器"就原样上报容器裁决，否则若首个非空白字节是 `{` 就把裸 JSON 在**内存里**
+用 `write_container` 包成最小容器（`project.json` + 空 `history.dag`）再交给权威读取器，
+形态用 `DocumentFormat::BareProjectJson` 明示（`format=project-json`）。
 
-1. 先按**容器**读（快路径）；
-2. 失败时若文件**看起来仍像容器**（前 4 字节是 `PK\x03\x04` / `PK\x05\x06` / `PK\x07\x08`）
-   ⇒ **原样上报容器裁决**（截断 / 篡改的 `.yeban` 因此永远拿到精确错误码，不会被"顺手当成 JSON 试试"）；
-3. 否则若首个非空白字节是 `{` ⇒ 用 `yeban_model::container::write_container` 在**内存里**
-   包一个最小容器（`project.json` = 原字节 + 空 `history.dag`），再交给**权威读取器**
-   `read_project_container` —— 路径安全、尺寸闸门、ZIP 结构、JSON 反序列化、错误码**全部**复用那一份实现；
-4. 否则 ⇒ `NotAContainerNorJson`（携带容器原裁决）。
+**为什么删**：D30 已经把容器定为唯一载体；D43（2026-10-04 负责人授权）明确"1.0.0 之前没有
+历史包袱与兼容需求，发现问题 / 更优解**直接推翻**"。这条兼容路径的成本是实打实的：
+一个只服务兼容的 `DocumentFormat` 枚举、一个只服务兼容的错误变体
+（`NotAContainerNorJson`）、一条"看起来像 ZIP 就绝不掉进 JSON 分支"的补丁式判断、一条
+`wrap_bare_project_json` 的成套逻辑，以及"同一份 JSON 有两种读法"的歧义面。
 
-任何一条失败路径都**不会**返回默认 / 空工程。判据 39/B10 覆盖成功路径，
-判据 28 覆盖"像 JSON 但 JSON 非法 ⇒ `InvalidProjectJson`"与"裸 JSON 不能绕过单条目上限"。
+**新行为**（判据 39/B10 是**反转**来的，不是删掉的）：
+
+1. 按容器读；成功 ⇒ `Ok`。
+2. 失败且文件**有 ZIP 结构** ⇒ 原样上报容器裁决（截断 / 篡改的 `.yeban` 仍拿到精确错误码）。
+3. 否则 ⇒ `OpenError::NotAYebanContainer`：**"不是 `.yeban` 容器"**，并携带容器原裁决
+   （通常是 `EocdNotFound`）。裸 `project.json`、空文件、随机字节都走这一支。
+
+任何一条失败路径都**不会**返回默认 / 空工程。判据 26/B10 覆盖"裸 JSON 被拒绝"，
+判据 28/B4 覆盖"空 / 垃圾 / 随机字节 / 坏 JSON 各自精确报错"，
+判据 20 覆盖"容器**内部**的坏 JSON ⇒ `InvalidProjectJson`"（这条**保留**：容器里的
+`project.json` 仍然是权威工程文档）。
 
 ### 5.2 `--save-as` 保真 `history.dag` 与资产池
 
@@ -344,6 +368,8 @@ SLINT_BACKEND=headless yeban-app --headless
 **必须写进文档的诚实说明（建议逐字采用）**：
 
 - `--open` 打不开就**报错退出**（退出码 3），**不会**打开成空工程；
+- `.yeban` 容器是**唯一**工程格式（ADR-0001 D43）：散落的 `project.json`、空文件、
+  随机字节都被**明确拒绝**（退出码 3，stderr 说明"不是 `.yeban` 容器"）；
 - `--save-as` 是**原子替换**（同目录临时文件 → fsync → rename），失败时**旧文件保持不变**；
 - 没有 `--open` 时 `--save-as` 保存的是**内置演示工程**，输出里 `from=sample=…` 会明说；
 - 无窗口命令（`--headless` / `--save-as` / `--export-elements` / `--dump-elements` /
@@ -359,7 +385,7 @@ SLINT_BACKEND=headless yeban-app --headless
 | 1 | **GUI 路径的自动化判据** | `--open <path>`（不带 `--headless`）会构造窗口并进事件循环；CI 无显示器 ⇒ 本线只交付了它的报告行与失败诊断（复用批处理那份实现），**没有**任何判据覆盖"窗口真的用打开的工程驱动了界面" | 需要 `yeban-ui-test-port` 的 testing backend（`[ARCH-UI-005]`）接到 `main.rs`，或人工在有显示器的机器上核对 |
 | 2 | **`--save-as` 之后的"当前工程路径"会话状态** | 进程退出即结束；没有 `.yeban.lock`（`[ARCH-SEC-003]` 的 OS 建议锁）、没有 "保存为默认落点" | `yeban-services` / 会话层（`MODEL-ISO-001` 第二层）；app-mixer 线 needs-3 同族 |
 | 3 | **`--open` 的 CLI 侧上限注入** | 命令行走 `ProjectOpenOptions::default()`（4 GiB + 容器默认闸门）；没有 `--max-bytes` 之类的开关 | 有需要再加；不要为了"看起来完整"凭空造开关 |
-| 4 | **`.yeban` 以外的导入格式** | 只有 `.yeban` 容器与裸 `project.json`；没有 `.mid` / `.als` / 音频导入 | 别的工作线（`yeban-decode` / `[ARCH-FMT-002]`）|
+| 4 | **`.yeban` 以外的导入格式** | 只有 `.yeban` 容器（裸 `project.json` 读路径已随 D43 删除）；没有 `.mid` / `.als` / 音频导入 | 别的工作线（`yeban-decode` / `[ARCH-FMT-002]`）|
 | 5 | **`--export-elements` 的格式开关（JSON / 过滤）** | 只有一种稳定文本格式（每行一个元素），与 `--dump-elements` 逐行相同 | 等 `[UI-TEST-001]` 的消费者（MCP / AI 工具）提出真实需求 |
 | 6 | **GUI 里的 `--save-as`** | `--save-as` 一律走无窗口批处理；"界面改完再存"需要 UI→模型写入先接线 | 见 §5.4 与 §7 第 1 条 |
 | 7 | **`--version` 的构建元数据** | 只有 `yeban-app <semver>`，没有 commit / 构建时间 | 需要构建期注入（`build.rs` 读 git）⇒ 会牵动 Cargo/cargo-deny 面，留给集成者裁决 |

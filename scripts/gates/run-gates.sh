@@ -152,9 +152,12 @@ gate_crate() {
     fi
   fi
   step "crate $crate: clippy --all-targets -D warnings ${extra[*]:-}"
-  run "clippy[$crate]" cargo clippy -p "$crate" --all-targets "${extra[@]}" -- -D warnings
+  # ⚠ `"${extra[@]}"` 在 **bash 3.2 + set -u** 下、当数组为空时会报 `extra[@]: unbound variable`
+  # （实测: 开发机 /bin/bash 是 3.2 ⇒ **除 yeban-engine 外所有 crate 的本机 crate 档都跑不起来**）。
+  # CI 的 bash 5 不受影响, 所以这个 bug 只在本地暴露 —— 由 `line/model-no-compat` 的接手者抓到。
+  run "clippy[$crate]" cargo clippy -p "$crate" --all-targets ${extra[@]+"${extra[@]}"} -- -D warnings
   step "crate $crate: test ${extra[*]:-}"
-  run "test[$crate]" cargo test -p "$crate" "${extra[@]}"
+  run "test[$crate]" cargo test -p "$crate" ${extra[@]+"${extra[@]}"}
 }
 
 case "$MODE" in
