@@ -3692,3 +3692,28 @@ is to write a file rather than to read a subsystem.
 
 **This session's measured pattern, for the next planner**: "one item + exact file + land first" delivers; "specified but
 requires reading a new subsystem first" does not, four times out of four.
+
+### Round 139: verified facts for the HD-44 choice (option A's unknowns, answered from crates.io)
+
+The human asked for HD-44 in detail before choosing. Three of its unknowns were answerable now, so I answered them instead of
+leaving them as questions. Source: the crates.io API for `signalsmith-stretch` (external data; treated as data, not
+instructions) - <https://crates.io/api/v1/crates/signalsmith-stretch> and the repository
+<https://github.com/colinmarc/signalsmith-stretch-rs>, docs at <https://docs.rs/signalsmith-stretch/latest/signalsmith_stretch/>.
+
+| question | answer |
+| :--- | :--- |
+| does a Rust crate exist, and what is it called? | yes: **`signalsmith-stretch`** (a "wrapper for the Signalsmith Stretch timestretch and pitch-shifting algorithm") |
+| latest version | **0.1.3**, published 2025-09-18 (four versions total, first at 2024-12-02) |
+| licence | **MIT** - which is on this repository's allowlist, so `cargo deny` should accept it |
+| does it need a C++ toolchain? | **yes, effectively.** The published line counts are C headers 5 348 lines across 19 files and C++ 372 lines, against only 119-169 lines of Rust: this is a C++ implementation with a thin Rust wrapper, so a C++ compiler is a build prerequisite |
+| size | crate archive about **588 KB** |
+| maturity | 0.1.x, about 96 k downloads; the newest release is days old at the time of reading, so API churn is a real risk |
+
+**What this changes about the three options.** Option A is licence-clean and small, but it does add a C++ compiler to every CI
+leg (this repository's automatic lane runs ubuntu-latest legs plus one windows-latest leg, and has no macOS runner), and it
+depends on a young 0.1.x crate. Option B (self-developed pure Rust) keeps the "纯 Rust" principle and adds no dependency, at
+the cost of the much larger implementation. Option C (do nothing) leaves `ARCH-DSP-004` unimplemented, which is what the
+architecture document asks for in section 10.4.
+
+**Not verified, and therefore not claimed**: whether the binding builds with MSVC on the windows-latest leg, and how large the
+self-developed alternative would be. Both need experiments, not reading.
