@@ -858,7 +858,11 @@ fn the_tool_path_uses_the_model_inverse_entry_point_only() {
     );
     let shared = sources
         .iter()
-        .find(|(path, _)| path.ends_with("src/undo_session.rs"))
+        // ⚠ 用共享实现里的**同一个**跨平台判据，不在这里另写一份路径比较：
+        // 第一版正是在共享实现里修好、却**在这里漏改**，被 CI 的 windows 腿抓到
+        // （run 37268901708：`path.ends_with("src/undo_session.rs")` 在
+        //  `…\src\undo_session.rs` 上为假 ⇒ `expect` panic）。
+        .find(|(path, _)| undo_session::is_the_shared_session(path))
         .expect("共享实现必须在扫描集合里");
     assert!(
         shared.1.contains(".undo_with("),

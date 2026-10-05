@@ -971,15 +971,37 @@ pub fn wiring_fixture(project: &YebanProjectV1) -> Option<WiringFixture> {
 /// 一份待扫描的源码（路径 + 内容）。
 pub type SourceFile = (String, String);
 
-/// 这个路径是不是**本共享实现自己**（两个 crate 下都成立）。
+/// 这个路径是不是**本共享实现自己**（两个 crate、两个平台下都成立）。
 ///
-/// ⚠ 必须**平台无关**地比：Windows 的 `Path::display()` 用 `\` 作分隔符，
-/// 直接用 `ends_with("src/undo_session.rs")` 在 Windows 上会漏判 ——
-/// 于是守卫会把自己的两处生产命中（`invert(` 与 `.undo_with(`）当成"第二份实现"。
-/// 这正是 CI 的 windows 腿在 run 37268427827 抓到的红点。
-fn is_the_shared_session(path: &str) -> bool {
+/// ## 为什么必须平台无关（CI 抓出来的两个真红点）
+///
+/// Windows 的 `Path::display()` 用 `\` 作分隔符，Linux/macOS 用 `/`。任何
+/// `path.ends_with("src/undo_session.rs")` 形态的判断在 Windows 上都会**漏判自己**：
+/// 守卫于是把自己的两处生产命中（只读推导用的 `invert(`、唯一执行者 `.undo_with(`）
+/// 当成"第二份撤销实现"（CI run 37268427827 的 windows 腿）。
+///
+/// ## 为什么只此一处口径
+///
+/// "这是不是共享实现"这个判断有三个调用点：扫描器自己、共享实现的判据、以及
+/// `crates/yeban-mcp/tests/undo_wiring.rs` 的源码级判据。**三处都调本函数** ——
+/// 第一版把它们各写了一遍，于是修好了一处、漏了另一处
+/// （CI run 37268901708 的 windows 腿又红在同一条判据上）。
+///
+/// 判据：分隔符归一化之后，路径尾部恰好是 `crates/yeban-mcp/src/undo_session.rs`
+/// （两个 crate 反推出来的路径都落在这一个尾部上），并且带一条**反向**回归 ——
+/// 别的 crate 下的同名文件**不得**被当成自己（否则守卫会空转）。
+#[must_use]
+pub fn is_the_shared_session(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
-    normalized.ends_with("src/undo_session.rs")
+    // 归一化后仍可能是 `…/crates/yeban-mcp/../../crates/yeban-mcp/src/undo_session.rs`
+    // （`production_source_roots` 会拼出 `../..`），`ends_with` 对此天然成立。
+    normalized.ends_with("crates/yeban-mcp/src/undo_session.rs")
+        || std::path::Path::new(path).ends_with(
+            std::path::Path::new("crates")
+                .join("yeban-mcp")
+                .join("src")
+                .join("undo_session.rs"),
+        )
 }
 
 /// 取一份源码的**生产区**（`#[cfg(test)]` 属性**行**之前的全部内容）。
@@ -1676,17 +1698,38 @@ mod tests {
         )];
         assert!(scan_second_undo_implementations(&in_tests).is_empty());
 
-        // 反例 4（Windows 形态）：路径用反斜杠时，**本文件自己**必须仍被认出来。
-        // 这条回归是 CI 的 windows 腿在 run 37268427827 抓到的真实缺陷：
-        // `ends_with("src/undo_session.rs")` 在 `…\\src\\undo_session.rs` 上漏判。
-        let windows_self: Vec<SourceFile> = vec![(
-            "D:\\a\\yeban\\yeban\\crates\\yeban-mcp\\src\\undo_session.rs".to_owned(),
-            "let n = graph.undo_with(&mut project, &head, &mut cursor, 1).unwrap();\n".to_owned(),
-        )];
-        assert!(
-            scan_second_undo_implementations(&windows_self).is_empty(),
-            "Windows 路径形态下也必须认出本共享实现"
-        );
+        // 反例 4（路径形态）：**两种平台的两种拼法**下都必须认出本文件自己。
+        // 这是 CI 的 windows 腿两次抓到的真实缺陷
+        // （run 37268427827 与 37268901708：`ends_with("src/undo_session.rs")` 在
+        //  `…\\src\\undo_session.rs` 上为假）。
+        for self_path in [
+            "/repo/crates/yeban-mcp/src/undo_session.rs",
+            "/repo/crates/yeban-mcp/../../crates/yeban-mcp/src/undo_session.rs",
+            "D:\\a\\yeban\\yeban\\crates\\yeban-mcp\\src\\undo_session.rs",
+            "D:\\a\\yeban\\yeban\\crates\\yeban-mcp\\..\\..\\crates\\yeban-mcp\\src\\undo_session.rs",
+            "\\\\?\\D:\\a\\yeban\\yeban\\crates\\yeban-mcp\\src\\undo_session.rs",
+        ] {
+            assert!(
+                is_the_shared_session(self_path),
+                "必须认出本共享实现: {self_path}"
+            );
+            let sources: Vec<SourceFile> = vec![(
+                self_path.to_owned(),
+                "let n = graph.undo_with(&mut project, &head, &mut cursor, 1).unwrap();\n"
+                    .to_owned(),
+            )];
+            assert!(
+                scan_second_undo_implementations(&sources).is_empty(),
+                "本共享实现不得被判成第二份实现: {self_path}"
+            );
+        }
+        // 反向：别的 crate 下的同名文件**不得**被当成自己（否则守卫会空转）。
+        for other in [
+            "/repo/crates/yeban-model/src/undo_session.rs",
+            "D:\\a\\yeban\\yeban\\crates\\yeban-model\\src\\undo_session.rs",
+        ] {
+            assert!(!is_the_shared_session(other), "不得误伤: {other}");
+        }
 
         // 反例 5: 注释里提到这些词不算违规（文档要能解释为什么不许写）。
         let comments = vec![(
