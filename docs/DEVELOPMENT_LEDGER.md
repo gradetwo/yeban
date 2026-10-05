@@ -7625,3 +7625,23 @@ guards the tree.
 **Attempt 17 reverted** so the tree stays green; the generator persists as a committed script, which is the one durable gain of the round.
 
 **Status**: tree green and clean; CI green through `24d6f2d`; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
+
+
+### Round 311: the test-split rule, decided from the tests themselves
+
+Round 310 established that the app's kept tests must be split rather than re-imported. Counted the module's `#[test]` blocks and classified each by
+whether it touches the writer's symbols (`export_project_to_file`, `write_file_atomically`, `MidiExportError::Save`, `temp_name`):
+
+- **stay in `yeban-app`** (2 blocks): those that exercise the atomic write and the report.
+- **move to `yeban-midi`** (11 blocks): those that exercise the domain mapping - PPQ reconciliation, time-signature conversion, tempo
+  map, track expansion, the domain error variants.
+
+**Why classification by symbol rather than by reading**: the tests' own code says which layer each belongs to, exactly as the compile errors of round
+310 said which symbols had moved. The rule is mechanical and checkable - a test that names the writer's symbols cannot live in a crate that has no
+`save` module, and a test that names the domain variants cannot live in a crate whose error type no longer has them.
+
+**So the remaining recipe is three mechanical steps**: run `scripts/dev/extract-midi-mapping.py` (which writes the four files and passes its own
+pre-flight), split the test module by the rule above, and run `cargo test`. Nothing about the design or the classification is still open.
+
+
+**Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool owed.
