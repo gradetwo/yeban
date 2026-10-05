@@ -6231,3 +6231,30 @@ and the `needs` register was accurate when it claimed LESS - and I trusted neith
 **What it does not change**: the three symptoms are real, the five shortcuts are still dead, and (a)-(d) of step 2 remain the work. What
 changes is where the work should have started: from the register, which would have told me in one read that the keyboard consumer is a
 known, deliberate gap rather than a bug to diagnose.
+
+### Round 254: the gap has a NUMBER - it is needs N2, and step 2's part (a) is N2
+
+Round 253 advised reading the gap register first; doing so names the thing this session spent six rounds diagnosing. In
+`docs/ledger/app-projection-notes.md` the `needs` table carries:
+
+| # | needs | 状态与理由 |
+| :--- | :--- | :--- |
+| **N2** | **GUI 路径上 `InputContext` 还没有读者**：`main.rs` 已接事件源（§2），但 "Slint 键盘事件 → `input::dispatch_key` → `invoke_*`" 这一段仍未接线 ⇒ §7.2 的守卫在生产二进制里**目前不生效** | (registered, with its section references) |
+
+So the keyboard gap is not an unrecorded defect, not a bug, and not something to diagnose: it is **N2**, a numbered need with a
+stated scope, and `main.rs`'s comment (round 252) was pointing at this very entry.
+
+**Why this is the most useful thing found in ten rounds**: it converts my step-2 plan from a locally-designed sequence into a
+reference to the project's own work item. Part (a) is no longer "create a SelectTool handler" as I framed it; it is **N2 - give
+`InputContext` a reader on the GUI path** - and the individual action arms (tool selection, pencil toggle, delete selection) are
+consequences of doing N2, not separate designs. The four parts become:
+
+1. **N2**: connect Slint key events to `input::dispatch_key`, apply the result, and make the guard in §7.2 actually live;
+2. the tool-selection arm and the `active-tool` mirror (round 250's corrected shape) - i.e. one consumer of N2;
+3. `wire_roll_edit` + `clip_at_tick` + owning track + `plan_to_add_note` + `commit_ops` + reproject (step 2's (b)/(c));
+4. the two criteria: the keyboard one (press a digit, read the property back) and the pencil one (click, note count +1, undo reverses).
+
+**And a note on how to read my own last ten rounds**: I treated a registered need as an unexplained symptom, re-measured it from three
+angles, and proposed three placements - none wrong in themselves, all avoiding the one document that already answered the question.
+The register was not stale; it was accurate and unread. That is the failure mode to avoid next, and it is cheaper to avoid than any of
+the code work above.
