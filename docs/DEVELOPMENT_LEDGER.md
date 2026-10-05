@@ -7192,3 +7192,20 @@ evidence for it and I reached for line numbers anyway.
 
 **Status, stated plainly**: the mapping layer is NOT moved; `yeban-midi` holds `midi` and `vlq`; the app still owns `export_midi.rs`; the MCP tool
 is therefore still owed. Two rounds were spent and the ledger's value from them is the recipe correction above.
+
+
+### Round 291: the whole-workspace sweep re-run after the split - 1788 again, unchanged
+
+Ran every crate's `--tests` again because `yeban-render` had changed (the `midi`/`vlq` modules left it), which makes its dependents the thing to
+re-check:
+
+**1788 passed / 0 failed** - the **same total** as round 281's sweep, taken before the split. That equality is the useful signal rather than the
+green itself: the moved tests now run under `yeban-midi` instead of `yeban-render`, so a stable total means nothing was dropped, duplicated, or
+silently skipped in the move - which is exactly the failure mode a module move can produce and the reason a count is worth more than a tick here.
+
+**What it does not prove**: that each individual test still runs where it should. A total is an aggregate; it would not distinguish "the same 1788
+in different places" from "1788 with two swapped". The per-crate logs from this sweep are in the session's `/tmp` (not durable), and the durable
+record is the command and the total - so if a future reader needs the per-crate breakdown, the sweep is one command.
+
+**Also noted**: `target` grew again during the sweep (7.6 GB free afterwards, from 9.0 GB). The increment is modest, but round 289's disk-full
+incident makes it worth watching: this kind of full sweep costs several GB each time it runs.
