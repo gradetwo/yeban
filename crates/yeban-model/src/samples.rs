@@ -637,6 +637,37 @@ fn write_json<T: Serialize>(
     Ok(path)
 }
 
+/// `[BASELINE-003]` 造一个含 `note_count` 个音符的工程，供 10 万音符帧率场景使用。
+///
+/// **确定性**：音符 id 走 [`EntityId::new`]（Ulid 单调），所以两次调用的规范化 JSON 不一定逐字节相同 ——
+/// 判据因此只断言"同一进程内音符数恰好为 `note_count`"与"两次调用的音符数一致"，
+/// 而**不**谎称逐字节可复现（id 是本机生成的）。这条口径写在测试里，免得后来者误判。
+#[must_use]
+pub fn project_with_notes(note_count: usize) -> YebanProjectV1 {
+    let mut project = filled_project();
+    // 找一个带 MIDI 音符的 clip（`filled_project` 里 lead 轨必有）。
+    // 用显式循环而不是 `find`：`Iterator::find` 会把 `&mut` 再套一层引用，
+    // `entry.content.notes_mut()` 因此借不到可变（实测 E0596）。
+    let mut target: Option<&mut crate::project::ClipPoolEntry> = None;
+    for entry in project.clip_pool.values_mut() {
+        if entry.content.notes().is_some() {
+            target = Some(entry);
+            break;
+        }
+    }
+    let clip = target.expect("filled_project 必须含至少一个 MIDI 片段");
+    let notes = clip.content.notes_mut().expect("上面已判定该片段带音符");
+    notes.clear();
+    for i in 0..note_count {
+        let id = EntityId::new();
+        // 铺开在 4 小节网格上, 音高在 36..=84 之间循环, 力度交替。
+        let start_tick = (i as u64 % 3840) * 4;
+        let pitch = 36 + (i % 49) as u8;
+        notes.insert(id, crate::music::MidiNote::new(id, start_tick, pitch, 240));
+    }
+    project
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +748,27 @@ mod tests {
             });
             assert!(present, "填充样本必须覆盖 `{field}`");
         }
+    }
+
+    #[test]
+    fn project_with_notes_has_exactly_the_requested_count() {
+        // 判据: **恰好** 10 万个音符, 不是"大约"。
+        let project = project_with_notes(100_000);
+        let total: usize = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .map(std::collections::BTreeMap::len)
+            .sum();
+        assert_eq!(total, 100_000, "音符总数必须恰好等于请求值");
+        // 两次调用的音符数一致（id 由本机生成 ⇒ 不谎称逐字节可复现, 见函数文档）。
+        let again: usize = project_with_notes(100_000)
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .map(std::collections::BTreeMap::len)
+            .sum();
+        assert_eq!(again, 100_000);
     }
 
     #[test]
