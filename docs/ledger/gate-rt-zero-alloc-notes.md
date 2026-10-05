@@ -33,6 +33,9 @@
 > （`quanta_visits == 该窗口的量子数`、`lock_try_successes == quanta_visits`）。
 > 探针的"牙"用 3 组正对照（非 RT 路径上阻塞加锁 / 争用等待 / 真实 I/O）+ 4 组注入（各自打红后**逐字节还原**）证明。
 > 本机（M2）**整条判据 22/22 通过，实测 3.22 秒**（含构建）。
+> **CI 判决（已读回）**：`line/gate-rt-zero-alloc` 的 run **37270170716 = success**，
+> `rust (yeban-engine)` 腿（job id 111635332023）在 **Linux** 上同一判据 **22 / 22 通过**，
+> 六个场景的四元组与 macOS **逐项相同**（见 §3.1）。
 
 | 文件 | 行数 | 规范 ID | 说明 |
 | :--- | ---: | :--- | :--- |
@@ -185,6 +188,28 @@ bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --tes
 
 ---
 
+## 3.1 本机（macOS / M2）与 CI（Linux）的读数对照
+
+两边的判据都是**同一条命令的同一个目标**（CI 上是 `cargo test --all-targets` 里的 `rt_zero_alloc` 目标），
+因此这张对照表同时是"判据不依赖平台"的证据。
+
+| 读数 | 本机 macOS / M2 | CI Linux（run 37270170716，engine 腿） | 差异解读 |
+| :--- | :--- | :--- | :--- |
+| 判据汇总 | 22 / 22 通过 | **22 / 22 通过** | 一致 |
+| ① 纯渲染 10 000 量子四元组 | `0 / 0 / 0 / 0 / 0 / 0` | `0 / 0 / 0 / 0 / 0 / 0` | 一致 |
+| ③ 走带（命令 202 / 推进 2151 / tick 18259） | 同上 | 同上（**逐项相同**） | 一致（走带是整数有理数推进，确定性） |
+| ⑥ 限制器（压过 256 098 / 最大压限 0.8878 / 窃取 27 / 触发 83 / NaN 0） | 同上 | 同上（**逐项相同**） | 一致（DSP 走 IEEE 精确类，见 `MUST-GATE-003` 的口径） |
+| ⑦b 争用等待 | `held=true joined=true released=true lock_waits=1` | 同（`lock_waits=1`，其中 `joined=true`） | 一致（250 ms 固定持锁在 GitHub runner 上足够） |
+| ⑦c I/O 有牙 | `io_requests=3 io_ops=3`、sink `emits 2 -> 5`、文件行数 `0 -> 3` | 同（**逐项相同**） | 一致 |
+| 判据 T 的**冷窗口** | `alloc=1`（§6 的 64 字节陷阱） | **`alloc=0`** | **平台差异**：该陷阱在本 CI runner 上不出现 ⇒ 只打印不断言是正确选择 |
+| libtest 单元判据 | 135 passed | 145 passed | CI 跑的是**默认 feature**（含 cpal），多出的 10 条是设备侧判据 |
+| 墙钟 | 3.22 s（含构建） | 整腿 **1 分 6 秒**（含 cpal 编译与本 crate 全部目标） | 规模差异，非判据差异 |
+
+**结论**：四元组判据本身与平台无关；唯一出现平台差异的是**探针自身**的首触开销（§6），
+而它的处置（窗口外温暖 + 只打印冷读数）在两边都成立。
+
+---
+
 ## 4. 判据清单与注入记录
 
 ### 4.1 判据清单（`tests/rt_zero_alloc.rs`，22 条，全部 PASS）
@@ -317,7 +342,7 @@ other thread 2nd: alloc=0 bytes=0
 | 本机 clippy | ✅ 已完成 | `bash scripts/dev/cargo-local.sh clippy -p yeban-engine --no-default-features --all-targets -- -D warnings` ⇒ 退出码 0 |
 | 本机 fmt | ✅ 已完成 | `bash scripts/dev/cargo-local.sh fmt --all --check` ⇒ 退出码 0 |
 | 本机门禁（轻档 + crate 档） | ✅ 已完成 | `bash scripts/gates/run-gates.sh light` 与 `… crate yeban-engine` ⇒ 退出码 0（crate 档自动用 `--no-default-features` 轻量变体，D19） |
-| **CI 判决** | ⏳ 见提交后的 `ci-verdict.sh` 读数 | CI 上跑的是**默认 feature** 全量（含 cpal 编译）与全部 4 个 `harness=false` 目标；**只有 CI 的判决算数**（SKILL「Honesty rules」） |
+| **CI 判决** | ✅ **run 37270170716 = success**（`line/gate-rt-zero-alloc`，tip `3e24d97`） | 六条腿全绿：`checks` 46 s / `plan` 7 s / `deny` 51 s / `lockfile` 18 s / **`rust (yeban-engine)` 1 m 6 s** / `rust (yeban-app)` 2 m 50 s（`windows` 与 `rust (workspace 全量)` 按路径过滤跳过）。engine 腿里本判据 **22 / 22 通过**，Linux 读数与 macOS 逐项对照见 §3.1；CI 上跑的是**默认 feature**（含 cpal）与全部 4 个 `harness = false` 目标 |
 
 **本机做不到、也不许假装做到的**：本机不编译 cpal（AGENTS.md §5），因此
 ① 真实设备回调线程上的读数、② 默认 feature 下的 `yeban-engine` 全量构建，
@@ -338,7 +363,7 @@ other thread 2nd: alloc=0 bytes=0
 ### 8.1 建议的 `gate-status.md` 行（供集成者逐字替换）
 
 ```text
-| `MUST-GATE-001` | 实时回调零分配/零释放/零 I/O/零锁 | **已接线** | **四个分量都有运行期判据**（`crates/yeban-engine/tests/rt_zero_alloc.rs`，`harness=false`，22 条判据 / 六场景 / 27 764 量子 + 1 063 次快照交换）：计数型全局分配器（按线程武装）断言 `allocations == 0 && deallocations == 0`；**新建探针边界** `crates/yeban-engine/src/rt_probe.rs`（`RtLockProbe` 见证型锁 + 唯一诊断/I-O 出口 `diag`）断言 `lock_blocking == 0 && lock_waits == 0 && io_requests == 0 && io_ops == 0`，并逐窗口附"探针被跑到过"的见证（`quanta_visits == 量子数`、`lock_try_successes == quanta_visits`）。探针的牙：3 组正对照（非 RT 阻塞加锁 / 争用等待 / 真实文件+控制台 I/O）+ 4 组注入（锁 / I/O / 分配 / 摘掉探针，各自打红后逐字节还原）。**诚实边界（实测）**：不是 syscall 级拦截 —— 裸 `eprintln!`（实测 28 171 行）与"窗口外已暖过的裸 `std::sync::Mutex`"**判据不变红**；⑤ 自动化只覆盖到事件出队（实时侧尚未改 DSP）。本机 `--no-default-features` 实测 22/22、3.35 s；CI 判决见 run id。判据与读数见 `docs/ledger/gate-rt-zero-alloc-notes.md` |
+| `MUST-GATE-001` | 实时回调零分配/零释放/零 I/O/零锁 | **已接线** | **四个分量都有运行期判据**（`crates/yeban-engine/tests/rt_zero_alloc.rs`，`harness=false`，22 条判据 / 六场景 / 27 764 量子 + 1 063 次快照交换）：计数型全局分配器（按线程武装）断言 `allocations == 0 && deallocations == 0`；**新建探针边界** `crates/yeban-engine/src/rt_probe.rs`（`RtLockProbe` 见证型锁 + 唯一诊断/I-O 出口 `diag`）断言 `lock_blocking == 0 && lock_waits == 0 && io_requests == 0 && io_ops == 0`，并逐窗口附"探针被跑到过"的见证（`quanta_visits == 量子数`、`lock_try_successes == quanta_visits`）。探针的牙：3 组正对照（非 RT 阻塞加锁 / 争用等待 / 真实文件+控制台 I/O）+ 4 组注入（锁 / I/O / 分配 / 摘掉探针，各自打红后逐字节还原）。**诚实边界（实测）**：不是 syscall 级拦截 —— 裸 `eprintln!`（实测 28 171 行）与"窗口外已暖过的裸 `std::sync::Mutex`"**判据不变红**；⑤ 自动化只覆盖到事件出队（实时侧尚未改 DSP）。本机 `--no-default-features` 实测 22/22、3.22 s；**CI run 37270170716 = success**（`rust (yeban-engine)` 腿 22/22，Linux 与 macOS 读数逐项对照见 notes §3.1）。判据与读数见 `docs/ledger/gate-rt-zero-alloc-notes.md` |
 ```
 
 ---
