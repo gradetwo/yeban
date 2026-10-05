@@ -8,7 +8,13 @@
       "attribution_doc": "assets/samples/ATTRIBUTION.md",
       "instruments_count": 323,
       "format": "SFZ_v2",
-      "allowed_licenses": ["CC0-1.0", "CC-BY-4.0", "MIT", "Apache-2.0"]
+      "allowed_licenses": [
+        "CC0-1.0",
+        "CC-BY-4.0",
+        "MIT",
+        "Apache-2.0"
+      ],
+      "note": "素材由人类负责人选定后，与首批条目一起创建 assets/samples/MANIFEST.json 并在此加 manifest 指针。校验器刻意拒绝空清单（空清单会让红线 9 变成空转），因此清单不得先建后填。"
     },
     {
       "category": "models",
@@ -18,7 +24,10 @@
     {
       "category": "fonts",
       "attribution_doc": "assets/fonts/LICENSES.md",
-      "allowed_licenses": ["OFL-1.1", "Apache-2.0"]
+      "allowed_licenses": [
+        "OFL-1.1",
+        "Apache-2.0"
+      ]
     }
   ]
 }

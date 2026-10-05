@@ -37,3 +37,30 @@ CI 流水线包含自动化检查步骤，验证：
 1. `manifest.json` 中声明的每个采样文件均在此文件中拥有对应词条；
 2. 采样音频元数据（RIFF Chunk）中无任何专有版权冲突信息；
 3. 音频格式为合规的未压缩 PCM WAV 或 FLAC 格式。
+
+---
+
+## 怎么往仓库里加采样（机械约束，不是建议）
+
+`assets/samples/` 目前**没有素材**（`MUST-GATE-014` 因此记账为 PENDING）：
+门禁的**机制**已就绪，但入库哪些素材是**许可与付费决策**，由人类负责人选定（`HD-31`）。
+
+加素材的步骤如下（`scripts/gates/validate_schemas.py --repo-assets` 会**强制**它们）：
+
+1. **先建清单** `assets/samples/MANIFEST.json`（结构照 `assets/models/MANIFEST.json`）：
+   `category: samples` + `version` + `policy` + `items`。
+   注意 **items 不得为空** —— 校验器**刻意拒绝空清单**（空清单会让资产登记这条红线变成空转），
+   所以清单必须与**首批条目一起**创建，不能先建一个空壳。
+2. **每条素材登记**：`id` / `name` / `relative_path` / `sha256` / `license` / `commercial_usable`；
+   需要署名的再加 `attribution_required` + `author` + `source_url`。
+   允许的许可见根清单 `assets/manifest.json` 的 `allowed_licenses`（`CC0-1.0` / `CC-BY-4.0` / `MIT` / `Apache-2.0`）。
+3. **在根清单里挂上指针**：把 `assets/manifest.json` 的 `sub_manifests` 里 `category: samples`
+   那一项加上 `manifest: assets/samples/MANIFEST.json`。
+4. **跑门禁**：`python3 scripts/gates/validate_schemas.py --repo-assets`。它会做三件事：
+   ① 校验清单结构；② **逐项重算 SHA-256 与 size_bytes 并与磁盘对账**；
+   ③ **扫描该目录下每一个非文档文件，凡未登记在 items 里的一律报错**
+   （实测：丢一个 INJECT_kick.wav 进去会立刻红，删掉即绿）。
+
+> 第 ③ 条是**红线 9 的机械形式**：只对账已登记的是不够的 —— 不这样扫一遍，
+> 往目录里直接丢一个 wav 就能绕过每个二进制资产都要有许可与 SHA-256 记录这条要求。
+

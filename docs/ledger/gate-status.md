@@ -31,7 +31,7 @@
 的长跑（按稳态速率约 1 160 万次）；**在它跑完前本门禁仍记"部分"** |
 | `MUST-GATE-012` | 快照退役队列零泄漏 | **部分** | `crates/yeban-engine/src/snapshot.rs` 的退役队列与"主线程 Drop"判据；**高频/长时间交换压测**未做 |
 | `MUST-GATE-013` | 仓库不含 ASIO SDK | **已接线** | 守卫 `G07`（`scripts/guards/policy_check.py` 的 ASIO 专有代码扫描），每次 `run-gates.sh light` 都跑 |
-| `MUST-GATE-014` | 323 款采样署名全匹配 | **PENDING** | `assets/samples/ATTRIBUTION.md` 已写口径，但 `assets/samples/` **目录为空**（样本未入库）；`validate_schemas.py --repo-assets` 能对账"登记了什么"，**登记本身**需要人类的产品/授权决定 |
+| `MUST-GATE-014` | 323 款采样指纹对账 | **PENDING（机器已就绪，素材待人类选定）** | **机制已可运行**：`scripts/gates/validate_schemas.py --repo-assets` 校验 `assets/**` 清单结构、**逐项重算 SHA-256 与 size_bytes 并对账磁盘**，并新增**未登记文件检查** —— 扫描每个资产目录里的非文档文件，凡未登记在 `items` 里的一律报错（**实测**：往 `assets/samples/` 丢一个 `INJECT_kick.wav` 立刻红，删掉即绿）。`assets/samples/ATTRIBUTION.md` 已写出**可执行**的加素材流程（含那条刻意保留的拒绝空清单规则）。**仍缺（人类）**：选定并采购/收集素材、确认许可（`HD-31`）。**不许**用自造夹具冒充 323 款采样 |
 | `MUST-GATE-015` | Golden 图必须由 Tier-1 软光栅化产出 | **已接线** | `crates/yeban-ui-test-port/src/render.rs`（自研 `Platform` + `MinimalSoftwareWindow`，不用 `i-slint-backend-testing`）；真实界面 1920×1080 非黑 100%（run 37229660272）；CI 上传 `ui-screenshots-*` |
 
 ## B. 性能基准线（`BASELINE-*`）

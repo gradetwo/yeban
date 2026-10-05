@@ -91,6 +91,61 @@ def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
     if not manifests:
         problems.append("assets/ 下没有任何清单文件 —— 红线 9 的'登记'没有载体")
         return
+    # --- 未登记资产文件检查（红线 9 的机械形式）------------------------------------
+    # 为什么要有这一条: "清单逐项对账"只能保证**登记了的**是对的, 它管不住**没登记的**文件 ——
+    # 往 `assets/<category>/` 直接丢一个 wav/png 就能绕过"资产必须登记许可与 SHA-256"这条红线,
+    # 而所有门禁依旧绿。这里按**根指针清单**声明过的分类逐个目录扫:
+    #   目录里有非文档文件 ⇒ 必须有清单, 且每个文件都必须在清单的 items 里出现。
+    root_doc = None
+    root_file = REPO / "assets" / "manifest.json"
+    if root_file.is_file():
+        try:
+            root_doc = load_json(root_file)
+        except Exception:  # noqa: BLE001 - 根清单坏掉时上面已经报过, 这里不重复
+            root_doc = None
+    if isinstance(root_doc, dict):
+        for entry in root_doc.get("sub_manifests", []):
+            category = entry.get("category")
+            if not category:
+                continue
+            category_dir = REPO / "assets" / category
+            if not category_dir.is_dir():
+                problems.append(f"根清单声明了资产分类 `{category}`, 但目录 assets/{category}/ 不存在")
+                continue
+            files = sorted(
+                path
+                for path in category_dir.rglob("*")
+                if path.is_file()
+                and path.suffix.lower() not in {".md", ".json"}
+                and not path.name.startswith(".")
+            )
+            if not files:
+                continue
+            declared = entry.get("manifest")
+            manifest_file = REPO / declared if isinstance(declared, str) else None
+            if manifest_file is None or not manifest_file.is_file():
+                problems.append(
+                    f"assets/{category}/ 下有 {len(files)} 个资产文件, 但根清单没有指向一份存在的清单 "
+                    f"(声明的是 {declared!r}) —— 先建清单再放文件"
+                )
+                continue
+            try:
+                doc = load_json(manifest_file)
+            except Exception as error:  # noqa: BLE001
+                problems.append(f"{rel(manifest_file)}: 无法解析为 JSON: {error}")
+                continue
+            listed = {
+                item.get("relative_path")
+                for item in doc.get("items", [])
+                if isinstance(item, dict)
+            }
+            for path in files:
+                if rel(path) not in listed:
+                    problems.append(
+                        f"{rel(path)}: 资产文件**未登记**在 {rel(manifest_file)} 里 —— "
+                        f"红线 9 要求每个二进制资产都有许可与 SHA-256 记录"
+                    )
+
     for manifest_path in manifests:
         try:
             doc = load_json(manifest_path)
