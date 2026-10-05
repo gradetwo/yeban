@@ -3302,3 +3302,31 @@ not recommended.
 **Positive evidence worth keeping**: callback scheduling is unusually stable on this machine (p99 jitter 0.0000 ms, max
 0.0040 ms, zero backend errors over ~1500 callbacks per direction) - that is evidence *for* the audio engine's practical
 behaviour, independent of which latency口径 is chosen.
+
+### Round 116: the Rayon inversion, attributed to its mechanism (auto = all cores, overhead-bound) with a decision-ready fix
+
+Reading the code the sweep pointed at:
+
+| location | what it says |
+| :--- | :--- |
+| `crates/yeban-render/src/render.rs:677` | `.num_threads(self.options.threads.unwrap_or(0))` ⇒ **auto means rayon's `num_threads(0)` = every core** (12 here) |
+| `crates/yeban-render/src/render.rs:706` | the parallel unit is `.par_iter_mut()` over disjoint layer ranges |
+| `render.rs:20-29` (module doc) | layers occupy contiguous slots precisely so `par_iter_mut` can hand out non-overlapping mutable borrows, and the reduction must proceed in a **fixed order** - that is what keeps 1/2/4/8-thread output **byte-identical** (asserted at `render.rs:940-951`) |
+
+**Attribution conclusion**: the parallel path is **overhead/bandwidth-bound, not granularity-bound**. Two facts pin this: it
+loses at *every* size tested (1.9x-4.4x, including 64 tracks where the work is 243 ms), and the sweep showed a threshold
+would not help. Spinning 12 threads to shave a ~130 ms sequential job, with a fixed-order merge that serialises part of the
+work anyway, is a losing trade.
+
+**Decision-ready fix options (smallest first), none of which may break the bit-exactness assertion**:
+1. **change what `auto` means** - treat `threads: None` as 1 thread (or as "cores only when frames x tracks exceeds a
+   measured threshold"), since today's auto is measurably the slower choice. One-line change at the `unwrap_or(0)` site plus
+   a documented rationale; the existing multi-thread equality test keeps guarding determinism.
+2. leave `auto` alone and make the **bench and docs stop implying parallel is the fast path**, so nobody optimises against a
+   measurement that says otherwise.
+3. only if someone needs real parallel scaling: redesign the decomposition (coarser chunks / fewer sync points) **with the
+   1/2/4/8-thread byte-equality test as the gate**.
+
+**Deliberately not done**: option 1 changes a public default's performance behaviour, which is a product decision rather than
+a cleanup; and my remaining context cannot carry the redesign in option 3 safely. The measurement plus this attribution is
+what makes the decision cheap for whoever takes it - which is the point of writing it down.
