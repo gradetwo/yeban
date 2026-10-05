@@ -30,10 +30,10 @@ spike 本身就可以按需退役（`docs/DEV_WORKFLOW.md`「明确废弃」）�
 | `spike-01-cpal-latency` | **将由 `line/engine-rt` 部分覆盖** | 该线会在 CI 上验证"能打开/配置设备、回调零分配"等**结构性**性质；但 spike 的通过判据是「30 分钟连续播放零 underrun + **硬件往返 ≤ 5.0ms**」，这两条**CI 上做不到**（runner 无声卡），必须由有音频设备的机器实测。详见 `docs/DEVELOPMENT_LEDGER.md` 的对应条目。 |
 | `spike-02-spsc-retire` / `spike-09-snapshot-exchange` | **将由 `line/engine-rt` 覆盖** | 无锁 SPSC 批量契约、`Arc<EngineSnapshot>` 原子交换与退役队列零泄漏都是该线的交付内容（`ROAD-M2-002/007`）。spike 目录保留为空壳，直到读数登记。 |
 | `spike-05-ui-test-port` / `spike-08-software-renderer` | **将由 `line/ui-test-port` 覆盖** | Tier-1 `SoftwareRenderer` 截图 + 语义控件树（`MUST-GATE-015`）。 |
-| `spike-03-slint-fps` | **未开始，且 CI 上无法可靠验证** | 通过判据是"稳定 120 FPS + 常驻内存 < 25MB"。帧率测量需要固定刷新率/无噪声的机器，GitHub 托管 runner 不满足（同 `BASELINE-003` 的处境）。**必须由有显示环境的机器测量**，且要人眼确认不是"看起来卡"。 |
+| `spike-03-slint-fps` | **未开始，且 CI 上无法可靠验证** | 通过判据是「稳定 120 FPS + 常驻内存 < 25MB」。**硬件异议已由负责人裁决解除**（`HD-45` = B，2026-10-05）：接受参考机（MacBook Pro M2 Max，ProMotion 自适应刷新率）上的读数，局限写进门禁行。**仍未开始的真正原因变了**：不是硬件，而是**没有可跑的帧率判据** —— 本目录仍是空壳，`BASELINE-003` 至今缺一条 example（规格见 `docs/DEVELOPMENT_LEDGER.md` 第 136 轮）。托管 runner 的读数仍**不得**用来宣布通过。 |
 | `spike-06-roll-virtualization` | **未开始** | 10 万音符卷帘的视口裁剪（R-Tree）与批量绘制。依赖 `yeban-app` 的卷帘组件真正接上模型数据（目前 UI 只有演示数据），因此排在数据绑定之后。 |
 | `spike-07-mcp-lock` | **部分由 `line/mcp-core` 覆盖** | 内嵌 Streamable HTTP MCP + 独立 stdio CLI 的**互斥**需要 `.yeban.lock`（`ARCH-SEC-001`），而**锁文件尚未实现**（`ROAD-M1-004` 的一部分）。因此 MCP 侧可以验证"内嵌可工作"，但"并发打开得到 `PROJECT_LOCKED`"这一半仍缺实现。 |
-| `spike-03` / `spike-06` 的共同点 | — | 两者都是**帧率/交互**类判据，与 `BASELINE-003` 一样属于"CI 托管 runner 不可用"的类别。**不要**用托管 runner 的读数宣布它们通过。 | 目录为空壳骨架，`[dependencies]` 里的重依赖仍是 `TODO(spike)` 注释。这也意味着一件事：**在 `line/ui-shell` 之前，整个仓库从未编译过 Slint**（第一次真的编译时暴露了 Linux fontconfig 前置条件，见 `docs/CI_CD.md` §3.2）。 |
+| `spike-03` / `spike-06` 的共同点 | — | 两者都是**帧率/交互**类判据。CI 托管 runner 的读数**不得**用来宣布通过（这一条没变）；但「需要固定刷新率硬件」这个理由**已被 `HD-45` 裁决解除**，所以它们现在缺的是**判据本身**，不是机器。 | 目录为空壳骨架，`[dependencies]` 里的重依赖仍是 `TODO(spike)` 注释。这也意味着一件事：**在 `line/ui-shell` 之前，整个仓库从未编译过 Slint**（第一次真的编译时暴露了 Linux fontconfig 前置条件，见 `docs/CI_CD.md` §3.2）。 |
 
 `spike-04` 的"已汲取"不等于"已验收"：MUST-GATE-010 要求的 **10,000 步**属性测试仍需在 CI 的上限档位
 真实跑过并把读数登记进账本；本机默认只跑小步数。
