@@ -292,7 +292,7 @@ running 4 tests   →  test result: ok. 4 passed; 0 failed      # tests/live_ui_
 | 4 | **段落 / 场景色标** | `SectionV3::color` / `SceneV3::color` 已进投影，但 `.slint` 仍未消费（本线只做**轨道**色标，按任务书范围） | 同轨道色标，复用 `parse_hex_color` 即可（一条后续线的小活） |
 | 5 | **混音台通道条** | `mixer_console.slint` 仍是 `for track_index in 6` + 内联 `FADER_LEVELS`；默认视图里它隐藏（`console-tab = 0`），因此不在运行时树里 | `[ARCH-UI-002]` 电平 SPSC；`app-binding` needs-1 |
 | 6 | **推子 / 声相 / 音量拖拽回写** | 投影只**读**；没有 UI → 模型方向（`Op` 日志 / 引擎调度） | `yeban-engine` + `yeban-model::Op` |
-| 7 | **自动化曲线 / 宏 / 设备链** | `automation_lanes` / `macros` / `devices` 仍未进视图；`device_rack.slint` 用 `scene::DEVICE_NAMES` 常量 | `[UI-NOTE-004]`；设备机架应由 `devices` 驱动 |
+| 7 | **自动化曲线 / 宏 / 设备链** | ✅ **自动化曲线已进视图**（2026-10-05，`line/app-automation-ui`，载体见 `app-binding-notes.md` 同行的更正）；**宏 / 设备链仍未进视图**。原表述（`automation_lanes` / `macros` / `devices` 仍未进视图）是**当时的**状态；`device_rack.slint` 用 `scene::DEVICE_NAMES` 常量 | `[UI-NOTE-004]`；设备机架应由 `devices` 驱动 |
 | 8 | **走带位置 / 当前分支** | 仍是 `SESSION_TIMECODE` / `SESSION_BRANCH_NAME` 占位常量（不属 `YebanProjectV1`） | `yeban-engine::EngineSnapshot` + `CommitGraph` |
 | 9 | **`.yeban` 打开接进 CLI / 会话** | 入口是**纯函数 + 公开入口**（`yeban_app::open`），**没有**接进 `main.rs` 的事件循环 —— 按任务书要求（红线 6 与"控制面/事件循环共用线程"是独立裁决） | 集成者 / 控制面线；见 §7 needs |
 | 10 | **`.yeban` 的写出方向** | 本线只做"打开"；`write_project_container` 在容器层有，但 app 侧没有"另存 / 保存"入口（那要接 Op 日志与 `ARCH-SEC-004` 原子落盘） | `yeban-mcp::domain::store` + 会话层 |
