@@ -402,3 +402,14 @@ panicked at crates/yeban-model/src/ops.rs:2773:9:
 下一轮代码提交的净行数：`schemas/ops.schema.json` **+23 / −1**；
 `crates/yeban-model/src/ops.rs` **+138 / −13**（含新判据与注释追平）——
 两处都在本机 `run-gates.sh light`（exit=0）与 `cargo-local.sh test -p yeban-model`（exit=0）下验证过。
+
+## 附：第 2 轮 CI 出现"**挂住的绿**"（集成者登记）
+
+代码轮 run `37281451537`（tip `6f771a7`）中 `plan` / `deny` / `lockfile` / `checks` 四条腿 **success**，
+但 `rust (workspace 全量)` 与 `windows` 两条腿**停在 `Post Run actions/checkout@v4`（post-job 清理）**，
+整轮 `updatedAt` 自 `2026-10-05T08:05:39Z` 起**不再前进**（`gh run cancel` 也长时间不落地）。
+
+⇒ 判定：**这不是"慢"，是清理阶段被孤儿进程挡住**（本项目日志里出现过 `Cleaning up orphan processes`）。
+与"空心绿"并列，这是"**挂住的绿**"：`in_progress` + `updatedAt` 不前进 + 停在 `Post Run …`。
+处置：`cancel` + `rerun`；若复现 ⇒ 去找**泄漏子进程的那条测试**（本仓有音频线程/派生进程的测试），**不是继续等**。
+本轮由集成者推一个提交触发新一轮（`cancel-in-progress` 会顺带收掉挂起的那次）。
