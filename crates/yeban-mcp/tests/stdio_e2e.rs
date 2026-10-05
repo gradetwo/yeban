@@ -152,3 +152,31 @@ fn initialize_handshake_over_stdio_succeeds() {
         "必须声明 tools 能力: {r}"
     );
 }
+
+#[test]
+fn notification_produces_no_response_but_the_session_survives() {
+    // [ROAD-M4-002] 规范要求 notification（没有 id）**不产生任何响应**。
+    // 这条判据的来历: 我在补 initialize 时**臆断**「本服务端没做通知特判、会对 notifications/initialized 报错」,
+    // 并把该臆断写进了提交信息。实测（3 行输入 ⇒ **2 行**响应、且 tools/list 仍被回答）证明它**已经**被正确处理
+    // (`dispatch.rs` 的 `request.is_notification()`)。判据留在这里, 免得下次再凭印象说话。
+    let res = session(&[
+        req(1, "initialize", serde_json::json!({})),
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
+        req(2, "tools/list", serde_json::json!({})),
+    ]);
+    assert_eq!(
+        res.len(),
+        2,
+        "3 行输入(含 1 条 notification) 应只产生 2 行响应: {res:?}"
+    );
+    let ids: Vec<_> = res.iter().map(|v| v["id"].clone()).collect();
+    assert!(ids.contains(&serde_json::json!(1)), "握手响应在: {ids:?}");
+    assert!(
+        ids.contains(&serde_json::json!(2)),
+        "通知之后的 tools/list 仍被回答: {ids:?}"
+    );
+    assert!(
+        !res.iter().any(|v| v["id"].is_null()),
+        "不得为 notification 编造响应: {res:?}"
+    );
+}
