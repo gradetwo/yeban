@@ -965,6 +965,28 @@ impl ViewState {
             .collect()
     }
 
+    /// `[UI-NOTE-001]` 步骤 ①（纵向）：当前视口的 **音高范围**。
+    ///
+    /// 卷帘目前**固定画 16 条泳道**（`piano_roll.slint` 的 `for lane_index in 16`），所以纵向窗口就是
+    /// "泳道号落在 `[0, lane_count)` 的那些音高"。这与"工程里出现过的音高"**不是**同一个量 ——
+    /// 后者会把视口之外的音高也算进来，正是账本第 202 轮拒绝发布的那种错值。
+    ///
+    /// 换算法是**扫描 0..=127** 找泳道在范围内的音高（`pitch_lane` 没有现成的反函数）；
+    /// 无匹配时返回 `(0, 0)`，与"没有可见音高"同义。
+    #[must_use]
+    pub fn visible_pitch_range(&self, lane_count: i32) -> (u8, u8) {
+        let mut min: Option<u8> = None;
+        let mut max: Option<u8> = None;
+        for pitch in 0..=u8::MAX {
+            let lane = pitch_lane(pitch);
+            if lane >= 0 && lane < lane_count {
+                min = Some(min.map_or(pitch, |m: u8| m.min(pitch)));
+                max = Some(max.map_or(pitch, |m: u8| m.max(pitch)));
+            }
+        }
+        (min.unwrap_or(0), max.unwrap_or(0))
+    }
+
     /// `[UI-NOTE-001]` 步骤 ①：当前视口的 **tick 范围**（`[min_tick, max_tick]`）。
     ///
     /// 规范第 3.1 节要求视口以 `min_tick` / `max_tick`（以及音高上下界）暴露给裁剪核心；
@@ -2490,6 +2512,41 @@ mod tests {
             vis.len(),
             total
         );
+    }
+
+    #[test]
+    fn visible_pitch_range_covers_every_pitch_the_roll_can_draw() {
+        // 纵向类比（第 459 轮 tick 判据的纵向版）：泳道号落在 `[0, lane_count)` 的音高,
+        // **必须**落在返回的音高范围内 —— 否则卷帘画得出的音符会跑到"视口范围"之外。
+        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
+        let lane_count = 16; // 与 `piano_roll.slint` 的 `for lane_index in 16` 一致
+        let (min_pitch, max_pitch) = view.visible_pitch_range(lane_count);
+        assert!(
+            min_pitch <= max_pitch,
+            "范围必须有序: {min_pitch}..{max_pitch}"
+        );
+        let mut covered = 0_usize;
+        for pitch in 0..=u8::MAX {
+            let lane = pitch_lane(pitch);
+            if lane >= 0 && lane < lane_count {
+                assert!(
+                    pitch >= min_pitch && pitch <= max_pitch,
+                    "音高 {pitch}（泳道 {lane}）应可见, 却不在范围 {min_pitch}..{max_pitch} 内"
+                );
+                covered += 1;
+            }
+        }
+        assert!(covered > 0, "16 条泳道必须覆盖至少一个音高, 否则判据空转");
+        // 反向: 范围之外**不得**有可见泳道（否则范围偏大, 等于没裁）。
+        for pitch in 0..=u8::MAX {
+            if pitch < min_pitch || pitch > max_pitch {
+                let lane = pitch_lane(pitch);
+                assert!(
+                    lane < 0 || lane >= lane_count,
+                    "音高 {pitch} 在范围外, 却落在可见泳道 {lane}"
+                );
+            }
+        }
     }
 
     #[test]
