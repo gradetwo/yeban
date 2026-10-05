@@ -50,6 +50,32 @@ export component ArrangementView inherits Rectangle {
     // 标尺小节线 x (逻辑像素)
     in property <[length]> bar-positions: [];
 
+    // ---- 自动化泳道 (line/app-automation-ui) ----
+    //
+    // 9 个平行数组**全部**由 `src/automation.rs` 的投影派生 (`src/host.rs` 单向注入),
+    // 界面只做"取数组下标", 不做任何算术 (位置与数值都已经是逻辑像素 / 文本)。
+    //
+    // 模型侧的接入口径 (docs/ledger/model-automation-notes.md §5):
+    //   `lane.unit()`              -> `automation-lane-axis-labels` (轴标签带单位)
+    //   `lane.effective_domain()`  -> 纵轴量程 (None 时按曲线最值自适应, 轴文本带「自适应」)
+    //   `lane.points_in_tick_order()` -> `automation-path-commands` (相邻两点之间按左端点
+    //                                   的 `curve` 采样 `ease`, 顶点值来自模型求值入口)
+    //   `lane.read_enabled` / `write_mode` -> 描边颜色 + 角标 + 无障碍标签
+    //
+    // 元素 ID 的三段字面量是刻意的: `[UI-TEST-001]` §12.2 的约定族需要可被文本层对账的
+    // 模板 (与 `elements.rs` 的注册表双向覆盖, 见
+    // `elements::slint_accessible_ids_and_registry_cover_each_other`)。拼出来的字符串
+    // 必须等于 `automation::lane_element_id`。
+    in property <[string]> automation-lane-target-keys: [];
+    in property <[int]> automation-lane-track-indexes: [];
+    in property <[string]> automation-lane-labels: [];
+    in property <[string]> automation-lane-axis-labels: [];
+    in property <[length]> automation-lane-band-ys: [];
+    in property <[length]> automation-lane-band-heights: [];
+    in property <[bool]> automation-lane-read-enabled: [];
+    in property <[string]> automation-lane-badges: [];
+    in property <[string]> automation-path-commands: [];
+
     background: Tokens.bg-void;
     clip: true;
 
@@ -306,6 +332,81 @@ export component ArrangementView inherits Rectangle {
             height: 16px;
             background: Tokens.bg-raised;
             border-radius: Tokens.radius-sm;
+        }
+    }
+
+    // ---------------------------------------------------------------- 自动化曲线 (自动化泳道)
+    //
+    // 一条泳道一个**可寻址元素** + 一条折线。为什么是覆盖在轨道车道上而不是单独一行:
+    // 编排视图的车道行高是 42px + 56px × 轨道序 (上一版就有的几何), 插入独立的自动化行
+    // 会改动每一条剪辑 / 音符的 y —— 那是 [UI-NOTE-001] 视口裁剪的范围, 不在本线。
+    // 因此本线用"覆盖模式": 一条轨道上有 N 条泳道时, 把该车道行**等分**成 N 条带
+    // (带高 = (56 − 2×2) / N), `band-ys` / `band-heights` 由投影算好注入。
+    //
+    // 折线用 `Path` 的 SVG 命令 (`commands`)。三条与"坐标必须逐位等于投影的像素"有关的
+    // 细节, 都是查上游源码后写死的:
+    //   ① `viewbox-*` = 元素自身的尺寸 (`parent.width / 1px` 把 length 变成 float),
+    //      `fit: ImageFit.fill` ⇒ 缩放恒为 1.0, 命令里的坐标就是逻辑像素;
+    //      不写 viewbox 时上游会用"命令包围盒"去 scale-to-fit, 那会把纵轴量程变成
+    //      "曲线自己撑满", 值域映射当场失效;
+    //   ② `width/height` 必须非零: 上游软件后端的 `draw_path` 先做 `should_draw(几何)`,
+    //      0 面积的元素**不画**;
+    //   ③ 命令坐标不带单位 (语言参考: "operate within the imaginary coordinate system")。
+    for _[lane_index] in root.automation-lane-target-keys : Rectangle {
+        x: 168px;
+        y: root.automation-lane-band-ys[lane_index];
+        width: parent.width - 168px;
+        height: root.automation-lane-band-heights[lane_index];
+        background: transparent;
+        clip: true;
+
+        accessible-role: image;
+        // `track-{i}-automation-{目标键}-lane` —— 三段字面量 + 两个注入片段。
+        accessible-id: "track-" + root.automation-lane-track-indexes[lane_index] + "-automation-" + root.automation-lane-target-keys[lane_index] + "-lane";
+        // 标签携带**单位与当前值** (读关闭 / 无采样点 / 目标不存在各有分支):
+        // "AI 能读到自动化"的机械证据就是这一行 —— 它与投影的 `label` 逐字相等。
+        accessible-label: root.automation-lane-labels[lane_index];
+
+        Path {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: parent.width / 1px;
+            viewbox-height: parent.height / 1px;
+            fit: ImageFit.fill;
+            commands: root.automation-path-commands[lane_index];
+            // 读关闭的泳道用次级墨色描边 (可区分), 读开的用金色。
+            stroke: root.automation-lane-read-enabled[lane_index] ? Tokens.gold-bright : Tokens.ink-2;
+            stroke-width: 1.5px;
+            fill: transparent;
+        }
+
+        // 轴标签 (单位 + 量程; 自适应时带「自适应」) —— 让"纵轴是怎么定的"在截图里可见。
+        UiMonoText {
+            x: Tokens.space-3;
+            y: 0;
+            width: 160px;
+            height: parent.height;
+            text: root.automation-lane-axis-labels[lane_index];
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        // 角标: 读关 / 录制臂 (写模式)。空串时不进运行时树 (上游语义, 见
+        // src/test_port_adapter.rs 文件头对 `visible.rs` 的核验)。
+        UiText {
+            x: 168px;
+            y: 0;
+            width: parent.width - 168px;
+            height: parent.height;
+            text: root.automation-lane-badges[lane_index];
+            color: root.automation-lane-read-enabled[lane_index] ? Tokens.gold-deep : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            visible: root.automation-lane-badges[lane_index] != "";
         }
     }
 

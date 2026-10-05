@@ -500,6 +500,25 @@ impl ElementRegistry {
             true,
         );
 
+        // ---- 自动化泳道（`line/app-automation-ui`） ----
+        //
+        // 每条泳道一个元素：ID 与 `ui/workspace/arrangement_view.slint` 里拼出来的
+        // `"track-" + i + "-automation-" + 目标键 + "-lane"` 逐字相同（由
+        // `slint_accessible_ids_and_registry_cover_each_other` 双侧对账），标签携带
+        // **单位与当前值** —— 于是"AI/判据能读到自动化"不是靠截图猜的。
+        //
+        // 角色是 `image`（它是曲线的图形载体，与 EQ 频响曲线 / 色标同款）。
+        // **不是**动态遮罩区：曲线随工程变化，但不随每帧的走带 / 电平跳变。
+        for lane in &view.automation_lanes {
+            registry.add(
+                &lane.element_id,
+                ElementKind::Image,
+                "workspace/arrangement_view.slint",
+                &lane.label,
+                false,
+            );
+        }
+
         // ------------------------------------------------------------ 控制台导轨
         registry.add(
             "console-tab-rail",
