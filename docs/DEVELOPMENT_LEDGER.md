@@ -6510,3 +6510,28 @@ separately, and why the count is worth having: "MCP 工具集扩张" reads like 
 **The recurring lesson applied in the other direction, for once**: this time I counted before declaring a gap, rather than declaring one
 from memory (rounds 240/246/261/262 each recorded the cost of the opposite). The habit that worked is the same one those rounds prescribed -
 grep the registry first - and it produced a smaller, more accurate piece of work than my memory suggested.
+
+### Round 265: the two remaining MCP gaps both hit the dependency rule, and one of them must not be built the obvious way
+
+Read both capabilities before designing their tools (round 263's lesson), and both turned out to be structural rather than wrappers:
+
+| gap | capability exists at | reachable from `yeban-mcp`? |
+| :--- | :--- | :--- |
+| MIDI 导出 | `crates/yeban-app/src/export_midi.rs` (plus `yeban-mcp`'s `render.rs`, which mentions MIDI only in its docs - MIDI synthesis as a render source, not an export) | **no** - it lives in `yeban-app`, which MCP does not depend on |
+| 响度目标 | `crates/yeban-dsp/src/meter.rs` (and the app's `meters.rs` / `elements.rs` / `host.rs`) | **no** - `yeban-dsp` is not in MCP's dependency list |
+
+**And the second one must NOT be solved by adding the dependency**: `crates/yeban-mcp/Cargo.toml` states its own constraint in writing -
+"**轻量 crate**: 不拖音频栈进 MCP" - so computing loudness inside MCP would violate a rule the crate documents about itself. Pulling
+`yeban-dsp` in is exactly what that sentence forbids.
+
+**The design the architecture already shows**: `yeban_query_engine_state` is a tool that READS state the engine produced rather than
+measuring anything itself. A loudness tool belongs in that family - the engine (which already has `yeban-dsp` and the meters) computes or
+holds the measurement, and MCP **queries** it. That keeps MCP light, keeps one implementation of the measurement, and matches the existing
+pattern instead of inventing a second one.
+
+**For MIDI export the same question has a different answer**: exporting is pure model-to-bytes work with no audio-stack need, so the
+capability can descend to a crate MCP may use (`yeban-model`, or a small dedicated crate) exactly as `plan_to_add_note` did - provided the
+format contract and its criteria come with it rather than staying in `yeban-app`.
+
+**Both are therefore deliberate pieces of work, not wrappers**, which is the concrete reason they are recorded rather than rushed: one needs
+a decision about where the bytes are produced, the other needs a query-shaped design instead of a measurement.
