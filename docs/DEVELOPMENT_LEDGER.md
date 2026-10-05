@@ -7164,3 +7164,31 @@ sweeps grew the target directory, and a disk-full symptom should be checked (df)
 **Honest judgement**: fifth multi-file move this session, and like the previous four it produced damage only a tool caught - here the test build.
 The difference is that the revert path was prepared and used, so the cost was one round rather than a broken tree. An attempt with a known revert
 is cheaper than another round of planning, and the recipe is now one item more complete.
+
+
+### Round 290: two attempts at the mapping move, both reverted - and the methodological conclusion
+
+Attempted round 289's corrected recipe (trim the six app-coupled spans AND keep the tests on the app side) and it failed again, at a different
+place: first a dangling doc comment where the `Save` variant had been (E0585, round 289's error repeated because my second script omitted that
+step), then - after adding a heuristic that drops doc runs sitting immediately before a closing brace - an "expected item after doc comment" at
+`export.rs:304`, where the heuristic did not apply.
+
+**Both attempts auto-reverted on a failed compile, so the tree is green** (`light` passes, both crates compile, their suites pass). That part of
+the process worked exactly as designed and is the reason two failures cost two rounds rather than a broken tree.
+
+**The methodological conclusion, which is the real output of these two rounds**: **deleting by line number is the wrong tool for this file.** The
+mapping file is full of doc comments attached to items, and removing an item while keeping its `///` lines produces exactly the class of error I
+hit twice; a heuristic that guesses which doc runs are orphaned then misfires elsewhere, because "doc comment before `}`" is not the only shape.
+The robust order is the opposite one:
+
+1. move the file **verbatim** (imports rewritten only);
+2. compile, and let the compiler name each site that cannot exist in the new crate (the `Save` variant, the writer, the app-coupled tests);
+3. fix each site **at the location the compiler prints**, one error at a time, recompiling between;
+4. only then add the consumer-side wrapper.
+
+That is slower per step and faster overall, and it never guesses about trivia like doc attachment. It is also the method that worked for
+`NotePlan`/`plan_to_add_note` (round 261) - where I moved the items and fixed what the compiler complained about - so the session already had
+evidence for it and I reached for line numbers anyway.
+
+**Status, stated plainly**: the mapping layer is NOT moved; `yeban-midi` holds `midi` and `vlq`; the app still owns `export_midi.rs`; the MCP tool
+is therefore still owed. Two rounds were spent and the ledger's value from them is the recipe correction above.
