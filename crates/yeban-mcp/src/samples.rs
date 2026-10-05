@@ -7,14 +7,14 @@
 //! 文件名前缀 `mcp-tools.` 已映射到 `schemas/mcp-tools.schema.json`
 //! （见 `validate_schemas.py` 的 `SAMPLE_SCHEMA_MAP`）。
 //!
-//! ## 导出什么（13 份 = 11 份契约实例 + 2 份文档样本）
+//! ## 导出什么（份数由注册表派生：每工具一份实例 + 1 份 ToolResponse + 2 份文档样本）
 //!
 //! | 文件 | 内容 | 为什么 |
 //! | :--- | :--- | :--- |
-//! | `mcp-tools.registry.meta.json`（文档样本，非契约实例） | 十个工具的注册表快照（含 scope / 副作用 / 参数 / 错误码） | 工具名集合、`dryRun`、`idempotencyKey` 的机器可读清单 |
+//! | `mcp-tools.registry.meta.json`（文档样本，非契约实例） | 全部工具的注册表快照（含 scope / 副作用 / 参数 / 错误码） | 工具名集合、`dryRun`、`idempotencyKey` 的机器可读清单 |
 //! | `mcp-tools.error-codes.meta.json`（文档样本，非契约实例） | 错误码全集 + **契约缺口清单** | 让"schema 的 7 个 enum 装不下表格的 16 个错误码"这件事可被机器读到 |
 //! | `mcp-tools.response.dry-run.json` | **真实管线**产出的 `ToolResponse`（dryRun 结果） | 覆盖根 `oneOf` 的**第二个分支**：否则契约定义了没人用的类型 |
-//! | `mcp-tools.call.<tool>.json` ×10 | 每个工具一份**规范 `ToolCall`** | 每个工具名都要被契约的 enum 认下来 |
+//! | `mcp-tools.call.<tool>.json` ×`TOOLS.len()` | 每个工具一份**规范 `ToolCall`** | 每个工具名都要被契约的 enum 认下来 |
 //!
 //! ## 契约实例 vs 文档样本（`.meta.` 约定 + 承重的根）
 //!
@@ -35,7 +35,7 @@
 //! - `mcp-tools.<name>.json` —— **契约实例**，必须通过 `mcp-tools.schema.json` 的根；
 //! - `mcp-tools.<name>.meta.json` —— **文档样本**，显式 `[skip]`，不对账 schema。
 //!
-//! 本模块导出的 13 份因此分成两侧：**11 份契约实例**（每个工具一份规范 `ToolCall`，
+//! 本模块导出的样本因此分成两侧：**契约实例**（每个工具一份规范 `ToolCall`，
 //! 外加一份**真实管线**产出的 `ToolResponse`）+ **2 份文档样本**。
 //!
 //! 为什么非要那份 `ToolResponse` 实例：根是 `oneOf(ToolCall, ToolResponse)`，
@@ -49,7 +49,7 @@
 //!
 //! 1. **脚本侧**（`scripts/gates/validate_schemas.py`，集成者的文件）：每个前缀
 //!    至少要有 1 份真实例，否则报"该契约等于没有对账（全是 meta 就是假绿）"。
-//!    它挡得住**整段逃逸**，挡不住**部分逃逸**（11 份实例里混 1 份 meta）。
+//!    它挡得住**整段逃逸**，挡不住**部分逃逸**（契约实例里混 1 份 meta）。
 //! 2. **本 crate 侧**：`tests/contract.rs::exported_instance_set_is_exactly_the_tool_set`
 //!    用**双射**断言 —— 非 meta 的实例文件名集合必须**恰好等于**
 //!    `{mcp-tools.call.<tool>.json}`，少一份、多一份、或者把一份改名成 `.meta.` 都会红。
@@ -388,6 +388,13 @@ fn fixture_argument(param: &ParamSpec) -> Value {
         "fields" => Value::Array(vec![Value::from("tracks"), Value::from("sections")]),
         "ops" => Value::Array(vec![Value::Object(Map::new())]),
         "value" => Value::from(0.5),
+        // ADR-0001 D46 的三个扩展工具（词汇表与 `project.json` 逐字相同）。
+        "lane" => Value::from("TrackVolume"),
+        "name" => Value::from("AI 导入的底鼓"),
+        "ticks" => Value::Array(vec![Value::from(0), Value::from(960)]),
+        "gainDb" => Value::from(-1.5),
+        "slotIndex" | "paramIndex" => Value::from(0),
+        "point" => serde_json::json!({"tick": 0, "value": -6.0, "curve": "Linear"}),
         other if other.ends_with("Id") => Value::from("01J8ZQ00000000000000000001"),
         _ => match param.json_type {
             "string" => Value::from("01J8ZQ00000000000000000001"),
@@ -413,7 +420,7 @@ pub fn default_out_dir() -> PathBuf {
     target.join(SAMPLES_DIR_NAME)
 }
 
-/// 把 13 份样本写到 `out_dir`，返回实际写出的路径（顺序固定）。
+/// 把全部样本写到 `out_dir`，返回实际写出的路径（顺序固定；份数由 `TOOLS` 派生）。
 ///
 /// 写盘**之前**先做 Rust 侧自检（[`check_sample`]），因此磁盘上不会出现
 /// 一份连自己都不合法的样本。
@@ -539,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn export_writes_twelve_byte_stable_samples() {
+    fn export_writes_the_registry_derived_sample_set() {
         let dir = temp_dir("stable");
         let written = export_all(&dir).expect("导出样本");
         let names: Vec<String> = written
@@ -551,7 +558,7 @@ mod tests {
         assert_eq!(
             names.len(),
             crate::tools::TOOL_COUNT + 3,
-            "10 实例(ToolCall) + 1 实例(ToolResponse) + 2 文档样本"
+            "每个工具一份 ToolCall 实例 + 1 份 ToolResponse 实例 + 2 份文档样本"
         );
         for name in &names {
             assert!(

@@ -1245,6 +1245,23 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         // （新会话一条 op 都没提交 ⇒ INDEX_OUT_OF_BOUNDS），不是实现级出口。
         ("yeban_undo", json!({})),
         ("yeban_redo", json!({})),
+        // D46 的三类扩展（`ADR-0001` D46）：自动化泳道 / 设备与引擎 / 音频导入。
+        // 这里只要求"走到领域实现 + 契约形状"；逐工具的"真做事 + 可逆 + dryRun"
+        // 证据在 `tests/extension_tools.rs`。
+        (
+            "yeban_edit_automation",
+            json!({
+                "trackId": track,
+                "lane": "TrackVolume",
+                "ticks": [0, 1920],
+            }),
+        ),
+        ("yeban_query_engine_state", json!({ "trackId": track })),
+        // 音频导入：源文件不存在 ⇒ **带内** `FILE_NOT_FOUND`（不是实现级出口）。
+        (
+            "yeban_import_audio",
+            json!({ "name": "Imported", "path": scratch.text("missing.wav") }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

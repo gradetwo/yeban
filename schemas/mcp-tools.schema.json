@@ -25,7 +25,10 @@
             "yeban_merge_proposal",
             "yeban_reject_proposal",
             "yeban_undo",
-            "yeban_redo"
+            "yeban_redo",
+            "yeban_edit_automation",
+            "yeban_query_engine_state",
+            "yeban_import_audio"
           ]
         },
         "arguments": {
@@ -76,6 +79,63 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_redo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_edit_automation"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_edit_automation"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_query_engine_state"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_query_engine_state"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_import_audio"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_import_audio"
               }
             }
           }
@@ -140,7 +200,7 @@
     },
     "ExtensionToolArguments": {
       "title": "ExtensionToolArguments",
-      "description": "ADR-0001 D46 说\"十工具是起点不是上限, 扩充时必须同步本契约\"。本节的**两条**扩展工具(D45 的撤销入口)因此在这里逐条声明实参约束 —— 含 `steps` 的类型 / 上下界 / 缺省值。判据 tests/contract.rs::extension_argument_constraints_match_the_registry 要求本节与 Rust 注册表(crate::tools::TOOLS)的声明**逐字段一致**, 因此这里不是第二份会漂移的手写 schema。",
+      "description": "ADR-0001 D46 说\"十工具是起点不是上限, 扩充时必须同步本契约\"。本节的**五条**扩展工具(D45 的撤销入口 + D46 的三类能力: 自动化泳道 / 设备与引擎 / 音频导入)因此在这里逐条声明实参约束。判据 tests/contract.rs::extension_argument_constraints_match_the_registry 要求本节与 Rust 注册表(crate::tools::TOOLS)的声明**逐字段一致**, 且**既有十工具不得出现在本节**(参数语义未被改动), 因此这里不是第二份会漂移的手写 schema。",
       "type": "object",
       "$defs": {
         "yeban_undo": {
@@ -184,6 +244,132 @@
               "type": "string"
             }
           }
+        },
+        "yeban_edit_automation": {
+          "title": "yeban_edit_automation",
+          "type": "object",
+          "description": "读某条自动化泳道的点与值 (走**唯一**求值入口 automation_value_at) 并写入一个点 (Op::SetAutomationPoint, 可逆)。lane 只接受与 project.json 逐字相同的变体名。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "目标音轨 EntityId (26 字符 ULID)"
+            },
+            "lane": {
+              "type": "string",
+              "description": "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro"
+            },
+            "edgeId": {
+              "type": "string",
+              "description": "SendGain 必需: 路由边 EntityId"
+            },
+            "slotIndex": {
+              "type": "integer",
+              "description": "DeviceParam: 设备链插槽下标 (默认 0)"
+            },
+            "paramIndex": {
+              "type": "integer",
+              "description": "DeviceParam: 参数下标 (默认 0)"
+            },
+            "macroIndex": {
+              "type": "integer",
+              "description": "Macro: 宏下标 (默认 0)"
+            },
+            "ticks": {
+              "type": "array",
+              "description": "要读取自动化值的 tick 列表 (保持给定顺序; 最多 256 个)",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "point": {
+              "type": "object",
+              "description": "要写入的一个点 {tick, value, curve?}; 缺省 = 只读调用 (一位都不改)",
+              "properties": {
+                "tick": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "value": {
+                  "type": "number"
+                },
+                "curve": {
+                  "type": "string",
+                  "description": "Linear | Exponential | Logarithmic | SCurve (默认 Linear)"
+                }
+              }
+            },
+            "pointId": {
+              "type": "string",
+              "description": "点的显式 EntityId; 缺省由 (目标, tick) 确定性派生"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "trackId",
+            "lane"
+          ]
+        },
+        "yeban_query_engine_state": {
+          "title": "yeban_query_engine_state",
+          "type": "object",
+          "description": "查询某轨的设备链与引擎/会话读数 (采样率/缓冲/走带位置/是否播放)。只读: 三份状态各有唯一来源 (project.audio_config / SessionRuntimeState / 宿主注入的引擎镜像)。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "要展开设备链的音轨 EntityId; 缺省只报引擎与会话读数"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          }
+        },
+        "yeban_import_audio": {
+          "title": "yeban_import_audio",
+          "type": "object",
+          "description": "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目 (走既有 yeban-decode + Op::AddClip; PcmBudget 全程生效)。assetHash 与 path 恰好给一个。",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "片段显示名"
+            },
+            "assetHash": {
+              "type": "string",
+              "description": "已在会话 CAS 池 (assets/{sha256}) 里的资产哈希; 与 path 恰好给一个"
+            },
+            "path": {
+              "type": "string",
+              "description": "磁盘音频文件路径 (WAV/FLAC/OGG); 与 assetHash 恰好给一个"
+            },
+            "gainDb": {
+              "type": "number",
+              "description": "片段增益 (dB); 默认 0.0"
+            },
+            "clipId": {
+              "type": "string",
+              "description": "片段的显式 EntityId; 缺省由 (来源, 名字, 增益) 确定性派生"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
         }
       }
     }

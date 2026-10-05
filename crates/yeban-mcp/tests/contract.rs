@@ -82,11 +82,12 @@ fn tool_name_count_equals_the_contract_enum_length() {
         contract.len(),
         tools::TOOL_COUNT
     );
-    // 10 = 规范表格的 MCP-TOOL-001..010；+2 = ADR-0001 D45/D46 的扩展（yeban_undo/yeban_redo）。
+    // 10 = 规范表格的 MCP-TOOL-001..010；+EXTENSION_TOOL_COUNT = ADR-0001 D45/D46 的扩展
+    // （yeban_undo / yeban_redo + D46 的三类能力）。
     assert_eq!(
         contract.len(),
-        tools::DOCUMENTED_TOOL_COUNT + 2,
-        "规范十个工具 + D45/D46 的两条扩展"
+        tools::DOCUMENTED_TOOL_COUNT + tools::EXTENSION_TOOL_COUNT,
+        "规范十个工具 + D45/D46 的扩展"
     );
     assert_eq!(tools::TOOLS.len(), contract.len());
 }
@@ -527,24 +528,59 @@ fn run_validate_schemas(dir: &std::path::Path) -> std::process::Output {
 // 判据 7: 红线自身的机器化自查
 // ---------------------------------------------------------------------------
 
-/// 扩展工具（`yeban_undo` / `yeban_redo`）的实参约束必须与 Rust 注册表**逐字段一致**。
+/// 扩展工具的实参约束必须与 Rust 注册表**逐字段一致**，且**既有十工具不得出现在本节**。
 ///
 /// 为什么需要这条：`definitions.ExtensionToolArguments` 是契约文件里唯一一节
 /// **手写**的逐工具参数约束（其余工具的 `inputSchema` 由注册表派生）。
-/// 手写就有漂移风险 —— 于是这条判据把两边的 `steps` 声明逐个字段对账，
+/// 手写就有漂移风险 —— 于是这条判据把两边的声明逐个字段对账，
 /// 让"注册表改了、契约没跟上"立刻变红。
+///
+/// ADR-0001 **D46** 还给了本线一条**特别授权/限制**：只允许**新增**工具定义，
+/// **不得改动既有十工具的参数语义**。这条判据把那个限制也机械化了：
+/// 规范十工具在契约里**没有**任何 `$defs` 条目、也**没有**任何 `if/then` 分支
+/// （它们的参数只存在于注册表派生的 `inputSchema` 里），因此"偷偷给某个老工具
+/// 加一个 if/then 约束"会红。
 #[test]
 fn extension_argument_constraints_match_the_registry() {
     let root = contract();
     let wiring = root["definitions"]["ToolCall"]["allOf"]
         .as_array()
         .expect("ToolCall.allOf 必须存在（扩展工具的实参约束靠 if/then 接线）");
-    assert_eq!(wiring.len(), 2, "恰好两条扩展的 if/then");
-    for (index, tool) in ["yeban_undo", "yeban_redo"].iter().enumerate() {
+    assert_eq!(
+        wiring.len(),
+        tools::EXTENSION_TOOL_COUNT,
+        "恰好一条 if/then 对应一个扩展工具"
+    );
+    let defs = &root["definitions"]["ExtensionToolArguments"]["$defs"];
+
+    // (1) 既有十工具**绝不**出现在本节（D46 的"不得改动既有参数语义"）。
+    for spec in tools::TOOLS.iter().take(tools::DOCUMENTED_TOOL_COUNT) {
+        assert!(
+            defs.get(spec.name).is_none(),
+            "规范工具 `{}` 不得出现在 ExtensionToolArguments 里",
+            spec.name
+        );
+        assert!(
+            !wiring.iter().any(|branch| {
+                branch["if"]["properties"]["name"]["const"].as_str() == Some(spec.name)
+            }),
+            "规范工具 `{}` 不得有 if/then 实参约束",
+            spec.name
+        );
+    }
+
+    // (2) 每个扩展工具：分支 ⇄ $defs ⇄ 注册表 三者逐字段一致。
+    let extension_names: Vec<&str> = tools::TOOLS
+        .iter()
+        .skip(tools::DOCUMENTED_TOOL_COUNT)
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(extension_names, tools::EXTENSION_NAMES, "扩展清单顺序");
+    for (index, tool) in extension_names.iter().enumerate() {
         let branch = &wiring[index];
         assert_eq!(
             branch["if"]["properties"]["name"]["const"], *tool,
-            "第 {index} 条 if 必须判 `{tool}`"
+            "第 {index} 条 if 必须判 `{tool}`（顺序 = 注册顺序）"
         );
         let reference = branch["then"]["properties"]["arguments"]["$ref"]
             .as_str()
@@ -554,42 +590,100 @@ fn extension_argument_constraints_match_the_registry() {
             format!("#/definitions/ExtensionToolArguments/$defs/{tool}")
         );
 
-        let declared =
-            &root["definitions"]["ExtensionToolArguments"]["$defs"][*tool]["properties"]["steps"];
         let spec = tools::tool(tool).unwrap_or_else(|| panic!("`{tool}` 必须注册"));
-        let param = spec.param("steps").expect("注册表必须声明 `steps`");
+        let declared = defs[*tool]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("`{tool}` 的 $defs 必须有 properties"));
+
+        // (2a) 属性集合**恰好**等于注册表的全部参数（公共两个 + 特有）。
+        let mut declared_keys: Vec<&str> = declared.keys().map(String::as_str).collect();
+        declared_keys.sort_unstable();
+        let mut registry_keys: Vec<&str> =
+            spec.all_params().iter().map(|param| param.name).collect();
+        registry_keys.sort_unstable();
         assert_eq!(
-            declared["type"], param.json_type,
-            "`{tool}.steps` 的 JSON 类型必须与注册表一致"
+            declared_keys, registry_keys,
+            "`{tool}` 的实参集合必须与注册表逐项相等"
+        );
+
+        // (2b) 每个参数的 JSON 类型一致。
+        for param in spec.all_params() {
+            let property = &declared[param.name];
+            assert_eq!(
+                property["type"], param.json_type,
+                "`{tool}.{}` 的 JSON 类型必须与注册表一致",
+                param.name
+            );
+        }
+
+        // (2c) 必填集合一致 —— 口径是手写 schema 的 `required` 数组。
+        let mut registry_required: Vec<String> = spec
+            .required_params()
+            .iter()
+            .map(|param| param.name.to_owned())
+            .collect();
+        registry_required.sort();
+        let schema_required: Vec<String> = defs[*tool]
+            .get("required")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str().expect("字符串").to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut schema_required_sorted = schema_required.clone();
+        schema_required_sorted.sort();
+        assert_eq!(
+            schema_required_sorted, registry_required,
+            "`{tool}` 的必填集合必须与注册表一致 (手写 schema 的 required 数组)"
+        );
+        // 反向：注册表说可选的那些参数，schema 里不得列进 required。
+        for param in spec.all_params() {
+            if !param.required {
+                assert!(
+                    !schema_required.contains(&param.name.to_owned()),
+                    "`{tool}.{}` 在注册表里是可选参数, schema 不得把它列成必填",
+                    param.name
+                );
+            }
+        }
+
+        // (2d) `dryRun` 的缺省值口径与公共声明一致（false）。
+        assert_eq!(
+            declared[tools::DRY_RUN_PARAM]["default"],
+            serde_json::Value::from(false),
+            "`{tool}.dryRun` 的 default 必须是 false"
         );
         assert_eq!(
-            declared["minimum"], 1,
-            "`{tool}.steps` 的下界必须是 1（0 是非法的显式取值）"
-        );
-        assert!(
-            !param.required,
-            "`{tool}.steps` 在注册表里必须是可选参数（缺省 1）"
-        );
-        assert!(
-            !spec
-                .required_params()
-                .iter()
-                .any(|required| required.name == "steps"),
-            "`{tool}` 的必填参数里不该出现 steps"
-        );
-        assert_eq!(
-            spec.side_effect,
-            tools::SideEffect::ProjectState,
-            "撤销/重做改变内存中的权威工程状态"
+            declared[tools::IDEMPOTENCY_KEY_PARAM]["type"],
+            "string",
+            "`{tool}.idempotencyKey` 必须是字符串"
         );
     }
-    // 12 个工具里只有这两个带 `steps`。
-    let with_steps: Vec<&str> = tools::TOOLS
-        .iter()
-        .filter(|spec| spec.param("steps").is_some())
-        .map(|spec| spec.name)
-        .collect();
-    assert_eq!(with_steps, vec!["yeban_undo", "yeban_redo"]);
+
+    // (3) 三个 D46 工具的名字必须真的在契约 enum 里（可发现性的一半；另一半是 tools/list）。
+    let names = contract_tool_names();
+    for tool in [
+        "yeban_edit_automation",
+        "yeban_query_engine_state",
+        "yeban_import_audio",
+    ] {
+        assert!(names.contains(&tool.to_owned()), "契约 enum 缺少 `{tool}`");
+    }
+
+    // (4) 扩展工具声明的错误码必须落在 D25 的 20 值联集里。
+    let contract_codes = contract_error_codes();
+    for spec in tools::TOOLS.iter().skip(tools::DOCUMENTED_TOOL_COUNT) {
+        for code in spec.errors {
+            assert!(
+                contract_codes.contains(&code.as_str().to_owned()),
+                "`{}` 声明了契约 enum 之外的错误码 {code}",
+                spec.name
+            );
+        }
+    }
 }
 
 #[test]

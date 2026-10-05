@@ -1010,7 +1010,13 @@ pub fn is_the_shared_session(path: &str) -> bool {
 /// 而为了对账在测试里调一次 `apply_inverse` 是正当的。
 /// ⚠ 用"整行以 `#[cfg(test)]` 开头"而不是 `find("#[cfg(test)]")`：后者会把**文档注释里
 /// 提到这个词**的地方当成测试区起点（本文件与 `domain/mod.rs` 的文档都提到过）。
-fn production_region(text: &str) -> String {
+///
+/// `pub`：`domain::automation_audit` / `domain::extension_audit` 各有一份**同口径**的
+/// 拷贝（那两份要能被**裸 `rustc` 独立跑**，因此不能依赖 crate 内任何东西）；集成判据
+/// `tests/extension_tools.rs::production_region_agrees_across_the_three_copies`
+/// 断言三份实现在真实源码上逐字节相同 —— 于是"三份拷贝"不会变成三种口径。
+/// （与 [`read_rust_sources`] / [`production_source_roots`] 一样，为判据而公开。）
+pub fn production_region(text: &str) -> String {
     text.lines()
         .take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
         .collect::<Vec<_>>()
