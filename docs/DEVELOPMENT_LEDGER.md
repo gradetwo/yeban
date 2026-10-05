@@ -3354,3 +3354,31 @@ miscount. (2) It also spot-checks the three D46 tools (`yeban_edit_automation`, 
 those tools now fails the stdio end-to-end suite rather than only contradicting a document.
 
 `cargo-local.sh test -p yeban-mcp --test stdio_e2e` = 5 passed after the change.
+
+### Round 119: a cross-check that found nothing - recorded as a negative result, plus the method error in it
+
+Following the tool-count success (round 118), I tried the same trick on the UI bridge: count distinct `"ui/..."` literals in
+`crates/yeban-ui-mcp/src/*.rs` and compare with the ledger. Result: **no drift established**, and my method was wrong in a
+way worth naming.
+
+```
+"ui/coverage" "ui/dispatch_key_press" "ui/dispatch_pointer_down" "ui/dispatch_pointer_move" "ui/dispatch_pointer_up"
+"ui/dynamic_regions" "ui/force_save" "ui/methods" "ui/node" "ui/nope" "ui/property" "ui/reload_engine" "ui/screenshot"
+"ui/switch_main_view" "ui/tree"
+```
+
+Two errors in treating that set as a "method count":
+1. it contains **`ui/nope`** - the deliberate **negative-case** string from an unknown-method test - and **`ui/methods`**,
+   which is the listing call itself;
+2. it also contains `ui/node` / `ui/property`, which are tree-query paths rather than top-level methods.
+And I could not locate any document claiming "14 ui methods" in the first place: the `14 行` I had in mind is a
+**table-category row count** in `feature-alignment.md`, not a method count. So there was nothing to reconcile.
+
+**Why this is worth writing down anyway**: the previous cross-check (tool count 12 vs 15) found a real error of mine, but
+this one shows the technique is only as good as its pattern. A literal-count grep is the same "a grep hit is not evidence"
+trap recorded in rounds 92 and 100 - here it produced a number (15) that would have looked like a finding if I had not opened
+the list and read the names. **Negative results are results**: the honest output is "no drift, and here is why my instrument
+could not have shown drift".
+
+(Separately: the CI run for `f8ee529`, the tool-count correction, was still `queued` when read - recorded as pending, not
+assumed green.)
