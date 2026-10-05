@@ -911,6 +911,26 @@ impl ViewState {
         self.notes.iter().map(|note| note.x).collect()
     }
 
+    /// `[ROAD-M3-002 / BASELINE-003 第一刀]` 只返回**可见水平窗口**内的音符下标。
+    ///
+    /// 为什么先做这一刀：`BASELINE-003` 要的是 10 万音符滚动下的帧率，而 `piano_roll.slint` 明文
+    /// 「视口裁剪、R-Tree … 仍未实现」—— 于是视图会把**全部**音符物化成元素。这里提供
+    /// "按窗口裁剪"的**唯一实现**：宿主注入 `note-*` 数组时只消费它的结果。
+    ///
+    /// 包含性口径：与窗口左右沿**相接**的块算可见（露出一像素也算），窗口外的一个不多。
+    /// 索引顺序由 `self.notes` 决定，属既有契约，本判据不重排。
+    #[must_use]
+    pub fn notes_visible_in(&self, scroll_x: f32, viewport_width: f32) -> Vec<usize> {
+        let left = scroll_x.max(0.0);
+        let right = left + viewport_width.max(0.0);
+        self.notes
+            .iter()
+            .enumerate()
+            .filter(|(_, note)| note.x + note.width >= left && note.x <= right)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
     #[must_use]
     pub fn note_widths(&self) -> Vec<f32> {
