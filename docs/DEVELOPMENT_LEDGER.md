@@ -6485,3 +6485,28 @@ relationship: the UI path is the special case where the fields come from a gestu
 **Third correction in three rounds on this same question** (261: "MCP has none" - wrong; 262: "the gap is duplication" - half right; 263: the
 duplication is real but correct). Each correction came from one more read, and none from reasoning about the architecture - which is now
 three data points for the habit this session keeps recording: read both sides before deciding one should call the other.
+
+### Round 264: measured - the MCP expansion list has two gaps left, not five
+
+The objective lists five MCP expansions (自动化泳道 / 设备与引擎 / 音频导入 / MIDI 导出 / 响度目标). Counted from the registry instead of
+recalled:
+
+| item | state | evidence in `tools.rs` |
+| :--- | :--- | :--- |
+| 自动化泳道 | **present** | `yeban_edit_automation` |
+| 设备与引擎 | **present** | `yeban_query_engine_state`, `yeban_set_macro` |
+| 音频导入 | **present** | `yeban_import_audio` |
+| **MIDI 导出** | **absent** | zero hits for `midi` |
+| **响度目标** | **absent** | zero hits for `loudness` |
+
+The full registered set, for the record: open/save/close/query_project, propose_section, edit_notes, set_macro, render_master,
+merge_proposal, reject_proposal, undo, redo, query_engine_state, import_audio, edit_automation, export_diagnostics - plus a
+`yeban_nope` name that the grep also picked up and that this session has not read, so it is noted rather than characterised.
+
+**What this changes**: two items, not five - and both are the kind that need a real artifact rather than a wrapper (MIDI export produces
+bytes with a format contract; a loudness target is a measurement with a tolerance). That is why they are worth doing deliberately and
+separately, and why the count is worth having: "MCP 工具集扩张" reads like a large unfinished block and is actually three-quarters done.
+
+**The recurring lesson applied in the other direction, for once**: this time I counted before declaring a gap, rather than declaring one
+from memory (rounds 240/246/261/262 each recorded the cost of the opposite). The habit that worked is the same one those rounds prescribed -
+grep the registry first - and it produced a smaller, more accurate piece of work than my memory suggested.
