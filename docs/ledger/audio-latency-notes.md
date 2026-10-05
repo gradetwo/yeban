@@ -339,6 +339,16 @@ BENCH baseline=005 label=fake-device verdict=unmeasurable-without-loopback evide
 4. 想让日志步骤自己不红，可以加 `--allow-unmeasurable`；
    但**必须**同时 grep `verdict=no-device`（否则就是把"没测到"洗成"通过"）。
 
+### 5.1 已读取的判决（本线的实测证据，不是预测）
+
+| run | tip | 结果 | 对这条线意味着什么 |
+| :--- | :--- | :--- | :--- |
+| [37249056627](https://github.com/gradetwo/yeban/actions/runs/37249056627) | `087622d` | ❌ `rust (yeban-engine)` 在 **clippy** 红 45s | **真 cpal 抓到自造仿真桩抓不到的错误**：`buffer_size` 被我错记在 `DeviceTrait` 上（实际在 `StreamTrait`）。详见 §3.5 —— 这是"自造契约无法证伪自造代码"的实测证据 |
+| [37249839115](https://github.com/gradetwo/yeban/actions/runs/37249839115) | `989e6ea` | ✅ **全绿**（`deny` / `lockfile` / `plan` / `checks` / `windows` / **`rust (workspace 全量)` 5m7s**） | ① 修好的 example **在真 cpal 下编译并 lint 通过**；② `cargo test --workspace --all-targets` 在**真正无声卡的托管 runner**上跑了 `latency_cli_contract` ⇒ 判据 ③ 在**目标部署环境**里被验证；③ 但这**不是** `BASELINE-005` 达标 —— 它只证明"本环境如实报告了没测到" |
+
+⚠ 判读纪律：`rust (workspace 全量)` 绿 **只**说明"工具能编译、判据能跑、无声卡时如实报 no-device"。
+**托管 runner 上没有声卡**，所以这两次判决都**没有**产生任何一个真实的设备时延读数。
+
 ---
 
 ## 6. 要在什么机器上、跑哪条命令，才**可能**判定达标（给人看的一句话）
