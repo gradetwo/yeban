@@ -505,3 +505,47 @@ panicked at crates/yeban-mcp/tests/extension_tools.rs:835:9:
 > 两次红都是判据对运行期语义的误解（撤销的图语义、夹具的状态隔离）。
 > 这类错误同样只有 CI 能抓（本机不编译），但它的处置**不是**改实现, 而是把误解放进注释,
 > 让下一个读判据的人不必再踩一次。
+
+### 9.8 第 7 轮：`run 37277069499`（commit `5f679e1`）—— ✅ **success（Linux + Windows 双绿）**
+
+| job | 结果 |
+| :--- | :--- |
+| `plan` / `checks`（fmt + 14 条机械守卫 + 6 条文档守卫 + schema） / `deny` / `lockfile` | ✅ |
+| `rust (yeban-mcp)` — `cargo clippy -p yeban-mcp --all-targets -- -D warnings` | ✅ `Finished dev profile in 12.32s`（零告警） |
+| `rust (yeban-mcp)` — 测试 | ✅ 逐目标全绿（见下表） |
+| `windows (yeban-mcp / yeban-model 的平台分支)` | ✅（含 Windows 上的 `.yeban.lock` 分支 + 同一套测试） |
+| `rust (yeban-ui-mcp)` | ✅ |
+| `rust (workspace 全量)` | skipped（受影响集合只含 yeban-mcp / yeban-ui-mcp / yeban-model） |
+
+逐个测试目标的读数（Linux 腿，原文行）：
+
+| 目标 | 结果 |
+| :--- | :--- |
+| `unittests src/lib.rs` | **`275 passed; 0 failed`** |
+| `unittests src/bin/yeban-mcp.rs` | `0 passed`（bin 无单测） |
+| `tests/container_store.rs` | `18 passed; 0 failed` |
+| `tests/contract.rs` | `16 passed; 0 failed` |
+| **`tests/extension_tools.rs`** | **`20 passed; 0 failed`** ← 本线 12 条判据（①..⑧）的实现 |
+| `tests/lock_advisory.rs` | `14 passed; 0 failed` |
+| `tests/render_audio_clips.rs` | `13 passed; 0 failed` |
+| `tests/render_master.rs` | `12 passed; 0 failed` |
+| `tests/tools_e2e.rs` | `32 passed; 0 failed` |
+| `tests/undo_wiring.rs` | `17 passed; 0 failed` |
+| `examples/export_mcp_samples.rs` | `0 passed`（示例无单测） |
+
+**至此：本线交付的"真做事 / `dryRun` / 幂等 / 错误码 / 可发现 / 无第二份实现 / 十工具不受影响"
+全部由 CI 判决（不是本机自述）。** 七轮判决的轨迹（每一轮的红都留了原文与归因）：
+
+| 轮 | run | 结论 | 红点归属 |
+| ---: | :--- | :--- | :--- |
+| 1 | 37274474454 | ❌ | 实现：`E0382`（`AssetHash` 非 `Copy`） |
+| 2 | 37274788668 | ❌ | 实现：两条 `clippy::all`（`needless_borrows` / `useless_format`） |
+| 3 | 37275584648（手动档） | ❌ | 实现：漏 `pub mod extension_audit;` + `ErrorObject::to_value` 不存在 |
+| 4 | 37275980542 | ❌ | 判据夹具：拿假字节当音频 + 逐工具用例表缺三条 |
+| 5 | 37276360545 | ❌ | 判据夹具：WAV 夹具污染了别人的"父目录不存在"前提 |
+| 6 | 37276699906 | ❌ | 判据语义：撤销不回退提交图谱 + 预览夹具未按用例对齐 |
+| 7 | **37277069499** | ✅ | —— |
+
+> 第七轮的读数：**本机覆盖不到的每一类错误, 都在 CI 上各红了一次**（类型、lint、模块声明、
+> 夹具真实格式、夹具隔离、运行期图语义）。四类里有三类随后被**机械化**（`scan_orphan_modules`、
+> "夹具必须真格式/独占目录"的纪律、判据注释里的图语义），下次同类错误会在本机或判据里先红。
