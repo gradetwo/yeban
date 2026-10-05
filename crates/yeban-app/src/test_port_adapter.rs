@@ -1306,6 +1306,42 @@ fn runtime_control_tree_cross_check_against_the_registry() {
 // 所以：CI 默认跳过（`#[ignore]`），判决由**手动档 `fps`** 用 `--release --ignored --nocapture` 显式运行并收集数字，
 // 依 `HD-45`（接受参考机上自适应刷新率的读数）。
 #[test]
+fn published_viewport_bounds_agree_with_the_window_they_came_from() {
+    // `[UI-NOTE-001]` 步骤 ① 的**接线**判据（补第 204 轮记的缺口：属性"写了但没人验证"）。
+    // 平台设置必须与同文件其它判据一致：`MainWindow::new()` 在裸环境下会在依赖内部 panic
+    // （实测：第一次写成直接 `build_main_window` ⇒ panic 落在 slint 的 registry 源码里）。
+    let project = yeban_model::samples::filled_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let registry = registry_to_tree(&ElementRegistry::from_view(&view)).expect("注册表必须能适配");
+    let port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台");
+    let ui = port.ui();
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+
+    let (min_tick, max_tick) = view.visible_tick_range(0.0, width);
+    let expect_min = min_tick.min(i32::MAX as u64) as i32;
+    let expect_max = max_tick.min(i32::MAX as u64) as i32;
+    assert_eq!(ui.get_roll_min_tick(), expect_min, "下界必须来自同一窗口");
+    assert_eq!(ui.get_roll_max_tick(), expect_max, "上界必须来自同一窗口");
+    assert!(
+        ui.get_roll_min_tick() <= ui.get_roll_max_tick(),
+        "区间必须有序"
+    );
+
+    let (min_pitch, max_pitch) = view.visible_pitch_range(16);
+    assert_eq!(ui.get_roll_min_pitch(), i32::from(min_pitch));
+    assert_eq!(ui.get_roll_max_pitch(), i32::from(max_pitch));
+    assert!(
+        ui.get_roll_min_pitch() <= ui.get_roll_max_pitch(),
+        "音高区间必须有序"
+    );
+}
+
+#[test]
 #[ignore = "600 帧 × 10 万音符的软光栅化循环：CI debug 构建跑不动, 且帧率判决归手动档 fps (HD-45)"]
 fn frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness() {
     const FRAMES: usize = 600;
