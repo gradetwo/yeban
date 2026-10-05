@@ -442,3 +442,30 @@ thread '…' panicked at crates/yeban-mcp/src/domain/mod.rs:2349:13:
 > "忘了声明模块"（已升级成本机文本守卫）与"夹具拿假字节当音频"（工具**真的**解码是设计的一部分,
 > 因此夹具必须真）。后者没有可机械化的守卫 —— 它属于"判据的语义正确性", 只能靠人读，
 > 但至少可以把它变成一条**明确的纪律**：*凡是会被工具解码/解析的输入, 夹具必须是真格式*。
+
+### 9.6 第 5 轮：`run 37276360545`（commit `1a5d358`）—— **红一条**（夹具污染了别人的前提）
+
+| job | 结果 |
+| :--- | :--- |
+| `plan` / `checks` / `deny` / `lockfile` / `rust (yeban-ui-mcp)` | ✅ |
+| **clippy（两个平台）** | ✅ **全绿** —— 第 2 轮的两条 clippy 已被证伪 |
+| `rust (yeban-mcp)` | ❌ `271 passed; 1 failed`（第 4 轮的两条已消失） |
+| `windows` | ❌ 同一条 |
+
+```text
+---- domain::tests::save_without_changes_is_skipped_unless_forced stdout ----
+thread '…' panicked at crates/yeban-mcp/src/domain/mod.rs:2501:9:
+assertion `left == right` failed
+  left: String("success")
+ right: "error"
+```
+
+根因是**本线的夹具改了别的判据依赖的前提**：那个既有判据断言"`force: true` 撞 `IO_ERROR`"，
+依据是 `unique_path()` 的**父目录不存在**；而本线为了放真 WAV 用了
+`unique_path().with_file_name("fixture.wav")` + `create_dir_all(父目录)` —— 目录被建出来之后，
+那次保存就**成功了**（测试并行 ⇒ 只在夹具先跑时红，本轮正好碰上）。
+
+处置：`wav_fixture()` 改用**自己的独占临时目录**（`yeban-mcp-unit-wav-<pid>-<ulid>/fixture.wav`）。
+
+> 纪律（新增）：**判据的夹具不得改动别的判据依赖的路径/文件前提**。夹具必须落在自己的独占目录里；
+> 共享一个"保证不存在"的路径是跨判据耦合，且因为测试并行而在 CI 上表现为**随机红**。

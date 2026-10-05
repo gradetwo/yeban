@@ -2282,11 +2282,19 @@ mod tests {
 
     /// 一份**真 WAV**（16-bit 单声道 48 kHz, 4 帧）—— `yeban_import_audio` 的规划会真的解码它。
     ///
-    /// 落在 `unique_path()` 的**同一个独占临时目录**里（不创建工程文件, 只放这份素材）,
-    /// 因此不污染仓库, 也不需要清理（临时目录由 OS 管）。
+    /// ⚠ 用**自己的独占临时目录**（`unique_path()` 之外的新目录）。CI 实测教训：
+    /// 第一版把它放进了 `unique_path()` 的父目录并 `create_dir_all` —— 于是
+    /// `save_without_changes_is_skipped_unless_forced` 的**前提**（"那个父目录不存在 ⇒
+    /// `force: true` 会撞 `IO_ERROR`"）被本夹具悄悄改掉了，该判据在并行执行下随机变红。
+    /// **夹具不得改动别的判据依赖的路径前提。**
     fn wav_fixture() -> PathBuf {
-        let path = unique_path().with_file_name("fixture.wav");
-        std::fs::create_dir_all(path.parent().expect("父目录")).expect("建临时目录");
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-unit-wav-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("fixture.wav");
         let samples: [i16; 4] = [0, 1_000, -1_000, 0];
         let data: Vec<u8> = samples
             .iter()
