@@ -2861,3 +2861,33 @@ blobs; it does not inspect unreachable/dangling objects, which are not part of a
 enforced continuously rather than re-measured by hand. It is deliberately *not* being added now: registering a new guard
 changes the guard counts that the doc-contract guards assert (`scripts/guards/policy_check.py` + the doc-contract step),
 so it needs to be done as a coherent edit (guard + docs + counts together), not squeezed into the end of a round.
+
+### Round 98: `ROAD-M-1-005`'s ATTRIBUTION half is verified too - and the "323 vs 30" question has an owner
+
+I measured the ATTRIBUTION side instead of assuming it:
+
+```
+清单 instruments = 30 | ATTRIBUTION.md 存在 | 未被 ATTRIBUTION.md 提到的乐器 = 0   (30/30 覆盖)
+```
+
+(An automated "extra slug" pass returned only sha256 prefixes in backticks - i.e. hashes, not stray instrument names.)
+
+Then I read the document's own scope section, which is the part that actually settles the item:
+
+> **规范目标**（`MUST-GATE-014`）: **323 款**原声乐器指纹与本文件逐条 100% 吻合。
+> **本次实际登记**: **30 款**（27 款 CC0 + 3 款 CC-BY），共 20594 个文件 / 9844170377 字节。
+> **差额**: 323 − 30 = **293 款未登记**。**另有 3 款被过滤掉**（非白名单许可，911 个文件 / 217669988 字节），见 §3。
+> ⚠ **不得把 30 写成 323**。
+
+**Conclusions (each tied to the quotes above).**
+1. The document is **not** under-covering what is registered: every one of the manifest's 30 instruments appears, and the
+   document states the invariant it is meant to satisfy.
+2. The "323 vs 30" gap is **declared, quantified and deliberately not papered over** - the document forbids writing 30
+   as 323. That is a *content acquisition* gap, not a documentation defect: closing it needs 293 instruments' worth of
+   samples plus licence review, which is human/legal work of the same family as the deferred legal items.
+3. Therefore the **"核验" half of `ROAD-M-1-005` is satisfied** (the document matches the manifest and quantifies the
+   remainder), while the **323-count target stays open** and already has an owner: the deferred legal/acquisition track.
+
+**Why this mattered to check rather than assert.** My first reading of the item ("核验 323 款素材") suggested the
+document might be failing to list things. The measurement said the opposite, and the document said so itself in its first
+section. Asserting either way without reading §0 would have been wrong in one direction or the other.
