@@ -6302,3 +6302,35 @@ existing `input::resolve` expects its key argument - and both are single reads.
 
 **Session state**: this is where the work stands; the CI stall (rounds 241/242) still prevents any new verdict, and HD-49 is still the
 one open decision. Everything since verdict 31 is locally verified only, and the newest commit's criterion (round 557) is among that.
+
+### Round 257: N2 is not a wiring task - Slint's key event cannot feed the input layer, and that needs a ruling
+
+Two reads, and together they change N2's nature:
+
+| 读到的 | 出处 |
+| :--- | :--- |
+| `pub fn resolve(&self, key: PhysicalKey, modifiers: Modifiers) -> Resolution` | `input.rs:514` |
+| `pub struct KeyEvent { text: SharedString, modifiers: KeyboardModifiers, repeat: bool }` | `i-slint-common-1.18.1/builtin_structs.rs:104-108` |
+
+So the input layer consumes a **physical key** plus modifiers - and it is designed that way on purpose (this session has read its own
+docs describing "物理扫描码 + IME 合成态防护") - while Slint's public key event carries only **text**, modifiers and a repeat flag. There
+is **no physical code** in the API at all.
+
+**Why that blocks N2 as written**: `event.text` is layout-, Shift- and Caps-dependent ("1" becomes "!" with Shift), so mapping text to
+`PhysicalKey` would either be lossy in exactly the cases the physical-code design exists to handle, or require a table that silently
+misroutes modified keys. The input layer was built to avoid depending on text; Slint's callback is the one thing that provides nothing
+else.
+
+**So N2 is a design decision, not a wiring gap**, and it has three shapes with different costs:
+1. **accept logical keys** (text + modifiers) and drop the physical-code requirement for the GUI path - cheapest to build, but it
+   abandons a documented discipline and would need the IME/modifier criteria re-examined;
+2. **obtain physical codes below Slint** (a backend/platform hook) - keeps the discipline, but reaches outside the UI framework and
+   touches the platform layer the architecture restricts;
+3. **keep the current state** - the shortcuts stay dead, and the register entry N2 stays accurate.
+
+**This is the first thing in this session that genuinely needs a负责人 ruling for a reason OTHER than policy**: the previous open items
+(HD-49's verdict口径, the clip-target rule) were judgement calls I could take under delegation; this one trades one documented guarantee
+against another and cannot be settled by reading more code. I am recording it rather than choosing, and the recommendation I would give
+if asked: **option 1 for the GUI path, with the physical-code path kept for the headless/port path**, because the UI shortcut is a
+convenience while the port's tests are where key fidelity is actually judged - but that is a recommendation and not a decision I am
+taking unilaterally on a documented discipline.
