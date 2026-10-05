@@ -6979,3 +6979,33 @@ inventory" as a cost statement.
 through `tail`**, so the rc reported was tail's, not Python's - it read green for the wrong reason. Re-running without the pipe (139/… and
 `python rc=0`) is what makes the result trustworthy. Third time this session that reading a slice of the output misrepresented the whole
 (rounds 231/240/279 were the others).
+
+### Round 283: decided and fully specified - the yeban-midi split, with the re-export trick that keeps every caller unchanged
+
+Round 282 removed the "wait for CI" argument, and the dependency rule makes the split mandatory rather than optional (MCP cannot depend on
+`yeban-render`, and MIDI export is an objective item). So it is decided here, and the read that makes it executable:
+
+| fact | value |
+| :--- | :--- |
+| the encoder's size | `crates/yeban-render/src/midi.rs`, **1150 lines**, single file |
+| its public surface | `MidiExportTrack`, `MidiTempo`, `MidiFormat`, `MidiExport` (+ `to_smf_bytes`), `MidiError`, `ParsedNote`, `ParsedMidi`, `TrackChunk`, `track_chunks()`, `parse_smf()` - it encodes AND parses |
+| its dependencies | `std`, `midly`, `yeban_model` - **no `dsp`, no `hound`**, which is exactly why it can be light |
+| its users | `yeban-app` via `yeban_render::midi::{…}` (`export_midi.rs`, `cli_contract.rs`) |
+
+**The plan, with the re-export that keeps everyone working** (the same trick that made round 261's move invisible to callers):
+1. new crate `crates/yeban-midi` with `yeban-model` + `midly` only, holding the encoder verbatim;
+2. `yeban-render` gains the dependency and replaces `pub mod midi;` with a re-export, so `yeban_render::midi::X` still resolves and the app's
+   code and criteria are untouched;
+3. `yeban-mcp` gains `yeban-midi` - allowed by its own rule and by the new dependency-direction guard (which bans app/dsp/render/engine/audio,
+   not `yeban-midi`);
+4. the MCP tool `yeban_export_midi` + registry count 16 -> 17 + the feature-alignment table's MCP count + criteria (bytes are a real SMF: parse
+   them back with the same crate's `parse_smf` and compare);
+5. verification, all local: the 1788-criteria sweep, licence inventory regeneration (693 lines today), the vendor mechanical check, `light`, and
+   one more `lock_advisory`-aware run.
+
+**Not started in this round, and this is the last time the reason is capacity**: this session's context is nearly spent, and steps 1-3 are a
+multi-file move of exactly the shape that produced four separate pieces of damage earlier (orphan derive, lost `Copy`, lost docs, over-deletion)
+- all found by reading afterwards. With the plan above, a fresh budget executes it mechanically; nothing about it is still a question.
+
+**Status of the objective's MIDI item, precisely**: capability exists and is standards-checked (`to_smf_bytes` with byte-level VLQ/chunk
+verification); what is missing is its reachability from MCP, and the blocker is one crate boundary that this plan moves.
