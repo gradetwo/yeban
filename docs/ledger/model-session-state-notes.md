@@ -260,7 +260,7 @@ pub trait SecretStore {
 
 ---
 
-## 7. 判据清单（`crates/yeban-model/tests/model_isolation.rs`，15 条 + 1 条 `#[ignore]`）
+## 7. 判据清单（`crates/yeban-model/tests/model_isolation.rs`，16 条 + 1 条 `#[ignore]`）
 
 | # | 判据（函数名） | 钉住什么 | 反空洞对照 |
 | :-- | :--- | :--- | :--- |
@@ -279,7 +279,8 @@ pub trait SecretStore {
 | ⑬ | `playhead_is_integer_ticks_at_960_ppq` | `playhead_ticks` 绑到 `u64`（改浮点即编译失败）、`PPQ == 960`、整数小节运算、饱和加法 | `session.rs` 真代码零 `f32` / `f64` |
 | ⑭ | `window_and_pid_sets_are_deterministic` | 乱序插入 ⇒ 视窗升序、PID 去重升序、幂等；任务进度整数百分比与 `validate()` 边界 | 相邻元素严格升序断言；两次遍历相同 |
 | ⑮ | `crate_keeps_forbid_unsafe_and_zero_gui_deps` | `#![forbid(unsafe_code)]` 在位；清单零 GUI 依赖、零 keychain 类依赖 | 清单确实被读到（含 `serde`、`[dependencies]`）；属性探针对照 |
-| ⑯ | `print_frozen_isolation_table`（`#[ignore]`） | 重新冻结常量的**唯一**取证入口 | — |
+| ⑯ | `editor_path_absoluteness_follows_platform_semantics` | 编辑器路径绝对性是**平台语义**：相对路径全平台拒；POSIX 绝对路径 Unix 接受；盘符路径 Windows 接受；无盘符的"有根路径"Windows **拒** | 两个 `is_absolute()` 事实先断言，再断言校验结果（见 §9.2 的真实事故） |
+| ⑰ | `print_frozen_isolation_table`（`#[ignore]`） | 重新冻结常量的**唯一**取证入口 | — |
 
 另有 **2 条 `compile_fail` doc-test + 3 条正向 doc-test**（§3.1），随 `cargo test -p yeban-model` 一起跑。
 
@@ -348,7 +349,7 @@ pub trait SecretStore {
 | :--- | :--- |
 | `bash scripts/dev/cargo-local.sh check -p yeban-model` | `Finished`（0 error） |
 | `bash scripts/dev/cargo-local.sh clippy -p yeban-model --all-targets -- -D warnings` | `Finished`（0 warning） |
-| `bash scripts/dev/cargo-local.sh test -p yeban-model` | 107 单元 + 28 + 50 + 16 + **15** + 8 + 9 集成 + 3 + **2** doctest 全绿；3 个 `#[ignore]` 取证入口 |
+| `bash scripts/dev/cargo-local.sh test -p yeban-model` | 107 单元 + 28 + 50 + 16 + **16** + 8 + 9 集成 + 3 + **2** doctest 全绿；3 个 `#[ignore]` 取证入口 |
 | `bash scripts/gates/run-gates.sh light` | **门禁通过 (mode=light)**：fmt / 14 条守卫 / 文档契约 / 许可清单 |
 | `bash scripts/gates/run-gates.sh crate yeban-model` | **门禁通过 (mode=crate)**：上述 + clippy + 全量测试（含 doctest） |
 
@@ -356,18 +357,52 @@ pub trait SecretStore {
 `cargo deny check`、jsonschema 契约校验、Windows/Linux 平台分支、UI 无头视觉回归。
 ⇒ 本机绿**只是参考**，判决以 CI 为准。
 
-### 9.2 CI 判决
+### 9.2 CI 判决（**如实登记，包含一次真实的红**）
 
-读取方式（唯一的算数入口）：
+| run id | tip | 结论 | 明细 |
+| :--- | :--- | :--- | :--- |
+| 37268168161 | `35f8ad0` | **RED** | `deny` / `checks` / `lockfile` / `plan` / `rust (yeban-model)` / 其余 6 条 rust 腿 **全绿**；**`windows` 腿红**：`test` 步骤 exit 101，3 条 `local_config*` 判据失败（同一次运行里 `model_isolation` 的其它 **12 条判据在 Windows 上全绿**，`session*` 与键集合 / 逐字节 / 容器判据一条没红） |
+
+**根因**（取自 `bash scripts/dev/ci-verdict.sh --logs 37268168161` 的原始日志，不是猜测）：
+
+```text
+panicked at crates\yeban-model\tests\model_isolation.rs:651:34:
+写本机配置: EditorPathNotAbsolute { path: "/Applications/Audacity.app/Contents/MacOS/Audacity" }
+```
+
+即：**判据夹具自己写死了 macOS 路径**。`Path::is_absolute()` 是**平台相关**的 ——
+在 Windows 上 `/Applications/...` 只是"有根"（rooted），**不是**绝对路径；
+于是 `LocalMachineConfig::to_json()` 正确地拒绝了它，而夹具在 `.expect("序列化")` 上 panic。
+**生产侧的"外部编辑器必须是绝对路径"校验行为完全正确**，那三条红是**夹具的缺陷**：
+
+| 集成者当时给的候选原因 | 实测裁定 |
+| :--- | :--- |
+| 1. `0600` 权限在 Windows 不可用 | **不成立**：`PermissionsExt` 与 `LOCAL_CONFIG_FILE_MODE` 都在 `#[cfg(unix)]` 内，Windows 走 `#[cfg(not(unix))]` 的 SKIP 分支；Windows 腿的 `clippy -D warnings` **通过**（编译无问题），红的只有测试运行时 |
+| 2. `~/.yeban` 在 CI 上不可写 / HOME 不同 | **不成立**：三条判据全部使用**显式临时目录**（`TempDir::new` + `path_for_home`），只有 `default_path()` 是只读探测；失败发生在 `save_to` 的**校验阶段**，不是 IO |
+| 3. 判据写死了"本机平台" | **成立，但位置更精确**：写死的是**夹具数据**（编辑器路径），不是断言也不是落盘逻辑 |
+
+**修法（不放宽任何断言）**：
+
+1. 夹具改为**平台正确**：`WAVEFORM_EDITOR_PATH` / `SCORE_EDITOR_PATH` 用 `#[cfg(windows)]` 给盘符路径、
+   `#[cfg(not(windows))]` 给 POSIX 路径；相对路径夹具 `RELATIVE_EDITOR_PATH` 全平台通用。
+2. **新增判据 ⑯** 把平台语义**显式断言**出来（而不是让夹具"碰巧"过）：
+   Windows 上"只有根、没有盘符"的 `\Program Files\...` 必须 `is_absolute() == false` 且被 `validate()` 拒绝；
+   Unix 上 `/usr/bin/vi` 必须被接受。该常量只在 `#[cfg(windows)]` 下存在（在 Unix 上它是绝对路径，留着就是谎言）。
+3. 容器泄漏探针同时扫描**实际夹具路径字节**，夹具换平台后探针不会静默失效。
+4. 生产代码（`local_config.rs`）**一字未改** —— 这次修复没有动被测对象。
+5. `session` 侧设计与实现**一字未改**（集成者预审通过的部分）。
+
+**未采用的做法（按口径明确排除）**：把 `assert!` 放宽成"看情况"、让 SKIP 伪装成通过、
+或把判据改成"仅 Unix 执行"（那会让 Windows 侧的路径语义**永远无人验证** ——
+而它恰恰是刚刚真实出事的地方）。
+
+修复后的判决读取命令与结论：
 
 ```text
 bash scripts/dev/ci-verdict.sh line/model-session-state
 ```
 
-**截至本文件提交时**：判决为 `pending`（本轮推送后读回）。
-本文件**不预写"通过"** —— run id 与结论由工作线汇报登记，未读回的一律记 `pending`。
-
----
+⇒ 修复提交推送后由该命令读回；**未读回的一律记 `pending`，本文件不预写"通过"**。
 
 ## 10. 修改文件与净行数
 
@@ -375,10 +410,10 @@ bash scripts/dev/ci-verdict.sh line/model-session-state
 | :--- | :--- | :--- |
 | `crates/yeban-model/src/session.rs` | 新增 | 389 |
 | `crates/yeban-model/src/local_config.rs` | 新增 | 828 |
-| `crates/yeban-model/tests/model_isolation.rs` | 新增 | 1283 |
+| `crates/yeban-model/tests/model_isolation.rs` | 新增 | 1412（含 Windows 修复新增的 136 行） |
 | `crates/yeban-model/src/lib.rs` | 修改 | +18 / -2 |
 | `docs/ledger/model-session-state-notes.md` | 新增 | 本文件 |
-| 合计 | — | 约 +2520 行（其中判据 1283 行） |
+| 合计 | — | 约 +2650 行（其中判据 1412 行） |
 
 **零新增依赖**：`crates/yeban-model/Cargo.toml` 与根 `Cargo.toml` / `Cargo.lock` 一字未改
 （`run-gates.sh light` 的 `licenses` 步骤仍然一致：679 行）。
@@ -403,7 +438,7 @@ bash scripts/dev/ci-verdict.sh line/model-session-state
 
 | 项 | 状态 |
 | :--- | :--- |
-| Windows 平台编译与测试 | **本机未验证**（无 Windows）。风险点已逐一处理：权限常量与 `PermissionsExt` 都在 `#[cfg(unix)]` 内，非 Unix 走 `#[cfg(not(unix))]` 的 SKIP 分支；权限常量在测试里用**全路径**引用（避免非 Unix 下的 unused import 变成 `-D warnings` 错误）。由 CI 的 windows 腿（`cargo clippy -p yeban-model -p yeban-mcp --all-targets` + `cargo test`）判定 |
+| Windows 平台编译与测试 | **本机未验证**（无 Windows），**并且已经真实红过一次**（run `37268168161`，见 §9.2）。首次红的根因是**夹具写死 macOS 路径**，已修并新增判据 ⑯ 显式钉住平台语义。**这次红同时提供了 Windows 侧的正向证据**：同一次运行里 `model_isolation` 的 12 条判据（键集合 / 递归键路径 / 逐字节样本 / 会话态 / 容器 / 密钥引用 / 后端错误 / BTreeSet 顺序 / forbid(unsafe) / 三层模块）在 Windows 上**全绿**，Windows 腿的 `clippy -D warnings` 也通过 ⇒ 平台分支（`#[cfg(unix)]` / `#[cfg(not(unix))]`）与跨平台字节稳定性**已被真机验证过**，只剩修复后的复跑 |
 | 真实 keychain 读写 | **刻意未实现**（N1），只固定边界与失败语义 |
 | 密码学擦除 | **刻意未实现**（N2），只有 best-effort |
 | 权限位在其它 Unix（Linux CI）上的行为 | 本机（macOS）实测绿；Linux 行为由 CI 的 ubuntu 腿判定 —— `OpenOptions::mode` + `set_permissions` 都是 POSIX 语义，理论上一致 |

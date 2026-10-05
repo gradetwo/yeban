@@ -14,7 +14,7 @@
 //! 本文件把那三件事变成**机械判据**：不靠注释声明，靠**键集合 / 逐字节 / 类型层 / 权限
 //! 位 / 探针对照**五类证据。
 //!
-//! ## 判据清单（14 条 + 1 条 `#[ignore]`）
+//! ## 判据清单（16 条 + 1 条 `#[ignore]`）
 //!
 //! | # | 判据 | 钉住什么 |
 //! | :-- | :--- | :--- |
@@ -33,7 +33,8 @@
 //! | ⑬ | [`playhead_is_integer_ticks_at_960_ppq`] | 播放头是整数 tick，960 PPQ 语义 |
 //! | ⑭ | [`window_and_pid_sets_are_deterministic`] | `BTreeSet` / `BTreeMap` 确定性顺序 |
 //! | ⑮ | [`crate_keeps_forbid_unsafe_and_zero_gui_deps`] | `forbid(unsafe_code)` + 零 GUI 依赖 |
-//! | ⑯ | [`print_frozen_isolation_table`]（`#[ignore]`） | 重新冻结常量时的取证入口 |
+//! | ⑯ | [`editor_path_absoluteness_follows_platform_semantics`] | 编辑器路径绝对性是**平台语义**（Unix / Windows 分开钉） |
+//! | ⑰ | [`print_frozen_isolation_table`]（`#[ignore]`） | 重新冻结常量时的取证入口 |
 //!
 //! 另外两条"判据自身有牙"的反空洞证明写在 ⑥ / ③ 里（合成输入 ⇒ 扫描器 / 哈希必须变红）。
 
@@ -117,6 +118,40 @@ const FROZEN_LOCAL_CONFIG_KEYS: [&str; 4] = [
 
 /// 判据 ⑪ 用的**显式假密钥**探针（真实密钥永不出现 —— 这个字符串就是"真实密钥"的替身）。
 const FAKE_SECRET_MATERIAL: &str = "sk-PROBE-5f4d3c2b1a0F9E8D7C6B5A4f3e2d1c0b-DO-NOT-PERSIST";
+
+/// 波形编辑器的**平台正确**绝对路径夹具。
+///
+/// 为什么不能用一套路径打天下：`Path::is_absolute()` 的语义是**平台相关**的 ——
+/// 在 Windows 上 `/Applications/...` 只是"有根"（rooted），**不是绝对路径**
+/// （见 `std::path::absolute` 的文档与 `Prefix` 组件语义）。
+///
+/// 夹具若写死 macOS 路径，判据会在 Windows 上因为**夹具自己不是本机合法路径**
+/// 而红 —— 那不是被测对象的缺陷，而是夹具把"我这台机器"当成了规范。
+/// 实测事故（CI run 37268168161，windows 腿）：三条 `local_config*` 判据红，
+/// 原文 `写本机配置: EditorPathNotAbsolute { path: "/Applications/Audacity.app/..." }`。
+///
+/// 修法是**让夹具平台正确**（而不是放宽断言）：生产侧"非绝对路径必须拒绝"的
+/// 校验一字未改，并且另有一条判据把这条平台语义**显式断言**出来。
+#[cfg(windows)]
+const WAVEFORM_EDITOR_PATH: &str = r"C:\Program Files\Audacity\Audacity.exe";
+#[cfg(not(windows))]
+const WAVEFORM_EDITOR_PATH: &str = "/Applications/Audacity.app/Contents/MacOS/Audacity";
+
+/// 乐谱编辑器的**平台正确**绝对路径夹具（理由同 [`WAVEFORM_EDITOR_PATH`]）。
+#[cfg(windows)]
+const SCORE_EDITOR_PATH: &str = r"C:\Program Files\MuseScore 4\bin\MuseScore4.exe";
+#[cfg(not(windows))]
+const SCORE_EDITOR_PATH: &str = "/Applications/MuseScore 4.app/Contents/MacOS/mscore";
+
+/// 平台正确的**非绝对**路径：判据用它证明"相对路径必须被拒"。
+const RELATIVE_EDITOR_PATH: &str = "relative/editor";
+
+/// Windows 专属的"**有根但不是绝对**"路径：只有根目录、没有盘符前缀。
+///
+/// 它只在 `#[cfg(windows)]` 下存在：在 Unix 上 `/Program Files/...` 是**绝对**路径，
+/// 同名常量会变成谎言（也会变成 `dead_code`）。这正是本线要显式钉住的平台语义。
+#[cfg(windows)]
+const ROOTED_BUT_NOT_ABSOLUTE_EDITOR_PATH: &str = r"\Program Files\Audacity\Audacity.exe";
 
 // ---------------------------------------------------------------------------
 // 工具
@@ -278,14 +313,14 @@ fn populated_config() -> LocalMachineConfig {
     config.external_editors.insert(
         EditorRole::Waveform,
         ExternalEditor {
-            absolute_path: PathBuf::from("/Applications/Audacity.app/Contents/MacOS/Audacity"),
+            absolute_path: PathBuf::from(WAVEFORM_EDITOR_PATH),
             arguments: vec!["--open".to_owned()],
         },
     );
     config.external_editors.insert(
         EditorRole::Score,
         ExternalEditor {
-            absolute_path: PathBuf::from("/Applications/MuseScore 4.app/Contents/MacOS/mscore"),
+            absolute_path: PathBuf::from(SCORE_EDITOR_PATH),
             arguments: Vec::new(),
         },
     );
@@ -605,6 +640,8 @@ fn local_config_is_absent_from_the_project_container() {
         b"yeban/cloud/elevenlabs".as_slice(),
         b"Focusrite Scarlett".as_slice(),
         b"Audacity".as_slice(),
+        WAVEFORM_EDITOR_PATH.as_bytes(),
+        SCORE_EDITOR_PATH.as_bytes(),
         FAKE_SECRET_MATERIAL.as_bytes(),
     ] {
         assert!(
@@ -751,6 +788,98 @@ fn local_config_file_is_0600() {
     );
 }
 
+/// 判据 ⑯：**外部编辑器路径的绝对性是平台语义**，显式断言而不是靠夹具"碰巧"过。
+///
+/// 为什么值得单独一条：CI run 37268168161 的 windows 腿红过三条 `local_config*` 判据，
+/// 原文是 `写本机配置: EditorPathNotAbsolute { path: "/Applications/Audacity.app/..."
+/// }` —— 生产侧的校验**完全正确**，错的是夹具把 macOS 路径当成了"本机合法路径"。
+/// 这条判据把三个平台事实**分开钉死**：
+///
+/// | 平台 | 路径形态 | 期望 |
+/// | :--- | :--- | :--- |
+/// | 所有平台 | `relative/editor` | 拒绝（相对路径不是本机事实） |
+/// | Unix | `/usr/bin/vi` | 接受（POSIX 绝对路径） |
+/// | Windows | `C:\Program Files\...` | 接受（盘符前缀） |
+/// | Windows | `\Program Files\...`（只有根、无盘符） | **拒绝**（`is_absolute()` 为假） |
+#[test]
+fn editor_path_absoluteness_follows_platform_semantics() {
+    let mut config = LocalMachineConfig {
+        version: LOCAL_CONFIG_VERSION,
+        audio_binding: AudioPortBinding::default(),
+        external_editors: BTreeMap::new(),
+        cloud_tokens: BTreeMap::new(),
+    };
+    config.external_editors.insert(
+        EditorRole::Waveform,
+        ExternalEditor {
+            absolute_path: PathBuf::from(WAVEFORM_EDITOR_PATH),
+            arguments: Vec::new(),
+        },
+    );
+    assert!(
+        Path::new(WAVEFORM_EDITOR_PATH).is_absolute(),
+        "夹具本身必须是本平台的绝对路径，否则判据测的是夹具: {WAVEFORM_EDITOR_PATH}"
+    );
+    config.validate().expect("平台正确的绝对路径必须被接受");
+
+    // 相对路径：所有平台都必须拒绝。
+    assert!(!Path::new(RELATIVE_EDITOR_PATH).is_absolute());
+    let mut relative = config.clone();
+    relative.external_editors.insert(
+        EditorRole::Sample,
+        ExternalEditor {
+            absolute_path: PathBuf::from(RELATIVE_EDITOR_PATH),
+            arguments: Vec::new(),
+        },
+    );
+    assert!(
+        matches!(
+            relative.validate(),
+            Err(yeban_model::local_config::LocalConfigError::EditorPathNotAbsolute { .. })
+        ),
+        "相对路径必须被拒绝: {:?}",
+        relative.validate()
+    );
+
+    // Unix 专属：POSIX 绝对路径必须接受。
+    #[cfg(unix)]
+    {
+        let mut posix = config.clone();
+        posix.external_editors.insert(
+            EditorRole::Score,
+            ExternalEditor {
+                absolute_path: PathBuf::from("/usr/bin/vi"),
+                arguments: Vec::new(),
+            },
+        );
+        posix.validate().expect("POSIX 绝对路径必须被接受");
+    }
+
+    // Windows 专属：没有盘符的"有根路径"不是绝对路径 ⇒ 必须拒绝。
+    #[cfg(windows)]
+    {
+        assert!(
+            !Path::new(ROOTED_BUT_NOT_ABSOLUTE_EDITOR_PATH).is_absolute(),
+            "Windows: 只有根、没有盘符的路径不是绝对路径"
+        );
+        let mut rooted = config.clone();
+        rooted.external_editors.insert(
+            EditorRole::Sample,
+            ExternalEditor {
+                absolute_path: PathBuf::from(ROOTED_BUT_NOT_ABSOLUTE_EDITOR_PATH),
+                arguments: Vec::new(),
+            },
+        );
+        assert!(
+            matches!(
+                rooted.validate(),
+                Err(yeban_model::local_config::LocalConfigError::EditorPathNotAbsolute { .. })
+            ),
+            "Windows: 无盘符的有根路径必须被拒绝"
+        );
+    }
+}
+
 #[cfg(not(unix))]
 #[test]
 fn local_config_file_is_0600() {
@@ -808,14 +937,14 @@ fn local_config_round_trip_is_field_exact_and_deterministic() {
     reordered.external_editors.insert(
         EditorRole::Score,
         ExternalEditor {
-            absolute_path: PathBuf::from("/Applications/MuseScore 4.app/Contents/MacOS/mscore"),
+            absolute_path: PathBuf::from(SCORE_EDITOR_PATH),
             arguments: Vec::new(),
         },
     );
     reordered.external_editors.insert(
         EditorRole::Waveform,
         ExternalEditor {
-            absolute_path: PathBuf::from("/Applications/Audacity.app/Contents/MacOS/Audacity"),
+            absolute_path: PathBuf::from(WAVEFORM_EDITOR_PATH),
             arguments: vec!["--open".to_owned()],
         },
     );
@@ -853,7 +982,7 @@ fn local_config_round_trip_is_field_exact_and_deterministic() {
     relative.external_editors.insert(
         EditorRole::Sample,
         ExternalEditor {
-            absolute_path: PathBuf::from("relative/editor"),
+            absolute_path: PathBuf::from(RELATIVE_EDITOR_PATH),
             arguments: Vec::new(),
         },
     );
@@ -1240,7 +1369,7 @@ fn crate_keeps_forbid_unsafe_and_zero_gui_deps() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑯ 重新冻结入口（`#[ignore]`：不进 CI，只供人工取证）
+// ⑰ 重新冻结入口（`#[ignore]`：不进 CI，只供人工取证）
 // ---------------------------------------------------------------------------
 
 /// 打印当前的真实冻结值 —— **唯一**的重新冻结入口。
