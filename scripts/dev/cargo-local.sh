@@ -33,5 +33,13 @@ if [[ "${1:-}" != "fmt" ]]; then
   done
 fi
 
-cd "$repo_root"
+# ⚠ 必须 cd 到**当前目录所属的工作区**, 而不是**脚本所在**的 checkout。
+# 实测事故: 本脚本住在主仓 (`/…/yeban/scripts/dev/`), 而工作线在 `.worktrees/<name>/`;
+# 在 worktree 里用**主仓的绝对路径**调用它时, 旧实现 `cd "$repo_root"` 会切回主仓 ⇒
+# **编译并测试的是主仓的代码**, 而报告里写的是"本工作树本机真跑" ——
+# 也就是说: 那个"全绿"根本不是被测对象的绿。修复: 取**当前目录**的 git 顶层。
+if workspace_root="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$workspace_root" ]; then
+  cd "$workspace_root"
+fi
+printf '\033[2m[cargo-local] 工作区=%s\033[0m\n' "$(pwd)"
 exec cargo "$@"
