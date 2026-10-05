@@ -4652,3 +4652,28 @@ the code" - this is the same failure with a different instrument.
 **Action**: leave the marker (its stated reasons are correct), withdraw the duration claim here, and stop treating round counts
 as elapsed time. If the workspace leg's true duration with the test enabled is wanted, it has to be measured with a timestamp -
 which is what this round did for the first time.
+
+### Round 181: the `#[ignore]` fix is CI-green, and the injection site for clipping is mapped
+
+**Verdict read**: run `37350525943` @ `6c58f55` = **completed success** - the run whose workspace leg had been stuck on the
+100 000-note loop. With the test `#[ignore]`d, the leg completes and the whole run is green, so the marker did what it was
+supposed to do: the default pass is fast again and the frame-rate verdict stays with the manual `fps` gate (run
+`37350746040`, still in progress).
+
+The other measurement from round 180 stands: the "40+ minutes" figure was never measured, and real elapsed times were minutes.
+This run's success is consistent with either story, so it does not resurrect the wrong number.
+
+**Injection site mapped** (`crates/yeban-app/src/host.rs:130-140`): the host pushes the roll's parallel arrays with
+`lengths(&view.note_positions())`, `lengths(&view.note_widths())`, `lengths(&view.note_ys())` alongside `note_ulids` and
+`note_velocities`. That is exactly where clipping must be consumed, and the four arrays above are why the shared-index API
+exists.
+
+**What the rewiring still needs (one read, not a guess)**: the current scroll offset and the viewport width available at
+injection time. The roll's `.slint` exposes the visible geometry (the projection has `viewport_width` in its scene), but whether
+the scroll offset lives as a Slint property, in the host's view state, or nowhere yet must be established before the injection
+can be filtered - if it does not exist yet, adding it is part of the same change rather than a separate one.
+
+Also recorded: `note_ulids` and `note_velocities` are two MORE parallel arrays in the same list, so the earlier statement that
+"four arrays must share one index set" was an undercount - it is **six** (ulids, velocities, positions, widths, ys, and the row
+index). The clipping API must therefore grow to cover all six before the host can consume it, or the semantic element IDs and
+velocity data will desynchronise from the geometry.
