@@ -37,8 +37,8 @@
 //! | [`noise`] | 确定性 xorshift RNG 与白/粉/棕噪声 | `dsp/noise.rs` |
 //! | [`smoothing`] | 一阶低通参数平滑（τ≈5ms） | 新写 [ARCH-DSP-001] |
 //! | [`loop_window`] | 64 点升余弦循环点微平滑窗 | 新写 [ARCH-DSP-001] |
-//! | [`meter`] | 电平口径（峰值/峰值保持/RMS/平滑 RMS/dBFS/钳位/取最新）+ 4× 真峰值 | engine `level.rs` 上移 [ARCH-UI-002, ROAD-M2-008] |
-//! | [`loudness`] | K 加权（BS.1770-4 @48 kHz）与**无门限**积分响度 LUFS 最小子集 | 新写 [ARCH-UI-002] |
+//! | [`meter`] | 电平口径（峰值/峰值保持/RMS/平滑 RMS/dBFS/钳位/取最新）+ **8×/16× 真峰值**（HD-26） | engine `level.rs` 上移 [ARCH-UI-002, ROAD-M2-008] |
+//! | [`loudness`] | K 加权（BS.1770-4，44.1/48/88.2/96 kHz）+ 门限积分 LUFS（−70 LUFS / −10 LU）+ 瞬时/短时窗口（HD-27） | 新写 [ARCH-UI-002] |
 //! | [`envelope`] | 可覆盖 release 的 ADSR | `dsp/adsr.rs` |
 //! | [`filter`] | TPT/ZDF 4 极梯形低通 + 有界饱和 | `dsp/ladder.rs` |
 //! | [`oscillator`] | mipmap 限带波表振荡器 + 全局 LFO | `dsp/wavetable.rs`、`dsp/lfo.rs` |
