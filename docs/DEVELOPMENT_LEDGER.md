@@ -4107,3 +4107,29 @@ leg rather than locally.
 
 Also unchanged and still required for D56: the UI command with its stable element id, the shared-implementation criterion, the
 redaction-scan criterion and the tooth test. This round records the recipe only; no code was half-written.
+
+### Round 158: D56 step 2 - the dispatch site located; the recipe is now complete and closed
+
+Round 157 left two spots to confirm plus one assumption to check. All three are now resolved by reading:
+
+1. **Counts to bump together** (`crates/yeban-mcp/src/tools.rs`):
+   `TOOL_COUNT: usize = 15` (line 61), `EXTENSION_TOOL_COUNT: usize = 5` (line 67), `EXTENSION_NAMES` (line 80, five entries),
+   `TOOLS: [ToolSpec; TOOL_COUNT]` (line 467), and a test asserting `TOOLS.len() == TOOL_COUNT` (line 1075).
+   So the sixteenth tool needs **four** edits in that file: bump `TOOL_COUNT` to 16, bump `EXTENSION_TOOL_COUNT` to 6, add the
+   name to `EXTENSION_NAMES`, and add the `ToolSpec` to `TOOLS`.
+2. **The dispatch site** is `domain::execute(&mut Domain)`, documented as step 7 of the pipeline in
+   `crates/yeban-mcp/src/dispatch.rs` (line 12: "工具执行 domain::execute(&mut Domain) —— 真实现"), with
+   `METHOD_TOOLS_CALL = "tools/call"` (line 55) and the full pipeline described at line 330. My earlier greps missed it because
+   the module is named `domain`, not `handle_tool`/`call_tool` - a reminder that searching for the *concept* misses a file named
+   after the *domain*.
+3. **The schema assumption**: `schemas/mcp-tools.schema.json` describes the tool shape rather than listing tools (no per-tool
+   `name` field was found), so `tools.rs` is the authoritative list. Recorded as checked-but-not-exhaustive: if the schema does
+   constrain tool names, the `checks` leg is where it will say so.
+
+**So D56 step 2 is a four-edit-plus-handler write with no unknowns left**: bump the two counts, extend the name array, add the
+`ToolSpec`, then add the `domain` arm that calls `yeban_engine::diagnostics::export_diagnostics` - the single implementation,
+which is what makes D56's criterion 4 true rather than intended. Tests then extend the `tools/call` path that
+`crates/yeban-mcp/tests/extension_tools.rs` already exercises.
+
+Remaining after that, unchanged: the UI command with its stable element id, the shared-implementation criterion (both entry
+points invoked once, manifests equal except timestamp and path), the redaction-scan criterion, and the tooth test.
