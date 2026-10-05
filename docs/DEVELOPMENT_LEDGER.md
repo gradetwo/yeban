@@ -6030,3 +6030,22 @@ evidence of a dispatcher - reading it is the one remaining read for (a), and it 
 pencil branch; (c) resolve clip via `clip_at_tick` -> owning track -> `plan_to_add_note` -> `commit_ops(now_ms)` -> reproject; (d) a UI
 criterion asserting the note count rises by exactly one and that undo reverses it. No part still needs a DESIGN decision; the remaining
 reads are single-file lookups, not questions.
+
+### Round 246: the tool keyboard shortcuts are dead - the action is produced and handled nowhere
+
+The read part (a) needed, and it produced a user-visible defect rather than a location: `grep -rn 'SelectTool'` across `host.rs`,
+`main.rs`, and every `crates/yeban-app/src/*.rs` other than `input.rs` returns **nothing**. So `Action::SelectTool(Tool)` is produced by
+the digit keys (`input.rs:584-585`) and **handled by nobody**: pressing `1`-`5` today changes no state anywhere.
+
+That both confirms and explains round 244: the comment in `piano_roll.slint` says "the keyboard changes active-tool, this side only
+reads", and neither half is true - the property is UI-internal and never read by the host, and the keyboard path produces an action
+that is dropped. The tool buttons in the roll apparently set the property directly, which is why the feature LOOKS wired in a demo: a
+user clicking the buttons sees the active tool change, and a user pressing the documented shortcut sees nothing.
+
+**This makes part (a) of step 2 do double duty, which is worth stating plainly**: adding the handler is not merely plumbing for the
+pencil - it is the repair of a documented shortcut that has never worked. The two edits are the same two: mirror `active-tool` to
+MainWindow, and set it where `SelectTool` is handled - the second of which requires CREATING that handling, not finding it.
+
+**And it raises the honesty bar for the work item itself**: an untested keyboard path that silently does nothing is precisely the class
+of thing this session has recorded repeatedly ("looks wired, is not"), and the fix must come with a criterion - press the digit through
+the input path, read the property back, assert it changed - or the repair is itself unverifiable.
