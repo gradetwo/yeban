@@ -445,6 +445,15 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
     }
 }
 
+/// `[ROAD-M3-002]` 卷帘滚动的**状态推进**：把一次手势增量并入当前偏移。
+///
+/// 抽成纯函数是为了可判据（回调本身需要 UI 线程与真实指针事件）；下限 0 表示**不滚到时间轴之前**。
+/// 上限暂不设：内容长度由投影决定，超过末端的部分自然裁空（见账本第 199 轮）。
+#[must_use]
+fn advance_scroll(current: f32, delta: f32) -> f32 {
+    (current + delta).max(0.0)
+}
+
 /// 构造主窗口：注入**外壳场景**/// 构造主窗口：注入**外壳场景**（会话运行态 / 本机视口）+ 投影状态（底部控制台默认 Tab 0）。
 ///
 /// 这是 `main.rs` 与全部 UI 判据的**唯一**构造入口。
@@ -484,5 +493,46 @@ pub fn build_main_window_with_console_tab(
     ui.set_console_tab(console_tab);
     ui.set_compact(scene.compact());
     apply_view(&ui, view, ui.window().size().width as f32, 0.0);
+    // `[ROAD-M3-002]` 滚动手势（账本第 199 轮）：偏移由**宿主**拥有 —— 因为裁剪也在宿主侧。
+    // 卷帘只报告增量, 宿主 clamp + 累加后**重新注入**；不用 `Flickable`, 否则会与宿主偏移双重计算。
+    let scroll = std::rc::Rc::new(std::cell::RefCell::new(0.0_f32));
+    let view_snapshot = std::rc::Rc::new(view.clone());
+    {
+        let weak = ui.as_weak();
+        let scroll = std::rc::Rc::clone(&scroll);
+        let view_snapshot = std::rc::Rc::clone(&view_snapshot);
+        ui.on_scroll_requested(move |delta| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let next = {
+                let mut current = scroll.borrow_mut();
+                // 下限 0：不滚到时间轴之前；上限暂不设（内容长度由投影决定, 见账本第 199 轮）。
+                *current = advance_scroll(*current, delta);
+                *current
+            };
+            // `Rc<ViewState>` 是不可变共享 ⇒ 直接解引用, 无需 `borrow`。
+            apply_view(&ui, &view_snapshot, ui.window().size().width as f32, next);
+        });
+    }
     Ok(ui)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::advance_scroll;
+
+    #[test]
+    fn advance_scroll_accumulates_and_clamps_at_zero() {
+        // 判据: 累加生效, 且**不滚到时间轴之前**（负增量在 0 处停住, 不会变成负数）。
+        assert!((advance_scroll(0.0, 16.0) - 16.0).abs() < f32::EPSILON);
+        assert!((advance_scroll(16.0, 16.0) - 32.0).abs() < f32::EPSILON);
+        assert!((advance_scroll(16.0, -16.0) - 0.0).abs() < f32::EPSILON);
+        assert!(
+            (advance_scroll(0.0, -100.0) - 0.0).abs() < f32::EPSILON,
+            "负偏移必须被夹到 0"
+        );
+        assert!((advance_scroll(8.0, -100.0) - 0.0).abs() < f32::EPSILON);
+    }
 }
