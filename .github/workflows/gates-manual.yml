@@ -304,7 +304,11 @@ jobs:
             python3 scripts/gates/measure_rss.py --label model-export-samples --timeout 300 -- \
               cargo run --release -p yeban-model --locked --example export_schema_samples 2>&1 | tee -a /tmp/bench.log
             echo '```'
-          } | tee /tmp/rss-summary.md >> "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee /tmp/rss-summary.md
+          # ⚠ 观测性修正: 旧写法把整块输出**重定向进 step summary** ⇒ 失败时日志里什么都看不到
+          # （run 37292000410 与 37292452335 都因此无法远程定位）。现在**先 tee 进日志**,
+          # 再把同一份内容追加进 summary —— 失败必须留下可读证据。
+          { echo '```text'; cat /tmp/rss-summary.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 'BASELINE-004 单步撤销时延 (p99)'
         run: |
