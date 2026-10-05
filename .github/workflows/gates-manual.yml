@@ -64,11 +64,8 @@ jobs:
   # ---------------------------------------------------------------------------
   inventory:
     name: inventory (门禁清单)
-    # ⚠ 手动档默认超时是 **6 小时**（GitHub 默认）。本 job 现在做重活（`cargo vendor --full` 795 MB +
-    # 200 文件取回 + L1 渲染）⇒ 一旦挂起会**长时间占住 runner**，而并发只有 1–2 ⇒ 显式设上限。
-    timeout-minutes: 40
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: 渲染门禁清单（自动取自唯一事实源）
