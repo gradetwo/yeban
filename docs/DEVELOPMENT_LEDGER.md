@@ -7988,3 +7988,28 @@ asserting `null` when unset and echo-when-set; (4) the engine-side producer stay
 
 **Status**: tree green and clean; CI green; this decision unblocks the tool's contract while leaving the transport open, with the reasoning recorded so it can
 be overturned.
+
+
+### Round 328: the loudness-fields edit is fully scoped - five construction sites, two files, one command
+
+Round 327 decided the contract; this round measured what applying it touches, so the edit can be written in one pass instead of discovered one error at a time
+(the failure mode of rounds 294-326):
+
+| what | where |
+| :--- | :--- |
+| the struct and its derive (`Clone, Copy, Debug, PartialEq, Eq`) | `crates/yeban-mcp/src/domain/engine_state.rs:38-39` |
+| construction sites | `engine_state.rs:246`, `engine_state.rs:259`, and `crates/yeban-mcp/tests/extension_tools.rs:726`, `:798`, `:832` |
+
+**The edit, exactly five steps**: (1) add the five `Option<f32>` fields to the struct; (2) change the derive to `Clone, Copy, Debug, PartialEq` (dropping `Eq`,
+which floats cannot satisfy - a deliberate visible change); (3) `impl Default for EngineReadings` so the fields default to `None`; (4) append `..
+EngineReadings::default()` to each of the five construction sites, which is a one-line insertion per site and needs no other change at any of them; (5) surface
+the five fields in `session_value`'s payload.
+
+**Why `Default` is the right mechanism rather than editing five literals with five explicit `None`s**: it makes the next field addition a one-line change in
+one place, and it states in code what round 327 decided in prose - absent means "not measured", and that is the default state of the standalone server.
+
+**Test to add with it**: a criterion asserting the five keys serialise as `null` when the readings leave them `None`, and echo their values when set - the
+in-memory assertion that makes "not measured yet" a checked property rather than a claim.
+
+**Status**: tree green and clean; CI green; the loudness contract is decided and its implementation fully scoped; the mapping move remains registered as
+`N-MCP-MIDI-1`.
