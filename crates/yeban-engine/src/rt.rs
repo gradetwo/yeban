@@ -180,7 +180,11 @@ pub struct EngineStats {
     ///
     /// 精确读在控制线程上是 `RetireQueue::pending()`；这一份来自
     /// [`crate::snapshot::RetireAccounting`]，因此渲染驱动与音频线程也看得到。
-    /// 控制线程每次 `drain` 之后会把它**覆写**为真实剩余 ⇒ 漂移自愈。
+    ///
+    /// 它 = **成功入队数 − 已出队数**（两个单调量之差，见 `RetireAccounting` 的文档）：
+    /// 静止点上与精确读**恒等**；并发窗口里可能瞬时差 1（环里已放进去、`+1` 还没落地）。
+    /// ⚠ 第一版把它做成"`drain` 后覆写为真实剩余"的量规，那个覆写与音频线程的 `+1`
+    /// 不原子 ⇒ 会**永久**少记一条（CI 实测 `镜像=512 权威=513`）。
     pub retire_pending: u64,
     /// 累计真正出队并 `Drop` 的旧快照条数（`= RetireQueue::dropped()`；单调不减，饱和）。
     pub retire_drained: u64,
