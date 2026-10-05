@@ -1824,3 +1824,40 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 **Wave C** = #2（工具集扩张，含 schema，mcp+schemas）；**Wave D** = #5（theory 接线）。
 每波都要求：**一次推完**（L32）、判据含注入、**同一实现不许有两份**。
 
+### 第 42 轮：两条线落地（假阻塞已拆 + 走带真的通了），并对 3 件"需要集成者裁决"的事给出裁决
+
+**落地**：`line/propose-section`（run 37253125714 = success）与 `line/transport-engine`
+（run 37253348002 = success，含 `rust (yeban-engine)` + `rust (yeban-app)` 两条腿）。
+- **假阻塞拆掉**：`yeban_propose_section` 现在真的用 `Op::Batch[SetSection, AddClip×N, AddTrack×N,
+  AddClipPlacement×N, AddRoutingNode×N(+1), ConnectRouting×N]` 生成骨架与声部连接
+  （实测 `sections 2→3, tracks 4→8, clip_pool 2→6, routing.nodes 4→8, edges 3→7`），
+  **`unwired == []` 且它是从真实 `opKinds` 推导的**；逆操作**逐字节**回退（sha256 `0218fa7d…` 前后相同）。
+- **走带真的通了**：引擎有了确定性走带状态机（**实时侧零浮点**：带余除法把每帧小数精确带下去 ⇒
+  位置与"一次性算 N 帧"逐位相同），界面 `toggle-play`/`stop` 是**唯一接线实现**，
+  `app.slint` 里"UI 自造状态"那行（`root.playing = !root.playing`）被删掉，
+  停止按钮原本**连 `clicked` 都没有**、现在接上了。实测：48 kHz/960 帧量子 ⇒ `38/76/115/153…`；
+  44.1 kHz 下序列不同（⇒ 未硬编码 48 kHz）；`stop` 冻结在 35、再 `play` 从 35 继续；
+  零分配探针在 10,000 量子 + 1,000 次读写下 `allocations=0 deallocations=0`。
+
+**裁决 1（`AGENTS.md` §5.2"本机不跑重活"的口径）**：该线**自报越界** —— 它复用主仓已建缓存跑了
+`cargo test -p yeban-app`（增量编译 ≈31 s），抓到了 `EngineHost::reload` 多发命令需再推一个量子、
+**违反 `ui/reload_engine` 契约**的真问题（红在 `tests/live_ui_mcp.rs:925`）。
+⇒ **裁决：接受**，并把口径写清：**允许**"**复用已建缓存、增量编译有界**"的本机编译去验证契约/Tier-1 判据
+（并要求在台账里**如实登记新增编译时间**）；**不允许**在本机做 Slint/cpal 的**首次全量**构建。
+理由：§5.2 的目的是"别把本机 CPU 烧在长耗时重活上"，而不是"宁可让真缺陷漏到 CI"—— 这次它当场抓到的东西
+恰恰是 CI 也会红、但**定位成本高得多**的那类契约违约。**自报越界**这个行为本身应当鼓励。
+
+**裁决 2（`ui/reload_engine` 与走带的接缝）**：该线为守契约**没有**改 `ui/reload_engine` 的语义
+（重建后不停走带），改由控制面显式 `stop()`。⇒ **确认这一选择为裁决**：
+**`ui/reload_engine` 的契约不含"重置走带"**；想停就显式停。理由与 D45 同族：
+**同一件事只能有一个负责者**，否则"重建即停"会变成一条藏在重建语义里的隐式副作用。
+
+**裁决 3（`time_signature` 未投影）**：`ViewState` 里没有 `time_signature`，所以时间码暂按 **4/4** 格式化。
+⇒ 记 **needs**（投影层改动，属 `yeban-app`，等下一波 app 线；**不要**在引擎侧临时补一个拍号）。
+
+**新教训 L33**：`git checkout --ours <file>` **只在真的冲突时才能用**。
+我把它当"保险"用（本轮 merge 前无条件跑了一次 `--ours Cargo.lock`）⇒ **静默丢弃了合并带来的变化**，
+合并后 `Cargo.lock` 与清单不一致 —— **是 `worktree.sh land` 的"合并后自检"当场抓到的**（两条 FAIL）。
+⇒ 规则：**没有冲突就不要 `--ours`/`--theirs`**；合并后必须让工具的**自检**说话，
+而不是"我跑过 cargo metadata 了"（跑一次成功不等于状态一致 —— 这次第一次跑就"成功"了，因为脚本会顺手改写锁）。
+
