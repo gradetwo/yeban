@@ -598,11 +598,12 @@ mod tests {
             .map(|entry| entry.id)
             .expect("filled 样本必有 MIDI 片段");
         // 身份升序里最后一条非主总线轨道（Aux）也摆一个同样的 MIDI 片段。
+        // `rfind` 而不是 `filter(..).next_back()`: 后者会撞上 `clippy::filter_next`
+        // （CI run 37254414896 的 `clippy --workspace` 正是被这一条抓红的）。
         let victim = project
             .tracks
             .values()
-            .filter(|track| track.id != project.master_bus_track_id)
-            .next_back()
+            .rfind(|track| track.id != project.master_bus_track_id)
             .map(|track| track.id)
             .expect("必有非主总线轨道");
         let placement_id = EntityId::new();

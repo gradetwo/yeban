@@ -214,7 +214,7 @@ exit=5          # 精确到"哪一步、哪个路径"; 不留半个文件, 不�
 | ① `yeban-render` 的 `vlq.rs` + `midi.rs` 自带判据（仓库原件） | `bash /tmp/app-export-midi-harness/run.sh` | ✅ **18 passed; 0 failed** |
 | ② `yeban-app` 零 Slint 半边（`cli` / `export_midi` / `bridge` / `open` / `save` / … 仓库原件） | 同上 | ✅ **122 passed; 0 failed** |
 | ③ 真进程判据 `tests/cli_contract.rs`（探针二进制当被测进程） | `bash /tmp/app-export-midi-harness/verify.sh` | ✅ **14 passed; 0 failed**（B1–B13） |
-| ④ clippy（两个探针 crate，`-D warnings -D clippy::all`） | `bash /tmp/app-export-midi-harness/clippy.sh` | ✅ **零告警** |
+| ④ clippy（两个探针 crate，`-D warnings -D clippy::all`，探针根**不再** allow `clippy::all`） | `bash /tmp/app-export-midi-harness/clippy.sh` | ✅ **零告警**（§5-7：这条一度是空转的，已修） |
 | ⑤ `cargo fmt --all --check` | `bash scripts/dev/cargo-local.sh fmt --all --check` | ✅ 通过 |
 | ⑥ 门禁 light（**无管道**，直接读退出码） | `bash scripts/gates/run-gates.sh light` | ✅ **门禁通过 (mode=light)**，`exit=0` |
 
@@ -248,7 +248,9 @@ exit=5          # 精确到"哪一步、哪个路径"; 不留半个文件, 不�
 | B | **把 tick 换算改成"beat 取整"**（应让 ② 红） | `export_midi.rs` 的 `start_tick: placement.start_tick + note.start_tick` → `raw / PPQ * PPQ`（960 tick = 一拍） | `export_midi::tests::exported_notes_match_the_demo_fixture_note_by_note`: 逐音符 diff 原文 `left: [… (0,64,100,0,480), (0,72,100,960,480), (0,76,100,1920,480) …]` vs `right: [… (0,64,100,480,480), (0,72,100,1440,480), (0,76,100,2400,480) …]`（480→0 / 1440→960 / 2400→1920）；`placement_start_is_added_to_the_note_tick` 与 `cli::tests::export_midi_writes_a_parseable_smf_whose_notes_match_the_project` 同红。**总读数 119 passed / 3 failed**。真进程：B12 **FAILED**（13 / 1） |
 
 还原复核：`md5` 与注入前逐字节一致
-（`midi.rs` = `fbdd36bf355a61c8187c6df18fec5386`，`export_midi.rs` = `5c9dba3a5933511a792c42e84371e73b`），
+（注入当时的哈希：`midi.rs` = `fbdd36bf355a61c8187c6df18fec5386`，
+`export_midi.rs` = `5c9dba3a5933511a792c42e84371e73b`；⚠ `export_midi.rs` 此后因
+`clippy::filter_next` 又改了一处**测试**代码，见 §5-7 ⇒ 现在它的哈希已不同），
 `cmp` identical，`grep -rn "INJECT" crates/` = **0 命中**；还原后复跑：
 
 ```text
@@ -282,6 +284,16 @@ exit=5          # 精确到"哪一步、哪个路径"; 不留半个文件, 不�
 5. `yeban-render` **整 crate** 的 clippy/test（`rayon` / `hound` / `sha2` 本机不编）；
    本机只真跑它的 `vlq.rs` + `midi.rs`。
 6. 跨平台：Windows job（`.yeban.lock` 的路径分支）与 Linux 的 GUI 工具链依赖。
+7. ⚠ **CI 真的抓到了本机没看见的一条**（run **37254414896**，本线第一次推送）：
+   `clippy --workspace` 红在 [`export_midi.rs`](../../crates/yeban-app/src/export_midi.rs) 的
+   测试代码 `filter(..).next_back()`（`clippy::filter_next`，`-D clippy::all` ⇒ 错误）。
+   **根因是探针自己的**：探针 crate 根当时带着 `#![allow(rust_2018_idioms, clippy::all)]`
+   （从 app-cli 线的 harness 抄来的），而**源文件里的 crate 级 `allow` 会盖过命令行的
+   `-D clippy::all`** ⇒ 那个"clippy 零告警"是**空转**的，一条 clippy lint 都没跑。
+   修法两步：① 探针三个 crate 根去掉 `clippy::all` 的 allow（只留 `rust_2018_idioms`）；
+   ② 代码改成 `.rfind(..)`。**验证**（不是声称）：把 `filter(..).next_back()` 故意写回去后
+   本机 `clippy.sh` **退出 1** 并打印出与 CI 逐字相同的那条 `clippy::filter_next`；
+   改回 `.rfind(..)` 后零告警。这正是"本机绿不是绿、CI 判决才算数"的**具体形态**。
 
 > **纪律复核**：本机跑的是"同构探针"，能证明**逻辑与字节**，**不能**证明"发布的那个产物"。
 > 因此 §9 把"CI 判决"记成 pending，判决回来后由集成者按 `docs/CI_CD.md` 的口径填。
@@ -386,9 +398,30 @@ $ python3 scripts/gates/license_inventory.py                  # 锁哈希列随�
 
 | # | 事项 | 为什么还没关 |
 | :-- | :--- | :--- |
-| 1 | **CI 判决**（run id + 逐 job 读数） | 本机绿不是绿（`docs/CI_CD.md`）；判决由 `scripts/dev/ci-verdict.sh line/app-export-midi` 读回后填 |
+| 1 | **CI 判决**（run id + 逐 job 读数） | 本机绿不是绿（`docs/CI_CD.md`）；判决由 `scripts/dev/ci-verdict.sh line/app-export-midi` 读回后填。**第一次读数已回**：见 §10 |
 | 2 | 真二进制（含 Slint）的 `cargo test -p yeban-app --all-targets --locked` | 本机不编 Slint（§5-1） |
 | 3 | `cargo clippy -p yeban-app --all-targets --locked -D warnings` | 同上；本机只跑了零 Slint 半边的 clippy |
 | 4 | `cargo test -p yeban-render --all-targets --locked`（整 crate） | 本机不编 `rayon` / `hound` / `sha2`；本机只真跑 `vlq.rs` + `midi.rs` |
-| 5 | `lockfile` job（`cargo metadata --locked`） | 本机跑过 `cargo metadata --offline`（生成锁）；`--locked` 版由 CI 复核 |
+| 5 | `lockfile` job（`cargo metadata --locked`） | 本机跑过 `cargo metadata --offline`（生成锁）；`--locked` 版由 CI 复核（**37254414896 已 ✓**） |
 | 6 | 与 `theory-wiring` 线的锁合并 | 两条线都改 `Cargo.lock`；谁后合并谁重生成（D51） |
+
+---
+
+## 10. CI 判决记录（**只有这里的绿算绿**）
+
+### 10.1 第一次推送：run **37254414896**（tip `d5275c0`）⇒ **failure**
+
+| job | 结论 | 说明 |
+| :--- | :--- | :--- |
+| `deny (cargo-deny 开源合规)` | ✅ success | 没有新外部依赖 ⇒ 许可策略不变 |
+| `lockfile (确定性 Cargo.lock)` | ✅ success | **`cargo metadata --locked` 通过** ⇒ §6 那条内部边与机械重生成的锁**自洽**（这是 D51 要求看到的关键证据） |
+| `checks (fmt / 红线守卫 / schema)` | ✅ success | `cargo fmt --all --check` + 14 条守卫 + schema |
+| `plan (受影响集合)` | ✅ success | 碰了 `Cargo.lock` ⇒ `workspace_wide = true` |
+| `windows (yeban-mcp / yeban-model 的平台分支)` | ✅ success | 与本次改动无关的平台腿 |
+| `rust (workspace 全量)` | ❌ **failure** | **`clippy --workspace (-D warnings)`** 红：`clippy::filter_next`（§5-7 的详细根因与修法） |
+| `rust (${{ matrix.crate }})` | — skipped | `workspace_wide = true` ⇒ 窄矩阵腿按设计跳过（`.github/workflows/ci.yml:170`） |
+
+### 10.2 第二次推送（修 `clippy::filter_next` + 探针去 allow）⇒ 见提交信息里的 run id
+
+> 本节的判读口径与 `docs/CI_CD.md` 一致：**未读取的判决记为 pending**，
+> 不把"本机绿"或"上一个 run 的绿"当成这次的绿。
