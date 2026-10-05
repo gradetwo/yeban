@@ -7028,3 +7028,26 @@ line 74 with the re-export and add the dependency to render's manifest; then `ca
 **Why this is recorded rather than executed now**: the recipe is four edits plus verification, which is small - but my remaining session budget
 is not enough to do it AND verify it, and a half-applied crate move is precisely the failure this session has recorded four times. The recipe
 above is written so that the next execution is a read-free sequence of mechanical steps, and so that a reviewer can check each one.
+
+### Round 285: the mapping layer can move too, once file-writing is separated from byte-production
+
+Read the last unknown for the MCP tool, and it is smaller than feared: `crates/yeban-app/src/export_midi.rs` (829 lines, three public items)
+imports only
+
+- `std::collections::BTreeMap`, `std::path::{Path, PathBuf}`;
+- `yeban_model::{music::MidiNote, project::{ClipContent, ClipPlacement, YebanProjectV1}, EntityId, PPQ}`;
+- `yeban_render::midi::{…}` - which **now resolves to `yeban-midi`** through the re-export added in round 283;
+- **`crate::save::{SaveError, write_file_atomically}`** - the only app coupling, i.e. file writing.
+
+**So the design writes itself**: the mapping is pure (read model -> assemble `yeban-midi`'s inputs), and the only non-model concern is *writing
+files*. Move the mapping into `yeban-midi` returning **bytes or the `MidiExport`**, and leave file-writing with each caller - the app's CLI keeps
+its atomic write, and the MCP tool returns bytes, which is what a tool should do anyway (a tool that silently writes to a path chosen inside MCP
+would be a worse contract, and would make the criterion depend on the filesystem rather than on the bytes).
+
+**Why that also improves the criterion**: with the mapping pure and shared, the MCP criterion can build a project, call the same mapping, get
+bytes, and parse them back with `parse_smf` - all in memory, no temp files, no filesystem flakiness (a real hazard given the `lock_advisory`
+flake of round 279).
+
+**What remains, exactly**: (1) move `export_midi.rs`'s mapping into `yeban-midi` as a module returning bytes/the export type, with the app
+re-exporting it so `--export-midi` is unchanged; (2) add the `yeban_export_midi` tool spec and handler in `yeban-mcp`, delegating to it; (3)
+counts: registry 16 -> 17 and the feature-alignment MCP count; (4) criteria as above. No unknowns left - only edits and verification.
