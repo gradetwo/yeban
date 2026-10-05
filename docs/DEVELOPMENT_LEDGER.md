@@ -3071,3 +3071,34 @@ for 004), which makes the figures *conservative*, not optimistic; and the earlie
 work, but a stock MCP client (which sends `initialize` first) would not get past its first request. `ROAD-M4-002` therefore
 stays **部分** - its stated gap (the spawn/tools-list/real-call judge) is closed, but the row's phrase "a real MCP client
 speaks stdio" is not yet true end-to-end, and the new test now pins exactly which byte of the protocol is missing.
+
+### Round 105: the visual-regression criterion is now cross-platform, with the Linux comparison WITNESSED from CI
+
+The push of the Linux baselines produced run **`37299800916` @ `8e997ef` = completed success** with
+**`rust (yeban-app)` = success `steps=10`**. "Tests passed" is not evidence by itself (it has fooled me twice today), so I
+downloaded that run's UI artifact and read the observations file:
+
+```
+一致行: 5 | 未被判定行: 0
+[UI-MCP-003] `app-main-window-arrangement-compact-1920x1080` 与基准逐字节一致 ✓
+[UI-MCP-003] `app-model-driven-demo-project-1920x1080` 与基准逐字节一致 ✓
+[UI-MCP-003] `app-main-window-session-full-1920x1080` 与基准逐字节一致 ✓
+```
+
+=> on Linux the judge **compared** all five scenes against the committed Linux baselines and they matched byte-for-byte.
+Had Linux baselines been missing it would have printed 未被判定 instead, which is exactly the silent-non-judgment this
+design refuses.
+
+**Two honest observations recorded rather than smoothed over.**
+1. **Scenes overlap**: `app-main-window-arrangement-full-1920x1080` and `app-model-driven-demo-project-1920x1080` are
+   byte-identical **on both platforms**. So the set has **4 distinct images, not 5**. That is a coverage observation, not
+   a rendering failure (it reproduces identically on macOS). If five visually distinct scenes were intended, one is
+   redundant; I am recording it rather than claiming five distinct baselines.
+2. **G13 has a hole**: it accepted a workflow that GitHub refused to dispatch because I had used Chinese text as a job
+   **id** (the `goldens` job). Python's YAML parser is content with a non-ASCII mapping key; GitHub's rule is
+   `[A-Za-z_][A-Za-z0-9_-]{0,99}`. Locally "green" yet undispatchable is precisely the class of failure this project
+   keeps hunting, so the regex check that caught it belongs inside G13 (next round).
+
+**Per-platform necessity, now measured rather than assumed**: all five Linux images differ byte-for-byte from their macOS
+namesakes (CoreText vs FreeType/fontconfig). The Linux MANIFEST states its honest environment caveat - the Linux reference
+is the hosted `ubuntu-latest` runner class, not a human-designated machine.
