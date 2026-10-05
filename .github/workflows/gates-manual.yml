@@ -103,7 +103,10 @@ jobs:
             echo "**本机不跑重活**: 开发机是 Apple M2，全量构建/基准/模糊测试一律在 CI 上执行"
             echo "（\`docs/DEV_WORKFLOW.md\`）。BASELINE 系列需要固定频率的参考硬件，"
             echo "GitHub 托管 runner 频率不固定，因此那几条必须等参考机就位后再谈达标。"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee /tmp/inventory-summary.txt
+          # 观测性(第 123 轮分类): 本档**总是运行**且**产物只在 summary 里** ⇒ 不 tee 进日志时,
+          # 它「渲染了什么」在 `gh run view --log` 里完全看不到。同型问题已在 pending 档修过一次。
+          cat /tmp/inventory-summary.txt >> "$GITHUB_STEP_SUMMARY"
           # 同时自检: 状态表腐烂就红。
           python3 scripts/gates/check_gate_status.py
       - name: MUST-GATE-009 发行物层面的"危险能力默认关"断言

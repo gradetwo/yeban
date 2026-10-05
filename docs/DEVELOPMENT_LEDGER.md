@@ -3464,3 +3464,29 @@ making the output readable in the log.
 so a blanket rewrite risks changing rendered summaries; and a guard that merely flags the pattern would turn twelve existing
 steps red at once. The honest artefact is the enumerated list above, so each can be converted deliberately - the same
 "enumerate, then convert one at a time" approach that worked for the status-hygiene pass.
+
+### Round 124: classifying the 12 remaining summary sites - only 2 of them actually need fixing
+
+Round 123 enumerated 13 sites whose stdout goes only into the job summary. Before converting them, I classified each by
+(a) its step name and (b) whether it is guarded by `if: failure()`:
+
+| site | guard | verdict |
+| :--- | :--- | :--- |
+| `ci.yml:241`, `:316`, `:390` | `if: failure()` | **duplicate** - "失败摘要" steps that copy error text the failing step already printed to its own log |
+| `gates-manual.yml:258`, `:444`, `:456`, `:539`, `:564` | `if: failure()` | same: failure summaries, the real error is in the failing step's log |
+| `gates-manual.yml:106` (inventory) | **always runs** | **needs the fix** - its whole product (the gate table) exists only in the summary |
+| `site-deploy.yml:92` | **always runs** | needs the fix in principle, but it is the website deploy - the human's own, deferred |
+| `gates-manual.yml:592` (pending) | always runs | **already fixed** (round 123) |
+
+=> the real exposure was **three always-run sites, not thirteen**; eight are failure-duplicators whose output is recoverable
+from the failing step's own log.
+
+**Fixed this round**: `gates-manual.yml:106` (the inventory lane's gate-table render), same pattern as round 123 - tee to a
+file, then append the identical bytes to the summary.
+
+**Not fixed**: the eight failure-summary steps (their content is already in the log, so changing them is churn) and
+`site-deploy.yml:92` (the website deploy belongs to the human's own track and is deferred).
+
+**Method note worth keeping**: "13 sites" was the output of a pattern grep; the *risk* was three. Counting hits is not
+assessing severity, and the second pass - classify by guard and by whether the log holds another copy - is what turned a
+13-item chore into one real fix.
