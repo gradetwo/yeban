@@ -121,7 +121,9 @@ pub fn pitch_lane(pitch: u8) -> i32 {
 /// 这不是缺陷而是当前截图的事实, 判据里以"往返"为准。
 #[must_use]
 pub fn pitch_for_lane(lane: i32) -> Option<u8> {
-    if lane < 0 || lane >= PITCH_LANE_COUNT {
+    // 用 `Range::contains` 而不是手写比较 —— clippy 的 `manual_range_contains` 正是这么要求的,
+    // 而我上一轮把门禁与提交串在一条命令里 ⇒ 它红着就推出去了（本会话第 172 轮记过这条规矩）。
+    if !(0..PITCH_LANE_COUNT).contains(&lane) {
         return None;
     }
     let offset = PITCH_LANE_COUNT - 1 - lane;
