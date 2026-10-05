@@ -6009,3 +6009,24 @@ true for this slice.
 **Not started, and the honest reason is capacity, not uncertainty**: the session's context is nearly spent, and (c) mutates the model
 and (d) judges that mutation - exactly the pair that should not be written at the end of a long session, as rounds 520 and 521 showed
 when hurrying produced a chained gate-and-commit and an unscoped text replacement. The four parts above are the handover.
+
+### Round 245: part (a) of step 2 is fully specified now - the action exists, nothing materialises it
+
+The last read part (a) needed: the tool-selection path already exists as an ACTION - `Action::SelectTool(Tool)` at `input.rs:431`,
+produced by the digit keys at `input.rs:584-585` (`Key::Digit(digit) => Tool::from_digit(digit) => Resolution::Action(Action::SelectTool(tool))`).
+So the keyboard half is written; what is missing is the half that turns the action into state that the roll and the host can both see -
+which round 244 established does not exist, because `active-tool` is not mirrored on MainWindow and the host never touches it.
+
+**Part (a) is therefore exactly two edits**, and both are additive:
+1. mirror `active-tool` from MainWindow to PianoRoll (the same three-level pattern as `note-selected`, rounds 502-504: property on the
+   roll, forwarded by ConsoleTabs and MainWindow);
+2. set it where `Action::SelectTool` is handled, so the existing keyboard path becomes real - and the comment that claims "the keyboard
+   changes active-tool" stops being false.
+
+**Where that handler is**: not yet read. `input.rs:605` lists `SelectTool` among a set of action names, which is suggestive but is not
+evidence of a dispatcher - reading it is the one remaining read for (a), and it is small.
+
+**State of the whole slice, for the handover**: (a) needs that one read plus two edits; (b) `wire_roll_edit(ui, port, context)` with the
+pencil branch; (c) resolve clip via `clip_at_tick` -> owning track -> `plan_to_add_note` -> `commit_ops(now_ms)` -> reproject; (d) a UI
+criterion asserting the note count rises by exactly one and that undo reverses it. No part still needs a DESIGN decision; the remaining
+reads are single-file lookups, not questions.
