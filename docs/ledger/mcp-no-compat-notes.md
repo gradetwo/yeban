@@ -304,7 +304,22 @@ $ bash /tmp/mcp-store-harness/run.sh    # test result: ok. 57 passed; 0 failed
 
 ### 7.3 门禁与 CI 判决
 
-（提交后回填：`run-gates.sh light` 读数、`git diff --cached --stat`、CI run id 与逐 job 结果。）
+**代码判据 = `0be9921` / run `37247658327`**（CI = **success**，`head_sha` 与推送 tip 逐字节相同）：
+
+| 项 | 读数 |
+| :--- | :--- |
+| `rust (yeban-mcp)`（job `111569209073`） | lib **183** / `container_store` **18** / contract **25** / `lock_advisory` **14** / `render_audio_clips` **13** / `render_master` **12** / `tools_e2e` **15** —— **0 failed**，clippy `-D warnings` 零告警 |
+| `windows (yeban-mcp / yeban-model)` | ✅（平台分支真编译真跑） |
+| `checks` / `deny` / `lockfile` / `plan` | ✅ |
+| `rust (workspace 全量)` | 按受影响集合 **skip**（符合纪律：窄改动不跑全量） |
+| 合并规模 | 12 文件 **+1044 / −273**（净删性质：形态枚举、错误分类、只服务于兼容的判断） |
+| 本机 `run-gates.sh light` | 绿（合并后由集成者复跑） |
+
+> **判决归属提醒（L23/L26）**：本线**没有**再推 docs-only 提交来"回填这一节" ——
+> 那会造成"合并后又有新 tip"的归属歧义。本节由**集成者**按该线的中途报告补齐，
+> 因此**唯一的代码判据就是上面那条 run id**，不存在"后来的 docs 轮"。
+> （集成者流程教训：`land` + `rm --purge` 会删掉工作树，而该线当时**仍在活跃** ——
+> 规则已改为"**只有该线已报告完成 + 工作树干净 + 无未读判决**才 land"。）
 
 ---
 
@@ -330,7 +345,7 @@ $ bash /tmp/mcp-store-harness/run.sh    # test result: ok. 57 passed; 0 failed
 
 ### 8.3 pending
 
-- CI 判决 run id：**待回填**（§7.3）。
+- CI 判决 run id：**已回填** —— `0be9921` / run `37247658327`（§7.3）。
 - 本机**未执行**的集成测试绿：**待 CI**（§7.2）——本机只做了类型检查。
 
 ---
