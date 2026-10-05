@@ -11,7 +11,7 @@
   ],
   "properties": {
     "origin": {
-      "description": "Op provenance. Unit variants serialize as plain strings; McpProposal carries {proposal_id, agent_name} and serializes as an externally tagged object.",
+      "description": "Op provenance. Unit variants serialize as plain strings; McpProposal carries {proposal_id, agent_name} and McpEdit carries {agent_name}; both serialize as externally tagged objects. Branch ORDER is part of the contract: oneOf[0] is the unit enum, oneOf[1] is McpProposal, oneOf[2] is McpEdit (two judges address branches by index).",
       "oneOf": [
         {
           "type": "string",
@@ -45,6 +45,28 @@
                 },
                 "agent_name": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "McpEdit"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "McpEdit": {
+              "type": "object",
+              "required": [
+                "agent_name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "agent_name": {
+                  "type": "string",
+                  "description": "Direct-edit agent name (no proposal identity: McpEdit never creates a proposal)"
                 }
               }
             }
