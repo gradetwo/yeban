@@ -2918,3 +2918,36 @@ precisely to avoid churning the guard counts that the doc-contract step asserts 
 f-string, which `ast.parse` rejected with a SyntaxError. This is the **third** time in this session that same quoting
 trap has bitten me, and it is written in my own notes ("Python 字符串里不写 ASCII 双引号（用「」）"). Fixed by switching
 the inner quotes to 「」; `ast.parse` then passed before any guard ran.
+
+### Round 100: triaging the partial/PENDING rows - my first attempt was an artifact, and the corrected count hints the ledger over-reports "partial"
+
+**First attempt (wrong, kept for the lesson).** I counted reason categories by regex over the **whole row**. Result:
+"future-dated: 23". That number was an artifact: my pattern included `M2|M3`, which matches each row's **own milestone id**
+(`ROAD-M2-001` ...), not its reason. This is the same error family recorded in round 92 ("a grep hit taken as evidence"):
+the pattern matched text that the row contains *by construction*.
+
+**Corrected (regex applied to the reason cell only, `cells[3]`).** 34 partial/PENDING rows:
+
+| bucket | rows |
+| :--- | ---: |
+| not-yet-built (未实现/尚未/没有依赖可锁/待实现) | 13 |
+| future-dated (v2.0.0/v3./未到期/后续版本) | 4 |
+| hardware-gated (参考硬件/固定频率/真机/硬件往返) | 2 |
+| human-legal-gated (法务/需要人类/待裁决/商标/签名) | 2 |
+| **not matched by any bucket** | **13+** |
+
+**The observation that actually matters.** Among the unmatched rows, the reason cell for several begins with
+"**已做到**" - e.g. `ROAD-M0-002` ("已做到: crates/yeban-engine/src/ring.rs ..."), `ROAD-M0-004` ("已做到（结论已被正式
+crate 汲取）: crates/yeban-model/src/ids.rs ..."), `ROAD-M0-005` ("已做到: crates/yeban-ui-test-port/ 真落地 ..."). So a
+meaningful share of the "partial" rows **already state that the substance is done in their own reason text**, with the
+status word left at 部分.
+
+⇒ Two consequences.
+1. The headline "27 partial / 7 PENDING" is **not** 34 outstanding work items; it mixes future-dated, hardware-gated,
+   human-gated, not-yet-built, and **already-done-but-not-relabelled** rows.
+2. A **status-hygiene pass** is warranted: read each row whose reason says 已做到 (or otherwise shows the substance is
+   present), verify the claim against the cited file/command, and only then move the status - with the evidence quoted.
+   Bulk-flipping statuses without reading each row would be exactly the "看起来有当成有" failure this project keeps
+   paying for.
+
+**Not done this round**: the per-row verification pass (it is the next thing, and it must be per-row with quoted evidence).
