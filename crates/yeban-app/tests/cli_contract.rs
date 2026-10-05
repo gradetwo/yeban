@@ -15,8 +15,8 @@
 //! ## 只跑"无窗口"参数
 //!
 //! 本文件**绝不**调用不带无窗口开关的命令：那会构造真窗口并进入阻塞事件循环，把 CI 挂死。
-//! 每条调用都带 `--headless` / `--dump-elements` / `--export-elements` / `--save-as` /
-//! `--print-shortcuts` / `--help` / `--version` 之一。
+//! 每条调用都带 `--headless` / `--dump-elements` / `--export-elements` / `--export-midi` /
+//! `--save-as` / `--print-shortcuts` / `--help` / `--version` 之一。
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -149,6 +149,7 @@ fn help_and_version_are_real_and_short_circuit() {
         "--save-as",
         "--dump-elements",
         "--export-elements",
+        "--export-midi",
         "--print-shortcuts",
         "--project-sample",
         "--headless",
@@ -661,4 +662,154 @@ fn print_shortcuts_is_a_batch_command() {
     );
     // 策略表的判定结果必须真的在里面（画布列 vs IME 合成列）。
     assert!(run.stdout.contains("F5 → Session 视图"), "{}", run.stdout);
+}
+
+/// 判据 B12: `--export-midi` 从**真二进制**导出的字节可被 SMF 读取面读回，
+/// 逐音符与工程一致，`MThd` 的 PPQ 字段是 960，且两次导出逐字节相同
+/// （① 回读 / ② 逐音符 / ③ PPQ 头 / ④ 确定性，全部在**进程级**再证一次）。
+#[test]
+fn export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary() {
+    use yeban_render::midi::{MidiFormat, parse_smf, track_chunks};
+
+    let dir = scratch_dir("export-midi");
+    let source = write_real_container(&dir, "song.yeban");
+    let source = source.to_str().expect("utf8");
+    let first = dir.join("song.mid");
+    let second = dir.join("song-again.mid");
+
+    let mut printed_bytes = Vec::new();
+    for target in [&first, &second] {
+        let run = invoke(&[
+            "--open",
+            source,
+            "--export-midi",
+            target.to_str().expect("utf8"),
+        ]);
+        assert_eq!(run.code, 0, "stderr={}", run.stderr);
+        let line = line_with(&run.stdout, "exported-midi:").expect("必须有 exported-midi: 行");
+        assert_eq!(field(line, "ppq").as_deref(), Some("960"), "{line}");
+        assert_eq!(field(line, "format").as_deref(), Some("parallel"), "{line}");
+        assert_eq!(field(line, "tracks").as_deref(), Some("1"), "{line}");
+        assert_eq!(field(line, "notes").as_deref(), Some("6"), "{line}");
+        assert!(
+            line.contains("from=") && line.contains("song.yeban"),
+            "来源必须明写: {line}"
+        );
+        let expected = std::fs::metadata(target).expect("文件在").len();
+        assert_eq!(
+            field(line, "bytes").as_deref(),
+            Some(expected.to_string().as_str()),
+            "打印的字节数必须是实际落盘字节数: {line}"
+        );
+        assert!(
+            !run.stdout.contains("panicked") && !run.stderr.contains("panicked"),
+            "不许 panic: {}",
+            run.stderr
+        );
+        printed_bytes.push(field(line, "bytes").expect("bytes="));
+    }
+    assert_eq!(
+        printed_bytes[0], printed_bytes[1],
+        "两次导出的字节数必须相同"
+    );
+    assert_eq!(
+        std::fs::read(&first).expect("读 a"),
+        std::fs::read(&second).expect("读 b"),
+        "同一工程两次 --export-midi 的字节必须完全相同"
+    );
+
+    let bytes = std::fs::read(&first).expect("读导出的 SMF");
+    // ③ `MThd` 的时间分度（大端）= 960 = 0x03C0。
+    assert_eq!(&bytes[12..14], &[0x03, 0xC0], "PPQ 字段必须是 960");
+    // ① 读取面读回 + chunk 布局。
+    let chunks = track_chunks(&bytes).expect("chunk 布局");
+    assert_eq!(&chunks[0].fourcc, b"MThd");
+    assert_eq!(chunks.len(), 3, "MThd + conductor + 一条音符轨");
+    for chunk in &chunks[1..] {
+        let payload = &bytes[chunk.payload.clone()];
+        assert_eq!(payload[payload.len() - 3..], [0xFF, 0x2F, 0x00]);
+    }
+    let parsed = parse_smf(&bytes).expect("回读");
+    assert_eq!(parsed.format, MidiFormat::Parallel);
+    assert_eq!(parsed.ppq, 960);
+    // ② 逐音符（演示夹具的六颗音符，独立数出来的期望值）。
+    let mut actual: Vec<(u8, u8, u8, u64, u64)> =
+        parsed.notes.iter().map(|note| note.key()).collect();
+    actual.sort_unstable();
+    let mut expected: Vec<(u8, u8, u8, u64, u64)> = [
+        (60_u8, 0_u64),
+        (64, 480),
+        (67, 960),
+        (72, 1440),
+        (74, 1920),
+        (76, 2400),
+    ]
+    .iter()
+    .map(|&(key, start)| (0, key, 100, start, 480))
+    .collect();
+    expected.sort_unstable();
+    assert_eq!(actual, expected, "六颗音符逐项一致");
+
+    // 所有 `*.tmp-*` 都必须已被重命名掉（原子替换的痕迹）。
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据 B13: `--export-midi` 的失败语义与既有 CLI 一致 —— 非容器输入 ⇒ 退出码 **3**
+/// 且一个字节都不写；目标不可写 ⇒ 退出码 **5**、精确原因、**不留下半个文件**。
+#[test]
+fn export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing() {
+    let dir = scratch_dir("export-midi-bad");
+    let junk = dir.join("junk.bin");
+    std::fs::write(&junk, b"not a zip at all").expect("写垃圾");
+    let target = dir.join("never.mid");
+
+    let run = invoke(&[
+        "--open",
+        junk.to_str().expect("utf8"),
+        "--export-midi",
+        target.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 3, "非容器输入必须退出 3; stderr={}", run.stderr);
+    assert!(
+        run.stderr.contains("不是 `.yeban` 容器"),
+        "必须转达容器裁决: {}",
+        run.stderr
+    );
+    assert!(!target.exists(), "打开失败 ⇒ 不许写出任何 MIDI 字节");
+    assert!(
+        run.stdout.is_empty(),
+        "失败不得留下半截输出: {}",
+        run.stdout
+    );
+
+    // 目标父目录不存在 ⇒ 导出失败（退出码 5），且不留下任何文件 / 目录。
+    let source = write_real_container(&dir, "good.yeban");
+    let blocked = dir.join("missing").join("out.mid");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-midi",
+        blocked.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 5, "不可写路径必须退出 5; stderr={}", run.stderr);
+    assert!(run.stderr.contains("导出 MIDI 到"), "{}", run.stderr);
+    assert!(!blocked.exists(), "失败不得留下目标文件");
+    assert!(!dir.join("missing").exists(), "失败不得凭空造出目录");
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

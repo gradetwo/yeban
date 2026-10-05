@@ -47,6 +47,12 @@
 //! `--save-as` 经 [`save`] **原子**落盘，`--export-elements` 把
 //! [`elements`] 的注册表原子写到文件；两条路径（GUI / 无窗口）共用同一份报告实现。
 //!
+//! **MIDI 导出**（app-export-midi 工作线，ADR-0001 D47 的裁决：唯一出口是 app CLI
+//! `--export-midi`）：[`export_midi`] 把当前工程投影成 `yeban_render::midi::MidiExport`，
+//! 由**那一个** SMF 编码器写成字节后原子落盘 —— 本 crate 里**没有**第二份编码器。
+//! 映射表（轨道 → MIDI 轨/通道、`MidiNote` 字段 → 事件、PPQ 口径）写在
+//! [`export_midi`] 的模块文档与 `docs/ledger/app-export-midi-notes.md`。
+//!
 //! 仍未接线的部分（走带 / Op 归约 / 设备链 / 自动化 / 声卡宿主 / UI→模型写入）
 //! 逐条记在 `docs/ledger/app-mixer-notes.md` §7 与 `docs/ledger/app-binding-notes.md`
 //! 的未实现项里；命令行的边界与未实现项记在 `docs/ledger/app-cli-notes.md`。
@@ -57,6 +63,7 @@ pub mod bridge;
 pub mod cli;
 pub mod elements;
 pub mod engine_host;
+pub mod export_midi;
 pub mod host;
 pub mod input;
 pub mod meters;
