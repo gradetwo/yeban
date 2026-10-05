@@ -71,6 +71,7 @@ gate_docs() {
   run "clippy-changed" bash scripts/gates/clippy-changed.sh
   run "handoff-snapshot" python3 scripts/gates/check_handoff_snapshot.py
   run "diagnostics-single-impl" python3 scripts/gates/check_diagnostics_single_implementation.py
+  run "viewport-bounds-wiring" python3 scripts/gates/check_viewport_bounds_wiring.py
 }
 
 gate_schemas() {
