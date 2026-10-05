@@ -6258,3 +6258,20 @@ consequences of doing N2, not separate designs. The four parts become:
 angles, and proposed three placements - none wrong in themselves, all avoiding the one document that already answered the question.
 The register was not stale; it was accurate and unread. That is the failure mode to avoid next, and it is cheaper to avoid than any of
 the code work above.
+
+### Round 255: N2's "event source" is the IME source, not a keyboard handler - that half does not exist either
+
+Read the half of N2 that was described as already done ("`main.rs` 已接事件源（§2）"), and the wording is precise in a way worth recording:
+the connected source is the **IME** source - `preedit-text` / `has-focus` changing into `InputContext` (the round-252 comment and
+round 253's `needs` list both say so) - and there is **no keyboard handler at all**.
+
+Evidence from `main.rs`: the registered callbacks are `on_toggle_view`, `on_toggle_sidebar`, `on_toggle_ai_drawer`,
+`on_open_musical_pr`, `on_accept_ai_proposal`, `on_reject_ai_proposal`, `on_run_acoustic_diagnosis` - each body a `trace(...)`
+placeholder - and nothing resembling key handling. A grep for `key`/`Key`/`on_` in that file turns up no key event registration.
+
+**So N2 is one step larger than "add the consumer"**: before `input::dispatch_key` can be fed, a Slint-side key source has to exist
+(a `FocusScope`-style callback or equivalent) and the host has to register it. That is .slint work plus host work plus the criterion -
+which is why it is not being started at this point in the session, and why saying it plainly beats another round of "nearly ready".
+
+**What stays true from round 254**: however the keyboard source is added, the goal is N2 - give `InputContext` a reader on the GUI path
+- and the three dead actions (tool selection, pencil toggle, delete selection) are consequences of that, not separate features.
