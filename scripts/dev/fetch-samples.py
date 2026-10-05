@@ -29,6 +29,22 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = REPO / "assets" / "samples" / "manifest.json"
 
 
+# ⚠ **上游剥离表**（临时，直到清单自己登记上游路径）。
+#
+# 为什么需要: `assets/samples/manifest.json` 的 `relative_path` 是**仓库内**路径，
+# 而上游路径是**推导**出来的 —— 两者**不是一一对应**。实测证据（GitHub API `?recursive=1`）:
+# `karoryfer.meatbass` 的 pin `ac9e859564bd` 下共 593 个条目，含 `aria_info` 的**只有** `GUI/aria_info.xml`；
+# 而清单里的仓库内路径是 `assets/samples/karoryfer-meatbass/Meatbass/GUI/aria_info.xml`
+# ⇒ 多出一层 `Meatbass/` ⇒ 推导出的 URL 必然 404。
+#
+# 语义: 乐器 id -> 从**推导出的上游路径**开头剥离的段数。
+# ⚠ 这不是"修好了"：真正的修法是让清单**登记上游路径**（见 `docs/DEVELOPMENT_LEDGER.md` 第 67 轮 needs）。
+# 本表只是把已**实测确认**的映射写下来，避免那条 404 继续以「无法判定」的身份占用 `--tolerate-404`。
+UPSTREAM_STRIP: dict[str, int] = {
+    "karoryfer-meatbass": 1,  # 上游无 `Meatbass/` 这一层（API 实测：唯一命中是 `GUI/aria_info.xml`）
+}
+
+
 def upstream_url(instrument: dict, item: dict) -> str | None:
     """由 `repo` + `pin` + 相对于乐器根的上游路径拼出 raw URL。"""
     repo, pin = instrument.get("repo"), instrument.get("pin")
@@ -44,6 +60,11 @@ def upstream_url(instrument: dict, item: dict) -> str | None:
     upstream_path = rel[len(prefix):] if rel.startswith(prefix) else rel
     # ⚠ 上游路径里有**空格与括号**（实测: "Struck Idiophones/Non-standard pitch (please transpose).txt"）
     # ⇒ 必须按段百分号编码, 否则 http.client 直接抛 InvalidURL（第一版就是这么崩的）。
+    strip = UPSTREAM_STRIP.get(str(item.get("instrument", "")), 0)
+    if strip:
+        parts = upstream_path.split("/")
+        if len(parts) > strip:
+            upstream_path = "/".join(parts[strip:])
     encoded = urllib.parse.quote(upstream_path, safe="/")
     return f"https://raw.githubusercontent.com/{repo}/{pin}/{encoded}"
 
