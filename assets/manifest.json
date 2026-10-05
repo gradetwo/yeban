@@ -5,16 +5,21 @@
   "sub_manifests": [
     {
       "category": "samples",
+      "manifest": "assets/samples/manifest.json",
       "attribution_doc": "assets/samples/ATTRIBUTION.md",
       "instruments_count": 323,
+      "instruments_registered": 30,
+      "instruments_shortfall": 293,
       "format": "SFZ_v2",
+      "bundled": false,
       "allowed_licenses": [
         "CC0-1.0",
+        "CC-BY-3.0",
         "CC-BY-4.0",
         "MIT",
         "Apache-2.0"
       ],
-      "note": "素材由人类负责人选定后，与首批条目一起创建 assets/samples/MANIFEST.json 并在此加 manifest 指针。校验器刻意拒绝空清单（空清单会让红线 9 变成空转），因此清单不得先建后填。"
+      "note": "`instruments_count: 323` 是 MUST-GATE-014 的**规范目标**, 不是已登记数; 已登记 30 款(27 CC0 + 3 CC-BY), 差 293 款。清单是**登记式**(registry-only): 21 505 个文件共 10 061 840 365 字节(9.371 GiB)不随仓库分发, 每条 item 带 optional=true, 由使用者按 instruments[].repo+pin 自行拉取并用 sha256 校验。CC-BY-3.0 是 Salamander Grand Piano 的上游许可(规范白名单写的是 `CC0/CC-BY/MIT`, CC-BY 含 3.0), 原先漏列。⚠ 门禁目前**不读** licence / allowed_licenses(全仓库无任何代码读它们), 白名单没有机械保护, 见 docs/ledger/samples-attribution-notes.md needs N2。"
     },
     {
       "category": "models",

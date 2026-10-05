@@ -59,8 +59,11 @@
 //! ```text
 //! 1) 采样数据解码（WAV/FLAC）—— 需要依赖裁决（symphonia/hound）或自研解码器；
 //! 2) 重采样（region 的 keycenter/tune/采样率 ≠ 工程采样率）—— 需要 rubato 或自研；
-//! 3) 数据本身：assets/samples/ 目前**只有** ATTRIBUTION.md，且 AGENTS.md §2 红线 9
-//!    要求样本在 assets/manifest.json 登记许可证 + SHA-256。
+//! 3) 数据本身：`assets/samples/` 是**登记式(registry-only)**的 —— `manifest.json` 已登记
+//!    30 款乐器 / 20 594 个文件的许可 + SHA-256（每条 `optional: true`，**字节不入库**），
+//!    `ATTRIBUTION.md` 逐条署名。要让本 crate 真正发声，仍需按清单的 `repo` + `pin`
+//!    拉取采样字节（拉取与校验步骤见该清单 §5 与 `docs/ledger/samples-attribution-notes.md`）。
+//!    注意 `MUST-GATE-014` 的规范目标是 323 款，当前登记 30 款，差额 293 款。
 //! ```
 //!
 //! **引擎侧的接入点已经就位**：`yeban-engine` 的 `SynthEngine::trigger` 是"选一个声部并
