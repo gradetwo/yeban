@@ -514,7 +514,7 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 | `bash scripts/dev/cargo-local.sh test -p yeban-dsp` | ✅ **157 passed** + 集成 **3 passed** + 文档测 **4 passed**（`INJECT` 清空后重跑确认） |
 | `bash scripts/dev/cargo-local.sh clippy -p yeban-dsp --all-targets -- -D warnings` | ✅ 0 告警 |
 | `bash scripts/dev/cargo-local.sh fmt --all --check` | ✅ |
-| `bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --all-targets` | ✅ **101 + 7 + 6 + 4 + 7** 全绿（含 `rt_zero_alloc` / `meter_rt_contract` 两个 `harness=false` 目标；电平/真峰值经 engine 的 `pub use` 路径仍然可用） |
+| `bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --all-targets` | ✅ **全绿**：101 单测 + 6 个集成/契约目标（`limiter_contract` 7、`mix_render` 6、`steal_fade` 4、`synth_filter` 7、`synth_render` 9，外加 `meter_rt_contract` / `rt_zero_alloc` / `synth_rt_zero_alloc` 三个 `harness=false` 目标）；电平/真峰值经 engine 的 `pub use` 路径仍然可用 |
 | `bash scripts/gates/run-gates.sh crate yeban-dsp` | ✅ 通过（**真编译真跑**：`clippy[yeban-dsp] ok` + `test[yeban-dsp]` 157+3+4，**不是 SKIP**） |
 | `bash scripts/gates/run-gates.sh light` | ✅ fmt + 13 条守卫 + 文档门禁 + 许可清单（见 §9.3） |
 | **4 条**注入 → 变红 → 还原 | ✅ 见 §8 |
