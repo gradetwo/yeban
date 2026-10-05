@@ -6389,6 +6389,7 @@ dependencies = [
  "thiserror 2.0.21",
  "yeban-decode",
  "yeban-diagnostics",
+ "yeban-midi",
  "yeban-model",
  "yeban-render",
  "yeban-theory",

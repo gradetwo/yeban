@@ -26,6 +26,10 @@ default = []
 mcp-http = []
 
 [dependencies]
+# `[MCP-TOOL-0xx]` SMF 导出/回读：与 app 的 `--export-midi` **共用同一实现**（`yeban-midi`）。
+# 为什么不是 `yeban-render`：那个 crate 拖音频栈（`yeban-dsp`/`hound`），而本 crate 的规则是
+# "轻量 crate: 不拖音频栈进 MCP" ⇒ 账本第 273/283 轮把编解码下移成了 `yeban-midi`。
+yeban-midi = { path = "../yeban-midi" }
 # [D56] 诊断包采集器（同一实现的两个入口之一）。**轻量 crate**: 不拖音频栈进 MCP。
 yeban-diagnostics = { path = "../yeban-diagnostics" }
 serde.workspace = true
