@@ -661,7 +661,11 @@ pub fn project_with_notes(note_count: usize) -> YebanProjectV1 {
     for i in 0..note_count {
         let id = EntityId::new();
         // 铺开在 4 小节网格上, 音高在 36..=84 之间循环, 力度交替。
-        let start_tick = (i as u64 % 3840) * 4;
+        // 铺开在**长时轴**上：每 240 tick 一个音符 ⇒ 10 万音符跨 2400 万 tick。
+        // 为什么必须这样（第 184 轮的发现）：早先写成 `(i % 3840) * 4`，10 万音符全挤在 3840 tick 内,
+        // 在 120 tpp 下只有约 128 px 宽 ⇒ **视口裁剪一个都裁不掉**, 而"帧率"量到的是挤成一团的病态场景。
+        // 真实滚动场景必须让音符在时间轴上铺开, 裁剪才有意义。
+        let start_tick = i as u64 * 240;
         let pitch = 36 + (i % 49) as u8;
         notes.insert(id, crate::music::MidiNote::new(id, start_tick, pitch, 240));
     }
@@ -761,6 +765,21 @@ mod tests {
             .map(std::collections::BTreeMap::len)
             .sum();
         assert_eq!(total, 100_000, "音符总数必须恰好等于请求值");
+        // 跨度断言：铺在长时轴上（否则裁剪无从谈起, 见函数文档）。
+        let span_ticks: u64 = 100_000 * 240;
+        let max_start = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(std::collections::BTreeMap::values)
+            .map(|note| note.start_tick)
+            .max()
+            .expect("音符");
+        assert!(
+            max_start > span_ticks / 2,
+            "音符必须铺在长时轴上: 最大 start_tick={max_start} 应超过 {}",
+            span_ticks / 2
+        );
         // 两次调用的音符数一致（id 由本机生成 ⇒ 不谎称逐字节可复现, 见函数文档）。
         let again: usize = project_with_notes(100_000)
             .clip_pool

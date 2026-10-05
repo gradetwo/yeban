@@ -2427,6 +2427,25 @@ mod tests {
     /// `ticks_per_pixel` 覆盖 **非 2 的幂**（3 / 7 / 30）与极端缩放（1 / 960）：
     /// 这一族数字就是"不许用浮点算位置"的探针（30 与 7 都除不尽）。
     #[test]
+    fn clipping_selects_a_small_fraction_of_the_100k_scene() {
+        // 判据: 在**真实滚动场景**下, 1920px 窗口只应选中极小比例的音符。
+        // 为什么这条必须有: 第 184 轮发现早先的夹具把 10 万音符挤在约 128px 内 ⇒ 裁剪一个都裁不掉,
+        // 量到的是病态场景。夹具改成铺开在长时轴（每 240 tick 一个）之后, 这条才成立。
+        let project = yeban_model::samples::project_with_notes(100_000);
+        let view = ViewState::from_project_with_zoom(&project, 120).expect("投影");
+        let total = view.note_positions().len();
+        assert_eq!(total, 100_000, "场景必须是 10 万音符");
+        let vis = view.visible_notes(0.0, 1920.0);
+        assert!(!vis.is_empty(), "首个窗口必须有音符");
+        assert!(
+            vis.len() * 20 < total,
+            "1920px 窗口应只选中不到 5%: 可见 {} / 总 {}",
+            vis.len(),
+            total
+        );
+    }
+
+    #[test]
     fn visible_notes_keeps_the_parallel_arrays_aligned() {
         // 判据: 四个平行数组**同长**, 且第 k 个可见音符的每个字段都等于源 `notes[idx[k]]` 的同名字段。
         // 若有人改成"每个数组各自裁剪", 下标错位会让这条红。
