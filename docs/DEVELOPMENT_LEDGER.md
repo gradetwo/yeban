@@ -3785,3 +3785,27 @@ does not cover it.
 
 So `ARCH-DSP-004` now has: the dependency (HD-44 = A, three conditions closed in round 141) **and** a criterion that runs on
 Linux and Windows in CI. It is no longer an unsupported claim in either direction.
+
+### Round 145: frame-rate harness - the exact API surface and where it must live (reconnaissance, ready to implement)
+
+Round 136 wrote the spec for `BASELINE-003`; this round removes the "read a new subsystem first" cost that stalled the line.
+Reading `crates/yeban-ui-test-port/src/render.rs`, the calls a harness needs are:
+
+| symbol | use |
+| :--- | :--- |
+| `Tier1Window::install(size: Size) -> Result<Self, RenderError>` | install the Tier-1 software window |
+| `Tier1Window::request_redraw(&self)` then `Tier1Window::capture(&self) -> Result<Rgb8Image, RenderError>` | the frame path to time: redraw, then read pixels |
+| `Tier1Window::dispatch(&self, WindowEvent)` / `pointer_down/move/up` / `key_press/release` / `type_char` | drive input, e.g. the scroll that the 100 000-note case needs |
+| `golden_evidence(&Rgb8Image) -> Result<GoldenEvidence, RenderError>` and `.summary()` | the non-triviality witness (same shape as the existing `headless-idle-witness`) |
+| `report_line`, `write_artifact`, `artifact_dir` | evidence output, consistent with the other harnesses |
+
+**Where it must live (a decision the reading settles)**: `Tier1Window` installs the window defined by
+`crates/yeban-ui-test-port/ui/fixture.slint`, i.e. a **fixture**, not the application's piano roll. The real view and the
+model live in `yeban-app` (its `src/test_port_adapter.rs` already renders the real main window and writes artifacts). So the
+frame-rate example belongs in **`yeban-app`**, reusing `Tier1Window` for the frame path, with the 100 000-note project built
+through `yeban-model` (`Op::AddNote`, or a fixture generator if a batch path exists).
+
+**So the next attempt is a writing task, not a reading task**: create the example in `yeban-app`, loop
+`request_redraw(); capture();` for 600 frames while advancing the scroll by 1/120 s, time each frame, print
+p50/p99/max plus the witness, and compare against p99 <= 8.3 ms and memory < 25 MB. Local checks must include clippy (round
+144's lesson), and the verdict comes from a manual `fps` gate rather than `ci.yml`.
