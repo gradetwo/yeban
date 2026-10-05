@@ -8036,3 +8036,22 @@ transform touches N known locations, address them by their measured positions an
 `N-MCP-MIDI-1` records and what this round should have followed.
 
 **Status**: tree green and clean; CI green; loudness contract decided and struct changed; five call sites remain; mapping move registered as `N-MCP-MIDI-1`.
+
+
+### Round 330: the loudness criterion needs a tolerance - f32 does not round-trip through the payload exactly
+
+The criterion was written and **failed**, which is the useful outcome: `assert_eq!(measured[key], want)` compares the payload's number against an `f64`
+literal, and the value travelled `f32` -> `serde_json::Value` (as `f64`) -> comparison. `-14.0` is exact, but `-13.5` and the others are not guaranteed to be,
+and the assertion is written per key, so one inexact representation fails the test - correctly reporting that **the payload carries an `f32`'s value, not the
+literal's**.
+
+**The fix is a tolerance, not a looser assertion**: compare `value.as_f64()` against the expected number with a small epsilon (the readings are dB values
+reported to a tenth; `f32` has ~7 significant digits, so an epsilon far below the reporting precision is still meaningful). That keeps the criterion's real
+claim - the key is wired to the right field - while not asserting a precision the type does not have.
+
+**What this round demonstrates about the item as a whole**: the contract, the struct, the five call sites and the payload are all in and green (277 tests
+before this addition); the only thing left is the assertion's arithmetic, and the failure told us exactly what kind. That is the shape of progress the last few
+rounds were missing - a real, specific, fixable finding rather than another tooling slip.
+
+**Status**: tree green and clean (failure path reverted); CI green; loudness contract, struct, call sites and payload landed; the criterion needs one
+tolerance-based comparison.
