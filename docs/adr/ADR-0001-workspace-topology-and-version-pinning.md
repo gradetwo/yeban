@@ -520,3 +520,47 @@ UI 的 `undo_tree_modal` 唯一 callback 是 `close`，MCP/ui-mcp 里 `undo|redo
 - `BASELINE-003/005` 仍然缺**参考硬件 + 声学回环口径**，这与 CI 额度无关（托管 runner 没有声卡），
   继续记 PENDING 并等人类资产/裁决。
 
+## D51 — 工作线**可以**新增「工作区内」依赖边并机械重生成根清单（**Accepted 2026-10-05**）
+
+`line/app-export-midi` 交回一处硬冲突：`--export-midi` 必须调用 `yeban_render::midi`，而 `yeban-app` 没有那条依赖边；
+加边必然改根 `Cargo.toml`/`Cargo.lock`，而它被禁改清单覆盖。⇒ **裁决：允许**，并升格为通用规则：
+1. **只允许「内部」边**：不得引入**新的外部 crate**（那要另走 `deny.toml` 白名单 + 人类裁决）。
+   判据：`Cargo.lock` 的 diff **只应出现**该内部依赖那一行（加生成物列的变化），**不得**出现新 package 段落；
+2. **生成物必须由工具产出**：`cargo metadata --format-version 1 >/dev/null` + `python3 scripts/gates/license_inventory.py`；**绝不手改**；
+3. **同时只有一条线能碰根清单**（由集成者排他）；若两条线都要加边 ⇒ **谁先绿谁先合并**，后合并者在 `land` 后**重新生成**；
+4. 线必须**如实登记**：碰 `Cargo.lock` 会把 CI 拉成**全量档**（≈5 分钟 + windows），原因见 `scripts/dev/changed-crates.py:35-43`；
+5. ⚠ **锁冲突用机械重生成解决，禁用 `git checkout --ours/--theirs`**（**L33**：集成者无条件用了 `--ours Cargo.lock`，
+   静默丢弃了合并带来的变化，是 `worktree.sh land` 的**合并后自检**报 FAIL 才抓到）。
+
+理由：禁改清单括号里的**理由**是「零新增依赖」，而这条内部边**没有破坏该理由**（`yeban-render` 早已是成员、
+其 `midly`/`rayon`/`hound` 早已在锁里）；且**不存在第二条路**（任何新边都要动锁，`yeban-app` 不能反向依赖，
+dev-dependency 进不了 bin 目标）—— 拒绝它等于用纪律否定 **D47** 本身。
+
+## D52 — `BASELINE-005` 的口径裁决：**延后**（**Accepted 2026-10-05，负责人明示延后，以后补**）
+
+「主机报告的驱动侧时延算不算规范说的『原生 API』」**暂不裁决**。⇒ `BASELINE-005` 保持 **PENDING**，
+理由写法从「待裁决」改为「**负责人已明示延后（2026-10-05）**」；工具与判据已就绪，**不得**因为延后就放松
+「没有声学往返 ⇒ 不许宣布达标」的既有约束（`unmeasurable-without-loopback` 继续是工具的上限）。
+
+## D53 — `BASELINE-006` 的 tokenizer 口径：**延后**（**Accepted 2026-10-05**）
+
+「Token 中位数 ≤600 用哪个 tokenizer 数」**暂不裁决**。⇒ 载荷统计（可做的那一半）照常推进，
+但 **Token 口径**未定之前该门禁记 **PENDING**，且**不许**挑一个 tokenizer 让数字好看。
+
+## D54 — `MUST-GATE-014` 的素材：**先复用 `groove` 的选择 / 登记 / 计算**（**Accepted 2026-10-05**）
+
+不用等人类挑选素材：**暂时采用 `groove` 项目既有的选择与登记与计算**（`groove/public/samples/manifest.json`，
+5.2 MB，**33 个 SFZ 乐器 / 21 505 个文件**，每文件 `{path, bytes, sha256}`，条目含 `licence`/`repo`/`pin`/`needs`）。
+**但必须按本条白名单过滤**：原文要求「**仅限 CC0/CC-BY/MIT**」，而 groove 的许可分布是
+CC0 **27** / CC-BY **3** / **CC-BY-NC-SA 1（非商用 ⇒ 不得入库）** / **CC-Sampling-Plus 1（不得入库）** / Unlicense 1
+（Unlicense 入库与否需集成者/人类裁决 —— `D20` 接受 Unlicense 是针对**代码依赖**，采样侧白名单未含）。
+⇒ 规范里的「**323 款原声乐器**」是**目标数字**，而当前可复用的是 **33 个**（过滤后 ≤30）⇒
+**如实记录数量差**，**不得**把 33 说成 323，**不得**用自造夹具凑数。
+
+## D55 — 法务文件与官网部署：**1.0.0 之后再说 / 由负责人自理**（**Accepted 2026-10-05**）
+
+- `LEGAL.md`/`GOVERNANCE.md` 的失效链接与 `ROAD-M-1-006` 的 4 项签署：**1.0.0 之后再提**
+  （集成者**不**在 1.0.0 前阻塞于它们）；
+- **官网部署由负责人单独操作**（Cloudflare 凭据不是集成者的待办）⇒ 该项从「待人类提供」改为
+  「**负责人自理，不阻塞开发**」。
+
