@@ -637,6 +637,11 @@ pub struct ViewState {
     /// [`Self::note_positions`] 等平行数组都由它派生（判据
     /// `note_parallel_arrays_agree_with_the_rich_projection` 逐项对账）。
     pub notes: Vec<NoteView>,
+    /// `[UI-NOTE-001]` 步骤 ②：按 `x` 升序排列的 `notes` 下标 —— 让视口查询走**二分**而不是全表扫描。
+    ///
+    /// 只按**水平轴**建索引：视口只在 tick/x 上过滤（纵向是固定 16 条泳道, 见账本第 202/203 轮）。
+    /// 这**不是** R-Tree；换真正的二维索引时应**替换**本字段而不是并存（同一契约下判据不变）。
+    pub note_x_order: Vec<u32>,
     /// 片段池里全部 MIDI 音符的身份（片段序 → 音符身份序，去重保序）。
     ///
     /// 它进 `.slint` 的 `note-{ulid}-rect`：这些 ID 必须来自**工程里的音符实体**，
@@ -804,6 +809,12 @@ impl ViewState {
             clips,
             sections,
             scenes,
+            note_x_order: {
+                // 一次性建索引：按 `x` 升序。`total_cmp` 对 NaN 也有全序, 不会 panic。
+                let mut order: Vec<u32> = (0..notes.len() as u32).collect();
+                order.sort_by(|a, b| notes[*a as usize].x.total_cmp(&notes[*b as usize].x));
+                order
+            },
             notes,
             note_ulids,
             note_velocities,
@@ -957,12 +968,24 @@ impl ViewState {
     pub fn notes_visible_in(&self, scroll_x: f32, viewport_width: f32) -> Vec<usize> {
         let left = scroll_x.max(0.0);
         let right = left + viewport_width.max(0.0);
-        self.notes
-            .iter()
-            .enumerate()
-            .filter(|(_, note)| note.x + note.width >= left && note.x <= right)
-            .map(|(index, _)| index)
-            .collect()
+        // `[UI-NOTE-001]` 步骤 ②：**二分**定位候选（`x <= right`），再逐个验第二个条件。
+        //
+        // 为什么这样仍然正确：`x <= right` 是"与该窗口相交"的**必要**条件, 所以按 x 排序后
+        // 第一个不满足它的下标之后都不可能命中 —— 这正是二分能用的原因。
+        // 第二个条件（`x + width >= left`）在 x 上**不单调**（宽度各异）, 故只能对候选逐个判。
+        let end = self
+            .note_x_order
+            .partition_point(|index| self.notes[*index as usize].x <= right);
+        let mut hits: Vec<usize> = Vec::with_capacity(end.min(1024));
+        for &index in &self.note_x_order[..end] {
+            let note = &self.notes[index as usize];
+            if note.x + note.width >= left {
+                hits.push(index as usize);
+            }
+        }
+        // 原实现按 `notes` 下标升序返回；这里必须保持**同一顺序**, 否则既有判据（逐项比对）会红。
+        hits.sort_unstable();
+        hits
     }
 
     /// `[UI-NOTE-001]` 步骤 ①（纵向）：当前视口的 **音高范围**。
