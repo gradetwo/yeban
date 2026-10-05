@@ -7051,3 +7051,26 @@ flake of round 279).
 **What remains, exactly**: (1) move `export_midi.rs`'s mapping into `yeban-midi` as a module returning bytes/the export type, with the app
 re-exporting it so `--export-midi` is unchanged; (2) add the `yeban_export_midi` tool spec and handler in `yeban-mcp`, delegating to it; (3)
 counts: registry 16 -> 17 and the feature-alignment MCP count; (4) criteria as above. No unknowns left - only edits and verification.
+
+### Round 286: the mapping's split is three items, and one of them moves without argument
+
+Read the signatures instead of the whole file, and the separation is unambiguous:
+
+| item | line | fate |
+| :--- | :--- | :--- |
+| `pub fn export_from_project(&YebanProjectV1) -> Result<MidiExport, MidiExportError>` | 267 | **pure, no I/O** -> moves to `yeban-midi` |
+| `pub struct MidiExportReport` | 73 | moves with it |
+| `MidiExportError::Save(SaveError)` | 124 | **stays in `yeban-app`** - it names the app's atomic-write error, so it cannot travel |
+| `pub fn export_project_to_file(…)` | 310 (`write_file_atomically` at 316) | **stays in `yeban-app`** as a thin wrapper: call the moved pure function, then write |
+
+**So the recipe is**: move the file into `yeban-midi` as a module; drop the `Save` variant and the writer there; in `yeban-app` keep a small module
+that re-exports the moved items and defines `export_project_to_file` by calling the moved `export_from_project` and then the existing
+`write_file_atomically`. The app's public surface is unchanged (`--export-midi` keeps working), and the MCP side gains a **pure** entry point that
+proves itself in memory.
+
+**A small design note worth keeping**: the error type is the thing that forces the split, and that is the right reason - a shared library should
+not carry a consumer's I/O error, because doing so would make the library depend on the consumer's filesystem conventions. Keeping `Save` where
+the writing happens is what makes the shared part genuinely reusable.
+
+**Nothing is unknown now**: four edits (move the file, trim it, add the re-export wrapper in the app, wire the app's call sites) plus the MCP tool,
+then the counts and the in-memory round-trip criterion. The next execution needs no further reading.
