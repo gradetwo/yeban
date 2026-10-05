@@ -26,6 +26,13 @@
 //! `McpProposal` 是外部标签对象，保留 `{proposal_id, agent_name}` 载荷）。
 //! 更早的冲突实测留痕见 `docs/ledger/model-core-provenance.md`。
 //!
+//! **`McpEdit` 的契约欠账（`line/op-origin-mcp`，2026-10-05）**：`OpOrigin` 新增
+//! [`OpOrigin::McpEdit`]（MCP 直接编辑的作者标签），而 `schemas/**` 由契约线独占 ⇒
+//! `origin.oneOf` 此刻只有 `McpProposal` 一个对象分支。这份漂移**不是静默的**：
+//! 测试里的 `PENDING_CONTRACT_ORIGINS` 显式登记了它，判据断言
+//! "枚举里的对象标签 − 契约里的对象标签 **恰好等于**这份清单"，契约一旦补上就立刻
+//! 变红要求清空。追平原委与影响面见 `docs/ledger/op-origin-mcp-notes.md`。
+//!
 //! 本模块的契约一致性有两条**直接读契约文件**的判据（不手抄第二份事实源）：
 //! `op_variants_match_ops_schema_exactly` 与
 //! `origin_variants_match_ops_schema_origin_one_of`。
@@ -55,6 +62,22 @@ pub enum OpOrigin {
         /// 提案身份。
         proposal_id: EntityId,
         /// 提交提案的代理名。
+        agent_name: String,
+    },
+    /// MCP 代理的**直接编辑**：工具在活跃工程上直接改一位并提交，**不创建提案**。
+    ///
+    /// 与 [`OpOrigin::McpProposal`] 的唯一区别就是"没有提案身份" —— 载荷因此只剩两档
+    /// 共有的 `agent_name`。这条变体是对"来源标签必须如实"的补齐：在它出现之前，
+    /// MCP 的直接编辑（`yeban_edit_automation` / `yeban_import_audio`）只能借
+    /// [`OpOrigin::AutomationRecord`]（"自动化录制落盘"）与 [`OpOrigin::Import`]
+    /// （"外部工程/格式导入"）—— 两档描述的都不是"代理直接改活跃工程"这件事。
+    ///
+    /// ⚠ **契约欠账**：`schemas/ops.schema.json` 的 `origin.oneOf` 目前只有
+    /// `McpProposal` 一个对象分支（`additionalProperties: false`），本变体尚未被它承认。
+    /// 本线禁改 `schemas/**`，因此这份漂移由测试里的显式欠账清单
+    /// `PENDING_CONTRACT_ORIGINS` 机械钉住（见 `ops.rs` 的 origin 判据），need 交集成者。
+    McpEdit {
+        /// 执行直接编辑的代理名。
         agent_name: String,
     },
     /// 撤销/重做自身产生的操作。
@@ -2526,6 +2549,166 @@ mod tests {
         );
     }
 
+    /// **枚举全集**（测试里的单一事实源）：`OpOrigin` 的每一个变体。
+    ///
+    /// 手写是因为 Rust 没有反射；完整性由
+    /// [`Self::declared_origin_variant_names`]（源码扫描）在
+    /// `origin_wire_shape_is_frozen_byte_for_byte` 里机械对齐。
+    fn all_origin_variants() -> Vec<OpOrigin> {
+        vec![
+            OpOrigin::UserUi,
+            OpOrigin::MidiInput,
+            OpOrigin::McpProposal {
+                proposal_id: fixture_id(1),
+                agent_name: "claude".to_owned(),
+            },
+            OpOrigin::McpEdit {
+                agent_name: "yeban-mcp".to_owned(),
+            },
+            OpOrigin::UndoRedo,
+            OpOrigin::AutomationRecord,
+            OpOrigin::Import,
+            OpOrigin::Migration,
+        ]
+    }
+
+    /// 从**源码文本**里抽取 `pub enum OpOrigin` 的全部变体名。
+    ///
+    /// 为什么扫源码：`OpOrigin` **没有**任何穷举 `match`（它只被 serde 派生消费），
+    /// 所以拿不到"编译器保证的全集"。这里用与
+    /// `every_op_variant_is_declared_in_the_contract` 同族的做法：只认**第一层**
+    /// （`depth == 1`）的标识符 —— 于是 `McpProposal { proposal_id: ... }` 的载荷键
+    /// 不会被误当成变体，文档注释整行跳过。
+    fn declared_origin_variant_names() -> std::collections::BTreeSet<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ops.rs");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("读取 {} 失败: {error}", path.display()));
+        let start = source
+            .find("pub enum OpOrigin {")
+            .expect("找到 OpOrigin 枚举");
+        let mut depth: i32 = 0;
+        let mut in_comment = false;
+        let mut current = String::new();
+        let mut declared = std::collections::BTreeSet::new();
+        for ch in source[start..].chars() {
+            if in_comment {
+                if ch == '\n' {
+                    in_comment = false;
+                }
+                continue;
+            }
+            match ch {
+                '/' => {
+                    in_comment = true;
+                    continue;
+                }
+                '{' => {
+                    depth += 1;
+                    current.clear();
+                    continue;
+                }
+                '}' => {
+                    depth -= 1;
+                    current.clear();
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            if depth != 1 {
+                continue;
+            }
+            if current.is_empty() {
+                if ch.is_ascii_uppercase() {
+                    current.push(ch);
+                }
+            } else if ch.is_ascii_alphanumeric() || ch == '_' {
+                current.push(ch);
+            } else {
+                declared.insert(std::mem::take(&mut current));
+            }
+        }
+        declared
+    }
+
+    /// **枚举有、契约 `origin.oneOf` 还没有**的对象标签（显式欠账清单）。
+    ///
+    /// 与 `PENDING_CONTRACT_OPS` 同一族的机械欠账：`schemas/**` 由契约线独占、
+    /// 本线禁改 ⇒ `OpOrigin::McpEdit` 此刻只存在于枚举里。判据
+    /// `origin_variants_match_ops_schema_origin_one_of` 断言
+    /// "枚举的对象标签 − 契约的对象标签 **恰好等于**这份清单"，因此
+    ///
+    /// - 契约补上 `McpEdit` 分支 ⇒ 差集变空 ≠ 本清单 ⇒ **立刻红并指名清空本清单**；
+    /// - 谁再往枚举里加一个对象标签而没登记 ⇒ 红；
+    /// - 契约多出一个枚举里没有的对象分支 ⇒ 红。
+    ///
+    /// 给契约线的请求原文见 `docs/ledger/op-origin-mcp-notes.md` 的 needs 节。
+    const PENDING_CONTRACT_ORIGINS: [&str; 1] = ["McpEdit"];
+
+    /// [`PENDING_CONTRACT_ORIGINS`] 的集合形态。
+    fn pending_contract_origins() -> std::collections::BTreeSet<String> {
+        PENDING_CONTRACT_ORIGINS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    }
+
+    /// 每个 `OpOrigin` 变体的**线上字节**必须逐字节冻住（既有语义一字不改）。
+    ///
+    /// 这是"新增变体不得顺手改动任何既有变体"的机械钉：重命名、加字段、改标签都会
+    /// 在这里变红。它同时是"枚举全集"的棘轮 —— 冻结表必须与源码里的变体**恰好**
+    /// 一一对应（多一个没登记 ⇒ 红；登记了但枚举里没有 ⇒ 红）。
+    #[test]
+    fn origin_wire_shape_is_frozen_byte_for_byte() {
+        let frozen: [(&str, OpOrigin, &str); 8] = [
+            ("UserUi", OpOrigin::UserUi, "\"UserUi\""),
+            ("MidiInput", OpOrigin::MidiInput, "\"MidiInput\""),
+            (
+                "McpProposal",
+                OpOrigin::McpProposal {
+                    proposal_id: fixture_id(1),
+                    agent_name: "claude".to_owned(),
+                },
+                "{\"McpProposal\":{\"proposal_id\":\"01J8ZQ00000000000000000001\",\
+                 \"agent_name\":\"claude\"}}",
+            ),
+            (
+                "McpEdit",
+                OpOrigin::McpEdit {
+                    agent_name: "yeban-mcp".to_owned(),
+                },
+                "{\"McpEdit\":{\"agent_name\":\"yeban-mcp\"}}",
+            ),
+            ("UndoRedo", OpOrigin::UndoRedo, "\"UndoRedo\""),
+            (
+                "AutomationRecord",
+                OpOrigin::AutomationRecord,
+                "\"AutomationRecord\"",
+            ),
+            ("Import", OpOrigin::Import, "\"Import\""),
+            ("Migration", OpOrigin::Migration, "\"Migration\""),
+        ];
+        let mut frozen_names = std::collections::BTreeSet::new();
+        for (name, origin, wire) in &frozen {
+            frozen_names.insert((*name).to_owned());
+            assert_eq!(
+                serde_json::to_string(origin).expect("serialize"),
+                *wire,
+                "`{name}` 的线上字节变了 —— 既有来源变体的语义**不许**被顺手改动"
+            );
+            let back: OpOrigin = serde_json::from_str(wire).expect("deserialize");
+            assert_eq!(&back, origin);
+        }
+        assert_eq!(
+            frozen_names,
+            declared_origin_variant_names(),
+            "冻结表必须覆盖 `OpOrigin` 的**全部**变体：新增变体要在这里补一行, \
+             并在 PENDING_CONTRACT_ORIGINS 里登记契约欠账"
+        );
+    }
+
     /// `OpOrigin` 的两种形状必须与契约的 `origin.oneOf` 对应（ADR-0001 D13）。
     #[test]
     fn origin_variants_match_ops_schema_origin_one_of() {
@@ -2540,26 +2723,69 @@ mod tests {
 
         let mut serialized_units: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        for origin in [
-            OpOrigin::UserUi,
-            OpOrigin::MidiInput,
-            OpOrigin::UndoRedo,
-            OpOrigin::AutomationRecord,
-            OpOrigin::Import,
-            OpOrigin::Migration,
-        ] {
+        let mut serialized_objects: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for origin in all_origin_variants() {
             let value = serde_json::to_value(&origin).expect("serialize");
-            let name = value
-                .as_str()
-                .expect("单元变体必须序列化为纯字符串 (契约 oneOf 的字符串分支)")
-                .to_owned();
-            serialized_units.insert(name);
+            match &value {
+                serde_json::Value::String(name) => {
+                    serialized_units.insert(name.clone());
+                }
+                serde_json::Value::Object(object) => {
+                    assert_eq!(object.len(), 1, "外部标签必须是单键对象: {value}");
+                    serialized_objects.insert(object.keys().next().expect("唯一键").clone());
+                }
+                other => panic!("OpOrigin 只能序列化为纯字符串或单键对象, 实际 {other}"),
+            }
             let back: OpOrigin = serde_json::from_value(value).expect("deserialize");
             assert_eq!(back, origin);
         }
         assert_eq!(
             serialized_units, unit_names,
             "单元来源变体必须与契约 origin.oneOf[0].enum 一一对应"
+        );
+
+        // 对象分支：契约里每个对象分支的 `required` 就是它的标签。
+        let contract_objects: std::collections::BTreeSet<String> =
+            schema["properties"]["origin"]["oneOf"]
+                .as_array()
+                .expect("origin.oneOf 必须是数组")
+                .iter()
+                .filter_map(|branch| branch.get("required").and_then(serde_json::Value::as_array))
+                .flat_map(|required| {
+                    required
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect();
+        let pending = pending_contract_origins();
+        assert!(
+            contract_objects.is_disjoint(&pending),
+            "契约已经补上了 {pending:?} 里的对象分支 —— 请把 PENDING_CONTRACT_ORIGINS 清空"
+        );
+        assert_eq!(
+            serialized_objects
+                .difference(&contract_objects)
+                .cloned()
+                .collect::<std::collections::BTreeSet<String>>(),
+            pending,
+            "枚举里多出来的对象标签必须**恰好**是 PENDING_CONTRACT_ORIGINS;\n\
+             若契约已补齐, 请把该清单清空;\n\
+             只在枚举里而契约缺失: {:?}",
+            serialized_objects
+                .difference(&contract_objects)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            contract_objects
+                .difference(&serialized_objects)
+                .next()
+                .is_none(),
+            "只在契约里而枚举缺失的对象标签: {:?}",
+            contract_objects
+                .difference(&serialized_objects)
+                .collect::<Vec<_>>(),
         );
 
         // McpProposal 必须落在契约的第二个分支：外部标签对象 + 恰好两个载荷键。
@@ -2587,18 +2813,7 @@ mod tests {
 
     #[test]
     fn origin_variants_round_trip() {
-        for origin in [
-            OpOrigin::UserUi,
-            OpOrigin::MidiInput,
-            OpOrigin::McpProposal {
-                proposal_id: fixture_id(1),
-                agent_name: "claude".to_owned(),
-            },
-            OpOrigin::UndoRedo,
-            OpOrigin::AutomationRecord,
-            OpOrigin::Import,
-            OpOrigin::Migration,
-        ] {
+        for origin in all_origin_variants() {
             let json = serde_json::to_string(&origin).expect("serialize");
             let back: OpOrigin = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(back, origin);
@@ -2611,6 +2826,43 @@ mod tests {
         }
         let back: StampedOp = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, stamped);
+    }
+
+    /// 来源标签**不得**影响 Op 的施加/撤销语义：同一个 op 换成 `McpEdit` 之后，
+    /// 施加与逆操作的结果必须与 `UserUi` 来源**逐字节相同**。
+    ///
+    /// 这是任务书判据 ③ 的模型侧那一半：新增变体不可能让撤销/重做"失配"，
+    /// 因为 `origin` 只出现在 `StampedOp` 的信封上，逆操作只看 `op` 本体。
+    #[test]
+    fn the_new_origin_variant_never_changes_an_op_or_its_inverse() {
+        let f = fixture();
+        let op = Op::AddNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note: MidiNote::new(fixture_id(700), 480, 64, 240),
+        };
+        let mcp_edit = || OpOrigin::McpEdit {
+            agent_name: "yeban-mcp".to_owned(),
+        };
+        let mut by_ui = fixture_document();
+        let mut by_mcp = fixture_document();
+        StampedOp::new(OpOrigin::UserUi, 42, op.clone())
+            .apply(&mut by_ui)
+            .expect("apply ui");
+        StampedOp::new(mcp_edit(), 42, op.clone())
+            .apply(&mut by_mcp)
+            .expect("apply mcp");
+        assert_eq!(by_ui, by_mcp, "来源标签不得改变工程内容");
+        assert_ne!(by_mcp, fixture_document(), "前提: 施加确实改了工程");
+
+        StampedOp::new(OpOrigin::UserUi, 42, op.clone())
+            .apply_inverse(&mut by_ui)
+            .expect("inverse ui");
+        StampedOp::new(mcp_edit(), 42, op)
+            .apply_inverse(&mut by_mcp)
+            .expect("inverse mcp");
+        assert_eq!(by_ui, by_mcp, "逆操作不得因来源标签而不同");
+        assert_eq!(by_ui, fixture_document(), "逆操作必须精确还原");
     }
 
     #[test]

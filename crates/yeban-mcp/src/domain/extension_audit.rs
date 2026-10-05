@@ -21,10 +21,11 @@
 //! | 守卫 | 性质 | 对应判据 | 注入（本机真做过） |
 //! | :--- | :--- | :--- | :--- |
 //! | [`scan_write_paths`] | 两个**写类**扩展工具的 `apply` 必须经过**唯一**提交入口 `undo_session::commit`，且不得直接改权威工程 | ① "写要落 `Op`、可逆" | 把 `commit` 换成 `op.apply(&mut active.project)` ⇒ 红 |
+//! | [`scan_direct_edit_origins`] | 两个写类扩展工具提交的 `CommitRequest.origin` 必须是 `OpOrigin::McpEdit{agent_name: AGENT_NAME}`，且生产区不得再借 `AutomationRecord` / `Import` | ① "来源标签如实" | 把一处 `origin` 退回 `AutomationRecord` ⇒ 红 |
 //! | [`scan_dry_run_entry_points`] | 每个扩展工具的**计划入口只拿共享引用**（`&Domain` / `&YebanProjectV1`） | ② "`dryRun` 结构上改不了状态" | 把 `&Domain` 改成 `&mut Domain` ⇒ 红 |
 //! | [`scan_error_code_vocabulary`] | 实现写出的错误码集合 **==** 契约 enum（`ADR-0001` **D25** 的 20 值联集） | ③ "只用既有错误码，不发明新码" | 把一条 `as_str` 换成新码 ⇒ 红 |
 //!
-//! 三者的口径都**只**来自"源码文本 + 契约文件文本"，不复制任何运行期事实。
+//! 四者的口径都**只**来自"源码文本 + 契约文件文本"，不复制任何运行期事实。
 
 use std::collections::BTreeSet;
 
@@ -65,6 +66,18 @@ pub const SHARED_PROJECT_REF: &str = "project: &YebanProjectV1";
 
 /// 可变工程引用（**不得**出现在计划函数里）。
 pub const MUTABLE_PROJECT_REF: &str = "&mut YebanProjectV1";
+
+/// 直接编辑的**作者标签**（MCP 代理在活跃工程上直接改一位、**不**创建提案）。
+pub const DIRECT_EDIT_ORIGIN: &str = "OpOrigin::McpEdit";
+
+/// 作者名字段的精确形状（与 `UndoState.author` 同源：`AGENT_NAME`）。
+pub const DIRECT_EDIT_AGENT: &str = "agent_name: super::AGENT_NAME";
+
+/// 曾经被**误借**的来源变体（写类扩展工具的生产区里不得再出现）。
+///
+/// `AutomationRecord` = "自动化录制落盘"、`Import` = "外部工程/格式导入" ——
+/// 两档都不是"代理直接改活跃工程"这件事。
+pub const BORROWED_ORIGIN_NEEDLES: [&str; 2] = ["OpOrigin::AutomationRecord", "OpOrigin::Import"];
 
 /// 取一份源码的**生产区**（`#[cfg(test)]` 属性行之前）。
 ///
@@ -118,6 +131,77 @@ pub fn scan_write_paths(sources: &[(String, String)]) -> Vec<String> {
                         "{path}:{} 直接改权威工程 (`{needle}`) —— 必须走 `{COMMIT_ENTRY}` \
                          才能同时写进 Op 日志 (否则撤销坏掉): {code}",
                         lineno + 1
+                    ));
+                }
+            }
+        }
+    }
+    violations
+}
+
+/// 守卫 ④：两个**写类**扩展工具提交的 `CommitRequest.origin` 必须是 `McpEdit`。
+///
+/// 为什么单列一条：**来源标签不准**是这一族的原始缺陷 —— MCP 的直接编辑一度借用
+/// "自动化录制落盘"（`AutomationRecord`）与"外部导入"（`Import`），于是审计看到的
+/// 作者不是"代理直接改活跃工程"。这条守卫把两件事钉死：
+///
+/// - 每个 `origin:` 的右值必须以 [`DIRECT_EDIT_ORIGIN`] 开头（且带上
+///   [`DIRECT_EDIT_AGENT`]，与 `UndoState.author` 同源）；
+/// - 生产区（注释行除外）里不得再出现 [`BORROWED_ORIGIN_NEEDLES`] 里的变体。
+///
+/// 返回违规清单（空 = 干净）；文件缺失也算违规（"找不到那个文件"不能当成"没问题"）。
+#[must_use]
+pub fn scan_direct_edit_origins(sources: &[(String, String)]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for suffix in WRITE_PATH_FILES {
+        let Some((path, text)) = sources
+            .iter()
+            .find(|(path, _)| path_ends_with(path, suffix))
+        else {
+            violations.push(format!(
+                "缺少写类扩展工具的源文件 `{suffix}` —— 守卫无法判定, 因此记违规"
+            ));
+            continue;
+        };
+        let production = production_region(text);
+        let mut seen = 0_usize;
+        for (lineno, line) in production.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let Some((_, rhs)) = line.split_once("origin:") else {
+                continue;
+            };
+            seen += 1;
+            let rhs = rhs.trim();
+            if !rhs.starts_with(DIRECT_EDIT_ORIGIN) {
+                violations.push(format!(
+                    "{path}:{} 直接编辑的来源标签必须是 `{DIRECT_EDIT_ORIGIN}`, 实际是 `{rhs}` \
+                     —— 借 `AutomationRecord`/`Import` 等于把'代理直接改活跃工程'记成别的动作",
+                    lineno + 1
+                ));
+            }
+        }
+        if seen == 0 {
+            violations.push(format!(
+                "{path} 的生产区没有 `origin:` —— 写路径的作者标签无处可查"
+            ));
+        }
+        if !production.contains(DIRECT_EDIT_AGENT) {
+            violations.push(format!(
+                "{path} 的生产区没有 `{DIRECT_EDIT_AGENT}` —— 直接编辑的作者名必须来自 `AGENT_NAME`"
+            ));
+        }
+        for needle in BORROWED_ORIGIN_NEEDLES {
+            for (lineno, line) in production.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if line.contains(needle) {
+                    violations.push(format!(
+                        "{path}:{} 仍在借 `{needle}` —— 那不是'代理直接编辑'这一档: {}",
+                        lineno + 1,
+                        line.trim()
                     ));
                 }
             }
@@ -414,6 +498,71 @@ mod tests {
     fn a_missing_write_file_is_a_violation_not_a_pass() {
         let found = scan_write_paths(&sources(&[]));
         assert_eq!(found.len(), WRITE_PATH_FILES.len(), "{found:?}");
+    }
+
+    /// 守卫 ④：直接编辑的来源标签必须是 `McpEdit`，且不得再借那两个变体。
+    #[test]
+    fn the_direct_edit_guard_requires_the_mcp_edit_label() {
+        let clean = sources(&[
+            (
+                "crates/yeban-mcp/src/domain/automation.rs",
+                "fn apply() {\n    let request = CommitRequest {\n        \
+                 origin: OpOrigin::McpEdit { agent_name: super::AGENT_NAME.to_owned() },\n    };\n}\n",
+            ),
+            (
+                "crates/yeban-mcp/src/domain/import_audio.rs",
+                "fn apply() {\n    let request = CommitRequest {\n        \
+                 origin: OpOrigin::McpEdit { agent_name: super::AGENT_NAME.to_owned() },\n    };\n}\n",
+            ),
+        ]);
+        assert_eq!(scan_direct_edit_origins(&clean), Vec::<String>::new());
+
+        // 注入 3：一个站点退回被借用的变体（这正是本线要修的原始缺陷）。
+        let injected = sources(&[
+            (
+                "crates/yeban-mcp/src/domain/automation.rs",
+                "fn apply() {\n    let request = CommitRequest {\n        \
+                 origin: OpOrigin::AutomationRecord,\n    };\n}\n",
+            ),
+            (
+                "crates/yeban-mcp/src/domain/import_audio.rs",
+                "fn apply() {\n    let request = CommitRequest {\n        \
+                 origin: OpOrigin::McpEdit { agent_name: super::AGENT_NAME.to_owned() },\n    };\n}\n",
+            ),
+        ]);
+        let found = scan_direct_edit_origins(&injected);
+        assert!(
+            found.iter().any(|line| line.contains("必须是")),
+            "注入必须被'标签不对'那条抓住: {found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|line| line.contains("OpOrigin::AutomationRecord")),
+            "注入必须被'仍在借'那条抓住: {found:?}"
+        );
+    }
+
+    /// 缺文件时必须记违规（否则守卫在文件被改名后**静默变成空转**）。
+    #[test]
+    fn a_write_file_without_an_origin_is_a_violation_not_a_pass() {
+        let found = scan_direct_edit_origins(&sources(&[]));
+        assert_eq!(found.len(), WRITE_PATH_FILES.len(), "{found:?}");
+        assert!(found.iter().all(|line| line.contains("缺少")), "{found:?}");
+
+        // 有文件但**没有** `origin:` ⇒ 也必须红（否则"标签对不对"无从判定）。
+        let no_origin = sources(&[
+            (
+                "crates/yeban-mcp/src/domain/automation.rs",
+                "fn apply() {\n    let request = CommitRequest { now_ms };\n}\n",
+            ),
+            (
+                "crates/yeban-mcp/src/domain/import_audio.rs",
+                "fn apply() {\n    let request = CommitRequest { now_ms };\n}\n",
+            ),
+        ]);
+        let found = scan_direct_edit_origins(&no_origin);
+        assert_eq!(found.len(), 2 * WRITE_PATH_FILES.len(), "{found:?}");
     }
 
     #[test]

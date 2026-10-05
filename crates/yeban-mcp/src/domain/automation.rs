@@ -36,13 +36,17 @@
 //! `CONFLICT`。这条断言让"预览说的"与"真做的"不可能漂移（判据
 //! `dry_run_preview_equals_the_real_write` 在外部再证明一遍）。
 //!
-//! ## 操作来源（`OpOrigin`）的**诚实缺口**
+//! ## 操作来源（`OpOrigin`）已**如实**（不再是借用）
 //!
-//! 模型 `OpOrigin` 的七个变体里**没有**"AI 直接编辑"这一档（`McpProposal` 要求一个
-//! 真实存在的提案身份，而本工具不创建提案）。本模块借用最接近的一档
-//! [`OpOrigin::AutomationRecord`]（"自动化写入的落盘动作"，不是实时播放），
-//! 并在响应的 `origin` 里如实写出借用的事实 + 未接线清单。
+//! 模型 `OpOrigin` 现在有 [`OpOrigin::McpEdit`] —— "MCP 代理的直接编辑：不创建提案"。
+//! 本工具正是这一档（它**不**创建提案，因此 [`OpOrigin::McpProposal`] 不适用），
+//! 此前借用 [`OpOrigin::AutomationRecord`]（"自动化写入的落盘动作"）的写法已删除。
 //! **作者**字段仍是 `yeban-mcp`（`UndoState.author`），因此不存在"伪装成用户操作"。
+//!
+//! ⚠ **契约欠账**：`schemas/ops.schema.json` 的 `origin.oneOf` 尚未承认 `McpEdit`
+//! （`additionalProperties: false`），本线禁改 `schemas/**` ⇒ 漂移由
+//! `yeban-model` 的显式欠账清单 `PENDING_CONTRACT_ORIGINS` 机械钉住；
+//! 契约侧请求见 `docs/ledger/op-origin-mcp-notes.md`。
 
 use serde_json::{Map, Value};
 
@@ -279,9 +283,9 @@ impl AutomationEdit {
             "projectDigestBefore": self.digest_before.clone(),
             "projectDigestAfter": self.digest_after.clone().map_or(Value::Null, Value::from),
             "origin": {
-                "kind": "AutomationRecord",
+                "kind": "McpEdit",
                 "author": super::AGENT_NAME,
-                "note": "模型 OpOrigin 没有 `McpEdit` 变体 (needs-1); 借用最接近的 AutomationRecord",
+                "note": "MCP 直接编辑 (不创建提案) ⇒ OpOrigin::McpEdit; 契约 origin.oneOf 尚未承认该分支 (needs)",
             },
         }))
     }
@@ -717,10 +721,11 @@ pub fn apply(
                 undo,
                 super::CommitRequest {
                     now_ms,
-                    // ⚠ 诚实缺口: 模型 `OpOrigin` 没有 `McpEdit` 变体（needs-1）。
-                    // `AutomationRecord` = "自动化写入的落盘动作"，是最接近的一档；
-                    // `McpProposal` 需要一个**真实存在**的提案，这里没有。
-                    origin: OpOrigin::AutomationRecord,
+                    // `McpEdit` = "MCP 代理的直接编辑" —— 本工具不创建提案，
+                    // 因此 `McpProposal` 不适用；这正是那一档。
+                    origin: OpOrigin::McpEdit {
+                        agent_name: super::AGENT_NAME.to_owned(),
+                    },
                     message: format!(
                         "edit_automation {} tick {} = {}",
                         edit.target_label, write.tick, write.value

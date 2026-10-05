@@ -27,6 +27,14 @@
 //! 登记本身是一条领域操作：`clip_pool` 里多一条 `ClipContent::Audio { asset, gain_db }`。
 //! 因此撤销是模型自己的 [`Op::invert`]（`AddClip` ⇄ `RemoveClip`），本层**不写**逆操作。
 //!
+//! ### 操作来源：`OpOrigin::McpEdit`（不再借 `Import`）
+//!
+//! 本工具**直接**在活跃工程上落一条片段、**不**创建提案 ⇒ 作者标签是
+//! [`OpOrigin::McpEdit`]（"MCP 代理的直接编辑"）。此前借的 `Import`
+//! （"外部工程/格式导入"）描述的不是"代理直接改活跃工程"这件事。
+//! `agent_name` 取 [`super::AGENT_NAME`]（与 `UndoState.author` 同源）。
+//! 契约 `origin.oneOf` 尚未承认该分支 ⇒ 见 `docs/ledger/op-origin-mcp-notes.md` 的 needs。
+//!
 //! ### 撤销**不**回收 CAS 池里的字节（如实登记的边界）
 //!
 //! 会话 CAS 池（`assets/{sha256}`）的字节**不是** `Op` 的载荷 —— 模型的 `Op` 全集里
@@ -492,8 +500,12 @@ pub fn apply(domain: &mut super::Domain, import: &AudioImport) -> Result<ToolRes
                 undo,
                 super::CommitRequest {
                     now_ms,
-                    // `Import` 正是这一档: "外部工程/格式导入" —— 本工具的语义就是它。
-                    origin: OpOrigin::Import,
+                    // `McpEdit` = "MCP 代理的直接编辑"：本工具在活跃工程上直接落一条
+                    // 片段，**不**创建提案 ⇒ `McpProposal` 不适用。
+                    // （此前借的 `Import` 描述的是"外部工程/格式导入"，不是这件事。）
+                    origin: OpOrigin::McpEdit {
+                        agent_name: super::AGENT_NAME.to_owned(),
+                    },
                     message: format!("import_audio {} ({})", import.clip.name, import.source_ref),
                     ops: vec![op.clone()],
                 },
