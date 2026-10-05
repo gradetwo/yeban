@@ -241,6 +241,67 @@ impl Tool {
     }
 }
 
+/// `[UI-NOTE-003]` 卷帘的**选区**（选择工具的左键单击语义）。
+///
+/// 用 `BTreeSet` 而不是 `HashSet`：迭代顺序**确定**，判据与界面都不依赖哈希随机性（与红线 4 的取向一致）。
+/// 选区是**视图状态**，不是模型改动 ⇒ 不需要撤销记录；但选中态最终要能被 MCP 读到, 那是后续切片。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Selection {
+    ids: std::collections::BTreeSet<String>,
+}
+
+impl Selection {
+    /// 空选区。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 是否为空。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// 选中数量。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// 某个音符是否被选中。
+    #[must_use]
+    pub fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
+    /// 迭代（**升序**，因此确定）。
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
+        self.ids.iter()
+    }
+
+    /// 选择工具**单击一个音符**：替换选区（单击不是累加 —— 累加需要 Shift, 那是矩阵里的"辅助键"列）。
+    pub fn select_only(&mut self, id: &str) {
+        self.ids.clear();
+        self.ids.insert(id.to_string());
+    }
+
+    /// 选择工具**单击空白**：清除选区。
+    pub fn clear(&mut self) {
+        self.ids.clear();
+    }
+
+    /// 追加选中且**不重复**（框选 / Shift 累加会用；本身幂等）。
+    pub fn insert(&mut self, id: &str) {
+        self.ids.insert(id.to_string());
+    }
+
+    /// 从选区移除（若不在其中则无变化）。
+    pub fn remove(&mut self, id: &str) {
+        self.ids.remove(id);
+    }
+}
+
 /// 卷帘工具矩阵 (规范 §3.3 / `[UI-NOTE-003]`)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -672,6 +733,34 @@ mod tests {
     }
 
     // ---------------------------------------------------------------- 工具矩阵
+    #[test]
+    fn selection_replaces_on_click_and_clears_on_empty() {
+        // 判据（规范"选择工具 · 左键单击"列）: 单击音符 ⇒ 选区**只有**它（替换, 不是累加）;
+        // 单击空白 ⇒ **清空**; 重复选中不出重复项; 顺序**确定**（BTreeSet ⇒ 升序）。
+        let mut sel = Selection::new();
+        assert!(sel.is_empty());
+        sel.select_only("b");
+        assert_eq!(sel.len(), 1);
+        assert!(sel.contains("b"));
+        sel.select_only("a");
+        assert_eq!(sel.len(), 1, "单击是**替换**, 不是累加");
+        assert!(
+            sel.contains("a") && !sel.contains("b"),
+            "旧选中必须被替换掉"
+        );
+        sel.insert("c");
+        sel.insert("a");
+        assert_eq!(sel.len(), 2, "重复插入不得产生重复项");
+        let ids: Vec<&String> = sel.iter().collect();
+        assert_eq!(ids, vec!["a", "c"], "迭代顺序必须确定（升序）");
+        sel.remove("a");
+        assert_eq!(sel.len(), 1);
+        sel.remove("zzz");
+        assert_eq!(sel.len(), 1, "移除不存在的 id 不得改变选区");
+        sel.clear();
+        assert!(sel.is_empty(), "单击空白必须清空选区");
+    }
+
     #[test]
     fn tool_cursor_and_click_match_the_spec_matrix_row_for_row() {
         // 判据: 光标字符串与"左键单击"语义**逐行**对齐规范 `[UI-NOTE-003]` 的矩阵,
