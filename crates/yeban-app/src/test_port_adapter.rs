@@ -1300,7 +1300,13 @@ fn runtime_control_tree_cross_check_against_the_registry() {
 ///
 /// **口径**：`ci.yml` **不**断言帧率（托管 runner 读数不算, 见 `spikes/README.md` 第 36 行）；
 /// 判决走**手动档 `fps`**, 依 `HD-45`。
+// 为什么 `#[ignore]`：本用例跑 **600 帧 × 10 万音符** 的软光栅化循环。CI 的 workspace 腿是 **debug** 构建，
+// 实测在托管 runner 上 20 分钟没跑完（run 37348640469 长时间 in_progress）⇒ 它会拖垮整条腿、
+// 而它**本来就不该在 CI 上判定帧率**（`spikes/README.md` 第 36 行：托管 runner 读数不算数）。
+// 所以：CI 默认跳过（`#[ignore]`），判决由**手动档 `fps`** 用 `--release --ignored --nocapture` 显式运行并收集数字，
+// 依 `HD-45`（接受参考机上自适应刷新率的读数）。
 #[test]
+#[ignore = "600 帧 × 10 万音符的软光栅化循环：CI debug 构建跑不动, 且帧率判决归手动档 fps (HD-45)"]
 fn frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness() {
     const FRAMES: usize = 600;
     let project = yeban_model::samples::project_with_notes(100_000);
