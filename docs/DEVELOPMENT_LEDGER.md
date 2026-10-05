@@ -6928,3 +6928,27 @@ asking "what does CI run that I have not?" rather than from more polling.
 
 **One caveat carried forward**: the `lock_advisory` flake (round 279) means a future full-suite run can go red without a code cause - re-run
 before treating it as a regression.
+
+### Round 281: the local verification now covers the whole workspace - 1788 criteria, zero failures
+
+Rounds 278-280 widened from one crate to the dependents and then to the integration suites. This round finishes the sweep: the remaining
+dependents and then every crate that does NOT depend on `yeban-model`, all with `--tests`:
+
+| group | crates and results |
+| :--- | :--- |
+| the two edited most | `yeban-app` **253**, `yeban-mcp` **426** |
+| other dependents of `yeban-model` | `yeban-model` **239**, `yeban-decode` **88**, `yeban-engine` **201**, `yeban-render` **125**, `yeban-ui-mcp` **92** |
+| non-dependents | `yeban-dsp` **164**, `yeban-theory` **93**, `yeban-sfz` **55**, `yeban-ui-test-port` **48**, `yeban-diagnostics` **4**, and `yeban-plugin-host` / `yeban-services` / `yeban-vst` **0** (no test targets yet) |
+| **合计** | **1788 passed / 0 failed** |
+
+**Why this is the strongest local evidence obtainable here**: the workspace rules forbid `--workspace`/`--all` (AGENTS.md §5), so a per-crate
+sweep is the local maximum - and it now spans every crate in `crates/`, which is why the number is worth recording rather than the earlier
+"112". It also means the session's claims no longer rest on "the crates I happened to edit".
+
+**What it still is NOT, stated plainly**: it is one platform, one toolchain, one run each - so it cannot substitute for what CI adds
+(cross-platform legs, cross-machine digest reproducibility, the vendor check, the licence inventory, heavy feature builds, and the manual
+BASELINE readings). The project's rule stands: `ci.yml` + `gates-manual.yml` are the only source of green, and none has run since 19:31Z. This
+sweep narrows the gap; it does not close it.
+
+**Caveats carried**: the `lock_advisory` flake (round 279) means a full run can go red without a code cause, so re-run before calling a red a
+regression; and three crates have zero test targets, which is a fact about coverage rather than a pass.
