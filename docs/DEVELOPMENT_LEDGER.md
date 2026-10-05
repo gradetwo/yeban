@@ -7112,3 +7112,27 @@ plus the consumer's own failure keeps each side's vocabulary to itself, which is
 **Nothing is unknown now**, and this entry exists precisely so that the next execution is mechanical: move the file, trim the `Save` variant and the
 writer, add `pub mod export;` to `yeban-midi`, write the wrapper above, update the call sites, then the MCP tool, the counts, and the in-memory
 round-trip criterion.
+
+### Round 288: quantifying the lock_advisory failure - one occurrence in seven observations, not an established flake
+
+Round 279 recorded a failure in `lock_advisory` under whole-suite execution and characterised it as a flake. That word was doing more work than the
+evidence supported, so it was measured instead:
+
+| run | result |
+| :--- | :--- |
+| `--test lock_advisory`, three times | 14 / 14 / 14 passed - **0 failures** |
+| `--tests` (whole suite), three times | **all ok**, 0 failures |
+| the original observation (round 279, `--tests`) | 1 failure |
+
+So the honest characterisation is: **one unreproduced failure in seven observations**, not a flake with a known rate. And there is a plausible
+non-code cause worth naming: at that moment this session was running several cargo commands in sequence in one shell, so the earlier run may have
+contended with builds or with another test process for the same lock files - which is exactly the kind of interference a suite about advisory
+locks would be sensitive to.
+
+**What this changes for reading future verdicts**: the advice to "re-run a red before calling it a regression" stands (it is cheap and correct for
+any red), but it should not be read as "expect this suite to be unreliable" - six consecutive clean runs do not support that, and telling a future
+reader to distrust a green suite would be its own kind of error. The accurate note is: **one unexplained failure seen once; not seen again in six
+attempts; if it recurs under CI, treat it as worth investigating rather than dismissing**.
+
+**The lesson, third instance of the same family this session**: I attached a causal label ("flaky") to a single observation, the same way rounds
+231/238 attached facts to partial readings. Measuring the rate before naming a cause is the cheap correction, and it took one command.
