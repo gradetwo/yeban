@@ -4074,3 +4074,36 @@ criterion 4 requires), adds no dependency, and is green locally (`check`, `clipp
 
 Still outstanding for D56, unchanged: the MCP tool `yeban_export_diagnostics` (tool 16), the UI command with its stable element
 id, the shared-implementation criterion, the redaction-scan criterion and the tooth test.
+
+### Round 157: D56 step 2 recipe - the MCP tool registration shape, and the two spots still to confirm
+
+`crates/yeban-mcp/src/tools.rs` holds the tool registry. The shape to copy for a new tool is:
+
+```rust
+ToolSpec {
+    spec_id: "MCP-TOOL-EXT-<NAME>",
+    name: "yeban_export_diagnostics",
+    summary: "把调试信息与相关文件采集并导出成 zip 诊断包 (人工触发, 供复现排查)",
+    scope: Scope::AppAdmin,                 // 与其它可写工具同级; 只写磁盘, 不改工程
+    side_effect: SideEffect::ReadOnly,      // 落盘到独立文件, 不触碰工程状态
+    params: &[param("outDir", "string", false, "输出目录; 缺省为进程当前目录")],
+    errors: &[ErrorCode::InvalidArgument, ...],
+}
+```
+
+Two spots must be confirmed before writing (each is a one-line read, deliberately not guessed):
+
+1. **`EXTENSION_TOOL_COUNT`** - `tools.rs:80` declares `EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT]` with five entries
+   (`yeban_undo`, `yeban_redo`, `yeban_edit_automation`, `yeban_query_engine_state`, `yeban_import_audio`). Adding the
+   sixteenth tool means adding the name **and** bumping that count constant, or the array长度断言 will fail at compile time.
+2. **the handler dispatch** - the `ToolSpec` above is the *declaration*; the implementation is dispatched from a match on the
+   tool name somewhere else. That match is where `yeban_engine::diagnostics::export_diagnostics` gets called, and it is the
+   place that makes D56's criterion 4 (one shared implementation) true rather than merely intended.
+
+Note on the schema: a search of `schemas/mcp-tools.schema.json` for a per-tool `name` field found **nothing**, so that file
+appears to describe the tool *shape* rather than listing the tools. If so, the authoritative list is `tools.rs` itself and the
+schema needs no per-tool entry - but that must be checked, not assumed, because a schema mismatch would surface in the `checks`
+leg rather than locally.
+
+Also unchanged and still required for D56: the UI command with its stable element id, the shared-implementation criterion, the
+redaction-scan criterion and the tooth test. This round records the recipe only; no code was half-written.
