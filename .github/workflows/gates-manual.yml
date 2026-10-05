@@ -93,6 +93,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # 同时自检: 状态表腐烂就红。
           python3 scripts/gates/check_gate_status.py
+      - name: MUST-GATE-005 源码分发包完备性（含真跑 cargo vendor --locked，联网）
+        run: |
+          set -euo pipefail
+          # 规范: 发布源码包必须完整包含所有 `.slint` + 确定性 `Cargo.lock` + `cargo vendor` 离线依赖。
+          # 本步骤在**联网**的手动档里跑 `--full`（真下载 vendor，体积大）⇒ 这正是"重活放 CI"的用法。
+          bash scripts/gates/check_vendor.sh --full
+
       - name: 采样登记与字节自洽（登记式入库的当前形态：只证明清单自洽）
         run: |
           set -euo pipefail
