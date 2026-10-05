@@ -5384,3 +5384,30 @@ still in progress - an unusually long run, and worth noting as such rather than 
 commits and its workspace leg may simply be queued behind them. Its conclusion is unread, so nothing is claimed about it.
 
 Completed full-workspace verdicts on main now number **nineteen**.
+
+### Round 217: a口径 trap in [UI-NOTE-002] - the gutter is in the layout, NOT in the mapping
+
+Checked before recording, and the x-axis mapping is already judged: `bridge.rs:28-29` states the contract that `tick_to_px` and
+`px_to_tick` round-trip (`tick_to_px(px_to_tick(p)?)? == p` for any pixel `p`), and a test at `bridge.rs:2178-2198` exercises it. So
+`[UI-NOTE-002]`'s x half has a criterion and needs nothing from me.
+
+**The trap is in the literal formula.** §3.2 gives
+
+```
+pixelX = (tick - scrollX) * zoomX + PianoKeyWidth
+pixelY = (MaxKey - pitch) * zoomY - scrollY
+```
+
+i.e. the keyboard gutter (`PianoKeyWidth`) and both scroll offsets sit **inside** the mapping. This implementation does not: the
+projection maps tick<->pixel and pitch<->lane purely (`tick_to_px` / `px_to_tick`, `pitch_lane` / `pitch_lane_y`), the offset is
+applied where clipping happens (the projection returns **viewport-relative** positions, rounds 440/449), and the gutter is a layout
+constant added by the view itself (`piano_roll.slint`: `x: Tokens.space-5 + root.note-positions[note_index]`).
+
+**Why this is worth writing down**: a future implementer who "corrects" the mapping to match the formula literally would add the
+gutter a second time and shift **every** note by the gutter width - and the result would look plausible (notes drawn, nothing
+crashing), which is exactly the class of error this ledger keeps recording. The two designs are both defensible; what is not
+defensible is mixing them.
+
+**The rule for anyone touching this**: the mapping functions stay pure (tick <-> pixel, pitch <-> lane); the offset belongs to the
+clipping path; the gutter belongs to the view's layout. If a change needs the gutter inside a mapping, it must first REMOVE the
+layout term, never add both.
