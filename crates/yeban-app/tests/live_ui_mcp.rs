@@ -1014,3 +1014,258 @@ fn production_mode_rejects_the_three_admin_actions_by_scope() {
     assert!(after.find("workspace-arrangement-canvas").is_some());
     assert!(after.find("workspace-session-canvas").is_none());
 }
+
+// ===========================================================================
+// `ui-mcp-dryrun-ime` 工作线：`dryRun`（ADR-0001 **D48**）与 IME 合成态
+// ===========================================================================
+//
+// 这一半的判据必须在**真实窗口**上跑（Tier-1 光栅化 + 真控件树 + 真 `MainWindow`
+// 属性），因为"dryRun 不改状态"这句话只有对着**真的会改状态**的执行面才有意义：
+// 零 Slint 的假面那 10 条判据证明的是管线与词表，这里证明的是**接线**。
+//
+// 本机纪律禁止编译 Slint ⇒ 这 3 条**只能由 CI 判**（`docs/ledger/ui-mcp-dryrun-ime-notes.md`
+// 的"本机 vs CI"一节）。本机跑过的对应判据是 `crates/yeban-ui-mcp/src/service.rs` 的那批。
+
+/// 判据 13（D48）：`dryRun=true` 在**真实界面**上不改一个状态位，且它**预告**的事情
+/// 与随后的真调用**逐字段一致**。
+///
+/// 观测面有四个，缺一不可：
+/// - `ui/tree` 的**线上 JSON**（逐字节）；
+/// - 磁盘（`ui/force_save` 的落点必须不存在）；
+/// - `MainWindow.arrangement-view` 的回读（经 `ui/switch_main_view` 的回执）；
+/// - 引擎代数（`ui/reload_engine` 的回执 `generation` 必须是**第一次**真调用推进的 1，而不是 2）。
+#[test]
+fn dry_run_leaves_the_live_window_and_the_disk_untouched() {
+    let project = demo_project();
+    let dir = scratch_dir("dry-run");
+    let path = dir.join("dry-run-must-not-exist.yeban");
+    let mut opts = options(Permission::Administrative, 1);
+    opts.save_path = Some(path.clone());
+    let mut plane = build_live_ui_with(&project, &opts)
+        .expect("装配")
+        .into_control_plane(Permission::Administrative);
+
+    let (before, before_json) = plane.plane().tree().expect("ui/tree");
+
+    // ① `ui/switch_main_view` 的 dryRun：预览说"会写进 arrangement-view = false"，
+    //    而现在的读数是 true（默认 Arrangement）。
+    let switched = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":71,"method":"ui/switch_main_view","params":{"view":"session","dryRun":true}}"#,
+    );
+    assert!(!switched.is_error(), "dryRun 必须成功: {switched:?}");
+    assert_eq!(switched.status, 200);
+    let result = switched.result.expect("有 result");
+    assert_eq!(result["dryRun"], true, "响应必须自证这是模拟");
+    assert_eq!(result["stateUnchanged"], true);
+    assert_eq!(result["wouldChangeState"], true);
+    assert_eq!(result["method"], "ui/switch_main_view");
+    assert_eq!(result["requiredScope"], "app:admin");
+    assert_eq!(result["arguments"]["view"], "session");
+    assert_eq!(result["preview"]["operation"], "switch_main_view");
+    assert_eq!(
+        result["preview"]["effect"]["currentArrangementView"], true,
+        "预览必须报**当前**读数"
+    );
+    assert_eq!(
+        result["preview"]["effect"]["arrangementView"], false,
+        "预览必须报'将要变成什么'"
+    );
+    assert!(
+        result.get("report").is_none(),
+        "dryRun 不得产生（更不得取走）管理动作回执: {result}"
+    );
+
+    // ② `ui/force_save` 的 dryRun：预告 saveEpoch=1（**不是**"我又存了一次"）。
+    let saved = plane
+        .plane()
+        .try_line(r#"{"jsonrpc":"2.0","id":72,"method":"ui/force_save","params":{"dryRun":true}}"#);
+    assert!(!saved.is_error(), "dryRun 必须成功: {saved:?}");
+    let saved = saved.result.expect("有 result");
+    assert_eq!(saved["preview"]["operation"], "force_save");
+    assert_eq!(saved["preview"]["effect"]["saveEpoch"], 1);
+    assert_eq!(saved["preview"]["effect"]["containerEntries"], 2);
+
+    // ③ `ui/reload_engine` 的 dryRun：预告 generation=1。
+    let reloaded = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":73,"method":"ui/reload_engine","params":{"dryRun":true}}"#,
+    );
+    assert!(!reloaded.is_error(), "dryRun 必须成功: {reloaded:?}");
+    let reloaded = reloaded.result.expect("有 result");
+    assert_eq!(reloaded["preview"]["operation"], "reload_engine");
+    assert_eq!(reloaded["preview"]["effect"]["generation"], 1);
+
+    // ④ `ui/dispatch_key_press` 的 dryRun：指针事件的影响只有窗口知道（如实报 null），
+    //    但**按键**的处置是可判定的（`[UI-A11Y-002]`）。
+    let pressed = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":74,"method":"ui/dispatch_key_press","params":{"keyCode":"Space","dryRun":true}}"#,
+    );
+    assert!(!pressed.is_error(), "dryRun 必须成功: {pressed:?}");
+    let pressed = pressed.result.expect("有 result");
+    assert_eq!(pressed["preview"]["operation"], "dispatch_key");
+    assert_eq!(
+        pressed["preview"]["effect"]["resolution"], "action",
+        "画布焦点 + 非合成态: `Space` 命中走带播放/暂停（真 `InputContext::resolve` 的回答）"
+    );
+    assert_eq!(pressed["preview"]["effect"]["isComposing"], false);
+
+    let moved = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":75,"method":"ui/dispatch_pointer_move","params":{"x":10.0,"y":20.0,"dryRun":true}}"#,
+    );
+    assert!(!moved.is_error(), "dryRun 必须成功: {moved:?}");
+    let moved = moved.result.expect("有 result");
+    assert_eq!(moved["preview"]["operation"], "dispatch_pointer");
+    assert!(
+        moved["preview"]["effect"].is_null(),
+        "执行面给不出影响时必须如实报 null, 不许编造: {moved}"
+    );
+
+    // 状态一位都没变。
+    assert!(!path.exists(), "dryRun 的 `ui/force_save` 写了盘");
+    let (after, after_json) = plane.plane().tree().expect("ui/tree");
+    assert_eq!(after_json, before_json, "dryRun 之后运行时树必须逐字节相同");
+    assert_eq!(after.count, before.count);
+    assert!(
+        after.find("workspace-arrangement-canvas").is_some(),
+        "dryRun 不得把视图切走"
+    );
+
+    // ---- 真做：预览说的就是实际发生的（计数从 0 起，而不是 2） ----
+    let real_reload = plane
+        .plane()
+        .try_line(r#"{"jsonrpc":"2.0","id":76,"method":"ui/reload_engine"}"#);
+    assert!(!real_reload.is_error(), "真重载必须成功: {real_reload:?}");
+    let real_reload = real_reload.result.expect("有 result");
+    assert_eq!(
+        real_reload["report"]["generation"], 1,
+        "dryRun 不得推进引擎代数（真调用才是第一次）"
+    );
+
+    let real_save = plane
+        .plane()
+        .try_line(r#"{"jsonrpc":"2.0","id":77,"method":"ui/force_save"}"#);
+    assert!(!real_save.is_error(), "真保存必须成功: {real_save:?}");
+    let real_save = real_save.result.expect("有 result");
+    assert_eq!(real_save["report"]["saveEpoch"], 1);
+    assert!(path.exists(), "真保存必须真的落盘");
+
+    let real_switch = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":78,"method":"ui/switch_main_view","params":{"view":"session"}}"#,
+    );
+    assert!(!real_switch.is_error(), "真切换必须成功: {real_switch:?}");
+    let real_switch = real_switch.result.expect("有 result");
+    assert_eq!(
+        real_switch["report"]["arrangementView"], false,
+        "真调用写进去的值必须与预览说的**逐字段相同**"
+    );
+    let (switched_tree, switched_json) = plane.plane().tree().expect("ui/tree");
+    assert_ne!(switched_json, before_json, "真调用必须真的换掉控件树");
+    assert!(switched_tree.find("workspace-session-canvas").is_some());
+    report_line(&format!(
+        "[ui-mcp-dryrun-ime] dryRun: 树 {} 字节未变; 预览 saveEpoch=1/generation=1/arrangementView=false 与真调用逐字段一致",
+        before_json.len()
+    ));
+}
+
+/// 判据 14（`[UI-A11Y-002]`）：IME 合成态在**真实界面**上可观测，且读的是
+/// `LiveUi::input_context()` 交出的**那一个**状态机（不是影子变量）。
+///
+/// 两个方向都断言：非合成 → 合成 → 非合成（含"焦点离开文本域自动结束合成"的既有语义）。
+#[test]
+fn ime_composition_is_observable_on_the_live_window() {
+    let project = demo_project();
+    // ⚠ 必须是 **Interactive**（= 测试模式）：`ui/dispatch_key_press` 的 `dryRun` 也要过
+    // `ui:inject` 这道闸门 —— CI run 37254896937 就是这么告诉我的：用 `ReadOnly`
+    // （⇒ `RunMode::Production`）时它拿到 `403 forbidden-in-production`。
+    // 那**不是**缺陷，是"dryRun 不绕过授权"这条对齐的直接后果（本机判据
+    // `dry_run_keeps_every_existing_error_code` 的第 ④ 条钉着同一件事）。
+    let ui = build_live_ui(&project, Permission::Interactive).expect("装配");
+    // 驱动点：生产上是 Slint 平台的 IME 事件，判据里直接驱动**同一个**对象。
+    let input = ui.input_context();
+    let mut plane = ui.into_control_plane(Permission::Interactive);
+
+    let read = |plane: &mut LiveControlPlane| {
+        let call = plane.plane().try_line(
+            r#"{"jsonrpc":"2.0","id":81,"method":"ui/property","params":{"elementId":"transport-bpm-field","name":"isComposing"}}"#,
+        );
+        assert!(!call.is_error(), "读 IME 位必须成功: {call:?}");
+        call.result.expect("有 result")
+    };
+
+    // 方向 1：画布聚焦、没有合成。
+    let idle = read(&mut plane);
+    assert_eq!(idle["name"], "isComposing");
+    assert_eq!(idle["value"], false);
+    assert_eq!(idle["focus"], "main-canvas");
+    assert_eq!(idle["specId"], "UI-A11Y-002");
+    assert_eq!(idle["id"], "transport-bpm-field");
+
+    // 文本域聚焦 + 开始合成（真的驱动状态机）。
+    input
+        .borrow_mut()
+        .set_focus(yeban_app::input::Focus::TextInput);
+    input.borrow_mut().begin_composition();
+    let composing = read(&mut plane);
+    assert_eq!(composing["value"], true, "合成态必须可观测");
+    assert_eq!(composing["focus"], "text-input");
+    assert_ne!(composing["value"], idle["value"], "两个方向必须可区分");
+
+    // 同一份状态也被 dryRun 的按键预览读到（"Space 会被输入法吞掉"）。
+    let press = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":82,"method":"ui/dispatch_key_press","params":{"keyCode":"Space","dryRun":true}}"#,
+    );
+    assert!(!press.is_error(), "dryRun 必须成功: {press:?}");
+    let press = press.result.expect("有 result");
+    assert_eq!(
+        press["preview"]["effect"]["resolution"], "consumed-by-ime",
+        "合成态下 Space 必须被输入法吞掉 [UI-A11Y-002] MUST"
+    );
+    assert_eq!(
+        press["preview"]["effect"]["isComposing"],
+        composing["value"]
+    );
+
+    // 方向 2：焦点离开文本域 ⇒ `InputContext::set_focus` 自己结束合成态。
+    input
+        .borrow_mut()
+        .set_focus(yeban_app::input::Focus::MainCanvas);
+    let left = read(&mut plane);
+    assert_eq!(left["value"], false);
+    assert_ne!(left["value"], composing["value"], "方向 2");
+    assert_eq!(left["value"], idle["value"]);
+    report_line(
+        "[ui-mcp-dryrun-ime] IME 位: 真实 `InputContext` 的两次读数 false -> true -> false 全部对得上",
+    );
+}
+
+/// 判据 15（D48）：`dryRun` 对"注定失败的真调用"**如实报错** —— 与真调用同码、同话、同 data。
+///
+/// 未配置保存路径（`LiveWiringOptions::save_path = None`）时 `ui/force_save` 会报
+/// `-32005`（"这条能力在这个装配上没接线"）；`dryRun` 必须报**同一件事**，
+/// 而不是给一份看起来成功的预览（领域侧 dryRun 的口径就是"只做参数与领域合法性校验"）。
+#[test]
+fn dry_run_reports_the_same_failure_as_the_real_save() {
+    let project = demo_project();
+    let mut plane = build_live_ui_with(&project, &options(Permission::Administrative, 0))
+        .expect("装配")
+        .into_control_plane(Permission::Administrative);
+
+    let dry = plane
+        .plane()
+        .try_line(r#"{"jsonrpc":"2.0","id":91,"method":"ui/force_save","params":{"dryRun":true}}"#);
+    let real = plane
+        .plane()
+        .try_line(r#"{"jsonrpc":"2.0","id":92,"method":"ui/force_save"}"#);
+    assert!(dry.is_error(), "没有落点时必须失败: {dry:?}");
+    assert!(real.is_error(), "没有落点时真调用也必须失败: {real:?}");
+    assert_eq!(dry.code, real.code, "dryRun 与真调用必须同码");
+    assert_eq!(
+        dry.message, real.message,
+        "连话都得一样: {dry:?} vs {real:?}"
+    );
+    assert_eq!(dry.kind, real.kind);
+    assert_eq!(dry.status, real.status);
+    report_line(&format!(
+        "[ui-mcp-dryrun-ime] dryRun 如实报错: code={:?} kind={:?}（与真调用逐字段相同）",
+        dry.code, dry.kind
+    ));
+}

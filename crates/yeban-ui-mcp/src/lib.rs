@@ -35,11 +35,13 @@
 //! | 模块 | 依赖 Slint? | 职责 | 规范 |
 //! | :--- | :--- | :--- | :--- |
 //! | [`base64`] | 否 | 零依赖 Base64（JSON 里传 PNG 字节的唯一办法） | — |
+//! | [`dry_run`] | 否 | **`dryRun`（先问后做）** 的词表与语义（ADR-0001 **D48**），与领域侧 `yeban_*` 工具对齐 | `UI-MCP-001` |
+//! | [`ime`] | 否 | **`is_composing`（IME 合成态）** 的可观测位词表与只读读数 | `UI-A11Y-002` |
 //! | [`tree`] | 否 | 语义控件树的 **JSON 投影**（稳定键序 / `visible` 的证据语义 / 动态区矩形） | `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` |
 //! | [`methods`] | 否 | 14 条方法的名字 / 参数 / scope / 规范出处 | `UI-MCP-001` `UI-TEST-002` `ARCH-UI-004` |
-//! | [`service`] | 否 | 管线：方法解析 → 授权（硬禁→token→scope）→ 参数 → 执行 | `UI-MCP-001` `ARCH-SEC-002` `MUST-GATE-009` |
+//! | [`service`] | 否 | 管线：方法解析 → 授权（硬禁→token→scope）→ 参数 → **dryRun 短路** → 执行 | `UI-MCP-001` `ARCH-SEC-002` `MUST-GATE-009` |
 //! | [`live`] | 否 | **真实界面上的控制面装配**（`ControlPlane`）与端到端读数（`ui/tree` → `ui/node` → `ui/screenshot`） | `ARCH-UI-004` `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` `MUST-GATE-015` |
-//! | [`surface`] | 否 | 执行面 `UiSurface`（= `UiTestPort` + Tier-1 像素）、像素证据、`PortAdapter` | `MUST-GATE-015` |
+//! | [`surface`] | 否 | 执行面 `UiSurface`（= `UiTestPort` + Tier-1 像素 + IME 状态 + dryRun 预览）、像素证据、`PortAdapter` | `MUST-GATE-015` `UI-A11Y-002` |
 //! | [`transport`] | 否 | stdio（默认开）与环回 HTTP（默认关，两道开关） | `ARCH-UI-004` `MUST-GATE-009` `ROAD-M4-002` |
 //! | [`samples`] | 否 | 3 份 `.meta.` 文档样本 + 跨语言对账入口 | `MUST-GATE-010` `TEST-SPEC-005` |
 //!
@@ -87,6 +89,8 @@
 #![forbid(unsafe_code)]
 
 pub mod base64;
+pub mod dry_run;
+pub mod ime;
 pub mod live;
 pub mod methods;
 pub mod samples;
@@ -98,6 +102,8 @@ pub mod tree;
 #[cfg(test)]
 mod testing;
 
+pub use dry_run::{DRY_RUN_FLAG, DRY_RUN_PARAM};
+pub use ime::{IME_FIELD, ImeFocus, ImeState};
 pub use live::{
     CallResult, ControlPlane, LiveProbe, ProbeError, ProbeOptions, ScreenshotProbe,
     find_family_member, find_semantic_node, scopes_for_permission,
@@ -108,7 +114,8 @@ pub use service::{
     http_status_for,
 };
 pub use surface::{
-    AdminReport, DEFAULT_MAX_PNG_BYTES, PortAdapter, ReportValue, ShotEvidence, UiSurface,
+    AdminReport, DEFAULT_MAX_PNG_BYTES, PortAdapter, PreviewArguments, PreviewEffect, ReportValue,
+    ShotEvidence, UiSurface,
 };
 pub use transport::{ENABLE_HTTP_FLAG, HTTP_FEATURE_NAME, HttpStartup};
 pub use tree::{Coverage, TreeSource, UiNode, UiTree};
@@ -130,6 +137,7 @@ pub const IMPLEMENTED_SPEC_IDS: &[&str] = &[
     "ROAD-M4-002",
     "ROAD-M4-008",
     "TEST-SPEC-005",
+    "UI-A11Y-002",
     "UI-MCP-001",
     "UI-MCP-002",
     "UI-MCP-003",

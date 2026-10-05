@@ -15,8 +15,9 @@ use std::rc::Rc;
 
 use serde_json::Value;
 
+use crate::ime::{ImeFocus, ImeState};
 use crate::service::UiService;
-use crate::surface::{AdminReport, UiSurface};
+use crate::surface::{AdminReport, PreviewArguments, PreviewEffect, ReportValue, UiSurface};
 
 use yeban_mcp::jsonrpc::{ErrorObject, Request};
 use yeban_mcp::security::{BearerToken, Channel, RunMode, Scope, ScopeSet};
@@ -38,10 +39,76 @@ pub(crate) struct Fixture {
     /// 假执行面不"真的"做事，但它必须能扮演"会交回执的执行面"，否则服务层的
     /// "把回执挂进 `result.report`"这条路径在本机（零 Slint）就没有判据覆盖。
     pub(crate) report: Option<AdminReport>,
+    // ------------------------------------------------------------------
+    // `ui-mcp-dryrun-ime` 工作线（ADR-0001 **D48** / `[UI-A11Y-002]`）新增的
+    // **可观测状态**。它们存在的唯一理由是让"dryRun 前后状态逐字段相同"与
+    // "dryRun 的预览 == 真做之后的状态"成为**可断言**的事实 ——
+    // 一个只有调用日志的假面证明不了"状态没变"（日志是"被问了什么"，不是"状态是什么"）。
+    // ------------------------------------------------------------------
+    /// `ui/switch_main_view` 真的会写的那个开关（真执行面上是 `MainWindow.arrangement-view`）。
+    pub(crate) arrangement_view: bool,
+    /// `ui/force_save` 的保存轮次（真执行面上是 `LiveAdminSurface::save_epoch`）。
+    pub(crate) save_epoch: u64,
+    /// `ui/reload_engine` 的引擎代数（真执行面上是 `EngineHost` 的 generation）。
+    pub(crate) engine_generation: u64,
+    /// `[UI-A11Y-002]` 的 IME 合成态 —— **同一份**状态既喂给 `ime_state`（观测）
+    /// 又喂给 `preview_effect`（"这一键会被怎么处置"），因此不是影子变量。
+    pub(crate) ime_composing: bool,
+    /// IME 状态机的焦点分类。
+    pub(crate) ime_focus: ImeFocus,
+}
+
+impl Fixture {
+    /// `[UI-A11Y-002]` 的驱动点（与 `yeban_app::input::InputContext::begin_composition`
+    /// 同名同义）：真的开始合成。
+    pub(crate) fn begin_composition(&mut self) {
+        self.ime_composing = true;
+    }
+
+    /// 合成结束（候选词上屏或取消）。
+    pub(crate) fn end_composition(&mut self) {
+        self.ime_composing = false;
+    }
+
+    /// 切换焦点（与 `InputContext::set_focus` 同语义：焦点离开文本域 ⇒ 结束合成态）。
+    pub(crate) fn set_focus(&mut self, focus: ImeFocus) {
+        self.ime_focus = focus;
+        if focus != ImeFocus::TextInput {
+            self.ime_composing = false;
+        }
+    }
+
+    /// **逐字段状态快照**（`dryRun` 判据的对照物）。
+    ///
+    /// 它只包含**可变的**状态：权限 / 三个真动作的状态 / IME 状态 / 调用日志 / 回执 /
+    /// 像素指纹。控件树不在里面 —— `UiTestPort::tree` 返回 `&ControlTree`，
+    /// 假面根本没有可变入口（真执行面上那棵树会被 `refresh_tree` 换掉，
+    /// 因此 CI 侧的判据用 `ui/tree` 的**线上 JSON** 快照去对，见
+    /// `crates/yeban-app/tests/live_ui_mcp.rs`）。
+    pub(crate) fn snapshot(&self) -> Value {
+        serde_json::json!({
+            "permission": self.permission.as_str(),
+            "arrangementView": self.arrangement_view,
+            "saveEpoch": self.save_epoch,
+            "engineGeneration": self.engine_generation,
+            "imeComposing": self.ime_composing,
+            "imeFocus": self.ime_focus.as_str(),
+            "calls": self.calls,
+            "hasReport": self.report.is_some(),
+            "imageFingerprint": crate::surface::fnv1a64(self.image.pixels()),
+        })
+    }
 }
 
 pub(crate) fn fixture_tree() -> ControlTree {
     let mut tree = ControlTree::new();
+    // ⚠ `track-0-fader` **刻意**没有几何包围盒：既有判据用它钉住 `[UI-TEST-001]` 的
+    // `visible: null` 证据语义（"元素在树里但没有几何 ⇒ 可见性不可断定"，
+    // 见 `service.rs` 的 `unknown_semantic_id_is_an_explicit_error_not_an_empty_success`）。
+    // 因此本假面**不**模拟 `LivePort::dispatch_pointer_down_impl` 的 `MissingGeometry`
+    // 前置（真执行面在 `crates/yeban-ui-test-port/src/render.rs:513-521` 有它）——
+    // `dryRun` 的只读前置校验会照真执行面的口径报 `-32009`，这一点写在
+    // `docs/ledger/ui-mcp-dryrun-ime-notes.md` 的"假面保真度"一节。
     tree.insert(ControlNode::new(
         "track-0-fader",
         Role::parse("slider").expect("合法角色"),
@@ -99,7 +166,22 @@ pub(crate) fn shared(permission: Permission) -> Rc<RefCell<Fixture>> {
         calls: Vec::new(),
         reject_admin: false,
         report: None,
+        arrangement_view: false,
+        save_epoch: 0,
+        engine_generation: 0,
+        ime_composing: false,
+        ime_focus: ImeFocus::MainCanvas,
     }))
+}
+
+/// 当前状态的一份**逐字段快照**（`dryRun` 判据的对照物）。
+pub(crate) fn snapshot(state: &Rc<RefCell<Fixture>>) -> Value {
+    state.borrow().snapshot()
+}
+
+/// 调用日志（假执行面收到的动作，按发生顺序）。
+pub(crate) fn calls(state: &Rc<RefCell<Fixture>>) -> Vec<String> {
+    state.borrow().calls.clone()
 }
 
 /// 假执行面：**零 Slint**，因此本文件的全部判据都能在本机真跑。
@@ -122,6 +204,93 @@ impl UiSurface for FakeSurface {
     /// 交出（并取走）夹具里预置的回执 —— 与真实执行面同语义。
     fn take_admin_report(&mut self) -> Option<AdminReport> {
         self.state.borrow_mut().report.take()
+    }
+
+    /// `[UI-A11Y-002]` 的 IME 合成态 —— 读的是夹具里**那一份**状态
+    /// （驱动点是 [`Fixture::begin_composition`] / [`Fixture::set_focus`]）。
+    fn ime_state(&self) -> Option<ImeState> {
+        let state = self.state.borrow();
+        Some(ImeState {
+            composing: state.ime_composing,
+            focus: state.ime_focus,
+        })
+    }
+
+    /// `dryRun` 的只读影响预览：与 `*_impl` **共用同一份夹具状态**，
+    /// 因此"预览说的"与"真做之后的"可以直接比对（判据 `dry_run_preview_…`）。
+    ///
+    /// 这里刻意**不**调用任何 `*_impl`、也不碰 `calls` —— 一个会留下痕迹的
+    /// "只读预览"会让 `dry_run_leaves_the_state_untouched_…` 立刻变红。
+    fn preview_effect(
+        &self,
+        method: &str,
+        arguments: &PreviewArguments,
+    ) -> Result<Option<PreviewEffect>, PortError> {
+        let state = self.state.borrow();
+        let effect = match method {
+            crate::methods::METHOD_SWITCH_MAIN_VIEW => {
+                let view = arguments.text("view");
+                PreviewEffect::new(vec![
+                    (
+                        "view",
+                        ReportValue::Text(view.unwrap_or_default().to_owned()),
+                    ),
+                    // 将要写进去的那个开关（真执行面上是 `MainWindow.arrangement-view`）。
+                    (
+                        "arrangementView",
+                        ReportValue::Bool(view == Some("arrangement")),
+                    ),
+                ])
+            }
+            crate::methods::METHOD_FORCE_SAVE => {
+                if state.reject_admin {
+                    // "这次真调用一定会失败" —— 与 `force_save_impl` **同一句话**。
+                    return Err(PortError::Rejected {
+                        message: "强制保存需要工程存储层".to_owned(),
+                    });
+                }
+                PreviewEffect::new(vec![(
+                    "saveEpoch",
+                    ReportValue::Uint(state.save_epoch.saturating_add(1)),
+                )])
+            }
+            crate::methods::METHOD_RELOAD_ENGINE => PreviewEffect::new(vec![(
+                "generation",
+                ReportValue::Uint(state.engine_generation.saturating_add(1)),
+            )]),
+            // `[UI-A11Y-002]`：这一键在当前 IME/焦点状态下会被怎么处置。
+            //
+            // ⚠ 假面**只知道两档**：它没有 `[UI-A11Y-001]` 的扫描码表（那是
+            // `yeban-app::input` 的知识），因此非合成态一律报 `pass-through`，
+            // **不冒充** `action`（真执行面用 `InputContext::resolve` 回答：
+            // `Space` 在画布上是 `action`）。取值本身来自 `crate::ime` 的**唯一**词表，
+            // 两个执行面因此不会各发明一个名字（判据
+            // `key_resolution_vocabulary_is_closed_and_unique`）。
+            crate::methods::METHOD_DISPATCH_KEY_PRESS => {
+                let consumed = state.ime_composing && state.ime_focus == ImeFocus::TextInput;
+                PreviewEffect::new(vec![
+                    ("isComposing", ReportValue::Bool(state.ime_composing)),
+                    (
+                        "focus",
+                        ReportValue::Text(state.ime_focus.as_str().to_owned()),
+                    ),
+                    (
+                        "resolution",
+                        ReportValue::Text(
+                            if consumed {
+                                crate::ime::RESOLUTION_CONSUMED_BY_IME
+                            } else {
+                                crate::ime::RESOLUTION_PASS_THROUGH
+                            }
+                            .to_owned(),
+                        ),
+                    ),
+                ])
+            }
+            // 指针事件的影响只有窗口自己知道 ⇒ 如实报 `None`（不编造）。
+            _ => return Ok(None),
+        };
+        Ok(Some(effect))
     }
 }
 
@@ -196,6 +365,10 @@ impl yeban_ui_test_port::port::UiTestPort for FakeSurface {
             });
         }
         state.calls.push(format!("switch_main_view:{view}"));
+        // **真的**改状态（真执行面上是 `MainWindow.arrangement-view`）——
+        // 少了这一步, "dryRun 前后状态相同"与"真调用确实改了状态"两条判据
+        // 都会退化成"对调用日志断言", 证明不了任何状态语义。
+        state.arrangement_view = view == "arrangement";
         Ok(())
     }
     fn force_save_impl(&mut self) -> Result<(), PortError> {
@@ -206,13 +379,13 @@ impl yeban_ui_test_port::port::UiTestPort for FakeSurface {
             });
         }
         state.calls.push("force_save".to_owned());
+        state.save_epoch = state.save_epoch.saturating_add(1);
         Ok(())
     }
     fn reload_engine_impl(&mut self) -> Result<(), PortError> {
-        self.state
-            .borrow_mut()
-            .calls
-            .push("reload_engine".to_owned());
+        let mut state = self.state.borrow_mut();
+        state.calls.push("reload_engine".to_owned());
+        state.engine_generation = state.engine_generation.saturating_add(1);
         Ok(())
     }
 }
@@ -284,8 +457,4 @@ pub(crate) fn error_of(
         .error_object()
         .expect("有 error")
         .clone()
-}
-
-pub(crate) fn calls(state: &Rc<RefCell<Fixture>>) -> Vec<String> {
-    state.borrow().calls.clone()
 }
