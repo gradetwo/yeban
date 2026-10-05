@@ -22,7 +22,7 @@ fn any_rate() -> impl Strategy<Value = u32> {
         Just(44_100u32),
         Just(48_000u32),
         Just(96_000u32),
-        1u32..=limits::MAX_SAMPLE_RATE,
+        1u32..=limits::DEFAULT_MAX_SAMPLE_RATE,
     ]
 }
 
@@ -47,12 +47,35 @@ proptest! {
         sample_rate in any::<u32>(),
         frames in 0u64..=40_000_000u64,
     ) {
-        let outcome = limits::check_layout(channels, sample_rate, frames, limits::MAX_PCM_BYTES);
-        let expected_ok = (1..=limits::MAX_CHANNELS).contains(&channels)
-            && (1..=limits::MAX_SAMPLE_RATE).contains(&sample_rate)
+        let budget = limits::PcmBudget::default();
+        let outcome = limits::check_layout(channels, sample_rate, frames, &budget);
+        // 四道闸门的合取；`&&` 的短路求值保证后面的除法/乘法只在采样率非 0 时求值。
+        let expected_ok = (1..=budget.max_channels).contains(&channels)
+            && (1..=budget.max_sample_rate).contains(&sample_rate)
+            && u128::from(frames) <= u128::from(budget.max_duration_secs) * u128::from(sample_rate)
             && u128::from(frames) * u128::from(channels)
-                <= u128::from(limits::MAX_INTERLEAVED_SAMPLES);
+                <= u128::from(budget.interleaved_samples_limit());
         prop_assert_eq!(outcome.is_ok(), expected_ok);
+        // 判据 (内存上界): 预算通过 ⇒ PCM 字节数 ≤ `max_pcm_bytes`。
+        // 这是"解码缓冲不会超过预算"的机械上界（与输入文件长度无关）。
+        if outcome.is_ok() {
+            prop_assert!(
+                u128::from(frames) * u128::from(channels) * 4 <= u128::from(budget.max_pcm_bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn pcm_size_conversion_is_exact_or_refused_never_wrapped(
+        seconds in any::<u64>(),
+        sample_rate in any::<u32>(),
+        channels in any::<u16>(),
+    ) {
+        let exact = u128::from(seconds) * u128::from(sample_rate) * u128::from(channels) * 4;
+        match limits::pcm_bytes_for(seconds, sample_rate, channels) {
+            Some(bytes) => prop_assert_eq!(u128::from(bytes), exact),
+            None => prop_assert!(exact == 0 || exact > u128::from(u64::MAX)),
+        }
     }
 
     #[test]

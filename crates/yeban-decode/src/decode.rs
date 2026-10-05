@@ -38,15 +38,19 @@ use symphonia::core::meta::MetadataOptions;
 use crate::asset::{DecodeFacts, DecodedAsset, PcmFormat};
 use crate::duration;
 use crate::error::{DecodeError, DecodeResult};
-use crate::limits::{self, LimitViolation};
+use crate::limits::{self, LimitViolation, PcmBudget};
 
 /// 一次解码的预算与严格度。
+///
+/// 资源上限**不再**是散落在常量里的写死数字：全部收进 [`PcmBudget`]（`HD-24`）。
+/// 调用方可以只改 `.budget` 一项来收紧/放宽，其余严格度旋钮保持默认。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeOptions {
-    /// 输入字节上限。默认 [`limits::MAX_INPUT_BYTES`]（2 GiB）。
-    pub max_input_bytes: u64,
-    /// 解码后交织 `f32` PCM 的字节上限。默认 [`limits::MAX_PCM_BYTES`]（2 GiB）。
-    pub max_pcm_bytes: u64,
+    /// 全部资源上限（输入字节 / PCM 字节 / 声道数 / 采样率 / 时长）。
+    ///
+    /// 默认 [`PcmBudget::default`]：96 kHz 立体声 3 小时（= 96 kHz 8 声道 45 分钟）
+    /// 的 PCM 预算，推导依据见 [`limits`] 的模块文档。
+    pub budget: PcmBudget,
     /// 声明帧数与解出帧数允许的差。默认 [`limits::DURATION_TOLERANCE_FRAMES`]（0）。
     pub duration_tolerance_frames: u64,
     /// 是否把声明/解出的不一致当成**错误**（而不是只记进元数据）。
@@ -59,8 +63,7 @@ pub struct DecodeOptions {
 impl Default for DecodeOptions {
     fn default() -> Self {
         Self {
-            max_input_bytes: limits::MAX_INPUT_BYTES,
-            max_pcm_bytes: limits::MAX_PCM_BYTES,
+            budget: PcmBudget::default(),
             duration_tolerance_frames: limits::DURATION_TOLERANCE_FRAMES,
             verify_declared_duration: true,
         }
@@ -77,7 +80,7 @@ impl Default for DecodeOptions {
 /// 见 [`DecodeError`]：I/O、格式不支持、畸形流、超预算、声明时长不一致等。
 pub fn decode_path(path: &Path, options: &DecodeOptions) -> DecodeResult<DecodedAsset> {
     let len = std::fs::metadata(path)?.len();
-    limits::check_input_len(len, options.max_input_bytes)?;
+    limits::check_input_len(len, &options.budget)?;
     let file = File::open(path)?;
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -93,7 +96,7 @@ pub fn decode_path(path: &Path, options: &DecodeOptions) -> DecodeResult<Decoded
 /// 同 [`decode_path`]。
 pub fn decode_bytes(bytes: &[u8], options: &DecodeOptions) -> DecodeResult<DecodedAsset> {
     let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    limits::check_input_len(len, options.max_input_bytes)?;
+    limits::check_input_len(len, &options.budget)?;
     decode_source(Box::new(Cursor::new(bytes)), &Hint::new(), options)
 }
 
@@ -112,7 +115,7 @@ where
 {
     let source = MeasuredSource::new(reader)?;
     if let Some(len) = source.byte_len() {
-        limits::check_input_len(len, options.max_input_bytes)?;
+        limits::check_input_len(len, &options.budget)?;
     }
     decode_source(Box::new(source), &Hint::new(), options)
 }
@@ -173,11 +176,12 @@ pub fn decode_source<'s>(
     // 预算：先按"声明"做一次廉价的前置检查（畸形文件常在头里就声称几小时）。
     // 传 `channels = 1` 是有意的 —— 这一层只判"每声道帧数 × 4 字节"是否超预算，
     // 声道数还不知道（要等第一个解码缓冲），因此不会在这里误判声道相关的分支。
+    // 时长闸门与声道数无关（`frames / sample_rate`），因此在这里判它是准确的。
     if let Some(frames) = declared_frames {
-        limits::check_layout(1, sample_rate, frames, options.max_pcm_bytes)?;
+        limits::check_layout(1, sample_rate, frames, &options.budget)?;
     }
 
-    let sample_budget = options.max_pcm_bytes / 4;
+    let sample_budget = options.budget.interleaved_samples_limit();
     let mut samples: Vec<f32> = Vec::new();
     let mut layout: Option<(u16, PcmFormat)> = None;
 
@@ -223,13 +227,13 @@ pub fn decode_source<'s>(
         let channels = u16::try_from(planes).map_err(|_| {
             DecodeError::Budget(LimitViolation::TooManyChannels {
                 channels: u16::MAX,
-                limit: limits::MAX_CHANNELS,
+                limit: options.budget.max_channels,
             })
         })?;
         let buffer_format = PcmFormat::from_buffer(&buffer);
         match layout {
             None => {
-                limits::check_layout(channels, sample_rate, 0, options.max_pcm_bytes)?;
+                limits::check_layout(channels, sample_rate, 0, &options.budget)?;
                 layout = Some((channels, buffer_format));
             }
             Some((locked_channels, locked_format)) => {
@@ -261,11 +265,11 @@ pub fn decode_source<'s>(
                 })?;
         let projected = u64::try_from(projected).unwrap_or(u64::MAX);
         if projected > sample_budget {
-            return Err(DecodeError::Budget(LimitViolation::TooManyFrames {
+            return Err(DecodeError::Budget(LimitViolation::PcmBudgetExceeded {
                 frames: projected / u64::from(channels),
                 channels,
                 samples: projected,
-                limit: sample_budget,
+                limit_samples: sample_budget,
             }));
         }
         samples.try_reserve(total).map_err(|_| {
@@ -285,7 +289,7 @@ pub fn decode_source<'s>(
     if frames == 0 {
         return Err(DecodeError::EmptyStream);
     }
-    limits::check_layout(channels, sample_rate, frames, options.max_pcm_bytes)?;
+    limits::check_layout(channels, sample_rate, frames, &options.budget)?;
 
     let outcome = duration::reconcile(declared_frames, frames, options.duration_tolerance_frames);
     if options.verify_declared_duration {
@@ -603,7 +607,10 @@ mod tests {
         let bytes = int_wav(2, 16, &[1_000; 512]);
         // 只有 128 字节 PCM 预算 => 32 个样本 => 16 帧，输入是 256 帧。
         let strict = DecodeOptions {
-            max_pcm_bytes: 128,
+            budget: PcmBudget {
+                max_pcm_bytes: 128,
+                ..PcmBudget::default()
+            },
             ..DecodeOptions::default()
         };
         let err = decode_bytes(&bytes, &strict).unwrap_err();
@@ -624,7 +631,10 @@ mod tests {
     fn the_input_byte_budget_is_enforced_before_probing() {
         let bytes = int_wav(1, 16, &[7; 8]);
         let strict = DecodeOptions {
-            max_input_bytes: 16,
+            budget: PcmBudget {
+                max_input_bytes: 16,
+                ..PcmBudget::default()
+            },
             ..DecodeOptions::default()
         };
         assert!(matches!(
@@ -697,5 +707,129 @@ mod tests {
         let from_bytes = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
         assert_eq!(from_path.samples(), from_bytes.samples());
         cleanup.unwrap();
+    }
+
+    #[test]
+    fn the_duration_gate_fires_independently_of_the_byte_budget() {
+        // 8000 Hz 单声道 2 秒 = 16000 帧，PCM 只有 64 KB —— 任何字节预算都拦不住它，
+        // 唯一能拦下它的是**时长闸门**（与声道数、字节数都无关的独立闸门）。
+        let bytes = int_wav(1, 16, &[0; 16_000]);
+        let one_second = DecodeOptions {
+            budget: PcmBudget {
+                max_duration_secs: 1,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        let err = decode_bytes(&bytes, &one_second).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DecodeError::Budget(LimitViolation::DurationTooLong { .. })
+            ),
+            "expected DurationTooLong, got {err}"
+        );
+        assert!(err.to_string().contains("duration cap"), "got {err}");
+        // 恰好 1 秒（8000 帧）必须通过 —— 闸门是闭区间。
+        let exact = int_wav(1, 16, &[0; 8_000]);
+        assert_eq!(
+            decode_bytes(&exact, &one_second).unwrap().frame_count(),
+            8_000
+        );
+        // 同一份 2 秒字节在默认预算下正常解出 ⇒ 上面红的确实是时长闸门。
+        assert_eq!(
+            decode_bytes(&bytes, &DecodeOptions::default())
+                .unwrap()
+                .frame_count(),
+            16_000
+        );
+    }
+
+    #[test]
+    fn the_channel_and_rate_gates_fire_on_their_own() {
+        let stereo = int_wav(2, 16, &[1_000; 64]);
+
+        // 声道闸门：预算只允许 1 声道，而素材是立体声。
+        let mono_only = DecodeOptions {
+            budget: PcmBudget {
+                max_channels: 1,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        let err = decode_bytes(&stereo, &mono_only).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DecodeError::Budget(LimitViolation::TooManyChannels {
+                    channels: 2,
+                    limit: 1
+                })
+            ),
+            "expected TooManyChannels, got {err}"
+        );
+        assert!(decode_bytes(&stereo, &DecodeOptions::default()).is_ok());
+
+        // 采样率闸门：素材 8000 Hz，预算只允许 4000 Hz。
+        let narrow = DecodeOptions {
+            budget: PcmBudget {
+                max_sample_rate: 4_000,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        let err = decode_bytes(&stereo, &narrow).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DecodeError::Budget(LimitViolation::SampleRateTooHigh {
+                    rate: 8_000,
+                    limit: 4_000
+                })
+            ),
+            "expected SampleRateTooHigh, got {err}"
+        );
+    }
+
+    #[test]
+    fn the_pcm_budget_boundary_is_closed_through_the_decoder() {
+        // 单声道 64 帧 ⇒ 256 字节交织 f32 PCM。
+        let bytes = int_wav(1, 16, &[100; 64]);
+        let exact = DecodeOptions {
+            budget: PcmBudget {
+                max_pcm_bytes: 256,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        assert_eq!(decode_bytes(&bytes, &exact).unwrap().frame_count(), 64);
+        // 少 4 字节（= 少一个样本）就必须被拒：闸门不是 `>=`。
+        let short = DecodeOptions {
+            budget: PcmBudget {
+                max_pcm_bytes: 252,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        let err = decode_bytes(&bytes, &short).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DecodeError::Budget(LimitViolation::PcmBudgetExceeded {
+                    frames: 64,
+                    channels: 1,
+                    samples: 64,
+                    limit_samples: 63,
+                })
+            ),
+            "expected PcmBudgetExceeded at the boundary, got {err}"
+        );
+        assert!(err.to_string().contains("PCM budget"), "got {err}");
+    }
+
+    #[test]
+    fn the_default_options_carry_the_derived_budget() {
+        // 单一事实源：默认预算只在 `PcmBudget::default()` 里推导一次。
+        assert_eq!(DecodeOptions::default().budget, PcmBudget::default());
     }
 }
