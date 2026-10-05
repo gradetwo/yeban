@@ -4601,3 +4601,27 @@ admissible.
 
 Dispatched run **`37350525943` @ `6c58f55`** to confirm that the default workspace pass is back to a normal duration with the
 test ignored; its verdict is **unread**.
+
+### Round 178: BASELINE-003 may be blocked by an unimplemented prerequisite - virtualization (ROAD-M3-002)
+
+The `fps` gate (run `37350746040`) is still at `steps=7` well past the build stage, and that prompted me to check the premise
+rather than wait indefinitely:
+
+`docs/ledger/phase-status.md` records **`ROAD-M3-002` as 部分**, and its own reason says the virtualization itself is **not
+implemented** - previously read: "**未做到**: **虚拟化本身** —— `piano_roll.slint:4` 明文「Slint 硬件加速视口裁剪 + R-Tree 空间索引
+**本骨架没有实现**」".
+
+**Why that matters here**: `BASELINE-003` asks for 10 万音符滚动 at 120 FPS. A viewport that materializes every note produces
+100 000 elements per frame; the gate's whole premise is that the viewport **clips** to what is visible (R-Tree + `clip: true`
+handling). Without virtualization, feeding 100 000 notes into the real view is not a frame-rate measurement - it is a stress test
+of an unimplemented optimisation, and the expected outcome is either minutes per frame or an allocation failure.
+
+**Status of this claim**: it is an **inference with supporting evidence**, not a read verdict. Evidence for it: `ROAD-M3-002`'s
+own recorded reason; the observed runtime of the fps job (still step 7 at the time of writing); and my earlier local attempt
+which I stopped after ten minutes. Evidence against it would be the fps job finishing with usable p50/p99 - which is exactly
+what the gate exists to find out, so the run stands and I will read it rather than pre-empt it.
+
+**If it is confirmed**: `BASELINE-003` cannot close before `ROAD-M3-002`'s virtualization lands, and the honest sequencing is to
+say so in the gate row rather than keep re-running a measurement whose precondition is missing. That sequencing decision is
+mine to take under the round-146 delegation once the run reports, because it changes what "PENDING" means for this gate: from
+"missing a criterion" to "missing the capability the criterion measures".
