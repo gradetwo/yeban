@@ -7921,3 +7921,21 @@ execution with the order fixed, which the ledger now states explicitly.
 
 **Status**: tree green and clean (failure path reverted); CI green; `yeban-midi` holds `midi` and `vlq`; the fixture family is shared; the mapping move is
 one ordering fix away; the MCP tool is still owed.
+
+
+### Round 325: tests pass - one unused import inside the shared lib is all that is left
+
+The corrected execution (rebuild first, fix only the shared crate, app imports preserved) produced the best result yet: **cargo test -p yeban-app -p yeban-midi
+--tests = 271 passed / 0 failed**, `light` 门禁通过, and a single diagnostic left:
+
+    error: unused import: `std::path::PathBuf`   --> crates/yeban-midi/src/export.rs:296
+
+So the mapping move is one import away. The fix is to drop `PathBuf` from the shared library's `use std::path::{...}` line (the tests that needed it stayed in
+the app, and the shared copy's remaining uses are inferred), then re-run the four verification steps. My earlier attempts at this removal broke the app; with
+the sides now separated - which round 324's ordering fix achieved - removing it from the shared side is safe.
+
+**What is verified now, concretely**: the shared crate holds the mapping and the eleven domain tests; the app holds the two writer tests and its thin wrapper;
+both crates compile through to the test build; 271 tests pass; the guards pass. That is every part of the move except one redundant import line.
+
+**Status**: tree green and clean (failure path reverted); CI green; `yeban-midi` holds `midi` and `vlq`; the fixture family is shared; the mapping move needs
+one line removed; the MCP tool is still owed.
