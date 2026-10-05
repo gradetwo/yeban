@@ -4677,3 +4677,32 @@ Also recorded: `note_ulids` and `note_velocities` are two MORE parallel arrays i
 "four arrays must share one index set" was an undercount - it is **six** (ulids, velocities, positions, widths, ys, and the row
 index). The clipping API must therefore grow to cover all six before the host can consume it, or the semantic element IDs and
 velocity data will desynchronise from the geometry.
+
+### Round 182: the fps gate WORKS and produced the first real 100k-note measurement - and the numbers are far outside the bar
+
+Run **`37350746040` = completed success** (8 steps), from the gate built in round 176/177:
+
+```
+BASELINE-003(10万音符) 帧数=600 音符=100000 p50=170.915ms p99=178.527ms max=267.726ms 见证字符数下限=122
+```
+
+Three things this establishes, in order of how much they can be trusted:
+
+1. **The harness works end to end.** 600 frames, exactly 100 000 notes (the assertion held), a non-trivial witness (122 chars
+   minimum per frame), release build, ignored-by-default test invoked deliberately, numbers captured to the log and uploaded.
+   That is the whole chain D56's pattern taught, applied to a second capability.
+2. **The scene is ~171 ms per frame at p50, i.e. about 5.8 FPS** - against a bar of p99 <= 8.3 ms, that is roughly **21x over**.
+   This is the first quantitative support for the round-178 hypothesis that the scene is not virtualized: a viewport that
+   clipped to the visible window would not spend 171 ms per frame on 100 000 notes.
+3. **The verdict is NOT this number.** The gate runs on a hosted `ubuntu-latest` runner, and the standing rule (spikes/README.md
+   line 36, plus HD-45's reference-machine ruling) is that hosted-runner readings cannot decide frame-rate gates. So this is
+   **indicative evidence of magnitude**, not the gate's official reading - and on a hosted runner even a fully virtualized scene
+   might miss 120 FPS, so the bar cannot be settled here either way.
+
+**What this changes for BASELINE-003**: the PENDING reason is now sharper and better evidenced than in round 179. It is no longer
+just "the source says clipping is unimplemented"; there is a measurement showing the consequence, plus a working gate to re-run
+once the host consumes the clipping already implemented in the projection (rounds 409-411). The remaining work is therefore
+concrete and ordered:
+(a) wire `host.rs:130-140` to push the six clipped arrays (needs the scroll offset - still the open read),
+(b) re-run `gh workflow run gates-manual.yml -f gate=fps` and compare,
+(c) once clipping is consumed, take the official reading on the reference machine under HD-45 rather than the hosted runner.
