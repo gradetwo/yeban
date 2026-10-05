@@ -5219,3 +5219,22 @@ it is cheap: log the chosen backend and renderer in the gate, and read it back w
 **And one more command-hygiene data point** - the fifth of its kind in this session: my round-205 grep returned nothing because the
 path was wrong, not because the API was absent. `ls` before `grep` on an unfamiliar crate layout would have prevented a caveat I
 then had to retract.
+
+### Round 207: fifteenth full-workspace verdict, and the fps gate is re-running with its口径 line
+
+Run **`37357738190` @ `1558b9a` = completed success**, with `checks` (12 steps), `plan` (5), `lockfile` (6) and `deny` (6) all green
+and the workspace and windows legs succeeding - the run's own conclusion is success, which is what makes it the fifteenth. It covers
+the UI-level bounds criterion added in round 466, the one that reads the four viewport properties back and requires each to equal the
+value computed from the same window width.
+
+What that criterion proves and does not, because the distinction keeps mattering: it proves the bounds are **wired to the window they
+claim to come from**. It proves nothing about culling, since the renderer still draws one element per visible note.
+
+Also dispatched: the manual `fps` gate on `a7e2cf4` (run `37358050020`), the first run that prints the口径 line added in round 469 -
+`slint_backend=<value|unset>` plus the viewport size, immediately before the numbers. Reading it settles whether the ~9.8 ms reading
+came from the software rasteriser, which round 206 could only infer. A background watcher captures both lines to `/tmp/fps7.txt`.
+
+**Command-hygiene note (sixth of its kind)**: the first attempt at this very entry wrote nothing, because `cd repo && nohup ... &`
+parses as `(cd repo && nohup ...) & rest` - so the `cd` belonged to the background job and the `cat`/`git` ran in the parent
+directory. Nothing was corrupted (the writes simply failed), but the fix is to keep backgrounding and repo-relative work in separate
+commands.
