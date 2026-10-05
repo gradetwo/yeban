@@ -7532,3 +7532,26 @@ touched the tree, and each refusal **named the file and the exact imbalance**, t
 diagnoses. The generator now fails before it can damage anything.
 
 **Status**: tree green and clean; `yeban-midi` holds `midi` and `vlq`; mapping layer and MCP tool still owed; CI green through `a4e4ef0`.
+
+
+### Round 307: twelfth attempt refused by the pre-flight; stopping, with the sub-task prepared but unlanded
+
+Attempt 12 added round 306's brace-less branch (a variant or statement is deleted as a single line, not brace-matched), and the writer-count check
+passed - so that fix worked. The pre-flight then refused `export.rs` with **+1** again, i.e. one unmatched `{` remains somewhere in the generated
+shared text. Twelve attempts, twelve refusals or reverts, and the tree has not been damaged once since the pre-flight was added.
+
+**Stopping here, deliberately.** The remaining defect is a single unbalanced brace whose location the tooling now narrows to one file, and finding it
+is a read-only exercise of the same kind that worked in round 305 (print the running balance). I am choosing not to spend further rounds on it in
+this session, because the value being chased is a code move whose design has been settled for twenty rounds, while the risk of each attempt is
+nonzero and my remaining context is nearly nil.
+
+**What is left for whoever picks this up, in order**:
+1. run the round-305 diagnostic (running brace balance per line of the generated `export.rs`) and read off the `+1` line - the candidate is now narrow
+   because the `use`-stripping and brace-less-item bugs are both fixed;
+2. fix that one span in the generator, and the pre-flight will let the write through;
+3. `cargo test -p yeban-app -p yeban-midi --tests`, then add the `yeban_export_midi` tool spec and handler delegating to `yeban_midi::export`,
+   update the registry count 16 -> 17 and the feature-alignment MCP count, and add the in-memory round-trip criterion (`parse_smf` on the produced
+   bytes).
+
+**Session state at this point**: tree green and clean; CI recovered and green through `a4e4ef0`; `yeban-midi` holds the SMF codec and VLQ helper
+(18 criteria, CI-verified on both platforms); the mapping layer and the MCP tool are owed; disk 149 GiB free; whole-workspace sweep 1788 passed.
