@@ -26,6 +26,8 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> note-ulids: [];
     in property <[float]> note-velocities: [];
     in property <[length]> note-positions: [];
+    // 与注入数组同一索引集的选中标志（只**透传**）。
+    in property <[bool]> note-selected: [];
     // 透传卷帘的滚动手势。
     callback scroll-requested(length);
     callback clicked(length, length);
@@ -150,6 +152,7 @@ export component ConsoleTabs inherits Rectangle {
         note-ulids: root.note-ulids;
         velocities: root.note-velocities;
         note-positions: root.note-positions;
+        note-selected: root.note-selected;
         scroll-requested(d) => { root.scroll-requested(d); }
         clicked(x, y) => { root.clicked(x, y); }
         note-ys: root.note-ys;

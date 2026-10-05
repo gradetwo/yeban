@@ -31,6 +31,8 @@ export component PianoRoll inherits Rectangle {
     // —— 音符的**索引**而不是工程的 tick。那条布局已被判据
     // `bridge::slint_text_contracts_for_colors_and_pitch_lanes` 明文禁止。
     in property <[length]> note-positions: [];
+    // `[UI-NOTE-003]` 与注入的六个数组**同一索引集**的第七个: 选中标志（宿主用 `Selection::flags_for` 生成）。
+    in property <[bool]> note-selected: [];
     // `[ROAD-M3-002]` 滚动手势：本组件**只报告增量**, 偏移由宿主拥有并重新注入
     // （见账本第 199 轮：Flickable 会与宿主拥有的偏移双重计算, 故不用）。
     callback scroll-requested(length);
@@ -165,13 +167,17 @@ export component PianoRoll inherits Rectangle {
             height: 12px;
             background: Tokens.gold;
             border-radius: Tokens.radius-sm;
+            // 选中态：加边框而**不改填充**（第 504 轮实测：`Tokens.accent` **不存在**, 用真实的 `gold-bright`） ⇒ 未选中时与旧基准一致（避免无谓的基准重生成）。
+            border-width: root.note-selected[note_index] ? 2px : 0px;
+            border-color: root.note-selected[note_index] ? Tokens.gold-bright : transparent;
             accessible-role: list-item;
             accessible-id: "note-" + note_ulid + "-rect";
             accessible-label: "音符 " + note_ulid;
             accessible-item-index: note_index;
             accessible-item-count: root.note-ulids.length;
             accessible-item-selectable: true;
-            accessible-item-selected: note_index == 0;
+            // 实测教训（第 504 轮）：这里此前硬编码 `note_index == 0`, 即**谎报第一个音符永远被选中**。
+            accessible-item-selected: root.note-selected[note_index];
         }
 
         // AI 建议层预览 (§9.1): 45% 半透明 + 虚线霓虹紫描边 + 置信度徽章。

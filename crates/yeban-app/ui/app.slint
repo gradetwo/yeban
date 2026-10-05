@@ -285,6 +285,10 @@ export component MainWindow inherits Window {
     in-out property <int> roll-max-tick: 0;
     /// `[UI-NOTE-003]` 当前选中的音符数（供判据观测；真正的选中高亮走 `note-selected` 数组, 见账本第 223 轮）。
     in-out property <int> selected-note-count: 0;
+    /// `[UI-NOTE-003]` 与可见数组**同一索引集**的选中标志（宿主注入；界面只取下标）。
+    in-out property <[bool]> note-selected: [];
+    /// `[UI-NOTE-003]` 当前选中的音符 ULID（**单一事实源**：`apply_view` 每次注入都由它重算标志）。
+    in-out property <[string]> selected-ulids: [];
     /// `[UI-NOTE-001]` 步骤 ①（纵向）：可见音高上下界。
     /// 由**固定 16 条泳道**推出（见 `visible_pitch_range` 的判据）；纵向范围若将来变成动态,
     /// 泳道数必须来自 `.slint` 而不是宿主硬编码（账本第 202 轮）。
@@ -501,6 +505,7 @@ export component MainWindow inherits Window {
             note-ulids: root.note-ulids;
             note-velocities: root.note-velocities;
             note-positions: root.note-positions;
+            note-selected: root.note-selected;
             scroll-requested(d) => { root.scroll-requested(d); }
             clicked(x, y) => { root.clicked(x, y); }
             note-ys: root.note-ys;

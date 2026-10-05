@@ -1348,6 +1348,30 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
         "音符下半截必须可命中（高度常量须与 .slint 的 12px 一致）"
     );
 
+    // 被点击的那个音符的 ULID —— 两次点击（中心与下半截）点的都是可见集里的第一个。
+    let clicked_ulid = visible.ulids[0].clone();
+    // 标志数组必须**恰有一个 true**, 且落在被点音符的下标上（与注入的可见集同一索引集）。
+    {
+        use slint::Model as _;
+        let flags: Vec<bool> = ui.get_note_selected().iter().collect();
+        assert_eq!(
+            flags.iter().filter(|f| **f).count(),
+            1,
+            "选中后标志数组必须恰好一个 true"
+        );
+        assert_eq!(
+            flags.len(),
+            visible.positions.len(),
+            "标志必须与注入数组同长"
+        );
+        let hit_index = flags.iter().position(|f| *f).expect("恰有一个");
+        let visible_now = view.visible_notes(scroll, width);
+        assert_eq!(
+            visible_now.ulids[hit_index], clicked_ulid,
+            "true 的位置必须是被点击的那个音符"
+        );
+    }
+
     // 点明显空白 ⇒ 清空。
     ui.invoke_clicked(cx, cy - 500.0);
     assert_eq!(ui.get_selected_note_count(), 0, "点空白必须清空选区");

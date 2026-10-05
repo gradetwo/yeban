@@ -136,6 +136,18 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
     // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
     let visible = view.visible_notes(scroll_x, viewport_width);
+    // 选中标志与其它数组**同一索引集**（第七个）：每次注入都从界面上的 `selected-ulids` 重算,
+    // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
+    // `ModelRc` 的迭代要 `Model` trait 在作用域内；构造要 `VecModel`（`Vec` 不直接 `Into<ModelRc>`）。
+    let selected_ulids: Vec<String> = {
+        use slint::Model as _;
+        ui.get_selected_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    let flags = crate::input::flags_for_ids(&selected_ulids, &visible.ulids);
+    ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
     // 把偏移**留在界面对象上**：撤销刷新要复用同一个值（账本第 200/201 轮）。
     ui.set_roll_scroll_x(scroll_x);
     // `[UI-NOTE-001]` 步骤 ①：把裁剪窗口换算成 tick 上下界并发布（音高上下界待做, 见账本第 201 轮）。
@@ -572,6 +584,15 @@ pub fn build_main_window_with_console_tab(
                 None => sel.clear(),
             }
             ui.set_selected_note_count(i32::try_from(sel.len()).unwrap_or(i32::MAX));
+            // 把选中 id 写回界面属性 —— `apply_view` 由它重算标志, 保证重注入后仍对齐。
+            let ids: Vec<slint::SharedString> = sel.iter().map(|id| id.as_str().into()).collect();
+            ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(ids)));
+            let visible = view_snapshot.visible_notes(scroll, width);
+            let flags = crate::input::flags_for_ids(
+                &sel.iter().cloned().collect::<Vec<_>>(),
+                &visible.ulids,
+            );
+            ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
         });
     }
     Ok(ui)

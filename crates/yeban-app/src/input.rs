@@ -241,6 +241,19 @@ impl Tool {
     }
 }
 
+/// `[UI-NOTE-003]` 由**选中的 id 列表**与**可见 id 列表**算出逐项对齐的标志（**单一实现**）。
+///
+/// 宿主把选中的 id 存在界面属性上, 于是**每次注入**都能重算标志 —— 若只在点击时设置,
+/// 滚动/撤销重注入后标志就会与新的可见集**错位**（那是本会话反复记录的错位类错误）。
+#[must_use]
+pub fn flags_for_ids(selected: &[String], visible: &[String]) -> Vec<bool> {
+    // 刻意写得**直白**: 我第一版用了 `then/map_or_else`, 编译器只能报"需要类型标注" —— 简单写法没有这个问题。
+    visible
+        .iter()
+        .map(|id| selected.iter().any(|candidate| candidate == id))
+        .collect()
+}
+
 /// `[UI-NOTE-003]` 卷帘的**选区**（选择工具的左键单击语义）。
 ///
 /// 用 `BTreeSet` 而不是 `HashSet`：迭代顺序**确定**，判据与界面都不依赖哈希随机性（与红线 4 的取向一致）。
@@ -307,7 +320,8 @@ impl Selection {
     /// 选中标志是第七个; 让它在**同一口径**下生成, 界面就只做"取下标", 不做任何匹配。
     #[must_use]
     pub fn flags_for(&self, visible_ulids: &[String]) -> Vec<bool> {
-        visible_ulids.iter().map(|id| self.contains(id)).collect()
+        let selected: Vec<String> = self.iter().cloned().collect();
+        flags_for_ids(&selected, visible_ulids)
     }
 }
 
