@@ -4221,3 +4221,35 @@ after each.
 **So D56 step 2 is: module written and compiling, wiring 0 of 5 done, tool not registered, no criteria yet.** The brief in
 `docs/ledger/d56-implementation-brief.md` remains the correct plan, now with the extra knowledge that four `Plan` matches must
 each gain an arm.
+
+### Round 163: D56 step 2 - code is wired and unit tests pass; three integration tests want SCHEMA wiring, and my schema assumption was wrong
+
+State on disk (uncommitted on purpose, because integration tests are red): the module, the `Plan` wiring (9 edits) and the
+tool registration (4 edits) all compile, `clippy -D warnings` is clean, and `cargo test -p yeban-mcp --lib` is **277 passed /
+0 failed**. What remains is `crates/yeban-mcp/tests/contract.rs`, which fails three tests:
+
+```
+every_registered_tool_name_is_in_the_contract_enum
+extension_argument_constraints_match_the_registry
+tool_name_count_equals_the_contract_enum_length
+```
+
+**My round-158 assumption was wrong, and this is the correction**: I recorded that `schemas/mcp-tools.schema.json` "describes
+the tool shape rather than listing tools, so tools.rs is authoritative". The contract tests prove otherwise - extension tools
+are wired in the schema through `definitions.ToolCall.allOf` **if/then** blocks, with
+`extension_argument_constraints_match_the_registry` asserting `wiring.len() == EXTENSION_TOOL_COUNT`, i.e. **exactly one
+if/then per extension tool**, plus a `$defs` entry under `definitions.ExtensionToolArguments`. So `TOOL_COUNT` 15→16 without a
+schema entry necessarily breaks the contract - the schema *is* part of the registry for extension tools.
+
+**What the next round must do** (mechanical, all in `schemas/mcp-tools.schema.json`):
+1. add one `if/then` block to `definitions.ToolCall.allOf` for `yeban_export_diagnostics`, copied in shape from
+   `yeban_query_engine_state`'s block (the `if` matches the tool name, the `then` references the arguments def);
+2. add the matching `$defs` entry under `definitions.ExtensionToolArguments` declaring the single optional `outDir` string
+   parameter, consistent with the `ToolSpec` in `tools.rs` (`extension_argument_constraints_match_the_registry` compares the
+   two);
+3. re-run `cargo-local.sh test -p yeban-mcp`; then clippy; then `light` (unfiltered); then commit; then dispatch CI and read the
+   crate legs specifically (`steps > 0`).
+
+Progress this round beyond the code: two of my own anchor mistakes were caught and fixed by the repository's contract tests
+rather than by review - inserting the `ToolSpec` at the array's START violated "documented tools first, extensions after", and
+the read-only list assertion compares Vec **order**, so the new name had to go last.
