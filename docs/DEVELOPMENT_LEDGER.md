@@ -4834,3 +4834,23 @@ the problem - whether consuming the clipping moves the static case, and what scr
 **Also worth recording from this round's timing**: two consecutive session rounds were ~26 seconds apart in wall clock
 (18:12:46Z -> 18:13:12Z). My earlier impressions of "these runs are taking forever" were therefore wrong by a wide margin, and
 the runs are simply early. Measuring the clock, not counting rounds, remains the rule (round 180).
+
+### Round 191: option B is now executable - the piano roll has NO scroll container, and the fix has exact anchors
+
+Reconnaissance for the `ROAD-M3-002` step that the numbers cannot settle:
+
+- the roll contains **no** `Flickable`, `ScrollView`, `viewport` or `scroll` construct at all (grep over
+  `crates/yeban-app/ui/console/piano_roll.slint` returns nothing), so today the horizontal offset is baked into the injected
+  numbers rather than applied at render time;
+- notes are drawn at line 156 with `x: Tokens.space-5 + root.note-positions[note_index]`, and velocity bars at line 205 with
+  `x: 56px + Tokens.space-5 + root.note-positions[velocity_index] + 30px`. Both read the same injected array, which is why the
+  projection can clip it and both stay consistent.
+
+**So option B reduces to two edits plus a host write**: add `in-out property <length> scroll-x: 0px;` to the roll, subtract it in
+those two `x:` expressions, and have the host set `scroll-x` to the SAME value it passed to `visible_notes` - which is what makes
+the clip and the offset agree instead of double-counting. A `Flickable` would be the larger alternative (it would take over the
+offset and gestures), and is not needed to make scrolling truthful.
+
+**Why this ordering matters**: clipping without an offset draws the visible window at the wrong place once the offset is non-zero
+(the notes are positioned absolutely, so a clipped set starting mid-timeline would render off-screen). Adding the subtraction is
+therefore not cosmetic - it is the part that makes `scroll_x != 0` render correctly rather than merely be measured.
