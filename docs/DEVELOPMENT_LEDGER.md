@@ -7865,3 +7865,22 @@ complete, two cosmetic errors left) precisely because it removed the per-item ma
 task: when a mechanical transform keeps failing on ITEM detection, transform the WHOLE container and then delete the exceptions.
 
 **Status**: tree green and clean; mapping move two lines from done; CI green; yeban-midi holds midi and vlq; MCP tool still owed.
+
+
+### Round 322: the last recipe defect - the copy must be trimmed on BOTH sides
+
+Round 320's step 1 said "copy the whole module to the shared crate, then delete the two writer tests from the shared copy". Executed, it produced the right
+shared module and then failed on **`DEFAULT_PPQ` not found in the APP** - because the app's file still contains **all thirteen** tests, including the eleven
+that now also live in `yeban-midi`. The duplicated tests are why `cargo fix` removed an import the app's remaining tests still needed: those tests were
+supposed to have left.
+
+**The corrected step 1 is symmetric**: copy the whole module to the shared side, delete the two writer tests **from the copy**, and delete the eleven domain
+tests **from the app's module** - so each crate keeps exactly the tests its classification assigned it. That is the same "2 in the app, 11 in "
+`yeban-midi`" outcome round 311 decided, reached by deletion on both sides instead of by item-by-item extraction on one.
+
+**Why this is the last defect and not another in a long line**: everything else in the chain has been verified working - the generator and its pre-flight, the
+per-side imports, the fixture path, the module-level constants and helpers (they travel with the whole-module copy by construction), and the unused-import
+cleanup once the tests are trimmed. What remained was my own copy not deleting from the source.
+
+**Status**: tree green and clean; CI green; `yeban-midi` holds `midi` and `vlq`; the fixture family is shared; the mapping move needs the two-sided trim; the
+MCP tool is still owed.
