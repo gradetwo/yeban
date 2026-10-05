@@ -7074,3 +7074,41 @@ the writing happens is what makes the shared part genuinely reusable.
 
 **Nothing is unknown now**: four edits (move the file, trim it, add the re-export wrapper in the app, wire the app's call sites) plus the MCP tool,
 then the counts and the in-memory round-trip criterion. The next execution needs no further reading.
+
+### Round 287: the last design point before the mapping move - how the app reports a write failure after the error type travels
+
+The recipe of round 286 is four edits, and attempting them surfaced the one thing it had not settled: `MidiExportError::Save(SaveError)` cannot
+stay inside a type that moves, and a moved enum cannot be extended by the consumer - so the app's writer needs its own error type. Settled as:
+
+```rust
+// yeban-app/src/export_midi.rs (new, thin)
+pub use yeban_midi::export::{MidiExportReport, export_from_project};
+
+#[derive(Debug)]
+pub enum ExportMidiError {
+    /// 领域侧的失败（映射/编码）—— 由共享 crate 产生。
+    Export(yeban_midi::export::MidiExportError),
+    /// 写入失败 —— **只有消费者**会遇到的错误，因此留在消费者这一侧。
+    Save(crate::save::SaveError),
+}
+// + From<MidiExportError> + Display + std::error::Error
+pub fn export_project_to_file(path: &Path, project: &YebanProjectV1) -> Result<MidiExportReport, ExportMidiError> {
+    let export = export_from_project(project).map_err(ExportMidiError::Export)?;
+    let bytes = export.to_smf_bytes().map_err(ExportMidiError::Export)?;
+    let saved = crate::save::write_file_atomically(&bytes, path).map_err(ExportMidiError::Save)?;
+    …
+}
+```
+
+**Why this shape and not a shortcut**: the temptation is to give the shared error a generic `Io(String)` variant (a) or to have the writer return
+`Box<dyn Error>` (b). Both would let the shared crate "know" about writing it must not do, and (b) would erase the error distinctions the app's CLI
+contract tests rely on (this session has read `cli_contract.rs`, which asserts on error kinds). A consumer-side enum that WRAPS the shared error
+plus the consumer's own failure keeps each side's vocabulary to itself, which is the same principle that forced the split in the first place.
+
+**Callers to update, named so the edit is mechanical**: `yeban-app/src/lib.rs` (the module declaration stays, pointing at the new file) and
+`yeban-app/src/cli.rs` plus `yeban-app/tests/cli_contract.rs`, which reference the old names - the wrapper above keeps `export_from_project` and
+`MidiExportReport` available under the same paths, so only the `Save` variant's path and any `MidiExportError` import need touching.
+
+**Nothing is unknown now**, and this entry exists precisely so that the next execution is mechanical: move the file, trim the `Save` variant and the
+writer, add `pub mod export;` to `yeban-midi`, write the wrapper above, update the call sites, then the MCP tool, the counts, and the in-memory
+round-trip criterion.
