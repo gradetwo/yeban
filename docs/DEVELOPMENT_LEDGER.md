@@ -2740,3 +2740,30 @@ Two errors of method, both of which this project keeps re-teaching:
   teeing to the log (`} 2>&1 | tee "$LOG"` then append `$LOG` to the summary). Fixed in this round for the bench lane.
 - When a step fails with no output, the first move is to check **where its stdout went**, not to theorise about hangs.
 - When grepping CI logs, exclude the echoed script body (it contains the same words as the output by construction).
+
+### Round 93: the bench lane is GREEN and CI now measures the object the spec names
+
+Run **`37293151145` = completed success** (dispatched `gate=bench` on `f859ef6`). CI (Linux x86_64, **release**):
+
+| measurement | peak RSS | verdict |
+| :--- | ---: | :--- |
+| empty project + `--headless` (process floor, zero Slint objects) | 12.98 MB | within-target |
+| **empty project + `--headless-idle` (the spec's object: real `MainWindow`, one rasterized frame, then idle)** | **20.50 MB** | within-target |
+| 6-track demo + `--headless-idle` (control) | 21.21 MB | within-target |
+
+The witness line appears in the run log too: `windows-created=1 size=1920x1080 rendered=true lines=1080
+non-black-pixels=20736 …`, so the reading is demonstrably not an empty-tree no-op.
+
+**Why the gate stays PARTIAL (unchanged reasons).** A hosted runner is not the spec's reference machine, and
+`measure_rss.py` itself states that the target requires re-running the same command there. The platform/build-mode spread
+is large and must not be averaged away: the same object reads **34.38 MB** on this machine (macOS **debug**) and the demo
+project reads **35.58 MB (over target)** there, while CI release reads 20.50 / 21.21 MB. One platform's number is not
+evidence for another's.
+
+**How this lane got here (three failures' worth of lessons, now all closed).**
+1. The step previously measured `--headless` on the demo project - i.e. the process skeleton, not the spec's object.
+2. Both rewrite attempts failed with **no log output**: the block's stdout was redirected into the step summary, making a
+   failure unreadable *by construction* (round 92). Fixed by teeing to the log first.
+3. Once readable, the real cause was visible in one line: `measure_rss.py ... -- cargo run ... -- --flag` drops the inner
+   `--`, so `--headless` was handed to **cargo** ("unexpected argument '--headless' found"). Fixed by building once and
+   passing the **binary path**, which also removed the compiler's peak from the measurement window.
