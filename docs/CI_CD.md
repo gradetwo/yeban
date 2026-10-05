@@ -221,3 +221,37 @@ Actions 的清理会一直等它 ⇒ 作业既不成功也不失败，判决要�
 **两个已确认的完成态判决**（可作为"全量绿"的基线）: `37283699896` @ `aac62e8`、`37284571290` @ `77d201f`
 —— 两者的 `rust (workspace 全量)` 均 **success `steps=10`**、`windows` **success `steps=8`**。
 
+## 两个新踩到的坑（本会话实测，已机械化其一）
+
+### 第六个坑：**本地绿、却根本发不出去**（job id 非法）
+
+我给手动档加 `goldens` 档时，把中文写成了 job 的**键**：
+```yaml
+  goldens (生成分平台基准图集):     # ← GitHub 直接拒绝整个 workflow
+```
+GitHub 的报错是
+`The identifier 'goldens (生成分平台基准图集)' is invalid. IDs may only contain alphanumeric characters, '_', and '-'`。
+而**本地一切正常**：`python3 -c "import yaml"` 能解析（它容忍非 ASCII 映射键）、`run-gates.sh light` 也全绿 ——
+因为 G13 当时只校验"能解析 + 每个 job 有 `runs-on`"，**没校验 job 键的字符集**。
+
+**修法（已做）**: G13 增加 `[A-Za-z_][A-Za-z0-9_-]{0,99}` 的 job 键判据，报错信息里直接写"中文请放进 `name:`"。
+配了牙测：注入 `goldens 中文:` ⇒ `[FAIL] G13 ... job id 不合法`；还原 ⇒ 通过。
+
+**教训**: "能解析"不等于"平台接受"。凡是要**交给外部系统**的配置（workflow、schema、清单），
+本地判据必须校验**该外部系统的接受规则**，而不是"我这边没报错"。
+
+### 第七个坑：失败**看不到原因**，是因为输出被重定向进了 step summary
+
+`bench` 档连续两次失败、日志里**一行输出都没有**。我据此先后诊断为"进程在第一条 echo 前就死了"和"超时" ——
+**两次都错**。真实原因是该步骤末尾写着
+```yaml
+} | tee /tmp/rss-summary.md >> "$GITHUB_STEP_SUMMARY"
+```
+于是整块 stdout 被重定向进 step summary 文件，而 `gh run view --log-failed` **不会**返回 summary 内容。
+
+**修法（已做）**: 先 `} 2>&1 | tee "$LOG"`（进日志），再把 `$LOG` 追加进 summary。
+
+**教训**: 一个"可能失败"的步骤**必须**把输出留在**日志**里。诊断"无输出"时，第一件事是问**它的 stdout 去哪了**，
+而不是猜挂起/瞬时崩溃；另外，在 CI 日志里 grep 时要**排除被回显的脚本体**（它按构造就含有同样的词 ——
+我曾用 `grep timeout` 命中脚本里字面的 `TIMEOUT=900`，把它当成"真的超时了"）。
+
