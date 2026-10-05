@@ -5665,3 +5665,31 @@ ledger guards), which is what the ledger says about them and nothing more.
 
 **Recorded as a behaviour, not just an incident**: before relying on any list's order, print it and read it - the cost here was one
 extra dispatch, but the same assumption made about run ids or step numbers would be worse.
+
+### Round 232: the model layer for tool edits already exists - the remaining work is WIRING, and here is the exact path
+
+Reconnaissance for the slice that has been deferred as "large": it is not. `crates/yeban-model` already has everything a note edit
+needs:
+
+| what | where |
+| :--- | :--- |
+| `YebanProjectV1::insert_note(&mut self, clip_id: &EntityId, note: MidiNote) -> Result<..>` | `project.rs:1825` |
+| `YebanProjectV1::remove_note(..)` | `project.rs:1846` |
+| `Op::AddNote { .. }` and `Op::DeleteNote { .. }` | `ops.rs:152` / `ops.rs:161` |
+| `Op::apply` and `Op::apply_inverse` | `ops.rs` (the pair that makes an edit undoable) |
+
+**Why this changes the plan**: the pencil's edit is `NotePlan` (round 521) -> `Op::AddNote` -> the existing apply path, which means
+undo comes for free BY CONSTRUCTION rather than being bolted on - and the objective's requirement that the undo entry point be
+shared between UI and MCP is satisfied structurally, because both would build the same `Op`. Nothing about note insertion needs to be
+invented.
+
+**So the remaining work is wiring, in this order**:
+1. turn a `NotePlan` into an `Op::AddNote` (pure function, immediately judgeable: the op's fields must equal the plan's, and applying
+   it to a project must raise that clip's note count by exactly one at the planned tick/pitch);
+2. call it from the host's click handler for the pencil only, behind the existing undo port, so the UI path is real;
+3. expose the same construction through MCP so the two entry points share one implementation - the alignment the matrix guard
+   enforces, and the same discipline `[D56]` used for the diagnostics bundle.
+
+**What I did NOT do**: start it. Two process incidents in the last three rounds (a chained gate-and-commit, an unscoped text
+replacement that corrupted unrelated code) are a signal to enter the next slice with a full verification budget rather than at the
+end of a long session. The reconnaissance above is the part that costs nothing to hand over.
