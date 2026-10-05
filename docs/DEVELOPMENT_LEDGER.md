@@ -6845,3 +6845,34 @@ the work locally verified, and record rather than guess at the cause. The earlie
 **Unchanged and worth repeating once**: repository Actions is verifiably enabled (`allowed_actions: "all"`), and the billing endpoints answer
 410/404 to this token, so the cause is outside what this session can observe or change. The four rulings still outstanding are the CI stall
 itself, HD-49, N2's shape, and the two MCP architectural questions.
+
+### Round 278: the local verification widened from one crate to every dependent of the crate I changed
+
+Until now this session's "locally verified" claims rested on `yeban-app` plus `yeban-model` (112 criteria). That was narrower than the change
+warranted: `NotePlan`/`plan_to_add_note` moved INTO `yeban-model`, so every crate depending on it is in scope - and `yeban-mcp` had not been run
+locally at all, despite being the crate the move was made for.
+
+Ran the lib criteria of every crate that names `yeban-model` in its manifest:
+
+| crate | result |
+| :--- | :--- |
+| `yeban-app` | 191 passed / 0 failed |
+| `yeban-decode` | 80 / 0 |
+| `yeban-engine` | 155 / 0 |
+| `yeban-mcp` | 277 / 0 |
+| `yeban-model` | 112 / 0 |
+| `yeban-render` | 102 / 0 |
+| `yeban-ui-mcp` | 87 / 0 |
+| **合计** | **1004 passed / 0 failed** |
+
+**What this changes**: the honest description of the session's work is now "verified locally across all seven dependents of the changed crate
+(1004 criteria)", not "app and model pass" - and the MCP crate, which had never been exercised in this session, is confirmed unaffected by the
+move that was made on its behalf. That is a materially stronger statement, and it was available all along at the cost of one command.
+
+**Why it took until now, and what the lesson is**: I ran `-p yeban-app` (and later `-p yeban-model`) because those were the crates I was editing,
+and treated the rest as CI's business - but CI has been unable to start since 19:31Z, so "CI's business" meant "nobody's". The habit worth
+keeping: when the change is in a library, the local check belongs to its DEPENDENTS, and they can be enumerated from the manifests in one line
+(`grep -l yeban-model crates/*/Cargo.toml`) rather than assumed.
+
+**Also measured**: the workspace-local rules forbid `--workspace` (AGENTS.md §5), so this per-crate enumeration is the correct local maximum -
+seven crates, 1004 criteria, no heavy `ui-test-port` builds beyond the app's existing UI criteria (18 + 1 ignored).
