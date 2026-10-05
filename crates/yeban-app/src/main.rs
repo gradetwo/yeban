@@ -176,6 +176,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::apply_transport(&ui, engine.borrow().transport());
 
     wire_callbacks(&ui, &engine);
+    // `[UI-A11Y-002]` §7.2 的**事件源**：BPM 敲入控件里真 `TextInput` 的
+    // `preedit-text` / `has-focus` 变化 → `ime-composition-changed` / `ime-focus-changed`
+    // → `InputContext`（合成态的唯一载体）。
+    //
+    // ⚠ **诚实边界**：在 GUI 路径上，这个状态机目前**还没有读者** ——
+    // "Slint 键盘事件 → `input::dispatch_key` → `invoke_*`"那一段仍然没接线
+    // （本线只补事件源，不假装守卫已经生效；消费者缺口记在
+    // docs/ledger/app-projection-notes.md 的 needs 里）。判据侧（`live_surface`）
+    // 的读者是齐的：`ui/property isComposing` 与按键预览都问这个对象。
+    let input = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+    host::wire_input(&ui, Rc::clone(&input));
     // 撤销的两条界面入口（弹窗开关 + "撤销一步"按钮）都汇到**同一个** `UndoPort`。
     host::wire_undo(&ui, &undo_port);
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。

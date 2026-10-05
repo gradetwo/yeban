@@ -1747,6 +1747,8 @@ struct TransportHarness {
     port: LivePort<MainWindow>,
     /// 引擎宿主（UI 线程持有；与 `main.rs` 的 GUI 路径同款）。
     engine: Rc<RefCell<EngineHost>>,
+    /// 活窗口上那一份**投影**（判据要在它身上对时间码读数：投影是唯一事实源）。
+    view: ViewState,
 }
 
 impl TransportHarness {
@@ -1782,7 +1784,7 @@ impl TransportHarness {
         host::wire_transport(port.ui(), Rc::clone(&engine));
         // 接线之后先把引擎读数注入一次界面（`main.rs` 的 GUI 路径做的是同一件事）。
         host::apply_transport(port.ui(), engine.borrow().transport());
-        Self { port, engine }
+        Self { port, engine, view }
     }
 
     /// 引擎当前读数。
@@ -1793,6 +1795,30 @@ impl TransportHarness {
     /// 引擎的走带动作日志。
     fn journal(&self) -> Vec<TransportActionRecord> {
         self.engine.borrow().transport_journal().to_vec()
+    }
+
+    /// 把引擎定位到 `ticks` 并**重新注入**一次走带读数（产品路径同款：
+    /// `host::apply_transport` 是唯一写 `timecode` 的地方）。
+    fn seek_and_inject(&mut self, ticks: u64) -> TransportReading {
+        self.engine.borrow_mut().seek(ticks);
+        let reading = self.reading();
+        host::apply_transport(self.port.ui(), reading);
+        reading
+    }
+
+    /// 把一份**同工程、不同拍号**的投影重新注入同一个活窗口（拍号改变的唯一路径：
+    /// `host::apply_view` —— 换工程 / 撤销走的就是它）。
+    ///
+    /// 返回值是重新投影出来的 `ViewState`：拍号改变的**两方向**断言要拿它算期望读数。
+    fn apply_time_signature(&mut self, numerator: u8, denominator: u8) -> ViewState {
+        let mut project = yeban_model::samples::filled_project();
+        project.time_signature = yeban_model::project::TimeSignature {
+            numerator,
+            denominator,
+        };
+        let view = ViewState::from_project(&project).expect("改拍号后的工程必须能投影");
+        host::apply_view(self.port.ui(), &view);
+        view
     }
 }
 
@@ -1818,8 +1844,8 @@ fn transport_callbacks_really_drive_the_engine_and_the_display_follows_it() {
     assert!(after_play.position_ticks > 0, "播放必须真的推进 tick");
     assert_eq!(
         ui.get_timecode(),
-        host::timecode_for_ticks(after_play.position_ticks),
-        "时间码必须来自引擎读数, 不是界面自己算的"
+        harness.view.timecode_at(after_play.position_ticks),
+        "时间码必须等于**投影**在这个 tick 上的读数（不是界面自己算的一份）"
     );
 
     // **动作记录**（注入点）：命令、命令后的引擎状态与位置、推了几个量子。
@@ -1892,7 +1918,7 @@ fn transport_callbacks_really_drive_the_engine_and_the_display_follows_it() {
     let stopped_shot = harness.port.window().capture().expect("Tier-1 截图");
     harness.engine.borrow_mut().seek(8_000);
     host::apply_transport(ui, harness.reading());
-    assert_eq!(ui.get_timecode(), host::timecode_for_ticks(8_000));
+    assert_eq!(ui.get_timecode(), harness.view.timecode_at(8_000));
     let moved_shot = harness.port.window().capture().expect("Tier-1 截图");
     assert_ne!(
         stopped_shot.pixels(),
@@ -1901,10 +1927,276 @@ fn transport_callbacks_really_drive_the_engine_and_the_display_follows_it() {
     );
     observe(&format!(
         "[transport] 时间码 0 -> {} 使截图像素变化 ({} 字节 vs {} 字节)",
-        host::timecode_for_ticks(8_000),
+        harness.view.timecode_at(8_000),
         stopped_shot.pixels().len(),
         moved_shot.pixels().len(),
     ));
+}
+
+/// 判据 ⑩（`[MODEL-AST-001]` 时间码 × 工程拍号）：**三种拍号**下同一批 tick 位置的
+/// `小节.拍.tick` 读数正确，且**读数等于投影算出的读数**（投影是唯一事实源）。
+///
+/// 这条判据的判别力来自"两个独立来源必须一致"：
+/// - 期望值是一张**手算的表**（4/4 / 3/4 / 6/8 各三个位置，见下面的字面量）；
+/// - 实测值来自活窗口的 `timecode` 属性，而它是由 `apply_view` 注入的两个整数
+///   （`timecode-ticks-{beat,bar}`）经 `bridge::timecode_for_ticks` 算出来的。
+///
+/// 若界面（host.rs）自己按写死的 4/4 算一份，3/4 与 6/8 的断言立刻变红
+/// （本线实测过：把 `timecode_grid_of` 换成写死 4/4 之后，本判据在
+/// `002.02.000` / `003.05.320` 两处失败 —— 见 ledger 的注入记录）。
+#[test]
+fn timecode_reads_the_projected_time_signature_for_three_signatures() {
+    let mut harness = TransportHarness::new();
+    // 手算表：(分子, 分母, tick, 期望读数)
+    //   4/4: 一拍 960, 一小节 3840  ⇒ 3840 = 002.01.000；8000 = 003.01.320；960 = 001.02.000
+    //   3/4: 一拍 960, 一小节 2880  ⇒ 3840 = 002.02.000；8000 = 003.03.320；960 = 001.02.000
+    //   6/8: 一拍 480, 一小节 2880  ⇒ 3840 = 002.03.000；8000 = 003.05.320；960 = 001.03.000
+    let cases: &[(u8, u8, u64, &str)] = &[
+        (4, 4, 960, "001.02.000"),
+        (4, 4, 3_840, "002.01.000"),
+        (4, 4, 8_000, "003.01.320"),
+        (3, 4, 960, "001.02.000"),
+        (3, 4, 3_840, "002.02.000"),
+        (3, 4, 8_000, "003.03.320"),
+        (6, 8, 960, "001.03.000"),
+        (6, 8, 3_840, "002.03.000"),
+        (6, 8, 8_000, "003.05.320"),
+    ];
+
+    for &(numerator, denominator, ticks, expected) in cases {
+        let view = harness.apply_time_signature(numerator, denominator);
+        harness.seek_and_inject(ticks);
+        let displayed = harness.port.ui().get_timecode();
+        assert_eq!(
+            displayed, expected,
+            "{numerator}/{denominator} 的 tick {ticks} 读数必须是 {expected}（手算表）"
+        );
+        assert_eq!(
+            displayed,
+            view.timecode_at(ticks),
+            "{numerator}/{denominator} 的 tick {ticks}: 界面读数必须等于**投影**读数"
+        );
+        // 注入面本身也要对得上：窗口上那两个整数就是投影算出的网格。
+        assert_eq!(
+            harness.port.ui().get_timecode_ticks_bar(),
+            i32::try_from(view.bar_length_ticks).expect("小节长度落在 i32"),
+            "注入的小节 tick 数必须来自投影"
+        );
+        assert_eq!(
+            harness.port.ui().get_timecode_ticks_beat(),
+            i32::try_from(view.bar_length_ticks / u64::from(numerator)).expect("一拍 tick 数"),
+            "注入的每拍 tick 数必须来自投影（= 小节长度 ÷ 分子）"
+        );
+        observe(&format!(
+            "[timecode] {numerator}/{denominator} tick={ticks} ⇒ 界面={displayed} 投影={} 小节={} 拍={}",
+            view.timecode_at(ticks),
+            view.bar_length_ticks,
+            view.bar_length_ticks / u64::from(numerator),
+        ));
+    }
+}
+
+/// 判据 ⑪（**拍号改变 ⇒ 同一个 tick 的读数随之变**，两个方向都断）：
+/// 引擎位置一位不动，只把 `3/4` 的投影重新注入同一个活窗口，读数必须变；
+/// 再注入回 `4/4`，读数必须变回来。
+#[test]
+fn changing_the_time_signature_changes_the_reading_at_the_same_tick_both_ways() {
+    let mut harness = TransportHarness::new();
+    let tick = 3_840_u64;
+
+    let four_four = harness.view.timecode_at(tick);
+    harness.seek_and_inject(tick);
+    let displayed_four_four = harness.port.ui().get_timecode();
+    assert_eq!(displayed_four_four, four_four);
+    assert_eq!(displayed_four_four, "002.01.000");
+
+    // 方向 A：4/4 → 3/4（**位置不变**）
+    let three_four_view = harness.apply_time_signature(3, 4);
+    let reading_after = harness.seek_and_inject(tick);
+    assert_eq!(
+        reading_after.position_ticks, tick,
+        "换拍号**不许**动引擎位置（拍号不是位置）"
+    );
+    let displayed_three_four = harness.port.ui().get_timecode();
+    assert_eq!(displayed_three_four, three_four_view.timecode_at(tick));
+    assert_eq!(displayed_three_four, "002.02.000");
+    assert_ne!(
+        displayed_three_four, displayed_four_four,
+        "同一个 tick 在 3/4 与 4/4 下的读数必须不同（否则时间码根本没读拍号）"
+    );
+
+    // 方向 B：3/4 → 4/4（回到原投影，读数必须回到原值）
+    let back = harness.apply_time_signature(4, 4);
+    harness.seek_and_inject(tick);
+    let displayed_back = harness.port.ui().get_timecode();
+    assert_eq!(displayed_back, back.timecode_at(tick));
+    assert_eq!(
+        displayed_back, displayed_four_four,
+        "方向 B：读数必须变回来"
+    );
+    assert_ne!(displayed_back, displayed_three_four);
+    observe(&format!(
+        "[timecode] 同一 tick {tick}: 4/4={displayed_four_four} 3/4={displayed_three_four} 回到 4/4={displayed_back}（引擎位置始终 {tick}）"
+    ));
+}
+
+/// 判据 ⑫（`[UI-A11Y-002]` §7.2）：IME 事件源（`.slint` 的 `TextInput` 回调）
+/// **真的**驱动那个唯一的状态机 —— 两态可区分，而且被吞掉的按键是**行为**断言。
+///
+/// 这里注入的是 `.slint` 声明的回调（`invoke_ime_composition_changed` /
+/// `invoke_ime_focus_changed`），也就是 `ui/transport.slint` 的 `bpm-input` 在
+/// `changed preedit-text` / `changed has-focus` 里调的那两个入口 ——
+/// 判据不打桩、不写状态机，只驱动事件源那一侧。
+#[test]
+fn ime_event_source_drives_the_input_context_and_swallows_bare_shortcuts() {
+    let view = ViewState::from_project(&yeban_model::samples::filled_project()).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let port = LivePort::new(size, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + 主窗口");
+    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+    host::wire_input(port.ui(), Rc::clone(&context));
+    let ui = port.ui();
+
+    // 起点：画布聚焦、非合成 ⇒ Space 是走带播放/暂停。
+    assert!(!context.borrow().is_composing());
+    assert_eq!(
+        context.borrow().resolve(
+            yeban_app::input::PhysicalKey::Space,
+            yeban_app::input::Modifiers::none()
+        ),
+        yeban_app::input::Resolution::Action(yeban_app::input::Action::PlayPause),
+        "非合成态下 Space 必须命中走带"
+    );
+
+    // 焦点进入敲入控件（`bpm-input` 的 `changed has-focus`）。
+    ui.invoke_ime_focus_changed(true);
+    assert_eq!(context.borrow().focus(), yeban_app::input::Focus::TextInput);
+
+    // 合成态置位（`changed preedit-text`：候选词非空）。
+    ui.invoke_ime_composition_changed(true);
+    assert!(
+        context.borrow().is_composing(),
+        "preedit 非空 ⇒ 状态机必须进入合成态（false → true）"
+    );
+    // **行为**断言：合成态下这一键被输入法吞掉，绝不冒泡成 DAW 快捷键。
+    assert_eq!(
+        context.borrow().resolve(
+            yeban_app::input::PhysicalKey::Space,
+            yeban_app::input::Modifiers::none()
+        ),
+        yeban_app::input::Resolution::ConsumedByIme,
+        "§7.2 MUST：合成态下 Space 必须被吞掉（不是\"控件存在\"）"
+    );
+
+    // 上屏 / 取消（preedit 清空）⇒ 合成态清零。焦点**仍在**敲入控件，因此裸快捷键
+    // 按 `input.rs` 的既有语义交给文本控件（"打字"而不是"DAW 动作"）。
+    ui.invoke_ime_composition_changed(false);
+    assert!(
+        !context.borrow().is_composing(),
+        "preedit 清空 ⇒ 状态机必须离开合成态（true → false）"
+    );
+    assert_eq!(
+        context.borrow().resolve(
+            yeban_app::input::PhysicalKey::Space,
+            yeban_app::input::Modifiers::none()
+        ),
+        yeban_app::input::Resolution::PassThrough,
+        "焦点在敲入控件上时 Space 必须交给文本控件（非合成态也是打字）"
+    );
+
+    // 失焦 ⇒ 焦点回画布；**合成中直接失焦**也必须清零（`set_focus` 的既有语义兜底）。
+    ui.invoke_ime_focus_changed(false);
+    assert_eq!(
+        context.borrow().focus(),
+        yeban_app::input::Focus::MainCanvas
+    );
+    assert_eq!(
+        context.borrow().resolve(
+            yeban_app::input::PhysicalKey::Space,
+            yeban_app::input::Modifiers::none()
+        ),
+        yeban_app::input::Resolution::Action(yeban_app::input::Action::PlayPause),
+        "焦点回画布之后 Space 必须重新命中走带（否则守卫会永久吞键）"
+    );
+    ui.invoke_ime_composition_changed(true);
+    assert!(context.borrow().is_composing());
+    ui.invoke_ime_focus_changed(false);
+    assert!(
+        !context.borrow().is_composing(),
+        "合成中失焦必须结束合成态（否则一次丢事件会把单键热键永久吞掉）"
+    );
+    observe(&format!(
+        "[ime] 事件源(Slint 回调) → InputContext: 合成 false→true→false 全部对得上; \
+         合成态下 Space={:?} 焦点在敲入控件时 Space={:?} 焦点回画布后 Space={:?}",
+        yeban_app::input::Resolution::ConsumedByIme,
+        yeban_app::input::Resolution::PassThrough,
+        yeban_app::input::Resolution::Action(yeban_app::input::Action::PlayPause),
+    ));
+}
+
+/// 判据 ⑬（**如实 SKIP，不静默通过**）：没有接线时事件源一位都改不动状态机；
+/// 接上之后同一个调用立刻生效 —— 因此判据 ⑫ 的绿**只能**来自 `host::wire_input`。
+///
+/// ## 这条判据同时打印本线**做不到**的那一半（SKIP 原因）
+///
+/// 上游（Slint 1.18.1）**有** IME 合成信号，但没有**公开的注入面**：
+/// - `WindowEvent` 是 `#[non_exhaustive]` 的公开枚举，**没有**合成变体；
+/// - 真正携带 preedit 的 `i_slint_core::input::InternalKeyEvent` / `KeyEventType`
+///   **没有**被 `slint` 或 `i-slint-backend-testing` 再导出（`slint` 的
+///   `private_unstable_api::re_exports` 只导出了 `input::{FocusEvent, KeyEvent, …}`，
+///   其中不含这两个类型），而 `WindowInner::process_key_input` 是 `pub(crate)`；
+/// - 因此判据**无法**在 Tier-1 平台上合成一次 `Ime::Preedit`，只能驱动到
+///   `.slint` 回调这一层（= 事件源的下游一格）。
+///
+/// 本线**不**为此加依赖（`i-slint-core` 不是本 crate 的依赖，加它就是"新增依赖"，
+/// 违反本线的约束）。这条限制如实登记在
+/// `docs/ledger/app-projection-notes.md` 的 needs 里，并被下面的 `observe` 打印出来
+/// —— 而不是让一条"元素存在"的断言冒充端到端证据。
+#[test]
+fn an_unwired_ime_event_source_changes_nothing_and_the_skip_is_reported() {
+    let view = ViewState::from_project(&yeban_model::samples::filled_project()).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let port = LivePort::new(size, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + 主窗口");
+    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+    let ui = port.ui();
+
+    // ---- 负向对照：没有 `wire_input` 时，事件源**一位都改不动** ----
+    ui.invoke_ime_focus_changed(true);
+    ui.invoke_ime_composition_changed(true);
+    assert!(
+        !context.borrow().is_composing(),
+        "没有接线时合成态必须**不动**（否则判据 ⑫ 的绿可能来自别处）"
+    );
+    assert_eq!(
+        context.borrow().focus(),
+        yeban_app::input::Focus::MainCanvas,
+        "没有接线时焦点也必须不动"
+    );
+
+    // ---- 同一对象接上之后，同一个调用立刻生效 ----
+    host::wire_input(ui, Rc::clone(&context));
+    ui.invoke_ime_focus_changed(true);
+    ui.invoke_ime_composition_changed(true);
+    assert!(
+        context.borrow().is_composing(),
+        "接线之后同一个 Slint 回调必须驱动状态机 ⇒ `wire_input` 是唯一边"
+    );
+
+    // ---- SKIP：平台级 preedit 注入在本仓库的依赖集下做不到（原因见文档注释）----
+    observe(
+        "[ime-skip] 平台级 `Ime::Preedit` 注入在 Slint 1.18.1 上没有公开入口 \
+         (`WindowEvent` 无合成变体; `InternalKeyEvent`/`KeyEventType` 未被再导出; \
+         `WindowInner::process_key_input` 是 pub(crate); 加 `i-slint-core` 依赖被本线约束禁止) \
+         ⇒ 判据覆盖到 `.slint` 回调这一格; 上游信号本身的接线证据 = \
+         ui/transport.slint 的 `changed preedit-text`（本线源码级核验），平台级注入记为 needs",
+    );
 }
 
 /// **负向对照**（判据 ⑧ 的判别力证明）：一个**没有接线**的活窗口上，

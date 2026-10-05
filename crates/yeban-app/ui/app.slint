@@ -177,6 +177,20 @@ export component MainWindow inherits Window {
     in-out property <string> bpm-display: "120.00";
     in-out property <string> branch-name: "main";
 
+    // ---------------------------------------------------------------------
+    // 时间码的**格式化网格**（`[MODEL-AST-001]`）
+    // ---------------------------------------------------------------------
+    // 唯一写者 = `src/host.rs` 的 `apply_view`（D28 的唯一注入点），值来自投影
+    // `ViewState::timecode_grid()`；唯一读 = `src/host.rs` 的 `apply_transport`，
+    // 它把这两个整数交给唯一的换算实现 `bridge::timecode_for_ticks`。
+    //
+    // 为什么参数要过一遍界面属性：走带位置是**引擎**读数（每帧在变），而拍号属于
+    // **工程**投影（换工程 / 撤销才变）。把网格钉在窗口上 ⇒ "换工程之后同一个 tick
+    // 的读数跟着变"不需要任何额外的共享可变状态，也不会读到过期的拍号。
+    // 0 = 模型层拒绝这个拍号 ⇒ `timecode_for_ticks` 如实退回 tick 文本。
+    in-out property <int> timecode-ticks-beat: 0;
+    in-out property <int> timecode-ticks-bar: 0;
+
     // 键盘/菜单入口: src/input.rs 判定后由宿主调用对应的 invoke_*。
     callback toggle-play();
     // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
@@ -192,6 +206,11 @@ export component MainWindow inherits Window {
     callback accept-ai-proposal();
     callback reject-ai-proposal();
     callback run-acoustic-diagnosis();
+    // `[UI-A11Y-002]` §7.2：BPM 敲入控件里真 `TextInput` 的合成态 / 焦点事件
+    // （见 ui/transport.slint 的 `bpm-input`）。宿主 `host::wire_input` 把它翻成
+    // `InputContext::begin_composition` / `end_composition` / `set_focus`。
+    callback ime-composition-changed(bool);
+    callback ime-focus-changed(bool);
 
     // =====================================================================
     // 模型投影注入面（**唯一写者** = src/host.rs 的 apply_view）
@@ -320,6 +339,14 @@ export component MainWindow inherits Window {
             toggle-ai-drawer => {
                 root.ai-drawer-open = !root.ai-drawer-open;
                 root.toggle-ai-drawer();
+            }
+            // §7.2：合成态 / 焦点是**事件**，不是状态 —— 界面原样转给宿主，
+            // 由宿主写进 `InputContext`（界面不存"我是不是在合成"）。
+            ime-composition-changed(composing) => {
+                root.ime-composition-changed(composing);
+            }
+            ime-focus-changed(focused) => {
+                root.ime-focus-changed(focused);
             }
         }
 

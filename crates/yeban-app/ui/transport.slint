@@ -30,6 +30,11 @@ export component Transport inherits Rectangle {
     in property <bool> arrangement-view: true;
     in property <bool> ai-drawer-open: false;
 
+    // 时间码的**格式化网格**（每拍 / 每小节的 tick 数）由宿主从投影注入 ——
+    // 但注入点是 `MainWindow`（见 app.slint 的 `timecode-ticks-*`），
+    // 因为换算发生在 Rust 侧的唯一实现 `bridge::timecode_for_ticks`，
+    // 而不是在 `.slint` 里再做一份拍号算术。
+
     callback toggle-play();
     // 停止 = **停住并回到起始点**（引擎侧是 `Stop` + `SeekTicks(0)` 两条命令，
     // 见 `src/host.rs` 的 `wire_transport`）。它与 `playing` 显示态走同一条注入面。
@@ -38,6 +43,12 @@ export component Transport inherits Rectangle {
     callback show-session();
     callback show-arrangement();
     callback toggle-ai-drawer();
+    // [UI-A11Y-002] §7.2 输入法合成态：BPM 参数敲入控件里的**真** TextInput 一有
+    // preedit（候选词）就置位，上屏 / 取消 / 失焦时清零。宿主（src/host.rs 的
+    // wire_input）把它翻成 `InputContext::begin_composition` / `end_composition`
+    // —— 界面**不**自己做"合成中"的判断。
+    callback ime-composition-changed(bool);
+    callback ime-focus-changed(bool);
 
     min-height: Tokens.top-bar-height;
     max-height: Tokens.top-bar-height;
@@ -140,8 +151,17 @@ export component Transport inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- BPM
-    // 参数敲入类控件: 规范 §7.2 明文要求这类控件挂 is_composing 防护。
-    // 这里先用 role=text-input 占位; 真正的 Slint TextInput 与数值校验随模型线落地。
+    // 参数敲入类控件: 规范 §7.2 明文要求这类控件挂 `is_composing` 防护。
+    //
+    // **事件源就在这里**：`bpm-input` 是真的 Slint `TextInput`（上一版只有
+    // `role=text-input` 的占位矩形 + 一句"随模型线落地"的注释 —— 合成事件根本没有源）。
+    // 上游把输入法的候选词写进 `TextInput.preedit-text`
+    // （`i-slint-compiler-1.18.1/builtin_elements.rs:2323` 的 `out property <string> preedit-text`，
+    // 由 winit 后端的 `Ime::Preedit` 事件驱动：`i-slint-backend-winit-1.18.1/winitwindowadapter.rs:1429`），
+    // 因此"是否正在合成"在 `.slint` 侧只有一个判据：preedit 非空。
+    //
+    // 这两个 `changed` 处理器**只通知**（callback），不自己保存任何状态 ——
+    // 状态的唯一载体是 `src/input.rs` 的 `InputContext`（宿主 `wire_input` 写它）。
     Rectangle {
         x: 120px;
         y: Tokens.space-4;
@@ -160,22 +180,36 @@ export component Transport inherits Rectangle {
         UiMonoText {
             x: Tokens.space-4;
             y: 0;
-            width: 44px;
+            width: 40px;
             height: parent.height;
             text: "BPM";
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }
 
-        UiMonoText {
-            x: 48px;
+        // 真正的编辑面（数值校验 / 提交回模型仍属后续线：本线只接**合成态事件源**）。
+        // 它**不**挂 accessible-id —— 语义节点仍然只有外层那一个 `transport-bpm-field`
+        // （`[UI-TEST-001]` §12.2：`ui/coverage` 要求运行时树 ⊆ 投影注册表，
+        // 而多出来的节点必须有登记；编辑面不是语义节点，因此不进树）。
+        bpm-input := TextInput {
+            x: 44px;
             y: 0;
-            width: 40px;
+            width: parent.width - 48px;
             height: parent.height;
             text: root.bpm-display;
             color: Tokens.gold;
             font-size: Tokens.font-size-lg;
             horizontal-alignment: right;
+            vertical-alignment: center;
+            single-line: true;
+            read-only: false;
+
+            changed preedit-text => {
+                root.ime-composition-changed(self.preedit-text != "");
+            }
+            changed has-focus => {
+                root.ime-focus-changed(self.has-focus);
+            }
         }
     }
 
