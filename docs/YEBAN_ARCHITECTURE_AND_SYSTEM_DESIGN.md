@@ -75,6 +75,8 @@
   5. **后台任务线程池 (Background IO & Render Pool)**：管理 CAS 磁盘读写、自动保存、Rayon 离线母带渲染与工程解压缩。
 - **[ARCH-TOP-003] 无头纯引擎独立性**：所有非 UI crate（`yeban-model`, `yeban-dsp`, `yeban-theory`, `yeban-render`, `yeban-engine`, `yeban-sfz`, `yeban-decode`, `yeban-midi`）严禁引入任何 Slint 或窗口图形依赖，脱离 GUI 可 100% 独立冷启动。
 
+- **[ARCH-TOP-003a] 类别规则（不依赖枚举）**：上面那条约束的对象是**类别**，不是清单 —— 凡**只依赖 `yeban-model` 与纯 Rust 库、不含任何 UI / 窗口 / 音频设备 I/O** 的 crate，一律属于"无头可独立冷启动"这一类，**新增此类 crate 无需修改本节即可自动受约束**。**纯格式 crate**（编解码 / 解析器，如 `yeban-midi`：SMF 编解码与 VLQ，只依赖 `yeban-model` 与 `midly`）即该类别的一个实例；它们**不属于**分层表的"音频引擎层"（那层指 DSP 与声卡 I/O），因此不在该行登记。本规则由 `scripts/gates/check_mcp_dependency_direction.py` 一类的机械守卫**部分**保证（该守卫管的是 MCP 依赖方向），完整保证依赖 CI 的 `cargo-deny` 与红线守卫。
+
 ```
 +──────────────────────────────────────────────────────────────────────────────────────────────────────────+
 |                                  进程形态 1: 主 DAW 桌面进程 (yeban-app)                                  |
