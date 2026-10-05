@@ -2714,3 +2714,29 @@ takes the binary path via an argument so it is **locally testable against the de
 so a future failure is self-explaining; and only then have the workflow call it. Wiring CI to measure a new object
 without a locally reproducible script was the mistake — the same "instrument first, then trust" lesson this session
 keeps paying for.
+
+### Round 92: the meta-lesson — a failing step whose output is redirected into the step summary is unreadable by construction
+
+Two bench dispatches failed with **zero log output** (`37292000410`, `37292452335`). I first diagnosed that as
+"the step died before its first `echo`" and then, in the same breath, suspected a timeout. **Both were wrong.**
+
+The actual cause: the step ended with
+
+```yaml
+} | tee /tmp/rss-summary.md >> "$GITHUB_STEP_SUMMARY"
+```
+
+so the whole block's stdout was redirected **into the step summary file**. A failing step therefore proves
+*only* that it failed — the reason lives in the summary, which `gh run view --log-failed` does not return.
+
+Two errors of method, both of which this project keeps re-teaching:
+1. **Treating "no output" as a diagnosis.** Absence of output is consistent with a redirect, a buffering effect,
+   a killed process group, or an instant death; it distinguishes none of them.
+2. **A grep hit taken as evidence.** My "timeout" signal was my own `grep -aE 'timeout'` matching the literal
+   `TIMEOUT=900` inside the echoed script body. A pattern match on echoed source is not an observation of behaviour.
+
+**Rules adopted.**
+- A CI step that can fail **must** leave its output in the **log**; copy into `$GITHUB_STEP_SUMMARY` only *after*
+  teeing to the log (`} 2>&1 | tee "$LOG"` then append `$LOG` to the summary). Fixed in this round for the bench lane.
+- When a step fails with no output, the first move is to check **where its stdout went**, not to theorise about hangs.
+- When grepping CI logs, exclude the echoed script body (it contains the same words as the output by construction).
