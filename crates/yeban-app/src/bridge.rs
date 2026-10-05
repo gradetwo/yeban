@@ -317,6 +317,30 @@ pub fn tick_to_px(tick: u64, ticks_per_pixel: u64) -> Result<u32, BridgeError> {
     u32::try_from(tick / ticks_per_pixel).map_err(|_| BridgeError::PixelOverflow { tick })
 }
 
+/// `[UI-NOTE-003]` 把**铅笔决策**变成一个**可撤销的**模型操作（`Op::AddNote`）。
+///
+/// 为什么是这一层: `Op` 自带 `apply_inverse`（`yeban-model/src/ops.rs`），所以"画一个音符"**构造上就可撤销**,
+/// 不需要另写一份反向逻辑; 而 UI 与 MCP 只要都调用本函数, 就**共用同一实现**（目标里"撤销入口两侧同接"的实质）。
+/// `note_id` 由调用方给出（通常是 `EntityId::new()`）, 便于判据与重放。
+#[must_use]
+pub fn plan_to_add_note(
+    plan: NotePlan,
+    track_id: yeban_model::ids::EntityId,
+    clip_id: yeban_model::ids::EntityId,
+    note_id: yeban_model::ids::EntityId,
+) -> yeban_model::ops::Op {
+    yeban_model::ops::Op::AddNote {
+        track_id,
+        clip_id,
+        note: yeban_model::music::MidiNote::new(
+            note_id,
+            plan.start_tick,
+            plan.pitch,
+            plan.duration_ticks,
+        ),
+    }
+}
+
 /// `[UI-NOTE-003]` 铅笔（或双击）要创建的**音符参数**：起点、音高、时值。
 ///
 /// 这是"决策"的结果, 还不是模型改动 —— 真正的插入必须经过撤销与 MCP（下一层），
@@ -2721,6 +2745,47 @@ mod tests {
             vis.len(),
             total
         );
+    }
+
+    #[test]
+    fn planning_a_note_produces_an_operation_that_inserts_exactly_one() {
+        // 判据（第 232 轮第 1 步）：`NotePlan` 变出的 op **应用后该片段音符数恰 +1**,
+        // 且新增音符的 tick/pitch/时值与 plan **逐项相等** —— 这是"决策"与"模型改动"之间的接口。
+        let mut project = yeban_model::samples::filled_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        let plan = NotePlan {
+            start_tick: 1_440,
+            pitch: 64,
+            duration_ticks: view.ppq,
+        };
+        // track/clip 身份取自**工程本身**, 不编造。
+        let track_id = *project.tracks.keys().next().expect("工程必须有轨道");
+        let clip_id = *project.clip_pool.keys().next().expect("工程必须有片段");
+        let note_id = yeban_model::ids::EntityId::new();
+        let notes_before = project
+            .clip_pool
+            .get(&clip_id)
+            .and_then(|entry| entry.content.notes())
+            .map_or(0, std::collections::BTreeMap::len);
+
+        let op = plan_to_add_note(plan, track_id, clip_id, note_id);
+        op.apply(&mut project).expect("插入必须成功");
+
+        let notes_after = project
+            .clip_pool
+            .get(&clip_id)
+            .and_then(|entry| entry.content.notes())
+            .map_or(0, std::collections::BTreeMap::len);
+        assert_eq!(notes_after, notes_before + 1, "应用后音符数必须恰 +1");
+        let inserted = project
+            .clip_pool
+            .get(&clip_id)
+            .and_then(|entry| entry.content.notes())
+            .and_then(|notes| notes.get(&note_id))
+            .expect("新音符必须可按键取回");
+        assert_eq!(inserted.start_tick, plan.start_tick);
+        assert_eq!(inserted.pitch, plan.pitch);
+        assert_eq!(inserted.duration_ticks, plan.duration_ticks);
     }
 
     #[test]
