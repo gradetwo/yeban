@@ -589,3 +589,30 @@ jobs:
             grep -rn "PENDING" docs/DEVELOPMENT_LEDGER.md | head -40 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  goldens (生成分平台基准图集):
+    if: inputs.gate == 'goldens'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - name: 系统库 (GUI 链接 / 字体)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev \
+            libgl1-mesa-dev libasound2-dev fonts-noto-cjk
+      - name: 在 Linux 上生成基准（YEBAN_WRITE_GOLDEN=1）
+        run: |
+          set -euo pipefail
+          # 为什么要专门跑这一档: 基准是**分平台**的（macOS 走 CoreText、Linux 走 FreeType/fontconfig，
+          # 字形与抗锯齿不同 ⇒ 像素必然不同），所以 Linux 的基准只能在 Linux 上生成，不能由 macOS 的图充当。
+          YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1 2>&1 | tail -5
+          ls -la crates/yeban-app/tests/golden/linux/
+      - name: 上传基准（供集成者复核后入库）
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-linux
+          path: crates/yeban-app/tests/golden/linux/
