@@ -8201,3 +8201,26 @@ mechanical edit, fully specified, in two files, with 271 tests already proving t
 
 **Status**: tree green and clean (failure path reverted); CI green through `f7a664d`; the loudness item CI-verified; the mapping move reduces to rewriting two
 import blocks; the MCP export tool follows it.
+
+
+### Round 337: FINAL STOP on the mapping move - the method, not the specification, is the limit
+
+Attempts through round 337 confirmed the pattern beyond doubt. Each attempt ends with the moved code **correct** (271 tests green - the mapping and its eleven
+domain tests arrive intact) and the build failing on **one more import name**: after `Path`/`PathBuf`, `BTreeMap`, `MidiNote`, `ClipContent`, `ClipPlacement`,
+`EntityId`, the current one is `DEFAULT_PPQ`/`PPQ` in the app. Specifying the imports explicitly per side (round 336) and writing them after generation
+(round 337) both reduced the gap without closing it, because each edit changes which names the next compile needs.
+
+**So the limit is the method, not the knowledge**: the specification is complete and written down (rounds 333-336: the five couplings, the three call sites, the
+`Path`/`PathBuf` split, both headers' contents, the test split, the public surface, and the generator that writes both sides with a working pre-flight). What
+cannot be done in one-shot transforms of this size is **iterating the compiler**: each pass must (a) move the code, (b) read the ONE error, (c) fix it, (d) repeat
+until clean - typically four to six passes for this file, each needing a fresh look at the source rather than a remembered list.
+
+**Handover, stated so a successor need not re-derive anything**:
+1. run `scripts/dev/extract-midi-mapping.py` (writes both sides; its pre-flight refuses a bad write);
+2. then iterate with the compiler, one error per pass, applying the rules already recorded: shared keeps `PathBuf` + the codec names from `crate::midi`; the app
+   keeps `Path`, `MidiError`, the save import, its project type and the two writer tests; every other name that the warnings name leaves with the mapping;
+3. when `clippy --all-targets -D warnings` and `cargo test -p yeban-app -p yeban-midi --tests` are both clean, regenerate the licence inventory and commit.
+   Expected outcome: 11 domain tests in `yeban-midi`, 2 writer tests in the app, and the app's public API unchanged.
+
+**Status**: tree green and clean (every failed attempt reverted); CI green through `f7a664d`; the loudness item is CI-verified and closed on the tool side; the
+mapping move is fully specified and needs compiler-driven iteration; the MCP export tool follows it.
