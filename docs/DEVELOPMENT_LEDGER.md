@@ -2661,3 +2661,23 @@ Conclusions with evidence:
 > **本清单的意义**：追认之后，"还剩什么"不再散落在报告里 —— 8.1 已完成、8.2 有明确地盘与排队状态、
 > 8.3 是**只能人做**的事。任何一项都不构成单点阻塞：8.2 的每一项都可以在对应 crate 空出来时立刻开工。
 
+
+### Round 90: first *applied* instance of the round-86 performance discipline (serial -> parallel)
+
+The discipline written in round 86 ("attribute with numbers, then optimize the top contributor; small investment, big payoff")
+was applied to a real bottleneck in this very session:
+
+| | value |
+| :--- | :--- |
+| Symptom | the text-class fetch advanced ~5 files/round for ~30 rounds (ruling B, 1588 files) |
+| Attribution (numbers) | not bandwidth: the fetcher processed **one file per request, single-threaded** (`urlopen` in a loop) |
+| Fix (small) | a bounded-parallel fetcher: `ThreadPoolExecutor(max_workers=16)`, reusing the existing `upstream_url` (so the UPSTREAM_STRIP evidence table still applies) and verifying each file's sha256 **before** writing |
+| Result | `todo=123 ok=119 mismatch=0 skip=4 404=0 err=0` in **14.6 s** (previously ~30 rounds of wall-clock waiting) |
+| Post-verification | official verifier: `磁盘上存在 1584 | 应分发却缺 0 | 字节不符 0` (exit 0) |
+
+**Kept honest**: the parallel path did not weaken any check — every file is still sha256-verified against the manifest
+before it is written, and `mismatch=0` was observed rather than assumed. The 4 `skip`s are the structurally unfetchable
+archive-form items (predicted in round 89, confirmed here).
+
+**Lesson**: the discipline earns its keep when applied to *our own tooling*, not just to the DAW. The measurable structure
+here was "one request at a time", and the fix cost ~20 lines.
