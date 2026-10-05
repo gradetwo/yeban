@@ -6459,3 +6459,29 @@ path produce the **same** `Op` for the same inputs - which is the only way "共�
 **The lesson, again of the same family**: I asserted an absence ("MCP has none") from a dependency reading plus an inference, without
 grepping the tool registry that was one command away. Rounds 240/246/261 each recorded a version of this; the reliable habit is to grep
 for the capability before declaring it missing.
+
+### Round 263: both sides already build the same Op - the sharing is real, and forcing one through the other would be wrong
+
+Read the two constructions side by side rather than assuming one should call the other:
+
+| side | how it builds the operation |
+| :--- | :--- |
+| MCP (`domain/notes.rs:173,214`) | `MidiNote::new(id, start_tick, pitch, duration_ticks)`, then sets `velocity` from the payload, then `validate()`, then `Op::AddNote { track_id, clip_id, note }` |
+| UI (`yeban_model::note_plan::plan_to_add_note`) | `MidiNote::new(note_id, plan.start_tick, plan.pitch, plan.duration_ticks)` inside `Op::AddNote { track_id, clip_id, note }` |
+
+**They already share the implementation that matters**: the note constructor and the op variant are both `yeban-model` items, and neither
+crate has its own copy of them. What differs is what each side KNOWS - MCP receives explicit fields including a velocity and validates them;
+the UI derives the fields from a click and uses the default velocity - and that difference is legitimate, not duplication.
+
+**So the planned refactor would have been a mistake, and it is worth saying why concretely**: routing MCP's `NoteOp::Add` through
+`plan_to_add_note` would discard MCP's `velocity` (a `NotePlan` has no velocity field) and bypass its `validate()` call, i.e. it would
+degrade a richer entry point to fit a thinner one. "共用同一实现" cannot mean "the second caller must lose information".
+
+**What remains, and it is the useful part**: make the sharing CHECKABLE rather than asserted - a criterion that builds the same note through
+both paths (UI: a plan with the default velocity; MCP: an explicit note with that velocity) and asserts the resulting `Op`s are equal. That
+is the only form in which "both sides share one implementation" can be a fact rather than a claim, and it also documents the intended
+relationship: the UI path is the special case where the fields come from a gesture.
+
+**Third correction in three rounds on this same question** (261: "MCP has none" - wrong; 262: "the gap is duplication" - half right; 263: the
+duplication is real but correct). Each correction came from one more read, and none from reasoning about the architecture - which is now
+three data points for the habit this session keeps recording: read both sides before deciding one should call the other.
