@@ -4253,3 +4253,24 @@ schema entry necessarily breaks the contract - the schema *is* part of the regis
 Progress this round beyond the code: two of my own anchor mistakes were caught and fixed by the repository's contract tests
 rather than by review - inserting the `ToolSpec` at the array's START violated "documented tools first, extensions after", and
 the read-only list assertion compares Vec **order**, so the new name had to go last.
+
+### Round 163b: the tool demonstrably produced real bundles - and they must not live in the repo
+
+While the contract tests were failing, three artifacts appeared next to the crate:
+
+```
+crates/yeban-mcp/yeban-diagnostics-1791214869-2c119eb.zip
+crates/yeban-mcp/yeban-diagnostics-1791214874-88a64a4.zip
+crates/yeban-mcp/yeban-diagnostics-1791214903-0d3a361.zip
+```
+
+Inspecting one shows the collector working end to end: the archive contains `env.txt`, `git.txt`, `config.json` and
+`MANIFEST.txt`, and the manifest's first lines carry the schema version, the generation timestamp and the entry count. So
+`apply` really runs, really writes a zip, and really emits a hash-based name - this is the first end-to-end evidence for D56
+beyond unit tests.
+
+**They were deleted, not committed**: a test that writes into the crate directory pollutes the repository, and `git status`
+showed them as untracked files that a careless `git add -A` would have landed. Follow-up for the next round: the test (or the
+tool's default when no `outDir` is given) should write into a temporary directory, and the crate directory must be asserted
+clean. Until that is done, any run of this test suite leaves artifacts behind, which is exactly the kind of thing the
+repository's "no unregistered binaries" red line exists to prevent.
