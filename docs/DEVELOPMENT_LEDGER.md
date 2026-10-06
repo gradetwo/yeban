@@ -9556,3 +9556,42 @@ region start field that real projects also write as 0) are registered in the los
 (仅系统 10 -> 11, total 72 -> 73) and both guards re-run green. `ROAD-M4-007` and the `.als` exporter are unchanged.
 
 **Status**: `354f74b` to be pushed by this round; CI verdict not yet read and not claimed.
+
+
+### Round 394: the Logic exporter reconciled chunk by chunk against real Logic files - 24 families missing, and that is now written down
+
+`f35e5a2` turns the Logic exporter's claim from "structure agrees with the measured layout" into something a reader can check: a path-gated diagnostic test
+(`logic_chunk_families_compare_side_by_side_when_the_demos_are_present`) enumerates the chunk identifiers of a real `ProjectData` and of ours side by side, and two
+headless criteria carry the teeth. The choice of a test rather than a dev binary is right for this repository: same test binary, no new target, no new dependency, and
+it reuses the "path missing => skip" discipline the module already had.
+
+**What it measured** (tags are little-endian, so stored `gnoS` reads as `Song`):
+
+* **ours**: `Song`, `EvSq`, `MSeq` - three families, 1356 bytes for the filled sample project;
+* **real `Swing!`**: 24 families across 4626 records; **real `ocean eyes`**: 26 families across 4094 records; **union 27**;
+* **exact set difference (real minus ours) = 24 families**: `AFld AuCO AuCU AuCn AuEv AuFl AuRg Clip CorM Envi GAdd GenM Grid Hypr InSt Layr ScSt SngO Styl Trak
+  Trns TxSq TxSt Vide`;
+* **no nested chunk identifiers in either file** - the container is flat, walked by the `+0x1c` size field - though real `gnoS` payloads *do* begin with the `#G`
+  magic, which the test prints rather than implying nesting.
+
+**Each missing family became a `未映射:` loss entry** naming the chunk and its stored bytes, and - this is the part that matters - the entries say the **purpose is
+unproven** in this repository rather than guessing what the chunk means. Two cite real evidence instead: `AuRg` points at groove's `gRuA` audio-material record, and
+`Trak` points at the existing `TRACK_OBJECTS_UNMAPPED` note about `karT`.
+
+**One field-level deviation is registered as `非等价:`** and I am keeping it: real records fill `+4` (measured 1..=8), `+0x16` (=2), `+0x1a` (=1) and root header
+`4..0xf`, and real `gnoS` payloads start with `#G`, while our writer writes zeros there. That is **writing different values, not omitting a field**, and the structural
+verdict found no case where a real file lacks something we write - so nothing needed a stop. Dropping this entry was offered as an option; keeping it is the honest
+choice, because the difference is measured and a reader who opens both files will see it.
+
+**Verified independently**: the commit changes exactly one file; `yeban-render` with the feature runs **94 passed** (from 90); `phase-status` and the other guards are
+green and `light` 门禁通过; and `git ls-files | grep -icE 'logicx|ProjectData|Demosongs'` is **0**, so no Apple path entered the repository. The constants hold only chunk
+names and generic offset facts - no bytes, no payload strings - and the demo-reading test points at `/nonexistent/...` paths in its skip proof, returning early rather
+than failing.
+
+**A metric slip of mine again, recorded because it is the same failure as before**: I checked "the loss table has entries" with `grep -c` and got 18 where the entries
+number 25, because I counted **lines** and the entries do not map one-to-one onto lines; and my `cargo tree` count read 758/758 instead of the line's 296/296 because I
+used a different regex against a differently-formatted stream. In both cases the **equality** I was testing held, but the numbers I printed were not the numbers the
+claim was about. Stating the metric as a sentence before running the command would have caught both - the rule written in round 384, broken twice more here.
+
+**Status**: `f35e5a2` pushed; `ROAD-M4-011` stays 部分 with its one unproven claim (Logic Pro opening the output) and 25 registered losses; Phase 4 6 完成 / 5 部分 /
+0 PENDING; no open question.
