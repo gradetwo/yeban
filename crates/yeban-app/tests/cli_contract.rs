@@ -738,6 +738,41 @@ fn default_artifact_refuses_the_in_process_mcp_switch() {
     assert!(run.stdout.is_empty(), "不该有 stdout");
 }
 
+/// 判据 B7c: **默认产物层面**拒绝 `--export-als`（`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
+///
+/// 与 B7b 同一条纪律、另一个产物形态：默认构建里 `experimental-als-export` 没被编译
+/// （那条导出路径与可选的 `flate2` 都不在依赖图上），于是这个开关**必须**以用法错误
+/// （退出码 2）被拒，并**点名**缺的是哪个 feature —— 绝不静默地"以为写了其实没写"。
+///
+/// 为什么只在默认构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同文件的
+/// `export_als_writes_a_gzip_document_and_prints_the_loss_summary`。
+#[cfg(not(feature = "experimental-als-export"))]
+#[test]
+fn default_artifact_refuses_the_experimental_als_switch() {
+    let dir = scratch_dir("als-not-compiled");
+    let target = dir.join("never.als");
+    let run = invoke(&["--export-als", target.to_str().expect("utf8")]);
+    assert_eq!(
+        run.code, 2,
+        "默认产物必须拒绝 --export-als; stderr={}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("--export-als") && run.stderr.contains("experimental-als-export"),
+        "拒绝必须同时点名开关与缺的 feature: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("用法:"),
+        "用法错误必须带用法提示: {}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "不该有 stdout");
+    assert!(!target.exists(), "被拒的开关不许写出任何文件");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 判据 B8: `--export-elements` 与 `--dump-elements` 同源（同一批行、同一个字节数）。
 #[test]
 fn export_elements_matches_dump_elements() {
@@ -1055,6 +1090,121 @@ fn export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing() {
     assert!(run.stderr.contains("导出 MIDI 到"), "{}", run.stderr);
     assert!(!blocked.exists(), "失败不得留下目标文件");
     assert!(!dir.join("missing").exists(), "失败不得凭空造出目录");
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据 B14: 带 `experimental-als-export` 时，`--export-als` 写出 Gzip 文档并把
+/// **映射损失表**逐条打到 stdout（`ADR-0001 D47` 的价值 = 损失表对用户可见）。
+///
+/// 与 B12 同一条思路，但断言的是另一件事：B12 证"字节能被 SMF 读取面读回"，
+/// 这里证"**没被映射的东西真的被说出来了**" —— 只打印一个计数不算交付。
+#[cfg(feature = "experimental-als-export")]
+#[test]
+fn export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
+    let dir = scratch_dir("export-als");
+    let source = write_real_container(&dir, "song.yeban");
+    let source = source.to_str().expect("utf8");
+    let first = dir.join("song.als");
+    let second = dir.join("song-again.als");
+
+    let run = invoke(&[
+        "--open",
+        source,
+        "--export-als",
+        first.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+
+    let line = line_with(&run.stdout, "exported-als:").expect("必须有 exported-als: 行");
+    let losses: usize = field(line, "losses")
+        .expect("losses=")
+        .parse()
+        .expect("条数是整数");
+    assert!(losses >= 1, "本仓库无参考 .als ⇒ 必然带损失条目: {line}");
+    assert!(
+        line.contains("from=") && line.contains("song.yeban"),
+        "来源必须明写: {line}"
+    );
+    let expected = std::fs::metadata(&first).expect("文件在").len();
+    assert_eq!(
+        field(line, "bytes").as_deref(),
+        Some(expected.to_string().as_str()),
+        "打印的字节数必须是实际落盘字节数: {line}"
+    );
+
+    // 损失表**真的**打出来了：计数行 + 逐条行, 且条数与 `count=` 对得上（超上限则截断并明写）。
+    let count_line = line_with(&run.stdout, "als-losses:").expect("als-losses: 行");
+    let counted: usize = field(count_line, "count")
+        .expect("count=")
+        .parse()
+        .expect("整数");
+    assert_eq!(counted, losses, "{count_line}");
+    let shown = run
+        .stdout
+        .lines()
+        .filter(|text| text.starts_with("als-loss: "))
+        .count();
+    let cap = yeban_app::cli::MAX_ALS_LOSS_LINES;
+    assert_eq!(shown, counted.min(cap), "显示条数 = min(条数, 上限)");
+    if counted > cap {
+        assert!(
+            run.stdout.contains("als-losses-truncated:") && run.stdout.contains("more"),
+            "超上限必须礼貌截断并写明还剩几条:\n{}",
+            run.stdout
+        );
+    }
+    assert!(
+        run.stdout.contains("未映射:") || run.stdout.contains("非等价:"),
+        "条目必须带机器可读的两分法前缀: {}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains("panicked") && !run.stderr.contains("panicked"),
+        "不许 panic: {}",
+        run.stderr
+    );
+
+    // 产物是 Gzip（魔数），且同一工程两次导出**逐字节相同**（与 --export-midi 同款确定性口径）。
+    let bytes = std::fs::read(&first).expect("读 .als");
+    assert_eq!(&bytes[..2], &[0x1F, 0x8B], "Gzip 魔数必须是 1f 8b");
+    let again = invoke(&[
+        "--open",
+        source,
+        "--export-als",
+        second.to_str().expect("utf8"),
+    ]);
+    assert_eq!(again.code, 0, "stderr={}", again.stderr);
+    assert_eq!(
+        std::fs::read(&first).expect("读 a"),
+        std::fs::read(&second).expect("读 b"),
+        "同一工程两次 --export-als 的字节必须完全相同"
+    );
+
+    // 目标父目录不存在 ⇒ 复用导出失败那一档（退出码 5），且不留半个文件。
+    let blocked = dir.join("missing").join("out.als");
+    let failed = invoke(&[
+        "--open",
+        source,
+        "--export-als",
+        blocked.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        failed.code, 5,
+        "不可写路径必须退出 5; stderr={}",
+        failed.stderr
+    );
+    assert!(failed.stderr.contains("导出 .als 到"), "{}", failed.stderr);
+    assert!(!blocked.exists(), "失败不得留下目标文件");
+    assert!(!dir.join("missing").exists(), "失败不得凭空造出目录");
+
     let leftovers: Vec<String> = std::fs::read_dir(&dir)
         .expect("列目录")
         .filter_map(Result::ok)

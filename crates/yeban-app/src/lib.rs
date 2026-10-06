@@ -53,6 +53,12 @@
 //! 映射表（轨道 → MIDI 轨/通道、`MidiNote` 字段 → 事件、PPQ 口径）写在
 //! [`export_midi`] 的模块文档与 `docs/ledger/app-export-midi-notes.md`。
 //!
+//! **实验性 `.als` 导出**（ADR-0001 D47 的同一条出口，非默认 feature
+//! `experimental-als-export`）：[`export_als`] 把当前工程交给 `yeban-render` 的 `als`
+//! 模块，把返回值原子落盘并把**映射损失表**逐条打到 stdout —— 本 crate 里**没有**
+//! 第二份 `.als` 编码器，也不直接依赖 `flate2`。默认构建里 `--export-als` 是一次
+//! 点名 feature 的用法错误（退出码 2），绝不静默忽略。
+//!
 //! 仍未接线的部分（走带 / Op 归约 / 设备链 / 自动化 / 声卡宿主 / UI→模型写入）
 //! 逐条记在 `docs/ledger/app-mixer-notes.md` §7 与 `docs/ledger/app-binding-notes.md`
 //! 的未实现项里；命令行的边界与未实现项记在 `docs/ledger/app-cli-notes.md`。
@@ -63,6 +69,7 @@ pub mod bridge;
 pub mod cli;
 pub mod elements;
 pub mod engine_host;
+pub mod export_als;
 pub mod export_midi;
 pub mod headless_idle;
 pub mod host;

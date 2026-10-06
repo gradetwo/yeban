@@ -136,6 +136,18 @@ ui-test-port = ["dep:yeban-ui-test-port"]
 # 它同时打开 `yeban-mcp/mcp-http`: 那一边的监听代码同样默认关着。
 in-process-mcp = ["dep:yeban-mcp", "yeban-mcp/mcp-http"]
 
+# `experimental-als-export`: `--export-als` 的实验性 Ableton `.als` 导出
+# (`[ARCH-FMT-002]` / `[ROAD-M4-007]`; ADR-0001 **D47** 把导出的唯一出口定为 app CLI)。
+#
+# **不在 `default` 里** —— AGENTS.md §2 红线 6 与 `scripts/guards/policy_check.py` 的
+# `FORBIDDEN_DEFAULT_FEATURES` 都点名了这个特性。它只是把 `yeban-render` 那一边的
+# 同名 feature 转发开: 真正的导出实现与可选的 `flate2` 依赖都住在 `yeban-render`,
+# 本 crate **不**直接依赖 `flate2`, 也**不**在这里复制第二份 `.als` 编码器
+# (与 `--export-midi` 只做薄封装、字节由 `yeban-render` 的 SMF 编码器产出同款)。
+# 默认构建里这个开关是**一次点名 feature 的用法错误**(退出码 2), 绝不静默忽略 ——
+# 与 `--enable-mcp-http` / `in-process-mcp` 同款(见 `src/cli.rs` 的 `ParseError::AlsNotCompiled`)。
+experimental-als-export = ["yeban-render/experimental-als-export"]
+
 # ---------------------------------------------------------------------------
 # dev-dependencies: 让真实界面的 Tier-1 判据**真的被执行**
 # ---------------------------------------------------------------------------

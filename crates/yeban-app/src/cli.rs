@@ -52,6 +52,7 @@ use yeban_render::midi::MidiFormat;
 
 use crate::bridge::{BridgeError, ViewState};
 use crate::elements::ElementRegistry;
+use crate::export_als::AlsExportError;
 use crate::export_midi::{MidiExportError, MidiExportReport, export_project_to_file};
 use crate::input::{InputContext, Modifiers, PhysicalKey};
 use crate::open::{
@@ -73,9 +74,10 @@ pub const EXIT_USAGE: u8 = 2;
 pub const EXIT_OPEN: u8 = 3;
 /// `--save-as` 失败（I/O 或容器写出被拒）。
 pub const EXIT_SAVE: u8 = 4;
-/// `--export-elements` / `--export-midi` 失败（I/O、编码被拒、工程无 MIDI 内容、PPQ 漂移）。
+/// `--export-elements` / `--export-midi` / `--export-als` 失败（I/O、编码被拒、
+/// 工程无 MIDI 内容、PPQ 漂移）。
 ///
-/// **不发明新码**（ADR-0001 D25 的口径）：MIDI 导出复用既有的"导出失败"这一档。
+/// **不发明新码**（ADR-0001 D25 的口径）：导出失败复用同一档。
 pub const EXIT_EXPORT: u8 = 5;
 
 /// CI 的握手行：它出现 = 进程真的没构造窗口、没进阻塞事件循环。
@@ -124,6 +126,19 @@ pub const MCP_HTTP_SWITCH: &str = "--enable-mcp-http";
 /// 与 [`MCP_HTTP_SWITCH`] 同一个理由：用法文本在默认构建里也要能提到它。
 pub const MCP_HTTP_ENV: &str = "YEBAN_MCP_HTTP";
 
+/// `--export-als` 的字面值（实验性 `.als` 导出的**唯一**用户出口，ADR-0001 **D47**）。
+///
+/// 与 [`MCP_HTTP_SWITCH`] 同一个理由：用法文本与"本次构建没编译它"的错误信息在
+/// **默认构建**里也要打得出来，因此字面值住在这里，而不住在会被 `cfg` 掉的模块里。
+pub const ALS_EXPORT_SWITCH: &str = "--export-als";
+
+/// 让 `--export-als` 真的可执行的那个**非默认** feature 名。
+///
+/// 用法错误必须**点名**它（`ParseError::AlsNotCompiled`）：说"不支持导出"没用，
+/// 用户需要知道重编译时要加哪个开关。它同时是 `scripts/guards/policy_check.py` 的
+/// `FORBIDDEN_DEFAULT_FEATURES` 成员 —— 默认构建里它必须关着。
+pub const ALS_EXPORT_FEATURE: &str = "experimental-als-export";
+
 // ---------------------------------------------------------------------------
 // 用法与版本
 // ---------------------------------------------------------------------------
@@ -158,6 +173,14 @@ pub fn usage_text() -> String {
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
                            字节由 yeban-render 的**唯一** SMF 编码器产出 (ADR-0001 D47),
                            与 --export-elements / --save-as 共用同一份**原子**落盘实现
+  --export-als <path>      把当前工程导出成**实验性** Ableton Live Set (`.als`, 即
+                           Gzip 压缩的 LiveSet XML) [ARCH-FMT-002]; 与 --export-midi
+                           并列, 同属 ADR-0001 D47 的\"导出唯一出口 = app CLI\";
+                           **映射损失表逐条打到 stdout** (`als-losses:` / `als-loss:` 行),
+                           因此\"哪些构造没被映射\"对用户可见 (太长时礼貌截断并写明还剩几条);
+                           产物是\"Ableton 风格\"而**不**声称能被 Live 11/12 打开
+                           (仓库内无参考 .als); **只在** `--features {als_feature}` 的
+                           构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
   --project-sample <default|filled|empty>
                            选择\"没有 --open 时\"用哪个工程 (默认 default);
@@ -183,7 +206,7 @@ pub fn usage_text() -> String {
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
   yeban-app --open a.yeban 用打开的那个工程启动 GUI
   任一\"无窗口开关\"(--headless / --dump-elements / --export-elements /
-  --export-midi / --print-shortcuts / --save-as) 都不构造窗口、不进事件循环,
+  --export-midi / --export-als / --print-shortcuts / --save-as) 都不构造窗口、不进事件循环,
   并打印握手行 `{handshake}`。
   `--headless-idle` 是**另一档**: 它同样不创建 OS 窗口、不进阻塞事件循环, 但它**会**
   构造一个软件窗口 + 真控件树并光栅化一帧, 因此握手行是 `{idle_handshake}`
@@ -197,15 +220,16 @@ pub fn usage_text() -> String {
                                (输出里 `project-source:` 会说明)
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
-  --export-elements 与 --export-midi 与 --save-as 任意组合
-                               顺序固定: **先**导出元素, **再**导出 MIDI,
+  --export-elements 与 --export-midi 与 --export-als 与 --save-as 任意组合
+                               顺序固定: **先**导出元素, **再**导出 MIDI, **再**导出 .als,
                                **最后**保存工程; 任一导出失败 ⇒ 不写工程 (退出码 {export})
   --export-midi 不给 --open    导出的是演示工程, 输出 `exported-midi: ... from=sample=...` 明说
+  --export-als 不给 --open    导出的是演示工程, 输出 `exported-als: ... from=sample=...` 明说
   --help / -h, --version / -V  短路: 出现即打印并退出 {ok}, 其余参数(含未知参数)不再检查
-  --open / --save-as / --export-elements / --export-midi
+  --open / --save-as / --export-elements / --export-midi / --export-als
                                各只能给一次; 重复给 = 用法错误 (退出码 {usage})
   --headless-idle 与 --save-as / --export-elements / --export-midi /
-  --dump-elements / --print-shortcuts
+  --export-als / --dump-elements / --print-shortcuts
                                不能组合 = 用法错误 (退出码 {usage}): 那会把写盘 / 导出
                                **静默**丢掉, 而本模式的输出契约只有一条 —— 建树 + 空闲 + 读数
   --headless-idle 与 --idle-seconds
@@ -224,13 +248,15 @@ pub fn usage_text() -> String {
   {ui} 界面路径失败 (无法创建窗口 / 事件循环异常 / 工程无法投影成界面)
   {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本 /
       --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
-      --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp`)
+      --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
+      --export-als 在本次构建未编译 `{als_feature}`)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
-  {export} --export-elements 失败 / --export-midi 失败 (I/O;
+  {export} --export-elements 失败 / --export-midi 失败 / --export-als 失败 (I/O;
       或工程里没有可导出的 MIDI 音符 / 拍号分母不是 2 的幂 /
-      工程 PPQ 与编码器默认 PPQ 不一致 / 编码器拒绝越界的音高或力度)
+      工程 PPQ 与编码器默认 PPQ 不一致 / 编码器拒绝越界的音高或力度 /
+      .als 的映射或 Gzip 封装失败)
 
 示例 (全部已在真二进制上跑过):
   yeban-app --headless
@@ -247,6 +273,7 @@ pub fn usage_text() -> String {
         idle_handshake = HEADLESS_IDLE_HANDSHAKE,
         max_idle = MAX_IDLE_SECONDS,
         mcp_env = MCP_HTTP_ENV,
+        als_feature = ALS_EXPORT_FEATURE,
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -357,6 +384,14 @@ pub struct Options {
     pub export_elements: Option<PathBuf>,
     /// `--export-midi <path>`：当前工程导出成标准 MIDI 文件（SMF 1）[ADR-0001 **D47**]。
     pub export_midi: Option<PathBuf>,
+    /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
+    /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
+    ///
+    /// **只在** [`ALS_EXPORT_FEATURE`] 打开的构建里可执行；默认构建给它 =
+    /// [`ParseError::AlsNotCompiled`]（退出码 [`EXIT_USAGE`]）—— 与
+    /// [`Self::enable_mcp_http`] 同款，绝不静默忽略。它**不需要**界面投影
+    /// （只依赖 `YebanProjectV1`，与 `--export-midi` / `--save-as` 同族）。
+    pub export_als: Option<PathBuf>,
     /// `--open <path>`：当前工程来自这个文件（否则来自 [`Self::sample`]）。
     pub open: Option<PathBuf>,
     /// `--save-as <path>`：把当前工程原子落盘到这里。
@@ -394,7 +429,8 @@ impl Options {
     ///
     /// 语义表（`--help` 的"组合语义"一节与判据都按这张表）：
     /// `--help` / `--version` / `--headless` / `--dump-elements` / `--print-shortcuts` /
-    /// `--export-elements` / `--export-midi` / `--save-as` 各自都能单独把进程推离 GUI 路径。
+    /// `--export-elements` / `--export-midi` / `--export-als` / `--save-as`
+    /// 各自都能单独把进程推离 GUI 路径。
     ///
     /// `--headless-idle` **也**在这一档里（它确实不建 OS 窗口），但它是**唯一**
     /// 会构造 Slint 对象的无窗口开关 ⇒ `main.rs` 必须在 `wants_gui()` 之前先看它，
@@ -408,6 +444,7 @@ impl Options {
             || self.print_shortcuts
             || self.export_elements.is_some()
             || self.export_midi.is_some()
+            || self.export_als.is_some()
             || self.save_as.is_some()
             || self.headless_idle
     }
@@ -478,6 +515,13 @@ pub enum ParseError {
     /// 控制面要挂在**正在跑的 app 进程**里（形态 A 的定义）；批处理路径跑完就退出，
     /// 挂上去等于刚一绑好就拆掉。接受这个组合只会让人以为"服务起来了"。
     McpHttpNeedsGui(&'static str),
+    /// 给了 `--export-als`，但这次构建**没有**编译 [`ALS_EXPORT_FEATURE`]
+    /// （`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
+    ///
+    /// 与 [`Self::McpHttpNotCompiled`] 同一条纪律：默认构建里那段导出代码与 `flate2`
+    /// 都**不在依赖图上**，用户要的是一个 `.als` 文件而二进制里根本没有那个出口 ——
+    /// 那必须是一次**点名 feature 的**用法错误，而不是"以为写了其实没写"。
+    AlsNotCompiled,
 }
 
 impl ParseError {
@@ -529,6 +573,12 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`{MCP_HTTP_SWITCH}` 不能与无窗口开关 `{other}` 组合 —— 控制面要挂在正在跑的 \
                  GUI 进程里 (形态 A), 批处理路径挂上去只会刚绑好就拆掉"
+            ),
+            Self::AlsNotCompiled => write!(
+                formatter,
+                "`{ALS_EXPORT_SWITCH}` 需要本次构建带 `--features {ALS_EXPORT_FEATURE}` \
+                 (实验性 .als 导出默认关: AGENTS.md §2 红线 6 与 [MUST-GATE-009] 同一条纪律; \
+                 它就是 [ARCH-FMT-002] / [ROAD-M4-007] 那条导出的唯一用户出口)"
             ),
         }
     }
@@ -621,6 +671,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--export-als" => {
+                let value = take_value("--export-als", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.export_als,
+                    ALS_EXPORT_SWITCH,
+                    PathBuf::from(value),
+                )?;
+            }
             "--headless-idle" => {
                 reject_inline("--headless-idle", inline)?;
                 options.headless_idle = true;
@@ -661,6 +719,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.export_midi.is_some(), "--export-midi"),
+            (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
         ] {
             if given {
@@ -681,6 +740,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.export_midi.is_some(), "--export-midi"),
+            (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
             (options.headless_idle, "--headless-idle"),
         ] {
@@ -688,6 +748,13 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 return Err(ParseError::McpHttpNeedsGui(name));
             }
         }
+    }
+    // `--export-als` 的**编译期**那道开关（`[ARCH-FMT-002]` / `[ROAD-M4-007]`）：
+    // 默认构建里 `yeban-render` 的 `als` 模块与可选的 `flate2` 都不在依赖图上，
+    // 因此这个开关必须是一次**点名 feature** 的用法错误 —— 与 `--enable-mcp-http`
+    // 同款，绝不静默忽略（静默忽略只会让人以为 `.als` 写了）。
+    if options.export_als.is_some() && !cfg!(feature = "experimental-als-export") {
+        return Err(ParseError::AlsNotCompiled);
     }
     Ok(options)
 }
@@ -869,6 +936,19 @@ pub enum CliError {
         /// 导出层的原样裁决（含 `yeban-render` 编码器的拒绝原因）。
         source: MidiExportError,
     },
+    /// `--export-als` 失败（映射 / Gzip 封装 / 落盘）。
+    ExportAls {
+        /// 目标路径。
+        path: PathBuf,
+        /// 导出层的原样裁决（含 `yeban-render` 的 `als` 导出器的拒绝原因）。
+        source: AlsExportError,
+    },
+    /// `--export-als` 被送进了**没有**编译 `experimental-als-export` 的 [`run_batch`]。
+    ///
+    /// 防假绿的第二道（第一道在 `parse()`）：那段导出代码在默认构建里根本不存在，
+    /// 静默跳过只会让人以为 `.als` 写了。`Options` 的字段是公开的，判据可以直接
+    /// 构造这个组合，因此这一档必须存在。
+    AlsNotCompiled,
     /// `--headless-idle` 被送进了**零 Slint 依赖**的 [`run_batch`]。
     ///
     /// 这一档存在的唯一理由是**防假绿**：该开关的语义是"**真的**构造 Slint 控件树"，
@@ -893,9 +973,10 @@ impl CliError {
             | Self::Ui { .. }
             | Self::HeadlessIdleNotBatch
             | Self::McpHttpNotBatch => EXIT_UI,
+            Self::AlsNotCompiled => EXIT_USAGE,
             Self::Open { .. } => EXIT_OPEN,
             Self::Save { .. } => EXIT_SAVE,
-            Self::Export { .. } | Self::ExportMidi { .. } => EXIT_EXPORT,
+            Self::Export { .. } | Self::ExportMidi { .. } | Self::ExportAls { .. } => EXIT_EXPORT,
         }
     }
 }
@@ -925,6 +1006,18 @@ impl fmt::Display for CliError {
                     path.display()
                 )
             }
+            Self::ExportAls { path, source } => {
+                write!(
+                    formatter,
+                    "导出 .als 到 `{}` 失败: {source}",
+                    path.display()
+                )
+            }
+            Self::AlsNotCompiled => write!(
+                formatter,
+                "`{ALS_EXPORT_SWITCH}` 需要本次构建带 `--features {ALS_EXPORT_FEATURE}` \
+                 (默认构建里那条导出路径不存在; parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
+            ),
             Self::HeadlessIdleNotBatch => write!(
                 formatter,
                 "`--headless-idle` 不能走 run_batch: 那条路径零 Slint 依赖, \
@@ -946,7 +1039,11 @@ impl std::error::Error for CliError {
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
-            Self::Ui { .. } | Self::HeadlessIdleNotBatch | Self::McpHttpNotBatch => None,
+            Self::ExportAls { source, .. } => Some(source),
+            Self::Ui { .. }
+            | Self::HeadlessIdleNotBatch
+            | Self::McpHttpNotBatch
+            | Self::AlsNotCompiled => None,
         }
     }
 }
@@ -1342,7 +1439,8 @@ pub fn shortcut_lines() -> Vec<String> {
 /// 5. 边界声明行（`headless:` 开头，说清这一版无头**没有**验证什么）;
 /// 6. `--export-elements` 的 `exported:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
 /// 7. `--export-midi` 的 `exported-midi:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
-/// 8. `--save-as` 的 `saved:`。
+/// 8. `--export-als` 的 `exported-als:` + 损失表行（同样失败即止）;
+/// 9. `--save-as` 的 `saved:`。
 ///
 /// # Errors
 ///
@@ -1366,6 +1464,13 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // 静默接受只会让人以为服务起来了。`parse()` 已经拒了这条组合，这里是第二道
         // （`Options` 的字段是公开的，判据可以直接构造组合）。
         return Err(CliError::McpHttpNotBatch);
+    }
+    // `--export-als` 的防假绿第二道（与 `parse()` 同一条纪律）：默认构建里那条导出
+    // 路径根本不存在（`yeban-render` 的 `als` 模块与 `flate2` 都不在依赖图上）。
+    // 静默跳过 = 用户以为 `.als` 写了而磁盘上什么都没有。
+    #[cfg(not(feature = "experimental-als-export"))]
+    if options.export_als.is_some() {
+        return Err(CliError::AlsNotCompiled);
     }
 
     let loaded = load_project(options)?;
@@ -1418,6 +1523,19 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             }
         })?;
         lines.push(exported_midi_line(&report, &loaded));
+    }
+
+    // 顺序契约（`--help` 的"组合语义"一节）：元素 → MIDI → .als → 保存工程。
+    // 与 `--export-midi` 一样, 导出失败 ⇒ 直接 `Err`, **不**继续保存。
+    #[cfg(feature = "experimental-als-export")]
+    if let Some(path) = options.export_als.as_ref() {
+        let report = crate::export_als::export_project_to_file(&loaded.archive.project, path)
+            .map_err(|source| CliError::ExportAls {
+                path: path.clone(),
+                source,
+            })?;
+        lines.push(exported_als_line(&report, &loaded));
+        lines.extend(als_loss_lines(&report.losses));
     }
 
     if let Some(path) = options.save_as.as_ref() {
@@ -1477,6 +1595,69 @@ fn exported_midi_line(report: &MidiExportReport, loaded: &Loaded) -> String {
         report.temp_name,
         loaded.source.save_origin(),
     )
+}
+
+/// `--export-als` 打到 stdout 的损失条目**上限**（超过就截断并明写还剩几条）。
+///
+/// 为什么要有上限：损失表随工程规模增长，一个大工程能吐出上千条 —— 全打到 stdout
+/// 会把真正的诊断淹掉。**截断不等于隐藏**：完整的表同时写进了文件的
+/// `<!-- yeban-loss … -->` 注释（导出器保证两者同源），而截断行会写明还剩多少条。
+///
+/// 公开它是为了让真二进制判据能算"应该显示几条"，而不是在判据里抄一个魔数。
+#[cfg(feature = "experimental-als-export")]
+pub const MAX_ALS_LOSS_LINES: usize = 20;
+
+/// `exported-als:` 行（说清落点、字节数、映射计数、**损失条数**、用过的临时文件与来源）。
+///
+/// `losses=` 是导出器**返回的**条数（不是本文件里第二个数字）：判据把它与随后打印的
+/// `als-loss:` 行数对账。
+#[cfg(feature = "experimental-als-export")]
+fn exported_als_line(report: &crate::export_als::AlsExportReport, loaded: &Loaded) -> String {
+    format!(
+        "exported-als: path={} bytes={} tracks={} clips={} notes={} losses={} temp={} from={}",
+        report.path.display(),
+        report.bytes,
+        report.mapped_tracks,
+        report.mapped_clips,
+        report.mapped_notes,
+        report.losses.len(),
+        report.temp_name,
+        loaded.source.save_origin(),
+    )
+}
+
+/// 把 `--export-als` 的映射损失表变成**给用户看的行**（`D47` 的价值就在这里）。
+///
+/// 形状（与既有报告行同一套 `key=value` / `quoted()` 转义）：
+///
+/// ```text
+/// als-losses: count=<总条数>
+/// als-loss: entity=<稳定寻址> bounced-to-audio=<true|false> reason="<转义后的人话>"
+/// …（最多 [`MAX_ALS_LOSS_LINES`] 条）
+/// als-losses-truncated: ... and <N> more (完整表也在文件的 `<!-- yeban-loss ... -->` 注释里)
+/// ```
+///
+/// 顺序与导出器返回的**完全一致**（导出器按 `BTreeMap` 键序产出），因此输出可复现；
+/// 本函数只做"取前 N 条 + 报剩余数"，绝不重排、绝不丢字段。
+#[cfg(feature = "experimental-als-export")]
+fn als_loss_lines(losses: &[yeban_render::als::AlsLoss]) -> Vec<String> {
+    let mut lines = vec![format!("als-losses: count={}", losses.len())];
+    for loss in losses.iter().take(MAX_ALS_LOSS_LINES) {
+        lines.push(format!(
+            "als-loss: entity={} bounced-to-audio={} reason={}",
+            loss.entity,
+            loss.bounced_to_audio,
+            quoted(&loss.reason),
+        ));
+    }
+    if losses.len() > MAX_ALS_LOSS_LINES {
+        lines.push(format!(
+            "als-losses-truncated: ... and {} more (完整表也在文件的 \
+             `<!-- yeban-loss ... -->` 注释里)",
+            losses.len() - MAX_ALS_LOSS_LINES
+        ));
+    }
+    lines
 }
 
 /// 把行打到 stdout（唯一打印点，保证"返回的"与"打印的"逐行一致）。
@@ -1566,6 +1747,7 @@ mod tests {
             "--dump-elements",
             "--export-elements",
             "--export-midi",
+            "--export-als",
             "--print-shortcuts",
             "--project-sample",
             "--headless",
@@ -2280,7 +2462,7 @@ mod tests {
         assert!(base.wants_gui(), "无参数 = GUI");
         assert!(!base.needs_projection());
 
-        let cases: [(Options, bool, bool); 10] = [
+        let cases: [(Options, bool, bool); 11] = [
             (
                 Options {
                     headless: true,
@@ -2352,6 +2534,15 @@ mod tests {
                 // MIDI 导出**不需要**界面投影（与 `--save-as` 同族）：只依赖 `YebanProjectV1`。
                 Options {
                     export_midi: Some(PathBuf::from("m.mid")),
+                    ..base.clone()
+                },
+                false,
+                false,
+            ),
+            (
+                // `.als` 导出与 `--export-midi` **同族**：无窗口、不需要投影。
+                Options {
+                    export_als: Some(PathBuf::from("a.als")),
                     ..base.clone()
                 },
                 false,
@@ -2447,6 +2638,7 @@ mod tests {
             (vec!["--print-shortcuts"], "--print-shortcuts"),
             (vec!["--export-elements", "e.txt"], "--export-elements"),
             (vec!["--export-midi", "m.mid"], "--export-midi"),
+            (vec!["--export-als", "a.als"], ALS_EXPORT_SWITCH),
             (vec!["--save-as", "b.yeban"], "--save-as"),
         ] {
             let mut raw = vec!["--headless-idle", "--idle-seconds", "1"];
@@ -2525,6 +2717,7 @@ mod tests {
             (vec!["--print-shortcuts"], "--print-shortcuts"),
             (vec!["--export-elements", "e.txt"], "--export-elements"),
             (vec!["--export-midi", "m.mid"], "--export-midi"),
+            (vec!["--export-als", "a.als"], ALS_EXPORT_SWITCH),
             (vec!["--save-as", "b.yeban"], "--save-as"),
             (
                 vec!["--headless-idle", "--idle-seconds", "1"],
@@ -2552,6 +2745,151 @@ mod tests {
             Err(CliError::McpHttpNotBatch)
         ));
         assert_eq!(CliError::McpHttpNotBatch.exit_code(), EXIT_UI);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 47: --export-als 的编译期开关 + 损失表呈现 [ARCH-FMT-002] [ROAD-M4-007]
+    //           (含 ① 字面值/feature 名是契约 / ② 默认构建点名 feature 的用法错误 /
+    //            ③ 取值写法与只能给一次 / ④ 绕过 parse 也被 run_batch 拒 /
+    //            ⑤ 损失表逐条可见 + 超长**礼貌截断**并写明还剩几条)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_als_export_switch_is_opt_in_and_the_loss_table_is_never_silently_dropped() {
+        let args = |raw: &[&str]| {
+            raw.iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // ① 字面值与 feature 名是**契约**（`--help`、用法错误、守卫的白名单都在引用它们）。
+        assert_eq!(ALS_EXPORT_SWITCH, "--export-als");
+        assert_eq!(ALS_EXPORT_FEATURE, "experimental-als-export");
+        // 它必须与 `--export-midi` **同族**：无窗口、不需要投影（`D47` 的一条出口两种产物）。
+        let model = Options {
+            export_als: Some(PathBuf::from("a.als")),
+            ..Options::default()
+        };
+        assert!(model.batch() && !model.wants_gui(), "{model:?}");
+        assert!(
+            !model.needs_projection(),
+            "导出只依赖 YebanProjectV1: {model:?}"
+        );
+
+        // ② 编译期那道开关：默认构建里这个开关**不存在**，给了就是点名 feature 的用法错误。
+        if cfg!(feature = "experimental-als-export") {
+            let parsed = parse(&args(&["--export-als", "a.als"])).expect("带 feature 时必须被接受");
+            assert_eq!(parsed.export_als, Some(PathBuf::from("a.als")));
+            assert!(parsed.batch() && !parsed.wants_gui(), "{parsed:?}");
+        } else {
+            let error = parse(&args(&["--export-als", "a.als"])).expect_err("默认构建里必须被拒");
+            assert_eq!(error, ParseError::AlsNotCompiled);
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            let text = error.to_string();
+            assert!(text.contains(ALS_EXPORT_SWITCH), "必须点名开关: {text}");
+            assert!(
+                text.contains(ALS_EXPORT_FEATURE),
+                "必须点名 feature: {text}"
+            );
+        }
+
+        // ③ `--opt value` 与 `--opt=value` 都认；缺取值 / 重复给与其它带取值开关同款。
+        //    （两条都在编译期检查**之前**判 —— 缺值/重复与"这个构建里有没有它"无关。）
+        assert_eq!(
+            parse(&args(&["--export-als"])),
+            Err(ParseError::MissingValue(ALS_EXPORT_SWITCH))
+        );
+        assert_eq!(
+            parse(&args(&["--export-als", "a.als", "--export-als", "b.als"])),
+            Err(ParseError::DuplicateOption(ALS_EXPORT_SWITCH))
+        );
+        #[cfg(feature = "experimental-als-export")]
+        assert_eq!(
+            parse(&args(&["--export-als=b.als"]))
+                .expect("内联取值必须被接受")
+                .export_als,
+            Some(PathBuf::from("b.als"))
+        );
+
+        // ④ 防假绿第二道：`Options` 被**直接构造**（绕过 parse）时, 默认构建的 `run_batch`
+        //    也必须拒绝 —— 静默跳过 = 用户以为 `.als` 写了而磁盘上什么都没有。
+        #[cfg(not(feature = "experimental-als-export"))]
+        {
+            let smuggled = Options {
+                export_als: Some(PathBuf::from("a.als")),
+                ..Options::default()
+            };
+            let error = run_batch(&smuggled).expect_err("默认构建里必须被拒");
+            assert!(matches!(error, CliError::AlsNotCompiled), "{error:?}");
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            let text = error.to_string();
+            assert!(text.contains(ALS_EXPORT_SWITCH), "{text}");
+            assert!(text.contains(ALS_EXPORT_FEATURE), "{text}");
+        }
+    }
+
+    /// 判据 48: 损失表呈现 —— 逐条可见、字段可判、超长时**礼貌截断**且写明还剩几条。
+    ///
+    /// 这条判据只用**合成**的损失表（不落盘、不依赖工程），因此它测的是呈现逻辑本身：
+    /// `D47` 说"把损失报告写进日志"这件事若只是打印一个数字，那它就没有价值。
+    #[cfg(feature = "experimental-als-export")]
+    #[test]
+    fn the_als_loss_report_lists_every_entry_and_truncates_politely() {
+        use yeban_render::als::AlsLoss;
+
+        let loss = |index: usize| AlsLoss {
+            entity: format!("track:{index:04}"),
+            reason: format!("未映射: 判据用合成条目 {index}"),
+            bounced_to_audio: index.is_multiple_of(5),
+        };
+
+        // 少于上限：全部可见, 且没有截断行。
+        let short: Vec<AlsLoss> = (0..MAX_ALS_LOSS_LINES - 1).map(loss).collect();
+        let rendered = als_loss_lines(&short);
+        assert_eq!(rendered[0], format!("als-losses: count={}", short.len()));
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.starts_with("als-loss: "))
+                .count(),
+            short.len(),
+            "每一条都必须可见"
+        );
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.starts_with("als-losses-truncated:")),
+            "没超上限就不该有截断行: {rendered:?}"
+        );
+        // 字段可判 + 人话被转义（与 `quoted()` 同一份实现）。
+        let first = &rendered[1];
+        assert_eq!(field(first, "entity").as_deref(), Some("track:0000"));
+        assert_eq!(field(first, "bounced-to-audio").as_deref(), Some("true"));
+        assert!(
+            first.contains("reason=\"未映射: 判据用合成条目 0\""),
+            "{first}"
+        );
+
+        // 超过上限：恰好显示上限条, 截断行**明写**还剩几条（不是静默吞掉）。
+        let overflow = 3;
+        let long: Vec<AlsLoss> = (0..MAX_ALS_LOSS_LINES + overflow).map(loss).collect();
+        let rendered = als_loss_lines(&long);
+        assert_eq!(rendered[0], format!("als-losses: count={}", long.len()));
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.starts_with("als-loss: "))
+                .count(),
+            MAX_ALS_LOSS_LINES,
+            "显示条数必须恰好等于上限"
+        );
+        let tail = rendered.last().expect("有截断行");
+        assert!(tail.starts_with("als-losses-truncated: "), "{tail}");
+        assert!(tail.contains(&format!("and {overflow} more")), "{tail}");
+        assert!(
+            tail.contains("yeban-loss"),
+            "截断行必须指出完整表在哪: {tail}"
+        );
     }
 
     // ------------------------------------------------------------------
