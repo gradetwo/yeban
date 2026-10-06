@@ -9674,5 +9674,18 @@ down" from "the GitHub CLI/API path is unhappy" - the distinction matters becaus
 Per this line's own rule, **an unread verdict is no verdict**: `2b72dab` (round 397's record) stays **unread** and is **not** claimed green anywhere, even though every
 earlier commit of this session has a read-back success. Nothing about the code changed in this round; the only action is this record, plus a retry later.
 
-**Status**: tree green and clean locally; Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; `2b72dab` pending read-back once the tool responds again; the only
+**Status**: tree green and clean locally; Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; `2b72dab` **read back green** in round 399 (as is `3614fa8`), so the outage left no unread verdict behind; the only
 unproven claim remains that Logic Pro opens the exported document.
+
+
+### Round 399: the outage is over and the last two verdicts are green - no unread verdict remains
+
+Re-measured the tool: `gh run list` returned with exit code 0 after the ~15-minute outage, and the two verdicts it had been unable to fetch are **success** -
+`2b72dab` (round 397's `.als`-side check) and `3614fa8` (round 398's environmental note). Round 398's "pending read-back" line is corrected above rather than left
+stale, because a ledger that keeps saying "pending" after the answer arrived is exactly the kind of stale summary this line has spent the session auditing.
+
+**So every commit of this session now has a read-back green verdict**, with no exception, and the network outage is recorded as an environmental event that cost
+about fifteen minutes and changed nothing in the repository.
+
+**Status**: tree green and clean at `3614fa8` (= `origin/main`); automatic CI green through `3614fa8` with nothing unread; Phase 4 6 完成 / 5 部分 / 0 PENDING; no
+open question; the only unproven claim remains that Logic Pro opens the exported document, which is a data gap rather than a code gap.
