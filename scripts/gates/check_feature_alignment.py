@@ -18,7 +18,7 @@
 | `phase-status.md` | 阶段项做没做完 | `check_phase_status.py` |
 | `human-decisions.md` | 待人类裁决 | `check_decisions.py` |
 
-## 四条机械判据（语义是否正确仍要人看）
+## 五条机械判据（语义是否正确仍要人看）
 
 1. **正向完整性**：`schemas/mcp-tools.schema.json` 里的**每一个** `yeban_*` 工具、
    `crates/yeban-ui-mcp/src/methods.rs` 里的**每一条** `ui/*` 方法，都必须在本表里
@@ -32,6 +32,19 @@
    下一个人只会把它重问一遍。
 4. **汇总对账**：顶部的六类分类计数必须与表格逐行统计**逐一相等**。
    汇总数字是人最爱手抄的东西；口径漂移在本仓库已实测发生多次。改了行忘了改汇总 ⇒ 红。
+5. **手抄副本对账**：本脚本 `[ok]` 行打印的三个数字（`N 行功能` / `N 个 MCP 工具` /
+   `N 条 ui 方法`）与 §4 那句 `本表有 N 行是 未核查`，在这些**活文档**里被手抄了多处。
+   凡是能被命令算出来的手抄数字，一律与逐行统计对账（与 `check_phase_status.py` 第 7 条同一手法）。
+
+**为什么第 5 条也在守卫里**：第 4 条只钉住本表 §1 那一份汇总，而同一个"一共几行"在
+**索引**（`docs/README.md` 的表格行）与本表**标题**里还被手抄了两次 —— 表从 66 行长到 73 行时
+两份副本都没人改，文件自己跟自己矛盾而守卫一声不响（实测：标题写 70 行、索引写 `66 行功能`，
+而表里是 73 行；`HD` 区间同理，见 `check_decisions.py`）。
+
+**哪些文件参与对账（这是个判据，不是随手写的）**：只有**活文档** —— 索引 `docs/README.md`
+与四张表（本表 / `gate-status.md` / `phase-status.md` / `human-decisions.md`）。
+`docs/DEVELOPMENT_LEDGER.md` 与 `docs/ledger/*-notes.md` 是**带日期的测量记录**
+（"当轮测得 66 行"是那一刻的真话），按纪律不得改写，因此**不参与**对账 —— 否则守卫会逼人篡改历史读数。
 
 ## 为什么"分类"是机器算的而不是人填的
 
@@ -97,6 +110,32 @@ GAP_RE = re.compile(r"原因：(?P<reason>.+?)；计划：(?P<plan>.+?)；状态
 STATUS_RE = re.compile(r"状态：(" + STATUS_CHARS + r")")
 #: 汇总行：`- 三方齐全：15 行` 与 `- **合计：67 行**`。
 TOTAL_RE = re.compile(r"^- \*\*合计：(\d+) 行\*\*$")
+
+#: 索引：`docs/README.md` 的文档目录表。
+INDEX = REPO / "docs/README.md"
+#: **活文档**（数字是当下的声明）：索引 + 四张表。
+#: `docs/DEVELOPMENT_LEDGER.md` 与 `docs/ledger/*-notes.md` 是**带日期的测量记录**
+#: （"当轮测得 66 行"是那一刻的真话），按纪律不得改写，故不参与第 5 条对账。
+LIVE_DOCS = (
+    INDEX,
+    TABLE,
+    REPO / "docs/ledger/gate-status.md",
+    REPO / "docs/ledger/phase-status.md",
+    REPO / "docs/ledger/human-decisions.md",
+)
+
+#: 第 5 条：手抄副本的形态（各实测出现过一次）。
+#: ⚠ 只认这五种**精确**形态，不做泛化的"任意 `N 行`"匹配 —— 表格里 `STYLE_PRESETS` 4 项 /
+#: `MODES` 12 项 这类**别的**计数若被顺手当成行数，守卫会静默地判错对象。
+#: 标题 `（系统 / UI / MCP，70 行）`（本表）、索引 `66 行功能`（`docs/README.md`）。
+DECLARED_TITLE_ROWS_RE = re.compile(r"，\s*(\d+)\s*行）")
+DECLARED_FEATURE_ROWS_RE = re.compile(r"(\d+)\s*行功能")
+#: §4 的纪律句 `本表有 1 行是 未核查`（见 §16）。
+DECLARED_UNCHECKED_RE = re.compile(r"本表有\s*(\d+)\s*行是")
+#: 本脚本 `[ok]` 行打印的另外两个数字。当前活文档里没人手抄它们（实测 0 处），
+#: 但它们是同一台机器算出来的同一族数字 —— 一旦有人手抄，就必须对得上。
+DECLARED_TOOLS_RE = re.compile(r"(\d+)\s*个 MCP 工具")
+DECLARED_METHODS_RE = re.compile(r"(\d+)\s*条 ui 方法")
 
 #: 行数区间（任务书建议 40–70；给"加一行不用同时改守卫"留出空间）。
 # 上限从 70 放宽到 80（负责人授权的自主决策，第 164 轮）: 工具集从 15 增到 16（D56 诊断导出），
@@ -337,6 +376,38 @@ def main() -> int:
         problems.append("§1 汇总缺少 `- **合计：N 行**` 一行")
     elif stated_total != len(rows):
         problems.append(f"§1 合计写的是 {stated_total} 行，实际数据行是 {len(rows)} 行")
+
+    # ---- 判据 5：手抄副本对账 -------------------------------------------------
+    #
+    # 判据 4 只钉住本表 §1 那一份汇总。同一个"一共几行"在索引与本表标题里还被手抄了两次，
+    # 改行数时没人会记得去改它们 —— 所以凡是能被算出来的手抄数字，一律对账。
+    unchecked_rows = 0
+    for row in rows:
+        matched = STATUS_RE.search(row.gap)
+        if matched is not None and matched.group(1) == "未核查":
+            unchecked_rows += 1
+
+    declared_forms = (
+        (DECLARED_TITLE_ROWS_RE, len(rows), "行", "标题声明的行数"),
+        (DECLARED_FEATURE_ROWS_RE, len(rows), "行", "手抄的功能行数"),
+        (DECLARED_UNCHECKED_RE, unchecked_rows, "行", "手抄的『未核查』行数"),
+        (DECLARED_TOOLS_RE, len(expected_tools), "个", "手抄的 MCP 工具数"),
+        (DECLARED_METHODS_RE, len(expected_methods), "条", "手抄的 ui 方法数"),
+    )
+    for path in LIVE_DOCS:
+        if not path.is_file():
+            problems.append(f"缺少活文档 {path.relative_to(REPO)}（判据 5 无法对账）")
+            continue
+        document = path.read_text(encoding="utf-8")
+        for pattern, computed, unit, label in declared_forms:
+            for matched in pattern.finditer(document):
+                lineno = document[: matched.start()].count("\n") + 1
+                stated = int(matched.group(1))
+                if stated != computed:
+                    problems.append(
+                        f"{path.relative_to(REPO)}:{lineno} 的『{label}』写的是 "
+                        f"{stated}{unit}，守卫算出来是 {computed}{unit}"
+                    )
 
     if problems:
         print("三方对齐矩阵校验未通过:", file=sys.stderr)

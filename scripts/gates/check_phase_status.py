@@ -21,7 +21,9 @@
 5. `PENDING` 的行必须写清**为什么**（证据列不能只有一个状态词）;
 6. 末尾的**逐阶段汇总计数**必须与表格逐行统计**一致**（数字要么能被命令复核、要么别写）;
 7. **标题与 §0 里的手抄总数**（`，N 项）`）、**行内的手抄 PENDING 计数**（`本表另有 **N** 项 PENDING`）
-   与**标题声明的 ID 区间**也必须与逐行统计一致。
+   与**标题声明的 ID 区间**也必须与逐行统计一致;
+8. **其它活文档里手抄的阶段项总数**（索引 `docs/README.md` 与 `feature-alignment.md` 的分工表里
+   那两处 `（47 项）` / `（`ROAD-*`，47 项）`）也必须一致 —— 第 7 条只扫本文件。
 
 **为什么第 6/7 条也在守卫里**: 汇总数字是人最爱手抄的东西, 而它恰恰是"Phase 2 还剩几项"的答案。
 口径漂移在本仓库已实测发生三次以上（`docs/DEVELOPMENT_LEDGER.md` 第 12 轮）。既然能机械对账, 就不靠自觉。
@@ -80,6 +82,23 @@ DECLARED_TOTAL_RE = re.compile(r"，\s*(\d+)\s*项）")
 DECLARED_PENDING_RE = re.compile(r"本表另有\s*\*\*(\d+)\*\*\s*项\s*PENDING")
 #: 标题声明的 ID 区间（`（`ROAD-M-1-001` … `ROAD-M4-011`，47 项）`）—— 上界会随新阶段项漂移。
 DECLARED_RANGE_RE = re.compile(r"（`(ROAD-[A-Z0-9-]+)`\s*…\s*`(ROAD-[A-Z0-9-]+)`")
+
+#: 第 8 条：**其它活文档**里手抄的阶段项总数。第 7 条只扫本文件, 而同一个数字在
+#: `docs/README.md` 的索引行与 `feature-alignment.md` 的分工表里还被各手抄了一份 ——
+#: 上一轮把 `docs/README.md` 的 46 手改成 47 却没有牙, 正是这个洞。
+#: ⚠ 形态必须与 `ROAD` 同处一行（下面 `[^（）\n]` 保证不跨行、不跨括号）—— 否则会把
+#: `feature-alignment.md` 里 `ErrorCode::ALL，21 项）` 这类**别的**计数误判成阶段项总数。
+#: 实测：活文档里 `N 项）` 共 13 处, 与 `ROAD` 同行的只有 4 处（本文件 2 + 其它 2）,
+#: 且 `（共 N 项）` 形态被"`（?` 之后必须紧跟数字"天然挡住。
+DECLARED_XREF_RE = re.compile(r"ROAD[^（）\n]*?[，,]?\s*（?(\d+)\s*项）")
+#: 第 8 条扫的"其它活文档"（本文件自己由第 7 条负责, 不重复报）。
+INDEX = REPO / "docs/README.md"
+XREF_DOCS = (
+    INDEX,
+    REPO / "docs/ledger/feature-alignment.md",
+    REPO / "docs/ledger/gate-status.md",
+    REPO / "docs/ledger/human-decisions.md",
+)
 
 #: ⚠ 表格单元格里用 `\|` 转义竖线（例如把 `a | b` 的管道命令写进证据列）。
 #: 朴素的 `line.split("|")` 会在**转义的**竖线上也切开, 于是整行的列都错位 ——
@@ -262,6 +281,21 @@ def main() -> int:
             f"标题声明的 ID 区间 {declared_range.group(1)} … {declared_range.group(2)} 与表里实际的 "
             f"{expected[0]} … {expected[-1]} 不符"
         )
+
+    # 方向 5（第 8 条）：**其它活文档**里手抄的阶段项总数（索引 + 三张兄弟表）。
+    for path in XREF_DOCS:
+        if not path.is_file():
+            problems.append(f"缺少活文档 {path.relative_to(REPO)}（第 8 条无法对账）")
+            continue
+        document = path.read_text(encoding="utf-8")
+        for matched in DECLARED_XREF_RE.finditer(document):
+            lineno = document[: matched.start()].count("\n") + 1
+            stated = int(matched.group(1))
+            if stated != counted_total:
+                problems.append(
+                    f"{path.relative_to(REPO)}:{lineno} 手抄的阶段项总数 {stated} 与逐行统计不符"
+                    f"（表里有 {counted_total} 项）"
+                )
 
     if problems:
         print("阶段状态表校验未通过:", file=sys.stderr)

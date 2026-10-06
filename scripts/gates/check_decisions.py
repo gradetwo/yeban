@@ -9,7 +9,18 @@
 本脚本只做**机械可判定**的部分(语义仍要人看):
 - ADR 里每个**标了 `Proposed`/`待人类`/`需人类` 的 `D<n>` 段落**, 必须在清单里出现;
 - 清单每行必须有 6 列(ID/问题/选项/建议/后果)且 `HD-nn` 编号唯一;
-- 清单必须写明"当前处置"(即: 不等裁决也能继续推进, 不构成单点阻塞)。
+- 清单必须写明"当前处置"(即: 不等裁决也能继续推进, 不构成单点阻塞);
+- **手抄计数副本必须与逐行统计一致**: 清单自己的表头(`**N 项中 M 项已裁决**` / `未决 N 项`)
+  与索引 / 四张表里手抄的 `HD-01..HD-NN` 区间上界, 全部对账。
+  数字要么能被命令复核, 要么别写 —— 与 `check_phase_status.py` 第 7 条同一手法。
+
+**为什么最后一条也在守卫里**: 清单从 40 项长到 49 项的过程中, `HD-01..HD-40` / `HD-01..HD-42`
+被手抄进 `docs/README.md`、`feature-alignment.md`、`phase-status.md`, 而没有任何判据去复核它们 ——
+本脚本每次只打印自己的 `49 项`, 于是三处旧区间一直与清单矛盾而门禁全绿(实测)。
+**哪些文件参与对账(这是个判据, 不是随手写的)**: 只有**活文档** —— 索引 `docs/README.md`
+与四张表。`docs/DEVELOPMENT_LEDGER.md`、`docs/ledger/*-notes.md` 与 `docs/adr/**` 是
+**带日期的测量/裁决记录**(ADR 那一节紧邻的一句就是 "2026-10-04 起…那 42 项"), 按纪律不得改写,
+因此**不参与**对账 —— 否则守卫会逼人篡改历史读数。
 """
 
 from __future__ import annotations
@@ -24,6 +35,27 @@ DECISIONS = REPO / "docs/ledger/human-decisions.md"
 
 #: 出现这些词就认为"这条裁决在等人类"。
 HUMAN_MARKERS = ("Proposed", "待人类", "需人类", "待追认")
+
+#: 索引：`docs/README.md` 的文档目录表。
+INDEX = REPO / "docs/README.md"
+#: **活文档**(数字是当下的声明): 索引 + 四张表。清单自己也在里面(表头计数)。
+#: `docs/DEVELOPMENT_LEDGER.md`、`docs/ledger/*-notes.md` 与 `docs/adr/**` 是**带日期的
+#: 测量/裁决记录**, 按纪律不得改写, 故不参与对账(ADR 里那处 `40 项` 紧邻 `那 42 项` 的历史叙述)。
+LIVE_DOCS = (
+    INDEX,
+    DECISIONS,
+    REPO / "docs/ledger/gate-status.md",
+    REPO / "docs/ledger/phase-status.md",
+    REPO / "docs/ledger/feature-alignment.md",
+)
+
+#: 手抄的 HD 区间上界: `HD-01..HD-42`。上界会随新条目漂移, 此前无人复核
+#: (实测三处写 40/42, 而清单有 49 项)。
+HD_RANGE_RE = re.compile(r"HD-01\.\.HD-(\d+)")
+#: 清单自己的表头声明: `**49 项中 47 项已裁决**`。
+DECLARED_TOTAL_DECIDED_RE = re.compile(r"\*\*(\d+)\s*项中\s*(\d+)\s*项已裁决\*\*")
+#: 表头后半句: `未决 2 项`。
+DECLARED_OPEN_RE = re.compile(r"未决\s*(\d+)\s*项")
 
 
 def adr_decisions_awaiting_human(text: str) -> set[str]:
@@ -104,6 +136,51 @@ def main() -> int:
             if not re.search(r"\d{4}-\d{2}-\d{2}", line):
                 problems.append(
                     f"{line.split('|')[1].strip()}: 标了已裁决但没有日期"
+                )
+
+    # 手抄计数副本必须与逐行统计一致(数字要么能被命令复核, 要么别写)。
+    # 清单自己的表头 —— 它就在这份文件里, 却没有任何判据复核过它。
+    header = DECLARED_TOTAL_DECIDED_RE.search(decisions_text)
+    if header is None:
+        problems.append(
+            "清单表头没有可复核的计数(形如 `**N 项中 M 项已裁决**`)"
+            " —— 数字要么能被命令复核, 要么别写"
+        )
+    else:
+        lineno = decisions_text[: header.start()].count("\n") + 1
+        stated_total, stated_decided = int(header.group(1)), int(header.group(2))
+        if (stated_total, stated_decided) != (rows, decided):
+            problems.append(
+                f"{DECISIONS.relative_to(REPO)}:{lineno} 表头声明的 "
+                f"`{stated_total} 项中 {stated_decided} 项已裁决` 与逐行统计不符"
+                f"(清单有 {rows} 项, 其中 {decided} 项已裁决)"
+            )
+    for matched in DECLARED_OPEN_RE.finditer(decisions_text):
+        lineno = decisions_text[: matched.start()].count("\n") + 1
+        stated_open = int(matched.group(1))
+        if stated_open != rows - decided:
+            problems.append(
+                f"{DECISIONS.relative_to(REPO)}:{lineno} 声明的『未决 {stated_open} 项』"
+                f"与逐行统计不符(清单有 {rows} 项, {decided} 项已裁决 ⇒ 未决 {rows - decided} 项)"
+            )
+
+    # 索引与四张表里手抄的 `HD-01..HD-NN` 区间上界也要等于清单里最大的那个编号。
+    max_hd = max((int(ident[3:]) for ident in seen_ids), default=0)
+    if max_hd == 0:
+        problems.append("清单里一个 `HD-nn` 编号都没抽到 —— 解析口径已过期")
+    for path in LIVE_DOCS:
+        if not path.is_file():
+            problems.append(f"缺少活文档 {path.relative_to(REPO)}(HD 区间对账无法进行)")
+            continue
+        document = path.read_text(encoding="utf-8")
+        for matched in HD_RANGE_RE.finditer(document):
+            lineno = document[: matched.start()].count("\n") + 1
+            stated_hd = int(matched.group(1))
+            if stated_hd != max_hd:
+                problems.append(
+                    f"{path.relative_to(REPO)}:{lineno} 声明的 HD 区间上界 "
+                    f"`HD-01..HD-{stated_hd:02d}` 与清单不符"
+                    f"(清单有 {rows} 项, 上界是 `HD-01..HD-{max_hd:02d}`)"
                 )
 
     if problems:
