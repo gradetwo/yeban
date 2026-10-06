@@ -252,6 +252,19 @@ jobs:
             cargo clippy --workspace --all-features --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
           fi
       - name: 失败摘要
+      # 为什么需要这一步（账本第 354 轮）：本档位此前**只跑 `clippy --all-features`**，而 `clippy` **只编译**
+      # ⇒ `#![cfg(feature = "in-process-mcp")]` 这类**feature-gated 判据从未在 CI 里执行过** ✗。
+      # 判据必须真跑，否则"绿"的判定来源并不覆盖它们（本仓规则：`ci.yml` + 本文件是唯一来源）。
+      - name: test --all-features（使 feature-gated 判据真被执行）
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if [ -n "${{ inputs.crate }}" ]; then
+            cargo test -p "${{ inputs.crate }}" --all-features --locked 2>&1 | tee /tmp/gate.test.log
+          else
+            cargo test --workspace --all-features --locked 2>&1 | tee /tmp/gate.test.log
+          fi
+
         if: failure()
         run: |
           {
