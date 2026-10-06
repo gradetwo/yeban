@@ -40,6 +40,11 @@ use live::{
 #[cfg(feature = "in-process-mcp")]
 use live::{AuthoritySync, build_live_ui_from_authority};
 
+// 判据 17 的**同案差分像素**（`ADR-0005` S1）：只被 non-default feature 下的那一条
+// 用例用到，因此连同常量 / 助手一起 cfg —— 否则默认构建里它们是 dead_code（`-D warnings`）。
+#[cfg(feature = "in-process-mcp")]
+use yeban_ui_test_port::{Rect, Rgb8Image};
+
 use yeban_app::elements::is_model_driven_family;
 use yeban_app::scene::TRACK_NAMES;
 use yeban_ui_mcp::live::{ProbeOptions, family_member_count};
@@ -450,6 +455,131 @@ fn frame_fingerprint(image: &yeban_ui_test_port::Rgb8Image) -> String {
     let (_bytes, evidence) =
         encode_with_evidence(image, DEFAULT_MAX_PNG_BYTES).expect("Tier-1 帧必须非零且非全黑");
     format!("{:016x}", evidence.fingerprint)
+}
+
+// ---------------------------------------------------------------------------
+// 判据 17 的**同案差分像素**（`ADR-0005` S1）：同一次运行的两帧对比，**不碰 golden**
+// ---------------------------------------------------------------------------
+
+/// 差分包围盒允许的**命名容差**（逻辑像素）。
+///
+/// 它吸收两处不可避免的取整：① 画布 → 窗口的 y 平移由投影 `band_y` 的取整标定；
+/// ② 字形边缘的抗锯齿会落到相邻像素。**它不允许大到"什么都容得下"** ——
+/// 上界由 [`LANE_DIFF_TOLERANCE_MAX_PX`] 与判据 `the_lane_diff_tolerance_stays_bounded`
+/// 钉住（把这里放大到全屏必须让那条判据变红）。
+#[cfg(feature = "in-process-mcp")]
+const LANE_DIFF_TOLERANCE_PX: i32 = 2;
+
+/// 容差的**上界**：判据钉住它，防止"把容差放大到全屏"把断言变成空转。
+#[cfg(feature = "in-process-mcp")]
+const LANE_DIFF_TOLERANCE_MAX_PX: i32 = 4;
+
+/// 两帧的**差异像素**读数（逐像素比较 RGB 三字节；相等即逐字节相同）。
+#[cfg(feature = "in-process-mcp")]
+struct FrameDiff {
+    /// 差异像素数。
+    count: u64,
+    /// 差异像素的整数包围盒（含边界；单位 = 像素）。
+    bbox: Rect,
+}
+
+/// 逐像素比较两帧；**逐字节相同** ⇒ `None`（"界面一位没动"）。
+#[cfg(feature = "in-process-mcp")]
+fn frame_diff(before: &Rgb8Image, after: &Rgb8Image) -> Option<FrameDiff> {
+    assert_eq!(
+        (before.width(), before.height()),
+        (after.width(), after.height()),
+        "两帧必须同尺寸（视口由装配时的 `DemoScene` 定下，重投影不改它）"
+    );
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0_u32, 0_u32);
+    let mut count = 0_u64;
+    for y in 0..before.height() {
+        for x in 0..before.width() {
+            if before.pixel(x, y) != after.pixel(x, y) {
+                count += 1;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    (count > 0).then(|| FrameDiff {
+        count,
+        // 边界含两端 ⇒ 宽高 +1（`Rect::right()`/`bottom()` 是**不含**的右/下界）。
+        bbox: Rect::new(
+            min_x as i32,
+            min_y as i32,
+            max_x - min_x + 1,
+            max_y - min_y + 1,
+        ),
+    })
+}
+
+/// 落在 `area` **之外**的差异像素数。`0` = "期望区域外逐字节相同"。
+#[cfg(feature = "in-process-mcp")]
+fn diff_pixels_outside(before: &Rgb8Image, after: &Rgb8Image, area: Rect) -> u64 {
+    let mut outside = 0_u64;
+    for y in 0..before.height() {
+        for x in 0..before.width() {
+            let inside = (x as i32) >= area.x
+                && (x as i32) < area.right()
+                && (y as i32) >= area.y
+                && (y as i32) < area.bottom();
+            if !inside && before.pixel(x, y) != after.pixel(x, y) {
+                outside += 1;
+            }
+        }
+    }
+    outside
+}
+
+/// 被改轨道上**泳道带栈**在窗口像素里的期望区域。
+///
+/// **几何来源是投影**：`ViewState::automation_lanes` 的 `band_y` / `band_height`
+/// （`ADR-0001` `D28` 的整数口径，`automation.rs:750-753` 的等分）。画布 → 窗口的 y
+/// 平移由 `anchor` 标定：起点那一条泳道在 `ui/tree` 里的真实几何（`anchor.y`）减去它的
+/// 投影 `band_y` —— 这不是猜，`D28` 的**唯一**注入点把同一份 `band_y` 写进这**一个**
+/// 窗口，因此平移是一个常量。x 范围直接取该泳道的窗口几何（所有泳道共用同一条 x 带）。
+///
+/// 为什么是"带**栈**"而不是"新泳道那一条带"：见判据 17 的步 5b（加一条泳道会重新等分
+/// 整条带栈，**既有**泳道的带高也会变）。
+#[cfg(feature = "in-process-mcp")]
+fn projected_lane_stack_box(
+    views: [&ViewState; 2],
+    track_index: usize,
+    anchor_band_y: f32,
+    anchor_bounds: Rect,
+    tolerance: i32,
+) -> Rect {
+    let origin_y = anchor_bounds.y - anchor_band_y.round() as i32;
+    let mut bands: Vec<(i32, i32)> = Vec::new();
+    for view in views {
+        for lane in view
+            .automation_lanes
+            .iter()
+            .filter(|lane| lane.track_index == track_index)
+        {
+            let y0 = origin_y + lane.band_y.round() as i32;
+            bands.push((y0, y0 + lane.band_height.round() as i32));
+        }
+    }
+    let top = bands
+        .iter()
+        .map(|(y0, _)| *y0)
+        .min()
+        .expect("该轨道至少一条泳道");
+    let bottom = bands
+        .iter()
+        .map(|(_, y1)| *y1)
+        .max()
+        .expect("该轨道至少一条泳道");
+    Rect::new(
+        anchor_bounds.x - tolerance,
+        top - tolerance,
+        anchor_bounds.width + 2 * tolerance as u32,
+        (bottom - top) as u32 + 2 * tolerance as u32,
+    )
 }
 
 /// 工程里的**非主总线**轨道身份（`BTreeMap` 升序 = 视图顺序）。
@@ -1691,14 +1821,19 @@ fn mcp_call(address: std::net::SocketAddr, bearer: &str, body: &str) -> serde_js
 /// | 3 | 从**宿主口**读同一个会话 | 施加修订号 **+1**；工程里真的多了 `track-0-automation-pan-lane` |
 /// | 4 | `sync_authority` | `Reprojected { revision }`（不是 `Unchanged`） |
 /// | 5 | 再读运行时控件树（同一个活窗口） | **新元素**在树里；它的 `accessible-label` 与"权威工程的投影"逐字相等 |
+/// | 5b | **同案两帧差分**（`ADR-0005` S1，不碰 golden）：域侧改动前 / 后各抓一帧 | 两帧不同；差异包围盒落在被改轨道的**投影泳道带栈**内；区域外逐字节相同；指纹可复现 |
 /// | 6 | 一次**只读**工具调用（`yeban_query_project`） | 修订号不动、`sync_authority = Unchanged` ⇒ 界面不是被查询刷来刷去 |
-/// | 7 | `ui/tree` / `ui/node` 端到端 | 控制面服务的就是更新后的那一棵树（同一个窗口） |
+/// | 7 | `ui/tree` / `ui/node` / `ui/screenshot` 端到端 | 控制面服务的就是更新后的那一棵树（同一个窗口），且未遮罩截图与第 5b 步那一帧指纹相同 |
 ///
 /// ## 这条判据怎么变红（负向实测见工作线报告）
 ///
 /// - 让 `Domain::apply` 不推进 `apply_revision`（或 `Plan::mutates_project` 对
 ///   `EditAutomation` 恒为 `false`）⇒ 第 4 步变成 `Unchanged`，第 5 步的新元素不在树里；
-/// - 让 `sync_authority` 拿**装配时**那一份工程（而不是每次从权威取）⇒ 同样在第 5 步变红。
+/// - 让 `sync_authority` 拿**装配时**那一份工程（而不是每次从权威取）⇒ 同样在第 5 步变红；
+/// - 把 `host::apply_view` 的注入摘掉 ⇒ 两帧**逐字节相同**，第 5b 步的差分断言先变红
+///   （比第 5 步更早、更直接地指出"界面没跟着权威动"）；
+/// - 让改动**溅到别的轨道**（例如同一次运行里再改一条别的轨道的泳道）⇒ 差异包围盒越出
+///   被改轨道的投影带栈，第 5b 步变红。
 #[cfg(feature = "in-process-mcp")]
 #[test]
 fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority() {
@@ -1739,6 +1874,9 @@ fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority()
     );
     let nodes_before = tree_before.len();
     let revision_before = authority.apply_revision();
+    // 第 5b 步的**改动前**那一帧：域侧调用之前抓，走的仍是 `ui/screenshot` 内部那条
+    // Tier-1 抓帧路径（`LiveUi::capture` ⇒ `capture_tier1`）。
+    let frame_before = ui.capture().expect("域侧改动前抓帧");
 
     // ---- 2. 真客户端、真令牌、真环回 socket：一次**会改工程**的工具调用 ----
     let reply = mcp_call(
@@ -1784,8 +1922,94 @@ fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority()
         "权威改过工程 ⇒ 这一次必须真的重投影"
     );
 
-    // ---- 5. 界面真的变了：新语义元素在树里，标签 == 权威工程的投影 ----
+    // ---- 5b. 同案**像素**证据（`ADR-0005` S1）：改动前 / 后各一帧，同一次运行 ----
+    //
+    // 两帧走**同一条**抓帧路径：`LiveUi::capture` 就是控制面 `ui/screenshot` 内部用的
+    // 那一次 `capture_tier1`（判据 1 已把"控制面发出去的原始帧 == 这一帧"逐字节钉住）。
+    // 这里**不引入**第二条像素路径，也**不碰 golden**（比的是同一次运行的两帧）。
     let tree_after = ui.tree_snapshot();
+    let frame_after = ui.capture().expect("域侧改动后抓帧");
+    let diff = frame_diff(&frame_before, &frame_after).unwrap_or_else(|| {
+        panic!(
+            "域侧真的改了工程、`sync_authority` 也报了 `Reprojected`，但两帧**逐字节相同** \
+             —— 界面没有跟着权威动（UI 线程上的重投影注入被绕过？）"
+        )
+    });
+    // 期望区域 = **被改轨道**的泳道带栈（改前 ∪ 改后的投影 `band_y` / `band_height` 并集）。
+    //
+    // 为什么不是"新泳道那一条带"（**实测读数**，`ADR-0005` S1 原文假定足迹只落在新带内）：
+    // 给一条轨道加一条泳道会重新**等分**整条带栈（`automation.rs` 的
+    // `band_height = (stride − 2×inset) / lane_count`），于是**既有的**音量泳道带高
+    // 52 → 26、它的曲线与角标一起移动。改动的投影足迹因此是整条带栈，不是新带那半条。
+    let volume_lane_id = format!("track-{lead_index}-automation-volume-lane");
+    let volume_bounds = tree_before
+        .find_by_id(&volume_lane_id)
+        .and_then(|node| node.bounds)
+        .expect("起点：音量泳道必须在运行时树里带几何（`D28` 的唯一注入点）");
+    let volume_band_y = view_before
+        .automation_lanes
+        .iter()
+        .find(|lane| lane.element_id == volume_lane_id)
+        .expect("起点：音量泳道的投影")
+        .band_y;
+    let expected_box = projected_lane_stack_box(
+        [&view_before, &view_after],
+        lead_index,
+        volume_band_y,
+        volume_bounds,
+        LANE_DIFF_TOLERANCE_PX,
+    );
+    assert!(
+        diff.bbox.x >= expected_box.x
+            && diff.bbox.y >= expected_box.y
+            && diff.bbox.right() <= expected_box.right()
+            && diff.bbox.bottom() <= expected_box.bottom(),
+        "差异包围盒必须落在**被改轨道**的投影泳道带栈内: diff {:?} ({} 像素) vs 期望 {:?}",
+        diff.bbox,
+        diff.count,
+        expected_box
+    );
+    assert_eq!(
+        diff_pixels_outside(&frame_before, &frame_after, expected_box),
+        0,
+        "期望区域**之外**必须逐字节相同（整屏重排 / 别处漏改都会在这里变红）: 期望 {:?}",
+        expected_box
+    );
+    let pan_bounds = tree_after
+        .find_by_id(&lane_id)
+        .and_then(|node| node.bounds)
+        .expect("重投影后新泳道必须在运行时树里带几何");
+    assert!(
+        diff.bbox.x < pan_bounds.right()
+            && diff.bbox.right() > pan_bounds.x
+            && diff.bbox.y < pan_bounds.bottom()
+            && diff.bbox.bottom() > pan_bounds.y,
+        "差异必须触及**新泳道**的投影几何 `{pan_bounds:?}`（进了树却没画出来）: diff {:?}",
+        diff.bbox
+    );
+    // ④ 指纹可复现：同一次运行里再抓一帧、再编码一次，都必须逐字节相同。
+    let frame_after_again = ui.capture().expect("同一次运行里再抓一帧");
+    assert_eq!(
+        frame_fingerprint(&frame_after),
+        frame_fingerprint(&frame_after_again),
+        "同一次运行里两次抓帧的指纹必须相同（像素路径是确定的）"
+    );
+    let (png_a, _) = encode_with_evidence(&frame_after, DEFAULT_MAX_PNG_BYTES).expect("差分帧编码");
+    let (png_b, _) =
+        encode_with_evidence(&frame_after_again, DEFAULT_MAX_PNG_BYTES).expect("对照帧编码");
+    assert_eq!(png_a, png_b, "同一帧两次编码必须逐字节相同");
+    report_line(&format!(
+        "[m4-008] 差分像素: 帧指纹 {} → {}; 差异 {} 像素, 包围盒 {:?}; 期望区域 {:?} \
+         （被改轨道的投影泳道带栈, 容差 {LANE_DIFF_TOLERANCE_PX}px）; 区域外差异 0; 指纹可复现 {}",
+        frame_fingerprint(&frame_before),
+        frame_fingerprint(&frame_after),
+        diff.count,
+        diff.bbox,
+        expected_box,
+        frame_fingerprint(&frame_after_again)
+    ));
+
+    // ---- 5. 界面真的变了：新语义元素在树里，标签 == 权威工程的投影 ----
     assert!(
         tree_after.contains(&lane_id),
         "重投影之后运行时控件树里必须有 `{lane_id}`（界面没跟着权威走）"
@@ -1844,6 +2068,21 @@ fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority()
         probe.tree_json.contains(&label_after),
         "`ui/tree` 的线上文本里必须真的有这条泳道的标签"
     );
+    // 把第 5b 步的差分帧与**控制面真正发出去的** `ui/screenshot` 帧钉在一起：
+    // 未遮罩地再抓一次，指纹必须就是差分用的那一帧（同一条抓帧路径，没有第二个像素来源）。
+    let raw = plane
+        .plane()
+        .probe(
+            &ProbeOptions::new(lane_id.clone(), "自动化")
+                .expecting_size(viewport.width, viewport.height)
+                .without_masking(),
+        )
+        .unwrap_or_else(|error| panic!("未遮罩帧 probe 失败: {error}"));
+    assert_eq!(
+        raw.screenshot.fingerprint,
+        frame_fingerprint(&frame_after),
+        "`ui/screenshot`（未遮罩）产出的原始帧必须就是第 5b 步差分用的那一帧"
+    );
 
     report_line(&format!(
         "[m4-008] 经 MCP 会话改工程 ⇒ 界面投影跟随: 环回 socket 上 `yeban_edit_automation` \
@@ -1852,6 +2091,30 @@ fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority()
         authority.apply_revision(),
     ));
     mount.stop().expect("停机必须成功（有 5 秒上限）");
+}
+
+// ---------------------------------------------------------------------------
+// 判据 17b：差分**容差**的上界（`ADR-0005` S1 的"容差本身要被判据钉住"）
+// ---------------------------------------------------------------------------
+
+/// 把 [`LANE_DIFF_TOLERANCE_PX`] 放大（例如放到全屏）就必须在这里变红；把上界
+/// [`LANE_DIFF_TOLERANCE_MAX_PX`] 也放大去迁就它，同样在这里变红。
+///
+/// 两条断言都走**局部绑定**而不是直接比较两个常量字面量：`clippy::assertions_on_constants`
+/// 会把后者当成"恒真的断言"而拒绝（`-D warnings`）。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn the_lane_diff_tolerance_stays_bounded() {
+    let tolerance = LANE_DIFF_TOLERANCE_PX;
+    let max = LANE_DIFF_TOLERANCE_MAX_PX;
+    assert!(
+        tolerance <= max,
+        "差分容差 {tolerance}px 超过上界 {max}px —— 它已经能容下泳道之外的差异（例如整屏重排）"
+    );
+    assert!(
+        max <= 4,
+        "容差上界本身不许被放大（现在是 {max}px; 视口是 1920x1080）"
+    );
 }
 
 // ---------------------------------------------------------------------------

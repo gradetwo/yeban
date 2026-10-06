@@ -56,6 +56,7 @@
 //! | :--- | :--- | :--- |
 //! | 读（投影） | `ProjectAuthorityHandle::project` / `apply_revision` | `HttpServer::host_domain`（只借 `&Domain`） |
 //! | 写（GUI 动作） | `ProjectAuthorityHandle::apply_host` | `HttpServer::apply_host_action` → `domain::apply_host_action` → `Plan::Host` → `domain::apply`（**唯一可变入口**） |
+//! | 写（落盘） | `ProjectAuthorityHandle::save_to` | `HttpServer::host_save_project` → `domain::host_save_project` → `store::write_project_atomic`（**同一个** `read_only` 门与唯一原子入口） |
 //!
 //! 界面侧（`src/live_surface.rs` 的 `build_live_ui_from_authority` + `LiveUi::sync_authority`）
 //! 因此可以**只**从这一个会话取工程，并在它的**施加修订号**前进时重投影；
@@ -575,7 +576,8 @@ impl ProjectAuthorityHandle {
 ///
 /// 它是 `Send + Sync` 的（`Weak<HttpServer>`），因此可以安全地放进被 marshal 到
 /// UI 线程的闭包里；同时它**不能**被用来装观察者、也不能被用来写 ——
-/// 唯一的写入口仍然只有升级之后的那个句柄上的 [`ProjectAuthorityHandle::apply_host`]。
+/// **两个**写入口都只在升级之后的那个句柄上（[`ProjectAuthorityHandle::apply_host`]
+/// 改内存工程、[`ProjectAuthorityHandle::save_to`] 落盘），弱形态一个都不给。
 #[derive(Clone, Debug)]
 pub struct WeakProjectAuthorityHandle {
     /// 与工作线程共享的那一个服务的**弱**引用。
@@ -694,7 +696,20 @@ impl InProcessMcp {
     /// 施加修订号交给宿主（界面由此投影，见 [`ProjectAuthorityHandle`]）。
     ///
     /// 与 [`Self::engine_readings_handle`] 同款：它不延长监听生命周期，
-    /// 也不影响 [`Self::stop`] 的语义；而且它**只能读**。
+    /// 也不影响 [`Self::stop`] 的语义。
+    ///
+    /// 它**不是只读的**：句柄给出读投影口（[`ProjectAuthorityHandle::project`] /
+    /// [`ProjectAuthorityHandle::apply_revision`]）与**两个**写口 ——
+    /// [`ProjectAuthorityHandle::apply_host`]（改会话的内存工程，经 `domain::apply`
+    /// 这**一个**可变入口）与 [`ProjectAuthorityHandle::save_to`]（落盘，走唯一原子入口）。
+    /// 两个写口都收敛到**同一个** `Domain`，因此"GUI 的写入口"不是第二个写者。
+    ///
+    /// 形态上的区分在**会话**那一侧、不在这个类型上：只读会话
+    /// （[`SessionSource::File`] / [`SessionSource::InMemory`]）拿到的是**同型**句柄，
+    /// 但它的 `save_to` 会被与 `yeban_save_project` **同一个** `read_only` 门拒绝
+    /// （`read_only` 只闸落盘，不闸 `apply_host` 的内存变更）；只有
+    /// [`SessionSource::WritableFile`] 会话的句柄能落到盘上。句柄要不要**按读/写分型**
+    /// 是 `ADR-0005` Q5 登记待人类裁决的事，与本条文档纠错无关。
     #[must_use]
     pub fn project_authority(&self) -> ProjectAuthorityHandle {
         ProjectAuthorityHandle {
