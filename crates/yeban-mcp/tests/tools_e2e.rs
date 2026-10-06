@@ -1267,6 +1267,8 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_export_diagnostics",
             json!({ "outDir": scratch.text("diag-out") }),
         ),
+        // SMF 导出：只读且无参数（活跃工程有 MIDI 内容 ⇒ 带内成功）。
+        ("yeban_export_midi", json!({})),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

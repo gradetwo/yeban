@@ -58,13 +58,14 @@ pub const DRY_RUN_PARAM: &str = "dryRun";
 pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 16;
+pub const TOOL_COUNT: usize = 17;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 
-/// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条。
-pub const EXTENSION_TOOL_COUNT: usize = 6;
+/// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条
+/// + D56 的诊断包 1 条 + 本线的 SMF 导出 1 条。
+pub const EXTENSION_TOOL_COUNT: usize = 7;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -84,6 +85,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_query_engine_state",
     "yeban_import_audio",
     "yeban_export_diagnostics",
+    "yeban_export_midi",
 ];
 
 /// 规范 ID 前缀。
@@ -777,6 +779,27 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         )],
         errors: &[ErrorCode::IoError, ErrorCode::InvalidParameterRange],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-EXPORT-MIDI",
+        name: "yeban_export_midi",
+        summary: "把活跃工程经 yeban-midi 的共享 SMF 映射导出成字节 (base64 回传, 只读不落盘)",
+        scope: Scope::AppAdmin,
+        // 只读：字节作为工具结果回传，工程状态一位都不改（落盘出口仍是 app CLI，D47）。
+        side_effect: SideEffect::ReadOnly,
+        // 映射层没有任何可调参数：输出的 SMF 只由工程内容决定（ARCH-DET-* 的确定性口径）。
+        params: &[],
+        // 错误码全部取自 `ADR-0001` D25 的 20 值联集（判据
+        // `tests/contract.rs::extension_tools_only_declare_codes_inside_the_d25_union`）：
+        // 没有可导出内容 / 编码器拒绝 → RENDER_FAILED；悬空片段 → CLIP_NOT_FOUND；
+        // 拍号或 PPQ 装不进 SMF → INVALID_PARAMETER_RANGE；PPQ 漂移 → CONFLICT。
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::ClipNotFound,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::Conflict,
+            ErrorCode::RenderFailed,
+        ],
+    },
 ];
 
 /// 按名查找工具（`const` 数组上的线性查找；10 个元素，无需哈希表）。
@@ -1328,12 +1351,13 @@ mod tests {
         assert_eq!(
             read_only,
             // ⚠ 顺序 = `TOOLS` 数组顺序（规范 10 个在前, 扩展在后）,
-            // 因为 `assert_eq!` 比较 Vec 顺序。`yeban_export_diagnostics` 是扩展,
-            // 所以排在这两个文档工具**之后**。
+            // 因为 `assert_eq!` 比较 Vec 顺序。`yeban_export_diagnostics` 与
+            // `yeban_export_midi` 都是扩展, 所以排在文档工具**之后**。
             vec![
                 "yeban_query_project",
                 "yeban_query_engine_state",
-                "yeban_export_diagnostics"
+                "yeban_export_diagnostics",
+                "yeban_export_midi"
             ],
             "只读工具必须显式分类为 read-only"
         );

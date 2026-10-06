@@ -41,6 +41,7 @@
 //! | [`automation_audit`] | **零依赖**审计：生产代码里不许有第二份自动化求值，本机可单独验证 |
 //! | [`engine_state`] | `yeban_query_engine_state`：设备链 + 引擎/会话读数（只读） |
 //! | [`import_audio`] | `yeban_import_audio`：`yeban-decode` + `PcmBudget` + `Op::AddClip` |
+//! | [`export_midi`] | `yeban_export_midi`：`yeban-midi` 共享映射 → SMF 字节（base64 回传，只读） |
 //! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
 //! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 
@@ -49,6 +50,7 @@ pub mod automation_audit;
 pub mod diagnostics;
 pub mod engine_state;
 pub mod error;
+pub mod export_midi;
 pub mod extension_audit;
 pub mod extension_pure;
 pub mod ids;
@@ -653,6 +655,11 @@ pub enum Plan {
         /// 只读规划的产物（片段条目 + 需要登记进 CAS 池的字节）。
         import: Box<import_audio::AudioImport>,
     },
+    /// `yeban_export_midi`（**只读**）：已经编好的 SMF 字节 + 全部实测读数
+    ExportMidi {
+        /// 只读规划的产物（SMF 字节 + 计数 + SHA-256）。
+        export: Box<export_midi::MidiExportArtifact>,
+    },
 }
 
 impl Plan {
@@ -674,6 +681,7 @@ impl Plan {
             Self::EditAutomation { .. } => "edit_automation",
             Self::EngineState { .. } => "engine_state",
             Self::ImportAudio { .. } => "import_audio",
+            Self::ExportMidi { .. } => "export_midi",
         }
     }
 
@@ -698,6 +706,8 @@ impl Plan {
             | Self::RenderMaster { .. }
             // 引擎/会话读数是**只读**的。
             | Self::EngineState { .. }
+            // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
+            | Self::ExportMidi { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
             | Self::Undo { .. }
             | Self::Redo { .. } => 0,
@@ -796,7 +806,8 @@ impl Plan {
             | Self::Propose { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
-            | Self::EngineState { .. } => Ok(None),
+            | Self::EngineState { .. }
+            | Self::ExportMidi { .. } => Ok(None),
         }
     }
 
@@ -1038,6 +1049,18 @@ impl Plan {
                 }
                 preview.insert("wouldApply".to_owned(), Value::from(import.op.is_some()));
             }
+            // SMF 导出：**只读**且不做差异模拟 —— 与引擎读数同一个做法
+            // （共用 `MidiExportArtifact::data()`，于是预览与真做逐字段一致）。
+            Self::ExportMidi { export } => {
+                let data = export.data();
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("readOnly".to_owned(), Value::from(true));
+                preview.insert("result".to_owned(), data);
+            }
         }
 
         // 差异预览的公共部分：工程内容摘要 + 提交数（**预测**，不是实测）。
@@ -1241,6 +1264,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_query_engine_state" => plan_query_engine_state(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
+        "yeban_export_midi" => plan_export_midi(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -1647,6 +1671,18 @@ fn plan_import_audio(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     })
 }
 
+/// `yeban_export_midi`（**只读**）：把活跃工程交给 `yeban-midi` 的**共享**映射层。
+///
+/// 本函数只拿 `&Domain`（借用检查器保证 `dryRun` 改不了任何状态），
+/// 且**不碰文件系统**：字节留在 [`Plan::ExportMidi`] 里，由 `apply` 原样回传。
+fn plan_export_midi(domain: &Domain, _call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let export = export_midi::plan(project)?;
+    Ok(Plan::ExportMidi {
+        export: Box::new(export),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // apply：可变
 // ---------------------------------------------------------------------------
@@ -1706,6 +1742,8 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::EngineState { data } => Ok(ToolResponse::success(data)),
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
+        // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
+        Plan::ExportMidi { export } => Ok(ToolResponse::success(export.data())),
     }
 }
 
@@ -2428,6 +2466,8 @@ mod tests {
             ),
             // [D56] 诊断导出：空参数合法（缺省写到当前目录），因此走 `_` 分支的"规划必须成功"。
             ("yeban_export_diagnostics", serde_json::json!({})),
+            // SMF 导出：**只读**且没有可调参数 —— `filled_project` 有 MIDI 内容 ⇒ 规划成功。
+            ("yeban_export_midi", serde_json::json!({})),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(

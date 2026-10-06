@@ -1488,7 +1488,160 @@ fn the_documented_ten_tools_are_untouched() {
                 .all(|character| character.is_ascii_digit())
         );
     }
-    // 工具名集合唯一（既有十工具 + 扩展 = 15，且不重复）。
+    // 工具名集合唯一（既有十工具 + 扩展 = TOOL_COUNT，且不重复）。
     let names: BTreeSet<&str> = tools::tool_names().into_iter().collect();
     assert_eq!(names.len(), tools::TOOL_COUNT);
+}
+
+// ---------------------------------------------------------------------------
+// ⑨ `yeban_export_midi`：只读 SMF 导出 + **内存**往返（全程不碰文件系统）
+// ---------------------------------------------------------------------------
+
+/// 测试侧的**独立** base64 解码器（RFC 4648 §4）—— 与被测的编码器分开写。
+///
+/// 存在意义同 `yeban-midi` 的自研 VLQ 回读：只有"另一份实现"才能证明字节层面的往返，
+/// 用被测编码器自己解自己等于自证。
+fn decode_base64(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buffer = 0_u32;
+    let mut bits = 0_u32;
+    for byte in text.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            other => panic!("非法的 base64 字符: {other}"),
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+    out
+}
+
+/// 内存往返：`yeban_export_midi` 回传的 base64 解回来必须**逐字节等于**共享映射
+/// （`yeban_midi::export::export_from_project` + `to_smf_bytes`）直接产出的字节，
+/// 且这些字节被 `yeban_midi::midi::parse_smf` 读回后的**音符数**与导出侧一致。
+///
+/// 本判据**不碰文件系统**：工程由 `open_in_memory` 注入，字节只经 JSON 回传。
+#[test]
+fn export_midi_round_trips_in_memory_through_the_shared_mapping() {
+    // 独立事实源 ①：共享映射层自己报的音符数（不是从工具响应里抄的）。
+    let project = filled_project();
+    let mapping = yeban_midi::export::export_from_project(&project).expect("filled 样本必须可映射");
+    let expected_notes: usize = mapping.tracks.iter().map(|track| track.notes.len()).sum();
+    assert_eq!(
+        expected_notes, 4,
+        "filled 样本的 MIDI 事实（`yeban-midi` 的判据 ⑤：一条轨道 / 四颗音符）"
+    );
+
+    let mut dispatcher = dispatcher_with_project(project);
+    let digest_before = dispatcher.domain().project_digest();
+    let commits_before = dispatcher.domain().commit_count();
+
+    let response = call_tool(&mut dispatcher, "yeban_export_midi", serde_json::json!({}));
+    assert_eq!(response["status"], "success", "{response}");
+    let data = &response["data"];
+    assert_eq!(data["format"], "smf1", "恒为 SMF 1");
+    assert_eq!(data["formatNumber"], 1);
+    assert_eq!(
+        data["ppq"], 960,
+        "时间分度 = 工程的 960 PPQ [MODEL-AST-001]"
+    );
+    assert_eq!(data["tracks"], mapping.tracks.len());
+    assert_eq!(data["notes"], expected_notes);
+    assert_eq!(data["tempos"], mapping.tempos.len());
+    assert_eq!(data["encoding"], "base64");
+    assert_eq!(data["source"], "yeban_midi::export::export_from_project");
+    assert_eq!(data["readOnly"], true);
+
+    // 独立事实源 ②：把回传的 base64 解回来 —— 必须**逐字节等于**共享映射编出来的字节。
+    let bytes = decode_base64(data["content"].as_str().expect("content"));
+    assert_eq!(
+        bytes,
+        mapping.to_smf_bytes().expect("共享编码器"),
+        "工具回传的字节必须与共享映射逐字节相同（不许有第二份实现）"
+    );
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("小尺寸"),
+        data["bytes"].as_u64().expect("bytes"),
+        "报出的字节数必须是实测长度"
+    );
+    assert_eq!(data["sha256"], AssetHash::of_bytes(&bytes).as_str());
+
+    // 独立事实源 ③：SMF 读取面把字节读回来 —— 音符数必须与导出侧一致。
+    let parsed = yeban_midi::midi::parse_smf(&bytes).expect("导出的字节必须能被 SMF 读取面读回");
+    assert_eq!(
+        parsed.notes.len(),
+        expected_notes,
+        "音符数必须与共享映射一致"
+    );
+    assert_eq!(
+        parsed.notes.len(),
+        usize::try_from(data["notes"].as_u64().expect("notes")).expect("小尺寸")
+    );
+    assert_eq!(
+        parsed.tempos.len(),
+        usize::try_from(data["tempos"].as_u64().expect("tempos")).expect("小尺寸")
+    );
+    assert_eq!(parsed.ppq, 960);
+    assert_eq!(parsed.format, mapping.format, "SMF 1");
+    for note in &parsed.notes {
+        assert_eq!(note.channel, 0, "filled 样本只有一条 MIDI 轨道 ⇒ 通道 0");
+    }
+
+    // 只读：工程状态一位都没改（本判据全程没有落盘）。
+    assert_eq!(dispatcher.domain().project_digest(), digest_before);
+    assert_eq!(dispatcher.domain().commit_count(), commits_before);
+}
+
+/// ② 号口径对新工具同样成立：`dryRun` 预览与真做**逐字段一致**，且状态一位不变。
+#[test]
+fn export_midi_dry_run_preview_equals_the_real_call() {
+    let mut preview_run = dispatcher_with_project(filled_project());
+    let mut real_run = dispatcher_with_project(filled_project());
+    let dry = call_tool(
+        &mut preview_run,
+        "yeban_export_midi",
+        serde_json::json!({"dryRun": true}),
+    );
+    let real = call_tool(&mut real_run, "yeban_export_midi", serde_json::json!({}));
+    let preview = &dry["data"]["preview"];
+    assert_eq!(preview["plan"], "export_midi", "预览必须自报计划名");
+    for key in [
+        "format",
+        "formatNumber",
+        "ppq",
+        "tracks",
+        "notes",
+        "tempos",
+        "bytes",
+        "encoding",
+        "content",
+        "sha256",
+        "source",
+        "encoder",
+        "readOnly",
+    ] {
+        assert!(preview.get(key).is_some(), "预览缺少 `{key}`: {preview}");
+        assert_eq!(
+            &preview[key], &real["data"][key],
+            "`yeban_export_midi` 的 dryRun 预览与真做在 `{key}` 上不一致"
+        );
+    }
+    assert_eq!(dry["data"]["wouldChangeState"], false, "只读工具");
+    assert_eq!(dry["data"]["stateUnchanged"], true);
+    assert_eq!(
+        preview_run.domain().project_digest(),
+        real_run.domain().project_digest(),
+        "dryRun 之后两侧工程仍然相同"
+    );
 }

@@ -32,8 +32,8 @@
 
 - 三方齐全：26 行
 - 系统+UI（MCP 无）：9 行
-- 系统+MCP（UI 无）：14 行
-- 仅系统：10 行
+- 系统+MCP（UI 无）：15 行
+- 仅系统：9 行
 - 仅计划（系统也未实现）：8 行
 - UI 或 MCP 独有（系统没有）：5 行
 - **合计：72 行**
@@ -152,7 +152,7 @@
 | Rayon 多核分层并行母带渲染 + 主总线字典序单线程归约 | 已实现｜`crates/yeban-render/src/render.rs:676,706`（`rayon::ThreadPoolBuilder` + `par_iter_mut`，按 `RoutingGraph` 分层）；确定性归约 `crates/yeban-render/src/sum.rs:59,81`（`fixed_order` / `reduce_ordered`）；判据 `crates/yeban-render/tests/l1_digest_contract.rs`；`ROAD-M4-004/005` | 无｜`grep -rn "render\|export\|bounce" crates/yeban-app/ui/` 无导出控件 | 有｜`yeban_render_master`（`format`/`sampleRate`/`normalize`/`path`） | 原因：GUI 导出面未做（无菜单、无对话框）；计划：`yeban-app` 或控制面接 `yeban-render`；另注 `BASELINE-001` 的"≥100× 实时"读数（单线程 106.3× / Rayon 135.9×）**只能算数量级**，达标判定要在规范指定参考机上复跑（`HD-38`）；状态：PENDING |
 | RF64 / BW64 写入器 + BEXT 元数据 | 已实现｜`crates/yeban-render/src/rf64.rs`（bext 固定前缀 602 字节，v1/v2 读写）；`ROAD-M4-006` | 无｜无格式选择控件 | 有｜`yeban_render_master` 的 `format`（白名单 `wav` / `rf64` / `bw64`，`crates/yeban-mcp/src/domain/render.rs:183`） | 原因：**有意不做** —— 格式是渲染参数，界面不造第二份白名单；计划：无；状态：有意不做 |
 | TPDF 抖动与位深量化 | 已实现｜`crates/yeban-render/src/dither.rs` + `rng.rs`（`dither_rng_for` 由 `project.rng_seed` 派生） | 无｜无 | 部分｜渲染路径**恒开**（`crates/yeban-mcp/src/domain/render.rs:168,694`，响应里报 `dither = "TPDF (ARCH-FMT-001)"`），**没有**开关参数 | 原因：`ARCH-FMT-001` 要求抖动是渲染固有步骤，**不该**由调用方关掉；计划：无；状态：有意不做 |
-| MIDI 0/1 导出（SMF，`midly` 编码 + 自研 VLQ 回读） | 已实现｜`crates/yeban-midi/src/midi.rs`（含 `MThd`/`MTrk` 字节级独立核对）；**出口已接**：`crates/yeban-app/src/export_midi.rs`（新增 829 行映射层）+ CLI `yeban-app --export-midi <path>`（判据 `tests/cli_contract.rs` B12/B13；CI run 37254761445 ✓） | 无｜GUI 仍无导出控件（**有意**：D47 把导出定为 CLI/离线语义，不扩 `render_master` 参数） | 无｜十工具仍无 MIDI 导出位（**有意**，同 D47） | 原因：曾经的依据是「规范 §7.2 的十个工具里没有 MIDI 导出」；计划：已由 `ADR-0001 D47` 裁决 —— **唯一出口 = app CLI `--export-midi`**（`crates/yeban-app/src/export_midi.rs`，run 37254761445 = success）；状态：有意不做（**MCP/UI 两列的有意缺席**：导出是离线批处理语义，D47 明文不扩工具参数面与 GUI） |
+| MIDI 0/1 导出（SMF，`midly` 编码 + 自研 VLQ 回读） | 已实现｜`crates/yeban-midi/src/midi.rs`（含 `MThd`/`MTrk` 字节级独立核对）；**两个出口**：app CLI `yeban-app --export-midi <path>`（`crates/yeban-app/src/export_midi.rs` + 判据 `tests/cli_contract.rs` B12/B13；CI run 37254761445 ✓）与 MCP 只读工具 `yeban_export_midi` | 无｜GUI 仍无导出控件（**有意**：D47 把 GUI 导出定为 CLI/离线语义） | 有｜`yeban_export_midi`（无特有参数；只读，base64 回传字节 + `sha256` + 计数；`crates/yeban-mcp/src/domain/export_midi.rs` 复用 `yeban_midi::export::export_from_project`） | 原因：UI 侧仍无导出控件（`ADR-0001 D47` 把 GUI 导出定为离线/CLI 语义）；MCP 侧按本线直接指令新增**只读**工具（不落盘 —— 落盘出口仍是 app CLI）；计划：UI 侧维持 D47 的离线语义，AI 侧的字节获取由 `yeban_export_midi` 覆盖；状态：PENDING |
 | 实验性 `.als` 导出（`experimental-als-export`） | 无｜`grep -rn "experimental-als-export" Cargo.toml crates/*/Cargo.toml` 命中 0；`grep -rin "export_als\|AlsExport" crates/ --include=*.rs` 命中 0（`docs/ledger/phase-status.md` §6 `ROAD-M4-007`） | 无｜无 | 无｜无 | 原因：完全未实现；前置能力已在（`crates/yeban-midi/src/midi.rs` + 音频片段进母带的通路）；计划：`[ARCH-FMT-002]` 线，需先有 `flate2` 特性门；状态：未到期 |
 
 ## 12. 分组 J —— 界面与交互

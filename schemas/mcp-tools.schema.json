@@ -29,7 +29,8 @@
             "yeban_edit_automation",
             "yeban_query_engine_state",
             "yeban_import_audio",
-            "yeban_export_diagnostics"
+            "yeban_export_diagnostics",
+            "yeban_export_midi"
           ]
         },
         "arguments": {
@@ -159,6 +160,25 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_export_midi"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_export_midi"
+              }
+            }
+          }
         }
       ]
     },
@@ -220,7 +240,7 @@
     },
     "ExtensionToolArguments": {
       "title": "ExtensionToolArguments",
-      "description": "ADR-0001 D46 说\"十工具是起点不是上限, 扩充时必须同步本契约\"。本节的**五条**扩展工具(D45 的撤销入口 + D46 的三类能力: 自动化泳道 / 设备与引擎 / 音频导入)因此在这里逐条声明实参约束。判据 tests/contract.rs::extension_argument_constraints_match_the_registry 要求本节与 Rust 注册表(crate::tools::TOOLS)的声明**逐字段一致**, 且**既有十工具不得出现在本节**(参数语义未被改动), 因此这里不是第二份会漂移的手写 schema。",
+      "description": "ADR-0001 D46 说\"十工具是起点不是上限, 扩充时必须同步本契约\"。本节的**七条**扩展工具(D45 的撤销入口 + D46 的三类能力: 自动化泳道 / 设备与引擎 / 音频导入 + D56 的 zip 诊断包 + 只读的 SMF 导出)因此在这里逐条声明实参约束。判据 tests/contract.rs::extension_argument_constraints_match_the_registry 要求本节与 Rust 注册表(crate::tools::TOOLS)的声明**逐字段一致**, 且**既有十工具不得出现在本节**(参数语义未被改动), 因此这里不是第二份会漂移的手写 schema。",
       "type": "object",
       "$defs": {
         "yeban_undo": {
@@ -400,6 +420,20 @@
               "type": "string",
               "description": "输出目录; 缺省为系统临时目录 (响应里给出完整路径)。"
             },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          }
+        },
+        "yeban_export_midi": {
+          "title": "yeban_export_midi",
+          "type": "object",
+          "description": "把活跃工程经 yeban-midi 的共享映射 (yeban_midi::export::export_from_project + MidiExport::to_smf_bytes) 投影成 SMF 字节, 以 base64 回传 (响应里同时给出字节数 / SHA-256 / 格式 / PPQ / 轨道数 / 音符数)。只读: 不落盘、不改工程状态 —— 落盘出口仍是 app CLI 的 --export-midi (ADR-0001 D47)。",
+          "properties": {
             "dryRun": {
               "type": "boolean",
               "default": false
