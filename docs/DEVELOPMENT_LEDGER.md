@@ -9764,3 +9764,30 @@ round.
 
 **Status**: `4d7a2d8` pushed; the负责人 has been asked to open `/tmp/yeban-logic-open/Yeban.logicx` again in Logic Pro 12.2, and until that answer arrives the
 repository still claims only structural agreement, never that Logic opens it.
+
+
+### Round 403: the second Logic test did not open the file - but it moved the failure, and that is progress
+
+The负责人 opened the version-code-fixed artifact in Logic Pro 12.2 again. The dialog changed, and the change is the useful part:
+
+* **first test**: "The operation couldn't be completed. (com.apple.logic10 error 100.) / The song you are trying to open is in **Logic 4 format (or earlier)**."
+* **second test**: "The operation could not be completed. / **No other information is available about the problem.**"
+
+Logic **no longer says it is an ancient format**, so the root-header fix from round 402 worked: the document is now read as a modern Logic song, and the failure happens
+**later in the load**. A generic error at that stage points at **structure**, not at the header - and the most likely structural gap is the one already in the loss
+table: we write **no track objects**, `Trak` is among the 24 missing chunk families, and real projects carry a track table.
+
+**So the honest state is**: the exporter is closer, not correct. Nothing in the repository claims Logic opens the output, and the two dialogs are now both recorded so
+that the next measurement can be compared with them.
+
+**Also landed in this round**: `dbaa122` resolved the round-402 "region-name difference" correctly - it was **not** a byte difference but a **reference-frame mix-up**
+(the constant `0x34` was record-relative, which is payload `+0x10`, and the writer had been landing on the right byte all along). It renamed the constant to
+`LOGIC_REGION_NAME_PAYLOAD_OFFSET` so the misreading cannot recur, **registered what really differs** (the rest of the `qeSM` payload, including the second
+space-prefixed string that `ocean eyes` has and `Swing!` does not) as a new `非等价:` entry, and added two criteria (render 96 -> **98** with the feature, 84 unchanged
+without it, so the addition is feature-gated). Its negative measurement perturbs the payload offset and fails with both byte arrays printed, and the demo-reading
+criterion was proven to skip cleanly when the Apple paths are absent.
+
+**Next**: build the **track table** from real measurements (`karT` and the surrounding `Trak` family), re-export to a fresh path, and ask for a third test. This is the
+same method that moved the failure point the first time: measure the real files, write only what the evidence supports, and register the rest.
+
+**Status**: tree green and clean; Phase 4 6 完成 / 5 部分 / 0 PENDING; the exporter's claim remains structural only.
