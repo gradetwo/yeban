@@ -200,7 +200,6 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         &loaded,
         now_ms,
     )?));
-
     let mut engine = EngineHost::new();
     if let Err(error) = engine.reload(&loaded.archive.project, 0) {
         // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
@@ -243,6 +242,35 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         "撤销: 可撤销 {} 步 · 已撤销 {} 步 · 分支 {} · 实现 = undo_session (与 MCP 的 yeban_undo 同一份源码)",
         undo_display.undoable, undo_display.undone, undo_display.branch
     )]);
+
+    // `[ROAD-M4-008]` 选项 (a) 第 (b) 项：**生产窗口的运行期重投影钩子**。
+    //
+    // 上面接好的全部写入口只覆盖"人在界面上动手"这一侧。会话侧（AI 经环回控制面发
+    // `tools/call`）改的是**同一个** `Domain`，但它不经过任何 GUI 回调 ——
+    // 没有这一步，生产窗口就会一直画着打开时那一版工程。
+    //
+    // 形态（**不是**定时器、**不是**后台线程）：`yeban-mcp` 的 `HttpServer::respond`
+    // 在"这次请求真的推进了施加修订号"时、**释放分发器锁之后、写出响应之前**调用
+    // 装上去的那个 `Fn(u64)`；观察者再把重投影 marshal 到 UI 线程
+    // （`slint::invoke_from_event_loop`）。判据因此可以确定性地驱动它：
+    // "客户端收到响应"蕴含"通知已经发生"，接下来跑掉事件循环里那一条排队调用即可。
+    //
+    // 返回值必须**活到事件循环结束**（它持有窗口与权威的弱引用 + 投影游标）。
+    #[cfg(feature = "in-process-mcp")]
+    let _reprojection = match in_process_mcp.as_ref() {
+        Some(mount) => {
+            let mirror = yeban_app::reproject::AuthorityMirror::install(&ui, mount);
+            cli::emit(&[match &mirror {
+                Some(mirror) => format!(
+                    "重投影: 已装 (会话侧改工程 ⇒ UI 线程重投影; 起点修订号 {})",
+                    mirror.projected_revision()
+                ),
+                None => "重投影: **未装** (控制面已停机) —— 会话侧改动不会自动刷新界面".to_owned(),
+            }]);
+            mirror
+        }
+        None => None,
+    };
 
     // 用 UFCS 而不是 `ui.run()`: `run()` 是 `slint::ComponentHandle` 的**trait 方法**,
     // 直接调用要求该 trait 在作用域内; 而显式 `use slint::ComponentHandle;` 在生成代码

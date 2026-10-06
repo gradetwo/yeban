@@ -59,6 +59,40 @@ pub fn install_testing_backend() {
     i_slint_backend_testing::init_no_event_loop();
 }
 
+/// 安装官方 Testing Backend，**并且带一个真的简单事件循环**（每进程一次）。
+///
+/// 出处：`i_slint_backend_testing::init_integration_test_with_mock_time()`，源码 `lib.rs:56-70`
+/// <https://docs.rs/i-slint-backend-testing/1.18.1/i_slint_backend_testing/fn.init_integration_test_with_mock_time.html>。
+///
+/// ## 为什么要第二条安装函数（`ROAD-M4-008` 选项 (a) 第 (b) 项）
+///
+/// [`install_testing_backend`] 装的是 `threading: false` 的那一档：上游文档原文
+/// *"global functions that needs an event loop such as `slint::invoke_from_event_loop`
+/// or `Timer`s won't work"*。生产路径上"会话侧改了工程 ⇒ UI 线程重投影"这一跳**必须**
+/// 经过 `slint::invoke_from_event_loop`（UI 对象只许在 UI 线程上碰），因此它需要
+/// 一个**有事件循环**的无头平台才能被端到端判据覆盖。
+///
+/// 这一档装的是 `threading: true`：`new_event_loop_proxy()` 返回 `Some`，
+/// `slint::invoke_from_event_loop` 真的把闭包排进队列，`slint::run_event_loop()`
+/// 按 FIFO 执行它们。
+///
+/// ## ⚠️ 两个硬约束（都是上游的结构，不是本仓库的偏好）
+///
+/// 1. **每个进程只能调一次**：上游用 `expect("platform already initialized")` 保护。
+///    `slint::platform::set_platform` 内部还会把一个**进程级**的 `OnceCell`
+///    （`i-slint-core` 的 `EVENTLOOP_PROXY`）填上；第二个线程再装**任何**带 proxy 的平台
+///    都会拿到 `SetPlatformError::AlreadySet`。因此用它的测试目标里**只能有一个
+///    `#[test]` 函数**（libtest 默认多线程并行）。
+/// 2. **它不渲染像素**（mock renderer）⇒ 只能用于属性 / 控件树断言，不能产出 Golden
+///    （`[MUST-GATE-015]` 的既有约束，与 [`install_testing_backend`] 同）。
+///
+/// # Panics
+///
+/// 当本进程已经装过后端时 panic（上游行为）。
+pub fn install_testing_backend_with_event_loop() {
+    i_slint_backend_testing::init_integration_test_with_mock_time();
+}
+
 /// Slint `AccessibleRole` → kebab-case 字面名。
 ///
 /// 上游**没有**运行时的 "enum → 字符串" API（kebab 化发生在编译期的

@@ -101,6 +101,14 @@ pub mod undo;
 #[cfg(feature = "in-process-mcp")]
 pub mod mcp_mount;
 
+// ---------------------------------------------------------------------------
+// 生产窗口的运行期重投影钩子 (`ROAD-M4-008` 选项 (a) 第 (b) 项, 2026-10-06)
+// ---------------------------------------------------------------------------
+// 与 `mcp_mount` 同一个 `cfg` 门：没有控制面就没有"会话侧"，也就没有要重投影的权威。
+// 默认构建里这个模块**不存在**，产品二进制的依赖图因此一位没变。
+#[cfg(feature = "in-process-mcp")]
+pub mod reproject;
+
 /// `build.rs` 里 `slint_build::compile("ui/app.slint")` 生成的 Slint 组件类型。
 ///
 /// 生成机制（已核验）：`slint-build` 把 `ui/app.slint` **及其 `import` 到的全部文件**

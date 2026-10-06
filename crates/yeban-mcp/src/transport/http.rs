@@ -27,9 +27,10 @@
 //! - 不做慢速攻击防护（环回 + 单用户开发场景；**不要**把它绑到非环回地址上）。
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::{Read as _, Write as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::dispatch::Dispatcher;
 use crate::security::{BearerToken, Channel};
@@ -449,11 +450,64 @@ fn error_body(kind: &str, detail: &str) -> String {
     serde_json::json!({"error": {"kind": kind, "detail": detail}}).to_string()
 }
 
+/// **宿主装的工程修订号观察者**的类型别名（见
+/// [`HttpServer::set_project_revision_sink`]）。
+///
+/// 参数是"这一次请求施加完之后"的 [`crate::domain::Domain::apply_revision`]。
+/// 它**只能**收下一个 `u64`：没有 `&Domain`、没有 `Dispatcher`、没有任何工具入口
+/// ⇒ 结构上不可能成为第二个写者。
+pub type ProjectRevisionSink = Arc<dyn Fn(u64) + Send + Sync>;
+
+/// 宿主装的**工程修订号观察者**（`ROAD-M4-008` 选项 (a) 第 (b) 项）。
+///
+/// 它只被**通知**：类型是 `Fn(u64)`，参数是一个修订号，**拿不到** `&Domain`、
+/// `&mut Domain`、`Dispatcher` 或任何工具调用入口。因此它**结构上不可能**成为
+/// 第二个写者 —— 唯一可变权威仍然是那一个 `Domain`（推进只发生在
+/// [`crate::domain::apply`]）。
+///
+/// 为什么这个口子住在传输层：会话侧的写（`tools/call`）与宿主侧的写
+/// （[`HttpServer::apply_host_action`]）都在这里收口，而"一次请求真的改过工程"
+/// 只有在**请求处理完之后**才可读。放在 `respond` 里、**在释放分发器锁之后、
+/// 在响应字节写出之前**通知，于是通知的时序对客户端是确定的：
+/// 调用方收到响应时，通知**一定**已经发生（判据因此不需要 sleep/轮询）。
+#[derive(Default)]
+struct RevisionSink {
+    installed: Mutex<Option<ProjectRevisionSink>>,
+}
+
+impl RevisionSink {
+    /// 通知一次（没有装观察者 ⇒ 什么都不做）。
+    ///
+    /// 刻意**不在持有分发器锁时**调用（调用方负责先释放）：
+    /// 观察者要做的事是"把重投影 marshal 到 UI 线程"，它**不许**回头读会话。
+    fn notify(&self, revision: u64) {
+        let sink = match self.installed.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        if let Some(sink) = sink {
+            sink(revision);
+        }
+    }
+}
+
+impl fmt::Debug for RevisionSink {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let installed = self.installed.lock().is_ok_and(|guard| guard.is_some());
+        // 刻意不打印闭包本身（`dyn Fn` 没有 Debug，而且里面可能持有宿主对象）。
+        formatter
+            .debug_struct("RevisionSink")
+            .field("installed", &installed)
+            .finish()
+    }
+}
+
 /// 环回 HTTP 服务。
 #[derive(Debug)]
 pub struct HttpServer {
     listener: TcpListener,
     dispatcher: Mutex<Dispatcher>,
+    revision_sink: RevisionSink,
 }
 
 impl HttpServer {
@@ -471,6 +525,7 @@ impl HttpServer {
         let server = Self {
             listener,
             dispatcher: Mutex::new(dispatcher),
+            revision_sink: RevisionSink::default(),
         };
         // 绑定后立刻回读: "我请求的是环回"与"我真的绑在环回上"是两件事。
         assert_loopback(server.local_addr()?)?;
@@ -565,6 +620,28 @@ impl HttpServer {
         }
     }
 
+    /// **宿主侧的工程修订号观察者安装口**（`ROAD-M4-008` 选项 (a) 第 (b) 项）。
+    ///
+    /// 宿主（形态 A 的 `yeban-app`）用它把"会话侧改了工程"这件事**事件驱动地**
+    /// 送到 UI 线程：装一个 `Fn(u64)`，它只在**一次请求真的推进了**
+    /// [`crate::domain::Domain::apply_revision`] 之后被调用一次，参数是新修订号。
+    ///
+    /// ## 它为什么不是第二条写通道
+    ///
+    /// - 观察者拿到的是 `u64`，**不是** `&Domain` / `&mut Domain` / `Dispatcher`：
+    ///   除了"改过工程了，这是新号"之外它什么也做不了；
+    /// - 安装它**不**改任何鉴权 / 作用域 / `dryRun` 语义，也不新增端口、令牌或线程；
+    /// - 推进修订号的仍然只有 [`crate::domain::apply`] 一处。
+    ///
+    /// 传 `None` 即卸载（幂等）。
+    pub fn set_project_revision_sink(&self, sink: Option<ProjectRevisionSink>) {
+        let mut installed = match self.revision_sink.installed.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *installed = sink;
+    }
+
     /// 处理一个已解析的请求。
     fn respond(&self, request: &HttpRequest) -> HttpResponse {
         if request.method != SUPPORTED_METHOD {
@@ -586,9 +663,26 @@ impl HttpServer {
             .outcome();
         }
 
-        let outcome =
-            self.lock()
-                .handle_line(Channel::Http, request.authorization(), &request.body);
+        // 修订号在**同一把锁**里前后各读一次：锁内不可能有第二个施加者，
+        // 因此"这一次请求改过工程"是一个精确的读数，而不是两次独立采样的猜测。
+        let (outcome, revision_after) = {
+            let mut dispatcher = self.lock();
+            let revision_before = dispatcher.domain().apply_revision();
+            let outcome =
+                dispatcher.handle_line(Channel::Http, request.authorization(), &request.body);
+            let revision_after = dispatcher.domain().apply_revision();
+            debug_assert!(
+                revision_after >= revision_before,
+                "施加修订号只许单调不降（推进点只有 domain::apply 一处）"
+            );
+            let advanced = revision_after != revision_before;
+            (outcome, advanced.then_some(revision_after))
+        };
+        // 通知**在释放分发器锁之后、在响应字节写出之前**：
+        // 于是"客户端收到响应"蕴含"宿主已经被通知过" —— 判据不需要 sleep/轮询。
+        if let Some(revision) = revision_after {
+            self.revision_sink.notify(revision);
+        }
         let body = outcome
             .response
             .map_or_else(String::new, |response| response.to_json());

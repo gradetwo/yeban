@@ -1,11 +1,13 @@
-# `M4-008` 工作线台账 —— UI↔领域**唯一可变权威**（`open-questions.md` 问题 6 选项 (a)：第一片 + 第二片 + 第三片）
+# `M4-008` 工作线台账 —— UI↔领域**唯一可变权威**（`open-questions.md` 问题 6 选项 (a)：第一片 + 第二片 + 第三片 + 第 (b) 项）
 
 > 授权：`docs/ledger/human-decisions.md` 头部声明它是**唯一**需要人类裁决的清单，其条目按**建议**列
 > 在负责人"按你的建议来"的长期授权下执行（**不是** Agent 自放行）。本行按
 > `docs/ledger/open-questions.md` 问题 6 的 **(a) 建议**执行。
 > §1–§5 是选项 (a) 的**第一片**（投影口）；§6 是**第二片**（GUI 的**写**入口落到该权威上）；
-> §7 是**第三片**（GUI 的**保存路径**纳入同一把 `.yeban.lock`，并**实测**裁决"仍不翻 `read_only`"）。
-> 问题 6 与 `ROAD-M4-008` 因此**仍是「部分」** —— 如实剩下的两步写在 §7.5。
+> §7 是**第三片**（GUI 的**保存路径**纳入同一把 `.yeban.lock`，并**实测**裁决"仍不翻 `read_only`"）；
+> §8 是**第 (b) 项**（生产窗口的**运行期重投影钩子** —— `run_gui` 不再只画打开时那一版）。
+> 问题 6 与 `ROAD-M4-008` 因此**仍是「部分」**：§7.5 的两件事里，第 2 件（运行期重投影）
+> 已由 §8 关闭，第 1 件（**单一写者会话**：宿主保存动作）仍在 —— 逐条见 §8.5。
 
 ---
 
@@ -413,4 +415,162 @@ git show HEAD:crates/yeban-app/Cargo.toml > crates/yeban-app/Cargo.toml   # 临�
 cargo-local.sh tree -p yeban-app -e normal --locked | grep -oE "[a-z0-9_-]+ v[0-9][0-9.a-z-]*" | sort -u | wc -l   # 296
 # …（换回新清单）…                                                                                                    # 296
 git status --short Cargo.lock    # 空 ⇒ Cargo.lock 未变（serde_json 早在 yeban-app 的锁定依赖表里）
+```
+
+---
+
+## 8. 第 (b) 项（2026-10-06）：生产窗口的**运行期重投影钩子**
+
+> 本片做选项 (a) 剩下的第 2 件事。它**不是**定时器、**不是**后台线程：
+> 通知点在控制面**服务完一次请求之后**（`HttpServer::respond`，释放分发器锁之后、
+> 写出响应字节之前），跨线程那一跳走 `slint::invoke_from_event_loop`。
+> 因此 `ROAD-M4-008` 的第 (b) 项**关闭**；本项整体仍是「部分」，因为第 1 件事
+> （"单一写者会话"）与它无关且仍未建（§8.5）。
+
+### 8.1 结构性证据（**改动前**实测；命中数 = "匹配该模式的行数"，命令逐条给出）
+
+| # | 说法 | 改动前读数 | 命令 |
+| :--- | :--- | :--- | :--- |
+| 1 | **改动前** `crates/` 里**一个** `invoke_from_event_loop` 调用点都没有 | **0** | `grep -rn "invoke_from_event_loop" crates/ --include=*.rs \| wc -l` |
+| 2 | `run_gui` 里**没有**任何定时器 / 事件循环投递 | **0** | `grep -rnE "Timer\|start_repeated\|invoke_from_event_loop" crates/yeban-app/src/ crates/yeban-app/ui/ \| wc -l` |
+| 3 | 生产窗口的构造点只有一处 | `host::build_main_window` 命中 **1**（`main.rs:139`） | `grep -n "build_main_window" crates/yeban-app/src/main.rs` |
+| 4 | `live_surface.rs` **不在**产品 lib 里（只在测试目标里 `#[path]` 装进去） | `grep -c "live_surface" crates/yeban-app/src/lib.rs` = **0** | 该命令本身；装它的只有 `tests/live_ui_mcp.rs:30` |
+| 5 | 判据今天**直接调** `sync_authority()`（没有事件循环参与） | 命中 **7**，全在 `tests/live_ui_mcp.rs` | `grep -rn "sync_authority()" crates/yeban-app/tests/live_ui_mcp.rs \| wc -l` |
+| 6 | 宿主侧对权威的强句柄 | `ProjectAuthorityHandle`（`mcp_mount.rs`，内含 `Arc<HttpServer>`） | `grep -n "pub struct ProjectAuthorityHandle" crates/yeban-app/src/mcp_mount.rs` |
+
+**第 1 条是必须登记的元问题**：`docs/DEVELOPMENT_LEDGER.md` 第 8962 行写着"the existing
+`invoke_from_event_loop` path already does for host calls"（即"这条路已经存在，复用它即可"）。
+**实测把这个前提推翻了**：改动前 `crates/` 全树 0 个调用点；`invoke_from_event_loop` 这个词
+在本仓只出现在 `docs/**` 与 `.worktrees/.cargo-home/` 里那份**上游 slint 源码**中。
+因此本片不是"复用一条已有的路"，而是**第一次把这条路接起来**。
+（`DEVELOPMENT_LEDGER.md` 由集成者独占，本片不改它；这一条在此登记并随报告上呈。）
+
+**第 2 条与"为什么不能加定时器"的关系**：无头判据用的 Tier-1 平台
+（`crates/yeban-ui-test-port/src/render.rs` 的 `Tier1Platform`）只实现了
+`create_window_adapter`，其余走上游默认实现 ⇒ `new_event_loop_proxy()` 返回 `None`、
+`run_event_loop()` 返回 `Err(NoEventLoopProvider)`。因此在这个平台上
+**定时器根本不会被推进**（没有循环去调 `update_timers_and_animations`），
+`invoke_from_event_loop` 也只会返回 `Err`。定时器仍然**不可判定**，本片一个都没加。
+
+### 8.2 本片做了什么
+
+| 文件 | 改动 | 为什么 |
+| :--- | :--- | :--- |
+| `crates/yeban-mcp/src/transport/http.rs` | 新增 `ProjectRevisionSink` 类型别名 + 私有 `RevisionSink` 字段（`Debug` 只报 `installed`）、`HttpServer::set_project_revision_sink`；`respond` 在**同一把分发器锁**里前后各读一次 `apply_revision`，只在**真的前进**时、**释放锁之后、写出响应之前**通知 | "一次请求真的改过工程"成为**精确读数**（不是两次独立采样）；通知时序对客户端确定 ⇒ 判据不需要 sleep/轮询。观察者是 `Fn(u64)`，**拿不到** `Domain` ⇒ 结构上不是第二个写者 |
+| `crates/yeban-app/src/mcp_mount.rs` | `InProcessMcp::set_project_revision_sink`（服务已停机 ⇒ 返回 `false`，不假装装上）；`ProjectAuthorityHandle::downgrade()` + 新类型 `WeakProjectAuthorityHandle` | 观察者装在 `HttpServer` **内部**；若它（或它 marshal 的闭包）持强句柄就形成 `HttpServer → 观察者 → Arc<HttpServer>` 引用环 ⇒ 停机后监听口不关。弱句柄切断这条环（§8.3.1 负向实测 ③ 就是这个环的实测证据） |
+| `crates/yeban-app/src/reproject.rs`（新，`cfg(in-process-mcp)`） | `AuthorityMirror`（窗口弱引用 + 权威弱句柄 + `projected` 修订号）+ `ProjectionOutcome` 五态 + `sync_now` / `sync_weak` / `event_loop_sink` / `install` | 生产路径的**唯一**重投影钩子：读权威（只读口）→ `ViewState::from_project` → `host::apply_view` 注入活窗口。`event_loop_sink` 是生产驱动（`invoke_from_event_loop`） |
+| `crates/yeban-app/src/main.rs` | `run_gui` 在进事件循环之前 `AuthorityMirror::install(&ui, mount)`，并打一行"重投影: 已装 / **未装**"的报告 | 装了才叫"生产路径上有钩子"；**未装时出声**（服务已停机），不留一个"看起来装了"的空钩子。返回值持到事件循环结束 |
+| `crates/yeban-app/src/lib.rs` | `pub mod reproject;`（同一个 `cfg`） | 默认构建里这个模块**不存在** ⇒ 产品依赖图一位没变 |
+| `crates/yeban-ui-test-port/src/inspect.rs` | `install_testing_backend_with_event_loop()`（转发上游 `init_integration_test_with_mock_time`） | 无头判据要**真的**跑 `invoke_from_event_loop` 这一跳，就必须有一个**带事件循环**的无头平台。上游那一档（`threading: true`）每进程只能装一次 ⇒ 判据目标里只能有一个 `#[test]`（文件头写明了） |
+| `crates/yeban-app/tests/production_reprojection.rs`（新） | 判据（下方 §8.3） | 这条判据是"第 (b) 项闭合"与"没闭合"的分界线 |
+
+**没有动的东西（都是刻意的）**：`read_only = true`、`SessionSource::lock_mode()`（仍 `SharedRead`）、
+`acquire_session_lock`、`undo.rs` 的任何一行、`Domain` 的任何一行、`Domain::apply` 的推进点、
+`crates/yeban-app/Cargo.toml` 与 `Cargo.lock`（实测未变，见 §8.6）、
+`in-process-mcp` / `experimental-als-export` 的 feature 定义、`MUST-GATE-009` 的四条。
+
+### 8.3 判据（有牙，且能失败）
+
+`crates/yeban-app/tests/production_reprojection.rs::a_session_side_mutation_reaches_the_production_window_through_the_runtime_hook`
+（`--features in-process-mcp`；文件里**只有这一个** `#[test]`，理由见 §8.2 的平台约束）
+
+| 步 | 动作 | 实读 |
+| :--- | :--- | :--- |
+| 1 | 用**生产构造入口** `host::build_main_window` 建窗口（工程取自权威） | 窗口的自动化泳道 1 条，`track-0-automation-pan-lane` **不在** |
+| 2 | `AuthorityMirror::install` 把观察者装到控制面上 | 起点"已投影修订号" == 权威当前修订号（0） |
+| 3 | **会话侧**：真环回 socket + 真令牌 + 真客户端发 `yeban_edit_automation`（`TrackPan` 写一个点） | `status = success`；权威修订号 **0 → 1** |
+| 4 | 钩子**还没跑**，读同一个活窗口 | 窗口泳道仍是那 **1** 条（旧投影）—— 会话侧的改动**没有**同步溜进 UI 线程 |
+| 5 | 同一时刻读**权威工程**的投影 | 权威**已经**有那条新泳道 ⇒ 第 4 步是真的缺口，不是巧合 |
+| 6 | `quit_event_loop()` + `run_event_loop()`（无头平台 FIFO 弹出那一条排队调用） | 钩子在 **UI 线程**上执行（没有 sleep / 轮询 / 超时） |
+| 7 | 再读同一个窗口 | 泳道 **1 → 2** 条，新标签 `Lead · 声相 自动化 0.250` **逐字等于**权威工程的投影；`projected_revision` == 1 |
+| 8 | 一次**只读** `yeban_query_project` + 再跑一轮事件循环 | 修订号不动 ⇒ `respond` 里 `advanced == false` ⇒ 观察者**根本没被调用**；窗口泳道逐字不变 |
+| 9 | 直接再驱动一次钩子本体（`sync_now`） | `Unchanged`（幂等：已经投影过这一版） |
+| 10 | `drop(authority)`（判据自己那个强句柄）后 `mount.stop()` | 监听口真的关了（`TcpStream::connect_timeout` 失败）⇒ 观察者持的是**弱**句柄，没有引用环 |
+
+**为什么第 4 步与第 8 步是"牙齿"而不是装饰**：第 4 步把"marshal 到 UI 线程"与"在服务线程上
+直接重投影"区分开；第 8 步把"事件驱动"与"每次请求都刷一遍"区分开。两者都不是恒真的断言。
+
+### 8.3.1 负向实测（先红后还原；四条方向各不相同）
+
+| # | 临时改哪里 | 红在哪 | 实读（原文） |
+| :--- | :--- | :--- | :--- |
+| ① | `AuthorityMirror::install` 里**不装观察者**（`set_project_revision_sink` 不调用） | 步 7（判据 `:199`） | ``钩子跑过之后生产窗口里必须有 `track-0-automation-pan-lane` 的标签 `Lead · 声相 自动化 0.250`: ["Lead · 音量 自动化 -6.0 dB · 录制臂 触碰"]``，`test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out` |
+| ② | `sync_now` 算出投影但**不注入**（摘掉 `host::apply_view`） | 步 7（判据 `:199`） | 与 ① 同一行、逐字相同（事件循环**真的**跑过了，只是没画） |
+| ③ | `event_loop_sink` 里让观察者持一个**强** `ProjectAuthorityHandle`（引用环） | 步 10（判据 `:261`） | `停机之后不该还有东西在监听 127.0.0.1:50874：钩子若持有强句柄就会形成 HttpServer → 观察者 → Arc<HttpServer> 的引用环，这里会变红` |
+| ④ | `event_loop_sink` **不 marshal**，直接在服务线程上调 `sync_weak()` | 步 7（判据 `:199`） | 与 ① 同一行、逐字相同 —— 因为上游 `Weak::upgrade()` 在**非创建线程**上返回 `None`（`i-slint-core/api.rs:1171-1177`），所以"在错误的线程上重投影"是一次**确定的**空操作，不是一个偶发 panic |
+
+四条都在**最终代码状态**上复跑过一次（lint 修复之后），四条都红、四条都还原：每次还原后
+`cmp` 与基线逐字节相同、`shasum -a 256 crates/yeban-app/src/reproject.rs`
+= `8d73bc1c8201c6416ee9b0a7fd62709772ff75b49a3a88639f0dc5b3e10a0391`（四次都一样），
+`grep -rn "NEGATIVE MEASUREMENT" crates/` = **0**。
+
+### 8.4 为什么这个形态是**可判定**的（而不是"又一个无法判定的定时器"）
+
+| 问题 | 答案 |
+| :--- | :--- |
+| 谁在什么时点通知？ | 控制面**服务完一次请求**之后（`HttpServer::respond`）。定义好的、由请求到达驱动 —— 不是时钟 |
+| 跨线程那一跳会不会丢？ | 不会：`slint::invoke_from_event_loop` 把闭包排进平台的事件循环队列；生产平台（`backend-winit`）实现了 proxy |
+| 判据怎么**确定**它已经排进去了？ | 通知发生在**写出响应字节之前** ⇒ "客户端读到响应"蕴含"已经排进队列"。判据因此不需要 sleep / 轮询 / 超时 |
+| 判据怎么**确定**那一跳会跑？ | 判据自己压一条 `Quit` 再进 `run_event_loop()`；无头平台是 FIFO 队列 ⇒ 先跑重投影、再看到 `Quit`，循环必然返回（不会 park 在空队列上） |
+| 没有事件循环的形态怎么办？ | `invoke_from_event_loop` 返回 `Err(NoEventLoopProvider)` ⇒ **出声**打一行 stderr，并且**不**推进 `projected`（下一次通知会再试）。**没有**静默降级 |
+
+### 8.5 第 (b) 项之后如实剩下的（因此 `ROAD-M4-008` 仍是「部分」）
+
+1. **"单一写者会话"未建**（§7.4 的第 1 条，本片未动）：GUI 的保存落点
+   （`save_project_file`）与控制面会话在**同一个**工程文件上互斥 ⇒ 控制面存活时 GUI 保存被拒
+   （fail-closed，判据 ④）。要同时成立须给宿主加一个**保存动作**并让 GUI 的 `ui/force_save`
+   走它。注意这一条是**磁盘写者**的边界，与内存权威无关。
+2. ~~生产窗口仍没有运行期重投影~~ ⇒ **本片关闭**。逐条对照 §7.5 第 2 条：
+   `run_gui` 今天**有**钩子了（`AuthorityMirror::install`），它由 `respond` 的通知驱动、
+   经 `invoke_from_event_loop` 在 UI 线程上执行；判据在**生产构造入口**建出来的窗口上
+   端到端跑通（§8.3）。**不是**定时器，因此不触碰"无头判据界定不了调度"那条 DoD。
+3. **`UndoPort` 会话与 `Domain` 会话仍是两个类型**（结构性，§6.5 第 3 条，本片未动）。
+4. **启动时仍有两份 `YebanProjectV1` 值**（§6.5 第 3 条）：`loaded.archive.project` 是
+   建窗口的**只读初值**、从不被写，因此不是第二个**可变**权威；本片让"之后"由权威驱动，
+   "启动那一次"仍复用 `host::build_main_window`。
+
+### 8.6 本机验证原始读数（第 (b) 项，2026-10-06）
+
+```text
+bash scripts/dev/cargo-local.sh fmt                                    # exit 0
+bash scripts/dev/cargo-local.sh fmt --check                            # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app                     # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app --features in-process-mcp          # exit 0
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets -- -D warnings      # exit 0
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets --features in-process-mcp -- -D warnings  # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests                             # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests --features in-process-mcp    # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-mcp --tests                              # exit 0（重跑；首轮 lock_advisory 一条偶发红，见下）
+bash scripts/gates/run-gates.sh light                                  # exit 0，末行 `门禁通过 (mode=light)`
+```
+
+与本片直接相关的判据行（`--features in-process-mcp` 档）：
+
+```text
+tests/production_reprojection.rs:  test result: ok. 1 passed; 0 failed; 0 ignored
+```
+
+默认档里这个目标存在但 0 用例（feature 关着：`mcp_mount` / `reproject` 两个模块都不在编译里）：
+
+```text
+tests/production_reprojection.rs:  test result: ok. 0 passed; 0 failed; 0 ignored
+```
+
+**一条偶发红（如实登记，不是本片引入）**：首轮 `test -p yeban-mcp --tests` 里
+`tests/lock_advisory.rs::another_process_cannot_open_a_project_we_hold_exclusively`
+红在 `握手标记必须是 JSON: EOF while parsing a value at line 1 column 0: `（`test result: FAILED. 13 passed; 1 failed`）。
+它是本仓**已登记**的百年老 flake（`docs/DEVELOPMENT_LEDGER.md` 第 279 / 288 轮：
+"one occurrence in seven observations"），且与本片无关 —— 那条断言量的是**子进程的握手行**，
+发生在任何 HTTP 请求（也就是 `respond` 里那个通知点）之前。随后单跑 3 次 + 整套重跑 1 次全绿
+（`14 passed` ×3，整套 11 个目标全 ok）。
+
+**依赖图对账（"包集合一个没变"的机械证据，零编译）**：
+
+```text
+# 默认树里「唯一的 name vX.Y.Z 集合」：本轮改动前 296 个 / 改动后 296 个
+bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked --prefix none \
+  | grep -oE "^[a-zA-Z0-9_-]+ v[0-9][0-9.a-zA-Z-]*" | sort -u | wc -l    # 296
+# 清单与锁文件逐字节未动（空输出）：
+git status --short -- Cargo.toml Cargo.lock crates/yeban-app/Cargo.toml \
+  crates/yeban-mcp/Cargo.toml crates/yeban-ui-test-port/Cargo.toml
 ```

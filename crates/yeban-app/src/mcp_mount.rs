@@ -111,8 +111,8 @@ use std::fmt;
 use std::io::Write as _;
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -122,7 +122,7 @@ use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
 use yeban_mcp::domain::{Domain, HostAction, HostOutcome};
 use yeban_mcp::security::{BearerToken, RunMode, ScopeSet, TokenFile};
-use yeban_mcp::transport::http::{HttpError, HttpServer, MCP_PATH};
+use yeban_mcp::transport::http::{HttpError, HttpServer, MCP_PATH, ProjectRevisionSink};
 use yeban_mcp::transport::{HttpStartup, TransportError, plan_http_startup};
 use yeban_mcp::undo_session::UndoDisplay;
 use yeban_model::{CommitGraph, YebanProjectV1};
@@ -484,6 +484,43 @@ impl ProjectAuthorityHandle {
     pub fn apply_host(&self, action: HostAction) -> Result<HostOutcome, Fault> {
         self.server.apply_host_action(action)
     }
+
+    /// 一个**不延长服务寿命**的弱句柄（`ROAD-M4-008` 选项 (a) 第 (b) 项）。
+    ///
+    /// 为什么必须有它：宿主把"会话侧改了工程"的通知 marshal 到 UI 线程时，
+    /// 排队里的闭包要能**再读到**权威（取工程快照去投影）。若那个闭包持
+    /// `ProjectAuthorityHandle`（内含 `Arc<HttpServer>`），而闭包本身又装在
+    /// `HttpServer` 里，就形成 `HttpServer → 观察者 → Arc<HttpServer>` 的**引用环**
+    /// —— 监听 socket 永远不会被关闭，`the_round_trip_stops_leaving_nothing_listening`
+    /// 那条判据会直接变红。弱句柄把这条环切断：它 `upgrade()` 不到就说明服务已经停了，
+    /// 重投影**如实放弃**（不是静默降级成"用一份陈旧工程"）。
+    #[must_use]
+    pub fn downgrade(&self) -> WeakProjectAuthorityHandle {
+        WeakProjectAuthorityHandle {
+            server: Arc::downgrade(&self.server),
+        }
+    }
+}
+
+/// [`ProjectAuthorityHandle`] 的**弱**形态（见 [`ProjectAuthorityHandle::downgrade`]）。
+///
+/// 它是 `Send + Sync` 的（`Weak<HttpServer>`），因此可以安全地放进被 marshal 到
+/// UI 线程的闭包里；同时它**不能**被用来装观察者、也不能被用来写 ——
+/// 唯一的写入口仍然只有升级之后的那个句柄上的 [`ProjectAuthorityHandle::apply_host`]。
+#[derive(Clone, Debug)]
+pub struct WeakProjectAuthorityHandle {
+    /// 与工作线程共享的那一个服务的**弱**引用。
+    server: Weak<HttpServer>,
+}
+
+impl WeakProjectAuthorityHandle {
+    /// 服务还活着就升级成完整句柄；已经停机 ⇒ `None`。
+    #[must_use]
+    pub fn upgrade(&self) -> Option<ProjectAuthorityHandle> {
+        self.server
+            .upgrade()
+            .map(|server| ProjectAuthorityHandle { server })
+    }
 }
 
 impl InProcessMcp {
@@ -647,6 +684,23 @@ impl InProcessMcp {
             drop(server);
         }
         Ok(())
+    }
+
+    /// **宿主侧的工程修订号观察者的安装口**（`ROAD-M4-008` 选项 (a) 第 (b) 项）。
+    ///
+    /// 把宿主提供的 `Fn(u64)` 装到**正在服务的那一个** [`HttpServer`] 上：它只在
+    /// 一次请求真的推进了施加修订号（即会话侧真的改过工程）之后被调用一次。
+    ///
+    /// 返回 `false` 表示服务已经停机（`server` 已被取走）⇒ **没有装上**。
+    /// 这不是静默降级：调用方（`reproject::AuthorityMirror::install`）如实报告它。
+    pub fn set_project_revision_sink(&self, sink: Option<ProjectRevisionSink>) -> bool {
+        match self.server.as_ref() {
+            Some(server) => {
+                server.set_project_revision_sink(sink);
+                true
+            }
+            None => false,
+        }
     }
 
     /// 用一次**环回连接**把阻塞在 `accept` 里的那一次 `serve_once` 叫回来。
