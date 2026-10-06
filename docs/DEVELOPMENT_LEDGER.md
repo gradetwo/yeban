@@ -8328,3 +8328,30 @@ since `cbfc681`; if it does not, treat pushes as unavailable and keep the ledger
 
 **Status**: tree green and clean; **local is 1 commit ahead of `origin/main` (`cbfc681`)**; CI green through `f7a664d`; the loudness item is CI-verified and
 closed on the tool side; the mapping move is one insertion rule from compiling (round 341).
+
+
+### Round 343: the MIDI export tool is scoped - every place its addition touches, measured
+
+With the mapping now shared (round 341-342, commit `c847450`), `yeban_export_midi` is the last item, and this round measured every site its addition touches
+instead of guessing:
+
+| site | current value | becomes |
+| :--- | :--- | :--- |
+| `crates/yeban-mcp/src/tools.rs:61` | `TOOL_COUNT: usize = 16` | `17` |
+| `:64` | `DOCUMENTED_TOOL_COUNT: usize = 10` | unchanged (the tool joins the extension set) |
+| `:67` | `EXTENSION_TOOL_COUNT: usize = 6` | `7` |
+| `:80` | `EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT]` | one more name |
+| `:468` | `TOOLS: [ToolSpec; TOOL_COUNT]` | one more `ToolSpec` |
+
+**The spec's shape is fixed by its neighbours** (`ToolSpec { spec_id, name, summary, scope, side_effect, params, errors }`), and the extension tools each
+declare only error codes inside `ADR-0001 D25`'s union - the criterion
+`tests/contract.rs::extension_tools_only_declare_codes_inside_the_d25_union` enforces that, so the new tool's `errors` list must stay inside those twenty
+values.
+
+**What the tool itself must do** (decided in earlier rounds and now implementable): delegate to `yeban_midi::export::export_from_project`, encode with the
+shared codec, and return the bytes; its criterion is an **in-memory round trip** - build the project, call the shared mapping, and read the produced SMF back
+with `parse_smf`, comparing notes - which avoids the filesystem entirely and therefore the lock-test flakiness seen in round 279. The MCP dependency direction
+is already satisfied: `yeban-mcp -> yeban-midi` is allowed and verified by `check_mcp_dependency_direction.py`.
+
+**Status**: tree green and clean; `271 passed / 0 failed` for the moved mapping; local is three commits ahead of `origin/main` because ssh publickey
+authentication is unavailable in this environment (round 342) - the work is safe locally and one `git push` restores the remote when the key returns.
