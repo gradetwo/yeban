@@ -398,3 +398,200 @@ bash scripts/dev/ci-verdict.sh line/gate-rt-zero-alloc
 | `crates/yeban-engine/src/rt_probe.rs` | `790e25a17149b73b32c5ac4d4bcba9f39092f2a5d38a1bd09f622a1c6b5b1bc3` |
 
 （`rt.rs` 的哈希在**四次注入的每次还原之后**都用 `sha256sum -c` 校验为同一个值。）
+
+---
+
+# 第 611 轮补（扩场景）：**六场景 → 十场景**
+
+> 本节由一次**扩场景**切片追加（任务的原话是"实时零分配扩场景"）。
+> **本切片没有修改 `docs/ledger/gate-status.md` 的任何一行**，也没有改 `MUST-GATE-001`
+> 或 `MUST-GATE-012` 的状态：`MUST-GATE-001` 本来就是 **已接线**（已接线是最高状态，
+> 只能被削弱、不能被"推进"），因此本轮是**给一个已经接线的门禁加证据，而不是移动它**。
+> 本切片碰过的文件只有两个：`crates/yeban-engine/tests/rt_zero_alloc.rs`（判据）与本文（记录）。
+
+## 11. 四个新场景：各自覆盖什么、为什么那条路径**可能**分配、怎么检出分配
+
+器件**完全复用**：计数型全局分配器、`window()`、`Scenario`、`Report` 都是本文件
+原有的机制，**没有新增 `unsafe`**（`#[global_allocator]` 仍然只有本文件里那一个
+`CountingAllocator`，定义在 `tests/` 下 ⇒ 不进任何发行二进制；见 §15）。
+判定口径不变：窗口内四元组（`alloc` / `dealloc` / `lock_blocking` / `lock_waits` /
+`io_requests` / `io_ops`）**逐项为 0**，外加"探针真的被跑到过"的见证
+（`quanta_visits == 期望量子数`、`lock_try_successes == quanta_visits`）。
+
+| # | 场景 | 覆盖的实时路径 | 为什么那条路径**可能**分配 | 分配怎么被检出 |
+| :-: | :--- | :--- | :--- | :--- |
+| ⑬ | 回调缓冲长度边界：`[1,2,3,127,128,129,1024,1025]` 帧 × 25 轮 + 每轮一次 129 样本（非帧对齐） | `process_quantum` 的 `while offset < total_frames` 切块 + 逐帧交错拷贝 + `AudioBlock::set_frames` 的短块路径 + 尾部残余样本契约 | 那是**唯一**把"设备给的任意长度交错缓冲"切成整量子的地方；一个自然的实现会 `to_vec()`/`resize()`，或为 `<128` 帧的尾块另建缓冲 | 同一个计数分配器；再加**哨兵检查**：帧对齐缓冲里不许残留哨兵，非对齐缓冲必须**恰好**残留 1 个 |
+| ⑭ | 采样率 × 项目声明 `block_size` 全组合（5×5×2 = 50 次切换，2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`（按新采样率重算频率/相位）、`Transport::arm` | 换快照时若重建 `Vec`/`BTreeMap`（调度表、声相表、PDC 计划）就会分配；既有场景②只改 `revision`（内容相同）⇒ 这条分支的"内容真的变了"那一半从未被覆盖 | 同一个计数分配器；覆盖度判据同时钉住"武装值逐项等于 `采样率/128`"（50 项）以证明重新武装**真的发生了** |
+| ⑮ | **播放中**「`Op` 层编辑 / 撤销 → 重新发布快照」2 000 轮 + 主线程排空退役队列 | `Op::apply` / `Op::apply_inverse`（真实撤销载荷）→ `EngineSnapshot::from_project` → 原子发布 → 实时侧"新修订 ⇒ 切换 + 旧快照入退役队列" | 撤销交互的组合路径：一边出声、一边被模型改写、一边换拓扑。既有场景②不播放，场景③不发布 ⇒ 这个组合从未被覆盖 | 同一个计数分配器；同时断言"编辑与撤销都真的应用过"（各 1 000 次）与"旧快照只在主线程释放" |
+| ⑯ | 满批事件洪峰：`SCRATCH_EVENTS` = 128 条/量子 × 500 量子（参数 + 音符 + 走带混排） | `EventReceiver::drain_with` 把整批搬进 `[EngineEvent; SCRATCH_EVENTS]` 栈数组的**满块边界** | 一个自然的实现会 `Vec::from_iter`/`extend`，或在"批比缓冲大"时分配溢出缓冲；既有场景⑤每量子只发 **1** 条 ⇒ 满块边界从未被覆盖 | 同一个计数分配器；同时断言 64 000 条**全部**被通道接受并被实时侧计数 |
+
+### 11.1 实测读数（本机 M2，`--no-default-features`，冻结代码）
+
+命令（L30：`cargo-local.sh` 会打印它实际用的工作区）：
+
+```bash
+bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --test rt_zero_alloc
+```
+
+| # | 量子 | 子窗口 | 探针经过 | 试探成功 | alloc | dealloc | lock_blocking | lock_waits | io_requests | io_ops |
+| :-: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ⑬ | 625 | 1 | 625 | 625 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ⑭ | 2 000 | 50 | 2 000 | 2 000 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ⑮ | 2 000 | 2 000 | 2 000 | 2 000 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ⑯ | 500 | 500 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+覆盖度证据（逐条来自判据 detail 行，防"窗口里什么都没跑"的假绿）：
+
+| # | 覆盖度读数（原文） |
+| :-: | :--- |
+| ⑬ | `长度集合=[1, 2, 3, 127, 128, 129, 1024, 1025] × 25 轮 + 每轮一次 129 样本；共喂入 60975 帧 / 625 个量子；帧对齐缓冲残留哨兵=0`；⑬c：`非对齐 129 样本的残余哨兵=25（要求 25，即每轮恰好 1 个）；单次 1025 帧 ⇒ 量子数=9（要求 9）` |
+| ⑭ | `切换 50 次（5 采样率 × 5 声明缓冲 × 2 轮）；武装的量子/秒=5 个不同值；走带位置 5 -> 6932 tick；合成样本=256128`；⑭c：`武装值逐项比对=true（要求 true；50 项）` |
+| ⑮ | `编辑=1000 撤销=1000 发布=2000；实际切换=2000 主线程回收=2000；走带位置=10245 tick 状态=Playing；释放线程=主线程?true 外线程排空=0 退役满寄存=0` |
+| ⑯ | `每量子 128 条 × 500 量子 = 尝试 64000 条，通道接受 64000 条；实时侧应用=64001 批量出队=501；通道容量=1024` |
+
+**判据总数：24 → 32**（`判据汇总: 32 / 32 通过`，退出码 0）。其中 ⑮ 顺带把
+`MUST-GATE-012`（退役队列）关心的两条读数也钉进了播放场景：`release_thread_is_main=true`、
+`foreign_drains=0`、`退役满寄存=0`——但**门禁 012 的行没有被本切片改动**。
+
+### 11.2 哪些跑在**真回调**、哪些只是**测试里的替身**（这条最容易含混，必须写明）
+
+| 场景 | 跑在哪 | 与规范那句的关系 |
+| :--- | :--- | :--- |
+| ⑬⑭⑮⑯（以及既有的①~⑥、⑪、⑫） | **判据自己声明的主线程**调用 `EngineRuntime::process_quantum` —— 即**与 cpal 回调同一份代码路径**，但**不是** cpal 的真实回调线程 | 覆盖"回调函数体"，**不覆盖**"设备把回调跑在哪个线程上" |
+| 真 cpal 回调 | `crates/yeban-engine/src/device.rs:390-391`（`build_output_stream` 的闭包只调 `process_quantum`） | 这条路径**从未被运行期分配判据覆盖过**：它需要 `device` feature（cpal）**且**一台有声卡的机器；本机按纪律不编译重载，托管 runner 无音频设备 |
+| `NullBackend`（`device.rs:414`，同一份 `EngineRuntime`） | `device.rs` 的 10 条单元判据（含 `null_backend_drives_the_same_render_path_without_a_device`） | 它是**替身**（在内存里驱动渲染），**不是**真实设备；而且 `device.rs` 里**没有**任何分配断言（`grep -n alloc crates/yeban-engine/src/device.rs` ⇒ 0 行）⇒ 它没有给本门禁提供证据 |
+
+⇒ 一句话：**本轮的四个新场景都不在真回调线程上，它们扩的是"回调函数体"的覆盖集，不是"回调宿主"的覆盖集。**
+
+## 12. 注入 I5–I8：**每个新场景各自能被单独打红**
+
+方法照 §4.2：把 `crates/yeban-engine/src/rt.rs` 复制到 `/tmp/rtbak/rt.rs.orig`，
+每次只改一处，跑同一条命令，记录红行，最后 `cp` 还原并**用 `cmp` + `sha256` 双证**逐字节相同
+（不用 `git checkout`，理由见 AGENTS.md §6.2）。四次注入后 `git diff -- crates/yeban-engine/src/` **为空**。
+
+`rt.rs` 冻结哈希 `sha256 = 80893dce9e361aa4eff69634f4357ad78b537307ee72d558de2898d70ecfebe3`
+（注入前 / 每次还原后**逐字节相同**）。
+
+| # | 注入点（`rt.rs`） | 判据结果 | 原始红行（节选，逐字） |
+| :-: | :--- | :--- | :--- |
+| I5 | `process_quantum` 切块循环里，当 `frames < DEFAULT_BLOCK_FRAMES` 时 `Vec::<u8>::with_capacity(1)` | **31 / 32**，**只有 ⑬** 红 | `[MUST-GATE-001] FAIL 判据 ⑬ …: ⑬回调缓冲长度边界；四元组[alloc=175 dealloc=175 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]；…探针经过=625（期望 625）…` —— 175 = 25 轮 × 7 个短块（1/2/3/127/64/129 的尾块/1025 的尾块），**与手算逐项吻合** |
+| I6 | 重新武装分支里，当 `current.sample_rate() != 48_000` 时分配一次 | **31 / 32**，**只有 ⑭** 红 | `FAIL 判据 ⑭ …: ⑭采样率/声明缓冲切换；四元组[alloc=40 dealloc=40 …]` —— 40 = 4 个非 48 kHz 采样率 × 5 个声明缓冲 × 2 轮 |
+| I7 | 重新武装分支里，当有轨 `volume_db() > 0.0`（= 编辑已生效）时分配一次 | **31 / 32**，**只有 ⑮** 红 | `FAIL 判据 ⑮ …: ⑮播放中编辑/撤销；四元组[alloc=1000 dealloc=1000 …]；…编辑=1000 撤销=1000…` —— 1000 = "编辑已应用"的那一半 |
+| I8 | `events.drain_with` 闭包里，当 `applied == SCRATCH_EVENTS` 时分配一次 | **31 / 32**，**只有 ⑯** 红 | `FAIL 判据 ⑯ …: ⑯满批事件洪峰；四元组[alloc=500 dealloc=500 …]；…每量子 128 条 × 500 量子…` —— 500 = 每量子恰好一次 |
+
+**没有"注入了却不变红"的情形**：四次注入各自命中且**只**命中它针对的那个新场景
+（这正是把注入条件绑到"该场景独有的事实"上的目的：⑬ 的短块、⑭ 的非 48 kHz、
+⑮ 的编辑值、⑯ 的满批）。还原后复跑：**32 / 32 通过**。
+
+## 13. 边界登记（**实测**，不是推断）：两条会到达 `diag` 边界的实时路径
+
+§2.3 说 `rt_probe::diag` 是实时路径上**唯一**的诊断/IO 出口，判据要求 `io_requests == 0`。
+但代码里有**两条**会**主动**调用它的路径。本节把"它们真的会被触发、并且真的会被判据抓到"
+从推断变成实测 —— **它们不在本判据的覆盖集内**（纳入就会变红）。
+
+### 13.1 退役队列欠容 ⇒ `SnapshotRetireStash`
+
+探法（临时，已还原）：把判据的 `Rig::new` 里退役通道容量 64 改成 **2**，其它一字不动。
+
+```text
+26 / 32 通过
+FAIL 判据 ② …: ②快照交换；四元组[alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=125 io_ops=125]；…发布=1063 实际切换=315 主线程回收=314 退役队列满寄存=125
+FAIL 判据 ⑭ …: 四元组[alloc=0 dealloc=0 … io_requests=1 io_ops=1]；…武装的量子/秒=1 个不同值
+FAIL 判据 ⑮ …: 四元组[alloc=0 dealloc=0 … io_requests=400 io_ops=400]；…实际切换=802 主线程回收=801 退役队列满寄存=400
+```
+
+### 13.2 电平计量容量不足 ⇒ `MeterCapacityDrop`
+
+探法（临时，已还原）：把 `crates/yeban-engine/src/meter.rs` 的 `SCRATCH_METERS` 由 256 改成 **2**。
+
+```text
+24 / 32 通过
+FAIL 判据 ① …: 四元组[alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=10000 io_ops=10000]；…quanta=10001 …
+FAIL 判据 ⑬ …: 四元组[alloc=0 dealloc=0 … io_requests=625 io_ops=625]；…共喂入 60975 帧 / 625 个量子…
+```
+
+### 13.3 结论（必须与"全 0"一起读）
+
+1. **分配分量仍然是 0**（两次探法的红行里 `alloc=0 dealloc=0`）⇒ 两条溢出路径**不会**
+   在实时线程上分配/释放；"零堆释放"这条设计目标（[ARCH-RT-002]）成立。
+2. 但 `io_requests > 0`，且在**装了见证 sink 的这个判据二进制里** `io_ops > 0` 也成立
+   （sink 真的写文件 + 真的 `stderr()` 打印）⇒ 判据按 `io_requests == 0` 判红。
+3. 因此准确的说法是：**"实时路径在非溢出条件下不产生诊断事件"**。
+   "实时路径上从不产生诊断事件"**不成立**，本判据的覆盖集**不含**这两条溢出路径。
+4. 生产影响**有界但非零**：发布构建**不安装 sink** ⇒ `diag` 退化为两次 `Relaxed` 原子自增
+   （无系统调用、无分配、不等待），红线 7 的"零阻塞 I/O"未破；
+   但只要有人给发布构建装了写文件的 sink（例如某个诊断开关），这两条路径就会变成
+   **实时线程上的真实文件/控制台写**。⇒ 记 needs N6。
+
+## 14. 归属更正（记录在案，防止下一个读者踩同一个坑）
+
+**本切片收到的任务把"实时零分配扩场景"这句话配到了 `MUST-GATE-012` 上；那个配对是错的。**
+治理目标给的是**两份列表**（六条门禁 ID / 五条短语），把两份列表**按位一一对应**就会得到错误的配对。
+正确映射（以`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` 的规范定义为准）：
+
+| 短语 | 门禁 | 规范定义（逐字，`…ROADMAP.md`） |
+| :--- | :--- | :--- |
+| **实时零分配扩场景** | **`MUST-GATE-001`** | `[MUST-GATE-001] 音频线程零安全违规 (Zero Glitch / Zero Alloc)`（`:380`）；规范背书 `ARCH-RT-001` |
+| **快照退役高频压测** | **`MUST-GATE-012`** | `[MUST-GATE-012] 音频退役回收队列零泄漏`（`:391`）；规范背书 `ARCH-RT-002` |
+
+在本切片**之前**，"实时零分配扩场景"这句话在全仓只出现过**一处**（`grep -rn` 命中 1 行）：
+`docs/DEVELOPMENT_LEDGER.md:2047`，而它在那一行里指的正是 **`MUST-GATE-001`**
+（"…然后开 `MUST-GATE-001`（实时零分配扩场景…）"）。（本文现在也引用了这句话，所以 `grep -c "实时零分配扩场景" docs/**/*.md` 的读数已经变了 ——
+**行数是会随文本变化的，别把这一刻的计数当永久事实**。）
+⇒ 本轮的工作属于 **001**；`MUST-GATE-012` 的行与状态**未被本切片改动**。
+
+## 15. 本轮的冻结哈希、依赖图度量与复现命令
+
+被改动的文件**只有** `crates/yeban-engine/tests/rt_zero_alloc.rs`（外加本文，属记录）。
+`crates/yeban-engine/src/**` 在全部注入与探法之后**逐字节还原**：`git diff -- crates/yeban-engine/src/` 为空。
+
+| 文件 | sha256 |
+| :--- | :--- |
+| `crates/yeban-engine/tests/rt_zero_alloc.rs`（本轮冻结值） | `04debc585b8b5d59cc241ef01f4f2beafb897566e4340ea047c796f00a2ba639` |
+| `crates/yeban-engine/src/rt.rs`（注入前/还原后；本切片**未**改） | `80893dce9e361aa4eff69634f4357ad78b537307ee72d558de2898d70ecfebe3` |
+| `crates/yeban-engine/src/meter.rs`（探法前/还原后；本切片**未**改） | `74d19d20df78a3719a1bf624d000946cb0db049c9607af54d940a59bb96cff1a` |
+| `crates/yeban-engine/src/snapshot.rs`（本切片**未**改） | `22e3af3a9b1471058f6f995c0e151a02cf12a332fcaed8f93d3ed72ef3b8c574` |
+
+**依赖图度量**（先说口径）：*`cargo tree -p <crate> -e normal --locked --prefix none`
+里**互不相同的 `name version` 条目数**（单位 = 依赖条目，不是行数 —— AGENTS.md §6.5）*：
+
+| crate | 度量（本切片之后） |
+| :--- | ---: |
+| `yeban-engine`（默认 feature，含 cpal） | **75** |
+| `yeban-engine`（`--no-default-features`，本机变体） | **56** |
+| `yeban-model`（默认 feature） | **34** |
+
+"之后"与"之前"**由结构证明相同**，而不是又量一遍：本切片没有碰任何清单 ——
+`git diff --name-only HEAD -- '*Cargo.toml' 'Cargo.lock'` **输出为空**。
+（本切片只改 `tests/**` 与 `docs/ledger/*-notes.md`，两者都不在依赖图里。）
+`crates/yeban-engine/Cargo.toml` 也**未**新增 `[dev-dependencies]`：计数型分配器住在
+`tests/rt_zero_alloc.rs` 里（`#[global_allocator]` + 文件内 `unsafe impl GlobalAlloc`），
+**本来就是既有的**，没有引入任何新依赖、也没有往 `src/` 加 `unsafe`。
+
+```bash
+# ① 本判据（本机真跑，零重依赖变体）
+bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --test rt_zero_alloc   # 32/32, exit 0
+
+# ② 全部 engine 目标
+bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features                        # exit 0
+
+# ③ 静态检查
+bash scripts/dev/cargo-local.sh fmt --all --check
+bash scripts/dev/cargo-local.sh check  -p yeban-engine --all-targets --no-default-features
+bash scripts/dev/cargo-local.sh clippy -p yeban-engine --all-targets --no-default-features -- -D warnings
+
+# ④ 依赖图度量
+bash scripts/dev/cargo-local.sh tree -p yeban-engine -e normal --locked --prefix none | sort -u | wc -l
+git diff --name-only HEAD -- '*Cargo.toml' 'Cargo.lock'   # 必须为空 ⇒ 依赖图与 HEAD 相同
+
+# ⑤ 门禁
+bash scripts/gates/run-gates.sh light
+```
+
+## 16. 本轮新增的 needs
+
+| # | needs | 性质 | 建议处置 |
+| :-: | :--- | :--- | :--- |
+| N6 | **两条溢出路径会到达 `diag` 边界**（§13 实测：退役队列欠容 / 电平容量不足）⇒ "实时路径上从不产生诊断事件"不成立；发布构建无 sink 时它只是原子自增，但一旦有人给发布构建装了写文件的 sink，那两条路径就是实时线程上的真实写 | 结构 + 裁决 | 二选一：① 把两条溢出路径改成**纯计数**（不经 sink），把 `diag` 留给"真的走 I/O"的路径；② 明确裁决"溢出诊断允许在实时线程上产生一条原子计数"，并相应弱化判据措辞（**不得**悄悄放行）。在此之前，任何"零 I/O"的声明都必须写明**不含溢出路径** |
+| N7 | **真 cpal 回调线程 / 设备开流-关流**仍未覆盖（§11.2）：需要 `device` feature + 有声卡的机器；`NullBackend` 是替身且无分配断言 | 环境缺口 | 在有声卡的参考机上跑一条 `device` feature 的窄判据（开流→推若干缓冲→关流），把分配计数开在回调线程上；或裁决"以 `process_quantum` 的覆盖为准"并写明 |
+| N8 | **插件（VST3/CLAP）路径不存在**：`yeban-plugin-host` / `yeban-vst` 是故意空的骨架（v2.0.0 阶段，`AGENTS.md` 附录 C.4） | 不是缺口 | **不要**为凑场景去提前实现它们；等 v2.0.0 的宿主真正落地后再加场景 |

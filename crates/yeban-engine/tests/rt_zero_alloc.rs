@@ -35,7 +35,7 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 六个场景（在既有 `harness = false` 风格上扩展）
+//! # 十个场景（在既有 `harness = false` 风格上扩展）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -45,6 +45,19 @@
 //! | ④ | 电平计量 10 000 量子 + UI 侧 60Hz 抽干 | 每轨/母线电平状态机 + **每量子恰好一次**批量发布 |
 //! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`） | 控制侧 `automation_value_at` → SPSC → 实时侧出队（**见 §needs：实时侧只计数，不改 DSP**） |
 //! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + 前瞻限制 + 声部窃取） | `BusLimiter::apply`、声相增益乘加、声部窃取路径 |
+//! | ⑬ | 回调缓冲长度边界：1/2/3/127/128/129/1024/1025 帧 × 25 轮 + 非帧对齐缓冲 | `process_quantum` 的**任意长度**切块与逐帧交错拷贝、尾部残余样本契约 |
+//! | ⑭ | 采样率 × 项目声明 `block_size` 全组合切换（2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`、`Transport::arm` |
+//! | ⑮ | 播放中「`Op` 层编辑 / 撤销 → 重新发布快照」2 000 轮 + 主线程排空 | `Op::apply`/`apply_inverse` 的模型改写 → 快照重建 → 原子发布 → 切换 + 旧快照入退役队列 |
+//! | ⑯ | 满批事件洪峰 128 条/量子 × 500 量子（参数 + 音符 + 走带混排） | `EventReceiver::drain_with` 的**满块**边界（`[EngineEvent; SCRATCH_EVENTS]`） |
+//!
+//! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
+//!
+//! | 路径 | 状态 | 事实 |
+//! | :--- | :--- | :--- |
+//! | cpal 真回调线程 / 设备开流关流 | **未覆盖** | 需要 `device` feature（cpal）与一台有声卡的机器；本机按纪律不编译重依赖，托管 runner 无音频设备 ⇒ 登记为 needs，**不用** `NullBackend` 冒充 |
+//! | 插件（VST3/CLAP）路径 | **不存在** | `yeban-plugin-host` / `yeban-vst` 是**故意空的**骨架（v2.0.0 阶段，见 `AGENTS.md` 附录 C.4）⇒ 没有路径可覆盖，不是缺口 |
+//! | 采样器磁盘流式读 | **不存在** | `yeban-sfz` 尚未接入 `synth`（`synth` 目前是内置波表） |
+//! | **退役队列欠容 / 电平容量溢出** | **会到达 `diag` 边界** | `SnapshotReader::retire_or_stash`（退役队列满 ⇒ `SnapshotRetireStash`）与 `EngineRuntime::render_block`（计量容量不足 ⇒ `MeterCapacityDrop`）两条溢出分支都调用 `rt_probe::diag`。**判据要求 `io_requests == 0` ⇒ 这两条路径不在本判据的覆盖集内**（把它们纳入就会变红）。无 sink 时 `diag` 只是两次原子自增（无系统调用）⇒ 生产红线未破，但"实时路径上从不产生诊断事件"这句话**不成立**。详见 `docs/ledger/gate-rt-zero-alloc-notes.md` §13 |
 //!
 //! # 为什么必须 `harness = false`（实测教训 L22）
 //!
@@ -64,7 +77,7 @@
 //! 否则"控制面能看见"就要拿渲染路径来换。⑫b 同时实测**注入口径**：
 //! `Vec::new()` 不分配（无效注入），`Vec::with_capacity(1)` 才分配（有效注入）。
 //!
-//! # 本判据怎么变红（④ 组注入，实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4）
+//! # 本判据怎么变红（八组注入，实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4 与 §12）
 //!
 //! | # | 注入点（`crates/yeban-engine/src/`） | 变红的判据 |
 //! | :-: | :--- | :--- |
@@ -72,6 +85,10 @@
 //! | I2 | `rt.rs::render_block` 里加 `rt_probe::diag(RtDiagEvent::NoSnapshot);` | ①~⑥ 的 **I/O** 分量（`io_requests`/`io_ops`） |
 //! | I3 | `rt.rs::render_block` 里加 `Vec::<u8>::with_capacity(1)` | ①~⑥ 的**分配/释放**分量 |
 //! | I4 | 删掉 `render_block` 开头的 `rt_probe::quantum_enter()` | **位置见证**（`quanta_visits != 0` 那条）—— 探针被摘掉就"空转"，判据必须发现 |
+//! | I5 | `process_quantum` 的 `frames < DEFAULT_BLOCK_FRAMES` 分支加一次 `Vec::with_capacity(1)` | **仅** ⑬（非整量子长度分支） |
+//! | I6 | `render_block` 的重新武装分支里按 `sample_rate != 48_000` 加一次分配 | **仅** ⑭（采样率切换） |
+//! | I7 | 同上的分支里按"有轨 `volume_db > 0`"（= 编辑已生效）加一次分配 | **仅** ⑮（播放中的编辑/撤销） |
+//! | I8 | `events.drain_with` 的闭包里按 `applied == SCRATCH_EVENTS` 加一次分配 | **仅** ⑯（满批出队边界） |
 //!
 //! # 覆盖范围的诚实边界（**必须和读数一起读**）
 //!
@@ -96,15 +113,18 @@ use std::time::{Duration, Instant};
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::meter::{MeterCollector, MeterFrame, meter_channel};
-use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
+use yeban_engine::ring::{
+    DEFAULT_EVENT_CAPACITY, EngineEvent, EventSender, ParamAddress, SCRATCH_EVENTS,
+    TransportCommand, event_channel,
+};
 use yeban_engine::rt::{EngineRuntime, EngineStats};
 use yeban_engine::rt_probe::{self, RtDiagEvent, RtDiagSink, RtLockProbe};
 use yeban_engine::snapshot::{EngineSnapshot, RetireQueue, SnapshotSlot, retire_channel};
 use yeban_engine::transport::TransportState;
 use yeban_model::samples::filled_project;
 use yeban_model::{
-    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType, EntityId,
-    YebanProjectV1,
+    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, BlockSize, CurveType,
+    EntityId, Op, SampleRate, StampedOp, YebanProjectV1,
 };
 
 mod support;
@@ -149,6 +169,22 @@ const FOREIGN_DIAGS: u64 = 2;
 const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 /// 每量子 128 帧 @ 120 BPM / 960 PPQ / 48 kHz ⇒ 1 tick = 25 样本。
 const SAMPLES_PER_TICK: u64 = 25;
+/// ⑬ 回调缓冲的**边界长度**（帧）：真实 `cpal` 回调拿到的长度不保证是
+/// `DEFAULT_BLOCK_FRAMES` 的倍数（设备协商结果可以是 1~几 k 帧）。
+const CALLBACK_FRAME_EDGES: [usize; 8] = [1, 2, 3, 127, 128, 129, 1024, 1025];
+/// ⑬ 非帧对齐的缓冲**样本**数：129 = 64 帧 + 1 个不属于任何完整帧的残余样本。
+const CALLBACK_ODD_TAIL_SAMPLES: usize = 129;
+/// ⑬ 每种长度各推几轮（覆盖"同一长度反复来"的稳态）。
+const CALLBACK_ROUNDS: u64 = 25;
+/// ⑭ 每个（采样率, 项目声明缓冲长度）组合下渲染的量子数。
+const SAMPLE_RATE_QUANTA: u64 = 40;
+/// ⑮ 播放中的"编辑 / 撤销 → 重新发布快照"轮数（= 发布次数 = 窗口数）。
+const UNDO_CHURN_QUANTA: u64 = 2_000;
+/// ⑮ 主线程排空退役队列的节拍（量子）：128 帧 @48 kHz ⇒ 5 量子 ≈ 13.3 ms ≈ 75 Hz，
+/// 与规范要求的 60 Hz 同量级（且比它更密）。
+const UNDO_CHURN_DRAIN_EVERY: u64 = 5;
+/// ⑯ 洪峰持续量子数。
+const FLOOD_QUANTA: u64 = 500;
 
 // ---------------------------------------------------------------------------
 // 计数型全局分配器（**按线程**武装：判据 ⑪ 要在窗口里跑别的线程）
@@ -434,7 +470,8 @@ impl Report {
         println!("[MUST-GATE-001] 判据汇总: {passed} / {total} 通过");
         if self.failures() == 0 {
             println!(
-                "[MUST-GATE-001] ok: 六场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链）\
+                "[MUST-GATE-001] ok: 十场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
+                 回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰）\
                  四元组全 0；控制面读取 EngineStats 的读取路径同样全 0；探针有牙（正对照 + 注入）；\
                  线程归属与外线程活动已对账"
             );
@@ -536,11 +573,26 @@ struct Rig {
 
 impl Rig {
     fn new(project: &YebanProjectV1, revision: u64, meter_capacity: usize) -> Self {
+        Self::with_capacities(project, revision, meter_capacity, 64, 64)
+    }
+
+    /// 显式给出**全部四个**通道容量。
+    ///
+    /// 为什么需要它：⑯ 要把事件通道压到"每量子一整批（`SCRATCH_EVENTS`）"的边界，
+    /// 而 [`Self::new`] 的 64 格装不下一批 128 条 —— 用默认容量测"满批出队"会
+    /// 悄悄只写进去一半，判据却仍然全绿（那种绿什么也没证明）。
+    fn with_capacities(
+        project: &YebanProjectV1,
+        revision: u64,
+        meter_capacity: usize,
+        retire_capacity: usize,
+        event_capacity: usize,
+    ) -> Self {
         let snapshot =
             EngineSnapshot::from_project(project, revision).expect("夹具工程必须能编译成快照");
         let slot = SnapshotSlot::new(snapshot);
-        let (retire, queue) = retire_channel(64);
-        let (sender, receiver) = event_channel(64);
+        let (retire, queue) = retire_channel(retire_capacity);
+        let (sender, receiver) = event_channel(event_capacity);
         let (publisher, collector) = meter_channel(meter_capacity);
         let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
         Self {
@@ -551,6 +603,32 @@ impl Rig {
             runtime,
             output: vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2],
         }
+    }
+
+    /// 把输出缓冲准备到至少 `samples` 长（`resize` 会分配 ⇒ **只在窗口之外调用**）。
+    fn reserve_output(&mut self, samples: usize) {
+        if self.output.len() < samples {
+            self.output.resize(samples, 0.0);
+        }
+    }
+
+    /// 推一次**任意帧数**的回调缓冲（交错、2 声道）——
+    /// 这是真实 `cpal` 回调的形态，长度由设备协商决定 [ARCH-TOP-002]。
+    fn callback_frames(&mut self, frames: usize) {
+        let samples = frames * 2;
+        let Self {
+            runtime, output, ..
+        } = self;
+        runtime.process_quantum(&mut output[..samples], 2);
+    }
+
+    /// 推一次**非帧对齐**的缓冲：`samples` 个样本里最后 1 个不属于任何完整帧
+    /// （`process_quantum` 的契约是"保持它的原值"，见该函数的文档）。
+    fn callback_samples(&mut self, samples: usize) {
+        let Self {
+            runtime, output, ..
+        } = self;
+        runtime.process_quantum(&mut output[..samples], 2);
     }
 
     /// 推一个 128 帧的量子。
@@ -964,6 +1042,376 @@ fn scenario_mix_chain(report: &mut Report) {
         format!(
             "压过样本={}（要求 > 0）窃取={}（要求 > 0）右声道非零={right_nonzero}（要求 0）NaN={nan}（要求 0）",
             stats.limiter_gain_reductions, stats.voice_steals
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 场景 ⑬ 回调缓冲长度边界（cpal 协商出来的长度不保证是 128 的倍数）
+// ---------------------------------------------------------------------------
+
+/// 非帧对齐缓冲的哨兵值。
+///
+/// 用 `NaN` 而不是一个普通数值：本文件的判据 ⑥ 已实测**输出无 NaN**，
+/// 因此"没有被写过的残余样本"与"引擎写出的样本"不可能混淆
+/// （任取一个普通数都有与真实样本碰撞的可能）。
+const TAIL_SENTINEL: f32 = f32::NAN;
+
+/// ⑬：把**回调缓冲长度**当成被测变量。
+///
+/// 为什么这条路径可能分配：`EngineRuntime::process_quantum` 是唯一把"设备给的任意
+/// 长度交错缓冲"切成整量子的地方（`while offset < total_frames` + 逐帧交错拷贝）。
+/// 一个自然的实现会在那里 `to_vec()`/`resize()`，或为尾部残块新建缓冲。
+/// 既有六个场景**全部**用 `DEFAULT_BLOCK_FRAMES * 2` 个样本（恰好 1 个量子）
+/// ⇒ 这条切块路径从未被覆盖过。
+fn scenario_callback_buffer_edges(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+    rig.send_transport(TransportCommand::Play);
+    // 最大缓冲与非对齐缓冲先备好 ⇒ 本场景里的分配全在窗口之外。
+    let largest = *CALLBACK_FRAME_EDGES.last().unwrap_or(&1);
+    rig.reserve_output(largest * 2);
+    rig.reserve_output(CALLBACK_ODD_TAIL_SAMPLES);
+
+    let mut scenario = Scenario::new("⑬回调缓冲长度边界");
+    let mut expected_blocks = 0u64;
+    let mut aligned_sentinel_leaks = 0u64;
+    let mut odd_tail_sentinels = 0u64;
+    let mut odd_tail_expected = 0u64;
+    let mut frames_served = 0u64;
+
+    let reading = window(|| {
+        for _ in 0..CALLBACK_ROUNDS {
+            for &frames in &CALLBACK_FRAME_EDGES {
+                expected_blocks += frames.div_ceil(DEFAULT_BLOCK_FRAMES) as u64;
+                frames_served += frames as u64;
+                rig.output.fill(TAIL_SENTINEL);
+                rig.callback_frames(frames);
+                // 帧对齐的缓冲里**每一个**样本都必须被写过 ⇒ 不该残留哨兵。
+                aligned_sentinel_leaks += rig.output[..frames * 2]
+                    .iter()
+                    .filter(|sample| sample.is_nan())
+                    .count() as u64;
+            }
+            // 非帧对齐：129 个样本 = 64 帧 + 1 个残余样本。
+            let frames = CALLBACK_ODD_TAIL_SAMPLES / 2;
+            expected_blocks += frames.div_ceil(DEFAULT_BLOCK_FRAMES) as u64;
+            odd_tail_expected += 1;
+            rig.output.fill(TAIL_SENTINEL);
+            rig.callback_samples(CALLBACK_ODD_TAIL_SAMPLES);
+            odd_tail_sentinels += rig.output[..CALLBACK_ODD_TAIL_SAMPLES]
+                .iter()
+                .filter(|sample| sample.is_nan())
+                .count() as u64;
+        }
+    });
+    scenario.absorb(expected_blocks, &reading);
+    scenario.note(format!(
+        "长度集合={CALLBACK_FRAME_EDGES:?} × {CALLBACK_ROUNDS} 轮 + 每轮一次 {CALLBACK_ODD_TAIL_SAMPLES} 样本；\
+         共喂入 {frames_served} 帧 / {expected_blocks} 个量子；帧对齐缓冲残留哨兵={aligned_sentinel_leaks}（要求 0）"
+    ));
+    report.scenario(
+        "⑬",
+        "[MUST-GATE-001] 回调缓冲长度边界（1..1025 帧 + 非帧对齐）：四元组全 0",
+        &scenario,
+    );
+
+    // 单次 1 025 帧的调用必须真的被切成 9 个量子（"多量子路径被动到"的定点证据，
+    // 而不是靠总量推算）。
+    rig.output.fill(TAIL_SENTINEL);
+    let split = window(|| rig.callback_frames(largest));
+    report.assert(
+        "⑬c",
+        "覆盖度：非帧对齐缓冲只留下约定的残余样本；单次 1 025 帧真的被切成 9 个量子",
+        aligned_sentinel_leaks == 0
+            && odd_tail_sentinels == odd_tail_expected
+            && split.visits == largest.div_ceil(DEFAULT_BLOCK_FRAMES) as u64
+            && split.visits > 1,
+        format!(
+            "帧对齐残留哨兵={aligned_sentinel_leaks}（要求 0）；非对齐 129 样本的残余哨兵={odd_tail_sentinels}\
+             （要求 {odd_tail_expected}，即每轮恰好 1 个）；单次 {largest} 帧 ⇒ 量子数={}（要求 9）",
+            split.visits
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 场景 ⑭ 采样率 / 项目声明缓冲长度切换（离线工程 → 换声卡）
+// ---------------------------------------------------------------------------
+
+/// ⑭：渲染途中切换**采样率**与项目声明的 `block_size`（每条都是一次快照修订）。
+///
+/// 为什么这条路径可能分配：新修订会在 `render_block` 内部走**重新武装**分支 ——
+/// `MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`（按新采样率
+/// 重算每条轨的相位/频率）、`Transport::arm`（新的 samples-per-tick）。
+/// 一个自然的实现会在那里重建 `Vec`/`BTreeMap`。既有场景②只改 `revision`
+/// （内容完全相同）⇒ **重新武装分支的"内容变了"那一半从未被覆盖**。
+///
+/// 顺带钉住一条**历史 bug**：弹道系数必须按**处理量子**（`sample_rate / 128`）折算，
+/// 而不是按项目声明的 `block_size`（例如 256）—— 后者会让峰值保持按 10 dB/s 衰减。
+/// 因此这里让 `block_size` 遍历全部合法取值，并断言武装值**只随采样率变**。
+fn scenario_declared_audio_config_switch(report: &mut Report) {
+    let fixture = note_project(&saturated_notes());
+    let mut project = fixture.project;
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.send_transport(TransportCommand::Play);
+    rig.preheat();
+
+    let mut scenario = Scenario::new("⑭采样率/声明缓冲切换");
+    let mut observed: Vec<f32> = Vec::new();
+    let mut expected: Vec<f32> = Vec::new();
+    let mut revision = 2u64;
+    let ticks_before = rig.stats().position_ticks;
+
+    for _ in 0..2 {
+        for rate in SampleRate::ALL {
+            for block in BlockSize::ALL {
+                project.audio_config.sample_rate = rate;
+                project.audio_config.block_size = block;
+                let next =
+                    EngineSnapshot::from_project(&project, revision).expect("快照必须能编译");
+                rig.slot.publish(next);
+                revision += 1;
+                scenario.absorb(SAMPLE_RATE_QUANTA, &rig.pump(SAMPLE_RATE_QUANTA));
+                // 读数在**窗口之外**（`observed`/`expected` 的 push 允许分配）。
+                observed.push(rig.stats().quanta_per_second.unwrap_or(f32::NAN));
+                expected.push(rate.hz() as f32 / DEFAULT_BLOCK_FRAMES as f32);
+            }
+        }
+    }
+
+    let stats = rig.stats();
+    let distinct = observed
+        .iter()
+        .fold(Vec::<f32>::new(), |mut seen, value| {
+            if !seen.contains(value) {
+                seen.push(*value);
+            }
+            seen
+        })
+        .len();
+    scenario.note(format!(
+        "切换 {} 次（{} 采样率 × {} 声明缓冲 × 2 轮）；武装的量子/秒={distinct} 个不同值；\
+         走带位置 {ticks_before} -> {} tick；合成样本={}",
+        observed.len(),
+        SampleRate::ALL.len(),
+        BlockSize::ALL.len(),
+        stats.position_ticks,
+        stats.rendered_samples
+    ));
+    report.scenario(
+        "⑭",
+        "[MUST-GATE-001] 采样率/声明缓冲切换 2 000 量子：四元组全 0",
+        &scenario,
+    );
+
+    report.assert(
+        "⑭c",
+        "覆盖度：每次切换都真的重新武装（量子/秒逐项等于 采样率/128，且与声明缓冲无关）",
+        observed == expected
+            && distinct == SampleRate::ALL.len()
+            && stats.position_ticks > ticks_before,
+        format!(
+            "武装值逐项比对={}（要求 true；{} 项）；不同值={distinct}（要求 {}）；\
+             走带 {ticks_before} -> {}（要求前进）",
+            observed == expected,
+            observed.len(),
+            SampleRate::ALL.len(),
+            stats.position_ticks
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 场景 ⑮ 播放中"编辑 / 撤销" + 快照高频交换（撤销交互实际碰到的路径）
+// ---------------------------------------------------------------------------
+
+/// ⑮：**播放中**每量子做一次「走 `Op` 层的编辑或它的逆操作（撤销）→ 重新发布快照」，
+/// 并按 60 Hz 量级在主线程排空退役队列。
+///
+/// 为什么这条路径可能分配：一次撤销 = 控制线程上的模型改写 + 一次完整的
+/// `EngineSnapshot::from_project`（新调度表 `BTreeMap`、新声相增益表、新 PDC 计划）+
+/// 一次原子发布；实时侧则走"检测到新修订 ⇒ 重新武装 + 旧快照入退役队列"。
+/// 既有场景②只发布**等价**快照（内容不变），场景③不做发布 ⇒
+/// "一边出声一边被编辑/撤销"这一组合从未被覆盖。
+///
+/// **诚实边界**：这里的"播放中"是主线程按量子节拍驱动
+/// `process_quantum`（判据声明的实时线程），**不是** cpal 的真回调线程；
+/// 模型改写与快照构造本身在**窗口之外**（控制线程允许分配）。
+fn scenario_undo_churn_while_playing(report: &mut Report) {
+    let fixture = note_project(&saturated_notes());
+    let track = fixture.track;
+    let mut project = fixture.project;
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.send_transport(TransportCommand::Play);
+    rig.preheat();
+
+    // 真正的 `Op` 层（不是直接改字段）：一次编辑 + 它的逆操作 = 撤销交互的那一对。
+    let base = project
+        .tracks
+        .get(&track)
+        .expect("夹具必须有那条 MIDI 轨")
+        .volume_db;
+    let edit = StampedOp::user_ui(
+        1,
+        Op::SetParam {
+            target: AutomationTarget::TrackVolume { track_id: track },
+            old_val: base,
+            new_val: base + 6.0,
+        },
+    );
+
+    let mut scenario = Scenario::new("⑮播放中编辑/撤销");
+    let mut released_on_main = 0u64;
+    let mut edits = 0u64;
+    let mut undos = 0u64;
+
+    for index in 0..UNDO_CHURN_QUANTA {
+        // 控制线程：编辑 / 撤销（窗口之外，允许分配）。
+        if index % 2 == 0 {
+            edit.apply(&mut project)
+                .expect("SetParam 必须能应用到夹具工程");
+            edits += 1;
+        } else {
+            edit.apply_inverse(&mut project)
+                .expect("SetParam 的逆操作必须能应用");
+            undos += 1;
+        }
+        let next = EngineSnapshot::from_project(&project, index + 2).expect("快照必须能编译");
+        rig.slot.publish(next);
+        // 窗口里恰好一个量子：快照切换 + 重新武装 + 合成 + 电平 + 走带。
+        scenario.absorb(1, &rig.pump(1));
+        // 主线程排空退役队列（窗口之外；这是规范指定的释放位置 [ARCH-RT-002]）。
+        if index % UNDO_CHURN_DRAIN_EVERY == 0 {
+            released_on_main += rig.queue.drain(64) as u64;
+        }
+    }
+    released_on_main += rig.queue.drain(64) as u64;
+
+    let stats = rig.stats();
+    scenario.note(format!(
+        "编辑={edits} 撤销={undos} 发布={UNDO_CHURN_QUANTA}；实际切换={} 主线程回收={released_on_main}；\
+         走带位置={} tick 状态={:?}；释放线程=主线程?{} 外线程排空={} 退役满寄存={}",
+        stats.snapshot_switches,
+        stats.position_ticks,
+        stats.transport_state,
+        stats.release_thread_is_main,
+        stats.foreign_drains,
+        stats.snapshot_stash_events
+    ));
+    report.scenario(
+        "⑮",
+        "[MUST-GATE-001] 播放中编辑/撤销 2 000 轮 + 2 000 次快照交换：四元组全 0",
+        &scenario,
+    );
+
+    report.assert(
+        "⑮c",
+        "覆盖度：编辑与撤销都真的应用过；快照真的切过；走带在走；旧快照只在主线程释放且无积压",
+        edits > 0
+            && undos > 0
+            && stats.snapshot_switches >= UNDO_CHURN_QUANTA
+            && stats.position_ticks > 0
+            && released_on_main > 0
+            && stats.release_thread_is_main
+            && stats.foreign_drains == 0
+            && stats.snapshot_stash_events == 0,
+        format!(
+            "编辑={edits}（要求 >0）撤销={undos}（要求 >0）切换={}（要求 ≥{UNDO_CHURN_QUANTA}）\
+             位置={}（要求 >0）主线程回收={released_on_main}（要求 >0）释放归属主线程={} \
+             外线程排空={}（要求 0）退役满寄存={}（要求 0）",
+            stats.snapshot_switches,
+            stats.position_ticks,
+            stats.release_thread_is_main,
+            stats.foreign_drains,
+            stats.snapshot_stash_events
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 场景 ⑯ 满批事件洪峰（`SCRATCH_EVENTS` 条/量子的出队块边界）
+// ---------------------------------------------------------------------------
+
+/// ⑯：每量子发布**一整批** `SCRATCH_EVENTS` = 128 条事件（参数 + 音符 + 走带混排），
+/// 把实时侧的批量出队压到栈上临时缓冲的**满块边界**。
+///
+/// 为什么这条路径可能分配：`EventReceiver::drain_with` 要把整批 128 条搬进
+/// `[EngineEvent; SCRATCH_EVENTS]` 栈数组并逐条回调。一个自然的实现会
+/// `Vec::from_iter`/`extend`，或在"批比缓冲大"时分配溢出缓冲。
+/// 既有场景⑤每量子只发 **1** 条 ⇒ 满块边界从未被覆盖。
+///
+/// **诚实边界（与场景⑤同一条，必须一起读）**：实时侧目前**只把
+/// `EngineEvent::Transport` 应用到状态机**；`SetParam` / `NoteOn` / `NoteOff`
+/// 走到"出队 + 计数"为止，**没有**作用于 DSP。因此本场景证明的是
+/// "满批出队与计数这条路径零分配"，**不是**"128 个参数变化都影响了声音"。
+fn scenario_event_flood(report: &mut Report) {
+    let fixture = note_project(&saturated_notes());
+    let track = fixture.track;
+    let project = fixture.project;
+    // 事件通道必须装得下一整批，否则"满批"会悄悄退化成"半批"。
+    let mut rig = Rig::with_capacities(&project, 1, 4096, 64, DEFAULT_EVENT_CAPACITY);
+    rig.send_transport(TransportCommand::Play);
+    rig.preheat();
+
+    let mut scenario = Scenario::new("⑯满批事件洪峰");
+    let mut batch = [EngineEvent::IDLE; SCRATCH_EVENTS];
+    let mut published = 0u64;
+
+    for _ in 0..FLOOD_QUANTA {
+        for (slot, event) in batch.iter_mut().enumerate() {
+            *event = match slot % 4 {
+                0 => EngineEvent::SetParam {
+                    target: ParamAddress::new(track, (slot % 8) as u16),
+                    value: (slot as f32) * 0.5 - 8.0,
+                },
+                1 => EngineEvent::NoteOn {
+                    track,
+                    pitch: 48 + (slot % 12) as u8,
+                    velocity: 100,
+                },
+                2 => EngineEvent::NoteOff {
+                    track,
+                    pitch: 48 + (slot % 12) as u8,
+                },
+                _ => EngineEvent::Transport {
+                    command: TransportCommand::Play,
+                },
+            };
+        }
+        // 发布在窗口之外；窗口里只有出队 + 渲染。
+        published += rig.sender.publish(&batch) as u64;
+        scenario.absorb(1, &rig.pump(1));
+    }
+
+    let stats = rig.stats();
+    scenario.note(format!(
+        "每量子 {SCRATCH_EVENTS} 条 × {FLOOD_QUANTA} 量子 = 尝试 {} 条，通道接受 {published} 条；\
+         实时侧应用={} 批量出队={}（要求 = {FLOOD_QUANTA}）；通道容量={}",
+        FLOOD_QUANTA * SCRATCH_EVENTS as u64,
+        stats.events_applied,
+        stats.event_bulk_pops,
+        rig.sender.capacity()
+    ));
+    report.scenario(
+        "⑯",
+        "[MUST-GATE-001] 满批事件洪峰（128 条/量子）500 量子：四元组全 0",
+        &scenario,
+    );
+
+    report.assert(
+        "⑯c",
+        "覆盖度：每一条都被通道接受并被实时侧出队计数（满块边界真的走到）",
+        published == FLOOD_QUANTA * SCRATCH_EVENTS as u64
+            && stats.events_applied >= FLOOD_QUANTA * SCRATCH_EVENTS as u64
+            && stats.event_bulk_pops >= FLOOD_QUANTA,
+        format!(
+            "接受={published}（要求 {}）实时侧应用={}（要求 ≥{}）批量出队={}（要求 ≥{FLOOD_QUANTA}）",
+            FLOOD_QUANTA * SCRATCH_EVENTS as u64,
+            stats.events_applied,
+            FLOOD_QUANTA * SCRATCH_EVENTS as u64,
+            stats.event_bulk_pops
         ),
     );
 }
@@ -1409,6 +1857,10 @@ fn main() -> ExitCode {
     scenario_metering(&mut report);
     scenario_automation(&mut report);
     scenario_mix_chain(&mut report);
+    scenario_callback_buffer_edges(&mut report);
+    scenario_declared_audio_config_switch(&mut report);
+    scenario_undo_churn_while_playing(&mut report);
+    scenario_event_flood(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);
