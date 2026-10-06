@@ -18,6 +18,10 @@
 | `phase-status.md` | 阶段项做没做完 | `check_phase_status.py` |
 | `human-decisions.md` | 待人类裁决 | `check_decisions.py` |
 
+（上表的"守卫"列指**该表自身内容**的守卫。本脚本的判据 5 早已读**全部**活文档；
+判据 7 自 2026-10-07 起也读本表 **+ `gate-status.md` + `phase-status.md`** 的源码行引用 ——
+为什么扩在这里而不是那两张表各自的守卫里，见 `SOURCE_CITATION_DOCS` 的注释。）
+
 ## 七条机械判据（语义是否正确仍要人看）
 
 1. **正向完整性**：`schemas/mcp-tools.schema.json` 里的**每一个** `yeban_*` 工具、
@@ -84,9 +88,12 @@
    "已核对 / 跳过"两数（文档一改就会动）。
 
    **本条诚实的边界（判断不了的一律跳过并计数，不假装通过）**：
-   ① 路径不能在工作树里唯一定位的 —— 裸文件名（`commit.rs:342`）、crate 相对路径
-      （`src/lib.rs:73`）、上游路径（`i-slint-core-*/item_tree.rs`）⇒ 跳过（工作树里同名文件
-      ≥2 个，绑到哪一个都是猜）；但 `` `crates/` `` / `` `docs/` `` / `` `schemas/` `` /
+   ① 路径不能在工作树里**按仓库根**唯一定位的 —— 裸文件名（`commit.rs:342`）、crate 相对路径
+      （`src/lib.rs:73`）、上游路径（`i-slint-core-*/item_tree.rs`）⇒ 跳过。判据**不做**
+      "按 crate 猜"的解析：裸文件名与 crate 相对路径一律不绑，**哪怕该文件名在树里只出现一次**
+      （实测：`phase-status.md` / `gate-status.md` 的 `host.rs:130-140` 就是这一类，工作树里只有
+      `crates/yeban-app/src/host.rs` 一个候选，但本规则仍不认它 ⇒ **它挡不住这类引用的回归**，
+      本切片只能手工核对后修正）。但 `` `crates/` `` / `` `docs/` `` / `` `schemas/` `` /
       `` `scripts/` `` / `` `spikes/` `` / `` `assets/` `` 开头的路径**必须**存在，
       不存在即红（文件被删/改名是真错误）；
    ② 引用旁边没有"以代码片段开头/结尾的括注"的 —— 纯 `foo.rs:NN`，或括注是散文
@@ -94,10 +101,21 @@
       不是命名；把它当构件名会误判（实测：`scene.rs:38,56` 的括注里 `scenes` 一词
       属于说明句，指错对象的是提取器而不是文档）；
    ③ 括注的第一个代码片段抽不出标识符（纯数字 / 标点）⇒ 跳过；
-   ④ **本规则只读本表**（与判据 6 同一射程）。`gate-status.md` / `phase-status.md` 里的
-      源码行引用仍不在射程内；本次实测已知 `phase-status.md:91` 的 `input.rs:219-225`
-      （点名 `View::Session` / `View::Arrangement`）与 `:92` 的 `piano_roll.slint:68-70`
-      均已指错，登记在案、待该表所有者修（本切片无权改那两张表）。
+   ④ **射程 = 本表 + `gate-status.md` + `phase-status.md`**（本切片由"只读本表"扩到这两张
+      兄弟活表，见 `SOURCE_CITATION_DOCS`；为什么扩在**本脚本**而不是那两张表各自的守卫里，
+      见该常量的注释）。扩射程前实测：这两张表里的源码行引用**同样在烂** ——
+      `phase-status.md` 的 `input.rs:219-225` 点名 `View::Session` / `View::Arrangement`
+      （实际在 `528-532`）、`piano_roll.slint:68-70` 点名三个 `accessible-*`（实际在 `77-79`）、
+      `host.rs:130-140` 点名"只注入可见窗口"（实际在 `157-184`）、`gate-status.md` 的
+      `host.rs:130-140` 同理。其中 `input.rs` 那处正是②认的"紧邻括注"形态 ⇒ **规则一上就能抓**；
+      `host.rs:130-140` 属边界①（裸文件名）⇒ **本规则够不到**，只能手工核对。够不到的一律
+      计数、不假装通过：`[ok]` 行按表打印"核对 / 跳过"两个数。
+
+   **为什么没有顺手把绑定器也放宽**（本切片实测，避免下一个人重做这个实验）：
+   ① "同子句里引用前后第一个代码片段"这种松绑定 ⇒ 12 个候选里**手核出 7 个假红**
+      （取到的是相邻散文里的别的片段，例如 `scene.rs:121`、`render.rs:6,10`），与判据 6
+      记下的 24/27 假红同族；② 真正紧的"紧随其后、中间只有空白"一档，在三张活表上只多出
+      **5** 处绑定、0 处假红 —— 样本太薄，不足以改判据定义。故本切片只放宽**射程**（同一手法）。
 
    **它能证明什么、不能证明什么**：它只能证明"作者点名的那个构件的标识符确实出现在被引行"，
    是**下界**。同一处引用点名多个构件时，只要有一个在，就算过 —— 它抓的是"整段漂走 / 指到
@@ -243,6 +261,25 @@ SPEC_ID_RE = re.compile(r"[A-Z]+-[A-Z0-9-]+")
 NUMERIC_TAIL_RE = re.compile(r"_?\d[\d_]*")
 #: 判据 7 的边界 ④：只有这些**仓库根**前缀下的路径必须存在，不存在即红。
 REPO_ROOT_PREFIXES = ("crates/", "docs/", "schemas/", "scripts/", "spikes/", "assets/")
+
+#: 判据 7 的**射程**：本表 + 两张同族活表（2026-10-07 由"只读本表"扩到这里）。
+#:
+#: **为什么扩在 `check_feature_alignment.py`，而不是 `check_phase_status.py` /
+#: `check_gate_status.py`**：判据 7 的**实现**（`SOURCE_CITATION_RE` 提取器 +
+#: `named_construct` 绑定器 + 跳过分类 + 计数）**就是这条规则本身**；把射程从本表扩到两张
+#: 兄弟表是**数据**变化，不是新规则。落到那两张表各自的守卫里，都要把这套机器**再抄一遍**
+#: —— 而本仓库的纪律是"同一事实出现两处，必然有一处是错的"（`check_gate_status.py` 模块
+#: 文档原话）。那两张表**各自只有一个表主**，所以无论选哪一张，它都要去读**另一张**表：
+#: "脚本名与表的对应"这个看似最强的理由，在需要覆盖**两张**表时对其中一张必然失效。
+#: 而本脚本早已为判据 5 读**全部**活文档（`LIVE_DOCS`），跨表读文档在这里不是新事；
+#: 判据 7 的"已核对 / 跳过"报数格式也因此保持一致。
+#:
+#: **没把绑定器一起放宽**的理由（本切片实测）见模块文档判据 7 的边界 ④ 之后那段。
+SOURCE_CITATION_DOCS = (
+    TABLE,
+    REPO / "docs/ledger/gate-status.md",
+    REPO / "docs/ledger/phase-status.md",
+)
 
 
 def cells_of(line: str) -> list[str]:
@@ -503,8 +540,8 @@ def named_construct(text: str, start: int, end: int) -> str | None:
     return None
 
 
-def source_line_problems(text: str) -> tuple[list[str], int, int]:
-    """判据 7：本表的源码行号引用必须指向它点名的构件。
+def source_line_problems(path: Path) -> tuple[list[str], int, int]:
+    """判据 7：射程内**每一张**活表的源码行号引用必须指向它点名的构件。
 
     返回 `(问题列表, 已核对处数, 按构造跳过处数)`。跳过的一律**不假装通过**：路径不能
     唯一定位、旁边没有代码括注、括注抽不出标识符 —— 三类都计入跳过并在 `[ok]` 行报数。
@@ -512,7 +549,8 @@ def source_line_problems(text: str) -> tuple[list[str], int, int]:
     problems: list[str] = []
     checked = 0
     skipped = 0
-    citing = TABLE.relative_to(REPO)
+    text = path.read_text(encoding="utf-8")
+    citing = path.relative_to(REPO)
     for matched in SOURCE_CITATION_RE.finditer(text):
         lineno = text[: matched.start()].count("\n") + 1
         path = matched.group("path")
@@ -702,12 +740,24 @@ def main() -> int:
     citation_problems, citations_checked = cross_reference_problems(text, TABLE)
     problems.extend(citation_problems)
 
-    # ---- 判据 7：源码行号引用必须指向它点名的构件 -------------------------------
+    # ---- 判据 7：射程内活表的源码行号引用必须指向它点名的构件 -------------------
     #
     # 判据 6 只绑"本表 → 其它活表"的 ID 行号；`` `inspect.rs:71` `` 这类**源码文件**的
     # 行号此前一条守卫都没有 —— 上次切片手工修掉三处漂移，只因判据 6 的射程够不到源码。
-    # 只认"紧邻的、以代码片段开头的括注"这一种结构化命名；绑不住的按构造跳过并计数。
-    source_problems, source_checked, source_skipped = source_line_problems(text)
+    # 只认"紧邻的、以代码片段开头/结尾的括注"这一种结构化命名；绑不住的按构造跳过并计数。
+    # 本切片把射程由"只读本表"扩到 `SOURCE_CITATION_DOCS`（本表 + `gate-status.md` +
+    # `phase-status.md`）—— 后两张表实测也在烂（`input.rs:219-225` 应为 `528-532`、
+    # `piano_roll.slint:68-70` 应为 `77-79`、`host.rs:130-140` 应为 `157-184`），
+    # 而此前没有任何守卫读它们的源码行引用。
+    source_problems: list[str] = []
+    source_per_doc: list[tuple[Path, int, int]] = []
+    for citing_doc in SOURCE_CITATION_DOCS:
+        if not citing_doc.is_file():
+            problems.append(f"缺少活表 {citing_doc.relative_to(REPO)}（判据 7 无法复核其源码行引用）")
+            continue
+        doc_problems, doc_checked, doc_skipped = source_line_problems(citing_doc)
+        source_problems.extend(doc_problems)
+        source_per_doc.append((citing_doc, doc_checked, doc_skipped))
     problems.extend(source_problems)
 
     if problems:
@@ -716,13 +766,19 @@ def main() -> int:
             print(f"  - {item}", file=sys.stderr)
         return 1
 
+    source_checked = sum(checked for _, checked, _ in source_per_doc)
+    source_skipped = sum(skipped for _, _, skipped in source_per_doc)
+    source_breakdown = " / ".join(
+        f"{doc.name} 核对 {checked} 跳过 {skipped}" for doc, checked, skipped in source_per_doc
+    )
     print(
         f"[ok] feature-alignment.md: {len(rows)} 行功能 / "
         f"{len(expected_tools)} 个 MCP 工具 / {len(expected_methods)} 条 ui 方法全部点名，"
         + "，".join(f"{category} {derived[category]}" for category in CATEGORIES)
         + f"；{citations_checked} 处行号交叉引用全部落在目标行"
         + f"；{source_checked} 处源码行引用指向点名构件"
-        + f"（另有 {source_skipped} 处路径歧义 / 未点名构件，按构造跳过、未假装通过）"
+        + f"（另有 {source_skipped} 处路径歧义 / 未点名构件，按构造跳过、未假装通过；"
+        + f"分表：{source_breakdown}）"
     )
     return 0
 
