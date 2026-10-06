@@ -8728,3 +8728,19 @@ the loudness target is closed, the mount and its lock are wired and CI-executed,
 already-deferred.
 
 **Status**: tree green and clean at `a3be329` (= `origin/main`); all gates green; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2.
+
+
+### Round 360: Phase 0's remaining 部分 are hardware measurements too - the queue really is human-gated
+
+Reconnaissance of the Phase 0 table (9 spiked items): `ROAD-M0-007` and `ROAD-M0-008` are 已完成; `ROAD-M0-003` (Slint 120 FPS + <25 MB) and `ROAD-M0-006` (100k-note
+roll at 120 FPS) are PENDING and both name the same blocker - a **fixed-refresh, noise-free machine**, i.e. HD-49; and the remaining 部分 items (`M0-001` 30-minute
+zero-underrun plus <=5.0 ms round trip, `M0-002` SPSC/retire queue, `M0-004` undo log, `M0-005` headless introspection, `M0-009` snapshot exchange) each record a
+substantial "已做到" with the structural work already absorbed into the production crates - what they still lack is the **measurement** on that same kind of
+machine, or a decision this line does not own.
+
+**So the honest position, now measured in both phases rather than asserted**: every item I can advance without a decision from the负责人 has been advanced, and what
+remains across Phase 0 and Phase 4 is (a) the **seven rulings**, (b) **HD-49**, which alone gates four of them, and (c) the two PENDINGs that are hardware or
+already-deferred. That is why this line keeps its goal active rather than claiming completion: the remaining work is not "not started", it is **not mine to start**.
+
+**Status**: tree green and clean; all gates green; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 完成 / 5 部分 / 2 PENDING; both CI sources (automatic and manual)
+operational and last measured green.
