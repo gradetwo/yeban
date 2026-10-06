@@ -1,13 +1,14 @@
-# `M4-008` 工作线台账 —— UI↔领域**唯一可变权威**（`open-questions.md` 问题 6 选项 (a)：第一片 + 第二片 + 第三片 + 第 (b) 项）
+# `M4-008` 工作线台账 —— UI↔领域**唯一可变权威**（`open-questions.md` 问题 6 选项 (a)：第一片 + 第二片 + 第三片 + 第 (b) 项 + **单一写者会话**）
 
 > 授权：`docs/ledger/human-decisions.md` 头部声明它是**唯一**需要人类裁决的清单，其条目按**建议**列
 > 在负责人"按你的建议来"的长期授权下执行（**不是** Agent 自放行）。本行按
 > `docs/ledger/open-questions.md` 问题 6 的 **(a) 建议**执行。
 > §1–§5 是选项 (a) 的**第一片**（投影口）；§6 是**第二片**（GUI 的**写**入口落到该权威上）；
 > §7 是**第三片**（GUI 的**保存路径**纳入同一把 `.yeban.lock`，并**实测**裁决"仍不翻 `read_only`"）；
-> §8 是**第 (b) 项**（生产窗口的**运行期重投影钩子** —— `run_gui` 不再只画打开时那一版）。
-> 问题 6 与 `ROAD-M4-008` 因此**仍是「部分」**：§7.5 的两件事里，第 2 件（运行期重投影）
-> 已由 §8 关闭，第 1 件（**单一写者会话**：宿主保存动作）仍在 —— 逐条见 §8.5。
+> §8 是**第 (b) 项**（生产窗口的**运行期重投影钩子** —— `run_gui` 不再只画打开时那一版）；
+> §9 是**最后一件**：**单一写者会话**（宿主保存动作 + 可写挂载形态 + GUI 保存经权威）。
+> 问题 6 与 `ROAD-M4-008` 因此**可以离开「部分」**：§7.5 的两件事分别由 §8（运行期重投影）
+> 与 §9（单一写者会话）关闭 —— 逐条见 §9.5。
 
 ---
 
@@ -574,3 +575,165 @@ bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked --prefix no
 git status --short -- Cargo.toml Cargo.lock crates/yeban-app/Cargo.toml \
   crates/yeban-mcp/Cargo.toml crates/yeban-ui-test-port/Cargo.toml
 ```
+
+---
+
+## 9. 单一写者会话（2026-10-06）—— 选项 (a) 的最后一件
+
+> 本片做的是 §7.5 第 1 件事：**谁是这份工程文档的磁盘写者**。结论：**挂了控制面时，
+> 那个会话是唯一写者**；GUI 的保存按钮把目标路径交给它（宿主保存动作），本地保存路径
+> 在它存活期间被同一把锁挡住（结构性，不靠约定）。为此新增一个**可写挂载形态**
+> （[`SessionSource::WritableFile`] ⇒ `ExclusiveWrite` + `read_only = false`），
+> 而**已有的只读挂载形态一位没改**（`in_process_mcp_lock.rs` 的 5 条原样全绿）。
+
+### 9.0 设计（先写下来，再动手）
+
+| 情形 | 唯一的磁盘写者 | GUI 的保存按钮（`ui/force_save`） | `--save-as`（批处理） | `.yeban.lock` 模式 |
+| :--- | :--- | :--- | :--- | :--- |
+| **挂了控制面 + 真工程文件**（生产 `run_gui`） | **那个会话**（[`SessionSource::WritableFile`]） | 走 [`ProjectAuthorityHandle::save_to`]：把**目标路径**交给权威，字节由权威自己产出（工程 + 提交图谱 + 资产池），落盘走唯一原子入口 `store::write_project_atomic` | 与挂载**互斥**：运行期开关要求 GUI 模式（`McpHttpNeedsGui`），因此一个进程里二者不同时存在；别的进程的 `--save-as` 被会话的排他锁拒（退出 4） | **`ExclusiveWrite`**（随挂载生命周期持有） |
+| 挂了控制面 + **只读**形态（[`SessionSource::File`]，供跨形态"只读者共存"语义与判据使用） | **没有**（该会话不落盘） | 权威拒绝（与 `yeban_save_project` **同一个** `read_only` 门），**不**回退到本地路径 | 被共享读锁挡住（fail-closed） | `SharedRead`（**未改**） |
+| **没有**控制面 | GUI / CLI 自己的保存路径 | 本地原子写 `save_project_file`（取 `ExclusiveWrite`） | 本地原子写 `save_archive_file`（取 `ExclusiveWrite`） | `ExclusiveWrite`（**每次保存**持有） |
+| 内存样本（无磁盘对应物） | 没有（无文件可写） | 同"没有控制面"，但目标不存在 ⇒ 如实报错 | 同左 | 不取 |
+
+三条不变量**由一处给出**（[`SessionSource::session_read_only`]）："宿主保存动作可用"
+⟺ "会话不是只读" ⟺ "文件形态取的是排他写锁"。因此**没有**"持共享读却落盘"的组合。
+
+"只有一个写者"是**锁的结构后果**，不是约定：只要那个会话活着并持有排他锁，
+GUI 的本地保存路径（`save_project_file` / `save_archive_file`）取排他锁时**必然**拿不到
+—— 所以"某条路忘了走权威"也不会变成第二条写路径（它会被拒，fail-closed）。
+
+### 9.1 结构性证据（**改动前**实测；命中数 = "匹配该模式的行数"，命令逐条给出）
+
+| # | 说法 | 改动前读数 | 命令 |
+| :--- | :--- | :--- | :--- |
+| 1 | 挂载会话**只有一种形态**，且恒为 `read_only = true` | `SessionSource::` 变体 **2** 个（`File` / `InMemory`）、`open_in_memory(.., true)` 命中 **1** | `grep -n "enum SessionSource" -A 12 crates/yeban-app/src/mcp_mount.rs`；`grep -n "open_in_memory" crates/yeban-app/src/mcp_mount.rs` |
+| 2 | 宿主侧**没有**保存动作 | `fn save_to` 命中 **0**；`fn host_save_project` 命中 **0** | `grep -rn "fn save_to\|fn host_save_project" crates/ \| wc -l` |
+| 3 | GUI 保存只有**本地**一条路 | `save_project_file(&self.project, &path)` 命中 **1**（`live_surface.rs` 的 `save_now`） | `grep -rn "save_project_file(&self.project" crates/yeban-app/src/` |
+| 4 | 控制面保存与 GUI 保存是**两处**落盘实现 | 工具侧 `store::write_project_atomic` 命中 1（`domain/mod.rs` 的 `apply_save`）、app 侧 `write_file_atomically` 命中 1（`save.rs`） | `grep -c "write_project_atomic\|write_file_atomically" …` |
+
+### 9.2 本片做了什么
+
+| 文件 | 改动 | 为什么 |
+| :--- | :--- | :--- |
+| `crates/yeban-mcp/src/domain/mod.rs` | 新增 `HostSaveOutcome` + `pub fn host_save_project(domain, target, force)`；把"这份工程会写出哪些字节"抽成 `save_material`（`plan_save` 与宿主保存动作**共用**同一口径） | 宿主保存**不经过** `Plan` / `apply`（保存不改工程内容 ⇒ `apply_revision` 不推进，推进点仍只有 `apply` 一处），但字节口径与落盘入口与工具路径**逐字相同**（一个 `save_material`、一个 `write_project_atomic`） |
+| `crates/yeban-mcp/src/transport/http.rs` | `HttpServer::host_save_project`（与 `host_domain` / `apply_host_action` 共用**同一个** `Mutex<Dispatcher>`、**同一个** `Domain`） | 宿主保存口住在传输层：没有第二个端口 / 令牌 / 通道；只对持有 `Arc<HttpServer>` 的宿主可见；对外 JSON-RPC 面一位没变 |
+| `crates/yeban-app/src/mcp_mount.rs` | `SessionSource::{File（只读，未改）, WritableFile（新）, InMemory}` + `session_read_only()`；`acquire_session_lock` 按形态取 `SharedRead` / `ExclusiveWrite`；`session_dispatcher` 接收 `read_only`；`ProjectAuthorityHandle::{save_to, is_writable}` | 把"谁是这份文档的写者"做成**会话来源的类型事实**，而不是 `start_for_project` 的一个布尔参数（后者会被调用点随手填错）；只读形态的语义**一位没改**（它是 `MUST-GATE-008` 共存腿的载体） |
+| `crates/yeban-app/src/main.rs` | `run_gui` 的文件来源改用 `SessionSource::WritableFile`；报告行点名"单一写者" | 生产 GUI 是这份文档的编辑者 ⇒ 它的控制面会话就是唯一写者；拿不到锁时仍**只拒绝控制面、界面照常运行**（沿用旧行为） |
+| `crates/yeban-app/src/live_surface.rs` | `save_now`：有权威 ⇒ `authority.save_to(&path)` 并回执 `writtenByAuthority = true`；无权威 ⇒ 本地 `save_project_file`（`false`）。新增 `build_live_ui_from_authority_with`（带全部装配选项的权威入口） | "有权威就不走本地、权威拒绝也不回退"是**分支事实**，且回执里有一条可断言的读数；`_with` 让"保存走哪条路"能在**同一个装配入口**上被判据观测 |
+| `crates/yeban-app/tests/single_writer_session.rs`（新） | 判据 9.3 的 ①②③ | 本片有牙的那一半 |
+| `crates/yeban-app/tests/live_ui_mcp.rs` | 判据 ④ | GUI 侧那一条 |
+
+**没有动的东西（都是刻意的）**：`SessionSource::File` 的锁模式与 `read_only`、
+`in_process_mcp_lock.rs` 的任何一行、`undo.rs`、`save.rs`、`Domain::apply` 的推进点、
+`crates/yeban-app/Cargo.toml` 与 `Cargo.lock`（实测未变，见 §9.6）、
+`in-process-mcp` / `experimental-als-export` 的 feature 定义、`MUST-GATE-009` 的四条。
+
+### 9.3 判据（有牙，且能失败）
+
+| # | 判据 | 证什么 | 关键断言 |
+| :--- | :--- | :--- | :--- |
+| ① | `single_writer_session.rs::a_writable_session_is_the_only_writer_and_its_save_persists` | **单一写者 + 持久化** | 写形态取 `ExclusiveWrite`；**读形态与写形态**的第二次挂载都被 `PROJECT_LOCKED` 拒（⇒ 不会有第二个写者）；真 socket 写一条 pan 泳道 ⇒ 宿主保存动作写盘 ⇒ **后续读者**（`open_project_file`）读回那一版；同一会话两次保存到不同路径**逐字节相同**；工具面 `yeban_save_project` 与它是**同一个**写会话（`saved: true`） |
+| ② | `single_writer_session.rs::the_local_gui_save_cannot_write_while_a_writable_session_lives` | **没有第二条写路径** | 写会话存活时：`save_project_file` ⇒ `SaveError::Locked` 且字节**逐字节未变**；真二进制 `--save-as` ⇒ 退出 **4** 且字节未变；停机后同一条本地保存**必须成功**（拒绝的原因只能是那把锁） |
+| ③ | `single_writer_session.rs::the_host_save_action_is_refused_on_a_read_only_session` | **宿主保存不是绕过 `read_only` 的后门** | 只读挂载上 `save_to` ⇒ `IO_ERROR`（与 `yeban_save_project` 同一个门）且字节未变；`is_writable() == false` |
+| ④ | `live_ui_mcp.rs::a_gui_force_save_while_mounted_writes_through_the_authority` | **GUI 的保存走权威，且写的是权威当前那一版** | 会话侧改工程后**故意不同步** ⇒ 活窗口仍是旧投影（缓存真的陈旧）；`ui/force_save` 成功、`writtenByAuthority = true`；后续读者读回的文件里**有**那条新泳道（⇒ 用的不是陈旧缓存） |
+
+### 9.4 负向实测（先红后还原；方向各不相同）
+
+| # | 临时改哪里 | 红在哪 | 实读（原文） |
+| :--- | :--- | :--- | :--- |
+| A | `domain::host_save_project` 里摘掉 `store::write_project_atomic(target, &bytes)?` | 判据 ① 的"落盘字节数"那一步（`:236`） | `assertion left == right failed: 落盘字节数必须等于回执里的数字 / left: 5238 / right: 6636`，`test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out` |
+| B | `LiveAdminSurface::save_now` 里把保存打回本地路径（绕过权威分支） | 判据 ④（`:945`） | ``挂载时 `ui/force_save` 必须成功（否则它落到了被排他锁拒的本地路径上）: CallResult { status: 501, id_echo: "62", code: Some(-32005), message: Some("…mounted.yeban` 被 `.yeban.lock` 建议锁占用 ⇒ 拒绝写入 … holderMode=ExclusiveWrite") … }``，`test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 20 filtered out` |
+| C | `domain::host_save_project` 里摘掉 `active.read_only` 门 | 判据 ③（`:381`） | `只读会话的宿主保存动作必须被拒: HostSaveOutcome { path: "…/demo.yeban", bytes: 5728, skipped: false, assets: 0, history_commits: 1, digest: "960f03a2…" }`，`test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out` |
+| D | `acquire_session_lock` 一个锁都不取（`return Ok(None)`） | 判据 ②（`:314`） | `写会话持排他锁时本地保存必须被拒: SaveReport { path: "…/demo.yeban", bytes: 5198, temp_name: "demo.yeban.tmp-…" }`，`test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out` |
+| E | 写形态**只取共享读锁**（= 不做锁模式重裁决） | 判据 ① 的锁模式断言（`:184`）；把该断言临时放宽后红在**第二步**（`:206`） | `单一写者会话必须取排他写锁… left: Some(SharedRead) / right: Some(ExclusiveWrite)`；E2（临时只放宽 `:184` 以便执行到第二步）：`只读形态在写者存活时不得挂载: Some(InProcessMcp { … mode: SharedRead … })` —— **第二个形态真的挂上了 = 两个写者** |
+
+**翻转 `read_only` 的实测裁决（问题 6 选项 (a) 第三步）**：把**已有的只读形态**
+（`SessionSource::File`）临时改成写形态（`lock_mode → ExclusiveWrite`、`session_read_only → false`），
+`in_process_mcp_lock.rs` 立刻 **3 条红**：
+
+```text
+:320  assertion `left == right` failed: 只读会话取的必须是共享读锁（不是排他，也不是不取）
+        left: Some(ExclusiveWrite) / right: Some(SharedRead)
+:375  assertion `left == right` failed: 只读控制面必须是共享读者
+        left: Some(ExclusiveWrite) / right: Some(SharedRead)
+:519  assertion `left == right` failed: 只读控制面必须是共享读者
+        left: Some(ExclusiveWrite) / right: Some(SharedRead)
+test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+⇒ **裁决**：**不翻**已有只读形态的 `read_only` / 锁模式 —— 那会拆掉 `MUST-GATE-008` 的
+"只读者共存"腿（另一形态的**只读**访问会被挡在门外，而"AI 只读分析"正是本形态的主要用途之一，
+§7.4 第 2 条原样成立）。单一写者会话改由**新的**可写形态承担（[`SessionSource::WritableFile`]）：
+
+- **它安全**：排他锁 ⇒ 第二个形态（读或写）都挂不上 ⇒ 不会有两个写者（负向 E2 的反面）；
+- **它把"翻转"限制在它自己身上**：只读形态与内存样本仍是 `read_only = true`，
+  `in_process_mcp.rs` 的"只读会话拒绝落盘"判据、`in_process_mcp_lock.rs` 的 5 条全都原样成立；
+- **代价如实登记**：可写形态存活期间，**别的形态连只读也进不来**（排他就是排他）。
+  需要与只读形态共存时用 `SessionSource::File`；生产 GUI 选可写是因为它就是编辑者。
+
+**还原证明**：五次改动全部还原，`cmp` 与基线逐字节相同，`sha256` 与改动后基线一致：
+
+```text
+crates/yeban-mcp/src/domain/mod.rs        d65c2b1c3309a0aac7fc75e6f9acecd38af6fc3fee9d5f858a17660a59bc1c2d
+crates/yeban-app/src/live_surface.rs      1f5e6940b35fcaf0b09612543027d434ae8e2020e9382d80f85976ebb457031a
+crates/yeban-app/src/mcp_mount.rs         2edd049293e47dbd1e9714e4472b72f7779c699355bd1d71163e038fa322e433
+crates/yeban-app/tests/single_writer_session.rs  ce5787669393bba8701bab7533f44c60e7419ebd6ba2e8cfa20080deda490fe4
+grep -rn "NEGATIVE MEASUREMENT" crates/   # 0
+```
+
+### 9.5 本片之后如实剩下的（因此 `ROAD-M4-008` 可以离开「部分」）
+
+1. ~~"单一写者会话"未建~~ ⇒ **本片关闭**：可写挂载形态 + 宿主保存动作 + GUI 路由 + 三条判据。
+2. ~~生产窗口没有运行期重投影~~ ⇒ **§8 关闭**。
+3. **`UndoPort` 会话与 `Domain` 会话仍是两个类型**（结构性，§6.5 第 3 条，与本项无关）。
+4. **生产 `run_gui` 今天仍不构造保存执行面**（`src/live_surface.rs` 只在测试目标里用 `#[path]`
+   装入 ⇒ 产品二进制里没有 `ui/force_save` 这条 UI 命令）：这是"保存 **UI**"的缺口，
+   **不是**写者边界的缺口 —— 一旦保存执行面进产品路径，它走的就是本片判据化的
+   `ProjectAuthorityHandle::save_to`。`--save-as` 这条产品路径今天就存在，且已被判据 ② 钉住。
+
+### 9.6 本机验证原始读数（本片，2026-10-06）
+
+```text
+bash scripts/dev/cargo-local.sh fmt --check                                          # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app                                   # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app --features in-process-mcp         # exit 0
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets -- -D warnings                            # exit 0
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets --features in-process-mcp -- -D warnings # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests                            # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests --features in-process-mcp  # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-mcp --tests                            # exit 0
+bash scripts/gates/run-gates.sh light                                                # exit 0, 末行 门禁通过 (mode=light)
+```
+
+默认档（`test -p yeban-app --tests`）里与本片直接相关的两行：
+
+```text
+tests/cli_contract.rs:          test result: ok. 20 passed; 0 failed; 0 ignored
+tests/single_writer_session.rs: test result: ok.  0 passed; 0 failed; 0 ignored  ← 目标存在但 feature 关着（0 用例）
+```
+
+`--features in-process-mcp` 档：
+
+```text
+tests/in_process_mcp.rs:        test result: ok.  3 passed; 0 failed; 0 ignored
+tests/in_process_mcp_lock.rs:   test result: ok.  5 passed; 0 failed; 0 ignored  ← MUST-GATE-008 跨形态互斥**原样**重跑（文件一位没改）
+tests/live_ui_mcp.rs:           test result: ok. 21 passed; 0 failed; 0 ignored  ← 含本片判据 ④（原先 20）
+tests/single_writer_session.rs: test result: ok.  3 passed; 0 failed; 0 ignored  ← 本片判据 ①②③
+```
+
+**依赖图对账（"默认依赖图一个包没变"的机械证据，零编译）**：
+
+```text
+# 指标：`cargo tree -p yeban-app -e normal --locked --prefix none` 里**不同的 name version 行数**
+bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked --prefix none \
+  | grep -oE "^[a-zA-Z0-9_-]+ v[0-9][0-9.a-zA-Z-]*" | sort -u | wc -l                 # 296（与 §8 的 296 相同）
+# 同一命令加 --features in-process-mcp（那是**特性树**，不是默认图；它自带 yeban-mcp 一族）
+… --features in-process-mcp | … | wc -l                                                # 320
+bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked --prefix none | grep -c "^yeban-mcp v"  # 0
+… --features in-process-mcp | grep -c "^yeban-mcp v"                                   # 1
+git status --short -- Cargo.toml Cargo.lock crates/yeban-app/Cargo.toml crates/yeban-mcp/Cargo.toml  # 空
+```
+
+**一条偶发红的登记**：本轮 `test -p yeban-mcp --tests` 一次跑完即绿（`lock_advisory.rs` =
+`14 passed; 0 failed`），没有再遇到 `docs/DEVELOPMENT_LEDGER.md` 第 279/288 轮登记的那条百年老 flake
+（`another_process_cannot_open_a_project_we_hold_exclusively` 的握手行 EOF）。

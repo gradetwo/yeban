@@ -683,6 +683,27 @@ pub struct HostOutcome {
     pub display: undo_session::UndoDisplay,
 }
 
+/// 一次**宿主保存动作**（[`host_save_project`]）的结构化读数（`ROAD-M4-008` 选项 (a)：
+/// 单一写者会话）。
+///
+/// GUI 侧用它写保存回执，**不必**解析工具响应 JSON；字段与 `yeban_save_project` 的
+/// 响应同源（同一个 `apply_save` 口径），但**不经过** `Plan` / 工具分发面。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostSaveOutcome {
+    /// 最终落点（调用方给的目标路径）。
+    pub path: PathBuf,
+    /// 写出的容器字节数。
+    pub bytes: usize,
+    /// 是否**跳过**了写盘（`force = false` 且内存状态与磁盘一致）。
+    pub skipped: bool,
+    /// 写进容器的 CAS 资产数。
+    pub assets: usize,
+    /// 写进 `history.dag` 的提交数。
+    pub history_commits: usize,
+    /// 工程内容摘要（规范化 JSON 的 SHA-256）。
+    pub digest: String,
+}
+
 /// 一次已经校验过的执行计划（**只读计算的产物**）。
 #[derive(Debug)]
 pub enum Plan {
@@ -1616,21 +1637,41 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             format!("工程 `{}` 是只读打开的, 拒绝落盘", active.path.display()),
         ));
     }
+    let (bytes, digest, assets, history_commits) = save_material(domain)?;
+    Ok(Plan::Save {
+        path: active.path.clone(),
+        changed: digest != active.saved_digest,
+        assets,
+        history_commits,
+        bytes,
+        digest,
+        force: arg_bool(call, "force", false),
+    })
+}
+
+/// "这份工程现在会写出哪些字节 / 摘要 / 条目数" —— `yeban_save_project` 与
+/// **宿主保存动作** [`host_save_project`] 的**唯一**口径。
+///
+/// 为什么不各算一遍：容器字节的口径（`ARCH-SEC-003`：工程 + 提交图谱 + CAS 资产池）
+/// 一旦有两份实现，迟早会出现"工具保存写进去的东西与宿主保存写进去的不一样"。
+///
+/// # Errors
+///
+/// 没有活跃工程、工程 / 图谱序列化失败、或容器层拒绝。
+fn save_material(domain: &Domain) -> Result<(Vec<u8>, String, usize, usize), Fault> {
+    let active = domain.active.as_ref().ok_or_else(no_active_project)?;
     let json = store::serialize_project(&active.project)?;
     let digest = store::digest_of(json.as_bytes());
     // 落盘字节 = `ARCH-SEC-003` 的容器（`project.json` + `history.dag` + `assets/{sha256}`）。
     // 与"工程内容摘要"是**两个量**：前者含提交图谱与资产，后者只描述工程文档。
     let bytes =
         store::container_bytes(&active.path, &active.project, &domain.graph, &active.assets)?;
-    Ok(Plan::Save {
-        path: active.path.clone(),
-        changed: digest != active.saved_digest,
-        assets: active.assets.len(),
-        history_commits: domain.graph.commit_count(),
+    Ok((
         bytes,
         digest,
-        force: arg_bool(call, "force", false),
-    })
+        active.assets.len(),
+        domain.graph.commit_count(),
+    ))
 }
 
 /// `yeban_close_project`。
@@ -2007,6 +2048,87 @@ pub fn apply_host_action(domain: &mut Domain, action: HostAction) -> Result<Host
             None
         },
         display: after,
+    })
+}
+
+/// **宿主的保存动作**（`ROAD-M4-008` 选项 (a)：单一写者会话）。
+///
+/// 它要证的那句话是：**控制面会话是唯一写者时，宿主的保存按钮也落到这同一个会话上。**
+/// 因此它只做三件事：① 只读预读"这份工程现在会写出哪些字节"（[`save_material`]，与
+/// `yeban_save_project` **同一个口径**）；② 在**同一个原子落盘入口**
+/// [`store::write_project_atomic`] 上写出；③ 读回结构化读数 [`HostSaveOutcome`]。
+///
+/// ## 它不制造第二个写者，也不制造第二个推进点
+///
+/// - **不落回 `Plan` / `apply`**：保存**不改工程内容**，因此
+///   [`Domain::apply_revision`] 在这里**不推进**（推进点仍然只有 [`apply`] 一处）。
+///   它也不出现在 [`crate::tools::ToolCall`] 的契约里 —— 对外 JSON-RPC 面一位没变；
+/// - **写入口与工具路径同一个**：字节由 [`save_material`] 产出、落盘由
+///   [`store::write_project_atomic`] 完成 —— "写工程文档"仍然只有一份实现；
+/// - **只对写会话开放**：`read_only` 是"这个会话可不可以写盘"的**唯一**事实源。
+///   只读会话（内存样本 / 只读挂载）在这里同样被拒 —— 宿主保存**不是**绕过
+///   `read_only` 的后门，它是"写会话的宿主落点"。
+///
+/// ## 目标路径可以不是会话路径
+///
+/// `--save-as` 语义（另存到别处）由此可行：容器字节来自**会话**（权威工程 + 图谱 +
+/// 资产池），写出的目标由调用方给。只有目标与会话路径**逐字相同**时才更新内存里的
+/// `saved_digest`（否则"未保存标记"会错误地声称另一个文件与内存一致）。
+///
+/// # Errors
+///
+/// 没有活跃工程、只读会话、工程 / 图谱序列化失败、容器层拒绝，或落盘 I/O 失败
+/// （原样携带领域错误码，与工具路径同源）。
+pub fn host_save_project(
+    domain: &mut Domain,
+    target: &Path,
+    force: bool,
+) -> Result<HostSaveOutcome, Fault> {
+    let (bytes, digest, assets, history_commits, changed, session_path) = {
+        let active = domain.active.as_ref().ok_or_else(no_active_project)?;
+        if active.read_only {
+            return Err(Fault::domain(
+                ErrorCode::IoError,
+                format!(
+                    "工程 `{}` 是只读打开的, 宿主保存动作拒绝落盘",
+                    active.path.display()
+                ),
+            ));
+        }
+        let (bytes, digest, assets, history_commits) = save_material(domain)?;
+        let changed = digest != active.saved_digest;
+        (
+            bytes,
+            digest,
+            assets,
+            history_commits,
+            changed,
+            active.path.clone(),
+        )
+    };
+    if !force && !changed {
+        return Ok(HostSaveOutcome {
+            path: target.to_path_buf(),
+            bytes: bytes.len(),
+            skipped: true,
+            assets,
+            history_commits,
+            digest,
+        });
+    }
+    store::write_project_atomic(target, &bytes)?;
+    if session_path.as_path() == target
+        && let Some(active) = domain.active.as_mut()
+    {
+        active.saved_digest.clone_from(&digest);
+    }
+    Ok(HostSaveOutcome {
+        path: target.to_path_buf(),
+        bytes: bytes.len(),
+        skipped: false,
+        assets,
+        history_commits,
+        digest,
     })
 }
 

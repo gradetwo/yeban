@@ -120,7 +120,7 @@ use yeban_mcp::Dispatcher;
 use yeban_mcp::domain::engine_state::EngineReadings;
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
-use yeban_mcp::domain::{Domain, HostAction, HostOutcome};
+use yeban_mcp::domain::{Domain, HostAction, HostOutcome, HostSaveOutcome};
 use yeban_mcp::security::{BearerToken, RunMode, ScopeSet, TokenFile};
 use yeban_mcp::transport::http::{HttpError, HttpServer, MCP_PATH, ProjectRevisionSink};
 use yeban_mcp::transport::{HttpStartup, TransportError, plan_http_startup};
@@ -220,15 +220,31 @@ pub fn plan(requested: bool) -> Result<HttpStartup, MountError> {
 /// 随手填错，而"样本工程该不该锁"不是一个可以含糊的问题。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionSource {
-    /// 磁盘上的真实工程文件（`cli::ProjectSource::File` 的形态）。
+    /// 磁盘上的真实工程文件，**只读**形态（`cli::ProjectSource::File` 的只读用法）。
     ///
     /// 会话以 [`LockMode::SharedRead`] 参与 `.yeban.lock`：挡住排他写者，
-    /// 与其它只读会话共存。
+    /// 与其它只读会话共存。**它不落盘**（会话 `read_only = true`，宿主保存动作也不开放）
+    /// —— 因此"谁能写这份文档"这个问题在它这里答案是"没有人"。
     File(PathBuf),
+    /// 磁盘上的真实工程文件，**单一写者**形态（`ROAD-M4-008` 选项 (a) 的交付形态）。
+    ///
+    /// 生产 `run_gui` 打开一个 `.yeban` 时用它：GUI 是这份文档的编辑者，因此这个会话
+    /// 就是它的**唯一磁盘写者**。
+    ///
+    /// - 会话以 [`LockMode::ExclusiveWrite`] 参与 `.yeban.lock`，**随挂载生命周期持有**
+    ///   ⇒ 另一个形态（另一个 app 实例 / stdio `yeban-mcp`，无论读还是写）在它存活期间
+    ///   拿不到这个文件 —— 这正是"不会出现第二个写者"的物理载体；
+    /// - 会话 `read_only = false`，因此**宿主保存动作**
+    ///   （[`ProjectAuthorityHandle::save_to`]）与工具面的 `yeban_save_project`
+    ///   **是同一个**写会话的两条入口，而不是两个写者。
+    ///
+    /// 代价如实登记：只读共存**不**适用于这个形态（排他锁就是排他）。需要与别的只读形态
+    /// 共存时用 [`Self::File`]。
+    WritableFile(PathBuf),
     /// 没有磁盘对应物的内存工程（规范样本 / 未落盘会话）。
     ///
     /// 携带的路径只是控制面会话的**标签**（例如 `sample:filled`），
-    /// 不是一个文件 ⇒ **不取锁**。
+    /// 不是一个文件 ⇒ **不取锁**，也不落盘。
     InMemory(PathBuf),
 }
 
@@ -237,7 +253,7 @@ impl SessionSource {
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
-            Self::File(path) | Self::InMemory(path) => path.as_path(),
+            Self::File(path) | Self::WritableFile(path) | Self::InMemory(path) => path.as_path(),
         }
     }
 
@@ -246,8 +262,26 @@ impl SessionSource {
     pub const fn lock_mode(&self) -> Option<LockMode> {
         match self {
             Self::File(_) => Some(LockMode::SharedRead),
+            Self::WritableFile(_) => Some(LockMode::ExclusiveWrite),
             Self::InMemory(_) => None,
         }
+    }
+
+    /// 控制面会话内的 `Domain` 是否以**只读**打开（= 它的 `read_only` 位）。
+    ///
+    /// 三条不变量由它一处给出（不许在调用点各判一次）：
+    ///
+    /// | 形态 | `read_only` | 宿主保存动作 | 锁 |
+    /// | :--- | :--- | :--- | :--- |
+    /// | [`Self::File`] | `true` | 拒绝 | `SharedRead` |
+    /// | [`Self::WritableFile`] | `false` | 可用 | `ExclusiveWrite` |
+    /// | [`Self::InMemory`] | `true` | 拒绝 | 无 |
+    ///
+    /// "宿主保存动作可用" ⟺ "会话不是只读" ⟺ "取的是排他写锁"（对文件形态）——
+    /// 因此**没有**"持共享读却落盘"的组合。
+    #[must_use]
+    pub const fn session_read_only(&self) -> bool {
+        !matches!(self, Self::WritableFile(_))
     }
 }
 
@@ -485,6 +519,41 @@ impl ProjectAuthorityHandle {
         self.server.apply_host_action(action)
     }
 
+    /// **宿主的保存动作**（`ROAD-M4-008` 选项 (a)：单一写者会话）。
+    ///
+    /// 把 `target` 交给**正在服务的那一个** `Domain`：字节由它自己产出
+    /// （工程 + 提交图谱 + CAS 资产池），落盘走**同一个**原子入口
+    /// （[`HttpServer::host_save_project`] → `domain::host_save_project` →
+    /// `store::write_project_atomic`）。GUI 的保存按钮因此**不再**自己写文件 ——
+    /// 在挂载了控制面时，"谁写了这份文档"的答案只有**一个**：这个会话。
+    ///
+    /// ## 为什么不是"把字节交给宿主"
+    ///
+    /// 交接字节会把"用哪一版工程"重新变成一个可以被调用点填错的问题（宿主缓存可能是
+    /// 旧的，而那正是本工作线要避免的漂移）。这里交出去的是**目标路径**，工程由权威
+    /// 自己读 —— 因此界面缓存（`live_surface` 的投影缓存）陈旧也不会写错内容。
+    ///
+    /// ## 只读会话会被拒
+    ///
+    /// 它走的是与 `yeban_save_project` **同一个** `read_only` 门：只读挂载 / 内存样本
+    /// ⇒ `Err`（`IO_ERROR`），**一个字节都不写**，且**不会**回退到本地保存路径。
+    /// 因此"宿主保存动作可用" ⟺ "这个会话是写会话" ⟺ "它取的是排他写锁"（文件形态）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`yeban_mcp::domain::host_save_project`]。
+    pub fn save_to(&self, target: impl AsRef<Path>) -> Result<HostSaveOutcome, Fault> {
+        self.server.host_save_project(target.as_ref(), true)
+    }
+
+    /// 这个会话**是不是**一个可写的单一写者会话（= 宿主保存动作是否会成功）。
+    ///
+    /// 只读投影口给出的读数，供 `run_gui` 的报告行与判据使用 —— 不改变任何行为。
+    #[must_use]
+    pub fn is_writable(&self) -> bool {
+        self.server.host_domain(|domain| !domain.is_read_only())
+    }
+
     /// 一个**不延长服务寿命**的弱句柄（`ROAD-M4-008` 选项 (a) 第 (b) 项）。
     ///
     /// 为什么必须有它：宿主把"会话侧改了工程"的通知 marshal 到 UI 线程时，
@@ -561,12 +630,12 @@ impl InProcessMcp {
     /// **开关关着就什么都不建**：返回 `Ok(None)`，连分发器都不构造
     /// （没有 socket、没有令牌、没有线程、没有工程克隆、没有锁）。
     ///
-    /// 工程固定以**只读**方式注入控制面会话（理由见模块文档的"会话"一节）——
+    /// 会话的 `read_only` 位由 [`SessionSource::session_read_only`] 决定 ——
     /// 这里**没有** `read_only` 参数，因为"要不要交出第二个写者"不该由调用点随手决定。
     ///
     /// 会话来源（[`SessionSource`]）决定它是否参与 `.yeban.lock` 跨形态互斥：
-    /// 磁盘上的真实工程文件取共享读锁（拿不到 ⇒ [`MountError::Locked`]），
-    /// 内存样本不取。
+    /// 只读文件取共享读锁、单一写者文件取排他写锁（两者拿不到都 ⇒
+    /// [`MountError::Locked`]）、内存样本不取。
     ///
     /// # Errors
     ///
@@ -581,7 +650,8 @@ impl InProcessMcp {
             HttpStartup::Enabled => {
                 // 取锁先于绑 socket：这是 fail-closed 的方向（少一个监听口，不是多一个）。
                 let lock = acquire_session_lock(&source)?;
-                let dispatcher = session_dispatcher(&project, source.path())?;
+                let read_only = source.session_read_only();
+                let dispatcher = session_dispatcher(&project, source.path(), read_only)?;
                 Self::start(dispatcher, lock).map(Some)
             }
         }
@@ -761,31 +831,46 @@ fn serve_loop(server: &Arc<HttpServer>, stop: &AtomicBool) {
 /// [`MountError::Locked`]：锁被别的活着的持有者占用（`PROJECT_LOCKED`），
 /// 或平台无建议锁 / 文件系统失败（同一个 `Fault` 出口，不做第二次分类）。
 fn acquire_session_lock(source: &SessionSource) -> Result<Option<AcquiredLock>, MountError> {
-    let SessionSource::File(path) = source else {
+    let Some(mode) = source.lock_mode() else {
         return Ok(None);
     };
-    // `true` 就是 `read_only`：只读会话 ⇒ 共享读锁。这条映射与
-    // [`SessionSource::lock_mode`] 是同一件事，两处不许漂移。
-    debug_assert_eq!(source.lock_mode(), Some(LockMode::SharedRead));
-    store::acquire_lock(path, true)
+    // `read_only = true` ⇒ 共享读；`false` ⇒ 排他写。这条映射与
+    // [`SessionSource::session_read_only`]是同一件事，两处不许漂移。
+    let read_only = source.session_read_only();
+    debug_assert_eq!(
+        mode,
+        if read_only {
+            LockMode::SharedRead
+        } else {
+            LockMode::ExclusiveWrite
+        }
+    );
+    store::acquire_lock(source.path(), read_only)
         .map(Some)
         .map_err(|fault| MountError::Locked {
-            path: path.clone(),
+            path: source.path().to_path_buf(),
             fault,
         })
 }
 
-/// 构造一个**生产模式**的分发器，并把工程注入它的**只读**会话。
+/// 构造一个**生产模式**的分发器，并把工程注入它的会话。
+///
+/// `read_only` 是 [`SessionSource::session_read_only`] 给出的**唯一**判定：只读挂载与
+/// 内存样本是 `true`，单一写者挂载（[`SessionSource::WritableFile`]）是 `false`。
 ///
 /// 高熵令牌在**这里**生成（[`BearerToken::generate`]，256 bit）—— 没有第二个生成点。
-fn session_dispatcher(project: &YebanProjectV1, path: &Path) -> Result<Dispatcher, MountError> {
+fn session_dispatcher(
+    project: &YebanProjectV1,
+    path: &Path,
+    read_only: bool,
+) -> Result<Dispatcher, MountError> {
     let token = BearerToken::generate().token;
     // scope 给全：`ui:inject` 的硬禁**不在这里**判，而在 `security::authorize`
     // 按 `RunMode::Production` 判 —— 少给 scope 不等于更安全，只会让别的工具也失灵。
     let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
     dispatcher
         .domain_mut()
-        .open_in_memory(path.to_path_buf(), project.clone(), true)
+        .open_in_memory(path.to_path_buf(), project.clone(), read_only)
         .map_err(|fault| MountError::Domain(format!("{fault:?}")))?;
     Ok(dispatcher)
 }

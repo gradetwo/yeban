@@ -331,10 +331,17 @@ fn mount_in_process_mcp(
     use yeban_app::mcp_mount;
 
     let requested = options.enable_mcp_http || mcp_mount::switch_from_env();
-    // 会话来源决定要不要参与 `.yeban.lock` 跨形态互斥（`ROAD-M0-007`）：
-    // 磁盘上的真工程文件取共享读锁，样本 / 未落盘会话没有锁可取。
+    // 会话来源决定要不要参与 `.yeban.lock` 跨形态互斥（`ROAD-M0-007`），以及**谁是写者**
+    // （`ROAD-M4-008` 选项 (a) 的单一写者会话）：
+    //
+    // - 磁盘上的真工程文件 ⇒ [`mcp_mount::SessionSource::WritableFile`]：GUI 是这份文档的
+    //   编辑者，因此那个会话取**排他写**锁、`read_only = false` ⇒ 它是**唯一**磁盘写者
+    //   （宿主保存动作 `ui/force_save` 走它；别的形态在它存活期间拿不到这个文件）；
+    // - 样本 / 未落盘会话 ⇒ 没有锁可取，也不落盘。
     let source = match &loaded.source {
-        cli::ProjectSource::File { path, .. } => mcp_mount::SessionSource::File(path.clone()),
+        cli::ProjectSource::File { path, .. } => {
+            mcp_mount::SessionSource::WritableFile(path.clone())
+        }
         cli::ProjectSource::Sample(sample) => mcp_mount::SessionSource::InMemory(
             std::path::PathBuf::from(format!("sample:{}", sample.name())),
         ),
@@ -363,8 +370,13 @@ fn mount_in_process_mcp(
     };
 
     cli::emit(&[format!(
-        "mcp-http: 进程内环回控制面已监听 {} (只绑环回; 会话按只读注入)",
-        mount.endpoint()
+        "mcp-http: 进程内环回控制面已监听 {} (只绑环回; 会话按{}注入)",
+        mount.endpoint(),
+        if mount.project_authority().is_writable() {
+            "单一写者 (取排他写锁, GUI 保存经它落盘)"
+        } else {
+            "只读"
+        }
     )]);
     match mcp_mount::publish_token(mount.token()) {
         Ok(path) => {

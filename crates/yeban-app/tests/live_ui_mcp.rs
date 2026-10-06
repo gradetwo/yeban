@@ -841,6 +841,138 @@ fn admin_force_save_really_writes_a_readable_container() {
     assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
 }
 
+/// 判据 20（`ROAD-M4-008` 选项 (a)：**单一写者会话**的 GUI 侧）：挂在控制面上时，
+/// `ui/force_save` 写出的**不是**界面缓存，而是**权威会话当前那一版**。
+///
+/// ## 为什么这条判据有分辨力（而不是"两条路写出同样的字节"）
+///
+/// 关键是让"界面缓存"与"权威工程"**故意分叉**：会话侧改一次工程，但**不**调
+/// `sync_authority` ⇒ 活窗口仍画着旧那一版；随后按保存。
+///
+/// | 走的路 | 结果 |
+/// | :--- | :--- |
+/// | 界面缓存（改动前的本地路径 `save_project_file`） | 要么写旧那一版（新泳道不在文件里），要么被会话的排他锁拒（`ui/force_save` 直接失败） |
+/// | 权威（`ProjectAuthorityHandle::save_to`） | 文件里**有**那条新泳道，且回执 `writtenByAuthority = true` |
+///
+/// ## 论证顺序
+///
+/// | 步 | 动作 | 读回 |
+/// | :--- | :--- | :--- |
+/// | 1 | 在真工程文件上以**单一写者**形态挂载，并以权威装配真实界面（带 `save_path`） | 权威可写；窗口里没有 pan 泳道 |
+/// | 2 | 真环回 socket 发 `yeban_edit_automation`（建 pan 泳道）；**不**同步投影 | 权威工程里有新泳道；活窗口仍**没有** —— 界面缓存确实是旧的 |
+/// | 3 | `ui/force_save` | 成功，`report.bytes > 0`、`report.writtenByAuthority = true` |
+/// | 4 | 用**后续读者**读同一个文件 | 新泳道**在**文件里 ⇒ 写的是权威那一版，不是陈旧缓存 |
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_gui_force_save_while_mounted_writes_through_the_authority() {
+    use std::collections::BTreeMap;
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    // ---- 夹具：磁盘上一份真容器（与 `in_process_mcp_lock.rs` 同一份数据）----
+    let dir = scratch_dir("single-writer-save");
+    let project_path = dir.join("mounted.yeban");
+    let project = yeban_model::samples::filled_project();
+    let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
+    let bytes =
+        yeban_model::container::write_project_container(&project, &history, &BTreeMap::new())
+            .expect("写真容器");
+    std::fs::write(&project_path, &bytes).expect("写夹具");
+
+    // ---- 1. 单一写者形态挂载 + 以权威装配界面（带 save_path）----
+    let mount = InProcessMcp::start_for_project(
+        true,
+        yeban_model::samples::filled_project(),
+        SessionSource::WritableFile(project_path.clone()),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    assert!(authority.is_writable(), "写形态会话必须可写");
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    let authority_view =
+        ViewState::from_project(&authority.project().expect("权威有活跃工程")).expect("投影");
+    let lead = authority_view.tracks.first().expect("有轨道");
+    let lead_id = lead.id.clone();
+    let lane_id = format!("track-{}-automation-pan-lane", lead.index);
+    assert!(
+        !authority_view
+            .automation_lane_element_ids()
+            .contains(&lane_id),
+        "起点：权威里不该有 `{lane_id}`"
+    );
+
+    let mut opts = options(Permission::Administrative, 0);
+    opts.save_path = Some(project_path.clone());
+    let mut plane = live::build_live_ui_from_authority_with(&authority, &opts)
+        .expect("以权威装配真实界面")
+        .into_control_plane(Permission::Administrative);
+    let (tree_before, _) = plane.plane().tree().expect("ui/tree");
+    assert!(
+        tree_before.find(&lane_id).is_none(),
+        "起点：活窗口里不该有 `{lane_id}`"
+    );
+
+    // ---- 2. 会话侧改工程，但**不**同步投影 ⇒ 界面缓存与权威故意分叉 ----
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{{"name":"yeban_edit_automation","arguments":{{"trackId":"{lead_id}","lane":"TrackPan","point":{{"tick":0,"value":0.25,"curve":"Linear"}}}}}}}}"#
+        ),
+    );
+    assert_eq!(
+        reply["result"]["status"], "success",
+        "写类工具必须成功: {reply}"
+    );
+    assert!(
+        ViewState::from_project(&authority.project().expect("权威有活跃工程"))
+            .expect("投影")
+            .automation_lane_element_ids()
+            .contains(&lane_id),
+        "权威工程里必须已经有 `{lane_id}`"
+    );
+    let (tree_stale, _) = plane.plane().tree().expect("ui/tree");
+    assert!(
+        tree_stale.find(&lane_id).is_none(),
+        "故意不同步 ⇒ 活窗口必须**仍然**画着旧那一版（否则本判据的对照不成立）"
+    );
+
+    // ---- 3. `ui/force_save` ⇒ 走权威 ----
+    let saved = plane
+        .plane()
+        .try_line(r#"{"jsonrpc":"2.0","id":62,"method":"ui/force_save"}"#);
+    assert!(
+        !saved.is_error(),
+        "挂载时 `ui/force_save` 必须成功（否则它落到了被排他锁拒的本地路径上）: {saved:?}"
+    );
+    let result = saved.result.expect("有 result");
+    assert_eq!(result["accepted"], true, "{result}");
+    assert_eq!(
+        result["report"]["writtenByAuthority"], true,
+        "回执必须点名这条保存走了权威（不是界面缓存）: {result}"
+    );
+    let written = result["report"]["bytes"].as_u64().expect("字节数");
+    assert!(written > 0);
+    assert_eq!(
+        std::fs::metadata(&project_path).expect("元数据").len(),
+        written,
+        "回执里的字节数必须等于磁盘上的字节数"
+    );
+
+    // ---- 4. 后续读者读回：写的是**权威当前那一版** ----
+    let on_disk = open_project_file(&project_path).expect("后续读者读回");
+    assert!(
+        ViewState::from_project(&on_disk)
+            .expect("投影")
+            .automation_lane_element_ids()
+            .contains(&lane_id),
+        "文件里必须有会话侧刚建的那条泳道 `{lane_id}` ⇒ 保存用的是权威的字节，不是陈旧缓存"
+    );
+
+    mount.stop().expect("停机");
+}
+
 /// 判据 10（**管理动作 3/3**）：`ui/reload_engine` 真的重建引擎，并把电平接回下限。
 ///
 /// 副作用链（每一步都可观测）：注入 0.0 dBFS 的电平 ⇒ `ui/tree` 读得到 ⇒ 重建引擎 ⇒

@@ -554,6 +554,17 @@ impl LiveAdminSurface {
     }
 
     /// `ui/force_save`：**真的**写盘（临时文件 → `sync_all` → 原子重命名）。
+    ///
+    /// ## 谁是写者（`ROAD-M4-008` 选项 (a)：单一写者会话）
+    ///
+    /// | 本执行面有没有权威句柄 | 落点 | 为什么 |
+    /// | :--- | :--- | :--- |
+    /// | **有**（[`build_live_ui_from_authority`] 装配的） | [`ProjectAuthorityHandle::save_to`] —— 控制面会话自己产出字节并写盘 | 挂在控制面上时，那个会话是这份文档的**唯一**磁盘写者；GUI 的本地保存路径（[`save_project_file`]）在会话持锁期间**必然被拒**（判据 ④），所以它**不能**是第二条写路径 |
+    /// | **没有**（[`build_live_ui`] / [`build_live_ui_with`] 装配的） | [`save_project_file`]（本地原子写，取排他写建议锁） | 没有控制面时进程里只有它一个写者，本地路径就是那条路 |
+    ///
+    /// 两条路**不会**同时发生：有权威时**不**调用本地路径，权威拒绝时**不**回退到本地路径
+    /// （回退会把"权威说不能写"变成一个偷偷写盘的分支）。因此"保存"这个动作在两种装配下
+    /// 各自只有一个落点，且挂载时那个落点是会话。
     fn save_now(&mut self) -> Result<(), PortError> {
         let Some(path) = self.save_path.clone() else {
             // 没有配置落点 = 这条能力在**这个装配上**没接线 ⇒ `-32005` 是诚实的。
@@ -563,6 +574,32 @@ impl LiveAdminSurface {
                     .to_owned(),
             });
         };
+        #[cfg(feature = "in-process-mcp")]
+        if let Some(authority) = self.authority.as_ref() {
+            // 保存经**权威自己的**字节（不是界面缓存）—— 因此界面缓存即使陈旧，
+            // 写出来的也一定是会话当前那一版工程。
+            let saved = authority.save_to(&path).map_err(|fault| PortError::Rejected {
+                message: format!(
+                    "权威会话拒绝保存（宿主保存动作与 `yeban_save_project` 同一个门）: {fault:?}"
+                ),
+            })?;
+            self.save_epoch = self.save_epoch.saturating_add(1);
+            self.report = Some(AdminReport::new(
+                "force_save",
+                vec![
+                    ("saveEpoch", ReportValue::Uint(self.save_epoch)),
+                    ("bytes", ReportValue::Uint(saved.bytes as u64)),
+                    // 这条读数就是"保存走了权威"的可断言的证据（不是注释里的声明）。
+                    ("writtenByAuthority", ReportValue::Bool(true)),
+                    ("assets", ReportValue::Uint(saved.assets as u64)),
+                    (
+                        "historyCommits",
+                        ReportValue::Uint(saved.history_commits as u64),
+                    ),
+                ],
+            ));
+            return Ok(());
+        }
         let saved = save_project_file(&self.project, &path).map_err(|error| match error {
             SaveError::Container(inner) => PortError::Rejected {
                 message: format!("容器写出被拒绝: {inner}"),
@@ -577,6 +614,8 @@ impl LiveAdminSurface {
             vec![
                 ("saveEpoch", ReportValue::Uint(self.save_epoch)),
                 ("bytes", ReportValue::Uint(saved.bytes as u64)),
+                // 没有权威 ⇒ 本地原子写（与历史行为逐字相同）。
+                ("writtenByAuthority", ReportValue::Bool(false)),
                 // 容器布局：`project.json` + `history.dag`（空图谱），见 `crate::save` 的边界。
                 ("containerEntries", ReportValue::Uint(2)),
             ],
@@ -1016,16 +1055,35 @@ pub fn build_live_ui_from_authority(
     authority: &ProjectAuthorityHandle,
     permission: Permission,
 ) -> Result<LiveUi, LiveWiringError> {
-    let project = authority
-        .project()
-        .ok_or(LiveWiringError::NoActiveAuthorityProject)?;
-    let mut ui = build_live_ui_with(
-        &project,
+    build_live_ui_from_authority_with(
+        authority,
         &LiveWiringOptions {
             permission,
             ..LiveWiringOptions::default()
         },
-    )?;
+    )
+}
+
+/// 同 [`build_live_ui_from_authority`]，但显式给出全部装配选项（控制台 Tab / 保存路径 /
+/// 量子数）—— 与 [`build_live_ui_with`] 对 [`build_live_ui`] 的关系同款。
+///
+/// 存在的理由（`ROAD-M4-008` 选项 (a) 的单一写者判据）：`ui/force_save` 的落点由
+/// `save_path` 决定，而"保存走的是权威还是本地路径"必须能在**同一个装配入口**上被断言
+/// （[`LiveAdminSurface::save_now`] 的分支）。没有这个入口，判据就只能分别装配两次、
+/// 比较两个不同的执行面。
+///
+/// # Errors
+///
+/// 同 [`build_live_ui_from_authority`]。
+#[cfg(feature = "in-process-mcp")]
+pub fn build_live_ui_from_authority_with(
+    authority: &ProjectAuthorityHandle,
+    options: &LiveWiringOptions,
+) -> Result<LiveUi, LiveWiringError> {
+    let project = authority
+        .project()
+        .ok_or(LiveWiringError::NoActiveAuthorityProject)?;
+    let mut ui = build_live_ui_with(&project, options)?;
     ui.surface.attach_authority(authority);
     Ok(ui)
 }

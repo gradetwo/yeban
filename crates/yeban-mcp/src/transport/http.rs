@@ -611,6 +611,43 @@ impl HttpServer {
         crate::domain::apply_host_action(dispatcher.domain_mut(), action)
     }
 
+    /// **宿主侧保存动作**（`ROAD-M4-008` 选项 (a)：单一写者会话）：把**正在服务的
+    /// 那一个**会话的工程文档写到 `target`。
+    ///
+    /// ## 为什么它是"单一写者"的那一半
+    ///
+    /// 形态 A 的 `yeban-app` 挂载控制面之后，工程文档的**磁盘写者**必须是这**一个**
+    /// 会话：GUI 的 `ui/force_save` / `--save-as` 不再自己去写文件，而是把目标路径交给
+    /// 本方法；字节由会话自己产出（[`crate::domain::save_material`]），落盘走**同一个**
+    /// [`crate::domain::store::write_project_atomic`]。于是"谁写了这份文档"的答案仍然
+    /// 是**一个**：这个会话。
+    ///
+    /// ## 它为什么不是第二条写通道
+    ///
+    /// - **同一个** `Mutex<Dispatcher>`、**同一个** [`crate::domain::Domain`]：没有
+    ///   第二个分发器、第二个会话、第二个端口、第二个令牌；
+    /// - **不经过** `Plan` / `apply`：保存不改工程内容，因此
+    ///   [`crate::domain::Domain::apply_revision`] 在它之后**不推进**（推进点仍然只有
+    ///   `domain::apply` 一处）；
+    /// - **不扩大对外能力面**：JSON-RPC 仍走 [`Self::handle_text`] → `Dispatcher::handle`
+    ///   （鉴权 / 作用域 / `dryRun` 一位没松）；本方法只对已经持有 `Arc<HttpServer>` 的
+    ///   宿主进程（形态 A 的 `yeban-app`）可见；
+    /// - **只对写会话开放**：只读会话（`Domain::is_read_only`）在这里被拒 —— 与
+    ///   `yeban_save_project` 是**同一个** `read_only` 门，不是绕过它的后门。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`crate::domain::host_save_project`]（没有活跃工程 / 只读会话 / 容器写出被拒 /
+    /// 落盘 I/O 失败）。
+    pub fn host_save_project(
+        &self,
+        target: &std::path::Path,
+        force: bool,
+    ) -> Result<crate::domain::HostSaveOutcome, crate::domain::error::Fault> {
+        let mut dispatcher = self.lock();
+        crate::domain::host_save_project(dispatcher.domain_mut(), target, force)
+    }
+
     /// 取分发器（锁被毒化时仍然取内层 —— 环回开发服务宁可继续回答并如实报错，
     /// 也不要在 handler 里 panic）。
     fn lock(&self) -> MutexGuard<'_, Dispatcher> {
