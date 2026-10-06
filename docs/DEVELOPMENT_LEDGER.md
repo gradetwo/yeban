@@ -8392,3 +8392,52 @@ the mapping move in particular, since it is the largest change and the first one
 locally, and the ledger recorded the divergence explicitly. That is exactly what "downgrade the blocker to a pending" is supposed to look like.
 
 **Status**: local and remote level at `abe537e`; tree green and clean; mapping layer shared and locally verified; loudness item CI-verified; MCP tools 5 of 6.
+
+
+### Round 346: the mapping move's CI run is green on six of seven jobs; the workspace is shared with the delegated run
+
+Status of `abe537e` (the push carrying the mapping move), read by run id rather than guessed: **`lockfile`(6), `deny`(6), `plan`(5), `checks`(12) and `windows`(9) are
+success**, `rust (${{ matrix.crate }})` is skipped by the plan, and **`rust (workspace 全量)` is still running** after roughly half an hour. The mapping move is
+therefore **CI-verified on Linux per-crate, on Windows, on the red-line guards and on fmt**, and **not yet on the full workspace sweep** - which is the one leg
+that runs every crate's tests together.
+
+**One measurement lesson from this stretch**: an in-progress job reports `conclusion` as an **empty string**, not `null`, so a filter of
+`select(.conclusion == null)` silently matches nothing and produces a false "everything finished" reading. The correct predicate is
+`select(.conclusion == null or .conclusion == "")`. Worth keeping: this is the same family as round 231's `tail` mistake - a filter that returns **nothing**
+is not evidence that there is nothing to find.
+
+**The workspace is now shared with the delegated run**: `git status` shows three entries, all in `crates/yeban-mcp/src/domain/` (`mod.rs` modified,
+`export_midi.rs` new, plus the test file the tool will add). Per 一文件一写者 the main line **stops touching those files** and **must not** run
+`git checkout -- .` while that work is in flight, since it would erase it. Verification of the delegated result happens after it reports, against the
+known-good state recorded here.
+
+
+### Round 347: session consolidated - what this line delivered, what it verified, and what is left
+
+Written while a delegated run and a CI leg are both in flight, and deliberately not committed yet (the workspace holds the delegated run's untracked files; a
+commit now would capture its half-finished state, and `git checkout` would erase it).
+
+**Delivered and verified on CI (`success` verdicts read back)**:
+* `yeban-midi` crate - SMF encode/decode (1150 lines) and the VLQ helper split out of `yeban-render`, green on **both platforms** (18 criteria);
+* `yeban-mcp -> yeban-midi` dependency, with the dependency-direction guard's tooth test passing;
+* the **loudness target** end to end on the tool side: `Option<f32>` contract (round 327), five fields with `Default` meaning "not measured" (`e3f3268`), the
+  five payload keys (`b0019b0`), and the three-part criterion - null when absent, null when unmeasured, echoed within tolerance when set (`98f3a22`, verified
+  by CI with a 10-step `rust (yeban-mcp)` leg);
+* the architecture document's instance list **and** the new category rule `[ARCH-TOP-003a]` for headless/pure-format crates;
+* the demo fixture family moved to `yeban-model::samples` with the app re-exporting it (492 tests green at the time);
+* ten mechanical guards in `light`, the tracking corrections, and 10.9 GiB of disk reclaimed with a 1788-test sweep to confirm nothing broke.
+
+**Delivered, locally verified, and now green on five of seven CI legs (`abe537e`)**: the **mapping move** - `export_from_project` and `MidiExportReport` in
+`yeban-midi::export` (11 domain tests), a thin `yeban-app` wrapper keeping the CLI's three public items (2 writer tests), 271 tests passing, clippy clean, and
+the `checks` (12 steps), `windows` (9 steps), `lockfile`, `deny` and `plan` legs all success. The `rust (workspace 全量)` leg is still running.
+
+**In flight**: `yeban_export_midi`, the sixth and last MCP tool, delegated with a measured specification (five registry sites, the neighbour's `ToolSpec`
+shape, the D25 error-code constraint, delegation to the shared mapping, and an in-memory `parse_smf` round-trip criterion).
+
+**Lessons this session earned, in one place**: (1) a filter that returns nothing is not evidence that there is nothing to find (round 231's `tail`, round 346's
+`conclusion == null`); (2) an in-progress CI job reports an **empty-string** conclusion; (3) when a mechanical transform keeps failing on per-item detection,
+transform the whole container and delete the exceptions (round 321), and when line-filtering leaves stray braces, **rebuild from named parts** (round 323);
+(4) a transform that touches N known locations should address them by **measured position**, not by shape (rounds 329, 333-335); (5) if a change oscillates
+between two opposite errors, change the **method** - wide imports plus a file-level allow converts a missing name into a hard error and a surplus one into a
+non-event (rounds 339-341); (6) an item move drags whatever it references, so measure the closure first (rounds 313-318, 335); (7) the failure path must revert
+**unconditionally**, and a failed attempt must never be retried against its own leftovers (rounds 315, 325).
