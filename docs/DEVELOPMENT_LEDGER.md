@@ -8375,3 +8375,20 @@ delegated run returns can be checked against a known-good state - and so that a 
 
 **Status**: tree green and clean; the mapping layer is shared (`c847450`); the loudness item is CI-verified and closed on the tool side; MCP tools stand at 5 of
 6 delivered; local is four commits ahead of `origin/main` with push pending (round 342).
+
+
+### Round 345: push access restored - the five accumulated commits are on the remote, CI can judge them
+
+The SSH key is available again: `ssh -T git@github.com` answers "Hi gradetwo! You've successfully authenticated", and `git push` moved `cbfc681..abe537e` to
+`main`, so **local and remote are level again** and the round-342 pending item is closed. The five commits the remote had not seen include the ones that
+matter: the loudness contract, fields, payload and criterion (`e3f3268`, `b0019b0`, `98f3a22` - the last of which already had a green CI verdict), the
+mapping move itself (`c847450`) and its ledger trail.
+
+**What happens next, in order**: CI now runs on `abe537e` and its ancestors; the verdicts must be **read back** before any of these commits is called green -
+the mapping move in particular, since it is the largest change and the first one to alter two crates' test layout (11 domain tests in `yeban-midi`, 2 in
+`yeban-app`). Until those verdicts are in, the honest status of `c847450` is "locally verified" (271 tests, clippy clean, `light` green), not "green".
+
+**The lesson worth keeping**: the outage lasted six rounds of work and cost nothing but the delay, because every commit was local, every step was verified
+locally, and the ledger recorded the divergence explicitly. That is exactly what "downgrade the blocker to a pending" is supposed to look like.
+
+**Status**: local and remote level at `abe537e`; tree green and clean; mapping layer shared and locally verified; loudness item CI-verified; MCP tools 5 of 6.
