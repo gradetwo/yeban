@@ -8486,3 +8486,32 @@ delegated run's claim (14 -> 15 and 10 -> 9), and all three MCP export-related t
 
 **Status**: `abe537e` (mapping move) and `251d11f` (handover) are `success`; `d2ea624` is six of seven legs green with the whole-workspace test sweep running;
 tree clean; goal active with five gates and two PENDINGs that need hardware or a human ruling rather than code.
+
+
+### Round 350: every commit of this session is green - the four deliveries are CI-verified
+
+The last outstanding verdict came back: **`d2ea624` is `completed success`**, all seven legs, including `rust (workspace 全量)` with its `clippy --workspace -D
+warnings` and `test --workspace` steps. With that, every commit this session produced has a green CI verdict read back:
+
+| commit | what | verdict |
+| :--- | :--- | :--- |
+| `abe537e` | the mapping move (plus the loudness item and five documentation commits) | success, full workspace |
+| `d2ea624` | `yeban_export_midi` and the ledger wait-state entries | success, full workspace |
+| `995b53c`, `251d11f`, `5173a7e` | push-restored notice, handover, CI-state record | success |
+
+**So the four deliveries are closed with evidence rather than assertion**:
+1. **the mapping layer is shared** - `export_from_project` and `MidiExportReport` in `yeban-midi::export`, eleven domain tests there, two writer tests plus the
+   three public items in `yeban-app`, the app's API unchanged;
+2. **the MCP tool set is 6 of 6** - `yeban_export_midi`, read-only, delegating to the shared mapping, registry `TOOL_COUNT` 16 -> 17, hand-rolled RFC 4648
+   base64 so no dependency enters the light MCP crate, and its in-memory round-trip criterion asserting the tool's bytes are byte-for-byte the shared mapping's;
+3. **the loudness target is closed on the tool side** - `Option<f32>` contract, five fields with `Default` meaning "not measured", five payload keys reaching
+   clients through `yeban_query_engine_state`, and a three-part criterion;
+4. **documentation and guards** - `yeban-midi` named in the architecture document **and** the category rule `[ARCH-TOP-003a]` for headless/pure-format crates,
+   the demo fixture family in `yeban-model::samples`, ten mechanical guards passing in `light`.
+
+**In flight**: `ROAD-M4-007`, the experimental `.als` exporter - delegated as a **flag-gated first slice** (`experimental-als-export`, optional `flate2`, the
+default build proven unaffected by `cargo check`, a mapping-loss table that must not be empty for unmapped constructs, and an in-memory gunzip criterion).
+
+**Still waiting on the负责人, not on code**: HD-49 (its own ledger requires fixed-refresh hardware and forbids hosted-runner readings), N2 (keyboard wiring below
+Slint), the loudness transport (optional - the contract no longer depends on it), and whether the read-only MCP export's relation to `ADR-0001 D47`'s CLI
+on-disk exit should be recorded normatively.
