@@ -9096,3 +9096,23 @@ requires a decision is questions 3, 5 and 6 for Phase 4, plus questions 1, 2 and
 
 **Status**: tree green and clean; both manual tiers green; all fifteen MUST-GATEs wired with the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 /
 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions and one cleanup permission outstanding, each answerable in a word.
+
+
+### Round 378: the "one file, one writer" claim is consistent with practice but NOT proven from history - and my own check contained a bad assumption
+
+I tried to evidence the objective's "一文件一写者" rule from git history and caught myself in the same trap this ledger keeps documenting. The command printed **73
+merge commits** in `main`'s history, while my own inline text assumed the count would be zero and would therefore mean "all fast-forward, no conflicts". The number
+is what it is, and the conclusion I had pre-written does not follow from it.
+
+**What is actually established**: the practice is *consistent* with the rule - one worktree per line exists, both merged line branches are clean and their commits are
+in `main`, the working tree is empty, and every commit of this session carries a green verdict (15+ consecutive). **What is NOT established**: that no two lines ever
+touched the same file concurrently. Proving that would need a per-file analysis of authorship and merge windows, which this round did not do, and 73 merges is not
+evidence either way.
+
+**Why this is worth writing down rather than glossing**: it is the third time this session that a check nearly became self-confirmation - the wrong revert baseline
+(round 355), the words that made two delivered features look missing (rounds 368-369), and now a printed figure paired with a conclusion written before it. The
+objective's rule "不许把看起来有当成有" applies to my own verification output as much as to the repository's records.
+
+**Status**: tree green and clean at `a673949` (= `origin/main`); automatic CI green for the last fifteen commits with none outstanding; both manual tiers green; all
+fifteen MUST-GATEs wired and the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions
+plus one cleanup permission outstanding.
