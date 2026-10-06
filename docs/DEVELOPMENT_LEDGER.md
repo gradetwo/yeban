@@ -8949,3 +8949,26 @@ record the same ruling as the basis for the source registration.
 
 **Status**: tree green and clean; automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING;
 Phase 0 2 / 5 / 2; buildable queue empty; six open questions each confirmed unruled by grep; objective delivery list verified.
+
+### Round 371: decision-ready brief for the M4-008 single-mutable-authority question
+
+Written because `ROAD-M4-008` is the one remaining Phase 4 item that needs a **design decision** rather than hardware or data, and the structure is already known
+from the delegated run: three copies of the project exist (`Domain` owns one and deliberately does not implement `Clone`; `undo::UndoPort` holds one inside a
+`RefCell<UndoSession>`; `live_surface::LiveSurface` holds one), and the in-process control plane's session is a **read-only clone**, which is why the mount is never
+a second writer today.
+
+**Option (a) - the UI projects from `Domain` (my recommendation).** Make `Domain` the single mutable authority and have `UndoPort`/`LiveSurface` hold *projections*
+rather than projects, re-projecting after each `apply`. Consequences: one writer by construction, so `MUST-GATE-008`'s lock story stays simple; the largest change to
+`undo.rs`/`live_surface.rs`; the Slint event loop must marshal re-projection, which the existing `invoke_from_event_loop` path already does for host calls.
+**Option (b) - keep the copies and hook `Domain::apply` to a host sink.** Add a post-apply callback that pushes a fresh project into the UI surfaces and the undo
+port. Consequences: smaller diff, but three authorities remain and correctness depends on every mutation path remembering to call the hook - exactly the class of bug
+the objective's "不许把看起来有当成有" is about.
+**Option (c) - make the mounted session writable and take `ExclusiveWrite`.** Consequences: the control plane becomes a real writer, so the GUI's own save path must
+yield while a session is mounted; this is the option the delegated run deliberately refused because it would create a shadow writer without the single-authority
+wiring.
+
+**What I would do on (a)**: move `Domain` to the centre, turn the two UI holders into projections, and add one criterion that mutates through the MCP session and
+asserts the UI projection changes - the evidence `ROAD-M4-008` currently lacks - while re-running the lock criteria to show `MUST-GATE-008` still holds.
+**On (b)**: implement the hook plus a criterion that a mutation on *each* existing path reaches the UI, and record the residual risk that a future path might forget.
+**On (c)**: take `ExclusiveWrite` for the session, make `save_now` fail-closed with a clear error while mounted, and extend the lock criterion to the now-writable
+session.
