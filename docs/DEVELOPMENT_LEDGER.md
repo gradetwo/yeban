@@ -8885,3 +8885,21 @@ easy to get wrong (two parallel undo stacks would look identical from the outsid
 
 **Status**: tree green and clean at `de5b423` (= `origin/main`); automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4
 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; the buildable queue is empty and the six open questions are each confirmed unruled by grep.
+
+
+### Round 368: verifying D48's UI bits - dryRun lives in the UI control layer, cited to the ruling
+
+Continuing the practice of checking the objective's own claims rather than restating them, this round looked for `D48`'s "`ui/*` introduces `dryRun` and an IME state
+bit". The declarative layer has **zero** occurrences of `dry` in `crates/yeban-app/ui/*.slint`, and the capability is instead in the Rust UI control surface:
+
+* `crates/yeban-app/src/live_surface.rs:621` names it outright - "`dryRun` 的只读影响预览（ADR-0001 **D48**）";
+* `:269` ties it to the IME question precisely: the correct use on an injection path is ask-then-act, with `dryRun` reporting that a keystroke would be swallowed by
+  the input method;
+* `:625` fixes the semantics ("参数与领域合法性校验、失败如实报") and `:651` states the honesty rule that a doomed save must not be previewed as success.
+
+So both bits `D48` requires are real and self-citing: `dryRun` here, and the IME state bit in `input.rs` (verified in round 365). Worth noting that "`ui/*`" in the
+objective means the UI **control surface**, not the `.slint` declarative files - a distinction that matters when someone greps only the markup and concludes the
+feature is missing.
+
+**Status**: tree green and clean; automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING;
+Phase 0 2 / 5 / 2; buildable queue empty; six open questions each confirmed unruled by grep.
