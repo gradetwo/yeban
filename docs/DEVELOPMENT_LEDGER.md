@@ -8903,3 +8903,24 @@ feature is missing.
 
 **Status**: tree green and clean; automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING;
 Phase 0 2 / 5 / 2; buildable queue empty; six open questions each confirmed unruled by grep.
+
+
+### Round 369: verifying the five MCP claims - all delivered, but two differ in shape from the wording
+
+Checked the objective's "MCP tool set expansion (automation lanes / devices and engine / audio import / MIDI export / loudness target)" against the registry in
+`crates/yeban-mcp/src/tools.rs` (17 tools plus `yeban_nope`, which is a negative-test fixture rather than a capability):
+
+* **automation lanes** -> `yeban_edit_automation`; **audio import** -> `yeban_import_audio`; **MIDI export** -> `yeban_export_midi`; **engine** ->
+  `yeban_query_engine_state`. Four of the five are dedicated tools, as the wording suggests.
+* **loudness target** is **not** a tool: the string `loudness` does not appear in `tools.rs` at all. It is delivered as **fields on `yeban_query_engine_state`**
+  (`integratedLufs`, `momentaryLufs`, `shortTermLufs`, `loudnessRangeLu`, `truePeakDbfs`), which this session verified reach clients through that tool.
+* **devices** likewise has no `device` string in `tools.rs`; that side is carried by the macro/device-parameter tools (`yeban_set_macro`) rather than by a tool
+  named after devices.
+
+**Why the distinction is worth recording**: all five are real and none is missing, but two arrive in a different shape than a literal reading of the objective
+suggests. A future reader who greps `tools.rs` for `loudness` or `device` and finds nothing would otherwise conclude the work is absent - the same trap as the
+`ui/*` `dryRun` question in round 368, where the capability lives in the control surface rather than the markup. The rule that keeps working here: **check the
+delivery, not the wording**.
+
+**Status**: tree green and clean; automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING;
+Phase 0 2 / 5 / 2; buildable queue empty; six open questions each confirmed unruled by grep.
