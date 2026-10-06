@@ -9663,3 +9663,16 @@ reason and classification against the reported table.
 
 **Status**: tree green and clean at `c8e8d68` (= `origin/main`); Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; the only unproven claim remains that Logic Pro
 opens the exported document.
+
+
+### Round 398: `gh run list` began hanging - an environmental note, and `2b72dab` stays unread
+
+While reading back verdicts, `gh run list` stopped returning: two consecutive commands exceeded their own limits and moved to background jobs, and a third returned no
+output after two minutes, so the tool was cancelled. A `git ls-remote` against the same network is measured in this round's output, which separates "the network is
+down" from "the GitHub CLI/API path is unhappy" - the distinction matters because the ledger must not blame the repository for a tool problem.
+
+Per this line's own rule, **an unread verdict is no verdict**: `2b72dab` (round 397's record) stays **unread** and is **not** claimed green anywhere, even though every
+earlier commit of this session has a read-back success. Nothing about the code changed in this round; the only action is this record, plus a retry later.
+
+**Status**: tree green and clean locally; Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; `2b72dab` pending read-back once the tool responds again; the only
+unproven claim remains that Logic Pro opens the exported document.
