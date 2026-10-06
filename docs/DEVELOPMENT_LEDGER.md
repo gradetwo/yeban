@@ -9828,3 +9828,25 @@ ruling**: the reference's validated method is a donor template - shipping or emb
 root Song body, is documented as opaque even by the reference.
 
 **Status**: `8c5c0df` pushed; Phase 4 6 完成 / 5 部分 / 0 PENDING; nothing in the repository claims Logic opens the output.
+
+
+### Round 405: the third Logic test returned the same generic dialog - and that is consistent with the diagnosis
+
+The负责人 opened `/tmp/yeban-logic-open4/Yeban.logicx` in Logic Pro 12.2 and the dialog was **identical to the second test**:
+
+> The operation could not be completed. / No other information is available about the problem.
+
+So the byte changes from round 404 - the meter payload 80 -> 96, the tempo payload 16 -> **48** (it had written position 0 and tempo 0), and the 16-byte tail on the note
+payload - did **not** change Logic's verdict. That is a real measurement and it narrows the diagnosis rather than contradicting it:
+
+* the first dialog named a **format** problem ("Logic 4 format (or earlier)") and the root-header fix removed it, so the header is now read as a modern song;
+* the second and third dialogs are **the same generic failure**, so what still blocks the load is **later and structural** - and the round-404 measurement already
+  identified what is missing: no **placement events**, so no region can land on a track, and **no track/channel cluster** at all;
+* the reference's own conclusion is that the channel cluster cannot be synthesised, only cloned from a Logic-saved donor - which is exactly the route the负责人 has now
+  authorised (round 405's ruling, option A), and which a delegated line is implementing.
+
+**So the honest scoreboard is**: three tests, one specific error fixed, two identical generic errors remaining, and the cause narrowed to the structure the donor
+route supplies. Nothing in the repository claims Logic opens the output, and all three dialogs are recorded so the fourth test can be compared with them.
+
+**Status**: Phase 4 6 完成 / 5 部分 / 0 PENDING; the donor-route line is in progress; the third-test artifact was `/tmp/yeban-logic-open4/Yeban.logicx`
+(`ProjectData` 1420 B, `MetaData.plist` 19116 B, `DisplayState.plist` 168 B, `Resources/ProjectInformation.plist` 215 B).
