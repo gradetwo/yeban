@@ -1,0 +1,727 @@
+# 夜半 (Yeban) 发布打包 —— 标签触发 (自动) + 手工触发 (workflow_dispatch)
+#
+# 规范来源:
+#   AGENTS.md §2 红线 6 / §3 (DoD) / §5.4 (CI/CD 双模式) / §6 (测量纪律)
+#   docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md §4 (MUST-GATE-001..015, 尤其 004/005/009)
+#   docs/DEV_WORKFLOW.md §5 (人类审查关卡: 公开发布授权不是 Agent 能代做的)
+#   docs/CI_CD.md (判决怎么读回来; 第九个坑: 连推会被同分组排队顶掉)
+#
+# 与既有两个 workflow 的关系 (不新造第二套约定 —— 触发器形态 / runner / 工具链 / 步骤风格全部照抄 ci.yml):
+#   - `ci.yml` 是**唯一**的"绿"来源 (自动档); `gates-manual.yml` 是重活/专项 (手动档)。
+#     **本文件不改动它们, 也不改变它们的判决含义。** 发布档只做"把 ci.yml 已经判过的那棵树,
+#     用**默认 feature** 真编译一次、真证明一次、打成可核对的包, 再交给负责人发布"。
+#   - 第三方 action: 仓库至今只用官方 `actions/*` 加一个 `EmbarkStudios/cargo-deny-action@v2`
+#     (MUST-GATE-004; ci.yml 与这里用的是**同一个** action、同一套参数)。
+#     ⇒ 创建 Release **不使用任何第三方 release action**, 只用 runner 自带 `gh` + `GITHUB_TOKEN`
+#     (与 gates-manual.yml 的 `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` 是同一条纪律)。
+#   - 缓存: 仓库**没有** `actions/cache` / rust-cache 之类的约定 (实测 `grep -rn cache .github/workflows/`
+#     = 0 命中)。⇒ 本文件也不引入缓存, 每次都由 `rust-toolchain.toml` 拉钉死工具链。
+#   - 可复现性: 钉死工具链 (`rust-toolchain.toml` 的 channel) + 全部 cargo 命令 `--locked`
+#     + `SOURCE_DATE_EPOCH` (与 gates-manual.yml 的 L1 档同一个值 1759638400; 该变量是仓库既有的
+#     复现变量)。把**同一个** SOURCE_DATE_EPOCH 再交给 `tar --mtime` 是本文件的新增用法,
+#     在此**显式写明**, 不静默引入。
+#
+# 发布纪律 (本文件是"响亮失败"的实现, 不是"尽力而为"):
+#   1. MUST-GATE-009 (发行物默认关, AGENTS.md §2 红线 6): 发布物**只**用默认 feature 构建 ——
+#      `in-process-mcp` / `experimental-als-export` / `experimental-logic-export` 必须**不在**里面。
+#      本文件**不假设**这一点, 而是三路证明 (见 job `build` 的 MUST-GATE-009 步骤):
+#        ① 依赖图指标: `cargo tree -p yeban-app -e normal --locked --prefix none` 去掉 ` (*)` 标记后
+#           的**不同 `name version` 行数**; 并断言 `yeban-mcp` / `yeban-ui-mcp` / `yeban-ui-test-port`
+#           在该图里命中 **0** (这是 m4-008 账本用的同一条判据);
+#        ② **正对照**: 加上 `--features in-process-mcp` 再量一次, 命中必须 >= 1 且指标必须变大
+#           —— 证明 ① 的"0 命中"不是空转;
+#        ③ **产物级**: 发布二进制自己拒绝三个开关 (退出码 2 且 stderr 点名缺哪个 feature),
+#           并跑仓库自己的守卫 `scripts/gates/check_release_defaults.sh`。
+#   2. 版本对账: 标签 `vX.Y.Z` 必须与根 `Cargo.toml` 的 `[workspace.package] version`、
+#      与**真二进制** `yeban-app --version` 的输出**三处一致**。不一致 ⇒ 立刻红, 什么都不发。
+#   3. 失败不发: `release` job `needs: build`; 且发布走"先建 draft → 上传全部资产 → 最后 publish",
+#      因此任何一步红都不会留下半份可见的发行物。
+#   4. 目标: 今天**唯一**有 CI 证据的发布目标是 `x86_64-unknown-linux-gnu` (ci.yml 的 rust 腿
+#      就在 ubuntu-latest 上真编译真测 `yeban-app`)。其余目标**明确拒绝并说明缺什么** ——
+#      见 job `plan` 的 `future_reason()` / "未来目标"表。**没有自托管 runner**
+#      (`HD-38` / `ADR-0001 D50` 已否决)。
+#   5. 已知缺陷 (不是本文件的, 如实登记): `crates/yeban-app/tests/real_ui_tier1.rs` 的
+#      golden 判据有**抖动**先例 —— 同字节数 (6222418 vs 6222418) 在 docs-only 提交上红过,
+#      下一次同代码绿 (见任务上下文)。本 job 若红在这一条, 先用 `gh run rerun <id>` 复跑**同一棵树**
+#      再下结论; 不要据此认为渲染被改坏了 (`--locked` + 干净工作树保证复跑的是同一份字节)。
+#
+# 本文件**不做**的事: 不打标签、不推送、不在负责人之外发布 (DEV_WORKFLOW §5 第 4 条是人类关卡)。
+
+name: Release (发布打包)
+
+on:
+  push:
+    tags:
+      # —— 版本标签 (自动档) ——
+      # `v*` 是任务要求的宽触发; `v[0-9]*` 是仓库惯例的更具体形态
+      # (路线图的里程碑写作 `v0.8.0` / `v1.0.0 GA`)。两条都留着: 宽的那条保证
+      # "打错形态的版本标签会**响亮地失败**(job plan 的 semver 判据 + 版本对账)", 而不是被静默忽略。
+      - "v*"
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "手工发布的版本/标签 (可带或不带 v 前缀, 例如 v0.0.1; dry_run 且留空时用工作区清单版本)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "只打包不发布 (演练打包路径; 默认开)"
+        type: boolean
+        default: true
+      draft:
+        description: "建为 draft 发布 (不对外可见), 由负责人复核后手动 publish"
+        type: boolean
+        default: false
+      target:
+        description: "发布目标 (今天唯一受支持: x86_64-unknown-linux-gnu)"
+        type: string
+        default: "x86_64-unknown-linux-gnu"
+
+concurrency:
+  # 发布**绝不**取消在飞运行: 打包到一半被掐掉只会留下半份产物。
+  # 分组键优先用**目标版本** (手工输入), 否则用 ref —— 这样"手工发布 v0.0.1"与"推 v0.0.1 标签"
+  # 落在**同一个**分组里排队, 不会两条 run 同时对同一个 Release 做 --clobber 上传。
+  # (空输入与 push 事件下 `inputs.version` 为空 ⇒ 自动回落到 ref_name; 见 docs/CI_CD.md 第九个坑。)
+  group: release-${{ inputs.version != '' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # 仓库既有的复现变量 (gates-manual.yml 的 L1 档用同一个值)。这里同时用作 tar 的 --mtime。
+  SOURCE_DATE_EPOCH: 1759638400
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 计划: 解析版本 (标签 / 手工输入) + 裁定发布目标
+  #
+  # 本 job 只做"能不能发"的机械判定, 不编译任何东西:
+  #   - 版本必须能从根 Cargo.toml 推导, 且与标签/输入**逐字相等**;
+  #   - 目标必须在受支持清单里, 否则**响亮拒绝**并说明缺什么。
+  # 于是"标签写错"或"选了个今天发不了的目标"在第一个 job 就红, 不会浪费一次全量构建。
+  # ---------------------------------------------------------------------------
+  plan:
+    name: plan (版本 / 目标裁定)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      target: ${{ steps.resolve.outputs.target }}
+      supported: ${{ steps.resolve.outputs.supported }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      draft: ${{ steps.resolve.outputs.draft }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析版本与目标 (semver 判据 + 工作区清单对账 + 目标裁定)
+        id: resolve
+        env:
+          # ⚠ 用户输入一律经 env 传入再在脚本里以 "$VAR" 引用, 不做 `${{ }}` 直接拼接 (脚本注入面)。
+          # ⚠ 也**不用** `A && B || C` 的写法选输入: `inputs.version` 为空串时它会被 `||` 兜到
+          #   分支名 (空输入 ⇒ "main" 被当成版本号的坑)。这里显式用 event_name 分支。
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+
+          # 触发形态决定取值来源; push 档没有 inputs, 一律用标签名与安全默认。
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            RAW_REF="$INPUT_VERSION"
+            REQUESTED_TARGET="${INPUT_TARGET:-x86_64-unknown-linux-gnu}"
+            DRY_RUN="$INPUT_DRY_RUN"
+            DRAFT="$INPUT_DRAFT"
+          else
+            RAW_REF="$REF_NAME"
+            REQUESTED_TARGET="x86_64-unknown-linux-gnu"
+            DRY_RUN="false"
+            DRAFT="false"
+          fi
+          DRY_RUN="${DRY_RUN:-false}"
+          DRAFT="${DRAFT:-false}"
+
+          # 发布物必须来自**已提交**的树: 工作树脏 ⇒ 打的包与某个提交对不上, 直接红。
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::工作树不干净 ⇒ 发布物的来源不可指认"; git status --porcelain; exit 1
+          fi
+
+          # 版本唯一事实源 = 根 Cargo.toml 的 [workspace.package] version (ADR-0001 D5)。
+          # ⚠ 先把指标说清楚: 这个数字数的是"根清单声明的 workspace 版本", 单位 = 一个 semver 字符串。
+          WS_VERSION="$(python3 - <<'PY'
+          import pathlib, sys
+          try:
+              import tomllib
+          except ModuleNotFoundError:
+              sys.exit(3)
+          data = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+          print(data["workspace"]["package"]["version"])
+          PY
+          )" || { echo "::error::无法从根 Cargo.toml 读出 [workspace.package] version (需要 python3 >= 3.11 的 tomllib)"; exit 1; }
+
+          RAW_REF="${RAW_REF:-}"
+          if [ -z "$RAW_REF" ]; then
+            # 只有演练允许省略: 用工作区清单版本当"假想的标签", 让负责人不填任何东西也能跑通打包路径。
+            [ "$DRY_RUN" = "true" ] || { echo "::error::手工发布必须给 version 输入 (例如 v0.0.1); 只有 dry_run=true 才允许留空"; exit 1; }
+            RAW_REF="v$WS_VERSION"
+            echo "::notice::dry_run 且未给 version ⇒ 用工作区清单版本 $RAW_REF 演练"
+          fi
+
+          VERSION="${RAW_REF#v}"
+          # semver 判据 (与 `v*` 宽触发配套): 形态不对就红, 不允许"发一个叫 v-latest 的版本"。
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$RAW_REF' 不是版本标签 (期望 vX.Y.Z 或 vX.Y.Z-<预发布后缀>)"; exit 1
+          fi
+          if [ "$VERSION" != "$WS_VERSION" ]; then
+            echo "::error::标签版本 '$VERSION' 与根 Cargo.toml 的 [workspace.package] version '$WS_VERSION' 不一致"
+            echo "::error::⇒ 二进制会自报 '$WS_VERSION', 发出去就是贴错标签的产物。请先改清单版本 (或在 plan 里给出正确标签)。"
+            exit 1
+          fi
+
+          # 要发布的必须是"这个标签指的那个提交"的字节, 用**事件元数据**判定:
+          #   github.ref = refs/tags/<标签> (这次触发确实是这个标签) 且 HEAD == github.sha。
+          # ⚠ **不用** `git describe --tags --exact-match`: actions/checkout 在标签事件下的取回策略
+          #   不保证本地存在 refs/tags/*, 那会制造**假红** —— 本仓库把假红与假绿同等看待。
+          if [ "$EVENT_NAME" = "push" ]; then
+            if [ "${GITHUB_REF:-}" != "refs/tags/$RAW_REF" ]; then
+              echo "::error::触发 ref '${GITHUB_REF:-<空>}' 不是本次要发布的标签 'refs/tags/$RAW_REF'"; exit 1
+            fi
+            HEAD_SHA="$(git rev-parse HEAD)"
+            if [ "$HEAD_SHA" != "${GITHUB_SHA:-}" ]; then
+              echo "::error::checkout 的提交 $HEAD_SHA 与事件提交 ${GITHUB_SHA:-<空>} 不一致 ⇒ 拒绝把别的提交打包成这个版本"; exit 1
+            fi
+          fi
+
+          # ------------------------------------------------------------------
+          # 目标裁定: 受支持清单是**唯一事实源**, 由本 job 输出给 build 交叉核对。
+          # ------------------------------------------------------------------
+          SUPPORTED="x86_64-unknown-linux-gnu"
+          # 今天发不了的目标, 逐条写明"缺什么" —— 拒绝必须是**有原因的**拒绝, 否则等于没拒绝。
+          future_reason() {
+            case "$1" in
+              aarch64-unknown-linux-gnu) printf '%s' "runner ubuntu-24.04-arm 已存在(gates-manual 的 arm 档在用), 但那只构建 yeban-render 的 example —— yeban-app (Slint/winit/cpal) 从未在该 runner 上构建过, arm64 上的 apt 前置(fontconfig/libclang/ALSA)也未验证";;
+              aarch64-apple-darwin|x86_64-apple-darwin) printf '%s' "yeban-app 只在本机 M2 macOS 上 cargo check 通过(账本有记录), CI 从未构建过它; 且 macOS 分发需要 codesign/notarize 凭据(仓库未配置), 分平台 golden 图集也只有 linux/ 一份";;
+              x86_64-pc-windows-msvc) printf '%s' "Windows runner 至今只构建 yeban-model/yeban-mcp/yeban-dsp (Lightweight crates); yeban-app (Slint/winit/cpal + MSVC 前置) 从未在 windows-latest 上构建过";;
+              *) printf '';;
+            esac
+          }
+          {
+            echo "### 发布目标裁定"
+            echo
+            echo "| 目标 | 今天能否发布 | 说明 |"
+            echo "| :--- | :--- | :--- |"
+            echo "| \`$SUPPORTED\` | **能** | ci.yml 的 rust 腿就在 ubuntu-latest 上真编译并测试 \`yeban-app\` |"
+            for t in aarch64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
+              echo "| \`$t\` | 不能 | $(future_reason "$t") |"
+            done
+            echo
+            echo "**没有自托管 runner** (HD-38 / ADR-0001 D50): 只用 GitHub 托管 runner。"
+          } 2>&1 | tee /tmp/release-plan.txt
+          cat /tmp/release-plan.txt >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$REQUESTED_TARGET" != "$SUPPORTED" ]; then
+            reason="$(future_reason "$REQUESTED_TARGET")"
+            if [ -n "$reason" ]; then
+              echo "::error::目标 '$REQUESTED_TARGET' 今天**不可发布**: $reason"
+            else
+              echo "::error::未知目标 '$REQUESTED_TARGET' (今天受支持的只有 '$SUPPORTED')"
+            fi
+            exit 1
+          fi
+
+          echo "version=$VERSION"      >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"         >> "$GITHUB_OUTPUT"
+          echo "target=$SUPPORTED"     >> "$GITHUB_OUTPUT"
+          echo "supported=$SUPPORTED"  >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN"      >> "$GITHUB_OUTPUT"
+          echo "draft=$DRAFT"          >> "$GITHUB_OUTPUT"
+          printf '版本=%s 目标=%s dry_run=%s draft=%s (清单版本=%s)\n' "$VERSION" "$SUPPORTED" "$DRY_RUN" "$DRAFT" "$WS_VERSION"
+
+  # ---------------------------------------------------------------------------
+  # 机械门禁: 仓库自己的 light 档 + MUST-GATE-005 轻档 + JSON Schema 契约
+  #
+  # 为什么这里可以直调 `run-gates.sh light`, 而 ci.yml 的 checks 腿刻意逐条列出脚本:
+  #   ci.yml 的注释写明理由是"新加的守卫默认不会在 CI 里跑" ⇒ 那里必须显式列举。
+  #   发布档要的是"必须通过**仓库自己的 light 档**", 直调档位入口既更短也更难漂移;
+  #   两档**并行存在**, 不互相替代。
+  # ⚠ `light` 里的 clippy-changed 以 origin/main 为基线; 标签 checkout (fetch-depth 1) 下
+  #   找不到该基线 ⇒ 它会打印 `[skip] 找不到基线` 并 0 退出 (**不是通过**)。发布树的完整
+  #   clippy 判据由 job `build` 的 `cargo clippy --workspace -D warnings` 承担。
+  # ---------------------------------------------------------------------------
+  guards:
+    name: guards (light 档 / MUST-GATE-005 / schema 契约)
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "工具链漂移断言 (与 ci.yml 同一个判据: 单一事实源 rust-toolchain.toml)"
+        run: |
+          set -euo pipefail
+          rustup show
+          want="$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | head -1 | cut -d'"' -f2)"
+          got="$(rustc --version | awk '{print $2}')"
+          echo "pinned=$want actual=$got"
+          [ "$want" = "$got" ] || { echo "::error::工具链漂移, L1 声学确定性要求锁定工具链"; exit 1; }
+
+      - name: 仓库 light 档 (fmt / 14 条红线守卫 / 文档契约 / 依赖许可漂移)
+        run: |
+          set -euo pipefail
+          bash scripts/gates/run-gates.sh light
+
+      - name: "MUST-GATE-005 源码分发包完备性 (轻档: .slint 全部被跟踪 + 确定性 Cargo.lock)"
+        run: |
+          set -euo pipefail
+          # 重档 `--full` (真跑 cargo vendor, 联网、约 795 MB) 仍住在联网手动档 `inventory`;
+          # 发布档跑轻档, 并把重档的结论当作**已由手动档判过**的前提 (gate-status.md MUST-GATE-005 行)。
+          bash scripts/gates/check_vendor.sh
+
+      - name: JSON Schema 契约 (schema 自身合法性 + 跨语言样本对账)
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'jsonschema>=4.24'
+          python3 scripts/gates/validate_schemas.py
+          # 与 ci.yml 的 checks 腿同一套对账: Rust 写字节 ↔ Python jsonschema 读契约。
+          # ⚠ 这里**故意没有** export_ui_samples (yeban-ui-mcp 经 Slint 会触发 fontconfig 的 build script,
+          #   而本 job 刻意不装系统库); 与 ci.yml 的理由逐字相同。
+          cargo run -p yeban-model --locked --example export_schema_samples -- --out target/schema-samples
+          cargo run -p yeban-mcp --locked --example export_mcp_samples -- --out target/schema-samples
+          python3 scripts/gates/validate_schemas.py --repo-assets --samples-dir target/schema-samples
+
+  # ---------------------------------------------------------------------------
+  # 开源合规 (MUST-GATE-004): 与 ci.yml 的 deny 腿**同一个 action、同一套参数**。
+  # `--all-features` 是既有口径 (查全部 feature 组合下的许可/漏洞), 与"发行物只用默认 feature"
+  # 是两件事, 不冲突。
+  # ---------------------------------------------------------------------------
+  deny:
+    name: deny (cargo-deny 开源合规)
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+          manifest-path: ./Cargo.toml
+
+  # ---------------------------------------------------------------------------
+  # 构建 + 证明 + 打包
+  #
+  # 顺序是**判据的一部分**, 不要随手重排:
+  #   ① release 构建 (**默认 feature**) 先做 —— 后面的产物级证明必须针对**要发的那两个二进制**;
+  #   ② MUST-GATE-009 证明紧接其后 —— 必须在**任何 debug 构建之前**, 因为
+  #      `check_release_defaults.sh` 优先找 `target/debug/yeban-mcp`; 这一步会显式断言
+  #      target/debug 下**没有**该产物、且脚本报告它查的是 `target/release/yeban-mcp`
+  #      (否则"证明的是 debug 产物"会变成一次静默的假证);
+  #   ③ 版本对账 (真二进制 --version ↔ 标签);
+  #   ④ clippy --workspace -D warnings (DoD 1);
+  #   ⑤ test --workspace --all-targets (DoD 2; 已知 flake 见文件头 (5));
+  #   ⑥ 打包 + sha256 + 上传 artifact。
+  # ⑤ 在 ⑥ 之前 ⇒ 测试红时**不上传任何可发布字节**; 加上 release job 的 `needs`, 失败即零发布。
+  #
+  # ⚠ **本 job 不等于"15 道 MUST-GATE 全过"**, 不要这样读:
+  #   它重跑的是与发布物直接相关的判据 (004 合规 / 005 源码包 / 009 默认关 / DoD 1-2)。
+  #   其余重活仍住在 `gates-manual.yml` 的对应档位, 发布前的状态以 `docs/ledger/gate-status.md` 为准:
+  #   `inventory` (005 的 `--full` vendor / 002 的 L1 摘要 / 014 素材)、`arm` (003 跨架构)、
+  #   `fuzz` (011)、`bench` (BASELINE)、`windows` (008 的 Windows 分支)。
+  #   本 job **不**用 `--all-features` 编译 (那会与 MUST-GATE-009 的"发行物默认关"直接冲突);
+  #   全 feature 组合编译是手动档 `all-features` 的职责。
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.target }})
+    needs: [plan, guards, deny]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    outputs:
+      # ⚠ 这两个输出假设矩阵**只有一个**目标。将来加第二个目标时, 这里必须改成按 target 分键
+      #   (或者让 release job 自己从 dist/ 里发现归档), 否则两个腿的产物会互相覆盖。
+      archive: ${{ steps.pack.outputs.archive }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    strategy:
+      fail-fast: false
+      # 目标矩阵**只在**受支持清单里取值; 清单由 job `plan` 唯一给出, 下面的断言会拦住漂移。
+      matrix:
+        target:
+          # 今天唯一有 CI 证据的目标。新增目标必须同时满足两件事:
+          #   ① plan 的 SUPPORTED 清单里加上它 (否则下面第一步就红);
+          #   ② 真在对应托管 runner 上验证过 app 的构建与测试 (见 plan 打出的"未来目标"表里的缺项)。
+          - x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 目标受支持断言 (受支持清单由 plan 唯一给出 ⇒ 矩阵与清单不允许漂移)
+        run: |
+          set -euo pipefail
+          case " ${{ needs.plan.outputs.supported }} " in
+            *" ${{ matrix.target }} "*) echo "[ok] ${{ matrix.target }} 在受支持清单里" ;;
+            *) echo "::error::矩阵目标 '${{ matrix.target }}' 不在 plan 的受支持清单里 ⇒ 拒绝构建 (要加目标就得先在 plan 里登记理由)"; exit 1 ;;
+          esac
+
+      - name: 安装 Linux 桌面构建依赖 (Slint / winit / cpal / bindgen 需要)
+        run: |
+          set -euo pipefail
+          # 与 ci.yml 的 rust 腿逐字相同: 缺 fontconfig 会在"编译依赖"阶段红(不是我们的代码错);
+          # fonts-noto-cjk 是**运行时环境依赖**(ADR-0001 D24), 缺了中文 Golden 会稳定地记录错误。
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            pkg-config libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
+            libasound2-dev \
+            clang libclang-dev \
+            fonts-noto-cjk
+
+      - name: 工具链漂移断言 (与 guards 腿同一个判据)
+        run: |
+          set -euo pipefail
+          rustup show
+          want="$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | head -1 | cut -d'"' -f2)"
+          got="$(rustc --version | awk '{print $2}')"
+          [ "$want" = "$got" ] || { echo "::error::工具链漂移, L1 声学确定性要求锁定工具链"; exit 1; }
+
+      - name: "发行构建 (默认 feature 专用: 绝不加 --all-features / 绝不加任何 --features)"
+        run: |
+          set -euo pipefail
+          # MUST-GATE-009 的第一道开关就是"编译期不把危险能力编进去" ⇒ 这里**只**能是默认 feature。
+          # `--locked` + 钉死工具链 = 仓库既有的复现约定。
+          cargo build --release --locked -p yeban-app -p yeban-mcp
+          ls -l target/release/yeban-app target/release/yeban-mcp
+
+      # -----------------------------------------------------------------------
+      # MUST-GATE-009: "发行物默认关"的**产物级 + 依赖图级**证明
+      # -----------------------------------------------------------------------
+      - name: MUST-GATE-009 证据 ① 依赖图指标 (默认档 vs 正对照)
+        id: graph
+        run: |
+          set -euo pipefail
+          # 先把指标说清楚 (AGENTS.md §6.1): 数的是
+          #   `cargo tree -p yeban-app -e normal --locked --prefix none` 的输出里, 去掉 cargo 的
+          #   "已出现过"标记 ` (*)` 之后, **不同的 `name version` 行数** —— 即"默认(normal 边)
+          #   依赖图里不同的包(name+version)", 单位 = 行。
+          #   刻意不看 dev 边: 发布二进制与 dev/测试目标无关 (m4-008 账本用的就是这条命令)。
+          graph_metric() {
+            cargo tree -p yeban-app -e normal --locked --prefix none "$@" \
+              | sed 's/ (\*)$//' | sort -u | wc -l | tr -d ' '
+          }
+          crate_hits() {
+            local crate="$1"; shift
+            cargo tree -p yeban-app -e normal --locked --prefix none "$@" \
+              | grep -c "^$crate v" || true
+          }
+
+          DEFAULT_METRIC="$(graph_metric)"
+          DEFAULT_MCP="$(crate_hits yeban-mcp)"
+          DEFAULT_UI_MCP="$(crate_hits yeban-ui-mcp)"
+          DEFAULT_UI_PORT="$(crate_hits yeban-ui-test-port)"
+          echo "默认档: 不同 name version 行 = $DEFAULT_METRIC; yeban-mcp=$DEFAULT_MCP yeban-ui-mcp=$DEFAULT_UI_MCP yeban-ui-test-port=$DEFAULT_UI_PORT"
+
+          # 正对照: 把 MUST-GATE-009 的第一道开关打开, 指标**必须**变化、命中**必须** >= 1。
+          # 没有这一步, "0 命中"就可能只是 grep 写错了 (本仓库最忌的假绿)。
+          CTRL_METRIC="$(graph_metric --features in-process-mcp)"
+          CTRL_MCP="$(crate_hits yeban-mcp --features in-process-mcp)"
+          echo "正对照(--features in-process-mcp): 不同 name version 行 = $CTRL_METRIC; yeban-mcp=$CTRL_MCP"
+
+          fail=0
+          [ "$DEFAULT_MCP" = "0" ]     || { echo "::error::默认依赖图里出现了 yeban-mcp ($DEFAULT_MCP) ⇒ in-process-mcp 被编进了发行物"; fail=1; }
+          [ "$DEFAULT_UI_MCP" = "0" ]  || { echo "::error::默认依赖图里出现了 yeban-ui-mcp ($DEFAULT_UI_MCP)"; fail=1; }
+          [ "$DEFAULT_UI_PORT" = "0" ] || { echo "::error::默认依赖图里出现了 yeban-ui-test-port ($DEFAULT_UI_PORT)"; fail=1; }
+          [ "$CTRL_MCP" -ge 1 ]        || { echo "::error::正对照失效: 打开 in-process-mcp 后 yeban-mcp 命中仍为 0 ⇒ 上面的 0 命中是空转的"; fail=1; }
+          [ "$CTRL_METRIC" -gt "$DEFAULT_METRIC" ] || { echo "::error::正对照失效: 打开 in-process-mcp 后依赖图指标($CTRL_METRIC)未大于默认档($DEFAULT_METRIC)"; fail=1; }
+          [ "$fail" -eq 0 ] || exit 1
+
+          {
+            echo "### MUST-GATE-009 证据 ①: 依赖图指标"
+            echo ""
+            echo '指标 = `cargo tree -p yeban-app -e normal --locked --prefix none` 去掉 ` (*)` 后**不同的 `name version` 行数**。'
+            echo ""
+            echo "| 档位 | 不同 name version 行 | \`yeban-mcp\` 命中 |"
+            echo "| :--- | ---: | ---: |"
+            echo "| 发行档 (默认 feature) | $DEFAULT_METRIC | $DEFAULT_MCP |"
+            echo "| 正对照 (\`--features in-process-mcp\`) | $CTRL_METRIC | $CTRL_MCP |"
+            echo ""
+            # ⚠ 变量一律用 ${VAR} 花括号写法: 本机 bash 3.2 + UTF-8 locale 下,
+            #   `$VAR。` 会把全角句号吞进变量名 (实测 unbound variable), 而 CI 的 bash 5 不会 ——
+            #   这类"只有某一版 bash 才红"的写法正是 G14 (bash 3.2 兼容) 要拦的东西。
+            echo "默认档 \`yeban-ui-mcp\` 命中 ${DEFAULT_UI_MCP} / \`yeban-ui-test-port\` 命中 ${DEFAULT_UI_PORT}。"
+          } 2>&1 | tee /tmp/must-gate-009-graph.txt
+          cat /tmp/must-gate-009-graph.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "metric=$DEFAULT_METRIC" >> "$GITHUB_OUTPUT"
+
+      - name: MUST-GATE-009 证据 ② 发布二进制自己拒绝三个危险开关 (产物级)
+        run: |
+          set -euo pipefail
+          # 与 check_release_defaults.sh 同一条纪律: **不问源码, 问产物**。
+          # 默认构建里这三个 feature 没被编译 ⇒ 开关必须是"点名 feature 的用法错误"(退出码 2),
+          # 不是静默忽略, 也不是别的原因失败。
+          # 期望的 stdout 为空、stderr 同时出现开关名与 feature 名 (判据形状照抄 crates/yeban-app/tests/cli_contract.rs B7/B7c/B7d)。
+          app=target/release/yeban-app
+          check_refusal() {
+            local label="$1" feature="$2"; shift 2
+            set +e
+            out="$(timeout 30 "$app" "$@" 2>&1 </dev/null)"; rc=$?
+            set -e
+            echo "--- $label: rc=$rc"
+            printf '%s\n' "$out" | head -2
+            [ "$rc" -eq 2 ] || { echo "::error::$label 期望退出码 2 (未编译该 feature 的用法错误), 实得 $rc"; return 1; }
+            printf '%s' "$out" | grep -q -- "$feature" || { echo "::error::$label 的拒绝未能点名 feature '$feature' ⇒ 无法证明拒绝是因为它没编进来"; return 1; }
+          }
+          check_refusal "--enable-mcp-http"       "in-process-mcp"                --enable-mcp-http
+          check_refusal "--export-als"            "experimental-als-export"       --export-als /tmp/yeban-must-not-exist.als
+          check_refusal "--export-logic"          "experimental-logic-export"     --export-logic /tmp/yeban-must-not-exist.logicx
+          echo "[ok] 三个开关都被默认产物以退出码 2 拒绝, 且各自点名了缺失的 feature"
+
+      - name: MUST-GATE-009 证据 ③ 仓库守卫 check_release_defaults.sh (断言它查的是 release 产物)
+        run: |
+          set -euo pipefail
+          # 该脚本优先找 target/debug/yeban-mcp ⇒ 必须证明此刻它**不存在**, 否则"证明的是 release 产物"
+          # 这句话就是假的。放在 workspace test 之前就是为了这个; 这里把前提**显式断言**出来。
+          if [ -e target/debug/yeban-mcp ]; then
+            echo "::error::target/debug/yeban-mcp 存在 ⇒ check_release_defaults.sh 会去查 debug 产物, 而不是要发布的 release 产物"; exit 1
+          fi
+          set +e
+          bash scripts/gates/check_release_defaults.sh 2>&1 | tee /tmp/must-gate-009-guard.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -q '^\[info\] 产物: target/release/yeban-mcp$' /tmp/must-gate-009-guard.txt \
+            || { echo "::error::守卫报告的被查产物不是 target/release/yeban-mcp ⇒ 证据指向的不是发行物"; exit 1; }
+          echo "guard_exit=$rc"
+          [ "$rc" -eq 0 ] || { echo "::error::check_release_defaults.sh 退出码 $rc (2 = 无法判定, 也按红处理: 不许把 SKIP 当通过)"; exit 1; }
+
+      - name: 版本对账 (标签 ↔ 根清单 ↔ 真二进制自报版本)
+        run: |
+          set -euo pipefail
+          # 三处必须一致 (不一致就"响亮地失败", 绝不发一个贴错标签的产物):
+          #   ① 标签 vX.Y.Z (job plan 已与 [workspace.package] version 对过);
+          #   ② `cargo metadata --locked` 报告的两个产品包版本 (证明**编译时**清单声明的就是它);
+          #   ③ 真二进制 `yeban-app --version` 的自报版本 (CARGO_PKG_VERSION, 由 Cargo 注入)。
+          # 说明 (不粉饰): `yeban-mcp` 没有 `--version` 开关 (help 里没有), 因此对它的产物只能证到 ②。
+          VERSION="${{ needs.plan.outputs.version }}"
+          # ⚠ 不要写 `cargo metadata ... | python3 - <<'PY'`: heredoc 会成为 python 的 stdin,
+          #   把管道里的字节顶掉 (本机实测: json.decoder.JSONDecodeError: Expecting value)。
+          #   ⇒ 先落盘, 再按**路径**读。
+          cargo metadata --locked --format-version 1 > /tmp/yeban-cargo-metadata.json
+          META_VERSIONS="$(python3 - /tmp/yeban-cargo-metadata.json <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              data = json.load(fh)
+          want = {"yeban-app", "yeban-mcp"}
+          print("\n".join(sorted(f'{p["name"]} {p["version"]}' for p in data["packages"] if p["name"] in want)))
+          PY
+          )"
+          echo "--- cargo metadata (--locked) 报告的版本 ---"
+          printf '%s\n' "$META_VERSIONS"
+          [ "$META_VERSIONS" = "$(printf 'yeban-app %s\nyeban-mcp %s' "$VERSION" "$VERSION")" ] \
+            || { echo "::error::清单版本与标签 '$VERSION' 不一致 (见上面两行)"; exit 1; }
+
+          BIN_LINE="$(timeout 30 target/release/yeban-app --version)"
+          echo "--- target/release/yeban-app --version ---"
+          echo "$BIN_LINE"
+          [ "$BIN_LINE" = "yeban-app $VERSION" ] \
+            || { echo "::error::二进制的自报版本 '$BIN_LINE' 与标签版本 'yeban-app $VERSION' 不一致 ⇒ 拒绝发布"; exit 1; }
+          echo "[ok] 标签 / 清单 / 二进制自报版本三处一致: $VERSION"
+
+      - name: clippy --workspace (-D warnings, DoD 1)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee /tmp/release-gate.log
+
+      - name: test --workspace --all-targets (DoD 2)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          # ⚠ 已知抖动: crates/yeban-app/tests/real_ui_tier1.rs 的 golden 判据曾以
+          #   **相同字节数**(6222418 vs 6222418) 在 docs-only 提交上红、下次同代码绿。
+          #   红在这一条时用 `gh run rerun <id>` 复跑同一棵树再下结论 (见文件头 (5))。
+          cargo test --workspace --all-targets --locked 2>&1 | tee -a /tmp/release-gate.log
+
+      - name: "打包 + sha256 (可复现 tar: --sort=name + --mtime=SOURCE_DATE_EPOCH)"
+        id: pack
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.plan.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          NAME="yeban-${VERSION}-${TARGET}"
+          mkdir -p dist
+
+          mkdir -p "stage/$NAME"
+          install -m 0755 target/release/yeban-app "stage/$NAME/yeban-app"
+          install -m 0755 target/release/yeban-mcp "stage/$NAME/yeban-mcp"
+          # GPLv3 再分发: 许可原文随包。缺了它宁可不发 (LICENSE 是红线 1 保护文件, 只读不动)。
+          install -m 0644 LICENSE "stage/$NAME/LICENSE"
+
+          # 随包证据: 让"这个包凭什么可发"在包里可读, 而不是只存在于 CI 日志里。
+          {
+            printf '夜半 (Yeban) %s\n' "$VERSION"
+            printf 'target: %s\n' "$TARGET"
+            printf 'source commit: %s\n' "${GITHUB_SHA}"
+            printf 'rustc: %s\n' "$(rustc --version)"
+            printf 'built at (SOURCE_DATE_EPOCH=%s): %s\n' "$SOURCE_DATE_EPOCH" "$(python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+            printf 'features: 默认档 only —— in-process-mcp / experimental-als-export / experimental-logic-export 均未编译\n'
+            printf '依赖图指标 (不同 name version 行数, cargo tree -p yeban-app -e normal --locked --prefix none): %s\n' "${{ steps.graph.outputs.metric }}"
+            printf 'sha256(yeban-app): %s\n' "$(sha256sum "stage/$NAME/yeban-app" | cut -d' ' -f1)"
+            printf 'sha256(yeban-mcp): %s\n' "$(sha256sum "stage/$NAME/yeban-mcp" | cut -d' ' -f1)"
+          } > "stage/$NAME/BUILD-INFO.txt"
+
+          # 复现约定: tar 只吃仓库既有的 SOURCE_DATE_EPOCH 当 mtime, 并固定排序/属主 ⇒ 同一棵树两次打包逐字节相同。
+          tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
+              --format=gnu -czf "dist/$NAME.tar.gz" -C stage "$NAME"
+          ( cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
+          SHA="$(cut -d' ' -f1 < "dist/$NAME.tar.gz.sha256")"
+          printf 'archive=%s.tar.gz\nsha256=%s\n' "$NAME" "$SHA" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 发行归档"
+            echo ""
+            echo '| 文件 | 字节 (wc -c) | sha256 |'
+            echo '| :--- | ---: | :--- |'
+            printf '| `%s.tar.gz` | %s | `%s` |\n' "$NAME" "$(wc -c < "dist/$NAME.tar.gz" | tr -d ' ')" "$SHA"
+            echo ""
+            cat "dist/$NAME.tar.gz.sha256"
+          } 2>&1 | tee /tmp/release-pack.txt
+          cat /tmp/release-pack.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传归档 (artifact; 发布是 release job 的事)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 失败摘要
+        if: failure()
+        run: |
+          {
+            echo "### 发布门禁未通过 —— 未打包, 未发布"
+            echo '```text'
+            tail -100 /tmp/release-gate.log 2>/dev/null || echo "(没有捕获到日志)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 发布 (GitHub Release)
+  #
+  # - 不用第三方 release action: `gh` + `GITHUB_TOKEN` (contents: write 只给这一个 job)。
+  # - 顺序是"先 draft → 上传全部资产 → 最后 publish" ⇒ 中途红不会留下半份**可见**发行物。
+  # - dry_run=true 时**什么都不建**: 资产只停在 workflow artifact, 并打印本来会执行的命令。
+  # - DEV_WORKFLOW §5 第 4 条是**人类关卡** (BDFL 核对 cargo deny 报告与 ATTRIBUTION 后签署发布授权):
+  #   推 `v*` 标签 = 负责人已经执行该动作; 手工派发时可用 `draft=true` 把它显式化。
+  # ---------------------------------------------------------------------------
+  release:
+    name: release (GitHub Release)
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # 只有这一步需要写; 顶层仍然是 contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: 校验取回的归档 (字节必须与构建 job 算出的 sha256 一致)
+        run: |
+          set -euo pipefail
+          ls -l dist
+          # ① 随包的 .sha256 自校验 (证明传输没坏);
+          ( cd dist && sha256sum -c ./*.sha256 )
+          # ② 与构建 job 输出的摘要逐字比对 (证明 release 贴的就是 build 判过的那份字节)。
+          expected="${{ needs.build.outputs.sha256 }}"
+          actual="$(cut -d' ' -f1 < "dist/${{ needs.build.outputs.archive }}.sha256")"
+          echo "expected=$expected"
+          echo "actual  =$actual"
+          [ "$expected" = "$actual" ] || { echo "::error::release job 拿到的手册摘要与 build job 的不一致"; exit 1; }
+          {
+            echo "### 待发布资产"
+            echo ""
+            echo '```text'
+            ( cd dist && sha256sum ./* )
+            echo '```'
+          } 2>&1 | tee /tmp/release-assets.txt
+          cat /tmp/release-assets.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 创建 / 更新 Release (dry_run 则跳过)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          DRY_RUN: ${{ needs.plan.outputs.dry_run }}
+          DRAFT: ${{ needs.plan.outputs.draft }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # 手工派发时标签可能还不存在 ⇒ 由 gh 在当前提交上创建 (创建者是负责人, 不是 Agent)。
+          # 标签触发时标签已存在 ⇒ 不再传 --target (避免歧义)。
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TARGET_ARG=(--target "$GITHUB_SHA")
+          else
+            TARGET_ARG=()
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            {
+              echo "### DRY RUN —— 未创建 / 未更新任何 Release, 未发布任何资产"
+              echo ""
+              echo "打包路径已完整跑通。真实发布会执行 (dry_run=false):"
+              echo '```bash'
+              if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+                echo "gh release create $TAG --target $GITHUB_SHA --title '夜半 Yeban $VERSION' --generate-notes"
+              else
+                echo "gh release create $TAG --title '夜半 Yeban $VERSION' --generate-notes"
+              fi
+              echo "gh release upload $TAG dist/* --clobber"
+              echo "gh release edit $TAG --draft=false   # 除非 draft=true"
+              echo '```'
+            } 2>&1 | tee /tmp/release-dry-run.txt
+            cat /tmp/release-dry-run.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::dry_run=true ⇒ 未发布 (资产见 workflow artifact release-*)"
+            exit 0
+          fi
+
+          # 先确保 Release 存在。已存在 ⇒ 只更新资产 (幂等重跑)。
+          DRAFT_ARG=()
+          if [ "$DRAFT" = "true" ]; then DRAFT_ARG=(--draft); fi
+          created=false
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "[info] Release $TAG 已存在 ⇒ 更新资产 (不覆盖 notes)"
+          else
+            gh release create "$TAG" --title "夜半 Yeban $VERSION" --generate-notes ${TARGET_ARG[@]+"${TARGET_ARG[@]}"} ${DRAFT_ARG[@]+"${DRAFT_ARG[@]}"}
+            created=true
+          fi
+
+          # 全部资产一次传完; 此时 release 要么是 draft, 要么已存在(已是公开态的更新)。
+          gh release upload "$TAG" dist/* --clobber
+
+          # 资产齐了才 publish ⇒ "失败不发"由顺序保证, 而不是靠运气。
+          if [ "$DRAFT" = "true" ]; then
+            if [ "$created" = "true" ]; then
+              echo "::notice::draft=true ⇒ 发行物已上传但仍是 draft, 等负责人复核后手动 publish"
+            else
+              echo "::notice::draft=true 且 Release 已存在 ⇒ 本次**不改动**它的 draft/公开状态 (只更新资产)"
+            fi
+          else
+            gh release edit "$TAG" --draft=false
+          fi
+
+          {
+            echo "### Release 已发布: $TAG"
+            echo ""
+            echo '```text'
+            gh release view "$TAG" --json url,tagName,isDraft,assets \
+              --template '{{.url}}{{"\n"}}draft={{.isDraft}}{{"\n"}}{{range .assets}}{{.name}}  {{.size}} bytes{{"\n"}}{{end}}'
+            echo '```'
+          } 2>&1 | tee /tmp/release-done.txt
+          cat /tmp/release-done.txt >> "$GITHUB_STEP_SUMMARY"
