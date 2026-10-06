@@ -8441,3 +8441,32 @@ transform the whole container and delete the exceptions (round 321), and when li
 between two opposite errors, change the **method** - wide imports plus a file-level allow converts a missing name into a hard error and a surplus one into a
 non-event (rounds 339-341); (6) an item move drags whatever it references, so measure the closure first (rounds 313-318, 335); (7) the failure path must revert
 **unconditionally**, and a failed attempt must never be retried against its own leftovers (rounds 315, 325).
+
+
+### Round 348: handover - the session's four deliveries are closed, and what remains is not mine to close
+
+**Closed, with CI verdicts read back**:
+
+1. **The mapping layer is shared** - `export_from_project` and `MidiExportReport` live in `yeban-midi::export` with the **eleven domain tests**; `yeban-app`
+   keeps the three public items its CLI uses with the **two writer tests**; the app's API and behaviour are unchanged. CI: `abe537e` is **completed success**,
+   including the legs that matter - `checks` (12 steps), `windows` (9 steps), **`clippy --workspace -D warnings`** and **`test --workspace`**.
+2. **The MCP tool set is 6 of 6** - `yeban_export_midi` (`0833da5`), registry count **16 -> 17**, read-only, delegating to the shared mapping with a hand-rolled
+   RFC 4648 base64 so no dependency enters the light MCP crate. I re-ran its verification myself (clippy clean, **432 passed / 0 failed**, `light` 门禁通过)
+   rather than trusting the delegated report; its CI verdict on `d2ea624` was still running at the time of writing.
+3. **The loudness target is closed on the tool side** - `Option<f32>` contract, five fields with `Default` = "not measured", five payload keys reaching clients
+   through the existing `yeban_query_engine_state`, and a three-part criterion, all CI-verified (`98f3a22`).
+4. **Documentation and guards** - the architecture document names `yeban-midi` **and** states the category rule `[ARCH-TOP-003a]`; the demo fixture family
+   moved to `yeban-model::samples`; ten mechanical guards pass in `light`.
+
+**What remains, and why it is not mine**:
+* **`HD-49`** (`BASELINE-003`, 120 FPS on 100k notes): the gate's own ledger says a fixed-refresh, noise-free machine is required and that hosted-runner
+  readings must not be used to rule. That is a hardware/decisions question for the负责人 (my recorded recommendation: a reference-machine runner).
+* **`BASELINE-006`** (AI interaction efficiency): payload statistics are not wired, and the负责人 has already deferred the tokeniser口径.
+* **`MUST-GATE-001/002/005/009/012`**: each has its own line in this ledger with its own evidence requirements; none is blocked by anything this session did.
+* **`MUST-GATE-014`** (real sample bytes): awaits the负责人's choice of material.
+* **Four rulings I have prepared consequences for**: HD-49, N2 (keyboard wiring below Slint), the loudness transport (optional - the contract no longer depends
+  on it), and whether the read-only MCP export's relationship to `ADR-0001 D47`'s CLI on-disk exit should be recorded normatively.
+
+**The direction of travel, stated once for a reader joining here**: this session took the MIDI export from "one implementation in the app, unreachable from
+MCP" to "one shared implementation, reachable from both", closed the loudness contract end to end on the tool side, completed the MCP tool set, and left every
+step with a CI verdict or a recorded local verification. The next moves are decisions, not code.
