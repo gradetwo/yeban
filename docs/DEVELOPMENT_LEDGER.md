@@ -9900,3 +9900,40 @@ history is recorded in rounds 401-405.
 **Also landed**: `750df86` vendors the MIT reference's own specification into `docs/research/logic-pro-projectdata-format.md` (whole file 94,889 B, verbatim body 92,606 B with sha256 verified against `/tmp/logic-ref/` by `cmp`, provenance header 2,283 B naming the upstream repository, the MIT licence, the verbatim copyright line and the as-fetched hashes). That makes the research material durable, because it previously existed only in `/tmp`, which had already been cleared once. Nothing else needed registering: the guards key on nothing under `docs/research/`, and the docs scan went 107 -> 108 files with no broken link.
 
 **Status**: `4bdc49e` and `750df86` to be pushed by this round; Phase 4 6 完成 / 5 部分 / 0 PENDING; the exporter's claim can now say **Logic Pro 12.2 opens the donor-spliced export**, which is the first time this repository has been able to say anything of the kind.
+
+
+### Round 408: slot activation is measured but NOT evidence-backed on this donor - and the working case is protected
+
+`d52f3da` is another honest partial, and it is the right one. The task was to activate channel slots so the export could carry **more than one track**. The line read the
+**vendored** specification (`docs/research/logic-pro-projectdata-format.md`, §10.6 - durable now, which is exactly why that vendoring was worth doing) and then measured
+the donor against it. **Two blockers, both measured:**
+
+* **§10.6.3(a)** requires editing `gnoS` Tables 2 and 3 at payload `+0x4d8c` and `+0x521c` - and those offsets **lie past the donor's 10,756-byte compact `gnoS`**,
+  so the tables are absent. There are no bytes to edit.
+* **§10.6.3(c)** requires selecting a pre-allocated strip whose `@0xbd` UUID is **all zero** - and the donor has **0** such strips out of 363 (355 carry `ee…`
+  placeholders).
+
+**The specification is not wrong; this donor's form differs**, which the line proved by measuring the real projects: zero-UUID strips exist there in quantity (`Swing!`
+147 of 549, `ocean eyes` 814 of 1162, `MONTERO` 327 of 1089). It also corrected two of the document's own statements from measurement - `@0xf8` is `(T<<16)|1`, not
+`((T+1)<<16)|1`, and `@0xf4>>16` is **not** the track count (donor 1/1, quiet 9/10, Swing! 1/76, ocean eyes 1/42, MONTERO 1/140) - and it noted again that the
+section's offsets are **record-relative**, the same frame mix-up rounds 402 and 403 recorded.
+
+**So it inserted nothing**, which is the correct outcome: inventing a free-strip rule would have produced bytes nothing validates. What it did instead: measured
+constants with their evidence, a `donor_inventory()` that reads the donor from its own bytes, a pure-arithmetic `donor_slot_plan()` (slots needed = MIDI tracks minus
+capacity; k-th slot = max index + k x 0x40000), and a `LOGIC_ACTIVATION_UNMAPPED` loss entry emitted **only** when a project has more MIDI tracks than the donor can
+carry - so single-track projects produce nothing new.
+
+**The most important check passed**: the single-track artefact's `ProjectData` is **byte-identical** to the artefact Logic opened (`open5`): both hash
+`aa5db6c99f57…`. Verified independently, and the line went further - before-versus-after this change, with the same sample, **all four files are `cmp`-identical**. The
+only case Logic has ever opened is therefore still reproducible, which was the stated worst outcome to avoid.
+
+**Its conclusion, which I accept**: a fifth Logic test would **not** be informative, because the record count, order, patched set, root version code and `gnoS` body are
+unchanged; only registration text and the mapped region's name and notes differ. The unblock for multi-track is a **new donor in the pre-allocated-mixer form** - the
+reference's recipe is "make N tracks, delete all but one, save", which the负责人 can produce on this machine with Logic Pro 12.2 - or another MIT donor carrying free
+strips. Neither exists in the repository, and Apple's demos must not be shipped. That request has been made; it is small and human-gated, like the earlier reference-file
+ask.
+
+**Verified independently**: two files changed; `yeban-render` runs **109 passed** with the feature (from 107); the guards and `light` are green; the single-track
+artefact is byte-identical; and the commit is pushed.
+
+**Status**: `d52f3da` pushed; Phase 4 6 完成 / 5 部分 / 0 PENDING; the exporter's claim remains the measured single-track one.
