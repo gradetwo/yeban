@@ -1335,9 +1335,13 @@ fn export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
 /// **bundle 目录**（四个文件）并把映射损失表逐条打到 stdout。
 ///
 /// 与 B14 同一条思路，但产物是多文件目录：因此它另外钉住 ① 目录与四个文件真的在、
-/// ② `ProjectData` 的**实测**头部（`23 47 C0 AB` / 声明长度 @0x10 / `gnoS` @0x18）、
-/// ③ `MetaData.plist` 是二进制 plist（`bplist00`）、④ 两次导出**逐文件**相同、
+/// ② `ProjectData` 的**供体**头部（`23 47 C0 AB` / 版本码 `0x09CF` / 声明长度 @0x10 /
+/// `gnoS` @0x18）、③ `MetaData.plist` 是二进制 plist（`bplist00`）、④ 两次导出**逐文件**相同、
 /// ⑤ 目标被普通文件挡住时退出 5。
+///
+/// 供体路线（负责人裁决选项 A）把 `ProjectData` 从自研的 1,420 字节换成
+/// `jonkubis/logicproformatwriter`（MIT）那份 **Logic 存过的**夹具骨架（127,689 字节）+ 我们自己的
+/// 拍号/速度/region 名/音符，因此这里也钉住"它确实带着供体"这一条。
 #[cfg(feature = "experimental-logic-export")]
 #[test]
 fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
@@ -1379,20 +1383,62 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
     }
 
     // ② `ProjectData` 的实测头部。
+    //
+    // ⚠ 这一条随**供体路线**改过：`--export-logic` 现在以 `jonkubis/logicproformatwriter`
+    // （MIT）的 Logic 夹具为骨架，因此根头是**供体自己存过的**那 24 个字节 —— 版本码
+    // `0x09CF`（Logic 存这份夹具时的落盘格式），不是自研写入器写 `0x09D0`。理由：版本码声明的是
+    // **这份文档的落盘格式**，而记录是 2511 形态；改成一个更新的声明只会让 Logic 用更新的解析器
+    // 去读更老的记录。自研写入器（`yeban_render::logic::project_data`）的 `0x09D0` 仍由
+    // render 侧的 `container_header_fields_carry_the_measured_modern_values` 钉住。
     let bytes = std::fs::read(&project_data).expect("读 ProjectData");
     assert_eq!(&bytes[..4], &[0x23, 0x47, 0xC0, 0xAB], "根魔数");
     assert_eq!(
         &bytes[0x04..0x10],
         &[
-            0xD0, 0x09, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00
+            0xCF, 0x09, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00
         ],
-        "根头 +0x04 必须是实测的最新格式版本码 0x09D0（Logic Pro 12.0.1）\
-         —— 写 0 时 Logic Pro 12.2 把文档读成 Logic 4 format (or earlier) 并拒绝打开"
+        "根头 +0x04 必须是**供体**落盘的格式版本码 0x09CF —— 供体路线保留供体的根头，\
+         改写它等于让 Logic 用更新的解析器读更老的记录"
     );
     assert_eq!(&bytes[0x18..0x1c], b"gnoS", "第一个 chunk 名必须是 gnoS");
     let declared =
         u32::from_le_bytes([bytes[0x10], bytes[0x11], bytes[0x12], bytes[0x13]]) as usize;
     assert_eq!(declared, bytes.len() - 0x18, "声明载荷长度 @0x10");
+
+    // ②b 它真的**带着供体的通道簇**：按 36 字节记录头走完全文，数四个家族。
+    //     自研写入器这四族一个都没有（`Envi`/`AuCO`/`GenM`/`Trak`），这正是它被判为
+    //     "没有轨道"的原因；供体路线把它们原样带进来。
+    let mut families: std::collections::BTreeMap<[u8; 4], usize> =
+        std::collections::BTreeMap::new();
+    let mut at = 0x18usize;
+    let mut records = 0usize;
+    while at + 0x24 <= bytes.len() {
+        let tag = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
+        let size = u32::from_le_bytes([
+            bytes[at + 0x1c],
+            bytes[at + 0x1d],
+            bytes[at + 0x1e],
+            bytes[at + 0x1f],
+        ]) as usize;
+        *families.entry(tag).or_default() += 1;
+        records += 1;
+        at += 0x24 + size;
+    }
+    assert_eq!(at, bytes.len(), "记录流必须恰好铺满声明载荷");
+    assert_eq!(records, 527, "供体路线的记录条数必须等于供体的 527 条");
+    // 落盘字节是**可读名的反序**（`Envi` 落盘为 `ivnE`），与 `yeban_render::logic` 的记录模型一致。
+    assert_eq!(
+        families.get(b"ivnE"),
+        Some(&12),
+        "ivnE 环境对象必须来自供体"
+    );
+    assert_eq!(families.get(b"OCuA"), Some(&376), "OCuA 混音条必须来自供体");
+    assert_eq!(families.get(b"MneG"), Some(&1), "MneG 必须来自供体");
+    assert_eq!(
+        families.get(b"karT"),
+        Some(&22),
+        "karT 轨道家族必须来自供体"
+    );
 
     // ③ `MetaData.plist` 是二进制 plist。
     let meta = std::fs::read(first.join("Alternatives/000/MetaData.plist")).expect("读 MetaData");

@@ -127,7 +127,12 @@ pub fn export_project_to_bundle(
     } else {
         project.title.clone()
     };
-    let bundle = yeban_render::logic::build_bundle(project, LOGIC_ALTERNATIVE, variant.as_str());
+    // 供体路线：`ProjectData` 以 `jonkubis/logicproformatwriter`（MIT）那份 **Logic 存过的**
+    // 夹具为骨架，只把我们自己的拍号 / 速度 / region 名 / 音符写进去。理由与登记见
+    // `yeban_render::logic` 的模块头与 `build_bundle_from_donor`，以及
+    // `crates/yeban-render/assets/logic-donor/README.md`。
+    let bundle =
+        yeban_render::logic::build_bundle_from_donor(project, LOGIC_ALTERNATIVE, variant.as_str());
 
     let mut files = Vec::with_capacity(bundle.files.len());
     for (relative, bytes) in &bundle.files {
