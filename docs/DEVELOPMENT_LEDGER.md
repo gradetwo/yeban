@@ -9398,3 +9398,25 @@ because the three differ by a large amount of work.
 
 **Status**: tree green and clean at `cfe27a6` (= `origin/main`); automatic CI green through `a2fd2b1` with `eefde06` pending read-back; Phase 4 6 完成 / 4 部分 /
 0 PENDING; the open list is now this one question about what the Logic direction should build.
+
+
+### Round 390: the Logic direction is feasible with local material - measured, not hoped
+
+Before asking the负责人 to choose between the three Logic options, I checked whether the material needed actually exists on this machine, because a direction that
+cannot be tested locally is not worth choosing.
+
+* **Both reference files are present in the local demos.** `Swing!.logicx/Alternatives/004/` holds `ProjectData` (**908 KB**) and `MetaData.plist` (**12 KB**);
+  `ocean eyes.logicx/Alternatives/001/` holds the same pair. These are exactly the two files groove's importer sends (`mcp/arrangement.ts:1012` names
+  `Alternatives/NNN/ProjectData` and its `MetaData.plist`, and explains that `Media/` may hold gigabytes that Phase 1 cannot use).
+* **A fixture is therefore about 920 KB**, not the 487 MB that `Colors.logicx/Media/` occupies - so any of the three options can have a criterion with a real
+  reference file, taken from a local demo rather than downloaded.
+* **The reusable knowledge is identified**: groove has `exportMcpLogicProject` (`mcp/arrangement.ts:1030`) and `importMcpLogicProject` (`:1053`) with 59 lines of
+  tool registration in `mcp/registryProject.ts`; its research names the open-source resources - **`wikibook/logicprox-106`** (a Logic Pro X 10.6 textbook's example
+  project set, groove's first choice) and an open-source mixtape that includes Logic projects; and it records one honest limitation: some timing in `ProjectData`
+  cannot be read reliably yet, which its reply states rather than implying notes start at bar 1.
+
+**So the answer A, B or C can be acted on immediately.** The format knowledge, the reference files and the sibling implementation all exist; what is missing is only
+the decision about **what to build**, which is the one question now open.
+
+**Status**: tree green and clean at `4485ba2` (= `origin/main`); automatic CI green through `a2fd2b1` with `eefde06` pending read-back; Phase 4 6 完成 / 4 部分 /
+0 PENDING; one question open (which Logic option to build).
