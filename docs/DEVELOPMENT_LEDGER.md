@@ -8683,3 +8683,27 @@ GitHub's parser rejects a construct that only the dispatch path tolerates.
 **Next step, cheaper than another push**: use `workflow_dispatch` on `gates-manual.yml` (the scheduled path that last succeeded) and read whether a dispatch is
 accepted now. If a dispatch still works while pushes fail, the defect is in push-time validation or in a sibling file changed by the same push - and the manual tier
 remains usable, which matters because the objective treats it as an authoritative source of "green".
+
+
+### Round 358: the in-process-mcp criteria now have CI evidence, and the manual tier is operational again
+
+The two gaps from rounds 354-357 are both closed and **proven by CI**, not by argument:
+
+* **manual tier restored**: after deleting the malformed twelve-line block (root cause: I had reverted to `b2a347f`, the commit that *introduced* it, and then
+  verified the restore against that same wrong baseline), `workflow_dispatch` is accepted again. Run `37401199688` (`inventory`) is **completed success** - the
+  first successful manual dispatch in this stretch - and run `37401327315` (`all-features`) is **completed success**.
+* **CI coverage closed**: in that same `all-features` run, **step 5 `clippy --all-features` succeeded and step 6 `test --all-features` succeeded**, with the
+  failure-summary step skipped (so nothing failed) and sitting *after* the test step, which also confirms the ordering fix. `cargo test --all-features` therefore
+  executed across the workspace on GitHub's runner, which means the five feature-gated criteria - `in_process_mcp`'s two and `in_process_mcp_lock`'s three - were
+  **executed by CI for the first time**.
+
+**Evidence upgrade, recorded deliberately**: `ROAD-M4-001`'s and `ROAD-M0-007`'s criteria move from "locally verified" to "executed in CI". That matters because
+the objective names `ci.yml` plus `gates-manual.yml` as the only source of "green": both halves of that source are now usable, and the criteria in question are
+covered by one of them rather than by a local run that no one else can reproduce.
+
+**The lesson worth carrying**: a revert is only as good as its baseline - I verified my restore with `diff -q` against the very commit that contained the defect,
+which turned verification into self-confirmation and cost three rounds. Checking the *right* baseline (`b2a347f^`) took one command and immediately showed the
+twelve lines that should never have been there.
+
+**Status**: tree green and clean at `ae3024b` (= `origin/main`); automatic CI green through `80a7f85`; both manual gates succeed; the in-process-mcp criteria are
+CI-executed; Phase 4 stands at 6 完成 / 4 部分 / 0 PENDING with Phase 0 at 2 / 5 / 2, and all fifteen MUST-GATEs wired.
