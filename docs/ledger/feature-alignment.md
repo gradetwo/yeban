@@ -276,6 +276,8 @@
 
 > ✅ **已裁决并落地一半（2026-10-05）**：`ADR-0001 **D47**` 把 MIDI 导出的**唯一出口**定为 `yeban-app --export-midi`（离线批处理语义），**有意不扩** `render_master` 的参数面 —— `line/app-export-midi` 已交付（`export_midi.rs` 829 行 + CLI + B12/B13 真二进制判据，run **37254761445** = success）。⇒ 本节对 MIDI 的判断改为：**系统有出口、UI/MCP 有意不加**；`.als` 导出（`ROAD-M4-007`）仍 PENDING。
 
+> ⚠ **MCP 半句已过期（Round 348，提交 `0833da5`）**：`yeban_export_midi` 已是**只读** MCP 工具（不落盘，base64 回传字节 + `sha256` + 计数；`crates/yeban-mcp/src/domain/export_midi.rs`）⇒ 上面标题的「MCP 没有」与上注的「MCP 有意不加」**只对当时（2026-10-05）的记录成立**；现状见 §11 分组 I 的 MIDI 行（三侧 = 已实现 / 无 / 有）。此处**不改写**原记录，只加此注。
+
 - **功能**：SMF 导出（`midly` 编码 + 自研 VLQ 回读，`ARCH-FMT-001 §5.5`）。
 - **证据**：`crates/yeban-midi/src/midi.rs`（模块头逐条写明能力与边界）；
   `grep -rn "yeban_render::midi\|render::midi" crates/*/src crates/*/tests` 命中 **0** ⇒ **零消费者**；

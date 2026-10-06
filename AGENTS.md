@@ -129,7 +129,7 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
    第 355 轮曾用"含缺陷的提交"当基线，于是"验证通过"了一个仍含缺陷的文件，代价是三轮。
 3. **不要用词面判断交付。** 目标或台账里的**词**常与**交付形态**不同：
    `ui/*` 的 `dryRun` 在控制面而非 `.slint` 标记层；响度是 `yeban_query_engine_state` 的**字段**而非工具；
-   `device` 由宏工具承载。**先 `grep` 交付，再下结论。**
+   `device` 是 `yeban_query_engine_state` 的**只读设备链**（宏工具 `yeban_set_macro` 承载的是 `track.macros[]`，不是设备对象），可写的只有 `yeban_edit_automation` 的 `DeviceParam` 目标，**工具面没有设备 CRUD**。**先 `grep` 交付，再下结论。**
 4. **文件大小用 `stat -f%z`（字节），不要用 `du -h`。** `du` 报的是磁盘占用，与内容长度不同。
    第 390 轮因此把 5.4 MiB 报成 908 KB。
 5. **数"条目"时不要用 `grep -c` 数"行"。** 条目与行不是一一对应。
