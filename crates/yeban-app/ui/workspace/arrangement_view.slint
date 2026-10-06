@@ -31,10 +31,17 @@ export component ArrangementView inherits Rectangle {
     // 时间轴相对 x / 宽度 (逻辑像素; 由整数 tick ÷ ticks_per_pixel 得出)
     in property <[length]> clip-positions: [];
     in property <[length]> clip-widths: [];
-    // 剪辑所在车道 (= 非主总线轨道的序号)
-    in property <[int]> clip-lanes: [];
+    // 剪辑的纵向几何 (y / 高) —— 由投影从**所在行**的行几何派生 (ADR-0004 S0)。
+    // 旧版这里是 `y: 42px + 56px * root.clip-lanes[clip_index] + 4px; height: 46px;`
+    // ⇒ 界面自己做行算术; 现在界面只取数组下标, 行几何的**唯一**来源是投影。
+    in property <[length]> clip-ys: [];
+    in property <[length]> clip-heights: [];
 
     in property <[string]> tracks: [];
+    // 每条非主总线轨道的行几何 (投影的**前缀和**; ADR-0004 S0)。
+    // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
+    in property <[length]> track-ys: [];
+    in property <[length]> track-heights: [];
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
@@ -155,9 +162,10 @@ export component ArrangementView inherits Rectangle {
     // ---------------------------------------------------------------- 轨道包头列
     for track_name[track_index] in root.tracks : Rectangle {
         x: 0;
-        y: 42px + 56px * track_index;
+        // 行几何由投影的前缀和给出 (ADR-0004 S0); 界面**不做**行算术。
+        y: root.track-ys[track_index];
         width: 168px;
-        height: 54px;
+        height: root.track-heights[track_index];
         // 包头: 负责人给了**一级**「鸦青·暗」(bg-head); 我们的包头是隔行交替的, 交替本身
         // 是既有几何 (去掉它会改默认渲染字节) ⇒ 偶行用 panel、奇行用 head, 两个值都来自
         // 负责人的墨阶, 且 brand 分支分别等于原来的 bg-panel / bg-shell。
@@ -281,9 +289,10 @@ export component ArrangementView inherits Rectangle {
     // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见本文件标尺那处的注释。
     for _[lane_index] in root.tracks : Rectangle {
         x: 168px;
-        y: 42px + 56px * lane_index;
+        // 与包头同一个数组、同一个下标 —— 两条循环必须落在同一行上。
+        y: root.track-ys[lane_index];
         width: parent.width - 168px;
-        height: 54px;
+        height: root.track-heights[lane_index];
         // 车道: 负责人给了**两级**墨阶 —— 墨池 (bg-lane) / 墨池·深 (bg-lane2)。
         background: lane_index.mod(2) == 0 ? Tokens.bg-lane : Tokens.bg-lane2;
         border-width: 1px;
@@ -292,9 +301,10 @@ export component ArrangementView inherits Rectangle {
 
     for clip_ulid[clip_index] in root.clip-ulids : Rectangle {
         x: 168px + root.clip-positions[clip_index];
-        y: 42px + 56px * root.clip-lanes[clip_index] + 4px;
+        // 剪辑的 y / 高由投影从所在行的行几何派生 (ADR-0004 S0)。
+        y: root.clip-ys[clip_index];
         width: root.clip-widths[clip_index];
-        height: 46px;
+        height: root.clip-heights[clip_index];
         background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         border-width: 1px;
@@ -342,10 +352,12 @@ export component ArrangementView inherits Rectangle {
     // ---------------------------------------------------------------- 自动化曲线 (自动化泳道)
     //
     // 一条泳道一个**可寻址元素** + 一条折线。为什么是覆盖在轨道车道上而不是单独一行:
-    // 编排视图的车道行高是 42px + 56px × 轨道序 (上一版就有的几何), 插入独立的自动化行
-    // 会改动每一条剪辑 / 音符的 y —— 那是 [UI-NOTE-001] 视口裁剪的范围, 不在本线。
+    // 编排视图的车道行几何来自投影的行几何 (`track-ys` / `track-heights`, 前缀和,
+    // ADR-0004 S0), 插入独立的自动化行会改动每一条剪辑 / 音符的 y —— 那是
+    // [UI-NOTE-001] 视口裁剪的范围, 不在本线。
     // 因此本线用"覆盖模式": 一条轨道上有 N 条泳道时, 把该车道行**等分**成 N 条带
-    // (带高 = (56 − 2×2) / N), `band-ys` / `band-heights` 由投影算好注入。
+    // (带高 = (row.stride − 2×2) / N), `band-ys` / `band-heights` 由投影从**同一份**
+    // 行几何算好注入 —— 界面侧零算术。
     //
     // 折线用 `Path` 的 SVG 命令 (`commands`)。三条与"坐标必须逐位等于投影的像素"有关的
     // 细节, 都是查上游源码后写死的:

@@ -613,6 +613,78 @@ impl VisibleNotes {
     }
 }
 
+/// 编排车道行的纵向几何（**投影算一次**，前缀和；所有纵向消费者读同一份）。
+///
+/// `ADR-0004` S0：行 `y` 与行高从 `.slint` 的 `42px + 56px * track_index` 搬进投影，
+/// `.slint` 侧从此**零行算术** —— 判据
+/// `automation::tests::lane_element_ids_match_the_slint_template` 把这条钉在文本上。
+///
+/// `y` 是**前缀和**（不是乘法）：`y(0) = TRACK_LANE_TOP_PX`、
+/// `y(i+1) = y(i) + stride`。S0 里 `stride` 恒为
+/// [`crate::automation::TRACK_LANE_HEIGHT_PX`]，因此前缀和与 `top + height × i`
+/// **逐位相等**（两者都是同一批小整数，`f32` 在 2^24 以内精确表示）；但形状已经是
+/// S1「每轨高度」需要的那个形状 —— 那时 `stride` 逐行不同，乘法形式不再成立。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RowGeometry {
+    /// 行顶沿 y（逻辑像素）。第 0 行 = [`crate::automation::TRACK_LANE_TOP_PX`]。
+    pub y: f32,
+    /// 行槽高（相邻两行顶沿之差）。S0 恒为 [`crate::automation::TRACK_LANE_HEIGHT_PX`]。
+    pub stride: f32,
+}
+
+/// 包头 / 车道矩形相对行槽高的上下留白（逻辑像素）。
+///
+/// 取值来自旧 `.slint` 的两个字面量之差：`56px`（行槽高）− `54px`（矩形高）。
+pub const TRACK_ROW_GAP_PX: f32 = 2.0;
+
+/// 剪辑矩形相对车道行的上下内缩（逻辑像素）。
+///
+/// 取值来自旧 `.slint` 的 `+ 4px` 与 `46px`（`54px − 2×4px`）。
+pub const CLIP_ROW_INSET_PX: f32 = 4.0;
+
+impl RowGeometry {
+    /// 包头 / 车道矩形的可画高（逻辑像素）= 行槽高 − 上下留白。
+    #[must_use]
+    pub fn drawn_height(self) -> f32 {
+        self.stride - TRACK_ROW_GAP_PX
+    }
+
+    /// 剪辑矩形的顶沿 y（逻辑像素）= 行顶沿 + 上下内缩。
+    #[must_use]
+    pub fn clip_y(self) -> f32 {
+        self.y + CLIP_ROW_INSET_PX
+    }
+
+    /// 剪辑矩形的可画高（逻辑像素）= 车道矩形高 − 上下内缩。
+    #[must_use]
+    pub fn clip_height(self) -> f32 {
+        self.drawn_height() - 2.0 * CLIP_ROW_INSET_PX
+    }
+}
+
+/// 投影**全部非主总线轨道**的行几何（`BTreeMap` 键序 ⇒ 与 [`TrackView::index`] 同序）。
+///
+/// 这是编排视图纵向布局的**唯一**事实源：包头 / 车道（[`TrackView`]）、剪辑（[`ClipView`]）
+/// 与自动化带（[`crate::automation::project_lanes_with_rows`]）全部由它派生 ——
+/// 旧版「`.slint` 算一遍 `42px + 56px * i`、`automation.rs` 再算一遍
+/// `TRACK_LANE_HEIGHT_PX * i`」的两份事实源在 S0 合并成这一处。
+#[must_use]
+pub fn track_rows(project: &YebanProjectV1) -> Vec<RowGeometry> {
+    let mut rows = Vec::new();
+    let mut y = crate::automation::TRACK_LANE_TOP_PX;
+    for track in project.tracks.values() {
+        if track.id == project.master_bus_track_id {
+            continue;
+        }
+        rows.push(RowGeometry {
+            y,
+            stride: crate::automation::TRACK_LANE_HEIGHT_PX,
+        });
+        y += crate::automation::TRACK_LANE_HEIGHT_PX;
+    }
+    rows
+}
+
 /// 视图里的一个轨道（**不是**模型实体 —— 它是投影结果，可以带界面派生字段）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackView {
@@ -653,6 +725,15 @@ pub struct TrackView {
     pub clip_count: usize,
     /// 是否为 `master_bus_track_id` 指向的主总线。
     pub is_master: bool,
+    /// 编排车道的**行顶沿 y**（逻辑像素）—— 由 [`track_rows`] 的前缀和给出。
+    ///
+    /// `.slint` 直接画它，不再算 `42px + 56px * track_index`（`ADR-0004` S0）。
+    /// 主总线在编排视图**没有行**（它是调音台的通道条）⇒ 恒 `0.0`。
+    pub y: f32,
+    /// 编排车道的**行矩形高**（逻辑像素）= 行槽高 − [`TRACK_ROW_GAP_PX`]。
+    ///
+    /// 主总线没有行 ⇒ 恒 `0.0`。旧 `.slint` 里这是包头 / 车道的 `height: 54px`。
+    pub height: f32,
 }
 
 /// 视图里的一个 MIDI 音符（`MidiNote` + 它落在哪个片段池条目上 + 投影算出的位置）。
@@ -721,7 +802,14 @@ pub struct ClipView {
     pub x: f32,
     /// 块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
     pub width: f32,
-    /// 车道序号（= [`ClipView::track_index`]，`.slint` 用它算 y）。
+    /// 块顶沿相对 y（逻辑像素）= 所在行的 [`RowGeometry::clip_y`]。
+    ///
+    /// 旧 `.slint` 算的是 `42px + 56px * root.clip-lanes[clip_index] + 4px` —— 现在由
+    /// 投影从**同一份**行几何给出（`ADR-0004` S0）。
+    pub y: f32,
+    /// 块高（逻辑像素）= 所在行的 [`RowGeometry::clip_height`]（旧 `.slint` 的 `46px`）。
+    pub height: f32,
+    /// 车道序号（= [`ClipView::track_index`]，进 `canonical_lines` 的 `lane=`）。
     pub lane: i32,
     /// 是否静音（`ClipPlacement::muted`）。
     pub muted: bool,
@@ -877,6 +965,10 @@ impl ViewState {
 
         let bar_ticks = bar_length_ticks(project.time_signature)?;
 
+        // 行几何：**投影算一次**（前缀和），包头 / 车道 / 剪辑 / 自动化带全部读它。
+        // `ADR-0004` S0 —— 旧版这里没有行几何，`.slint` 与 `automation.rs` 各算一份。
+        let rows = track_rows(project);
+
         let mut tracks: Vec<TrackView> = Vec::new();
         let mut master: Option<TrackView> = None;
         let mut clips: Vec<ClipView> = Vec::new();
@@ -885,10 +977,11 @@ impl ViewState {
         // （红线 4 的确定性要求）。这里刻意不排序 —— 排序会掩盖"集合被换成 HashMap"。
         for track in project.tracks.values() {
             if track.id == project.master_bus_track_id {
-                master = Some(track_view(track, 0, true));
+                master = Some(track_view(track, 0, true, None));
                 continue;
             }
             let index = tracks.len();
+            let row = rows.get(index).copied();
             for placement in track.clips.values() {
                 clips.push(clip_view(
                     project,
@@ -896,9 +989,10 @@ impl ViewState {
                     index,
                     &track.name,
                     ticks_per_pixel,
+                    row,
                 )?);
             }
-            tracks.push(track_view(track, index, false));
+            tracks.push(track_view(track, index, false, row));
         }
         for (index, clip) in clips.iter_mut().enumerate() {
             clip.index = index;
@@ -986,8 +1080,9 @@ impl ViewState {
             note_ulids,
             note_velocities,
             bar_positions,
-            automation_lanes: crate::automation::project_lanes_at_cursor(
+            automation_lanes: crate::automation::project_lanes_with_rows(
                 project,
+                &rows,
                 ticks_per_pixel,
                 cursor_tick,
             )?,
@@ -1042,6 +1137,23 @@ impl ViewState {
     #[must_use]
     pub fn track_names(&self) -> Vec<String> {
         self.tracks.iter().map(|track| track.name.clone()).collect()
+    }
+
+    /// 每条非主总线轨道的**行顶沿 y**（逻辑像素，前缀和）—— `.slint` 直接画它。
+    ///
+    /// 与 `track-names` **同索引集**（都来自 `self.tracks`）：`.slint` 的
+    /// `for track_name[track_index] in root.tracks` 与 `for _[lane_index] in root.tracks`
+    /// 用的就是这个下标。判据 `automation::tests::lane_element_ids_match_the_slint_template`
+    /// 断言 `.slint` 读的是这两个数组、且**不再**做任何行算术。
+    #[must_use]
+    pub fn track_ys(&self) -> Vec<f32> {
+        self.tracks.iter().map(|track| track.y).collect()
+    }
+
+    /// 每条非主总线轨道的**行矩形高**（逻辑像素）—— `.slint` 直接画它。
+    #[must_use]
+    pub fn track_heights(&self) -> Vec<f32> {
+        self.tracks.iter().map(|track| track.height).collect()
     }
 
     /// 非主总线轨道的音量显示文本（`TrackV3::volume_db` 的 `{:.1}` 形态）。
@@ -1107,10 +1219,16 @@ impl ViewState {
         self.clips.iter().map(|clip| clip.width).collect()
     }
 
-    /// 剪辑车道序号。
+    /// 剪辑块顶沿的相对 y（逻辑像素）—— 由所在行的 [`RowGeometry::clip_y`] 给出。
     #[must_use]
-    pub fn clip_lanes(&self) -> Vec<i32> {
-        self.clips.iter().map(|clip| clip.lane).collect()
+    pub fn clip_ys(&self) -> Vec<f32> {
+        self.clips.iter().map(|clip| clip.y).collect()
+    }
+
+    /// 剪辑块高（逻辑像素）—— 由所在行的 [`RowGeometry::clip_height`] 给出。
+    #[must_use]
+    pub fn clip_heights(&self) -> Vec<f32> {
+        self.clips.iter().map(|clip| clip.height).collect()
     }
 
     // ------------------------------------------------------------------
@@ -1638,11 +1756,20 @@ fn kind_name(kind: TrackKind) -> &'static str {
 }
 
 /// 投影一条轨道。
-fn track_view(track: &TrackV3, index: usize, is_master: bool) -> TrackView {
+///
+/// `row` 是这条轨道在编排视图里的行几何（`None` = 主总线，它没有编排行）。
+fn track_view(
+    track: &TrackV3,
+    index: usize,
+    is_master: bool,
+    row: Option<RowGeometry>,
+) -> TrackView {
     #[allow(clippy::cast_possible_truncation)]
     let pan_millis = (f64::from(track.pan) * 1000.0).round() as i32;
     // 色标：**在这里**（唯一一处）解析 + 回退；界面与判据都只读解析结果。
     let color_rgb = track_color_or_default(track.color.as_deref());
+    // 编排行几何：主总线没有行 ⇒ 宽高恒 0（界面也不会画它 —— `track-names` 不含主总线）。
+    let (y, height) = row.map_or((0.0, 0.0), |row| (row.y, row.drawn_height()));
     TrackView {
         index,
         id: track.id.to_canonical_string(),
@@ -1661,6 +1788,8 @@ fn track_view(track: &TrackV3, index: usize, is_master: bool) -> TrackView {
         pan_display: pan_display(pan_millis),
         clip_count: track.clips.len(),
         is_master,
+        y,
+        height,
     }
 }
 
@@ -1748,12 +1877,16 @@ fn note_view(
 }
 
 /// 投影一个剪辑摆放（`index` 由调用方在收集完成后统一编号）。
+///
+/// `row` 是这条轨道在编排视图里的行几何（同一条轨道上的所有剪辑读**同一份**行几何）；
+/// `None` 只可能来自越界的 `track_index`（构造上不会发生）⇒ 宽高退化为 0 而不是 panic。
 fn clip_view(
     project: &YebanProjectV1,
     placement: &ClipPlacement,
     track_index: usize,
     track_name: &str,
     ticks_per_pixel: u64,
+    row: Option<RowGeometry>,
 ) -> Result<ClipView, BridgeError> {
     let start_tick = placement.start_tick;
     let end_tick = start_tick
@@ -1774,6 +1907,7 @@ fn clip_view(
     };
     #[allow(clippy::cast_possible_truncation)]
     let lane = track_index as i32;
+    let (y, height) = row.map_or((0.0, 0.0), |row| (row.clip_y(), row.clip_height()));
     Ok(ClipView {
         index: 0,
         placement_id: placement.id.to_canonical_string(),
@@ -1788,6 +1922,8 @@ fn clip_view(
         duration_ticks: placement.duration_ticks,
         x,
         width: (x_end - x).max(MIN_BLOCK_WIDTH_PX),
+        y,
+        height,
         lane,
         muted: placement.muted,
     })
@@ -2134,6 +2270,52 @@ mod tests {
         assert_eq!(view.sections.len(), crate::scene::SCENE_COUNT);
         assert_eq!(view.scenes.len(), crate::scene::SCENE_COUNT);
         assert_eq!(view.bpm_display, "120.00");
+    }
+
+    /// 判据（`ADR-0004` S0）：行几何是投影的**前缀和**，且 `.slint` 要读的四个数组
+    /// 与它逐项一致 —— 界面因此不需要（也不许）自己做 `42px + 56px * i`。
+    ///
+    /// "数字不变"在这里是**逐位**断言：前缀和必须等于旧 `.slint` 的闭式
+    /// `TRACK_LANE_TOP_PX + TRACK_LANE_HEIGHT_PX × i`，而旧 `.slint` 的 `54px` / `46px`
+    /// / `+ 4px` 三个字面量分别等于投影的 `drawn_height()` / `clip_height()` / `clip_y()`
+    /// 偏移。任何一处漂移都会让默认帧变字节 ⇒ 这条判据就是"逐字节不变"的投影侧证据。
+    #[test]
+    fn row_geometry_is_a_prefix_sum_that_the_slint_arrays_carry() {
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        let rows = track_rows(&project);
+        assert_eq!(rows.len(), view.tracks.len());
+        assert!(!rows.is_empty(), "演示工程必须有轨道");
+        assert_eq!(view.track_ys().len(), view.tracks.len());
+        assert_eq!(view.track_heights().len(), view.tracks.len());
+
+        for (index, row) in rows.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let closed_form = crate::automation::TRACK_LANE_TOP_PX
+                + crate::automation::TRACK_LANE_HEIGHT_PX * index as f32;
+            assert_eq!(row.y, closed_form, "前缀和必须逐位等于旧 `.slint` 的闭式");
+            assert_eq!(row.stride, crate::automation::TRACK_LANE_HEIGHT_PX);
+            assert_eq!(view.track_ys()[index], row.y);
+            assert_eq!(view.track_heights()[index], row.drawn_height());
+            // 旧 `.slint` 包头 / 车道的 `height: 54px`（= 56 − 2）。
+            assert_eq!(row.drawn_height(), 54.0);
+        }
+        // 行只能往下走（S1 的每轨高度依赖这条单调性）。
+        assert!(rows.windows(2).all(|pair| pair[0].y < pair[1].y));
+
+        // 剪辑：旧 `.slint` 的 `+ 4px` 与 `height: 46px`。
+        assert!(!view.clips.is_empty(), "演示工程必须有剪辑");
+        assert_eq!(view.clip_ys().len(), view.clips.len());
+        assert_eq!(view.clip_heights().len(), view.clips.len());
+        for clip in &view.clips {
+            assert_eq!(clip.y, rows[clip.track_index].y + CLIP_ROW_INSET_PX);
+            assert_eq!(clip.height, 46.0);
+        }
+        // 主总线在编排视图没有行 —— 几何必须显式为 0（不是编造一行）。
+        if let Some(master) = &view.master {
+            assert_eq!(master.y, 0.0);
+            assert_eq!(master.height, 0.0);
+        }
     }
 
     /// 判据 6: 字段映射 —— `filled_project()` 的每一个被投影用到的模型字段都进了视图。

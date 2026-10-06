@@ -129,6 +129,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
         grid.map_or(0, |grid| i32::try_from(grid.ticks_per_bar()).unwrap_or(0)),
     );
     ui.set_track_names(strings(&view.track_names()));
+    // 编排行几何：`y` / `height` 由投影的**前缀和**算一次（`ADR-0004` S0），
+    // `.slint` 直接画注入值、不做 `42px + 56px * i`。
+    ui.set_track_ys(lengths(&view.track_ys()));
+    ui.set_track_heights(lengths(&view.track_heights()));
     ui.set_track_volumes(strings(&view.track_volumes()));
     ui.set_track_volume_fractions(lengths(&view.track_volume_fractions()));
     ui.set_track_pans(strings(&view.track_pans()));
@@ -140,7 +144,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_clip_labels(strings(&view.clip_labels()));
     ui.set_clip_positions(lengths(&view.clip_positions()));
     ui.set_clip_widths(lengths(&view.clip_widths()));
-    ui.set_clip_lanes(integers(&view.clip_lanes()));
+    // 剪辑的行几何同源：由所在行的 `RowGeometry` 给出（旧版 `.slint` 自己乘 `clip-lanes`）。
+    ui.set_clip_ys(lengths(&view.clip_ys()));
+    ui.set_clip_heights(lengths(&view.clip_heights()));
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));

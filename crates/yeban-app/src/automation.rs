@@ -52,18 +52,27 @@
 //! 一条轨道可以有多个目标（音量 / 声相 / 发送 / 设备参数 / 宏），因此一条车道行里可能有
 //! 多条泳道。本模块按 **`BTreeMap` 键序**把它们**等分**成多条带（`band_y` / `band_height`），
 //! 于是"多泳道叠加"不是静默丢数据，而是"一条泳道一条带、顺序确定、几何可判据"。
-//! 带的高度公式（**没有累加**，只有一次乘法）：
+//!
+//! ## 带几何来自投影的**行几何**（`ADR-0004` S0，唯一事实源）
+//!
+//! 本模块**不再自己算**行偏移。行几何由 [`crate::bridge::track_rows`] 用**前缀和**
+//! 算一次（`RowGeometry { y, stride }`），[`project_lanes_with_rows`] 直接消费它：
 //!
 //! ```text
-//! usable      = 56 − 2×2                                    // 车道高 − 上下内缩
+//! usable      = row.stride − 2×INSET                        // 行槽高 − 自动化带上下内缩
 //! band_height = usable / lane_count
-//! band_y      = 42 + 56×track_index + 2 + band_height × band_index
+//! band_y      = row.y + INSET + band_height × band_index
 //! ```
 //!
-//! `42` / `56` 是 `ui/workspace/arrangement_view.slint` 里**已经在用**的车道几何
-//! （`42px + 56px * track_index`）。两处各写一份是**已知的耦合**，由文本层判据
-//! `lane_geometry_matches_the_arrangement_grid` 对账（口径与 `app-completion` 的
-//! 音高车道 `14px * lane_index` 完全同源，本机不编译 Slint 时这是能拿到的最强证据）。
+//! 旧版这里是 `TRACK_LANE_HEIGHT_PX * track_index`（乘法），与 `.slint` 的
+//! `42px + 56px * track_index` 各算一份 —— `automation.rs:64` 自己把那份耦合记为
+//! "已知的耦合"。S0 之后**只有一份**：包头 / 车道 / 剪辑（[`crate::bridge::TrackView`] /
+//! [`crate::bridge::ClipView`]）与自动化带都从 `track_rows` 派生，`.slint` 侧零行算术。
+//! 判据 `lane_element_ids_match_the_slint_template` 把"`.slint` 不做行算术、几何来自注入数组"
+//! 钉在文本上；判据 `automation_bands_lie_inside_their_rows` 把带落在行内钉在数值上。
+//!
+//! 纵向**值域 → 像素**的映射仍在本模块（[`AutomationAxis`]），与行几何无关：行几何说
+//! "这条带在屏幕上的哪一块"，[`AutomationAxis`] 说"曲线值在这块里画多高"。
 //!
 //! ## 没画的（如实登记，不是静默降级）
 //!
@@ -82,10 +91,16 @@ use yeban_model::project::{
 
 use crate::bridge::{BridgeError, tick_to_px};
 
-/// 编排视图里一条轨道所在车道的顶沿 y（与 `arrangement_view.slint` 的 `42px` 对齐）。
+/// 编排视图里第 0 行车道的顶沿 y（逻辑像素）。
+///
+/// 它**不是**界面里的字面量：它喂给 [`crate::bridge::track_rows`] 的**前缀和**
+/// （`.slint` 在 `ADR-0004` S0 之后读投影注入的 `track-ys`，自己不做行算术）。
 pub const TRACK_LANE_TOP_PX: f32 = 42.0;
 
-/// 一条轨道车道的高度（与 `arrangement_view.slint` 的 `56px` 对齐）。
+/// 编排视图一条车道行的**行槽高**（相邻两行顶沿之差，逻辑像素）。
+///
+/// 同一个数喂给 [`crate::bridge::track_rows`]；S0 里它逐行相同，S1（每轨高度）会
+/// 让 `RowGeometry::stride` 逐行不同，而这一常量仍是**默认行高**。
 pub const TRACK_LANE_HEIGHT_PX: f32 = 56.0;
 
 /// 自动化曲线带在车道内的纵向内缩（上下各一份，逻辑像素）。
@@ -574,7 +589,8 @@ fn target_label(track: &TrackV3, target: &AutomationTarget) -> String {
 
 /// 投影**一条**泳道。
 ///
-/// 调用者保证 `band_y` / `band_height` 已经算好（见 [`project_lanes`] 的等分口径）。
+/// 调用者保证 `band_y` / `band_height` 已经算好（见 [`project_lanes_with_rows`] 的
+/// 「行几何 → 带几何」口径）。
 ///
 /// # Errors
 ///
@@ -680,11 +696,33 @@ pub fn project_lanes(
 /// 顺序（**确定**）：轨道按 `YebanProjectV1::tracks` 的键序遍历、跳过主总线，
 /// 轨道内按 `automation_lanes` 的键序（`AutomationTarget::Ord`）遍历。
 ///
+/// 行几何由 [`crate::bridge::track_rows`] 现算一份（= 生产路径 `ViewState` 用的同一函数）；
+/// 生产路径请用 [`project_lanes_with_rows`] 传入**已经算好的**那一份，避免同一个前缀和算两遍。
+///
 /// # Errors
 ///
 /// 见 [`project_lane`]。
 pub fn project_lanes_at_cursor(
     project: &YebanProjectV1,
+    ticks_per_pixel: u64,
+    cursor_tick: u64,
+) -> Result<Vec<AutomationLaneView>, BridgeError> {
+    let rows = crate::bridge::track_rows(project);
+    project_lanes_with_rows(project, &rows, ticks_per_pixel, cursor_tick)
+}
+
+/// 用投影**已经算好的行几何**投影全部泳道 —— `ViewState` 走的生产入口。
+///
+/// `rows` 必须与 [`crate::bridge::track_rows`] 的输出**同序同长**（`ViewState` 就是这么传的）：
+/// 于是自动化带与包头 / 车道 / 剪辑读的是同一份行几何，不再各算一遍
+/// `TRACK_LANE_HEIGHT_PX * track_index`（`ADR-0004` S0，Q3「带必须同行」）。
+///
+/// # Errors
+///
+/// 见 [`project_lane`]。
+pub fn project_lanes_with_rows(
+    project: &YebanProjectV1,
+    rows: &[crate::bridge::RowGeometry],
     ticks_per_pixel: u64,
     cursor_tick: u64,
 ) -> Result<Vec<AutomationLaneView>, BridgeError> {
@@ -699,17 +737,20 @@ pub fn project_lanes_at_cursor(
         if lane_count == 0 {
             continue;
         }
+        // 行几何来自投影的前缀和（唯一事实源）。缺行在构造上不会发生（`rows` 与这个循环
+        // 同序同长），真缺时回退到常量几何 —— 这条纯函数仍然不 panic、不越界。
+        let row = rows
+            .get(track_index)
+            .copied()
+            .unwrap_or(crate::bridge::RowGeometry {
+                y: TRACK_LANE_TOP_PX,
+                stride: TRACK_LANE_HEIGHT_PX,
+            });
         #[allow(clippy::cast_precision_loss)]
-        let band_height =
-            (TRACK_LANE_HEIGHT_PX - 2.0 * AUTOMATION_BAND_INSET_PX) / lane_count as f32;
-        #[allow(clippy::cast_precision_loss)]
-        let track_offset = TRACK_LANE_HEIGHT_PX * track_index as f32;
+        let band_height = (row.stride - 2.0 * AUTOMATION_BAND_INSET_PX) / lane_count as f32;
         for (band_index, (target, lane)) in track.automation_lanes.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
-            let band_y = TRACK_LANE_TOP_PX
-                + track_offset
-                + AUTOMATION_BAND_INSET_PX
-                + band_height * band_index as f32;
+            let band_y = row.y + AUTOMATION_BAND_INSET_PX + band_height * band_index as f32;
             lanes.push(project_lane(
                 project,
                 track,
@@ -1602,11 +1643,19 @@ mod tests {
         assert!(curved.path_commands.starts_with("M "), "首指令必须是 M");
     }
 
-    /// 判据（文本层）：`.slint` 里的泳道元素 ID 模板与投影的拼接口径**一致**。
+    /// 判据（文本层）：`.slint` 的泳道 ID 模板与**行几何**都来自投影（`ADR-0004` S0）。
     ///
-    /// 本机不编译 Slint，因此"我写对了 accessible-id 的三段字面量"只能以读原文的方式
-    /// 断言（与 `app-completion` 的 `slint_text_contracts_for_colors_and_pitch_lanes`
+    /// 本机不编译 Slint，因此"我写对了 ID 的三段字面量"与"界面不做行算术"只能以读原文的
+    /// 方式断言（与 `app-completion` 的 `slint_text_contracts_for_colors_and_pitch_lanes`
     /// 同源）。真正的判决是 CI 的 `cargo build`。
+    ///
+    /// **这条判据在 S0 被改写过（不是删掉）**：旧版断言 `.slint` 里**逐字存在**
+    /// `42px + 56px * track_index` —— 那正是"行几何住在界面里"的证据，与 S0 的目标相反，
+    /// 所以它在 S0 必然变红。新版断言**更强**，它同时钉住三件事：
+    ///
+    /// 1. 界面里**没有任何**行算术（`42px + 56px *` 等形态全部禁止）；
+    /// 2. 行几何读的是投影注入的 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`；
+    /// 3. 宿主 `host.rs` **真的注入**了这四个数组（属性写了没人注入 = 空数组 = 界面静默变形）。
     #[test]
     fn lane_element_ids_match_the_slint_template() {
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
@@ -1638,14 +1687,105 @@ mod tests {
                 "泳道 ID 模板里出现了可疑字面量 `{forbidden}`"
             );
         }
-        // 几何耦合：`.slint` 的车道网格必须与投影的 42 / 56 常量一致。
-        assert!(
-            code.contains("42px + 56px * track_index"),
-            "投影的 TRACK_LANE_TOP_PX / TRACK_LANE_HEIGHT_PX 与 .slint 的网格脱节"
-        );
+        // (S0 ①) `.slint` 的车道网格**不许**再自己算：任何 `… × 行序号` 的形态都必须消失。
+        for forbidden in [
+            "42px + 56px *",
+            "56px * track_index",
+            "56px * lane_index",
+            "56px * root.clip-lanes",
+            "track_index * 56",
+            "lane_index * 56",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "`.slint` 仍在做行算术 `{forbidden}` ⇒ 行几何没有搬进投影（ADR-0004 S0）"
+            );
+        }
+        // (S0 ②) 行几何只能来自**注入的**数组（包头 / 车道两个下标 + 剪辑）。
+        for needle in [
+            "y: root.track-ys[track_index]",
+            "height: root.track-heights[track_index]",
+            "y: root.track-ys[lane_index]",
+            "height: root.track-heights[lane_index]",
+            "y: root.clip-ys[clip_index]",
+            "height: root.clip-heights[clip_index]",
+        ] {
+            assert!(
+                code.contains(needle),
+                "`.slint` 缺少投影行几何的读取点 `{needle}` ⇒ 几何来源不是投影"
+            );
+        }
+        // (S0 ③) 注入侧真的存在（"属性写了没人注入"会让界面静默画成空数组）。
+        let host = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+        )
+        .expect("读 host.rs");
+        for setter in [
+            "set_track_ys(",
+            "set_track_heights(",
+            "set_clip_ys(",
+            "set_clip_heights(",
+        ] {
+            assert!(
+                host.contains(setter),
+                "`host.rs` 没有 `{setter})` 调用 ⇒ 投影算了但界面收不到（ADR-0004 S0 未接线）"
+            );
+        }
         // 折线必须是 Path + 注入的 commands（不是界面里内联的折线）。
         assert!(code.contains("commands: root.automation-path-commands[lane_index]"));
         assert!(code.contains("viewbox-width: parent.width / 1px"));
         assert!(code.contains("fit: ImageFit.fill"));
+    }
+
+    /// 判据（数值层，`ADR-0004` S0 / Q3）：自动化带落在**投影行几何**之内，且行几何
+    /// 与旧 `.slint` 的闭式 `top + stride × i` **逐位相等**（"数字不变"的机器证据）。
+    ///
+    /// 这一条把"带必须同行"从注释变成事实：带的 `y` / `y + height` 必须夹在它所属行的
+    /// `[row.y, row.y + row.stride]` 里 —— 若 `band_y` 又回去乘 `TRACK_LANE_HEIGHT_PX × index`
+    /// （旧实现），行几何一变它就掉出所属行。
+    #[test]
+    fn automation_bands_lie_inside_their_projected_rows() {
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("演示工程必须能投影");
+        let rows = crate::bridge::track_rows(&project);
+        assert_eq!(
+            rows.len(),
+            view.tracks.len(),
+            "行几何必须与非主总线轨道一一对应"
+        );
+        assert!(!rows.is_empty(), "演示工程必须有轨道");
+        for (index, row) in rows.iter().enumerate() {
+            // 前缀和 == 旧 `.slint` 的 `42px + 56px × i`（逐位相等 ⇒ 默认帧不变）。
+            #[allow(clippy::cast_precision_loss)]
+            let closed_form = TRACK_LANE_TOP_PX + TRACK_LANE_HEIGHT_PX * index as f32;
+            assert_eq!(
+                row.y, closed_form,
+                "第 {index} 行的前缀和必须等于闭式 top + stride × i"
+            );
+            assert_eq!(row.stride, TRACK_LANE_HEIGHT_PX);
+            assert_eq!(view.tracks[index].y, row.y, "TrackView.y 必须来自行几何");
+            assert_eq!(view.tracks[index].height, row.drawn_height());
+        }
+        // 剪辑的 y / 高来自**同一个**行几何。
+        for clip in &view.clips {
+            let row = rows[clip.track_index];
+            assert_eq!(clip.y, row.clip_y(), "剪辑 y 必须来自所在行的行几何");
+            assert_eq!(clip.height, row.clip_height());
+        }
+        // 自动化带：每条都在它所属行内，且行内**顺序**与 `band_index` 一致。
+        assert!(!view.automation_lanes.is_empty(), "演示工程必须有泳道");
+        for lane in &view.automation_lanes {
+            let row = rows[lane.track_index];
+            assert!(
+                lane.band_y >= row.y,
+                "泳道 `{}` 的 band_y 掉出了所属行的上沿",
+                lane.element_id
+            );
+            assert!(
+                lane.band_y + lane.band_height <= row.y + row.stride,
+                "泳道 `{}` 的带底掉出了所属行",
+                lane.element_id
+            );
+        }
     }
 }

@@ -308,6 +308,10 @@ export component MainWindow inherits Window {
     // 因此不需要额外的 `track-count` 标量属性 —— 少一个可能与数组不一致的状态。
     in property <string> window-title: "夜半 Yeban";
     in property <[string]> track-names: [];
+    // 编排行几何（行顶沿 y / 行高，逻辑像素）—— 由投影的前缀和算一次（ADR-0004 S0），
+    // 与 `track-names` 同索引集；`.slint` 不再做 `42px + 56px * i`。
+    in property <[length]> track-ys: [];
+    in property <[length]> track-heights: [];
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
@@ -319,7 +323,9 @@ export component MainWindow inherits Window {
     in property <[string]> clip-labels: [];
     in property <[length]> clip-positions: [];
     in property <[length]> clip-widths: [];
-    in property <[int]> clip-lanes: [];
+    // 剪辑的行几何（y / 高，逻辑像素）—— 由投影从所在行派生（ADR-0004 S0）。
+    in property <[length]> clip-ys: [];
+    in property <[length]> clip-heights: [];
     in property <[length]> bar-positions: [];
     // 钢琴卷帘的音符身份与力度（`MidiNote::id` / `MidiNote::velocity` ÷ 127）
     in property <[string]> note-ulids: [];
@@ -505,6 +511,8 @@ export component MainWindow inherits Window {
                     height: parent.height;
                     visible: root.arrangement-view;
                     tracks: root.track-names;
+                    track-ys: root.track-ys;
+                    track-heights: root.track-heights;
                     track-volumes: root.track-volumes;
                     track-mutes: root.track-mutes;
                     track-solos: root.track-solos;
@@ -515,7 +523,8 @@ export component MainWindow inherits Window {
                     clip-labels: root.clip-labels;
                     clip-positions: root.clip-positions;
                     clip-widths: root.clip-widths;
-                    clip-lanes: root.clip-lanes;
+                    clip-ys: root.clip-ys;
+                    clip-heights: root.clip-heights;
                     bar-positions: root.bar-positions;
                     track-colors: root.track-colors;
                     track-color-labels: root.track-color-labels;
