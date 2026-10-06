@@ -19,20 +19,33 @@
 //! | :--- | :--- |
 //! | 根魔数 | `23 47 C0 AB` 在偏移 0 |
 //! | 根头长度 | **0x18** = 24 字节 |
+//! | **工程格式版本码** | `u16` **小端** 在偏移 **0x04**（见 [`LOGIC_FORMAT_VERSION_CODE`]） |
+//! | 根头 0x06..0x0f | 十个**恒定**字节 `03 00 04 00 00 00 01 00 08 00` |
 //! | 声明载荷长度 | `u32` **小端** 在偏移 0x10（= 文件长度 − 0x18） |
 //! | 第一个 chunk 名 | 偏移 **0x18**（不是 0x14） |
 //! | chunk 名存放 | **小端**：`Song` 落盘为 `gnoS`（0x67 0x6e 0x6f 0x53） |
-//! | 记录头长度 | **0x24** = 36 字节（chunk 名在 +0，cluster 在 +8，载荷长度 `u32` 小端在 +0x1c） |
+//! | 记录头长度 | **0x24** = 36 字节（chunk 名在 +0，kind 在 +4，subtype 在 +6，cluster 在 +8，载荷长度 `u32` 小端在 +0x1c） |
+//! | 记录头恒定字 | +0x16 = 2、+0x18 = 0、+0x1a = 2（格式版本码 ≥ 2509；≤ 2507 时 +0x1a 为 1） |
 //! | 事件行长度 | **16** 字节；第 7 字节最高位 = 1 表示"续行"，0 表示"开新事件" |
 //! | 音符字段 | 头行 +4 = 起始 tick，+0x0b = 力度，+0x0c = 音高；时值在**第一条续行**的 +0x0c |
 //! | 速度 | `gnoS` 载荷在 0x3a6（权威槽）与 0x92（回退槽）存 `round(bpm × 10000)` |
 //! | 拍号 | `qSvE` 载荷 +0x0b = 分母的以 2 为底指数，+0x0c = 分子 |
+//! | `gnoS` 载荷开头 | 嵌套 `#G` 子帧：`23 47 C0 AB` + 版本码 + `18 00 11 00` |
 //!
 //! ⚠️ **与简报/账本第 391 轮的一处偏差（实测更正）**：账本写"偏移 0x14 是 `gnoS`"，
 //! 但本机两个演示工程（`Swing!.logicx/Alternatives/004`、`ocean eyes.logicx/Alternatives/001`）
 //! 的实测都是 **0x18**：0x14 处是 4 个 0 字节，`gnoS` 紧跟在 0x18。0x18 也正是 groove
 //! 读取器 `src/data/logicToArrangement.ts:369` 的 `let offset = 0x18;`。本模块按实测的
 //! 0x18 实现。
+//!
+//! ## 版本码为什么必须非零（外部测量）
+//!
+//! 负责人把本模块的产物交给 **Logic Pro 12.2**（本机安装的就是 12.2），得到的对话框是
+//! *"The song you are trying to open is in **Logic 4 format (or earlier)**"*
+//! （`com.apple.logic10 error 100`）。这说明 Logic **认出了**这是一份 Logic 工程，但把
+//! 根头 `+0x04` 读成了最老的格式 —— 本写入器原先在那里写 0。现在写的是本机实测到的最新
+//! 版本码（[`LOGIC_FORMAT_VERSION_CODE`] = `0x09D0`，来自本机 `Logic Pro 12.0.1` 存过的
+//! 工程）。**这仍然不等于 Logic 能打开它**：仓库里没有任何被 Logic 打开过的产物。
 //!
 //! ## 参考实现（**翻译逻辑，不抄代码**）
 //!
@@ -63,9 +76,14 @@
 //!   `InSt`、`Layr`、`ScSt`、`SngO`、`Styl`、`Trak`、`Trns`、`TxSq`、`TxSt`、`Vide`；
 //!   每次导出为每一个家族登记一条 `未映射:`（理由里点名 chunk；只有 `Trak` 与 `AuRg` 的定位
 //!   有仓库内依据，其余 22 个明写"用途未证实"）。
-//! * 反向（真实工程**没有**而产物有）在家族层面为空；但**字段层面**有一处实测偏差：
-//!   记录头 +4/+0x16/+0x1a 与根头 4..0xf 真实工程非零、本写入器写 0，登记为
+//! * 反向（真实工程**没有**而产物有）在家族层面为空；但**字段层面**仍有一处实测偏差：
+//!   记录头 +0x08..+0x14 的簇号与 `0xFFFF` / `0xFFFF0000` 哨兵（实测随格式版本变化）、
+//!   region 的 `qeSM` / 音符 `qSvE` 的 subtype（与配对序列共享的序列号，无编号规则可推），
+//!   以及 `gnoS` 载荷里嵌套 `#G` 子帧除实测前缀外的内容 —— 登记为
 //!   [`CONTAINER_HEADER_CAVEAT`]（`非等价:`）。
+//!   根头的版本码与十个恒定字节、记录头 kind@+4 / +0x16 / +0x18 / +0x1a、`gnoS` 的
+//!   subtype（`0xFFFF`）、拍号/速度 `qSvE` 的 subtype（1 / 3）与 `gnoS` 的 `#G` 前缀
+//!   **已按实测写入**，因此**不再**登记为偏差。
 //!
 //! 判据（`crates/yeban-render/src/logic.rs` 的 `tests`）：一个**无头确定性**判据断言
 //! "写入家族 == [`WRITTEN_CHUNK_FAMILIES`]"且"差集逐条有损失条目"，另一个**只在两个本机
@@ -101,17 +119,19 @@
 //!
 //! ## 诚实边界（**没有证明什么**）
 //!
-//! 1. **不声称 Logic Pro 能打开本产物。** 本机没有把产物交给 Logic 打开过；仓库里
-//!    也**不提交**任何 Apple 演示工程（它们有版权）。被验证的只是"结构与本机实测的
-//!    字节布局、以及 groove 的写入器一致"。
+//! 1. **不声称 Logic Pro 能打开本产物。** 负责人确实把产物交给本机的 **Logic Pro 12.2**
+//!    打开过，结果是**被拒绝**：对话框说它读到的是 "Logic 4 format (or earlier)"
+//!    （`com.apple.logic10 error 100`）。据此改正了根头的版本码（原先写 0），并**再次导出**
+//!    供人复测 —— 但在人手报告成功之前，本模块**不说**它能被打开。仓库里也**不提交**
+//!    任何 Apple 演示工程（它们有版权）；被验证的只是"结构与本机实测的字节布局一致"。
 //! 2. **不写轨道对象**：本切片只写 `gnoS` / `qSvE` / `qeSM` 与 region 的音符序列，
 //!    Logic 的轨道表（`karT` 一族）**没有写**（groove 的写入器同样如此）。因此产物
 //!    经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
 //! 3. **只写 3/27 个实测 chunk 家族**：真实工程（两例并集）有 27 个家族，本切片只写
 //!    `Song` / `EvSq` / `MSeq`；其余 **24 个**家族（[`MISSING_CHUNK_FAMILIES`]：插件、
-//!    混音、环境、自动化、视频、网格…）**逐族**进损失表，理由里点名 chunk。此外容器头的
-//!    若干字段（记录头 +4/+0x16/+0x1a、根头 4..0xf）真实工程非零而本写入器写 0，
-//!    作为 [`CONTAINER_HEADER_CAVEAT`] 登记（`非等价:`）。
+//!    混音、环境、自动化、视频、网格…）**逐族**进损失表，理由里点名 chunk。容器头里
+//!    **仍未重建**的字段（记录头 +0x08..+0x14 的哨兵、region 的 subtype、`gnoS` 子帧的
+//!    正文）作为 [`CONTAINER_HEADER_CAVEAT`] 登记（`非等价:`）。
 //!
 //! ## 确定性
 //!
@@ -134,6 +154,52 @@ pub const LOGIC_ROOT_HEADER: usize = 0x18;
 /// 声明载荷长度（`u32` 小端）在根头里的偏移（实测 0x10）。
 pub const LOGIC_DECLARED_LENGTH_OFFSET: usize = 0x10;
 
+/// 根头里**工程格式版本码**（`u16` 小端）的偏移。参考实现
+/// `jonkubis/logicproformatwriter`（MIT）的 `PROJECTDATA_FORMAT.md` §2 把它记作
+/// "`+0x04` 2 version code"。
+pub const LOGIC_FORMAT_VERSION_OFFSET: usize = 0x04;
+
+/// 根头 0x06..0x0f 那十个**恒定字节**的偏移。
+pub const LOGIC_ROOT_STABLE_OFFSET: usize = 0x06;
+
+/// 根头的工程格式版本码（`u16` 小端）。
+///
+/// 实测（本机 `~/Music/Logic`、`~/Music/templates`、`~/Music/Logic Book Projects`、
+/// `~/Music/Logic Pro Library.bundle`、`/Applications/Logic Pro.app/Contents/Resources/Project Templates`
+/// 与 `/Library/Application Support/Logic/Logic Pro X Demosongs` 下的**全部** `ProjectData`）：
+/// 该字段随 Logic 版本单调增大，且能与同工程 `Resources/ProjectInformation.plist` 的
+/// `LastSavedFrom` 一一对上：
+///
+/// | `LastSavedFrom` | 版本码 |
+/// | :--- | :--- |
+/// | `Logic Pro X 10.2.4 (4369.43)` | `0x06DC` = 1756 |
+/// | `Logic Pro X 10.4.0 (4905.7)` | `0x06EA` = 1770 |
+/// | `Logic Pro X 10.5.1 (5299)` | `0x07D0` = 2000 |
+/// | `Logic Pro X 10.7.0 (5533)` | `0x09C4` = 2500 |
+/// | `Logic Pro X 10.8.1 (5906)` | `0x09CB` = 2507 |
+/// | `Logic Pro X 11.0.1 (6029)` | `0x09CD` = 2509 |
+/// | `Logic Pro 11.1.2 (6162)` | `0x09CE` = 2510 |
+/// | `Logic Pro 11.2.2 (6387)` | `0x09CF` = 2511 |
+/// | **`Logic Pro 12.0.1 (6590)`** | **`0x09D0` = 2512** |
+///
+/// 本机安装的 Logic Pro 是 **12.2**，但本机**没有任何 12.2 存过的工程**，因此这里取实测到的
+/// 最新值 **`0x09D0`（Logic Pro 12.0.1）**，而不是替 12.2 猜一个专用值。参考实现那份格式文档
+/// （由 Logic Pro 11.2.2 的差分夹具反推、产物经 Logic 打开验证）把 11.2.2 记为
+/// `D0 09` / `CF 09`，与实测的 2511/2512 一致。
+///
+/// **写 0 的后果已被外部测量**：负责人把本写入器的产物交给 **Logic Pro 12.2**，得到的对话框是
+/// *"The song you are trying to open is in **Logic 4 format (or earlier)**"*
+/// （`com.apple.logic10 error 100`）。零即"最老的格式"，这是本字段必须非零的直接证据。
+pub const LOGIC_FORMAT_VERSION_CODE: u16 = 0x09D0;
+
+/// 根头 0x06..0x0f 的十个字节。**实测恒定**：本机全部真实 `ProjectData`
+/// （10.2.4 … 12.0.1：七个演示工程 + 用户工程 + 工厂模板）与参考实现的产物
+/// （版本码 2511）在这十个字节上**完全一致**；参考实现的格式文档也把它记作 "(stable)"。
+///
+/// ⚠ 这十个字节的**语义未证实**（本仓库只证明其取值恒定），因此只按实测值写出。
+pub const LOGIC_ROOT_STABLE_FIELDS: [u8; 10] =
+    [0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00];
+
 /// 第一个记录（chunk）的偏移 = [`LOGIC_ROOT_HEADER`]。
 pub const LOGIC_FIRST_RECORD_OFFSET: usize = LOGIC_ROOT_HEADER;
 
@@ -142,6 +208,54 @@ pub const LOGIC_RECORD_HEADER: usize = 0x24;
 
 /// 记录头里 cluster 索引（`u32` 小端）的偏移（groove 读取器读 +8）。
 pub const LOGIC_RECORD_CLUSTER_OFFSET: usize = 0x08;
+
+/// 记录头里 **kind**（`u16` 小端）的偏移。参考实现的格式文档记作 "kind@+4"。
+pub const LOGIC_RECORD_KIND_OFFSET: usize = 0x04;
+
+/// 记录头里 **subtype**（`u16` 小端）的偏移。参考实现的格式文档记作 "subtype@+6"。
+pub const LOGIC_RECORD_SUBTYPE_OFFSET: usize = 0x06;
+
+/// 记录头 +0x16（`u16` 小端）：实测**本机全部真实记录恒为 2**，无例外。
+pub const LOGIC_RECORD_FIELD_16: u16 = 2;
+
+/// 记录头 +0x18（`u16` 小端）：实测恒为 0。
+pub const LOGIC_RECORD_FIELD_18: u16 = 0;
+
+/// 记录头 +0x1a（`u16` 小端）：实测格式版本码 `>= 2509` 时恒为 **2**，`<= 2507` 时为 1。
+/// 本写入器的目标版本码是 [`LOGIC_FORMAT_VERSION_CODE`]（2512），因此写 2。
+pub const LOGIC_RECORD_FIELD_1A: u16 = 2;
+
+/// `gnoS`（`Song`）记录头的 kind：实测 2511/2512 为 **6**、2509 为 5、`<= 2507` 为 3。
+pub const LOGIC_SONG_KIND: u16 = 6;
+
+/// `gnoS` 记录头的 subtype：实测**恒为 `0xFFFF`**（本机全部真实工程与参考实现产物）。
+pub const LOGIC_SONG_SUBTYPE: u16 = 0xFFFF;
+
+/// `qSvE`（`EvSq`）记录头的 kind：实测**恒为 1**。
+pub const LOGIC_SEQUENCE_KIND: u16 = 1;
+
+/// 拍号 `qSvE` 的 subtype（载荷第一个字 = `0x30` 的那条）：实测**恒为 1**。
+pub const LOGIC_METER_SUBTYPE: u16 = 1;
+
+/// 速度 `qSvE` 的 subtype（载荷第一个字 = `0x60` 的那条）：实测**恒为 3**。
+///
+/// 实测依据：本机 10.5.1、10.8.1、11.2.2、12.0.1 四代工程里，`payload[0]=0x30`（拍号）的
+/// `qSvE` 都是 subtype 1、`payload[0]=0x60`（速度）的 `qSvE` 都是 subtype 3 —— 与记录顺序
+/// 无关（同一份文件里后者出现在别处时仍是 3）。本仓库只实测到 subtype 与 marker 的**配对**，
+/// 不解释其语义。
+pub const LOGIC_TEMPO_SUBTYPE: u16 = 3;
+
+/// `qeSM`（`MSeq`，region）记录头的 kind：实测 2509+（11.0.1 / 11.2.2 / 12.0.1）恒为 **5**，
+/// `<= 2507` 时为 2/3 —— 与 [`LOGIC_SONG_KIND`] 一样是"随格式版本走"的 kind。
+pub const LOGIC_REGION_KIND: u16 = 5;
+
+/// `gnoS` 载荷开头那段嵌套 `#G` 子帧前缀里，紧跟版本码的四个实测字节。
+///
+/// 实测：本机全部真实工程与参考实现产物在 `gnoS` 载荷 `+0x00` 都是
+/// `23 47 C0 AB` + 版本码（`u16` 小端）+ `18 00 11 00`。本写入器只写这段实测前缀；
+/// 子帧其后约 10 KB 的全局设置**没有重建**（参考实现同样把整个 `gnoS` 视为不透明、
+/// 靠克隆 donor 而不重建），这一点保留在 [`CONTAINER_HEADER_CAVEAT`] 里。
+pub const LOGIC_SONG_SUBFRAME_SUFFIX: [u8; 4] = [0x18, 0x00, 0x11, 0x00];
 
 /// 记录头里载荷长度（`u32` 小端）的偏移（实测 +0x1c）。
 pub const LOGIC_RECORD_SIZE_OFFSET: usize = 0x1c;
@@ -295,20 +409,29 @@ pub const MISSING_CHUNK_FAMILIES: [(&str, &str); 24] = [
     ("Vide", MISSING_FAMILY_TAIL_UNKNOWN),
 ];
 
-/// 与真实工程**逐字节**对账后发现的一处**实测偏差**（不是省略，是写了不同的值）。
+/// 与真实工程**逐字节**对账后**仍然存在**的一处实测偏差（不是省略，是写了不同的值）。
 ///
-/// 实测（两个本机演示工程的全部记录）：记录头 +4（u16 类型/版本，取值 1..=8）、
-/// +0x16（u32，恒为 2）、+0x1a（u16，恒为 1）都非零，根头 4..0xf 也非零，且 `gnoS` 载荷
-/// 以根魔数 `#G` 开头；本写入器在这些位置一律写 0，`gnoS` 载荷是 0 填充。
-/// 这是**有意的**最小选择（不从真实文件反推类型系统的取值等于编造对象类型；groove 的写入器
-/// 同样写 0），但它与每一个实测到的真实记录都不同，因此登记为"有表示、等价性未经证实"，
-/// 而不是静默省略。
+/// 已经**不再是**偏差的字段（按本机实测改正，见各自的常量文档）：根头 4..0xf
+/// （版本码 + 十个恒定字节）、记录头 kind@+4、+0x16、+0x18、+0x1a，`gnoS` 的 subtype
+/// （`0xFFFF`）、拍号/速度 `qSvE` 的 subtype（1 / 3），以及 `gnoS` 载荷开头的 `#G` 子帧前缀。
+/// 这些原先写 0、现在写实测值，因此**不再登记**。
+///
+/// 仍然写不同的值的是三处**没有反推出规则**的字段：记录头 `+0x08..+0x14` 的簇号与
+/// `0xFFFF` / `0xFFFF0000` 哨兵（本机实测**随格式版本变化**：例如 `qSvE` 的 `+0x10`
+/// 在 2507 是 `0xFFFFFFFF`、在 2512 是 `0xFFFF0000`）；region 的 `qeSM` 与音符 `qSvE`
+/// 的 subtype（实测是与配对序列共享的序列号 1/3/5/14/17/22/23/25，无编号规则可推，故保持 0）；
+/// 以及 `gnoS` 载荷里嵌套 `#G` 子帧**除实测 10 字节前缀以外**的内容（真实工程约 10 KB
+/// 全局设置，参考实现同样靠克隆 donor 而不重建）。这些**不猜**：登记为"有表示、
+/// 等价性未经证实"，而不是静默省略。
 pub const CONTAINER_HEADER_CAVEAT: &str = concat!(
-    "非等价: 容器头的若干字段与实测真实工程不同——记录头 +4（类型/版本，实测 1..=8）、",
-    "+0x16（实测恒为 2）、+0x1a（实测恒为 1）与根头 4..0xf 在真实工程里都非零，",
-    "而本写入器一律写 0；`gnoS` 载荷在真实工程里以根魔数 `#G` 开头，本写入器是 0 填充。",
-    "这是**写了不同的值**而不是省略：本切片不从真实文件反推对象类型（那等于编造），",
-    "groove 的写入器同样写 0；是否被接受**未经证实**"
+    "非等价: 容器头仍有未重建的字段——根头版本码与 0x06..0x0f、每条记录的 kind@+4 与 ",
+    "+0x16 / +0x18 / +0x1a、`gnoS` 的 subtype（0xFFFF）与拍号/速度 `qSvE` 的 subtype（1 / 3）、",
+    "以及 `gnoS` 载荷开头的 `#G` 子帧前缀，都已按本机实测的 Logic 12.0.1（格式版本码 0x09D0）",
+    "取值写入；但记录头 +0x08..+0x14 里的簇号与 0xFFFF / 0xFFFF0000 哨兵（实测随格式版本变化）",
+    "没有反推出规则，region 的 `qeSM` 与音符 `qSvE` 的 subtype（与配对序列共享的序列号，",
+    "实测 1/3/5/14/17/22/23/25，无编号规则可推）保持 0，`gnoS` 载荷里嵌套 `#G` 子帧除实测前缀外",
+    "的内容（真实工程约 10 KB 全局设置）也没有重建。这是**写了不同的值**而不是省略：",
+    "本切片不猜这些字段的语义，是否被接受**未经证实**"
 );
 
 /// 把落盘的四个 tag 字节反序解码成可读名：`gnoS` ⇒ `Song`。
@@ -924,8 +1047,15 @@ impl LogicBuilder {
                 }
 
                 self.records.push(region_record(cluster, &name));
-                self.records
-                    .push(record(LOGIC_SEQUENCE_TAG, cluster, &note_lines(&lines)));
+                // 音符 `qSvE` 的 subtype 在真实工程里与配对 `qeSM` 共享同一个序列号，
+                // 本仓库没有反推出编号规则 ⇒ 与 `qeSM` 一样写 0（见 `region_record`）。
+                self.records.push(record(
+                    LOGIC_SEQUENCE_TAG,
+                    LOGIC_SEQUENCE_KIND,
+                    0,
+                    cluster,
+                    &note_lines(&lines),
+                ));
                 self.mapped_regions += 1;
                 self.mapped_notes += lines.len();
 
@@ -1018,6 +1148,10 @@ fn project_entity(project: &YebanProjectV1) -> String {
 }
 
 /// `gnoS`：速度写在两个固定槽里（`round(bpm × 10000)`，`u32` 小端）。
+///
+/// 载荷 `+0x00` 是实测的嵌套 `#G` 子帧前缀（[`LOGIC_ROOT_MAGIC`] + 版本码 +
+/// [`LOGIC_SONG_SUBFRAME_SUFFIX`]）；子帧其余内容不重建，见 [`CONTAINER_HEADER_CAVEAT`]。
+/// 记录头 `+0x08..+0x16` 是实测的 14 字节 `0xFF` 填充（不是 cluster 值）。
 fn song_record(bpm: f64) -> Vec<u8> {
     let raw = (bpm * 10_000.0).round();
     let ticks = if raw.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&raw) {
@@ -1026,6 +1160,9 @@ fn song_record(bpm: f64) -> Vec<u8> {
         0
     };
     let mut body = vec![0u8; LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE - LOGIC_RECORD_HEADER + 4];
+    body[..4].copy_from_slice(&LOGIC_ROOT_MAGIC);
+    put_u16_le(&mut body, 4, LOGIC_FORMAT_VERSION_CODE);
+    body[6..10].copy_from_slice(&LOGIC_SONG_SUBFRAME_SUFFIX);
     put_u32_le(
         &mut body,
         LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE - LOGIC_RECORD_HEADER,
@@ -1036,7 +1173,17 @@ fn song_record(bpm: f64) -> Vec<u8> {
         LOGIC_SONG_TEMPO_SLOT_FALLBACK - LOGIC_RECORD_HEADER,
         ticks,
     );
-    record(LOGIC_SONG_TAG, 0, &body)
+    let mut out = record(
+        LOGIC_SONG_TAG,
+        LOGIC_SONG_KIND,
+        LOGIC_SONG_SUBTYPE,
+        0,
+        &body,
+    );
+    for byte in &mut out[LOGIC_RECORD_CLUSTER_OFFSET..0x16] {
+        *byte = 0xFF;
+    }
+    out
 }
 
 /// 拍号记录：第一个字 `0x30`，+0x0b 是分母的以 2 为底指数，+0x0c 是分子。
@@ -1045,17 +1192,34 @@ fn meter_record(numerator: u8, denominator: u8) -> Vec<u8> {
     put_u32_le(&mut body, 0, LOGIC_METER_MARKER);
     body[0x0b] = denominator.trailing_zeros() as u8;
     body[0x0c] = numerator;
-    record(LOGIC_SEQUENCE_TAG, 0, &body)
+    record(
+        LOGIC_SEQUENCE_TAG,
+        LOGIC_SEQUENCE_KIND,
+        LOGIC_METER_SUBTYPE,
+        0,
+        &body,
+    )
 }
 
 /// 速度事件序列：第一个字 `0x60`（本切片只写这一个事件）。
 fn tempo_record() -> Vec<u8> {
     let mut body = vec![0u8; LOGIC_EVENT_LINE_SIZE];
     put_u32_le(&mut body, 0, LOGIC_TEMPO_MARKER);
-    record(LOGIC_SEQUENCE_TAG, 0, &body)
+    record(
+        LOGIC_SEQUENCE_TAG,
+        LOGIC_SEQUENCE_KIND,
+        LOGIC_TEMPO_SUBTYPE,
+        0,
+        &body,
+    )
 }
 
 /// region 记录：载荷 +0x34 是 `uint16` 小端长度 + UTF-8 名字，名字后一个 `u32` 写 0。
+///
+/// ⚠ subtype（+0x06）在真实工程里是与配对 `qSvE` **共享的序列号**（实测同一 region 的
+/// `qeSM` 与 `qSvE` 取同一个值，本机 12.0.1 工程里是 1、3、5、14、17、22、23、25 这些值），
+/// 本仓库没有反推出编号规则，因此**不猜**：写 0，并把这一处登记在
+/// [`CONTAINER_HEADER_CAVEAT`] 里（而不是假装它与实测一致）。
 fn region_record(cluster: u32, name: &str) -> Vec<u8> {
     let name_in_body = LOGIC_REGION_NAME_OFFSET - LOGIC_RECORD_HEADER;
     let name_bytes = utf8_prefix(name, usize::from(u16::MAX)).as_bytes();
@@ -1063,7 +1227,7 @@ fn region_record(cluster: u32, name: &str) -> Vec<u8> {
     body[name_in_body..name_in_body + 2].copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
     body[name_in_body + 2..name_in_body + 2 + name_bytes.len()].copy_from_slice(name_bytes);
     put_u32_le(&mut body, name_in_body + 2 + name_bytes.len(), 0);
-    record(LOGIC_REGION_TAG, cluster, &body)
+    record(LOGIC_REGION_TAG, LOGIC_REGION_KIND, 0, cluster, &body)
 }
 
 /// 一个待写入的音符（tick 已换算成绝对位置 + 原点偏移）。
@@ -1094,21 +1258,37 @@ fn note_lines(notes: &[WrittenNote]) -> Vec<u8> {
     body
 }
 
-/// 36 字节记录头 + 载荷：名字在 +0，cluster 在 +8，载荷长度在 +0x1c。
-fn record(tag: [u8; 4], cluster: u32, body: &[u8]) -> Vec<u8> {
+/// 36 字节记录头 + 载荷：名字在 +0，kind 在 +4，subtype 在 +6，cluster 在 +8，
+/// +0x16/+0x18/+0x1a 是实测的恒定字，载荷长度在 +0x1c。
+fn record(tag: [u8; 4], kind: u16, subtype: u16, cluster: u32, body: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; LOGIC_RECORD_HEADER + body.len()];
     out[..4].copy_from_slice(&tag);
+    put_u16_le(&mut out, LOGIC_RECORD_KIND_OFFSET, kind);
+    put_u16_le(&mut out, LOGIC_RECORD_SUBTYPE_OFFSET, subtype);
     put_u32_le(&mut out, LOGIC_RECORD_CLUSTER_OFFSET, cluster);
+    put_u16_le(&mut out, 0x16, LOGIC_RECORD_FIELD_16);
+    put_u16_le(&mut out, 0x18, LOGIC_RECORD_FIELD_18);
+    put_u16_le(&mut out, 0x1a, LOGIC_RECORD_FIELD_1A);
     put_u32_le(&mut out, LOGIC_RECORD_SIZE_OFFSET, body.len() as u32);
     out[LOGIC_RECORD_HEADER..].copy_from_slice(body);
     out
 }
 
-/// 把记录串成完整的 `ProjectData`：根头 0x18 字节 + 记录流，声明长度写在 0x10。
+/// 把记录串成完整的 `ProjectData`：根头 0x18 字节 + 记录流。
+///
+/// 根头写**实测**的版本码（[`LOGIC_FORMAT_VERSION_CODE`]，+0x04）与十个恒定字节
+/// （[`LOGIC_ROOT_STABLE_FIELDS`]，+0x06..0x10），声明长度写在 0x10。
 fn root_document(records: &[Vec<u8>]) -> Vec<u8> {
     let payload: usize = records.iter().map(Vec::len).sum();
     let mut out = vec![0u8; LOGIC_ROOT_HEADER + payload];
     out[..4].copy_from_slice(&LOGIC_ROOT_MAGIC);
+    put_u16_le(
+        &mut out,
+        LOGIC_FORMAT_VERSION_OFFSET,
+        LOGIC_FORMAT_VERSION_CODE,
+    );
+    out[LOGIC_ROOT_STABLE_OFFSET..LOGIC_ROOT_STABLE_OFFSET + LOGIC_ROOT_STABLE_FIELDS.len()]
+        .copy_from_slice(&LOGIC_ROOT_STABLE_FIELDS);
     put_u32_le(&mut out, LOGIC_DECLARED_LENGTH_OFFSET, payload as u32);
     let mut at = LOGIC_ROOT_HEADER;
     for entry in records {
@@ -1116,6 +1296,11 @@ fn root_document(records: &[Vec<u8>]) -> Vec<u8> {
         at += entry.len();
     }
     out
+}
+
+/// `u16` 小端写到 `out[at..at+2]`。
+fn put_u16_le(out: &mut [u8], at: usize, value: u16) {
+    out[at..at + 2].copy_from_slice(&value.to_le_bytes());
 }
 
 /// `u32` 小端写到 `out[at..at+4]`。
@@ -1473,6 +1658,23 @@ mod tests {
         u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
     }
 
+    fn u16_le(bytes: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([bytes[at], bytes[at + 1]])
+    }
+
+    /// 所有记录的 `(偏移, tag)`，**只由载荷长度驱动**走完整个 chunk 流。
+    fn record_offsets(bytes: &[u8]) -> Vec<(usize, [u8; 4])> {
+        let mut out = Vec::new();
+        let mut at = LOGIC_ROOT_HEADER;
+        while at + LOGIC_RECORD_HEADER <= bytes.len() {
+            let tag = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
+            let size = u32_le(bytes, at + LOGIC_RECORD_SIZE_OFFSET) as usize;
+            out.push((at, tag));
+            at += LOGIC_RECORD_HEADER + size;
+        }
+        out
+    }
+
     fn read_records(bytes: &[u8]) -> Vec<Record> {
         assert_eq!(bytes[..4], LOGIC_ROOT_MAGIC, "根魔数");
         assert_eq!(
@@ -1688,6 +1890,110 @@ mod tests {
         assert!(tags.contains(&LOGIC_REGION_TAG), "必须有 region");
         assert_eq!(read_meter(&records), Some((3, 4)), "3/4 拍号必须回读");
         assert_eq!(read_song_tempo(&records), Some(128.0), "速度必须回读");
+    }
+
+    /// 判据：容器头写的是**本机实测的现代取值** —— 逐字段用**实测字面量**钉住。
+    ///
+    /// ⚠ 断言里刻意写**字面量**（`0x09D0`、`0x06..0x0f` 的十个字节、kind / subtype /
+    /// +0x16 / +0x1a、`gnoS` 载荷前缀），**不引用本模块的常量** —— 把常量改错必须让本判据
+    /// 变红，否则它只是一个"照镜子"的判据。
+    ///
+    /// 证据来源（全部本机实测，见 `LOGIC_FORMAT_VERSION_CODE` 的文档）：
+    /// * 根头 `+0x04` = `0x09D0`（`Logic Pro 12.0.1 (6590)` 存过的工程）；
+    /// * 根头 `0x06..0x0f` = `03 00 04 00 00 00 01 00 08 00`（10.2.4…12.0.1 全部一致）；
+    /// * `gnoS`：kind 6 / subtype `0xFFFF` / `+0x08..+0x16` 是 14 字节 `0xFF`；
+    /// * 记录头 `+0x16` = 2、`+0x18` = 0、`+0x1a` = 2（版本码 ≥ 2509）；
+    /// * `gnoS` 载荷开头 = `#G` + 版本码 + `18 00 11 00`；
+    /// * 拍号 `qSvE` kind/subtype = (1, 1)、速度 `qSvE` = (1, 3)、`qeSM` kind = 5。
+    #[test]
+    fn container_header_fields_carry_the_measured_modern_values() {
+        let bundle = build_bundle(&fixture_project(), "000", "Header");
+        let data = &bundle.files["Alternatives/000/ProjectData"];
+
+        // 根头 +0x04..0x10：版本码 + 十个恒定字节。
+        assert_eq!(
+            &data[0x04..0x10],
+            &[
+                0xD0, 0x09, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00
+            ],
+            "根头 +0x04 必须是实测的最新版本码 0x09D0（Logic Pro 12.0.1），\
+             且 0x06..0x0f 是实测的十个恒定字节（写 0 = Logic 把它读成 Logic 4）"
+        );
+
+        // `gnoS`：实测第一条记录在 0x18。
+        assert_eq!(&data[0x18..0x1c], b"gnoS", "第一条记录必须是 gnoS");
+        let song = 0x18;
+        assert_eq!(
+            u16_le(data, song + 0x04),
+            6,
+            "gnoS 记录头 +4（kind）实测 2512 = 6"
+        );
+        assert_eq!(
+            u16_le(data, song + 0x06),
+            0xFFFF,
+            "gnoS 记录头 +6（subtype）实测恒为 0xFFFF"
+        );
+        assert_eq!(
+            &data[song + 0x08..song + 0x16],
+            &[0xFF; 14],
+            "gnoS 记录头 +0x08..+0x16 实测是 14 字节 0xFF 填充"
+        );
+        assert_eq!(u16_le(data, song + 0x16), 2, "记录头 +0x16 实测恒为 2");
+        assert_eq!(u16_le(data, song + 0x18), 0, "记录头 +0x18 实测恒为 0");
+        assert_eq!(
+            u16_le(data, song + 0x1a),
+            2,
+            "记录头 +0x1a 实测格式版本码 >= 2509 恒为 2"
+        );
+        // `gnoS` 载荷（记录头之后）的嵌套 `#G` 子帧实测前缀。
+        assert_eq!(
+            &data[0x3c..0x3c + 10],
+            &[0x23, 0x47, 0xC0, 0xAB, 0xD0, 0x09, 0x18, 0x00, 0x11, 0x00],
+            "gnoS 载荷必须以实测的 #G 子帧前缀（#G + 版本码 + 18 00 11 00）开头"
+        );
+
+        // 拍号 / 速度 `qSvE` 与第一条 `qeSM`。
+        let mut meter = None;
+        let mut tempo = None;
+        let mut region = None;
+        for (at, tag) in record_offsets(data) {
+            let body = at + LOGIC_RECORD_HEADER;
+            if tag == *b"qSvE" && data[body..body + 4] == 0x30_u32.to_le_bytes() {
+                meter = Some(at);
+            }
+            if tag == *b"qSvE" && data[body..body + 4] == 0x60_u32.to_le_bytes() {
+                tempo = Some(at);
+            }
+            if tag == *b"qeSM" && region.is_none() {
+                region = Some(at);
+            }
+        }
+        let meter = meter.expect("必须有拍号 qSvE（载荷第一个字 0x30）");
+        let tempo = tempo.expect("必须有速度 qSvE（载荷第一个字 0x60）");
+        let region = region.expect("必须有 region qeSM");
+        assert_eq!(
+            (u16_le(data, meter + 4), u16_le(data, meter + 6)),
+            (1, 1),
+            "拍号 qSvE 的 kind/subtype 实测为 (1, 1)"
+        );
+        assert_eq!(
+            (u16_le(data, tempo + 4), u16_le(data, tempo + 6)),
+            (1, 3),
+            "速度 qSvE 的 kind/subtype 实测为 (1, 3)"
+        );
+        assert_eq!(
+            u16_le(data, region + 4),
+            5,
+            "region qeSM 的 kind 实测 2509+ 为 5"
+        );
+        for at in [meter, tempo, region] {
+            assert_eq!(u16_le(data, at + 0x16), 2, "记录头 +0x16 实测恒为 2");
+            assert_eq!(
+                u16_le(data, at + 0x1a),
+                2,
+                "记录头 +0x1a 实测格式版本码 >= 2509 恒为 2"
+            );
+        }
     }
 
     /// 判据 (b)：空工程产出最小但合法的文档（只有速度/拍号/速度事件三个记录）。
@@ -1921,6 +2227,10 @@ mod tests {
     ///
     /// ⚠ 演示工程**有版权、不进仓库**，CI 上不存在 ⇒ 本判据在 CI 里是 skip，绝不红。
     /// 它证明的是"本模块的常量与本机实测一致"，不是"Logic 能打开"。
+    ///
+    /// 除了魔数/声明长度/第一个 chunk，这里还核对**根头版本码非零且落在实测区间内**、
+    /// **根头 0x06..0x0f 是那十个恒定字节**、以及**每条记录的 +0x16 都是 2** ——
+    /// 这三条就是本模块写进产物的那些字段在本机真实文件里的 ground truth。
     #[test]
     fn local_demo_projects_match_the_measured_header_layout_when_present() {
         let demos = [
@@ -1943,6 +2253,30 @@ mod tests {
                 &LOGIC_SONG_TAG,
                 "{demo} 的第一个 chunk 必须是 gnoS"
             );
+            // 版本码：实测区间 0x06DC（10.2.4）…0x09D0（12.0.1）；这两个演示是 0x09CB/0x07D0。
+            let version = u16_le(&bytes, LOGIC_FORMAT_VERSION_OFFSET);
+            assert!(
+                (0x06DC..=0x09D0).contains(&version),
+                "{demo} 的根头版本码必须落在实测区间内，实测 {version:#06x}"
+            );
+            assert_eq!(
+                &bytes[LOGIC_ROOT_STABLE_OFFSET..LOGIC_ROOT_STABLE_OFFSET + 10],
+                &LOGIC_ROOT_STABLE_FIELDS,
+                "{demo} 的根头 0x06..0x0f 必须是那十个恒定字节"
+            );
+            for (at, tag) in record_offsets(&bytes) {
+                assert_eq!(
+                    u16_le(&bytes, at + 0x16),
+                    2,
+                    "{demo} 的 {:?} 记录 +0x16 实测恒为 2",
+                    String::from_utf8_lossy(&tag)
+                );
+                assert_eq!(
+                    u16_le(&bytes, at + 0x18),
+                    0,
+                    "{demo} 的记录头 +0x18 实测恒为 0"
+                );
+            }
             checked += 1;
         }
         eprintln!("可选演示工程核对：{checked} 个文件存在并核对通过（不存在 = skip）");

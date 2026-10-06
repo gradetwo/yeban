@@ -1381,6 +1381,14 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
     // ② `ProjectData` 的实测头部。
     let bytes = std::fs::read(&project_data).expect("读 ProjectData");
     assert_eq!(&bytes[..4], &[0x23, 0x47, 0xC0, 0xAB], "根魔数");
+    assert_eq!(
+        &bytes[0x04..0x10],
+        &[
+            0xD0, 0x09, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00
+        ],
+        "根头 +0x04 必须是实测的最新格式版本码 0x09D0（Logic Pro 12.0.1）\
+         —— 写 0 时 Logic Pro 12.2 把文档读成 Logic 4 format (or earlier) 并拒绝打开"
+    );
     assert_eq!(&bytes[0x18..0x1c], b"gnoS", "第一个 chunk 名必须是 gnoS");
     let declared =
         u32::from_le_bytes([bytes[0x10], bytes[0x11], bytes[0x12], bytes[0x13]]) as usize;
