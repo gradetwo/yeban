@@ -6572,7 +6572,7 @@ Read the requirement instead of inventing one, and it settles both the tool's me
 
 | source | requirement |
 | :--- | :--- |
-| `YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1013` and `YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:236` | 主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与响度范围, plus true-peak and RMS meters |
+| `YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1013（同上，现为 :1014）` and `YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:236（该文件于 2026-10-06 因权威降级各加 1 行 ⇒ 现为 :237）` | 主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与响度范围, plus true-peak and RMS meters |
 | `YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:459` | broadcast `bext` metadata carries **EBU R128 响度元数据** |
 | `YEBAN_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md:226` | 完全符合 **EBU R128 与 ITU-R BS.1770-4** 的响度计算与真峰值积分标准 |
 
