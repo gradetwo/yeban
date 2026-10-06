@@ -9971,3 +9971,30 @@ reports **已完成 18 / 部分 23 / PENDING 6**, i.e. the summary moved with th
 **One registered, non-blocking remainder**: production `run_gui` still builds no save surface, because `src/live_surface.rs` is `#[path]`-included only by test targets,
 so the product binary has no `ui/force_save` command. That is a **save-UI** gap, not a writer-boundary gap, and when the surface enters the product path it uses the
 now-criteria-backed `ProjectAuthorityHandle::save_to`.
+
+
+### Round 411: the product binary gets a save entry - and the minimal choice protected the distribution graph
+
+`d180bfb` closes the last registered gap around `M4-008`: the save capability was criteria-backed but **unreachable by a user**, because `src/live_surface.rs` is
+`#[path]`-included only by `tests/live_ui_mcp.rs` and its crates are dev-dependencies.
+
+**It measured first, and the measurement shaped the choice**: `ui/force_save` is a **control-plane method** (`crates/yeban-ui-mcp/src/methods.rs:76` ->
+`src/service.rs:438` -> `LiveAdminSurface::save_now` -> `authority.save_to` / `save_project_file`), not a Slint callback, and `run_gui` had **no** save wiring while
+`ui/*.slint` had **no** save callbacks. Moving `live_surface.rs` into the product path would have added **two product dependency edges plus a non-default feature** and
+pulled `yeban-ui-mcp` into the **distribution graph** - `AGENTS.md` §2 redline 6 - so it wrote a small **production-local** entry instead: `src/save_action.rs` with
+`dispatch_save`, and when `in-process-mcp` is off the authority parameter is an **uninhabitable placeholder type**, so the three-branch policy is written exactly once.
+
+**The user route**: `transport-save-button` -> `save-project` -> `host::wire_save` -> `dispatch_save`, with the outcome drawn at `status-bar-save-status`. The three
+cases behave as the writer boundary requires: a writable session saves **through the authority** (`by_authority = true`, no fallback); a read-only session is
+**refused at the authority door with zero bytes and no fallback** (the message says why); and with no control plane the local `save_project_file` writes under its own
+exclusive `.yeban.lock` - and when another form holds it, the message **names the lock file, the holder and the mode**, because a user has to be able to read why the
+save did not happen.
+
+**Verified independently**: 14 files changed; the default dependency metric (distinct `name version` pairs) is **296**, unchanged, so no product edge was added and
+the redline-6 discipline held; `production_save_ui` runs **1 passed** and `single_writer_session` **5 passed** (from 3); `lib` is **191 passed**; the phase guard still
+reports **18 / 23 / 6** with `ROAD-M4-008` 已完成; `light` is green; and the commit is pushed. Four negative measurements went red and were restored with matching
+checksums - including one on the accessible-id registry, which is what keeps the new button from quietly disappearing.
+
+**One honest cost is registered rather than hidden**: `live_surface.rs::save_now` and `save_action::dispatch_save` now each spell the three-branch policy once. They
+call **identical entry points**, and the ledger records that if `live_surface.rs` ever moves to the product path, `save_now` must be deleted in favour of
+`dispatch_save`. That is the correct trade for not widening the distribution graph, and it is written where the next line will read it.
