@@ -8959,7 +8959,7 @@ a second writer today.
 
 **Option (a) - the UI projects from `Domain` (my recommendation).** Make `Domain` the single mutable authority and have `UndoPort`/`LiveSurface` hold *projections*
 rather than projects, re-projecting after each `apply`. Consequences: one writer by construction, so `MUST-GATE-008`'s lock story stays simple; the largest change to
-`undo.rs`/`live_surface.rs`; the Slint event loop must marshal re-projection, which the existing `invoke_from_event_loop` path already does for host calls.
+`undo.rs`/`live_surface.rs`; the Slint event loop must marshal re-projection, which （**更正，第 409 轮**：当时写的"既有的 `invoke_from_event_loop` 路径已做此事"是**未测量的假话** —— 实测该调用点在 `crates/` 里**0 处**；正确路径由第 409 轮实现：`reproject.rs` 的 `event_loop_sink` 经 `slint::invoke_from_event_loop` 投递）.
 **Option (b) - keep the copies and hook `Domain::apply` to a host sink.** Add a post-apply callback that pushes a fresh project into the UI surfaces and the undo
 port. Consequences: smaller diff, but three authorities remain and correctness depends on every mutation path remembering to call the hook - exactly the class of bug
 the objective's "不许把看起来有当成有" is about.
