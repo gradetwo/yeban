@@ -579,6 +579,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "是否做峰值归一化 (目标满量程)",
             ),
             param(
+                "targetLufs",
+                "number",
+                false,
+                "响度目标 (LUFS, ITU-R BS.1770-4 门限积分; 闭区间 [−70, 0])。给了就按 ±0.5 LU 容差判定: 未达标返回 RENDER_FAILED; 不给则只报实测读数 (默认路径)",
+            ),
+            param(
                 "path",
                 "string",
                 false,
@@ -590,6 +596,14 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         // `IO_ERROR`（落盘失败）—— 它们全在 ADR-0001 D25 的 20 值联集内,
         // 由 `docs/ledger/tools-domain-notes.md` 的 boundary-7 与本线台账登记,
         // 不塞进这一列（这一列的口径是"表格里列了什么"）。
+        //
+        // 本线新增的 `targetLufs` **没有**改变这一列：它产生的两条出口里,
+        // `RENDER_FAILED`（未达标 / 测不出）本来就在列内；另一条
+        // `INVALID_PARAMETER_RANGE`（目标越出 [−70, 0] 或非有限数）**必须**留在列外
+        // —— 判据 `tools::tests::documented_tools_error_codes_cover_the_table_exactly`
+        // 明文要求文档十工具声明的每一个码都属于架构 §7.2 的表格并集, 往这一列塞
+        // 一个表格外的码会**当场变红**（本线第一版就是这么红的）。
+        // ⇒ 口径与上面那段注释一致：**这一列是"表格里列了什么"，不是"实现能产出什么"**。
         // `BUSY` 仍不可达（领域状态单线程同步），见 `domain/render.rs` 模块头。
         errors: &[ErrorCode::RenderFailed, ErrorCode::Busy],
     },

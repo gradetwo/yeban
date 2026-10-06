@@ -35,6 +35,7 @@
         },
         "arguments": {
           "type": "object",
+          "description": "工具实参。本节的 `properties` 只声明**所有工具共有**的两个键（`dryRun` / `idempotencyKey`）；每个工具的**特有**实参由 `definitions.ToolCall.properties.name` 对应的注册表条目在 `tools/list` 的 `inputSchema` 里逐条派生（`crates/yeban-mcp/src/tools.rs` 的 `ToolSpec::input_schema`，`additionalProperties: false`）。扩展工具的实参**另有**本节下方的 `definitions.ExtensionToolArguments` 手写逐字段约束。**`yeban_render_master` 的 `targetLufs`**（响度目标, LUFS; 给了就按 ±0.5 LU 容差判定, 未达标报 `RENDER_FAILED`）就是前一条路径上的特有实参 —— 它**不是**公共键, 因此刻意不写在这里。",
           "properties": {
             "dryRun": {
               "type": "boolean",

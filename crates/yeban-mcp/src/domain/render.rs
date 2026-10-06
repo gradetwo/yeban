@@ -110,21 +110,73 @@
 //! - 归一化发生在抖动**之前**：抖动是"降位深"这一步的伴生 [ARCH-FMT-001]，
 //!   对还没定标的信号抖动等于提前污染母带。
 //!
+//! ## `targetLufs` 的口径（本切片新增；"能测的那一半"）
+//!
+//! **响度目标不是一个新工具，是 `yeban_render_master` 的一个可选参数**，因为
+//! 交付形态是"一次渲染 + 一份实测-对-目标的报告"，而渲染入口已经存在
+//! （`AGENTS.md` §6.3：先 grep 交付形态，再下结论）。
+//!
+//! ```text
+//! 不给 targetLufs  → 只报实测读数; verdict = "noTarget"   ← **默认路径, 逐字节不变**
+//! 给 targetLufs    → 报读数 + 判定; |实测 − 目标| ≤ 0.5 LU ⇒ "pass"
+//!                                            否则           ⇒ "fail" + RENDER_FAILED
+//! 测不出（静音 / 采样率无核验系数）          ⇒ "unmeasurable" + RENDER_FAILED
+//! ```
+//!
+//! 五件事写死在这里，都是**刻意的**：
+//!
+//! 1. **不做响度归一化**（不像 `normalize` 那样去改样本）：规范只要求"显示 LUFS"，
+//!    没有任何文字要求按 LUFS 目标改变增益（见下方"规范沉默"）。做归一化会改变
+//!    母带字节，而**默认路径必须逐字节不变**（`MUST-GATE-002` 的 L1 位级渲染）。
+//! 2. **测量对象是抖动/量化之前的浮点母带**（与 `normalize` 同一作用域）：响度计量的
+//!    对象是母带信号本身，抖动是"降位深"的伴生步骤。
+//! 3. **测量在 [`RenderArtifact::build`] 里做**（`plan` 阶段，只读）；`apply` 只落盘 ⇒
+//!    `dryRun` 与真调用拿到的是**同一份**判定。
+//! 4. **未达标不写文件**：`RENDER_FAILED` 从 `build` 里返回，`apply` 根本不会被调用。
+//! 5. **判定是只读的**：`bytes` / `sha256` / `masterDigest` 与不给目标时逐位相同，
+//!    判据 `the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached`。
+//!
+//! ### 规范沉默处（**这是工程选择，必须登记**）
+//!
+//! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016` 只要求
+//!   "主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与
+//!   响度范围（LRA）数值显示" —— 是**显示**要求，不是**目标**要求；
+//! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` 通篇没有响度目标条目
+//!   （`grep -n '响度\|loudness\|LUFS'` 只命中 `:107` 的"符合 ITU-R BS.1770-4 的
+//!   真峰值多相插值砖墙限制器"）；
+//! - `docs/ledger/mcp-tools-expansion-notes.md:224` 把"响度目标"挂在 `BASELINE-006`
+//!   名下，而 `BASELINE-006` 的实测定义是
+//!   "**AI 交互效率**：序列化 JSON 载荷 ≤ 4 KB，Token 开销中位数 ≤ 600"
+//!   （`YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:361`）—— **它是 tokenizer 指标**，
+//!   与 LUFS 无关。该注解见本文件所在工作线的台账（annotate，不改写）。
+//!
+//! 因此**容差**（[`TARGET_TOLERANCE_LU`] = 0.5 LU）与**判定规则**（不达标 ⇒
+//! `RENDER_FAILED`）都是本切片的选择。要改它们得有人先裁决"谁来定容差"。
+//!
+//! ### 哪些采样率上可判
+//!
+//! K 加权系数只对 44.1 / 48 / 88.2 / 96 kHz 四档推导并核验过
+//! （`crates/yeban-dsp/src/loudness.rs` 的 `K_WEIGHTING_SAMPLE_RATES_HZ`）。
+//! `SampleRate` 枚举还有 192 kHz：那时**不硬套 48 kHz 系数**（那会给出错 0.8 dB 的
+//! "说谎"读数），读数写 `null` + `measurementNote`，给了目标则判 `unmeasurable`。
+//!
 //! ## 可观测性（响应 `data` 里的数字全部是实测值）
 //!
 //! `frames` / `channels` / `sampleRate` / `bytes`（容器总字节）/ `headerBytes` /
 //! `payloadBytes` / `sha256`（整份文件）/ `masterDigest`（母带样本的位级 SHA-256）/
 //! `blocks` / `longestPathFrames` / `peak.before` / `peak.after` / `sourceNodes` /
 //! `audio`（音频片段的**实测**事实：容器嗅探、声道布局、源/目标采样率、裁剪帧数、
-//! 重采样口径）/ `unsupported`。`dryRun` 返回同一批数字 + `wouldWrite`，**不落盘**。
+//! 重采样口径）/ `loudness`（门限积分读数 + 对目标的判定）/ `unsupported`。
+//! `dryRun` 返回同一批数字 + `wouldWrite`，**不落盘**。
 //!
 //! ## 错误映射（不发明新码，`ADR-0001 D25`）
 //!
 //! | 状况 | 出口 |
 //! | :--- | :--- |
-//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
+//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
 //! | 没有活跃工程 | `NO_ACTIVE_PROJECT`（带内） |
 //! | 0 帧、超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID） |
+//! | **母带响度未达标或测不出** | `RENDER_FAILED`（`data.reason = "loudnessTargetMissed"`，`data` 带实测/目标/差值/容差） |
 //! | 片段引用的资产既不在会话 CAS 池里、工程 `assets` 索引里也没有 | `RENDER_FAILED`（`data.reason = "assetMissing"`） |
 //! | 会话 CAS 池里的字节与它声明的 SHA-256 不符（完整性破坏） | `RENDER_FAILED`（`data.reason = "assetHashMismatch"`） |
 //! | 资产解码失败（坏/截断/不支持的容器） | `RENDER_FAILED`（`data.reason = "assetDecodeFailed"` + 分类）；解码器报的是 I/O 错时走 `IO_ERROR` |
@@ -170,6 +222,11 @@ use yeban_render::render::{
     AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderPlan, db_to_linear,
     track_latencies,
 };
+// **响度计量的唯一实现**在 `yeban-dsp::loudness`（ITU-R BS.1770-4 的 K 加权 +
+// 门限积分）。本模块**不复制**它一个表达式：走 `yeban-render` 的再导出，因为
+// `scripts/gates/check_mcp_dependency_direction.py` 禁止 MCP 直接依赖 `yeban-dsp`
+// （"不拖音频栈进 MCP"），而 `yeban-mcp -> yeban-render` 这条边早已存在。
+use yeban_render::loudness::GatedLoudness;
 use yeban_render::rf64::{Bext, ContainerKind, ContainerPlan, PcmFormat, write_container};
 use yeban_render::rng::dither_rng_for;
 
@@ -191,6 +248,59 @@ pub const OUTPUT_BIT_DEPTH: u16 = 24;
 /// 归一化目标（满量程）。
 pub const NORMALIZE_TARGET: f32 = 1.0;
 
+// ---------------------------------------------------------------------------
+// 响度目标（D46 的"能测的另一半"）：容差、词表与判据常量
+// ---------------------------------------------------------------------------
+
+/// 判定"母带达到响度目标"的**容差**（LU, 即 LUFS 上的差）。
+///
+/// ## 为什么是 ±0.5 LU（这是**规范沉默处的选择**，必须登记）
+///
+/// `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §5.2 只要求"提供 LUFS
+/// (Momentary / Short-term / Integrated) 与 LRA 数值显示"（`:1016`），
+/// `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` 的通篇没有"响度目标"条目
+/// （`grep -n '响度\|loudness\|LUFS' …ROADMAP.md` 只命中 `:107` 的限制器那句）。
+/// 也就是说：**没有任何规范文字给出容差**。本常量因此是**工程选择**，不是规范读数。
+///
+/// 口径与理由：
+/// - 单位是 **LU**（相对响度差），与 BS.1770 的读数差同量纲；
+/// - 数值取 **0.5 LU**：它比该实现自身的数值噪声大三个数量级
+///   （四档采样率上 997 Hz 标定点的残余偏差 ≤0.025 dB，见
+///   `crates/yeban-dsp/src/loudness.rs:1091-1127`），又比广播实务里"±1 LU 以内算合规"
+///   更严 —— 于是它**不会**因为实现误差而误判，也不会宽到让"差 0.9 LU"过关；
+/// - 需要更宽/更严的调用方此刻**没有**参数可调：本切片刻意只加**一个**参数
+///   （`targetLufs`），因为"容差也做成参数"会把一次判定变成二维旋钮，
+///   而规范对判定规则本身沉默（见 `docs/ledger/mcp-tools-expansion-notes.md` 的注解）。
+///   要放宽必须先有人裁决"谁来定容差"。
+pub const TARGET_TOLERANCE_LU: f32 = 0.5;
+
+/// `targetLufs` 的**可接受区间**（LUFS，闭区间）。
+///
+/// 下界 = BS.1770 的绝对门限 `Γa = −70 LUFS`（`crates/yeban-dsp/src/loudness.rs:94`
+/// 的 `ABSOLUTE_GATE_LUFS`）：比它还低的目标在门限积分的定义里**不可达**
+/// （所有块都会被绝对门限丢掉 ⇒ 读数恒为负无穷），因此拒绝而不是假装能判。
+/// 上界 = `0.0 LUFS`（数字满量程；正值在 PCM 里不可达）。区间**端点是接受的**。
+///
+/// 这是**实现侧护栏**，来自两个已公开的常量（`ABSOLUTE_GATE_LUFS` 与满量程），
+/// 不是从规范里抄来的数字。
+pub const TARGET_LUFS_RANGE: [f32; 2] = [-70.0, 0.0];
+
+/// 判定词表：达标。
+pub const VERDICT_PASS: &str = "pass";
+/// 判定词表：**未**达标（差值的绝对值超出容差）。
+pub const VERDICT_FAIL: &str = "fail";
+/// 判定词表：无法测量（纯静音母带，或该采样率上本实现没有核验过的 K 加权系数）。
+pub const VERDICT_UNMEASURABLE: &str = "unmeasurable";
+/// 判定词表：调用方没有给 `targetLufs`（**默认路径**；只报读数，不做判定）。
+pub const VERDICT_NO_TARGET: &str = "noTarget";
+
+/// 响度读数或判定**不可用**时的原因词（进响应 `loudness.measurementNote`）。
+pub const NOTE_SILENT_MASTER: &str = "纯静音母带: 门限积分的读数为负无穷, 不是 0 LUFS";
+/// 见 [`NOTE_SILENT_MASTER`]；这一条是采样率不在四档核验表里。
+pub const NOTE_UNVERIFIED_SAMPLE_RATE: &str =
+    "该采样率没有核验过的 K 加权系数 (44.1/48/88.2/96 kHz 四档), 拒绝硬套 48 kHz 系数";
+
+// ---------------------------------------------------------------------------
 /// 起音时长（毫秒）。
 pub const ATTACK_MS: u32 = 5;
 
@@ -245,6 +355,11 @@ pub struct RenderRequest {
     pub sample_rate: SampleRate,
     /// 是否做峰值归一化。
     pub normalize: bool,
+    /// 响度目标（LUFS）；`None` = **只报读数、不做判定**（也是默认路径）。
+    ///
+    /// 用「`f32` 的位型」参与 `Eq`（`#[derive(Eq)]` 对 `f32` 不成立），因此这里存
+    /// 判定所需的**位型**，读出时用 [`target_lufs`](Self::target_lufs) 还原。
+    pub target_lufs_bits: Option<u32>,
     /// 显式输出路径（`None` = 按缺省规则从工程路径派生）。
     pub path: Option<PathBuf>,
 }
@@ -256,6 +371,12 @@ impl RenderRequest {
         FORMATS.get(self.format_index).copied().unwrap_or("wav")
     }
 
+    /// 响度目标（LUFS）；`None` = 未请求判定。
+    #[must_use]
+    pub fn target_lufs(&self) -> Option<f32> {
+        self.target_lufs_bits.map(f32::from_bits)
+    }
+
     /// 诚实描述这次请求（`dryRun` 与响应共用的 `request` 字段）。
     #[must_use]
     pub fn to_value(&self) -> Value {
@@ -263,6 +384,12 @@ impl RenderRequest {
             "format": self.format(),
             "sampleRate": self.sample_rate.hz(),
             "normalize": self.normalize,
+            "targetLufs": self.target_lufs(),
+            "targetToleranceLu": if self.target_lufs_bits.is_some() {
+                Some(TARGET_TOLERANCE_LU)
+            } else {
+                None
+            },
             "path": self.path.as_ref().map(|path| path.display().to_string()),
             "pathRule": if self.path.is_some() {
                 "显式 path 参数"
@@ -299,13 +426,169 @@ impl RenderRequest {
     }
 }
 
+/// 母带的**实测**响度 + 对目标的判定（进响应 `data.loudness`）。
+///
+/// ## 它为什么不是"第二份测量标准"
+///
+/// 读数**只**来自 `yeban-dsp::loudness` 的 [`GatedLoudness`]（ITU-R BS.1770-4 的
+/// K 加权 + `Γa = −70 LUFS` 绝对门限 + `Γr = −10 LU` 相对门限的**门限积分**），
+/// 也就是 `yeban_query_engine_state` 的 `integratedLufs` 字段背后**同一个**计量器。
+/// 本类型只加两件计量器没有的东西：**目标**与**比较**。
+///
+/// ## 它为什么**不**改渲染
+///
+/// 判定发生在抖动/量化**之前的浮点母带**上，且**只读**：它不改一个样本、不参与
+/// 容器编码。[`RenderArtifact::bytes`] 与 `sha256`／`masterDigest` 因此与不给
+/// `targetLufs` 时**逐字节相同**（判据
+/// `the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached`）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoudnessTarget {
+    /// 调用方给的目标（LUFS）；`None` = 默认路径（只报读数）。
+    pub target_lufs: Option<f32>,
+    /// 容差（LU）。
+    pub tolerance_lu: f32,
+    /// 实测的**门限积分**响度（LUFS）；测不出时 `None`。
+    pub measured_lufs: Option<f32>,
+    /// `measured − target`（LU）；两者有一缺就 `None`。
+    pub delta_lu: Option<f32>,
+    /// 判定（[`VERDICT_PASS`] / [`VERDICT_FAIL`] / [`VERDICT_UNMEASURABLE`] /
+    /// [`VERDICT_NO_TARGET`]）。
+    pub verdict: &'static str,
+    /// 测不出读数时的原因（[`NOTE_SILENT_MASTER`] / [`NOTE_UNVERIFIED_SAMPLE_RATE`]）。
+    pub measurement_note: Option<&'static str>,
+}
+
+impl LoudnessTarget {
+    /// 测一段**抖动/量化之前**的浮点母带，并对目标判定。
+    ///
+    /// `samples` 是 `channels` 声道交织的 `f32`（本工具恒为立体声）。
+    #[must_use]
+    pub fn measure(
+        sample_rate: u32,
+        channels: usize,
+        samples: &[f32],
+        target: Option<f32>,
+    ) -> Self {
+        let (measured_lufs, measurement_note) = if channels != MASTER_CHANNELS {
+            // 本工具只产出立体声；真走到这里说明调用点错了，如实报"测不出"而不是瞎量。
+            (None, Some(NOTE_UNVERIFIED_SAMPLE_RATE))
+        } else {
+            let frames = samples.len() / channels;
+            // 交错 → 两个声道的切片（计量器的口径是"每声道一段"，不是交错流）。
+            let mut left = Vec::with_capacity(frames);
+            let mut right = Vec::with_capacity(frames);
+            for index in 0..frames {
+                left.push(samples[index * channels]);
+                right.push(samples[index * channels + 1]);
+            }
+            match GatedLoudness::integrated_stereo_at(sample_rate as f32, &left, &right) {
+                Some(value) if value.is_finite() => (Some(value), None),
+                // `Some(−∞)` = 没有任何 400 ms 块过绝对门限（纯静音母带）。
+                Some(_) => (None, Some(NOTE_SILENT_MASTER)),
+                // `None` = 该采样率没有核验过的 K 加权系数（本实现只内置四档）。
+                None => (None, Some(NOTE_UNVERIFIED_SAMPLE_RATE)),
+            }
+        };
+        let (delta_lu, verdict) = match (target, measured_lufs) {
+            (None, _) => (None, VERDICT_NO_TARGET),
+            (Some(_), None) => (None, VERDICT_UNMEASURABLE),
+            (Some(want), Some(got)) => {
+                let delta = got - want;
+                let verdict = if delta.abs() <= TARGET_TOLERANCE_LU {
+                    VERDICT_PASS
+                } else {
+                    VERDICT_FAIL
+                };
+                (Some(delta), verdict)
+            }
+        };
+        Self {
+            target_lufs: target,
+            tolerance_lu: TARGET_TOLERANCE_LU,
+            measured_lufs,
+            delta_lu,
+            verdict,
+            measurement_note,
+        }
+    }
+
+    /// 进响应的 JSON 形状（`null` 而不是 `Infinity`／`NaN` —— 两者都不是合法 JSON）。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "targetLufs": self.target_lufs,
+            "toleranceLu": self.tolerance_lu,
+            "measuredIntegratedLufs": json_f32(self.measured_lufs),
+            "deltaLu": json_f32(self.delta_lu),
+            "verdict": self.verdict,
+            "measured": self.measured_lufs.is_some(),
+            "measurementNote": self.measurement_note,
+            "algorithm": "ITU-R BS.1770-4 (K-weighted, gated integrated: Γa = −70 LUFS, Γr = −10 LU)",
+            "implementation": "yeban-dsp::loudness::GatedLoudness (与 yeban_query_engine_state 的 integratedLufs 同一计量器)",
+            "specId": "ARCH-UI-002",
+            "specSilentOnTolerance": true,
+        })
+    }
+
+    /// **判定未通过**时的带内错误（`RENDER_FAILED`，`ADR-0001` D25 里既有的 20 值之一）。
+    ///
+    /// 只在 `verdict` 是 [`VERDICT_FAIL`] 或 [`VERDICT_UNMEASURABLE`] 时调用。
+    /// `RENDER_FAILED` 的语义是"渲染没有产出可交付的母带"，两句都字面成立：
+    /// 母带**渲染成功了，但它不达标**（或根本测不出响度），调用方拿到的不是能发布的
+    /// 东西。报文里逐字给出实测值、目标、差值与容差 —— 它不是一个只说"失败了"的码。
+    #[must_use]
+    pub fn failure(&self) -> Fault {
+        let target = self.target_lufs.unwrap_or(f32::NAN);
+        let message = match self.measured_lufs {
+            Some(measured) => {
+                let delta = self.delta_lu.unwrap_or(f32::NAN);
+                format!(
+                    "母带响度未达标: 实测 {measured} LUFS, 目标 {target} LUFS, 差 {delta} LU \
+                     (容差 ±{} LU)",
+                    self.tolerance_lu
+                )
+            }
+            // 测不出 ⇒ 无法判定 ⇒ 也不能算"通过"。原因句**原样**给出, 不编一个数字。
+            None => format!(
+                "母带响度无法测量, 因此无法判定目标 {target} LUFS 是否达成: {}",
+                self.measurement_note.unwrap_or("(未给出原因)")
+            ),
+        };
+        Fault::domain_with_data(
+            ErrorCode::RenderFailed,
+            message,
+            serde_json::json!({
+                "reason": "loudnessTargetMissed",
+                "measuredIntegratedLufs": json_f32(self.measured_lufs),
+                "targetLufs": target,
+                "deltaLu": json_f32(self.delta_lu),
+                "toleranceLu": self.tolerance_lu,
+                "measurementNote": self.measurement_note,
+                "algorithm": "ITU-R BS.1770-4",
+            }),
+        )
+    }
+}
+
+/// `f32` → JSON：非有限值写 `null`（`serde_json` 会把 `Infinity`/`NaN` 静默写成 `null`
+/// 并留下一个"看起来是数字、其实是空"的字段；这里显式做，口径写在一处）。
+#[must_use]
+fn json_f32(value: Option<f32>) -> Value {
+    match value {
+        Some(number) if number.is_finite() => Value::from(number),
+        _ => Value::Null,
+    }
+}
+
 /// 校验渲染参数。
 ///
 /// # Errors
 ///
 /// - 未知 `format` → `INVALID_PARAMETER_RANGE`（带白名单）；
 /// - `sampleRate` 不在模型层允许集合 → `INVALID_PARAMETER_RANGE`；
-/// - `normalize` 不是布尔 / `path` 不是非空字符串 → `INVALID_PARAMETER_RANGE`。
+/// - `normalize` 不是布尔 / `path` 不是非空字符串 → `INVALID_PARAMETER_RANGE`；
+/// - `targetLufs` 不是有限数、或不在 [`TARGET_LUFS_RANGE`] 内 →
+///   `INVALID_PARAMETER_RANGE`（带区间）。
 pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> {
     let format = arguments
         .get("format")
@@ -343,6 +626,34 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
+    let target_lufs_bits = match arguments.get("targetLufs") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(number)) => {
+            // `as_f64` 覆盖整数与浮点两种 JSON 形状；`f32` 是有意收窄
+            // （响应里报出的也是 `f32`，判定与读数用同一个宽度）。
+            // `as_f64` 对 `serde_json::Number` 恒有值；万一没有就按非法处理。
+            let value = number.as_f64().map_or(f32::NAN, |raw| raw as f32);
+            let [low, high] = TARGET_LUFS_RANGE;
+            if !value.is_finite() || value < low || value > high {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`targetLufs` 必须在 {low}..={high} LUFS 之间且有限, 实际收到 {value}"),
+                    serde_json::json!({
+                        "minLufs": low,
+                        "maxLufs": high,
+                        "reason": "低于 BS.1770 的绝对门限 Γa 的读数不可达; 高于 0 LUFS 在 PCM 里不可达",
+                    }),
+                ));
+            }
+            Some(value.to_bits())
+        }
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`targetLufs` 必须是数字, 实际收到 {other}"),
+            ));
+        }
+    };
     let path = match arguments.get("path") {
         None => None,
         Some(Value::String(text)) if !text.trim().is_empty() => Some(PathBuf::from(text)),
@@ -357,6 +668,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         format_index,
         sample_rate,
         normalize,
+        target_lufs_bits,
         path,
     })
 }
@@ -544,6 +856,12 @@ pub struct RenderArtifact {
     pub normalize_applied: bool,
     /// 归一化的补充说明（全零信号等边界）。
     pub normalize_note: Option<&'static str>,
+    /// **实测**的门限积分响度 + 对 `targetLufs` 的判定。
+    ///
+    /// 它在**抖动/量化之前**的浮点母带上测量（与响度计量"作用在母带信号上"的口径
+    /// 一致），且只读 ⇒ 不改变 [`Self::bytes`]。默认路径（不给 `targetLufs`）也报读数，
+    /// 只是 [`VERDICT_NO_TARGET`]。
+    pub loudness: LoudnessTarget,
     /// `bext` 的 `OriginatorReference`（工程 ULID，`ARCH-FMT-001` 要求的映射）。
     pub originator_reference: String,
     /// `bext` 的 `OriginationDate`。
@@ -686,6 +1004,8 @@ impl RenderArtifact {
                 "note": self.normalize_note,
             }),
         );
+        // 响度：**永远**给出读数（默认路径也一样），判定只在给了 `targetLufs` 时有意义。
+        map.insert("loudness".to_owned(), self.loudness.to_value());
         map.insert("atomic".to_owned(), Value::from(true));
         map.insert(
             "strategy".to_owned(),
@@ -931,6 +1251,21 @@ pub fn build(
         }
     }
     let peak_after = math::peak_of(&output.samples);
+    // 10b. 响度读数 + 对 `targetLufs` 的判定（**只读**：在抖动之前的浮点母带上测）。
+    //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是
+    //      "降位深"的伴生步骤（与 `normalize` 同一条理由, 见模块文档）。
+    //      `with_master_gain` 之后、`normalize` 之后的这一份就是响度口径下的母带。
+    let loudness = LoudnessTarget::measure(
+        sample_rate,
+        MASTER_CHANNELS,
+        &output.samples,
+        request.target_lufs(),
+    );
+    // 判定的两个否定出口都**不落盘**：`fail`（不达标）与 `unmeasurable`（测不出 ⇒
+    // 无法判定 ⇒ 不能算通过）。判据用"失败时目录里没有产品"钉住这一点。
+    if matches!(loudness.verdict, VERDICT_FAIL | VERDICT_UNMEASURABLE) {
+        return Err(loudness.failure());
+    }
     // 11. TPDF 抖动 → 24-bit PCM → 容器。
     let mut rng = dither_rng_for(project.rng_seed, project.master_bus_track_id);
     let pcm = quantize(&output.samples, BitDepth::Int24, &mut rng);
@@ -993,6 +1328,7 @@ pub fn build(
         peak_after,
         normalize_applied,
         normalize_note,
+        loudness,
         originator_reference,
         origination_date,
         origination_time,

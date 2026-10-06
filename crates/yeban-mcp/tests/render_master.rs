@@ -581,6 +581,459 @@ fn normalize_hits_full_scale_and_leaves_all_zero_signal_alone() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 3b：响度目标（`targetLufs`）—— 读数必须真、目标必须有牙、默认路径必须不变
+// ---------------------------------------------------------------------------
+
+/// 判据 3b-i：**不给** `targetLufs` 时也报**实测**读数，且判定是 `noTarget`。
+///
+/// 这是"新字段的默认路径"判据：默认响应必须已经带着响度块（否则默认路径的读数
+/// 就没人测了），但**不许**有判定（`deltaLu == null`）。
+#[test]
+fn loudness_reading_is_reported_on_the_default_path_without_a_target() {
+    let scratch = Scratch::new("loudness-default");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "dryRun": true}),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let loudness = &result["data"]["preview"]["loudness"];
+    assert_eq!(loudness["verdict"], "noTarget", "{result}");
+    assert_eq!(loudness["targetLufs"], Value::Null);
+    assert_eq!(loudness["deltaLu"], Value::Null);
+    assert_eq!(loudness["measured"], true, "夹具母带不是静音: {result}");
+    let measured = loudness["measuredIntegratedLufs"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("必须有实测读数: {result}"));
+    // 门限积分的读数必须落在 LS.1770 的绝对门限之上、满量程之下。
+    assert!(
+        measured.is_finite() && measured > -70.0 && measured <= 0.0,
+        "实测读数是合法 LUFS 才会在这里: {measured}"
+    );
+    assert_eq!(loudness["toleranceLu"], 0.5);
+    // 洞：默认路径的读数**不是** 0，也不是某个常数 —— 它必须来自母带信号。
+    assert!(
+        (measured - 0.0).abs() > 1.0,
+        "读数不许是个用来占位的 0: {measured}"
+    );
+}
+
+/// 判据 3b-ii：**判定必须有牙** —— 目标被忽略时本判据变红。
+///
+/// 三件事一起钉：
+/// 1. 目标 = 实测 ⇒ `pass` 且 `deltaLu ≈ 0`；
+/// 2. 目标 = 实测 − 6 LU ⇒ `fail` + `RENDER_FAILED`（带内结构化数据里给出实测/目标/差值）；
+/// 3. **同一个目标会产出不同的读数**：两个请求（一个合理、一个离谱）在同一工程上
+///    给出**不同**的 `verdict`，而**音频字节相同** —— 证明判定读的是母带而不是常量。
+///
+/// 注入（本机真的做过，见台账）：把 `build` 里的
+/// `if loudness.verdict == VERDICT_FAIL { return Err(loudness.failure()); }` 换成
+/// 注释掉 ⇒ 第 2 步不再报错 ⇒ 本判据红。
+#[test]
+fn the_loudness_target_has_teeth() {
+    let scratch = Scratch::new("loudness-teeth");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+
+    // 1) 先拿到实测值（不给目标）。
+    let probe_path = scratch.join("probe.wav");
+    let probe = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": probe_path.display().to_string()}),
+    );
+    assert_eq!(probe["status"], "success", "{probe}");
+    let measured = probe["data"]["loudness"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("实测读数");
+    assert!(measured.is_finite());
+
+    // 2) 目标 = 实测 ⇒ 达标。
+    let hit_path = scratch.join("hit.wav");
+    let hit = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": measured,
+            "path": hit_path.display().to_string(),
+        }),
+    );
+    assert_eq!(hit["status"], "success", "{hit}");
+    let verdict = &hit["data"]["loudness"];
+    assert_eq!(verdict["verdict"], "pass", "{hit}");
+    // 目标值是 **f32**（契约里 `targetLufs` 是 `number`，实现按 f32 收窄）。
+    // 把响应里的 f64 写回 JSON 再读回 f32 会经过一次十进制往返，因此这里比**数值**：
+    // 往返误差必须小于 1e-6 LU（比容差小五个数量级）。
+    let echoed = verdict["targetLufs"].as_f64().expect("targetLufs");
+    assert!(
+        (echoed - measured).abs() < 1.0e-6,
+        "回显的目标 {echoed} 必须等于实测值 {measured} 的 f32 表示"
+    );
+    let delta = verdict["deltaLu"].as_f64().expect("deltaLu");
+    assert!(
+        delta.abs() < 1.0e-4,
+        "目标 = 实测时差值必须是数值噪声: {delta}"
+    );
+    // 判定**不改音频**：产物与不给目标时逐字节相同。
+    assert_eq!(
+        fs::read(&probe_path).expect("probe"),
+        fs::read(&hit_path).expect("hit"),
+        "响度判定是只读的: 加一个已经达标的 targetLufs 不许改动一个字节"
+    );
+
+    // 3) 目标 = 实测 − 6 LU ⇒ **未达标**，带内报 `RENDER_FAILED` + 结构化数字。
+    let miss_path = scratch.join("miss.wav");
+    let miss = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": measured - 6.0,
+            "path": miss_path.display().to_string(),
+        }),
+    );
+    assert_eq!(miss["status"], "error", "{miss}");
+    assert_eq!(miss["error"]["code"], "RENDER_FAILED", "{miss}");
+    assert_eq!(miss["error"]["data"]["reason"], "loudnessTargetMissed");
+    let reported = miss["error"]["data"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("失败报文里必须给实测值");
+    assert!(
+        (reported - measured).abs() < 1.0e-4,
+        "失败报文里的实测值 {reported} 必须等于只读探测到的 {measured}"
+    );
+    let echoed_target = miss["error"]["data"]["targetLufs"]
+        .as_f64()
+        .expect("失败报文里必须给目标");
+    assert!(
+        (echoed_target - (measured - 6.0)).abs() < 1.0e-6,
+        "失败报文里的目标 {echoed_target} 必须是请求的那个 (f32 往返)"
+    );
+    assert_eq!(miss["error"]["data"]["toleranceLu"], 0.5);
+    // **失败时不许落盘**：未达标的母带不是可交付物。
+    assert!(
+        !miss_path.exists(),
+        "未达标时不许写出产品: {:?}",
+        entries(&scratch.dir)
+    );
+}
+
+/// 判据 3b-iii：**目标被忽略时本判据变红**（"报告是常量"的负向测量）。
+///
+/// 三个请求打在同一工程上：`无目标` / `目标 = 实测` / `目标 = 实测 − 12 LU`。
+/// 若实现忽略 `targetLufs`，三个 `verdict` 会相同（都 `noTarget`）⇒ 红。
+/// 若实测读数是硬编码常量，三者的 `measuredIntegratedLufs` 会与母带无关 ——
+/// 用"改工程音量后读数必须跟着走"再钉一次（见下一条判据）。
+#[test]
+fn the_target_changes_the_verdict_so_it_cannot_be_ignored() {
+    let scratch = Scratch::new("loudness-ignored");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let mut verdicts = Vec::new();
+    for (index, target) in [None, Some(-3.0f64), Some(-40.0)].into_iter().enumerate() {
+        let path = scratch.join(&format!("v{index}.wav"));
+        let mut arguments = json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path.display().to_string(),
+        });
+        if let Some(target) = target {
+            arguments["targetLufs"] = json!(target);
+        }
+        let result = call(&mut dispatcher, &auth, arguments);
+        let verdict = match result["status"].as_str().expect("status") {
+            "success" => result["data"]["loudness"]["verdict"]
+                .as_str()
+                .expect("verdict")
+                .to_owned(),
+            "error" => {
+                assert_eq!(result["error"]["code"], "RENDER_FAILED", "{result}");
+                String::from("fail")
+            }
+            other => panic!("非法的 status: {other}"),
+        };
+        verdicts.push(verdict);
+    }
+    assert_eq!(verdicts[0], "noTarget", "{verdicts:?}");
+    assert_eq!(verdicts[1], "pass", "{verdicts:?}");
+    assert_eq!(verdicts[2], "fail", "{verdicts:?}");
+    assert_ne!(verdicts[0], verdicts[1]);
+    assert_ne!(verdicts[1], verdicts[2]);
+    assert_ne!(verdicts[0], verdicts[2]);
+}
+
+/// 判据 3b-iv：读数是**测出来的**（不是常量）—— 改母带电平 ⇒ 读数跟着走。
+///
+/// 同一工程，只改 `volume_db`（0 dB → −12 dB）⇒ 门限积分读数必须下降约 12 LU。
+/// 若有人把读数写死成常量，本判据红。
+#[test]
+fn the_loudness_reading_follows_the_master_level() {
+    let scratch = Scratch::new("loudness-levels");
+    let mut readings = Vec::new();
+    for (tag, volume_db) in [("loud", 0.0f32), ("quiet", -12.0)] {
+        let spec = Spec {
+            volume_db,
+            ..Spec::default()
+        };
+        let path = scratch.join(&format!("{tag}.wav"));
+        let (mut dispatcher, auth) =
+            dispatcher_with(&project(&spec), &scratch.join(&format!("{tag}.yeban")));
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "path": path.display().to_string()}),
+        );
+        assert_eq!(result["status"], "success", "{result}");
+        readings.push(
+            result["data"]["loudness"]["measuredIntegratedLufs"]
+                .as_f64()
+                .expect("读数"),
+        );
+    }
+    let drop = readings[0] - readings[1];
+    assert!(
+        (drop - 12.0).abs() < 0.6,
+        "母带电平降 12 dB ⇒ 读数必须降 ≈12 LU, 实测降了 {drop} ({readings:?})"
+    );
+}
+
+/// 判据 3b-v：非法目标只用契约内的错误码，且**没有**任何文件被写出。
+///
+/// 三个输入形状各走一条出口：
+/// - 数字越出 `[-70, 0]` ⇒ 领域 `INVALID_PARAMETER_RANGE`（带区间）；
+/// - 字符串 ⇒ **JSON-RPC 层** `-32602`（`ToolSpec::validate_arguments` 的类型闸门,
+///   它比领域校验更早 —— 这与既有 `normalize`/`path` 的处置完全一致）；
+/// - 端点 `-70.0` / `0.0` **合法**（闭区间），因此进入判定并以 `RENDER_FAILED` 收尾。
+#[test]
+fn an_impossible_loudness_target_is_an_invalid_parameter() {
+    let scratch = Scratch::new("loudness-bad");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    for (index, target) in [-70.001f64, 0.001, -1000.0, 12.0].into_iter().enumerate() {
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({
+                "format": "wav",
+                "sampleRate": 48000,
+                "targetLufs": target,
+                "path": scratch.join(&format!("bad{index}.wav")).display().to_string(),
+            }),
+        );
+        assert_domain_error(
+            &result,
+            "INVALID_PARAMETER_RANGE",
+            &format!("targetLufs = {target}"),
+        );
+        assert!(
+            result["error"]["data"]["reason"].as_str().is_some(),
+            "参数错必须带结构化原因: {result}"
+        );
+        assert!(
+            !scratch.join(&format!("bad{index}.wav")).exists(),
+            "参数错不许写出任何产品"
+        );
+    }
+    // 边界值本身是**接受**的（闭区间）。
+    for target in [-70.0f64, 0.0] {
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "targetLufs": target, "dryRun": true}),
+        );
+        // 端点合法 ⇒ 结论是"未达标"（RENDER_FAILED），**不是**参数错。
+        assert_eq!(
+            result["status"], "error",
+            "端点 {target} 必须合法到能进入判定: {result}"
+        );
+        assert_eq!(result["error"]["code"], "RENDER_FAILED", "{result}");
+        assert_eq!(result["error"]["data"]["reason"], "loudnessTargetMissed");
+    }
+    // 非数字形状走 **JSON-RPC 层**的类型闸门（`-32602`），与 `normalize` / `path` 同一条。
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": "t",
+        "method": "tools/call",
+        "params": {
+            "name": "yeban_render_master",
+            "arguments": {"format": "wav", "sampleRate": 48000, "targetLufs": "loud"}
+        }
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
+    let response = outcome.response.expect("必须有响应");
+    assert!(response.result.is_none(), "{response:?}");
+    let error = response.error.expect("字符串目标必须被类型闸门拦下");
+    assert_eq!(error.code, -32602, "{error:?}");
+    assert!(
+        format!("{error:?}").contains("targetLufs"),
+        "报文必须点名 `targetLufs`: {error:?}"
+    );
+}
+
+/// 判据 3b-vi：**纯静音母带 + 目标** ⇒ `measured = null` 且不达标，但**不许**是 NaN/Infinity。
+///
+/// 边界口径：门限积分的静音读数是负无穷，而负无穷不是合法 JSON。实现把它写成
+/// `measuredIntegratedLufs: null` + `measurementNote`，然后按"测不出 ⇒ 无法判定"处理。
+#[test]
+fn a_silent_master_cannot_meet_a_loudness_target_and_never_reports_infinity() {
+    let scratch = Scratch::new("loudness-silent");
+    let silent = Spec {
+        velocity: 0,
+        ..Spec::default()
+    };
+    let (mut dispatcher, auth) = dispatcher_with(&project(&silent), &scratch.join("silent.yeban"));
+    // 不给目标：读数缺席，但**必须**有原因，且没有任何非有限数字流进响应。
+    let plain_path = scratch.join("plain.wav");
+    let plain = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": plain_path.display().to_string()}),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+    let loudness = &plain["data"]["loudness"];
+    assert_eq!(loudness["verdict"], "noTarget");
+    assert_eq!(loudness["measured"], false);
+    assert_eq!(loudness["measuredIntegratedLufs"], Value::Null);
+    assert_eq!(loudness["deltaLu"], Value::Null);
+    assert!(
+        loudness["measurementNote"].is_string(),
+        "缺席必须带原因: {plain}"
+    );
+    // 给目标：测不出 ⇒ 未达标（不是"假装达标"）。
+    let targeted = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": -14.0,
+            "path": scratch.join("targeted.wav").display().to_string(),
+        }),
+    );
+    assert_eq!(targeted["status"], "error", "{targeted}");
+    assert_eq!(targeted["error"]["code"], "RENDER_FAILED", "{targeted}");
+    assert_eq!(
+        targeted["error"]["data"]["reason"], "loudnessTargetMissed",
+        "测不出就是未达标: {targeted}"
+    );
+    assert_eq!(
+        targeted["error"]["data"]["measuredIntegratedLufs"],
+        Value::Null,
+        "测不出时不许编一个读数: {targeted}"
+    );
+    assert!(
+        targeted["error"]["data"]["measurementNote"].is_string(),
+        "失败报文必须带原因: {targeted}"
+    );
+    // 全响应的文本里不许出现 Infinity / NaN（那会让契约样本非法）。
+    let text = plain.to_string() + &targeted.to_string();
+    assert!(!text.contains("Infinity"), "{text}");
+    assert!(!text.contains("NaN"), "{text}");
+}
+
+/// 判据 3b-vii：**默认路径逐字节不变**（`MUST-GATE-002` 的同平台位级 L1 渲染）。
+///
+/// 交付形态：**同一份工程**渲染两次，一次不带 `targetLufs`、一次带一个已达标的目标，
+/// 两份产物逐字节相同；且**不带目标的那一份**与仓库钉死的两个常量
+/// （`masterDigest` / 文件 `sha256`，见
+/// [`two_renders_of_the_same_project_are_byte_identical`]）**仍然**相同。
+/// 后者才是"本切片没有改动默认渲染路径"的强形式：它不是自比自。
+#[test]
+fn the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached() {
+    let scratch = Scratch::new("loudness-determinism");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let plain_path = scratch.join("plain.wav");
+    let plain = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": plain_path.display().to_string()}),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+    // **钉死的常量**（与判据 2 同一对数字）：默认路径的位级身份没有漂。
+    assert_eq!(
+        plain["data"]["masterDigest"],
+        "b242d510d581541732134d3c0e233a11d6045ffb65535675adc73501fb28eefb",
+        "默认路径的母带样本摘要必须与本切片之前逐位相同"
+    );
+    assert_eq!(
+        plain["data"]["sha256"], "b9472fcd20086efd4953d457dde26169d1374f592bc90a0cf7b81304e0b69cc4",
+        "默认路径的文件摘要必须与本切片之前逐位相同"
+    );
+
+    let measured = plain["data"]["loudness"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("实测读数");
+    let targeted_path = scratch.join("targeted.wav");
+    let targeted = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": measured,
+            "path": targeted_path.display().to_string(),
+        }),
+    );
+    assert_eq!(targeted["status"], "success", "{targeted}");
+    assert_eq!(
+        targeted["data"]["loudness"]["verdict"], "pass",
+        "{targeted}"
+    );
+    let a = fs::read(&plain_path).expect("plain");
+    let b = fs::read(&targeted_path).expect("targeted");
+    assert_eq!(a, b, "挂一个已达标的目标不许改动产物的任何一个字节");
+    assert_eq!(plain["data"]["sha256"], targeted["data"]["sha256"]);
+    assert_eq!(
+        plain["data"]["masterDigest"],
+        targeted["data"]["masterDigest"]
+    );
+    assert_eq!(plain["data"]["frames"], targeted["data"]["frames"]);
+    assert_eq!(
+        plain["data"]["peak"]["after"],
+        targeted["data"]["peak"]["after"]
+    );
+}
+
+/// 判据 3b-viii：`dryRun` 与真调用给**同一份**判定（`targetLufs` 也不例外）。
+#[test]
+fn dry_run_preview_and_the_real_call_agree_on_the_loudness_verdict() {
+    let scratch = Scratch::new("loudness-dryrun");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let preview = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -3.0, "dryRun": true}),
+    );
+    assert_eq!(preview["status"], "success", "{preview}");
+    let preview_loudness = preview["data"]["preview"]["loudness"].clone();
+    let real = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": -3.0,
+            "path": scratch.join("real.wav").display().to_string(),
+        }),
+    );
+    assert_eq!(real["status"], "success", "{real}");
+    let real_loudness = real["data"]["loudness"].clone();
+    assert_eq!(
+        preview_loudness, real_loudness,
+        "预览与真做的响度块必须逐字段相同"
+    );
+    assert_eq!(preview_loudness["verdict"], "pass");
+}
+
+// ---------------------------------------------------------------------------
 // 判据 4：dryRun 不落盘
 // ---------------------------------------------------------------------------
 

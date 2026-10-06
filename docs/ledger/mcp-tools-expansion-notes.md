@@ -224,6 +224,16 @@ rustc --edition 2024 -D warnings /tmp/yeban-audit/local_audit.rs -o /tmp/yeban-a
 4. **响度目标（`BASELINE-006`）本轮未做**：人类已延后口径 ⇒ 本线**不做**"能测的那一半"，
    因为"MCP 侧可测"依赖 Token 口径（`LUFS` 的 K-weighting 与门限）先定。
    **Token 口径未定**是这一条的全部原因。
+   > **⚠ 本条已过期，且它的归因是错的（保留原文，见 §10 的注解）**：
+   > ① 这一条把"响度目标"与 `BASELINE-006` 绑在一起，而 `BASELINE-006` 的规范定义是
+   > **AI 交互效率**（`YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:361`：
+   > "**序列化 JSON 载荷 ≤ 4 KB, 结构化字段传输, Token 开销中位数 ≤ 600 Tokens**"）
+   > —— 它是 **tokenizer 指标**，与 LUFS / K-weighting / 门限无关；
+   > ② "MCP 侧可测依赖 Token 口径"这句话**不成立**：响度计量的口径由
+   > `ITU-R BS.1770-4` 与 `crates/yeban-dsp/src/loudness.rs` 的已核验实现给定
+   > （`ABSOLUTE_GATE_LUFS` / `RELATIVE_GATE_LU` / 四档 K 加权系数），不需要任何分词器；
+   > ③ 本条描述的"未做"状态**在 §10 之后不再成立**：`yeban_render_master` 现在有
+   > `targetLufs` 参数并对目标做判定。**§10 是本条的唯一更正处**，原文一字未删。
 5. **MIDI 导出不在本线**（`ADR-0001` **D47**：唯一出口是 app CLI `--export-midi`）。
    本线**没有**新增任何 MIDI 导出工具，也不打算加。
 6. **没有"放置/引用片段"的工具**：`Op::AddClipPlacement` 在 MCP 侧仍未接线，因此
@@ -563,3 +573,135 @@ panicked at crates/yeban-mcp/tests/extension_tools.rs:835:9:
 > 第七轮的读数：**本机覆盖不到的每一类错误, 都在 CI 上各红了一次**（类型、lint、模块声明、
 > 夹具真实格式、夹具隔离、运行期图语义）。四类里有三类随后被**机械化**（`scan_orphan_modules`、
 > "夹具必须真格式/独占目录"的纪律、判据注释里的图语义），下次同类错误会在本机或判据里先红。
+
+---
+
+## 10. 追加（同一工作线，**响度目标**切片）：`targetLufs` —— 注解 §6.4 的错误归因
+
+> 本节是**追加的记录**，不改写任何既有段落。§6 第 4 条（本文件 `:224`）保留原文，
+> 它的更正处就是本节（`:224` 处已加一条指向本节的 ⚠ 注解）。
+
+### 10.1 交付形态（先 `grep` 交付，再下结论 —— `AGENTS.md` §6.3）
+
+**响度目标不是新工具，是 `yeban_render_master`（`MCP-TOOL-008`）的一个可选参数
+`targetLufs`**，因为交付形态是"一次渲染 + 一份实测-对-目标的报告"，而渲染入口已存在。
+
+| 项 | 事实 | 落点 |
+| :--- | :--- | :--- |
+| 读数（**已存在**） | `integratedLufs` / `momentaryLufs` / `shortTermLufs` / `loudnessRangeLu` / `truePeakDbfs` | `crates/yeban-mcp/src/domain/engine_state.rs:77-85`（结构体字段）、`:151-155`（镜像读数）、`:171-175`（宿主注入） |
+| 读数背后的实现（**已存在**） | `ITU-R BS.1770-4` 的 K 加权 + `Γa = −70 LUFS` 绝对门限 + `Γr = −10 LU` 相对门限的**门限积分**；四档采样率（44.1/48/88.2/96 kHz）的系数由同一解析原型推导并复现正文表（≤3.3e-16） | `crates/yeban-dsp/src/loudness.rs:1-78`（模块文档）、`:94-97`（门限常量）、`:747-776`（两遍门限积分）、`:1045-1089`（锚点判据） |
+| **缺的**（本切片补） | 目标 / 阈值：工具面与契约里没有任何 target 参数 | `targetLufs`（`crates/yeban-mcp/src/tools.rs:581-586`） |
+
+⇒ **"目标"不需要任何新的测量标准**：测量已经是定义好的（BS.1770-4，有锚点判据与
+997 Hz 标定判据）。本切片加的只是**比较**（实测 vs 目标）与**判定**（容差内的 pass/fail）。
+
+### 10.2 判定 `BASELINE-006` 的绑定：**错**
+
+| 证据 | 原文 | 结论 |
+| :--- | :--- | :--- |
+| 规范定义 | `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:361`：`**[BASELINE-006]** \| **AI 交互效率** \| 单次段落生成数据负载与 Token 开销 \| 统计生成 16 小节段落的完整 MCP 工具往返载荷 \| **序列化 JSON 载荷 ≤ 4 KB，结构化字段传输，Token 开销中位数 ≤ 600 Tokens (测试参考基准)**` | 它是 **tokenizer / 载荷**指标 |
+| 人类裁决 | `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md:554-559`（**D53**）："「Token 中位数 ≤600 用哪个 tokenizer 数」**暂不裁决**"；`docs/ledger/human-decisions.md:88`（`HD-47`）"`BASELINE-006` 的 tokenizer 口径 … A 用通用分词器 / B 用本仓自己的分词器 / C 负责人指定另一个" | 被延后的是**分词器口径**，不是响度 |
+| 响度的规范来源 | `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016`："主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与响度范围（LRA）数值显示"；`:396`（真峰值限制器需要 BS.1770-4 的 4× 过采样）；`:461`（RF64 `bext` 的"响度元数据 EBU R128"）；`YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:107`（限制器"符合 ITU-R BS.1770-4"） | 响度的规范族是 **EBU R128 / ITU-R BS.1770**，与 tokenizer 无关 |
+
+⇒ §6.4 把两件不相干的事用一个编号绑在了一起（"响度目标（`BASELINE-006`）"），
+并且由此得出"MCP 侧可测依赖 Token 口径"这个**不成立**的因果。
+`BASELINE-006` **仍然** PENDING（D53 的延后继续有效），本切片**没有**动它一行。
+
+### 10.3 规范对"目标"的沉默（必须登记）
+
+- 架构 §5.2 只要求**显示** LUFS/LRA（`:1016`），**没有**任何"目标 / 达标 / 归一化到某 LUFS"的要求；
+- 路线图通篇没有响度目标条目（`grep -n '响度\|loudness\|LUFS' docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md`
+  只命中 `:107` 的限制器那句）；
+- 因此以下三个量是**工程选择**，不是规范读数：
+  1. **容差** `TARGET_TOLERANCE_LU = 0.5` LU（`crates/yeban-mcp/src/domain/render.rs`）；
+  2. **判定规则**：未达标（或测不出）⇒ `RENDER_FAILED`（领域错误，工具不产出产物）；
+  3. **不做响度归一化**：不像 `normalize` 那样去改样本 —— 因为那会改母带字节，与
+     "默认路径逐字节不变"（`MUST-GATE-002` 的 L1）冲突，而规范也没要求。
+- 容差取 0.5 LU 的理由：比本实现自身的数值噪声（四档采样率上 997 Hz 标定点残余 ≤0.025 dB）
+  大三个数量级，又比广播实务里常见的"±1 LU"更严 —— 既不会因实现误差误判，
+  也不会宽到让"差 0.9 LU"过关。**要放宽/收紧必须先有人裁决"谁来定容差"。**
+
+### 10.4 依赖方向：**没有**新增依赖边（也没有复制第二个实现）
+
+- 计量器的唯一实现在 `yeban-dsp`，而 `scripts/gates/check_mcp_dependency_direction.py:19-25`
+  **禁止** MCP 直接依赖 `yeban-dsp`（"不拖音频栈进 MCP"）；
+- 因此走 `yeban-render` 的**再导出**：`crates/yeban-render/src/lib.rs` 的
+  `pub use yeban_dsp::loudness;`（与既有的 `pub use yeban_midi::midi;` 同一手法、同一理由：
+  "编解码已下移到独立 crate，此处再导出以保持路径可用"）。一个表达式都没有复制。
+- `Cargo.toml` / `Cargo.lock` **零改动**（依赖 metric 不变）。
+- ⚠ **顺手发现的守卫缺口（登记，不在本切片修）**：`check_mcp_dependency_direction.py:46`
+  取依赖键的方式是 `line.split("=", 1)[0].strip()`，而本仓的成员依赖写法是
+  `yeban-dsp.workspace = true` ⇒ 键是 `"yeban-dsp.workspace"`，**不等于** 黑名单里的
+  `"yeban-dsp"` ⇒ 这条守卫对"用 `.workspace = true` 写法加的禁用依赖"**是瞎的**。
+  实测：把 `yeban-render`（已在 `[dependencies]` 里、写法同为 `.workspace = true`）
+  代入同一段逻辑，`hits == []`，而守卫照样打印 `[ok] … 5 个被禁 crate 均未被直接依赖`。
+  这是**独立的**缺陷（牵动禁用清单的语义与 `yeban-mcp → yeban-render` 这条既有边），
+  归属与修法留给集成者，本节只登记。
+
+### 10.5 判据与负向测量
+
+新增 8 条判据（全在 `crates/yeban-mcp/tests/render_master.rs`，与既有判据同一套夹具）：
+
+| # | 判据 | 用例 |
+| :--- | :--- | :--- |
+| 3b-i | 默认路径也报**实测**读数，判定恒为 `noTarget`（且读数不是占位的 0） | `loudness_reading_is_reported_on_the_default_path_without_a_target` |
+| 3b-ii | **目标有牙**：目标=实测 ⇒ `pass` + 差值 ≈ 0；目标=实测−6 ⇒ `RENDER_FAILED` + 结构化数字；**未达标不落盘** | `the_loudness_target_has_teeth` |
+| 3b-iii | 三个目标 ⇒ 三个**互不相同**的 verdict（忽略目标即红） | `the_target_changes_the_verdict_so_it_cannot_be_ignored` |
+| 3b-iv | 读数是**测出来的**：母带电平 −12 dB ⇒ 读数降 ≈12 LU | `the_loudness_reading_follows_the_master_level` |
+| 3b-v | 越出 `[−70, 0]` ⇒ `INVALID_PARAMETER_RANGE`（带区间）；字符串 ⇒ JSON-RPC `-32602`；端点合法 | `an_impossible_loudness_target_is_an_invalid_parameter` |
+| 3b-vi | 纯静音 + 目标 ⇒ 读数 `null` + 原因 + 未达标；响应里**没有** `Infinity`/`NaN` | `a_silent_master_cannot_meet_a_loudness_target_and_never_reports_infinity` |
+| 3b-vii | **默认路径逐字节不变**：不带目标的产物仍等于仓库钉死的 `masterDigest` / `sha256`，且挂一个已达标的目标后逐字节相同 | `the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached` |
+| 3b-viii | `dryRun` 预览与真调用的响度块逐字段相同 | `dry_run_preview_and_the_real_call_agree_on_the_loudness_verdict` |
+
+**负向测量（本机真跑过，注入 = 把判定改成恒 `noTarget`）**：
+
+```text
+crates/yeban-mcp/tests/render_master.rs:763: assertion `left == right` failed: ["noTarget", "noTarget", "noTarget"]
+  left: "noTarget"
+ right: "pass"
+crates/yeban-mcp/tests/render_master.rs:667: assertion `left == right` failed
+  left: String("noTarget")
+ right: "pass"
+test result: FAILED. 14 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+注入前的字节与还原后的字节 **`cmp` 相同**、SHA-256 相同
+（`0381993baa82e664729864341d9f90f346b7c2ce89ce89268fb4f5a5c55895bd`），
+还原后同一条命令：`test result: ok. 20 passed; 0 failed`。
+
+### 10.6 契约（`schemas/mcp-tools.schema.json`）
+
+**D46 的"十工具不得出现在 `ExtensionToolArguments`"是判据强制的**
+（`crates/yeban-mcp/tests/contract.rs:556-570` 的断言与 `:540-542` 的注释逐字："规范十工具在契约里**没有**任何
+`$defs` 条目、也**没有**任何 `if/then` 分支（它们的参数只存在于注册表派生的 `inputSchema` 里）"）。
+因此本切片**没有**给 `yeban_render_master` 加 `$defs`／`if-then`（那会当场变红）。
+`targetLufs` 的权威定义因此落在
+
+- **注册表**：`crates/yeban-mcp/src/tools.rs:581-586`（→ `ToolSpec::input_schema` 派生
+  `tools/list` 的 `inputSchema`，含 `additionalProperties: false`；判据
+  `crates/yeban-mcp/tests/contract.rs:544-687` 逐字段对账）；
+- **契约文件**：`schemas/mcp-tools.schema.json` 的 `ToolCall.properties.arguments.description`
+  —— 本次在此**显式写明**：本节只声明公共两键，各工具特有实参由注册表派生，
+  并**点名** `yeban_render_master` 的 `targetLufs`。
+
+**错误码没有扩充**：`INVALID_PARAMETER_RANGE` 绝不能塞进 `MCP-TOOL-008` 的 `errors` 列 ——
+判据 `tools::tests::documented_tools_error_codes_cover_the_table_exactly` 明文要求
+文档十工具声明的每一个码都属于架构 §7.2 的表格并集（第一版就是这么红的：
+`yeban_render_master 声明了表格之外的错误码 INVALID_PARAMETER_RANGE`）。
+口径回到既有注释那句：**"这一列是「表格里列了什么」，不是「实现能产出什么」"**。
+`RENDER_FAILED` 本来就在列内 ⇒ 未达标/测不出两个出口都有家，`D25` 的 20 值联集一位没动。
+
+### 10.7 本机读数（本机真跑；CI 判决未读回 ⇒ 一律记 `pending`）
+
+| 目标 | 结果 |
+| :--- | :--- |
+| `cargo fmt -p yeban-mcp -p yeban-render --check` | ✅ 无差异 |
+| `cargo clippy -p yeban-mcp -p yeban-render --all-targets -- -D warnings` | ✅ 零告警 |
+| `unittests src/lib.rs`（`yeban-mcp`） | `283 passed; 0 failed`（上一线是 275） |
+| `tests/contract.rs` | `16 passed; 0 failed`（含 `validate_schemas.py --samples-dir` 那一档） |
+| `tests/render_master.rs` | **`20 passed; 0 failed`**（上一线是 12） |
+| `tests/container_store.rs` / `lock_advisory.rs` / `render_audio_clips.rs` / `tools_e2e.rs` / `undo_wiring.rs` | `18 / 14 / 13 / 32 / 17 passed; 0 failed` |
+| `tests/extension_tools.rs` / `stdio_e2e.rs` | `20 / 6 passed; 0 failed` |
+| `cargo test -p yeban-render --doc` | `0 passed; 0 failed`（再导出不为本 crate 收集 doctest；`loudness` 的 doctest 仍由 `yeban-dsp` 收集） |
+
+⚠ **CI 判决未读回**：本切片没有推送，因此 `yeban-mcp` 的 CI 腿记 **pending**，不得写成"通过"。

@@ -98,6 +98,16 @@ pub mod sum;
 // 与 `midi` 同理：VLQ 编解码随 SMF 一起下移到 `yeban-midi`，此处再导出以保持路径可用。
 pub use yeban_midi::vlq;
 pub mod wav;
+// **响度计量**（`ITU-R BS.1770-4` 的 K 加权 + 门限积分）住在本 crate 早已依赖的
+// `yeban-dsp` 里。这里**再导出同一个模块**，而不是让 `yeban-mcp` 直接加一条
+// `yeban-dsp` 依赖边：`scripts/gates/check_mcp_dependency_direction.py` 明文禁止 MCP
+// 直接依赖音频栈，而"把共享件下移到 model 级 crate"这条路对本切片不成立
+// —— 响度是 DSP 数学（K 加权双二阶 + 门限积分），不是数据模型。
+//
+// 于是路径是：`yeban-render`（MCP 已依赖）**转发** `yeban-dsp` 的**同一份**实现。
+// 这不是第二份实现：`D46` 的"不许有第二份求值"管的是语义复制，这里一个表达式都没有
+// 复制（详见 `crates/yeban-mcp/src/domain/render.rs` 的"响度目标"一节）。
+pub use yeban_dsp::loudness;
 // 实验性 Ableton Live Set (`.als`) 导出 [ARCH-FMT-002] [ROAD-M4-007]：
 // **只在非默认 feature `experimental-als-export` 下存在**（AGENTS.md §2 红线 6）。
 // 默认构建既不编译这个模块, 也不把 `flate2` 链进依赖图 —— 判据是
