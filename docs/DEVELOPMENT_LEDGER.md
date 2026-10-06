@@ -8744,3 +8744,24 @@ already-deferred. That is why this line keeps its goal active rather than claimi
 
 **Status**: tree green and clean; all gates green; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 完成 / 5 部分 / 2 PENDING; both CI sources (automatic and manual)
 operational and last measured green.
+
+### Round 361: decision-ready brief for HD-49 - the one ruling that unlocks four items
+
+Written because HD-49 is the single highest-leverage decision outstanding: it alone gates `MUST-GATE`-adjacent `BASELINE-003` (120 FPS on 100k notes), `ROAD-M0-003`
+(Slint window at 120 FPS and <25 MB), `ROAD-M0-006` (virtualised roll at 120 FPS) and `ROAD-M4-006` (32-track master at >=100x realtime). The project's own rule is
+that hosted-runner readings must not be used to rule on frame rate, and all four items are barred by exactly that rule.
+
+**Option (a) - a reference machine / self-hosted runner (my recommendation).** Register a runner on the reference hardware (the负责人's MBP M2 Max is already the
+project's stated reference), label it e.g. `reference-mac`, and add a `gates-manual.yml` tier that runs the frame-rate and throughput measurements there. What it
+unlocks: all four items can be ruled on from CI output, and the readings become the authoritative source the objective demands. Cost: a runner registration plus
+one workflow tier; the measurements themselves already exist as criteria and spikes.
+**Option (b) - accept hosted readings and record 未达标.** Cheapest, but it contradicts the ledger's own prohibition and would make the four items permanently
+un-measurable rather than measured - the opposite of the objective's "不许把看起来有当成有".
+**Option (c) - leave all four PENDING.** Honest and costs nothing, but it keeps the two PENDING rows and two 部分 rows exactly where they are, and HD-49 stays the
+single blocker for four items indefinitely.
+
+**What I would do the moment you pick (a)**: add the `reference-mac` tier to `gates-manual.yml` in the exact shape of the existing `bench` tier (that structure is
+already proven to dispatch, and the round-358 failure taught me to copy an existing step's shape and validate by dispatch rather than by eye), wire `BASELINE-003`,
+`ROAD-M0-003`, `ROAD-M0-006` and `ROAD-M4-006` to it, then read the verdicts back and move the four rows on evidence.
+**What I would do on (b)**: record 未达标 in the four rows with the hosted reading and the caveat, and close HD-49 as ruled - no code change.
+**On (c)**: no action, and this brief stays as the standing explanation.
