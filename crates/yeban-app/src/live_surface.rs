@@ -112,6 +112,11 @@ use yeban_app::elements::ElementRegistry;
 use yeban_app::engine_host::{EngineHost, EngineHostError};
 use yeban_app::host;
 use yeban_app::input::{Focus, InputContext, Modifiers, PhysicalKey, Resolution};
+// `ROAD-M4-008` 选项 (a)：控制面会话是**唯一可变权威**，界面是它的投影。
+// 这个句柄只存在于非默认 feature `in-process-mcp` 下 —— 默认构建里没有 `yeban-mcp`
+// （`grep -c "yeban-mcp" <tree -p yeban-app -e normal>` = 0），因此这里也必须 cfg。
+#[cfg(feature = "in-process-mcp")]
+use yeban_app::mcp_mount::ProjectAuthorityHandle;
 use yeban_app::meters::{MeterRuntime, MeterSnapshot};
 use yeban_app::save::{SaveError, save_project_file};
 use yeban_app::scene::DemoScene;
@@ -193,6 +198,12 @@ pub enum LiveWiringError {
     Capture(PortError),
     /// 引擎重建失败（`ui/reload_engine`；没有主总线 / 路由图成环 / 模型校验失败）。
     Engine(EngineHostError),
+    /// 权威会话**没有活跃工程**（`yeban_close_project` 之后），因此没有可投影的东西。
+    ///
+    /// 只可能出现在 `build_live_ui_from_authority`（选项 (a) 的装配入口）：
+    /// 其余入口的工程由调用方给出，不存在"取不到"。
+    #[cfg(feature = "in-process-mcp")]
+    NoActiveAuthorityProject,
 }
 
 impl core::fmt::Display for LiveWiringError {
@@ -203,6 +214,10 @@ impl core::fmt::Display for LiveWiringError {
             Self::Render(error) => write!(f, "Tier-1 执行面装配失败: {error}"),
             Self::Capture(error) => write!(f, "Tier-1 抓帧失败: {error}"),
             Self::Engine(error) => write!(f, "引擎重建失败: {error}"),
+            #[cfg(feature = "in-process-mcp")]
+            Self::NoActiveAuthorityProject => {
+                f.write_str("权威会话没有活跃工程（`yeban_close_project` 之后），没有可投影的东西")
+            }
         }
     }
 }
@@ -239,6 +254,31 @@ impl From<EngineHostError> for LiveWiringError {
     }
 }
 
+/// 一次**权威投影刷新**的读数（[`LiveUi::sync_authority`] 的返回值）。
+///
+/// 为什么做成枚举而不是 `bool`：三种结局在报告里必须能分开 ——
+/// "什么都没发生"与"会话被关掉了"是**两件**不同的事，混成一个 `false` 会让
+/// 判据只能断言"没刷新"，而分不清"刷新逻辑没跑"与"没有工程可刷"。
+#[cfg(feature = "in-process-mcp")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthoritySync {
+    /// 权威的施加修订号没动 ⇒ 什么都没做（这是**常态**：只读调用不推进修订号）。
+    Unchanged,
+    /// 权威上有**新的**工程，已经重新投影并注入同一个活窗口。
+    Reprojected {
+        /// 刷新后权威的施加修订号。
+        revision: u64,
+    },
+    /// 权威的会话**没有活跃工程** ⇒ 投影**不动**（界面保留最后一次投影）。
+    ///
+    /// 如实登记：当前界面没有"没有工程"的表示（空工程是另一回事），
+    /// 因此这里不假装把界面清空。
+    NoActiveProject {
+        /// 权威当前的施加修订号。
+        revision: u64,
+    },
+}
+
 /// **管理动作的真正落地 + 电平消费** —— 包住 `PortAdapter<LivePort<MainWindow>>`。
 ///
 /// 它只覆写三个 `*_impl`（`[UI-MCP-001]` §12.3 的 Administrative 一级），其余全部原样
@@ -273,7 +313,12 @@ struct LiveAdminSurface {
     window: MainWindow,
     /// 静态语义注册表（动态区标记的来源，重抓树时要重新注入）。
     registry: ControlTree,
-    /// 当前工程与它的投影（换工程时一起换）。投影是纯函数，两份必然逐字节相同。
+    /// 当前工程的**投影缓存**（与它的 `ViewState` 一起换）。
+    ///
+    /// 它**不是**权威：`ROAD-M4-008` 选项 (a) 之后，权威是 `Domain` 会话
+    /// （`authority` 字段），本字段只在 [`Self::apply_project`] 里被权威的工程整体换掉
+    /// —— 因此"权威换了工程而界面还画着旧的那份"需要有人**跳过**这一次调用才可能发生，
+    /// 而 `sync_authority` 就是那个唯一的调用点。
     project: YebanProjectV1,
     view: ViewState,
     save_path: Option<PathBuf>,
@@ -284,6 +329,17 @@ struct LiveAdminSurface {
     report: Option<AdminReport>,
     /// `[UI-A11Y-002]` 的 IME 状态机 —— **唯一**的一份（观测与按键预览共用它）。
     input: Rc<RefCell<InputContext>>,
+    /// **唯一可变权威**的宿主句柄（`ROAD-M4-008` 选项 (a)）。
+    ///
+    /// `Some` ⇒ 本执行面的工程**只**从它来（装配入口是
+    /// [`build_live_ui_from_authority`]，那个函数**不接受**工程参数），
+    /// 下面那个 `project` 字段因此只是它的**投影缓存**，刷新由修订号驱动
+    /// （[`LiveUi::sync_authority`]）；`None` ⇒ 工程由调用方给出（旧的 [`build_live_ui`] 形态）。
+    #[cfg(feature = "in-process-mcp")]
+    authority: Option<ProjectAuthorityHandle>,
+    /// 已经把哪一版权威投影进来了（`sync_authority` 的比较基准）。
+    #[cfg(feature = "in-process-mcp")]
+    authority_revision: u64,
 }
 
 /// `yeban_app::input::Focus` → 线格式的 [`ImeFocus`]（**唯一**的映射点）。
@@ -422,6 +478,48 @@ impl LiveAdminSurface {
         }
         self.pump_meters();
         Ok(())
+    }
+
+    /// 把这个执行面接到**唯一可变权威**上（`ROAD-M4-008` 选项 (a)）。
+    ///
+    /// 只记下句柄与"当前已经投影过哪一版"，**不**改工程 —— 投影由
+    /// [`Self::sync_authority`] 做。装配入口 [`build_live_ui_from_authority`]
+    /// 先按权威的工程把窗口建出来，再调这里。
+    #[cfg(feature = "in-process-mcp")]
+    fn attach_authority(&mut self, authority: &ProjectAuthorityHandle) {
+        self.authority = Some(authority.clone());
+        self.authority_revision = authority.apply_revision();
+    }
+
+    /// 依**权威的施加修订号**刷新投影（`ROAD-M4-008` 选项 (a) 的刷新点）。
+    ///
+    /// 顺序是契约，三条都在这里：
+    /// 1. 读权威的修订号；与"已经投影过的"相同 ⇒ [`AuthoritySync::Unchanged`]（**常态**：
+    ///    一次只读工具调用不推进修订号，因此界面不会被查询刷来刷去）；
+    /// 2. 前进 ⇒ 取权威工程的一份快照，走**与装配同一条**数据流
+    ///    （[`Self::apply_project`]：`ViewState::from_project` → `host::apply_view` →
+    ///    重建注册表 → 引擎换代 → 重抓树）；
+    /// 3. **只有投影成功之后**才记下新修订号：失败会让下一次重试（响亮），
+    ///    而不是把"已经投影过了"记成一句不成立的话。
+    ///
+    /// # Errors
+    ///
+    /// 投影 / 注册表适配 / 引擎换代失败（[`LiveWiringError`]）。
+    #[cfg(feature = "in-process-mcp")]
+    fn sync_authority(&mut self) -> Result<AuthoritySync, LiveWiringError> {
+        let Some(authority) = self.authority.clone() else {
+            return Ok(AuthoritySync::Unchanged);
+        };
+        let revision = authority.apply_revision();
+        if revision == self.authority_revision {
+            return Ok(AuthoritySync::Unchanged);
+        }
+        let Some(project) = authority.project() else {
+            return Ok(AuthoritySync::NoActiveProject { revision });
+        };
+        self.apply_project(&project)?;
+        self.authority_revision = revision;
+        Ok(AuthoritySync::Reprojected { revision })
     }
 
     /// `ui/switch_main_view`：**真的**改 `MainWindow.arrangement-view` 并回读。
@@ -790,6 +888,25 @@ impl LiveUi {
         self.surface.apply_project(project)
     }
 
+    /// **依唯一可变权威刷新投影**（`ROAD-M4-008` 选项 (a)）。
+    ///
+    /// 只在权威的**施加修订号**前进时重投影。判据因此可以这样写：
+    /// "AI 经控制面改了工程" ⇒ 本方法返回 [`AuthoritySync::Reprojected`]，
+    /// 而界面上的语义元素随之改变；一次只读调用 ⇒ [`AuthoritySync::Unchanged`]，
+    /// 界面**一位不动**（不是"重投影了一遍但恰好相同"）。
+    ///
+    /// 生产 GUI 的接线点是**周期性的一跳**（与电平消费同款）：本方法幂等，
+    /// 每跳调一次即可，不需要"哪条路径改了就记得通知"。
+    ///
+    /// # Errors
+    ///
+    /// 投影 / 注册表适配 / 引擎换代失败。只有 [`build_live_ui_from_authority`]
+    /// 装配出来的执行面才有权威；其余装配下恒为 [`AuthoritySync::Unchanged`]。
+    #[cfg(feature = "in-process-mcp")]
+    pub fn sync_authority(&mut self) -> Result<AuthoritySync, LiveWiringError> {
+        self.surface.sync_authority()
+    }
+
     /// `[UI-A11Y-002]` 的 IME 状态机句柄 —— **唯一**的那一份（与执行面的观测位、
     /// 按键处置共用同一个对象；`Rc` 共享，不是复制）。
     ///
@@ -880,6 +997,39 @@ pub fn build_live_ui(
     )
 }
 
+/// **以进程内控制面会话为唯一可变权威**装配真实界面（`ROAD-M4-008` 选项 (a)）。
+///
+/// 与 [`build_live_ui`] 的差别是**结构性的**，不是风格：这里**不接受**任何工程参数。
+/// 工程的唯一来源是 `authority` —— 也就是控制面**正在服务的那一个** `Domain`。
+/// 因此"界面画的是哪一份工程"与"控制面读写的是哪一份工程"不可能分叉：
+/// 分叉需要一个第二来源，而本函数没有给它入口。
+///
+/// 之后每次权威改了工程（例如 AI 发了一次 `tools/call`），用 [`LiveUi::sync_authority`]
+/// 刷新投影；本函数已经把**当前**那一版投影进去了，因此不需要先调一次同步。
+///
+/// # Errors
+///
+/// 权威会话没有活跃工程（[`LiveWiringError::NoActiveAuthorityProject`]），
+/// 或投影 / 平台 / 组件 / 抓帧失败（同 [`build_live_ui_with`]）。
+#[cfg(feature = "in-process-mcp")]
+pub fn build_live_ui_from_authority(
+    authority: &ProjectAuthorityHandle,
+    permission: Permission,
+) -> Result<LiveUi, LiveWiringError> {
+    let project = authority
+        .project()
+        .ok_or(LiveWiringError::NoActiveAuthorityProject)?;
+    let mut ui = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission,
+            ..LiveWiringOptions::default()
+        },
+    )?;
+    ui.surface.attach_authority(authority);
+    Ok(ui)
+}
+
 /// 同 [`build_live_ui`]，但显式给出全部装配选项（控制台 Tab / 保存路径 / 量子数）。
 ///
 /// 构造顺序（不可颠倒，顺序本身就是约束）：
@@ -944,6 +1094,12 @@ pub fn build_live_ui_with(
         save_epoch: 0,
         report: None,
         input,
+        // 默认**没有**权威句柄：`build_live_ui*` 的工程由调用方给出。
+        // 接上权威的装配入口是 `build_live_ui_from_authority`（选项 (a)）。
+        #[cfg(feature = "in-process-mcp")]
+        authority: None,
+        #[cfg(feature = "in-process-mcp")]
+        authority_revision: 0,
     };
     Ok(LiveUi {
         reference,

@@ -38,9 +38,22 @@
 //! [`start_for_project`] 把调用方交进来的 `YebanProjectV1` 经 `Domain::open_in_memory`
 //! 注入控制面会话，并且**固定 `read_only = true`**。为什么只读：
 //!
-//! - app 侧**还没有**把这份投影与界面共享同一个可变实例（那是 `ROAD-M4-008` 的缺口），
-//!   一个可写的**影子副本**会让 Agent 以为自己改了用户的工程；
-//! - 只读 ⇒ 控制面**不会**成为同一工程文件的第二个写者。
+//! - 生产 GUI（`src/main.rs` 的 `run_gui`）**仍然**持着自己的撤销权威
+//!   （`undo::UndoPort` 的 `RefCell<UndoSession>`）。在它被改成"从 `Domain` 投影"
+//!   之前，把本会话改成可写就是**两个写者**（一个影子副本）—— 委派运行刻意不做这件事；
+//! - 只读 ⇒ 控制面**不会**成为同一工程文件的第二个写者（`yeban_save_project` 被拒，
+//!   判据见 `tests/in_process_mcp.rs` 第 5 条）。
+//!
+//! ## 唯一可变权威：**投影口已经接上**（`ROAD-M4-008` 选项 (a) 的第一片）
+//!
+//! [`InProcessMcp::project_authority`] 给出一个**只读**的 [`ProjectAuthorityHandle`]：
+//! 界面侧（`src/live_surface.rs` 的 `build_live_ui_from_authority` + `LiveUi::sync_authority`）
+//! 因此可以**只**从这一个会话取工程，并在它的**施加修订号**前进时重投影 ——
+//! 于是"AI 经控制面改了工程 ⇒ 界面跟着变"有判据直证（`tests/live_ui_mcp.rs`）。
+//!
+//! **仍然剩下的那一半**（如实登记，不假装闭合）：生产 GUI 的撤销 / 卷帘编辑**还没有**
+//! 改走这个权威，所以 `read_only` 也还不能放开。两件事是同一件事的两面：
+//! 先让 GUI 的写入口落到会话上，才谈得上把 `read_only` 改成 `false` 并重新裁决锁模式。
 //!
 //! ### 会话来源决定它怎样参与跨形态互斥（`ROAD-M0-007` / `MUST-GATE-008`）
 //!
@@ -66,7 +79,8 @@
 //!
 //! ## 明确**没做**（不是"忘了"）
 //!
-//! - **没有**把控制面会话与界面投影接成同一实例（`ROAD-M4-008` 的域侧缺口）；
+//! - **没有**让本会话成为生产 GUI 的写者：见上面"仍然剩下的那一半" ——
+//!   `read_only` 与 [`LockMode::SharedRead`] 因此**一位没改**；
 //! - **没有**停机信号的传输层原语：`HttpServer` 只有阻塞的 `serve_once` / `serve_forever`。
 //!   本模块用一个 stop 标志 + 一次**环回唤醒连接**让阻塞中的 `accept` 返回（见 [`InProcessMcp::stop`]）。
 //!   代价如实登记：一个连上却不发请求的慢客户端会推迟停机（传输层文件头已声明"不做慢速攻击防护"）。
@@ -95,6 +109,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use yeban_mcp::Dispatcher;
+use yeban_mcp::domain::Domain;
 use yeban_mcp::domain::engine_state::EngineReadings;
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
@@ -375,6 +390,61 @@ impl EngineReadingsHandle {
     }
 }
 
+/// **宿主侧工程权威句柄**（`ROAD-M4-008` 选项 (a) 的交付侧，2026-10-06）。
+///
+/// 它要证的那句话是：**控制面正在服务的那一个 `Domain` 就是唯一可变权威，界面是它的投影。**
+/// 因此这个句柄只做两件事，**都是读**：
+///
+/// | 方法 | 宿主拿它做什么 |
+/// | :--- | :--- |
+/// | [`Self::project`] | 拿权威工程的一份快照去重投影（`ViewState::from_project` → `host::apply_view`） |
+/// | [`Self::apply_revision`] | 判断"权威改过没有"，从而**只在改过时**重投影（不靠宿主记住每次调用） |
+///
+/// ## 为什么需要这个句柄（与 [`EngineReadingsHandle`] 同一个理由）
+///
+/// `InProcessMcp` 一旦挂上就不能再被可变借用（工作线程已经拿着它），而宿主
+/// **挂载之后**才需要读会话（判据里是"AI 通过控制面改了工程之后"）。没有这个口子，
+/// 宿主只能拿挂载**前**的那份克隆 —— 那正好是 `ROAD-M4-008` 要消掉的那个缺口。
+///
+/// ## 它不是第二套机制，也没有扩大权限面
+///
+/// - **同一个**分发器、**同一个** `Domain`、**同一个**线程都在用的 `Mutex`；
+/// - 走的是 `HttpServer::host_domain` 这个**只借出 `&Domain`** 的宿主口：签名里
+///   没有 `&mut`，因此**结构上不可能**成为第二个写者（`MUST-GATE-008` 的
+///   "只读会话不是第二个写者"没有被放松 —— 本句柄连写的能力都没有）；
+/// - `[MUST-GATE-009]` 的四条（默认关 / 只绑环回 / 必须令牌 / `ui:inject` 硬禁）与它无关：
+///   这里没有新增任何一条对外能力，也没有第二个端口 / 令牌 / 通道。
+///
+/// 句柄是 `Clone` 的（与 [`EngineReadingsHandle`] 同款）：它只包着一个与工作线程共享的
+/// [`HttpServer`]（`Arc`），**不拥有**停机。
+#[derive(Clone, Debug)]
+pub struct ProjectAuthorityHandle {
+    /// 与工作线程**共享**的那一个服务（内部的 `Mutex<Dispatcher>` 就是唯一会话）。
+    server: Arc<HttpServer>,
+}
+
+impl ProjectAuthorityHandle {
+    /// 权威工程的一份快照（`None` = 这个会话没有活跃工程）。
+    ///
+    /// **它是投影的唯一来源**：`crates/yeban-app/src/live_surface.rs` 的
+    /// `build_live_ui_from_authority` 只从这里取工程，因此"界面画的是哪一份工程"
+    /// 与"控制面读写的是哪一份工程"不可能分叉（分叉需要一个第二来源，而那里没有入口）。
+    #[must_use]
+    pub fn project(&self) -> Option<YebanProjectV1> {
+        self.server
+            .host_domain(|domain| domain.active_project().cloned())
+    }
+
+    /// 权威的**施加修订号**：每施加一个可能改工程的计划 +1（只读调用不推进）。
+    ///
+    /// 宿主拿它当"要不要重投影"的开关，因此界面刷新是**事件驱动**的，而不是
+    /// "每条路径都记得调钩子"（那是选项 (b) 的弱点）。
+    #[must_use]
+    pub fn apply_revision(&self) -> u64 {
+        self.server.host_domain(Domain::apply_revision)
+    }
+}
+
 impl InProcessMcp {
     /// 真的绑环回、建线程、开始服务。
     ///
@@ -464,6 +534,22 @@ impl InProcessMcp {
     #[must_use]
     pub fn engine_readings_handle(&self) -> EngineReadingsHandle {
         EngineReadingsHandle {
+            server: Arc::clone(
+                self.server
+                    .as_ref()
+                    .expect("挂载存活期间监听 socket 一定在（stop 消费 self）"),
+            ),
+        }
+    }
+
+    /// **宿主侧工程权威句柄**：把控制面**正在服务的那一个** `Domain` 的工程 /
+    /// 施加修订号交给宿主（界面由此投影，见 [`ProjectAuthorityHandle`]）。
+    ///
+    /// 与 [`Self::engine_readings_handle`] 同款：它不延长监听生命周期，
+    /// 也不影响 [`Self::stop`] 的语义；而且它**只能读**。
+    #[must_use]
+    pub fn project_authority(&self) -> ProjectAuthorityHandle {
+        ProjectAuthorityHandle {
             server: Arc::clone(
                 self.server
                     .as_ref()

@@ -191,6 +191,16 @@ pub struct Domain {
     /// 不进 `project.json` 也不进 `history.dag`。
     readings_tail: Vec<(u64, engine_state::EngineReadings)>,
     now_ms: u64,
+    /// **施加修订号**：每施加一个**可能改工程**的计划就 +1（只读计划不推进）。
+    ///
+    /// 它是**宿主投影刷新的触发口径**（`ROAD-M4-008` 选项 (a)）：形态 A 的
+    /// `yeban-app` 把控制面会话当唯一可变权威，界面是它的**投影** —— 投影只在
+    /// 这个号前进时重做一次，因此"AI 改模型 ⇒ 界面跟着变"不依赖宿主记住
+    /// "刚才那次调用改了没有"（那正是选项 (b) 的弱点）。
+    ///
+    /// 单调性由 [`apply`] 这**一个**写入点保证（推进口径见 [`Plan::mutates_project`]）；
+    /// 与 [`Self::readings_revision`] 是两件事：后者是**引擎读数**的游标，住在会话运行态。
+    apply_revision: u64,
 }
 
 impl Default for Domain {
@@ -213,7 +223,16 @@ impl Domain {
             readings_revision: 0,
             readings_tail: Vec::new(),
             now_ms: 0,
+            apply_revision: 0,
         }
+    }
+
+    /// **施加修订号**（`0` = 从未施加过任何可能改工程的计划）。
+    ///
+    /// 宿主用它驱动界面投影的刷新（`ROAD-M4-008` 选项 (a)）：见字段文档。
+    #[must_use]
+    pub const fn apply_revision(&self) -> u64 {
+        self.apply_revision
     }
 
     /// 会话运行态（只读）[`MODEL-ISO-001` 第 2 层]。
@@ -773,6 +792,40 @@ impl Plan {
                 .as_ref()
                 .map_or(1, |graph| graph.commit_count()),
             other => domain.commit_count() + other.commit_delta(),
+        }
+    }
+
+    /// 这个计划**可能改动工程文档**吗（只读变体 = `false`）。
+    ///
+    /// 与 [`Self::op`] / [`Self::commit_delta`] 同一位置、同一风格：它是
+    /// [`Domain::apply_revision`] 的**推进口径**，因此"一次查询把界面刷新了一遍"
+    /// 在结构上不会发生。三处容易搞错的地方都写在这里，而不是散在 `apply_inner` 里：
+    ///
+    /// | 变体 | 为什么是这个答案 |
+    /// | :--- | :--- |
+    /// | `Propose` / `Reject` | 只动提案记录与提案分支 —— 工作工程（`Active::project`）一位不变，因此界面**不需要**重投影 |
+    /// | `Save` / `Close` | `Save` 只改"未保存标记"；`Close` 把工程整体放掉（从"有工程"变成"没有工程"），投影确实会失效 ⇒ 算**可能改**，由调用方如实处理"没有活跃工程"这一档 |
+    /// | `Undo` / `Redo` | 不动提交图谱（`commit_delta` = 0），但**真的动工程字节** ⇒ 必须算 |
+    #[must_use]
+    pub fn mutates_project(&self) -> bool {
+        match self {
+            Self::Open(..) | Self::Close { .. } | Self::Merge { .. } => true,
+            // 撤销 / 重做只移动游标，但工程字节真的回退/前进。
+            Self::Undo { .. } | Self::Redo { .. } => true,
+            // 只写一个点的自动化编辑改工程；只读调用（没有 `point`）一位都不改。
+            Self::EditAutomation { edit } => edit.write.is_some(),
+            // 真登记才改工程；幂等命中（内容已存在）一位都不改。
+            Self::ImportAudio { import } => import.op.is_some(),
+            Self::Save { .. }
+            | Self::Query { .. }
+            | Self::Diagnostics { .. }
+            | Self::Propose { .. }
+            | Self::Reject { .. }
+            | Self::RenderMaster { .. }
+            // 引擎/会话读数是**只读**的。
+            | Self::EngineState { .. }
+            // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
+            | Self::ExportMidi { .. } => false,
         }
     }
 
@@ -1753,7 +1806,14 @@ fn plan_export_midi(domain: &Domain, _call: &ToolCall) -> Result<Plan, Fault> {
 /// 领域失败 → [`Fault::Domain`]（走 `ToolResponse`）；
 /// 实现级状况 → [`Fault::Impl`]（走 JSON-RPC 错误对象）。
 pub fn apply(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
+    // **施加修订号**在进 `apply_inner` 之前就定：`plan` 的所有权要交给 `apply_inner`，
+    // 而"这个计划可不可能改工程"是**计划自己的**事实（[`Plan::mutates_project`]），
+    // 不需要看施加结果。失败的计划不推进（下面只在 `Ok` 时提交这个读数）。
+    let mutates = plan.mutates_project();
     let outcome = apply_inner(domain, plan);
+    if mutates && outcome.is_ok() {
+        domain.apply_revision = domain.apply_revision.saturating_add(1);
+    }
     // 会话运行态里那份**撤销游标镜像**在唯一可变入口处同步（见 `Domain::session`）。
     // 放在这里而不是每个 `apply_*` 里：漏一处就会漂移，而这里是**唯一**的入口。
     domain.sync_session();
@@ -2944,6 +3004,79 @@ mod tests {
             planned_ops,
             Value::Array(committed),
             "预览里的 op 必须与真实提交的 op 逐字节相同 (确定性身份)"
+        );
+    }
+
+    /// **施加修订号的推进口径**（`ROAD-M4-008` 选项 (a) 的触发口径）。
+    ///
+    /// 这条判据要证的句子：**只有真的可能改工程的计划才推进修订号**。
+    /// 两侧都用**真工具调用**（不是手搓 `Plan`）：只读一侧是 `yeban_query_project`
+    /// 与 `yeban_export_midi`；写一侧是 `yeban_edit_automation`（在一个从没有泳道的
+    /// `TrackPan` 目标上写一个点）。
+    ///
+    /// 两处交叉核对都做，因为两种错法都会让界面出错，而且方向相反：
+    /// - "修订号动了但工程没动" ⇒ 界面被**白刷**（因此只读一侧断言字节逐字不变）；
+    /// - "工程动了而修订号没动" ⇒ 界面**不跟**（因此写一侧断言字节真的变了）。
+    #[test]
+    fn only_plans_that_can_change_the_project_advance_the_apply_revision() {
+        let project_json = |domain: &Domain| -> String {
+            crate::domain::store::serialize_project(domain.active_project().expect("活跃工程"))
+                .expect("序列化")
+        };
+        let mut domain = domain();
+        let revision = domain.apply_revision();
+        let bytes_before = project_json(&domain);
+
+        // ---- 只读一侧：修订号与工程字节都必须一位不动 ----
+        for (name, arguments) in [
+            ("yeban_query_project", serde_json::json!({"limit": 3})),
+            ("yeban_export_midi", serde_json::json!({})),
+        ] {
+            let tool_call = call(name, arguments);
+            let planned = plan(&domain, &tool_call).expect("只读工具必须规划成功");
+            assert!(
+                !planned.mutates_project(),
+                "`{name}` 不得被算作「可能改工程」"
+            );
+            execute(&mut domain, &tool_call).expect("只读工具必须执行成功");
+            assert_eq!(
+                domain.apply_revision(),
+                revision,
+                "`{name}` 之后修订号不得动"
+            );
+            assert_eq!(
+                project_json(&domain),
+                bytes_before,
+                "`{name}` 之后工程字节必须逐字不变"
+            );
+        }
+
+        // ---- 写一侧：恰好推进一次，且工程字节真的变了 ----
+        let track = fixture_track(&domain);
+        let write = call(
+            "yeban_edit_automation",
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "lane": "TrackPan",
+                "point": {"tick": 0, "value": 0.25, "curve": "Linear"},
+            }),
+        );
+        assert!(
+            plan(&domain, &write)
+                .expect("写类工具必须规划成功")
+                .mutates_project(),
+            "在从没有泳道的目标上写一个点必须被算作「可能改工程」"
+        );
+        execute(&mut domain, &write).expect("施加");
+        assert_eq!(
+            domain.apply_revision(),
+            revision + 1,
+            "改工程的施加必须恰好推进一个修订号"
+        );
+        assert_ne!(
+            project_json(&domain),
+            bytes_before,
+            "修订号动了 ⇒ 工程字节必须真的变了"
         );
     }
 }

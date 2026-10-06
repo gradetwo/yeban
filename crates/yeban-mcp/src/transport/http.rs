@@ -509,6 +509,24 @@ impl HttpServer {
         self.lock().domain_mut().set_engine_readings(readings);
     }
 
+    /// **宿主侧只读投影口**：把正在服务的那**一个**会话的领域状态交给宿主**读一次**。
+    ///
+    /// 为什么住在传输层：与 [`Self::set_engine_readings`] 同一个理由 —— 分发器在
+    /// `Mutex` 里，服务一旦开始 `serve_once` 就不可能被外部可变借用；而形态 A 的
+    /// `yeban-app` 需要把**同一个**会话的工程投影到界面上（`ROAD-M4-008` 选项 (a)：
+    /// 控制面会话是唯一可变权威，界面是它的投影）。
+    ///
+    /// ## 它只借出 `&Domain`（这一条是承重的）
+    ///
+    /// 把"这一侧只能读"做成**签名事实**：调用方拿不到 `&mut`，因此这个口子**不可能**
+    /// 成为第二个写者 —— 它不是 `Dispatcher` 的可达面（JSON-RPC 走的是
+    /// `handle_text` → `respond` 那条私有链），也没有第二个令牌、第二条通道、
+    /// 第二个端口。想改工程，唯一的入口仍然是 `tools/call`（走
+    /// [`Dispatcher::handle`] 的鉴权 / 作用域 / `dryRun` 全套）。
+    pub fn host_domain<R>(&self, read: impl FnOnce(&crate::domain::Domain) -> R) -> R {
+        read(self.lock().domain())
+    }
+
     /// 取分发器（锁被毒化时仍然取内层 —— 环回开发服务宁可继续回答并如实报错，
     /// 也不要在 handler 里 panic）。
     fn lock(&self) -> MutexGuard<'_, Dispatcher> {

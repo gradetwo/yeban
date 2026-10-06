@@ -101,6 +101,26 @@
 - (c) 让挂载会话可写并取 `ExclusiveWrite` ⇒ 控制面成为真写者，GUI 保存路径须让位；委派运行刻意拒绝（会在没有单一权威接线时造出影子写者）。
 - **选 (a) 我做**：`Domain` 居中 + 两处改投影 + 加"经 MCP 变更 ⇒ UI 投影跟随"判据 + 重跑锁判据证明 `MUST-GATE-008` 仍成立。
 
+### 执行状态：🟡 **第一片已落地（2026-10-06），仍是「部分」** —— 方向已定，缺的是生产 GUI 那一半
+
+**已做到（投影口 + 会红的判据）**
+
+- **`Domain` 有了"我改过工程"的可观察读数**：`crates/yeban-mcp/src/domain/mod.rs` 新增 `Domain::apply_revision`（**施加修订号**）与 `Plan::mutates_project`（推进口径：只读变体不推进）。推进点只有一个 —— 唯一可变入口 `Domain::apply`，且只在施加**成功**时 +1。
+- **宿主只读口**：`crates/yeban-mcp/src/transport/http.rs` 的 `HttpServer::host_domain` 只借出 `&Domain`（签名里没有 `&mut`）⇒ 这个口子**结构上不可能**成为第二个写者；`crates/yeban-app/src/mcp_mount.rs` 的 `InProcessMcp::project_authority()` 把它包成只读的 `ProjectAuthorityHandle`（`project()` / `apply_revision()`）。
+- **界面成为投影（这一条是选项 (a) 的实质）**：`crates/yeban-app/src/live_surface.rs` 新增 `build_live_ui_from_authority` —— 它**不接受任何工程参数**，工程的唯一来源是控制面正在服务的那一个 `Domain`；`LiveUi::sync_authority` 只在修订号前进时重投影（因此不依赖"每条路径都记得调钩子"）。`LiveAdminSurface.project` 的角色从"另一份权威"改写为"**投影缓存**"。
+- **判据（有牙，且能失败）**：`crates/yeban-app/tests/live_ui_mcp.rs::an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority` —— 真环回 socket + 真令牌发 `yeban_edit_automation`（在从没有泳道的 `TrackPan` 上写一个点）⇒ 修订号 0→1 ⇒ **同一个活窗口**的运行时控件树 84→**85** 个节点、新语义元素 `track-0-automation-pan-lane` 的 `accessible-label` **逐字等于权威工程的投影** ⇒ `ui/tree` / `ui/node` 端到端读到它；随后一次**只读** `yeban_query_project` ⇒ `AuthoritySync::Unchanged`（界面不是被查询刷新的）。配套：`crates/yeban-mcp/src/domain/mod.rs::only_plans_that_can_change_the_project_advance_the_apply_revision` 钉住推进口径（只读：修订号与工程字节逐字不变；写：恰好 +1 且字节真的变了）。
+- **负向实测两条（都是先红后还原）**：① 临时摘掉 `apply` 的修订号推进 ⇒ 红在「施加修订号 0→1」（`left: 0, right: 1`，`test result: FAILED. 0 passed; 1 failed`）；② 临时摘掉 `sync_authority` 里的重投影一步 ⇒ 红在控件树断言（`track-0-automation-pan-lane` 不在树里）。因此这条判据不是恒绿。
+- **`MUST-GATE-008` 一位没动**：控制面会话仍 `read_only = true`、仍取 `LockMode::SharedRead`，`crates/yeban-app/tests/in_process_mcp_lock.rs` 原样重跑全绿；默认依赖树里 `yeban-mcp` 命中仍为 **0**（加 feature 才 1）。
+
+**没做到（因此本项仍是「部分」，不是「已关闭」）**
+
+1. **生产 GUI 还不是投影**：`src/main.rs` 的 `run_gui` 没有运行期重投影（它只在启动时 `host::apply_view` 一次），而它的写入口是 `undo::UndoPort` 的 `RefCell<UndoSession>` —— **它仍是一份权威**。要让 GUI 也"从 `Domain` 投影"，必须把 `Cmd+Z` / 卷帘编辑这些**写**入口改走 `ProjectAuthorityHandle`，并在 Slint 侧接一条周期性 `sync_authority`（与电平消费同款）。这一片动的面比第一片大得多，本次刻意不做半迁移。
+2. **因此 `read_only` 还不能放开**：只要 GUI 仍持自己的会话，把挂载会话改成可写就是**两个写者**（影子副本）—— 选项 (c) 已明文拒绝这件事，本片据此**拒绝**了"顺手把会话改成可写 + 取 `ExclusiveWrite`"。
+3. **`UndoPort` 与 `Domain` 的会话仍是两份**：`crates/yeban-app/src/undo.rs` 用 `#[path]` 共享 `undo_session.rs`，而 `#[path]` 引入的是**另一个 crate 里的另一个类型** —— 两个 `UndoSession` 实例无法直接共享，因此"同一个实例"必须经由宿主口在**投影**层面达成（本片做的正是这个），或另做一次把 GUI 写入口整体搬到 `Domain` 的重构。这是本项剩下工作量的**结构性原因**，不是疏漏。
+
+**原始读数与逐条证据**（授权核实、命中数、负向实测的原文、锁判据的三行 `test result:`）：见
+[`docs/ledger/m4-008-authority-notes.md`](m4-008-authority-notes.md)。
+
 ---
 
 ## 附：Phase 4 的四项「部分」各自缺什么，以及对应哪条裁决
@@ -111,12 +131,12 @@
 | :--- | :--- | :--- | :--- |
 | `ROAD-M4-006` | RF64/BW64 写入器 + BEXT 元数据已落地（`crates/yeban-render/src/rf64.rs`）| **32 轨参考工程 ≥100× 实时**的**实测** | **不需要新裁决** —— 依 `HD-38`/`D50`（不投入自托管 runner）该实测**长期 PENDING**；若你改变 `D50`，我按第 361 轮简报的 (a) 执行 |
 | `ROAD-M4-007` | `.als` 导出器首片：模块 + 19 条损失表 + 4 条判据；**默认依赖树 0 命中 `flate2`**；**CI 全量腿 success**；**出口已接**：CLI `--export-als` 呈现损失表（问题 3 已关闭） | **参考 `.als`**（用于把"风格级"升级为"可在 Live 打开"）| **问题 5**（提供 / 不做）；出口形态已由 **问题 3**（`D47`）裁决并落地 |
-| `ROAD-M4-008` | UI 侧闭环真跑；依赖边与运行态挂载已落地（`4971549`）；跨形态锁已成立（`db1a667`）| **单一可变 UI↔领域权威**（三份拷贝的收束）| **问题 6**（`(a)` 建议）|
+| `ROAD-M4-008` | UI 侧闭环真跑；依赖边与运行态挂载已落地（`4971549`）；跨形态锁已成立（`db1a667`）；**选项 (a) 第一片已落地（2026-10-06）**：`Domain` 施加修订号 + 宿主只读投影口 `HttpServer::host_domain` + `build_live_ui_from_authority` / `LiveUi::sync_authority` + 判据「经 MCP 变更 ⇒ UI 投影跟随」（负向实测会红） | **生产 GUI 的写入口仍未落到该权威**（`run_gui` 的 `undo::UndoPort` 持自己的一份 `UndoSession`，没有运行期重投影）；因此 `read_only` 与锁模式**未变** | **无需新裁决** —— 方向已是**问题 6 (a)**（本项上方「执行状态」），剩下的是**执行**：把 GUI 写入口搬到该权威上 |
 | `ROAD-M4-010` | V1/V2 Web 包袱已彻底删除；汇合项（`P4_Gate` 四个入边）| **它必然被其它项拖住**，不可单独提前判 | **无需单独裁决** —— 随 `M4-006/007/008` 与两项 PENDING 的处置而自然收口 |
 
 **读法**：上表四行里，`M4-006` 与 `M4-010` **不需要你新增裁决**（前者依既有 `D50` 裁决为长期 PENDING，后者是汇合项）；
 **问题 1**（`N2` 快捷键）、**问题 2**（响度传输）与**问题 3**（`D47`/`.als` 出口）**已关闭**
 （分别按建议 (1)/(a)/(a) 落地：GUI 绑逻辑键 + 无头端口判据；既有控制面的 `since` 游标 +
 `InProcessMcp::engine_readings_handle` 宿主注入口 + 真 socket 判据；CLI `--export-als` + 损失表可见）；
-真正需要你的只剩 **问题 5**（参考 `.als`）与 **问题 6**（`M4-008`），再加上与 Phase 4 并列的
-**问题 4**（`MUST-GATE-014` 素材）。
+真正需要你的只剩 **问题 5**（参考 `.als`）以及与 Phase 4 并列的 **问题 4**（`MUST-GATE-014` 素材）
+—— **问题 6 的裁决已经是 (a)**（本轮交出第一片，见上方「执行状态」），它现在缺的是**执行**而不是**你选一个字母**。

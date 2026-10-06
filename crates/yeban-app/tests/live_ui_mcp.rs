@@ -34,6 +34,12 @@ use live::{
     LiveControlPlane, LiveWiringError, LiveWiringOptions, build_live_ui, build_live_ui_with,
 };
 
+// 判据 17（`ROAD-M4-008` 选项 (a)）：以进程内控制面会话为**唯一可变权威**的装配入口
+// 与刷新点。它们只存在于非默认 feature `in-process-mcp` 下 —— 默认构建里没有
+// `yeban-mcp`（`tree -p yeban-app -e normal` 命中 0），因此这里也必须 cfg。
+#[cfg(feature = "in-process-mcp")]
+use live::{AuthoritySync, build_live_ui_from_authority};
+
 use yeban_app::elements::is_model_driven_family;
 use yeban_app::scene::TRACK_NAMES;
 use yeban_ui_mcp::live::{ProbeOptions, family_member_count};
@@ -1466,4 +1472,229 @@ fn a_logical_key_shortcut_from_the_event_source_reaches_the_host_action() {
          端口注入 `Tab` ⇒ arrangement-view true→{after_tab}; 回调注入 `5` ⇒ {after_five}、`B` ⇒ {after_b}; \
          未绑定的 `q` 与无撤销会话的 `Cmd+Z` 如实 reject（物理码判据未改动）"
     ));
+}
+
+// ---------------------------------------------------------------------------
+// 判据 17：`ROAD-M4-008` 选项 (a) —— 唯一可变权威是控制面会话，界面是它的投影
+// ---------------------------------------------------------------------------
+
+/// 真环回 socket 上的一次 JSON-RPC 往返（判据 17 的**客户端**那一半）。
+///
+/// **它不是第二份协议实现**：协议层（405 / 411 / 413 / 431 / 401 / 200）的判据住在
+/// `crates/yeban-app/tests/in_process_mcp.rs` 与 `yeban-mcp` 的单元判据里，本文件
+/// **不重复**它们。这里只需要"把一条 `tools/call` 送到那个监听口、把响应体读回来"。
+///
+/// 为什么走 socket 而不是宿主口：这条判据要证的是"**经 MCP 会话**的改动会到界面"，
+/// 因此改动必须真的从一个客户端、带令牌、过鉴权与分发器进来 —— 那是外部 AI 的路径。
+#[cfg(feature = "in-process-mcp")]
+fn mcp_call(address: std::net::SocketAddr, bearer: &str, body: &str) -> serde_json::Value {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let timeout = Duration::from_secs(5);
+    let mut stream =
+        TcpStream::connect_timeout(&address, timeout).expect("连接环回控制面（真 socket）");
+    stream.set_read_timeout(Some(timeout)).expect("设置读超时");
+    stream.set_write_timeout(Some(timeout)).expect("设置写超时");
+    let head = format!(
+        "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+         Authorization: {bearer}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        yeban_mcp::transport::http::MCP_PATH,
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).expect("写请求头");
+    stream.write_all(body.as_bytes()).expect("写请求体");
+    stream.flush().expect("刷出请求");
+    let mut raw = String::new();
+    stream
+        .read_to_string(&mut raw)
+        .expect("读响应（超时即失败）");
+    let body = raw
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("响应里没有头/体分隔符: {raw}"))
+        .1;
+    serde_json::from_str(body).unwrap_or_else(|error| panic!("响应体不是 JSON ({error}): {body}"))
+}
+
+/// 判据 17（`docs/ledger/open-questions.md` 问题 6 选项 (a)）：**经 MCP 会话改动工程 ⇒
+/// 界面投影跟着变**，因为两者**只有一个**可变权威。
+///
+/// ## 这条判据要证的句子
+///
+/// `build_live_ui_from_authority` 装配出来的界面**没有**自己的工程来源：它只从
+/// `ProjectAuthorityHandle`（= 控制面正在服务的那一个 `Domain`）取工程。因此一次 AI
+/// 的工具调用改了会话的工程之后，`LiveUi::sync_authority` 依**施加修订号**重投影，
+/// 真实 `MainWindow` 的语义元素随之改变 —— 而只读调用一位都不改。
+///
+/// ## 论证顺序（每一步都用上一步的实读值）
+///
+/// | 步 | 动作 | 读回 |
+/// | :--- | :--- | :--- |
+/// | 1 | 以权威装配真实界面（该入口**不接受**工程参数） | 运行时控件树里只有样本那一条泳道 `track-0-automation-volume-lane` |
+/// | 2 | 一个**真客户端**带令牌在环回 socket 上发 `yeban_edit_automation`（在从没有泳道的 `TrackPan` 上写一个点） | `status = success`、`applied = true` |
+/// | 3 | 从**宿主口**读同一个会话 | 施加修订号 **+1**；工程里真的多了 `track-0-automation-pan-lane` |
+/// | 4 | `sync_authority` | `Reprojected { revision }`（不是 `Unchanged`） |
+/// | 5 | 再读运行时控件树（同一个活窗口） | **新元素**在树里；它的 `accessible-label` 与"权威工程的投影"逐字相等 |
+/// | 6 | 一次**只读**工具调用（`yeban_query_project`） | 修订号不动、`sync_authority = Unchanged` ⇒ 界面不是被查询刷来刷去 |
+/// | 7 | `ui/tree` / `ui/node` 端到端 | 控制面服务的就是更新后的那一棵树（同一个窗口） |
+///
+/// ## 这条判据怎么变红（负向实测见工作线报告）
+///
+/// - 让 `Domain::apply` 不推进 `apply_revision`（或 `Plan::mutates_project` 对
+///   `EditAutomation` 恒为 `false`）⇒ 第 4 步变成 `Unchanged`，第 5 步的新元素不在树里；
+/// - 让 `sync_authority` 拿**装配时**那一份工程（而不是每次从权威取）⇒ 同样在第 5 步变红。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority() {
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008")),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    // ---- 1. 以权威为唯一工程来源装配真实界面 ----
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+    let view_before =
+        ViewState::from_project(&authority.project().expect("权威有活跃工程")).expect("投影");
+    let lead_index = view_before.tracks[0].index;
+    let lead_id = view_before.tracks[0].id.clone();
+    let lane_id = format!("track-{lead_index}-automation-pan-lane");
+    assert!(
+        view_before
+            .automation_lane_element_ids()
+            .contains(&format!("track-{lead_index}-automation-volume-lane")),
+        "起点：主轨必须已经有那条音量泳道（否则本判据的对照不成立）"
+    );
+    assert!(
+        !view_before.automation_lane_element_ids().contains(&lane_id),
+        "起点：`{lane_id}` 还不存在 —— 第 2 步要新建的就是它"
+    );
+    let tree_before = ui.tree_snapshot();
+    assert!(
+        !tree_before.contains(&lane_id),
+        "起点：运行时控件树里不该有 `{lane_id}`"
+    );
+    let nodes_before = tree_before.len();
+    let revision_before = authority.apply_revision();
+
+    // ---- 2. 真客户端、真令牌、真环回 socket：一次**会改工程**的工具调用 ----
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"yeban_edit_automation","arguments":{{"trackId":"{lead_id}","lane":"TrackPan","point":{{"tick":0,"value":0.25,"curve":"Linear"}}}}}}}}"#
+        ),
+    );
+    assert_eq!(
+        reply["result"]["status"], "success",
+        "写类工具必须成功: {reply}"
+    );
+    assert_eq!(reply["result"]["data"]["applied"], true, "{reply}");
+
+    // ---- 3. 同一个会话：修订号 +1，工程里真的多了那条泳道 ----
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before + 1,
+        "一次改工程的施加必须恰好推进一个修订号"
+    );
+    let project_after = authority.project().expect("权威有活跃工程");
+    let view_after = ViewState::from_project(&project_after).expect("投影");
+    assert!(
+        view_after.automation_lane_element_ids().contains(&lane_id),
+        "权威工程里必须出现 `{lane_id}`: {:?}",
+        view_after.automation_lane_element_ids()
+    );
+    let expected_label = view_after
+        .automation_lanes
+        .iter()
+        .find(|lane| lane.element_id == lane_id)
+        .expect("新泳道的投影")
+        .label
+        .clone();
+
+    // ---- 4. 投影刷新：**只有**权威改了才动手 ----
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 1
+        },
+        "权威改过工程 ⇒ 这一次必须真的重投影"
+    );
+
+    // ---- 5. 界面真的变了：新语义元素在树里，标签 == 权威工程的投影 ----
+    let tree_after = ui.tree_snapshot();
+    assert!(
+        tree_after.contains(&lane_id),
+        "重投影之后运行时控件树里必须有 `{lane_id}`（界面没跟着权威走）"
+    );
+    assert!(
+        tree_after.len() > nodes_before,
+        "控件树节点数必须增加: {nodes_before} → {}",
+        tree_after.len()
+    );
+    let label_after = label_of(&tree_after, &lane_id);
+    assert_eq!(
+        label_after, expected_label,
+        "界面上的标签必须等于**权威工程**的投影（不是装配时那一份）"
+    );
+
+    // ---- 6. 只读调用不刷新界面：修订号不动 ⇒ `Unchanged` ----
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_query_project","arguments":{"limit":2}}}"#,
+    );
+    assert_eq!(reply["result"]["status"], "success", "{reply}");
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before + 1,
+        "只读工具不得推进施加修订号"
+    );
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Unchanged,
+        "没有新版本 ⇒ 不得重投影"
+    );
+    assert_eq!(
+        ui.tree_snapshot().len(),
+        tree_after.len(),
+        "`Unchanged` 必须意味着界面一位没动"
+    );
+
+    // ---- 7. 端到端：控制面服务的就是这**一个**更新后的活窗口 ----
+    let nodes_after = tree_after.len();
+    let mut plane = ui.into_control_plane(Permission::ReadOnly);
+    let viewport = plane.viewport();
+    let probe = plane
+        .plane()
+        .probe(
+            &ProbeOptions::new(lane_id.clone(), "自动化")
+                .expecting_size(viewport.width, viewport.height),
+        )
+        .unwrap_or_else(|error| panic!("端到端 probe 失败: {error}"));
+    assert_eq!(probe.node.id, lane_id);
+    assert_eq!(
+        probe.node.label, expected_label,
+        "`ui/node` 读到的标签必须就是权威工程的投影"
+    );
+    assert!(
+        probe.tree_json.contains(&label_after),
+        "`ui/tree` 的线上文本里必须真的有这条泳道的标签"
+    );
+
+    report_line(&format!(
+        "[m4-008] 经 MCP 会话改工程 ⇒ 界面投影跟随: 环回 socket 上 `yeban_edit_automation` \
+         新建 `{lane_id}` ⇒ 施加修订号 {revision_before}→{}; 控件树 {nodes_before}→{nodes_after} 个节点; \
+         标签 = `{label_after}`; 随后的只读调用 = Unchanged（界面不是被查询刷新的）",
+        authority.apply_revision(),
+    ));
+    mount.stop().expect("停机必须成功（有 5 秒上限）");
 }
