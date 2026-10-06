@@ -9022,3 +9022,18 @@ On **(a)** I would publish the five fields on the existing control-plane session
   instruments (27 CC0 + 3 CC-BY)** out of the 33 SFZ / 21 505 files / 9.371 GiB source. So the ruling is simply whether to **distribute those 30** (then the gate
   moves from mechanism-only to real bytes) or to keep them out of the repository and leave the gate at 0 bytes with that reason recorded - a legitimate answer that
   `HD-31` already anticipated.
+
+
+### Round 374: the six open questions now live in one entry point - `docs/ledger/open-questions.md`
+
+The briefs written in rounds 361-373 were scattered through this ledger, which made the负责人 hunt for them. They are now consolidated into a single page,
+`docs/ledger/open-questions.md`, structured so that each item is answerable with one letter: the options, my recommendation, the exact consequence I would execute,
+and - importantly - the two questions I already **withdrew** after finding them answered (`HD-49`, ruled out by `HD-38`/`D50`) and the two I removed after finding
+them covered (the HD-46 "summing" sub-question, and the `ui/*` `dryRun`/loudness forms that a word-grep would wrongly call missing).
+
+It also carries the discipline forward: **check this file and the ADRs before asking**, because a judgment already recorded still counts and re-asking is noise. That
+rule cost me nothing to write and has already paid twice this session.
+
+**Status**: tree green and clean; `check_docs_links` now counts 105 files (the new page included); automatic CI green through `de5b423`; both manual tiers green; all
+fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; the objective's delivery list verified end to end; and the
+open questions reduced to six, each answerable with one word.
