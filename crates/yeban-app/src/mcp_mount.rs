@@ -33,19 +33,25 @@
 //! - **`ui:inject` 仍然硬禁**：分发器一律以 [`RunMode::Production`] 构造，
 //!   生产模式下 `ui:inject` 由 `security::authorize` 硬拒（本模块无法放松它）。
 //!
-//! ## 会话：**只读**打开的那份工程 + **共享读** `.yeban.lock`
+//! ## 会话：来源决定 `read_only` 与它取的 `.yeban.lock` 模式
 //!
 //! [`start_for_project`] 把调用方交进来的 `YebanProjectV1` 经 `Domain::open_in_memory`
-//! 注入控制面会话，并且**固定 `read_only = true`**。注意 `read_only` 的准确含义是
-//! **不许落盘**（`yeban_save_project` 被拒，判据见 `tests/in_process_mcp.rs` 第 5 条），
-//! **不是**"工程不可变"：`yeban_undo` / `yeban_edit_automation` 一直在改这份内存工程。
-//! 因此第二片把 GUI 的写入口搬上来时，`read_only` 不需要、也没有被放开。
+//! 注入控制面会话；`read_only` **不再写死**，而由 [`SessionSource`] 一处给出
+//! （[`SessionSource::session_read_only`]）：只读形态（[`SessionSource::File`] /
+//! [`SessionSource::InMemory`]）是 `true`，单一写者形态（[`SessionSource::WritableFile`]）
+//! 是 `false`。注意 `read_only` 的准确含义是**不许落盘**（`yeban_save_project` 被拒，
+//! 判据见 `tests/in_process_mcp.rs` 第 5 条），**不是**"工程不可变"：内存写口
+//! （[`ProjectAuthorityHandle::apply_host`]）对只读会话同样开着 —— `yeban_undo` /
+//! `yeban_edit_automation` 一直在改这份内存工程，`read_only` 只闸落盘。
 //!
-//! 为什么**不**改成 `read_only = false`（本片明确停在这里，如实登记）：
-//! 放开它意味着控制面可以 `yeban_save_project` **落盘**，而 app GUI 自己的保存路径
-//! （`ui/force_save` / `--save-as`，`src/save.rs`）**不取** `.yeban.lock` ——
-//! 两条会同时写同一个工程文件的路 = 影子写者（问题 6 选项 (c) 被拒的正是这件事）。
-//! 要放开它，必须先让 GUI 的保存路径也参与同一把锁并交出写权限，那是下一片。
+//! 上一版"为什么**不**改成 `read_only = false`"的顾虑（GUI 的保存路径不取这把锁）
+//! 已经消除：GUI 的两条工程保存
+//! 入口（`ui/force_save` / `--save-as`，`src/save.rs` 的 `save_project_file` /
+//! `save_archive_file`）现在各取一次**排他写**建议锁，用的是与控制面**同一份源码**
+//! （`src/project_lock.rs`，经 `#[path]` 共享 `yeban-mcp/src/domain/lock.rs`），
+//! 拿不到锁就**一个字节都不写**；挂载了控制面时，界面侧的保存更**不自己落盘**，
+//! 而是委派给那个会话的 [`ProjectAuthorityHandle::save_to`]（`src/save_action.rs`）。
+//! 于是"两条同时写同一个工程文件的路"由**同一把锁 + 同一个写会话**消掉，而不是靠告诫。
 //!
 //! ## 唯一可变权威：**投影口 + 写入口都已接上**（`ROAD-M4-008` 选项 (a) 第二片）
 //!
@@ -72,6 +78,7 @@
 //! | 来源 | `.yeban.lock` | 理由 |
 //! | :--- | :--- | :--- |
 //! | [`SessionSource::File`] | **取**（[`LockMode::SharedRead`]，随挂载生命周期持有） | 只读会话在既有锁 API 里的**正确映射**是共享读锁（`store::acquire_lock(path, read_only = true)`）：它挡住任何排他写者（另一个 app 实例的写会话、stdio `yeban-mcp`），同时允许其它只读会话共存 |
+//! | [`SessionSource::WritableFile`] | **取**（[`LockMode::ExclusiveWrite`]，随挂载生命周期持有） | 单一写者会话：GUI 是这份文档的编辑者，排他锁就是"不会出现第二个写者"的物理载体；代价如实登记 —— 只读共存**不**适用于它（排他就是排他） |
 //! | [`SessionSource::InMemory`] | 不取 | 样本 / 未落盘会话**没有对应的工程文件**，不存在可竞争的锁 |
 //!
 //! 取锁发生在**绑定 socket 之前**：拿不到锁就 [`MountError::Locked`] **拒绝挂载** ——
@@ -81,15 +88,27 @@
 //! 另一个进程的排他写者被 `PROJECT_LOCKED` 挡住；另一个只读进程共存；
 //! 停机之后写者不再被挡）。
 //!
-//! **诚实边界**：app GUI 自己的保存路径**不取**这把锁（改动前如此，本模块不扩大也不缩小
-//! 那条边界）。会话持有的共享读锁保证的是"控制面存活期间，别的形态拿不到排他写"。
+//! **诚实边界**（后续切片已把这一条改成对称）：app GUI 自己的保存路径**现在取同一把锁** ——
+//! `src/save.rs` 的两条工程保存入口各取一次 [`LockMode::ExclusiveWrite`]（`src/project_lock.rs`，
+//! 与控制面**同一份源码**），拿不到锁就如实拒绝（`save::SaveError::Locked`，一个字节都不写）；
+//! 挂载了控制面时，界面侧的保存更是直接委派给那个会话的
+//! [`ProjectAuthorityHandle::save_to`]，不自己再取第二把锁。因此"控制面存活期间，别的形态
+//! 拿不到排他写"在两种会话下都成立：只读会话持共享读，单一写者会话持排他写。
 //!
-//! 想真的**改**工程，走的仍是已完成的形态 B（`yeban-mcp` stdio CLI + `.yeban.lock`）。
+//! 想真的**改**工程，这条线（形态 A）自己也行了：内存变更走
+//! [`ProjectAuthorityHandle::apply_host`]，落盘走 [`ProjectAuthorityHandle::save_to`]，
+//! 两者都收敛到**同一个** `Domain`；形态 B（`yeban-mcp` stdio CLI + `.yeban.lock`）仍是
+//! **另一个**形态，两条靠同一把 `.yeban.lock` 互斥，不会同时写同一份文档。
 //!
 //! ## 明确**没做**（不是"忘了"）
 //!
-//! - **没有**放开 `read_only` / [`LockMode::SharedRead`]：见上面"为什么**不**改成
-//!   `read_only = false`" —— GUI 的保存路径还没参与同一把锁，放开就是影子写者；
+//! - **没有**把"只读 / 可写"做成**句柄类型**上的区分：[`ProjectAuthorityHandle`] 只有一种
+//!   类型，能不能落盘由**会话**决定 —— 只读会话拿到的是**同型**句柄，它的 `save_to` 被与
+//!   `yeban_save_project` **同一个** `read_only` 门拒绝（`read_only` 只闸落盘，不闸内存
+//!   `apply_host`）。是否按读/写分型是 `ADR-0005` Q5 登记待人类裁决的事；
+//!   `read_only` 本身已按会话来源放开：[`SessionSource::WritableFile`] 是 `false`
+//!   （[`LockMode::ExclusiveWrite`]），[`SessionSource::File`] / [`SessionSource::InMemory`]
+//!   仍是 `true`（共享读 / 不取锁），**不是**全局放开；
 //! - **没有**停机信号的传输层原语：`HttpServer` 只有阻塞的 `serve_once` / `serve_forever`。
 //!   本模块用一个 stop 标志 + 一次**环回唤醒连接**让阻塞中的 `accept` 返回（见 [`InProcessMcp::stop`]）。
 //!   代价如实登记：一个连上却不发请求的慢客户端会推迟停机（传输层文件头已声明"不做慢速攻击防护"）。
@@ -730,7 +749,10 @@ impl InProcessMcp {
         self.lock.as_ref().map(|lock| lock.guard.path())
     }
 
-    /// 会话持有的 `.yeban.lock` 模式（应当恒为 [`LockMode::SharedRead`]）。
+    /// 会话持有的 `.yeban.lock` 模式（由 [`SessionSource::lock_mode`] 决定：
+    /// [`SessionSource::File`] ⇒ [`LockMode::SharedRead`]，
+    /// [`SessionSource::WritableFile`] ⇒ [`LockMode::ExclusiveWrite`]，
+    /// [`SessionSource::InMemory`] ⇒ `None`）。
     #[must_use]
     pub fn lock_mode(&self) -> Option<LockMode> {
         self.lock.as_ref().map(|lock| lock.guard.mode())
@@ -836,7 +858,9 @@ fn serve_loop(server: &Arc<HttpServer>, stop: &AtomicBool) {
 /// 只读会话取的是**共享读锁** —— 这是既有锁 API 对"只读打开"的正确映射
 /// （`store::acquire_lock(path, read_only = true)`，内部即 [`LockMode::SharedRead`]）：
 /// 它挡住任何排他写者（另一个 app 实例的写会话 / stdio `yeban-mcp`），
-/// 同时允许其它只读会话共存。
+/// 同时允许其它只读会话共存。单一写者会话（[`SessionSource::WritableFile`]）取的是
+/// **排他写锁**（`read_only = false` ⇒ [`LockMode::ExclusiveWrite`]）：它自己就是唯一写者，
+/// 因此连只读共存也不允许。
 ///
 /// [`SessionSource::InMemory`] **没有锁可取**：不存在"同一个工程文件"这件事，
 /// 硬造一个锁文件反而是把标签当路径。
