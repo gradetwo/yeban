@@ -75,7 +75,7 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
 
 ### 4.2 服务与 UI
 
-- `MCP-TOOL-001..010`：十个 `yeban_*` 工具（权威定义见 `schemas/mcp-tools.schema.json`）
+- `MCP-TOOL-001..010`：**文档化的**十个 `yeban_*` 工具。契约里另有 **7** 个扩展工具（`yeban_undo` / `yeban_redo` / `yeban_edit_automation` / `yeban_query_engine_state` / `yeban_import_audio` / `yeban_export_diagnostics` / `yeban_export_midi`），故 `schemas/mcp-tools.schema.json`（唯一权威定义）现共登记 **17** 个；`crates/yeban-mcp/src/tools.rs` 的 `TOOL_COUNT` 是这三者的机械读数
 - `MCP-DUAL-001`：双 MCP 自测闭环
 - `UI-GRID-001..004`：Slint 视口、响应式断点与折叠、局部脏矩形、120 FPS
 - `UI-NOTE-001..005`：卷帘视口裁剪、坐标双向映射、工具矩阵、编曲辅助、全键盘音符操控
