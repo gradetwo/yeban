@@ -8996,3 +8996,29 @@ has no CLI, MCP or UI exit), which is why the question is open rather than answe
   exit, so it would need `D47` amended rather than merely extended.
 On **(a)** I would add the CLI switch with the loss report surfaced, extend `cli_contract.rs` to cover it, and keep the non-default feature gate; on **(b)** I would
 write the clarifying sentence in the ADR and mark the row's status text accordingly.
+
+### Round 373: the last two decision-ready briefs - loudness transport, and the reference `.als` / material choice
+
+**Loudness transport (optional).** The contract side is already closed and does not depend on this: the five loudness fields are published by
+`yeban_query_engine_state` and verified to reach clients (this session). The question is only whether a *transport* should carry them beyond polling.
+* **(a) In-app embedded server (my recommendation).** The app already hosts a loopback control plane behind the non-default `in-process-mcp` feature, so loudness
+  could be pushed over that channel with no new process, no new port and no new auth scheme. Consequence: clients can stream metres instead of polling, and the mount
+  gains a second use - but the mount is default-off, so the capability inherits that gate.
+* **(b) No transport - polling only.** Nothing to build; every client reads the latest value on demand. Consequence: simplest and honest, but a metering UI cannot
+  update between polls.
+* **(c) A separate transport (e.g. a socket or file tail).** Rejected in advance: a second channel means a second auth story and duplicates what the mount already
+  provides, which is exactly the kind of drift `MUST-GATE-009` exists to prevent.
+On **(a)** I would publish the five fields on the existing control-plane session, add one criterion that a connected client receives an update, and keep
+`MUST-GATE-009`'s default-off rule intact.
+
+**Reference `.als` and the `MUST-GATE-014` material choice.** Both are data decisions rather than code, and both are one-word answers.
+* **Reference `.als`**: the exporter is deliberately described as "Ableton-style" rather than "opens in Live 11/12", because no reference file exists in the
+  repository to test against - the delegated run refused to claim more than it could verify. **Supplying one reference set (or doing one manual open on the
+ 负责人's machine and reporting the result) is the only thing that would upgrade that claim.** On receipt I would add it under a test fixture path, write a criterion
+  that the produced file matches the reference's structural expectations (not byte equality - Live rewrites its own containers), and upgrade the row's wording to
+  whatever the evidence supports.
+* **`MUST-GATE-014` material**: the mechanism, whitelist, registration and verification entry points are all wired and the repository verifies **0 bytes** today, so
+  the only missing input is **which samples to distribute**. `D54` already authorises reusing `groove`'s selection, and the current filtered registration is **30
+  instruments (27 CC0 + 3 CC-BY)** out of the 33 SFZ / 21 505 files / 9.371 GiB source. So the ruling is simply whether to **distribute those 30** (then the gate
+  moves from mechanism-only to real bytes) or to keep them out of the repository and leave the gate at 0 bytes with that reason recorded - a legitimate answer that
+  `HD-31` already anticipated.
