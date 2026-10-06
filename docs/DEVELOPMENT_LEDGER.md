@@ -8851,3 +8851,19 @@ earlier problems were in the *summaries* of status rather than in the work. That
 
 **Status**: tree green and clean; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; all gates green; both CI sources operational; six open questions, each
 confirmed unruled by grep rather than assumed.
+
+
+### Round 366: the manual `pending` tier is derived, not hand-maintained - and the audit queue is exhausted
+
+Last audit target: the `pending` tier of `gates-manual.yml`, which exists to keep the outstanding-infrastructure list honest. Reading it shows it cannot rot: it runs
+`scripts/gates/check_gate_status.py` (so the table must pass its own guard) and then **prints** `docs/ledger/gate-status.md` plus a bounded `grep` of the ledger for
+PENDING lines - it renders current state rather than storing a list. Nothing to fix, and that is the right shape for a status surface.
+
+**With that, this line's audit queue is exhausted**: gates (round 351, found the premise stale), tracking rows (352-353, one row with a category shift), my own
+questions (362-364, two withdrawn), and the ratified decisions plus this tier (365-366, both clean). The picture that emerges is consistent - the **work** and the
+**ratified decisions** are in good order, while the **status summaries** needed several corrections, which is exactly the failure mode the objective warns about
+with "不许把看起来有当成有".
+
+**Standing state, for a reader joining here**: Phase 4 6 完成 / 4 部分 / 0 PENDING (from 4/5/1 at the start of this line); Phase 0 2/5/2; all fifteen MUST-GATEs
+wired; 19 已接线 / 0 部分 / 2 PENDING where both PENDINGs are ruled; both CI sources operational with the in-process-mcp criteria now CI-executed; every commit of
+this session carries a green verdict read back; the buildable queue is empty and the six remaining questions are each confirmed unruled by grep.
