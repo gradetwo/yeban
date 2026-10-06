@@ -9611,5 +9611,37 @@ showed the sentence describes an intention rather than a tested fact:
 evidence of it. The registration of the gap matters more than the gap, because the gap is small: when the exporter is next touched, the fix is to read `YebanMappingLosses`
 back in a criterion and assert it equals the reported table - one assertion, and then the sentence becomes true.
 
-**Status**: tree green and clean at `8793076` (= `origin/main`); Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; the unenforced sentence is recorded here and
-in no way changes what the exporter writes today.
+**CLOSED in round 396 by `5f7f8e1`.** The criterion `reported_loss_table_equals_the_embedded_plist_table_entry_for_entry` now decodes the produced
+`MetaData.plist` **from its bytes** with the module's separately-derived bplist reader and compares it entry for entry - count, order, entity, reason and the
+`未映射:` / `非等价:` classification - against the table the CLI reports, and the module doc sentence that overstated enforcement was rewritten to name that
+criterion. Two negative measurements prove the teeth: dropping one embedded entry gives `left: 34 / right: 35` on the count, and **swapping** two entries keeps
+the count and still goes red on order, which is what distinguishes an enforcement from a length check. Verified independently: one file changed, `yeban-render`
+runs 95 passed with the feature (from 94) and 84 without it (unchanged, so the change is feature-gated), guards green and `light` 门禁通过.
+
+**Status**: tree green and clean at `5f7f8e1` (= `origin/main`); Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question.
+
+
+### Round 396: the round-395 gap is closed - the report-vs-file claim is now enforced, not asserted
+
+`5f7f8e1` adds `reported_loss_table_equals_the_embedded_plist_table_entry_for_entry` (`logic.rs:1813`) and rewrites the one module-doc sentence that had promised
+enforcement without a criterion. The criterion decodes the produced `MetaData.plist` **from its bytes** using the module's own hand-rolled bplist reader - a parser
+re-derived from the bplist00 spec that never consults the encoder's `PlistValue` - and compares `YebanMappingLosses` against `LogicBundle::losses`, which is exactly
+what the CLI prints. The assertions cover non-vacuity, the fixture carrying both classifications, the count, and then per index the entity, the reason, the
+classification branch and the full `"<entity>: <reason>"` string.
+
+**The two negative measurements are the reason to trust it**: dropping one embedded entry fails on the **count** (`left: 34 / right: 35`), and **swapping** two entries
+fails while the count stays equal - so order and content are enforced, not merely length. Restoration was proven with `cmp` and a matching sha256, and no
+`NEGATIVE MEASUREMENT` marker was left behind.
+
+**Its own residual risk is stated rather than hidden**: the reader is this crate's decoder, so a misconception shared between encoder and decoder is not excluded. It
+is a genuinely separate code path, and an earlier round read the same bytes externally with Python `plistlib` and `plutil -lint`; a third-party judge would need a
+dependency this offline machine cannot fetch. That is the honest shape of the evidence, and it is written down.
+
+**One number of mine corrected**: round 394 cited "25 条损失登记" while the current `unmappable_project()` fixture reports **35** entries. These are different
+measurement objects rather than a regression, but the number to quote for the fixture is 35, and round 394's 25 should be read as that round's object.
+
+**Verified independently**: one file changed; `yeban-render` runs **95 passed** with the feature (from 94) and **84 passed** without it (unchanged, so the addition is
+feature-gated); `phase-status` and the other guards are green; `light` 门禁通过; and the commit was pushed.
+
+**Status**: tree green and clean at `5f7f8e1` (= `origin/main`); Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; the only unproven claim left anywhere in this
+line is that Logic Pro opens the exported document, which is a data gap rather than a code gap.
