@@ -394,3 +394,161 @@ fn the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
     drop(after);
     drop(writer);
 }
+
+// ---------------------------------------------------------------------------
+// ③ GUI 的**保存路径**与别的形态争同一把锁（`ROAD-M4-008` 选项 (a) 第三片）
+// ---------------------------------------------------------------------------
+
+/// `ROAD-M4-008` 选项 (a) 第三片的方向一（**跨进程**）：别的形态排他持锁时，
+/// app 的**保存路径**必须拒绝写入 —— 两条都测：
+///
+/// | # | 保存路径 | 与 UI 的关系 |
+/// | :--- | :--- | :--- |
+/// | 1 | [`yeban_app::save::save_project_file`] | `ui/force_save` 调的就是它（`src/live_surface.rs`） |
+/// | 2 | 真二进制 `yeban-app --save-as <path>` | 命令行保存路径（默认构建里就存在） |
+///
+/// 四步各自可失败：
+/// 1. 子进程（真 `Command` + 文件握手）以**排他写**打开同一工程 ⇒ 它真的持有那把锁；
+/// 2. 两条保存路径都被拒（`SaveError::Locked` / 退出码 4），工程字节**逐字节未变**；
+/// 3. `SIGKILL` 掉持有者（内核释放建议锁）⇒ 同一条保存**必须成功**；
+/// 4. 成功的那一次换掉了内容，且不留残留 `.yeban.lock`（排他持有者 `Drop` 收走）。
+#[test]
+fn the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively() {
+    use yeban_app::save::{SaveError, save_project_file};
+
+    let scratch = Scratch::new("gui-save");
+    let project = scratch.project("demo.yeban");
+    let ready = scratch.join("holder.json");
+
+    // ---- 1. 另一个进程（真 Command）排他持有 ----
+    let holder = ChildHolder::spawn_holding(&project, &ready, true);
+    let before = fs::read(&project).expect("读持有者打开前后的字节");
+
+    // ---- 2a. `ui/force_save` 的落点：`save_project_file` 必须被拒 ----
+    let error = save_project_file(&yeban_model::samples::filled_project(), &project)
+        .expect_err("持锁时 app 侧保存必须被拒");
+    match &error {
+        SaveError::Locked(hold) => {
+            assert_eq!(hold.path, project, "拒绝必须点名目标工程");
+            assert_eq!(hold.lock_file, lock_path(&project), "拒绝必须点名锁文件");
+            assert_eq!(
+                hold.holder_metadata, "available",
+                "Unix 上建议锁是**建议**的 ⇒ 加锁前的快照必须读到持有者元数据: {error}"
+            );
+        }
+        other => panic!("必须是 SaveError::Locked, 实际: {other:?}"),
+    }
+    assert_eq!(
+        fs::read(&project).expect("旧文件仍在"),
+        before,
+        "被拒绝的保存绝不能碰工程文件"
+    );
+
+    // ---- 2b. 真二进制 `--save-as` 也必须被拒（退出码 4）----
+    let bin = env!("CARGO_BIN_EXE_yeban-app");
+    let blocked = Command::new(bin)
+        .args(["--save-as".to_owned(), project.display().to_string()])
+        .output()
+        .expect("跑 yeban-app --save-as");
+    assert_eq!(
+        blocked.status.code(),
+        Some(4),
+        "被持锁时 --save-as 必须退出 4; stderr={}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("拒绝写入"),
+        "拒绝的原因必须写在 stderr 里: {}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+    assert_eq!(
+        fs::read(&project).expect("旧文件仍在"),
+        before,
+        "被拒绝的 `--save-as` 绝不能碰工程文件"
+    );
+
+    // ---- 3. 杀掉持有者（SIGKILL ⇒ 内核释放 flock）⇒ 保存必须成功 ----
+    drop(holder);
+    let report = save_project_file(&yeban_model::samples::filled_project(), &project)
+        .expect("持有者消失后保存必须成功");
+    assert!(report.bytes > 0, "保存出的容器不能是 0 字节");
+
+    // ---- 4. 内容真的换了，且不留残留锁 ----
+    assert_ne!(
+        fs::read(&project).expect("读回"),
+        before,
+        "成功的那一次必须真的换了内容（`history.dag` 空字节 vs 子进程写的图谱）"
+    );
+    assert!(
+        !lock_path(&project).exists(),
+        "成功的排他保存必须收走自己的锁文件: {}",
+        lock_path(&project).display()
+    );
+}
+
+/// `ROAD-M4-008` 选项 (a) 第三片的方向二（**同进程**，也是"为什么还不能翻 `read_only`"
+/// 的**实测**）：只读控制面会话正持 [`LockMode::SharedRead`] 时，app 的保存路径
+/// （`ui/force_save` 的落点）**拿不到**排他写建议锁 ⇒ 保存被**拒绝**（fail-closed），
+/// 而不是产生第二个写者。
+///
+/// 这条是**登记事实**的判据，不是"想要的结局"：它把"同一个进程里，长命的共享读者
+/// 与短命的排他写者互斥"变成可失败的断言。要让它变成"能存"，前提是让**一个**持有者
+/// （会话）成为唯一写者 —— 那需要新的宿主保存动作，见
+/// `docs/ledger/m4-008-authority-notes.md` §7.4。
+///
+/// 三步：
+/// 1. 挂载（`SessionSource::File` ⇒ `SharedRead`）⇒ 保存被拒且字节未变；
+/// 2. 停机（RAII 释放）⇒ 同一条保存必须成功；
+/// 3. 成功之后内容真的换了，且锁文件被收走。
+#[test]
+fn a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file() {
+    use yeban_app::save::{SaveError, save_project_file};
+
+    let scratch = Scratch::new("self-conflict");
+    let project = scratch.project("demo.yeban");
+    let before = fs::read(&project).expect("读原文");
+
+    // ---- 1. 挂载：本进程的只读会话持共享读锁 ----
+    let mount = InProcessMcp::start_for_project(
+        true,
+        yeban_model::samples::filled_project(),
+        SessionSource::File(project.clone()),
+    )
+    .expect("挂载决策")
+    .expect("开关打开时必须真的挂载");
+    assert_eq!(
+        mount.lock_mode(),
+        Some(LockMode::SharedRead),
+        "只读控制面必须是共享读者"
+    );
+
+    let error = save_project_file(&yeban_model::samples::filled_project(), &project)
+        .expect_err("本进程的共享读者持锁时, 排他写保存必须被拒（fail-closed）");
+    assert!(
+        matches!(error, SaveError::Locked(_)),
+        "必须是 SaveError::Locked, 实际: {error:?}"
+    );
+    assert_eq!(
+        fs::read(&project).expect("旧文件仍在"),
+        before,
+        "被拒绝的保存绝不能碰工程文件"
+    );
+
+    // ---- 2. 停机 ⇒ 锁释放 ⇒ 同一条保存必须成功 ----
+    mount.stop().expect("停机");
+    let report = save_project_file(&yeban_model::samples::filled_project(), &project)
+        .expect("会话停机后保存必须成功");
+    assert!(report.bytes > 0, "保存出的容器不能是 0 字节");
+
+    // ---- 3. 内容真的换了，且不留残留锁 ----
+    assert_ne!(
+        fs::read(&project).expect("读回"),
+        before,
+        "成功的那一次必须真的换了内容（`history.dag` 空字节 vs 夹具写的图谱）"
+    );
+    assert!(
+        !lock_path(&project).exists(),
+        "成功的排他保存必须收走自己的锁文件: {}",
+        lock_path(&project).display()
+    );
+}

@@ -873,6 +873,89 @@ fn save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 判据 B14（`ROAD-M4-008` 选项 (a) 第三片）：`.yeban.lock` 被**别的持有者**持有时，
+/// `--save-as` 必须**拒绝写入**（退出 4），而不是绕过锁覆盖工程文件
+/// （`[ARCH-SEC-001]` / `[MUST-GATE-008]`）。
+///
+/// 持锁用的是 [`yeban_app::project_lock`] —— 与保存路径**同一份源码**
+/// （`#[path]` 共享 `crates/yeban-mcp/src/domain/lock.rs`），因此本判据证的正是
+/// "app 的保存路径与控制面争**同一把**建议锁"这件事。
+///
+/// 三步各自可失败：
+/// 1. 持锁期间 `--save-as` ⇒ 退出 4 且 stderr 点名"拒绝写入"；
+/// 2. 目标文件**逐字节未变**（第二次保存写的是**另一份**工程：样本工程而不是
+///    `--open` 进来的那个容器 ⇒ "写没写"在字节上看得见，不是同一份内容的自证）；
+/// 3. 释放锁之后**同一条命令必须成功**，且排他持有者把自己的锁文件收走。
+#[test]
+fn save_as_is_refused_while_the_project_lock_is_held() {
+    use yeban_app::project_lock::lock::{LockMode, acquire, lock_path};
+
+    let dir = scratch_dir("lock-refuse");
+    let source = write_real_container(&dir, "source.yeban");
+    let target = dir.join("target.yeban");
+
+    // 先让 target 里是 `source` 那份工程（带 `binary-history` 与非空资产池）。
+    let first = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--save-as",
+        target.to_str().expect("utf8"),
+    ]);
+    assert_eq!(first.code, 0, "第一次保存必须成功; stderr={}", first.stderr);
+    let before = std::fs::read(&target).expect("读原文");
+
+    // 另一个持有者拿同一把锁（排他写）。
+    let guard = acquire(&target, LockMode::ExclusiveWrite).expect("取排他写建议锁");
+    // 这次**不带 --open** ⇒ 写的是样本工程，字节与 `before` 必然不同。
+    let blocked = invoke(&["--save-as", target.to_str().expect("utf8")]);
+    assert_eq!(
+        blocked.code, 4,
+        "被别的持有者持锁时 --save-as 必须拒绝（退出 4）; stderr={}",
+        blocked.stderr
+    );
+    assert!(
+        blocked.stderr.contains("保存到") && blocked.stderr.contains("拒绝写入"),
+        "拒绝的原因必须写在 stderr 里: {}",
+        blocked.stderr
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("旧文件仍在"),
+        before,
+        "被拒绝的保存绝不能碰旧文件（这就是『取锁』与『没取锁』的区别）"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "被拒绝的保存不得留下临时文件: {leftovers:?}"
+    );
+
+    // 释放 ⇒ 同一条命令必须成功（证明第 2 步拒绝的原因就是那把锁）。
+    drop(guard);
+    let after = invoke(&["--save-as", target.to_str().expect("utf8")]);
+    assert_eq!(
+        after.code, 0,
+        "释放锁之后必须能保存; stderr={}",
+        after.stderr
+    );
+    assert_ne!(
+        std::fs::read(&target).expect("读回"),
+        before,
+        "成功的那一次必须真的换了内容（否则上面的『逐字节未变』是假证据）"
+    );
+    assert!(
+        !lock_path(&target).exists(),
+        "成功的排他保存必须收走自己的锁文件: {}",
+        lock_path(&target).display()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 判据 B10（**反转**）: 裸 `project.json` 必须被**明确拒绝** —— 容器是唯一工程格式
 /// （ADR-0001 D43）。旧判据在这里断言"能打开 + `format=project-json`"。
 #[test]

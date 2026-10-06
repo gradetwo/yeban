@@ -85,6 +85,24 @@ yeban-engine = { workspace = true }
 yeban-diagnostics = { path = "../yeban-diagnostics" }
 
 # ---------------------------------------------------------------------------
+# serde_json: **只**为 `#[path]` 共享进来的 `.yeban.lock` 实现 (零新增包)
+# ---------------------------------------------------------------------------
+# `ROAD-M4-008` 选项 (a) 第三片：GUI 的保存路径必须与领域 MCP 参与**同一把**
+# `.yeban.lock`，而锁的**唯一实现**在 `crates/yeban-mcp/src/domain/lock.rs`。
+# 本 crate 用 `#[path]` 把那一份源码装进 `src/project_lock.rs`（与
+# `src/undo.rs` 装 `undo_session.rs` 同款）⇒ 不写第二份锁，也不新增 `yeban-mcp`
+# 依赖边（MUST-GATE-009 的第一道开关因此**没有被削弱**：
+# `cargo tree -p yeban-app -e normal --locked | grep -c yeban-mcp` 仍然是 0）。
+#
+# 代价只有一条**直接边**：那份源码的锁元数据（`ARCH-SEC-001` 第 4 条）用 `serde_json`。
+# 这个包**早就在** `-e normal` 的依赖图里（`yeban-model` → `serde_json`），因此
+# 默认依赖图的**包集合一个没变**（判据是零编译的 `cargo tree` 前后对账，见
+# `docs/ledger/m4-008-authority-notes.md` §7）。它本来也只是 dev-dependency
+# （`tests/in_process_mcp.rs` 要解析 JSON-RPC 响应）；dev 目标看得见普通依赖，
+# 因此那一段不需要重复列出。
+serde_json = { workspace = true }
+
+# ---------------------------------------------------------------------------
 # ui-test-port: 无头 UI 自动化测试端口 (默认**关闭**)
 # ---------------------------------------------------------------------------
 # 依赖方向 (架构规范 §8 的 crate 清单): yeban-app --(feature)--> yeban-ui-test-port。
@@ -170,11 +188,6 @@ experimental-als-export = ["yeban-render/experimental-als-export"]
 # (feature 仍能把它拉进 lib/bin 的构建图; 这里只是让测试目标无论如何都拿得到它)。
 [dev-dependencies]
 yeban-ui-test-port = { path = "../yeban-ui-test-port" }
-
-# `tests/in_process_mcp.rs` 要**解析**控制面回的真实 JSON-RPC 响应 (而不是做字符串包含),
-# 因此测试目标需要 serde_json。它**不进** `-e normal` 的依赖图 —— dev-dependencies 只参与
-# test / example / bench 目标, 与上面 `yeban-ui-test-port` 的理由同款。
-serde_json = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # ui-mcp: UI 控制面 —— **只**在测试目标里接线 (live-port 工作线)

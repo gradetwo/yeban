@@ -1,10 +1,11 @@
-# `M4-008` 工作线台账 —— UI↔领域**唯一可变权威**（`open-questions.md` 问题 6 选项 (a)：第一片 + 第二片）
+# `M4-008` 工作线台账 —— UI↔领域**唯一可变权威**（`open-questions.md` 问题 6 选项 (a)：第一片 + 第二片 + 第三片）
 
 > 授权：`docs/ledger/human-decisions.md` 头部声明它是**唯一**需要人类裁决的清单，其条目按**建议**列
 > 在负责人"按你的建议来"的长期授权下执行（**不是** Agent 自放行）。本行按
 > `docs/ledger/open-questions.md` 问题 6 的 **(a) 建议**执行。
-> §1–§5 是选项 (a) 的**第一片**（投影口）；§6 是**第二片**（GUI 的**写**入口也落到该权威上）。
-> 问题 6 与 `ROAD-M4-008` 因此**仍是「部分」** —— 如实剩下的那一步写在 §6.4。
+> §1–§5 是选项 (a) 的**第一片**（投影口）；§6 是**第二片**（GUI 的**写**入口落到该权威上）；
+> §7 是**第三片**（GUI 的**保存路径**纳入同一把 `.yeban.lock`，并**实测**裁决"仍不翻 `read_only`"）。
+> 问题 6 与 `ROAD-M4-008` 因此**仍是「部分」** —— 如实剩下的两步写在 §7.5。
 
 ---
 
@@ -260,4 +261,156 @@ tests/in_process_mcp.rs:      test result: ok. 3 passed; 0 failed; 0 ignored
 tests/in_process_mcp_lock.rs: test result: ok. 3 passed; 0 failed; 0 ignored   ← MUST-GATE-008 跨形态互斥原样重跑
 tests/live_ui_mcp.rs:         test result: ok. 20 passed; 0 failed; 0 ignored  ← 含本片判据 18 / 19（默认档是 17）
 tests/undo_wiring_ui.rs:      test result: ok. 10 passed; 0 failed; 0 ignored
+```
+
+---
+
+## 7. 第三片（2026-10-06）：GUI 的**保存路径**也纳入同一把 `.yeban.lock`
+
+> 本片做选项 (a) 剩下的第 1 件事（落盘写者边界），并把第 2 件事（翻 `read_only`）
+> **实测后拒绝**：翻过去会让控制面真的落盘（§7.4 的原始读数），而 GUI **自己**的保存
+> 路径会被**本进程自己**的锁挡住 ⇒"翻一下"不是一次机械改动，它需要"单一写者会话"
+> 这个新设计。第 3 件事（生产路径的运行期重投影）仍然不做，理由见 §7.5。
+> 因此问题 6 与 `ROAD-M4-008` **仍是「部分」**。
+
+### 7.1 结构性证据（**改动前**实测；命中数 = "匹配该模式的行数"，命令逐条给出）
+
+| # | 说法 | 改动前读数 | 命令 |
+| :--- | :--- | :--- | :--- |
+| 1 | app 侧**一行取锁代码都没有** | `acquire(` 命中 **0** | `grep -rn "acquire(" crates/yeban-app/src/ \| wc -l` |
+| 2 | **写工程**的入口只有两条，且都在 `save.rs` 里收口 | `save_project_file(` 除 `save.rs` 外命中 **1**（`live_surface.rs:566` = `ui/force_save`）；`save_archive_file(` 命中 **2**（`cli.rs:1542` = 生产 `--save-as`，`cli.rs:2058` = 同文件单测） | `grep -rn "save_project_file(\|save_archive_file(" crates/yeban-app/src/ \| grep -v "src/save.rs"` |
+| 3 | 共用的原子写入面**不都是工程** | `write_file_atomically(` 除 `save.rs` 外命中 **3**：`cli.rs:1505`（`--export-elements`）、`export_midi.rs:52`（`--export-midi`）、`export_als.rs:115`（`--export-als`） | 同上一行的命令（换函数名） |
+| 4 | `feature-alignment.md` 那行"GUI 路径不持锁"的机械证据**从一开始就数错了东西** | `grep -rn "yeban.lock\|try_lock" crates/yeban-app/src/` 命中 **21**（全是注释：`mcp_mount.rs` 16 / `main.rs` 3 / `undo.rs` 2） | 该命令本身（零编译） |
+| 5 | "共享 `yeban-mcp` 源码"有先例可循 | `#[path` 声明命中 **1**（`undo.rs:33` 装 `undo_session.rs`） | `grep -rn "#\[path" crates/yeban-app/src/` |
+
+**第 4 条是顺手修掉的元问题**：那一列想表达的"GUI 不取锁"其实该用**取锁调用**计数
+（第 1 行：0 命中），而写成"`yeban.lock` 这个词出现几次"之后，任何**注释**都会让它变绿 ——
+它当时写"命中 0"，但第二片加的模块文档早已把命中推到 21。本片因此把那一格改成
+**可复核的取锁调用计数**。
+
+### 7.2 本片做了什么
+
+| 文件 | 改动 | 为什么 |
+| :--- | :--- | :--- |
+| `crates/yeban-app/src/project_lock.rs`（新） | `#[path = "../../yeban-mcp/src/domain/lock.rs"] pub mod lock;` | **同一份源码**装进 app（与 `undo.rs` 装 `undo_session.rs` 同款）⇒ 不写第二份锁协议；也不新增 `yeban-mcp` 依赖边（MUST-GATE-009 的编译期开关一位没动） |
+| `crates/yeban-app/src/save.rs` | `save_project_file` / `save_archive_file` 各取一次 `LockMode::ExclusiveWrite`（私有 `acquire_write_lock`）；新增 `SaveError::{Locked, LockUnsupported}` + `LockHold`；`write_file_atomically` **仍然不取锁** | 这两条是**唯一**写工程容器的入口 ⇒ 取锁位置只有一个，不存在"某条保存路径忘了取"。导出目标（清单 / `.mid` / `.als`）不是工程文档，对它们取工程锁是**假保护** |
+| `crates/yeban-app/Cargo.toml` | `serde_json` 由 dev-dependency 改为普通依赖（一条**直接边**，包集合不变） | 共享进来的那份源码用 `serde_json` 写锁元数据；它**早就在**默认依赖图里（`yeban-model` → `serde_json`） |
+| `crates/yeban-app/src/lib.rs` | `pub mod project_lock;` | 锁模块的出入口 |
+| `crates/yeban-app/src/save.rs`（单测） | 判据 8 | 本机最快的"持锁 ⇒ 拒绝"读数 |
+| `crates/yeban-app/tests/cli_contract.rs` | 判据 B14 | **默认构建**的真二进制判据（CI 的默认腿就会跑到它） |
+| `crates/yeban-app/tests/in_process_mcp_lock.rs` | 判据 ③①②（两条） | 跨进程（真 `Command` 子进程持有）与同进程（挂载会话持有）两条腿 |
+
+**没有动的东西（刻意的）**：`read_only = true`、`SessionSource::lock_mode()`（仍 `SharedRead`）、
+`acquire_session_lock`、`crates/yeban-mcp/**`（一个字节没改）、`in-process-mcp` /
+`experimental-als-export` 的 feature 定义、`Cargo.lock`（实测未变，见 §7.6）。
+
+### 7.3 判据（有牙，且能失败）
+
+| # | 判据 | 证什么 | 关键断言 |
+| :--- | :--- | :--- | :--- |
+| 8 | `save.rs::a_held_project_lock_refuses_the_save_without_touching_the_file`（lib 单测） | 保存路径**真的**取同一把锁 | 持锁 ⇒ `SaveError::Locked`（点名工程与锁文件）+ 旧文件逐字节未变 + **释放后同一份保存必须成功** + 成功不留残留 `.yeban.lock` |
+| B14 | `cli_contract.rs::save_as_is_refused_while_the_project_lock_is_held`（**默认构建**、真二进制） | 命令行保存路径（`--save-as`）与别的持有者争同一把锁 | 持锁 ⇒ 退出 **4** + stderr 含"拒绝写入" + 目标逐字节未变（第二次保存写的是**另一份**工程 ⇒ "写没写"在字节上看得见）+ 释放后退出 **0** 且内容**真的换了** |
+| ③ | `in_process_mcp_lock.rs::the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively`（feature，**跨进程**） | 别的形态（真子进程）排他持锁时，**两条** GUI 保存路径都被拒 | `save_project_file` ⇒ `SaveError::Locked`（`holderMetadata == "available"`）；真二进制 `--save-as` ⇒ 退出 4；`SIGKILL` 持有者后保存成功且不留残留锁 |
+| ④ | `in_process_mcp_lock.rs::a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file`（feature，**同进程**） | "本进程的只读会话"与"GUI 的排他写"互斥（fail-closed） | 挂载（`SharedRead`）时 `save_project_file` ⇒ `SaveError::Locked` 且字节未变；`stop()` 后同一条保存成功 |
+
+判据 ④ **不是"想要的结局"，而是登记事实**：它把"长命的共享读者与短命的排他写者互斥"
+变成可失败的断言，也是 §7.4 拒绝翻转的实测依据。
+
+### 7.3.1 负向实测（先红后还原；两个取锁点各测一次，因为它们是**两条**独立接线）
+
+| # | 临时改哪里 | 红在哪 | 实读 |
+| :--- | :--- | :--- | :--- |
+| ① | `save_project_file` 里的 `acquire_write_lock(path)?` 摘掉 | 判据 8 / 判据 ④ / 判据 ③ 的 2a 步 | 判据 8：`持锁时保存必须被拒: SaveReport { … bytes: 7683 … }`，`test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 188 filtered out`；`in_process_mcp_lock`：`test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out`（③ 与 ④ 同时红）。**B14 保持绿**（它走 `save_archive_file`）⇒ 两个取锁点确实是**两条**接线，不是一条 |
+| ② | `save_archive_file` 里的 `acquire_write_lock(path)?` 摘掉 | B14 / 判据 ③ 的 2b 步 | B14：`assertion `left == right` failed: 被别的持有者持锁时 --save-as 必须拒绝（退出 4）; stderr= left: 0 right: 4`，`test result: FAILED. 0 passed; 1 failed; … 18 filtered out`；`in_process_mcp_lock`：`left: Some(0) / right: Some(4)`，`test result: FAILED. 4 passed; 1 failed; …`（判据 ④ 保持绿） |
+
+两条都已还原（`grep -rn "NEGATIVE MEASUREMENT" crates/` = **0**；`grep -c "acquire_write_lock(path)?" crates/yeban-app/src/save.rs` = **2**）。
+
+### 7.4 为什么**仍然不**翻 `read_only` / 锁模式（这次是**实测**的裁决）
+
+第二片拒绝翻转的理由是"GUI 保存路径不取锁"（§6.4）。本片把那一条**关掉了**，
+因此翻转必须重新裁决一次 —— **实测**（临时改 `mcp_mount.rs` 三处：`lock_mode` →
+`ExclusiveWrite`、`acquire_lock(path, true)` → `(path, false)`、`open_in_memory(.., true)`
+→ `(.., false)`，跑完即还原）得到：
+
+| 判据 | 翻转后的实读 | 说明 |
+| :--- | :--- | :--- |
+| `in_process_mcp.rs::the_round_trip_stops_leaving_nothing_listening` | `left: String("success") / right: "error"`（`:359`），`test result: FAILED. 2 passed; 1 failed; 0 ignored` | **控制面真的拿到了落盘路径**：`yeban_save_project` 从被拒变成成功 —— 这就是"新开一条磁盘写者"的实测证据 |
+| `in_process_mcp_lock.rs::the_mounted_control_plane_excludes_writers_and_shares_with_readers` | `left: Some(ExclusiveWrite) / right: Some(SharedRead)`（`:375`） | 共享读的语义没了：另一个只读形态**不能再共存**（`MUST-GATE-008` 的第二条腿） |
+| `in_process_mcp_lock.rs::a_mount_is_refused_while_another_form_holds_the_project_exclusively` | `left: Some(ExclusiveWrite) / right: Some(SharedRead)`（`:320`） | 同一个断言（同一份语义） |
+| `in_process_mcp_lock.rs::a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file` | `left: Some(ExclusiveWrite) / right: Some(SharedRead)`（`:519`） | 而 GUI 自己的保存**仍然是拒绝**（`flock` 在 fd 粒度仲裁，同进程另一个 fd 也冲突）⇒ 翻转**不会**让 GUI 能存，只会让控制面能存 |
+| 合计 | `test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out` | 三条红、两条绿（跨进程那两条与本裁决无关） |
+
+**裁决：不翻。** 三条理由，逐条都有上面的读数支撑：
+
+1. **翻转换来的是"控制面能落盘"，代价是"GUI 不能保存"** —— 同一个工程文件上，
+   会话是长命持有者、GUI 保存是短命写者，两者在*同一个进程*里抢同一把 `flock`，
+   GUI 必然输。要让两者都成立，前提是**一个持有者**（会话）成为唯一写者，
+   也就是给宿主加一个**保存动作**（`HostAction::Save` 之类）并让 GUI 的 `ui/force_save`
+   走它 —— 那是新的接口，不是"把布尔翻一下"。
+2. **它会拆掉 `MUST-GATE-008` 的第二条腿**：`SharedRead` 的语义是"只读者共存、写者被挡"，
+   现有判据 ② 就靠"另一个只读进程能共存"证明挂载取的不是排他锁。翻成 `ExclusiveWrite`
+   之后，第二个 app 实例 / 独立 stdio `yeban-mcp` 的**只读**访问会被挡在门外 ——
+   而"AI 只读分析"正是本形态的主要用途。
+3. **本片的目标（GUI 保存路径纳入同一把锁）不依赖翻转**：控制面保持只读时，
+   GUI 保存仍然与它争同一把锁（判据 ③：跨进程持有者挡住两条保存路径；
+   判据 ④：本进程的只读会话也挡住）。也就是说**排他性已经成立**，
+   翻转不是它的前提，而是"要不要把控制面变成写者"这个**另一个**问题。
+
+### 7.5 第三片之后如实剩下的（因此 `ROAD-M4-008` 仍是「部分」）
+
+1. **"单一写者会话"未建**（§7.4 第 1 条）：`ui/force_save` 的落点
+   （`save_project_file`）与控制面会话在同一个工程文件上互斥 ⇒ 控制面存活时 GUI 的
+   保存被**拒绝**（fail-closed，判据 ④）。今天不可观测：`ui/force_save` 的 `save_path`
+   只由 `LiveWiringOptions` 给，而**生产 `run_gui` 从不构造它**（`live_surface.rs` 只在
+   测试目标里被 `#[path]` 装进去）⇒ 生产 GUI 今天没有保存入口。要真的让"人在 GUI 存"
+   与"AI 经控制面读/写"同时成立，需要一个宿主保存动作（会话持锁、GUI 委派），
+   本片**不做**，设计要点写在 §7.4 第 1 条。
+2. **生产窗口仍没有运行期重投影**（第二片 §6.5 第 2 条原样成立，本片不动）：
+   本片实测复核了两条事实 —— `crates/yeban-app/src/` + `ui/` 里
+   `Timer|start_repeated|invoke_from_event_loop` 命中 **0**（`run_gui` 真的没有任何定时器），
+   而"依修订号重投影"的唯一实现 `LiveUi::sync_authority` 只存在于
+   `src/live_surface.rs`（dev-dependency 决定它不进产品二进制）。⇒ **本片没有可无头判定的
+   实现路径**：要么把 `yeban-ui-test-port` / `yeban-ui-mcp` 拉进产品依赖图（红线，不动），
+   要么加一个**没有任何无头判据能界定其调度**的定时器（本仓 DoD 明文拒绝）。
+   因此如实**不做**，与第二片同一结论、同一条理由。
+3. **`UndoPort` 会话与 `Domain` 会话仍是两个类型**（结构性，第二片 §6.5 第 3 条）。
+
+### 7.6 本机验证原始读数（第三片，2026-10-06）
+
+```text
+bash scripts/dev/cargo-local.sh fmt                                                       # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app                                        # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app --features in-process-mcp              # exit 0
+bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked | grep -c yeban-mcp                      # 0
+bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked --features in-process-mcp | grep -c yeban-mcp  # 1
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets -- -D warnings                            # exit 0
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets --features in-process-mcp -- -D warnings # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests                          # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests --features in-process-mcp # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-mcp --tests                           # exit 0
+```
+
+默认档（`test -p yeban-app --tests`）里与本片直接相关的两行：
+
+```text
+tests/cli_contract.rs:        test result: ok. 19 passed; 0 failed; 0 ignored   ← 含本片判据 B14
+src/lib.rs (unittests):       test result: ok. 189 passed; 0 failed; 0 ignored  ← 含本片判据 8
+```
+
+`--features in-process-mcp` 档：
+
+```text
+tests/in_process_mcp.rs:      test result: ok. 3 passed; 0 failed; 0 ignored
+tests/in_process_mcp_lock.rs: test result: ok. 5 passed; 0 failed; 0 ignored   ← MUST-GATE-008 的 3 条 + 本片判据 ③ ④
+tests/live_ui_mcp.rs:         test result: ok. 20 passed; 0 failed; 0 ignored
+```
+
+**依赖图对账（"包集合一个没变"的机械证据，零编译）**：
+
+```text
+# 默认树里「唯一的 name vX.Y.Z 集合」：改动前(HEAD 清单) 296 个 / 改动后 296 个，diff 为空
+git show HEAD:crates/yeban-app/Cargo.toml > crates/yeban-app/Cargo.toml   # 临时换回旧清单
+cargo-local.sh tree -p yeban-app -e normal --locked | grep -oE "[a-z0-9_-]+ v[0-9][0-9.a-z-]*" | sort -u | wc -l   # 296
+# …（换回新清单）…                                                                                                    # 296
+git status --short Cargo.lock    # 空 ⇒ Cargo.lock 未变（serde_json 早在 yeban-app 的锁定依赖表里）
 ```

@@ -101,7 +101,7 @@
 - (c) 让挂载会话可写并取 `ExclusiveWrite` ⇒ 控制面成为真写者，GUI 保存路径须让位；委派运行刻意拒绝（会在没有单一权威接线时造出影子写者）。
 - **选 (a) 我做**：`Domain` 居中 + 两处改投影 + 加"经 MCP 变更 ⇒ UI 投影跟随"判据 + 重跑锁判据证明 `MUST-GATE-008` 仍成立。
 
-### 执行状态：🟡 **第二片已落地（2026-10-06），仍是「部分」** —— GUI 的**写**入口已落到该权威；缺的是"保存路径也纳入同一把锁"与"生产窗口的运行期重投影"
+### 执行状态：🟡 **第三片已落地（2026-10-06），仍是「部分」** —— GUI 的**保存路径**已纳入同一把 `.yeban.lock`；缺的是"单一写者会话"与"生产窗口的运行期重投影"
 
 **已做到（投影口 + 会红的判据）**
 
@@ -120,9 +120,18 @@
 - **负向实测两条（先红后还原）**：① `UndoPort::from_authority` 改回另开一份 `UndoSession` ⇒ 红在判据 18 的 `left: 1 / right: 2`（`test result: FAILED. 0 passed; 1 failed; … 19 filtered out`）；② `commit_ops` 的权威分支改成直接 `Err` ⇒ 红在判据 19 的 `left: 0 / right: 1`（音符 4→4）。两条已还原（`grep -rn "NEGATIVE MEASUREMENT" crates/` = 0）。
 - **`read_only` / 锁模式仍然一位没改，且这是刻意的**：实测查清 `read_only` 只闸**落盘**（`plan_save`），不闸内存变更 —— 因此第 1 步不需要放开它。而翻成 `false` 会**新开一条落盘路径**（控制面 `yeban_save_project`），与 GUI 自己的保存路径（`ui/force_save` / `--save-as`）**同时写同一个工程文件**，那就是影子写者（选项 (c) 被拒的理由）；而且 GUI 保存路径**不取** `.yeban.lock`，把锁改成 `ExclusiveWrite` 也挡不住它。⇒ 本片**停在这里**并如实登记。
 
+**第三片（2026-10-06）：GUI 的保存路径也纳入同一把 `.yeban.lock`**
+
+- **锁的同一份源码**：新增 `crates/yeban-app/src/project_lock.rs`，用 `#[path = "../../yeban-mcp/src/domain/lock.rs"]` 把领域 MCP 的锁实现装进 app（与 `undo.rs` 装 `undo_session.rs` 同款）⇒ 不写第二份锁协议，**也不新增 `yeban-mcp` 依赖边**（默认树里 `yeban-mcp` 命中仍为 **0**，加 feature 才 1）。代价只有一条**直接边**：那份源码用 `serde_json`（它**早就在**默认依赖图里：`yeban-model` → `serde_json`；默认树"唯一 name+version 集合"改动前后各 **296** 个、diff 为空，`Cargo.lock` 未变）。
+- **两条工程保存入口各取一次 `ExclusiveWrite`**：`crates/yeban-app/src/save.rs` 的 `save_project_file`（`ui/force_save` 的落点）与 `save_archive_file`（`--save-as` 的落点）；拿不到锁 ⇒ 新增的 `SaveError::Locked`，**一个字节都不写**。`write_file_atomically` **仍然不取锁**：它写的是任意产物（元素清单 / `.mid` / `.als`），对它们取工程锁是**假保护**（`song.mid.lock` 与任何工程都不互斥）。改动前的写入口计数（除 `save.rs`）：`save_project_file(` **1**、`save_archive_file(` **2**（1 生产 + 1 单测）、`write_file_atomically(` **3**（全是导出）—— 取锁位置因此只有一处。
+- **判据（有牙，且能失败）**：`save.rs::a_held_project_lock_refuses_the_save_without_touching_the_file`（lib 单测：持锁 ⇒ 拒绝 + 旧文件逐字节未变 + 释放后同一份保存必须成功 + 不留残留锁）；`tests/cli_contract.rs::save_as_is_refused_while_the_project_lock_is_held`（**默认构建**的真二进制：持锁 ⇒ 退出 4、stderr 含"拒绝写入"、目标字节不变；释放 ⇒ 退出 0 且内容真的换了）；`tests/in_process_mcp_lock.rs` 新增两条 —— `…the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively`（真子进程排他持有 ⇒ `save_project_file` 与 `--save-as` **两条**都被拒；`SIGKILL` 持有者后保存成功且不留残留锁）与 `…a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file`（本进程的只读会话持 `SharedRead` 时 GUI 保存同样被拒 = fail-closed，登记事实）。
+- **负向实测两条（先红后还原，两个取锁点各测一次）**：① 摘掉 `save_project_file` 的取锁 ⇒ 单测 `持锁时保存必须被拒: SaveReport { … }`（`FAILED. 0 passed; 1 failed`）+ `in_process_mcp_lock` `FAILED. 3 passed; 2 failed`，而 B14 **保持绿**；② 摘掉 `save_archive_file` 的取锁 ⇒ B14 `left: 0 / right: 4` 且 `FAILED. 0 passed; 1 failed`，`in_process_mcp_lock` `left: Some(0) / right: Some(4)`，而判据 ④ **保持绿**。两条已还原（`grep -rn "NEGATIVE MEASUREMENT" crates/` = 0）。
+- **`read_only` / 锁模式仍然一位没改 —— 这一次是实测后的裁决**：临时把 `mcp_mount.rs` 翻成 `ExclusiveWrite` + `open_in_memory(.., false)` 跑一遍，`in_process_mcp.rs::the_round_trip_stops_leaving_nothing_listening` 立刻红在 `left: String("success") / right: "error"`（**控制面真的拿到了落盘路径**），`in_process_mcp_lock.rs` 三条红（`Some(ExclusiveWrite)` vs `Some(SharedRead)`，含"另一个只读形态不能共存"），合计 `FAILED. 2 passed; 3 failed` ⇒ 翻转换来的是"控制面能落盘 + GUI 保存仍被自己的锁挡住 + `MUST-GATE-008` 的共享读语义没了"。⇒ 本片**明确不翻**，把"单一写者会话（宿主保存动作）"登记为下一步；完整读数见 `m4-008-authority-notes.md` §7.4。
+- **运行期重投影（选项 (a) 剩下第 3 件事）：本片仍不做，理由可复核**：`crates/yeban-app/src/` + `ui/` 里 `Timer|start_repeated|invoke_from_event_loop` 命中 **0**（`run_gui` 真的没有定时器），`sync_authority` 只住在 dev-dependency 的 `src/live_surface.rs` ⇒ 唯一"能无头判定"的实现要么要把 `yeban-ui-test-port`/`yeban-ui-mcp` 拉进产品依赖图（红线），要么要加一个**没有无头判据能界定其调度**的定时器（DoD 明文拒绝）。
+
 **没做到（因此本项仍是「部分」，不是「已关闭」）**
 
-1. **落盘写者边界未合并**：GUI 自己的保存路径（`ui/force_save` → `src/save.rs`、`--save-as`）**不取** `.yeban.lock`，因此不能把挂载会话改成 `read_only = false` 并取 `ExclusiveWrite` —— 两条会同时写同一个工程文件的路就是影子写者（选项 (c) 已明文拒绝）。本片据此**拒绝**了"顺手翻过去"。注意这一条是**磁盘写者**的边界，与内存权威无关：内存里的唯一可变权威已经只有一个（第二片做的）。
+1. **"单一写者会话"未建**（第三片 §7.4）：GUI 的保存落点与控制面会话在**同一个**工程文件上互斥（`flock` 在 fd 粒度仲裁，同进程另一个 fd 也冲突）⇒ 控制面存活时 GUI 的保存被**拒绝**（fail-closed）。今天不可观测（生产 `run_gui` 从不给 `ui/force_save` 配 `save_path`），但要让"人在 GUI 存"与"AI 经控制面读写"同时成立，必须给宿主加一个**保存动作**让会话成为唯一写者。注意这一条是**磁盘写者**的边界，与内存权威无关：内存里的唯一可变权威已经只有一个（第二片做的）。
 2. **生产 GUI 仍没有运行期重投影**：`run_gui` 建窗口走 `host::build_main_window`（初值来自 `loaded.archive.project`，一份**只读**输入），而"依修订号重投影"的唯一实现（`live_surface::LiveUi::sync_authority`）住在**测试目标专用**的 `src/live_surface.rs`（dev-dependency ⇒ 不进产品二进制）。后果：GUI **自己**的动作会从权威重投影（`host::refresh_undo_window` / `wire_roll_edit` 都用 `port.try_project()`），但**会话侧的改动不会自动刷新生产窗口**。补它需要在产品路径上接一条周期性刷新，而 `run_gui` 今天没有任何定时器 —— 加一个**无法无头判定**的定时器违反本仓 DoD（"没有判据的能力不算交付"），因此本片不做，如实登记为下一片。
 3. **`UndoPort` 与 `Domain` 的会话仍是两个类型**（结构性）：`crates/yeban-app/src/undo.rs` 用 `#[path]` 共享 `undo_session.rs`，而 `#[path]` 引入的是**另一个 crate 里的另一个类型** ⇒ "共享同一个实例"在类型系统里不成立。第二片因此走的是**委派**（`HostAction` → `Domain`），而不是"把同一个 `UndoSession` 交给两边"。
 
@@ -139,7 +148,7 @@
 | :--- | :--- | :--- | :--- |
 | `ROAD-M4-006` | RF64/BW64 写入器 + BEXT 元数据已落地（`crates/yeban-render/src/rf64.rs`）| **32 轨参考工程 ≥100× 实时**的**实测** | **不需要新裁决** —— 依 `HD-38`/`D50`（不投入自托管 runner）该实测**长期 PENDING**；若你改变 `D50`，我按第 361 轮简报的 (a) 执行 |
 | `ROAD-M4-007` | `.als` 导出器首片：模块 + 19 条损失表 + 4 条判据；**默认依赖树 0 命中 `flate2`**；**CI 全量腿 success**；**出口已接**：CLI `--export-als` 呈现损失表（问题 3 已关闭） | **参考 `.als`**（用于把"风格级"升级为"可在 Live 打开"）| **问题 5**（提供 / 不做）；出口形态已由 **问题 3**（`D47`）裁决并落地 |
-| `ROAD-M4-008` | UI 侧闭环真跑；依赖边与运行态挂载已落地（`4971549`）；跨形态锁已成立（`db1a667`）；**选项 (a) 第一片（2026-10-06）**：`Domain` 施加修订号 + 宿主只读投影口 `HttpServer::host_domain` + `build_live_ui_from_authority` / `LiveUi::sync_authority`；**选项 (a) 第二片（2026-10-06）**：`Plan::Host` + `apply_host_action` + `HttpServer::apply_host_action` 把 GUI 的**写**入口（撤销族 / 卷帘铅笔）落到那一个 `Domain` 上（`UndoPort` 的 `RefCell<UndoSession>` 命中 1→0），判据 18/19 直证"GUI 写与会话写落在**同一个**投影上"，两条负向实测都会红 | **落盘写者边界未合并**（GUI 保存路径不取 `.yeban.lock` ⇒ `read_only` 与 `SharedRead` 不能翻，否则与控制面 `yeban_save_project` 同时写一个文件 = 影子写者）；**生产窗口没有运行期重投影**（`sync_authority` 住在 dev-dependency 的 `live_surface.rs`，`run_gui` 也没有可无头判定的定时器） | **无需新裁决** —— 方向已是**问题 6 (a)**（本项上方「执行状态」），剩下的是**执行**：先把 GUI 保存路径纳入同一把锁，再接产品路径的运行期重投影 |
+| `ROAD-M4-008` | UI 侧闭环真跑；依赖边与运行态挂载已落地（`4971549`）；跨形态锁已成立（`db1a667`）；**选项 (a) 第一片（2026-10-06）**：`Domain` 施加修订号 + 宿主只读投影口 `HttpServer::host_domain` + `build_live_ui_from_authority` / `LiveUi::sync_authority`；**选项 (a) 第二片（2026-10-06）**：`Plan::Host` + `apply_host_action` + `HttpServer::apply_host_action` 把 GUI 的**写**入口（撤销族 / 卷帘铅笔）落到那一个 `Domain` 上（`UndoPort` 的 `RefCell<UndoSession>` 命中 1→0）；**选项 (a) 第三片（2026-10-06）**：`src/project_lock.rs` 以 `#[path]` 共享 `yeban-mcp` 的锁实现，`save_project_file` / `save_archive_file` 各取一次 `ExclusiveWrite`（拿不到 ⇒ `SaveError::Locked`，一个字节都不写），判据 B14 + `in_process_mcp_lock.rs` 两条 + lib 单测，两条负向实测（两个取锁点各一条）都会红 | **"单一写者会话"未建**（GUI 保存与控制面会话在同一文件上互斥 ⇒ 控制面存活时 GUI 保存被拒；要同时成立须给宿主加保存动作，第三片 §7.4 有实测依据）；**生产窗口没有运行期重投影**（`sync_authority` 住在 dev-dependency 的 `live_surface.rs`，`run_gui` 里 `Timer` 类命中 0，没有可无头判定的实现路径） | **无需新裁决** —— 方向已是**问题 6 (a)**（本项上方「执行状态」），剩下的是**执行**：先建"单一写者会话"（宿主保存动作），再接产品路径的运行期重投影 |
 | `ROAD-M4-010` | V1/V2 Web 包袱已彻底删除；汇合项（`P4_Gate` 四个入边）| **它必然被其它项拖住**，不可单独提前判 | **无需单独裁决** —— 随 `M4-006/007/008` 与两项 PENDING 的处置而自然收口 |
 
 **读法**：上表四行里，`M4-006` 与 `M4-010` **不需要你新增裁决**（前者依既有 `D50` 裁决为长期 PENDING，后者是汇合项）；
@@ -147,4 +156,4 @@
 （分别按建议 (1)/(a)/(a) 落地：GUI 绑逻辑键 + 无头端口判据；既有控制面的 `since` 游标 +
 `InProcessMcp::engine_readings_handle` 宿主注入口 + 真 socket 判据；CLI `--export-als` + 损失表可见）；
 真正需要你的只剩 **问题 5**（参考 `.als`）以及与 Phase 4 并列的 **问题 4**（`MUST-GATE-014` 素材）
-—— **问题 6 的裁决已经是 (a)**（本轮交出第一片，见上方「执行状态」），它现在缺的是**执行**而不是**你选一个字母**。
+—— **问题 6 的裁决已经是 (a)**（本轮交出**第三片**：GUI 的保存路径也纳入同一把 `.yeban.lock`，并实测裁决"仍不翻 `read_only`"，见上方「执行状态」），它现在缺的是**执行**而不是**你选一个字母**。

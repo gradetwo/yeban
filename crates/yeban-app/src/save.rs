@@ -19,7 +19,7 @@
 //! `yeban-mcp`**，而那里现在还只有字节层。本切片需要"`ui/force_save` 真的写了一个文件"
 //! 这条可判据的事实，因此在这里写一个**最小**实现，并把两者关系登记清楚：
 //!
-//! - 本模块**只**做"字节 → 同目录临时文件 → `sync_all` → `rename`"，不碰锁、不碰
+//! - 本模块**只**做"字节 → 同目录临时文件 → `sync_all` → `rename`"，不碰
 //!   `history.dag` 的语义、不碰资产池；
 //! - [`save_project_file`] 把 `history.dag` 以**空字节**写出（工程容器布局要求该条目存在；
 //!   提交图谱的权威内容属 `yeban-model::commit`，`ui/force_save` 这条切片没有提交可写）；
@@ -28,6 +28,18 @@
 //! - [`write_file_atomically`] 是上面两条**唯一**的落盘实现，也是命令行
 //!   `--export-elements` 的落盘实现 —— 原子替换只有一份代码；
 //! - 一旦 `yeban-mcp` 的 store 落地，应当把本模块换成对它的调用（needs 已登记）。
+//!
+//! ## 锁：**两条工程保存入口都取 `.yeban.lock`**（`ROAD-M4-008` 选项 (a) 第三片）
+//!
+//! 上面那句"不碰锁"曾经是事实，也是问题 6 的缺口：控制面的 `yeban_save_project`
+//! 在会话持有的 `.yeban.lock` 下写盘，而 app 的保存路径（`ui/force_save` / `--save-as`）
+//! **一把锁都不取** ⇒ 两条路径会同时写同一个工程文件（选项 (c) 被拒的"影子写者"）。
+//! 现在两条入口各取**排他写**建议锁，且用的是**与控制面同一份源码**
+//! （[`crate::project_lock`]，`#[path]` 共享 `yeban-mcp/src/domain/lock.rs`）。
+//! 拿不到锁 ⇒ [`SaveError::Locked`]，**一个字节都不写**（`MUST-GATE-008`）。
+//!
+//! [`write_file_atomically`] **仍然不取锁**：它写的是任意产物（元素清单 / `.mid` / `.als`），
+//! 不是工程文档，锁对它没有语义（见该函数的文档）。
 //!
 //! ## 平台差异（**如实登记，不写没验证过的代码**）
 //!
@@ -50,6 +62,8 @@ use std::path::{Path, PathBuf};
 use yeban_model::container::{ContainerError, ProjectArchive, write_project_container};
 use yeban_model::ids::{AssetHash, EntityId};
 use yeban_model::project::YebanProjectV1;
+
+use crate::project_lock;
 
 /// 临时文件名里的固定中缀（`[ARCH-SEC-004]` 的 `.yeban.tmp-{ulid}` 形态）。
 pub const TEMP_INFIX: &str = ".tmp-";
@@ -84,6 +98,42 @@ pub enum SaveError {
         /// 底层错误。
         source: std::io::Error,
     },
+    /// 目标工程文件的 `.yeban.lock` **排他写**建议锁被别的活着的持有者占用 ⇒
+    /// **拒绝写入**（`[ARCH-SEC-001]` / `[MUST-GATE-008]`；`ROAD-M4-008` 选项 (a) 第三片）。
+    ///
+    /// 存在的理由：控制面的 `yeban_save_project` 与 app 的保存路径必须争**同一把**锁。
+    /// 没有这一条时，`--save-as` / `ui/force_save` 会在别人持锁时直接覆盖工程文件 ——
+    /// 那正是问题 6 选项 (c) 被拒的"影子写者"。
+    ///
+    /// 说明：诊断载荷装在一个 `Box` 里（[`LockHold`]）。这不是洁癖 ——
+    /// `SaveError` 会进 `CliError`，而 `clippy::result_large_err`（`-D warnings` 下）对
+    /// `Result<_, CliError>` 的尺寸有上限；把 `PathBuf`/`String` 摊在变体里会让整个
+    /// crate 的 `Result` 都变大。
+    Locked(Box<LockHold>),
+    /// 本平台没有可用的 OS 建议锁 ⇒ **显式**失败，绝不静默放行并发写。
+    LockUnsupported {
+        /// 企图写入的工程路径。
+        path: PathBuf,
+        /// `std::env::consts::OS`。
+        os: &'static str,
+        /// 规范 ID（`ARCH-SEC-001` / `MUST-GATE-008`）。
+        spec_id: &'static str,
+    },
+}
+
+/// [`SaveError::Locked`] 的诊断载荷（谁占着、占用的是哪个锁文件）。
+#[derive(Debug)]
+pub struct LockHold {
+    /// 企图写入的工程路径。
+    pub path: PathBuf,
+    /// 被占用的锁文件路径（`<工程>.lock`）。
+    pub lock_file: PathBuf,
+    /// 持有者文本（读不到时给出**原因**，而不是空串）。
+    pub holder: String,
+    /// 持有者元数据的可读性口径（`available` / `unavailable-on-this-platform` / `unavailable`）。
+    pub holder_metadata: &'static str,
+    /// 持有者的锁模式（元数据读不到时为 `None`）。
+    pub holder_mode: Option<String>,
 }
 
 impl SaveError {
@@ -92,7 +142,10 @@ impl SaveError {
     pub const fn container(&self) -> Option<&ContainerError> {
         match self {
             Self::Container(error) => Some(error),
-            Self::NoFileName { .. } | Self::Io { .. } => None,
+            Self::NoFileName { .. }
+            | Self::Io { .. }
+            | Self::Locked(_)
+            | Self::LockUnsupported { .. } => None,
         }
     }
 }
@@ -113,6 +166,22 @@ impl core::fmt::Display for SaveError {
                 action,
                 source,
             } => write!(formatter, "{action} `{}` 失败: {source}", path.display()),
+            Self::Locked(hold) => write!(
+                formatter,
+                "`{}` 被 `.yeban.lock` 建议锁占用 ⇒ 拒绝写入 (绝不绕过锁覆盖别人的工程): \
+                 锁文件={} 持有者={} holderMetadata={} holderMode={}",
+                hold.path.display(),
+                hold.lock_file.display(),
+                hold.holder,
+                hold.holder_metadata,
+                hold.holder_mode.as_deref().unwrap_or("<unknown>"),
+            ),
+            Self::LockUnsupported { path, os, spec_id } => write!(
+                formatter,
+                "平台 `{os}` 没有实现 OS 建议锁 ({spec_id}) ⇒ 拒绝写入 `{}` \
+                 (绝不静默放任并发写)",
+                path.display()
+            ),
         }
     }
 }
@@ -122,7 +191,7 @@ impl core::error::Error for SaveError {
         match self {
             Self::Container(error) => Some(error),
             Self::Io { source, .. } => Some(source),
-            Self::NoFileName { .. } => None,
+            Self::NoFileName { .. } | Self::Locked(_) | Self::LockUnsupported { .. } => None,
         }
     }
 }
@@ -146,15 +215,21 @@ impl From<ContainerError> for SaveError {
 /// # Errors
 ///
 /// 路径无法构造临时文件（[`SaveError::NoFileName`]）、容器写出被拒
-/// （[`SaveError::Container`]）、或任一步 I/O 失败（[`SaveError::Io`]）。
+/// （[`SaveError::Container`]）、`.yeban.lock` 排他写建议锁拿不到（[`SaveError::Locked`] /
+/// [`SaveError::LockUnsupported`]）、或任一步 I/O 失败（[`SaveError::Io`]）。
 pub fn save_project_file(
     project: &YebanProjectV1,
     path: impl AsRef<Path>,
 ) -> Result<SaveReport, SaveError> {
+    let path = path.as_ref();
     // 第 0 步：先把**字节**全部算出来（容器写出失败时一个文件都还没碰）。
     // `history.dag` 以空字节写出：容器布局要求该条目存在，而提交图谱的权威内容属
     // `yeban-model::commit`（本切片没有提交可写，见模块文档的边界）。
     let bytes = write_project_container(project, &[], &BTreeMap::new())?;
+    // 第 0.5 步：**取排他写建议锁并随本次写入持有**（`MUST-GATE-008`）。
+    // 顺序是刻意的：字节先算完（容器被拒时一个文件都不碰，连锁文件都不建），
+    // 锁在**任何**文件系统写入之前拿到 ⇒ 拿不到就一个字节都不写。
+    let _lock = acquire_write_lock(path)?;
     write_file_atomically(&bytes, path)
 }
 
@@ -185,12 +260,80 @@ pub fn save_archive_file(
     archive: &ProjectArchive,
     path: impl AsRef<Path>,
 ) -> Result<SaveReport, SaveError> {
+    let path = path.as_ref();
     let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
     for (hash, data) in &archive.assets {
         assets.insert(hash.clone(), data.clone());
     }
     let bytes = write_project_container(&archive.project, &archive.history_dag, &assets)?;
+    // 与 [`save_project_file`] 同一条门：`--save-as` 因此与 `ui/force_save`、与
+    // 控制面的 `yeban_save_project` 争**同一把** `.yeban.lock`。
+    let _lock = acquire_write_lock(path)?;
     write_file_atomically(&bytes, path)
+}
+
+/// 取目标工程文件的**排他写**建议锁，随这次写入的生命周期持有
+/// （`[ARCH-SEC-001]` / `[MUST-GATE-008]`；`ROAD-M4-008` 选项 (a) 第三片）。
+///
+/// ## 为什么是"取锁"而不是"看一眼锁文件在不在"
+///
+/// `lock.rs` 的模块文档已经把这条钉死：**"文件存在"绝不是"被占用"的证据**
+/// （崩溃会留下无持有者的锁文件，内核在进程死亡时释放 `flock`）；
+/// "能拿到建议锁"才是"没有活着的持有者"的证据。因此这里直接用
+/// [`crate::project_lock::lock::acquire`] —— 与控制面会话**同一个函数体**。
+///
+/// ## 为什么拿不到就**拒绝写入**
+///
+/// 保存路径是 `.yeban` 工程的**磁盘写者**。别人（另一个 app 实例 / stdio `yeban-mcp` /
+/// 本进程的只读控制面会话）持着同一把锁时，唯一不制造第二个写者的行为就是拒绝 ——
+/// 这正是问题 6 选项 (c) 被拒绝时点名的"影子写者"。
+///
+/// ## 归还方式
+///
+/// `LockGuard` 是 RAII：成功路径在 `write_file_atomically` 返回后随函数退出释放；
+/// 失败路径（容器被拒之前就已经算完字节，之后任何 I/O 失败）同样随作用域释放。
+/// **排他**持有者 `Drop` 时删除锁文件（共享读者不删，见 `lock.rs`），
+/// 因此一次成功的保存**不会**在工程旁留下 `.yeban.lock`。
+fn acquire_write_lock(path: &Path) -> Result<project_lock::lock::LockGuard, SaveError> {
+    use project_lock::lock::{LockError, LockMode, lock_path};
+
+    // 先做与写入端**同一个**文件名判定：`/` 这类路径连"同目录临时文件"都构造不出来，
+    // 若先试着建锁文件，就会把"路径非法"报成 `/project.lock` 的 I/O 失败
+    // （`a_path_without_a_file_name_is_rejected` 会红）。⇒ 非法路径**一个文件都不碰**。
+    file_name_of(path)?;
+    project_lock::lock::acquire(path, LockMode::ExclusiveWrite).map_err(|error| match error {
+        LockError::WouldBlock { snapshot } => SaveError::Locked(Box::new(LockHold {
+            path: path.to_path_buf(),
+            lock_file: lock_path(path),
+            holder: snapshot.holder_text(),
+            holder_metadata: snapshot.availability(),
+            holder_mode: snapshot.metadata().map(|metadata| metadata.lock_mode),
+        })),
+        LockError::UnsupportedPlatform { os, spec_id } => SaveError::LockUnsupported {
+            path: path.to_path_buf(),
+            os,
+            spec_id,
+        },
+        // I/O 失败仍然是 I/O 失败（拿不到锁文件与"写不进目录"是同一类事实）：
+        // 归到 [`SaveError::Io`] 而不是新造一个语义，调用方的退出码也因此不变。
+        LockError::Io(source) => SaveError::Io {
+            path: lock_path(path),
+            action: "获取排他写建议锁",
+            source,
+        },
+    })
+}
+
+/// 目标路径的**文件名字段**（`NoFileName` 的**唯一**判定）。
+///
+/// 锁与写入共用它，顺序因此只有一种：**非法路径 ⇒ 一个文件都不碰**
+/// （既不建锁文件，也不建临时文件）。
+fn file_name_of(path: &Path) -> Result<String, SaveError> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| SaveError::NoFileName {
+            path: path.to_path_buf(),
+        })
 }
 
 /// 把一段已经算好的字节**原子**写到 `path`（`[ARCH-SEC-004]` 的第 1~3.5 步）。
@@ -198,6 +341,14 @@ pub fn save_archive_file(
 /// 为什么把它抽成公开函数：工程保存与"导出元素清单"必须共用**同一份**原子写入实现。
 /// 两条各写一遍的原子替换，迟早有一条会退化成"直接 create + write"——那时
 /// **失败现场的旧文件已经被截断**，而调用方只会看到一句"保存失败"。
+///
+/// ## 它**不取** `.yeban.lock`（刻意的）
+///
+/// 锁的语义单位是"**一份工程文档**"。这条入口写的是任意字节的任意目标
+/// （元素清单 / `.mid` / `.als`），对它取工程锁会在 `song.mid` 旁边凭空造一个
+/// `song.mid.lock`，而且与任何工程的锁都不互斥 —— 那是假保护。
+/// 工程保存的两条入口（[`save_project_file`] / [`save_archive_file`]）各自在外面
+/// 取锁，因此"写工程"这件事**只有一个**取锁位置（不存在"某条保存路径忘了取"的形态）。
 ///
 /// # Errors
 ///
@@ -207,10 +358,7 @@ pub fn write_file_atomically(
     path: impl AsRef<Path>,
 ) -> Result<SaveReport, SaveError> {
     let path = path.as_ref().to_path_buf();
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .ok_or_else(|| SaveError::NoFileName { path: path.clone() })?;
+    let file_name = file_name_of(&path)?;
 
     // 第 1 步：同目录临时文件（`[ARCH-SEC-004]` 的 `.yeban.tmp-{ulid}` 形态）。
     // `EntityId::new()` 生成一个 ULID，取它的规范文本做尾段 —— 与规范的字面形态一致，
@@ -497,6 +645,57 @@ mod tests {
     fn a_read_only_directory_never_touches_the_existing_file() {
         eprintln!(
             "[yeban-app/save] 非 Unix 平台: 只读目录语义是 ACL, 本仓库不构造 —— 该判据只在 Unix 腿有效"
+        );
+    }
+
+    /// 判据 8（`ROAD-M4-008` 选项 (a) 第三片）：**别的持有者持着 `.yeban.lock` 时，
+    /// 工程保存必须拒绝写入**（`MUST-GATE-008`）。
+    ///
+    /// 这条判据的牙在"三步都断言"：
+    /// 1. 持锁期间保存 ⇒ `SaveError::Locked`（点名目标与锁文件）；
+    /// 2. 拒绝之后旧文件**逐字节未变**（不是"写坏了才知道"）；
+    /// 3. 释放锁之后**同一份保存必须成功**，且排他持有者把自己的锁文件收走
+    ///    —— 这证明第 1 步拒绝的原因就是那把锁，而不是别的偶发失败。
+    #[test]
+    fn a_held_project_lock_refuses_the_save_without_touching_the_file() {
+        use crate::project_lock::lock::{LockMode, acquire, lock_path};
+
+        let dir = scratch_dir("locked");
+        let path = dir.join("locked.yeban");
+        save_project_file(&demo_project(), &path).expect("先放一个真容器");
+        let before = std::fs::read(&path).expect("读原文");
+
+        // 与保存路径**同一个实现、同一把锁**（这正是 `#[path]` 共享源码的可观测后果）。
+        let guard = acquire(&path, LockMode::ExclusiveWrite).expect("取排他写建议锁");
+        let error = save_project_file(&demo_project(), &path).expect_err("持锁时保存必须被拒");
+        match &error {
+            SaveError::Locked(hold) => {
+                assert_eq!(hold.path, path, "拒绝必须点名企图写入的工程");
+                assert_eq!(
+                    hold.lock_file,
+                    lock_path(&path),
+                    "拒绝必须点名被占用的锁文件"
+                );
+            }
+            other => panic!("必须是 SaveError::Locked, 实际: {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("旧文件仍在"),
+            before,
+            "被拒绝的保存绝不能碰旧文件"
+        );
+        assert!(
+            save_project_file(&demo_project(), &path).is_err(),
+            "锁还在时第二次也必须被拒（不是只有第一次）"
+        );
+        drop(guard);
+
+        // 释放之后同一份保存必须成功 ⇒ 第 1 步拒绝的原因只能是那把锁。
+        save_project_file(&demo_project(), &path).expect("锁释放后必须能保存");
+        assert!(
+            !lock_path(&path).exists(),
+            "成功的排他保存必须把自己的锁文件收走（不留残留锁）: {}",
+            lock_path(&path).display()
         );
     }
 }
