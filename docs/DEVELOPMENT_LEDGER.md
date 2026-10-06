@@ -8831,3 +8831,23 @@ sub-question I was about to raise. Both were found by reading the ledgers, not b
 
 **Status**: tree green and clean; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; all gates green; `BASELINE-005` 已接线 with a CI run id; both CI sources
 operational.
+
+
+### Round 365: auditing D45-D55 for artifacts found none missing - the first audit that came back clean
+
+Applied the same grep-before-asserting method to the ratified decisions' deliverables, and unlike the gate and tracking audits this one found nothing stale:
+
+* **`D48`** (`dryRun` plus the IME state bit): the IME handling exists in `crates/yeban-app/src/input.rs` (with `host.rs` and `test_port_adapter.rs` alongside), which
+  matches the note recorded earlier that the Slint IME event source is wired to `InputContext`.
+* **`D49`** (`yeban-theory` wiring): the dependency is real and cited - `crates/yeban-mcp/src/domain/section.rs:125` names `yeban-theory::genre::GenreLibrary::ids`,
+  and `section_build.rs:59` states the ruling in its own words ("由 MCP 侧按需消费 `yeban-theory` 的既有能力").
+* `D45` (undo on both sides), `D46` (tool expansion), `D47` (MIDI export's exit), `D50` (no self-hosted runner), `D51` (in-workspace edges), `D52`/`D53`
+  (deferrals), `D54` (material via groove) and `D55` (legal/site later) are all either cited in this session's work or already ratified with their artifacts in
+  place.
+
+**Why a clean audit is worth recording**: three consecutive audits found stale premises (gates, tracking rows, and my own questions), which could suggest the
+repository's records are unreliable. This one shows the opposite for the decisions themselves - the ratified set has artifacts on disk and in the code, and the
+earlier problems were in the *summaries* of status rather than in the work. That distinction matters for anyone deciding how much to trust which file.
+
+**Status**: tree green and clean; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; all gates green; both CI sources operational; six open questions, each
+confirmed unruled by grep rather than assumed.
