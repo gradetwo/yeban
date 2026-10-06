@@ -110,6 +110,20 @@ pub const HEADLESS_IDLE_BOUNDARY: &str = "headless-idle: 已构造真 MainWindow
 /// 而不是一次"CI 卡住几十分钟"。
 pub const MAX_IDLE_SECONDS: u32 = 60;
 
+/// `--enable-mcp-http` 的字面值（`[ROAD-M4-001]` 的**运行期**开关）。
+///
+/// 权威定义在 `yeban-mcp` 的 `transport::ENABLE_HTTP_FLAG`（形态 A 与形态 B 说的是
+/// 同一个词）。这里保留一份的理由是**编译期**的：默认构建里 `yeban-mcp` 根本不在依赖图上
+/// （`in-process-mcp` 默认关），而用法文本与错误信息在默认构建里也要打得出来。
+/// 两边**逐字节相同**这件事由判据钉住 —— `crates/yeban-app/tests/in_process_mcp.rs`
+/// 断言它等于 `yeban_mcp::transport::ENABLE_HTTP_FLAG`。
+pub const MCP_HTTP_SWITCH: &str = "--enable-mcp-http";
+
+/// `YEBAN_MCP_HTTP` 的字面值（运行期开关的**环境变量**形态；判定见 `src/mcp_mount.rs`）。
+///
+/// 与 [`MCP_HTTP_SWITCH`] 同一个理由：用法文本在默认构建里也要能提到它。
+pub const MCP_HTTP_ENV: &str = "YEBAN_MCP_HTTP";
+
 // ---------------------------------------------------------------------------
 // 用法与版本
 // ---------------------------------------------------------------------------
@@ -158,6 +172,12 @@ pub fn usage_text() -> String {
   --idle-seconds <N>        --headless-idle 的空闲秒数 (整数 1..={max_idle});
                            只对 --headless-idle 有意义, 单独给 = 用法错误 (退出码 {usage});
                            重复给以最后一个为准
+  --enable-mcp-http        把**领域 MCP** 的环回 HTTP JSON-RPC 控制面挂进**本进程**
+                           (形态 A, [ROAD-M4-001]): 只绑 127.0.0.1:0 (端口由系统分配,
+                           绑后回读断言是环回)、强制 256-bit Bearer 令牌鉴权;
+                           默认**关**, 且只在 `--features in-process-mcp` 的构建里存在;
+                           令牌落 ~/.yeban/session.token (0600), 只报路径不报令牌。
+                           等价入口: 环境变量 {mcp_env}=1
 
 运行形态:
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
@@ -190,15 +210,21 @@ pub fn usage_text() -> String {
                                **静默**丢掉, 而本模式的输出契约只有一条 —— 建树 + 空闲 + 读数
   --headless-idle 与 --idle-seconds
                                必须成对; 缺一个 = 用法错误 (退出码 {usage}), 绝不默认空闲时长
+  --enable-mcp-http 与任一\"无窗口开关\"
+                               不能组合 = 用法错误 (退出码 {usage}): 控制面要挂在**正在跑的
+                               GUI 进程**里 (形态 A), 批处理路径挂上去只会\"刚绑好就拆掉\"
 
 环境变量:
   SLINT_BACKEND=headless   与 --headless 等价 (yeban 自研哨兵值; Slint 1.18.1 无此后端)
+  {mcp_env}=1              与 --enable-mcp-http 等价 (同样只在带 `in-process-mcp`
+                           的构建里有效; 默认关)
 
 退出码:
   {ok} 成功 (含 --help / --version / 无头自检完成)
   {ui} 界面路径失败 (无法创建窗口 / 事件循环异常 / 工程无法投影成界面)
   {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本 /
-      --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给)
+      --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
+      --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp`)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
@@ -220,6 +246,7 @@ pub fn usage_text() -> String {
         handshake = HEADLESS_HANDSHAKE,
         idle_handshake = HEADLESS_IDLE_HANDSHAKE,
         max_idle = MAX_IDLE_SECONDS,
+        mcp_env = MCP_HTTP_ENV,
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -350,6 +377,16 @@ pub struct Options {
     /// 少了它就无法区分"空闲 0 秒"与"参数没生效"，而 `BASELINE-002` 的读数正建立在
     /// "空闲了多少秒"这件事上（判据 ③ 要证空闲期间读数不再攀升）。
     pub idle_seconds: Option<u32>,
+    /// `--enable-mcp-http`：把**领域 MCP 的环回 HTTP 控制面**挂进本进程（`[ROAD-M4-001]`）。
+    ///
+    /// 这是**运行期**那道开关（编译期那道是 `--features in-process-mcp`，见
+    /// `crates/yeban-app/Cargo.toml` 与 `src/mcp_mount.rs`）。默认 `false`；
+    /// 环境变量 `YEBAN_MCP_HTTP=1` 是等价入口（判定在 `crate::mcp_mount::switch_requested`，
+    /// 但那个模块只在 feature 打开时存在，因此这里只存命令行那一路的事实）。
+    ///
+    /// 为什么它**不**让进程离开 GUI 路径：控制面要挂在**正在跑的 app 进程**里
+    /// （形态 A 的定义），而不是把进程变成一个无头服务器。
+    pub enable_mcp_http: bool,
 }
 
 impl Options {
@@ -430,6 +467,17 @@ pub enum ParseError {
     /// （建树 + 空闲 + 读数），如果接受这些组合，`--save-as` / `--export-*` 就会被
     /// 悄悄忽略 —— 那正是本仓库最忌讳的一类假绿。要保存就先跑一次不带本开关的命令。
     IdleConflict(&'static str),
+    /// 给了 `--enable-mcp-http`，但这次构建**没有**编译 `in-process-mcp`
+    /// （`[ROAD-M4-001]` / `[MUST-GATE-009]` 的第一道开关）。
+    ///
+    /// 不静默忽略是本仓库的通则：用户要开一个网络控制面，而二进制里根本没有那段代码 ——
+    /// 那必须是一次**响亮的**用法错误，而不是"以为开了其实没开"。
+    McpHttpNotCompiled,
+    /// `--enable-mcp-http` 与一个**无窗口**开关同时给。
+    ///
+    /// 控制面要挂在**正在跑的 app 进程**里（形态 A 的定义）；批处理路径跑完就退出，
+    /// 挂上去等于刚一绑好就拆掉。接受这个组合只会让人以为"服务起来了"。
+    McpHttpNeedsGui(&'static str),
 }
 
 impl ParseError {
@@ -471,6 +519,16 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`--headless-idle` 不能与 `{other}` 组合 —— 本模式的输出契约只有 \
                  \"建树 + 空闲 + 读数\", 接受它会把 {other} 静默丢掉"
+            ),
+            Self::McpHttpNotCompiled => write!(
+                formatter,
+                "`{MCP_HTTP_SWITCH}` 需要本次构建带 `--features in-process-mcp` \
+                 (它就是 [MUST-GATE-009] 的第一道开关: 默认构建里没有网络控制面这段代码)"
+            ),
+            Self::McpHttpNeedsGui(other) => write!(
+                formatter,
+                "`{MCP_HTTP_SWITCH}` 不能与无窗口开关 `{other}` 组合 —— 控制面要挂在正在跑的 \
+                 GUI 进程里 (形态 A), 批处理路径挂上去只会刚绑好就拆掉"
             ),
         }
     }
@@ -573,6 +631,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 // 重复给以最后一个为准（与 `--project-sample` 同款）。
                 options.idle_seconds = Some(parse_idle_seconds(&value)?);
             }
+            "--enable-mcp-http" => {
+                reject_inline("--enable-mcp-http", inline)?;
+                options.enable_mcp_http = true;
+                cursor += 1;
+            }
             "--project-sample" => {
                 let value = take_value("--project-sample", inline, args, &mut cursor)?;
                 options.sample = match value.as_str() {
@@ -602,6 +665,27 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
         ] {
             if given {
                 return Err(ParseError::IdleConflict(name));
+            }
+        }
+    }
+    // `--enable-mcp-http` 的两条前置（`[ROAD-M4-001]`）：编译期那道开关，以及"只能在
+    // GUI 路径上开"。两条都是**用法错误**而不是静默忽略 —— 前者让人以为网络控制面开了，
+    // 后者让人以为服务在跑（批处理路径跑完就退出）。
+    if options.enable_mcp_http {
+        if !cfg!(feature = "in-process-mcp") {
+            return Err(ParseError::McpHttpNotCompiled);
+        }
+        for (given, name) in [
+            (options.headless, "--headless"),
+            (options.dump_elements, "--dump-elements"),
+            (options.print_shortcuts, "--print-shortcuts"),
+            (options.export_elements.is_some(), "--export-elements"),
+            (options.export_midi.is_some(), "--export-midi"),
+            (options.save_as.is_some(), "--save-as"),
+            (options.headless_idle, "--headless-idle"),
+        ] {
+            if given {
+                return Err(ParseError::McpHttpNeedsGui(name));
             }
         }
     }
@@ -792,6 +876,12 @@ pub enum CliError {
     /// `BASELINE-002` 就会拿到一个"看着成功、其实没建树"的读数 ——
     /// 那正是本工作线要消灭的那种绿。正确入口是 `crate::headless_idle::run`。
     HeadlessIdleNotBatch,
+    /// `--enable-mcp-http` 被送进了 [`run_batch`]（`[ROAD-M4-001]`）。
+    ///
+    /// 同款防假绿：控制面要挂在**正在跑的** GUI 进程里；批处理路径跑完就退出，
+    /// 在它里面挂控制面等于刚一绑好就拆掉。`parse()` 已经拒了这条组合，
+    /// 这里是 `Options` 被直接构造时的第二道。
+    McpHttpNotBatch,
 }
 
 impl CliError {
@@ -799,7 +889,10 @@ impl CliError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Projection { .. } | Self::Ui { .. } | Self::HeadlessIdleNotBatch => EXIT_UI,
+            Self::Projection { .. }
+            | Self::Ui { .. }
+            | Self::HeadlessIdleNotBatch
+            | Self::McpHttpNotBatch => EXIT_UI,
             Self::Open { .. } => EXIT_OPEN,
             Self::Save { .. } => EXIT_SAVE,
             Self::Export { .. } | Self::ExportMidi { .. } => EXIT_EXPORT,
@@ -837,6 +930,11 @@ impl fmt::Display for CliError {
                 "`--headless-idle` 不能走 run_batch: 那条路径零 Slint 依赖, \
                  一个控件树对象都不构造 ⇒ 读数会假绿; 正确入口是 crate::headless_idle::run"
             ),
+            Self::McpHttpNotBatch => write!(
+                formatter,
+                "`{MCP_HTTP_SWITCH}` 不能走 run_batch: 那条路径是一次性命令 (跑完就退出), \
+                 而控制面要挂在**正在跑的** GUI 进程里 (形态 A) ⇒ 挂上去只会刚绑好就拆掉"
+            ),
         }
     }
 }
@@ -848,7 +946,7 @@ impl std::error::Error for CliError {
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
-            Self::Ui { .. } | Self::HeadlessIdleNotBatch => None,
+            Self::Ui { .. } | Self::HeadlessIdleNotBatch | Self::McpHttpNotBatch => None,
         }
     }
 }
@@ -1262,6 +1360,13 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // `BASELINE-002` 会拿到一个"命令成功、但一个 Slint 对象都没构造"的读数。
         return Err(CliError::HeadlessIdleNotBatch);
     }
+    if options.enable_mcp_http {
+        // 同款防假绿：`--enable-mcp-http` 的语义是"把控制面挂在**正在跑的** GUI 进程里"。
+        // 批处理路径是一次性命令（跑完就退出），在这里挂上去等于刚一绑好就拆掉 ——
+        // 静默接受只会让人以为服务起来了。`parse()` 已经拒了这条组合，这里是第二道
+        // （`Options` 的字段是公开的，判据可以直接构造组合）。
+        return Err(CliError::McpHttpNotBatch);
+    }
 
     let loaded = load_project(options)?;
     let mut lines: Vec<String> = Vec::new();
@@ -1466,11 +1571,17 @@ mod tests {
             "--headless",
             "--headless-idle",
             "--idle-seconds",
+            "--enable-mcp-http",
             "--help",
             "--version",
         ] {
             assert!(usage.contains(switch), "用法文本必须列出 `{switch}`");
         }
+        // 环境变量那一路也要在用法里（它是等价的第二入口，藏起来等于没有）。
+        assert!(
+            usage.contains(MCP_HTTP_ENV),
+            "用法文本必须列出 {MCP_HTTP_ENV}"
+        );
         // 退出码语义必须在用法里逐条写出（用户与脚本的唯一去处）。
         for code in [
             EXIT_OK,
@@ -2362,6 +2473,85 @@ mod tests {
             Err(CliError::HeadlessIdleNotBatch)
         ));
         assert_eq!(CliError::HeadlessIdleNotBatch.exit_code(), EXIT_UI);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 46: --enable-mcp-http 的两条前置 + 防假绿守卫 [ROAD-M4-001]
+    //           (含 ① 字面值是契约 / ② 编译期那道开关 / ③ 不接受取值 /
+    //            ④ 与无窗口开关同给 = 用法错误 / ⑤ 绕过 parse 也被 run_batch 拒)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_mcp_http_switch_is_opt_in_refuses_non_gui_paths_and_never_lies() {
+        let args = |raw: &[&str]| {
+            raw.iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // ① 字面值与环境变量名是**契约**（另一个 crate 的 tests/in_process_mcp.rs 与
+        //    yeban-mcp 的 ENABLE_HTTP_FLAG 也对这两个字面值对账）。
+        assert_eq!(MCP_HTTP_SWITCH, "--enable-mcp-http");
+        assert_eq!(MCP_HTTP_ENV, "YEBAN_MCP_HTTP");
+
+        // ② 编译期那道开关：默认构建里这个开关**不存在**，给了就是用法错误
+        //    （不许静默忽略 —— 那会让人以为网络控制面开了）。
+        if cfg!(feature = "in-process-mcp") {
+            let parsed = parse(&args(&["--enable-mcp-http"])).expect("带 feature 时必须被接受");
+            assert!(parsed.enable_mcp_http);
+            // 它**不**把进程推离 GUI 路径：形态 A 的定义就是"挂在正在跑的 app 进程里"。
+            assert!(parsed.wants_gui() && !parsed.batch(), "{parsed:?}");
+        } else {
+            let error = parse(&args(&["--enable-mcp-http"])).expect_err("默认构建里必须被拒");
+            assert_eq!(error, ParseError::McpHttpNotCompiled);
+            assert!(
+                error.to_string().contains("in-process-mcp"),
+                "错误必须点名缺的是哪个 feature: {error}"
+            );
+        }
+
+        // ③ 与其它"没有取值的开关"同款：`--flag=value` 是错误。
+        assert_eq!(
+            parse(&args(&["--enable-mcp-http=1"])),
+            Err(ParseError::UnexpectedValue(MCP_HTTP_SWITCH))
+        );
+
+        // ④ 与任一"无窗口开关"同给：带 feature 时是 McpHttpNeedsGui（控制面要挂在正在跑的
+        //    GUI 进程里）；不带 feature 时更早一步就被"这个构建里没有它"挡住。
+        //    两种都必须是**错误** —— 绝不静默丢参数。
+        for (flag, name) in [
+            (vec!["--headless"], "--headless"),
+            (vec!["--dump-elements"], "--dump-elements"),
+            (vec!["--print-shortcuts"], "--print-shortcuts"),
+            (vec!["--export-elements", "e.txt"], "--export-elements"),
+            (vec!["--export-midi", "m.mid"], "--export-midi"),
+            (vec!["--save-as", "b.yeban"], "--save-as"),
+            (
+                vec!["--headless-idle", "--idle-seconds", "1"],
+                "--headless-idle",
+            ),
+        ] {
+            let mut raw = vec!["--enable-mcp-http"];
+            raw.extend(flag.iter().copied());
+            let expected = if cfg!(feature = "in-process-mcp") {
+                ParseError::McpHttpNeedsGui(name)
+            } else {
+                ParseError::McpHttpNotCompiled
+            };
+            assert_eq!(parse(&args(&raw)), Err(expected), "{raw:?} 必须被拒");
+        }
+
+        // ⑤ 防假绿第二道：`Options` 被**直接构造**（绕过 parse）时，`run_batch` 也必须拒绝 ——
+        //    批处理路径跑完就退出，在那里挂控制面等于刚绑好就拆掉。
+        let smuggled = Options {
+            enable_mcp_http: true,
+            ..Options::default()
+        };
+        assert!(matches!(
+            run_batch(&smuggled),
+            Err(CliError::McpHttpNotBatch)
+        ));
+        assert_eq!(CliError::McpHttpNotBatch.exit_code(), EXIT_UI);
     }
 
     // ------------------------------------------------------------------

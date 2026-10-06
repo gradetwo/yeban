@@ -73,6 +73,15 @@ pub mod save;
 pub mod scene;
 pub mod undo;
 
+// ---------------------------------------------------------------------------
+// 形态 A 的运行态挂载 (非默认 feature `in-process-mcp`) [ROAD-M4-001, MUST-GATE-009]
+// ---------------------------------------------------------------------------
+// 单独一个 `cfg` 门而不是"模块里再判 feature": 默认构建**看不到**这个模块,
+// 也就看不到 `yeban-mcp` 这个依赖 (依赖边由 `[features]` 的 `dep:yeban-mcp` 拉进来)。
+// 这就是「发行物默认关」在源码层面的落点 —— 与 `ui-test-port` 是同一套做法。
+#[cfg(feature = "in-process-mcp")]
+pub mod mcp_mount;
+
 /// `build.rs` 里 `slint_build::compile("ui/app.slint")` 生成的 Slint 组件类型。
 ///
 /// 生成机制（已核验）：`slint-build` 把 `ui/app.slint` **及其 `import` 到的全部文件**

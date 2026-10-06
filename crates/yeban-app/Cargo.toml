@@ -104,9 +104,37 @@ yeban-diagnostics = { path = "../yeban-diagnostics" }
 # 再由集成者把它连同版本一起登记进根 `[workspace.dependencies]`。
 yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
 
+# ---------------------------------------------------------------------------
+# in-process-mcp: 形态 A 的**运行态挂载** —— app 进程内托管领域 MCP 的环回 HTTP 控制面
+# ---------------------------------------------------------------------------
+# 依赖方向: yeban-app --(feature)--> yeban-mcp。反向会成环, 因此**不允许**反向;
+# `scripts/gates/check_mcp_dependency_direction.py` 约束的是 yeban-mcp **不得**依赖
+# yeban-app (它自己的"轻量 crate"规则), 不禁止 app 依赖它。
+#
+# 为什么默认关闭 (AGENTS.md §2 红线 6 / MUST-GATE-009「网络监听默认关闭」):
+# 编译期是**第一道**开关 —— 默认 release 二进制里既没有监听循环, 也没有 yeban-mcp
+# 这一整个依赖图。核验命令 (零编译, 本机可跑):
+#     cargo tree -p yeban-app -e normal --locked                      # 默认档: `yeban-mcp` 命中 **0**
+#     cargo tree -p yeban-app -e normal --locked --features in-process-mcp   # 命中 **>= 1**
+#
+# `yeban-mcp/mcp-http` 必须**一起**打开: 那个 crate 的 `transport::http` 模块在非 test
+# 构建下只在 `mcp-http` feature 下存在, 少了它连 `HttpServer::bind_loopback` 都没有。
+# 运行期还有**第二道**开关 (`--enable-mcp-http` / `YEBAN_MCP_HTTP=1`), 见
+# `crates/yeban-app/src/mcp_mount.rs` 的模块文档 —— 编译进来了不等于要在生产里开。
+#
+# 只写 `path`(+`optional`), 不写 version: 成员清单里不出现版本号是本仓库的规则
+# (ADR-0001 D5; 带 path 的 `*` 由 D21 的 `allow-wildcard-paths` 豁免, 与上面
+# `yeban-ui-test-port` 同款)。
+yeban-mcp = { path = "../yeban-mcp", optional = true }
+
 [features]
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
 ui-test-port = ["dep:yeban-ui-test-port"]
+
+# `in-process-mcp`: 形态 A 的运行态挂载 (见上面的长注释与 `src/mcp_mount.rs`)。
+# **不在 `default` 里** —— 这是 MUST-GATE-009 的第一道开关, 不是可选的便利。
+# 它同时打开 `yeban-mcp/mcp-http`: 那一边的监听代码同样默认关着。
+in-process-mcp = ["dep:yeban-mcp", "yeban-mcp/mcp-http"]
 
 # ---------------------------------------------------------------------------
 # dev-dependencies: 让真实界面的 Tier-1 判据**真的被执行**
@@ -130,6 +158,11 @@ ui-test-port = ["dep:yeban-ui-test-port"]
 # (feature 仍能把它拉进 lib/bin 的构建图; 这里只是让测试目标无论如何都拿得到它)。
 [dev-dependencies]
 yeban-ui-test-port = { path = "../yeban-ui-test-port" }
+
+# `tests/in_process_mcp.rs` 要**解析**控制面回的真实 JSON-RPC 响应 (而不是做字符串包含),
+# 因此测试目标需要 serde_json。它**不进** `-e normal` 的依赖图 —— dev-dependencies 只参与
+# test / example / bench 目标, 与上面 `yeban-ui-test-port` 的理由同款。
+serde_json = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # ui-mcp: UI 控制面 —— **只**在测试目标里接线 (live-port 工作线)

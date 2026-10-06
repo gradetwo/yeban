@@ -706,6 +706,38 @@ fn unknown_switches_exit_two_with_usage_on_stderr() {
     }
 }
 
+/// 判据 B7b: **默认产物层面**拒绝 `--enable-mcp-http`（`[ROAD-M4-001]` / `[MUST-GATE-009]`）。
+///
+/// 这是"危险能力默认关"在 **app 二进制产物**上的断言（与
+/// `scripts/gates/check_release_defaults.sh` 对 `yeban-mcp` 二进制做的那一条同一条纪律、
+/// 另一个产物）：默认构建里 `in-process-mcp` 没被编译，于是这个开关**必须**以用法错误
+/// （退出码 2）被拒，并**点名**缺的是哪个 feature —— 不许静默地"以为开了其实没开"。
+///
+/// 为什么只在默认构建里跑：带 `in-process-mcp` 时它是**合法**的 GUI 开关，给它会走
+/// 开窗口那一档，而本文件只用无窗口参数（见模块文档的纪律）。带 feature 的正面判据在
+/// `tests/in_process_mcp.rs`（真环回 socket 上的完整往返）。
+#[cfg(not(feature = "in-process-mcp"))]
+#[test]
+fn default_artifact_refuses_the_in_process_mcp_switch() {
+    let run = invoke(&["--enable-mcp-http"]);
+    assert_eq!(
+        run.code, 2,
+        "默认产物必须拒绝 --enable-mcp-http; stderr={}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("--enable-mcp-http") && run.stderr.contains("in-process-mcp"),
+        "拒绝必须同时点名开关与缺的 feature: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("用法:"),
+        "用法错误必须带用法提示: {}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "不该有 stdout");
+}
+
 /// 判据 B8: `--export-elements` 与 `--dump-elements` 同源（同一批行、同一个字节数）。
 #[test]
 fn export_elements_matches_dump_elements() {
