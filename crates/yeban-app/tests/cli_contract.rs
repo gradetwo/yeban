@@ -738,6 +738,38 @@ fn default_artifact_refuses_the_in_process_mcp_switch() {
     assert!(run.stdout.is_empty(), "不该有 stdout");
 }
 
+/// 判据 B7d: **默认产物层面**拒绝 `--export-logic`（`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
+///
+/// 与 B7c 同一条纪律、另一个产物形态（`.logicx` 是**目录**而不是单文件）：默认构建里
+/// `experimental-logic-export` 没被编译，于是这个开关**必须**以用法错误（退出码 2）被拒，
+/// 并**点名**缺的是哪个 feature。
+#[cfg(not(feature = "experimental-logic-export"))]
+#[test]
+fn default_artifact_refuses_the_experimental_logic_switch() {
+    let dir = scratch_dir("logic-not-compiled");
+    let target = dir.join("never.logicx");
+    let run = invoke(&["--export-logic", target.to_str().expect("utf8")]);
+    assert_eq!(
+        run.code, 2,
+        "默认产物必须拒绝 --export-logic; stderr={}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("--export-logic") && run.stderr.contains("experimental-logic-export"),
+        "拒绝必须同时点名开关与缺的 feature: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("用法:"),
+        "用法错误必须带用法提示: {}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "不该有 stdout");
+    assert!(!target.exists(), "被拒的开关不许写出任何文件或目录");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 判据 B7c: **默认产物层面**拒绝 `--export-als`（`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
 ///
 /// 与 B7b 同一条纪律、另一个产物形态：默认构建里 `experimental-als-export` 没被编译
@@ -1295,6 +1327,125 @@ fn export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
         .filter(|name| name.contains(".tmp-"))
         .collect();
     assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据 B15: 带 `experimental-logic-export` 时，`--export-logic` 写出 `.logicx`
+/// **bundle 目录**（四个文件）并把映射损失表逐条打到 stdout。
+///
+/// 与 B14 同一条思路，但产物是多文件目录：因此它另外钉住 ① 目录与四个文件真的在、
+/// ② `ProjectData` 的**实测**头部（`23 47 C0 AB` / 声明长度 @0x10 / `gnoS` @0x18）、
+/// ③ `MetaData.plist` 是二进制 plist（`bplist00`）、④ 两次导出**逐文件**相同、
+/// ⑤ 目标被普通文件挡住时退出 5。
+#[cfg(feature = "experimental-logic-export")]
+#[test]
+fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
+    let dir = scratch_dir("export-logic");
+    let source = write_real_container(&dir, "song.yeban");
+    let source = source.to_str().expect("utf8");
+    let first = dir.join("Song.logicx");
+    let second = dir.join("Song-again.logicx");
+
+    let run = invoke(&[
+        "--open",
+        source,
+        "--export-logic",
+        first.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+
+    let line = line_with(&run.stdout, "exported-logic:").expect("必须有 exported-logic: 行");
+    let losses: usize = field(line, "losses")
+        .expect("losses=")
+        .parse()
+        .expect("条数是整数");
+    assert!(losses >= 1, "无 ground truth 那条必然在: {line}");
+    assert_eq!(field(line, "files").as_deref(), Some("4"), "{line}");
+    assert!(
+        line.contains("from=") && line.contains("song.yeban"),
+        "来源必须明写: {line}"
+    );
+
+    // ① bundle 目录与四个文件真的落盘了。
+    let project_data = first.join("Alternatives/000/ProjectData");
+    for relative in [
+        "Alternatives/000/ProjectData",
+        "Alternatives/000/MetaData.plist",
+        "Alternatives/000/DisplayState.plist",
+        "Resources/ProjectInformation.plist",
+    ] {
+        assert!(first.join(relative).is_file(), "{relative} 必须存在");
+    }
+
+    // ② `ProjectData` 的实测头部。
+    let bytes = std::fs::read(&project_data).expect("读 ProjectData");
+    assert_eq!(&bytes[..4], &[0x23, 0x47, 0xC0, 0xAB], "根魔数");
+    assert_eq!(&bytes[0x18..0x1c], b"gnoS", "第一个 chunk 名必须是 gnoS");
+    let declared =
+        u32::from_le_bytes([bytes[0x10], bytes[0x11], bytes[0x12], bytes[0x13]]) as usize;
+    assert_eq!(declared, bytes.len() - 0x18, "声明载荷长度 @0x10");
+
+    // ③ `MetaData.plist` 是二进制 plist。
+    let meta = std::fs::read(first.join("Alternatives/000/MetaData.plist")).expect("读 MetaData");
+    assert_eq!(&meta[..8], b"bplist00", "标准二进制 plist 魔数");
+
+    // ④ 损失表逐条可见，且两分法前缀在。
+    let count_line = line_with(&run.stdout, "logic-losses:").expect("logic-losses: 行");
+    let counted: usize = field(count_line, "count")
+        .expect("count=")
+        .parse()
+        .expect("整数");
+    assert_eq!(counted, losses, "{count_line}");
+    let shown = run
+        .stdout
+        .lines()
+        .filter(|text| text.starts_with("logic-loss: "))
+        .count();
+    let cap = yeban_app::cli::MAX_LOGIC_LOSS_LINES;
+    assert_eq!(shown, counted.min(cap), "显示条数 = min(条数, 上限)");
+    assert!(
+        run.stdout.contains("未映射:") || run.stdout.contains("非等价:"),
+        "条目必须带机器可读的两分法前缀: {}",
+        run.stdout
+    );
+
+    // ⑤ 两次导出（不同目录）逐文件相同。
+    let again = invoke(&[
+        "--open",
+        source,
+        "--export-logic",
+        second.to_str().expect("utf8"),
+    ]);
+    assert_eq!(again.code, 0, "stderr={}", again.stderr);
+    for relative in [
+        "Alternatives/000/ProjectData",
+        "Alternatives/000/MetaData.plist",
+        "Alternatives/000/DisplayState.plist",
+        "Resources/ProjectInformation.plist",
+    ] {
+        assert_eq!(
+            std::fs::read(first.join(relative)).expect("读第一次"),
+            std::fs::read(second.join(relative)).expect("读第二次"),
+            "{relative} 两次导出必须逐字节相同"
+        );
+    }
+
+    // ⑥ 目标被一个**普通文件**挡住 ⇒ 建不出目录 ⇒ 复用导出失败那一档（退出码 5）。
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, b"not a directory").expect("写遮挡文件");
+    let failed = invoke(&[
+        "--open",
+        source,
+        "--export-logic",
+        blocker.join("Sub.logicx").to_str().expect("utf8"),
+    ]);
+    assert_eq!(failed.code, 5, "stderr={}", failed.stderr);
+    assert!(
+        failed.stderr.contains("导出 .logicx 到"),
+        "{}",
+        failed.stderr
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

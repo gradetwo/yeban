@@ -31,7 +31,7 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
 3. **物理架构解耦红线**：严禁向 `yeban-model`、`yeban-dsp`、`yeban-theory`、`yeban-render`、`yeban-engine`、`yeban-sfz` 等引擎层 crate 引入任何 GUI（Slint/winit/OpenGL/Qt）相关依赖；
 4. **确定性状态红线**：严禁在持久化 AST 核心实体集合中使用 `HashMap` 或 `HashSet`，必须强制使用 `BTreeMap` 以保障跨进程、跨重启迭代顺序的一致性；
 5. **网络监听安全红线**：所有 MCP 及调试服务严禁绑定 `0.0.0.0`，必须且仅能绑定环回地址 `127.0.0.1`；
-6. **发行特性安全红线**：官方默认 release 构建中严禁默认开启 `mcp-http`、`ui-mcp`、`asio`、`experimental-vst3` 或 `experimental-als-export`，上述特性仅限在特定开发或测试配置中按需开启；
+6. **发行特性安全红线**：官方默认 release 构建中严禁默认开启 `mcp-http`、`ui-mcp`、`asio`、`experimental-vst3`、`experimental-als-export` 或 `experimental-logic-export`，上述特性仅限在特定开发或测试配置中按需开启；
 7. **实时音频安全红线**：实时音频回调函数内严禁出现任何堆内存分配（`malloc`/`Box::new`/`Vec::push` 等）、堆释放（`drop`/`dealloc`）、互斥锁等待（`Mutex::lock`）或阻塞式系统调用（文件/网络 I/O、控制台打印等）；
 8. **内存安全红线 (Safe-by-Default)**：在 `yeban-model`、`yeban-theory`、`yeban-dsp`、`yeban-render` 中强制启用 `#![forbid(unsafe_code)]`；`unsafe` 仅限出现在已审计的底层驱动与 FFI 边界中，且必须附带详尽的 `// SAFETY:` 注释证明；
 9. **资产与权重合规红线**：严禁提交任何大于 10MB 的未注册二进制文件，严禁提交任何未在 `assets/manifest.json` 或 `assets/models/MANIFEST.json` 中登记许可证与 SHA-256 的音频样本或神经网络权重。
@@ -67,7 +67,7 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
 - `ARCH-UI-*`：局部脏矩形、电平 SPSC 解耦、无头配置、元素树内省安全、Testing Backend 使用约束（001–005）
 - `ARCH-SLINT-*`：Slint 上游能力核验与三层自研兜底（001）
 - `ARCH-OPS-*`：领域操作日志与提交图谱（001–002）
-- `ARCH-FMT-*`：RF64/BW64 与实验性 `.als` 导出（001–002）
+- `ARCH-FMT-*`：RF64/BW64 与实验性 DAW 互操作导出（`.als` / `.logicx`）（001–002）
 - `ARCH-PLUG-*` / `ARCH-REC-*` / `ARCH-EXT-*` / `ARCH-SYS-*`：插件宿主 / 录音 / 外部协同 / 自动保存
 - `MODEL-ISO-001`：持久化 / 会话运行态 / 本机配置三层状态物理隔离
 - `MODEL-AST-001..005, 007`：960 PPQ 与 `EntityId`、`YebanProjectV1`、`BTreeMap` 确定性、`RoutingGraph`、`MidiNote`、CAS 哈希
@@ -90,7 +90,7 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
 - `ROAD-M1-001..006`：Phase 1 数据模型 / Ops Log / 容器 / 迁移 / 属性测试
 - `ROAD-M2-001..008`：Phase 2 实时引擎 / PDC / SFZ / 声部池 / 电平表
 - `ROAD-M3-001..007`：Phase 3 Slint 工作区 / 虚拟化卷帘 / A-B 盲听 / 无障碍 / 视觉回归
-- `ROAD-M4-001..010`：Phase 4 MCP / 离线母带 / 分发与门禁切流
+- `ROAD-M4-001..011`：Phase 4 MCP / 离线母带 / 实验性 DAW 互操作导出（`.als`、`.logicx`）/ 分发与门禁切流
 - `MUST-GATE-001..015`：硬性发布门禁（一票否决）
 - `BASELINE-001..006`：基准性能达标线
 - `TEST-SPEC-001..006`：测试规范（属性幂等、模糊、跨架构对账、无头视觉回归、读屏用例、WCAG 对比度）

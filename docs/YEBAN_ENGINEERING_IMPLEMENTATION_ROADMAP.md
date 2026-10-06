@@ -257,6 +257,9 @@ AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace, v0.0.1
 5. **[ROAD-M4-009] GPLv3 源码分发包构建与生产切流**：
    - 交付符合 GPLv3 严格要求的离线源码包构建脚本（包含全部 `.slint` 声明式 UI 源文件、`Cargo.lock` 依赖锁定与 `cargo vendor` 离线缓存）；
    - **[ROAD-M4-010]** 全面通过硬性发布门禁（Must-Gates），彻底删除 V1/V2 历史 Web 代码包袱，交付生产就绪版本。
+6. **[ROAD-M4-011] 实验性 Logic Pro (`.logicx`) bundle 导出器 (`experimental-logic-export`)** ：
+   - 把 `YebanProjectV1` 映射成 `.logicx` **bundle 目录**：`Alternatives/<NNN>/ProjectData`（自研分块二进制）+ `MetaData.plist` / `DisplayState.plist` + `Resources/ProjectInformation.plist`（标准二进制 plist，自研 bplist00 编码器，**不引第三方 plist 依赖**）；
+   - 与 `[ROAD-M4-007]` 同一条纪律：**非默认 feature**、**映射损失表**（`未映射:` / `非等价:` 两分法）、**不声称**产物能被 Logic Pro 打开（没有 ground truth）；`ROAD-M4-007` 的 `.als` 导出器**原样保留**。
 
 ---
 

@@ -166,6 +166,16 @@ in-process-mcp = ["dep:yeban-mcp", "yeban-mcp/mcp-http"]
 # 与 `--enable-mcp-http` / `in-process-mcp` 同款(见 `src/cli.rs` 的 `ParseError::AlsNotCompiled`)。
 experimental-als-export = ["yeban-render/experimental-als-export"]
 
+# `experimental-logic-export`: 实验性 Logic Pro `.logicx` bundle 导出的转发开关
+# (`[ARCH-FMT-002]` / `[ROAD-M4-007]`)。
+#
+# **不在 `default` 里** —— AGENTS.md §2 红线 6 与 `scripts/guards/policy_check.py` 的
+# `FORBIDDEN_DEFAULT_FEATURES` 都点名了这个特性。它只把 `yeban-render` 那一边的同名
+# feature 转发开: 真正的编码器住在 `yeban-render/src/logic.rs`, 本 crate 不复制第二份。
+# 与 `.als` 不同, `yeban-render` 侧的这个 feature **没有可选依赖**, 因此默认依赖图
+# (默认 `cargo tree -p yeban-app -e normal --locked` 的逐包集合) **一位不变**。
+experimental-logic-export = ["yeban-render/experimental-logic-export"]
+
 # ---------------------------------------------------------------------------
 # dev-dependencies: 让真实界面的 Tier-1 判据**真的被执行**
 # ---------------------------------------------------------------------------

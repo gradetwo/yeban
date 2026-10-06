@@ -93,6 +93,24 @@
 - (B) 明确不做 ⇒ 该措辞保持现状，并在行内写清"由数据缺口决定"。
 - **选 (A) 我做**：加入 fixture + 写**结构性**判据（**不是**逐字节相等 —— Live 会重写自己的容器）+ 按证据升级措辞。
 
+## 5b. Logic Pro 导出方向 —— ✅ **已裁决（负责人，选项 A）**
+
+- 背景（账本第 389–391 轮）：负责人把"参考 `.als`"（问题 5）**改指到 Logic Pro**，并点名 groove 的调研与实现。
+  当时给出三个字母：**(A)** 新增一个 Logic Pro 导出器、`.als` 原样保留；**(B)** 用 Logic 替换 `.als` 的定位；
+  **(C)** 只把 Logic 当优先项、`.als` 仍是实验性首片。三者的工作量相差很大，故没有替负责人选。
+- **裁决：选项 A。** ⇒ 新能力 = Logic Pro (`.logicx`) **导出器**，gate 在**非默认** feature
+  `experimental-logic-export` 后面；`crates/yeban-render/src/als.rs` 与 `experimental-als-export`
+  **一位没动**（`.als` 原样保留）。
+- **已落地（本切片，`ROAD-M4-011`）**：`crates/yeban-render/src/logic.rs`（纯内存、确定性的
+  `project_data` / `build_bundle`：自研分块 `ProjectData` + bplist00 `MetaData.plist` 三件 + 映射损失表）、
+  app 出口 `crates/yeban-app/src/export_logic.rs`（建 bundle 目录 + 同一份原子落盘）+ CLI `--export-logic <dir>`
+  （`crates/yeban-app/src/cli.rs`，`logic-losses:` / `logic-loss:` 逐条打到 stdout），
+  判据在 render 侧 6 条（含**可选**的本机演示工程头部核对，演示工程不存在即 skip）+ app 侧单测 2 条 +
+  真二进制 B7d/B15。
+- **诚实边界**：**不声称 Logic Pro 能打开本产物** —— 本机没有把产物交给 Logic 打开过，也不提交
+  任何 Apple 演示工程（有版权）。被验证的是结构与本机实测字节布局、以及 groove 的写入器/读取器一致；
+  `MetaData.plist` 是标准 bplist00（独立用 `plistlib` / `plutil` 对账）。
+
 ## 6. `M4-008` —— UI↔领域**唯一可变权威**
 - 结构：三份拷贝（`Domain` 独占且刻意不实现 `Clone`；`undo::UndoPort` 的 `RefCell<UndoSession>`；`live_surface::LiveSurface`）；
   进程内控制面的会话是**只读克隆** ⇒ 挂载今天绝不是第二个写者。

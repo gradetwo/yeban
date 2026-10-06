@@ -53,6 +53,7 @@ use yeban_render::midi::MidiFormat;
 use crate::bridge::{BridgeError, ViewState};
 use crate::elements::ElementRegistry;
 use crate::export_als::AlsExportError;
+use crate::export_logic::LogicExportError;
 use crate::export_midi::{MidiExportError, MidiExportReport, export_project_to_file};
 use crate::input::{InputContext, Modifiers, PhysicalKey};
 use crate::open::{
@@ -139,6 +140,17 @@ pub const ALS_EXPORT_SWITCH: &str = "--export-als";
 /// `FORBIDDEN_DEFAULT_FEATURES` 成员 —— 默认构建里它必须关着。
 pub const ALS_EXPORT_FEATURE: &str = "experimental-als-export";
 
+/// `--export-logic` 的字面值（实验性 Logic Pro `.logicx` bundle 导出的**唯一**用户出口）。
+///
+/// 同 [`ALS_EXPORT_SWITCH`] 的理由：默认构建的用法文本与"没编译它"的错误信息都要打得出来。
+pub const LOGIC_EXPORT_SWITCH: &str = "--export-logic";
+
+/// 让 `--export-logic` 真的可执行的那个**非默认** feature 名。
+///
+/// 同 [`ALS_EXPORT_FEATURE`] 的理由：用法错误必须**点名**它，而且它同时是
+/// `scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES` 成员。
+pub const LOGIC_EXPORT_FEATURE: &str = "experimental-logic-export";
+
 // ---------------------------------------------------------------------------
 // 用法与版本
 // ---------------------------------------------------------------------------
@@ -181,6 +193,18 @@ pub fn usage_text() -> String {
                            产物是\"Ableton 风格\"而**不**声称能被 Live 11/12 打开
                            (仓库内无参考 .als); **只在** `--features {als_feature}` 的
                            构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
+  --export-logic <dir>      把当前工程导出成**实验性** Logic Pro 工程 bundle (`.logicx`,
+                             一个**目录**, 不是文件) [ARCH-FMT-002]; 与 --export-als 并列,
+                             同属 ADR-0001 D47 的\"导出唯一出口 = app CLI\"; 目录**会被创建**
+                             (含父目录), 里面写 `Alternatives/<NNN>/ProjectData` +
+                             `MetaData.plist` + `DisplayState.plist` 与
+                             `Resources/ProjectInformation.plist`;
+                             **映射损失表逐条打到 stdout** (`logic-losses:` / `logic-loss:` 行),
+                             因此\"哪些构造没被映射\"对用户可见 (太长时礼貌截断并写明还剩几条);
+                             **不声称** Logic Pro 能打开它 (本机没有把产物交给 Logic 打开过,
+                             仓库里也不提交任何 Apple 演示工程); **只在**
+                             `--features {logic_feature}` 的构建里存在 —— 默认构建给这个开关
+                             = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
   --project-sample <default|filled|empty>
                            选择\"没有 --open 时\"用哪个工程 (默认 default);
@@ -206,8 +230,8 @@ pub fn usage_text() -> String {
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
   yeban-app --open a.yeban 用打开的那个工程启动 GUI
   任一\"无窗口开关\"(--headless / --dump-elements / --export-elements /
-  --export-midi / --export-als / --print-shortcuts / --save-as) 都不构造窗口、不进事件循环,
-  并打印握手行 `{handshake}`。
+  --export-midi / --export-als / --export-logic / --print-shortcuts / --save-as)
+  都不构造窗口、不进事件循环, 并打印握手行 `{handshake}`。
   `--headless-idle` 是**另一档**: 它同样不创建 OS 窗口、不进阻塞事件循环, 但它**会**
   构造一个软件窗口 + 真控件树并光栅化一帧, 因此握手行是 `{idle_handshake}`
   (与 `{handshake}` 刻意不同 —— 后者的语义是\"一个 Slint 对象都没构造\")。
@@ -220,16 +244,18 @@ pub fn usage_text() -> String {
                                (输出里 `project-source:` 会说明)
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
-  --export-elements 与 --export-midi 与 --export-als 与 --save-as 任意组合
+  --export-elements 与 --export-midi 与 --export-als 与 --export-logic 与 --save-as 任意组合
                                顺序固定: **先**导出元素, **再**导出 MIDI, **再**导出 .als,
-                               **最后**保存工程; 任一导出失败 ⇒ 不写工程 (退出码 {export})
+                               **再**导出 .logicx, **最后**保存工程; 任一导出失败 ⇒ 不写工程
+                               (退出码 {export})
   --export-midi 不给 --open    导出的是演示工程, 输出 `exported-midi: ... from=sample=...` 明说
   --export-als 不给 --open    导出的是演示工程, 输出 `exported-als: ... from=sample=...` 明说
+  --export-logic 不给 --open  导出的是演示工程, 输出 `exported-logic: ... from=sample=...` 明说
   --help / -h, --version / -V  短路: 出现即打印并退出 {ok}, 其余参数(含未知参数)不再检查
-  --open / --save-as / --export-elements / --export-midi / --export-als
+  --open / --save-as / --export-elements / --export-midi / --export-als / --export-logic
                                各只能给一次; 重复给 = 用法错误 (退出码 {usage})
   --headless-idle 与 --save-as / --export-elements / --export-midi /
-  --export-als / --dump-elements / --print-shortcuts
+  --export-als / --export-logic / --dump-elements / --print-shortcuts
                                不能组合 = 用法错误 (退出码 {usage}): 那会把写盘 / 导出
                                **静默**丢掉, 而本模式的输出契约只有一条 —— 建树 + 空闲 + 读数
   --headless-idle 与 --idle-seconds
@@ -249,14 +275,15 @@ pub fn usage_text() -> String {
   {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本 /
       --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
       --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
-      --export-als 在本次构建未编译 `{als_feature}`)
+      --export-als 在本次构建未编译 `{als_feature}` /
+      --export-logic 在本次构建未编译 `{logic_feature}`)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
-  {export} --export-elements 失败 / --export-midi 失败 / --export-als 失败 (I/O;
-      或工程里没有可导出的 MIDI 音符 / 拍号分母不是 2 的幂 /
+  {export} --export-elements 失败 / --export-midi 失败 / --export-als 失败 / --export-logic 失败
+      (I/O; 或工程里没有可导出的 MIDI 音符 / 拍号分母不是 2 的幂 /
       工程 PPQ 与编码器默认 PPQ 不一致 / 编码器拒绝越界的音高或力度 /
-      .als 的映射或 Gzip 封装失败)
+      .als 的映射或 Gzip 封装失败 / .logicx 的 bundle 目录建不出来)
 
 示例 (全部已在真二进制上跑过):
   yeban-app --headless
@@ -267,6 +294,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
   yeban-app --open song.yeban --export-midi song.mid
+  yeban-app --open song.yeban --export-logic out/Song.logicx
   yeban-app --version
 ",
         handshake = HEADLESS_HANDSHAKE,
@@ -274,6 +302,7 @@ pub fn usage_text() -> String {
         max_idle = MAX_IDLE_SECONDS,
         mcp_env = MCP_HTTP_ENV,
         als_feature = ALS_EXPORT_FEATURE,
+        logic_feature = LOGIC_EXPORT_FEATURE,
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -392,6 +421,13 @@ pub struct Options {
     /// [`Self::enable_mcp_http`] 同款，绝不静默忽略。它**不需要**界面投影
     /// （只依赖 `YebanProjectV1`，与 `--export-midi` / `--save-as` 同族）。
     pub export_als: Option<PathBuf>,
+    /// `--export-logic <dir>`：当前工程导出成实验性 Logic Pro 工程 bundle（`.logicx`，一个**目录**）
+    /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-als` 并列同属 `D47` 的 CLI 出口。
+    ///
+    /// **只在** [`LOGIC_EXPORT_FEATURE`] 打开的构建里可执行；默认构建给它 =
+    /// [`ParseError::LogicNotCompiled`]（退出码 [`EXIT_USAGE`]）—— 与 [`Self::export_als`] 同款。
+    /// 取值是目录而不是文件：bundle 会被**创建**（含父目录）。它**不需要**界面投影。
+    pub export_logic: Option<PathBuf>,
     /// `--open <path>`：当前工程来自这个文件（否则来自 [`Self::sample`]）。
     pub open: Option<PathBuf>,
     /// `--save-as <path>`：把当前工程原子落盘到这里。
@@ -445,6 +481,7 @@ impl Options {
             || self.export_elements.is_some()
             || self.export_midi.is_some()
             || self.export_als.is_some()
+            || self.export_logic.is_some()
             || self.save_as.is_some()
             || self.headless_idle
     }
@@ -522,6 +559,13 @@ pub enum ParseError {
     /// 都**不在依赖图上**，用户要的是一个 `.als` 文件而二进制里根本没有那个出口 ——
     /// 那必须是一次**点名 feature 的**用法错误，而不是"以为写了其实没写"。
     AlsNotCompiled,
+    /// 给了 `--export-logic`，但这次构建**没有**编译 [`LOGIC_EXPORT_FEATURE`]
+    /// （`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
+    ///
+    /// 与 [`Self::AlsNotCompiled`] 同一条纪律：默认构建里 `yeban-render` 的 `logic` 模块
+    /// 不存在，用户要的是一个 `.logicx` bundle 而二进制里根本没有那个出口 ——
+    /// 那必须是一次**点名 feature 的**用法错误。
+    LogicNotCompiled,
 }
 
 impl ParseError {
@@ -578,6 +622,12 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`{ALS_EXPORT_SWITCH}` 需要本次构建带 `--features {ALS_EXPORT_FEATURE}` \
                  (实验性 .als 导出默认关: AGENTS.md §2 红线 6 与 [MUST-GATE-009] 同一条纪律; \
+                 它就是 [ARCH-FMT-002] / [ROAD-M4-007] 那条导出的唯一用户出口)"
+            ),
+            Self::LogicNotCompiled => write!(
+                formatter,
+                "`{LOGIC_EXPORT_SWITCH}` 需要本次构建带 `--features {LOGIC_EXPORT_FEATURE}` \
+                 (实验性 .logicx 导出默认关: AGENTS.md §2 红线 6 与 [MUST-GATE-009] 同一条纪律; \
                  它就是 [ARCH-FMT-002] / [ROAD-M4-007] 那条导出的唯一用户出口)"
             ),
         }
@@ -679,6 +729,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--export-logic" => {
+                let value = take_value(LOGIC_EXPORT_SWITCH, inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.export_logic,
+                    LOGIC_EXPORT_SWITCH,
+                    PathBuf::from(value),
+                )?;
+            }
             "--headless-idle" => {
                 reject_inline("--headless-idle", inline)?;
                 options.headless_idle = true;
@@ -720,6 +778,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_elements.is_some(), "--export-elements"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
+            (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
         ] {
             if given {
@@ -741,6 +800,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.export_elements.is_some(), "--export-elements"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
+            (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
             (options.headless_idle, "--headless-idle"),
         ] {
@@ -755,6 +815,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     // 同款，绝不静默忽略（静默忽略只会让人以为 `.als` 写了）。
     if options.export_als.is_some() && !cfg!(feature = "experimental-als-export") {
         return Err(ParseError::AlsNotCompiled);
+    }
+    // `--export-logic` 的**编译期**那道开关（同族）：默认构建里 `yeban-render` 的 `logic`
+    // 模块不存在，因此同样必须是一次**点名 feature** 的用法错误。
+    if options.export_logic.is_some() && !cfg!(feature = "experimental-logic-export") {
+        return Err(ParseError::LogicNotCompiled);
     }
     Ok(options)
 }
@@ -943,12 +1008,23 @@ pub enum CliError {
         /// 导出层的原样裁决（含 `yeban-render` 的 `als` 导出器的拒绝原因）。
         source: AlsExportError,
     },
+    /// `--export-logic` 失败（bundle 目录 / 原子落盘）。
+    ExportLogic {
+        /// 目标 bundle 目录。
+        path: PathBuf,
+        /// 导出层的原样裁决。
+        source: LogicExportError,
+    },
     /// `--export-als` 被送进了**没有**编译 `experimental-als-export` 的 [`run_batch`]。
     ///
     /// 防假绿的第二道（第一道在 `parse()`）：那段导出代码在默认构建里根本不存在，
     /// 静默跳过只会让人以为 `.als` 写了。`Options` 的字段是公开的，判据可以直接
     /// 构造这个组合，因此这一档必须存在。
     AlsNotCompiled,
+    /// `--export-logic` 被送进了**没有**编译 `experimental-logic-export` 的 [`run_batch`]。
+    ///
+    /// 与 [`Self::AlsNotCompiled`] 同款的第二道防假绿。
+    LogicNotCompiled,
     /// `--headless-idle` 被送进了**零 Slint 依赖**的 [`run_batch`]。
     ///
     /// 这一档存在的唯一理由是**防假绿**：该开关的语义是"**真的**构造 Slint 控件树"，
@@ -974,9 +1050,13 @@ impl CliError {
             | Self::HeadlessIdleNotBatch
             | Self::McpHttpNotBatch => EXIT_UI,
             Self::AlsNotCompiled => EXIT_USAGE,
+            Self::LogicNotCompiled => EXIT_USAGE,
             Self::Open { .. } => EXIT_OPEN,
             Self::Save { .. } => EXIT_SAVE,
-            Self::Export { .. } | Self::ExportMidi { .. } | Self::ExportAls { .. } => EXIT_EXPORT,
+            Self::Export { .. }
+            | Self::ExportMidi { .. }
+            | Self::ExportAls { .. }
+            | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
     }
 }
@@ -1013,9 +1093,21 @@ impl fmt::Display for CliError {
                     path.display()
                 )
             }
+            Self::ExportLogic { path, source } => {
+                write!(
+                    formatter,
+                    "导出 .logicx 到 `{}` 失败: {source}",
+                    path.display()
+                )
+            }
             Self::AlsNotCompiled => write!(
                 formatter,
                 "`{ALS_EXPORT_SWITCH}` 需要本次构建带 `--features {ALS_EXPORT_FEATURE}` \
+                 (默认构建里那条导出路径不存在; parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
+            ),
+            Self::LogicNotCompiled => write!(
+                formatter,
+                "`{LOGIC_EXPORT_SWITCH}` 需要本次构建带 `--features {LOGIC_EXPORT_FEATURE}` \
                  (默认构建里那条导出路径不存在; parse() 与 run_batch() 都会拒绝, 绝不静默忽略)"
             ),
             Self::HeadlessIdleNotBatch => write!(
@@ -1040,10 +1132,12 @@ impl std::error::Error for CliError {
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
             Self::ExportAls { source, .. } => Some(source),
+            Self::ExportLogic { source, .. } => Some(source),
             Self::Ui { .. }
             | Self::HeadlessIdleNotBatch
             | Self::McpHttpNotBatch
-            | Self::AlsNotCompiled => None,
+            | Self::AlsNotCompiled
+            | Self::LogicNotCompiled => None,
         }
     }
 }
@@ -1440,7 +1534,8 @@ pub fn shortcut_lines() -> Vec<String> {
 /// 6. `--export-elements` 的 `exported:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
 /// 7. `--export-midi` 的 `exported-midi:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
 /// 8. `--export-als` 的 `exported-als:` + 损失表行（同样失败即止）;
-/// 9. `--save-as` 的 `saved:`。
+/// 9. `--export-logic` 的 `exported-logic:` + 损失表行（同样失败即止）;
+/// 10. `--save-as` 的 `saved:`。
 ///
 /// # Errors
 ///
@@ -1471,6 +1566,12 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     #[cfg(not(feature = "experimental-als-export"))]
     if options.export_als.is_some() {
         return Err(CliError::AlsNotCompiled);
+    }
+    // `--export-logic` 的防假绿第二道（同款）：默认构建里 `yeban-render` 的 `logic`
+    // 模块根本不存在，静默跳过 = 用户以为 bundle 写了而磁盘上什么都没有。
+    #[cfg(not(feature = "experimental-logic-export"))]
+    if options.export_logic.is_some() {
+        return Err(CliError::LogicNotCompiled);
     }
 
     let loaded = load_project(options)?;
@@ -1525,7 +1626,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         lines.push(exported_midi_line(&report, &loaded));
     }
 
-    // 顺序契约（`--help` 的"组合语义"一节）：元素 → MIDI → .als → 保存工程。
+    // 顺序契约（`--help` 的"组合语义"一节）：元素 → MIDI → .als → .logicx → 保存工程。
     // 与 `--export-midi` 一样, 导出失败 ⇒ 直接 `Err`, **不**继续保存。
     #[cfg(feature = "experimental-als-export")]
     if let Some(path) = options.export_als.as_ref() {
@@ -1536,6 +1637,17 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             })?;
         lines.push(exported_als_line(&report, &loaded));
         lines.extend(als_loss_lines(&report.losses));
+    }
+
+    #[cfg(feature = "experimental-logic-export")]
+    if let Some(path) = options.export_logic.as_ref() {
+        let report = crate::export_logic::export_project_to_bundle(&loaded.archive.project, path)
+            .map_err(|source| CliError::ExportLogic {
+            path: path.clone(),
+            source,
+        })?;
+        lines.push(exported_logic_line(&report, &loaded));
+        lines.extend(logic_loss_lines(&report.losses));
     }
 
     if let Some(path) = options.save_as.as_ref() {
@@ -1660,6 +1772,60 @@ fn als_loss_lines(losses: &[yeban_render::als::AlsLoss]) -> Vec<String> {
     lines
 }
 
+/// `--export-logic` 打到 stdout 的损失条目**上限**（与 `.als` 同一条纪律）。
+///
+/// 完整的表同时写进了 bundle 的 `Alternatives/<NNN>/MetaData.plist`
+/// （`YebanMappingLosses` 键，导出器保证两者同源），而截断行会写明还剩多少条。
+#[cfg(feature = "experimental-logic-export")]
+pub const MAX_LOGIC_LOSS_LINES: usize = 20;
+
+/// `exported-logic:` 行（说清落点、文件数、映射计数、**损失条数**与来源）。
+#[cfg(feature = "experimental-logic-export")]
+fn exported_logic_line(report: &crate::export_logic::LogicExportReport, loaded: &Loaded) -> String {
+    let bytes: usize = report.files.iter().map(|(_, size)| *size).sum();
+    format!(
+        "exported-logic: path={} files={} bytes={} regions={} notes={} losses={} from={}",
+        report.directory.display(),
+        report.files.len(),
+        bytes,
+        report.mapped_regions,
+        report.mapped_notes,
+        report.losses.len(),
+        loaded.source.save_origin(),
+    )
+}
+
+/// 把 `--export-logic` 的映射损失表变成**给用户看的行**。
+///
+/// 形状（与 `als-loss` 同款，去掉 `.als` 特有的 `bounced-to-audio`）：
+///
+/// ```text
+/// logic-losses: count=<总条数>
+/// logic-loss: entity=<稳定寻址> reason="<转义后的人话>"
+/// …（最多 [`MAX_LOGIC_LOSS_LINES`] 条）
+/// logic-losses-truncated: ... and <N> more (完整表也在 MetaData.plist 的 YebanMappingLosses)
+/// ```
+#[cfg(feature = "experimental-logic-export")]
+fn logic_loss_lines(losses: &[yeban_render::logic::LogicLoss]) -> Vec<String> {
+    let mut lines = vec![format!("logic-losses: count={}", losses.len())];
+    for loss in losses.iter().take(MAX_LOGIC_LOSS_LINES) {
+        lines.push(format!(
+            "logic-loss: entity={} reason={}",
+            loss.entity,
+            quoted(&loss.reason),
+        ));
+    }
+    if losses.len() > MAX_LOGIC_LOSS_LINES {
+        lines.push(format!(
+            "logic-losses-truncated: ... and {} more (完整表也在 MetaData.plist 的 \
+             `{}` 键里)",
+            losses.len() - MAX_LOGIC_LOSS_LINES,
+            yeban_render::logic::META_DATA_LOSS_KEY,
+        ));
+    }
+    lines
+}
+
 /// 把行打到 stdout（唯一打印点，保证"返回的"与"打印的"逐行一致）。
 pub fn emit(lines: &[String]) {
     for line in lines {
@@ -1748,6 +1914,7 @@ mod tests {
             "--export-elements",
             "--export-midi",
             "--export-als",
+            "--export-logic",
             "--print-shortcuts",
             "--project-sample",
             "--headless",
@@ -2462,7 +2629,7 @@ mod tests {
         assert!(base.wants_gui(), "无参数 = GUI");
         assert!(!base.needs_projection());
 
-        let cases: [(Options, bool, bool); 11] = [
+        let cases: [(Options, bool, bool); 12] = [
             (
                 Options {
                     headless: true,
@@ -2543,6 +2710,15 @@ mod tests {
                 // `.als` 导出与 `--export-midi` **同族**：无窗口、不需要投影。
                 Options {
                     export_als: Some(PathBuf::from("a.als")),
+                    ..base.clone()
+                },
+                false,
+                false,
+            ),
+            (
+                // `.logicx` 导出与 `--export-als` **同族**：无窗口、不需要投影。
+                Options {
+                    export_logic: Some(PathBuf::from("out/Song.logicx")),
                     ..base.clone()
                 },
                 false,
@@ -2639,6 +2815,10 @@ mod tests {
             (vec!["--export-elements", "e.txt"], "--export-elements"),
             (vec!["--export-midi", "m.mid"], "--export-midi"),
             (vec!["--export-als", "a.als"], ALS_EXPORT_SWITCH),
+            (
+                vec!["--export-logic", "out/Song.logicx"],
+                LOGIC_EXPORT_SWITCH,
+            ),
             (vec!["--save-as", "b.yeban"], "--save-as"),
         ] {
             let mut raw = vec!["--headless-idle", "--idle-seconds", "1"];
@@ -2888,6 +3068,146 @@ mod tests {
         assert!(tail.contains(&format!("and {overflow} more")), "{tail}");
         assert!(
             tail.contains("yeban-loss"),
+            "截断行必须指出完整表在哪: {tail}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 49: --export-logic 的编译期开关 + 损失表呈现 [ARCH-FMT-002] [ROAD-M4-007]
+    //           （与判据 47 同族、另一个产物形态：bundle 目录而不是单文件）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_logic_export_switch_is_opt_in_and_the_loss_table_is_never_silently_dropped() {
+        let args = |raw: &[&str]| {
+            raw.iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // ① 字面值与 feature 名是**契约**。
+        assert_eq!(LOGIC_EXPORT_SWITCH, "--export-logic");
+        assert_eq!(LOGIC_EXPORT_FEATURE, "experimental-logic-export");
+        let model = Options {
+            export_logic: Some(PathBuf::from("out/Song.logicx")),
+            ..Options::default()
+        };
+        assert!(model.batch() && !model.wants_gui(), "{model:?}");
+        assert!(
+            !model.needs_projection(),
+            "导出只依赖 YebanProjectV1: {model:?}"
+        );
+
+        // ② 编译期那道开关：默认构建里这个开关**不存在**，给了就是点名 feature 的用法错误。
+        if cfg!(feature = "experimental-logic-export") {
+            let parsed = parse(&args(&["--export-logic", "out/Song.logicx"]))
+                .expect("带 feature 时必须被接受");
+            assert_eq!(parsed.export_logic, Some(PathBuf::from("out/Song.logicx")));
+            assert!(parsed.batch() && !parsed.wants_gui(), "{parsed:?}");
+        } else {
+            let error = parse(&args(&["--export-logic", "out/Song.logicx"]))
+                .expect_err("默认构建里必须被拒");
+            assert_eq!(error, ParseError::LogicNotCompiled);
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            let text = error.to_string();
+            assert!(text.contains(LOGIC_EXPORT_SWITCH), "必须点名开关: {text}");
+            assert!(
+                text.contains(LOGIC_EXPORT_FEATURE),
+                "必须点名 feature: {text}"
+            );
+        }
+
+        // ③ 取值写法与只能给一次。
+        assert_eq!(
+            parse(&args(&["--export-logic"])),
+            Err(ParseError::MissingValue(LOGIC_EXPORT_SWITCH))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "--export-logic",
+                "a.logicx",
+                "--export-logic",
+                "b.logicx"
+            ])),
+            Err(ParseError::DuplicateOption(LOGIC_EXPORT_SWITCH))
+        );
+        #[cfg(feature = "experimental-logic-export")]
+        assert_eq!(
+            parse(&args(&["--export-logic=b.logicx"]))
+                .expect("内联取值必须被接受")
+                .export_logic,
+            Some(PathBuf::from("b.logicx"))
+        );
+
+        // ④ 防假绿第二道：`Options` 被**直接构造**（绕过 parse）时, 默认构建的 `run_batch`
+        //    也必须拒绝 —— 静默跳过 = 用户以为 bundle 写了而磁盘上什么都没有。
+        #[cfg(not(feature = "experimental-logic-export"))]
+        {
+            let smuggled = Options {
+                export_logic: Some(PathBuf::from("out/Song.logicx")),
+                ..Options::default()
+            };
+            let error = run_batch(&smuggled).expect_err("默认构建里必须被拒");
+            assert!(matches!(error, CliError::LogicNotCompiled), "{error:?}");
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            let text = error.to_string();
+            assert!(text.contains(LOGIC_EXPORT_SWITCH), "{text}");
+            assert!(text.contains(LOGIC_EXPORT_FEATURE), "{text}");
+        }
+    }
+
+    /// 判据 50: `.logicx` 损失表呈现 —— 逐条可见、字段可判、超长时**礼貌截断**。
+    ///
+    /// 与判据 48 同款，只是没有 `.als` 的 `bounced-to-audio` 字段。
+    #[cfg(feature = "experimental-logic-export")]
+    #[test]
+    fn the_logic_loss_report_lists_every_entry_and_truncates_politely() {
+        use yeban_render::logic::LogicLoss;
+
+        let loss = |index: usize| LogicLoss {
+            entity: format!("track:{index:04}"),
+            reason: format!("未映射: 判据用合成条目 {index}"),
+        };
+
+        let short: Vec<LogicLoss> = (0..MAX_LOGIC_LOSS_LINES - 1).map(loss).collect();
+        let rendered = logic_loss_lines(&short);
+        assert_eq!(rendered[0], format!("logic-losses: count={}", short.len()));
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.starts_with("logic-loss: "))
+                .count(),
+            short.len()
+        );
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.starts_with("logic-losses-truncated:")),
+            "没超上限就不该有截断行: {rendered:?}"
+        );
+        let first = &rendered[1];
+        assert_eq!(field(first, "entity").as_deref(), Some("track:0000"));
+        assert!(
+            first.contains("reason=\"未映射: 判据用合成条目 0\""),
+            "{first}"
+        );
+
+        let overflow = 3;
+        let long: Vec<LogicLoss> = (0..MAX_LOGIC_LOSS_LINES + overflow).map(loss).collect();
+        let rendered = logic_loss_lines(&long);
+        assert_eq!(rendered[0], format!("logic-losses: count={}", long.len()));
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.starts_with("logic-loss: "))
+                .count(),
+            MAX_LOGIC_LOSS_LINES
+        );
+        let tail = rendered.last().expect("有截断行");
+        assert!(tail.starts_with("logic-losses-truncated: "), "{tail}");
+        assert!(tail.contains(&format!("and {overflow} more")), "{tail}");
+        assert!(
+            tail.contains(yeban_render::logic::META_DATA_LOSS_KEY),
             "截断行必须指出完整表在哪: {tail}"
         );
     }

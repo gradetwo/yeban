@@ -9437,3 +9437,85 @@ Measured the two files a Logic fixture would use, because the answer decides how
 
 **Status**: tree green and clean at `c643ebf` (= `origin/main`); automatic CI green through `a2fd2b1` with `eefde06` pending read-back; Phase 4 6 完成 / 4 部分 /
 0 PENDING; the single open question is which Logic option (A, B or C) to build.
+
+
+### Round 392: the负责人 picks option A - a Logic Pro exporter joins, and the `.als` exporter is untouched
+
+The ruling is **A**: add a Logic Pro (`.logicx`) exporter as a second, better-referenced format, and **keep** the `.als` exporter exactly as it is. So `crates/yeban-render/src/als.rs`
+and the `experimental-als-export` feature were not edited at all; the new work is a sibling, gated behind the non-default feature `experimental-logic-export`
+(new roadmap item **`ROAD-M4-011`**; `ROAD-M4-007` keeps meaning the `.als` exporter).
+
+**The brief's measured facts, re-verified (and one corrected).** All readings are from this machine, today:
+
+* a `.logicx` **is a directory** - `test -d` on `Swing!.logicx` says DIRECTORY, and its `Alternatives/004/` holds `ProjectData` + `MetaData.plist` (+ `DisplayState.plist`,
+  `DisplayStateArchive`, `WindowImage.jpg`, `Undo Data.nosync`); `Media/` is absent here but `Colors.logicx/Media/` is the 487 MB case the brief names;
+* `MetaData.plist` **is a standard binary plist** - `file` reports `Apple binary property list`; `plistlib` reads 23 keys from each of `Swing!` (`115.0` BPM, 4/4, `NumberOfTracks 76`,
+  `SampleRate 48000`) and `ocean eyes` (`145.0` BPM, 4/4, 42 tracks, 44100). Its `Resources/ProjectInformation.plist` pairs an **integer** `ActiveVariant` (4 and 1) with the
+  three-digit folder (`004`, `001`) - so the alternative number is **not** always `000`, which is why the writer writes that file too;
+* `ProjectData` is a custom chunked binary whose first bytes are `23 47 c0 ab cb 09 03 00 04 00 00 00 01 00 08 00` and whose chunk identifiers are stored **little-endian**
+  (a plain `grep` for `Song` finds nothing);
+* ⚠ **one correction to Round 391**: `gnoS` is at offset **0x18**, not 0x14. Measured in **both** local demos - 0x14 is four zero bytes, then `67 6e 6f 53` at 0x18 - and 0x18 is also
+  groove's own reader constant (`src/data/logicToArrangement.ts:369`, `let offset = 0x18;`). The brief repeated the 0x14 figure, so the writer and its criteria use the measured 0x18;
+* the sizes in Round 390 are also off for today's files: `Swing!.logicx/Alternatives/004/ProjectData` is **5,648,035 B** (5.4 MiB), not 908 KB, and
+  `ocean eyes.logicx/Alternatives/001/ProjectData` is **4,075,622 B**; their `MetaData.plist` are 11,364 B and 52,578 B. The 908 KB figure does not match any file read here.
+
+**What was read in groove (function names + lines).** `mcp/arrangement.ts:1030` `exportMcpLogicProject` (which files one export returns) and `:1053` `importMcpLogicProject`;
+`src/data/arrangementToLogic.ts` (`songRecord`, `meterRecord`, `tempoRecord`, `regionRecord`, `logicNoteLines`, `arrangementToLogicFiles`, `logicProjectBundle`,
+`logicMetaDataPlist`, `logicProjectInformationPlist`, `logicDisplayStatePlist`); `src/data/logicToArrangement.ts:366` `readRecords`, `:447` the 16-byte line model
+(`lineRun` / `isContinuationLine`), `readTempo` and `readMeter` after `:600`; `mcp/registryProject.ts` (59 lines, two tools). Verified against groove: the root magic and
+0x18 root header, the declared payload length at 0x10, the 36-byte record header (tag at +0, cluster at +8, payload length at +0x1c), the 16-byte event line with the
+continuation flag at byte 7, the note fields at head +4/+0x0b/+0x0c and the duration at the first continuation's +0x0c, the `gnoS` tempo slots 0x3a6/0x92 as `round(bpm*10000)`,
+the `qSvE` meter bytes +0x0b/+0x0c, and the region name as a `uint16` length + UTF-8 at payload +0x34. One **deliberate** difference: groove writes the records
+`qSvE`(meter) -> `qSvE`(tempo) -> `gnoS`, while this writer puts `gnoS` **first** because the measured real projects' first chunk is `gnoS`; groove's reader finds records by
+tag, so order does not matter to it. A second simplification is said out loud: every note is written with **exactly one** continuation line (the reader only reads the length
+from the first, so nothing is lost on the way back, but it differs from Logic's own shape).
+
+**What was built (a complete first slice).**
+
+| path | why |
+| :--- | :--- |
+| `crates/yeban-render/src/logic.rs` (new) | the exporter: `project_data` / `build_bundle` (pure, zero file-system I/O, byte-deterministic) writing `ProjectData` + a hand-rolled bplist00 `MetaData.plist` / `DisplayState.plist` / `ProjectInformation.plist`, plus the two-way `LogicLoss` table (also embedded in `MetaData.plist` under the Yeban-extension key `YebanMappingLosses`, so table and file cannot disagree) |
+| `crates/yeban-render/Cargo.toml` | feature `experimental-logic-export = []` - **no optional dependency**, unlike `.als` (the bplist00 encoder is written here rather than pulling a `plist` crate), so the default graph cannot move |
+| `crates/yeban-render/src/lib.rs` | `#[cfg(feature = "experimental-logic-export")] pub mod logic;` + module map and the honest-boundary paragraph |
+| `crates/yeban-app/src/export_logic.rs` (new) | the outlet: creates the bundle directory and writes each file through the **same** `write_file_atomically` the other exports use (D47: one encoding, one atomic writer) |
+| `crates/yeban-app/src/cli.rs` | `--export-logic <dir>`, its non-default feature gate (default build = usage error 2 naming the feature, plus a second `run_batch` guard), and the `logic-losses:` / `logic-loss:` report lines |
+| `crates/yeban-app/Cargo.toml`, `crates/yeban-app/src/lib.rs` | feature forwarding + module doc |
+| `scripts/guards/policy_check.py` | `FORBIDDEN_DEFAULT_FEATURES` gains `experimental-logic-export` (red line 6, same as `.als`) |
+| `docs/ledger/open-questions.md` | new closed section 5b recording that the负责人 chose **A** |
+| roadmap §3, `docs/ledger/phase-status.md`, `docs/ledger/feature-alignment.md` | new roadmap item `ROAD-M4-011` + its phase row (Phase 4 6/5/0, total 17/24/6 = 47) + its exposure row (仅系统 10 -> 11, total 72 -> 73); both guards re-run and green |
+| `crates/yeban-app/tests/cli_contract.rs` | B7d (default binary refuses `--export-logic`, names the feature) and B15 (bundle of four files, measured header, `bplist00`, two exports identical file-by-file, blocked path exits 5) |
+
+**Criteria with teeth (all deterministic and headless; the six in-crate ones touch no network and write no files - the app-level B15 is the one that writes into a scratch directory).**
+(a) the produced `ProjectData` matches the measured layout - asserted against **literal** measured offsets (`23 47 C0 AB`, `0x18 + u32@0x10 == len`, `gnoS` at `0x18`, and not
+`Song`), so breaking the module's own constants cannot make the criterion follow along; (b) `default_project()` yields a minimal valid document (exactly `gnoS` + meter + tempo,
+tempo 120, 4/4, four non-empty files, a `bplist00` `MetaData.plist` whose `NumberOfTracks` is 0); (c) `filled_project()` builds byte-identically twice, every file; (d) a project
+with an audio track / aux return / automation / an audio clip has a non-vacuous loss table (both `未映射:` and `非等价:` appear, the audio track is named, and the empty project is
+asserted **not** to grow those entries); and (e) notes round-trip through a test-only reader that follows the measured layout. Plus an **optional** criterion that reads the two local
+Apple demos' headers **only when they exist** and otherwise returns early (it checked 2 files here, and is skipped in CI).
+
+**Negative measurement - every criterion was made to fail, then restored (4/4 red).** Literal readings: (a) `LOGIC_ROOT_HEADER` 0x18 -> 0x14 gave
+`left: 1321 / right: 1325` on the declared-length assert; (b) removing the meter record gave `left: 2 / right: 3` on "空工程 = gnoS + 拍号 + 速度事件"; (c) injecting a
+`SystemTime` byte into `song_record` gave `Alternatives/000/ProjectData 必须逐字节相同`; (d) deleting the audio-track loss entry gave `音频轨必须被点名`. The file was restored
+byte-identical after each (`cmp` clean; `grep -rn "NEGATIVE MEASUREMENT" crates/` = 0).
+
+**The default dependency graph, with its metric.** Metric = the number of distinct `name version` lines of `cargo tree -p yeban-app -e normal --locked --prefix none`. Before
+adding any feature the manifest diff is feature-declarations only (no dependency edge was added anywhere), and after: **default 297 / with `--features experimental-logic-export`
+297, `diff` empty**; `Cargo.lock` unchanged (`git diff --stat Cargo.lock` empty). So the same package set before and after.
+
+**Literal verification readings (this machine).** `fmt --all --check` clean; `check -p yeban-app` (default and `--features experimental-logic-export`) both
+`Finished`; `clippy -p yeban-render --all-targets -- -D warnings` and `clippy -p yeban-app --all-targets -- -D warnings` (each in both modes) zero warnings;
+`test -p yeban-render` -> `test result: ok. 84 passed; 0 failed` and with the feature `90 passed; 0 failed` (+6 logic criteria, the same 10 + 13 integration tests in both);
+`test -p yeban-app --lib` -> `190 passed` / `191 passed`; `test -p yeban-app --test cli_contract` -> `20 passed` in both modes;
+`check_feature_alignment.py` -> `[ok] ... 73 行功能 ... 仅系统 11`; `check_phase_status.py` -> `[ok] phase-status.md: 47 项阶段要求, 已完成 17 / 部分 24 / PENDING 6`;
+`bash scripts/gates/run-gates.sh light` = 门禁通过. `MetaData.plist` was independently checked: `file` -> `Apple binary property list`, `plistlib` reads back
+`BeatsPerMinute 128.0 / NumberOfTracks 4 / YebanMappingLosses` (20 entries), `plutil -lint` -> `OK` on all three plists.
+
+**The honest claim boundary (and the legal handling).** The module, the CLI help and the ledger say only what is proven: the bytes follow the layout **measured here** and the
+structure groove's writer/reader use, and the plists are standard `bplist00` (independently read by Python and `plutil`). They say **nowhere** that Logic Pro opens the output -
+that would need a Mac with Logic and a reference file, and there is no way to run Logic in CI. Apple's demo projects are **copyrighted**, so they are **not committed** and
+**no criterion fails when they are absent**: the core criteria run on a fixture the writer itself produces, and the demo check is an opt-in that skips when the path is missing.
+Also not written, and registered as loss instead: Logic's **track objects** (the track table), the mixer / plugin / automation chunks, region placement (the field stays 0, as
+measured in real projects), and the deliberate absence of `SongKey` / `SongGenderKey` / `SignatureKey` (an arrangement here has no key field, so writing one would invent a claim).
+
+**Status**: tree green and clean locally; Phase 4 is now 6 完成 / 5 部分 / 0 PENDING (47 items total); the `.als` exporter (`ROAD-M4-007`) is unchanged. Local readings only -
+the CI verdict for this slice is **not read** and must not be written as "passed".

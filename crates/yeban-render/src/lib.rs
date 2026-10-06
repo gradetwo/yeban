@@ -40,6 +40,7 @@
 //! | [`wav`] | 普通 RIFF WAV 的读写, 用 `hound` 当独立第三方裁判 | `ARCH-FMT-001` |
 //! | [`midi`] | SMF 0/1 导出与回读, 含独立 VLQ/chunk 字节级核验 | `ARCH-FMT-001 §5.5` |
 //! | `als`（feature `experimental-als-export`） | 实验性 Ableton `.als` 导出：Gzip XML + 映射损失表 | `ARCH-FMT-002`, `ROAD-M4-007` |
+//! | `logic`（feature `experimental-logic-export`） | 实验性 Logic Pro `.logicx` bundle 导出：自研分块 `ProjectData` + bplist00 `MetaData.plist` + 映射损失表 | `ARCH-FMT-002`, `ROAD-M4-007` |
 //! | [`vlq`] | MIDI 可变长度量的零依赖参考编解码 | `ARCH-FMT-001 §5.5` |
 //! | [`sum`] | 确定性有序归约核（刻意不依赖 rayon） | `ARCH-DET-002` |
 //! | [`rng`] | `yeban_dsp::noise::Rng` 到抖动接口的适配与种子派生 | `ARCH-DET-001` |
@@ -63,6 +64,14 @@
 //!   存在, 且**未与任何参考 `.als` 对账**：它产出 Ableton 风格的 Gzip XML 与一份
 //!   **映射损失表**, 但**不声称**产物可被 Live 11/12 直接打开。不可等价映射的构造一律
 //!   进损失表（内置设备标记为"音频冻结兜底", 但本切片**不渲染那份音频**）。
+//! - 实验性 Logic Pro `.logicx` 导出（feature `experimental-logic-export`, 见 `logic` 模块）
+//!   只在显式开启时存在: 它按**本机实测**的字节布局（根头 0x18、记录头 0x24、16 字节事件行、
+//!   chunk 名小端存放）产出 `Alternatives/<NNN>/ProjectData` 与标准二进制 plist **字节**
+//!   （`logic::build_bundle`, 纯内存、零文件系统 I/O; 建目录与落盘是 app 层 `export_logic`
+//!   的事, 与 `als` 同款纪律）, 并返回映射损失表。**不声称 Logic Pro 能打开它**（本机没有把
+//!   产物交给 Logic 打开过, 仓库里也不提交任何 Apple 演示工程）; Logic 的轨道对象与混音/
+//!   插件/自动化一族 chunk **一概不写**, 全部进损失表。本 feature **没有可选依赖**, 因此默认
+//!   依赖图一位不变。
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -94,6 +103,12 @@ pub mod wav;
 // 而 `cargo tree -p yeban-render` 在默认构建里没有 `flate2`。
 #[cfg(feature = "experimental-als-export")]
 pub mod als;
+// 实验性 Logic Pro (`.logicx`) bundle 导出 [ARCH-FMT-002] [ROAD-M4-007]：
+// **只在非默认 feature `experimental-logic-export` 下存在**（AGENTS.md §2 红线 6）。
+// 与 `als` 不同, 本 feature **没有可选依赖**（bplist00 编码器是本 crate 自研的）,
+// 因此默认构建与带 feature 构建的 `cargo tree -p yeban-app -e normal --locked` 逐包相同。
+#[cfg(feature = "experimental-logic-export")]
+pub mod logic;
 
 #[cfg(test)]
 mod contract_tests {

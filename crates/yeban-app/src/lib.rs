@@ -59,6 +59,13 @@
 //! 第二份 `.als` 编码器，也不直接依赖 `flate2`。默认构建里 `--export-als` 是一次
 //! 点名 feature 的用法错误（退出码 2），绝不静默忽略。
 //!
+//! **实验性 Logic Pro `.logicx` 导出**（同一条 D47 出口，非默认 feature
+//! `experimental-logic-export`）：[`export_logic`] 把当前工程交给 `yeban-render` 的
+//! `logic` 模块，建出 `.logicx` **bundle 目录**，对每个文件走**同一份**原子落盘实现，
+//! 并把**映射损失表**逐条打到 stdout —— 本 crate 里**没有**第二份 `ProjectData` 编码器，
+//! 也不认识 bplist00。默认构建里 `--export-logic` 同样是一次点名 feature 的用法错误。
+//! ⚠ 该 feature **没有可选依赖**，因此默认依赖图一位不变。
+//!
 //! 仍未接线的部分（走带 / Op 归约 / 设备链 / 自动化 / 声卡宿主 / UI→模型写入）
 //! 逐条记在 `docs/ledger/app-mixer-notes.md` §7 与 `docs/ledger/app-binding-notes.md`
 //! 的未实现项里；命令行的边界与未实现项记在 `docs/ledger/app-cli-notes.md`。
@@ -70,6 +77,7 @@ pub mod cli;
 pub mod elements;
 pub mod engine_host;
 pub mod export_als;
+pub mod export_logic;
 pub mod export_midi;
 pub mod headless_idle;
 pub mod host;

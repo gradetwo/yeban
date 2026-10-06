@@ -1,0 +1,1726 @@
+//! 实验性 Logic Pro (`.logicx`) 导出 [ARCH-FMT-002] [ROAD-M4-007]。
+//!
+//! 本模块只在**非默认** feature `experimental-logic-export` 下存在
+//! （见 `crates/yeban-render/Cargo.toml` 的 `[features]`）。AGENTS.md §2 红线 6 要求
+//! 实验性导出不得进默认 release 构建，因此 `default` 保持为空：默认构建**既不编译本模块，
+//! 也不新增任何依赖边**（本 feature 没有可选依赖 —— 见下面的"为什么不用 plist crate"）。
+//!
+//! ## 一个 `.logicx` 是**目录**，不是文件
+//!
+//! 实测（本机两个演示工程）：`.logicx` 是一个 bundle 目录，音乐住在
+//! `Alternatives/<NNN>/ProjectData`（自定义分块二进制）与 `Alternatives/<NNN>/MetaData.plist`
+//! （标准 plist）里；`Media/` 可能上 GB 而且本切片用不到。因此 [`build_bundle`] 产出
+//! **路径 → 字节** 的映射；**建目录与落盘是调用方的事**（与 `als` 模块"落盘是调用方的事"
+//! 同款纪律）：app 层的 `export_logic` 负责建目录并走同一份原子落盘实现。
+//!
+//! ## 实测的字节布局（`ProjectData`）
+//!
+//! | 事实 | 读数 |
+//! | :--- | :--- |
+//! | 根魔数 | `23 47 C0 AB` 在偏移 0 |
+//! | 根头长度 | **0x18** = 24 字节 |
+//! | 声明载荷长度 | `u32` **小端** 在偏移 0x10（= 文件长度 − 0x18） |
+//! | 第一个 chunk 名 | 偏移 **0x18**（不是 0x14） |
+//! | chunk 名存放 | **小端**：`Song` 落盘为 `gnoS`（0x67 0x6e 0x6f 0x53） |
+//! | 记录头长度 | **0x24** = 36 字节（chunk 名在 +0，cluster 在 +8，载荷长度 `u32` 小端在 +0x1c） |
+//! | 事件行长度 | **16** 字节；第 7 字节最高位 = 1 表示"续行"，0 表示"开新事件" |
+//! | 音符字段 | 头行 +4 = 起始 tick，+0x0b = 力度，+0x0c = 音高；时值在**第一条续行**的 +0x0c |
+//! | 速度 | `gnoS` 载荷在 0x3a6（权威槽）与 0x92（回退槽）存 `round(bpm × 10000)` |
+//! | 拍号 | `qSvE` 载荷 +0x0b = 分母的以 2 为底指数，+0x0c = 分子 |
+//!
+//! ⚠️ **与简报/账本第 391 轮的一处偏差（实测更正）**：账本写"偏移 0x14 是 `gnoS`"，
+//! 但本机两个演示工程（`Swing!.logicx/Alternatives/004`、`ocean eyes.logicx/Alternatives/001`）
+//! 的实测都是 **0x18**：0x14 处是 4 个 0 字节，`gnoS` 紧跟在 0x18。0x18 也正是 groove
+//! 读取器 `src/data/logicToArrangement.ts:369` 的 `let offset = 0x18;`。本模块按实测的
+//! 0x18 实现。
+//!
+//! ## 参考实现（**翻译逻辑，不抄代码**）
+//!
+//! 同类项目的写入器在 `/Users/crow/work/music/groove`（TypeScript）：
+//!
+//! * `mcp/arrangement.ts:1030` `exportMcpLogicProject` —— 一次导出返回哪几个文件；
+//! * `mcp/arrangement.ts:1053` `importMcpLogicProject` + `src/data/logicToArrangement.ts`
+//!   （`readRecords` 在 `:366`、事件行模型在 `:447`、`readTempo`/`readMeter` 在 `:600` 之后）；
+//! * `src/data/arrangementToLogic.ts`（`songRecord` / `meterRecord` / `tempoRecord` /
+//!   `regionRecord` / `logicNoteLines` / `arrangementToLogicFiles` / `logicProjectBundle`）；
+//! * `mcp/registryProject.ts`（59 行工具注册）。
+//!
+//! 这些常量与记录形状**逐条**对照过 groove 的写入器与其读取器（互为逆运算）；
+//! 唯一**有意**的差异是记录顺序：groove 写 `qSvE`(拍号) → `qSvE`(速度) → `gnoS`，
+//! 本模块把 `gnoS` 放在**最前**，因为实测的真实工程第一个 chunk 就是 `gnoS`
+//! （groove 的读取器按 chunk 名查找记录，与顺序无关）。
+//!
+//! ## 映射损失表（**不静默丢东西**）
+//!
+//! [`build_bundle`] / [`project_data`] 与字节**同时**返回 [`LogicLoss`] 列表。
+//! `reason` 的**前缀**是机器可读的两分法：
+//!
+//! | 前缀 | 含义 |
+//! | :--- | :--- |
+//! | [`LOSS_UNMAPPED_PREFIX`]（`未映射:`） | 该构造在产物里**没有任何表示** |
+//! | [`LOSS_NOT_EQUIVALENT_PREFIX`]（`非等价:`） | 该构造**有**表示，但等价性**未经证实** |
+//!
+//! 与 `.als` 的 XML 注释不同，`ProjectData` 没有注释通道，因此整张表同时写进
+//! `MetaData.plist` 的夜半扩展键 [`META_DATA_LOSS_KEY`]（一个字符串数组，每条 =
+//! `"<entity>: <reason>"`）—— 表与文件因此不会各说各话（判据钉住这一点）。
+//! ⚠ 这是一个**非 Logic 键**：Logic 忽略未知 plist 键这件事在本机**未验证**。
+//!
+//! ## 为什么不用 plist crate
+//!
+//! `MetaData.plist` 的实测形态是**标准二进制 plist**（`file` 报 `bplist00`）。
+//! 写二进制 plist 的标准做法是引一个 `plist` crate；但本 feature 的验收条件之一是
+//! **默认依赖图零变化**，而本机 registry 里没有该 crate（离线），因此这里按 bplist00
+//! 规范自己写一个**最小、确定性**的编码器（[`encode_binary_plist`] 的调用方）。
+//! 产物已用 Python `plistlib` 读回对账（见 `docs/DEVELOPMENT_LEDGER.md` 本轮记录）。
+//!
+//! ## 诚实边界（**没有证明什么**）
+//!
+//! 1. **不声称 Logic Pro 能打开本产物。** 本机没有把产物交给 Logic 打开过；仓库里
+//!    也**不提交**任何 Apple 演示工程（它们有版权）。被验证的只是"结构与本机实测的
+//!    字节布局、以及 groove 的写入器一致"。
+//! 2. **不写轨道对象**：本切片只写 `gnoS` / `qSvE` / `qeSM` 与 region 的音符序列，
+//!    Logic 的轨道表（`karT` 一族）**没有写**（groove 的写入器同样如此）。因此产物
+//!    经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
+//! 3. **一串 `qSvE` 记录**：真实工程在 region 之外还有大量其它 chunk（插件、混音、
+//!    自动化…），本切片一概不写，全部进损失表。
+//!
+//! ## 确定性
+//!
+//! 输出逐字节可复现：集合一律按 `BTreeMap` 键序迭代，**不出现 `HashMap`**（红线 4）；
+//! 二进制 plist 的对象顺序由分配顺序固定，且不含时间戳/随机数。判据
+//! `filled_project_bundle_is_byte_deterministic` 钉住这一点。
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use yeban_model::{
+    ClipContent, ClipPlacement, EntityId, MidiNote, PPQ, TrackKind, TrackV3, YebanProjectV1,
+};
+
+/// `.logicx` 根 chunk 的魔数（实测两例一致）。
+pub const LOGIC_ROOT_MAGIC: [u8; 4] = [0x23, 0x47, 0xC0, 0xAB];
+
+/// 根头长度（实测 **0x18** = 24 字节）。
+pub const LOGIC_ROOT_HEADER: usize = 0x18;
+
+/// 声明载荷长度（`u32` 小端）在根头里的偏移（实测 0x10）。
+pub const LOGIC_DECLARED_LENGTH_OFFSET: usize = 0x10;
+
+/// 第一个记录（chunk）的偏移 = [`LOGIC_ROOT_HEADER`]。
+pub const LOGIC_FIRST_RECORD_OFFSET: usize = LOGIC_ROOT_HEADER;
+
+/// 记录头长度（实测 0x24 = 36 字节）。
+pub const LOGIC_RECORD_HEADER: usize = 0x24;
+
+/// 记录头里 cluster 索引（`u32` 小端）的偏移（groove 读取器读 +8）。
+pub const LOGIC_RECORD_CLUSTER_OFFSET: usize = 0x08;
+
+/// 记录头里载荷长度（`u32` 小端）的偏移（实测 +0x1c）。
+pub const LOGIC_RECORD_SIZE_OFFSET: usize = 0x1c;
+
+/// 工程/速度 chunk 的名字：`Song` 按**小端**存放即 `gnoS`（实测）。
+pub const LOGIC_SONG_TAG: [u8; 4] = *b"gnoS";
+
+/// [`LOGIC_SONG_TAG`] 对应的可读 ASCII —— 判据用它证明"chunk 名是字节反序的"。
+pub const LOGIC_SONG_NAME: &[u8; 4] = b"Song";
+
+/// 事件序列 chunk 的名字（拍号 / 速度 / 音符序列共用）。
+pub const LOGIC_SEQUENCE_TAG: [u8; 4] = *b"qSvE";
+
+/// region chunk 的名字。
+pub const LOGIC_REGION_TAG: [u8; 4] = *b"qeSM";
+
+/// 事件行长度（16 字节）。
+pub const LOGIC_EVENT_LINE_SIZE: usize = 16;
+
+/// 音符头行的状态字节（MIDI 风格的 `0x90`）。
+pub const LOGIC_NOTE_STATUS: u8 = 0x90;
+
+/// 事件行第 7 字节的续行标志位。
+pub const LOGIC_CONTINUATION_FLAG: u8 = 0x80;
+
+/// 拍号序列载荷的第一个字（判定"这是拍号序列"的记号）。
+pub const LOGIC_METER_MARKER: u32 = 0x30;
+
+/// 速度序列载荷的第一个字（判定"这是速度序列"的记号）。
+pub const LOGIC_TEMPO_MARKER: u32 = 0x60;
+
+/// 拍号记录体的长度（groove / 实测读取器都按 80 字节的头部解析）。
+pub const LOGIC_METER_BODY_LEN: usize = 80;
+
+/// 一拍等于多少 tick（= 夜半的 [`PPQ`] = 960）。
+pub const LOGIC_TICKS_PER_QUARTER: u64 = PPQ;
+
+/// region 摆放的计数原点（九个 4/4 小节 = 34560 tick）；本切片只把它写进文档与损失表。
+pub const LOGIC_REGION_ORIGIN_TICKS: u64 = 34_560;
+
+/// 音符事件的计数原点（region 原点 + 一整个 4/4 小节 = 38400 tick，实测写入器加、读取器减）。
+pub const LOGIC_NOTE_ORIGIN_TICKS: u64 = 38_400;
+
+/// `gnoS` 载荷里速度的**权威槽**（`u32` 小端，`round(bpm × 10000)`）。
+pub const LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE: usize = 0x3a6;
+
+/// `gnoS` 载荷里速度的**回退槽**。
+pub const LOGIC_SONG_TEMPO_SLOT_FALLBACK: usize = 0x92;
+
+/// region 载荷里名字的偏移（`uint16` 小端长度 + UTF-8 字节，之后一个 `u32`）。
+pub const LOGIC_REGION_NAME_OFFSET: usize = 0x34;
+
+/// `未映射:` —— 该构造在产物里没有任何表示。
+pub const LOSS_UNMAPPED_PREFIX: &str = "未映射:";
+
+/// `非等价:` —— 该构造有表示，但等价性未经证实。
+pub const LOSS_NOT_EQUIVALENT_PREFIX: &str = "非等价:";
+
+/// 每一次导出都会登记的那条"没有 ground truth"警告。
+pub const NO_GROUND_TRUTH_CAVEAT: &str = concat!(
+    "非等价: 无 ground truth —— ProjectData 的字节布局是按**实测**重建的：",
+    "根魔数 `23 47 C0 AB` 在 0、根头 0x18 字节、声明载荷长度 u32 小端在 0x10、",
+    "第一个 chunk 名在 0x18、36 字节记录头（cluster 在 +8，载荷长度在 +0x1c）、",
+    "16 字节事件行（第 7 字节最高位 = 续行）。chunk 名按小端存放（`Song` 落盘为 `gnoS`）。",
+    "仓库内没有任何被 Logic Pro 打开过的参考产物，也没有提交任何 Apple 演示工程（有版权），",
+    "因此**不声称** Logic Pro 能打开本产物"
+);
+
+/// 每一次导出都会登记的那条"轨道对象未写入"警告。
+pub const TRACK_OBJECTS_UNMAPPED: &str = concat!(
+    "未映射: Logic 的轨道对象（轨道表）未写入 —— 本切片只写 `gnoS`(工程/速度)、",
+    "`qSvE`(拍号与速度事件)、`qeSM`(region) 与 region 的音符序列；",
+    "groove 的写入器同样如此，因此产物经 groove 的读取器可往返，但 Logic 是否据此显示轨道未验证"
+);
+
+/// region 自身起点字段的诚实说明（groove 记录的限制一并承接）。
+pub const REGION_TIMING_CAVEAT: &str = concat!(
+    "非等价: region 的自身起点字段一律写 0（实测真实工程里名字后的 u32 也是 0），",
+    "因此 region 的摆放位置不由该字段表达；音符携带的是绝对 tick",
+    "（placement.start_tick + note.start_tick + 38400）。groove 记录的读取限制同样适用：",
+    "ProjectData 里的一部分时限无法可靠读取，其读取器把每个 part 放在 beat 0 —— 本写入器不掩盖这一点"
+);
+
+/// `MetaData.plist` 里承载整张损失表的**夜半扩展键**（字符串数组）。
+///
+/// ⚠ 这是非 Logic 键：Logic 忽略未知 plist 键在本机未验证，因此这条本身也被登记为损失。
+pub const META_DATA_LOSS_KEY: &str = "YebanMappingLosses";
+
+/// 一条"无法等价映射"的记录。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogicLoss {
+    /// 被降级的夜半实体的稳定文本寻址。
+    ///
+    /// | 前缀 | 指向 |
+    /// | :--- | :--- |
+    /// | `project:` | 工程级构造（词汇表保真度 / 轨道表 / 段落 / 场景 / 路由 / 资产 …） |
+    /// | `track:` | 一条音轨 |
+    /// | `clip:` | 一个片段池条目 |
+    /// | `clip-placement:` | 一次时间轴摆放 |
+    pub entity: String,
+    /// 人话解释。**前缀**是机器可读的两分法（见模块头）。
+    pub reason: String,
+}
+
+/// `ProjectData` 的产物 + 损失表 + 映射计数。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogicProjectData {
+    /// `Alternatives/<NNN>/ProjectData` 的完整字节。
+    pub bytes: Vec<u8>,
+    /// 映射损失表（对任何含未映射构造的工程都非空，且从不静默为空）。
+    pub losses: Vec<LogicLoss>,
+    /// 写进 `ProjectData` 的 region 条数（= 成功映射的 MIDI 摆放数）。
+    pub mapped_regions: usize,
+    /// 写进 `ProjectData` 的音符事件数。
+    pub mapped_notes: usize,
+}
+
+/// 一个 `.logicx` bundle：**相对路径 → 字节**。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogicBundle {
+    /// 包内相对路径 → 文件字节（`BTreeMap` ⇒ 迭代顺序确定）。
+    pub files: BTreeMap<String, Vec<u8>>,
+    /// 映射损失表（与 [`LogicProjectData::losses`] 同一份，且同时写进 `MetaData.plist`）。
+    pub losses: Vec<LogicLoss>,
+    /// 同 [`LogicProjectData::mapped_regions`]。
+    pub mapped_regions: usize,
+    /// 同 [`LogicProjectData::mapped_notes`]。
+    pub mapped_notes: usize,
+    /// 规范化后的 alternative 目录名（三位十进制，如 `"004"`）。
+    pub alternative: String,
+}
+
+/// 取出 `qSvE` 音符序列体（供调用方/判据复用，不重新发明事件行模型）。
+///
+/// 返回 `(起始 tick, 时值 tick, 音高, 力度)`，起始 tick 已扣掉
+/// [`LOGIC_NOTE_ORIGIN_TICKS`]（即回到"region 内相对 tick + 摆放起点"的口径）。
+#[must_use]
+pub fn decode_note_lines(body: &[u8]) -> Vec<(u64, u64, u8, u8)> {
+    let mut notes = Vec::new();
+    let mut at = 0usize;
+    while at + LOGIC_EVENT_LINE_SIZE <= body.len() {
+        let line = &body[at..at + LOGIC_EVENT_LINE_SIZE];
+        if is_continuation(line) {
+            break;
+        }
+        let mut next = at + LOGIC_EVENT_LINE_SIZE;
+        while next + LOGIC_EVENT_LINE_SIZE <= body.len()
+            && is_continuation(&body[next..next + LOGIC_EVENT_LINE_SIZE])
+        {
+            next += LOGIC_EVENT_LINE_SIZE;
+        }
+        if line[0] == LOGIC_NOTE_STATUS {
+            let raw = u64::from(u32::from_le_bytes([line[4], line[5], line[6], line[7]]));
+            let start = raw.saturating_sub(LOGIC_NOTE_ORIGIN_TICKS);
+            let duration = if next > at + LOGIC_EVENT_LINE_SIZE {
+                let continuation = &body[at + LOGIC_EVENT_LINE_SIZE..next];
+                u64::from(u32::from_le_bytes([
+                    continuation[0x0c],
+                    continuation[0x0d],
+                    continuation[0x0e],
+                    continuation[0x0f],
+                ]))
+            } else {
+                0
+            };
+            notes.push((start, duration, line[0x0c], line[0x0b]));
+        }
+        at = next;
+    }
+    notes
+}
+
+/// 一个事件行是否"续上一事件"（第 7 字节最高位）。
+#[must_use]
+pub fn is_continuation(line: &[u8]) -> bool {
+    line.get(7)
+        .is_some_and(|byte| byte & LOGIC_CONTINUATION_FLAG != 0)
+}
+
+/// 把工程映射成 `ProjectData` 字节 + 损失表（纯函数、无 I/O、确定性）。
+#[must_use]
+pub fn project_data(project: &YebanProjectV1) -> LogicProjectData {
+    let mut builder = LogicBuilder::new();
+    builder.records.push(song_record(project.bpm));
+    builder.records.push(meter_record(
+        project.time_signature.numerator,
+        project.time_signature.denominator,
+    ));
+    builder.records.push(tempo_record());
+
+    builder.write_project_losses(project);
+
+    for track in project.tracks.values() {
+        builder.write_track(project, track);
+    }
+
+    // 片段池里没有被任何摆放引用的条目（否则它们会被静默丢掉）。
+    let referenced: BTreeSet<EntityId> = project
+        .tracks
+        .values()
+        .flat_map(|track| track.clips.values().map(|placement| placement.clip_id))
+        .collect();
+    for entry in project.clip_pool.values() {
+        if !referenced.contains(&entry.id) {
+            builder.loss(
+                format!("clip:{}#{}", entry.name, entry.id.to_canonical_string()),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 片段池条目没有被任何时间轴摆放引用\
+                     （池里 {}/{} 条被引用）⇒ 不导出",
+                    referenced.len(),
+                    project.clip_pool.len()
+                ),
+            );
+        }
+    }
+
+    let bytes = root_document(&builder.records);
+    LogicProjectData {
+        bytes,
+        losses: builder.losses,
+        mapped_regions: builder.mapped_regions,
+        mapped_notes: builder.mapped_notes,
+    }
+}
+
+/// `Alternatives/<NNN>/MetaData.plist`：标准二进制 plist（`bplist00`）。
+///
+/// 键集合取自 groove 的 `logicMetaDataPlist`（它按本机三个真实工程取并集），
+/// 再补一个夜半扩展键 [`META_DATA_LOSS_KEY`]。**刻意不写** `SongKey` /
+/// `SongGenderKey` / `SignatureKey`：夜半的工程没有调性字段，写 `"C"/"major"` 等于
+/// 替作者声明一件他没说过的事（groove 的写入器同样刻意不写）。
+#[must_use]
+pub fn meta_data_plist(project: &YebanProjectV1, losses: &[LogicLoss]) -> Vec<u8> {
+    use PlistValue::{Array, Bool, Integer, Real, Text};
+
+    let empty = || Array(Vec::new());
+    let empty_keys = [
+        "PlaybackFiles",
+        "UnusedAudioFiles",
+        "AudioFiles",
+        "AlchemyFiles",
+        "QuicksamplerFiles",
+        "UltrabeatFiles",
+        "SamplerInstrumentsFiles",
+        "ImpulsResponsesFiles",
+        "VideoFiles",
+    ];
+
+    let mut entries: Vec<(String, PlistValue)> = vec![
+        ("BeatsPerMinute".to_owned(), Real(project.bpm)),
+        (
+            "SongSignatureNumerator".to_owned(),
+            Integer(i64::from(project.time_signature.numerator)),
+        ),
+        (
+            "SongSignatureDenominator".to_owned(),
+            Integer(i64::from(project.time_signature.denominator)),
+        ),
+        (
+            "NumberOfTracks".to_owned(),
+            Integer(project.tracks.len() as i64),
+        ),
+        (
+            "SampleRate".to_owned(),
+            Integer(i64::from(project.audio_config.sample_rate.hz())),
+        ),
+        ("FrameRateIndex".to_owned(), Integer(1)),
+        ("SurroundFormatIndex".to_owned(), Integer(5)),
+        ("Version".to_owned(), Integer(3)),
+        ("isTimeCodeBased".to_owned(), Bool(false)),
+        ("HasARAPlugins".to_owned(), Bool(false)),
+        ("HasGrid".to_owned(), Bool(false)),
+    ];
+    for key in empty_keys {
+        entries.push((key.to_owned(), empty()));
+    }
+    entries.push((
+        META_DATA_LOSS_KEY.to_owned(),
+        Array(
+            losses
+                .iter()
+                .map(|loss| Text(format!("{}: {}", loss.entity, loss.reason)))
+                .collect(),
+        ),
+    ));
+
+    encode_binary_plist(&PlistValue::Dict(entries))
+}
+
+/// `Resources/ProjectInformation.plist`：标准二进制 plist，`ActiveVariant` 是**整数**。
+///
+/// 实测：真实工程的目录是 `004` 而该键是 `4`（`ocean eyes` 是 `001` / `1`），
+/// 因此这里把同一个编号既写进目录名也写进这个键。
+#[must_use]
+pub fn project_information_plist(alternative_index: u32, variant_name: &str) -> Vec<u8> {
+    use PlistValue::{Bool, Dict, Integer, Real, Text};
+
+    let key = alternative_index.to_string();
+    let names = || Dict(vec![(key.clone(), Text(variant_name.to_owned()))]);
+    encode_binary_plist(&PlistValue::Dict(vec![
+        (
+            "ActiveVariant".to_owned(),
+            Integer(i64::from(alternative_index)),
+        ),
+        ("BundleVersion".to_owned(), Real(2.0)),
+        ("HasProjectFolder".to_owned(), Bool(false)),
+        ("VariantNames".to_owned(), names()),
+        ("VariantNamesV2".to_owned(), names()),
+    ]))
+}
+
+/// `Alternatives/<NNN>/DisplayState.plist`：实测的五个键，值一律取空形态。
+///
+/// 本写入器没有屏幕可描述，凭空编造窗口尺寸是对一个从未存在过的界面的谎言；
+/// 真实工程里的另外两个文件（`WindowImage.jpg` 缩略图、`DisplayStateArchive` 不透明归档）
+/// **不写**，并登记为损失。
+#[must_use]
+pub fn display_state_plist() -> Vec<u8> {
+    use PlistValue::{Array, Dict, Integer};
+
+    encode_binary_plist(&PlistValue::Dict(vec![
+        ("displayDataVersion".to_owned(), Integer(1)),
+        ("docPreferences".to_owned(), Dict(Vec::new())),
+        ("screenVisibleFrames".to_owned(), Array(Vec::new())),
+        ("screensetCurrSlot".to_owned(), Integer(0)),
+        ("screensetDictArray".to_owned(), Array(Vec::new())),
+    ]))
+}
+
+/// 组装一个 `.logicx` bundle（纯函数，零文件系统 I/O）。
+///
+/// 写四个文件（与 groove 的 `logicProjectBundle` 同形）：`Alternatives/<alt>/ProjectData`、
+/// 同目录的 `MetaData.plist` 与 `DisplayState.plist`，以及
+/// `Resources/ProjectInformation.plist`（它点名哪个 alternative 是活动的 —— 真实工程的
+/// 编号**不是**永远 `000`，所以这个文件必须写）。
+///
+/// `alternative` 允许 `"4"` 或 `"004"`，一律规范成三位；不可解析时退回 `"000"` 并登记一条损失。
+#[must_use]
+pub fn build_bundle(
+    project: &YebanProjectV1,
+    alternative: &str,
+    variant_name: &str,
+) -> LogicBundle {
+    let data = project_data(project);
+    let mut losses = data.losses;
+    let index = alternative_index(alternative);
+    let alternative_name = match index {
+        Some(value) => format!("{value:03}"),
+        None => {
+            losses.push(LogicLoss {
+                entity: project_entity(project),
+                reason: format!(
+                    "{LOSS_UNMAPPED_PREFIX} alternative 编号 `{alternative}` 不是 0..=999 的十进制整数\
+                     ⇒ 目录退回 `000`（时间轴上的另一种静默：不发明一个编号）"
+                ),
+            });
+            "000".to_owned()
+        }
+    };
+    let index = index.unwrap_or(0);
+
+    let mut files = BTreeMap::new();
+    files.insert(
+        format!("Alternatives/{alternative_name}/ProjectData"),
+        data.bytes,
+    );
+    files.insert(
+        format!("Alternatives/{alternative_name}/MetaData.plist"),
+        meta_data_plist(project, &losses),
+    );
+    files.insert(
+        format!("Alternatives/{alternative_name}/DisplayState.plist"),
+        display_state_plist(),
+    );
+    files.insert(
+        "Resources/ProjectInformation.plist".to_owned(),
+        project_information_plist(index, variant_name),
+    );
+
+    LogicBundle {
+        files,
+        losses,
+        mapped_regions: data.mapped_regions,
+        mapped_notes: data.mapped_notes,
+        alternative: alternative_name,
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * 记录构造
+ * ------------------------------------------------------------------ */
+
+/// 逐记录拼 `ProjectData`。
+struct LogicBuilder {
+    records: Vec<Vec<u8>>,
+    losses: Vec<LogicLoss>,
+    mapped_regions: usize,
+    mapped_notes: usize,
+    next_cluster: u32,
+}
+
+impl LogicBuilder {
+    fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            losses: Vec::new(),
+            mapped_regions: 0,
+            mapped_notes: 0,
+            next_cluster: 1,
+        }
+    }
+
+    fn loss(&mut self, entity: String, reason: String) {
+        self.losses.push(LogicLoss { entity, reason });
+    }
+
+    fn write_project_losses(&mut self, project: &YebanProjectV1) {
+        let entity = project_entity(project);
+        self.loss(entity.clone(), NO_GROUND_TRUTH_CAVEAT.to_owned());
+        self.loss(entity.clone(), TRACK_OBJECTS_UNMAPPED.to_owned());
+        self.loss(entity.clone(), REGION_TIMING_CAVEAT.to_owned());
+        self.loss(
+            entity.clone(),
+            format!(
+                "{LOSS_NOT_EQUIVALENT_PREFIX} `{}` 是夜半写进 MetaData.plist 的**扩展键**，\
+                 用于让整张损失表随文件走；Logic 忽略未知 plist 键这件事在本机未验证",
+                META_DATA_LOSS_KEY
+            ),
+        );
+        // 速度是 u32 的 `round(bpm × 10000)`，写不下的精度必须说出来。
+        let quantised = (project.bpm * 10_000.0).round() / 10_000.0;
+        if (quantised - project.bpm).abs() > f64::EPSILON {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_NOT_EQUIVALENT_PREFIX} 速度 {} BPM 以 `round(bpm × 10000)` 整数写入\
+                     `gnoS`，回读为 {quantised} BPM（差 {}）",
+                    project.bpm,
+                    quantised - project.bpm
+                ),
+            );
+        }
+        self.loss(
+            entity.clone(),
+            format!(
+                "{LOSS_UNMAPPED_PREFIX} 调性（`SongKey`/`SongGenderKey`/`SignatureKey`）\
+                 刻意不写 —— 夜半工程没有调性字段，写 \"C\"/\"major\" 等于替作者声明（工程 {} 轨）",
+                project.tracks.len()
+            ),
+        );
+        self.loss(
+            entity.clone(),
+            format!(
+                "{LOSS_UNMAPPED_PREFIX} 真实工程的另外三个 alternative 文件\
+                 （`WindowImage.jpg`、`DisplayStateArchive`、`Undo Data.nosync`）不写 —— \
+                 它们是不透明二进制/缩略图，本切片不伪造"
+            ),
+        );
+        let mut unmapped_containers: Vec<(&str, usize)> = Vec::new();
+        if !project.sections.is_empty() {
+            unmapped_containers.push(("段落 sections", project.sections.len()));
+        }
+        if !project.scenes.is_empty() {
+            unmapped_containers.push(("场景 scenes", project.scenes.len()));
+        }
+        if !project.clip_pool.is_empty() {
+            unmapped_containers.push(("片段池 clip_pool", project.clip_pool.len()));
+        }
+        if !project.assets.is_empty() {
+            unmapped_containers.push(("资产索引 assets", project.assets.len()));
+        }
+        if !project.routing_graph.edges.is_empty() {
+            unmapped_containers.push(("路由边 routing_graph", project.routing_graph.edges.len()));
+        }
+        for (name, count) in unmapped_containers {
+            self.loss(
+                entity.clone(),
+                format!("{LOSS_UNMAPPED_PREFIX} {name} 共 {count} 条没有 Logic 侧对应物 ⇒ 不导出"),
+            );
+        }
+    }
+
+    fn write_track(&mut self, project: &YebanProjectV1, track: &TrackV3) {
+        let entity = format!("track:{}#{}", track.name, track.id.to_canonical_string());
+        match track.kind {
+            TrackKind::Audio => {
+                self.loss(
+                    entity,
+                    format!(
+                        "{LOSS_UNMAPPED_PREFIX} 音频轨（TrackKind::Audio）没有 Logic 侧的 region \
+                         表示 —— 本切片不写 `Media/`，也不写音频 region（摆放 {} 条）",
+                        track.clips.len()
+                    ),
+                );
+                return;
+            }
+            TrackKind::AuxReturn => {
+                self.loss(
+                    entity,
+                    format!(
+                        "{LOSS_UNMAPPED_PREFIX} 辅助返回轨（TrackKind::AuxReturn）没有 Logic 侧的 \
+                         region 表示 ⇒ 不导出（摆放 {} 条）",
+                        track.clips.len()
+                    ),
+                );
+                return;
+            }
+            TrackKind::Master => {
+                self.loss(
+                    entity,
+                    format!(
+                        "{LOSS_UNMAPPED_PREFIX} 主总线轨（TrackKind::Master）不是 Logic 的 region，\
+                         本切片不写混音/输出对象 ⇒ 不导出（工程 master_bus_track_id={}）",
+                        project.master_bus_track_id.to_canonical_string()
+                    ),
+                );
+                return;
+            }
+            TrackKind::Midi => {}
+        }
+
+        if track.volume_db != 0.0 || track.pan != 0.0 || track.mute || track.solo || track.solo_safe
+        {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 轨道混音（volume_db={} / pan={} / mute={} / solo={} / \
+                     solo_safe={}）不在本切片子集内 ⇒ 只导出 region 与音符",
+                    track.volume_db, track.pan, track.mute, track.solo, track.solo_safe
+                ),
+            );
+        }
+        if !track.devices.is_empty() {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 设备链 {} 个（{}）没有 Logic 侧的 AU/插件对象 ⇒ 不导出",
+                    track.devices.len(),
+                    track
+                        .devices
+                        .iter()
+                        .map(|device| device.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+        if !track.macros.is_empty() {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 宏 {} 个没有 Logic 侧对应物 ⇒ 不导出",
+                    track.macros.len()
+                ),
+            );
+        }
+        if !track.automation_lanes.is_empty() {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 自动化泳道 {} 条（Logic 的自动化是另一族 chunk）⇒ 不导出",
+                    track.automation_lanes.len()
+                ),
+            );
+        }
+        if let Some(color) = &track.color {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 轨道色标 {color} 的 Logic 整数编码不在仓库内 ⇒ 不导出"
+                ),
+            );
+        }
+        if track.folder_id.is_some() {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} `folder_id`（仅界面折叠语义）没有 Logic 侧表示 ⇒ 不导出"
+                ),
+            );
+        }
+        if track.clips.is_empty() {
+            self.loss(
+                entity,
+                format!("{LOSS_UNMAPPED_PREFIX} MIDI 轨没有任何时间轴摆放 ⇒ 不产出 region"),
+            );
+            return;
+        }
+        for placement in track.clips.values() {
+            self.write_placement(project, track, placement);
+        }
+    }
+
+    fn write_placement(
+        &mut self,
+        project: &YebanProjectV1,
+        track: &TrackV3,
+        placement: &ClipPlacement,
+    ) {
+        let placement_entity = format!("clip-placement:{}", placement.id.to_canonical_string());
+        let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+            self.loss(
+                placement_entity,
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 摆放指向的片段池条目 {} 不存在（悬挂引用）⇒ 该摆放不导出",
+                    placement.clip_id.to_canonical_string()
+                ),
+            );
+            return;
+        };
+        let clip_entity = format!("clip:{}#{}", entry.name, entry.id.to_canonical_string());
+
+        match &entry.content {
+            ClipContent::Audio { asset, gain_db } => {
+                self.loss(
+                    clip_entity,
+                    format!(
+                        "{LOSS_UNMAPPED_PREFIX} 音频片段（资产 {}，增益 {gain_db} dB）没有 Logic 侧 \
+                         region 表示，且本切片不写 `Media/` ⇒ 不导出",
+                        asset.as_str()
+                    ),
+                );
+            }
+            ClipContent::Midi { notes } => {
+                let cluster = self.next_cluster;
+                self.next_cluster = self.next_cluster.wrapping_add(1);
+                let name = if entry.name.is_empty() {
+                    track.name.clone()
+                } else {
+                    entry.name.clone()
+                };
+
+                let mut lines: Vec<WrittenNote> = Vec::with_capacity(notes.len());
+                let mut clamped = false;
+                for note in notes.values() {
+                    let absolute = placement
+                        .start_tick
+                        .checked_add(note.start_tick)
+                        .and_then(|ticks| ticks.checked_add(LOGIC_NOTE_ORIGIN_TICKS));
+                    let start = match absolute.and_then(|ticks| u32::try_from(ticks).ok()) {
+                        Some(value) => value,
+                        None => {
+                            clamped = true;
+                            u32::MAX
+                        }
+                    };
+                    let duration = match u32::try_from(note.duration_ticks) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            clamped = true;
+                            u32::MAX
+                        }
+                    };
+                    lines.push(WrittenNote {
+                        start,
+                        duration,
+                        pitch: note.pitch,
+                        velocity: note.velocity,
+                    });
+                }
+                if clamped {
+                    self.loss(
+                        clip_entity.clone(),
+                        format!(
+                            "{LOSS_NOT_EQUIVALENT_PREFIX} 有音符的 tick 超出 `u32` 能表示的范围\
+                             （起始 = 摆放 + 音符 + 38400），已饱和到 u32::MAX ⇒ 相对位置不再可信"
+                        ),
+                    );
+                }
+
+                self.records.push(region_record(cluster, &name));
+                self.records
+                    .push(record(LOGIC_SEQUENCE_TAG, cluster, &note_lines(&lines)));
+                self.mapped_regions += 1;
+                self.mapped_notes += lines.len();
+
+                let attributes = unsupported_note_attributes(notes);
+                if !attributes.is_empty() {
+                    let affected = notes
+                        .values()
+                        .filter(|note| has_unsupported_attributes(note))
+                        .count();
+                    self.loss(
+                        clip_entity,
+                        format!(
+                            "{LOSS_UNMAPPED_PREFIX} {affected}/{} 个音符携带本子集无法表达的表现属性\
+                             （{}）—— 只导出起始/时值/音高/力度",
+                            notes.len(),
+                            attributes.join(", ")
+                        ),
+                    );
+                }
+            }
+        }
+
+        if placement.muted {
+            self.loss(
+                placement_entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 静音摆放标记 muted=true 没有 Logic 侧表示 ⇒ 不导出"
+                ),
+            );
+        }
+        let loop_config = placement.loop_config;
+        let loop_covers =
+            loop_config.start_tick == 0 && loop_config.end_tick == placement.duration_ticks;
+        if loop_config.enabled && !loop_covers {
+            self.loss(
+                placement_entity,
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 循环区间 {}..{} tick 与摆放跨度 0..{} tick 不同 ⇒ \
+                     重复播放会丢",
+                    loop_config.start_tick, loop_config.end_tick, placement.duration_ticks
+                ),
+            );
+        }
+    }
+}
+
+/// 音符表现属性里本子集无法表达的那些（按字母序、去重）。
+fn unsupported_note_attributes(notes: &BTreeMap<EntityId, MidiNote>) -> Vec<&'static str> {
+    let mut found = BTreeSet::new();
+    for note in notes.values() {
+        if note.probability.is_some() {
+            found.insert("probability");
+        }
+        if note.ratchet.is_some() {
+            found.insert("ratchet");
+        }
+        if note.micro_timing_ticks.is_some() {
+            found.insert("micro_timing_ticks");
+        }
+        if note.slide.is_some() {
+            found.insert("slide");
+        }
+        if !note.pitch_bend_curve.is_empty() {
+            found.insert("pitch_bend_curve");
+        }
+        if note.syllable.is_some() {
+            found.insert("syllable");
+        }
+        if !note.phonemes.is_empty() {
+            found.insert("phonemes");
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// 一个音符是否携带任何本子集无法表达的属性。
+fn has_unsupported_attributes(note: &MidiNote) -> bool {
+    note.probability.is_some()
+        || note.ratchet.is_some()
+        || note.micro_timing_ticks.is_some()
+        || note.slide.is_some()
+        || !note.pitch_bend_curve.is_empty()
+        || note.syllable.is_some()
+        || !note.phonemes.is_empty()
+}
+
+/// 工程级实体的稳定寻址。
+fn project_entity(project: &YebanProjectV1) -> String {
+    format!("project:{}", project.id.to_canonical_string())
+}
+
+/// `gnoS`：速度写在两个固定槽里（`round(bpm × 10000)`，`u32` 小端）。
+fn song_record(bpm: f64) -> Vec<u8> {
+    let raw = (bpm * 10_000.0).round();
+    let ticks = if raw.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&raw) {
+        raw as u32
+    } else {
+        0
+    };
+    let mut body = vec![0u8; LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE - LOGIC_RECORD_HEADER + 4];
+    put_u32_le(
+        &mut body,
+        LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE - LOGIC_RECORD_HEADER,
+        ticks,
+    );
+    put_u32_le(
+        &mut body,
+        LOGIC_SONG_TEMPO_SLOT_FALLBACK - LOGIC_RECORD_HEADER,
+        ticks,
+    );
+    record(LOGIC_SONG_TAG, 0, &body)
+}
+
+/// 拍号记录：第一个字 `0x30`，+0x0b 是分母的以 2 为底指数，+0x0c 是分子。
+fn meter_record(numerator: u8, denominator: u8) -> Vec<u8> {
+    let mut body = vec![0u8; LOGIC_METER_BODY_LEN];
+    put_u32_le(&mut body, 0, LOGIC_METER_MARKER);
+    body[0x0b] = denominator.trailing_zeros() as u8;
+    body[0x0c] = numerator;
+    record(LOGIC_SEQUENCE_TAG, 0, &body)
+}
+
+/// 速度事件序列：第一个字 `0x60`（本切片只写这一个事件）。
+fn tempo_record() -> Vec<u8> {
+    let mut body = vec![0u8; LOGIC_EVENT_LINE_SIZE];
+    put_u32_le(&mut body, 0, LOGIC_TEMPO_MARKER);
+    record(LOGIC_SEQUENCE_TAG, 0, &body)
+}
+
+/// region 记录：载荷 +0x34 是 `uint16` 小端长度 + UTF-8 名字，名字后一个 `u32` 写 0。
+fn region_record(cluster: u32, name: &str) -> Vec<u8> {
+    let name_in_body = LOGIC_REGION_NAME_OFFSET - LOGIC_RECORD_HEADER;
+    let name_bytes = utf8_prefix(name, usize::from(u16::MAX)).as_bytes();
+    let mut body = vec![0u8; name_in_body + 2 + name_bytes.len() + 4];
+    body[name_in_body..name_in_body + 2].copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+    body[name_in_body + 2..name_in_body + 2 + name_bytes.len()].copy_from_slice(name_bytes);
+    put_u32_le(&mut body, name_in_body + 2 + name_bytes.len(), 0);
+    record(LOGIC_REGION_TAG, cluster, &body)
+}
+
+/// 一个待写入的音符（tick 已换算成绝对位置 + 原点偏移）。
+struct WrittenNote {
+    start: u32,
+    duration: u32,
+    pitch: u8,
+    velocity: u8,
+}
+
+/// 音符序列：每个音符一行头（16 字节）+ **恰好一行**续行（16 字节）。
+///
+/// ⚠ 这是刻意的简化并写进模块头：真实工程里每个音符的续行数在 16…96 字节之间变化，
+/// 而读取器只从**第一条**续行取时值，因此一条续行不丢信息 —— 但与 Logic 自己的形状
+/// 不同，正是"读取器能容忍、Logic 未必"的那类差异。
+fn note_lines(notes: &[WrittenNote]) -> Vec<u8> {
+    let mut body = vec![0u8; notes.len() * LOGIC_EVENT_LINE_SIZE * 2];
+    for (index, note) in notes.iter().enumerate() {
+        let head = index * LOGIC_EVENT_LINE_SIZE * 2;
+        let continuation = head + LOGIC_EVENT_LINE_SIZE;
+        body[head] = LOGIC_NOTE_STATUS;
+        put_u32_le(&mut body, head + 4, note.start);
+        body[head + 0x0b] = note.velocity.clamp(1, 127);
+        body[head + 0x0c] = note.pitch;
+        body[continuation + 7] = LOGIC_CONTINUATION_FLAG;
+        put_u32_le(&mut body, continuation + 0x0c, note.duration.max(1));
+    }
+    body
+}
+
+/// 36 字节记录头 + 载荷：名字在 +0，cluster 在 +8，载荷长度在 +0x1c。
+fn record(tag: [u8; 4], cluster: u32, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; LOGIC_RECORD_HEADER + body.len()];
+    out[..4].copy_from_slice(&tag);
+    put_u32_le(&mut out, LOGIC_RECORD_CLUSTER_OFFSET, cluster);
+    put_u32_le(&mut out, LOGIC_RECORD_SIZE_OFFSET, body.len() as u32);
+    out[LOGIC_RECORD_HEADER..].copy_from_slice(body);
+    out
+}
+
+/// 把记录串成完整的 `ProjectData`：根头 0x18 字节 + 记录流，声明长度写在 0x10。
+fn root_document(records: &[Vec<u8>]) -> Vec<u8> {
+    let payload: usize = records.iter().map(Vec::len).sum();
+    let mut out = vec![0u8; LOGIC_ROOT_HEADER + payload];
+    out[..4].copy_from_slice(&LOGIC_ROOT_MAGIC);
+    put_u32_le(&mut out, LOGIC_DECLARED_LENGTH_OFFSET, payload as u32);
+    let mut at = LOGIC_ROOT_HEADER;
+    for entry in records {
+        out[at..at + entry.len()].copy_from_slice(entry);
+        at += entry.len();
+    }
+    out
+}
+
+/// `u32` 小端写到 `out[at..at+4]`。
+fn put_u32_le(out: &mut [u8], at: usize, value: u32) {
+    out[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+/// 最长不超过 `max` 字节的 UTF-8 前缀（不切进一个字符的中间）。
+fn utf8_prefix(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// alternative 编号：`0..=999` 的十进制整数。
+fn alternative_index(alternative: &str) -> Option<u32> {
+    let trimmed = alternative.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    match trimmed.parse::<u32>() {
+        Ok(value) if value <= 999 => Some(value),
+        _ => None,
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * 最小二进制 plist (bplist00) 编码器
+ * ------------------------------------------------------------------ */
+
+/// plist 的取值子集（本模块用到的全部形态）。
+#[derive(Clone, Debug, PartialEq)]
+enum PlistValue {
+    Bool(bool),
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Array(Vec<PlistValue>),
+    Dict(Vec<(String, PlistValue)>),
+}
+
+/// 一个已分配、但还没编码的 plist 对象。
+enum PlistNode {
+    Bool(bool),
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Array(Vec<u32>),
+    Dict(Vec<(u32, u32)>),
+}
+
+/// 两趟式编码：第一趟分配对象并收集引用，第二趟在知道 `objectRefSize` 之后编码。
+#[derive(Default)]
+struct PlistWriter {
+    nodes: Vec<PlistNode>,
+}
+
+impl PlistWriter {
+    fn alloc(&mut self, value: &PlistValue) -> u32 {
+        let index = self.nodes.len() as u32;
+        self.nodes.push(PlistNode::Bool(false));
+        let node = match value {
+            PlistValue::Bool(flag) => PlistNode::Bool(*flag),
+            PlistValue::Integer(number) => PlistNode::Integer(*number),
+            PlistValue::Real(number) => PlistNode::Real(*number),
+            PlistValue::Text(text) => PlistNode::Text(text.clone()),
+            PlistValue::Array(items) => {
+                let mut refs = Vec::with_capacity(items.len());
+                for item in items {
+                    refs.push(self.alloc(item));
+                }
+                PlistNode::Array(refs)
+            }
+            PlistValue::Dict(entries) => {
+                let mut sorted: Vec<&(String, PlistValue)> = entries.iter().collect();
+                sorted.sort_by(|left, right| left.0.cmp(&right.0));
+                let mut pairs = Vec::with_capacity(sorted.len());
+                for (key, item) in sorted {
+                    let key_ref = self.alloc(&PlistValue::Text(key.clone()));
+                    let value_ref = self.alloc(item);
+                    pairs.push((key_ref, value_ref));
+                }
+                PlistNode::Dict(pairs)
+            }
+        };
+        self.nodes[index as usize] = node;
+        index
+    }
+}
+
+/// 把 plist 值编码成标准 `bplist00` 字节（确定性：对象顺序 = 分配顺序，无时间戳）。
+fn encode_binary_plist(value: &PlistValue) -> Vec<u8> {
+    let mut writer = PlistWriter::default();
+    let top = writer.alloc(value);
+    debug_assert_eq!(top, 0, "根对象必须是 0 号对象");
+    let object_count = writer.nodes.len();
+    let object_ref_size = width(object_count as u64);
+
+    let mut body: Vec<u8> = Vec::new();
+    let mut offsets: Vec<u64> = Vec::with_capacity(object_count);
+    for node in &writer.nodes {
+        offsets.push(8 + body.len() as u64);
+        encode_node(node, object_ref_size, &mut body);
+    }
+
+    let offset_table_offset = 8 + body.len() as u64;
+    let offset_int_size = width(offset_table_offset.max(offsets.last().copied().unwrap_or(0) + 1));
+
+    let mut out =
+        Vec::with_capacity(offset_table_offset as usize + object_count * offset_int_size + 32);
+    out.extend_from_slice(b"bplist00");
+    out.extend_from_slice(&body);
+    for offset in &offsets {
+        out.extend_from_slice(&be_bytes(*offset, offset_int_size));
+    }
+    let mut trailer = [0u8; 32];
+    trailer[6] = offset_int_size as u8;
+    trailer[7] = object_ref_size as u8;
+    trailer[8..16].copy_from_slice(&(object_count as u64).to_be_bytes());
+    trailer[16..24].copy_from_slice(&0u64.to_be_bytes());
+    trailer[24..32].copy_from_slice(&offset_table_offset.to_be_bytes());
+    out.extend_from_slice(&trailer);
+    out
+}
+
+/// 编码一个对象（引用宽度已定）。
+fn encode_node(node: &PlistNode, ref_size: usize, out: &mut Vec<u8>) {
+    match node {
+        PlistNode::Bool(true) => out.push(0x09),
+        PlistNode::Bool(false) => out.push(0x08),
+        PlistNode::Integer(value) => push_int(out, *value),
+        PlistNode::Real(value) => {
+            out.push(0x23);
+            out.extend_from_slice(&value.to_bits().to_be_bytes());
+        }
+        PlistNode::Text(text) => push_string(out, text),
+        PlistNode::Array(refs) => {
+            push_length(out, 0xA0, refs.len());
+            for reference in refs {
+                out.extend_from_slice(&be_bytes(u64::from(*reference), ref_size));
+            }
+        }
+        PlistNode::Dict(pairs) => {
+            push_length(out, 0xD0, pairs.len());
+            for (key, _) in pairs {
+                out.extend_from_slice(&be_bytes(u64::from(*key), ref_size));
+            }
+            for (_, value) in pairs {
+                out.extend_from_slice(&be_bytes(u64::from(*value), ref_size));
+            }
+        }
+    }
+}
+
+/// 容器/字符串的长度标记；≥ 15 时按规范接一个整型对象。
+fn push_length(out: &mut Vec<u8>, base: u8, count: usize) {
+    if count < 15 {
+        out.push(base | (count as u8));
+    } else {
+        out.push(base | 0x0f);
+        push_int(out, count as i64);
+    }
+}
+
+/// 内联整型对象（1/2/4/8 字节，大端）。
+fn push_int(out: &mut Vec<u8>, value: i64) {
+    if value >= 0 {
+        let raw = value as u64;
+        let (marker, size) = if raw <= u64::from(u8::MAX) {
+            (0x10u8, 1usize)
+        } else if raw <= u64::from(u16::MAX) {
+            (0x11, 2)
+        } else if raw <= u64::from(u32::MAX) {
+            (0x12, 4)
+        } else {
+            (0x13, 8)
+        };
+        out.push(marker);
+        out.extend_from_slice(&be_bytes(raw, size));
+    } else {
+        out.push(0x13);
+        out.extend_from_slice(&(value as u64).to_be_bytes());
+    }
+}
+
+/// ASCII → `0x5x`，其余 → UTF-16BE 的 `0x6x`（plist 的两种字符串形态）。
+fn push_string(out: &mut Vec<u8>, text: &str) {
+    if text.is_ascii() {
+        push_length(out, 0x50, text.len());
+        out.extend_from_slice(text.as_bytes());
+    } else {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        push_length(out, 0x60, units.len());
+        for unit in units {
+            out.extend_from_slice(&unit.to_be_bytes());
+        }
+    }
+}
+
+/// 大端定宽编码（`value` 的低 `size` 字节）。
+fn be_bytes(value: u64, size: usize) -> Vec<u8> {
+    value.to_be_bytes()[8 - size..].to_vec()
+}
+
+/// 表示 `value` 需要几个字节。
+fn width(value: u64) -> usize {
+    if value <= u64::from(u8::MAX) {
+        1
+    } else if value <= u64::from(u16::MAX) {
+        2
+    } else if value <= u64::from(u32::MAX) {
+        4
+    } else {
+        8
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * 判据
+ * ------------------------------------------------------------------ */
+
+#[cfg(all(test, feature = "experimental-logic-export"))]
+mod tests {
+    use super::*;
+    use std::str::FromStr as _;
+
+    /// 稳定的夹具身份（与 `yeban_model::samples` 的 fixture 同款 ULID 前缀）。
+    fn test_id(index: u128) -> EntityId {
+        EntityId::from_str(&format!("01J8ZQ{index:020}")).expect("canonical fixture ulid")
+    }
+
+    /// 一个音符一个音高的小夹具：两条 `Midi` 轨（第二轨有一个非零摆放起点）。
+    fn fixture_project() -> YebanProjectV1 {
+        let mut project = YebanProjectV1 {
+            title: "Logic Fixture".to_owned(),
+            bpm: 128.0,
+            time_signature: yeban_model::TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+            ..YebanProjectV1::default()
+        };
+
+        let first_clip = test_id(10);
+        let mut clip = yeban_model::ClipPoolEntry {
+            id: first_clip,
+            name: "Piano".to_owned(),
+            content: ClipContent::default(),
+        };
+        if let Some(notes) = clip.content.notes_mut() {
+            for (index, (start, pitch, velocity)) in
+                [(0_u64, 60_u8, 100_u8), (960, 64, 90), (1920, 67, 80)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let note_id = test_id(100 + index as u128);
+                let mut note = MidiNote::new(note_id, start, pitch, 480);
+                note.velocity = velocity;
+                notes.insert(note_id, note);
+            }
+        }
+        project.clip_pool.insert(first_clip, clip);
+
+        let placement = test_id(50);
+        let mut lead = TrackV3 {
+            id: test_id(1),
+            name: "Lead".to_owned(),
+            ..TrackV3::default()
+        };
+        lead.clips.insert(
+            placement,
+            ClipPlacement {
+                id: placement,
+                clip_id: first_clip,
+                start_tick: 3_840,
+                duration_ticks: 3_840,
+                loop_config: yeban_model::LoopConfig::default(),
+                muted: false,
+            },
+        );
+        project.tracks.insert(lead.id, lead);
+        project
+    }
+
+    /// 一个含**不可映射构造**的工程：音频轨、辅助返回轨、主总线、设备链、自动化、音频片段。
+    fn unmappable_project() -> YebanProjectV1 {
+        let mut project = fixture_project();
+
+        let audio_clip = test_id(11);
+        project.clip_pool.insert(
+            audio_clip,
+            yeban_model::ClipPoolEntry {
+                id: audio_clip,
+                name: "Kick".to_owned(),
+                content: ClipContent::Audio {
+                    asset: yeban_model::AssetHash::of_bytes(b"kick"),
+                    gain_db: -1.5,
+                },
+            },
+        );
+        let audio_placement = test_id(51);
+        let mut audio = TrackV3 {
+            id: test_id(2),
+            name: "Bass".to_owned(),
+            kind: TrackKind::Audio,
+            ..TrackV3::default()
+        };
+        audio.clips.insert(
+            audio_placement,
+            ClipPlacement {
+                id: audio_placement,
+                clip_id: audio_clip,
+                start_tick: 0,
+                duration_ticks: 960,
+                loop_config: yeban_model::LoopConfig::default(),
+                muted: true,
+            },
+        );
+        project.tracks.insert(audio.id, audio);
+
+        let aux = TrackV3 {
+            id: test_id(3),
+            name: "Aux".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        };
+        project.tracks.insert(aux.id, aux);
+
+        // 给 Lead 加一条自动化泳道与一个设备，证明"有表示但不完整"的那类也会登记。
+        if let Some(lead) = project.tracks.get_mut(&test_id(1)) {
+            lead.automation_lanes.insert(
+                yeban_model::AutomationTarget::TrackVolume { track_id: lead.id },
+                yeban_model::AutomationLane::implicit(yeban_model::AutomationTarget::TrackVolume {
+                    track_id: lead.id,
+                }),
+            );
+        }
+        project
+    }
+
+    // ---- 测试用的最小读取器（照 groove 的 `logicToArrangement.ts` 翻译） ----
+
+    struct Record {
+        tag: [u8; 4],
+        cluster: u32,
+        body: Vec<u8>,
+    }
+
+    fn u32_le(bytes: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+    }
+
+    fn read_records(bytes: &[u8]) -> Vec<Record> {
+        assert_eq!(bytes[..4], LOGIC_ROOT_MAGIC, "根魔数");
+        assert_eq!(
+            u32_le(bytes, LOGIC_DECLARED_LENGTH_OFFSET) as usize,
+            bytes.len() - LOGIC_ROOT_HEADER,
+            "声明载荷长度必须等于 文件长度 − 0x18"
+        );
+        let mut records = Vec::new();
+        let mut at = LOGIC_ROOT_HEADER;
+        while at + LOGIC_RECORD_HEADER <= bytes.len() {
+            let tag = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
+            let size = u32_le(bytes, at + LOGIC_RECORD_SIZE_OFFSET) as usize;
+            let cluster = u32_le(bytes, at + LOGIC_RECORD_CLUSTER_OFFSET);
+            let body = bytes[at + LOGIC_RECORD_HEADER..at + LOGIC_RECORD_HEADER + size].to_vec();
+            records.push(Record { tag, cluster, body });
+            at += LOGIC_RECORD_HEADER + size;
+        }
+        assert_eq!(at, bytes.len(), "记录流必须恰好铺满声明载荷");
+        records
+    }
+
+    fn read_song_tempo(records: &[Record]) -> Option<f64> {
+        let song = records.iter().find(|record| record.tag == LOGIC_SONG_TAG)?;
+        for slot in [
+            LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE,
+            LOGIC_SONG_TEMPO_SLOT_FALLBACK,
+        ] {
+            if slot + 4 <= song.body.len() + LOGIC_RECORD_HEADER {
+                // 记录体相对槽 = 载荷槽 − 0x24（groove 的 `readTempo` 读载荷，本测试读体）。
+                let at = slot - LOGIC_RECORD_HEADER;
+                if at + 4 <= song.body.len() {
+                    let raw = u32_le(&song.body, at);
+                    if raw > 0 && raw < 100_000_000 {
+                        return Some(f64::from(raw) / 10_000.0);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn read_meter(records: &[Record]) -> Option<(u8, u8)> {
+        let meter = records.iter().find(|record| {
+            record.tag == LOGIC_SEQUENCE_TAG
+                && record.body.len() >= LOGIC_METER_BODY_LEN
+                && u32_le(&record.body, 0) == LOGIC_METER_MARKER
+        })?;
+        let exponent = meter.body[0x0b];
+        let numerator = meter.body[0x0c];
+        Some((numerator, 1u8 << exponent))
+    }
+
+    fn read_region_name(record: &Record) -> String {
+        let at = LOGIC_REGION_NAME_OFFSET - LOGIC_RECORD_HEADER;
+        let length = usize::from(u16::from_le_bytes([record.body[at], record.body[at + 1]]));
+        String::from_utf8(record.body[at + 2..at + 2 + length].to_vec()).expect("UTF-8")
+    }
+
+    // ---- 最小 bplist00 读取器（只覆盖本模块写出的形态） ----
+
+    #[derive(Debug, PartialEq)]
+    enum TestPlist {
+        Bool(bool),
+        Integer(i64),
+        Real(f64),
+        Text(String),
+        Array(Vec<TestPlist>),
+        Dict(BTreeMap<String, TestPlist>),
+    }
+
+    fn read_bplist(bytes: &[u8]) -> TestPlist {
+        assert_eq!(&bytes[..8], b"bplist00", "二进制 plist 魔数");
+        let trailer = &bytes[bytes.len() - 32..];
+        let offset_int_size = usize::from(trailer[6]);
+        let object_ref_size = usize::from(trailer[7]);
+        let object_count = be_uint(&trailer[8..16], 8) as usize;
+        let top = be_uint(&trailer[16..24], 8) as usize;
+        let table = be_uint(&trailer[24..32], 8) as usize;
+        let offsets: Vec<usize> = (0..object_count)
+            .map(|index| {
+                be_uint(&bytes[table + index * offset_int_size..], offset_int_size) as usize
+            })
+            .collect();
+        read_object(bytes, &offsets, object_ref_size, top)
+    }
+
+    fn be_uint(bytes: &[u8], size: usize) -> u64 {
+        let mut value = 0u64;
+        for byte in bytes.iter().take(size) {
+            value = (value << 8) | u64::from(*byte);
+        }
+        value
+    }
+
+    fn plist_length(bytes: &[u8], marker: u8, at: usize) -> (usize, usize) {
+        let info = usize::from(marker & 0x0f);
+        if info != 0x0f {
+            return (info, at);
+        }
+        let int_marker = bytes[at];
+        assert_eq!(int_marker >> 4, 1, "长度前缀必须是整型对象");
+        let size = 1usize << (int_marker & 0x0f);
+        (be_uint(&bytes[at + 1..], size) as usize, at + 1 + size)
+    }
+
+    fn read_object(bytes: &[u8], offsets: &[usize], ref_size: usize, index: usize) -> TestPlist {
+        let mut at = offsets[index];
+        let marker = bytes[at];
+        at += 1;
+        match marker >> 4 {
+            0x0 => match marker {
+                0x08 => TestPlist::Bool(false),
+                0x09 => TestPlist::Bool(true),
+                other => panic!("未知的简单标记 {other:#x}"),
+            },
+            0x1 => {
+                let size = 1usize << (marker & 0x0f);
+                TestPlist::Integer(be_uint(&bytes[at..], size) as i64)
+            }
+            0x2 => TestPlist::Real(f64::from_bits(be_uint(&bytes[at..], 8))),
+            0x5 => {
+                let (count, at) = plist_length(bytes, marker, at);
+                TestPlist::Text(String::from_utf8(bytes[at..at + count].to_vec()).expect("ASCII"))
+            }
+            0x6 => {
+                let (count, mut at) = plist_length(bytes, marker, at);
+                let mut units = Vec::with_capacity(count);
+                for _ in 0..count {
+                    units.push(u16::from_be_bytes([bytes[at], bytes[at + 1]]));
+                    at += 2;
+                }
+                TestPlist::Text(String::from_utf16(&units).expect("UTF-16"))
+            }
+            0xA => {
+                let (count, mut at) = plist_length(bytes, marker, at);
+                let mut items = Vec::with_capacity(count);
+                for _ in 0..count {
+                    items.push(read_object(
+                        bytes,
+                        offsets,
+                        ref_size,
+                        be_uint(&bytes[at..], ref_size) as usize,
+                    ));
+                    at += ref_size;
+                }
+                TestPlist::Array(items)
+            }
+            0xD => {
+                let (count, mut at) = plist_length(bytes, marker, at);
+                let mut keys = Vec::with_capacity(count);
+                for _ in 0..count {
+                    keys.push(be_uint(&bytes[at..], ref_size) as usize);
+                    at += ref_size;
+                }
+                let mut dict = BTreeMap::new();
+                for key in keys {
+                    let value = read_object(
+                        bytes,
+                        offsets,
+                        ref_size,
+                        be_uint(&bytes[at..], ref_size) as usize,
+                    );
+                    at += ref_size;
+                    let TestPlist::Text(name) = read_object(bytes, offsets, ref_size, key) else {
+                        panic!("plist 字典的键必须是字符串");
+                    };
+                    dict.insert(name, value);
+                }
+                TestPlist::Dict(dict)
+            }
+            other => panic!("未知的 plist 标记族 {other:#x}"),
+        }
+    }
+
+    fn dict_of(value: &TestPlist) -> &BTreeMap<String, TestPlist> {
+        match value {
+            TestPlist::Dict(dict) => dict,
+            other => panic!("期望字典，得到 {other:?}"),
+        }
+    }
+
+    /// 判据 (a)：产物根头与 chunk 名与实测布局一致，且 chunk 名是**字节反序**的。
+    ///
+    /// ⚠ 这里刻意写**实测字面量**（0x18 / 0x10 / `[0x23,0x47,0xC0,0xAB]` / `gnoS`），
+    /// 而不是本模块自己的常量 —— 否则把常量改错时判据会跟着一起错，等于没有判据。
+    #[test]
+    fn project_data_header_and_chunk_ids_match_the_measured_layout() {
+        let bundle = build_bundle(&fixture_project(), "004", "Fixture");
+        let data = &bundle.files["Alternatives/004/ProjectData"];
+
+        assert_eq!(
+            data.len(),
+            0x18 + u32_le(data, 0x10) as usize,
+            "声明载荷长度（u32 小端 @0x10）必须等于 文件长度 − 0x18"
+        );
+        assert_eq!(&data[..4], &[0x23, 0x47, 0xC0, 0xAB], "根魔数");
+        assert_eq!(
+            &data[0x18..0x1c],
+            &[0x67, 0x6e, 0x6f, 0x53],
+            "实测第一个 chunk 名在 0x18，且是小端的 `gnoS`"
+        );
+        assert_ne!(&data[0x18..0x1c], b"Song", "chunk 名不是正序的 `Song`");
+        assert_eq!(LOGIC_SONG_TAG, {
+            let mut reversed = *LOGIC_SONG_NAME;
+            reversed.reverse();
+            reversed
+        });
+
+        let records = read_records(data);
+        assert_eq!(records[0].tag, LOGIC_SONG_TAG);
+        let tags: Vec<[u8; 4]> = records.iter().map(|record| record.tag).collect();
+        assert!(tags.contains(&LOGIC_SEQUENCE_TAG), "必须有拍号/速度序列");
+        assert!(tags.contains(&LOGIC_REGION_TAG), "必须有 region");
+        assert_eq!(read_meter(&records), Some((3, 4)), "3/4 拍号必须回读");
+        assert_eq!(read_song_tempo(&records), Some(128.0), "速度必须回读");
+    }
+
+    /// 判据 (b)：空工程产出最小但合法的文档（只有速度/拍号/速度事件三个记录）。
+    #[test]
+    fn empty_project_produces_a_minimal_valid_document() {
+        let bundle = build_bundle(&YebanProjectV1::default(), "000", "Empty");
+        let data = &bundle.files["Alternatives/000/ProjectData"];
+        let records = read_records(data);
+        assert_eq!(records.len(), 3, "空工程 = gnoS + 拍号 + 速度事件");
+        assert_eq!(records[0].tag, LOGIC_SONG_TAG);
+        assert!(records.iter().all(|record| record.tag != LOGIC_REGION_TAG));
+        assert_eq!(read_song_tempo(&records), Some(120.0));
+        assert_eq!(read_meter(&records), Some((4, 4)));
+        assert_eq!(bundle.mapped_regions, 0);
+        assert_eq!(bundle.mapped_notes, 0);
+
+        // 四个文件都在且非空。
+        assert_eq!(bundle.files.len(), 4);
+        for (path, bytes) in &bundle.files {
+            assert!(!bytes.is_empty(), "{path} 不得为空");
+        }
+        let meta = &bundle.files["Alternatives/000/MetaData.plist"];
+        let parsed = read_bplist(meta);
+        let dict = dict_of(&parsed);
+        assert_eq!(dict["NumberOfTracks"], TestPlist::Integer(0));
+        assert_eq!(dict["BeatsPerMinute"], TestPlist::Real(120.0));
+        assert_eq!(dict["SongSignatureNumerator"], TestPlist::Integer(4));
+    }
+
+    /// 判据 (c)：同一工程两次导出逐字节相同（含二进制 plist）。
+    #[test]
+    fn filled_project_bundle_is_byte_deterministic() {
+        let project = yeban_model::samples::filled_project();
+        let first = build_bundle(&project, "000", "Arrangement");
+        let second = build_bundle(&project, "000", "Arrangement");
+        assert_eq!(first.files.len(), second.files.len());
+        for (path, bytes) in &first.files {
+            assert_eq!(Some(bytes), second.files.get(path), "{path} 必须逐字节相同");
+        }
+        assert_eq!(first.losses, second.losses);
+    }
+
+    /// 判据 (d)：含不可映射构造的工程有**非空**损失表，两个前缀都出现，且表写进了文件。
+    #[test]
+    fn a_project_with_unmappable_features_has_a_non_vacuous_loss_table() {
+        let empty = build_bundle(&YebanProjectV1::default(), "000", "Empty");
+        let rich = build_bundle(&unmappable_project(), "000", "Rich");
+
+        assert!(
+            rich.losses
+                .iter()
+                .any(|loss| loss.reason.starts_with(LOSS_UNMAPPED_PREFIX)),
+            "必须有 `未映射:` 条目"
+        );
+        assert!(
+            rich.losses
+                .iter()
+                .any(|loss| loss.reason.starts_with(LOSS_NOT_EQUIVALENT_PREFIX)),
+            "必须有 `非等价:` 条目"
+        );
+        // 有牙：空工程不该凭空长出这些条目（证明它们来自工程内容，不是常量）。
+        assert!(
+            !empty
+                .losses
+                .iter()
+                .any(|loss| loss.reason.contains("音频轨")),
+            "空工程不得有音频轨条目"
+        );
+        assert!(
+            rich.losses
+                .iter()
+                .any(|loss| loss.reason.contains("音频轨")),
+            "音频轨必须被点名"
+        );
+        assert!(
+            rich.losses
+                .iter()
+                .any(|loss| loss.reason.contains("辅助返回轨")),
+            "辅助返回轨必须被点名"
+        );
+        assert!(
+            rich.losses
+                .iter()
+                .any(|loss| loss.reason.contains("自动化泳道")),
+            "自动化泳道必须被点名"
+        );
+
+        // 表必须与文件同源：MetaData.plist 的扩展键逐条等于返回的损失表。
+        let embedded: Vec<String> = rich
+            .losses
+            .iter()
+            .map(|loss| format!("{}: {}", loss.entity, loss.reason))
+            .collect();
+        let parsed = read_bplist(&rich.files["Alternatives/000/MetaData.plist"]);
+        let dict = dict_of(&parsed);
+        let Some(TestPlist::Array(items)) = dict.get(META_DATA_LOSS_KEY) else {
+            panic!("MetaData.plist 必须带 {META_DATA_LOSS_KEY}");
+        };
+        let written: Vec<String> = items
+            .iter()
+            .map(|item| match item {
+                TestPlist::Text(text) => text.clone(),
+                other => panic!("损失条目必须是字符串，得到 {other:?}"),
+            })
+            .collect();
+        assert_eq!(written, embedded, "文件里的损失表必须与返回的逐条相同");
+    }
+
+    /// 往返：写入的音符经"实测布局的读取器"读回（音高/力度/起点/时值）。
+    #[test]
+    fn written_notes_round_trip_through_the_measured_layout() {
+        let bundle = build_bundle(&fixture_project(), "000", "Fixture");
+        let data = &bundle.files["Alternatives/000/ProjectData"];
+        let records = read_records(data);
+
+        let region = records
+            .iter()
+            .find(|record| record.tag == LOGIC_REGION_TAG)
+            .expect("必须有一个 region");
+        assert_eq!(read_region_name(region), "Piano");
+        let sequence = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG
+                    && record.cluster == region.cluster
+                    && record
+                        .body
+                        .first()
+                        .is_some_and(|byte| *byte == LOGIC_NOTE_STATUS)
+            })
+            .expect("region 必须有音符序列");
+        let notes = decode_note_lines(&sequence.body);
+        assert_eq!(
+            notes,
+            vec![
+                (3_840, 480, 60, 100),
+                (4_800, 480, 64, 90),
+                (5_760, 480, 67, 80),
+            ],
+            "摆放起点 (3840) + 音符内起点，时值 480，音高/力度逐条相同"
+        );
+        assert_eq!(bundle.mapped_regions, 1);
+        assert_eq!(bundle.mapped_notes, 3);
+    }
+
+    /// **可选**判据：本机存在 Apple 演示工程时，用它核对同一套头部读数；不存在就跳过。
+    ///
+    /// ⚠ 演示工程**有版权、不进仓库**，CI 上不存在 ⇒ 本判据在 CI 里是 skip，绝不红。
+    /// 它证明的是"本模块的常量与本机实测一致"，不是"Logic 能打开"。
+    #[test]
+    fn local_demo_projects_match_the_measured_header_layout_when_present() {
+        let demos = [
+            "/Library/Application Support/Logic/Logic Pro X Demosongs/Swing!.logicx/Alternatives/004/ProjectData",
+            "/Library/Application Support/Logic/Logic Pro X Demosongs/ocean eyes.logicx/Alternatives/001/ProjectData",
+        ];
+        let mut checked = 0usize;
+        for demo in demos {
+            let Ok(bytes) = std::fs::read(demo) else {
+                continue;
+            };
+            assert_eq!(&bytes[..4], &LOGIC_ROOT_MAGIC, "{demo}");
+            assert_eq!(
+                u32_le(&bytes, LOGIC_DECLARED_LENGTH_OFFSET) as usize,
+                bytes.len() - LOGIC_ROOT_HEADER,
+                "{demo} 的声明长度"
+            );
+            assert_eq!(
+                &bytes[LOGIC_FIRST_RECORD_OFFSET..LOGIC_FIRST_RECORD_OFFSET + 4],
+                &LOGIC_SONG_TAG,
+                "{demo} 的第一个 chunk 必须是 gnoS"
+            );
+            checked += 1;
+        }
+        eprintln!("可选演示工程核对：{checked} 个文件存在并核对通过（不存在 = skip）");
+    }
+}

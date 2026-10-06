@@ -21,6 +21,15 @@ path = "src/lib.rs"
 # `--features experimental-als-export` 下才存在（默认构建既不编译它，也不链接 `flate2`）。
 experimental-als-export = ["dep:flate2"]
 
+# 实验性 Logic Pro (`.logicx`) bundle 导出 [ARCH-FMT-002] [ROAD-M4-007]。
+#
+# **默认关**（AGENTS.md §2 红线 6，与 `experimental-als-export` 同款）：
+# `default` 保持为空，本模块只在显式 `--features experimental-logic-export` 下才存在。
+# ⚠ 与 `.als` 不同，本 feature **没有可选依赖** —— `ProjectData` 是自研分块二进制，
+# `MetaData.plist` 的 bplist00 编码器也是本 crate 自研的（见模块头的"为什么不用 plist crate"）。
+# 因此默认构建与带本 feature 的构建，**依赖图逐包相同**（`cargo tree -p yeban-app -e normal --locked`）。
+experimental-logic-export = []
+
 [dependencies]
 # SMF 编解码（下移出的独立 crate; 本行只为保持 `yeban_render::midi::*` 可用）。
 yeban-midi = { path = "../yeban-midi" }
