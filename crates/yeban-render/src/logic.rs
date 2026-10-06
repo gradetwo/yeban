@@ -492,6 +492,28 @@
 //!    [`LOGIC_NOTE_CONST_17`]。`+0x0a` 的"细力度"实测为 0（参考实现的
 //!    `_enc_note_event(..., fine=0)` 也写 0），因此保持 0。
 //!
+//!    ⚠ **第 420 轮复核（四个字节逐个量过，见判据
+//!    `note_event_constant_bytes_match_the_measured_donors_and_the_registered_write_form`）**：
+//!    这四处此前**没有任何判据钉住**（第 419 轮登记的空洞）；而且量出来的结论是
+//!    "`+0x0f` 与 `+0x17` 与供体逐事件一致，`+0x10` 与末条标志**与供体不一致**"：
+//!
+//!    * `+0x0f` = `0x01`：本仓库内嵌的负责人两份供体 **1,422 个事件读数**（517/517/388）
+//!      全部是 `0x01`，**含三条载荷各自的末条**（供体里读不到 `0x81`）；
+//!    * `+0x17` = `0x89`：1,422/1,422（本仓库内嵌字节里是**恒等**的，判据逐事件断言）；
+//!    * `+0x10` = `0x40`：供体实测 **`0x80`**（1,422/1,422）；`0x40` 只来自参考实现 §8.5 的
+//!      另一个夹具 `F4b_midinotes`（本仓库没有、也不引入）。**它根本不是常量**：本机 388 份
+//!      带音符的真实工程、22,990 条音符载荷的 **955,763** 个事件读数里，这个字节取 **128** 个
+//!      不同值（`0x40` 448,817 / `0x80` 340,953 / `0x00` 83,876 …）⇒ 语义未反推，只登记、不发明；
+//!    * 末条标志 `0x81`：供体三条载荷的末条事件实测都是 `0x01`；`0x81` 同样只来自参考实现的
+//!      那个夹具（本机那份扫描里 `0x81` 作为音符标志出现 4,168 次，其中只有 229 次落在载荷末条）。
+//!
+//!    写入形态的这两处差异因此**登记**在 [`NOTE_EVENT_SHAPE_CAVEAT`] 里（`+0x10` 那一处此前
+//!    已在同一常量里点名，末条标志这一处本轮补上），并由上述判据同时钉住"供体实测"与
+//!    "本写入器写什么"两件事。**一个字节都没有改**：单轨那份产物是第 407 轮被 Logic Pro 12.2
+//!    打开过的字节，它的 sha256 是 [`LOGIC_OPENED_SINGLE_TRACK_SHA256`]；供体 `+0x10` 的
+//!    `0x80` 与本写入器的 `0x40` 在**不同整体形状**里出现，改这一个字节等于让产物既不是参考形态、
+//!    也不是供体形态，而"正确的 `+0x10`"在本机 388 份里**本来就不是单值**。
+//!
 //! ## 实测的 `Trak` 家族：上一轮的**布局**读数（本轮复核仍然成立，保留备查）
 //!
 //! 第 403 轮把 `Trak` 家族（**落盘**的四个字节是 `6b 61 72 54`，即简报里的 `karT`；按落盘字节反序解码
@@ -1269,7 +1291,11 @@ pub const NOTE_EVENT_SHAPE_CAVEAT: &str = concat!(
     "MIDI 通道、+0x04 是位置（供体 region1 两行：38400 与 150720），音符头行首字节同为 0x90/0x91、",
     "续行首字节 0x80（实测 region1 16,592 = 16×2 + 32×517 + 16、region2 12,448 = 16×1 + 32×388 + 16，",
     "与两份 .mid 的 517/388 note-on 对上）；本写入器按 MIT 参考实现 §8.5 写 `32·N + 16`（无 b0/b1 行、",
-    "续行首字节 0x40、音符首字节恒 0x90）。该形态**已被实测显示**（open7 第一条轨道与 open8 的**两条**",
+    "续行首字节 0x40、音符首字节恒 0x90）。两处**逐字节**差异（判据",
+    "`note_event_constant_bytes_match_the_measured_donors_and_the_registered_write_form` 钉住）：",
+    "① `+0x10`（续行首字节）本写入器恒 0x40，供体 **1,422** 个事件读数（517/517/388）里恒 **0x80**；",
+    "② 末条音符的 `+0x0f` 本写入器带 0x80 位（写 **0x81**），供体三条载荷的**末条**事件都是 **0x01**。",
+    "该形态**已被实测显示**（open7 第一条轨道与 open8 的**两条**",
     "轨道的音符都由负责人用本机 Logic Pro 12.2 读出且与源工程逐音相同），",
     "但 b0/b1 行携带的每 region MIDI 通道（供体第二条是 0x91）没有复现 ⇒ 播放通道/音色路由未验证；",
     "b0/b1 行其余字节的语义未反推，因此不写、不猜"
@@ -4110,10 +4136,22 @@ struct WrittenNote {
 /// 音符事件里**首个** 16 字节行的 `+0x0f` 标志：`0x01`（实测，参考实现 §8.5）。
 pub const LOGIC_NOTE_FLAG: u8 = 0x01;
 
-/// 音符事件里**最后一条**音符的 `+0x0f` 标志：`0x01 | 0x80`（实测，参考实现 §8.5）。
+/// 音符事件里**最后一条**音符的 `+0x0f` 标志：`0x01 | 0x80`。
+///
+/// ⚠ 这个值来自 MIT 参考实现 §8.5 的 `F4b_midinotes` 夹具（本仓库**没有**、也不引入）；
+/// **本仓库内嵌的负责人两份供体里一个 `0x81` 都读不到** —— 三条音符载荷的**末条**事件实测
+/// 都是 `0x01`（判据 `note_event_constant_bytes_match_the_measured_donors_and_the_registered_write_form`）。
+/// 本写入器按参考实现的形态写 `0x81`，该差异登记在 [`NOTE_EVENT_SHAPE_CAVEAT`] 里。
 pub const LOGIC_NOTE_FLAG_LAST: u8 = 0x81;
 
-/// 音符事件 `+0x10` 的恒定字节（实测 `0x40`，参考实现 §8.5 记 "const (=64)"）。
+/// 音符事件 `+0x10`（= 第二条 16 字节续行的首字节）本写入器写的字节：`0x40`。
+///
+/// ⚠ **它不是实测常量**。参考实现 §8.5 从它的 `F4b_midinotes` 夹具（3 个音符）记成
+/// "const (=64)"，但本仓库内嵌的负责人两份供体 **1,422 个事件读数**（517/517/388）里这个
+/// 字节**恒 `0x80`**；本机 388 份带音符的真实工程、22,990 条音符载荷的 955,763 个事件读数里它取
+/// **128** 个不同值（`0x40` 448,817 / `0x80` 340,953 / `0x00` 83,876 …）⇒ 它是**逐音符变化**的字段，语义未反推。
+/// 本写入器写 `0x40`（参考形态的默认值），差异登记在 [`NOTE_EVENT_SHAPE_CAVEAT`] 里；
+/// 判据 `note_event_constant_bytes_…` 同时钉住"本写入器写 `0x40`"与"供体恒 `0x80`"两件事。
 pub const LOGIC_NOTE_CONST_10: u8 = 0x40;
 
 /// 音符事件第二条 16 字节行的第 7 字节（事件内 `+0x17`）：实测 `0x89`。
@@ -5121,6 +5159,197 @@ mod tests {
             &tail,
             "音符载荷必须以实测的 16 字节尾结束"
         );
+    }
+
+    /// 判据：音符事件的**四个常量字节** —— 供体实测与本写入器形态两段都钉死（第 419 轮登记的覆盖空洞）。
+    ///
+    /// `LOGIC_NOTE_FLAG` / `LOGIC_NOTE_FLAG_LAST` / `LOGIC_NOTE_CONST_10` / `LOGIC_NOTE_CONST_17`
+    /// 这四处此前**没有任何判据**：逐个改成错值后带 feature 的 `yeban-render` 仍全绿。本条把四个
+    /// 字面量都钉住，且**一个模块常量都不引用** —— 引用常量会随注入一起漂移，判据就没牙了
+    /// （与 `event_sequence_payloads_carry_the_measured_bytes` 同款纪律）。
+    ///
+    /// ## 第一段：Logic 自己的文件（内嵌的负责人供体，CI 上也在；不读 Apple 演示）
+    ///
+    /// 测法：从两份负责人供体 `ProjectData` 按 36 字节记录头走完全文，取 `qSvE` 载荷里
+    /// **首字节 `0x90..0x9f` 且第 7 字节最高位为 0** 的头行（续行的第 7 字节最高位 = 1，
+    /// 因此不入选），读该音符事件的 `+0x0f` / `+0x10` / `+0x17`。
+    ///
+    /// **读数（单位 = 事件读数，即一个音符事件，不是 16 字节行）**：
+    ///
+    /// | 供体 | 音符载荷字节数 | 事件读数 | `+0x0f` | `+0x10` | `+0x17` |
+    /// | :--- | ---: | ---: | :--- | :--- | :--- |
+    /// | 负责人 1 轨 | 16,592 | 517 | `0x01` ×517 | `0x80` ×517 | `0x89` ×517 |
+    /// | 负责人 2 轨 · 轨 1 | 16,592 | 517 | `0x01` ×517 | `0x80` ×517 | `0x89` ×517 |
+    /// | 负责人 2 轨 · 轨 2 | 12,448 | 388 | `0x01` ×388 | `0x80` ×388 | `0x89` ×388 |
+    ///
+    /// 1 轨那份的 16,592 字节载荷与 2 轨那份**逐字节相同**（本条断言）⇒ **互异**事件 =
+    /// 517 + 388 = **905**；三条载荷合计 **1,422** 个事件读数。三条载荷的**末条**事件标志也都是
+    /// `0x01`（逐条断言）⇒ 供体里**读不到 `0x81`**。MIT 夹具
+    /// （`assets/logic-donor/Alternatives/000/ProjectData`）的音符事件数 = **0**（11 条 `qSvE`
+    /// 都是 16 字节空尾）⇒ 它对这四个字节**不提供任何证据**，不能拿它"证明"本写入器的值。
+    ///
+    /// ⚠ 因此 `LOGIC_NOTE_FLAG` = `0x01` 与 `LOGIC_NOTE_CONST_17` = `0x89` 与供体**逐事件一致**；
+    /// **`LOGIC_NOTE_CONST_10` = `0x40` 与 `LOGIC_NOTE_FLAG_LAST` = `0x81` 在供体里一个也读不到**
+    /// （供体 `+0x10` 恒 `0x80`、末条标志恒 `0x01`）。这两个值来自 MIT 参考实现 §8.5 的
+    /// `F4b_midinotes` 夹具（本仓库没有、也不引入），本写入器写的是那个形态；写入形态的差异
+    /// **必须登记** ⇒ 第三段断言登记文本里两处都在。
+    ///
+    /// ## 第二段：本写入器的四个字节（有牙）
+    ///
+    /// `fixture_project()` 有 3 个音符 ⇒ 3 个 32 字节事件。字面量：标志 `0x01`/`0x01`/`0x81`
+    /// （末条带 `0x80` 位）、`+0x10` = `0x40`、`+0x17` = `0x89`。四处分别注入错值都必须让本条红。
+    #[test]
+    fn note_event_constant_bytes_match_the_measured_donors_and_the_registered_write_form() {
+        /// 一条供体 `ProjectData` 里所有**带音符事件**的 `qSvE` 载荷（原样字节）。
+        fn donor_note_payloads(bytes: &[u8]) -> Vec<Vec<u8>> {
+            let mut payloads = Vec::new();
+            for record in read_records(bytes) {
+                if record.tag != LOGIC_SEQUENCE_TAG {
+                    continue;
+                }
+                let mut has_note = false;
+                let mut at = 0usize;
+                while at + LOGIC_EVENT_LINE_SIZE <= record.body.len() {
+                    if record.body[at] & 0xF0 == 0x90
+                        && record.body[at + 7] & LOGIC_CONTINUATION_FLAG == 0
+                    {
+                        has_note = true;
+                        break;
+                    }
+                    at += LOGIC_EVENT_LINE_SIZE;
+                }
+                if has_note {
+                    payloads.push(record.body);
+                }
+            }
+            payloads
+        }
+
+        /// 一条音符载荷里每个音符事件的 `(头行 +0x0f, 事件 +0x10, 事件 +0x17)`，按行序。
+        fn event_triples(payload: &[u8]) -> Vec<(u8, u8, u8)> {
+            let mut out = Vec::new();
+            let mut at = 0usize;
+            while at + 2 * LOGIC_EVENT_LINE_SIZE <= payload.len() {
+                if payload[at] & 0xF0 == 0x90 && payload[at + 7] & LOGIC_CONTINUATION_FLAG == 0 {
+                    out.push((payload[at + 0x0f], payload[at + 0x10], payload[at + 0x17]));
+                }
+                at += LOGIC_EVENT_LINE_SIZE;
+            }
+            out
+        }
+
+        // ---- 第一段：供体实测字面量 ----
+        let one = donor_note_payloads(LOGIC_OWNER_DONOR_1T_PROJECT_DATA);
+        let two = donor_note_payloads(LOGIC_OWNER_DONOR_2T_PROJECT_DATA);
+        assert_eq!(one.len(), 1, "1 轨供体恰有 1 条带音符的 `qSvE`（条）");
+        assert_eq!(two.len(), 2, "2 轨供体恰有 2 条带音符的 `qSvE`（条）");
+        assert_eq!(one[0].len(), 16_592, "1 轨供体音符载荷字节数（字节）");
+        assert_eq!(
+            two[0].len(),
+            16_592,
+            "2 轨供体第 1 条音符载荷字节数（字节）"
+        );
+        assert_eq!(
+            two[1].len(),
+            12_448,
+            "2 轨供体第 2 条音符载荷字节数（字节）"
+        );
+        assert_eq!(
+            one[0], two[0],
+            "两份供体里 16,592 字节的音符载荷必须逐字节相同（互异事件 = 905 的依据）"
+        );
+
+        let mut readings = 0usize;
+        for (index, (payload, expected)) in [(&one[0], 517usize), (&two[0], 517), (&two[1], 388)]
+            .into_iter()
+            .enumerate()
+        {
+            let events = event_triples(payload);
+            assert_eq!(
+                events.len(),
+                expected,
+                "第 {} 条载荷的音符事件读数（个）",
+                index + 1
+            );
+            readings += events.len();
+            for (flag, const_10, const_17) in &events {
+                assert_eq!(
+                    *flag,
+                    0x01,
+                    "供体音符事件头行 +0x0f 的实测字面量（第 {} 条）",
+                    index + 1
+                );
+                assert_eq!(
+                    *const_10,
+                    0x80,
+                    "供体音符事件 +0x10 的实测字面量（第 {} 条）",
+                    index + 1
+                );
+                assert_eq!(
+                    *const_17,
+                    0x89,
+                    "供体音符事件 +0x17 的实测字面量（第 {} 条）",
+                    index + 1
+                );
+            }
+            assert_eq!(
+                events.last().map(|event| event.0),
+                Some(0x01),
+                "供体末条音符的标志也是 0x01 —— 供体里读不到 0x81（第 {} 条）",
+                index + 1
+            );
+        }
+        assert_eq!(readings, 1_422, "三条载荷合计的事件读数（个）");
+        assert!(
+            donor_note_payloads(LOGIC_DONOR_PROJECT_DATA).is_empty(),
+            "MIT 夹具的音符事件数 = 0 ⇒ 这四个字节没有任何来自它的证据"
+        );
+
+        // ---- 第二段：本写入器的四个字节（字面量，不引用模块常量） ----
+        let data = project_data_from_donor(&fixture_project());
+        let records = read_records(&data.bytes);
+        let notes = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG && record.cluster == LOGIC_DONOR_REGION_CLUSTER
+            })
+            .expect("MIT 供体路线被摆放 region 的音符 `qSvE`");
+        assert_eq!(notes.body.len(), 3 * 32 + 16, "3 个音符 ⇒ 32·3 + 16 字节");
+        let (events, rest) = notes.body[..3 * 32].as_chunks::<32>();
+        assert!(rest.is_empty(), "3 个音符必须恰好切成 3 个 32 字节事件");
+        assert_eq!(
+            events.iter().map(|event| event[0x0f]).collect::<Vec<u8>>(),
+            vec![0x01, 0x01, 0x81],
+            "写入器头行 +0x0f：前两条 0x01、末条带 0x80 位（写 0x81）"
+        );
+        assert_eq!(
+            events.iter().map(|event| event[0x10]).collect::<Vec<u8>>(),
+            vec![0x40; 3],
+            "写入器 +0x10 恒 0x40（MIT 参考形态；供体实测 0x80，差异见第三段）"
+        );
+        assert_eq!(
+            events.iter().map(|event| event[0x17]).collect::<Vec<u8>>(),
+            vec![0x89; 3],
+            "写入器 +0x17 恒 0x89（与供体逐事件一致）"
+        );
+
+        // ---- 第三段：两处与供体的差异必须登记在损失表里 ----
+        let text = data
+            .losses
+            .iter()
+            .map(|loss| format!("{}: {}", loss.entity, loss.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains(NOTE_EVENT_SHAPE_CAVEAT),
+            "音符序列形状的差异必须作为损失条目出现"
+        );
+        for needle in ["+0x10", "0x81", "末条", "1,422"] {
+            assert!(
+                text.contains(needle),
+                "登记文本必须写下音符事件差异 `{needle}`（供体 1,422 个事件读数）"
+            );
+        }
     }
 
     /// 判据 (b)：空工程产出最小但合法的文档（只有速度/拍号/速度事件三个记录）。
