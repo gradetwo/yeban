@@ -107,6 +107,57 @@
 //! **字节数**），以及一条逐条核对真实 `qeSM` 名字字段的可选判据
 //! （`real_demo_qesm_records_use_the_measured_name_field_when_present`，路径不存在即 skip）。
 //!
+//! ## 实测的 `Trak` 家族：**布局已知、语义未知** —— 本轮结论是**不写**轨道表
+//!
+//! 本轮把 `Trak` 家族（**落盘**的四个字节是 `6b 61 72 54`，即简报里的 `karT`；按落盘字节反序解码
+//! 才是可读名 `Trak`）在**四份**真实工程里逐字节量了一遍，而不是只看简报点名的两个演示：
+//! 两个 Apple 演示工程（`Swing!` 版本码 **2507**、`ocean eyes` **2000**）与两份**与本写入器同版本码
+//! 2512** 的工程（`~/Music/Logic/quiet`、工厂模板 `01 Hip Hop`）—— 因为第 402 轮的教训正是
+//! **参照系**：我们的目标版本码是 2512，而两个演示分别是 2507 与 2000。
+//!
+//! **测法**：从 0x18 起**只按** 36 字节记录头的 `u32` 小端载荷长度（+0x1c）驱动走完整个文件。
+//! 四份文件的行走终点都**恰好等于 EOF**。读数（字节数用 `stat -f%z` 口径）：
+//!
+//! | 读数 | `Swing!` (2507) | `ocean eyes` (2000) | `quiet` (2512) | `01 Hip Hop` (2512) |
+//! | :--- | ---: | ---: | ---: | ---: |
+//! | `ProjectData` 字节数 | 5,648,035 | 4,075,622 | 360,193 | 1,862,456 |
+//! | 全文件记录条数 | 4,626 | 4,094 | 718 | 1,717 |
+//! | `Trak` 记录条数 | 799 | 753 | 118 | 179 |
+//! | 其中载荷长 **0** 的 | 545 | 245 | 65 | 75 |
+//! | 其中载荷**非 0** 的 | 254（长 57） | 508（长 56） | 53（长 58） | 104（长 58） |
+//! | 记录头 kind（+0x04） | **5** | **4** | **6** | **6** |
+//! | 记录头 subtype（+0x06） | 23 | 23 | 23 | 23 |
+//! | `MetaData.plist` `NumberOfTracks` | 76 | 42 | 10 | 34 |
+//!
+//! 记录头其余字节在四份文件里**实测恒定**（与其它家族共用同一套记录头）：+0x0c..+0x0f =
+//! `00 00 ff ff`、+0x0e..+0x11 = `ff ff ff ff`、+0x16 = 2、+0x18 = 0、+0x1a = 2（2512）/ 1
+//! （2507、2000，与 [`LOGIC_RECORD_FIELD_1A`] 的实测规则独立吻合）；载荷长 0 的那一类
+//! +0x12..+0x15 = `ff ff ff 7f`。只有 +0x08..+0x0b（**随组递增的簇号**）与载荷非 0 那类的
+//! +0x12 随记录变化。kind 随版本走（2000→4、2507→5、2512→6），因此**不是**跨演示常量。
+//!
+//! **为什么这仍然不支持写轨道表**（三条都是实测，不是推测）：
+//!
+//! 1. **条数与轨道数在任何一份文件里都不相等**：799 vs 76、753 vs 42、118 vs 10、179 vs 34。
+//!    载荷非 0 的那一类在 2512 的两份文件里是 53 与 104 —— 本仓库**既无法判定哪一条是轨道**，
+//!    也无法判定该写几条。
+//! 2. **`Trak` 载荷里没有名字**：四份文件共 **919** 条非 0 载荷里，没有任何一处是
+//!    "`u16` 长度（`2..=96`）+ 全可打印 ASCII + `\0`"形态的名字字段（命中 **0/919**）。
+//!    名字字段在 `MSeq`（region）载荷 `+0x10`/`+0x12`（见 [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`]）。
+//!    本轮在两个 2512 工程里读到的 `MSeq` 名字还包含 `*Automation`、`Track Alternatives`、
+//!    `Track Automation Root Folder` 这类**内部对象**，说明这一族记录横跨用户轨道与 Logic 内部构造。
+//! 3. **没有任何记录引用 `Trak` 载荷里的 16 字节标识符**：在 `quiet` 里 53 条非 0 载荷的标识符
+//!    **53/53 互不相同，且各自在整份文件里只出现 1 次**。区域与记录的关联只能落到随组递增的簇号上，
+//!    而簇号的规则本模块**尚未反推出来**（已登记在 [`CONTAINER_HEADER_CAVEAT`]）。
+//!
+//! 另外：**不存在嵌套的 `karT`**。落盘的 `6b 61 72 54` 在四份文件里的出现次数**恰好等于**
+//! `Trak` 记录条数（799 / 753），而按**正序**拼写 `karT` 的四个字节 `54 72 61 6b` 出现 **0** 次；
+//! 即这一族没有"里层还有一层 `karT`"的结构（round 394 的"容器是扁平的"在本族上独立复现）。
+//!
+//! 因此本切片**不写** `Trak`：写一条我们说不出它指向什么的记录，比不写更坏。这一决定由两条判据
+//! 钉住：无头的 `track_family_is_measured_but_deliberately_unwritten`，与路径不存在即 skip 的
+//! `real_demo_track_family_shape_matches_the_measurement_when_present`（后者用**实测字面量**
+//! 钉住上表的每一格，并证明非 0 `Trak` 条数 > 同目录 `MetaData.plist` 的 `NumberOfTracks`）。
+//!
 //! ## 映射损失表（**不静默丢东西**）
 //!
 //! [`build_bundle`] / [`project_data`] 与字节**同时**返回 [`LogicLoss`] 列表。
@@ -142,8 +193,11 @@
 //!    供人复测 —— 但在人手报告成功之前，本模块**不说**它能被打开。仓库里也**不提交**
 //!    任何 Apple 演示工程（它们有版权）；被验证的只是"结构与本机实测的字节布局一致"。
 //! 2. **不写轨道对象**：本切片只写 `gnoS` / `qSvE` / `qeSM` 与 region 的音符序列，
-//!    Logic 的轨道表（`karT` 一族）**没有写**（groove 的写入器同样如此）。因此产物
-//!    经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
+//!    Logic 的 `Trak` 轨道家族（落盘字节 `6b 61 72 54`）**没有写**（groove 的写入器同样如此）。
+//!    本轮已把这一族的**布局**量完（见上一节：四份真实工程的条数、载荷长、kind/subtype 与恒定字节），
+//!    但**语义仍未反推出来** —— 条数与轨道数在四份文件里都不相等、载荷里没有名字字段、
+//!    载荷内 16 字节标识符没有任何记录引用它。因此这里不是"还没顾上写"，而是**证据不支持写**：
+//!    产物经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
 //! 3. **只写 3/27 个实测 chunk 家族**：真实工程（两例并集）有 27 个家族，本切片只写
 //!    `Song` / `EvSq` / `MSeq`；其余 **24 个**家族（[`MISSING_CHUNK_FAMILIES`]：插件、
 //!    混音、环境、自动化、视频、网格…）**逐族**进损失表，理由里点名 chunk。容器头里
@@ -367,10 +421,21 @@ pub const NO_GROUND_TRUTH_CAVEAT: &str = concat!(
 );
 
 /// 每一次导出都会登记的那条"轨道对象未写入"警告。
+///
+/// 理由里的每一格都是**实测**（四份真实工程：`Swing!` 2507、`ocean eyes` 2000、`quiet` 2512、
+/// 工厂模板 `01 Hip Hop` 2512；详见模块头"实测的 `Trak` 家族"一节），不是推测：
+/// 布局已量完（落盘字节、kind 随版本 4/5/6、subtype 恒 23、载荷长 0/56/57/58、恒定字节），
+/// 但**语义未反推出来** —— 条数与 `NumberOfTracks` 在四份文件里都不相等（799/76、753/42、
+/// 118/10、179/34）、919 条非 0 载荷里没有名字字段、16 字节标识符无人引用。
 pub const TRACK_OBJECTS_UNMAPPED: &str = concat!(
-    "未映射: Logic 的轨道对象（轨道表）未写入 —— 本切片只写 `gnoS`(工程/速度)、",
-    "`qSvE`(拍号与速度事件)、`qeSM`(region) 与 region 的音符序列；",
-    "groove 的写入器同样如此，因此产物经 groove 的读取器可往返，但 Logic 是否据此显示轨道未验证"
+    "未映射: Logic 的 `Trak` 轨道家族（**落盘**四个字节 `6b 61 72 54`，即 `karT`）未写入 —— ",
+    "本切片只写 `gnoS`(工程/速度)、`qSvE`(拍号与速度事件)、`qeSM`(region) 与 region 的音符序列。",
+    "本轮已把这一族的**布局**在四份真实工程里量完（文件 5,648,035/4,075,622/360,193/1,862,456 字节；",
+    "记录头 kind 随版本 5/4/6、subtype 恒 23；载荷长 0 或 57/56/58），但**语义未反推出来**：",
+    "条数与 `MetaData.plist` 的 `NumberOfTracks` 在四份文件里都不相等（799/76、753/42、118/10、179/34），",
+    "共 919 条非 0 载荷里没有名字字段，载荷内 16 字节标识符也没有任何记录引用它。",
+    "因此这里**不是省略**而是**证据不支持写**（写一条说不出指向什么的记录比不写更坏）；",
+    "groove 的写入器同样不写轨道对象"
 );
 
 /// region 自身起点字段的诚实说明（groove 记录的限制一并承接）。
@@ -471,8 +536,10 @@ pub const MISSING_CHUNK_FAMILIES: [(&str, &str); 24] = [
     ("Styl", MISSING_FAMILY_TAIL_UNKNOWN),
     (
         "Trak",
-        "Logic 的轨道表（轨道对象）——本仓库的 `TRACK_OBJECTS_UNMAPPED` 已点名落盘字节 `karT`，\
-         本切片不写轨道对象",
+        "Logic 的轨道家族（**落盘**四个字节 `karT`）——本仓库已实测其**布局**（见模块头那一节：\
+         四份真实工程的条数、载荷长、kind/subtype 与恒定字节），但**语义未反推出来**：\
+         条数与轨道数在四份文件里都不相等、载荷里没有名字字段、16 字节标识符无人引用，\
+         所以本切片**不写**它 —— 这不是漏掉，而是证据不支持（详见 `TRACK_OBJECTS_UNMAPPED`）",
     ),
     ("Trns", MISSING_FAMILY_TAIL_UNKNOWN),
     ("TxSq", MISSING_FAMILY_TAIL_UNKNOWN),
@@ -2717,5 +2784,241 @@ mod tests {
             difference.len(),
             difference.iter().copied().collect::<Vec<_>>().join(", ")
         );
+    }
+
+    // ---- `Trak` 轨道家族：布局已实测、语义未反推 ⇒ 刻意不写 ----
+
+    /// **无头确定性判据（有牙）**：本切片**刻意不写** `Trak` 轨道家族，并把这一省略**点名登记**在损失表里。
+    ///
+    /// 实测事实（四份真实工程，见模块头那一节）：`Trak` 的**落盘**四个字节是 `6b 61 72 54`；
+    /// 条数在四份文件里都**不等于**轨道数、919 条非 0 载荷里没有名字字段、载荷内 16 字节标识符
+    /// 没有任何记录引用。因此写它属于"发明规则"。本判据用**实测字面量**（不是本模块的常量）钉住这个决定：
+    /// 产物里不得出现落盘 `karT` 记录，且损失表必须有一条点名 `Trak` 的 `未映射:` 条目。
+    ///
+    /// 负向实测：让写入器多产一条落盘 `6b 61 72 54` 记录 ⇒ 本判据红（本轮记录里有逐字失败行）。
+    #[test]
+    fn track_family_is_measured_but_deliberately_unwritten() {
+        // 实测字面量（刻意不用模块常量：常量改错时判据会跟着一起错，等于没有判据）。
+        const STORED_TRACK_TAG: [u8; 4] = [0x6b, 0x61, 0x72, 0x54];
+        for (project, alternative) in [(fixture_project(), "000"), (unmappable_project(), "001")] {
+            let bundle = build_bundle(&project, alternative, "Tracks");
+            let data = &bundle.files[&format!("Alternatives/{alternative}/ProjectData")];
+            let strays: Vec<usize> = read_records(data)
+                .iter()
+                .enumerate()
+                .filter(|(_index, record)| record.tag == STORED_TRACK_TAG)
+                .map(|(index, _record)| index)
+                .collect();
+            assert!(
+                strays.is_empty(),
+                "{alternative}: 产物里不得出现落盘 `karT` 记录 —— 实测该族的条数与轨道数不相等、\
+                 载荷无名字字段、标识符无人引用，写它等于发明规则；实测多出的记录下标 {strays:?}"
+            );
+            assert!(
+                !emitted_chunk_families(data).contains("Trak"),
+                "{alternative}: `Trak` 不得进入写出家族集合"
+            );
+            let loss = bundle
+                .losses
+                .iter()
+                .find(|loss| {
+                    loss.reason.starts_with(LOSS_UNMAPPED_PREFIX)
+                        && loss.reason.contains("Trak")
+                        && loss.reason.contains("karT")
+                })
+                .unwrap_or_else(|| {
+                    panic!("{alternative}: `Trak` 必须有一条点名它的 `未映射:` 损失条目")
+                });
+            assert!(
+                loss.reason.contains("23"),
+                "`Trak` 的损失条目必须写出实测 subtype 23（四份文件一致）"
+            );
+            assert!(
+                loss.reason.contains("76") && loss.reason.contains("34"),
+                "`Trak` 的损失条目必须写出实测的 条数/轨道数 不等（799/76 … 179/34）"
+            );
+        }
+    }
+
+    /// **路径驱动判据（两个本机 Apple 演示工程都存在时才跑，否则干净 skip）**：
+    /// 用**实测字面量**钉住 `Trak` 家族在真实文件里的形状 —— 这正是"本切片为什么不写它"的证据。
+    ///
+    /// 每份文件断言：字节数（`stat -f%z` 口径）、全文件记录条数（行走恰好铺满声明载荷）、`Trak` 条数、
+    /// 载荷长 0 / 非 0 的条数与长度、记录头 kind 与 subtype（subtype 恒 23）、**正序 `karT` 四字节出现
+    /// 0 次**（无嵌套）、以及**没有任何 `Trak` 载荷含"`u16` 长度（`2..=96`）+ 全可打印 ASCII + `\0`"
+    /// 形态的名字字段**；并读同目录 `MetaData.plist` 的 `NumberOfTracks`，断言它**严格小于**非 0
+    /// `Trak` 条数（即这一族不是"一条轨道一条记录"，所以无法据此写轨道表）。
+    ///
+    /// ⚠ Apple 的演示工程**有版权、不进仓库**：本判据只**读**它们并按上面的字面量核对，
+    /// 不把任何字节或字符串内容写进仓库。路径不存在就 `continue`（CI 上不存在 ⇒ 绝不红）；
+    /// 两个都不存在时打印 skip 行。
+    #[test]
+    fn real_demo_track_family_shape_matches_the_measurement_when_present() {
+        // (路径, 字节数, 全文件记录数, Trak 条数, Trak 空载荷条数, Trak 非 0 载荷条数,
+        //  Trak 非 0 载荷长度, Trak kind, MetaData.plist NumberOfTracks)
+        let demos = [
+            (
+                "/Library/Application Support/Logic/Logic Pro X Demosongs/Swing!.logicx/Alternatives/004/ProjectData",
+                5_648_035u64,
+                4_626usize,
+                799usize,
+                545usize,
+                254usize,
+                57u32,
+                5u16,
+                76u64,
+            ),
+            (
+                "/Library/Application Support/Logic/Logic Pro X Demosongs/ocean eyes.logicx/Alternatives/001/ProjectData",
+                4_075_622u64,
+                4_094usize,
+                753usize,
+                245usize,
+                508usize,
+                56u32,
+                4u16,
+                42u64,
+            ),
+        ];
+        // 实测字面量：`Trak` 的落盘四个字节；正序拼写 `karT` 在本族的任何位置都不出现。
+        const STORED_TRACK_TAG: [u8; 4] = [0x6b, 0x61, 0x72, 0x54];
+        const FORWARD_KART: [u8; 4] = [0x54, 0x72, 0x61, 0x6b];
+
+        let mut present = 0usize;
+        for (
+            path,
+            size,
+            record_count,
+            trak_total,
+            trak_empty,
+            trak_filled,
+            filled_len,
+            kind,
+            plist_tracks,
+        ) in demos
+        {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            present += 1;
+            assert_eq!(bytes.len() as u64, size, "{path}: ProjectData 字节数");
+            let offsets = record_offsets(&bytes);
+            assert_eq!(offsets.len(), record_count, "{path}: 全文件记录条数");
+            let end = offsets.last().map_or(LOGIC_ROOT_HEADER, |(at, _tag)| {
+                *at + LOGIC_RECORD_HEADER + u32_le(&bytes, *at + LOGIC_RECORD_SIZE_OFFSET) as usize
+            });
+            assert_eq!(end, bytes.len(), "{path}: 记录流必须恰好铺满声明载荷");
+
+            let trak: Vec<usize> = offsets
+                .iter()
+                .filter(|(_at, tag)| *tag == STORED_TRACK_TAG)
+                .map(|(at, _tag)| *at)
+                .collect();
+            assert_eq!(trak.len(), trak_total, "{path}: Trak 记录条数");
+            let empty = trak
+                .iter()
+                .filter(|at| u32_le(&bytes, *at + LOGIC_RECORD_SIZE_OFFSET) == 0)
+                .count();
+            let filled: Vec<usize> = trak
+                .iter()
+                .copied()
+                .filter(|at| u32_le(&bytes, *at + LOGIC_RECORD_SIZE_OFFSET) != 0)
+                .collect();
+            assert_eq!(empty, trak_empty, "{path}: Trak 空载荷条数");
+            assert_eq!(filled.len(), trak_filled, "{path}: Trak 非 0 载荷条数");
+            assert!(
+                filled
+                    .iter()
+                    .all(|at| u32_le(&bytes, *at + LOGIC_RECORD_SIZE_OFFSET) == filled_len),
+                "{path}: Trak 非 0 载荷长度必须恒为实测的 {filled_len}"
+            );
+            assert!(
+                trak.iter().all(|at| u16_le(&bytes, at + 4) == kind),
+                "{path}: Trak 记录头 kind（+0x04）必须恒为实测的 {kind}"
+            );
+            assert!(
+                trak.iter().all(|at| u16_le(&bytes, at + 6) == 23),
+                "{path}: Trak 记录头 subtype（+0x06）实测恒为 23"
+            );
+
+            assert_eq!(
+                occurrences(&bytes, &FORWARD_KART),
+                0,
+                "{path}: 实测没有嵌套的 `karT`（正序四字节 0 次）"
+            );
+            assert_eq!(
+                occurrences(&bytes, &STORED_TRACK_TAG),
+                trak_total,
+                "{path}: 落盘 `karT` 四字节的出现次数必须恰好等于 Trak 记录条数（没有第二处）"
+            );
+
+            for at in &filled {
+                let len = u32_le(&bytes, *at + LOGIC_RECORD_SIZE_OFFSET) as usize;
+                let body = &bytes[*at + LOGIC_RECORD_HEADER..*at + LOGIC_RECORD_HEADER + len];
+                if let Some(name) = printable_name_shaped_field(body) {
+                    panic!(
+                        "{path}: 实测 Trak 载荷里**没有**名字字段，但在偏移 {at} 的载荷里读到 {name:?}"
+                    );
+                }
+            }
+
+            let meta = path.replace("ProjectData", "MetaData.plist");
+            let meta_bytes = std::fs::read(&meta).expect("演示工程的 MetaData.plist 必须可读");
+            let plist = read_bplist(&meta_bytes);
+            assert_eq!(
+                dict_of(&plist).get("NumberOfTracks"),
+                Some(&TestPlist::Integer(plist_tracks as i64)),
+                "{path}: MetaData.plist 的 NumberOfTracks"
+            );
+            assert!(
+                (trak_filled as u64) > plist_tracks,
+                "{path}: 非 0 Trak 条数（{trak_filled}）必须严格大于轨道数（{plist_tracks}）—— \
+                 这正是这一族不能当作『一条轨道一条记录』的轨道表的实测证据"
+            );
+            eprintln!(
+                "可选 Trak 家族核对：{path} —— {trak_total} 条（{trak_empty} 空 + {trak_filled} 非 0，\
+                 长 {filled_len}），kind {kind}，subtype 23，NumberOfTracks {plist_tracks}"
+            );
+        }
+        if present == 0 {
+            eprintln!("skip: 本机没有 Apple 演示工程（CI 上不存在 ⇒ 本判据不跑、绝不红）");
+        }
+    }
+
+    /// 一段字节里 `needle` 作为子串出现的次数（用来证明"某四个字节在本族里出现多少次"）。
+    fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return 0;
+        }
+        haystack
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
+    }
+
+    /// 实测定义下的"名字形态字段"：`u16` 小端长度（`2..=96`）+ 全可打印 ASCII + `\0`。
+    ///
+    /// 四份真实工程的 **919** 条非 0 `Trak` 载荷在这个定义下命中 **0**；而 `MSeq` 的名字字段
+    /// （载荷 `+0x10`/`+0x12`，见 [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`]）会命中 —— 因此这个扫描器
+    /// 能分辨"有名字"和"没名字"，不是恒假条件。
+    fn printable_name_shaped_field(body: &[u8]) -> Option<String> {
+        if body.len() < 3 {
+            return None;
+        }
+        for at in 0..=body.len() - 3 {
+            let length = usize::from(u16_le(body, at));
+            if !(2..=96).contains(&length) || at + 2 + length > body.len() {
+                continue;
+            }
+            if body[at + 2 + length - 1] != 0 {
+                continue;
+            }
+            let text = &body[at + 2..at + 2 + length - 1];
+            if text.is_empty() || !text.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+                continue;
+            }
+            return Some(String::from_utf8_lossy(text).into_owned());
+        }
+        None
     }
 }
