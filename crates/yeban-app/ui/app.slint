@@ -231,6 +231,18 @@ export component MainWindow inherits Window {
     callback toggle-undo-tree();
     // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
     callback undo-step();
+    // `ROAD-M4-008` 选项 (a)：**保存工程**。事件源是 `ui/transport.slint` 的"保存"按钮
+    // （`accessible-id: "transport-save-button"`）；宿主 `host::wire_save` 把它落到
+    // `save_action::dispatch_save`（有控制面会话 ⇒ 走那个会话；没有 ⇒ 本地原子写），
+    // 并把它说的**原话**写回 `save-status`（下面的 `in-out property`）。
+    // 界面**不**自己写盘、也不自己做"保存成功了吗"的判断。
+    callback save-project();
+    // 最近一次保存的结果文本（`""` = 本次会话还没按过保存）。
+    // 它是**宿主写的**（`host::apply_save_outcome` 是唯一写者），由状态栏读出来；
+    // 成功与失败都在这里 —— 失败被吞掉正是本仓库最忌讳的失败模式。
+    in-out property <string> save-status: "";
+    // 最近一次保存是否成功（`.slint` 用它选颜色；读数是宿主的，不是界面算的）。
+    in-out property <bool> save-succeeded: false;
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
@@ -420,6 +432,11 @@ export component MainWindow inherits Window {
             stop => {
                 root.stop();
             }
+            // `ROAD-M4-008`：保存按钮**原样**转给宿主 —— 界面不写盘、不改 `save-status`
+            // （那个属性只有宿主一个写者，见 `host::apply_save_outcome`）。
+            save-project => {
+                root.save-project();
+            }
             toggle-view => {
                 root.arrangement-view = !root.arrangement-view;
                 root.toggle-view();
@@ -578,7 +595,11 @@ export component MainWindow inherits Window {
         }
 
         // ---------------------------------------------------------- 24px 状态栏
-        StatusBar { }
+        StatusBar {
+            // `ROAD-M4-008`：最近一次保存的原话（宿主是唯一写者）。
+            save-status: root.save-status;
+            save-succeeded: root.save-succeeded;
+        }
     }
 
     // =====================================================================

@@ -54,6 +54,19 @@ use crate::scene::DemoScene;
 use crate::ui::MainWindow;
 use crate::undo::{UiAction, UndoPort};
 
+/// [`wire_save`] 的**装配输入**：保存到哪 + 没有权威时用哪一份工程。
+///
+/// 为什么把这两样捆成一个结构体：它们是"保存这个动作"在界面这一侧的全部输入，
+/// 而**权威**（有的话）由 `wire_save` 的第二个参数单独给 —— 于是"有权威时
+/// `project` 字段不被使用"这件事在签名上是可见的，而不是埋在函数体里。
+#[derive(Debug, Clone)]
+pub struct SaveStatus {
+    /// 保存目标（`None` = 这个会话没有磁盘对应物，保存会从此如实报错）。
+    pub target: Option<std::path::PathBuf>,
+    /// GUI 当前持有的工程（**只在没有控制面权威时**被 `dispatch_save` 使用）。
+    pub project: yeban_model::YebanProjectV1,
+}
+
 /// `[string]` 属性 ← `&[String]`。
 fn strings(values: &[String]) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(
@@ -433,6 +446,84 @@ pub fn wire_keys(ui: &MainWindow, context: Rc<RefCell<InputContext>>, undo: Opti
             Resolution::Action(action) => apply_action(&ui, undo.as_ref(), action),
         }
     });
+}
+
+/// **用户按"保存"的接线**（`ROAD-M4-008` 选项 (a) 剩下的"保存 UI"缺口）。
+///
+/// 它把两件事接起来，别的一件都不做：
+///
+/// 1. `.slint` 的 `save-project` 回调（`ui/transport.slint` 的"保存"按钮，
+///    `accessible-id: "transport-save-button"`）→ [`crate::save_action::dispatch_save`]；
+/// 2. 回执 → **界面状态文本**（`save-status` 属性；同一个属性由 `status_bar.slint`
+///    以 `accessible-id: "status-bar-save-status"` 画出来，因此屏读器与判据都读得到）。
+///
+/// ## 为什么状态写进界面属性而不是只打日志
+///
+/// 本仓库最忌讳的失败模式是"保存失败而用户以为成功"。因此无论成功还是被拒，
+/// 那条消息都**必须**留在界面上：`save_status` 是屏读器可达的（`accessible-label`
+/// 由 `.slint` 直接取这个属性），也是判据可断言的（`ui.get_save_status()`）。
+/// 拒绝的原因（谁占着 `.yeban.lock`、会话是不是只读）由
+/// [`crate::save_action::dispatch_save`] 写在消息里，这里**不再做第二次分类**。
+///
+/// 工程从哪来：[`SaveRequest::project`]。有权威时它**不被使用**（字节由权威自己产出，
+/// 见 `save_action` 模块文档），因此"界面缓存陈旧 ⇒ 写错内容"不可能发生。
+pub fn wire_save(
+    ui: &MainWindow,
+    port: SaveStatus,
+    #[cfg(feature = "in-process-mcp")] authority: Option<crate::mcp_mount::ProjectAuthorityHandle>,
+    #[cfg(not(feature = "in-process-mcp"))]
+    #[cfg_attr(not(feature = "in-process-mcp"), allow(unused_variables))]
+    authority: Option<crate::save_action::AuthorityHandle>,
+) {
+    let weak = ui.as_weak();
+    ui.on_save_project(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 默认构建里 `authority` 是那个**不可构造**的占位类型 ⇒ 这里恒为 `None`，
+        // 策略表里"没有控制面"那一行就是唯一的行（没有条件编译出来的第二条策略）。
+        #[cfg(feature = "in-process-mcp")]
+        let authority = authority.as_ref();
+        #[cfg(not(feature = "in-process-mcp"))]
+        let authority = None;
+        let request = crate::save_action::SaveRequest {
+            target: port.target.clone(),
+            project: port.project.clone(),
+        };
+        let outcome = crate::save_action::dispatch_save(&request, authority);
+        apply_save_outcome(&ui, &outcome);
+    });
+}
+
+/// 一次保存的**界面回执**：把 [`crate::save_action::SaveOutcome`] 写进状态文本。
+///
+/// 成功与失败用**同一**条路径写界面（只有文字与颜色不同）—— 于是"失败时忘了刷新界面"
+/// 这种错法不存在；而"成功时说的话"与"失败时说的话"都能在控件树里读到。
+fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome) {
+    let (status, ok) = match outcome {
+        crate::save_action::SaveOutcome::Saved {
+            path,
+            bytes,
+            by_authority,
+        } => (
+            format!(
+                "已保存 {bytes} 字节 → {}（{}）",
+                path.display(),
+                if *by_authority {
+                    "经控制面会话写盘（唯一写者）"
+                } else {
+                    "本地原子写"
+                }
+            ),
+            true,
+        ),
+        crate::save_action::SaveOutcome::Failed { message, .. } => {
+            (format!("保存失败：{message}"), false)
+        }
+    };
+    ui.set_save_status(status.into());
+    ui.set_save_succeeded(ok);
 }
 
 /// 逻辑键解析出的 [`Action`] → 界面行为的**唯一**落点。

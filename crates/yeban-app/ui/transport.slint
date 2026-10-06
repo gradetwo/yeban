@@ -39,6 +39,12 @@ export component Transport inherits Rectangle {
     // 停止 = **停住并回到起始点**（引擎侧是 `Stop` + `SeekTicks(0)` 两条命令，
     // 见 `src/host.rs` 的 `wire_transport`）。它与 `playing` 显示态走同一条注入面。
     callback stop();
+    // `ROAD-M4-008` 选项 (a)：**保存当前工程**。
+    // 落点由宿主决定，界面**不**自己写盘、也不猜路径：挂了进程内控制面时它走那个会话的
+    // 宿主保存动作（那个会话是这份文档的唯一磁盘写者），没挂时走本地原子写。
+    // 成功 / 被拒（例如另一个形态正持 `.yeban.lock`）的**原话**由宿主写进
+    // `MainWindow.save-status`，由 `status_bar.slint` 画出来。
+    callback save-project();
     callback toggle-view();
     callback show-session();
     callback show-arrangement();
@@ -326,6 +332,41 @@ export component Transport inherits Rectangle {
         revert_area := TouchArea {
             width: parent.width;
             height: parent.height;
+        }
+    }
+
+    // 保存 — `ROAD-M4-008` 选项 (a)：用户够得到的保存入口。
+    //
+    // 位置：紧随"分支 / 提交 / 回滚"这一组**文档级**动作（保存也是文档级动作，
+    // 而回滚那条线右边是 AI 提案徽章，语义上不该插进去）。
+    // `TouchArea` 是**唯一**的点击源，`clicked` 只调 `save-project()` 回调 ——
+    // 界面不写盘、不改任何属性（成功/失败的原话由宿主写 `MainWindow.save-status`）。
+    Rectangle {
+        x: 580px;
+        y: Tokens.space-4;
+        width: 56px;
+        height: 32px;
+        background: save_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "transport-save-button";
+        accessible-label: "保存工程";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "保存";
+            color: Tokens.gold;
+            font-size: Tokens.font-size-md;
+            horizontal-alignment: center;
+        }
+
+        save_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.save-project(); }
         }
     }
 

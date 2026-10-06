@@ -227,6 +227,29 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 焦点落在 BPM 敲入框上时单键快捷键按规范归文本控件，没有"自动回焦"的判据。
     let input = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
     host::wire_input(&ui, Rc::clone(&input));
+    // `[ROAD-M4-008]` 选项 (a) 的**最后一处**：产品二进制里的保存入口。
+    //
+    // 在这之前，保存能力（宿主保存动作 `ProjectAuthorityHandle::save_to` / 本地原子写
+    // `save::save_project_file`）只在**测试目标**的装配（`src/live_surface.rs` 的
+    // `ui/force_save`）里可达 ⇒ 用户按不到。现在它是 `ui/transport.slint` 的"保存"按钮
+    // （`accessible-id: "transport-save-button"`）经 `host::wire_save` 落到
+    // `save_action::dispatch_save`：挂了控制面就走那个会话（唯一写者），没挂就走本地原子写。
+    //
+    // 目标路径由 [`yeban_app::cli::ProjectSource::save_target`] 从 `--open` 的那个文件给出；
+    // 样本形态没有磁盘对应物 ⇒ 保存会**如实报错**（不是假成功，也不是猜一个文件名）。
+    host::wire_save(
+        &ui,
+        host::SaveStatus {
+            target: loaded.source.save_target(),
+            project: loaded.archive.project.clone(),
+        },
+        #[cfg(feature = "in-process-mcp")]
+        in_process_mcp
+            .as_ref()
+            .map(yeban_app::mcp_mount::InProcessMcp::project_authority),
+        #[cfg(not(feature = "in-process-mcp"))]
+        None,
+    );
     // `N2` 裁决 (1)：GUI 的逻辑键快捷键 → 界面动作。撤销族经 `undo::dispatch_key`
     // （唯一下发点）落到 `UndoPort`，因此 `Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`
     // 与时光机按钮是**同一条链**（ADR-0001 D45 的"人按 `Cmd+Z` 真的能撤销"）。

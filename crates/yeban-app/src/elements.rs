@@ -222,6 +222,15 @@ impl ElementRegistry {
             "录音",
             false,
         );
+        // `ROAD-M4-008` 选项 (a)：产品二进制里的**保存**入口（用户够得到的那个按钮）。
+        // 它不改工程内容，只是把"保存"交给宿主（`host::wire_save` → `save_action`）。
+        registry.add(
+            "transport-save-button",
+            ElementKind::Button,
+            "transport.slint",
+            "保存工程",
+            false,
+        );
         registry.add(
             "transport-bpm-field",
             ElementKind::TextInput,
@@ -330,6 +339,15 @@ impl ElementRegistry {
             "status_bar.slint",
             "快捷键提示",
             false,
+        );
+        // `ROAD-M4-008` 选项 (a)：最近一次保存的结果（宿主注入的**原话**，成功与失败都在）。
+        // 与上一格共用同一块 480px（`.slint` 的 `visible` 二选一），是两个语义节点。
+        registry.add(
+            "status-bar-save-status",
+            ElementKind::Text,
+            "status_bar.slint",
+            "最近一次保存工程的结果",
+            true,
         );
         registry.add(
             "status-bar-device",

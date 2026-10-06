@@ -23,6 +23,8 @@
 //! | `domain::host_save_project` 不调用 `write_project_atomic` | 同一条（读回的仍是**旧**夹具，新泳道不在） |
 //! | `SessionSource::session_read_only` 对写形态返回 `true` | 同一条（宿主保存动作被同一个 `read_only` 门拒） |
 //! | `acquire_session_lock` 改回恒 `SharedRead` | 同一条 |
+//! | `save_action::dispatch_save` 在只读权威上回退本地路径 | `the_production_save_refuses_on_a_read_only_authority_without_falling_back`（字节会被写进去） |
+//! | `dispatch_save` 绕过权威恒走本地路径 | `the_production_save_dispatches_through_the_writable_authority`（本地路径被会话的排他锁拒） |
 //!
 //! 运行：
 //!
@@ -43,6 +45,7 @@ use yeban_app::bridge::ViewState;
 use yeban_app::mcp_mount::{InProcessMcp, MountError, SessionSource};
 use yeban_app::open::open_project_file;
 use yeban_app::save::{SaveError, save_project_file};
+use yeban_app::save_action::{SaveOutcome, SaveRequest, SaveStage, dispatch_save};
 use yeban_mcp::domain::store::{LockMode, lock_path};
 use yeban_mcp::transport::http::MCP_PATH;
 
@@ -389,5 +392,142 @@ fn the_host_save_action_is_refused_on_a_read_only_session() {
         before,
         "被拒绝的宿主保存绝不能碰工程文件"
     );
+    mount.stop().expect("停机");
+}
+
+// ---------------------------------------------------------------------------
+// 判据 4：**生产保存入口**（`save_action::dispatch_save`）的两个方向
+// ---------------------------------------------------------------------------
+//
+// `ROAD-M4-008` 选项 (a) 剩下的"保存 UI"缺口：生产 `run_gui` 以前不构造保存执行面
+// （`src/live_surface.rs` 只被测试目标 `#[path]` 装入），因此用户按不到保存。
+// 现在产品路径有 `save_action::dispatch_save`（`crate::host::wire_save` 是它唯一的
+// 界面调用点），这一组判据钉住它的**路由**：
+//
+// | 判据 | 证什么 |
+// | :--- | :--- |
+// | [`the_production_save_dispatches_through_the_writable_authority`] | 有可写会话时保存**经**那个会话（`by_authority`），写的是会话当前那一版，且后续读者读得回 |
+// | [`the_production_save_refuses_on_a_read_only_authority_without_falling_back`] | 只读会话上**拒绝**且**不回退**本地路径：字节逐字节未变（回退就会写进去） |
+//
+// "另一个进程持排他锁 ⇒ 本地路径被拒"那一条住在 `in_process_mcp_lock.rs`
+// （它已经有跨进程持有者的夹具，见那边的判据 4）。
+
+/// **有可写权威 ⇒ 保存走权威**（`ROAD-M4-008` 选项 (a) 保存 UI 的主判据）。
+///
+/// 三件事一起断言：① 会话侧改了工程 ⇒ `dispatch_save` 成功且回执说"经权威"；
+/// ② 落盘字节数等于回执数字；③ 后续读者从**磁盘**读回的是**会话当前那一版**
+/// （新泳道在文件里 —— 若它写的是宿主缓存，新泳道不会在）。
+#[test]
+fn the_production_save_dispatches_through_the_writable_authority() {
+    let scratch = Scratch::new("dispatch-authority");
+    let project_path = scratch.project("demo.yeban");
+    let fixture_bytes = std::fs::read(&project_path).expect("读夹具字节");
+    let before = open_project_file(&project_path).expect("读夹具");
+    let (lead, lead_index) = lead_track_of(&before);
+    let lane_id = format!("track-{lead_index}-automation-pan-lane");
+    assert!(
+        !lane_element_ids(&before).contains(&lane_id),
+        "起点：夹具里不该有 `{lane_id}`"
+    );
+
+    let mount = InProcessMcp::start_for_project(
+        true,
+        yeban_model::samples::filled_project(),
+        SessionSource::WritableFile(project_path.clone()),
+    )
+    .expect("挂载决策")
+    .expect("必须挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    // ---- 会话侧改工程（宿主**不**去同步投影，模拟"界面缓存是旧的"）----
+    let reply = write_a_pan_lane(mount.address(), &bearer, &lead);
+    assert_eq!(
+        reply["result"]["status"], "success",
+        "写类工具必须成功: {reply}"
+    );
+
+    // ---- 生产保存入口：目标路径 + 宿主手里那份（**故意**是旧投影）----
+    let request = SaveRequest::new(project_path.clone(), before);
+    let outcome = dispatch_save(&request, Some(&authority));
+    let SaveOutcome::Saved {
+        path,
+        bytes,
+        by_authority,
+    } = &outcome
+    else {
+        panic!("可写会话上生产保存入口必须成功，实际: {outcome:?}");
+    };
+    assert!(*by_authority, "有权威时保存必须走那个会话（不是本地路径）");
+    assert_eq!(path, &project_path, "落点必须是请求给的那个文件");
+    assert_eq!(
+        std::fs::metadata(&project_path).expect("文件在").len(),
+        *bytes as u64,
+        "落盘字节数必须等于回执里的数字"
+    );
+    assert_ne!(
+        std::fs::read(&project_path).expect("读回"),
+        fixture_bytes,
+        "保存过之后磁盘内容必须真的换了（不是原样没动）"
+    );
+
+    // ---- 后续读者读回：**会话当前那一版**（新泳道在文件里）----
+    let saved = open_project_file(&project_path).expect("后续读者读回");
+    assert!(
+        lane_element_ids(&saved).contains(&lane_id),
+        "权威会话存出的文件里必须有那条新泳道 `{lane_id}`（否则写的不是会话当前那一版）: {:?}",
+        lane_element_ids(&saved)
+    );
+
+    mount.stop().expect("停机");
+}
+
+/// **只读权威 ⇒ 拒绝，且不回退到本地路径**（保存 UI 的 fail-closed 那一半）。
+///
+/// 为什么"不回退"是承重的：进程里存在权威时，本地路径**不是**"另一条也能成功的路"。
+/// 回退（权威拒绝 ⇒ 偷偷调 `save_project_file`）会在会话持排他锁时写失败、在
+/// 只读会话（共享读锁 **不**挡本地排他写）时**真的写进去** —— 那就是第二个写者。
+/// 因此断言分两半：回执是 `Failed{stage: Authority}`，且**字节逐字节未变**。
+#[test]
+fn the_production_save_refuses_on_a_read_only_authority_without_falling_back() {
+    let scratch = Scratch::new("dispatch-read-only");
+    let project_path = scratch.project("demo.yeban");
+    let before = std::fs::read(&project_path).expect("读原文");
+
+    let mount = InProcessMcp::start_for_project(
+        true,
+        yeban_model::samples::filled_project(),
+        SessionSource::File(project_path.clone()),
+    )
+    .expect("挂载决策")
+    .expect("必须挂载");
+    assert_eq!(mount.lock_mode(), Some(LockMode::SharedRead));
+    let authority = mount.project_authority();
+    assert!(!authority.is_writable(), "只读挂载的会话不能是可写的");
+
+    let request = SaveRequest::new(project_path.clone(), yeban_model::samples::filled_project());
+    let outcome = dispatch_save(&request, Some(&authority));
+    let SaveOutcome::Failed { stage, message } = &outcome else {
+        panic!("只读会话上生产保存入口必须被拒，实际: {outcome:?}");
+    };
+    assert_eq!(
+        *stage,
+        SaveStage::Authority,
+        "拒绝必须发生在权威那一层（不是本地锁）：{message}"
+    );
+    assert!(
+        message.contains("只读"),
+        "拒绝原因必须点名会话是只读的（用户要能读懂为什么没存上）: {message}"
+    );
+    assert!(
+        message.contains("不会回退"),
+        "拒绝原因必须说明**不回退**到本地路径（否则'拒绝'看起来像'坏了'）: {message}"
+    );
+    assert_eq!(
+        std::fs::read(&project_path).expect("旧文件仍在"),
+        before,
+        "被拒的生产保存绝不能碰工程文件（回退实现会在这里写进去）"
+    );
+
     mount.stop().expect("停机");
 }

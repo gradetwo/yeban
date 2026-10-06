@@ -686,10 +686,12 @@ grep -rn "NEGATIVE MEASUREMENT" crates/   # 0
 1. ~~"单一写者会话"未建~~ ⇒ **本片关闭**：可写挂载形态 + 宿主保存动作 + GUI 路由 + 三条判据。
 2. ~~生产窗口没有运行期重投影~~ ⇒ **§8 关闭**。
 3. **`UndoPort` 会话与 `Domain` 会话仍是两个类型**（结构性，§6.5 第 3 条，与本项无关）。
-4. **生产 `run_gui` 今天仍不构造保存执行面**（`src/live_surface.rs` 只在测试目标里用 `#[path]`
-   装入 ⇒ 产品二进制里没有 `ui/force_save` 这条 UI 命令）：这是"保存 **UI**"的缺口，
-   **不是**写者边界的缺口 —— 一旦保存执行面进产品路径，它走的就是本片判据化的
-   `ProjectAuthorityHandle::save_to`。`--save-as` 这条产品路径今天就存在，且已被判据 ② 钉住。
+4. ~~**生产 `run_gui` 今天仍不构造保存执行面**（`src/live_surface.rs` 只在测试目标里用 `#[path]`
+   装入 ⇒ 产品二进制里没有 `ui/force_save` 这条 UI 命令）~~ ⇒ **§10 关闭**（产品路径新增
+   `src/save_action.rs` 的 `dispatch_save` + `host::wire_save` + `ui/transport.slint` 的
+   `transport-save-button`）。此前那句仍然成立的部分是：`ui/force_save` 本身（测试装配的
+   UI 命令）**没有**进产品路径，也不该进（它需要 dev-dependency）；产品路径拿到的是
+   **同一个落点策略**，不是那条命令。写者边界一位没动，`--save-as` 那条产品路径原样存在。
 
 ### 9.6 本机验证原始读数（本片，2026-10-06）
 
@@ -737,3 +739,155 @@ git status --short -- Cargo.toml Cargo.lock crates/yeban-app/Cargo.toml crates/y
 **一条偶发红的登记**：本轮 `test -p yeban-mcp --tests` 一次跑完即绿（`lock_advisory.rs` =
 `14 passed; 0 failed`），没有再遇到 `docs/DEVELOPMENT_LEDGER.md` 第 279/288 轮登记的那条百年老 flake
 （`another_process_cannot_open_a_project_we_hold_exclusively` 的握手行 EOF）。
+
+## 10. 生产二进制的**保存入口**（2026-10-06）—— §9.5 第 4 条那个"保存 UI"缺口
+
+> 本片只关一件事：**用户按得到保存**。§9.5 第 4 条登记的缺口（生产 `run_gui` 不构造保存
+> 执行面 ⇒ 产品二进制没有 `ui/force_save` 这条 UI 命令）在此关闭；**写者边界一位没动**
+> （`Domain` 的推进点、`SessionSource` 的三种形态与锁模式、`ui/force_save`、`--save-as`
+> 全部未改），**没有**新增端口 / 令牌 / 通道 / feature，**没有**动 `MUST-GATE-009` 的两道开关
+> 与默认依赖图。
+
+### 10.0 先测量（命令 + 命中数；命中数 = "匹配该模式的行数"）
+
+| # | 说法 | 改动前读数 | 命令 |
+| :--- | :--- | :--- | :--- |
+| 1 | `src/live_surface.rs` **只被一个**测试目标 `#[path]` 装入 | `#[path = "../src/live_surface.rs"]` 命中 **1**（`crates/yeban-app/tests/live_ui_mcp.rs:30`） | `grep -rn '#\[path = "\.\./src/live_surface.rs"\]' crates/ --include=*.rs` |
+| 2 | 它需要的两个 crate 都是 **dev-dependency**（发行图里没有） | `crates/yeban-app/Cargo.toml` 的 `[dev-dependencies]` 段命中 **2**（`yeban-ui-test-port` `:200`、`yeban-ui-mcp` `:220`）；`[dependencies]` 的 optional 段只有 `yeban-ui-test-port`（`ui-test-port` feature） | `sed -n '199,221p' crates/yeban-app/Cargo.toml` |
+| 3 | 默认依赖图里它们**一个都不在** | `tree -p yeban-app -e normal --locked --prefix none \| grep -cE '^(yeban-ui-mcp\|yeban-ui-test-port) v'` = **0** | 同左 |
+| 4 | `ui/force_save` 是**控制面方法**（不是 Slint 回调、也不是键盘动作） | 定义为 `pub const METHOD_FORCE_SAVE: &str = "ui/force_save"`（`crates/yeban-ui-mcp/src/methods.rs:76`）；派发点 `service.rs:438`（`ControlPlane::call` → `surface.force_save()`）；真实落地 `UiSurface::force_save_impl` 的覆写是 `live_surface.rs:726` 的 `LiveAdminSurface::save_now` | `grep -rn "METHOD_FORCE_SAVE" crates/yeban-ui-mcp/src/`；`grep -n "fn save_now\|fn force_save_impl" crates/yeban-app/src/live_surface.rs` |
+| 5 | 那条命令的**两条落点**（权威 / 本地） | `authority.save_to(&path)` 命中 **1**（`live_surface.rs:581`）、`save_project_file(&self.project, &path)` 命中 **1**（`:603`） | `grep -n "authority.save_to\|save_project_file(&self.project" crates/yeban-app/src/live_surface.rs` |
+| 6 | `run_gui` 里**没有**任何保存接线 | `grep -n "save" crates/yeban-app/src/main.rs` 改动前只命中 `--save-as` 的注释与 `cli` 的 `save_target` 不存在；`ui/*.slint` 里 `callback save`/`save-project` 命中 **0** | `grep -rn "save" crates/yeban-app/src/main.rs crates/yeban-app/ui/*.slint` |
+
+**结论（这就是"要移什么"的答案）**：产品路径**不能**直接复用 `live_surface.rs` 的装配 ——
+它要 `LivePort` / `PortAdapter` / `ControlPlane`（两个 dev-dependency）、一个 Tier-1 无头窗口
+（`set_platform` 每线程一次）与一整套 `AdminReport` 回执。**要移的不是装配，是那条策略**：
+"有权威走权威、没权威走本地、权威拒绝不回退"。因此本片把那 40 行策略抽成
+`src/save_action.rs`（产品模块，零新依赖），装配留给测试目标。
+
+### 10.1 选了哪条路（**小**，不是搬 `live_surface.rs`）
+
+| 方案 | 代价 | 裁决 |
+| :--- | :--- | :--- |
+| 把 `live_surface.rs` 挪进产品路径 | 新增两条产品依赖边 + 一个非默认 feature；`yeban-ui-mcp`（内省/控制面）进发行图，与 `AGENTS.md` §2 红线 6 的精神正面冲突；默认树会变 | **否** |
+| 产品路径自带一个**保存动作模块**（本片） | 约 40 行策略 + 一个 `.slint` 按钮 + 一个状态栏节点；落点函数与测试装配**逐字相同** | **是** |
+
+代价如实登记：两处（`live_surface.rs` 的 `save_now` 与 `save_action.rs` 的 `dispatch_save`）
+现在各自写一遍同一套三分支策略。它们**不是**两份实现 —— 落点（`save_to` / `save_project_file`）
+与拒绝语义是同一批函数，本片新增的判据同时钉住产品那一条；但"两处分支会漂移"这个风险是真的，
+登记为后续 need（若将来 `live_surface.rs` 进产品路径，`save_now` 应当**删除**并改为调用
+`dispatch_save`）。
+
+### 10.2 三个情形的落点（产品路径上的全部策略）
+
+| 情形 | 落点 | 界面说什么 |
+| :--- | :--- | :--- |
+| 挂了控制面且会话**可写**（`SessionSource::WritableFile`） | `ProjectAuthorityHandle::save_to`（字节由那个 `Domain` 自己产出，走唯一原子入口） | `已保存 N 字节 → <path>（经控制面会话写盘（唯一写者））` |
+| 挂了控制面但会话**只读**（`SessionSource::File` / 内存样本） | **拒绝，不回退**（`SaveStage::Authority`） | `保存失败：保存被拒：控制面会话以**只读**形态挂载 … ⇒ 一个字节都没写；不会回退到本地路径（那会造出第二个写者）。目标 <path>` |
+| **没有**控制面（默认构建 / 开关关着 / 拿不到锁没挂上） | `save::save_project_file`（本地原子写 + `.yeban.lock` 排他写建议锁） | 成功同上一行（`本地原子写`）；被别的形态持锁 ⇒ `保存失败：本地保存被拒（目标 <path>）: <path> 被 `.yeban.lock` 建议锁占用 ⇒ 拒绝写入（锁文件 <lock>，持有者 <json>，模式 ExclusiveWrite）…` |
+| 内存样本（没有磁盘对应物） | 拒绝（`SaveStage::NoTarget`） | `保存失败：未配置保存路径（这个会话没有磁盘对应物；\`--save-as <path>\` …）` |
+
+三条不变量与 §9 完全一致，只是入口从"控制面方法"换成"用户按的那个按钮"：
+**只要 `authority` 是 `Some`，本地路径那一支就不可达**（不是"也调一下"）。
+
+### 10.3 本片做了什么
+
+| 文件 | 改动 | 为什么 |
+| :--- | :--- | :--- |
+| `crates/yeban-app/src/save_action.rs`（新） | `SaveRequest` / `SaveOutcome` / `SaveStage` / `pub fn dispatch_save(request, authority)`；`in-process-mcp` 关着时权威参数是一个**不可构造**的占位类型 `AuthorityHandle` ⇒ 策略只写一份（不复制两套 `dispatch_save`） | 把"谁是写者"这段策略从测试装配里拿出来，做成产品路径上的普通函数；默认构建里它是纯本地原子写 |
+| `crates/yeban-app/src/host.rs` | `pub struct SaveStatus`（目标路径 + 没有权威时用的工程）；`pub fn wire_save(ui, status, authority)`（`.slint` 回调 → `dispatch_save` → 界面状态文本）；`apply_save_outcome` 是状态属性的**唯一**写者 | 界面**不**自己写盘、也**不**自己判断成功；成功与失败走同一条回写路径（"失败时忘了刷新界面"这种错法不存在） |
+| `crates/yeban-app/src/main.rs` | `run_gui` 里调 `host::wire_save(...)`，目标路径取 `loaded.source.save_target()`，权威取 `in_process_mcp.as_ref().map(...project_authority)` | 产品二进制的保存入口；挂载点在它之前（`in_process_mcp` 已构造），故"有权威 ⇒ 走权威"在装配期就是事实 |
+| `crates/yeban-app/src/cli.rs` | `ProjectSource::save_target()`（文件 ⇒ `Some(path)`；样本 ⇒ `None`）+ 一条 lib 判据 | "按保存会写哪个文件"的**唯一**判定点；样本形态不猜文件名 |
+| `crates/yeban-app/ui/transport.slint` | `callback save-project()` + "保存"按钮（`accessible-id: "transport-save-button"`，紧随分支/提交/回滚那一组文档级动作） | 用户够得到的入口；界面只转发回调 |
+| `crates/yeban-app/ui/status_bar.slint` | `save-status` / `save-succeeded` 两个属性 + `status-bar-save-status` 节点（与 `status-bar-shortcut-tip` 共用 480px，`visible` 二选一 ⇒ 同一时刻只画一个） | 成功 / 被拒的**原话**留在界面上、屏读器可达、判据可断言 |
+| `crates/yeban-app/ui/app.slint` | `callback save-project()` + `save-status` / `save-succeeded` 属性 + Transport 与 StatusBar 两处转发 | 同上 |
+| `crates/yeban-app/src/elements.rs` | 注册表新增 `transport-save-button` / `status-bar-save-status` | `[UI-TEST-001]` 的"UI 加了 ID 必须登记"双向覆盖判据（负向实测 E 抓到了它） |
+| `crates/yeban-app/tests/production_save_ui.rs`（新） | 判据 ①（生产窗口上的端到端） | 唯一"真的经过产品接线"的那条 |
+| `crates/yeban-app/tests/single_writer_session.rs` | 判据 ②③ | 不需要窗口的路由判据（可写 / 只读） |
+| `crates/yeban-app/tests/in_process_mcp_lock.rs` | 判据 ④（接在已有跨进程持有者判据里） | 复用**已有**的真 `Command` + 文件握手夹具，不造第二套 |
+
+**没有动的东西（都是刻意的）**：`src/live_surface.rs`（判据 ④ 与 §9 的判据原样重跑）、
+`mcp_mount.rs`、`yeban-mcp` 的任何一行、`save.rs`（`save_project_file` / `save_archive_file`
+一位未改）、`Domain::apply` 的推进点、`Cargo.toml` / `Cargo.lock`、
+`in-process-mcp` / `experimental-als-export` 的 feature 定义、`MUST-GATE-009` 的两道开关。
+
+### 10.4 判据（有牙，且能失败）
+
+| # | 判据 | 证什么 | 关键断言 |
+| :--- | :--- | :--- | :--- |
+| ① | `production_save_ui.rs::the_production_window_save_entry_writes_through_the_mounted_authority` | **产品的保存按钮真的写盘，且写的是权威当前那一版** | 用**生产构造入口**建窗口（`host::build_main_window`）+ **生产接线** `host::wire_save`；会话侧真 socket 写一条 pan 泳道（**不同步投影**）⇒ `ui.invoke_save_project()` ⇒ `save_succeeded`、状态文本点名"经控制面会话写盘"与目标路径、磁盘字节真的变了、**后续读者**读回的文件里**有**那条新泳道；两次保存都**不**推进 `apply_revision`；没有控制面时 `dispatch_save(.., None)` ⇒ `by_authority == false` 且本地文件字节数与回执一致 |
+| ② | `single_writer_session.rs::the_production_save_dispatches_through_the_writable_authority` | 可写会话上生产入口**经权威** | `by_authority == true`；落盘字节数 == 回执数字；磁盘内容真的换了；后续读者读回**会话当前那一版**（新泳道在文件里） |
+| ③ | `single_writer_session.rs::the_production_save_refuses_on_a_read_only_authority_without_falling_back` | 只读会话上**拒绝且不回退** | `Failed{stage: Authority}`；文本含"只读"与"不会回退"；工程字节**逐字节未变**（回退实现会在共享读锁下真的写进去） |
+| ④ | `in_process_mcp_lock.rs::the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively`（新增的那一段） | 别的进程排他持锁时**产品入口**被拒且原因可读 | `dispatch_save(.., None)` ⇒ `Failed{stage: Local}`；文本含"被 `.yeban.lock` 建议锁占用"/"拒绝写入"/"持有者"/"模式"；字节逐字节未变 |
+| ⑤ | `cli.rs::the_save_target_is_the_opened_file_and_none_for_a_sample`（lib） | 目标路径的判定点（不猜文件名） | 文件来源 ⇒ 同一个路径；样本 ⇒ `None` |
+| ⑥ | `elements.rs::slint_accessible_ids_and_registry_cover_each_other`（既有判据，被本片**加严**） | 新按钮/新状态节点的语义 ID **登记在案** | `.slint` 里的每一个 `accessible-id` 都要有注册表成员（反之亦然） |
+
+### 10.5 负向实测（先红后还原；命令与原文逐条给出）
+
+| # | 临时改哪里 | 红在哪 | 实读（原文） |
+| :--- | :--- | :--- | :--- |
+| A | `host.rs` 的 `wire_save` 绕过 `dispatch_save`（回调恒报 `Failed`） | 判据 ①（`production_save_ui.rs:212`） | `生产保存入口必须成功（否则它落到了被排他锁拒的本地路径上）: 保存失败：NEGATIVE MEASUREMENT`；`test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out` |
+| B | `save_action.rs` 的权威分支条件改成恒假（`if false && let Some(..)`） | 判据 ②（`single_writer_session.rs:459`） | `可写会话上生产保存入口必须成功，实际: Failed { stage: Local, message: "本地保存被拒（目标 …/demo.yeban）: … 被 `.yeban.lock` 建议锁占用 ⇒ 拒绝写入（… 模式 ExclusiveWrite）…" }`——**权威存在时本地路径必然被那把排他锁拒**，这正是"必须走权威"的机械证据 |
+| C | `save_action.rs` 的 `render_local_error` 把 `.yeban.lock` 的措辞换成一句 `"保存失败"` | 判据 ④（`in_process_mcp_lock.rs:466`） | `拒绝原因必须点名那把锁（用户要能读懂为什么没存上）: 本地保存被拒（目标 …/demo.yeban）: 保存失败` |
+| D | `elements.rs` 的注册表里删掉 `transport-save-button` | 判据 ⑥（`elements.rs:1396`） | `app.slint 里的 accessible-id 模板 ["transport-save-button"] (template=false) 在注册表里一个成员都没有` |
+
+**还原证明**：四处改动全部还原，`cmp` 与突变前基线逐字节相同，五个被改文件的 `sha256`
+与突变前完全一致（`host.rs a1a53c70…` / `save_action.rs 2a1a09cd…` / `elements.rs 6ff0aae1…` /
+`transport.slint 83c56314…` / `status_bar.slint 3afad36a…`），`grep -rn "NEGATIVE MEASUREMENT" crates/` = **0**。
+
+### 10.6 本机验证原始读数（本片，2026-10-06）
+
+```text
+bash scripts/dev/cargo-local.sh fmt                                                                    # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app                                                     # exit 0
+bash scripts/dev/cargo-local.sh check -p yeban-app --features in-process-mcp                           # exit 0
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets -- -D warnings                        # exit 0（零告警）
+bash scripts/dev/cargo-local.sh clippy -p yeban-app --all-targets --features in-process-mcp -- -D warnings  # exit 0（零告警）
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests                                              # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-app --tests --features in-process-mcp                     # exit 0
+bash scripts/dev/cargo-local.sh test -p yeban-mcp --tests                                              # exit 0（lock_advisory 14 passed，未遇登记过的 flake）
+python3 scripts/gates/check_feature_alignment.py                                                       # exit 0
+python3 scripts/gates/check_phase_status.py                                                            # exit 0（47 项：已完成 18 / 部分 23 / PENDING 6）
+bash scripts/gates/run-gates.sh light                                                                  # exit 0，末行 门禁通过 (mode=light)
+```
+
+默认档（`test -p yeban-app --tests`）里与本片直接相关的行：
+
+```text
+tests/production_save_ui.rs: test result: ok. 0 passed; 0 failed; 0 ignored  ← 目标存在但 feature 关着（0 用例）
+tests/single_writer_session.rs: test result: ok. 0 passed; 0 failed; 0 ignored
+```
+
+`--features in-process-mcp` 档：
+
+```text
+unittests src/lib.rs:         test result: ok. 191 passed; 0 failed; 0 ignored   ← 含本片的两条 lib 判据（§10.4 ⑤ 与加严后的 ⑥）
+tests/in_process_mcp.rs:      test result: ok.   3 passed; 0 failed; 0 ignored
+tests/in_process_mcp_lock.rs: test result: ok.   5 passed; 0 failed; 0 ignored   ← MUST-GATE-008 的 5 条原样（判据 ④ 接在其中一条里）
+tests/live_ui_mcp.rs:         test result: ok.  21 passed; 0 failed; 0 ignored   ← §9 的判据 ④ 原样（live_surface.rs 一位没改）
+tests/production_reprojection.rs: test result: ok. 1 passed; 0 failed; 0 ignored
+tests/production_save_ui.rs:  test result: ok.   1 passed; 0 failed; 0 ignored   ← 本片判据 ①
+tests/single_writer_session.rs: test result: ok. 5 passed; 0 failed; 0 ignored   ← §9 的 3 条 + 本片判据 ②③
+tests/undo_wiring_ui.rs:      test result: ok.  10 passed; 0 failed; 0 ignored
+```
+
+**依赖图对账（"默认依赖图一个包没变"的机械证据，零编译）**：
+
+```text
+# 指标：`cargo tree -p yeban-app -e normal --locked --prefix none` 里**不同的 name version 行数**
+bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked --prefix none \
+  | grep -oE "^[a-zA-Z0-9_-]+ v[0-9][0-9.a-zA-Z-]*" | sort -u | wc -l                 # 296（与 §9 的 296 相同）
+… --features in-process-mcp | … | wc -l                                                # 320（与 §9 相同）
+bash scripts/dev/cargo-local.sh tree -p yeban-app -e normal --locked --prefix none | grep -c "^yeban-mcp v"  # 0
+… --features in-process-mcp | grep -c "^yeban-mcp v"                                   # 1
+git status --short -- Cargo.toml Cargo.lock crates/yeban-app/Cargo.toml crates/yeban-mcp/Cargo.toml  # 空
+```
+
+**没有削弱的四条（逐条点名）**：`MUST-GATE-009` 的两道开关未动（`in-process-mcp` /
+`experimental-als-export` 仍不在任何 `default` 里，`cli_contract.rs` 的"默认产物拒绝
+`--enable-mcp-http`"判据两档都绿）；`in-process-mcp` 与 `experimental-als-export` 的
+feature 定义一位未改；默认依赖图的 296 个 `name version` 与锁文件逐字未动；
+Logic 导出器（`ROAD-M4-011`）的模块、feature 与其判据本轮**一个字节都没碰**。
+
+**本提交的 CI 判决待集成者推送后读回。**
+

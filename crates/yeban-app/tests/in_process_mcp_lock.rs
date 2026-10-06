@@ -405,6 +405,7 @@ fn the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
 /// | # | 保存路径 | 与 UI 的关系 |
 /// | :--- | :--- | :--- |
 /// | 1 | [`yeban_app::save::save_project_file`] | `ui/force_save` 调的就是它（`src/live_surface.rs`） |
+/// | 1b | [`yeban_app::save_action::dispatch_save`]（无权威） | **生产**窗口的保存按钮调的就是它（`crate::host::wire_save`，见判据 ④） |
 /// | 2 | 真二进制 `yeban-app --save-as <path>` | 命令行保存路径（默认构建里就存在） |
 ///
 /// 四步各自可失败：
@@ -442,6 +443,38 @@ fn the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclus
         fs::read(&project).expect("旧文件仍在"),
         before,
         "被拒绝的保存绝不能碰工程文件"
+    );
+
+    // ---- 2a-bis. **生产保存入口**（无权威）也必须被同一把锁拒，且原因可读 ----
+    //
+    // 这一条钉住 `ROAD-M4-008` 选项 (a) 的"保存 UI"缺口：产品的保存按钮走
+    // `save_action::dispatch_save`，而**没有控制面**时它的落点就是上面那条本地路径。
+    // 因此"另一个形态正开着这份工程"必须在**用户看到的那句话**里说出来，而不是静默失败。
+    let request = yeban_app::save_action::SaveRequest::new(
+        project.clone(),
+        yeban_model::samples::filled_project(),
+    );
+    let outcome = yeban_app::save_action::dispatch_save(&request, None);
+    let yeban_app::save_action::SaveOutcome::Failed { stage, message } = &outcome else {
+        panic!("持锁时生产保存入口必须被拒，实际: {outcome:?}");
+    };
+    assert_eq!(
+        *stage,
+        yeban_app::save_action::SaveStage::Local,
+        "没有权威时它走的必须是本地路径: {message}"
+    );
+    assert!(
+        message.contains("被 `.yeban.lock` 建议锁占用") && message.contains("拒绝写入"),
+        "拒绝原因必须点名那把锁（用户要能读懂为什么没存上）: {message}"
+    );
+    assert!(
+        message.contains("持有者") && message.contains("模式"),
+        "拒绝原因必须带上持有者与锁模式（否则'谁占着'查不出来）: {message}"
+    );
+    assert_eq!(
+        fs::read(&project).expect("旧文件仍在"),
+        before,
+        "被拒绝的生产保存绝不能碰工程文件"
     );
 
     // ---- 2b. 真二进制 `--save-as` 也必须被拒（退出码 4）----

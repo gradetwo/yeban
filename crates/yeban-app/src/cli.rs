@@ -946,6 +946,21 @@ impl ProjectSource {
             }
         }
     }
+
+    /// 界面上的"保存"该写回哪个文件（`ROAD-M4-008` 选项 (a) 的保存 UI 入口）。
+    ///
+    /// **为什么样本形态是 `None` 而不是猜一个文件名**：`--project-sample` / 不带 `--open`
+    /// 的会话**没有磁盘对应物**（[`Self::report_line`] 已经如实写了"未读任何文件"）。
+    /// 那时"保存"唯一诚实的行为是报"未配置保存路径"，而不是在用户的当前目录里凭空造出
+    /// 一个 `untitled.yeban` —— 那是"界面上多了一个文件"这种查不出的现象。
+    /// 想把样本落盘的路径今天就存在：`--save-as <path>`（本函数不改变那条路）。
+    #[must_use]
+    pub fn save_target(&self) -> Option<PathBuf> {
+        match self {
+            Self::File { path, .. } => Some(path.clone()),
+            Self::Sample(_) => None,
+        }
+    }
 }
 
 /// 当前工程 + 它的来源。
@@ -3663,5 +3678,32 @@ mod tests {
         );
         assert!(!report.contains("未读任何文件"), "{report}");
         assert!(project_report(&loaded_file)[0].starts_with("opened:"));
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 42: 界面保存的目标路径（`ROAD-M4-008` 选项 (a) 的保存 UI 入口）
+    // ------------------------------------------------------------------
+
+    /// 文件来源 ⇒ 保存写回**同一个**文件；样本来源 ⇒ `None`（不猜文件名）。
+    ///
+    /// 为什么它是一条独立判据：`save_target` 是"界面上按保存会写哪个文件"的**唯一**
+    /// 判定点。若它在样本形态给出 `Some(untitled.yeban)`，用户会在自己的当前目录里
+    /// 凭空得到一个文件 —— 那正是本仓库最忌讳的、查不出的现象。
+    #[test]
+    fn the_save_target_is_the_opened_file_and_none_for_a_sample() {
+        let file = ProjectSource::File {
+            path: PathBuf::from("/tmp/夜半/demo.yeban"),
+            bytes: 7,
+        };
+        assert_eq!(
+            file.save_target(),
+            Some(PathBuf::from("/tmp/夜半/demo.yeban")),
+            "文件来源的保存目标必须是**它自己**（不是同目录里另一个名字）"
+        );
+        assert_eq!(
+            ProjectSource::Sample(Sample::Default).save_target(),
+            None,
+            "样本没有磁盘对应物 ⇒ 保存必须如实报\"未配置保存路径\""
+        );
     }
 }

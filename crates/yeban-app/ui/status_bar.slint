@@ -18,6 +18,12 @@ export component StatusBar inherits Rectangle {
     in property <string> chord: "Cmaj7";
     in property <string> tip: "空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听";
     in property <string> device: "48 kHz / 24-bit · DSP 3.2% · 目标 120 FPS";
+    // `ROAD-M4-008` 选项 (a)：最近一次**保存**的结果原话（宿主唯一写者）。
+    // 它取代"快捷键提示"这一格（提示仍然在 `accessible-label` 里）；
+    // 空串（还没按过保存）⇒ 回落到提示文本，状态栏不会空着一块。
+    in property <string> save-status: "";
+    // 保存成功 / 被拒（宿主注入的读数，`.slint` 只用来选颜色）。
+    in property <bool> save-succeeded: false;
 
     min-height: Tokens.status-bar-height;
     max-height: Tokens.status-bar-height;
@@ -55,17 +61,40 @@ export component StatusBar inherits Rectangle {
         accessible-label: "实时和弦识别";
     }
 
+    // 快捷键提示（原来的那一格，仍在注册表里：`status-bar-shortcut-tip`）。
+    //
+    // `ROAD-M4-008` 之后它与"最近一次保存的结果"**共用**同一块 480px：
+    // 没按过保存时显示提示，按过之后显示那条结果 —— 两个语义节点都在，
+    // `visible` 保证同一时刻只有一个在画（重叠的两段文字是渲染缺陷，不是功能）。
     UiText {
         x: 344px;
         y: 0;
         width: 480px;
         height: parent.height;
+        visible: root.save-status == "";
         text: root.tip;
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         accessible-role: text;
         accessible-id: "status-bar-shortcut-tip";
         accessible-label: "快捷键提示";
+    }
+
+    // 最近一次保存的结果 —— 成功 / 被拒的**原话**（宿主 `host::apply_save_outcome` 是唯一写者）。
+    UiText {
+        x: 344px;
+        y: 0;
+        width: 480px;
+        height: parent.height;
+        visible: root.save-status != "";
+        text: root.save-status;
+        color: root.save-succeeded ? Tokens.ink-1 : Tokens.record-red;
+        font-size: Tokens.font-size-xs;
+        accessible-role: text;
+        // 这是一个**独立**的语义节点（不是把提示节点改个名）：判据按 `[UI-TEST-001]` 的
+        // 语义 ID 寻址它，屏读器按它念出最近一次保存的结果。
+        accessible-id: "status-bar-save-status";
+        accessible-label: "最近一次保存工程的结果";
     }
 
     UiMonoText {

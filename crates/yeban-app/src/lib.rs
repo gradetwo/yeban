@@ -89,6 +89,11 @@ pub mod open;
 // 它没有 feature 门：`--save-as` 在**默认构建**里也是写路径（见该模块的文档）。
 pub mod project_lock;
 pub mod save;
+// **用户在界面上按的"保存工程"**（`ROAD-M4-008` 选项 (a) 剩下的"保存 UI"缺口）。
+// 产品路径上的普通模块：它只拿 `save::save_project_file` 与（有 feature 时）
+// `ProjectAuthorityHandle::save_to`，因此**不**把 dev-dependency 的测试装配拉进发行图。
+// 见该模块文档的"为什么是一个函数而不是搬 `live_surface.rs`"。
+pub mod save_action;
 pub mod scene;
 pub mod undo;
 
