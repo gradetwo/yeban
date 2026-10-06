@@ -9308,3 +9308,33 @@ flip `read_only` and re-adjudicate the lock mode.
 
 **Status**: `ca07bfb` pushed; Phase 4 6 完成 / 4 部分 / 0 PENDING; questions 1, 2 and 4 closed; **question 5 (a reference `.als`) is the only item that needs the
 负责人**; the `M4-008` follow-up above is the next buildable step inside the same authorisation.
+
+
+### Round 387: the GUI's write entry points now land on the single authority - and the lock flip was correctly refused
+
+`a2fd2b1` is the second slice of `M4-008` option (a), and it moved the thing that mattered: **`crates/yeban-app/src/undo.rs` no longer holds a `RefCell<UndoSession>`**
+(the count went 1 -> **0**). `UndoPort` now owns `UndoBackend::{Local(Box<UndoSession>), Authority(ProjectAuthorityHandle)}` and delegates display, project, graph,
+fingerprint, commit_ops, undo and redo; `run_gui` mounts the control plane **before** building the port and takes the authority backend when mounted, else the local
+session (the default build path is unchanged).
+
+Verified independently with named metrics: the commit holds 11 files, `grep -c 'RefCell<UndoSession>' crates/yeban-app/src/undo.rs` is **0**, the default `cargo tree
+-e normal` shows `yeban-mcp` **0** times against **1** with the feature, `in_process_mcp_lock` re-runs at **3 passed / 0 failed** so `MUST-GATE-008` stands,
+`live_ui_mcp` is **20 passed** (was 18 - the two new criteria), and the guards plus `light` pass.
+
+**Three judgements worth recording, all of them the right call:**
+1. Host writes go through a new `Plan::Host{Undo,Redo,Commit}` handed to the existing `Domain::apply`, so `apply_revision`/`sync_session` still advance in **exactly
+   one place** - and `Plan::Host` is **unreachable from `plan()` and the ten tools**, so no MCP capability was quietly widened and `MUST-GATE-009` is untouched
+   (`Cargo.toml` has no diff at all).
+2. It **stopped before flipping `read_only`**, with a sharp reason: `read_only` only gates `plan_save` (proved by criterion 17, whose read-only session still
+   mutates in memory), so flipping it would let the control plane save the project while the **GUI's own save path writes the same file without taking `.yeban.lock`
+   at all** - and `ExclusiveWrite` would not bind that path, because it never takes the lock. That is precisely the shadow-writer outcome option (c) was rejected
+   for, so `read_only = true` and `SharedRead` are untouched.
+3. Host-side reads now use `try_project()` at the three call sites, so a closed authority cannot panic inside a Slint callback.
+
+**What remains, stated in the ledger and not implied**: (a) the GUI save path must join the **same** `.yeban.lock`, and only then can `read_only` flip and the lock mode
+be re-adjudicated; (b) a **headlessly judgeable** runtime reprojection hook on the production path - `sync_authority` lives in the dev-dependency-only
+`src/live_surface.rs` and `run_gui` has no timer, so session-side (AI) mutations do **not** auto-refresh the production window yet, while GUI-initiated actions do
+reproject. Both are buildable inside the same authorisation; neither is a missing decision.
+
+**Status**: `a2fd2b1` pushed; `ROAD-M4-008` stays 部分 with the two remaining items named; Phase 4 6 完成 / 4 部分 / 0 PENDING; question 5 (a reference `.als`) remains
+the only item that needs the负责人.
