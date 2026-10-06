@@ -402,6 +402,74 @@
 //! 配方**没有**提到 `GenM` 的轨道状态 JSON（实测 +343 字节），也没有提到被激活 `AuCO` 载荷后面
 //! 那 52 字节里 `+0x06`/`+0x80` 会随槽序号变化（实测 `Inst 1` ⇒ 0，`Inst 3` ⇒ 2）。
 //!
+//! ### 2026-10-06 第 415 轮（本条）：两轨产物"第一条有音符、第二条没有"—— 差分定位到 region 名补位
+//!
+//! **负责人实测**：他用本机 **Logic Pro 12.2** 打开 `/tmp/yeban-logic-open7/Yeban.logicx`，
+//! 逐字回报「**两条轨道，第一条有音符，第二条没有**」。
+//!
+//! #### 一、差分（方法同上：与负责人 2 轨供体逐记录比）
+//!
+//! **指标**：记录**条数**、逐记录**字节**、region 的字段**偏移**。读数：产物 **507** 条 = 供体
+//! **507** 条，**只有 6 条**与供体不同（`#3` 拍号、`#7` 速度、`#488`/`#490` 第一条 region 的名字与
+//! 音符、`#491`/`#493` 第二条）。**因此缺陷一定在这 6 条里，而不是"少了什么记录"**。
+//! 逐条拆开：拍号/速度是全局的；`#490`/`#493` 的**音符载荷**都是 `32·4 + 16` = 144 字节、
+//! 结构逐字节同型（只有 tick/音高值不同）⇒ **音符数据本身既在、也同型，解释不了"第二条没有"**。
+//! 剩下的只有 `#488`/`#491` 的 **region 名**。
+//!
+//! #### 二、根因：region 名是**变长字段**，名字之后的 `rest` 必须随之平移（参考实现警告过）
+//!
+//! 参考实现 §8.5 的原话（本仓库 vendored 副本第 535-544 行）：
+//! *"The region qeSM name is VARIABLE-LENGTH `[u16 len @RECORD+0x34][ASCII @+0x36][pad→even][rest…]`
+//! with `rest` immediately after the string … An in-place write that kept the record size and left
+//! stale bytes CORRUPTED the file … `_set_region_name` now RESIZES the record … The `+0x78` length /
+//! `+0x11c` position fields sit AFTER the name and shift on resize (values preserved)."*
+//!
+//! **实测（本轮，两份负责人供体 + MIT 夹具 + 本机 11 份真实工程）**：
+//!
+//! * 供体两条 region 的 `rest` 起点 = `0x12 + 名字字节数` 补齐到**偶数载荷偏移**：
+//!   `up:`（3）⇒ **`0x16`**、`down:`（5）⇒ **`0x18`**、MIT 夹具 `Untitled`（8）⇒ **`0x1a`**。
+//! * 把两条 region 的 `rest` 首尾对齐后，**279 字节里只差 3 处**（`rest+0xcc` 链接 id `0xe4`/`0x58`、
+//!   `rest+0xd4` 的 `ff`/`fe`、`rest+0xee` 的 `01`/`02`）⇒ `rest` 是名字之后的一段**定长**结构。
+//! * `rest+0x3c` 是 **region 自身长度**（两条都是 `0x24ea0` = 150,688；= 参考实现的**记录内 `+0x78`**），
+//!   `rest+0xcc` 是**摆放事件引用的链接 id**（= 参考实现的**记录内 `+0x108`**）⇒ 这两个偏移
+//!   **只对某个特定名字长度成立**，一般形式是 `rest` 相对。
+//! * **可伪证的交叉核对**（`rest+0xcc` 必须等于编排摆放事件的 `+0x10`）：用"偶数对齐"规则在本机
+//!   11 份真实工程上命中 `quiet` **52/52**、`wrong_way` **16/16**、`Lesson 2 Song` **14/14**、
+//!   `安静` **10/10**、负责人 2 轨 **7/7**、负责人 1 轨 **6/6**、MIT 夹具 **2/2**；改用"不补位"
+//!   规则只剩 23/52、0/16、12/14、8/10、0/7、0/6、0/2。
+//!
+//! **失败机制（逐字节可算）**：旧实现把名字**原地**写、记录长度不变。`Clip`（4）补齐到 `0x16`，
+//! 恰好等于供体 `up:` 的 `rest` 起点 ⇒ 第一条 region 的 `rest` 仍在对的位置，
+//! Logic 在 `rest+0x3c` 读到长度 `0x24ea0`、在 `rest+0xcc` 读到链接 id `0xe4` ⇒ **音符出现**。
+//! 第二条名字是 `Second Voice`（12）⇒ Logic 按 `len→name→pad` 算出 `rest` 起点 **`0x1e`**，
+//! 而旧产物把 `rest` 留在 **`0x18`** ⇒ 到处错位 **6 字节**：Logic 在载荷 `0x5a` 读到的"长度"是
+//! **0**（`0x54` 处的 `a0 4e 02 00` 之后全是 0），在 `0xea` 读到的"链接 id"是 `0xfffe0000`。
+//! 于是一条 **0 长度、且没有任何摆放指向它**的 region ⇒ **轨道画得出来、region 里没有音符**。
+//! 这就是负责人看到的那个现象，而且它解释了**为什么只有第二条**。
+//!
+//! #### 三、修了什么（只改这一个字段的写法和它引起的记录长度）
+//!
+//! 对**链接 id 非 0**（即真的被摆放事件引用）的供体 region，[`donor_splice_with`] **重建**记录：
+//! `[+0x00..+0x0f 供体原样][u16 名字字节数 @+0x10][名字 @+0x12][补到偶数][供体的 rest 原样]`，
+//! 并把新载荷长度写回记录头 `+0x1c`。`rest` 的**字节一个都不改**，只整体平移。
+//! 名字长度因此不再受"原地容量"限制，也**不再截断**（旧实现按 13/15/69 字节截断并登记）。
+//!
+//! **链接 id = 0 的那条（MIT 夹具，单 MIDI 轨路线）故意保持旧行为**：实测它没有任何摆放指向
+//! （`rest+0xcc` = 0），而那份 527 条记录的产物是**唯一被 Logic Pro 12.2 打开过**的字节
+//! （sha256 [`LOGIC_OPENED_SINGLE_TRACK_SHA256`]）；为一个没有观测到后果的差异改它，等于毁掉唯一的
+//! 打开实测。该差异只登记（`非等价:`），单轨产物的四个文件与第 407 轮**逐字节相同**（判据
+//! `single_track_output_is_still_the_artifact_logic_opened` + 本机 `cmp`）。
+//!
+//! #### 四、判据（有牙）
+//!
+//! * `region_rest_follows_the_variable_length_name_and_keeps_the_placement_link`：供体两条 region 的
+//!   `rest` 起点必须等于钉住的实测字面量；产物每条被映射 region 的载荷长 = 新 `rest` 起点 + 供体
+//!   `rest` 长度；`rest+0xcc` 的链接 id 必须能在编排摆放事件里找到、且轨道号 = 1/2、region 槽字节
+//!   = 对象号 `>> 16`；`rest+0x3c` 的 region 长度必须与供体相同且**不得为 0**。
+//! * `exported_note_payloads_carry_the_source_notes_for_every_mapped_track`：把产物读回来，
+//!   **逐条**核对每条被映射轨道的 (起始 tick, 音高, 力度, 时值) 等于**实测字面量**，并断言两条
+//!   轨道的条数/音高集合/音区都不同（负责人 2026-10-06 的要求：不同轨道写不同音符，好分辨、好核对）。
+//!
 //! ### 参考实现同时暴露了本写入器**四处未登记的缺陷**，本轮改正
 //!
 //! 那四处都在**本写入器已经会写的**记录里，因此不需要新结构就能修：
@@ -493,19 +561,27 @@
 //!
 //! ## 诚实边界（**没有证明什么**）
 //!
-//! 1. **只声称一件事：本机 Logic Pro 12.2 能打开 [`build_bundle_from_donor`] 的供体拼接产物**
-//!    （负责人实测，2026-10-06）。**这不覆盖**自研（synthesised）写入器的产物：它被拒绝过两次
-//!    （第 403、405 轮是同一个通用失败对话框；第 401 轮是更早的 "Logic 4 format (or earlier)" /
-//!    `com.apple.logic10 error 100`），**也不覆盖其它 Logic 版本或其它机器**。
-//!    仓库里也**不提交**任何 Apple 演示工程（它们有版权）。
+//! 1. **打开实测一共两条，范围都写死在登记里**：
+//!    ① 本机 **Logic Pro 12.2** 打开过**单 MIDI 轨**（MIT 供体）的供体拼接产物
+//!    `/tmp/yeban-logic-open5/Yeban.logicx`（负责人，2026-10-06，回报「可以正常打开」）；
+//!    ② 同一台机器、同一个版本打开过**负责人供体**的**两轨**产物
+//!    `/tmp/yeban-logic-open7/Yeban.logicx`，逐字回报「**两条轨道，第一条有音符，第二条没有**」
+//!    —— 骨架与两条轨道成立、第二条轨道的音符当时缺失（缺陷已在**本轮**修掉，见
+//!    [`LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR`] 与 [`region_rest_start`]，但**修复后的产物还没有被打开过**）。
+//!    **这不覆盖**自研（synthesised）写入器的产物：它被拒绝过两次（第 403、405 轮是同一个通用失败
+//!    对话框；第 401 轮是更早的 "Logic 4 format (or earlier)" / `com.apple.logic10 error 100`），
+//!    **也不覆盖其它 Logic 版本或其它机器**。仓库里也**不提交**任何 Apple 演示工程（它们有版权）。
 //! 2. **自研路线不写轨道对象、不写 region 摆放链；供体路线写的是供体的**：自研产物只写
 //!    `gnoS` / `qSvE` / `qeSM` 与 region 的音符序列，Logic 的 `Trak` 轨道家族（落盘字节
 //!    `6b 61 72 54`）**没有写**（groove 的写入器同样如此），登记在
 //!    [`TRACK_OBJECTS_UNMAPPED`] 与 [`REGION_PLACEMENT_UNMAPPED`]；供体路线
 //!    （[`build_bundle_from_donor`]，也是 `--export-logic` 现在走的那条）把供体的 22 条 `karT`
-//!    与两条摆放事件**原样带进来**，但**没有**激活任何新槽、也没有把 region 摆到我们自己的
+//!    与摆放事件**原样带进来**，但**没有**激活任何新槽、也没有把 region 摆到我们自己的
 //!    摆放下标上 —— 那一整族仍在损失表里逐族登记（`LogicBuilder::write_donor_losses`）。
-//!    产物经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
+//!    **摆放本身是实测过的**（本轮）：负责人 2 轨供体编排 `qSvE` 的内存放事件 `+0x10` 链接 id
+//!    与 region `qeSM` 的 `rest+0xcc` 相同（`0xe4`/`0x58`），`+0x14` 是 1 起的轨道号（`1`/`2`），
+//!    `+0x20` 是 region 对象号的槽字节（`0x20`/`0x24`）—— 见 [`LOGIC_ARRANGE_CLUSTER`] 与
+//!    [`LOGIC_PLACEMENT_LINK_ID_OFFSET`]。
 //! 3. **自研路线只写 3/27 个实测 chunk 家族**：真实工程（两例并集）有 27 个家族，自研产物只写
 //!    `Song` / `EvSq` / `MSeq`；其余 **24 个**家族（[`MISSING_CHUNK_FAMILIES`]：插件、
 //!    混音、环境、自动化、视频、网格…）**逐族**进损失表，理由里点名 chunk。容器头里
@@ -515,19 +591,22 @@
 //!    记录在名字后还有一份空格前缀副本）作为 [`REGION_PAYLOAD_CAVEAT`] 登记（`非等价:`）。
 //!    region 的**名字字段**已按实测写入（载荷 +0x10/+0x12），**不**登记为偏差。
 //!    供体路线走的是另一套损失条目（18 个家族**在产物里**但属于供体，逐族登记）。
-//! 4. **本轮改正的四处 `qSvE` / 音符载荷形状**（拍号 80→96、速度 16→48、音符加 16 字节尾、
+//! 4. **第 404/405 轮改正的四处 `qSvE` / 音符载荷形状**（拍号 80→96、速度 16→48、音符加 16 字节尾、
 //!    音符事件三个常量字节）来自实测与 MIT 参考实现，因此**不**登记为偏差；但其中"速度
 //!    `qSvE` 此前写的是速度 0"这一缺陷在上一轮之前**从未被任何损失条目登记**过 —— 这说明
 //!    "逐条登记"的纪律仍有盲区，下一轮应当在每次拿到新参考材料时**重做一次逐字段对账**，
-//!    而不是只补新发现的字段。
-//! 5. **供体路线是"结构从哪来"的答案，而且有一份"能打开"的测量**：本机 **Logic Pro 12.2**
-//!    打开过供体拼接产物（负责人，2026-10-06）。但 `ProjectData` 的绝大部分字节是**供体**的，
-//!    语义本仓库没有逐字段反推。第 409 轮之后：单 MIDI 轨工程仍走 MIT 那份 1 轨供体
-//!    （`gnoS` 正文与根版本码 `0x09CF` 原样保留），**2 条 MIDI 轨起**走负责人那份 2 轨供体
-//!    （根版本码 `0x09D0`）⇒ 最多映射 **2** 条轨道；**通道混音那一半的激活**因此是真的
-//!    （由供体自带，见上），而**第 3 条轨道**需要的编排行 / region 三元组 / `GenM` 状态 JSON
-//!    仍然**没有**证据（`未映射:`）。**打开结论仍然只覆盖第 407 轮那一份单轨产物**；
-//!    负责人那份 2 轨骨架**没有被任何 Logic 打开过**（它是负责人存出来的原件，不是我们的产物）。
+//!    而不是只补新发现的字段。**本轮的 region 名补位缺陷是同一个盲区的第二次**：参考实现 §8.5
+//!    的原话就写了"原地写会让文件被判损坏、要 `RESIZE`"，而第 409 轮按**原地**实现了它。
+//! 5. **供体路线是"结构从哪来"的答案，有两条打开实测，但"音符对不对"只有本轮的字面量判据**：
+//!    本机 **Logic Pro 12.2** 打开过单轨（MIT）产物与两轨（负责人供体）产物（负责人，2026-10-06）。
+//!    `ProjectData` 的绝大部分字节是**供体**的，语义本仓库没有逐字段反推。第 409 轮之后：单 MIDI 轨
+//!    工程仍走 MIT 那份 1 轨供体（`gnoS` 正文与根版本码 `0x09CF` 原样保留），**2 条 MIDI 轨起**走
+//!    负责人那份 2 轨供体（根版本码 `0x09D0`）⇒ 最多映射 **2** 条轨道；**通道混音那一半的激活**
+//!    因此是真的（由供体自带，见上），而**第 3 条轨道**需要的编排行 / region 三元组 / `GenM` 状态
+//!    JSON 仍然**没有**证据（`未映射:`）。**修复后的产物（`/tmp/yeban-logic-open8/Yeban.logicx`）
+//!    还没有被任何人打开**，因此"第二条轨道的音符出现了"这句话在本仓库里**没有实测**，只有
+//!    "产物字节读回来等于源工程的音符"这条判据；音符形状与供体的差异（`b0`/`b1` 行、每 region 通道）
+//!    登记在 [`NOTE_EVENT_SHAPE_CAVEAT`]。
 //!    结论**只覆盖本机 12.2**。
 //!
 //! ## 确定性
@@ -770,6 +849,42 @@ pub const LOGIC_REGION_ORIGIN_TICKS: u64 = 34_560;
 /// 音符事件的计数原点（region 原点 + 一整个 4/4 小节 = 38400 tick，实测写入器加、读取器减）。
 pub const LOGIC_NOTE_ORIGIN_TICKS: u64 = 38_400;
 
+/* ------------------------------------------------------------------ *
+ * 编排区（arrange）里的**摆放事件** —— 本轮为"第二条轨道的音符为什么不出现"逐字段量过
+ * ------------------------------------------------------------------ */
+
+/// 编排区摆放事件所在的 `qSvE` 的**对象号**（记录头 `+0x08`）。
+///
+/// 实测：负责人 2 轨供体 `EvSq` 记录头 `+0x08 == 0x0004_0000`、载荷 **176** 字节 =
+/// **2** 条 80 字节摆放事件 + 16 字节 `f1…3f` 尾；负责人 1 轨那份是 **96** = 1 条 + 尾
+/// （这也正是第 409 轮差分里"编排 `EvSq` 96 → 176（+80 = 一条摆放事件）"的那一条）。
+/// MIT 夹具（Logic 12.0.1）的摆放列表落在对象号 `0x0008_0000`，因此**本模块不按对象号
+/// 挑摆放**，判据挑的是"载荷首 4 字节 == [`LOGIC_ARRANGE_MIDI_MARKER`]"的那一条。
+pub const LOGIC_ARRANGE_CLUSTER: u32 = 0x0004_0000;
+
+/// 一条摆放事件的字节数（实测 **80**；事件之间没有别的分隔）。
+pub const LOGIC_ARRANGE_EVENT_LEN: usize = 80;
+
+/// 摆放事件的类型记号（`u32` 小端 @事件 `+0x00`）：**MIDI** = [`LOGIC_ARRANGE_MIDI_MARKER`]
+/// （`20 00 00 00`）、音频 = `0x24`。
+pub const LOGIC_ARRANGE_MIDI_MARKER: u32 = 0x20;
+
+/// 摆放事件里**位置**的偏移（`u32` 小端 @ `+0x04` = `34560 + region 起点 tick`）。
+pub const LOGIC_PLACEMENT_POSITION_OFFSET: usize = 0x04;
+
+/// 摆放事件里**链接 id** 的偏移（`u32` 小端 @ `+0x10`）。
+///
+/// 实测：负责人 2 轨供体两条摆放分别是 `0xe4`（轨道 1）与 `0x58`（轨道 2），而对应 region
+/// `qeSM` 的 `rest+0xcc` 也分别是 `0xe4` / `0x58` —— 这就是 region 与轨道的绑定。
+pub const LOGIC_PLACEMENT_LINK_ID_OFFSET: usize = 0x10;
+
+/// 摆放事件里**1 起的轨道号**的偏移（**单字节** @ `+0x14`；实测 1 / 2，其后 3 字节是 `00 00 89`）。
+pub const LOGIC_PLACEMENT_TRACK_OFFSET: usize = 0x14;
+
+/// 摆放事件里 region 对象号**槽字节**的偏移（`u32` 小端 @ `+0x20`；实测 `0x20` / `0x24`，
+/// 分别等于 region 对象号 `0x0020_0000` / `0x0024_0000` 的高 16 位）。
+pub const LOGIC_PLACEMENT_REGION_OFFSET: usize = 0x20;
+
 /// `gnoS` 载荷里速度的**权威槽**（`u32` 小端，`round(bpm × 10000)`）。
 pub const LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE: usize = 0x3a6;
 
@@ -789,6 +904,11 @@ pub const LOGIC_SONG_TEMPO_SLOT_FALLBACK: usize = 0x92;
 /// 每一条的 `+0x10` 都恰好等于其后名字的 **UTF-8 字节数**（不是字符数），名字之后 4 字节
 /// **全为 0** —— 载荷总长 296..324 字节，这一条对 790 条无一例外。
 ///
+/// ⚠ **第 415 轮的实测更正（只补一处，不推翻上面）**："名字之后 4 字节全为 0"是**这些样本**
+/// （名字长度恰好都让接下来的 4 字节落在补位与 `rest` 的前导 0 里）的**巧合**，不是规则。
+/// 规则是 `[u16 字节数][名字][补到偶数载荷偏移][rest…]` —— 见 [`LOGIC_REGION_REST_ALIGNMENT`]，
+/// 那里有 11 份真实工程的可伪证交叉核对。
+///
 /// 长度口径 = **字节数**的独立证据：本机 **501** 份真实 `ProjectData` 里有 **1070** 条名字含
 /// `>=0x80` 的字节，**全部**是合法 UTF-8，且长度字段等于字节数 —— 例：`未命名` 的
 /// `e6 9c aa e5 91 bd e5 90 8d` 是 9 字节，长度字段就是 `09 00`。
@@ -800,6 +920,51 @@ pub const LOGIC_SONG_TEMPO_SLOT_FALLBACK: usize = 0x92;
 /// 本写入器产物的 region 载荷实测就在 `+0x10/+0x12`。本常量现在只以**载荷**为参照系，避免同一误读
 /// 再发生；判据 `region_name_field_sits_at_the_measured_payload_offsets` 用实测字面量钉住它。
 pub const LOGIC_REGION_NAME_PAYLOAD_OFFSET: usize = 0x10;
+
+/// region（`qeSM`）名字字段**之后**那段固定结构（本模块称 `rest`）起点相对**载荷 0** 的对齐：
+/// 名字从载荷 `+0x12` 起，`rest` 从**不小于** `0x12 + 名字字节数` 的**最小偶数载荷偏移**起
+/// （名字为奇数长度时补 1 个 0 字节）。
+///
+/// **实测（本轮，三份供体 + 本机 11 份真实工程）**：名字与 `rest` 的关系不是"名字之后 4 个 0"，
+/// 而是 `[u16 字节数 @+0x10][UTF-8 名字 @+0x12][补到偶数偏移][rest…]`。读数：
+///
+/// | 记录 | 名字 | 长度 | `rest` 起点（载荷） | 依据 |
+/// | :--- | :--- | ---: | ---: | :--- |
+/// | 负责人 2 轨供体 `up:`（对象号 `0x0020_0000`） | `up:` | 3 | **`0x16`** | 与另一条 region 的 `rest` 逐字节对齐（279 字节里只差 3 处，见判据） |
+/// | 负责人 2 轨供体 `down:`（`0x0024_0000`） | `down:` | 5 | **`0x18`** | 同上 |
+/// | MIT 夹具 region（`0x00e4_0000`） | `Untitled` | 8 | **`0x1a`** | `rest` 长 279 字节，与负责人那份同长 |
+///
+/// **独立佐证（可伪证的交叉核对）**：`rest + 0xcc` 是摆放事件引用的**链接 id**，
+/// 它必须等于编排 `qSvE` 里那条摆放事件的 `+0x10`。用**偶数对齐**规则在本机 11 份真实工程上
+/// 核对：`quiet` **52/52**、`wrong_way` **16/16**、`Lesson 2 Song` **14/14**、`安静` **10/10**、
+/// 负责人 2 轨 **7/7**、负责人 1 轨 **6/6**、MIT 夹具 **2/2** 命中；改用"不补位"规则则分别只有
+/// 23/52、0/16、12/14、8/10、0/7、0/6、0/2 命中。**`+0x108` 那种"记录内固定偏移"只在某个
+/// 特定名字长度上成立** —— 参考实现 §8.5 的 `+0x78`/`+0x11c`/`+0x108` 都是这种偏移。
+pub const LOGIC_REGION_REST_ALIGNMENT: usize = 2;
+
+/// `rest`（见 [`LOGIC_REGION_REST_ALIGNMENT`]）内的两个字段偏移。
+///
+/// 参考实现（MIT，§8.5）把 region 自身长度记在**记录内 `+0x78`**、把链接 id 记在
+/// **记录内 `+0x108`**，内部起点记在**记录内 `+0x11c`**。本轮实测：这三个偏移**都是
+/// `rest` 相对**（记录内偏移随名字长度平移），换算关系是 `记录内 = rest + 0x24`，
+/// 且 `rest` 本身随名字长度平移。负责人 2 轨供体两条 region 的 `rest` 长都是 **279** 字节，
+/// 二者只差 **3** 处（`rest+0xcc` 链接 id、`rest+0xd4`、`rest+0xee`），其余逐字节相同 ——
+/// 这就是"`rest` 是名字之后的一段定长结构"的直接证据。
+pub const LOGIC_REGION_LENGTH_FROM_REST: usize = 0x3C;
+
+/// `rest` 内**链接 id** 的偏移（`rest + 0xcc`，`u32` 小端）。
+///
+/// 实测：负责人 2 轨供体 `up:` 的 `rest+0xcc` = **`0xe4`**（= 它那条摆放事件的 `+0x10`）、
+/// `down:` 的 `rest+0xcc` = **`0x58`**（= 它那条摆放事件的 `+0x10`）。
+pub const LOGIC_REGION_LINK_ID_FROM_REST: usize = 0xCC;
+
+/// `rest` 起点的实测换算：`0x12 + 名字字节数`，按 [`LOGIC_REGION_REST_ALIGNMENT`] 向上取整。
+#[must_use]
+pub fn region_rest_start(name_len: usize) -> usize {
+    let at = LOGIC_REGION_NAME_PAYLOAD_OFFSET + 2 + name_len;
+    at + (LOGIC_REGION_REST_ALIGNMENT - at % LOGIC_REGION_REST_ALIGNMENT)
+        % LOGIC_REGION_REST_ALIGNMENT
+}
 
 /// `未映射:` —— 该构造在产物里没有任何表示。
 pub const LOSS_UNMAPPED_PREFIX: &str = "未映射:";
@@ -825,16 +990,25 @@ pub const LOGIC_OPEN_SCOPE_CAVEAT: &str = concat!(
 
 /// **负责人供体路线**专用的"打开结论的适用范围"。
 ///
-/// 与 [`LOGIC_OPEN_SCOPE_CAVEAT`] 分开的理由是**不许把已实测的结论说宽**：唯一有打开实测的
-/// 产物是**单 MIDI 轨**（MIT 供体）那一份。本路线借的是负责人自己存的两轨工程，它**本身**
-/// （以及由它拼出的产物）**没有被任何 Logic 打开过** —— 这一点必须写在同一条登记里，
-/// 否则读损失表的人会以为这条打开结论覆盖本次产物。
+/// **2026-10-06 第 415 轮的实测（负责人）**：负责人用本机 **Logic Pro 12.2** 打开了
+/// `/tmp/yeban-logic-open7/Yeban.logicx`（就是本路线在**修复前**的产物），逐字回报
+/// **「两条轨道，第一条有音符，第二条没有」**。三件事因此是实测而不是推断：① 负责人供体的
+/// 骨架产物**能被打开**（这是这条路线第一次有打开实测）；② **槽激活在结构上成立** —— Logic
+/// 确实画出**两条**轨道；③ **第二条轨道的音符没有出现**（当时的具体缺陷，本轮已定位并修复）。
+///
+/// 这条登记因此**不再**写"本次产物没有被任何 Logic 打开过"（那是修复前的事实）。它现在写的是
+/// **范围**：打开实测只覆盖**那一个**产物、**本机 Logic Pro 12.2**、**两条轨道**；本轮修复后的
+/// 产物（`/tmp/yeban-logic-open8/Yeban.logicx`，region 记录按变长名字重建）**尚未被任何人打开**
+/// —— 它的判决只能由下一次 Logic 测试给出，不得据此条推断。
 pub const LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR: &str = concat!(
-    "非等价: 打开结论的适用范围 —— 本仓库唯一**有打开实测**的产物是**单 MIDI 轨**的供体拼接产物",
-    "（MIT 夹具 `F0_baseline` 的 527 条记录、只改 4 条；负责人用本机 Logic Pro 12.2 打开过",
-    "`/tmp/yeban-logic-open5/Yeban.logicx`，2026-10-06）。**本次产物不在那个结论里**：它的骨架是",
-    "**负责人自己**用 Logic Pro 12.2 存出来的**两轨**工程（其 507 条记录第一次被当作产物骨架），",
-    "该骨架与本次产物**都没有被任何 Logic 打开过**，结论也不覆盖其它 Logic 版本或其它机器。",
+    "非等价: 打开结论的适用范围 —— **负责人**用本机 **Logic Pro 12.2** 打开过**本路线修复前**的产物",
+    "`/tmp/yeban-logic-open7/Yeban.logicx`（负责人自己用 Logic Pro 12.2 存的两轨工程 507 条记录作骨架），",
+    "逐字回报「**两条轨道，第一条有音符，第二条没有**」（2026-10-06）：**骨架能打开、两条轨道画得出来**，",
+    "但**第二条轨道的音符当时没有出现**。本轮把这个缺陷定位到 region `qeSM` 的名字字段（变长字段：名字之后",
+    "`rest` 的偏移随名字长度平移，而 `rest+0x3c` 是 region 长度、`rest+0xcc` 是摆放引用的链接 id），",
+    "并重建了该记录 ⇒ **本轮修复后的产物 `/tmp/yeban-logic-open8/Yeban.logicx` 尚未被任何 Logic 打开**；",
+    "它的打开结果、以及第二条轨道的音符是否出现，**都还没有实测**。结论也不覆盖其它 Logic 版本或其它机器；",
+    "单 MIDI 轨（MIT 供体）那条另有 [`LOGIC_OPEN_SCOPE_CAVEAT`] 的实测。",
     "ProjectData 的字节布局仍是按**实测**重建的（根魔数 `23 47 C0 AB` 在 0、根头 0x18 字节、",
     "声明载荷长度 u32 小端在 0x10、第一个 chunk 名在 0x18、36 字节记录头、16 字节事件行；",
     "chunk 名小端存放，`Song` 落盘为 `gnoS`）。"
@@ -984,6 +1158,37 @@ pub const REGION_PAYLOAD_CAVEAT: &str = concat!(
     "但真实载荷长 296..324 字节，+0x00 起是 `2e 03` 与一段随记录变化的字节（语义未反推），",
     "`ocean eyes`（10.5.1）的部分记录在名字后还有一份空格前缀的字符串副本；`Swing!`（10.8.1）的 545 条里未发现同类副本；",
     "本写入器的 region 载荷只有名字字段（0x16 + 名字字节数）。载荷其余字节的语义未证实，本切片不猜"
+);
+
+/// 供体路线的**音符序列形状**与供体的实测差异（`非等价:`）—— 已测量、但"是否影响 Logic"未证实。
+///
+/// **实测（本轮）**：负责人 2 轨供体每条用户轨道的 region，其配对音符 `qSvE` 的载荷形状是
+///
+/// ```text
+/// [K × 16 字节 `b0`/`b1` 事件][N × 32 字节音符事件][16 字节 `f1…3f` 尾]
+/// ```
+///
+/// 其中 `b0`/`b1` 行的首字节编码**该 region 的 MIDI 通道**、`+0x04` 是一个位置（供体 region1
+/// 有 2 行：`0x9600` = 38400 与 `0x24cc0` = 150720），音符头行的首字节同样是 `0x90`/`0x91`；
+/// 续行首字节是 `0x80`、第 8 字节 `0x89`。读数：region1 载荷 16,592 字节 = 16×2 + 32×517 + 16、
+/// region2 12,448 = 16×1 + 32×388 + 16（与两份 `.mid` 的 517 / 388 note-on 逐条对上）。
+///
+/// 本写入器写的是**MIT 参考实现 §8.5 的形态**（`32·N + 16`，无 `b0`/`b1` 行、续行首字节 `0x40`、
+/// 音符首字节恒 `0x90`），它**已被实测显示**：负责人看到的 `/tmp/yeban-logic-open7/` 第一条轨道
+/// 上的音符就是这个形态写出来的（那条 region 的 `rest` 恰好对齐、记录重建前后字节相同）。
+/// **没有**被证实的是：`b0`/`b1` 行携带的**每 region MIDI 通道**（供体第 2 条是 `0x91`）没有复现，
+/// 因此两条轨道的音符都落在通道 1 上 —— 显示不受影响（已实测），**播放通道/音色路由未验证**。
+/// `b0`/`b1` 行那几个字节的语义（`20 00 00 00 96 00 00 24 49 92 64 07 00 00 01`）没有反推，
+/// 因此**不写**、**不猜**。
+pub const NOTE_EVENT_SHAPE_CAVEAT: &str = concat!(
+    "非等价: region 的音符序列形状与供体不同（已测量，显示已实测、通道语义未证实）—— 供体的载荷是",
+    "`[K × 16 字节 b0/b1 事件][N × 32 字节音符事件][16 字节 f1…3f 尾]`，b0/b1 行首字节编码该 region 的",
+    "MIDI 通道、+0x04 是位置（供体 region1 两行：38400 与 150720），音符头行首字节同为 0x90/0x91、",
+    "续行首字节 0x80（实测 region1 16,592 = 16×2 + 32×517 + 16、region2 12,448 = 16×1 + 32×388 + 16，",
+    "与两份 .mid 的 517/388 note-on 对上）；本写入器按 MIT 参考实现 §8.5 写 `32·N + 16`（无 b0/b1 行、",
+    "续行首字节 0x40、音符首字节恒 0x90）。该形态**已被实测显示**（负责人看到的 open7 第一条轨道就是它），",
+    "但 b0/b1 行携带的每 region MIDI 通道（供体第二条是 0x91）没有复现 ⇒ 播放通道/音色路由未验证；",
+    "b0/b1 行其余字节的语义未反推，因此不写、不猜"
 );
 
 /// 本机两个 Apple 演示工程**实测**到的 chunk 家族（**解码后**的可读名，只记名字，不记内容）。
@@ -1507,13 +1712,14 @@ pub const LOGIC_DONOR_REGION_PAYLOAD_BYTES: usize = 305;
 /// 供体 region 载荷里名字字段之后的**第一个非零字段**的载荷偏移（实测 `+0x57`）。
 pub const LOGIC_DONOR_REGION_FIRST_OTHER_FIELD: usize = 0x57;
 
-/// 供体 region 载荷里名字字段的**原地容量**（字节）。
+/// 供体 region 的 `rest` 起点（实测载荷 **`0x1a`** = 名字 `Untitled` 8 字节补齐到偶数）。
 ///
-/// 名字长度 `u16` 在载荷 `+0x10`、名字从 `+0x12` 起，名字之后第一个非零字段在
-/// `+0x57`，因此在 `+0x12` 处最多写 `0x57 − 0x12 = 69` 字节就不会移动供体在 `+0x57`
-/// 及其后的任何字节。更长的名字会被截断并登记（`非等价:`）。
-pub const LOGIC_DONOR_REGION_NAME_CAPACITY: usize =
-    LOGIC_DONOR_REGION_FIRST_OTHER_FIELD - LOGIC_REGION_NAME_PAYLOAD_OFFSET - 2;
+/// ⚠ 旧常量 `LOGIC_DONOR_REGION_NAME_CAPACITY`（`0x57 − 0x12 = 69` 字节"原地容量"）**已被本轮
+/// 实测推翻**：region 名不是"容量内原地写"，而是**变长字段**，`rest`（其中 `rest+0x3c` 是 region
+/// 长度、`rest+0xcc` 是摆放引用的链接 id）**紧随名字**。原地写一个长度不同的名字会让 `rest`
+/// 整体错位，Logic 于是在错误偏移上读到长度 **0** 与垃圾链接 id ⇒ **region 有轨道、没有音符**
+/// （这正是负责人 2026-10-06 在 `/tmp/yeban-logic-open7/` 上看到的现象）。
+pub const LOGIC_DONOR_REGION_REST_START: usize = 0x1A;
 
 /// 供体 `gnoS` 的载荷长度（实测 10,756 字节 = 参考实现说的 compact 形态 ≈10,792 字节一族）。
 pub const LOGIC_DONOR_SONG_PAYLOAD_BYTES: usize = 10_756;
@@ -1757,12 +1963,16 @@ pub const LOGIC_OWNER_DONOR_TRACK_CAPACITY: usize = 2;
 
 /// 负责人供体里**属于用户轨道的 region 三元组**（`qeSM` + `karT` + 配对 `qSvE`）。
 ///
-/// 每项 = (region 的对象号, `qeSM` 载荷字节数, 名字字段的原地容量, 名字之后第一个非零载荷偏移)。
+/// 每项 = (region 的对象号, `qeSM` 供体载荷字节数, **供体 `rest` 起点**, 名字之后第一个非零载荷偏移)。
 /// 实测两份供体在这个对象号集合上一致（1 轨那份的 `0x0020_0000`；2 轨那份再加 `0x0024_0000`），
 /// 两条记录的名字分别是 `up:` 与 `down:`，与两份 `.mid` 里的轨道名**逐字相同**。
+///
+/// `rest` 起点由名字长度算出（`up:` 3 → `0x16`、`down:` 5 → `0x18`），这里把它**钉成实测字面量**
+/// 供 `donor_splice_with` 交叉核对：运行时从供体名字重新算出的 `rest` 必须等于它，否则形状不符
+/// （返回 `None` 退回自研写入器并登记），**绝不猜**。
 pub const LOGIC_OWNER_DONOR_TRACK_REGIONS: [(u32, usize, usize, usize); 2] = [
-    (0x0020_0000, 301, 0x1F - 0x12, 0x1F),
-    (0x0024_0000, 303, 0x21 - 0x12, 0x21),
+    (0x0020_0000, 301, 0x16, 0x1F),
+    (0x0024_0000, 303, 0x18, 0x21),
 ];
 
 /// 负责人供体 `karT`（对象号 `0x0004_0000`）编排轨行的**名次字段**偏移（记录内 `+0x10`）。
@@ -2172,7 +2382,7 @@ struct DonorTemplate {
     saved_from: &'static str,
     saved_on: &'static str,
     capacity: usize,
-    /// (region 对象号, `qeSM` 载荷字节数, 名字原地容量, 名字之后第一个非零载荷偏移)
+    /// (region 对象号, `qeSM` 供体载荷字节数, 供体 `rest` 起点, 名字之后第一个非零载荷偏移)
     regions: &'static [(u32, usize, usize, usize)],
     patched_records: usize,
     families: &'static [(&'static str, usize)],
@@ -2186,6 +2396,12 @@ struct DonorTemplate {
 
 /// MIT 夹具 `F0_baseline`（容量 1）—— **不改动**：`--export-logic` 在单 MIDI 轨工程上
 /// 逐字节复现第 407 轮那份被 Logic Pro 12.2 打开的产物。
+///
+/// ⚠ **不只是"不改骨架"**：这条模板被补丁的 region（对象号 `0x00e4_0000`）实测 `rest+0xcc`
+/// 的链接 id = **0**（没有任何摆放事件引用它），因此 [`donor_splice_with`] 对它走**旧行为**
+/// （名字原地写、记录长度不变）而**不是**本轮给负责人路线加的变长重建 —— 这样
+/// `--project-sample filled` 的四个文件才能与第 407 轮**逐字节相同**
+/// （sha256 [`LOGIC_OPENED_SINGLE_TRACK_SHA256`]）。差异登记在损失表里（`非等价:`）。
 static LOGIC_F0_TEMPLATE: DonorTemplate = DonorTemplate {
     bytes: LOGIC_DONOR_PROJECT_DATA,
     byte_len: LOGIC_DONOR_PROJECT_DATA_BYTES,
@@ -2198,7 +2414,7 @@ static LOGIC_F0_TEMPLATE: DonorTemplate = DonorTemplate {
     regions: &[(
         LOGIC_DONOR_REGION_CLUSTER,
         LOGIC_DONOR_REGION_PAYLOAD_BYTES,
-        LOGIC_DONOR_REGION_NAME_CAPACITY,
+        LOGIC_DONOR_REGION_REST_START,
         LOGIC_DONOR_REGION_FIRST_OTHER_FIELD,
     )],
     patched_records: LOGIC_DONOR_PATCHED_RECORDS,
@@ -2354,6 +2570,8 @@ struct DonorSplice {
     mapped_start_tick: u64,
     /// 有音符的 tick 超出 `u32`（已饱和）时为真。
     clamped: bool,
+    /// **只有**不走重建的那条路径（供体 region 的链接 id = 0 ⇒ 单 MIDI 轨的 MIT 夹具）才可能为真：
+    /// 名字超过"原地容量"被按 UTF-8 边界截断。
     name_truncated: bool,
 }
 
@@ -2404,18 +2622,58 @@ fn donor_splice_with(
     // 逐条"region 三元组"：`qeSM`（region 自身）+ 同对象号、同 subtype 的 `qSvE`（它的事件）。
     // 形状不变量（参考实现 §10.6.2 / 问题 3）：两者共享同一个对象号**与同一个 subtype**，
     // 且 kind 分别是 5 / 1（本机 2509+ 实测）。
-    let mut slots: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(template.regions.len());
-    for (cluster, payload_bytes, name_capacity, first_other) in template.regions {
+    //
+    // ⚠ **本轮新增的形状核对（有牙）**：region 名是**变长字段**，`rest` 紧随名字（补到偶数载荷
+    // 偏移）。供体的名字长度必须能算出钉住的 `rest_start`，且 `rest_start..first_other` 之间
+    // 必须**全是 0**（实测 `up:`/`down:`/`Untitled` 都是 9 个 0 字节）。任一条不成立 ⇒ 形状与
+    // 本模块钉住的不符 ⇒ 返回 `None`（退回自研写入器并登记），**不猜**。
+    //
+    // 第三/第四项是逐 region 的**实测属性**：供体 `rest` 起点、以及 `rest+0xcc` 的链接 id
+    // （**非 0 = 这条 region 被一条摆放事件引用**；负责人 2 轨供体 `up:`=0xe4 / `down:`=0x58，
+    // MIT 夹具那条 = **0**，即没有任何摆放指向它）。
+    let mut slots: Vec<(usize, usize, usize, usize, bool)> =
+        Vec::with_capacity(template.regions.len());
+    for (cluster, payload_bytes, rest_start, first_other) in template.regions {
         let region_index = donor_unique_index(&parsed, LOGIC_REGION_TAG, *cluster, None)?;
         let note_index = donor_unique_index(&parsed, LOGIC_SEQUENCE_TAG, *cluster, None)?;
-        if parsed[region_index].payload().len() != *payload_bytes
+        let payload = parsed[region_index].payload();
+        if payload.len() != *payload_bytes
             || parsed[region_index].kind != LOGIC_REGION_KIND
             || parsed[note_index].kind != LOGIC_SEQUENCE_KIND
             || parsed[region_index].subtype != parsed[note_index].subtype
         {
             return None;
         }
-        slots.push((region_index, note_index, *name_capacity, *first_other));
+        let donor_name_len = usize::from(u16::from_le_bytes([
+            *payload.get(LOGIC_REGION_NAME_PAYLOAD_OFFSET)?,
+            *payload.get(LOGIC_REGION_NAME_PAYLOAD_OFFSET + 1)?,
+        ]));
+        if region_rest_start(donor_name_len) != *rest_start {
+            return None;
+        }
+        if payload
+            .get(*rest_start..*first_other)?
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return None;
+        }
+        let link = u32::from_le_bytes(
+            payload
+                .get(
+                    *rest_start + LOGIC_REGION_LINK_ID_FROM_REST
+                        ..*rest_start + LOGIC_REGION_LINK_ID_FROM_REST + 4,
+                )?
+                .try_into()
+                .ok()?,
+        );
+        slots.push((
+            region_index,
+            note_index,
+            *rest_start,
+            *first_other,
+            link != 0,
+        ));
     }
 
     // 要映射的轨道：按 `BTreeMap` 键序取 MIDI 轨，每条取它的**第一个** MIDI 摆放，最多
@@ -2496,33 +2754,61 @@ fn donor_splice_with(
         tempo_ticks(project.bpm),
     );
 
-    // (3)/(4) 每条被映射 region 的名字与音符：名字**原地**写（只动名字字段与它之后到
-    //     `first_other` 之间的字节 ⇒ 供体在 `first_other` 及其后的字节一个都不动）；
+    // (3)/(4) 每条被映射 region 的名字与音符。
+    //
+    //     名字是**变长字段**（参考实现 §8.5 自己记过：`[u16 长度][ASCII][补到偶数][rest…]`，
+    //     "原地写、保留记录长度"会让 Logic 沿 `len→name→rest` 走偏 ⇒ 它记的失败现象就是文件被
+    //     判损坏）。**本轮实测的失败形态更精确**：`rest+0x3c` 是 region 自身长度、`rest+0xcc` 是
+    //     摆放事件引用的链接 id；名字长度一变而 `rest` 不动，Logic 就在错的偏移上读到长度 0 与
+    //     **⚠ 只在"被摆放链接引用"的 region 上重建**（供体 `rest+0xcc` 的链接 id **非 0**）：
+    //     只有这种 region 的 `rest` 偏移会被 Logic 用来找 region 长度与摆放绑定。MIT 夹具那条被补丁
+    //     的 region 实测链接 id = **0**（没有任何摆放指向它），而且它正是**唯一被 Logic 打开过**的
+    //     单轨产物的骨架 ⇒ 那条路径**一个字节都不动**（旧行为：名字在容量内原地写），否则就为了
+    //     一个没有观测到后果的差异毁掉"能打开的那份字节"。该差异如实登记为 [`NOTE_EVENT_SHAPE_CAVEAT`]
+    //     之外的 region 名补位 `非等价:`（见 `write_donor_losses`）。
     //     音符序列**只换载荷**，记录头逐字节保留供体的
     //     （kind/subtype/cluster 与 +0x0c..+0x16 的实测字）。
     let mut mapped_notes = 0usize;
     let mut clamped = false;
     let mut name_truncated = false;
-    for (index, (region_index, note_index, name_capacity, first_other)) in slots.iter().enumerate()
+    for (index, (region_index, note_index, donor_rest_start, first_other, linked)) in
+        slots.iter().enumerate()
     {
         let Some((region_name, lines, slot_clamped)) = payloads.get(index) else {
             // 没有第 index 条要映射的轨道 ⇒ 该 region 连名字都不改（保持供体原样）。
             continue;
         };
         clamped |= *slot_clamped;
-        let name_bytes = utf8_prefix(region_name, *name_capacity).as_bytes();
-        name_truncated |= name_bytes.len() < region_name.len();
-        let name_at = LOGIC_RECORD_HEADER + LOGIC_REGION_NAME_PAYLOAD_OFFSET;
-        put_u16_le(
-            &mut records[*region_index],
-            name_at,
-            name_bytes.len() as u16,
-        );
-        for byte in &mut records[*region_index][name_at + 2..LOGIC_RECORD_HEADER + *first_other] {
-            *byte = 0;
+        let name_bytes = region_name.as_bytes();
+        if *linked {
+            let donor_rest =
+                records[*region_index][LOGIC_RECORD_HEADER + *donor_rest_start..].to_vec();
+            let mut rebuilt = records[*region_index][..LOGIC_RECORD_HEADER].to_vec();
+            rebuilt.extend_from_slice(
+                &records[*region_index]
+                    [LOGIC_RECORD_HEADER..LOGIC_RECORD_HEADER + LOGIC_REGION_NAME_PAYLOAD_OFFSET],
+            );
+            rebuilt.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            rebuilt.extend_from_slice(name_bytes);
+            rebuilt.resize(LOGIC_RECORD_HEADER + region_rest_start(name_bytes.len()), 0);
+            rebuilt.extend_from_slice(&donor_rest);
+            let rebuilt_len = (rebuilt.len() - LOGIC_RECORD_HEADER) as u32;
+            put_u32_le(&mut rebuilt, LOGIC_RECORD_SIZE_OFFSET, rebuilt_len);
+            records[*region_index] = rebuilt;
+        } else {
+            // 旧行为（**逐字节保留**）：名字在第一个非零字段之前原地写，记录长度不变。
+            let capacity = *first_other - LOGIC_REGION_NAME_PAYLOAD_OFFSET - 2;
+            let truncated = utf8_prefix(region_name, capacity).as_bytes();
+            name_truncated |= truncated.len() < region_name.len();
+            let name_at = LOGIC_RECORD_HEADER + LOGIC_REGION_NAME_PAYLOAD_OFFSET;
+            put_u16_le(&mut records[*region_index], name_at, truncated.len() as u16);
+            for byte in &mut records[*region_index][name_at + 2..LOGIC_RECORD_HEADER + *first_other]
+            {
+                *byte = 0;
+            }
+            records[*region_index][name_at + 2..name_at + 2 + truncated.len()]
+                .copy_from_slice(truncated);
         }
-        records[*region_index][name_at + 2..name_at + 2 + name_bytes.len()]
-            .copy_from_slice(name_bytes);
 
         let note_payload = note_lines(lines);
         let mut rebuilt = records[*note_index][..LOGIC_RECORD_HEADER].to_vec();
@@ -2864,6 +3150,8 @@ impl LogicBuilder {
                 ),
             );
         }
+        // 音符序列形状的实测差异（两条供体路线共用同一套音符写入器）。
+        self.loss(entity.clone(), NOTE_EVENT_SHAPE_CAVEAT.to_owned());
         // 逐族登记：这些家族**在产物里**，但描述的是供体的工程（这正是本路线的收益与代价）。
         for (name, count) in template.families {
             self.loss(
@@ -2900,13 +3188,18 @@ impl LogicBuilder {
             self.loss(
                 entity.clone(),
                 format!(
-                    "{LOSS_NOT_EQUIVALENT_PREFIX} 被摆放 region 的 `qeSM` 载荷除名字字段外的其余字节是供体的：\
-                     载荷长 {} 保持不变，名字之后第一个非零字段在载荷 `{:#04x}`，名字字段的原地容量因此是 \
-                     {} 字节；名字之前（`+0x00` 起 `70 03 01 00`）与之后（`+0x57`/`+0x58`/`+0x65`/`+0x99`/\
-                     `+0xb7`/`+0xbc`/`+0xbd`/`+0xee`/`+0x120`/`+0x126`）的字节一个都没动",
+                    "{LOSS_NOT_EQUIVALENT_PREFIX} 被摆放 region 的 `qeSM` 载荷除名字字段外的其余字节是供体的，\
+                     且这条 region **故意**仍按旧行为写（名字在容量内**原地**写、记录长度不变）：载荷长 {} 保持\
+                     不变，名字之后第一个非零字段在载荷 `{:#04x}`，名字字段的原地容量因此是 {} 字节。**为什么\
+                     不按本轮实测的变长名字重建**：这条 region 的 `rest+{:#04x}` 链接 id 实测为 **0**（没有任何\
+                     摆放事件引用它），而这份 527 条记录的产物是**唯一被 Logic Pro 12.2 打开过**的字节\
+                     （sha256 `{LOGIC_OPENED_SINGLE_TRACK_SHA256}`）—— 为一个没有观测到后果的差异改它，等于\
+                     毁掉那条唯一的打开实测。它的名字补位差异因此只登记、不修。（负责人供体路线的 region 链接 id\
+                     非 0，走变长重建。）",
                     LOGIC_DONOR_REGION_PAYLOAD_BYTES,
                     LOGIC_DONOR_REGION_FIRST_OTHER_FIELD,
-                    LOGIC_DONOR_REGION_NAME_CAPACITY
+                    LOGIC_DONOR_REGION_FIRST_OTHER_FIELD - LOGIC_REGION_NAME_PAYLOAD_OFFSET - 2,
+                    LOGIC_REGION_LINK_ID_FROM_REST,
                 ),
             );
             if splice.name_truncated {
@@ -2915,7 +3208,7 @@ impl LogicBuilder {
                     format!(
                         "{LOSS_NOT_EQUIVALENT_PREFIX} region 名超过供体名字字段的原地容量 {} 字节，\
                          已按 UTF-8 边界截断（移动名字之后的供体字节比截断更坏）",
-                        LOGIC_DONOR_REGION_NAME_CAPACITY
+                        LOGIC_DONOR_REGION_FIRST_OTHER_FIELD - LOGIC_REGION_NAME_PAYLOAD_OFFSET - 2
                     ),
                 );
             }
@@ -2984,11 +3277,13 @@ impl LogicBuilder {
                 bpm = project.bpm
             ),
         );
-        for (index, (cluster, payload_bytes, name_capacity, first_other)) in
+        for (index, (cluster, payload_bytes, rest_start, first_other)) in
             template.regions.iter().enumerate()
         {
             let carrier = if index < splice.mapped_regions {
-                "本 region 承载了我们的一条轨道：只有名字字段与配对音符 `qSvE` 的**载荷**被替换"
+                "本 region 承载了我们的一条轨道：它的 `qeSM` 被**按实测重建**（`[0x00..0x0f]\
+                 [u16 名字字节数][名字][补到偶数][供体 rest 原样]`，载荷长度随名字变化），配对音符 `qSvE` 的\
+                 **载荷**被替换；`rest` 的字节只整体平移、一个都没改"
             } else {
                 "本 region 保持供体原样（没有第 N 条轨道要映射到这里）"
             };
@@ -3001,31 +3296,21 @@ impl LogicBuilder {
                 })
                 .map_or(String::new(), |record| {
                     format!(
-                        "载荷 `+0x08` 的实测字 `{:#010x}`、`+0x0c` 的 `{:#010x}`",
+                        "载荷 `+0x08` 的实测字 `{:#010x}`、`+0x0c` 的 `{:#010x}`；供体 `rest` 从载荷 \
+                         `{rest_start:#04x}` 起、长 {} 字节，`rest+{LOGIC_REGION_LENGTH_FROM_REST:#04x}` 是 \
+                         region 自身长度、`rest+{LOGIC_REGION_LINK_ID_FROM_REST:#04x}` 是摆放事件引用的链接 id",
                         record.u32_at(0x24 + 0x08).unwrap_or(0),
-                        record.u32_at(0x24 + 0x0c).unwrap_or(0)
+                        record.u32_at(0x24 + 0x0c).unwrap_or(0),
+                        payload_bytes - rest_start,
                     )
                 });
             self.loss(
                 entity.to_owned(),
                 format!(
                     "{LOSS_NOT_EQUIVALENT_PREFIX} 第 {} 条轨道 region（对象号 `{cluster:#010x}`）的 `qeSM` \
-                     载荷长 {payload_bytes} 字节不变，名字之后第一个非零字段在载荷 `{first_other:#04x}`\
-                     ⇒ 名字字段的原地容量是 {name_capacity} 字节；名字之前（`+0x00` 起 `70 03 01 00`）与\
-                     之后（`+{first_other:#04x}` 及其后）的字节一个都没动（{rest}）—— {carrier}",
+                     供体载荷 {payload_bytes} 字节、名字之后第一个非零字段在载荷 `{first_other:#04x}`；\
+                     名字之前（`+0x00` 起 `70 03 01 00`）的字节是供体的（{rest}）—— {carrier}",
                     index + 1
-                ),
-            );
-        }
-        if splice.name_truncated {
-            self.loss(
-                entity.to_owned(),
-                format!(
-                    "{LOSS_NOT_EQUIVALENT_PREFIX} region 名超过供体名字字段的原地容量（实测 {} 或 {} 字节，\
-                     取决于落在那一条 region 上），已按 UTF-8 边界截断\
-                     （移动名字之后的供体字节比截断更坏）",
-                    template.regions[0].2,
-                    template.regions[template.regions.len() - 1].2
                 ),
             );
         }
@@ -4137,6 +4422,37 @@ mod tests {
         project
     }
 
+    /// 第 `index`（1 起）条轨道的内容：`(起始 tick, 音高, 时值, 力度)`。
+    ///
+    /// **负责人 2026-10-06 的要求**：多轨产物里不同轨道必须**一眼可分辨**（音区、节奏、条数都不同），
+    /// 这样他打开 Logic 时既能判断"第二条轨道的音符在不在"，也能判断"音符对不对"。因此这里刻意让
+    /// 第 1 条与第 2 条在**三个可度量上**都不同：音区（72..76 对 36/43）、节奏（240 tick 对 960 tick）、
+    /// 条数（3 对 2）。第 3 条起只是"与前面不同"，不参与 `capacity` 2 的映射。
+    fn midi_spec_for_track(index: usize) -> Vec<(u64, u8, u64, u8)> {
+        match index {
+            // 与交给负责人的那份 `.yeban` 输入**逐条一致**（本切片报告里逐字写出）：
+            // 第 1 条 = 高音区 16 分/8 分上行（6 个音），第 2 条 = 低音区慢速（4 个音）。
+            1 => vec![
+                (0, 72, 240, 100),
+                (240, 74, 240, 100),
+                (480, 76, 240, 100),
+                (960, 77, 240, 96),
+                (1200, 79, 240, 96),
+                (1440, 81, 240, 96),
+            ],
+            2 => vec![
+                (0, 36, 800, 80),
+                (960, 43, 800, 80),
+                (1920, 36, 800, 80),
+                (2880, 38, 1600, 80),
+            ],
+            other => vec![
+                (0, 48 + other as u8, 480, 90),
+                (480, 50 + other as u8, 480, 90),
+            ],
+        }
+    }
+
     /// 一个有 `count` 条**都带 MIDI 摆放**的 `TrackKind::Midi` 轨的工程。
     ///
     /// 多轨导出的判据需要它：只有**带 MIDI 摆放**的轨道才会被映射，因此要量到 `capacity`
@@ -4159,11 +4475,12 @@ mod tests {
                 content: ClipContent::default(),
             };
             if let Some(notes) = clip.content.notes_mut() {
-                for step in 0..3u64 {
+                for (step, (start, pitch, duration, velocity)) in
+                    midi_spec_for_track(index).into_iter().enumerate()
+                {
                     let note_id = test_id(10_000 + index as u128 * 16 + step as u128);
-                    let mut note =
-                        MidiNote::new(note_id, step * 480, 60 + index as u8 + step as u8, 240);
-                    note.velocity = 90;
+                    let mut note = MidiNote::new(note_id, start, pitch, duration);
+                    note.velocity = velocity;
                     notes.insert(note_id, note);
                 }
             }
@@ -4179,7 +4496,7 @@ mod tests {
                 ClipPlacement {
                     id: placement,
                     clip_id,
-                    start_tick: 960 * (index as u64 - 1),
+                    start_tick: 0,
                     duration_ticks: 3_840,
                     loop_config: yeban_model::LoopConfig::default(),
                     muted: false,
@@ -4188,6 +4505,47 @@ mod tests {
             project.tracks.insert(track.id, track);
         }
         project
+    }
+
+    /// 测试用的最小音符事件读取器：**按实测布局**（参考实现 §8.5 + 本轮对负责人供体的复核）
+    /// 从 region 配对 `qSvE` 的**载荷**里读出 `(起始 tick, 音高, 力度, 时值)`。
+    ///
+    /// 依赖的字段偏移（**载荷**相对；全部来自实测，不是本模块的常量）：
+    ///
+    /// | 偏移 | 含义 | 来源 |
+    /// | :--- | :--- | :--- |
+    /// | 事件 32 字节 = 头 16 + 续行 16，载荷 = `32·N + 16` | 形状 | 参考实现 §8.5；本机 `quiet`/`MIT` 夹具复核 |
+    /// | 头 `+0x00` = `0x90` | MIDI note-on 状态字节 | §8.5 逐字 `+0x00 u32 90 00 00 00` |
+    /// | 头 `+0x04` = `u32` | 起始 tick = `38400 + region 相对 tick` | §8.5 逐字，并由 F4b/F4c 的"同音符换小节"证明 |
+    /// | 头 `+0x0b` = 力度 | 1..127 | §8.5 逐字 |
+    /// | 头 `+0x0c` = 音高 | MIDI note number | §8.5 逐字 |
+    /// | 续行 `+0x0c`（事件 `+0x1c`）= `u32` | 时值（960 PPQ tick） | §8.5 逐字 |
+    ///
+    /// 载荷末尾的 16 字节 `f1…3f` 是尾（`LOGIC_EVENT_SEQUENCE_TAIL`），不参与解码。
+    fn read_note_events(payload: &[u8]) -> Vec<(u32, u8, u8, u32)> {
+        assert_eq!(
+            payload.len() % 32,
+            16,
+            "音符载荷必须是 32·N + 16（实测形状）"
+        );
+        assert_eq!(
+            &payload[payload.len() - LOGIC_EVENT_SEQUENCE_TAIL.len()..],
+            LOGIC_EVENT_SEQUENCE_TAIL,
+            "音符载荷必须以实测的 16 字节尾结束"
+        );
+        let mut out = Vec::new();
+        let body = &payload[..payload.len() - LOGIC_EVENT_SEQUENCE_TAIL.len()];
+        let (events, rest) = body.as_chunks::<32>();
+        assert!(rest.is_empty(), "音符载荷必须由整 32 字节事件组成");
+        for event in events {
+            assert_eq!(event[0], LOGIC_NOTE_STATUS, "音符头行的首字节");
+            let start = u32::from_le_bytes([event[4], event[5], event[6], event[7]]);
+            let velocity = event[0x0b];
+            let pitch = event[0x0c];
+            let duration = u32::from_le_bytes([event[0x1c], event[0x1d], event[0x1e], event[0x1f]]);
+            out.push((start, pitch, velocity, duration));
+        }
+        out
     }
 
     // ---- 测试用的最小读取器（照 groove 的 `logicToArrangement.ts` 翻译） ----
@@ -5938,7 +6296,11 @@ mod tests {
             "2 条 MIDI 轨必须走负责人 2 轨供体的 507 条记录"
         );
         assert_eq!(data.mapped_regions, 2, "两条轨道各映射一个 region");
-        assert_eq!(data.mapped_notes, 6, "两条轨道各 3 个音符");
+        assert_eq!(
+            data.mapped_notes,
+            midi_spec_for_track(1).len() + midi_spec_for_track(2).len(),
+            "两条轨道的音符条数之和（夹具第 1 条 3 个、第 2 条 2 个 ⇒ 刻意不同，便于分辨）"
+        );
         let text = data
             .losses
             .iter()
@@ -6326,8 +6688,12 @@ mod tests {
             "2 轨产物必须登记负责人供体版本的打开范围"
         );
         assert!(
-            text.contains("**本次产物不在那个结论里**"),
-            "必须明写本次产物不在打开结论里"
+            text.contains("尚未被任何 Logic 打开"),
+            "必须明写本轮修复后的产物还没有打开实测"
+        );
+        assert!(
+            text.contains("两条轨道，第一条有音符，第二条没有"),
+            "必须逐字写下负责人 2026-10-06 在 Logic Pro 12.2 上量到的现象"
         );
         let changed: Vec<usize> = (0..donor.len())
             .filter(|index| donor[*index] != output[*index])
@@ -6355,6 +6721,262 @@ mod tests {
                 index + 1
             );
         }
+    }
+
+    /// 编排区摆放事件的读取器：返回**所有**能解析成摆放列表的记录里的
+    /// `(链接 id, 1 起轨道号, 位置, region 槽字节)`，按记录流顺序、记录内事件顺序。
+    ///
+    /// ⚠ 有意**不按对象号挑记录**：负责人供体的摆放列表在对象号 `0x0004_0000`，而 MIT 夹具的
+    /// 在 `0x0008_0000`（见 [`LOGIC_ARRANGE_CLUSTER`] 的实测注）。判据因此按"载荷首 4 字节 ==
+    /// [`LOGIC_ARRANGE_MIDI_MARKER`]"逐记录解析，再把结果并起来核对。
+    fn read_placements(bytes: &[u8]) -> Vec<(u32, u32, u32, u32)> {
+        let mut out = Vec::new();
+        for record in read_records(bytes) {
+            // 摆放列表的签名：载荷首 4 字节是类型记号，**且**载荷 = k×80 + 实测的 16 字节尾
+            // （实测：负责人供体 176 = 2×80 + 16、1 轨那份 96 = 1×80 + 16）。少了这个签名，
+            // 别的以 `20 00 00 00` 开头的 `qSvE` 会被误读成摆放。
+            if record.tag != LOGIC_SEQUENCE_TAG
+                || record.body.len() < LOGIC_ARRANGE_EVENT_LEN + LOGIC_EVENT_SEQUENCE_TAIL.len()
+                || u32_le(&record.body, 0) != LOGIC_ARRANGE_MIDI_MARKER
+                || !record.body.ends_with(&LOGIC_EVENT_SEQUENCE_TAIL)
+                || !(record.body.len() - LOGIC_EVENT_SEQUENCE_TAIL.len())
+                    .is_multiple_of(LOGIC_ARRANGE_EVENT_LEN)
+            {
+                continue;
+            }
+            let events = &record.body[..record.body.len() - LOGIC_EVENT_SEQUENCE_TAIL.len()];
+            let (events, _tail) = events.as_chunks::<LOGIC_ARRANGE_EVENT_LEN>();
+            for event in events {
+                if u32_le(event, 0) != LOGIC_ARRANGE_MIDI_MARKER {
+                    break;
+                }
+                out.push((
+                    u32_le(event, LOGIC_PLACEMENT_LINK_ID_OFFSET),
+                    u32::from(event[LOGIC_PLACEMENT_TRACK_OFFSET]),
+                    u32_le(event, LOGIC_PLACEMENT_POSITION_OFFSET),
+                    u32_le(event, LOGIC_PLACEMENT_REGION_OFFSET),
+                ));
+            }
+        }
+        out
+    }
+
+    /// **判据（有牙）**：region（`qeSM`）的名字是**变长字段**，名字之后的 `rest` 紧随其后
+    /// （补到**偶数载荷偏移**），因此 `rest+0x3c` 的 region 长度与 `rest+0xcc` 的**链接 id**
+    /// 都落在 Logic 真正会读的偏移上。
+    ///
+    /// 依赖的偏移全部来自**实测**（见 [`LOGIC_REGION_REST_ALIGNMENT`] /
+    /// [`LOGIC_REGION_LINK_ID_FROM_REST`]）：名字长度 `u16` @载荷 `+0x10`、名字 @`+0x12`、
+    /// `rest` 起点 = `0x12 + 名字字节数` 补齐到偶数。断言三件事：
+    /// ① 供体两条 region 的 `rest` 起点等于钉住的实测字面量；
+    /// ② 产物每条被映射 region 的载荷长 = `rest 起点 + 供体 rest 长度`（名字变长/变短都成立）；
+    /// ③ 产物 region `rest+0xcc` 的链接 id **逐条等于**编排摆放事件的链接 id，
+    ///    且摆放事件的轨道号是 1 / 2、region 槽字节 = region 对象号 >> 16。
+    #[test]
+    fn region_rest_follows_the_variable_length_name_and_keeps_the_placement_link() {
+        // ① 供体自身必须先符合这条规则，否则本判据问的不是同一个问题。
+        let donor_records = read_records(LOGIC_OWNER_DONOR_2T_PROJECT_DATA);
+        for (cluster, payload_bytes, rest_start, first_other) in LOGIC_OWNER_DONOR_TRACK_REGIONS {
+            let donor = donor_records
+                .iter()
+                .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == cluster)
+                .expect("供体 region `qeSM`");
+            let name_len = usize::from(u16_le(&donor.body, LOGIC_REGION_NAME_PAYLOAD_OFFSET));
+            assert_eq!(
+                region_rest_start(name_len),
+                rest_start,
+                "供体 region `{cluster:#010x}` 的 rest 起点（名字 {name_len} 字节）"
+            );
+            assert_eq!(donor.body.len(), payload_bytes, "供体 region 载荷长");
+            assert!(rest_start < first_other, "rest 必须落在第一个非零字段之前");
+        }
+
+        // 夹具的名字是 `Clip 1` / `Clip 2`（各 6 字节）：两条都比供体的 `up:`/`down:` 长，
+        // 因此这一条**同时**覆盖"名字变长"（两个方向里更难的那个）。
+        let project = project_with_midi_tracks(2);
+        let data = project_data_from_donor(&project);
+        let records = read_records(&data.bytes);
+        let placements = read_placements(&data.bytes);
+        assert!(
+            placements.len() >= 2,
+            "产物里至少有两条摆放事件，实测 {}",
+            placements.len()
+        );
+
+        for (index, (cluster, _, donor_rest_start, _)) in
+            LOGIC_OWNER_DONOR_TRACK_REGIONS.iter().enumerate()
+        {
+            let region = records
+                .iter()
+                .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == *cluster)
+                .expect("产物 region `qeSM`");
+            let name = read_region_name(region);
+            assert_eq!(name, format!("Clip {}", index + 1), "region 名");
+            let name_len = usize::from(u16_le(&region.body, LOGIC_REGION_NAME_PAYLOAD_OFFSET));
+            assert_eq!(name_len, name.len(), "名字长度字段 = 字节数");
+            let rest_start = region_rest_start(name_len);
+            assert_eq!(
+                region.body.len(),
+                rest_start + (LOGIC_OWNER_DONOR_TRACK_REGIONS[index].1 - donor_rest_start),
+                "重建后的 region 载荷长 = 新 rest 起点 + 供体 rest 长度"
+            );
+            assert_eq!(
+                region.body.len() - rest_start,
+                LOGIC_OWNER_DONOR_TRACK_REGIONS[index].1 - donor_rest_start,
+                "供体 rest 的**字节数**一个没变（只整体平移）"
+            );
+            // `rest` 必须**逐字节等于供体的**（我们只替换名字；长度字段/链接 id 等一个都不改）。
+            let donor_region = donor_records
+                .iter()
+                .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == *cluster)
+                .expect("供体 region `qeSM`");
+            assert_eq!(
+                &region.body[rest_start..],
+                &donor_region.body[*donor_rest_start..],
+                "第 {} 条 region 的 rest 必须逐字节等于供体的（只整体平移）",
+                index + 1
+            );
+
+            // ③ 链接 id：产物 region 的 `rest+0xcc` == 编排摆放事件的 `+0x10`。
+            let link = u32_le(&region.body, rest_start + LOGIC_REGION_LINK_ID_FROM_REST);
+            let placement = placements
+                .iter()
+                .find(|placement| placement.0 == link)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "第 {} 条 region 的链接 id {link:#x} 在 {} 条摆放事件里找不到（这正是修复前的失败形态）",
+                        index + 1,
+                        placements.len()
+                    )
+                });
+            assert_eq!(
+                placement.1,
+                index as u32 + 1,
+                "第 {} 条 region 对应的摆放事件的 1 起轨道号",
+                index + 1
+            );
+            assert_eq!(
+                placement.3,
+                cluster >> 16,
+                "第 {} 条摆放事件指向的 region 槽字节",
+                index + 1
+            );
+            // region 自身长度（`rest+0x3c`）必须仍是供体的值（非 0），否则 Logic 会把它读成空 region。
+            assert_eq!(
+                u32_le(&region.body, rest_start + LOGIC_REGION_LENGTH_FROM_REST),
+                u32_le(
+                    &donor_records
+                        .iter()
+                        .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == *cluster)
+                        .expect("供体 region")
+                        .body,
+                    donor_rest_start + LOGIC_REGION_LENGTH_FROM_REST
+                ),
+                "第 {} 条 region 的自身长度必须与供体相同",
+                index + 1
+            );
+            assert_ne!(
+                u32_le(&region.body, rest_start + LOGIC_REGION_LENGTH_FROM_REST),
+                0,
+                "region 自身长度不得为 0（修复前第二条 region 正是被读成 0）"
+            );
+        }
+    }
+
+    /// **判据（有牙）**：把产物**读回来**，逐条核对每条被映射轨道的音符**内容** ——
+    /// 条数、起始 tick、音高、力度、时值；并断言**两条轨道的内容不同**（负责人 2026-10-06 的
+    /// 要求：不同的轨道要写不同的音符，好让他一眼分辨、并检查音符是否正确）。
+    ///
+    /// 解码依赖的字段偏移见 [`tests::read_note_events`] 的文档（全部来自参考实现 §8.5 的实测表）。
+    /// 期望值是**实测字面量**（不是从 [`midi_spec_for_track`] 反算的 —— 那样夹具一改判据就跟着改，
+    /// 等于没有牙）；同时**另**断言这串字面量仍等于夹具声明的内容，因此夹具漂移与写入器漂移
+    /// **两个方向**都会红。
+    #[test]
+    fn exported_note_payloads_carry_the_source_notes_for_every_mapped_track() {
+        // (起始 tick, 音高, 力度, 时值) —— 与交给负责人的 `.yeban` 输入逐条一致。
+        let expected_per_track: [&[(u32, u8, u8, u32)]; 2] = [
+            &[
+                (38_400, 72, 100, 240),
+                (38_640, 74, 100, 240),
+                (38_880, 76, 100, 240),
+                (39_360, 77, 96, 240),
+                (39_600, 79, 96, 240),
+                (39_840, 81, 96, 240),
+            ],
+            &[
+                (38_400, 36, 80, 800),
+                (39_360, 43, 80, 800),
+                (40_320, 36, 80, 800),
+                (41_280, 38, 80, 1_600),
+            ],
+        ];
+
+        let project = project_with_midi_tracks(2);
+        let data = project_data_from_donor(&project);
+        let records = read_records(&data.bytes);
+
+        let mut per_track: Vec<Vec<(u32, u8, u8, u32)>> = Vec::new();
+        for (index, (cluster, _, _, _)) in LOGIC_OWNER_DONOR_TRACK_REGIONS.iter().enumerate() {
+            let notes = records
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == *cluster)
+                .expect("被映射 region 的配对 `qSvE`");
+            let decoded = read_note_events(&notes.body);
+            assert_eq!(
+                decoded,
+                expected_per_track[index].to_vec(),
+                "第 {} 条轨道的音符内容（起始 tick, 音高, 力度, 时值）必须逐条等于源工程",
+                index + 1
+            );
+            per_track.push(decoded);
+        }
+
+        // 夹具声明的内容必须与上面这串实测字面量一致（**两个方向**都有牙）。
+        for (index, expected) in expected_per_track.iter().enumerate() {
+            let declared: Vec<(u32, u8, u8, u32)> = midi_spec_for_track(index + 1)
+                .into_iter()
+                .map(|(start, pitch, duration, velocity)| {
+                    (
+                        u32::try_from(start + LOGIC_NOTE_ORIGIN_TICKS).expect("tick"),
+                        pitch,
+                        velocity,
+                        u32::try_from(duration).expect("duration"),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                declared,
+                expected.to_vec(),
+                "夹具第 {} 条轨道的声明内容必须等于判据钉住的字面量",
+                index + 1
+            );
+        }
+
+        // **可分辨**：条数不同、音高集合不同、音区不同 —— 打开 Logic 时两条轨道一眼能分辨。
+        assert_ne!(
+            per_track[0].len(),
+            per_track[1].len(),
+            "两条轨道的音符**条数**必须不同"
+        );
+        let pitches = |track: &Vec<(u32, u8, u8, u32)>| {
+            let mut set: Vec<u8> = track.iter().map(|(_, pitch, _, _)| *pitch).collect();
+            set.sort_unstable();
+            set.dedup();
+            set
+        };
+        assert_ne!(
+            pitches(&per_track[0]),
+            pitches(&per_track[1]),
+            "两条轨道的**音高集合**必须不同"
+        );
+        assert!(
+            per_track[0].iter().all(|(_, pitch, _, _)| *pitch >= 60),
+            "第 1 条轨道是高音区"
+        );
+        assert!(
+            per_track[1].iter().all(|(_, pitch, _, _)| *pitch < 60),
+            "第 2 条轨道是低音区"
+        );
     }
 
     /// **判据（有牙）**：供体选择只由 **MIDI 轨条数**决定 —— 1 轨（及 0 轨）仍走 MIT 那份
@@ -6422,6 +7044,37 @@ mod tests {
                 .count(),
             0,
             "单轨产物里不得出现负责人 2 轨供体的 sha256"
+        );
+
+        // **结构上的"字节冻结"（第 415 轮新增）**：MIT 那条 region 的链接 id 实测为 **0**
+        // （没有任何摆放事件引用它），因此它走**旧行为**（名字原地写、记录长度不变）而**不是**
+        // 本轮给负责人路线加的变长重建。若有人把这条也换成重建，载荷长会从 305 变成 303 ⇒ 红。
+        let region = read_records(&data.bytes)
+            .into_iter()
+            .find(|record| {
+                record.tag == LOGIC_REGION_TAG && record.cluster == LOGIC_DONOR_REGION_CLUSTER
+            })
+            .expect("MIT 供体的 region `qeSM`");
+        assert_eq!(
+            region.body.len(),
+            LOGIC_DONOR_REGION_PAYLOAD_BYTES,
+            "MIT 那条 region 的载荷长必须保持供体的 305 字节（字节冻结：它是唯一被 Logic 打开过的骨架）"
+        );
+        assert_eq!(
+            read_region_name(&region),
+            "Piano",
+            "名字仍是原地写在载荷 +0x12"
+        );
+        assert_eq!(
+            region_rest_start(5),
+            0x18,
+            "本例名字 5 字节补齐到 0x18，与供体 `Untitled`（8 字节）的 0x1a **不同** —— \
+             这正是两条路线必须分开处理的原因"
+        );
+        assert_ne!(
+            region_rest_start(5),
+            LOGIC_DONOR_REGION_REST_START,
+            "供体 rest 起点与本例补齐后的起点必须不同，否则本判据问的不是同一个问题"
         );
     }
 
