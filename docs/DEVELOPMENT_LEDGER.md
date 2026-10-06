@@ -8867,3 +8867,21 @@ with "不许把看起来有当成有".
 **Standing state, for a reader joining here**: Phase 4 6 完成 / 4 部分 / 0 PENDING (from 4/5/1 at the start of this line); Phase 0 2/5/2; all fifteen MUST-GATEs
 wired; 19 已接线 / 0 部分 / 2 PENDING where both PENDINGs are ruled; both CI sources operational with the in-process-mcp criteria now CI-executed; every commit of
 this session carries a green verdict read back; the buildable queue is empty and the six remaining questions are each confirmed unruled by grep.
+
+
+### Round 367: verifying D45's "both sides share one implementation" - they do, and the shared layer is the model
+
+The objective lists the undo entry as "UI 与 MCP 两侧同接（**共用同一实现**）", and that phrase is a claim worth checking rather than repeating. Both fronts point at
+the same types from `yeban-model`:
+
+* the app's `crates/yeban-app/src/undo.rs` imports `CommitRequest`, `UndoDisplay`, `UndoRefusal`, `UndoSession`, `UndoState` and friends, and its module header
+  states that the display is read out of **`CommitGraph` plus `UndoCursor`**;
+* the MCP's `crates/yeban-mcp/src/domain/mod.rs` imports `CommitDraft`, `CommitGraph`, `EntityId`, `Op`, `OpOrigin` and holds **`graph: CommitGraph`** with an
+  optional undo history beside it.
+
+So the single implementation is the model layer's commit graph and undo session, and the two fronts are genuinely two views of it - which is exactly what `D45`
+requires and what the objective's wording asserts. Another audit that came back clean, and a useful one to have on the record because "同接" is easy to claim and
+easy to get wrong (two parallel undo stacks would look identical from the outside until they diverged).
+
+**Status**: tree green and clean at `de5b423` (= `origin/main`); automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4
+6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; the buildable queue is empty and the six open questions are each confirmed unruled by grep.
