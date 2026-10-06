@@ -9881,3 +9881,22 @@ not remain in the tree.
 **A fourth Logic test is informative**, and the负责人 has been asked for it. The two outcomes are both useful: success points to channel-slot activation as the next
 step, and the same generic dialog would prove the blocker lies in the four patched records or in `MetaData.plist`, not in the missing cluster. Nothing in the repository
 claims Logic opens the output.
+
+
+### Round 407: LOGIC PRO OPENS THE EXPORT - the last unproven claim in this line is now measured
+
+The负责人 opened `/tmp/yeban-logic-open5/Yeban.logicx` in **Logic Pro 12.2** on this machine and reports: **可以正常打开** - it opens normally.
+
+That closes the claim this line has been chasing since round 389, and it closes it the way the objective demanded: by measurement, not by assertion.
+
+**What was tested, exactly.** The artifact is the **donor-spliced** export: the MIT fixture's 527-record stream carried in donor order with exactly four records patched (global meter, global tempo, the placed region's name field, that region's note payload). So the precise claim is
+"**Logic Pro 12.2 opens the donor-spliced export**", and it does **not** claim that a synthesised-from-nothing `.logicx` opens - the synthesized writer's own output was refused twice, and that
+history is recorded in rounds 401-405.
+
+**The path that got there, in order, each step measured**: the root header `+0x04` is a format version code and zero reads as "Logic 4" (rounds 401-402); the reference `jonkubis/logicproformatwriter` (MIT) was reachable and answered the semantic questions (round 404); four unregistered defects were fixed in records we already wrote - meter payload 80 -> 96 B, tempo payload 16 -> 48 B with position 38400 and the real BPM (it had written position 0 and tempo 0), the note payload's 16-byte tail, and the note-event flags at `+0x0f`/`+0x10`/`+0x17` (rounds 404, 406); and then the负责人 chose option A, the donor-template route, and it worked (round 406).
+
+**What this does not claim, and the ledger stays narrow about it**: the donor carries **one** arrange row, so at most one MIDI track's first placement is mapped and other tracks are registered as `未映射:`; there is no channel-slot activation yet; the compact `gnoS` body is untouched; and the root version code is the donor's `0x09CF`.
+
+**Also landed**: `750df86` vendors the MIT reference's own specification into `docs/research/logic-pro-projectdata-format.md` (whole file 94,889 B, verbatim body 92,606 B with sha256 verified against `/tmp/logic-ref/` by `cmp`, provenance header 2,283 B naming the upstream repository, the MIT licence, the verbatim copyright line and the as-fetched hashes). That makes the research material durable, because it previously existed only in `/tmp`, which had already been cleared once. Nothing else needed registering: the guards key on nothing under `docs/research/`, and the docs scan went 107 -> 108 files with no broken link.
+
+**Status**: `4bdc49e` and `750df86` to be pushed by this round; Phase 4 6 完成 / 5 部分 / 0 PENDING; the exporter's claim can now say **Logic Pro 12.2 opens the donor-spliced export**, which is the first time this repository has been able to say anything of the kind.
