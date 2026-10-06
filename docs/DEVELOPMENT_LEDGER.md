@@ -8765,3 +8765,30 @@ already proven to dispatch, and the round-358 failure taught me to copy an exist
 `ROAD-M0-003`, `ROAD-M0-006` and `ROAD-M4-006` to it, then read the verdicts back and move the four rows on evidence.
 **What I would do on (b)**: record 未达标 in the four rows with the hosted reading and the caveat, and close HD-49 as ruled - no code change.
 **On (c)**: no action, and this brief stays as the standing explanation.
+
+
+### Round 362: retraction - HD-49 was already ruled (HD-38 / D50), and the answer is (c), not (a)
+
+The round-361 brief asked the负责人 to pick between a reference runner, hosted readings, and long-term PENDING. Reading `docs/ledger/human-decisions.md` and
+`ADR-0001` before assuming the question was open shows it was **not**: `HD-38` (self-hosted fixed-frequency runner budget, which decides `BASELINE-003/005` and DoD 4)
+is ruled **B** - those gates stay **PENDING long-term** - recorded as **已裁决 2026-10-04** and again **2026-10-05 by the human负责人**, with the explicit reason that
+GitHub's open-source CI quota is unlimited and saving money must not cost development and test cadence, cross-referenced as **`ADR-0001 D50`**. The same entry adds
+a caveat I should have known: unlimited quota is **not** unlimited concurrency (measured `in_progress` stuck at 1-2), so the one-push-one-batch rule (L32) stays in
+force, with its justification restated as **verdict attribution** rather than runner scarcity.
+
+**So my recommendation (a) is ruled out by an existing decision, and the ruled state is (c)**: `BASELINE-003`, `ROAD-M0-003`, `ROAD-M0-006` and `ROAD-M4-006` are
+PENDING **by decision**, not by neglect. I withdraw the (a) recommendation and stop asking for this ruling; the brief stays as the explanation of why, with this
+entry as its correction.
+
+**Fourth time this session that a premise turned out to be stale** - and the first time it was **my own question** that was stale rather than a ledger row. The
+pattern is now unmistakable and worth stating as a rule for the next line: **before asking for a ruling, grep `human-decisions.md` and the ADRs for it**. The
+objective's own discipline ("未读回的判决等于没有判决") has a converse that bit me here: **a judgment already read and recorded still counts**, and re-asking for it is
+not diligence but noise.
+
+**Also confirmed**: the whole `D45`-`D55` set is **Accepted 2026-10-05** in `ADR-0001` (D45 undo both sides sharing one implementation, D46 MCP tool expansion,
+D47 MIDI export's single exit, D48 dryRun + IME bits, D49 yeban-theory wiring, D50 no self-hosted runner, D51 in-workspace dependency edges, D52 `BASELINE-005`
+deferred, D53 `BASELINE-006` deferred, D54 `MUST-GATE-014` material via groove, D55 legal/site after 1.0.0) - so the objective's "deliver ratified D45-D55" has a
+ratified frame and this session's work sits inside it.
+
+**Status**: tree green and clean; the real open questions are the six that remain genuinely unanswered (N2, loudness transport, `D47` coverage of `.als`, the
+`MUST-GATE-014` material choice, whether a reference `.als` will be supplied, and the `M4-008` single-authority design decision) - not seven.
