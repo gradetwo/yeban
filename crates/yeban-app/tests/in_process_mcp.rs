@@ -46,6 +46,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use yeban_app::mcp_mount::{self, InProcessMcp, MountError, SessionSource};
+use yeban_mcp::domain::engine_state::EngineReadings;
 use yeban_mcp::security::{AuthContext, Denial, RunMode, Scope, ScopeSet, authorize};
 use yeban_mcp::tools::TOOL_COUNT;
 use yeban_mcp::transport::http::{BEARER_CHALLENGE, MCP_PATH};
@@ -143,6 +144,44 @@ fn call(address: SocketAddr, authorization: Option<&str>, body: &str) -> Reply {
 /// 规范样本工程（与 `http.rs` 的单元判据、`live_ui_mcp.rs` 用的是同一份）。
 fn sample_project() -> YebanProjectV1 {
     yeban_model::samples::filled_project()
+}
+
+/// `[ARCH-UI-002]` 契约里的**五个响度字段**（`yeban_query_engine_state` 的 `engine` 对象）。
+///
+/// 这份清单是判据的**唯一**口径：正反两条（未测量 ⇒ 全 `null` / 已交付 ⇒ 回显）
+/// 都从它派生，因此"漏检查一个字段"在结构上不可能。
+const LOUDNESS_FIELDS: [&str; 5] = [
+    "integratedLufs",
+    "momentaryLufs",
+    "shortTermLufs",
+    "loudnessRangeLu",
+    "truePeakDbfs",
+];
+
+/// 断言一个读数对象里的五个响度字段**逐个**是指定值（`None` = 必须是 `null`）。
+///
+/// 为什么不是 `assert_eq!(object, expected)`：那只会在整块不等时报错，而这里要的是
+/// **逐字段**的证据 —— 缺一个键与"值是 null"在报告里必须能分开。
+fn assert_loudness(object: &Value, expected: [Option<f64>; 5], where_: &str) {
+    for (field, want) in LOUDNESS_FIELDS.iter().zip(expected) {
+        let got = &object[*field];
+        match want {
+            None => assert!(
+                got.is_null(),
+                "{where_}: `{field}` 未测量时必须是 null, 实际 {got}"
+            ),
+            Some(want) => {
+                let got = got
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("{where_}: `{field}` 应当是数值, 实际 {got}"));
+                // 读数是 `f32`、载荷是 `f64`：容差与 `engine_state.rs` 的判据同口径。
+                assert!(
+                    (got - want).abs() < 1e-4,
+                    "{where_}: `{field}` 应在容差内回显: got {got}, want {want}"
+                );
+            }
+        }
+    }
 }
 
 /// **判据 1**：两道运行期开关的字面值与判定表，以及"**开关关着 ⇒ 一位都不碰**"。
@@ -341,4 +380,199 @@ fn the_round_trip_stops_leaving_nothing_listening() {
         TcpStream::connect_timeout(&address, IO_TIMEOUT).is_err(),
         "停机之后 {endpoint} 上还有东西在接受连接 —— 「停止」不是真的"
     );
+}
+
+/// **判据 3（`docs/ledger/open-questions.md` 问题 2 选 (a)）**：响度读数**越过既有的
+/// 环回控制面**到客户端 —— 真 socket、真令牌、同一个端口。
+///
+/// ## 这条判据要证的句子（两句，缺一不可）
+///
+/// 1. **在场**：宿主读到一次引擎响度读数之后，一个**已经连过**的客户端再调用
+///    `yeban_query_engine_state`（带 `since` 游标）就会收到**那一条**更新，
+///    五个字段逐个回显，`readingsRevision` 严格递增；
+/// 2. **缺席**：没有任何测量可交付时（宿主还没注入），五个字段**全部是 `null`** ——
+///    如契约所定，服务端绝不编造 `0`。
+///
+/// ## 论证顺序（每一步都用上一步的实读值）
+///
+/// | 步 | 动作 | 读回 |
+/// | :--- | :--- | :--- |
+/// | 1 | 缺省调用（无游标） | 五个字段全 `null`、`readingsRevision = 0`、**没有** `readingsStream` 段 |
+/// | 2 | 宿主注入一次**真的**读数（采样率 = 本工程、缓冲 128、LUFS/真峰值都有值） | `readingsRevision = 1` |
+/// | 3 | 客户端带第 1 步的游标（`0`）再调一次 | `updates` 恰好 **1** 条，就是第 2 步注入的那份 |
+/// | 4 | 同游标再调一次（客户端还没更新游标） | `updates` **仍然**是那 1 条 —— 游标是幂等的，不是"消费即消失" |
+/// | 5 | 客户端推进游标（`1`）再调 | `updates` 空、`agedOut = false` |
+/// | 6 | 宿主注入**第二条**（响度值不同） | `readingsRevision = 2` |
+/// | 7 | 客户端带游标 `1` | `updates` 恰好 1 条 = 第 6 步那条（**旧的不会重放**） |
+///
+/// ## 为什么不是"服务端主动推"
+///
+/// `yeban-mcp` 的 HTTP 传输是**一请求一响应**（无 keep-alive / 无 chunked）；
+/// 服务端无法在同一条连接上主动写第二条报文，除非发明第二套机制。因此交付形态是
+/// **有修订号的游标**（`docs/ledger/open-questions.md` 问题 2 的 (a) 最小诚实形态），
+/// 判据证明的正是"宿主一注入，客户端下一次调用**必然**拿到那一条"。
+///
+/// ## 这条判据怎么变红（负向实测见工作线报告）
+///
+/// - 摘掉 `InProcessMcp::engine_readings_handle` 的接线（让注入打到**另一个**分发器）⇒ 第 3 步
+///   拿不到更新；
+/// - 让 `Domain::set_engine_readings` 不推进修订号 ⇒ 第 3 步的 `updates` 为空；
+/// - 让 `engine_state::readings_record` 漏掉五个字段 ⇒ 第 3 + 7 步的逐字段断言变红。
+#[test]
+fn a_client_receives_loudness_updates_over_the_in_process_control_plane() {
+    let project = sample_project();
+    let project_rate = project.sample_rate().hz();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(PathBuf::from("sample:loudness")),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let address = mount.address();
+    let bearer = format!("Bearer {}", mount.token().expose());
+    // 宿主侧注入口：与工作线程**共享**那一个会话（这是判据 3 的第 2 步与第 6 步）。
+    let handle = mount.engine_readings_handle();
+
+    // ---- 1. 尚未测量：五个字段全 null + 修订 0 + 缺省调用**没有**增量段 ----
+    let query = |since: Option<u64>| {
+        let arguments = match since {
+            Some(value) => format!(r#"{{"since":{value}}}"#),
+            None => "{}".to_owned(),
+        };
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{{"name":"yeban_query_engine_state","arguments":{arguments}}}}}"#
+        );
+        let reply = call(address, Some(&bearer), &body);
+        assert_eq!(reply.status, 200, "领域调用是带内的; 体={}", reply.body);
+        reply.json()
+    };
+
+    let first = query(None);
+    assert_eq!(first["result"]["status"], "success", "{first}");
+    assert_eq!(
+        first["result"]["data"]["engine"]["bufferSource"], "unavailable",
+        "没有宿主注入时缓冲读数必须如实说不知道: {first}"
+    );
+    assert_loudness(
+        &first["result"]["data"]["engine"],
+        [None; 5],
+        "未测量（缺省调用）",
+    );
+    assert_eq!(
+        first["result"]["data"]["engine"]["readingsRevision"], 0,
+        "从未注入 ⇒ 修订号 0"
+    );
+    assert!(
+        first["result"]["data"].get("readingsStream").is_none(),
+        "缺省调用（不带 since）不得多出增量段: {first}"
+    );
+
+    // ---- 2. 宿主注入一次**真的**读数（采样率来自本工程、响度有值） ----
+    let first_reading = EngineReadings {
+        sample_rate: project_rate,
+        buffer_frames: 128,
+        integrated_lufs: Some(-14.0),
+        momentary_lufs: Some(-13.5),
+        short_term_lufs: Some(-13.8),
+        loudness_range_lu: Some(6.0),
+        true_peak_dbfs: Some(-1.0),
+    };
+    handle.set_engine_readings(Some(first_reading));
+
+    // ---- 3. 客户端带第 1 步的游标 ⇒ 恰好那一条更新 ----
+    let delivered = query(Some(0));
+    assert_eq!(delivered["result"]["status"], "success", "{delivered}");
+    let engine = &delivered["result"]["data"]["engine"];
+    assert_eq!(
+        engine["readingsRevision"], 1,
+        "一次注入 ⇒ 一次修订: {delivered}"
+    );
+    assert_eq!(engine["bufferFrames"], 128);
+    assert_eq!(engine["bufferSource"], "hostEngineMirror");
+    assert_eq!(engine["sampleRateMatchesMirror"], true);
+    assert_loudness(
+        engine,
+        [Some(-14.0), Some(-13.5), Some(-13.8), Some(6.0), Some(-1.0)],
+        "已交付（当前读数）",
+    );
+
+    let stream = &delivered["result"]["data"]["readingsStream"];
+    assert_eq!(stream["since"], 0);
+    assert_eq!(stream["revision"], 1);
+    assert_eq!(stream["agedOut"], false);
+    let updates = stream["updates"].as_array().expect("updates 是数组");
+    assert_eq!(updates.len(), 1, "游标 0 ⇒ 只给修订 1 那一条: {stream}");
+    assert_eq!(updates[0]["revision"], 1);
+    assert_eq!(updates[0]["sampleRate"], project_rate);
+    assert_eq!(updates[0]["bufferFrames"], 128);
+    assert_loudness(
+        &updates[0],
+        [Some(-14.0), Some(-13.5), Some(-13.8), Some(6.0), Some(-1.0)],
+        "已交付（增量记录）",
+    );
+
+    // ---- 4. 同一个游标再调 ⇒ 仍然是那一条（游标幂等，不是消费即消失） ----
+    let again = query(Some(0));
+    assert_eq!(
+        again["result"]["data"]["readingsStream"]["updates"]
+            .as_array()
+            .expect("数组")
+            .len(),
+        1,
+        "游标没推进 ⇒ 同一条仍要给出: {again}"
+    );
+
+    // ---- 5. 客户端推进游标 ⇒ 没有新东西，也**不**谎报 agedOut ----
+    let caught_up = query(Some(1));
+    let stream = &caught_up["result"]["data"]["readingsStream"];
+    assert_eq!(stream["agedOut"], false);
+    assert_eq!(
+        stream["updates"].as_array().expect("数组").len(),
+        0,
+        "已经见过修订 1 ⇒ 没有新更新: {caught_up}"
+    );
+
+    // ---- 6. 第二条读数（值不同）⇒ 第二次修订 ----
+    handle.set_engine_readings(Some(EngineReadings {
+        sample_rate: project_rate,
+        buffer_frames: 256,
+        integrated_lufs: Some(-9.0),
+        momentary_lufs: Some(-8.5),
+        short_term_lufs: Some(-8.8),
+        loudness_range_lu: Some(3.0),
+        true_peak_dbfs: Some(-0.5),
+    }));
+
+    // ---- 7. 客户端带旧游标 ⇒ **只**拿到新的那一条（旧的不得重放） ----
+    let next = query(Some(1));
+    assert_eq!(next["result"]["data"]["engine"]["readingsRevision"], 2);
+    let stream = &next["result"]["data"]["readingsStream"];
+    assert_eq!(stream["since"], 1);
+    assert_eq!(stream["revision"], 2);
+    let updates = stream["updates"].as_array().expect("数组");
+    assert_eq!(updates.len(), 1, "只给修订 2: {stream}");
+    assert_eq!(updates[0]["revision"], 2);
+    assert_eq!(updates[0]["bufferFrames"], 256);
+    assert_loudness(
+        &updates[0],
+        [Some(-9.0), Some(-8.5), Some(-8.8), Some(3.0), Some(-0.5)],
+        "第二条更新",
+    );
+
+    // ---- 8. "清空回未测量"也必须到得了客户端（不是只加不减的单向流） ----
+    handle.set_engine_readings(None);
+    let cleared = query(Some(2));
+    assert_eq!(cleared["result"]["data"]["engine"]["readingsRevision"], 3);
+    assert_eq!(
+        cleared["result"]["data"]["engine"]["bufferSource"], "unavailable",
+        "清除之后必须如实回到不知道: {cleared}"
+    );
+    assert_loudness(
+        &cleared["result"]["data"]["engine"],
+        [None; 5],
+        "清除之后（当前读数）",
+    );
+
+    mount.stop().expect("停机必须成功（有 5 秒上限）");
 }

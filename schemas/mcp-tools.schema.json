@@ -359,11 +359,17 @@
         "yeban_query_engine_state": {
           "title": "yeban_query_engine_state",
           "type": "object",
-          "description": "查询某轨的设备链与引擎/会话读数 (采样率/缓冲/走带位置/是否播放)。只读: 三份状态各有唯一来源 (project.audio_config / SessionRuntimeState / 宿主注入的引擎镜像)。",
+          "description": "查询某轨的设备链与引擎/会话读数 (采样率/缓冲/走带位置/是否播放 + 宿主注入的响度读数)。只读: 三份状态各有唯一来源 (project.audio_config / SessionRuntimeState / 宿主注入的引擎镜像)。带 `since` 时额外回传读数游标段 (只含修订号更大的读数)。",
           "properties": {
             "trackId": {
               "type": "string",
               "description": "要展开设备链的音轨 EntityId; 缺省只报引擎与会话读数"
+            },
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "读数游标: 只回传修订号大于它的引擎读数 (缺省 = 不带增量段; 取上一次响应的 engine.readingsRevision)"
             },
             "dryRun": {
               "type": "boolean",

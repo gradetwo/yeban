@@ -95,6 +95,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use yeban_mcp::Dispatcher;
+use yeban_mcp::domain::engine_state::EngineReadings;
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
 use yeban_mcp::security::{BearerToken, RunMode, ScopeSet, TokenFile};
@@ -310,9 +311,14 @@ impl From<HttpError> for MountError {
 
 /// 一个**正在跑**的进程内控制面。
 ///
-/// 它持有三样东西：监听 socket、工作线程句柄、停机标志。**停止 = 消费掉它**
-/// （[`Self::stop`] 或 `Drop`）：停机之后监听 socket 被真的关掉，因此"没有东西在监听"
-/// 是可被 `TcpStream::connect` 观察到的事实，而不只是一句声明。
+/// 它持有三样东西：监听 socket、工作线程句柄、停机标志；另有一个**宿主侧读数注入口**
+/// （[`EngineReadingsHandle`]，与工作线程共享同一个分发器）。**停止 = 消费掉它**：
+/// 停机之后监听 socket 被真的关掉，因此"没有东西在监听"是可被 `TcpStream::connect`
+/// 观察到的事实，而不只是一句声明。
+///
+/// `server` 是 `Arc`（与 `yeban-mcp` 的 `transport::http` 里同一个共享分发器）：
+/// 工作线程与宿主侧的读数注入口必须操作**同一个**会话 —— 各持一份就变成两个事实源，
+/// 正是 `MUST-GATE-009` 要防的漂移。
 #[derive(Debug)]
 pub struct InProcessMcp {
     /// 监听 socket（`None` = 已经停机、socket 已关闭）。
@@ -331,6 +337,42 @@ pub struct InProcessMcp {
     /// 别的形态拿不到排他写锁"的物理载体。`Drop` 释放建议锁 [MUST-GATE-008]。
     /// [`Self::lock_path`] / [`Self::lock_mode`] 是它的可观察出口。
     lock: Option<AcquiredLock>,
+}
+
+/// **宿主侧的引擎读数注入口**（`[ARCH-UI-002]` 的交付侧；账本问题 2 选 (a)）。
+///
+/// 它只做一件事：把宿主读到的 [`EngineReadings`] 交给**正在服务的那一个**控制面会话。
+/// 为什么需要这个句柄：`InProcessMcp` 一旦挂上就不能再被可变借用（工作线程已经拿着它），
+/// 而引擎读数**在挂载之后**才会被读到（引擎是后来才重建的）—— 没有这个口子，宿主只能
+/// 在挂载前注入一次，那正好是"字段永远是 null"的另一种写法。
+///
+/// ## 它**不是**第二套机制，也没有扩大权限面
+///
+/// - **同一个**分发器、**同一个** `Domain`、**同一个**线程都在用的 `Mutex`：没有第二条
+///   通道、第二个端口、第二份令牌；
+/// - 它走的正是 `Domain::set_engine_readings` 这个**既有的、文档写明"只对宿主开放"**的
+///   注入口 —— 判据 `tools_never_write_the_engine_mirror` 已经把"任何工具都碰不到它"
+///   钉死（本句柄只出现在 `yeban-app` 的宿主代码里，不在 JSON-RPC 的可达面上）；
+/// - `MUST-GATE-009` 的四条（默认关 / 只绑环回 / 必须令牌 / `ui:inject` 硬禁）与它无关：
+///   这里没有新增任何一条对外能力。
+///
+/// 句柄是 `Clone` 的：它只包着一个与工作线程共享的 [`HttpServer`]（`Arc`），
+/// **不拥有**停机 —— drop 一个句柄不会关掉监听口（停机仍然只由 `InProcessMcp::stop` / `Drop`
+/// 决定）；停机之后句柄仍然可以注入，只是没有连接会读到它。
+#[derive(Clone, Debug)]
+pub struct EngineReadingsHandle {
+    /// 与工作线程**共享**的那一个服务（内部的 `Mutex<Dispatcher>` 是唯一的会话）。
+    server: Arc<HttpServer>,
+}
+
+impl EngineReadingsHandle {
+    /// 注入 / 清除引擎读数镜像（`None` = 如实回到"未测量"）。
+    ///
+    /// 成功即推进控制面的读数修订号（`engine.readingsRevision`），因此 `since` 游标
+    /// 立刻能看到这条更新。
+    pub fn set_engine_readings(&self, readings: Option<EngineReadings>) {
+        self.server.set_engine_readings(readings);
+    }
 }
 
 impl InProcessMcp {
@@ -415,6 +457,21 @@ impl InProcessMcp {
         &self.token
     }
 
+    /// **宿主侧读数注入口**：挂载之后再把引擎读数交给这一个控制面会话。
+    ///
+    /// 返回的句柄与工作线程共享同一份分发器（见 [`EngineReadingsHandle`]）。
+    /// 它不延长监听生命周期，也不影响 [`Self::stop`] 的语义。
+    #[must_use]
+    pub fn engine_readings_handle(&self) -> EngineReadingsHandle {
+        EngineReadingsHandle {
+            server: Arc::clone(
+                self.server
+                    .as_ref()
+                    .expect("挂载存活期间监听 socket 一定在（stop 消费 self）"),
+            ),
+        }
+    }
+
     /// 会话实际持有的 `.yeban.lock` 路径（内存会话 / 未取锁时为 `None`）。
     ///
     /// 与 `Domain::lock_path` 同一个理由：守卫字段必须有一个**可观察的出口**，
@@ -496,7 +553,10 @@ impl Drop for InProcessMcp {
 ///
 /// 为什么用 `serve_once` 而不是 `serve_forever`：后者没有停机入口（它 `loop { accept }`），
 /// 而本模块必须能证明"停止之后什么都不在监听"。
-fn serve_loop(server: &HttpServer, stop: &AtomicBool) {
+///
+/// `server` 是 `Arc`：宿主侧的读数注入口与这里必须是**同一个**分发器
+/// （见 [`EngineReadingsHandle`]）。
+fn serve_loop(server: &Arc<HttpServer>, stop: &AtomicBool) {
     while !stop.load(Ordering::SeqCst) {
         if server.serve_once().is_err() {
             // 连接级 I/O 失败不是停机理由；`accept` 真坏了会立刻再进这里，因此退避一下。

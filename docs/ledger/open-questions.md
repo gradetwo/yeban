@@ -34,11 +34,39 @@
     **键位**意图、Shift 改了字符的键如美式 `Shift+1` = `"!"`）—— 逐条写在
     `docs/ledger/app-projection-notes.md` 的 `N2` 行里。
 
-## 2. 响度传输（可选；契约侧已闭合且与传输无关）
+## 2. 响度传输（可选；契约侧已闭合且与传输无关）✅ **已关闭（2026-10-06，按建议 (a) 执行）**
 - **(a) 建议**：用**已有的**环回控制面推送 5 个字段（无新进程/端口/鉴权；能力继承挂载的"默认关"）。
 - (b) 仅轮询 —— 零构建，但表头在两次轮询之间无法更新。
 - (c) 另立通道 —— 预先拒绝：第二套鉴权 + 重复挂载已提供的东西（`MUST-GATE-009` 要防的漂移）。
-- **选 (a) 我做**：在既有会话上发布 5 字段 + 一条"客户端收到更新"判据 + 保持默认关。
+- **选 (a) 已执行（2026-10-06）**：在既有会话上发布 5 字段 + 一条"客户端收到更新"判据 + 保持默认关。
+  - **没有新机制**：同一个方法（`yeban_query_engine_state`）、同一个 token、同一个环回端口、同一个
+    分发器。新增的只是一个**可选游标** `since` + 会话上的**单调读数修订号**
+    （`engine.readingsRevision` 每次注入 +1）+ 一条 64 条的**有界尾部**。
+  - **为什么不是"服务端在同一条连接上主动写"**：`crates/yeban-mcp/src/transport/http.rs` 的形态是
+    **一请求一响应**（无 keep-alive / 无 `Transfer-Encoding: chunked` / 无 HTTP/2，响应写完即
+    `Connection: close`，见该文件"边界（明确没做）"）。服务端推送需要**第二套机制** ⇒ 按本项
+    预备的退路取"**既有查询上的 `since`/游标方案**"，并把这个局限写进契约描述与实现文档。
+  - **客户端形状**：`yeban_query_engine_state` 新增可选整数 `since`；带它时响应的
+    `data.readingsStream` = `{since, revision, buffered, agedOut, updates[]}`，`updates[]` 里每条
+    是 `{revision, sampleRate, bufferFrames, integratedLufs, momentaryLufs, shortTermLufs,
+    loudnessRangeLu, truePeakDbfs}`（修订号严格大于 `since`）。**幂等**：客户端不推进游标就
+    重复拿到同一条，不是"消费即消失"。**不静默丢**：游标比保留窗口更旧 ⇒ `agedOut: true` +
+    空 `updates`（ADR-0001 D23 的同一条纪律）。**缺省不带 `since` 时响应形状与从前逐字段相同**
+    （旧客户端的字节不变）。
+  - **宿主怎么注入**（这条线补上的那一半）：`InProcessMcp::engine_readings_handle()` →
+    `EngineReadingsHandle::set_engine_readings`，走**既有**的、文档写明"只对宿主开放"的
+    `Domain::set_engine_readings`。它**不**扩大 JSON-RPC 面：没有任何工具的实参碰得到镜像
+    （判据 `tools_never_write_the_engine_mirror` 仍逐位钉住），也没有第二个分发器/端口/令牌。
+  - **判据**：`crates/yeban-app/tests/in_process_mcp.rs::a_client_receives_loudness_updates_over_the_in_process_control_plane`
+    （真 `TcpStream` + 真令牌）：先证**缺席**（未测量 ⇒ 5 个字段全 `null`、`readingsRevision = 0`、
+    缺省调用无增量段），再注入一次真读数后证**在场**（游标 `0` ⇒ 恰好 1 条更新，5 字段逐个回显）、
+    **幂等**（同游标重复拿到同一条）、**推进后不再重放**（游标 `1` ⇒ 空、`agedOut=false`）、
+    **第二条更新只给新的**（游标 `1` ⇒ 只有修订 2）、以及"清空回未测量"也到得了客户端。
+    **负向实测**：临时摘掉 `Domain::set_engine_readings` 里那一行"把读数交给会话"，判据立刻变红
+    （`assertion left: Null, right: 128`，`test result: FAILED. 2 passed; 1 failed`；随后已还原）。
+  - **`MUST-GATE-009` 一条未动**：`in-process-mcp` 仍不在任何 `default` 里（`scripts/guards/policy_check.py`
+    的 `FORBIDDEN_DEFAULT_FEATURES` 点名），默认依赖树里 `yeban-mcp` 命中仍为 **0**，仍只绑环回 +
+    动态端口、仍必须 Bearer token、`ui:inject` 在生产模式下仍硬拒。
 
 ## 3. `D47` —— MIDI 导出的"唯一出口 = app CLI"是否覆盖实验性 `.als`？ ✅ **已关闭（2026-10-06，按建议 (a) 执行）**
 - **(a) 建议（若要让导出器可用）**：加 `--export-als`，与 `--export-midi` 并列，并把损失报告写进日志。
@@ -87,7 +115,8 @@
 | `ROAD-M4-010` | V1/V2 Web 包袱已彻底删除；汇合项（`P4_Gate` 四个入边）| **它必然被其它项拖住**，不可单独提前判 | **无需单独裁决** —— 随 `M4-006/007/008` 与两项 PENDING 的处置而自然收口 |
 
 **读法**：上表四行里，`M4-006` 与 `M4-010` **不需要你新增裁决**（前者依既有 `D50` 裁决为长期 PENDING，后者是汇合项）；
-**问题 1**（`N2` 快捷键）与**问题 3**（`D47`/`.als` 出口）**已关闭**（分别按建议 (1) 与 (a) 落地：GUI 绑逻辑键 + 无头端口判据；
-CLI `--export-als` + 损失表可见）；
+**问题 1**（`N2` 快捷键）、**问题 2**（响度传输）与**问题 3**（`D47`/`.als` 出口）**已关闭**
+（分别按建议 (1)/(a)/(a) 落地：GUI 绑逻辑键 + 无头端口判据；既有控制面的 `since` 游标 +
+`InProcessMcp::engine_readings_handle` 宿主注入口 + 真 socket 判据；CLI `--export-als` + 损失表可见）；
 真正需要你的只剩 **问题 5**（参考 `.als`）与 **问题 6**（`M4-008`），再加上与 Phase 4 并列的
-**问题 2**（响度传输）、**问题 4**（`MUST-GATE-014` 素材）。
+**问题 4**（`MUST-GATE-014` 素材）。

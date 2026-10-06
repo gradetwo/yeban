@@ -494,6 +494,21 @@ impl HttpServer {
         self.lock().expected_token().clone()
     }
 
+    /// **宿主侧读数注入口**：把引擎读数镜像交给这个服务正在用的那**一个**会话。
+    ///
+    /// 为什么这个方法住在传输层而不是让调用方自己拿分发器：分发器在 `Mutex` 里，
+    /// 而服务一旦开始 `serve_once`，分发器就不可能被外部可变借用了。宿主需要的是
+    /// "挂载之后仍然能注入"（引擎是后来才重建的），因此这里给一个**只做这一件事**的
+    /// 方法 —— 它不暴露 `Dispatcher`，调用方拿不到任何别的东西。
+    ///
+    /// 幂等：内容与当前相同时修订号不推进（判据见 `domain::engine_state` 的游标口径）。
+    pub fn set_engine_readings(
+        &self,
+        readings: Option<crate::domain::engine_state::EngineReadings>,
+    ) {
+        self.lock().domain_mut().set_engine_readings(readings);
+    }
+
     /// 取分发器（锁被毒化时仍然取内层 —— 环回开发服务宁可继续回答并如实报错，
     /// 也不要在 handler 里 panic）。
     fn lock(&self) -> MutexGuard<'_, Dispatcher> {

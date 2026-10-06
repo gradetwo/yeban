@@ -716,15 +716,27 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-ENGINE-STATE",
         name: "yeban_query_engine_state",
-        summary: "查询某轨的设备链与引擎/会话读数 (采样率/缓冲/走带位置/是否播放)",
+        summary: "查询某轨的设备链与引擎/会话读数 (采样率/缓冲/走带位置/是否播放 + 宿主注入的响度读数)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ReadOnly,
-        params: &[param(
-            "trackId",
-            "string",
-            false,
-            "要展开设备链的音轨 EntityId; 缺省只报引擎与会话读数",
-        )],
+        params: &[
+            param(
+                "trackId",
+                "string",
+                false,
+                "要展开设备链的音轨 EntityId; 缺省只报引擎与会话读数",
+            ),
+            // 读数游标（`docs/ledger/open-questions.md` 问题 2 选 (a)）：本次传输的既有形态是
+            // **一请求一响应**（无 keep-alive / 无 chunked），因此"服务端主动推"表达不了；
+            // 这里给的是最小的诚实替代 —— 客户端带上次的 `engine.readingsRevision`，
+            // 就只取没见过的读数。缺省（不带）时响应形状与从前逐字段相同。
+            param(
+                "since",
+                "integer",
+                false,
+                "读数游标: 只回传修订号大于它的引擎读数 (缺省 = 不带增量段; 取上一次响应的 engine.readingsRevision)",
+            ),
+        ],
         errors: &[ErrorCode::NoActiveProject, ErrorCode::TrackNotFound],
     },
     ToolSpec {

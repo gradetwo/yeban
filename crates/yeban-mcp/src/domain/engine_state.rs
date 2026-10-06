@@ -26,6 +26,33 @@
 //!
 //! 没有宿主注入时（形态 B 的 stdio 二进制、判据）缓冲读数是 `null` 且
 //! `bufferSource = "unavailable"`：**如实说明不知道**，绝不编一个 128/256。
+//!
+//! ## 响度读数怎么**越过控制面**到客户端（`docs/ledger/open-questions.md` 问题 2 选 (a)）
+//!
+//! 契约侧的五个字段（`integratedLufs` / `momentaryLufs` / `shortTermLufs` /
+//! `loudnessRangeLu` / `truePeakDbfs`）由宿主注入，与传输无关。这里补的是**交付**：
+//! 一次注入 = 一次**修订**（单调递增的 `readingsRevision`），客户端拿上一次的修订当游标
+//! （`since`），就能只取到**还没有见过**的那几条读数，而不是反复拉同一份快照。
+//!
+//! ### 为什么是"游标 + 有界尾部"而不是服务端推送（实测的传输层事实）
+//!
+//! `crate::transport::http` 的形态是**一个连接一个请求、一个响应**：没有 keep-alive、
+//! 没有 `Transfer-Encoding: chunked`、没有 HTTP/2，响应写完就 `Connection: close`
+//! （见那个文件头部的"边界（明确没做）"）。因此"服务端在同一条连接上主动写一条
+//! notification"**无法**在不发明第二套机制的前提下表达 —— 而账本问题 2 的 (c) 已经预先
+//! 拒绝过并行机制（第二套鉴权 / 第二次挂载正是 `MUST-GATE-009` 要防的漂移）。
+//!
+//! 因此选了 (a) 的最小诚实形态：**同一个方法、同一个 token、同一个 socket**，
+//! 多一个可选的 `since` 游标。它不是推送，但它让"客户端收到更新"变成**有修订号可核对**
+//! 的事实（`readingsRevision` 单调，`updates[*].revision` 严格递增），而不是"再读一遍
+//! 看有没有变化"。
+//!
+//! ### 不丢更新的口径（诚实边界）
+//!
+//! 尾部只保留最近 [`READINGS_TAIL_CAPACITY`] 条读数。客户端游标**比保留窗口更旧**时，
+//! `readingsStream.agedOut = true` 且 `updates` 为空 —— 这是**如实报告"你错过了"**，
+//! 不是静默地少给几条（ADR-0001 D23 的同一条纪律：看不见的丢失比丢失更糟）。
+//! 客户端看到它就重新同步一次（缺省调用即为当前完整读数）。
 
 use serde_json::{Map, Value};
 
@@ -33,6 +60,12 @@ use yeban_model::{EntityId, SessionRuntimeState, TrackV3, YebanProjectV1};
 
 use super::error::Fault;
 use crate::tools::ErrorCode;
+
+/// 会话里保留多少条**最近**的引擎读数（游标窗口）。
+///
+/// 与 `yeban-engine` 的 `DEFAULT_METER_CAPACITY` 同量级：宿主按控制面节奏注入（不是按
+/// 音频量子），64 条足以覆盖一个客户端两次调用之间的突发；超出即"太旧"并被如实上报。
+pub const READINGS_TAIL_CAPACITY: usize = 64;
 
 /// 宿主注入的**引擎读数镜像**（只读快照，见模块文档的"为什么不是第二份状态"）。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -125,6 +158,61 @@ pub fn engine_value(project: &YebanProjectV1, mirror: Option<EngineReadings>) ->
     })
 }
 
+/// 一条读数的 JSON 记录（游标段与当前读数**共用同一份字段拼装**，不许漂移）。
+///
+/// `revision` 是这条读数被注入时的修订号（严格递增）。
+#[must_use]
+pub fn readings_record(revision: u64, readings: EngineReadings) -> Value {
+    serde_json::json!({
+        "revision": revision,
+        "sampleRate": readings.sample_rate,
+        "bufferFrames": readings.buffer_frames,
+        // 五个响度字段与当前读数**同一个拼法**（`[ARCH-UI-002]`；未测量 = `null`）。
+        "integratedLufs": readings.integrated_lufs,
+        "momentaryLufs": readings.momentary_lufs,
+        "shortTermLufs": readings.short_term_lufs,
+        "loudnessRangeLu": readings.loudness_range_lu,
+        "truePeakDbfs": readings.true_peak_dbfs,
+    })
+}
+
+/// 游标段的 JSON 形态：`since` 之后**还没有被这个客户端见过**的读数（修订号严格递增）。
+///
+/// - `since` 比窗口更旧（`since + 1 < oldest`）⇒ `agedOut: true`、`updates: []`：
+///   如实说"你错过了"，而不是假装给全了；
+/// - `since` 超前（客户端拿了一个更大的修订号）⇒ 恒为 `agedOut: false` + 空更新：
+///   服务端不为非法的游标编造读数（也不报错 —— 客户端可能只是重放过）。
+///
+/// `revision` 是会话**当前**的修订号（`engine.readingsRevision` 的同一个数）。
+#[must_use]
+pub fn readings_stream_value(
+    since: Option<u64>,
+    revision: u64,
+    tail: &[(u64, EngineReadings)],
+) -> Value {
+    let Some(since) = since else {
+        // 缺省调用：没有游标 ⇒ 没有增量段（只有 `engine.readingsRevision` 那一份当前读数）。
+        return Value::Null;
+    };
+    let oldest = tail.first().map(|(revision, _)| *revision);
+    let aged_out = oldest.is_some_and(|oldest| since.saturating_add(1) < oldest);
+    let updates: Vec<Value> = if aged_out {
+        Vec::new()
+    } else {
+        tail.iter()
+            .filter(|(revision, _)| *revision > since)
+            .map(|(revision, readings)| readings_record(*revision, *readings))
+            .collect()
+    };
+    serde_json::json!({
+        "since": since,
+        "revision": revision,
+        "buffered": tail.len(),
+        "agedOut": aged_out,
+        "updates": updates,
+    })
+}
+
 /// 一条设备链的 JSON 形态（`slotIndex` 就是链上的位置，`ARCH-PDC-001` 的延迟逐台可见）。
 #[must_use]
 pub fn device_chain_value(track: &TrackV3) -> Value {
@@ -174,7 +262,25 @@ pub fn device_chain_value(track: &TrackV3) -> Value {
     })
 }
 
+/// 读数**游标**的三样东西：当前修订号、保留窗口、以及客户端的游标。
+///
+/// 收成一个结构体而不是三个参数：`clippy::too_many_arguments` 在本仓是承重信号
+/// （见 `Domain::SessionSeed` 的同款理由），而且这三者**必须一起**给出 ——
+/// 分开传就允许"修订号与窗口不是同一次读取"这种自相矛盾的调用。
+#[derive(Clone, Copy, Debug)]
+pub struct ReadingsCursor<'a> {
+    /// 会话当前的读数修订号（`0` = 从未注入）。
+    pub revision: u64,
+    /// 最近注入的读数（含修订号），按修订递增。
+    pub tail: &'a [(u64, EngineReadings)],
+    /// 客户端的游标（`None` = 本次调用不带增量段）。
+    pub since: Option<u64>,
+}
+
 /// 组装一次查询的 `data`。
+///
+/// `readings` 是客户端的**读数游标**（上一个它见过的 `readingsRevision`）；缺省 ⇒
+/// 响应里没有 `readingsStream` 段（只有当前读数）。
 ///
 /// # Errors
 ///
@@ -186,6 +292,7 @@ pub fn snapshot(
     mirror: Option<EngineReadings>,
     undo_cursor: usize,
     track_id: Option<EntityId>,
+    readings: ReadingsCursor<'_>,
 ) -> Result<Value, Fault> {
     let track = track_id
         .map(|id| {
@@ -204,7 +311,19 @@ pub fn snapshot(
             project.time_signature.denominator,
         ),
     );
-    data.insert("engine".to_owned(), engine_value(project, mirror));
+    let mut engine = engine_value(project, mirror);
+    if let Value::Object(fields) = &mut engine {
+        // 客户端从这里取下一次调用要用的游标（`readingsRevision`）。
+        fields.insert(
+            "readingsRevision".to_owned(),
+            Value::from(readings.revision),
+        );
+    }
+    data.insert("engine".to_owned(), engine);
+    let stream = readings_stream_value(readings.since, readings.revision, readings.tail);
+    if !stream.is_null() {
+        data.insert("readingsStream".to_owned(), stream);
+    }
     data.insert(
         "track".to_owned(),
         track.map_or(Value::Null, device_chain_value),
@@ -217,6 +336,7 @@ pub fn snapshot(
             "bufferFrames": "host injected EngineReadings mirror",
             "devices": "project.tracks[].devices",
             "undoCursor": "undo_session::UndoState",
+            "readingsRevision": "host injected EngineReadings mirror (monotonic)",
         }),
     );
     Ok(Value::Object(data))
@@ -318,17 +438,115 @@ mod tests {
     fn snapshot_is_null_track_by_default_and_track_not_found_when_asked() {
         let project = filled_project();
         let session = SessionRuntimeState::new();
-        let value = snapshot(&project, &session, None, 0, None).expect("快照");
+        let value = snapshot(
+            &project,
+            &session,
+            None,
+            0,
+            None,
+            ReadingsCursor {
+                revision: 0,
+                tail: &[],
+                since: None,
+            },
+        )
+        .expect("快照");
         assert_eq!(value["track"], Value::Null);
         assert!(value["stateSources"]["bufferFrames"].is_string());
+        // 没有游标 ⇒ 没有增量段（缺省调用的形状不变）。
+        assert!(value.get("readingsStream").is_none());
+        assert_eq!(value["engine"]["readingsRevision"], 0);
 
         let ghost = super::super::ids::deterministic_id("ghost-track");
-        let fault = snapshot(&project, &session, None, 0, Some(ghost)).expect_err("音轨不存在");
+        let fault = snapshot(
+            &project,
+            &session,
+            None,
+            0,
+            Some(ghost),
+            ReadingsCursor {
+                revision: 0,
+                tail: &[],
+                since: None,
+            },
+        )
+        .expect_err("音轨不存在");
         assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
         assert_eq!(
             needs_project().domain_code(),
             Some(ErrorCode::NoActiveProject)
         );
+    }
+
+    /// 游标段的**四条**口径：只给没见过的、严格递增、太旧就如实说 `agedOut`、
+    /// 且五个响度字段与当前读数是**同一个拼法**（未测量 = `null`）。
+    #[test]
+    fn the_readings_cursor_only_hands_out_what_the_client_has_not_seen() {
+        let measured = EngineReadings {
+            sample_rate: 48_000,
+            buffer_frames: 128,
+            integrated_lufs: Some(-14.0),
+            momentary_lufs: Some(-13.5),
+            short_term_lufs: Some(-13.8),
+            loudness_range_lu: Some(6.0),
+            true_peak_dbfs: Some(-1.0),
+        };
+        let tail = [(3_u64, measured), (4, EngineReadings::default())];
+
+        // ---- 客户端说"我见过 3" ⇒ 只拿到 4（严格大于游标） ----
+        let stream = readings_stream_value(Some(3), 4, &tail);
+        assert_eq!(stream["since"], 3);
+        assert_eq!(stream["revision"], 4);
+        assert_eq!(stream["buffered"], 2);
+        assert_eq!(stream["agedOut"], false);
+        let updates = stream["updates"].as_array().expect("updates 数组");
+        assert_eq!(updates.len(), 1, "只给游标之后的: {stream}");
+        assert_eq!(updates[0]["revision"], 4);
+        // 未测量的那一条：五个字段**全部** `null`（不是 0）—— 与契约同一条纪律。
+        for key in [
+            "integratedLufs",
+            "momentaryLufs",
+            "shortTermLufs",
+            "loudnessRangeLu",
+            "truePeakDbfs",
+        ] {
+            assert!(
+                updates[0][key].is_null(),
+                "未测量的 `{key}` 必须是 null: {stream}"
+            );
+        }
+
+        // ---- 客户端落后于窗口 ⇒ 如实说"你错过了", 不静默少给 ----
+        let aged = readings_stream_value(Some(1), 4, &tail);
+        assert_eq!(aged["agedOut"], true);
+        assert_eq!(aged["updates"].as_array().expect("数组").len(), 0);
+
+        // ---- 客户端已经是最新（或超前）⇒ 空更新, 但**不**报 agedOut ----
+        let current = readings_stream_value(Some(4), 4, &tail);
+        assert_eq!(current["agedOut"], false);
+        assert_eq!(current["updates"].as_array().expect("数组").len(), 0);
+        let ahead = readings_stream_value(Some(99), 4, &tail);
+        assert_eq!(ahead["agedOut"], false);
+        assert_eq!(ahead["updates"].as_array().expect("数组").len(), 0);
+
+        // ---- 已测量的那条：五个字段**在容差内**回显（与 `engine_value` 同一份拼装） ----
+        let full = readings_stream_value(Some(2), 3, &tail);
+        let record = &full["updates"][0];
+        for (key, want) in [
+            ("integratedLufs", -14.0_f64),
+            ("momentaryLufs", -13.5),
+            ("shortTermLufs", -13.8),
+            ("loudnessRangeLu", 6.0),
+            ("truePeakDbfs", -1.0),
+        ] {
+            let got = record[key].as_f64().expect("读数应是数值");
+            assert!((got - want).abs() < 1e-4, "{key}: got {got}, want {want}");
+        }
+
+        // ---- 无游标 ⇒ `null` 段（缺省调用不带增量段） ----
+        assert!(readings_stream_value(None, 4, &tail).is_null());
+        // 空窗口 + 非零游标：没有东西可给，但**也不**是 agedOut（没有任何东西被丢）。
+        assert_eq!(readings_stream_value(Some(0), 0, &[])["agedOut"], false);
     }
 
     #[test]

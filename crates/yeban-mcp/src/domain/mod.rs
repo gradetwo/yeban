@@ -178,6 +178,18 @@ pub struct Domain {
     /// （形态 A 的 `yeban-app`）通过 [`Domain::set_engine_readings`] 交进来；
     /// 没有注入时读数是 `null` + `bufferSource: "unavailable"`。
     engine: Option<engine_state::EngineReadings>,
+    /// 引擎读数镜像的**单调修订号**（`0` = 从未注入；每次注入 +1）。
+    ///
+    /// 它就是控制面上的**读数游标**（见 [`engine_state`] 的模块文档）：客户端拿它当
+    /// `yeban_query_engine_state` 的 `since`，就能只取没见过的读数。单调性由
+    /// [`Domain::set_engine_readings`] 这**一个**写入点保证。
+    readings_revision: u64,
+    /// 最近 [`engine_state::READINGS_TAIL_CAPACITY`] 条读数（含各自的修订号），**按修订递增**。
+    ///
+    /// `Vec` 而不是环形缓冲：容量 64，且这里**不在实时线程上**（宿主按控制面节奏注入）。
+    /// 与 `engine` 一样是**会话运行态**（`MODEL-ISO-001` 第 2 层）：打开 / 关闭工程会整体重置，
+    /// 不进 `project.json` 也不进 `history.dag`。
+    readings_tail: Vec<(u64, engine_state::EngineReadings)>,
     now_ms: u64,
 }
 
@@ -198,6 +210,8 @@ impl Domain {
             undo: undo_session::UndoState::new(AGENT_NAME),
             session: SessionRuntimeState::new(),
             engine: None,
+            readings_revision: 0,
+            readings_tail: Vec::new(),
             now_ms: 0,
         }
     }
@@ -219,12 +233,44 @@ impl Domain {
         self.engine
     }
 
-    /// 注入 / 清除引擎读数镜像。
+    /// 引擎读数镜像的当前**修订号**（控制面游标；`0` = 从未注入）。
+    #[must_use]
+    pub const fn readings_revision(&self) -> u64 {
+        self.readings_revision
+    }
+
+    /// 最近注入的读数（含修订号），**按修订递增**，最多
+    /// [`engine_state::READINGS_TAIL_CAPACITY`] 条（游标段从这里取增量）。
+    #[must_use]
+    pub fn readings_tail(&self) -> &[(u64, engine_state::EngineReadings)] {
+        &self.readings_tail
+    }
+
+    /// 注入 / 清除引擎读数镜像，并推进**读数修订号**（`[ARCH-UI-002]` 的交付侧）。
     ///
     /// **只对宿主开放**：没有任何工具的 `apply` 会碰它（判据
     /// `tools_never_write_the_engine_mirror` 用"调用前后镜像逐位相同"钉住）。
-    pub const fn set_engine_readings(&mut self, readings: Option<engine_state::EngineReadings>) {
+    ///
+    /// 与读数一起推进的还有**有界尾部**：`since` 游标只会拿到**新注入**的读数，
+    /// 且窗口之外的游标会被如实标记 `agedOut`（见 [`engine_state`] 的模块文档）。
+    /// 修订号只在**注入内容与当前不同**时推进 —— 同一条读数重复注入不制造假更新。
+    pub fn set_engine_readings(&mut self, readings: Option<engine_state::EngineReadings>) {
+        let changed = self.engine != readings;
         self.engine = readings;
+        if !changed {
+            return;
+        }
+        self.readings_revision = self.readings_revision.saturating_add(1);
+        if let Some(readings) = readings {
+            self.readings_tail.push((self.readings_revision, readings));
+            let excess = self
+                .readings_tail
+                .len()
+                .saturating_sub(engine_state::READINGS_TAIL_CAPACITY);
+            if excess > 0 {
+                self.readings_tail.drain(..excess);
+            }
+        }
     }
 
     /// 把模型会话态里那份**撤销游标镜像**同步成权威值（见 [`Domain::session`]）。
@@ -1634,18 +1680,27 @@ fn plan_edit_automation(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///
 /// 三份状态的来源见 [`engine_state`] 的模块文档：采样率读工程、走带读
 /// `SessionRuntimeState`、缓冲读宿主注入的镜像。本函数**不**碰文件系统、**不**改状态。
+///
+/// 可选的 `since` 是**读数游标**（客户端上一个见过的 `readingsRevision`）：给了它，
+/// 响应里就多一段 `readingsStream`（只含游标之后注入的读数）。缺省 ⇒ 形状不变。
 fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let track_id = match call.arguments.get("trackId") {
         Some(_) => Some(arg_id(call, "trackId")?),
         None => None,
     };
+    let since = arg_u64(call, "since")?;
     let data = engine_state::snapshot(
         project,
         domain.session(),
         domain.engine_readings(),
         domain.undo_state().undone(),
         track_id,
+        engine_state::ReadingsCursor {
+            revision: domain.readings_revision(),
+            tail: domain.readings_tail(),
+            since,
+        },
     )?;
     Ok(Plan::EngineState { data })
 }
