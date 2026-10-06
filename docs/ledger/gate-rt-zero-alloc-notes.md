@@ -392,12 +392,19 @@ bash scripts/dev/ci-verdict.sh line/gate-rt-zero-alloc
 
 | 文件 | sha256 |
 | :--- | :--- |
-| `crates/yeban-engine/src/rt.rs` | `ccd0c2d0a35428f29501de043af9fca508fcb88b941b19449c30efbac2a6f5cf` |
+| `crates/yeban-engine/src/rt.rs` | `bf37d1a06c2e0782e0f60fdaed95f51e0337c2719cf866c6b858d3a8a395059b` |
 | `crates/yeban-engine/src/snapshot.rs` | `e9765f1348a9b15476c1d77385853c200bdf918e37a8ac0418a21bbd347bdff9` |
-| `crates/yeban-engine/tests/rt_zero_alloc.rs` | `86dd3ef653b5ed933b35a6f6145628cedec46a8d1aef582a1298f511461f159a` |
+| `crates/yeban-engine/tests/rt_zero_alloc.rs` | `d90e0abe4f3f0f1d11f613f61745e99991b7f80b63a937716614f6ce5a73fe51` |
 | `crates/yeban-engine/src/rt_probe.rs` | `790e25a17149b73b32c5ac4d4bcba9f39092f2a5d38a1bd09f622a1c6b5b1bc3` |
 
 （`rt.rs` 的哈希在**四次注入的每次还原之后**都用 `sha256sum -c` 校验为同一个值。）
+⚠ **2026-10-07 重测（`3502353` 改动了 `rt.rs` 与 `tests/rt_zero_alloc.rs` 两个文件）**：
+本表 `rt.rs` 一行原记 `ccd0c2d0a35428f29501de043af9fca508fcb88b941b19449c30efbac2a6f5cf`、
+`tests/rt_zero_alloc.rs` 一行原记 `86dd3ef653b5ed933b35a6f6145628cedec46a8d1aef582a1298f511461f159a`
+（那一刻的真话，原值保留在这里）；上面两行的新值用
+`shasum -a 256 crates/yeban-engine/src/rt.rs crates/yeban-engine/tests/rt_zero_alloc.rs` 实测。
+本表另外两行（`snapshot.rs` / `rt_probe.rs`）**本提交未触及**，未重测。新增文件
+`crates/yeban-engine/tests/pdc_mix_path.rs` 的哈希见 §17。
 
 ---
 
@@ -449,7 +456,8 @@ bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --tes
 | ⑮ | `编辑=1000 撤销=1000 发布=2000；实际切换=2000 主线程回收=2000；走带位置=10245 tick 状态=Playing；释放线程=主线程?true 外线程排空=0 退役满寄存=0` |
 | ⑯ | `每量子 128 条 × 500 量子 = 尝试 64000 条，通道接受 64000 条；实时侧应用=64001 批量出队=501；通道容量=1024` |
 
-**判据总数：24 → 32**（`判据汇总: 32 / 32 通过`，退出码 0）。其中 ⑮ 顺带把
+**判据总数：24 → 32**（`判据汇总: 32 / 32 通过`，退出码 0；⚠ 后续的 PDC 接线切片
+（`3502353`）再把它推到 **34**，见 §17）。其中 ⑮ 顺带把
 `MUST-GATE-012`（退役队列）关心的两条读数也钉进了播放场景：`release_thread_is_main=true`、
 `foreign_drains=0`、`退役满寄存=0`——但**门禁 012 的行没有被本切片改动**。
 
@@ -470,7 +478,8 @@ bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features --tes
 （不用 `git checkout`，理由见 AGENTS.md §6.2）。四次注入后 `git diff -- crates/yeban-engine/src/` **为空**。
 
 `rt.rs` 冻结哈希 `sha256 = 80893dce9e361aa4eff69634f4357ad78b537307ee72d558de2898d70ecfebe3`
-（注入前 / 每次还原后**逐字节相同**）。
+（注入前 / 每次还原后**逐字节相同**。⚠ 这是**第 611 轮那一刻**的 `rt.rs`；
+`3502353`（PDC 接线）之后的新值见 §17。）
 
 | # | 注入点（`rt.rs`） | 判据结果 | 原始红行（节选，逐字） |
 | :-: | :--- | :--- | :--- |
@@ -552,14 +561,33 @@ FAIL 判据 ⑬ …: 四元组[alloc=0 dealloc=0 … io_requests=625 io_ops=625]
 | `crates/yeban-engine/src/meter.rs`（探法前/还原后；本切片**未**改） | `74d19d20df78a3719a1bf624d000946cb0db049c9607af54d940a59bb96cff1a` |
 | `crates/yeban-engine/src/snapshot.rs`（本切片**未**改） | `22e3af3a9b1471058f6f995c0e151a02cf12a332fcaed8f93d3ed72ef3b8c574` |
 
+⚠ 本表 `crates/yeban-engine/src/rt.rs` 与 `crates/yeban-engine/tests/rt_zero_alloc.rs` 两行是
+**第 611 轮那一刻**的冻结值；`3502353`（PDC 接线）改动了这两个文件，当前值见 §17。
+`src/meter.rs` 与 `src/snapshot.rs` 两行未被本提交触及（§17 未重测）。
+
 **依赖图度量**（先说口径）：*`cargo tree -p <crate> -e normal --locked --prefix none`
 里**互不相同的 `name version` 条目数**（单位 = 依赖条目，不是行数 —— AGENTS.md §6.5）*：
 
-| crate | 度量（本切片之后） |
+| crate | 度量（本切片之后；⚠ 口径见下面的更正） |
 | :--- | ---: |
 | `yeban-engine`（默认 feature，含 cpal） | **75** |
 | `yeban-engine`（`--no-default-features`，本机变体） | **56** |
 | `yeban-model`（默认 feature） | **34** |
+
+⚠ **口径更正（2026-10-07 重测，`3502353`）**：上表三个值（75 / 56 / 34）**不是**本节
+声称的"互不相同的 `name version` 条目数"，而是下面旧命令 `… | sort -u | wc -l` 数出来的
+**原始输出行数**（cargo 把已展示过的子树重渲染成 `(*)`，各占一行；再加上 `cargo-local.sh`
+打印横幅那一行）。按本节**写明的口径**（`cargo tree -p <crate> -e normal --locked --prefix none`
+里互不相同的 `name version` 条目）重测当前树（`3502353`，未改任何清单），读数是
+**`yeban-engine` 默认 57 / `--no-default-features` 44 / `yeban-model` 29**。命令：
+
+```bash
+bash scripts/dev/cargo-local.sh tree -p <crate> -e normal --locked --prefix none \
+  | tail -n +2 | sed 's/ (\*)$//' | sort -u | wc -l
+```
+
+旧值保留在此（那是那一刻的真话，不改写）；`tail -n +2` 是为了丢掉 `cargo-local.sh` 的横幅，
+`sed 's/ (\*)$//'` 是为了把 cargo 的重渲染行折回同一个 `name version` 条目。
 
 "之后"与"之前"**由结构证明相同**，而不是又量一遍：本切片没有碰任何清单 ——
 `git diff --name-only HEAD -- '*Cargo.toml' 'Cargo.lock'` **输出为空**。
@@ -580,8 +608,11 @@ bash scripts/dev/cargo-local.sh fmt --all --check
 bash scripts/dev/cargo-local.sh check  -p yeban-engine --all-targets --no-default-features
 bash scripts/dev/cargo-local.sh clippy -p yeban-engine --all-targets --no-default-features -- -D warnings
 
-# ④ 依赖图度量
-bash scripts/dev/cargo-local.sh tree -p yeban-engine -e normal --locked --prefix none | sort -u | wc -l
+# ④ 依赖图度量（口径 = 互不相同的 name version 条目；必须剥掉 cargo 的 " (*)" 与 cargo-local 的横幅）
+bash scripts/dev/cargo-local.sh tree -p yeban-engine -e normal --locked --prefix none \
+  | tail -n +2 | sed 's/ (\*)$//' | sort -u | wc -l
+# ⚠ 旧版这里只写 `| sort -u | wc -l`：那数的是原始输出行（含 (*) 重渲染与横幅），
+#    第 611 轮因此把 57 记成 75。
 git diff --name-only HEAD -- '*Cargo.toml' 'Cargo.lock'   # 必须为空 ⇒ 依赖图与 HEAD 相同
 
 # ⑤ 门禁
@@ -595,3 +626,77 @@ bash scripts/gates/run-gates.sh light
 | N6 | **两条溢出路径会到达 `diag` 边界**（§13 实测：退役队列欠容 / 电平容量不足）⇒ "实时路径上从不产生诊断事件"不成立；发布构建无 sink 时它只是原子自增，但一旦有人给发布构建装了写文件的 sink，那两条路径就是实时线程上的真实写 | 结构 + 裁决 | 二选一：① 把两条溢出路径改成**纯计数**（不经 sink），把 `diag` 留给"真的走 I/O"的路径；② 明确裁决"溢出诊断允许在实时线程上产生一条原子计数"，并相应弱化判据措辞（**不得**悄悄放行）。在此之前，任何"零 I/O"的声明都必须写明**不含溢出路径** |
 | N7 | **真 cpal 回调线程 / 设备开流-关流**仍未覆盖（§11.2）：需要 `device` feature + 有声卡的机器；`NullBackend` 是替身且无分配断言 | 环境缺口 | 在有声卡的参考机上跑一条 `device` feature 的窄判据（开流→推若干缓冲→关流），把分配计数开在回调线程上；或裁决"以 `process_quantum` 的覆盖为准"并写明 |
 | N8 | **插件（VST3/CLAP）路径不存在**：`yeban-plugin-host` / `yeban-vst` 是故意空的骨架（v2.0.0 阶段，`AGENTS.md` 附录 C.4） | 不是缺口 | **不要**为凑场景去提前实现它们；等 v2.0.0 的宿主真正落地后再加场景 |
+
+---
+
+## 17. 第 612 轮补（`ROAD-M2-004` PDC 接线）：`32 → 34` 条判据与场景 ⑰
+
+> 本节由 `3502353`（把 PDC 计划接进实时混音路径）追加。本切片**只**改判据与登记：
+> `MUST-GATE-001` 仍是 **已接线**（最高状态，不给一个已接线的门禁"升级"），
+> `docs/ledger/gate-status.md` 的任何一行都**没有被本切片改动**。
+> 改动文件（`git show --stat 3502353`）：`crates/yeban-engine/src/graph.rs`、
+> `crates/yeban-engine/src/rt.rs`、新增 `crates/yeban-engine/tests/pdc_mix_path.rs`、
+> `crates/yeban-engine/tests/rt_zero_alloc.rs`。
+
+**冻结哈希（本次重测）** —— 命令：
+`shasum -a 256 crates/yeban-engine/src/rt.rs crates/yeban-engine/tests/rt_zero_alloc.rs crates/yeban-engine/tests/pdc_mix_path.rs`：
+
+| 文件 | sha256 |
+| :--- | :--- |
+| `crates/yeban-engine/src/rt.rs` | `bf37d1a06c2e0782e0f60fdaed95f51e0337c2719cf866c6b858d3a8a395059b` |
+| `crates/yeban-engine/tests/rt_zero_alloc.rs` | `d90e0abe4f3f0f1d11f613f61745e99991b7f80b63a937716614f6ce5a73fe51` |
+| `crates/yeban-engine/tests/pdc_mix_path.rs`（新增） | `045e33d8fc50f94154172b0f9227ab77d689173d4a9fc4cdd7d87cfed203c145` |
+
+本文件此前记录过这两个文件的另外几个值（§4.2 与 §10 的 `ccd0c2d0…`、§10 的 `86dd3ef6…`、
+§12 与 §15 的 `80893dce…`、§15 的 `04debc58…`），它们都是**各自那一刻**的 rt.rs /
+rt_zero_alloc.rs。本次**不改写**那些历史行，只在上文加了指针，并在这里给出当前值。
+`src/meter.rs`、`src/snapshot.rs`、`src/rt_probe.rs` 未被 `3502353` 触及，**未重测**。
+
+**判据总数 32 → 34**：`[MUST-GATE-001] 判据汇总: 34 / 34 通过`（本机 M2，
+`--no-default-features`，退出码 0）。本文件的净增是场景 ⑰ 的 `⑰` 与 `⑰c` 两条
+（32 → 34）；新文件 `tests/pdc_mix_path.rs` 的 2 条**不属于本文件**，另跑
+`test result: ok. 2 passed; 0 failed`。
+
+### 17.1 场景 ⑰：覆盖什么
+
+| # | 场景 | 覆盖的实时路径 | 为什么那条路径**可能**分配 | 分配怎么被检出 |
+| :-: | :--- | :--- | :--- | :--- |
+| ⑰ | PDC 补偿延迟线：2 000 量子稳态 + 1 000 量子跨快照**重新武装**（32 → 96 帧） | `render_block` 快照边界的 `CompensationBank::rearm`（`set_delay` 分支）与逐轨 `apply` 的逐样本环形延迟读写（`ROAD-M2-004` 接线新增） | 一个自然的实现会按计划重建 `Vec`（`from_plan`）或 `truncate` 旧延迟线（`Drop` ⇒ `dealloc`）；`rearm` 只写节点键 + `set_delay`，所以必须证明这条路径真的零分配 | 同一个计数分配器；覆盖度判据 ⑰c 另钉住"武装延迟逐节点等于计划、至少一条 > 0、窗口里真有样本流过、重新武装后等于新计划、未武装/被钳均为 0" |
+
+### 17.2 ⑰ 的实测四元组与见证值（本机 M2，`--no-default-features`）
+
+| # | 量子 | 子窗口 | 探针经过 | 试探成功 | alloc | dealloc | lock_blocking | lock_waits | io_requests | io_ops |
+| :-: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ⑰ | 3 000 | 2 | 3 000 | 3 000 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+覆盖度见证（判据 ⑰c 的 detail 行，逐字）：`装配差异=[]`、`武装>0 节点=1`、`延迟和=32`、
+`窗口非零样本=88552`、`重新武装后差异=[]`、`延迟和=96`、`延迟线真的处理过=3001`、
+`未武装节点=0`、`被钳帧数=0`。判据 ⑰ 的四元组读数逐字：
+`四元组[alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]`。
+
+复现命令：
+
+```bash
+bash scripts/dev/cargo-local.sh test -p yeban-engine --no-default-features \
+  --test rt_zero_alloc --test pdc_mix_path    # 判据汇总: 34 / 34 通过；pdc_mix_path 2 passed
+shasum -a 256 crates/yeban-engine/src/rt.rs crates/yeban-engine/tests/rt_zero_alloc.rs \
+  crates/yeban-engine/tests/pdc_mix_path.rs
+```
+
+### 17.3 本节新增/仍然有效的边界（必须和"全 0"一起读）
+
+1. **跑的是回调体，不是 cpal 回调线程**：与 §11.2 同口径 —— 判据自己声明的主线程调
+   `EngineRuntime::process_quantum`。
+2. **引擎仍没有真实设备链延迟**：`DeviceDefinition::latency_samples` 是**上报值**；
+   `pdc_mix_path` 的慢支路自身延迟按 `graph.rs` 既有判据
+   `compensated_branches_line_up_sample_exactly` 的同样方式模拟。
+3. **`MAX_PDC_DELAY_FRAMES = 8192` / `PDC_SLOTS = 16` 是实现边界，不是规范常数**：
+   `ARCH-PDC-001` / `ARCH-PDC-002` 对池容量**没有上限**，而 `MUST-GATE-001` 禁止回调内分配
+   ⇒ 预分配池必然有一条容量线。超出由 `EngineStats::pdc_unarmed_nodes` /
+   `pdc_clamped_frames` 计数（**可观察，不静默**）。
+4. **`D44②` 仍未回填**：限制器自身的 33 帧前瞻没有写进 `LatencyTable` ⇒ master 输出带
+   `L_max + 33`。这是**故意不吞掉**的欠债，不是本切片修好的东西。
+5. **`yeban-render` 侧那份重复 `pdc.rs` 的退役仍 pending**（ADR-0001 D19）。
+6. **规范对四点沉默**：环容量上限、电平取样点的位置、全局 `L_max` 预滚是否应计入上报延迟、
+   以及实时池装不下计划时的行为 —— 本切片对前两点做了**登记**（取样点选在电平之后、
+   容量线可观察），没有发明规范答案。

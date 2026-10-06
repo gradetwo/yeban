@@ -180,16 +180,36 @@ impl DelayLine {
     pub fn process(&mut self, input: &[f32], output: &mut [f32]);   // 按较短者工作
 }
 
+pub struct RearmShortfall;                     // Clone + Copy + Debug + Default + PartialEq + Eq
+impl RearmShortfall {
+    pub unarmed_nodes: usize;                  // 槽位用尽而未分到延迟线的节点数
+    pub clamped_frames: u64;                   // 被容量钳掉的延迟点数和（wanted - actual）
+    pub const fn is_exact(&self) -> bool;      // 逐点精确兑现了计划
+}
+
 pub struct CompensationBank;                   // Clone + Debug
 impl CompensationBank {
-    pub fn from_plan(plan: &PdcPlan) -> Self;              // 构造期分配，处理期零分配
+    // —— 已登记的六个方法：**签名一位未改**（加性扩展，不是替换）——
+    pub fn from_plan(plan: &PdcPlan) -> Self;              // 离线路径：构造期分配，处理期零分配
     pub fn len(&self) -> usize;
     pub fn is_empty(&self) -> bool;
     pub fn max_capacity(&self) -> usize;
     pub fn apply(&mut self, node: &EntityId, buf: &mut [f32]) -> bool;   // 无该节点时 false
     pub fn line(&self, node: &EntityId) -> Option<&DelayLine>;
+    // —— 实时接线新增（`ROAD-M2-004`，`3502353`）：只在 `from_plan` 之外加一条路径 ——
+    pub fn preallocated(slots: usize, max_delay_samples: usize) -> Self;  // 构造期一次分配定长池；初始 armed = 0
+    pub fn rearm(&mut self, plan: &PdcPlan) -> RearmShortfall;  // 回调内只写节点键 + `set_delay`：零分配 / 零 `Drop`
+    pub fn slots(&self) -> usize;                              // 预分配槽位数（与武装条数无关）
+    pub const fn processed_blocks(&self) -> u64;               // 见证：真的施加过**非零**延迟的"节点·块"次数（`delay == 0` 不计）
 }
 ```
+
+**`CompensationBank` 的契约现在是加性的（`3502353`）**：`preallocated` / `rearm` / `slots` /
+`processed_blocks` 四条与 `RearmShortfall` 类型是**新增**；上面已登记的六个方法
+（`from_plan` / `len` / `is_empty` / `max_capacity` / `apply` / `line`）**签名与语义一位未改**
+（`3502353` 只是在 bank 内部给 `apply`/`line` 的查找窗口加了一条 `armed` 上界；`from_plan` 仍按计划精确分配）——
+`yeban-render` 的机械替换按原样使用那六个方法即可，**不需要**为了实时路径改写已有调用。
+`rearm` 的两个上限（槽位不足、容量钳制）都**回报**给调用方（`RearmShortfall`），不静默欠补偿。
 
 **语义与不变量（替换时必须保持）**：
 
@@ -282,9 +302,20 @@ impl CompensationBank {
 
 ### 5.3 pending（后续切片）
 
-- `graph::CompensationBank` 尚未接进 `EngineRuntime::render_block` 的实际混音路径
-  （现在只构造 + 测试里用）。接入时注意：[ARCH-DET-002] 要求汇合处按 `EntityId`
-  字典序**串行**累加，`PdcPlan::order()` 已提供确定性拓扑序。
+- ✅ **已关闭（`3502353`，`ROAD-M2-004`）**：`graph::CompensationBank` **已接进**
+  `EngineRuntime::render_block` 的实际混音路径。运行时在构造期持有 `PDC_SLOTS =
+  MAX_TRACK_SLOTS`（16）条 × `MAX_PDC_DELAY_FRAMES = 8192` 帧的**预分配**池；快照边界
+  `rearm(current.pdc())` 只写节点键 + `set_delay`（零分配 / 零 `Drop`），逐轨在
+  **电平取样之后、`sum_into_bus` 之前** `apply`（规范 §3.4 第 3 条的"进入总线求和节点前"）。
+  行为判据：`tests/pdc_mix_path.rs` 的 P1/P2
+  （`pdc_compensation_is_applied_on_the_real_mix_path_sample_exactly`、
+  `pdc_lines_up_a_parallel_diamond_sample_exactly_at_the_summing_node`；
+  `test result: ok. 2 passed`），零分配判据：`tests/rt_zero_alloc.rs` 场景 ⑰
+  （`[MUST-GATE-001] 判据汇总: 34 / 34 通过`）。[ARCH-DET-002] 要求的按 `EntityId`
+  字典序**串行**累加由 `PdcPlan::order()` 提供（未变）。**这次关闭没有消除的边界**：
+  `D44②` 未回填（限制器 33 帧未进 `LatencyTable`，master 输出带 `L_max + 33`）；
+  池容量是实现边界而**不是规范常数**，装不下时由 `EngineStats::pdc_unarmed_nodes` /
+  `pdc_clamped_frames` 如实计数；判据跑的是**回调函数体**，不是 cpal 回调线程。
 - `EngineEvent` 的 `SetParam`/`NoteOn`/`NoteOff`/`Transport` 目前只计数，未接渲染；
   接入时配一阶低通参数平滑（τ≈5ms，[ARCH-DSP-001]）。
 - `MeterBoard` 未接 Slint Property 更新（属于 `yeban-app` 的地盘）。
