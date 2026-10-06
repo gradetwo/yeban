@@ -84,7 +84,11 @@
 //!
 //! 与 `.als` 的 XML 注释不同，`ProjectData` 没有注释通道，因此整张表同时写进
 //! `MetaData.plist` 的夜半扩展键 [`META_DATA_LOSS_KEY`]（一个字符串数组，每条 =
-//! `"<entity>: <reason>"`）—— 表与文件因此不会各说各话（判据钉住这一点）。
+//! `"<entity>: <reason>"`）—— **报告给用户的那张表与落盘的这张表因此不会各说各话**。
+//! 这不是一句设计意图：判据
+//! `reported_loss_table_equals_the_embedded_plist_table_entry_for_entry` 把
+//! `MetaData.plist` 的字节重新解一遍，与调用方拿到的 [`LogicBundle::losses`] 逐条
+//! （条数、顺序、全文、`未映射:` / `非等价:` 分类）对账，任一侧漂移都会红。
 //! ⚠ 这是一个**非 Logic 键**：Logic 忽略未知 plist 键这件事在本机**未验证**。
 //!
 //! ## 为什么不用 plist crate
@@ -1790,6 +1794,90 @@ mod tests {
             })
             .collect();
         assert_eq!(written, embedded, "文件里的损失表必须与返回的逐条相同");
+    }
+
+    /// 判据 (e)：**报告出来的**损失表与 `MetaData.plist` 里**落盘的**那张表逐条相同。
+    ///
+    /// 这条补的是模块头那句"表与文件因此不会各说各话"：判据 (d) 只证明了
+    /// "想写的 == 编解码回来的"，那是**写路径**的自洽；本判据把 [`LogicBundle::losses`]
+    /// （CLI 报告的那张表，见 `crates/yeban-app/src/cli.rs` 的 `logic_loss_lines`）与
+    /// **从字节重新解出来的** `YebanMappingLosses` 对账，覆盖：条数、顺序、每条的
+    /// `"<entity>: <reason>"` 全文，以及 `未映射:` / `非等价:` 的分类。任一侧改动
+    /// （漏一条、换序、改理由）都会红。
+    ///
+    /// 解码路径：本模块的 `read_bplist` —— 它是**独立于编码器**重新实现的 bplist00
+    /// 读取器（自己走偏移表与 marker，不调用 `encode_binary_plist` 的 `PlistValue`
+    /// 数据），但它与编码器同在一个文件、同一个 crate，仍不是第三方裁判；真正的外部
+    /// 裁判要另起依赖（本机离线做不到，见模块头"为什么不用 plist crate"）。
+    #[test]
+    fn reported_loss_table_equals_the_embedded_plist_table_entry_for_entry() {
+        let bundle = build_bundle(&unmappable_project(), "000", "Reported");
+        assert!(
+            !bundle.losses.is_empty(),
+            "判据不得空转：含不可映射构造的工程必须至少有一条损失"
+        );
+        assert!(
+            bundle
+                .losses
+                .iter()
+                .any(|loss| loss.reason.starts_with(LOSS_UNMAPPED_PREFIX)),
+            "表里必须有 `未映射:` 条目，否则分类对账是空转"
+        );
+        assert!(
+            bundle
+                .losses
+                .iter()
+                .any(|loss| loss.reason.starts_with(LOSS_NOT_EQUIVALENT_PREFIX)),
+            "表里必须有 `非等价:` 条目，否则分类对账是空转"
+        );
+
+        let parsed = read_bplist(&bundle.files["Alternatives/000/MetaData.plist"]);
+        let dict = dict_of(&parsed);
+        let Some(TestPlist::Array(items)) = dict.get(META_DATA_LOSS_KEY) else {
+            panic!("MetaData.plist 必须带 {META_DATA_LOSS_KEY} 且是字符串数组");
+        };
+        assert_eq!(
+            items.len(),
+            bundle.losses.len(),
+            "落盘表条数必须等于报告表条数"
+        );
+
+        for (index, (item, loss)) in items.iter().zip(&bundle.losses).enumerate() {
+            let TestPlist::Text(entry) = item else {
+                panic!("第 {index} 条落盘损失必须是字符串，得到 {item:?}");
+            };
+            let (entity, reason) = entry
+                .split_once(": ")
+                .expect("落盘损失必须形如 `<entity>: <reason>`");
+            assert_eq!(
+                entity, loss.entity,
+                "第 {index} 条落盘损失的 entity 与报告表不同（落盘 `{entity}` / 报告 `{}`）",
+                loss.entity
+            );
+            assert_eq!(
+                reason, loss.reason,
+                "第 {index} 条落盘损失的 reason 与报告表不同（落盘 `{reason}` / 报告 `{}`）",
+                loss.reason
+            );
+            let classified = if loss.reason.starts_with(LOSS_UNMAPPED_PREFIX) {
+                "未映射"
+            } else if loss.reason.starts_with(LOSS_NOT_EQUIVALENT_PREFIX) {
+                "非等价"
+            } else {
+                panic!("第 {index} 条报告的损失没有可分类的前缀：`{entry}`");
+            };
+            assert_eq!(
+                classified == "未映射",
+                reason.starts_with(LOSS_UNMAPPED_PREFIX),
+                "第 {index} 条（`{entry}`）的分类与报告表不同：报告是 `{classified}`，\
+                 落盘的 reason 里没有对应的前缀"
+            );
+            assert_eq!(
+                entry,
+                &format!("{}: {}", loss.entity, loss.reason),
+                "第 {index} 条落盘损失的内容与报告表不同"
+            );
+        }
     }
 
     /// 往返：写入的音符经"实测布局的读取器"读回（音高/力度/起点/时值）。
