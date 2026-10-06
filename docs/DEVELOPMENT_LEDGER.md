@@ -9037,3 +9037,24 @@ rule cost me nothing to write and has already paid twice this session.
 **Status**: tree green and clean; `check_docs_links` now counts 105 files (the new page included); automatic CI green through `de5b423`; both manual tiers green; all
 fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; the objective's delivery list verified end to end; and the
 open questions reduced to six, each answerable with one word.
+
+
+### Round 375: verifying the multi-line process claim - worktrees are real, branch hygiene is clean, and two worktrees are safe to retire
+
+The objective requires multi-line work through git worktrees with one line per tree, so I checked the actual tree rather than the claim:
+
+* **branch hygiene**: `origin` carries only `main` and `website`, and **no merged branch is left behind** - the condition the manual gate at
+  `gates-manual.yml:212` checks. `origin/website` is expected rather than stale, since `D55`/`HD-43` leave the site to the负责人.
+* **worktrees in use**: three line checkouts exist, which confirms the convention is actually practised rather than described -
+  `.worktrees/baseline-fps` at `cfb3795` (clean, **already merged into `main`**), `.worktrees/mcp-stdio-e2e` at `6b309df` (clean, **already merged**) and
+  `.worktrees/website` at `e5aa5ce` (**not merged, and holding 3 uncommitted changes**).
+* **what I deliberately did not do**: retire the two merged worktrees. Their commits are in `main` and they are clean, so removing them would lose nothing and
+  reclaim disk - but deletion is destructive, the third tree proves this checkout is in active use, and the discipline that has served this session is to verify
+  before removing rather than after. They are reported as **safe cleanup candidates** for the负责人 to confirm.
+
+**The useful part for a reader**: the process requirement is **verifiable from the repository state**, not just from a promise - and the same check gives a concrete,
+low-risk cleanup list (`baseline-fps`, `mcp-stdio-e2e`) plus an explicit instruction to leave `website` alone.
+
+**Status**: tree green and clean at `7b41750` (= `origin/main`); automatic CI green for the last twelve commits with no verdict outstanding; both manual tiers green;
+all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six open questions each answerable with one word in
+`docs/ledger/open-questions.md`.
