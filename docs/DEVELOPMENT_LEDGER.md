@@ -8972,3 +8972,27 @@ asserts the UI projection changes - the evidence `ROAD-M4-008` currently lacks -
 **On (b)**: implement the hook plus a criterion that a mutation on *each* existing path reaches the UI, and record the residual risk that a future path might forget.
 **On (c)**: take `ExclusiveWrite` for the session, make `save_now` fail-closed with a clear error while mounted, and extend the lock criterion to the now-writable
 session.
+
+### Round 372: decision-ready briefs for N2 (shortcuts) and D47/.als (whether the single exit covers the exporter)
+
+**N2 - shortcuts, given that Slint exposes no physical key codes.** The constraint is that the GUI cannot see physical scancodes, so a shortcut layer built on them
+cannot be verified from the UI side.
+* **(1) Accept logical keys in the GUI, keep physical codes for the port criteria (my recommendation).** The GUI binds logical keys; the headless port keeps
+  physical-code criteria for the cases that need them. Consequence: shortcuts become testable through the existing headless harness, and the limitation is stated in
+  the ledger rather than hidden; the risk is that a logical binding cannot express layout-independent intent (e.g. "the key left of Z"), which the port criteria cover.
+* **(2) Change the GUI framework.** Removes the constraint outright but discards the Slint work and the UI tier built on it - disproportionate to a shortcut layer.
+* **(3) Ship shortcuts unverified.** Cheapest, and contradicts the objective's rule that a capability without a criterion is not delivered.
+On **(1)** I would bind the logical keys, add criteria through `live_ui_mcp`/the port for the bindings that matter, and record in `N2`'s row exactly which cases
+the port's physical-code criteria still cover.
+
+**`D47` / `.als` - does "MIDI export's single exit = app CLI" also cover the experimental `.als` exporter?** Today `.als` is reachable only from its own crate (it
+has no CLI, MCP or UI exit), which is why the question is open rather than answered.
+* **(a) Yes - `.als` must go through the app CLI like MIDI export (my recommendation if the exporter is to be usable).** Add an `--export-als` path beside
+  `--export-midi`, writing the same loss report to the log. Consequence: one exit for exports, the loss table becomes user-visible, and the exporter stops being
+  reachable only from tests; it also means the CLI contract test must cover it.
+* **(b) No - `.als` stays crate-internal and experimental.** Then the honest row is that there is no user-facing exit, the exporter is a library capability, and
+  `D47`'s wording needs one clarifying sentence so a reader does not assume `.als` was overlooked.
+* **(c) Yes but through MCP instead of the CLI.** Consistent with the tool-expansion decisions, but contradicts `D47`'s explicit choice of the app CLI as the single
+  exit, so it would need `D47` amended rather than merely extended.
+On **(a)** I would add the CLI switch with the loss report surfaced, extend `cli_contract.rs` to cover it, and keep the non-default feature gate; on **(b)** I would
+write the clarifying sentence in the ADR and mark the row's status text accordingly.
