@@ -620,6 +620,64 @@
 //!    **播放通道/音色路由仍未验证**，登记在 [`NOTE_EVENT_SHAPE_CAVEAT`]。
 //!    结论**只覆盖本机 12.2**、容量**两条** MIDI 轨。
 //!
+//! ### 2026-10-06 参考文件级对账：拿 **Logic 自己导出的 `.mid`** 与我们的 `.logicx` 对账 —— **不是** Logic 往返
+//!
+//! ⚠ **这不是往返，判据名与本节都写明这一点**：本仓库里**没有**任何一步让 Logic **导入**我们的
+//! 产物再导出。参照物是负责人**自己**用 Logic Pro 12.2 从他的两份工程导出的
+//! `export.mid`（[`LOGIC_OWNER_DONOR_1T_EXPORT_MID`] / [`LOGIC_OWNER_DONOR_2T_EXPORT_MID`]，
+//! 与同目录的 `ProjectData` 是**同一个工程**的两种 Logic 编码）。判据名：
+//! `exported_notes_cross_check_logics_own_mid_export_not_a_round_trip`（对账）
+//! 与 `donor_mid_reference_pins_the_logicx_to_midi_unit_mapping`（把单位换算量出来）。
+//!
+//! **实测（指标 = 事件条数 / tick；解析器是 `midly`，与本模块的 `ProjectData` 记录模型无关）**：
+//!
+//! | 读数 | `furelise-1track/export.mid` | `furelise-2tracks/export.mid` |
+//! | :--- | ---: | ---: |
+//! | 字节数（`stat -f%z`） | 3,822 | 6,687 |
+//! | SMF 格式（`MThd` format） | **0**（单块） | **1**（并行，含一条纯 meta 的指挥轨） |
+//! | `MThd` 声明的轨道数 / 实际 `MTrk` 块数 | 1 / 1 | 3 / 3 |
+//! | division | **480 PPQ** | **480 PPQ** |
+//! | 力度 > 0 的 note-on（个） | **517** | **517 + 388 = 905** |
+//! | 轨道名（meta `0x03`） | `up:` | `up:` / `down:`（块 1 没有名字） |
+//! | 起始 tick 范围 | 0..74,880 | `up:` 0..74,880 / `down:` 960..74,880 |
+//! | 文件被完全消费 | 是（行走终点 = 文件长） | 是 |
+//!
+//! 对账依赖的**事件类型**（只有这些进读数）：`MTrk` 的 note-on / note-off（`0x90` / `0x80`，
+//! 含 running status）、meta `0x03` 轨道名 / `0x04` 乐器名 / `0x20` 通道前缀 / `0x21` 端口 /
+//! `0x2f` 结束 / `0x51` 速度 / `0x54` SMPTE 偏移 / `0x58` 拍号 / `0x59` 调号，
+//! 以及 `0xB0` / `0xB1` 控制器 —— 后面这些**都不进对账**，只有 note-on/note-off 进。
+//!
+//! **单位换算（从字节推导，不是猜）**：`.mid` 的 division **480** 与本模块
+//! [`LOGIC_TICKS_PER_QUARTER`]（= 夜半 [`PPQ`] = **960**）之比是 **2**；`.mid` 的 tick 0 = 歌曲起点，
+//! 而 `.logicx` 的音符事件把 [`LOGIC_NOTE_ORIGIN_TICKS`]（**38,400**）**加**在 region 内相对
+//! tick 上。用**同一工程**的两种编码（负责人 2 轨 `ProjectData` ↔ 它的 `export.mid`）独立核对：
+//! 517 + 388 条音符里，**除 1 条**起始 tick 与**除 1 条**时值外全部满足
+//! `logicx = 38,400 + 2 × midi`（那两条各差 **1** tick，见
+//! [`LOGIC_OWNER_DONOR_PAIR_START_TICK_OFF_BY_ONE`]）⇒ 这两处是 **Logic 自己两次编码之间的
+//! 量化差**，不是我们的编码差。判据据此只要求**我们的**产物与 `.mid` 严格成 2 倍（我们控制
+//! 输入），并把那两处例外钉成读数。
+//!
+//! **哪些可比、哪些不可比（判据只说前者）**：
+//!
+//! * **可比**（逐条对账）：每条轨道（region）的 note **条数**、**音高多重集**、**力度多重集**、
+//!   乘以 2 之后的**起始 tick 多重集**、乘以 2 之后的**时值多重集**。
+//! * **不可比，明确不比较**：① **PPQ**（480 vs 960）⇒ 只能说"乘 2 之后相等"，不能说 tick 相等；
+//!   ② **块/轨道结构**（`.mid` 有纯 meta 指挥轨、`.logicx` 没有；1 轨 `.mid` 是格式 0 单块，
+//!   而对应的 `.logicx` 是 494/507 条记录）⇒ 块数与记录数**不可比**；
+//!   ③ **音符事件的字节形状**：供体 `.logicx` 载荷是「K 个 16 字节 `b0`/`b1` 行 + N 个 32 字节
+//!   音符事件 + 16 字节尾」（`up:` K=2、`down:` K=1，且 `down:` 的音符头是 `0x91`），
+//!   本写入器写 `32·N + 16`、头恒 `0x90` ⇒ **载荷字节与长度**不可比（登记在
+//!   [`NOTE_EVENT_SHAPE_CAVEAT`]）；
+//!   ④ **每 region 的 MIDI 通道**（`.mid` 的 `down:` 在通道 2，本写入器恒写通道 1）；
+//!   ⑤ `.mid` 的 meta 与控制器事件（`0x2f`/`0x51`/`0x58`/`0x59`/`0x54`/`0x20`/`0x21`/`0x03`/
+//!   `0x04` 与 `0xB0`/`0xB1`）我们没有写 ⇒ 不参与对账。
+//!
+//! 对账方式：把 `.mid` 的材料（`midi_tick × 2`、`duration × 2`、力度原样）装进一个工程，
+//! 走**正常出口** [`project_data_from_donor`]，再用本模块判据既有的实测偏移表
+//! （`read_note_events`：`32·N + 16` 形状、头 `+0x00 = 0x90`、头 `+0x04` = 起始 tick、
+//! 头 `+0x0b` = 力度、头 `+0x0c` = 音高、续行 `+0x0c` = 时值、末尾 16 字节尾）读回来逐条对账
+//! —— 1 轨材料走 MIT 供体（517 条），2 轨材料走负责人 2 轨供体（517 + 388 条）。
+//!
 //! ## 确定性
 //!
 //! 输出逐字节可复现：集合一律按 `BTreeMap` 键序迭代，**不出现 `HashMap`**（红线 4）；
@@ -1969,6 +2027,46 @@ pub const LOGIC_OWNER_DONOR_1T_MID_SHA256: &str =
 /// 2 轨供体那份 **Logic 自己导出的** `.mid` 的 sha256（实测）。
 pub const LOGIC_OWNER_DONOR_2T_MID_SHA256: &str =
     "a80f39556afb851e7af5ee63858113d85484fe644bac63c02c1894f218b88984";
+
+/* ------------------------------------------------------------------ *
+ * 两份 `.mid` 的**逐字段**实测读数 —— 参考文件级对账的参照物（**不是** Logic 往返）
+ * ------------------------------------------------------------------ */
+
+/// 1 轨 `.mid` 的 SMF **格式**（`MThd` 的 format 字段，实测 **0** = 单块）。
+pub const LOGIC_OWNER_DONOR_MID_1T_FORMAT: u8 = 0;
+
+/// 2 轨 `.mid` 的 SMF **格式**（实测 **1** = 并行多条 `MTrk`，第 1 块是纯 meta 的指挥轨）。
+pub const LOGIC_OWNER_DONOR_MID_2T_FORMAT: u8 = 1;
+
+/// 两份 `.mid` 的 `MThd` division（实测**两份都是 480 PPQ**）。
+///
+/// 这是"我们的 tick 与 Logic 的 tick 不可直接比较"的唯一原因：本模块
+/// [`LOGIC_TICKS_PER_QUARTER`] = 夜半 [`PPQ`] = **960**，因此 **1 个 `.mid` tick = 2 个本模块 tick**。
+pub const LOGIC_OWNER_DONOR_MID_DIVISION: u16 = 480;
+
+/// 1 轨 `.mid` 的 `MTrk` 块数（实测 **1**，等于 `MThd` 声明的轨道数）。
+pub const LOGIC_OWNER_DONOR_MID_1T_CHUNKS: usize = 1;
+
+/// 2 轨 `.mid` 的 `MTrk` 块数（实测 **3** = 1 条纯 meta 的指挥轨 + `up:` + `down:`）。
+pub const LOGIC_OWNER_DONOR_MID_2T_CHUNKS: usize = 3;
+
+/// 1 轨 `.mid` 里**力度 > 0 的 note-on** 条数（实测 **517**；每个都被同音高 note-off 关闭）。
+pub const LOGIC_OWNER_DONOR_MID_1T_NOTE_ONS: usize = 517;
+
+/// 2 轨 `.mid` 里**有音符的两条 `MTrk`** 各自的 note-on 条数（实测 `up:` **517** + `down:` **388**）。
+pub const LOGIC_OWNER_DONOR_MID_2T_TRACK_NOTE_ONS: [usize; 2] = [517, 388];
+
+/// 负责人 `.mid` 与**他自己的** `.logicx`（同目录 `ProjectData`）之间**不**严格成 2 倍的音符条数。
+///
+/// **实测（517 + 388 条逐条对账）**：`up:` 那条 517 音里恰有 **1** 条起始 tick 差 1
+/// （`.logicx` `72905` vs `.mid` `17253 × 2 + 38400 = 72906`）、恰有 **1** 条时值差 1
+/// （`.logicx` `25` vs `.mid` `13 × 2 = 26`）；`down:` 的 **388** 条**完全**成 2 倍。
+/// ⇒ 这两个 1 是 **Logic 自己两次编码之间的量化差**，不是我们的编码差；参考对账因此
+/// 只要求**我们的**产物与 `.mid` 严格成 2 倍（我们控制输入），并把这两处例外钉成读数。
+pub const LOGIC_OWNER_DONOR_PAIR_START_TICK_OFF_BY_ONE: usize = 1;
+
+/// 见 [`LOGIC_OWNER_DONOR_PAIR_START_TICK_OFF_BY_ONE`]（实测时值差 1 的也是 **1** 条）。
+pub const LOGIC_OWNER_DONOR_PAIR_DURATION_OFF_BY_ONE: usize = 1;
 
 /// 两份负责人供体的根头格式版本码（实测**两份都是** `0x09D0`）。
 ///
@@ -6655,6 +6753,595 @@ mod tests {
             );
             assert!(!expected.is_empty(), "{label} 必须钉住 sha256");
         }
+    }
+
+    // ------------------------------------------------------------------ //
+    // 参考文件级对账：用 Logic **自己导出**的 `.mid` 当参照物（**不是** Logic 往返）     //
+    // ------------------------------------------------------------------ //
+
+    /// `sha256` 的小写十六进制，用来把参考 `.mid` 的字节钉成常量。
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
+        let digest = Sha256::digest(bytes);
+        let mut out = String::with_capacity(64);
+        for byte in digest {
+            write!(out, "{byte:02x}").expect("写入 String 不会失败");
+        }
+        out
+    }
+
+    /// 参考 `.mid` 里的一条音符：`(起始 tick, 音高, 力度, 时值)`。
+    ///
+    /// tick 单位 = **该文件自己的 division**（实测 480 PPQ），因此与 `.logicx` 对账前必须乘
+    /// `LOGIC_TICKS_PER_QUARTER / division`（实测 = 2）。
+    type ReferenceNote = (u64, u8, u8, u64);
+
+    /// 参考 `.mid` 里的一条 `MTrk`（只保留与对账有关的两项）。
+    struct ReferenceTrack {
+        /// meta `0x03` 轨道名（没有就是 `None`）。
+        name: Option<String>,
+        /// 按 tick 排序后的音符（解析时按"后开先关"配对 note-on / note-off）。
+        notes: Vec<ReferenceNote>,
+    }
+
+    /// 参考 `.mid` 的整体读数。
+    struct ReferenceMidi {
+        format: u8,
+        division: u16,
+        declared_tracks: u16,
+        tracks: Vec<ReferenceTrack>,
+    }
+
+    /// 用 `midly`（本 crate 既有的 SMF 依赖，见 `Cargo.toml`）解析 Logic 自己导出的 `.mid`。
+    ///
+    /// 这条读路径**不经过**本模块的 `ProjectData` 记录模型，因此与 `read_note_events`
+    /// 是两条独立的读法；参考对账就是让两条读法在同一批材料上相遇。
+    /// `declared_tracks` 直接取 `MThd` 的 `u16` 大端字段（`midly` 0.5 的 `Header` 不保留它），
+    /// 用来核对"声明的轨道数 == 实际的 `MTrk` 块数"。每个 note-on（力度 > 0）都必须被同通道
+    /// 同音高的 note-off 关闭，否则本函数 panic。
+    fn read_reference_midi(bytes: &[u8]) -> ReferenceMidi {
+        use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
+
+        assert_eq!(&bytes[..4], b"MThd", "参考文件必须是标准 MIDI 文件");
+        let declared_tracks = u16::from_be_bytes([bytes[10], bytes[11]]);
+        let smf = Smf::parse(bytes).expect("Logic 自己导出的 .mid 必须能被 midly 解析");
+        let format = match smf.header.format {
+            Format::SingleTrack => LOGIC_OWNER_DONOR_MID_1T_FORMAT,
+            Format::Parallel => LOGIC_OWNER_DONOR_MID_2T_FORMAT,
+            Format::Sequential => panic!("参考文件实测不是 SMF 格式 2"),
+        };
+        let division = match smf.header.timing {
+            Timing::Metrical(division) => division.as_int(),
+            Timing::Timecode(..) => panic!("参考文件实测是 Metrical（480 PPQ）"),
+        };
+
+        let mut tracks = Vec::with_capacity(smf.tracks.len());
+        for track in &smf.tracks {
+            let mut tick = 0u64;
+            // (channel, key) -> (start_tick, velocity)：与 `yeban-midi` 同一套配对规则。
+            let mut open: Vec<(u8, u8, u64, u8)> = Vec::new();
+            let mut notes = Vec::new();
+            let mut name = None;
+            for event in track {
+                tick += u64::from(event.delta.as_int());
+                match event.kind {
+                    TrackEventKind::Midi { channel, message } => {
+                        let channel = channel.as_int();
+                        match message {
+                            MidiMessage::NoteOn { key, vel } => {
+                                let key = key.as_int();
+                                let velocity = vel.as_int();
+                                if velocity == 0 {
+                                    close_reference_note(&mut open, &mut notes, channel, key, tick);
+                                } else {
+                                    open.push((channel, key, tick, velocity));
+                                }
+                            }
+                            MidiMessage::NoteOff { key, .. } => {
+                                close_reference_note(
+                                    &mut open,
+                                    &mut notes,
+                                    channel,
+                                    key.as_int(),
+                                    tick,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    TrackEventKind::Meta(MetaMessage::TrackName(raw)) => {
+                        name = Some(String::from_utf8_lossy(raw).into_owned());
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                open.is_empty(),
+                "参考文件里每个 note-on 都必须被 note-off 关闭（未关闭 {} 个）",
+                open.len()
+            );
+            notes.sort_unstable();
+            tracks.push(ReferenceTrack { name, notes });
+        }
+        ReferenceMidi {
+            format,
+            division,
+            declared_tracks,
+            tracks,
+        }
+    }
+
+    /// 关掉一条参考音符（后开先关），供 [`read_reference_midi`] 使用。
+    fn close_reference_note(
+        open: &mut Vec<(u8, u8, u64, u8)>,
+        notes: &mut Vec<ReferenceNote>,
+        channel: u8,
+        key: u8,
+        tick: u64,
+    ) {
+        let Some(index) = open.iter().rposition(|&(open_channel, open_key, _, _)| {
+            open_channel == channel && open_key == key
+        }) else {
+            panic!("参考文件里 note-off 没有配对的 note-on：tick {tick} key {key}");
+        };
+        let (_, _, start, velocity) = open.remove(index);
+        notes.push((start, key, velocity, tick - start));
+    }
+
+    /// 读**供体**（Logic 自己存过的 `ProjectData`）region 的音符载荷，返回 `(音符, 非音符 16 字节行数)`。
+    ///
+    /// 形状（实测，见 [`NOTE_EVENT_SHAPE_CAVEAT`]）：「K 个 16 字节 `b0`/`b1` 行 + N 个 32 字节音符
+    /// 事件 + 16 字节 `f1…3f` 尾」，音符头行的首字节是 `0x90`/`0x91`（**每 region 的 MIDI 通道**）。
+    /// 因此这条读取器**不能**用 `read_note_events`（后者断言 `32·N + 16`、头恒 `0x90`，
+    /// 只对本写入器的产物成立）。
+    fn read_donor_note_payload(payload: &[u8]) -> (Vec<(u32, u8, u8, u32)>, usize) {
+        assert_eq!(payload.len() % 16, 0, "供体事件行必须是 16 字节的整数倍");
+        let mut notes = Vec::new();
+        let mut other = 0usize;
+        let mut at = 0usize;
+        while at + 16 <= payload.len() {
+            let row = &payload[at..at + 16];
+            if row[0] & 0xF0 != 0x90 {
+                other += 1;
+                at += 16;
+                continue;
+            }
+            let start = u32::from_le_bytes([row[4], row[5], row[6], row[7]]);
+            let mut next = at + 16;
+            let mut duration = 0u32;
+            let mut taken = false;
+            while next + 16 <= payload.len() && payload[next + 7] & 0x80 != 0 {
+                if !taken {
+                    duration = u32::from_le_bytes([
+                        payload[next + 0x0c],
+                        payload[next + 0x0d],
+                        payload[next + 0x0e],
+                        payload[next + 0x0f],
+                    ]);
+                    taken = true;
+                }
+                next += 16;
+            }
+            notes.push((start, row[0x0c], row[0x0b], duration));
+            at = next;
+        }
+        (notes, other)
+    }
+
+    /// 参考 `.mid` 里**有音符的**轨道（按文件顺序）。
+    fn played_reference_tracks(reference: &ReferenceMidi) -> Vec<&ReferenceTrack> {
+        reference
+            .tracks
+            .iter()
+            .filter(|track| !track.notes.is_empty())
+            .collect()
+    }
+
+    /// 把参考 `.mid` 的材料装进一个工程：每条**有音符的** `MTrk` = 一条 MIDI 轨。
+    ///
+    /// **单位换算（从字节推导，见 [`LOGIC_OWNER_DONOR_MID_DIVISION`]）**：
+    /// `note.start_tick = midi_tick × 2`、`note.duration_ticks = duration × 2`、力度原样；
+    /// 摆放起点 0 ⇒ 产物里读出的起始 tick = `LOGIC_NOTE_ORIGIN_TICKS + 2 × midi_tick`。
+    /// **只搬可比的东西**：通道、控制器、meta 事件与轨道名都不进工程。
+    fn project_from_reference_tracks(tracks: &[&ReferenceTrack]) -> YebanProjectV1 {
+        let ratio = LOGIC_TICKS_PER_QUARTER / u64::from(LOGIC_OWNER_DONOR_MID_DIVISION);
+        let mut project = YebanProjectV1 {
+            title: "Logic MIDI reference".to_owned(),
+            ..YebanProjectV1::default()
+        };
+        for (index, track) in tracks.iter().enumerate() {
+            let clip_id = test_id(1_000 + index as u128);
+            let mut clip = yeban_model::ClipPoolEntry {
+                id: clip_id,
+                name: format!("ref-track-{}", index + 1),
+                content: ClipContent::default(),
+            };
+            let end = track
+                .notes
+                .iter()
+                .map(|(start, _, _, duration)| (start + duration) * ratio)
+                .max()
+                .unwrap_or(0);
+            if let Some(notes) = clip.content.notes_mut() {
+                for (step, (start, pitch, velocity, duration)) in track.notes.iter().enumerate() {
+                    let note_id = test_id(10_000 + (index * 1_000 + step) as u128);
+                    let mut note = MidiNote::new(note_id, start * ratio, *pitch, duration * ratio);
+                    note.velocity = *velocity;
+                    notes.insert(note_id, note);
+                }
+            }
+            project.clip_pool.insert(clip_id, clip);
+            let placement = test_id(2_000 + index as u128);
+            let mut model_track = TrackV3 {
+                id: test_id(index as u128 + 1),
+                name: format!("Track {}", index + 1),
+                ..TrackV3::default()
+            };
+            model_track.clips.insert(
+                placement,
+                ClipPlacement {
+                    id: placement,
+                    clip_id,
+                    start_tick: 0,
+                    duration_ticks: end.max(3_840),
+                    loop_config: yeban_model::LoopConfig::default(),
+                    muted: false,
+                },
+            );
+            project.tracks.insert(model_track.id, model_track);
+        }
+        project
+    }
+
+    /// 参考对账的公共体：`.mid` → 工程 → **正常出口** → 用实测偏移表读回来逐项对账。
+    ///
+    /// 复用既有判据钉住的偏移表（`read_note_events` 的文档就是那张表）：
+    /// `32·N + 16` 形状、头 `+0x00 = 0x90`、头 `+0x04` = 起始 tick、头 `+0x0b` = 力度、
+    /// 头 `+0x0c` = 音高、续行 `+0x0c` = 时值、末尾 16 字节尾。
+    fn cross_check_export_against_reference(label: &str, mid: &[u8], expected_note_ons: &[usize]) {
+        let reference = read_reference_midi(mid);
+        assert_eq!(
+            reference.division, LOGIC_OWNER_DONOR_MID_DIVISION,
+            "{label}：.mid 的 division（PPQ）"
+        );
+        let ratio = LOGIC_TICKS_PER_QUARTER / u64::from(reference.division);
+        assert_eq!(
+            ratio, 2,
+            "{label}：960 / 480 的整数比（本模块 tick / .mid tick）"
+        );
+        let played = played_reference_tracks(&reference);
+        assert_eq!(
+            played.len(),
+            expected_note_ons.len(),
+            "{label}：有音符的轨道条数（条）"
+        );
+        for (index, count) in expected_note_ons.iter().enumerate() {
+            assert_eq!(
+                played[index].notes.len(),
+                *count,
+                "{label}：第 {} 条轨道的 note-on 条数（个）",
+                index + 1
+            );
+        }
+
+        let project = project_from_reference_tracks(&played);
+        let data = project_data_from_donor(&project);
+        assert_eq!(
+            data.mapped_notes,
+            expected_note_ons.iter().sum::<usize>(),
+            "{label}：出口报告的映射音符总数（个）"
+        );
+        let records = read_records(&data.bytes);
+        let template = donor_template_for(&project);
+        assert_eq!(
+            template.regions.len(),
+            played.len(),
+            "{label}：供体可映射的 region 条数（条）"
+        );
+
+        for (index, ((cluster, _, _, _), track)) in
+            template.regions.iter().zip(played.iter()).enumerate()
+        {
+            let seq = records
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == *cluster)
+                .unwrap_or_else(|| panic!("{label}：第 {} 条 region 的配对 qSvE", index + 1));
+            let mut ours: Vec<ReferenceNote> = read_note_events(&seq.body)
+                .into_iter()
+                .map(|(start, pitch, velocity, duration)| {
+                    (u64::from(start), pitch, velocity, u64::from(duration))
+                })
+                .collect();
+            let mut mapped: Vec<ReferenceNote> = track
+                .notes
+                .iter()
+                .map(|(start, pitch, velocity, duration)| {
+                    (
+                        LOGIC_NOTE_ORIGIN_TICKS + start * ratio,
+                        *pitch,
+                        *velocity,
+                        duration * ratio,
+                    )
+                })
+                .collect();
+
+            assert_eq!(
+                ours.len(),
+                mapped.len(),
+                "{label}：第 {} 条轨道的 note 条数（个）",
+                index + 1
+            );
+            let mut ours_pitches: Vec<u8> = ours.iter().map(|note| note.1).collect();
+            let mut mapped_pitches: Vec<u8> = mapped.iter().map(|note| note.1).collect();
+            ours_pitches.sort_unstable();
+            mapped_pitches.sort_unstable();
+            assert_eq!(
+                ours_pitches,
+                mapped_pitches,
+                "{label}：第 {} 条轨道的音高多重集",
+                index + 1
+            );
+            let mut ours_velocity: Vec<u8> = ours.iter().map(|note| note.2).collect();
+            let mut mapped_velocity: Vec<u8> = mapped.iter().map(|note| note.2).collect();
+            ours_velocity.sort_unstable();
+            mapped_velocity.sort_unstable();
+            assert_eq!(
+                ours_velocity,
+                mapped_velocity,
+                "{label}：第 {} 条轨道的力度多重集",
+                index + 1
+            );
+            let mut ours_ticks: Vec<u64> = ours.iter().map(|note| note.0).collect();
+            let mut mapped_ticks: Vec<u64> = mapped.iter().map(|note| note.0).collect();
+            ours_ticks.sort_unstable();
+            mapped_ticks.sort_unstable();
+            assert_eq!(
+                ours_ticks,
+                mapped_ticks,
+                "{label}：第 {} 条轨道的起始 tick 多重集必须等于 38,400 + 2 × .mid tick",
+                index + 1
+            );
+            ours.sort_unstable();
+            mapped.sort_unstable();
+            assert_eq!(
+                ours,
+                mapped,
+                "{label}：第 {} 条轨道的 (起始 tick, 音高, 力度, 时值) 必须逐条等于 Logic 自己导出的 .mid 在同一单位下的映射",
+                index + 1
+            );
+        }
+    }
+
+    /// **参考文件级判据（有牙，离线可跑）**：`.mid`（Logic **自己**导出，480 PPQ）↔ **他自己**存的
+    /// `.logicx`（同一工程，960 PPQ）逐音符对账，从而把 `logicx = 38,400 + 2 × midi` 这条单位换算
+    /// **从字节**量出来，并钉住两处量化例外（各 1 条差 1 tick）。
+    ///
+    /// **与 `owner_donor_mid_exports_cross_check_the_two_track_delta` 的关系（明写重叠、不重复）**：
+    /// 两条判据读**同一对文件**，都钉 sha256 与 note-on 条数（517 / 517+388）。本条**新增**的是：
+    /// 逐音符的 (起始 tick, 音高, 力度, 时值) 对账、音高/力度多重集、SMF 格式 / division /
+    /// 块数 / 轨道名 / 原点，以及"除那两条之外严格成 2 倍"这个读数；那条判据量的是
+    /// "多一条轨道 = 多一条**有音符的**轨道"。两条都**不是** Logic 往返。
+    #[test]
+    fn donor_mid_reference_pins_the_logicx_to_midi_unit_mapping() {
+        assert_eq!(
+            sha256_hex(LOGIC_OWNER_DONOR_1T_EXPORT_MID),
+            LOGIC_OWNER_DONOR_1T_MID_SHA256,
+            "1 轨参考 .mid 的字节必须就是钉住的那一份"
+        );
+        assert_eq!(
+            sha256_hex(LOGIC_OWNER_DONOR_2T_EXPORT_MID),
+            LOGIC_OWNER_DONOR_2T_MID_SHA256,
+            "2 轨参考 .mid 的字节必须就是钉住的那一份"
+        );
+
+        let one = read_reference_midi(LOGIC_OWNER_DONOR_1T_EXPORT_MID);
+        assert_eq!(
+            one.format, LOGIC_OWNER_DONOR_MID_1T_FORMAT,
+            "1 轨 .mid 的 SMF 格式"
+        );
+        assert_eq!(
+            one.division, LOGIC_OWNER_DONOR_MID_DIVISION,
+            "1 轨 .mid 的 division（PPQ）"
+        );
+        assert_eq!(
+            usize::from(one.declared_tracks),
+            LOGIC_OWNER_DONOR_MID_1T_CHUNKS,
+            "1 轨 .mid 声明的 MTrk 数（块）"
+        );
+        assert_eq!(
+            one.tracks.len(),
+            LOGIC_OWNER_DONOR_MID_1T_CHUNKS,
+            "1 轨 .mid 实际的 MTrk 块数（块）"
+        );
+        assert_eq!(
+            one.tracks[0].name.as_deref(),
+            Some("up:"),
+            "1 轨 .mid 的轨道名"
+        );
+        assert_eq!(
+            one.tracks[0].notes.len(),
+            LOGIC_OWNER_DONOR_MID_1T_NOTE_ONS,
+            "1 轨 .mid 的 note-on 条数（个）"
+        );
+
+        let two = read_reference_midi(LOGIC_OWNER_DONOR_2T_EXPORT_MID);
+        assert_eq!(
+            two.format, LOGIC_OWNER_DONOR_MID_2T_FORMAT,
+            "2 轨 .mid 的 SMF 格式"
+        );
+        assert_eq!(
+            two.division, LOGIC_OWNER_DONOR_MID_DIVISION,
+            "2 轨 .mid 的 division（PPQ）"
+        );
+        assert_eq!(
+            usize::from(two.declared_tracks),
+            LOGIC_OWNER_DONOR_MID_2T_CHUNKS,
+            "2 轨 .mid 声明的 MTrk 数（块）"
+        );
+        assert_eq!(
+            two.tracks.len(),
+            LOGIC_OWNER_DONOR_MID_2T_CHUNKS,
+            "2 轨 .mid 实际的 MTrk 块数（块）"
+        );
+        assert!(
+            two.tracks[0].notes.is_empty(),
+            "2 轨 .mid 的第 1 块是纯 meta 的指挥轨"
+        );
+        assert_eq!(
+            two.tracks[1].name.as_deref(),
+            Some("up:"),
+            "2 轨 .mid 第 2 块的名字"
+        );
+        assert_eq!(
+            two.tracks[2].name.as_deref(),
+            Some("down:"),
+            "2 轨 .mid 第 3 块的名字"
+        );
+        assert_eq!(
+            [two.tracks[1].notes.len(), two.tracks[2].notes.len()],
+            LOGIC_OWNER_DONOR_MID_2T_TRACK_NOTE_ONS,
+            "2 轨 .mid 两条有音符轨道的 note-on 条数（个）"
+        );
+        assert_eq!(two.tracks[2].notes[0].0, 960, "down: 的首个 note-on tick");
+
+        // 同一工程两种编码的逐音符对账 ⇒ 单位换算从字节量出来。
+        let ratio = LOGIC_TICKS_PER_QUARTER / u64::from(two.division);
+        assert_eq!(ratio, 2, "960 / 480 的整数比（本模块 tick / .mid tick）");
+        let records = read_records(LOGIC_OWNER_DONOR_2T_PROJECT_DATA);
+        for (index, (cluster, _, _, _)) in LOGIC_OWNER_DONOR_TRACK_REGIONS.iter().enumerate() {
+            let seq = records
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == *cluster)
+                .unwrap_or_else(|| panic!("供体第 {} 条 region 的配对 qSvE", index + 1));
+            let (donor, other_rows) = read_donor_note_payload(&seq.body);
+            let midi = &two.tracks[index + 1].notes;
+            assert_eq!(
+                donor.len(),
+                midi.len(),
+                "第 {} 条 region：两种编码的 note 条数（个）",
+                index + 1
+            );
+            assert_eq!(
+                donor.len(),
+                LOGIC_OWNER_DONOR_MID_2T_TRACK_NOTE_ONS[index],
+                "第 {} 条 region：note 条数必须等于钉住的实测值（个）",
+                index + 1
+            );
+            let mut donor_pitches: Vec<u8> = donor.iter().map(|note| note.1).collect();
+            let mut midi_pitches: Vec<u8> = midi.iter().map(|note| note.1).collect();
+            donor_pitches.sort_unstable();
+            midi_pitches.sort_unstable();
+            assert_eq!(
+                donor_pitches,
+                midi_pitches,
+                "第 {} 条 region：音高多重集必须等于 .mid",
+                index + 1
+            );
+            let mut donor_velocity: Vec<u8> = donor.iter().map(|note| note.2).collect();
+            let mut midi_velocity: Vec<u8> = midi.iter().map(|note| note.2).collect();
+            donor_velocity.sort_unstable();
+            midi_velocity.sort_unstable();
+            assert_eq!(
+                donor_velocity,
+                midi_velocity,
+                "第 {} 条 region：力度多重集必须等于 .mid",
+                index + 1
+            );
+
+            let mut ours: Vec<(u64, u8, u8)> = donor
+                .iter()
+                .map(|note| (u64::from(note.0), note.1, note.2))
+                .collect();
+            let mut mapped: Vec<(u64, u8, u8)> = midi
+                .iter()
+                .map(|note| (LOGIC_NOTE_ORIGIN_TICKS + note.0 * ratio, note.1, note.2))
+                .collect();
+            ours.sort_unstable();
+            mapped.sort_unstable();
+            let off_by_one = ours.iter().zip(&mapped).filter(|(a, b)| a != b).count();
+            assert_eq!(
+                off_by_one,
+                if index == 0 {
+                    LOGIC_OWNER_DONOR_PAIR_START_TICK_OFF_BY_ONE
+                } else {
+                    0
+                },
+                "第 {} 条 region：除钉住的那几条之外，(起始 tick, 音高, 力度) 必须逐条成 2 倍",
+                index + 1
+            );
+            if index == 0 {
+                assert!(
+                    ours.contains(&(72_905, 69, 62)),
+                    "实测的 off-by-one 起始 tick 72905（.logicx 侧）"
+                );
+                assert!(
+                    mapped.contains(&(72_906, 69, 62)),
+                    "映射后的 72906（.mid 17253 × 2 + 38400）"
+                );
+                assert!(
+                    !ours.contains(&(72_906, 69, 62)),
+                    "那一条不在 72906 —— 1 tick 的量化差是 Logic 自己的"
+                );
+            }
+            let mut donor_durations: Vec<u64> =
+                donor.iter().map(|note| u64::from(note.3)).collect();
+            donor_durations.sort_unstable();
+            let mut mapped_durations: Vec<u64> = midi.iter().map(|note| note.3 * ratio).collect();
+            mapped_durations.sort_unstable();
+            let duration_off = donor_durations
+                .iter()
+                .zip(&mapped_durations)
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(
+                duration_off,
+                if index == 0 {
+                    LOGIC_OWNER_DONOR_PAIR_DURATION_OFF_BY_ONE
+                } else {
+                    0
+                },
+                "第 {} 条 region：除钉住的那 1 条之外，时值必须逐条成 2 倍",
+                index + 1
+            );
+            if index == 0 {
+                assert!(donor_durations.contains(&25), "实测的 off-by-one 时值 25");
+                assert!(mapped_durations.contains(&26), "映射后的 26（.mid 13 × 2）");
+            }
+            assert!(
+                other_rows >= 1,
+                "第 {} 条 region：载荷里至少有一行非音符（b0/b1 行或 16 字节尾）",
+                index + 1
+            );
+        }
+    }
+
+    /// **参考文件级判据（有牙，离线可跑）**：我们的 `.logicx` 出口对**同一批材料**写出的音符，
+    /// 必须与 **Logic 自己**从源工程导出的 `.mid` 逐条一致 —— 条数、音高多重集、力度多重集、
+    /// 乘 2 后的起始 tick 与时值。
+    ///
+    /// ⚠ **这不是 Logic 往返**（判据名与这段注释都写明）：参照物是**负责人自己**用
+    /// Logic Pro 12.2 从源工程导出的 `.mid`（与同目录 `ProjectData` 是同一工程的两种 Logic 编码）；
+    /// 本判据把那份**材料**装进一个工程、走我们**正常出口** [`project_data_from_donor`]，
+    /// 再把产物读回来对账。**本仓库里没有任何一步让 Logic 导入我们的字节再导出** ——
+    /// 那需要 Logic 与负责人，因此这一条只把 `ROAD-M4-011` 的"参考文件级判据"缺口**部分**补上。
+    ///
+    /// **不比较什么（编码本身不支持）**：PPQ（480 vs 960 ⇒ 只比"乘 2 后相等"）、块/记录结构
+    /// （`.mid` 的纯 meta 指挥轨 vs `.logicx` 的 494/507 条记录）、音符事件的**字节形状**
+    /// （供体有 `b0`/`b1` 头行、`down:` 的头是 `0x91`，本写入器写 `32·N + 16`、头恒 `0x90`）、
+    /// 每 region 的 MIDI 通道、以及全部 meta / 控制器事件。见模块头同名小节。
+    #[test]
+    fn exported_notes_cross_check_logics_own_mid_export_not_a_round_trip() {
+        cross_check_export_against_reference(
+            "1 轨材料（Logic 自己的 furelise-1track/export.mid）",
+            LOGIC_OWNER_DONOR_1T_EXPORT_MID,
+            &[LOGIC_OWNER_DONOR_MID_1T_NOTE_ONS],
+        );
+        cross_check_export_against_reference(
+            "2 轨材料（Logic 自己的 furelise-2tracks/export.mid）",
+            LOGIC_OWNER_DONOR_2T_EXPORT_MID,
+            &LOGIC_OWNER_DONOR_MID_2T_TRACK_NOTE_ONS,
+        );
     }
 
     /// **结构判据（有牙）**：2 条 MIDI 轨的产物 = 负责人 2 轨供体的 **507** 条记录，
