@@ -18,7 +18,7 @@
 | `phase-status.md` | 阶段项做没做完 | `check_phase_status.py` |
 | `human-decisions.md` | 待人类裁决 | `check_decisions.py` |
 
-## 六条机械判据（语义是否正确仍要人看）
+## 七条机械判据（语义是否正确仍要人看）
 
 1. **正向完整性**：`schemas/mcp-tools.schema.json` 里的**每一个** `yeban_*` 工具、
    `crates/yeban-ui-mcp/src/methods.rs` 里的**每一条** `ui/*` 方法，都必须在本表里
@@ -55,8 +55,9 @@
 
    **为什么把范围钉死成"同行唯一 ID"**：绑定必须**结构化**，不能靠词面猜。同行 0 个 ID
    （引用的是散文/源码行）或 ≥2 个不同 ID（绑不住是哪一个）一律**跳过**并如实登记为边界 ——
-   不写一条会误判的规则去够它。源码行引用（`foo.rs:NN`）同理不在射程内：把散文里的符号名
-   映射到某一行需要猜，实测一条朴素的绑定器在活文档上产出 24/27 处**假红**，故不采用。
+   不写一条会误判的规则去够它。**源码行引用（`foo.rs:NN`）由判据 7 单独管**：把散文里的
+   符号名映射到某一行确实要猜，实测一条朴素的绑定器在活文档上产出 24/27 处**假红**，
+   故判据 7 只认作者**主动**写出的紧邻代码括注。
    `feature-alignment.md` 自己的行首是功能名、没有编号 ⇒ 引用它的行号同样无法机械绑定。
 
    **为什么 dated records 与"故意提旧位置"的散文按构造安全**：
@@ -65,6 +66,42 @@
    ② 活文档里要**记录一次移动**，必然同时给出两端（`` 原 `…:36`，现 `…:38` ``）—— 同一行对
    同一目标出现**两个以上不同行号**时，这一行是在记录变更而不是主张现状，按构造整行豁免；
    ③ 只说"第 36 行"而不点目标路径的散文**不是本规则认得的引用形态**，永远不是候选。
+
+7. **源码行号引用必须指向它点名的构件**：本表里每一处 `` `源码.rs:NN` `` / `` `界面.slint:NN` ``，
+   若**紧邻**它有一个**以代码片段开头**的括注（`` …`ids.rs:26`（`PPQ=960`）… ``），
+   则该括注里的**第一个**反引号片段就是它点名的构件；被引的那一行里必须出现该构件的
+   至少一个标识符。实测（本条要防的）：本次落规则前，本表里已有 **12 处**这样的引用
+   （**11 个不同的 `path:line`**）指错对象
+   —— 上一次切片手工修掉的三处（`inspect.rs:71` 指无关文档行、`automation.rs:377` 指 `}`、
+   `piano_roll.slint:68-70` 漂到 `77-79`）只是**症状**：判据 6 只绑"本表 → 其它活表"的
+   ID 行号，源码文件的行号**此前一条守卫都没有**，于是同样的腐烂又积累了 11 处。
+
+   **为什么只认"紧邻的、以代码开头的括注"**：构件名与行号的绑定必须是**结构**的。
+   本仓库试过"把同行散文里的符号名映射到行号"，在活文档上产出 24/27 处假红（见判据 6）；
+   而紧邻括注里的第一个代码片段是作者**主动**给出的命名。拿它去核对被引行，落这条规则时
+   实测：120 处引用里核对 33 处、其中 12 处为真错、**0 处假红**；其余 87 处按下列边界跳过。
+   这 4 个数是**落规则那一刻**的读数，不是常数 —— `[ok]` 行每次打印**当前**的
+   "已核对 / 跳过"两数（文档一改就会动）。
+
+   **本条诚实的边界（判断不了的一律跳过并计数，不假装通过）**：
+   ① 路径不能在工作树里唯一定位的 —— 裸文件名（`commit.rs:342`）、crate 相对路径
+      （`src/lib.rs:73`）、上游路径（`i-slint-core-*/item_tree.rs`）⇒ 跳过（工作树里同名文件
+      ≥2 个，绑到哪一个都是猜）；但 `` `crates/` `` / `` `docs/` `` / `` `schemas/` `` /
+      `` `scripts/` `` / `` `spikes/` `` / `` `assets/` `` 开头的路径**必须**存在，
+      不存在即红（文件被删/改名是真错误）；
+   ② 引用旁边没有"以代码片段开头/结尾的括注"的 —— 纯 `foo.rs:NN`，或括注是散文
+      （`` （4 个场景，投影自演示工程的 `scenes`） ``）⇒ 跳过。散文括注里的词是**描述**，
+      不是命名；把它当构件名会误判（实测：`scene.rs:38,56` 的括注里 `scenes` 一词
+      属于说明句，指错对象的是提取器而不是文档）；
+   ③ 括注的第一个代码片段抽不出标识符（纯数字 / 标点）⇒ 跳过；
+   ④ **本规则只读本表**（与判据 6 同一射程）。`gate-status.md` / `phase-status.md` 里的
+      源码行引用仍不在射程内；本次实测已知 `phase-status.md:91` 的 `input.rs:219-225`
+      （点名 `View::Session` / `View::Arrangement`）与 `:92` 的 `piano_roll.slint:68-70`
+      均已指错，登记在案、待该表所有者修（本切片无权改那两张表）。
+
+   **它能证明什么、不能证明什么**：它只能证明"作者点名的那个构件的标识符确实出现在被引行"，
+   是**下界**。同一处引用点名多个构件时，只要有一个在，就算过 —— 它抓的是"整段漂走 / 指到
+   无关行"这类腐烂，不保证每一行的语义都对。
 
 ## 为什么"分类"是机器算的而不是人填的
 
@@ -190,6 +227,22 @@ CITED_TABLES = (
         re.compile(r"ROAD-[\w-]+"),
     ),
 )
+
+#: 判据 7：本表里的源码行号引用（只认这两种承载代码的后缀）。
+SOURCE_CITATION_RE = re.compile(
+    r"(?P<path>[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:rs|slint))"
+    r":(?P<lines>\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)"
+)
+#: 括注里的反引号代码片段（`PPQ=960` / `View::Session` / `track-{i}-…-lane`）。
+CODE_SPAN_RE = re.compile(r"`([^`]+)`")
+#: 代码片段里的标识符（`PPQ=960` ⇒ `PPQ`；`CommitGraph::undo` ⇒ 两个）。
+SYMBOL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: 规范 ID 形态（`UI-MCP-002`）不是代码符号，不参与判据 7 的行内匹配。
+SPEC_ID_RE = re.compile(r"[A-Z]+-[A-Z0-9-]+")
+#: 数字字面量的下划线后缀（`10_000` ⇒ `_000`）不是符号名，同上。
+NUMERIC_TAIL_RE = re.compile(r"_?\d[\d_]*")
+#: 判据 7 的边界 ④：只有这些**仓库根**前缀下的路径必须存在，不存在即红。
+REPO_ROOT_PREFIXES = ("crates/", "docs/", "schemas/", "scripts/", "spikes/", "assets/")
 
 
 def cells_of(line: str) -> list[str]:
@@ -388,6 +441,129 @@ def cross_reference_problems(text: str, citing: Path) -> tuple[list[str], int]:
     return problems, checked
 
 
+def _parenthetical_after(text: str, end: int) -> str | None:
+    """引用结束处之后**紧邻**的括注内容（跳过引用自身的收尾反引号与空白）。"""
+    cursor = end
+    if cursor < len(text) and text[cursor] == "`":
+        cursor += 1
+    while cursor < len(text) and text[cursor] in " \t":
+        cursor += 1
+    if cursor >= len(text) or text[cursor] not in "（(":
+        return None
+    opener = text[cursor]
+    closer = "）" if opener == "（" else ")"
+    depth = 0
+    for scan in range(cursor, len(text)):
+        if text[scan] == opener:
+            depth += 1
+        elif text[scan] == closer:
+            depth -= 1
+            if depth == 0:
+                return text[cursor + 1 : scan]
+    return None
+
+
+def _parenthetical_before(text: str, start: int) -> str | None:
+    """引用开始处之前**紧邻**的括注内容（跳过引用自身的起始反引号与空白）。"""
+    cursor = start
+    if cursor > 0 and text[cursor - 1] == "`":
+        cursor -= 1
+    while cursor > 0 and text[cursor - 1] in " \t":
+        cursor -= 1
+    if cursor == 0 or text[cursor - 1] not in "）)":
+        return None
+    closer = text[cursor - 1]
+    opener = "（" if closer == "）" else "("
+    depth = 0
+    for scan in range(cursor - 1, -1, -1):
+        if text[scan] == closer:
+            depth += 1
+        elif text[scan] == opener:
+            depth -= 1
+            if depth == 0:
+                return text[scan + 1 : cursor - 1]
+    return None
+
+
+def named_construct(text: str, start: int, end: int) -> str | None:
+    """引用 `[start, end)` 紧邻括注里点名的构件（第一个代码片段）；认不出返回 `None`。
+
+    只认**以代码片段开头**（后置括注）或**以代码片段结尾**（前置括注）的括注：
+    散文括注（`` （4 个场景，投影自演示工程的 `scenes`） ``）不构成命名，按构造跳过 ——
+    那是**描述**而不是构件名，拿它去核对被引行只会误判。
+    """
+    after = _parenthetical_after(text, end)
+    if after is not None and after.lstrip().startswith("`"):
+        spans = CODE_SPAN_RE.findall(after)
+        return spans[0] if spans else None
+    before = _parenthetical_before(text, start)
+    if before is not None and before.rstrip().endswith("`"):
+        spans = CODE_SPAN_RE.findall(before)
+        return spans[-1] if spans else None
+    return None
+
+
+def source_line_problems(text: str) -> tuple[list[str], int, int]:
+    """判据 7：本表的源码行号引用必须指向它点名的构件。
+
+    返回 `(问题列表, 已核对处数, 按构造跳过处数)`。跳过的一律**不假装通过**：路径不能
+    唯一定位、旁边没有代码括注、括注抽不出标识符 —— 三类都计入跳过并在 `[ok]` 行报数。
+    """
+    problems: list[str] = []
+    checked = 0
+    skipped = 0
+    citing = TABLE.relative_to(REPO)
+    for matched in SOURCE_CITATION_RE.finditer(text):
+        lineno = text[: matched.start()].count("\n") + 1
+        path = matched.group("path")
+        spec = matched.group("lines")
+        target = REPO / path
+        if not target.is_file():
+            # 只有仓库根前缀下的路径必须存在；裸文件名 / crate 相对路径（`src/lib.rs`）
+            # 在工作树里有多个同名文件，绑到哪一个都是猜 ⇒ 跳过。
+            if path.startswith(REPO_ROOT_PREFIXES):
+                checked += 1
+                problems.append(
+                    f"{citing}:{lineno} 的源码行引用 `{path}:{spec}` 找不到文件"
+                    f"（`{path}` 不在工作树里）"
+                )
+            else:
+                skipped += 1
+            continue
+        construct = named_construct(text, matched.start(), matched.end())
+        if construct is None:
+            skipped += 1
+            continue
+        symbols = [
+            symbol
+            for symbol in SYMBOL_RE.findall(construct)
+            if not SPEC_ID_RE.fullmatch(symbol) and not NUMERIC_TAIL_RE.fullmatch(symbol)
+        ]
+        if not symbols:
+            skipped += 1
+            continue
+        checked += 1
+        source = target.read_text(encoding="utf-8", errors="ignore").splitlines()
+        cited = cited_line_numbers(spec)
+        named = " / ".join(f"`{symbol}`" for symbol in symbols)
+        if not cited or max(cited) > len(source):
+            problems.append(
+                f"{citing}:{lineno} 的源码行引用 `{path}:{spec}` 越过文件末尾"
+                f"（`{path}` 只有 {len(source)} 行）"
+            )
+            continue
+        if not any(
+            1 <= line <= len(source)
+            and any(re.search(r"\b" + re.escape(symbol) + r"\b", source[line - 1]) for symbol in symbols)
+            for line in cited
+        ):
+            problems.append(
+                f"{citing}:{lineno} 的源码行引用 `{path}:{spec}` 点名 {named}，"
+                "但被引行里没有它（构件应指到它所在的那一行）"
+            )
+    return problems, checked, skipped
+
+
 def main() -> int:
     for required in (TABLE, SCHEMA, METHODS):
         if not required.exists():
@@ -526,6 +702,14 @@ def main() -> int:
     citation_problems, citations_checked = cross_reference_problems(text, TABLE)
     problems.extend(citation_problems)
 
+    # ---- 判据 7：源码行号引用必须指向它点名的构件 -------------------------------
+    #
+    # 判据 6 只绑"本表 → 其它活表"的 ID 行号；`` `inspect.rs:71` `` 这类**源码文件**的
+    # 行号此前一条守卫都没有 —— 上次切片手工修掉三处漂移，只因判据 6 的射程够不到源码。
+    # 只认"紧邻的、以代码片段开头的括注"这一种结构化命名；绑不住的按构造跳过并计数。
+    source_problems, source_checked, source_skipped = source_line_problems(text)
+    problems.extend(source_problems)
+
     if problems:
         print("三方对齐矩阵校验未通过:", file=sys.stderr)
         for item in problems:
@@ -537,6 +721,8 @@ def main() -> int:
         f"{len(expected_tools)} 个 MCP 工具 / {len(expected_methods)} 条 ui 方法全部点名，"
         + "，".join(f"{category} {derived[category]}" for category in CATEGORIES)
         + f"；{citations_checked} 处行号交叉引用全部落在目标行"
+        + f"；{source_checked} 处源码行引用指向点名构件"
+        + f"（另有 {source_skipped} 处路径歧义 / 未点名构件，按构造跳过、未假装通过）"
     )
     return 0
 
