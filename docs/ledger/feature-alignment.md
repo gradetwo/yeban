@@ -315,7 +315,7 @@
 - **影响**：今天"双 MCP"实际是**两个互不相识的端点**：领域 MCP 不知道界面长什么样，UI 控制面不知道工程里有什么。
   `ROAD-M4-008`（双 MCP 协同闭环）的"AI 改模型 → 界面跟着变"这半条因此没有载体。
 - **建议处置**：与错位 2 / `ROAD-M4-001` 同一件事 —— 需要 `yeban-app` 引入非默认 feature 的 `yeban-mcp` 依赖边，
-  由集成者在 `ci.yml` 加步骤（`.github/**` 集成者独占）。
+依赖边**已落地**（`4971549`：非默认 feature `in-process-mcp` ⇒ `yeban-app` → `yeban-mcp`，默认依赖树仍 0 命中）；**运行态挂载**与**跨形态锁**亦已落地（`4971549`/`db1a667`）。`ci.yml` 的步骤**仍未加**，但**手动档 `gates-manual.yml` 的 `all-features` 档位现在会真跑 `cargo test --all-features`**（`ae3024b`，已由 run `37401327315` 证 success）⇒ `in-process-mcp` 的 5 条判据**已由 CI 执行**；本条旧文已于账本第 358 轮更正。
 
 ## 17. 本机 vs CI 的严格区分
 
