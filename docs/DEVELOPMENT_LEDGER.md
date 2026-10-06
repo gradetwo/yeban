@@ -8541,3 +8541,24 @@ flag-gated slice.
 **Why this correction matters**: the objective has been carrying a premise that work done by other lines had already discharged. Recording the true set is not
 bookkeeping for its own sake - it changes what "done" means for this goal, and it means the next actions are the负责人's decisions plus one buildable feature
 rather than five gate closures.
+
+
+### Round 352: ROAD-M4-007 first slice verified, pushed, and one follow-up registered rather than forced
+
+The delegated `.als` work is **independently verified** and now on the remote (`ad1afa7`, pushed). My own runs, not its report: the `lib.rs` gate is
+`#[cfg(feature = "experimental-als-export")] pub mod als;`; the **default** `cargo check -p yeban-render` finishes; the **default** dependency tree has **zero**
+`flate2` hits while the feature-enabled tree has one; the default test run is **84 passed / 0 failed** and the feature-enabled run **88** (the four new
+criteria); `run-gates.sh light` passes; and the commit contains **exactly its seven paths**, so the shared-workspace rule held.
+
+That dependency-graph evidence is the strongest form of "发行物默认关" available for a library feature: not only does the module not compile by default, the
+crate does not even *depend* on the gzip backend unless the feature is on. The guard `G05 [红线 6]` states the same rule mechanically.
+
+**One follow-up registered instead of forced**: `docs/ledger/feature-alignment.md:156` still reads "完全未实现", and I tried to sync it. Two attempts failed the
+same way - rewriting the row broke its column structure (the original contains escaped pipes inside a code span), and a surgical status-cell replacement still
+dropped the guard's data-row count from 72 to 71 and turned `feature-alignment` red. **Re-running `light` on the clean committed state confirms the failure was
+mine**: `[ok] feature-alignment.md: 72 行功能 / 17 个 MCP 工具 / 14 条 ui 方法` and 门禁通过. So the file is reverted and the sync is recorded here as a
+small, well-specified task for the next pass: **replace only the row's status cell with a SHORT text** (the long replacement is what broke the count), keep the
+rest of the line byte-identical, and re-run `check_feature_alignment.py` immediately.
+
+**Status**: tree green and clean at `ad1afa7` (= `origin/main`); Phase 4 is now 4 完成 / 6 部分 / **0 PENDING**; all fifteen MUST-GATEs are wired; the loudness,
+mapping and MCP-tool items are CI-verified; `ad1afa7`'s own CI verdict is the one still to read back.
