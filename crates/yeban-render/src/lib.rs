@@ -39,6 +39,7 @@
 //! | [`dither`] | TPDF 抖动与 16/24/32f 位深转换 | `ARCH-FMT-001`, `ARCH-DET-001` |
 //! | [`wav`] | 普通 RIFF WAV 的读写, 用 `hound` 当独立第三方裁判 | `ARCH-FMT-001` |
 //! | [`midi`] | SMF 0/1 导出与回读, 含独立 VLQ/chunk 字节级核验 | `ARCH-FMT-001 §5.5` |
+//! | `als`（feature `experimental-als-export`） | 实验性 Ableton `.als` 导出：Gzip XML + 映射损失表 | `ARCH-FMT-002`, `ROAD-M4-007` |
 //! | [`vlq`] | MIDI 可变长度量的零依赖参考编解码 | `ARCH-FMT-001 §5.5` |
 //! | [`sum`] | 确定性有序归约核（刻意不依赖 rayon） | `ARCH-DET-002` |
 //! | [`rng`] | `yeban_dsp::noise::Rng` 到抖动接口的适配与种子派生 | `ARCH-DET-001` |
@@ -58,6 +59,10 @@
 //!   [`render::track_latencies`] 提供了从 `DeviceDefinition::latency_samples`
 //!   ([ARCH-PDC-001], main `8f40290` 补上) 推导该映射的标准做法。
 //! - 没有 `criterion` 基准, 因此 [BASELINE-001] 的 "≥ 100× 实时" **未被本分支证实**。
+//! - 实验性 `.als` 导出（feature `experimental-als-export`, 见 `als` 模块）只在显式开启时
+//!   存在, 且**未与任何参考 `.als` 对账**：它产出 Ableton 风格的 Gzip XML 与一份
+//!   **映射损失表**, 但**不声称**产物可被 Live 11/12 直接打开。不可等价映射的构造一律
+//!   进损失表（内置设备标记为"音频冻结兜底", 但本切片**不渲染那份音频**）。
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -82,6 +87,13 @@ pub mod sum;
 // 与 `midi` 同理：VLQ 编解码随 SMF 一起下移到 `yeban-midi`，此处再导出以保持路径可用。
 pub use yeban_midi::vlq;
 pub mod wav;
+// 实验性 Ableton Live Set (`.als`) 导出 [ARCH-FMT-002] [ROAD-M4-007]：
+// **只在非默认 feature `experimental-als-export` 下存在**（AGENTS.md §2 红线 6）。
+// 默认构建既不编译这个模块, 也不把 `flate2` 链进依赖图 —— 判据是
+// `cargo check -p yeban-render`（默认）与 `--features experimental-als-export` 都能编过,
+// 而 `cargo tree -p yeban-render` 在默认构建里没有 `flate2`。
+#[cfg(feature = "experimental-als-export")]
+pub mod als;
 
 #[cfg(test)]
 mod contract_tests {

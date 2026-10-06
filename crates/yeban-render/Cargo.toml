@@ -12,6 +12,15 @@ publish.workspace = true
 name = "yeban_render"
 path = "src/lib.rs"
 
+[features]
+# 实验性 Ableton Live Set (`.als`) 导出 [ARCH-FMT-002] [ROAD-M4-007]。
+#
+# **默认关**：AGENTS.md §2 红线 6 与 `scripts/guards/policy_check.py` 的
+# `FORBIDDEN_DEFAULT_FEATURES` 都点名了这个特性 —— 官方默认 release 构建里
+# 不得默认开启它。因此 `default` 保持为空，该模块只在显式
+# `--features experimental-als-export` 下才存在（默认构建既不编译它，也不链接 `flate2`）。
+experimental-als-export = ["dep:flate2"]
+
 [dependencies]
 # SMF 编解码（下移出的独立 crate; 本行只为保持 `yeban_render::midi::*` 可用）。
 yeban-midi = { path = "../yeban-midi" }
@@ -34,6 +43,13 @@ midly = { workspace = true, features = ["std"] }
 # 普通 RIFF WAV 的读写。RF64/BW64 的 ds64/bext 由本 crate 自研 (见 src/rf64.rs),
 # hound 在这里同时充当"独立第三方读取器"来交叉验证自研写入器的字节布局。
 hound.workspace = true
+# 实验性 `.als` 导出的 Gzip 压缩 [ARCH-FMT-002] [ROAD-M4-007]。**可选依赖**,
+# 只由 `experimental-als-export` 打开 (红线 6)。
+#
+# 根清单登记的是 `default-features = false`（flate2 的默认后端会拉 `runtime_detection`），
+# 因此这里必须**显式**打开纯 Rust 后端 `rust_backend`（→ `miniz_oxide`）：
+# C 版 zlib 会引入 `cc`/系统库，让"纯 Rust、无系统库"的构建前提失守。
+flate2 = { workspace = true, optional = true, features = ["rust_backend"] }
 
 [dev-dependencies]
 # 属性测试 (ARCH-DET-002 的"任意线程数 → 逐位相同")。
