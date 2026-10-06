@@ -210,6 +210,92 @@
 //! 供体路线的损失表由 `LogicBuilder::write_donor_losses` 逐族产出；自研路线的
 //! [`TRACK_OBJECTS_UNMAPPED`] 仍然描述**自研**产物（它一条 `karT` 都不写）。
 //!
+//! ### 2026-10-06 本轮：通道槽激活（参考实现 §10.6.3）—— 量完了，结论是**证据不支持实施**
+//!
+//! 目标是把"供体只有 1 条编排轨行"变成"工程有 N 条 MIDI 轨就有 N 个可用槽"。本轮把它**量清楚**
+//! 并实施到**证据允许的那一步**（槽索引），**没有**插入任何记录。理由逐条是实测，不是"没时间"。
+//!
+//! #### 一、参考实现怎么说（逐字引用，出处 = 仓库内 vendored 的
+//! `docs/research/logic-pro-projectdata-format.md`，MIT，第 10.6 节）
+//!
+//! §10.6.1："Tracks can NOT be synthesized from nothing: creating a brand-new channel triggers
+//! Logic's mixer / CoreMIDI-Environment EXPANSION, which regenerates time-UUIDs and re-indexes the
+//! entire `OCuA` channel block — pervasive and impractical to reproduce"，办法是"N audio tracks …
+//! delete all but one, and save"得到"an N-channel pre-allocated mixer = up to N−1 free slots"。
+//!
+//! §10.6.3 的六步（原样缩写）：**(a)** `gnoS` 计数器与注册表 —— `@0xf4`=`(T+1)<<16`、
+//! `@0xf8`=`((T+1)<<16)|1`、`@0x80`=`new_idx`；Table 1（`@0x1e20` 起 24 字节行
+//! `[u32 0x14][u32 slot][16-B UUID]`）、Table 2（`@0x4db0` 起 16 字节行）、Table 3（`@0x5240`）；
+//! **(b)** 克隆当前最大 idx 的 `ivnE`；(**c**) 找 `@0xbd` 全 0 且 `@0x82 == T` 的预分配条并打上
+//! `chan_uuid`；**(d)** 克隆 `karT`(`0x040000`) 基础行、插在 master 行（`@0x2a == 0x500000`）之前；
+//! **(e)/(f)** `MneG` 与可见性表。§10.6.4 给了五道"画得出来"的门（编排行、通道条 UUID 链、
+//! Session-Player 绑定、每槽 Track 对象**按 `@0x12` 名次升序重排**、编排区高度 `0x3c×(N+1)`）。
+//!
+//! #### 二、参照系（本轮实测更正）：§10.6.x 的偏移是**记录内偏移**
+//!
+//! 参考实现 §5/§7 有几处写成 "payload +0x.."，但 §10.6.2/§10.6.3 的 `gnoS @0x80` /
+//! `ivnE @0x1eb` / `OCuA @0xbd` / `karT @0x2a` 只有按**记录内偏移**才对得上实测：
+//! 供体 `gnoS` 载荷 `+0x5c`（记录 `0x80`）实测 = `0x00580000` = 最大 `ivnE` 对象号；
+//! `@0xf4`（载荷 `0xd0`）= `0x00010000` = `1 << 16`；`ivnE @0x34`（载荷 `+0x10`）= 槽字节。
+//! 这与账本第 402/403 轮那次"region 名载荷 `+0x34` vs `+0x10`"的**参照系混淆**是同一件事：
+//! 记录内偏移减 [`LOGIC_RECORD_HEADER`] 才是载荷偏移。
+//!
+//! #### 三、供体（F0_baseline）实测清单（判据 `donor_channel_inventory_matches_the_measured_activation_layout`）
+//!
+//! **指标**：每一项的单位写在括号里，读数由 [`donor_inventory`] 从**供体字节本身**量出。
+//!
+//! | 读数 | 值 |
+//! | :--- | ---: |
+//! | 记录条数（条） | 527 |
+//! | `ivnE` 通道记录（条） | **12** |
+//! | 长到能装下 `@0xbd` 那 16 字节的 `OCuA` 混音条（条） | 363 |
+//! | ↳ `@0xbd` 16 字节**全 0** 的条（条） | **0**（355 条是 `ee…` 占位 UUID） |
+//! | `gnoS @0x80` 的索引部分 | `0x00580000`（低 16 位是哨兵） |
+//! | `gnoS @0xf4 >> 16` | 1（= `MetaData.plist NumberOfTracks`） |
+//! | 非 master 的 `karT`(`0x040000`) 非空行（条） | 1（另一条 `@0x2a` = `0x00500000` = master） |
+//! | `karT`(`0x080000`) 非空行（条） | 5（名次 `0..4`，槽 `0x48`/`0x58`/`0x4c`/`0x50`/`0x54`） |
+//! | `gnoS @0x1e14` 会话中段 `CONST_A` | `5b1211f1` |
+//! | `gnoS @0x1e20` 起带 `CONST_A` 的 24 字节行（行） | 7（marker 实测 `0x17`/`0x19`/`0x1e`/`0x21`，**不是**文档的固定 `0x14`） |
+//! | Table 2（记录内 `0x4db0` ⇒ 载荷 `0x4d8c` = 19,852）落在 `gnoS` 载荷内？ | **否**（载荷只有 10,756 字节） |
+//! | Table 3（记录内 `0x5240` ⇒ 载荷 `0x521c` = 21,020）落在 `gnoS` 载荷内？ | **否** |
+//!
+//! 供体的 **12 条 `ivnE`** 逐条实测为：`Not Assigned`(`0x0`)、`MIDI Click`(`0xc0000`)、
+//! `(Folder)`(`0x100000`)、`Sequencer Input`(`0x140000`)、`Physical Input`(`0x180000`)、
+//! `Input View`(`0x400000`)、`Input Notes`(`0x440000`)、`Preview`(`0x480000`)、`Click`(`0x4c0000`)、
+//! `Stereo Out`(`0x500000`)、`Master`(`0x540000`)、**`Inst 1`**(`0x580000`，通道条 cfg `0x29f5`)。
+//! ⇒ **整个供体只有一条可当轨道用的通道**，没有空闲槽可激活；这就是 §10.6.1 那条"必须先有一个
+//! N 声道预分配混音器"的前提在**这一份供体上不成立**。
+//!
+//! #### 四、本机真实工程复核到的公式与**两处必须补的限定**
+//!
+//! 样本 = 7 个 Apple 演示 + `~/Music/Logic` 的用户工程 + 工厂模板（读运行时文件，**不提交**）。
+//!
+//! * `ivnE` 对象号步长 `0x00040000` —— 供体与全部样本一致（[`LOGIC_SLOT_INDEX_STRIDE`]）。
+//! * **`gnoS @0xf4 >> 16` 不是轨道数**：供体 `1`/`1`、`quiet` `9`/`10`、`wrong_way` `2`/`8`、
+//!   `Swing!` `1`/`76`、`ocean eyes` `1`/`42`、`MONTERO` `1`/`140`（前者 = 该字段，
+//!   后者 = `MetaData.plist NumberOfTracks`）⇒ 参考实现把 `T` 定义成它，只在**同族模板**上成立。
+//! * **`@0xf8` 是 `(T << 16) | 1`，不是 `((T+1) << 16) | 1`**：供体（`T`=1）实测 `0x00010001`、
+//!   `quiet`（`T`=9）`0x00090001`、`wrong_way`（`T`=2）`0x00020001`。
+//! * **`@0x80` 的低 16 位是哨兵**：供体/`quiet`/`wrong_way` 是 `0x…0000`，而 `Swing!`/`ocean eyes`/
+//!   `Colors`/`MONTERO` 是 `0x…ffff` ⇒ 取索引必须 `& 0xFFFF_0000`，否则 `new_idx = cur_max + 0x40000`
+//!   会算出 `0x…ffff + 0x40000`。
+//! * 全 0 UUID 的混音条在**真实工程里确实存在**（`Swing!` 147/549、`ocean eyes` 814/1162、
+//!   `MONTERO` 327/1089）⇒ §10.6.3(c) 的判据不是文档错，而是**供体这一份的形态不同**。
+//!
+//! #### 五、本轮做的那一步：**槽索引**，不改记录流
+//!
+//! [`donor_slot_plan`] 只做算术：需要激活的槽数 = MIDI 轨数 − 供体容量（1），第 k 个槽的
+//! 对象号 = `max_idx + k × 0x00040000`（供体 ⇒ `0x5c0000`/`0x600000`/`0x640000`…，槽字节
+//! `0x5c`/`0x60`/`0x64`…）。它**不插入任何记录**，只在工程需要的槽多于供体自带时把这件事
+//! 逐条登记（[`LOGIC_ACTIVATION_UNMAPPED`] + 每条多出来的 MIDI 轨点名它需要的槽）。
+//! **单 MIDI 轨工程一个字都不加** ⇒ 第 407 轮那份被 Logic Pro 12.2 打开的产物的 `ProjectData`
+//! **逐字节不变**（本轮实测：`filled` 样本的四个文件与改动前的二进制输出 `cmp` 全同，
+//! `ProjectData` 与 open5 的 sha256 都是 `aa5db6c99f5766b1b04b242bda5faf52162ed9ae0eec0c2c7911c2f6ff02fe57`）。
+//!
+//! **仍然不知道**：哪一条混音条是"下一个空闲槽"；compact `gnoS` 里缺失的 Table 2/3 的真实布局；
+//! `karT`(`0x080000`) 名次重排后 Logic 是否照单接受；`MneG` 的 JSON 插入是否必须。这些都**没有**
+//! 被本轮的任何测量回答，因此**没有**写进产物。
+//!
 //! ### 参考实现同时暴露了本写入器**四处未登记的缺陷**，本轮改正
 //!
 //! 那四处都在**本写入器已经会写的**记录里，因此不需要新结构就能修：
@@ -715,6 +801,34 @@ pub const REGION_TIMING_CAVEAT: &str = concat!(
     "两处本切片都没写（见 `REGION_PLACEMENT_UNMAPPED`）。",
     "groove 记录的读取限制同样适用：ProjectData 里的一部分时限无法可靠读取，",
     "其读取器把每个 part 放在 beat 0 —— 本写入器不掩盖这一点"
+);
+
+/// **通道槽激活**（参考实现 §10.6.3）没有实施的理由 —— 逐条是实测，不是"还没做"。
+///
+/// 供体只有 [`LOGIC_DONOR_ARRANGE_ROWS`] 条编排轨行，因此多出来的 MIDI 轨要用**新槽**才画得出来。
+/// 参考实现的办法是克隆一份"预分配混音器"模板的通道簇；本模块**没有**实施，因为两段证据缺失：
+///
+/// * **(a) 注册表**：文档给的 Table 2（记录内 `0x4db0`）与 Table 3（`0x5240`）的**载荷位置**
+///   `0x4d8c` = 19,852 与 `0x521c` = 21,020 都**越过了**供体 compact `gnoS` 的
+///   [`LOGIC_DONOR_SONG_PAYLOAD_BYTES`] = 10,756 字节 —— 这两张表在供体里**不存在**，
+///   因此"改注册表"没有可依据的字节。
+/// * **(c) 空闲条**：文档把"空闲的预分配条"定义为 `OCuA @0xbd` 16 字节全 0 且 `@0x82` == 当前
+///   轨道数。供体 [`LOGIC_DONOR_MIXER_STRIPS`] = 363 条混音条里实测 **0** 条满足（355 条是
+///   `ee…` 形状的占位 UUID）。本机真实工程里全 0 的条确实存在，因此这不是"文档错"，
+///   而是**供体这一份的形态不同** ⇒ 哪一条是"下一个空闲槽"无法从证据判定。
+///
+/// 因此本模块只做**槽索引**（[`donor_slot_plan`]：`max_idx + k × `[`LOGIC_SLOT_INDEX_STRIDE`]），
+/// **不改记录流** —— 不发明"哪条是空闲条"、不发明注册表布局。产物仍是供体的
+/// [`LOGIC_DONOR_RECORD_COUNT`] 条记录按供体顺序、只改 [`LOGIC_DONOR_PATCHED_RECORDS`] 条。
+pub const LOGIC_ACTIVATION_UNMAPPED: &str = concat!(
+    "未映射: 通道槽激活（MIT 参考实现 `PROJECTDATA_FORMAT.md` §10.6.3 的 (a)–(f)）**没有实施** —— ",
+    "多出来的 MIDI 轨因此没有可画的槽。不实施的原因是**证据不足**，不是没时间：",
+    "(a) 段要改 `gnoS` 注册表，而文档点名的 Table 2（记录内 0x4db0）与 Table 3（0x5240）的载荷位置 ",
+    "0x4d8c = 19,852 与 0x521c = 21,020 都越过了供体 compact `gnoS` 的 10,756 字节载荷 ⇒ 这两张表在供体里**不存在**；",
+    "(c) 段要找 `OCuA @0xbd` 16 字节全 0 的预分配条，而供体 363 条混音条里实测 **0 条**满足",
+    "（355 条是 `ee…` 占位 UUID；本机真实工程里全 0 的条确实存在，说明是供体形态不同）⇒ ",
+    "哪一条是「下一个空闲槽」无法从证据判定。",
+    "因此只做槽索引（实测公式 max_idx + k×0x40000 的直接算术），**不改记录流**"
 );
 
 /// region（`qeSM`）载荷里**除名字字段以外**的实测差异（`非等价:`）。
@@ -1300,6 +1414,135 @@ pub const LOGIC_DONOR_CHUNK_FAMILIES: [(&str, usize); 18] = [
 /// + 该 region 的配对音符 `qSvE`。其余记录逐字节是供体的。
 pub const LOGIC_DONOR_PATCHED_RECORDS: usize = 4;
 
+/* ------------------------------------------------------------------ *
+ * 通道槽激活（参考实现 §10.6.3）—— **实测的布局**
+ *
+ * 下面所有偏移都是**记录内偏移**（从 36 字节记录头的第 0 字节起算）。这不是随便挑的参照系：
+ * 参考实现 `PROJECTDATA_FORMAT.md` 的 §10.6.2/§10.6.3 用的就是它（`gnoS @0x80`、
+ * `ivnE @0x1eb`、`OCuA @0xbd`、`karT @0x2a`/`@0x12`），而 §5/§7 里写成 "payload +0x.."
+ * 的少数几处（`qeSM` 名字 "payload +0x34"）按记录内偏移才能对上实测（0x34 − 0x24 = 载荷
+ * `+0x10`，正是本模块 [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`] 的实测值）。
+ * ------------------------------------------------------------------ */
+
+/// `ivnE`（`Envi`，环境对象 / 混音通道）记录**落盘**的四个字节（可读名 = 反序 = `ivnE`）。
+pub const LOGIC_IVNE_TAG: [u8; 4] = *b"ivnE";
+
+/// `OCuA`（`AuCO`，混音条）记录**落盘**的四个字节。
+pub const LOGIC_OCUA_TAG: [u8; 4] = *b"OCuA";
+
+/// `karT`（`Trak`，轨道对象）记录**落盘**的四个字节。
+pub const LOGIC_KART_TAG: [u8; 4] = *b"karT";
+
+/// 预分配混音槽的索引步长（实测）。
+///
+/// **指标**：`ivnE` 记录头 `+0x08`（= 记录内的对象号，也就是参考实现 §8.1 的
+/// `trackIndex × 0x40000`）里相邻两条通道的差。实测供体的 12 条 `ivnE` 的对象号是
+/// `0x0`/`0xc0000`/`0x100000`/`0x140000`/`0x180000`/`0x400000`/`0x440000`/`0x480000`/
+/// `0x4c0000`/`0x500000`/`0x540000`/`0x580000` —— 凡是相邻的两条，差都是 `0x40000`
+/// （本机 `quiet` 的 `0xe4`→`0x80`… 与参考实现 §10.6.2 的 "slot<<16" 同源）。
+pub const LOGIC_SLOT_INDEX_STRIDE: u32 = 0x0004_0000;
+
+/// `gnoS`（`Song`）记录内**当前最大** `ivnE` 对象号的偏移（实测 `0x80`）。
+///
+/// ⚠ 这个 `u32` 的**低 16 位不是索引的一部分**：实测供体与 `quiet`/`wrong_way` 是
+/// `0x…0000`，而 `Swing!`/`ocean eyes`/`Colors`/`MONTERO` 是 `0x…ffff`（哨兵）。
+/// 因此取索引时必须 `& 0xFFFF_0000`，参考实现 §10.6.3 的 `new_idx = cur_max + 0x40000`
+/// 只有在低 16 位为 0 时才直接成立 —— 这是本轮实测出的一处**必须补的限定**。
+pub const LOGIC_SONG_MAX_CHANNEL_INDEX_OFFSET: usize = 0x80;
+
+/// `gnoS`（`Song`）记录内"轨道计数 `<< 16`"字段的偏移（实测 `0xf4`）。
+///
+/// ⚠ 实测它**并不总等于** `MetaData.plist` 的 `NumberOfTracks`：供体 `1`/`1`、`quiet`
+/// `9`/`10`、`wrong_way` `2`/`8`、`Swing!` `1`/`76`、`ocean eyes` `1`/`42`、
+/// `MONTERO` `1`/`140`。参考实现 §10.6.3 用它当 `T`，本模块只把它当**读数**，
+/// 不当作轨道数使用。
+pub const LOGIC_SONG_TRACK_COUNT_OFFSET: usize = 0xf4;
+
+/// `gnoS`（`Song`）记录内 `(T << 16) | 1` 字段的偏移（实测 `0xf8`）。
+///
+/// ⚠ 参考实现 §10.6.3(a) 写的是 `((T+1) << 16) | 1`；实测供体（`T` = 1）是
+/// `0x0001_0001`、`quiet`（`T` = 9）是 `0x0009_0001`、`wrong_way`（`T` = 2）是
+/// `0x0002_0001` —— 即 `(T << 16) | 1`，**没有 +1**。本模块按实测写，不按文档。
+pub const LOGIC_SONG_TRACK_COUNT_TAIL_OFFSET: usize = 0xf8;
+
+/// `gnoS`（`Song`）记录内会话 UUID **中段**（参考实现的 `CONST_A`）的偏移（实测 `0x1e14`）。
+pub const LOGIC_SONG_SESSION_CONST_A_OFFSET: usize = 0x1e14;
+
+/// `gnoS` 记录内注册表 Table 1（`ivnE` 注册表）的偏移（实测 `0x1e20`）。
+///
+/// 实测形态：从该处起每 **24** 字节一行 `[u32 marker][u32 槽字节][16 字节 UUID]`，
+/// 供体实测连续 **7** 行（marker 取值 `0x17`/`0x19`/`0x1e`/`0x21`）；参考实现 §10.6.3(a)
+/// 记的 marker 是**固定** `0x14`，与供体不符 ⇒ 即使 Table 1 存在，它的行布局也不完全等于文档。
+/// 本模块只用"这一行的 UUID 里含会话中段"来数连续段。
+pub const LOGIC_SONG_REGISTRY_TABLE_1_OFFSET: usize = 0x1e20;
+
+/// `gnoS` 记录内注册表 Table 2 的偏移（参考实现 §10.6.3(a) 给出的 `0x4db0`）。
+///
+/// ⚠ **实测：它在供体 compact `gnoS` 里不存在** —— 供体 `gnoS` 载荷只有
+/// [`LOGIC_DONOR_SONG_PAYLOAD_BYTES`] = 10,756 字节，而该偏移的载荷位置是
+/// `0x4d8c` = 19,852 > 10,756。
+pub const LOGIC_SONG_REGISTRY_TABLE_2_OFFSET: usize = 0x4db0;
+
+/// `gnoS` 记录内注册表 Table 3 的偏移（参考实现 §10.6.3(a) 给出的 `0x5240`）。
+///
+/// ⚠ 同 [`LOGIC_SONG_REGISTRY_TABLE_2_OFFSET`]：载荷位置 `0x521c` = 21,020 > 10,756 ⇒ 不存在。
+pub const LOGIC_SONG_REGISTRY_TABLE_3_OFFSET: usize = 0x5240;
+
+/// `OCuA` 混音条记录内 16 字节**通道 UUID** 的偏移（实测 `0xbd`）。
+///
+/// 实测依据：供体的 363 条 169/185 字节混音条里，有 8 条的 `0xbd` 处是一个
+/// `[time_low:4][CONST_A:4][node:8]` 形状的 UUID，其中 3 条与 `ivnE` 的 UUID 逐个字节相同
+/// （`Preview` 0x480000 / `Master` 0x540000 / `Inst 1` 0x580000）；参考实现 §10.6.2
+/// 记 `OCuA @0xbd` == `ivnE @0x1eb`。载荷偏移 = `0xbd − 0x24` = `0x99`。
+pub const LOGIC_MIXER_STRIP_UUID_OFFSET: usize = 0xbd;
+
+/// `OCuA` 混音条里预分配**序号**的偏移（参考实现 §10.6.3(c) 的 `@0x82`，实测同）。
+pub const LOGIC_MIXER_STRIP_ORDINAL_OFFSET: usize = 0x82;
+
+/// `karT` 编排轨行（对象号 `0x0004_0000`）里**它指向的通道索引**的偏移（实测 `0x2a`）。
+pub const LOGIC_TRACK_ROW_CHANNEL_OFFSET: usize = 0x2a;
+
+/// master 编排轨行指向的通道索引（实测 `0x0050_0000` = 供体的 `Stereo Out`）。
+///
+/// 实测：供体 2 条非空 `karT`（对象号 `0x0004_0000`）里，序号 0 那条 `@0x2a` =
+/// `0x0058_0000`（`Inst 1`），序号 1 那条 `@0x2a` = `0x0050_0000`；参考实现 §10.6.3(d)
+/// 也把 master 行记成 `@0x2a == 0x500000`。
+pub const LOGIC_MASTER_CHANNEL_INDEX: u32 = 0x0050_0000;
+
+/// 供体 `gnoS @0x80` 的实测值：最大通道索引 = `Inst 1` 的 `0x0058_0000`（低 16 位为 0）。
+pub const LOGIC_DONOR_MAX_CHANNEL_INDEX: u32 = 0x0058_0000;
+
+/// 供体携带的**非 master 编排轨行**条数（实测 `1`）。
+pub const LOGIC_DONOR_ARRANGE_ROWS: usize = 1;
+
+/// 供体携带的 `ivnE` 通道记录条数（实测 `12`）。
+pub const LOGIC_DONOR_CHANNEL_RECORDS: usize = 12;
+
+/// 供体里**够长到能装下通道 UUID** 的 `OCuA` 混音条条数（实测 `363`）。
+pub const LOGIC_DONOR_MIXER_STRIPS: usize = 363;
+
+/// 供体里 [`LOGIC_MIXER_STRIP_UUID_OFFSET`] 处 **16 字节全 0** 的混音条条数（实测 **`0`**）。
+///
+/// 参考实现 §10.6.3(c) 把"空闲的预分配条"定义为 `@0xbd == 全 0` **且** `@0x82 == T`；
+/// 供体实测没有一条满足前半句（它的 355 条未占用条是 `ee…` 形状的**占位** UUID）。
+/// 本机真实工程里全 0 的条确实存在（`Swing!` 147/549、`ocean eyes` 814/1162、
+/// `MONTERO` 327/1089），因此那不是"文档写错"，而是**供体这一份的形态不同** ⇒
+/// 无法从证据判定"下一个空闲槽是哪一条"。
+pub const LOGIC_DONOR_ZERO_UUID_STRIPS: usize = 0;
+
+/// 供体 `gnoS` 的会话 UUID 中段（`CONST_A`，实测 `5b1211f1`）。
+pub const LOGIC_DONOR_SESSION_CONST_A: [u8; 4] = [0x5b, 0x12, 0x11, 0xf1];
+
+/// 供体 `gnoS` 注册表 Table 1 起点处那段 24 字节行的**连续段长度**（实测 `7`）。
+pub const LOGIC_DONOR_REGISTRY_TABLE_1_ROWS: usize = 7;
+
+/// 供体**没有**的注册表：参考实现 §10.6.3(a) 点名的 Table 2 / Table 3 的偏移都越过了
+/// 供体 compact `gnoS` 的载荷末端。这是"槽激活不能按文档实施"的第一条实测原因。
+pub const LOGIC_DONOR_MISSING_REGISTRY_TABLES: [(&str, usize); 2] = [
+    ("Table 2", LOGIC_SONG_REGISTRY_TABLE_2_OFFSET),
+    ("Table 3", LOGIC_SONG_REGISTRY_TABLE_3_OFFSET),
+];
+
 /// 供体记录（只读视图：整条记录 + 解码后的头字段）。
 struct DonorRecord<'a> {
     full: &'a [u8],
@@ -1383,6 +1626,210 @@ fn donor_unique_index(
         }
     }
     found
+}
+
+/// 从**供体的字节本身**量出来的通道 / 混音条 / 编排轨清单。
+///
+/// 每一个字段都是一次具体测量（指标写在字段的文档里），不是转录的常量：判据
+/// `donor_channel_inventory_matches_the_measured_activation_layout` 把它与**实测字面量**逐项比对，
+/// 因此供体一换、或解读一错，就会红。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicDonorInventory {
+    /// 按 36 字节记录头走完供体得到的记录条数（实测 527）。
+    pub records: usize,
+    /// `ivnE` 记录条数（实测 12）。
+    pub channel_records: usize,
+    /// 长到足以容纳 [`LOGIC_MIXER_STRIP_UUID_OFFSET`] 处那 16 字节的 `OCuA` 条数（实测 363）。
+    pub mixer_strips: usize,
+    /// 其中 [`LOGIC_MIXER_STRIP_UUID_OFFSET`] 处 16 字节全 0 的条数（实测 0）。
+    pub zero_uuid_strips: usize,
+    /// `gnoS @0x80` 的索引部分（`& 0xFFFF_0000`，实测 `0x0058_0000`）。
+    pub max_channel_index: u32,
+    /// `gnoS @0xf4 >> 16`（实测 1）。
+    pub track_count_field: usize,
+    /// 非 master 的 `karT`（对象号 `0x0004_0000`）非空行条数（实测 1）。
+    pub arrange_rows: usize,
+    /// `karT`（对象号 `0x0008_0000`）非空行条数，即预分配的"每个槽一条 Track 对象"（实测 5）。
+    pub per_slot_track_objects: usize,
+    /// `gnoS @0x1e14` 的 4 字节会话 UUID 中段（实测 `5b1211f1`）。
+    pub session_const_a: [u8; 4],
+    /// `gnoS @0x1e20` 起、每 24 字节一行、UUID 里含 [`Self::session_const_a`] 的连续行数
+    /// （实测 `7`；**第一行**就是文档点名的 Table 1 起点）。
+    pub registry_table_1_rows: usize,
+    /// 上面那段行里 `[u32 marker]` 字段出现过的**不同**取值（实测 `0x17`/`0x19`/`0x1e`/`0x21`）。
+    ///
+    /// ⚠ 参考实现 §10.6.3(a) 把 Table 1 的行记成固定的 `[u32 0x14][u32 slot][16-B UUID]`；
+    /// 供体实测的 marker **不是常数** ⇒ 即使 Table 1 存在，它的行布局也不完全等于文档。
+    pub registry_table_1_markers: Vec<u32>,
+    /// 参考实现点名的 Table 2 / Table 3 是否**落在** `gnoS` 载荷内（实测 `(false, false)`）。
+    pub registry_tables_2_and_3_present: (bool, bool),
+}
+
+impl DonorRecord<'_> {
+    /// 按**记录内偏移**读一个 `u32` 小端；越界返回 `None`。
+    fn u32_at(&self, record_offset: usize) -> Option<u32> {
+        let at = record_offset.checked_sub(LOGIC_RECORD_HEADER)?;
+        let bytes = self.payload().get(at..at + 4)?;
+        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// 按**记录内偏移**读一段字节；越界返回 `None`。
+    fn bytes_at(&self, record_offset: usize, len: usize) -> Option<&[u8]> {
+        let at = record_offset.checked_sub(LOGIC_RECORD_HEADER)?;
+        self.payload().get(at..at + len)
+    }
+}
+
+/// 量一遍供体（[`LOGIC_DONOR_PROJECT_DATA`]）。形状与本模块钉住的不符时返回 `None`。
+#[must_use]
+pub fn donor_inventory() -> Option<LogicDonorInventory> {
+    let parsed = donor_records(LOGIC_DONOR_PROJECT_DATA).ok()?;
+    if parsed.len() != LOGIC_DONOR_RECORD_COUNT {
+        return None;
+    }
+    let song = parsed.iter().find(|record| record.tag == LOGIC_SONG_TAG)?;
+    let max_raw = song.u32_at(LOGIC_SONG_MAX_CHANNEL_INDEX_OFFSET)?;
+    let session_const_a: [u8; 4] = song
+        .bytes_at(LOGIC_SONG_SESSION_CONST_A_OFFSET, 4)?
+        .try_into()
+        .ok()?;
+    let payload_len = song.payload().len();
+
+    // 混音条：只有"长到能装下 UUID 字段"的那些才算（供体另外 13 条 14 字节的 `OCuA` 短记录
+    // 装不下任何 UUID，把它们算进来会让"全 0 条数"这个读数失去意义）。
+    let uuid_len_at = LOGIC_MIXER_STRIP_UUID_OFFSET - LOGIC_RECORD_HEADER;
+    let strips: Vec<&DonorRecord<'_>> = parsed
+        .iter()
+        .filter(|record| record.tag == LOGIC_OCUA_TAG && record.payload().len() >= uuid_len_at + 16)
+        .collect();
+    let zero_uuid = strips
+        .iter()
+        .filter(|record| {
+            record
+                .bytes_at(LOGIC_MIXER_STRIP_UUID_OFFSET, 16)
+                .is_some_and(|uuid| uuid == [0u8; 16])
+        })
+        .count();
+
+    let arrange = parsed
+        .iter()
+        .filter(|record| {
+            record.tag == LOGIC_KART_TAG
+                && record.cluster == LOGIC_SLOT_INDEX_STRIDE
+                && !record.payload().is_empty()
+                && record.u32_at(LOGIC_TRACK_ROW_CHANNEL_OFFSET) != Some(LOGIC_MASTER_CHANNEL_INDEX)
+        })
+        .count();
+    let per_slot = parsed
+        .iter()
+        .filter(|record| {
+            record.tag == LOGIC_KART_TAG
+                && record.cluster == 2 * LOGIC_SLOT_INDEX_STRIDE
+                && !record.payload().is_empty()
+        })
+        .count();
+
+    // Table 1：从实测偏移起每 24 字节一行，只认"UUID 里含会话中段"的行（marker 语义未证实），
+    // 遇到第一行不合该形状就停 —— 这个"连续段长度"是本模块**量到**的东西，不是文档的说法。
+    let mut rows = 0usize;
+    let mut markers: Vec<u32> = Vec::new();
+    let mut at = LOGIC_SONG_REGISTRY_TABLE_1_OFFSET;
+    while let Some(row) = song.bytes_at(at, 24) {
+        // 行 = `[u32 marker][u32 槽字节][16 字节 UUID]`，UUID 的 `[4..8]` 是会话中段。
+        if row[12..16] != session_const_a {
+            break;
+        }
+        let marker = u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
+        if !markers.contains(&marker) {
+            markers.push(marker);
+        }
+        rows += 1;
+        at += 24;
+    }
+
+    Some(LogicDonorInventory {
+        records: parsed.len(),
+        channel_records: parsed
+            .iter()
+            .filter(|record| record.tag == LOGIC_IVNE_TAG)
+            .count(),
+        mixer_strips: strips.len(),
+        zero_uuid_strips: zero_uuid,
+        max_channel_index: max_raw & 0xFFFF_0000,
+        track_count_field: (song.u32_at(LOGIC_SONG_TRACK_COUNT_OFFSET)? >> 16) as usize,
+        arrange_rows: arrange,
+        per_slot_track_objects: per_slot,
+        session_const_a,
+        registry_table_1_rows: rows,
+        registry_table_1_markers: markers,
+        registry_tables_2_and_3_present: (
+            LOGIC_SONG_REGISTRY_TABLE_2_OFFSET - LOGIC_RECORD_HEADER < payload_len,
+            LOGIC_SONG_REGISTRY_TABLE_3_OFFSET - LOGIC_RECORD_HEADER < payload_len,
+        ),
+    })
+}
+
+/// 本工程**需要**多少个槽、以及每个槽的索引 —— 纯算术，来自实测的索引公式。
+///
+/// **指标**：`project` 里 `TrackKind::Midi` 的轨道条数（单位：条），减去供体自带的编排轨容量
+/// [`LOGIC_DONOR_ARRANGE_ROWS`]（单位：条），差就是"要激活的槽"个数（单位：个）；
+/// 第 k 个要激活的槽索引 = `gnoS @0x80 的索引部分 + k × `[`LOGIC_SLOT_INDEX_STRIDE`]
+/// （参考实现 §10.6.3 的 `new_idx = cur_max + 0x40000`，实测公式的算术部分）。
+///
+/// ⚠ 这个计划**只描述**"要激活什么"，本模块**不实施**激活（见 [`LOGIC_ACTIVATION_UNMAPPED`]）：
+/// 实施的 (a) 段缺 Table 2/3，实施的 (c) 段缺"空闲条"的判据 —— 两处都**没有证据**可依。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicSlotPlan {
+    /// 工程里 `TrackKind::Midi` 的轨道条数。
+    pub midi_tracks: usize,
+    /// 供体自带的编排轨容量（[`LOGIC_DONOR_ARRANGE_ROWS`]）。
+    pub capacity: usize,
+    /// 还差几个槽（`midi_tracks.saturating_sub(capacity)`）。
+    pub slots_to_activate: usize,
+    /// 每个待激活槽的 `ivnE` / `karT` 对象号（`max_idx + k × stride`）。
+    pub new_channel_indices: Vec<u32>,
+    /// 每个待激活槽的**槽字节**（`idx >> 16`）。
+    pub new_slot_bytes: Vec<u8>,
+    /// 供体里 UUID 全 0 的预分配条数（实测 0 ⇒ (c) 段无法按文档执行）。
+    pub zero_uuid_strips: usize,
+}
+
+/// 按实测的索引公式算出"要激活哪些槽"。供体形状不符时返回 `None`。
+#[must_use]
+pub fn donor_slot_plan(project: &YebanProjectV1) -> Option<LogicSlotPlan> {
+    let inventory = donor_inventory()?;
+    slot_plan_from(project, &inventory)
+}
+
+/// [`donor_slot_plan`] 的纯算术部分（不再解析供体，便于一次导出里共用一份读数）。
+fn slot_plan_from(
+    project: &YebanProjectV1,
+    inventory: &LogicDonorInventory,
+) -> Option<LogicSlotPlan> {
+    let midi_tracks = project
+        .tracks
+        .values()
+        .filter(|track| track.kind == TrackKind::Midi)
+        .count();
+    let capacity = inventory.arrange_rows;
+    let slots = midi_tracks.saturating_sub(capacity);
+    let mut indices = Vec::with_capacity(slots);
+    let mut bytes = Vec::with_capacity(slots);
+    for step in 1..=slots {
+        let index = inventory
+            .max_channel_index
+            .checked_add((step as u32).checked_mul(LOGIC_SLOT_INDEX_STRIDE)?)?;
+        indices.push(index);
+        bytes.push((index >> 16) as u8);
+    }
+    Some(LogicSlotPlan {
+        midi_tracks,
+        capacity,
+        slots_to_activate: slots,
+        new_channel_indices: indices,
+        new_slot_bytes: bytes,
+        zero_uuid_strips: inventory.zero_uuid_strips,
+    })
 }
 
 /// 供体路线的产物：供体的根头 + 记录流（供体顺序）+ 映射计数。
@@ -1946,13 +2393,95 @@ impl LogicBuilder {
             ),
         );
         self.write_container_losses(&entity, project);
-        self.write_donor_track_losses(project, splice);
+        let inventory = donor_inventory();
+        self.write_donor_activation_loss(&entity, project, inventory.as_ref());
+        self.write_donor_track_losses(project, splice, inventory.as_ref());
+    }
+
+    /// **槽激活的登记**：只在工程需要的槽**多于**供体自带时出现（单 MIDI 轨工程一个字都不加）。
+    ///
+    /// 这里写的是**计划**（要激活哪些索引）与**阻塞原因**（两条实测），不是"已激活"。
+    fn write_donor_activation_loss(
+        &mut self,
+        entity: &str,
+        project: &YebanProjectV1,
+        inventory: Option<&LogicDonorInventory>,
+    ) {
+        let Some(inventory) = inventory else {
+            return;
+        };
+        let Some(plan) = slot_plan_from(project, inventory) else {
+            return;
+        };
+        if plan.slots_to_activate == 0 {
+            return;
+        }
+        let indices = plan
+            .new_channel_indices
+            .iter()
+            .map(|index| format!("{index:#010x}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let slots = plan
+            .new_slot_bytes
+            .iter()
+            .map(|slot| format!("{slot:#04x}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let (table2, table3) = inventory.registry_tables_2_and_3_present;
+        self.loss(
+            entity.to_owned(),
+            format!(
+                "{LOGIC_ACTIVATION_UNMAPPED} —— 本工程有 {} 条 `TrackKind::Midi` 轨，供体的编排轨容量是 \
+                 {} 条 ⇒ 要激活 {} 个槽：索引 {}（槽字节 {}）。实测读数（单位：条 / 字节）：供体记录 {}、\
+                 `ivnE` {}、够长的 `OCuA` 混音条 {}（其中 `@0xbd` 16 字节全 0 的 **{}**）、\
+                 `karT` 非空行 {}/{}（`0x0004_0000` 编排行 / `0x0008_0000` 每槽一条）、\
+                 `gnoS @0x80` = {:#010x}（低 16 位是哨兵，取索引时必须屏蔽）、`gnoS @0xf4>>16` = {}、\
+                 会话中段 `CONST_A` = {}、注册表 Table 1 {} 行、Table 2/3（记录内 {:#06x}/{:#06x} ⇒ 载荷 \
+                 {:#06x}/{:#06x}）落在 `gnoS` 载荷内 = {}/{}",
+                plan.midi_tracks,
+                plan.capacity,
+                plan.slots_to_activate,
+                indices,
+                slots,
+                inventory.records,
+                inventory.channel_records,
+                inventory.mixer_strips,
+                inventory.zero_uuid_strips,
+                inventory.arrange_rows,
+                inventory.per_slot_track_objects,
+                inventory.max_channel_index,
+                inventory.track_count_field,
+                inventory
+                    .session_const_a
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(""),
+                inventory.registry_table_1_rows,
+                LOGIC_SONG_REGISTRY_TABLE_2_OFFSET,
+                LOGIC_SONG_REGISTRY_TABLE_3_OFFSET,
+                LOGIC_SONG_REGISTRY_TABLE_2_OFFSET - LOGIC_RECORD_HEADER,
+                LOGIC_SONG_REGISTRY_TABLE_3_OFFSET - LOGIC_RECORD_HEADER,
+                table2,
+                table3,
+            ),
+        );
     }
 
     /// 供体路线里**每一条夜半轨道**的登记：被映射的那条登记非 region 属性，其余整条登记为未映射。
-    fn write_donor_track_losses(&mut self, project: &YebanProjectV1, splice: &DonorSplice) {
+    fn write_donor_track_losses(
+        &mut self,
+        project: &YebanProjectV1,
+        splice: &DonorSplice,
+        inventory: Option<&LogicDonorInventory>,
+    ) {
+        let mut midi_seen = 0usize;
         for track in project.tracks.values() {
             let entity = format!("track:{}#{}", track.name, track.id.to_canonical_string());
+            if track.kind == TrackKind::Midi {
+                midi_seen += 1;
+            }
             if Some(track.id) == splice.mapped_track_id {
                 self.write_track_caveats(&entity, track);
                 let midi_placements = track
@@ -1977,17 +2506,35 @@ impl LogicBuilder {
                 }
                 continue;
             }
+            // 本条 MIDI 轨在"要激活的槽"里排第几号 —— 与 [`donor_slot_plan`] 用同一条算术。
+            let would_be_slot = match (track.kind, inventory) {
+                (TrackKind::Midi, Some(inventory)) if midi_seen > inventory.arrange_rows => {
+                    let step = (midi_seen - inventory.arrange_rows) as u32;
+                    inventory
+                        .max_channel_index
+                        .checked_add(step.saturating_mul(LOGIC_SLOT_INDEX_STRIDE))
+                        .map(|index| {
+                            format!(
+                                "；本条需要的槽索引是 {index:#010x}（槽字节 {:#04x}）",
+                                (index >> 16) as u8
+                            )
+                        })
+                        .unwrap_or_default()
+                }
+                _ => String::new(),
+            };
             self.loss(
                 entity,
                 format!(
                     "{LOSS_UNMAPPED_PREFIX} 供体只携带 {} 条编排轨行（`Trak` 记录头 `+0x08 == \
                      0x00040000` 的非 0 载荷 2 条 − 1 条 master 行 = `MetaData.plist NumberOfTracks` \
                      {}）；我们的轨道（kind={:?}，摆放 {} 条）没有可供体插槽 ⇒ 整条不导出 —— \
-                     参考实现（§10.6.1）的结论是新增通道会重排整个 `OCuA` 通道块，本切片不做插入",
+                     参考实现（§10.6.1）的结论是新增通道会重排整个 `OCuA` 通道块，本切片不做插入{}",
                     LOGIC_DONOR_TRACK_COUNT,
                     LOGIC_DONOR_TRACK_COUNT,
                     track.kind,
-                    track.clips.len()
+                    track.clips.len(),
+                    would_be_slot,
                 ),
             );
         }
@@ -4584,6 +5131,150 @@ mod tests {
             dict_of(&meta).get("NumberOfTracks"),
             Some(&TestPlist::Integer(1)),
             "NumberOfTracks 必须是映射数 1，而不是工程轨道总数 2"
+        );
+    }
+
+    /// 供体通道清单：用**实测字面量**逐项钉住，因此常量抄错、或对供体的解读一错就会红。
+    #[test]
+    fn donor_channel_inventory_matches_the_measured_activation_layout() {
+        let inventory = donor_inventory().expect("供体的形状必须与本模块钉住的一致");
+        assert_eq!(inventory.records, 527, "按记录头走完供体的记录条数");
+        assert_eq!(inventory.channel_records, 12, "`ivnE` 通道记录条数");
+        assert_eq!(
+            inventory.mixer_strips, 363,
+            "长到能装下 `@0xbd` 那 16 字节的 `OCuA` 混音条数"
+        );
+        assert_eq!(
+            inventory.zero_uuid_strips, 0,
+            "`@0xbd` 16 字节全 0 的混音条数（参考实现 §10.6.3(c) 的“空闲条”判据）"
+        );
+        assert_eq!(
+            inventory.max_channel_index, 0x0058_0000,
+            "`gnoS @0x80` 的索引部分（`Inst 1` 的槽）"
+        );
+        assert_eq!(inventory.track_count_field, 1, "`gnoS @0xf4 >> 16`");
+        assert_eq!(inventory.arrange_rows, 1, "非 master 的编排轨行条数");
+        assert_eq!(
+            inventory.per_slot_track_objects, 5,
+            "`karT` 对象号 `0x0008_0000` 的非空行条数（每个预分配槽一条）"
+        );
+        assert_eq!(
+            inventory.session_const_a,
+            [0x5b, 0x12, 0x11, 0xf1],
+            "`gnoS @0x1e14` 的会话 UUID 中段"
+        );
+        assert_eq!(
+            inventory.registry_table_1_rows, 7,
+            "注册表 Table 1 连续段行数"
+        );
+        assert_eq!(
+            inventory.registry_table_1_markers,
+            vec![0x17, 0x19, 0x1e, 0x21],
+            "那段行的 marker 取值（参考实现记的是固定 `0x14`）"
+        );
+        assert_eq!(
+            inventory.registry_tables_2_and_3_present,
+            (false, false),
+            "参考实现点名的 Table 2/3 是否落在 compact `gnoS` 载荷内"
+        );
+
+        // 索引公式：三个 MIDI 轨 ⇒ 两个新槽（`max_idx + k × stride` ⇒ 0x5c / 0x60）。
+        let mut project = fixture_project();
+        for (index, name) in [(2_u128, "Second"), (3, "Third")] {
+            let track = TrackV3 {
+                id: test_id(index),
+                name: name.to_owned(),
+                ..TrackV3::default()
+            };
+            project.tracks.insert(track.id, track);
+        }
+        let plan = donor_slot_plan(&project).expect("槽计划");
+        assert_eq!(plan.midi_tracks, 3, "工程里的 MIDI 轨条数");
+        assert_eq!(plan.capacity, 1, "供体自带的编排轨容量");
+        assert_eq!(plan.slots_to_activate, 2, "还差几个槽");
+        assert_eq!(
+            plan.new_channel_indices,
+            vec![0x005c_0000, 0x0060_0000],
+            "待激活槽的对象号"
+        );
+        assert_eq!(plan.new_slot_bytes, vec![0x5c, 0x60], "待激活槽的槽字节");
+        assert_eq!(plan.zero_uuid_strips, 0, "计划里也必须带上这个实测读数");
+
+        // 单 MIDI 轨：一个槽都不用激活。
+        let single = donor_slot_plan(&fixture_project()).expect("槽计划");
+        assert_eq!(single.midi_tracks, 1);
+        assert_eq!(single.slots_to_activate, 0);
+        assert!(single.new_channel_indices.is_empty(), "单轨不得列出任何槽");
+    }
+
+    /// 槽激活的**登记**只在"工程需要的槽多于供体自带"时出现 —— 单 MIDI 轨工程一个字都不加，
+    /// 因此第 407 轮那份被 Logic Pro 12.2 打开的产物的损失表**不因本切片增长**。
+    #[test]
+    fn donor_activation_blockers_appear_only_when_slots_are_needed() {
+        let single = project_data_from_donor(&fixture_project());
+        let single_text = single
+            .losses
+            .iter()
+            .map(|loss| format!("{}: {}", loss.entity, loss.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !single_text.contains(LOGIC_ACTIVATION_UNMAPPED),
+            "单 MIDI 轨工程不得出现槽激活条目（否则会动到已实测能打开的那份产物）"
+        );
+
+        let mut project = fixture_project();
+        for (index, name) in [(2_u128, "Second"), (3, "Third")] {
+            let track = TrackV3 {
+                id: test_id(index),
+                name: name.to_owned(),
+                ..TrackV3::default()
+            };
+            project.tracks.insert(track.id, track);
+        }
+        let data = project_data_from_donor(&project);
+        let text = data
+            .losses
+            .iter()
+            .map(|loss| format!("{}: {}", loss.entity, loss.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains(LOGIC_ACTIVATION_UNMAPPED), "多轨工程必须登记");
+        assert!(
+            text.contains("0x005c0000/0x00600000"),
+            "必须写出待激活槽的索引：{text}"
+        );
+        assert!(text.contains("槽字节 0x5c/0x60"), "必须写出槽字节");
+        assert!(
+            text.contains("全 0 的 **0**"),
+            "必须写出“UUID 全 0 的混音条 = 0”这个实测读数"
+        );
+        assert!(
+            text.contains("0x0058_0000") || text.contains("0x00580000"),
+            "必须写出实测的最大索引"
+        );
+        assert!(
+            text.contains("载荷 0x4d8c/0x521c"),
+            "必须写出 Table 2/3 越界的载荷位置"
+        );
+        assert!(
+            text.contains("落在 `gnoS` 载荷内 = false/false"),
+            "必须写出 Table 2/3 不在供体载荷内"
+        );
+        assert!(
+            text.contains("本条需要的槽索引是 0x005c0000"),
+            "每条多出来的 MIDI 轨必须点名它需要的槽：{text}"
+        );
+        assert!(
+            text.contains("本条需要的槽索引是 0x00600000"),
+            "第三条 MIDI 轨的槽必须是下一个索引"
+        );
+        // 产物本身**没有**变：记录流仍是供体的。
+        let output = record_slices(&data.bytes);
+        assert_eq!(
+            output.len(),
+            LOGIC_DONOR_RECORD_COUNT,
+            "登记不得改变记录条数"
         );
     }
 }
