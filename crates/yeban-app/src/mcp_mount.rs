@@ -36,24 +36,32 @@
 //! ## 会话：**只读**打开的那份工程 + **共享读** `.yeban.lock`
 //!
 //! [`start_for_project`] 把调用方交进来的 `YebanProjectV1` 经 `Domain::open_in_memory`
-//! 注入控制面会话，并且**固定 `read_only = true`**。为什么只读：
+//! 注入控制面会话，并且**固定 `read_only = true`**。注意 `read_only` 的准确含义是
+//! **不许落盘**（`yeban_save_project` 被拒，判据见 `tests/in_process_mcp.rs` 第 5 条），
+//! **不是**"工程不可变"：`yeban_undo` / `yeban_edit_automation` 一直在改这份内存工程。
+//! 因此第二片把 GUI 的写入口搬上来时，`read_only` 不需要、也没有被放开。
 //!
-//! - 生产 GUI（`src/main.rs` 的 `run_gui`）**仍然**持着自己的撤销权威
-//!   （`undo::UndoPort` 的 `RefCell<UndoSession>`）。在它被改成"从 `Domain` 投影"
-//!   之前，把本会话改成可写就是**两个写者**（一个影子副本）—— 委派运行刻意不做这件事；
-//! - 只读 ⇒ 控制面**不会**成为同一工程文件的第二个写者（`yeban_save_project` 被拒，
-//!   判据见 `tests/in_process_mcp.rs` 第 5 条）。
+//! 为什么**不**改成 `read_only = false`（本片明确停在这里，如实登记）：
+//! 放开它意味着控制面可以 `yeban_save_project` **落盘**，而 app GUI 自己的保存路径
+//! （`ui/force_save` / `--save-as`，`src/save.rs`）**不取** `.yeban.lock` ——
+//! 两条会同时写同一个工程文件的路 = 影子写者（问题 6 选项 (c) 被拒的正是这件事）。
+//! 要放开它，必须先让 GUI 的保存路径也参与同一把锁并交出写权限，那是下一片。
 //!
-//! ## 唯一可变权威：**投影口已经接上**（`ROAD-M4-008` 选项 (a) 的第一片）
+//! ## 唯一可变权威：**投影口 + 写入口都已接上**（`ROAD-M4-008` 选项 (a) 第二片）
 //!
-//! [`InProcessMcp::project_authority`] 给出一个**只读**的 [`ProjectAuthorityHandle`]：
+//! [`InProcessMcp::project_authority`] 给出的 [`ProjectAuthorityHandle`] 现在同时是
+//! 界面侧的**读**口与**写**口：
+//!
+//! | 方向 | 宿主入口 | 落点 |
+//! | :--- | :--- | :--- |
+//! | 读（投影） | `ProjectAuthorityHandle::project` / `apply_revision` | `HttpServer::host_domain`（只借 `&Domain`） |
+//! | 写（GUI 动作） | `ProjectAuthorityHandle::apply_host` | `HttpServer::apply_host_action` → `domain::apply_host_action` → `Plan::Host` → `domain::apply`（**唯一可变入口**） |
+//!
 //! 界面侧（`src/live_surface.rs` 的 `build_live_ui_from_authority` + `LiveUi::sync_authority`）
-//! 因此可以**只**从这一个会话取工程，并在它的**施加修订号**前进时重投影 ——
-//! 于是"AI 经控制面改了工程 ⇒ 界面跟着变"有判据直证（`tests/live_ui_mcp.rs`）。
-//!
-//! **仍然剩下的那一半**（如实登记，不假装闭合）：生产 GUI 的撤销 / 卷帘编辑**还没有**
-//! 改走这个权威，所以 `read_only` 也还不能放开。两件事是同一件事的两面：
-//! 先让 GUI 的写入口落到会话上，才谈得上把 `read_only` 改成 `false` 并重新裁决锁模式。
+//! 因此可以**只**从这一个会话取工程，并在它的**施加修订号**前进时重投影；
+//! 生产 GUI 的撤销族 / 卷帘编辑（`src/undo.rs` 的 `UndoPort`）在挂载了控制面时也把
+//! 写入落到这**同一个** `Domain` 上。于是"GUI 改工程"与"AI 经控制面改工程"是**同一份**
+//! `Active::project` + `CommitGraph` + `UndoState` —— 判据见 `tests/live_ui_mcp.rs`。
 //!
 //! ### 会话来源决定它怎样参与跨形态互斥（`ROAD-M0-007` / `MUST-GATE-008`）
 //!
@@ -79,8 +87,8 @@
 //!
 //! ## 明确**没做**（不是"忘了"）
 //!
-//! - **没有**让本会话成为生产 GUI 的写者：见上面"仍然剩下的那一半" ——
-//!   `read_only` 与 [`LockMode::SharedRead`] 因此**一位没改**；
+//! - **没有**放开 `read_only` / [`LockMode::SharedRead`]：见上面"为什么**不**改成
+//!   `read_only = false`" —— GUI 的保存路径还没参与同一把锁，放开就是影子写者；
 //! - **没有**停机信号的传输层原语：`HttpServer` 只有阻塞的 `serve_once` / `serve_forever`。
 //!   本模块用一个 stop 标志 + 一次**环回唤醒连接**让阻塞中的 `accept` 返回（见 [`InProcessMcp::stop`]）。
 //!   代价如实登记：一个连上却不发请求的慢客户端会推迟停机（传输层文件头已声明"不做慢速攻击防护"）。
@@ -109,14 +117,15 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use yeban_mcp::Dispatcher;
-use yeban_mcp::domain::Domain;
 use yeban_mcp::domain::engine_state::EngineReadings;
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
+use yeban_mcp::domain::{Domain, HostAction, HostOutcome};
 use yeban_mcp::security::{BearerToken, RunMode, ScopeSet, TokenFile};
 use yeban_mcp::transport::http::{HttpError, HttpServer, MCP_PATH};
 use yeban_mcp::transport::{HttpStartup, TransportError, plan_http_startup};
-use yeban_model::YebanProjectV1;
+use yeban_mcp::undo_session::UndoDisplay;
+use yeban_model::{CommitGraph, YebanProjectV1};
 
 // ---------------------------------------------------------------------------
 // 两道开关（第二道）与时间常量
@@ -390,30 +399,33 @@ impl EngineReadingsHandle {
     }
 }
 
-/// **宿主侧工程权威句柄**（`ROAD-M4-008` 选项 (a) 的交付侧，2026-10-06）。
+/// **宿主侧工程权威句柄**（`ROAD-M4-008` 选项 (a) 的交付侧，2026-10-06；第二片 2026-10-06）。
 ///
 /// 它要证的那句话是：**控制面正在服务的那一个 `Domain` 就是唯一可变权威，界面是它的投影。**
-/// 因此这个句柄只做两件事，**都是读**：
+/// 句柄因此同时给出**读**与**经唯一入口的写**：
 ///
 /// | 方法 | 宿主拿它做什么 |
 /// | :--- | :--- |
 /// | [`Self::project`] | 拿权威工程的一份快照去重投影（`ViewState::from_project` → `host::apply_view`） |
 /// | [`Self::apply_revision`] | 判断"权威改过没有"，从而**只在改过时**重投影（不靠宿主记住每次调用） |
+/// | [`Self::undo_display`] / [`Self::graph`] | 界面显示态与提交图谱的**唯一**来源（界面不许自己算） |
+/// | [`Self::apply_host`] | GUI 的写入口（`Cmd+Z` / 卷帘铅笔）：把动作交给**同一个** `Domain` 的唯一可变入口 |
 ///
-/// ## 为什么需要这个句柄（与 [`EngineReadingsHandle`] 同一个理由）
+/// ## 写入口为什么不制造第二个写者（第二片的关键）
 ///
-/// `InProcessMcp` 一旦挂上就不能再被可变借用（工作线程已经拿着它），而宿主
-/// **挂载之后**才需要读会话（判据里是"AI 通过控制面改了工程之后"）。没有这个口子，
-/// 宿主只能拿挂载**前**的那份克隆 —— 那正好是 `ROAD-M4-008` 要消掉的那个缺口。
+/// 第一片只给了只读口，理由写在 [`crate::mcp_mount`] 的模块文档里：那时 GUI 还持着自己的
+/// `undo::UndoPort`，多给一个写口就是两个可变状态。第二片把 GUI 的写入口**搬到这个句柄上**，
+/// 于是"两份"变成"一份"：`Self::apply_host` 只做一次委派 ——
+/// [`HttpServer::apply_host_action`] → `Dispatcher::domain_mut()` → `domain::apply_host_action`
+/// → `Plan::Host` → `domain::apply`（`apply_revision` 与 `sync_session` 只在那里发生）。
 ///
-/// ## 它不是第二套机制，也没有扩大权限面
+/// 边界因此是：
 ///
 /// - **同一个**分发器、**同一个** `Domain`、**同一个**线程都在用的 `Mutex`；
-/// - 走的是 `HttpServer::host_domain` 这个**只借出 `&Domain`** 的宿主口：签名里
-///   没有 `&mut`，因此**结构上不可能**成为第二个写者（`MUST-GATE-008` 的
-///   "只读会话不是第二个写者"没有被放松 —— 本句柄连写的能力都没有）；
-/// - `[MUST-GATE-009]` 的四条（默认关 / 只绑环回 / 必须令牌 / `ui:inject` 硬禁）与它无关：
-///   这里没有新增任何一条对外能力，也没有第二个端口 / 令牌 / 通道。
+/// - **没有**第二个端口 / 令牌 / 通道；对外 JSON-RPC 面一位没变（仍是
+///   `tools/call` + 鉴权 + 作用域 + `dryRun`）；
+/// - "只读会话"的含义没变：`read_only` 只闸**落盘**（[`Self::apply_host`] 碰不到文件），
+///   与 `MUST-GATE-008` 的共享读锁边界一致。
 ///
 /// 句柄是 `Clone` 的（与 [`EngineReadingsHandle`] 同款）：它只包着一个与工作线程共享的
 /// [`HttpServer`]（`Arc`），**不拥有**停机。
@@ -442,6 +454,35 @@ impl ProjectAuthorityHandle {
     #[must_use]
     pub fn apply_revision(&self) -> u64 {
         self.server.host_domain(Domain::apply_revision)
+    }
+
+    /// 权威的**撤销显示态**（`CommitGraph` + `UndoCursor` 的模型读数）。
+    ///
+    /// 界面显示态（能否撤销 / 还能撤几步 / 提交数 / 分支）只从这里取 ——
+    /// 与 `yeban_undo` / `yeban_redo` 的响应用的是同一个 `Domain::undo_display`。
+    #[must_use]
+    pub fn undo_display(&self) -> UndoDisplay {
+        self.server.host_domain(Domain::undo_display)
+    }
+
+    /// 权威的**提交图谱**（一份拷贝；只读用途：时光机画版本树、保存 `history.dag`）。
+    #[must_use]
+    pub fn graph(&self) -> CommitGraph {
+        self.server.host_domain(|domain| domain.graph().clone())
+    }
+
+    /// **宿主写入口**：把一次 GUI 动作施加到这一个会话上。
+    ///
+    /// 施加链见 [`ProjectAuthorityHandle`] 的类型文档；成功之后
+    /// [`Self::apply_revision`] 必然前进（`Plan::Host::mutates_project` 为真时），
+    /// 因此 `LiveUi::sync_authority` 下一次就会重投影。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`yeban_mcp::domain::apply_host_action`]：没有活跃工程、没有可撤销 / 可重做的历史、
+    /// op 施加失败，或提交不带任何 op。
+    pub fn apply_host(&self, action: HostAction) -> Result<HostOutcome, Fault> {
+        self.server.apply_host_action(action)
     }
 }
 

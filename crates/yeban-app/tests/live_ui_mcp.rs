@@ -1698,3 +1698,307 @@ fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority()
     ));
     mount.stop().expect("停机必须成功（有 5 秒上限）");
 }
+
+// ---------------------------------------------------------------------------
+// 判据 18 / 19（`ROAD-M4-008` 选项 (a) **第二片**）：GUI 的写入口落到唯一可变权威上
+// ---------------------------------------------------------------------------
+
+/// 工程里**全部**音符身份（`clip_pool` 键序；与 `bridge::ViewState` 的枚举同一来源）。
+#[cfg(feature = "in-process-mcp")]
+fn project_note_ids(project: &YebanProjectV1) -> Vec<String> {
+    let mut ids = Vec::new();
+    for entry in project.clip_pool.values() {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        ids.extend(notes.keys().map(|id| id.to_canonical_string()));
+    }
+    ids
+}
+
+/// 判据 18：**GUI 的撤销与环回会话的撤销改的是同一个 `Domain`**，因此两条写路径在
+/// **同一个投影**上汇合。
+///
+/// ## 这条判据要证的两句话
+///
+/// 1. GUI 的写入口（`UndoPort`）**不再持有**自己的 `UndoSession`：它由
+///    `UndoPort::from_authority` 构造，只握 `ProjectAuthorityHandle`；因此
+///    第 3 步的 GUI 撤销必须推进**同一个**权威的施加修订号（`r+1 → r+2`）。
+/// 2. 会话侧的写入（`yeban_edit_automation` / `yeban_redo`）与 GUI 侧的写入
+///    **互相可见**：同一棵运行时控件树按同一条 `sync_authority` 重投影。
+///
+/// ## 论证顺序（每一步都用上一步的实读值）
+///
+/// | 步 | 谁写 | 读回 |
+/// | :--- | :--- | :--- |
+/// | 1 | 以权威装配真实界面 + 由**同一个**句柄构造端口 | 起点：`track-0-automation-pan-lane` 不在树里；端口显示态 == 权威显示态 |
+/// | 2 | **会话侧**：真客户端 + 真令牌发 `yeban_edit_automation`（`TrackPan` 写一个点） | 修订号 `r → r+1`；`sync_authority = Reprojected`；泳道进树 |
+/// | 3 | **GUI 侧**：`host::wire_undo` 接的真实 Slint 回调 `undo-step` | 修订号 `r+1 → r+2`（同一个权威！）；端口的 `undone == 1` |
+/// | 4 | 投影跟随 | `sync_authority = Reprojected`；泳道离开运行时树 |
+/// | 5 | **会话侧**：`yeban_redo` | 修订号 `r+2 → r+3`；同一条泳道回到同一投影 |
+///
+/// ## 怎么变红（负向实测见工作线报告）
+///
+/// 把 `UndoPort::from_authority(authority.clone())` 换回 `UndoPort::new(<另一份 UndoSession>)`
+/// ⇒ 第 3 步的修订号停在 `r+1`（GUI 写的是**另一个**会话），第 4 步 `Unchanged`、泳道仍在树里。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_gui_action_and_a_session_action_share_one_projection_through_the_authority() {
+    use std::rc::Rc;
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+    use yeban_app::undo::UndoPort;
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008-gui-undo")),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    // ---- 1. 以权威为唯一工程来源装配真实界面；端口也只握这一个句柄 ----
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+    let port = Rc::new(UndoPort::from_authority(authority.clone()));
+    yeban_app::host::wire_undo(ui.ui(), &port);
+    yeban_app::host::apply_undo(ui.ui(), &port);
+
+    let view_before =
+        ViewState::from_project(&authority.project().expect("权威有活跃工程")).expect("投影");
+    let lead_index = view_before.tracks[0].index;
+    let lead_id = view_before.tracks[0].id.clone();
+    let lane_id = format!("track-{lead_index}-automation-pan-lane");
+    let revision_before = authority.apply_revision();
+    assert!(
+        !ui.tree_snapshot().contains(&lane_id),
+        "起点：`{lane_id}` 不该在运行时树里"
+    );
+    assert_eq!(
+        (port.display().undone, port.display().commit_count),
+        (
+            authority.undo_display().undone,
+            authority.undo_display().commit_count
+        ),
+        "端口的显示态必须逐字段来自**权威**（它没有自己的会话可读）"
+    );
+
+    // ---- 2. 会话侧（AI）：真环回 socket 写一个自动化点 ----
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"yeban_edit_automation","arguments":{{"trackId":"{lead_id}","lane":"TrackPan","point":{{"tick":0,"value":0.25,"curve":"Linear"}}}}}}}}"#
+        ),
+    );
+    assert_eq!(reply["result"]["status"], "success", "{reply}");
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before + 1,
+        "会话侧写入必须推进权威修订号"
+    );
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 1
+        }
+    );
+    assert!(
+        ui.tree_snapshot().contains(&lane_id),
+        "会话侧写入必须出现在同一投影里"
+    );
+
+    // ---- 3. GUI 侧：走 `host::wire_undo` 接的**真实** Slint 回调（撤销一步） ----
+    ui.ui().invoke_undo_step();
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before + 2,
+        "GUI 的写入必须落在**同一个**权威上（若 GUI 还持自己的会话，这里会停在 r+1）"
+    );
+    assert_eq!(
+        port.display().undone,
+        1,
+        "GUI 撤销必须真的落到权威会话的游标上"
+    );
+    let record = port.last_record().expect("GUI 动作日志");
+    assert_eq!(record.action, "undo");
+    assert!(
+        record.changed_project(),
+        "GUI 动作日志必须证明工程真的变了: {record:?}"
+    );
+
+    // ---- 4. 投影跟随：泳道离开同一棵运行时控件树 ----
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 2
+        }
+    );
+    assert!(
+        !ui.tree_snapshot().contains(&lane_id),
+        "GUI 撤销之后泳道必须离开运行时树（界面没有跟着权威走）"
+    );
+
+    // ---- 5. 会话侧再来一次：重做 ⇒ 同一条泳道回到同一投影 ----
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_redo","arguments":{"steps":1}}}"#,
+    );
+    assert_eq!(reply["result"]["status"], "success", "{reply}");
+    assert_eq!(authority.apply_revision(), revision_before + 3);
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 3
+        }
+    );
+    assert!(
+        ui.tree_snapshot().contains(&lane_id),
+        "会话侧重做之后同一条泳道必须回到同一投影"
+    );
+
+    report_line(&format!(
+        "[m4-008] GUI 写入口落在唯一可变权威上: GUI 回调 `undo-step` ⇒ 施加修订号 {}→{} \
+         （与会话侧写入同一个号）; 泳道 `{lane_id}` 随 `sync_authority` 出现 / 消失 / 再出现",
+        revision_before,
+        authority.apply_revision()
+    ));
+    mount.stop().expect("停机必须成功（有 5 秒上限）");
+}
+
+/// 判据 19：**GUI 的卷帘铅笔编辑进的是同一个权威** —— 会话侧一次 `yeban_undo` 能把它撤掉，
+/// 同一棵运行时控件树随之更新。
+///
+/// ## 论证顺序
+///
+/// | 步 | 动作 | 读回 |
+/// | :--- | :--- | :--- |
+/// | 1 | 以权威装配真实界面；`wire_roll_edit` 接上**同一个**句柄构造的端口 | 起点音符身份集 |
+/// | 2 | 用**与宿主同一条解析**（`host::pencil_op_for`）找一个真落在片段内的点击位置 | `Some(AddNote)` |
+/// | 3 | **GUI 事件源**：`app.slint` 的 `clicked` 回调 → `wire_roll_edit` | 权威工程多**恰好一个**音符；修订号 `r → r+1` |
+/// | 4 | `sync_authority` + 运行时树 | 新音符 `note-{ulid}-rect` 在树里 |
+/// | 5 | **会话侧**：真环回 socket 发 `yeban_undo` | 音符身份集回到起点；新元素离开树 |
+///
+/// ## 怎么变红
+///
+/// 把 `wire_roll_edit` 里的 `port.commit_ops(..)` 摘掉（或让端口改回本地会话）
+/// ⇒ 第 3 步权威工程里音符数不变 ⇒ 本判据立刻红。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_gui_pencil_edit_lands_in_the_same_authority_as_the_session() {
+    use std::collections::BTreeSet;
+    use std::rc::Rc;
+    use yeban_app::host::{PENCIL_TOOL_DIGIT, ROLL_SNAP_GRID_TICKS, pencil_op_for};
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+    use yeban_app::undo::UndoPort;
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008-gui-pencil")),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let bearer = format!("Bearer {}", mount.token().expose());
+
+    let mut ui = build_live_ui_from_authority(&authority, Permission::ReadOnly).expect("装配");
+    let port = Rc::new(UndoPort::from_authority(authority.clone()));
+    yeban_app::host::wire_roll_edit(ui.ui(), &port);
+    // 矩阵第 3 行 = 铅笔（`Tool::from_digit(2)`）；`wire_roll_edit` 只在这个工具下提交。
+    ui.ui().set_active_tool(i32::from(PENCIL_TOOL_DIGIT));
+
+    let project_before = authority.project().expect("权威有活跃工程");
+    let scroll = ui.ui().get_roll_scroll_x();
+    let y = 100.0_f32;
+    let hit_x = (0..240)
+        .map(|step| 10.0 * f32::from(u8::try_from(step).unwrap_or(0)))
+        .find(|x| {
+            pencil_op_for(
+                &project_before,
+                scroll,
+                *x,
+                y,
+                ROLL_SNAP_GRID_TICKS,
+                i32::from(PENCIL_TOOL_DIGIT),
+            )
+            .is_some()
+        })
+        .expect("夹具里必须存在一个真的落在片段内的点击位置（否则本判据的对照不成立）");
+    let notes_before: BTreeSet<String> = project_note_ids(&project_before).into_iter().collect();
+    let tree_before = ui.tree_snapshot();
+    let revision_before = authority.apply_revision();
+
+    // ---- GUI 事件源：`app.slint` 的 `clicked` → `wire_roll_edit` → 端口 → 权威 ----
+    ui.ui().invoke_clicked(hit_x, y);
+
+    let project_after = authority.project().expect("权威有活跃工程");
+    let notes_after: BTreeSet<String> = project_note_ids(&project_after).into_iter().collect();
+    let added: Vec<&String> = notes_after.difference(&notes_before).collect();
+    assert_eq!(
+        added.len(),
+        1,
+        "GUI 铅笔画一次必须恰好在**权威工程**里加一个音符（起点 {} 个，现在 {} 个）",
+        notes_before.len(),
+        notes_after.len()
+    );
+    assert_eq!(
+        authority.apply_revision(),
+        revision_before + 1,
+        "GUI 的提交必须推进**同一个**权威的施加修订号"
+    );
+    let element_id = format!("note-{}-rect", added[0]);
+    assert!(
+        !tree_before.contains(&element_id),
+        "起点不该已经有 `{element_id}`"
+    );
+
+    // ---- 投影跟随：新音符出现在同一棵运行时控件树里 ----
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 1
+        }
+    );
+    assert!(
+        ui.tree_snapshot().contains(&element_id),
+        "新音符 `{element_id}` 必须出现在活窗口的运行时控件树里"
+    );
+
+    // ---- 会话侧（AI）看得见这次 GUI 编辑：一次 `yeban_undo` 把它撤掉 ----
+    let reply = mcp_call(
+        mount.address(),
+        &bearer,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"yeban_undo","arguments":{"steps":1}}}"#,
+    );
+    assert_eq!(reply["result"]["status"], "success", "{reply}");
+    assert_eq!(
+        project_note_ids(&authority.project().expect("权威有活跃工程"))
+            .into_iter()
+            .collect::<BTreeSet<String>>(),
+        notes_before,
+        "会话侧撤销必须撤掉 GUI 刚加的那个音符（证明它进的是同一个会话）"
+    );
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: revision_before + 2
+        }
+    );
+    assert!(
+        !ui.tree_snapshot().contains(&element_id),
+        "撤销后新音符必须离开同一棵运行时控件树"
+    );
+
+    report_line(&format!(
+        "[m4-008] GUI 卷帘铅笔经权威提交: 点击 ({hit_x}, {y}) ⇒ 权威工程音符 {}→{} ⇒ \
+         树里出现 `{element_id}`; 会话侧 `yeban_undo` ⇒ 音符回到 {} 个、元素离树",
+        notes_before.len(),
+        notes_after.len(),
+        notes_before.len()
+    ));
+    mount.stop().expect("停机必须成功（有 5 秒上限）");
+}

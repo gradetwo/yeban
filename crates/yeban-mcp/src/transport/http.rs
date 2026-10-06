@@ -527,6 +527,35 @@ impl HttpServer {
         read(self.lock().domain())
     }
 
+    /// **宿主侧写入口**（`ROAD-M4-008` 选项 (a) 第二片）：把一次
+    /// [`HostAction`](crate::domain::HostAction) 施加到正在服务的那**一个**会话上。
+    ///
+    /// ## 为什么它不破坏"唯一可变权威"
+    ///
+    /// - **同一个** `Mutex<Dispatcher>`、**同一个** [`crate::domain::Domain`]：本方法没有
+    ///   第二个分发器、第二个 `Domain`、第二个端口、第二个令牌；
+    /// - 施加只经过 [`crate::domain::apply_host_action`]，而它把动作包成 `Plan::Host`
+    ///   交给 [`crate::domain::apply`] —— `apply_revision` 与 `sync_session` 仍然只在
+    ///   `apply` 那一处发生。因此"谁改了工程"这个问题的答案依旧是**一个**：这个会话。
+    /// - 它**不**扩大对外能力面：JSON-RPC 仍走 [`Self::handle_text`] → `Dispatcher::handle`，
+    ///   那条路上的鉴权 / 作用域 / `dryRun` 一位没松；本方法只对**已经持有
+    ///   `Arc<HttpServer>` 的宿主进程**可见（形态 A 的 `yeban-app`）。
+    ///
+    /// 与 [`Self::host_domain`] 的分工：那个只借出 `&Domain`（投影读），
+    /// 这个只交出一个**已被限定**的动作施加口（写）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`crate::domain::apply_host_action`]（没有活跃工程 / 没有可撤销的历史 /
+    /// op 施加失败 / 空批提交）。
+    pub fn apply_host_action(
+        &self,
+        action: crate::domain::HostAction,
+    ) -> Result<crate::domain::HostOutcome, crate::domain::error::Fault> {
+        let mut dispatcher = self.lock();
+        crate::domain::apply_host_action(dispatcher.domain_mut(), action)
+    }
+
     /// 取分发器（锁被毒化时仍然取内层 —— 环回开发服务宁可继续回答并如实报错，
     /// 也不要在 handler 里 panic）。
     fn lock(&self) -> MutexGuard<'_, Dispatcher> {

@@ -651,8 +651,13 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
         };
         let scroll = ui.get_roll_scroll_x();
         let width = slint::ComponentHandle::window(&ui).size().width as f32;
+        // 权威会话可能被控制面关掉工程（`try_project` 如实返回 `None`）——
+        // 那时**什么都不做**，而不是在一个 Slint 回调里 panic。
+        let Some(project) = port.try_project() else {
+            return;
+        };
         let Some(op) = pencil_op_for(
-            &port.project(),
+            &project,
             scroll,
             x,
             y,
@@ -672,7 +677,10 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             return;
         }
         // 重新投影, 让新音符出现在界面上（与 `refresh_undo` 同一手法）。
-        if let Ok(refreshed) = ViewState::from_project(&port.project()) {
+        if let Some(refreshed) = port
+            .try_project()
+            .and_then(|project| ViewState::from_project(&project).ok())
+        {
             apply_view(&ui, &refreshed, width, scroll);
         }
     });
@@ -699,7 +707,13 @@ fn refresh_undo_window(ui: &MainWindow, port: &UndoPort, reproject: bool) {
     if !reproject {
         return;
     }
-    match ViewState::from_project(&port.project()) {
+    // 权威会话可能被控制面关掉工程 ⇒ `try_project` 如实返回 `None`，
+    // 那时**出声不画**，而不是在一个 Slint 回调里 panic。
+    let Some(project) = port.try_project() else {
+        eprintln!("[yeban-app] 撤销后没有可投影的工程: 权威会话此刻没有活跃工程");
+        return;
+    };
+    match ViewState::from_project(&project) {
         Ok(view) => {
             // 复用当前偏移：撤销**不应**把卷帘滚回起点（账本第 200 轮记录的缺陷）。
             let scroll_x = ui.get_roll_scroll_x();

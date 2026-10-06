@@ -101,7 +101,7 @@
 - (c) 让挂载会话可写并取 `ExclusiveWrite` ⇒ 控制面成为真写者，GUI 保存路径须让位；委派运行刻意拒绝（会在没有单一权威接线时造出影子写者）。
 - **选 (a) 我做**：`Domain` 居中 + 两处改投影 + 加"经 MCP 变更 ⇒ UI 投影跟随"判据 + 重跑锁判据证明 `MUST-GATE-008` 仍成立。
 
-### 执行状态：🟡 **第一片已落地（2026-10-06），仍是「部分」** —— 方向已定，缺的是生产 GUI 那一半
+### 执行状态：🟡 **第二片已落地（2026-10-06），仍是「部分」** —— GUI 的**写**入口已落到该权威；缺的是"保存路径也纳入同一把锁"与"生产窗口的运行期重投影"
 
 **已做到（投影口 + 会红的判据）**
 
@@ -112,11 +112,19 @@
 - **负向实测两条（都是先红后还原）**：① 临时摘掉 `apply` 的修订号推进 ⇒ 红在「施加修订号 0→1」（`left: 0, right: 1`，`test result: FAILED. 0 passed; 1 failed`）；② 临时摘掉 `sync_authority` 里的重投影一步 ⇒ 红在控件树断言（`track-0-automation-pan-lane` 不在树里）。因此这条判据不是恒绿。
 - **`MUST-GATE-008` 一位没动**：控制面会话仍 `read_only = true`、仍取 `LockMode::SharedRead`，`crates/yeban-app/tests/in_process_mcp_lock.rs` 原样重跑全绿；默认依赖树里 `yeban-mcp` 命中仍为 **0**（加 feature 才 1）。
 
+**第二片（2026-10-06）：GUI 的写入口也落到该权威上**
+
+- **宿主写入口**：`crates/yeban-mcp/src/domain/mod.rs` 新增 `HostAction`（`Undo`/`Redo`/`Commit`）、`HostOutcome` 与 `Plan::Host`；`pub fn apply_host_action(domain, action)` 只做三件事 —— 只读预读 op 种类、把动作包成 `Plan::Host` 交给**唯一可变入口** `apply`、读回显示态。推进 `apply_revision` 与 `sync_session` 仍**只在** `apply` 那一处。`crates/yeban-mcp/src/transport/http.rs` 的 `HttpServer::apply_host_action` 与既有的 `host_domain` 共用**同一个** `Mutex<Dispatcher>`、**同一个** `Domain`：没有第二个端口 / 令牌 / 通道，对外 JSON-RPC 面一位没变。
+- **GUI 侧不再持自己的会话**：`crates/yeban-app/src/undo.rs` 的 `UndoPort` 内部改为 `UndoBackend::{Local(Box<UndoSession>), Authority(ProjectAuthorityHandle)}`；`main.rs` 的 `run_gui` **先挂控制面**，挂上了就用 `UndoPort::from_authority`（端口只握句柄，`display`/`project`/`graph`/`fingerprint`/`commit_ops`/`undo`/`redo` 全部委派给权威），没挂上才用本地会话（那时进程里没有第二个写者）。`ProjectAuthorityHandle` 相应扩出 `undo_display` / `graph` / `apply_host`。实测：`grep -c "RefCell<UndoSession>" crates/yeban-app/src/undo.rs` 由 **1 → 0**。
+- **判据（有牙，且能失败）**：`crates/yeban-app/tests/live_ui_mcp.rs::a_gui_action_and_a_session_action_share_one_projection_through_the_authority` —— 以权威装配真实界面 + 由**同一个**句柄构造端口；会话侧真 socket 发 `yeban_edit_automation` ⇒ 修订号 `r→r+1`、泳道进树；**GUI 侧**走 `host::wire_undo` 接的真实回调 `undo-step` ⇒ 修订号 `r+1→r+2`（同一个权威）、泳道离树；会话侧再 `yeban_redo` ⇒ `r+2→r+3`、泳道回树。`…::a_gui_pencil_edit_lands_in_the_same_authority_as_the_session` —— GUI 的 `clicked` 回调（卷帘铅笔）让**权威工程**音符 4→5、修订号 +1、新元素 `note-{ulid}-rect` 进树；随后会话侧一次 `yeban_undo` 把音符与元素一起撤掉。
+- **负向实测两条（先红后还原）**：① `UndoPort::from_authority` 改回另开一份 `UndoSession` ⇒ 红在判据 18 的 `left: 1 / right: 2`（`test result: FAILED. 0 passed; 1 failed; … 19 filtered out`）；② `commit_ops` 的权威分支改成直接 `Err` ⇒ 红在判据 19 的 `left: 0 / right: 1`（音符 4→4）。两条已还原（`grep -rn "NEGATIVE MEASUREMENT" crates/` = 0）。
+- **`read_only` / 锁模式仍然一位没改，且这是刻意的**：实测查清 `read_only` 只闸**落盘**（`plan_save`），不闸内存变更 —— 因此第 1 步不需要放开它。而翻成 `false` 会**新开一条落盘路径**（控制面 `yeban_save_project`），与 GUI 自己的保存路径（`ui/force_save` / `--save-as`）**同时写同一个工程文件**，那就是影子写者（选项 (c) 被拒的理由）；而且 GUI 保存路径**不取** `.yeban.lock`，把锁改成 `ExclusiveWrite` 也挡不住它。⇒ 本片**停在这里**并如实登记。
+
 **没做到（因此本项仍是「部分」，不是「已关闭」）**
 
-1. **生产 GUI 还不是投影**：`src/main.rs` 的 `run_gui` 没有运行期重投影（它只在启动时 `host::apply_view` 一次），而它的写入口是 `undo::UndoPort` 的 `RefCell<UndoSession>` —— **它仍是一份权威**。要让 GUI 也"从 `Domain` 投影"，必须把 `Cmd+Z` / 卷帘编辑这些**写**入口改走 `ProjectAuthorityHandle`，并在 Slint 侧接一条周期性 `sync_authority`（与电平消费同款）。这一片动的面比第一片大得多，本次刻意不做半迁移。
-2. **因此 `read_only` 还不能放开**：只要 GUI 仍持自己的会话，把挂载会话改成可写就是**两个写者**（影子副本）—— 选项 (c) 已明文拒绝这件事，本片据此**拒绝**了"顺手把会话改成可写 + 取 `ExclusiveWrite`"。
-3. **`UndoPort` 与 `Domain` 的会话仍是两份**：`crates/yeban-app/src/undo.rs` 用 `#[path]` 共享 `undo_session.rs`，而 `#[path]` 引入的是**另一个 crate 里的另一个类型** —— 两个 `UndoSession` 实例无法直接共享，因此"同一个实例"必须经由宿主口在**投影**层面达成（本片做的正是这个），或另做一次把 GUI 写入口整体搬到 `Domain` 的重构。这是本项剩下工作量的**结构性原因**，不是疏漏。
+1. **落盘写者边界未合并**：GUI 自己的保存路径（`ui/force_save` → `src/save.rs`、`--save-as`）**不取** `.yeban.lock`，因此不能把挂载会话改成 `read_only = false` 并取 `ExclusiveWrite` —— 两条会同时写同一个工程文件的路就是影子写者（选项 (c) 已明文拒绝）。本片据此**拒绝**了"顺手翻过去"。注意这一条是**磁盘写者**的边界，与内存权威无关：内存里的唯一可变权威已经只有一个（第二片做的）。
+2. **生产 GUI 仍没有运行期重投影**：`run_gui` 建窗口走 `host::build_main_window`（初值来自 `loaded.archive.project`，一份**只读**输入），而"依修订号重投影"的唯一实现（`live_surface::LiveUi::sync_authority`）住在**测试目标专用**的 `src/live_surface.rs`（dev-dependency ⇒ 不进产品二进制）。后果：GUI **自己**的动作会从权威重投影（`host::refresh_undo_window` / `wire_roll_edit` 都用 `port.try_project()`），但**会话侧的改动不会自动刷新生产窗口**。补它需要在产品路径上接一条周期性刷新，而 `run_gui` 今天没有任何定时器 —— 加一个**无法无头判定**的定时器违反本仓 DoD（"没有判据的能力不算交付"），因此本片不做，如实登记为下一片。
+3. **`UndoPort` 与 `Domain` 的会话仍是两个类型**（结构性）：`crates/yeban-app/src/undo.rs` 用 `#[path]` 共享 `undo_session.rs`，而 `#[path]` 引入的是**另一个 crate 里的另一个类型** ⇒ "共享同一个实例"在类型系统里不成立。第二片因此走的是**委派**（`HostAction` → `Domain`），而不是"把同一个 `UndoSession` 交给两边"。
 
 **原始读数与逐条证据**（授权核实、命中数、负向实测的原文、锁判据的三行 `test result:`）：见
 [`docs/ledger/m4-008-authority-notes.md`](m4-008-authority-notes.md)。
@@ -131,7 +139,7 @@
 | :--- | :--- | :--- | :--- |
 | `ROAD-M4-006` | RF64/BW64 写入器 + BEXT 元数据已落地（`crates/yeban-render/src/rf64.rs`）| **32 轨参考工程 ≥100× 实时**的**实测** | **不需要新裁决** —— 依 `HD-38`/`D50`（不投入自托管 runner）该实测**长期 PENDING**；若你改变 `D50`，我按第 361 轮简报的 (a) 执行 |
 | `ROAD-M4-007` | `.als` 导出器首片：模块 + 19 条损失表 + 4 条判据；**默认依赖树 0 命中 `flate2`**；**CI 全量腿 success**；**出口已接**：CLI `--export-als` 呈现损失表（问题 3 已关闭） | **参考 `.als`**（用于把"风格级"升级为"可在 Live 打开"）| **问题 5**（提供 / 不做）；出口形态已由 **问题 3**（`D47`）裁决并落地 |
-| `ROAD-M4-008` | UI 侧闭环真跑；依赖边与运行态挂载已落地（`4971549`）；跨形态锁已成立（`db1a667`）；**选项 (a) 第一片已落地（2026-10-06）**：`Domain` 施加修订号 + 宿主只读投影口 `HttpServer::host_domain` + `build_live_ui_from_authority` / `LiveUi::sync_authority` + 判据「经 MCP 变更 ⇒ UI 投影跟随」（负向实测会红） | **生产 GUI 的写入口仍未落到该权威**（`run_gui` 的 `undo::UndoPort` 持自己的一份 `UndoSession`，没有运行期重投影）；因此 `read_only` 与锁模式**未变** | **无需新裁决** —— 方向已是**问题 6 (a)**（本项上方「执行状态」），剩下的是**执行**：把 GUI 写入口搬到该权威上 |
+| `ROAD-M4-008` | UI 侧闭环真跑；依赖边与运行态挂载已落地（`4971549`）；跨形态锁已成立（`db1a667`）；**选项 (a) 第一片（2026-10-06）**：`Domain` 施加修订号 + 宿主只读投影口 `HttpServer::host_domain` + `build_live_ui_from_authority` / `LiveUi::sync_authority`；**选项 (a) 第二片（2026-10-06）**：`Plan::Host` + `apply_host_action` + `HttpServer::apply_host_action` 把 GUI 的**写**入口（撤销族 / 卷帘铅笔）落到那一个 `Domain` 上（`UndoPort` 的 `RefCell<UndoSession>` 命中 1→0），判据 18/19 直证"GUI 写与会话写落在**同一个**投影上"，两条负向实测都会红 | **落盘写者边界未合并**（GUI 保存路径不取 `.yeban.lock` ⇒ `read_only` 与 `SharedRead` 不能翻，否则与控制面 `yeban_save_project` 同时写一个文件 = 影子写者）；**生产窗口没有运行期重投影**（`sync_authority` 住在 dev-dependency 的 `live_surface.rs`，`run_gui` 也没有可无头判定的定时器） | **无需新裁决** —— 方向已是**问题 6 (a)**（本项上方「执行状态」），剩下的是**执行**：先把 GUI 保存路径纳入同一把锁，再接产品路径的运行期重投影 |
 | `ROAD-M4-010` | V1/V2 Web 包袱已彻底删除；汇合项（`P4_Gate` 四个入边）| **它必然被其它项拖住**，不可单独提前判 | **无需单独裁决** —— 随 `M4-006/007/008` 与两项 PENDING 的处置而自然收口 |
 
 **读法**：上表四行里，`M4-006` 与 `M4-010` **不需要你新增裁决**（前者依既有 `D50` 裁决为长期 PENDING，后者是汇合项）；

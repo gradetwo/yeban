@@ -15,6 +15,23 @@
 //!    判据因此可以断言"**点了它 ⇒ 工程真的回退了一版**"，而不是
 //!    "控件树里有这个元素"（三方表的错位 5 明确警告过那种假证据）。
 //!
+//! ## 谁是权威：两个后端（`ROAD-M4-008` 选项 (a) 第二片）
+//!
+//! [`UndoPort`] 内部是一个 [`UndoBackend`]：
+//!
+//! - **挂载了进程内控制面** ⇒ [`UndoPort::from_authority`]：端口只握
+//!   `ProjectAuthorityHandle`，读（投影 / 显示态 / 图谱 / 指纹）与写（撤销 / 重做 / 提交）
+//!   全部落到控制面正在服务的**那一个** `Domain`（唯一可变权威）。这是**生产 GUI 的常态**
+//!   （`src/main.rs` 的 `run_gui` 先挂控制面再建端口）。
+//! - **没有控制面**（默认构建 / 运行期开关关着 / `.yeban.lock` 被别的形态持有）⇒
+//!   [`UndoPort::new`]：端口持有自己的一份 `UndoSession`。那时进程里**不存在**第二个写者，
+//!   因此它仍是唯一权威。
+//!
+//! 两个后端的**模型语义完全一致**（同一份 `undo_session.rs`）；差别只在"权威住在哪"。
+//! 注意 `#[path]` 引入的是**另一个 crate 里的另一个类型**：`yeban_app::undo::UndoSession`
+//! 与 `yeban_mcp::undo_session::UndoSession` 在类型系统里无法互换，所以权威后端不能
+//! "共享同一个实例"，只能**委派**（这也是 [`HostAction`] 存在的原因）。
+//!
 //! ## 显示态来自模型读数
 //!
 //! 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由
@@ -35,7 +52,17 @@ pub mod undo_session;
 
 use std::cell::{Cell, RefCell};
 
-use yeban_model::{EntityId, Op, YebanProjectV1};
+use yeban_model::{CommitGraph, EntityId, Op, OpOrigin, YebanProjectV1};
+
+// `ROAD-M4-008` 选项 (a) 第二片：挂载了控制面时，GUI 的写入口落到**那一个** `Domain` 上。
+// 这两个类型只存在于非默认 feature `in-process-mcp` 下（默认构建里没有 `yeban-mcp`）。
+#[cfg(feature = "in-process-mcp")]
+use yeban_mcp::domain::error::Fault;
+#[cfg(feature = "in-process-mcp")]
+use yeban_mcp::domain::{HostAction, HostOutcome};
+
+#[cfg(feature = "in-process-mcp")]
+use crate::mcp_mount::ProjectAuthorityHandle;
 
 pub use undo_session::{
     CommitRequest, UndoDisplay, UndoRefusal, UndoSession, UndoState, project_fingerprint,
@@ -203,6 +230,27 @@ impl UiActionRecord {
     }
 }
 
+/// 撤销端口的**后端** —— 决定"这一份工程 / 图谱 / 游标的权威是谁"。
+///
+/// | 变体 | 什么时候 | 权威是谁 |
+/// | :--- | :--- | :--- |
+/// | [`Self::Local`] | 没挂载控制面（默认构建，或 `--features in-process-mcp` 但运行期开关关着 / 拿不到 `.yeban.lock`） | 本端口持有的那一个 `UndoSession` |
+/// | [`Self::Authority`] | 挂载了进程内控制面（`src/main.rs` 的 `mount_in_process_mcp` 成功） | 控制面正在服务的那一个 `Domain`（`ROAD-M4-008` 选项 (a)） |
+///
+/// 为什么是枚举而不是 trait 对象：两个后端的操作集合完全一样，枚举让"此刻谁是权威"
+/// 在装配点一眼可见，也不会为 `dyn` 引入额外的对象安全约束。
+///
+/// 注意 [`Self::Local`] 里的 `Box`：`UndoSession` 比句柄大得多，
+/// 不装箱会撞上 `clippy::large_enum_variant`（`-D warnings` 下是硬错误）。
+#[derive(Debug)]
+enum UndoBackend {
+    /// GUI 自己打开的会话（**没有**控制面时的唯一一份）。
+    Local(Box<UndoSession>),
+    /// 控制面正在服务的那一个 `Domain`（挂载了控制面时的**唯一可变权威**）。
+    #[cfg(feature = "in-process-mcp")]
+    Authority(ProjectAuthorityHandle),
+}
+
 /// 界面 → 会话的**唯一**入口。
 ///
 /// 为什么用 `RefCell` / `Cell` 而不是 `&mut self`：Slint 的回调是 `Fn`
@@ -211,17 +259,34 @@ impl UiActionRecord {
 /// 变成 `Rc<RefCell<UndoPort>>`（那会让每次调用都可能撞上借用冲突）。
 #[derive(Debug)]
 pub struct UndoPort {
-    session: RefCell<UndoSession>,
+    session: RefCell<UndoBackend>,
     actions: RefCell<Vec<UiActionRecord>>,
     open: Cell<bool>,
 }
 
 impl UndoPort {
-    /// 从一个已打开的会话构造端口。
+    /// 从一个已打开的会话构造端口（**没有**控制面时的形态）。
     #[must_use]
     pub fn new(session: UndoSession) -> Self {
         Self {
-            session: RefCell::new(session),
+            session: RefCell::new(UndoBackend::Local(Box::new(session))),
+            actions: RefCell::new(Vec::new()),
+            open: Cell::new(false),
+        }
+    }
+
+    /// 以**控制面正在服务的那一个 `Domain`** 为唯一可变权威构造端口
+    /// （`ROAD-M4-008` 选项 (a) 第二片）。
+    ///
+    /// 这样构造出来的端口**不持有任何工程 / 图谱 / 游标副本**：`display` / `project` /
+    /// `graph` / `fingerprint` 与三个写入口（`Undo` / `Redo` / `commit_ops`）全部委派给
+    /// 同一个句柄，因此"人在界面上按 `Cmd+Z`"与"AI 发 `yeban_undo`"改的是**同一串字节**。
+    /// 这也正是"GUI 不再持有唯一可变副本"的可机械验证形态：把句柄拿走，端口什么都读不到。
+    #[cfg(feature = "in-process-mcp")]
+    #[must_use]
+    pub fn from_authority(authority: ProjectAuthorityHandle) -> Self {
+        Self {
+            session: RefCell::new(UndoBackend::Authority(authority)),
             actions: RefCell::new(Vec::new()),
             open: Cell::new(false),
         }
@@ -230,13 +295,35 @@ impl UndoPort {
     /// 显示态（**模型读数**：能不能撤 / 还能撤几步 / 已撤几步 / 提交数 / 分支）。
     #[must_use]
     pub fn display(&self) -> UndoDisplay {
-        self.session.borrow().display()
+        match &*self.session.borrow() {
+            UndoBackend::Local(session) => session.display(),
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => display_from_authority(authority.undo_display()),
+        }
+    }
+
+    /// 权威工程的**一份快照**（界面重投影用）。
+    ///
+    /// 权威会话此刻没有活跃工程时返回 `None`（控制面可以关掉工程）。
+    #[must_use]
+    pub fn try_project(&self) -> Option<YebanProjectV1> {
+        match &*self.session.borrow() {
+            UndoBackend::Local(session) => Some(session.project().clone()),
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => authority.project(),
+        }
     }
 
     /// 权威工程的一份拷贝（界面重投影用）。
+    ///
+    /// # Panics
+    ///
+    /// 权威会话没有活跃工程时 panic。需要容忍"工程被控制面关掉"的调用方用
+    /// [`Self::try_project`]；`main.rs` 的装配路径保证端口存在时工程一定在。
     #[must_use]
     pub fn project(&self) -> YebanProjectV1 {
-        self.session.borrow().project().clone()
+        self.try_project()
+            .expect("撤销端口必须有一份工程（权威会话此刻没有活跃工程）")
     }
 
     /// 提交图谱的一份拷贝（**只读**用途：时光机画版本树、保存 `history.dag`）。
@@ -245,14 +332,25 @@ impl UndoPort {
     /// 借出去的引用会与 `perform` 的借用撞车。图谱本身是 `BTreeMap` 集合，
     /// 拷贝的代价是 O(提交数)。
     #[must_use]
-    pub fn graph(&self) -> yeban_model::CommitGraph {
-        self.session.borrow().graph().clone()
+    pub fn graph(&self) -> CommitGraph {
+        match &*self.session.borrow() {
+            UndoBackend::Local(session) => session.graph().clone(),
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => authority.graph(),
+        }
     }
 
     /// 当前工程指纹（模型容器字节的 SHA-256）。
     #[must_use]
     pub fn fingerprint(&self) -> Option<String> {
-        self.session.borrow().fingerprint().ok()
+        match &*self.session.borrow() {
+            UndoBackend::Local(session) => session.fingerprint().ok(),
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => authority
+                .project()
+                .as_ref()
+                .and_then(|project| project_fingerprint(project).ok()),
+        }
     }
 
     /// 时光机弹窗是否打开（**界面运行态**，不是模型读数）。
@@ -277,19 +375,36 @@ impl UndoPort {
     ///
     /// # Errors
     ///
-    /// 见 [`undo_session::commit`]。
+    /// 见 [`undo_session::commit`]；权威路径下权威的拒绝原因原文照传
+    /// （[`yeban_mcp::domain::error::Fault`] → [`UndoRefusal::Model`]）。
     pub fn commit_ops(
         &self,
         now_ms: u64,
         message: &str,
         ops: Vec<Op>,
     ) -> Result<EntityId, UndoRefusal> {
-        self.session.borrow_mut().commit(CommitRequest {
-            now_ms,
-            origin: yeban_model::OpOrigin::UserUi,
-            message: message.to_owned(),
-            ops,
-        })
+        match &mut *self.session.borrow_mut() {
+            UndoBackend::Local(session) => session.commit(CommitRequest {
+                now_ms,
+                origin: OpOrigin::UserUi,
+                message: message.to_owned(),
+                ops,
+            }),
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => authority
+                .apply_host(HostAction::Commit {
+                    now_ms,
+                    origin: OpOrigin::UserUi,
+                    message: message.to_owned(),
+                    ops,
+                })
+                .map_err(refusal_from_fault)
+                .and_then(|outcome| {
+                    outcome.commit.ok_or_else(|| UndoRefusal::Model {
+                        detail: "权威提交成功但没有返回提交身份".to_owned(),
+                    })
+                }),
+        }
     }
 
     /// 执行一个界面动作，并把结果记进动作日志。
@@ -299,8 +414,8 @@ impl UndoPort {
     pub fn perform(&self, action: UiAction) -> ActionOutcome {
         let before_fingerprint = self.fingerprint();
         let (undone_before, commits_before) = {
-            let session = self.session.borrow();
-            (session.state().undone(), session.graph().commit_count())
+            let display = self.display();
+            (display.undone, display.commit_count)
         };
 
         let outcome = match action {
@@ -322,9 +437,9 @@ impl UndoPort {
                 }
                 ActionOutcome::DisplayOnly
             }
-            UiAction::Undo => self.run_undo(1),
-            UiAction::UndoMany(steps) => self.run_undo(steps),
-            UiAction::Redo => self.run_redo(1),
+            UiAction::Undo => self.undo_steps(1),
+            UiAction::UndoMany(steps) => self.undo_steps(steps),
+            UiAction::Redo => self.redo_steps(1),
             UiAction::OpenUndoTree => {
                 self.open.set(true);
                 ActionOutcome::DisplayOnly
@@ -341,8 +456,7 @@ impl UndoPort {
 
         let after_fingerprint = self.fingerprint();
         let (undone_after, undoable_after, commits_after) = {
-            let session = self.session.borrow();
-            let display = session.display();
+            let display = self.display();
             (display.undone, display.undoable, display.commit_count)
         };
         self.actions.borrow_mut().push(UiActionRecord {
@@ -360,40 +474,97 @@ impl UndoPort {
         outcome
     }
 
-    fn run_undo(&self, steps: usize) -> ActionOutcome {
-        let mut session = self.session.borrow_mut();
-        match session.undo_steps(steps) {
-            Ok(outcome) => ActionOutcome::Changed {
-                steps: outcome.steps,
-                undone_total: outcome.undone_total,
-                op_kinds: outcome
-                    .op_kinds
-                    .iter()
-                    .map(|kind| (*kind).to_owned())
-                    .collect(),
+    fn undo_steps(&self, steps: usize) -> ActionOutcome {
+        match &mut *self.session.borrow_mut() {
+            UndoBackend::Local(session) => match session.undo_steps(steps) {
+                Ok(outcome) => local_outcome(&outcome),
+                Err(refusal) => ActionOutcome::Refused {
+                    detail: refusal.to_string(),
+                },
             },
-            Err(refusal) => ActionOutcome::Refused {
-                detail: refusal.to_string(),
-            },
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => {
+                match authority.apply_host(HostAction::Undo { steps }) {
+                    Ok(outcome) => host_outcome(outcome),
+                    Err(fault) => ActionOutcome::Refused {
+                        detail: refusal_from_fault(fault).to_string(),
+                    },
+                }
+            }
         }
     }
 
-    fn run_redo(&self, steps: usize) -> ActionOutcome {
-        let mut session = self.session.borrow_mut();
-        match session.redo_steps(steps) {
-            Ok(outcome) => ActionOutcome::Changed {
-                steps: outcome.steps,
-                undone_total: outcome.undone_total,
-                op_kinds: outcome
-                    .op_kinds
-                    .iter()
-                    .map(|kind| (*kind).to_owned())
-                    .collect(),
+    fn redo_steps(&self, steps: usize) -> ActionOutcome {
+        match &mut *self.session.borrow_mut() {
+            UndoBackend::Local(session) => match session.redo_steps(steps) {
+                Ok(outcome) => local_outcome(&outcome),
+                Err(refusal) => ActionOutcome::Refused {
+                    detail: refusal.to_string(),
+                },
             },
-            Err(refusal) => ActionOutcome::Refused {
-                detail: refusal.to_string(),
-            },
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => {
+                match authority.apply_host(HostAction::Redo { steps }) {
+                    Ok(outcome) => host_outcome(outcome),
+                    Err(fault) => ActionOutcome::Refused {
+                        detail: refusal_from_fault(fault).to_string(),
+                    },
+                }
+            }
         }
+    }
+}
+
+/// 本地会话的一次撤销 / 重做结果 → 界面动作后果。
+fn local_outcome(outcome: &undo_session::UndoOutcome) -> ActionOutcome {
+    ActionOutcome::Changed {
+        steps: outcome.steps,
+        undone_total: outcome.undone_total,
+        op_kinds: outcome
+            .op_kinds
+            .iter()
+            .map(|kind| (*kind).to_owned())
+            .collect(),
+    }
+}
+
+/// 权威会话的一次撤销 / 重做 / 提交结果 → 界面动作后果。
+#[cfg(feature = "in-process-mcp")]
+fn host_outcome(outcome: HostOutcome) -> ActionOutcome {
+    ActionOutcome::Changed {
+        steps: outcome.steps,
+        undone_total: outcome.undone_total,
+        op_kinds: outcome.op_kinds,
+    }
+}
+
+/// 权威的显示态（`yeban_mcp` 侧类型）→ 界面侧的同名字段。
+///
+/// 两个 `UndoDisplay` 是**同一份源码**（`undo_session.rs`）在两个 crate 里各自实例化的
+/// 类型（见本模块文档第 1 条），因此只能逐字段搬运 —— 这也正是"把同一个实例交给两边"
+/// 在类型系统里不成立的那件事的可见代价。
+#[cfg(feature = "in-process-mcp")]
+fn display_from_authority(display: yeban_mcp::undo_session::UndoDisplay) -> UndoDisplay {
+    UndoDisplay {
+        branch: display.branch,
+        head: display.head,
+        commit_count: display.commit_count,
+        branch_count: display.branch_count,
+        undone: display.undone,
+        undoable: display.undoable,
+        can_undo: display.can_undo,
+        can_redo: display.can_redo,
+    }
+}
+
+/// 权威的拒绝（`Fault`）→ 界面侧的 [`UndoRefusal`]（一句人话，原文照传）。
+#[cfg(feature = "in-process-mcp")]
+fn refusal_from_fault(fault: Fault) -> UndoRefusal {
+    match fault {
+        Fault::Domain { message, .. } => UndoRefusal::Model { detail: message },
+        Fault::Impl { error } => UndoRefusal::Model {
+            detail: format!("{error:?}"),
+        },
     }
 }
 

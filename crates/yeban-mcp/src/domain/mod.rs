@@ -614,6 +614,75 @@ pub struct OpenRequest {
     pub assets: BTreeMap<AssetHash, Vec<u8>>,
 }
 
+/// **宿主（形态 A 的 GUI）经唯一可变权威施加的一次会话动作**（`ROAD-M4-008` 选项 (a) 第二片）。
+///
+/// ## 为什么住在领域层而不是 GUI 层
+///
+/// 生产 GUI 的写入口（`Cmd+Z` / 时光机按钮 / 卷帘铅笔）过去改的是 `yeban-app` 自己的
+/// `undo::UndoPort`（一份 `RefCell<UndoSession>`）。那让"界面改了工程"与"控制面会话改了工程"
+/// 成为**两处**可变状态。本类型把 GUI 的动作**翻译成领域层的动作**，由
+/// [`apply`]（唯一可变入口）施加到控制面正在服务的那一个 [`Domain`] 上 ——
+/// 于是 GUI 与控制面读写的是同一份 `Active::project` + `CommitGraph` + `UndoState`。
+///
+/// ## 它不是第二个工具面
+///
+/// 它**不**出现在 [`crate::tools::ToolCall`] 的契约里，也**没有**对应的 `yeban_*` 工具：
+/// 工具面仍然只有那十个。宿主拿到它的路径是
+/// [`crate::transport::http::HttpServer::apply_host_action`] —— 与宿主读数口
+/// [`crate::transport::http::HttpServer::host_domain`] 共用**同一个** `Mutex<Dispatcher>`，
+/// 没有新端口、新令牌、新通道。
+///
+/// ## 为什么要走 `Plan` 而不是直接调 `undo_session`
+///
+/// [`Domain::apply_revision`] 的推进口径写在 [`Plan::mutates_project`] 里、推进动作写在
+/// [`apply`] 里。宿主动作若绕过 `apply`，就会长出第二个"推进修订号"的地方。
+/// 因此宿主路径与工具路径在**同一处**汇合：`apply(&mut Domain, Plan)`。
+#[derive(Debug)]
+pub enum HostAction {
+    /// 撤销若干步（`Cmd+Z` / 时光机）。
+    Undo {
+        /// 请求的步数（≥ 1）。
+        steps: usize,
+    },
+    /// 重做若干步（`Cmd+Shift+Z`）。
+    Redo {
+        /// 请求的步数（≥ 1）。
+        steps: usize,
+    },
+    /// 提交一批 op（卷帘铅笔加音符 / 将来的编辑入口）。
+    ///
+    /// `origin` 由调用方给出：GUI 的动作是 [`OpOrigin::UserUi`]，与 MCP 采纳提案的
+    /// [`OpOrigin::McpProposal`] 区分开 —— 提交血缘不能因为走了一条不同的路就变。
+    Commit {
+        /// Unix 毫秒（模型不自取时钟，由调用方注入）。
+        now_ms: u64,
+        /// 操作来源。
+        origin: OpOrigin,
+        /// 提交信息。
+        message: String,
+        /// 本次提交携带的 op（**整批算一步**）。
+        ops: Vec<Op>,
+    },
+}
+
+/// 一次 [`HostAction`] 施加后的**结构化读数**。
+///
+/// GUI 侧用它写动作日志与界面显示态，**不必**去解析工具响应 JSON：字段就在这里，
+/// 与 [`Plan::Host`] 的响应是同一处定义的。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostOutcome {
+    /// **实际**走的步数（撤销可能少于请求值；提交 = 1）。
+    pub steps: usize,
+    /// 施加后已撤销的总步数（会话运行态）。
+    pub undone_total: usize,
+    /// 被处理的 op 变体名（`Op::name()`，顺序 = 处理顺序）。
+    pub op_kinds: Vec<String>,
+    /// 提交动作的新提交身份（撤销 / 重做时为 `None`）。
+    pub commit: Option<EntityId>,
+    /// 施加后的**显示态**（模型读数；界面不许自己算）。
+    pub display: undo_session::UndoDisplay,
+}
+
 /// 一次已经校验过的执行计划（**只读计算的产物**）。
 #[derive(Debug)]
 pub enum Plan {
@@ -725,6 +794,12 @@ pub enum Plan {
         /// 只读规划的产物（SMF 字节 + 计数 + SHA-256）。
         export: Box<export_midi::MidiExportArtifact>,
     },
+    /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
+    ///
+    /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
+    /// 它只由 [`apply_host`] 构造，再交给 [`apply`] —— 因此它走的是与工具路径
+    /// **同一条**施加链，`apply_revision` / `sync_session` 一位不少。
+    Host(HostAction),
 }
 
 impl Plan {
@@ -747,6 +822,8 @@ impl Plan {
             Self::EngineState { .. } => "engine_state",
             Self::ImportAudio { .. } => "import_audio",
             Self::ExportMidi { .. } => "export_midi",
+            // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
+            Self::Host(_) => "host_action",
         }
     }
 
@@ -762,6 +839,11 @@ impl Plan {
             Self::EditAutomation { edit } => usize::from(edit.write.is_some()),
             // 真登记才提交；幂等命中（内容已存在）一位都不改。
             Self::ImportAudio { import } => usize::from(import.op.is_some()),
+            // 宿主动作：提交恰好一条 `Op::Batch`；撤销 / 重做不动图谱。
+            Self::Host(action) => match action {
+                HostAction::Commit { ops, .. } => usize::from(!ops.is_empty()),
+                HostAction::Undo { .. } | HostAction::Redo { .. } => 0,
+            },
             Self::Open(..)
             | Self::Save { .. }
             | Self::Close { .. }
@@ -816,6 +898,11 @@ impl Plan {
             Self::EditAutomation { edit } => edit.write.is_some(),
             // 真登记才改工程；幂等命中（内容已存在）一位都不改。
             Self::ImportAudio { import } => import.op.is_some(),
+            // 宿主动作：撤销 / 重做真的动工程字节；提交在携带 op 时才算（空批不改文档）。
+            Self::Host(action) => match action {
+                HostAction::Commit { ops, .. } => !ops.is_empty(),
+                HostAction::Undo { .. } | HostAction::Redo { .. } => true,
+            },
             Self::Save { .. }
             | Self::Query { .. }
             | Self::Diagnostics { .. }
@@ -898,6 +985,46 @@ impl Plan {
                     .map_err(|failure| error::from_model("音频登记模拟", &failure))?;
                 Ok(Some(simulated))
             }
+            // 宿主动作的差异预览：与真做**共用**同一个 `undo_session` / `Op::apply`
+            // （尽管 `plan` 永不产出这个变体，这里的口径仍与真做一致）。
+            Self::Host(action) => match action {
+                HostAction::Undo { steps } => {
+                    let current = domain.active_project().ok_or_else(no_active_project)?;
+                    undo_session::simulate_undo(
+                        domain.graph(),
+                        current,
+                        domain.undo_state(),
+                        *steps,
+                    )
+                    .map(Some)
+                    .map_err(undo_refusal_to_fault)
+                }
+                HostAction::Redo { steps } => {
+                    let current = domain.active_project().ok_or_else(no_active_project)?;
+                    undo_session::simulate_redo(
+                        domain.graph(),
+                        current,
+                        domain.undo_state(),
+                        *steps,
+                    )
+                    .map(Some)
+                    .map_err(undo_refusal_to_fault)
+                }
+                HostAction::Commit { ops, message, .. } => {
+                    if ops.is_empty() {
+                        return Ok(None);
+                    }
+                    let current = domain.active_project().ok_or_else(no_active_project)?;
+                    let mut simulated = current.clone();
+                    Op::Batch {
+                        ops: ops.clone(),
+                        description: message.clone(),
+                    }
+                    .apply(&mut simulated)
+                    .map_err(|failure| error::from_model("宿主动作提交模拟", &failure))?;
+                    Ok(Some(simulated))
+                }
+            },
             Self::Save { .. }
             | Self::Close { .. }
             | Self::Query { .. }
@@ -1160,6 +1287,9 @@ impl Plan {
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert("result".to_owned(), data);
             }
+            // 宿主动作没有工具信封可预览；顶部的 `plan` 键 + 下面的工程摘要已足够。
+            // （`plan` 永不产出这个变体，因此这条分支在实践中不可达。）
+            Self::Host(_) => {}
         }
 
         // 差异预览的公共部分：工程内容摘要 + 提交数（**预测**，不是实测）。
@@ -1820,6 +1950,127 @@ pub fn apply(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
     outcome
 }
 
+/// **宿主（形态 A 的 GUI）的写入口** —— `ROAD-M4-008` 选项 (a) 第二片。
+///
+/// 它做的事只有三件：① 从 `&Domain` 只读预读"这次会处理哪些 op"（与真做同一口径：
+/// [`undo_session::undo_op_kinds`] / [`undo_session::redo_op_kinds`]）；
+/// ② 把动作包成 [`Plan::Host`] 交给 [`apply`]（**唯一可变入口** —— 施加、推进
+/// [`Domain::apply_revision`]、[`Domain::sync_session`] 全都在那里发生，本函数
+/// 不重复任何一步）；③ 读施加后的显示态并组装 [`HostOutcome`]。
+///
+/// # Errors
+///
+/// 与 [`apply`] 同：没有活跃工程、没有可撤销/可重做的历史、op 施加失败，
+/// 或提交不带任何 op。
+pub fn apply_host_action(domain: &mut Domain, action: HostAction) -> Result<HostOutcome, Fault> {
+    let before = domain.undo_display();
+    let committing = matches!(&action, HostAction::Commit { .. });
+    let planned_op_kinds = match &action {
+        HostAction::Undo { steps } => {
+            undo_session::undo_op_kinds(domain.graph(), domain.undo_state(), *steps)
+                .map_err(undo_refusal_to_fault)?
+        }
+        HostAction::Redo { steps } => {
+            undo_session::redo_op_kinds(domain.graph(), domain.undo_state(), *steps)
+                .map_err(undo_refusal_to_fault)?
+        }
+        HostAction::Commit { ops, .. } => {
+            if ops.is_empty() {
+                return Err(Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    "宿主动作提交必须携带至少一个 op（空批不改工程）",
+                ));
+            }
+            // 提交在会话里恰好包成一条 `Op::Batch`（见 [`undo_session::commit`]）——
+            // 名字取自模型自己的 `Op::name()`，不手抄字符串。
+            let batch = Op::Batch {
+                ops: Vec::new(),
+                description: String::new(),
+            };
+            vec![batch.name()]
+        }
+    };
+    // **唯一可变入口。**
+    apply(domain, Plan::Host(action))?;
+    let after = domain.undo_display();
+    Ok(HostOutcome {
+        steps: if committing {
+            1
+        } else {
+            before.undone.abs_diff(after.undone)
+        },
+        undone_total: after.undone,
+        op_kinds: planned_op_kinds.into_iter().map(str::to_owned).collect(),
+        commit: if committing {
+            domain.active_head()
+        } else {
+            None
+        },
+        display: after,
+    })
+}
+
+/// [`Plan::Host`] 的施加：**复用**工具路径的那两个函数（撤销 / 重做），
+/// 以及本文件里唯一的宿主动作提交实现。
+fn apply_host_plan(domain: &mut Domain, action: HostAction) -> Result<ToolResponse, Fault> {
+    match action {
+        // 与 `yeban_undo` / `yeban_redo` **同一个**施加函数、同一份响应形状。
+        HostAction::Undo { steps } => apply_undo(domain, steps),
+        HostAction::Redo { steps } => apply_redo(domain, steps),
+        HostAction::Commit {
+            now_ms,
+            origin,
+            message,
+            ops,
+        } => apply_host_commit(domain, now_ms, origin, message, ops),
+    }
+}
+
+/// 宿主动作的一次提交：**恰好**一条 `Op::Batch` 提交（= 一步撤销），与
+/// [`undo_session::commit`] 同一条路 —— 逆操作仍由模型提供，本层不写第二份。
+fn apply_host_commit(
+    domain: &mut Domain,
+    now_ms: u64,
+    origin: OpOrigin,
+    message: String,
+    ops: Vec<Op>,
+) -> Result<ToolResponse, Fault> {
+    if ops.is_empty() {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "宿主动作提交必须携带至少一个 op（空批不改工程）",
+        ));
+    }
+    let id = {
+        let Domain {
+            active,
+            graph,
+            undo,
+            ..
+        } = domain;
+        let active = active.as_mut().ok_or_else(no_active_project)?;
+        undo_session::commit(
+            graph,
+            &mut active.project,
+            undo,
+            CommitRequest {
+                now_ms,
+                origin,
+                message,
+                ops,
+            },
+        )
+        .map_err(undo_refusal_to_fault)?
+    };
+    let display = domain.undo_display();
+    Ok(ToolResponse::success(serde_json::json!({
+        "committed": true,
+        "commit": id.to_canonical_string(),
+        "cursorPersisted": false,
+        "after": undo_display_value(&display),
+    })))
+}
+
 /// [`apply`] 的本体（同步会话态的那一步在外面，见上）。
 fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
     match plan {
@@ -1852,6 +2103,9 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::RenderMaster { artifact } => apply_render(*artifact),
         Plan::Undo { steps, .. } => apply_undo(domain, steps),
         Plan::Redo { steps, .. } => apply_redo(domain, steps),
+        // 宿主动作（`ROAD-M4-008` 选项 (a) 第二片）：`plan` 永不产出它，只有
+        // [`apply_host_action`] 会构造它 —— 施加走的就是这条同一的链。
+        Plan::Host(action) => apply_host_plan(domain, action),
         Plan::EditAutomation { edit } => automation::apply(domain, &edit),
         // 只读：`plan` 已经把读数组装好了，`apply` 原样返回（一位都不改）。
         Plan::EngineState { data } => Ok(ToolResponse::success(data)),

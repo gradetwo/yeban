@@ -61,6 +61,13 @@
 //! → `crate::undo_session`（**与 MCP 的 `yeban_undo` 是同一份源码**，用 `#[path]` 引入）
 //! → `CommitGraph::undo_with`。因此"人按 `Cmd+Z` 与 AI 发工具调用"改的是同一串字节。
 //!
+//! **谁是权威**（`ROAD-M4-008` 选项 (a) 第二片）：`run_gui` 先挂进程内控制面
+//! （`--features in-process-mcp` + 运行期开关），再据结果构造 `UndoPort` ——
+//! 挂上了就用 [`yeban_app::undo::UndoPort::from_authority`]（端口只握
+//! `ProjectAuthorityHandle`，写入口落到控制面正在服务的那一个 `Domain`），
+//! 没挂上才用 [`yeban_app::undo::UndoPort::new`]（自己的一份会话，那时进程里没有第二个写者）。
+//! 因此**默认构建与"控制面关闭"两种形态一位没变**。
+//!
 //! 键盘那一跳（OS 键事件 → `input.rs` 的策略表）**已经接上**（`N2` 裁决 (1)）：
 //! `.slint` 的 `FocusScope.key-pressed` 把**逻辑键**（`event.text` + 修饰位）交给
 //! [`yeban_app::host::wire_keys`] → `input::resolve_logical` →（撤销族经
@@ -146,6 +153,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 把这一代停在 `Stopped`，与界面的初始 `playing: false` 一致 ——
     // 这一步是**引擎侧的动作**（真的过无锁通道、真的在量子边界生效），
     // 不是把界面属性改一下了事。
+    //
     // 撤销会话（会话运行态）[ADR-0001 D45 / MODEL-ISO-001]。
     // 打开一个工程 = **新会话**：游标与活跃分支都从头开始，因此撤销不可能跨越打开边界。
     // `history.dag` 的**图谱**恢复由 `--open` 的容器层负责，这里只接当前这一份工程。
@@ -158,20 +166,40 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         cli::ProjectSource::File { path, .. } => path.display().to_string(),
         cli::ProjectSource::Sample(sample) => format!("sample:{}", sample.name()),
     };
-    let undo_session = match UndoSession::open(
-        undo_source,
-        "yeban-app",
-        loaded.archive.project.clone(),
-        now_ms,
-    ) {
-        Ok(session) => session,
-        Err(error) => {
-            return Err(cli::CliError::Ui {
-                detail: format!("撤销会话无法初始化: {error}"),
-            });
-        }
+
+    // `[ROAD-M4-001]` 形态 A：把领域 MCP 的环回 HTTP 控制面挂进**本进程**。
+    // 两道开关都在里面判：编译期是 `--features in-process-mcp`（这个 `cfg`），
+    // 运行期是 `--enable-mcp-http` / `YEBAN_MCP_HTTP=1`（`mcp_mount` 的纯函数）。
+    // 返回值必须**活到事件循环结束**（`Drop` 才是停机），所以绑在一个具名局部变量上。
+    // 默认构建里这段整个不存在（`cfg`），`parse()` 也已经把"要求开但没编译进来"变成用法错误。
+    //
+    // `[ROAD-M4-008]` 选项 (a) 第二片：挂载点**提前到构造撤销端口之前** ——
+    // 下一步要据"挂上了没有"决定撤销端口的权威是谁。
+    #[cfg(feature = "in-process-mcp")]
+    let in_process_mcp = mount_in_process_mcp(options, &loaded)?;
+
+    // 撤销端口的**权威**（`ROAD-M4-008` 选项 (a) 第二片）：
+    //
+    // - 控制面挂上了 ⇒ 端口只持 `ProjectAuthorityHandle`，**不持有任何工程副本**；
+    //   于是"人在界面按 `Cmd+Z`/卷帘编辑"与"AI 发 `yeban_undo`/工具调用"改的是
+    //   同一个 `Domain`（唯一可变权威），投影也只有一份来源。
+    // - 没挂上（运行期开关关着 / `.yeban.lock` 被别的形态持有 / 默认构建）⇒ 沿用
+    //   GUI 自己的会话 —— 那时**不存在**第二个写者，所以它并不违反"唯一权威"。
+    #[cfg(feature = "in-process-mcp")]
+    let undo_port = match &in_process_mcp {
+        Some(mount) => Rc::new(UndoPort::from_authority(mount.project_authority())),
+        None => Rc::new(UndoPort::new(open_undo_session(
+            &undo_source,
+            &loaded,
+            now_ms,
+        )?)),
     };
-    let undo_port = Rc::new(UndoPort::new(undo_session));
+    #[cfg(not(feature = "in-process-mcp"))]
+    let undo_port = Rc::new(UndoPort::new(open_undo_session(
+        &undo_source,
+        &loaded,
+        now_ms,
+    )?));
 
     let mut engine = EngineHost::new();
     if let Err(error) = engine.reload(&loaded.archive.project, 0) {
@@ -216,14 +244,6 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         undo_display.undoable, undo_display.undone, undo_display.branch
     )]);
 
-    // `[ROAD-M4-001]` 形态 A：把领域 MCP 的环回 HTTP 控制面挂进**本进程**。
-    // 两道开关都在里面判：编译期是 `--features in-process-mcp`（这个 `cfg`），
-    // 运行期是 `--enable-mcp-http` / `YEBAN_MCP_HTTP=1`（`mcp_mount` 的纯函数）。
-    // 返回值必须**活到事件循环结束**（`Drop` 才是停机），所以绑在一个具名局部变量上。
-    // 默认构建里这段整个不存在（`cfg`），`parse()` 也已经把"要求开但没编译进来"变成用法错误。
-    #[cfg(feature = "in-process-mcp")]
-    let _in_process_mcp = mount_in_process_mcp(options, &loaded)?;
-
     // 用 UFCS 而不是 `ui.run()`: `run()` 是 `slint::ComponentHandle` 的**trait 方法**,
     // 直接调用要求该 trait 在作用域内; 而显式 `use slint::ComponentHandle;` 在生成代码
     // 恰好把它带进作用域时会变成 unused import, 直接撞上 `-D warnings`。
@@ -234,6 +254,27 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             detail: format!("事件循环异常退出: {error}"),
         }),
     }
+}
+
+/// 打开 GUI **自己的**撤销会话（`ROAD-M4-008`：只在没有挂载控制面时用它）。
+///
+/// 与 `yeban-mcp` 的 `yeban_undo` 是**同一份源码**（`#[path]` 引入 `undo_session.rs`），
+/// 因此模型侧的提交 / 逆操作只有一份实现；差别只在"谁是权威"：
+/// 挂上了控制面时权威是那个 `Domain`（[`UndoPort::from_authority`]），没有时是这一份。
+///
+/// # Errors
+///
+/// 根提交被模型拒绝（容器版本门 / 结构校验不通过）。
+fn open_undo_session(
+    source: &str,
+    loaded: &cli::Loaded,
+    now_ms: u64,
+) -> Result<UndoSession, cli::CliError> {
+    UndoSession::open(source, "yeban-app", loaded.archive.project.clone(), now_ms).map_err(
+        |error| cli::CliError::Ui {
+            detail: format!("撤销会话无法初始化: {error}"),
+        },
+    )
 }
 
 /// `[ROAD-M4-001]` 形态 A 的运行态挂载（**只在 `--features in-process-mcp` 下存在**）。
