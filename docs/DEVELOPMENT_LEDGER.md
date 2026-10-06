@@ -8924,3 +8924,28 @@ delivery, not the wording**.
 
 **Status**: tree green and clean; automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING;
 Phase 0 2 / 5 / 2; buildable queue empty; six open questions each confirmed unruled by grep.
+
+
+### Round 370: the objective's own delivery list is now verified end to end
+
+Last claim checked: "`MUST-GATE-014` 先复用 `groove` 的登记". It is registered in both directions - `gate-status.md:34` gives the material source as "按 `ADR-0001 D54`
+复用 `groove` 的登记（33 个 SFZ 乐器 / 21 505 文件 / 9.371 GiB），按白名单过滤后登记 30 款（27 CC0 + 3 CC-BY）", and `samples-attribution-notes.md:4` and `:937`
+record the same ruling as the basis for the source registration.
+
+**So every item the objective lists now has code or ledger evidence, and each was checked rather than restated**:
+
+| objective claim | how it was verified |
+| :--- | :--- |
+| undo on both sides **sharing one implementation** | both fronts import `yeban-model`'s `CommitGraph`/`UndoSession` (round 367) |
+| MCP tool expansion (automation / devices / engine / audio import / MIDI export / loudness) | four dedicated tools plus loudness as `yeban_query_engine_state` fields and devices via the macro tools (round 369) |
+| `ui/*` `dryRun` and IME bits | `dryRun` in the control surface cited to `D48`, IME bit in `input.rs` (rounds 365, 368) |
+| `yeban-theory` wiring | `section.rs:125` names `GenreLibrary::ids`; `section_build.rs:59` states `D49` (round 365) |
+| `MUST-GATE-014` reusing groove's registration | `gate-status.md:34` and the needs file, both citing `D54` (this round) |
+| all fifteen `MUST-GATE`s wired | audited row by row (round 351) |
+
+**The pattern that produced these results is worth naming**: every one needed **grep of the delivery**, not a reading of the summary - two of them (loudness and
+`dryRun`) would have looked *missing* to anyone who grepped for the word the objective uses. That is the same discipline the objective asks for with "不许把看起来
+有当成有", applied in the opposite direction: **not assuming something is missing either**.
+
+**Status**: tree green and clean; automatic CI green through `de5b423`; both manual tiers green; all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING;
+Phase 0 2 / 5 / 2; buildable queue empty; six open questions each confirmed unruled by grep; objective delivery list verified.
