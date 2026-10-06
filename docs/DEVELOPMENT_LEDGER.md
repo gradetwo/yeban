@@ -8470,3 +8470,19 @@ non-event (rounds 339-341); (6) an item move drags whatever it references, so me
 **The direction of travel, stated once for a reader joining here**: this session took the MIDI export from "one implementation in the app, unreachable from
 MCP" to "one shared implementation, reachable from both", closed the loudness contract end to end on the tool side, completed the MCP tool set, and left every
 step with a CI verdict or a recorded local verification. The next moves are decisions, not code.
+
+
+### Round 349: the tool commit is green on six of seven legs
+
+`d2ea624` (the MCP export tool plus this ledger's wait-state entries) has passed `deny`, `checks` (fmt, red-line guards, schema), `lockfile`, `plan` and
+**`windows`**; `rust (${{ matrix.crate }})` is skipped by the plan; and **`rust (workspace 全量)`** is running with its step 5 (`clippy --workspace -D
+warnings`) already **success**, i.e. it is now in `test --workspace`. So the tool is CI-verified for compliance, formatting, schema, determinism, platform
+branch and whole-workspace lint - the last remaining question is the whole-workspace test sweep, which is the same leg that validated the mapping move on
+`abe537e` a few rounds earlier.
+
+Also verified by my own count rather than by report: the tracking matrix now reads **`系统+MCP（UI 无）`: 15 rows** and **`仅系统`: 9 rows**, matching the
+delegated run's claim (14 -> 15 and 10 -> 9), and all three MCP export-related tools appear in both `schemas/mcp-tools.schema.json` and
+`crates/yeban-mcp/src/tools.rs`, so the schema/registry parity the subagent added holds.
+
+**Status**: `abe537e` (mapping move) and `251d11f` (handover) are `success`; `d2ea624` is six of seven legs green with the whole-workspace test sweep running;
+tree clean; goal active with five gates and two PENDINGs that need hardware or a human ruling rather than code.
