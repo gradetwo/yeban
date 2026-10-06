@@ -9429,7 +9429,7 @@ Measured the two files a Logic fixture would use, because the answer decides how
 * **`MetaData.plist` is a standard binary plist** - `file` reports `bplist00`. So it is readable with existing tooling (`plist` in Rust, `plistlib` in Python) and
   needs no reverse engineering.
 * **`ProjectData` is a custom binary**, `file` reporting only `data`. Its first bytes are `23 47 c0 ab cb 09 03 00 04 00 00 00 01 00 08 00 …` - a `#G` magic
-  followed by version bytes - and at offset 0x14 the four bytes `67 6e 6f 53` spell **`gnoS`**, which is `Song` with its bytes in little-endian order. So the format
+  followed by version bytes - and at offset **0x18** the four bytes `67 6e 6f 53` spell **`gnoS`** (round 391 said 0x14; the delegated line measured 0x18 in both local demos and confirmed groove's reader constant is also 0x18, so 0x18 is correct and 0x14 was my misreading of the hex dump), which is `Song` with its bytes in little-endian order. So the format
   is a **chunked container whose four-character chunk identifiers are stored byte-reversed**, which is why a plain `grep` for `Song` finds nothing.
 * **Consequence for feasibility**: `MetaData.plist` is free, and `ProjectData` needs a real parser - but **groove's importer already reads `ProjectData`**
   (`mcp/arrangement.ts:1053`), so a working reference implementation exists in a sibling project. The port is a translation, not a research project, and the one
@@ -9519,3 +9519,40 @@ measured in real projects), and the deliberate absence of `SongKey` / `SongGende
 
 **Status**: tree green and clean locally; Phase 4 is now 6 完成 / 5 部分 / 0 PENDING (47 items total); the `.als` exporter (`ROAD-M4-007`) is unchanged. Local readings only -
 the CI verdict for this slice is **not read** and must not be written as "passed".
+
+
+### Round 393: ruling A landed - a Logic Pro exporter exists - and the delegated line corrected two of my measurements
+
+`354f74b` adds a Logic Pro `.logicx` exporter under the feature **`experimental-logic-export`** (non-default, and with **no optional dependency at all**, so the default
+graph is unchanged by construction). `crates/yeban-render/src/logic.rs` (1726 lines) writes `ProjectData` plus three hand-rolled `bplist00` files
+(`MetaData.plist`, `DisplayState.plist`, `ProjectInformation.plist`), and `crates/yeban-app/src/export_logic.rs` plus a `--export-logic` CLI switch give it a user
+outlet with a `logic-losses:` / `logic-loss:` report capped at 20 lines. The two-way loss table is also embedded in `MetaData.plist` under `YebanMappingLosses`, so
+the report and the file cannot disagree. The `.als` exporter is untouched, as ruling A required.
+
+**Two of my own measurements were wrong, and the delegated line caught both**:
+1. I wrote that `gnoS` sits at offset **0x14**; it is at **0x18**. Round 391's text is corrected above. The line verified 0x18 in both local demos **and** against
+   groove's reader constant (`logicToArrangement.ts:369`), so the writer and criteria use 0x18.
+2. I reported `Swing!`'s `ProjectData` as **908 KB** from `du -h`; its real size is **5,648,035 bytes (5.4 MiB)**. So the "about 920 KB fixture" figure I gave the
+  负责人 was wrong - the pair is still far smaller than `Media/`, but it is megabytes, not kilobytes.
+
+Verified independently with named metrics: the commit holds the new and changed files as reported; the **distinct `name version` lines** of
+`cargo tree -p yeban-app -e normal --locked --prefix none` are **297 by default and 297 with the feature** (diff empty; `Cargo.lock` untouched); with the feature
+`yeban-render` runs **90 passed** (from 84, so +6 new criteria) and `cli_contract` **20 passed in both modes**; the guards and `light` pass. The line also ran four
+**negative measurements** (root header 0x18->0x14, the meter record removed, a `SystemTime` byte injected into the song record, the audio-track loss entry deleted),
+each turning red and each restored.
+
+**Independent validation of the plists** is the strongest part of the evidence: `file` reports *Apple binary property list*, Python `plistlib` reads the keys back
+(`BeatsPerMinute 128.0`, `NumberOfTracks 4`, `YebanMappingLosses` with 20 entries), and **`plutil -lint` passes on all three** - so the hand-rolled encoder is checked
+by a tool that is not ours.
+
+**Copyright handled correctly**: Apple's demo projects are **not** committed and nothing was copied from them. The core criteria run on a fixture the writer itself
+produces; the only demo-reading criterion reads the two headers **when the paths exist** and returns early otherwise, so it checks two files locally and skips in CI.
+
+**Claim boundary kept honest**: the words "opens in Logic" appear nowhere. What is verified is structural agreement with the measured byte layout and with groove's
+writer and reader. What is **not** verified is that Logic Pro opens the output. The unwritten parts (Logic's `karT` track table, mixer/plugin/automation chunks, a
+region start field that real projects also write as 0) are registered in the loss table rather than hidden.
+
+**Ledger**: a new roadmap item **`ROAD-M4-011`** was added, so Phase 4 is now **6 完成 / 5 部分 / 0 PENDING** and the total is 47; the feature-alignment row was added
+(仅系统 10 -> 11, total 72 -> 73) and both guards re-run green. `ROAD-M4-007` and the `.als` exporter are unchanged.
+
+**Status**: `354f74b` to be pushed by this round; CI verdict not yet read and not claimed.
