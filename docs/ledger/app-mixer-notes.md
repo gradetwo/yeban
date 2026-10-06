@@ -285,7 +285,7 @@ lib 目标，我把探针扩成 lib(OFF)/lib(ON)/单元判据三步 —— 第�
 | # | 未实现 | 现状 | 归属 / 阻塞 |
 | :-- | :--- | :--- | :--- |
 | 1 | **引擎不发声** | 轨道渲染是占位静音 ⇒ 引擎实际发布的电平恒为下限；本线的"真实电平"是指**计量与接线**是真的（口径、SPSC、每量子一次批量发布），判据用**注入的已知帧**证明消费链路 | `yeban-sfz` / `yeban-dsp` 的声部合成切片 |
-| 2 | **声相 / 静音 / 独奏的"数值"在控件树里读不到** | 运行时 `ControlNode` 只有 `id/role/label/bounds/dynamic_region/parent`，**没有** `accessible-checked` / `accessible-value`；`ui/property` 的清单里也没有它们。因此静音/独奏的证据是**标签 + 像素**，声相的证据是标签（`PAN L50`） | `yeban-ui-test-port` 的 `ControlNode` 扩展（不是本地盘）；本线**不编造** checked 字段 |
+| 2 | **声相 / 静音 / 独奏的"数值"在控件树里读不到** | 运行时 `ControlNode` 只有 `id/role/label/bounds/dynamic_region/parent`，**没有** `accessible-checked` / `accessible-value`；`ui/property` 的清单里也没有它们。因此静音/独奏的证据是**标签 + 像素**，声相的证据是标签（`PAN L50`）。**【后续更正（`b37f6ad`，2026-10-07）】**：`ControlNode` 已加 `value` / `checked`（活组件路径），`ui/property` 的清单已含这两个名字 ⇒ **静音 / 独奏的勾选态与推子的 dB 值现在读得到**；**声相仍未解决** —— `mixer_console.slint` 只把 `pan` 写进标签文本 `PAN L50`，没有 `accessible-value` ⇒ 无从读起。本行上半句是**当时那一刻的真话**，按 dated record 纪律**保留不改** | `yeban-ui-test-port` 的 `ControlNode` 扩展（不是本地盘）；本线**不编造** checked 字段 —— **该扩展已由 `b37f6ad` 完成** |
 | 3 | **推子 / 声相的拖动** | 推子帽位置由 `volume_db` 驱动，但拖拽（指针捕获 + Op 日志）未接；静音/独奏按钮有 `TouchArea` 语义但点击不改工程 | `[UI-NOTE-003]` + `yeban-model` 的 `Op`（UI→模型方向本线**故意不做**） |
 | 4 | **设备链 / 自动化 / 宏** | `device_rack.slint` 仍用演示常量；`TrackV3::devices` / `automation_lanes` / `macros` 未进视图 | `[UI-NOTE-004]`；设备机架应由 `devices` 驱动 |
 | 5 | **指针/键盘注入之后不自动重抓树** | 注入走的是 `LivePort` 的窗口事件；若一次点击会改变可见分支（例如点 `tab-mixer-button`），运行时树要等下一次 `pump_meters` / 管理动作 / 换工程才更新。**没有**自动刷新是刻意的：`ui/tree` 的字节稳定性判据依赖"没有别的写入者" | 需要一次裁决：注入后是否强制 `refresh_tree`（代价：每次注入一次全树内省） |

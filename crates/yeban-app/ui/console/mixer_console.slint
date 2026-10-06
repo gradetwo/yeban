@@ -25,6 +25,9 @@
 //      `"峰值 <x> RMS <y> dBFS"`，`accessible-value` 携带峰值文本 ——
 //      否则"UI 真的消费了电平"无法机械验证（`[UI-TEST-001]` 只允许语义 ID 寻址，
 //      而 `ui/property` 的清单里没有 `accessible-value`）。
+//      **注（`b37f6ad` 起）**：上述括注**已过期** —— `ui/property` 的清单现在有
+//      `value`（= `accessible-value` 原文）与 `checked`，dBFS 也能经 `ui/property` 读。
+//      本段是《这一版改了什么》的历史记录，按原样保留，只在末尾加这条注。
 //
 // 数据流方向: 只读。界面只做"取数组下标 + 画像素"，dBFS 换算 / 声相文本 / 推子归一化
 // 全在投影层与 `src/meters.rs`（零 Slint 依赖，本机可 `rustc --test` 真跑）。

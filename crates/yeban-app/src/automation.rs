@@ -361,9 +361,10 @@ struct LabelParts<'a> {
 
 /// 标签的**状态段**（优先级：目标不存在 > 读关闭 > 有值 > 无采样点 > 无自动化值）。
 ///
-/// `[UI-TEST-001]` 只允许语义 ID 寻址，而 `accessible-value` 不在 Slint 的无障碍属性
-/// 清单里（`ui/property` 有 `accessible-value`，但投影只用 `accessible-label` 传数值 ——
-/// 与色标 / 电平文本同款做法）。因此"AI/判据能读到自动化"的载体就是这一段文本。
+/// `[UI-TEST-001]` 只允许语义 ID 寻址；`ui/property` 的属性名是 `value`（取自 Slint 的
+/// `accessible-value`，`b37f6ad` 起进 `property_of` 清单），但**自动化泳道的元素没有声明
+/// `accessible-value`** ⇒ 投影仍只用 `accessible-label` 传数值（与色标 / 电平文本同款做法）。
+/// 因此"AI/判据能读到自动化"的载体就是这一段文本。
 fn label_state(parts: &LabelParts<'_>) -> String {
     if !parts.reconciled {
         return "目标不存在".to_owned();
