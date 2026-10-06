@@ -9176,3 +9176,29 @@ what is missing plus a fixture location to use. Neither needs any further prepar
 **Status**: tree green and clean; automatic CI green for the last seventeen commits plus this one; both manual tiers green; all fifteen MUST-GATEs wired and the five
 named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions plus one cleanup permission
 outstanding, each answerable in a word.
+
+
+### Round 382: `D47` option (a) landed - `.als` now has a user exit, and my own verification targeted the wrong metric
+
+`4f0490b` implements `D47`'s option (a) from `docs/ledger/open-questions.md` question 3, which the负责人's standing authorisation ("按你的建议来", recorded at the top
+of `human-decisions.md` as covering all 42 items) makes an authorised execution rather than self-approval. The delegated line verified that authorisation itself
+before writing code, which is the right order.
+
+What landed: `--export-als` beside `--export-midi` (both `--opt value` and `--opt=value` forms, set-once, conflict lists with the no-window switches), a
+default-build refusal that exits **2 and names the feature** (mirroring the proven `McpHttpNotCompiled` pattern), and - the point of `D47` - the **loss table
+surfaced to the user**: `exported-als: path=… bytes=… tracks=… clips=… notes=… losses=37`, then `als-losses: count=N`, one `als-loss:` per entry with its `未映射:` /
+`非等价:` prefix, bounded at 20 lines with an explicit "and N more" that also points at the full table inside the file's `<!-- yeban-loss … -->` comments. On a real
+sample the run showed 17 losses including the single `bounced-to-audio=true` device.
+
+Criteria: `cli_contract.rs` B7c asserts the default-build refusal on the real binary beside the existing B7b, and a feature-gated B14 checks the gzip magic,
+determinism, the count-to-rows agreement and that a failed write leaves no half file. Guards unchanged and green; `Cargo.lock` untouched; no new external crate.
+
+**My own error worth recording**: verifying "no dependency added by default" I first grepped the default tree for `yeban-render` and got 1 in both modes - but
+`yeban-render` is a **default** dependency of the app, so that measurement was uninformative. The correct check is **inverted**: `cargo tree -i flate2` shows
+`yeban-render` as a parent **0 times by default** and **1 time with the feature**, which is the real evidence. This is the third time this session that the metric,
+not the conclusion, was the weak link - the same family as the wrong revert baseline (round 355) and the word-greps that made two delivered features look missing
+(rounds 368-369).
+
+**Status**: `4f0490b` pushed; tree clean; CI verdict for it still to be read back; Phase 4 6 完成 / 4 部分 / 0 PENDING with `M4-007`'s evidence updated to include the
+new exit; `open-questions.md` question 3 closed. Next authorised lines: question 1 (`N2` logical keys), question 2 (loudness over the existing control plane), question
+6 (`M4-008` single authority). Questions 4 and 5 remain the负责人's alone (data).
