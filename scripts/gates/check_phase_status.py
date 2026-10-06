@@ -19,10 +19,17 @@
 4. **反向**也查：表里出现路线图里**没有**的 ID ⇒ 报错。凭空发明编号是硬错误
    （`AGENTS.md` §4.1 点名过先例：`MODEL-AST-006` 在规范里缺号）;
 5. `PENDING` 的行必须写清**为什么**（证据列不能只有一个状态词）;
-6. 末尾的**逐阶段汇总计数**必须与表格逐行统计**一致**（数字要么能被命令复核、要么别写）。
+6. 末尾的**逐阶段汇总计数**必须与表格逐行统计**一致**（数字要么能被命令复核、要么别写）;
+7. **标题与 §0 里的手抄总数**（`，N 项）`）、**行内的手抄 PENDING 计数**（`本表另有 **N** 项 PENDING`）
+   与**标题声明的 ID 区间**也必须与逐行统计一致。
 
-**为什么第 6 条也在守卫里**: 汇总数字是人最爱手抄的东西, 而它恰恰是"Phase 2 还剩几项"的答案。
+**为什么第 6/7 条也在守卫里**: 汇总数字是人最爱手抄的东西, 而它恰恰是"Phase 2 还剩几项"的答案。
 口径漂移在本仓库已实测发生三次以上（`docs/DEVELOPMENT_LEDGER.md` 第 12 轮）。既然能机械对账, 就不靠自觉。
+第 7 条是**实测补上的洞**: 第 6 条只钉住 §7 那一份, 而"一共几项 / 还剩几项 PENDING"在这份文件里
+被手抄了**五**处。表建立于 `93c83e0`（当时确实是 46 项 / PENDING 7）, 之后 `ROAD-M4-011` 入库、
+PENDING 掉到 6, §7 被同步改了, 标题（×2）、`docs/README.md`、`feature-alignment.md` 与
+`ROAD-M4-010` 行内那句却一直停在旧值 —— 文件自己跟自己矛盾而守卫一声不响（`ROAD-M4-010` 是本项
+唯一引用的权威表, 它的数字必须能被命令复核）。
 
 用法:
     python3 scripts/gates/check_phase_status.py
@@ -64,6 +71,15 @@ PHASE_PREFIX = {
     "Phase 3": "ROAD-M3-",
     "Phase 4": "ROAD-M4-",
 }
+
+#: 文件里"手抄总数"的形态（第 7 条）：除末尾 §7 汇总的 `（共 N 项）` 之外, 另外两份副本写成
+#: `，N 项）`（标题 = `（`ROAD-M-1-001` … `ROAD-M4-011`，47 项）`, §0 = `（`ROAD-*`，47 项）`）。
+#: 只在 `，` 后面取数, 因此**不会**误命中 §7 的 `（共 N 项）`。
+DECLARED_TOTAL_RE = re.compile(r"，\s*(\d+)\s*项）")
+#: 行内手抄的 PENDING 计数（实测出现在 `ROAD-M4-010` 行的 `本表另有 **6** 项 PENDING`）。
+DECLARED_PENDING_RE = re.compile(r"本表另有\s*\*\*(\d+)\*\*\s*项\s*PENDING")
+#: 标题声明的 ID 区间（`（`ROAD-M-1-001` … `ROAD-M4-011`，47 项）`）—— 上界会随新阶段项漂移。
+DECLARED_RANGE_RE = re.compile(r"（`(ROAD-[A-Z0-9-]+)`\s*…\s*`(ROAD-[A-Z0-9-]+)`")
 
 #: ⚠ 表格单元格里用 `\|` 转义竖线（例如把 `a | b` 的管道命令写进证据列）。
 #: 朴素的 `line.split("|")` 会在**转义的**竖线上也切开, 于是整行的列都错位 ——
@@ -212,6 +228,39 @@ def main() -> int:
             f"汇总的合计与表格不符：写的是 已完成 {stated_grand[0]} / 部分 {stated_grand[1]} / "
             f"PENDING {stated_grand[2]}（共 {stated_grand[3]}），逐行统计是 "
             f"已完成 {grand[0]} / 部分 {grand[1]} / PENDING {grand[2]}（共 {sum(grand)}）"
+        )
+
+    # 方向 4（第 7 条）：标题 / §0 / 行内那几份**手抄副本**也必须与逐行统计一致。
+    #
+    # 判据取 `len(expected)`（路线图里的项数, 也是本脚本最后 `[ok]` 行打印的那个数）——
+    # 让"守卫自己报的数字"与"文件里写的数字"必须相等, 这正是"能被命令复核"的定义。
+    counted_total = len(expected)
+    declared_totals = [
+        (text[: matched.start()].count("\n") + 1, int(matched.group(1)))
+        for matched in DECLARED_TOTAL_RE.finditer(text)
+    ]
+    if not declared_totals:
+        problems.append("标题/§0 里没有可复核的总数（形如 `，N 项）`）—— 数字要么能被命令复核, 要么别写")
+    for lineno, stated in declared_totals:
+        if stated != counted_total:
+            problems.append(
+                f"第 {lineno} 行声明的总数 {stated} 与逐行统计不符（表里有 {counted_total} 项）"
+            )
+    for matched in DECLARED_PENDING_RE.finditer(text):
+        lineno = text[: matched.start()].count("\n") + 1
+        stated = int(matched.group(1))
+        if stated != grand[2]:
+            problems.append(
+                f"第 {lineno} 行的『本表另有 {stated} 项 PENDING』与逐行统计不符"
+                f"（表里有 {grand[2]} 项 PENDING）"
+            )
+    declared_range = DECLARED_RANGE_RE.search(text)
+    if declared_range is None:
+        problems.append("标题里没有可复核的 ID 区间（形如 `（`ROAD-…` … `ROAD-…`，N 项）`）")
+    elif (declared_range.group(1), declared_range.group(2)) != (expected[0], expected[-1]):
+        problems.append(
+            f"标题声明的 ID 区间 {declared_range.group(1)} … {declared_range.group(2)} 与表里实际的 "
+            f"{expected[0]} … {expected[-1]} 不符"
         )
 
     if problems:
