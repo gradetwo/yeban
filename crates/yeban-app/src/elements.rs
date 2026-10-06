@@ -1702,8 +1702,10 @@ mod tests {
             "root.master-meter-level",
             "root.master-volume-fraction",
             "root.master-color",
-            // dBFS 必须出现在**控件树可读**的属性里（`[UI-TEST-001]` 只允许语义 ID 寻址，
-            // 而 `ui/property` 的清单里没有 `accessible-value` ⇒ 只能用 label）。
+            // dBFS 必须出现在**控件树可读**的属性里（`[UI-TEST-001]` 只允许语义 ID 寻址；
+            // `ui/property` 的属性名是 `value`，取自 Slint 的 `accessible-value`（`b37f6ad`
+            // 起进 `property_of` 清单）—— 本文件的 dBFS 文本走 `accessible-label`，
+            // `track-{i}-meter` / `mixer-master-meter` 另在 `accessible-value` 里各带一份）。
             "dBFS",
         ] {
             assert!(
