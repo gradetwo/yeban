@@ -9058,3 +9058,27 @@ low-risk cleanup list (`baseline-fps`, `mcp-stdio-e2e`) plus an explicit instruc
 **Status**: tree green and clean at `7b41750` (= `origin/main`); automatic CI green for the last twelve commits with no verdict outstanding; both manual tiers green;
 all fifteen MUST-GATEs wired; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six open questions each answerable with one word in
 `docs/ledger/open-questions.md`.
+
+
+### Round 376: the objective's five named gates are closed - checked individually, not inferred from the total
+
+The objective names five gates to knock out one by one (`MUST-GATE-001/002/005/009/012`). Reading each row rather than trusting the aggregate:
+
+| gate | subject | status |
+| :--- | :--- | :--- |
+| `MUST-GATE-001` | realtime callback: zero alloc / zero free / zero I/O / zero lock | **已接线** |
+| `MUST-GATE-002` | same-platform offline master bit-exact (L1) | **已接线（同平台两次独立产出已对账 PASS）** |
+| `MUST-GATE-005` | GPLv3 source-distribution completeness (`.slint` + locked `Cargo.lock` + `cargo vendor`) | **已接线** |
+| `MUST-GATE-009` | MCP strict default safety | **已接线** |
+| `MUST-GATE-012` | snapshot retire queue, zero leak | **已接线** |
+
+So the objective's central ask is **met**: all five are wired, and `MUST-GATE-002` carries the strongest form of that status - two independent outputs on the same
+platform reconciled to PASS - rather than merely having a harness. Combined with round 351's row-by-row audit (all fifteen wired) and round 358's correction that the
+in-process-mcp criteria are now **executed** by CI, the gate picture is closed rather than merely counted.
+
+**Why checking individually mattered here**: the aggregate "19 已接线 / 0 部分 / 2 PENDING" could hide a named gate sitting in the wrong bucket, and the objective
+would then be judged by a total that never mentioned it. Reading the five rows is the same discipline as the earlier audits, applied to the objective's own words.
+
+**Status**: tree green and clean; automatic CI green for the last twelve commits (`5f5445f` pending read-back); both manual tiers green; all fifteen MUST-GATEs wired;
+the five named gates confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six open questions in
+`docs/ledger/open-questions.md`, each answerable with one word, plus one cleanup permission (two merged worktrees).
