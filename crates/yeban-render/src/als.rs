@@ -1185,6 +1185,87 @@ mod tests {
         &xml[start..=start + end]
     }
 
+    /// 把注释属性文本里的 XML 实体引用**独立地**还原（不调用写入侧的 `escape_attr`）。
+    ///
+    /// 单遍扫描：`&amp;lt;` 先还原 `&amp;` 再原样保留 `lt;`, 得到字面量 `&lt;` 而不是 `<`。
+    fn unescape_entities(value: &str) -> String {
+        // 与上面的 `ENTITIES` 同表, 只是这里要的是**还原后的字符**。
+        const TABLE: [(&str, &str); 5] = [
+            ("&amp;", "&"),
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&quot;", "\""),
+            ("&apos;", "'"),
+        ];
+        let mut out = String::with_capacity(value.len());
+        let mut rest = value;
+        while let Some(amp) = rest.find('&') {
+            out.push_str(&rest[..amp]);
+            let tail = &rest[amp..];
+            match TABLE.iter().find(|entry| tail.starts_with(entry.0)) {
+                Some((entity, decoded)) => {
+                    out.push_str(decoded);
+                    rest = &tail[entity.len()..];
+                }
+                None => {
+                    out.push('&');
+                    rest = &tail[1..];
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// 取注释体里 ` name="value"` 的 `value`。
+    ///
+    /// 写入侧把 `"` 转义成 `&quot;`, 因此"扫到下一个字面量 `"`"就是安全的边界判断。
+    fn loss_comment_attribute(body: &str, name: &str) -> String {
+        let needle = format!("{name}=\"");
+        let start = body
+            .find(&needle)
+            .unwrap_or_else(|| panic!("yeban-loss 注释缺少属性 {name}: {body}"));
+        let after = &body[start + needle.len()..];
+        let end = after
+            .find('"')
+            .unwrap_or_else(|| panic!("yeban-loss 注释的属性 {name} 没有闭合引号: {body}"));
+        after[..end].to_owned()
+    }
+
+    /// 解析一条 `yeban-loss` 注释体（不含 `<!--` / `-->`）。
+    fn parse_loss_comment(body: &str) -> (String, bool, String) {
+        assert!(
+            body.starts_with("yeban-loss "),
+            "不是 yeban-loss 注释体: {body}"
+        );
+        let entity = unescape_entities(&loss_comment_attribute(body, "entity"));
+        let bounced = match loss_comment_attribute(body, "bounced-to-audio").as_str() {
+            "true" => true,
+            "false" => false,
+            other => panic!("bounced-to-audio 只能是 true/false, 得到 `{other}`: {body}"),
+        };
+        let reason = unescape_entities(&loss_comment_attribute(body, "reason"));
+        (entity, bounced, reason)
+    }
+
+    /// 从 XML 本体里取出全部 `yeban-loss` 注释, 解析成 `(entity, bounced_to_audio, reason)`。
+    ///
+    /// 这是**独立于写入路径**的读取器：只按注释边界与属性文本扫描, 不调用
+    /// [`AlsBuilder::loss`] / [`escape_attr`]。顺序 = 文档顺序 = 损失表顺序。
+    fn embedded_loss_comments(xml: &str) -> Vec<(String, bool, String)> {
+        let mut out = Vec::new();
+        let mut rest = xml;
+        while let Some(start) = rest.find("<!-- yeban-loss ") {
+            let after = &rest[start + 5..];
+            let end = after
+                .find(" -->")
+                .unwrap_or_else(|| panic!("yeban-loss 注释未闭合: {after}"));
+            out.push(parse_loss_comment(&after[..end]));
+            rest = &after[end + 4..];
+        }
+        out
+    }
+
     /// 判据 A/B/C（本切片的主判据）：`filled_project()` → 导出 → **内存 gunzip** →
     /// ① XML 结构良构; ② 音轨名与计数符合预期; ③ 损失表非空且覆盖所有未映射构造。
     #[test]
@@ -1412,5 +1493,95 @@ mod tests {
 
         // 消毒函数本身的行为也要钉住（不是靠 check_xml 间接判断）。
         assert_eq!(comment_body("a--b-"), "a- -b-");
+    }
+
+    /// 判据 G：**报告出来的**损失表与 XML 本体里那串 `<!-- yeban-loss ... -->` 注释逐条相同。
+    ///
+    /// 这条补的是模块头那句"表格与文件不会各说各话"：判据 A/B/C 只在**内存里**断言
+    /// `export.losses` 非空 / 前缀合法 / 覆盖若干构造, 加上一句"XML 里出现过 `yeban-loss`"——
+    /// 那是**写路径**的自洽; 本判据把 [`AlsExport::losses`]（CLI 报告的那张表, 见
+    /// `crates/yeban-app/src/cli.rs` 的 `als_loss_lines`）与**从产出字节重新解压、重新解析出来的**
+    /// 注释表对账, 覆盖：条数、顺序、每条的 `entity` / `bounced-to-audio` / `reason` 全文,
+    /// 以及 `未映射:` / `非等价:` 的分类。任一侧改动（漏一条、换序、改理由、改分类）都会红。
+    ///
+    /// 解码路径：本模块测试里的 [`embedded_loss_comments`] —— 它独立于写入路径重新实现注释解析
+    /// （自己扫 `<!-- ... -->` 边界与属性文本, 不调用 `AlsBuilder::loss` 或 `escape_attr`）,
+    /// 但它与写入器同在一个文件、同一个 crate, 仍不是第三方裁判。
+    #[test]
+    fn reported_loss_table_equals_the_embedded_comment_table_entry_for_entry() {
+        let project = filled_project();
+        let export = export_project(&project).expect("导出");
+        let xml = gunzip(&export.bytes);
+
+        // 判据不得空转：表非空, 且两条分类都真的出现（否则"分类对账"是空转）。
+        assert!(!export.losses.is_empty(), "判据不得空转：损失表不能为空");
+        assert!(
+            export
+                .losses
+                .iter()
+                .any(|loss| loss.reason.starts_with(LOSS_UNMAPPED_PREFIX)),
+            "表里必须有 `未映射:` 条目，否则分类对账是空转"
+        );
+        assert!(
+            export
+                .losses
+                .iter()
+                .any(|loss| loss.reason.starts_with(LOSS_NOT_EQUIVALENT_PREFIX)),
+            "表里必须有 `非等价:` 条目，否则分类对账是空转"
+        );
+        // `comment_body` 会把 `--` 拆成 `- -` 且不可逆。本 fixture 的损失文本里没有 `--`,
+        // 因此下面逐字比较是**精确**的; 这条守卫让"有了含 `--` 的理由"先在这里红,
+        // 而不是让比较口径悄悄失效。
+        for loss in &export.losses {
+            assert!(
+                !loss.entity.contains("--") && !loss.reason.contains("--"),
+                "损失文本含 `--`, 注释消毒会破坏逐字比较: {} / {}",
+                loss.entity,
+                loss.reason
+            );
+        }
+
+        let embedded = embedded_loss_comments(&xml);
+        assert_eq!(
+            embedded.len(),
+            export.losses.len(),
+            "XML 里的 yeban-loss 注释条数必须等于报告表条数"
+        );
+
+        for (index, (comment, loss)) in embedded.iter().zip(&export.losses).enumerate() {
+            let (entity, bounced, reason) = comment;
+            assert_eq!(
+                entity, &loss.entity,
+                "第 {index} 条注释的 entity 与报告表不同（注释 `{entity}` / 报告 `{}`）",
+                loss.entity
+            );
+            assert_eq!(
+                reason, &loss.reason,
+                "第 {index} 条注释的 reason 与报告表不同（注释 `{reason}` / 报告 `{}`）",
+                loss.reason
+            );
+            assert_eq!(
+                *bounced, loss.bounced_to_audio,
+                "第 {index} 条注释的 bounced-to-audio 与报告表不同"
+            );
+            let classified = if loss.reason.starts_with(LOSS_UNMAPPED_PREFIX) {
+                "未映射"
+            } else if loss.reason.starts_with(LOSS_NOT_EQUIVALENT_PREFIX) {
+                "非等价"
+            } else {
+                panic!("第 {index} 条报告的损失没有可分类的前缀：`{reason}`");
+            };
+            assert_eq!(
+                classified == "未映射",
+                reason.starts_with(LOSS_UNMAPPED_PREFIX),
+                "第 {index} 条（`{reason}`）的分类与报告表不同：报告是 `{classified}`，\
+                 注释的 reason 里没有对应的前缀"
+            );
+            assert_eq!(
+                format!("{entity}: {reason}"),
+                format!("{}: {}", loss.entity, loss.reason),
+                "第 {index} 条注释的内容与报告表不同"
+            );
+        }
     }
 }
