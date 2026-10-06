@@ -9709,3 +9709,32 @@ date, failure records the measured refusal - and until that report arrives the e
 
 **Status**: tree green and clean at `20342b0` (= `origin/main`); `20342b0`'s CI verdict is **unread** because the GitHub API returned `unexpected EOF` twice, so it is not
 claimed green; every earlier commit of this session has a read-back green verdict; Phase 4 6 完成 / 5 部分 / 0 PENDING.
+
+
+### Round 401: Logic Pro 12.2 answered the open question - it refuses our file as "Logic 4 format (or earlier)"
+
+The负责人 opened `/tmp/yeban-logic-open/Yeban.logicx` in **Logic Pro 12.2** on this machine and got a dialog with this text:
+
+> The operation couldn't be completed. (com.apple.logic10 error 100.)
+> The song you are trying to open is in **Logic 4 format (or earlier)**. Please open and save it with Logic 7.2.1 or earlier first.
+> You have to do that on a Macintosh computer, which still runs an older version of macOS, because these old versions of Logic Pro are no longer compatible
+> with macOS 10.13 or later.
+
+**This is a much better measurement than "it failed"**, and it is the first external judgement this exporter has ever had:
+
+1. Logic **recognised the document as a Logic song** - it did not say "not a Logic project" - so our container is close enough to be parsed as one.
+2. It read our header as **Logic 4 format or earlier**, which means the version/format fields we write as **zero** are being interpreted as an ancient format. Round 394
+   registered exactly those fields as the `非等价: 容器头…` deviation: record header `+4` (measured 1..=8 in real projects), `+0x16` (=2), `+0x1a` (=1) and root header
+   `4..0xf` non-zero, real `gnoS` payloads starting with `#G`. Writing zeros there was the honest choice at the time because we had not reverse-engineered their
+   meaning; **now there is direct evidence that at least one of them carries the format version, and that zero means "Logic 4"**.
+3. The refusal is therefore **actionable rather than fatal**: the fix is to learn the correct values from the reference implementations instead of leaving them zero.
+
+**The负责人's next instruction** is to consult the documentation of the open-source Logic Pro projects that groove's own docs name - `wikibook/logicprox-106` (a Logic Pro
+X 10.6 textbook's example project set, groove's first choice) and the open-source mixtape that includes Logic projects - and then correct the writer and re-export a
+document for another test on the same machine (Logic Pro 12.2).
+
+**Claim boundary, unchanged in the meantime**: nothing in the repository may say the exporter's output opens in Logic. Today's evidence says the opposite, and it is
+recorded here with the exact dialog text so that no reader can mistake the current state.
+
+**Status**: tree green and clean at `f5e10c8` (= `origin/main`), whose CI verdict is **success**; Phase 4 6 完成 / 5 部分 / 0 PENDING; the open question is now a
+concrete engineering task with one known symptom (`com.apple.logic10 error 100` on a document Logic reads as Logic 4).
