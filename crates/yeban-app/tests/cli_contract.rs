@@ -1066,6 +1066,104 @@ fn print_shortcuts_is_a_batch_command() {
     assert!(run.stdout.contains("F5 → Session 视图"), "{}", run.stdout);
 }
 
+/// 判据 B11b: 快捷键表**说能用**的键, 解析 + 宿主必须真的接受; 表里标 `(未实现)` 的键,
+/// 宿主必须真的拒绝。
+///
+/// 这一条针对一类具体的谎：表里写着 `Z → 选区撑满视口`, 而 `host::apply_action` 对它
+/// 返回 `false`（`reject`）—— 用户按了没反应, 表却已经许下了承诺。判据把三个观测面
+/// **逐条对账**（单位是**条目**, 不是行）：
+///
+/// 1. **渲染结果**：真二进制 `--print-shortcuts` 的 stdout 里, 每一行的"规范写法"一列
+///    要么是 `label`（表声称能用），要么是 `label (未实现)`（表声称不能用）；
+/// 2. **解析**：`InputContext::resolve(key, modifiers)` 必须解析出这一行声称的
+///    `Action`（标签与它绑的键不能各说各话），且 stdout 那一行的"画布聚焦"列与它一致；
+/// 3. **宿主**：`host::action_has_implementation(action)` 必须等于这一行的 `implemented`
+///    —— 宿主说没有实现的动作, 表就必须标 `(未实现)`; 反之亦然。
+///
+/// 能无头查的就是这三面。`apply_action` 对 `Undo`/`Redo`/`OpenTimeMachine` 在**没有撤销
+/// 端口**的装配下也返回 `false` —— 那是装配缺件, 不是动作没实现, 所以这条判据判的是
+/// "有没有落地实现", 而不是"当前这个装配有没有接上它"。真实窗口上的消费 / 拒绝由
+/// `tests/live_ui_mcp.rs` 的判据 16 用真事件源直接见证。
+#[test]
+fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
+    use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::{Focus, InputContext, Resolution};
+
+    // ① 真二进制的 stdout：表**渲染出来**的样子（用户看到的就是它）。
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+
+    let rows = shortcut_rows();
+    assert_eq!(rows.len(), 18, "快捷键表的**条目**数（不是行数）");
+    // 表头那三行 `# …` 是说明文字, 其中一行**定义**了标记; 数标记只数**条目行**。
+    let printed_marks: usize = run
+        .stdout
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .map(|line| line.matches(UNIMPLEMENTED_MARKER).count())
+        .sum();
+    assert_eq!(
+        printed_marks,
+        rows.iter().filter(|row| !row.implemented).count(),
+        "stdout 条目行里的 `{UNIMPLEMENTED_MARKER}` 出现次数必须等于表里未实现的**条目**数:\n{}",
+        run.stdout
+    );
+
+    // 下表"画布聚焦"列用的就是它。
+    let mut canvas = InputContext::new();
+    canvas.set_focus(Focus::MainCanvas);
+
+    let mut checked = 0usize;
+    let mut marked = 0usize;
+    for row in rows {
+        // ② 标签绑的键必须解析出标签声称的动作（表内部不能自相矛盾）。
+        let resolved = canvas.resolve(row.key, row.modifiers);
+        assert_eq!(
+            resolved,
+            Resolution::Action(row.action),
+            "`{}` 的键位解析出的不是它声称的动作: 得到 {resolved:?}",
+            row.label
+        );
+        // ③ 表的主张必须与宿主的事实一致 —— 分叉即红。
+        assert_eq!(
+            action_has_implementation(row.action),
+            row.implemented,
+            "`{}` ({:?}) 的落地状态分叉: 表说 implemented={}, 宿主说 {}",
+            row.label,
+            row.action,
+            row.implemented,
+            action_has_implementation(row.action),
+        );
+
+        // ① stdout 那一行必须**恰好**按主张渲染（标了就要打印出来, 没标就不能偷偷标）。
+        let rendered = if row.implemented {
+            row.label.to_owned()
+        } else {
+            marked += 1;
+            format!("{} {}", row.label, UNIMPLEMENTED_MARKER)
+        };
+        let line = run
+            .stdout
+            .lines()
+            .find(|line| line.trim_start().starts_with(&rendered))
+            .unwrap_or_else(|| {
+                panic!("`--print-shortcuts` 里找不到 `{rendered}`:\n{}", run.stdout);
+            });
+        assert!(
+            line.contains(&format!("{resolved:?}")),
+            "`{rendered}` 那一行的画布聚焦列与 resolve 不符:\n{line}"
+        );
+        checked += 1;
+    }
+
+    eprintln!(
+        "[shortcut-honesty] 逐条对账 {checked} 条快捷键: 渲染列 / resolve / host::action_has_implementation \
+         三面一致; 其中标记 `{UNIMPLEMENTED_MARKER}` 的 {marked} 条（含 `Z → 选区撑满视口` 与 \
+         `Shift+Z → 全曲总览`）被宿主如实拒绝"
+    );
+}
+
 /// 判据 B12: `--export-midi` 从**真二进制**导出的字节可被 SMF 读取面读回，
 /// 逐音符与工程一致，`MThd` 的 PPQ 字段是 960，且两次导出逐字节相同
 /// （① 回读 / ② 逐音符 / ③ PPQ 头 / ④ 确定性，全部在**进程级**再证一次）。

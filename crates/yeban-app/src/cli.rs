@@ -55,7 +55,7 @@ use crate::elements::ElementRegistry;
 use crate::export_als::AlsExportError;
 use crate::export_logic::LogicExportError;
 use crate::export_midi::{MidiExportError, MidiExportReport, export_project_to_file};
-use crate::input::{InputContext, Modifiers, PhysicalKey};
+use crate::input::{Action, InputContext, Modifiers, PhysicalKey, Tool, View};
 use crate::open::{
     DOCUMENT_FORMAT, OpenError, OpenedProject, ProjectOpenOptions, open_project_document_file,
 };
@@ -1687,76 +1687,193 @@ pub fn quoted(text: &str) -> String {
 // 快捷键表（`--print-shortcuts`）
 // ---------------------------------------------------------------------------
 
+/// 快捷键表里"这一行还没有可作用的实现"的标记。
+///
+/// 它出现在 [`shortcut_lines`] 的**规范写法**一列。存在的理由只有一条：表里写着某个键,
+/// 用户就会去按; 而 `host::apply_action` 对没有落地的动作返回 `false`（`reject`）。
+/// 没有这个标记, 表就是一份**假承诺** —— 用户按了没反应, 只能自己猜是键坏了还是功能没做。
+pub const UNIMPLEMENTED_MARKER: &str = "(未实现)";
+
+/// 快捷键表的一行：规范写法 + 领域动作 + 物理键 + 修饰位 + **本版本是否已有落地**。
+///
+/// `implemented` 是**写下来的主张**, 不是从这里推出来的事实：本模块是**零 Slint 依赖**
+/// 的命令行面（见 `cli.rs` 的模块文档）, 不能引用 `crate::host`（那个模块依赖 Slint,
+/// 引用它会把 Slint 拉进命令行的零依赖探针）。主张与事实的对账住在
+/// `tests/cli_contract.rs` 的 `shortcut_table_status_matches_the_resolution_and_host_pipeline`：
+/// 它把 `implemented` 与 [`InputContext::resolve`] 的解析结果、`host::action_has_implementation`
+/// （宿主自己的陈述）逐行比对 —— 任一侧分叉即变红。
+pub struct ShortcutRow {
+    /// 规范 §7.1 表格里的写法（**不含** [`UNIMPLEMENTED_MARKER`]）。
+    pub label: &'static str,
+    /// [`ShortcutRow::label`] 声称的那个领域动作。
+    pub action: Action,
+    /// 绑定用的物理键。
+    pub key: PhysicalKey,
+    /// 绑定用的修饰位。
+    pub modifiers: Modifiers,
+    /// 本版本是否已有可作用的实现（宿主会不会消费这一键）。
+    pub implemented: bool,
+}
+
 /// 规范 §7.1 的核心快捷键表, 用于 `--print-shortcuts`。
 ///
-/// 每一项都是 (规范表格里的写法, 物理键, 修饰键)。这张表的**意义**是让策略表的判定结果
-/// 可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支。
-const KEYMAP: [(&str, PhysicalKey, Modifiers); 18] = [
-    ("Space → 播放/暂停", PhysicalKey::Space, Modifiers::none()),
-    (
-        "Shift+Space → 从光标处续播",
-        PhysicalKey::Space,
-        Modifiers::shift(),
-    ),
-    (
-        "Tab → 视图切换 (仅画布聚焦)",
-        PhysicalKey::Tab,
-        Modifiers::none(),
-    ),
-    ("F5 → Session 视图", PhysicalKey::F5, Modifiers::none()),
-    ("F6 → Arrangement 视图", PhysicalKey::F6, Modifiers::none()),
-    ("Cmd/Ctrl+Z → 撤销", PhysicalKey::KeyZ, Modifiers::meta()),
-    (
-        "Cmd/Ctrl+Shift+Z → 重做",
-        PhysicalKey::KeyZ,
-        Modifiers::ctrl_shift(),
-    ),
-    (
-        "Cmd/Ctrl+Shift+H → 时光机",
-        PhysicalKey::KeyH,
-        Modifiers::ctrl_shift(),
-    ),
-    (
-        "Cmd/Ctrl+D → 原位复制",
-        PhysicalKey::KeyD,
-        Modifiers::meta(),
-    ),
-    (
-        "Delete/Backspace → 删除",
-        PhysicalKey::Delete,
-        Modifiers::none(),
-    ),
-    ("B → 箭头/铅笔切换", PhysicalKey::KeyB, Modifiers::none()),
-    (
-        "Cmd/Ctrl+Alt+B → 左抽屉",
-        PhysicalKey::KeyB,
-        Modifiers::ctrl_alt(),
-    ),
-    ("Z → 选区撑满视口", PhysicalKey::KeyZ, Modifiers::none()),
-    ("Shift+Z → 全曲总览", PhysicalKey::KeyZ, Modifiers::shift()),
-    (
-        "Cmd/Ctrl+Alt+M → 控制台最大化",
-        PhysicalKey::KeyM,
-        Modifiers::ctrl_alt(),
-    ),
-    ("1 → 选择工具", PhysicalKey::Digit(1), Modifiers::none()),
-    (
-        "Shift+Enter → 采纳 AI 建议",
-        PhysicalKey::Enter,
-        Modifiers::shift(),
-    ),
-    ("[ → 试听主线", PhysicalKey::BracketLeft, Modifiers::none()),
+/// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
+/// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
+/// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
+const SHORTCUTS: [ShortcutRow; 18] = [
+    ShortcutRow {
+        label: "Space → 播放/暂停",
+        action: Action::PlayPause,
+        key: PhysicalKey::Space,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Shift+Space → 从光标处续播",
+        action: Action::ResumeFromCursor,
+        key: PhysicalKey::Space,
+        modifiers: Modifiers::shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Tab → 视图切换 (仅画布聚焦)",
+        action: Action::ToggleView,
+        key: PhysicalKey::Tab,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F5 → Session 视图",
+        action: Action::ShowView(View::Session),
+        key: PhysicalKey::F5,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "F6 → Arrangement 视图",
+        action: Action::ShowView(View::Arrangement),
+        key: PhysicalKey::F6,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Z → 撤销",
+        action: Action::Undo,
+        key: PhysicalKey::KeyZ,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+Z → 重做",
+        action: Action::Redo,
+        key: PhysicalKey::KeyZ,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+H → 时光机",
+        action: Action::OpenTimeMachine,
+        key: PhysicalKey::KeyH,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+D → 原位复制",
+        action: Action::Duplicate,
+        key: PhysicalKey::KeyD,
+        modifiers: Modifiers::meta(),
+        implemented: false,
+    },
+    ShortcutRow {
+        label: "Delete/Backspace → 删除",
+        action: Action::DeleteSelection,
+        key: PhysicalKey::Delete,
+        modifiers: Modifiers::none(),
+        implemented: false,
+    },
+    ShortcutRow {
+        label: "B → 箭头/铅笔切换",
+        action: Action::TogglePencilTool,
+        key: PhysicalKey::KeyB,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+B → 左抽屉",
+        action: Action::ToggleSidebar,
+        key: PhysicalKey::KeyB,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Z → 选区撑满视口",
+        action: Action::ZoomToSelection,
+        key: PhysicalKey::KeyZ,
+        modifiers: Modifiers::none(),
+        implemented: false,
+    },
+    ShortcutRow {
+        label: "Shift+Z → 全曲总览",
+        action: Action::ZoomToFit,
+        key: PhysicalKey::KeyZ,
+        modifiers: Modifiers::shift(),
+        implemented: false,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+M → 控制台最大化",
+        action: Action::ToggleConsoleMaximize,
+        key: PhysicalKey::KeyM,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "1 → 选择工具",
+        action: Action::SelectTool(Tool::Select),
+        key: PhysicalKey::Digit(1),
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Shift+Enter → 采纳 AI 建议",
+        action: Action::AcceptAiSuggestion,
+        key: PhysicalKey::Enter,
+        modifiers: Modifiers::shift(),
+        implemented: false,
+    },
+    ShortcutRow {
+        label: "[ → 试听主线",
+        action: Action::AuditionMain,
+        key: PhysicalKey::BracketLeft,
+        modifiers: Modifiers::none(),
+        implemented: false,
+    },
 ];
+
+/// [`SHORTCUTS`] 的只读视图。
+///
+/// 给判据用：`--print-shortcuts` 的文本是这张表渲染出来的，判据要能把**渲染结果**与
+/// `input` 的解析、`host` 的接受/拒绝逐行对账（见 `tests/cli_contract.rs`）。
+#[must_use]
+pub fn shortcut_rows() -> &'static [ShortcutRow] {
+    &SHORTCUTS
+}
 
 /// 打印 `[UI-A11Y-001]` / `[UI-A11Y-002]` 策略表在本版本下的判定结果。
 ///
 /// 同时给出**画布聚焦**与**IME 合成态**两列 —— 这两列必须不同, 而且差异必须是
 /// "合成态什么都收不到"。这个输出本身就是给 CI 与人看的一份活文档。
+///
+/// 规范写法一列还带**落地状态**：宿主还没有可作用实现的键会被标上
+/// [`UNIMPLEMENTED_MARKER`]（键**已绑定**、解析得出动作、但 `host::apply_action` 会
+/// `reject`）。表与宿主的一致性由 `tests/cli_contract.rs` 的判据逐行对账，不再靠人记得同步。
 #[must_use]
 pub fn shortcut_lines() -> Vec<String> {
     let mut lines = vec![
         "# 快捷键策略表 (yeban-app scaffold)".to_owned(),
         "# 第三列是 [UI-A11Y-002] 的核心: 合成态下所有非 F5/F6 的键都必须被输入法吞掉".to_owned(),
+        format!(
+            "# {UNIMPLEMENTED_MARKER} = 键已绑定、解析得出动作, 但宿主尚无落地实现 (按下被 reject, 不是键坏了)"
+        ),
         format!(
             "# {:<34} {:<28} {:<28}",
             "规范写法", "画布聚焦", "文本输入 + IME 合成态"
@@ -1770,12 +1887,17 @@ pub fn shortcut_lines() -> Vec<String> {
     composing.set_focus(crate::input::Focus::TextInput);
     composing.begin_composition();
 
-    for (label, key, modifiers) in KEYMAP {
+    for row in SHORTCUTS {
+        let label = if row.implemented {
+            row.label.to_owned()
+        } else {
+            format!("{} {}", row.label, UNIMPLEMENTED_MARKER)
+        };
         lines.push(format!(
             "  {:<34} {:<28} {:<28}",
             label,
-            format!("{:?}", canvas.resolve(key, modifiers)),
-            format!("{:?}", composing.resolve(key, modifiers)),
+            format!("{:?}", canvas.resolve(row.key, row.modifiers)),
+            format!("{:?}", composing.resolve(row.key, row.modifiers)),
         ));
     }
     lines

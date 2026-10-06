@@ -526,17 +526,45 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
     ui.set_save_succeeded(ok);
 }
 
+/// `Action` 是否有**可作用的实现** —— 宿主对此的**唯一**陈述。
+///
+/// 这张名单回答的是"按下去会不会真的发生一件事", 因此它是**用户可见承诺**的事实源：
+/// `--print-shortcuts` 的 [`crate::cli::UNIMPLEMENTED_MARKER`] 标记、下面 `apply_action`
+/// 的拒绝分支都从这里读。`tests/cli_contract.rs` 的判据
+/// `shortcut_table_status_matches_the_resolution_and_host_pipeline` 把快捷键表逐行与它
+/// 对账 —— 表与行为因此不可能各说各话。
+///
+/// 返回 `false` 的八条（`DeleteSelection` / `Duplicate` / `ZoomToSelection` / `ZoomToFit` /
+/// `AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion` / `Cancel`）是模型侧的编辑 /
+/// 视口语义还没落地的动作。**不消费**它们是刻意的：把键吞掉却什么都不做，比不处理更糟 ——
+/// 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
+#[must_use]
+pub fn action_has_implementation(action: Action) -> bool {
+    !matches!(
+        action,
+        Action::DeleteSelection
+            | Action::Duplicate
+            | Action::ZoomToSelection
+            | Action::ZoomToFit
+            | Action::AuditionMain
+            | Action::AuditionProposal
+            | Action::AcceptAiSuggestion
+            | Action::Cancel
+    )
+}
+
 /// 逻辑键解析出的 [`Action`] → 界面行为的**唯一**落点。
 ///
 /// 判据（`tests/live_ui_mcp.rs` 的判据 16）从无头端口注入逻辑键，观测的就是这里写下的属性。
 ///
 /// ## 为什么有些动作**不消费**
 ///
-/// `Action::DeleteSelection` / `Duplicate` / `ZoomToSelection` / `ZoomToFit` /
-/// `AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion` / `Cancel` 目前**没有**可作用的
-/// 实现（模型侧的编辑语义还没落地）。这里让它们落到 `false`（`reject`）—— 把键吞掉却什么
-/// 都不做，比不处理更糟：用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
+/// 没有可作用实现的动作由 [`action_has_implementation`] **同一份陈述**在这里挡下，
+/// 返回 `false`（`reject`）。
 fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) -> bool {
+    if !action_has_implementation(action) {
+        return false;
+    }
     match action {
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。
@@ -601,7 +629,7 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             refresh_undo_window(ui, port, matches!(action, Action::Undo | Action::Redo));
             true
         }
-        // 没有可作用实现的动作：**不消费**（见函数文档）。
+        // 其余取值已在函数开头被 `action_has_implementation` 挡下；这一支只为让 match 穷尽。
         _ => false,
     }
 }

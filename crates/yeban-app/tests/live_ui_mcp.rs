@@ -1599,10 +1599,33 @@ fn a_logical_key_shortcut_from_the_event_source_reaches_the_host_action() {
         "没有撤销会话时 `Cmd+Z` 必须如实放行（而不是假装撤销了）"
     );
 
+    // ⑦ 表里**已绑定、但宿主没有落地实现**的键：真事件源上必须如实 `reject`，并且没有副作用。
+    //    这是 `--print-shortcuts` 把这两行标成 `(未实现)` 的行为侧证据（表的对账在判据 B11b）。
+    let tool_before_zoom = window.get_active_tool();
+    let view_before_zoom = window.get_arrangement_view();
+    assert!(
+        !window.invoke_key_action("z".into(), false, false, false, false),
+        "`Z → 选区撑满视口` 尚无落地实现 ⇒ 必须如实 reject（不得假装缩放了）"
+    );
+    assert!(
+        !window.invoke_key_action("Z".into(), true, false, false, false),
+        "`Shift+Z → 全曲总览` 尚无落地实现 ⇒ 必须如实 reject（不得假装缩放了）"
+    );
+    assert_eq!(
+        window.get_active_tool(),
+        tool_before_zoom,
+        "被拒绝的缩放键不得有副作用"
+    );
+    assert_eq!(
+        window.get_arrangement_view(),
+        view_before_zoom,
+        "被拒绝的缩放键不得切视图"
+    );
+
     report_line(&format!(
         "[n2-logical-keys] 逻辑键路径实测: 端口注入 `3` ⇒ active-tool 1→{after_digit}; \
          端口注入 `Tab` ⇒ arrangement-view true→{after_tab}; 回调注入 `5` ⇒ {after_five}、`B` ⇒ {after_b}; \
-         未绑定的 `q` 与无撤销会话的 `Cmd+Z` 如实 reject（物理码判据未改动）"
+         未绑定的 `q`、无撤销会话的 `Cmd+Z`、尚无落地实现的 `Z` / `Shift+Z` 都如实 reject（物理码判据未改动）"
     ));
 }
 
