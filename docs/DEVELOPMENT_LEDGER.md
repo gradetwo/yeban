@@ -8658,3 +8658,28 @@ evidence**, not on manual dispatches.
 
 **Status**: tree green and clean at `ce71ca4` (= `origin/main`); the automatic `CI` runs are green for every commit through `80a7f85` (`ce71ca4` queued); the manual
 workflow is unavailable for a pre-existing reason; the CI-coverage gap for the in-process-mcp criteria remains open and registered.
+
+
+### Round 357: the manual workflow succeeded on cron at 18:43Z and fails on every push today - the trigger is part of the puzzle
+
+Sharpened the round-356 finding with the workflow's own history:
+
+* the workflow **has 20 successes** and 18 failures overall, and the most recent success is `a7e2cf4` at **18:43Z on 2026-10-05** - a run that touched **zero**
+  `.github` files, i.e. it came from the **cron or a dispatch**, not from a push;
+* between that success and my first edit there is **no other run at all**;
+* then **every push that touched `.github/**` fails**, including `ce71ca4`, where I restored the file **byte-for-byte** to the state that had just succeeded on
+  cron (`diff -q` against `6b79ca7^`).
+
+**So the picture is now**: the same file content **succeeds when the workflow is triggered on a schedule** and **fails when it is pushed**. That rules out a simple
+"the YAML is invalid" reading - an invalid file could not have run successfully at 18:43Z - and it points at GitHub's **push-time workflow validation** as the thing
+that is unhappy, with a cause this session has not yet isolated. Candidates worth checking next, in order: whether **another workflow file changed in the same
+push batch** and is the actual invalid one (validation errors are reported against the workflow path that changed, and `80a7f85` - tracking only - failing suggests
+the *push* is being judged, not the file); whether a **required input, environment or runner label** referenced by this workflow is missing on push; and whether
+GitHub's parser rejects a construct that only the dispatch path tolerates.
+
+**Attribution, stated plainly**: I cannot yet say whether my edit was fine on its own. What is established is that reverting did not clear the failure, so my edit is
+**not sufficient** to explain it, and the previous "my edit broke validation" claim stays retracted.
+
+**Next step, cheaper than another push**: use `workflow_dispatch` on `gates-manual.yml` (the scheduled path that last succeeded) and read whether a dispatch is
+accepted now. If a dispatch still works while pushes fail, the defect is in push-time validation or in a sibling file changed by the same push - and the manual tier
+remains usable, which matters because the objective treats it as an authoritative source of "green".
