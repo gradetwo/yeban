@@ -9689,3 +9689,23 @@ about fifteen minutes and changed nothing in the repository.
 
 **Status**: tree green and clean at `3614fa8` (= `origin/main`); automatic CI green through `3614fa8` with nothing unread; Phase 4 6 完成 / 5 部分 / 0 PENDING; no
 open question; the only unproven claim remains that Logic Pro opens the exported document, which is a data gap rather than a code gap.
+
+
+### Round 400: the负责人 will open the exported document - the artifact path is recorded here so it can be found again
+
+The负责人 ruled that Logic Pro is installed on this machine and that they will open the exported document themselves ("文件在哪里，我来开吧"), so the GUI-automation
+subagent that had been delegated for the same purpose was stopped to avoid two processes driving Logic at once. **The artifact I produced for them is at
+`/tmp/yeban-logic-open/Yeban.logicx`** - a four-file bundle (`Alternatives/000/ProjectData` 1428 B, `Alternatives/000/MetaData.plist` 15004 B,
+`Alternatives/000/DisplayState.plist` 168 B, `Resources/ProjectInformation.plist` 197 B), produced by `yeban-app --export-logic` with the non-default feature
+`experimental-logic-export`.
+
+**One incident worth recording**: stopping that subagent removed the `/tmp` directory it had been working in, which included the first copy I had pointed the负责人 at,
+so the artifact had to be exported again. The path above is the re-export, verified present with `stat -f%z` on all four files. **The lesson is small but real**: a
+generated artifact that a human is expected to use should have its path written down **and** be re-verified before it is promised, because a cleanup by another actor
+can remove it silently.
+
+**What remains**: the负责人's report of what happened when Logic opened it. Either answer closes the claim - success upgrades `ROAD-M4-011`'s wording with a version and
+date, failure records the measured refusal - and until that report arrives the exporter's claim stays exactly as narrow as the ledger says.
+
+**Status**: tree green and clean at `20342b0` (= `origin/main`); `20342b0`'s CI verdict is **unread** because the GitHub API returned `unexpected EOF` twice, so it is not
+claimed green; every earlier commit of this session has a read-back green verdict; Phase 4 6 完成 / 5 部分 / 0 PENDING.
