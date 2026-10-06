@@ -2,8 +2,11 @@
 //!
 //! 规范来源 (Normative):
 //! - `[UI-A11Y-001]` UI/UX 规范 §7.1「全键盘热键映射规范 (Physical Scancode Binding)」:
-//!   绑定基于**物理扫描码**, 避免输入法与键盘布局切换产生键位漂移。因此本模块的输入是
-//!   [`PhysicalKey`] 而不是"字符" —— 按 `Shift+2` 得到的 `@` 不该被当成 `@` 热键。
+//!   绑定基于**物理扫描码**, 避免输入法与键盘布局切换产生键位漂移。
+//!   ⚠ **GUI 路径做不到这一条**（Slint 的 `KeyEvent` 没有物理码）⇒ 按 `N2` 裁决 **(1)**
+//!   （`docs/ledger/open-questions.md` 问题 1）：**GUI 绑逻辑键**
+//!   ([`LogicalKey`] / [`InputContext::resolve_logical`])，**无头端口保留物理码判据**
+//!   ([`PhysicalKey`] / [`InputContext::resolve`])。两条入口共用**同一张**策略表。
 //! - `[UI-A11Y-002]` §7.2「输入法 IME 候选词保护规范」: 合成态 (`is_composing == true`) 下
 //!   **必须彻底拦截 `Space`/`B`/`Z` 等全部单键快捷键的冒泡分发**。
 //! - 规范 §2.2「`Tab` 键焦点隔离 (MUST)」: 焦点在主工作区画布时 `Tab` 切视图;
@@ -17,7 +20,9 @@
 //!    把它做成零依赖状态机, 测试就能在任何机器上跑 (CI 的 `-p yeban-app` 腿)。
 //! 2. Slint 侧的 `FocusScope` / `TextInput` 绑定只是**事件来源**。真正的"哪个键在当前
 //!    IME 状态下应该做什么"是一个策略表, 策略表属于业务逻辑, 不属于表现层。
-//!    宿主把 Slint 的按键事件翻译成 [`PhysicalKey`] + [`Modifiers`], 再问 [`InputContext::resolve`]。
+//!    宿主把 Slint 的按键事件解析成 [`LogicalKey`] + [`Modifiers`], 再问
+//!    [`InputContext::resolve_logical`]；能拿到物理键身份的那条路（无头端口）走
+//!    [`InputContext::resolve`], 两者跑的是同一张表。
 //!
 //! ## 三条被显式编码进来的策略决定 (规范没写的部分)
 //!
@@ -42,7 +47,9 @@ pub enum Focus {
     Other,
 }
 
-/// 修饰键状态。基于物理修饰键, 与扫描码绑定配套。
+/// 修饰键状态。两条入口共用它：物理码入口跟着扫描码绑定，GUI 路径跟着 Slint 的
+/// `KeyboardModifiers`（macOS 上 Slint 把 `Cmd` 映射到 `control`、`Ctrl` 映射到 `meta`，
+/// 因此"命令键"一律问 [`Modifiers::command`] 而不是只看一个字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modifiers {
     /// 左/右 `Ctrl`。
@@ -150,6 +157,10 @@ impl Modifiers {
 ///
 /// 只列 `[UI-A11Y-001]` 表格里真实出现过的键, 加上 `Delete`/`Backspace`
 /// (规范写在同一格里)。没有映射的键由宿主直接丢弃, 不进本状态机。
+///
+/// **谁用它**：无头测试端口 (`live_surface.rs` 的 `physical_key_of`)、`undo.rs` 的
+/// `perform_key`、以及本模块的判据 —— 也就是"能拿到物理键身份"的那条路。
+/// GUI 路径拿不到 (Slint 的 `KeyEvent` 只有 `text`)，见 [`LogicalKey`] 与 `N2` 裁决。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalKey {
     /// `Space` —— 播放 / 暂停。
@@ -184,6 +195,118 @@ pub enum PhysicalKey {
     BracketLeft,
     /// `]` —— 切到 AI 提案分支试听。
     BracketRight,
+}
+
+impl PhysicalKey {
+    /// 物理键 → 它"打出来"的那个逻辑键（**唯一的**桥）。
+    ///
+    /// 存在的理由只有一个：[`InputContext::resolve`]（物理码入口）与
+    /// [`InputContext::resolve_logical`]（GUI 的逻辑键入口）必须跑**同一张**快捷键策略表，
+    /// 否则两个入口迟早分叉。它不是"布局换算"：`KeyZ` 在任何布局下都映射到逻辑 `z`，
+    /// 因此物理码入口的语义（"这个键位"）一位没变 —— 变的是策略表用哪套词表写下来。
+    ///
+    /// `Digit(d)` 只对 `0..=9` 有意义（本模块的判据与端口都只用这个范围）；
+    /// 超出的值映射到一个**不可能是快捷键**的字符，于是如实落到 `PassThrough`，不回绕、不 panic。
+    #[must_use]
+    pub fn logical(self) -> LogicalKey {
+        match self {
+            Self::Space => LogicalKey::Space,
+            Self::Tab => LogicalKey::Tab,
+            Self::Escape => LogicalKey::Escape,
+            Self::Enter => LogicalKey::Enter,
+            Self::Backspace => LogicalKey::Backspace,
+            Self::Delete => LogicalKey::Delete,
+            Self::F5 => LogicalKey::F5,
+            Self::F6 => LogicalKey::F6,
+            Self::KeyB => LogicalKey::Character('b'),
+            Self::KeyZ => LogicalKey::Character('z'),
+            Self::KeyH => LogicalKey::Character('h'),
+            Self::KeyD => LogicalKey::Character('d'),
+            Self::KeyM => LogicalKey::Character('m'),
+            Self::Digit(digit) => {
+                LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
+            }
+            Self::BracketLeft => LogicalKey::Character('['),
+            Self::BracketRight => LogicalKey::Character(']'),
+        }
+    }
+}
+
+/// **逻辑键** —— GUI 路径的键表示（`N2` 裁决 **(1)**）。
+///
+/// ## 为什么需要第二个键类型
+///
+/// `[UI-A11Y-001]` 的绑定基于**物理扫描码**，而 Slint 的公开按键事件里**没有物理码**：
+/// `KeyEvent { text, modifiers, repeat }`（`i-slint-common-1.18.1/builtin_structs.rs:104-108`）
+/// 只有 `text`。GUI 因此**只能**绑逻辑键 —— 这正是 `docs/ledger/open-questions.md` 问题 1
+/// 的 `N2` 裁决：**GUI 绑逻辑键，无头端口保留物理码判据**，残余（逻辑绑定表达不了的
+/// 与布局无关的意图）写在 `docs/ledger/app-projection-notes.md` 的 `N2` 行里。
+///
+/// ## 它是什么、不是什么
+///
+/// - 它是 [`InputContext::resolve_logical`] 的输入，也是**唯一**从 Slint 的
+///   `event.text` 解析出来的词表（[`Self::from_text`]）。
+/// - 它**不是**"把物理键翻译掉"：物理码入口原样保留（[`PhysicalKey::logical`] 只是让两条
+///   入口共用一张策略表）。
+/// - 可打印键统一**小写化**，组合由**修饰位**表达（`Cmd+Shift+Z` 的 `text` 是 `"Z"`，
+///   修饰位带 `shift`）。Shift 之后**变了字符**的键（美式布局的 `Shift+1` = `"!"`）不会被
+///   折回未 Shift 的键位 —— 那是"逻辑绑定表达不了与布局无关的意图"的真实残余，写在
+///   `docs/ledger/app-projection-notes.md` 的 `N2` 行，不在这里假装它不存在。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalKey {
+    /// `Space`（Slint 的 `event.text == " "`）。
+    Space,
+    /// `Tab`（`"\t"`）。
+    Tab,
+    /// `Esc`（`"\u{1b}"`）。
+    Escape,
+    /// `Enter`/`Return`（`"\n"`）。
+    Enter,
+    /// `Backspace`（`"\u{8}"`）。
+    Backspace,
+    /// `Delete`（`"\u{7f}"`）。
+    Delete,
+    /// `F5`（`"\u{f708}"`）—— 直达 Session 视图。
+    F5,
+    /// `F6`（`"\u{f709}"`）—— 直达 Arrangement 视图。
+    F6,
+    /// 可打印键（**已小写化**；`[`/`]`/数字/字母都在这里）。
+    Character(char),
+}
+
+impl LogicalKey {
+    /// Slint 的 `KeyEvent.text` → 逻辑键（**唯一**的解析点）。
+    ///
+    /// 非打印键用 Slint 的私有区 / 控制字符表示，取值表在
+    /// `i-slint-common-1.18.1/key_codes.rs` 的 `for_each_keys!`（`Space` 就是普通空格）。
+    /// 返回 `None` = 这一串 `text` 不代表一次可绑定的按键（多字符文本、裸修饰键、
+    /// 方向键等尚未接线的键）⇒ 宿主**不消费**它，交给焦点系统。
+    ///
+    /// 刻意**不**把 Shift 后的符号折回未 Shift 的键位：`"!"` 只可能是 `Character('!')`
+    /// （策略表里没有它 ⇒ `PassThrough`），不会变成 `"1"`。理由见类型文档的残余说明。
+    #[must_use]
+    pub fn from_text(text: &str) -> Option<Self> {
+        let mut chars = text.chars();
+        let first = chars.next()?;
+        if chars.next().is_some() {
+            // 一次按键只携带一个字符；多字符不是按键（例如已经上屏的文本）。
+            return None;
+        }
+        Some(match first {
+            '\u{0008}' => Self::Backspace,
+            '\u{0009}' => Self::Tab,
+            '\u{000a}' => Self::Enter,
+            '\u{001b}' => Self::Escape,
+            '\u{007f}' => Self::Delete,
+            '\u{f708}' => Self::F5,
+            '\u{f709}' => Self::F6,
+            ' ' => Self::Space,
+            printable if printable.is_ascii_graphic() => {
+                Self::Character(printable.to_ascii_lowercase())
+            }
+            _ => return None,
+        })
+    }
 }
 
 /// `[UI-NOTE-003]` 左键**拖拽**在该工具下的语义（规范矩阵的"左键拖拽"列）。
@@ -382,6 +505,22 @@ impl Tool {
             _ => None,
         }
     }
+
+    /// 工具 → 它的数字键（`[UI-NOTE-003]` 矩阵的行号，与 [`Self::from_digit`] 互逆）。
+    ///
+    /// GUI 路径需要正向映射：逻辑键 `"3"` 解析出的 [`Action::SelectTool`] 最终要写成界面上的
+    /// `active-tool`，而这个属性与 `from_digit` 用的是同一套数字口径 —— 写两处 `match`
+    /// 迟早会让"按 3 得到剪刀"和"界面显示 3"分叉。
+    #[must_use]
+    pub const fn digit(self) -> u8 {
+        match self {
+            Self::Select => 1,
+            Self::Pencil => 2,
+            Self::Knife => 3,
+            Self::Velocity => 4,
+            Self::Eraser => 5,
+        }
+    }
 }
 
 /// 双视图 (`Session` 触发矩阵 / `Arrangement` 线性编曲)。
@@ -501,7 +640,17 @@ impl InputContext {
         self.composing = false;
     }
 
-    /// 解析一次按键。
+    /// 解析一次按键（**物理码入口** —— 无头端口与既有判据走这条）。
+    ///
+    /// 实现**只有一份**：它把物理键映射成它打出来的逻辑键（[`PhysicalKey::logical`]），
+    /// 再交给 [`Self::resolve_logical`]。因此 `N2` 裁决引入的逻辑键词表**不会**造出第二张
+    /// 快捷键表 —— 物理码的语义（"这个键位"）一位没变，判据原样通过。
+    #[must_use]
+    pub fn resolve(&self, key: PhysicalKey, modifiers: Modifiers) -> Resolution {
+        self.resolve_logical(key.logical(), modifiers)
+    }
+
+    /// 解析一次按键（**逻辑键入口** —— GUI 路径走这条，`N2` 裁决 (1)）。
     ///
     /// 判定顺序 (顺序本身就是规范优先级):
     /// 1. `F5`/`F6` —— 全局直达, 连合成态都放行;
@@ -511,8 +660,8 @@ impl InputContext {
     /// 5. `Shift` 组合;
     /// 6. 无修饰单键。
     #[must_use]
-    pub fn resolve(&self, key: PhysicalKey, modifiers: Modifiers) -> Resolution {
-        use PhysicalKey as Key;
+    pub fn resolve_logical(&self, key: LogicalKey, modifiers: Modifiers) -> Resolution {
+        use LogicalKey as Key;
 
         // 1. F5 / F6: 「全局无冲突备选快捷键」。
         match key {
@@ -534,12 +683,14 @@ impl InputContext {
         // 3. Cmd / Ctrl 组合。
         if modifiers.command() {
             return match (key, modifiers.shift, modifiers.alt) {
-                (Key::KeyZ, false, false) => Resolution::Action(Action::Undo),
-                (Key::KeyZ, true, false) => Resolution::Action(Action::Redo),
-                (Key::KeyH, true, false) => Resolution::Action(Action::OpenTimeMachine),
-                (Key::KeyD, false, false) => Resolution::Action(Action::Duplicate),
-                (Key::KeyB, false, true) => Resolution::Action(Action::ToggleSidebar),
-                (Key::KeyM, false, true) => Resolution::Action(Action::ToggleConsoleMaximize),
+                (Key::Character('z'), false, false) => Resolution::Action(Action::Undo),
+                (Key::Character('z'), true, false) => Resolution::Action(Action::Redo),
+                (Key::Character('h'), true, false) => Resolution::Action(Action::OpenTimeMachine),
+                (Key::Character('d'), false, false) => Resolution::Action(Action::Duplicate),
+                (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
+                (Key::Character('m'), false, true) => {
+                    Resolution::Action(Action::ToggleConsoleMaximize)
+                }
                 _ => Resolution::PassThrough,
             };
         }
@@ -547,8 +698,8 @@ impl InputContext {
         // 4. Alt 组合: 规范 §2.2 的 `Alt + 1` / `Alt + 2` 备选视图切换。
         if modifiers.alt {
             return match key {
-                Key::Digit(1) => Resolution::Action(Action::ShowView(View::Session)),
-                Key::Digit(2) => Resolution::Action(Action::ShowView(View::Arrangement)),
+                Key::Character('1') => Resolution::Action(Action::ShowView(View::Session)),
+                Key::Character('2') => Resolution::Action(Action::ShowView(View::Arrangement)),
                 _ => Resolution::PassThrough,
             };
         }
@@ -558,7 +709,7 @@ impl InputContext {
             return match key {
                 Key::Space => Resolution::Action(Action::ResumeFromCursor),
                 Key::Enter => Resolution::Action(Action::AcceptAiSuggestion),
-                Key::KeyZ => Resolution::Action(Action::ZoomToFit),
+                Key::Character('z') => Resolution::Action(Action::ZoomToFit),
                 _ => Resolution::PassThrough,
             };
         }
@@ -577,11 +728,11 @@ impl InputContext {
             Key::Space => Resolution::Action(Action::PlayPause),
             Key::Escape => Resolution::Action(Action::Cancel),
             Key::Delete | Key::Backspace => Resolution::Action(Action::DeleteSelection),
-            Key::KeyB => Resolution::Action(Action::TogglePencilTool),
-            Key::KeyZ => Resolution::Action(Action::ZoomToSelection),
-            Key::BracketLeft => Resolution::Action(Action::AuditionMain),
-            Key::BracketRight => Resolution::Action(Action::AuditionProposal),
-            Key::Digit(digit) => match Tool::from_digit(digit) {
+            Key::Character('b') => Resolution::Action(Action::TogglePencilTool),
+            Key::Character('z') => Resolution::Action(Action::ZoomToSelection),
+            Key::Character('[') => Resolution::Action(Action::AuditionMain),
+            Key::Character(']') => Resolution::Action(Action::AuditionProposal),
+            Key::Character(digit @ '1'..='5') => match Tool::from_digit(digit as u8 - b'0') {
                 Some(tool) => Resolution::Action(Action::SelectTool(tool)),
                 None => Resolution::PassThrough,
             },
@@ -612,6 +763,11 @@ mod tests {
         KeyH, KeyM, KeyZ, Space, Tab,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
+
+    /// 逻辑键的短别名。不能直接 `use LogicalKey::{...}`：`PhysicalKey` 有同名变体
+    /// （`Space`/`Tab`/…）已在作用域里，两个 `use` 会撞名。类型别名上的变体路径
+    /// （`LKey::Space`）让两条入口在判据里一眼可辨。
+    type LKey = LogicalKey;
 
     fn canvas() -> InputContext {
         let mut ctx = InputContext::new();
@@ -1027,5 +1183,186 @@ mod tests {
         ] {
             assert!(!mods.is_bare());
         }
+    }
+
+    // ------------------------------------------------------- N2 逻辑键（GUI 路径）
+    /// 判据（`N2` 裁决 (1) 的**反漂移**判据）：物理码入口与逻辑键入口**逐项同解**。
+    ///
+    /// 两条入口共用一张策略表是本裁决成立的前提；一旦有人在 `resolve_logical` 里改了一条
+    /// 绑定而忘了物理侧（或反过来），这条判据立刻变红。覆盖三类上下文（画布 / 文本域 /
+    /// 合成中的文本域）× 七种修饰位组合 × 物理键全表。
+    #[test]
+    fn physical_and_logical_entries_resolve_identically() {
+        let mut composing = text_field();
+        composing.begin_composition();
+        let contexts = [canvas(), text_field(), composing];
+        let modifier_sets = [
+            Modifiers::none(),
+            Modifiers::shift(),
+            Modifiers::ctrl(),
+            Modifiers::meta(),
+            Modifiers::alt(),
+            Modifiers::ctrl_shift(),
+            Modifiers::ctrl_alt(),
+        ];
+        let keys = [
+            Space,
+            Tab,
+            Escape,
+            Enter,
+            Backspace,
+            Delete,
+            F5,
+            F6,
+            KeyB,
+            KeyZ,
+            KeyH,
+            KeyD,
+            KeyM,
+            Digit(0),
+            Digit(1),
+            Digit(5),
+            Digit(9),
+            BracketLeft,
+            BracketRight,
+        ];
+        for ctx in contexts {
+            for key in keys {
+                for mods in modifier_sets {
+                    assert_eq!(
+                        ctx.resolve(key, mods),
+                        ctx.resolve_logical(key.logical(), mods),
+                        "物理 `{key:?}` 与它的逻辑键在 {mods:?} 下必须同解（焦点 {:?}）",
+                        ctx.focus()
+                    );
+                }
+            }
+        }
+    }
+
+    /// 判据：`Tool::digit` 是 `Tool::from_digit` 的**逆**（GUI 路径要把动作写回 `active-tool`）。
+    #[test]
+    fn tool_digit_is_the_inverse_of_from_digit() {
+        for tool in Tool::all_in_matrix_order() {
+            assert_eq!(
+                Tool::from_digit(tool.digit()),
+                Some(tool),
+                "{tool:?} 的数字键必须是它自己在矩阵里的行号"
+            );
+        }
+        // 矩阵行号必须是 1..=5（与 `.slint` 的 `for tool_index in 5` 同一口径）。
+        assert_eq!(
+            Tool::all_in_matrix_order().map(Tool::digit),
+            [1, 2, 3, 4, 5]
+        );
+    }
+
+    /// 判据：Slint 的 `KeyEvent.text` 词表 → 逻辑键（`N2` 的解析点）。
+    ///
+    /// 取值来自 `i-slint-common-1.18.1/key_codes.rs` 的 `for_each_keys!`（非打印键是
+    /// 控制字符 / 私有区字符）。**多字符、裸修饰键、尚未接线的键一律 `None`** ——
+    /// 宿主据此**不消费**它们，而不是把它们猜成某个快捷键。
+    #[test]
+    fn logical_keys_are_parsed_from_the_slint_text_vocabulary() {
+        assert_eq!(LogicalKey::from_text(" "), Some(LKey::Space));
+        assert_eq!(LogicalKey::from_text("\t"), Some(LKey::Tab));
+        assert_eq!(LogicalKey::from_text("\n"), Some(LKey::Enter));
+        assert_eq!(LogicalKey::from_text("\u{1b}"), Some(LKey::Escape));
+        assert_eq!(LogicalKey::from_text("\u{8}"), Some(LKey::Backspace));
+        assert_eq!(LogicalKey::from_text("\u{7f}"), Some(LKey::Delete));
+        assert_eq!(LogicalKey::from_text("\u{f708}"), Some(LKey::F5));
+        assert_eq!(LogicalKey::from_text("\u{f709}"), Some(LKey::F6));
+        // 可打印键：小写化后进策略表（`Cmd+Shift+Z` 的 text 是 "Z"，组合由修饰位表达）。
+        assert_eq!(LogicalKey::from_text("z"), Some(LKey::Character('z')));
+        assert_eq!(LogicalKey::from_text("Z"), Some(LKey::Character('z')));
+        assert_eq!(LogicalKey::from_text("3"), Some(LKey::Character('3')));
+        assert_eq!(LogicalKey::from_text("["), Some(LKey::Character('[')));
+        // 残余（写在 N2 行里，不在这里假装不存在）：Shift 之后变了字符的键**不折回**未 Shift
+        // 的键位 —— `"!"` 不是 `"1"`，因此美式布局下 `Alt+1` 这类组合在逻辑路径上可能解析不出来。
+        assert_eq!(LogicalKey::from_text("!"), Some(LKey::Character('!')));
+        assert_ne!(LogicalKey::from_text("!"), Some(LKey::Character('1')));
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('!'), Modifiers::none()),
+            PassThrough
+        );
+        // 非按键文本：多字符 / 空 / 裸修饰键 / 尚未接线（方向键是 `[UI-NOTE-005]` 的未实现项）。
+        assert_eq!(LogicalKey::from_text(""), None);
+        assert_eq!(LogicalKey::from_text("ab"), None);
+        assert_eq!(LogicalKey::from_text("\u{10}"), None); // Shift 单键
+        assert_eq!(LogicalKey::from_text("\u{11}"), None); // Ctrl 单键
+        assert_eq!(LogicalKey::from_text("\u{17}"), None); // Meta 单键
+        assert_eq!(LogicalKey::from_text("\u{f700}"), None); // UpArrow
+    }
+
+    /// 判据（**本裁决要交付的那一条**）：一个逻辑键快捷键**真的**解析出动作。
+    ///
+    /// `1`–`5` 与 `B`/`Tab`/`F5`/`F6` 是 GUI 路径上第一批真的可用的快捷键
+    /// （`active-tool` / `arrangement-view` 由 `host::wire_keys` 落到界面上；
+    /// 落到界面之后的那一半由 `tests/live_ui_mcp.rs` 经无头端口判）。
+    #[test]
+    fn logical_shortcuts_resolve_to_their_actions() {
+        for digit in 1_u8..=5 {
+            let ch = char::from_digit(u32::from(digit), 10).expect("1..=5 一定是数字");
+            assert_eq!(
+                canvas().resolve_logical(LKey::Character(ch), Modifiers::none()),
+                Act(SelectTool(Tool::from_digit(digit).expect("1..=5 都是工具"))),
+                "逻辑键 `{ch}` 必须选中矩阵第 {digit} 行的工具"
+            );
+        }
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('b'), Modifiers::none()),
+            Act(TogglePencilTool)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Tab, Modifiers::none()),
+            Act(ToggleView)
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::F5, Modifiers::none()),
+            Act(ShowView(View::Session))
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::F6, Modifiers::none()),
+            Act(ShowView(View::Arrangement))
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('z'), Modifiers::ctrl()),
+            Act(Undo),
+            "`Ctrl+Z` 的逻辑路径必须与物理路径同解（D45 的快捷键那一半）"
+        );
+        // 未绑定的逻辑键**不得**被消费。
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('q'), Modifiers::none()),
+            PassThrough
+        );
+    }
+
+    /// 逻辑键入口同样受 §7.2 的 IME 门控（合成态吞掉、文本域放行）—— 守卫不能只在物理入口生效。
+    #[test]
+    fn logical_entries_are_gated_by_ime_and_focus() {
+        let mut composing = text_field();
+        composing.begin_composition();
+        assert_eq!(
+            composing.resolve_logical(LKey::Character('3'), Modifiers::none()),
+            ConsumedByIme
+        );
+        assert_eq!(
+            composing.resolve_logical(LKey::Space, Modifiers::none()),
+            ConsumedByIme
+        );
+        // `F5`/`F6` 连合成态都放行（既有语义，两条入口一致）。
+        assert_eq!(
+            composing.resolve_logical(LKey::F5, Modifiers::none()),
+            Act(ShowView(View::Session))
+        );
+        // 非合成态的文本域：单键交给文本控件（"打字"而不是 DAW 动作）。
+        assert_eq!(
+            text_field().resolve_logical(LKey::Character('3'), Modifiers::none()),
+            PassThrough
+        );
+        assert_eq!(
+            text_field().resolve_logical(LKey::Tab, Modifiers::none()),
+            PassThrough
+        );
     }
 }

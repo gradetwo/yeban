@@ -1376,3 +1376,94 @@ fn dry_run_reports_the_same_failure_as_the_real_save() {
         dry.code, dry.kind
     ));
 }
+
+// ===========================================================================
+// `N2` 裁决 (1)：GUI 路径的**逻辑键**快捷键
+// ===========================================================================
+//
+// `docs/ledger/open-questions.md` 问题 1 的裁决 (1)：**GUI 绑逻辑键，无头端口保留物理码判据**。
+// 依据是 Slint 的公开按键事件只有 `text`（`KeyEvent { text, modifiers, repeat }`），
+// 拿不到 `src/input.rs` 扫描码表要的物理键身份。
+//
+// 这一节判的就是裁决要求的那条判据：一个用**逻辑键**表达的快捷键，在**真实界面**上
+// 真的作用到宿主状态。链路是：
+//
+// ```text
+// ui/dispatch_key_press(KeyCode) --LivePort--> Slint WindowEvent::KeyPressed { text }
+//   --ui/app.slint 的 key-handler(FocusScope).key-pressed--> callback key-action(text, 修饰位)
+//   --host::wire_keys--> input::resolve_logical --> apply_action --> MainWindow 的属性
+// ```
+//
+// 没有一处经过物理码；物理码那条路（`physical_key_of` + `InputContext::resolve`）保持原样，
+// 仍由本文件其它判据与 `test_port_adapter.rs` / `undo.rs` 的判据覆盖。
+
+/// 判据 16（`N2` 裁决 (1)）：逻辑键快捷键**真的**触发动作 —— 经端口的真事件源，也经回调那一格。
+///
+/// 三个观测面：
+/// 1. `ui/dispatch_key_press` 注入 `"3"`（端口的 `KeyCode::Character` → `type_char` →
+///    `WindowEvent::KeyPressed { text: "3" }`）⇒ `active-tool` 必须变成矩阵第 3 行；
+/// 2. 同一个端口注入 `Tab` ⇒ 画布焦点下必须切视图，且**被消费**（`accept` 意味着
+///    Slint 自己的 `Tab` 焦点轮转不再接管 —— 这正是 §2.2 MUST 的形态）；
+/// 3. `invoke_key_action` 直接驱动 `.slint` 回调那一格：已绑定的键被消费、未绑定的键
+///    与"这个装配没有撤销会话"的 `Cmd+Z` 如实 `reject`（不假装处理了）。
+#[test]
+fn a_logical_key_shortcut_from_the_event_source_reaches_the_host_action() {
+    let project = demo_project();
+    let ui = build_live_ui(&project, Permission::Interactive).expect("装配");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let mut plane = ui.into_control_plane(Permission::Interactive);
+
+    // ① 起点：矩阵第 1 行（选择工具）、Arrangement 视图。
+    assert_eq!(window.get_active_tool(), 1, "默认工具是选择");
+    assert!(window.get_arrangement_view(), "默认视图是 Arrangement");
+
+    // ② 端口注入逻辑键 `"3"`（**没有**任何物理码参与）。
+    let pressed = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":101,"method":"ui/dispatch_key_press","params":{"keyCode":"3"}}"#,
+    );
+    assert!(!pressed.is_error(), "逻辑键注入必须成功: {pressed:?}");
+    let after_digit = window.get_active_tool();
+    assert_eq!(
+        after_digit, 3,
+        "逻辑键 `3` 必须真的切到剪刀工具（矩阵第 3 行）"
+    );
+
+    // ③ 同一个事件源注入 `Tab`：画布焦点 ⇒ 切视图，且这一键被 DAW 消费（不再做焦点轮转）。
+    let tab = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":102,"method":"ui/dispatch_key_press","params":{"keyCode":"Tab"}}"#,
+    );
+    assert!(!tab.is_error(), "Tab 注入必须成功: {tab:?}");
+    let after_tab = window.get_arrangement_view();
+    assert!(!after_tab, "画布聚焦时 `Tab` 必须切到 Session 视图");
+
+    // ④ `.slint` 回调那一格直接驱动（同一个回调、同一张策略表）。
+    assert!(
+        window.invoke_key_action("5".into(), false, false, false, false),
+        "已绑定的逻辑键 `5` 必须被消费（accept）"
+    );
+    let after_five = window.get_active_tool();
+    assert_eq!(after_five, 5, "逻辑键 `5` 必须切到橡皮擦");
+    assert!(
+        window.invoke_key_action("b".into(), false, false, false, false),
+        "`B` 必须被消费"
+    );
+    let after_b = window.get_active_tool();
+    assert_eq!(after_b, 2, "`B` 把非铅笔工具切到铅笔（箭头 ⇄ 铅笔）");
+
+    // ⑤ 未绑定的逻辑键**不得**被消费（`reject` ⇒ 事件继续冒泡 / 交给焦点系统）。
+    assert!(
+        !window.invoke_key_action("q".into(), false, false, false, false),
+        "没有绑定的逻辑键不得被吞掉"
+    );
+    // ⑥ 撤销族在**本装配**上没有撤销会话（`wire_keys(.., None)`）⇒ 如实不消费。
+    assert!(
+        !window.invoke_key_action("z".into(), false, true, false, false),
+        "没有撤销会话时 `Cmd+Z` 必须如实放行（而不是假装撤销了）"
+    );
+
+    report_line(&format!(
+        "[n2-logical-keys] 逻辑键路径实测: 端口注入 `3` ⇒ active-tool 1→{after_digit}; \
+         端口注入 `Tab` ⇒ arrangement-view true→{after_tab}; 回调注入 `5` ⇒ {after_five}、`B` ⇒ {after_b}; \
+         未绑定的 `q` 与无撤销会话的 `Cmd+Z` 如实 reject（物理码判据未改动）"
+    ));
+}

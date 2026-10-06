@@ -41,7 +41,7 @@ pub use undo_session::{
     CommitRequest, UndoDisplay, UndoRefusal, UndoSession, UndoState, project_fingerprint,
 };
 
-use crate::input::{Action, InputContext, Modifiers, PhysicalKey, Resolution};
+use crate::input::{Action, InputContext, LogicalKey, Modifiers, PhysicalKey, Resolution};
 
 /// 界面上的撤销类动作（**全部**撤销入口都归到这里）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +49,8 @@ pub enum UiAction {
     /// `[D56]` 人工导出诊断包（把调试信息与相关文件打包, 供复现排查）。
     ExportDiagnostics,
     /// `[UI-NOTE-003]` 切到某个卷帘工具（**视图状态**；由键盘路径派发，界面侧应用）。
-    /// N2：`InputContext` 在 GUI 路径上还没有读者 ⇒ 本条目前收不到按键（见 app-projection-notes.md）。
+    /// `N2` 裁决 (1) 之后：GUI 的逻辑键路径（`host::wire_keys`）经这里下发，
+    /// 宿主随即把 `active-tool` 写到界面上（本端口碰不到 Slint）。
     SelectTool(crate::input::Tool),
     /// `Cmd+Z` / 时光机里的"撤销一步"按钮。
     Undo,
@@ -99,7 +100,7 @@ pub const fn dispatch_key(action: Action) -> Option<UiAction> {
     }
 }
 
-/// 键盘事件 → 会话动作：**整条链的唯一落点**。
+/// 键盘事件（**物理码入口**）→ 会话动作：**整条链的唯一落点**。
 ///
 /// `context` 就是 `crate::input` 的策略表（物理扫描码绑定 + IME 合成态拦截 +
 /// 焦点规则 `[UI-A11Y-001/002]`），因此本函数**不复制**任何键盘策略：
@@ -114,7 +115,22 @@ pub fn perform_key(
     key: PhysicalKey,
     modifiers: Modifiers,
 ) -> Option<ActionOutcome> {
-    match context.resolve(key, modifiers) {
+    perform_logical_key(port, context, key.logical(), modifiers)
+}
+
+/// 同 [`perform_key`]，但收的是 **GUI 路径的逻辑键**（`N2` 裁决 (1)）。
+///
+/// 两条入口共用同一张策略表（`InputContext::resolve` 就是
+/// `resolve_logical(key.logical(), ..)`），因此这里再写一遍 `match` 只会制造第二个真相源。
+/// 存在的理由：Slint 的 `KeyEvent` 没有物理码，GUI **只能**给出逻辑键 ——
+/// 而"人按 `Cmd+Z` 真的能撤销"（ADR-0001 **D45**）必须落在**同一个** `UndoPort` 上。
+pub fn perform_logical_key(
+    port: &UndoPort,
+    context: &InputContext,
+    key: LogicalKey,
+    modifiers: Modifiers,
+) -> Option<ActionOutcome> {
+    match context.resolve_logical(key, modifiers) {
         Resolution::Action(action) => dispatch_key(action).map(|ui_action| port.perform(ui_action)),
         Resolution::PassThrough | Resolution::ConsumedByIme => None,
     }
@@ -717,6 +733,85 @@ mod tests {
         composing.set_focus(crate::input::Focus::TextInput);
         assert_eq!(
             perform_key(&port, &composing, PhysicalKey::KeyZ, Modifiers::meta()),
+            None,
+            "文本框里的 Cmd+Z 必须留给文本框（[UI-A11Y-002]）"
+        );
+    }
+
+    /// 判据（`N2` 裁决 (1)）：**逻辑键**那一跳也真的回退工程 —— 也就是 GUI 上的 `Cmd+Z`。
+    ///
+    /// 与上一条判据的关系：上一条证明物理码入口（无头端口）的整条链，这一条证明
+    /// GUI 唯一拿得到的那套输入（逻辑键名 + 修饰位）落到**同一个** `UndoPort`。
+    /// 两条都过 ⇒ "人按 `Cmd+Z` 与 AI 发工具调用改同一串字节"（D45）在两条入口上都成立。
+    #[test]
+    fn the_logical_key_chain_really_rolls_the_project_back() {
+        let port = port();
+        let pristine = port.fingerprint().expect("指纹");
+        let op = fixture_op(&port);
+        port.commit_ops(NOW + 1, "判据夹具", vec![op])
+            .expect("提交");
+        let edited = port.fingerprint().expect("指纹");
+        assert_ne!(edited, pristine, "夹具必须真的改了工程");
+
+        let canvas = InputContext::new(); // 启动态 = 画布聚焦、非合成态
+        // GUI 上 `Cmd+Z` 的 `event.text` 是 `"z"`；macOS 上 Slint 把 `Cmd` 映射到
+        // `KeyboardModifiers::control`，两条都由 `Modifiers::command()` 覆盖。
+        let outcome = perform_logical_key(
+            &port,
+            &canvas,
+            LogicalKey::Character('z'),
+            Modifiers::meta(),
+        );
+        assert!(
+            matches!(outcome, Some(ActionOutcome::Changed { steps: 1, .. })),
+            "逻辑键 `Ctrl/Cmd+z` 必须真的撤销一步: {outcome:?}"
+        );
+        assert_eq!(
+            port.fingerprint().expect("指纹"),
+            pristine,
+            "逻辑键路径必须真的把工程回退一版"
+        );
+        assert_eq!(port.last_record().expect("日志").action, "undo");
+
+        // `Cmd+Shift+Z` ⇒ 重做（逻辑键 + `shift` 位）。
+        let outcome = perform_logical_key(
+            &port,
+            &canvas,
+            LogicalKey::Character('z'),
+            Modifiers::ctrl_shift(),
+        );
+        assert!(matches!(
+            outcome,
+            Some(ActionOutcome::Changed { steps: 1, .. })
+        ));
+        assert_eq!(port.fingerprint().expect("指纹"), edited);
+
+        // 与撤销无关的逻辑键仍走**同一**下发点（`SelectTool` 只报显示态，不改工程）。
+        assert_eq!(
+            perform_logical_key(
+                &port,
+                &canvas,
+                LogicalKey::Character('3'),
+                Modifiers::none()
+            ),
+            Some(ActionOutcome::DisplayOnly),
+            "工具选择的逻辑键必须经唯一下发点落到端口（界面属性由宿主写）"
+        );
+        // 未绑定的逻辑键放行（不消费）。
+        assert_eq!(
+            perform_logical_key(
+                &port,
+                &canvas,
+                LogicalKey::Character('q'),
+                Modifiers::none()
+            ),
+            None
+        );
+        // 文本输入框聚焦 + `Cmd+Z` ⇒ 策略表说 `PassThrough`（留给文本框做文本撤销）。
+        let mut text = InputContext::new();
+        text.set_focus(crate::input::Focus::TextInput);
+        assert_eq!(
+            perform_logical_key(&port, &text, LogicalKey::Character('z'), Modifiers::meta()),
             None,
             "文本框里的 Cmd+Z 必须留给文本框（[UI-A11Y-002]）"
         );

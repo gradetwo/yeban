@@ -6,11 +6,33 @@
 > （`BASELINE-003`、`ROAD-M0-003`、`ROAD-M0-006`、`ROAD-M4-006`）因此是**依裁决 PENDING**，不是因疏忽。
 > 纪律提醒（本会话第 362/364 轮学到）：**问之前先查本目录与 ADR** —— 已经记录在案的判决依然算数，重复追问是噪音。
 
-## 1. `N2` —— 快捷键（Slint 不暴露物理键码）
+## 1. `N2` —— 快捷键（Slint 不暴露物理键码）✅ **已关闭（2026-10-06，按建议 (1) 执行）**
 - **(1) 建议**：GUI 接受**逻辑键**，无头端口保留**物理码**判据；在 `N2` 行写清端口判据仍覆盖哪些情形。
 - (2) 换 GUI 框架 —— 为快捷键层丢弃 Slint 及建在其上的 UI 层，代价与收益不成比例。
 - (3) 不经判据发布 —— 与"没有判据的能力不算交付"矛盾。
-- **选 (1) 我做**：绑定逻辑键 + 经 `live_ui_mcp`/端口为关键绑定加判据 + 记录残余（逻辑绑定表达不了与布局无关的意图）。
+- **选 (1) 已执行（2026-10-06）**：
+  - `crates/yeban-app/src/input.rs` 新增 `LogicalKey`（唯一解析点 `from_text`，词表取自 Slint 的
+    `key_codes`：`\t`/`\n`/`\u{1b}`/`\u{7f}`/`\u{f708}`/`\u{f709}`/空格/可打印字符）与
+    `InputContext::resolve_logical`；`InputContext::resolve`（物理码入口）改为委托给它 ⇒ **两条入口
+    共用同一张策略表**，由判据 `physical_and_logical_entries_resolve_identically` 逐项机械钉住。
+  - `crates/yeban-app/ui/app.slint` 加 `forward-focus: key-handler;` 与
+    `key-handler := FocusScope { key-pressed(event) => … }`（**唯一**键盘事件源，把 `event.text` +
+    四个修饰位交给宿主的 `key-action` 回调）。
+  - `crates/yeban-app/src/host.rs` 的 `wire_keys` → `apply_action`：工具 / 双视图 / 侧栏 / 控制台 /
+    走带落到**界面已有**的属性与回调；撤销族（`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`）经
+    `undo::dispatch_key`（唯一下发点）落到 `UndoPort`。生产 `main.rs` 传真 `UndoPort`；无头执行面
+    `live_surface.rs` 传 `None`（那里没有撤销会话 ⇒ 如实 `reject`，不假装撤销了）。
+  - **判据**：`crates/yeban-app/tests/live_ui_mcp.rs` 判据 16
+    (`a_logical_key_shortcut_from_the_event_source_reaches_the_host_action`)：从无头端口注入逻辑键
+    `"3"` ⇒ `active-tool` 真的变成矩阵第 3 行；注入 `Tab` ⇒ 切视图且被消费（`accept`）；未绑定的键与
+    无撤销会话的 `Cmd+Z` 如实 `reject`。**负向实测**：临时摘掉 `wire_keys` 这一条立刻变红
+    （`left: 1, right: 3`），因此它不是一条恒绿的判据。另有零 Slint 的判据
+    `undo.rs::the_logical_key_chain_really_rolls_the_project_back`（逻辑键 `Cmd+Z` 真的回退工程字节）。
+  - **端口物理码判据原样保留、一条未改**：`live_surface.rs::physical_key_of` + `key_resolution`
+    （`ui/dispatch_key_press` 的 `dryRun.resolution`）、`test_port_adapter.rs` 的 IME 门控判据、
+    `undo.rs::perform_key`（物理码整链）。它们仍覆盖逻辑绑定**结构上表达不了**的情形（与布局无关的
+    **键位**意图、Shift 改了字符的键如美式 `Shift+1` = `"!"`）—— 逐条写在
+    `docs/ledger/app-projection-notes.md` 的 `N2` 行里。
 
 ## 2. 响度传输（可选；契约侧已闭合且与传输无关）
 - **(a) 建议**：用**已有的**环回控制面推送 5 个字段（无新进程/端口/鉴权；能力继承挂载的"默认关"）。
@@ -65,6 +87,7 @@
 | `ROAD-M4-010` | V1/V2 Web 包袱已彻底删除；汇合项（`P4_Gate` 四个入边）| **它必然被其它项拖住**，不可单独提前判 | **无需单独裁决** —— 随 `M4-006/007/008` 与两项 PENDING 的处置而自然收口 |
 
 **读法**：上表四行里，`M4-006` 与 `M4-010` **不需要你新增裁决**（前者依既有 `D50` 裁决为长期 PENDING，后者是汇合项）；
-**问题 3**（`D47`/`.als` 出口）**已关闭**（按建议 (a) 落地：CLI `--export-als` + 损失表可见）；
+**问题 1**（`N2` 快捷键）与**问题 3**（`D47`/`.als` 出口）**已关闭**（分别按建议 (1) 与 (a) 落地：GUI 绑逻辑键 + 无头端口判据；
+CLI `--export-als` + 损失表可见）；
 真正需要你的只剩 **问题 5**（参考 `.als`）与 **问题 6**（`M4-008`），再加上与 Phase 4 并列的
-**问题 1**（`N2`）、**问题 2**（响度传输）、**问题 4**（`MUST-GATE-014` 素材）。
+**问题 2**（响度传输）、**问题 4**（`MUST-GATE-014` 素材）。

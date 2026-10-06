@@ -927,6 +927,10 @@ pub fn build_live_ui_with(
     // 与 `input_context()` / `ui/property {"name":"isComposing"}` 共享同一个 `Rc`，
     // 因此"界面上的合成态"与"界面看到的合成态"不可能各说各话（不新造状态机）。
     host::wire_input(&window, Rc::clone(&input));
+    // `N2` 裁决 (1)：GUI 的**逻辑键**事件源（`ui/app.slint` 的 `key-handler` FocusScope）。
+    // 判据侧这里**没有**撤销会话（`UndoPort` 住生产 `main.rs`），因此撤销族快捷键
+    // 如实 `reject`（不被消费）；工具 / 视图 / 走带这类界面动作照常生效 —— 判据 16 判的就是它们。
+    host::wire_keys(&window, Rc::clone(&input), None);
     let admin = LiveAdminSurface {
         inner: surface,
         window,

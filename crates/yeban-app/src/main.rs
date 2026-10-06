@@ -61,9 +61,11 @@
 //! → `crate::undo_session`（**与 MCP 的 `yeban_undo` 是同一份源码**，用 `#[path]` 引入）
 //! → `CommitGraph::undo_with`。因此"人按 `Cmd+Z` 与 AI 发工具调用"改的是同一串字节。
 //!
-//! 键盘那一跳（OS 键事件 → `input.rs` 的策略表）**本进程还没有事件源**：
-//! [`yeban_app::undo::perform_key`] 已经把"解析结果 → 工程回退"整条链做完并可判据化，
-//! 缺的只是把键事件喂进来（Slint 不暴露物理扫描码，见台账的 needs）。
+//! 键盘那一跳（OS 键事件 → `input.rs` 的策略表）**已经接上**（`N2` 裁决 (1)）：
+//! `.slint` 的 `FocusScope.key-pressed` 把**逻辑键**（`event.text` + 修饰位）交给
+//! [`yeban_app::host::wire_keys`] → `input::resolve_logical` →（撤销族经
+//! [`yeban_app::undo::dispatch_key`] 这个唯一下发点）→ [`yeban_app::undo::UndoPort`]。
+//! Slint 不暴露物理扫描码，因此 GUI 绑逻辑键；无头端口保留物理码判据（见 `N2` 行）。
 
 use std::cell::RefCell;
 use std::process::ExitCode;
@@ -188,13 +190,20 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // `preedit-text` / `has-focus` 变化 → `ime-composition-changed` / `ime-focus-changed`
     // → `InputContext`（合成态的唯一载体）。
     //
-    // ⚠ **诚实边界**：在 GUI 路径上，这个状态机目前**还没有读者** ——
-    // "Slint 键盘事件 → `input::dispatch_key` → `invoke_*`"那一段仍然没接线
-    // （本线只补事件源，不假装守卫已经生效；消费者缺口记在
-    // docs/ledger/app-projection-notes.md 的 needs 里）。判据侧（`live_surface`）
-    // 的读者是齐的：`ui/property isComposing` 与按键预览都问这个对象。
+    // 生产路径上这个状态机**有读者了**（`N2` 裁决 (1)，2026-10-06）：下面的 `wire_keys`
+    // 把 `.slint` 的 `FocusScope.key-pressed`（`event.text` + 四个修饰位）交给
+    // `input::resolve_logical`，因此 §7.2 的守卫与 §7.1 的快捷键在生产二进制里**真的生效**。
+    //
+    // 残余（如实登记，见 docs/ledger/app-projection-notes.md 的 `N2` 行）：Slint 不暴露物理键码，
+    // 因此这里的绑定是**逻辑键**；"与布局无关的键位"（例如"Z 左边那个键"）只有无头端口的
+    // 物理码判据能表达。另外，键盘源需要 Slint 焦点（`forward-focus` 在窗口建立时给到），
+    // 焦点落在 BPM 敲入框上时单键快捷键按规范归文本控件，没有"自动回焦"的判据。
     let input = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
     host::wire_input(&ui, Rc::clone(&input));
+    // `N2` 裁决 (1)：GUI 的逻辑键快捷键 → 界面动作。撤销族经 `undo::dispatch_key`
+    // （唯一下发点）落到 `UndoPort`，因此 `Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`
+    // 与时光机按钮是**同一条链**（ADR-0001 D45 的"人按 `Cmd+Z` 真的能撤销"）。
+    host::wire_keys(&ui, Rc::clone(&input), Some(Rc::clone(&undo_port)));
     // 撤销的两条界面入口（弹窗开关 + "撤销一步"按钮）都汇到**同一个** `UndoPort`。
     host::wire_undo(&ui, &undo_port);
     // `[UI-NOTE-003]` 卷帘编辑入口（铅笔）：与撤销端口共用同一实现 ⇒ 可撤销是构造上的。

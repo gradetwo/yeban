@@ -243,6 +243,40 @@ export component MainWindow inherits Window {
     callback ime-focus-changed(bool);
 
     // =====================================================================
+    // `N2` 裁决 (1)：GUI 路径的键盘事件源（**逻辑键**）
+    // =====================================================================
+    // Slint 的 `KeyEvent` 只有 `text` + `modifiers`，**没有物理码**
+    // （`i-slint-common-1.18.1/builtin_structs.rs` 的 `KeyEvent { text, modifiers, repeat }`），
+    // 而 `src/input.rs` 的扫描码表需要物理键身份 ⇒ GUI **只能**绑逻辑键。
+    // 因此这个 `FocusScope` 是**唯一**的键盘事件源：它把 `event.text` 与四个修饰位
+    // 原样交给宿主（`host::wire_keys` → `input::resolve_logical`，与无头端口的物理码路径
+    // **共用同一张**快捷键策略表）。
+    //
+    // 参数顺序（Rust 侧 `on_key_action` 必须逐位对齐）：
+    //   text, shift, control, alt, meta
+    //
+    // 返回值 = `.slint` 的 `EventResult`：
+    //   `true`  ⇒ `accept`：这一键被 DAW 消费（不再冒泡，Slint 也不做 `Tab` 焦点轮转）；
+    //   `false` ⇒ `reject`：交给焦点系统 / 文本控件（例如文本框里的 `Tab` 与单键、未绑定的键）。
+    callback key-action(string, bool, bool, bool, bool) -> bool;
+    // 为什么用 `forward-focus`：`FocusScope` 只有在 `has-focus`（或包住获得焦点的元素）时才收键；
+    // `forward-focus` 让窗口建立时焦点就落在这里，因此快捷键**不需要先点一下界面**才生效
+    // （判据 16 的端口注入就是这个前提的机械证据）。
+    // 焦点被 BPM 敲入框拿走时，单键快捷键按 §7.1/§7.2 归文本控件 —— 那是规范语义，不是缺口；
+    // 回到这里要靠 Slint 的焦点轮转（`Tab`）或程序性 `focus()`，**没有**自动回焦的判据（见 N2 行）。
+    forward-focus: key-handler;
+    key-handler := FocusScope {
+        key-pressed(event) => {
+            if (root.key-action(event.text, event.modifiers.shift, event.modifiers.control,
+                                event.modifiers.alt, event.modifiers.meta)) {
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    // =====================================================================
     // 模型投影注入面（**唯一写者** = src/host.rs 的 apply_view）
     // =====================================================================
     // 这些数组的默认值一律是**空**：界面里不再内联演示数据（上一版的债见

@@ -48,7 +48,7 @@ use yeban_engine::transport::TransportReading;
 
 use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, ViewState};
 use crate::engine_host::EngineHost;
-use crate::input::{Focus, InputContext};
+use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
 use crate::ui::MainWindow;
@@ -380,6 +380,141 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
     });
 }
 
+/// 把界面的**键盘事件源**接到动作上（`N2` 裁决 **(1)**：GUI 绑**逻辑键**）。
+///
+/// ## 为什么是逻辑键
+///
+/// Slint 的公开按键事件没有物理码（`KeyEvent { text, modifiers, repeat }`），而
+/// `[UI-A11Y-001]` 的扫描码表要物理键身份 ⇒ GUI 路径只能绑逻辑键。裁决与残余见
+/// `docs/ledger/open-questions.md` 问题 1 与 `docs/ledger/app-projection-notes.md` 的 `N2` 行。
+/// 物理码那条路**一位没改**：`input::PhysicalKey` + `InputContext::resolve` 仍是无头端口
+/// （`live_surface.rs` 的 `physical_key_of`、`undo::perform_key`）的判据入口。
+///
+/// ## 链路（唯一的一条）
+///
+/// ```text
+/// ui/app.slint 的 key-handler(FocusScope).key-pressed
+///   --callback key-action(text, shift, control, alt, meta)--> 本函数
+///   --LogicalKey::from_text--> InputContext::resolve_logical   （与物理入口同一张策略表）
+///   --Resolution::Action--> apply_action                        （界面行为的唯一落点）
+/// ```
+///
+/// `undo` 是**可选的**：判据侧的装配（`build_live_ui_with`）没有撤销会话，那时撤销族
+/// 快捷键**如实不消费**（`.slint` 收到 `reject`），而不是假装处理了却什么都不做。
+/// 生产路径（`main.rs`）传入真的 `UndoPort`，于是 `Cmd+Z` 经 `undo::dispatch_key`
+/// 这个**唯一下发点**落到 `CommitGraph`（ADR-0001 **D45** 的那一半）。
+///
+/// ## 返回值（`.slint` 的 `EventResult`）
+///
+/// `true` = 这一键被 DAW 消费（`accept`，不再冒泡）；`false` = 放行给焦点系统 / 文本控件
+/// （`reject`）。`ConsumedByIme` 也返回 `true` —— §7.2 要求合成态下**彻底拦截**，
+/// 这是 GUI 侧的兜底（正常情况下敲入控件自己就会吃掉这些键）。
+pub fn wire_keys(ui: &MainWindow, context: Rc<RefCell<InputContext>>, undo: Option<Rc<UndoPort>>) {
+    let weak = slint::ComponentHandle::as_weak(ui);
+    ui.on_key_action(move |text, shift, ctrl, alt, meta| -> bool {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return false;
+        };
+        // 一次按键只携带一个字符；非按键文本（多字符 / 裸修饰键 / 尚未接线的键）
+        // 一律 `None` ⇒ 不消费，交给焦点系统。
+        let Some(key) = LogicalKey::from_text(text.as_str()) else {
+            return false;
+        };
+        let modifiers = Modifiers {
+            ctrl,
+            shift,
+            alt,
+            meta,
+        };
+        match context.borrow().resolve_logical(key, modifiers) {
+            Resolution::PassThrough => false,
+            Resolution::ConsumedByIme => true,
+            Resolution::Action(action) => apply_action(&ui, undo.as_ref(), action),
+        }
+    });
+}
+
+/// 逻辑键解析出的 [`Action`] → 界面行为的**唯一**落点。
+///
+/// 判据（`tests/live_ui_mcp.rs` 的判据 16）从无头端口注入逻辑键，观测的就是这里写下的属性。
+///
+/// ## 为什么有些动作**不消费**
+///
+/// `Action::DeleteSelection` / `Duplicate` / `ZoomToSelection` / `ZoomToFit` /
+/// `AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion` / `Cancel` 目前**没有**可作用的
+/// 实现（模型侧的编辑语义还没落地）。这里让它们落到 `false`（`reject`）—— 把键吞掉却什么
+/// 都不做，比不处理更糟：用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
+fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) -> bool {
+    match action {
+        // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
+        // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。
+        Action::SelectTool(tool) => {
+            if let Some(port) = undo {
+                port.perform(UiAction::SelectTool(tool));
+            }
+            ui.set_active_tool(i32::from(tool.digit()));
+            true
+        }
+        // `B`：在箭头与铅笔之间快速切换（规范 §3.3 的"快速切换"，不是"选中铅笔"）。
+        Action::TogglePencilTool => {
+            let pencil = i32::from(PENCIL_TOOL_DIGIT);
+            let next = if ui.get_active_tool() == pencil {
+                i32::from(crate::input::Tool::Select.digit())
+            } else {
+                pencil
+            };
+            ui.set_active_tool(next);
+            true
+        }
+        // 双视图：`Tab` 是切换，`F5`/`F6`/`Alt+1`/`Alt+2` 是直达。写的是**界面属性**，
+        // 与 `ui/switch_main_view` 走的是同一个属性（管理动作那边有回读判据）。
+        Action::ToggleView => {
+            ui.set_arrangement_view(!ui.get_arrangement_view());
+            true
+        }
+        Action::ShowView(View::Session) => {
+            ui.set_arrangement_view(false);
+            true
+        }
+        Action::ShowView(View::Arrangement) => {
+            ui.set_arrangement_view(true);
+            true
+        }
+        Action::ToggleSidebar => {
+            ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
+            true
+        }
+        Action::ToggleConsoleMaximize => {
+            ui.set_console_expanded(!ui.get_console_expanded());
+            true
+        }
+        // 走带：两条都落到界面**已有**的 `toggle-play`（`wire_transport` 接到引擎的那一个
+        // 回调）。引擎没有单独的"从光标继续"命令，`EngineHost::toggle_play` 在停住时
+        // 就是从当前位置起播 —— 因此不在这里发明第二条走带语义。
+        Action::PlayPause | Action::ResumeFromCursor => {
+            ui.invoke_toggle_play();
+            true
+        }
+        // 撤销族：经 `undo::dispatch_key`（**唯一下发点**）落到 `UndoPort::perform`，
+        // 与时光机按钮、`Cmd+Z` 是同一条链。
+        Action::Undo | Action::Redo | Action::OpenTimeMachine => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(ui_action) = crate::undo::dispatch_key(action) else {
+                return false;
+            };
+            port.perform(ui_action);
+            // 工程真的变了就重新投影（`Undo`/`Redo` 会改工程；时光机只开关弹窗）。
+            refresh_undo_window(ui, port, matches!(action, Action::Undo | Action::Redo));
+            true
+        }
+        // 没有可作用实现的动作：**不消费**（见函数文档）。
+        _ => false,
+    }
+}
+
 /// 把**撤销的**模型读数注入界面（显示态 + 时光机弹窗开关）。
 ///
 /// 与 [`apply_transport`] 同一条纪律：界面**不自己算**"能不能撤销"。
@@ -415,9 +550,10 @@ pub fn apply_undo(ui: &MainWindow, port: &UndoPort) {
 /// 2. 工程真的变了就**重新投影**（[`ViewState::from_project`] → [`apply_view`]）——
 ///    界面显示的是回退后的那一版工程，而不是"游标动了但画面没动"。
 ///
-/// 键盘那条路（`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`）走的是
-/// [`crate::undo::dispatch_key`] + [`crate::undo::perform_key`]：策略表仍然是
-/// `crate::input` 那一份（物理扫描码 + IME 合成态防护），本函数不复制它。
+/// 键盘那条路（`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`）由 [`wire_keys`] 经
+/// [`crate::undo::dispatch_key`]（唯一下发点）落到同一个 `UndoPort`：策略表仍然是
+/// `crate::input` 那一份（`N2` 裁决 (1) 之后 GUI 用逻辑键入口、无头端口用物理码入口，
+/// IME 合成态防护两条都在），本函数不复制它。
 pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
     {
         let port = Rc::clone(port);
@@ -551,7 +687,15 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
         debug_assert!(false, "MainWindow 在回调执行期间被销毁");
         return;
     };
-    apply_undo(&ui, port);
+    refresh_undo_window(&ui, port, reproject);
+}
+
+/// 同 [`refresh_undo`]，但调用方**已经**持有活窗口（键盘路径就是这样）。
+///
+/// 抽出来的理由不是省一次 `upgrade`：两条入口必须回写**同一批**属性与投影，
+/// 否则"按钮撤销"和"快捷键撤销"会在界面上留下不同的显示态。
+fn refresh_undo_window(ui: &MainWindow, port: &UndoPort, reproject: bool) {
+    apply_undo(ui, port);
     if !reproject {
         return;
     }
@@ -559,7 +703,7 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
         Ok(view) => {
             // 复用当前偏移：撤销**不应**把卷帘滚回起点（账本第 200 轮记录的缺陷）。
             let scroll_x = ui.get_roll_scroll_x();
-            apply_view(&ui, &view, ui.window().size().width as f32, scroll_x)
+            apply_view(ui, &view, ui.window().size().width as f32, scroll_x)
         }
         Err(error) => {
             // 投影失败**出声**：工程已经在内存里回退了，但这一帧画不出来。
