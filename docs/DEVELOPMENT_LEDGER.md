@@ -9202,3 +9202,23 @@ not the conclusion, was the weak link - the same family as the wrong revert base
 **Status**: `4f0490b` pushed; tree clean; CI verdict for it still to be read back; Phase 4 6 完成 / 4 部分 / 0 PENDING with `M4-007`'s evidence updated to include the
 new exit; `open-questions.md` question 3 closed. Next authorised lines: question 1 (`N2` logical keys), question 2 (loudness over the existing control plane), question
 6 (`M4-008` single authority). Questions 4 and 5 remain the负责人's alone (data).
+
+
+### Round 383: the负责人 ruled question 4 - reuse groove's R2 mirror, source-first with mirror fallback, and stop verifying it
+
+The ruling, verbatim in substance: **素材复用 groove 的 r2 镜像，不用重新入库**; the principle is the same as groove's - **先从源下载，失败再 fallback 到 r2 镜像**;
+and explicitly **这块不用查验了**.
+
+**This is a third option I had not offered** - not "distribute the 30 into the repository" and not "keep them out", but **reuse the existing R2 mirror on demand**. So
+the honest shape of `MUST-GATE-014` changes from "a gap waiting for material" to "**a design choice**: the repository verifies 0 bytes because the material is not
+supposed to live here; the mechanism, whitelist and registration are in place, and distribution is not this repository's responsibility". Recorded in both
+`open-questions.md` (question 4 closed with the ruling) and the `MUST-GATE-014` row of `gate-status.md`, whose status stays 已接线 with the reason now stated.
+
+**What I will stop doing, as instructed**: no further verification or preparation of the material block - not the download path, not the mirror contents, not the
+byte accounting. My earlier rounds' analyses (rounds 380-381) remain as background but are now superseded by the ruling.
+
+**Consequence for the open list**: question 4 is closed, so the **only** item that still requires the负责人 is **question 5 (a reference `.als`)**, which no
+authorisation can substitute for - the file has to come from outside the repository.
+
+**Status**: tree green and clean; `4f0490b` and `e5ff9bc` both CI **success**; the `N2` line (question 1) is in progress in a delegated subagent; Phase 4 6 完成 / 4
+部分 / 0 PENDING; guards all green after this edit.
