@@ -341,12 +341,18 @@ export component Transport inherits Rectangle {
     // 而回滚那条线右边是 AI 提案徽章，语义上不该插进去）。
     // `TouchArea` 是**唯一**的点击源，`clicked` 只调 `save-project()` 回调 ——
     // 界面不写盘、不改任何属性（成功/失败的原话由宿主写 `MainWindow.save-status`）。
+    //
+    // 底色是 `Tokens.bg-control` 而**不是** `bg-panel-alt`（2026-10-06 修）：本控件右边缘
+    // 636 px、AI 提案徽章左边缘 640 px，两者只隔 **4 px**，用同一个 `bg-panel-alt`
+    // 就会在顶栏并排出现两块一模一样的亮色板（负责人报的缺陷）。`bg-control` 在
+    // `--theme default` 下的取值**就是** `#1b2447`（= 原来的 `bg-panel-alt`），
+    // 所以默认渲染一位未变；`--theme yeban` 下它是 §6c 里那支更亮的 #42454d。
     Rectangle {
         x: 580px;
         y: Tokens.space-4;
         width: 56px;
         height: 32px;
-        background: save_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: save_area.pressed ? Tokens.bg-raised : Tokens.bg-control;
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-save-button";
@@ -371,6 +377,12 @@ export component Transport inherits Rectangle {
     }
 
     // ------------------------------------------------- AI 提案徽章 (§10 时光机入口)
+    //
+    // 描边用 `Tokens.accent` 而**不是** `ai-suggestion`（2026-10-06）：`accent` 是整份
+    // 界面**只准出现一次**的那一个强调色。它在 `--theme default` 下的取值就是
+    // `#a855f7`（= 原来的 `ai-suggestion`），因此默认渲染一位未变；`--theme yeban`
+    // 下它是测量出来的朱砂 `#d94a4a`。`ai-suggestion` 本身仍按 §9.1 的语义用在
+    // 钢琴卷帘的 AI 建议层（45% 半透明 + 虚线描边），**没有**改语义。
     Rectangle {
         x: 640px;
         y: Tokens.space-4;
@@ -379,7 +391,7 @@ export component Transport inherits Rectangle {
         background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         border-width: 1px;
-        border-color: Tokens.ai-suggestion;
+        border-color: Tokens.accent;
         accessible-role: button;
         accessible-id: "transport-ai-proposal-badge";
         accessible-label: "AI 编曲提案待审查";

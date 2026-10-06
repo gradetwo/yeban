@@ -238,9 +238,13 @@ pub fn usage_text() -> String {
                              `--features {logic_feature}` 的构建里存在 —— 默认构建给这个开关
                              = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
-  --theme <default|material|fluent|cupertino|native>
+  --theme <default|yeban|material|fluent|cupertino|native>
                            选择界面主题; 重复给以最后一个为准 (默认 default)
                              default    本仓品牌深色 —— **就是今天的外观** (逐像素不变)
+                             yeban      水墨 + 颜料: 背景/面板/线几乎零饱和, 颜色只留在
+                                        内容上, 朱砂 (`accent`) 整份界面只出现一次。
+                                        取值全部由测量推导 (品牌 logo + golden 渲染帧的
+                                        量化直方图与 k-means), 出处见 ui/tokens.slint §6b
                              material   Material Design 的 Slint `Palette` 角色
                              fluent     Fluent Design System 的 `Palette` 角色
                              cupertino  macOS 观感的 `Palette` 角色
@@ -249,10 +253,10 @@ pub fn usage_text() -> String {
                            **边界 (实测, 别外推)**: 本仓界面 100% 自绘 (Rectangle x74,
                            Slint 内建控件 x0), 所以 Slint 内建风格本身改不动我们的像素;
                            `--theme` 改的是 ui/tokens.slint 的颜色令牌 —— 十三支品牌色在
-                           非 default 主题下改为读 `Palette.*`。而 Slint 1.18.1 **没有**
-                           运行时换风格的 API (风格只能编译期定, 见下面的 {slint_style_env}),
-                           因此四个内建名字共享**本二进制编进来的那一个**风格;
-                           `{print_theme}` 会把这件事如实打出来。
+                           default / yeban 之外的主题下改为读 `Palette.*`。而 Slint 1.18.1
+                           **没有**运行时换风格的 API (风格只能编译期定, 见下面的
+                           {slint_style_env}), 因此四个内建名字共享**本二进制编进来的那一个**
+                           风格; `{print_theme}` 会把这件事如实打出来。
                            生效范围: 只有真的构造窗口的路径 (GUI / --headless-idle);
                            `--headless` 一个 Slint 对象都不构造, 因此接受本开关但不生效
   {print_theme}          打印主题报告: 请求的主题 / 生效的调色板来源 / 本二进制实际
@@ -332,7 +336,7 @@ pub fn usage_text() -> String {
   {ok} 成功 (含 --help / --version / 无头自检完成)
   {ui} 界面路径失败 (无法创建窗口 / 事件循环异常 / 工程无法投影成界面)
   {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本 /
-      未知主题 ({theme_switch} 的取值不在 default|material|fluent|cupertino|native 里) /
+      未知主题 ({theme_switch} 的取值不在 default|yeban|material|fluent|cupertino|native 里) /
       --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
       --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
       --export-als 在本次构建未编译 `{als_feature}` /
@@ -357,6 +361,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-logic out/Song.logicx
   yeban-app --print-theme
   yeban-app --theme material
+  yeban-app --theme yeban
   {slint_style_env}=cupertino cargo build -p yeban-app
   yeban-app --version
 ",
@@ -488,6 +493,18 @@ pub enum Theme {
     /// 对用户的字面值是 `--theme default`。
     #[default]
     Brand,
+    /// 水墨 + 颜料（2026-10-06 负责人批准的第二个**自绘**调色板）。
+    ///
+    /// 在 `.slint` 侧它的枚举名是 `YebanTheme.yeban`，对用户的字面值也就是 `yeban`。
+    /// 它与 [`Self::Brand`] 一样**不经过** `Palette`：那是一串自己的十六进制字面量，
+    /// 取值全部由测量推导（`assets/brand/png/yeban-dark-512.png` 与两张 golden 渲染帧
+    /// 的量化直方图 + k-means），出处逐条写在 `ui/tokens.slint` §6b/§6c 与
+    /// `tests/theme_selection.rs` 的 `the_yeban_palette_is_the_measured_one`。
+    ///
+    /// 与 `Brand` 的**结构**差别（这才是它存在的理由）：
+    /// 背景/面板/分隔线几乎零饱和（饱和度被压到 8%），颜色只留在内容上，而
+    /// [`Self::palette_source`] 里那支 `accent`（朱砂）在整份界面里**只出现一次**。
+    Yeban,
     /// Material Design（<https://m3.material.io>）对应的 `Palette` 角色。
     Material,
     /// Fluent Design System 对应的 `Palette` 角色。
@@ -501,8 +518,9 @@ pub enum Theme {
 
 impl Theme {
     /// 全部合法取值（用法文本、错误信息与判据共用**这一份**顺序）。
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Brand,
+        Self::Yeban,
         Self::Material,
         Self::Fluent,
         Self::Cupertino,
@@ -517,6 +535,7 @@ impl Theme {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Brand => "default",
+            Self::Yeban => "yeban",
             Self::Material => "material",
             Self::Fluent => "fluent",
             Self::Cupertino => "cupertino",
@@ -532,17 +551,33 @@ impl Theme {
 
     /// 是否请求"走设计系统"（而不是品牌色）。
     ///
-    /// `false` **只**对 [`Self::Brand`] 成立 —— 这是"默认外观不变"的判据入口。
+    /// `false` 对 [`Self::Brand`] 与 [`Self::Yeban`] 成立 —— 这两支都自带一串
+    /// 十六进制字面量，都不读 `Palette`。它同时是"默认外观不变"的判据入口。
     #[must_use]
     pub const fn uses_design_system(self) -> bool {
-        !matches!(self, Self::Brand)
+        !matches!(self, Self::Brand | Self::Yeban)
     }
 
-    /// 这个主题请求的 Slint 内建风格名（`Brand` 不请求任何内建风格 ⇒ `None`）。
+    /// 这一支主题的颜色**从哪来**（`--print-theme` 如实打出来的那个词）。
+    ///
+    /// 三分法而不是布尔：`yeban` 既不是品牌字面量、也不是设计系统角色，用一个
+    /// `bool` 表达它必然要么说假话、要么被并进"brand"里 —— 两种都是本仓库忌讳的
+    /// 假绿。判据 `every_valid_theme_value_is_accepted_and_reported` 用**同一个**
+    /// 方法算期望值，所以报告与实现不会各说各话。
+    #[must_use]
+    pub const fn palette_source(self) -> &'static str {
+        match self {
+            Self::Brand => "brand",
+            Self::Yeban => "yeban-measured-literals",
+            _ => "design-system-palette",
+        }
+    }
+
+    /// 这个主题请求的 Slint 内建风格名（`Brand` / `Yeban` 不请求任何内建风格 ⇒ `None`）。
     #[must_use]
     pub const fn requested_slint_style(self) -> Option<&'static str> {
         match self {
-            Self::Brand => None,
+            Self::Brand | Self::Yeban => None,
             Self::Material => Some("material"),
             Self::Fluent => Some("fluent"),
             Self::Cupertino => Some("cupertino"),
@@ -1749,7 +1784,8 @@ pub fn shortcut_lines() -> Vec<String> {
 /// - `requested=` 是解析出来的主题字面值（`default` 表示**没有任何主题被请求**，
 ///   也就是今天的外观）；
 /// - `palette=` 是这次请求**实际**会让 `ui/tokens.slint` 走的调色板来源
-///   （`brand` = 那一串十六进制字面量 / `design-system-palette` = Slint 的 `Palette.*` 角色）；
+///   （`brand` = 那一串十六进制字面量 / `yeban-measured-literals` = 第二串**测量推导**
+///   出来的十六进制字面量 / `design-system-palette` = Slint 的 `Palette.*` 角色）；
 /// - `compiled-style=` 是 `build.rs` 注入的**编译期**事实（`cargo:rustc-env`），
 ///   不是从命令行推出来的；
 /// - `style-switch=` 是那个**必须**说出来的区别：Slint 1.18.1 换风格只能在编译期，
@@ -1757,11 +1793,7 @@ pub fn shortcut_lines() -> Vec<String> {
 #[must_use]
 pub fn theme_lines(theme: Theme) -> Vec<String> {
     let requested = theme.name();
-    let palette = if theme.uses_design_system() {
-        "design-system-palette"
-    } else {
-        "brand"
-    };
+    let palette = theme.palette_source();
     let compiled = compiled_slint_style();
     let mut lines = vec![
         "# 主题报告 (yeban-app)".to_owned(),
@@ -1778,8 +1810,13 @@ pub fn theme_lines(theme: Theme) -> Vec<String> {
              要真的拿到 `{style}`, 重新构建时把环境变量 {SLINT_STYLE_ENV}={style} 交给 cargo"
         )),
         None => lines.push(format!(
-            "theme-style: 没有请求任何内建风格 —— 品牌色不经过 Slint `Palette`, \
-             因此与编进来的风格 (`{compiled}`) 无关"
+            "theme-style: 没有请求任何内建风格 —— {} 不经过 Slint `Palette`, \
+             因此与编进来的风格 (`{compiled}`) 无关",
+            if theme == Theme::Yeban {
+                "`yeban` 用的是测量推导出的那串十六进制字面量"
+            } else {
+                "品牌色"
+            }
         )),
     }
     lines.push(format!(

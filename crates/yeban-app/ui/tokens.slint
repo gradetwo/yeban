@@ -48,9 +48,13 @@ import { Palette } from "std-widgets.slint";
 //      ①全部文本走 UiText/UiMonoText (显式设了 `color`), ②`MainWindow` 显式设了
 //      `background: Tokens.bg-void` ⇒ 两个兜底都落不到我们身上。
 //
-// 于是本文件的颜色令牌写成 `ThemeState.theme` 的二选一表达式:
+// 于是本文件的颜色令牌写成 `ThemeState.theme` 的**三选一**表达式 (2026-10-06 起):
 //   - `brand` (**CLI `--theme default`**) = 下面那一串**十六进制字面量, 一位未改** ——
 //     这是"今天的默认外观不变"的机械保证, 因此 `tests/golden/linux/**` 不需要重生成;
+//   - `yeban` (**CLI `--theme yeban`**, 2026-10-06 新增) = 第二串十六进制字面量。它同样
+//     **不经过** `Palette`, 取值全部由测量推导 (出处与频次见 §6b/§6c)。它是"水墨结构 +
+//     颜料只标主体 + 朱砂只用一次"的那一版: 背景/面板/线几乎零饱和, 颜色留在内容上,
+//     `accent` 整份界面只有一处引用。
 //   - 四个内建风格名 (`material` / `fluent` / `cupertino` / `native`) = 走 `Palette.*`
 //     的**设计系统角色**。同一个二进制里 `Palette` 只有一个 (编译进来的那个风格),
 //     所以这四个名字在**不重新编译**时共享同一套 Palette 值 —— 这不是缺陷, 是
@@ -65,6 +69,14 @@ export enum YebanTheme {
     // 品牌深色 = 今天的外观 (默认)。注意在 Slint 里 `default` 是保留字, 故内部名是 `brand`;
     // 对用户的字面值仍是 `--theme default` (映射在 `src/cli.rs` 的 `Theme::from_name`)。
     brand,
+    // ------------------------------------------------------------------
+    // `yeban` = 2026-10-06 负责人批准的第二个**自绘**调色板 (水墨 + 颜料)。
+    //
+    // 它不是"更暗的品牌色", 而是一次**结构**改变: 背景/面板/分隔线几乎零饱和
+    // (墨), 颜色只留在内容上 (颜料), 朱砂只出现一次 (印)。取值全部来自测量,
+    // 逐条的出处、方法与频次写在本文件 §6b 与 §10 的注释里。
+    // ------------------------------------------------------------------
+    yeban,
     material,
     fluent,
     cupertino,
@@ -141,27 +153,98 @@ export global Tokens {
     // =====================================================================
     // 背景: 径向渐变 #151D38 → #060A14 (这里登记渐变的两端与一个中间面板色)
     // 右边的 `Palette.*` 是设计系统角色 (见文件头的主题说明), 只在非 brand 主题下生效。
-    out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : Palette.background;
-    out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : Palette.background;
-    out property <color> bg-panel: ThemeState.theme == YebanTheme.brand ? #151d38 : Palette.alternate-background;
-    out property <color> bg-panel-alt: ThemeState.theme == YebanTheme.brand ? #1b2447 : Palette.alternate-background;
-    out property <color> bg-raised: ThemeState.theme == YebanTheme.brand ? #232f5c : Palette.control-background;
+    //
+    // 三态表达式的读法 (2026-10-06 新增 `yeban`):
+    //   `theme == brand  ? <今天的十六进制字面量>`        —— 一位未改, golden 因此不用重生成
+    //   `theme == yeban  ? <测量推导出的水墨值>`          —— 见 §6b 的出处表
+    //   否则              `<Palette.*>`                    —— 设计系统角色 (四个内建风格名)
+    out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? #0c0d0e : Palette.background);
+    out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #17181c : Palette.background);
+    out property <color> bg-panel: ThemeState.theme == YebanTheme.brand ? #151d38 : (ThemeState.theme == YebanTheme.yeban ? #23252a : Palette.alternate-background);
+    out property <color> bg-panel-alt: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #2d2f35 : Palette.alternate-background);
+    out property <color> bg-raised: ThemeState.theme == YebanTheme.brand ? #232f5c : (ThemeState.theme == YebanTheme.yeban ? #3a3d45 : Palette.control-background);
 
-    // 主金: 线性渐变 #F7E6B0 → #E2C77E → #B8933E
-    // 设计系统侧只有**一个** accent 角色, 因此三档金色在非 brand 主题下收敛到它。
-    out property <color> gold-bright: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : Palette.accent-background;
-    out property <color> gold: ThemeState.theme == YebanTheme.brand ? #e2c77e : Palette.accent-background;
-    out property <color> gold-deep: ThemeState.theme == YebanTheme.brand ? #b8933e : Palette.accent-background;
+    // ---------------------------------------------------------------------
+    // 6b. `yeban` 主题的推导 (2026-10-06) —— 每一个值都是**测量**的, 不是挑的
+    // ---------------------------------------------------------------------
+    //
+    // 测法 (两步, 两种方法互为独立见证; 脚本与频次见账本):
+    //   ① 对 `assets/brand/png/yeban-dark-512.png` (512x512 = 262,144 px) 与
+    //      `crates/yeban-app/tests/golden/linux/app-model-driven-filled-project-1920x1080.png`
+    //      (1920x1080 = 2,073,600 px) 做 **4 bit/通道量化 RGB 直方图** (4096 桶),
+    //      报出最高频桶的桶心与该桶像素数;
+    //   ② 对同一张图做 **k-means (k=8, 初始质心 = 直方图最高频的 8 个桶心, 40 轮)**,
+    //      报质心与其簇大小。两张图、两种方法给出的背景/面板/金色完全一致。
+    //
+    // 所有权的边界 (先说清): 本仓库里**没有**"月下湖景插画"、**没有**朱砂印章、
+    // **没有**竖排诗句 —— 全历史 (`git log --all --diff-filter=A`) 里出现过的图片只有
+    // 品牌 logo (月牙 + 声波弧) 与 golden/artifacts 截图。因此本主题的采样源就是
+    // **我们自己的 logo 与 golden 渲染帧**, 没有第三样东西可以采。
+    //
+    // 水墨 (chrome) 的推导规则 —— 这是本主题**唯一**的自由参数, 明写在这里:
+    //   取该 token **今天**那个测量值的 HSL 色相 h 与明度 l, 把饱和度**直接设为 8%**。
+    //   8% 是设计常数 (不是测量值): 它把测到的 39–54% 压到 1/5–1/7, 大色块不再读作"蓝";
+    //   色相与明度原样保留, 所以这仍是**同一张画**的颜色, 只是去了彩。
+    //   括号里是采样源 (桶心, 前面是它在 golden 里的像素数):
+    //     bg-void      <- #060a14 (705,141 px)  -> #0c0d0e   [玄]
+    //     bg-shell     <- #0d1326 (553,017 px)  -> #17181c   [墨]
+    //     bg-panel     <- #151d38 (495,902 px)  -> #23252a   [黛]
+    //     bg-panel-alt <- #1b2447 ( 58,684 px)  -> #2d2f35   [鸦青]
+    //     bg-raised    <- #232f5c ( 19,795 px)  -> #3a3d45   [无名]
+    //     line         <- #1e2745 (197,863 px)  -> #2e2f35   [无名]
+    //     line-strong  <- #334466 (  1,336 px)  -> #464a53   [无名]
+    //     ink-2        <- #5a6b8a (品牌字面量)   -> #696f7b   [无名]
+    //     ink-1 / ink-0 **保持原测量值**: #c8c2b8 / #f0ebe3 (golden 里 5,367 px 的正文色)。
+    //     (传统色名只是**标签**, 不是权威: 同名在不同出处取值不同。以十六进制为准。)
+    //
+    // 颜料 (pigment) —— banner: `gold*` 三支就是本主题的颜料槽:
+    //     gold-bright  #f7e6b0 (golden  1,223 px)  时间码 / 播放头 / 选中态  [缃]
+    //     gold         #e2c77e (golden  1,158 px)  音符头 / 片段标签 / 分区名 [秋香, 标签存疑]
+    //     gold-deep    #22aa88 (golden    168 px)  片段描边 / solo / 自动化徽章 [石绿]
+    //   后两个金色**一位未改**; 只有 gold-deep 换成了我们**自己渲染过**的石绿 —— 它出现在
+    //   `yeban-model/src/samples.rs` 的演示工程轨道色标里, 在 demo golden 的
+    //   (364,206)-(373,223) 这个 10x18 px 色标上是逐像素精确的 168 px。
+    //   为什么不塞满 石青/胭脂/赭石: 我们自己的美术只有**一个**颜料色相 (月牙的金),
+    //   其余多色都是**工程数据**(轨道色标)或**语义色**(AI 紫/录音红), 它们不归主题管;
+    //   凭空补一个 石青 就等于发明十六进制 —— 那正是本次要求的反面。
+    out property <color> gold-bright: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : (ThemeState.theme == YebanTheme.yeban ? #f7e6b0 : Palette.accent-background);
+    out property <color> gold: ThemeState.theme == YebanTheme.brand ? #e2c77e : (ThemeState.theme == YebanTheme.yeban ? #e2c77e : Palette.accent-background);
+    out property <color> gold-deep: ThemeState.theme == YebanTheme.brand ? #b8933e : (ThemeState.theme == YebanTheme.yeban ? #22aa88 : Palette.accent-background);
+
+    // ---------------------------------------------------------------------
+    // 6c. 两支**新增**令牌 —— 为"顶栏两块同色板"这条缺陷而加 (2026-10-06)
+    // ---------------------------------------------------------------------
+    //
+    // 缺陷 (负责人报, 已复现): `transport-save-button` (x=580 w=56 ⇒ 右边缘 636) 与
+    // `transport-ai-proposal-badge` (x=640) 相距**恰好 4 px**, 而两者的 `background`
+    // 都是 `bg-panel-alt` ⇒ 顶栏出现两块一模一样的亮蓝色板。
+    //
+    // 修法是**加令牌**, 不是改布局: 新令牌在 brand 下的取值**就等于**被替换掉的那个字面量,
+    // 所以默认主题的渲染字节一位未变 (golden 不用重生成); `yeban` 下才分道扬镳。
+    //   - `bg-control`: 保存键的板。brand = #1b2447 (**就是** bg-panel-alt, 因此默认不变);
+    //     yeban = #42454d (← 测量值 #2c3a63 / 10,481 px, 同 §6b 规则) ⇒ 比徽章板亮
+    //     1.40:1 (默认那两块之间是 1.00:1 —— 完全相同)。
+    //   - `accent`: **整份界面只准出现一次**的那一个强调色 (朱砂/印)。
+    //     brand = #a855f7 (**就是** AI 建议语义色, 因此默认不变);
+    //     yeban = #d94a4a, 出处是 golden 里唯一被渲染出来的红:
+    //     `tokens.slint` §9 的 `record-red`, 在顶栏录音键圆点上逐像素 390 px
+    //     (demo golden bbox (92,21)-(269,413)), 色相 0°、S=65.3%、L=57.1%。
+    //     它**不是**印章的朱砂 —— 本仓库没有印章; 它是"我们自己画出来的那个红"。
+    //     用它的地方只有一处: AI 提案徽章的 1 px 描边 (对 bg-panel-alt 3.20:1 ≥ 3:1,
+    //     非文本 UI 边界 [WCAG 1.4.11]); 判据 `accent_is_used_in_exactly_one_role`
+    //     扫源码点名要求恰好 1 处。
+    out property <color> bg-control: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #42454d : Palette.control-background);
+    out property <color> accent: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #d94a4a : Palette.accent-background);
 
     // 文字/墨色与次级灰蓝。设计系统侧没有"三级灰"这个角色, 用 foreground →
     // alternate-foreground → control-foreground 这条**真实存在的**层级代替。
-    out property <color> ink-0: ThemeState.theme == YebanTheme.brand ? #f0ebe3 : Palette.foreground;
-    out property <color> ink-1: ThemeState.theme == YebanTheme.brand ? #c8c2b8 : Palette.alternate-foreground;
-    out property <color> ink-2: ThemeState.theme == YebanTheme.brand ? #5a6b8a : Palette.control-foreground;
+    out property <color> ink-0: ThemeState.theme == YebanTheme.brand ? #f0ebe3 : (ThemeState.theme == YebanTheme.yeban ? #f0ebe3 : Palette.foreground);
+    out property <color> ink-1: ThemeState.theme == YebanTheme.brand ? #c8c2b8 : (ThemeState.theme == YebanTheme.yeban ? #c8c2b8 : Palette.alternate-foreground);
+    out property <color> ink-2: ThemeState.theme == YebanTheme.brand ? #5a6b8a : (ThemeState.theme == YebanTheme.yeban ? #696f7b : Palette.control-foreground);
 
     // 分隔线与栅格 (来自同色系的低对比派生, 便于保持 AAA 对比预算)
-    out property <color> line: ThemeState.theme == YebanTheme.brand ? #1e2745 : Palette.border;
-    out property <color> line-strong: ThemeState.theme == YebanTheme.brand ? #2c3a63 : Palette.border;
+    out property <color> line: ThemeState.theme == YebanTheme.brand ? #1e2745 : (ThemeState.theme == YebanTheme.yeban ? #2e2f35 : Palette.border);
+    out property <color> line-strong: ThemeState.theme == YebanTheme.brand ? #2c3a63 : (ThemeState.theme == YebanTheme.yeban ? #464a53 : Palette.border);
 
     // =====================================================================
     // 7. 品牌色 · 浅色 (登记在册; 运行时切换机制仍是待决项, 见 notes 的 needs)

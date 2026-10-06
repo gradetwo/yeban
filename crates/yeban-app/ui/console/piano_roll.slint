@@ -169,7 +169,8 @@ export component PianoRoll inherits Rectangle {
             height: 12px;
             background: Tokens.gold;
             border-radius: Tokens.radius-sm;
-            // 选中态：加边框而**不改填充**（第 504 轮实测：`Tokens.accent` **不存在**, 用真实的 `gold-bright`） ⇒ 未选中时与旧基准一致（避免无谓的基准重生成）。
+            // 选中态：加边框而**不改填充**（第 504 轮实测：当时**没有任何**"选中色"令牌可用, 用真实的 `gold-bright`） ⇒ 未选中时与旧基准一致（避免无谓的基准重生成）。
+            // (2026-10-06: 现在确实有了一支 `accent`, 但它的角色是"整份界面只准出现一次"的朱砂, 已经给了 AI 提案徽章; 这里**故意**继续用 `gold-bright`。)
             border-width: root.note-selected[note_index] ? 2px : 0px;
             border-color: root.note-selected[note_index] ? Tokens.gold-bright : transparent;
             accessible-role: list-item;

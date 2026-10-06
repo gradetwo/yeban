@@ -866,8 +866,8 @@ pub fn build_main_window(
 ///
 /// ## 与 `apply_view` 同一条纪律
 ///
-/// 单向注入：`.slint` 侧只**读** `ThemeState.theme`（`ui/tokens.slint` 的十三支品牌色
-/// 都是它的二选一表达式），Rust 侧只**写**。界面文件因此一行都不用改 ——
+/// 单向注入：`.slint` 侧只**读** `ThemeState.theme`（`ui/tokens.slint` 的颜色令牌
+/// 都是它的三选一表达式），Rust 侧只**写**。界面文件因此一行都不用改 ——
 /// "换主题"落在唯一一处：这个函数。
 ///
 /// ## 它**不**做什么（边界，写在 `--print-theme` 与用法文本里）
@@ -879,6 +879,10 @@ pub fn build_main_window(
 /// 在当前二进制里指向**同一个** `Palette` —— 这是实测出来的上限，不是实现偷懒。
 /// 要真的换风格，重新构建时给 `SLINT_STYLE=<style>`（用法文本里有完整取值表）。
 ///
+/// [`crate::cli::Theme::Yeban`] 是 2026-10-06 新增的**第三类**：它既不是品牌字面量、
+/// 也不是设计系统角色，而是第二串**测量推导**出来的十六进制字面量（见
+/// `ui/tokens.slint` §6b/§6c 的出处表）。它同样不读 `Palette`，因此与编进来的风格无关。
+///
 /// 为什么仍然值得给 `Brand` 之外的主题留四个名字：`Brand` ↔ 其余四个的差别是**真实的**
 /// 像素差别（品牌色 vs 设计系统 `Palette` 角色），而且 `Palette` 会跟随系统的浅色/深色
 /// 设置（`SlintInternal.color-scheme`）—— 那正是"搬到真实设计系统上"的收益。
@@ -888,6 +892,7 @@ pub fn build_main_window(
 pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
     ui.global::<ThemeState<'_>>().set_theme(match theme {
         crate::cli::Theme::Brand => YebanTheme::Brand,
+        crate::cli::Theme::Yeban => YebanTheme::Yeban,
         crate::cli::Theme::Material => YebanTheme::Material,
         crate::cli::Theme::Fluent => YebanTheme::Fluent,
         crate::cli::Theme::Cupertino => YebanTheme::Cupertino,
