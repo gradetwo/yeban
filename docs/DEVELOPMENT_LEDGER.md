@@ -9420,3 +9420,20 @@ the decision about **what to build**, which is the one question now open.
 
 **Status**: tree green and clean at `4485ba2` (= `origin/main`); automatic CI green through `a2fd2b1` with `eefde06` pending read-back; Phase 4 6 完成 / 4 部分 /
 0 PENDING; one question open (which Logic option to build).
+
+
+### Round 391: what the two Logic files actually are - one is a standard plist, the other is a custom chunked binary
+
+Measured the two files a Logic fixture would use, because the answer decides how much of a parser has to be written:
+
+* **`MetaData.plist` is a standard binary plist** - `file` reports `bplist00`. So it is readable with existing tooling (`plist` in Rust, `plistlib` in Python) and
+  needs no reverse engineering.
+* **`ProjectData` is a custom binary**, `file` reporting only `data`. Its first bytes are `23 47 c0 ab cb 09 03 00 04 00 00 00 01 00 08 00 …` - a `#G` magic
+  followed by version bytes - and at offset 0x14 the four bytes `67 6e 6f 53` spell **`gnoS`**, which is `Song` with its bytes in little-endian order. So the format
+  is a **chunked container whose four-character chunk identifiers are stored byte-reversed**, which is why a plain `grep` for `Song` finds nothing.
+* **Consequence for feasibility**: `MetaData.plist` is free, and `ProjectData` needs a real parser - but **groove's importer already reads `ProjectData`**
+  (`mcp/arrangement.ts:1053`), so a working reference implementation exists in a sibling project. The port is a translation, not a research project, and the one
+  limitation groove recorded (some timing cannot be read reliably yet) carries over honestly.
+
+**Status**: tree green and clean at `c643ebf` (= `origin/main`); automatic CI green through `a2fd2b1` with `eefde06` pending read-back; Phase 4 6 完成 / 4 部分 /
+0 PENDING; the single open question is which Logic option (A, B or C) to build.
