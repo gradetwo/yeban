@@ -9154,3 +9154,25 @@ verification and this registration as its stated reason.
 **Status**: tree green and clean; automatic CI green for the last seventeen commits with none outstanding; both manual tiers green; all fifteen MUST-GATEs wired and
 the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions plus one cleanup permission
 outstanding, each answerable in a word.
+
+
+### Round 381: the reference `.als` ruling is immediately executable too, and the code already says so
+
+Checking decision 5's premise the same way as decision 4: the exporter's own source documents the gap and the upgrade path precisely, so a reference file would slot
+straight in.
+
+* `als.rs:65` - "仓库里**没有任何参考 `.als`**（`find . -name '*.als'` 命中 0）, 也没有 Ableton 的 XML";
+* `als.rs:75` - the criteria deliberately do **not** assert "Live can open it", because that needs a reference `.als`;
+* `als.rs:105` - the values used are "公开 `.als` 形态的取值, **未经参考文件对账**";
+* `als.rs:131` and `:455` - the emitted message and one loss entry both state "无参考文件可对账".
+
+**And the fixture convention already exists**: `crates/yeban-render/tests/data/` sits beside the crate's other test data. So on receiving a reference file the work is
+to place it there and reconcile **structurally** - track names, node kinds, loss-table coverage - rather than by byte equality, because Live rewrites its own
+containers. That is a small, well-specified change, not a design question.
+
+**Both data decisions are therefore executable on a word**: #4 has its whitelist, digests and verification path in place, and #5 has an honest code-level statement of
+what is missing plus a fixture location to use. Neither needs any further preparation from me.
+
+**Status**: tree green and clean; automatic CI green for the last seventeen commits plus this one; both manual tiers green; all fifteen MUST-GATEs wired and the five
+named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions plus one cleanup permission
+outstanding, each answerable in a word.
