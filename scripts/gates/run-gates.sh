@@ -78,7 +78,19 @@ gate_docs() {
 
 gate_schemas() {
   step "JSON Schema 契约校验"
-  run "schemas" python3 scripts/gates/validate_schemas.py
+  # `--repo-assets` 是 MUST-GATE-014 的**本体**, 不是可选装饰:
+  # 它逐份校验 `assets/**/manifest.json` 的结构、逐条执行 `licence_whitelist`(含与根清单
+  # `allowed_licenses` 的交叉对账 / `commercial_usable`), 并逐项重算 SHA-256 与 size_bytes。
+  # ⚠ 此前本机 `full` 调的是**不带**该开关的版本 ⇒ 这条判据**只**存在于 CI
+  # (`ci.yml:172` / `release.yml:297`), 本机 full 全绿也可以带着一份坏清单。
+  # 实测代价 (本机 M2, 各 3 次): 不带 = 0.26 s (4 份 schema); 带 = 0.93 / 0.94 / 1.15 s
+  # (8 条 `[ok]`, 多校验 `assets/**` 下 **4** 份清单 —— 根指针 + brand/models/samples ——
+  #  其中 `assets/samples/manifest.json` 一条就含 20 594 项) ⇒ 约 +0.7 s。
+  # 为什么**不**下放到 `light`: light 档的定位是"零编译, 任何机器都能跑", 而 schema 一族
+  # 本来就只跑在 full(light 连 `gate_schemas` 都不调用); 把一条要求 8.9 MB 清单在场 +
+  # `jsonschema` 依赖的判据塞进 light, 换来的不是安全, 而是"在没取回素材的机器上变成环境错误"。
+  # 宁可慢一拍也不静默跳过 ⇒ 只在真正跑 schema 的 full 档加开关。
+  run "schemas" python3 scripts/gates/validate_schemas.py --repo-assets
 }
 
 # 依赖许可清单漂移检查: 需要 cargo metadata (不编译, 只解析), 因此属于"零编译"一族。
