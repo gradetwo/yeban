@@ -13,6 +13,19 @@
 5. **手抄在活文档里的聚合必须与逐行统计一致** —— `MUST-GATE-001..015` / `BASELINE-001..006`
    这类 **ID 区间**、`21 条` 这类**总条数**、以及 `19 已接线 / 0 部分 / 2 PENDING` 这类
    **三状态分解**，凡是能从本表逐行算出来的手抄副本，一律对账。
+6. **表格行里的"行内门禁状态副本"必须与本表的状态列一致** —— 活文档的表格里除了聚合数字，
+   还把**单条门禁的状态**行内抄进了别的行（实测 `phase-status.md` 8 行 / 9 处、
+   `feature-alignment.md` 1 处）。第 5 条只管聚合，这些**逐条**副本此前无人复核：
+   实测 `MUST-GATE-014`（**PENDING**）、`BASELINE-005`（**PENDING**）、`BASELINE-004`（**部分**）、
+   `MUST-GATE-001/002/011/012` 等 10 处早已与本表不符而门禁全绿。
+   ⚠ 本条**只扫表格行**（首个非空白字符是 `|`）：同一串 `` `BASELINE-002`（**部分**） ``
+   出现在**正文**里时是**带日期的历史记录**（`phase-status.md:51` 当场更正它、`:108` 记着
+   "本行旧版本写的是…"），按纪律**不得改写** —— 改了就是篡改历史。行 = 活声明、正文 = 记录，
+   这个区分是**结构性**的，正文因此**按构造**不在射程内。
+   **边界（如实登记）**：本条只认**能被锚定**的行内写法（`` `ID`（…状态…） `` / `` `ID` = 状态 ``）。
+   行单元格里**自由散文**式的状态词锚不住 —— 实测 `feature-alignment.md:205` 的
+   「`BASELINE-005` 的『机器就绪、门禁仍 PENDING』」就属这一类（该门禁现已 `已接线`），
+   本规则**不覆盖**它。不写一条靠猜的规则去够它: 一条会误判的规则比一条覆盖窄的规则危险。
 
 **为什么第 5 条也在守卫里**: 前 4 条只保证"这 21 行自己没烂"，而"**一共几条 / 各自什么状态**"
 才是本表存在的理由，它却在别处被手抄：`docs/README.md` 的两行、本文件标题、
@@ -76,6 +89,30 @@ DECLARED_BREAKDOWN_RE = re.compile(
     r"(\d+)\s*已接线\s*/\s*(\d+)\s*部分\s*/\s*(\d+)\s*PENDING"
 )
 
+#: 第 6 条: 行内门禁状态副本里的 ID 形态（与本表的行首列同一形态）。
+INLINE_ID_PATTERN = r"(?:MUST-GATE|BASELINE)-[0-9]{3}"
+#: 第 6 条认的三种**行内**状态写法（实测活文档里都出现过）:
+#: ① `` `MUST-GATE-014`（**PENDING** —— 素材待人类选定） ``（括注可带原因尾巴）;
+#: ② `` `MUST-GATE-012` = **部分** ``; ③ `` `MUST-GATE-002` = 部分 ``（不带粗体）。
+#: ⚠ 反斜杠转义的 `\|` 由行首取样天然排除；`（**已接线**）+ 本机可复跑 …` 这种**没有 ID 前缀**
+#: 的括注不会被命中（正则要求前面紧跟被反引号包住的 ID）。
+INLINE_CLAIM_RE = re.compile(
+    rf"`(?P<ident>{INLINE_ID_PATTERN})`\s*(?:"
+    r"（(?:\*\*)?(?P<paren>已接线|部分|PENDING)(?:\*\*)?[^）]*）"
+    r"|=\s*\*{0,2}(?P<equals>已接线|部分|PENDING)\*{0,2})"
+)
+#: 第 6 条里**唯一**的"记录豁免"形态（裁定第 2 条）: 同一表格行**自己**用"旧值 → 新值"的转写
+#: 把这条 ID 的旧状态标注成历史（house style: `` 已由「部分」升为 **已接线** ``），**且新值就是**
+#: 本表的当前值。两件都满足才算**记录**; 缺一、或写成别的措辞，一律按**活声明**报红 ——
+#: 宁可红一次让人把话说清楚，也不静默放过一条可能与事实不符的行内声明。
+#: 豁免是**逐 (行, ID, 声明值)** 的: 连"这一行把「部分」标成了历史"都要写对，才享受豁免。
+#: 实测只命中 `phase-status.md:51`（该行既引用旧值 `BASELINE-002`（**部分**），又当场写下
+#: 「已由「部分」升为 **已接线**」——所以它是记录而不是声明）。
+INLINE_RECORD_RE = re.compile(
+    rf"`?(?P<ident>{INLINE_ID_PATTERN})`?[^|]{{0,4}}"
+    r"已由[「『]?(?P<old>已接线|部分|PENDING)[」』]?\s*升为\s*\*\*?(?P<new>已接线|部分|PENDING)"
+)
+
 
 def emit_summary(rows: dict[str, tuple[str, str]]) -> None:
     """把表格渲染成 markdown, 供 CI 的 job summary 使用。
@@ -112,6 +149,63 @@ def parse_rows(text: str) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
             rows[ident] = (cells[2], cells[3])
             requirements.setdefault(ident, cells[1][:60])
     return rows, requirements
+
+
+def check_inline_status_copies(
+    rows: dict[str, tuple[str, str]],
+) -> tuple[list[str], int, int]:
+    """第 6 条: 活文档**表格行**里行内手抄的门禁状态必须与权威表的状态列一致。
+
+    返回 `(问题清单, 已对账的活声明数, 按裁定第 2 条豁免的历史引用数)`。
+
+    ⚠ 只取"首个非空白字符是 `|`"的行。**正文**里同样的串（例如 `phase-status.md:51` 那句
+    "两处引用已过期…"、`:108` 那句"本行旧版本写的是…"）是**记录**, 按构造不在射程内 ——
+    这条规则的**安全性**正来自这个结构性区分, 而不是来自"看起来像不像声明"的词面判断。
+    """
+    authoritative: dict[str, str] = {}
+    for ident, (status, _evidence) in rows.items():
+        matched = [candidate for candidate in VALID_STATUS if candidate in status]
+        if len(matched) == 1:
+            authoritative[ident] = matched[0]
+    problems: list[str] = []
+    checked = 0
+    records = 0
+    for path in LIVE_DOCS:
+        if not path.is_file():
+            continue  # 缺文件已由第 5 条报过一次, 不在这里重复报。
+        document = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(document.splitlines(), 1):
+            if not line.lstrip().startswith("|"):
+                continue  # 正文 = 记录, 不参与。
+            # 这一行把哪些 ID 的哪个旧值**当场转写**成了现在的值（逐 (ID, 旧值)）。
+            recorded = {
+                matched.group("ident"): matched.group("old")
+                for matched in INLINE_RECORD_RE.finditer(line)
+                if matched.group("new") == authoritative.get(matched.group("ident"))
+            }
+            for matched in INLINE_CLAIM_RE.finditer(line):
+                ident = matched.group("ident")
+                claimed = matched.group("paren") or matched.group("equals")
+                current = authoritative.get(ident)
+                if current is None:
+                    problems.append(
+                        f"{path.relative_to(REPO)}:{lineno} 行内副本引用了本表里没有的 "
+                        f"`{ident}` —— 有门禁编号被凭空发明"
+                    )
+                    continue
+                if claimed == current:
+                    checked += 1
+                    continue
+                if recorded.get(ident) == claimed:
+                    # 裁定第 2 条: 这一行自己把「claimed → current」写成了历史转写 ⇒ 是记录。
+                    records += 1
+                    continue
+                problems.append(
+                    f"{path.relative_to(REPO)}:{lineno} 行内副本 `{ident}` 声明「{claimed}」"
+                    f"与 `gate-status.md` 不符（表里是 {current}）—— 表格行是活声明, "
+                    f"要么改成 {current}, 要么在同一行写明它已是历史"
+                )
+    return problems, checked, records
 
 
 def main() -> int:
@@ -214,6 +308,14 @@ def main() -> int:
                     f"(本表里是 {computed[0]} 已接线 / {computed[1]} 部分 / {computed[2]} PENDING)"
                 )
 
+    # ---- 第 6 条: 表格行里的**行内**门禁状态副本 ---------------------------------
+    #
+    # 第 5 条钉住的是"聚合"（区间 / 总条数 / 三状态分解），它管不到"某一行里随口抄了
+    # `MUST-GATE-014`（**PENDING**）"这种**逐条**副本 —— 而那正是"文件自己跟自己矛盾"的
+    # 另一种形态（实测 10 处早已腐烂而门禁全绿）。按同一手法钉住: 行内副本必须等于状态列。
+    inline_problems, inline_checked, inline_records = check_inline_status_copies(rows)
+    problems.extend(inline_problems)
+
     if problems:
         print("门禁状态表校验未通过:", file=sys.stderr)
         for item in problems:
@@ -222,7 +324,9 @@ def main() -> int:
     wired, partial, pending = (status_counts[word] for word in VALID_STATUS)
     print(
         f"[ok] gate-status.md: {len(MUST_GATES)} 条 MUST-GATE + {len(BASELINES)} 条 BASELINE "
-        f"均已登记且带证据/原因; 共 {total} 条 = 已接线 {wired} / 部分 {partial} / PENDING {pending}"
+        f"均已登记且带证据/原因; 共 {total} 条 = 已接线 {wired} / 部分 {partial} / PENDING {pending}; "
+        f"其它活文档的**表格行**里, 行内门禁状态副本 {inline_checked} 处与状态列一致"
+        f"（另有 {inline_records} 处为当场更正过的历史引用, 按「行 = 活声明 / 正文 = 记录」的结构区分豁免）"
     )
     return 0
 

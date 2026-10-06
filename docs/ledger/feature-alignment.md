@@ -140,7 +140,7 @@
 
 | 功能 | 系统（实现/计划 + 证据） | UI 暴露（有/无 + 载体） | MCP 暴露（有/无 + 工具·参数） | 缺口：原因 / 计划 / 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| SFZ v2 零拷贝解析器（三级作用域 / `#define` / `#include` 沙箱） | 已实现｜`crates/yeban-sfz/src/parser.rs:941,951`（`parse_text` / `parse_sources`）；台账 `docs/ledger/sfz-core-notes.md`；`MUST-GATE-011`（部分） | 无｜无乐器加载控件 | 无｜无工具 | 原因：`yeban-sfz` **没有任何工作区内消费者**（`grep -rn "yeban-sfz" crates/*/Cargo.toml` 只命中自身与根清单登记）；计划：engine 线在合成路径接入 `yeban-sfz`；状态：PENDING |
+| SFZ v2 零拷贝解析器（三级作用域 / `#define` / `#include` 沙箱） | 已实现｜`crates/yeban-sfz/src/parser.rs:941,951`（`parse_text` / `parse_sources`）；台账 `docs/ledger/sfz-core-notes.md`；`MUST-GATE-011`（已接线；2026-10-06 更正——本行旧记「（部分）」，该门禁已由 fuzz 达标转绿） | 无｜无乐器加载控件 | 无｜无工具 | 原因：`yeban-sfz` **没有任何工作区内消费者**（`grep -rn "yeban-sfz" crates/*/Cargo.toml` 只命中自身与根清单登记）；计划：engine 线在合成路径接入 `yeban-sfz`；状态：PENDING |
 | 固定容量声部池与确定性窃取（默认 512 声部） | 已实现｜`crates/yeban-sfz/src/voice_pool.rs:214`（`VoicePool`）；`ARCH-RT-004` | 无｜无 | 无｜无 | 原因：与上一条同一根因（无消费者）；计划：随 `yeban-sfz` 接线一起暴露；状态：PENDING |
 | 设备机架与设备链（`DeviceKind` / `TrackV3::devices`） | 部分｜`TrackV3::devices` 在 `crates/yeban-model/src/project.rs`；**没有** `DeviceKind` 的 SFZ 变体（`docs/ledger/mcp-render-notes.md` 的 pending 段） | 部分｜`crates/yeban-app/ui/console/device_rack.slint` 仍用 `scene::DEVICE_NAMES` 演示常量 + `device-plugin-host-placeholder-card` 占位卡 | 无｜无设备工具 | 原因：设备链 DSP / 自动化求值接口未落地（`docs/ledger/mcp-render-notes.md` needs-3）；计划：`[UI-NOTE-004]` 设备机架改由工程驱动 + engine 参数面；状态：PENDING |
 | 外部插件宿主（CLAP / VST3 + 崩溃看门狗） | 无｜`crates/yeban-plugin-host/src/lib.rs` 是 12 行纯文档占位（`grep -c "pub fn\|pub struct"` 命中 0） | 部分｜`crates/yeban-app/ui/console/device_rack.slint` 的 `device-plugin-host-placeholder-card`（占位卡，不是真宿主） | 无｜无工具 | 原因：`[v2.0.0]` 范围；计划：v2.0.0 插件宿主线；状态：未到期 |
