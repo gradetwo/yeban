@@ -8515,3 +8515,29 @@ default build proven unaffected by `cargo check`, a mapping-loss table that must
 **Still waiting on the负责人, not on code**: HD-49 (its own ledger requires fixed-refresh hardware and forbids hosted-runner readings), N2 (keyboard wiring below
 Slint), the loudness transport (optional - the contract no longer depends on it), and whether the read-only MCP export's relation to `ADR-0001 D47`'s CLI
 on-disk exit should be recorded normatively.
+
+
+### Round 351: accounting correction - the objective's "unclosed gates" list is stale; all fifteen MUST-GATEs are wired
+
+Audited `docs/ledger/gate-status.md` row by row instead of trusting the objective's summary, and the summary is **out of date**: every one of the five gates it
+names as unclosed, and in fact **all fifteen `MUST-GATE`s**, are recorded as **已接线**, each with evidence:
+
+| gate | what the ledger records |
+| :--- | :--- |
+| `MUST-GATE-001` | CI run **37270170716 = success**, engine leg **22/22** for the realtime zero-alloc criterion |
+| `MUST-GATE-002` | same-platform bit-exactness, two independent productions reconciled **PASS** (manual run 37268533533 + integrator's letter-by-letter check) |
+| `MUST-GATE-005` | `scripts/gates/check_vendor.sh` validates the distribution's completeness off-line (14 `.slint` files, locked `Cargo.lock`, vendor cache) |
+| `MUST-GATE-009` | 112 in-process criteria: default-off, loopback-only with read-back assertions, `0600`, `ui:inject` hard-denied |
+| `MUST-GATE-012` | CI run **37268651578 = success**, `rust (yeban-engine)` really ran `tests/snapshot_retire_churn.rs` |
+| `MUST-GATE-013` | guard `G07` scans for ASIO-proprietary code on every `light` run |
+| `MUST-GATE-014` | the **mechanism is wired and the whitelist is enforced**, but the **material itself is not distributed, so zero bytes are verified** in-repo; the source is registered per `ADR-0001 D54` by reusing groove's inventory (33 SFZ instruments, 21505 files) |
+| `MUST-GATE-015` | goldens produced by a hand-written Tier-1 software rasteriser (`yeban-ui-test-port`), not `i-slint-backend-testing` |
+
+**So the honest remaining set is not "five gates" but**: `MUST-GATE-014`'s **material** (awaits the负责人's choice/distribution - the mechanism is ready),
+`BASELINE-003` (needs fixed-refresh hardware, i.e. HD-49), `BASELINE-006` (the负责人 has deferred its口径), and **Phase 4's five 「部分」items**, which are
+wiring or hardware questions rather than unwritten mechanisms - plus `ROAD-M4-007`, the `.als` exporter, which is genuinely unimplemented and is in flight as a
+flag-gated slice.
+
+**Why this correction matters**: the objective has been carrying a premise that work done by other lines had already discharged. Recording the true set is not
+bookkeeping for its own sake - it changes what "done" means for this goal, and it means the next actions are the负责人's decisions plus one buildable feature
+rather than five gate closures.
