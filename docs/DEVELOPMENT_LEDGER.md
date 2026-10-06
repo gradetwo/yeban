@@ -8628,3 +8628,33 @@ which is what this round does.
 **Status**: the workflow file is back to its pre-edit state, the tracking fix from round 354 (the `进程内嵌入 yeban-app` row now reads 系统 已实现 / UI 无 / MCP 有,
 with 系统+MCP 15 -> 16 and UI 或 MCP 独有 5 -> 4) is committed and pushed separately, and the coverage gap is a registered pending rather than a half-applied
 workflow change.
+
+
+### Round 356: the manual workflow was ALREADY rejected before my edit - corrected attribution
+
+Round 355's attribution was wrong, and the evidence is unambiguous. Listing every run for the commits that touched `.github/**`:
+
+| commit | what it did to the workflow | `.github/workflows/gates-manual` run |
+| :--- | :--- | :--- |
+| `b2a347f` | added the test step | **failure** |
+| `6b79ca7` | reordered that step | **failure** |
+| `80a7f85` | tracking only (no workflow change) | failure |
+| **`ce71ca4`** | **reverted the file byte-for-byte** | **failure** |
+
+**The revert still fails**, and the file at that commit is byte-identical to the pre-edit state (verified with `diff -q` against `6b79ca7^`). So the failure is **not**
+caused by my step: GitHub is rejecting `gates-manual.yml` for a reason that predates every edit this session made. That also explains why the run appears **only**
+for commits touching `.github/**` - GitHub validates the workflow file when it changes, and it has been invalid all along.
+
+**What this means, and it is bigger than my edit**: the objective treats `gates-manual.yml` as one of the two authoritative sources of "green", but the file as
+committed **cannot be dispatched** - every attempt produces a run named after the workflow path with a failure and no jobs or steps. The manual tier is therefore
+not merely unused; it is **unavailable**. That is a real gap against the objective's premise and it is now recorded as such.
+
+**What I retract**: round 355's claim that "my workflow edit broke GitHub's validation". The edit may or may not have been fine on its own - that question is moot
+until the pre-existing invalidity is fixed - and the revert was still the right conservative move because it removed one variable from the picture.
+
+**Next step, precise**: validate `gates-manual.yml` against GitHub's parser (for example `actionlint`, or by dispatching the smallest possible change and reading the
+run's annotations), find the pre-existing defect, and fix it. Until then, the manual tier's criterion counts in this ledger rest on **local and automatic-CI
+evidence**, not on manual dispatches.
+
+**Status**: tree green and clean at `ce71ca4` (= `origin/main`); the automatic `CI` runs are green for every commit through `80a7f85` (`ce71ca4` queued); the manual
+workflow is unavailable for a pre-existing reason; the CI-coverage gap for the in-process-mcp criteria remains open and registered.
