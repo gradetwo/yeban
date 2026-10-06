@@ -30,6 +30,7 @@
 //! | 音符字段 | 头行 +4 = 起始 tick，+0x0b = 力度，+0x0c = 音高；时值在**第一条续行**的 +0x0c |
 //! | 速度 | `gnoS` 载荷在 0x3a6（权威槽）与 0x92（回退槽）存 `round(bpm × 10000)` |
 //! | 拍号 | `qSvE` 载荷 +0x0b = 分母的以 2 为底指数，+0x0c = 分子 |
+//! | region（`qeSM`）名字 | 载荷 **+0x10** = `u16` **小端字节数**，**+0x12** 起 UTF-8 名字，其后 4 字节 0（记录内 +0x34） |
 //! | `gnoS` 载荷开头 | 嵌套 `#G` 子帧：`23 47 C0 AB` + 版本码 + `18 00 11 00` |
 //!
 //! ⚠️ **与简报/账本第 391 轮的一处偏差（实测更正）**：账本写"偏移 0x14 是 `gnoS`"，
@@ -37,6 +38,16 @@
 //! 的实测都是 **0x18**：0x14 处是 4 个 0 字节，`gnoS` 紧跟在 0x18。0x18 也正是 groove
 //! 读取器 `src/data/logicToArrangement.ts:369` 的 `let offset = 0x18;`。本模块按实测的
 //! 0x18 实现。
+//!
+//! ⚠️ **账本第 402 轮记的"region 名在载荷 +0x34、真实文件在 +0x10/+0x12"不是字节差异，
+//! 是参照系混淆**。实测两例演示的 **790/790** 条 `qeSM`（`ocean eyes` 245 条 /
+//! `Swing!` 545 条）在载荷 `+0x10` 都是 `u16` 小端 = 名字的 **UTF-8 字节数**、`+0x12` 起是
+//! 名字、名字后 4 字节全 0；本写入器产物的 region 载荷实测同样在 `+0x10`/`+0x12`（旧常量
+//! `LOGIC_REGION_NAME_OFFSET = 0x34` 是**记录**内偏移，写入时减去 0x24 才落到载荷 `+0x10`，
+//! 但它的文档曾写成"载荷偏移"，这正是误读的来源）。现在常量
+//! [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`] 只以载荷为参照系，并用实测字面量钉住。名字字段
+//! **因此不登记**为偏差；载荷**其余部分**（+0x00 起 `2e 03`、长度 296..324、`ocean eyes`
+//! 的部分记录在名字后还有一份空格前缀的副本）仍未重建，登记在 [`REGION_PAYLOAD_CAVEAT`]。
 //!
 //! ## 版本码为什么必须非零（外部测量）
 //!
@@ -76,19 +87,25 @@
 //!   `InSt`、`Layr`、`ScSt`、`SngO`、`Styl`、`Trak`、`Trns`、`TxSq`、`TxSt`、`Vide`；
 //!   每次导出为每一个家族登记一条 `未映射:`（理由里点名 chunk；只有 `Trak` 与 `AuRg` 的定位
 //!   有仓库内依据，其余 22 个明写"用途未证实"）。
-//! * 反向（真实工程**没有**而产物有）在家族层面为空；但**字段层面**仍有一处实测偏差：
+//! * 反向（真实工程**没有**而产物有）在家族层面为空；但**字段层面**仍有两处实测偏差：
 //!   记录头 +0x08..+0x14 的簇号与 `0xFFFF` / `0xFFFF0000` 哨兵（实测随格式版本变化）、
 //!   region 的 `qeSM` / 音符 `qSvE` 的 subtype（与配对序列共享的序列号，无编号规则可推），
 //!   以及 `gnoS` 载荷里嵌套 `#G` 子帧除实测前缀外的内容 —— 登记为
-//!   [`CONTAINER_HEADER_CAVEAT`]（`非等价:`）。
+//!   [`CONTAINER_HEADER_CAVEAT`]（`非等价:`）；region 载荷里**除名字字段以外**的字节
+//!   （`+0x00` 起 `2e 03`、载荷长 296..324、`ocean eyes` 的部分记录在名字后还有一份
+//!   空格前缀副本）没有重建 —— 登记为 [`REGION_PAYLOAD_CAVEAT`]（`非等价:`）。
 //!   根头的版本码与十个恒定字节、记录头 kind@+4 / +0x16 / +0x18 / +0x1a、`gnoS` 的
-//!   subtype（`0xFFFF`）、拍号/速度 `qSvE` 的 subtype（1 / 3）与 `gnoS` 的 `#G` 前缀
+//!   subtype（`0xFFFF`）、拍号/速度 `qSvE` 的 subtype（1 / 3）、`gnoS` 的 `#G` 前缀，
+//!   以及 region 的**名字字段**（载荷 +0x10/+0x12）
 //!   **已按实测写入**，因此**不再**登记为偏差。
 //!
 //! 判据（`crates/yeban-render/src/logic.rs` 的 `tests`）：一个**无头确定性**判据断言
 //! "写入家族 == [`WRITTEN_CHUNK_FAMILIES`]"且"差集逐条有损失条目"，另一个**只在两个本机
 //! 演示工程都存在时**才跑的对账判据（不存在就 skip，CI 不受影响）断言实测并集 ==
-//! [`MEASURED_REAL_CHUNK_FAMILIES`]。
+//! [`MEASURED_REAL_CHUNK_FAMILIES`]；region 名字字段另有一条**用实测字面量**钉住的判据
+//! （`region_name_field_sits_at_the_measured_payload_offsets`，含非 ASCII 名字以证明长度是
+//! **字节数**），以及一条逐条核对真实 `qeSM` 名字字段的可选判据
+//! （`real_demo_qesm_records_use_the_measured_name_field_when_present`，路径不存在即 skip）。
 //!
 //! ## 映射损失表（**不静默丢东西**）
 //!
@@ -131,7 +148,10 @@
 //!    `Song` / `EvSq` / `MSeq`；其余 **24 个**家族（[`MISSING_CHUNK_FAMILIES`]：插件、
 //!    混音、环境、自动化、视频、网格…）**逐族**进损失表，理由里点名 chunk。容器头里
 //!    **仍未重建**的字段（记录头 +0x08..+0x14 的哨兵、region 的 subtype、`gnoS` 子帧的
-//!    正文）作为 [`CONTAINER_HEADER_CAVEAT`] 登记（`非等价:`）。
+//!    正文）作为 [`CONTAINER_HEADER_CAVEAT`] 登记（`非等价:`），region 载荷里**除名字字段
+//!    以外**的字节（`+0x00` 起 `2e 03`、载荷长 296..324、`ocean eyes` 的部分记录在名字后
+//!    还有一份空格前缀副本）作为 [`REGION_PAYLOAD_CAVEAT`] 登记（`非等价:`）。region 的
+//!    **名字字段**已按实测写入（载荷 +0x10/+0x12），**不**登记为偏差。
 //!
 //! ## 确定性
 //!
@@ -305,8 +325,30 @@ pub const LOGIC_SONG_TEMPO_SLOT_AUTHORITATIVE: usize = 0x3a6;
 /// `gnoS` 载荷里速度的**回退槽**。
 pub const LOGIC_SONG_TEMPO_SLOT_FALLBACK: usize = 0x92;
 
-/// region 载荷里名字的偏移（`uint16` 小端长度 + UTF-8 字节，之后一个 `u32`）。
-pub const LOGIC_REGION_NAME_OFFSET: usize = 0x34;
+/// region（`qeSM`）**载荷**里名字字段的偏移：长度 `u16` **小端** @ **+0x10**，
+/// UTF-8 名字字节 @ **+0x12**，名字之后 4 个 0 字节。
+///
+/// 实测（本机两例 Apple 演示工程，**790/790** 条 `qeSM` 一致）：
+///
+/// | 文件 | 版本码 | `qeSM` 条数 | 载荷 `+0x10` | 载荷 `+0x12` 起 |
+/// | :--- | :--- | :--- | :--- | :--- |
+/// | `ocean eyes.logicx/Alternatives/001` | `0x07D0`（10.5.1） | 245 | `u16` 小端 = 名字字节数 | 名字（UTF-8） |
+/// | `Swing!.logicx/Alternatives/004` | `0x09CB`（10.8.1） | 545 | 同上 | 同上 |
+///
+/// 每一条的 `+0x10` 都恰好等于其后名字的 **UTF-8 字节数**（不是字符数），名字之后 4 字节
+/// **全为 0** —— 载荷总长 296..324 字节，这一条对 790 条无一例外。
+///
+/// 长度口径 = **字节数**的独立证据：本机 **501** 份真实 `ProjectData` 里有 **1070** 条名字含
+/// `>=0x80` 的字节，**全部**是合法 UTF-8，且长度字段等于字节数 —— 例：`未命名` 的
+/// `e6 9c aa e5 91 bd e5 90 8d` 是 9 字节，长度字段就是 `09 00`。
+///
+/// 记录内偏移 = [`LOGIC_RECORD_HEADER`] + 0x10 = **0x34**。
+///
+/// ⚠ **账本第 402 轮那条"本写入器把 region 名放在载荷 +0x34、真实文件在 +0x10/+0x12"的差异
+/// 是参照系混淆，不是字节差异**：0x34 是**记录**内偏移，载荷内偏移是 `0x34 − 0x24 = 0x10`；
+/// 本写入器产物的 region 载荷实测就在 `+0x10/+0x12`。本常量现在只以**载荷**为参照系，避免同一误读
+/// 再发生；判据 `region_name_field_sits_at_the_measured_payload_offsets` 用实测字面量钉住它。
+pub const LOGIC_REGION_NAME_PAYLOAD_OFFSET: usize = 0x10;
 
 /// `未映射:` —— 该构造在产物里没有任何表示。
 pub const LOSS_UNMAPPED_PREFIX: &str = "未映射:";
@@ -337,6 +379,35 @@ pub const REGION_TIMING_CAVEAT: &str = concat!(
     "因此 region 的摆放位置不由该字段表达；音符携带的是绝对 tick",
     "（placement.start_tick + note.start_tick + 38400）。groove 记录的读取限制同样适用：",
     "ProjectData 里的一部分时限无法可靠读取，其读取器把每个 part 放在 beat 0 —— 本写入器不掩盖这一点"
+);
+
+/// region（`qeSM`）载荷里**除名字字段以外**的实测差异（`非等价:`）。
+///
+/// **名字字段本身不在这条里**：它已按实测写入（长度 `u16` 小端字节数 @ 载荷 `+0x10`、
+/// UTF-8 名字 @ `+0x12`、其后 4 个 0；两例演示 790/790 条一致，见
+/// [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`]），并且账本第 402 轮把"载荷 +0x34"记成差异属于
+/// **参照系混淆**（记录内 0x34 = 载荷内 0x10），不是字节差异 —— 因此这里**不登记**名字。
+///
+/// 仍然不同的是载荷的**其余部分**，实测如下：
+///
+/// * 真实 `qeSM` 载荷长 **296..324** 字节，`+0x00` 起是 `2e 03` 与一段随记录变化的字节
+///   （例：`ocean eyes` 第一条 `2e 03 41 00 …`、`Swing!` 第一条 `2e 03 01 00 …`），
+///   这段的语义**未反推**；
+/// * `ocean eyes`（10.5.1）的部分记录在名字之后还有一份**空格前缀**的字符串副本 ——
+///   例：第一条 `qeSM`（名字 `Untitled`，载荷 `+0x12..+0x19`）在载荷 `+0x2e` 是
+///   `20 55 6e 74 69 74 6c 65 64 00`（`" Untitled\0"`）；`Swing!`（10.8.1）的 545 条里
+///   537 条在名字之后没有连续 3 个以上可打印 ASCII 字节，没有一条被证实有同类副本。
+///   它是"第二份名字"还是别的字段**未证实**；
+/// * 本写入器的 region 载荷**只有**名字字段 = `0x16 + 名字的 UTF-8 字节数`（其余位置为 0）。
+///
+/// 这是"写了更少的内容"，不是静默省略：本切片不猜这段字节的语义，是否被接受**未经证实**。
+pub const REGION_PAYLOAD_CAVEAT: &str = concat!(
+    "非等价: region（`qeSM`）载荷除名字字段以外的内容没有重建 —— 名字字段已按实测写入",
+    "（长度 u16 小端字节数 @载荷 +0x10、UTF-8 名字 @+0x12、其后 4 字节 0；两例演示 790/790 条一致，",
+    "记录内偏移 0x34 = 0x24 + 0x10，因此账本第 402 轮记的 +0x34 差异是参照系混淆而非字节差异）；",
+    "但真实载荷长 296..324 字节，+0x00 起是 `2e 03` 与一段随记录变化的字节（语义未反推），",
+    "`ocean eyes`（10.5.1）的部分记录在名字后还有一份空格前缀的字符串副本；`Swing!`（10.8.1）的 545 条里未发现同类副本；",
+    "本写入器的 region 载荷只有名字字段（0x16 + 名字字节数）。载荷其余字节的语义未证实，本切片不猜"
 );
 
 /// 本机两个 Apple 演示工程**实测**到的 chunk 家族（**解码后**的可读名，只记名字，不记内容）。
@@ -785,6 +856,7 @@ impl LogicBuilder {
         self.loss(entity.clone(), NO_GROUND_TRUTH_CAVEAT.to_owned());
         self.loss(entity.clone(), TRACK_OBJECTS_UNMAPPED.to_owned());
         self.loss(entity.clone(), REGION_TIMING_CAVEAT.to_owned());
+        self.loss(entity.clone(), REGION_PAYLOAD_CAVEAT.to_owned());
         self.loss(
             entity.clone(),
             format!(
@@ -1214,14 +1286,18 @@ fn tempo_record() -> Vec<u8> {
     )
 }
 
-/// region 记录：载荷 +0x34 是 `uint16` 小端长度 + UTF-8 名字，名字后一个 `u32` 写 0。
+/// region 记录：载荷 `+0x10` = `u16` 小端**字节数**，`+0x12` 起 UTF-8 名字，名字后 4 字节 0
+/// （见 [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`] 的实测表；记录内偏移 = 0x24 + 0x10 = 0x34）。
 ///
 /// ⚠ subtype（+0x06）在真实工程里是与配对 `qSvE` **共享的序列号**（实测同一 region 的
 /// `qeSM` 与 `qSvE` 取同一个值，本机 12.0.1 工程里是 1、3、5、14、17、22、23、25 这些值），
 /// 本仓库没有反推出编号规则，因此**不猜**：写 0，并把这一处登记在
 /// [`CONTAINER_HEADER_CAVEAT`] 里（而不是假装它与实测一致）。
+///
+/// ⚠ 载荷**其余部分**（`+0x00..+0x0f`、`+0x1a` 之后）与真实记录不同 —— 真实载荷长 296..324
+/// 字节且开头非零，本写入器只写名字字段。这一处登记在 [`REGION_PAYLOAD_CAVEAT`] 里。
 fn region_record(cluster: u32, name: &str) -> Vec<u8> {
-    let name_in_body = LOGIC_REGION_NAME_OFFSET - LOGIC_RECORD_HEADER;
+    let name_in_body = LOGIC_REGION_NAME_PAYLOAD_OFFSET;
     let name_bytes = utf8_prefix(name, usize::from(u16::MAX)).as_bytes();
     let mut body = vec![0u8; name_in_body + 2 + name_bytes.len() + 4];
     body[name_in_body..name_in_body + 2].copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
@@ -1728,7 +1804,7 @@ mod tests {
     }
 
     fn read_region_name(record: &Record) -> String {
-        let at = LOGIC_REGION_NAME_OFFSET - LOGIC_RECORD_HEADER;
+        let at = LOGIC_REGION_NAME_PAYLOAD_OFFSET;
         let length = usize::from(u16::from_le_bytes([record.body[at], record.body[at + 1]]));
         String::from_utf8(record.body[at + 2..at + 2 + length].to_vec()).expect("UTF-8")
     }
@@ -2223,6 +2299,56 @@ mod tests {
         assert_eq!(bundle.mapped_notes, 3);
     }
 
+    /// 判据：region 名写在**实测的载荷偏移**上 —— 长度 `u16` 小端**字节数** @ 载荷 `+0x10`、
+    /// UTF-8 名字 @ `+0x12`、其后 4 字节 0。断言里写**实测字面量**（不引用本模块的常量），
+    /// 因此改偏移、改长度口径（字节 ↔ 字符）、改编码都会红。
+    ///
+    /// 名字用非 ASCII 的 `夜半`（6 字节 UTF-8），把"长度 = **字节数**而不是字符数"钉死：
+    /// 若按字符数写会得到 `02 00`，这里的期望是 `06 00` 并逐字节核对 UTF-8。
+    /// 实测依据见 [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`]（两例演示 790/790 条 `qeSM` 一致）。
+    #[test]
+    fn region_name_field_sits_at_the_measured_payload_offsets() {
+        let mut project = fixture_project();
+        let clip_id = test_id(10);
+        project
+            .clip_pool
+            .get_mut(&clip_id)
+            .expect("夹具必须有片段池条目")
+            .name = "夜半".to_owned();
+
+        let bundle = build_bundle(&project, "000", "RegionName");
+        let data = &bundle.files["Alternatives/000/ProjectData"];
+        let records = read_records(data);
+        let region = records
+            .iter()
+            .find(|record| record.tag == LOGIC_REGION_TAG)
+            .expect("必须有 region qeSM");
+
+        // 载荷 +0x10 = u16 小端字节数（`夜半` = e5 a4 9c e5 8d 8a = **6** 字节，不是 2 个字符）。
+        assert_eq!(
+            &region.body[0x10..0x12],
+            &[0x06, 0x00],
+            "region 载荷 +0x10 必须是实测的 u16 小端**字节数**（夜半 = 6 字节）"
+        );
+        assert_eq!(
+            &region.body[0x12..0x18],
+            &[0xE5, 0xA4, 0x9C, 0xE5, 0x8D, 0x8A],
+            "region 载荷 +0x12 起必须是名字的 UTF-8 字节"
+        );
+        assert_eq!(
+            &region.body[0x18..0x1c],
+            &[0, 0, 0, 0],
+            "名字之后的 4 个字节实测全为 0"
+        );
+        // 记录内偏移 = 0x24 + 0x10 = 0x34：两个参照系指向同一个字节。
+        assert_eq!(
+            LOGIC_RECORD_HEADER + LOGIC_REGION_NAME_PAYLOAD_OFFSET,
+            0x34,
+            "实测的记录内偏移是 0x34"
+        );
+        assert_eq!(read_region_name(region), "夜半");
+    }
+
     /// **可选**判据：本机存在 Apple 演示工程时，用它核对同一套头部读数；不存在就跳过。
     ///
     /// ⚠ 演示工程**有版权、不进仓库**，CI 上不存在 ⇒ 本判据在 CI 里是 skip，绝不红。
@@ -2280,6 +2406,64 @@ mod tests {
             checked += 1;
         }
         eprintln!("可选演示工程核对：{checked} 个文件存在并核对通过（不存在 = skip）");
+    }
+
+    /// **可选**判据：本机存在 Apple 演示工程时，逐条核对**全部** `qeSM` 记录的名字字段就是
+    /// 本模块写入的布局 —— 载荷 `+0x10` = `u16` 小端 **UTF-8 字节数**、`+0x12` 起名字、
+    /// 其后 4 字节全 0；路径不存在就 skip（CI 上不存在 ⇒ 绝不红）。
+    ///
+    /// 这条把"实测"变成可复跑的判据：它读真实文件的字节，但**不把任何字节或字符串内容写进
+    /// 仓库**（只打印条数与偏移）。两例演示共 790 条 `qeSM`，全部命中同一布局。
+    #[test]
+    fn real_demo_qesm_records_use_the_measured_name_field_when_present() {
+        let demos = [
+            "/Library/Application Support/Logic/Logic Pro X Demosongs/Swing!.logicx/Alternatives/004/ProjectData",
+            "/Library/Application Support/Logic/Logic Pro X Demosongs/ocean eyes.logicx/Alternatives/001/ProjectData",
+        ];
+        let mut present = 0usize;
+        for demo in demos {
+            let Ok(bytes) = std::fs::read(demo) else {
+                continue;
+            };
+            present += 1;
+            let mut regions = 0usize;
+            for (at, tag, size, _cluster) in walk_chunk_run(&bytes, LOGIC_ROOT_HEADER, bytes.len())
+            {
+                if tag != LOGIC_REGION_TAG {
+                    continue;
+                }
+                let payload = &bytes[at + LOGIC_RECORD_HEADER..at + LOGIC_RECORD_HEADER + size];
+                assert!(
+                    payload.len() >= 0x16,
+                    "{demo} 的 qeSM 载荷只有 {} 字节，放不下 +0x10 的字段",
+                    payload.len()
+                );
+                let length = usize::from(u16_le(payload, 0x10));
+                assert!(
+                    0x12 + length + 4 <= payload.len(),
+                    "{demo} 的 qeSM 载荷 +0x10 长度字段 {length} 超出载荷（{} 字节）",
+                    payload.len()
+                );
+                let name =
+                    std::str::from_utf8(&payload[0x12..0x12 + length]).unwrap_or_else(|_| {
+                        panic!("{demo} 的 qeSM 载荷 +0x12 起 {length} 字节不是合法 UTF-8")
+                    });
+                assert_eq!(
+                    &payload[0x12 + length..0x12 + length + 4],
+                    &[0, 0, 0, 0],
+                    "{demo} 的名字 `{name}` 之后 4 字节实测必须全为 0"
+                );
+                regions += 1;
+            }
+            assert!(regions > 0, "{demo} 必须至少有 1 条 qeSM");
+            eprintln!(
+                "可选 qeSM 名字布局核对：{demo} —— {regions} 条记录，载荷 +0x10 = u16 小端字节数、\
+                 +0x12 起 UTF-8 名字、其后 4 字节 0"
+            );
+        }
+        if present == 0 {
+            eprintln!("skip: 本机没有 Apple 演示工程（CI 上不存在 ⇒ 本判据不跑、绝不红）");
+        }
     }
 
     // ---- chunk 家族对账（诊断） ----
@@ -2434,6 +2618,13 @@ mod tests {
                 .iter()
                 .any(|loss| loss.reason == CONTAINER_HEADER_CAVEAT),
             "容器头的实测偏差必须登记为损失"
+        );
+        assert!(
+            bundle
+                .losses
+                .iter()
+                .any(|loss| loss.reason == REGION_PAYLOAD_CAVEAT),
+            "region 载荷除名字字段以外的实测偏差必须登记为损失"
         );
     }
 
