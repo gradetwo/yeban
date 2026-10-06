@@ -35,7 +35,7 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 十个场景（在既有 `harness = false` 风格上扩展）
+//! # 十一个场景（在既有 `harness = false` 风格上扩展）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -49,6 +49,7 @@
 //! | ⑭ | 采样率 × 项目声明 `block_size` 全组合切换（2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`、`Transport::arm` |
 //! | ⑮ | 播放中「`Op` 层编辑 / 撤销 → 重新发布快照」2 000 轮 + 主线程排空 | `Op::apply`/`apply_inverse` 的模型改写 → 快照重建 → 原子发布 → 切换 + 旧快照入退役队列 |
 //! | ⑯ | 满批事件洪峰 128 条/量子 × 500 量子（参数 + 音符 + 走带混排） | `EventReceiver::drain_with` 的**满块**边界（`[EngineEvent; SCRATCH_EVENTS]`） |
+//! | ⑰ | PDC 补偿延迟线：2 000 量子稳态 + 1 000 量子跨快照**重新武装**（32 → 96 帧） | `CompensationBank::rearm` 的 `set_delay` 分支 + 逐样本环形延迟读写（`ROAD-M2-004` 接线之后新增；行为判据在 `tests/pdc_mix_path.rs`） |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -112,6 +113,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
+use yeban_engine::graph::{LatencyTable, PdcPlan};
 use yeban_engine::meter::{MeterCollector, MeterFrame, meter_channel};
 use yeban_engine::ring::{
     DEFAULT_EVENT_CAPACITY, EngineEvent, EventSender, ParamAddress, SCRATCH_EVENTS,
@@ -185,6 +187,10 @@ const UNDO_CHURN_QUANTA: u64 = 2_000;
 const UNDO_CHURN_DRAIN_EVERY: u64 = 5;
 /// ⑯ 洪峰持续量子数。
 const FLOOD_QUANTA: u64 = 500;
+/// ⑰ PDC 延迟线稳态窗口的量子数。
+const PDC_QUANTA: u64 = 2_000;
+/// ⑰ PDC **跨快照重新武装**窗口的量子数（覆盖 `rearm` 的 `set_delay` 分支）。
+const PDC_REARM_QUANTA: u64 = 1_000;
 
 // ---------------------------------------------------------------------------
 // 计数型全局分配器（**按线程**武装：判据 ⑪ 要在窗口里跑别的线程）
@@ -470,10 +476,10 @@ impl Report {
         println!("[MUST-GATE-001] 判据汇总: {passed} / {total} 通过");
         if self.failures() == 0 {
             println!(
-                "[MUST-GATE-001] ok: 十场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
-                 回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰）\
-                 四元组全 0；控制面读取 EngineStats 的读取路径同样全 0；探针有牙（正对照 + 注入）；\
-                 线程归属与外线程活动已对账"
+                "[MUST-GATE-001] ok: 十一场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
+                 回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰 / \
+                 PDC 补偿延迟线）四元组全 0；控制面读取 EngineStats 的读取路径同样全 0；\
+                 探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
             );
             ExitCode::SUCCESS
         } else {
@@ -1417,6 +1423,140 @@ fn scenario_event_flood(report: &mut Report) {
 }
 
 // ---------------------------------------------------------------------------
+// 场景 ⑰ PDC 补偿延迟线（`ROAD-M2-004` 接线之后新增）
+// ---------------------------------------------------------------------------
+
+/// `filled_project()` 里各节点自身的延迟在**跨快照重新武装**时乘上的倍数。
+///
+/// 用一个既非 1、也非 0 的倍数，是为了让"重新武装真的改了延迟"可观测：
+/// 32 → 96 帧，两支路的 `D` 都换值，`set_delay` 分支必须真的走到。
+const PDC_REARM_FACTOR: u32 = 3;
+
+/// ⑰：**PDC 延迟线的逐样本环形读写真的在实时窗口里跑**，且四元组仍全 0。
+///
+/// 为什么必须有这一条（而不是"① 已经跑过 filled_project 了"就算覆盖）：
+/// ① 用的 `filled_project()` 确实带一个上报 32 帧延迟的设备，但**如果**装配里
+/// `PdcPlan::compensation` 全为 0、或 `apply` 没被调用，① 的四元组读数**一模一样**——
+/// "零分配"这条读数对"延迟线有没有真的处理样本"是完全盲的。因此本场景额外钉住：
+///
+/// 1. `armed_pdc_delay(v) == plan.compensation(v)`（逐节点，装配读数 vs 计划）；
+/// 2. 至少一条轨的武装延迟 **> 0**，且窗口里**真的有非零样本**流过；
+/// 3. 跨快照重新武装到另一组延迟之后，读数等于**新**计划，且 `pdc_clamped_frames` /
+///    `pdc_unarmed_nodes` 仍为 0（池装得下）。
+///
+/// 变红的注入：删掉 `render_block` 里的 `self.pdc.apply(...)` ⇒ 断言 2 的
+/// `pdc_processed_blocks` 停在预热那一次数值上（**实测**：注入后 ⑰c 红，
+/// 见 `docs/ledger/engine-rt-notes.md` 的记录口径）；把 `rearm` 改成每次
+/// `from_plan`（重新分配）⇒ 本场景的四元组分配分量红。
+///
+/// ⚠ 本场景**不能**替代行为判据：它证明的是"非零延迟的环形读写真的在零分配窗口里
+/// 跑过"，而"延迟量正确、并联支路采样级同相"由 `tests/pdc_mix_path.rs` 的 P1/P2
+/// 逐位判据负责（那里逐帧比对 `shifted[t] == reference[t - D]`）。
+fn scenario_pdc_delay_lines(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+
+    // ---- 装配读数 vs 计划：逐节点相等（控制线程读数，窗口之外）----
+    let plan = EngineSnapshot::from_project(&project, 1).expect("快照必须能编译");
+    let armed = armed_pdc(&rig, &project, plan.pdc());
+    let (positive, total) = (armed.positive, armed.total);
+
+    let mut scenario = Scenario::new("⑰PDC 延迟线");
+
+    // 窗口 1：稳态逐样本环形读写（2 000 量子）。
+    let mut nonzero = 0u64;
+    let reading = window(|| {
+        for _ in 0..PDC_QUANTA {
+            rig.step();
+            nonzero += rig.output.iter().filter(|sample| **sample != 0.0).count() as u64;
+        }
+    });
+    scenario.absorb(PDC_QUANTA, &reading);
+    scenario.note(format!(
+        "武装延迟>0 的节点={positive} 延迟和={total} 帧；窗口内非零样本={nonzero}"
+    ));
+
+    // 窗口 2：跨快照**重新武装**到另一组延迟（32 → 96 帧）。
+    let mut latencies = LatencyTable::new();
+    for (node, frames) in LatencyTable::from_project(&project).iter() {
+        latencies.set(*node, frames.saturating_mul(PDC_REARM_FACTOR));
+    }
+    let rearmed = EngineSnapshot::from_project_with_latencies(&project, 2, &latencies)
+        .expect("快照必须能编译");
+    rig.slot.publish(rearmed);
+    scenario.absorb(PDC_REARM_QUANTA, &rig.pump(PDC_REARM_QUANTA));
+
+    let stats = rig.stats();
+    let rearm_plan = EngineSnapshot::from_project_with_latencies(&project, 2, &latencies)
+        .expect("快照必须能编译");
+    let after = armed_pdc(&rig, &project, rearm_plan.pdc());
+
+    report.scenario(
+        "⑰",
+        "[MUST-GATE-001] PDC 补偿延迟线（2 000 量子稳态 + 1 000 量子重新武装）：四元组全 0",
+        &scenario,
+    );
+
+    report.assert(
+        "⑰c",
+        "覆盖度：武装延迟逐节点等于计划、至少一条 > 0、窗口里真有样本流过、重新武装后等于新计划",
+        armed.mismatches.is_empty()
+            && positive >= 1
+            && total > 0
+            && nonzero > 0
+            && after.mismatches.is_empty()
+            && after.positive >= 1
+            && after.total == total * u64::from(PDC_REARM_FACTOR)
+            && stats.pdc_processed_blocks >= PDC_QUANTA + PDC_REARM_QUANTA
+            && stats.pdc_unarmed_nodes == 0
+            && stats.pdc_clamped_frames == 0,
+        format!(
+            "装配差异={:?}（要求空）武装>0 节点={positive}（≥1）延迟和={total}（>0）窗口非零样本={nonzero}（>0）\
+             重新武装后差异={:?}（要求空）延迟和={}（要求 {}）延迟线真的处理过={}（要求 ≥{}）             未武装节点={} 被钳帧数={}（均要求 0）",
+            armed.mismatches,
+            after.mismatches,
+            after.total,
+            total * u64::from(PDC_REARM_FACTOR),
+            stats.pdc_processed_blocks,
+            PDC_QUANTA + PDC_REARM_QUANTA,
+            stats.pdc_unarmed_nodes,
+            stats.pdc_clamped_frames
+        ),
+    );
+}
+
+/// 逐节点比对"装置里武装的延迟"与"计划里的 `D(v)`"。
+struct ArmedPdc {
+    mismatches: Vec<String>,
+    positive: usize,
+    total: u64,
+}
+
+fn armed_pdc(rig: &Rig, project: &YebanProjectV1, plan: &PdcPlan) -> ArmedPdc {
+    let mut armed = ArmedPdc {
+        mismatches: Vec::new(),
+        positive: 0,
+        total: 0,
+    };
+    for id in project.tracks.keys() {
+        match (plan.compensation(id), rig.runtime.armed_pdc_delay(id)) {
+            (Some(want), Some(got)) if want as usize == got => {
+                if got > 0 {
+                    armed.positive += 1;
+                    armed.total += got as u64;
+                }
+            }
+            (None, None) => {}
+            (want, got) => armed
+                .mismatches
+                .push(format!("{id:?}: 计划 {want:?} vs 武装 {got:?}")),
+        }
+    }
+    armed
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ⑦ 探针有牙（正对照：非 RT 路径上让读数非 0）
 // ---------------------------------------------------------------------------
 
@@ -1861,6 +2001,7 @@ fn main() -> ExitCode {
     scenario_declared_audio_config_switch(&mut report);
     scenario_undo_churn_while_playing(&mut report);
     scenario_event_flood(&mut report);
+    scenario_pdc_delay_lines(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);

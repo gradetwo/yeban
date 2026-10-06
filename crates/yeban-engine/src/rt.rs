@@ -29,6 +29,7 @@
 //! 3) 渲染 + 电平：对快照里**每条非母线轨**
 //!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch（声相之前、单声道）
 //!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
+//!         →  **PDC 补偿延迟线（`D(v) = L_max − arrival(v)` 采样点）** [ARCH-PDC-001]
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
 //!    然后 **BusLimiter::apply(block)**                    ← 母线峰值限制（前瞻 33 帧）
 //!    再对母线（stereo-linked）MeterBank::measure_bus_stereo(block)   ← **限制之后**的读数
@@ -92,6 +93,7 @@ use yeban_model::EntityId;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
+use crate::graph::CompensationBank;
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::mixer::{BusLimiter, PanLaw};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
@@ -106,6 +108,25 @@ use crate::transport::{
 const _: () = crate::block::assert_supported_frames::<DEFAULT_BLOCK_FRAMES>();
 // 栈上临时事件缓冲至少能装下一个量子的参数洪峰。
 const _: () = assert!(SCRATCH_EVENTS >= DEFAULT_BLOCK_FRAMES);
+
+/// 实时 PDC 延迟线池的**槽位数**：与声部池的轨道上限同源（[`MAX_TRACK_SLOTS`]）。
+///
+/// 理由不是"刚好够用"而是"同一个事实源"：`SynthEngine` 只为前 [`MAX_TRACK_SLOTS`]
+/// 条轨分配声部槽，第 17 条轨本身就没有信号可补偿。槽位用尽的计划由
+/// [`EngineStats::pdc_unarmed_nodes`] 如实计数（**不静默**）。
+pub const PDC_SLOTS: usize = MAX_TRACK_SLOTS;
+
+/// 每条 PDC 延迟线的**最大补偿延迟**（采样点）。
+///
+/// ⚠ 这是**实现边界，不是规范常数**：[ARCH-PDC-001] / [ARCH-PDC-002] 只说
+/// "插入 `D_i = L_max - L_i` 个采样点的环形延迟缓冲"，**没有给上限**。而实时回调
+/// 不许分配 [MUST-GATE-001] ⇒ 缓冲必须在构造期定长预分配 ⇒ 必然存在一条容量线。
+///
+/// 取值 8192 帧 @48 kHz ≈ **170.7 ms**，比本仓库任何已登记的量级都大两个数量级
+/// （模型样本设备 32 帧；母线前瞻限制器 33 帧；`process_quantum` 的处理量子 128 帧）。
+/// 超出这条线的计划由 [`EngineStats::pdc_clamped_frames`] 计数；`yeban-render` 的
+/// 离线路径按计划精确分配容量、**没有**这条上限（它允许分配）。
+pub const MAX_PDC_DELAY_FRAMES: usize = 8192;
 
 /// 渲染驱动的累计统计（音频线程写入，非实时线程读取 —— 只用于诊断/UI）。
 ///
@@ -152,6 +173,21 @@ pub struct EngineStats {
     pub limiter_gain_reductions: u64,
     /// 母线限制器累计的**最大**瞬时压限量（1.0 − 最小增益；0 = 从未压过）。
     pub limiter_max_reduction: f32,
+    /// 因实时侧 PDC 延迟线池**槽位用尽**而未能武装的节点数（累计；正常恒为 0）[ROAD-M2-004]。
+    ///
+    /// 非 0 = 那一份计划里有节点**没有**得到补偿。它是"容量不足不静默"的机械形式：
+    /// 只把补偿"尽力而为"地做掉，会让相位对齐悄悄失效而没有任何读数。
+    pub pdc_unarmed_nodes: u64,
+    /// 因延迟线**容量上限**（[`MAX_PDC_DELAY_FRAMES`]）而被钳掉的补偿帧数
+    /// （累计；正常恒为 0）。
+    pub pdc_clamped_frames: u64,
+    /// PDC 延迟线**真的施加过非零延迟**的"节点·量子"次数（累计）[ROAD-M2-004]。
+    ///
+    /// 它是"接线"这件事的**见证**：[`EngineRuntime::armed_pdc_delay`] 只能证明
+    /// "计划被武装进了池"，而一个被武装却**从不被调用**的池与一个正常工作的池
+    /// 在读数上完全一样（相位错位不会 panic、也不会让峰值判据变红）。
+    /// `delay == 0` 的直通节点不计入（它们没有工作可做）。
+    pub pdc_processed_blocks: u64,
     /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
     ///
     /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
@@ -282,6 +318,18 @@ pub struct EngineRuntime {
     /// 位置：**逐轨汇流之后、母线电平之前** ⇒ 母线电平读数（[`EngineStats::meter_frames`]）
     /// 就是**限制后**的读数，而逐轨电平仍是**声相之前**的单声道读数。
     limiter: BusLimiter,
+    /// **内部 PDC 延迟线池** [ARCH-PDC-001, ROAD-M2-004]。
+    ///
+    /// 位置：**每轨输出之后、汇入母线之前**（规范 §3.4 第 3 条的字面位置：
+    /// "在进入总线求和节点前自动插入 `D_i = L_max − L_i` 采样点的环形延迟缓冲"）。
+    /// 延迟量来自快照里的 [`crate::graph::PdcPlan::compensation`]，在**快照边界**
+    /// （修订变化时）用 [`CompensationBank::rearm`] 重新武装 —— 只写 `set_delay`，
+    /// 因此回调内**零分配** [MUST-GATE-001]。
+    pdc: CompensationBank,
+    /// 见 [`EngineStats::pdc_unarmed_nodes`]。
+    pdc_unarmed_nodes: u64,
+    /// 见 [`EngineStats::pdc_clamped_frames`]。
+    pdc_clamped_frames: u64,
     /// 本快照武装的声相衰减律（`audio_config.pan_law` 的投影）。
     armed_pan_law: PanLaw,
     /// 本快照武装的每轨声相增益 `(左, 右)`（构造期算好，实时侧只做乘法）。
@@ -345,6 +393,10 @@ impl EngineRuntime {
             transport: Transport::free_running(48_000, yeban_model::project::DEFAULT_BPM),
             transport_mirror: Arc::new(TransportMirror::new()),
             limiter: BusLimiter::new(),
+            // PDC 延迟线池：**构造期**按上限预分配（回调内绝不再分配）。
+            pdc: CompensationBank::preallocated(PDC_SLOTS, MAX_PDC_DELAY_FRAMES),
+            pdc_unarmed_nodes: 0,
+            pdc_clamped_frames: 0,
             armed_pan_law: PanLaw::default(),
             armed_pan_gains: [(
                 EntityId::default(),
@@ -429,6 +481,9 @@ impl EngineRuntime {
             notes_triggered: self.synth.notes_triggered(),
             limiter_gain_reductions: self.limiter_gain_reductions,
             limiter_max_reduction: self.limiter_max_reduction,
+            pdc_unarmed_nodes: self.pdc_unarmed_nodes,
+            pdc_clamped_frames: self.pdc_clamped_frames,
+            pdc_processed_blocks: self.pdc.processed_blocks(),
             quanta_per_second: self.armed_quanta_per_second,
             transport_state: self.transport.state(),
             position_ticks: self.transport.position_ticks(),
@@ -443,6 +498,17 @@ impl EngineRuntime {
             release_thread_is_main: retire.release_thread_is_owner(),
             foreign_drains: retire.foreign_drains(),
         }
+    }
+
+    /// 本快照武装的**每轨 PDC 补偿延迟**（诊断/判据用；采样点）。
+    ///
+    /// 返回 `None` = 该节点不在本快照的 PDC 计划里（不可达 master，或池的槽位用尽）。
+    /// 存在的理由与 [`Self::armed_pan_gain`] 同族：把"武装进去的那个数"变成**可读**的，
+    /// 判据就不必从音频输出反推它 —— 而 PDC 恰恰是"看不出错"的那一类（相位错位
+    /// 不会 panic，也不会让峰值判据变红）。
+    #[must_use]
+    pub fn armed_pdc_delay(&self, node: &EntityId) -> Option<usize> {
+        self.pdc.line(node).map(crate::graph::DelayLine::delay)
     }
 
     /// 走带状态机的只读视图（**实时侧状态**；同线程判据/诊断用）。
@@ -585,6 +651,8 @@ impl EngineRuntime {
             limiter,
             limiter_gain_reductions,
             limiter_max_reduction,
+            pdc_unarmed_nodes,
+            pdc_clamped_frames,
             armed_revision,
             armed_scheduled_notes,
             armed_note_schedule_drops,
@@ -663,6 +731,17 @@ impl EngineRuntime {
                 *armed_scheduled_notes = current.scheduled_notes() as u64;
                 *armed_note_schedule_drops = current.note_schedule_drops();
 
+                // --- 2b'') PDC：把这一份快照的补偿计划武装进**预分配**延迟线池 ---
+                // [ARCH-PDC-001, ROAD-M2-004] 规范 §3.4 第 3 条：
+                // "对于累积延迟为 L_i 的并行分支, 在进入总线求和节点前自动插入
+                //   D_i = L_max − L_i 采样点的环形延迟缓冲 (PDC Delay Line)"。
+                // 计划在**控制线程**（`EngineSnapshot::from_project` → `PdcPlan::compute`）
+                // 算好，这里只做 `set_delay`：**零分配、零锁、零 I/O** [MUST-GATE-001]。
+                // 池装不下的部分不静默：记进两个累计读数（见 `RearmShortfall`）。
+                let shortfall = self.pdc.rearm(current.pdc());
+                *pdc_unarmed_nodes = pdc_unarmed_nodes.wrapping_add(shortfall.unarmed_nodes as u64);
+                *pdc_clamped_frames = pdc_clamped_frames.wrapping_add(shortfall.clamped_frames);
+
                 // --- 2c) 声相增益：在**构造期语义**下算一次（`cos`/`sin` 属超越函数类,
                 // 不进逐样本路径）。`pan_law` 与 `pan` 在整份快照的生命周期内不变。
                 // 表先写进 `self`（权威副本，诊断可读），再刷新栈上那份 —— 顺序无所谓，
@@ -727,6 +806,20 @@ impl EngineRuntime {
                     *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
                     rt_probe::diag(RtDiagEvent::MeterCapacityDrop);
                 }
+                // --- PDC：本轨输出 → 补偿延迟线 → 声相/母线求和 ---
+                // [ARCH-PDC-001, ROAD-M2-004] 位置就是规范 §3.4 第 3 条说的
+                // "在进入总线求和节点前"。延迟量在快照边界武装好（见 2b''），
+                // 这里只做环形读写：**零分配、逐样本无分支**（`delay == 0` 时
+                // `process_in_place` 直接返回，是显式直通快路径）。
+                //
+                // ⚠ 刻意放在 `bank.measure` **之后**：逐轨电平的取样点因此**一位没动**
+                // （仍是"该轨自己渲染出来的、声相之前的单声道结果"），PDC 是**求和节点
+                // 输入侧**的事 —— 这正是规范那句话的位置。放到电平之前也能对齐相位，
+                // 但那样会顺带改掉电平的读数口径。
+                //
+                // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
+                // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
+                self.pdc.apply(&track, &mut track_scratch[..frames]);
                 // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
                 // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
                 // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
@@ -802,7 +895,8 @@ impl EngineRuntime {
 /// 居中（默认律）时 `(√2/2, √2/2)` ⇒ 每声道 −3.01 dB，与 `yeban-mcp` 的离线渲染同口径。
 ///
 /// 仍然是**占位**的部分（本切片没做，见 notes 的 needs）：发送/辅助汇流、
-/// 路由边的 `gain_db`（`RoutingEdge::gain_db` 目前被忽略）、PDC 延迟线对齐。
+/// 路由边的 `gain_db`（`RoutingEdge::gain_db` 目前被忽略）。
+/// PDC 延迟线对齐**已接线**（调用点见 [`EngineRuntime::render_block`] 步骤 3a'）。
 fn sum_into_bus(
     block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
     mono: &[f32],

@@ -485,14 +485,59 @@ impl DelayLine {
 ///
 /// 构造期完成全部 `Vec` 分配；[`apply`](Self::apply) 走 `binary_search` 定位，
 /// **处理期零分配** [ARCH-RT-001]。
+///
+/// ## 两条构造路径（离线 vs 实时）
+///
+/// | 路径 | 构造 | 重新武装 |
+/// | :--- | :--- | :--- |
+/// | 离线（`from_plan`） | 按计划**精确**分配：每条线容量恰为 `D_i + 1` | 不需要（一次渲染一份计划） |
+/// | 实时（`preallocated` + [`rearm`](Self::rearm)） | 构造期按上限**预分配**定长池 | 快照边界只写 `set_delay` ⇒ 零分配 |
+///
+/// 实时路径不能按计划分配：计划来自**控制线程**、随时可能变大，而回调内分配是
+/// [MUST-GATE-001] 的一票否决。代价是池有一条**容量上限**，超出时
+/// [`rearm`](Self::rearm) 不静默丢样本，而是把差额回报给调用方（`EngineRuntime`
+/// 把它记进 `EngineStats` 的 `pdc_unarmed_nodes` / `pdc_clamped_frames`）。
 #[derive(Clone, Debug)]
 pub struct CompensationBank {
     /// 按键升序（`PdcPlan::compensation` 是 `BTreeMap`，天然有序）。
+    ///
+    /// `preallocated` 之后本 `Vec` 的长度固定不变（**绝不在处理期增长或截断**：
+    /// 增长会分配、`truncate` 会 `Drop` 延迟线 ⇒ `dealloc`），只有**前 `armed` 项**
+    /// 参与查找。
     entries: Vec<(EntityId, DelayLine)>,
+    /// 已武装的条数（`entries[..armed]` 有效且按键升序）。
+    armed: usize,
+    /// **见证计数**：`apply` 真的施加过**非零**延迟的"节点·块"次数。
+    ///
+    /// 只增不减、`delay == 0` 的直通不计。它是"延迟线真的在信号路径上"的机械证据：
+    /// 「武装了」不等于「被调用了」，而一个被武装却从不被调用的 bank 在音频读数上
+    /// 就是一个**静默的**相位错位。递增是 `wrapping_add(u64::from(..))`，**无分支**、
+    /// **零分配**，仍满足 [ARCH-RT-001]。
+    processed_blocks: u64,
+}
+
+/// [`CompensationBank::rearm`] 未能精确兑现的补偿量。
+///
+/// **正常恒为全零**。非零意味着实时侧的定长池装不下这一份计划：调用方必须把它
+/// 记成可读的读数，而不是当作"补偿成功"。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RearmShortfall {
+    /// 计划里需要补偿、但没有分到延迟线的节点数（池的槽位用尽）。
+    pub unarmed_nodes: usize,
+    /// 被容量钳制的延迟点数之和（`wanted - actual`，采样点）。
+    pub clamped_frames: u64,
+}
+
+impl RearmShortfall {
+    /// 是否**逐点精确**兑现了计划。
+    #[must_use]
+    pub const fn is_exact(&self) -> bool {
+        self.unarmed_nodes == 0 && self.clamped_frames == 0
+    }
 }
 
 impl CompensationBank {
-    /// 按 PDC 计划构造延迟线集合。
+    /// 按 PDC 计划构造延迟线集合（**离线路径**：容量精确匹配计划）。
     #[must_use]
     pub fn from_plan(plan: &PdcPlan) -> Self {
         let mut entries: Vec<(EntityId, DelayLine)> = Vec::with_capacity(plan.compensated_len());
@@ -501,19 +546,83 @@ impl CompensationBank {
             line.set_delay(*samples as usize);
             entries.push((*node, line));
         }
-        Self { entries }
+        let armed = entries.len();
+        Self {
+            entries,
+            armed,
+            processed_blocks: 0,
+        }
     }
 
-    /// 延迟线数量（= 需要补偿的节点数）。
+    /// 预分配 `slots` 条上限为 `max_delay_samples` 的延迟线（**实时路径**）。
+    ///
+    /// 构造期一次分配；之后只用 [`rearm`](Self::rearm) 重新绑定节点与延迟，
+    /// 因此回调内零分配。初始状态一条都没武装（`len() == 0`）。
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub fn preallocated(slots: usize, max_delay_samples: usize) -> Self {
+        let entries = (0..slots)
+            .map(|_| (EntityId::default(), DelayLine::new(max_delay_samples)))
+            .collect();
+        Self {
+            entries,
+            armed: 0,
+            processed_blocks: 0,
+        }
+    }
+
+    /// 用一份新计划重新武装（**零分配**：只写节点键与 `set_delay`）。
+    ///
+    /// 武装顺序就是计划里 `compensation` 的迭代顺序（`BTreeMap` 按键升序），因此
+    /// `entries[..armed]` 始终保持按键升序 —— [`apply`](Self::apply) 的
+    /// `binary_search` 前提由此成立。
+    ///
+    /// 两个上限（都由构造期容量决定，**都不静默**）：
+    /// 1. 槽位不够 ⇒ 多出来的节点进 [`RearmShortfall::unarmed_nodes`]；
+    /// 2. 延迟超过线容量 ⇒ 钳到容量上界（[`DelayLine::set_delay`] 的语义），
+    ///    差额进 [`RearmShortfall::clamped_frames`]。
+    pub fn rearm(&mut self, plan: &PdcPlan) -> RearmShortfall {
+        let mut shortfall = RearmShortfall::default();
+        let mut armed = 0usize;
+        for (node, &wanted) in plan.compensation.iter() {
+            if armed >= self.entries.len() {
+                shortfall.unarmed_nodes += 1;
+                continue;
+            }
+            let wanted = wanted as usize;
+            let (slot_node, line) = &mut self.entries[armed];
+            *slot_node = *node;
+            let actual = line.set_delay(wanted);
+            if actual != wanted {
+                shortfall.clamped_frames += (wanted - actual) as u64;
+            }
+            armed += 1;
+        }
+        self.armed = armed;
+        shortfall
+    }
+
+    /// 预分配的槽位数（与武装了多少条无关）。
+    #[must_use]
+    pub fn slots(&self) -> usize {
         self.entries.len()
     }
 
-    /// 是否没有任何延迟线。
+    /// 已武装的延迟线数量（= 参与了补偿的节点数）。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.armed
+    }
+
+    /// 见 [`Self::processed_blocks`] 字段（累计；采样点级不动，每个"节点·块"一次）。
+    #[must_use]
+    pub const fn processed_blocks(&self) -> u64 {
+        self.processed_blocks
+    }
+
+    /// 是否没有武装任何延迟线。
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.armed == 0
     }
 
     /// 本 bank 中最大的延迟线容量（预分配用）。
@@ -531,22 +640,23 @@ impl CompensationBank {
     /// 返回 `true` 表示该节点确实有一条延迟线（即使是直通），`false` 表示该节点
     /// 不在本计划内（调用方应视为"无需补偿"）。
     pub fn apply(&mut self, node: &EntityId, buf: &mut [f32]) -> bool {
-        match self
-            .entries
-            .binary_search_by(|(candidate, _)| candidate.cmp(node))
-        {
+        match self.entries[..self.armed].binary_search_by(|(candidate, _)| candidate.cmp(node)) {
             Ok(index) => {
-                self.entries[index].1.process_in_place(buf);
+                let line = &mut self.entries[index].1;
+                self.processed_blocks = self
+                    .processed_blocks
+                    .wrapping_add(u64::from(line.delay() != 0));
+                line.process_in_place(buf);
                 true
             }
             Err(_) => false,
         }
     }
 
-    /// 只读访问某个节点的延迟线。
+    /// 只读访问某个节点的延迟线（未武装的槽位不可达）。
     #[must_use]
     pub fn line(&self, node: &EntityId) -> Option<&DelayLine> {
-        self.entries
+        self.entries[..self.armed]
             .binary_search_by(|(candidate, _)| candidate.cmp(node))
             .ok()
             .map(|index| &self.entries[index].1)
@@ -925,5 +1035,110 @@ mod tests {
         assert_eq!(table.get(&id), 40, "32 + 8（旁通的 4096 不计入）");
         assert_eq!(table.get(&silent), 0, "真的零延迟 ⇒ 0");
         assert_eq!(table.len(), 1, "0 不保留条目（set(_, 0) == 未登记）");
+    }
+
+    /// 实时路径的重新武装：预分配池按计划绑定节点与延迟，**只写 `set_delay`**。
+    ///
+    /// 变红的注入：`rearm` 里改成 `self.entries = from_plan(plan).entries`（重新分配）
+    /// ⇒ 实时窗口的分配判据（`rt_zero_alloc` ⑰）红；把 `set_delay(wanted)` 写成
+    /// 常量 0 ⇒ 下面的 `line(a).delay()` 断言红；把 `self.armed = armed` 写成
+    /// `self.entries.len()`（把空槽也算进查找范围）⇒ 空槽的 `EntityId::default()`
+    /// 会插在有序键**前面**，下面"陌生节点必须返回 `None`/`false`"的断言红。
+    ///
+    /// 槽位数**刻意多于**计划条目数（6 > 4）：两者相等时"把空槽也算进查找范围"
+    /// 这个 bug 观察不到 —— 第一版正是 4 槽 4 条，注入之后仍然全绿。
+    #[test]
+    fn preallocated_bank_rearms_to_the_plan_and_looks_up_by_key() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let c = EntityId::new();
+        let m = EntityId::new();
+        let graph = graph_of(&[(a, b), (b, m), (a, c), (c, m)]);
+        let plan = PdcPlan::compute(&graph, m, &latency_table(&[(b, 10)])).expect("合法 DAG");
+
+        let mut bank = CompensationBank::preallocated(6, 64);
+        assert!(bank.is_empty(), "预分配之后一条都没武装");
+        assert_eq!(bank.slots(), 6);
+        let shortfall = bank.rearm(&plan);
+        assert!(
+            shortfall.is_exact(),
+            "4 个节点 6 条线，必须逐点精确：{shortfall:?}"
+        );
+        assert_eq!(bank.len(), plan.compensated_len());
+        assert_eq!(bank.slots(), 6, "武装不改变池的大小");
+        assert_eq!(bank.line(&a).map(DelayLine::delay), Some(10));
+        assert_eq!(bank.line(&b).map(DelayLine::delay), Some(0));
+        assert_eq!(bank.line(&c).map(DelayLine::delay), Some(10));
+        assert_eq!(bank.line(&m).map(DelayLine::delay), Some(0));
+
+        // 空槽必须**不可达**（否则按键查找会命中没武装的槽位）。
+        let stranger = EntityId::new();
+        assert!(
+            bank.line(&stranger).is_none(),
+            "未武装的槽位不得被查到（其键是 `EntityId::default()`）"
+        );
+
+        // 行为面：短支路被延后 10 帧，长支路（delay 0）逐位不变。
+        let mut short = [1.0f32; 4];
+        assert!(bank.apply(&c, &mut short));
+        assert_eq!(short, [0.0, 0.0, 0.0, 0.0], "延迟线的历史是零");
+        assert_eq!(
+            bank.processed_blocks(),
+            1,
+            "只有**非零**延迟的那一次算『真的处理过』"
+        );
+        let mut long = [1.0f32, 2.0, 3.0, 4.0];
+        assert!(bank.apply(&b, &mut long));
+        assert_eq!(long, [1.0, 2.0, 3.0, 4.0], "delay 0 是显式直通");
+        assert_eq!(
+            bank.processed_blocks(),
+            1,
+            "delay == 0 的直通不计入见证（否则见证会掩盖『延迟线从未施加延迟』）"
+        );
+
+        // 不在计划里的节点：`apply` 返回 false（调用方视为无需补偿）。
+        assert!(!bank.apply(&stranger, &mut long));
+
+        // 二次武装（换计划）不改变槽位数，只改绑定：同一份计划逐点仍然精确。
+        let other = PdcPlan::compute(&graph, m, &latency_table(&[(b, 3)])).expect("合法 DAG");
+        let again = bank.rearm(&other);
+        assert!(again.is_exact());
+        assert_eq!(bank.slots(), 6, "重新武装绝不改变预分配池的大小");
+        assert_eq!(bank.line(&a).map(DelayLine::delay), Some(3));
+        assert_eq!(bank.line(&b).map(DelayLine::delay), Some(0));
+        assert!(bank.line(&stranger).is_none());
+    }
+
+    /// 池装不下时必须**回报**差额，而不是静默地少补。
+    #[test]
+    fn rearm_reports_slot_and_capacity_shortfall_instead_of_silently_under_compensating() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let c = EntityId::new();
+        let m = EntityId::new();
+        let graph = graph_of(&[(a, b), (b, m), (a, c), (c, m)]);
+        let plan = PdcPlan::compute(&graph, m, &latency_table(&[(b, 10)])).expect("合法 DAG");
+
+        // 槽位不足：4 个补偿节点只给 1 条线 ⇒ 3 个未武装。
+        let mut few_slots = CompensationBank::preallocated(1, 64);
+        let shortfall = few_slots.rearm(&plan);
+        assert_eq!(shortfall.unarmed_nodes, 3);
+        assert_eq!(shortfall.clamped_frames, 0);
+        assert!(!shortfall.is_exact());
+        assert_eq!(few_slots.len(), 1, "只武装了装得下的那些");
+
+        // 容量不足：线容量 4 ⇒ 两条 `D = 10` 的支路各被钳掉 6 帧，缺口必须被记下。
+        let mut small = CompensationBank::preallocated(4, 4);
+        let shortfall = small.rearm(&plan);
+        assert_eq!(shortfall.unarmed_nodes, 0);
+        assert_eq!(
+            shortfall.clamped_frames, 12,
+            "两条短支路各有 (10 - 4) = 6 帧补偿缺口"
+        );
+        assert!(!shortfall.is_exact());
+        for node in [a, b, c, m] {
+            let delay = small.line(&node).map(DelayLine::delay).expect("已武装");
+            assert!(delay <= 4, "任何延迟都不得越过线容量");
+        }
     }
 }
