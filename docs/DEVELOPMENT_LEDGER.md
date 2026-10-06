@@ -9738,3 +9738,29 @@ recorded here with the exact dialog text so that no reader can mistake the curre
 
 **Status**: tree green and clean at `f5e10c8` (= `origin/main`), whose CI verdict is **success**; Phase 4 6 完成 / 5 部分 / 0 PENDING; the open question is now a
 concrete engineering task with one known symptom (`com.apple.logic10 error 100` on a document Logic reads as Logic 4).
+
+
+### Round 402: the Logic header is fixed from measured evidence - root `+0x04` is the format version code
+
+`4d7a2d8` fixes the defect that `com.apple.logic10 error 100` revealed, and it did so from **measured bytes plus a reachable reference**, not from inference. The root
+header's `+0x04` is a **u16 little-endian format version code**, proven three ways: the real projects on this machine are monotone in Logic version (`0x06EA` = Logic
+10.4.0, `0x07D0` = 10.5.1, `0x09C4` = 10.7.0, `0x09CB` = 10.8/10.8.1, `0x09CD` = 11.0.1, `0x09CE` = 11.1.2, `0x09CF` = 11.2.2, **`0x09D0` = Logic Pro 12.0.1**); the
+open-source reference `jonkubis/logicproformatwriter` (MIT) states the root frame verbatim in `PROJECTDATA_FORMAT.md` §2 and its **Logic-validated fixture** measures
+`0x09CF` with the same ten constant bytes at `0x06..0x0f`; and zero is what Logic reads as "Logic 4", which is exactly the dialog the负责人 saw.
+
+Also written from measurement: the ten constant bytes `03 00 04 00 00 00 01 00 08 00`, record kind/subtype (`gnoS` 6/`0xFFFF`, meter `qSvE` 1/1, tempo `qSvE` 1/3,
+`qeSM` 5), `+0x16`=2, `+0x18`=0, `+0x1a`=2, and the `#G` sub-frame prefix in the `gnoS` payload. The `非等价:` container-header entry was rewritten so **nothing
+corrected stays registered**, and only the fields whose rule could not be derived remain: the record `+0x08..+0x14` sentinels, the region subtype numbering, and the
+`gnoS` body beyond the measured prefix. The new criterion `container_header_fields_carry_the_measured_modern_values` pins every field with **literal measured bytes**
+rather than the module's constants, and B15 pins the root header at the CLI level; the negative measurement (`0x09D0` -> `0x09CF`) fails on the version code with both
+byte arrays printed, and restoration was proven with `cmp` and a matching sha256.
+
+Independently verified after the fix: the artifact's first 24 bytes now read `23 47 c0 ab d0 09 03 00 04 00 00 00 01 00 08 00 7c 05 00 00 00 00 00 00`, `yeban-render`
+runs **96 passed** with the feature, `light` is green, and the commit is pushed.
+
+**Honest unknowns recorded**: whether Logic Pro **12.2** accepts a **12.0.1** code (no 12.2-saved project exists on this machine to measure), and a **newly observed**
+difference - we write the region name at payload `+0x34` while Logic 12.0.1's `qeSM` carries it at `+0x10`/`+0x12` - which is real, unregistered, and worth its own
+round.
+
+**Status**: `4d7a2d8` pushed; the负责人 has been asked to open `/tmp/yeban-logic-open/Yeban.logicx` again in Logic Pro 12.2, and until that answer arrives the
+repository still claims only structural agreement, never that Logic opens it.
