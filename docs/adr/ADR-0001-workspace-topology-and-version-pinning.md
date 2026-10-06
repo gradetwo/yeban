@@ -275,6 +275,15 @@
   > 不是写死的。上面这句"只能返回 unwired"读起来像现状，**按 D43 在此更正为"当时的问题陈述"**。
   > 证据：CI run **37253125714** = success；逆操作**逐字节**回退（sha256 `0218fa7d…` 调用前后相同）。这是**规范要求的能力在操作日志层缺失**，
   与 D12（补 `RemoveSection`/`RemoveScene`）同一族。
+  > **接线位置与判据（本轮补，供下一个读者机械复核）**：实现 =
+  > `crates/yeban-mcp/src/domain/section_build.rs`（`plan()` 真的产出 `Op::AddClip`/`AddClipPlacement`/`AddRoutingNode`/`ConnectRouting`；
+  > `unwired_for_section_op_kinds()` 在 `:660` 按**真实 op** 推导那两个键；调用点 `:965`）。
+  > 判据 = `the_plan_wires_clips_and_routing_and_reports_no_unwired`
+  > （`crates/yeban-mcp/src/domain/section.rs:190`）：它断言 `part_clip_ids == part_track_ids == placement_ids == routing_edge_ids`
+  > ⇒ 片段池与声部连接**都**真的接上，且 `planned.unwired.is_empty()`
+  > ⇒ 正是 D27 所说"表达不出来"的那件事，覆盖成立。落地提交 = `4a29c9c`（2026-10-05）。
+  > 反向保护在 `section_build.rs:1702`（`unwired_is_derived_from_the_real_ops`：逐相位摘掉 `AddClip`/`ConnectRouting`/`AddRoutingNode`，
+  > `unwired` 必须**自己**说话）⇒ 把 `unwired` 加回来会变红，这条缺口不会静默复发。
 - **裁决**：`Op` 从 23 个变体扩到 **27** 个：
   · `AddClip { clip }` / `RemoveClip { clip_id, previous_clip }`（后者前置：片段存在且**无摆放引用** → `ClipInUse`）；
   · `AddRoutingNode { node }` / `RemoveRoutingNode { node }`（后者前置：节点存在且**无边引用** → `RoutingNodeInUse`）。

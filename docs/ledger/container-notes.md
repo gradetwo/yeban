@@ -26,7 +26,7 @@
 
 | 文件 | 规范 ID | 说明 |
 | :--- | :--- | :--- |
-| [`../../crates/yeban-model/src/container/mod.rs`](../../crates/yeban-model/src/container/mod.rs) | `ARCH-SEC-003`、`MUST-GATE-006`、`MUST-GATE-007` | 公开 API：`ContainerLimits`（4 道可注入阈值）、`ContainerEntry`、`ContainerArchive`、`write_container` / `read_container`、§5.3 内容布局（`write_project_container` / `read_project_container`、`ProjectArchive`）、`ContainerError`（38 个变体，每个都能独立触发） |
+| [`../../crates/yeban-model/src/container/mod.rs`](../../crates/yeban-model/src/container/mod.rs) | `ARCH-SEC-003`、`MUST-GATE-006`、`MUST-GATE-007` | 公开 API：`ContainerLimits`（4 道可注入阈值）、`ContainerEntry`、`ContainerArchive`、`write_container` / `read_container`、§5.3 内容布局（`write_project_container` / `read_project_container`、`ProjectArchive`）、`ContainerError`（45 个变体，每个都能独立触发；测法见 §2.5） |
 | [`../../crates/yeban-model/src/container/zip.rs`](../../crates/yeban-model/src/container/zip.rs) | 同上 | 最小 ZIP 读写器（local header / central directory / EOCD；ZIP32 子集）；判定顺序即契约；`find_eocd` 尾部扫描；panic-free 游标 `Reader` |
 | [`../../crates/yeban-model/src/container/path.rs`](../../crates/yeban-model/src/container/path.rs) | `MUST-GATE-006` | `normalize_entry_name`：纯语法层规范化判定（**接受 == 原样，拒绝 == 报错**，绝不静默重写） |
 | [`../../crates/yeban-model/src/container/crc32.rs`](../../crates/yeban-model/src/container/crc32.rs) | `ARCH-SEC-003` | CRC-32/ISO-HDLC 查表实现（`const fn` 编译期建表，零初始化、零分配） |
@@ -122,6 +122,22 @@ $ unzip -p /tmp/yeban-container-probe/interop.yeban assets/78ee600c...a7e13 | sh
 以上"手动"证据之外，判据 `unzip_reads_our_container` 把同一件事**自动化**了
 （`unzip -l` / `unzip -t` / `unzip -p` 三步断言，本机实测通过；缺 `unzip` 的极小容器会**显式打印 skip** 并跳过，
 不会伪装成通过）。
+
+### 2.5 `ContainerError` 变体数的测法（§1 表格里那个数字）
+
+**指标**：`crates/yeban-model/src/container/mod.rs` 里 `enum ContainerError { … }` 内部**变体声明的条数**。
+**方法**：先取 `pub enum ContainerError {` 到其闭合 `}` 之间的行，再只匹配"恰好一个缩进层级 + 大写字母开头 +
+以 `,` 或 `{` 结尾"的行 —— 即 `^    [A-Z][A-Za-z0-9]*( *,| *\{)`；`#[error(...)]` 属性、`///` 文档注释、
+以及变体字段（多缩进一层）都不会被计入。
+
+```text
+$ sed -n '195,508p' crates/yeban-model/src/container/mod.rs | grep -cE '^    [A-Z][A-Za-z0-9]*( *,| *\{)'
+45
+```
+
+**45 条**，与枚举里被 `Vec<&str>`/判据逐一点名的变体数一致（`grep -rho 'ContainerError::[A-Za-z]*' crates/yeban-model/src/container crates/yeban-model/tests/container_*.rs | sort -u | wc -l` = 45）⇒
+"每个都能独立触发"这半句成立。本文件 §1 表格原写 "38 个变体"，是**笔误**（引入该枚举的提交 `8e112d9`
+当时就已是 45 条，`git show 8e112d9:crates/yeban-model/src/container/mod.rs` 按同一方法复数的结果相同）。
 
 ---
 

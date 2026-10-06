@@ -88,6 +88,9 @@ cargo run --release -p yeban-app -- --save-as demo.yeban                      # 
 cargo run --release -p yeban-app -- --open demo.yeban --headless              # 打开它，并打印真的读到了什么
 cargo run --release -p yeban-app -- --open demo.yeban --save-as copy.yeban    # 另存为：原子替换，归档保真
 cargo run --release -p yeban-app -- --open demo.yeban --export-elements e.txt # 导出语义元素清单给脚本/AI
+cargo run --release -p yeban-app -- --open demo.yeban --export-midi song.mid  # 标准 MIDI 文件（SMF 1）—— MIDI 落盘出口（ADR-0001 D47）
+cargo run --release -p yeban-app -- --open demo.yeban --export-als song.als   # 实验性 Ableton Live Set（需 --features experimental-als-export）
+cargo run --release -p yeban-app -- --open demo.yeban --export-logic out/Song.logicx # 实验性 Logic Pro bundle（是目录；需 --features experimental-logic-export）
 cargo run --release -p yeban-app -- --dump-elements                           # 同一份清单打到 stdout
 cargo run --release -p yeban-app -- --project-sample filled --save-as f.yeban  # 换一个内置样本
 cargo run --release -p yeban-app -- --print-shortcuts                         # 快捷键策略表
@@ -105,6 +108,10 @@ cargo run --release -p yeban-mcp --features mcp-http -- --enable-mcp-http       
 `--save-as` 是**原子替换**（临时文件 → `fsync` → `rename`），失败时旧文件一字未改；没有 `--open` 时 `--save-as`
 存的是**内置演示工程**并在输出里明说；未知开关退出 **2** 并打印用法。退出码：`0` 成功 · `1` 界面路径 ·
 `2` 用法错误 · `3` 打开失败 · `4` 保存失败 · `5` 导出失败。
+
+`--export-midi` **始终**编进二进制。`--export-als` 与 `--export-logic` 是**实验性且默认关闭**的
+（`experimental-als-export` / `experimental-logic-export`）；默认构建给这两个开关 = 用法错误（退出 **2**），
+绝不静默忽略 —— 与 `--enable-mcp-http` 同一条规则。
 
 ### 测试
 

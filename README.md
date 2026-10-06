@@ -80,6 +80,9 @@ cargo run --release -p yeban-app -- --save-as demo.yeban                      # 
 cargo run --release -p yeban-app -- --open demo.yeban --headless              # open it and print what was read
 cargo run --release -p yeban-app -- --open demo.yeban --save-as copy.yeban    # save-as: atomic, archives preserved
 cargo run --release -p yeban-app -- --open demo.yeban --export-elements e.txt # semantic element list for scripts/AI
+cargo run --release -p yeban-app -- --open demo.yeban --export-midi song.mid  # standard MIDI file (SMF 1) — the MIDI disk outlet (ADR-0001 D47)
+cargo run --release -p yeban-app -- --open demo.yeban --export-als song.als   # experimental Ableton Live Set (needs --features experimental-als-export)
+cargo run --release -p yeban-app -- --open demo.yeban --export-logic out/Song.logicx # experimental Logic Pro bundle (a directory; needs --features experimental-logic-export)
 cargo run --release -p yeban-app -- --dump-elements                           # the same list on stdout
 cargo run --release -p yeban-app -- --project-sample filled --save-as f.yeban  # pick a different built-in sample
 cargo run --release -p yeban-app -- --print-shortcuts                         # keyboard-shortcut policy table
@@ -98,6 +101,10 @@ reason and never degrades into an empty project; `--save-as` replaces the target
 `rename`) and leaves the old file untouched on failure; with no `--open`, `--save-as` saves the **built-in demo project**
 and says so in its output; unknown switches exit **2** with usage. Exit codes: `0` ok · `1` UI path · `2` usage ·
 `3` open · `4` save · `5` export.
+
+`--export-midi` is always compiled in. `--export-als` and `--export-logic` are **experimental and off by default**
+(`experimental-als-export` / `experimental-logic-export`); giving either one to a default build is a usage error
+(exit **2**), never a silent no-op — the same rule `--enable-mcp-http` follows.
 
 ### Test
 
