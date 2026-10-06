@@ -8562,3 +8562,23 @@ rest of the line byte-identical, and re-run `check_feature_alignment.py` immedia
 
 **Status**: tree green and clean at `ad1afa7` (= `origin/main`); Phase 4 is now 4 完成 / 6 部分 / **0 PENDING**; all fifteen MUST-GATEs are wired; the loudness,
 mapping and MCP-tool items are CI-verified; `ad1afa7`'s own CI verdict is the one still to read back.
+
+
+### Round 353: why the tracking row resists a one-cell edit - the guard cross-checks it against the summary counts
+
+Three attempts to flip `feature-alignment.md:156` from `无` to `部分`, all failing with the same message ("§1 合计写的是 72 行，实际数据行是 71 行"), and then a
+**decisive experiment**: after each revert, `check_feature_alignment.py` reports `[ok]` on the clean committed state. So the failure is mine in every case, and it
+is not about text length or structural damage - **even setting the cell to exactly the vocabulary word `部分` fails**, which rules out the two explanations I had
+been working with.
+
+**The remaining explanation, and the one that also explains earlier history**: the guard does not treat that cell as free text - it **cross-checks it against the
+summary counts in §1**, the same counts the previous line had to rebalance when it moved rows between categories (14 -> 15 and 10 -> 9 in that case). Flipping
+one row's status without moving it in the summary makes the two disagree, and the guard reports the mismatch as a row-count difference because that is the
+symptom it can see.
+
+**So the fix is a two-part edit, not one**: change the status cell **and** move the row's category count (§1's `系统+MCP（UI 无）` / `仅系统` lines), then run
+`check_feature_alignment.py` before anything else. Recorded this way so the next pass does not repeat my three attempts - and the file is reverted, so the tree
+is green at `0cc9dd3`.
+
+**Status**: tree green and clean; `ad1afa7` (the `.als` first slice) and `0cc9dd3` are pushed with verdicts pending; Phase 4 is 4 完成 / 6 部分 / 0 PENDING;
+fifteen MUST-GATEs wired; the loudness, mapping and MCP-tool items CI-verified.
