@@ -9645,3 +9645,21 @@ feature-gated); `phase-status` and the other guards are green; `light` 门禁通
 
 **Status**: tree green and clean at `5f7f8e1` (= `origin/main`); Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; the only unproven claim left anywhere in this
 line is that Logic Pro opens the exported document, which is a data gap rather than a code gap.
+
+
+### Round 397: the `.als` exporter already enforces its embedded loss table - checked, and no gap this time
+
+After closing the Logic exporter's report-vs-file gap in round 396, I checked whether the `.als` exporter had the same unenforced promise, since it also embeds its
+loss table in the produced file as `<!-- yeban-loss ... -->` comments and the CLI tells the user the full table is there.
+
+Measured: `yeban-loss` occurs **5** times in `crates/yeban-render/src/als.rs` (the write sites), a criterion named
+`filled_project_exports_gzip_xml_with_a_complete_loss_table` exists at `:1191`, and the test region below the first `#[cfg(all(test` contains **1** occurrence of
+`yeban-loss` - so a criterion does read the embedded comments back rather than only counting them in memory.
+
+**The honest limit of this check**: it is grep-level evidence that a read-back criterion exists and not a reading of the assertion's body, so what I can say is that
+the `.als` side does not have the *specific* shape of gap found on the Logic side, not that its comparison covers order and classification the way the Logic criterion
+now does. If the `.als` exporter is touched next, the cheap improvement is to bring it to the same standard: decode the comments back and assert count, order, entity,
+reason and classification against the reported table.
+
+**Status**: tree green and clean at `c8e8d68` (= `origin/main`); Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; the only unproven claim remains that Logic Pro
+opens the exported document.
