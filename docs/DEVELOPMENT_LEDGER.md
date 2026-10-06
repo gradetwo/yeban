@@ -9116,3 +9116,20 @@ objective's rule "不许把看起来有当成有" applies to my own verification
 **Status**: tree green and clean at `a673949` (= `origin/main`); automatic CI green for the last fifteen commits with none outstanding; both manual tiers green; all
 fifteen MUST-GATEs wired and the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions
 plus one cleanup permission outstanding.
+
+
+### Round 379: the CI-coverage fix covers the whole set - there are no other orphaned feature-gated tests
+
+Checked whether the `cargo test --all-features` step added in round 358 covers everything, or only the two files that prompted it. It covers everything:
+
+* the only **feature-gated files under `crates/*/tests/`** are `in_process_mcp.rs` and `in_process_mcp_lock.rs`, both gated on `in-process-mcp` - exactly the pair
+  that was orphaned before the fix;
+* feature-gated criteria **inside library sources** (such as the `.als` exporter's four, under `cfg(all(test, feature = "experimental-als-export"))`) are lib unit
+  tests, which `cargo test --all-features --workspace` also compiles and runs.
+
+So the gap is closed for the whole class, not just for the instance that was noticed - which is the difference between fixing a symptom and fixing the category. It is
+also the reason no further CI work is needed here: the step is the general guard, and there is nothing left outside it.
+
+**Status**: tree green and clean at `aa3d0d7` (= `origin/main`); automatic CI green for the last sixteen commits with none outstanding; both manual tiers green; all
+fifteen MUST-GATEs wired and the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions
+plus one cleanup permission outstanding in `docs/ledger/open-questions.md`.
