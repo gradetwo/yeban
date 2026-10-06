@@ -9082,3 +9082,17 @@ would then be judged by a total that never mentioned it. Reading the five rows i
 **Status**: tree green and clean; automatic CI green for the last twelve commits (`5f5445f` pending read-back); both manual tiers green; all fifteen MUST-GATEs wired;
 the five named gates confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six open questions in
 `docs/ledger/open-questions.md`, each answerable with one word, plus one cleanup permission (two merged worktrees).
+
+
+### Round 377: mapping every remaining Phase 4 部分 to the ruling that unblocks it
+
+The open-questions entry now ends with a four-row table so that "what is left" and "which letter to answer" correspond one to one: `M4-006` needs the >=100x
+measurement that `HD-38`/`D50` already ruled out on a self-hosted runner, so it needs **no new ruling** unless `D50` changes; `M4-007` needs the reference `.als`
+(question 5) with its exit shape under question 3; `M4-008` needs the single-authority decision (question 6); and `M4-010` is the convergence item that cannot move
+ahead of the others, so it likewise needs **no ruling of its own**.
+
+Two of the four therefore need nothing from the负责人, which is worth stating plainly: the outstanding set is smaller than "four 部分" sounds. What genuinely
+requires a decision is questions 3, 5 and 6 for Phase 4, plus questions 1, 2 and 4 alongside it.
+
+**Status**: tree green and clean; both manual tiers green; all fifteen MUST-GATEs wired with the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 /
+0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions and one cleanup permission outstanding, each answerable in a word.
