@@ -9338,3 +9338,36 @@ reproject. Both are buildable inside the same authorisation; neither is a missin
 
 **Status**: `a2fd2b1` pushed; `ROAD-M4-008` stays 部分 with the two remaining items named; Phase 4 6 完成 / 4 部分 / 0 PENDING; question 5 (a reference `.als`) remains
 the only item that needs the负责人.
+
+
+### Round 388: the GUI's save paths join the same lock, and the read_only flip is refused by measurement
+
+`eefde06` is the third slice of `M4-008` option (a). Item (a) is now closed: every write path in the app that can produce the **project document** takes the same
+`.yeban.lock` as the control plane. The slice found them by grep rather than assumption - `grep -rn "acquire(" crates/yeban-app/src/` was **0** before, so the app
+took no lock at all - and listed exactly two: `ui/force_save` through `live_surface.rs:566` into `save::save_project_file`, and `--save-as` through `cli.rs:1542`
+into `save::save_archive_file`. Both now take `LockMode::ExclusiveWrite` for the duration of the write, through a new `src/project_lock.rs` that `#[path]`-shares the
+MCP crate's `lock.rs` (the same precedent as `undo.rs` sharing `undo_session.rs`, so there is still no `yeban-mcp` dependency edge: default tree 0, feature 1). The
+three export paths (`--export-elements`, `--export-midi`, `--export-als`) deliberately take no lock, because they do not write project documents and a fabricated
+`song.mid.lock` would pair with nothing.
+
+Independently verified: 10 files changed; default `cargo tree -e normal` shows `yeban-mcp` **0** times; `in_process_mcp_lock` runs **5 passed / 0 failed** (the three
+existing criteria plus two new ones); default `cli_contract` runs **19 passed** (the new B14); `light` 门禁通过; pushed.
+
+**The flip was re-adjudicated by measurement, not by argument.** The second slice refused it because the GUI save took no lock; that reason is now gone, so the slice
+temporarily flipped `mcp_mount.rs` and measured: `the_round_trip_stops_leaving_nothing_listening` goes red with `left: "success" / right: "error"` because
+`yeban_save_project` **starts succeeding** (the control plane really gains a disk-write path), and `in_process_mcp_lock` drops to `2 passed; 3 failed` with
+`left: Some(ExclusiveWrite) / right: Some(SharedRead)` (shared-read coexistence with other read-only forms is lost). Reverted byte-identically. So `read_only = true`
+and `LockMode::SharedRead` stay, and the resulting behaviour is registered as a fact by a new criterion: while a mounted session holds the file, the GUI save is
+**refused** rather than racing. Closing that needs a **single-writer session** (a host save action so the session is the only writer), which is the next slice.
+
+**Item (b) is left undone with a measured reason**: `Timer|start_repeated|invoke_from_event_loop` in `crates/yeban-app/src/` and `ui/` is **0** hits, and
+`sync_authority` exists only in the dev-dependency-only `src/live_surface.rs`. The only honest implementations would pull the test-port crates into the product graph
+(forbidden) or add a timer no headless criterion can bound. No criterion was written that cannot fail.
+
+**One deviation flagged for the record**: `serde_json` moved from dev-dependency to dependency in `yeban-app`, because the shared lock source serialises lock metadata.
+Measured to be harmless in graph terms - the unique package set of the default tree is **296 before and after**, `Cargo.lock` is unmodified, and `MUST-GATE-009` is
+untouched - but it is a direct edge, recorded rather than glossed.
+
+**Status**: `eefde06` pushed; `ROAD-M4-008` stays 部分 with three named remainders (single-writer session, production reprojection hook, the two `UndoSession` types
+being distinct); Phase 4 6 完成 / 4 部分 / 0 PENDING; question 5 (a reference `.als`) is the only item that needs the负责人, and a three-option brief with costs is
+in `open-questions.md`.
