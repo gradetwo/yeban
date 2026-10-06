@@ -9791,3 +9791,40 @@ criterion was proven to skip cleanly when the Apple paths are absent.
 same method that moved the failure point the first time: measure the real files, write only what the evidence supports, and register the rest.
 
 **Status**: tree green and clean; Phase 4 6 完成 / 5 部分 / 0 PENDING; the exporter's claim remains structural only.
+
+
+### Round 404: the MIT reference was reachable, the three semantic questions are answered, and three real defects were fixed
+
+`8c5c0df` is the most substantive Logic round so far, and it worked because the reference was reachable: `jonkubis/logicproformatwriter` (MIT, "Copyright (c) 2026 Jon
+Kubis") was fetched to `/tmp/logic-ref/` - `PROJECTDATA_FORMAT.md` (92,606 B), the Logic 12.0.1 fixture `F0_baseline` (127,689 B + two plists), `LICENSE` and
+`README.md`. **Nothing was committed**: `git ls-files | grep -ciE 'logicx|ProjectData|Demosongs'` is 0 and the same for the reference paths. Attribution is written in
+the module doc and at each constant, with short quotations only, and the round even flags the two places where a quotation normalises the source's own formatting.
+
+**The three questions, answered and re-measured**:
+
+1. **A region does not reference its track.** The `qeSM` record's `+0x08` is its own object id; the relation lives in the **track's** `qSvE` as a **placement event**
+   (kind 20 for MIDI / 24 for audio, position `34560 + tick`, link id `0x58 + i*4`, and a **1-based track number** at `+0x14`). We write no placement event, which is
+   now registered as `REGION_PLACEMENT_UNMAPPED`: regions cannot land on any track.
+2. **Non-empty `Trak` payloads are three sub-populations**, which is why their counts never matched track counts. The decisive formula: for `+0x08 = 0x00040000`
+   (arrange Track rows), **non-empty count minus one equals `NumberOfTracks`** - verified in all five files (F0 2-1=1, Swing! 77-1=76, ocean eyes 43-1=42, quiet
+   11-1=10, 01 Hip Hop 35-1=34), the extra row being master; `0x00080000` is one Track object per pre-allocated mixer slot whose stream order is the track list.
+3. **Record `+0x08..+0x0b` is the owning object's u32 id** (slot byte shifted left 16), with small ids reserved for internal objects and `>= 0x480000` for mixer
+   slots; every `qeSM` shares both its id and its subtype with its paired `qSvE` (13/13, 545/545, 245/245, 65/65, 75/75).
+
+**Three defects fixed in records we already wrote**, all previously unregistered: the meter `qSvE` payload was 80 bytes instead of **96**; the tempo `qSvE` payload was
+16 bytes instead of **48** - and it wrote **position 0 and tempo 0**, where all five real files carry 48 bytes whose tempo word equals their `MetaData` BPM, so we now
+write position 38400 and `round(bpm*10000)`; and the note `qSvE` payload was missing the 16-byte tail that `32*N + 16` requires.
+
+**The track table is still deliberately not written**, but the reason improved from "semantics unknown" to the reference's own measured conclusion (section 10.6.1):
+tracks cannot be synthesised from nothing, because a new channel re-indexes the whole `OCuA` block; the reference itself clones a Logic-saved **donor**, and this
+repository ships none.
+
+**Verified independently**: two files changed; `yeban-render` runs **101 passed** with the feature (from 100) and 84 without it; the artifact
+`/tmp/yeban-logic-open4/Yeban.logicx` has `ProjectData` **1420** bytes (up from 1356, so the bytes really changed) with `MetaData.plist` 19116, `DisplayState.plist`
+168 and `Resources/ProjectInformation.plist` 215; the guards and `light` are green; and the commit is pushed.
+
+**The负责人 has been asked for a third test**, which is informative this time precisely because the bytes changed. **If it still fails, the next step needs a
+ruling**: the reference's validated method is a donor template - shipping or embedding a Logic-saved project - while the alternative, synthesising the ~10 KB `gnoS`
+root Song body, is documented as opaque even by the reference.
+
+**Status**: `8c5c0df` pushed; Phase 4 6 完成 / 5 部分 / 0 PENDING; nothing in the repository claims Logic opens the output.
