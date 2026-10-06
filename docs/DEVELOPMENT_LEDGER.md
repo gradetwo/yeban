@@ -5757,7 +5757,7 @@ Two routes, and this is the part worth writing down because they are NOT equival
 
 1. **Through the model**: read the placement type (track -> placements with a start/end tick -> clip id) and query it in tick space.
    This is the authoritative version: it answers exactly the question the decision was written in.
-2. **Through the projection**: `ViewState` already injects `clip_ulids`, `clip_positions`, `clip_widths` and `clip_lanes`, so
+2. **Through the projection**: `ViewState` already injects `clip_ulids`, `clip_positions`, `clip_widths` and `clip_lanes` (**S0 `ee7fad5` correction**: the `clip-lanes` injection this line counted on has been removed; clip row geometry now comes from the projection's injected `clip-ys` / `clip-heights` arrays), so
    "the clip whose pixel range contains the clicked x on the current lane" is computable with data already on hand - and it matches
    what the user SEES.
 

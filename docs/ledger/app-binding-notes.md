@@ -49,7 +49,7 @@
 | `tracks[*].kind` | `kind`（`midi`/`audio`/`aux-return`/`master`） | —（待接图标位） | `canonical_lines()` 的 `kind=` |
 | `tracks[*].color` | `color: Option<String>` | —（见 §6 未实现项） | `canonical_lines()` 的 `color=` |
 | `tracks[*].pan` | `pan_millis`（`i32`） | —（推子/声相未接） | `canonical_lines()` 的 `pan_millis=` |
-| `tracks[*].clips[*]`（`ClipPlacement`） | `clips: Vec<ClipView>` | `clip-ulids` / `clip-labels` / `clip-positions` / `clip-widths` / `clip-lanes` | `clip-{placement_id}-header`（**ID 段 = 工程的摆放身份**） |
+| `tracks[*].clips[*]`（`ClipPlacement`） | `clips: Vec<ClipView>` | `clip-ulids` / `clip-labels` / `clip-positions` / `clip-widths` / `clip-lanes`（**S0 `ee7fad5` 更正**：`clip-lanes` 注入已删除，剪辑行几何现由投影注入的 `clip-ys` / `clip-heights` 供） | `clip-{placement_id}-header`（**ID 段 = 工程的摆放身份**） |
 | `ClipPlacement::start_tick` / `duration_ticks` | `start_tick` / `end_tick`(`checked_add`) / `duration_ticks` / `x` / `width` | `clip-positions[i]` / `clip-widths[i]` | 几何断言 + `x == tick_to_px(start)` |
 | `ClipPlacement::clip_id` → `ClipPoolEntry.name` | `clip_id` / `clip_name` / `label`（`"{轨道} · {片段}"`） | `clip-labels[i]` | `clip-{ulid}-header.label` |
 | `ClipContent`（Midi/Audio） | `content`（`"midi"`/`"audio"`） | —（波形占位块） | `canonical_lines()` 的 `content=`（经 `clip_id` 归并） |
@@ -76,7 +76,7 @@
 
 | 文件 | 改动 | 为什么必须 |
 | :--- | :--- | :--- |
-| `app.slint` | 新增 17 个 `in property`（`window-title` / `track-names` / `track-volumes` / `track-mutes` / `track-solos` / `scene-names` / `section-names` / `section-positions` / `section-widths` / `clip-ulids` / `clip-labels` / `clip-positions` / `clip-widths` / `clip-lanes` / `bar-positions` / `note-ulids` / `note-velocities`）并转发给 `SessionView` / `ArrangementView` / `ConsoleTabs`；`title: root.window-title` | 数组必须由 Rust 侧 `ModelRc` 注入，否则界面只能读内联常量；`window-title` 让标题也来自工程 |
+| `app.slint` | 新增 17 个 `in property`（`window-title` / `track-names` / `track-volumes` / `track-mutes` / `track-solos` / `scene-names` / `section-names` / `section-positions` / `section-widths` / `clip-ulids` / `clip-labels` / `clip-positions` / `clip-widths` / `clip-lanes`（**S0 `ee7fad5` 更正**：该注入已删除，行几何现由投影注入的 `track-ys` / `track-heights` / `clip-ys` / `clip-heights` 供） / `bar-positions` / `note-ulids` / `note-velocities`）并转发给 `SessionView` / `ArrangementView` / `ConsoleTabs`；`title: root.window-title` | 数组必须由 Rust 侧 `ModelRc` 注入，否则界面只能读内联常量；`window-title` 让标题也来自工程 |
 | `workspace/arrangement_view.slint` | 三个数组默认值 → `[]`；`for x in 6/3/4` → `for name[i] in root.<数组>`；`accessible-item-count` → `.length`；x/width → 注入的 `[length]`；静音/独奏 `accessible-checked` → 工程的 `mute`/`solo`；音量文本 → 注入 | **核心**：轨道名/轨道数/剪辑块/段落标记从此由工程决定 |
 | `workspace/session_view.slint` | `tracks`/`scenes` 默认值 → `[]`；循环规模用数组长度；Scene Launch 列与 Back-to-Arrangement 的 x 由 `root.tracks.length` 算出（上一版**写死** `128px * 6`，轨道数一变就错位） | 同上；顺带修掉一个真实的错位缺陷 |
 | `console/console_tabs.slint` | 新增 `note-ulids` / `note-velocities` 两个**透传**属性并转发给 `PianoRoll` | 默认可见的控制台页（卷帘）此前渲染内联演示 ULID |
@@ -324,7 +324,7 @@ running 9 tests   →  test result: ok. 9 passed; 0 failed      # Tier-1 判据�
 - `.slint` 的语义与类型检查：`[length]` 数组属性、`root.<数组>.length`（**不带括号** ——
   上游 `tests/syntax/basic/expected_type.slint:53` 明文写着 `length` 是属性不是方法，
   `arr.length()` 是 `error{The expression is not a function}`）、数组属性转发
-  （`tracks: root.track-names`）、`168px + <length>`、`56px * root.clip-lanes[i]`、
+  （`tracks: root.track-names`）、`168px + <length>`、`56px * root.clip-lanes[i]`（**S0 `ee7fad5` 更正**：该注入已删除，行几何现由投影注入的 `clip-ys` / `clip-heights` 供）、
   `128px * root.tracks.length` —— **全部编译通过**；
 - `host.rs` / `main.rs` / `test_port_adapter.rs` 的编译与 `clippy -D warnings` —— **绿**；
 - 运行时控件树的内容与 Tier-1 像素 —— 见 §5.1/§5.2。

@@ -33,32 +33,34 @@
 - 四份 Normative 规范**没有任何一处**定义「轨道高度」「编排视图的横向缩放」或「轨道折叠」。
   `UI-GRID-002`（architecture 与 UI/UX 两份各有同文）的「折叠」指的是**侧栏 36px 图标轨 / AI 抽屉**，
   对象是**栏**，不是轨道。
-- 唯一与折叠有关的口径是 `ROAD-M1-002` 与 `TrackV3` 的文档注释（`project.rs:1109-1112`、字段在 `:1143`）：
+- 唯一与折叠有关的口径是 `ROAD-M1-002` 与 `TrackV3` 的文档注释（`project.rs:1113-1116`、字段在 `:1143`）：
   「`folder_id` **仅**用于界面层树状折叠，严禁承载音频信号语义」。它已经被登记：
   `docs/ledger/feature-alignment.md:77` 写的是「**已实现**（模型）/ **无**（UI：没有路由/连线视图）/ **部分**（MCP）」。
 - 横向缩放更微妙：快捷键 `Z`（选区撑满视口）与 `Shift+Z`（全曲总览）**早已写在规范 §7.1**，
-  而提交 `7c995e7`（2026-10-07）刚刚把快捷表改成给未落地动作打 `(未实现)` 标记——`host.rs:542`
+  而提交 `7c995e7`（2026-10-07）刚刚把快捷表改成给未落地动作打 `(未实现)` 标记——`host.rs:548`
   `action_has_implementation` 明确把 `ZoomToSelection` / `ZoomToFit` 列进「没有落点」的集合，
   判据 B11b（`cli_contract.rs:1088`）把快捷表 **18 条条目**与它逐条对账（其中 **6 条**标 `(未实现)`）。
   ⇒ 在这一刻，「缩放」在代码里是一个**被点名的空承诺**；这既是横向缩放该做的理由，也是它的第一条判据。
 
 ### (c) 实测的当前状态（每条都读过代码）
 
-1. **轨道高度：只有名字，没有能力。** 行距是**写死两次**的常量：
-   `automation.rs:86` `TRACK_LANE_TOP_PX: f32 = 42.0`（逻辑像素）、`:89` `TRACK_LANE_HEIGHT_PX: f32 = 56.0`（逻辑像素）；
-   `ui/workspace/arrangement_view.slint:158/160`（包头 `y: 42px + 56px * track_index; height: 54px;`）、
-   `:281/283`（车道 `42px + 56px * lane_index; height: 54px;`）、
-   `:291`（剪辑 `y: 42px + 56px * root.clip-lanes[clip_index] + 4px` 与 `height: 46px`）。
-   `TrackView`（`bridge.rs:618-656`）**没有**高度字段；`track_view()`（`bridge.rs:1641-1665`）**不产出**高度；
-   `host::apply_view`（`host.rs:119` 起）**不注入**高度。
-   ——注意：行 `y` 今天是 **`.slint` 自己算的**，这与 `D28` 第 3 条「`.slint` 侧零算术」已有偏差；
-   前置切片正好把它纠正（见「切片顺序」S0）。
-2. **横向缩放：投影支持，产品改不动。** `ViewState::ticks_per_pixel`（`bridge.rs:788`，单位：tick / 逻辑像素）
-   是投影字段；`from_project_with_zoom` / `_and_cursor`（`bridge.rs:849/869`）接受**任意** `ticks_per_pixel`；
-   判据 `note_positions_are_integer_derived_from_ticks`（`bridge.rs:2757` 起）在 **7 档**
+1. **轨道高度：只有名字，没有能力。** 行距常量仍在**一处**（投影侧）：
+   `automation.rs:98` `TRACK_LANE_TOP_PX: f32 = 42.0`（逻辑像素）、`:104` `TRACK_LANE_HEIGHT_PX: f32 = 56.0`（逻辑像素）；
+   行几何由 `bridge::track_rows()`（`bridge.rs:672`）算前缀和，`TrackView`（`bridge.rs:690-737`）与
+   `ClipView`（`bridge.rs:778` 起）各自带 `y` / `height`，`host::apply_view`（`host.rs:119` 起）注入
+   `track-ys` / `track-heights` / `clip-ys` / `clip-heights` 四个 `[length]` 数组；
+   `ui/workspace/arrangement_view.slint` 的包头 / 车道 / 剪辑三处直接读注入值
+   （`root.track-ys[track_index]` / `root.track-ys[lane_index]` / `root.clip-ys[clip_index]`），**不做行算术**。
+   ——**S0 已落地（`ee7fad5`，2026-10-07）**：这里原写「行 `y` 今天是 **`.slint` 自己算的**」，那与 `D28` 第 3 条
+   「`.slint` 侧零算术」的偏差**已被 S0 纠正**；旧的 `42px + 56px * track_index`（包头 / 车道 / 剪辑三处）
+   与注入的 `clip-lanes` 数组都已删除。但**高度仍是常量**：今天没有每轨 `height_px`、也没有高度缩放级 ——
+   那才是本 ADR 要裁决的能力（见 Q1/Q3）。
+2. **横向缩放：投影支持，产品改不动。** `ViewState::ticks_per_pixel`（`bridge.rs:876`，单位：tick / 逻辑像素）
+   是投影字段；`from_project_with_zoom` / `_and_cursor`（`bridge.rs:937/957`）接受**任意** `ticks_per_pixel`；
+   判据 `note_positions_are_integer_derived_from_ticks`（`bridge.rs:2940` 起）在 **7 档**
    `[1, 3, 7, 30, 32, 120, 960]` 上逐档对账整数除法；默认 `DEFAULT_TICKS_PER_PIXEL = 30`（`bridge.rs:72`）。
    **`from_project_with_zoom*` 的生产调用点 = 0 个**：全部生产入口都走 `from_project`（即默认 30）——
-   `host.rs:723/801/835`、`scene.rs:198`、`live_surface.rs:460/1112`、`cli.rs:1450`、`reproject.rs:159`。
+   `host.rs:729/807/841`、`scene.rs:198`、`live_surface.rs:460/1112`、`cli.rs:1450`、`reproject.rs:159`。
    这把 `ticks_per_pixel` 变成一个「**有能力、无消费者**」的字段（本仓刚在 `7c995e7` 里为同族问题改过快捷表）。
 3. **折叠：模型孤岛。** `TrackV3::folder_id: Option<EntityId>`（`project.rs:1143`）被持久化、被 `validate()` 查存在性；
    而 `crates/yeban-app` 里 `folder` 出现 **0** 次（`grep -rn folder crates/yeban-app/ | wc -l` ⇒ `0`）。
@@ -67,31 +69,31 @@
    ⇒ **自指**（`folder_id == track.id`）、**环**（a→b→a）、**指向主总线**今天**全部通过**。
    这是第一个「顺着指针走」的实现会踩的陷阱。
 4. **编排视图没有横向滚动，也没有 `Flickable`。** `ui/` 下 `Flickable` 只出现在 `tokens.slint:32` 的注释里；
-   `arrangement_view.slint`（433 行）全文 **0** 处 `scroll`/`viewport` 命中。
+   `arrangement_view.slint`（445 行）全文 **0** 处 `scroll`/`viewport` 命中。
    钢琴卷帘走的是**另一条已被判据钉住的路径**：`callback scroll-requested(length)`（`piano_roll.slint:40`）
    + 宿主拥有偏移并重新注入，其注释（`piano_roll.slint:39`）明确写着「**Flickable 会与宿主拥有的偏移双重计算, 故不用**」。
-   `app.slint:330/573` 与 `console_tabs.slint:34/159` 是这条路径的既有接线。
+   `app.slint:336/582` 与 `console_tabs.slint:34/159` 是这条路径的既有接线。
 
 ### (d) 代码强制的约束（选项只能在它们之内）
 
 | # | 判据 / 事实（位置） | 它强制什么 |
 | :-- | :--- | :--- |
-| 1 | `automation.rs:1643` 断言 `.slint` 里**逐字**存在 `"42px + 56px * track_index"` | 任何变行高**按构造**让它变红。这条判据必须随实现**改写**（不是绕过）：改写成「`.slint` 不做行算术，行几何来自投影数组」，判别力必须**更强**而不是更弱 |
-| 2 | `automation.rs:704-711`：`band_height = (TRACK_LANE_HEIGHT_PX − 2×inset)/lane_count`、`track_offset = TRACK_LANE_HEIGHT_PX × track_index` | 变行高时 `track_offset` 必须变成**前缀和**；否则 9 个平行数组与真实行错位 |
-| 3 | `automation.rs` 的 9 个平行数组由 `host.rs:184-192` 注入（8 个 `set_automation_lane_*` + `set_automation_path_commands`） | 这 9 个数组与行几何必须来自**同一份**事实 |
+| 1 | `automation.rs:1660` 的 `lane_element_ids_match_the_slint_template` 断言 `.slint` 里**没有任何**行算术（`"42px + 56px *"`、`"56px * track_index"` 等形态全部禁止）、几何读注入的 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`，且 `host.rs` **真的注入**这四组（S0 已按本表建议**改写**，不是绕过） | 任何变行高**按构造**让它变红。改写后的判别力**更强**：旧断言只钉住一个字符串，新断言钉住「唯一事实源」（`.slint` 零算术 + 注入面存在） |
+| 2 | `automation.rs:750-753`：`band_height = (row.stride − 2×inset)/lane_count`、`band_y = row.y + inset + band_height × band_index`（S0 已把 `track_offset = TRACK_LANE_HEIGHT_PX × track_index` 换成投影的行几何） | 变行高时带几何必须随 `row.stride` / `row.y` 走；否则 9 个平行数组与真实行错位 |
+| 3 | `automation.rs` 的 9 个平行数组由 `host.rs:190-198` 注入（8 个 `set_automation_lane_*` + `set_automation_path_commands`） | 这 9 个数组与行几何必须来自**同一份**事实 |
 | 4 | `elements.rs:1247` `SLINT_MANIFEST: [&str; 13]`，与 `ui/` 实际文件集合逐项比对（`elements.rs:1298-1300`） | 新增任何 `.slint` 文件即红 |
 | 5 | `elements.rs:1364` `slint_accessible_ids_and_registry_cover_each_other` | `.slint` 的 `accessible-id` 与 `ElementRegistry` **双向覆盖**；隐藏行若只在一侧消失即红 |
 | 6 | `elements.rs:1081` `per_track_semantic_families_are_complete` | 每个 `track-{i}` 必须有 fader / header / mute-button / solo-button / channel-strip / meter / color-swatch **7 族** |
 | 7 | `elements.rs:1418` `registry_follows_the_projected_project` | `track-{i}` 的 `i` 必须与投影 `ViewState.tracks` 的**下标**对应（演示工程 6 条轨道 ⇒ 有 `track-5-header`；filled 项目 3 条 ⇒ **没有** `track-3-header`）。「隐藏即从数组里删掉」会被它按构造打红 |
 | 8 | `elements.rs:405/478/658` 三个族（session / arrangement / mixer）都按 `view.tracks.iter().enumerate()` 造 ID | 任何重编号都同时动三族语义 ID |
-| 9 | `TrackView.index` 的文档（`bridge.rs:620`）：视图内序号（0 起，已排除主总线）**进 `track-{i}-*` 的语义 ID** | 下标就是可寻址身份，不是排版下标 |
-| 10 | `bridge.rs:3149` 钉死 `PITCH_LANE_HEIGHT_PX == 14.0`（钢琴卷帘行高，逻辑像素） | 另一条纵向几何已有自己的常量与判据；**不要**把它和编排行高混用 |
+| 9 | `TrackView.index` 的文档（`bridge.rs:691`）：视图内序号（0 起，已排除主总线）**进 `track-{i}-*` 的语义 ID** | 下标就是可寻址身份，不是排版下标 |
+| 10 | `bridge.rs:3331` 钉死 `PITCH_LANE_HEIGHT_PX == 14.0`（钢琴卷帘行高，逻辑像素） | 另一条纵向几何已有自己的常量与判据；**不要**把它和编排行高混用 |
 | 11 | `model_isolation.rs:105` `FROZEN_PROJECT_KEY_PATH_SHA256` + `:109` `FROZEN_PROJECT_KEY_PATH_COUNT = 223`（条递归键路径）+ `:447` 的两份逐字节样本 + `:405` 顶层键表 | 工程里**加任何键**同时移动 4 处 |
 | 12 | `model_isolation.rs:539` `session_state_has_no_serde_surface` | `session.rs` 真代码里不许出现 `serde`/`Serialize`/`Deserialize` ⇒ **第 2 层（会话态）按构造不能持久化** |
 | 13 | `local_config.rs:498/529/581` 三处 `#[serde(deny_unknown_fields)]`、`:637` 版本闸门（只接受 `version <= LOCAL_CONFIG_VERSION`，当前 `= 1`）、`model_isolation.rs:112` `FROZEN_LOCAL_CONFIG_KEYS: [&str; 4]` | 第 3 层加字段要同时改契约、冻结键集与版本口径 |
 | 14 | 5 张 Linux Tier-1 Golden（`tests/golden/linux/*.png`，1920×1080）+ `MANIFEST.txt` 的 run id / 时间戳 / 逐文件 sha256 | 任何**默认可视几何**变化都要按 `ADR-0003`「批准后的再生成程序」在 CI 上重做 5 张 |
 | 15 | `test_port_adapter.rs:174` `assert_matches_golden`：平台目录不存在时打印「视觉回归**未被判定**（不等于通过）」并 `return`；本仓只有 `tests/golden/linux/` | **本机 macOS 判不了 golden**；本机绿不是证据 |
-| 16 | `host.rs:542` `action_has_implementation` 把 `ZoomToSelection`/`ZoomToFit` 列为未落地；`cli_contract.rs:1088`（判据 B11b）把快捷表 18 条条目的 `implemented` 与它逐行对账 | 横向缩放一落地，`host.rs`、`cli.rs` 的表、B11b 必须**同一提交**一起动 |
+| 16 | `host.rs:548` `action_has_implementation` 把 `ZoomToSelection`/`ZoomToFit` 列为未落地；`cli_contract.rs:1088`（判据 B11b）把快捷表 18 条条目的 `implemented` 与它逐行对账 | 横向缩放一落地，`host.rs`、`cli.rs` 的表、B11b 必须**同一提交**一起动 |
 | 17 | `docs/ledger/feature-alignment.md:77` | UI 侧做折叠会移动那一行的三方状态（那是集成者的登记动作，本 ADR 不改它） |
 
 ---
@@ -142,7 +144,7 @@
   即投影；界面没有第二处），否则会生出两份事实源。
 
 **代码强制**：`D28`（位置整数、投影是唯一注入点、`.slint` 零算术）；`TRACK_LANE_HEIGHT_PX` 今天是**常量**而非数据；
-`bridge.rs:3149` 说明另一条纵向几何（钢琴卷帘 14px）有自己独立的常量与判据，**不能**与编排行高共用一个数。
+`bridge.rs:3331` 说明另一条纵向几何（钢琴卷帘 14px）有自己独立的常量与判据，**不能**与编排行高共用一个数。
 
 **建议**：**C（分层，职责互斥）**。理由：① 负责人原话同时点名每轨拖拽与缩放级，二者语义不同（作品 vs 视图）；
 ② 代码已经把「投影接受外部参数」的形状给出来（`from_project_with_zoom` 是**入参**而不是字段），
@@ -180,21 +182,22 @@
 **选项与代价**：
 
 - **A. 不跟随（band 仍按 56 逻辑像素常量）** —— **代价**：`track_offset = 56 × track_index` 与真实的（前缀和）行 `y`
-  **必然**分叉；`host.rs:184-192` 注入的 **9 个平行数组**（`automation-lane-band-ys` / `-band-heights` 等）
-  与真实行错位；`lane_geometry_matches_the_arrangement_grid`（`automation.rs:1642`）与
-  `automation.rs:1621` 的 ID 模板对账会红。**这不是「少做一个特性」，而是让界面自相矛盾。**
+  **必然**分叉；`host.rs:190-198` 注入的 **9 个平行数组**（`automation-lane-band-ys` / `-band-heights` 等）
+  与真实行错位；`lane_element_ids_match_the_slint_template`（`automation.rs:1660`）与
+  `automation.rs:1670` 的 ID 模板对账会红。**这不是「少做一个特性」，而是让界面自相矛盾。**
 - **B. 跟随：投影先算每行 `y`（前缀和）与行高，带几何由**同一份**行几何派生** ——
-  触点：`automation.rs` 的 `project_lanes*`（`automation.rs:673/688`）多一个「行几何」输入；
+  触点：`automation.rs` 的 `project_lanes*`（`automation.rs:687/705`；S0 新增的带行几何入口
+  `project_lanes_with_rows` 在 `:723`）多一个「行几何」输入；
   `host.rs` 的注入面不变（9 个数组仍是投影产物）。**代价**：`automation.rs` 的函数签名与
-  它的调用点（`automation.rs:914/1006/…` 大量传 `DEFAULT_TICKS_PER_PIXEL`）要改；**新增一条判据**：
+  它的调用点（`automation.rs:955/1047/…` 大量传 `DEFAULT_TICKS_PER_PIXEL`）要改；**新增一条判据**：
   每个带的 `y` 落在其所在行的 `[row_y, row_y + row_height]` 之内。
 
-**代码强制**：`automation.rs:704-711` 的公式；`automation.rs:1643` 的逐字断言；
+**代码强制**：`automation.rs:750-753` 的公式；`automation.rs:1690-1703` 的文本层断言（S0 已改写为禁止行算术）；
 `app-automation-ui-notes.md:466` 记录的既有风险（一条轨道 >52 条泳道时带高 <1px ⇒ 元素可能被裁剪语义过滤掉，
 「登记了但查不到」）。
 
 **建议**：**B**，而且带与剪辑车道**必须**从**同一个** `Rows` 值派生，**不是各算一次**——
-否则「同一个 42/56 写两份」的旧病会在新形状里复发（`automation.rs:64` 的注释自己承认那是「已知的耦合」）。
+否则「同一个 42/56 写两份」的旧病会在新形状里复发（`automation.rs:67-70` 的注释自己承认那是「已知的耦合」）。
 这一条属于**共享前置切片 S0**（见切片顺序）。
 
 ### Q4 — 如果状态不是每工程的，它住在哪一层？
@@ -256,7 +259,7 @@ C 的「4 处同时移动」是机械的；`MODEL-ISO-001` 定义了 3 层。
 - **B. 同片**：沿用钢琴卷帘**已被判据钉住**的形状（`callback scroll-requested(length)` + 宿主拥有偏移 +
   投影侧减偏移后重新注入），**不引入 `Flickable`**（`piano_roll.slint:39` 的注释是证据：
   Flickable 与宿主偏移双重计算）。触点：`arrangement_view.slint`（新 callback + 一个可拖的滚动条/手势）、
-  `app.slint` 的接线（`scroll-requested` 已有先例 `app.slint:330/573`）、`host.rs` 的 `apply_view`（已有一个
+  `app.slint` 的接线（`scroll-requested` 已有先例 `app.slint:336/582`）、`host.rs` 的 `apply_view`（已有一个
   `scroll_x` 参数，钢琴卷帘在用）、`bridge.rs` 里剪辑/小节线/自动化顶点的 x 减去偏移
   （`visible_notes` 已经是这个形状：「位置**相对视口**（投影侧已减去 `scroll_x`）」）。
   **代价**：一条新判据（偏移单调、越界不 panic、`px_to_tick` 口径与投影一致——`bridge.rs:412-420`
@@ -282,7 +285,7 @@ C 的「4 处同时移动」是机械的；`MODEL-ISO-001` 定义了 3 层。
   判据 `tick_to_px(30, 30) == 1`、`tick_to_px(6, 7) == 0` 就在那里）。
 - **C. 连续小数缩放，投影取整** —— 同 B 且更差：界面持有浮点、投影只看到整数 ⇒ 用户看到的档位不可复现。
 
-**代码强制**：`ticks_per_pixel: u64` 与 `BridgeError::ZeroTicksPerPixel`（`bridge.rs:869` 的
+**代码强制**：`ticks_per_pixel: u64` 与 `BridgeError::ZeroTicksPerPixel`（`bridge.rs:957` 的
 `if ticks_per_pixel == 0 { return Err(...) }`）⇒ **下界 = 1 是类型/判据强制的**；`tick_to_px` 是整数除法。
 
 **建议**：**A**。阶梯定义在**一处**（`bridge.rs` 的常量数组），下界 1、上界一个命名常量；
@@ -299,7 +302,7 @@ C 的「4 处同时移动」是机械的；`MODEL-ISO-001` 定义了 3 层。
   折叠是投影/界面的行为。**触点**：零 schema；`validate()` 加固（Q13）；投影多一个「可见性」概念。
   **代价**：「它是文件夹」是**隐式角色**（有孩子 ⇒ 是文件夹），没有类型保护；而且它**可以**持有设备/剪辑/自动化
   与混音通道条（因为它是普通轨道）——这可能不是想要的。**但代码已经就是这个形状**，
-  `project.rs:1109-1112` 与 `ROAD-M1-002` 的口径明文说它**只**做界面折叠。
+  `project.rs:1113-1116` 与 `ROAD-M1-002` 的口径明文说它**只**做界面折叠。
 - **B. 加 `TrackKind::Folder`（组实体）** —— **触点**：`project.rs:389` 的枚举 +
   `schemas/project.schema.json` 的 `tracks.*.kind.enum`（今天 **4** 个值）+ **每一处 `match track.kind`**
   （`kind_name()`、混音、路由节点、引擎快照等）+ 可能的迁移；`kind` 是 required 键。
@@ -322,20 +325,20 @@ C 的「4 处同时移动」是机械的；`MODEL-ISO-001` 定义了 3 层。
 
 **选项与代价**：
 
-- **A. 从 `ViewState.tracks` 里移除** —— **代码强制否决**：`TrackView.index` 的文档（`bridge.rs:620`）
+- **A. 从 `ViewState.tracks` 里移除** —— **代码强制否决**：`TrackView.index` 的文档（`bridge.rs:691`）
   明写「进 `track-{i}-*` 的语义 ID」；`elements.rs:1418` 断言 index ↔ 投影下标；
   `elements.rs:405/478/658` 三个族都按 `view.tracks.iter().enumerate()` 造 ID；
-  `automation-lane-track-indexes` 也携带 index（`arrangement_view.slint:369` 的 ID 模板）。
+  `automation-lane-track-indexes` 也携带 index（`arrangement_view.slint:381` 的 ID 模板）。
   移除 ⇒ 后面**每一条轨道的 ID 全部重编号**（编排 + 混音 + 会话三族），`UI-TEST-001` 的稳定语义寻址当场失效，
   按下标索引的选中/撤销状态会被**静默重定向**。
 - **B. 保留整个数组，加 `visible`/`folded`，并给出投影的 `y`/`height`** —— **代价**：需要一条
   「隐藏行的有效高 = 0（或跳过排布）」的规则；判据 5（双向覆盖）与 6（7 族）要求**注册表与模板同步**
   （隐藏行仍登记，或两侧一起学可见性）。
-- **C. 由投影给所有消费者供 `row-ys` / `row-heights`**（把行几何从 `.slint` 搬进投影）—— 与 B 是同一件事的两面：
+- **C. 由投影给所有消费者供行几何**（`row-ys` / `row-heights` 那一族；把行几何从 `.slint` 搬进投影；S0 已落地为注入的 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`）—— 与 B 是同一件事的两面：
   B 说「数组保留什么」，C 说「谁算 y」。**C 正是纵向变高需要的同一个改动。**
 
 **代码强制**：A 被判据 5/6/7/8 + `UI-TEST-001` 按构造否决；
-`arrangement_view.slint:158/281/291` 的行算术必须搬进投影（`D28` 第 3 条）。
+`arrangement_view.slint` 三处（包头 / 车道 / 剪辑）的**行算术**必须搬进投影（`D28` 第 3 条）；S0 已落地（`ee7fad5`），三处改读注入的 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`。
 代码**唯一**强制的是：`.slint` 模板与 `elements.rs` 必须保持**互相覆盖**——所以隐藏不能只在一侧发生。
 
 **建议**：**B + C 合取**：数组**保留完整**（索引稳定），`visible`/`folded` 是投影字段，
@@ -353,11 +356,11 @@ C 的「4 处同时移动」是机械的；`MODEL-ISO-001` 定义了 3 层。
   投影多一条派生数组（并集跨度的 `x` / `width`），完全由既有 `ClipView` 推导；
   不需要新栈规则；`clip-{ulid}-*` 的 ID **不重复**（只画区间，不画子剪辑）。
 - **C. 显示子轨的剪辑（堆叠）** —— **代价（关键）**：今天的 `Vec<ClipView>` 是**扁平**的，
-  `clip_lanes` 只是一个 `u32` 行号；要把子剪辑堆到折叠行上，就必须发明一条**重叠打包/堆叠规则**
+  `ClipView::lane` 只是一个行号（`i32`）；要把子剪辑堆到折叠行上，就必须发明一条**重叠打包/堆叠规则**
   （投影里今天不存在，规范也没有定义）；而且每个剪辑会同时出现在「折叠行」与「子行」两处
   ⇒ 同一条 `clip-{ulid}-header` 出现两次，破坏 `UI-TEST-001` 的 ID 唯一性。**出局**。
 
-**代码强制**：`ClipView` / `clip_lanes` 扁平；判据 5（双向覆盖）与 `clip-{ulid}-*` 的唯一性；`elements.rs` 的 clip 族。
+**代码强制**：`ClipView` / `ClipView::lane` 扁平；判据 5（双向覆盖）与 `clip-{ulid}-*` 的唯一性；`elements.rs` 的 clip 族。
 
 **建议**：**B**（并集跨度），**C 明确出局**（它需要的堆叠规则既不在代码里也不在规范里，且产生重复语义 ID）；
 A 可作为第一片的最小步，但 B 只多一条派生数组，收益是「折叠 ≠ 空」。
@@ -369,14 +372,14 @@ A 可作为第一片的最小步，但 B 只多一条派生数组，收益是「
 
 **选项与代价**：
 
-- **A. 也隐藏折叠通道条** —— **代价**：`host.rs` 只注入**一份** `track-names`（`host.rs:129` `set_track_names`），
-  `app.slint:497/507/578` 把它同时给编排与混音；`mixer_console.slint:78` 按 `track-names` 迭代并造
+- **A. 也隐藏折叠通道条** —— **代价**：`host.rs` 只注入**一份** `track-names`（`host.rs:131` `set_track_names`），
+  `app.slint:503/513/587` 把它同时给编排与混音；`mixer_console.slint:78` 按 `track-names` 迭代并造
   `track-{i}-channel-strip / -fader / -meter`。隐藏 ⇒ 混音台也要重编号（同 Q9-A 的破坏），
   **或者**引入第二条「混音可见」数组 + 一条新不变式。
 - **B. 保留折叠通道条** —— **代价**：混音台显示一条在编排里看不见的轨道
   （可解释为「折叠是时间轴的手势，不是混音的路由」）；**零重编号、零新数组**。
 
-**代码强制**：单一 `track_names()`（`bridge.rs:1043`）与 `host.rs` 的单次注入；判据 6（7 族）；
+**代码强制**：单一 `track_names()`（`bridge.rs:1138`）与 `host.rs` 的单次注入；判据 6（7 族）；
 `mixer_console.slint:78` 的迭代。
 
 **建议**：**B（保留）作为第一片**，把「混音台要不要隐藏」登记为一个**可延后**的问题
@@ -430,13 +433,13 @@ A 可作为第一片的最小步，但 B 只多一条派生数组，收益是「
 
 负责人第 418 轮要求「各自一个切片、各带能变红的判据」。审计点名的那条共享事实
 （「投影供行」既被纵向变高需要、又被折叠需要）决定了顺序：**共享改动必须最先**，
-否则会先长出两套行模型，再被迫合并——那正是 `automation.rs:64` 自认的旧病。
+否则会先长出两套行模型，再被迫合并——那正是 `automation.rs:67-70` 自认的旧病。
 
 | 切片 | 交付 | 依赖的裁决 | 落地什么 | schema | golden |
 | :-- | :--- | :--- | :--- | :--- | :--- |
-| **S0（共享前置，必须最先）** | 投影供行几何 | Q1（单位）、Q2（夹紧住投影）、Q3（带同行）、Q9-B/C | `ViewState` 供 `row-ys` / `row-heights`（前缀和）；`TrackView` 带 `y`/`height`；`automation.rs` 的带从**同一份**行几何派生；`arrangement_view.slint` 三处（`:158/281/291`）改读数组；`automation.rs:1643` 的逐字断言改写成「`.slint` 不做行算术」 | **否** | **默认几何不变 ⇒ 5 张 Linux Tier-1 Golden 不变**（这条本身就是判据：重构必须逐字节保持默认帧） |
+| **S0（共享前置，必须最先）— 已落地 `ee7fad5`（2026-10-07）** | 投影供行几何 | Q1（单位）、Q2（夹紧住投影）、Q3（带同行）、Q9-B/C | `ViewState` / `host` 供 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`（前缀和）；`TrackView` / `ClipView` 带 `y`/`height`；`automation.rs` 的带从**同一份**行几何派生（新入口 `project_lanes_with_rows`）；`arrangement_view.slint` 三处改读注入数组；`lane_element_ids_match_the_slint_template` 的文本层断言改写成「`.slint` 不做行算术」 | **否** | **默认几何不变 ⇒ 5 张 Linux Tier-1 Golden 不变**（这条本身就是判据：重构必须逐字节保持默认帧） |
 | **S1（纵向轨道高度）** | 每轨高度 + 全局高度缩放级 | Q1、Q2、Q3、Q4 | `row-heights` 由 `clamp(height_px × 百分比 / 100)` 得到；一个拖拽手势；S0 的**第一个真消费者** | 只在 Q1 = A/C 时要 | 只在默认几何或新增可视控件时变 |
-| **S2（横向时间轴缩放 + 编排滚动）** | 滚动 + 缩放级 | Q5、Q6、Q7 | 宿主拥有 `ticks_per_pixel`（离散整数阶梯）+ `arrangement_scroll_x`；`from_project_with_zoom` **第一个生产调用点**；`arrangement_view.slint` 加 `scroll-requested`（复用钢琴卷帘形状，**不用 `Flickable`**）；剪辑/小节线/自动化顶点在投影里减偏移；`host.rs:542` + `cli.rs` 的表 + B11b **同提交**一起动 | 只在 Q5 = A 时要 | 只在默认缩放 ≠ 30 或新增可视控件时变 |
+| **S2（横向时间轴缩放 + 编排滚动）** | 滚动 + 缩放级 | Q5、Q6、Q7 | 宿主拥有 `ticks_per_pixel`（离散整数阶梯）+ `arrangement_scroll_x`；`from_project_with_zoom` **第一个生产调用点**；`arrangement_view.slint` 加 `scroll-requested`（复用钢琴卷帘形状，**不用 `Flickable`**）；剪辑/小节线/自动化顶点在投影里减偏移；`host.rs:548` + `cli.rs` 的表 + B11b **同提交**一起动 | 只在 Q5 = A 时要 | 只在默认缩放 ≠ 30 或新增可视控件时变 |
 | **S3（轨道折叠）** | 折叠（含 Q13 前置） | Q8、Q9、Q10、Q11、Q12（+ Q13 先落） | `validate()` 加固（Q13，可先单独落）；投影加 `visible`/`folded` + 隐藏行高 0；标尺并集跨度（Q10-B）；混音台保留（Q11-B）；`collapsed` 位按 Q12 | 只在 Q12 = B 时要 | 折叠默认「不折叠」时可能不要；一旦新增折叠按钮即要（5 张） |
 
 **顺序的理由**：
@@ -452,7 +455,7 @@ A 可作为第一片的最小步，但 B 只多一条派生数组，收益是「
    就是同一个错误的新实例。纵向变高是负责人点名的第一交互，也是**每轨**语义的落点。
 3. **S2（横向缩放 + 滚动）独立于行几何**，所以它的位置与 S1 可换（两条线的触点不重叠：
    S1 在行几何，S2 在 x/滚动）。把它排在 S1 之后而不是之前，是因为它要同时动**三处**与
-   「能力落地陈述」耦合的地方（`host.rs:542`、`cli.rs` 的 `implemented`、`cli_contract.rs:1088`），
+   「能力落地陈述」耦合的地方（`host.rs:548`、`cli.rs` 的 `implemented`、`cli_contract.rs:1088`），
    是一笔独立的、与行几何无关的账。**但滚动必须与缩放同片**（Q6）。
 4. **S3（折叠）最后**，因为它**未决问题最多**（Q8–Q12），且两个副作用（标尺显示、混音台是否隐藏）
    各自会牵动新的数组/不变式；把 Q13 的校验加固放在它**之前**（或作为 S3 的第一步），
@@ -494,7 +497,7 @@ Q9（判据 5/6/7/8 与 `UI-TEST-001` 强制索引稳定）、Q13 的终止机�
 2. **持久化口径的代价是一次性的**：若负责人裁「进工程」，代价是**一次**键路径（223 条）/ 摘要 /
    2 份字节样本 / 顶层键表 / schema / 5 张 Golden 的联动移动；若裁「留会话」，代价是「重启后视图丢失」。
    两种代价都真实，但**只付一次**（三键一次加）比付三次便宜。
-3. **S0 会改写一条既有判据**（`automation.rs:1643` 的逐字断言）。这**不是**削弱门禁：
+3. **S0 改写了一条既有判据**（`automation.rs:1690-1703` 的文本层断言）。这**不是**削弱门禁：
    断言要从「`.slint` 里有这串字面量」改成「`.slint` 不做行算术、行几何来自投影数组」；
    判别力必须**更强**（旧断言只钉住一个字符串，新断言钉住「唯一事实源」）。
 4. **折叠第一片不隐藏混音台**（Q11-B），所以混音台会显示编排里看不见的轨道。
