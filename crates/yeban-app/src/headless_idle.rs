@@ -204,6 +204,10 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
     let ui = host::build_main_window(&view, &scene).map_err(|error| CliError::Ui {
         detail: format!("无法创建主窗口 ({error})"),
     })?;
+    // 主题（`--theme`）：与 GUI 路径**同一个**写入口，且同样在"控件树开跑"之前。
+    // 本档真的构造控件树并光栅化一帧，因此这里的主题是**可被像素见证的**：
+    // 换主题 ⇒ `distinct-colors` / `non-black-pixels` 会不一样。
+    host::apply_theme(&ui, options.theme);
     ui.show().map_err(|error| CliError::Ui {
         detail: format!("主窗口 show 失败: {error}"),
     })?;

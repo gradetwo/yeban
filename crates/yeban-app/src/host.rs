@@ -51,7 +51,7 @@ use crate::engine_host::EngineHost;
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
-use crate::ui::MainWindow;
+use crate::ui::{MainWindow, ThemeState, YebanTheme};
 use crate::undo::{UiAction, UndoPort};
 
 /// [`wire_save`] 的**装配输入**：保存到哪 + 没有权威时用哪一份工程。
@@ -860,6 +860,39 @@ pub fn build_main_window(
     scene: &DemoScene,
 ) -> Result<MainWindow, slint::PlatformError> {
     build_main_window_with_console_tab(view, scene, 0)
+}
+
+/// 把 `--theme` 选中的主题写进 Slint 的 `ThemeState.theme`（**唯一**的主题写入口）。
+///
+/// ## 与 `apply_view` 同一条纪律
+///
+/// 单向注入：`.slint` 侧只**读** `ThemeState.theme`（`ui/tokens.slint` 的十三支品牌色
+/// 都是它的二选一表达式），Rust 侧只**写**。界面文件因此一行都不用改 ——
+/// "换主题"落在唯一一处：这个函数。
+///
+/// ## 它**不**做什么（边界，写在 `--print-theme` 与用法文本里）
+///
+/// 它**不**改变 Slint 编译进来的**风格**。Slint 1.18.1 没有运行时换风格的 API
+/// （`slint::select_built_in_style` 在该版本的源码里不存在），风格由 `build.rs` 的
+/// `SLINT_STYLE` → `slint_build::CompilerConfiguration::with_style` 在**编译期**定死。
+/// 于是 [`crate::cli::Theme::Material`] / `Fluent` / `Cupertino` / `Native` 这四个值
+/// 在当前二进制里指向**同一个** `Palette` —— 这是实测出来的上限，不是实现偷懒。
+/// 要真的换风格，重新构建时给 `SLINT_STYLE=<style>`（用法文本里有完整取值表）。
+///
+/// 为什么仍然值得给 `Brand` 之外的主题留四个名字：`Brand` ↔ 其余四个的差别是**真实的**
+/// 像素差别（品牌色 vs 设计系统 `Palette` 角色），而且 `Palette` 会跟随系统的浅色/深色
+/// 设置（`SlintInternal.color-scheme`）—— 那正是"搬到真实设计系统上"的收益。
+/// 返回 `()` 而不是全局句柄：调用方（`main.rs` / `headless_idle.rs`）只需要"写进去"，
+/// 而判据自己用 `ui.global::<ThemeState>()` 回读 —— 把句柄当返回值只会让每个调用点
+/// 多一个"忽略了必须使用的返回值"的告警。
+pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
+    ui.global::<ThemeState<'_>>().set_theme(match theme {
+        crate::cli::Theme::Brand => YebanTheme::Brand,
+        crate::cli::Theme::Material => YebanTheme::Material,
+        crate::cli::Theme::Fluent => YebanTheme::Fluent,
+        crate::cli::Theme::Cupertino => YebanTheme::Cupertino,
+        crate::cli::Theme::Native => YebanTheme::Native,
+    });
 }
 
 /// 同 [`build_main_window`]，但显式指定底部控制台的初始 Tab。

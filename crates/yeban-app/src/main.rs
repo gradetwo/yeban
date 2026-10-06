@@ -148,6 +148,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         }
     };
 
+    // 主题（`--theme`）：**唯一**的写入口是 `host::apply_theme`，与 `apply_view` 同款
+    // 单向注入。放在 `run()` 之前 —— 窗口一旦进了事件循环，任何"换主题"就只是重绘。
+    //
+    // 默认值 `Theme::Brand` 与 `ui/tokens.slint` 里 `ThemeState.theme` 的初值**同一个**，
+    // 因此不给 `--theme` 时这一步是幂等的：像素一位未改（Linux golden 基线不需要重生成）。
+    host::apply_theme(&ui, options.theme);
+
     // 走带要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁通道 + 量子驱动）。
     // 用 0 个量子重建（不空转；`reload` **不改**走带状态），随后显式发一条 `Stop`
     // 把这一代停在 `Stopped`，与界面的初始 `playing: false` 一致 ——

@@ -19,6 +19,64 @@
 // 与其赌通道顺序, 不如把 alpha 一律留在使用点用 `.with-alpha()` / `opacity:` 表达。
 // 核验记录: https://docs.slint.dev/latest/docs/slint/reference/property-types/colors-and-brushes/
 
+// `Palette` 是 Slint 内建风格的设计系统全局。**必须显式 import** —— 见下面第 3 条实测。
+import { Palette } from "std-widgets.slint";
+
+// ---------------------------------------------------------------------------
+// 主题选择 (2026-10-06, 负责人要求「提供切换这几个主题的功能」)
+// ---------------------------------------------------------------------------
+//
+// 实测结论 (先量后写, 见 crates/yeban-app/tests/theme_selection.rs 与账本):
+//
+//   1. **本仓的界面 100% 是自绘的**：13 个 `.slint` 里 `Rectangle` 出现 74 次,
+//      而 Slint 内建控件 (`StandardButton` / `LineEdit` / `ScrollView` / `ListView` /
+//      `ComboBox` / `Slider` / `TabWidget` / …) 出现 **0 次**。
+//      因此"换内建风格"本身**改不动我们的任何像素** —— 它只改 Slint 自己的控件与 `Palette`。
+//   2. Slint 1.18.1 **没有运行时选风格的 API** (`slint::select_built_in_style` 在这个版本
+//      的源码里不存在, 已全文检索 slint / i-slint-core / i-slint-backend-selector /
+//      i-slint-compiler)。风格是**编译期**定的: `SLINT_STYLE` 环境变量 (由
+//      `i-slint-compiler` 的 `CompilerConfiguration` 读) 或 `slint_build::CompilerConfiguration::with_style`
+//      (由 `build.rs` 调, 见那里的注释)。
+//   3. **能真的跟着走的**是 `Palette` —— Slint 内建风格的设计系统全局。注意它**必须显式
+//      import**: 编译器只把 `style-base.slint` 的 `Palette`/`StyleMetrics` 自动注入
+//      **根文档** (`i-slint-compiler` 的 `passes.rs`), 而本文件是被 app.slint import 的
+//      **子文档** —— 实测不写第 28 行那一句就会得到
+//      `tokens.slint: Cannot access id 'Palette'`。
+//   4. 改 `SLINT_STYLE` **只**通过 `Palette` 影响本仓界面, 别无第二条路径。实测依据:
+//      `apply_default_properties_from_style.rs` 只给 `Text`/`TextInput`/`StyledText` 的
+//      `color` 与 `Window`/`Dialog` 的 `background` 兜 StyleMetrics 默认值, 而本仓
+//      ①全部文本走 UiText/UiMonoText (显式设了 `color`), ②`MainWindow` 显式设了
+//      `background: Tokens.bg-void` ⇒ 两个兜底都落不到我们身上。
+//
+// 于是本文件的颜色令牌写成 `ThemeState.theme` 的二选一表达式:
+//   - `brand` (**CLI `--theme default`**) = 下面那一串**十六进制字面量, 一位未改** ——
+//     这是"今天的默认外观不变"的机械保证, 因此 `tests/golden/linux/**` 不需要重生成;
+//   - 四个内建风格名 (`material` / `fluent` / `cupertino` / `native`) = 走 `Palette.*`
+//     的**设计系统角色**。同一个二进制里 `Palette` 只有一个 (编译进来的那个风格),
+//     所以这四个名字在**不重新编译**时共享同一套 Palette 值 —— 这不是缺陷, 是
+//     第 2 条那个实测结论的直接后果, `--print-theme` 会把它如实打给用户看。
+//     想要某一份真实的风格调色板: `SLINT_STYLE=<风格> cargo build -p yeban-app`
+//     再配 `--theme <同一个名字>`。两条一起给才是完整的"换到那个设计系统"。
+//
+// 语义色 (diff 三色 / 遮罩 / 状态色) **刻意不跟随主题**: 它们的取值是本文件登记在册的
+// 事实源 (`[UI-A11Y-004]` 的冗余编码语义 + 视觉 Diff 语义色), 换主题改它们等于改语义 ——
+// 那超出了"换主题"的授权范围。
+export enum YebanTheme {
+    // 品牌深色 = 今天的外观 (默认)。注意在 Slint 里 `default` 是保留字, 故内部名是 `brand`;
+    // 对用户的字面值仍是 `--theme default` (映射在 `src/cli.rs` 的 `Theme::from_name`)。
+    brand,
+    material,
+    fluent,
+    cupertino,
+    native
+}
+
+// 主题状态: 唯一的写者是 Rust 侧的 `host::apply_theme` (与 `apply_view` 同款单向注入)。
+// 12 个界面文件读的仍然是 `Tokens.<role>`, 一行都没改 —— 换主题 = 换这一整套颜色。
+export global ThemeState {
+    in-out property <YebanTheme> theme: YebanTheme.brand;
+}
+
 export global Tokens {
     // =====================================================================
     // 1. 网格几何 [UI-GRID-001] —— 规范正文的像素值, 一个都不许改
@@ -82,25 +140,28 @@ export global Tokens {
     // 6. 品牌色 · 深色 (默认主题) —— assets/brand/README.md
     // =====================================================================
     // 背景: 径向渐变 #151D38 → #060A14 (这里登记渐变的两端与一个中间面板色)
-    out property <color> bg-void: #060a14;
-    out property <color> bg-shell: #0d1326;
-    out property <color> bg-panel: #151d38;
-    out property <color> bg-panel-alt: #1b2447;
-    out property <color> bg-raised: #232f5c;
+    // 右边的 `Palette.*` 是设计系统角色 (见文件头的主题说明), 只在非 brand 主题下生效。
+    out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : Palette.background;
+    out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : Palette.background;
+    out property <color> bg-panel: ThemeState.theme == YebanTheme.brand ? #151d38 : Palette.alternate-background;
+    out property <color> bg-panel-alt: ThemeState.theme == YebanTheme.brand ? #1b2447 : Palette.alternate-background;
+    out property <color> bg-raised: ThemeState.theme == YebanTheme.brand ? #232f5c : Palette.control-background;
 
     // 主金: 线性渐变 #F7E6B0 → #E2C77E → #B8933E
-    out property <color> gold-bright: #f7e6b0;
-    out property <color> gold: #e2c77e;
-    out property <color> gold-deep: #b8933e;
+    // 设计系统侧只有**一个** accent 角色, 因此三档金色在非 brand 主题下收敛到它。
+    out property <color> gold-bright: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : Palette.accent-background;
+    out property <color> gold: ThemeState.theme == YebanTheme.brand ? #e2c77e : Palette.accent-background;
+    out property <color> gold-deep: ThemeState.theme == YebanTheme.brand ? #b8933e : Palette.accent-background;
 
-    // 文字/墨色与次级灰蓝
-    out property <color> ink-0: #f0ebe3;
-    out property <color> ink-1: #c8c2b8;
-    out property <color> ink-2: #5a6b8a;
+    // 文字/墨色与次级灰蓝。设计系统侧没有"三级灰"这个角色, 用 foreground →
+    // alternate-foreground → control-foreground 这条**真实存在的**层级代替。
+    out property <color> ink-0: ThemeState.theme == YebanTheme.brand ? #f0ebe3 : Palette.foreground;
+    out property <color> ink-1: ThemeState.theme == YebanTheme.brand ? #c8c2b8 : Palette.alternate-foreground;
+    out property <color> ink-2: ThemeState.theme == YebanTheme.brand ? #5a6b8a : Palette.control-foreground;
 
     // 分隔线与栅格 (来自同色系的低对比派生, 便于保持 AAA 对比预算)
-    out property <color> line: #1e2745;
-    out property <color> line-strong: #2c3a63;
+    out property <color> line: ThemeState.theme == YebanTheme.brand ? #1e2745 : Palette.border;
+    out property <color> line-strong: ThemeState.theme == YebanTheme.brand ? #2c3a63 : Palette.border;
 
     // =====================================================================
     // 7. 品牌色 · 浅色 (登记在册; 运行时切换机制仍是待决项, 见 notes 的 needs)

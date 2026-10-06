@@ -151,6 +151,37 @@ pub const LOGIC_EXPORT_SWITCH: &str = "--export-logic";
 /// `scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES` 成员。
 pub const LOGIC_EXPORT_FEATURE: &str = "experimental-logic-export";
 
+/// `--theme` 的字面值（运行期调色板切换的**唯一**用户出口）。
+pub const THEME_SWITCH: &str = "--theme";
+
+/// `--print-theme` 的字面值（把"请求的主题 / 本二进制实际编译进来的风格"如实打出来）。
+///
+/// 与 `--print-shortcuts` 同族：一条**只读**的自述命令，让人与 CI 能核对
+/// "我说要 material，这个二进制到底编的是不是 material"。
+pub const PRINT_THEME_SWITCH: &str = "--print-theme";
+
+/// `SLINT_STYLE` 的字面值 —— Slint **自己**的编译期风格选择入口（本仓库不改它的语义）。
+///
+/// 为什么要在用法文本里写它：Slint 1.18.1 的**风格**只能在编译期选，而 `--theme` 只能在
+/// 运行期换调色板。两者是不同层次的东西，用户必须能从一个地方读到这个区别
+/// （另一处是 `--print-theme` 的输出）。
+pub const SLINT_STYLE_ENV: &str = "SLINT_STYLE";
+
+/// 这个二进制**实际**编译进来的 Slint 风格名。
+///
+/// 取值由 `build.rs` 用 `cargo:rustc-env=YEBAN_SLINT_STYLE=…` 注入 —— 它必须与
+/// `slint_build::CompilerConfiguration::with_style` 收到的是**同一个**字符串，否则
+/// `--print-theme` 会开始说假话。
+///
+/// `option_env!` 而不是 `env!`：本文件同时被"零 Slint 探针"（`rustc --test` 直接编译
+/// `cli.rs`，见 `docs/ledger/app-cli-notes.md` §4.1）使用，那时没有 build script 注入。
+/// 缺省值取 `"fluent"` —— 它**就是** Slint 在没给风格时的默认
+/// （`i-slint-compiler` 的 `typeloader.rs:957`），因此探针路径不会凭空发明一个风格。
+#[must_use]
+pub fn compiled_slint_style() -> &'static str {
+    option_env!("YEBAN_SLINT_STYLE").unwrap_or("fluent")
+}
+
 // ---------------------------------------------------------------------------
 // 用法与版本
 // ---------------------------------------------------------------------------
@@ -207,6 +238,25 @@ pub fn usage_text() -> String {
                              `--features {logic_feature}` 的构建里存在 —— 默认构建给这个开关
                              = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
+  --theme <default|material|fluent|cupertino|native>
+                           选择界面主题; 重复给以最后一个为准 (默认 default)
+                             default    本仓品牌深色 —— **就是今天的外观** (逐像素不变)
+                             material   Material Design 的 Slint `Palette` 角色
+                             fluent     Fluent Design System 的 `Palette` 角色
+                             cupertino  macOS 观感的 `Palette` 角色
+                             native     平台原生风格别名 (macOS→cupertino / Windows→fluent /
+                                        Android→material / Linux·BSD→有 Qt 则 qt 否则 fluent)
+                           **边界 (实测, 别外推)**: 本仓界面 100% 自绘 (Rectangle x74,
+                           Slint 内建控件 x0), 所以 Slint 内建风格本身改不动我们的像素;
+                           `--theme` 改的是 ui/tokens.slint 的颜色令牌 —— 十三支品牌色在
+                           非 default 主题下改为读 `Palette.*`。而 Slint 1.18.1 **没有**
+                           运行时换风格的 API (风格只能编译期定, 见下面的 {slint_style_env}),
+                           因此四个内建名字共享**本二进制编进来的那一个**风格;
+                           `{print_theme}` 会把这件事如实打出来。
+                           生效范围: 只有真的构造窗口的路径 (GUI / --headless-idle);
+                           `--headless` 一个 Slint 对象都不构造, 因此接受本开关但不生效
+  {print_theme}          打印主题报告: 请求的主题 / 生效的调色板来源 / 本二进制实际
+                           编译进来的 Slint 风格 (由 build.rs 注入, 不是从命令行推出来的)
   --project-sample <default|filled|empty>
                            选择\"没有 --open 时\"用哪个工程 (默认 default);
                            empty = 真的 0 轨空工程 (规范 空工程空闲常驻内存 [BASELINE-002]
@@ -267,6 +317,14 @@ pub fn usage_text() -> String {
 
 环境变量:
   SLINT_BACKEND=headless   与 --headless 等价 (yeban 自研哨兵值; Slint 1.18.1 无此后端)
+  {slint_style_env}=<style>       **编译期**选 Slint 内建风格 (Slint 自己的入口, 见 build.rs)。
+                           这是本版本换**风格**的唯一办法 —— 运行时没有这个 API;
+                           可用取值 = fluent | fluent-light | fluent-dark | material |
+                           material-light | material-dark | cupertino | cupertino-light |
+                           cupertino-dark | cosmic | cosmic-light | cosmic-dark | qt | native。
+                           没设时 = fluent (Slint 自己的默认), 也就是今天的外观。
+                           非法的取值会让**构建**失败 (不由编译器给英文诊断), 因为一个
+                           拼错的风格名静默回落到 fluent 正是本仓库最忌讳的假绿
   {mcp_env}=1              与 --enable-mcp-http 等价 (同样只在带 `in-process-mcp`
                            的构建里有效; 默认关)
 
@@ -274,6 +332,7 @@ pub fn usage_text() -> String {
   {ok} 成功 (含 --help / --version / 无头自检完成)
   {ui} 界面路径失败 (无法创建窗口 / 事件循环异常 / 工程无法投影成界面)
   {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本 /
+      未知主题 ({theme_switch} 的取值不在 default|material|fluent|cupertino|native 里) /
       --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
       --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
       --export-als 在本次构建未编译 `{als_feature}` /
@@ -296,6 +355,9 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-elements elements.txt
   yeban-app --open song.yeban --export-midi song.mid
   yeban-app --open song.yeban --export-logic out/Song.logicx
+  yeban-app --print-theme
+  yeban-app --theme material
+  {slint_style_env}=cupertino cargo build -p yeban-app
   yeban-app --version
 ",
         handshake = HEADLESS_HANDSHAKE,
@@ -304,6 +366,9 @@ pub fn usage_text() -> String {
         mcp_env = MCP_HTTP_ENV,
         als_feature = ALS_EXPORT_FEATURE,
         logic_feature = LOGIC_EXPORT_FEATURE,
+        print_theme = PRINT_THEME_SWITCH,
+        slint_style_env = SLINT_STYLE_ENV,
+        theme_switch = THEME_SWITCH,
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -394,6 +459,98 @@ impl Sample {
     }
 }
 
+/// `--theme` 可选的主题（运行期调色板选择）。
+///
+/// ## 它到底能改什么（实测，不是期望）
+///
+/// 本仓的界面 **100% 自绘**：13 个 `.slint` 里 `Rectangle` 出现 74 次，而 Slint 内建控件
+/// （`StandardButton` / `LineEdit` / `ScrollView` / `ListView` / `ComboBox` / `Slider` /
+/// `TabWidget` …）出现 **0 次**。所以"换一个 Slint 内建风格"本身**改不动我们的像素** ——
+/// 它只改 Slint 自己的控件与 `Palette` 全局。
+///
+/// 能让我们的像素跟着走的，是 [`crate::host::apply_theme`] 把
+/// `ui/tokens.slint` 的 `ThemeState.theme` 写成下面的值：`Brand` 走**今天那一串十六进制
+/// 字面量**（默认外观因此一位未改），其余四个走 Slint 设计系统的 `Palette.*` 角色。
+///
+/// ## 为什么四个内建名字在**同一个二进制**里长得一样
+///
+/// Slint 1.18.1 **没有运行时选风格的 API**（`slint::select_built_in_style` 在该版本的
+/// slint / i-slint-core / i-slint-backend-selector / i-slint-compiler 全文检索里不存在），
+/// 风格是**编译期**定死的（`build.rs` 的 `SLINT_STYLE` → `with_style`）。`Palette` 也只有
+/// 编译进来的那一个。于是 `--theme material` 与 `--theme fluent` 在不重新编译时共享同一套
+/// `Palette` 值 —— 这不是缺陷而是本版本的上限；[`theme_lines`] / [`PRINT_THEME_SWITCH`]
+/// 把这件事**如实**打给用户，而不是假装四个主题各不相同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Theme {
+    /// 本仓品牌深色 —— **就是今天的外观**，也因此是默认值。
+    ///
+    /// 在 `.slint` 侧它的枚举名是 `YebanTheme.brand`（Slint 里 `default` 是保留字），
+    /// 对用户的字面值是 `--theme default`。
+    #[default]
+    Brand,
+    /// Material Design（<https://m3.material.io>）对应的 `Palette` 角色。
+    Material,
+    /// Fluent Design System 对应的 `Palette` 角色。
+    Fluent,
+    /// macOS 观感（Cupertino）对应的 `Palette` 角色。
+    Cupertino,
+    /// 平台原生风格别名：macOS → `cupertino`，Windows → `fluent`，Android → `material`，
+    /// Linux/BSD → 有 Qt 则 `qt` 否则 `fluent`（`i-slint-common` 的 `get_native_style`）。
+    Native,
+}
+
+impl Theme {
+    /// 全部合法取值（用法文本、错误信息与判据共用**这一份**顺序）。
+    pub const ALL: [Self; 5] = [
+        Self::Brand,
+        Self::Material,
+        Self::Fluent,
+        Self::Cupertino,
+        Self::Native,
+    ];
+
+    /// 命令行字面值（`--theme <name>`）。
+    ///
+    /// `Brand` 的字面值是 `default` —— 用户不该被迫知道品牌色的内部名字；
+    /// "不改外观"这件事在 CLI 上就叫"默认"。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Brand => "default",
+            Self::Material => "material",
+            Self::Fluent => "fluent",
+            Self::Cupertino => "cupertino",
+            Self::Native => "native",
+        }
+    }
+
+    /// 从命令行字面值解析（未知取值返回 `None`，由调用方转成用法错误）。
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.name() == value)
+    }
+
+    /// 是否请求"走设计系统"（而不是品牌色）。
+    ///
+    /// `false` **只**对 [`Self::Brand`] 成立 —— 这是"默认外观不变"的判据入口。
+    #[must_use]
+    pub const fn uses_design_system(self) -> bool {
+        !matches!(self, Self::Brand)
+    }
+
+    /// 这个主题请求的 Slint 内建风格名（`Brand` 不请求任何内建风格 ⇒ `None`）。
+    #[must_use]
+    pub const fn requested_slint_style(self) -> Option<&'static str> {
+        match self {
+            Self::Brand => None,
+            Self::Material => Some("material"),
+            Self::Fluent => Some("fluent"),
+            Self::Cupertino => Some("cupertino"),
+            Self::Native => Some("native"),
+        }
+    }
+}
+
 /// 解析后的命令行选项。
 ///
 /// 字段全公开是为了让判据能直接构造组合（例如只给 `save_as` 而不给 `open`），
@@ -459,6 +616,23 @@ pub struct Options {
     /// 为什么它**不**让进程离开 GUI 路径：控制面要挂在**正在跑的 app 进程**里
     /// （形态 A 的定义），而不是把进程变成一个无头服务器。
     pub enable_mcp_http: bool,
+    /// `--theme <default|material|fluent|cupertino|native>`：运行期调色板选择。
+    ///
+    /// 默认 [`Theme::Brand`] = **今天的外观**（`ui/tokens.slint` 里那一串十六进制字面量），
+    /// 因此不给这个开关时渲染一位未改 —— `tests/golden/linux/**` 不需要重生成。
+    ///
+    /// 生效范围（如实登记）：**只有真的构造窗口的路径**才会调用
+    /// [`crate::host::apply_theme`] —— 也就是 GUI 与 `--headless-idle` 两档。
+    /// `--headless` 是"一个 Slint 对象都不构造"的路径（见 `main.rs` 的模块文档），
+    /// 那里**没有**可写的 `ThemeState`，所以它接受这个开关但不生效。
+    pub theme: Theme,
+    /// `--print-theme`：把请求的主题与"本二进制实际编译进来的 Slint 风格"打到 stdout。
+    ///
+    /// 为什么它必须存在（而不是只写在我的报告里）：`--theme material` 在一个用
+    /// `SLINT_STYLE=fluent` 编译出来的二进制里**拿不到** Material 的调色板 —— 因为
+    /// Slint 1.18.1 没有运行时选风格 API。用户需要一个**命令**能读到这件事，
+    /// 否则"我选了 material"与"我看到的是 fluent"之间就没有任何可核对的地方。
+    pub print_theme: bool,
 }
 
 impl Options {
@@ -479,6 +653,7 @@ impl Options {
             || self.headless
             || self.dump_elements
             || self.print_shortcuts
+            || self.print_theme
             || self.export_elements.is_some()
             || self.export_midi.is_some()
             || self.export_als.is_some()
@@ -527,6 +702,12 @@ pub enum ParseError {
     DuplicateOption(&'static str),
     /// `--project-sample` 的取值不在允许集合里。
     UnknownSample(String),
+    /// `--theme` 的取值不在允许集合里。
+    ///
+    /// 与 [`Self::UnknownSample`] 同款：**绝不静默回退到默认主题** —— 那会让
+    /// "我选了 material"与"其实渲染的是品牌色"长得一模一样，而本仓库最忌讳
+    /// 的就是这一类"以为生效了"的假绿。
+    UnknownTheme(String),
     /// `--headless-idle` 没配 `--idle-seconds`。
     ///
     /// 为什么是错误而不是"默认空闲 1 秒"：默认值会让"参数没生效"与"空闲 0 秒"长得一样，
@@ -589,6 +770,18 @@ impl fmt::Display for ParseError {
             Self::UnknownSample(sample) => write!(
                 formatter,
                 "未知的工程样本 `{sample}` (可用: default|demo|filled|empty)"
+            ),
+            Self::UnknownTheme(theme) => write!(
+                formatter,
+                "未知的主题 `{theme}` (可用: {}; 默认 `default` = 本仓品牌深色, \
+                 外观与本次改动之前逐像素相同; 其余四个走 Slint 设计系统的 Palette 角色, \
+                 而 Slint 1.18.1 的风格只能**编译期**选 —— 见 `{PRINT_THEME_SWITCH}` 与 \
+                 `{SLINT_STYLE_ENV}`)",
+                Theme::ALL
+                    .iter()
+                    .map(|theme| theme.name())
+                    .collect::<Vec<_>>()
+                    .join("|")
             ),
             Self::IdleSecondsMissing => write!(
                 formatter,
@@ -698,6 +891,13 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.print_shortcuts = true;
                 cursor += 1;
             }
+            // `--print-theme`: 只读自述命令 (与 `--print-shortcuts` 同族)。
+            // 它是**无窗口**路径: 不构造控件树, 只把"请求的主题 vs 编进来的风格"打出来。
+            PRINT_THEME_SWITCH => {
+                reject_inline(PRINT_THEME_SWITCH, inline)?;
+                options.print_theme = true;
+                cursor += 1;
+            }
             "--open" => {
                 let value = take_value("--open", inline, args, &mut cursor)?;
                 set_once(&mut options.open, "--open", PathBuf::from(value))?;
@@ -761,6 +961,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     "empty" => Sample::Empty,
                     other => return Err(ParseError::UnknownSample(other.to_owned())),
                 };
+            }
+            // `--theme`: 重复给以最后一个为准（与 `--project-sample` 同款）。
+            // 未知取值 ⇒ **点名**用法错误, 绝不静默回退（那会把"选了 material"变成
+            // "其实渲染品牌色"而用户看不出来）。
+            THEME_SWITCH => {
+                let value = take_value(THEME_SWITCH, inline, args, &mut cursor)?;
+                options.theme = Theme::from_name(&value)
+                    .ok_or_else(|| ParseError::UnknownTheme(value.clone()))?;
             }
             other => return Err(ParseError::UnknownArgument(other.to_owned())),
         }
@@ -1535,10 +1743,55 @@ pub fn shortcut_lines() -> Vec<String> {
     lines
 }
 
+/// `--print-theme` 的行（`--theme` 的**自述**报告）。
+///
+/// 每一行都对应一次**真的读到**的事实，而不是把输入抄一遍：
+/// - `requested=` 是解析出来的主题字面值（`default` 表示**没有任何主题被请求**，
+///   也就是今天的外观）；
+/// - `palette=` 是这次请求**实际**会让 `ui/tokens.slint` 走的调色板来源
+///   （`brand` = 那一串十六进制字面量 / `design-system-palette` = Slint 的 `Palette.*` 角色）；
+/// - `compiled-style=` 是 `build.rs` 注入的**编译期**事实（`cargo:rustc-env`），
+///   不是从命令行推出来的；
+/// - `style-switch=` 是那个**必须**说出来的区别：Slint 1.18.1 换风格只能在编译期，
+///   所以四个内建名字共享这一个二进制里编进来的风格。
+#[must_use]
+pub fn theme_lines(theme: Theme) -> Vec<String> {
+    let requested = theme.name();
+    let palette = if theme.uses_design_system() {
+        "design-system-palette"
+    } else {
+        "brand"
+    };
+    let compiled = compiled_slint_style();
+    let mut lines = vec![
+        "# 主题报告 (yeban-app)".to_owned(),
+        format!("theme: requested={requested} palette={palette} compiled-style={compiled}"),
+    ];
+    match theme.requested_slint_style() {
+        Some(style) if style == compiled => lines.push(format!(
+            "theme-style: 请求的风格 `{style}` 与编译进来的风格**一致** —— \
+             `Palette` 就是这个风格的调色板"
+        )),
+        Some(style) => lines.push(format!(
+            "theme-style: 请求的风格 `{style}` **没有**编进这个二进制 (编进来的是 `{compiled}`) \
+             —— Slint 1.18.1 换风格只能编译期做, 因此 `Palette` 现在给的是 `{compiled}` 的调色板; \
+             要真的拿到 `{style}`, 重新构建时把环境变量 {SLINT_STYLE_ENV}={style} 交给 cargo"
+        )),
+        None => lines.push(format!(
+            "theme-style: 没有请求任何内建风格 —— 品牌色不经过 Slint `Palette`, \
+             因此与编进来的风格 (`{compiled}`) 无关"
+        )),
+    }
+    lines.push(format!(
+        "theme-note: `{THEME_SWITCH}` 只换**调色板**; 本仓界面 100% 自绘 \
+         (Rectangle x74 / 内建控件 x0), 所以 Slint 内建风格本身改不动我们的像素"
+    ));
+    lines
+}
+
 // ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
-
 /// 无窗口路径的执行：返回**它应当打印的每一行**（打印由 [`emit`] / [`finish`] 做）。
 ///
 /// 顺序是契约的一部分：
@@ -1606,6 +1859,9 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     }
     if options.print_shortcuts {
         lines.extend(shortcut_lines());
+    }
+    if options.print_theme {
+        lines.extend(theme_lines(options.theme));
     }
 
     lines.push(HEADLESS_HANDSHAKE.to_owned());
@@ -1932,6 +2188,8 @@ mod tests {
             "--export-als",
             "--export-logic",
             "--print-shortcuts",
+            "--theme",
+            PRINT_THEME_SWITCH,
             "--project-sample",
             "--headless",
             "--headless-idle",
@@ -1946,6 +2204,12 @@ mod tests {
         assert!(
             usage.contains(MCP_HTTP_ENV),
             "用法文本必须列出 {MCP_HTTP_ENV}"
+        );
+        // 主题那一路的两个入口同理: `--theme` 是**运行期**换调色板, `SLINT_STYLE` 是
+        // **编译期**换风格。只写前者会让用户以为风格也能运行时换。
+        assert!(
+            usage.contains(SLINT_STYLE_ENV),
+            "用法文本必须列出 {SLINT_STYLE_ENV}"
         );
         // 退出码语义必须在用法里逐条写出（用户与脚本的唯一去处）。
         for code in [

@@ -3089,16 +3089,28 @@ mod tests {
             .lines()
             .find(|line| line.contains("line-strong:"))
             .expect("tokens.slint 必须有 line-strong");
-        let literal = strong
+        // 2026-10-06（主题特性，`--theme`）：`line-strong` 不再是一个光秃秃的字面量，而是
+        //     out property <color> line-strong: ThemeState.theme == YebanTheme.brand
+        //                                        ? #2c3a63 : Palette.border;
+        // 这条对账要守的性质**没有变**，只是现在要指名**默认分支**：回退色必须等于
+        // `ThemeState.theme == YebanTheme.brand` 那一支的字面量 —— 因为默认主题就是
+        // Linux golden 基线钉住的那一屏，回退色只有跟着它才算"没变"。
+        // 因此这里**要求**表达式是主题二选一（少了 `?` 就是主题特性被拿掉了，应该红），
+        // 而不是退回到"整行必须只有一个字面量"的旧读法。
+        let after_colon = strong.split(':').nth(1).expect("line-strong 有值");
+        let (_condition, rest) = after_colon
+            .split_once('?')
+            .expect("line-strong 必须是主题二选一表达式（默认分支 = 品牌字面量）");
+        let literal = rest
             .split(':')
-            .nth(1)
-            .expect("line-strong 有值")
+            .next()
+            .unwrap_or(rest)
             .trim()
             .trim_end_matches(';')
             .to_ascii_uppercase();
         assert_eq!(
             literal, DEFAULT_TRACK_COLOR_HEX,
-            "回退色必须等于 Tokens.line-strong（两处各写一份，靠这条判据对账）"
+            "回退色必须等于 Tokens.line-strong 的**默认分支**（两处各写一份，靠这条判据对账）"
         );
 
         let roll = std::fs::read_to_string(ui.join("console/piano_roll.slint"))

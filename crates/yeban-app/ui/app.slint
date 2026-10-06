@@ -28,7 +28,16 @@
 //
 // 数据流方向: MainWindow 是唯一写者。子组件只读 + 发回调。
 
+// `import` 把名字带进**本文件**的作用域; `export { … } from …` 是**纯再导出**
+// (实测: 它**不**把名字带进本文件 —— 只写后者会让本文件里 44 处 `Tokens.*` 全部报
+// `Cannot access id 'Tokens'`)。因此两行都要, 且它们不冲突: 再导出不引入本地名字。
+//
+// 为什么必须让 Rust 侧看见 `Tokens` / `ThemeState`:
+// `src/host.rs` 的 `apply_theme` 要写 `ThemeState.theme`, 而
+// `tests/theme_selection.rs` 要**回读** `Tokens.*` 的真实取值 —— 那是"生效的调色板
+// 真的跟着主题变了"的判据 (断言 token 值, 不碰像素)。
 import { Tokens, UiText } from "tokens.slint";
+export { Tokens, ThemeState } from "tokens.slint";
 import { Transport } from "transport.slint";
 import { StatusBar } from "status_bar.slint";
 import { Sidebar } from "sidebar.slint";
