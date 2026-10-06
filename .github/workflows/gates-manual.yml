@@ -251,6 +251,15 @@ jobs:
           else
             cargo clippy --workspace --all-features --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
           fi
+      - name: test --all-features
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if [ -n "${{ inputs.crate }}" ]; then
+            cargo test -p "${{ inputs.crate }}" --all-features --locked 2>&1 | tee /tmp/gate.test.log
+          else
+            cargo test --workspace --all-features --locked 2>&1 | tee /tmp/gate.test.log
+          fi
       - name: 失败摘要
         if: failure()
         run: |
