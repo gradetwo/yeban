@@ -6336,6 +6336,7 @@ dependencies = [
  "slint-build",
  "yeban-diagnostics",
  "yeban-engine",
+ "yeban-midi",
  "yeban-model",
  "yeban-render",
  "yeban-ui-mcp",

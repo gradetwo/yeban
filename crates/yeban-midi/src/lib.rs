@@ -10,6 +10,7 @@
 //! 编解码本身**只**需要 `yeban-model` + `midly`，因此把它下移到这里：
 //! `yeban-render` 经再导出继续提供 `yeban_render::midi::*`（调用方一行不改），
 //! `yeban-mcp` 则可以直接依赖本 crate ⇒ **两侧共用同一实现**。
+pub mod export;
 pub mod midi;
 /// MIDI 可变长度量（VLQ）的零依赖参考编解码 —— `midi` 的字节级核验依赖它。
 pub mod vlq;
