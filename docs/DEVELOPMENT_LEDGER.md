@@ -9371,3 +9371,30 @@ untouched - but it is a direct edge, recorded rather than glossed.
 **Status**: `eefde06` pushed; `ROAD-M4-008` stays 部分 with three named remainders (single-writer session, production reprojection hook, the two `UndoSession` types
 being distinct); Phase 4 6 完成 / 4 部分 / 0 PENDING; question 5 (a reference `.als`) is the only item that needs the负责人, and a three-option brief with costs is
 in `open-questions.md`.
+
+
+### Round 389: the负责人 redirects question 5 to Logic Pro - and groove already has the importer, the exporter and the research
+
+The ruling: instead of a reference `.als`, refer to **Logic Pro** files. Two resources named: the local demos at
+`/Users/crow/Music/Logic Pro X Demosongs` (a symlink to `/Library/Application Support/Logic/Logic Pro X Demosongs`), and "groove 项目中也有 logic 的调研和几个 logic 格式的开源资源".
+
+Measured, not assumed:
+
+* the local folder holds **seven `.logicx` bundles** - `Colors`, `MONTERO`, `MONTERO - Spatial Audio`, `Manzana`, `Spatial Audio Demo Grid`, `Swing!`, `ocean eyes` -
+  plus an older-format `Project Templates/Compose/Orchestral.logic`;
+* `groove` lives at **`/Users/crow/work/music/groove`**, inside this workspace. Grepping it with `node_modules` excluded found that the Logic work is **already
+  implemented**, not merely researched: `mcp/registryProject.ts` opens with "⭐ The Logic project tools, moved out of `registry.ts` whole" and exposes two tools -
+  "Export an arrangement as a Logic Pro project" and "Import a Logic Pro project as tracks (MIDI only)"; `mcp/arrangement.ts:1009-1011` implements the importer for
+  Phase 1 (MIDI only) and explains that a `.logicx` is a **directory**, so the caller sends the two small files that carry music rather than the bundle (whose
+  `Media/` may be gigabytes);
+* `groove/docs/OPEN_WORK.md:291` records the owner's instruction of 2026-10-01 - "Logic Pro 工程文件 导入导出加入开发计划，可以先只导入" - and `:337` names the
+  criterion shape: one `.logicx` fixture in, `parts` out, with note count, start/end and pitch matching the fixture.
+
+**Why this matters for this line**: the same pattern as the `MUST-GATE-014` ruling ("复用 groove 的 R2 镜像") applies - the reference material and the format research
+already exist in a sibling project, so the work here is to **reuse**, not to invent. But the instruction does not yet say **what is to be built or replaced**: the
+`.als` exporter stays where it is, and the Logic work could mean (a) add a Logic Pro exporter as a second, better-referenced format; (b) replace the `.als` exporter's
+claim by re-pointing it at Logic; or (c) treat Logic as the priority and let `.als` remain the experimental first slice. I am asking for one word rather than guessing,
+because the three differ by a large amount of work.
+
+**Status**: tree green and clean at `cfe27a6` (= `origin/main`); automatic CI green through `a2fd2b1` with `eefde06` pending read-back; Phase 4 6 完成 / 4 部分 /
+0 PENDING; the open list is now this one question about what the Logic direction should build.
