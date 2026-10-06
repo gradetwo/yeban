@@ -71,15 +71,19 @@ def main() -> int:
 
     started = time.monotonic()
     process = subprocess.Popen(command)
+    timed_out = False
     try:
         if args.settle_seconds > 0:
             time.sleep(min(args.settle_seconds, args.timeout))
         code = process.wait(timeout=max(1.0, args.timeout - (time.monotonic() - started)))
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait()
+        # `wait()` 仍必须收掉子进程：`ru_maxrss` 是**被 wait() 过**的子进程的高水位，
+        # 不收尸就拿不到读数 —— 而超时恰恰是"这个读数最值得看"的时刻。
+        # 返回码为负 = 被信号杀死（POSIX）⇒ child_exit 如实反映"命令没有自己退出"。
+        code = process.wait()
+        timed_out = True
         print(f"[measure_rss] 超时 {args.timeout}s，已终止被测进程", file=sys.stderr)
-        return 3
     except KeyboardInterrupt:
         process.kill()
         process.wait()
@@ -87,12 +91,22 @@ def main() -> int:
     peak_mb = peak_rss_mb()
 
     # 命令本身的退出码**必须**透传：否则"测到了内存"会掩盖"被测命令其实失败了"。
+    #
+    # 输出契约：stdout 恒为两行 `BENCH baseline=002 ...`
+    #   ① `... label=<L> peak_rss_mb=<x> target_mb=35.0 child_exit=<c> verdict=<v>`
+    #   ② note="..." 诚实边界行。
+    # 超时（`verdict=truncated`）时第①行**追加** ` timed_out=true`：进程在到达稳态前被杀，
+    # 读数只是**下限** ⇒ 不许判 `within-target`，但读数本身**绝不丢弃**。
+    # 退出码契约：0/被测命令码 = 量到了；2 = 用法错误；3 = 超时（**仍是失败**）；4 = 拿不到 RSS。
     verdict = "within-target" if 0 < peak_mb <= TARGET_MB else "over-target"
     if peak_mb <= 0:
         verdict = "unmeasured"
+    if timed_out:
+        verdict = "truncated"
     print(
         f"BENCH baseline=002 label={args.label} peak_rss_mb={peak_mb:.2f} "
         f"target_mb={TARGET_MB:.1f} child_exit={code} verdict={verdict}"
+        f"{' timed_out=true' if timed_out else ''}"
     )
     print(
         'BENCH baseline=002 note="RSS 取自 resource.getrusage(RUSAGE_CHILDREN).ru_maxrss; '
@@ -100,6 +114,11 @@ def main() -> int:
     )
     if peak_mb <= 0:
         print("[measure_rss] 拿不到 RSS（本平台的 ru_maxrss 语义可能不同）", file=sys.stderr)
+    if timed_out:
+        # 超时**不因为"打印了读数"而变成成功**：退出码 3 不变 ⇒ CI 步骤照旧变红，
+        # 只是失败现场里**有**读数可看（此前它恰恰在最有意思的时刻被静默丢弃）。
+        return 3
+    if peak_mb <= 0:
         return 4
     return code
 
