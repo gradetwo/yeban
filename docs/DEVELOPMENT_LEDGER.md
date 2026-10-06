@@ -10026,3 +10026,18 @@ here as such.
 
 **Status**: CI is **still red**; `ae5e2ca`'s green is **vacuous** and is not evidence. Phase 4 7 完成 / 4 部分 / 0 PENDING; the release workflow is pushed and awaits a
 triggered run; the Logic donor question (A/B/C) is still open.
+
+
+### Round 413: CI IS GREEN AGAIN - the regression I caused is closed, and the fix is verified the way the rules demand
+
+`5a95b3b`'s run is **completed success**, and it is **not** a vacuous green: the log contains **five** `与基准逐字节一致 ✓` lines, one per Linux golden, and those lines print **only when the bytes are equal**. So the two failing criteria now pass on the runner that was failing.
+
+**What happened, honestly.** I caused the regression: `d180bfb` added the save button to the top bar, which changed the rendering, and the committed Linux goldens predated it. I then misdiagnosed it **twice**: first as "each commit gets its own run" (wrong - each commit **does** get its own run, but `9d4e230`'s green was **vacuous** because the planner skipped every rust leg for a docs-only change), then as "identical byte counts mean identical content" (wrong - the PNG writer is stored-deflate, so **every** 1920x1080 frame is exactly 6,222,418 bytes and the number carries no information). Both errors are now rules in `AGENTS.md` section 6.3, and both are stated as having been paid for by a real misjudgement.
+
+**The measured root cause** was a deterministic stale baseline, proven from CI's own artifacts: the produced PNGs from four red runs were byte-identical to each other and differed from the golden in **exactly 268 pixels inside `x 580..591 x y 8..39`** - the new element's declared geometry - of which **242 cells were `#151d38 -> #1b2447`**, i.e. `Tokens.bg-panel` -> `Tokens.bg-panel-alt`.
+
+**The fix took the ruling route rather than the convenient one.** Blessing the rendering would have enshrined an element that was **85.7% occluded** including its label, and that the Normative top-bar sequence does not define. So `ADR-0003` was filed as Proposed, the负责人 approved it, the badge moved `x: 588px -> x: 640px` (one line, `transport.slint:375`), and the five Linux goldens were regenerated **once** through the sanctioned `gates-manual.yml gate=goldens` lane (run 37474182887), with the replacement verified against the push run's own screenshots as **byte-identical**, and `MANIFEST.txt` rewritten with the new run id, timestamp and per-file sha256. No hash was ever fabricated: while there was no regeneration run, the manifest kept the labelled pre-`d180bfb` hashes and the line said plainly that inventing them would be the worst possible false green.
+
+**Still open, and it is a real defect I introduced**: the负责人 reports the top-bar colouring now looks wrong, and the cause is measurable - the save button and the AI badge both render `Tokens.bg-panel-alt` (`#1b2447`) and the ADR placed them 4 px apart, so the bar has **two identical bright-blue slabs side by side**. The root cause is the **spec gap**: the Normative sequence has no save slot, so nothing defined the element's colour. A one-line token change (`bg-panel`) plus the corresponding Normative edit is proposed, and it must be combined with **one** further golden regeneration rather than two.
+
+**Status**: CI green; Phase 4 7 完成 / 4 部分 / 0 PENDING; the slot-activation line is in flight using the负责人's 1-track/2-track controlled pair.
