@@ -9937,3 +9937,37 @@ ask.
 artefact is byte-identical; and the commit is pushed.
 
 **Status**: `d52f3da` pushed; Phase 4 6 完成 / 5 部分 / 0 PENDING; the exporter's claim remains the measured single-track one.
+
+
+### Round 410: M4-008 IS CLOSED - a writable session variant makes the mounted Domain the only disk writer
+
+`0763bc8` closes `ROAD-M4-008`, and it did so by **designing first and measuring the flip** rather than by asserting that one writer was enough.
+
+**The design, written before the code**: when a control plane is mounted, the mounted `Domain` is the document's **only** disk writer. A new `SessionSource::WritableFile`
+takes `LockMode::ExclusiveWrite` for the mount lifetime and opens the session `read_only = false`; the GUI's `ui/force_save` now **hands the authority the target
+path** (`ProjectAuthorityHandle::save_to`), and the authority serialises **its own** project, graph and assets through the one atomic writer. With no control plane the
+local path is unchanged, and `--save-as` cannot coexist with a mount in one process (it refuses from another process through the exclusive lock, exit 4). **Three
+invariants come from one function** (`SessionSource::session_read_only`): host-save available <=> session not read-only <=> the file form holds the exclusive lock - so
+there is no "shared reader that writes" combination.
+
+**Every writer path is accounted for** and the list is in the report: `ui/force_save` goes to the authority only (no fallback), local `save_project_file` is **refused**
+by the lock (structural, not convention), `--save-as` on the real binary is refused with exit 4, the `yeban_save_project` tool writes through the **same** session, the
+host save action refuses a read-only session, and a second mount is `Locked`/`PROJECT_LOCKED`. No tool-surface widening; `apply_revision` still advances only inside
+`domain::apply`.
+
+**The flip was adjudicated by measurement, and the measurement won**: flipping the **existing** read-only mount makes `in_process_mcp_lock.rs` go **2 passed / 3
+failed**, with `left: Some(ExclusiveWrite) / right: Some(SharedRead)` at three sites - it would tear out `MUST-GATE-008`'s "readers coexist" leg, killing read-only
+analysis by a second form. So the read-only form is untouched and the single writer is carried by the **new** variant. The cost is registered honestly: while a writable
+session lives, another form cannot even **read** the file.
+
+**Five negative measurements**, each red then restored with matching checksums - and the fifth is the decisive one: giving the writer a **shared** lock lets a second
+form mount, i.e. **two writers**, which is the measurement that justifies `ExclusiveWrite` rather than a preference.
+
+**Verified independently**: 11 files changed; the default dependency metric (distinct `name version` pairs of `cargo tree -p yeban-app -e normal --locked --prefix
+none`) is **296**, unchanged; the new `single_writer_session` suite runs **3 passed** and the untouched cross-form lock suite re-runs **5 passed**; the phase guard
+reports **已完成 18 / 部分 23 / PENDING 6**, i.e. the summary moved with the row; `light` is green; and the commit is pushed. **Phase 4 is now 7 完成 / 4 部分 /
+0 PENDING**, up from 4 完成 / 5 部分 / 1 PENDING when this session started.
+
+**One registered, non-blocking remainder**: production `run_gui` still builds no save surface, because `src/live_surface.rs` is `#[path]`-included only by test targets,
+so the product binary has no `ui/force_save` command. That is a **save-UI** gap, not a writer-boundary gap, and when the surface enters the product path it uses the
+now-criteria-backed `ProjectAuthorityHandle::save_to`.
