@@ -9595,3 +9595,21 @@ claim was about. Stating the metric as a sentence before running the command wou
 
 **Status**: `f35e5a2` pushed; `ROAD-M4-011` stays 部分 with its one unproven claim (Logic Pro opening the output) and 25 registered losses; Phase 4 6 完成 / 5 部分 /
 0 PENDING; no open question.
+
+
+### Round 395: a claim I repeated was not backed by a criterion - the embedded loss table is written but never read back
+
+Checking one sentence I had repeated from a delegated report - that the loss table is also embedded in `MetaData.plist` "so the report and the file cannot disagree" -
+showed the sentence describes an intention rather than a tested fact:
+
+* the two loss criteria that do exist are `a_project_with_unmappable_features_has_a_non_vacuous_loss_table` (`logic.rs:1731`) and
+  `every_missing_chunk_family_is_registered_in_the_loss_table` (`:1969`), and both are real and have teeth (their negative measurements were reported);
+* but `YebanMappingLosses` appears **once** in `logic.rs` - only where it is written inside `meta_data_plist` - and there is **no assertion** that the embedded table
+  equals the table the CLI reports. So "cannot disagree" is not enforced; a change to one side would not turn anything red.
+
+**I recorded that sentence in round 393 as if it were verified**, which makes this the same failure this line keeps auditing: accepting a description of a design for
+evidence of it. The registration of the gap matters more than the gap, because the gap is small: when the exporter is next touched, the fix is to read `YebanMappingLosses`
+back in a criterion and assert it equals the reported table - one assertion, and then the sentence becomes true.
+
+**Status**: tree green and clean at `8793076` (= `origin/main`); Phase 4 6 完成 / 5 部分 / 0 PENDING; no open question; the unenforced sentence is recorded here and
+in no way changes what the exporter writes today.
