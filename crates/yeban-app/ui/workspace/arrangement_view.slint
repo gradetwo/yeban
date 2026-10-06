@@ -158,7 +158,10 @@ export component ArrangementView inherits Rectangle {
         y: 42px + 56px * track_index;
         width: 168px;
         height: 54px;
-        background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
+        // 包头: 负责人给了**一级**「鸦青·暗」(bg-head); 我们的包头是隔行交替的, 交替本身
+        // 是既有几何 (去掉它会改默认渲染字节) ⇒ 偶行用 panel、奇行用 head, 两个值都来自
+        // 负责人的墨阶, 且 brand 分支分别等于原来的 bg-panel / bg-shell。
+        background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-head;
         border-width: 1px;
         border-color: Tokens.line;
         clip: true;
@@ -281,7 +284,8 @@ export component ArrangementView inherits Rectangle {
         y: 42px + 56px * lane_index;
         width: parent.width - 168px;
         height: 54px;
-        background: lane_index.mod(2) == 0 ? Tokens.bg-shell : Tokens.bg-void;
+        // 车道: 负责人给了**两级**墨阶 —— 墨池 (bg-lane) / 墨池·深 (bg-lane2)。
+        background: lane_index.mod(2) == 0 ? Tokens.bg-lane : Tokens.bg-lane2;
         border-width: 1px;
         border-color: Tokens.line;
     }

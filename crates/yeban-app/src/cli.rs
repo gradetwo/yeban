@@ -242,9 +242,9 @@ pub fn usage_text() -> String {
                            选择界面主题; 重复给以最后一个为准 (默认 default)
                              default    本仓品牌深色 —— **就是今天的外观** (逐像素不变)
                              yeban      水墨 + 颜料: 背景/面板/线几乎零饱和, 颜色只留在
-                                        内容上, 朱砂 (`accent`) 整份界面只出现一次。
-                                        取值全部由测量推导 (品牌 logo + golden 渲染帧的
-                                        量化直方图与 k-means), 出处见 ui/tokens.slint §6b
+                                        内容上, 唯一强调色 (`accent`) 整份界面只出现一次。
+                                        取值**由负责人下发的具名调色板指定** (2026-10-07 HTML mock;
+                                        取代 2026-10-06 的采样推导), 逐条映射见 ui/tokens.slint §6b
                              material   Material Design 的 Slint `Palette` 角色
                              fluent     Fluent Design System 的 `Palette` 角色
                              cupertino  macOS 观感的 `Palette` 角色
@@ -496,14 +496,17 @@ pub enum Theme {
     /// 水墨 + 颜料（2026-10-06 负责人批准的第二个**自绘**调色板）。
     ///
     /// 在 `.slint` 侧它的枚举名是 `YebanTheme.yeban`，对用户的字面值也就是 `yeban`。
-    /// 它与 [`Self::Brand`] 一样**不经过** `Palette`：那是一串自己的十六进制字面量，
-    /// 取值全部由测量推导（`assets/brand/png/yeban-dark-512.png` 与两张 golden 渲染帧
-    /// 的量化直方图 + k-means），出处逐条写在 `ui/tokens.slint` §6b/§6c 与
-    /// `tests/theme_selection.rs` 的 `the_yeban_palette_is_the_measured_one`。
+    /// 它与 [`Self::Brand`] 一样**不经过** `Palette`：那是一串自己的十六进制字面量。
+    /// **2026-10-07 起取值不再由我们推导**：负责人把一份具名的完整调色板（HTML mock）
+    /// 作为权威设计输入交下来（墨阶六级 + 两级发丝线 + 三级文字 + 枫桥夜泊颜料槽），
+    /// 逐条映射写在 `ui/tokens.slint` §6b，判据是
+    /// `tests/theme_selection.rs` 的 `the_effective_palette_follows_the_selection` 与
+    /// `the_theme_palette_literals_in_the_source_are_the_measured_ones`。
+    /// 2026-10-06 那版「按 8% 饱和度从品牌色采样推导」的取值**全部作废**。
     ///
     /// 与 `Brand` 的**结构**差别（这才是它存在的理由）：
-    /// 背景/面板/分隔线几乎零饱和（饱和度被压到 8%），颜色只留在内容上，而
-    /// [`Self::palette_source`] 里那支 `accent`（朱砂）在整份界面里**只出现一次**。
+    /// 背景/面板/分隔线全部落在负责人给的墨阶上，颜色只留在内容上，而
+    /// [`Self::palette_source`] 里那支 `accent` 在整份界面里**只出现一次**。
     Yeban,
     /// Material Design（<https://m3.material.io>）对应的 `Palette` 角色。
     Material,
@@ -1784,8 +1787,9 @@ pub fn shortcut_lines() -> Vec<String> {
 /// - `requested=` 是解析出来的主题字面值（`default` 表示**没有任何主题被请求**，
 ///   也就是今天的外观）；
 /// - `palette=` 是这次请求**实际**会让 `ui/tokens.slint` 走的调色板来源
-///   （`brand` = 那一串十六进制字面量 / `yeban-measured-literals` = 第二串**测量推导**
-///   出来的十六进制字面量 / `design-system-palette` = Slint 的 `Palette.*` 角色）；
+///   （`brand` = 那一串十六进制字面量 / `yeban-measured-literals` = 第二串十六进制字面量
+///   —— 这个键名是 2026-10-06 的**历史标识**, 现在那串值的来源是负责人下发的调色板,
+///   键名保持不变以免改动 CLI 契约 / `design-system-palette` = Slint 的 `Palette.*` 角色）；
 /// - `compiled-style=` 是 `build.rs` 注入的**编译期**事实（`cargo:rustc-env`），
 ///   不是从命令行推出来的；
 /// - `style-switch=` 是那个**必须**说出来的区别：Slint 1.18.1 换风格只能在编译期，
@@ -1813,7 +1817,8 @@ pub fn theme_lines(theme: Theme) -> Vec<String> {
             "theme-style: 没有请求任何内建风格 —— {} 不经过 Slint `Palette`, \
              因此与编进来的风格 (`{compiled}`) 无关",
             if theme == Theme::Yeban {
-                "`yeban` 用的是测量推导出的那串十六进制字面量"
+                "`yeban` 用的是负责人下发的那串十六进制字面量 (2026-10-07 HTML mock; \
+                 取代 2026-10-06 的采样推导)"
             } else {
                 "品牌色"
             }

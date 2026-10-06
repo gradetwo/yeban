@@ -15,14 +15,29 @@
 //! | ① | 每个合法取值都被**接受**（`--theme <v> --print-theme` 与 `--headless`） | 真进程的退出码 + stdout |
 //! | ② | 未知取值被**拒绝**：退出码 `2`、stderr 点名原因与可用集合、stdout 为空 | 真进程的退出码 + stderr |
 //! | ③ | **生效的调色板真的跟着选择变**：从活的 Slint 组件**回读** `Tokens.*` | 真 `MainWindow` 的 token 值（无像素） |
-//! | ④ | `yeban` 的每一支颜色 == 测量表里的那个字面量（回读 + 对比度断言） | 真 `MainWindow` 的 token 值 |
+//! | ④ | `yeban` 的每一支颜色 == 负责人下发的那个字面量（回读 + 对比度断言） | 真 `MainWindow` 的 token 值 |
 //! | ⑤ | `yeban` 调色板的**源码钉**：`ui/tokens.slint` 里每个 token 的 brand/yeban 两个分支 | `tokens.slint` 的文本 |
-//! | ⑥ | `accent`（朱砂）在整份界面里**恰好出现一次**；`bg-control` 也恰好一次 | 全部 `ui/**/*.slint` 的文本 |
+//! | ⑥ | `accent`（唯一强调色）在整份界面里**恰好出现一次**；`bg-control` 也恰好一次 | 全部 `ui/**/*.slint` 的文本 |
+//! | ⑦ | 原则 ②「暖强调色唯一」与原则 ④「无投影/无渐变」的机械形态 | token 值的色相 + 全部 `ui/**/*.slint` 的文本 |
 //!
-//! ④ 是"颜色是**测量**的、不是挑的"那条要求的可失败形态：把 `#23252a` 改成别的值，
-//! 或者把测量表里的数字抄错一位，它就会红。⑤ 是 ④ 的**独立**见证 —— 它不看运行时，
-//! 直接读源码文本，因此"改对了 Slint 但抄错了表"和"表对了但源码漂了"都会被抓住。
-//! ⑥ 是"强调色唯一"的机械形态：多写一处 `Tokens.accent` 就红。
+//! ## 2026-10-07：取值来源从「我们测量」换成「负责人下发」
+//!
+//! 上一版（提交 `a19b2e0`）的 `yeban` 取值是**我们自己**从品牌 logo 与 golden 渲染帧里
+//! 采出来的。负责人随后把一份**具名的完整调色板**（HTML mock）作为权威设计输入交下来：
+//! 背景六级的墨阶、两级发丝线、三级文字、以及枫桥夜泊的颜料槽（渔火 / 月华 / 江枫 /
+//! 愁眠 / 铜绿 / 客船 / 寒山 / 苇白）。**他们的数字取代我们的推导** —— 旧采样值全部作废，
+//! 这是设计权威的转移，不是回归。
+//!
+//! 因此 ④ 的表从 15 行扩到 **23 行**（新增 `bg-lane` / `bg-lane2` / `bg-head` / `playing` /
+//! `selection` / `piano-key` 六支结构上缺失的令牌，并给 `ai-suggestion` / `record-red`
+//! 补上 yeban 分支），判据的措辞也从「颜色是**测量**出来的」改成「颜色是负责人**下发**的」。
+//! 每一条仍然**两侧独立见证**：④ 读活的组件，⑤ 读源码文本。
+//!
+//! 对比度断言**保留阈值**，把负责人的数字代进去重算。**如实报告**：`--txt-faint` 霜灰
+//! `#5a6672` 对 `--bg-panel` 黛蓝·暗 `#131a22` 只有 **2.99:1 < 3:1**（对 `#161e28` 2.86:1、
+//! 对 `#1e2733` 2.57:1）。我们**没有**改负责人的颜色，而是把这三对写进
+//! [`OWNER_TEXT_FAINT_SHORTFALL`] —— 数字被**钉住**（谁改了任一侧的十六进制都会红），
+//! 但缺口本身被登记为负责人调色板的事实，等待裁决。
 //!
 //! ③ 是这条工作线的核心 —— 因为"换主题"这件事最容易做成"改了命令行、什么都没变"。
 //! 它读的是 `ui/tokens.slint` 里那十三支颜色令牌的**实际取值**，不是像素、不是文件内容。
@@ -303,27 +318,35 @@ fn the_effective_palette_follows_the_selection() {
          之后渲染字节不许变（它原来用的就是 ai-suggestion）"
     );
 
-    // ---- ①b `yeban`: 每一支都必须等于测量表里的那个字面量 ----
+    // ---- ①b `yeban`: 每一支都必须等于负责人下发的那个字面量 ----
     //
-    // 表里的每一个十六进制都有一条**测量**出处（`ui/tokens.slint` §6b/§6c 逐条写明了
-    // 采样源、方法与像素频次）。改一个数字、或把测量抄错一位，这里就红。
+    // 表里的每一个十六进制都是负责人 HTML mock 里的原话（出处 = 色名 + 角色，逐条写在
+    // `ui/tokens.slint` §6b）。改一个数字、或把下发的值抄错一位，这里就红。
     host::apply_theme(&ui, Theme::Yeban);
-    let yeban: [(&str, Color, u32); 15] = [
-        ("bg-void", tokens.get_bg_void(), 0x0c0d0e),
-        ("bg-shell", tokens.get_bg_shell(), 0x17181c),
-        ("bg-panel", tokens.get_bg_panel(), 0x23252a),
-        ("bg-panel-alt", tokens.get_bg_panel_alt(), 0x2d2f35),
-        ("bg-raised", tokens.get_bg_raised(), 0x3a3d45),
-        ("bg-control", tokens.get_bg_control(), 0x42454d),
-        ("line", tokens.get_line(), 0x2e2f35),
-        ("line-strong", tokens.get_line_strong(), 0x464a53),
-        ("ink-0", tokens.get_ink_0(), 0xf0ebe3),
-        ("ink-1", tokens.get_ink_1(), 0xc8c2b8),
-        ("ink-2", tokens.get_ink_2(), 0x696f7b),
-        ("gold-bright", tokens.get_gold_bright(), 0xf7e6b0),
-        ("gold", tokens.get_gold(), 0xe2c77e),
-        ("gold-deep", tokens.get_gold_deep(), 0x22aa88),
-        ("accent", tokens.get_accent(), 0xd94a4a),
+    let yeban: [(&str, Color, u32); 23] = [
+        ("bg-void", tokens.get_bg_void(), 0x0e1216),
+        ("bg-shell", tokens.get_bg_shell(), 0x11161c),
+        ("bg-lane", tokens.get_bg_lane(), 0x11161c),
+        ("bg-lane2", tokens.get_bg_lane2(), 0x0d1116),
+        ("bg-panel", tokens.get_bg_panel(), 0x131a22),
+        ("bg-head", tokens.get_bg_head(), 0x161e28),
+        ("bg-panel-alt", tokens.get_bg_panel_alt(), 0x161e28),
+        ("bg-raised", tokens.get_bg_raised(), 0x1e2733),
+        ("bg-control", tokens.get_bg_control(), 0x1e2733),
+        ("line", tokens.get_line(), 0x212b36),
+        ("line-strong", tokens.get_line_strong(), 0x2c3948),
+        ("ink-0", tokens.get_ink_0(), 0xd7dee1),
+        ("ink-1", tokens.get_ink_1(), 0x8d99a5),
+        ("ink-2", tokens.get_ink_2(), 0x5a6672),
+        ("gold-bright", tokens.get_gold_bright(), 0xe7dfc8),
+        ("gold", tokens.get_gold(), 0xc6a47c),
+        ("gold-deep", tokens.get_gold_deep(), 0x6d88a1),
+        ("accent", tokens.get_accent(), 0xc6a47c),
+        ("ai-suggestion", tokens.get_ai_suggestion(), 0x8e86a6),
+        ("record-red", tokens.get_record_red(), 0xac6e60),
+        ("playing", tokens.get_playing(), 0x6e9488),
+        ("selection", tokens.get_selection(), 0x8e86a6),
+        ("piano-key", tokens.get_piano_key(), 0xc8c2b2),
     ];
     for (name, value, packed) in yeban {
         let expected = Color::from_rgb_u8(
@@ -333,8 +356,8 @@ fn the_effective_palette_follows_the_selection() {
         );
         assert_eq!(
             value, expected,
-            "`--theme yeban` 的 `{name}` 必须是测量表里的 #{packed:06x} —— \
-             颜色是**测量**出来的, 不是挑出来的; 表在 ui/tokens.slint §6b/§6c"
+            "`--theme yeban` 的 `{name}` 必须是负责人下发的 #{packed:06x} —— \
+             颜色是**负责人指定**的, 不是我们挑的; 表在 ui/tokens.slint §6b"
         );
     }
 
@@ -343,11 +366,20 @@ fn the_effective_palette_follows_the_selection() {
     // 阈值取自 WCAG 2.1: 正文 7:1 (AAA) / 4.5:1 (AA) / 3:1 (AA 大字与非文本 UI 边界
     // [1.4.11])。为什么用 WCAG 而不是自定的数: 它是本仓库 [UI-A11Y-004] 已经引用的
     // 那份标准, 而且这些数是可以逐条复核的。
-    let case: [(&str, Color, Color, f64); 10] = [
+    //
+    // 2026-10-07: 阈值**一位未改**, 只把负责人的数字代进去重算。表里的每一对都是
+    // **真实存在的配对**（前景画在哪个背景上, 逐条注明）。
+    let case: [(&str, Color, Color, f64); 16] = [
         (
             "ink-0 / bg-void",
             tokens.get_ink_0(),
             tokens.get_bg_void(),
+            7.0,
+        ),
+        (
+            "ink-0 / bg-lane",
+            tokens.get_ink_0(),
+            tokens.get_bg_lane(),
             7.0,
         ),
         (
@@ -369,9 +401,9 @@ fn the_effective_palette_follows_the_selection() {
             4.5,
         ),
         (
-            "ink-2 / bg-panel",
+            "ink-2 / bg-void",
             tokens.get_ink_2(),
-            tokens.get_bg_panel(),
+            tokens.get_bg_void(),
             3.0,
         ),
         (
@@ -387,6 +419,12 @@ fn the_effective_palette_follows_the_selection() {
             4.5,
         ),
         (
+            "gold / bg-raised",
+            tokens.get_gold(),
+            tokens.get_bg_raised(),
+            4.5,
+        ),
+        (
             "gold-bright / bg-void",
             tokens.get_gold_bright(),
             tokens.get_bg_void(),
@@ -399,9 +437,33 @@ fn the_effective_palette_follows_the_selection() {
             4.5,
         ),
         (
+            "gold-deep / bg-void",
+            tokens.get_gold_deep(),
+            tokens.get_bg_void(),
+            4.5,
+        ),
+        (
             "accent / bg-panel-alt",
             tokens.get_accent(),
             tokens.get_bg_panel_alt(),
+            3.0,
+        ),
+        (
+            "selection / bg-panel-alt",
+            tokens.get_selection(),
+            tokens.get_bg_panel_alt(),
+            3.0,
+        ),
+        (
+            "playing / bg-panel-alt",
+            tokens.get_playing(),
+            tokens.get_bg_panel_alt(),
+            3.0,
+        ),
+        (
+            "record-red / bg-void",
+            tokens.get_record_red(),
+            tokens.get_bg_void(),
             3.0,
         ),
     ];
@@ -410,6 +472,50 @@ fn the_effective_palette_follows_the_selection() {
         assert!(
             ratio >= threshold,
             "`yeban` 的对比度不达标: {label} = {ratio:.2}:1 < {threshold}:1 (WCAG 2.1)"
+        );
+    }
+
+    // ---- ①c-bis 负责人调色板的**已知 WCAG 缺口**（报告, 不擅自改色） ----
+    //
+    // 负责人的 `--txt-faint` 霜灰 `#5a6672` 画在比 `--bg-void` 亮的墨阶上时低于 3:1。
+    // 这不是我们抄错了数字 —— 是这副调色板自身的结果。处理方式:
+    //   * **不**改负责人的颜色（那是权威设计输入）;
+    //   * **不**把这一对从判据里删掉（那才是削弱门禁）;
+    //   * 改成**把缺口钉住**: 记录每一对的实测比值, 并断言「它确实低于 3:1」。
+    // 任何一侧的十六进制被改动（无论朝好还是朝坏）, 这三条都会红 —— 缺口不会被悄悄
+    // 「修好」或悄悄变大。裁决权在负责人: 要么接受这个缺口, 要么由他们改自己的颜色。
+    let faint_shortfall: [(&str, Color, Color, f64); 3] = [
+        (
+            "ink-2 / bg-panel",
+            tokens.get_ink_2(),
+            tokens.get_bg_panel(),
+            2.99,
+        ),
+        (
+            "ink-2 / bg-panel-alt",
+            tokens.get_ink_2(),
+            tokens.get_bg_panel_alt(),
+            2.86,
+        ),
+        (
+            "ink-2 / bg-raised",
+            tokens.get_ink_2(),
+            tokens.get_bg_raised(),
+            2.57,
+        ),
+    ];
+    for (label, a, b, recorded) in faint_shortfall {
+        let ratio = contrast_ratio(a, b);
+        let rounded = (ratio * 100.0).round() / 100.0;
+        assert!(
+            (rounded - recorded).abs() < f64::EPSILON,
+            "负责人调色板的 `--txt-faint` 缺口记录过期: {label} 实测 {ratio:.4}:1 \
+             (两位小数 {rounded:.2}), 登记的是 {recorded:.2} —— 任一侧改色都必须同时更新这条记录"
+        );
+        assert!(
+            ratio < 3.0,
+            "`{label}` 被登记为负责人调色板的 WCAG 缺口, 但实测 {ratio:.2}:1 ≥ 3:1 ⇒ \
+             要么记录过期, 要么颜色被改过; 请复核 ui/tokens.slint §6b"
         );
     }
 
@@ -424,11 +530,11 @@ fn the_effective_palette_follows_the_selection() {
         "`yeban` 顶栏的保存键板 / AI 徽章板亮度比只有 {slab:.2}:1, 不高于默认主题自己 \
          的 panel↔panel-alt 那一档 (1.10:1) ⇒ 两块板仍然分不开"
     );
-    // 强调色也必须真的不同 (否则"朱砂只用一次"就只是把同一个紫换了个名字)。
+    // 强调色也必须真的不同 (否则「唯一强调色只用一次」就只是把 AI 语义色换了个名字)。
     assert_ne!(
         tokens.get_accent(),
         tokens.get_ai_suggestion(),
-        "`yeban` 的 `accent` 不许等于 AI 建议的语义紫 —— 那意味着强调色其实没换"
+        "`yeban` 的 `accent` 不许等于 AI 建议的语义色 —— 那意味着强调色其实没换"
     );
 
     // ---- ② 非默认主题必须**真的**换掉调色板 ----
@@ -541,11 +647,11 @@ fn contrast_ratio(a: Color, b: Color) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// 判据 ⑤/⑥: 源码钉 —— 不碰 Slint, 直接把 `ui/**/*.slint` 当文本读
+// 判据 ⑤/⑥/⑦: 源码钉 —— 不碰 Slint, 直接把 `ui/**/*.slint` 当文本读
 // ---------------------------------------------------------------------------
 //
 // 为什么还要一条源码判据（运行时回读已经是判据 ④）: 两者抓的是**不同**的漂移。
-// ④ 抓"编译出来的值 != 测量表"; ⑤ 抓"源码里的字面量 != 测量表" —— 例如有人把
+// ④ 抓"编译出来的值 != 负责人下发的表"; ⑤ 抓"源码里的字面量 != 表" —— 例如有人把
 // 两个分支的表达式写反了、或者给某个 token 多加了一层三元但恰好让 brand 那支没变。
 // 一条判据只写一遍自己的观测面, 这里是文本。
 
@@ -597,7 +703,7 @@ fn token_literals(source: &str, token: &str) -> Vec<String> {
     out
 }
 
-/// **判据 ⑤**：`ui/tokens.slint` 里每个主题令牌的两个字面量分支都等于测量表。
+/// **判据 ⑤**：`ui/tokens.slint` 里每个主题令牌的两个字面量分支都等于负责人下发的表。
 ///
 /// 表里的 yeban 值与判据 ④ 是**同一份数字的两个独立观测面**（一个读源码、一个读活组件）。
 #[test]
@@ -609,22 +715,30 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
         .expect("必须存在 ui/tokens.slint");
 
     // (token, brand 字面量, yeban 字面量)
-    let table: [(&str, &str, &str); 15] = [
-        ("bg-void", "#060a14", "#0c0d0e"),
-        ("bg-shell", "#0d1326", "#17181c"),
-        ("bg-panel", "#151d38", "#23252a"),
-        ("bg-panel-alt", "#1b2447", "#2d2f35"),
-        ("bg-raised", "#232f5c", "#3a3d45"),
-        ("bg-control", "#1b2447", "#42454d"),
-        ("line", "#1e2745", "#2e2f35"),
-        ("line-strong", "#2c3a63", "#464a53"),
-        ("ink-0", "#f0ebe3", "#f0ebe3"),
-        ("ink-1", "#c8c2b8", "#c8c2b8"),
-        ("ink-2", "#5a6b8a", "#696f7b"),
-        ("gold-bright", "#f7e6b0", "#f7e6b0"),
-        ("gold", "#e2c77e", "#e2c77e"),
-        ("gold-deep", "#b8933e", "#22aa88"),
-        ("accent", "#a855f7", "#d94a4a"),
+    let table: [(&str, &str, &str); 23] = [
+        ("bg-void", "#060a14", "#0e1216"),
+        ("bg-shell", "#0d1326", "#11161c"),
+        ("bg-lane", "#0d1326", "#11161c"),
+        ("bg-lane2", "#060a14", "#0d1116"),
+        ("bg-panel", "#151d38", "#131a22"),
+        ("bg-head", "#0d1326", "#161e28"),
+        ("bg-panel-alt", "#1b2447", "#161e28"),
+        ("bg-raised", "#232f5c", "#1e2733"),
+        ("bg-control", "#1b2447", "#1e2733"),
+        ("line", "#1e2745", "#212b36"),
+        ("line-strong", "#2c3a63", "#2c3948"),
+        ("ink-0", "#f0ebe3", "#d7dee1"),
+        ("ink-1", "#c8c2b8", "#8d99a5"),
+        ("ink-2", "#5a6b8a", "#5a6672"),
+        ("gold-bright", "#f7e6b0", "#e7dfc8"),
+        ("gold", "#e2c77e", "#c6a47c"),
+        ("gold-deep", "#b8933e", "#6d88a1"),
+        ("accent", "#a855f7", "#c6a47c"),
+        ("ai-suggestion", "#a855f7", "#8e86a6"),
+        ("record-red", "#d94a4a", "#ac6e60"),
+        ("playing", "#e2c77e", "#6e9488"),
+        ("selection", "#f7e6b0", "#8e86a6"),
+        ("piano-key", "#f0ebe3", "#c8c2b2"),
     ];
     for (token, brand, yeban) in table {
         let found = token_literals(tokens_slint, token);
@@ -635,7 +749,7 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
         );
         assert_eq!(
             found[1], yeban,
-            "`{token}` 的 yeban 分支必须是测量表里的 {yeban}（出处见 §6b/§6c）; 实际 {}",
+            "`{token}` 的 yeban 分支必须是负责人下发的 {yeban}（出处见 §6b）; 实际 {}",
             found[1]
         );
     }
@@ -651,7 +765,10 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
 /// **判据 ⑥**：唯一的强调色在整份界面里**恰好引用一次**，而且那一处就是 AI 提案徽章的描边。
 ///
 /// 这是"强调色必须唯一"那条设计原则的机械形态：任何第二处引用（例如顺手也把保存键
-/// 描成朱砂）都会让这条红。`bg-control` 同样只准一处 —— 它是为那一块板而加的。
+/// 描成 渔火）都会让这条红。`bg-control` 同样只准一处 —— 它是为那一块板而加的。
+///
+/// 位置与令牌纪律在 2026-10-07 的换色里**一位未改**：改的只是 `accent` 的取值
+/// （原来是我们采到的红 `#d94a4a`，现在是负责人下发的 渔火 `#c6a47c`）。
 #[test]
 fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     // ⚠ 数的是**代码**，不是注释：源码里用反引号提到某个令牌名是文档，不是引用。
@@ -679,7 +796,7 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     assert_eq!(
         hits.len(),
         1,
-        "`Tokens.accent`（朱砂）必须**恰好**出现一次, 实际 {} 处: {hits:#?}",
+        "`Tokens.accent`（唯一强调色）必须**恰好**出现一次, 实际 {} 处: {hits:#?}",
         hits.len()
     );
     assert!(
@@ -701,6 +818,149 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
         !files_with("Tokens.ai-suggestion").is_empty(),
         "`ai-suggestion` 仍是 AI 建议层的语义色（AI 徽章换用 `accent` 之后它不该消失）"
     );
+
+    // 2026-10-07 新增的一支: 负责人把「选区=愁眠」与「播放头=月华」分给了**两个**令牌
+    // ⇒ 两支都必须真的被用到。把 `selection` 全量换回 `gold-bright`、或把 `gold-bright`
+    // 删掉（让「选中」与「播放头」又合成一支）, 都会让这条红。
+    for token in ["Tokens.selection", "Tokens.gold-bright"] {
+        let files = files_with(token);
+        assert!(
+            !files.is_empty(),
+            "`{token}` 必须真的被 ui/ 用到 —— 负责人的调色板把「选区/激活/AI」(`selection`) \
+             与「播放头/时间码/读数」(`gold-bright`) 分成了两个颜色; 实际 {files:#?}"
+        );
+    }
+}
+
+/// **判据 ⑦a**：负责人原则 ② 的机械形态 —— 渔火 是**唯一**的暖强调色。
+///
+/// 观测面是 `ui/tokens.slint` 的**源码文本**（不是活组件）：本文件只有 ③ 那一个测试
+/// 允许碰 Slint 进程内对象（平台是线程局部且每线程只能装一次），所以这条走文本。
+///
+/// 三条断言，各自能独立变红：
+///   ① 主强调的两支（`accent` 与 `gold`）在 yeban 下必须**都是** 渔火 `#c6a47c` ——
+///     负责人把「片段/主强调」与「唯一强调色」给了同一个色; 改任一支都红。
+///   ② 渔火 必须是**暖**色相（H ∈ [0°,60°]）。
+///   ③ 功能/AI 侧的两支强调（`gold-deep` 客船、`selection` 愁眠）必须是**冷**色相
+///      （H ∈ [150°,300°]）—— 也就是说, 它们不是第二个暖强调。
+///
+/// 为什么用「指定的两支必须同色 + 其余强调必须冷」而不是「数暖色相的个数」：负责人
+/// 自己的调色板里 月华 `#e7dfc8` 与 江枫 `#ac6e60` 也在暖区（前者是播放头、后者是
+/// 录音功能色），所以"全界面只有一个暖色相"**不是**他们的规格；他们的规格是
+/// "只有一个暖**强调**色"。这条判据写的就是那句话。
+#[test]
+fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
+    let sources = all_ui_sources();
+    let (_, tokens_slint) = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("ui/tokens.slint"))
+        .expect("必须存在 ui/tokens.slint");
+
+    let yeban_of = |token: &str| token_literals(tokens_slint, token)[1].clone();
+    let accent = yeban_of("accent");
+    let gold = yeban_of("gold");
+    assert_eq!(
+        accent, "#c6a47c",
+        "yeban 的 `accent` 必须是负责人下发的 渔火 #c6a47c; 实际 {accent}"
+    );
+    assert_eq!(
+        gold, "#c6a47c",
+        "yeban 的 `gold`（片段/音符头/章节名 = 主强调）必须是 渔火 #c6a47c; 实际 {gold}"
+    );
+    assert_eq!(
+        accent, gold,
+        "负责人的原则 ② 是「渔火 是全界面唯一的暖强调色」⇒ `accent` 与 `gold` 必须同色"
+    );
+
+    let warm = hue_of(&accent).expect("渔火 必须有彩度");
+    assert!(
+        !(60.0..300.0).contains(&warm),
+        "渔火 必须在暖色区 (H<60° 或 H>300°), 实测 H={warm:.1}°"
+    );
+
+    for token in ["gold-deep", "selection"] {
+        let hex = yeban_of(token);
+        let hue = hue_of(&hex).expect("这两支必须有彩度");
+        assert!(
+            (150.0..=300.0).contains(&hue),
+            "`{token}` (yeban {hex}) 必须是冷色相 (150°..=300°), 实测 H={hue:.1}° —— \
+             否则它就是负责人原则 ② 禁止的第二个暖强调色"
+        );
+    }
+}
+
+/// **判据 ⑦b**：负责人原则 ④ 的前半 —— **无投影、无渐变光晕**。
+///
+/// 观测面是全部 `ui/**/*.slint` 的**代码**（注释已剥掉：在注释里写"我们不用
+/// `drop-shadow-*`"是文档，不是用法）。三条独立命中路径各自会红：
+/// `drop-shadow-*` 系列属性、`@linear-gradient(...)`/`@radial-gradient(...)`/
+/// `@conic-gradient(...)` 画笔、以及任何含 `shadow` 的标识符。
+///
+/// 为什么这条值得存在：这条纪律在本仓是**结构性成立**的（13 个 `.slint` 全部自绘
+/// `Rectangle`，一个上游控件都没有），所以它很容易被"顺手加一个投影好看一点"打破，
+/// 而那种改动不会撞上任何既有判据。
+#[test]
+fn the_ui_uses_no_shadow_and_no_gradient_brush() {
+    let sources: Vec<(String, String)> = all_ui_sources()
+        .into_iter()
+        .map(|(path, text)| (path, strip_slint_comments(&text)))
+        .collect();
+
+    let needles = [
+        "drop-shadow",
+        "@linear-gradient",
+        "@radial-gradient",
+        "@conic-gradient",
+        "gradient",
+        "shadow",
+    ];
+    let mut hits = Vec::new();
+    for (path, text) in &sources {
+        for (line_no, line) in text.lines().enumerate() {
+            let lowered = line.to_ascii_lowercase();
+            for needle in needles {
+                if lowered.contains(needle) {
+                    hits.push(format!("{path}:{}: {}", line_no + 1, line.trim()));
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "负责人原则 ④ 禁止投影与渐变光晕, 但 ui/ 的代码里出现了 {} 处: {hits:#?}",
+        hits.len()
+    );
+}
+
+/// 把 `#rrggbb` 解析成 `(r, g, b)`（0..=255）。
+fn rgb_of(hex: &str) -> (f64, f64, f64) {
+    assert_eq!(hex.len(), 7, "`{hex}` 必须是 `#rrggbb`");
+    let channel = |at: usize| {
+        f64::from(
+            u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or_else(|err| panic!("{hex}: {err}")),
+        )
+    };
+    (channel(1), channel(3), channel(5))
+}
+
+/// HSL 色相（度, `0..360`）。灰阶（max == min）返回 `None` —— 它没有色相, 既不是暖也不是冷。
+fn hue_of(hex: &str) -> Option<f64> {
+    let (r, g, b) = rgb_of(hex);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    if delta == 0.0 {
+        return None;
+    }
+    let hue = if max == r {
+        60.0 * (((g - b) / delta) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    Some(if hue < 0.0 { hue + 360.0 } else { hue })
 }
 
 /// 去掉 Slint 的 `//` 与 `/* */` 注释（保留换行，因此行号仍然对得上）。

@@ -83,7 +83,9 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: root.playing ? "‖" : "▶";
-            color: Tokens.gold;
+            // 播放/走带 = 负责人的 铜绿 (`playing`, 原则 ③)。brand 分支 = #e2c77e = 原来的 `gold`,
+            // 所以默认主题这一处一位未变。
+            color: Tokens.playing;
             font-size: Tokens.font-size-xl;
             horizontal-alignment: center;
         }
@@ -403,7 +405,9 @@ export component Transport inherits Rectangle {
             width: parent.width - 8px;
             height: parent.height;
             text: "AI提案 (待审查)";
-            color: Tokens.gold-bright;
+            // AI 文案 = 负责人的 愁眠 (`selection`, 原则 ③「AI=愁眠」); brand 分支 = #f7e6b0
+            // = 原来的 `gold-bright` ⇒ 默认主题一位未变。
+            color: Tokens.selection;
             font-size: Tokens.font-size-md;
         }
     }
@@ -428,7 +432,7 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "Session";
-            color: !root.arrangement-view ? Tokens.gold-bright : Tokens.ink-2;
+            color: !root.arrangement-view ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
         }
@@ -459,7 +463,7 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "Arrangement";
-            color: root.arrangement-view ? Tokens.gold-bright : Tokens.ink-2;
+            color: root.arrangement-view ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
         }

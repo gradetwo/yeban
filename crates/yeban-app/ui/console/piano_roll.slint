@@ -87,7 +87,8 @@ export component PianoRoll inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "" + (tool_index + 1) + " " + root.tool-labels[tool_index];
-            color: root.active-tool == tool_index ? Tokens.gold-bright : Tokens.ink-2;
+            // 选中/激活 = 负责人的 愁眠 (`selection`); 播放头/读数才是 月华 (`gold-bright`)。
+            color: root.active-tool == tool_index ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
             overflow: elide;
@@ -123,7 +124,7 @@ export component PianoRoll inherits Rectangle {
             y: 14px * key_index;
             width: parent.width;
             height: 13px;
-            background: root.white-key-pattern[key_index.mod(12)] ? Tokens.ink-0 : Tokens.bg-void;
+            background: root.white-key-pattern[key_index.mod(12)] ? Tokens.piano-key : Tokens.bg-void;
             border-width: 1px;
             border-color: Tokens.line;
         }
@@ -170,9 +171,11 @@ export component PianoRoll inherits Rectangle {
             background: Tokens.gold;
             border-radius: Tokens.radius-sm;
             // 选中态：加边框而**不改填充**（第 504 轮实测：当时**没有任何**"选中色"令牌可用, 用真实的 `gold-bright`） ⇒ 未选中时与旧基准一致（避免无谓的基准重生成）。
-            // (2026-10-06: 现在确实有了一支 `accent`, 但它的角色是"整份界面只准出现一次"的朱砂, 已经给了 AI 提案徽章; 这里**故意**继续用 `gold-bright`。)
+            // (2026-10-06: 现在确实有了一支 `accent`, 但它的角色是"整份界面只准出现一次"的强调色, 已经给了 AI 提案徽章; 这里**故意**不用它。)
+            // (2026-10-07: 负责人把「选区」给了 愁眠 ⇒ 换用新的 `selection`；它的 brand 分支
+            //  = #f7e6b0 = `gold-bright`, 所以默认主题的边框字节一位未变。)
             border-width: root.note-selected[note_index] ? 2px : 0px;
-            border-color: root.note-selected[note_index] ? Tokens.gold-bright : transparent;
+            border-color: root.note-selected[note_index] ? Tokens.selection : transparent;
             accessible-role: list-item;
             accessible-id: "note-" + note_ulid + "-rect";
             accessible-label: "音符 " + note_ulid;

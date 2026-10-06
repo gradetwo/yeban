@@ -146,7 +146,7 @@ export component Sidebar inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: category_index == 0 ? "乐器" : (category_index == 1 ? "采样" : "预置");
-            color: category_index == 0 ? Tokens.gold-bright : Tokens.ink-2;
+            color: category_index == 0 ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
         }
@@ -176,7 +176,7 @@ export component Sidebar inherits Rectangle {
             width: parent.width - 12px;
             height: parent.height;
             text: root.items[item_index];
-            color: item_index == 0 ? Tokens.gold-bright : Tokens.ink-1;
+            color: item_index == 0 ? Tokens.selection : Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             overflow: elide;
             visible: !root.compact;
