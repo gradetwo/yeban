@@ -107,9 +107,89 @@
 //! **字节数**），以及一条逐条核对真实 `qeSM` 名字字段的可选判据
 //! （`real_demo_qesm_records_use_the_measured_name_field_when_present`，路径不存在即 skip）。
 //!
-//! ## 实测的 `Trak` 家族：**布局已知、语义未知** —— 本轮结论是**不写**轨道表
+//! ## 参考实现之二：`jonkubis/logicproformatwriter`（MIT）—— 本轮拿到了**语义**
 //!
-//! 本轮把 `Trak` 家族（**落盘**的四个字节是 `6b 61 72 54`，即简报里的 `karT`；按落盘字节反序解码
+//! 第 403 轮把"下一步"写成一句话：去读开源参考 `jonkubis/logicproformatwriter`。本轮网络可用，
+//! 从 `raw.githubusercontent.com` 取回了它的 `PROJECTDATA_FORMAT.md`（**92,606 字节**，按
+//! `stat -f%z` 口径）与它的 Logic 12.0.1 **fixture** `fixtures/F0_baseline.logicx`（`ProjectData`
+//! **127,689 字节**），放在 **`/tmp/logic-ref/`** —— **不进仓库**（第三方 fixture 不引入，
+//! 与"不提交 Apple 演示工程"同一条纪律）。
+//!
+//! * **来源**：`https://github.com/jonkubis/logicproformatwriter`
+//!   （`PROJECTDATA_FORMAT.md`、`fixtures/F0_baseline.logicx`）。
+//! * **许可**：**MIT**（仓库根 `LICENSE` 取回为 1,066 字节，MIT 全文）。
+//! * **用法**：只**读语义与常量**，按本模块自己的形状重写；**没有拷贝代码、没有新增依赖**。
+//!   模块里引用它时只写**短句**并点名来源与 MIT（例如
+//!   "`payload_size = 80 + 48*changes + 16`"、"16-byte TAIL `F1 00 00 00 FF FF FF 3F …`"）。
+//!
+//! ### 三个语义问题的答案（参考实现 + 本机五份真实文件复核）
+//!
+//! 参照系：`F0` fixture（Logic 12.0.1）+ 本机四份工程（`Swing!` 2507、`ocean eyes` 2000、
+//! `quiet` 2512、工厂模板 `01 Hip Hop` 2512）。**"五份全中"** 都指这五份。
+//!
+//! 1. **region（`qeSM`）怎么指向它所属的轨道？—— 不指向。** region 记录头 `+0x08` 是它
+//!    **自己的对象号**（参考实现 §8.5：一个 MIDI region **就是**一条带自己 track-cluster
+//!    index 的 `qeSM`，例 `0x1c0000`，与它自己的 `karT`/`qSvE` 同簇）。"属于哪条轨道"存在
+//!    **轨道的** `qSvE` 里，是一条**摆放事件**：类型记号 `20`(MIDI)/`24`(音频)、位置 @+0x04
+//!    = 34560 + tick、链接 id @+0x10（`0x58 + 序号×4`，与 region `qeSM` 的 `+0x108` 相同）、
+//!    **1 起的轨道号 @+0x14**、region 链接 @+0x2c。位置**另存一份**在 region `qeSM` 的
+//!    `+0x11c`（零起 tick），长度在 `+0x78`。本切片两处都没写 ⇒ 登记为
+//!    [`REGION_PLACEMENT_UNMAPPED`]（`未映射:`）。
+//! 2. **非空 `Trak` 载荷是什么、要几条、怎么排序？** 是 **Track 对象**，按记录头 `+0x08`
+//!    的对象号分**三个子群**（上一轮"条数 799/753/118/179 与轨道数 76/42/10/34 不相等"的
+//!    谜底就是这个：这一族不是一张表，而是三个子群；其中编排轨行那一群恰好是
+//!    `NumberOfTracks + 1`）：
+//!    * `0x00040000` = **编排轨行**（arrange Track row）。实测**非 0 载荷条数 − 1 恰等于
+//!      `NumberOfTracks`，五份全中**（`F0` 2−1=1、`Swing!` 77−1=76、`ocean eyes` 43−1=42、
+//!      `quiet` 11−1=10、`01 Hip Hop` 35−1=34）；多出来的那条是 **master 行**（载荷
+//!      `+0x00 == 3`，载荷 `+0x08` 指向通道槽 `0x50`；其余行的 `+0x00 == 1`）。顺序 = 记录头
+//!      `+0x12` 的单字节序号 `0..N-1`，master 排在最后（参考实现 §10.6.3(d)：新行插在 master
+//!      之前，并把 master 的序号抬到 `T+1`）—— 实测 `quiet`/`01 Hip Hop` 的该组序号正是
+//!      `0..=N` 连续。
+//!    * `0x00080000` = **每个预分配混音槽一条 Track 对象**；载荷 `+0x08` = 槽号，记录头
+//!      `+0x12` = 名次，**流的顺序就是轨道表顺序**（参考实现 §10.6.4 gate 4：名次设好后
+//!      **必须按 `+0x12` 升序重排记录**）。实测 `quiet` 该组 40 条非 0、槽号互不相同。
+//!    * 其余对象号下还有少量 `Trak`，多数载荷为 0。
+//! 3. **记录头 `+0x08..+0x0b` 的"簇号"是什么？** 是**属主对象的 `u32` 对象号**
+//!    （参考实现 §8.1/§10.6.2：`trackIndex × 0x40000`，等价于槽字节 `<< 16`；`ivnE` 的
+//!    `idx` 例如 `0x580000` ⇒ 槽 `0x58`）。小的号是**保留的内部对象**：`0x00000000` 根/工程、
+//!    `0x00040000` 编排、`0x00080000` 自动化根文件夹、`0x000c0000` Track Alternatives、
+//!    `0x00100000` Global Harmonies …；`0x00480000` 以上是混音通道槽。**实测五份全中**：
+//!    每条 `qeSM` 与它**配对的 `qSvE` 共享同一个对象号与同一个 subtype**（`F0` 13/13、
+//!    `Swing!` 545/545、`ocean eyes` 245/245、`quiet` 65/65、`01 Hip Hop` 75/75）。
+//!    它是**唯一**随记录变化的记录头字段（其余恒定：`+0x0c..0x0f` = `00 00 ff ff`、
+//!    `+0x0e..0x11` = `ff ff ff ff`、`+0x16` = 2、`+0x18` = 0、`+0x1a` = 2/1）。
+//!
+//! ### 因此本轮**仍然不写** `Trak` —— 但理由换了
+//!
+//! 上一轮的理由是"**语义未知**"。现在语义已知，**仍然不写**的理由变成了参考实现自己的结论：
+//! 轨道**不能凭空合成**（§10.6.1 原话：新建通道会触发 Logic 的混音器 / CoreMIDI Environment
+//! **扩张**，重新生成 time-UUID 并重排整个 `OCuA` 通道块，"pervasive and impractical to
+//! reproduce"）。它自己通过 Logic 验证的做法，是克隆一份 **Logic 存过的** donor 模板的通道簇
+//! （`ivnE` + `OCuA` + `gnoS` 注册表 + `MneG`，§10.6.3 的 (a)–(f) 六步）。本仓库**不提交、
+//! 也不内嵌**任何 Logic 存过的 donor（Apple 演示工程有版权；参考实现的 fixture 也不引入），
+//! 所以"凭空写出能画出来的轨道表"这条路**没有被任何可用来源验证过**。写一条我们无法验证
+//! 能被画出来的记录，比不写更坏 —— 这条决定仍在 [`TRACK_OBJECTS_UNMAPPED`] 里逐条登记。
+//!
+//! ### 参考实现同时暴露了本写入器**三处未登记的缺陷**，本轮改正
+//!
+//! 那三处都在**本写入器已经会写的**记录里，因此不需要新结构就能修：
+//!
+//! 1. **拍号 `qSvE` 载荷缺 16 字节尾**：原先写 80 字节；参考实现（§5）与实测（无变化工程
+//!    都是 **96** 字节）要求 80 字节头 + 16 字节尾。已改，见 [`LOGIC_METER_PAYLOAD_LEN`]。
+//! 2. **速度 `qSvE` 载荷缺 32 字节正文与 16 字节尾**：原先写 **16** 字节 —— 只有第一个字
+//!    `0x60`、其余全 0，即**位置 0、速度 0**。实测五份文件的全局速度序列**全是 48 字节** =
+//!    32 字节事件 + 16 字节尾，事件里的速度字等于各工程 `MetaData.plist` 的 BPM
+//!    （120/115/145/120/70 BPM ⇒ 1,200,000/1,150,000/1,450,000/1,200,000/700,000）。
+//!    已改，见 [`LOGIC_TEMPO_PAYLOAD_LEN`]。**这一处此前没有被任何损失条目登记**。
+//! 3. **region 音符 `qSvE` 载荷缺 16 字节尾**：参考实现（§8.5）记"空 region 的 `qSvE`
+//!    载荷就是那 16 字节尾；每个音符在尾之前加一个 32 字节事件（载荷 = 32·N + 16）"。
+//!    已改，见 [`LOGIC_EVENT_SEQUENCE_TAIL`]。groove 的读取器把 `f1 00` 当运行结束标记，
+//!    因此往返解析不受影响。
+//!
+//! ## 实测的 `Trak` 家族：上一轮的**布局**读数（本轮复核仍然成立，保留备查）
+//!
+//! 第 403 轮把 `Trak` 家族（**落盘**的四个字节是 `6b 61 72 54`，即简报里的 `karT`；按落盘字节反序解码
 //! 才是可读名 `Trak`）在**四份**真实工程里逐字节量了一遍，而不是只看简报点名的两个演示：
 //! 两个 Apple 演示工程（`Swing!` 版本码 **2507**、`ocean eyes` **2000**）与两份**与本写入器同版本码
 //! 2512** 的工程（`~/Music/Logic/quiet`、工厂模板 `01 Hip Hop`）—— 因为第 402 轮的教训正是
@@ -125,38 +205,27 @@
 //! | `Trak` 记录条数 | 799 | 753 | 118 | 179 |
 //! | 其中载荷长 **0** 的 | 545 | 245 | 65 | 75 |
 //! | 其中载荷**非 0** 的 | 254（长 57） | 508（长 56） | 53（长 58） | 104（长 58） |
+//! | ↳ `+0x08 == 0x40000` 组的非 0 条数（= 轨道数 + 1） | 77（76+1） | 43（42+1） | 11（10+1） | 35（34+1） |
+//! | ↳ `+0x08 == 0x80000` 组的非 0 条数（每个混音槽一条） | 173 | 104 | 40 | 66 |
 //! | 记录头 kind（+0x04） | **5** | **4** | **6** | **6** |
 //! | 记录头 subtype（+0x06） | 23 | 23 | 23 | 23 |
 //! | `MetaData.plist` `NumberOfTracks` | 76 | 42 | 10 | 34 |
 //!
-//! 记录头其余字节在四份文件里**实测恒定**（与其它家族共用同一套记录头）：+0x0c..+0x0f =
+//! 记录头其余字节在四份文件里**实测恒定**（与其它家族共用同一套记录头）：+0x0c..0x0f =
 //! `00 00 ff ff`、+0x0e..+0x11 = `ff ff ff ff`、+0x16 = 2、+0x18 = 0、+0x1a = 2（2512）/ 1
 //! （2507、2000，与 [`LOGIC_RECORD_FIELD_1A`] 的实测规则独立吻合）；载荷长 0 的那一类
-//! +0x12..+0x15 = `ff ff ff 7f`。只有 +0x08..+0x0b（**随组递增的簇号**）与载荷非 0 那类的
-//! +0x12 随记录变化。kind 随版本走（2000→4、2507→5、2512→6），因此**不是**跨演示常量。
-//!
-//! **为什么这仍然不支持写轨道表**（三条都是实测，不是推测）：
-//!
-//! 1. **条数与轨道数在任何一份文件里都不相等**：799 vs 76、753 vs 42、118 vs 10、179 vs 34。
-//!    载荷非 0 的那一类在 2512 的两份文件里是 53 与 104 —— 本仓库**既无法判定哪一条是轨道**，
-//!    也无法判定该写几条。
-//! 2. **`Trak` 载荷里没有名字**：四份文件共 **919** 条非 0 载荷里，没有任何一处是
-//!    "`u16` 长度（`2..=96`）+ 全可打印 ASCII + `\0`"形态的名字字段（命中 **0/919**）。
-//!    名字字段在 `MSeq`（region）载荷 `+0x10`/`+0x12`（见 [`LOGIC_REGION_NAME_PAYLOAD_OFFSET`]）。
-//!    本轮在两个 2512 工程里读到的 `MSeq` 名字还包含 `*Automation`、`Track Alternatives`、
-//!    `Track Automation Root Folder` 这类**内部对象**，说明这一族记录横跨用户轨道与 Logic 内部构造。
-//! 3. **没有任何记录引用 `Trak` 载荷里的 16 字节标识符**：在 `quiet` 里 53 条非 0 载荷的标识符
-//!    **53/53 互不相同，且各自在整份文件里只出现 1 次**。区域与记录的关联只能落到随组递增的簇号上，
-//!    而簇号的规则本模块**尚未反推出来**（已登记在 [`CONTAINER_HEADER_CAVEAT`]）。
+//! +0x12..+0x15 = `ff ff ff 7f`。只有 +0x08..+0x0b（**对象号**，见上文问题 3）与载荷非 0
+//! 那类的 +0x12 随记录变化。kind 随版本走（2000→4、2507→5、2512→6），因此**不是**跨演示常量。
 //!
 //! 另外：**不存在嵌套的 `karT`**。落盘的 `6b 61 72 54` 在四份文件里的出现次数**恰好等于**
 //! `Trak` 记录条数（799 / 753），而按**正序**拼写 `karT` 的四个字节 `54 72 61 6b` 出现 **0** 次；
 //! 即这一族没有"里层还有一层 `karT`"的结构（round 394 的"容器是扁平的"在本族上独立复现）。
 //!
-//! 因此本切片**不写** `Trak`：写一条我们说不出它指向什么的记录，比不写更坏。这一决定由两条判据
-//! 钉住：无头的 `track_family_is_measured_but_deliberately_unwritten`，与路径不存在即 skip 的
-//! `real_demo_track_family_shape_matches_the_measurement_when_present`（后者用**实测字面量**
-//! 钉住上表的每一格，并证明非 0 `Trak` 条数 > 同目录 `MetaData.plist` 的 `NumberOfTracks`）。
+//! 这一决定由两条判据钉住：无头的 `track_family_is_measured_but_deliberately_unwritten`
+//! （钉住"产物里一条 `karT` 都没有"＋"损失条目点名了三个子群的读数"），与路径不存在即 skip 的
+//! `real_demo_track_family_shape_matches_the_measurement_when_present`（用**实测字面量**钉住
+//! 上表的每一格，并断言 `0x40000` 组非 0 条数 − 1 **恰等于**同目录 `MetaData.plist` 的
+//! `NumberOfTracks` —— 这正是本轮语义答案的证据）。
 //!
 //! ## 映射损失表（**不静默丢东西**）
 //!
@@ -192,20 +261,26 @@
 //!    （`com.apple.logic10 error 100`）。据此改正了根头的版本码（原先写 0），并**再次导出**
 //!    供人复测 —— 但在人手报告成功之前，本模块**不说**它能被打开。仓库里也**不提交**
 //!    任何 Apple 演示工程（它们有版权）；被验证的只是"结构与本机实测的字节布局一致"。
-//! 2. **不写轨道对象**：本切片只写 `gnoS` / `qSvE` / `qeSM` 与 region 的音符序列，
-//!    Logic 的 `Trak` 轨道家族（落盘字节 `6b 61 72 54`）**没有写**（groove 的写入器同样如此）。
-//!    本轮已把这一族的**布局**量完（见上一节：四份真实工程的条数、载荷长、kind/subtype 与恒定字节），
-//!    但**语义仍未反推出来** —— 条数与轨道数在四份文件里都不相等、载荷里没有名字字段、
-//!    载荷内 16 字节标识符没有任何记录引用它。因此这里不是"还没顾上写"，而是**证据不支持写**：
-//!    产物经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
+//! 2. **不写轨道对象、不写 region 摆放链**：本切片只写 `gnoS` / `qSvE` / `qeSM` 与 region
+//!    的音符序列，Logic 的 `Trak` 轨道家族（落盘字节 `6b 61 72 54`）**没有写**（groove 的
+//!    写入器同样如此）。本轮已从 MIT 参考实现拿到这一族的**语义**并在五份真实文件上复核
+//!    （见上文"三个语义问题的答案"），**仍然不写**的理由换成了参考实现的实测结论：轨道不能
+//!    凭空合成，它自己也只能克隆 **Logic 存过的** donor 模板的通道簇。同时登记了
+//!    [`REGION_PLACEMENT_UNMAPPED`]：region 自己不指向轨道，"属于哪条轨道"由**轨道的** `qSvE`
+//!    里的摆放事件表达（轨道号 @+0x14、链接 @+0x2c），本切片没写 ⇒ region 在产物里无法落到
+//!    任何轨道上。产物经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
 //! 3. **只写 3/27 个实测 chunk 家族**：真实工程（两例并集）有 27 个家族，本切片只写
 //!    `Song` / `EvSq` / `MSeq`；其余 **24 个**家族（[`MISSING_CHUNK_FAMILIES`]：插件、
 //!    混音、环境、自动化、视频、网格…）**逐族**进损失表，理由里点名 chunk。容器头里
-//!    **仍未重建**的字段（记录头 +0x08..+0x14 的哨兵、region 的 subtype、`gnoS` 子帧的
-//!    正文）作为 [`CONTAINER_HEADER_CAVEAT`] 登记（`非等价:`），region 载荷里**除名字字段
-//!    以外**的字节（`+0x00` 起 `2e 03`、载荷长 296..324、`ocean eyes` 的部分记录在名字后
-//!    还有一份空格前缀副本）作为 [`REGION_PAYLOAD_CAVEAT`] 登记（`非等价:`）。region 的
-//!    **名字字段**已按实测写入（载荷 +0x10/+0x12），**不**登记为偏差。
+//!    **仍未重建**的字段（记录头 +0x08..+0x14 的**对象号分配规则**、region 的 subtype、
+//!    `gnoS` 子帧的正文）作为 [`CONTAINER_HEADER_CAVEAT`] 登记（`非等价:`），region 载荷里
+//!    **除名字字段以外**的字节（`+0x00` 起 `2e 03`、载荷长 296..324、`ocean eyes` 的部分
+//!    记录在名字后还有一份空格前缀副本）作为 [`REGION_PAYLOAD_CAVEAT`] 登记（`非等价:`）。
+//!    region 的**名字字段**已按实测写入（载荷 +0x10/+0x12），**不**登记为偏差。
+//! 4. **本轮改正的三处 `qSvE` 载荷形状**（拍号 80→96、速度 16→48、音符加 16 字节尾）来自
+//!    实测与 MIT 参考实现，因此**不**登记为偏差；但其中"速度 `qSvE` 此前写的是速度 0"这一
+//!    缺陷在本轮之前**从未被任何损失条目登记**过 —— 这说明"逐条登记"的纪律仍有盲区，
+//!    下一轮应当在每次拿到新参考材料时**重做一次逐字段对账**，而不是只补新发现的字段。
 //!
 //! ## 确定性
 //!
@@ -355,14 +430,82 @@ pub const LOGIC_NOTE_STATUS: u8 = 0x90;
 /// 事件行第 7 字节的续行标志位。
 pub const LOGIC_CONTINUATION_FLAG: u8 = 0x80;
 
+/// 每条 `qSvE`（事件序列）载荷**结尾**的 16 字节尾。
+///
+/// 实测：五份文件里 `qSvE` 载荷以此尾结束的比例是 `F0` 夹具 **13/13**、
+/// `Swing!` **544/545**、`ocean eyes` **240/245**、`quiet` **65/65**、`01 Hip Hop` **75/75**
+/// （少数例外是参考实现记载的 "settling" 变体）。
+/// 参考实现 `jonkubis/logicproformatwriter`（MIT，`PROJECTDATA_FORMAT.md` §3）把它写成
+/// "Each `qSvE` payload = `[events...]` + a **16-byte TAIL**
+/// `F1 00 00 00 FF FF FF 3F 00 00 00 00 00 00 00 00`" —— 本常量就是那 16 个字节的实测字面量。
+///
+/// groove 的读取器把开头的 `f1 00` 当作"空序列/运行结束"标记（`EMPTY_SEQUENCE_MARKER`），
+/// 因此写上这个尾**不会**让它的往返解析多出一条音符：测试用的 [`decode_note_lines`] 同样
+/// 在第 7 字节（`0x3f`，最高位为 0）判定它不是续行、首字节 `0xf1 ≠ 0x90` 判定它不是音符。
+pub const LOGIC_EVENT_SEQUENCE_TAIL: [u8; 16] = [
+    0xF1, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
 /// 拍号序列载荷的第一个字（判定"这是拍号序列"的记号）。
 pub const LOGIC_METER_MARKER: u32 = 0x30;
 
 /// 速度序列载荷的第一个字（判定"这是速度序列"的记号）。
 pub const LOGIC_TEMPO_MARKER: u32 = 0x60;
 
-/// 拍号记录体的长度（groove / 实测读取器都按 80 字节的头部解析）。
+/// 拍号 `qSvE` 载荷里**头部**的长度。参考实现（MIT，§5）写
+/// "`payload_size = 80 + 48*changes + 16`"，即 80 字节头 + 每条变化 48 字节 + 16 字节尾。
+/// 因此**没有**拍号变化时载荷长 = 80 + 16 = [`LOGIC_METER_PAYLOAD_LEN`]（实测五份文件里的
+/// 无变化工程都是 96 字节：`F0` 夹具、`quiet`、`ocean eyes`、`01 Hip Hop`）。
 pub const LOGIC_METER_BODY_LEN: usize = 80;
+
+/// 拍号 `qSvE` 载荷在**没有**拍号变化时的长度：80 字节头 + 16 字节尾（实测字面量 96）。
+pub const LOGIC_METER_PAYLOAD_LEN: usize = 96;
+
+/// 拍号头里分母的以 2 为底指数（`den = 2^exp`）的偏移。实测：`F0`/`quiet`/`01 Hip Hop` 的
+/// 4/4 都是 `02 04` 落在 `+0x0b`/`+0x0c`。
+pub const LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET: usize = 0x0b;
+
+/// 拍号头里分子的偏移（见 [`LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET`]）。
+pub const LOGIC_METER_NUMERATOR_OFFSET: usize = 0x0c;
+
+/// **没有**拍号变化时头部 `+0x0f` 的标志位。参考实现（MIT，§5）记
+/// "`flag@+0x0F` (0x80 if there are no changes)"，`set_meter_map` 正是这么写的，
+/// 而它产出的工程被 Logic 打开过。
+///
+/// ⚠ 实测的**本机**取值并不统一：`F0` 夹具（12.0.1）是 `0x80`，而 `quiet`（0x09D0）与
+/// `01 Hip Hop`（0x09D0）是 `0x00`、`ocean eyes`（0x07D0）是 `0x01`。参考实现明写这个字节
+/// **不承载映射**（"These bytes do NOT affect the decoded map"）且两种形态都被 Logic 接受，
+/// 因此这里写参考实现记录的"无变化"形态 `0x80`。
+pub const LOGIC_METER_NO_CHANGE_FLAG: u8 = 0x80;
+
+/// 一条速度事件的长度（`u32` 小端位置 + 7 个字段 = 32 字节）。
+pub const LOGIC_TEMPO_EVENT_LEN: usize = 0x20;
+
+/// 速度 `qSvE` 载荷在**单条**初始速度时的长度：32 字节事件 + 16 字节尾。
+///
+/// 实测五份文件里的全局速度序列**全部**是 48 字节：`F0` 夹具、`Swing!`、`ocean eyes`、
+/// `quiet`、`01 Hip Hop`。参考实现（MIT，§4）写 "Payload = N events + 16-B tail;
+/// `payload_size = 32N + 16`"。
+pub const LOGIC_TEMPO_PAYLOAD_LEN: usize = 0x30;
+
+/// 速度事件里的位置（`u64` 小端）＝**速度/记号原点** 38400（= [`LOGIC_NOTE_ORIGIN_TICKS`]）。
+///
+/// 实测五份文件的第一条速度事件在 `+0x04` 都是 `00 96 00 00 00 00 00 00`（= 38400）；
+/// 参考实现（MIT，§3）记 "Tempo/marker-origin 38400 (= 34560 + 3840)"。
+pub const LOGIC_TEMPO_POSITION_TICKS: u64 = LOGIC_NOTE_ORIGIN_TICKS;
+
+/// 速度事件 `+0x0f` 的标志：`0x00` = 首个/初始事件（实测五份文件全为 `0x00`）。
+pub const LOGIC_TEMPO_FLAG_FIRST: u8 = 0x00;
+
+/// 速度事件 `+0x14..+0x18` 的恒定四个字节（实测五份文件一致）。
+pub const LOGIC_TEMPO_EVENT_CONST_14: [u8; 4] = [0x00, 0x00, 0x40, 0x88];
+
+/// 速度事件 `+0x18` 的绝对时间缓存（`u32` 小端）。
+///
+/// 参考实现（MIT，§4）给出精确公式：`altpos = 7_200_000 + round(Σ …)`，原点 7,200,000 是
+/// 1 小时 SMPTE、单位 2000/秒。首个事件在 tick 0 处累计时长为 0，因此就是 **7,200,000**
+/// （实测字面量 `00 dd 6d 00`，五份文件一致）。
+pub const LOGIC_TEMPO_ALT_POSITION_BASE: u32 = 7_200_000;
 
 /// 一拍等于多少 tick（= 夜半的 [`PPQ`] = 960）。
 pub const LOGIC_TICKS_PER_QUARTER: u64 = PPQ;
@@ -422,28 +565,88 @@ pub const NO_GROUND_TRUTH_CAVEAT: &str = concat!(
 
 /// 每一次导出都会登记的那条"轨道对象未写入"警告。
 ///
-/// 理由里的每一格都是**实测**（四份真实工程：`Swing!` 2507、`ocean eyes` 2000、`quiet` 2512、
-/// 工厂模板 `01 Hip Hop` 2512；详见模块头"实测的 `Trak` 家族"一节），不是推测：
-/// 布局已量完（落盘字节、kind 随版本 4/5/6、subtype 恒 23、载荷长 0/56/57/58、恒定字节），
-/// 但**语义未反推出来** —— 条数与 `NumberOfTracks` 在四份文件里都不相等（799/76、753/42、
-/// 118/10、179/34）、919 条非 0 载荷里没有名字字段、16 字节标识符无人引用。
+/// ⚠ **第 404 轮把这条从"语义未知"改成了"语义已知、但参考实现说不能凭空合成"。** 这是重点：
+/// 上一轮拒绝写轨道表的理由是**不知道它是什么**；本轮从 MIT 参考实现
+/// `jonkubis/logicproformatwriter` 的 `PROJECTDATA_FORMAT.md` 拿到了语义，并且**在本机五份
+/// 真实文件上逐条复现了它**（`F0` 夹具 + 四份真实工程）。结论是**仍然不写**，但理由换了：
+/// 参考实现明写轨道**不能**从零合成（§10.6.1），它自己的写入器一律从 Logic 存过的 donor
+/// 模板做增量重放。理由里现在有可核对的读数，而不是"未知"。
+///
+/// 实测读数（五份文件，`Trak` 家族按记录头 `+0x08` 的对象号分组）：
+/// * `+0x08 == 0x00040000` 组 = **编排轨行**：非 0 载荷条数 − 1 **恰等于** `NumberOfTracks`，
+///   五份全中（`F0` 2−1=1、`Swing!` 77−1=76、`ocean eyes` 43−1=42、`quiet` 11−1=10、
+///   `01 Hip Hop` 35−1=34）；多出来的那条是 master 行（载荷 `+0x00 == 3`，载荷 `+0x08`
+///   指向通道槽 `0x50`）。
+/// * `+0x08 == 0x00080000` 组 = **每个预分配混音槽一条 Track 对象**（载荷 `+0x08` = 槽号，
+///   记录头 `+0x12` = 名次；**流的顺序就是轨道表顺序**）。
+/// * 其余对象号下还有少量 `Trak`，多数载荷为 0。
+///
+/// 因此上一轮"条数与轨道数不相等"的谜底是：这一族**不是**一张表，而是**三个子群**；
+/// 其中编排轨行那一群**恰好**是 `NumberOfTracks + 1`。但这仍然不支持本切片写它 ——
+/// 参考实现（MIT，§10.6.1）的原话是：轨道不能凭空合成，因为新建通道会触发 Logic 的
+/// 混音器 / CoreMIDI Environment **扩张**，重新生成 time-UUID 并重排整个 `OCuA` 通道块，
+/// "pervasive and impractical to reproduce"；其通过 Logic 验证的做法是克隆一份
+/// **Logic 存过的** donor 模板的通道簇（`ivnE` + `OCuA` + `gnoS` 注册表 + `MneG`）。
+/// 本仓库不提交、也不内嵌任何 Logic 存过的 donor（Apple 演示工程有版权；参考实现的
+/// fixture 是它的 MIT 产物，本仓库同样不引入第三方 fixture），因此"凭空写出能画出来的
+/// 轨道表"这条路**没有被任何可用来源验证过**，本切片不走。
 pub const TRACK_OBJECTS_UNMAPPED: &str = concat!(
     "未映射: Logic 的 `Trak` 轨道家族（**落盘**四个字节 `6b 61 72 54`，即 `karT`）未写入 —— ",
     "本切片只写 `gnoS`(工程/速度)、`qSvE`(拍号与速度事件)、`qeSM`(region) 与 region 的音符序列。",
-    "本轮已把这一族的**布局**在四份真实工程里量完（文件 5,648,035/4,075,622/360,193/1,862,456 字节；",
-    "记录头 kind 随版本 5/4/6、subtype 恒 23；载荷长 0 或 57/56/58），但**语义未反推出来**：",
-    "条数与 `MetaData.plist` 的 `NumberOfTracks` 在四份文件里都不相等（799/76、753/42、118/10、179/34），",
-    "共 919 条非 0 载荷里没有名字字段，载荷内 16 字节标识符也没有任何记录引用它。",
-    "因此这里**不是省略**而是**证据不支持写**（写一条说不出指向什么的记录比不写更坏）；",
-    "groove 的写入器同样不写轨道对象"
+    "**语义本轮已由 MIT 参考实现 `jonkubis/logicproformatwriter`（`PROJECTDATA_FORMAT.md` §8.1/§10.6）",
+    "给出，并在本机五份真实文件（F0 夹具 + Swing!/ocean eyes/quiet/01 Hip Hop）上复现**：",
+    "这一族按记录头 `+0x08` 的对象号分三个子群 —— `0x00040000` 是**编排轨行**（非 0 载荷条数 − 1 ",
+    "恰等于 `NumberOfTracks`：2−1=1、77−1=76、43−1=42、11−1=10、35−1=34，五份全中；多出的那条是 ",
+    "master 行，载荷 +0x00 = 3、载荷 +0x08 指向通道槽 0x50），`0x00080000` 是**每个预分配混音槽一条 ",
+    "Track 对象**（载荷 +0x08 = 槽号、记录头 +0x12 = 名次，流顺序即轨道表顺序），其余对象号下还有少量 ",
+    "空载荷记录。上一轮「条数 799/753/118/179 与轨道数 76/42/10/34 不相等」的谜底就是这三个子群。",
+    "记录头在这一族里实测恒定：kind 随版本 5/4/6、**subtype 恒 23**、+0x16 = 2、+0x18 = 0。",
+    "**仍然不写的理由换成了参考实现的实测结论**：轨道不能凭空合成 —— 新建通道会触发混音器 / ",
+    "Environment 扩张并重排整个 `OCuA` 通道块，参考实现自己也只能克隆 **Logic 存过的** donor 模板的 ",
+    "通道簇（`ivnE` + `OCuA` + `gnoS` 注册表 + `MneG`）。本仓库不提交也不内嵌任何这类 donor",
+    "（Apple 演示工程有版权；参考实现的 fixture 也不引入），因此凭空写轨道表这条路**没有任何可用来源验证过**"
+);
+
+/// region **摆放链**未写入（`未映射:`）—— 这是本轮从参考实现读到的、关于"region 属于哪条轨道"
+/// 的答案，也是本切片产物的一个真实缺口。
+///
+/// 参考实现（MIT，§8.1 / §8.5）与实测一致：**region 自己不指向轨道**。关系存在**轨道的**
+/// `qSvE` 里，作为一条**摆放事件**：
+///
+/// | 字段 | 含义 |
+/// | :--- | :--- |
+/// | `+0x00` | 事件类型记号 `20 00 00 00`（MIDI）/ `24 00 00 00`（音频） |
+/// | `+0x04` | `u32` 位置 = 34560 + tick（region 原点） |
+/// | `+0x10` | `u32` 每条摆放的 id（`0x58 + 序号×4`），与 region `qeSM` 的 `+0x108` 相同 —— 这是链接 id |
+/// | `+0x14` | **1 起的轨道号**（字节） |
+/// | `+0x2c` | `u32` 指向该 region 的链接 |
+///
+/// region 自己的记录头 `+0x08` 是它**自己的**对象号（例：`0x1c0000` = 它自己的 `karT`+`qeSM`+`qSvE`
+/// 那一簇），**不是**轨道号；位置还**另存一份**在 region `qeSM` 的 `+0x11c`（零起 tick），
+/// 长度在 `+0x78`。
+///
+/// 本切片不写摆放事件、不写 region 的 `+0x78`/`+0x11c`，因此**region 在产物里无法落到任何轨道上**，
+/// 位置也只由音符的绝对 tick 隐含。这不是静默省略：这一族要求的宿主（轨道簇）本切片没有写，
+/// 写一条落在空处的摆放事件比不写更坏。
+pub const REGION_PLACEMENT_UNMAPPED: &str = concat!(
+    "未映射: region 的**摆放链**没有写入 —— region 自己不指向轨道，关系在**轨道的** `qSvE` 里：",
+    "一条摆放事件（类型记号 `20`(MIDI)/`24`(音频)、位置 @+0x04 = 34560 + tick、",
+    "链接 id @+0x10（与 region `qeSM` 的 +0x108 相同）、**1 起的轨道号 @+0x14**、region 链接 @+0x2c），",
+    "位置另存一份在 region `qeSM` 的 +0x11c、长度在 +0x78（以上来自 MIT 参考实现 ",
+    "`jonkubis/logicproformatwriter` 的 `PROJECTDATA_FORMAT.md` §8.1/§8.5，并与本机实测一致）。",
+    "本切片不写摆放事件，也不写 `qeSM` 的 +0x78/+0x11c，因此 region 在产物里**无法落到任何轨道上**，",
+    "位置只由音符的绝对 tick 隐含 —— 写一条落在空处的摆放事件比不写更坏"
 );
 
 /// region 自身起点字段的诚实说明（groove 记录的限制一并承接）。
 pub const REGION_TIMING_CAVEAT: &str = concat!(
     "非等价: region 的自身起点字段一律写 0（实测真实工程里名字后的 u32 也是 0），",
     "因此 region 的摆放位置不由该字段表达；音符携带的是绝对 tick",
-    "（placement.start_tick + note.start_tick + 38400）。groove 记录的读取限制同样适用：",
-    "ProjectData 里的一部分时限无法可靠读取，其读取器把每个 part 放在 beat 0 —— 本写入器不掩盖这一点"
+    "（placement.start_tick + note.start_tick + 38400）。",
+    "参考实现（MIT，§8.5）给出位置真正存放的两处 —— 摆放事件的 +0x04 与 region `qeSM` 的 +0x11c —— ",
+    "两处本切片都没写（见 `REGION_PLACEMENT_UNMAPPED`）。",
+    "groove 记录的读取限制同样适用：ProjectData 里的一部分时限无法可靠读取，",
+    "其读取器把每个 part 放在 beat 0 —— 本写入器不掩盖这一点"
 );
 
 /// region（`qeSM`）载荷里**除名字字段以外**的实测差异（`非等价:`）。
@@ -536,10 +739,13 @@ pub const MISSING_CHUNK_FAMILIES: [(&str, &str); 24] = [
     ("Styl", MISSING_FAMILY_TAIL_UNKNOWN),
     (
         "Trak",
-        "Logic 的轨道家族（**落盘**四个字节 `karT`）——本仓库已实测其**布局**（见模块头那一节：\
-         四份真实工程的条数、载荷长、kind/subtype 与恒定字节），但**语义未反推出来**：\
-         条数与轨道数在四份文件里都不相等、载荷里没有名字字段、16 字节标识符无人引用，\
-         所以本切片**不写**它 —— 这不是漏掉，而是证据不支持（详见 `TRACK_OBJECTS_UNMAPPED`）",
+        "Logic 的轨道家族（**落盘**四个字节 `karT`）——**语义已由 MIT 参考实现 \
+         `jonkubis/logicproformatwriter`（`PROJECTDATA_FORMAT.md` §8.1/§10.6）给出并在本机五份真实文件上复现**：\
+         记录头 +0x08 的对象号把它分成三个子群 —— `0x00040000` 编排轨行（非 0 载荷条数 − 1 恰等于 \
+         `NumberOfTracks`，多出的那条是 master）、`0x00080000` 每个预分配混音槽一条 Track 对象、\
+         其余对象号下少量空载荷记录；上一轮「条数 799/753/118/179 与轨道数 76/42/10/34 不相等」的谜底即此。\
+         仍然**不写**的理由是参考实现的结论：轨道不能凭空合成（新建通道会触发混音器 / Environment 扩张），\
+         它自己也只能克隆 **Logic 存过的** donor 模板的通道簇（详见 `TRACK_OBJECTS_UNMAPPED`）",
     ),
     ("Trns", MISSING_FAMILY_TAIL_UNKNOWN),
     ("TxSq", MISSING_FAMILY_TAIL_UNKNOWN),
@@ -550,25 +756,33 @@ pub const MISSING_CHUNK_FAMILIES: [(&str, &str); 24] = [
 /// 与真实工程**逐字节**对账后**仍然存在**的一处实测偏差（不是省略，是写了不同的值）。
 ///
 /// 已经**不再是**偏差的字段（按本机实测改正，见各自的常量文档）：根头 4..0xf
-/// （版本码 + 十个恒定字节）、记录头 kind@+4、+0x16、+0x18、+0x1a，`gnoS` 的 subtype
-/// （`0xFFFF`）、拍号/速度 `qSvE` 的 subtype（1 / 3），以及 `gnoS` 载荷开头的 `#G` 子帧前缀。
-/// 这些原先写 0、现在写实测值，因此**不再登记**。
+/// （版本码 + 十个恒定字节）、记录头 kind@+4、`+0x16`、`+0x18`、`+0x1a`，`gnoS` 的 subtype
+/// （`0xFFFF`）、拍号/速度 `qSvE` 的 subtype（1 / 3）、`gnoS` 载荷开头的 `#G` 子帧前缀，
+/// 以及**第 404 轮改正的三处事件序列形状**：拍号 `qSvE` 载荷的 16 字节尾（80 → 96 字节）、
+/// 速度 `qSvE` 载荷的 32 字节初始事件 + 16 字节尾（16 → 48 字节，此前速度字写的是 0）、
+/// region 音符 `qSvE` 载荷的 16 字节尾。这些原先写错、现在按实测与 MIT 参考实现写入，不再登记。
 ///
-/// 仍然写不同的值的是三处**没有反推出规则**的字段：记录头 `+0x08..+0x14` 的簇号与
-/// `0xFFFF` / `0xFFFF0000` 哨兵（本机实测**随格式版本变化**：例如 `qSvE` 的 `+0x10`
-/// 在 2507 是 `0xFFFFFFFF`、在 2512 是 `0xFFFF0000`）；region 的 `qeSM` 与音符 `qSvE`
-/// 的 subtype（实测是与配对序列共享的序列号 1/3/5/14/17/22/23/25，无编号规则可推，故保持 0）；
-/// 以及 `gnoS` 载荷里嵌套 `#G` 子帧**除实测 10 字节前缀以外**的内容（真实工程约 10 KB
-/// 全局设置，参考实现同样靠克隆 donor 而不重建）。这些**不猜**：登记为"有表示、
+/// 仍然写不同的值的是三处**没有反推出规则**的字段：记录头 `+0x08..+0x14` 的簇号（**含义已从参考
+/// 实现读到**：`u32` 对象号 = 槽字节 `<< 16`；`qeSM` 与它配对的 `qSvE` 共享同一个对象号与 subtype，
+/// 但**怎么给本写入器自己的 region 分配**这个号没有规则，本切片写的是 0/1/2… 的递增序号，
+/// 不是实测的 `槽字节 << 16` 形态）与 `0xFFFF` / `0xFFFF0000` 哨兵（本机实测**随格式版本变化**：
+/// 例如 `qSvE` 的 `+0x10` 在 2507 是 `0xFFFFFFFF`、在 2512 是 `0xFFFF0000`）；region 的 `qeSM`
+/// 与音符 `qSvE` 的 subtype（实测是与配对序列共享的序列号 1/3/5/14/17/22/23/25，无编号规则可推，
+/// 故保持 0）；以及 `gnoS` 载荷里嵌套 `#G` 子帧**除实测 10 字节前缀以外**的内容（真实工程约
+/// 10 KB 全局设置，参考实现同样靠克隆 donor 而不重建）。这些**不猜**：登记为"有表示、
 /// 等价性未经证实"，而不是静默省略。
 pub const CONTAINER_HEADER_CAVEAT: &str = concat!(
     "非等价: 容器头仍有未重建的字段——根头版本码与 0x06..0x0f、每条记录的 kind@+4 与 ",
     "+0x16 / +0x18 / +0x1a、`gnoS` 的 subtype（0xFFFF）与拍号/速度 `qSvE` 的 subtype（1 / 3）、",
-    "以及 `gnoS` 载荷开头的 `#G` 子帧前缀，都已按本机实测的 Logic 12.0.1（格式版本码 0x09D0）",
-    "取值写入；但记录头 +0x08..+0x14 里的簇号与 0xFFFF / 0xFFFF0000 哨兵（实测随格式版本变化）",
-    "没有反推出规则，region 的 `qeSM` 与音符 `qSvE` 的 subtype（与配对序列共享的序列号，",
-    "实测 1/3/5/14/17/22/23/25，无编号规则可推）保持 0，`gnoS` 载荷里嵌套 `#G` 子帧除实测前缀外",
-    "的内容（真实工程约 10 KB 全局设置）也没有重建。这是**写了不同的值**而不是省略：",
+    "`gnoS` 载荷开头的 `#G` 子帧前缀，以及拍号/速度/音符 `qSvE` 载荷结尾的 16 字节尾与速度事件的 ",
+    "32 字节正文（本轮按实测与 MIT 参考实现 `jonkubis/logicproformatwriter` 写入，见 ",
+    "`LOGIC_EVENT_SEQUENCE_TAIL` / `LOGIC_TEMPO_PAYLOAD_LEN`），都已按本机实测的 Logic 12.0.1",
+    "（格式版本码 0x09D0）取值写入；但记录头 +0x08..+0x14 的对象号**分配规则**没有反推出来",
+    "（含义已读到：u32 对象号 = 槽字节 << 16，qeSM 与其配对 qSvE 共享对象号与 subtype；",
+    "本切片写的是 0/1/2… 递增序号，不是实测形态），0xFFFF / 0xFFFF0000 哨兵实测随格式版本变化，",
+    "region 的 `qeSM` 与音符 `qSvE` 的 subtype（与配对序列共享的序列号，实测 1/3/5/14/17/22/23/25，",
+    "无编号规则可推）保持 0，`gnoS` 载荷里嵌套 `#G` 子帧除实测前缀外的内容（真实工程约 10 KB ",
+    "全局设置）也没有重建。这是**写了不同的值**而不是省略：",
     "本切片不猜这些字段的语义，是否被接受**未经证实**"
 );
 
@@ -690,7 +904,7 @@ pub fn project_data(project: &YebanProjectV1) -> LogicProjectData {
         project.time_signature.numerator,
         project.time_signature.denominator,
     ));
-    builder.records.push(tempo_record());
+    builder.records.push(tempo_record(project.bpm));
 
     builder.write_project_losses(project);
 
@@ -922,6 +1136,7 @@ impl LogicBuilder {
         let entity = project_entity(project);
         self.loss(entity.clone(), NO_GROUND_TRUTH_CAVEAT.to_owned());
         self.loss(entity.clone(), TRACK_OBJECTS_UNMAPPED.to_owned());
+        self.loss(entity.clone(), REGION_PLACEMENT_UNMAPPED.to_owned());
         self.loss(entity.clone(), REGION_TIMING_CAVEAT.to_owned());
         self.loss(entity.clone(), REGION_PAYLOAD_CAVEAT.to_owned());
         self.loss(
@@ -1325,12 +1540,39 @@ fn song_record(bpm: f64) -> Vec<u8> {
     out
 }
 
-/// 拍号记录：第一个字 `0x30`，+0x0b 是分母的以 2 为底指数，+0x0c 是分子。
+/// 拍号 `qSvE` 载荷**没有**拍号变化时的 80 字节头（**实测字面量**，`0x0b`/`0x0c` 由调用方写入）。
+///
+/// 字节来自本机实测且与 MIT 参考实现一致的文件：`quiet`
+/// （`…/quiet.logicx/Alternatives/000/ProjectData`，版本码 0x09D0）与工厂模板 `01 Hip Hop`
+/// 的 4/4 载荷在这 80 个字节上**逐字节相同**；`F0` 夹具（Logic 12.0.1，版本码 0x09CF）
+/// 只差 `+0x0f` 一个字节（它写 `0x80`，本常量也写 `0x80`，见 [`LOGIC_METER_NO_CHANGE_FLAG`]）。
+/// 这 80 个字节之后接 [`LOGIC_EVENT_SEQUENCE_TAIL`]。
+const LOGIC_METER_HEADER_NO_CHANGE: [u8; LOGIC_METER_BODY_LEN] = [
+    // +0x00
+    0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x04, 0x00, 0x00, 0x80,
+    // +0x10
+    0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0xF6, 0xFF, 0x00, 0x00, 0x00, 0x96, 0x00, 0x00,
+    // +0x20
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // +0x30
+    0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
+    // +0x40
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// 拍号记录：**实测/参考实现**的 96 字节载荷 = 80 字节头 + 16 字节尾。
+///
+/// 头里 `+0x0b` 是分母的以 2 为底指数（`den = 2^exp`），`+0x0c` 是分子，
+/// `+0x0f` 是 [`LOGIC_METER_NO_CHANGE_FLAG`]（本切片写不出拍号变化，因此恒为"无变化"形态）。
+///
+/// 参考实现（MIT，§5）把这个形状记为 `payload_size = 80 + 48*changes + 16`，其
+/// `set_meter_map` 产出的工程被 Logic 打开过；实测五份文件里无变化的拍号载荷都是 96 字节。
 fn meter_record(numerator: u8, denominator: u8) -> Vec<u8> {
-    let mut body = vec![0u8; LOGIC_METER_BODY_LEN];
-    put_u32_le(&mut body, 0, LOGIC_METER_MARKER);
-    body[0x0b] = denominator.trailing_zeros() as u8;
-    body[0x0c] = numerator;
+    let mut body = Vec::with_capacity(LOGIC_METER_PAYLOAD_LEN);
+    body.extend_from_slice(&LOGIC_METER_HEADER_NO_CHANGE);
+    body[LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET] = denominator.trailing_zeros() as u8;
+    body[LOGIC_METER_NUMERATOR_OFFSET] = numerator;
+    body.extend_from_slice(&LOGIC_EVENT_SEQUENCE_TAIL);
     record(
         LOGIC_SEQUENCE_TAG,
         LOGIC_SEQUENCE_KIND,
@@ -1340,10 +1582,41 @@ fn meter_record(numerator: u8, denominator: u8) -> Vec<u8> {
     )
 }
 
-/// 速度事件序列：第一个字 `0x60`（本切片只写这一个事件）。
-fn tempo_record() -> Vec<u8> {
-    let mut body = vec![0u8; LOGIC_EVENT_LINE_SIZE];
+/// 速度事件序列：**实测/参考实现**的 48 字节载荷 = 一条 32 字节事件 + 16 字节尾。
+///
+/// 事件布局（`F0` 夹具、`quiet`、`01 Hip Hop` 的 120 BPM 记录在这 32 个字节上逐字节相同；
+/// `Swing!` 115 BPM、`ocean eyes` 145 BPM、`01 Hip Hop` 70 BPM 只差 `+0x10` 的速度字）：
+///
+/// | 偏移 | 内容 |
+/// | :--- | :--- |
+/// | +0x00 | `60 00 00 00`（[`LOGIC_TEMPO_MARKER`]） |
+/// | +0x04 | `u64` 小端位置 = [`LOGIC_TEMPO_POSITION_TICKS`]（38400） |
+/// | +0x0c | `7F 00 00` + [`LOGIC_TEMPO_FLAG_FIRST`] |
+/// | +0x10 | `u32` 小端速度 = `round(bpm × 10000)` |
+/// | +0x14 | [`LOGIC_TEMPO_EVENT_CONST_14`] |
+/// | +0x18 | `u32` 小端 [`LOGIC_TEMPO_ALT_POSITION_BASE`] |
+/// | +0x1c | 0 |
+///
+/// ⚠ 在本次改正之前，本函数写的是 **16 字节**载荷：只有第一个字 `0x60`、其余全 0 ——
+/// 也就是说**位置 0、速度 0**，而且没有 16 字节尾。那一处**没有**被登记成偏差，
+/// 是一个此前未被发现的缺陷；现在它按实测与 MIT 参考实现的形状写入。
+fn tempo_record(bpm: f64) -> Vec<u8> {
+    let raw = (bpm * 10_000.0).round();
+    let ticks = if raw.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&raw) {
+        raw as u32
+    } else {
+        0
+    };
+    let mut body = Vec::with_capacity(LOGIC_TEMPO_PAYLOAD_LEN);
+    body.resize(LOGIC_TEMPO_EVENT_LEN, 0);
     put_u32_le(&mut body, 0, LOGIC_TEMPO_MARKER);
+    body[0x04..0x0c].copy_from_slice(&LOGIC_TEMPO_POSITION_TICKS.to_le_bytes());
+    body[0x0c] = 0x7F;
+    body[0x0f] = LOGIC_TEMPO_FLAG_FIRST;
+    put_u32_le(&mut body, 0x10, ticks);
+    body[0x14..0x18].copy_from_slice(&LOGIC_TEMPO_EVENT_CONST_14);
+    put_u32_le(&mut body, 0x18, LOGIC_TEMPO_ALT_POSITION_BASE);
+    body.extend_from_slice(&LOGIC_EVENT_SEQUENCE_TAIL);
     record(
         LOGIC_SEQUENCE_TAG,
         LOGIC_SEQUENCE_KIND,
@@ -1386,6 +1659,10 @@ struct WrittenNote {
 /// ⚠ 这是刻意的简化并写进模块头：真实工程里每个音符的续行数在 16…96 字节之间变化，
 /// 而读取器只从**第一条**续行取时值，因此一条续行不丢信息 —— 但与 Logic 自己的形状
 /// 不同，正是"读取器能容忍、Logic 未必"的那类差异。
+///
+/// 载荷**以 [`LOGIC_EVENT_SEQUENCE_TAIL`] 结束**：参考实现（MIT，§8.5）记
+/// "Empty region qSvE payload = just the 16B `f1…3f` tail; each note adds a **32-byte event**
+/// before the tail (payload = 32·N + 16)"。本次改正之前本函数**没有**写这个尾。
 fn note_lines(notes: &[WrittenNote]) -> Vec<u8> {
     let mut body = vec![0u8; notes.len() * LOGIC_EVENT_LINE_SIZE * 2];
     for (index, note) in notes.iter().enumerate() {
@@ -1398,6 +1675,7 @@ fn note_lines(notes: &[WrittenNote]) -> Vec<u8> {
         body[continuation + 7] = LOGIC_CONTINUATION_FLAG;
         put_u32_le(&mut body, continuation + 0x0c, note.duration.max(1));
     }
+    body.extend_from_slice(&LOGIC_EVENT_SEQUENCE_TAIL);
     body
 }
 
@@ -2139,6 +2417,107 @@ mod tests {
         }
     }
 
+    /// 判据：拍号 / 速度 / 音符三条 `qSvE` 的**载荷逐字节**等于实测与 MIT 参考实现记录的形状。
+    ///
+    /// 断言里写的是**实测字面量**（五份文件的字节，`quiet` 0x09D0 与 `F0` 夹具 0x09CF 在无变化
+    /// 时一致），**不引用本模块的常量** —— 把 `LOGIC_METER_HEADER_NO_CHANGE` /
+    /// `LOGIC_TEMPO_PAYLOAD_LEN` / `LOGIC_EVENT_SEQUENCE_TAIL` 改错必须让本判据红。
+    ///
+    /// 三处此前**没有**被任何判决钉住的形状（本轮改正的缺陷）：
+    /// 1. 拍号载荷原先是 **80** 字节、没有 16 字节尾；实测与参考实现（§5，
+    ///    "`payload_size = 80 + 48*changes + 16`"）要求 96；
+    /// 2. 速度载荷原先是 **16** 字节、位置与速度**都是 0**；实测五份全是 48 字节 =
+    ///    32 字节事件 + 16 字节尾，事件里的速度字 = `round(bpm × 10000)`（夹具 128 BPM
+    ///    ⇒ 1,280,000 = `00 88 13 00`），位置 = 38400 = `00 96 00 00 00 00 00 00`，
+    ///    `+0x14` = `00 00 40 88`，`+0x18` = 7,200,000 = `00 dd 6d 00`；
+    /// 3. 音符载荷末尾原先没有那 16 字节尾（参考实现 §8.5："payload = 32·N + 16"）。
+    ///
+    /// 负向实测：把速度事件的位置改成 0 ⇒ 本判据在 `+0x04` 的 8 个字节上红；
+    /// 把拍号头上的 16 字节尾删掉 ⇒ 在载荷长度与逐字节比对两处红（本轮记录里有逐字失败行）。
+    #[test]
+    fn event_sequence_payloads_carry_the_measured_bytes() {
+        let bundle = build_bundle(&fixture_project(), "000", "Sequences");
+        let data = &bundle.files["Alternatives/000/ProjectData"];
+        let records = read_records(data);
+
+        let tail: [u8; 16] = [
+            0xF1, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+
+        // (1) 拍号：夹具是 3/4，因此 `+0x0c` 实测字面量是 `03`（分母指数 `+0x0b` = 2）。
+        let meter = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG && record.body[..4] == 0x30_u32.to_le_bytes()
+            })
+            .expect("必须有拍号 qSvE");
+        assert_eq!(
+            meter.body.len(),
+            96,
+            "拍号载荷实测 96 = 80 字节头 + 16 字节尾"
+        );
+        #[rustfmt::skip]
+        let expected_meter: Vec<u8> = vec![
+            0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0x00, 0x00, 0x80,
+            0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0xF6, 0xFF, 0x00, 0x00, 0x00, 0x96, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xF1, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(
+            meter.body, expected_meter,
+            "拍号载荷必须逐字节等于实测的 96 字节（80 字节头 + 16 字节尾）"
+        );
+
+        // (2) 速度：夹具 128 BPM ⇒ `round(128 × 10000)` = 1,280,000 = `00 88 13 00`。
+        let tempo = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG && record.body[..4] == 0x60_u32.to_le_bytes()
+            })
+            .expect("必须有速度 qSvE");
+        assert_eq!(
+            tempo.body.len(),
+            48,
+            "速度载荷实测 48 = 32 字节事件 + 16 字节尾"
+        );
+        #[rustfmt::skip]
+        let expected_tempo: Vec<u8> = vec![
+            0x60, 0x00, 0x00, 0x00, 0x00, 0x96, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x00, 0x00,
+            0x00, 0x88, 0x13, 0x00, 0x00, 0x00, 0x40, 0x88, 0x00, 0xDD, 0x6D, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xF1, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(
+            tempo.body, expected_tempo,
+            "速度载荷必须逐字节等于实测的 48 字节：位置 38400、速度 round(bpm×10000)、\
+             +0x14 = 00 00 40 88、+0x18 = 7,200,000，后接 16 字节尾"
+        );
+
+        // (3) region 的音符序列：夹具 3 个音符 ⇒ 载荷 = 3×32 + 16 = 112，且以尾结束。
+        let note = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG
+                    && record
+                        .body
+                        .first()
+                        .is_some_and(|byte| *byte == LOGIC_NOTE_STATUS)
+            })
+            .expect("必须有音符 qSvE");
+        assert_eq!(
+            note.body.len(),
+            3 * 32 + 16,
+            "音符载荷实测 = 32 × 音符数 + 16 字节尾（参考实现 §8.5）"
+        );
+        assert_eq!(
+            &note.body[note.body.len() - 16..],
+            &tail,
+            "音符载荷必须以实测的 16 字节尾结束"
+        );
+    }
+
     /// 判据 (b)：空工程产出最小但合法的文档（只有速度/拍号/速度事件三个记录）。
     #[test]
     fn empty_project_produces_a_minimal_valid_document() {
@@ -2788,14 +3167,18 @@ mod tests {
 
     // ---- `Trak` 轨道家族：布局已实测、语义未反推 ⇒ 刻意不写 ----
 
-    /// **无头确定性判据（有牙）**：本切片**刻意不写** `Trak` 轨道家族，并把这一省略**点名登记**在损失表里。
+    /// **无头确定性判据（有牙）**：本切片**刻意不写** `Trak` 轨道家族，并把这一省略**点名登记**
+    /// 在损失表里，理由里带本轮从 MIT 参考实现 + 五份真实文件得到的读数。
     ///
-    /// 实测事实（四份真实工程，见模块头那一节）：`Trak` 的**落盘**四个字节是 `6b 61 72 54`；
-    /// 条数在四份文件里都**不等于**轨道数、919 条非 0 载荷里没有名字字段、载荷内 16 字节标识符
-    /// 没有任何记录引用。因此写它属于"发明规则"。本判据用**实测字面量**（不是本模块的常量）钉住这个决定：
-    /// 产物里不得出现落盘 `karT` 记录，且损失表必须有一条点名 `Trak` 的 `未映射:` 条目。
+    /// 实测事实（见模块头"三个语义问题的答案"）：`Trak` 的**落盘**四个字节是 `6b 61 72 54`；
+    /// 记录头 `+0x08` 的对象号把它分成三个子群 —— `0x00040000`（编排轨行，非 0 载荷条数 − 1
+    /// 恰等于 `NumberOfTracks`）、`0x00080000`（每个预分配混音槽一条 Track 对象）、其余少量空载荷。
+    /// 本判据用**实测字面量**（不是本模块的常量）钉住"不写"这个决定，并要求登记文本里带齐
+    /// **可核对的读数**（两个对象号、五份文件的 −1 减法、master 槽 `0x50`、subtype 23、
+    /// 参考实现的名字）—— 登记文本漂回"语义未知"就会红。
     ///
-    /// 负向实测：让写入器多产一条落盘 `6b 61 72 54` 记录 ⇒ 本判据红（本轮记录里有逐字失败行）。
+    /// 负向实测：让写入器多产一条落盘 `6b 61 72 54` 记录 ⇒ 本判据红；把登记文本里的子群读数
+    /// 删掉 ⇒ 本判据红（两次都在本轮记录里有逐字失败行）。
     #[test]
     fn track_family_is_measured_but_deliberately_unwritten() {
         // 实测字面量（刻意不用模块常量：常量改错时判据会跟着一起错，等于没有判据）。
@@ -2811,8 +3194,9 @@ mod tests {
                 .collect();
             assert!(
                 strays.is_empty(),
-                "{alternative}: 产物里不得出现落盘 `karT` 记录 —— 实测该族的条数与轨道数不相等、\
-                 载荷无名字字段、标识符无人引用，写它等于发明规则；实测多出的记录下标 {strays:?}"
+                "{alternative}: 产物里不得出现落盘 `karT` 记录 —— 参考实现（MIT）说轨道不能凭空合成，\
+                 只能克隆 Logic 存过的 donor 的通道簇，本仓库不引入任何这类 donor；\
+                 实测多出的记录下标 {strays:?}"
             );
             assert!(
                 !emitted_chunk_families(data).contains("Trak"),
@@ -2829,25 +3213,45 @@ mod tests {
                 .unwrap_or_else(|| {
                     panic!("{alternative}: `Trak` 必须有一条点名它的 `未映射:` 损失条目")
                 });
-            assert!(
-                loss.reason.contains("23"),
-                "`Trak` 的损失条目必须写出实测 subtype 23（四份文件一致）"
-            );
-            assert!(
-                loss.reason.contains("76") && loss.reason.contains("34"),
-                "`Trak` 的损失条目必须写出实测的 条数/轨道数 不等（799/76 … 179/34）"
-            );
+            // 登记文本必须带**本轮实测的读数**，而不是"语义未知"。
+            for needle in [
+                "0x00040000",
+                "0x00080000",
+                "2−1=1",
+                "77−1=76",
+                "43−1=42",
+                "11−1=10",
+                "35−1=34",
+                "0x50",
+                "subtype 恒 23",
+                "jonkubis/logicproformatwriter",
+            ] {
+                assert!(
+                    loss.reason.contains(needle),
+                    "{alternative}: `Trak` 的损失条目必须写出实测读数 {needle:?}，\
+                     实际登记文本为：{}",
+                    loss.reason
+                );
+            }
         }
     }
 
     /// **路径驱动判据（两个本机 Apple 演示工程都存在时才跑，否则干净 skip）**：
-    /// 用**实测字面量**钉住 `Trak` 家族在真实文件里的形状 —— 这正是"本切片为什么不写它"的证据。
+    /// 用**实测字面量**钉住 `Trak` 家族在真实文件里的形状 —— 这正是"本切片为什么不写它"的证据，
+    /// 也是本轮"三个语义问题的答案"在真实字节上的复核。
     ///
     /// 每份文件断言：字节数（`stat -f%z` 口径）、全文件记录条数（行走恰好铺满声明载荷）、`Trak` 条数、
     /// 载荷长 0 / 非 0 的条数与长度、记录头 kind 与 subtype（subtype 恒 23）、**正序 `karT` 四字节出现
     /// 0 次**（无嵌套）、以及**没有任何 `Trak` 载荷含"`u16` 长度（`2..=96`）+ 全可打印 ASCII + `\0`"
-    /// 形态的名字字段**；并读同目录 `MetaData.plist` 的 `NumberOfTracks`，断言它**严格小于**非 0
-    /// `Trak` 条数（即这一族不是"一条轨道一条记录"，所以无法据此写轨道表）。
+    /// 形态的名字字段**。
+    ///
+    /// **本轮新增（语义答案的证据）**：读同目录 `MetaData.plist` 的 `NumberOfTracks`，然后
+    /// * 记录头 `+0x08 == 0x00040000` 组（编排轨行）的**非 0 载荷条数 − 1 必须恰好等于**
+    ///   `NumberOfTracks`（`Swing!` 77−1=76、`ocean eyes` 43−1=42）；
+    /// * 该组里**恰好一条** master 行（载荷 `+0x00 == 3` 且载荷 `+0x08 == 0x50`），其余行 `+0x00 == 1`；
+    /// * 该组的记录头 `+0x12` 单字节序号排序后是 `0..=NumberOfTracks`（master 最后）；
+    /// * `+0x08 == 0x00080000` 组（每个预分配混音槽一条 Track 对象）的非 0 条数等于实测字面量，
+    ///   且载荷 `+0x08` 的槽号**互不相同**。
     ///
     /// ⚠ Apple 的演示工程**有版权、不进仓库**：本判据只**读**它们并按上面的字面量核对，
     /// 不把任何字节或字符串内容写进仓库。路径不存在就 `continue`（CI 上不存在 ⇒ 绝不红）；
@@ -2855,7 +3259,8 @@ mod tests {
     #[test]
     fn real_demo_track_family_shape_matches_the_measurement_when_present() {
         // (路径, 字节数, 全文件记录数, Trak 条数, Trak 空载荷条数, Trak 非 0 载荷条数,
-        //  Trak 非 0 载荷长度, Trak kind, MetaData.plist NumberOfTracks)
+        //  Trak 非 0 载荷长度, Trak kind, MetaData.plist NumberOfTracks,
+        //  `+0x08 == 0x40000` 组非 0 条数（= 轨道数 + 1）, `+0x08 == 0x80000` 组非 0 条数)
         let demos = [
             (
                 "/Library/Application Support/Logic/Logic Pro X Demosongs/Swing!.logicx/Alternatives/004/ProjectData",
@@ -2867,6 +3272,8 @@ mod tests {
                 57u32,
                 5u16,
                 76u64,
+                77usize,
+                173usize,
             ),
             (
                 "/Library/Application Support/Logic/Logic Pro X Demosongs/ocean eyes.logicx/Alternatives/001/ProjectData",
@@ -2878,6 +3285,8 @@ mod tests {
                 56u32,
                 4u16,
                 42u64,
+                43usize,
+                104usize,
             ),
         ];
         // 实测字面量：`Trak` 的落盘四个字节；正序拼写 `karT` 在本族的任何位置都不出现。
@@ -2895,6 +3304,8 @@ mod tests {
             filled_len,
             kind,
             plist_tracks,
+            arrange_filled,
+            slot_objects_filled,
         ) in demos
         {
             let Ok(bytes) = std::fs::read(path) else {
@@ -2973,8 +3384,82 @@ mod tests {
             assert!(
                 (trak_filled as u64) > plist_tracks,
                 "{path}: 非 0 Trak 条数（{trak_filled}）必须严格大于轨道数（{plist_tracks}）—— \
-                 这正是这一族不能当作『一条轨道一条记录』的轨道表的实测证据"
+                 因为这一族不是一张表，而是记录头 +0x08 分出的三个子群"
             );
+
+            // ---- 本轮语义答案的证据：按记录头 +0x08 的对象号分子群 ----
+            let cluster_of = |at: usize| u32_le(&bytes, at + LOGIC_RECORD_CLUSTER_OFFSET);
+            let body_first = |at: usize| bytes[at + LOGIC_RECORD_HEADER];
+            let body_word8 = |at: usize| u32_le(&bytes, at + LOGIC_RECORD_HEADER + 8);
+            let rank_at = |at: usize| bytes[at + 0x12];
+
+            let arrange: Vec<usize> = filled
+                .iter()
+                .copied()
+                .filter(|at| cluster_of(*at) == 0x0004_0000)
+                .collect();
+            let slots: Vec<usize> = filled
+                .iter()
+                .copied()
+                .filter(|at| cluster_of(*at) == 0x0008_0000)
+                .collect();
+            assert_eq!(
+                arrange.len(),
+                arrange_filled,
+                "{path}: `+0x08 == 0x00040000` 组（编排轨行）的非 0 载荷条数"
+            );
+            assert_eq!(
+                slots.len(),
+                slot_objects_filled,
+                "{path}: `+0x08 == 0x00080000` 组（每个预分配混音槽一条）的非 0 载荷条数"
+            );
+            assert_eq!(
+                arrange.len() as u64 - 1,
+                plist_tracks,
+                "{path}: 编排轨行非 0 条数 − 1 必须**恰好等于** MetaData.plist 的 NumberOfTracks\
+                 （多出来的那条是 master 行）—— 这是本轮从 MIT 参考实现读到、在真实字节上复核的语义"
+            );
+            let masters: Vec<usize> = arrange
+                .iter()
+                .copied()
+                .filter(|at| body_first(*at) == 3)
+                .collect();
+            assert_eq!(
+                masters.len(),
+                1,
+                "{path}: 编排轨行里必须**恰好一条** master 行（载荷 +0x00 == 3）"
+            );
+            assert_eq!(
+                body_word8(masters[0]),
+                0x50,
+                "{path}: master 行的载荷 +0x08 必须指向实测的通道槽 0x50"
+            );
+            assert!(
+                arrange
+                    .iter()
+                    .filter(|at| body_first(**at) != 3)
+                    .all(|at| body_first(*at) == 1),
+                "{path}: 非 master 的编排轨行载荷 +0x00 实测恒为 1"
+            );
+            let mut ranks: Vec<u8> = arrange.iter().map(|at| rank_at(*at)).collect();
+            ranks.sort_unstable();
+            assert_eq!(
+                ranks,
+                (0..=plist_tracks as u8).collect::<Vec<u8>>(),
+                "{path}: 编排轨行的记录头 +0x12 单字节序号必须恰好是 0..=NumberOfTracks"
+            );
+            let mut slot_numbers: Vec<u32> = slots.iter().map(|at| body_word8(*at)).collect();
+            let distinct = {
+                slot_numbers.sort_unstable();
+                slot_numbers.dedup();
+                slot_numbers.len()
+            };
+            assert_eq!(
+                distinct,
+                slots.len(),
+                "{path}: `+0x08 == 0x00080000` 组的载荷 +0x08 槽号必须互不相同"
+            );
+
             eprintln!(
                 "可选 Trak 家族核对：{path} —— {trak_total} 条（{trak_empty} 空 + {trak_filled} 非 0，\
                  长 {filled_len}），kind {kind}，subtype 23，NumberOfTracks {plist_tracks}"
