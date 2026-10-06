@@ -19,7 +19,7 @@
 | :--- | :--- | :--- | :--- |
 | **本表** `docs/ledger/phase-status.md` | **阶段项**做没做完（`ROAD-*`，47 项） | `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` §3 | `scripts/gates/check_phase_status.py` |
 | `docs/ledger/gate-status.md` | **发布门禁**过没过（`MUST-GATE-001..015` / `BASELINE-001..006`，21 条） | 同一份路线图 §5 | `scripts/gates/check_gate_status.py` |
-| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-49`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
+| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-50`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
 
 引用规则（这是三张表不互相矛盾的关键）：
 
