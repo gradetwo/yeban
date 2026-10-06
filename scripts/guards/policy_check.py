@@ -59,6 +59,9 @@ FORBIDDEN_DEFAULT_FEATURES = (
     "asio",
     "experimental-vst3",
     "experimental-als-export",
+    # 账本第 800 轮：`yeban-app` 的进程内 MCP 挂载（新依赖边 + 监听端口）—— 与上面几项同类，
+    # 必须永远保持"非默认"，故纳入本名单做机械防线（纵深防御）。
+    "in-process-mcp",
 )
 
 #: 单文件大小上限 (字节); 超过必须登记 [AGENTS.md 红线 9]
