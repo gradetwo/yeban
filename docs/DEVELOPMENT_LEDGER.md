@@ -9998,3 +9998,31 @@ checksums - including one on the accessible-id registry, which is what keeps the
 **One honest cost is registered rather than hidden**: `live_surface.rs::save_now` and `save_action::dispatch_save` now each spell the three-branch policy once. They
 call **identical entry points**, and the ledger records that if `live_surface.rs` ever moves to the product path, `save_now` must be deleted in favour of
 `dispatch_save`. That is the correct trade for not widening the distribution graph, and it is written where the next line will read it.
+
+
+### Round 412: the CI red is a stale Linux golden, the fix needs a UX ruling, and the line refused to fabricate hashes
+
+**Diagnosis, and my own error corrected.** The red that started at `d180bfb` is **not** a flake. The Linux golden was generated `2026-10-05T16:36Z`, before the save
+button landed, so it is **stale**, and the pixel change is deterministic. I had called it a flake twice on bad evidence, and both errors are now rules in `AGENTS.md`
+section 6.3: a green **tip** covers only the tip (each commit gets its own run), a **skipped** job is not a green (a docs-only change returns an empty crate list, every
+rust leg shows `-` at 0s, and the conclusion is still success), and **identical byte counts usually carry no information** - the PNG writer is stored-deflate, so every
+1920x1080 frame is exactly 6,222,418 bytes.
+
+**The evidence, reproduced from CI's own artifact.** Two independent lines downloaded the failing run's screenshots and got the same answer: exactly **2 of the 5**
+images exist in the artifact, because each criterion panics at its **first** golden write; the produced files are byte-identical to each other across four red runs; and
+they differ from the committed golden in **268 pixels inside `x 580..591 x y 8..39`** - the new button's declared geometry - of which **242 cells are `#151d38` ->
+`#1b2447`** (`Tokens.bg-panel` -> `Tokens.bg-panel-alt`, the new element's own fill) plus 26 anti-aliased corner cells. Ordering, timers, fonts and cross-criterion
+interference are all ruled out: **2,073,332 of 2,073,600 pixels are byte-identical**, and the green and the first red run used the same runner image.
+
+**Why the fix is blocked on a ruling.** The save button occupies `x 580..636`; the normative AI badge occupies `x 588..708` and is declared **after** the button, so it
+paints on top: **48 of 56 px are occluded (85.7%)** and the label `保存` (centred 594..622) is **100% occluded**. The cluster's only free runs are 8 px, 4 px and 12 px,
+so no in-cluster position takes a 56 px button, and every candidate that fits either collides or **inserts a slot the normative top bar does not define**. The line
+therefore **stopped** at its own stated condition and changed nothing. `ADR-0003` is being filed as Proposed with the smallest option: amend the top-bar sequence, keep
+the button at `x 580px`, and move the **badge** `x: 588px -> x: 640px`, which is a **one-line** code diff and moves nothing else.
+
+**And it refused the worst false green.** With no regeneration run, there is no new run id and no new sha256 - so the manifest still carries the **pre-`d180bfb`**
+hashes, explicitly labelled, and the line said plainly that fabricating them would be the worst possible false green. That is the correct behaviour and it is recorded
+here as such.
+
+**Status**: CI is **still red**; `ae5e2ca`'s green is **vacuous** and is not evidence. Phase 4 7 完成 / 4 部分 / 0 PENDING; the release workflow is pushed and awaits a
+triggered run; the Logic donor question (A/B/C) is still open.
