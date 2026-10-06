@@ -1384,21 +1384,23 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
 
     // ② `ProjectData` 的实测头部。
     //
-    // ⚠ 这一条随**供体路线**改过：`--export-logic` 现在以 `jonkubis/logicproformatwriter`
-    // （MIT）的 Logic 夹具为骨架，因此根头是**供体自己存过的**那 24 个字节 —— 版本码
-    // `0x09CF`（Logic 存这份夹具时的落盘格式），不是自研写入器写 `0x09D0`。理由：版本码声明的是
-    // **这份文档的落盘格式**，而记录是 2511 形态；改成一个更新的声明只会让 Logic 用更新的解析器
-    // 去读更老的记录。自研写入器（`yeban_render::logic::project_data`）的 `0x09D0` 仍由
-    // render 侧的 `container_header_fields_carry_the_measured_modern_values` 钉住。
+    // ⚠ 这一条随**供体选择**改过（`ROAD-M4-011` 多轨导出）：`--export-logic` 现在按工程的
+    // **MIDI 轨条数**选骨架 —— 1 条（及 0 条）仍用 `jonkubis/logicproformatwriter`（MIT）的
+    // `F0_baseline`（版本码 `0x09CF`），**2 条起**用**负责人自己**用 Logic Pro 12.2
+    // （2026-10-06）存的两轨工程（版本码 `0x09D0`，sha256
+    // `cfeabcfc11c5f001edfb48d5711cbccb57944aa23c22bd926483c704dde36db6`）。演示工程有
+    // **4** 条 MIDI 轨 ⇒ 走负责人那份，**2** 条被映射（实测容量 2），其余 2 条逐条登记为未映射。
+    // 根头仍**逐字节保留所选供体的**：版本码声明的是**这份文档的落盘格式**，改写它等于让 Logic
+    // 用更新的解析器去读更老的记录。自研写入器（`yeban_render::logic::project_data`）的
+    // `0x09D0` 仍由 render 侧的 `container_header_fields_carry_the_measured_modern_values` 钉住。
     let bytes = std::fs::read(&project_data).expect("读 ProjectData");
     assert_eq!(&bytes[..4], &[0x23, 0x47, 0xC0, 0xAB], "根魔数");
     assert_eq!(
         &bytes[0x04..0x10],
         &[
-            0xCF, 0x09, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00
+            0xD0, 0x09, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00
         ],
-        "根头 +0x04 必须是**供体**落盘的格式版本码 0x09CF —— 供体路线保留供体的根头，\
-         改写它等于让 Logic 用更新的解析器读更老的记录"
+        "根头 +0x04 必须是**所选供体**落盘的格式版本码 —— 负责人 2 轨那份是 0x09D0"
     );
     assert_eq!(&bytes[0x18..0x1c], b"gnoS", "第一个 chunk 名必须是 gnoS");
     let declared =
@@ -1407,7 +1409,7 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
 
     // ②b 它真的**带着供体的通道簇**：按 36 字节记录头走完全文，数四个家族。
     //     自研写入器这四族一个都没有（`Envi`/`AuCO`/`GenM`/`Trak`），这正是它被判为
-    //     "没有轨道"的原因；供体路线把它们原样带进来。
+    //     "没有轨道"的原因；供体路线把它们原样带进来。读数 = 负责人 2 轨那份的实测逐族表。
     let mut families: std::collections::BTreeMap<[u8; 4], usize> =
         std::collections::BTreeMap::new();
     let mut at = 0x18usize;
@@ -1425,19 +1427,24 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
         at += 0x24 + size;
     }
     assert_eq!(at, bytes.len(), "记录流必须恰好铺满声明载荷");
-    assert_eq!(records, 527, "供体路线的记录条数必须等于供体的 527 条");
+    assert_eq!(records, 507, "负责人 2 轨供体的记录条数是实测的 507 条");
     // 落盘字节是**可读名的反序**（`Envi` 落盘为 `ivnE`），与 `yeban_render::logic` 的记录模型一致。
     assert_eq!(
         families.get(b"ivnE"),
-        Some(&12),
-        "ivnE 环境对象必须来自供体"
+        Some(&45),
+        "ivnE 环境对象条数必须是负责人 2 轨那份的实测值"
     );
-    assert_eq!(families.get(b"OCuA"), Some(&376), "OCuA 混音条必须来自供体");
+    assert_eq!(families.get(b"OCuA"), Some(&286), "OCuA 混音条必须来自供体");
     assert_eq!(families.get(b"MneG"), Some(&1), "MneG 必须来自供体");
     assert_eq!(
         families.get(b"karT"),
-        Some(&22),
+        Some(&31),
         "karT 轨道家族必须来自供体"
+    );
+    assert_eq!(
+        families.get(b"UCuA"),
+        Some(&19),
+        "UCuA 通道条状态（含第二条轨道新激活的那 8 条）必须来自供体"
     );
 
     // ③ `MetaData.plist` 是二进制 plist。
