@@ -56,7 +56,10 @@
 //! （`com.apple.logic10 error 100`）。这说明 Logic **认出了**这是一份 Logic 工程，但把
 //! 根头 `+0x04` 读成了最老的格式 —— 本写入器原先在那里写 0。现在写的是本机实测到的最新
 //! 版本码（[`LOGIC_FORMAT_VERSION_CODE`] = `0x09D0`，来自本机 `Logic Pro 12.0.1` 存过的
-//! 工程）。**这仍然不等于 Logic 能打开它**：仓库里没有任何被 Logic 打开过的产物。
+//! 工程）。**这仍然不等于自研（synthesised）写入器的产物能被打开**：它被拒绝过两次
+//! （账本第 403、405 轮；第 401 轮是更早的 "Logic 4 format (or earlier)" 拒绝）；
+//! 被实测打开的只是 [`build_bundle_from_donor`] 的**供体拼接**产物
+//! （本机 **Logic Pro 12.2**，负责人实测，2026-10-06）。
 //!
 //! ## 参考实现（**翻译逻辑，不抄代码**）
 //!
@@ -201,7 +204,8 @@
 //! * **没有**动供体的摆放（第 1 小节）与 region 自身起点：音符按 `38400 + 绝对 tick` 写进 region
 //!   的 `qSvE`（实测语义：音符位置是 region 相对的，region 的绝对位置只由摆放与 `qeSM +0x11c`
 //!   表达）。
-//! * **没有**声称 Logic Pro 能打开它 —— 三次外部测量的对话框都记在账本里（见下文"诚实边界"）。
+//! * **打开结论（实测，勿外推）**：本机 **Logic Pro 12.2** 能打开这条**供体拼接**产物
+//!   （负责人，2026-10-06）；自研（无供体）写入器的产物被拒绝过两次（账本第 403、405 轮）。
 //!
 //! 供体路线的损失表由 `LogicBuilder::write_donor_losses` 逐族产出；自研路线的
 //! [`TRACK_OBJECTS_UNMAPPED`] 仍然描述**自研**产物（它一条 `karT` 都不写）。
@@ -297,11 +301,11 @@
 //!
 //! ## 诚实边界（**没有证明什么**）
 //!
-//! 1. **不声称 Logic Pro 能打开本产物。** 负责人确实把产物交给本机的 **Logic Pro 12.2**
-//!    打开过，结果是**被拒绝**：对话框说它读到的是 "Logic 4 format (or earlier)"
-//!    （`com.apple.logic10 error 100`）。据此改正了根头的版本码（原先写 0），并**再次导出**
-//!    供人复测 —— 但在人手报告成功之前，本模块**不说**它能被打开。仓库里也**不提交**
-//!    任何 Apple 演示工程（它们有版权）；被验证的只是"结构与本机实测的字节布局一致"。
+//! 1. **只声称一件事：本机 Logic Pro 12.2 能打开 [`build_bundle_from_donor`] 的供体拼接产物**
+//!    （负责人实测，2026-10-06）。**这不覆盖**自研（synthesised）写入器的产物：它被拒绝过两次
+//!    （第 403、405 轮是同一个通用失败对话框；第 401 轮是更早的 "Logic 4 format (or earlier)" /
+//!    `com.apple.logic10 error 100`），**也不覆盖其它 Logic 版本或其它机器**。
+//!    仓库里也**不提交**任何 Apple 演示工程（它们有版权）。
 //! 2. **自研路线不写轨道对象、不写 region 摆放链；供体路线写的是供体的**：自研产物只写
 //!    `gnoS` / `qSvE` / `qeSM` 与 region 的音符序列，Logic 的 `Trak` 轨道家族（落盘字节
 //!    `6b 61 72 54`）**没有写**（groove 的写入器同样如此），登记在
@@ -324,10 +328,11 @@
 //!    `qSvE` 此前写的是速度 0"这一缺陷在上一轮之前**从未被任何损失条目登记**过 —— 这说明
 //!    "逐条登记"的纪律仍有盲区，下一轮应当在每次拿到新参考材料时**重做一次逐字段对账**，
 //!    而不是只补新发现的字段。
-//! 5. **供体路线仍然只是"结构从哪来"的答案，不是"能打开"的答案**：`ProjectData` 的绝大部分
-//!    字节是第三方夹具的，它的语义本仓库没有逐字段反推；三条外部测量（Logic Pro 12.2 的三次
-//!    对话框）都指向"结构缺失"，而本轮**没有**做第四次测量 —— 产物字节换了大半，
-//!    一次复测是**有信息量**的。
+//! 5. **供体路线是"结构从哪来"的答案，本轮又有了"能打开"的测量**：本机 **Logic Pro 12.2**
+//!    打开过供体拼接产物（负责人，2026-10-06）。但 `ProjectData` 的绝大部分字节是第三方夹具的，
+//!    语义本仓库没有逐字段反推；供体**只带 1 条编排轨行** ⇒ 最多映射一条 MIDI 轨的**第一个**
+//!    摆放，**没有通道槽激活**；`gnoS` 正文与根版本码 `0x09CF` 都原样保留供体的。
+//!    结论**只覆盖本机 12.2**。
 //!
 //! ## 确定性
 //!
@@ -606,14 +611,20 @@ pub const LOSS_UNMAPPED_PREFIX: &str = "未映射:";
 /// `非等价:` —— 该构造有表示，但等价性未经证实。
 pub const LOSS_NOT_EQUIVALENT_PREFIX: &str = "非等价:";
 
-/// 每一次导出都会登记的那条"没有 ground truth"警告。
-pub const NO_GROUND_TRUTH_CAVEAT: &str = concat!(
-    "非等价: 无 ground truth —— ProjectData 的字节布局是按**实测**重建的：",
-    "根魔数 `23 47 C0 AB` 在 0、根头 0x18 字节、声明载荷长度 u32 小端在 0x10、",
-    "第一个 chunk 名在 0x18、36 字节记录头（cluster 在 +8，载荷长度在 +0x1c）、",
-    "16 字节事件行（第 7 字节最高位 = 续行）。chunk 名按小端存放（`Song` 落盘为 `gnoS`）。",
-    "仓库内没有任何被 Logic Pro 打开过的参考产物，也没有提交任何 Apple 演示工程（有版权），",
-    "因此**不声称** Logic Pro 能打开本产物"
+/// 每一次导出都会登记的那条"打开结论的适用范围"警告。
+///
+/// ⚠ 旧措辞（"无 ground truth"，并据此否认过打开结论）已被**实测**取代：
+/// 本机 **Logic Pro 12.2** 能打开**供体拼接**（donor-spliced）产物（负责人，2026-10-06）。
+/// 自研（synthesised）写入器的产物被拒绝过两次（账本第 403、405 轮），结论不跨版本、不跨机器 ——
+/// 这条范围因此仍然作为 `非等价:` 损失逐次导出登记。
+pub const LOGIC_OPEN_SCOPE_CAVEAT: &str = concat!(
+    "非等价: 打开结论的适用范围 —— 本机 Logic Pro 12.2 实测能打开**供体拼接**（donor-spliced）产物",
+    "（负责人，2026-10-06）：借用 MIT 供体 `F0_baseline` 的 527 条记录、按供体顺序、只改 4 条",
+    "（全局拍号、全局速度、被摆放 region 的名字字段、该 region 的音符载荷）。这**不覆盖**自研",
+    "（synthesised）写入器的产物 —— 它被拒绝过两次（账本第 403、405 轮），也不覆盖其它 Logic 版本或其它机器。",
+    "ProjectData 的字节布局仍是按**实测**重建的（根魔数 `23 47 C0 AB` 在 0、根头 0x18 字节、",
+    "声明载荷长度 u32 小端在 0x10、第一个 chunk 名在 0x18、36 字节记录头、16 字节事件行；",
+    "chunk 名小端存放，`Song` 落盘为 `gnoS`）。"
 );
 
 /// 每一次导出都会登记的那条"轨道对象未写入"警告。
@@ -1660,7 +1671,7 @@ impl LogicBuilder {
 
     fn write_project_losses(&mut self, project: &YebanProjectV1) {
         let entity = project_entity(project);
-        self.loss(entity.clone(), NO_GROUND_TRUTH_CAVEAT.to_owned());
+        self.loss(entity.clone(), LOGIC_OPEN_SCOPE_CAVEAT.to_owned());
         self.loss(entity.clone(), TRACK_OBJECTS_UNMAPPED.to_owned());
         self.loss(entity.clone(), REGION_PLACEMENT_UNMAPPED.to_owned());
         self.loss(entity.clone(), REGION_TIMING_CAVEAT.to_owned());
@@ -1831,7 +1842,7 @@ impl LogicBuilder {
     /// 只是属于供体。
     fn write_donor_losses(&mut self, project: &YebanProjectV1, splice: &DonorSplice) {
         let entity = project_entity(project);
-        self.loss(entity.clone(), NO_GROUND_TRUTH_CAVEAT.to_owned());
+        self.loss(entity.clone(), LOGIC_OPEN_SCOPE_CAVEAT.to_owned());
         self.loss(
             entity.clone(),
             format!(

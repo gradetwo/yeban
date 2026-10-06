@@ -1364,7 +1364,7 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
         .expect("losses=")
         .parse()
         .expect("条数是整数");
-    assert!(losses >= 1, "无 ground truth 那条必然在: {line}");
+    assert!(losses >= 1, "打开结论的适用范围那条必然在: {line}");
     assert_eq!(field(line, "files").as_deref(), Some("4"), "{line}");
     assert!(
         line.contains("from=") && line.contains("song.yeban"),

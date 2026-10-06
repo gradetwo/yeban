@@ -201,8 +201,9 @@ pub fn usage_text() -> String {
                              `Resources/ProjectInformation.plist`;
                              **映射损失表逐条打到 stdout** (`logic-losses:` / `logic-loss:` 行),
                              因此\"哪些构造没被映射\"对用户可见 (太长时礼貌截断并写明还剩几条);
-                             **不声称** Logic Pro 能打开它 (本机没有把产物交给 Logic 打开过,
-                             仓库里也不提交任何 Apple 演示工程); **只在**
+                             **打开结论（实测，勿外推）**: 本机 **Logic Pro 12.2** 能打开**供体拼接**
+                             产物 (负责人实测, 2026-10-06); 自研 (无供体) 写入器的产物被拒绝过两次
+                             (账本第 403、405 轮), 结论不覆盖其它 Logic 版本与其它机器; **只在**
                              `--features {logic_feature}` 的构建里存在 —— 默认构建给这个开关
                              = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]

@@ -259,7 +259,7 @@ AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace, v0.0.1
    - **[ROAD-M4-010]** 全面通过硬性发布门禁（Must-Gates），彻底删除 V1/V2 历史 Web 代码包袱，交付生产就绪版本。
 6. **[ROAD-M4-011] 实验性 Logic Pro (`.logicx`) bundle 导出器 (`experimental-logic-export`)** ：
    - 把 `YebanProjectV1` 映射成 `.logicx` **bundle 目录**：`Alternatives/<NNN>/ProjectData`（自研分块二进制）+ `MetaData.plist` / `DisplayState.plist` + `Resources/ProjectInformation.plist`（标准二进制 plist，自研 bplist00 编码器，**不引第三方 plist 依赖**）；
-   - 与 `[ROAD-M4-007]` 同一条纪律：**非默认 feature**、**映射损失表**（`未映射:` / `非等价:` 两分法）、**不声称**产物能被 Logic Pro 打开（没有 ground truth）；`ROAD-M4-007` 的 `.als` 导出器**原样保留**。
+   - 与 `[ROAD-M4-007]` 同一条纪律：**非默认 feature**、**映射损失表**（`未映射:` / `非等价:` 两分法）；**打开结论的实测范围**（负责人，2026-10-06）：本机 **Logic Pro 12.2** 能打开**供体拼接**（donor-spliced）产物，自研（无供体）写入器的产物被拒绝过两次（账本第 403、405 轮），结论不覆盖其它 Logic 版本或其它机器；`ROAD-M4-007` 的 `.als` 导出器**原样保留**。
 
 ---
 
