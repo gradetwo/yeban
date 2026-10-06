@@ -33,22 +33,40 @@
 //! - **`ui:inject` 仍然硬禁**：分发器一律以 [`RunMode::Production`] 构造，
 //!   生产模式下 `ui:inject` 由 `security::authorize` 硬拒（本模块无法放松它）。
 //!
-//! ## 会话：**只读**打开的那份工程
+//! ## 会话：**只读**打开的那份工程 + **共享读** `.yeban.lock`
 //!
 //! [`start_for_project`] 把调用方交进来的 `YebanProjectV1` 经 `Domain::open_in_memory`
 //! 注入控制面会话，并且**固定 `read_only = true`**。为什么只读：
 //!
-//! - app 侧**没有**把这份投影与界面共享同一个可变实例（那是 `ROAD-M4-008` 的缺口），
+//! - app 侧**还没有**把这份投影与界面共享同一个可变实例（那是 `ROAD-M4-008` 的缺口），
 //!   一个可写的**影子副本**会让 Agent 以为自己改了用户的工程；
-//! - 只读还意味着控制面**不会**成为同一工程文件的第二个写者 ——
-//!   `[MUST-GATE-008]` / `ROAD-M0-007` 的「跨形态互斥」缺口**不因本帖而被扩大**。
+//! - 只读 ⇒ 控制面**不会**成为同一工程文件的第二个写者。
 //!
-//! 想真的改工程，走的仍是已完成的形态 B（`yeban-mcp` stdio CLI + `.yeban.lock`）。
+//! ### 会话来源决定它怎样参与跨形态互斥（`ROAD-M0-007` / `MUST-GATE-008`）
+//!
+//! [`SessionSource`] 把"这份工程有没有磁盘对应物"做成**类型事实**，而不是一个
+//! 调用点可以随手填错的布尔：
+//!
+//! | 来源 | `.yeban.lock` | 理由 |
+//! | :--- | :--- | :--- |
+//! | [`SessionSource::File`] | **取**（[`LockMode::SharedRead`]，随挂载生命周期持有） | 只读会话在既有锁 API 里的**正确映射**是共享读锁（`store::acquire_lock(path, read_only = true)`）：它挡住任何排他写者（另一个 app 实例的写会话、stdio `yeban-mcp`），同时允许其它只读会话共存 |
+//! | [`SessionSource::InMemory`] | 不取 | 样本 / 未落盘会话**没有对应的工程文件**，不存在可竞争的锁 |
+//!
+//! 取锁发生在**绑定 socket 之前**：拿不到锁就 [`MountError::Locked`] **拒绝挂载** ——
+//! 不会留下一个"没有保护"的监听口。守卫住在 [`InProcessMcp`] 里（RAII），
+//! 停机 / `Drop` 即释放。判据是**跨进程**的：
+//! `crates/yeban-app/tests/in_process_mcp_lock.rs`（真 `Command` + 文件握手 ——
+//! 另一个进程的排他写者被 `PROJECT_LOCKED` 挡住；另一个只读进程共存；
+//! 停机之后写者不再被挡）。
+//!
+//! **诚实边界**：app GUI 自己的保存路径**不取**这把锁（改动前如此，本模块不扩大也不缩小
+//! 那条边界）。会话持有的共享读锁保证的是"控制面存活期间，别的形态拿不到排他写"。
+//!
+//! 想真的**改**工程，走的仍是已完成的形态 B（`yeban-mcp` stdio CLI + `.yeban.lock`）。
 //!
 //! ## 明确**没做**（不是"忘了"）
 //!
 //! - **没有**把控制面会话与界面投影接成同一实例（`ROAD-M4-008` 的域侧缺口）；
-//! - **没有**取 `.yeban.lock` ⇒ 跨形态互斥未被验证（`ROAD-M0-007` 的缺口）；
 //! - **没有**停机信号的传输层原语：`HttpServer` 只有阻塞的 `serve_once` / `serve_forever`。
 //!   本模块用一个 stop 标志 + 一次**环回唤醒连接**让阻塞中的 `accept` 返回（见 [`InProcessMcp::stop`]）。
 //!   代价如实登记：一个连上却不发请求的慢客户端会推迟停机（传输层文件头已声明"不做慢速攻击防护"）。
@@ -58,6 +76,9 @@
 //! `crates/yeban-app/tests/in_process_mcp.rs`（只在 `--features in-process-mcp` 下存在）：
 //! 开关关着 ⇒ 什么都不建；开关打开 ⇒ 真环回 socket 上 `tools/list` / `yeban_query_project`
 //! 拿到 200 与真实载荷；**无令牌 ⇒ 401**；**停机之后同一地址连不上**。
+//!
+//! `crates/yeban-app/tests/in_process_mcp_lock.rs`（同一 feature）：跨进程 `.yeban.lock`
+//! 互斥 —— 另一个进程的排他写者被挡住、只读会话共存、停机释放锁。
 //! 运行：
 //!
 //! ```text
@@ -74,6 +95,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use yeban_mcp::Dispatcher;
+use yeban_mcp::domain::error::Fault;
+use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
 use yeban_mcp::security::{BearerToken, RunMode, ScopeSet, TokenFile};
 use yeban_mcp::transport::http::{HttpError, HttpServer, MCP_PATH};
 use yeban_mcp::transport::{HttpStartup, TransportError, plan_http_startup};
@@ -161,6 +184,49 @@ pub fn plan(requested: bool) -> Result<HttpStartup, MountError> {
 }
 
 // ---------------------------------------------------------------------------
+// 会话来源：要不要参与 `.yeban.lock` 跨形态互斥
+// ---------------------------------------------------------------------------
+
+/// 控制面会话所服务的工程**来源**。
+///
+/// 它存在的唯一理由是 `ROAD-M0-007` 的跨形态互斥：**只有磁盘上的真实工程文件**才有
+/// 一把可以被别的形态（另一个 app 实例 / stdio `yeban-mcp`）争的 `.yeban.lock`。
+/// 把这件事做成类型，而不是 `start_for_project` 的一个布尔参数 —— 后者会被调用点
+/// 随手填错，而"样本工程该不该锁"不是一个可以含糊的问题。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionSource {
+    /// 磁盘上的真实工程文件（`cli::ProjectSource::File` 的形态）。
+    ///
+    /// 会话以 [`LockMode::SharedRead`] 参与 `.yeban.lock`：挡住排他写者，
+    /// 与其它只读会话共存。
+    File(PathBuf),
+    /// 没有磁盘对应物的内存工程（规范样本 / 未落盘会话）。
+    ///
+    /// 携带的路径只是控制面会话的**标签**（例如 `sample:filled`），
+    /// 不是一个文件 ⇒ **不取锁**。
+    InMemory(PathBuf),
+}
+
+impl SessionSource {
+    /// 控制面会话的工程路径（真文件路径或标签）。
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::File(path) | Self::InMemory(path) => path.as_path(),
+        }
+    }
+
+    /// 该会话要取的锁模式（`None` = 没有可取的锁）。
+    #[must_use]
+    pub const fn lock_mode(&self) -> Option<LockMode> {
+        match self {
+            Self::File(_) => Some(LockMode::SharedRead),
+            Self::InMemory(_) => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 错误
 // ---------------------------------------------------------------------------
 
@@ -173,6 +239,16 @@ pub enum MountError {
     Http(HttpError),
     /// 工程无法注入控制面会话（版本门 / 结构校验不通过）。
     Domain(String),
+    /// `.yeban.lock` 已被**别的形态**（另一个 app 实例 / stdio `yeban-mcp`）
+    /// 排他持有 ⇒ **拒绝挂载**（`ROAD-M0-007` / `MUST-GATE-008`）。
+    ///
+    /// 刻意不是"挂上去但不取锁"：那正是缺口本身。拿不到锁就没有控制面。
+    Locked {
+        /// 目标工程文件。
+        path: PathBuf,
+        /// 领域层的锁失败：`PROJECT_LOCKED`（载荷含锁文件路径与持有者元数据）。
+        fault: Fault,
+    },
     /// 工作线程创建失败。
     Thread(std::io::Error),
     /// 停机超时：工作线程在 [`STOP_TIMEOUT`] 内没有退出。
@@ -189,6 +265,17 @@ impl fmt::Display for MountError {
             Self::Domain(detail) => {
                 write!(formatter, "工程无法注入控制面会话: {detail}")
             }
+            Self::Locked { path, fault } => {
+                write!(
+                    formatter,
+                    "工程 {} 已被别的形态排他持有, 拒绝挂载控制面",
+                    path.display()
+                )?;
+                if let Fault::Domain { code, message, .. } = fault {
+                    write!(formatter, " ({}: {message})", code.as_str())?;
+                }
+                Ok(())
+            }
             Self::Thread(error) => write!(formatter, "控制面工作线程创建失败: {error}"),
             Self::StopTimeout(limit) => {
                 write!(formatter, "控制面在 {limit:?} 内没有停机")
@@ -204,7 +291,9 @@ impl std::error::Error for MountError {
             Self::Transport(error) => Some(error),
             Self::Http(error) => Some(error),
             Self::Thread(error) => Some(error),
-            Self::Domain(_) | Self::StopTimeout(_) | Self::WorkerPanicked => None,
+            Self::Domain(_) | Self::Locked { .. } | Self::StopTimeout(_) | Self::WorkerPanicked => {
+                None
+            }
         }
     }
 }
@@ -236,6 +325,12 @@ pub struct InProcessMcp {
     address: SocketAddr,
     /// 期望的会话令牌（启动时从分发器取出；`Debug` 是脱敏的）。
     token: BearerToken,
+    /// 会话持有的 `.yeban.lock` 守卫（`None` = 内存会话 / 没有磁盘对应物）。
+    ///
+    /// 这个字段必须被**持有**（而不是取一次就丢）：它就是"控制面活着的时候，
+    /// 别的形态拿不到排他写锁"的物理载体。`Drop` 释放建议锁 [MUST-GATE-008]。
+    /// [`Self::lock_path`] / [`Self::lock_mode`] 是它的可观察出口。
+    lock: Option<AcquiredLock>,
 }
 
 impl InProcessMcp {
@@ -244,10 +339,13 @@ impl InProcessMcp {
     /// 调用方负责两件事：把**令牌**交给外部 Agent（见 [`publish_token`]），以及在该停的
     /// 时候 [`Self::stop`]。
     ///
+    /// `lock` 是**已经拿到的** `.yeban.lock` 守卫（见 [`acquire_session_lock`]）：
+    /// 取锁必须先于绑定 —— 拿不到锁就不该存在监听口。
+    ///
     /// # Errors
     ///
     /// 绑定失败、回读地址不是环回、或工作线程创建失败。
-    pub fn start(dispatcher: Dispatcher) -> Result<Self, MountError> {
+    fn start(dispatcher: Dispatcher, lock: Option<AcquiredLock>) -> Result<Self, MountError> {
         let server = Arc::new(HttpServer::bind_loopback(dispatcher)?);
         let address = server.local_addr()?;
         let token = server.token();
@@ -266,28 +364,35 @@ impl InProcessMcp {
             worker: Some(worker),
             address,
             token,
+            lock,
         })
     }
 
     /// **开关关着就什么都不建**：返回 `Ok(None)`，连分发器都不构造
-    /// （没有 socket、没有令牌、没有线程、没有工程克隆）。
+    /// （没有 socket、没有令牌、没有线程、没有工程克隆、没有锁）。
     ///
     /// 工程固定以**只读**方式注入控制面会话（理由见模块文档的"会话"一节）——
     /// 这里**没有** `read_only` 参数，因为"要不要交出第二个写者"不该由调用点随手决定。
     ///
+    /// 会话来源（[`SessionSource`]）决定它是否参与 `.yeban.lock` 跨形态互斥：
+    /// 磁盘上的真实工程文件取共享读锁（拿不到 ⇒ [`MountError::Locked`]），
+    /// 内存样本不取。
+    ///
     /// # Errors
     ///
-    /// 决策失败、工程无法注入、或绑定/线程失败。
+    /// 决策失败、`.yeban.lock` 被别的形态持有、工程无法注入、或绑定/线程失败。
     pub fn start_for_project(
         requested: bool,
         project: YebanProjectV1,
-        path: impl Into<PathBuf>,
+        source: SessionSource,
     ) -> Result<Option<Self>, MountError> {
         match plan(requested)? {
             HttpStartup::Disabled => Ok(None),
             HttpStartup::Enabled => {
-                let dispatcher = session_dispatcher(&project, &path.into())?;
-                Self::start(dispatcher).map(Some)
+                // 取锁先于绑 socket：这是 fail-closed 的方向（少一个监听口，不是多一个）。
+                let lock = acquire_session_lock(&source)?;
+                let dispatcher = session_dispatcher(&project, source.path())?;
+                Self::start(dispatcher, lock).map(Some)
             }
         }
     }
@@ -308,6 +413,21 @@ impl InProcessMcp {
     #[must_use]
     pub fn token(&self) -> &BearerToken {
         &self.token
+    }
+
+    /// 会话实际持有的 `.yeban.lock` 路径（内存会话 / 未取锁时为 `None`）。
+    ///
+    /// 与 `Domain::lock_path` 同一个理由：守卫字段必须有一个**可观察的出口**，
+    /// 否则"锁一直活着"就只是一个只写字段。
+    #[must_use]
+    pub fn lock_path(&self) -> Option<&Path> {
+        self.lock.as_ref().map(|lock| lock.guard.path())
+    }
+
+    /// 会话持有的 `.yeban.lock` 模式（应当恒为 [`LockMode::SharedRead`]）。
+    #[must_use]
+    pub fn lock_mode(&self) -> Option<LockMode> {
+        self.lock.as_ref().map(|lock| lock.guard.mode())
     }
 
     /// 停机：置标志 → 唤醒阻塞中的 `accept` → **有界地**等工作线程退出 → 关掉监听 socket。
@@ -383,6 +503,35 @@ fn serve_loop(server: &HttpServer, stop: &AtomicBool) {
             thread::sleep(ACCEPT_RETRY_BACKOFF);
         }
     }
+}
+
+/// 让挂载的会话**参与 `.yeban.lock` 跨形态互斥**（`ROAD-M0-007` / `MUST-GATE-008`）。
+///
+/// 只读会话取的是**共享读锁** —— 这是既有锁 API 对"只读打开"的正确映射
+/// （`store::acquire_lock(path, read_only = true)`，内部即 [`LockMode::SharedRead`]）：
+/// 它挡住任何排他写者（另一个 app 实例的写会话 / stdio `yeban-mcp`），
+/// 同时允许其它只读会话共存。
+///
+/// [`SessionSource::InMemory`] **没有锁可取**：不存在"同一个工程文件"这件事，
+/// 硬造一个锁文件反而是把标签当路径。
+///
+/// # Errors
+///
+/// [`MountError::Locked`]：锁被别的活着的持有者占用（`PROJECT_LOCKED`），
+/// 或平台无建议锁 / 文件系统失败（同一个 `Fault` 出口，不做第二次分类）。
+fn acquire_session_lock(source: &SessionSource) -> Result<Option<AcquiredLock>, MountError> {
+    let SessionSource::File(path) = source else {
+        return Ok(None);
+    };
+    // `true` 就是 `read_only`：只读会话 ⇒ 共享读锁。这条映射与
+    // [`SessionSource::lock_mode`] 是同一件事，两处不许漂移。
+    debug_assert_eq!(source.lock_mode(), Some(LockMode::SharedRead));
+    store::acquire_lock(path, true)
+        .map(Some)
+        .map_err(|fault| MountError::Locked {
+            path: path.clone(),
+            fault,
+        })
 }
 
 /// 构造一个**生产模式**的分发器，并把工程注入它的**只读**会话。

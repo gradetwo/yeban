@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::Value;
-use yeban_app::mcp_mount::{self, InProcessMcp, MountError};
+use yeban_app::mcp_mount::{self, InProcessMcp, MountError, SessionSource};
 use yeban_mcp::security::{AuthContext, Denial, RunMode, Scope, ScopeSet, authorize};
 use yeban_mcp::tools::TOOL_COUNT;
 use yeban_mcp::transport::http::{BEARER_CHALLENGE, MCP_PATH};
@@ -196,7 +196,7 @@ fn the_switch_off_builds_nothing_at_all() {
     let off = InProcessMcp::start_for_project(
         false,
         unreadable.clone(),
-        PathBuf::from("sample:unreadable"),
+        SessionSource::InMemory(PathBuf::from("sample:unreadable")),
     )
     .expect("运行期开关关着 ⇒ 不是错误");
     assert!(
@@ -204,9 +204,12 @@ fn the_switch_off_builds_nothing_at_all() {
         "开关关着时必须什么都不建（连工程注入都不做）"
     );
 
-    let error =
-        InProcessMcp::start_for_project(true, unreadable, PathBuf::from("sample:unreadable"))
-            .expect_err("开关打开时必须真的注入工程 ⇒ 不可读工程要被拒");
+    let error = InProcessMcp::start_for_project(
+        true,
+        unreadable,
+        SessionSource::InMemory(PathBuf::from("sample:unreadable")),
+    )
+    .expect_err("开关打开时必须真的注入工程 ⇒ 不可读工程要被拒");
     assert!(
         matches!(error, MountError::Domain(_)),
         "拒绝必须来自工程注入这一层: {error:?}"
@@ -234,9 +237,13 @@ fn the_round_trip_stops_leaving_nothing_listening() {
         "样本工程必须有轨道（否则第 4 条无意义）"
     );
 
-    let mount = InProcessMcp::start_for_project(true, project, PathBuf::from("sample:filled"))
-        .expect("挂载决策")
-        .expect("运行期开关打开时必须真的挂载");
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(PathBuf::from("sample:filled")),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
 
     // ---- 1. 只绑环回 + 动态端口 ----
     let address = mount.address();

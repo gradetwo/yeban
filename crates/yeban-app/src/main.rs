@@ -234,6 +234,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
 /// 1. 把命令行开关与环境变量合成一个布尔（[`yeban_app::mcp_mount::switch_requested`]）；
 /// 2. 交给 [`yeban_app::mcp_mount::InProcessMcp::start_for_project`] ——
 ///    **开关关着时它返回 `Ok(None)`，连分发器都不构造**（没有 socket、没有令牌、没有线程）；
+///    真工程文件还会以**共享读锁**参与 `.yeban.lock` 跨形态互斥（`ROAD-M0-007`），
+///    拿不到锁 ⇒ `MountError::Locked` ⇒ **只拒绝控制面，界面照常运行**；
 /// 3. 开启成功时把令牌按 `[ARCH-SEC-002]` 落到 `~/.yeban/session.token`（`0600`），
 ///    报告**端点与令牌文件路径**，绝不打印令牌本身。
 ///
@@ -251,20 +253,32 @@ fn mount_in_process_mcp(
     use yeban_app::mcp_mount;
 
     let requested = options.enable_mcp_http || mcp_mount::switch_from_env();
-    let session_path = match &loaded.source {
-        cli::ProjectSource::File { path, .. } => path.clone(),
-        cli::ProjectSource::Sample(sample) => {
-            std::path::PathBuf::from(format!("sample:{}", sample.name()))
-        }
+    // 会话来源决定要不要参与 `.yeban.lock` 跨形态互斥（`ROAD-M0-007`）：
+    // 磁盘上的真工程文件取共享读锁，样本 / 未落盘会话没有锁可取。
+    let source = match &loaded.source {
+        cli::ProjectSource::File { path, .. } => mcp_mount::SessionSource::File(path.clone()),
+        cli::ProjectSource::Sample(sample) => mcp_mount::SessionSource::InMemory(
+            std::path::PathBuf::from(format!("sample:{}", sample.name())),
+        ),
     };
-    let mounted = mcp_mount::InProcessMcp::start_for_project(
+    let mounted = match mcp_mount::InProcessMcp::start_for_project(
         requested,
         loaded.archive.project.clone(),
-        session_path,
-    )
-    .map_err(|error| cli::CliError::Ui {
-        detail: format!("[ROAD-M4-001] 进程内 MCP 控制面挂载失败: {error}"),
-    })?;
+        source,
+    ) {
+        Ok(mounted) => mounted,
+        // 工程被别的形态排他持有 ⇒ **只**拒绝控制面，界面照常启动。
+        // 界面是主功能；fail-closed 的方向是"少一个监听口"，不是"GUI 起不来"。
+        Err(error @ mcp_mount::MountError::Locked { .. }) => {
+            cli::emit(&[format!("mcp-http: {error} —— 控制面未挂载, 界面照常运行")]);
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(cli::CliError::Ui {
+                detail: format!("[ROAD-M4-001] 进程内 MCP 控制面挂载失败: {error}"),
+            });
+        }
+    };
     let Some(mount) = mounted else {
         // 运行期开关关着 ⇒ 什么都不建（这就是"默认不监听"的可观察形态）。
         return Ok(None);
