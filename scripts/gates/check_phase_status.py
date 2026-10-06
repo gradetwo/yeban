@@ -24,6 +24,12 @@
    与**标题声明的 ID 区间**也必须与逐行统计一致;
 8. **其它活文档里手抄的阶段项总数**（索引 `docs/README.md` 与 `feature-alignment.md` 的分工表里
    那两处 `（47 项）` / `（`ROAD-*`，47 项）`）也必须一致 —— 第 7 条只扫本文件。
+9. **本表里的行号交叉引用必须指向它点名的那一行**：`` `其它活表:NN` `` 或 `` `其它活表` 第 NN 行 ``，
+   若同行**恰好点名一个**属于那张表的 ID（`HD-nn` / `MUST-GATE-nnn`·`BASELINE-nnn` / `ROAD-*`），
+   则行号必须等于那个 ID 的行号。实测（本条要防的）：本表 `:43` 写 `human-decisions.md:68` 指
+   `HD-34`，而 `HD-34` 在 `:70`。绑定只认**结构**（同行恰好一个 ID）；0 个或 ≥2 个一律跳过并
+   登记为边界，不靠词面猜。`feature-alignment.md` 的行首是功能名、没有编号 ⇒ 引用它的行号
+   （实测一处：`:105` 引 `feature-alignment.md:156`）**绑不住**，同样在本规则射程外。
 
 **为什么第 6/7 条也在守卫里**: 汇总数字是人最爱手抄的东西, 而它恰恰是"Phase 2 还剩几项"的答案。
 口径漂移在本仓库已实测发生三次以上（`docs/DEVELOPMENT_LEDGER.md` 第 12 轮）。既然能机械对账, 就不靠自觉。
@@ -32,6 +38,14 @@
 PENDING 掉到 6, §7 被同步改了, 标题（×2）、`docs/README.md`、`feature-alignment.md` 与
 `ROAD-M4-010` 行内那句却一直停在旧值 —— 文件自己跟自己矛盾而守卫一声不响（`ROAD-M4-010` 是本项
 唯一引用的权威表, 它的数字必须能被命令复核）。
+
+**为什么第 9 条按构造放得过"历史"**：① 它只读**本表**（citing doc）与三张**活表**（targets）；
+`docs/DEVELOPMENT_LEDGER.md`、`docs/ledger/*-notes.md` 与 `docs/adr/**` **从不被打开**
+⇒ 记在那里的历史够不到本规则（与 `check_decisions.py` / `check_feature_alignment.py` /
+`check_gate_status.py` 同一条纪律）；② 活文档里要记录一次**移动**，必然同时给出两端
+（`` 原 `…:68`，现 `…:70` ``）—— 同一行对同一目标出现**两个以上不同行号**时，那是在记录变更
+而不是主张现状，按构造整行豁免（不是靠"原/曾/formerly"这类词面判断）；③ 只说"第 68 行"
+而不点目标路径的散文**不是本规则认得的引用形态**，永远不是候选。
 
 用法:
     python3 scripts/gates/check_phase_status.py
@@ -105,6 +119,28 @@ XREF_DOCS = (
 #: 而错位之后 `cells[2]` 拿到的不是状态, 判据会静默地判错对象。所以按"未被反斜杠转义的竖线"切。
 CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
+#: 第 9 条：本表里"指向另一张**活表**的行号引用"的靶子。只有**行能被机械定位**的表在射程内 ——
+#: 三张表的表行首列都有一个稳定 ID：`HD-nn` / `MUST-GATE-nnn`·`BASELINE-nnn` / `ROAD-*`。
+#: ⚠ `feature-alignment.md` 的行首是功能名、没有编号 ⇒ 引用它的行号绑不到某一行，按构造排除。
+#: 元组 = （目标表, 表行正则, 该表的 ID 正则）。与 `check_feature_alignment.py` 第 6 条同一手法。
+CITED_TABLES = (
+    (
+        REPO / "docs/ledger/human-decisions.md",
+        re.compile(r"^\| `(HD-\d+)`"),
+        re.compile(r"HD-\d+"),
+    ),
+    (
+        REPO / "docs/ledger/gate-status.md",
+        re.compile(r"^\| `((?:MUST-GATE|BASELINE)-\d+)`"),
+        re.compile(r"(?:MUST-GATE|BASELINE)-\d+"),
+    ),
+    (
+        REPO / "docs/ledger/phase-status.md",
+        re.compile(r"^\| `(ROAD-[\w-]+)`"),
+        re.compile(r"ROAD-[\w-]+"),
+    ),
+)
+
 
 def cells_of(line: str) -> list[str]:
     """把一行 markdown 表格拆成单元格（正确处理 `\\|` 转义，并还原成 `|`）。"""
@@ -165,6 +201,73 @@ def parse_summary(text: str) -> dict[str, tuple[int, int, int, int]]:
                 int(matched.group(5)),
             )
     return summary
+
+
+def table_row_lines(path: Path, row_re: re.Pattern[str]) -> dict[str, int]:
+    """表里每个 ID 的**行号**（`ID -> 行号`）。表行 = 以 `|` 开头且首列就是那个 ID。"""
+    return {
+        matched.group(1): lineno
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if (matched := row_re.match(line))
+    }
+
+
+def cited_line_numbers(spec: str) -> set[int]:
+    """把 `NN` / `NN-MM` / `NN,MM` 解析成行号集合（半角 `-` 与全角 `–` 都算区间）。"""
+    numbers: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        span = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", part)
+        if span:
+            numbers.update(range(int(span.group(1)), int(span.group(2)) + 1))
+        elif part.isdigit():
+            numbers.add(int(part))
+    return numbers
+
+
+def cross_reference_problems(text: str, citing: Path) -> tuple[list[str], int]:
+    """第 9 条：本表的行号交叉引用必须指向它**点名的那一行**。
+
+    认的形态是 `` `目标:NN` `` 与 `` `目标` 第 NN 行 ``。绑定**只认结构**：同行必须**恰好**
+    出现一个属于目标表的 ID；0 个（引用散文/源码行）或 ≥2 个（绑不住是哪一个）⇒ 跳过，不猜。
+    同行对同一目标给出**两个以上不同行号** ⇒ 那是在记录"移动"，按构造整行豁免（见模块文档）。
+    与 `check_feature_alignment.py` 第 6 条是同一套做法的第二份实现。
+    """
+    problems: list[str] = []
+    checked = 0
+    lines = text.splitlines()
+    for target, row_re, id_re in CITED_TABLES:
+        rows = table_row_lines(target, row_re)
+        relative = target.relative_to(REPO)
+        citation_re = re.compile(
+            r"`?(?:[\w./-]*/)?" + re.escape(target.name)
+            + r"`?\s*(?::\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)"
+            + r"|第\s*(\d+)\s*行)"
+        )
+        for lineno, line in enumerate(lines, 1):
+            matches = list(citation_re.finditer(line))
+            if not matches:
+                continue
+            identifiers = sorted(set(id_re.findall(line)))
+            if len(identifiers) != 1:
+                continue
+            ident = identifiers[0]
+            actual = rows.get(ident)
+            if actual is None:
+                continue
+            stated_lines: set[int] = set()
+            for matched in matches:
+                stated_lines |= cited_line_numbers(matched.group(1) or matched.group(2))
+            if len(stated_lines) != 1:
+                continue
+            stated = stated_lines.pop()
+            checked += 1
+            if stated != actual:
+                problems.append(
+                    f"{citing.relative_to(REPO)}:{lineno} 的行号引用 `{relative}:{stated}` "
+                    f"指向 `{ident}`，但 `{ident}` 实际在第 {actual} 行"
+                )
+    return problems, checked
 
 
 def main() -> int:
@@ -297,6 +400,15 @@ def main() -> int:
                     f"（表里有 {counted_total} 项）"
                 )
 
+    # 方向 6（第 9 条）：本表里的**行号交叉引用**必须指向它点名的那一行。
+    #
+    # 第 6/7/8 条管的是**手抄的数字**；本表里还有一类跨文档的活声明：`` `其它活表:NN` ``。
+    # 目标表一插行，这种引用就静默变假（实测：本表 `:43` 指 `HD-34` 的引用停在 `:68`，
+    # 而 `HD-34` 在 `:70`），此前没有任何守卫复核。
+    # 只绑"同行恰好一个 ID"的结构；绑不住的（散文/源码行、多个 ID）按构造跳过。
+    citation_problems, citations_checked = cross_reference_problems(text, TABLE)
+    problems.extend(citation_problems)
+
     if problems:
         print("阶段状态表校验未通过:", file=sys.stderr)
         for item in problems:
@@ -306,7 +418,8 @@ def main() -> int:
     done, partial, pending = grand
     print(
         f"[ok] phase-status.md: {len(expected)} 项阶段要求, "
-        f"已完成 {done} / 部分 {partial} / PENDING {pending}"
+        f"已完成 {done} / 部分 {partial} / PENDING {pending}；"
+        f"{citations_checked} 处行号交叉引用全部落在目标行"
     )
     return 0
 

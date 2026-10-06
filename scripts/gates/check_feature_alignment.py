@@ -18,7 +18,7 @@
 | `phase-status.md` | 阶段项做没做完 | `check_phase_status.py` |
 | `human-decisions.md` | 待人类裁决 | `check_decisions.py` |
 
-## 五条机械判据（语义是否正确仍要人看）
+## 六条机械判据（语义是否正确仍要人看）
 
 1. **正向完整性**：`schemas/mcp-tools.schema.json` 里的**每一个** `yeban_*` 工具、
    `crates/yeban-ui-mcp/src/methods.rs` 里的**每一条** `ui/*` 方法，都必须在本表里
@@ -45,6 +45,26 @@
 与四张表（本表 / `gate-status.md` / `phase-status.md` / `human-decisions.md`）。
 `docs/DEVELOPMENT_LEDGER.md` 与 `docs/ledger/*-notes.md` 是**带日期的测量记录**
 （"当轮测得 66 行"是那一刻的真话），按纪律不得改写，因此**不参与**对账 —— 否则守卫会逼人篡改历史读数。
+
+6. **行号交叉引用必须指向它点名的那一行**：本表里凡是 `` `其它活表:NN` `` 或
+   `` `其它活表` 第 NN 行 `` 的写法，若同行**恰好点名了一个**属于那张表的 ID
+   （`HD-nn` / `MUST-GATE-nnn`·`BASELINE-nnn` / `ROAD-*`），则该行号必须等于那个 ID 的行号。
+   实测（本条要防的）：`feature-alignment.md:244` 写 `human-decisions.md:36` 指 `HD-12`，
+   而 `HD-12` 在 `:38`；`:86`/`:219` 写 `gate-status.md:44` 指 `BASELINE-004`，而它在 `:41`。
+   这类引用是**跨文档的活声明**：目标表一插行，引用就静默变假，而它此前**没有任何守卫**。
+
+   **为什么把范围钉死成"同行唯一 ID"**：绑定必须**结构化**，不能靠词面猜。同行 0 个 ID
+   （引用的是散文/源码行）或 ≥2 个不同 ID（绑不住是哪一个）一律**跳过**并如实登记为边界 ——
+   不写一条会误判的规则去够它。源码行引用（`foo.rs:NN`）同理不在射程内：把散文里的符号名
+   映射到某一行需要猜，实测一条朴素的绑定器在活文档上产出 24/27 处**假红**，故不采用。
+   `feature-alignment.md` 自己的行首是功能名、没有编号 ⇒ 引用它的行号同样无法机械绑定。
+
+   **为什么 dated records 与"故意提旧位置"的散文按构造安全**：
+   ① 本条只读**本表**（citing doc）与三张**活表**（targets）；`docs/DEVELOPMENT_LEDGER.md`、
+   `docs/ledger/*-notes.md` 与 `docs/adr/**` **从不被打开** ⇒ 写在那里的历史够不到本规则；
+   ② 活文档里要**记录一次移动**，必然同时给出两端（`` 原 `…:36`，现 `…:38` ``）—— 同一行对
+   同一目标出现**两个以上不同行号**时，这一行是在记录变更而不是主张现状，按构造整行豁免；
+   ③ 只说"第 36 行"而不点目标路径的散文**不是本规则认得的引用形态**，永远不是候选。
 
 ## 为什么"分类"是机器算的而不是人填的
 
@@ -148,6 +168,28 @@ CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 #: 只扫这些后缀的源文件（`crates/` 下没有别的文本形态承载工具名/方法名）。
 SOURCE_SUFFIXES = (".rs", ".toml", ".slint")
+
+#: 第 6 条：本表里"指向另一张**活表**的行号引用"的靶子。只有**行能被机械定位**的表在射程内 ——
+#: 三张表的表行首列都有一个稳定 ID：`HD-nn` / `MUST-GATE-nnn`·`BASELINE-nnn` / `ROAD-*`。
+#: ⚠ `feature-alignment.md` 的行首是功能名、没有编号 ⇒ 引用它的行号绑不到某一行，按构造排除。
+#: 元组 = （目标表, 表行正则, 该表的 ID 正则）。
+CITED_TABLES = (
+    (
+        REPO / "docs/ledger/human-decisions.md",
+        re.compile(r"^\| `(HD-\d+)`"),
+        re.compile(r"HD-\d+"),
+    ),
+    (
+        REPO / "docs/ledger/gate-status.md",
+        re.compile(r"^\| `((?:MUST-GATE|BASELINE)-\d+)`"),
+        re.compile(r"(?:MUST-GATE|BASELINE)-\d+"),
+    ),
+    (
+        REPO / "docs/ledger/phase-status.md",
+        re.compile(r"^\| `(ROAD-[\w-]+)`"),
+        re.compile(r"ROAD-[\w-]+"),
+    ),
+)
 
 
 def cells_of(line: str) -> list[str]:
@@ -280,6 +322,72 @@ def parse_summary(text: str) -> tuple[dict[str, int], int | None]:
     return summary, total
 
 
+def table_row_lines(path: Path, row_re: re.Pattern[str]) -> dict[str, int]:
+    """表里每个 ID 的**行号**（`ID -> 行号`）。表行 = 以 `|` 开头且首列就是那个 ID。"""
+    return {
+        matched.group(1): lineno
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if (matched := row_re.match(line))
+    }
+
+
+def cited_line_numbers(spec: str) -> set[int]:
+    """把 `NN` / `NN-MM` / `NN,MM` 解析成行号集合（半角 `-` 与全角 `–` 都算区间）。"""
+    numbers: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        span = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", part)
+        if span:
+            numbers.update(range(int(span.group(1)), int(span.group(2)) + 1))
+        elif part.isdigit():
+            numbers.add(int(part))
+    return numbers
+
+
+def cross_reference_problems(text: str, citing: Path) -> tuple[list[str], int]:
+    """第 6 条：本表的行号交叉引用必须指向它**点名的那一行**。
+
+    认的形态是 `` `目标:NN` `` 与 `` `目标` 第 NN 行 ``。绑定**只认结构**：同行必须**恰好**
+    出现一个属于目标表的 ID；0 个（引用散文/源码行）或 ≥2 个（绑不住是哪一个）⇒ 跳过，不猜。
+    同行对同一目标给出**两个以上不同行号** ⇒ 那是在记录"移动"，按构造整行豁免（见模块文档）。
+    """
+    problems: list[str] = []
+    checked = 0
+    lines = text.splitlines()
+    for target, row_re, id_re in CITED_TABLES:
+        rows = table_row_lines(target, row_re)
+        relative = target.relative_to(REPO)
+        citation_re = re.compile(
+            r"`?(?:[\w./-]*/)?" + re.escape(target.name)
+            + r"`?\s*(?::\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)"
+            + r"|第\s*(\d+)\s*行)"
+        )
+        for lineno, line in enumerate(lines, 1):
+            matches = list(citation_re.finditer(line))
+            if not matches:
+                continue
+            identifiers = sorted(set(id_re.findall(line)))
+            if len(identifiers) != 1:
+                continue
+            ident = identifiers[0]
+            actual = rows.get(ident)
+            if actual is None:
+                continue
+            stated_lines: set[int] = set()
+            for matched in matches:
+                stated_lines |= cited_line_numbers(matched.group(1) or matched.group(2))
+            if len(stated_lines) != 1:
+                continue
+            stated = stated_lines.pop()
+            checked += 1
+            if stated != actual:
+                problems.append(
+                    f"{citing.relative_to(REPO)}:{lineno} 的行号引用 `{relative}:{stated}` "
+                    f"指向 `{ident}`，但 `{ident}` 实际在第 {actual} 行"
+                )
+    return problems, checked
+
+
 def main() -> int:
     for required in (TABLE, SCHEMA, METHODS):
         if not required.exists():
@@ -409,6 +517,15 @@ def main() -> int:
                         f"{stated}{unit}，守卫算出来是 {computed}{unit}"
                     )
 
+    # ---- 判据 6：行号交叉引用必须指向它点名的那一行 -----------------------------
+    #
+    # 判据 4/5 管的是**手抄的数字**；本表里还有一类跨文档的活声明：`` `其它活表:NN` ``。
+    # 目标表一插行，这种引用就静默变假（实测：指 `HD-12` 的引用停在 `:36`、指 `BASELINE-004`
+    # 的引用停在 `:44`，而它们其实在 `:38` / `:41`），此前没有任何守卫复核。
+    # 只绑"同行恰好一个 ID"的结构；绑不住的（散文/源码行、多个 ID）按构造跳过。
+    citation_problems, citations_checked = cross_reference_problems(text, TABLE)
+    problems.extend(citation_problems)
+
     if problems:
         print("三方对齐矩阵校验未通过:", file=sys.stderr)
         for item in problems:
@@ -419,6 +536,7 @@ def main() -> int:
         f"[ok] feature-alignment.md: {len(rows)} 行功能 / "
         f"{len(expected_tools)} 个 MCP 工具 / {len(expected_methods)} 条 ui 方法全部点名，"
         + "，".join(f"{category} {derived[category]}" for category in CATEGORIES)
+        + f"；{citations_checked} 处行号交叉引用全部落在目标行"
     )
     return 0
 

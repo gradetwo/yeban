@@ -83,7 +83,7 @@
 | 功能 | 系统（实现/计划 + 证据） | UI 暴露（有/无 + 载体） | MCP 暴露（有/无 + 工具·参数） | 缺口：原因 / 计划 / 状态 |
 | :--- | :--- | :--- | :--- | :--- |
 | 10,000 步随机操作序列守恒（`proptest` + 逆操作） | 已实现｜`crates/yeban-model/src/ops.rs:1620`（`CI_SEQUENCE_STEPS = 10_000`）；判据 `state_tree_is_conserved_under_reverse_undo`（`ops.rs:3364`） | 无｜UI 层没有属性测试（守恒性是模型层财产，跨层重复会造第二份口径） | 无｜MCP 层同样没有（理由同上） | 原因：**有意不做** —— 这条判据的消费者是 `MUST-GATE-010`，不是界面或工具；计划：无；状态：有意不做 |
-| **执行**撤销 / 重做（可逆能力对外可调用） | 已实现｜生产入口 `crates/yeban-model/src/commit.rs:505`（`CommitGraph::undo`）、`:521`（`undo_with`，游标由调用方保存）、`:533`（`op.apply_inverse(doc)?`，在 `#[cfg(test)]`（`commit.rs:568`）**之前** ⇒ 是生产代码）；撤销原语 `crates/yeban-model/src/ops.rs:112,954`；时延判据 `BASELINE-004`（`docs/ledger/gate-status.md:44`：p99 0.084 µs，`undo_batch2` 1.834 µs） | 部分｜**只有展示，没有操作**：`crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 的**唯一** callback 是 `close`（`grep -oE 'callback [a-z-]+'` ⇒ 只有 `close`）；`crates/yeban-app/ui/app.slint:166,177,484,486` 只有 `undo-tree-open` 展示态；元素已登记（`crates/yeban-app/src/elements.rs:818,825,833,841`）；快捷键解析在 `crates/yeban-app/src/input.rs:369-370`（`Action::Undo`/`Redo`），但派发在 `crates/yeban-app/src/main.rs:146` 未接线 | 无｜十工具里没有撤销 / 重做；`crates/yeban-ui-mcp/src/methods.rs` 的 14 条方法里也没有 | 原因：三侧各自只做到"模型侧可逆"，**没有谁负责把它接到面上** —— `grep -rn "UndoCursor" crates/` 只命中 `crates/yeban-model/src/commit.rs` 与 `crates/yeban-model/src/lib.rs` ⇒ `yeban-model` 之外**零调用者**；计划：新开一条线**同时**接 UI（`undo_tree_modal` 真的触发 `undo_with`）与 MCP（工具或 `ui/*` 方法）；状态：PENDING |
+| **执行**撤销 / 重做（可逆能力对外可调用） | 已实现｜生产入口 `crates/yeban-model/src/commit.rs:505`（`CommitGraph::undo`）、`:521`（`undo_with`，游标由调用方保存）、`:533`（`op.apply_inverse(doc)?`，在 `#[cfg(test)]`（`commit.rs:568`）**之前** ⇒ 是生产代码）；撤销原语 `crates/yeban-model/src/ops.rs:112,954`；时延判据 `BASELINE-004`（`docs/ledger/gate-status.md:41`：p99 0.084 µs，`undo_batch2` 1.834 µs） | 部分｜**只有展示，没有操作**：`crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 的**唯一** callback 是 `close`（`grep -oE 'callback [a-z-]+'` ⇒ 只有 `close`）；`crates/yeban-app/ui/app.slint:166,177,484,486` 只有 `undo-tree-open` 展示态；元素已登记（`crates/yeban-app/src/elements.rs:818,825,833,841`）；快捷键解析在 `crates/yeban-app/src/input.rs:369-370`（`Action::Undo`/`Redo`），但派发在 `crates/yeban-app/src/main.rs:146` 未接线 | 无｜十工具里没有撤销 / 重做；`crates/yeban-ui-mcp/src/methods.rs` 的 14 条方法里也没有 | 原因：三侧各自只做到"模型侧可逆"，**没有谁负责把它接到面上** —— `grep -rn "UndoCursor" crates/` 只命中 `crates/yeban-model/src/commit.rs` 与 `crates/yeban-model/src/lib.rs` ⇒ `yeban-model` 之外**零调用者**；计划：新开一条线**同时**接 UI（`undo_tree_modal` 真的触发 `undo_with`）与 MCP（工具或 `ui/*` 方法）；状态：PENDING |
 
 ## 5. 分组 C —— 容器与文件
 
@@ -216,7 +216,7 @@
   - 生产入口 `crates/yeban-model/src/commit.rs:505`（`CommitGraph::undo`）、`:521`（`undo_with`，游标由调用方保存）；
   - `commit.rs:533` 的 `op.apply_inverse(doc)?` 位于 `#[cfg(test)]`（`commit.rs:568`）**之前** ⇒ 是生产代码；
   - 撤销原语 `crates/yeban-model/src/ops.rs:112`、`:954`（`apply_inverse`），`ops.rs` 里逆操作相关共 **10** 处；
-  - 时延判据 `BASELINE-004`：`docs/ledger/gate-status.md:44` 记 p99 **0.084 µs**（20,000 次/op，本机 M2 `--release`），`undo_batch2` 1.834 µs，目标 200 µs。
+  - 时延判据 `BASELINE-004`：`docs/ledger/gate-status.md:41` 记 p99 **0.084 µs**（20,000 次/op，本机 M2 `--release`），`undo_batch2` 1.834 µs，目标 200 µs。
 - **UI = 部分（只有"展示"，没有"操作"）**：
   - `crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 的**唯一** callback 是 `close`（`grep -oE 'callback [a-z-]+'` ⇒ 只有 `close`）；
   - `crates/yeban-app/ui/app.slint:166,177,484,486` 只有 `undo-tree-open` 展示态与 `toggle-undo-tree`；
@@ -241,7 +241,7 @@
 - **证据**：
   - 报告缺口的代码：`crates/yeban-mcp/src/domain/section.rs:8-16`（模块头断言"没有 `AddClip` / `RemoveClip` / `AddRoutingNode` / `RemoveRoutingNode` 变体"）与 `section.rs:109-110`（响应里报 `data.unwired = ["clipPoolEntries","routingEdges"]`）。
   - 反证：`crates/yeban-model/src/ops.rs:190`（`AddClip`）、`:197`（`RemoveClip`）、以及 `AddRoutingNode` / `RemoveRoutingNode`（29 个变体中的四个）**都已经存在**，落地提交 `4190651`（`git merge-base --is-ancestor 4190651 HEAD` ⇒ 真）。
-  - 裁决依据：`docs/ledger/human-decisions.md:36`（`HD-12` = `ADR-0001 D27`，已裁决"追认并回写"，状态 ✅ 2026-10-04）。
+  - 裁决依据：`docs/ledger/human-decisions.md:38`（`HD-12` = `ADR-0001 D27`，已裁决"追认并回写"，状态 ✅ 2026-10-04）。
   - 台账也停在旧结论：`docs/ledger/tools-domain-notes.md:55,231` 与 `docs/ledger/mcp-render-notes.md:325`（needs-4）。
 - **影响**：① 规范 §7.2 要求的"声部连接"**至今没产出**，而阻塞理由已经不成立 —— 这是"假阻塞"；
   ② AI Agent 拿到 `unwired` 会以为模型表达力不足，转而去绕路（例如直接改工程文件），绕开 `Op` 日志的撤销语义；
