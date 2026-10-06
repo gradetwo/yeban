@@ -50,6 +50,28 @@
 //! 本模块把 `gnoS` 放在**最前**，因为实测的真实工程第一个 chunk 就是 `gnoS`
 //! （groove 的读取器按 chunk 名查找记录，与顺序无关）。
 //!
+//! ## 与真实工程的 chunk 家族对账（实测差集）
+//!
+//! 诊断判据 `logic_chunk_families_compare_side_by_side_when_the_demos_are_present`
+//! 把本机两个 Apple 演示工程的 `ProjectData` 与本模块的产物
+//! **逐 chunk** 并排列出（容器是**扁平的** chunk 流：两个真实文件与产物里都**没有**嵌套
+//! chunk 标识符；`gnoS` 载荷虽以根魔数 `#G` 开头，其后并不是 chunk 流）。实测结果：
+//!
+//! * **真实工程（两例并集）= 27 个家族**，产物 = **3 个**（`Song` / `EvSq` / `MSeq`）；
+//! * 差集 = **24 个**家族，即 [`MISSING_CHUNK_FAMILIES`]：`AFld`、`AuCO`、`AuCU`、`AuCn`、
+//!   `AuEv`、`AuFl`、`AuRg`、`Clip`、`CorM`、`Envi`、`GAdd`、`GenM`、`Grid`、`Hypr`、
+//!   `InSt`、`Layr`、`ScSt`、`SngO`、`Styl`、`Trak`、`Trns`、`TxSq`、`TxSt`、`Vide`；
+//!   每次导出为每一个家族登记一条 `未映射:`（理由里点名 chunk；只有 `Trak` 与 `AuRg` 的定位
+//!   有仓库内依据，其余 22 个明写"用途未证实"）。
+//! * 反向（真实工程**没有**而产物有）在家族层面为空；但**字段层面**有一处实测偏差：
+//!   记录头 +4/+0x16/+0x1a 与根头 4..0xf 真实工程非零、本写入器写 0，登记为
+//!   [`CONTAINER_HEADER_CAVEAT`]（`非等价:`）。
+//!
+//! 判据（`crates/yeban-render/src/logic.rs` 的 `tests`）：一个**无头确定性**判据断言
+//! "写入家族 == [`WRITTEN_CHUNK_FAMILIES`]"且"差集逐条有损失条目"，另一个**只在两个本机
+//! 演示工程都存在时**才跑的对账判据（不存在就 skip，CI 不受影响）断言实测并集 ==
+//! [`MEASURED_REAL_CHUNK_FAMILIES`]。
+//!
 //! ## 映射损失表（**不静默丢东西**）
 //!
 //! [`build_bundle`] / [`project_data`] 与字节**同时**返回 [`LogicLoss`] 列表。
@@ -81,8 +103,11 @@
 //! 2. **不写轨道对象**：本切片只写 `gnoS` / `qSvE` / `qeSM` 与 region 的音符序列，
 //!    Logic 的轨道表（`karT` 一族）**没有写**（groove 的写入器同样如此）。因此产物
 //!    经 groove 的读取器可以往返，但 Logic 是否会据此显示轨道**未验证**。
-//! 3. **一串 `qSvE` 记录**：真实工程在 region 之外还有大量其它 chunk（插件、混音、
-//!    自动化…），本切片一概不写，全部进损失表。
+//! 3. **只写 3/27 个实测 chunk 家族**：真实工程（两例并集）有 27 个家族，本切片只写
+//!    `Song` / `EvSq` / `MSeq`；其余 **24 个**家族（[`MISSING_CHUNK_FAMILIES`]：插件、
+//!    混音、环境、自动化、视频、网格…）**逐族**进损失表，理由里点名 chunk。此外容器头的
+//!    若干字段（记录头 +4/+0x16/+0x1a、根头 4..0xf）真实工程非零而本写入器写 0，
+//!    作为 [`CONTAINER_HEADER_CAVEAT`] 登记（`非等价:`）。
 //!
 //! ## 确定性
 //!
@@ -195,6 +220,105 @@ pub const REGION_TIMING_CAVEAT: &str = concat!(
     "（placement.start_tick + note.start_tick + 38400）。groove 记录的读取限制同样适用：",
     "ProjectData 里的一部分时限无法可靠读取，其读取器把每个 part 放在 beat 0 —— 本写入器不掩盖这一点"
 );
+
+/// 本机两个 Apple 演示工程**实测**到的 chunk 家族（**解码后**的可读名，只记名字，不记内容）。
+///
+/// 测法（诊断判据 `logic_chunk_families_compare_side_by_side_when_the_demos_are_present`）：
+/// 从 0x18 起按 36 字节记录头驱动走完整个文件
+/// （tag 在 +0、cluster 在 +8、载荷长度 `u32` 小端在 +0x1c），把每个 tag 的四个字节
+/// **反序**解码（落盘的 `gnoS` ⇒ 可读的 `Song`）。两个文件的家族集合**不同**
+/// （`GenM` 只在 `Swing!`，`GAdd`/`Vide`/`Grid` 只在 `ocean eyes`），这里是并集。
+///
+/// ⚠ Apple 的演示工程**有版权、不进仓库**：这里只有从它们**测得**的 27 个名字，
+/// 没有任何来自那些文件的字节或字符串内容。
+pub const MEASURED_REAL_CHUNK_FAMILIES: [&str; 27] = [
+    "AFld", "AuCO", "AuCU", "AuCn", "AuEv", "AuFl", "AuRg", "Clip", "CorM", "Envi", "EvSq", "GAdd",
+    "GenM", "Grid", "Hypr", "InSt", "Layr", "MSeq", "ScSt", "SngO", "Song", "Styl", "Trak", "Trns",
+    "TxSq", "TxSt", "Vide",
+];
+
+/// 本写入器**真正写进** `ProjectData` 的 chunk 家族（解码后可读名）。
+///
+/// 三个：`gnoS`(`Song`) + 拍号/速度两条 `qSvE`(`EvSq`) + 每个摆放一条 `qeSM`(`MSeq`)。
+/// 判据 `emitted_chunk_families_are_exactly_the_declared_written_set` 把产物的实际家族
+/// 与这个列表逐一对齐（写入器多写一族就红）。
+pub const WRITTEN_CHUNK_FAMILIES: [&str; 3] = ["EvSq", "MSeq", "Song"];
+
+/// "用途在本仓库内未证实"的家族共用的理由尾巴（22/24 条）。
+const MISSING_FAMILY_TAIL_UNKNOWN: &str = concat!(
+    "它的**用途在本仓库内未证实**——只实测到它在本机两个 Apple 演示工程里存在，",
+    "未读到其字段语义，因此这里只说“没有写入”，不猜测它是什么"
+);
+
+/// 真实工程有、本写入器**不写**的 chunk 家族 = [`MEASURED_REAL_CHUNK_FAMILIES`] 减
+/// [`WRITTEN_CHUNK_FAMILIES`]，共 **24** 个。每条在每次导出时登记一条 `未映射:` 损失，
+/// 理由里点名 chunk（"Do not invent a reason"：只有 `Trak` 与 `AuRg` 的定位有仓库内依据，
+/// 其余 22 个明写"用途未证实"）。
+///
+/// 二元组 = (解码后可读名, 定位说明)。
+pub const MISSING_CHUNK_FAMILIES: [(&str, &str); 24] = [
+    ("AFld", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("AuCO", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("AuCU", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("AuCn", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("AuEv", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("AuFl", MISSING_FAMILY_TAIL_UNKNOWN),
+    (
+        "AuRg",
+        "音频 region 一族——groove 的 `docs/OPEN_WORK.md` 把落盘字节 `gRuA` 记为音频素材；\
+         本仓库未进一步证实它的字段，本切片也不写 `Media/`",
+    ),
+    ("Clip", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("CorM", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("Envi", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("GAdd", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("GenM", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("Grid", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("Hypr", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("InSt", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("Layr", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("ScSt", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("SngO", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("Styl", MISSING_FAMILY_TAIL_UNKNOWN),
+    (
+        "Trak",
+        "Logic 的轨道表（轨道对象）——本仓库的 `TRACK_OBJECTS_UNMAPPED` 已点名落盘字节 `karT`，\
+         本切片不写轨道对象",
+    ),
+    ("Trns", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("TxSq", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("TxSt", MISSING_FAMILY_TAIL_UNKNOWN),
+    ("Vide", MISSING_FAMILY_TAIL_UNKNOWN),
+];
+
+/// 与真实工程**逐字节**对账后发现的一处**实测偏差**（不是省略，是写了不同的值）。
+///
+/// 实测（两个本机演示工程的全部记录）：记录头 +4（u16 类型/版本，取值 1..=8）、
+/// +0x16（u32，恒为 2）、+0x1a（u16，恒为 1）都非零，根头 4..0xf 也非零，且 `gnoS` 载荷
+/// 以根魔数 `#G` 开头；本写入器在这些位置一律写 0，`gnoS` 载荷是 0 填充。
+/// 这是**有意的**最小选择（不从真实文件反推类型系统的取值等于编造对象类型；groove 的写入器
+/// 同样写 0），但它与每一个实测到的真实记录都不同，因此登记为"有表示、等价性未经证实"，
+/// 而不是静默省略。
+pub const CONTAINER_HEADER_CAVEAT: &str = concat!(
+    "非等价: 容器头的若干字段与实测真实工程不同——记录头 +4（类型/版本，实测 1..=8）、",
+    "+0x16（实测恒为 2）、+0x1a（实测恒为 1）与根头 4..0xf 在真实工程里都非零，",
+    "而本写入器一律写 0；`gnoS` 载荷在真实工程里以根魔数 `#G` 开头，本写入器是 0 填充。",
+    "这是**写了不同的值**而不是省略：本切片不从真实文件反推对象类型（那等于编造），",
+    "groove 的写入器同样写 0；是否被接受**未经证实**"
+);
+
+/// 把落盘的四个 tag 字节反序解码成可读名：`gnoS` ⇒ `Song`。
+#[must_use]
+pub fn decode_chunk_tag(tag: &[u8; 4]) -> String {
+    let mut bytes = *tag;
+    bytes.reverse();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// 可读名对应的**落盘**四个字节（`Song` ⇒ `gnoS`），只用于损失表里点名。
+fn stored_chunk_tag(name: &str) -> String {
+    name.chars().rev().collect()
+}
 
 /// `MetaData.plist` 里承载整张损失表的**夜半扩展键**（字符串数组）。
 ///
@@ -571,6 +695,18 @@ impl LogicBuilder {
                  它们是不透明二进制/缩略图，本切片不伪造"
             ),
         );
+        // 逐族点名真实工程有、本写入器不写的 chunk（实测差集，见 MISSING_CHUNK_FAMILIES）。
+        for (name, role) in MISSING_CHUNK_FAMILIES {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 真实工程的 chunk 家族 `{name}`（落盘字节 `{}`）\
+                     没有写入 —— {role}",
+                    stored_chunk_tag(name)
+                ),
+            );
+        }
+        self.loss(entity.clone(), CONTAINER_HEADER_CAVEAT.to_owned());
         let mut unmapped_containers: Vec<(&str, usize)> = Vec::new();
         if !project.sections.is_empty() {
             unmapped_containers.push(("段落 sections", project.sections.len()));
@@ -1722,5 +1858,251 @@ mod tests {
             checked += 1;
         }
         eprintln!("可选演示工程核对：{checked} 个文件存在并核对通过（不存在 = skip）");
+    }
+
+    // ---- chunk 家族对账（诊断） ----
+
+    /// 走完一段 chunk 流（从 `base` 到 `limit`），返回 `(偏移, tag, size, cluster)`。
+    ///
+    /// **只由载荷长度驱动**，绝不扫描下一个 tag：载荷里可以出现任意四个字节。
+    fn walk_chunk_run(
+        bytes: &[u8],
+        base: usize,
+        limit: usize,
+    ) -> Vec<(usize, [u8; 4], usize, u32)> {
+        let mut out = Vec::new();
+        let mut at = base;
+        while at + LOGIC_RECORD_HEADER <= limit {
+            let tag = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
+            let size = u32_le(bytes, at + LOGIC_RECORD_SIZE_OFFSET) as usize;
+            let cluster = u32_le(bytes, at + LOGIC_RECORD_CLUSTER_OFFSET);
+            out.push((at, tag, size, cluster));
+            let end = at + LOGIC_RECORD_HEADER + size;
+            if end > limit {
+                break;
+            }
+            at = end;
+        }
+        out
+    }
+
+    /// 一段 chunk 流里**嵌套**的 chunk 家族（从"载荷以根魔数开头"的地方按同一套记录头再走一层）。
+    ///
+    /// 实测：真实工程与本产物都**没有**嵌套 chunk 标识符（`gnoS` 载荷虽以根魔数 `#G` 开头，
+    /// 其后不是 chunk 流），因此本函数返回空——诊断判据把它**打印出来**而不是假装不存在。
+    fn nested_chunk_families(bytes: &[u8], base: usize, limit: usize) -> Vec<String> {
+        let mut found = Vec::new();
+        for (at, _tag, size, _cluster) in walk_chunk_run(bytes, base, limit) {
+            let body = at + LOGIC_RECORD_HEADER;
+            let end = body + size;
+            if size < LOGIC_ROOT_HEADER
+                || end > bytes.len()
+                || bytes[body..body + 4] != LOGIC_ROOT_MAGIC
+            {
+                continue;
+            }
+            for (nested_at, nested_tag, nested_size, _nested_cluster) in
+                walk_chunk_run(bytes, body + LOGIC_ROOT_HEADER, end)
+            {
+                let fits = nested_at + LOGIC_RECORD_HEADER + nested_size <= end;
+                if fits && nested_tag.iter().all(u8::is_ascii_graphic) {
+                    found.push(decode_chunk_tag(&nested_tag));
+                }
+            }
+        }
+        found
+    }
+
+    /// 一份 `ProjectData` 实际写出的 chunk 家族（解码后可读名）。
+    fn emitted_chunk_families(bytes: &[u8]) -> BTreeSet<String> {
+        walk_chunk_run(bytes, LOGIC_ROOT_HEADER, bytes.len())
+            .into_iter()
+            .map(|(_at, tag, _size, _cluster)| decode_chunk_tag(&tag))
+            .collect()
+    }
+
+    /// 解码：落盘字节 → 可读名（`gnoS` ⇒ `Song`）。
+    #[test]
+    fn chunk_tags_decode_by_reversing_their_stored_bytes() {
+        assert_eq!(decode_chunk_tag(b"gnoS"), "Song");
+        assert_eq!(decode_chunk_tag(b"qSvE"), "EvSq");
+        assert_eq!(decode_chunk_tag(b"qeSM"), "MSeq");
+        assert_eq!(decode_chunk_tag(&LOGIC_SONG_TAG), "Song");
+        assert_eq!(stored_chunk_tag("Song"), "gnoS");
+    }
+
+    /// **无头确定性判据**：产物写出的 chunk 家族**只能是** [`WRITTEN_CHUNK_FAMILIES`]
+    /// （有 region 的工程必须写满三个），且产物里没有嵌套 chunk 标识符（多写一族就红）。
+    #[test]
+    fn emitted_chunk_families_are_exactly_the_declared_written_set() {
+        let declared: BTreeSet<&str> = WRITTEN_CHUNK_FAMILIES.into_iter().collect();
+        for (project, alternative, expect_all) in [
+            (YebanProjectV1::default(), "000", false),
+            (fixture_project(), "000", true),
+            (unmappable_project(), "001", true),
+        ] {
+            let bundle = build_bundle(&project, alternative, "Chunks");
+            let data = &bundle.files[&format!("Alternatives/{alternative}/ProjectData")];
+            let emitted = emitted_chunk_families(data);
+            let emitted_refs: BTreeSet<&str> = emitted.iter().map(String::as_str).collect();
+            let undeclared: Vec<&&str> = emitted_refs.difference(&declared).collect();
+            assert!(
+                undeclared.is_empty(),
+                "{alternative}: 产物写出了未声明的 chunk 家族 {undeclared:?}"
+            );
+            if expect_all {
+                assert_eq!(
+                    emitted_refs, declared,
+                    "{alternative}: 有 region 的工程必须写满声明的三个家族"
+                );
+            }
+            assert!(
+                nested_chunk_families(data, LOGIC_ROOT_HEADER, data.len()).is_empty(),
+                "{alternative}: 产物里不得出现嵌套 chunk 标识符"
+            );
+        }
+    }
+
+    /// **无头确定性判据**：实测差集 `真实 − 产物` **恰好**等于 [`MISSING_CHUNK_FAMILIES`]，
+    /// 且每个缺失家族都有一条**点名它**的 `未映射:` 损失条目（缺一条、或某族没进损失表就红）。
+    #[test]
+    fn every_missing_chunk_family_is_registered_in_the_loss_table() {
+        let real: BTreeSet<&str> = MEASURED_REAL_CHUNK_FAMILIES.into_iter().collect();
+        let written: BTreeSet<&str> = WRITTEN_CHUNK_FAMILIES.into_iter().collect();
+        assert_eq!(
+            real.len(),
+            MEASURED_REAL_CHUNK_FAMILIES.len(),
+            "实测家族列表不得重复"
+        );
+        assert_eq!(
+            written.len(),
+            WRITTEN_CHUNK_FAMILIES.len(),
+            "写入家族列表不得重复"
+        );
+        let difference: BTreeSet<&str> = real.difference(&written).copied().collect();
+        let declared: BTreeSet<&str> = MISSING_CHUNK_FAMILIES
+            .iter()
+            .map(|(name, _role)| *name)
+            .collect();
+        assert_eq!(
+            declared.len(),
+            MISSING_CHUNK_FAMILIES.len(),
+            "缺失清单不得重复"
+        );
+        assert_eq!(declared, difference, "缺失清单必须恰好等于实测差集");
+
+        let bundle = build_bundle(&fixture_project(), "000", "Losses");
+        let data = &bundle.files["Alternatives/000/ProjectData"];
+        let emitted = emitted_chunk_families(data);
+        for (name, _role) in MISSING_CHUNK_FAMILIES {
+            assert!(
+                !emitted.contains(name),
+                "{name} 是缺失家族，不该出现在产物里"
+            );
+            assert!(
+                bundle.losses.iter().any(|loss| {
+                    loss.reason.starts_with(LOSS_UNMAPPED_PREFIX) && loss.reason.contains(name)
+                }),
+                "缺失家族 {name} 必须有一条点名它的 `未映射:` 条目"
+            );
+        }
+        assert!(
+            bundle
+                .losses
+                .iter()
+                .any(|loss| loss.reason == CONTAINER_HEADER_CAVEAT),
+            "容器头的实测偏差必须登记为损失"
+        );
+    }
+
+    /// **诊断判据（路径驱动：两个本机 Apple 演示工程都存在时才跑，否则干净 skip）**：
+    /// 把真实工程与产物的顶层/嵌套 chunk 家族**并排**打印，并证明实测并集逐族等于声明列表。
+    ///
+    /// 选这种形态的理由：同一份测试二进制、零新目标、零新依赖，且本模块已有
+    /// `local_demo_projects_match_the_measured_header_layout_when_present` 用同一套
+    /// "路径不存在就 skip" 的纪律（CI 上没有这些路径 ⇒ 绝不红）。打印要 `-- --nocapture`：
+    /// `cargo test -p yeban-render --features experimental-logic-export logic_chunk_families \
+    ///   -- --nocapture`
+    ///
+    /// ⚠ Apple 的演示工程**有版权、不进仓库**：本判据只**读**它们的 chunk **名字**并打印，
+    /// 不把任何字节或字符串内容写进仓库。
+    #[test]
+    fn logic_chunk_families_compare_side_by_side_when_the_demos_are_present() {
+        let demos = [
+            "/Library/Application Support/Logic/Logic Pro X Demosongs/Swing!.logicx/Alternatives/004/ProjectData",
+            "/Library/Application Support/Logic/Logic Pro X Demosongs/ocean eyes.logicx/Alternatives/001/ProjectData",
+        ];
+
+        let bundle = build_bundle(&yeban_model::samples::filled_project(), "000", "Chunks");
+        let ours_bytes = &bundle.files["Alternatives/000/ProjectData"];
+        let ours = emitted_chunk_families(ours_bytes);
+        let ours_nested = nested_chunk_families(ours_bytes, LOGIC_ROOT_HEADER, ours_bytes.len());
+        eprintln!(
+            "ours  Alternatives/000/ProjectData ({} B): {}",
+            ours_bytes.len(),
+            ours.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+        assert_eq!(
+            ours.iter().map(String::as_str).collect::<BTreeSet<_>>(),
+            WRITTEN_CHUNK_FAMILIES.into_iter().collect::<BTreeSet<_>>()
+        );
+
+        let mut measured: BTreeSet<String> = BTreeSet::new();
+        let mut real_nested: BTreeSet<String> = BTreeSet::new();
+        let mut present = 0usize;
+        for demo in demos {
+            let Ok(bytes) = std::fs::read(demo) else {
+                continue;
+            };
+            present += 1;
+            let records = walk_chunk_run(&bytes, LOGIC_ROOT_HEADER, bytes.len());
+            let families: BTreeSet<String> = records
+                .iter()
+                .map(|(_at, tag, _size, _cluster)| decode_chunk_tag(tag))
+                .collect();
+            real_nested.extend(nested_chunk_families(
+                &bytes,
+                LOGIC_ROOT_HEADER,
+                bytes.len(),
+            ));
+            measured.extend(families.iter().cloned());
+            eprintln!(
+                "real  {} ({} B, {} chunk records): {}",
+                demo.split('/').nth(5).unwrap_or(demo),
+                bytes.len(),
+                records.len(),
+                families.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+        if present == 0 {
+            eprintln!("skip: 本机没有 Apple 演示工程（CI 上不存在 ⇒ 本判据不跑、绝不红）");
+            return;
+        }
+        eprintln!(
+            "nested chunk identifiers — ours: [{}] ; real: [{}]",
+            ours_nested.join(", "),
+            real_nested.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+
+        let measured_refs: BTreeSet<&str> = measured.iter().map(String::as_str).collect();
+        let declared: BTreeSet<&str> = MEASURED_REAL_CHUNK_FAMILIES.into_iter().collect();
+        let unrecorded: Vec<&&str> = measured_refs.difference(&declared).collect();
+        assert!(
+            unrecorded.is_empty(),
+            "实测到未登记的 chunk 家族（必须补进 MEASURED_REAL_CHUNK_FAMILIES）: {unrecorded:?}"
+        );
+        if present == demos.len() {
+            assert_eq!(
+                measured_refs, declared,
+                "两个演示工程都存在时，实测并集必须逐族等于声明的 27 个家族"
+            );
+        }
+        let written: BTreeSet<&str> = WRITTEN_CHUNK_FAMILIES.into_iter().collect();
+        let difference: BTreeSet<&str> = measured_refs.difference(&written).copied().collect();
+        eprintln!(
+            "set difference (real has, ours does not): {} families: {}",
+            difference.len(),
+            difference.iter().copied().collect::<Vec<_>>().join(", ")
+        );
     }
 }
