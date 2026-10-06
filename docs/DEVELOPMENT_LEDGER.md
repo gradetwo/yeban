@@ -8355,3 +8355,23 @@ is already satisfied: `yeban-mcp -> yeban-midi` is allowed and verified by `chec
 
 **Status**: tree green and clean; `271 passed / 0 failed` for the moved mapping; local is three commits ahead of `origin/main` because ssh publickey
 authentication is unavailable in this environment (round 342) - the work is safe locally and one `git push` restores the remote when the key returns.
+
+
+### Round 344: the last item is delegated - and why that is the objective's own mechanism
+
+`yeban_export_midi` is now running as a **delegated task** rather than another sequential pass in the main line. The objective prescribes exactly this (git
+worktree + subagent, 一树一线, 一文件一写者), and the item is the ideal shape for it: **self-contained, fully specified and independently verifiable**. The
+specification was measured - not guessed - in round 343: the five registry sites and their new values, the `ToolSpec` shape taken from its neighbours, the D25
+error-code constraint its contract test enforces, the delegation to `yeban_midi::export::export_from_project`, and the **in-memory round-trip criterion** via
+`parse_smf` that avoids both the filesystem and the lock-test flakiness recorded in round 279.
+
+**Why delegating rather than continuing**: the main line has just spent twenty rounds on the mapping move, each ending in a real diagnostic but also consuming
+the context needed to hold the whole task in view. Delegation buys that context back - the subagent receives the specification as a document and returns a
+result, and the main line reads the result rather than reproducing the work. That is the same trade the objective asks for, applied to the last item instead of
+to a worktree split.
+
+**What the main line keeps doing**: staying green (tree clean, 271 tests passing, `light` 门禁通过) and keeping the ledger current, so that whatever the
+delegated run returns can be checked against a known-good state - and so that a revert, if needed, is one command away.
+
+**Status**: tree green and clean; the mapping layer is shared (`c847450`); the loudness item is CI-verified and closed on the tool side; MCP tools stand at 5 of
+6 delivered; local is four commits ahead of `origin/main` with push pending (round 342).
