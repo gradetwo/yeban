@@ -8792,3 +8792,23 @@ ratified frame and this session's work sits inside it.
 
 **Status**: tree green and clean; the real open questions are the six that remain genuinely unanswered (N2, loudness transport, `D47` coverage of `.als`, the
 `MUST-GATE-014` material choice, whether a reference `.als` will be supplied, and the `M4-008` single-authority design decision) - not seven.
+
+
+### Round 363: applied the new rule - my six questions are genuinely open, and HD-46 is one I should have known
+
+Following the rule written in round 362 ("before asking for a ruling, grep the decisions ledger"), I checked all six remaining questions against
+`docs/ledger/human-decisions.md`:
+
+* `N2` / keyboard, `IME`, the loudness **transport**, `.als`, and the `M4-008` single-mutable-authority question return **no hits** - so they are genuinely
+  unruled, and asking about them is legitimate rather than noise;
+* but the sweep surfaced **`HD-46`**, which I had not read: a re-examination of the options after `HD-38`, about the **口径 for `BASELINE-005` (latency)**. Its own text
+  records that the tool is delivered and has really run, with local readings of **4.3750 ms output / 2.3750 ms input** (host-reported driver-side latency, not
+  acoustic round trip) against a threshold of **<=5.5 ms round trip**;
+* it also confirms `HD-27` (LUFS thresholds/windows: subset vs full BS.1770) as ruled **A** where loudness normalisation is wanted, which is consistent with the
+  loudness work this session closed on the tool side.
+
+**Net effect**: the rule worked - it prevented me from re-asking an answered question while confirming that the six I do list are unanswered - and it found one
+open item (`HD-46`) plus one already-ruled item (`HD-27`) that belong in any account of the remaining work. The "six open questions" figure stands, with `HD-46`
+now tracked alongside them.
+
+**Status**: tree green and clean; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; all gates green; both CI sources operational.
