@@ -10056,3 +10056,20 @@ triggered run; the Logic donor question (A/B/C) is still open.
 **A fifth Logic test is informative for the first time.** Every earlier "no information" verdict was because no new **structure** entered the artifact; `/tmp/yeban-logic-open7/Yeban.logicx` (`ProjectData` 198,557 B, 507 records, two regions named `Clip` and `Second Voice`) is the first built on the owner's two-track skeleton. It would prove whether Logic Pro 12.2 opens that skeleton and shows **two** tracks. It would **not** prove anything about a third track or other versions, and the line explicitly does **not** claim Logic opens it - the owner-donor loss entry says in as many words that this artifact has never been opened. The honest limits are registered: capacity is **2** tracks, only each track's **first** placement is mapped, the donor's bar-1 placement is kept so notes start at bar 1, region names truncate at 13/15 bytes, and the two-track artifact reuses the donor's channel-strip plugin state rather than our own instruments.
 
 **Also of note**: the line audited its own work and found one of its assertions was **vacuous** - a per-track reason embedded the whole constant, so `contains(...)` was satisfied regardless - and fixed it by asserting a project-level entry by its unique phrasing. Seven new criteria, seven negative measurements each restored byte-identically, and the guards, `light` and the dependency metric (296/296) are all green.
+
+
+### Round 415: LOGIC PRO OPENS THE OWNER-DONOR TWO-TRACK ARTIFACT - and shows two tracks, with the second track's notes missing
+
+The负责人 opened `/tmp/yeban-logic-open7/Yeban.logicx` in **Logic Pro 12.2** and reports, verbatim: **"两条轨道，第一条有音符，第二条没有"**.
+
+Three things follow, and all three are measurements rather than inference:
+
+1. **The owner-donor skeleton opens.** This is the first time anything on the owner-donor path has been opened, and it means the vendored pair the负责人 generated (`crates/yeban-render/assets/logic-donor-owner/`) produces a document Logic accepts - not just the MIT donor.
+2. **The slot activation works structurally.** Logic shows **two** tracks, so the measured recipe from the 1-track/2-track differential (8 `AuCU` strips, the realized `AuCO`, the second `Trak`/`MSeq`/`EvSq` triplet, the `GenM` update) is doing what it was derived to do.
+3. **The second track's notes do not appear.** That is a concrete, localisable defect, and the repository already names its prime suspect: the previous slice registered `REGION_PLACEMENT_UNMAPPED` - **we write no placement event** - and the placement is what associates a region with a track (earlier measurement: the track's own `qSvE` carries kind `20`/`24`, position `34560 + tick`, a link id, and a **1-based track number at `+0x14`**). If the second region has no placement, its note data is present in the file but nothing routes it to the second track, which is exactly the reported symptom: the track appears, its notes do not.
+
+**A claim in the repository is now false and must be rewritten.** The owner-donor loss entry (`LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR`) and related text say the owner-donor path **has never been opened by Logic**. The负责人 just opened it. The text must state what was measured - which artifact, which Logic version, two tracks, notes on the first, none on the second at the time of the test - and must not generalise beyond Logic Pro 12.2 on this machine.
+
+**The diagnostic advantage is that the owner's own two-track project is a known-good reference**: Logic wrote it, Logic opens it, and its own MIDI export carries 905 note-on events across two named tracks. So our output can be diffed against a document that is correct by construction, which is the method that produced the activation recipe in the first place.
+
+**Status**: a slice is in flight to diagnose the missing notes by that differential, fix what the evidence supports, export `/tmp/yeban-logic-open8/`, and correct the now-false claim. Both previously opened artifacts - the single-track MIT-donor one and the two-track owner-donor skeleton - must remain reproducible, and any change to either must be proved with `cmp`.
