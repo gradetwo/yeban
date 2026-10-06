@@ -8812,3 +8812,22 @@ open item (`HD-46`) plus one already-ruled item (`HD-27`) that belong in any acc
 now tracked alongside them.
 
 **Status**: tree green and clean; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; all gates green; both CI sources operational.
+
+
+### Round 364: the "summing" sub-question I was about to ask is already answered - the open list is six, not seven
+
+Round 363 flagged a possible open sub-question under `HD-46`: whether the two latency directions may be summed, since summing would give 6.75 ms against a <=5.5 ms
+threshold. Checking the gate table instead of asking settles it: `BASELINE-005` is **已接线** with `line/audio-latency` CI run **37249839115 = success**, the tool is
+delivered, and `HD-46` is **ruled B** (host-reported driver-side latency, with an explicit instruction to re-measure later). The tool itself **refuses to sum the two
+directions** - there is an in-row `driver_io_sum_is_roundtrip=false` - so each direction stands on its own (4.3750 ms output, 2.3750 ms input, both inside the
+threshold), the summing question has no blocker behind it, and "re-measure later" is a future task rather than a decision anyone owes.
+
+**So the genuinely open list is six**: `N2` (keyboard below Slint), the loudness transport (optional - the contract is independent), whether `D47` covers `.als`,
+the `MUST-GATE-014` material choice, whether a reference `.als` will be supplied, and the `M4-008` single-mutable-authority design decision. I am removing the
+seventh from my reports rather than carrying a question the repository already answers.
+
+**Second consecutive round where the "grep before asking" rule changed the answer** - round 362 removed a ruling I had been re-requesting, and this one removed a
+sub-question I was about to raise. Both were found by reading the ledgers, not by reasoning about them.
+
+**Status**: tree green and clean; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; all gates green; `BASELINE-005` 已接线 with a CI run id; both CI sources
+operational.
