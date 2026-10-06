@@ -9222,3 +9222,31 @@ authorisation can substitute for - the file has to come from outside the reposit
 
 **Status**: tree green and clean; `4f0490b` and `e5ff9bc` both CI **success**; the `N2` line (question 1) is in progress in a delegated subagent; Phase 4 6 完成 / 4
 部分 / 0 PENDING; guards all green after this edit.
+
+
+### Round 384: `N2` option (1) landed - and the fourth time my own check used the wrong metric
+
+`dd4afb6` implements `N2` option (1) from `open-questions.md` question 1, under the same standing authorisation as `D47`. Independently verified: the commit touches
+**no** `Cargo.toml`/`Cargo.lock` (zero dependency change), the default dependency graph still has **zero** hits for the MCP and test-port crates, `src/lib.rs` went
+182 -> **188 passed** (the six new unit criteria), `live_ui_mcp.rs` went 16 -> **17 passed** (criterion 16), every other test binary is `0 failed`, all guards green
+and `light` 门禁通过.
+
+What it built, in its own terms: one `FocusScope` with `forward-focus` as the single keyboard event source in `ui/app.slint`; `LogicalKey` plus `InputContext::resolve_logical`
+in `input.rs`, with the physical entry **delegating** to it so there is exactly one shortcut table (a criterion walks every physical key x 7 modifier sets x 3
+contexts asserting both entries agree); `host::wire_keys` routing into existing properties/callbacks, with **unimplemented actions deliberately left unconsumed**
+rather than silently swallowed; the undo family through the single `undo::dispatch_key` (consistent with `D45`); and a measured negative check - removing
+`wire_keys` makes criterion 16 fail with `left: 1, right: 3`, so the criterion can fail.
+
+**The metric slip, fourth occurrence**: I first checked "no dependency change" with `git show --stat dd4afb6 | grep -cE 'Cargo.toml|Cargo.lock'` and got 1, but the
+match was the phrase **inside the commit message**; the correct check is `git show --name-only --format= dd4afb6 | grep -cE 'Cargo\.(toml|lock)'`, which is 0. My test
+count check also filtered on the wrong stream and printed nothing useful, and had to be redone. Sequence of this family: wrong revert baseline (round 355), word-greps
+that made two delivered features look missing (rounds 368-369), a pre-written conclusion paired with a printed figure (round 378), grepping `yeban-render` where the
+evidence lived in `flate2`'s parents (round 382), and this. **The rule that would have caught all five: state the metric as a sentence before running the command, and
+only accept a number whose unit you named.**
+
+**Residual, recorded by the line in all three ledger places**: the handler needs Slint focus (supplied by `forward-focus` at window build, proved by the port
+injection criterion); after the BPM field takes focus, single-key shortcuts belong to the text control per the normative spec, and there is **no automatic re-focus
+criterion** yet - left as an explicit follow-up rather than papered over.
+
+**Status**: `dd4afb6` pushed; CI verdict to read back; Phase 4 6 完成 / 4 部分 / 0 PENDING; open-questions 1 and 4 closed, **question 5 is the only one left for the
+负责人**; next authorised line is question 2 (loudness over the existing control plane), then question 6 (`M4-008`).
