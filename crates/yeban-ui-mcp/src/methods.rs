@@ -153,7 +153,7 @@ const PROPERTY_NAME: ParamSpec = ParamSpec {
     json_type: "string",
     required: true,
     allowed: None,
-    description: "属性名（`yeban_ui_test_port::inspect::property_of` 支持的清单 + 本控制面的虚拟属性 `isComposing` = `[UI-A11Y-002]` 的 IME 合成态, 返回原生布尔）",
+    description: "属性名（`yeban_ui_test_port::inspect::property_of` 支持的清单 —— 含 `[ARCH-UI-004]` 的 `value` = `accessible-value` 原文与 `checked` = `accessible-checked` 的 \"true\"/\"false\"; 这两个是**可选**属性, 元素没声明时如实报错, 而 `ui/node` 的对应字段是 null + 本控制面的虚拟属性 `isComposing` = `[UI-A11Y-002]` 的 IME 合成态, 返回原生布尔）",
 };
 const MASK_DYNAMIC: ParamSpec = ParamSpec {
     name: "maskDynamic",

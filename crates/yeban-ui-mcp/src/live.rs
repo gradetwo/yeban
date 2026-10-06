@@ -932,26 +932,40 @@ mod tests {
     /// 把它换成 `project.tracks[0].name`，因此"字面值是否等于工程"由 CI 钉住。
     fn project_like_tree() -> ControlTree {
         let mut tree = ControlTree::new();
-        let mut add = |id: &str, role: &str, label: &str, bounds: Option<Rect>| {
-            let node = ControlNode::new(id, Role::parse(role).expect("合法角色"), label);
-            let node = match bounds {
-                Some(rect) => node.with_bounds(rect),
-                None => node,
+        let mut add =
+            |id: &str, role: &str, label: &str, bounds: Option<Rect>, value: Option<&str>| {
+                let node = ControlNode::new(id, Role::parse(role).expect("合法角色"), label);
+                let node = match bounds {
+                    Some(rect) => node.with_bounds(rect),
+                    None => node,
+                };
+                let node = match value {
+                    Some(text) => node.with_value(text),
+                    None => node,
+                };
+                tree.insert(node).expect("夹具 ID 唯一且合法");
             };
-            tree.insert(node).expect("夹具 ID 唯一且合法");
-        };
         add(
             "track-0-header",
             "list-item",
             "轨道 Lead",
             Some(Rect::new(0, 48, 128, 56)),
+            None,
         );
-        add("track-0-fader", "slider", "轨道 Lead 推子", None);
+        // 推子带 `[ARCH-UI-004]` 的"自定义绑定状态"：让线格式里出现一个**有值**的节点。
+        add(
+            "track-0-fader",
+            "slider",
+            "轨道 Lead 推子",
+            None,
+            Some("-6.0 dB"),
+        );
         add(
             "status-bar",
             "region",
             "状态栏",
             Some(Rect::new(0, 114, 200, 6)),
+            None,
         );
         tree.insert(
             ControlNode::new(
@@ -1015,6 +1029,18 @@ mod tests {
             probe.tree_json.starts_with("{\"count\":") && probe.tree_json.contains(",\"nodes\":["),
             "线上投影的顶层键必须按字母序 (`count,nodes,source`): {}",
             &probe.tree_json[..probe.tree_json.len().min(80)]
+        );
+        // `[ARCH-UI-004]` 的状态字段必须在**线上**：有值的节点带字符串，没声明的节点带 `null`。
+        // 键必须在场（那正是"缺席 = null"这一契约的载体，缺键会让调用方无法区分两种"没有"）。
+        assert!(
+            probe.tree_json.contains("\"value\":\"-6.0 dB\""),
+            "线上文本里必须有推子的 `accessible-value`: {}",
+            probe.tree_json
+        );
+        assert!(
+            probe.tree_json.contains("\"checked\":null"),
+            "没声明勾选态的节点在线上必须是 null（不是 false）: {}",
+            probe.tree_json
         );
 
         // --- 节点 ---

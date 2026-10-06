@@ -7,6 +7,14 @@
 //! - `[UI-MCP-001]` §12.3：`ReadOnly` 权限就是"控件树结构检索 + 响应式属性读取"；
 //! - `[UI-MCP-002]` §12.5：比对前必须按**元素树元数据**取得高频刷新组件的矩形包围盒并置黑。
 //!
+//! ## 节点的"值"从哪来（`[ARCH-UI-004]` 的"自定义绑定状态（如推子电平）"）
+//!
+//! `[ARCH-UI-004]` 原文要求控件树能被提取"坐标、尺寸、可见性及**自定义绑定状态
+//! （如推子电平）**"。`ControlNode` 的 [`ControlNode::value`] / [`ControlNode::checked`]
+//! 就是那两个字段：它们来自 Slint 的 `accessible-value` / `accessible-checked`，
+//! **只有运行时路径**（[`crate::inspect::node_from_handle`]）能填 —— 静态注册表只知道
+//! 声明了什么，没有数值可读，因此在那条路径上如实为 `None`。
+//!
 //! ## 依赖方向（架构硬约束）
 //!
 //! 本 crate 由 `yeban-app` 通过 feature **单向**依赖（架构规范 §8 的 crate 清单）。
@@ -133,10 +141,26 @@ pub struct ControlNode {
     pub dynamic_region: bool,
     /// 父节点的语义 ID（§12.2 的"组件层级选择器"需要它）。根节点为 `None`。
     pub parent: Option<String>,
+    /// `accessible-value` 的**原文**（`[ARCH-UI-004]` 的"自定义绑定状态（如推子电平）"）。
+    ///
+    /// `None` = 该元素**没有声明** `accessible-value` —— 不是空串。
+    /// 两种"没有"必须分得开：`sidebar-search-field` 真的可以把值声明成 `""`，
+    /// 而一个没有值的按钮根本没有这个属性。用空串冒充后者会让调用方
+    /// "读到一个空值"，那是最坏的一种成功（与 `bounds: None` 同款口径）。
+    ///
+    /// 零成本：静态注册表路径（`registry_tree` / `test_port_adapter`）恒为 `None` ——
+    /// 注册表只知道"声明了什么"，没有运行时数值可读。
+    pub value: Option<String>,
+    /// `accessible-checked`（开关 / 复选 / 可勾选按钮的当前态）。
+    ///
+    /// `None` = 该元素没有声明 `accessible-checked`（或它不是可勾选控件）。
+    /// 同样**不编造** `false`：一个恒假的勾选位会让"开关真的关着"与
+    /// "这个控件根本没有勾选语义"变成同一件事。
+    pub checked: Option<bool>,
 }
 
 impl ControlNode {
-    /// 构造一个无几何、非动态区的节点（静态注册表路径的常见形态）。
+    /// 构造一个无几何、非动态区、**无值无勾选态**的节点（静态注册表路径的常见形态）。
     #[must_use]
     pub fn new(id: impl Into<String>, role: Role, label: impl Into<String>) -> Self {
         Self {
@@ -146,6 +170,8 @@ impl ControlNode {
             bounds: None,
             dynamic_region: false,
             parent: None,
+            value: None,
+            checked: None,
         }
     }
 
@@ -153,6 +179,20 @@ impl ControlNode {
     #[must_use]
     pub fn with_bounds(mut self, bounds: Rect) -> Self {
         self.bounds = Some(bounds);
+        self
+    }
+
+    /// 标注 `accessible-value` 的原文（运行时才有；注册表读不到数值）。
+    #[must_use]
+    pub fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    /// 标注 `accessible-checked`。
+    #[must_use]
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
         self
     }
 
@@ -633,6 +673,64 @@ mod tests {
                 role: "buton".to_owned()
             })
         );
+    }
+
+    /// 判据 4b: `[ARCH-UI-004]` 的"自定义绑定状态"—— 值 / 勾选态进模型，**缺席就是缺席**。
+    ///
+    /// 三件事一起钉住：
+    /// 1. `with_value` / `with_checked` 真的写进字段（不是只写进 JSON）；
+    /// 2. 没标注的节点是 `None` —— 默认**诚实**（不是 `Some("")` / `Some(false)`）；
+    /// 3. JSON 往返把 `null` 与"有值"分得开 —— `Some("")`（声明了空值）与 `None`
+    ///    （根本没有这个属性）在字节上不同。
+    #[test]
+    fn optional_state_is_absent_not_fabricated() {
+        let mut tree = ControlTree::new();
+        tree.insert(
+            node("track-0-fader", "slider")
+                .with_value("-6.0 dB")
+                .with_checked(true),
+        )
+        .expect("插入应当成功");
+        // 声明了**空值**的元素：这是 `""`，不是"没有值"。
+        tree.insert(node("sidebar-search-field", "text-input").with_value(""))
+            .expect("插入应当成功");
+        // 两个都没声明的元素（静态注册表路径的常态）。
+        tree.insert(node("clip-01J8Z-2-header", "list-item"))
+            .expect("插入应当成功");
+
+        let fader = tree.find_by_id("track-0-fader").expect("存在");
+        assert_eq!(fader.value.as_deref(), Some("-6.0 dB"));
+        assert_eq!(fader.checked, Some(true));
+
+        let search = tree.find_by_id("sidebar-search-field").expect("存在");
+        assert_eq!(
+            search.value.as_deref(),
+            Some(""),
+            "声明了空串的元素必须读成 `Some(\"\")`, 与『没有值』区分开"
+        );
+        assert_eq!(search.checked, None, "没有勾选态 ⇒ None, 不是 false");
+
+        let bare = tree.find_by_id("clip-01J8Z-2-header").expect("存在");
+        assert_eq!(bare.value, None, "没标注的值必须恒为 None（默认诚实）");
+        assert_eq!(bare.checked, None, "没标注的勾选态必须恒为 None");
+
+        // JSON 往返：`null` 与 `""` 是不同的字节, 且往返后逐字节相同。
+        let json = tree.dump_json();
+        assert!(
+            json.contains("\"value\": null") && json.contains("\"checked\": null"),
+            "缺席必须是 JSON null: {json}"
+        );
+        assert!(
+            json.contains("\"value\": \"\""),
+            "声明了空串的值必须序列化成空串（不是 null）: {json}"
+        );
+        assert!(
+            json.contains("\"value\": \"-6.0 dB\"") && json.contains("\"checked\": true"),
+            "有值 / 勾选态必须原样过线: {json}"
+        );
+        let parsed = ControlTree::from_json(&json).expect("往返应当成功");
+        assert_eq!(parsed, tree);
+        assert_eq!(parsed.dump_json(), json, "往返后的字节必须完全相同");
     }
 
     /// 判据 5: `[UI-MCP-002]` —— 动态区必须能产出遮罩矩形；"动态区没包围盒"必须报错而不是放过。

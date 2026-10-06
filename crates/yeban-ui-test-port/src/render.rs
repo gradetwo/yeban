@@ -498,8 +498,21 @@ impl<T: ComponentHandle> UiTestPort for LivePort<T> {
                 id: element_id.to_owned(),
             }
         })?;
-        inspect::property_of(&handle, name).ok_or_else(|| PortError::Rejected {
-            message: format!("不支持的属性名 `{name}` (见 inspect::property_of 的清单)"),
+        inspect::property_of(&handle, name).ok_or_else(|| {
+            // `[ARCH-UI-004]` 的两个**可选**状态属性（`value` / `checked`）在一个元素上
+            // 可能**根本没有声明** —— 那是元素的事实，不是调用方写错了名字。
+            // 两条都给 `Rejected`（读路径上映射为 `-32602`，D25：不发明新错误码），
+            // 但**话术必须不同**：把"没声明"说成"不支持这个属性名"会让调用方
+            // 去查文档找拼写，而真正的原因是那个控件没有值可读。
+            let message = if inspect::is_optional_property(name) {
+                format!(
+                    "元素 `{element_id}` 没有声明 `accessible-{name}`（该属性是可选的: \
+                     缺席时 `ui/node` / `ui/tree` 的 `{name}` 字段是 null）"
+                )
+            } else {
+                format!("不支持的属性名 `{name}` (见 inspect::property_of 的清单)")
+            };
+            PortError::Rejected { message }
         })
     }
 
@@ -817,6 +830,142 @@ mod tests {
         assert!(
             !regressed_verdict.passed,
             "静态回归必须被检出: {regressed_verdict}"
+        );
+
+        // ---------------- [ARCH-UI-004] 值 / 勾选态：来自**活组件**，不是测试常量 ----------------
+        //
+        // 规范原文（`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:236`）：
+        // *"AI Agent 可通过 JSON-RPC 查询控件树（Widget Tree），提取坐标、尺寸、可见性及
+        // **自定义绑定状态（如推子电平）**"*。下面四步把"读得到"钉牢：
+        //   ① 节点上有值 / 勾选态；② 没声明的元素如实为 `None`；
+        //   ③ **改根属性 ⇒ 读回来必须跟着变**（宿主若抄了一份常量，第 ③ 步变红）；
+        //   ④ `property_of("value")` 读的是**同一份活组件**。
+        //
+        // 为什么"改一次再读"是承重的：只断言一个初值，无法排除"主机把 `.slint` 里的
+        // 初值抄进了一个 Rust 常量"。夹具的 `fader-value` / `mute-on` 是根属性
+        // （`ui/fixture.slint`），测试改它们 —— 那不是测试自己写进树里的常量。
+        assert_eq!(
+            tree.find_by_id("mixer-vu-track-0")
+                .expect("夹具节点")
+                .value
+                .as_deref(),
+            Some("-6.0 dB"),
+            "`accessible-value` 必须进 `ControlNode::value`"
+        );
+        assert_eq!(
+            tree.find_by_id("transport-play-button")
+                .expect("夹具节点")
+                .checked,
+            Some(false),
+            "`accessible-checked` 必须进 `ControlNode::checked`"
+        );
+        // 没有声明这两个属性的元素：如实 `None`（不是空串 / `false`）。
+        let bare = tree.find_by_id("clip-01J8ZQ9K2M-header").expect("夹具节点");
+        assert_eq!(bare.value, None, "没声明 `accessible-value` ⇒ `None`");
+        assert_eq!(bare.checked, None, "没声明 `accessible-checked` ⇒ `None`");
+        assert_eq!(
+            bare.value, None,
+            "空串会与『声明了空值』混为一谈 —— 缺席必须是 None"
+        );
+
+        // 改活组件的根属性 ⇒ 重抓之后读回来必须变。
+        port.ui().set_fader_value("-3.5 dB".into());
+        port.ui().set_mute_on(true);
+        let refreshed = port
+            .refresh_tree(Some(&registry))
+            .expect("重抓运行时控件树")
+            .clone();
+        assert_eq!(
+            refreshed
+                .find_by_id("mixer-vu-track-0")
+                .expect("夹具节点")
+                .value
+                .as_deref(),
+            Some("-3.5 dB"),
+            "改 `fader-value` 之后读回来的值必须跟着变（常量抄本在这里变红）"
+        );
+        assert_eq!(
+            refreshed
+                .find_by_id("transport-play-button")
+                .expect("夹具节点")
+                .checked,
+            Some(true),
+            "翻转 `mute-on` 之后 `checked` 必须跟着翻"
+        );
+
+        // `property_of` 走的是**同一份活组件**（不是上面那棵树）。
+        let vu_handle = inspect::find_by_accessible_id(port.ui(), "mixer-vu-track-0")
+            .expect("活组件里有 `mixer-vu-track-0`");
+        assert_eq!(
+            inspect::property_of(&vu_handle, "value").as_deref(),
+            Some("-3.5 dB"),
+            "`ui/property {{name:\"value\"}}` 必须从活组件读到当前值"
+        );
+        let play_handle = inspect::find_by_accessible_id(port.ui(), "transport-play-button")
+            .expect("活组件里有 `transport-play-button`");
+        assert_eq!(
+            inspect::property_of(&play_handle, "checked").as_deref(),
+            Some("true"),
+            "`ui/property {{name:\"checked\"}}` 必须从活组件读到当前勾选态"
+        );
+        assert_eq!(
+            inspect::property_of(&vu_handle, "checked"),
+            None,
+            "进度条没有勾选态 ⇒ 如实 None（不是 \"false\"）"
+        );
+        let bare_handle = inspect::find_by_accessible_id(port.ui(), "clip-01J8ZQ9K2M-header")
+            .expect("活组件里有剪辑包头");
+        assert_eq!(
+            inspect::property_of(&bare_handle, "value"),
+            None,
+            "没声明 `accessible-value` 的元素 ⇒ `property_of` 也给 None（不是空串）"
+        );
+        assert_eq!(
+            inspect::property_of(&bare_handle, "nope"),
+            None,
+            "未知属性名同样是 None —— 两者由 `is_optional_property` 分开报"
+        );
+        assert!(
+            inspect::is_optional_property("value") && inspect::is_optional_property("checked"),
+            "两个可选属性名必须在 `OPTIONAL_PROPERTY_NAMES` 里（否则 `read_property` \
+             会把『元素没声明』说成『不支持这个属性名』）"
+        );
+        assert!(
+            !inspect::is_optional_property("role"),
+            "`role` 是必答属性, 不是可选属性"
+        );
+
+        // `read_property` 的 `None` 有**两种**含义，话术必须分开：
+        //   ① 元素没声明这个可选属性（元素的事实）；
+        //   ② 名字根本不支持（调用方写错了）。
+        // 把它们混成一句会让调用方去查文档找拼写。
+        match port.read_property("clip-01J8ZQ9K2M-header", "value") {
+            Err(PortError::Rejected { message }) => {
+                assert!(
+                    message.contains("没有声明 `accessible-value`"),
+                    "元素没声明的可选属性必须说清是『没声明』: {message}"
+                );
+                assert!(
+                    !message.contains("不支持的属性名"),
+                    "『没声明』不能混成『不支持这个属性名』: {message}"
+                );
+            }
+            other => panic!("没声明 `accessible-value` 必须报 `Rejected`: {other:?}"),
+        }
+        match port.read_property("clip-01J8ZQ9K2M-header", "nope") {
+            Err(PortError::Rejected { message }) => {
+                assert!(
+                    message.contains("不支持的属性名"),
+                    "未知属性名必须说清是『不支持这个属性名』: {message}"
+                );
+            }
+            other => panic!("未知属性名必须报 `Rejected`: {other:?}"),
+        }
+        // 有值的元素照常读到（与 `property_of` 同一份活组件）。
+        assert_eq!(
+            port.read_property("mixer-vu-track-0", "value").as_deref(),
+            Ok("-3.5 dB"),
+            "端口路径必须读到活组件的当前值"
         );
 
         // ---------------- [UI-MCP-001] 三级权限在真实端口上的行为 ----------------

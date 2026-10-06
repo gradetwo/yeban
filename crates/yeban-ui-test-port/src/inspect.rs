@@ -145,7 +145,12 @@ pub fn role_name(role: AccessibleRole) -> &'static str {
 /// - `accessible-id` 格式不合法返回 `Err(MalformedId)`：不允许静默跳过，
 ///   否则一个拼错的 ID 会表现为"元素不见了"；
 /// - 角色缺省为 `none`，标签缺省为空串；
-/// - 几何来自 `absolute_position()` + `size()`（窗口坐标，逻辑像素，见 `[UI-MCP-002]` 的包围盒）。
+/// - 几何来自 `absolute_position()` + `size()`（窗口坐标，逻辑像素，见 `[UI-MCP-002]` 的包围盒）；
+/// - [`ControlNode::value`] / [`ControlNode::checked`] 直接来自**活组件**的
+///   `accessible-value` / `accessible-checked`（`[ARCH-UI-004]` 的"自定义绑定状态（如推子
+///   电平）"）。元素**没有声明**它们时如实为 `None` —— 不编造空串 / `false`。
+///   零成本：这只是两个已经在读的 `accessible_string_property` 查询，
+///   注册表路径根本不调用本函数。
 ///
 /// `dynamic_region` 在这里**恒为 `false`**：运行时读不到"这个节点每帧跳变"这种业务知识。
 /// 它必须由调用方用 [`ControlTree::merge_dynamic_flags_from`] 从静态注册表注入
@@ -178,6 +183,8 @@ pub fn node_from_handle(handle: &ElementHandle) -> Result<Option<ControlNode>, T
         bounds: Some(bounds),
         dynamic_region: false,
         parent: None,
+        value: handle.accessible_value().map(|text| text.to_string()),
+        checked: handle.accessible_checked(),
     }))
 }
 
@@ -241,12 +248,36 @@ pub fn find_by_accessible_id(root: &impl ElementRoot, id: &str) -> Option<Elemen
         .find_first()
 }
 
+/// 元素**可能没有声明**的可选属性名（`accessible-value` / `accessible-checked`）。
+///
+/// 存在的意义只有一个：让 [`property_of`] 的 `None` 可以被**分开解释** ——
+/// "这个名字不支持"与"这个元素没有声明它"是两件事，调用方给出的话术必须不同。
+/// 取值一律来自活组件的 `accessible-string-property`，不由本 crate 编造。
+pub const OPTIONAL_PROPERTY_NAMES: [&str; 2] = ["value", "checked"];
+
+/// 一个名字是不是上面那族的**可选属性**。
+#[must_use]
+pub fn is_optional_property(name: &str) -> bool {
+    OPTIONAL_PROPERTY_NAMES.contains(&name)
+}
+
 /// 读一个元素的"属性投影"。
 ///
 /// 只暴露**可字符串化且稳定**的那些属性（§12.3 的 `ReadOnly` 就是"响应式属性读取"）。
 /// 未支持的属性名返回 `None` —— 不返回空串冒充成功。
 ///
-/// 支持：`role` / `label` / `id` / `type` / `x` / `y` / `width` / `height` / `opacity` / `valid`。
+/// 支持：`role` / `label` / `id` / `type` / `x` / `y` / `width` / `height` / `opacity` /
+/// `valid`，以及 `[ARCH-UI-004]` 的**自定义绑定状态** `value`（`accessible-value` 原文）
+/// 与 `checked`（`accessible-checked`，`"true"` / `"false"`）。
+///
+/// ## `None` 的两种含义（调用方**必须**分开报，别混成一句"不支持"）
+///
+/// 1. 名字不在支持清单里 —— 那是调用方写错了（未知属性）；
+/// 2. 名字是 [`OPTIONAL_PROPERTY_NAMES`] 之一、但这个元素**没有声明**它
+///    （例如对一个纯按钮问 `value`）—— 那是元素的事实，不是调用方的错。
+///
+/// 用 [`is_optional_property`] 把两者分开。缺席的**权威 schema** 是 [`ControlNode`] 的
+/// `value: null` / `checked: null`（见 [`crate::tree`] 与 `ui/node` 的投影）。
 #[must_use]
 pub fn property_of(handle: &ElementHandle, name: &str) -> Option<String> {
     let position = handle.absolute_position();
@@ -276,6 +307,11 @@ pub fn property_of(handle: &ElementHandle, name: &str) -> Option<String> {
                 .map(|text| text.to_string())
                 .unwrap_or_default(),
         ),
+        // `[ARCH-UI-004]` 的"自定义绑定状态（如推子电平）"：**活**组件的 `accessible-value`。
+        "value" => handle.accessible_value().map(|text| text.to_string()),
+        "checked" => handle
+            .accessible_checked()
+            .map(|checked| checked.to_string()),
         "x" => Some(format!("{:.2}", position.x)),
         "y" => Some(format!("{:.2}", position.y)),
         "width" => Some(format!("{:.2}", size.width)),

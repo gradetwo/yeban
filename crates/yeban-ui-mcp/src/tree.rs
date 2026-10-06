@@ -31,6 +31,13 @@
 //! （不可见的分支根本不会出现在运行时树里，而注册表不知道可见性）。
 //! 编造 `false` 会让调用方以为"这个元素存在但被隐藏了" —— 那是错的。
 //!
+//! ## `value` / `checked` 为什么是 `Option`（同上，**不编造**）
+//!
+//! `[ARCH-UI-004]` 要求控件树能给出"自定义绑定状态（如推子电平）"。这两个字段来自
+//! Slint 的 `accessible-value` / `accessible-checked`，在**元素没有声明它们**时是 `null`：
+//! 空串会把"声明了空值"与"根本没有值"混成一件事，而恒假会把"开关关着"与
+//! "这个控件不能勾选"混成一件事。`null` = 缺席，是本投影对"无值"的**唯一**表达。
+//!
 //! ## 稳定键序（红线 4 的精神）
 //!
 //! 节点按**语义 ID 升序**排列（`ControlTree` 内部是 `BTreeMap`，与插入顺序无关），
@@ -98,6 +105,18 @@ pub struct UiNode {
     pub maskable: bool,
     /// 父节点的语义 ID（`null` 表示根，或该来源给不出层级）。
     pub parent: Option<String>,
+    /// `accessible-value` 的原文（`[ARCH-UI-004]` 的"自定义绑定状态（如推子电平）"）。
+    ///
+    /// **`null` 就是"这个控件没有值"** —— 这是"无值"在 schema 里的**唯一**表达：
+    /// 不是空串（空串是一个真实的值，`sidebar-search-field` 就声明了 `""`），
+    /// 也不是缺席的键（缺席会让"没这个字段"与"字段为 null"无法区分）。
+    /// 只有运行时来源能填它（静态注册表没有数值，恒 `null`，与 `bounds` 同款理由）。
+    pub value: Option<String>,
+    /// `accessible-checked`（开关 / 复选 / 可勾选按钮的当前态）。
+    ///
+    /// `null` = 该元素没有声明勾选态。**永不编造 `false`** —— 恒假会让
+    /// "开关真的关着"与"这个控件没有勾选语义"变成同一件事（与 `visible` 同款口径）。
+    pub checked: Option<bool>,
 }
 
 /// 整棵树的 JSON 投影。
@@ -154,6 +173,8 @@ impl UiTree {
                 dynamic_region: node.dynamic_region,
                 maskable: node.needs_masking(),
                 parent: node.parent.clone(),
+                value: node.value.clone(),
+                checked: node.checked,
             })
             .collect::<Vec<_>>();
         Self {
@@ -425,6 +446,85 @@ mod tests {
                 id: "mixer-vu-track-1".to_owned()
             })
         );
+    }
+
+    /// 判据 3b: `[ARCH-UI-004]` 的"自定义绑定状态"过线 —— `value` / `checked` 原样投影，
+    /// **缺席投影成 `null` 而不是空串 / `false`**（与 `visible` 同一条"不编造"口径）。
+    ///
+    /// 注入验证：把 `project` 里的 `value: node.value.clone()` 改成 `String::new().into()`
+    /// （或 `checked: Some(false)`），本判据的第一条/第三条断言变红。
+    #[test]
+    fn optional_state_is_projected_faithfully_and_absent_is_null() {
+        let mut tree = ControlTree::new();
+        tree.insert(
+            ControlNode::new("track-0-fader", role("slider"), "轨道 0 推子")
+                .with_value("-6.0 dB")
+                .with_checked(true),
+        )
+        .expect("插入");
+        // 声明了**空值**的控件：`""` 是一个真实的值，不能与"没有值"混同。
+        tree.insert(
+            ControlNode::new("sidebar-search-field", role("text-input"), "搜索").with_value(""),
+        )
+        .expect("插入");
+        // 两个都没声明（静态注册表路径的常态）。
+        tree.insert(ControlNode::new(
+            "clip-01J8Z-2-header",
+            role("list-item"),
+            "剪辑头",
+        ))
+        .expect("插入");
+
+        let runtime = UiTree::from_runtime(&tree);
+        let fader = runtime.find("track-0-fader").expect("存在");
+        assert_eq!(fader.value.as_deref(), Some("-6.0 dB"));
+        assert_eq!(fader.checked, Some(true));
+
+        let search = runtime.find("sidebar-search-field").expect("存在");
+        assert_eq!(search.value.as_deref(), Some(""), "空串必须原样过线");
+        assert_eq!(search.checked, None, "没有勾选态 ⇒ null, 不是 false");
+
+        let bare = runtime.find("clip-01J8Z-2-header").expect("存在");
+        assert_eq!(bare.value, None, "缺席必须是 null");
+        assert_eq!(bare.checked, None, "缺席必须是 null");
+
+        // 静态注册表路径：适配器只用 `ControlNode::new`（不标注值 / 勾选态），
+        // 因此注册表树的这两个字段**恒 null** —— 注册表没有运行时数值可读。
+        // ⚠ 这条约束属于**适配器**（`registry_tree` / `test_port_adapter`），不属于
+        // `UiTree::from_registry`：后者只是把传进来的那棵树投影一遍，它不负责抹掉状态
+        // （抹掉会让"注册表里碰巧有值"这种上游错误变成静默通过）。
+        let mut registry_shaped = ControlTree::new();
+        registry_shaped
+            .insert(ControlNode::new(
+                "track-0-fader",
+                role("slider"),
+                "轨道 0 推子",
+            ))
+            .expect("插入");
+        let registry = UiTree::from_registry(&registry_shaped);
+        for node in &registry.nodes {
+            assert!(
+                node.value.is_none() && node.checked.is_none(),
+                "注册表适配器的 `ControlNode::new` 不得凭空给出值 / 勾选态: {node:?}"
+            );
+        }
+
+        // 线上 JSON：null 与 `""` 是不同字节。
+        let json = runtime.to_json_pretty();
+        assert!(
+            json.contains("\"value\": null") && json.contains("\"checked\": null"),
+            "缺席必须是 JSON null: {json}"
+        );
+        assert!(
+            json.contains("\"value\": \"\""),
+            "声明了空串的值必须序列化成空串: {json}"
+        );
+        assert!(
+            json.contains("\"value\": \"-6.0 dB\"") && json.contains("\"checked\": true"),
+            "有值 / 勾选态必须原样过线: {json}"
+        );
+        // 两次序列化逐字节相同（稳定键序）。
+        assert_eq!(runtime.to_json_pretty(), runtime.to_json_pretty());
     }
 
     /// 判据 4: **动态区矩形来自运行时包围盒**（`[UI-MCP-002]` §12.5），不是硬编码坐标。

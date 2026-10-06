@@ -88,8 +88,8 @@ pub mod tree;
 pub use golden::{GOLDEN_ROOT, GoldenError, PlatformTag};
 pub use image::{ImageError, LumaImage, MASK_COLOR, Rect, Rgb8Image, Size};
 pub use inspect::{
-    find_by_accessible_id, install_testing_backend, node_from_handle, role_name,
-    tree_from_element_root,
+    OPTIONAL_PROPERTY_NAMES, find_by_accessible_id, install_testing_backend, is_optional_property,
+    node_from_handle, property_of, role_name, tree_from_element_root,
 };
 pub use mask::{apply_masks, equal_after_masking, mask_is_effective, mask_rects_from_tree, masked};
 pub use png::{PngError, REPO_MAX_FILE_BYTES, encode_rgb8, encode_rgb8_limited, encoded_len};

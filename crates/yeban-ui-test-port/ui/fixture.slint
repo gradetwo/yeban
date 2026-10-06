@@ -35,6 +35,13 @@ export component PortFixture inherits Window {
     height: 120px;
     background: rgb(16, 32, 48);
 
+    // `[ARCH-UI-004]` 的"自定义绑定状态（如推子电平）"：夹具必须**能变**的值，
+    // 否则"读回来的是活组件还是宿主抄的一份"就无法分辨（判据改这个属性再读一次）。
+    // 两个都是 `in` 属性：夹具只负责被读，不参与写回。
+    in property <string> fader-value: "-6.0 dB";
+    // 可勾选控件的当前态（判据翻转它 ⇒ `accessible-checked` 必须跟着翻）。
+    in property <bool> mute-on: false;
+
     // 走带栏
     Rectangle {
         x: 0px;
@@ -55,10 +62,15 @@ export component PortFixture inherits Window {
             accessible-role: button;
             accessible-id: "transport-play-button";
             accessible-label: "播放";
+            // 可勾选按钮：判据读 `accessible-checked` 并翻转 `root.mute-on`。
+            accessible-checkable: true;
+            accessible-checked: root.mute-on;
         }
     }
 
     // 静态图元: 剪辑包头 (用来验证"静态回归必须被检出")
+    // 它**故意没有** `accessible-value` / `accessible-checked` —— 用来钉住
+    // "没有声明的状态如实读成 None，而不是空串 / false"。
     Rectangle {
         x: 8px;
         y: 24px;
@@ -83,6 +95,7 @@ export component PortFixture inherits Window {
     }
 
     // [UI-MCP-002] 动态区 2: VU 电平条 (窄条)
+    // `accessible-value` 绑定到 `root.fader-value`：值是活的（判据改它 ⇒ 读回来的必须变）。
     Rectangle {
         x: 148px;
         y: 24px;
@@ -92,6 +105,7 @@ export component PortFixture inherits Window {
         accessible-role: progress-indicator;
         accessible-id: "mixer-vu-track-0";
         accessible-label: "轨道 0 VU 电平";
+        accessible-value: root.fader-value;
     }
 
     // [UI-MCP-002] 动态区 3: 走带光标 (极窄, 2px)

@@ -440,6 +440,47 @@ fn label_in(tree: &UiTree, id: &str) -> String {
         .clone()
 }
 
+/// 取某个语义 ID 在**执行面**控件树（`ControlTree`）里的 `accessible-value` 原文。
+///
+/// `None` = 该元素**没有声明** `accessible-value`（`[ARCH-UI-004]` 的可选状态属性；
+/// 不是空串）。判据既要读值，也要读"没有值"。
+fn value_of(tree: &ControlTree, id: &str) -> Option<String> {
+    tree.find_by_id(id)
+        .unwrap_or_else(|| panic!("运行时控件树里没有 `{id}`"))
+        .value
+        .clone()
+}
+
+/// 取某个语义 ID 在**执行面**控件树（`ControlTree`）里的 `accessible-checked`。
+fn checked_of(tree: &ControlTree, id: &str) -> Option<bool> {
+    tree.find_by_id(id)
+        .unwrap_or_else(|| panic!("运行时控件树里没有 `{id}`"))
+        .checked
+}
+
+/// 取某个语义 ID 在**控制面**投影（`ui/tree` 的 `UiTree`）里的 `accessible-value`。
+fn value_in(tree: &UiTree, id: &str) -> Option<String> {
+    tree.find(id)
+        .unwrap_or_else(|| panic!("`ui/tree` 的投影里没有 `{id}`"))
+        .value
+        .clone()
+}
+
+/// 取某个语义 ID 在**控制面**投影（`ui/tree` 的 `UiTree`）里的 `accessible-checked`。
+fn checked_in(tree: &UiTree, id: &str) -> Option<bool> {
+    tree.find(id)
+        .unwrap_or_else(|| panic!("`ui/tree` 的投影里没有 `{id}`"))
+        .checked
+}
+
+/// 从推子的 `accessible-value`（`"-3.2 dB"`）里取出 dB 数值。
+///
+/// 用于把**读回来的文本**与 `TrackV3::volume_db`（模型的权威数字）对账 ——
+/// 而不是与"测试自己写的期望文本"对账。`{:.1}` 的显示精度 ⇒ 容差 0.05 dB。
+fn db_of_value(value: &str) -> Option<f32> {
+    value.strip_suffix(" dB")?.trim().parse::<f32>().ok()
+}
+
 /// 从电平标签里取出**峰值 dBFS**（`"… 峰值 -6.0 RMS -23.4 dBFS"` ⇒ `-6.0`）。
 ///
 /// 为什么不用字符串相等去断言电平: 电平是**新引擎真实合成**的产物, 把它写成常量会让这条判据
@@ -640,6 +681,58 @@ fn mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
         format!("轨道色标 {}", demo_view.track_color_labels()[0])
     );
     assert_eq!(label_of(&before, "track-0-fader"), "轨道 鼓 推子");
+
+    // ---- [ARCH-UI-004] "自定义绑定状态（如推子电平）"：值 / 勾选态真的读得回来 ----
+    //
+    // 读的是活控件上的 `accessible-value` / `accessible-checked`（不是标签文本，
+    // 也不是测试自己写进树里的常量）。期望值从**投影**（`ViewState`）派生，
+    // 而"它跟着活控件走"由下面的换工程那一段证明（换工程 ⇒ 读回来的值必须变）。
+    let demo_fader_value =
+        value_of(&before, "track-0-fader").expect("推子必须声明 accessible-value");
+    let demo_fader_db = db_of_value(&demo_fader_value)
+        .unwrap_or_else(|| panic!("推子值必须形如 `X dB`，实测 {demo_fader_value:?}"));
+    assert!(
+        (demo_fader_db - demo_view.tracks[0].volume_db).abs() <= 0.05,
+        "读回来的推子值 {demo_fader_db} dB 必须等于投影的 volume_db {} dB（`{{:.1}}` 的显示精度 ⇒ 容差 0.05）",
+        demo_view.tracks[0].volume_db
+    );
+    assert_eq!(
+        demo_fader_value,
+        format!("{} dB", demo_view.track_volumes()[0]),
+        "accessible-value 的文本必须就是投影的 `volume_display + \" dB\"`"
+    );
+    assert!(
+        demo_view.track_solos()[0] && demo_view.track_mutes()[5],
+        "演示工程必须 0 号轨独奏、5 号轨静音，否则下面两条断言没有分辨力"
+    );
+    assert_eq!(
+        checked_of(&before, "track-0-mixer-solo-button"),
+        Some(demo_view.track_solos()[0]),
+        "独奏按钮的 checked 必须来自工程"
+    );
+    assert_eq!(
+        checked_of(&before, "track-5-mixer-mute-button"),
+        Some(demo_view.track_mutes()[5]),
+        "静音按钮的 checked 必须来自工程"
+    );
+    // 没有声明可选状态的元素：如实 `None`（不是空串 / `false`）。
+    assert_eq!(
+        value_of(&before, "track-0-mixer-color-swatch"),
+        None,
+        "色标没有声明 `accessible-value` ⇒ None，不许用空串冒充"
+    );
+    assert_eq!(
+        checked_of(&before, "track-0-fader"),
+        None,
+        "推子没有声明 `accessible-checked` ⇒ None，不许编造 false"
+    );
+    report_line(&format!(
+        "[app-mixer] [ARCH-UI-004] 演示工程: track-0-fader value={demo_fader_value:?} \
+         track-0-mixer-solo-button checked={:?} track-5-mixer-mute-button checked={:?}",
+        checked_of(&before, "track-0-mixer-solo-button"),
+        checked_of(&before, "track-5-mixer-mute-button")
+    ));
+
     let frame_before = frame_fingerprint(&live.capture().expect("换工程前抓帧"));
 
     // ---- 同一个活窗口上换工程 ----
@@ -660,6 +753,42 @@ fn mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
         label_of(&after, "track-0-mixer-color-swatch"),
         format!("轨道色标 {}", filled_view.track_color_labels()[0])
     );
+
+    // ---- [ARCH-UI-004] 换工程 ⇒ 读回来的值 / 勾选态必须**跟着变**（常量抄本在这里变红） ----
+    let filled_fader_value =
+        value_of(&after, "track-0-fader").expect("推子必须声明 accessible-value");
+    assert_eq!(
+        filled_fader_value,
+        format!("{} dB", filled_view.track_volumes()[0]),
+        "换工程后推子值必须来自**新**投影"
+    );
+    assert!(
+        (db_of_value(&filled_fader_value).expect("形如 X dB") - filled_view.tracks[0].volume_db)
+            .abs()
+            <= 0.05,
+        "换工程后读回来的推子值必须等于新投影的 volume_db {}",
+        filled_view.tracks[0].volume_db
+    );
+    assert_ne!(
+        demo_fader_value, filled_fader_value,
+        "换工程必须换推子值（演示 {} vs 样本 {}）—— 否则读的不是活控件",
+        demo_view.tracks[0].volume_db, filled_view.tracks[0].volume_db
+    );
+    assert!(
+        !filled_view.track_solos()[0],
+        "样本工程 0 号轨必须不独奏，否则下面那条断言没有分辨力"
+    );
+    assert_eq!(
+        checked_of(&after, "track-0-mixer-solo-button"),
+        Some(filled_view.track_solos()[0]),
+        "换工程后独奏勾选态必须来自新投影"
+    );
+    assert_ne!(
+        checked_of(&before, "track-0-mixer-solo-button"),
+        checked_of(&after, "track-0-mixer-solo-button"),
+        "同一个活窗口换工程 ⇒ 独奏勾选态必须真的翻（演示 true / 样本 false）"
+    );
+
     let frame_after = frame_fingerprint(&live.capture().expect("换工程后抓帧"));
     assert_ne!(
         frame_before, frame_after,
@@ -701,6 +830,57 @@ fn mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
         family_member_count(&probe.tree, "track-", "-channel-strip"),
         filled_view.tracks.len()
     );
+
+    // ---- `[ARCH-UI-004]` 端到端：`ui/property` 的两个状态属性走**活控件**，与 `ui/node` 一致 ----
+    assert_eq!(
+        value_in(&tree, "track-0-fader").as_deref(),
+        Some(filled_fader_value.as_str()),
+        "`ui/tree` 的 `value` 必须与执行面树上读到的是同一个值"
+    );
+    assert_eq!(
+        checked_in(&tree, "track-0-mixer-solo-button"),
+        Some(false),
+        "`ui/tree` 的 `checked` 必须与执行面树一致"
+    );
+    let value_line = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":71,"method":"ui/property","params":{"elementId":"track-0-fader","name":"value"}}"#,
+    );
+    assert!(
+        !value_line.is_error(),
+        "`ui/property` value: {value_line:?}"
+    );
+    assert_eq!(
+        value_line.result.expect("有 result")["value"],
+        filled_fader_value.as_str(),
+        "`ui/property {{name:\"value\"}}` 必须从**活控件**读到当前值"
+    );
+    let checked_line = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":72,"method":"ui/property","params":{"elementId":"track-0-mixer-solo-button","name":"checked"}}"#,
+    );
+    assert!(
+        !checked_line.is_error(),
+        "`ui/property` checked: {checked_line:?}"
+    );
+    assert_eq!(
+        checked_line.result.expect("有 result")["value"],
+        "false",
+        "`ui/property {{name:\"checked\"}}` 必须从活控件读到勾选态"
+    );
+    // 缺席必须**如实报错**（`-32602`，D25 不发明新码）—— 不是空串，也不是"成功但没值"。
+    //
+    // 为什么不在这里断言那句话：`invalid_params` 把详细理由放在 `error.data.detail`，
+    // 而 `message` 是稳定的种类说明（"参数非法"）。本仓库的口径是"判据断言拒的**理由**
+    // （机器可读），不去比对一句人话"。因此"元素没声明"与"不支持这个属性名"这两条话术的
+    // 区分由**端口层**判据钉住（`yeban-ui-test-port` 的 `read_property` 直接给
+    // `PortError::Rejected { message }`），这里只钉线上错误码。
+    let absent = plane.plane().try_line(
+        r#"{"jsonrpc":"2.0","id":73,"method":"ui/property","params":{"elementId":"track-0-mixer-color-swatch","name":"value"}}"#,
+    );
+    assert!(
+        absent.is_error(),
+        "色标没有 `accessible-value` ⇒ 必须报错而不是空串: {absent:?}"
+    );
+    assert_eq!(absent.code, Some(-32602));
 }
 
 /// 判据 6（**电平真的被消费**）：注入一组已知 `MeterFrame` ⇒ 控件树里的 dBFS 与之一致。
