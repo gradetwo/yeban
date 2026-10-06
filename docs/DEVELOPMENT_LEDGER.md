@@ -8582,3 +8582,27 @@ is green at `0cc9dd3`.
 
 **Status**: tree green and clean; `ad1afa7` (the `.als` first slice) and `0cc9dd3` are pushed with verdicts pending; Phase 4 is 4 完成 / 6 部分 / 0 PENDING;
 fifteen MUST-GATEs wired; the loudness, mapping and MCP-tool items CI-verified.
+
+
+### Round 354: correction - the in-process-mcp criteria are NOT executed by CI, and I claimed they were
+
+A delegated tracking pass caught an error in my own reporting, and my independent check confirms it: **no CI step runs anything with the `in-process-mcp` feature**.
+`grep -rc 'in-process-mcp' .github/` is **0** in every workflow and CODEOWNERS; the only `--all-features` in `ci.yml` is at `:422`, inside the **cargo-deny** job, and
+`gates-manual.yml`'s `all-features` catalog entry runs **clippy only** - a compile, not a run. So the criteria in `crates/yeban-app/tests/in_process_mcp.rs` and
+`crates/yeban-app/tests/in_process_mcp_lock.rs` carry `#![cfg(feature = "in-process-mcp")]`, are compiled by that manual clippy gate, and are **never executed by
+CI**.
+
+**Therefore my statements that `ROAD-M4-001` and `ROAD-M0-007` were "CI-verified" were wrong**, and I am retracting them here. What is actually true: the commits
+(`4971549`, `db1a667`) passed CI for their **default-feature** legs (per-crate and, for `4971549`, the whole-workspace sweep, plus Windows), and the criteria
+themselves were verified **locally** - `in_process_mcp` 2 passed, `in_process_mcp_lock` 3 passed, `0 failed`. The ledger row now says exactly that, and the
+feature-alignment row says it too.
+
+**Why this matters beyond bookkeeping**: the objective's rule is that `ci.yml` plus `gates-manual.yml` are the *only* source of "green". A test that CI compiles but
+never runs is not covered by that source, no matter how green the surrounding run looks - and this session has already been bitten once by reading an aggregate
+verdict instead of asking what a specific count would show. The fix is small and now well specified: give the manual all-features 档位 a **run** step (not only
+clippy) for `yeban-app`, or add the feature to a CI leg, so these criteria execute somewhere authoritative. `.github/**` is integrator-owned, which in this line
+means me.
+
+**Status**: tree green and clean at `d72827f` (= `origin/main`); the tracking rows for the dual-MCP loop and the cross-form lock now match what landed; one
+further stale row (`进程内嵌入 yeban-app`) is identified with its two possible marker choices and awaits my decision; the CI-coverage gap above is the newest
+registered item.
