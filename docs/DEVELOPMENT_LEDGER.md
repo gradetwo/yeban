@@ -8707,3 +8707,24 @@ twelve lines that should never have been there.
 
 **Status**: tree green and clean at `ae3024b` (= `origin/main`); automatic CI green through `80a7f85`; both manual gates succeed; the in-process-mcp criteria are
 CI-executed; Phase 4 stands at 6 完成 / 4 部分 / 0 PENDING with Phase 0 at 2 / 5 / 2, and all fifteen MUST-GATEs wired.
+
+
+### Round 359: the buildable queue for Phase 4 is empty - the remaining 部分 items are convergence, hardware or design-gated
+
+Reconnaissance rather than assumption: I read the four remaining Phase 4 `部分` rows to see whether any is independently buildable.
+
+* **`ROAD-M4-010`** is the Phase 4 **convergence item** (`P4_Gate`'s four in-edges) and its own cell says so: its status is **necessarily held back by the other
+  items** and must not be raised on its own. Its inline counts were stale ("截至第 50 轮: 11 已接线 / 7 部分 / 3 PENDING") and are now replaced with the current
+  authoritative statement - **all fifteen `MUST-GATE`s wired; 19 已接线 / 0 部分 / 2 PENDING**, the two being `BASELINE-003` (needs fixed-refresh hardware, HD-49)
+  and `BASELINE-006` (deferred口径).
+* **`ROAD-M4-006`** (32-track master at ≥100× realtime) needs the **reference machine** - HD-49.
+* **`ROAD-M4-008`** (a single mutable UI↔domain authority) needs a **design decision**, and the delegated run documented the structural reason precisely: `Domain`
+  owns its project clone with no external-mutable injection point, while `UndoPort` and `LiveSurface` each hold their own copy.
+* **`ROAD-M4-001`** and **`ROAD-M0-007`** are already 已完成 and now have **CI-executed** evidence (round 358).
+
+**So the honest state of this line is**: the work I could do without a decision from the负责人 is done - the mapping layer is shared, the MCP tool set is complete,
+the loudness target is closed, the mount and its lock are wired and CI-executed, both CI sources of "green" are operational again, and the tracking matches reality
+(with the guards confirming it at every step). What remains is **seven decisions**, listed in every report, plus the two PENDINGs that are hardware or
+already-deferred.
+
+**Status**: tree green and clean at `a3be329` (= `origin/main`); all gates green; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2.
