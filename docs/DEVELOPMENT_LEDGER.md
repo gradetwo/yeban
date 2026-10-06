@@ -9250,3 +9250,32 @@ criterion** yet - left as an explicit follow-up rather than papered over.
 
 **Status**: `dd4afb6` pushed; CI verdict to read back; Phase 4 6 完成 / 4 部分 / 0 PENDING; open-questions 1 and 4 closed, **question 5 is the only one left for the
 负责人**; next authorised line is question 2 (loudness over the existing control plane), then question 6 (`M4-008`).
+
+
+### Round 385: question 2 landed as a cursor, not a push - because the transport was audited first
+
+`24b7c92` implements `open-questions.md` question 2 option (a) under the standing authorisation, and the way it was done matters more than the diff. The line
+**audited `transport/http.rs` before designing** and found it is one-request-one-response with `Connection: close` and no keep-alive, chunked or HTTP/2 - so a
+server-initiated push is inexpressible without a second mechanism. It therefore took the fallback the brief had pre-authorised (a `since` cursor) rather than bolting
+on a parallel channel, which is exactly what the option's pre-refusal of (c) asked for.
+
+What it reused: `set_engine_readings` becomes the **single** write point that bumps a revision (idempotent - identical content does not bump it) and trims a 64-entry
+tail; the server is now `Arc`-shared so worker and host share **one** dispatcher; the host-only handle routes into `Domain::set_engine_readings`, so nothing on the
+JSON-RPC surface can reach the mirror. No new port, token, thread or auth scheme. Client shape: `yeban_query_engine_state` gains an optional integer `since`; with it
+the reply carries `data.readingsStream = {since, revision, buffered, agedOut, updates[]}` with each update carrying the five loudness fields plus sample rate and
+buffer frames; **without** `since` the response is unchanged field-for-field and only `engine.readingsRevision` is added as the cursor to feed back.
+
+Verified independently, with the metric named before measuring (the rule from round 384): default `cargo tree -e normal` shows the string `yeban-mcp` **0** times,
+**1** with the feature; the commit's `--name-only` list contains **0** `Cargo.toml`/`Cargo.lock`; `in_process_mcp` runs **3 passed / 0 failed** with the feature (was
+2) and its negative measurement - removing `self.engine = readings;` - turns it red at `in_process_mcp.rs:491`. Guards green, `light` 门禁通过.
+
+**The honest boundary it recorded, which I am carrying forward**: loudness now **reaches** clients, but **nothing in the GUI publishes it yet** - `grep` for loudness
+in `crates/yeban-app/src` is 0, so no production call site invokes the handle, and window overflow is reported as `agedOut` rather than a server push. That is a
+producer-side follow-up (the app has no loudness meter reading to publish), not a defect in this slice, and it is written in the ledger rather than implied.
+
+**A real inconsistency found and fixed in this round**: `human-decisions.md`'s header still claimed all 42 items were decided, but the table now holds **49** rows
+with **HD-44** and **HD-49** open - `check_decisions.py` prints `49 项(其中 47 项已裁决)` on every run. The header now says 49/47, names the two open rows, and
+records that the count was corrected. That is the same class of stale summary this line has been auditing all along, found this time inside the human's own ledger.
+
+**Status**: `24b7c92` and `f975128` pushed; Phase 4 6 完成 / 4 部分 / 0 PENDING; open-questions 1, 2 and 4 closed; **question 5 (a reference `.als`) is the only item
+left for the负责人**; the last authorised line is question 6 (`M4-008` single authority).
