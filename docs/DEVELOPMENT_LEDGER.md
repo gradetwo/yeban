@@ -9133,3 +9133,24 @@ also the reason no further CI work is needed here: the step is the general guard
 **Status**: tree green and clean at `aa3d0d7` (= `origin/main`); automatic CI green for the last sixteen commits with none outstanding; both manual tiers green; all
 fifteen MUST-GATEs wired and the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions
 plus one cleanup permission outstanding in `docs/ledger/open-questions.md`.
+
+
+### Round 380: the material registration for `MUST-GATE-014` is complete, so the ruling is immediately executable
+
+Checked what decision 4 (`MUST-GATE-014` material) would actually need before it can be executed, in case the answer is "distribute": the registration is already
+thorough enough to act on.
+
+* **registered**: 30 instruments (27 CC0 + 3 CC-BY), 20,594 files, 9,844,170,377 bytes (9.168 GiB);
+* **per-file digests**: all 21,505 source files carry `sha256`, with the source totalling 10,061,840,365 bytes (9.371 GiB);
+* **real verification, not paperwork**: the notes state plainly that they did not register sha256 without ever checking real bytes - section 7 is an actual download
+  verification - which is the distinction the objective cares about;
+* **structured entries**: 105 table rows carrying `sourceUrl`, `category`, `mirroredAt` and, where there is no git repository, an `archive{asset,url,bytes,sha256}`
+  (4 instruments, two FreePats organs delivered as `.tar.xz`).
+
+**So the answer "distribute the 30" is executable as soon as it is given** - the whitelist, the digests and the verification path are all in place, and the work would
+be to bring the bytes in and let the existing gate verify them, not to build anything new. The answer "keep them out" is equally documentable, with the 0-byte
+verification and this registration as its stated reason.
+
+**Status**: tree green and clean; automatic CI green for the last seventeen commits with none outstanding; both manual tiers green; all fifteen MUST-GATEs wired and
+the five named ones confirmed individually; Phase 4 6 完成 / 4 部分 / 0 PENDING; Phase 0 2 / 5 / 2; buildable queue empty; six questions plus one cleanup permission
+outstanding, each answerable in a word.
