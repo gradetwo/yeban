@@ -1826,8 +1826,26 @@ pub fn volume_fraction(volume_db: f32) -> f32 {
 /// | `1000` | `"R100"` | 右满 |
 /// | 越界值 | 先夹到 `-1000..=1000` | 模型 `validate()` 已拦，但投影不假设输入可信 |
 ///
-/// 用整数（千分之一）而不是 `f32`：声相文本会进 `accessible-value`，跨平台浮点格式化
-/// 的 1 ulp 差异会让"同一工程两台机器给出不同文本"（`ARCH-DET-001` 禁止的正是这个）。
+/// 用整数（千分之一）而不是 `f32`：这一层的**交付物是文本**（`.slint` 只画
+/// `pan_display` 的结果 —— `mixer_console.slint` 里通道条与主总线的 `UiMonoText.text`
+/// 分别是 `"PAN " + root.track-pans[…]` / `"PAN " + root.master-pan`），而它同时进投影的
+/// 规范行协议（`canonical_lines` 的 `pan_millis={}`，见 [`track_view`] →
+/// [`ViewState::canonical_lines`]，由判据
+/// `two_projections_of_the_same_project_are_byte_identical` 钉住逐字节可复现）。
+/// 于是把模型 `f32` 的量化**一次**做在投影边界（[`track_view`] 的 `round(f64 * 1000)`），
+/// 此后文本只用整数除法（`abs / 10`）：1% 档位与"不足 1% 也不设死区"都是精确的整数事实，
+/// 规范行里也永远不会出现 `-0` 或浮点尾数。
+///
+/// **更正（本次）**：这里原写「声相文本会进 `accessible-value`，跨平台浮点格式化的
+/// 1 ulp 差异会让"同一工程两台机器给出不同文本"（`ARCH-DET-001` 禁止的正是这个）」。
+/// 两句都不成立，故删去：① 全史没有任何 `.slint` 把 `pan` 绑到 `accessible-value`
+/// （`git log -S` 无命中；`mixer_console.slint` 只把它写进 `UiMonoText.text`），
+/// 而 `docs/ledger/feature-alignment.md` 与 `docs/ledger/app-mixer-notes.md` 也一直把
+/// 「声相读不到」当作现状在册；② Rust 的浮点格式化是纯 Rust、与平台无关，且同一条
+/// `canonical_lines` 本来就用 `{:.6}` 格式化 `volume_db`。`ARCH-DET-001` 管的是
+/// PCM 采样的位级一致，不是文本。整数千分之一的真实理由见上段；表示法本身**不动**
+/// （它不在 schema 里 —— `schemas/project.schema.json` 的 `pan` 仍是 `-1.0..=1.0`
+/// 的 number —— 改类型只会无谓地挪动规范行的字节）。
 #[must_use]
 pub fn pan_display(pan_millis: i32) -> String {
     let clamped = pan_millis.clamp(-1000, 1000);
