@@ -9279,3 +9279,32 @@ records that the count was corrected. That is the same class of stale summary th
 
 **Status**: `24b7c92` and `f975128` pushed; Phase 4 6 完成 / 4 部分 / 0 PENDING; open-questions 1, 2 and 4 closed; **question 5 (a reference `.als`) is the only item
 left for the负责人**; the last authorised line is question 6 (`M4-008` single authority).
+
+
+### Round 386: all four authorised lines are done - and the last one found a type-system fact that reshaped it
+
+The four lines the standing authorisation covered are complete and independently verified: `D47` option (a) for the `.als` exit (`4f0490b`), `N2` option (1) for logical
+keys (`dd4afb6`), question 2's loudness cursor (`24b7c92`), and question 6's single-authority first slice (`ca07bfb`). Each was verified against named metrics, not
+impressions: for the last one the commit holds 9 files, the default `cargo tree -e normal` has **0** `yeban-mcp` lines against **1** with the feature, the lock
+criteria re-run at **3 passed / 0 failed**, the new UI criterion makes `live_ui_mcp` **18 passed** (was 17), and both guards plus `light` pass.
+
+**The finding that matters most** came from the last line: `undo.rs:33` includes the MCP crate's `undo_session.rs` **by path** (`#[path = "../../yeban-mcp/src/undo_session.rs"]`),
+so the two `UndoSession` instantiations are **two distinct types**. "The same instance on both sides" is therefore impossible in the type system, and a single
+authority can only be reached **at the projection layer** (what landed) or by moving the GUI's write entry points onto `Domain` wholesale (the remainder). That is a
+structural fact about the repository, discovered by grepping rather than assumed, and it retroactively explains why earlier attempts to "share one instance" had no
+natural seam.
+
+**What landed, safely**: `Domain::apply_revision` advances only in the unique mutable entry `Domain::apply`, only when the plan can change the project **and** the
+apply succeeded; `HttpServer::host_domain` lends `&Domain` with no `&mut` in its signature, so it **structurally cannot be a second writer**; `ProjectAuthorityHandle`
+is read-only and reuses the existing `Arc`/`Mutex`/session; `build_live_ui_from_authority` **takes no project argument**, so the authority is the only source; and
+`sync_authority` re-projects only when the revision advances. The criterion drives a real loopback socket with a real token, writes one automation point, and shows
+the **same live window's** control tree going **84 -> 85 nodes** with a label byte-equal to the authority's projection - plus two measured negative checks that both
+go red when either the revision bump or the re-projection is removed.
+
+**What it refused, and why that was right**: making the mounted session writable now would create a **shadow writer**, because the production `run_gui` still owns
+`UndoPort`'s own `UndoSession` with no runtime re-projection. So `read_only = true` and `SharedRead` stay byte-for-byte unchanged and `MUST-GATE-008` stays green.
+The remaining work is stated precisely: route the GUI's write entry points (undo, roll edit) through `ProjectAuthorityHandle` plus a periodic `sync_authority`, then
+flip `read_only` and re-adjudicate the lock mode.
+
+**Status**: `ca07bfb` pushed; Phase 4 6 完成 / 4 部分 / 0 PENDING; questions 1, 2 and 4 closed; **question 5 (a reference `.als`) is the only item that needs the
+负责人**; the `M4-008` follow-up above is the next buildable step inside the same authorisation.
