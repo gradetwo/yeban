@@ -10,7 +10,7 @@
 | **本表** `docs/ledger/feature-alignment.md` | **三方暴露**：系统 / UI / MCP 各自有没有、错位在哪 | `crates/*/src/lib.rs` 的 `IMPLEMENTED_SPEC_IDS`、`schemas/mcp-tools.schema.json`、`crates/yeban-ui-mcp/src/methods.rs`、`docs/ledger/*-notes.md` | `scripts/gates/check_feature_alignment.py` |
 | `docs/ledger/gate-status.md` | **发布门禁**过没过（`MUST-GATE-*` / `BASELINE-*`） | 路线图 §5 | `scripts/gates/check_gate_status.py` |
 | `docs/ledger/phase-status.md` | **阶段项**做没做完（`ROAD-*`，47 项） | 路线图 §3 | `scripts/gates/check_phase_status.py` |
-| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-50`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
+| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-51`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
 
 引用规则（这是四张表不互相矛盾的关键）：
 

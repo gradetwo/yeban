@@ -11,7 +11,7 @@
 
 1. **架构与系统设计核心 (Normative)**：[`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md`](docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md)
 2. **工程重构路线图与门禁 (Normative)**：[`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md`](docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md)
-3. **桌面 UI/UX 交互设计规范 (Normative)**：[`docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md`](docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md)
+3. **桌面 UI/UX 交互设计规范 (Advisory / Reference Only —— 2026-10-06 经负责人裁决自 Normative 降级)**：[`docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md`](docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md)（*注：参考设计，**非绑定**，不得直接作为硬性实现规范*）
 4. **法律合规与许可政策 (Mandatory Legal)**：[`LICENSE`](LICENSE), [`LEGAL.md`](LEGAL.md), [`TRADEMARK.md`](TRADEMARK.md)
 5. **安全策略 (Mandatory Security)**：[`SECURITY.md`](SECURITY.md)
 6. **行业调研与生态融合 (Informative / Research Only)**：[`docs/YEBAN_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md`](docs/YEBAN_INDUSTRY_BENCHMARK_AND_OPEN_SOURCE_STUDY.md)（*注：仅供选型与背景参考，不得直接作为硬性实现规范*）

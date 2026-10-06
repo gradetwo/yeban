@@ -774,9 +774,10 @@ yeban/
 # 夜半 (Yeban) 专业桌面 DAW UI/UX 布局与交互重构设计规范 (Pure Rust + Slint 极速版)
 
 > **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`
-> **规范状态**：Normative UI/UX Specification (规范性设计文件)
+> **规范状态**：Advisory / Reference (建议与参考，**非绑定**；原 Normative UI/UX Specification)
 > **版本**：`v1.0.0-rev2` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`
 > **文档依赖**：`Depends-on: ARCHITECTURE v1.0.0, ROADMAP v1.0.0, LEGAL.md, AGENTS.md`
+> **权威降级（负责人裁决，2026-10-06）**：本内嵌副本与独立文件 `docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md` 同为**建议与参考** —— 它是参考设计，**不是要求**；正文原样保留。
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
