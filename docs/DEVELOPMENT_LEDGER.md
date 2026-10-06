@@ -8606,3 +8606,25 @@ means me.
 **Status**: tree green and clean at `d72827f` (= `origin/main`); the tracking rows for the dual-MCP loop and the cross-form lock now match what landed; one
 further stale row (`进程内嵌入 yeban-app`) is identified with its two possible marker choices and awaits my decision; the CI-coverage gap above is the newest
 registered item.
+
+
+### Round 355: my workflow edit broke GitHub's workflow validation - reverted, and the gap stays registered
+
+Round 354's fix - adding a `cargo test --all-features` step to `gates-manual.yml` so the in-process-mcp criteria actually run - **failed CI in a specific and
+instructive way**. Two runs appeared for the same commit: the normal **CI** run (fine), and a second run whose **name is the workflow file path itself**, with
+`conclusion: failure` and **no jobs and no steps at all**. That signature is GitHub rejecting the workflow **file**, not a step failing: PyYAML accepted my edit,
+GitHub did not.
+
+I did not chase the exact YAML feature (my remaining context could not carry a second diagnose-fix-push cycle), and the honest trade was to **revert**: the file is
+restored byte-for-byte to its pre-edit state (`git checkout 6b79ca7^ -- …`, verified with `diff -q`), so the repository returns to a known-good workflow. The
+**gap itself stays registered** and is unchanged: no CI step runs the `in-process-mcp` criteria, so those five criteria (2 + 3) are compiled but never executed by
+CI, and their verification remains local.
+
+**What the next attempt should do differently**: make the change **minimal and reviewable against the file's existing idioms** - copy an existing step's exact
+shape (the `clippy --all-features` step is the model), avoid free-form comments inside the step list, and validate with something closer to GitHub's parser than
+PyYAML. If in doubt, the cheaper and equally honest route is to leave `gates-manual.yml` untouched and record the coverage gap as a pending with this rationale -
+which is what this round does.
+
+**Status**: the workflow file is back to its pre-edit state, the tracking fix from round 354 (the `进程内嵌入 yeban-app` row now reads 系统 已实现 / UI 无 / MCP 有,
+with 系统+MCP 15 -> 16 and UI 或 MCP 独有 5 -> 4) is committed and pushed separately, and the coverage gap is a registered pending rather than a half-applied
+workflow change.

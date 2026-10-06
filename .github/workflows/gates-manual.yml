@@ -251,6 +251,7 @@ jobs:
           else
             cargo clippy --workspace --all-features --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
           fi
+      - name: 失败摘要
       # 为什么需要这一步（账本第 354 轮）：本档位此前**只跑 `clippy --all-features`**，而 `clippy` **只编译**
       # ⇒ `#![cfg(feature = "in-process-mcp")]` 这类**feature-gated 判据从未在 CI 里执行过** ✗。
       # 判据必须真跑，否则"绿"的判定来源并不覆盖它们（本仓规则：`ci.yml` + 本文件是唯一来源）。
@@ -276,8 +277,6 @@ jobs:
           # 实测教训: 第一版只写 `>> "$GITHUB_STEP_SUMMARY"` ⇒ 判决只出现在 job summary,
           # 而 `gh run view --log` 抓不到它 —— 于是"门禁绿了"这件事可读, 但"它凭什么绿"读不到。
 
-
-      - name: 失败摘要
   # ---------------------------------------------------------------------------
   # 基准: 目前没有任何 criterion 基准, 只验证 bench 目标可编译
   # ---------------------------------------------------------------------------
