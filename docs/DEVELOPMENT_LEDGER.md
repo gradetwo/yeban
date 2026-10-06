@@ -9850,3 +9850,34 @@ route supplies. Nothing in the repository claims Logic opens the output, and all
 
 **Status**: Phase 4 6 完成 / 5 部分 / 0 PENDING; the donor-route line is in progress; the third-test artifact was `/tmp/yeban-logic-open4/Yeban.logicx`
 (`ProjectData` 1420 B, `MetaData.plist` 19116 B, `DisplayState.plist` 168 B, `Resources/ProjectInformation.plist` 215 B).
+
+
+### Round 406: option A landed - the exporter now splices a Logic-saved donor, and the artifact grew two orders of magnitude
+
+The负责人 chose option A (the donor-template route), and `4bdc49e` implements it. The change is the largest in this whole line: the exported `ProjectData` went from
+**1,420** bytes to **127,817**, because the document is now mostly **a file Logic itself wrote**, with our data patched into it.
+
+**What was vendored, and the legal check.** `crates/yeban-render/assets/logic-donor/` holds the MIT reference's own fixture verbatim - `Alternatives/000/ProjectData`
+(127,689 B, sha256 `8a5ec737`), two plists, the upstream `LICENSE` (1,066 B) and a provenance `README.md` (4,884 B) - 129,595 B of upstream bytes plus the note,
+**134,479 B** in total, with the source repository, the licence, the verbatim copyright line and each file's size and sha256 recorded. **Apple's demos were not
+shipped**: I checked independently that the vendored file's sha256 `8a5ec737` differs from `Swing!`'s `fb7412e3` and `ocean eyes`' `dda1faca`, and `git ls-files` still
+matches nothing for `*.logicx` or `Demosongs`.
+
+**The clone and the patch.** The donor's `ivnE` + `OCuA` + `gnoS` registries + `MneG` + `karT` are carried as **all 527 records in donor order**, and
+`build_bundle_from_donor` - now what `--export-logic` uses - changes **exactly four**: the global meter, the global tempo, the placed region's name field, and that
+region's note payload. The remaining **523** records are the donor's and are registered **family by family** as `非等价:` (18 entries), so nothing is silently inherited.
+
+**It is an honest partial, and the line said so precisely**: the splice is complete but the clone is not - there is no channel-slot activation, so the donor's single
+arrange row carries at most **one** MIDI track's first placement and other tracks are registered as `未映射:` ("没有可供体插槽"); the donor's compact 10,756 B `gnoS` is
+untouched (its embedded 120 BPM triple is left alone, per the reference's own section 10.4); the donor's bar-1 placement and zero region start and length are kept; and
+the root version code stays the donor's `0x09CF` because the code declares the document's on-disk format. It also fixed a **fourth previously unregistered defect** the
+reference exposed: the note-event flags at `+0x0f`, `+0x10` and `+0x17` were being written as zero.
+
+**Verified independently**: nine files changed; `yeban-render` runs **107 passed** with the feature (from 101, the six new criteria) and 84 without it; the artifact is
+`ProjectData` 127,817 / `MetaData.plist` 13,494 / `DisplayState.plist` 168 / `Resources/ProjectInformation.plist` 215; the guards and `light` are green; and the commit
+is pushed. The line also corrected itself twice, including a wrong `README.md` size that had reached the ledger cell - it amended the commit so the wrong number would
+not remain in the tree.
+
+**A fourth Logic test is informative**, and the负责人 has been asked for it. The two outcomes are both useful: success points to channel-slot activation as the next
+step, and the same generic dialog would prove the blocker lies in the four patched records or in `MetaData.plist`, not in the missing cluster. Nothing in the repository
+claims Logic opens the output.
