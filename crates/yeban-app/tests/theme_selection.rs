@@ -490,6 +490,13 @@ fn the_effective_palette_follows_the_selection() {
     //
     // 2026-10-07: 阈值**一位未改**, 只把负责人的数字代进去重算。表里的每一对都是
     // **真实存在的配对**（前景画在哪个背景上, 逐条注明）。
+    //
+    // ⚠ 先写回 `yeban`（2026-10-07 编译修复时补上的一行）: `wcag_cases` 读的是**当前**
+    // token 值, 而上面那段 inkmoor/plume 循环把 `ThemeState` 留在了 `plume`。不写回的话
+    // 这一段会拿 **plume** 的数字去撞「`yeban` 的对比度不达标」这句话 —— 它照样会绿,
+    // 于是 `yeban` 的 16 对配对**一条都不再被这段覆盖**(下面 ①c-ter 只跑 inkmoor/plume)。
+    // 提交 4257d0f 的顺序是「`apply_theme(Yeban)` 之后立刻建表」, 这一行恢复那个语义。
+    host::apply_theme(&ui, Theme::Yeban);
     let case = wcag_cases(&tokens);
     for (label, a, b, threshold) in case {
         let ratio = contrast_ratio(a, b);
@@ -1148,6 +1155,7 @@ fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
 /// 负责人两版稿子对这件事的措辞不同但同义：
 ///   * 墨泊：「渔火 `#C9A26B` 是全界面**唯一**的暖强调色」（原则 ②）；
 ///   * 孤烟：「落日橙 `#C68252` …… 全界面唯一暖强调」（诗句→UI 语义表）。
+///
 /// 因此两支皮肤的 `accent` 与 `gold` 各自同色，但**它们彼此不同色** —— 这一条也断言。
 #[test]
 fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {

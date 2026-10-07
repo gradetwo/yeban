@@ -932,7 +932,11 @@ pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
     ui.global::<ThemeState<'_>>().set_theme(match theme {
         crate::cli::Theme::Brand => YebanTheme::Brand,
         crate::cli::Theme::Yeban => YebanTheme::Yeban,
-        crate::cli::Theme::InkMoor => YebanTheme::InkMoor,
+        // Slint 的 Rust 代码生成把 `.slint` 里的 `inkmoor` 转成 `Inkmoor`
+        // （单个小写词没有分隔符 ⇒ 只首字母大写，不是 `InkMoor`；后者是负责人设计稿的
+        // `ThemeKind.InkMoor` 拼法，不是这里生成的拼法）。实测见 `target/debug/build/
+        // yeban-app-*/out/app.rs` 的 `pub enum YebanTheme`。
+        crate::cli::Theme::InkMoor => YebanTheme::Inkmoor,
         crate::cli::Theme::Plume => YebanTheme::Plume,
         crate::cli::Theme::Material => YebanTheme::Material,
         crate::cli::Theme::Fluent => YebanTheme::Fluent,
