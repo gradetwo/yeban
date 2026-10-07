@@ -2,12 +2,12 @@ Golden 基准图集 —— 平台 linux（= PlatformTag::Linux::as_str()）
 生成地点: GitHub Actions `ubuntu-latest`（**托管 runner 就是本平台的基准环境**；Linux 侧没有像 M2 Max 那样
 被负责人点名的本机，故以该 runner 类为准并在下面写明这一点）。
 生成方式: 手动档 `gates-manual.yml` 的 `goldens` 档（`gh workflow run gates-manual.yml -f gate=goldens`），
-run id **37589980886**（conclusion=success）；该档跑 `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`，
+run id **37695374534**（conclusion=success）；该档跑 `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`，
 再上传 `crates/yeban-app/tests/golden/linux/` 为 artifact，由集成者复核后入库。
-生成时间(UTC): 2026-10-07T07:53:47Z（该 run 生成步骤的完成时刻；窗口 07:52:26Z–07:53:47Z）
-入库时间(UTC): 2026-10-07T07:58:29Z（本次提交，复核记录见下）
+生成时间(UTC): 2026-10-07T22:20:55Z（该 run 的窗口 22:18:55Z–22:20:55Z，取自 `gh run view`）
+入库时间(UTC): 2026-10-07T22:23:48Z（本次提交，复核记录见下）
 
-**为什么会有这一次再生成**: 提交 `6fca8b5`（"bundle JetBrains Mono and Noto Serif SC and register them with Slint"）
+**为什么会有这一次再生成**: 提交 `ffb3dcc` 把顶栏 AI 徽章的**可见文案**从「AI提案 (待审查)」改成「AI提案」（诚实性审计：它原先声称有 1 条待审查提案，而没有任何宿主写者）。该文案在顶栏默认可见 ⇒ 默认帧像素改变 ⇒ 5 张旧基准确定性过期。
 把 **JetBrains Mono** 与 **Noto Serif SC** 两款字体**编译期内嵌**进二进制（`crates/yeban-app/ui/tokens.slint` 的
 `import` + 注册进二进制），并随包携带 OFL-1.1 许可文本。于是 UI 的**文字像素**改变，旧基准**确定性地**过期。
 macOS 侧实测 **6,982 个差异单元**（13 条文字带）—— 族 `Menlo` / `Songti SC` 被真正的 `JetBrains Mono` /
@@ -51,8 +51,8 @@ FreeType/fontconfig，字形与抗锯齿不同 ⇒ 像素必然不同。拿 macO
 平台无基准时打印「未被判定」（不等于通过）。
 
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	1b703acce166016d8ff7f6c1ceee519e2c5aae0946599f13c531ca17e69f0a59	6222418
-app-main-window-arrangement-full-1920x1080.png	9f524c9f4c45f7cef32fe2389fc42d0ac95af633b154672e86002bdff66621ba	6222418
-app-main-window-session-full-1920x1080.png	b8369f486ff7d27007c00808cb6d8498e0806aed7255c546ebab9eb02e8b66c6	6222418
-app-model-driven-demo-project-1920x1080.png	9f524c9f4c45f7cef32fe2389fc42d0ac95af633b154672e86002bdff66621ba	6222418
-app-model-driven-filled-project-1920x1080.png	e185d95c762a0c82aacaa1d53863a1735df88dcdfb98886046e49f7d82707ff0	6222418
+app-main-window-arrangement-compact-1920x1080.png	09d8de7e52af256bef808d8894bcbe1b1030f3e7730401baf62591173d250c3f	6222418
+app-main-window-arrangement-full-1920x1080.png	0ecf9f625e099938b78a9a1c620f8b90435eae140015fb604b4efd4156c6e459	6222418
+app-main-window-session-full-1920x1080.png	2193f645251178311becc326c4eb3cd3f3dd701e713502a966517a025d716e37	6222418
+app-model-driven-demo-project-1920x1080.png	0ecf9f625e099938b78a9a1c620f8b90435eae140015fb604b4efd4156c6e459	6222418
+app-model-driven-filled-project-1920x1080.png	76696d16b76d0107f4f72b21e85aa94d44ba89ed7ae86f4ed80777cea7ab3f60	6222418
