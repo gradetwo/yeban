@@ -72,6 +72,13 @@ gate_docs() {
   run "handoff-snapshot" python3 scripts/gates/check_handoff_snapshot.py
   run "diagnostics-single-impl" python3 scripts/gates/check_diagnostics_single_implementation.py
   run "viewport-bounds-wiring" python3 scripts/gates/check_viewport_bounds_wiring.py
+  # Linux Tier-1 golden 清单（`crates/yeban-app/tests/golden/linux/MANIFEST.txt`）: 表里那 5 行
+  # `filename / sha256 / bytes` 是**手工抄写**的, 仓库里没有任何生成器写它 ⇒ 抄错不会让任何
+  # Rust 测试变红（`assert_matches_golden` 只读 PNG, 从不读 MANIFEST）。这条判据拿表逐行核对
+  # **磁盘上的真实字节**（存在性 + sha256 + 字节数 + 无未登记文件 + 无重复行 + 表头/出处形状）。
+  # 实测代价（本机 M2, 5 张各 6,222,418 字节）: 0.05 s ⇒ 属"零编译、任何机器都能跑"的 light 一族。
+  # ⚠ 它是**门禁脚本**, 不是 policy guard: 不占 `G01..G14` 的编号, 「14 条守卫」不受影响。
+  run "golden-manifest(linux)" python3 scripts/gates/check_golden_manifest.py
   # `yeban-mcp` 的依赖方向规则（它自己的 Cargo.toml 写着"不拖音频栈进 MCP"）。
   run "mcp-dependency-direction" python3 scripts/gates/check_mcp_dependency_direction.py
 }
