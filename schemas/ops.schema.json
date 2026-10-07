@@ -370,6 +370,27 @@
             }
           }
         }
+,
+        {
+          "required": [
+            "SetTrackMute"
+          ],
+          "properties": {
+            "SetTrackMute": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTrackSolo"
+          ],
+          "properties": {
+            "SetTrackSolo": {
+              "type": "object"
+            }
+          }
+        }
       ],
       "description": "Domain reversible operation. oneOf must cover every Op variant: exactly one branch may match."
     }

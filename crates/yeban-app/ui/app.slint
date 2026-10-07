@@ -352,6 +352,27 @@ export component MainWindow inherits Window {
     callback track-height-drag(int, length);
     /// 收尾：松开 / 指针离开窗口（`PointerEventKind.cancel`）/ 打断。
     callback track-height-release(int);
+    // 混音台的**写入面**（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`）。
+    //
+    // 形状与上面三个 `track-height-*` 同款：`.slint` 只报"哪一个下标 + 本地坐标"，
+    // 位移换算、拖动期的视图态与松手时的**一次** `commit_ops` 全在宿主
+    // （`host::wire_mixer_edit`）。五个成员 = 推子竖直拖 / 声相水平拖 / 两个开关。
+    /// 推子按下（轨道下标, 推子面坐标系里的 y）。
+    callback mixer-fader-grab(int, length);
+    /// 推子拖动（同一个下标的当前 y；位移由宿主算）。
+    callback mixer-fader-drag(int, length);
+    /// 推子收尾（松手 / 指针离开窗口）。
+    callback mixer-fader-release(int);
+    /// 声相按下（轨道下标, 声相面坐标系里的 x）。
+    callback mixer-pan-grab(int, length);
+    /// 声相拖动。
+    callback mixer-pan-drag(int, length);
+    /// 声相收尾。
+    callback mixer-pan-release(int);
+    /// 静音按钮点击（一次点击 = 一次可撤销的编辑）。
+    callback mixer-mute-toggle(int);
+    /// 独奏按钮点击。
+    callback mixer-solo-toggle(int);
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
@@ -665,6 +686,33 @@ export component MainWindow inherits Window {
             select-piano-roll => { root.console-tab = 0; }
             select-mixer => { root.console-tab = 1; }
             select-devices => { root.console-tab = 2; }
+
+            // 混音台写入面：只上抛，不在 `.slint` 里改任何工程值
+            // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，落点是 `host::wire_mixer_edit`）。
+            mixer-fader-grab(index, y) => {
+                root.mixer-fader-grab(index, y);
+            }
+            mixer-fader-drag(index, y) => {
+                root.mixer-fader-drag(index, y);
+            }
+            mixer-fader-release(index) => {
+                root.mixer-fader-release(index);
+            }
+            mixer-pan-grab(index, x) => {
+                root.mixer-pan-grab(index, x);
+            }
+            mixer-pan-drag(index, x) => {
+                root.mixer-pan-drag(index, x);
+            }
+            mixer-pan-release(index) => {
+                root.mixer-pan-release(index);
+            }
+            mixer-mute-toggle(index) => {
+                root.mixer-mute-toggle(index);
+            }
+            mixer-solo-toggle(index) => {
+                root.mixer-solo-toggle(index);
+            }
         }
 
         // ---------------------------------------------------------- 24px 状态栏

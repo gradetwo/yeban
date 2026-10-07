@@ -320,6 +320,32 @@ pub enum Op {
         /// 修改后数值。
         new_val: f32,
     },
+    /// 设置音轨**静音**。
+    ///
+    /// 为什么必须有这个变体（而不是复用 [`Op::SetParam`]）：`SetParam` 的两个载荷都是
+    /// `f32`，而 [`TrackV3::mute`] 是 `bool`；[`AutomationTarget`] 也没有静音变体
+    /// ⇒ 静音在操作日志层**不可表达**（`ARCH-OPS-001` 的同一族缺口；
+    /// 与 D12 / D27 / D42 补 `RemoveSection` / `AddClip` / `SetAutomationLane` 的理由同型）。
+    SetTrackMute {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前静音。
+        old_mute: bool,
+        /// 修改后静音。
+        new_mute: bool,
+    },
+    /// 设置音轨**独奏**。
+    ///
+    /// 与 [`Op::SetTrackMute`] 同族：[`TrackV3::solo`] 也是 `bool`。
+    /// `TrackV3::solo_safe` **不在**载荷里 —— 本变体只表达这一个开关，不顺手改别的字段。
+    SetTrackSolo {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前独奏。
+        old_solo: bool,
+        /// 修改后独奏。
+        new_solo: bool,
+    },
     /// 设置宏位置。
     SetMacro {
         /// 目标音轨。
@@ -498,6 +524,8 @@ impl Op {
             Self::InsertDevice { .. } => "InsertDevice",
             Self::RemoveDevice { .. } => "RemoveDevice",
             Self::SetParam { .. } => "SetParam",
+            Self::SetTrackMute { .. } => "SetTrackMute",
+            Self::SetTrackSolo { .. } => "SetTrackSolo",
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
             Self::RemoveAutomationPoint { .. } => "RemoveAutomationPoint",
@@ -800,6 +828,25 @@ impl Op {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 validate_param_value(*target, *new_val)
+            }
+            // 与 `SetParam` 同型：先校验"载荷里的旧值确实是文档现值"，否则 `OpStateMismatch`。
+            // `new_* == old_*` 是**合法**的无操作（`SetParam` 也放行）—— 幂等由调用方决定
+            // 是否要提交（GUI 侧在值没变时**不**提交，见 `host::end_mixer_drag`）。
+            Self::SetTrackMute {
+                track_id, old_mute, ..
+            } => {
+                if doc.track(track_id)?.mute != *old_mute {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetTrackSolo {
+                track_id, old_solo, ..
+            } => {
+                if doc.track(track_id)?.solo != *old_solo {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
             }
             Self::SetMacro {
                 track_id,
@@ -1125,6 +1172,25 @@ impl Op {
                 old_val: *new_val,
                 new_val: *old_val,
             },
+            // 纯结构化取反：只交换"前 / 后"两个布尔。
+            Self::SetTrackMute {
+                track_id,
+                old_mute,
+                new_mute,
+            } => Self::SetTrackMute {
+                track_id: *track_id,
+                old_mute: *new_mute,
+                new_mute: *old_mute,
+            },
+            Self::SetTrackSolo {
+                track_id,
+                old_solo,
+                new_solo,
+            } => Self::SetTrackSolo {
+                track_id: *track_id,
+                old_solo: *new_solo,
+                new_solo: *old_solo,
+            },
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -1371,6 +1437,19 @@ impl Op {
             Self::SetParam {
                 target, new_val, ..
             } => write_param(doc, *target, *new_val),
+            // 只写那**一个**布尔字段：不碰 `solo_safe`、不碰音量、不碰路由。
+            Self::SetTrackMute {
+                track_id, new_mute, ..
+            } => {
+                doc.track_mut(track_id)?.mute = *new_mute;
+                Ok(())
+            }
+            Self::SetTrackSolo {
+                track_id, new_solo, ..
+            } => {
+                doc.track_mut(track_id)?.solo = *new_solo;
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -2069,6 +2148,18 @@ mod tests {
                 old_val: 1200.0,
                 new_val: 2400.0,
             },
+            // 夹具的每条轨道 `mute` / `solo` 都是 `false`（`TrackV3::default`）⇒
+            // 这两条的前置条件在 `fixture_document()` 上成立。
+            Op::SetTrackMute {
+                track_id: f.lead,
+                old_mute: false,
+                new_mute: true,
+            },
+            Op::SetTrackSolo {
+                track_id: f.bass,
+                old_solo: false,
+                new_solo: true,
+            },
             Op::SetMacro {
                 track_id: f.lead,
                 macro_index: 0,
@@ -2216,6 +2307,8 @@ mod tests {
             "InsertDevice",
             "RemoveDevice",
             "SetParam",
+            "SetTrackMute",
+            "SetTrackSolo",
             "SetMacro",
             "SetAutomationPoint",
             "RemoveAutomationPoint",
@@ -2302,6 +2395,102 @@ mod tests {
             before,
             "新建片段 → 摆放 → 全链撤销必须逐字节回到原状"
         );
+    }
+
+    /// 判据（混音开关 `MUST-GATE-010` 的一格）：`SetTrackMute` / `SetTrackSolo` 的三条硬性质
+    /// —— **可逆** / **前置条件走既有错误码** / **无操作（`new == old`）被放行**。
+    ///
+    /// 这三条就是这两个变体进入 `Op` 全集的条件（负责人批准时点名）。
+    /// 怎么变红：
+    /// - 把 `structural_inverse()` 里两个字段都写成 `*new_*` ⇒ 逆操作的前置条件不成立，
+    ///   下面的 `invert` 直接 `Err`；
+    /// - 把 `precondition()` 里的比较删掉（或把 `!=` 写成 `==`）⇒ 第二段断言红；
+    /// - 把 `commit()` 写成只读不写 ⇒ 第一段的 `read(&doc)` 断言红。
+    #[test]
+    fn the_mix_switch_ops_are_reversible_and_check_their_payloads() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        // 夹具起点：lead 的 `mute` 与 bass 的 `solo` 都是 `false`。
+        assert!(!doc.track(&f.lead).expect("lead").mute);
+        assert!(!doc.track(&f.bass).expect("bass").solo);
+
+        // ---- ① 真的写下去，并按载荷精确还原 ----
+        let before_mute = doc.clone();
+        let mute = Op::SetTrackMute {
+            track_id: f.lead,
+            old_mute: false,
+            new_mute: true,
+        };
+        mute.apply(&mut doc).expect("静音必须可应用");
+        assert!(doc.track(&f.lead).expect("lead").mute, "必须真的写成 true");
+        mute.invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("逆应用");
+        assert_eq!(doc, before_mute, "静音的逆必须逐位还原");
+
+        let before_solo = doc.clone();
+        let solo = Op::SetTrackSolo {
+            track_id: f.bass,
+            old_solo: false,
+            new_solo: true,
+        };
+        solo.apply(&mut doc).expect("独奏必须可应用");
+        assert!(doc.track(&f.bass).expect("bass").solo, "必须真的写成 true");
+        solo.invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("逆应用");
+        assert_eq!(doc, before_solo, "独奏的逆必须逐位还原");
+
+        // ---- ② 载荷与文档不符 ⇒ 既有错误码 `OpStateMismatch`（不发明新码, D25） ----
+        assert_eq!(
+            Op::SetTrackMute {
+                track_id: f.lead,
+                old_mute: true,
+                new_mute: false,
+            }
+            .apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "SetTrackMute" }),
+            "文档现值是 false 而载荷说 true ⇒ 必须拒绝"
+        );
+        assert_eq!(
+            Op::SetTrackSolo {
+                track_id: f.bass,
+                old_solo: true,
+                new_solo: false,
+            }
+            .apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "SetTrackSolo" })
+        );
+        // 轨道的**其它**布尔字段不许被顺手改掉（载荷里没有 `solo_safe`）。
+        assert!(!doc.track(&f.lead).expect("lead").solo_safe);
+
+        // ---- ③ 不存在的轨道 ⇒ 既有的"轨道找不到"，不是新码 ----
+        let ghost = fixture_id(998);
+        assert!(
+            Op::SetTrackMute {
+                track_id: ghost,
+                old_mute: false,
+                new_mute: true,
+            }
+            .apply(&mut doc)
+            .is_err(),
+            "不存在的轨道必须被拒绝（既有错误码，不是新码）"
+        );
+
+        // ---- ④ 无操作（`new == old`）：与 `SetParam` 同口径 —— **前置条件放行** ----
+        //
+        // 模型**允许**无操作（`SetParam` 也允许）；"要不要把它变成一次可撤销的编辑"由调用方
+        // 决定 —— GUI 侧在值没变时**不提交**（`host::end_mixer_drag` 返回 `false`）。
+        let mut noop_doc = fixture_document();
+        let noop = Op::SetTrackMute {
+            track_id: f.lead,
+            old_mute: false,
+            new_mute: false,
+        };
+        assert_eq!(noop.apply(&mut noop_doc), Ok(()), "无操作必须被放行");
+        assert_eq!(noop_doc, fixture_document(), "无操作不得改变文档的任何一位");
     }
 
     #[test]
@@ -2469,8 +2658,8 @@ mod tests {
         );
         assert_eq!(
             contract.len(),
-            29,
-            "op.oneOf 必须覆盖 29 个变体, 实际 {}: {contract:?}",
+            31,
+            "op.oneOf 必须覆盖 31 个变体, 实际 {}: {contract:?}",
             contract.len()
         );
 

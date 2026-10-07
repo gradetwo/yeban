@@ -559,6 +559,542 @@ fn cancel_track_height_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> boo
     true
 }
 
+// ===========================================================================
+// 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏
+// ===========================================================================
+//
+// 缺口（本切片补的那一格）：`crates/yeban-app/ui/console/mixer_console.slint` 的
+// `TouchArea` 数量在本次之前是 **0** —— 推子帽、静音、独奏都是纯 `Rectangle`，
+// 于是"音量 / 声相 / 静音 / 独奏"四项在界面上**完全不可操作**。
+//
+// ## 权威链（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`）
+//
+// ```text
+// mixer_console.slint 的 TouchArea
+//   --mixer-fader-grab/drag/release--+--mixer-pan-grab/drag/release--+--mixer-mute/solo-toggle-->
+//        └─ host::wire_mixer_edit（本文件，唯一实现）
+//             ├─ 拖动期：**只**写视图态（`track-volumes` / `track-volume-fractions` / `track-pans`）
+//             └─ 松手 / 点击：`UndoPort::commit_ops(vec![Op])` —— **恰一次**
+//                  └─ `refresh_undo_window` 重投影（值回到"从工程读出来"的形态）
+// ```
+//
+// ## 为什么"一次拖动 = 一次提交"（照抄 `wire_track_height_drag` 的形状）
+//
+// 每一个 `move` 都提交会把"拖一次推子"碎成几百步撤销，用户按一次 `Cmd+Z` 只回退一个像素。
+// 因此：`drag` 只改视图态（数值文本与推子帽位置**立即**跟着动），`release` 才提交一次。
+// 这与 `host::wire_track_height_drag`（`host.rs:432` 起）的形状逐条相同。
+//
+// ## 为什么不用 `SetParam` 表达静音 / 独奏
+//
+// `Op::SetParam`（`crates/yeban-model/src/ops.rs:315`）的两个载荷都是 `f32`，
+// 而 `TrackV3::mute` / `TrackV3::solo` 是 `bool`（`crates/yeban-model/src/project.rs:1130` /
+// `:1132`），且 `AutomationTarget`（`project.rs:512`）没有布尔变体 ⇒ 静音 / 独奏必须有自己的
+// `Op`（`Op::SetTrackMute` / `Op::SetTrackSolo`，本切片新增；裁决见交付报告）。
+// 音量 / 声相**复用**既有的 `Op::SetParam` + `AutomationTarget::TrackVolume` / `TrackPan`。
+
+/// 推子面的**像素行程**（逻辑像素）。
+///
+/// 与 `.slint` 的推子帽几何**同源**：`mixer_console.slint` 里推子帽的
+/// `y: 60px + 88px * (1.0 - root.track-volume-fractions[track_index])`
+/// ⇒ 走完 0.0–1.0 的位置正好 88px。两处必须一致，否则"拖 1 像素"在数值上不等于
+/// "推子帽动 1 像素"（判据 `the_mixer_fader_travel_matches_the_slint_geometry` 钉住那个字面量）。
+pub const MIXER_FADER_TRAVEL_PX: f32 = 88.0;
+
+/// 声相面的**像素行程**（逻辑像素）＝ `mixer_console.slint` 里声相 `TouchArea` 的宽度。
+///
+/// 口径：走完这个宽度 = `pan` 从 `-1.0` 走到 `+1.0`（2.0 的跨度）。
+pub const MIXER_PAN_TRAVEL_PX: f32 = 36.0;
+
+/// 一次混音手势（推子 / 声相）的状态。
+///
+/// 为什么住在宿主而不是界面上：它只在**一次拖动**里有意义，而且必须在 `release`
+/// 那一刻拿得到"这一拖从哪开始"（提交的 `old_val` 就是它）。与
+/// `track-height-drag-*` 三个属性是同一个角色，只是本切片不需要 `Escape` 的取消路径，
+/// 因此不必让界面持有它（少三个注入属性 = 少三处转发对账）。
+#[derive(Clone, Debug, PartialEq)]
+enum MixerGesture {
+    /// 没有进行中的手势。
+    Idle,
+    /// 推子拖动中。
+    Fader {
+        /// 本次手势按下那一轨的身份（26 字符 `EntityId` 文本）。
+        track_id: String,
+        /// 手势开始时的音量 (dB) —— 提交时的 `old_val`。
+        start_db: f32,
+        /// 按下时的指针 y（推子面坐标系）。
+        start_y: f32,
+        /// 最后一次 `drag` 算出来的音量（提交时的 `new_val`）。
+        ///
+        /// 为什么把结果**存下来**而不是松手时从界面读回来：界面上的文本是 `{:.1}` 的
+        /// 有损形态，读回来会把"用户拖出来的值"改成另一个数。存下来 ⇒ "用户看到的数"
+        /// 与"提交的数"是同一个 `f32`（显示是它的函数）。
+        last_db: f32,
+        /// 这一拖是否**真的动过**（收到过至少一个 `drag`）。
+        ///
+        /// 为什么需要它：`volume_fraction` ⇄ dB 的往返在 f32 下**不是**恒等
+        /// （实测 `-3.2` ⇒ 位置 ⇒ 回 dB 差 3 ulp）。因此"动过没有"是**事件事实**，
+        /// 不是数值比较；没有它，"按下就松手"会提交一步什么都没改的编辑。
+        moved: bool,
+    },
+    /// 声相拖动中。
+    Pan {
+        /// 本次手势按下那一轨的身份。
+        track_id: String,
+        /// 手势开始时的声相 -1.0..=1.0 —— 提交时的 `old_val`。
+        start_pan: f32,
+        /// 按下时的指针 x（声相面坐标系）。
+        start_x: f32,
+        /// 最后一次 `drag` 算出来的声相（提交时的 `new_val`；理由同
+        /// [`MixerGesture::Fader::last_db`]）。
+        last_pan: f32,
+        /// 这一拖是否真的动过（理由同 [`MixerGesture::Fader::moved`]）。
+        moved: bool,
+    },
+}
+
+/// 推子：起点**位置**（0.0–1.0）与纵向位移 ⇒ 新位置（纯函数，可单独判据）。
+///
+/// 这是"推子帽动 n 像素"与"数值动多少"的**唯一**加法点：`.slint` 用
+/// [`crate::bridge::volume_fraction`] 把位置画成像素，宿主用本函数把像素变回位置。
+/// 夹紧只发生一次（位置夹到 `0.0..=1.0`，等价于 dB 夹到量程两端）。
+///
+/// `delta_px == 0.0` 时**逐位**返回起点：否则"拖出去再拖回来"会因为多一次
+/// `f32` 加法而差几个 ulp，进而提交一步"数值没变"的编辑（实测 3 ulp）。
+#[must_use]
+pub fn dragged_fader_fraction(start_fraction: f32, delta_px: f32) -> f32 {
+    let start = start_fraction.clamp(0.0, 1.0);
+    if delta_px == 0.0 {
+        return start;
+    }
+    if !delta_px.is_finite() {
+        return start;
+    }
+    (start + delta_px / MIXER_FADER_TRAVEL_PX).clamp(0.0, 1.0)
+}
+
+/// 推子**位置 → dB**（`[`FADER_MIN_DB`, `FADER_MAX_DB`]` 上线性）。
+///
+/// 它是 [`crate::bridge::volume_fraction`] 的反解：两处必须同时改（判据
+/// `dragged_fader_db_maps_pixels_to_db_and_clamps` 钉住端到端一致）。
+#[must_use]
+pub fn fader_db_from_fraction(fraction: f32) -> f32 {
+    crate::bridge::FADER_MIN_DB
+        + fraction.clamp(0.0, 1.0) * (crate::bridge::FADER_MAX_DB - crate::bridge::FADER_MIN_DB)
+}
+
+/// 推子：从起点 dB 与**纵向位移**算新的 dB（[`dragged_fader_fraction`] 的 dB 形态）。
+///
+/// - 口径：`delta_px = start_y − current_y`（Slint 的 y 轴向下）⇒ 向上拖 = 变大；
+/// - 位置**一位没变**时逐位返回起点（见 [`dragged_fader_fraction`]）；
+/// - 非有限位移（`NaN` / `±∞`）⇒ 原地返回起点（不让 `NaN` 进工程）。
+#[must_use]
+pub fn dragged_fader_db(start_db: f32, delta_px: f32) -> f32 {
+    let start_fraction = crate::bridge::volume_fraction(start_db);
+    let fraction = dragged_fader_fraction(start_fraction, delta_px);
+    if fraction.to_bits() == start_fraction.to_bits() {
+        return start_db.clamp(crate::bridge::FADER_MIN_DB, crate::bridge::FADER_MAX_DB);
+    }
+    fader_db_from_fraction(fraction)
+}
+
+/// 声相：从起点 `pan` 与**横向位移**算新的 `pan`（纯函数，可单独判据）。
+///
+/// - 口径：`delta_px = current_x − start_x`（向右拖 = 偏右）；
+/// - 跨度 2.0 铺满 [`MIXER_PAN_TRAVEL_PX`]，越界夹到 `-1.0..=1.0`
+///   （与 `ModelError::PanOutOfRange` 的边界同一处值域，见 `ops.rs` 的 `validate_param_value`）；
+/// - 起点非有限 ⇒ 当居中（`0.0`）处理；位移非有限或为 `0.0` ⇒ 原地返回起点
+///   （`0.0` 那一路是逐位的，理由同 [`dragged_fader_fraction`]）。
+#[must_use]
+pub fn dragged_pan(start_pan: f32, delta_px: f32) -> f32 {
+    let start = if start_pan.is_finite() {
+        start_pan.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    if delta_px == 0.0 || !delta_px.is_finite() {
+        return start;
+    }
+    (start + delta_px / MIXER_PAN_TRAVEL_PX * 2.0).clamp(-1.0, 1.0)
+}
+
+/// 声相 `f32` → 千分之一整数（**唯一**口径，与投影同源：`bridge.rs:2093`）。
+fn pan_millis_of(pan: f32) -> i32 {
+    (f64::from(pan) * 1000.0).round() as i32
+}
+
+/// 音量 dB → 界面文本（**唯一**口径，与投影同源：`bridge.rs:2114` 的 `{:.1}`）。
+fn volume_display_of(volume_db: f32) -> String {
+    format!("{volume_db:.1}")
+}
+
+/// 把某一轨的**视图态预览**写进界面（拖动期唯一的写入面）。
+///
+/// 只写三个数组、只改一个下标：不重投影（重投影会重建 repeater 条目、把正在拖拽的
+/// `TouchArea` 连同指针抓取一起丢掉 —— 实测记录见 [`apply_row_geometry`] 的文档）。
+/// `index` 越界时**什么都不做**（不 panic、也不猜一条轨道）。
+fn preview_volume(ui: &MainWindow, index: i32, volume_db: f32) {
+    let Ok(index) = usize::try_from(index) else {
+        return;
+    };
+    let mut volumes = read_strings(&ui.get_track_volumes());
+    let mut fractions = read_lengths(&ui.get_track_volume_fractions());
+    if index >= volumes.len() || index >= fractions.len() {
+        return;
+    }
+    volumes[index] = volume_display_of(volume_db);
+    fractions[index] = crate::bridge::volume_fraction(volume_db);
+    ui.set_track_volumes(strings(&volumes));
+    ui.set_track_volume_fractions(lengths(&fractions));
+}
+
+/// 同 [`preview_volume`]，写声相数组（文本与千分位整数同源）。
+fn preview_pan(ui: &MainWindow, index: i32, pan: f32) {
+    let Ok(index) = usize::try_from(index) else {
+        return;
+    };
+    let mut pans = read_strings(&ui.get_track_pans());
+    if index >= pans.len() {
+        return;
+    }
+    pans[index] = crate::bridge::pan_display(pan_millis_of(pan));
+    ui.set_track_pans(strings(&pans));
+}
+
+/// 权威工程里按**身份文本**取音轨的音量 / 声相 / 静音 / 独奏读数。
+///
+/// 身份来自界面注入的 `track-ids`（`host::track_id_at`），因此这里按同一个口径回查模型：
+/// 找不到就是 `None`（工程被换掉 / 控制面关掉了工程），调用方**什么都不做**，不猜。
+fn mixer_track_state(port: &UndoPort, track_id: &str) -> Option<MixerTrackState> {
+    let project = port.try_project()?;
+    project
+        .tracks
+        .values()
+        .find(|track| track.id.to_canonical_string() == track_id)
+        .map(|track| MixerTrackState {
+            volume_db: track.volume_db,
+            pan: track.pan,
+            mute: track.mute,
+            solo: track.solo,
+        })
+}
+
+/// [`mixer_track_state`] 的读数（四格，全是模型字段的原文）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MixerTrackState {
+    /// `TrackV3::volume_db`。
+    volume_db: f32,
+    /// `TrackV3::pan`。
+    pan: f32,
+    /// `TrackV3::mute`。
+    mute: bool,
+    /// `TrackV3::solo`。
+    solo: bool,
+}
+
+/// **混音台写入面的接线**（唯一实现；`main.rs` 与 `live_surface` 调的是同一个函数）。
+///
+/// 五个入口分两类：
+/// - **手势**（推子竖直 / 声相水平）：按下记起点 → 移动只写视图态 → 松手提交**一次**；
+/// - **开关**（静音 / 独奏）：点击即提交**一次**（没有中间态）。
+///
+/// 提交失败（控制面拒绝、工程被关掉）⇒ **什么都不回写**并打一行 stderr：
+/// 不假装成功，也不 panic（与 `wire_roll_edit` 同款）。
+pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let gesture = Rc::new(RefCell::new(MixerGesture::Idle));
+
+    // ---------------------------------------------------------------- 推子
+    ui.on_mixer_fader_grab({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index, pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(track_id) = track_id_at(&ui, index) else {
+                *gesture.borrow_mut() = MixerGesture::Idle;
+                return;
+            };
+            match mixer_track_state(&port, &track_id) {
+                Some(state) => {
+                    *gesture.borrow_mut() = MixerGesture::Fader {
+                        track_id,
+                        start_db: state.volume_db,
+                        start_y: pointer_y,
+                        last_db: state.volume_db,
+                        moved: false,
+                    };
+                }
+                None => *gesture.borrow_mut() = MixerGesture::Idle,
+            }
+        }
+    });
+    ui.on_mixer_fader_drag({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move |index, pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 没有进行中的手势 / 下标不是按下那一轨 ⇒ **什么都不做**（黏住的拖拽态第一道防线）。
+            // 每一次 `drag` 都从**起点**重算（不从上一个结果累加）：累加会让 f32 的
+            // 舍入误差随移动次数漂移，同一个指针位置在"直着拖过去"与"绕一圈拖过去"
+            // 两种走法下会给出不同的数。
+            let (track_id, next_db) = match &mut *gesture.borrow_mut() {
+                MixerGesture::Fader {
+                    track_id,
+                    start_db,
+                    start_y,
+                    last_db,
+                    moved,
+                } => {
+                    *moved = true;
+                    let next_db = dragged_fader_db(*start_db, *start_y - pointer_y);
+                    *last_db = next_db;
+                    (track_id.clone(), next_db)
+                }
+                _ => return,
+            };
+            if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
+                return;
+            }
+            preview_volume(&ui, index, next_db);
+        }
+    });
+    ui.on_mixer_fader_release({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let taken = std::mem::replace(&mut *gesture.borrow_mut(), MixerGesture::Idle);
+            let MixerGesture::Fader {
+                track_id,
+                start_db,
+                last_db,
+                moved,
+                ..
+            } = taken
+            else {
+                return;
+            };
+            if !moved {
+                // 按下就松手（一个 `drag` 都没收到）⇒ **不提交**：不留一步什么都没改的撤销。
+                return;
+            }
+            if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
+                return;
+            }
+            // 动过但算回了同一个数（拖出去又拖回来）⇒ 同样不提交。
+            // 比较的是 `f32` 的**位**：`f32: PartialEq` 会把 `-0.0 == 0.0` 判真，
+            // 而这里要的是"一个字节都没变"。
+            if last_db.to_bits() == start_db.to_bits() {
+                return;
+            }
+            let Ok(track_id) = track_id.parse::<yeban_model::EntityId>() else {
+                return;
+            };
+            let op = yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::TrackVolume { track_id },
+                old_val: start_db,
+                new_val: last_db,
+            };
+            if port
+                .commit_ops(now_ms(), "mixer: set track volume", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] 推子提交被拒绝（工程未改）");
+                return;
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- 声相
+    ui.on_mixer_pan_grab({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index, pointer_x| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(track_id) = track_id_at(&ui, index) else {
+                *gesture.borrow_mut() = MixerGesture::Idle;
+                return;
+            };
+            match mixer_track_state(&port, &track_id) {
+                Some(state) => {
+                    *gesture.borrow_mut() = MixerGesture::Pan {
+                        track_id,
+                        start_pan: state.pan,
+                        start_x: pointer_x,
+                        last_pan: state.pan,
+                        moved: false,
+                    };
+                }
+                None => *gesture.borrow_mut() = MixerGesture::Idle,
+            }
+        }
+    });
+    ui.on_mixer_pan_drag({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move |index, pointer_x| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let (track_id, next_pan) = match &mut *gesture.borrow_mut() {
+                MixerGesture::Pan {
+                    track_id,
+                    start_pan,
+                    start_x,
+                    last_pan,
+                    moved,
+                } => {
+                    *moved = true;
+                    let next_pan = dragged_pan(*start_pan, pointer_x - *start_x);
+                    *last_pan = next_pan;
+                    (track_id.clone(), next_pan)
+                }
+                _ => return,
+            };
+            if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
+                return;
+            }
+            preview_pan(&ui, index, next_pan);
+        }
+    });
+    ui.on_mixer_pan_release({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let taken = std::mem::replace(&mut *gesture.borrow_mut(), MixerGesture::Idle);
+            let MixerGesture::Pan {
+                track_id,
+                start_pan,
+                last_pan,
+                moved,
+                ..
+            } = taken
+            else {
+                return;
+            };
+            if !moved {
+                // 按下就松手 ⇒ 不提交（同推子）。
+                return;
+            }
+            if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
+                return;
+            }
+            // 提交的是 `drag` 算出来的那个 `f32`（位比较，理由同推子）。
+            // 界面上那一格文本是它的函数（`pan_display(pan_millis_of(..))`），
+            // 因此"用户看到的数"与"提交的数"不可能两说。
+            if last_pan.to_bits() == start_pan.to_bits() {
+                return;
+            }
+            let Ok(track_id) = track_id.parse::<yeban_model::EntityId>() else {
+                return;
+            };
+            let op = yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::TrackPan { track_id },
+                old_val: start_pan,
+                new_val: last_pan,
+            };
+            if port
+                .commit_ops(now_ms(), "mixer: set track pan", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] 声相提交被拒绝（工程未改）");
+                return;
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- 两个开关
+    wire_mixer_switch(ui, port, &weak, MixerSwitch::Mute);
+    wire_mixer_switch(ui, port, &weak, MixerSwitch::Solo);
+}
+
+/// 混音台上的两个**布尔开关**（静音 / 独奏）—— 除了目标字段不同，接线逐字相同。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MixerSwitch {
+    /// `TrackV3::mute`。
+    Mute,
+    /// `TrackV3::solo`。
+    Solo,
+}
+
+/// 一个开关的**唯一**接线实现。
+///
+/// 点击 = 读现值 → 取反 → `commit_ops` **一次** → 重投影。没有中间态，
+/// 因此不存在"拖动期视图态"这一档（与推子 / 声相的形状差异是有意的）。
+fn wire_mixer_switch(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    weak: &slint::Weak<MainWindow>,
+    which: MixerSwitch,
+) {
+    let weak = weak.clone();
+    let port = Rc::clone(port);
+    let handler = move |index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let Some(track_id) = track_id_at(&ui, index) else {
+            return;
+        };
+        let Some(state) = mixer_track_state(&port, &track_id) else {
+            return;
+        };
+        let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+            return;
+        };
+        let (op, message) = match which {
+            MixerSwitch::Mute => (
+                yeban_model::Op::SetTrackMute {
+                    track_id: id,
+                    old_mute: state.mute,
+                    new_mute: !state.mute,
+                },
+                "mixer: toggle track mute",
+            ),
+            MixerSwitch::Solo => (
+                yeban_model::Op::SetTrackSolo {
+                    track_id: id,
+                    old_solo: state.solo,
+                    new_solo: !state.solo,
+                },
+                "mixer: toggle track solo",
+            ),
+        };
+        if port.commit_ops(now_ms(), message, vec![op]).is_err() {
+            eprintln!("[yeban-app] 混音开关提交被拒绝（工程未改）");
+            return;
+        }
+        refresh_undo_window(&ui, &port, true);
+    };
+    match which {
+        MixerSwitch::Mute => ui.on_mixer_mute_toggle(handler),
+        MixerSwitch::Solo => ui.on_mixer_solo_toggle(handler),
+    }
+}
+
 /// `[string]` 属性 → `Vec<String>`（读回视图态；写方向是 [`strings`]）。
 fn read_strings(model: &ModelRc<SharedString>) -> Vec<String> {
     use slint::Model as _;
@@ -1612,6 +2148,78 @@ pub fn build_main_window_with_console_tab(
 #[cfg(test)]
 mod tests {
     use super::advance_scroll;
+
+    /// 判据（混音台的**纯算术**那一半）：推子位移 → 位置 / dB 的映射、夹紧与退化输入。
+    ///
+    /// 口径（与 `.slint` 的几何同源）：位置空间 0.0–1.0 铺满 `[-60, 6]` dB，
+    /// 走完整个行程需要 `MIXER_FADER_TRAVEL_PX` 像素 ⇒ **每像素 66 ÷ 88 = 0.75 dB**。
+    #[test]
+    fn dragged_fader_db_maps_pixels_to_db_and_clamps() {
+        use super::{
+            MIXER_FADER_TRAVEL_PX, dragged_fader_db, dragged_fader_fraction, fader_db_from_fraction,
+        };
+        use crate::bridge::{FADER_MAX_DB, FADER_MIN_DB, volume_fraction};
+
+        // 向上拖（`delta_px > 0`）= 变大：88px 恰好走完 66 dB。
+        assert!((dragged_fader_db(-3.2, MIXER_FADER_TRAVEL_PX) - FADER_MAX_DB).abs() < 1e-4);
+        // 向下拖 40px = −30 dB（40 ÷ 88 × 66 = 30）。
+        assert!(
+            (dragged_fader_db(-3.2, -40.0) - (-33.2)).abs() < 1e-3,
+            "实测 {}",
+            dragged_fader_db(-3.2, -40.0)
+        );
+        // 位移为 0 时**逐位**返回起点：这是"拖出去再拖回来不提交"的前提
+        // （第一版没有这条短路，实测差 3 ulp，于是会提交一步"数值没变"的编辑）。
+        assert_eq!(dragged_fader_db(-3.2, 0.0).to_bits(), (-3.2_f32).to_bits());
+        assert_eq!(
+            dragged_fader_fraction(volume_fraction(-3.2), 0.0).to_bits(),
+            volume_fraction(-3.2).to_bits()
+        );
+        // 位置 ⇄ dB 的反解必须与投影的 `volume_fraction` 是同一把尺子。
+        assert_eq!(fader_db_from_fraction(0.0), FADER_MIN_DB);
+        assert_eq!(fader_db_from_fraction(1.0), FADER_MAX_DB);
+        assert!((fader_db_from_fraction(volume_fraction(-3.2)) - (-3.2)).abs() < 1e-3);
+        // 越界：夹到量程两端（不是绕回、不是 `NaN`）。
+        assert_eq!(dragged_fader_db(-3.2, -10_000.0), FADER_MIN_DB);
+        assert_eq!(dragged_fader_db(-3.2, 10_000.0), FADER_MAX_DB);
+        // 非有限位移：原地返回起点（`NaN` 进工程是最难查的一类缺陷）。
+        assert_eq!(
+            dragged_fader_db(-3.2, f32::NAN).to_bits(),
+            (-3.2_f32).to_bits()
+        );
+        assert_eq!(
+            dragged_fader_db(-3.2, f32::INFINITY).to_bits(),
+            (-3.2_f32).to_bits()
+        );
+    }
+
+    /// 判据（混音台的**纯算术**那一半）：声相位移 → `pan` 的映射、夹紧与退化输入。
+    ///
+    /// 口径：`MIXER_PAN_TRAVEL_PX` 像素走完 `-1.0..=+1.0`（跨度 2.0）⇒ **每像素 2/36**。
+    #[test]
+    fn dragged_pan_maps_pixels_to_pan_and_clamps() {
+        use super::{MIXER_PAN_TRAVEL_PX, dragged_pan};
+
+        // 走完整个行程 ⇒ 两端。
+        assert!((dragged_pan(0.0, MIXER_PAN_TRAVEL_PX) - 1.0).abs() < 1e-6);
+        assert!((dragged_pan(0.0, -MIXER_PAN_TRAVEL_PX) + 1.0).abs() < 1e-6);
+        // 一半行程 ⇒ ±0.5（判据 ② 的 `R50` 就是这一格：9 ÷ 36 × 2 = 0.5）。
+        assert!((dragged_pan(0.0, 9.0) - 0.5).abs() < 1e-6);
+        assert!((dragged_pan(0.0, -9.0) + 0.5).abs() < 1e-6);
+        // 位移 0 ⇒ 逐位返回起点（同推子）。
+        assert_eq!(dragged_pan(0.0, 0.0).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(dragged_pan(-0.25, 0.0).to_bits(), (-0.25_f32).to_bits());
+        // 越界夹紧（与 `ModelError::PanOutOfRange` 的边界同一处）。
+        assert_eq!(dragged_pan(0.5, 10_000.0), 1.0);
+        assert_eq!(dragged_pan(-0.5, -10_000.0), -1.0);
+        // 非有限：位移非有限 ⇒ 起点；起点非有限 ⇒ 当居中（0.0）再施加位移。
+        assert_eq!(dragged_pan(0.25, f32::NAN).to_bits(), 0.25_f32.to_bits());
+        assert_eq!(dragged_pan(f32::NAN, 0.0).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(dragged_pan(f32::NAN, MIXER_PAN_TRAVEL_PX), 1.0);
+        // 起点越界（模型不该给，但投影不假设输入可信）：先夹再施加位移。
+        assert_eq!(dragged_pan(5.0, 0.0), 1.0);
+        assert_eq!(dragged_pan(-5.0, 0.0), -1.0);
+    }
 
     #[test]
     fn advance_scroll_accumulates_and_clamps_at_zero() {

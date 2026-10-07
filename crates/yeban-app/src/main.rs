@@ -283,6 +283,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 端口在这里的作用与 `wire_roll_edit` 逐字相同：给出此刻权威的工程。
     // `Escape`（`Action::Cancel`）也经同一个 `wire_keys` 端口取消这一拖（见 `apply_action`）。
     host::wire_track_height_drag(&ui, &undo_port);
+    // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏。
+    //
+    // 工程内容是**领域内容** ⇒ 走 `Op` + `UndoPort`（`ADR-0005`）：拖动期间只写视图态，
+    // 松手 / 点击才 `commit_ops` **一次**，因此一次拖动 = 一步可撤销的编辑。
+    // 与 `wire_roll_edit` 共用同一个 `UndoPort`（唯一可变权威）。
+    host::wire_mixer_edit(&ui, &undo_port);
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
     host::apply_undo(&ui, &undo_port);
     let undo_display = undo_port.display();

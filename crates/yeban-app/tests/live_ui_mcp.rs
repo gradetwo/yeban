@@ -887,6 +887,386 @@ fn mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
     assert_eq!(absent.code, Some(-32602));
 }
 
+/// 判据 7（**混音台的四项写入能力**）：推子 / 声相 / 静音 / 独奏各走**自己的**语义元素
+/// 与**自己的**轨道下标，并且各自满足"拖动期只写视图态 ＋ 松手恰一次提交 ＋ `Cmd+Z` 复原"。
+///
+/// ## 为什么四项用四个不同的轨道下标（序号化 / 多路径探针）
+///
+/// 上一轮的教训：判据用**固定探针 id** 时，单独破坏某一路径**仍然绿**。
+/// 本判据因此给每一项能力分配一组**互不共享**的 `(语义元素, 轨道下标, 模型字段)`：
+///
+/// | # | 能力 | 语义元素 | 轨道下标 | 模型字段 |
+/// | :--- | :--- | :--- | :--- | :--- |
+/// | ① | 音量 | `track-0-fader` | 0 | `TrackV3::volume_db` |
+/// | ② | 声相 | `track-1-pan` | 1 | `TrackV3::pan` |
+/// | ③ | 静音 | `track-2-mixer-mute-button` | 2 | `TrackV3::mute` |
+/// | ④ | 独奏 | `track-3-mixer-solo-button` | 3 | `TrackV3::solo` |
+///
+/// 每一段都额外断言**别的轨道一位没变** ⇒ "写错下标"这一类缺陷会被指名抓到。
+///
+/// ## 三条会变红的注入（都实测过，见交付报告）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 删掉推子的 `TouchArea`（"混音台回退成无输入面"） | `ui/console/mixer_console.slint` | ① 段：注入后 `track-volumes[0]` 与注入前逐字相同 ⇒ 红 |
+/// | 把提交从 `release` 挪到 `drag`（"拖动不原子"） | `src/host.rs` 的 `on_mixer_fader_drag` | ① 段：`拖动之后 undoable == 0` 与 `工程字段仍是起点值` 两条同时红 |
+/// | 删掉 `wire_mixer_edit(&window, undo)` | `src/live_surface.rs` | 四段一起红（没有任何 `.slint` 回调被接到端口上） |
+#[test]
+fn the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
+    use std::rc::Rc;
+
+    use serde_json::json;
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_ui_mcp::methods::{METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE};
+
+    /// 会话打开时刻（与既有两个拖拽判据同一个夹具常量）。
+    const MIXER_NOW: u64 = 1_760_000_000_000;
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    assert!(view.tracks.len() >= 4, "演示工程至少有 4 条非主总线轨道");
+    // 四项能力各自的起点值（从**投影**读，与界面上的下标同源）。
+    let before: Vec<(f32, f32, bool, bool)> = (0..4)
+        .map(|index| mixer_readings(&project, &view, index))
+        .collect();
+    // 起点必须能分辨"改过"与"没改"：四项的起点都不是它们的终值。
+    assert_eq!(before[0].0, -3.2, "0 号轨（鼓）的音量起点是 -3.2 dB");
+    assert_eq!(before[1].1, 0.0, "1 号轨（贝斯）的声相起点居中");
+    assert!(!before[2].2, "2 号轨（铺底）起点不静音");
+    assert!(!before[3].3, "3 号轨（主音）起点不独奏");
+
+    // 混音台（控制台 Tab 1）必须**可见**，否则它的元素不在运行时树里。
+    //
+    // 端口先于装配建好，并交给 [`LiveWiringOptions::undo`]：装配路径
+    // （`build_live_ui_with`）拿它去接**生产形态**的两条线 —— `host::wire_keys`
+    // （`Cmd+Z`）与 `host::wire_mixer_edit`（混音台写入面）。
+    // 判据**自己不再接线**：于是"装配路径忘了接混音台"会被本判据直接抓到
+    // （注入实测见本判据文档的表）。
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), MIXER_NOW).expect("打开"),
+    ));
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+    // ---- 像素：**未注入任何拖动**的默认外观（`console_tab = 1` ⇒ 混音台可见）----
+    //
+    // 本切片给混音台加的全是**不画像素**的东西（`TouchArea` 与 `accessible-*`），
+    // 因此默认帧必须逐字节不变。读数记为 PNG **字节**的 sha256（不是文件大小：
+    // 本仓 PNG 是存储式 deflate，1920×1080 恒为 6,222,418 字节 ⇒ 尺寸证明不了内容）。
+    // A/B 实测（同一条 `console_tab=1` 帧，改动前 / 改动后各构建一次）见交付报告。
+    let default_frame = live.capture().expect("默认外观帧");
+    let (default_png, _default_evidence) =
+        encode_with_evidence(&default_frame, DEFAULT_MAX_PNG_BYTES).expect("默认帧必须可编码");
+    let default_digest = yeban_model::ids::ContentHash::of_bytes(&default_png);
+    let artifact = write_artifact_bytes("mixer-default-1920x1080.png", &default_png);
+    report_line(&format!(
+        "[mixer-pixel] 默认外观（未注入拖动）: {} 字节 / sha256={} / artifact={artifact}",
+        default_png.len(),
+        default_digest.as_str()
+    ));
+    let mut plane = live.into_control_plane(Permission::Interactive);
+
+    assert_eq!(port.display().undoable, 0, "起点不该有可撤销的编辑");
+
+    // ================================================================ ① 音量（推子竖直拖）
+    let fader = element_bounds(&mut plane, 301, "track-0-fader");
+    let fader_x = fader["x"].as_f64().expect("x") + 11.0;
+    let fader_y = fader["y"].as_f64().expect("y") + 8.0;
+    let before_text = injected_strings(&window.get_track_volumes())[0].clone();
+    assert_eq!(before_text, "-3.2", "① 注入前的推子文本");
+    let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        302,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(json!({"elementId": "track-0-fader", "xOffset": 11.0, "yOffset": 8.0, "button": "left"})),
+    ));
+    assert!(!down.is_error(), "① 推子按下必须落到真实窗口: {down:?}");
+    // 向下拖 40px：88px 走完 66 dB（`-60..=6`）⇒ 40 ÷ 88 × 66 = 30 dB ⇒ -3.2 − 30 = -33.2。
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        303,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": fader_x, "y": fader_y + 40.0})),
+    ));
+    assert!(!moved.is_error(), "① 推子拖动必须落到真实窗口: {moved:?}");
+    let dragging_text = injected_strings(&window.get_track_volumes())[0].clone();
+    assert_eq!(
+        dragging_text, "-33.2",
+        "① 拖动期数值文本必须**立即**跟着动（这是「数值始终可见且随拖动更新」）"
+    );
+    // ⭐ 拖动期**只**写视图态：工程一位没动，撤销栈也没涨。
+    assert_eq!(
+        port.display().undoable,
+        0,
+        "① 拖动期不许提交（每像素一次提交会把一步撤销碎成几百步）"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0,
+        before[0].0,
+        "① 拖动期工程里的 volume_db 必须一位没动（视图态 ≠ 工程）"
+    );
+    let up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        304,
+        "ui/dispatch_pointer_up",
+        Some(json!({"button": "left"})),
+    ));
+    assert!(!up.is_error(), "① 推子松手必须落到真实窗口: {up:?}");
+    let committed_volume = mixer_readings(&port.project(), &view, 0).0;
+    assert_eq!(
+        format!("{committed_volume:.1}"),
+        "-33.2",
+        "① 松手后工程里的 volume_db 必须真的是 -33.2 dB（读回来证明）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        1,
+        "① 一次拖动 = **恰一步**可撤销的编辑（原子）"
+    );
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0].clone(),
+        "-33.2"
+    );
+    // 别的轨道一位没变（写错下标会被这里抓到）。
+    for (index, expected) in before.iter().enumerate().skip(1) {
+        assert_eq!(
+            mixer_readings(&port.project(), &view, index),
+            *expected,
+            "① 第 {index} 轨不该被 0 号轨的手势波及"
+        );
+    }
+    report_line(&format!(
+        "[mixer-①volume] 注入前 {before_text} dB → 拖动期 {dragging_text} dB（工程仍 {} dB / undoable 0）\
+         → 松手 {committed_volume:.4} dB / undoable {} → `ui/property` 读数 {:?}",
+        before[0].0,
+        port.display().undoable,
+        read_property(&mut plane, 305, "track-0-fader", "value")
+    ));
+
+    // `Cmd+Z` 复原（走 `.slint` 的 `key-action` 那**同一格**：与平台事件源同一条链）。
+    assert!(
+        window.invoke_key_action("z".into(), false, false, false, true),
+        "① `Cmd+Z` 必须被 DAW 消费"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0.to_bits(),
+        before[0].0.to_bits(),
+        "① `Cmd+Z` 必须把 volume_db **逐位**还原"
+    );
+    assert_eq!(port.display().undoable, 0);
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0].clone(),
+        before_text,
+        "① `Cmd+Z` 之后界面上的数值文本也必须回到注入前"
+    );
+    report_line(&format!(
+        "[mixer-①volume] `Cmd+Z` 之后: volume_db={} dB（起点 {}）/ 界面文本={:?} / undoable={}",
+        mixer_readings(&port.project(), &view, 0).0,
+        before[0].0,
+        injected_strings(&window.get_track_volumes())[0].clone(),
+        port.display().undoable
+    ));
+
+    // ================================================================ ② 声相（水平拖）
+    let pan = element_bounds(&mut plane, 311, "track-1-pan");
+    let pan_x = pan["x"].as_f64().expect("x") + 10.0;
+    let pan_y = pan["y"].as_f64().expect("y") + 7.0;
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[1].clone(),
+        "C",
+        "② 注入前的声相文本"
+    );
+    let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        312,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(
+            json!({"elementId": "track-1-pan", "xOffset": 10.0, "yOffset": 7.0, "button": "left"}),
+        ),
+    ));
+    assert!(!down.is_error(), "② 声相按下必须落到真实窗口: {down:?}");
+    // 向右拖 9px：声相面 36px 走完 -1.0..=+1.0（跨度 2.0）⇒ 9 ÷ 36 × 2.0 = +0.5 ⇒ `R50`。
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        313,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": pan_x + 9.0, "y": pan_y})),
+    ));
+    assert!(!moved.is_error(), "② 声相拖动必须落到真实窗口: {moved:?}");
+    let dragging_pan = injected_strings(&window.get_track_pans())[1].clone();
+    assert_eq!(dragging_pan, "R50", "② 拖动期声相文本必须立即更新");
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).1,
+        before[1].1,
+        "② 拖动期工程里的 pan 必须一位没动"
+    );
+    assert_eq!(port.display().undoable, 0, "② 拖动期不许提交");
+    let up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        314,
+        "ui/dispatch_pointer_up",
+        Some(json!({"button": "left"})),
+    ));
+    assert!(!up.is_error(), "② 声相松手必须落到真实窗口: {up:?}");
+    let committed_pan = mixer_readings(&port.project(), &view, 1).1;
+    assert!(
+        (committed_pan - 0.5).abs() < 1e-6,
+        "② 松手后工程里的 pan 必须真的是 +0.5（读回来证明），实测 {committed_pan}"
+    );
+    assert_eq!(port.display().undoable, 1, "② 一次拖动 = 恰一步");
+    assert_eq!(
+        read_property(&mut plane, 315, "track-1-pan", "value"),
+        json!("R50"),
+        "② `ui/property` 的 `value` 必须把声相读回来（本切片之前它读不到）"
+    );
+    for index in [0_usize, 2, 3] {
+        assert_eq!(
+            mixer_readings(&port.project(), &view, index),
+            before[index],
+            "② 第 {index} 轨不该被 1 号轨的手势波及"
+        );
+    }
+    report_line(&format!(
+        "[mixer-②pan] 注入前 {:?} → 拖动期 {:?}（工程仍 {} / undoable 0）→ 松手 {committed_pan} / \
+         `ui/property value`={:?}",
+        "C",
+        dragging_pan,
+        before[1].1,
+        read_property(&mut plane, 316, "track-1-pan", "value")
+    ));
+    assert!(
+        window.invoke_key_action("z".into(), false, false, false, true),
+        "② `Cmd+Z` 必须被 DAW 消费"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).1.to_bits(),
+        before[1].1.to_bits(),
+        "② `Cmd+Z` 必须把 pan **逐位**还原"
+    );
+    assert_eq!(injected_strings(&window.get_track_pans())[1].clone(), "C");
+
+    // ================================================================ ③ 静音（点击开关）
+    let opened = port.project().tracks.iter().filter(|(_, t)| t.solo).count();
+    assert!(!before[2].2, "③ 起点不静音");
+    click_element(&mut plane, 321, "track-2-mixer-mute-button");
+    assert!(
+        mixer_readings(&port.project(), &view, 2).2,
+        "③ 点击之后工程里的 mute 必须真的是 true（读回来证明）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        1,
+        "③ 一次点击 = **恰一步**可撤销的编辑"
+    );
+    assert_eq!(
+        read_property(&mut plane, 325, "track-2-mixer-mute-button", "checked"),
+        json!("true"),
+        "③ 界面上的勾选态必须跟着工程（`ui/property` 的 `value` 是**文本**，与既有判据同口径）"
+    );
+    for index in [0_usize, 1, 3] {
+        assert_eq!(
+            mixer_readings(&port.project(), &view, index),
+            before[index],
+            "③ 第 {index} 轨不该被 2 号轨的点击波及"
+        );
+    }
+    report_line(&format!(
+        "[mixer-③mute] `track-2-mixer-mute-button` 点击: mute {} → {} / undoable {} / \
+         `ui/property checked`={:?}（solo 轨数仍 {opened}）",
+        before[2].2,
+        mixer_readings(&port.project(), &view, 2).2,
+        port.display().undoable,
+        read_property(&mut plane, 326, "track-2-mixer-mute-button", "checked")
+    ));
+    assert!(
+        window.invoke_key_action("z".into(), false, false, false, true),
+        "③ `Cmd+Z` 必须被 DAW 消费"
+    );
+    assert!(
+        !mixer_readings(&port.project(), &view, 2).2,
+        "③ `Cmd+Z` 必须把 mute 还原"
+    );
+    assert_eq!(port.display().undoable, 0);
+
+    // ================================================================ ④ 独奏（点击开关）
+    assert!(!before[3].3, "④ 起点不独奏");
+    click_element(&mut plane, 331, "track-3-mixer-solo-button");
+    assert!(
+        mixer_readings(&port.project(), &view, 3).3,
+        "④ 点击之后工程里的 solo 必须真的是 true（读回来证明）"
+    );
+    assert_eq!(port.display().undoable, 1, "④ 一次点击 = 恰一步");
+    assert_eq!(
+        read_property(&mut plane, 335, "track-3-mixer-solo-button", "checked"),
+        json!("true")
+    );
+    for index in [0_usize, 1, 2] {
+        assert_eq!(
+            mixer_readings(&port.project(), &view, index),
+            before[index],
+            "④ 第 {index} 轨不该被 3 号轨的点击波及"
+        );
+    }
+    report_line(&format!(
+        "[mixer-④solo] `track-3-mixer-solo-button` 点击: solo {} → {} / undoable {} / \
+         `ui/property checked`={:?}",
+        before[3].3,
+        mixer_readings(&port.project(), &view, 3).3,
+        port.display().undoable,
+        read_property(&mut plane, 336, "track-3-mixer-solo-button", "checked")
+    ));
+    assert!(
+        window.invoke_key_action("z".into(), false, false, false, true),
+        "④ `Cmd+Z` 必须被 DAW 消费"
+    );
+    assert!(
+        !mixer_readings(&port.project(), &view, 3).3,
+        "④ `Cmd+Z` 必须把 solo 还原"
+    );
+    assert_eq!(port.display().undoable, 0);
+
+    // ---- 收尾：四项都复原之后，工程必须逐位回到起点（四条能力互不残留） ----
+    for (index, expected) in before.iter().enumerate() {
+        assert_eq!(
+            mixer_readings(&port.project(), &view, index),
+            *expected,
+            "第 {index} 轨在四条能力都 `Cmd+Z` 之后必须逐位回到起点"
+        );
+    }
+    // 撤销日志证明"四条能力各自走到了端口"（不是只改了界面属性）。
+    let names: Vec<String> = port
+        .records()
+        .iter()
+        .map(|record| record.action.to_owned())
+        .collect();
+    report_line(&format!(
+        "[mixer] 四项能力的撤销日志（共 {} 条 undo）: {names:?}；最后 undoable={}",
+        names.len(),
+        port.display().undoable
+    ));
+}
+
+/// 工程里第 `index` 条非主总线轨道的混音四格 `(volume_db, pan, mute, solo)`。
+///
+/// 身份从**投影**取（`ViewState::tracks[index].id`），因此这里的读数与界面上的
+/// `track-{index}-*` 寻址的是**同一条轨道**（不是两套下标口径）。
+fn mixer_readings(
+    project: &YebanProjectV1,
+    view: &ViewState,
+    index: usize,
+) -> (f32, f32, bool, bool) {
+    let id = view.tracks[index].id.clone();
+    let track = project
+        .tracks
+        .values()
+        .find(|track| track.id.to_canonical_string() == id)
+        .unwrap_or_else(|| panic!("工程里必须有身份 {id} 的轨道"));
+    (track.volume_db, track.pan, track.mute, track.solo)
+}
+
 /// 判据 6（**电平真的被消费**）：注入一组已知 `MeterFrame` ⇒ 控件树里的 dBFS 与之一致。
 ///
 /// 容差与理由：`MeterFrame` 的幅度是线性的，dBFS = `20·log10(a)`；界面上显示的是

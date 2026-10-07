@@ -45,6 +45,26 @@ export component MixerConsole inherits Rectangle {
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
 
+    // ---- 混音**写入面**的三条手势 + 两个开关（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`）----
+    //
+    // 形状照抄 `ui/workspace/arrangement_view.slint` 的 `track-height-grab/drag/release`：
+    // `.slint` **只报**"哪一个下标 + 本地坐标"，位移换算、视图态写入与 `Op` 提交全在宿主
+    // （`host::wire_mixer_edit`）。于是：
+    //   - **一次拖动 = 一次 `commit_ops`**：`drag` 只改视图态（数值文本与推子位置立即更新），
+    //     只有 `release` 才提交。逐像素提交会把一步撤销碎成几百步；
+    //   - **数值始终可见**：拖动期的预览写在 `track-volumes` / `track-volume-fractions` /
+    //     `track-pans` 上，读的就是下面那两个 `UiMonoText` 与推子帽的 `y`。
+    //
+    // `length` 就是 Slint 的 `f32`（与 `track-height-*` 同款：宿主只做减法）。
+    callback mixer-fader-grab(int, length);
+    callback mixer-fader-drag(int, length);
+    callback mixer-fader-release(int);
+    callback mixer-pan-grab(int, length);
+    callback mixer-pan-drag(int, length);
+    callback mixer-pan-release(int);
+    callback mixer-mute-toggle(int);
+    callback mixer-solo-toggle(int);
+
     // ---- 由 src/host.rs 注入的**电平**数据 (60Hz 抽帧的结果) ----
     // `track-meter-peaks` / `track-meter-rmss` 是 `{:.1}` dBFS 文本（**已按 -120 下限钳位**，
     // 且 NaN/±∞ 已在 `src/meters.rs` 落成下限）。`track-meter-levels` 是 0.0–1.0 的柱高。
@@ -103,7 +123,9 @@ export component MixerConsole inherits Rectangle {
             overflow: elide;
         }
 
-        // 声相文本 —— 由投影的 `pan_display` 给出（界面不做任何算术）。
+        // 声相读出 —— **始终可见**的数值（`PAN C` / `PAN L50`，由投影的 `pan_display` 给出，
+        // 界面不做任何算术）。本轮起它同时是**声相拖动面**的语义落点：
+        // `accessible-value` 让 `pan` 第一次能从控件树读回来（在此之前它只活在标签文本里）。
         UiMonoText {
             x: Tokens.space-3;
             y: 20px;
@@ -113,6 +135,14 @@ export component MixerConsole inherits Rectangle {
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             overflow: elide;
+            accessible-role: slider;
+            accessible-id: "track-" + track_index + "-pan";
+            accessible-label: "轨道 " + track_name + " 声相";
+            accessible-orientation: horizontal;
+            accessible-value-minimum: -100;
+            accessible-value-maximum: 100;
+            accessible-value-step: 1;
+            accessible-value: root.track-pans[track_index];
         }
 
         // 轨道色标 —— 与 arrangement 的 `track-{i}-color-swatch` 同源（同一个投影字段），
@@ -153,6 +183,15 @@ export component MixerConsole inherits Rectangle {
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
             }
+
+            // 点击 ⇒ `Op::SetTrackMute`（一次点击 = 一次可撤销的编辑）。
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.mixer-mute-toggle(track_index);
+                }
+            }
         }
 
         // 独奏 —— `accessible-checked` 来自工程的 `TrackV3::solo`
@@ -178,6 +217,15 @@ export component MixerConsole inherits Rectangle {
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
+            }
+
+            // 点击 ⇒ `Op::SetTrackSolo`。与静音按钮**成对相邻**（静音 x=4、独奏 x=30）。
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.mixer-solo-toggle(track_index);
+                }
             }
         }
 
@@ -248,6 +296,52 @@ export component MixerConsole inherits Rectangle {
             color: Tokens.gold;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
+        }
+
+        // ---------------------------------------------------------------- 输入面
+        //
+        // 两个 `TouchArea` 的位置都**不随数值动**（推子帽的 `y`、声相文本都会动）：
+        // 手势读的是 `self.mouse-y` / `self.mouse-x`，若控件自己也动，坐标就自己喂自己。
+        // 因此它们是**静态矩形**，只做命中与坐标上报，**不画任何像素**（默认外观不变）。
+        //
+        // 声明顺序 = 命中顺序（Slint 自后往前做命中测试）：两个都排在它们所覆盖的
+        // 视觉元素**之后**，所以按在推子帽 / 声相文本上也能抓到。
+        //
+        // 范围：推子面 x 22–70 / y 54–170 盖住导轨（x 38–44）与推子帽（x 30–52，
+        // y ∈ [60, 164]）；声相面 x 4–40 / y 18–36 盖住 `PAN …` 文本（x 4–32）。
+        // 两者都**不**碰静音 / 独奏（y 38–54）、电平表（x 4–16）与别的通道条。
+        TouchArea {
+            x: 22px;
+            y: 54px;
+            width: 48px;
+            height: 116px;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.mixer-fader-grab(track_index, self.mouse-y);
+                } else if event.kind == PointerEventKind.move {
+                    root.mixer-fader-drag(track_index, self.mouse-y);
+                } else {
+                    // `up` 与 `cancel` 都是收尾：指针拖到窗口外松手也走这条
+                    // （与 `track-height-release` 同款）。
+                    root.mixer-fader-release(track_index);
+                }
+            }
+        }
+
+        TouchArea {
+            x: Tokens.space-3;
+            y: 18px;
+            width: 36px;
+            height: 18px;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.mixer-pan-grab(track_index, self.mouse-x);
+                } else if event.kind == PointerEventKind.move {
+                    root.mixer-pan-drag(track_index, self.mouse-x);
+                } else {
+                    root.mixer-pan-release(track_index);
+                }
+            }
         }
     }
 

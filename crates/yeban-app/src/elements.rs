@@ -678,6 +678,21 @@ impl ElementRegistry {
                 &format!("轨道 {} 推子", track.name),
                 false,
             );
+            // 声相读出 / 拖动面（`mixer_console.slint` 的 `"PAN " + root.track-pans[i]`）。
+            //
+            // 为什么它是一个**独立**的语义 ID 而不是复用推子的：`pan` 到 2026-10-07 为止
+            // 只活在标签文本里（`docs/ledger/feature-alignment.md` 的"声相读不到"），
+            // 而"拖得动 + 读得回"要求它有 `accessible-value`。本切片起它有。
+            //
+            // ⚠ 与 `track-{i}-fader` **同族但不同名**：两个元素可能同时出现在树上，
+            // 重名会让运行时控件树构建失败（`TreeError::DuplicateId`）。
+            registry.add(
+                &format!("track-{track_index}-pan"),
+                ElementKind::Slider,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 声相", track.name),
+                false,
+            );
             // 混音台的静音 / 独奏 / 色标用**自己**的语义 ID（`-mixer-` 中缀），
             // 不复用 arrangement 的 `track-{i}-mute-button`：两个视图可能同时可见，
             // 重复 ID 会让运行时控件树构建直接失败（`TreeError::DuplicateId`）。
@@ -1732,6 +1747,72 @@ mod tests {
                 "mixer_console.slint 的代码里不许再有 `{forbidden}`（内联演示数据）"
             );
         }
+    }
+
+    /// 判据（文本层）：混音台的**输入面真的存在**，且像素行程常量与 `.slint` 的几何一致。
+    ///
+    /// ## 它守的是什么（本次的缺口就是它抓的那一格）
+    ///
+    /// 本次之前 `mixer_console.slint` 的 `TouchArea` 计数是 **0** —— 推子 / 静音 / 独奏
+    /// 全是纯 `Rectangle`，四项能力在界面上**完全不可操作**，而当时的判据（控件树里有
+    /// 这些语义 ID、值来自投影）**全绿**。这条判据把"输入面"变成机械事实：
+    /// 四个 `TouchArea`（推子 / 声相 / 静音 / 独奏）少一个就红。
+    ///
+    /// ## 第二半：像素行程常量必须与 `.slint` 的几何**同源**
+    ///
+    /// `MIXER_FADER_TRAVEL_PX` 与 `MIXER_PAN_TRAVEL_PX`（`src/host.rs`）是"拖 1 像素 =
+    /// 数值变多少"的唯一口径；它们必须分别等于 `.slint` 里推子帽位置表达式的像素系数与
+    /// 声相拖动面的宽度，否则"推子帽动 1 像素"与"数值动一格"会各说各话。
+    #[test]
+    fn the_mixer_input_surface_exists_and_matches_the_travel_constants() {
+        let source = std::fs::read_to_string(ui_dir().join("console/mixer_console.slint"))
+            .expect("读 mixer_console.slint");
+
+        // ① 输入面：四个 `TouchArea`（每个都是循环体里的一份 ⇒ 源码里各出现一次）。
+        assert!(
+            source.matches("TouchArea").count() >= 4,
+            "混音台必须有 ≥ 4 个 `TouchArea`（推子 / 声相 / 静音 / 独奏），实测 {}",
+            source.matches("TouchArea").count()
+        );
+        for (what, marker) in [
+            (
+                "推子竖直拖",
+                "root.mixer-fader-grab(track_index, self.mouse-y)",
+            ),
+            ("推子收尾", "root.mixer-fader-release(track_index)"),
+            (
+                "声相水平拖",
+                "root.mixer-pan-grab(track_index, self.mouse-x)",
+            ),
+            ("声相收尾", "root.mixer-pan-release(track_index)"),
+            ("静音点击", "root.mixer-mute-toggle(track_index)"),
+            ("独奏点击", "root.mixer-solo-toggle(track_index)"),
+        ] {
+            assert!(
+                source.contains(marker),
+                "混音台缺少「{what}」的输入面：源码里找不到 `{marker}`"
+            );
+        }
+
+        // ② 推子行程：`.slint` 的位置表达式里的像素系数就是行程。
+        let fader_geometry = "60px + 88px * (1.0 - root.track-volume-fractions[track_index])";
+        assert!(
+            source.contains(fader_geometry),
+            "推子帽的位置表达式是像素行程的唯一来源"
+        );
+        assert_eq!(
+            crate::host::MIXER_FADER_TRAVEL_PX,
+            88.0,
+            "宿主常量必须等于 `.slint` 的 88px"
+        );
+
+        // ③ 声相行程：拖动漫面的宽度就是行程（整段字面量一起钉住，避免"读了半个块"）。
+        let pan_surface = "            x: Tokens.space-3;\n            y: 18px;\n            width: 36px;\n            height: 18px;";
+        assert!(
+            source.contains(pan_surface),
+            "声相拖动漫面的几何（宽 36px）必须与 `MIXER_PAN_TRAVEL_PX` 一致"
+        );
+        assert_eq!(crate::host::MIXER_PAN_TRAVEL_PX, 36.0);
     }
 
     /// 判据（文本层）：**转发链两侧对齐** —— `app.slint → ConsoleTabs → MixerConsole`

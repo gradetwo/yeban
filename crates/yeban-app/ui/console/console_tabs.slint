@@ -64,6 +64,16 @@ export component ConsoleTabs inherits Rectangle {
     callback select-piano-roll();
     callback select-mixer();
     callback select-devices();
+    // 混音台（Tab 2）的**写入面**透传 —— 本组件不解释它们，只把 `MixerConsole` 的
+    // 手势 / 点击原样转给 `MainWindow`（宿主侧唯一实现是 `host::wire_mixer_edit`）。
+    callback mixer-fader-grab(int, length);
+    callback mixer-fader-drag(int, length);
+    callback mixer-fader-release(int);
+    callback mixer-pan-grab(int, length);
+    callback mixer-pan-drag(int, length);
+    callback mixer-pan-release(int);
+    callback mixer-mute-toggle(int);
+    callback mixer-solo-toggle(int);
 
     min-height: 32px;
     background: Tokens.bg-panel;
@@ -194,6 +204,31 @@ export component ConsoleTabs inherits Rectangle {
         master-meter-peak: root.master-meter-peak;
         master-meter-rms: root.master-meter-rms;
         master-meter-level: root.master-meter-level;
+        // 写入面：三个手势 + 两个开关，全部原样上抛（`MainWindow` 是唯一落点）。
+        mixer-fader-grab(index, y) => {
+            root.mixer-fader-grab(index, y);
+        }
+        mixer-fader-drag(index, y) => {
+            root.mixer-fader-drag(index, y);
+        }
+        mixer-fader-release(index) => {
+            root.mixer-fader-release(index);
+        }
+        mixer-pan-grab(index, x) => {
+            root.mixer-pan-grab(index, x);
+        }
+        mixer-pan-drag(index, x) => {
+            root.mixer-pan-drag(index, x);
+        }
+        mixer-pan-release(index) => {
+            root.mixer-pan-release(index);
+        }
+        mixer-mute-toggle(index) => {
+            root.mixer-mute-toggle(index);
+        }
+        mixer-solo-toggle(index) => {
+            root.mixer-solo-toggle(index);
+        }
     }
 
     DeviceRack {

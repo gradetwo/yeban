@@ -1396,6 +1396,12 @@ pub fn build_live_ui_with(
     // （真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea` → 宿主写属性）。
     // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
     host::wire_view_callbacks(&window);
+    // 混音台（控制台 Tab 2）的**写入面**：与产品进程（`main.rs` 的 `wire_callbacks`）调的是
+    // **同一个**函数。它需要 `UndoPort`（工程内容必须走 `Op`，`ADR-0005`）⇒ 只在装配给了
+    // 端口时接上；`options.undo` 为 `None` 的既有判据因此照旧"没有写入面"，行为一位不变。
+    if let Some(undo) = options.undo.as_ref() {
+        host::wire_mixer_edit(&window, undo);
+    }
     let admin = LiveAdminSurface {
         inner: surface,
         window,
