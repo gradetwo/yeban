@@ -34,6 +34,13 @@
    缺口列必须含 `状态：<状态词>`；**凡"无 / 部分"的行**必须把 `原因：…；计划：…；状态：…`
    三件事按序写全、各自非空。**这是本任务的核心要求**：一个"无"若没有原因与计划，
    下一个人只会把它重问一遍。
+   **同一条能力不许有两个口径**：功能名逐字相同（`seen`）或**归一化后互为包含**
+   （`capability_key()`，被包含的名字 ≥ `CAPABILITY_KEY_MIN` 字符，见该函数的注释）的两行，
+   三侧标记必须一致。只认"逐字相同"是不够的 —— 实测：同一条撤销 / 重做被写成
+   `**执行**撤销 / 重做（可逆能力对外可调用）`（旧读数：UI `部分` / MCP `无` / `PENDING`）与
+   `撤销 / 重做（yeban_undo / yeban_redo + UI 入口）`（三侧齐全）两行，守卫当时全绿。
+   本判据**只在标记不一致时开火**，且实测活表上只有那 1 对候选、0 处假红
+   （宽松到"最长公共子串 ≥ 5"会产出 30 对假红，故不采用模糊匹配）。
 4. **汇总对账**：顶部的六类分类计数必须与表格逐行统计**逐一相等**。
    汇总数字是人最爱手抄的东西；口径漂移在本仓库已实测发生多次。改了行忘了改汇总 ⇒ 红。
 5. **手抄副本对账**：本脚本 `[ok]` 行打印的三个数字（`N 行功能` / `N 个 MCP 工具` /
@@ -218,6 +225,10 @@ DECLARED_METHODS_RE = re.compile(r"(\d+)\s*条 ui 方法")
 # 这个区间的作用是抓"误删/误增整块"，不是精确值，故放宽不削弱它。
 MIN_ROWS, MAX_ROWS = 40, 80
 
+#: 判据 3 的"同一能力"归一化名的**最小长度**。比它短的名字（实测活表里只有 `走带` 一个，
+#: 归一化后 2 字符）太容易"被别的名字包含" ⇒ 按构造跳过，不拿它去制造假红。
+CAPABILITY_KEY_MIN = 4
+
 #: ⚠ 表格单元格里用 `\|` 转义竖线时不能切错（照 `check_phase_status.py` 的口径）。
 CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
@@ -341,6 +352,25 @@ class Row:
             or self.ui != "有"
             or self.mcp != "有"
         )
+
+
+def capability_key(feature: str) -> str:
+    """功能名的**归一化**形态：去掉括注与一切非词符（markdown 星号 / 反引号 / 空白 / 标点）。
+
+    这是判据 3 里"一行一个功能"的推广。逐字相同的检查**只认字面**，于是同一条能力被
+    两种写法各写一行时守卫一声不响 —— 实测（本规则落地的这一轮）：本表有
+    `**执行**撤销 / 重做（可逆能力对外可调用）`（第 86 行，当时记 UI `部分` / MCP `无` / `PENDING`）
+    与 `撤销 / 重做（yeban_undo / yeban_redo + UI 入口）`（第 107 行，记三侧齐全）两行，
+    指的是**同一条能力**（`ADR-0001 D45` 的同一次落地），三侧标记却相反。
+    归一化后 `撤销重做` 被 `执行撤销重做` 包含 ⇒ 认作同一能力，标记必须一致。
+
+    **为什么不做模糊匹配**：本切片实测过"最长公共子串"这一档 —— 阈值放到 5 个字符就
+    产出 **30 对**候选（`yeban_*` 工具名共享前缀、`.yeban` 族共享字面），阈值放到 6 仍有 9 对，
+    全是假红。故本规则只认**包含**（比公共子串严格得多），并要求被包含的那个名字
+    ≥ `CAPABILITY_KEY_MIN` 个字符。
+    """
+    without_notes = re.sub(r"（[^）]*）|\([^)]*\)", "", feature)
+    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", without_notes)
 
 
 def parse_rows(text: str) -> tuple[list[Row], list[str]]:
@@ -650,6 +680,37 @@ def main() -> int:
                     problems.append(f"{where}: 有缺口但 `原因：` 是空的")
                 if not matched.group("plan").strip("。， "):
                     problems.append(f"{where}: 有缺口但 `计划：` 是空的")
+
+    # ---- 判据 3（续）：同一条能力的两行不许给出互相矛盾的标记 -------------------
+    #
+    # "一行一个功能"此前只由逐字相同的功能名把守。实测它挡不住这一种腐烂：同一条能力
+    # 用两种写法各写一行（第 86 行 vs 第 107 行的撤销 / 重做），一行已按落地改完、
+    # 另一行停在旧读数，于是本表自己跟自己矛盾而守卫全绿。
+    # 只认**包含**这一种结构关系 + 只在标记**不一致**时开火 ⇒ 实测活表上只有 1 对候选
+    # （就是那对撤销 / 重做），0 处假红；修好之后两行标记一致，本判据保持沉默。
+    ability_rows = [
+        (row.line_no, capability_key(row.feature), row.system, row.ui, row.mcp)
+        for row in rows
+        if len(capability_key(row.feature)) >= CAPABILITY_KEY_MIN
+    ]
+    for index, (line_a, key_a, system_a, ui_a, mcp_a) in enumerate(ability_rows):
+        for line_b, key_b, system_b, ui_b, mcp_b in ability_rows[index + 1 :]:
+            if key_a == key_b:
+                shorter, longer = key_a, key_b
+            elif key_a in key_b:
+                shorter, longer = key_a, key_b
+            elif key_b in key_a:
+                shorter, longer = key_b, key_a
+            else:
+                continue
+            if (system_a, ui_a, mcp_a) == (system_b, ui_b, mcp_b):
+                continue
+            problems.append(
+                f"第 {line_a} 行与第 {line_b} 行像是**同一条能力**（归一化功能名 `{shorter}` "
+                f"⊆ `{longer}`），三侧标记却相反："
+                f"({system_a} / {ui_a} / {mcp_a}) vs ({system_b} / {ui_b} / {mcp_b}) —— "
+                "同一条能力的两行必须给出同一套标记；若确是两件事，请把功能名改到不互相包含"
+            )
 
     # ---- 判据 1：正向完整性 ---------------------------------------------------
     table_tools = set(TABLE_TOOL_RE.findall(text))
