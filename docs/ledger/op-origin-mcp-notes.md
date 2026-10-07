@@ -154,7 +154,7 @@ const PENDING_CONTRACT_ORIGINS: [&str; 1] = ["McpEdit"];
 | 契约多出一个枚举没有的对象分支 | 反向差集非空 ⇒ 红 |
 | 单元变体集合（6 个）与契约 enum | **原判据原样保留**（逐字比对） |
 
-同一族的先例是 `Op` 的 `PENDING_CONTRACT_OPS`（`Op` 29 个变体那条棘轮）。
+同一族的先例是 `Op` 的 `PENDING_CONTRACT_OPS`（`Op` 29 个变体那条棘轮）（⚠ **2026-10-08 注**：29 是**本线那一刻**的读数。混音切片新增 `SetTrackMute` / `SetTrackSolo` 之后，全集**实测**为 **31**：`crates/yeban-model/src/ops.rs` 的 `enum Op` = **31** 个顶层变体，`schemas/ops.schema.json` 的 `properties.op.oneOf` = **31** 个分支，两个集合**相等**（双向差集为空），`PENDING_CONTRACT_OPS` 现为 `[&str; 0]`。本文件是带日期的测量记录，按纪律**只加注、不改写**）。
 
 ### 4.3 「新增变体不改变既有字节」的**实测**（不是推理）
 
