@@ -815,9 +815,18 @@ impl LiveAdminSurface {
     ///
     /// ## 权威（`ADR-0005`：**不造第二个权威**）
     ///
-    /// 「打开」只有一条实现：[`yeban_app::open::open_project_file`] —— 与 CLI `--open` 与
-    /// `--headless` 用的是**同一个**入口（`crates/yeban-app/src/main.rs` 的
-    /// `cli::load_project` 最终落到它）。「注入」也只有一条：[`Self::apply_project`]
+    /// 「打开」这一层只有**一条容器读取核心**：`crate::open` 的 `read_capped`（尺寸闸）
+    /// ＋ `open_project_archive`（容器裁决）。本方法用它上面的 **`open_project_file`**
+    /// （`crates/yeban-app/src/open.rs:357`）。⚠ 精确口径（2026-10-08 就地改正，原写"与 CLI
+    /// `--open` 是同一个入口"）：CLI 那条（`crates/yeban-app/src/main.rs` 的
+    /// `cli::load_project`）走的是**同模块的另一个包装** `open_project_document_file`
+    /// （`crates/yeban-app/src/open.rs:310`），它多带回 `history.dag` / 资产池与
+    /// `NotAYebanContainer` 这一档分类。两者共用**同一条**底层路径，因此不存在第二份容器
+    /// 读法；差别只在**返回形态**。本方法的取舍是 `open_project_file` 自己的文档契约：
+    /// **只取工程** ⇒ `history.dag` 与资产池**不**在这里恢复（本执行面没有这一层状态的消费者：
+    /// 挂着撤销会话时它直接拒绝，见下表）。
+    ///
+    /// 「注入」也只有一条：[`Self::apply_project`]
     /// （`ViewState` → `host::apply_view` → 换注册表 → 作废旧电平 → `EngineHost::reload`
     /// 换代 → `pump_meters`）—— 与权威重投影 [`Self::sync_authority`] 逐字同一条数据流。
     /// 本方法**不**新增打开实现、**不**新增注入点。

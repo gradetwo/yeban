@@ -475,7 +475,9 @@ pub const METHODS: [MethodSpec; 16] = [
         port_operation: Some(Operation::OpenProject),
         params: &[PATH, SAVE_FIRST, DRY_RUN],
         signature: "规范里没有这个方法名与签名 —— 它是 CLI `--open`（`crates/yeban-app/src/open.rs`）\
-                    在控制面上的工程裁决：在**正在运行的**执行面上换一份当前工程。参数名沿用 \
+                    在控制面上的工程裁决：在**正在运行的**执行面上换一份当前工程。它复用 CLI 那一条的\
+                    **容器读取核心**（`crates/yeban-app/src/open.rs:357` 的 `open_project_file` ⇒ \
+                    `read_capped` ＋ `open_project_archive`），不新造第二份读法。参数名沿用 \
                     §12.3 [UI-MCP-001] 的 camelCase 风格（`path` 与 `yeban_open_project` 同名同义；\
                     `saveFirst` 与 `yeban_close_project` 同名同义、默认值也相同），\
                     权限沿用 D29 给管理类动作的 `app:admin`",

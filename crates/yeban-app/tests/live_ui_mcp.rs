@@ -2933,7 +2933,8 @@ fn admin_force_save_really_writes_a_readable_container() {
 /// 在这一条之前，产品与控制面**在进程跑起来之后**都无法换工程：唯一的打开入口是启动时的
 /// CLI `--open`（`crates/yeban-app/src/main.rs` 的 `cli::load_project`），控制面 15 条
 /// `ui/*` 方法里没有一条叫 `ui/open_project`。本判据证明新方法真的落到**同一个活窗口**上，
-/// 而且复用**同一条**权威打开路径（`yeban_app::open::open_project_file`）与**同一个**注入点
+/// 而且复用**同一条**容器读取核心（`yeban_app::open` 的 `read_capped` ＋
+/// `open_project_archive`；本方法用其上的 `open_project_file`）与**同一个**注入点
 /// （`LiveAdminSurface::apply_project`）—— 因此它不造第二个权威。
 ///
 /// ## 两个工程的选取（分辨力）
