@@ -400,6 +400,7 @@ fn interactive_test_mode_plane_injects_into_the_live_window() {
 use std::path::PathBuf;
 
 use yeban_app::bridge::{ViewState, demo_project};
+use yeban_app::host::{self, MeterPump};
 use yeban_app::open::open_project_file;
 use yeban_engine::meter::{MeterFrame, meter_channel};
 use yeban_model::ids::EntityId;
@@ -2525,7 +2526,11 @@ fn mixer_meter_labels_match_the_injected_frames() {
         // 母线单独一条（立体声联动的读数）
         MeterFrame::new(project.master_bus_track_id, 5, 1.0, 1.0),
     ]);
-    let snapshot = live.pump_meters();
+    // 界面 6 条 == 手里那份投影 6 条 ⇒ 长度契约成立 ⇒ 必须注入。
+    // 这条腿一旦重新变成"无条件注入"（无牙），下面的 `LengthMismatch` 判据会红。
+    let MeterPump::Applied(snapshot) = live.pump_meters() else {
+        panic!("长度相等的这一跳必须注入（本判据的其余断言都靠这一跳）");
+    };
     assert_eq!(snapshot.quantum, Some(5), "抽到的是最新的那个量子");
     assert_eq!(snapshot.nodes_seen, 4);
     assert_eq!(snapshot.peak_labels()[0], "0.0");
@@ -2581,6 +2586,155 @@ fn mixer_meter_labels_match_the_injected_frames() {
     );
 }
 
+/// 判据 6b（**长度契约，测试端口那条腿**）：界面 `track-names` 行数与手里那份投影的
+/// 轨道数不等长 ⇒ 与生产路径**同一份实现**：抽干照做、**跳过注入**、如实回报
+/// `MeterPump::LengthMismatch { rows, projected }`。
+///
+/// ## 它钉的缺口（2026-10-08 收敛）
+///
+/// 本文件走的执行面（`build_live_ui*` ⇒ `LiveAdminSurface`）原先是"抽干 ＋ 应用"的
+/// **第二份**实现，而它**没有**生产路径那道长度闸（`host::pump_meters`，
+/// `crates/yeban-app/src/host.rs:1958`）⇒ 无头 Tier-1 判据面与产品路径跑的是**两条腿**，
+/// 判据面可能因此看不见产品路径上的真实行为（缺口登记在
+/// `docs/ledger/feature-alignment.md` 的"60Hz 主线程电平心跳"行）。现在两处共用
+/// **同一个函数**（`LiveAdminSurface::pump_meters` 只加"重抓树"这一步）；
+/// 本判据在"这条腿重新变成无牙（无条件注入）"时变红。
+///
+/// ## 造法（与生产判据 3 同款，但走**另一条腿**）
+///
+/// 窗口上装载 `filled` 工程（3 条非主总线轨道），执行面手里的投影也是 `filled`；
+/// 随后把 `demo` 工程的投影（6 条）**直接注入窗口**（`host::apply_view`）——
+/// 这正是"控制面换了工程、而持有循环的那一段还拿着旧投影"的形态
+/// （生产那条腿的对应判据是 `tests/production_meter_leg.rs` 的判据 3）。
+///
+/// ## 为什么要四个字面读数
+///
+/// 1. **等长**那一跳：注入的已知幅度真的进控件树（前提：这条腿本来有牙）；
+/// 2. **不等长**那一跳：`LengthMismatch { rows: 6, projected: 3 }`，且电平数组一位没动；
+/// 3. **抽干照做**：队列容量取 **1** ⇒ "这一跳有没有抽干"可以从
+///    `MeterPublisher::dropped()` 直接读出来（没抽干 ⇒ 队列还满着 ⇒ 下一条推送被丢）；
+/// 4. **反证**：把长度对齐回去，面板里那帧必须重新进界面（⇒ 上面那条读数不是
+///    "这条腿永远不注入"）。
+#[test]
+fn the_live_surface_meter_leg_reports_a_length_mismatch_and_skips_the_injection() {
+    let filled = yeban_model::samples::filled_project();
+    let demo = demo_project();
+    let filled_ids = track_ids(&filled);
+    assert_eq!(filled_ids.len(), 3, "filled 工程有 3 条非主总线轨道");
+    let demo_view = ViewState::from_project(&demo).expect("演示工程投影");
+    assert_eq!(
+        demo_view.tracks.len(),
+        6,
+        "演示工程有 6 条非主总线轨道（与 filled 的 3 条不同 ⇒ 本条判据有分辨力）"
+    );
+
+    let mut live = build_live_ui_with(&filled, &options(Permission::ReadOnly, 1)).expect("装配");
+    // 容量 1：**唯一**的目的是让"有没有抽干"变成可读的数（`dropped()`）。
+    let (mut publisher, collector) = meter_channel(1);
+    live.adopt_meter_collector(collector);
+
+    // ---- 第 1 步（前提）：等长那一跳，注入必须真的进界面与控件树 ---------------
+    publisher.publish(&[MeterFrame::new(filled_ids[0], 7, 1.0, 1.0)]);
+    let MeterPump::Applied(snapshot) = live.pump_meters() else {
+        panic!("长度相等的这一跳必须注入");
+    };
+    assert_eq!(snapshot.quantum, Some(7), "抽到的是注入的那个量子");
+    assert_eq!(snapshot.tracks.len(), 3, "面板按手里那份投影生成 3 条");
+    assert_eq!(publisher.dropped(), 0, "容量 1 推一条必须写得进去");
+    let injected_label = label_of(&live.tree_snapshot(), "track-0-meter");
+    assert!(
+        injected_label.ends_with("峰值 0.0 RMS 0.0 dBFS"),
+        "满幅帧必须进控件树, 实际 {injected_label:?}"
+    );
+    report_line(&format!(
+        "[meter-leg-live] 等长那一跳: rows=3 projected=3 ⇒ track-0-meter={injected_label:?}\
+         （注入 peak=1.0 ⇒ 0.0 dBFS）"
+    ));
+
+    // ---- 第 2 步：把**另一个长度**的投影注入窗口 ⇒ 手里那份变成陈旧的 ----------
+    let width = slint::ComponentHandle::window(live.ui()).size().width as f32;
+    host::apply_view(live.ui(), &demo_view, width, 0.0);
+    assert_eq!(
+        injected_strings(&live.ui().get_track_names()).len(),
+        6,
+        "窗口此刻是演示工程的 6 条轨道"
+    );
+    let after_apply_view = injected_strings(&live.ui().get_track_meter_peaks());
+    assert_eq!(
+        after_apply_view.len(),
+        6,
+        "`apply_view` 把电平数组重置成 6 条"
+    );
+    assert!(
+        after_apply_view.iter().all(|label| label == "-120.0"),
+        "`apply_view` 必须写静音（不是留下上一份工程的电平）, 实际 {after_apply_view:?}"
+    );
+
+    // ---- 第 3 步：不等长那一跳 ⇒ 只抽干、不注入、回报两个长度 ----------------
+    // 命题②（**像素**）：先抓一帧（此刻界面已经是演示工程那个投影），走完这一跳再抓一帧。
+    // ⚠ 这与"默认帧可复现"是**两个命题**：那条量的是外观的确定性，这条量的是
+    // "这一跳有没有副作用"。不注入 ⇒ 两帧必须逐字节相同（不同像素 0 个）。
+    let frame_before = live.capture().expect("Tier-1 截图（不等长那一跳之前）");
+    publisher.publish(&[MeterFrame::new(filled_ids[0], 11, 1.0, 1.0)]);
+    let pump = live.pump_meters();
+    let MeterPump::LengthMismatch { rows, projected } = pump else {
+        panic!("长度不等长时必须跳过注入并回报 LengthMismatch, 实际 {pump:?}");
+    };
+    assert_eq!(rows, 6, "回报的是界面此刻的长度（演示工程 6 条）");
+    assert_eq!(projected, 3, "回报的是手里那份投影的长度（filled 的 3 条）");
+    let after_mismatch = injected_strings(&live.ui().get_track_meter_peaks());
+    assert_eq!(
+        after_mismatch, after_apply_view,
+        "长度不等长 ⇒ 电平数组必须一位没动（注入会按 `.slint` 的下标串到别的轨道）"
+    );
+    let frame_after = live.capture().expect("Tier-1 截图（不等长那一跳之后）");
+    let diff = frame_diff(&frame_before, &frame_after);
+    assert!(
+        diff.is_none(),
+        "不等长那一跳必须一个像素都不改（这一跳只抽干、不注入）, 实际不同像素 {} 个, 包围盒 {:?}",
+        diff.as_ref().map_or(0, |diff| diff.count),
+        diff.as_ref().map(|diff| diff.bbox)
+    );
+    report_line(&format!(
+        "[meter-leg-live] 长度不等长: rows={rows} projected={projected} ⇒ 界面仍是 \
+         {:?}（注入的量子 11 没有进界面）; 这一跳前后两帧不同像素 0 个",
+        &after_mismatch[..3]
+    ));
+
+    // ---- 第 3b 步：抽干照做（队列容量 1 ⇒ 没抽干会让下一条推送被丢） ----------
+    publisher.publish(&[MeterFrame::new(filled_ids[0], 15, 0.5, 0.25)]);
+    assert_eq!(
+        publisher.dropped(),
+        0,
+        "不等长那一跳必须仍然抽干队列 —— 没抽干时容量 1 的队列还满着, 这条推送会被丢"
+    );
+
+    // ---- 第 4 步（反证）：对齐回去 ⇒ 面板里那帧必须重新进界面 ----------------
+    host::apply_view(
+        live.ui(),
+        &ViewState::from_project(&filled).expect("filled 投影"),
+        width,
+        0.0,
+    );
+    let MeterPump::Applied(resnapshot) = live.pump_meters() else {
+        panic!("长度对齐之后必须重新注入");
+    };
+    assert_eq!(
+        resnapshot.quantum,
+        Some(15),
+        "面板里最新的那帧是量子 15（⇒ 前面几跳的帧真的被消费了）"
+    );
+    let replayed = injected_strings(&live.ui().get_track_meter_peaks());
+    assert_eq!(
+        replayed[0], "-6.0",
+        "对齐之后界面必须回到注入值（peak=0.5 ⇒ 20·log10(0.5) = -6.02 ⇒ \"-6.0\"）"
+    );
+    report_line(&format!(
+        "[meter-leg-live] 对齐回去那一跳: rows=3 projected=3 ⇒ track-0-meter 回到 {}（量子 {:?}）",
+        replayed[0], resnapshot.quantum
+    ));
+}
+
 /// 判据 7（**静音下限与 NaN**）：敌意电平输入在控件树里**不许**出现 `NaN`，只许出现下限。
 ///
 /// 这里故意绕过引擎的生产侧钳位（直接构造 `NaN` 帧），因为消费侧必须自己也是安全的：
@@ -2610,7 +2764,9 @@ fn hostile_levels_never_render_as_nan_in_the_control_tree() {
             rms_smoothed: f32::NEG_INFINITY,
         },
     ]);
-    let snapshot = live.pump_meters();
+    let MeterPump::Applied(snapshot) = live.pump_meters() else {
+        panic!("长度相等的这一跳必须注入（本判据读的就是注入后的读数）");
+    };
     assert!(
         snapshot.peak_labels()[0]
             .parse::<f32>()

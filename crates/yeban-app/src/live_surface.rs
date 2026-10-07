@@ -119,7 +119,7 @@ use yeban_app::input::{Focus, InputContext, Modifiers, PhysicalKey, Resolution};
 // （`grep -c "yeban-mcp" <tree -p yeban-app -e normal>` = 0），因此这里也必须 cfg。
 #[cfg(feature = "in-process-mcp")]
 use yeban_app::mcp_mount::ProjectAuthorityHandle;
-use yeban_app::meters::{MeterRuntime, MeterSnapshot};
+use yeban_app::meters::MeterRuntime;
 use yeban_app::save::{SaveError, save_project_file};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
@@ -528,18 +528,30 @@ impl LiveAdminSurface {
         self.engine.drive_audio(quanta)
     }
 
-    /// 一轮电平消费：抽干 → 对齐工程 → 注入 Slint → 重抓树。
+    /// 一轮电平消费：**生产那一份**（[`host::pump_meters`]）＋ 重抓树。
     ///
-    /// **顺序是契约**：注入必须发生在重抓树之前，否则 `ui/tree` 读到的是上一帧的标签
+    /// ## 为什么这里不再自己 `poll` / `snapshot` / `apply_meters`（2026-10-08 收敛）
+    ///
+    /// 这一份原先是"抽干 ＋ 应用"的**第二份**实现，而它与生产那一份**不等价**：
+    /// [`host::pump_meters`] 在注入之前比"界面 `track-names` 行数 vs 投影轨道数"，
+    /// 不等长就**跳过注入**并回报 [`host::MeterPump::LengthMismatch`]；这一份**没有那道闸**，
+    /// 无条件注入。⇒ 无头 Tier-1 判据面（走本文件）与产品路径跑的是**两条腿**，
+    /// 判据面因此可能看不见产品路径上的真实行为（这个缺口登记在
+    /// `docs/ledger/feature-alignment.md` 的"60Hz 主线程电平心跳"行）。现在两处
+    /// **共用同一个函数**：闸、抽干顺序、返回值形状不可能再漂移。
+    ///
+    /// **顺序是契约**（与生产同一条）：抽干 → 对齐 → 注入 → 重抓树。
+    /// 注入必须发生在重抓树之前，否则 `ui/tree` 读到的是上一帧的标签
     /// （判据 `mixer_meter_labels_match_the_injected_frames` 就是靠这一点）。
-    fn pump_meters(&mut self) -> MeterSnapshot {
-        self.meters.poll(self.view.tracks.len() + 1);
-        let snapshot = self.meters.snapshot(&self.view);
-        host::apply_meters(&self.window, &snapshot);
+    /// 重抓树是**本执行面独有**的一步（生产 GUI 没有内省树），因此留在这一层 ——
+    /// 长度不等长时**也要**重抓：界面此刻是对的（[`host::apply_view`] 已经按当前投影
+    /// 重置了电平数组），树只是要跟上界面。
+    fn pump_meters(&mut self) -> host::MeterPump {
+        let pump = host::pump_meters(&self.window, &mut self.meters, &self.view);
         // 电平标签变了 ⇒ 控件树必须重抓（失败也不该让一次电平刷新变成错误：
         // 界面已经是新值，重抓失败只是"控制面看到的树旧了一点"）。
         let _ = self.refresh_tree();
-        snapshot
+        pump
     }
 
     /// 换一个工程：投影 → 注入 → 换注册表 → 作废旧电平 → （若引擎已起）换代 → 重抓树。
@@ -793,7 +805,17 @@ impl LiveAdminSurface {
         } = rebuild;
         // 新引擎 ⇒ 旧读数作废；新队列的消费端交给 UI 线程（**唯一**的生产者-消费者关系）。
         self.meters.adopt(collector);
-        let snapshot = self.pump_meters();
+        let pump = self.pump_meters();
+        // ⚠ 长度契约不成立时（这一跳刚 `adopt` 了新队列、投影没换 ⇒ 实际到不了）
+        // `pump_meters` 与生产路径一样**不注入** ⇒ 界面上**没有**本代引擎的读数。
+        // 两个"可见"读数因此如实报 0（与"什么都没抽到"同一个值），而不是把面板里的数
+        // 当成界面上的数。
+        let (visible_quantum, visible_nodes) = match &pump {
+            host::MeterPump::Applied(snapshot) => {
+                (snapshot.quantum.unwrap_or(0), snapshot.nodes_seen as u64)
+            }
+            host::MeterPump::NoEngine | host::MeterPump::LengthMismatch { .. } => (0, 0),
+        };
         self.report = Some(AdminReport::new(
             "reload_engine",
             vec![
@@ -806,15 +828,9 @@ impl LiveAdminSurface {
                     ReportValue::Uint(meter_bulk_publishes),
                 ),
                 ("meterFrames", ReportValue::Uint(meter_frames)),
-                // 新引擎第一次抽帧的量子号（0 = 什么都没抽到）。
-                (
-                    "visibleQuantum",
-                    ReportValue::Uint(snapshot.quantum.unwrap_or(0)),
-                ),
-                (
-                    "visibleNodes",
-                    ReportValue::Uint(snapshot.nodes_seen as u64),
-                ),
+                // 新引擎第一次抽帧的量子号（0 = 什么都没抽到，或这一跳没注入）。
+                ("visibleQuantum", ReportValue::Uint(visible_quantum)),
+                ("visibleNodes", ReportValue::Uint(visible_nodes)),
             ],
         ));
         Ok(())
@@ -1160,8 +1176,13 @@ impl LiveUi {
         self.surface.meters.adopt(collector);
     }
 
-    /// 一轮电平消费（60Hz 定时器腿）：抽干 → 面板 → 注入 `.slint` → 重抓树。
-    pub fn pump_meters(&mut self) -> MeterSnapshot {
+    /// 一轮电平消费（60Hz 定时器腿）：**生产那一份**（`host::pump_meters`）＋ 重抓树。
+    ///
+    /// 返回值是生产的 [`host::MeterPump`]（不再是 `MeterSnapshot`）：长度契约不成立时
+    /// 这一跳与生产路径**同语义** —— 抽干照做、**跳过注入**、如实回报
+    /// `LengthMismatch { rows, projected }`。返回形状与生产同款，调用方因此不可能
+    /// "看不见"那一跳没注入。
+    pub fn pump_meters(&mut self) -> host::MeterPump {
         self.surface.pump_meters()
     }
 
