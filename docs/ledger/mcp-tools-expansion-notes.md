@@ -17,7 +17,7 @@
 | `yeban_edit_automation` | `MCP-TOOL-EXT-AUTOMATION` | 读某条自动化泳道的点与值（**唯一求值入口**）+ 写一个点 | `project-state`（按最坏情况） | `Op::SetAutomationPoint`（可逆） |
 | `yeban_query_engine_state` | `MCP-TOOL-EXT-ENGINE-STATE` | 某轨设备链 + 引擎/会话读数 | `read-only` | 三份状态各有唯一来源 |
 | `yeban_import_audio` | `MCP-TOOL-EXT-IMPORT-AUDIO` | 资产池哈希 / 磁盘音频 → `clip_pool` 条目 | `project-state` | `yeban-decode` + `Op::AddClip`（可逆） |
-| `yeban_export_diagnostics` | `MCP-TOOL-EXT-DIAGNOSTICS` | 调试信息 + 相关文件 → zip 诊断包（人工触发，供复现排查） | `read-only`（只写一个独立文件，不改工程状态） | `yeban-engine` 的 `diagnostics`（**与 UI 共用同一实现**，D56 判据 4） |
+| `yeban_export_diagnostics` | `MCP-TOOL-EXT-DIAGNOSTICS` | 调试信息 + 相关文件 → zip 诊断包（人工触发，供复现排查） | `read-only`（只写一个独立文件，不改工程状态） | `crates/yeban-diagnostics/src/lib.rs` 的采集器（**与 UI 共用同一实现**，D56 判据 4）。**2026-10-07 更正（带日期的记录只标注不改写）**：本格原文写 `yeban-engine` 的 `diagnostics`，该路径**不存在** —— 采集器已在 `e78b8f4` 移入轻量 crate `yeban-diagnostics` |
 
 注册表 `TOOLS` 从 12 → **15**（`TOOL_COUNT = DOCUMENTED_TOOL_COUNT(10) + EXTENSION_TOOL_COUNT(5)`）。
 新增的扩展段清单是**常量**（`tools::EXTENSION_NAMES`），判据、契约对账与样本导出全部从它派生。
