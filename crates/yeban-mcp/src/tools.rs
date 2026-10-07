@@ -471,14 +471,54 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
         name: "yeban_open_project",
-        summary: "校验排他锁并打开指定 `.yeban` 工程",
+        summary: "校验排他锁并打开指定 `.yeban` 工程; `create:true` 时从零建一个可渲染的工程 (主总线在路由图里)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
             param("path", "string", true, "工程文件路径"),
             param("readOnly", "boolean", false, "以只读方式打开 (不取写锁)"),
+            // `create` 与它的三个伙伴是本线新增的**可选**实参（缺省 = 逐字节等于旧行为）。
+            //
+            // 为什么扩 `yeban_open_project` 而不新增工具：建工程需要的三样东西
+            // （路径、`.yeban.lock` 协议、"打开后成为活跃工程"）这个工具已经全有；
+            // 新增工具会动 `TOOL_COUNT`、契约的 `name.enum` 与台账的计数
+            // （`ADR-0001` D46：先扩参数，确实不合适才新增）。
+            //
+            // ⚠ 主总线身份**不是**任何 `Op` 的载荷（模型 `Op` 全集没有写
+            // `master_bus_track_id` 的变体，见 `domain/project_create.rs` 模块头的逐条证据），
+            // 因此模板文档由本工具定型，内容改动仍走 `Op`。
+            param(
+                "create",
+                "boolean",
+                false,
+                "从零新建工程 (默认 false = 打开已存在的容器)。目标路径已存在 ⇒ `CONFLICT`, 绝不静默覆盖; 与 `readOnly:true` 同给 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "title",
+                "string",
+                false,
+                "`create:true` 时的工程标题 (缺省 `Untitled`)",
+            ),
+            param(
+                "bpm",
+                "number",
+                false,
+                "`create:true` 时的速度 (BPM, 模型区间 20..=999; 缺省 120)",
+            ),
+            param(
+                "seed",
+                "object",
+                false,
+                "`create:true` 时的最小内容: `{trackCount: 1..=8, clipName: string, notes: [{pitch: 0..=127, durationTicks: >=1}]}`。缺省 = 1 条 MIDI 轨 + 4 个种子音符 + 一小节摆放 (因此新建的工程立即可 `render_master`, 且 `propose_section` 有 MIDI 材料可用)",
+            ),
         ],
-        errors: &[ErrorCode::ProjectLocked, ErrorCode::FileNotFound],
+        // `CONFLICT` 是 `ADR-0001` D25 的 20 值联集与 §7.2 表格里都有的既有码,
+        // 用于"目标路径已存在, 拒绝新建覆盖"。**没有**发明新错误码。
+        errors: &[
+            ErrorCode::ProjectLocked,
+            ErrorCode::FileNotFound,
+            ErrorCode::Conflict,
+        ],
     },
     ToolSpec {
         spec_id: "MCP-TOOL-002",

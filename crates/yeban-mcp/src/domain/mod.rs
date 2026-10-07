@@ -40,6 +40,7 @@
 //! | [`automation`] | `yeban_edit_automation`：泳道读（唯一求值入口）+ 写一个点（`Op`，可逆） |
 //! | [`automation_audit`] | **零依赖**审计：生产代码里不许有第二份自动化求值，本机可单独验证 |
 //! | [`engine_state`] | `yeban_query_engine_state`：设备链 + 引擎/会话读数（只读） |
+//! | [`project_create`] | `yeban_open_project` 的 **`create: true`** 分支：从零建一个可渲染、可配器的工程（主总线在路由图里） |
 //! | [`import_audio`] | `yeban_import_audio`：`yeban-decode` + `PcmBudget` + `Op::AddClip` |
 //! | [`export_midi`] | `yeban_export_midi`：`yeban-midi` 共享映射 → SMF 字节（base64 回传，只读） |
 //! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
@@ -58,6 +59,7 @@ pub mod import_audio;
 pub mod lock;
 pub mod macros;
 pub mod notes;
+pub mod project_create;
 pub mod proposal;
 pub mod render;
 pub mod render_clip_math;
@@ -594,6 +596,14 @@ impl Domain {
 /// 收成一个结构体而不是 9 个 `Plan::Open` 字段：打开一个容器要携带的东西是
 /// "工程 + 历史 + 资产池"三类，平铺进枚举变体会让每一处 `match` 都变成
 /// 一长串 `..`。结构体也让"打开时必须一起决定的事"在类型上绑在一起。
+/// `yeban_open_project` 的**已校验**打开请求（[`plan_open`] 的产物）。
+///
+/// 收成一个结构体而不是 9 个 `Plan::Open` 字段：打开一个容器要携带的东西是
+/// "工程 + 历史 + 资产池"三类，平铺进枚举变体会让每一处 `match` 都变成
+/// 一长串 `..`。结构体也让"打开时必须一起决定的事"在类型上绑在一起。
+///
+/// `create: true` 时 [`OpenRequest::created`] 携带"这份文档是刚建出来的"
+/// 以及它的落盘字节；其余路径为 `None`。
 #[derive(Debug)]
 pub struct OpenRequest {
     /// 目标路径。
@@ -612,6 +622,24 @@ pub struct OpenRequest {
     pub history: Option<Box<CommitGraph>>,
     /// `assets/{sha256}` 解出的会话 CAS 资产池。
     pub assets: BTreeMap<AssetHash, Vec<u8>>,
+    /// **新建**工程的落盘字节（`create: true` 且目标路径不存在时才有值）。
+    ///
+    /// 为什么放在这里而不是在 [`apply_open`] 里现算：`plan` 是**只读**的
+    /// （`dryRun` 走同一条路，见模块头），所以"这份文档长什么样"必须在 `plan` 里定死；
+    /// `apply` 只负责把它原子落盘（`store::write_project_atomic`）。
+    /// 两个相位读的是**同一份**字节，因此 `dryRun` 的预览与真调用不会漂移。
+    pub created: Option<CreatedSeed>,
+}
+
+/// `create: true` 建出来的东西（文档 + 字节 + 读数）。
+#[derive(Debug)]
+pub struct CreatedSeed {
+    /// 已通过 `validate()` 的容器字节。
+    pub bytes: Vec<u8>,
+    /// 主总线音轨身份（**非 nil**）。
+    pub master_bus_track_id: EntityId,
+    /// `data.seed` 载荷。
+    pub summary: Value,
 }
 
 /// **宿主（形态 A 的 GUI）经唯一可变权威施加的一次会话动作**（`ROAD-M4-008` 选项 (a) 第二片）。
@@ -1595,6 +1623,13 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             Fault::domain(ErrorCode::InvalidParameterRange, "`path` 必须是字符串")
         })?);
     let read_only = arg_bool(call, "readOnly", false);
+    // `create: true` 走**建工程**分支：从零构造一份可渲染、可配器的文档。
+    // 它不读盘（路径本来就不存在），因此不会撞 `FILE_NOT_FOUND` ——
+    // 这正是本能力要关的那个缺口（旧行为：不存在的路径 ⇒ FILE_NOT_FOUND，
+    // 而没有任何工具能建工程）。
+    if arg_bool(call, "create", false) {
+        return plan_create(domain, path, read_only, call);
+    }
     let loaded = store::load_project(&path)?;
     let json = store::serialize_project(&loaded.project)?;
     let digest = store::digest_of(json.as_bytes());
@@ -1629,6 +1664,100 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         already_open,
         history: loaded.graph.map(Box::new),
         assets: loaded.assets,
+        created: None,
+    })))
+}
+
+/// `yeban_open_project` 的 **`create: true`** 分支。
+///
+/// 三条判据（顺序即错误码优先级）：
+///
+/// 1. `readOnly: true` 同给 ⇒ `INVALID_PARAMETER_RANGE`（只读地新建一个文件
+///    是自相矛盾的要求，静默忽略只读位会让调用方以为"没写盘"）；
+/// 2. 目标路径**已存在** ⇒ `CONFLICT` + `data.reason = "projectAlreadyExists"`
+///    （**绝不**静默覆盖；`yeban_save_project` 的语义是"刷盘到当前工程路径"，
+///    与本工具的"写一个新文件"是两件事，因此这里不复用它）；
+/// 3. 已有另一个活跃工程 ⇒ `CONFLICT`（与普通打开分支同一口径）。
+fn plan_create(
+    domain: &Domain,
+    path: PathBuf,
+    read_only: bool,
+    call: &ToolCall,
+) -> Result<Plan, Fault> {
+    if read_only {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`create: true` 与 `readOnly: true` 相互矛盾: 新建工程必须写盘",
+            serde_json::json!({ "reason": "createIsNotReadOnly" }),
+        ));
+    }
+    if path.exists() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!(
+                "工程已存在, 拒绝新建覆盖: {} (要打开它就不要给 `create`)",
+                path.display()
+            ),
+            serde_json::json!({
+                "reason": "projectAlreadyExists",
+                "path": path.display().to_string(),
+            }),
+        ));
+    }
+    if domain.active_path().is_some_and(|open| open != path) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!(
+                "已有另一个活跃工程 `{}`, 请先关闭它",
+                domain
+                    .active_path()
+                    .map_or_else(String::new, |open| open.display().to_string())
+            ),
+            serde_json::json!({ "activePath": domain.active_path().map(|open| open.display().to_string()) }),
+        ));
+    }
+    let seed = call.arguments.get("seed");
+    let config = project_create::parse_config(
+        call.arguments.get("title"),
+        call.arguments.get("bpm"),
+        seed.and_then(|seed| seed.get("trackCount")),
+        seed.and_then(|seed| seed.get("clipName")),
+        seed.and_then(|seed| seed.get("notes")),
+    )?;
+    let created = project_create::build(&config, &path)?;
+    let json = store::serialize_project(&created.project)?;
+    let digest = store::digest_of(json.as_bytes());
+    // `history.dag`：新工程从**空图谱**开始（与 `yeban-app --save-as` 的
+    // 内置样本同一条路径：样本本来就没有归档历史层）。
+    let history = serde_json::to_vec(&CommitGraph::new())
+        .map_err(|error| Fault::domain(ErrorCode::IoError, format!("空图谱序列化失败: {error}")))?;
+    let bytes = yeban_model::container::write_project_container(
+        &created.project,
+        &history,
+        &BTreeMap::new(),
+    )
+    .map_err(|error| {
+        Fault::domain(
+            ErrorCode::IoError,
+            format!("新建工程的容器写出被拒: {error}"),
+        )
+    })?;
+    let summary = project_create::seed_summary(&created);
+    let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    Ok(Plan::Open(Box::new(OpenRequest {
+        path,
+        read_only: false,
+        project: Box::new(created.project),
+        digest,
+        bytes: byte_count,
+        already_open: false,
+        history: None,
+        assets: BTreeMap::new(),
+        created: Some(CreatedSeed {
+            bytes,
+            master_bus_track_id: created.master_bus_track_id,
+            summary,
+        }),
     })))
 }
 
@@ -2356,6 +2485,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         already_open,
         history,
         assets,
+        created,
     } = request;
     let asset_count = assets.len();
     let history_commits = history.as_ref().map_or(0, |graph| graph.commit_count());
@@ -2379,6 +2509,30 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
             "project": summary,
         })));
     }
+    // ---- `create: true`：先把新文档原子落盘, 再取锁并成为活跃工程 ----
+    //
+    // 顺序是刻意的: 落盘在**取锁之前**。若反过来（先取锁再写盘），一次写盘失败
+    // 会留下一个 `.yeban.lock` 与"没有工程"的状态；而先写盘时，写失败只是
+    // "什么都没发生"（临时文件在 `write_project_atomic` 里被清理）。
+    //
+    // 覆盖保护在这里**再查一次**：`plan` 与 `apply` 之间有一段时间窗，
+    // 期间另一个进程可能把文件放进来。第二次检查把"已存在的文件被静默覆盖"
+    // 压缩到"两次 `exists()` 之间的纳秒级窗口"，并且写盘本身走的是
+    // 同目录临时文件 + `rename`（`ARCH-SEC-004`），目标文件在 `rename` 之前
+    // 一直保持原样。
+    if created.is_some() && path.exists() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!("工程在新建落盘前已出现, 拒绝覆盖: {}", path.display()),
+            serde_json::json!({
+                "reason": "projectAlreadyExists",
+                "path": path.display().to_string(),
+            }),
+        ));
+    }
+    if let Some(seed) = created.as_ref() {
+        store::write_project_atomic(&path, &seed.bytes)?;
+    }
     let lock = store::lock(&path, lock_mode(read_only))?;
     let took_over_stale_lock = lock.took_over_stale_lock();
     domain.reset_history(SessionSeed {
@@ -2390,9 +2544,11 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         history: history.map(|graph| *graph),
         assets,
     })?;
+    let seed_summary = created.as_ref().map(|seed| seed.summary.clone());
     Ok(ToolResponse::success(serde_json::json!({
         "opened": true,
         "alreadyOpen": false,
+        "created": created.is_some(),
         "path": path.display().to_string(),
         "readOnly": read_only,
         // 排他写 = 独占; 共享读 = 与其他读者共存 (ARCH-SEC-001 第 3 条)。
@@ -2413,6 +2569,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         "project": domain
             .active_project()
             .map_or(Value::Null, project_summary),
+        "seed": seed_summary.unwrap_or(Value::Null),
     })))
 }
 

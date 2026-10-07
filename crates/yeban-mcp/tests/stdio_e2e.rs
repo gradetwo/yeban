@@ -396,3 +396,104 @@ fn notification_produces_no_response_but_the_session_survives() {
         "不得为 notification 编造响应: {res:?}"
     );
 }
+
+/// **主链路的第一步，经真 stdio 进程走完**：一个不存在的路径 ⇒ 建工程 ⇒
+/// `propose_section` ⇒ `merge` ⇒ `export_midi` ⇒ `render_master` ⇒ `close`。
+///
+/// 为什么必须在**真二进制**上再证一次（`tests/tools_e2e.rs` 已有一条进程内判据）：
+/// 缺口当初是在"真 stdio 会话"里被普查到的（`FILE_NOT_FOUND` ⇒ 没有建工程工具 ⇒
+/// 四条下游全断），而进程内判据绕过了 stdio 传输、令牌闸门与批处理生命周期。
+/// 这条判据把这四样都放回路径上：子进程、真 stdout、读到 EOF 自行退出、退出码 0。
+///
+/// 牙长在三处，任一处回归都会红：
+/// 1. `create` 的 `seed.masterBusTrackId` 不得是全零、且 `masterBusInRoutingGraph == true`；
+/// 2. `propose_section` 必须真的成功（旧行为：`TRACK_NOT_FOUND`）；
+/// 3. `render_master` 必须成功并**真的**在磁盘上留下母带（旧行为：
+///    `RENDER_FAILED MasterNotInGraph`），且磁盘字节的 SHA-256 等于响应读数。
+#[test]
+fn a_new_project_can_be_created_over_stdio_and_reaches_a_rendered_master() {
+    let dir = scratch().join(format!("create-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("建 scratch 子目录");
+    let path = dir.join("brand-new.yeban");
+    let _ = std::fs::remove_file(&path);
+    assert!(!path.exists(), "前提: 目标路径必须不存在");
+
+    let res = session(&[
+        req(
+            1,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": path.display().to_string(), "create": true, "title": "Stdio"},
+            }),
+        ),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_propose_section",
+                "arguments": {"sectionName": "Intro", "stylePreset": "pop", "bars": 2},
+            }),
+        ),
+        req(
+            3,
+            "tools/call",
+            serde_json::json!({"name": "yeban_export_midi", "arguments": {}}),
+        ),
+        req(
+            4,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_render_master",
+                "arguments": {"format": "wav", "sampleRate": 48000},
+            }),
+        ),
+    ]);
+    assert_eq!(res.len(), 4, "4 行请求 ⇒ 4 行响应: {res:?}");
+
+    // ① 建工程：主总线非零 + 在路由图里。
+    let created = &res[0]["result"]["data"];
+    assert_eq!(res[0]["result"]["status"], "success", "{created}");
+    assert_eq!(created["created"], true, "{created}");
+    let bus = created["seed"]["masterBusTrackId"]
+        .as_str()
+        .expect("seed.masterBusTrackId");
+    assert_ne!(
+        bus, "00000000000000000000000000",
+        "主总线不得是全零身份: {created}"
+    );
+    assert_eq!(
+        created["seed"]["masterBusInRoutingGraph"], true,
+        "{created}"
+    );
+    assert!(path.exists(), "工程容器必须真的落盘: {}", path.display());
+
+    // ② propose_section 不再 TRACK_NOT_FOUND。
+    assert_eq!(
+        res[1]["result"]["status"], "success",
+        "建好主总线之后 propose_section 必须能跑: {}",
+        res[1]
+    );
+
+    // ③ export_midi 有真实音符。
+    let midi = &res[2]["result"]["data"];
+    assert_eq!(res[2]["result"]["status"], "success", "{midi}");
+    assert!(midi["notes"].as_u64().unwrap_or(0) > 0, "{midi}");
+
+    // ④ render_master 真的写出母带；磁盘摘要 == 响应读数。
+    let rendered = &res[3]["result"]["data"];
+    assert_eq!(
+        res[3]["result"]["status"], "success",
+        "主总线在路由图里 ⇒ 必须真的渲染出母带: {}",
+        res[3]
+    );
+    let wav = std::path::PathBuf::from(rendered["path"].as_str().expect("母带路径"));
+    assert!(wav.exists(), "母带必须落在磁盘上: {}", wav.display());
+    let bytes = std::fs::read(&wav).expect("读母带");
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(&bytes).as_str(),
+        rendered["sha256"].as_str().expect("sha256"),
+        "磁盘字节的摘要必须等于响应里的读数"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

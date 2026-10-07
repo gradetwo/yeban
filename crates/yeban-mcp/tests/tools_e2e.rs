@@ -2385,3 +2385,345 @@ fn the_workspace_is_never_used_as_scratch_space() {
         "不得污染仓库"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `yeban_open_project` 的 `create: true`：主链路的第一步
+// ---------------------------------------------------------------------------
+
+/// 磁盘上这份文件的 SHA-256（**从字节读**，不是回抄响应）。
+fn file_sha256(path: &Path) -> String {
+    let bytes = fs::read(path).expect("读产物");
+    yeban_model::AssetHash::of_bytes(&bytes).as_str().to_owned()
+}
+
+/// **从零建工程 ⇒ 建轨/主总线 ⇒ propose_section ⇒ merge ⇒ save ⇒ export_midi
+/// ⇒ render_master ⇒ close** 的端到端判据。
+///
+/// 为什么必须存在：在这条判据之前，主链路的第一步是断的 —— 对不存在的路径
+/// `yeban_open_project` 只会 `FILE_NOT_FOUND`，而**没有任何工具**能从零建工程；
+/// 模型 `Op` 全集又写不了 `master_bus_track_id`（见
+/// `crates/yeban-mcp/src/domain/project_create.rs` 模块头的逐条证据）。
+///
+/// ## 这条判据的牙长在哪
+///
+/// 三个量会**在"主总线缺失"或"建工程退回旧行为"时变红**：
+///
+/// 1. `create` 的响应里 `seed.masterBusTrackId` 必须是 26 字符且**不是**全零；
+/// 2. `masterBusInRoutingGraph` 必须是 `true`，且文档里
+///    `routing_graph.nodes` 真的含那条身份；
+/// 3. `yeban_render_master` 必须 `status=success` 且磁盘上的 WAV 的 SHA-256
+///    等于响应里的 `sha256`（旧行为这里一定是 `RENDER_FAILED MasterNotInGraph`
+///    / `TRACK_NOT_FOUND`）。
+///
+/// 判据里的每一步都用**工具自己的响应**推进（`proposalId` 从提案响应里取），
+/// 因此它不是"照着内部 API 拼出来的"，而是一条真能复跑的调用序列。
+#[test]
+fn create_project_then_whole_chain_reaches_a_rendered_master_and_midi() {
+    let scratch = Scratch::new("create-chain");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("fresh.yeban");
+    let wav = scratch.join("fresh.master.wav");
+
+    // ---- ① 从**不存在的路径**建工程 ----
+    assert!(!path.exists(), "前提: 目标路径必须不存在");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "Fresh",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(created["data"]["created"], true, "{created}");
+    assert!(
+        path.exists(),
+        "建工程必须真的在磁盘上留下容器: {}",
+        path.display()
+    );
+
+    // ①a 主总线：身份非全零 + **真的在路由图节点表里**。
+    let bus = created["data"]["seed"]["masterBusTrackId"]
+        .as_str()
+        .expect("seed.masterBusTrackId")
+        .to_owned();
+    assert_ne!(bus, "00000000000000000000000000", "主总线不得是全零身份");
+    assert_eq!(bus.len(), 26, "主总线身份必须是 26 字符 ULID: {bus}");
+    assert_eq!(
+        created["data"]["seed"]["masterBusInRoutingGraph"], true,
+        "主总线必须在路由图里（否则 render_master 报 MasterNotInGraph）: {created}"
+    );
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let bus_id =
+        <yeban_model::EntityId as std::str::FromStr>::from_str(&bus).expect("解析主总线身份");
+    assert!(
+        project.routing_graph.nodes.contains(&bus_id),
+        "文档里的 routing_graph.nodes 必须含主总线"
+    );
+    assert_eq!(project.master_bus_track_id, bus_id, "文档与响应必须同源");
+    assert!(
+        project.tracks.contains_key(&bus_id),
+        "主总线必须真的是一条音轨"
+    );
+
+    // ①b 默认必须给出**能渲染的最小内容**：工程里真的有 MIDI 音符。
+    let default_notes: usize = project
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes())
+        .map(std::collections::BTreeMap::len)
+        .sum();
+    assert!(
+        default_notes > 0,
+        "默认工程必须有可渲染的 MIDI 内容 (否则 render_master 报 0 帧)"
+    );
+
+    // ---- ② propose_section（配器骨架）----
+    let proposed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Intro", "stylePreset": "pop", "bars": 2 }),
+    );
+    assert_eq!(
+        proposed["status"], "success",
+        "主总线建好之后 propose_section 必须能跑: {proposed}"
+    );
+    assert_eq!(
+        proposed["data"]["unwired"],
+        json!([]),
+        "骨架的全部 op 都已接线: {proposed}"
+    );
+    let proposal_id = proposed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+
+    // ---- ③ merge ----
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "merge Intro" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+
+    // ---- ④ save ----
+    let saved = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
+    assert_eq!(saved["status"], "success", "{saved}");
+    assert_eq!(saved["data"]["saved"], true, "{saved}");
+
+    // ---- ⑤ export_midi（只读，字节以 base64 回传）----
+    let midi = call(&mut dispatcher, &auth, "yeban_export_midi", json!({}));
+    assert_eq!(midi["status"], "success", "{midi}");
+    assert!(
+        midi["data"]["notes"].as_u64().unwrap_or(0) >= default_notes as u64,
+        "导出的音符数不得少于默认种子: {midi}"
+    );
+
+    // ---- ⑥ render_master（旧行为在这里必然 RENDER_FAILED）----
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({ "format": "wav", "sampleRate": 48_000 }),
+    );
+    assert_eq!(
+        rendered["status"], "success",
+        "主总线在路由图里 ⇒ 必须真的渲染出母带: {rendered}"
+    );
+    assert_eq!(rendered["data"]["rendered"], true, "{rendered}");
+    assert_eq!(rendered["data"]["format"], "wav", "{rendered}");
+    assert!(
+        rendered["data"]["frames"].as_u64().unwrap_or(0) > 0,
+        "母带不得是 0 帧: {rendered}"
+    );
+    assert_eq!(
+        rendered["data"]["path"],
+        json!(wav.display().to_string()),
+        "缺省输出路径 = <工程 stem>.master.<format>: {rendered}"
+    );
+    // 产物必须真的在磁盘上，且它的 SHA-256 等于响应里的读数。
+    assert!(wav.exists(), "母带必须落在磁盘上: {}", wav.display());
+    assert_eq!(
+        file_sha256(&wav),
+        rendered["data"]["sha256"].as_str().expect("sha256"),
+        "磁盘字节的摘要必须等于响应里的读数"
+    );
+
+    // ---- ⑦ close ----
+    let closed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_close_project",
+        json!({ "saveFirst": true }),
+    );
+    assert_eq!(closed["status"], "success", "{closed}");
+    assert_eq!(closed["data"]["closed"], true, "{closed}");
+    assert_eq!(closed["data"]["releasedLock"], true, "{closed}");
+    assert!(
+        dispatcher.domain().active_path().is_none(),
+        "关闭后不得留下活跃工程"
+    );
+}
+
+/// 建工程必须**明确拒绝**已存在的文件（绝不静默覆盖），并逐字节保住原文件。
+#[test]
+fn create_refuses_to_overwrite_an_existing_project() {
+    let scratch = Scratch::new("create-conflict");
+    let (mut dispatcher, auth) = dispatcher();
+    let (path, original) = scratch.write_project("taken.yeban");
+
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string(), "create": true }),
+    );
+    assert_domain_error(&refused, "CONFLICT", "已存在的文件不得被新建覆盖");
+    assert_eq!(
+        refused["error"]["data"]["reason"], "projectAlreadyExists",
+        "{refused}"
+    );
+    assert_eq!(
+        fs::read(&path).expect("读原文件"),
+        original,
+        "原字节必须不变"
+    );
+}
+
+/// `create: true` 与 `readOnly: true` 同给 ⇒ 既有的 `INVALID_PARAMETER_RANGE`
+/// （**没有**发明新错误码，`ADR-0001` D25）。
+#[test]
+fn create_with_read_only_is_an_invalid_parameter_range() {
+    let scratch = Scratch::new("create-readonly");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("never.yeban");
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string(), "create": true, "readOnly": true }),
+    );
+    assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", "create + readOnly");
+    assert!(!path.exists(), "被拒的请求不得留下任何文件");
+}
+
+/// 建工程的最小内容实参**真的**改变产物（否则那几个参数就是装饰）。
+#[test]
+fn create_seed_arguments_change_the_document() {
+    let scratch = Scratch::new("create-seed");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("seeded.yeban");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "Seeded",
+            "bpm": 96.0,
+            "seed": {
+                "trackCount": 2,
+                "clipName": "Motif X",
+                "notes": [{ "pitch": 72, "durationTicks": 480 }],
+            },
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    assert_eq!(project.title, "Seeded");
+    assert!((project.bpm - 96.0).abs() < f64::EPSILON);
+    // 2 条内容轨 + 主总线。
+    assert_eq!(project.tracks.len(), 3);
+    assert_eq!(
+        created["data"]["seed"]["trackCount"],
+        json!(3),
+        "读数必须从文档里数出来"
+    );
+    let pitches: Vec<u8> = project
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes())
+        .flat_map(|notes| notes.values().map(|note| note.pitch))
+        .collect();
+    assert_eq!(pitches, vec![72], "种子音符必须真的进文档");
+    assert!(
+        project
+            .clip_pool
+            .values()
+            .any(|entry| entry.name == "Motif X"),
+        "片段名必须真的进文档"
+    );
+}
+
+/// 建工程与既有幂等层的行为一致：同一个非空 `idempotencyKey` 只建**一次**
+/// （第二次拿到 `replayed: true` 信封 + 首次的载荷），文件字节一位不改。
+///
+/// 为什么这条必须存在：`create: true` 是**有副作用**的（写一个新文件）。
+/// 幂等层的价值正是在这种调用上 —— "同键不重复施加"是结构性的（命中缓存就
+/// 走不到 `domain::execute`），但这条判据把"它真的适用于新建路径"钉成事实。
+#[test]
+fn create_project_respects_the_idempotency_key() {
+    let scratch = Scratch::new("create-idem");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("idem-create.yeban");
+    let arguments = json!({
+        "path": path.display().to_string(),
+        "create": true,
+        "title": "Idem",
+        "idempotencyKey": "create-once",
+    });
+    let first = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        arguments.clone(),
+    );
+    assert_eq!(first["status"], "success", "{first}");
+    assert!(path.exists(), "首次必须真的落盘");
+    let bytes_after_first = fs::read(&path).expect("读新建的工程");
+
+    let second = call(&mut dispatcher, &auth, "yeban_open_project", arguments);
+    assert_eq!(second["replayed"], true, "第二次必须命中缓存: {second}");
+    // 重放的主体与首次逐字节相同（只换了信封与 id）。
+    assert_eq!(first, second["response"]["result"], "重放必须返回首次结果");
+    assert_eq!(
+        fs::read(&path).expect("重读"),
+        bytes_after_first,
+        "命中缓存不得重写文件"
+    );
+    assert_eq!(dispatcher.replayed(), 1);
+}
+
+/// 没有 `idempotencyKey` 时，第二次 `create` 走的是**存在性拒绝**（不是缓存）：
+/// 幂等层只在给了键时介入，因此"重复建同一个路径"是一个明确的 `CONFLICT`。
+#[test]
+fn create_without_a_key_rejects_the_second_attempt() {
+    let scratch = Scratch::new("create-idem-none");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("twice.yeban");
+    let arguments = json!({ "path": path.display().to_string(), "create": true });
+    let first = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        arguments.clone(),
+    );
+    assert_eq!(first["status"], "success", "{first}");
+    // ⚠ 第二次调用会撞上"已有另一个活跃工程"这条**同样**正确的前置检查
+    // （与普通打开同口径）；把会话清干净才能测到**存在性**那条。
+    let closed = call(&mut dispatcher, &auth, "yeban_close_project", json!({}));
+    assert_eq!(closed["data"]["closed"], true, "{closed}");
+    let second = call(&mut dispatcher, &auth, "yeban_open_project", arguments);
+    assert_domain_error(&second, "CONFLICT", "第二次建同一个路径");
+    assert_eq!(
+        second["error"]["data"]["reason"], "projectAlreadyExists",
+        "{second}"
+    );
+}
