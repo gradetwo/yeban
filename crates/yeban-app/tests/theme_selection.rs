@@ -15,10 +15,26 @@
 //! | ① | 每个合法取值都被**接受**（`--theme <v> --print-theme` 与 `--headless`） | 真进程的退出码 + stdout |
 //! | ② | 未知取值被**拒绝**：退出码 `2`、stderr 点名原因与可用集合、stdout 为空 | 真进程的退出码 + stderr |
 //! | ③ | **生效的调色板真的跟着选择变**：从活的 Slint 组件**回读** `Tokens.*` | 真 `MainWindow` 的 token 值（无像素） |
-//! | ④ | `yeban` / `inkmoor` / `plume` 的每一支颜色 == 负责人下发的那个字面量（回读 + 对比度断言） | 真 `MainWindow` 的 token 值 |
+//! | ④ | `default`(= yeban) / `inkmoor` / `plume` 的每一支颜色 == 负责人下发的那个字面量（回读 + 对比度断言） | 真 `MainWindow` 的 token 值 |
 //! | ⑤ | 四支自绘调色板的**源码钉**：`ui/tokens.slint` 里每个 token 的四个字面量分支 | `tokens.slint` 的文本 |
 //! | ⑥ | `accent`（唯一强调色）在整份界面里**恰好出现一次**，且那一处是**录音键的 ●**（`HD-54`）；`bg-control` 也恰好一次 | 全部 `ui/**/*.slint` 的文本 |
 //! | ⑦ | 原则「暖强调色唯一」「无投影/无渐变」的机械形态（三支自绘皮肤各一条，含落点搬走后 AI 徽章必须冷、以及 `accent != record-red`）；`--print-theme` 的出处行 | token 值的色相 + 全部 `ui/**/*.slint` 的文本 + 真进程 stdout |
+//! | ⑧ | `default` 选到的就是 yeban 调色板、`yeban` 是它的**别名**、`brand` 是旧品牌色；且 `.slint` 的 `ThemeState.theme` **初值** = 默认主题（golden 截图路径不调 `apply_theme`） | `Theme` 的解析 + `tokens.slint` 文本 + 真进程 stdout |
+//!
+//! ## 2026-10-07 之后：默认主题换成 `yeban`, 品牌深色改名 `brand`
+//!
+//! 负责人新指令（原文）：「默认主题改成 yeban 那一套，原来 default 改个名作为可选」。
+//! 于是 ③/⑤/⑧ 钉的对应关系变成:
+//!   * `--theme default` = **yeban 调色板**（负责人下发的墨阶 / 颜料值, 原来只有
+//!     `--theme yeban` 才选得到它; 别名 `yeban` 继续可用, 解析到**同一支**）;
+//!   * `--theme brand` = **本仓品牌深色**（今天之前那一串十六进制字面量, 取值一位未改）,
+//!     它就是本文件 ① 段那张品牌表;
+//!   * 其余 (`inkmoor` / `plume` / `material` / `fluent` / `cupertino` / `native`) 不变。
+//!
+//! ⚠ **代价（照实登记）**：默认**外观**因此改变 ⇒ `tests/golden/linux/**` 的 5 张基准
+//! 必须走手动档 `gates-manual.yml` 的 `gate=goldens` 重新录制 + 人工复核（`HD-56` 已把
+//! "基准冻结"从绝对约束降为**条件**; 这不是本文件能修的 —— 本文件只负责把漂移检测住）。
+//! 判据本身**一条都没放宽**：`brand` 表、`default` 表、别名等价、初值耦合都仍然会红。
 //!
 //! ## 2026-10-07：三支自绘皮肤（`yeban` / `inkmoor` / `plume`）
 //!
@@ -58,8 +74,8 @@
 //! AI 徽章另找角色（本仓取 `ai-suggestion`）。因此本文件里有四处**随落点一起移动**：
 //!   * ③ 的品牌表：`accent` 的 brand 值写成 `#d94a4a`（= 录音键的 ● 原来画的
 //!     `record-red`），并新增 `accent == record-red`、`ai-suggestion == #a855f7`
-//!     （= `accent` **移动前**的 brand 值）两条机械保证 —— 这是 `--theme default`
-//!     逐像素不变的两个前提;
+//!     （= `accent` **移动前**的 brand 值）两条机械保证 —— 这是 `--theme brand`
+//!     （2026-10-07 之前的默认主题）逐像素不变的两个前提;
 //!   * `wcag_cases`：录音键的静置板 `bg-panel-alt`、按下板 `bg-raised` 两对，加上旧落点
 //!     AI 徽章的 `ai-suggestion / bg-panel-alt`（16 → 18 对）;
 //!   * ⑥：唯一那一处的落点判据从"AI 徽章的 `border-color`"改成"**录音键的 ●**"，并反向
@@ -92,7 +108,7 @@ use slint::{Color, ComponentHandle as _};
 use yeban_app::cli::{self, Theme};
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
-use yeban_app::ui::Tokens;
+use yeban_app::ui::{ThemeState, Tokens, YebanTheme};
 
 /// 被测二进制的绝对路径（由 Cargo 注入，与 `tests/cli_contract.rs` 同款）。
 const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
@@ -199,8 +215,8 @@ fn every_valid_theme_value_is_accepted_and_reported() {
 /// 未知主题必须是**用法错误**（退出码 [`cli::EXIT_USAGE`]）、stderr 点名那个坏取值与
 /// 可用集合、stdout 为空。
 ///
-/// 为什么"静默回退到默认主题"不可接受：那会让"我说了 material"与"其实渲染的是品牌色"
-/// 长得一模一样 —— 正是本仓库最忌讳的一类假绿。
+/// 为什么"静默回退到默认主题"不可接受：那会让"我说了 material"与"其实渲染的是
+/// `default`(yeban 调色板)"长得一模一样 —— 正是本仓库最忌讳的一类假绿。
 #[test]
 fn an_unknown_theme_is_refused_with_a_reason_and_a_nonzero_exit() {
     let bad = "nope-not-a-theme";
@@ -252,6 +268,188 @@ fn an_unknown_theme_is_refused_with_a_reason_and_a_nonzero_exit() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 ⑧: 默认主题 = yeban、`yeban` 是别名、`brand` 是旧品牌色; 且 `.slint` 初值 = 默认
+// ---------------------------------------------------------------------------
+//
+// 这一节**不碰 Slint 进程内对象**（全部是 `Theme` 的解析 + `tokens.slint` 文本 + 子进程
+// stdout），因此可以独立成条测试：`set_platform` 是线程局部且每线程只能装一次，只有 ③
+// 那个测试能碰活组件（见文件头）。
+
+/// **判据 ⑧a**：`default` / `yeban` / `brand` 三者的解析关系，以及"可接受集合由
+/// `Theme::ALL` 机械推导"这条不许漂移的性质（用法文本与错误信息共用一个推导）。
+///
+/// 为什么这条要**在真进程上**再验一遍：`Theme::accepted_names()` 是 Rust 侧的事实，
+/// 而"用户看到的用法文本与错误信息里也真的列了这些名字"是**另一个**观测面 ——
+/// 少了它，`accepted_names()` 可以被改成只给判据看的一份漂亮列表。
+#[test]
+fn the_yeban_alias_resolves_to_the_default_theme_everywhere() {
+    // 规范名 / 别名 / 旧默认三者的解析关系。
+    assert_eq!(
+        Theme::default(),
+        Theme::Yeban,
+        "`Theme::default()` 必须是 yeban（默认主题）"
+    );
+    assert_eq!(
+        Theme::Yeban.name(),
+        "default",
+        "yeban 那一支的规范名是 `default`"
+    );
+    assert_eq!(
+        Theme::from_name("default"),
+        Some(Theme::Yeban),
+        "`--theme default` 必须选到 yeban 调色板"
+    );
+    assert_eq!(
+        Theme::from_name("yeban"),
+        Some(Theme::Yeban),
+        "`--theme yeban` 是同一个取值的**别名**（旧脚本不许被打断）"
+    );
+    assert_eq!(
+        Theme::from_name("brand"),
+        Some(Theme::Brand),
+        "`--theme brand` 必须选到今天之前那支品牌深色"
+    );
+    assert_eq!(
+        Theme::from_name("default"),
+        Theme::from_name("yeban"),
+        "别名与规范名必须解析到**同一个**枚举值（不是两支长得一样的调色板）"
+    );
+
+    // 可接受集合 = 规范名 + 别名, 且**全部**从 `Theme::ALL` 长出来。
+    let names = Theme::accepted_names();
+    assert_eq!(
+        names,
+        vec![
+            "default",
+            "yeban",
+            "brand",
+            "inkmoor",
+            "plume",
+            "material",
+            "fluent",
+            "cupertino",
+            "native"
+        ],
+        "可接受取值的**顺序与集合**都来自 `Theme::ALL` + 别名; 它不是随手写的字符串表"
+    );
+    for theme in Theme::ALL {
+        assert!(
+            names.contains(&theme.name()),
+            "每支主题的规范名 `{}` 都必须在可接受集合里",
+            theme.name()
+        );
+        for alias in theme.aliases() {
+            assert!(
+                names.contains(alias),
+                "`{}` 的别名 `{alias}` 必须在可接受集合里",
+                theme.name()
+            );
+        }
+    }
+
+    // 观测面 1: 用法文本必须列出**全部**可接受取值（`--help` 是用户唯一的去处）。
+    let usage = cli::usage_text();
+    for name in &names {
+        assert!(
+            usage.contains(name),
+            "用法文本必须列出 `--theme` 的可接受取值 `{name}`"
+        );
+    }
+    // 观测面 2: 未知取值的错误信息必须列出**同一份**集合。
+    let bad = invoke(&["--theme", "nope-not-a-theme", "--headless"]);
+    assert_eq!(bad.code, i32::from(cli::EXIT_USAGE));
+    for name in &names {
+        assert!(
+            bad.stderr.contains(name),
+            "错误信息的可用集合必须含 `{name}`（与用法文本同一份推导）; stderr={}",
+            bad.stderr
+        );
+    }
+
+    // 观测面 3: 真进程的自述报告 —— 别名与规范名必须**逐字节相同**（同一支调色板、
+    // 同一个 `palette=`、同一个出处行），而 `brand` 必须如实报另一支。
+    let default_report = invoke(&["--theme", "default", "--print-theme"]);
+    let alias_report = invoke(&["--theme", "yeban", "--print-theme"]);
+    let brand_report = invoke(&["--theme", "brand", "--print-theme"]);
+    assert_eq!(default_report.code, 0, "stderr={}", default_report.stderr);
+    assert_eq!(alias_report.code, 0, "stderr={}", alias_report.stderr);
+    assert_eq!(brand_report.code, 0, "stderr={}", brand_report.stderr);
+    assert_eq!(
+        default_report.stdout, alias_report.stdout,
+        "`--theme yeban` 与 `--theme default` 的自述报告必须逐字节相同 —— \
+         别名一旦产生第二套像素或第二份出处, 这里先红"
+    );
+    assert!(
+        default_report.stdout.contains("requested=default"),
+        "报告打的是**规范名**（`requested=default`），即使请求的是别名; stdout={}",
+        default_report.stdout
+    );
+    assert!(
+        default_report
+            .stdout
+            .contains("palette=yeban-measured-literals"),
+        "默认主题必须报 yeban 的调色板来源; stdout={}",
+        default_report.stdout
+    );
+    assert!(
+        brand_report.stdout.contains("requested=brand")
+            && brand_report.stdout.contains("palette=brand"),
+        "`--theme brand` 必须报品牌调色板（这里 `requested` 与 `palette` 同名是**新产生**\
+         的值巧合, 见本判据的注释）; stdout={}",
+        brand_report.stdout
+    );
+}
+
+/// **判据 ⑧b**：`ui/tokens.slint` 的 `ThemeState.theme` **初值**必须等于默认主题。
+///
+/// 为什么这条是独立的一条、而且走**源码文本**：golden 截图的路径
+/// (`src/test_port_adapter.rs`) 直接 `host::build_main_window` 而**不调** `apply_theme`,
+/// 所以"默认外观是什么"在那条路径上由这个初值决定。`cli.rs` 的 `#[default]` 与它一旦
+/// 漂移, 默认外观就会一半是新主题、一半是旧主题 —— 这条判据把两处钉在一起。
+///
+/// 观测面是文本（不碰 Slint）：与 ⑤ 同一份源码, 因此可以在同一个文件里独立成条测试。
+#[test]
+fn the_default_theme_is_the_slint_initial_value() {
+    let sources = all_ui_sources();
+    let (_, tokens_slint) = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("ui/tokens.slint"))
+        .expect("必须存在 ui/tokens.slint");
+
+    let line = tokens_slint
+        .lines()
+        .find(|line| {
+            line.trim_start()
+                .starts_with("in-out property <YebanTheme> theme:")
+        })
+        .expect("`ui/tokens.slint` 必须有 `ThemeState.theme` 的初值声明");
+    let initial = line
+        .split(':')
+        .nth(1)
+        .expect("初值声明必须有冒号")
+        .trim()
+        .trim_end_matches(';')
+        .trim();
+    assert_eq!(
+        initial, "YebanTheme.yeban",
+        "`ThemeState.theme` 的初值必须是 `YebanTheme.yeban`（默认主题）—— 不调 \
+         `apply_theme` 的路径 (Tier-1 无头渲染 / golden 截图) 看的就是它; 实际 {initial:?}"
+    );
+
+    // 同一份事实的另一侧: `cli.rs` 的默认值必须是同一支。
+    assert_eq!(
+        Theme::default(),
+        Theme::Yeban,
+        "`Theme::default()` 必须与 `.slint` 初值同一支（yeban）"
+    );
+    assert_eq!(
+        Theme::default().name(),
+        "default",
+        "默认主题的 CLI 规范名必须是 `default`"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ③: 生效的调色板**真的**跟着选择变（回读活的 Slint 组件的 token 值）
 // ---------------------------------------------------------------------------
 
@@ -291,9 +489,11 @@ fn demo_view_and_scene() -> (yeban_app::bridge::ViewState, DemoScene) {
 
 /// **核心判据**：从活的 `MainWindow` 回读 `Tokens.*`，证明
 ///
-/// ① 默认主题（`--theme default`）渲染的就是**今天那一串十六进制字面量** ——
-///    这是"默认外观一位未改、Linux golden 基线不需要重生成"的机械见证；
-/// ② 非默认主题下的取值**真的不一样**（走 Slint 设计系统的 `Palette` 角色）；
+/// ⓪ **默认主题**是 yeban 那一支：`Theme::default()` / `Theme::from_name("default")` /
+///    `tokens.slint` 的 `ThemeState.theme` 初值**三者同一**（初值那条是关键 —— golden
+///    截图的路径**不调** `apply_theme`，它看到的就是初值）；
+/// ① `--theme brand`（2026-10-07 之前的默认主题）渲染的就是那一串本仓品牌字面量；
+/// ② 走设计系统的主题取值**真的不一样**（`Palette` 角色）；
 /// ③ Slint 1.18.1 的上限被**如实**登记：四个内建风格名共享同一个编译进来的 `Palette`，
 ///    因此它们彼此相等 —— 判据把这件事写成断言，而不是回避它。
 #[test]
@@ -303,7 +503,44 @@ fn the_effective_palette_follows_the_selection() {
     let ui = host::build_main_window(&view, &scene).expect("构造真 MainWindow");
     let tokens = ui.global::<Tokens<'_>>();
 
-    // ---- ① 默认 = 今天的外观（**逐字节**的品牌字面量）----
+    // ---- ⓪ 默认主题 = yeban: 三条入口必须落在同一支 ----
+    //
+    // 这条在 `apply_theme` **之前**先读窗口的初值: `test_port_adapter` 的 golden 截图
+    // 直接 `build_main_window` 而不调 `apply_theme`, 顶层走的就是这个初值 —— 所以
+    // "默认外观换了"这件事的机械见证是这里, 不是 CLI 的 `#[default]`。
+    assert_eq!(
+        Theme::default(),
+        Theme::Yeban,
+        "`Theme::default()` 必须是 yeban 那一支 (CLI 规范名 `default`)"
+    );
+    assert_eq!(
+        Theme::from_name("default"),
+        Some(Theme::Yeban),
+        "`--theme default` 必须解析到 yeban 那一支"
+    );
+    assert_eq!(
+        Theme::from_name("yeban"),
+        Some(Theme::Yeban),
+        "`--theme yeban` 是 `default` 的**别名**, 必须解析到同一支"
+    );
+    assert_eq!(
+        ui.global::<ThemeState<'_>>().get_theme(),
+        YebanTheme::Yeban,
+        "`ui/tokens.slint` 的 `ThemeState.theme` 初值必须是 yeban —— 不调 `apply_theme` 的\
+         路径 (Tier-1 无头渲染 / golden 截图) 直接看这个初值; 它一旦退回 brand,\
+         '默认外观换了'就没有任何机械见证"
+    );
+    host::apply_theme(&ui, Theme::default());
+    assert_eq!(
+        ui.global::<ThemeState<'_>>().get_theme(),
+        YebanTheme::Yeban,
+        "`apply_theme(Theme::default())` 必须写进 yeban —— CLI 默认与 `.slint` 初值不许漂移"
+    );
+
+    // ---- ① `--theme brand`（2026-10-07 之前的默认主题）----
+    //
+    // 注意这条**不再是**"默认外观"的见证（默认已经是 yeban）: 它守的是**品牌调色板
+    // 自身一位未改**, 也就是这次改名不许顺手改品牌色的值。
     host::apply_theme(&ui, Theme::Brand);
     let brand: [(&str, Color, u8, u8, u8); 12] = [
         ("bg-panel", tokens.get_bg_panel(), 0x15, 0x1d, 0x38),
@@ -314,11 +551,11 @@ fn the_effective_palette_follows_the_selection() {
         ("line", tokens.get_line(), 0x1e, 0x27, 0x45),
         ("bg-void", tokens.get_bg_void(), 0x06, 0x0a, 0x14),
         ("bg-shell", tokens.get_bg_shell(), 0x0d, 0x13, 0x26),
-        // 2026-10-06 新增的两支（见 `ui/tokens.slint` §6c）: 默认主题下它们必须**分别**
-        // 等于被它们替换掉的那两个字面量，否则顶栏的渲染字节就变了。
+        // 2026-10-06 新增的两支（见 `ui/tokens.slint` §6c）: brand 分支下它们必须**分别**
+        // 等于被它们替换掉的那两个字面量，否则品牌分支的渲染字节就变了。
         ("bg-control", tokens.get_bg_control(), 0x1b, 0x24, 0x47),
         // 2026-10-07（`HD-54`）: 唯一强调色的**落点**从 AI 徽章描边移到录音键的 ●。
-        // 落点移动不许改默认像素 ⇒ 被碰到的两支令牌各写出它们的 brand 值:
+        // 落点移动不许改品牌分支的像素 ⇒ 被碰到的两支令牌各写出它们的 brand 值:
         //   `accent`        = #d94a4a = 录音键的 ● 原来画的 `record-red`（brand）;
         //   `record-red`    = #d94a4a（取值一位未改）;
         //   `ai-suggestion` = #a855f7 = AI 徽章描边原来画的 `accent`（移动前）的 brand 值。
@@ -336,40 +573,45 @@ fn the_effective_palette_follows_the_selection() {
         assert_eq!(
             value,
             Color::from_rgb_u8(red, green, blue),
-            "默认主题的 `{name}` 必须仍是品牌字面量 #{red:02x}{green:02x}{blue:02x} \
-             —— 它变了就意味着 Linux golden 基线要重生成"
+            "`--theme brand` 的 `{name}` 必须仍是品牌字面量 #{red:02x}{green:02x}{blue:02x} \
+             —— 它变了说明品牌调色板被改了（默认外观已经是 `default`/yeban, 这条不再为它作证）"
         );
     }
-    // 这三条是**顶栏两处令牌替换的机械保证**:
+    // 这三条是**顶栏两处令牌替换的机械保证**（品牌分支口径）:
     //   ① 2026-10-06 保存键的板: `bg-control` == `bg-panel-alt`（它原来用的就是后者）;
     //   ② 2026-10-07 `HD-54` 录音键的 ●: `accent` == `record-red`（落点移动后它画的还是
-    //      那个红, 所以 `--theme default` 一位未变）;
+    //      那个红, 所以 `--theme brand` 一位未变）;
     //   ③ 2026-10-07 `HD-54` AI 徽章的描边: `ai-suggestion` == 移动前 `accent` 的 brand 值
     //      #a855f7（徽章也因此一位未变）。
     assert_eq!(
         tokens.get_bg_control(),
         tokens.get_bg_panel_alt(),
-        "默认主题下 `bg-control` 必须逐字节等于 `bg-panel-alt` —— 保存键的板换了令牌之后 \
-         渲染字节不许变（它原来用的就是 bg-panel-alt）"
+        "`--theme brand` 下 `bg-control` 必须逐字节等于 `bg-panel-alt` —— 保存键的板换了\
+         令牌之后渲染字节不许变（它原来用的就是 bg-panel-alt）"
     );
     assert_eq!(
         tokens.get_accent(),
         tokens.get_record_red(),
-        "默认主题下 `accent` 必须逐字节等于 `record-red` —— 录音键的 ● 换成 `accent` 之后 \
-         渲染字节不许变（它原来画的就是 record-red 的 #d94a4a）"
+        "`--theme brand` 下 `accent` 必须逐字节等于 `record-red` —— 录音键的 ● 换成\
+         `accent` 之后渲染字节不许变（它原来画的就是 record-red 的 #d94a4a）"
     );
     assert_eq!(
         tokens.get_ai_suggestion(),
         Color::from_rgb_u8(0xa8, 0x55, 0xf7),
-        "默认主题下 `ai-suggestion` 必须仍是 #a855f7 —— AI 徽章的描边从 `accent` 换成它 \
-         之后渲染字节不许变（`accent` **移动前**的 brand 值就是 #a855f7）"
+        "`--theme brand` 下 `ai-suggestion` 必须仍是 #a855f7 —— AI 徽章的描边从 `accent`\
+         换成它之后渲染字节不许变（`accent` **移动前**的 brand 值就是 #a855f7）"
     );
 
-    // ---- ①b `yeban`: 每一支都必须等于负责人下发的那个字面量 ----
+    // ---- ①a `default` (= yeban): 默认主题的每一支都必须等于负责人下发的字面量 ----
     //
-    // 表里的每一个十六进制都是负责人 HTML mock 里的原话（出处 = 色名 + 角色，逐条写在
+    // 用 CLI 字面值 `default` 解析（不直接写变体名）：这样"`--theme default` 选到的就是
+    // yeban 调色板"是被判据**证明**的, 不是被假设的。`yeban` 别名的等价性在同表末尾再钉一次。
+    // 表里的每一个十六进制都是负责人 HTML mock 里的原话（出处 = 色名 + 角色, 逐条写在
     // `ui/tokens.slint` §6b）。改一个数字、或把下发的值抄错一位，这里就红。
-    host::apply_theme(&ui, Theme::Yeban);
+    host::apply_theme(
+        &ui,
+        Theme::from_name("default").expect("`default` 必须是合法 --theme 取值"),
+    );
     let yeban: [(&str, Color, u32); 23] = [
         ("bg-void", tokens.get_bg_void(), 0x0e1216),
         ("bg-shell", tokens.get_bg_shell(), 0x11161c),
@@ -403,8 +645,33 @@ fn the_effective_palette_follows_the_selection() {
         );
         assert_eq!(
             value, expected,
-            "`--theme yeban` 的 `{name}` 必须是负责人下发的 #{packed:06x} —— \
-             颜色是**负责人指定**的, 不是我们挑的; 表在 ui/tokens.slint §6b"
+            "`--theme default`(= yeban, **默认主题**) 的 `{name}` 必须是负责人下发的 \
+             #{packed:06x} —— 颜色是**负责人指定**的, 不是我们挑的; 表在 ui/tokens.slint §6b"
+        );
+    }
+
+    // 别名 `yeban` 必须落在**同一支**上: 回读值与 `--theme default` 完全一致。
+    // 这条不依赖任何"别名表"的措辞 —— 它直接比较两串像素取值。
+    host::apply_theme(
+        &ui,
+        Theme::from_name("yeban").expect("别名 `yeban` 必须是合法 --theme 取值"),
+    );
+    for (name, expected) in [
+        ("bg-void", Color::from_rgb_u8(0x0e, 0x12, 0x16)),
+        ("bg-panel", Color::from_rgb_u8(0x13, 0x1a, 0x22)),
+        ("accent", Color::from_rgb_u8(0xc6, 0xa4, 0x7c)),
+        ("record-red", Color::from_rgb_u8(0xac, 0x6e, 0x60)),
+    ] {
+        let read = match name {
+            "bg-void" => tokens.get_bg_void(),
+            "bg-panel" => tokens.get_bg_panel(),
+            "accent" => tokens.get_accent(),
+            _ => tokens.get_record_red(),
+        };
+        assert_eq!(
+            read, expected,
+            "`--theme yeban`（别名）的 `{name}` 必须与 `--theme default` 逐字节相同 —— \
+             别名不许产生第二套像素"
         );
     }
 
@@ -543,14 +810,19 @@ fn the_effective_palette_follows_the_selection() {
         );
     }
 
-    // ---- ①c-ter 两支新皮肤：**同一张**阈值表逐支重算 ----
+    // ---- ①c-ter 另三支自绘调色板（`brand` / `inkmoor` / `plume`）：**同一张**阈值表逐支重算 ----
     //
-    // 观测面与 ①c 完全相同（活组件的 token 值）与同一组配对，只是换了皮肤。
+    // 观测面与 ①c 完全相同（活组件的 token 值）与同一组配对，只是换了皮肤/调色板。
     // **没有**为它们把任何阈值调低 —— 失败时的措辞明确禁止"改负责人的颜色"。
-    for skin in ["inkmoor", "plume"] {
+    //
+    // 2026-10-07: 默认主题换成 yeban 之后, 原来的默认调色板改名 `brand` —— 把 `brand`
+    // 也放进这条循环, 于是**改名后的那一支仍然逐对受 WCAG 约束**（实测最小值是
+    // `accent / bg-raised` 3.08:1 ≥ 3:1, 18 对全过）。这不是新增门槛, 只是让"被改名的
+    // 分支"继续留在同一张表里, 而不是靠 ① 的 12 支令牌抽样替它作证。
+    for skin in ["brand", "inkmoor", "plume"] {
         host::apply_theme(
             &ui,
-            Theme::from_name(skin).expect("皮肤名必须是合法 --theme 取值"),
+            Theme::from_name(skin).expect("调色板名必须是合法 --theme 取值"),
         );
         let cases = wcag_cases(&tokens);
         for (label, a, b, threshold) in cases {
@@ -558,20 +830,30 @@ fn the_effective_palette_follows_the_selection() {
             assert!(
                 ratio >= threshold,
                 "`{skin}` 的对比度不达标: {label} = {ratio:.2}:1 < {threshold}:1 (WCAG 2.1) \
-                 —— 颜色是负责人下发的, **不许**为了让它过而改色; 把数字交回负责人裁决"
+                 —— 颜色是负责人下发的（`brand` 是本仓品牌色）, **不许**为了让它过而改色; \
+                 把数字交回负责人裁决"
             );
         }
     }
 
-    // ---- ①c-quater 三级文字在三支皮肤上的**逐对实测**（缺口不隐藏） ----
+    // ---- ①c-quater 三级文字在另三支自绘调色板上的**逐对实测**（缺口不隐藏） ----
     //
-    // `ink-2` 是三级文字。`yeban` 的三对全部低于 3:1（见 ①c-bis）。负责人**修订版**
-    // 调色板把霜灰/驼灰调亮了，于是实测：
-    //   inkmoor  3.49 / 3.39 / 3.12 —— 三对都 ≥ 3:1（旧缺口消失）
+    // `ink-2` 是三级文字。默认主题 (`default` = yeban) 的三对全部低于 3:1（见 ①c-bis）。
+    // 其余三支的实测（本行数字由 `contrast_ratio` 现算后钉住）：
+    //   brand    3.09 / **2.81** / **2.39** —— 后两对低于 3:1
+    //   inkmoor  3.49 / 3.39 / 3.12 —— 三对都 ≥ 3:1（负责人修订版把霜灰调亮了, 旧缺口消失）
     //   plume    3.20 / 3.11 / **2.87** —— `ink-2 / bg-raised` 仍低于 3:1
-    // 我们**没有**改负责人的颜色（那是权威设计输入），只把每个数字钉住：任一侧改色，
-    // 这里的"记录过期"与"缺口登记不符"两条断言至少有一条会红。
+    // 我们**没有**改任何一支的颜色（品牌色与负责人下发的颜色都是权威输入），只把每个
+    // 数字钉住：任一侧改色，这里的"记录过期"与"缺口登记不符"两条断言至少有一条会红。
     for (skin, recorded) in [
+        (
+            "brand",
+            [
+                ("ink-2 / bg-panel", 3.09_f64, false),
+                ("ink-2 / bg-panel-alt", 2.81, true),
+                ("ink-2 / bg-raised", 2.39, true),
+            ],
+        ),
         (
             "inkmoor",
             [
@@ -687,14 +969,15 @@ fn the_effective_palette_follows_the_selection() {
 
     // ---- ①d 顶栏两块板必须**可区分**（负责人报的缺陷） ----
     //
-    // 默认主题下两块板逐字节相同（`bg-control == bg-panel-alt`, 见 ①）⇒ 那正是缺陷本身。
-    // `yeban` 下它们必须分开, 而且**给出数字**: 亮度比要高于默认主题自己用来区分
-    // `bg-panel` 与 `bg-panel-alt` 的那一档 (实测 1.10:1), 否则"分开了"只是一句话。
+    // `--theme brand`（2026-10-07 之前的默认主题）下两块板逐字节相同
+    // （`bg-control == bg-panel-alt`, 见 ①）⇒ 那正是缺陷本身。默认主题 (`default` = yeban)
+    // 下它们必须分开, 而且**给出数字**: 亮度比要高于 `brand` 自己用来区分
+    // `bg-panel` 与 `bg-panel-alt` 的那一档 (brand 实测 1.10:1), 否则"分开了"只是一句话。
     let slab = contrast_ratio(tokens.get_bg_panel_alt(), tokens.get_bg_control());
     assert!(
         slab > 1.10,
-        "`yeban` 顶栏的保存键板 / AI 徽章板亮度比只有 {slab:.2}:1, 不高于默认主题自己 \
-         的 panel↔panel-alt 那一档 (1.10:1) ⇒ 两块板仍然分不开"
+        "默认主题 (`default` = yeban) 顶栏的保存键板 / AI 徽章板亮度比只有 {slab:.2}:1, \
+         不高于 `brand` 的 panel↔panel-alt 那一档 (1.10:1) ⇒ 两块板仍然分不开"
     );
     // 强调色也必须真的不同 (否则「唯一强调色只用一次」就只是把 AI 语义色换了个名字)。
     // 2026-10-07（`HD-54`）之后这两支还在**两个不同的落点**上: `accent` 画录音键的 ●,
@@ -706,9 +989,11 @@ fn the_effective_palette_follows_the_selection() {
          那意味着强调色其实没换"
     );
 
-    // ---- ② 非默认主题必须**真的**换掉调色板 ----
-    let brand_panel = tokens.get_bg_panel();
-    let brand_accent = tokens.get_gold();
+    // ---- ② 走设计系统的主题必须**真的**换掉调色板 ----
+    //
+    // 参照值是**默认主题** (`default` = yeban) 的取值（上面刚写回它）。
+    let default_panel = tokens.get_bg_panel();
+    let default_accent = tokens.get_gold();
     let mut seen: Vec<(Theme, Color, Color)> = Vec::new();
     for theme in Theme::ALL {
         if !theme.uses_design_system() {
@@ -719,17 +1004,17 @@ fn the_effective_palette_follows_the_selection() {
         let accent = tokens.get_gold();
         assert_ne!(
             panel,
-            brand_panel,
-            "`--theme {}` 之后 `bg-panel` 仍是品牌色 {:?} ⇒ 主题开关是空转的",
+            default_panel,
+            "`--theme {}` 之后 `bg-panel` 仍是默认主题 (yeban) 的取值 {:?} ⇒ 主题开关是空转的",
             theme.name(),
-            brand_panel
+            default_panel
         );
         assert_ne!(
             accent,
-            brand_accent,
-            "`--theme {}` 之后主色仍是品牌金 {:?} ⇒ 主题开关是空转的",
+            default_accent,
+            "`--theme {}` 之后主色仍是默认主题 (yeban) 的渔火 {:?} ⇒ 主题开关是空转的",
             theme.name(),
-            brand_accent
+            default_accent
         );
         // 设计系统主题内部必须自洽：`ink-0` 不该等于背景（否则文字看不见）。
         assert_ne!(
@@ -1021,7 +1306,9 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
         .expect("必须存在 ui/tokens.slint");
 
     // (token, brand, yeban, inkmoor, plume) —— 四支自绘调色板各一列。
-    // `brand` / `yeban` 两列是 2026-10-07 之前的既有值；`yeban` 列本切片之后仍然一位未改，
+    // **列语义（2026-10-07 起）**: `yeban` 列 = **默认主题** (`--theme default` / 别名 `yeban`)
+    // 的取值, `brand` 列 = `--theme brand`（2026-10-07 之前的默认主题）的取值。
+    // `brand` / `yeban` 两列是既有值；`yeban` 列至今一位未改，
     // `brand` 列**只有 `accent` 一行**因 `HD-54` 的落点移动而改动（#a855f7 → #d94a4a，
     // 见那一行的注释）；
     // `inkmoor` / `plume` 两列是负责人设计稿（HTML mock）的原话，逐条映射见 §6e。
@@ -1057,12 +1344,14 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
         let found = token_literals(tokens_slint, token);
         assert_eq!(
             found[0], brand,
-            "`{token}` 的 brand 分支必须仍是 {brand}（默认外观逐像素不变）; 实际 {}",
+            "`{token}` 的 brand 分支必须仍是 {brand}（那是 `--theme brand`, 2026-10-07 之前的\
+             默认外观; 它变了说明品牌调色板被改了）; 实际 {}",
             found[0]
         );
         assert_eq!(
             found[1], yeban,
-            "`{token}` 的 yeban 分支必须是负责人下发的 {yeban}（出处见 §6b）; 实际 {}",
+            "`{token}` 的 yeban 分支必须是负责人下发的 {yeban}（那是**默认主题** \
+             `--theme default` 的取值, 出处见 §6b）; 实际 {}",
             found[1]
         );
         assert_eq!(
@@ -1080,10 +1369,10 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
     }
 
     // 品牌色 `#151d38` 这条**既有**的字面量判据（本仓库"品牌色从母版 SVG 提取"那条）
-    // 必须仍然成立: 它一旦消失, "默认主题 = 今天的外观"就没有源码侧的见证。
+    // 必须仍然成立: 它一旦消失, `--theme brand`（旧默认外观）就没有源码侧的见证。
     assert!(
         tokens_slint.contains("#151d38"),
-        "`ui/tokens.slint` 必须仍然写死品牌面板色 `#151d38`"
+        "`ui/tokens.slint` 必须仍然写死品牌面板色 `#151d38`（`--theme brand` 的源码侧见证）"
     );
 }
 
@@ -1286,7 +1575,7 @@ fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
     );
 
     // ⑤ `HD-54`: 录音键的**功能**色不许顶替暖强调 —— 相等就说明这次"移动"只是把
-    // 录音键原来的红改了个名。(brand 下两者**故意**相等: 那是默认像素不变的机械前提,
+    // 录音键原来的红改了个名。(`brand` 下两者**故意**相等: 那是**品牌分支**像素不变的机械前提,
     // 见测试 ③ 的 ① 段与 `ui/tokens.slint` §6e 的「值重合」登记。)
     assert_ne!(
         accent,

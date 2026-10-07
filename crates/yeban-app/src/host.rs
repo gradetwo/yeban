@@ -914,8 +914,10 @@ pub fn build_main_window(
 /// 要真的换风格，重新构建时给 `SLINT_STYLE=<style>`（用法文本里有完整取值表）。
 ///
 /// [`crate::cli::Theme::Yeban`] 是 2026-10-06 新增的**第三类**：它既不是品牌字面量、
-/// 也不是设计系统角色，而是第二串**测量推导**出来的十六进制字面量（见
-/// `ui/tokens.slint` §6b/§6c 的出处表）。它同样不读 `Palette`，因此与编进来的风格无关。
+/// 也不是设计系统角色，而是一串自己的十六进制字面量（**2026-10-07 起取值由负责人下发的
+/// 具名调色板指定**，见 `ui/tokens.slint` §6b 的出处表；早期那版采样推导的取值已作废）。
+/// 它同样不读 `Palette`，因此与编进来的风格无关。**2026-10-07 起它是默认主题**：
+/// CLI 规范名是 `default`（`Theme::Yeban`），`yeban` 保留为**别名**。
 ///
 /// [`crate::cli::Theme::InkMoor`] / [`crate::cli::Theme::Plume`] 是 2026-10-07 新增的
 /// **同款第三类**：负责人设计稿「墨泊 InkMoor」/「孤烟 Plume」各是一串自己的十六进制
@@ -927,9 +929,10 @@ pub fn build_main_window(
 /// `InkMoor` 差一个大写，两者不是同一个名字，别混用；实测见 `target/debug/build/
 /// yeban-app-*/out/app.rs` 的 `pub enum YebanTheme`) 与四个设计系统名字共享**这一个**写入口。
 ///
-/// 为什么仍然值得给 `Brand` 之外的主题留四个名字：`Brand` ↔ 其余四个的差别是**真实的**
-/// 像素差别（品牌色 vs 设计系统 `Palette` 角色），而且 `Palette` 会跟随系统的浅色/深色
-/// 设置（`SlintInternal.color-scheme`）—— 那正是"搬到真实设计系统上"的收益。
+/// 为什么仍然值得给四支自绘调色板之外留四个名字：`Brand` / `Yeban` ↔ 其余四个的差别
+/// 是**真实的**像素差别（自绘十六进制字面量 vs 设计系统 `Palette` 角色），而且 `Palette`
+/// 会跟随系统的浅色/深色设置（`SlintInternal.color-scheme`）—— 那正是"搬到真实设计系统上"
+/// 的收益。
 /// 返回 `()` 而不是全局句柄：调用方（`main.rs` / `headless_idle.rs`）只需要"写进去"，
 /// 而判据自己用 `ui.global::<ThemeState>()` 回读 —— 把句柄当返回值只会让每个调用点
 /// 多一个"忽略了必须使用的返回值"的告警。

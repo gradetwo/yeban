@@ -250,18 +250,26 @@ fn mean_luma(luma: &LumaImage, rect: Rect) -> f64 {
     if count == 0 { 0.0 } else { sum / count as f64 }
 }
 
-/// `ui/tokens.slint` §6 的两个色值。
+/// `ui/tokens.slint` §6 的三个色值 —— **默认主题**（`--theme default` = yeban 调色板,
+/// 2026-10-07 起）的那一支。
 ///
 /// 为什么在这里写一份副本：`.slint` 的 `Tokens` global 不保证能从 Rust 侧按名取到，
-/// 而"判据需要这两个背景色"不值得为它生成一层绑定代码。这与
+/// 而"判据需要这几个背景色"不值得为它生成一层绑定代码。这与
 /// `src/scene.rs` ↔ `.slint` 的常量重复是同一类 known debt（见 `scene.rs` 的模块文档）。
-/// 判据本身钉住了"这两个色值确实是面板背景"：下面任何一个背景色写错，
+/// 判据本身钉住了"这些色值确实是面板背景"：下面任何一个背景色写错，
 /// 该元素内部的墨迹数都会暴涨（把整块背景都算成墨迹），判据立刻变红。
-const TOKEN_BG_VOID: [u8; 3] = [0x06, 0x0a, 0x14];
+///
+/// **2026-10-07 更新（跟随默认主题）**：本文件的截图来自
+/// `host::build_main_window` + **不调** `apply_theme` 的路径 ⇒ 渲染用的就是
+/// `ThemeState.theme` 的初值 = 默认主题。默认主题从 `brand` 换成 yeban 之后，
+/// 这三支必须换成 **yeban 分支**的取值（否则 `bg-panel-alt` 那一个会整块被算成墨迹:
+/// yeban 的 #161e28 与 brand 的 #1b2447 在蓝通道差 31 > `INK_CHANNEL_TOLERANCE` 24）。
+/// `brand`（旧默认）的取值是 #060a14 / #1b2447 / #151d38 —— 它们已经不在这里。
+const TOKEN_BG_VOID: [u8; 3] = [0x0e, 0x12, 0x16];
 /// 见 [`TOKEN_BG_VOID`]。
-const TOKEN_BG_PANEL_ALT: [u8; 3] = [0x1b, 0x24, 0x47];
+const TOKEN_BG_PANEL_ALT: [u8; 3] = [0x16, 0x1e, 0x28];
 /// 见 [`TOKEN_BG_VOID`]（状态栏的面板色）。
-const TOKEN_BG_PANEL: [u8; 3] = [0x15, 0x1d, 0x38];
+const TOKEN_BG_PANEL: [u8; 3] = [0x13, 0x1a, 0x22];
 
 /// ADR-0001 D24「界面字体非 tofu」判据的硬下限：**以汉字为主的文本元素**内部的墨迹像素数。
 ///
@@ -296,7 +304,7 @@ fn inset_rect(rect: Rect, margin: u32) -> Rect {
 ///
 /// "墨迹" = 任一通道与**该元素的背景色**相差超过 [`INK_CHANNEL_TOLERANCE`] 的像素。
 /// 用"与该元素自己的背景色比较"而不是"非黑"，因为 DAW 面板本身就不是黑的
-/// （`bg-void` 是 `#060a14`）；用"非黑"会让整块面板都算成墨迹。
+/// （默认主题的 `bg-void` 是 `#0e1216`）；用"非黑"会让整块面板都算成墨迹。
 fn ink_stats(image: &Rgb8Image, rect: Rect, background: [u8; 3]) -> (u64, Option<Rect>, usize) {
     let Some(area) = rect.intersect(image.size()) else {
         return (0, None, 0);

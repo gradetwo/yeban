@@ -60,10 +60,16 @@
 //!   - 解析结果用 `cargo:rustc-env=YEBAN_SLINT_STYLE=…` 交给 `src/cli.rs`, 于是
 //!     `yeban-app --print-theme` 能把"这个二进制**实际**编的是哪个风格"如实打出来。
 //!
-//! **默认一位未改**: `SLINT_STYLE` 没设时取 [`DEFAULT_STYLE`] = `"fluent"`, 那正是
+//! **风格默认一位未改**: `SLINT_STYLE` 没设时取 [`DEFAULT_STYLE`] = `"fluent"`, 那正是
 //! `i-slint-compiler` 在 `style = None` 时的 `unwrap_or_else(|| "fluent".into())`。
-//! 所以默认构建与本次改动之前的构建**是同一个风格** —— 这是"今天的默认外观不变"的
-//! 机械保证, `tests/golden/linux/**` 因此不需要重生成。
+//! 所以默认构建与本次改动之前的构建**是同一个风格**。
+//!
+//! ⚠ **风格 ≠ 调色板, 两者别混**: 2026-10-07 负责人把 `--theme` 的默认主题改成
+//! `default` (= yeban 调色板, 自绘十六进制字面量, **不读** `Palette`) ⇒ 默认**外观**
+//! 已经改变, `tests/golden/linux/**` 的 5 张基准要按手动档 `gates-manual.yml` 的
+//! `gate=goldens` 重新录制 + 人工复核 (`HD-56` 已把"基准冻结"降为条件; 见
+//! `docs/DEVELOPMENT_LEDGER.md` 第 425 轮)。本行保证的只有"编进来的 Slint 风格还是
+//! fluent"这一件事 —— 它管的是 Slint 内建控件与 `Palette` 的默认值, 不再是默认外观。
 
 /// Slint 1.18.1 认得的**全部**内建风格名。
 ///
@@ -94,7 +100,13 @@ const KNOWN_STYLES: &[&str] = &[
 ///
 /// 出处: `i-slint-compiler-1.18.1/typeloader.rs:957`
 /// (`compiler_config.style.clone().unwrap_or_else(|| "fluent".into())`)。
-/// 改这个常量 = 改默认外观 = 必须重生成 Linux golden 基线, 因此**不许**顺手改。
+///
+/// 改这个常量改的是**本二进制编进来的 Slint 风格**: 它影响四个设计系统名字
+/// (`material` / `fluent` / `cupertino` / `native`) 读到的 `Palette.*` 角色, 以及
+/// `--print-theme` 报出的 `compiled-style`。**2026-10-07 起它不再改默认外观**:
+/// 默认主题 `default` 是 yeban 字面量, 不读 `Palette`, 因此这一支**不随**本常量变
+/// (旧文案写"改这个常量 = 改默认外观 = 必须重生成 golden 基线", 那句在默认主题换人
+/// 之后已经不成立)。仍然**不许**顺手改: 它会改四个设计系统主题的取值与自述报告。
 const DEFAULT_STYLE: &str = "fluent";
 
 fn main() {

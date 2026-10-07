@@ -84,7 +84,7 @@ export component Transport inherits Rectangle {
             height: parent.height;
             text: root.playing ? "‖" : "▶";
             // 播放/走带 = 负责人的 铜绿 (`playing`, 原则 ③)。brand 分支 = #e2c77e = 原来的 `gold`,
-            // 所以默认主题这一处一位未变。
+            // 所以**品牌调色板** (`--theme brand`, 2026-10-07 之前的默认主题) 下这一处一位未变。
             color: Tokens.playing;
             font-size: Tokens.font-size-xl;
             horizontal-alignment: center;
@@ -132,7 +132,8 @@ export component Transport inherits Rectangle {
     // 圆点 (●) 的颜色是 `Tokens.accent`（2026-10-07 `HD-54`）：负责人裁决「录音键——
     // 落日：唯一带光环的圆」⇒ 整份界面**唯一**的暖强调色落在**录音键**上，AI 徽章
     // 改用别的角色。这里只换**颜色表达式**：`accent` 的 brand 分支 = #d94a4a =
-    // `record-red` 的 brand 值（圆点原来画的就是它），所以 `--theme default` 一位未变。
+    // `record-red` 的 brand 值（圆点原来画的就是它），所以 `--theme brand`
+    //（2026-10-07 之前的默认主题）下一位未变。
     Rectangle {
         x: 80px;
         y: Tokens.space-4;
@@ -352,8 +353,9 @@ export component Transport inherits Rectangle {
     // 底色是 `Tokens.bg-control` 而**不是** `bg-panel-alt`（2026-10-06 修）：本控件右边缘
     // 636 px、AI 提案徽章左边缘 640 px，两者只隔 **4 px**，用同一个 `bg-panel-alt`
     // 就会在顶栏并排出现两块一模一样的亮色板（负责人报的缺陷）。`bg-control` 在
-    // `--theme default` 下的取值**就是** `#1b2447`（= 原来的 `bg-panel-alt`），
-    // 所以默认渲染一位未变；`--theme yeban` 下它是 §6c 里那支更亮的 #42454d。
+    // `--theme brand`（2026-10-07 之前的默认主题）下的取值**就是** `#1b2447`
+    // （= 原来的 `bg-panel-alt`），所以**品牌分支**的渲染一位未变；默认主题现在是
+    // `--theme default` = yeban，它取 §6c 的绀灰 #1e2733（比徽章板亮 1.11:1）。
     Rectangle {
         x: 580px;
         y: Tokens.space-4;
@@ -388,7 +390,7 @@ export component Transport inherits Rectangle {
     // 描边用 `Tokens.ai-suggestion`（2026-10-07 `HD-54` 改）：整份界面**唯一**的暖强调色
     // 已移到**录音键**的 ● 上，AI 徽章因此**另找角色**。这一处原来画的是 `accent`，
     // 而 `accent` 移动前的 brand 值就是 `#a855f7` (= `ai-suggestion` 的 brand 分支)，
-    // 所以 `--theme default` 下这 1 px 描边一位未变。三支自绘皮肤下它现在拿到的是
+    // 所以 `--theme brand`（2026-10-07 之前的默认主题）下这 1 px 描边一位未变。三支自绘皮肤下它现在拿到的是
     // 愁眠 / 愁眠 / 归雁的**冷**色（对 bg-panel-alt 4.89 / 6.10 / 5.93:1，≥ 3:1），
     // 暖强调确实不在徽章上了。`ai-suggestion` 本身仍按 §9.1 的语义用在钢琴卷帘的
     // AI 建议层（45% 半透明 + 虚线描边），**没有**改语义。
@@ -413,7 +415,7 @@ export component Transport inherits Rectangle {
             height: parent.height;
             text: "AI提案 (待审查)";
             // AI 文案 = 负责人的 愁眠 (`selection`, 原则 ③「AI=愁眠」); brand 分支 = #f7e6b0
-            // = 原来的 `gold-bright` ⇒ 默认主题一位未变。
+            // = 原来的 `gold-bright` ⇒ **品牌分支**一位未变（它在 2026-10-07 之前是默认主题）。
             color: Tokens.selection;
             font-size: Tokens.font-size-md;
         }

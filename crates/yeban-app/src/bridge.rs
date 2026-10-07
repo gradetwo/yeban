@@ -165,10 +165,13 @@ pub fn pitch_lane_y(pitch: u8) -> f32 {
 
 /// 没有色标（`TrackV3::color == None`）或色标非法时的回退色。
 ///
-/// 取值就是 `ui/tokens.slint` 的 `Tokens.line-strong`（`#2c3a63`）—— 一个中性石板色：
-/// 它在深色面板上可见、又不会被误认成"某个轨道品牌色"。代价是 `.slint` 与 Rust 各写一份
-/// 十六进制值，由判据 `missing_or_illegal_colors_fall_back_to_the_documented_value` 与
+/// 取值就是 `ui/tokens.slint` 的 `Tokens.line-strong` 的 **brand 分支**（`#2c3a63`）
+/// —— 一个中性石板色：它在深色面板上可见、又不会被误认成"某个轨道品牌色"。代价是
+/// `.slint` 与 Rust 各写一份十六进制值，由判据
+/// `missing_or_illegal_colors_fall_back_to_the_documented_value` 与
 /// `token_drift_of_the_fallback_color_is_detected` 两侧对账（后者直接读 `tokens.slint` 原文）。
+/// 注意它绑的是**品牌分支**：2026-10-07 起默认主题是 yeban，`line-strong` 在默认主题下
+/// 取 #2c3948，与这个回退色不同 —— 这条耦合守的是"回退色 = 品牌分支"，不是"回退色 = 默认外观"。
 pub const DEFAULT_TRACK_COLOR_HEX: &str = "#2C3A63";
 
 /// 一个已经解析成功（或已回退）的 RGB 色标。
@@ -3291,16 +3294,19 @@ mod tests {
             .expect("tokens.slint 必须有 line-strong");
         // 2026-10-06（主题特性，`--theme`）：`line-strong` 不再是一个光秃秃的字面量，而是
         //     out property <color> line-strong: ThemeState.theme == YebanTheme.brand
-        //                                        ? #2c3a63 : Palette.border;
-        // 这条对账要守的性质**没有变**，只是现在要指名**默认分支**：回退色必须等于
-        // `ThemeState.theme == YebanTheme.brand` 那一支的字面量 —— 因为默认主题就是
-        // Linux golden 基线钉住的那一屏，回退色只有跟着它才算"没变"。
-        // 因此这里**要求**表达式是主题二选一（少了 `?` 就是主题特性被拿掉了，应该红），
+        //                                        ? #2c3a63 : (… yeban / inkmoor / plume / Palette.border);
+        // （2026-10-07 起是四支自绘调色板 + `Palette` 的多选一，第一分支仍是品牌字面量。）
+        // 这条对账要守的性质**没有变**，只是现在要指名表达式的**第一分支**：回退色必须等于
+        // `ThemeState.theme == YebanTheme.brand` 那一支的字面量 —— 那是**品牌调色板**
+        // (`--theme brand`) 的取值。2026-10-07 之前品牌色就是默认主题，所以当时这句读作
+        // "默认主题就是 Linux golden 基线钉住的那一屏"; 现在默认主题是 yeban（`--theme
+        // default`），这条耦合因此**只**再保证"回退色与品牌分支一致"。
+        // 因此这里**要求**表达式是主题多选一（少了 `?` 就是主题特性被拿掉了，应该红），
         // 而不是退回到"整行必须只有一个字面量"的旧读法。
         let after_colon = strong.split(':').nth(1).expect("line-strong 有值");
         let (_condition, rest) = after_colon
             .split_once('?')
-            .expect("line-strong 必须是主题二选一表达式（默认分支 = 品牌字面量）");
+            .expect("line-strong 必须是主题多选一表达式（第一分支 = 品牌字面量）");
         let literal = rest
             .split(':')
             .next()

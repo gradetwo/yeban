@@ -151,8 +151,11 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 主题（`--theme`）：**唯一**的写入口是 `host::apply_theme`，与 `apply_view` 同款
     // 单向注入。放在 `run()` 之前 —— 窗口一旦进了事件循环，任何"换主题"就只是重绘。
     //
-    // 默认值 `Theme::Brand` 与 `ui/tokens.slint` 里 `ThemeState.theme` 的初值**同一个**，
-    // 因此不给 `--theme` 时这一步是幂等的：像素一位未改（Linux golden 基线不需要重生成）。
+    // 默认值 `Theme::default()` = `Theme::Yeban`（CLI `--theme default`，yeban 调色板）
+    // 与 `ui/tokens.slint` 里 `ThemeState.theme` 的初值**同一个**（初值也是 `YebanTheme.yeban`，
+    // 由 `tests/theme_selection.rs` 的 `the_default_theme_is_the_slint_initial_value` 钉住），
+    // 因此不给 `--theme` 时这一步是幂等的。**默认外观因此与 2026-10-07 之前不同**：
+    // 5 张 Linux 基准要按手动档 `gates-manual.yml gate=goldens` 重录 + 人工复核（`HD-56`）。
     host::apply_theme(&ui, options.theme);
 
     // 走带要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁通道 + 量子驱动）。

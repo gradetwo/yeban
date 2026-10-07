@@ -239,12 +239,16 @@ pub fn usage_text() -> String {
                              = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
   --theme <{themes}>
-                           选择界面主题; 重复给以最后一个为准 (默认 default)
-                             default    本仓品牌深色 —— **就是今天的外观** (逐像素不变)
-                             yeban      水墨 + 颜料: 背景/面板/线几乎零饱和, 颜色只留在
-                                        内容上, 唯一强调色 (`accent`) 整份界面只出现一次。
-                                        取值**由负责人下发的具名调色板指定** (2026-10-07 HTML mock;
-                                        取代 2026-10-06 的采样推导), 逐条映射见 ui/tokens.slint §6b
+                           选择界面主题; 重复给以最后一个为准 (默认 default = yeban 调色板)
+                             default    水墨 + 颜料 (**2026-10-07 起是默认主题**): 背景/面板/线
+                                        几乎零饱和, 颜色只留在内容上, 唯一强调色 (`accent`)
+                                        整份界面只出现一次。取值**由负责人下发的具名调色板指定**
+                                        (2026-10-07 HTML mock; 取代 2026-10-06 的采样推导),
+                                        逐条映射见 ui/tokens.slint §6b。
+                                        `yeban` 是它的**别名**, 解析到同一支调色板 (旧名继续可用)
+                             brand      本仓品牌深色 —— **2026-10-07 之前的默认外观** (那时 CLI
+                                        名是 `default`, 本次改名让给 yeban 调色板)。它是本仓
+                                        自己的品牌色 (assets/brand/ 从母版 SVG 提取), 不读 Palette
                              inkmoor    负责人设计稿「墨泊 InkMoor · 枫桥夜泊」: 冷墨阶 +
                                         渔火唯一暖强调, 圆角偏柔。取值来自那份 mock 的
                                         `body.inkmoor` 变量块, 逐条映射见 ui/tokens.slint §6e
@@ -262,7 +266,7 @@ pub fn usage_text() -> String {
                            **边界 (实测, 别外推)**: 本仓界面 100% 自绘 (Rectangle x74,
                            Slint 内建控件 x0), 所以 Slint 内建风格本身改不动我们的像素;
                            `--theme` 改的是 ui/tokens.slint 的颜色令牌 —— 十三支品牌色在
-                           default / yeban / inkmoor / plume 之外的主题下改为读 `Palette.*`。而 Slint 1.18.1
+                           default / brand / inkmoor / plume 之外的主题下改为读 `Palette.*`。而 Slint 1.18.1
                            **没有**运行时换风格的 API (风格只能编译期定, 见下面的
                            {slint_style_env}), 因此四个内建名字共享**本二进制编进来的那一个**
                            风格; `{print_theme}` 会把这件事如实打出来。
@@ -335,7 +339,8 @@ pub fn usage_text() -> String {
                            可用取值 = fluent | fluent-light | fluent-dark | material |
                            material-light | material-dark | cupertino | cupertino-light |
                            cupertino-dark | cosmic | cosmic-light | cosmic-dark | qt | native。
-                           没设时 = fluent (Slint 自己的默认), 也就是今天的外观。
+                           没设时 = fluent (Slint 自己的默认)。注意这是**风格**层的默认,
+                            与 `--theme` 的默认 (`default` = yeban 调色板) 是两层, 互不代替。
                            非法的取值会让**构建**失败 (不由编译器给英文诊断), 因为一个
                            拼错的风格名静默回落到 fluent 正是本仓库最忌讳的假绿
   {mcp_env}=1              与 --enable-mcp-http 等价 (同样只在带 `in-process-mcp`
@@ -370,7 +375,9 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-logic out/Song.logicx
   yeban-app --print-theme
   yeban-app --theme material
+  yeban-app --theme default
   yeban-app --theme yeban
+  yeban-app --theme brand
   {slint_style_env}=cupertino cargo build -p yeban-app
   yeban-app --version
 ",
@@ -383,13 +390,9 @@ pub fn usage_text() -> String {
         print_theme = PRINT_THEME_SWITCH,
         slint_style_env = SLINT_STYLE_ENV,
         theme_switch = THEME_SWITCH,
-        // 合法取值集合**机械地**来自 `Theme::ALL`（唯一事实源）：用法文本与
-        // `ParseError::UnknownTheme` 的可用列表因此不可能各说各话。
-        themes = Theme::ALL
-            .iter()
-            .map(|theme| theme.name())
-            .collect::<Vec<_>>()
-            .join("|"),
+        // 合法取值集合**机械地**来自 `Theme::ALL`（唯一事实源，别名也在同一份推导里）：
+        // 用法文本与 `ParseError::UnknownTheme` 的可用列表因此不可能各说各话。
+        themes = Theme::accepted_names().join("|"),
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -490,17 +493,21 @@ impl Sample {
 /// 它只改 Slint 自己的控件与 `Palette` 全局。
 ///
 /// 能让我们的像素跟着走的，是 [`crate::host::apply_theme`] 把
-/// `ui/tokens.slint` 的 `ThemeState.theme` 写成下面的值：`Brand` 走**今天那一串十六进制
-/// 字面量**（默认外观因此一位未改），`Yeban` / `InkMoor` / `Plume` 各走**负责人下发的
-/// 另一串十六进制字面量**（`.slint` 侧写作 `yeban` / `inkmoor` / `plume`；Slint 的 Rust
-/// 生成器只把每段首字母大写，所以 `inkmoor` **生成出来**是 `YebanTheme::Inkmoor`，
-/// 与本枚举的 **CLI 变体名** `Theme::InkMoor` 差一个大写 —— 两个名字各属于一层，别混用），
-/// 剩下四个走 Slint 设计系统的 `Palette.*` 角色。
+/// `ui/tokens.slint` 的 `ThemeState.theme` 写成下面的值：`Yeban` 走**负责人下发的
+/// yeban 字面量**（2026-10-07 起是**默认主题**，CLI 字面值 `default`，`yeban` 是它的
+/// 别名），`Brand` 走**本仓品牌深色的那一串十六进制字面量**（CLI 字面值 `brand`；
+/// 2026-10-07 之前它是默认主题、CLI 名字叫 `default`），`InkMoor` / `Plume` 各走
+/// **负责人下发的另一串十六进制字面量**（`.slint` 侧写作 `brand` / `yeban` / `inkmoor` /
+/// `plume`；Slint 的 Rust 生成器只把每段首字母大写，所以 `inkmoor` **生成出来**是
+/// `YebanTheme::Inkmoor`，与本枚举的 **CLI 变体名** `Theme::InkMoor` 差一个大写 ——
+/// 两个名字各属于一层，别混用），剩下四个走 Slint 设计系统的 `Palette.*` 角色。
 ///
 /// 于是八支主题分成两族：**四支自绘**（`Brand` / `Yeban` / `InkMoor` / `Plume` —— 都是
 /// 本枚举的变体名；它们在 `YebanTheme` 里对应 `Brand` / `Yeban` / `Inkmoor` / `Plume`，
 /// [`Self::uses_design_system`] 为假、[`Self::requested_slint_style`] 为 `None`）与
 /// **四个设计系统名字**（`Material` / `Fluent` / `Cupertino` / `Native`）。
+/// **命令行取值比主题多一个**：`yeban` 是 `Yeban` 的别名（见 [`Self::aliases`]），
+/// 因此 `--theme` 的可接受集合 = [`Self::accepted_names`] 的 9 个名字 / 8 支调色板。
 ///
 /// ## 为什么四个内建名字在**同一个二进制**里长得一样
 ///
@@ -512,15 +519,17 @@ impl Sample {
 /// 把这件事**如实**打给用户，而不是假装四个主题各不相同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
-    /// 本仓品牌深色 —— **就是今天的外观**，也因此是默认值。
+    /// 本仓品牌深色（`assets/brand/`，从母版 SVG 提取）—— **2026-10-07 之前的默认外观**。
     ///
     /// 在 `.slint` 侧它的枚举名是 `YebanTheme.brand`（Slint 里 `default` 是保留字），
-    /// 对用户的字面值是 `--theme default`。
-    #[default]
+    /// 对用户的字面值是 `--theme brand`：负责人把默认主题改成 `yeban` 那一套之后，
+    /// `default` 这个名字让给了 yeban 调色板；品牌调色板自身**一位未改**，仍然可选。
     Brand,
-    /// 水墨 + 颜料（2026-10-06 负责人批准的第二个**自绘**调色板）。
+    /// 水墨 + 颜料（2026-10-06 负责人批准的第二个**自绘**调色板）——
+    /// **2026-10-07 起是默认主题**（`#[default]`，CLI 字面值 `default`，`yeban` 为别名）。
     ///
-    /// 在 `.slint` 侧它的枚举名是 `YebanTheme.yeban`，对用户的字面值也就是 `yeban`。
+    /// 在 `.slint` 侧它的枚举名是 `YebanTheme.yeban`；对用户的字面值是 `default`，
+    /// 而 `yeban` 解析到**同一支**调色板（[`Self::aliases`]），旧脚本不用改。
     /// 它与 [`Self::Brand`] 一样**不经过** `Palette`：那是一串自己的十六进制字面量。
     /// **2026-10-07 起取值不再由我们推导**：负责人把一份具名的完整调色板（HTML mock）
     /// 作为权威设计输入交下来（墨阶六级 + 两级发丝线 + 三级文字 + 枫桥夜泊颜料槽），
@@ -532,6 +541,7 @@ pub enum Theme {
     /// 与 `Brand` 的**结构**差别（这才是它存在的理由）：
     /// 背景/面板/分隔线全部落在负责人给的墨阶上，颜色只留在内容上，而
     /// [`Self::palette_source`] 里那支 `accent` 在整份界面里**只出现一次**。
+    #[default]
     Yeban,
     /// 墨泊 InkMoor（2026-10-07 负责人下发的**第三支自绘调色板**，第一支成对皮肤）。
     ///
@@ -543,7 +553,8 @@ pub enum Theme {
     ///
     /// 与 [`Self::Yeban`] 的关系**如实登记**：两者都出自"枫桥夜泊"同一套意象，但数字
     /// **逐条不同**（例：渔火 `yeban #c6a47c` vs `inkmoor #c9a26b`），是同一套语言的
-    /// 两版修订。本切片按硬约束保留 `yeban` 原值，"是否取代"留给负责人（§6e）。
+    /// 两版修订。**已裁决 `HD-53`：两支都留**（两版都能选，没有谁取代谁；`Theme::ALL`
+    /// 因此是 8 支）。
     InkMoor,
     /// 孤烟 Plume（2026-10-07 负责人下发的**第四支自绘调色板**，与 [`Self::InkMoor`] 成对）。
     ///
@@ -565,10 +576,13 @@ pub enum Theme {
 }
 
 impl Theme {
-    /// 全部合法取值（用法文本、错误信息与判据共用**这一份**顺序）。
+    /// 全部主题（每支一个；别名不在这里，见 [`Self::aliases`]）。
+    ///
+    /// 顺序 = **默认主题在前**，其余按"自绘调色板 → 设计系统名字"排；用法文本与错误信息
+    /// 共用**这一份**顺序，所以两处的枚举解释不会各说各话。
     pub const ALL: [Self; 8] = [
-        Self::Brand,
         Self::Yeban,
+        Self::Brand,
         Self::InkMoor,
         Self::Plume,
         Self::Material,
@@ -577,10 +591,13 @@ impl Theme {
         Self::Native,
     ];
 
-    /// 命令行字面值（`--theme <name>`）。
+    /// 命令行**规范名**（`--theme <name>`；每支主题恰好一个）。
     ///
-    /// `Brand` 的字面值是 `default` —— 用户不该被迫知道品牌色的内部名字；
-    /// "不改外观"这件事在 CLI 上就叫"默认"。
+    /// `Yeban` 的规范名是 `default` —— 2026-10-07 负责人把默认主题改成 yeban 那一套之后，
+    /// "默认"这个名字就归它；`yeban` 作为**别名**保留（见 [`Self::aliases`]），旧脚本不用改。
+    ///
+    /// `Brand` 的规范名是 `brand`：它内部就叫品牌色（`.slint` 侧是 `YebanTheme.brand`），
+    /// 2026-10-07 之前对用户的字面值才是 `default`。
     ///
     /// `InkMoor` / `Plume` 的字面值**就是文档里的名字**（`inkmoor` / `plume`）：
     /// 负责人设计稿用 `ThemeKind.InkMoor` / `.Plume` 与 `theme-name` 的拼音/英文名，
@@ -588,8 +605,8 @@ impl Theme {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Brand => "default",
-            Self::Yeban => "yeban",
+            Self::Brand => "brand",
+            Self::Yeban => "default",
             Self::InkMoor => "inkmoor",
             Self::Plume => "plume",
             Self::Material => "material",
@@ -599,17 +616,50 @@ impl Theme {
         }
     }
 
-    /// 从命令行字面值解析（未知取值返回 `None`，由调用方转成用法错误）。
+    /// 这一支主题的**别名**（解析到同一支调色板；规范名见 [`Self::name`]）。
+    ///
+    /// 为什么 `Yeban` 要留一个别名：2026-10-06 起 `--theme yeban` 就已经是公开取值，
+    /// 负责人 2026-10-07 只是把**默认**换成它、并要求品牌色改名。删掉 `yeban` 会把所有
+    /// 已经写着 `--theme yeban` 的脚本打断，而保留它的成本是零 —— 两支名字解析到同一支
+    /// 调色板，别名不会产生第二套像素。**没有**任何理由不留，故留。
+    ///
+    /// 别再给别的主题加别名：`--print-theme` 的 `requested=` 打的是**规范名**，别名越多，
+    /// "我请求的名字"与报告里那一行就越容易对不上。
     #[must_use]
-    pub fn from_name(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|theme| theme.name() == value)
+    pub const fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::Yeban => &["yeban"],
+            _ => &[],
+        }
     }
 
-    /// 是否请求"走设计系统"（而不是品牌色）。
+    /// **全部可接受的命令行取值**（规范名 + 别名，顺序 = [`Self::ALL`] 的顺序）。
+    ///
+    /// 这是用法文本、`ParseError::UnknownTheme` 的可用列表与判据**共用**的唯一推导：
+    /// 三者都从 `Theme::ALL` 机械地长出来，所以"帮助里写了什么"与"解析器真的接受什么"
+    /// 不可能漂移。别在别处再手写一遍主题名字列表。
+    #[must_use]
+    pub fn accepted_names() -> Vec<&'static str> {
+        Self::ALL
+            .into_iter()
+            .flat_map(|theme| std::iter::once(theme.name()).chain(theme.aliases().iter().copied()))
+            .collect()
+    }
+
+    /// 从命令行字面值解析（规范名或别名；未知取值返回 `None`，由调用方转成用法错误）。
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|theme| theme.name() == value || theme.aliases().contains(&value))
+    }
+
+    /// 是否请求"走设计系统"（而不是自绘的十六进制字面量）。
     ///
     /// `false` 对 [`Self::Brand`] / [`Self::Yeban`] / [`Self::InkMoor`] / [`Self::Plume`]
-    /// 成立 —— 这四支都自带一串十六进制字面量，都不读 `Palette`。它同时是"默认外观不变"
-    /// 的判据入口。
+    /// 成立 —— 这四支都自带一串十六进制字面量，都不读 `Palette`。它同时是判据里
+    /// "哪些主题会被 `SLINT_STYLE` 影响"的入口（默认主题 `Yeban` 在其中，因此默认外观
+    /// **不**随编译进来的风格变）。
     #[must_use]
     pub const fn uses_design_system(self) -> bool {
         !matches!(
@@ -744,10 +794,13 @@ pub struct Options {
     /// 为什么它**不**让进程离开 GUI 路径：控制面要挂在**正在跑的 app 进程**里
     /// （形态 A 的定义），而不是把进程变成一个无头服务器。
     pub enable_mcp_http: bool,
-    /// `--theme <default|yeban|inkmoor|plume|material|fluent|cupertino|native>`：运行期调色板选择。
+    /// `--theme <default|yeban|brand|inkmoor|plume|material|fluent|cupertino|native>`：
+    /// 运行期调色板选择（`yeban` 是 `default` 的别名，见 [`Theme::accepted_names`]）。
     ///
-    /// 默认 [`Theme::Brand`] = **今天的外观**（`ui/tokens.slint` 里那一串十六进制字面量），
-    /// 因此不给这个开关时渲染一位未改 —— `tests/golden/linux/**` 不需要重生成。
+    /// 默认 [`Theme::Yeban`]（= CLI `default`）= **负责人下发的 yeban 调色板**，
+    /// 也就是 2026-10-07 起的外观。默认外观**因此与之前不同** ⇒ 5 张 Linux 基准要按
+    /// 手动档 `gates-manual.yml gate=goldens` 重录 + 人工复核（`HD-56` 把"基准冻结"
+    /// 降为条件；`--theme brand` 才是原来那一屏）。
     ///
     /// 生效范围（如实登记）：**只有真的构造窗口的路径**才会调用
     /// [`crate::host::apply_theme`] —— 也就是 GUI 与 `--headless-idle` 两档。
@@ -833,7 +886,7 @@ pub enum ParseError {
     /// `--theme` 的取值不在允许集合里。
     ///
     /// 与 [`Self::UnknownSample`] 同款：**绝不静默回退到默认主题** —— 那会让
-    /// "我选了 material"与"其实渲染的是品牌色"长得一模一样，而本仓库最忌讳
+    /// "我选了 material"与"其实渲染的是 `default`(yeban 调色板)"长得一模一样，而本仓库最忌讳
     /// 的就是这一类"以为生效了"的假绿。
     UnknownTheme(String),
     /// `--headless-idle` 没配 `--idle-seconds`。
@@ -901,16 +954,13 @@ impl fmt::Display for ParseError {
             ),
             Self::UnknownTheme(theme) => write!(
                 formatter,
-                "未知的主题 `{theme}` (可用: {}; 默认 `default` = 本仓品牌深色, \
-                 外观与本次改动之前逐像素相同; `yeban` / `inkmoor` / `plume` 也各自带一串\
+                "未知的主题 `{theme}` (可用: {}; 默认 `default` = yeban 调色板 \
+                 (`yeban` 是它的别名, 同一个取值); `brand` = 本仓品牌深色, \
+                 也就是 2026-10-07 之前的默认外观; `inkmoor` / `plume` 也各自带一串\
                  负责人下发的十六进制字面量, 不读 Palette; 只有剩下那四个内建名字走 Slint \
                  设计系统的 Palette 角色, 而 Slint 1.18.1 的风格只能**编译期**选 —— \
                  见 `{PRINT_THEME_SWITCH}` 与 `{SLINT_STYLE_ENV}`)",
-                Theme::ALL
-                    .iter()
-                    .map(|theme| theme.name())
-                    .collect::<Vec<_>>()
-                    .join("|")
+                Theme::accepted_names().join("|")
             ),
             Self::IdleSecondsMissing => write!(
                 formatter,
@@ -1093,7 +1143,9 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             }
             // `--theme`: 重复给以最后一个为准（与 `--project-sample` 同款）。
             // 未知取值 ⇒ **点名**用法错误, 绝不静默回退（那会把"选了 material"变成
-            // "其实渲染品牌色"而用户看不出来）。
+            // "其实渲染的是 `default` 的 yeban 调色板"而用户看不出来）。
+            // 别名也在这里解析（`Theme::from_name` 同时认规范名与 [`Theme::aliases`]），
+            // 因此 `--theme yeban` 与 `--theme default` 落在**同一个**枚举值上。
             THEME_SWITCH => {
                 let value = take_value(THEME_SWITCH, inline, args, &mut cursor)?;
                 options.theme = Theme::from_name(&value)
@@ -1997,10 +2049,12 @@ pub fn shortcut_lines() -> Vec<String> {
 /// `--print-theme` 的行（`--theme` 的**自述**报告）。
 ///
 /// 每一行都对应一次**真的读到**的事实，而不是把输入抄一遍：
-/// - `requested=` 是解析出来的主题字面值（`default` 表示**没有任何主题被请求**，
-///   也就是今天的外观）；
+/// - `requested=` 是解析出来的主题的**规范名**（[`Theme::name`]）：别名 `yeban` 解析到
+///   `default`，所以两种写法打出来的这一行**逐字相同**（别名不产生第二支调色板）；
+///   不给 `--theme` 时也是 `default`（默认主题）；
 /// - `palette=` 是这次请求**实际**会让 `ui/tokens.slint` 走的调色板来源
-///   （`brand` = 那一串十六进制字面量 / `yeban-measured-literals` = 第二串十六进制字面量
+///   （`brand` = 本仓品牌深色那一串十六进制字面量 / `yeban-measured-literals` = 第二串
+///   十六进制字面量
 ///   —— 这个键名是 2026-10-06 的**历史标识**, 现在那串值的来源是负责人下发的调色板,
 ///   键名保持不变以免改动 CLI 契约 / `inkmoor-owner-literals` / `plume-owner-literals`
 ///   = 2026-10-07 新增的两支负责人下发的字面量（键名不再沿用那个会误导的
@@ -2035,15 +2089,15 @@ pub fn theme_lines(theme: Theme) -> Vec<String> {
              因此与编进来的风格 (`{compiled}`) 无关",
             match theme {
                 Theme::Yeban =>
-                    "`yeban` 用的是负责人下发的那串十六进制字面量 (2026-10-07 HTML mock; \
-                     取代 2026-10-06 的采样推导)",
+                    "`default` (别名 `yeban`) 用的是负责人下发的那串十六进制字面量 \
+                     (2026-10-07 HTML mock; 取代 2026-10-06 的采样推导) —— 它就是**默认主题**",
                 Theme::InkMoor =>
                     "`inkmoor` 用的是负责人设计稿「墨泊 InkMoor」的那串十六进制字面量 \
                      (HTML mock 的 body.inkmoor 变量块; 见 ui/tokens.slint §6e)",
                 Theme::Plume =>
                     "`plume` 用的是负责人设计稿「孤烟 Plume」的那串十六进制字面量 \
                      (HTML mock 的 body.plume 变量块; 见 ui/tokens.slint §6e)",
-                _ => "品牌色",
+                _ => "`brand` 用的是本仓品牌深色的那串十六进制字面量 (2026-10-07 之前的默认外观)",
             }
         )),
     }

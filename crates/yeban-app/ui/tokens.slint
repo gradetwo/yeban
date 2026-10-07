@@ -48,13 +48,22 @@ import { Palette } from "std-widgets.slint";
 //      ①全部文本走 UiText/UiMonoText (显式设了 `color`), ②`MainWindow` 显式设了
 //      `background: Tokens.bg-void` ⇒ 两个兜底都落不到我们身上。
 //
-// 于是本文件的颜色令牌写成 `ThemeState.theme` 的**三选一**表达式 (2026-10-06 起):
-//   - `brand` (**CLI `--theme default`**) = 下面那一串**十六进制字面量, 一位未改** ——
-//     这是"今天的默认外观不变"的机械保证, 因此 `tests/golden/linux/**` 不需要重生成;
-//   - `yeban` (**CLI `--theme yeban`**, 2026-10-06 新增) = 第二串十六进制字面量。它同样
-//     **不经过** `Palette`。**2026-10-07 起, 这串数字不再由我们推导**: 负责人下发了一份
-//     具名的完整调色板 (HTML mock), 那是权威设计输入, 逐条映射见 §6b。旧版「按 8% 饱和度
-//     从品牌色推导」的取值**全部作废** —— 设计权威转移不是回归。
+// 于是本文件的颜色令牌写成 `ThemeState.theme` 的**多选一**表达式 (2026-10-06 起):
+//   - `yeban` (**CLI `--theme default`**, 2026-10-06 新增; 2026-10-07 起是**默认主题**)
+//     = 负责人下发的墨阶 / 颜料值。**2026-10-07 起, 这串数字不再由我们推导**: 负责人
+//     下发了一份具名的完整调色板 (HTML mock), 那是权威设计输入, 逐条映射见 §6b。旧版
+//     「按 8% 饱和度从品牌色推导」的取值**全部作废** —— 设计权威转移不是回归。
+//     `yeban` 同时保留为**别名** (CLI `--theme yeban` 与 `--theme default` 是同一支);
+//   - `brand` (**CLI `--theme brand`**) = 下面那一串**本仓品牌深色的十六进制字面量**。
+//     2026-10-07 之前它才是默认主题 (那时 CLI 名是 `default`), 品牌值本身**一位未改**;
+//     ⚠ **默认外观已经改变**: 默认主题换成 `yeban` 之后, `tests/golden/linux/**` 的 5 张
+//     基准**必须**按手动档 `gates-manual.yml` 的 `gate=goldens` 重新录制 + 人工复核
+//     (`HD-56` 把"基准冻结"降为条件; 见 `docs/DEVELOPMENT_LEDGER.md` 第 425 轮)。
+//     本文件里原来写"默认主题一位未变 / golden 不用重生成"的句子已按本次改名就地更正:
+//     它们守的性质读作"**brand 分支**等于被它替换掉的字面量", 而"默认"一律指 2026-10-07
+//     之前的 `brand` 或现在的 yeban —— 每处都写明了是哪一支;
+//   - `inkmoor` / `plume` (**CLI 同名**, 2026-10-07 新增) = 负责人同一份设计稿的
+//     `body.inkmoor` / `body.plume` 两套成对皮肤, 同样是**自绘字面量** (逐条映射见 §6e);
 //   - 四个内建风格名 (`material` / `fluent` / `cupertino` / `native`) = 走 `Palette.*`
 //     的**设计系统角色**。同一个二进制里 `Palette` 只有一个 (编译进来的那个风格),
 //     所以这四个名字在**不重新编译**时共享同一套 Palette 值 —— 这不是缺陷, 是
@@ -66,11 +75,15 @@ import { Palette } from "std-widgets.slint";
 // 事实源 (`[UI-A11Y-004]` 的冗余编码语义 + 视觉 Diff 语义色), 换主题改它们等于改语义 ——
 // 那超出了"换主题"的授权范围。
 export enum YebanTheme {
-    // 品牌深色 = 今天的外观 (默认)。注意在 Slint 里 `default` 是保留字, 故内部名是 `brand`;
-    // 对用户的字面值仍是 `--theme default` (映射在 `src/cli.rs` 的 `Theme::from_name`)。
+    // 品牌深色 = 本仓品牌调色板。**2026-10-07 之前它是默认主题**; 负责人把默认换成
+    // yeban 那一套之后, 对用户的字面值是 `--theme brand` (映射在 `src/cli.rs` 的
+    // `Theme::name`)。注意在 Slint 里 `default` 是保留字, 故内部名仍是 `brand`。
     brand,
     // ------------------------------------------------------------------
     // `yeban` = 2026-10-06 负责人批准的第二个**自绘**调色板 (水墨 + 颜料)。
+    // **2026-10-07 起它是默认主题**: CLI `--theme default`, 而 `yeban` 保留为别名
+    // (同一支调色板); 默认外观因此改变, 5 张 Linux 基准要按 `gates-manual.yml` 的
+    // `gate=goldens` 重录 (见文件头的说明与 `HD-56`)。
     //
     // 它不是"更暗的品牌色", 而是一次**结构**改变: 背景/面板/分隔线几乎零饱和
     // (墨), 颜色只留在内容上 (颜料), 朱砂只出现一次 (印)。取值全部来自测量,
@@ -86,8 +99,9 @@ export enum YebanTheme {
     // 江枫/铜绿/客船/苇白), 但 `yeban` 的取值来自 2026-10-07 稍早的一版 mock, 而
     // `inkmoor` 来自负责人同一份设计稿的**修订版** (数字整体更亮、饱和更低) ——
     // 两版**逐条不同** (例: 渔火 yeban #c6a47c vs inkmoor #c9a26b)。
-    // 本切片**不动** `yeban` (硬约束: 既有主题取值一位未改), 因此两支暂时并存;
-    // "yeban 是否被 inkmoor 取代"是**负责人的裁决**, 不在这里替他做 (§6e 末段)。
+    // 本切片**不动** `yeban` (硬约束: 既有主题取值一位未改), 因此两支并存;
+    // "yeban 是否被 inkmoor 取代"**已由负责人裁决 (`HD-53`, 2026-10-07): 两支都留**
+    // —— 两版都要能选, 没有谁取代谁, 逐条见 §6e 末段。
     // ------------------------------------------------------------------
     inkmoor,
     plume,
@@ -99,8 +113,15 @@ export enum YebanTheme {
 
 // 主题状态: 唯一的写者是 Rust 侧的 `host::apply_theme` (与 `apply_view` 同款单向注入)。
 // 12 个界面文件读的仍然是 `Tokens.<role>`, 一行都没改 —— 换主题 = 换这一整套颜色。
+//
+// ⚠ 初值必须是**默认主题**: 有些路径会直接构造窗口而**不**调 `apply_theme`
+// (Tier-1 无头渲染 / golden 截图走的就是这条), 它们看到的就是这个初值。
+// 因此它必须等于 `crate::cli::Theme::default()` 经 `apply_theme` 写进去的那一支
+// —— 2026-10-07 起两边都是 yeban。判据
+// `tests/theme_selection.rs::the_default_theme_is_the_slint_initial_value` 把这条
+// 耦合钉住: 改任一侧而不同步, 那条判据先红 (这是"默认外观真的换了"的机械见证)。
 export global ThemeState {
-    in-out property <YebanTheme> theme: YebanTheme.brand;
+    in-out property <YebanTheme> theme: YebanTheme.yeban;
 }
 
 export global Tokens {
@@ -163,14 +184,15 @@ export global Tokens {
     out property <string> font-mono: "SF Mono, Menlo, Consolas, Noto Sans Mono CJK SC, monospace";
 
     // =====================================================================
-    // 6. 品牌色 · 深色 (默认主题) —— assets/brand/README.md
+    // 6. 品牌色 · 深色 (CLI `--theme brand`; 2026-10-07 之前的默认主题) —— assets/brand/README.md
     // =====================================================================
     // 背景: 径向渐变 #151D38 → #060A14 (这里登记渐变的两端与一个中间面板色)
     // 右边的 `Palette.*` 是设计系统角色 (见文件头的主题说明), 只在非 brand 主题下生效。
     //
-    // 三态表达式的读法 (2026-10-06 新增 `yeban`):
-    //   `theme == brand  ? <今天的十六进制字面量>`        —— 一位未改, golden 因此不用重生成
-    //   `theme == yeban  ? <负责人下发的墨阶 / 颜料值>`    —— 见 §6b 的映射表
+    // 多选一表达式的读法 (2026-10-06 新增 `yeban`, 2026-10-07 补 `inkmoor` / `plume`):
+    //   `theme == yeban  ? <负责人下发的墨阶 / 颜料值>`    —— 见 §6b 的映射表 (**默认主题**)
+    //   `theme == brand  ? <本仓品牌深色的十六进制字面量>` —— 一位未改, 但**不再是默认外观**
+    //   `theme == inkmoor/plume ? <负责人另两套字面量>`    —— 见 §6e
     //   否则              `<Palette.*>`                    —— 设计系统角色 (四个内建风格名)
     out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? #0e1216 : (ThemeState.theme == YebanTheme.inkmoor ? #0e1114 : (ThemeState.theme == YebanTheme.plume ? #14100d : Palette.background)));
     out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #11161c : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.background)));
@@ -221,7 +243,9 @@ export global Tokens {
     //   piano-key      <- #c8c2b2  苇白      weibai     钢琴卷帘白键
     //
     // 结构上**新增**的令牌 (旧令牌集没有这些角色)。每一个的 brand 分支都等于它
-    // **替换掉的那个字面量** ⇒ 默认主题的渲染字节一位未变 (差分实测见报告):
+    // **替换掉的那个字面量** ⇒ **brand 分支**的渲染字节相对改动前一位未变
+    // (那是 2026-10-07 之前的默认主题, 所以当时的差分实测是"默认零像素差"; 现在默认
+    // 主题已是 yeban, 这条只再保证品牌分支自身没变):
     //   bg-lane   brand #0d1326 (= bg-shell)     bg-lane2   brand #060a14 (= bg-void)
     //   bg-head   brand #0d1326 (= bg-shell)     playing    brand #e2c77e (= gold)
     //   selection brand #f7e6b0 (= gold-bright)  piano-key  brand #f0ebe3 (= ink-0)
@@ -229,7 +253,7 @@ export global Tokens {
     // 负责人**没有**命名的角色照旧用旧值, 不替他们发明: `ok-green` / `warn-amber` (§9)
     // 与 `diff-*` / `mask-black` (§8) —— 语义色仍不跟随主题。两个例外是负责人**点名**过的:
     // 录音=江枫 ⇒ `record-red` 有了 yeban 分支; AI=愁眠 ⇒ `ai-suggestion` 有了 yeban 分支。
-    // 两者的 brand 分支都仍是原字面量, 所以默认外观不变。
+    // 两者的 brand 分支都仍是原字面量, 所以**品牌分支**不变 (默认主题已换成 yeban)。
     //
     // 已知取舍 (如实登记, **没有**擅自改负责人的颜色):
     //   - `--txt-faint` 霜灰 #5a6672 对 `--bg-panel` 黛蓝·暗 #131a22 的 WCAG 2.1 对比度是
@@ -278,17 +302,19 @@ export global Tokens {
     // 都是 `bg-panel-alt` ⇒ 顶栏出现两块一模一样的亮蓝色板。
     //
     // 修法是**加令牌**, 不是改布局: 新令牌在 brand 下的取值**就等于**被替换掉的那个字面量,
-    // 所以默认主题的渲染字节一位未变 (golden 不用重生成); `yeban` 下才分道扬镳。
-    //   - `bg-control`: 保存键的板。brand = #1b2447 (**就是** bg-panel-alt, 因此默认不变);
+    // 所以 **brand 分支**的渲染字节相对改动前一位未变 (2026-10-07 之前品牌色就是默认主题,
+    // 当时的差分实测因此是"默认零像素差、golden 不用重生成"; 现在默认主题是 yeban ——
+    // 见文件头与 `HD-56`); `yeban` 下才分道扬镳。
+    //   - `bg-control`: 保存键的板。brand = #1b2447 (**就是** bg-panel-alt, 因此品牌分支不变);
     //     yeban = 绀灰 #1e2733 (负责人的 bg-raise 那一档 —— 墨阶里比 鸦青·暗 再亮的只有它)
-    //     ⇒ 比徽章板 (鸦青·暗 #161e28) 亮 **1.11:1** (默认那两块之间是 1.00:1 —— 完全相同)。
+    //     ⇒ 比徽章板 (鸦青·暗 #161e28) 亮 **1.11:1** (brand 那两块之间是 1.00:1 —— 完全相同)。
     //     这一档只比判据的 1.10 门槛高 0.01, 是负责人墨阶自身给不出更大间距的结果, 如实登记。
     //   - `accent`: **整份界面只准出现一次**的那一个强调色。2026-10-07 的 `HD-54`
     //     把它的**落点**从 AI 徽章描边移到了**录音键的 ●**（负责人原话：「录音键——
-    //     落日：唯一带光环的圆」）。落点移动时**取值必须随落点走**, 否则默认主题就会
+    //     落日：唯一带光环的圆」）。落点移动时**取值必须随落点走**, 否则 brand 分支就会
     //     变像素:
-    //     brand = #d94a4a (**就是** `record-red` 的 brand 值 = 录音键的 ● 今天画的那个
-    //     红, 因此默认渲染一位未变);
+    //     brand = #d94a4a (**就是** `record-red` 的 brand 值 = 录音键的 ● 原来画的那个
+    //     红, 因此品牌分支的渲染一位未变);
     //     yeban / inkmoor / plume = 渔火 / 渔火 / 落日 (取值与移动前**完全一样**, 仍是
     //     负责人下发的「唯一暖强调」)。
     //     对录音键的板实测 (bg-panel-alt 静置 / bg-raised 按下): brand 3.62 / 3.08:1,
@@ -297,18 +323,24 @@ export global Tokens {
     //     `the_accent_appears_in_exactly_one_role_in_the_ui_sources` 扫源码要求恰好
     //     1 处, 并点名那一处必须是录音键的 ●(不再是 AI 徽章描边)。
     //     AI 徽章的 1 px 描边改用 `ai-suggestion`: brand = #a855f7 (**就是** `accent`
-    //     移动前的 brand 值, 因此徽章默认渲染也一位未变); yeban / inkmoor / plume 下
+    //     移动前的 brand 值, 因此品牌分支的徽章渲染也一位未变); yeban / inkmoor / plume 下
     //     它是 愁眠 / 愁眠 / 归雁 的冷色 (对 bg-panel-alt 4.89 / 6.10 / 5.93:1, 同样
     //     ≥ 3:1), 于是「唯一暖强调」确实离开了 AI 徽章。
     //     **设计系统四支如实登记**: 那里 `accent` 仍是 `Palette.accent-background`、
     //     `ai-suggestion` 仍是硬编码 `#a855f7`, 所以这四支下录音键的 ● 与徽章描边**都
-    //     换了取值**(默认主题与三支自绘皮肤不受影响; golden 只覆盖默认主题)。
+    //     换了取值**(四支自绘调色板不受影响; golden 覆盖的是默认主题, 现在是 yeban)。
     //     **权衡登记 (2026-10-07)**: 负责人当日的规则是"1.0.0 之前一切可改, 收益够大
     //     就改", 而改 `--theme default` 的代价是 5 张 Linux 基准要走手动档
     //     `gates-manual.yml` 的 `goldens` 重新生成 + 人工复核。这次**不动**默认像素:
     //     brand 不是负责人下发的皮肤, 给它另造一个"暖强调"值等于替负责人发明颜色; 而
     //     "把落点搬到录音键"本身**不需要**动默认像素 —— 录音键的 ● 今天画的就是这个红。
     //     收益为 0 ⇒ 按规则不改, 基准不需要重录。
+    //     **修正 (2026-10-07 稍后, 负责人新指令)**: 负责人随后要求「默认主题改成 yeban
+    //     那一套, 原来 default 改个名作为可选」⇒ 这一次的收益**不为 0**(默认外观按负责人
+    //     的要求换), 于是按**同一条最高规则**改: `--theme default` = yeban 调色板,
+    //     品牌调色板改名 `--theme brand`(取值一位未改、仍可选), `yeban` 保留为别名;
+    //     代价照实记为 5 张 Linux 基准走手动档 `gates-manual.yml` 的 `gate=goldens`
+    //     重录 + 人工复核 (`HD-56`)。上一段的"默认像素不动"是**当时**的权衡读数, 不改写。
     out property <color> bg-control: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #1e2733 : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
     out property <color> accent: ThemeState.theme == YebanTheme.brand ? #d94a4a : (ThemeState.theme == YebanTheme.yeban ? #c6a47c : (ThemeState.theme == YebanTheme.inkmoor ? #c9a26b : (ThemeState.theme == YebanTheme.plume ? #c68252 : Palette.accent-background)));
 
@@ -326,17 +358,19 @@ export global Tokens {
     // 6d. 三支**新增**令牌 —— 负责人的功能色 / 内容色落在我们结构缺失的角色上 (2026-10-07)
     // ---------------------------------------------------------------------
     //
-    // 与 §6c 同一条纪律: brand 分支 = 被替换掉的那个字面量 ⇒ 默认主题零像素差。
+    // 与 §6c 同一条纪律: brand 分支 = 被替换掉的那个字面量 ⇒ **brand 分支**零像素差
+    // (品牌色在 2026-10-07 之前是默认主题, 所以当时的读数是"默认零像素差"; 现在默认主题
+    // 已是 yeban, 这几行只再保证品牌分支自身没变)。
     //   - `playing`: 播放 / 走带 = 铜绿 #6e9488 (负责人原则 ③)。走带键的 ▶/‖ 原来用
-    //     `gold`, brand = #e2c77e ⇒ 默认不变; yeban 下播放键转 铜绿, 与 渔火 (内容强调)
+    //     `gold`, brand = #e2c77e ⇒ brand 分支不变; yeban 下播放键转 铜绿, 与 渔火 (内容强调)
     //     分开。(对 bg-panel-alt 5.00:1 ≥ 3:1)
     //   - `selection`: 选中 / 激活 / AI 文案 = 愁眠 #8e86a6 (负责人原则 ③「选区=愁眠」)。
     //     原来这些位置一律用 `gold-bright` (它同时承担播放头/时间码/读数), brand = #f7e6b0
-    //     ⇒ 默认不变; yeban 下「被选中的那一个」与「播放头」第一次分开成两支。
+    //     ⇒ brand 分支不变; yeban 下「被选中的那一个」与「播放头」第一次分开成两支。
     //     负责人的角色表把「选区」与「AI」给同一个色, 所以 AI 文案也走这支。
     //     (对 bg-panel-alt 4.89:1 ≥ 3:1)
     //   - `piano-key`: 钢琴卷帘白键 = 苇白 #c8c2b2 (负责人角色表「track colour / piano keys」)。
-    //     白键原来用 `ink-0` (正文色借用作键色), brand = #f0ebe3 ⇒ 默认不变。
+    //     白键原来用 `ink-0` (正文色借用作键色), brand = #f0ebe3 ⇒ brand 分支不变。
     //     (对 bg-void 10.58:1 ≥ 3:1)
     out property <color> playing: ThemeState.theme == YebanTheme.brand ? #e2c77e : (ThemeState.theme == YebanTheme.yeban ? #6e9488 : (ThemeState.theme == YebanTheme.inkmoor ? #85a794 : (ThemeState.theme == YebanTheme.plume ? #7f9483 : Palette.accent-background)));
     out property <color> selection: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : (ThemeState.theme == YebanTheme.yeban ? #8e86a6 : (ThemeState.theme == YebanTheme.inkmoor ? #9e97ae : (ThemeState.theme == YebanTheme.plume ? #9c93a2 : Palette.accent-background)));
@@ -459,13 +493,15 @@ export global Tokens {
     //     「主强调 / 片段」给了同一个色 ⇒ **暖强调色相唯一**, 但**令牌不唯一**。
     //     与 `yeban` 的取舍同款 (§6b 末段)。
     //   * `accent` == `record-red` (**只在 brand 下**, 都是 #d94a4a): `HD-54` 把 `accent`
-    //     的落点移到录音键的 ● 之后, 要让默认主题一位未变, `accent` 的 brand 分支就必须
+    //     的落点移到录音键的 ● 之后, 要让 **brand 分支**一位未变 (品牌色在 2026-10-07 之前
+    //     是默认主题, 所以当时的读数是"默认主题一位未变"), `accent` 的 brand 分支就必须
     //     等于那一处**原来画的** `record-red`。这是"为了让一个主题范围内的令牌能换落点"
     //     而登记的重合, **不是**把两支令牌合并: 三支自绘皮肤下它们立刻分开
     //     (yeban #c6a47c vs #ac6e60 / inkmoor #c9a26b vs #b4715f / plume #c68252 vs #b25c43),
     //     判据 `the_single_warm_accent_*` 也逐支断言它们不等。
     //   * `ai-suggestion` (**brand**) == `accent` **移动前**的 brand 值 (#a855f7): 这也是
-    //     落点移动的机械前提 —— AI 徽章的描边换成 `ai-suggestion` 之后默认渲染一位未变。
+    //     落点移动的机械前提 —— AI 徽章的描边换成 `ai-suggestion` 之后 brand 分支的渲染
+    //     一位未变 (那个分支在 2026-10-07 之前就是默认主题)。
     //   * `bg-panel-alt` == `bg-head`: 负责人只给了一级「包头」色, 而我们在结构上有两个
     //     角色 ⇒ 共用 (与 yeban 同款取舍)。
     //   * `bg-control` == `bg-raised`, `bg-shell` == `bg-lane`, `ai-suggestion` == `selection`:
@@ -559,18 +595,20 @@ export global Tokens {
     //
     // 2026-10-07: 负责人点名「选区=愁眠 / AI=愁眠」⇒ 这一支**第一次有了 yeban 分支**
     // (在此之前语义色一律不跟随主题, 见文件头 §8 的既有纪律)。brand 分支仍是 #a855f7,
-    // 所以默认外观不变; 设计系统主题也仍是 #a855f7 (第三个分支), 行为与改前逐位相同。
+    // 所以**品牌分支**不变 (品牌色在 2026-10-07 之前是默认主题, 故当时写作"默认外观不变");
+    // 设计系统主题也仍是 #a855f7 (第三个分支), 行为与改前逐位相同。
     //
     // 同日 `HD-54` 之后它还多了一个**使用点**: AI 提案徽章的 1 px 描边 (§6c 的落点移动
     // —— 那处原来画的是 `accent` 移动前的 brand 值 #a855f7, 与本支的 brand 分支同值,
-    // 因此默认渲染一位未变)。它**仍然**按 §9.1 的语义用在钢琴卷帘的 AI 建议层上。
+    // 因此**品牌分支**的渲染一位未变)。它**仍然**按 §9.1 的语义用在钢琴卷帘的 AI 建议层上。
     out property <color> ai-suggestion: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #8e86a6 : (ThemeState.theme == YebanTheme.inkmoor ? #9e97ae : (ThemeState.theme == YebanTheme.plume ? #9c93a2 : #a855f7)));
 
     // =====================================================================
     // 9. 状态色 (走带/录音/告警) —— 规范未定义, 登记待决
     // =====================================================================
     // 2026-10-07: 负责人点名「录音=江枫」(原则 ③) ⇒ `record-red` 有了 yeban 分支。
-    // brand 分支仍是 #d94a4a (默认外观一位未改); 设计系统主题仍是 #d94a4a, 行为不变。
+    // brand 分支仍是 #d94a4a (**品牌分支**一位未改 —— 品牌色在 2026-10-07 之前是默认主题,
+    // 故当时写作"默认外观一位未改"); 设计系统主题仍是 #d94a4a, 行为不变。
     // `ok-green` / `warn-amber` 负责人**没有**命名 ⇒ 原样不动, 不替他们发明。
     //
     // 同日 `HD-54` 之后: 录音键的 ● **不再**用这一支 (改用 `accent`, 见 §6c)。它仍是

@@ -173,7 +173,8 @@ export component PianoRoll inherits Rectangle {
             // 选中态：加边框而**不改填充**（第 504 轮实测：当时**没有任何**"选中色"令牌可用, 用真实的 `gold-bright`） ⇒ 未选中时与旧基准一致（避免无谓的基准重生成）。
             // (2026-10-06: 现在确实有了一支 `accent`, 但它的角色是"整份界面只准出现一次"的强调色, 已经给了 AI 提案徽章; 这里**故意**不用它。)
             // (2026-10-07: 负责人把「选区」给了 愁眠 ⇒ 换用新的 `selection`；它的 brand 分支
-            //  = #f7e6b0 = `gold-bright`, 所以默认主题的边框字节一位未变。)
+            //  = #f7e6b0 = `gold-bright`, 所以**品牌分支**（`--theme brand`, 2026-10-07 之前的
+            //  默认主题）的边框字节一位未变。)
             border-width: root.note-selected[note_index] ? 2px : 0px;
             border-color: root.note-selected[note_index] ? Tokens.selection : transparent;
             accessible-role: list-item;
