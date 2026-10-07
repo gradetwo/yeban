@@ -10347,3 +10347,77 @@ The负责人 took `HD-56` at its word and used it: **make the yeban palette the 
 **本机与 CI 的边界。** 本机是 macOS。`cargo test -p yeban-app --tests` 里的 5 张 Tier-1 黄金判据打印「平台 `macos` 无基准 ⇒ 视觉回归**未被判定**（不等于通过）」—— **那不是通过**，本轮不据此声称默认像素不变。默认像素不变的证据分两半：① 判据 `the_default_row_geometry_is_bit_for_bit_the_s0_literals`（默认几何逐字段 = S0 字面量：`ys = 42 + 56 × i`、`heights = 54`、剪辑顶沿全部落在 S0 行内、四个手势状态位全为默认）；② 渲染帧 sha256 的 A/B：同一台机器上把本轮改动整体撤下再渲染一次，与带改动的帧逐字节比较（见本轮的交付报告；5 张 Linux 基准图**未被触碰**）。
 
 **共享工作树的实测。** 本轮进行期间，另一条工作线在 `crates/yeban-app/tests/perf_draw_budget.rs`（未跟踪文件）上写代码。第一次 `cargo test -p yeban-app --tests --features in-process-mcp` 里那一个目标红（`viewport_clipping_pins_the_number_of_visible_notes` / `roll_primitives_at_runtime_are_pinned_by_the_viewport`）；等那个文件写完后再跑同一个目标（4/4 绿）与整个套件（全绿）。那条红是**并发写文件**造成的，不是本轮的改动；本轮没有碰它。
+
+### Round 430: 同一类"存在即读"握手竞态的第二处落地（写入方原子落盘），并把本机 NeuralNote 参照与性能优化待办各记一条台账
+
+本轮两件事。第一件是**代码**：`crates/yeban-app/tests/in_process_mcp_lock.rs` 的文件握手改成**写入方原子落盘**（与 `2262b82` 在 `crates/yeban-mcp/tests/lock_advisory.rs` 的同名修法同口径）。第二件是**文档**：追加两条待办台账 —— 本机 NeuralNote 参照（`BASELINE-006` 维持延后）与性能优化清单（依 `HD-60`：功能优先，性能后续）。负责人的优先级已在 `HD-60` 落定，本轮不优化任何性能指标。
+
+**竞态是什么（先量，再报 `file:line`）。** 量对象 = 一次 `ChildHolder::spawn` 里"父进程读到握手标记的时间点"与"子进程把内容落盘的时间点"的先后。写入方是**测试辅助**（**不是产品代码**）：`crates/yeban-app/tests/in_process_mcp_lock.rs:253`（原）的 `fs::write(&ready, serde_json::to_string(&value)…)` 等价于 `File::create`（O_TRUNC：`open` 一返回，**路径就已存在且为空**）+ `write_all`。轮询判据在 `:147`（原）：`while !ready.exists()`，超时 **30 s**（`:146` 的 `deadline`，`:148` 的超时断言），每 10 ms 看一次，并顺带断言子进程没有提前退出（`:153`）。读者侧断言在 `:159`–`:161`（原）：**单次** `fs::read_to_string` + `serde_json::from_str`，失败即 `panic!("握手标记必须是 JSON: {error}: {text}")`。⇒ 判据的声明语义「标记存在 = 标记完整」在**写入方**没有被保证 —— 这就是竞态。
+
+**实测红率（未改任何东西）。** 顺序档：`cargo test -p yeban-app --features in-process-mcp --test in_process_mcp_lock` × **30** ⇒ **1 红 / 30**（54 s）。字面红行 = `thread 'a_mount_is_refused_while_another_form_holds_the_project_exclusively' (3910866) panicked at crates/yeban-app/tests/in_process_mcp_lock.rs:161:37:` ＋ `握手标记必须是 JSON: EOF while parsing a value at line 1 column 0: ` ＋ `test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s`。放大档：**36 并发 × 15 轮 = 540 次执行**（直接跑测试二进制 `target/debug/deps/in_process_mcp_lock-e0c3e8c7e7c9923f`）⇒ **462 红 / 540 = 85.6%**（17 s）；**全部 737 条** panic 行都是同一类（`in_process_mcp_lock.rs:161:37` + `握手标记必须是 JSON: EOF while parsing a value at line 1 column 0`），分布在三个用例上：`the_mounted_control_plane_excludes_writers_and_shares_with_readers` **346**、`the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively` **217**、`a_mount_is_refused_while_another_form_holds_the_project_exclusively` **174**。⚠ 红率口径必须带 `--features in-process-mcp`：不带 feature 时 `#![cfg(feature = "in-process-mcp")]` 让这个目标跑 **0** 个判据（`cargo test -p yeban-app --tests` 默认档里该目标就是 `test result: ok. 0 passed`），因此"不带 feature 的 30 次"不含任何证据。
+
+**是不是同一类：是。** 机制与 `2262b82` 逐条对齐 —— 写入方 `fs::write`（`create` 先落出一个空文件）、读者侧轮询 `exists()` 后**立刻单次**读 + 解析、症状是同一个 `serde_json` 的 EOF 字面红行。⇒ 按同一口径修**写入方**；读者侧的重试、超时、解析断言**一个字都没改**（⛔ 不加"读者重试到能解析"）。
+
+**改动文本（原文 → 改后）。** 原文（子进程角色，`:253`–`:257`）：
+
+```ignore
+    fs::write(
+        &ready,
+        serde_json::to_string(&value).expect("序列化子进程响应"),
+    )
+    .expect("写握手标记");
+```
+
+改后（调用点，新文件 `:309`）＋新增辅助 `write_handshake_atomically`（新文件 `:211`–`:259`）：
+
+```ignore
+    write_handshake_atomically(&ready, &value).expect("写握手标记");
+```
+
+```ignore
+/// 握手标记的**常量**权限：这是 `fs::write` 在这份夹具上的既有口径
+/// （`0o666 & !umask`；本机 umask 022 ⇒ `0o644`）。它在**创建时**就定死，
+/// 因此临时文件不会先以更宽（或更窄）的权限出现。
+#[cfg(unix)]
+const HANDSHAKE_FILE_MODE: u32 = 0o644;
+
+fn write_handshake_atomically(ready: &Path, value: &Value) -> std::io::Result<()> {
+    // 临时文件与目标**同目录**：跨目录 `rename` 不是原子替换，还可能 `EXDEV`。
+    let mut temp = ready.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let text = serde_json::to_string(value).expect("序列化子进程响应");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(HANDSHAKE_FILE_MODE);
+    }
+    let outcome = options
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&temp, ready));
+    if outcome.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    outcome
+}
+```
+
+父进程轮询处（**原** `:147`；新文件里三行说明在 `:148`–`:150`、`while !ready.exists()` 在 `:151`）加了三行注释说明"标记存在 = 标记完整"由写入方保证；`ChildHolder::spawn` 的 30 s 超时、提前退出断言、`serde_json` 断言**均未改**（新文件里 `serde_json` 那条在 `:165`）。
+
+**三次注入（先红 → 抓字面红行 → 还原，`cmp` ＋ sha256）。** ① 注入回**非原子写**（`fs::write(&ready, b"")` 先落出空文件、停 200 ms 再写内容）⇒ 红：`thread 'a_mount_is_refused_while_another_form_holds_the_project_exclusively' (3924203) panicked at crates/yeban-app/tests/in_process_mcp_lock.rs:165:37:` ＋ `握手标记必须是 JSON: EOF while parsing a value at line 1 column 0: ` ＋ `test result: FAILED. 0 passed; 1 failed; …`。② 注入**完整但不合法**的 JSON（`{"status": success}`，文件一次写全）⇒ 红：`握手标记必须是 JSON: expected value at line 1 column 12: {"status": success}` ⇒ 读者侧那条解析断言仍有牙（不是只有"读到空文件"才红）。③ 子进程**永不写**握手标记但**保持存活** ⇒ 红：`子进程 6944 30 秒内没有写握手标记 /var/folders/…/holder.json` ＋ `test result: FAILED. 0 passed; 1 failed; …; finished in 30.02s` ⇒ 超时判据仍是**原超时 30 s**（30.02 s = 30 s 期限 + 两次 10 ms 轮询），**没有被放大**。三次还原都 `cmp` 退出 0，两侧 sha256 同为 `cd1c4d5ff884b39de4275ccc8f1f986240bd04cbb502a7ca4220dcc1f4eb8cee`。
+
+**不再 flaky（实测）。** 修后顺序档 × **30** ⇒ **0 红 / 30**（54 s）；放大档 **36 并发 × 15 轮 = 540/540 绿**（29 s）；修后直接跑测试二进制一次 ⇒ `test result: ok. 5 passed; 0 failed`。`cargo test -p yeban-app --tests` 两种模式各 3 次全绿（见下面"验证，字面"）。
+
+**任务二 · 台账 1：本机 NeuralNote 是第三方参照，`BASELINE-006` 维持延后。** 本机装有 `/Applications/NeuralNote.app` **2.0.0**；本轮用 `PlistBuddy` 复核 `CFBundleShortVersionString` = `2.0.0`、`CFBundleIdentifier` = `com.draudio.neuralnote`。它是**音频转 MIDI** 的开源应用（内含 Spotify Basic Pitch；上游仓库见 [DamRsn/NeuralNote](https://github.com/DamRsn/NeuralNote) —— 本轮**只读网页标题与 README 链接，未取回代码、未核对仓库里的任何基准**）。**实测它是 GUI 应用、没有命令行接口**：`/Applications/NeuralNote.app/Contents/MacOS/` 只有一个 `NeuralNote` 可执行文件；`find /Applications/NeuralNote.app -maxdepth 5` 找 `*.py` / `*.json` / `*.onnx` / `*.tflite` = **0 个** ⇒ 应用包内**没找到**基准脚本或模型文件。负责人 2026-10-07 的裁决原话：「**先别碰它：BASELINE-006 仍维持延后**」。⇒ 台账口径：**它是本机可用的第三方参照，但 `BASELINE-006` 维持延后**；将来若要解除延后，可考虑它的开源仓库里的基准（**本轮未取回、未核对**，登记为待办而非证据）。⚠ 本轮**没有碰** `docs/ledger/gate-status.md` 的 `BASELINE-006` 行（该行仍写 `**PENDING**`，理由仍是"需要'生成 16 小节段落'的完整 MCP 往返统计；载荷统计未接；Token 口径需人类裁决用哪个 tokenizer"）。⚠ **范围说明（防串号）**：`BASELINE-006` 的规范定义（`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:361`）是 **AI 交互效率**（序列化 JSON 载荷 ≤ 4 KB、Token 开销中位数 ≤ 600），即 **tokenizer / 载荷**指标，**不是**音频转 MIDI 指标 ⇒ 本条**不声称** NeuralNote 能测 `BASELINE-006`；两者的关系只是负责人在同一条口述里同时给了"先别碰它"与"006 维持延后"。另：`HD-47`（tokenizer 口径）与 `HD-48` 的**延后**状态本轮未动。
+
+**任务二 · 台账 2：性能优化待办清单（依 `HD-60`：功能优先，性能后续）。** 下列数字**只引已提交来源**，出处逐个写在数字旁边，方便将来直接开工。**正式门限** = 绘制回调耗时（不含呈现）**p99 ≤ 2 ms**（`HD-59`，`docs/ledger/human-decisions.md:96`）。**已登记的 6 次读数** p99 = **2.440 / 2.441 / 2.504 / 2.551 / 2.956 / 3.049 ms**（出处：`HD-59` 行、`docs/adr/ADR-0002-baseline-verdict-hardware.md:85`、`docs/ledger/gate-status.md` 的 `BASELINE-003` 行）⇒ **未达标**，门禁 **保持 PENDING**。**两条热点**（出处 = `crates/yeban-app/tests/perf_draw_budget.rs` 的模块文档）：㈠ 每个音符/力度柱的绘制成本 ≈ **2.15 µs**（逐项截断 A/B 的斜率），其中圆角 ≈ **1.6 µs**（同文件 `:27`）；把 **466** 个矩形画成"最省的纯矩形"（方角 + 去边框）p99 = **2.11 ms**（`:29`）；把两条循环 `visible:false`：正式口径 p99 从 **3.12–3.22 ms** 降到 **1.73–1.84 ms**（`:28`）。㈡ `host.rs::apply_view` 每帧重写约 **30** 个与滚动无关的数组，值 **−0.4 ms p50 / −0.55…−0.6 ms p99**，并连带把每帧创建的 FBO layer 从 **4 个降到 0 个**（`:31`–`:32`）。**已就绪但未应用**的补丁 = `host.rs::apply_view` **先比较再写**（落地位置与改法见同文件 `:34`–`:61`；落地后判据 ③ 应收紧到 **7** = 六个随 `scroll_x` 变化的数组 + 一个标量）；收益仍引已提交出处 **−0.4 ms p50 / −0.55…−0.6 ms p99**；**逐像素不变**（两条路径的 PNG sha256 都是 `e7796cb0c9086c46cc9227f47af004e18e95046ccc0a7f2bbdb7e8aa03eb721d`，`cmp` 逐字节相同，同文件 `:68`）。**两条已被负责人排除的路线**（`HD-60`）：**批合并**（去掉 `note-{ulid}-rect` 语义元素、破坏 `[UI-TEST-001]` 语义寻址、五张 Linux 基准全重录）；**局部脏矩形**（FemtoVG 不支持，只有软件光栅化有 `partial_renderer`）。⚠ **不可引用的来源**：`target/**` 下任何日志（例如 `target/tmp/perf/interleaved.log`、`target/tmp/perf/official-ab.log`）是 **gitignored 构建产物**（`.gitignore` 的 `target/`；`git ls-files target/tmp/perf/` 为空）⇒ 不进本清单。⚠ **两处任务书数字与已提交来源不符，本台账按已提交来源记**：任务书写"466 个圆角矩形 ≈ **1.35 ms** p99"与"每帧重写 **19** 个与滚动无关的数组"，这两个数在**已提交来源里找不到** —— `perf_draw_budget.rs` 的模块文档写的是 **≈30 个**数组（`:31`）与"466 个矩形 → p99 **2.11 ms**"（`:29`）；1.35 ms 只能由两条循环的 p99 落差（3.12–3.22 → 1.73–1.84，即约 **1.38–1.39 ms**）**近似**推出，且**不等于** 1.35。按 `AGENTS.md` §6「不许把'看起来有'当成'有'」与"宁可少写一个数字"，本清单**不记** 1.35 ms、**不记** 19。
+
+**红线与门禁计数。** 三条红线未动（本轮没有任何音频线程代码、没有 `unsafe`、没有改逐位一致判据）。门禁表仍 **19 已接线 / 0 部分 / 2 PENDING**，Phase 4 仍 **7 完成 / 4 部分 / 0 PENDING**，MCP 工具仍 **17** 个，守卫编号仍 `G01`–`G14` 共 **14** 条。本轮只改一个测试辅助文件（`crates/yeban-app/tests/in_process_mcp_lock.rs`）与 `docs/**`；`crates/**/src/**`、`schemas/**`、`assets/**`、基准图、法务文件一律未碰；没有新增依赖、没有新增 `#[ignore]`、没有新增 `#[should_panic]`、没有放大任何超时。
+
+**验证，字面（本轮）。** `cargo check -p yeban-app --all-targets` 退出 0（**8.17 s**）；加 `--features in-process-mcp` 退出 0（**8.07 s**）。`cargo clippy -p yeban-app --all-targets -- -D warnings` 退出 0（**7.02 s**）；加 `--features in-process-mcp` 退出 0（**8.06 s**）。`cargo fmt --all --check` 退出 0。`cargo test -p yeban-app --tests` 全绿 **3/3**（**80 / 27 / 25 s**，15 个目标，0 failed，2 ignored 是既有 `#[ignore]`）；加 `--features in-process-mcp` 全绿 **3/3**（**95 / 39 / 37 s**，15 个目标：201 + 21 + 3 + 31 + 5 + 2 + 4 + 1 + 1 + 18 + 5 + 11 + 10 + …，0 failed）。`bash scripts/gates/run-gates.sh light` 退出 **0**，末行 `门禁通过 (mode=light)`。`python3 scripts/guards/policy_check.py` 退出 0 并打印 `守卫全部通过 (14 条)。`。⚠ `light` **跳过** `yeban-app`（重依赖档打印 `[skip] … clippy 交给 CI`）⇒ 上面四条 `yeban-app` 的真编译/真测试命令才是代码那一半的证据。⚠ 本机是 macOS：`cargo test -p yeban-app --tests` 里的 5 张 Tier-1 黄金判据打印「平台 `macos` 无基准 ⇒ 视觉回归**未被判定**（不等于通过）」—— **那不是通过**，本轮不据此声称任何像素不变（本轮没有改任何产品代码，故也不声称像素变化）。
