@@ -7,6 +7,14 @@
 //! 2. **回调内零分配、零锁、零阻塞 I/O、零日志** [AGENTS.md §2 红线 7]：
 //!    数据回调只调用 [`crate::rt::EngineRuntime::process_quantum`]；
 //!    错误回调只做一次原子自增（**不打印** —— 打印是阻塞式系统调用）；
+//!
+//!    回调体被抽成**具名函数** [`render_callback`]（它只有一行），因此"回调里到底做了
+//!    什么"成了**可被执行的对象**：`build_output_stream` 的闭包与
+//!    `crates/yeban-engine/tests/rt_zero_alloc.rs` 的判据 ⑳ 调用**同一个**
+//!    [`render_callback`] ⇒ 往回调体里加任何工作（分配 / 锁 / I/O / 日志）都会让那条
+//!    判据的四元组变红。⚠ 覆盖边界：判据 ⑳ 覆盖的是**回调体**；cpal 的**闭包/流**
+//!    （`build_output_stream` → `play` → 真回调线程）仍然**未覆盖**（需要一台有声卡的
+//!    机器，见 `rt_zero_alloc.rs` 的覆盖边界登记）。
 //! 3. **真实设备路径必须能在不打开设备的前提下被编译与单测覆盖**：
 //!    配置协商被抽成纯函数 [`negotiate`]（输入是 `&[SupportedStreamConfigRange]`，
 //!    可以用 `SupportedStreamConfigRange::new` 手工构造），因此 CI 上无声卡也能测；
@@ -302,6 +310,9 @@ fn describe(supported: &[SupportedStreamConfigRange]) -> String {
 /// 已打开的输出流句柄。
 pub struct OutputStreamHandle {
     stream: cpal::Stream,
+    /// 打开时协商到的那台设备的显示名（`cpal::Device` 的 `Display`；**控制面**读，
+    /// 不在实时路径上）。
+    device_name: String,
     negotiated: NegotiatedConfig,
     backend_errors: Arc<AtomicU64>,
 }
@@ -311,6 +322,12 @@ impl OutputStreamHandle {
     #[must_use]
     pub const fn negotiated(&self) -> &NegotiatedConfig {
         &self.negotiated
+    }
+
+    /// 这台流的设备显示名（`enumerate_output_devices` 的 `DeviceInfo::name` 同源）。
+    #[must_use]
+    pub fn device_name(&self) -> &str {
+        &self.device_name
     }
 
     /// 后端错误计数（错误回调只做自增，**从不打印** [红线 7]）。
@@ -343,10 +360,28 @@ impl OutputStreamHandle {
 impl std::fmt::Debug for OutputStreamHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutputStreamHandle")
+            .field("device_name", &self.device_name)
             .field("negotiated", &self.negotiated)
             .field("backend_errors", &self.backend_errors())
             .finish()
     }
+}
+
+/// **cpal 数据回调的完整负载** —— 本函数就是"回调体"本身。
+///
+/// 它存在的唯一理由，是让这条路径**在不打开设备的前提下可被判据执行**：
+/// [`open_output`] 建流的闭包、[`NullBackend::render`] 与
+/// `crates/yeban-engine/tests/rt_zero_alloc.rs` 的判据 ⑳ 调用**同一个**函数。
+/// 因此"往回调里多加了一点事"不再是只能靠读源码发现的事 —— 计数型分配器与
+/// 锁/I-O 探针会当场变红。
+///
+/// 硬要求 #2（模块文档）的字面含义就是本函数体只有一行：**只有** `process_quantum`。
+/// ⛔ 在这里加任何东西（`Vec::with_capacity`、`Mutex::lock`、`println!`、`drop`）
+/// 都会让判据 ⑳ 的四元组（分配 / 释放 / 锁 / 阻塞 I/O）变红。
+///
+/// 它是实时路径：零分配、零锁、零阻塞 I/O、零日志 [红线 7 / `MUST-GATE-001`]。
+pub fn render_callback(runtime: &mut EngineRuntime, data: &mut [f32], channels: u16) {
+    runtime.process_quantum(data, channels);
 }
 
 /// 打开默认输出设备并把 [`EngineRuntime`] 挂到回调上。
@@ -372,6 +407,7 @@ pub fn open_output(
     let device: Device = host
         .default_output_device()
         .ok_or(DeviceError::NoDefaultOutputDevice)?;
+    let device_name = device.to_string();
     let supported: Vec<SupportedStreamConfigRange> = device.supported_output_configs()?.collect();
     let negotiated = negotiate(&supported, want)?;
 
@@ -384,11 +420,12 @@ pub fn open_output(
     let backend_errors = Arc::new(AtomicU64::new(0));
     let error_counter = Arc::clone(&backend_errors);
 
-    // 数据回调: 只有 `process_quantum` —— 零分配 / 零锁 / 零 I/O / 零日志 [红线 7]。
+    // 数据回调: 只有 `render_callback`（= 只有 `process_quantum`）——
+    // 零分配 / 零锁 / 零 I/O / 零日志 [红线 7]。回调体是**具名函数**，见它的文档。
     let stream = device.build_output_stream::<f32, _, _>(
         stream_config,
         move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-            runtime.process_quantum(data, channels);
+            render_callback(&mut runtime, data, channels);
         },
         // 错误回调: 只自增原子计数器。打印/日志都在这里被禁止 [红线 7]。
         move |_error: cpal::Error| {
@@ -399,6 +436,7 @@ pub fn open_output(
 
     Ok(OutputStreamHandle {
         stream,
+        device_name,
         negotiated,
         backend_errors,
     })
@@ -477,14 +515,20 @@ impl NullBackend {
     }
 
     /// 推进 `frames` 帧（按 128 帧量子切分，与真实回调同路径）。
+    ///
+    /// "同路径"是**字面**的：本函数经 [`render_callback`] 调 `process_quantum`，
+    /// 与 cpal 建流的闭包是同一个函数。
     pub fn render(&mut self, frames: usize) -> EngineStats {
         let channels = usize::from(self.negotiated.channels.max(1));
         let mut remaining = frames;
         while remaining > 0 {
             let quantum = remaining.min(DEFAULT_BLOCK_FRAMES);
             let samples = quantum * channels;
-            self.runtime
-                .process_quantum(&mut self.interleaved[..samples], self.negotiated.channels);
+            render_callback(
+                &mut self.runtime,
+                &mut self.interleaved[..samples],
+                self.negotiated.channels,
+            );
             self.frames_rendered = self.frames_rendered.saturating_add(quantum as u64);
             remaining -= quantum;
         }
@@ -731,5 +775,87 @@ mod tests {
         let stats = backend.render(0);
         assert_eq!(stats.quanta, 0);
         assert_eq!(backend.frames_rendered(), 0);
+    }
+
+    /// 判据 (h)：**真实墙钟**驱动渲染路径（不需要任何设备）。
+    ///
+    /// **量什么**：`NullBackend::render` 在 N 个**真的时钟节拍**上各推一个量子
+    /// （节拍周期 = `DEFAULT_BLOCK_FRAMES` 帧 ÷ 48000 Hz = 2666 µs，来自
+    /// `std::thread::sleep` 的墙钟），窗口内累计推进的**帧数**与墙钟**耗时**。
+    /// 单位 = 帧、量子、微秒。
+    ///
+    /// ⚠ 本判据**不声称** cpal 的回调线程被驱动 —— 那需要一台有声卡的机器
+    /// （覆盖边界登记在 `crates/yeban-engine/tests/rt_zero_alloc.rs` 的模块文档与
+    /// `docs/ledger/gate-rt-zero-alloc-notes.md`）。它证明的是：这些帧是被**时钟**
+    /// 推出来的（每个节拍一个量子，`sleep` 的契约是"至少睡这么久" ⇒ 耗时 ≥ N × 周期），
+    /// 而且**回调体本身**（[`render_callback`]，与 cpal 闭包同一个函数）逐量子记账。
+    #[test]
+    fn a_real_clock_drives_the_render_path_without_any_device() {
+        const QUANTA: u64 = 24;
+        // 128 帧 @ 48 kHz = 2.666 ms。整数微秒，避免浮点。
+        const PERIOD_US: u64 = 1_000_000 * DEFAULT_BLOCK_FRAMES as u64 / 48_000;
+        let runtime = default_runtime();
+        let mut backend = NullBackend::with_default_config(runtime);
+        let start = std::time::Instant::now();
+        for _ in 0..QUANTA {
+            backend.render(DEFAULT_BLOCK_FRAMES);
+            std::thread::sleep(Duration::from_micros(PERIOD_US));
+        }
+        let elapsed = start.elapsed();
+        let stats = backend.runtime().stats();
+
+        assert_eq!(
+            stats.quanta, QUANTA,
+            "N 个时钟节拍 ⇒ N 个量子（回调体逐次记账）"
+        );
+        assert_eq!(
+            backend.frames_rendered(),
+            QUANTA * DEFAULT_BLOCK_FRAMES as u64,
+            "帧数 = 量子数 × 128"
+        );
+        assert_eq!(
+            stats.position_frames,
+            QUANTA * DEFAULT_BLOCK_FRAMES as u64,
+            "走带位置（帧）与渲染帧数同步 —— 自由跑时二者相等"
+        );
+        assert_eq!(
+            stats.transport_state,
+            crate::transport::TransportState::Playing
+        );
+        assert!(
+            stats.position_ticks > 0,
+            "帧推进必须换算成 tick（实测 {}）",
+            stats.position_ticks
+        );
+        // 时钟证据：`sleep` **至少**睡满给定时长 ⇒ 耗时不得短于 N × 周期。
+        // 少了这一条，"忙循环推了 N 个量子"也会绿 —— 那正是本判据要排除的形态。
+        assert!(
+            elapsed >= Duration::from_micros(QUANTA * PERIOD_US),
+            "耗时必须 ≥ {QUANTA} × {PERIOD_US} µs（实测 {elapsed:?}）"
+        );
+        println!(
+            "[device-clock] quanta={QUANTA} frames={} ticks={} elapsed={:?} 周期={PERIOD_US}µs \
+             backend_errors=0（无设备；cpal 真回调线程未执行）",
+            backend.frames_rendered(),
+            stats.position_ticks,
+            elapsed,
+        );
+    }
+
+    /// 判据 (i)：回调体**只有一个出口** —— `render_callback` 的量子记账与
+    /// [`EngineRuntime::process_quantum`] 逐字相同（它是同一个函数）。
+    #[test]
+    fn the_callback_body_counts_one_quantum_per_call() {
+        let mut runtime = default_runtime();
+        let mut data = [0.0_f32; DEFAULT_BLOCK_FRAMES * 2];
+        for expected in 1..=3_u64 {
+            render_callback(&mut runtime, &mut data, 2);
+            assert_eq!(runtime.stats().quanta, expected, "一次调用一个量子");
+            assert_eq!(
+                runtime.stats().event_bulk_pops,
+                expected,
+                "每量子恰好一次事件批量出队"
+            );
+        }
     }
 }

@@ -9,9 +9,9 @@
 //!   （[`crate::meters::MeterRuntime`]），生产端留在引擎运行时里。
 //! - `[ARCH-TOP-002]`：线程拓扑。**实时线程**跑 `EngineRuntime::process_quantum`；
 //!   本模块的 `reload` 是**控制面/测试线程**的动作（允许分配、允许建队列）。
-//! - ADR-0001 **D19**：本文件只用 `yeban-engine` 与设备无关的公开面
-//!   （`snapshot` / `rt` / `ring` / `meter`），**一个 `cpal::*` 都不出现**；
-//!   设备宿主（`device` feature）仍是引擎侧的事。
+//! - ADR-0001 **D19**：本文件只用 `yeban-engine` 的公开面，**一个 `cpal::*` 都不出现**
+//!   （`snapshot` / `rt` / `ring` / `meter` / **`device`**）；声卡宿主本身仍是引擎侧的事
+//!   —— 本 crate 不写一行 cpal 调用，只调 [`yeban_engine::device::open_output`]。
 //!
 //! ## 为什么这不是"假装重建"
 //!
@@ -42,10 +42,43 @@
 //!   也与这份实测矛盾，因此**就地改正**。残留（本票不许碰其它 `docs/**`）：
 //!   `docs/ledger/engine-meters-notes.md` §0.1 至今仍写同一条旧结论，需要它自己的所有者更正。
 //!   "重建是真的"仍然指快照/队列/量子驱动是真的 —— 这一半没有变。
-//! - **没有开声卡**：本切片不调用 `yeban_engine::device`（红线 6 与 D19 都要求设备 I/O
-//!   单独裁决）。`process_quantum` 由控制面/测试线程显式驱动，因此在"设备回调"这条路上
-//!   它是**同一个函数**（`EngineRuntime::process_quantum` 就是 cpal 回调会调的那个），
-//!   但"由 cpal 回调驱动"这件事本身仍未接线（登记在 notes 的 pending）。
+//! - **开声卡了（2026-10-08 就地改正）**：本切片现在调用 `yeban_engine::device`
+//!   （[`EngineHost::open_device`] 走 `device::open_output` + `play()`）。原文写
+//!   「本切片不调用 `yeban_engine::device`（红线 6 与 D19 都要求设备 I/O 单独裁决）」
+//!   —— 复核两条裁决的**原文**后，这个理由是**不成立**的：
+//!   `AGENTS.md` §2 红线 6 是「**发行特性安全红线**：官方默认 release 构建中严禁默认开启
+//!   `mcp-http`、`ui-mcp`、`asio`、`experimental-vst3`、`experimental-als-export` 或
+//!   `experimental-logic-export`」；ADR-0001 **D19** 是「实时引擎与离线渲染**共用 PDC 算法**，
+//!   但离线侧不得被迫拖入 cpal」（裁决 = cpal 走 `yeban-engine` 的 `device` feature、
+//!   `yeban-render` 用 `default-features = false`）。**两条都没有禁止开声卡**：
+//!   红线 6 管的是"哪些 feature 不能默认开"，D19 管的是"离线渲染器不许被迫编译 cpal"。
+//!   事实上 `yeban-engine` 的 `default = ["device"]` ⇒ `cpal 0.18.2` **早就在**
+//!   `cargo tree -p yeban-app -e normal --locked` 的默认依赖图里，本票**没有**改任何
+//!   feature、没有加任何依赖。D19 的字面要求（app 里不出现 `cpal::*`）继续成立：
+//!   本文件只用 [`yeban_engine::device`] 的具名类型，裸 `cpal` 一个字都没有。
+//! - **今天怎么驱动**：三种形态，同一时刻只有一种（[`EngineHost::open_device`] 成功之后
+//!   控制面**不再**推进量子 —— `pump` / `drive_audio` 返回 0）：
+//!
+//!   | 形态 | 谁推进 `process_quantum` | 位置前进的驱动 |
+//!   | :--- | :--- | :--- |
+//!   | **设备腿**（有声卡） | cpal 回调线程（`device::open_output` 的闭包 → `device::render_callback`） | **真实时钟**（设备缓冲节拍） |
+//!   | **控制驱动**（无声卡 / `open_device` 失败） | 控制面显式 `pump(n)` / `drive_audio(n)` | 每次走带动作 **1** 个量子（既有形态，一位没变） |
+//!   | 无引擎（快照投影失败） | 没有 | 没有 |
+//!
+//!   ⚠ **两处仍然存在的缺口**（如实登记，本票**不实现**）：
+//!   ① `[ROAD-M2-001]` **实时线程优先级未实现** —— cpal 0.18 的 `realtime` feature 只覆盖
+//!   WASAPI / AAudio / PipeWire / JACK，macOS CoreAudio 与 Linux-ALSA 没有任何开关；
+//!   自实现要 `pthread_setschedparam`（= 新的 `libc` 依赖）⇒ **依赖图裁决**，不由本工作线
+//!   单独决定（`crates/yeban-engine/src/device.rs` 的模块文档与
+//!   `docs/ledger/engine-rt-notes.md` §4 同一条）。
+//!   ② **独占模式**：cpal 0.18 没有 WASAPI Exclusive 的 API ⇒
+//!   `ShareMode::PreferExclusive` 静默降级为共享、`ShareMode::RequireExclusive` 返回
+//!   `DeviceError::ExclusiveModeUnsupported`（宁可明确失败也不假装独占成功）。
+//!   ⚠ 还有一处**本票引入的新边界**：设备腿活跃时 `EngineRuntime` 归 cpal 回调线程所有
+//!   ⇒ [`EngineHost::engine_stats`] 返回 `None`（引擎累计统计不再可读）。走带读数仍可读
+//!   （`TransportMirror` 是 `Arc`），电平仍可读（独立 SPSC），快照槽计数仍可读
+//!   （`snapshot_counts`）。需要一个"跨线程只读的 `EngineStats` 镜像"才能补上 ——
+//!   **本票不做**（登记为 needs，不发明第二份统计来源）。
 //!
 //! ## 编辑 ⇒ 发声：增量发布 ＋ 退役回收心跳
 //!
@@ -70,6 +103,7 @@
 //! [ARCH-RT-001 / MUST-GATE-001]。
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
+use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
 use yeban_engine::ring::{EngineEvent, EventSender, TransportCommand, event_channel};
 use yeban_engine::rt::{EngineRuntime, EngineStats};
@@ -79,6 +113,18 @@ use yeban_engine::snapshot::{
 use yeban_engine::transport::{TransportMirror, TransportReading, TransportState};
 use yeban_model::EntityId;
 use yeban_model::project::YebanProjectV1;
+
+/// 走带命令等待设备回调确认的上界。
+///
+/// 设备腿活跃时命令只能**在下一个回调的块边界**生效（`render_block` 第 1 步出队）。
+/// 控制面因此要等引擎自己的读数确认（`TransportReading::commands_applied` 前进），
+/// 否则走带按钮会把**命令之前**的状态画回界面 —— 那是 UI 的假读数。
+/// 一台正常的声卡回调周期是 3–10 ms，250 ms 是 25–80 倍余量；超时**不**换来源，
+/// 只如实返回引擎此刻的读数（`quanta_pumped == 0`）。
+const DEVICE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// 设备腿轮询确认的间隔（控制线程；不是实时路径）。
+const DEVICE_COMMAND_POLL: std::time::Duration = std::time::Duration::from_millis(1);
 
 /// 退役队列容量（条）。
 ///
@@ -102,6 +148,13 @@ pub enum EngineHostError {
     Snapshot(SnapshotError),
     /// 还没有一代引擎（`reload` 从未成功过）⇒ 没有槽可以发布。
     NoEngine,
+    /// **设备腿**打开失败（[`EngineHost::open_device`]）：设备不存在 / 采样率不支持 /
+    /// 格式不是 `f32` / 要求独占模式 / 后端错误。
+    ///
+    /// 变体直接承载引擎侧的 [`DeviceError`]（**不**翻译、**不**吞掉）—— 引擎是设备
+    /// 错误码的**唯一**权威（与 D25 同一条纪律：不发明第二套错误码）。
+    /// 打开失败时**既有引擎一位不动**（控制驱动形态可继续用）。
+    Device(DeviceError),
 }
 
 impl core::fmt::Display for EngineHostError {
@@ -109,6 +162,7 @@ impl core::fmt::Display for EngineHostError {
         match self {
             Self::Snapshot(error) => write!(formatter, "引擎快照投影失败: {error}"),
             Self::NoEngine => write!(formatter, "还没有一代引擎 (reload 从未成功过)"),
+            Self::Device(error) => write!(formatter, "音频设备打开失败: {error}"),
         }
     }
 }
@@ -118,6 +172,7 @@ impl core::error::Error for EngineHostError {
         match self {
             Self::Snapshot(error) => Some(error),
             Self::NoEngine => None,
+            Self::Device(error) => Some(error),
         }
     }
 }
@@ -243,6 +298,68 @@ impl EngineRebuild {
     }
 }
 
+/// 一次**设备腿打开**的读数（[`EngineHost::open_device`]）。
+///
+/// 每个数字都来自**引擎侧**：设备名来自 `device::OutputStreamHandle::device_name()`，
+/// 采样率 / 通道数 / 块长接受与否来自 `device::NegotiatedConfig`，`carryover_quanta`
+/// 来自新运行时自己的 `EngineStats::quanta`（不是"推算"的）。
+///
+/// 刻意**不**携带任何 `cpal::*` 类型（D19）：`sample_format` 恒为 `f32`（协商不成就返回
+/// `DeviceError::UnsupportedSampleFormat`），因此这里不重复登记它；`buffer_size` 的
+/// 原始形态（`BufferSize::Fixed/Default`）由 `fixed_block_accepted` + `block_frames`
+/// 两个**纯量**表达。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceOpening {
+    /// 设备的显示名（`device::OutputStreamHandle::device_name()` 直读）。
+    pub device_name: String,
+    /// 通道数（协商结果）。
+    pub channels: u16,
+    /// 采样率（Hz，协商结果）。
+    pub sample_rate: u32,
+    /// **实际**共享模式：当前实现恒为 [`ShareMode::Shared`]（独占不可用，见模块文档缺口 ②）。
+    pub share_mode: ShareMode,
+    /// 请求的每回调帧数是否被后端接受为 `BufferSize::Fixed`。
+    pub fixed_block_accepted: bool,
+    /// 请求的每回调帧数（`EngineConfig::block_frames`）。
+    pub block_frames: u32,
+    /// 把新运行时**带到当前走带位置**所推的量子数（交设备之前，控制面自己推的）。
+    pub carryover_quanta: u64,
+    /// 交接时引擎上报的走带位置（960 PPQ tick）—— 设备腿的起点。
+    pub carryover_position_ticks: u64,
+    /// 交接时引擎上报的走带状态（`Playing` ⇒ 已入队一条 `Play`，由设备回调生效）。
+    pub carryover_state: TransportState,
+}
+
+/// **一代引擎的四个端点 + 渲染驱动**（[`EngineHost::reload`] 与
+/// [`EngineHost::open_device`] 用**同一份**构造）。
+///
+/// 抽出来是为了让"设备腿"能先造一个**全新**的运行时，只有在
+/// `device::open_output` **和** `play()` 都成功之后才换掉手里那一代 ——
+/// 这样"打开设备失败"绝不会把正在用的引擎弄丢（优雅降级的结构性保证）。
+struct FreshRuntime {
+    runtime: EngineRuntime,
+    retire: RetireQueue,
+    events: EventSender,
+    mirror: std::sync::Arc<TransportMirror>,
+    collector: MeterCollector,
+}
+
+/// 用**当前快照槽**造一套全新端点（`EngineRuntime::new` 要求全部通道在开设备之前建立）。
+fn fresh_runtime(slot: &std::sync::Arc<SnapshotSlot>) -> FreshRuntime {
+    let (retire_producer, retire) = retire_channel(RETIRE_CAPACITY);
+    let (events, event_receiver) = event_channel(EVENT_CAPACITY);
+    let (publisher, collector) = meter_channel(DEFAULT_METER_CAPACITY);
+    let runtime = EngineRuntime::new(slot, retire_producer, event_receiver, publisher);
+    let mirror = std::sync::Arc::clone(runtime.transport_mirror());
+    FreshRuntime {
+        runtime,
+        retire,
+        events,
+        mirror,
+        collector,
+    }
+}
+
 /// 一次走带动作的**记录**（走带接线判据的注入点）。
 ///
 /// 它存在的唯一理由是"控件树里有这个元素"**不能**当作"回调接线了"的证据
@@ -291,6 +408,12 @@ pub struct EngineHost {
     events: Option<EventSender>,
     /// RT → UI 的走带读数镜面（与 `EngineRuntime` 里那一份是**同一个** `Arc`）。
     transport_mirror: Option<std::sync::Arc<TransportMirror>>,
+    /// **设备腿**：已经交给真实声卡的那条流（[`EngineHost::open_device`]）。
+    ///
+    /// `Some` ⇒ `runtime` 是 `None`（`EngineRuntime` 已经 **move 进** cpal 的回调闭包，
+    /// 它必须在**音频线程**上活着）；同一时刻只有一种驱动形态，见模块文档。
+    /// 丢掉这个句柄 = cpal 的 `Drop` 停流 ⇒ 引擎回到"没有运行时"的形态。
+    device: Option<OutputStreamHandle>,
     /// 走带动作日志（控制线程私有；判据的注入点，见 [`TransportActionRecord`]）。
     journal: Vec<TransportActionRecord>,
 }
@@ -321,9 +444,39 @@ impl EngineHost {
     }
 
     /// 是否有一代活的引擎。
+    ///
+    /// **两种驱动形态都算"活着"**：控制驱动（`runtime` 在手里）与设备腿
+    /// （`runtime` 在 cpal 回调线程上，见 [`EngineHost::open_device`]）。
     #[must_use]
     pub const fn has_engine(&self) -> bool {
-        self.runtime.is_some()
+        self.runtime.is_some() || self.device.is_some()
+    }
+
+    /// **设备腿**是否活跃（`open_device` 成功且流已 `play()`）。
+    #[must_use]
+    pub const fn device_active(&self) -> bool {
+        self.device.is_some()
+    }
+
+    /// 设备腿那台设备的显示名（没有设备腿 ⇒ `None`）。
+    #[must_use]
+    pub fn device_name(&self) -> Option<&str> {
+        self.device.as_ref().map(OutputStreamHandle::device_name)
+    }
+
+    /// 设备腿的**后端错误计数**（cpal 错误回调只做一次原子自增 [红线 7]；
+    /// 没有设备腿 ⇒ `None`）。它由 `OutputStreamHandle::backend_errors()` 直读。
+    #[must_use]
+    pub fn device_backend_errors(&self) -> Option<u64> {
+        self.device.as_ref().map(OutputStreamHandle::backend_errors)
+    }
+
+    /// 关掉设备腿（停流并丢掉那一代运行时）。返回"之前是否活跃"。
+    ///
+    /// 调用点：① [`EngineHost::reload`] 的开头（换代必然换驱动形态，同一时刻只允许
+    /// 一个驱动）；② 窗口关闭时宿主整体 `Drop`（`OutputStreamHandle` 的 `Drop` 停流）。
+    pub fn close_device(&mut self) -> bool {
+        self.device.take().is_some()
     }
 
     /// **重建引擎**：投影新快照 → 建新队列 → 推 `quanta` 个量子 → 交还消费端。
@@ -331,6 +484,11 @@ impl EngineHost {
     /// `quanta = 0` 是合法的（只重建、不推进）；但**失败必须被上报**：快照投影失败时
     /// 旧的一代**原样保留**（不做半更新），调用方拿到 `Err` 后界面上的引擎仍是上一代 ——
     /// 这比"清空成空引擎"诚实得多。
+    ///
+    /// ⚠ **换代必然先关掉设备腿**（同一时刻只有一个驱动形态）：新的一代是**控制驱动**的
+    /// 一代，要重新交回设备请再调一次 [`EngineHost::open_device`]。关闭发生在投影**之前**
+    /// 还是之后有区别吗？发生在**成功投影之后、装机之前**没有意义（失败要保留旧的一代，
+    /// 而旧的一代可能就是设备腿）—— 因此关设备腿放在**投影成功之后**。
     ///
     /// # Errors
     ///
@@ -342,18 +500,24 @@ impl EngineHost {
     ) -> Result<EngineRebuild, EngineHostError> {
         let generation = self.generation.saturating_add(1);
         let revision = self.snapshot_revision.saturating_add(1);
-        // 第 1 步：真的投影快照（失败在这里就返回，旧的一代不动）。
+        // 第 1 步：真的投影快照（失败在这里就返回，旧的一代不动 —— 包括设备腿）。
         let snapshot = EngineSnapshot::from_project(project, revision)?;
         let tracks = snapshot.tracks().len();
         let channels = snapshot.channels().max(1);
 
-        // 第 2 步：四样东西全是新的。事件**生产端**保留下来（走带命令从这里进引擎）。
+        // 第 1.5 步：投影已经成功 ⇒ 现在可以安全地放下旧驱动（旧设备腿在这里停流）。
+        self.close_device();
+
+        // 第 2 步：四样东西全是新的（与设备腿走**同一份**构造 [`fresh_runtime`]）。
+        // 事件**生产端**保留下来（走带命令从这里进引擎）。
         let slot = SnapshotSlot::new(snapshot);
-        let (retire_producer, retire) = retire_channel(RETIRE_CAPACITY);
-        let (events, event_receiver) = event_channel(EVENT_CAPACITY);
-        let (publisher, collector) = meter_channel(DEFAULT_METER_CAPACITY);
-        let mut runtime = EngineRuntime::new(&slot, retire_producer, event_receiver, publisher);
-        let mirror = std::sync::Arc::clone(runtime.transport_mirror());
+        let FreshRuntime {
+            mut runtime,
+            retire,
+            events,
+            mirror,
+            collector,
+        } = fresh_runtime(&slot);
 
         // 第 3 步：真的推量子。
         //
@@ -412,6 +576,114 @@ impl EngineHost {
             "引擎的结构性契约: 每量子恰好一次电平批量发布 [ROAD-M2-007]"
         );
         Ok(rebuild)
+    }
+
+    // -----------------------------------------------------------------------
+    // 设备腿：把这一代引擎交给真实声卡（真实时钟驱动音频线程）
+    // -----------------------------------------------------------------------
+
+    /// **把这一代引擎交给真实声卡**（`yeban_engine::device`；`ROAD-M2-001` 的接线那一半）。
+    ///
+    /// 顺序是契约 —— 每一步失败都留下一个**仍然可用**的产品：
+    ///
+    /// 1. **先造一套新端点**（[`fresh_runtime`]）：手里那一代（可能是控制驱动，也可能是
+    ///    已经在跑的设备腿）**一位不动**；
+    /// 2. **把新运行时带到当前走带位置**：往**新**事件通道发 `Stop` + `SeekTicks(位置)`，
+    ///    再在新运行时上推**一个**量子让命令在块边界生效。少了这一步，新运行时是
+    ///    "自由跑在 tick 0"的默认值 ⇒ 开设备会把播放位置重置成 0 —— 那等于**另造一条
+    ///    未初始化的音频路径**，本票不许有。交接时在播放的话再补一条 `Play`：
+    ///    它由**设备回调**在下一个块边界生效，因此**不丢帧**；
+    /// 3. `device::open_output(&config, 新运行时)`：失败 ⇒ 丢掉新端点、返回
+    ///    [`EngineHostError::Device`]，手里那一代继续按**控制驱动**形态工作；
+    /// 4. `handle.play()`：失败 ⇒ 流被 `Drop`（停流），**仍然**不动手里那一代；
+    /// 5. 只有 1–4 全成功才装机：换掉 `events` / `transport_mirror` / `retire` /
+    ///    `collector`，`runtime` 置 `None`（它已经 **move 进** cpal 的回调闭包，必须在
+    ///    音频线程上活着），`device = Some(handle)`。
+    ///
+    /// 返回 `(读数, 电平消费端)`：消费端**必须**被 UI 线程采纳（与
+    /// [`EngineRebuild::collector`] 同一条纪律），否则设备腿发布的电平没有人抽。
+    ///
+    /// ⚠ 已经有一个活跃设备腿时调用它：旧腿在**装机那一步**才停（`close_device`）。
+    /// ⚠ 之后 [`EngineHost::engine_stats`] 返回 `None`（运行时在音频线程上，见模块文档）。
+    ///
+    /// # Errors
+    ///
+    /// - [`EngineHostError::NoEngine`]：还没有一代引擎（没有快照槽可挂）；
+    /// - [`EngineHostError::Device`]：设备不存在 / 采样率不支持 / 格式不是 `f32` /
+    ///   要求独占模式 / 后端错误 —— **全部是返回值，绝不 panic**（`device.rs` 硬要求 #1）。
+    pub fn open_device(
+        &mut self,
+        config: EngineConfig,
+    ) -> Result<(DeviceOpening, MeterCollector), EngineHostError> {
+        // 1) 新端点（旧的一代一位不动）。
+        let Some(slot) = self.slot.as_ref().map(std::sync::Arc::clone) else {
+            return Err(EngineHostError::NoEngine);
+        };
+        let channels = slot.current().channels().max(1);
+        let before = self.transport();
+        let FreshRuntime {
+            mut runtime,
+            retire,
+            mut events,
+            mirror,
+            collector,
+        } = fresh_runtime(&slot);
+
+        // 2) 交接走带状态（只在**新**运行时上推量子）。
+        let mut scratch = vec![0.0_f32; DEFAULT_BLOCK_FRAMES * usize::from(channels)];
+        let carryover = [
+            EngineEvent::Transport {
+                command: TransportCommand::Stop,
+            },
+            EngineEvent::Transport {
+                command: TransportCommand::SeekTicks(before.position_ticks),
+            },
+        ];
+        let written = events.publish(&carryover);
+        debug_assert_eq!(written, carryover.len(), "交接命令必须全部被通道接受");
+        runtime.process_quantum(&mut scratch, channels);
+        let carryover_stats = runtime.stats();
+        if before.state.is_running() {
+            let resume = [EngineEvent::Transport {
+                command: TransportCommand::Play,
+            }];
+            let written = events.publish(&resume);
+            debug_assert_eq!(written, 1, "交接的 Play 必须被通道接受");
+        }
+
+        // 3) 开设备（失败 ⇒ 手里那一代一位不动）。
+        let handle = match yeban_engine::device::open_output(&config, runtime) {
+            Ok(handle) => handle,
+            Err(error) => return Err(EngineHostError::Device(error)),
+        };
+        // 4) 启流（失败 ⇒ 流被 Drop、手里那一代一位不动）。
+        if let Err(error) = handle.play() {
+            return Err(EngineHostError::Device(error));
+        }
+        let negotiated = *handle.negotiated();
+        let device_name = handle.device_name().to_owned();
+
+        // 5) 装机（只有到这里，旧的一代才被替换）。
+        self.close_device();
+        self.runtime = None;
+        self.events = Some(events);
+        self.transport_mirror = Some(mirror);
+        self.retire = Some(retire);
+        self.device = Some(handle);
+        Ok((
+            DeviceOpening {
+                device_name,
+                channels: negotiated.channels,
+                sample_rate: negotiated.sample_rate,
+                share_mode: negotiated.share_mode,
+                fixed_block_accepted: negotiated.fixed_block_accepted,
+                block_frames: config.block_frames,
+                carryover_quanta: carryover_stats.quanta,
+                carryover_position_ticks: before.position_ticks,
+                carryover_state: before.state,
+            },
+            collector,
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -534,6 +806,12 @@ impl EngineHost {
     ///
     /// `EngineStats::snapshot_switches` 是"音频读路径真的换了快照"的见证
     /// （它是 `SnapshotReader::begin_block` 里计的数）。
+    ///
+    /// ⚠ **设备腿活跃时返回 `None`**：那一代的 `EngineRuntime` 已经 move 进 cpal 回调，
+    /// 控制线程拿不到它。走带读数（`TransportMirror`）、电平（独立 SPSC）与快照槽计数
+    /// （[`EngineHost::snapshot_counts`]）不受影响。要在这里也读到统计，需要一份
+    /// "跨线程只读的 `EngineStats` 镜像" —— **本票不做**（登记为 needs，不发明第二份
+    /// 统计来源）。
     #[must_use]
     pub fn engine_stats(&self) -> Option<EngineStats> {
         self.runtime.as_ref().map(EngineRuntime::stats)
@@ -561,21 +839,33 @@ impl EngineHost {
     }
 
     /// 是否有一代活着的引擎（走带命令只有在这种情况下才发得出去）。
+    ///
+    /// ⚠ 设备腿活跃时 `runtime` 是 `None`（它在 cpal 回调线程上），因此这里的判据
+    /// **不能**只看 `runtime` —— 否则"接了声卡"会让走带整体失能。
     #[must_use]
     pub fn transport_ready(&self) -> bool {
-        self.runtime.is_some() && self.events.is_some()
+        self.has_engine() && self.events.is_some()
     }
 
-    /// 发一批走带命令并**推一个量子**让它们生效，返回命令应用之后的读数。
+    /// 发一批走带命令，返回**命令应用之后**的读数。
     ///
-    /// 为什么"发完还要推量子"：命令是在**量子边界**由实时侧出队应用的
+    /// 为什么"发完还要让边界到来"：命令是在**量子边界**由实时侧出队应用的
     /// （`EngineRuntime::render_block` 第 1 步）。没有设备回调时，唯一让边界到来的
-    /// 方式就是控制面显式推量子 —— 这正是本 crate 既有的边界
-    /// （`engine_host.rs` 模块文档："实时线程今天由控制面/测试线程显式驱动"）。
-    /// 真实设备接管之后，这里的推量子会被设备时钟取代，而**命令通道不变**。
+    /// 方式就是控制面显式推量子。
     ///
-    /// 推的量子数是 `1`：走带位置会因此前进一个运行时量子（128 帧）。这是当前
-    /// "没有声卡"形态的**已知代价**，不是走带的语义（写在 notes 的未实现项里）。
+    /// 两种驱动形态在这里**分开**（本票新增；见模块文档的形态表）：
+    ///
+    /// | 形态 | 让命令生效的方式 | `quanta_pumped` |
+    /// | :--- | :--- | :--- |
+    /// | 控制驱动（无声卡 / 开设备失败） | 控制面 `pump(1)`（既有形态，一位没变） | `1` |
+    /// | 设备腿（有声卡） | **设备回调**在下一个块边界出队（等 `commands_applied` 前进） | `0` |
+    ///
+    /// 设备腿那一支**必须等确认**：不等就会把"命令之前"的状态画回界面（UI 的假读数）。
+    /// 等待是**有界的**（[`DEVICE_COMMAND_TIMEOUT`]，250 ms ≈ 回调周期的 25–80 倍），
+    /// 超时**不换来源**，如实返回引擎此刻的读数。
+    ///
+    /// 控制驱动的**已知代价**：走带位置会因此前进一个运行时量子（128 帧）—— 那是
+    /// "没有声卡"形态的代价，不是走带的语义。设备腿形态没有这个代价（推进由真实时钟给出）。
     pub fn send_transport(&mut self, commands: &[TransportCommand]) -> TransportReading {
         if !self.transport_ready() {
             return TransportReading::cold();
@@ -584,10 +874,17 @@ impl EngineHost {
             .iter()
             .map(|command| EngineEvent::Transport { command: *command })
             .collect();
+        let expected = commands.len() as u64;
         if let Some(sender) = self.events.as_mut() {
             sender.publish(&events);
         }
-        let pumped = self.pump(1);
+        let pumped = if self.runtime.is_some() {
+            self.pump(1)
+        } else {
+            // 设备腿：等引擎自己的读数确认（`TransportReading::commands_applied`）。
+            let _confirmed = self.await_device_commands(expected);
+            0
+        };
         let reading = self.transport();
         for command in commands {
             self.journal.push(TransportActionRecord {
@@ -600,10 +897,35 @@ impl EngineHost {
         reading
     }
 
+    /// 等设备回调把**至少** `expected` 条命令应用掉（控制线程，有界轮询）。
+    ///
+    /// 判据是引擎自己的读数（[`TransportReading::commands_applied`]）前进，不是猜意图：
+    /// 每条命令（含幂等的 `Play`/`Stop`）都会让那个计数器 `+1`（`Transport::apply`）。
+    /// 返回"是否在超时之前确认"。超时不是错误：调用方仍会读到引擎此刻的**真实**读数。
+    fn await_device_commands(&self, expected: u64) -> bool {
+        let Some(mirror) = self.transport_mirror.as_ref() else {
+            return false;
+        };
+        let target = mirror.read().commands_applied.saturating_add(expected);
+        let deadline = std::time::Instant::now() + DEVICE_COMMAND_TIMEOUT;
+        loop {
+            if mirror.read().commands_applied >= target {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(DEVICE_COMMAND_POLL);
+        }
+    }
+
     /// 推 `quanta` 个运行时量子（每个量子 [`DEFAULT_BLOCK_FRAMES`] 帧），返回实际推进数。
     ///
     /// 它是"走带路径的控制线程推量子"：推完顺带 `drain` 一次退役队列（历史形态，见
     /// [`Self::drive_audio`]）。没有引擎时返回 0（不 panic、不假装推进过）。
+    ///
+    /// ⚠ **设备腿活跃时恒返回 0**：那一代的 `EngineRuntime` 在 cpal 回调线程上，
+    /// 控制面推不了、也**不许**推（推了就是第二条音频路径）。推进由真实时钟负责。
     pub fn pump(&mut self, quanta: u64) -> u64 {
         let driven = self.drive_audio(quanta);
         self.drain_retired();
@@ -617,6 +939,8 @@ impl EngineHost {
     /// （[`Self::heartbeat`]）。生产 GUI 里音频侧由设备时钟驱动、控制线程不再调
     /// `pump`，因此"读者换了快照、但还没人回收"这个窗口是真实存在的 —— 判据用本函数
     /// 把它造出来，用来证明心跳的 `drain` 腿有牙。
+    ///
+    /// ⚠ 设备腿活跃时返回 0（运行时不在控制线程手里）。
     pub fn drive_audio(&mut self, quanta: u64) -> u64 {
         let Some(runtime) = self.runtime.as_mut() else {
             return 0;

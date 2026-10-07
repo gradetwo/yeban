@@ -47,7 +47,7 @@ use slint::{ModelRc, SharedString, VecModel};
 use yeban_engine::transport::TransportReading;
 
 use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
-use crate::engine_host::{EditMark, EngineHost, EngineHostError, HeartbeatReadings};
+use crate::engine_host::{DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings};
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
@@ -1786,7 +1786,7 @@ pub enum MeterPump {
 /// `if let Err(error) = engine.reload(&project, 0) { … }` —— 于是 `Ok` 那一侧
 /// **整个被丢掉**，而 `Ok` 装的 [`crate::engine_host::EngineRebuild`] 里就有
 /// [`crate::engine_host::EngineRebuild::collector`]（新引擎的电平消费端，
-/// `engine_host.rs:224` 的注释写着"**UI 线程必须采纳它**"）。
+/// `engine_host.rs:289` 的注释写着"**UI 线程必须采纳它**"）。
 /// 后果有两条，都在生产窗口里：引擎侧那条 SPSC **没有消费者**（满则丢最新帧），
 /// 而界面上的电平表永远停在 `apply_view` 写下的静音值。
 ///
@@ -1846,6 +1846,28 @@ impl ProductionLoop {
             engine: Rc::new(RefCell::new(EngineHost::new())),
             meters: MeterRuntime::empty(),
         }
+    }
+
+    /// **设备腿**：把这一代引擎真的交给声卡（[`EngineHost::open_device`]）。
+    ///
+    /// 与 [`Self::start`] 同一条纪律：`EngineHost::open_device` 交出的电平**消费端**
+    /// 是所有权，必须在这里被采纳 —— 否则设备腿发布的电平没有人抽，界面上的电平表
+    /// 停在最后一次控制驱动的读数上（那是**假绿**：表在动，但动的是旧驱动）。
+    ///
+    /// 失败**不改**本循环的任何状态（`EngineHost::open_device` 的 1–4 步都不动手里那一代）
+    /// ⇒ 调用方拿到 `Err` 后产品仍然按控制驱动形态工作。
+    ///
+    /// # Errors
+    ///
+    /// [`EngineHostError::NoEngine`]（还没 `start` 过）或 [`EngineHostError::Device`]
+    /// （设备不存在 / 采样率不支持 / 格式不是 `f32` / 独占模式 / 后端错误）。
+    pub fn open_device(
+        &mut self,
+        config: yeban_engine::device::EngineConfig,
+    ) -> Result<DeviceOpening, EngineHostError> {
+        let (opening, collector) = self.engine.borrow_mut().open_device(config)?;
+        self.meters.adopt(collector);
+        Ok(opening)
     }
 
     /// 引擎在这个进程里活没活着（`reload` 成功过）。

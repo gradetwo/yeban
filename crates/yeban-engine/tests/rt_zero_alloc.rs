@@ -35,7 +35,7 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 十三个场景（在既有 `harness = false` 风格上扩展）
+//! # 十四个场景（在既有 `harness = false` 风格上扩展）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -52,12 +52,14 @@
 //! | ⑰ | PDC 补偿延迟线：2 000 量子稳态 + 1 000 量子跨快照**重新武装**（32 → 96 帧） | `CompensationBank::rearm` 的 `set_delay` 分支 + 逐样本环形延迟读写（`ROAD-M2-004` 接线之后新增；行为判据在 `tests/pdc_mix_path.rs`） |
 //! | ⑱ | 退役队列欠容（容量 1 + 控制面**故意**不排空）64 轮 | `SnapshotReader::retire_or_stash` 的 `PushError::Full` 分支 ⇒ `note_suppressed(SnapshotRetireStash)`（`N6` 选项 A） |
 //! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A） |
+//! | ⑳ | 设备回调体 2 000 次（`yeban_engine::device::render_callback`） | cpal 建流的闭包、`NullBackend::render` 与判据调用的**同一个**函数 ⇒ "回调里多做了事"（分配/锁/I-O/日志）在这里变红；**feature `device` 门控**（`--no-default-features` 下本场景不跑） |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
 //! | 路径 | 状态 | 事实 |
 //! | :--- | :--- | :--- |
-//! | cpal 真回调线程 / 设备开流关流 | **未覆盖** | 需要 `device` feature（cpal）与一台有声卡的机器；本机按纪律不编译重依赖，托管 runner 无音频设备 ⇒ 登记为 needs，**不用** `NullBackend` 冒充 |
+//! | cpal **回调体**（`device::render_callback`） | **已覆盖（⑳）** | 回调体是具名函数，本判据对它直接武装计数器（2 000 次调用 ⇒ 四元组全 0 + 量子记账 == 2 001） |
+//! | cpal 真回调线程 / 设备开流关流（`build_output_stream` → `play()`） | **未覆盖** | 需要 `device` feature（cpal）与一台有声卡的机器；本机按纪律不编译重依赖，托管 runner 无音频设备 ⇒ 登记为 needs。⑳ 覆盖的是**回调体**，不是"流真的被驱动"——**不用** `NullBackend` 冒充 |
 //! | 插件（VST3/CLAP）路径 | **不存在** | `yeban-plugin-host` / `yeban-vst` 是**故意空的**骨架（v2.0.0 阶段，见 `AGENTS.md` 附录 C.4）⇒ 没有路径可覆盖，不是缺口 |
 //! | 采样器磁盘流式读 | **不存在** | `yeban-sfz` 尚未接入 `synth`（`synth` 目前是内置波表） |
 //! | **退役队列欠容 / 电平容量溢出** | **已覆盖（纯计数）** | `N6` 裁决 = **选项 A** 已落地：这两条溢出分支（`SnapshotReader::retire_or_stash` 的 `PushError::Full` 与 `EngineRuntime::render_block` 的电平容量不足）**只调** `rt_probe::note_suppressed` —— 一个**不读** `SINK` 的纯计数出口（`crates/yeban-engine/src/rt_probe.rs`）。本文件新增两条场景把它们纳入覆盖集：⑱ 退役队列容量 1 + 控制面不排空；⑲ 轨道数 `SCRATCH_METERS + 44`。两条都断言**四元组全 0**（含 `io_requests == 0 && io_ops == 0`，而 witness sink 是**真的装着**的）**且** `suppressed_diag_events > 0`（那条出口真的被走到 ⇒ "零 I/O"是**跑出来的**，不是"没跑到"）。历史（选项 A 之前，**实测**）：这两条路径走的是 `diag`，在装了 sink 的判据二进制里实测 `io_requests == io_ops`（退役欠容 `400`、电平容量 `10000`）⇒ 当时它们**不在**本判据的覆盖集内，且"实时路径上从不产生诊断事件"**不成立** |
@@ -80,7 +82,7 @@
 //! 否则"控制面能看见"就要拿渲染路径来换。⑫b 同时实测**注入口径**：
 //! `Vec::new()` 不分配（无效注入），`Vec::with_capacity(1)` 才分配（有效注入）。
 //!
-//! # 本判据怎么变红（八组注入，实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4 与 §12）
+//! # 本判据怎么变红（十组注入，实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4 与 §12）
 //!
 //! | # | 注入点（`crates/yeban-engine/src/`） | 变红的判据 |
 //! | :-: | :--- | :--- |
@@ -93,6 +95,7 @@
 //! | I7 | 同上的分支里按"有轨 `volume_db > 0`"（= 编辑已生效）加一次分配 | **仅** ⑮（播放中的编辑/撤销） |
 //! | I8 | `events.drain_with` 的闭包里按 `applied == SCRATCH_EVENTS` 加一次分配 | **仅** ⑯（满批出队边界） |
 //! | I9 | `rt.rs::render_block` 的电平容量不足分支把 `note_suppressed` **换回** `rt_probe::diag` | **仅** ⑲（溢出路径的 I/O 分量） |
+//! | I10 | `device.rs::render_callback` 里加一次 `Vec::<u8>::with_capacity(1)`（或 `Mutex::lock` / `println!`） | **仅** ⑳（设备回调体）—— ①~⑲ 全部不动（它们不执行那个函数） |
 //!
 //! # I9 的实测记录（`N6` 选项 A 的验收证据；本节只在本文件里留档，账本由集成者补记）
 //!
@@ -1824,6 +1827,78 @@ fn oversized_meter_snapshot(revision: u64) -> EngineSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 ⑳：**设备回调体**（`device::render_callback`）—— cpal 闭包调用的同一个函数
+// ---------------------------------------------------------------------------
+
+/// ⑳ 的量子数（回调体被调用的次数）。
+#[cfg(feature = "device")]
+const CALLBACK_BODY_QUANTA: u64 = 2_000;
+/// ⑳ 的预热量子数（`Rig::preheat` 一次）—— 记账期望值要把这一笔算进去。
+#[cfg(feature = "device")]
+const CALLBACK_BODY_PREHEAT: u64 = 1;
+
+/// ⑳ **设备回调体**：`yeban_engine::device::render_callback`。
+///
+/// 为什么这是一个**新的**被测对象（而不是 ⑬ 的重复）：⑬ 把 `process_quantum` 当被测对象，
+/// 而"cpal 回调里到底做了什么"此前只存在于 `device.rs` 一个**匿名闭包**里 ——
+/// 往里加一次 `Vec::with_capacity(1)` 或一次 `println!`，⑬ 与 ① 一条都不会红
+/// （它们根本不会执行那个闭包）。`render_callback` 是把回调体抽成具名函数之后的
+/// 那个函数：cpal 建流的闭包、`NullBackend::render` 与本场景调用**同一个**函数，
+/// 因此"回调里多做了事"在这里会当场变红。
+///
+/// ⚠ **覆盖边界**：本场景覆盖**回调体**；cpal 的**闭包/流**（`build_output_stream`
+/// → `play()` → 真回调线程）**仍然未覆盖** —— 那需要一台有声卡的机器。
+/// 本场景**不**用 `NullBackend` 冒充设备：它测的是"回调体"这个函数，
+/// 不是"设备被打开"这件事。
+#[cfg(feature = "device")]
+fn scenario_device_callback_body(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+    rig.send_transport(TransportCommand::Play);
+    rig.reserve_output(DEFAULT_BLOCK_FRAMES * 2);
+
+    let mut scenario = Scenario::new("⑳设备回调体");
+    let reading = window(|| {
+        for _ in 0..CALLBACK_BODY_QUANTA {
+            let Rig {
+                runtime, output, ..
+            } = &mut rig;
+            yeban_engine::device::render_callback(
+                runtime,
+                &mut output[..DEFAULT_BLOCK_FRAMES * 2],
+                2,
+            );
+        }
+    });
+    scenario.absorb(CALLBACK_BODY_QUANTA, &reading);
+
+    let stats = rig.stats();
+    let expected = CALLBACK_BODY_PREHEAT + CALLBACK_BODY_QUANTA;
+    scenario.note(format!(
+        "回调体 `yeban_engine::device::render_callback` 被调用 {CALLBACK_BODY_QUANTA} 次 \
+         ⇒ 量子 {}（期望 {expected} = 预热 {CALLBACK_BODY_PREHEAT} + {CALLBACK_BODY_QUANTA}）；\
+         走带位置 {} tick",
+        stats.quanta, stats.position_ticks,
+    ));
+    report.scenario(
+        "⑳",
+        "[MUST-GATE-001] 设备回调体（`render_callback`，cpal 闭包调用的同一个函数）：四元组全 0",
+        &scenario,
+    );
+    // 记账见证：防"回调体没被跑到 ⇒ 读数全 0"的假绿。
+    report.assert(
+        "⑳-记账",
+        "[MUST-GATE-001] 设备回调体的量子记账见证（跑到了才可能全 0）",
+        stats.quanta == expected,
+        format!(
+            "quanta={} 期望={expected}（预热 {CALLBACK_BODY_PREHEAT} + 窗口 {CALLBACK_BODY_QUANTA}）",
+            stats.quanta
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ⑦ 探针有牙（正对照：非 RT 路径上让读数非 0）
 // ---------------------------------------------------------------------------
 
@@ -2271,6 +2346,8 @@ fn main() -> ExitCode {
     scenario_pdc_delay_lines(&mut report);
     scenario_retire_queue_overflow(&mut report);
     scenario_meter_capacity_overflow(&mut report);
+    #[cfg(feature = "device")]
+    scenario_device_callback_body(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);

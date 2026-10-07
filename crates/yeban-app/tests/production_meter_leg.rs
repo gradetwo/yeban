@@ -9,7 +9,7 @@
 //! ```
 //!
 //! `Ok` 那一侧**整个被丢掉**，而 `Ok` 装的 `EngineRebuild` 里有 `collector`
-//! （新引擎的电平消费端，`crates/yeban-app/src/engine_host.rs:224` 的注释写着
+//! （新引擎的电平消费端，`crates/yeban-app/src/engine_host.rs:289` 的注释写着
 //! "**UI 线程必须采纳它**"）。后果：引擎侧那条 SPSC 没有消费者，而生产窗口里的
 //! 电平表永远不动。
 //!

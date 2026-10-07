@@ -183,7 +183,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ② **采纳** `reload` 交出的电平消费端（`EngineRebuild::collector`）。
     //    ⛔ 这一条以前被丢掉：`if let Err(error) = engine.reload(..)` 只看了错误那一侧，
     //    于是引擎侧那条 SPSC 没有消费者，界面上的电平表永远不动
-    //    （`crate::meters` 的模块文档与 `engine_host.rs:224` 都要求 UI 线程采纳它）。
+    //    （`crate::meters` 的模块文档与 `engine_host.rs:289` 都要求 UI 线程采纳它）。
     //    现在"建引擎 + 采纳消费端 + 每一跳"都住在 [`host::ProductionLoop`] 里，
     //    生产路径与判据走同一段代码。
     //
@@ -233,15 +233,16 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         &loaded,
         now_ms,
     )?));
-    let engine = host::ProductionLoop::start(&loaded.archive.project, 0).unwrap_or_else(|error| {
-        // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
-        // 但走带回调会明确报告"没有引擎"，而不是静默地假装在播。
-        // ⛔ 这一段与接电平之前**逐字相同** —— 电平腿不许改这条语义。
-        cli::emit(&[format!(
-            "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
-        )]);
-        host::ProductionLoop::without_engine()
-    });
+    let mut engine =
+        host::ProductionLoop::start(&loaded.archive.project, 0).unwrap_or_else(|error| {
+            // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
+            // 但走带回调会明确报告"没有引擎"，而不是静默地假装在播。
+            // ⛔ 这一段与接电平之前**逐字相同** —— 电平腿不许改这条语义。
+            cli::emit(&[format!(
+                "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
+            )]);
+            host::ProductionLoop::without_engine()
+        });
     if engine.has_engine() {
         // 初始快照**就是**这份工程的投影 ⇒ 记下开局标记，免得第一次心跳白发一份
         // （`reload` 不知道"这一份投影对应哪个撤销标记"，只有装配点知道）。
@@ -251,6 +252,47 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             .borrow_mut()
             .mark_applied(EditMark::from_display(&undo_port.display()));
         engine.engine_handle().borrow_mut().stop();
+    }
+    // -----------------------------------------------------------------------
+    // 设备腿（本票）：把这一代引擎真的交给声卡 —— **真实时钟驱动音频线程**
+    // -----------------------------------------------------------------------
+    //
+    // 为什么放在 `stop()` **之后**：`EngineHost::open_device` 把新运行时带到**当前**
+    // 走带位置（`Stop` + `SeekTicks(位置)`），因此这一步不会把播放位置重置成 tick 0。
+    //
+    // 为什么走 `yeban_engine::device` 而不是自己写 cpal 调用：`device.rs` 早就把
+    // "枚举能力 → 纯函数协商 → 建流 → 回调体"整条路修好了（三条硬要求见它的模块文档），
+    // 本 crate 只做**接线**（D19：app 里一个裸 `cpal::*` 都不出现）。
+    //
+    // **失败不是致命错误**（`device.rs` 硬要求 #1：绝不 panic）：`DeviceError` 走既有
+    // 错误路径 ⇒ 产品退化成"控制面显式推量子"的形态（无声卡机器与托管 CI 的常态），
+    // 界面、走带回调、电平表照常工作。`EngineHost::open_device` 的前四步都不动手里那一代，
+    // 因此这里的 `Err` 分支**一位状态都不需要回滚**。
+    //
+    // 两处**不实现**的缺口（如实登记，见 `engine_host.rs` 的模块文档）：
+    // `[ROAD-M2-001]` 实时线程优先级（自实现要新的 `libc` 依赖 ⇒ 依赖图裁决）；
+    // 独占模式（cpal 0.18 没有该 API ⇒ `ShareMode::PreferExclusive` 静默降级为共享）。
+    if engine.has_engine() {
+        let config = yeban_engine::device::EngineConfig::from_project(&loaded.archive.project);
+        match engine.open_device(config) {
+            Ok(opening) => cli::emit(&[format!(
+                "音频设备: `{}` · {} Hz / {} ch · 请求每回调 {} 帧 (后端接受 Fixed = {}) · \
+                 共享模式 {:?} · 交接量子 {} @ tick {} ({:?}) · **真实时钟驱动音频线程**",
+                opening.device_name,
+                opening.sample_rate,
+                opening.channels,
+                opening.block_frames,
+                opening.fixed_block_accepted,
+                opening.share_mode,
+                opening.carryover_quanta,
+                opening.carryover_position_ticks,
+                opening.carryover_state,
+            )]),
+            Err(error) => cli::emit(&[format!(
+                "音频设备: **未接线**（{error}）⇒ 降级为控制面推量子驱动（每次走带动作 1 个量子）；\
+                 界面、走带与电平照常可用"
+            )]),
+        }
     }
     let engine_handle = engine.engine_handle();
     host::apply_transport(&ui, engine_handle.borrow().transport());
