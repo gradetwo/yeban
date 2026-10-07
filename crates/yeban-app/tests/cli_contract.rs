@@ -738,6 +738,36 @@ fn default_artifact_refuses_the_in_process_mcp_switch() {
     assert!(run.stdout.is_empty(), "不该有 stdout");
 }
 
+/// 判据 B7c-2: **默认产物层面**拒绝 `--enable-ui-mcp-http`（`[ARCH-UI-004]` / `[MUST-GATE-009]`）。
+///
+/// 与 B7c（`--enable-mcp-http`）逐条同款，因为两条控制面说的是同一条红线：默认 release
+/// 构建里**不得**默认开启这类能力，因此"开了但没有那段代码"必须是一次**点名 feature 的**
+/// 用法错误（退出码 2），而不是静默忽略 —— 静默忽略会让人以为环回控制面起来了。
+///
+/// 只在**不带** `ui-mcp-http` 的构建里存在：带了那个 feature 时这个开关会真的去
+/// 建控件树 + 绑 socket（那是产品行为，不是用法错误），所以判据必须 cfged out。
+#[cfg(not(feature = "ui-mcp-http"))]
+#[test]
+fn default_artifact_refuses_the_ui_mcp_http_switch() {
+    let run = invoke(&["--enable-ui-mcp-http"]);
+    assert_eq!(
+        run.code, 2,
+        "默认产物必须拒绝 --enable-ui-mcp-http; stderr={}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("--enable-ui-mcp-http") && run.stderr.contains("ui-mcp-http"),
+        "拒绝必须同时点名开关与缺的 feature: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("用法:"),
+        "用法错误必须带用法提示: {}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "不该有 stdout");
+}
+
 /// 判据 B7d: **默认产物层面**拒绝 `--export-logic`（`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
 ///
 /// 与 B7c 同一条纪律、另一个产物形态（`.logicx` 是**目录**而不是单文件）：默认构建里

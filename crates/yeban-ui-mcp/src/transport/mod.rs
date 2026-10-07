@@ -5,6 +5,10 @@
 //! | stdio | [`stdio`]：逐行 JSON-RPC | 进程边界即能力边界（`Credential::LocalProcess`） | **开** |
 //! | 环回 HTTP | [`http`]：`127.0.0.1:0` | `Authorization: Bearer <TOKEN>` | **关** |
 //!
+//! [`mount`] 是环回 HTTP 的**产品装配点**：它把 [`http::UiHttpServer`] + `0600` 令牌
+//! 文件 + "消费即释放"的停机语义串成宿主能持有、能泵、能释放的一个对象
+//! （`yeban-app` 的 `--enable-ui-mcp-http` 走它）。它**不**新增任何判定。
+//!
 //! ## 两道开关（缺一不可）
 //!
 //! HTTP 形态要同时满足：
@@ -41,6 +45,9 @@ pub mod stdio;
 
 #[cfg(any(feature = "ui-mcp-http", test))]
 pub mod http;
+
+#[cfg(any(feature = "ui-mcp-http", test))]
+pub mod mount;
 
 /// 本服务的端点路径（**与领域 MCP 的 `/mcp` 刻意不同**，见 [`http`] 的文档）。
 ///

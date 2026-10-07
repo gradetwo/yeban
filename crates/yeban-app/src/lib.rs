@@ -114,6 +114,39 @@ pub mod mcp_mount;
 #[cfg(feature = "in-process-mcp")]
 pub mod reproject;
 
+// ---------------------------------------------------------------------------
+// UI 控制面的产品入口 (非默认 feature `ui-mcp-http`) [ARCH-UI-004, MUST-GATE-009]
+// ---------------------------------------------------------------------------
+// 与 `in-process-mcp` 是**两条**依赖边、**两个**方法命名空间 (`yeban_*` vs `ui/*`)、
+// **两个**端点路径 (`/mcp` vs `/ui-mcp`)。共同的只有安全模型本身 (同一个
+// `yeban_mcp::security` 的令牌 / 0600 文件 / 环回断言 / 报文层) —— 那是**复用**，
+// 不是第二份实现。
+//
+// `live_surface.rs` 在这条 feature 下**同时**是产品模块：它此前只被测试目标用
+// `#[path]` 装进去（`crates/yeban-app/tests/live_ui_mcp.rs`），文件头的"固有代价"一节
+// 早就写明了升级路径 —— "加一个非默认 feature + 把依赖从 dev 段挪到 optional 段"。
+// 现在两条路都在：测试目标走 `#[path]`，产品走这里。
+#[cfg(feature = "ui-mcp-http")]
+pub mod live_surface;
+
+// `src/live_surface.rs` 里的每个跨模块引用都写成 `yeban_app::…` **绝对路径** —— 这不是风格，
+// 是它同时被两处编译的必然结果：产品库（`crate::live_surface`）与测试目标
+// （`tests/live_ui_mcp.rs` 的 `#[path] mod live;`，那里的 `yeban_app` 是一个**外部** crate）。
+// 在库内编译时，这个别名让同一串路径继续解析到本 crate 根。
+//
+// 只在真用到它的 feature 下加：feature 关着时没有任何模块引用这个别名，
+// 而 `rust_2018_idioms` 的 `unused_extern_crates` 会把一个用不上的别名报成警告
+// （本仓库 `-D warnings` ⇒ 硬错误）。
+#[cfg(feature = "ui-mcp-http")]
+extern crate self as yeban_app;
+
+/// `--enable-ui-mcp-http` 的执行体（挂载 + 服务 + 停机）。
+///
+/// 默认构建里这个模块**不存在**（`yeban-ui-mcp` 那条依赖边也关着），
+/// 因此产品二进制的依赖图与监听循环一位没变。
+#[cfg(feature = "ui-mcp-http")]
+pub mod ui_mcp_serve;
+
 /// `build.rs` 里 `slint_build::compile("ui/app.slint")` 生成的 Slint 组件类型。
 ///
 /// 生成机制（已核验）：`slint-build` 把 `ui/app.slint` **及其 `import` 到的全部文件**

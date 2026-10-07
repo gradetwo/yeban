@@ -536,6 +536,40 @@ impl ControlPlane {
         }
     }
 
+    /// **生产模式** + §12.3 的三级权限（`--enable-ui-mcp-http` 的**产品形态**）。
+    ///
+    /// 与上面三个构造点的差别只有一条，但它是承重的：`RunMode::Production`。
+    /// 于是 `ui:inject`（事件注入族：`ui/dispatch_key_press` / `ui/dispatch_pointer_*`）
+    /// 在**服务端**被 `yeban_mcp::security::authorize` 硬拒
+    /// （`error.data.kind = "forbidden-in-production"`，而且判定**先于** token 校验），
+    /// 而 `ui/switch_main_view` / `ui/force_save` / `ui/reload_engine` 按其 `app:*`
+    /// scope 正常授权 —— 这正是产品进程要的形态：`[MUST-GATE-009]` 不允许因为
+    /// "这是自动化 / 测试入口"就把注入放开。
+    ///
+    /// 作用域集合不在这里手写，仍走 [`scopes_for_permission`]（唯一的映射表）。
+    #[must_use]
+    pub fn production(
+        permission: yeban_ui_test_port::port::Permission,
+        surface: Box<dyn UiSurface>,
+    ) -> Self {
+        Self::with_scope_set(
+            surface,
+            scopes_for_permission(permission),
+            RunMode::Production,
+        )
+    }
+
+    /// 取走服务本体（环回 HTTP 传输按值持有它：
+    /// `crate::transport::http::UiHttpServer::bind_loopback(service)`）。
+    ///
+    /// 它与 [`Self::service`] / [`Self::service_mut`] 的区别是**所有权**：那两个只借出，
+    /// 本方法把服务交给传输层 —— 于是"控制面"与"这一条链路上的服务"是**同一个**对象
+    /// （不是复制一份凭据与作用域的快照）。
+    #[must_use]
+    pub fn into_service(self) -> UiService {
+        self.service
+    }
+
     /// 期望的令牌（判据要用它构造 `Authorization` 头）。
     #[must_use]
     pub fn token(&self) -> &BearerToken {
@@ -1267,6 +1301,72 @@ mod tests {
         assert!(outcome.is_error());
         assert_eq!(outcome.id_echo, "null", "未鉴权时无从回显 id");
         assert!(outcome.result.is_none());
+    }
+
+    /// 判据 8b：**产品形态**（[`ControlPlane::production`] + `Administrative`）的两面 ——
+    /// 注入族被硬禁，而管理族真的被授权；并且 [`ControlPlane::into_service`] 交出去的
+    /// 就是**这一个**服务（凭据 / 作用域 / 执行面都不是快照副本）。
+    #[test]
+    fn production_plane_hard_denies_injection_but_grants_the_administrative_tier() {
+        use yeban_mcp::security::Scope;
+
+        let state = shared(Permission::Administrative);
+        let surface = FakeSurface {
+            state: std::rc::Rc::clone(&state),
+            tree: project_like_tree(),
+        };
+        let mut plane = ControlPlane::production(Permission::Administrative, Box::new(surface));
+        assert_eq!(plane.service().mode(), RunMode::Production);
+        for scope in [
+            Scope::UiRead,
+            Scope::UiScreenshot,
+            Scope::UiInject,
+            Scope::AppSave,
+            Scope::AppReloadEngine,
+            Scope::AppAdmin,
+        ] {
+            assert!(
+                plane.service().granted().grants(scope),
+                "`production(Administrative)` 的 scope 集合必须按 §12.3 的映射给全: 缺 {scope}"
+            );
+        }
+
+        // ① 注入族：**即便** scope 给全了，生产模式下仍是硬禁，且执行面一次都没被碰。
+        let injected = plane.try_line(&request_line(
+            21,
+            crate::methods::METHOD_DISPATCH_KEY_PRESS,
+            Some(Value::Object(Map::from_iter([(
+                "keyCode".to_owned(),
+                Value::from("Tab"),
+            )]))),
+        ));
+        assert_eq!(injected.status, 403);
+        assert_eq!(injected.kind.as_deref(), Some("forbidden-in-production"));
+        assert_eq!(
+            state.borrow().calls,
+            Vec::<String>::new(),
+            "硬禁必须在执行面之前"
+        );
+
+        // ② 管理族：`app:*` scope 授权照常 ⇒ 这条**会真的改窗口**（`-32005` 的假面拒绝
+        //    不会出现，因为假面的 `switch_main_view_impl` 是默认实现 ⇒ 我们只断言
+        //    授权这一层：不是 401/403）。
+        let switched = plane.try_line(&request_line(
+            22,
+            crate::methods::METHOD_SWITCH_MAIN_VIEW,
+            Some(Value::Object(Map::from_iter([(
+                "view".to_owned(),
+                Value::from("arrangement"),
+            )]))),
+        ));
+        assert_ne!(switched.code, Some(yeban_mcp::jsonrpc::UNAUTHORIZED));
+        assert_ne!(switched.code, Some(yeban_mcp::jsonrpc::FORBIDDEN));
+
+        // ③ `into_service` 交给传输层的**就是**这一个服务：同一个令牌、同一个模式。
+        let token = plane.token().clone();
+        let service = plane.into_service();
+        assert_eq!(service.mode(), RunMode::Production);
+        assert_eq!(service.expected_token().expose(), token.expose());
     }
 
     /// 判据 9：`ui/coverage` 的两个方向都能报出来（运行时 ⊆ 注册表 时 `unknown` 为空）。

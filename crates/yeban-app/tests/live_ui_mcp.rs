@@ -2683,3 +2683,139 @@ fn track_height_view_state_reaches_the_injected_row_geometry() {
         heights[0], ys[1], heights[1], after
     ));
 }
+
+/// 判据 18（**产品形态**）：`--enable-ui-mcp-http` 走的那一条装配路径
+/// （`LiveUi::into_production_control_plane` + `LiveControlPlane::into_service`）。
+///
+/// 为什么这条判据必须存在（而不是"产品代码写好了就行"）：
+///
+/// 1. `src/live_surface.rs` 同时被产品库与**本测试目标**编译（`#[path]`）。这两个方法
+///    只被产品路径调用 ⇒ 少了本判据，它们在测试目标的编译里是 `dead_code`
+///    （本仓库 `-D warnings` ⇒ 硬错误），而且"产品形态真的按生产模式装配"这句话
+///    就没有任何会变红的证据；
+/// 2. 产品形态与判据形态的**唯一**差别就是运行模式：判据用 `RunMode::Test` 才能注入事件，
+///    产品必须用 `RunMode::Production`（`ui:inject` 族硬禁）。这条判据把那个差别钉住：
+///    在**同一条**真实执行面上，注入被硬拒而管理族照常授权。
+#[test]
+fn production_plane_denies_injection_and_really_switches_the_live_view() {
+    use live::{LiveWiringOptions, build_live_ui_with};
+    use serde_json::{Value, json};
+    use yeban_ui_mcp::methods::{METHOD_DISPATCH_KEY_PRESS, METHOD_SWITCH_MAIN_VIEW};
+
+    let project = yeban_model::samples::filled_project();
+    let wiring = LiveWiringOptions {
+        permission: Permission::Administrative,
+        console_tab: 0,
+        // `ui/force_save` 的落点：本判据不碰保存（它落盘），所以不给路径 ——
+        // 与产品路径"样本没有磁盘对应物"的形态一致。
+        save_path: None,
+        engine_quanta: 0,
+    };
+    let mut plane = build_live_ui_with(&project, &wiring)
+        .expect("真实界面 + Tier-1 执行面")
+        .into_production_control_plane(Permission::Administrative);
+
+    // ① 绑定之前的进程内探针（`src/ui_mcp_serve.rs` 的第一步就是它）：树真的可读。
+    let (tree, before) = plane.plane().tree().expect("ui/tree");
+    assert!(
+        tree.count >= 40,
+        "运行时控件树只有 {} 个节点，布局或 debug info 疑似没生效",
+        tree.count
+    );
+
+    // ② 生产模式 ⇒ 注入族硬禁。注意这条链路上的令牌是**对**的（`try_line` 自己带），
+    //    所以 403 而不是 401 —— 这正是"硬禁**先于**令牌校验"的 HTTP 侧证据。
+    let denied = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        101,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({"keyCode": "Tab"})),
+    ));
+    assert_eq!(denied.status, 403, "{denied:?}");
+    assert_eq!(denied.kind.as_deref(), Some("forbidden-in-production"));
+
+    // ③ 管理族（`app:admin`）真的被授权，而且**真的改了窗口**：
+    //    回执里 `arrangementView` 是**回读**值，运行时控件树也随之换了字节。
+    //
+    //    目标视图由**观测到的树**推出（而不是写死一个方向）：默认装配落在哪一支是
+    //    `MainWindow.arrangement-view` 的初值决定的，写死方向会让这条判据在初值变化时
+    //    变成"换到一个本来就是的视图 ⇒ 树没变 ⇒ 假红"。用树里的画布 ID 决定方向，
+    //    正好也是外部调用方（人 / AI）唯一能依据的证据。
+    let (target, other, expected_arrangement) = if before.contains("workspace-arrangement-canvas") {
+        ("session", "workspace-arrangement-canvas", false)
+    } else {
+        ("arrangement", "workspace-session-canvas", true)
+    };
+    assert!(
+        before.contains(other),
+        "初次读到的树里应当有 `{other}`（否则这条判据的前提不成立）"
+    );
+    let switched = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        102,
+        METHOD_SWITCH_MAIN_VIEW,
+        Some(json!({"view": target})),
+    ));
+    assert!(!switched.is_error(), "换主视图必须被授权: {switched:?}");
+    let result = switched.result.expect("成功响应必须有 result");
+    assert_eq!(result["accepted"], Value::Bool(true));
+    assert_eq!(result["view"], target);
+    assert_eq!(
+        result["report"]["arrangementView"],
+        Value::Bool(expected_arrangement),
+        "`arrangementView` 必须是写完之后**回读**到的值: {result}"
+    );
+    let (_, after) = plane.plane().tree().expect("ui/tree (after)");
+    assert_ne!(
+        before, after,
+        "换主视图必须改变运行时控件树的投影（否则这条动作只是个回执）"
+    );
+    assert!(
+        after.contains(&format!("workspace-{target}-canvas")),
+        "换到 {target} 之后运行时树里必须有对应的画布: {after}"
+    );
+    report_line(&format!(
+        "[ui-mcp-http] 生产模式平面: 树 {} 节点; 注入族 403 {}; \
+         换主视图 -> {target} ⇒ arrangementView={expected_arrangement}, 树字节 {} -> {}",
+        tree.count,
+        denied.kind.as_deref().unwrap_or("<none>"),
+        before.len(),
+        after.len(),
+    ));
+
+    // ④ `into_service()` 交出去的**就是**这一个服务：同一个令牌、同一个模式、同一个执行面。
+    //    这一条不是恒等式 —— 环回传输按值持有它，交错了（或另生成一份凭据）就全错。
+    let token = plane.plane().token().expose().to_owned();
+    let surface = plane.plane().surface_name();
+    let service = plane.into_service();
+    assert!(
+        service.mode().is_production(),
+        "产品形态必须用 RunMode::Production (ui:inject 的硬禁就靠它)"
+    );
+    assert_eq!(service.expected_token().expose(), token);
+    assert_eq!(service.surface_name(), surface);
+}
+
+/// 判据 18b（**跨 crate 字面值对账**）：`yeban-app::cli` 里那三个"为了默认构建也能打用法
+/// 文本"而保留的副本，必须与 `yeban-ui-mcp` 的权威定义**逐字节相同**。
+///
+/// 为什么必须有这条：字面值有两份是实现的需要（默认构建里 `yeban-ui-mcp` 只是
+/// dev-dependency，`usage_text()` 却必须打得出来），而"两份不许漂移"只能靠判据 ——
+/// 与 `tests/in_process_mcp.rs` 对 `--enable-mcp-http` / `YEBAN_MCP_HTTP` 做的是同一件事。
+/// 端点路径那一条还有第二个理由：`ui/*` 与领域 MCP 接**不同**的路径，
+/// 接错端口时人应当能一眼看出来（`/ui-mcp` vs `/mcp`）。
+#[test]
+fn the_ui_mcp_http_switch_literals_match_the_ui_mcp_crate() {
+    use yeban_app::cli::{UI_MCP_HTTP_FEATURE, UI_MCP_HTTP_SWITCH, UI_MCP_PATH};
+
+    assert_eq!(UI_MCP_HTTP_SWITCH, yeban_ui_mcp::ENABLE_HTTP_FLAG);
+    assert_eq!(UI_MCP_HTTP_FEATURE, yeban_ui_mcp::HTTP_FEATURE_NAME);
+    assert_eq!(UI_MCP_PATH, yeban_ui_mcp::transport::UI_MCP_PATH);
+    assert_eq!(UI_MCP_HTTP_FEATURE, "ui-mcp-http");
+    assert_ne!(
+        UI_MCP_PATH, "/mcp",
+        "UI 控制面的端点必须与领域 MCP 的 `/mcp` 不同"
+    );
+    report_line(&format!(
+        "[ui-mcp-http] 字面值对账: {UI_MCP_HTTP_SWITCH} / feature {UI_MCP_HTTP_FEATURE} / \
+         端点 {UI_MCP_PATH} 与 yeban-ui-mcp 的权威定义逐字节相同"
+    ));
+}

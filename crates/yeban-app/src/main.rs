@@ -104,11 +104,19 @@ fn main() -> ExitCode {
         options.headless = true;
     }
 
-    // 三条路径，判定顺序是**承重**的：
+    // 四条路径，判定顺序是**承重**的：
     //   `--headless-idle` 也在 `batch()` 里（它确实不建 OS 窗口），但它是唯一
     //   **会构造 Slint 对象**的无窗口开关 ⇒ 必须在 `wants_gui()` 之前先分流出去，
     //   而且绝不能落到 `run_batch`（那会静默降级成"不建树"，让 `BASELINE-002` 假绿；
     //   `run_batch` 自己也有一道守卫兜底）。
+    //   `--enable-ui-mcp-http` 是**同族但更强**的一档（同一棵活控件树 + 环回控制面），
+    //   因此排在 `--headless-idle` 之前：两个开关同时给 = 走 UI 控制面（见 `cli.rs`）。
+    //   默认构建里 `ui_mcp_http` 永远为 false（`parse()` 已经把它变成用法错误），
+    //   所以这个分支被 `cfg` 掉也不会漏掉任何能跑的组合。
+    #[cfg(feature = "ui-mcp-http")]
+    if options.ui_mcp_http {
+        return cli::finish(yeban_app::ui_mcp_serve::run(&options));
+    }
     if options.headless_idle {
         cli::finish(yeban_app::headless_idle::run(&options))
     } else if options.wants_gui() {

@@ -125,6 +125,7 @@ use yeban_engine::meter::MeterCollector;
 use yeban_model::YebanProjectV1;
 use yeban_ui_mcp::ime::{ImeFocus, ImeState};
 use yeban_ui_mcp::live::ControlPlane;
+use yeban_ui_mcp::service::UiService;
 use yeban_ui_mcp::surface::{
     AdminReport, PortAdapter, PreviewArguments, PreviewEffect, ReportValue, UiSurface,
 };
@@ -894,6 +895,32 @@ impl LiveUi {
         }
     }
 
+    /// **生产模式**的控制面（`--enable-ui-mcp-http` 的**产品形态**）。
+    ///
+    /// 与 [`Self::into_control_plane`] 的差别**只有**运行模式，但那条差别是承重的：
+    /// 上面三个构造点为了让判据能注入事件而用 `RunMode::Test`（名字里的 `for_tests`
+    /// 就是契约），而产品进程必须用 `RunMode::Production` —— 于是 `ui:inject` 族
+    /// （`ui/dispatch_key_press` / `ui/dispatch_pointer_*`）在服务端被
+    /// `yeban_mcp::security::authorize` **硬拒**（`forbidden-in-production`，
+    /// 判定先于令牌校验），而 `ui/switch_main_view` / `ui/force_save` /
+    /// `ui/reload_engine` 按其 `app:*` scope 授权。
+    ///
+    /// 作用域集合与上面同一条来源（`yeban_ui_mcp::live::production` →
+    /// `scopes_for_permission`）：调用方只说"我要哪一级"，不在这里手写 scope 清单。
+    #[must_use]
+    pub fn into_production_control_plane(self, permission: Permission) -> LiveControlPlane {
+        let view = self.surface.view.clone();
+        let registry = self.surface.registry.clone();
+        let plane = ControlPlane::production(permission, Box::new(self.surface));
+        LiveControlPlane {
+            plane,
+            view,
+            registry,
+            scene: self.scene,
+            reference: self.reference,
+        }
+    }
+
     /// 当前运行时控件树的一份快照（**就是** `ui/tree` 会服务的那棵树，同一对象克隆）。
     ///
     /// 判据用它做"同一个活窗口上换工程前后"的对照；真正的端到端断言仍然走
@@ -992,6 +1019,18 @@ impl LiveControlPlane {
     /// 借出控制面（发 `ui/*` 调用）。
     pub fn plane(&mut self) -> &mut ControlPlane {
         &mut self.plane
+    }
+
+    /// **取走服务本体**（`--enable-ui-mcp-http` 的环回传输按值持有它：
+    /// `yeban_ui_mcp::transport::mount::UiHttpMount::bind_loopback(service)`）。
+    ///
+    /// 交出去的是**这一个**服务（同一个令牌 / 同一套作用域 / 同一个执行面），
+    /// 因此"判据里跑的控制面"与"环回 socket 上应答的控制面"不可能分叉。
+    /// 装配期留下的读数（投影 / 注册表 / 对照帧）在这一步被丢弃 —— 它们只是证据，
+    /// 服务不需要它们。
+    #[must_use]
+    pub fn into_service(self) -> UiService {
+        self.plane.into_service()
     }
 
     /// 投影出来的视图状态。

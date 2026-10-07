@@ -127,6 +127,28 @@ pub const MCP_HTTP_SWITCH: &str = "--enable-mcp-http";
 /// 与 [`MCP_HTTP_SWITCH`] 同一个理由：用法文本在默认构建里也要能提到它。
 pub const MCP_HTTP_ENV: &str = "YEBAN_MCP_HTTP";
 
+/// `--enable-ui-mcp-http` 的字面值（**UI 控制面**的环回入口，`[ARCH-UI-004]` / `[MUST-GATE-009]`）。
+///
+/// 与 [`MCP_HTTP_SWITCH`] 是**两条**开关而不是一条：领域 MCP 与 UI 控制面是两个方法命名空间
+/// （`yeban_*` vs `ui/*`）、两个端点路径（`/mcp` vs `/ui-mcp`），它们的可用进程形态也不同
+/// —— 详见 `src/ui_mcp_serve.rs` 的模块文档。
+pub const UI_MCP_HTTP_SWITCH: &str = "--enable-ui-mcp-http";
+
+/// 让 `--enable-ui-mcp-http` 真的可执行的那个**非默认** feature 名。
+///
+/// 默认构建里既没有 `yeban-ui-mcp` 也没有 UI 控制面的执行面 —— 它是
+/// `[MUST-GATE-009]` 的第一道开关（`AGENTS.md` §2 红线 6）。用法错误必须**点名**它。
+pub const UI_MCP_HTTP_FEATURE: &str = "ui-mcp-http";
+
+/// UI 控制面的端点路径（权威定义在 `yeban-ui-mcp` 的 `transport::UI_MCP_PATH`）。
+///
+/// 与 [`MCP_HTTP_SWITCH`] 保留副本**同一个理由**：默认构建里 `yeban-ui-mcp` 只是
+/// dev-dependency（`[dependencies]` 里的那条是 optional 且默认关），而用法文本在默认
+/// 构建里也要打得出来。两边**逐字节相同**这件事由判据钉住 ——
+/// `crates/yeban-app/tests/live_ui_mcp.rs` 断言它等于 `yeban_ui_mcp::transport::UI_MCP_PATH`
+/// （它必须与领域 MCP 的 `/mcp` 不同：接错端口要能一眼看出来）。
+pub const UI_MCP_PATH: &str = "/ui-mcp";
+
 /// `--export-als` 的字面值（实验性 `.als` 导出的**唯一**用户出口，ADR-0001 **D47**）。
 ///
 /// 与 [`MCP_HTTP_SWITCH`] 同一个理由：用法文本与"本次构建没编译它"的错误信息在
@@ -284,15 +306,31 @@ pub fn usage_text() -> String {
                            这是 [BASELINE-002] 那句 空工程空闲常驻内存 要量的**对象**
                            (--headless 一个 Slint 对象都不构造); 与 --headless 同时给
                            = 只走本模式 (它是更强的形态), 握手行换成 {idle_handshake}。
-  --idle-seconds <N>        --headless-idle 的空闲秒数 (整数 1..={max_idle});
-                           只对 --headless-idle 有意义, 单独给 = 用法错误 (退出码 {usage});
-                           重复给以最后一个为准
+  --idle-seconds <N>        --headless-idle 的空闲秒数 / UI 控制面的服务秒数
+                            (整数 1..={max_idle});
+                            只对 --headless-idle 与 {ui_mcp_switch} 有意义,
+                            单独给 = 用法错误 (退出码 {usage}); 重复给以最后一个为准
   --enable-mcp-http        把**领域 MCP** 的环回 HTTP JSON-RPC 控制面挂进**本进程**
                            (形态 A, [ROAD-M4-001]): 只绑 127.0.0.1:0 (端口由系统分配,
                            绑后回读断言是环回)、强制 256-bit Bearer 令牌鉴权;
                            默认**关**, 且只在 `--features in-process-mcp` 的构建里存在;
                            令牌落 ~/.yeban/session.token (0600), 只报路径不报令牌。
                            等价入口: 环境变量 {mcp_env}=1
+  {ui_mcp_switch}  把 **UI 控制面** (14 条 `ui/*` 方法, [ARCH-UI-004]) 挂成一个
+                           真的能 curl 的**环回**入口: 只绑 127.0.0.1:0 (端口由系统
+                           分配, 绑后回读断言是环回)、强制 256-bit Bearer 令牌鉴权
+                           (缺失 / 错误 ⇒ 401 + WWW-Authenticate)、**生产模式** ⇒
+                           `ui:inject` 族硬禁 (403 `forbidden-in-production`, 判定
+                           **先于**令牌校验); 默认**关**, 且只在
+                           `--features {ui_mcp_feature}` 的构建里存在; 令牌落
+                           ~/.yeban/session.token (0600), 只报路径不报令牌;
+                           令牌写不进去 ⇒ **停机并释放监听口** (fail closed)。
+                           端点路径 {ui_mcp_path} (与领域 MCP 的 /mcp 刻意不同)。
+                           进程形态: 软件光栅化平台上的**活控件树** —— 不创建 OS 窗口、
+                           不进阻塞事件循环, 因为 `slint::platform::set_platform`
+                           每线程只能装一次, 而 GUI 路径已经把 winit 后端装上了。
+                           配 --headless-idle + --idle-seconds <N> = 服务 N 秒后自动
+                           停机并释放; 不配 = 服务到进程被终止 (Ctrl-C / kill)。
 
 运行形态:
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
@@ -331,6 +369,18 @@ pub fn usage_text() -> String {
   --enable-mcp-http 与任一\"无窗口开关\"
                                不能组合 = 用法错误 (退出码 {usage}): 控制面要挂在**正在跑的
                                GUI 进程**里 (形态 A), 批处理路径挂上去只会\"刚绑好就拆掉\"
+  {ui_mcp_switch} 与 --headless / --dump-elements / --print-shortcuts /
+  --export-* / --save-as / {mcp_switch}
+                               不能组合 = 用法错误 (退出码 {usage}): 前一组会被**静默丢掉**;
+                               与领域 MCP 那条不在同一个进程形态里 —— 领域控制面要挂在
+                               **正在跑的 GUI 事件循环**里, 而 ui/* 的 Tier-1 执行面只能装在
+                               软件光栅化平台上 (set_platform 每线程一次且必须先于组件构造)
+  {ui_mcp_switch} 与 --headless-idle 可以一起给
+                               两个开关说的是同一档进程形态 (软件平台上的活控件树);
+                               同时给 => 走 UI 控制面 (它更强: 真的应答 ui/*)
+  {ui_mcp_switch} 与 --idle-seconds
+                               --idle-seconds 可选: 给了就服务到点自动停机并释放监听口,
+                               不给就一直服务到进程被终止 (Ctrl-C / kill)
 
 环境变量:
   SLINT_BACKEND=headless   与 --headless 等价 (yeban 自研哨兵值; Slint 1.18.1 无此后端)
@@ -353,6 +403,7 @@ pub fn usage_text() -> String {
       未知主题 ({theme_switch} 的取值不在 {themes} 里) /
       --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
       --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
+      {ui_mcp_switch} 与不该组合的开关同给或本次构建未编译 `{ui_mcp_feature}` /
       --export-als 在本次构建未编译 `{als_feature}` /
       --export-logic 在本次构建未编译 `{logic_feature}`)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
@@ -368,6 +419,7 @@ pub fn usage_text() -> String {
   yeban-app --headless --project-sample empty
   yeban-app --open song.yeban --headless
   yeban-app --headless-idle --idle-seconds 2 --project-sample empty
+  yeban-app --enable-ui-mcp-http --headless-idle --idle-seconds 30
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
@@ -385,6 +437,10 @@ pub fn usage_text() -> String {
         idle_handshake = HEADLESS_IDLE_HANDSHAKE,
         max_idle = MAX_IDLE_SECONDS,
         mcp_env = MCP_HTTP_ENV,
+        ui_mcp_switch = UI_MCP_HTTP_SWITCH,
+        ui_mcp_feature = UI_MCP_HTTP_FEATURE,
+        ui_mcp_path = UI_MCP_PATH,
+        mcp_switch = MCP_HTTP_SWITCH,
         als_feature = ALS_EXPORT_FEATURE,
         logic_feature = LOGIC_EXPORT_FEATURE,
         print_theme = PRINT_THEME_SWITCH,
@@ -794,6 +850,27 @@ pub struct Options {
     /// 为什么它**不**让进程离开 GUI 路径：控制面要挂在**正在跑的 app 进程**里
     /// （形态 A 的定义），而不是把进程变成一个无头服务器。
     pub enable_mcp_http: bool,
+    /// `--enable-ui-mcp-http`：把 **UI 控制面**（14 条 `ui/*` 方法）挂成一个真的能 `curl` 的
+    /// **环回**入口（`[ARCH-UI-004]` / `[MUST-GATE-009]`；实现在 `src/ui_mcp_serve.rs`）。
+    ///
+    /// 编译期那道开关是**非默认** feature [`UI_MCP_HTTP_FEATURE`]（默认构建里这个开关 =
+    /// [`ParseError::UiMcpHttpNotCompiled`]，退出码 2，绝不静默忽略）。
+    ///
+    /// ## 为什么它**自己**就是一条无窗口路径
+    ///
+    /// `ui/*` 的执行面是 `LivePort<MainWindow>` —— Tier-1 **软件**光栅化
+    /// （`MinimalSoftwareWindow` + `SoftwareRenderer`，`[MUST-GATE-015]` 允许的唯一像素路径）
+    /// 加上 `i-slint-backend-testing` 的运行时控件树。而 `Tier1Window::install` 调用的
+    /// `slint::platform::set_platform` 是**线程局部且每线程一次**，并且**必须在构造任何
+    /// Slint 组件之前**完成。GUI 路径（`run_gui`）先 `MainWindow::new()` 把 winit 后端装上了，
+    /// 因此那里**再也装不下** Tier-1 平台（`set_platform` 会返回 `Err`）。
+    /// 结论：这个开关承载的进程形态是"**软件平台上的活控件树**"，也就是与
+    /// `--headless-idle` 同族的那一档 —— 它不创建 OS 窗口、不进阻塞事件循环，
+    /// 但**真的**有一棵被布局、被光栅化的控件树，事件注入真的落进窗口。
+    ///
+    /// `--idle-seconds` 可选：给了就服务到点自动停机（并释放监听口），
+    /// 不给就一直服务到进程被终止（Ctrl-C / `kill`）。
+    pub ui_mcp_http: bool,
     /// `--theme <default|yeban|brand|inkmoor|plume|material|fluent|cupertino|native>`：
     /// 运行期调色板选择（`yeban` 是 `default` 的别名，见 [`Theme::accepted_names`]）。
     ///
@@ -841,6 +918,9 @@ impl Options {
             || self.export_logic.is_some()
             || self.save_as.is_some()
             || self.headless_idle
+            // `--enable-ui-mcp-http` 也**自己**就是一条无窗口路径（软件平台上的活控件树，
+            // 见 `Options::ui_mcp_http` 的文档）⇒ `main.rs` 必须在 `run_batch` 之前分流它。
+            || self.ui_mcp_http
     }
 
     /// 是否要真的开窗口。
@@ -915,6 +995,18 @@ pub enum ParseError {
     /// 控制面要挂在**正在跑的 app 进程**里（形态 A 的定义）；批处理路径跑完就退出，
     /// 挂上去等于刚一绑好就拆掉。接受这个组合只会让人以为"服务起来了"。
     McpHttpNeedsGui(&'static str),
+    /// 给了 `--enable-ui-mcp-http`，但这次构建**没有**编译 [`UI_MCP_HTTP_FEATURE`]。
+    ///
+    /// 与 [`Self::McpHttpNotCompiled`] 逐字同一条纪律（也是同一个红线的第一道开关）：
+    /// 用户要开一个能 `curl` 的 UI 控制面，而二进制里根本没有那段监听代码 ——
+    /// 那必须是一次**响亮的**用法错误，而不是"以为开了其实没开"。
+    UiMcpHttpNotCompiled,
+    /// `--enable-ui-mcp-http` 与一个它承载不了的开关同时给。
+    ///
+    /// 两类：① 会写盘 / 导出的批处理开关（会被静默丢掉，与 [`Self::IdleConflict`] 同款）；
+    /// ② `--enable-mcp-http`（领域 MCP 要求**正在跑的 GUI 事件循环**，而 UI 控制面的
+    /// 执行面只能装在软件光栅化平台上 —— 两者不在同一个进程形态里；见 `src/ui_mcp_serve.rs`）。
+    UiMcpHttpConflict(&'static str),
     /// 给了 `--export-als`，但这次构建**没有**编译 [`ALS_EXPORT_FEATURE`]
     /// （`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
     ///
@@ -990,6 +1082,18 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`{MCP_HTTP_SWITCH}` 不能与无窗口开关 `{other}` 组合 —— 控制面要挂在正在跑的 \
                  GUI 进程里 (形态 A), 批处理路径挂上去只会刚绑好就拆掉"
+            ),
+            Self::UiMcpHttpNotCompiled => write!(
+                formatter,
+                "`{UI_MCP_HTTP_SWITCH}` 需要本次构建带 `--features {UI_MCP_HTTP_FEATURE}` \
+                 (它就是 [MUST-GATE-009] / AGENTS.md §2 红线 6 的第一道开关: \
+                 默认构建里既没有 UI 控制面这段监听代码, 也没有 yeban-ui-mcp 这个依赖边)"
+            ),
+            Self::UiMcpHttpConflict(other) => write!(
+                formatter,
+                "`{UI_MCP_HTTP_SWITCH}` 不能与 `{other}` 组合 —— 本开关的进程形态是\
+                 \"软件光栅化平台上的一棵活控件树\" (它承载 ui/* 的 Tier-1 执行面), \
+                 接受这个组合只会让 `{other}` 被静默丢掉, 或者让人以为另一个控制面也起来了"
             ),
             Self::AlsNotCompiled => write!(
                 formatter,
@@ -1132,6 +1236,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.enable_mcp_http = true;
                 cursor += 1;
             }
+            "--enable-ui-mcp-http" => {
+                reject_inline(UI_MCP_HTTP_SWITCH, inline)?;
+                options.ui_mcp_http = true;
+                cursor += 1;
+            }
             "--project-sample" => {
                 let value = take_value("--project-sample", inline, args, &mut cursor)?;
                 options.sample = match value.as_str() {
@@ -1158,7 +1267,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     // 顺序问题变成第二个事实源）。
     match (options.headless_idle, options.idle_seconds) {
         (true, None) => return Err(ParseError::IdleSecondsMissing),
-        (false, Some(_)) => return Err(ParseError::IdleSecondsWithoutHeadlessIdle),
+        // `--enable-ui-mcp-http` 是**另一档**同样"真的建树"的无窗口形态，
+        // 它也吃 `--idle-seconds`（给了就服务到点自动停机）。
+        (false, Some(_)) if !options.ui_mcp_http => {
+            return Err(ParseError::IdleSecondsWithoutHeadlessIdle);
+        }
         _ => {}
     }
     if options.headless_idle {
@@ -1173,6 +1286,36 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
         ] {
             if given {
                 return Err(ParseError::IdleConflict(name));
+            }
+        }
+    }
+    // ⚠ 本块必须排在 `--enable-mcp-http` 那块**之前**：`--enable-ui-mcp-http` 在默认构建里
+    // 是一次"点名 feature 的用法错误"。排在后面的话，`--enable-ui-mcp-http --enable-mcp-http`
+    // 会被领域那块以 `McpHttpNotCompiled` 拒掉 —— 而在"只编了 in-process-mcp"的构建里
+    // 领域那块会**通过**（它不认 UI 开关），于是这个开关就被**静默忽略**了。
+    // 顺序在这里是契约：先判"这个开关在这个构建里存不存在"，再判"能不能与别的开关组合"。
+    // `--enable-ui-mcp-http` 的两条前置（与 `--enable-mcp-http` 同款，逐条理由见
+    // `src/ui_mcp_serve.rs` 的模块文档）：
+    //   ① 编译期那道开关（非默认 feature `ui-mcp-http`）；
+    //   ② 组合面 —— 会写盘 / 导出的开关会被**静默丢掉**，而 `--enable-mcp-http`
+    //      与它不在同一个进程形态里（领域 MCP 要 GUI 事件循环，UI 控制面要软件平台）。
+    if options.ui_mcp_http {
+        if !cfg!(feature = "ui-mcp-http") {
+            return Err(ParseError::UiMcpHttpNotCompiled);
+        }
+        for (given, name) in [
+            (options.headless, "--headless"),
+            (options.dump_elements, "--dump-elements"),
+            (options.print_shortcuts, "--print-shortcuts"),
+            (options.export_elements.is_some(), "--export-elements"),
+            (options.export_midi.is_some(), "--export-midi"),
+            (options.export_als.is_some(), ALS_EXPORT_SWITCH),
+            (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
+            (options.save_as.is_some(), "--save-as"),
+            (options.enable_mcp_http, MCP_HTTP_SWITCH),
+        ] {
+            if given {
+                return Err(ParseError::UiMcpHttpConflict(name));
             }
         }
     }
@@ -1443,6 +1586,13 @@ pub enum CliError {
     /// 在它里面挂控制面等于刚一绑好就拆掉。`parse()` 已经拒了这条组合，
     /// 这里是 `Options` 被直接构造时的第二道。
     McpHttpNotBatch,
+    /// `--enable-ui-mcp-http` 被送进了 [`run_batch`]。
+    ///
+    /// 同款防假绿，**而且更硬**：UI 控制面的执行面是"软件平台上的活控件树"
+    /// （`ui/*` 的 `ui/tree` / `ui/screenshot` 都要它），而 [`run_batch`] 一个 Slint
+    /// 对象都不构造。放它过去 ⇒ 服务会绑上，但每条 `ui/*` 都会诚实地失败 ——
+    /// 那不是"服务起来了"，只是"端口开着"。正确入口是 `crate::ui_mcp_serve::run`。
+    UiMcpHttpNotBatch,
 }
 
 impl CliError {
@@ -1453,6 +1603,7 @@ impl CliError {
             Self::Projection { .. }
             | Self::Ui { .. }
             | Self::HeadlessIdleNotBatch
+            | Self::UiMcpHttpNotBatch
             | Self::McpHttpNotBatch => EXIT_UI,
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
@@ -1525,6 +1676,12 @@ impl fmt::Display for CliError {
                 "`{MCP_HTTP_SWITCH}` 不能走 run_batch: 那条路径是一次性命令 (跑完就退出), \
                  而控制面要挂在**正在跑的** GUI 进程里 (形态 A) ⇒ 挂上去只会刚绑好就拆掉"
             ),
+            Self::UiMcpHttpNotBatch => write!(
+                formatter,
+                "`{UI_MCP_HTTP_SWITCH}` 不能走 run_batch: 那条路径零 Slint 依赖, \
+                 一个控件树对象都不构造, 而 ui/* 的全部内容都长在那棵树上面 ⇒ \
+                 正确入口是 crate::ui_mcp_serve::run"
+            ),
         }
     }
 }
@@ -1540,6 +1697,7 @@ impl std::error::Error for CliError {
             Self::ExportLogic { source, .. } => Some(source),
             Self::Ui { .. }
             | Self::HeadlessIdleNotBatch
+            | Self::UiMcpHttpNotBatch
             | Self::McpHttpNotBatch
             | Self::AlsNotCompiled
             | Self::LogicNotCompiled => None,
@@ -2152,6 +2310,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // 静默接受只会让人以为服务起来了。`parse()` 已经拒了这条组合，这里是第二道
         // （`Options` 的字段是公开的，判据可以直接构造组合）。
         return Err(CliError::McpHttpNotBatch);
+    }
+    if options.ui_mcp_http {
+        // 同款防假绿（更硬的那种，见 `CliError::UiMcpHttpNotBatch` 的文档）：
+        // 端口会绑上，而每一条 ui/* 都会因为"没有控件树"而失败。
+        return Err(CliError::UiMcpHttpNotBatch);
     }
     // `--export-als` 的防假绿第二道（与 `parse()` 同一条纪律）：默认构建里那条导出
     // 路径根本不存在（`yeban-render` 的 `als` 模块与 `flate2` 都不在依赖图上）。
@@ -3529,6 +3692,116 @@ mod tests {
             Err(CliError::McpHttpNotBatch)
         ));
         assert_eq!(CliError::McpHttpNotBatch.exit_code(), EXIT_UI);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 46b: --enable-ui-mcp-http 的两条前置 + 防假绿守卫 [ARCH-UI-004] [MUST-GATE-009]
+    //            (与判据 46 逐条同款, 因为两条控制面说的是同一条红线;
+    //             差别只有"哪个进程形态承载执行面"与"哪个 feature 门"）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_ui_mcp_http_switch_is_opt_in_names_its_feature_and_owns_its_process_shape() {
+        let args = |raw: &[&str]| {
+            raw.iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // ① 字面值与 feature 名是**契约**（`crates/yeban-ui-mcp` 的
+        //    `transport::ENABLE_HTTP_FLAG` / `HTTP_FEATURE_NAME` 是权威定义，
+        //    逐字节相同这件事由 `tests/live_ui_mcp.rs` 的判据 18b 对账）。
+        assert_eq!(UI_MCP_HTTP_SWITCH, "--enable-ui-mcp-http");
+        assert_eq!(UI_MCP_HTTP_FEATURE, "ui-mcp-http");
+        assert_eq!(UI_MCP_PATH, "/ui-mcp");
+
+        // ② 编译期那道开关：默认构建里这个开关**不存在**，给了就是用法错误。
+        if cfg!(feature = "ui-mcp-http") {
+            let parsed = parse(&args(&["--enable-ui-mcp-http"])).expect("带 feature 时必须被接受");
+            assert!(parsed.ui_mcp_http);
+            // 它是**无窗口**路径（软件平台上的活控件树），因此绝不能落到 run_batch，
+            // 而且 `--idle-seconds` 对它是有意义的（给了就服务到点自动停机）。
+            assert!(parsed.batch() && !parsed.wants_gui(), "{parsed:?}");
+            let bounded = parse(&args(&["--enable-ui-mcp-http", "--idle-seconds", "3"]))
+                .expect("--idle-seconds 对 UI 控制面有意义");
+            assert_eq!(bounded.idle_seconds, Some(3));
+        } else {
+            let error = parse(&args(&["--enable-ui-mcp-http"])).expect_err("默认构建里必须被拒");
+            assert_eq!(error, ParseError::UiMcpHttpNotCompiled);
+            assert!(
+                error.to_string().contains(UI_MCP_HTTP_FEATURE),
+                "错误必须点名缺的是哪个 feature: {error}"
+            );
+            // `--idle-seconds` 单独给仍然是用法错误（默认构建里本开关根本进不来，
+            // 所以这条前置仍然由 `--headless-idle` 独占）。
+            assert_eq!(
+                parse(&args(&["--idle-seconds", "3"])),
+                Err(ParseError::IdleSecondsWithoutHeadlessIdle)
+            );
+        }
+
+        // ③ 不接受取值。
+        assert_eq!(
+            parse(&args(&["--enable-ui-mcp-http=1"])),
+            Err(ParseError::UnexpectedValue(UI_MCP_HTTP_SWITCH))
+        );
+
+        // ④ 与"会被静默丢掉"或"不在同一进程形态"的开关同给 = 用法错误。
+        //    带 feature 时是 UiMcpHttpConflict；不带 feature 时更早一步就被挡住。
+        for (flag, name) in [
+            (vec!["--headless"], "--headless"),
+            (vec!["--dump-elements"], "--dump-elements"),
+            (vec!["--print-shortcuts"], "--print-shortcuts"),
+            (vec!["--export-elements", "e.txt"], "--export-elements"),
+            (vec!["--export-midi", "m.mid"], "--export-midi"),
+            (vec!["--export-als", "a.als"], ALS_EXPORT_SWITCH),
+            (vec!["--save-as", "b.yeban"], "--save-as"),
+        ] {
+            let mut raw = vec!["--enable-ui-mcp-http"];
+            raw.extend(flag.iter().copied());
+            let expected = if cfg!(feature = "ui-mcp-http") {
+                ParseError::UiMcpHttpConflict(name)
+            } else {
+                ParseError::UiMcpHttpNotCompiled
+            };
+            assert_eq!(parse(&args(&raw)), Err(expected), "{raw:?} 必须被拒");
+        }
+
+        // ④c 两个控制面开关同给：带 feature 时是本侧的组合规则（两者**不在同一个进程形态**
+        //     里）；不带 feature 时更早一步就被"这个构建里没有它"挡住。
+        //     这一条同时钉住 parse() 里的**检查顺序**（见那里的注释）：UI 那块在前，
+        //     因此"只编了 in-process-mcp"的构建里这个开关也不会被静默忽略。
+        let pair = vec!["--enable-ui-mcp-http", "--enable-mcp-http"];
+        let expected = if cfg!(feature = "ui-mcp-http") {
+            ParseError::UiMcpHttpConflict(MCP_HTTP_SWITCH)
+        } else {
+            ParseError::UiMcpHttpNotCompiled
+        };
+        assert_eq!(parse(&args(&pair)), Err(expected), "{pair:?} 必须被拒");
+
+        // ④b 与 `--headless-idle` 同给是**允许**的（同一档进程形态；UI 控制面更强）。
+        if cfg!(feature = "ui-mcp-http") {
+            let both = parse(&args(&[
+                "--enable-ui-mcp-http",
+                "--headless-idle",
+                "--idle-seconds",
+                "5",
+            ]))
+            .expect("--headless-idle 可以与 --enable-ui-mcp-http 同给");
+            assert!(both.ui_mcp_http && both.headless_idle);
+        }
+
+        // ⑤ 防假绿第二道：`Options` 被**直接构造**（绕过 parse）时，`run_batch` 也必须拒绝 ——
+        //    那条路径零 Slint 依赖，一个控件树对象都不构造，而 ui/* 全长在那棵树上。
+        let smuggled = Options {
+            ui_mcp_http: true,
+            ..Options::default()
+        };
+        assert!(matches!(
+            run_batch(&smuggled),
+            Err(CliError::UiMcpHttpNotBatch)
+        ));
+        assert_eq!(CliError::UiMcpHttpNotBatch.exit_code(), EXIT_UI);
     }
 
     // ------------------------------------------------------------------

@@ -145,6 +145,32 @@ yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
 # `yeban-ui-test-port` 同款)。
 yeban-mcp = { path = "../yeban-mcp", optional = true }
 
+# ---------------------------------------------------------------------------
+# ui-mcp-http: **UI 控制面**（14 条 `ui/*` 方法）的环回入口
+# ---------------------------------------------------------------------------
+# 依赖方向: yeban-app --(feature)--> yeban-ui-mcp --> {yeban-mcp, yeban-ui-test-port}。
+# **不反向**（yeban-ui-mcp 绝不依赖 yeban-app，否则成环）—— 因此"怎么拿像素"由
+# `PortAdapter` 以函数指针注入（与 `[dev-dependencies]` 那一条下面的注释同款）。
+#
+# 为什么默认关闭 (AGENTS.md §2 红线 6 / MUST-GATE-009): 与 `in-process-mcp` 同一条纪律。
+# 默认构建里既没有 UI 执行面 (`yeban-ui-test-port` 的 Tier-1 软件光栅化 + testing
+# backend)，也没有 `yeban-mcp/mcp-http` 的报文层 —— 也就是说**一个监听循环都不在依赖图上**。
+# 核验命令 (零编译):
+#     cargo tree -p yeban-app -e normal --locked                         # 默认档: yeban-ui-mcp 命中 0
+#     cargo tree -p yeban-app -e normal --locked --features ui-mcp-http   # 命中 >= 1
+#
+# `yeban-ui-mcp/ui-mcp-http` 必须**一起**打开: 那个 crate 的 `transport::http` /
+# `transport::mount` 在非 test 构建下只在那个 feature 下存在，少了它连
+# `UiHttpServer::bind_loopback` 都没有。运行期还有第二道开关
+# (`--enable-ui-mcp-http`)，见 `src/ui_mcp_serve.rs`。
+#
+# 同一个包同时出现在 `[dependencies]`(optional) 与 `[dev-dependencies]` 是 Cargo
+# 支持的写法（`yeban-ui-test-port` 已经是这个形状）: dev 段那一条给**测试目标**，
+# optional 那一条给**产品路径**（非默认 feature 打开时）。
+#
+# 只写 `path`(+`optional`)，不写 version —— 见上面 `yeban-mcp` 的同一条注释。
+yeban-ui-mcp = { path = "../yeban-ui-mcp", optional = true }
+
 [features]
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
 ui-test-port = ["dep:yeban-ui-test-port"]
@@ -153,6 +179,16 @@ ui-test-port = ["dep:yeban-ui-test-port"]
 # **不在 `default` 里** —— 这是 MUST-GATE-009 的第一道开关, 不是可选的便利。
 # 它同时打开 `yeban-mcp/mcp-http`: 那一边的监听代码同样默认关着。
 in-process-mcp = ["dep:yeban-mcp", "yeban-mcp/mcp-http"]
+
+# `ui-mcp-http`: **UI 控制面**的产品入口 (`--enable-ui-mcp-http`, 见 `src/ui_mcp_serve.rs`)。
+# **不在 `default` 里** —— 同一条 MUST-GATE-009 的第一道开关。三个 `dep:` 由
+# `yeban-ui-mcp` 的执行面推出: 光栅化 + testing backend 在 `yeban-ui-test-port`,
+# 报文层与令牌在 `yeban-ui-mcp`(它再转发 `yeban-mcp/mcp-http`)。
+ui-mcp-http = [
+    "dep:yeban-ui-mcp",
+    "dep:yeban-ui-test-port",
+    "yeban-ui-mcp/ui-mcp-http",
+]
 
 # `experimental-als-export`: `--export-als` 的实验性 Ableton `.als` 导出
 # (`[ARCH-FMT-002]` / `[ROAD-M4-007]`; ADR-0001 **D47** 把导出的唯一出口定为 app CLI)。

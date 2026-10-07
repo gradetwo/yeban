@@ -46,6 +46,13 @@ use crate::transport::UI_MCP_PATH;
 /// 头 / 体分隔符。
 const HEAD_TERMINATOR: &[u8] = b"\r\n\r\n";
 
+/// 泵形态（[`UiHttpServer::try_serve_once`]）下**单个连接**的读/写超时。
+///
+/// 2 秒是个折中：正常的一次 `POST`（环回、body ≤ 1 MiB）在毫秒级完成，而一个
+/// 连上就不说话的客户端最多让宿主线程卡 2 秒 —— 那条线程是**界面线程**，
+/// 所以这个上限必须有（见 `try_serve_once` 的文档）。
+const CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// 环回 HTTP 服务。
 pub struct UiHttpServer {
     listener: TcpListener,
@@ -184,6 +191,65 @@ impl UiHttpServer {
             .map_err(|source| HttpError::Io { source })?;
         assert_loopback_peer(peer)?;
         self.handle_stream(&mut stream)
+    }
+
+    /// 把监听 socket 切成非阻塞（给"在**别人的循环**里泵"的产品宿主用）。
+    ///
+    /// ## 为什么需要它（这一条不是可选优化）
+    ///
+    /// 真实的执行面 `yeban_ui_test_port::render::LivePort<MainWindow>` 持有 Slint 组件
+    /// （`Rc` 语义 ⇒ **`!Send`**），因此服务**只能**跑在持有窗口的那条线程上。那条线程
+    /// 还要干别的事（Slint 事件循环 / 空闲循环），所以 `accept` 不能阻塞 —— 阻塞的
+    /// `accept` 会把宿主线程连同界面一起冻住。产品形态因此是"宿主拍一拍，服务答一个"
+    /// （[`Self::try_serve_once`]，由 `crate::transport::mount::UiHttpMount` 驱动）。
+    ///
+    /// # Errors
+    ///
+    /// `TcpListener::set_nonblocking` 失败。
+    pub fn set_nonblocking(&self, nonblocking: bool) -> Result<(), HttpError> {
+        self.listener
+            .set_nonblocking(nonblocking)
+            .map_err(|source| HttpError::Io { source })
+    }
+
+    /// **非阻塞地**服务**至多一个**待处理连接（[`Self::serve_once`] 的"泵"形态）。
+    ///
+    /// | 返回值 | 含义 |
+    /// | :--- | :--- |
+    /// | `Ok(true)` | 真的接受并回答了一个连接（队列里可能还有） |
+    /// | `Ok(false)` | **此刻没有**待处理连接（`WouldBlock`）—— 调用方可以回去干别的事 |
+    ///
+    /// 前提：监听 socket 已经是非阻塞的（[`Self::set_nonblocking`]）。
+    /// `UiHttpMount::bind_loopback` 在绑定时就替宿主做好了这件事；单独用本方法时要自己开。
+    ///
+    /// ## 连接上的两个超时（为什么必须有）
+    ///
+    /// 被接受的 stream 在 macOS/BSD 上会**继承**监听 socket 的非阻塞标志，而
+    /// [`Self::handle_stream`] 的读法（[`read_head`] 逐字节读到 `\r\n\r\n`）要求阻塞语义
+    /// —— 于是这里显式把它切回阻塞，并给**读/写**各一个 [`CONNECTION_TIMEOUT`]。
+    /// 没有超时的话，一个连上却不发请求的客户端会把宿主线程（也就是界面）永远卡住：
+    /// 这是"泵"与"阻塞 accept"之间真正的差别，也是本方法相对 [`Self::serve_once`] 唯一
+    /// 额外付出的代价（后者由**独立的工作线程**承担这个风险，见 `yeban-app` 的形态 A）。
+    ///
+    /// # Errors
+    ///
+    /// accept 失败；或该连接的 socket 选项 / 读写失败。
+    /// 协议层错误（非法请求行 / 头太大 / 缺 `Content-Length` …）**不**在此返回 ——
+    /// 它们被翻译成错误响应（与 [`Self::handle_stream`] 同款）。
+    pub fn try_serve_once(&self) -> Result<bool, HttpError> {
+        let (mut stream, peer) = match self.listener.accept() {
+            Ok(accepted) => accepted,
+            Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(source) => return Err(HttpError::Io { source }),
+        };
+        assert_loopback_peer(peer)?;
+        stream
+            .set_nonblocking(false)
+            .and_then(|()| stream.set_read_timeout(Some(CONNECTION_TIMEOUT)))
+            .and_then(|()| stream.set_write_timeout(Some(CONNECTION_TIMEOUT)))
+            .map_err(|source| HttpError::Io { source })?;
+        self.handle_stream(&mut stream)?;
+        Ok(true)
     }
 
     /// 永久服务（**只在 `ui-mcp-http` feature 下存在**）。

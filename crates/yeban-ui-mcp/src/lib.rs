@@ -42,7 +42,7 @@
 //! | [`service`] | 否 | 管线：方法解析 → 授权（硬禁→token→scope）→ 参数 → **dryRun 短路** → 执行 | `UI-MCP-001` `ARCH-SEC-002` `MUST-GATE-009` |
 //! | [`live`] | 否 | **真实界面上的控制面装配**（`ControlPlane`）与端到端读数（`ui/tree` → `ui/node` → `ui/screenshot`） | `ARCH-UI-004` `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` `MUST-GATE-015` |
 //! | [`surface`] | 否 | 执行面 `UiSurface`（= `UiTestPort` + Tier-1 像素 + IME 状态 + dryRun 预览）、像素证据、`PortAdapter` | `MUST-GATE-015` `UI-A11Y-002` |
-//! | [`transport`] | 否 | stdio（默认开）与环回 HTTP（默认关，两道开关） | `ARCH-UI-004` `MUST-GATE-009` `ROAD-M4-002` |
+//! | [`transport`] | 否 | stdio（默认开）与环回 HTTP（默认关，两道开关）；`transport::mount` 是**产品装配点**（绑环回 + `0600` 令牌 + 消费即释放） | `ARCH-UI-004` `MUST-GATE-009` `ROAD-M4-001` `ROAD-M4-002` |
 //! | [`samples`] | 否 | 3 份 `.meta.` 文档样本 + 跨语言对账入口 | `MUST-GATE-010` `TEST-SPEC-005` |
 //!
 //! **本 crate 自己的代码零 Slint 依赖**（Slint 只经 `yeban-ui-test-port` 间接进入依赖图）。
