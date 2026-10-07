@@ -844,6 +844,15 @@ impl ElementRegistry {
             "视觉差异图例: 新增 / 删除 / 微调",
             false,
         );
+        // 空态（零提案时**唯一**出现在抽屉内容区的图元）。注册表的标签就是界面上那句
+        // 可见文案 —— 注册表与图元说的是同一句话（`[UI-TEST-001]`）。
+        registry.add(
+            "musical-pr-empty-state",
+            ElementKind::Text,
+            "dialogs/musical_pr_drawer.slint",
+            "还没有 AI 提案。这条链路尚未接线。",
+            false,
+        );
         for proposal_index in 0..3 {
             registry.add(
                 &format!("musical-pr-proposal-{proposal_index}-item"),
@@ -1061,6 +1070,37 @@ pub fn is_model_driven_family(id: &str) -> bool {
         .iter()
         .any(|prefix| id.starts_with(prefix))
 }
+
+/// 从 `ui/dialogs/musical_pr_drawer.slint` **删掉的**全部假提案字面量（文案 + 置信度）。
+///
+/// 逐字抄自本票改动前的 HEAD（`git show <parent>:crates/yeban-app/ui/dialogs/
+/// musical_pr_drawer.slint` 的 `:18-25`），当时它们是四条属性的**默认值** ——
+/// 也就是说没有任何宿主写它们（`no_host_writes_the_musical_pr_proposal_properties`
+/// 证明这一点），**用户看到的就是这些编造的数据**。
+///
+/// 为什么放在 lib 里而不是测试模块里: 两个测试目标（本文件的单元测试与
+/// `tests/live_ui_mcp.rs` 的集成测试）要探**同一批**字符串。写第二份就会漂移 ——
+/// 补一条字面量却漏改另一份, 判据就有一半永远绿。
+#[doc(hidden)]
+pub const DEMO_PROPOSAL_LITERALS: [&str; 6] = [
+    "Verse 第 3 小节加入上行贝斯线",
+    "Chorus 第 2 拍删除重叠和弦音",
+    "Drop 段微调铺底音高 -2 半音",
+    "94%",
+    "88%",
+    "76%",
+];
+
+/// 抽屉的四个数据面属性：`.slint` 名 / Slint 生成的 Rust setter 名（snake_case）配对。
+///
+/// 判据要同时看两侧的**名称风格** —— 只查一侧会让"换个名字重新注入"漏过去。
+#[doc(hidden)]
+pub const MUSICAL_PR_PROPERTY_NAMES: [(&str, &str); 4] = [
+    ("proposal-count", "proposal_count"),
+    ("proposal-labels", "proposal_labels"),
+    ("proposal-kinds", "proposal_kinds"),
+    ("confidences", "confidences"),
+];
 
 #[cfg(test)]
 mod tests {
@@ -1983,6 +2023,227 @@ mod tests {
                 setters.contains(name),
                 "MainWindow 声明了 `{name}` 但没有任何 setter 写它（死属性）"
             );
+        }
+    }
+
+    // =====================================================================
+    // 诚实性契约：AI 提案抽屉里**不许出现编造的提案数据**（文本层 + 属性层）
+    //
+    // 本机不编译 Slint, 因此这里是本地能真跑的那一半；运行时控件树那一半在
+    // `tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`。
+    // =====================================================================
+
+    /// 去掉 `//` 行注释与行尾注释后的**代码文本**。
+    ///
+    /// 为什么要去注释: 本票把"什么被删掉了"写进了注释（审计留痕）。探针若把注释也算作
+    /// "界面里的字面量", 就会逼着作者**不写**留痕 —— 那与本仓库的纪律相反。
+    /// 只处理 `//`: `.slint` 与 `.rs` 在本仓库都不用块注释承载会出现在界面上的字符串。
+    fn code_only(source: &str) -> String {
+        source
+            .lines()
+            .map(|line| match line.split_once("//") {
+                Some((code, _comment)) => code,
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 判据（**多路径探针：源码文本 + 属性默认值 + 循环规模**）：抽屉里没有任何假提案。
+    ///
+    /// 三条路径各自独立, 破坏任何一条都变红：
+    ///
+    /// 1. **全 `ui/` 源码文本**: [`DEMO_PROPOSAL_LITERALS`] 一条都不得出现在 `ui/**` 的
+    ///    任何 `.slint` 的**代码**里。只查抽屉那一个文件不够 —— 把假数据搬到 `app.slint`
+    ///    再注入, 用户看到的还是一模一样的假界面。
+    /// 2. **属性默认值**: 四个数据面属性的默认值必须是 `0` / `[]`。这一条钉的是
+    ///    "宿主不写时界面显示什么", 而今天**没有**任何宿主写它们（下一条判据证明）。
+    /// 3. **循环规模**: 提案列表必须由**数据**驱动, 不得是固定的 `for … in 3` ——
+    ///    固定循环加空数组会在界面上留三张空卡片。
+    ///
+    /// 还有一条**空态**断言: 零提案时界面必须有一句用户可见的真话,
+    /// 而不是一片空白（空白让用户以为界面坏了）。文案必须同时是 `accessible-label`
+    /// 与可见 `text` —— 只写一处就是"源码里说真话、用户看不见"的老毛病。
+    #[test]
+    fn musical_pr_drawer_declares_no_demo_proposals() {
+        let drawer_path = ui_dir().join("dialogs/musical_pr_drawer.slint");
+        let drawer = std::fs::read_to_string(&drawer_path).expect("读 musical_pr_drawer.slint");
+
+        // ---- 路径 ①: 全 ui/ 的**代码**里不得有假提案字面量 ----
+        let ui = ui_dir();
+        let mut files = Vec::new();
+        collect_slint_files(&ui, &mut files);
+        files.sort();
+        assert!(!files.is_empty(), "ui/ 下一个 .slint 都没有?");
+        let mut hits: Vec<String> = Vec::new();
+        for file in &files {
+            let rel = file
+                .strip_prefix(&ui)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let code = code_only(&std::fs::read_to_string(file).expect("读 .slint 失败"));
+            for literal in DEMO_PROPOSAL_LITERALS {
+                if code.contains(literal) {
+                    hits.push(format!("{rel}: `{literal}`"));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "假提案数据回到了界面里（编造的提案文案 / 置信度不许出现在任何 .slint 的代码里）:\n  {}",
+            hits.join("\n  ")
+        );
+
+        // ---- 路径 ②: 四个属性的**默认值**必须是空的 ----
+        for (slint_name, _) in MUSICAL_PR_PROPERTY_NAMES {
+            assert!(
+                !drawer.contains(&format!("{slint_name}: 3")),
+                "`{slint_name}` 的默认值回到了演示常量"
+            );
+        }
+        for literal in [
+            "in property <int> proposal-count: 0;",
+            "in property <[string]> proposal-labels: [];",
+            "in property <[string]> proposal-kinds: [];",
+            "in property <[string]> confidences: [];",
+        ] {
+            assert!(
+                drawer.contains(literal),
+                "抽屉的数据面必须默认全空, 缺这一行: `{literal}`"
+            );
+        }
+
+        // ---- 路径 ③: 提案列表由**数据**驱动, 不是固定的三条 ----
+        assert!(
+            drawer.contains("in root.proposal-kinds :"),
+            "提案列表必须由数据（`root.proposal-kinds`）驱动, 不能是固定条数"
+        );
+        assert!(
+            !drawer.contains("for proposal_index in 3"),
+            "固定的 `for proposal_index in 3` 必须消失（它会在空数组上留三张空卡片）"
+        );
+
+        // ---- 空态: 用户可见的真话（`accessible-label` 与 `text` **两处都要有**）----
+        assert!(
+            drawer.contains("accessible-id: \"musical-pr-empty-state\";"),
+            "零提案时必须有一个语义 ID = `musical-pr-empty-state` 的空态图元"
+        );
+        assert!(
+            drawer.contains("accessible-label: \"还没有 AI 提案。这条链路尚未接线。\";"),
+            "空态的 `accessible-label` 必须就是界面上那句话（读屏用户听到的也是它）"
+        );
+        assert!(
+            drawer.contains("text: \"还没有 AI 提案。这条链路尚未接线。\";"),
+            "空态必须有一句**可见**的文案 —— 只写在注释或 `accessible-label` 里用户看不见"
+        );
+
+        // ---- 零提案时不画"采纳 / 放弃": 一个可点的「采纳」在空列表上是假控件 ----
+        assert_eq!(
+            drawer
+                .matches("if root.proposal-count > 0 : Rectangle")
+                .count(),
+            2,
+            "「采纳」与「放弃」两个按钮都必须挂在 `proposal-count > 0` 的条件上"
+        );
+        for id in ["musical-pr-accept-button", "musical-pr-reject-button"] {
+            assert!(
+                drawer.contains(&format!("accessible-id: \"{id}\";")),
+                "`{id}` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）"
+            );
+        }
+    }
+
+    /// 判据（**属性层的前提**）：没有任何宿主代码写抽屉的四个数据面属性。
+    ///
+    /// 这条不是顺手加的对账 —— 它是上一条判据**路径 ②** 得以成立的前提:
+    /// 只要有任何一处 Rust 写这四个属性, "默认值 = 用户看到的"就不再成立,
+    /// 路径 ② 就退化成一句空话。
+    ///
+    /// 两条子路径：
+    /// - **Rust 侧**: `src/**` 的**代码**里不得出现 Slint 生成的 setter
+    ///   （`set_proposal_count(` 等）。口径与 `host_setters_match_the_declared_slint_properties`
+    ///   同款 —— 都是文本层扫 `.rs`。
+    /// - **界面侧**: 除了抽屉自己, `ui/**` 的**代码**里不得出现那四个 kebab-case 属性名。
+    ///   在 `app.slint` 里绑一句（`proposal-count: root.…`）就等于接上了注入面。
+    ///
+    /// 本仓纪律: "把动作吞掉却什么都不做, 比不处理更糟"（见 `host.rs` 的
+    /// `action_has_implementation` 文档）。这一条把"今天真的没有数据源"从一句话变成断言。
+    #[test]
+    fn no_host_writes_the_musical_pr_proposal_properties() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut rs_files = Vec::new();
+        collect_files_with_extension(&src, "rs", &mut rs_files);
+        rs_files.sort();
+        assert!(!rs_files.is_empty(), "src/ 下一个 .rs 都没有?");
+
+        let mut setter_hits: Vec<String> = Vec::new();
+        for file in &rs_files {
+            let rel = file
+                .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let code = code_only(&std::fs::read_to_string(file).expect("读 .rs 失败"));
+            for (_, rust_name) in MUSICAL_PR_PROPERTY_NAMES {
+                if code.contains(&format!("set_{rust_name}(")) {
+                    setter_hits.push(format!("{rel}: set_{rust_name}(…)"));
+                }
+            }
+        }
+        assert!(
+            setter_hits.is_empty(),
+            "有宿主代码在写抽屉的提案数据面 ⇒ 界面上的提案不再是'没有数据源':\n  {}",
+            setter_hits.join("\n  ")
+        );
+
+        let ui = ui_dir();
+        let mut slint_files = Vec::new();
+        collect_slint_files(&ui, &mut slint_files);
+        slint_files.sort();
+        let drawer_rel = "dialogs/musical_pr_drawer.slint";
+        let mut bind_hits: Vec<String> = Vec::new();
+        for file in &slint_files {
+            let rel = file
+                .strip_prefix(&ui)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == drawer_rel {
+                continue; // 抽屉自己**声明**这四个属性, 这不是注入。
+            }
+            let code = code_only(&std::fs::read_to_string(file).expect("读 .slint 失败"));
+            for (slint_name, _) in MUSICAL_PR_PROPERTY_NAMES {
+                if code.contains(&format!("{slint_name}:")) {
+                    bind_hits.push(format!("{rel}: {slint_name}:"));
+                }
+            }
+        }
+        assert!(
+            bind_hits.is_empty(),
+            "抽屉之外有 .slint 在绑定提案数据面 ⇒ 用户看到的不再是默认值:\n  {}",
+            bind_hits.join("\n  ")
+        );
+    }
+
+    /// 收集 `dir` 下（递归）全部扩展名为 `ext` 的文件。
+    ///
+    /// 与上面的 `collect_slint_files` 同款, 只是扩展名可参数化（本判据还要扫 `src/**` 的 `.rs`）。
+    fn collect_files_with_extension(
+        dir: &std::path::Path,
+        ext: &str,
+        out: &mut Vec<std::path::PathBuf>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files_with_extension(&path, ext, out);
+            } else if path.extension().is_some_and(|found| found == ext) {
+                out.push(path);
+            }
         }
     }
 }

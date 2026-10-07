@@ -2349,8 +2349,16 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// 但界面侧**没有提案身份的来源**：`grep -rn 'proposalId' crates/yeban-app/src` 的命中
 /// **全部落在注释里**（本文件的这一段与 `main.rs` 的 `wire_callbacks` 文档），没有一处是取值。
 /// 抽屉里的 `proposal-count` / `proposal-labels` / `proposal-kinds` / `confidences`
-/// 是内联演示常量（`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint:18-25`；
-/// 该文件 `:12` 自陈"静态骨架 + 演示数据"，`:194` 是固定的三条循环）。
+/// 是**空的**（`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint` 的 `:32-35`：
+/// `0` 与四个空数组），界面在零提案时画一句用户可见的空态
+/// （`musical-pr-empty-state`，`:12` 自陈"静态骨架, **不含演示数据**"）。
+/// **2026-10-08 更正**：这四个属性此前是**内联演示常量**（三条中文假提案 + 三个假置信度），
+/// 于是界面显示"AI 提了 3 条提案"而用户分不出真假；本切片删掉了那批数据并加了空态。
+/// 两条判据钉住它：`elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals` /
+/// `no_host_writes_the_musical_pr_proposal_properties`（文本层 + 属性层）与
+/// `tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`（运行时树）。
+/// 清空数据**不**改变本条结论：界面侧**仍然没有**"当前待采纳的提案身份"这个表示，
+/// 因此 `Shift+Enter` 仍然如实不消费。
 /// 提案注册表（`Domain.proposals`）住在 `crates/yeban-mcp/src/domain/mod.rs:155`，
 /// 由 `crates/yeban-app/src/mcp_mount.rs` 在**非默认 feature** `in-process-mcp` 且
 /// 运行期 `--enable-mcp-http` 打开时才建，**不在** UI 线程的 `apply_action` 路径上。

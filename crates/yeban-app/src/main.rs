@@ -574,10 +574,15 @@ fn mount_in_process_mcp(
 ///
 /// - `accept-ai-proposal` / `reject-ai-proposal`：**提案在界面侧没有表示** ——
 ///   `ui/dialogs/musical_pr_drawer.slint` 的 `proposal-count` / `proposal-labels` /
-///   `proposal-kinds` / `confidences` 全是内联演示常量（该文件自陈"静态骨架 + 演示数据"），
-///   界面上没有任何"当前提案身份"的属性；而 `yeban_merge_proposal` /
-///   `yeban_reject_proposal` 要 `proposalId`。在界面侧新造一条提案状态会与领域权威冲突
-///   （`ADR-0005`）⇒ 登记为缺口，不接。
+///   `proposal-kinds` / `confidences` 默认**全空**（`0` 与四个空数组），并且**没有任何**
+///   宿主代码写它们（判据：`elements.rs` 的 `no_host_writes_the_musical_pr_proposal_properties`）。
+///   界面在零提案时只画一句可见的空态，**不画**「采纳 / 放弃」两个按钮
+///   （一个可点的「采纳」在空列表上是假控件）。
+///   **2026-10-08 更正**：这四个属性此前是内联演示常量（三条中文假提案 + 三个假置信度），
+///   界面因此显示"AI 提了 3 条"而用户分不出真假；本切片删掉了那批数据。
+///   清空数据**不**改变本条结论：界面上仍然没有任何"当前提案身份"的属性，
+///   而 `yeban_merge_proposal` / `yeban_reject_proposal` 要 `proposalId`。
+///   在界面侧新造一条提案状态会与领域权威冲突（`ADR-0005`）⇒ 登记为缺口，不接。
 /// - `run-acoustic-diagnosis`：仓库里**没有**声学分析（掩蔽 / 相位 / 动态范围）的实现。
 ///   最近的既有机制是 `[D56]` 的 `UiAction::ExportDiagnostics`，而 [`host::wire_undo`]
 ///   已经把它接在**另一个**按钮（`diagnostics-export-action`）上，产物是 env/git/日志的

@@ -6728,9 +6728,17 @@ fn the_view_state_properties_drive_the_runtime_tree() {
         after.contains("musical-pr-drawer"),
         "`musical-pr-open=true` ⇒ 提案抽屉进树"
     );
+    // ⚠ 这一格 2026-10-08 由 `3` 改成 `0`：抽屉里的三条「提案」是**编造的演示数据**
+    // （见 `tests/live_ui_mcp.rs` 的 `the_musical_pr_drawer_shows_an_honest_empty_state`
+    // 与 `src/elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals`）。
+    // 写成 `3` 等于把"界面显示假数据"钉成契约。
     assert_eq!(
-        proposal_items, 3,
-        "抽屉里的三条提案条目在树里（`for … in 3`）"
+        proposal_items, 0,
+        "零提案时抽屉里不该有任何 `musical-pr-proposal-*-item`（那三条是编造的）"
+    );
+    assert!(
+        after.contains("musical-pr-empty-state"),
+        "零提案时抽屉里必须有那句用户可见的空态"
     );
     // ⚠ **不断言总节点数增加**：这一格里节点数由 85 降到 78（实测），因为同时发生的
     // 还有两件**减少**节点的事 —— `compact` 关掉常驻右栏那整棵子树、`arrangement-view=false`
@@ -6750,6 +6758,160 @@ fn the_view_state_properties_drive_the_runtime_tree() {
     assert!(
         !closed.contains("musical-pr-drawer"),
         "反证失败：抽屉关掉之后仍在树里 ⇒ 上面那条断言没有判别力"
+    );
+}
+
+// =====================================================================================
+// 判据：**抽屉不说谎** —— 零提案的抽屉里没有编造的数据，只有一句用户可见的真话
+//
+// 这是"AI 提案抽屉"的诚实性契约的**运行时那一半**；文本层与属性层那一半在
+// `crates/yeban-app/src/elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals`
+// 与 `no_host_writes_the_musical_pr_proposal_properties`。三条路径共用**同一份**假字面量
+// （`yeban_app::elements::DEMO_PROPOSAL_LITERALS`），因此不存在"两份清单漂移"。
+// =====================================================================================
+
+/// 判据：打开抽屉 ⇒ 运行时树里**零条**提案、零条编造置信度，且有一句可见的空态。
+///
+/// | 路径 | 量什么 | 期望 |
+/// | :--- | :--- | :--- |
+/// | 属性 → 树 | `musical-pr-drawer` 节点的 `value`（= `accessible-value` 原文） | `"0"` |
+/// | 树（ID） | `musical-pr-proposal-*-item` 的条数 | `0` |
+/// | 树（标签） | 任何节点的 `accessible-label` / `accessible-value` 命中 6 条假字面量 | `0` 处 |
+/// | 树（空态） | `musical-pr-empty-state` 的 `label` | 逐字等于界面上那句话 |
+/// | 树（假控件） | `musical-pr-accept-button` / `-reject-button` | 都不在树里 |
+/// | 像素 | 打开抽屉前后两帧的差异像素数与包围盒 | 必须变（不碰 golden） |
+///
+/// **为什么 `value` 这一格是"属性 ⇒ 树"**：`accessible-value` 是抽屉从 `proposal-count`
+/// 算出来的文本，运行时树读的是**活控件**（`crates/yeban-ui-test-port/src/inspect.rs:186`）。
+/// 把 `proposal-count` 改回演示常量 ⇒ 这一格立刻变成 `"3"`。
+#[test]
+fn the_musical_pr_drawer_shows_an_honest_empty_state() {
+    let project = yeban_model::samples::filled_project();
+    let mut ui = build_live_ui(&project, Permission::ReadOnly).expect("装配");
+
+    // ---- 默认（抽屉关着）: 先抓一帧，作为"打开抽屉改变了画面"的对照
+    ui.pump_meters();
+    let before_tree = ui.tree_snapshot();
+    assert!(
+        !before_tree.contains("musical-pr-drawer"),
+        "默认不打开提案抽屉"
+    );
+    let before_frame = ui.capture().expect("默认帧");
+
+    // ---- 打开抽屉
+    ui.ui().set_musical_pr_open(true);
+    ui.pump_meters();
+    let after = ui.tree_snapshot();
+    assert!(after.contains("musical-pr-drawer"), "抽屉必须在树里");
+
+    // ---- 属性 ⇒ 树: `accessible-value` 就是 `proposal-count` 的文本
+    let drawer = after
+        .find_by_id("musical-pr-drawer")
+        .expect("`musical-pr-drawer` 节点");
+    let count_reading = drawer.value.clone().unwrap_or_default();
+    report_line(&format!(
+        "[musical-pr] 属性 ⇒ 树: `musical-pr-drawer` 的 accessible-value = {count_reading:?} \
+         （= 抽屉头 `AI 编曲提案 (N)` 里的 N）"
+    ));
+    assert_eq!(
+        count_reading, "0",
+        "零提案时抽屉必须如实报 0 条（`accessible-value` 是 `proposal-count` 的文本）"
+    );
+
+    // ---- 树（多路径探针）: 假数据不许回来
+    let proposal_ids: Vec<&str> = after
+        .ids()
+        .filter(|id| id.starts_with("musical-pr-proposal-"))
+        .collect();
+    let mut leaks: Vec<String> = Vec::new();
+    for node in after.iter() {
+        for literal in yeban_app::elements::DEMO_PROPOSAL_LITERALS {
+            if node.label.contains(literal) {
+                leaks.push(format!(
+                    "`{}` 的 accessible-label 命中 `{literal}`",
+                    node.id
+                ));
+            }
+            if node
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains(literal))
+            {
+                leaks.push(format!(
+                    "`{}` 的 accessible-value 命中 `{literal}`",
+                    node.id
+                ));
+            }
+        }
+    }
+    report_line(&format!(
+        "[musical-pr] 运行时树: 节点 {}; `musical-pr-proposal-*-item` {} 条 {proposal_ids:?}; \
+         假字面量命中 {} 处 {leaks:?}; `musical-pr-accept-button` 在树里 = {}; \
+         `musical-pr-reject-button` 在树里 = {}",
+        after.len(),
+        proposal_ids.len(),
+        leaks.len(),
+        after.contains("musical-pr-accept-button"),
+        after.contains("musical-pr-reject-button"),
+    ));
+    assert!(
+        leaks.is_empty(),
+        "抽屉里出现了编造的提案数据（文案或置信度）:\n  {}",
+        leaks.join("\n  ")
+    );
+    assert!(
+        proposal_ids.is_empty(),
+        "零提案时不该有任何提案条目, 实测 {proposal_ids:?}"
+    );
+    // 一个可点的「采纳」在空列表上是**假控件**（按下去只关抽屉 + 一行 stderr）。
+    // 上一轮已裁定 `Shift+Enter → 采纳 AI 建议` 不许假装实现, 这里同款。
+    assert!(
+        !after.contains("musical-pr-accept-button"),
+        "零提案时「采纳」按钮不许在树里（它是假控件）"
+    );
+    assert!(
+        !after.contains("musical-pr-reject-button"),
+        "零提案时「放弃」按钮不许在树里（它是假控件）"
+    );
+
+    // ---- 空态: 用户此刻看到的那句话, 逐字读回来
+    let empty = after
+        .find_by_id("musical-pr-empty-state")
+        .expect("零提案时必须有空态节点");
+    report_line(&format!(
+        "[musical-pr] 运行时树文本: `musical-pr-empty-state` role={} label={:?}",
+        empty.role.as_str(),
+        empty.label
+    ));
+    assert_eq!(
+        empty.label, "还没有 AI 提案。这条链路尚未接线。",
+        "空态的 `accessible-label` 必须就是界面上那句话"
+    );
+
+    // ---- 像素: 打开抽屉必须真的改变画面（同一次运行的两帧, 不碰 golden）
+    let after_frame = ui.capture().expect("抽屉打开帧");
+    let diff = frame_diff(&before_frame, &after_frame).expect("打开抽屉必须改变像素");
+    report_line(&format!(
+        "[musical-pr] 像素: 默认帧 vs 抽屉打开帧 = 差异 {} px, 包围盒 x{}..{} × y{}..{}（帧 {}×{}）",
+        diff.count,
+        diff.bbox.x,
+        diff.bbox.right(),
+        diff.bbox.y,
+        diff.bbox.bottom(),
+        before_frame.width(),
+        before_frame.height(),
+    ));
+    assert!(
+        diff.count > 0,
+        "打开抽屉之后画面必须改变（否则抽屉没有被渲染）"
+    );
+    // 抽屉是 `x: root.width - 360px` 的右侧覆盖层（`ui/app.slint`）⇒ 差异必须伸进
+    // 右起 360px 那一条带。这一格防的是"差异来自别处、抽屉其实没画出来"。
+    let drawer_band_left = i32::try_from(after_frame.width().saturating_sub(360)).unwrap_or(0);
+    assert!(
+        diff.bbox.right() > drawer_band_left,
+        "差异包围盒右界 {} 没有伸进抽屉那条带（x ≥ {drawer_band_left}）⇒ 画的不是抽屉",
+        diff.bbox.right()
     );
 }
 

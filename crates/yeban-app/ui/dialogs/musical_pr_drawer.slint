@@ -9,20 +9,32 @@
 //     `border-style` 只有 solid, 虚线要用图元拼)。
 //   - [UI-TEST-001] §12.2: 语义 Element ID
 //
-// 静态骨架 + 演示数据: 没有真实 AI 提案数据源, 没有采纳/放弃的 Ops 归约。
-// `Shift+Enter` 采纳 / `Esc` 放弃的键盘路径住在 src/input.rs, 这里只提供可点等价物。
+// 静态骨架, **不含演示数据**: 没有真实 AI 提案数据源, 没有采纳/放弃的 Ops 归约。
+// `Shift+Enter` 采纳 / `Esc` 放弃的键盘路径住在 src/input.rs, 这里只提供可点等价物 ——
+// 而那两条键盘路径今天**如实不消费**（`src/host.rs` 的 `action_has_implementation`
+// 返回 `false`; `src/cli.rs` 的表里是 `implemented: false`）。
+//
+// ⚠ 本文件曾经把三条中文假提案与三个假置信度百分比写成**属性默认值**, 于是界面显示
+// "AI 提了 3 条提案, 每条带一个百分比置信度"。那些数字是编造的, 用户分不出真假。这已删除:
+// 数据面默认**全空**, 空的时候画一句用户可见的空态文案（见下面的 `musical-pr-empty-state`）。
+// 判据（多路径探针: 源码文本 + 属性默认值 + 运行时树）:
+// `src/elements.rs` 的 `musical_pr_drawer_declares_no_demo_proposals` /
+// `no_host_writes_the_musical_pr_proposal_properties`, 与 `tests/live_ui_mcp.rs` 的
+// `the_musical_pr_drawer_shows_an_honest_empty_state`。
 
 import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
 
 export component MusicalPrDrawer inherits Rectangle {
-    in property <int> proposal-count: 3;
-    in property <[string]> proposal-labels: [
-        "Verse 第 3 小节加入上行贝斯线",
-        "Chorus 第 2 拍删除重叠和弦音",
-        "Drop 段微调铺底音高 -2 半音"
-    ];
-    in property <[string]> proposal-kinds: ["新增", "删除", "微调"];
-    in property <[string]> confidences: ["94%", "88%", "76%"];
+    // ---------------------------------------------------------------- 提案数据面
+    // 默认**全空**: `0` 条提案 + 四个空数组。这里刻意**不**放演示数据。
+    // 唯一写者本应是宿主 Rust; 今天 `grep -rn 'proposal-count|proposal-labels|
+    // proposal-kinds|confidences' crates/yeban-app/src` **只有注释命中** ⇒ 没有任何宿主
+    // 写这四个属性 ⇒ 默认值就是用户在界面上看到的东西（这正是必须清空的原因）。
+    // ⚠ 四个数组必须**等长**: 下面的循环按下标同时读 `kinds` / `labels` / `confidences`。
+    in property <int> proposal-count: 0;
+    in property <[string]> proposal-labels: [];
+    in property <[string]> proposal-kinds: [];
+    in property <[string]> confidences: [];
 
     callback accept();
     callback reject();
@@ -36,6 +48,11 @@ export component MusicalPrDrawer inherits Rectangle {
     accessible-role: region;
     accessible-id: "musical-pr-drawer";
     accessible-label: "AI 编曲提案审核抽屉";
+    // 提案条数进 `accessible-value` ⇒ 它是**机器可读**的读数（`ui/tree` / `ui/node` 的
+    // `value` 字段, `crates/yeban-ui-test-port/src/inspect.rs:186`）。
+    // 零提案时它是 `"0"`。判据 `the_musical_pr_drawer_shows_an_honest_empty_state`
+    // 读的就是它 —— "界面说 0 条"因此不是一句注释, 而是一条断言。
+    accessible-value: "" + root.proposal-count;
 
     // ---------------------------------------------------------------- 抽屉头
     Rectangle {
@@ -190,8 +207,44 @@ export component MusicalPrDrawer inherits Rectangle {
         }
     }
 
+    // ---------------------------------------------------------------- 空态
+    // 没有数据源 ⇒ 界面**说真话**。这一句是**用户可见**的: 源码里的自陈用户看不见,
+    // 所以诚实必须落在图元上。
+    // 先例（本仓既有的同款做法）: `ui/console/device_rack.slint` 的
+    // `device-plugin-host-placeholder-card` —— 一张卡片, 可见文本与 `accessible-label`
+    // 都写"未实现", 颜色用次级墨色 `Tokens.ink-2`。
+    // 本块借了: 可见文本 + `accessible-label` 双份陈述, 次级墨色, 卡片几何。
+    // 本块弃了: 把它做成 `list-item`（它不是列表条目, 去掉更准; 故用 `text`）。
+    if root.proposal-count == 0 : Rectangle {
+        x: Tokens.space-4;
+        y: 124px;
+        width: parent.width - 8px;
+        height: 48px;
+        background: Tokens.bg-void;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+
+        accessible-role: text;
+        accessible-id: "musical-pr-empty-state";
+        accessible-label: "还没有 AI 提案。这条链路尚未接线。";
+
+        UiText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: "还没有 AI 提案。这条链路尚未接线。";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+    }
+
     // ---------------------------------------------------------------- 提案列表
-    for proposal_index in 3 : Rectangle {
+    // 规模由**数据**决定（不是固定的 `for … in 3`）: 数组为空 ⇒ 这一族一个节点都不在树里。
+    for proposal_kind[proposal_index] in root.proposal-kinds : Rectangle {
         x: Tokens.space-4;
         y: 124px + 56px * proposal_index;
         width: parent.width - 8px;
@@ -203,9 +256,9 @@ export component MusicalPrDrawer inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "musical-pr-proposal-" + proposal_index + "-item";
-        accessible-label: root.proposal_kinds[proposal_index] + ": " + root.proposal_labels[proposal_index];
+        accessible-label: proposal_kind + ": " + root.proposal_labels[proposal_index];
         accessible-item-index: proposal_index;
-        accessible-item-count: 3;
+        accessible-item-count: root.proposal-count;
         accessible-item-selectable: true;
         accessible-item-selected: false;
 
@@ -237,7 +290,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 4px;
             width: parent.width - 56px;
             height: 18px;
-            text: root.proposal_kinds[proposal_index] + " · " + root.proposal_labels[proposal_index];
+            text: proposal_kind + " · " + root.proposal_labels[proposal_index];
             color: Tokens.ink-0;
             font-size: Tokens.font-size-sm;
             overflow: elide;
@@ -255,7 +308,12 @@ export component MusicalPrDrawer inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 采纳 / 放弃
-    Rectangle {
+    // ⚠ 零提案时**不画**这两个按钮。一个可点的「采纳 (Shift+Enter)」在空列表上是
+    // **假控件**: 按下去只关抽屉 + 一行 stderr。上一轮已裁定 `Shift+Enter → 采纳 AI 建议`
+    // 不许假装实现（`src/cli.rs` 的 `implemented: false` + `src/host.rs` 的
+    // `action_has_implementation` 如实返回 `false`）⇒ 这里的**可点等价物**必须同款。
+    // 有提案时它们自动回来（条件只看 `proposal-count`）。
+    if root.proposal-count > 0 : Rectangle {
         x: Tokens.space-4;
         y: parent.height - 40px;
         width: (parent.width - 16px) / 2;
@@ -286,7 +344,7 @@ export component MusicalPrDrawer inherits Rectangle {
         }
     }
 
-    Rectangle {
+    if root.proposal-count > 0 : Rectangle {
         x: Tokens.space-4 + (parent.width - 16px) / 2 + Tokens.space-2;
         y: parent.height - 40px;
         width: (parent.width - 16px) / 2;
