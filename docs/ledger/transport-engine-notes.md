@@ -64,7 +64,7 @@ Stopped  ── Play ──►  Playing          Stop/Pause: Playing ──► S
   描述同一瞬间；Running 时同步前进，Stopped 时一起冻结）。
 - "回到起始点"**不是** `Stop` 的语义（这是本线对 `ring.rs` 既有文档的一处更正）：
   它是 `Stop` + `SeekTicks(0)` 两条命令，UI 的停止按钮发的就是这两条
-  （`EngineHost::stop_and_rewind`，`engine_host.rs:377`）—— 于是"引擎的停止"与"界面停止按钮的标签"
+  （`EngineHost::stop_and_rewind`，`engine_host.rs:377`；⚠ 行号已漂移 ⇒ 现为 `crates/yeban-app/src/engine_host.rs:971`，更正依据见 §4.1 图后的「后续更正（2026-10-08）」）—— 于是"引擎的停止"与"界面停止按钮的标签"
   各自都诚实。
 - 命令**只有一条通道**：既有的 UI→音频无锁 SPSC `ring::EngineEvent::Transport`
   （`[ARCH-RT-001]` / `[ROAD-M2-007]` 的批量 API），不再造第二条。实时侧在**量子边界**
@@ -197,6 +197,17 @@ src/engine_host.rs:385 toggle_play() / :377 stop_and_rewind()
 src/host.rs:230  apply_transport(ui, reading)   ← **唯一**写 playing / timecode 的地方
    （读的是 src/engine_host.rs:294 transport() → TransportMirror 原子读数）
 ```
+
+**【后续更正（2026-10-08，设备腿 `5d528b7` 之后）】**：上图与 §2.1 的 `engine_host.rs` 行号**全部已漂移**（该文件此后大幅增长），原文按 dated record 纪律**保留不改**。实测更正表（量法：`grep -n '<符号>' crates/yeban-app/src/engine_host.rs`，单位 = 行号）：
+
+| 原文行号 | 符号 | 实测行号 |
+| :--- | :--- | :--- |
+| `src/engine_host.rs:385` | `toggle_play()` | `crates/yeban-app/src/engine_host.rs:979` |
+| `engine_host.rs:377` / `:377` | `stop_and_rewind()` | `crates/yeban-app/src/engine_host.rs:971` |
+| `engine_host.rs:349` | `pump()` | `crates/yeban-app/src/engine_host.rs:929` |
+| `src/engine_host.rs:294` | `transport()` | `crates/yeban-app/src/engine_host.rs:829` |
+
+⚠ 上图里还有 `src/host.rs:256` / `src/host.rs:230` / `rt.rs:497` / `main.rs:128/135/137/139` / `ui/transport.slint:107,74` / `ui/app.slint:173/176` 等行号：它们**不在本票的核对口径内**（本票只核 `device.rs` 与 `engine_host.rs`），**未核实**，不得据本表推断为对或错。
 
 `main.rs:128/135/137/139`：GUI 路径真的建一代引擎（`reload(project, 0)` → 显式 `stop()` →
 `apply_transport` → `wire_callbacks`）。**没有第二套状态源**：界面的 `playing` 不再被 `.slint`
