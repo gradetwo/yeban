@@ -1328,6 +1328,135 @@ fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
     );
 }
 
+/// 判据 B11f: **能力缺失**的那两条快捷键仍然如实标记为 `(未实现)` —— 本判据是"它还不可用"的牙。
+///
+/// ## 为什么要有这一条（它不是 B11b 的重复）
+///
+/// B11b（`shortcut_table_status_matches_the_resolution_and_host_pipeline`）判的是**三面一致**
+/// ——"表 / 解析 / 宿主有没有各说各话"。它**允许**这三面一起改成"已实现"。而本判据钉住的是
+/// **事实本身**：`Shift+Enter → 采纳 AI 建议` 与 `[ → 试听主线` 的能力**今天不存在**
+/// （缺的不是接线，是"待采纳的提案身份"与 `[ARCH-RT-005]` 的 A/B 并发渲染）。
+///
+/// 因此它会在两种情况下变红，两种都该红：
+/// 1. **假实现**：把 `implemented` 改成 `true`（或把动作从 `!matches!` 移出）而能力仍未落地
+///    ⇒ 第 ①②③ 步全部失败；
+/// 2. **真实现但忘了改判据**：谁真的把能力接上了（例如引擎把 `ARCH-RT-005` 落进
+///    `IMPLEMENTED_SPEC_IDS`）⇒ 第 ⑤ 步失败，逼作者回来更新这一条、`cli.rs` 的
+///    `implemented` 与 `host::action_has_implementation` 的名单。
+///
+/// ## 各步的"单位"（防止把行数当条数）
+///
+/// - 第 ③ 步数的是 `--print-shortcuts` 的**条目行**里 `(未实现)` 的出现**次数**（单位：条目标记），
+///   表头那一行 `# (未实现) = …` 是**说明文字**，不计入（口径与 B11b 第 ① 步同款）。
+/// - 第 ④ 步数的是 `shortcut_rows()` 里 `implemented == false` 的**条目数**（单位：条目）。
+///
+/// 运行时的"按下不消费且一位不变"由 `tests/live_ui_mcp.rs` 的
+/// `the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change` 用真事件源见证。
+#[test]
+fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
+    use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::{Action, Focus, InputContext, Modifiers, PhysicalKey, Resolution};
+
+    // ① 宿主自己的陈述：三条都**没有**可作用的实现。
+    //    第三条（`AuditionProposal`）不在快捷表里，但同一份陈述同样挡住它。
+    let still_unimplemented = [
+        Action::AcceptAiSuggestion,
+        Action::AuditionMain,
+        Action::AuditionProposal,
+    ];
+    for action in still_unimplemented {
+        assert!(
+            !action_has_implementation(action),
+            "`{action:?}` 的能力今天不存在 ⇒ `host::action_has_implementation` 必须返回 false \
+             （回退成 `true` 就是一次假实现）"
+        );
+    }
+
+    // ② 键**仍然绑定**到这两个动作（缺口是"动作没落地"，不是"键丢了"）。
+    let mut canvas = InputContext::new();
+    canvas.set_focus(Focus::MainCanvas);
+    assert_eq!(
+        canvas.resolve(PhysicalKey::Enter, Modifiers::shift()),
+        Resolution::Action(Action::AcceptAiSuggestion),
+        "`Shift+Enter` 必须仍然解析出 `AcceptAiSuggestion`（物理码路径）"
+    );
+    assert_eq!(
+        canvas.resolve(PhysicalKey::BracketLeft, Modifiers::none()),
+        Resolution::Action(Action::AuditionMain),
+        "`[` 必须仍然解析出 `AuditionMain`（物理码路径）"
+    );
+
+    // ③ 表里只有这两条 `implemented: false`，且就是它们（单位：条目）。
+    let unimplemented_rows: Vec<Action> = shortcut_rows()
+        .iter()
+        .filter(|row| !row.implemented)
+        .map(|row| row.action)
+        .collect();
+    assert_eq!(
+        unimplemented_rows,
+        vec![Action::AcceptAiSuggestion, Action::AuditionMain],
+        "本版本快捷键表里未实现的条目必须**恰好**是 `Shift+Enter` 与 `[` 这两条"
+    );
+
+    // ④ 真二进制的渲染面：条目行上恰好 2 个标记，且两条被点名的行都带标记。
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+    let printed_marks: usize = run
+        .stdout
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .map(|line| line.matches(UNIMPLEMENTED_MARKER).count())
+        .sum();
+    assert_eq!(
+        printed_marks,
+        unimplemented_rows.len(),
+        "`--print-shortcuts` 的**条目行**里 `{UNIMPLEMENTED_MARKER}` 的次数必须等于未实现条目数:\n{}",
+        run.stdout
+    );
+    assert_eq!(printed_marks, 2, "这两条是本版本仅剩的未实现快捷键");
+    for label in ["Shift+Enter → 采纳 AI 建议", "[ → 试听主线"] {
+        let line = run
+            .stdout
+            .lines()
+            .find(|line| line.trim_start().starts_with(label))
+            .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到 `{label}`:\n{}", run.stdout));
+        assert!(
+            line.contains(UNIMPLEMENTED_MARKER),
+            "能力仍缺失的行**必须**带 `{UNIMPLEMENTED_MARKER}`: {line}"
+        );
+    }
+    // 反方向：别的行**不许**被顺手标上标记（否则"未实现"这一列就不再可读）。
+    for line in run
+        .stdout
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+    {
+        if line.contains(UNIMPLEMENTED_MARKER) {
+            assert!(
+                line.contains("Shift+Enter → 采纳 AI 建议") || line.contains("[ → 试听主线"),
+                "只有那两条能力缺失的行可以带标记, 实际: {line}"
+            );
+        }
+    }
+
+    // ⑤ 能力缺失的**机械锚点**：`[` / `]` 的规范依据 `[ARCH-RT-005]`（主线与提案分支
+    //    并发渲染 + 30ms 等功率瞬切 + 2048 采样预滚）**不在**引擎已实现的规范 ID 清单里。
+    //    引擎哪天真把它接上了，这一步变红 ⇒ 走第 1 条的更新路径（不是删断言）。
+    assert!(
+        !yeban_engine::IMPLEMENTED_SPEC_IDS.contains(&"ARCH-RT-005"),
+        "引擎已把 `ARCH-RT-005` 标为已实现 ⇒ 请把 `Action::AuditionMain` / `Action::AuditionProposal` \
+         从 `host::action_has_implementation` 的 `!matches!` 移出、把 `cli.rs` 的 `implemented` 改成 `true`，\
+         并更新本判据（而不是删掉它）"
+    );
+
+    eprintln!(
+        "[unimplemented-pins] 未实现快捷键条目 {printed_marks} 条（`Shift+Enter → 采纳 AI 建议` / \
+         `[ → 试听主线`）: 宿主对三条动作（含不在表里的 `AuditionProposal`）一律拒绝, \
+         键仍绑定, `ARCH-RT-005` 不在引擎的 IMPLEMENTED_SPEC_IDS 里"
+    );
+}
+
 /// 判据 B12: `--export-midi` 从**真二进制**导出的字节可被 SMF 读取面读回，
 /// 逐音符与工程一致，`MThd` 的 PPQ 字段是 960，且两次导出逐字节相同
 /// （① 回读 / ② 逐音符 / ③ PPQ 头 / ④ 确定性，全部在**进程级**再证一次）。

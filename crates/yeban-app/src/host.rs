@@ -2335,8 +2335,46 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// 对账 —— 表与行为因此不可能各说各话。
 ///
 /// 返回 `false` 的三条（`AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion`）
-/// 是模型侧的视口语义还没落地的动作。**不消费**它们是刻意的：
+/// 是**能力**还没落地的动作。**不消费**它们是刻意的：
 /// 把键吞掉却什么都不做，比不处理更糟 —— 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
+///
+/// ## 三条各自缺什么（2026-10-08 实测；这是**缺口登记**，不是待办装饰）
+///
+/// 缺的是**能力**，不是"接线"。把它们接上所需的机制在仓库里**不存在**，因此本轮**有意**
+/// 保持这三条在名单里（`docs/ledger/feature-alignment.md` 的 AI 提案行与走带行有就地加注）。
+///
+/// **① `AcceptAiSuggestion`（`Shift+Enter` 采纳 AI 建议）—— 没有"待采纳的提案"这个对象。**
+/// 领域侧**有**提案概念：`crates/yeban-mcp/src/domain/proposal.rs` 的 `Proposal`
+/// （`ProposalStatus::Open`）与 `yeban_merge_proposal`（要 `proposalId`）。
+/// 但界面侧**没有提案身份的来源**：`grep -rn 'proposalId' crates/yeban-app/src` 的命中
+/// **全部落在注释里**（本文件的这一段与 `main.rs` 的 `wire_callbacks` 文档），没有一处是取值。
+/// 抽屉里的 `proposal-count` / `proposal-labels` / `proposal-kinds` / `confidences`
+/// 是内联演示常量（`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint:18-25`；
+/// 该文件 `:12` 自陈"静态骨架 + 演示数据"，`:194` 是固定的三条循环）。
+/// 提案注册表（`Domain.proposals`）住在 `crates/yeban-mcp/src/domain/mod.rs:155`，
+/// 由 `crates/yeban-app/src/mcp_mount.rs` 在**非默认 feature** `in-process-mcp` 且
+/// 运行期 `--enable-mcp-http` 打开时才建，**不在** UI 线程的 `apply_action` 路径上。
+/// ⇒ 空前置条件（今天**任何**装配）下 `Shift+Enter` 都返回 `false`（不消费），
+/// 与 `DeleteSelection` / `ZoomToSelection` / `Duplicate` 空选区时的取向一致。
+///
+/// **② `AuditionMain`（`[` 试听主线）与 ③ `AuditionProposal`（`]` 试听 AI 提案分支）——
+/// 规范 `[ARCH-RT-005]` 的 A/B 盲听机制未实现。**
+/// 规范 `[ARCH-RT-005]` 要求"主线与 AI 提案分支**并发渲染**、30ms 等功率瞬切、
+/// 下一拍对齐、2048 采样预滚"（`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:391-392`）。
+/// 实测这套机制**一处都不存在**：
+/// `grep -rn 'ARCH-RT-005' crates/ schemas/ scripts/` 命中 **0**，
+/// `crates/yeban-engine/src/lib.rs:128-147` 的 `IMPLEMENTED_SPEC_IDS` 里**没有**它；
+/// 引擎的走带命令只有四条（`crates/yeban-engine/src/ring.rs:82-91` 的
+/// `Play` / `Stop` / `Pause` / `SeekTicks`）—— **没有**"切到哪条分支"这一维；
+/// 引擎只持**一份**当前快照（`crates/yeban-engine/src/snapshot.rs:1140-1156` 的
+/// `SnapshotSlot` 是单个 `AtomicPtr` + 单个 `anchor`），`crates/yeban-engine/src/rt.rs`
+/// 的渲染循环只读那一份 ⇒ 没有"双分支并发"可言，也没有任何交叉淡化代码
+/// （`grep -rn -i 'crossfade\|equal-power\|pre-roll' crates/yeban-engine/src` 命中 0）；
+/// 界面侧也没有第二条工程版本：宿主播放的就是活跃工程（= 主线），
+/// `crates/yeban-app/src/engine_host.rs` 的 `publish_project` 换的是**那一份**快照。
+/// ⇒ 今天按 `[` 唯一能做的事是"播放"——那已经是 `Space`（`Action::PlayPause`），
+/// 再接一次就等于用一个重名动作冒充 A/B 盲听（`[ARCH-RT-005]` 的可见承诺）。
+/// 因此空前置条件下（今天**任何**装配）`[` / `]` 都返回 `false`（不消费）。
 ///
 /// `DeleteSelection` / `ZoomToSelection` / `ZoomToFit` / `Duplicate` 都曾在这张名单里；
 /// 它们现在都有落地实现（下面的 `apply_action` 分支），因此**同时**从这张名单与 `cli.rs`

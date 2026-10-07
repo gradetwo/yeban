@@ -7316,3 +7316,193 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
          {expected_fit}（滚动 0）; 空选区 `Z` ⇒ 返回 false 且读数不变; 撤销栈深度 0"
     ));
 }
+
+// ===========================================================================
+// AI 建议采纳（`Shift+Enter`）与试听主线（`[`）：能力缺失 ⇒ 如实拒绝且一位不变
+// ===========================================================================
+
+/// 判据 B11f 的**行为侧**（`[UI-A11Y-001]` / `[ARCH-RT-005]`）：`Shift+Enter` 与 `[`
+/// 在**真实界面**上被如实拒绝，而且**一位不变**（不是"吞掉键却什么都不做"）。
+///
+/// ## 为什么要有这一条（它不是"什么都没做"的空判据）
+///
+/// 它证明的是**否定命题**："这两个动作没有落地实现" —— 这一点只能靠"按键之后没有任何
+/// 可观测变化"来证，而"没有任何变化"必须先证明**探针能看见变化**，否则断言是空的。
+/// 因此本判据自带一个**阳性对照**：注入已落地且已绑定的 `B`（箭头 ⇄ 铅笔）⇒ 同一个读数
+/// 面必须真的变。阳性对照不过 ⇒ 本判据的"一位不变"不算证据。
+///
+/// ## 量什么 / 怎么量 / 单位
+///
+/// | 步 | 量什么 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- | :--- |
+/// | ① | 工具矩阵行号 | `MainWindow.active-tool` | 行号（1–5） |
+/// | ② | 视图档 | `MainWindow.arrangement-view` | bool |
+/// | ③ | 走带显示态 | `MainWindow.playing` | bool |
+/// | ④ | 横向缩放 / 滚动 | `MainWindow.roll-ticks-per-pixel` / `roll-scroll-x` | tick/px、tick |
+/// | ⑤ | 工程音符条目数 | `model_note_count(UndoPort::project())` | 条目 |
+/// | ⑥ | 可撤销步数 / 提交数 | `UndoPort::display().undoable` / `.commit_count` | 步、次 |
+/// | ⑦ | 帧内容 | `LiveControlPlane::capture()` 的**差异像素数**与 **PNG 字节的 sha256** | 像素、哈希 |
+///
+/// ## 怎么变红
+///
+/// - 把 `Action::AcceptAiSuggestion` 或 `Action::AuditionMain` 从
+///   `host::action_has_implementation` 的 `!matches!` 移出而没真接上能力 ⇒ ①②…⑦ 里
+///   至少一项变化（键被消费 ⇒ `invoke_key_action` 返回 `true`）。
+/// - 把这两个键从 `input.rs` 的策略表里删掉 ⇒ `invoke_key_action` 仍然返回 `false`，
+///   但 `tests/cli_contract.rs` 的判据 B11f 会红（它要求键仍绑定）。
+/// - 把阳性对照用的 `B` 摘掉 ⇒ 本判据的阳性对照步变红（说明探针失灵，而不是"引擎安静"）。
+#[test]
+fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
+    use std::rc::Rc;
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_ui_test_port::port::KeyCode;
+
+    const NOW: u64 = 1_760_000_000_000;
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据:AI建议与试听>", "yeban-app", project.clone(), NOW)
+            .expect("打开撤销会话"),
+    ));
+    let wiring = LiveWiringOptions {
+        permission: Permission::Interactive,
+        console_tab: 0,
+        save_path: None,
+        engine_quanta: 0,
+        undo: Some(Rc::clone(&port)),
+    };
+    let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
+
+    // ---- 默认帧（**未注入任何按键**）：命题①（确定性）＝同一状态两次抓帧逐字节相同 ----
+    let frame_before = ui.capture().expect("默认外观帧");
+    let frame_before_again = ui.capture().expect("默认外观帧（第二次）");
+    assert!(
+        frame_diff(&frame_before, &frame_before_again).is_none(),
+        "命题①: 同一状态的两次抓帧必须逐字节相同（默认帧可复现）"
+    );
+    let (before_png, before_evidence) =
+        encode_with_evidence(&frame_before, DEFAULT_MAX_PNG_BYTES).expect("默认帧必须可编码");
+    let before_digest = yeban_model::ids::ContentHash::of_bytes(&before_png);
+
+    // ---- 起点读数（每一条的单位见本判据的文档表） ----
+    let tool_before = ui.ui().get_active_tool();
+    let view_before = ui.ui().get_arrangement_view();
+    let playing_before = ui.ui().get_playing();
+    let tpp_before = ui.ui().get_roll_ticks_per_pixel();
+    let scroll_before = ui.ui().get_roll_scroll_x();
+    let notes_before = model_note_count(&port.project());
+    let undoable_before = port.display().undoable;
+    let commits_before = port.display().commit_count;
+
+    // ---- ① `.slint` 回调那一格（`host::wire_keys` 的唯一落点）：两条都必须 `reject` ----
+    assert!(
+        !ui.ui()
+            .invoke_key_action("\n".into(), true, false, false, false),
+        "`Shift+Enter → 采纳 AI 建议` 的能力今天不存在 ⇒ 必须如实返回 false（不得假装采纳了）"
+    );
+    assert!(
+        !ui.ui()
+            .invoke_key_action("[".into(), false, false, false, false),
+        "`[ → 试听主线` 的能力今天不存在（`[ARCH-RT-005]` 未实现）⇒ 必须如实返回 false"
+    );
+    assert!(
+        !ui.ui()
+            .invoke_key_action("]".into(), false, false, false, false),
+        "`] → 试听 AI 提案分支` 与 `[` 同一件事的另一半 ⇒ 同样必须如实返回 false"
+    );
+
+    // ---- ② 端口**真实事件源**注入（不是直接调回调） ----
+    ui.dispatch_key_press(KeyCode::ShiftEnter)
+        .expect("端口注入 `Shift+Enter`");
+    ui.dispatch_key_press(KeyCode::Character('['))
+        .expect("端口注入 `[`");
+    ui.dispatch_key_press(KeyCode::Character(']'))
+        .expect("端口注入 `]`");
+
+    // ---- ③ 被拒绝的键**不得有副作用**：逐项回读 ----
+    assert_eq!(
+        ui.ui().get_active_tool(),
+        tool_before,
+        "被拒绝的键不得换工具（active-tool 必须一位不变）"
+    );
+    assert_eq!(
+        ui.ui().get_arrangement_view(),
+        view_before,
+        "被拒绝的键不得切视图"
+    );
+    assert_eq!(
+        ui.ui().get_playing(),
+        playing_before,
+        "被拒绝的键不得驱动走带（`playing` 一位不变）"
+    );
+    assert_eq!(
+        ui.ui().get_roll_ticks_per_pixel(),
+        tpp_before,
+        "被拒绝的键不得缩放（roll-ticks-per-pixel 一位不变）"
+    );
+    assert_eq!(
+        ui.ui().get_roll_scroll_x(),
+        scroll_before,
+        "被拒绝的键不得滚动（roll-scroll-x 一位不变）"
+    );
+    assert_eq!(
+        model_note_count(&port.project()),
+        notes_before,
+        "被拒绝的键不得改工程内容（音符条目数一位不变）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "被拒绝的键不得进撤销栈（可撤销步数一位不变）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "被拒绝的键不得产生提交（commit_count 一位不变）"
+    );
+
+    // ---- ④ 画面也一位不变（命题①的可见后果） ----
+    let frame_after = ui.capture().expect("注入被拒绝的键之后的帧");
+    assert!(
+        frame_diff(&frame_before, &frame_after).is_none(),
+        "被拒绝的键的可见后果必须是**逐字节不变** —— 有差异就说明某个键真的被消费了"
+    );
+
+    // ---- ⑤ 阳性对照：探针不是瞎的 ----
+    //
+    // 注入一条**已落地且已绑定**的键（`B` = 箭头 ⇄ 铅笔）。它必须被消费、并且真的改读数。
+    // 这一步不过 ⇒ 上面那些"一位不变"不构成证据。
+    assert!(
+        ui.ui()
+            .invoke_key_action("b".into(), false, false, false, false),
+        "阳性对照: `B` 必须被消费"
+    );
+    let tool_after_b = ui.ui().get_active_tool();
+    assert_ne!(
+        tool_after_b, tool_before,
+        "阳性对照: `B` 必须真的换工具（否则本判据的读数面对变化不敏感）"
+    );
+    let frame_after_b = ui.capture().expect("阳性对照帧");
+    let positive_diff = frame_diff(&frame_before, &frame_after_b);
+    // 画面差异只**报告**、不断言：工具高亮是逐像素可判的，但它不是本判据要证的那件事
+    // （本判据要证的是"被拒绝的键零变化"）。报告出来是为了让读者知道探针能看见变化。
+    report_line(&format!(
+        "[unimplemented-keys-pixel] 默认外观（未注入按键）: {}x{} PNG {} 字节 / non_black={} / \
+         颜色 {} 种 / 指纹 {:016x} / sha256={}（PNG 字节的 sha256, 本机本次运行的读数）",
+        frame_before.width(),
+        frame_before.height(),
+        before_png.len(),
+        before_evidence.non_black_pixels,
+        before_evidence.distinct_colors,
+        before_evidence.fingerprint,
+        before_digest.as_str()
+    ));
+    report_line(&format!(
+        "[unimplemented-keys] 拒绝侧: `Shift+Enter` / `[` / `]` 经回调与端口**两条**路径注入 ⇒ \
+         回调返回 false, active-tool={tool_before}（不变）、arrangement-view={view_before}（不变）、\
+         playing={playing_before}（不变）、tpp={tpp_before}（不变）、scroll={scroll_before}（不变）、\
+         音符条目={notes_before}（不变）、undoable={undoable_before}（不变）、\
+         commit_count={commits_before}（不变）、帧差异=0 像素; 阳性对照 `B` ⇒ active-tool \
+         {tool_before}→{tool_after_b}, 帧差异 {} 像素（本判据关心的是前者为 0）",
+        positive_diff.as_ref().map_or(0, |diff| diff.count)
+    ));
+}

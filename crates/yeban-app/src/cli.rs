@@ -2134,6 +2134,19 @@ const SHORTCUTS: [ShortcutRow; 18] = [
         modifiers: Modifiers::none(),
         implemented: true,
     },
+    // 以下**两条**是本版本仅剩的 `implemented: false` 条目（表共 18 条）。
+    //
+    // `implemented` 是"宿主会不会消费这一键"的主张，事实源是 `host::action_has_implementation`
+    // （逐行对账见本文件 `ShortcutRow` 的文档与 `tests/cli_contract.rs` 的判据 B11b）。
+    // 这两条之所以**仍是** `false`：缺的是**能力**，不是接线 ——
+    //   - `Shift+Enter`（采纳 AI 建议）：界面侧没有"当前待采纳的提案身份"这一表示
+    //     （`ui/dialogs/musical_pr_drawer.slint:18-25` 是内联演示常量），而领域的
+    //     `yeban_merge_proposal` 要 `proposalId`；
+    //   - `[`（试听主线）：规范 `[ARCH-RT-005]` 要"主线与提案分支并发渲染 + 30ms 等功率瞬切
+    //     + 2048 采样预滚"，这套机制在仓库里一处都不存在。
+    // 逐条证据（`grep` 字面命中与 `file:line`）见 `host.rs` 的 `action_has_implementation` 文档；
+    // "它还不可用"这件事由 `tests/cli_contract.rs` 的判据 B11f 机械钉住（谁真接了、忘了改判据即变红）。
+    // 「空前置条件不消费」的取向与 `DeleteSelection` / `ZoomToSelection` / `Duplicate` 一致。
     ShortcutRow {
         label: "Shift+Enter → 采纳 AI 建议",
         action: Action::AcceptAiSuggestion,
