@@ -2049,6 +2049,133 @@ mod tests {
             .join("\n")
     }
 
+    /// 取出 `{name} := TouchArea { … }` 的**代码**片段（花括号配平）。
+    ///
+    /// 返回 `None` = 源文件里没有这个 `TouchArea`。那本身就是要红的事实：
+    /// `ui/` ↔ 注册表的双向契约要求它留在源文件里。
+    fn touch_area_body(code: &str, name: &str) -> Option<String> {
+        let marker = format!("{name} := TouchArea {{");
+        let start = code.find(&marker)?;
+        let rest = &code[start..];
+        let mut depth = 0_i32;
+        for (index, ch) in rest.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(rest[..=index].to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// 判据（**"今天确实不可用"钉死**）：走带区三个**文档级动作**今天都没有接线。
+    ///
+    /// 三个控制由 `953b85b`（"Slint 主窗口骨架…"）加进走带区。那一票的提交信息逐字写着
+    /// "`GUI` 路径注入演示数据并接线回调"与"回调只打 stderr"，并在边界一节写明
+    /// "走带 / Op 归约 / AI 采纳 / 撤销栈 / 电平 SPSC / … 均未实现"。
+    ///
+    /// 本判据把"今天确实不可用"钉成**机械事实**：将来谁真接了、忘了改判据，会红。
+    /// 谁正是来接线的，就**必须**一并更新本判据（它钉的是**今天**的状态，不是永久禁令）。
+    ///
+    /// 三个控制各自卡在哪（代价表与逐条证据见交付报告）。
+    /// 行号刻意**不写**：本仓库的守卫口径是"符号是判据、行号是提示"，
+    /// 而 `ui/transport.slint` 同一片区域今天还有别的切片在改（行号会漂）。
+    ///
+    /// - `transport-commit-button`（`ui/transport.slint` 的 `commit_area`）—— **能力不存在**：
+    ///   每一次界面编辑已经各自 `commit_ops` 一次（`src/host.rs:1660` 等），
+    ///   会话里**没有**"待提交的编辑"这一状态；权威对**空** op 批次明确拒绝
+    ///   （`crates/yeban-mcp/src/domain/mod.rs:2152`，`mutates_project` 也按 `!ops.is_empty()`
+    ///   判定，`:893` / `:952`）。
+    /// - `transport-revert-button`（同文件的 `revert_area`）—— **能力存在但未接线**：
+    ///   每次提交恰好携带一条 `Op::Batch`（`crates/yeban-mcp/src/undo_session.rs:445`，
+    ///   `:684` 的"本实现保证每次提交恰好一条 op"），因此**一步撤销 = 回退一个 Commit**，
+    ///   载体是既有的 `UiAction::Undo`。
+    /// - `transport-branch-button`（同文件，**没有** `TouchArea`）—— **能力不存在**：
+    ///   没有任何"切换活跃分支"的 API（`HostAction` 只有 `Undo` / `Redo` / `Commit`，
+    ///   `domain/mod.rs:669`）；它今天只是一块**只读**显示（`src/host.rs:2708` 写 `branch-name`）。
+    ///
+    /// **为什么不在本判据里顺手把按钮置灰**：任何**用户可见**的处置（置灰 + 文字说明，
+    /// 或移除控件）都会改默认帧 ⇒ `crates/yeban-app/tests/golden/linux/` 的 5 张基准
+    /// **确定性**过期，而基准只许按 `gates-manual.yml` 的 `goldens` 档重录 + 人工复核。
+    /// 只写 `accessible-label` 不算诚实处置 —— 本文件 `musical_pr_drawer_declares_no_demo_proposals`
+    /// 的判据已经写明"只写在注释或 `accessible-label` 里用户看不见"。
+    #[test]
+    fn the_three_transport_document_actions_are_not_wired_today() {
+        let transport = code_only(
+            &std::fs::read_to_string(ui_dir().join("transport.slint")).expect("读 transport.slint"),
+        );
+
+        // ① `app.slint` 的 `Transport { … }` 实例**没有**转发这三个回调。
+        //    查在**声明**之前：一个只声明不转发的回调是空壳，一个 `name => …` 的转发
+        //    才是"用户点下去真的会走那条链"。两条各自独立（本判据的注入实测见交付报告）。
+        let app =
+            code_only(&std::fs::read_to_string(ui_dir().join("app.slint")).expect("读 app.slint"));
+        for name in ["commit", "revert", "branch"] {
+            for spelling in [format!("{name} =>"), format!("{name}=>")] {
+                assert!(
+                    !app.contains(&spelling),
+                    "`app.slint` 今天不得转发 `{spelling}` —— \
+                     谁接上了就一并更新本判据（`the_three_transport_document_actions_are_not_wired_today`）"
+                );
+            }
+        }
+
+        // ② `transport.slint` **没有**为这三个动作声明任何回调。
+        //    声明了却接不上（或接了却没人转发）就是假契约。
+        for name in ["commit", "revert", "branch"] {
+            assert!(
+                !transport.contains(&format!("callback {name}")),
+                "`transport.slint` 今天不得声明 `callback {name}` —— \
+                 谁接上了就一并更新本判据（`the_three_transport_document_actions_are_not_wired_today`）"
+            );
+        }
+
+        // ③ 两个**已经存在**的 `TouchArea` 里没有 `clicked`。
+        //    它们今天只在按下时换底色（`background: commit_area.pressed ? …`），松手什么都不发生。
+        for area in ["commit_area", "revert_area"] {
+            let body = touch_area_body(&transport, area).unwrap_or_else(|| {
+                panic!("`{area}` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）")
+            });
+            assert!(
+                !body.contains("clicked"),
+                "`{area}` 今天不得有 `clicked` —— 谁接上了就一并更新本判据\n{body}"
+            );
+        }
+
+        // ④ 分支那块连点击源都没有：`transport-branch-button` 到下一个 `accessible-id`
+        //    之间不得出现 `TouchArea`（否则"点得动但没反应"又回来了）。
+        let branch_start = transport
+            .find("accessible-id: \"transport-branch-button\";")
+            .expect("`transport-branch-button` 必须留在源文件里");
+        let branch_rest = &transport[branch_start..];
+        let branch_end = branch_rest
+            .find("accessible-id: \"transport-commit-button\";")
+            .expect("`transport-commit-button` 必须紧跟分支控件之后");
+        assert!(
+            !branch_rest[..branch_end].contains("TouchArea"),
+            "`transport-branch-button` 今天不得有点击源（切换分支的 API 一处都不存在）"
+        );
+
+        // ⑤ 三个语义 ID **仍然登记**：登记与接线是两件事，本判据只钉接线。
+        //    这样"顺手把控件删掉"也会走到这里，逼作者显式改判据（删或接，都要留痕）。
+        let registry = registry();
+        for id in [
+            "transport-branch-button",
+            "transport-commit-button",
+            "transport-revert-button",
+        ] {
+            assert!(
+                registry.contains(id),
+                "`{id}` 必须留在语义注册表里 —— 移除它是另一票（要重录 5 张 Linux 基准）"
+            );
+        }
+    }
+
     /// 判据（**多路径探针：源码文本 + 属性默认值 + 循环规模**）：抽屉里没有任何假提案。
     ///
     /// 三条路径各自独立, 破坏任何一条都变红：
