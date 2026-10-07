@@ -69,6 +69,17 @@ pub const TOKEN_DIR_MODE: u32 = 0o700;
 /// Unix 上的操作系统熵源路径。
 pub const OS_ENTROPY_PATH: &str = "/dev/urandom";
 
+/// 原子落盘用的临时文件**中缀**（`session.token.tmp-{pid}-{nonce}`）。
+///
+/// 与 `[ARCH-SEC-004]` 的 `.yeban.tmp-{ulid}` 同形：临时文件与目标**同目录**，
+/// 因此 `rename` 是同目录内的原子替换，不可能 `EXDEV`。
+#[cfg(unix)]
+const TOKEN_TEMP_INFIX: &str = ".tmp-";
+
+/// 进程内临时文件序号（保证同一 PID 的多次 `save` 不会撞名）。
+#[cfg(unix)]
+static TOKEN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// 安全模型相关的错误。
 #[derive(Debug, thiserror::Error)]
 pub enum SecurityError {
@@ -77,6 +88,23 @@ pub enum SecurityError {
     MalformedToken {
         /// 实际长度。
         actual: usize,
+    },
+    /// 令牌文件存在，但内容**不是**一个可用的令牌（空文件 / 只有空白）。
+    ///
+    /// 这是"崩溃安全"的安全侧：`save` 的 `open(truncate)` 一返回，磁盘上就是 0 字节，
+    /// 而 `exists()` 已经是真。把空文件当成"已有令牌"会静默换掉令牌。
+    ///
+    /// **fail closed**：拒绝，并且**不**替调用方删文件 —— 删掉一个可能正被另一个进程
+    /// 使用的令牌文件必须由人（或运维脚本）显式决定。
+    #[error(
+        "令牌文件 `{path}` 存在但不是可用令牌 ({reason}): 拒绝使用; \
+         确认没有进程正在使用该令牌后删除它, 下次启动会重新生成"
+    )]
+    MalformedTokenFile {
+        /// 文件路径。
+        path: String,
+        /// 具体原因（空文件 / 只有空白 / 长度不对 / 含非十六进制字符）。
+        reason: String,
     },
     /// 令牌文件权限不是 `0600`。
     #[error("令牌文件权限不安全: `{path}` 是 {mode:o}, 必须恰好是 {expected:o}")]
@@ -806,38 +834,92 @@ impl TokenFile {
 
     /// 写入令牌，权限强制 `0600`（目录 `0700`）。
     ///
-    /// 即使文件已存在且权限宽松，也会被**纠正**为 `0600`。
+    /// ## 原子落盘（`[ARCH-SEC-004]` 的三阶段，本轮修复）
+    ///
+    /// 1. 同目录临时文件 `session.token.tmp-{pid}-{nonce}`，**创建时**就是 `0600`
+    ///    （`OpenOptions::mode` + `create_new`，不是"先建宽权限再 `chmod`"）；
+    /// 2. 写完 `token` + `\n` 之后 `sync_all()`（`fsync`），数据真正进非易失介质；
+    /// 3. 同目录 `rename` 覆盖目标 —— 目标要么是**旧的完整文件**，要么是**新的完整文件**，
+    ///    不存在"0 字节"或"半截"的中间态。
+    ///
+    /// 最后把**目录项**也 `fsync`（`[ARCH-SEC-004]` 第 3.5 步）。
+    ///
+    /// 格式**不变**：`64 位小写十六进制 + "\n"`（既有部署的旧令牌原样可读）。
+    ///
+    /// 已存在且权限宽松的目标会被**整份替换**成 `0600` 的新文件（不是原地 `chmod`）。
+    ///
+    /// ## 并发语义（多进程）
+    ///
+    /// 临时文件名含 PID 与进程内序号，因此两个进程**不会**撞名（`create_new` 只会
+    /// 因自己重名而失败）。两个进程同时 `save` 是"后写者赢"，最后一个 `rename`
+    /// 决定磁盘内容 —— 与修复前的"后写者赢（原地覆盖）"语义相同，但**任何一个进程
+    /// 的任何时刻**读到的都是完整令牌，不会再读到半截文件。
     ///
     /// # Errors
     ///
     /// 非 Unix 平台返回 [`SecurityError::UnsupportedPlatform`]；I/O 失败。
+    /// 失败路径会清掉本次的临时文件，**目标文件保持逐字节不变**。
     #[cfg(unix)]
     pub fn save(&self, token: &BearerToken) -> Result<(), SecurityError> {
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        use std::os::unix::fs::PermissionsExt as _;
 
         let path_text = self.path.display().to_string();
         let io = |source: std::io::Error| SecurityError::Io {
             path: path_text.clone(),
             source,
         };
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(io)?;
-            fs::set_permissions(parent, fs::Permissions::from_mode(TOKEN_DIR_MODE)).map_err(io)?;
+        let parent = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        fs::create_dir_all(&parent).map_err(io)?;
+        fs::set_permissions(&parent, fs::Permissions::from_mode(TOKEN_DIR_MODE)).map_err(io)?;
+
+        // 第 1 步: 同目录临时文件。`create_new` + `mode(0600)` ⇒ 文件**一出生**就是 0600。
+        let temp = parent.join(format!(
+            "{TOKEN_FILE_NAME}{TOKEN_TEMP_INFIX}{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        if let Err(source) = self.write_temp_then_replace(&temp, token) {
+            let _ = fs::remove_file(&temp);
+            return Err(SecurityError::Io {
+                path: path_text,
+                source,
+            });
         }
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(TOKEN_FILE_MODE)
-            .open(&self.path)
-            .map_err(io)?;
-        let mut file = file;
-        file.write_all(token.expose().as_bytes()).map_err(io)?;
-        file.write_all(b"\n").map_err(io)?;
-        file.flush().map_err(io)?;
-        // `open(2)` 的 mode 只对**新建**文件生效; 已存在的宽松权限必须显式纠正。
-        fs::set_permissions(&self.path, fs::Permissions::from_mode(TOKEN_FILE_MODE)).map_err(io)?;
+
+        // 第 3.5 步: 目录项也要落盘, 否则"文件在了"这件事可能还只在页缓存里。
+        match fs::File::open(&parent) {
+            Ok(handle) => handle.sync_all().map_err(io)?,
+            Err(source) => return Err(io(source)),
+        }
         Ok(())
+    }
+
+    /// 第 1、2、3 步的本体：写临时文件 → `sync_all` → 同目录 `rename`。
+    ///
+    /// 返回 `std::io::Result` 而不是 [`SecurityError`]：错误路径由调用方统一带上路径
+    /// （临时文件路径是诊断信息，目标路径才是运维要看的路径）。
+    #[cfg(unix)]
+    fn write_temp_then_replace(&self, temp: &Path, token: &BearerToken) -> std::io::Result<()> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(TOKEN_FILE_MODE)
+                .open(temp)?;
+            file.write_all(token.expose().as_bytes())?;
+            file.write_all(b"\n")?;
+            // `flush` 只把 `BufWriter` 之类的用户态缓冲交给内核；裸 `File` 本来就无缓冲。
+            // 真正保证"数据进非易失介质"的是 `sync_all`（`fsync`）。
+            file.sync_all()?;
+        }
+        fs::rename(temp, &self.path)
     }
 
     /// 非 Unix 平台：明确拒绝，不静默放过。
@@ -851,6 +933,11 @@ impl TokenFile {
     }
 
     /// 读取令牌，并**校验**权限位恰好是 `0600`。
+    ///
+    /// 内容校验是**全部**而非只看长度：空文件、只有空白、长度不对、含非十六进制字符
+    /// 一律明确报错（空文件走 [`SecurityError::MalformedTokenFile`]，其余走
+    /// [`SecurityError::MalformedToken`]）。**没有**"读不出来就当没有"的分支 ——
+    /// 静默重新生成会换掉一个可能正被另一个进程使用的令牌。
     ///
     /// # Errors
     ///
@@ -876,6 +963,18 @@ impl TokenFile {
             });
         }
         let text = fs::read_to_string(&self.path).map_err(io)?;
+        // `read_to_string` 已经保证是 UTF-8。空白文件**单独命名**，这样运维一眼能分辨
+        // "崩溃留空文件"与"文件被人塞了垃圾"。
+        if text.trim().is_empty() {
+            return Err(SecurityError::MalformedTokenFile {
+                path: path_text,
+                reason: if text.is_empty() {
+                    String::from("空文件")
+                } else {
+                    String::from("只有空白字符")
+                },
+            });
+        }
         BearerToken::parse(&text)
     }
 
@@ -891,8 +990,20 @@ impl TokenFile {
 
     /// 读取已有令牌；不存在则生成并落盘。
     ///
-    /// 返回 `(令牌, 是否新建)`。权限不安全的**已有**文件会被拒绝，
-    /// 而不是"读出来继续用"。
+    /// 返回 `(令牌, 是否新建)`。
+    ///
+    /// ## 失败语义（本轮修复）
+    ///
+    /// `exists()` 只用来区分"**路径上什么都没有**"与"**路径上有东西**"。
+    /// - 没有东西 ⇒ 生成并**原子**落盘（[`TokenFile::save`]）；
+    /// - 有东西但不可用 ⇒ **拒绝启动**（权限不安全 / 空文件 / 半截文件 / 非法内容），
+    ///   并把路径写进错误信息。
+    ///
+    /// **为什么是拒绝而不是重新生成**：这个文件可能正被另一个进程（`yeban-app`
+    /// 的 `--enable-ui-mcp-http`，或另一个 `yeban-mcp --enable-mcp-http`）用来鉴权。
+    /// 静默换掉令牌会让那个进程的已授权客户端全部开始 401。拒绝是可恢复的：
+    /// 人确认没有进程在用之后删掉文件，下次启动就重新生成（判据 D 钉住这条路）。
+    /// 这条语义与既有的"权限不安全就拒绝读"完全同向，只是把校验面从权限位扩到内容。
     ///
     /// # Errors
     ///
@@ -1331,6 +1442,234 @@ mod tests {
         assert!(!created_again);
         assert_eq!(first, second, "第二次必须复用同一令牌");
         fs::remove_dir_all(path.parent().expect("parent")).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // 令牌文件的原子落盘 + 坏文件 fail-closed（本轮新增）
+    // -----------------------------------------------------------------------
+
+    /// 判据 A（牙齿）：保存必须是"同目录临时文件 + `rename`"，不是原地截断写。
+    ///
+    /// 注入证明：把 `save` 退回 `truncate(true)` 原地写 ⇒ inode 不变 ⇒ 本判据在
+    /// 「磁盘上的字节其实是对的」的情况下依然变红。这是本轮唯一一条**只要写入回退成
+    /// 非原子就变红**的判据，因此它必须报出 inode 字面值，而不是只说"不相等"。
+    #[test]
+    #[cfg(unix)]
+    fn save_replaces_the_inode_instead_of_truncating_in_place() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let path = temp_token_path("atomic-inode");
+        let file = TokenFile::new(&path);
+        // 先放一份**合法**旧令牌：原地截断写会毁掉它，原子替换会整份换掉它。
+        let old = fixture_token(0x11);
+        fs::write(&path, format!("{}\n", old.expose())).expect("预置旧令牌");
+        fs::set_permissions(&path, fs::Permissions::from_mode(TOKEN_FILE_MODE)).expect("chmod");
+        let before = fs::metadata(&path).expect("旧文件元数据").ino();
+
+        let new = fixture_token(0x22);
+        file.save(&new).expect("保存");
+        let after = fs::metadata(&path).expect("新文件元数据").ino();
+        assert_ne!(
+            before, after,
+            "令牌文件保存必须是'新文件 + rename'（inode 从 {before} 变成 {after}）；\
+             inode 不变意味着原地截断写，两次 write_all 之间被打断就会留下空/半截文件"
+        );
+        assert_eq!(file.load().expect("读回"), new);
+        fs::remove_dir_all(path.parent().expect("parent")).ok();
+    }
+
+    /// 判据 B（牙齿）：空令牌文件是**坏文件**，必须被明确拒绝，且**不得**被静默重新生成。
+    ///
+    /// 这个字节形态是**实测**的中断现场（不是猜的）：旧 `save` 的 `open(O_TRUNC)`
+    /// 一返回，磁盘上就是 0 字节，而 `exists()` 已经是真。
+    #[test]
+    #[cfg(unix)]
+    fn empty_token_file_is_rejected_and_never_silently_replaced() {
+        let path = temp_token_path("atomic-empty");
+        fs::write(&path, b"").expect("造空文件");
+        fs::set_permissions(&path, fs::Permissions::from_mode(TOKEN_FILE_MODE)).expect("chmod");
+
+        let error = TokenFile::new(&path)
+            .load_or_create()
+            .expect_err("空文件必须被拒绝");
+        assert!(
+            matches!(error, SecurityError::MalformedTokenFile { .. }),
+            "空文件必须走'坏令牌文件'的专用错误，实际: {error:?}"
+        );
+        let reported = error.to_string();
+        assert!(
+            reported.contains(&path.display().to_string()),
+            "错误必须指出路径，实际: {reported}"
+        );
+        assert_eq!(
+            fs::read(&path).expect("读回"),
+            Vec::<u8>::new(),
+            "坏文件不得被静默覆盖成新令牌"
+        );
+        fs::remove_dir_all(path.parent().expect("parent")).ok();
+    }
+
+    /// 判据 C（牙齿）：**中断现场**必须被拒绝，且**不得**被静默重新生成。
+    ///
+    /// ## 两个"半截"状态，必须分开说（第一版判据在这里错过一次）
+    ///
+    /// `save` 的旧 I/O 序列是 `open(O_TRUNC)` → `write_all(64B)` → `write_all(1B, "\n")`。
+    /// 被打断时磁盘上可能是：
+    ///
+    /// | 中断点 | 磁盘内容 | 旧 `exists() ⇒ load()` 的判定 |
+    /// | :--- | :--- | :--- |
+    /// | `open(O_TRUNC)` 之后、第一次 `write_all` 之前 | **空文件** | 拒绝（`parse` 长度 0） |
+    /// | 第一次 `write_all` 之后、第二次 `write_all` 之前 | **恰好 64 位十六进制（无换行）** | **接受 —— 危险** |
+    /// | 第二次 `write_all` 写了一半 | 64 位十六进制 + 半个换行 | 拒绝（65 字节但尾部不是合法文本） |
+    ///
+    /// 中间那一行最危险：它是**格式合法**的令牌。`BearerToken::parse` 无从分辨
+    /// "这是半截文件"与"这就是一份没带换行的合法令牌"（两种都在既有格式之内）。
+    /// 所以安全不能靠读侧的长度启发式，只能靠**写侧原子**：
+    /// `save_replaces_the_inode_instead_of_truncating_in_place` 才是这条风险的直接判据；
+    /// 本判据钉住的是**读侧的处置**——遇到不可用的内容必须报错，绝不静默换令牌。
+    ///
+    /// 本判据因此用**空文件**（`open(O_TRUNC)` 之后那个状态，真实且可区分）走
+    /// `MalformedTokenFile`；下面第二段再钉住"垃圾内容"也被拒绝。
+    #[test]
+    #[cfg(unix)]
+    fn torn_token_file_is_rejected_and_never_silently_replaced() {
+        let path = temp_token_path("atomic-torn");
+        // 中断点 1: `open(O_TRUNC)` 之后, 一个字节都没写。
+        fs::write(&path, b"").expect("造中断现场");
+        fs::set_permissions(&path, fs::Permissions::from_mode(TOKEN_FILE_MODE)).expect("chmod");
+        assert_eq!(
+            fs::read(&path).expect("读回"),
+            Vec::<u8>::new(),
+            "造现场失败: 磁盘上不是空文件"
+        );
+        let file = TokenFile::new(&path);
+        let error = file.load_or_create().expect_err("中断现场必须被拒绝");
+        assert!(
+            matches!(error, SecurityError::MalformedTokenFile { .. }),
+            "中断现场必须走'坏令牌文件'的专用错误，实际: {error:?}"
+        );
+        assert!(
+            error.to_string().contains(&path.display().to_string()),
+            "错误必须指出路径，实际: {error}"
+        );
+        assert_eq!(
+            fs::read(&path).expect("读回"),
+            Vec::<u8>::new(),
+            "坏文件不得被静默覆盖成新令牌"
+        );
+
+        // 中断点 3 的等价形态: 长度为 64 但含非十六进制字符(半个换行 / 垃圾)。
+        let junk = format!("{}{}", "c".repeat(TOKEN_HEX_LEN - 1), "\u{0}");
+        fs::write(&path, junk.as_bytes()).expect("造垃圾现场");
+        let error = file.load_or_create().expect_err("垃圾内容必须被拒绝");
+        assert!(
+            matches!(error, SecurityError::MalformedToken { .. }),
+            "垃圾内容必须报令牌格式非法，实际: {error:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("读回"),
+            junk,
+            "坏文件不得被静默覆盖成新令牌"
+        );
+        fs::remove_dir_all(path.parent().expect("parent")).ok();
+    }
+
+    /// 判据 D：坏文件被拒绝之后，**删掉它**再启动必须能恢复（正常路径没有被堵死）。
+    ///
+    /// 这条是判据 B/C 的"反面"：拒绝不是死锁 —— 运维动作（删文件）之后必须立刻能拿到新令牌。
+    #[test]
+    #[cfg(unix)]
+    fn deleting_a_rejected_token_file_restores_the_normal_path() {
+        let path = temp_token_path("atomic-recover");
+        fs::write(&path, b"junk").expect("造坏文件");
+        fs::set_permissions(&path, fs::Permissions::from_mode(TOKEN_FILE_MODE)).expect("chmod");
+        let file = TokenFile::new(&path);
+        // 只断言"被拒绝"：具体是哪一种坏文件不是这条判据的对象
+        // （空文件走 `MalformedTokenFile`，垃圾内容走 `MalformedToken`，两条都在 B/C 里钉住）。
+        assert!(file.load_or_create().is_err(), "坏文件必须被拒绝");
+
+        fs::remove_file(&path).expect("运维动作: 删掉坏文件");
+        let (token, created) = file.load_or_create().expect("删掉之后必须能重新生成");
+        assert!(created, "删掉之后这一次必须是'新建'");
+        assert_eq!(token.expose().len(), TOKEN_HEX_LEN);
+        assert_eq!(file.load().expect("读回"), token);
+        fs::remove_dir_all(path.parent().expect("parent")).ok();
+    }
+
+    /// 判据 E（权限窗口）：临时文件**在创建时**就必须是 `0600`，不留"先宽后收"的窗口。
+    ///
+    /// 手法：在 `save` 运行期间反复 `read_dir` 目标目录，记录每一个出现过的临时文件的权限位。
+    /// 旧实现的临时文件**就是目标文件本身**（没有临时文件），因此这条判据在有临时文件之后才有意义。
+    ///
+    /// **如实登记（不许弱化）**：采样是概率性的。它只能证明"本次采样没抓到宽权限窗口"，
+    /// 不能证明"任何时刻都没有窗口"。真正的结构保证是写入路径上的
+    /// `OpenOptions::mode(TOKEN_FILE_MODE)` + `create_new(true)`：文件**一出生**就是 `0600`。
+    #[test]
+    #[cfg(unix)]
+    fn temp_file_is_never_visible_with_loose_permissions() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let path = temp_token_path("atomic-mode-window");
+        let file = TokenFile::new(&path);
+        file.save(&fixture_token(0x33)).expect("先放一份合法令牌");
+        let parent = path.parent().expect("parent").to_path_buf();
+        let name = path
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher_stop = Arc::clone(&stop);
+        let watcher_dir = parent.clone();
+        let watcher_name = name.clone();
+        let watcher = std::thread::spawn(move || {
+            let mut samples = 0_usize;
+            let mut loose: Vec<(u32, String)> = Vec::new();
+            while !watcher_stop.load(Ordering::Relaxed) {
+                if let Ok(entries) = fs::read_dir(&watcher_dir) {
+                    for entry in entries.flatten() {
+                        let entry_name = entry.file_name().to_string_lossy().into_owned();
+                        if entry_name == watcher_name {
+                            continue;
+                        }
+                        if let Ok(meta) = entry.metadata() {
+                            samples += 1;
+                            let mode = meta.permissions().mode() & 0o777;
+                            if mode != TOKEN_FILE_MODE {
+                                loose.push((mode, entry_name));
+                            }
+                        }
+                    }
+                }
+            }
+            (samples, loose)
+        });
+
+        for i in 0..64_u8 {
+            file.save(&fixture_token(i)).expect("保存");
+        }
+        stop.store(true, Ordering::Relaxed);
+        let (samples, loose) = watcher.join().expect("采样线程");
+        assert!(
+            loose.is_empty(),
+            "临时文件出现过非 0600 权限（mode, name）= {loose:?}；\
+             这说明存在'先建宽权限再 chmod'的可读窗口（本次采样 {samples} 次）"
+        );
+        let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, TOKEN_FILE_MODE, "最终文件必须仍恰好是 0600");
+        let leftovers: Vec<String> = fs::read_dir(&parent)
+            .expect("读目录")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|entry| entry != &name)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "保存成功后不得留下临时文件: {leftovers:?}"
+        );
+        fs::remove_dir_all(&parent).ok();
     }
 
     #[test]
