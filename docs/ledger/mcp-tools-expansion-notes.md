@@ -215,7 +215,8 @@ rustc --edition 2024 -D warnings /tmp/yeban-audit/local_audit.rs -o /tmp/yeban-a
    本线借用 `AutomationRecord`（自动化写入落盘）作自动化编辑的来源、`Import` 作音频导入的来源，
    **作者字段**仍是 `yeban-mcp`（`UndoState.author`），因此没有伪装成用户操作。
    建议：模型侧补 `OpOrigin::McpEdit { agent_name }`（或裁决"借用即可"）。响应里 `origin.note` 已如实写出。
-2. **CAS 池的字节不是 `Op` 的载荷**。模型 `Op` 全集（实测 29 个变体）没有任何资产变体 ⇒
+2. **CAS 池的字节不是 `Op` 的载荷**。模型 `Op` 全集（实测 **31** 个变体；2026-10-08 就地更正，
+   原文写 29 —— 混音切片新增 `SetTrackMute` / `SetTrackSolo`）没有任何资产变体 ⇒
    `yeban_import_audio` 的 `Op::AddClip` **逆操作不会回收**池里的字节：撤销后保存会把一份
    未被引用的资产写进容器。内容寻址让重复导入幂等（可收敛），但"孤儿字节"需要模型侧一个
    资产声明/回收 `Op`。本工具在响应 `notes` 里**如实**写出这一点。

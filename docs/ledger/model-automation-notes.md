@@ -189,7 +189,7 @@ let u: f32 = curve.ease(t);
 | ③b | 删除（含"空但带属性"的泳道）→ 撤销 | 逐字节还原（属性 + 采样点都在） |
 | ③c | 隐式建/收、属性泳道移空/撤销 | 两种情形都逐字节 |
 | ⑧b | `Batch[SetAutomationLane, SetAutomationPoint, RemoveAutomationPoint]` → 逆批次 | 逐字节回到原状 |
-| crate 内 | `every_variant_applies_and_inverts_exactly`（showcase 覆盖 29 个变体） | 通过 |
+| crate 内 | `every_variant_applies_and_inverts_exactly`（showcase 覆盖 29 个变体）（⚠ **2026-10-08 注**：29 是**本线那一刻**的读数；混音切片新增 `SetTrackMute` / `SetTrackSolo` 之后全集为 **31**（`crates/yeban-model/src/ops.rs` 的 `showcase_ops()` 里现在含这两个变体）—— 带日期的测量记录按纪律**只加注、不改写**） | 通过 |
 | crate 内 | `state_tree_is_conserved_under_reverse_undo`（`MUST-GATE-010`，本机 256 步 / CI 10000 步，生成器已含两个新变体） | 通过 |
 
 ## 4. 规范依据与裁决留痕（D10 / D12 / D27 / D28 / D32）
@@ -469,7 +469,7 @@ FAILED: every_op_variant_is_declared_in_the_contract / op_variants_match_ops_sch
 
 | # | 需要谁 | 具体动作 | 不做会怎样 |
 | :--- | :--- | :--- | :--- |
-| N1 | **集成者 + 契约线** | 把 `SetAutomationLane` / `RemoveAutomationLane` 加进 `schemas/ops.schema.json` 的 `op.oneOf`（27 → 29 个分支，每个分支照现有格式 `required: [<名>]` + `properties`），并**同时**把 `crates/yeban-model/src/ops.rs` 里的 `PENDING_CONTRACT_OPS` 清成 `[]` | 契约缺两个分支；判据里的显式欠账会一直挂着（`run-gates.sh` 会提醒"若契约已补齐, 请把该清单清空"） |
+| N1 | **集成者 + 契约线** | 把 `SetAutomationLane` / `RemoveAutomationLane` 加进 `schemas/ops.schema.json` 的 `op.oneOf`（27 → 29 个分支，每个分支照现有格式 `required: [<名>]` + `properties`），并**同时**把 `crates/yeban-model/src/ops.rs` 里的 `PENDING_CONTRACT_OPS` 清成 `[]`（⚠ **2026-10-08 注**：本行是**那一轮**的待办记录，**已由本线自己完成**；27 → 29 是当时的增量，全集此后到 **31**（混音切片：`SetTrackMute` / `SetTrackSolo`）。按 dated record 纪律**只加注、不改写**） | 契约缺两个分支；判据里的显式欠账会一直挂着（`run-gates.sh` 会提醒"若契约已补齐, 请把该清单清空"） |
 | N2 | **人类** | 追认 §4.2 的 A1–A7（尤其 **A7：`Op` 全集 27 → 29**），按 D12/D27 的方式回写规范 §6.1；并在 `docs/ledger/human-decisions.md` 里补一行 `HD-42`（本线**不得**改该文件） | 与 `HD-01`/`HD-12` 同族：规范正文与实际 `Op` 全集继续分叉，下一条线仍会以为"只有 27 个" |
 | N3 | **人类 / 规范线** | 若要求 `Exponential`/`Logarithmic` 是**真** `exp`/`log`，需修订规范给出公式（并接受 D32 的 ulp 预算）；否则把 §4.2 A1 的四项多项式写进规范正文 | 公式只活在代码注释与判据里 |
 | N4 | **设备/插件线** | `ParameterValue` 需要一个"合法区间 + 量纲"字段，`AutomationTarget::DeviceParam::nominal_domain()` 才能从 `None` 变成真值；在此之前界面必须按曲线最值自适应 | 设备参数泳道的纵轴刻度只能自适应 |

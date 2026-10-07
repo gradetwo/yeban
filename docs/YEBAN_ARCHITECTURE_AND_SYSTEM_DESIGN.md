@@ -798,7 +798,7 @@ yeban/
 
 | 原措辞（已不准确） | 修订后的措辞 | 裁决 | 实测依据 |
 | :--- | :--- | :--- | :--- |
-| §6.1 的 `Op` 全集 | 实测全集为 **29 个变体**（在架构原文基础上依次扩展）：`RemoveSection`/`RemoveScene`（D12）、`AddClip`/`RemoveClip`/`AddRoutingNode`/`RemoveRoutingNode`（D27）、`SetAutomationLane`/`RemoveAutomationLane`（D42/HD-42）。契约 `schemas/ops.schema.json` 的 `op.oneOf` 与枚举**逐变体对账**，且有**棘轮判据**（`enum − contract == PENDING_CONTRACT_OPS`，两集合不相交）保证欠账不会静默漂移 | D12, D27, HD-42 | `crates/yeban-model` 的 `op_variants_match_ops_schema_exactly` |
+| §6.1 的 `Op` 全集 | 实测全集为 **31 个变体**（在架构原文基础上依次扩展）：`RemoveSection`/`RemoveScene`（D12）、`AddClip`/`RemoveClip`/`AddRoutingNode`/`RemoveRoutingNode`（D27）、`SetAutomationLane`/`RemoveAutomationLane`（D42/HD-42）、`SetTrackMute`/`SetTrackSolo`（2026-10-08 混音切片）。⚠ 本行是**事实性读数**更正（29 → 31）：**规范要求本身与棘轮判据一字未改**。契约 `schemas/ops.schema.json` 的 `op.oneOf` 与枚举**逐变体对账**（2026-10-08 实测读数：`ops.rs` 的 `enum Op` = **31** 个变体；`schemas/ops.schema.json` 的 `properties.op.oneOf` = **31** 个分支），且有**棘轮判据**（`enum − contract == PENDING_CONTRACT_OPS`，两集合不相交）保证欠账不会静默漂移 | D12, D27, HD-42 | `crates/yeban-model` 的 `op_variants_match_ops_schema_exactly` |
 | 错误码里同时出现 `CYCLE_DETECTED` 与 `ROUTING_CYCLE_DETECTED` | 二者**同义**（都指路由图成环）。对外契约取**联集 20 值**并保留二者以兼容既有样本；**新代码一律用 `ROUTING_CYCLE_DETECTED`**（更准确），`CYCLE_DETECTED` 仅作为既有样本的兼容别名 | D25 | `schemas/mcp-tools.schema.json` 的 `error.code` 联集 |
 | §3.3 的窗函数措辞（"Hann"） | 实现采用**周期 Hann**（`w[n] = 0.5 - 0.5·cos(2πn/N)`，分母是 `N` 而非 `N-1`）。规范若意在**对称 Hann**，需明确写出；当前以**周期 Hann**为准（STFT 重建常数叠加更自然） | D16 | `crates/yeban-dsp` 的窗函数判据 |
 | 重采样 API 点名 `SincFixedIn` / `FftFixedIn` | `rubato 5.0.1` **没有**这两个名字（实际为 `Async::new_sinc` 等）；`symphonia 0.6` 的 EOF/类型名也与旧文档不同。规范按**实际锁定版本**修订 | D26 | `Cargo.toml` 锁定版本 + `yeban-decode` 实测 |

@@ -36,7 +36,7 @@
 
 | # | 判据 | 位置（`ff71c19`） | 它读契约的哪一段 | 断言什么 |
 | :-- | :--- | :--- | :--- | :--- |
-| ① | `op_variants_match_ops_schema_exactly` | `ops.rs:2457` | **只读 `op.oneOf`** | `op.oneOf[*].required[0]` 的集合**恰好 29 个**；`showcase_ops()` 的名字集合 == 该集合 ∪ `PENDING_CONTRACT_OPS` |
+| ① | `op_variants_match_ops_schema_exactly` | `ops.rs:2457` | **只读 `op.oneOf`** | `op.oneOf[*].required[0]` 的集合**恰好 29 个**（⚠ **2026-10-08 注**：29 是基线 `ff71c19` 那一刻的读数；混音切片新增 `SetTrackMute` / `SetTrackSolo` 之后，现行读数是 **31** —— 本表是带日期的测量记录，按纪律**只加注、不改写**）；`showcase_ops()` 的名字集合 == 该集合 ∪ `PENDING_CONTRACT_OPS` |
 | ② | `origin_variants_match_ops_schema_origin_one_of` | `ops.rs:2714` | `origin.oneOf[0].enum`、`origin.oneOf[*].required`、`origin.oneOf[1].properties.McpProposal.required` | 单元变体集合相等；对象标签差集**恰好等于** `PENDING_CONTRACT_ORIGINS`（双向）；McpProposal 载荷键 == 契约 required |
 | ③ | `ops_origin_shapes_match_the_origin_one_of` | `samples.rs:771` | `origin.oneOf[0].enum`（经 helper 的 `.expect`，`samples.rs:676`） | enum 恰好 **6** 项；默认样本来源是 enum 里的字符串；filled 样本来源是只带 `McpProposal` 一个键的对象 |
 | ④ | `every_unit_origin_variant_is_in_the_contract_enum` | `samples.rs:795` | 同上 helper | 6 个**单元**变体逐个序列化成字符串且落在 enum 里，并能往返 |

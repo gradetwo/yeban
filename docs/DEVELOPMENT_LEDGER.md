@@ -411,7 +411,7 @@ SKILL 规则 10：**把自己的错误连同它产生的规则一起记下来**�
   `011` 仍差"千万次"那一轮、`014` 仍缺素材（机器已就绪）、`005` 有了测量工具但需硬件。
 - **能力切片（累计，按阶段）**：
   · **Phase -1/0**：仓库大扫除、九大 Spike、四条门禁族（守卫/契约/文档/许可）全部机械执行；
-  · **Phase 1（模型）**：`Op` 全集 **29 变体**且逐字节真逆、自动化泳道 + **唯一求值入口**、
+  · **Phase 1（模型）**：`Op` 全集 **29 变体**（⚠ **2026-10-08 注**：这是**当时那一轮**的读数；此后混音切片新增 `SetTrackMute` / `SetTrackSolo` ⇒ 全集为 **31 变体**，出处 `docs/ledger/app-mixer-notes.md` §7 #3 与 `docs/ledger/feature-alignment.md`；按 dated record 纪律**只加注、不改写**）且逐字节真逆、自动化泳道 + **唯一求值入口**、
     `#[serde(default)]` 收敛到 **18 处**（其余为必需）、契约 `required` 与实现必需性**对齐**（根 18 键 / 23 路径）；
   · **Phase 2（引擎）**：**真的出声**（确定性合成：三音符夹具 102 398/102 400 非零样本、两次渲染逐位相同）、
     混音链（常量功率声相 / 前瞻母线限制器 / 梯形滤波 / 3 ms 窃取淡出）、**零分配窗口**在多场景下仍成立、
@@ -1371,6 +1371,8 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   —— 这是"用类型消掉一类错误"而不是"加一条判据去抓它"的范例。
 - **我兑现了契约承诺**：`schemas/ops.schema.json` 的 `op.oneOf` 27 → **29**（补
   `SetAutomationLane` / `RemoveAutomationLane`），并把 `PENDING_CONTRACT_OPS` **清空**。
+  （⚠ **2026-10-08 注**：27 → 29 是**那一轮**的增量；全集此后到 **31 变体**（混音切片：
+  `SetTrackMute` / `SetTrackSolo`）—— 按 dated record 纪律**只加注、不改写**。）
   该线的**棘轮判据**（`enum − contract == PENDING_CONTRACT_OPS`，且两集合不相交）因此从"欠账 2 个"
   变成"欠账 0 个"—— 它是**机器校验的欠账**：契约补上后若不清空清单，判据会立刻红并指名"清空它"。
   实测：`cargo test -p yeban-model` 107 + 28 + 50 + 16 全绿；
@@ -1387,7 +1389,7 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 | HD | 做了什么 | 证据 |
 | :--- | :--- | :--- |
 | HD-02, HD-04, HD-05, HD-08, HD-09, HD-14, HD-15, HD-16, HD-17, HD-18, HD-19, HD-22, HD-28, HD-29 | 写进**四份 Normative 规范**的"修订记录（Errata）"；`SLINT_BACKEND=headless` 的命令块**就地修正**（Slint 1.18.1 无此后端） | 两份规范各 +errata；路线图 +errata；文档门禁绿 |
-| HD-01, HD-12, HD-42 | `Op` 全集以 **29 变体**写进架构 errata（含棘轮判据的说明） | `schemas/ops.schema.json` 29 分支 + `PENDING_CONTRACT_OPS` 清空 |
+| HD-01, HD-12, HD-42 | `Op` 全集以 **29 变体**写进架构 errata（含棘轮判据的说明）（⚠ **2026-10-08 注**：29 是**当时那一轮**的读数，现行读数是 **31 变体** —— 混音切片新增 `SetTrackMute` / `SetTrackSolo`；按 dated record 纪律**只加注、不改写**） | `schemas/ops.schema.json` 29 分支 + `PENDING_CONTRACT_OPS` 清空（⚠ 现行读数：**31 分支**） |
 | HD-03, HD-06, HD-10, HD-11, HD-25 | ADR-0001 转 **Accepted**；许可白名单追认 | `grep -c Proposed docs/adr/…` 由 6 → 0（保留历史说明） |
 | HD-07, HD-13, HD-20, HD-35, HD-37, HD-38, HD-39, HD-40, HD-41 | 已是当前实现/政策（保持现状类），逐条标注在决策清单 | `docs/ledger/human-decisions.md` 的 ✅ 标记 |
 | HD-36 | **已执行并已拿到判决**：ARM 跨架构门禁 | run 37244030287 success；`MUST-GATE-003` 转"已接线" |
@@ -1450,7 +1452,8 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
 - **全量验证转绿**：run **37245465832**（`force_full`）= **success** —— `rust (workspace 全量)` ✓、`windows` ✓、
   `checks`/`lockfile`/`deny` ✓。这一次判决覆盖了三个此前**没有任何代码判决**的改动：
   ① 我的 app 判据修复（`c210eb4`，修"静音前提"失效）；② `model-automation` 合并（自动化泳道 + `Op` 29）；
-  ③ 契约 `op.oneOf` 27→29 与棘轮清空。
+  ③ 契约 `op.oneOf` 27→29 与棘轮清空。（⚠ **2026-10-08 注**：②③ 的 29 是**那一轮**的读数；
+  全集此后到 **31 变体**（混音切片：`SetTrackMute` / `SetTrackSolo`）—— 按 dated record 纪律**只加注、不改写**。）
   ⇒ **"被取消的 run 等于没有判决"**（L23/L26）这一次是**正面验证**：只有把零散推送停下来、
   在最终 tip 上派发一次 `force_full`，才拿到一份真正覆盖全部改动的判决。
 - **三处口径裁决（D44）**：① `ARCH-RT-004` 的 3 ms 指数（**声部窃取**）与 `ARCH-DSP-001` 的 5 ms 升余弦
@@ -2632,7 +2635,7 @@ Conclusions with evidence:
 | HD | 做了什么 | 证据 |
 | :--- | :--- | :--- |
 | HD-02, HD-04, HD-05, HD-08, HD-09, HD-14, HD-15, HD-16, HD-17, HD-18, HD-19, HD-22, HD-28, HD-29 | 写进**四份 Normative 规范**的"修订记录（Errata）"；`SLINT_BACKEND=headless` 的命令块**就地修正**（Slint 1.18.1 无此后端） | 两份规范各 +errata；路线图 +errata；文档门禁绿 |
-| HD-01, HD-12, HD-42 | `Op` 全集以 **29 变体**写进架构 errata（含棘轮判据的说明） | `schemas/ops.schema.json` 29 分支 + `PENDING_CONTRACT_OPS` 清空 |
+| HD-01, HD-12, HD-42 | `Op` 全集以 **29 变体**写进架构 errata（含棘轮判据的说明）（⚠ **2026-10-08 注**：29 是**当时那一轮**的读数，现行读数是 **31 变体** —— 混音切片新增 `SetTrackMute` / `SetTrackSolo`；按 dated record 纪律**只加注、不改写**） | `schemas/ops.schema.json` 29 分支 + `PENDING_CONTRACT_OPS` 清空（⚠ 现行读数：**31 分支**） |
 | HD-03, HD-06, HD-10, HD-11, HD-25 | ADR-0001 转 **Accepted**；许可白名单追认 | `grep -c Proposed docs/adr/…` 由 6 → 0（保留历史说明） |
 | HD-07, HD-13, HD-20, HD-35, HD-37, HD-38, HD-39, HD-40, HD-41 | 已是当前实现/政策（保持现状类），逐条标注在决策清单 | `docs/ledger/human-decisions.md` 的 ✅ 标记 |
 | HD-36 | **已执行并已拿到判决**：ARM 跨架构门禁 | run 37244030287 success；`MUST-GATE-003` 转"已接线" |
