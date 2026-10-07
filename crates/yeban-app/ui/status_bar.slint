@@ -9,7 +9,27 @@
 // 本文件是 ADR-0001 D2 为了承载 24px 状态栏而**新增**的组件 (UI/UX §8 的清单里没有它,
 // architecture §8 的 4 文件清单里也没有)。裁决留痕见 ADR-0001 D2 与 notes。
 //
-// 数据流方向: 只读。所有值都是**演示数据**, 由 app.slint 的 MainWindow 传入。
+// 数据流方向: 只读。只有 `save-status` / `save-succeeded` 真的由 `app.slint` 的
+// `MainWindow` 传入（宿主 `host::apply_save_outcome` 是唯一写者）。
+//
+// ⚠ **诚实性审计登记（2026-10-08，本次未修，如实登记不假装）**：
+// 上面那句原来写的是"所有值都是**演示数据**，由 app.slint 的 MainWindow 传入" —— 那是**假的**：
+// `selection`（`:17`）/ `chord`（`:18`）/ `device`（`:20`）三个属性
+// **没有任何宿主写者**（`git grep -n 'set_selection\|set_chord\|set_device' crates/yeban-app/src`
+// 命中 0），而 `crates/yeban-app/ui/app.slint` 的 `StatusBar { … }` 实例只传了
+// `save-status` / `save-succeeded` ⇒ **界面显示的就是这三条属性默认值**。
+// 三条里最糟的是 `device` 的 `"DSP 3.2%"`：那是一个**编造的性能读数**。
+// 而这三格在**默认帧里就可见**（与 AI 徽章同一类，且更显眼）。
+//
+// 为什么本次不修（留给下一票，按"能真接就真接"排序）：
+//   ① `selection` —— **可以真接**：`MainWindow.selected-note-count` 是真实读数
+//      （写者 `src/host.rs` 的点击/删除路径），把**它**接到这一格即可让"无选区"变成真话；
+//      **区间文本**（`1.1.000 – 5.4.480`）需要选中音符的 tick 极值，今天没有这条投影。
+//   ② `chord` —— **能力不存在**：全仓没有和弦识别被接到界面（`yeban-theory` 不在 app 的依赖图上）。
+//   ③ `device` —— **部分可接**：`project.audio_config.sample_rate` 是模型里的真数据
+//      （`yeban_query_engine_state` 已暴露），但"DSP 3.2%"与"目标 120 FPS"没有数据源。
+//   代价：任何**用户可见**的处置都会改默认帧 ⇒ 5 张 Linux 基准按手动档 `gates-manual.yml`
+//   的 `gate=goldens` 重录一次（本票为 AI 徽章已经要重录一次，这一票可搭车）。
 
 import { Tokens, UiText, UiMonoText } from "tokens.slint";
 

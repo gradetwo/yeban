@@ -6916,6 +6916,426 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
 }
 
 // =====================================================================================
+// 判据（诚实性审计 2026-10-08）：时光机画**真实提交链**；AI 徽章不再声称假状态
+//
+// 两条判据的"文本层 + 写者层"那一半住在新文件 `tests/undo_tree_honesty.rs`（本机不
+// 渲染 Slint 也能跑）。这里只做运行时那一半：控件树 + 属性 + 真实点击 + 像素。
+// =====================================================================================
+
+/// 探针：运行时树的 `accessible-label` / `accessible-value` 里一个假历史节点名都没有。
+///
+/// 返回命中的字面量（空 = 干净）。**两个字段都探** —— 把假标签从 `label` 挪到
+/// `value` 是一样糟的假数据。
+fn demo_undo_literal_hits(tree: &ControlTree) -> Vec<String> {
+    let mut hits = Vec::new();
+    for node in tree.iter() {
+        for literal in yeban_app::elements::DEMO_UNDO_TREE_LITERALS {
+            if node.label.contains(literal) {
+                hits.push(format!(
+                    "`{}` 的 accessible-label 命中 `{literal}`",
+                    node.id
+                ));
+            }
+            if node
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains(literal))
+            {
+                hits.push(format!(
+                    "`{}` 的 accessible-value 命中 `{literal}`",
+                    node.id
+                ));
+            }
+        }
+    }
+    hits
+}
+
+/// 判据（**甲：真接**）：时光机画的节点 = **权威提交图谱**里的真实提交，一条不多一条不少。
+///
+/// ## 端到端链（每一步都是字面读数）
+///
+/// | 步 | 动作 | 断言 |
+/// | :--- | :--- | :--- |
+/// | ① | 打开真实 `UndoSession`（根提交消息 = `open <label>`）→ 装配活界面 → `host::apply_undo` | `undo-node-labels` == `["open <判据>"]`（**1** 条，不是 6 条）；`undo-node-count` == **1** |
+/// | ② | 打开时光机 → 读运行时树 | 树里**有** `undo-tree-node-0`，其 `accessible-label` **逐字**等于那条真实提交消息；`undo-tree-node-1` **不在**树里；空态节点不在树里 |
+/// | ③ | 经端口再提交 **7** 次真 op | 链条长 **8** ⇒ 画出最近 **6** 个 + `undo-node-hidden` == **2**；`undo-tree-node-6` 不在树里；截断报数节点在树里，其标签里的数字 == `2` |
+/// | ④ | 假字面量探针 | 运行时树的 `label` / `value` 一处都不命中 [`DEMO_UNDO_TREE_LITERALS`] |
+///
+/// 为什么"节点数 == 图谱读数"是**算术**而不是巧合：`node-count` 由
+/// `chain.len().min(UNDO_TREE_MAX_NODES)` 得到，`node-hidden` 由同一长度的
+/// `saturating_sub` 得到 ⇒ 两个读数的和必须**恰好**等于 `CommitGraph::ancestry` 的长度。
+#[test]
+fn the_undo_tree_shows_the_real_commit_chain() {
+    use std::rc::Rc;
+
+    // `ModelRc::iter`（读 `[string]` 属性）来自 `slint::Model`（本文件既有的写法）。
+    use slint::Model as _;
+    use yeban_app::undo::undo_session::wiring_fixture;
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    /// 会话打开时刻（与既有判据同一个夹具常量）。
+    const UNDO_TREE_NOW: u64 = 1_760_000_000_000;
+
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), UNDO_TREE_NOW).expect("打开"),
+    ));
+    // 根提交的原话（`UndoSession::open` 写的是 `format!("open {label}")`）。
+    let genesis = port
+        .graph()
+        .commits
+        .values()
+        .map(|commit| commit.message.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        genesis,
+        vec!["open <判据>".to_owned()],
+        "新会话必须恰好有一条根提交，消息逐字可预期"
+    );
+
+    let mut ui = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::ReadOnly,
+            console_tab: 0,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    // 生产 GUI 的注入点（`src/main.rs` 的 `host::apply_undo(&ui, &undo_port)`）。
+    yeban_app::host::apply_undo(ui.ui(), &port);
+
+    // ---- ① 属性：真实链条（1 条），不是编造的 6 条 ----
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let labels_1: Vec<String> = window
+        .get_undo_node_labels()
+        .iter()
+        .map(|label| label.to_string())
+        .collect();
+    report_line(&format!(
+        "[undo-tree] ① 图谱读数: `ancestry(head)` 长度 {} / 属性 `undo-node-labels` {:?} / \
+         `undo-node-count` {} / `undo-node-hidden` {}",
+        genesis.len(),
+        labels_1,
+        window.get_undo_node_count(),
+        window.get_undo_node_hidden(),
+    ));
+    assert_eq!(
+        labels_1,
+        vec!["open <判据>".to_owned()],
+        "属性里的节点标签必须**逐字**等于根提交的消息"
+    );
+    assert_eq!(window.get_undo_node_count(), 1, "链长 1 ⇒ 画 1 个节点");
+    assert_eq!(window.get_undo_node_hidden(), 0, "链长 1 ⇒ 没有截断");
+
+    // ---- ② 打开时光机 ⇒ 运行时树 ----
+    // ⚠ 必须走**端口**打开：`undo-tree-open` 的唯一写者是 `host::apply_undo`
+    // （它每一跳都从 `port.undo_tree_open()` 回写）。直接 `window.set_undo_tree_open(true)`
+    // 会在下一次 `apply_undo` 时被宿主的读数**覆盖回 false** —— 这正是"唯一写者"的证据。
+    port.perform(yeban_app::undo::UiAction::OpenUndoTree);
+    yeban_app::host::apply_undo(ui.ui(), &port);
+    ui.pump_meters();
+    let tree_1 = ui.tree_snapshot();
+    assert!(
+        tree_1.contains("undo-tree-modal"),
+        "`undo-tree-open=true` ⇒ 时光机进树"
+    );
+    let node_0 = tree_1
+        .find_by_id("undo-tree-node-0")
+        .expect("真实链有 1 条提交 ⇒ 必须有 `undo-tree-node-0`");
+    report_line(&format!(
+        "[undo-tree] ② 运行时树: 节点 {}; `undo-tree-node-0` role={} label={:?}; \
+         `undo-tree-node-1` 在树里 = {}; 空态在树里 = {}; 截断报数在树里 = {}",
+        tree_1.len(),
+        node_0.role.as_str(),
+        node_0.label,
+        tree_1.contains("undo-tree-node-1"),
+        tree_1.contains("undo-tree-empty-state"),
+        tree_1.contains("undo-tree-truncation-note"),
+    ));
+    assert_eq!(
+        node_0.label, "open <判据>",
+        "树的 `accessible-label` 必须**逐字**等于真实提交消息（编造的版本名会在这里红）"
+    );
+    assert!(
+        !tree_1.contains("undo-tree-node-1"),
+        "链上只有 1 条提交 ⇒ 第 2 个节点**不许**存在（改动前这里画着 6 个编造节点）"
+    );
+    assert!(
+        !tree_1.contains("undo-tree-empty-state"),
+        "链非空 ⇒ 空态不许在树里"
+    );
+    assert!(
+        !tree_1.contains("undo-tree-truncation-note"),
+        "链比画布短 ⇒ 截断报数不许在树里"
+    );
+    let hits_1 = demo_undo_literal_hits(&tree_1);
+    assert!(
+        hits_1.is_empty(),
+        "运行时树里读到了编造的版本节点名:\n  {}",
+        hits_1.join("\n  ")
+    );
+
+    // ---- ③ 再提交 7 次 ⇒ 链条 8 条，画布只放得下 6 个 ----
+    // 每次提交的 `old_vel` 必须是**上一步写进去的值**（模型校验前后态），因此这里
+    // 逐次滚动地构造 7 条互不相同的真 op —— 不是把同一条 op 重复 7 次。
+    let fixture = wiring_fixture(&port.project()).expect("夹具：工程里必须有可改的音符");
+    let mut old_velocity = fixture.old_velocity;
+    for step in 0..7_u32 {
+        let new_velocity = u8::try_from(40 + step).expect("力度落在 u8 内");
+        port.commit_ops(
+            UNDO_TREE_NOW + u64::from(step) + 1,
+            &format!("审计夹具 {step}"),
+            vec![yeban_model::Op::ModifyNoteVelocity {
+                track_id: fixture.track_id,
+                clip_id: fixture.clip_id,
+                note_id: fixture.note_id,
+                old_vel: old_velocity,
+                new_vel: new_velocity,
+            }],
+        )
+        .expect("提交必须被接受");
+        old_velocity = new_velocity;
+    }
+    yeban_app::host::apply_undo(ui.ui(), &port);
+    let chain_len = port
+        .graph()
+        .ancestry(&port.display().head.expect("有活跃分支头"))
+        .expect("祖先链")
+        .len();
+    let hidden = window.get_undo_node_hidden();
+    let rendered = window.get_undo_node_count();
+    let labels_8: Vec<String> = window
+        .get_undo_node_labels()
+        .iter()
+        .map(|label| label.to_string())
+        .collect();
+    report_line(&format!(
+        "[undo-tree] ③ 提交 7 次之后: `ancestry` 长度 {chain_len} = 画出 {rendered} + 截断 {hidden} \
+         （算术: {rendered} + {hidden} = {}）; 最近的标签 {:?}; 最旧的标签 {:?}",
+        rendered + hidden,
+        labels_8.first(),
+        labels_8.last(),
+    ));
+    assert_eq!(chain_len, 8, "1 条根提交 + 7 次提交 = 8");
+    assert_eq!(rendered, 6, "画布只放得下 6 个节点");
+    assert_eq!(hidden, 2, "8 - 6 = 2 个更早的版本被截断");
+    assert_eq!(
+        i32::try_from(chain_len).expect("链长") - rendered,
+        hidden,
+        "两个读数必须与链条长度闭合（这就是端到端的算术）"
+    );
+    assert_eq!(
+        labels_8.first().map(String::as_str),
+        Some("审计夹具 6"),
+        "最新在前：下标 0 必须是最后一次提交的消息"
+    );
+    assert_eq!(
+        labels_8.last().map(String::as_str),
+        Some("审计夹具 1"),
+        "画出的 6 个是**最近**的 6 个"
+    );
+
+    ui.pump_meters();
+    let tree_8 = ui.tree_snapshot();
+    let undo_ids: Vec<&str> = tree_8
+        .ids()
+        .filter(|id| id.starts_with("undo-tree-"))
+        .collect();
+    report_line(&format!(
+        "[undo-tree] ③ 树里的 `undo-tree-*` 节点（{} 条）: {undo_ids:?}",
+        undo_ids.len()
+    ));
+    let note = tree_8
+        .find_by_id("undo-tree-truncation-note")
+        .expect("链条比画布长 ⇒ 必须有截断报数节点");
+    report_line(&format!(
+        "[undo-tree] ③ 运行时树: 节点 {}; `undo-tree-node-6` 在树里 = {}; \
+         截断报数 label={:?}",
+        tree_8.len(),
+        tree_8.contains("undo-tree-node-6"),
+        note.label,
+    ));
+    assert!(
+        !tree_8.contains("undo-tree-node-6"),
+        "画布画不下第 7 个节点 ⇒ `undo-tree-node-6` 不许在树里（注册表也只登记 0..6）"
+    );
+    assert_eq!(
+        tree_8.find_by_id("undo-tree-node-0").expect("头节点").label,
+        "审计夹具 6",
+        "树里的头节点标签必须是真实提交消息"
+    );
+    assert!(
+        note.label == "更早的 2 个版本未画出",
+        "截断报数必须带**真实**的截断条数（实测 2），实际 {note:?}"
+    );
+    let hits_8 = demo_undo_literal_hits(&tree_8);
+    assert!(
+        hits_8.is_empty(),
+        "运行时树里读到了编造的版本节点名:\n  {}",
+        hits_8.join("\n  ")
+    );
+}
+
+/// 判据（**乙：如实表达"没有"**）：没有宿主写者时，时光机画**空态**，不画任何节点。
+///
+/// 这一条装配**没有**撤销端口（`LiveWiringOptions::undo = None`）—— `host::wire_undo` /
+/// `host::apply_undo` 因此从未跑过 ⇒ 界面拿到的就是 `node-count` / `node-labels` /
+/// `node-hidden` 的**属性默认值**（`0` / `[]` / `0`）。此时打开时光机，运行时树里必须有
+/// `undo-tree-empty-state`，且**一个** `undo-tree-node-*` 都没有。
+///
+/// 改动前这里画着 **6** 个编造的版本名（含 `"c5 AI 提案"`）—— 那是**没有任何写者**的
+/// 属性默认值，也就是用户看到的东西。
+///
+/// ## 像素
+///
+/// 命题①（**默认帧**，时光机关着）的读数是 PNG 字节的 sha256（本仓 PNG 是存储式
+/// deflate，1920×1080 恒为 6,222,418 字节 ⇒ 尺寸证明不了内容）。命题②（打开时光机之后）
+/// 是同一帧的差异像素数与包围盒 —— 两个命题分开陈述，不可互相代替。
+#[test]
+fn unwritten_undo_tree_shows_an_honest_empty_state_at_runtime() {
+    // ---- 没有写者 ⇒ 属性停在默认值 ----
+    let project = yeban_model::samples::filled_project();
+    let mut ui = build_live_ui(&project, Permission::ReadOnly).expect("装配（无撤销端口）");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+
+    // ---- 像素命题①：**默认帧**（时光机关着）的读数 ----
+    let frame_closed = ui.capture().expect("默认帧");
+    let (closed_png, _closed_evidence) =
+        encode_with_evidence(&frame_closed, DEFAULT_MAX_PNG_BYTES).expect("默认帧必须可编码");
+    let closed_digest = yeban_model::ids::ContentHash::of_bytes(&closed_png);
+    let closed_artifact = write_artifact_bytes("undo-tree-closed-1920x1080.png", &closed_png);
+    report_line(&format!(
+        "[undo-tree-pixel] 命题①默认帧（时光机关着）: {} 字节 / sha256={} / artifact={closed_artifact}",
+        closed_png.len(),
+        closed_digest.as_str(),
+    ));
+
+    // 没有撤销端口 ⇒ 没有任何宿主写者会回写 `undo-tree-open`，因此这里直接写属性。
+    window.set_undo_tree_open(true);
+    ui.pump_meters();
+    let tree = ui.tree_snapshot();
+    let node_ids: Vec<&str> = tree
+        .ids()
+        .filter(|id| id.starts_with("undo-tree-node-"))
+        .collect();
+    let empty = tree
+        .find_by_id("undo-tree-empty-state")
+        .expect("没有宿主写者时必须有空态节点");
+    report_line(&format!(
+        "[undo-tree] 空态: `undo-tree-node-*` {} 条 {node_ids:?}; \
+         `undo-tree-empty-state` role={} label={:?}; 节点总数 {}",
+        node_ids.len(),
+        empty.role.as_str(),
+        empty.label,
+        tree.len(),
+    ));
+    assert!(
+        node_ids.is_empty(),
+        "没有宿主写者时一个图谱节点都不许出现（改动前这里画着 6 个编造版本），实际 {node_ids:?}"
+    );
+    assert_eq!(
+        empty.label, "还没有任何版本提交。撤销历史为空。",
+        "空态的 `accessible-label` 必须就是界面上那句话"
+    );
+    let hits = demo_undo_literal_hits(&tree);
+    assert!(
+        hits.is_empty(),
+        "运行时树里读到了编造的版本节点名:\n  {}",
+        hits.join("\n  ")
+    );
+
+    // ---- 像素命题②：打开时光机之后画面必须真的变（与命题①的默认帧对照）----
+    let frame_open = ui.capture().expect("时光机打开帧");
+    let diff = frame_diff(&frame_closed, &frame_open).expect("打开时光机必须改变像素");
+    report_line(&format!(
+        "[undo-tree-pixel] 命题②: 差异 {} px, 包围盒 x{}..{} × y{}..{}（帧 {}×{}）",
+        diff.count,
+        diff.bbox.x,
+        diff.bbox.right(),
+        diff.bbox.y,
+        diff.bbox.bottom(),
+        frame_closed.width(),
+        frame_closed.height(),
+    ));
+    assert!(
+        diff.count > 0,
+        "打开时光机之后画面必须改变（否则弹窗没有被渲染）"
+    );
+}
+
+/// 判据（**乙的运行时那一半**）：AI 徽章不再声称"有 1 条待审查提案"，且它**真的能点**。
+///
+/// 改动前这一处是三连假：`accessible-role: button` 没有点击源；`accessible-value: "1"`
+/// 与可见文案「AI提案 (待审查)」声称有 1 条待审查提案，而**没有任何宿主写者**
+/// （`git grep -n 'ai-proposal-badge'` 只命中语义注册表与测试）。三件事各自独立：
+///
+/// 1. 运行时树的 `accessible-label` 是**动作**描述（不是状态声明），`accessible-value`
+///    **不存在**（`null`，改前是 `"1"`）；
+/// 2. `label` / `value` 都不含假状态字面量「待审查」；
+/// 3. 一次**真实指针点击**（按下 → 移动 → 松手 → Slint 命中测试 → `.slint` 的 `TouchArea`
+///    → `open-ai-proposals` → `app.slint` → `open-musical-pr` → 宿主写 `musical-pr-open`）
+///    真的打开提案抽屉 —— 因此 `accessible-role: button` 不再是空承诺。
+#[test]
+fn the_ai_badge_has_a_real_action_and_no_fake_state_at_runtime() {
+    use serde_json::json;
+
+    /// 徽章上被删掉的假状态字面量（与 `tests/undo_tree_honesty.rs` 同一批）。
+    const BADGE_FALSE_LITERALS: [&str; 1] = ["待审查"];
+
+    // 这一条用 Interactive 权限装配一条**真实指针注入**的面（与 `click_element` 同一手法）。
+    let (window, mut plane) = assemble_view_state_callbacks();
+    let badge = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        900,
+        yeban_ui_mcp::methods::METHOD_NODE,
+        Some(json!({ "elementId": "transport-ai-proposal-badge" })),
+    ));
+    assert!(!badge.is_error(), "徽章必须在运行时树里: {badge:?}");
+    let badge_node = badge.result.expect("有 result")["node"].clone();
+    report_line(&format!(
+        "[ai-badge] 运行时树: id={} role={} label={:?} value={}",
+        badge_node["id"], badge_node["role"], badge_node["label"], badge_node["value"],
+    ));
+    let label = badge_node["label"].as_str().unwrap_or_default();
+    assert!(
+        !BADGE_FALSE_LITERALS
+            .iter()
+            .any(|literal| label.contains(literal)),
+        "徽章的 `accessible-label` 仍在声称假状态: {label:?}"
+    );
+    assert_eq!(
+        label, "打开 AI 编曲提案审核抽屉",
+        "徽章的标签必须是**动作描述**（它现在真的能点）"
+    );
+    assert!(
+        badge_node["value"].is_null(),
+        "徽章**不许**声明 `accessible-value`（改前是编造的 `\"1\"`），实际 {}",
+        badge_node["value"]
+    );
+
+    // 真实点击 ⇒ 抽屉真的打开（一次交互 = 一次明确动作）。
+    assert!(!window.get_musical_pr_open(), "默认不打开提案抽屉");
+    click_element(&mut plane, 910, "transport-ai-proposal-badge");
+    assert!(
+        window.get_musical_pr_open(),
+        "点徽章必须真的打开提案抽屉（`open-ai-proposals` → `open-musical-pr`）"
+    );
+    let opened = plane.plane().tree().expect("ui/tree").0;
+    report_line(&format!(
+        "[ai-badge] 真实点击之后: musical-pr-open={} / 抽屉在树里 = {}",
+        window.get_musical_pr_open(),
+        opened.find("musical-pr-drawer").is_some(),
+    ));
+    assert!(
+        opened.find("musical-pr-drawer").is_some(),
+        "点击徽章之后提案抽屉必须进树"
+    );
+}
+
+// =====================================================================================
 // 判据：**读方法看见当下的界面**（`ui/tree` / `ui/node` / `ui/property` 的新鲜度一致）
 //
 // 背景：`ui/tree` / `ui/node` 读的是执行面持有的**运行时树缓存**，而 `ui/property`

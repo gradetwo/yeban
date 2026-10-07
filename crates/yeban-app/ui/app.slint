@@ -210,6 +210,16 @@ export component MainWindow inherits Window {
     in-out property <int> undo-depth: 0;
     in-out property <int> undo-undone: 0;
     in-out property <int> undo-commit-count: 0;
+    // ---- 时光机画出的**真实提交链**（唯一写者 = src/host.rs 的 apply_undo）--------
+    // 来源是**权威提交图谱**：`UndoPort::graph()` → `CommitGraph::ancestry(head)` →
+    // 每个 `Commit::message`（最新在前）。界面不自带节点；默认全空 ⇒ 画空态。
+    // `undo-node-hidden` = 链条上比画布画得下的更多的版本数（如实报数，不静默截断）。
+    // ⚠ 这三个属性**曾经不存在**：那时 `UndoTreeModal` 自带 6 个编造的版本名默认值，
+    // 而没有任何宿主写者 ⇒ 用户看到的是不存在的历史。判据见
+    // `crates/yeban-app/tests/undo_tree_honesty.rs`。
+    in-out property <int> undo-node-count: 0;
+    in-out property <[string]> undo-node-labels: [];
+    in-out property <int> undo-node-hidden: 0;
 
     in-out property <string> timecode: "001.01.000";
     in-out property <string> bpm-display: "120.00";
@@ -563,6 +573,14 @@ export component MainWindow inherits Window {
             toggle-ai-drawer => {
                 root.toggle-ai-drawer();
             }
+            // 顶栏那枚 AI 徽章：它原先 `accessible-role: button` 却**没有点击源**、
+            // 也没有回调，还写着"待审查 (1)"这个没有任何数据源的读数（= 假控件 +
+            // 假状态）。现在它有**一个真实动作**：打开同一个提案抽屉 —— 与右栏的
+            // `ai-rail-musical-pr-button` 落到**同一个** `open-musical-pr` 回调
+            // （唯一写者仍是 `host::wire_view_callbacks`），因此不产生第二个真相源。
+            open-ai-proposals => {
+                root.open-musical-pr();
+            }
             // §7.2：合成态 / 焦点是**事件**，不是状态 —— 界面原样转给宿主，
             // 由宿主写进 `InputContext`（界面不存"我是不是在合成"）。
             ime-composition-changed(composing) => {
@@ -830,6 +848,10 @@ export component MainWindow inherits Window {
         undone-depth: root.undo-undone;
         commit-count: root.undo-commit-count;
         branch-name: root.branch-name;
+        // 图谱节点 = **真实提交链**的投影（宿主从 `UndoPort::graph()` 读出）。
+        node-count: root.undo-node-count;
+        node-labels: root.undo-node-labels;
+        node-hidden: root.undo-node-hidden;
 
         undo-step => { root.undo-step(); }
         close => { root.undo-tree-open = false; }

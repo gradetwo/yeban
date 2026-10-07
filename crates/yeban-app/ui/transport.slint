@@ -49,6 +49,10 @@ export component Transport inherits Rectangle {
     callback show-session();
     callback show-arrangement();
     callback toggle-ai-drawer();
+    // 顶栏 AI 徽章的唯一动作。它不是"第二个真相源"：`app.slint` 把它原样转到
+    // `MainWindow.open-musical-pr`（与右栏 `ai-rail-musical-pr-button` **同一个**回调），
+    // 而 `musical-pr-open` 的唯一写者仍是 `host::wire_view_callbacks`。
+    callback open-ai-proposals();
     // [UI-A11Y-002] §7.2 输入法合成态：BPM 参数敲入控件里的**真** TextInput 一有
     // preedit（候选词）就置位，上屏 / 取消 / 失焦时清零。宿主（src/host.rs 的
     // wire_input）把它翻成 `InputContext::begin_composition` / `end_composition`
@@ -389,7 +393,22 @@ export component Transport inherits Rectangle {
         }
     }
 
-    // ------------------------------------------------- AI 提案徽章 (§10 时光机入口)
+    // ------------------------------------------------- AI 提案徽章 (§10 Musical PR 入口)
+    //
+    // ⚠ 诚实性（2026-10-08）：这一处曾经是**假控件 + 假状态**三连 ——
+    //   ① `accessible-role: button` 却**没有** `TouchArea`、没有回调、没有人能点；
+    //   ② `accessible-value: "1"` 与可见文案 "AI提案 (待审查)" 声称"有 1 条待审查提案"，
+    //      而**没有任何宿主写者**（`git grep 'ai-proposal-badge'` 只命中语义注册表与测试）
+    //      ⇒ 那个"1"是编造的；同一件事的载体 `MusicalPrDrawer` 此刻也如实显示 0 条
+    //      （`ui/dialogs/musical_pr_drawer.slint` 的空态）。两处互相矛盾，用户看到的
+    //      是这枚徽章。
+    //   ② 的处置 = **删掉假读数**；① 的处置 = **真接一个存在的动作**：点它打开同一个
+    //      提案抽屉（`open-ai-proposals` → `app.slint` → `open-musical-pr`，与右栏
+    //      `ai-rail-musical-pr-button` 落到同一个宿主写者）。
+    // 未改的：几何（`x: 640px` / 120 × 32）与描边色 —— `ADR-0003` 的槽位裁决与
+    // `tests/theme_selection.rs` 对 `Tokens.ai-suggestion` 的判据都依赖它们。
+    // 判据：`crates/yeban-app/tests/undo_tree_honesty.rs` 的
+    // `the_ai_badge_claims_no_pending_proposal_and_has_a_real_action`。
     //
     // 描边用 `Tokens.ai-suggestion`（2026-10-07 `HD-54` 改）：整份界面**唯一**的暖强调色
     // 已移到**录音键**的 ● 上，AI 徽章因此**另找角色**。这一处原来画的是 `accent`，
@@ -403,25 +422,37 @@ export component Transport inherits Rectangle {
         y: Tokens.space-4;
         width: 120px;
         height: 32px;
-        background: Tokens.bg-panel-alt;
+        background: proposal_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.ai-suggestion;
         accessible-role: button;
         accessible-id: "transport-ai-proposal-badge";
-        accessible-label: "AI 编曲提案待审查";
-        accessible-value: "1";
+        // 标签**只描述动作**，不再声称"有待审查的提案"（那个读数没有数据源）。
+        accessible-label: "打开 AI 编曲提案审核抽屉";
+        // ⛔ 这里**不许**再出现 `accessible-value`：提案条数今天没有数据源，
+        // 任何写死的数字都是编造的读数。条数的**唯一**诚实来源是提案抽屉自己的
+        // `accessible-value`（= `MusicalPrDrawer.proposal-count`，此刻为 `"0"`）。
 
         UiText {
             x: Tokens.space-4;
             y: 0;
             width: parent.width - 8px;
             height: parent.height;
-            text: "AI提案 (待审查)";
+            // ⛔ 这里**不许**再出现 "(待审查)"：它声称的状态没有数据源。
+            text: "AI提案";
             // AI 文案 = 负责人的 愁眠 (`selection`, 原则 ③「AI=愁眠」); brand 分支 = #f7e6b0
             // = 原来的 `gold-bright` ⇒ **品牌分支**一位未变（它在 2026-10-07 之前是默认主题）。
             color: Tokens.selection;
             font-size: Tokens.font-size-md;
+        }
+
+        // 唯一的点击源：把"一个看起来像按钮的东西"变成**真的**按钮。
+        // 它只发一个回调；`musical-pr-open` 的写者仍是宿主（没有第二个真相源）。
+        proposal_area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.open-ai-proposals(); }
         }
     }
 

@@ -2688,11 +2688,15 @@ fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
     true
 }
 
-/// 把**撤销的**模型读数注入界面（显示态 + 时光机弹窗开关）。
+/// 把**撤销的**模型读数注入界面（显示态 + 时光机弹窗开关 + 图谱节点）。
 ///
 /// 与 [`apply_transport`] 同一条纪律：界面**不自己算**"能不能撤销"。
 /// 唯一的事实源是 [`UndoPort::display`]（= `undo_session::UndoDisplay`：
 /// `CommitGraph` + `UndoCursor` 的读数）。
+///
+/// 时光机画的那排节点同样来自**权威图谱**（[`UndoPort::graph`]）—— 见
+/// [`undo_tree_projection`]。界面里**没有**任何自带的节点（`ui/dialogs/
+/// undo_tree_modal.slint` 的两个数据面属性默认是 `0` / `[]`）：本函数是它们唯一的写者。
 ///
 /// 为什么 `undo-tree-open` 也在这里写：它是**界面运行态**（不是模型读数），
 /// 但它必须与"撤销动作"共用同一个写者，否则弹窗开关就会有两个真相源。
@@ -2706,6 +2710,54 @@ pub fn apply_undo(ui: &MainWindow, port: &UndoPort) {
     ui.set_undo_undone(clamp(display.undone));
     ui.set_undo_commit_count(clamp(display.commit_count));
     ui.set_branch_name(display.branch.into());
+    // 图谱节点 = 真实提交链（同一个权威图谱的读数；见 `undo_tree_projection`）。
+    let (node_labels, node_hidden) = undo_tree_projection(port);
+    ui.set_undo_node_count(clamp(node_labels.len()));
+    ui.set_undo_node_labels(strings(&node_labels));
+    ui.set_undo_node_hidden(clamp(node_hidden));
+}
+
+/// 时光机画布能画下的**最多**节点数。
+///
+/// 这是**布局常量**，不是数据：面板宽 `720px`、节点自 `x = space-6 (24px)` 起、
+/// 间距 `108px`、节点宽 `100px` ⇒ `24 + 108 × 5 + 100 = 664 ≤ 720`；第 7 个节点
+/// （`x = 772`）会被面板裁掉。`ui/dialogs/undo_tree_modal.slint` 的边循环用同一个
+/// 数字（那里写成字面量 `6`，因为 Slint 侧引用不到 Rust 常量）。
+pub const UNDO_TREE_MAX_NODES: usize = 6;
+
+/// 时光机图谱的**真实**节点标签，以及**被画布截掉**的版本数。
+///
+/// 数据来源是**权威提交图谱**（[`UndoPort::graph`]）—— 不是界面自己算的，
+/// 也不是第二份状态：
+///
+/// 1. `CommitGraph::ancestry(head)` 给出活跃分支的祖先链 `[head, parent, …, root]`
+///    （**最新的在前**）；
+/// 2. 每个节点的标签 = 那条 `Commit` 的 `message`（提交时给出的原话）；
+/// 3. 只取最近 [`UNDO_TREE_MAX_NODES`] 个（画布放不下更多），**其余如实计数**交给
+///    界面报出来 —— 不静默截断。
+///
+/// 只调**一次** `UndoPort::graph()`（它返回一份 `CommitGraph` 拷贝，代价 `O(提交数)`），
+/// 因此本函数不引入第二次拷贝。
+fn undo_tree_projection(port: &UndoPort) -> (Vec<String>, usize) {
+    let graph = port.graph();
+    // `head` 为 `None` = 图谱还没有头（例如权威侧此刻没有活跃工程）⇒ 一个真实节点都没有。
+    let Some(head) = port.display().head else {
+        return (Vec::new(), 0);
+    };
+    let Ok(chain) = graph.ancestry(&head) else {
+        return (Vec::new(), 0);
+    };
+    let labels = chain
+        .iter()
+        .take(UNDO_TREE_MAX_NODES)
+        .map(|id| {
+            graph
+                .commits
+                .get(id)
+                .map_or_else(String::new, |commit| commit.message.clone())
+        })
+        .collect();
+    (labels, chain.len().saturating_sub(UNDO_TREE_MAX_NODES))
 }
 
 /// 把撤销入口接到界面上（`toggle-undo-tree` 与时光机的"撤销一步"按钮）。

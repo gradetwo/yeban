@@ -16,18 +16,43 @@
 // `host::apply_undo` 从 `undo_session::UndoDisplay`（`CommitGraph` + `UndoCursor` 的读数）
 // 写入。界面**不推断**"能不能撤销"，也不知道撤销栈有多深 —— 它只显示。
 //
+// `node-labels` / `node-count` / `node-hidden` 同样由 `host::apply_undo` 写入，来源是
+// **权威提交图谱**（`UndoPort::graph()` → `CommitGraph::ancestry(head)` → 每个 `Commit`
+// 的 `message`）。界面**不自带任何节点**：默认是空数组 ⇒ 没有宿主写者时画的是空态
+// （见下面的 `undo-tree-empty-state`），而不是一排编造的版本名。
+//
+// ⚠ 本文件曾经把 6 个**编造的**历史节点（`"c0 初始"` … `"c5 AI 提案"`）写成
+// `node-labels` 的**属性默认值**、把 `node-count: 6` 写成常量，而**没有任何宿主写者**
+// （`git grep` 只命中注册表与测试）⇒ 用户打开时光机看到的是六个不存在的版本。
+// 现在三层都是真读数；判据见 `crates/yeban-app/tests/undo_tree_honesty.rs` 与
+// `tests/live_ui_mcp.rs` 的 `the_undo_tree_shows_the_real_commit_chain`。
+//
 // ## 仍然是骨架的部分（如实登记，不假装）
 //
-// 6 个节点的 **DAG 图形**仍是硬编码示意（真实的版本树画法要等匿名分支的可视化；
-// 见 notes 的未实现项）。真正接线的是：
+// **DAG 的图形**（固定 108px 间距的单行折线、没有真实分叉/合并的边）仍是示意：
+// 真实的匿名分支可视化未实现（见 notes 的未实现项），而且画布只放得下
+// `UNDO_TREE_MAX_NODES`（= 6）个节点 ⇒ 更早的版本由 `node-hidden` **如实报数**，
+// 不静默截断。真正接线的是：
 //   * "撤销一步"按钮 → `undo-step` → 宿主 → `UndoCursor` 真的前移（判据断言工程真的回退）；
-//   * 顶部状态行 → 模型读数（可撤销 N 步 / 活跃分支）。
+//   * 顶部状态行 → 模型读数（可撤销 N 步 / 活跃分支）；
+//   * 节点标签 + 节点数 → 真实提交链（`Commit::message`，最新在前）。
 
 import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
 
 export component UndoTreeModal inherits Rectangle {
-    in property <int> node-count: 6;
-    in property <[string]> node-labels: ["c0 初始", "c1 鼓组", "c2 贝斯", "c3 铺底", "c4 主音", "c5 AI 提案"];
+    // ---- 图谱节点（**真实提交链的投影**；宿主是唯一写者）------------------------
+    // 默认**全空**：`0` 个节点 + 空数组。这里刻意**不**放演示节点名。
+    // 唯一写者本应是宿主 Rust（`src/host.rs` 的 `apply_undo`）；它从
+    // `UndoPort::graph()` 读**权威** `CommitGraph`，沿 `ancestry(head)` 取每个
+    // `Commit::message`（最新在前，下标 0 = 活跃分支头）。
+    // ⚠ 本文件改动前这里写的是 6 个编造的版本名与 `node-count: 6`，而没有任何宿主
+    // 写者 ⇒ 那 6 个节点就是用户看到的东西。判据 `DEMO_UNDO_TREE_LITERALS` 钉死它们。
+    in property <int> node-count: 0;
+    in property <[string]> node-labels: [];
+    // 真实提交链上**比画布画得下的更多**的版本数（宿主读 `ancestry` 的长度后减去
+    // `node-count`）。它不是估计值：画布只放得下 `UNDO_TREE_MAX_NODES` 个节点，
+    // 更早的版本必须**如实报数**，不许静默截断。
+    in property <int> node-hidden: 0;
 
     // ---- 模型读数（宿主注入；界面不自己算）------------------------------------
     in property <bool> can-undo: false;
@@ -117,7 +142,11 @@ export component UndoTreeModal inherits Rectangle {
         }
 
         // ------------------------------------------------------------ DAG 节点
-        for node_index in 6 : Rectangle {
+        // 规模由**数据**决定（不再是固定的 `for … in 6`）：链为空 ⇒ 这一族在树里一个
+        // 节点都没有。顺序 = 宿主给的顺序 = `CommitGraph::ancestry(head)` 的顺序
+        // （**最新的在前**）：下标 0 就是活跃分支头（`UndoDisplay::head`），
+        // 因此"头节点被选中"是一个真读数，不是装饰。
+        for node_label[node_index] in root.node-labels : Rectangle {
             x: Tokens.space-6 + 108px * node_index;
             y: 100px + 44px * node_index.mod(2);
             width: 100px;
@@ -129,9 +158,9 @@ export component UndoTreeModal inherits Rectangle {
             clip: true;
             accessible-role: list-item;
             accessible-id: "undo-tree-node-" + node_index;
-            accessible-label: root.node-labels[node_index];
+            accessible-label: node_label;
             accessible-item-index: node_index;
-            accessible-item-count: 6;
+            accessible-item-count: root.node-count;
             accessible-item-selectable: true;
             accessible-item-selected: node_index == 0;
 
@@ -140,7 +169,7 @@ export component UndoTreeModal inherits Rectangle {
                 y: 0;
                 width: parent.width - 4px;
                 height: parent.height;
-                text: root.node_labels[node_index];
+                text: node_label;
                 color: node_index == 0 ? Tokens.selection : Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -148,13 +177,75 @@ export component UndoTreeModal inherits Rectangle {
             }
         }
 
-        // 节点之间的边 (DAG 的 E 只用直线段示意; 真实分叉/合并要等 Ops Log 图谱)
-        for edge_index in 5 : Rectangle {
+        // 节点之间的边 (DAG 的 E 只用直线段示意; 真实分叉/合并要等 Ops Log 图谱)。
+        // `6` 是**布局常量**（画布 `720px` 宽、节点间距 `108px` ⇒ 放得下 6 个节点，
+        // 与 `src/host.rs` 的 `UNDO_TREE_MAX_NODES` 同值）；真正画几条由 `node-count`
+        // 决定 ⇒ 只有真实相邻的节点之间才有边（0 或 1 个节点时一条都没有）。
+        for edge_index in 6 : Rectangle {
+            visible: edge_index < root.node-count - 1;
             x: Tokens.space-6 + 100px + 108px * edge_index;
             y: 118px + 44px * edge_index.mod(2);
             width: 8px;
             height: 2px;
             background: Tokens.line-strong;
+        }
+
+        // ---------------------------------------------------------------- 空态
+        // 提交链上一版都没有 ⇒ 界面**说真话**。源码里的自陈用户看不见，所以诚实必须
+        // 落在图元上（与 `ui/dialogs/musical_pr_drawer.slint` 的 `musical-pr-empty-state`
+        // 同款做法）。
+        if root.node-count == 0 : Rectangle {
+            x: Tokens.space-6;
+            y: 100px;
+            width: parent.width - 48px;
+            height: 40px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+
+            accessible-role: text;
+            accessible-id: "undo-tree-empty-state";
+            accessible-label: "还没有任何版本提交。撤销历史为空。";
+
+            UiText {
+                x: Tokens.space-4;
+                y: 0;
+                width: parent.width - 8px;
+                height: parent.height;
+                text: "还没有任何版本提交。撤销历史为空。";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-sm;
+                overflow: elide;
+            }
+        }
+
+        // ------------------------------------------------------ 截断的**如实报数**
+        // 真实链条比画布长时，必须说出"没画出来"多少（数字来自 `ancestry` 的长度，
+        // 不是估计）。静默只画前 6 个会让用户以为历史只有 6 版。
+        if root.node-hidden > 0 : Rectangle {
+            x: Tokens.space-6;
+            y: 190px;
+            width: parent.width - 48px;
+            height: 16px;
+            clip: true;
+
+            accessible-role: text;
+            accessible-id: "undo-tree-truncation-note";
+            accessible-label: "更早的 " + root.node-hidden + " 个版本未画出";
+
+            UiMonoText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "更早的 " + root.node-hidden + " 个版本未画出（画布只画得下最近 "
+                    + root.node-count + " 个）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
         }
 
         // ------------------------------------------------------- 撤销一步（D45）

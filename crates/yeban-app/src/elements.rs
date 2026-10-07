@@ -270,7 +270,10 @@ impl ElementRegistry {
             "transport-ai-proposal-badge",
             ElementKind::Button,
             "transport.slint",
-            "AI 编曲提案待审查",
+            // 2026-10-08（诚实性审计）：这里原写 `"AI 编曲提案待审查"` —— 那是一个**没有
+            // 数据源的状态声明**，与 `ui/transport.slint` 的假读数同源。徽章现在只声明
+            // 它的真实动作（`open-ai-proposals` → 打开提案抽屉），标签随之改为动作描述。
+            "打开 AI 编曲提案审核抽屉",
             false,
         );
         registry.add(
@@ -899,6 +902,28 @@ impl ElementRegistry {
                 false,
             );
         }
+        // 2026-10-08（诚实性审计）：图谱节点现在是**真实提交链**的投影（宿主
+        // `host::apply_undo` 从 `UndoPort::graph()` 写 `undo-node-labels` /
+        // `-node-count` / `-node-hidden`）。链条为空时界面画**空态**、比画布长时画
+        // **截断报数** —— 两个状态都各自有一个稳定的语义 ID（`[UI-TEST-001]`）。
+        // 为什么注册的节点 ID 仍恰好是 `0..6`：画布只放得下 `host::UNDO_TREE_MAX_NODES`
+        // （= 6）个节点，所以运行时**不可能**出现第 7 个 `undo-tree-node-*`
+        // （`live_control_plane_coverage_matches_the_projected_registry` 的
+        // `unknown_at_runtime` 因此仍然为空）。
+        registry.add(
+            "undo-tree-empty-state",
+            ElementKind::Region,
+            "dialogs/undo_tree_modal.slint",
+            "还没有任何版本提交。撤销历史为空。",
+            false,
+        );
+        registry.add(
+            "undo-tree-truncation-note",
+            ElementKind::Region,
+            "dialogs/undo_tree_modal.slint",
+            "更早的版本未画出（截断报数）",
+            false,
+        );
         registry.add(
             "undo-tree-close-button",
             ElementKind::Button,
@@ -1089,6 +1114,27 @@ pub const DEMO_PROPOSAL_LITERALS: [&str; 6] = [
     "94%",
     "88%",
     "76%",
+];
+
+/// 从 `ui/dialogs/undo_tree_modal.slint` **删掉的**全部假历史节点名（逐字）。
+///
+/// 逐字抄自本次改动前的 HEAD（`git show <parent>:crates/yeban-app/ui/dialogs/
+/// undo_tree_modal.slint` 的 `:30`），当时它们是 `node-labels` 属性的**默认值** ——
+/// 而**没有任何宿主写者**（`git grep -n 'node-labels'` 只命中语义注册表与测试）
+/// ⇒ 用户打开时光机看到的就是这六个不存在的版本，其中最后一个还声称有一条
+/// "AI 提案"版本。
+///
+/// 为什么放在 lib 里而不是测试模块里：两个测试目标（`tests/undo_tree_honesty.rs`
+/// 的文本层探针与 `tests/live_ui_mcp.rs` 的运行时树探针）要探**同一批**字符串。
+/// 写第二份就会漂移。
+#[doc(hidden)]
+pub const DEMO_UNDO_TREE_LITERALS: [&str; 6] = [
+    "c0 初始",
+    "c1 鼓组",
+    "c2 贝斯",
+    "c3 铺底",
+    "c4 主音",
+    "c5 AI 提案",
 ];
 
 /// 抽屉的四个数据面属性：`.slint` 名 / Slint 生成的 Rust setter 名（snake_case）配对。
