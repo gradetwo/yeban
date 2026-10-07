@@ -1,0 +1,48 @@
+{
+  "$schema": "../../schemas/assets.manifest.schema.json",
+  "category": "fonts",
+  "version": "1.0.0",
+  "attribution_doc": "assets/fonts/LICENSES.md",
+  "licence_whitelist": [
+    "OFL-1.1"
+  ],
+  "bundled": true,
+  "note": "随仓库分发的界面字体 (与 assets/samples 的登记式相反: 这些字节**在**树里, 因此每条都必须逐字节对账)。两条都只带 1 个真字面 (Regular), 因为 .slint 侧只有 UiMonoText / UiSerifText / transport.slint 的 BPM TextInput 用到这两族, 而它们**都不写 font-weight** (请求的恒为 400; 见 crates/yeban-app/ui/tokens.slint 的 §5b/§5c)。两份文件都远低于 G06 的单文件 10 MiB 上限 (scripts/guards/policy_check.py:71 的 MAX_FILE_BYTES), 因此**不**需要动 LARGE_FILE_ALLOWLIST。OFL-1.1 是 copyleft-**弱**的字体专用许可: 允许打包、修改与商用, 义务是随附版权声明与许可文本 (assets/fonts/OFL-1.1.md) —— 两支上游 OFL 都**没有** Reserved Font Name 子句, 故允许修改与再分发。",
+  "items": [
+    {
+      "id": "font-jetbrains-mono-regular",
+      "name": "JetBrains Mono Regular",
+      "relative_path": "assets/fonts/JetBrainsMono-Regular.ttf",
+      "sha256": "a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f",
+      "size_bytes": 273900,
+      "license": "OFL-1.1",
+      "author": "The JetBrains Mono Project Authors",
+      "source_url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
+      "commercial_usable": true,
+      "attribution_required": true,
+      "bundled": true,
+      "family": "JetBrains Mono",
+      "weight": 400,
+      "unmodified": true,
+      "note": "上游 ZIP (sha256 6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf) 里的 fonts/ttf/JetBrainsMono-Regular.ttf, **一个字节未改**。族内名 (name ID 1/2) = `JetBrains Mono` / `Regular`。用途: crates/yeban-app/ui/tokens.slint 的 `font-mono` —— 时间码 / BPM / dB / 序号等数值读数 (UiMonoText 共 36 处) 与走带条 BPM 输入框 (transport.slint:217)。真等宽是这些数字列能对齐的**唯一**机制 (Slint 1.18.1 没有 font-variant-numeric / font-feature-settings)。"
+    },
+    {
+      "id": "font-noto-serif-sc-regular-subset",
+      "name": "Noto Serif SC Regular (Simplified-Chinese subset OTF, minus CJK Ext A/B)",
+      "relative_path": "assets/fonts/NotoSerifSC-Regular-subset.otf",
+      "sha256": "4293341c25ff2cf9220025114289088184a367e784f9655db4773e07770f5f55",
+      "size_bytes": 8888964,
+      "license": "OFL-1.1",
+      "author": "Google Inc. / Adobe (Noto CJK)",
+      "source_url": "https://github.com/notofonts/noto-cjk/raw/main/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf",
+      "commercial_usable": true,
+      "attribution_required": true,
+      "bundled": true,
+      "family": "Noto Serif SC",
+      "weight": 400,
+      "unmodified": false,
+      "modification": "pyftsubset 删除字形; name 表 / CFF 轮廓 / layout 特性 / hinting 一字未动。被删的只有 CJK Ext A (U+3400-U+4DBF) 与 Ext B+ (U+20000+), 因为上游整支 Regular 是 11625800 字节 (11.09 MiB) > G06 的 10 MiB 单文件上限。族内名仍是 `Noto Serif SC` / `Regular`。",
+      "note": "上游 SC 子集静态 Regular OTF (sha256 e8f396decc1f0963a016a989c3d8852e863d1350996f573860a80767c83a1cd3, 11625800 字节, 版本 2.003) 的子集, 复现命令写在 assets/fonts/LICENSES.md §3。**不**用 Google Fonts 的变量字体 `NotoSerifSC[wght].ttf` (25125512 字节) 的理由: 它要先实例化再子集, 且实例化后的 TTF 子集是 10462348 字节 —— 离 10 MiB 上限只剩 23 KB, 而 CFF/OTF 路径留 1.4 MiB 余量。用途: crates/yeban-app/ui/tokens.slint 的 `font-serif` (UiSerifText, 全界面只有 arrangement_view.slint:108 一处 —— 章节名)。"
+    }
+  ]
+}

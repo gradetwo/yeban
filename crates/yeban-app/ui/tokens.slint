@@ -232,27 +232,27 @@ export global Tokens {
     //    (`773113cae0deec2d…`)。⇒ 旧栈的真实效果 = 全界面 Helvetica, 而且 `font-mono`
     //    **根本不是等宽** —— 数值列对不齐的根因就在这里, 不是几何。
     //
-    // 因此每族只写**一个名字**, 且只写**本机实测存在**的族 (不打包任何字体文件)。
+    // 因此每族只写**一个名字**。三族的落定分两个阶段, 逐条读作**当时**的账:
     // 实测方法: `system_profiler SPFontsDataType` 的 `Family:` 行去重 + `fc-list ":family=<名>"`。
     //
-    // 负责人 2026-10-07 点名的三族, 逐条实测 (本机 = Apple M2 / macOS):
+    // 阶段一 (2026-10-07 排印切片): 负责人点名三族, 逐条实测 (本机 = Apple M2 / macOS):
     //   - `PingFang SC`    —— **在** (`system_profiler` 1 族 / `fc-list` 6 face)。采用。
-    //   - `JetBrains Mono` —— **不在** (`system_profiler` 0 / `fc-list` 0 / 字体目录无
-    //     `*JetBrains*`)。许可 = **OFL-1.1**, 可自由打包 (含商用, 需随附许可文本),
-    //     但本切片按负责人口径**不打包** ⇒ 取负责人 mock mono 栈的下一顺位 `Menlo`
-    //     (系统自带, 真等宽)。注: 旧栈首位的 `SF Mono` 在本机**不存在** (随 Xcode 分发,
-    //     不进系统字体表), 所以它在旧栈里也是空转。
-    //   - `Noto Serif SC`  —— **不在** (`system_profiler` 0 / `fc-list` 0)。同为 OFL-1.1。
-    //     取负责人 mock `--serif` 的**第一顺位** `Songti SC` (在: `fc-list` 4 face)。
+    //   - `JetBrains Mono` —— **不在**。许可 = **OFL-1.1**, 可自由打包 (含商用, 需随附
+    //     许可文本), 但当轮按负责人口径**不打包** ⇒ 取负责人 mock mono 栈的下一顺位
+    //     `Menlo` (系统自带, 真等宽)。注: 旧栈首位的 `SF Mono` 在本机**不存在**
+    //     (随 Xcode 分发, 不进系统字体表), 所以它在旧栈里也是空转。
+    //   - `Noto Serif SC`  —— **不在**。同为 OFL-1.1 ⇒ 当轮取负责人 mock `--serif` 的
+    //     **第一顺位** `Songti SC` (在: `fc-list` 4 face)。
     //
-    // ⚠ "以后装了 JetBrains Mono 就自动用上"这件事, **逗号栈做不到** (见证据 1)。
-    // 唯一可行机制是**构建期探测** (`build.rs` 扫字体目录 → 生成 `.slint` 常量), 代价是
-    // `.slint` 的编译结果从此依赖**装机字体集合**, 会给 golden 回归引入一类新的、隐形的
-    // 像素变量。那是一个应当由集成者裁决的决定, 本切片**不擅自**引入 —— 只把名字按
-    // "负责人点名 → 未装则取负责人 mock 的下一顺位"这个顺序落定。
+    // 阶段二 (2026-10-08, 负责人命令「打包字体」): 上面那两个"取负责人 mock 下一顺位"
+    // 的名字**不是最终结论** —— 两支缺失族改为**随仓库分发**, 并在本文件末尾 §5c 按族名
+    // 注册 (`import` 也在那里; 刻意留在末尾是为了保住本文件的既有行号引用, 见 §5c)。
+    // 于是 `font-mono` / `font-serif` 现在是**打包进来的**族: 逐条登记 (来源 URL /
+    // sha256 / 字节 / 许可 / 子集口径) 见 §5c 与 `assets/fonts/LICENSES.md`; `font-ui` 仍是
+    // 系统族 `PingFang SC` —— 本次**不**打包 CJK 无衬线, 理由见 §5c。
     out property <string> font-ui: "PingFang SC";
-    out property <string> font-mono: "Menlo";
-    out property <string> font-serif: "Songti SC";
+    out property <string> font-mono: "JetBrains Mono";
+    out property <string> font-serif: "Noto Serif SC";
 
     // =====================================================================
     // 6. 品牌色 · 深色 (CLI `--theme brand`; 2026-10-07 之前的默认主题) —— assets/brand/README.md
@@ -756,3 +756,158 @@ export component UiSerifText inherits Text {
     color: Tokens.ink-0;
     vertical-alignment: center;
 }
+
+// ===========================================================================
+// 5c. 打包字体 (bundled fonts) —— 2026-10-08, 负责人命令「打包字体」
+// ===========================================================================
+//
+// ## 1. 为什么这两行 `import` 在**文件末尾** (而不是文件头的 import 区)
+//
+// Slint 的解析器允许 `import` 出现在文档的**任意**顶层位置
+// (`i-slint-compiler-1.18.1/parser/document.rs:21-45` 的 `parse_document` 在主循环里
+// 对 `"import"` 一视同仁), 字体 import 的收集与顺序无关
+// (`object_tree.rs:237-260` 填 `custom_fonts`; `passes/collect_custom_fonts.rs` 把
+// **所有**文档的 `custom_fonts` 合并后写进每个导出根的 init code)。
+//
+// 放在末尾是**故意的**: 本文件有若干**仓库外的行号引用**正指向它
+// (`docs/ledger/human-decisions.md` 与 `docs/DEVELOPMENT_LEDGER.md` 都点
+//  `tokens.slint:124` —— 那是 `ThemeState.theme` 的初值, 现仍**准确**;
+//  前者另外点 `tokens.slint:518`, 那一条**在本次改动之前就已经漂了**: 它引的
+//  "本行的旧措辞"那句在 HEAD 的 **588** 行, 而 518 行是 inkmoor/plume 的色值表)。
+// 那两份文档归集成者, 本切片**不许动**。把新增内容全部放在最后一行之后 ⇒
+// 本文件**零行号漂移**: `:124` 继续准确; 已经漂了的那条**不因本次改动再漂一次**
+// (不把"偏 70 行"推成"偏 70 行 + 本切片的增量")。机械见证: 新文件的第 1–758 行与
+// `git show HEAD:crates/yeban-app/ui/tokens.slint` 逐行 diff, 全部差异都落在
+// **235–255 这 21 行**内, 其余 737 行行号与内容逐字节相同。
+//
+// `../../../assets/fonts/…`: 相对**本文件所在目录**解析
+// (`pathutils.rs:467+` 的 `join`; 存在性在编译期就被检查, 文件不在会直接编译失败)。
+// 三个 `..` 从 `crates/yeban-app/ui/` 回到仓库根。
+//
+// ## 2. 注册是**编译期**的, 而且字节**进二进制**
+//
+// 语法出处: `parser/document.rs:296-299` 的 `/// import "something.ttf";` +
+// `pathutils.rs:14-16` 的 `is_font_file` (`.ttf` / `.ttc` / `.otf`)。
+// 本仓走的是**嵌入**分支: `slint-build` 的默认 `EmbedResourcesKind::EmbedFiles`
+// 映射成 `AllResources` (`slint-build-1.18.1/lib.rs:167-179`), 而 Rust 输出的默认值
+// 就是 `EmbedAllResources` (`i-slint-compiler-1.18.1/lib.rs:242-244`) ⇒
+// `collect_custom_fonts` 发的是 `RegisterCustomFontByMemory` (`passes.rs:364-371`)。
+// **运行时不再依赖 `assets/fonts/` 还在不在磁盘上** —— 这是"打包"要买的性质。
+//
+// **没有新增任何 Rust 依赖**: 走的全是既有 `slint` / `slint-build` 的能力。
+// 运行时那条路 (`slint::fontique_011::shared_collection()`, `slint-1.18.1/lib.rs:734-780`)
+// 要开 `unstable-fontique-011` cargo feature, 本次**没有**用它, 也**不**需要它。
+//
+// ## 3. 逐条登记 (来源 / 摘要 / 许可 / 为什么是这个字重)
+//
+// | 令牌 | 族内名 | 文件 (相对仓库根) | 字节 | sha256 |
+// | :--- | :--- | :--- | ---: | :--- |
+// | `font-mono` | `JetBrains Mono` | `assets/fonts/JetBrainsMono-Regular.ttf` | 273900 | `a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f` |
+// | `font-serif` | `Noto Serif SC` | `assets/fonts/NotoSerifSC-Regular-subset.otf` | 8888964 | `4293341c25ff2cf9220025114289088184a367e784f9655db4773e07770f5f55` |
+//
+// - **只带 Regular (400)**: 用到这两族的三个位置
+//   (`UiMonoText` 36 处 / `transport.slint:217` 的 BPM `TextInput` / `UiSerifText`,
+//   全界面只有 `arrangement_view.slint:108` 一处) **一处都没写 `font-weight`**,
+//   而全仓 5 处 `font-weight` 全挂在 `font-ui` 那三支上 ⇒ 这两族在本 UI 上只被请求 400。
+//   带 Bold/Medium 是没有使用点的字节 (`JetBrains Mono` 每字面约 274 KB,
+//   `Noto Serif SC` 每多一个真字面要再花 3–4 MB)。
+// - **`Noto Serif SC` 是子集过的**: 上游 SC 子集静态 OTF 是 11625800 字节 = 11.09 MiB,
+//   **超过**本仓自己的单文件上限 10 MiB (`scripts/guards/policy_check.py:71` 的
+//   `MAX_FILE_BYTES`; `:73` 的 `LARGE_FILE_ALLOWLIST` 是空的)。子集口径 = 上游删掉
+//   CJK Ext A (`U+3400–U+4DBF`) 与 Ext B+ (`U+20000+`), 剩 24119/30928 个码位,
+//   8.48 MiB。`name` 表 / CFF / layout / hinting 一字未动, 族内名仍是 `Noto Serif SC`。
+//   **GB2312 的 7445 个字符一个不缺**; 复现命令与覆盖读数写在
+//   `assets/fonts/LICENSES.md` §3。
+// - **许可 = OFL-1.1** (两支都是), 因此允许打包、修改与**商用**; 义务是随附版权声明与
+//   许可文本 ⇒ 那一段**逐字节**带在 `assets/fonts/OFL-1.1.md`。两支上游的 OFL 版权行里
+//   **都没有** "with Reserved Font Name …" ⇒ RFN 义务不触发, 子集副本可以继续用原族名。
+// - 机器可读登记: `assets/fonts/manifest.json` (根指针在 `assets/manifest.json` 的
+//   `category: "fonts"`), 由 `scripts/gates/validate_schemas.py --repo-assets` 逐条重算
+//   sha256 / size_bytes 并执行 `licence_whitelist`。
+//
+// ## 4. `font-ui` 为什么**不**打包 (负责人点名的只有那两支缺失族)
+//
+// `PingFang SC` 是 macOS 系统族, **在本机存在且负责人已经看过它渲染出来的界面**。
+// 打包一支 CJK 无衬线 (Noto Sans SC 一族) 要再花 8–10 MB, 而且会**替换掉**当前默认外观
+// ⇒ 收益是"Linux 上的 UI 字体也一致", 代价是一次全界面重排 + 又一次基准重录。
+// 本次对象是那两支**缺失**族, 所以 `font-ui` 一位未动 —— 这意味着
+// **在 Linux/CI 上 `font-ui` 仍然落到系统兜底族**, 这一半的不一致与改动前一样, 如实登记。
+//
+// ## 5. 基准后果 (说清楚, 本切片**不**动任何基准)
+//
+// `crates/yeban-app/tests/golden/linux/**` 那 5 张基准**必须**按手动档
+// `gates-manual.yml` 的 `gate=goldens` 重新录制 + 人工复核 (`HD-56` 把"基准冻结"降为条件):
+//
+//   - `app-main-window-arrangement-full-1920x1080.png`
+//   - `app-main-window-arrangement-compact-1920x1080.png`
+//   - `app-main-window-session-full-1920x1080.png`
+//   - `app-model-driven-demo-project-1920x1080.png`
+//   - `app-model-driven-filled-project-1920x1080.png`
+//
+// 理由: 这 5 张是 **Linux** 帧, 而本次改的正是"族是否存在"。改动前 Linux 上
+// `JetBrains Mono` / `Noto Serif SC` **两支族都不存在** ⇒ 那些文本落到兜底族;
+// 改动后字节随二进制走, 族**在 Linux 上真的存在了** ⇒ 等宽数字列与章节名会**真的**换字形。
+// 也就是说: 本次改动在 Linux 上的像素差**大于** macOS (macOS 上 `Menlo` / `Songti SC`
+// 本来就是真实存在的族, 换的只是"另一支存在的族"; Linux 上换的是"兜底族 → 真族")。
+// 基准重录是**独立的手动派发**, 由集成者执行; 本切片一个基准字节都没碰。
+//
+// ## 6. 没有打包的东西
+//
+// 两支族的非 Regular 字重 (无使用点)、`Noto Serif SC` 的 CJK Ext A/B+ (10 MiB 上限)、
+// 它的 TC/JP/KR 区域子集 (各 10 MB 级, 与本 UI 无关)、以及 `font-ui` 的 CJK 无衬线
+// (见第 4 节)。逐条理由写在 `assets/fonts/LICENSES.md` §6。
+
+import "../../../assets/fonts/JetBrainsMono-Regular.ttf";
+import "../../../assets/fonts/NotoSerifSC-Regular-subset.otf";
+
+// ===========================================================================
+// 5d. 像素证据 (2026-10-08) —— 上面这些行**真的**改到了渲染
+// ===========================================================================
+//
+// 先说指标 (本仓的测量纪律: 先写这个数字在数什么): **同一工程 `ViewState::demo()`、
+// 同一尺寸 1920x1080、同一条 Tier-1 软件光栅化路径的前后两帧之间, 逐像素比较后
+// 颜色不同的像素个数**, 以及这些像素的包围盒。1920x1080 的 PNG **恒为 6222418 字节**
+// (写入器是存储式 deflate), 所以**字节数不携带任何内容信息** —— 下面判内容一律用
+// sha256 (从 PNG 字节里算) 与逐像素。
+//
+// | 帧 | 尺寸 | PNG 字节 | sha256 |
+// | :--- | :--- | ---: | :--- |
+// | 改动前 (HEAD `770b5c5`, `font-mono: "Menlo"` / `font-serif: "Songti SC"`) | 1920x1080 | 6222418 | `d94335a650c94861533617caa84329fc5207a12aa4d49e486c62ff0934885816` |
+// | 改动后 (本文件, `"JetBrains Mono"` / `"Noto Serif SC"`) | 1920x1080 | 6222418 | `7b5cd4c4c74ca085167841ea4c65f1b9539bbabc4164757fe150a78891a143c0` |
+//
+// **`diff_pixels = 6982`, 包围盒 `(34,19)-(1907,1073)`, 首个差异像素 `(128,19)`:
+// `#11161a` → `#0e1216`** (那是一位字形边缘的抗锯齿混色, 底色未变)。
+// 差异**不是**散在整帧上的噪声, 而是 **13 条文本行带** (每条 10–18 行高), 逐条与界面元素对得上:
+//
+// | 行带 (y) | x 范围 | 那是什么 | 走的令牌 |
+// | :--- | :--- | :--- | :--- |
+// | 19..29 | 128..309 | 顶栏 BPM `120.00` + 时间码 `001.01.000` | `font-mono` |
+// | 53..62 | 414..1217 | 编曲区章节名 `Intro` / `Verse` / `Chorus` / `Outro` | **`font-serif`** |
+// | 98..110 / 120..136 / 154..163 / 168..185 / 210..220 | 370..725 | 自动化泳道读数与 UUID (`-3.2`, `[200.0 — 400.0]`, `01J8Z5Q0…`) | `font-mono` |
+// | 232..241 / 288..297 / 344..353 / 400..409 | 370..399 | 左侧自动化轴标签列 | `font-mono` |
+// | 672..682 | 298..467 | 控制台脚注 `吸附 1/16 · PPQ 960 · 显示 C2 - C7` | `font-mono` |
+// | 1063..1073 | 34..1907 | 状态栏读数 `区 1.1.000 — 5.4.480` / `和弦 Cmaj7` 等 | `font-mono` |
+//
+// 中文字符 (`吸附` / `显示` / `写入` / `和弦`) **一个像素都没动** —— 因为它们走
+// `font-ui` = `PingFang SC`, 本次一位未改。这条**阴性**对照与上面 13 条阳性读数是同一批
+// 数字: 变的是**这两支令牌**, 不是"整个界面换了个字体"。
+//
+// **对照实验 (把因果钉死, 不是相关性)**: 保留这两行 `import`, 只把两个族名改回
+// `"Menlo"` / `"Songti SC"` 重新编译渲染 ⇒ 得到的帧与改动前的
+// `d94335a6…` **逐字节相同**。也就是说: ①注册字体本身**零像素副作用**;
+// ②这 6982 个差异像素**全部**归因于那两个族名。
+//
+// **第二条独立见证 (不同代码路径的同一结论)**: 仓库自己的 Tier-1 测试目标
+// (`target/debug/deps/real_ui_tier1-… criteria::live_main_window_renders_tier1_pixels_and_enforces_permissions`)
+// 写出的 `target/ui-test-port/app-main-window-arrangement-full-1920x1080.png`
+// 与仓库外 harness 的帧**逐字节相同** (`7b5cd4c4…`) —— 改动前那一对也是逐字节相同的
+// (`d94335a6…`)。两条路径一致 ⇒ 这些像素就是产品界面, 不是 harness 的产物。
+//
+// **macOS 上的基准判据**仍然打印「[UI-MCP-003] 平台 `macos` 无基准 … ⇒ 视觉回归
+// **未被判定**（不等于通过）」—— 那是**未判定**, 不是通过。
+//
+// 人眼对照图 (仓库外, 上=改动前 / 下=改动后, 最近邻放大):
+// `yeban-theme-preview/22-zoom-topbar.png` (顶栏等宽读数, 4x) /
+// `22-zoom-strip.png` (章节名衬线 + UUID, 2x) /
+// `22-zoom-console.png` (控制台脚注, 4x) /
+// `22-zoom-statusbar.png` (状态栏, 3x)。

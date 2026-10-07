@@ -28,11 +28,16 @@
     },
     {
       "category": "fonts",
+      "manifest": "assets/fonts/manifest.json",
       "attribution_doc": "assets/fonts/LICENSES.md",
       "allowed_licenses": [
         "OFL-1.1",
         "Apache-2.0"
-      ]
+      ],
+      "files_count": 2,
+      "files_total_bytes": 9162864,
+      "bundled": true,
+      "note": "**登记 + 打包**(与 samples 的登记式相反): 2026-10-08 负责人命令「打包字体」, 两支点名的缺失族 (JetBrains Mono / Noto Serif SC) 随仓库分发, 并按族名注册给 Slint —— `crates/yeban-app/ui/tokens.slint` §5c 用编译期 `import \"*.ttf|otf\"` 注册, slint-build 的默认 `EmbedResourcesKind::EmbedFiles` ⇒ `EmbedAllResources` ⇒ 字节进二进制, 运行时不再依赖磁盘路径。逐条 sha256 / 字节 / 来源 / 许可见 assets/fonts/manifest.json; 许可全文见 assets/fonts/OFL-1.1.md。两份都 ≤ 10 MiB ⇒ **没有**动 `LARGE_FILE_ALLOWLIST` (scripts/guards/policy_check.py:73)。原先这里**没有** `manifest` 指针 —— 而 validate_schemas.py 的未登记资产扫描要求分类目录里每个非 .md/.json 文件都必须被一份存在的清单登记; 本次一并补上。`allowed_licenses` 里的 `Apache-2.0` 目前没有任何条目用到, 保留是为了不改既有声明。"
     }
   ]
 }
