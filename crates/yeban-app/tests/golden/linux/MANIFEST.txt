@@ -2,40 +2,47 @@ Golden 基准图集 —— 平台 linux（= PlatformTag::Linux::as_str()）
 生成地点: GitHub Actions `ubuntu-latest`（**托管 runner 就是本平台的基准环境**；Linux 侧没有像 M2 Max 那样
 被负责人点名的本机，故以该 runner 类为准并在下面写明这一点）。
 生成方式: 手动档 `gates-manual.yml` 的 `goldens` 档（`gh workflow run gates-manual.yml -f gate=goldens`），
-run id **37584181801**（conclusion=success）；该档跑 `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`，
+run id **37589980886**（conclusion=success）；该档跑 `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`，
 再上传 `crates/yeban-app/tests/golden/linux/` 为 artifact，由集成者复核后入库。
-生成时间(UTC): 2026-10-07T06:58:02Z（该 run 生成步骤的完成时刻；窗口 06:55:41Z–06:58:02Z）
-入库时间(UTC): 2026-10-07T06:59:11Z（本次提交，复核记录见下）
+生成时间(UTC): 2026-10-07T07:53:47Z（该 run 生成步骤的完成时刻；窗口 07:52:26Z–07:53:47Z）
+入库时间(UTC): 2026-10-07T07:58:29Z（本次提交，复核记录见下）
 
-**为什么会有这一次再生成**: 提交 `f71205a`（"make the typography real —— the font stacks never resolved"）把 UI 的
-字体**族名字符串**改对：Slint 1.18.1 的 `Text.font-family` 只接受**一个**族名，不是 CSS 逗号栈，所以此前那些栈
-**一个也没匹配上**，每个字形都落到 Helvetica；该提交同时补上了 `font-weight` 与 `letter-spacing` 令牌
-（此前 UI 全域**零条声明**），并把数字改走等宽进位的族。字重/字距由 shaper 施加、**与后端无关**，
-因此它同样到达 FreeRT/Linux 这一档 —— 5 张基准的**文字像素**随之改变。这不是 flake：`f71205a` 之后 CI 的
-`rust (workspace 全量)` 是**确定性的基准过期**（run **37583625469** / job 112668730099 的失败原文：
-`[UI-MCP-003] \`app-model-driven-filled-project-1920x1080\` 与基准不一致：基准 6222418 字节 /
-当前 6222418 字节`、`[UI-MCP-003] \`app-main-window-arrangement-full-1920x1080\` 与基准不一致：基准 6222418 字节 /
-当前 6222418 字节`），重跑不会绿，只能按上面那条已批准的再生成程序重出。`HD-56`
+**为什么会有这一次再生成**: 提交 `6fca8b5`（"bundle JetBrains Mono and Noto Serif SC and register them with Slint"）
+把 **JetBrains Mono** 与 **Noto Serif SC** 两款字体**编译期内嵌**进二进制（`crates/yeban-app/ui/tokens.slint` 的
+`import` + 注册进二进制），并随包携带 OFL-1.1 许可文本。于是 UI 的**文字像素**改变，旧基准**确定性地**过期。
+macOS 侧实测 **6,982 个差异单元**（13 条文字带）—— 族 `Menlo` / `Songti SC` 被真正的 `JetBrains Mono` /
+`Noto Serif SC` 取代。**Linux 侧的差异更大，这是预期的**：这两族在 `6fca8b5` 之前**在本平台根本不存在**，
+那些单元原先落在 `[SansSerif, SystemUi]` 兜底上；现在它们解析到内嵌字面 ⇒ **族名这一半在 Linux 上不再是空操作**。
+差异只落在**文字带**（见下复核第 2 条），判据一条未放宽、未加 `#[ignore]`。这不是 flake：`6fca8b5` 之后 CI 的
+`rust (workspace 全量)` 是**确定性的基准过期**（run **37589910042** / job **112688708360** 的失败原文：
+`[UI-MCP-003] \`app-model-driven-filled-project-1920x1080\` 与基准不一致：基准 6222418 字节 / 当前 6222418 字节`、
+`[UI-MCP-003] \`app-main-window-arrangement-full-1920x1080\` 与基准不一致：基准 6222418 字节 / 当前 6222418 字节`），
+重跑不会绿，只能按 `docs/adr/ADR-0003-save-button-top-bar-slot.md`「批准后的再生成程序」重出。`HD-56`
 （`docs/ledger/human-decisions.md` §F，2026-10-07）已把「1.0.0 之前没有任何东西不可改、收益够大就可以改」记为
 **最高规则**，并明确「5 张 Linux 基准可以按手动档 `gates-manual.yml` 的 `gate=goldens` 重新录制 + 人工复核」——
-本次即按该已批准路径执行（收益 = 负责人直接要求"界面必须好看"），判据一条未放宽、未加 `#[ignore]`，
-**没有任何一张基准被手工编辑或合成**：5 张全部来自该 run 的 `golden-linux` artifact，逐字节安装。
+本次即按该已批准路径执行（收益 = 负责人**直接下令**内嵌这两款字体）。**没有任何一张基准被手工编辑或合成**：
+5 张全部来自该 run 的 `golden-linux` artifact，逐字节安装。
 
 **入库前的复核（口径写在前面）**: 下面每条比的是**哈希**或**逐像素单元 (cell)**，**不是文件大小** ——
 本仓 PNG 写入器是存储式 deflate，1920 × 1080 恒为 6,222,418 字节，长度相等不含信息。
 1. 与**另一次 run** 交叉验证: 本 artifact 的 5 张里可交叉的 2 张（`app-main-window-arrangement-full`、
-   `app-model-driven-filled-project`）与同一提交 `f71205a` 触发的 `ci.yml` run **37583625469** 的
-   `ui-screenshots-workspace` artifact 里的同名文件逐字节比对 —— 该 run 只产出 2 张（判据在第一张基准不一致处就
-   panic），**2/2 张完全相同**（sha256 亦相同）。
-2. 与旧基准逐像素比对（旧 = run 37560724165 登记的上一版）: 5 张差异单元数 = `compact` 1,627 /
-   `arrangement-full` 2,469 / `session-full` 1,820 / `demo-project` 2,469 / `filled-project` 2,106
-   （每张共 2,073,600 个 = 1920 × 1080），差异包围盒一致落在**文字带**而非整帧
-   （`compact` x 36..1013 × y 53..654；其余 4 张 x 8..1697 × y 53..654）—— 与「字形 / 字重 / 字距改变」
-   吻合，与上一次「默认调色板整体切换」（2,072,592 个单元、整帧包围盒）不是一回事。
-   逐字节相同的单元数 = 2,071,973 / 2,071,131 / 2,071,780 / 2,071,131 / 2,071,494。
+   `app-model-driven-filled-project`）与同一提交 `523fd98`（含 `6fca8b5` 的字体改动）触发的 `ci.yml` run
+   **37589910042** 的 `ui-screenshots-workspace` artifact 里的同名文件逐字节比对 —— 该 run 只产出 2 张
+   （判据在第一张基准不一致处就 panic），**2/2 张完全相同**（sha256 亦相同：`9f524c9f…` 与 `e185d95c…`）。
+2. 与旧基准逐像素比对（旧 = run 37584181801 登记的上一版）: 5 张差异单元数 = `compact` **9,120** /
+   `arrangement-full` **8,787** / `session-full` **3,942** / `demo-project` **8,787** / `filled-project` **6,254**
+   （每张共 2,073,600 个 = 1920 × 1080），逐单元相同数 = 2,064,480 / 2,064,813 / 2,069,658 / 2,064,813 / 2,067,346。
+   差异**只落在文字带**：`compact` 14 条带、其余 4 张 13 / 3 / 13 / 8 条带，带高 9–38 px；连通域共 89 / 81 / 31 /
+   81 / 56 个，**最大连通域高 13 px、宽 120 px**，**没有任何连通域高过 40 px 或宽过 150 px** ⇒ 改变的是字形/字距，
+   不是布局位移或整块底色。整体包围盒 `compact` x 19..1907 × y 19..1073、其余 4 张 x 32..1907 × y 19..1073 ——
+   `compact` 的 x 由左侧轨道头文字带（y 154..191）贡献，5 张的 y 上沿由走带读数（y 19..29）贡献、下沿由状态栏
+   文字（y 1063..1073）贡献；上一版包围盒只到 y 654（状态栏那一带当时不随族名改变），本次那一带也变了 ——
+   与「内嵌等宽族现在真的解析到了」吻合，与上一次「默认调色板整体切换」（2,072,592 个单元、整帧包围盒）不是一回事。
 3. 5 张里 4 个不同 sha256，`app-main-window-arrangement-full` 与 `app-model-driven-demo-project`
    共用同一个 —— 与"这两个场景本就逐字节相同"的既有记录一致。
 4. 5 张全部由 Pillow 解码为 1920 × 1080 的 RGB 帧成功（不是只看扩展名）。
+5. ⚠ 该 artifact **自带一份 `MANIFEST.txt`**（= 本次改动前的仓库副本，含旧哈希），**未被采用**；本清单是
+   为这 5 张新 PNG **人手重写**的。
 
 **为什么必须分平台**: 本目录 5 张与 macos 目录同名文件**逐字节全部不同** —— macOS 走 CoreText、Linux 走
 FreeType/fontconfig，字形与抗锯齿不同 ⇒ 像素必然不同。拿 macOS 的图当 Linux 基准会得到永远红的假判据。
@@ -44,8 +51,8 @@ FreeType/fontconfig，字形与抗锯齿不同 ⇒ 像素必然不同。拿 macO
 平台无基准时打印「未被判定」（不等于通过）。
 
 文件	sha256	字节
-app-main-window-arrangement-compact-1920x1080.png	cb935d5216468b6d3981dc95295c1907eebde1c946ef871f9f2c011d58d9de42	6222418
-app-main-window-arrangement-full-1920x1080.png	058acb5bb438ef1acec6c8b7447fee1829822a177e659ee1eb83ddaad3859b1b	6222418
-app-main-window-session-full-1920x1080.png	97859e1b125ff9f0f891b49f90fea50979978137e55d5adbabed8bf85efe681e	6222418
-app-model-driven-demo-project-1920x1080.png	058acb5bb438ef1acec6c8b7447fee1829822a177e659ee1eb83ddaad3859b1b	6222418
-app-model-driven-filled-project-1920x1080.png	df9eb7fcb4f962b93f8d2a4965d7b202f0ae536b92618bf61734e7d8b7ea4208	6222418
+app-main-window-arrangement-compact-1920x1080.png	1b703acce166016d8ff7f6c1ceee519e2c5aae0946599f13c531ca17e69f0a59	6222418
+app-main-window-arrangement-full-1920x1080.png	9f524c9f4c45f7cef32fe2389fc42d0ac95af633b154672e86002bdff66621ba	6222418
+app-main-window-session-full-1920x1080.png	b8369f486ff7d27007c00808cb6d8498e0806aed7255c546ebab9eb02e8b66c6	6222418
+app-model-driven-demo-project-1920x1080.png	9f524c9f4c45f7cef32fe2389fc42d0ac95af633b154672e86002bdff66621ba	6222418
+app-model-driven-filled-project-1920x1080.png	e185d95c762a0c82aacaa1d53863a1735df88dcdfb98886046e49f7d82707ff0	6222418
