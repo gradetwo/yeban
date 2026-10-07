@@ -15,7 +15,7 @@
 // 循环规模由数组长度决定，Scene Launch 列的 x 也由 `root.tracks.length` 算出
 // （上一版写死 `128px * 6`，轨道数一变就错位）。
 
-import { Tokens, UiText } from "../tokens.slint";
+import { Tokens, UiText, UiMediumText } from "../tokens.slint";
 
 export component SessionView inherits Rectangle {
     // 由 src/host.rs 注入: 轨道名 / 场景名 (默认空 = 没有内联演示数据)
@@ -46,7 +46,7 @@ export component SessionView inherits Rectangle {
         accessible-item-index: track_index;
         accessible-item-count: root.tracks.length;
 
-        UiText {
+        UiMediumText {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;
@@ -151,7 +151,7 @@ export component SessionView inherits Rectangle {
         accessible-item-index: scene_index;
         accessible-item-count: root.scenes.length;
 
-        UiText {
+        UiMediumText {
             x: 0;
             y: 0;
             width: parent.width;

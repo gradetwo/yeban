@@ -21,7 +21,7 @@
 // 仍未实现: 波形金字塔 / R-Tree 视口裁剪 / 拖拽吸附 / 循环选区拖拽。
 // 那些是 [UI-NOTE-001..005] 的范围, 需要 `yeban-render` 与 Op 日志先落地。
 
-import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+import { Tokens, UiText, UiMonoText, UiMediumText, UiSerifText } from "../tokens.slint";
 
 export component ArrangementView inherits Rectangle {
     // ---- 由 src/host.rs 注入的投影数据 (默认空 = 没有内联演示数据) ----
@@ -105,7 +105,7 @@ export component ArrangementView inherits Rectangle {
         accessible-item-index: section_index;
         accessible-item-count: root.sections.length;
 
-        UiText {
+        UiSerifText {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;
@@ -181,7 +181,7 @@ export component ArrangementView inherits Rectangle {
         accessible-item-selectable: true;
         accessible-item-selected: false;
 
-        UiText {
+        UiMediumText {
             x: Tokens.space-4;
             y: Tokens.space-2;
             width: 96px;

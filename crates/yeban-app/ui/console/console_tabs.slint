@@ -100,6 +100,10 @@ export component ConsoleTabs inherits Rectangle {
             text: root.tab-labels[tab_index];
             color: root.active-tab == tab_index ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-sm;
+            // 负责人 mock 的 `.etab{letter-spacing:2px}` 是 12.5px 下的取值; 这里 11px
+            // 是同一档字号 scale 的下一级, 按比例取 `tracking-wide` (1px) —— 中文标签
+            // 加 2px 字距在 11px 下会散架。
+            letter-spacing: Tokens.tracking-wide;
             horizontal-alignment: center;
             overflow: elide;
         }

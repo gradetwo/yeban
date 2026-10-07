@@ -211,6 +211,10 @@ export component Transport inherits Rectangle {
             width: parent.width - 48px;
             height: parent.height;
             text: root.bpm-display;
+            // BPM 是**数值读数** ⇒ 必须与 UiMonoText 同族, 否则它与时间码的
+            // 数字宽度不同源, 两处读数不会对齐 (负责人 mock: BPM 与时间码同列)。
+            // TextInput 不继承 UiText, 所以这里显式写族名。
+            font-family: Tokens.font-mono;
             color: Tokens.gold;
             font-size: Tokens.font-size-lg;
             horizontal-alignment: right;

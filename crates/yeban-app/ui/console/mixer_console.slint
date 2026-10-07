@@ -32,7 +32,7 @@
 // 数据流方向: 只读。界面只做"取数组下标 + 画像素"，dBFS 换算 / 声相文本 / 推子归一化
 // 全在投影层与 `src/meters.rs`（零 Slint 依赖，本机可 `rustc --test` 真跑）。
 
-import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+import { Tokens, UiText, UiMonoText, UiMediumText } from "../tokens.slint";
 
 export component MixerConsole inherits Rectangle {
     // ---- 由 src/host.rs 注入的**投影**数据 (默认空 = 没有内联演示数据) ----
@@ -92,7 +92,7 @@ export component MixerConsole inherits Rectangle {
         accessible-id: "track-" + track_index + "-channel-strip";
         accessible-label: "通道条 " + track_name;
 
-        UiText {
+        UiMediumText {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;
@@ -266,7 +266,7 @@ export component MixerConsole inherits Rectangle {
         accessible-id: "mixer-master-strip";
         accessible-label: "主控通道条";
 
-        UiText {
+        UiMediumText {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px;

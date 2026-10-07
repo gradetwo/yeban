@@ -12,7 +12,7 @@
 // 数据流方向: 只读 + 通知。折叠状态住在 app.slint 的 MainWindow。
 // 资源树条目是**演示数据**: 真实资源索引要等扫描器落地 (见 notes 的 pending)。
 
-import { Tokens, UiText } from "tokens.slint";
+import { Tokens, UiText, UiMonoText, UiTitleText } from "tokens.slint";
 
 export component Sidebar inherits Rectangle {
     in property <bool> compact: false;
@@ -48,7 +48,7 @@ export component Sidebar inherits Rectangle {
         height: 32px;
         background: Tokens.bg-panel-alt;
 
-        UiText {
+        UiTitleText {
             x: Tokens.space-4;
             y: 0;
             width: parent.width - 40px;
@@ -182,7 +182,7 @@ export component Sidebar inherits Rectangle {
             visible: !root.compact;
         }
 
-        UiText {
+        UiMonoText {
             x: 0;
             y: 0;
             width: parent.width;

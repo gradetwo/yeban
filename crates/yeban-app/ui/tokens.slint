@@ -178,10 +178,81 @@ export global Tokens {
     out property <length> font-size-xl: 16px;
 
     // =====================================================================
-    // 5. 字体栈 (规范缺口) —— 系统字体 + CJK 回退, 不打包任何字体文件
+    // 5. 字重 / 字距 / 行高 scale (2026-10-07 排印切片新增)
     // =====================================================================
-    out property <string> font-ui: "Inter, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Noto Sans, Helvetica Neue, Arial, sans-serif";
-    out property <string> font-mono: "SF Mono, Menlo, Consolas, Noto Sans Mono CJK SC, monospace";
+    // 为什么需要这一节: 本切片之前, 全仓 81 处文本**没有一处**写 `font-weight`
+    // 或 `letter-spacing` (机械读数: 对 `ui/**` 搜这两个属性 = **0** 命中), 于是层级
+    // 只能靠字号区分, 标题 / 正文 / 数值在字重上完全同质。取值对齐负责人 mock
+    // (`/tmp/theme.md`): `.sec b` 600 / `.tname` 500 / `.lib-head b` 600 / `.box .val` 500;
+    // 字距同理 (`.sec b` 2px, `.lib-head b` 2.5px, `.etab` 2px)。
+    out property <int> font-weight-regular: 400;
+    out property <int> font-weight-medium: 500;
+    out property <int> font-weight-semibold: 600;
+    out property <int> font-weight-bold: 700;
+    out property <length> tracking-none: 0px;
+    out property <length> tracking-tight: 0.2px;
+    out property <length> tracking-wide: 1px;
+    out property <length> tracking-eyebrow: 2px;
+    out property <length> tracking-brand: 4px;
+    // `line-height-factor` 是 Slint 的原生名字 (CSS 无单位 `line-height` 的等价物;
+    // 见 `i-slint-compiler-1.18.1/builtin_elements.rs:1105-1117`, 默认 `1`)。
+    //
+    // **本切片实测结论: 它在本 UI 上只对 2 处文本可见, 且看不出收益 ⇒ 不施加。**
+    // 测法: 给 `UiText` 整体加 `line-height-factor: 1.45` 重渲 1920x1080 再逐像素比对,
+    // 与施加前 **2,429 个像素不同**, 包围盒 `x1654..1756 × y96..195` —— 恰好是 AI 协作栏
+    // 那**两个两行**按钮 (`app.slint:90` / `app.slint:117` 的 `"…\n…"`); 全部**单行居中**
+    // 文本 **0** 像素变化 (整帧 sha256 只在这两处改变)。逐行量墨迹 (声学诊断按钮,
+    // 盒 y104..167): 第 2 行 `y142..153` **一位未动**, 只有第 1 行 `y114..123 → y117..126`
+    // 下移 3px —— 行距是**收紧**而不是舒展, 所以这不是一个可报的改进。
+    // 结论: 真正的多行排版要动的是**盒子高度**(几何, 本切片明令不改), 不是这个系数。
+    // 两个令牌因此**已登记、未施加**, 留给日后确实有多行文案的切片。
+
+    // =====================================================================
+    // 5b. 字体族 —— **每个角色一个族名**, 不是 CSS 风格的逗号栈
+    // =====================================================================
+    // ⚠ 这个形状是**上游语义逼出来的**, 不是图省事。三条源码证据 + 一条像素证据:
+    //
+    // 1. Slint 的 `Text.font-family` 只接受**一个族名**。
+    //    `i-slint-core-1.18.1/graphics.rs:107-110` 的 `FontRequest.family` 是
+    //    `Option<SharedString>`, 注释原文 "The name of the font family to be used …
+    //    An empty family name means the system default font family";
+    //    `textlayout/sharedparley/shaping.rs:90-95` 把它原样包成
+    //    `parley::style::FontFamilyName::named(family.as_str())` —— **全程没有按 `,` 分割**。
+    // 2. 名字查不到时的兜底**只有** `[SansSerif, SystemUi]`
+    //    (`i-slint-common-1.18.1/sharedfontique.rs:188-192`), **没有 Monospace**,
+    //    也没有"改用列表里的下一个族"。`fontique-0.11.1/src/collection/query.rs:207-211`
+    //    的 `From<&str> for QueryFamily` 恒为 `Named`, 再由同一文件 `64-67` 行走
+    //    `collection.family_id(name)` 做**字面**查表。
+    // 3. 于是**此前写在这里的逗号栈一行都不生效**: 整串被当成一个不存在的族名, 逐字
+    //    回落到 `GenericFamily::SansSerif`, 在 macOS 上 = `Helvetica`
+    //    (`fontique-0.11.1/src/backend/coretext.rs:28`)。
+    // 4. **像素证据** (仓库外 `yeban-theme-preview/` 的 Tier-1 软件光栅化, 1920x1080):
+    //    把两条令牌都改成单族名 `"Helvetica"` 渲染, 与逗号栈渲染**逐字节相同**
+    //    (sha256 `641268e4ff845e05…`); 改成 `"PingFang SC"` / `"Menlo"` 才变
+    //    (`773113cae0deec2d…`)。⇒ 旧栈的真实效果 = 全界面 Helvetica, 而且 `font-mono`
+    //    **根本不是等宽** —— 数值列对不齐的根因就在这里, 不是几何。
+    //
+    // 因此每族只写**一个名字**, 且只写**本机实测存在**的族 (不打包任何字体文件)。
+    // 实测方法: `system_profiler SPFontsDataType` 的 `Family:` 行去重 + `fc-list ":family=<名>"`。
+    //
+    // 负责人 2026-10-07 点名的三族, 逐条实测 (本机 = Apple M2 / macOS):
+    //   - `PingFang SC`    —— **在** (`system_profiler` 1 族 / `fc-list` 6 face)。采用。
+    //   - `JetBrains Mono` —— **不在** (`system_profiler` 0 / `fc-list` 0 / 字体目录无
+    //     `*JetBrains*`)。许可 = **OFL-1.1**, 可自由打包 (含商用, 需随附许可文本),
+    //     但本切片按负责人口径**不打包** ⇒ 取负责人 mock mono 栈的下一顺位 `Menlo`
+    //     (系统自带, 真等宽)。注: 旧栈首位的 `SF Mono` 在本机**不存在** (随 Xcode 分发,
+    //     不进系统字体表), 所以它在旧栈里也是空转。
+    //   - `Noto Serif SC`  —— **不在** (`system_profiler` 0 / `fc-list` 0)。同为 OFL-1.1。
+    //     取负责人 mock `--serif` 的**第一顺位** `Songti SC` (在: `fc-list` 4 face)。
+    //
+    // ⚠ "以后装了 JetBrains Mono 就自动用上"这件事, **逗号栈做不到** (见证据 1)。
+    // 唯一可行机制是**构建期探测** (`build.rs` 扫字体目录 → 生成 `.slint` 常量), 代价是
+    // `.slint` 的编译结果从此依赖**装机字体集合**, 会给 golden 回归引入一类新的、隐形的
+    // 像素变量。那是一个应当由集成者裁决的决定, 本切片**不擅自**引入 —— 只把名字按
+    // "负责人点名 → 未装则取负责人 mock 的下一顺位"这个顺序落定。
+    out property <string> font-ui: "PingFang SC";
+    out property <string> font-mono: "Menlo";
+    out property <string> font-serif: "Songti SC";
 
     // =====================================================================
     // 6. 品牌色 · 深色 (CLI `--theme brand`; 2026-10-07 之前的默认主题) —— assets/brand/README.md
@@ -540,8 +611,11 @@ export global Tokens {
     // 6f. 负责人在这两套皮肤里的**非颜色**手法 —— 哪些本切片实现了, 哪些没有
     // =====================================================================
     //
-    // mock 的手法表把"高级感"拆成 8 条。**本切片只做颜色** (负责人要的是皮肤, 不是
+    // mock 的手法表把"高级感"拆成 8 条。**颜色切片只做颜色** (负责人要的是皮肤, 不是
     // 一次布局改版); 逐条如下 (这一节是**登记**, 不是待办清单):
+    // ⚠ 2026-10-07 **排印切片**把下面的"等宽 tabular-nums"一条从**没实现**移到了
+    //   **已实现** (见 §5b 与末尾的 `UiMonoText`): 手法表因此是
+    //   **2 条已实现 / 6 条未实现** (第 2 条 = 唯一暖强调的落点, 见 `HD-54`)。
     //
     //   只有颜色、本切片**已随令牌实现**:
     //     - 墨阶/沙阶表面系统 (§6e 的 5 级背景) —— 纯粹换令牌值;
@@ -556,7 +630,12 @@ export global Tokens {
     //     - 2.8% / 3% 胶片颗粒 (`body::after` 的 feTurbulence 噪点平铺) —— 纹理层;
     //     - 电平表呼吸动画 (幅度 9%、周期 2–4s) —— 动画 + 定时器;
     //     - 1.5px 自绘线性图标 (内嵌 SVG/`Path`) —— 几何/图形资源;
-    //     - 等宽 tabular-nums —— 字体特性 (本仓已有 `font-mono`, 但数值列的对齐是几何);
+    //     ~~- 等宽 tabular-nums —— 字体特性 (本仓已有 `font-mono`, 但数值列的对齐是几何);~~
+    //       **2026-10-07 排印切片: 已实现**, 见 §5b 与 `UiMonoText`。它**不是**靠
+    //       `font-variant-numeric` (Slint 1.18.1 没有这个属性), 而是把数值读数落到
+    //       **等宽族** `Menlo` 上: 数字 advance 恒等 ⇒ 小数点与负号天然成列。
+    //       上面那句被划掉的旧措辞("对齐是几何")**被像素证据推翻**: 只改族名、
+    //       零几何改动, 1920x1080 就有 **26,003** 个像素不同 (见 §5b 的 4 条证据)。
     //     - 「月色/落日余晖」环境光与「长河」一线 —— **渐变画笔 + 定位矩形**,
     //       而且 §8 的判据 `the_ui_uses_no_shadow_and_no_gradient_brush` 明令禁止;
     //     - 标题栏的**主题标签** (`<span class="theme-tag">孤烟 PLUME</span>`)、
@@ -620,17 +699,60 @@ export global Tokens {
     out property <color> warn-amber: #d9a441;
 }
 
-// 全部文本图元的统一起点: 一处固定字体栈与默认墨色, 免得 40 个 Text 各写一遍。
+// 全部文本图元的统一起点: 一处固定字体族 / 字重与默认墨色, 免得 81 个 Text 各写一遍。
 // 用法: `UiText { text: "…"; font-size: Tokens.font-size-md; }`
+//
+// 五个角色 (负责人 mock 的层级):
+//   UiText        正文 / 标签 / 按钮            400, 无字距
+//   UiMediumText  轨道名 / 场景名 / 数值标签      500
+//   UiTitleText   面板与对话框标题              600 + 1px 字距
+//   UiMonoText    时间码 / BPM / dB / 序号       等宽 (数字成列的唯一手段)
+//   UiSerifText   段落名 / 诗句 (诗意点缀)         衬线 + 2px 字距
+//
+// 关于「等宽数字 / tabular-nums」: Slint 1.18.1 的 `Text` **没有**
+// `font-variant-numeric`, 也没有 `font-feature-settings` (机械读数: 在
+// `i-slint-core-1.18.1/` 全树搜 `font_features|tnum|tabular` = **0** 命中)
+// ⇒ 负责人 mock 里的 `font-variant-numeric: tabular-nums` 在 Slint 里**无法直接表达**,
+// 也没有 `tnum` 特性开关可开。等宽族是让数字列对齐的**唯一**可用手段: 等宽字体每个
+// 数字的 advance 恒等, 小数点和负号因此天然成列 —— 这就是 `UiMonoText` 的机制,
+// 不是"看起来像等宽"。
 export component UiText inherits Text {
     font-family: Tokens.font-ui;
+    font-weight: Tokens.font-weight-regular;
     color: Tokens.ink-0;
     vertical-alignment: center;
 }
 
-// 等宽图元: 时间码 / BPM / 频率数值 —— 数字跳动时不许抖宽度。
+// 中粗 —— 轨道名 / 场景名 / 需要一点分量的标签 (负责人 mock `.tname` 500)。
+export component UiMediumText inherits Text {
+    font-family: Tokens.font-ui;
+    font-weight: Tokens.font-weight-medium;
+    color: Tokens.ink-0;
+    vertical-alignment: center;
+}
+
+// 标题 —— 面板 / 对话框 / 列表头。半粗 + 一点字距 (负责人 mock `.lib-head b`)。
+export component UiTitleText inherits Text {
+    font-family: Tokens.font-ui;
+    font-weight: Tokens.font-weight-semibold;
+    letter-spacing: Tokens.tracking-wide;
+    color: Tokens.ink-0;
+    vertical-alignment: center;
+}
+
+// 等宽图元: 时间码 / BPM / dB / PPQ / 序号 —— 数字跳动时不许抖宽度。
+// **不**给这里加 `font-weight: 500`: `Menlo` 只有 Regular/Bold 两个真字面, 请求 500
+// 只会四舍五入回 400 或触发合成加粗 (反而糊)。分量由字号与颜色表达。
 export component UiMonoText inherits Text {
     font-family: Tokens.font-mono;
+    color: Tokens.ink-0;
+    vertical-alignment: center;
+}
+
+// 衬线图元: 段落名与诗句 —— 负责人 mock 的 `--serif`, 全界面**只有**诗意点缀用它。
+export component UiSerifText inherits Text {
+    font-family: Tokens.font-serif;
+    letter-spacing: Tokens.tracking-eyebrow;
     color: Tokens.ink-0;
     vertical-alignment: center;
 }

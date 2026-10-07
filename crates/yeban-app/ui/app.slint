@@ -36,7 +36,7 @@
 // `src/host.rs` 的 `apply_theme` 要写 `ThemeState.theme`, 而
 // `tests/theme_selection.rs` 要**回读** `Tokens.*` 的真实取值 —— 那是"生效的调色板
 // 真的跟着主题变了"的判据 (断言 token 值, 不碰像素)。
-import { Tokens, UiText } from "tokens.slint";
+import { Tokens, UiText, UiTitleText } from "tokens.slint";
 export { Tokens, ThemeState } from "tokens.slint";
 import { Transport } from "transport.slint";
 import { StatusBar } from "status_bar.slint";
@@ -63,7 +63,7 @@ component AiRail inherits Rectangle {
     accessible-id: "ai-rail";
     accessible-label: "AI 协作栏: 意图生成与声学诊断";
 
-    UiText {
+    UiTitleText {
         x: Tokens.space-4;
         y: Tokens.space-3;
         width: parent.width - 8px;

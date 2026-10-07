@@ -23,7 +23,7 @@
 //   * "撤销一步"按钮 → `undo-step` → 宿主 → `UndoCursor` 真的前移（判据断言工程真的回退）；
 //   * 顶部状态行 → 模型读数（可撤销 N 步 / 活跃分支）。
 
-import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
 
 export component UndoTreeModal inherits Rectangle {
     in property <int> node-count: 6;
@@ -64,7 +64,7 @@ export component UndoTreeModal inherits Rectangle {
         accessible-id: "undo-tree-panel";
         accessible-label: "版本图谱面板";
 
-        UiText {
+        UiTitleText {
             x: Tokens.space-6;
             y: Tokens.space-4;
             width: parent.width - 96px;
