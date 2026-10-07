@@ -238,13 +238,22 @@ pub fn usage_text() -> String {
                              `--features {logic_feature}` 的构建里存在 —— 默认构建给这个开关
                              = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
-  --theme <default|yeban|material|fluent|cupertino|native>
+  --theme <{themes}>
                            选择界面主题; 重复给以最后一个为准 (默认 default)
                              default    本仓品牌深色 —— **就是今天的外观** (逐像素不变)
                              yeban      水墨 + 颜料: 背景/面板/线几乎零饱和, 颜色只留在
                                         内容上, 唯一强调色 (`accent`) 整份界面只出现一次。
                                         取值**由负责人下发的具名调色板指定** (2026-10-07 HTML mock;
                                         取代 2026-10-06 的采样推导), 逐条映射见 ui/tokens.slint §6b
+                             inkmoor    负责人设计稿「墨泊 InkMoor · 枫桥夜泊」: 冷墨阶 +
+                                        渔火唯一暖强调, 圆角偏柔。取值来自那份 mock 的
+                                        `body.inkmoor` 变量块, 逐条映射见 ui/tokens.slint §6e
+                             plume      负责人设计稿「孤烟 Plume · 使至塞上」: 与墨泊成对的
+                                        暖沙阶 + 落日唯一暖强调, 几何偏锐。取值来自同一份 mock
+                                        的 `body.plume` 变量块, 逐条映射见 ui/tokens.slint §6e。
+                                        **本切片只换颜色**: 圆角 / 指针形态 / 录音光环 /
+                                        长河一线 / 标题栏主题标签等几何·动画·结构差异
+                                        **没有**实现 (见 ui/tokens.slint §6f)
                              material   Material Design 的 Slint `Palette` 角色
                              fluent     Fluent Design System 的 `Palette` 角色
                              cupertino  macOS 观感的 `Palette` 角色
@@ -253,7 +262,7 @@ pub fn usage_text() -> String {
                            **边界 (实测, 别外推)**: 本仓界面 100% 自绘 (Rectangle x74,
                            Slint 内建控件 x0), 所以 Slint 内建风格本身改不动我们的像素;
                            `--theme` 改的是 ui/tokens.slint 的颜色令牌 —— 十三支品牌色在
-                           default / yeban 之外的主题下改为读 `Palette.*`。而 Slint 1.18.1
+                           default / yeban / inkmoor / plume 之外的主题下改为读 `Palette.*`。而 Slint 1.18.1
                            **没有**运行时换风格的 API (风格只能编译期定, 见下面的
                            {slint_style_env}), 因此四个内建名字共享**本二进制编进来的那一个**
                            风格; `{print_theme}` 会把这件事如实打出来。
@@ -336,7 +345,7 @@ pub fn usage_text() -> String {
   {ok} 成功 (含 --help / --version / 无头自检完成)
   {ui} 界面路径失败 (无法创建窗口 / 事件循环异常 / 工程无法投影成界面)
   {usage} 命令行用法错误 (未知开关 / 缺取值 / 重复给只能给一次的开关 / 未知工程样本 /
-      未知主题 ({theme_switch} 的取值不在 default|yeban|material|fluent|cupertino|native 里) /
+      未知主题 ({theme_switch} 的取值不在 {themes} 里) /
       --idle-seconds 单独给或与 --headless-idle 组合不当 / 非法空闲秒数 / 不该组合的开关同给 /
       --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
       --export-als 在本次构建未编译 `{als_feature}` /
@@ -374,6 +383,13 @@ pub fn usage_text() -> String {
         print_theme = PRINT_THEME_SWITCH,
         slint_style_env = SLINT_STYLE_ENV,
         theme_switch = THEME_SWITCH,
+        // 合法取值集合**机械地**来自 `Theme::ALL`（唯一事实源）：用法文本与
+        // `ParseError::UnknownTheme` 的可用列表因此不可能各说各话。
+        themes = Theme::ALL
+            .iter()
+            .map(|theme| theme.name())
+            .collect::<Vec<_>>()
+            .join("|"),
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -475,7 +491,12 @@ impl Sample {
 ///
 /// 能让我们的像素跟着走的，是 [`crate::host::apply_theme`] 把
 /// `ui/tokens.slint` 的 `ThemeState.theme` 写成下面的值：`Brand` 走**今天那一串十六进制
-/// 字面量**（默认外观因此一位未改），其余四个走 Slint 设计系统的 `Palette.*` 角色。
+/// 字面量**（默认外观因此一位未改），`Yeban` / `InkMoor` / `Plume` 各走**负责人下发的
+/// 另一串十六进制字面量**，剩下四个走 Slint 设计系统的 `Palette.*` 角色。
+///
+/// 于是八支主题分成两族：**四支自绘**（`Brand` / `Yeban` / `InkMoor` / `Plume`，
+/// [`Self::uses_design_system`] 为假、[`Self::requested_slint_style`] 为 `None`）与
+/// **四个设计系统名字**（`Material` / `Fluent` / `Cupertino` / `Native`）。
 ///
 /// ## 为什么四个内建名字在**同一个二进制**里长得一样
 ///
@@ -508,6 +529,26 @@ pub enum Theme {
     /// 背景/面板/分隔线全部落在负责人给的墨阶上，颜色只留在内容上，而
     /// [`Self::palette_source`] 里那支 `accent` 在整份界面里**只出现一次**。
     Yeban,
+    /// 墨泊 InkMoor（2026-10-07 负责人下发的**第三支自绘调色板**，第一支成对皮肤）。
+    ///
+    /// 在 `.slint` 侧它的枚举名是 `YebanTheme.inkmoor`，对用户的字面值也就是 `inkmoor`。
+    /// 取值**不是**我们推导的：负责人设计稿（HTML mock）的 `body.inkmoor` CSS 变量块
+    /// 与同一份稿子的 `export global InkMoor { … }` 是权威输入，逐条映射写在
+    /// `ui/tokens.slint` §6e。它与 [`Self::Yeban`] **不经过** `Palette`，也与 `yeban`
+    /// 一样是一条自己的十六进制字面量链。
+    ///
+    /// 与 [`Self::Yeban`] 的关系**如实登记**：两者都出自"枫桥夜泊"同一套意象，但数字
+    /// **逐条不同**（例：渔火 `yeban #c6a47c` vs `inkmoor #c9a26b`），是同一套语言的
+    /// 两版修订。本切片按硬约束保留 `yeban` 原值，"是否取代"留给负责人（§6e）。
+    InkMoor,
+    /// 孤烟 Plume（2026-10-07 负责人下发的**第四支自绘调色板**，与 [`Self::InkMoor`] 成对）。
+    ///
+    /// 在 `.slint` 侧它的枚举名是 `YebanTheme.plume`，对用户的字面值也就是 `plume`。
+    /// 取值来自同一份设计稿的 `body.plume` 变量块与 `export global Plume { … }`，
+    /// 逐条映射写在 `ui/tokens.slint` §6e。它与 [`Self::InkMoor`] 是同一系统的两种性格
+    /// （冷墨/圆润 ↔ 暖沙/锐利），但**本切片只换颜色**：圆角、指针形态、录音光环、
+    /// 长河一线、标题栏主题标签等几何/动画/结构差异**没有**实现（见 §6f）。
+    Plume,
     /// Material Design（<https://m3.material.io>）对应的 `Palette` 角色。
     Material,
     /// Fluent Design System 对应的 `Palette` 角色。
@@ -521,9 +562,11 @@ pub enum Theme {
 
 impl Theme {
     /// 全部合法取值（用法文本、错误信息与判据共用**这一份**顺序）。
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Brand,
         Self::Yeban,
+        Self::InkMoor,
+        Self::Plume,
         Self::Material,
         Self::Fluent,
         Self::Cupertino,
@@ -534,11 +577,17 @@ impl Theme {
     ///
     /// `Brand` 的字面值是 `default` —— 用户不该被迫知道品牌色的内部名字；
     /// "不改外观"这件事在 CLI 上就叫"默认"。
+    ///
+    /// `InkMoor` / `Plume` 的字面值**就是文档里的名字**（`inkmoor` / `plume`）：
+    /// 负责人设计稿用 `ThemeKind.InkMoor` / `.Plume` 与 `theme-name` 的拼音/英文名，
+    /// 命令行取小写的同一串字母，不做任何再命名。
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Brand => "default",
             Self::Yeban => "yeban",
+            Self::InkMoor => "inkmoor",
+            Self::Plume => "plume",
             Self::Material => "material",
             Self::Fluent => "fluent",
             Self::Cupertino => "cupertino",
@@ -554,11 +603,15 @@ impl Theme {
 
     /// 是否请求"走设计系统"（而不是品牌色）。
     ///
-    /// `false` 对 [`Self::Brand`] 与 [`Self::Yeban`] 成立 —— 这两支都自带一串
-    /// 十六进制字面量，都不读 `Palette`。它同时是"默认外观不变"的判据入口。
+    /// `false` 对 [`Self::Brand`] / [`Self::Yeban`] / [`Self::InkMoor`] / [`Self::Plume`]
+    /// 成立 —— 这四支都自带一串十六进制字面量，都不读 `Palette`。它同时是"默认外观不变"
+    /// 的判据入口。
     #[must_use]
     pub const fn uses_design_system(self) -> bool {
-        !matches!(self, Self::Brand | Self::Yeban)
+        !matches!(
+            self,
+            Self::Brand | Self::Yeban | Self::InkMoor | Self::Plume
+        )
     }
 
     /// 这一支主题的颜色**从哪来**（`--print-theme` 如实打出来的那个词）。
@@ -567,24 +620,57 @@ impl Theme {
     /// `bool` 表达它必然要么说假话、要么被并进"brand"里 —— 两种都是本仓库忌讳的
     /// 假绿。判据 `every_valid_theme_value_is_accepted_and_reported` 用**同一个**
     /// 方法算期望值，所以报告与实现不会各说各话。
+    ///
+    /// `yeban-measured-literals` 是一个**历史键名**（2026-10-06 那版取值确实是我们
+    /// 自己测量推导的；2026-10-07 换成负责人下发的调色板后键名没动，以免改动 CLI
+    /// 契约）。2026-10-07 新增的两支**不再沿用那个会误导的键名**：`inkmoor` / `plume`
+    /// 的取值从第一天起就是负责人下发的，所以键名直接写 `owner-literals`。
     #[must_use]
     pub const fn palette_source(self) -> &'static str {
         match self {
             Self::Brand => "brand",
             Self::Yeban => "yeban-measured-literals",
+            Self::InkMoor => "inkmoor-owner-literals",
+            Self::Plume => "plume-owner-literals",
             _ => "design-system-palette",
         }
     }
 
-    /// 这个主题请求的 Slint 内建风格名（`Brand` / `Yeban` 不请求任何内建风格 ⇒ `None`）。
+    /// 这个主题请求的 Slint 内建风格名（四支自绘调色板不请求任何内建风格 ⇒ `None`）。
     #[must_use]
     pub const fn requested_slint_style(self) -> Option<&'static str> {
         match self {
-            Self::Brand | Self::Yeban => None,
+            Self::Brand | Self::Yeban | Self::InkMoor | Self::Plume => None,
             Self::Material => Some("material"),
             Self::Fluent => Some("fluent"),
             Self::Cupertino => Some("cupertino"),
             Self::Native => Some("native"),
+        }
+    }
+
+    /// 这一支自绘调色板的**设计出处**（`--print-theme` 的 `theme-source:` 行）。
+    ///
+    /// 四支自绘调色板各自有一份权威设计输入：`brand` 是本仓品牌色（`assets/brand/`），
+    /// 另三支是负责人下发的 HTML mock。把出处打成一行，是为了让"这个 hex 从哪来"
+    /// 在**命令输出**里可核对，而不是只活在我们的报告里。
+    ///
+    /// 走设计系统的四支没有这一行 ⇒ `None`（它们没有"负责人下发的具体色值"这回事）。
+    #[must_use]
+    pub const fn design_source(self) -> Option<&'static str> {
+        match self {
+            Self::Brand => Some("assets/brand/README.md (本仓品牌色, 从母版 SVG 提取)"),
+            Self::Yeban => {
+                Some("负责人 2026-10-07 下发的具名调色板 (HTML mock; 见 ui/tokens.slint §6b)")
+            }
+            Self::InkMoor => Some(
+                "负责人设计稿「墨泊 InkMoor · 枫桥夜泊」(HTML mock 的 body.inkmoor 变量块; \
+                 见 ui/tokens.slint §6e)",
+            ),
+            Self::Plume => Some(
+                "负责人设计稿「孤烟 Plume · 使至塞上」(HTML mock 的 body.plume 变量块; \
+                 见 ui/tokens.slint §6e)",
+            ),
+            _ => None,
         }
     }
 }
@@ -654,7 +740,7 @@ pub struct Options {
     /// 为什么它**不**让进程离开 GUI 路径：控制面要挂在**正在跑的 app 进程**里
     /// （形态 A 的定义），而不是把进程变成一个无头服务器。
     pub enable_mcp_http: bool,
-    /// `--theme <default|material|fluent|cupertino|native>`：运行期调色板选择。
+    /// `--theme <default|yeban|inkmoor|plume|material|fluent|cupertino|native>`：运行期调色板选择。
     ///
     /// 默认 [`Theme::Brand`] = **今天的外观**（`ui/tokens.slint` 里那一串十六进制字面量），
     /// 因此不给这个开关时渲染一位未改 —— `tests/golden/linux/**` 不需要重生成。
@@ -812,9 +898,10 @@ impl fmt::Display for ParseError {
             Self::UnknownTheme(theme) => write!(
                 formatter,
                 "未知的主题 `{theme}` (可用: {}; 默认 `default` = 本仓品牌深色, \
-                 外观与本次改动之前逐像素相同; 其余四个走 Slint 设计系统的 Palette 角色, \
-                 而 Slint 1.18.1 的风格只能**编译期**选 —— 见 `{PRINT_THEME_SWITCH}` 与 \
-                 `{SLINT_STYLE_ENV}`)",
+                 外观与本次改动之前逐像素相同; `yeban` / `inkmoor` / `plume` 也各自带一串\
+                 负责人下发的十六进制字面量, 不读 Palette; 只有剩下那四个内建名字走 Slint \
+                 设计系统的 Palette 角色, 而 Slint 1.18.1 的风格只能**编译期**选 —— \
+                 见 `{PRINT_THEME_SWITCH}` 与 `{SLINT_STYLE_ENV}`)",
                 Theme::ALL
                     .iter()
                     .map(|theme| theme.name())
@@ -1911,11 +1998,15 @@ pub fn shortcut_lines() -> Vec<String> {
 /// - `palette=` 是这次请求**实际**会让 `ui/tokens.slint` 走的调色板来源
 ///   （`brand` = 那一串十六进制字面量 / `yeban-measured-literals` = 第二串十六进制字面量
 ///   —— 这个键名是 2026-10-06 的**历史标识**, 现在那串值的来源是负责人下发的调色板,
-///   键名保持不变以免改动 CLI 契约 / `design-system-palette` = Slint 的 `Palette.*` 角色）；
+///   键名保持不变以免改动 CLI 契约 / `inkmoor-owner-literals` / `plume-owner-literals`
+///   = 2026-10-07 新增的两支负责人下发的字面量（键名不再沿用那个会误导的
+///   `measured`）/ `design-system-palette` = Slint 的 `Palette.*` 角色）；
 /// - `compiled-style=` 是 `build.rs` 注入的**编译期**事实（`cargo:rustc-env`），
 ///   不是从命令行推出来的；
 /// - `style-switch=` 是那个**必须**说出来的区别：Slint 1.18.1 换风格只能在编译期，
-///   所以四个内建名字共享这一个二进制里编进来的风格。
+///   所以四个内建名字共享这一个二进制里编进来的风格；
+/// - `theme-source:` 是**这一支的字面量从哪来**（四支自绘调色板各有权威设计输入；
+///   走设计系统的四支没有这一行 —— 绝不写一句假出处）。
 #[must_use]
 pub fn theme_lines(theme: Theme) -> Vec<String> {
     let requested = theme.name();
@@ -1938,13 +2029,24 @@ pub fn theme_lines(theme: Theme) -> Vec<String> {
         None => lines.push(format!(
             "theme-style: 没有请求任何内建风格 —— {} 不经过 Slint `Palette`, \
              因此与编进来的风格 (`{compiled}`) 无关",
-            if theme == Theme::Yeban {
-                "`yeban` 用的是负责人下发的那串十六进制字面量 (2026-10-07 HTML mock; \
-                 取代 2026-10-06 的采样推导)"
-            } else {
-                "品牌色"
+            match theme {
+                Theme::Yeban =>
+                    "`yeban` 用的是负责人下发的那串十六进制字面量 (2026-10-07 HTML mock; \
+                     取代 2026-10-06 的采样推导)",
+                Theme::InkMoor =>
+                    "`inkmoor` 用的是负责人设计稿「墨泊 InkMoor」的那串十六进制字面量 \
+                     (HTML mock 的 body.inkmoor 变量块; 见 ui/tokens.slint §6e)",
+                Theme::Plume =>
+                    "`plume` 用的是负责人设计稿「孤烟 Plume」的那串十六进制字面量 \
+                     (HTML mock 的 body.plume 变量块; 见 ui/tokens.slint §6e)",
+                _ => "品牌色",
             }
         )),
+    }
+    // 出处行: 这一支的 hex 从哪来。四支自绘调色板各有权威设计输入, 走设计系统的
+    // 四支没有 ⇒ 没有这一行 (绝不写一句"出处"骗人)。
+    if let Some(source) = theme.design_source() {
+        lines.push(format!("theme-source: {source}"));
     }
     lines.push(format!(
         "theme-note: `{THEME_SWITCH}` 只换**调色板**; 本仓界面 100% 自绘 \

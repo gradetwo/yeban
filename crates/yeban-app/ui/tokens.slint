@@ -77,6 +77,20 @@ export enum YebanTheme {
     // 逐条的出处、方法与频次写在本文件 §6b 与 §10 的注释里。
     // ------------------------------------------------------------------
     yeban,
+    // ------------------------------------------------------------------
+    // `inkmoor` / `plume` = 2026-10-07 负责人下发的**两套成对皮肤** (同一份 HTML mock
+    // 里的 `body.inkmoor` / `body.plume` 变量块)。它们与 `yeban` 一样是**自绘字面量**,
+    // 不读 `Palette`; 三支自绘调色板并存, 逐条出处与取舍见 §6e。
+    //
+    // 与 `yeban` 的关系**如实登记**: 三者都出自"枫桥夜泊"同一套意象 (渔火/月华/愁眠/
+    // 江枫/铜绿/客船/苇白), 但 `yeban` 的取值来自 2026-10-07 稍早的一版 mock, 而
+    // `inkmoor` 来自负责人同一份设计稿的**修订版** (数字整体更亮、饱和更低) ——
+    // 两版**逐条不同** (例: 渔火 yeban #c6a47c vs inkmoor #c9a26b)。
+    // 本切片**不动** `yeban` (硬约束: 既有主题取值一位未改), 因此两支暂时并存;
+    // "yeban 是否被 inkmoor 取代"是**负责人的裁决**, 不在这里替他做 (§6e 末段)。
+    // ------------------------------------------------------------------
+    inkmoor,
+    plume,
     material,
     fluent,
     cupertino,
@@ -158,11 +172,11 @@ export global Tokens {
     //   `theme == brand  ? <今天的十六进制字面量>`        —— 一位未改, golden 因此不用重生成
     //   `theme == yeban  ? <负责人下发的墨阶 / 颜料值>`    —— 见 §6b 的映射表
     //   否则              `<Palette.*>`                    —— 设计系统角色 (四个内建风格名)
-    out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? #0e1216 : Palette.background);
-    out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #11161c : Palette.background);
-    out property <color> bg-panel: ThemeState.theme == YebanTheme.brand ? #151d38 : (ThemeState.theme == YebanTheme.yeban ? #131a22 : Palette.alternate-background);
-    out property <color> bg-panel-alt: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #161e28 : Palette.alternate-background);
-    out property <color> bg-raised: ThemeState.theme == YebanTheme.brand ? #232f5c : (ThemeState.theme == YebanTheme.yeban ? #1e2733 : Palette.control-background);
+    out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? #0e1216 : (ThemeState.theme == YebanTheme.inkmoor ? #0e1114 : (ThemeState.theme == YebanTheme.plume ? #14100d : Palette.background)));
+    out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #11161c : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.background)));
+    out property <color> bg-panel: ThemeState.theme == YebanTheme.brand ? #151d38 : (ThemeState.theme == YebanTheme.yeban ? #131a22 : (ThemeState.theme == YebanTheme.inkmoor ? #141920 : (ThemeState.theme == YebanTheme.plume ? #1b1512 : Palette.alternate-background)));
+    out property <color> bg-panel-alt: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #161e28 : (ThemeState.theme == YebanTheme.inkmoor ? #171c24 : (ThemeState.theme == YebanTheme.plume ? #1f1814 : Palette.alternate-background)));
+    out property <color> bg-raised: ThemeState.theme == YebanTheme.brand ? #232f5c : (ThemeState.theme == YebanTheme.yeban ? #1e2733 : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
 
     // ---------------------------------------------------------------------
     // 6b. `yeban` 的取值 —— 2026-10-07 负责人下发的**指定调色板** (HTML mock)
@@ -229,9 +243,9 @@ export global Tokens {
     //     我们的「内凹/交替面」没有独立名字 ⇒ 落在同一级。
     //   - `accent` 与 `gold` 同为 渔火 #c6a47c: 负责人的角色表把 渔火 同时给了「主强调」与
     //     「片段」⇒ **暖强调色相唯一**(整个 yeban 只有一个暖强调色), 但**令牌不唯一**。
-    out property <color> bg-lane: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #11161c : Palette.alternate-background);
-    out property <color> bg-lane2: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? #0d1116 : Palette.background);
-    out property <color> bg-head: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #161e28 : Palette.alternate-background);
+    out property <color> bg-lane: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #11161c : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.alternate-background)));
+    out property <color> bg-lane2: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? #0d1116 : (ThemeState.theme == YebanTheme.inkmoor ? #0f1317 : (ThemeState.theme == YebanTheme.plume ? #151110 : Palette.background)));
+    out property <color> bg-head: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? #161e28 : (ThemeState.theme == YebanTheme.inkmoor ? #171c24 : (ThemeState.theme == YebanTheme.plume ? #1f1814 : Palette.alternate-background)));
 
     // ---------------------------------------------------------------------
     // 6b-bis. 旧的采样推导 (2026-10-06, 提交 a19b2e0) —— **已被取代, 留档不复用**
@@ -251,9 +265,9 @@ export global Tokens {
     //   gold-bright  时间码 / 播放头 / 读数   -> 月华 #e7dfc8
     //   gold         片段 / 音符头 / 章节名   -> 渔火 #c6a47c
     //   gold-deep    片段描边 / solo / 徽章   -> 客船 #6d88a1 (副强调)
-    out property <color> gold-bright: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : (ThemeState.theme == YebanTheme.yeban ? #e7dfc8 : Palette.accent-background);
-    out property <color> gold: ThemeState.theme == YebanTheme.brand ? #e2c77e : (ThemeState.theme == YebanTheme.yeban ? #c6a47c : Palette.accent-background);
-    out property <color> gold-deep: ThemeState.theme == YebanTheme.brand ? #b8933e : (ThemeState.theme == YebanTheme.yeban ? #6d88a1 : Palette.accent-background);
+    out property <color> gold-bright: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : (ThemeState.theme == YebanTheme.yeban ? #e7dfc8 : (ThemeState.theme == YebanTheme.inkmoor ? #efe9da : (ThemeState.theme == YebanTheme.plume ? #eae2d3 : Palette.accent-background)));
+    out property <color> gold: ThemeState.theme == YebanTheme.brand ? #e2c77e : (ThemeState.theme == YebanTheme.yeban ? #c6a47c : (ThemeState.theme == YebanTheme.inkmoor ? #c9a26b : (ThemeState.theme == YebanTheme.plume ? #c68252 : Palette.accent-background)));
+    out property <color> gold-deep: ThemeState.theme == YebanTheme.brand ? #b8933e : (ThemeState.theme == YebanTheme.yeban ? #6d88a1 : (ThemeState.theme == YebanTheme.inkmoor ? #7c93a8 : (ThemeState.theme == YebanTheme.plume ? #6f8d96 : Palette.accent-background)));
 
     // ---------------------------------------------------------------------
     // 6c. 两支**新增**令牌 —— 为"顶栏两块同色板"这条缺陷而加 (2026-10-06)
@@ -277,18 +291,18 @@ export global Tokens {
     //     扫源码点名要求恰好 1 处 —— 位置没变, 只换了数字。
     //     (角色与取值的张力如实登记: 这一处的**位置**是 AI 徽章, 而负责人把 AI 归给 愁眠;
     //      但**令牌**叫 accent, 负责人把 渔火 叫"唯一暖强调色" ⇒ 按令牌取 渔火。)
-    out property <color> bg-control: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #1e2733 : Palette.control-background);
-    out property <color> accent: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #c6a47c : Palette.accent-background);
+    out property <color> bg-control: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #1e2733 : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
+    out property <color> accent: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #c6a47c : (ThemeState.theme == YebanTheme.inkmoor ? #c9a26b : (ThemeState.theme == YebanTheme.plume ? #c68252 : Palette.accent-background)));
 
     // 文字/墨色与次级灰蓝。设计系统侧没有"三级灰"这个角色, 用 foreground →
     // alternate-foreground → control-foreground 这条**真实存在的**层级代替。
-    out property <color> ink-0: ThemeState.theme == YebanTheme.brand ? #f0ebe3 : (ThemeState.theme == YebanTheme.yeban ? #d7dee1 : Palette.foreground);
-    out property <color> ink-1: ThemeState.theme == YebanTheme.brand ? #c8c2b8 : (ThemeState.theme == YebanTheme.yeban ? #8d99a5 : Palette.alternate-foreground);
-    out property <color> ink-2: ThemeState.theme == YebanTheme.brand ? #5a6b8a : (ThemeState.theme == YebanTheme.yeban ? #5a6672 : Palette.control-foreground);
+    out property <color> ink-0: ThemeState.theme == YebanTheme.brand ? #f0ebe3 : (ThemeState.theme == YebanTheme.yeban ? #d7dee1 : (ThemeState.theme == YebanTheme.inkmoor ? #e9e7e2 : (ThemeState.theme == YebanTheme.plume ? #efe7d9 : Palette.foreground)));
+    out property <color> ink-1: ThemeState.theme == YebanTheme.brand ? #c8c2b8 : (ThemeState.theme == YebanTheme.yeban ? #8d99a5 : (ThemeState.theme == YebanTheme.inkmoor ? #a3a7ae : (ThemeState.theme == YebanTheme.plume ? #aba091 : Palette.alternate-foreground)));
+    out property <color> ink-2: ThemeState.theme == YebanTheme.brand ? #5a6b8a : (ThemeState.theme == YebanTheme.yeban ? #5a6672 : (ThemeState.theme == YebanTheme.inkmoor ? #6a6f78 : (ThemeState.theme == YebanTheme.plume ? #6f665a : Palette.control-foreground)));
 
     // 分隔线与栅格 (发丝线: 负责人的 stroke / stroke2 两级)
-    out property <color> line: ThemeState.theme == YebanTheme.brand ? #1e2745 : (ThemeState.theme == YebanTheme.yeban ? #212b36 : Palette.border);
-    out property <color> line-strong: ThemeState.theme == YebanTheme.brand ? #2c3a63 : (ThemeState.theme == YebanTheme.yeban ? #2c3948 : Palette.border);
+    out property <color> line: ThemeState.theme == YebanTheme.brand ? #1e2745 : (ThemeState.theme == YebanTheme.yeban ? #212b36 : (ThemeState.theme == YebanTheme.inkmoor ? #20242b : (ThemeState.theme == YebanTheme.plume ? #2a2520 : Palette.border)));
+    out property <color> line-strong: ThemeState.theme == YebanTheme.brand ? #2c3a63 : (ThemeState.theme == YebanTheme.yeban ? #2c3948 : (ThemeState.theme == YebanTheme.inkmoor ? #282d35 : (ThemeState.theme == YebanTheme.plume ? #332d26 : Palette.border)));
 
     // ---------------------------------------------------------------------
     // 6d. 三支**新增**令牌 —— 负责人的功能色 / 内容色落在我们结构缺失的角色上 (2026-10-07)
@@ -306,9 +320,177 @@ export global Tokens {
     //   - `piano-key`: 钢琴卷帘白键 = 苇白 #c8c2b2 (负责人角色表「track colour / piano keys」)。
     //     白键原来用 `ink-0` (正文色借用作键色), brand = #f0ebe3 ⇒ 默认不变。
     //     (对 bg-void 10.58:1 ≥ 3:1)
-    out property <color> playing: ThemeState.theme == YebanTheme.brand ? #e2c77e : (ThemeState.theme == YebanTheme.yeban ? #6e9488 : Palette.accent-background);
-    out property <color> selection: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : (ThemeState.theme == YebanTheme.yeban ? #8e86a6 : Palette.accent-background);
-    out property <color> piano-key: ThemeState.theme == YebanTheme.brand ? #f0ebe3 : (ThemeState.theme == YebanTheme.yeban ? #c8c2b2 : Palette.foreground);
+    out property <color> playing: ThemeState.theme == YebanTheme.brand ? #e2c77e : (ThemeState.theme == YebanTheme.yeban ? #6e9488 : (ThemeState.theme == YebanTheme.inkmoor ? #85a794 : (ThemeState.theme == YebanTheme.plume ? #7f9483 : Palette.accent-background)));
+    out property <color> selection: ThemeState.theme == YebanTheme.brand ? #f7e6b0 : (ThemeState.theme == YebanTheme.yeban ? #8e86a6 : (ThemeState.theme == YebanTheme.inkmoor ? #9e97ae : (ThemeState.theme == YebanTheme.plume ? #9c93a2 : Palette.accent-background)));
+    out property <color> piano-key: ThemeState.theme == YebanTheme.brand ? #f0ebe3 : (ThemeState.theme == YebanTheme.yeban ? #c8c2b2 : (ThemeState.theme == YebanTheme.inkmoor ? #ccc5b4 : (ThemeState.theme == YebanTheme.plume ? #c2ad91 : Palette.foreground)));
+
+    // =====================================================================
+    // 6e. `inkmoor` / `plume` 的取值 —— 2026-10-07 负责人下发的**成对皮肤**
+    // =====================================================================
+    //
+    // 出处: 负责人设计稿 (HTML mock) 的 `body.inkmoor` / `body.plume` CSS 变量块,
+    // 以及同一份稿子里的 `theme.slint` 参考实现 (`export global InkMoor { … }` /
+    // `export global Plume { … }`)。**数字一个都没改**; 逐条对应关系如下。
+    //
+    // `inkmoor` (墨泊 InkMoor —— 枫桥夜泊 · 冷墨 · 圆润):
+    //   令牌            <- 负责人取值  色名 / 角色 (mock 变量)
+    //   bg-void         <- #0e1114     墨        bg-base   主背景
+    //   bg-shell        <- #12161b     缁        bg-lane   内凹/交替面 (混音条、设备架、卷帘网格)
+    //   bg-lane         <- #12161b     缁        bg-lane   轨道车道 (偶)
+    //   bg-lane2        <- #0f1317     —        bg-lane2  轨道车道 (奇)
+    //   bg-panel        <- #141920     黛        bg-panel  面板 / 走带条
+    //   bg-head         <- #171c24     鸦青      bg-head   轨道包头 (奇; 偶仍用 bg-panel)
+    //   bg-panel-alt    <- #171c24     鸦青      bg-head   交替面板 / 按钮板 / 片段底
+    //   bg-raised       <- #1d232d     绀        bg-raise  hover / 选中
+    //   bg-control      <- #1d232d     绀        bg-raise  保存键的板 (取「抬起面」那一档)
+    //   line            <- #20242b     发丝线 6.5% (见下面「rgba 的处理」)
+    //   line-strong     <- #282d35     发丝线 11%  (同上)
+    //   ink-0           <- #e9e7e2     月白      txt
+    //   ink-1           <- #a3a7ae     雾        txt2
+    //   ink-2           <- #6a6f78     霜        txt3
+    //   gold-bright     <- #efe9da     月华      moon      播放头 / 时间码 / 读数
+    //   gold            <- #c9a26b     渔火      gold      片段 / 音符头 / 章节名 = 主强调
+    //   gold-deep       <- #7c93a8     客船      boat      副强调: 片段描边 / solo / 自动化徽章
+    //   accent          <- #c9a26b     渔火      gold      唯一那一处强调 (AI 徽章描边)
+    //   ai-suggestion   <- #9e97ae     愁眠      frost     AI 建议层
+    //   record-red      <- #b4715f     江枫      maple     录音 / 静音
+    //   playing         <- #85a794     铜绿      verd      播放 / 走带
+    //   selection       <- #9e97ae     愁眠      frost     选中 / 激活 / AI 文案
+    //   piano-key       <- #ccc5b4     苇白      reed      钢琴卷帘白键
+    //
+    // `plume` (孤烟 Plume —— 使至塞上 · 暖沙 · 锐利):
+    //   bg-void         <- #14100d     沙幕      bg-base
+    //   bg-shell        <- #181310     漠野      bg-lane
+    //   bg-lane         <- #181310     漠野      bg-lane
+    //   bg-lane2        <- #151110     —        bg-lane2
+    //   bg-panel        <- #1b1512     驼褐      bg-panel
+    //   bg-head         <- #1f1814     沙岩      bg-head
+    //   bg-panel-alt    <- #1f1814     沙岩      bg-head
+    //   bg-raised       <- #271f19     暮沙      bg-raise
+    //   bg-control      <- #271f19     暮沙      bg-raise
+    //   line            <- #2a2520     发丝线 6.5% (见下面「rgba 的处理」)
+    //   line-strong     <- #332d26     发丝线 11%  (同上)
+    //   ink-0           <- #efe7d9     月牙      txt
+    //   ink-1           <- #aba091     沙        txt2
+    //   ink-2           <- #6f665a     驼灰      txt3
+    //   gold-bright     <- #eae2d3     孤烟      moon      播放头 / 时间码 / 读数
+    //   gold            <- #c68252     落日      gold      主强调 (mock 原文: 「全界面唯一暖强调」)
+    //   gold-deep       <- #6f8d96     长河      boat      副强调 (波形 / 标尺「河光」)
+    //   accent          <- #c68252     落日      gold      唯一那一处强调 (AI 徽章描边)
+    //   ai-suggestion   <- #9c93a2     归雁      frost     雁书 / AI 建议层
+    //   record-red      <- #b25c43     落霞      maple     录音激活 / 电平峰值
+    //   playing         <- #7f9483     燕然/石绿 verd      播放 / 走带
+    //   selection       <- #9c93a2     归雁      frost     选区 / AI 提案
+    //   piano-key       <- #c2ad91     大漠      reed      钢琴卷帘白键
+    //
+    // ---------------------------------------------------------------
+    // rgba 的处理 (负责人把两条发丝线写成 alpha, 我们的令牌是不透明色)
+    // ---------------------------------------------------------------
+    // 负责人给的是 `--line:rgba(235,235,245,.065)` / `--line2:rgba(235,235,245,.11)`
+    // (Plume 是 `rgba(243,232,218,…)`), 也就是「白 @ 6.5% / 11%」。本文件的文件头
+    // 定了纪律: **只用不透明的 6 位 #rrggbb**, alpha 留在使用点。两个约束合起来要求
+    // 把 alpha 合成成一个不透明值 —— 而"合成到哪个底色上"必须有人选。
+    // 我们的选择是**不选**: 负责人自己的配色面板 (mock 里 `表 面 · 墨 阶` 下面那组
+    // `line 6.5%` / `line2 11%` 色块) 已经给出了他们自己的扁平化色值 ——
+    //   inkmoor  #20242b / #282d35      plume  #2a2520 / #332d26
+    // 于是本文件直接取**负责人的那两个数字**, 一个都没自己算 (核算过: 把
+    // #ebebf5 @6.5% 合成到负责人自己的 `bg-tab` #12171d 上得到 #20252b, 与他们写的
+    // #20242b 只差 1/255 —— 说明那就是他们的合成底色; 那条核算只是旁证, 取的值仍是
+    // 他们写的)。
+    // **代价如实登记**: 不透明发丝线不会再随底色自适应 (负责人的 6.5% 是自适应的),
+    // 因此在我们最亮的那个面 (`bg-raised` #1d232d / #271f19) 上, 这条线比 6.5% 读起来
+    // 更实; 在最暗的面 (`bg-void`) 上更虚。要恢复自适应需要 `.with-alpha()` 落在**使用点**,
+    // 那是 13 个 `.slint` 的改动, 超出"加一支颜色分支"的授权。
+    //
+    // ---------------------------------------------------------------
+    // 负责人**有**而我们**没有**的角色 (不发明令牌, 只登记)
+    // ---------------------------------------------------------------
+    // 本仓的颜色令牌只有 23 支跟随主题 (上面这套)。负责人稿子里这些值**没有家**,
+    // 因为对应的界面构造我们根本没有 (或它由几何/动画/纹理表达, 见 mock 的手法表):
+    //   `bg-app` #0b0d10 / #110d0a    —— 窗口最外层底色。我们的 `bg-void` 同时承担
+    //        「主背景」与「内凹井」(BPM/时间码字段、mute/solo 未激活态、卷帘黑键),
+    //        只有一个值 ⇒ 按 §6b 已登记的「bg-void <- bg-base 主背景」沿用 `bg-base`。
+    //        负责人自己的 `body{background:var(--bg-app)}` 因此比我们亮 1 级 —— 登记。
+    //   `bg-well` #0c0f13 / #0f0c0a   —— 内凹井。落进 `bg-void` (见上)。
+    //   `bg-tab` #12171d / #17110d    —— 走带下方 tab 条。我们复用 `bg-panel`/`bg-panel-alt`。
+    //   `gold2` #e4c48f / #e0a76e     —— 渔火/落日的亮档 (`accent-hi`)。我们的 `gold-bright`
+    //        是**播放头** (负责人 `moon`), 不是亮档金 ⇒ 不拿它顶替, 该值无家。
+    //   `seal` #9e3b2c / #c68252 + `seal-fg` #f2e7dc / #241204 —— 标题栏印章。
+    //        本仓标题栏没有印章元素 (且本切片不许动标题栏) ⇒ 无家。
+    //   `hill` #8aa39a / #7f9483, `dune` #c2ad91, `camel` #a3856b —— 每轨色板
+    //        (`track-colors[6]`); 本仓没有 per-track 颜色令牌 ⇒ 无家。
+    //   `sec-char` / `amode` / `clip-acc-t` / `clip-sec-t` / `key-label` —— 局部文字色;
+    //        本仓对应位置复用 `gold` / `ink-2` ⇒ 无家。
+    //   `keys-bg` / `key-w1` / `key-w2` / `key-b1` / `key-b2` / `key-line` —— 钢琴卷帘
+    //        白/黑键的**两段渐变**与键线; 我们的 `piano-key` 是不透明单色, 只取 `reed`
+    //        (`piano-key` 的登记角色就是「track colour / piano keys」) ⇒ 渐变两端无家。
+    //   `tl-c` / `tl-m` / `tl-x` —— macOS 红黄绿窗钮; Slint 画的是自绘窗口 ⇒ 无家。
+    //   `note1` (`--note1`) —— 音符头的渐变**亮端**。`note2` 两支都恰好等于 `gold`,
+    //        所以我们用 `gold` 平铺 (渐变被 §8 的「无渐变画笔」纪律挡住) ⇒ 亮端无家。
+    //   `--arr-ambient` / `--meter-grad` / `--line`+`--line2` 的**渐变用法** ——
+    //        环境光与电平表都是**渐变画笔**, 判据 `the_ui_uses_no_shadow_and_no_gradient_brush`
+    //        明令禁止, 且它们是布局/动画而不是颜色 ⇒ 本切片**不实现** (见 §6f)。
+    //   `--focus-bd` / `--pal-bg` / `--poem-ls` / `--poem-op` —— 焦点环 alpha、配色面板
+    //        自身底色、诗句字距与透明度; 不是我们的调色板角色 ⇒ 无家。
+    //
+    // ---------------------------------------------------------------
+    // 值重合 (如实登记, 不隐藏)
+    // ---------------------------------------------------------------
+    //   * `accent` == `gold` (两支皮肤都是): 负责人把「唯一暖强调」(渔火 / 落日) 与
+    //     「主强调 / 片段」给了同一个色 ⇒ **暖强调色相唯一**, 但**令牌不唯一**。
+    //     与 `yeban` 的取舍同款 (§6b 末段)。
+    //   * `bg-panel-alt` == `bg-head`: 负责人只给了一级「包头」色, 而我们在结构上有两个
+    //     角色 ⇒ 共用 (与 yeban 同款取舍)。
+    //   * `bg-control` == `bg-raised`, `bg-shell` == `bg-lane`, `ai-suggestion` == `selection`:
+    //     同上, 都是"负责人给得比我们的角色少"。
+    //   * Plume 的 `seal` == `accent` (#c68252), 且 `dune` == `reed` (#c2ad91),
+    //     `hill` == `verd` (#7f9483) —— 负责人自己稿子里的重合, 登记不评判。
+    //
+    // ---------------------------------------------------------------
+    // 待负责人裁决 (本切片**不替他们决定**)
+    // ---------------------------------------------------------------
+    //   1. `yeban` 与 `inkmoor` 的取值**逐条不同** (同一套"枫桥夜泊"意象、两版数字)。
+    //      本切片按硬约束保留 `yeban` 原值、新增 `inkmoor`; "是否让 inkmoor 取代 yeban"
+    //      是负责人的取舍, 不是本次改动的授权范围。
+    //   2. Plume 文稿的散文把**录音键**写成「落日: 唯一带光环的圆」(落日 = `--gold` =
+    //      主强调), 而 mock 的实现 (`.sun-dot{background:var(--maple)}` 与 `--maple:#b25c43`)
+    //      把录音键画成 **落霞**。我们的 `record-red` 是录音键的色 ⇒ 取 mock 的
+    //      `--maple` #b25c43 (实现是更完整的那份), 与散文的措辞冲突**登记在此**。
+    //   3. Plume 的「唯一暖强调」在负责人稿子里落在**录音键/落日**上, 而本仓 `accent`
+    //      令牌落在 **AI 徽章描边**上 (位置由既有判据钉住, 本切片不许移动像素) ⇒
+    //      取值取 落日, 位置不动; 语义错位由负责人裁决。
+    //   4. `piano-key` 在负责人稿子里是**两段渐变**的白键, 我们只能给一个不透明值;
+    //      取的是他们变量表里的 `reed` (InkMoor) / `dune`==`reed` (Plume)。若要更贴近
+    //      他们画出来的键, 需要的是「渐变」而不是「另一个单色」。
+
+    // =====================================================================
+    // 6f. 负责人在这两套皮肤里的**非颜色**手法 —— 哪些本切片实现了, 哪些没有
+    // =====================================================================
+    //
+    // mock 的手法表把"高级感"拆成 8 条。**本切片只做颜色** (负责人要的是皮肤, 不是
+    // 一次布局改版); 逐条如下 (这一节是**登记**, 不是待办清单):
+    //
+    //   只有颜色、本切片**已随令牌实现**:
+    //     - 墨阶/沙阶表面系统 (§6e 的 5 级背景) —— 纯粹换令牌值;
+    //     - 发丝线由 alpha 换成不透明值 (§6e 的 rgba 处理) —— 有代价, 已登记;
+    //     - 唯一暖强调 (渔火 / 落日) —— `accent` + `gold` 的值;
+    //     - 功能色降饱和 (录音 / 播放 / 选区 / 副强调) —— `record-red`/`playing`/
+    //       `selection`/`gold-deep` 的值;
+    //     - 文本三级灰 —— `ink-0/1/2`.
+    //
+    //   **不是**颜色、本切片**没有**实现 (也不该由颜色令牌假装实现):
+    //     - 2.8% / 3% 胶片颗粒 (`body::after` 的 feTurbulence 噪点平铺) —— 纹理层;
+    //     - 电平表呼吸动画 (幅度 9%、周期 2–4s) —— 动画 + 定时器;
+    //     - 1.5px 自绘线性图标 (内嵌 SVG/`Path`) —— 几何/图形资源;
+    //     - 等宽 tabular-nums —— 字体特性 (本仓已有 `font-mono`, 但数值列的对齐是几何);
+    //     - 「月色/落日余晖」环境光与「长河」一线 —— **渐变画笔 + 定位矩形**,
+    //       而且 §8 的判据 `the_ui_uses_no_shadow_and_no_gradient_brush` 明令禁止;
+    //     - 标题栏的**主题标签** (`<span class="theme-tag">孤烟 PLUME</span>`)、
+    //       印章 `.seal`、红黄绿窗钮 —— 标题栏的结构改动 (硬约束: 本切片不许动标题栏);
+    //     - 走带指针的形态差异 (月华柔光 ↔ 孤烟直上/底部消散) 与录音键光环
+    //       (`Theme.playhead-glow` / `playhead-fade` / `rec-halo`) —— 几何 + 动画;
+    //     - 圆角 4/6/8 ↔ 2/4/6 与 pill 16 ↔ 4 —— **几何**, 明令不许动;
+    //     - 段落名 (起承转合 ↔ 出塞/大漠/落日/燕然)、诗句、库脚注等**文案**.
 
     // =====================================================================
     // 7. 品牌色 · 浅色 (登记在册; 运行时切换机制仍是待决项, 见 notes 的 needs)
@@ -338,7 +520,7 @@ export global Tokens {
     // 2026-10-07: 负责人点名「选区=愁眠 / AI=愁眠」⇒ 这一支**第一次有了 yeban 分支**
     // (在此之前语义色一律不跟随主题, 见文件头 §8 的既有纪律)。brand 分支仍是 #a855f7,
     // 所以默认外观不变; 设计系统主题也仍是 #a855f7 (第三个分支), 行为与改前逐位相同。
-    out property <color> ai-suggestion: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #8e86a6 : #a855f7);
+    out property <color> ai-suggestion: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #8e86a6 : (ThemeState.theme == YebanTheme.inkmoor ? #9e97ae : (ThemeState.theme == YebanTheme.plume ? #9c93a2 : #a855f7)));
 
     // =====================================================================
     // 9. 状态色 (走带/录音/告警) —— 规范未定义, 登记待决
@@ -346,7 +528,7 @@ export global Tokens {
     // 2026-10-07: 负责人点名「录音=江枫」(原则 ③) ⇒ `record-red` 有了 yeban 分支。
     // brand 分支仍是 #d94a4a (默认外观一位未改); 设计系统主题仍是 #d94a4a, 行为不变。
     // `ok-green` / `warn-amber` 负责人**没有**命名 ⇒ 原样不动, 不替他们发明。
-    out property <color> record-red: ThemeState.theme == YebanTheme.brand ? #d94a4a : (ThemeState.theme == YebanTheme.yeban ? #ac6e60 : #d94a4a);
+    out property <color> record-red: ThemeState.theme == YebanTheme.brand ? #d94a4a : (ThemeState.theme == YebanTheme.yeban ? #ac6e60 : (ThemeState.theme == YebanTheme.inkmoor ? #b4715f : (ThemeState.theme == YebanTheme.plume ? #b25c43 : #d94a4a)));
     out property <color> ok-green: #3fa96a;
     out property <color> warn-amber: #d9a441;
 }

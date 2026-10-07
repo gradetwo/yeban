@@ -901,7 +901,7 @@ pub fn build_main_window(
 /// ## 与 `apply_view` 同一条纪律
 ///
 /// 单向注入：`.slint` 侧只**读** `ThemeState.theme`（`ui/tokens.slint` 的颜色令牌
-/// 都是它的三选一表达式），Rust 侧只**写**。界面文件因此一行都不用改 ——
+/// 都是它的多选一表达式），Rust 侧只**写**。界面文件因此一行都不用改 ——
 /// "换主题"落在唯一一处：这个函数。
 ///
 /// ## 它**不**做什么（边界，写在 `--print-theme` 与用法文本里）
@@ -917,6 +917,11 @@ pub fn build_main_window(
 /// 也不是设计系统角色，而是第二串**测量推导**出来的十六进制字面量（见
 /// `ui/tokens.slint` §6b/§6c 的出处表）。它同样不读 `Palette`，因此与编进来的风格无关。
 ///
+/// [`crate::cli::Theme::InkMoor`] / [`crate::cli::Theme::Plume`] 是 2026-10-07 新增的
+/// **同款第三类**：负责人设计稿「墨泊 InkMoor」/「孤烟 Plume」各是一串自己的十六进制
+/// 字面量（`ui/tokens.slint` §6e 的逐条映射），同样不读 `Palette`。四支自绘调色板
+/// (`Brand` / `Yeban` / `InkMoor` / `Plume`) 与四个设计系统名字共享**这一个**写入口。
+///
 /// 为什么仍然值得给 `Brand` 之外的主题留四个名字：`Brand` ↔ 其余四个的差别是**真实的**
 /// 像素差别（品牌色 vs 设计系统 `Palette` 角色），而且 `Palette` 会跟随系统的浅色/深色
 /// 设置（`SlintInternal.color-scheme`）—— 那正是"搬到真实设计系统上"的收益。
@@ -927,6 +932,8 @@ pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
     ui.global::<ThemeState<'_>>().set_theme(match theme {
         crate::cli::Theme::Brand => YebanTheme::Brand,
         crate::cli::Theme::Yeban => YebanTheme::Yeban,
+        crate::cli::Theme::InkMoor => YebanTheme::InkMoor,
+        crate::cli::Theme::Plume => YebanTheme::Plume,
         crate::cli::Theme::Material => YebanTheme::Material,
         crate::cli::Theme::Fluent => YebanTheme::Fluent,
         crate::cli::Theme::Cupertino => YebanTheme::Cupertino,
