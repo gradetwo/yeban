@@ -1249,6 +1249,146 @@ fn the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
     ));
 }
 
+/// 判据 20（**编辑 ⇒ 发声**端到端，本票）：在**同一个活窗口**上做一次真实的混音台推子
+/// 手势 ⇒ `UndoPort` 真的提交一步 ⇒ 控制线程心跳一跳 ⇒ **引擎快照里那一个字段**变了。
+///
+/// 它证明的那句话是："改一个混音参数之后，播放侧**真的**会看到新值。" 断点两侧都是**字面
+/// 读数**：
+///
+/// | 时刻 | 读数 | 期望 |
+/// | :--- | :--- | :--- |
+/// | 起引擎之后 | `engine_track_volume_db(track0)` | `-3.2`（= 工程起点） |
+/// | 手势之后、心跳之前 | 同上 | **仍是** `-3.2`（这就是本票修的那个断点） |
+/// | 心跳之后 | 同上 | `-33.2`（= 提交进工程的那一版） |
+///
+/// 手势走的是 `MainWindow` 的**三个混音台回调**（`.slint` 的 `TouchArea` 调的就是它们，
+/// 见 `ui/console/mixer_console.slint:320-326`）—— 与真实指针事件同一条链（后者另有判据 7）。
+///
+/// ## 会变红的注入（实测见交付报告）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 心跳里跳过 `publish_project`（"编辑不发布"） | `src/main.rs` / `engine_tick` | 第 3 行的读数仍是 `-3.2` ⇒ 红 |
+/// | 心跳里跳过 `prune`（"发布了不回收"） | `EngineHost::heartbeat` | 第 2 跳 `released == 0` / `pending_len == 1` ⇒ 红 |
+#[test]
+fn a_mixer_gesture_reaches_the_engine_snapshot_on_the_live_window() {
+    use std::rc::Rc;
+
+    use yeban_app::engine_host::EditMark;
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    /// 会话打开时刻（与其它混音台判据同一个夹具常量）。
+    const NOW: u64 = 1_760_000_000_000;
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    let ids = track_ids(&project);
+    assert!(!ids.is_empty(), "演示工程至少有一条非主总线轨道");
+    let track_id = ids[0];
+
+    // 端口先建好并交给装配路径（与判据 7 同款：装配忘接混音台会被抓到）。
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let mut live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+
+    // 起一代引擎（与 `ui/reload_engine` 同一条路径，0 个量子 ⇒ 不空转）。
+    live.start_engine().expect("起引擎");
+    let opened_db = live
+        .engine_track_volume_db(&track_id)
+        .expect("快照里必须有这条轨道");
+    assert_eq!(
+        opened_db,
+        mixer_readings(&port.project(), &view, 0).0,
+        "起引擎之后：快照里的音量 = 工程起点"
+    );
+    assert_eq!(opened_db, -3.2, "0 号轨（鼓）的音量起点是 -3.2 dB");
+    let opened_counts = live.engine_snapshot_counts().expect("有引擎必有计数");
+    assert_eq!(opened_counts.published, 1, "reload 发了一份");
+    assert_eq!(opened_counts.pending_len, 0, "基线：写者侧清单为空");
+
+    // ---- 真实手势：三个混音台回调（下拖 40px = 66 dB × 40 ÷ 88 = 30 dB）----
+    let window = live.ui();
+    window.invoke_mixer_fader_grab(0, 8.0);
+    window.invoke_mixer_fader_drag(0, 48.0);
+    window.invoke_mixer_fader_release(0);
+    let committed_db = mixer_readings(&port.project(), &view, 0).0;
+    assert_eq!(
+        format!("{committed_db:.1}"),
+        "-33.2",
+        "手势之后工程里的 volume_db 必须真的变了（模型读数）"
+    );
+    assert_eq!(port.display().undoable, 1, "一次拖动 = 恰一步可撤销");
+    assert_eq!(
+        live.engine_track_volume_db(&track_id).expect("快照"),
+        opened_db,
+        "★ 发布之前：引擎快照**仍是**旧值 —— 这就是本票修的那个断点"
+    );
+
+    // ---- 心跳第一跳：按需增量发布 + 回收（`run_gui` 的 60Hz 定时器逐字复制）----
+    let mark = EditMark::from_display(&port.display());
+    let first = live.engine_heartbeat(mark, Some(&port.project()));
+    assert_eq!(first.published_revision, Some(2), "这一跳必须发布新快照");
+    assert_eq!(
+        first.readings.published, 2,
+        "槽里累计发布 2 次（1 起 + 1 增量）"
+    );
+    assert_eq!(
+        first.readings.pending_len, 1,
+        "读者（音频侧）还没走过这个纪元 ⇒ 那一份必须保持存活"
+    );
+    assert_eq!(first.readings.released, 0, "读者没确认之前一条都不许释放");
+    let edited_db = live
+        .engine_track_volume_db(&track_id)
+        .expect("快照里必须有这条轨道");
+    assert_ne!(
+        edited_db, opened_db,
+        "★ 编辑 ⇒ 发声：快照里那一个字段必须不同"
+    );
+    assert_eq!(edited_db, committed_db, "快照读到的就是提交进工程的那一版");
+    report_line(&format!(
+        "[engine-snapshot] 推子手势 {opened_db:.1} → {committed_db:.1} dB; \
+         快照 {opened_db:.1} → {edited_db:.1} dB; published={} pending={}",
+        first.readings.published, first.readings.pending_len
+    ));
+
+    // 重复标记 ⇒ **不**再发布（"没改就不克隆工程"这条成本契约）。
+    let second = live.engine_heartbeat(mark, Some(&port.project()));
+    assert_eq!(second.published_revision, None, "标记没变 ⇒ 不许再发一份");
+    assert_eq!(second.readings.published, 2, "发布计数一位不动");
+
+    // ---- 设备回调那一侧：读者换快照 ⇒ 旧快照进退役队列 ⇒ 下一跳由心跳回收 ----
+    assert_eq!(live.drive_audio(1), 1, "推一个量子");
+    assert_eq!(
+        live.engine_snapshot_switches(),
+        Some(1),
+        "音频读路径（begin_block）真的换到了新快照"
+    );
+    let third = live.engine_heartbeat(mark, None);
+    assert_eq!(third.published_revision, None, "没有新标记 ⇒ 不发布");
+    assert_eq!(
+        third.readings.released, 1,
+        "写者侧那一份在读者走过之后被回收"
+    );
+    assert_eq!(third.readings.retired, 1, "读者交出的旧快照被 Drop");
+    assert_eq!(third.readings.pending_len, 0, "回收之后清单回到基线");
+    let end_counts = live.engine_snapshot_counts().expect("有引擎必有计数");
+    assert_eq!(end_counts.published, 2, "总计两份：reload 1 + 编辑 1");
+    assert_eq!(end_counts.pruned, 1, "累计回收 1 份");
+    assert_eq!(end_counts.pending_len, 0, "编辑结束：写者侧清单回到基线");
+    assert_eq!(end_counts.retire_pending, 0, "编辑结束：退役队列为空");
+}
+
 /// 工程里第 `index` 条非主总线轨道的混音四格 `(volume_db, pan, mute, solo)`。
 ///
 /// 身份从**投影**取（`ViewState::tracks[index].id`），因此这里的读数与界面上的

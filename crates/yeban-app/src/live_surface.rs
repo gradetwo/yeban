@@ -109,7 +109,9 @@ use slint::ComponentHandle as _;
 
 use yeban_app::bridge::{BridgeError, ViewState};
 use yeban_app::elements::ElementRegistry;
-use yeban_app::engine_host::{EngineHost, EngineHostError};
+use yeban_app::engine_host::{
+    EditMark, EngineHost, EngineHostError, HeartbeatReadings, SnapshotCounts,
+};
 use yeban_app::host;
 use yeban_app::input::{Focus, InputContext, Modifiers, PhysicalKey, Resolution};
 // `ROAD-M4-008` 选项 (a)：控制面会话是**唯一可变权威**，界面是它的投影。
@@ -122,7 +124,7 @@ use yeban_app::save::{SaveError, save_project_file};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_engine::meter::MeterCollector;
-use yeban_model::YebanProjectV1;
+use yeban_model::{EntityId, YebanProjectV1};
 use yeban_ui_mcp::ime::{ImeFocus, ImeState};
 use yeban_ui_mcp::live::ControlPlane;
 use yeban_ui_mcp::service::UiService;
@@ -191,6 +193,18 @@ impl Default for LiveWiringOptions {
             undo: None,
         }
     }
+}
+
+/// **一次心跳的读数**（[`LiveUi::engine_heartbeat`] 的返回值）。
+///
+/// 它是生产 `run_gui` 的 60Hz 定时器那一跳的**逐字复制**：先按需增量发布快照，再回收
+/// （`SnapshotSlot::prune` + `RetireQueue::drain`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineTick {
+    /// 这一跳真的发布了新快照时是它的版本号；标记没变（或没有工程可投影）时是 `None`。
+    pub published_revision: Option<u64>,
+    /// 回收读数（见 [`HeartbeatReadings`]）。
+    pub readings: HeartbeatReadings,
 }
 
 /// 接线过程可能出的错（投影层 / 注册表适配 / Tier-1 渲染层 / 引擎宿主）。
@@ -481,6 +495,37 @@ impl LiveAdminSurface {
         self.engine
             .reload(&self.project, self.engine_quanta)
             .map_err(LiveWiringError::from)
+    }
+
+    /// **编辑 ⇒ 发声**的一跳：按需增量发布快照 ＋ 回收（生产 60Hz 心跳的三步）。
+    ///
+    /// 顺序是契约（与 `src/main.rs` 的 `run_gui` 逐字相同）：
+    /// 1. 标记与"当前快照已经反映的"相同 ⇒ **不发布**（也不克隆工程）；
+    /// 2. 不同 ⇒ `EngineHost::publish_project` 增量发布（**不是** `reload`：它不换代、
+    ///    不动 `quanta` 契约）；
+    /// 3. 无论发没发 ⇒ `EngineHost::heartbeat`：`prune` + `drain`。
+    ///
+    /// ⛔ ②与③必须在**同一条调用序列**里：只发布不回收会留下"只涨不回收"的慢泄漏。
+    fn engine_tick(&mut self, mark: EditMark, project: Option<&YebanProjectV1>) -> EngineTick {
+        let mut published_revision = None;
+        if self.engine.has_engine()
+            && self.engine.should_publish(mark)
+            && let Some(project) = project
+        {
+            published_revision = self.engine.publish_project(project, mark).ok();
+        }
+        EngineTick {
+            published_revision,
+            readings: self.engine.heartbeat(),
+        }
+    }
+
+    /// 驱动音频侧 `quanta` 个量子（**不**排空退役队列）—— 设备回调那一侧的替身。
+    ///
+    /// 本机没有 cpal 回调线程（AGENTS.md §5），判据用它把"读者换了快照、旧快照进了
+    /// 退役队列"这个窗口造出来，再由**心跳**回收。
+    fn drive_audio(&mut self, quanta: u64) -> u64 {
+        self.engine.drive_audio(quanta)
     }
 
     /// 一轮电平消费：抽干 → 对齐工程 → 注入 Slint → 重抓树。
@@ -1122,6 +1167,68 @@ impl LiveUi {
     /// 一轮电平消费（60Hz 定时器腿）：抽干 → 面板 → 注入 `.slint` → 重抓树。
     pub fn pump_meters(&mut self) -> MeterSnapshot {
         self.surface.pump_meters()
+    }
+
+    /// **起一代引擎**：与 `ui/reload_engine` **同一条路径**（`EngineHost::reload`），
+    /// 并把新队列交给电平消费端（[`MeterRuntime::adopt`]）。
+    ///
+    /// 存在的理由：`ui/reload_engine` 只在控制面上可达，而控制面会**消费**执行面
+    /// （`into_control_plane` 把它装箱取走）；"编辑 ⇒ 发声"的判据需要在**同一个**活窗口上
+    /// 先起引擎、再动混音台、再读快照，因此这里给出同一条路径的第二个入口。
+    ///
+    /// # Errors
+    ///
+    /// 工程投影失败（例如没有主总线）—— 引擎没有被换掉（`reload` 的既有契约）。
+    pub fn start_engine(&mut self) -> Result<(), LiveWiringError> {
+        let rebuild = self.surface.rebuild_engine()?;
+        // 新引擎 ⇒ 旧读数作废：与 `reload_engine_now` 同款，消费端交给 UI 线程。
+        self.surface.meters.adopt(rebuild.collector);
+        Ok(())
+    }
+
+    /// **生产心跳的一跳**（`src/main.rs` 的 60Hz 定时器调用序列的逐字复制）：
+    /// 按需增量发布快照 ＋ 回收。
+    ///
+    /// `project` 只在标记变化时才被读取 —— 生产路径传的是 `UndoPort::try_project`（整份
+    /// 工程的克隆），因此"没改就不克隆"是这一跳的成本契约。
+    pub fn engine_heartbeat(
+        &mut self,
+        mark: EditMark,
+        project: Option<&YebanProjectV1>,
+    ) -> EngineTick {
+        self.surface.engine_tick(mark, project)
+    }
+
+    /// 驱动音频侧 `quanta` 个量子（**不**排空退役队列）—— 设备回调那一侧的替身。
+    pub fn drive_audio(&mut self, quanta: u64) -> u64 {
+        self.surface.drive_audio(quanta)
+    }
+
+    /// 当前快照槽的计数（判据读 `published` / `pending_len` / `pruned`；没有引擎时 `None`）。
+    #[must_use]
+    pub fn engine_snapshot_counts(&self) -> Option<SnapshotCounts> {
+        self.surface.engine.snapshot_counts()
+    }
+
+    /// 当前引擎快照里某轨的音量（**dB**，f32）—— 判据读回的"那一个字面字段"。
+    ///
+    /// 没有引擎 / 快照里没有这条轨道 ⇒ `None`（不猜、不返回 0.0）。
+    #[must_use]
+    pub fn engine_track_volume_db(&self, track_id: &EntityId) -> Option<f32> {
+        self.surface
+            .engine
+            .current_snapshot()?
+            .track(track_id)
+            .map(|params| params.volume_db())
+    }
+
+    /// 音频读路径累计换过多少次快照（`SnapshotReader::begin_block` 里的计数）。
+    #[must_use]
+    pub fn engine_snapshot_switches(&self) -> Option<u64> {
+        self.surface
+            .engine
+            .engine_stats()
+            .map(|stats| stats.snapshot_switches)
     }
 
     /// 换一个工程（同一个活窗口上的重新投影 + 重新注入）。

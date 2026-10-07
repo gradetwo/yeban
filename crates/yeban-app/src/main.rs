@@ -79,10 +79,17 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use yeban_app::cli::{self, Options};
-use yeban_app::engine_host::EngineHost;
+use yeban_app::engine_host::{EditMark, EngineHost};
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::undo::{UndoPort, UndoSession};
+
+/// 主线程心跳的周期（毫秒）。
+///
+/// `16 ms` ⇒ **62.5 Hz**，不低于 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2
+/// 要求的 60Hz（那一节要求主线程以 60Hz 轮询退役队列并负责旧快照的 `Drop`）。
+/// 这一跳同时承担"编辑 ⇒ 增量发布快照"与"写者侧回收"两件事，见 `run_gui` 的注释。
+const HEARTBEAT_PERIOD_MS: u64 = 16;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -225,10 +232,65 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         cli::emit(&[format!(
             "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
         )]);
+    } else {
+        // 初始快照**就是**这份工程的投影 ⇒ 记下开局标记，免得第一次心跳白发一份
+        // （`reload` 不知道"这一份投影对应哪个撤销标记"，只有装配点知道）。
+        engine.mark_applied(EditMark::from_display(&undo_port.display()));
     }
     engine.stop();
     let engine = Rc::new(RefCell::new(engine));
     host::apply_transport(&ui, engine.borrow().transport());
+
+    // -----------------------------------------------------------------------
+    // 60Hz 主线程心跳：**编辑 ⇒ 发声** 的发布点 ＋ 退役回收（本票补上的那一段）
+    // -----------------------------------------------------------------------
+    //
+    // 这一跳做三件事，缺一不可：
+    //
+    // ① 读撤销端口的**模型读数**（`UndoPort::display` 的 `head` / `undone`）：一次提交会
+    //    换 `head`，一次撤销 / 重做会改 `undone` ⇒ 这是"工程改过没有"的轻量信号，同时
+    //    覆盖 GUI 编辑（推子 / 声相 / 静音 / 独奏 / 卷帘）与挂了控制面时的 AI 编辑
+    //    （两种后端都经同一个 `UndoPort::display`，见 `undo::UndoBackend`）。
+    // ② 改过 ⇒ `EngineHost::publish_project` **增量**发布：只换快照，不重建槽 / 队列 /
+    //    `EngineRuntime`。⛔ 不用 `EngineHost::reload` —— 它会改掉 `ui/reload_engine` 的
+    //    `quanta` 契约（既有判据 `admin_reload_engine_*` 钉着那一条）。
+    // ③ 不论改没改，`EngineHost::heartbeat` 都要跑：`SnapshotSlot::prune` 释放写者侧
+    //    待回收清单、`RetireQueue::drain` 把读者交出的旧快照 **Drop** 掉。
+    //    ⛔ 没有 ③，②就是一条"只涨不回收"的慢泄漏。
+    //
+    // 线程：Slint 事件循环线程 —— 它就是建这一代引擎（= 建退役队列）的那一个线程，
+    // 因此 `RetireQueue::release_thread_is_main()` 保持为真、`foreign_drains == 0`
+    // [MUST-GATE-012]。音频回调那条读路径（`SnapshotReader::begin_block`）一位没动
+    // [ARCH-RT-001 / MUST-GATE-001]。
+    //
+    // 启停：句柄必须活到事件循环结束（drop 掉它 = 取消回调）。窗口关闭 ⇒
+    // `ComponentHandle::run` 返回 ⇒ `run_gui` 返回 ⇒ 句柄被 drop ⇒ 心跳停止；
+    // 控制面会话被关掉 ⇒ `try_project()` 读到 `None` ⇒ 发布自然停止（回收继续跑到
+    // 窗口关闭为止）。
+    let heartbeat = slint::Timer::default();
+    {
+        let engine = Rc::clone(&engine);
+        let port = Rc::clone(&undo_port);
+        heartbeat.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(HEARTBEAT_PERIOD_MS),
+            move || {
+                let mark = EditMark::from_display(&port.display());
+                let mut engine = engine.borrow_mut();
+                if !engine.has_engine() {
+                    return;
+                }
+                if engine.should_publish(mark)
+                    && let Some(project) = port.try_project()
+                    && let Err(error) = engine.publish_project(&project, mark)
+                {
+                    // 投影失败**不改播放侧**（旧快照原样保留）⇒ 如实出声，不静默。
+                    eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
+                }
+                let _ = engine.heartbeat();
+            },
+        );
+    }
 
     wire_callbacks(&ui, &engine);
     // `[UI-A11Y-002]` §7.2 的**事件源**：BPM 敲入控件里真 `TextInput` 的
