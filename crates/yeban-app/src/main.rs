@@ -79,7 +79,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use yeban_app::cli::{self, Options};
-use yeban_app::engine_host::{EditMark, EngineHost};
+use yeban_app::engine_host::EditMark;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::undo::{UndoPort, UndoSession};
@@ -173,11 +173,19 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 5 张 Linux 基准要按手动档 `gates-manual.yml gate=goldens` 重录 + 人工复核（`HD-56`）。
     host::apply_theme(&ui, options.theme);
 
-    // 走带要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁通道 + 量子驱动）。
-    // 用 0 个量子重建（不空转；`reload` **不改**走带状态），随后显式发一条 `Stop`
-    // 把这一代停在 `Stopped`，与界面的初始 `playing: false` 一致 ——
-    // 这一步是**引擎侧的动作**（真的过无锁通道、真的在量子边界生效），
-    // 不是把界面属性改一下了事。
+    // 走带与电平都要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁事件通道 +
+    // 电平 SPSC + 量子驱动）。`ProductionLoop::start` 做两件事，第二件是本票修的缺口：
+    //
+    // ① 用 0 个量子重建（不空转；`reload` **不改**走带状态），随后显式发一条 `Stop`
+    //    把这一代停在 `Stopped`，与界面的初始 `playing: false` 一致 ——
+    //    这一步是**引擎侧的动作**（真的过无锁通道、真的在量子边界生效），
+    //    不是把界面属性改一下了事；
+    // ② **采纳** `reload` 交出的电平消费端（`EngineRebuild::collector`）。
+    //    ⛔ 这一条以前被丢掉：`if let Err(error) = engine.reload(..)` 只看了错误那一侧，
+    //    于是引擎侧那条 SPSC 没有消费者，界面上的电平表永远不动
+    //    （`crate::meters` 的模块文档与 `engine_host.rs:224` 都要求 UI 线程采纳它）。
+    //    现在"建引擎 + 采纳消费端 + 每一跳"都住在 [`host::ProductionLoop`] 里，
+    //    生产路径与判据走同一段代码。
     //
     // 撤销会话（会话运行态）[ADR-0001 D45 / MODEL-ISO-001]。
     // 打开一个工程 = **新会话**：游标与活跃分支都从头开始，因此撤销不可能跨越打开边界。
@@ -225,27 +233,33 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         &loaded,
         now_ms,
     )?));
-    let mut engine = EngineHost::new();
-    if let Err(error) = engine.reload(&loaded.archive.project, 0) {
+    let engine = host::ProductionLoop::start(&loaded.archive.project, 0).unwrap_or_else(|error| {
         // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
         // 但走带回调会明确报告"没有引擎"，而不是静默地假装在播。
+        // ⛔ 这一段与接电平之前**逐字相同** —— 电平腿不许改这条语义。
         cli::emit(&[format!(
             "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
         )]);
-    } else {
+        host::ProductionLoop::without_engine()
+    });
+    if engine.has_engine() {
         // 初始快照**就是**这份工程的投影 ⇒ 记下开局标记，免得第一次心跳白发一份
         // （`reload` 不知道"这一份投影对应哪个撤销标记"，只有装配点知道）。
-        engine.mark_applied(EditMark::from_display(&undo_port.display()));
+        // 随后显式发一条 `Stop`：新引擎沿用"自由跑"默认值，而界面的初始态是 `playing: false`。
+        engine
+            .engine_handle()
+            .borrow_mut()
+            .mark_applied(EditMark::from_display(&undo_port.display()));
+        engine.engine_handle().borrow_mut().stop();
     }
-    engine.stop();
-    let engine = Rc::new(RefCell::new(engine));
-    host::apply_transport(&ui, engine.borrow().transport());
-
+    let engine_handle = engine.engine_handle();
+    host::apply_transport(&ui, engine_handle.borrow().transport());
     // -----------------------------------------------------------------------
-    // 60Hz 主线程心跳：**编辑 ⇒ 发声** 的发布点 ＋ 退役回收（本票补上的那一段）
+    // 60Hz 主线程心跳：**编辑 ⇒ 发声** 的发布点 ＋ 退役回收 ＋ **电平抽干**
     // -----------------------------------------------------------------------
     //
-    // 这一跳做三件事，缺一不可：
+    // 这一跳做三件事，缺一不可（实现住在 [`host::ProductionLoop::tick`]，
+    // 生产窗口与判据因此走**同一段**代码）：
     //
     // ① 读撤销端口的**模型读数**（`UndoPort::display` 的 `head` / `undone`）：一次提交会
     //    换 `head`，一次撤销 / 重做会改 `undone` ⇒ 这是"工程改过没有"的轻量信号，同时
@@ -257,42 +271,63 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ③ 不论改没改，`EngineHost::heartbeat` 都要跑：`SnapshotSlot::prune` 释放写者侧
     //    待回收清单、`RetireQueue::drain` 把读者交出的旧快照 **Drop** 掉。
     //    ⛔ 没有 ③，②就是一条"只涨不回收"的慢泄漏。
+    // ④ 不论改没改，`host::pump_meters` 也要跑：抽干电平 SPSC → 对齐投影 →
+    //    `host::apply_meters` 写 Slint 属性。⛔ 没有 ④，引擎侧的队列没有消费者，
+    //    而界面上的电平表永远不动（本票修的就是这一条；消费端的采纳在
+    //    [`host::ProductionLoop::start`]）。
+    //
+    // 为什么 ②③④ 共用**同一个** tick：见 `host::ProductionLoop::tick` 的文档
+    // （同为 60Hz 一条腿 ⇒ 拆开只会多一次唤醒，还要另证"电平在快照之后被抽"）。
     //
     // 线程：Slint 事件循环线程 —— 它就是建这一代引擎（= 建退役队列）的那一个线程，
     // 因此 `RetireQueue::release_thread_is_main()` 保持为真、`foreign_drains == 0`
     // [MUST-GATE-012]。音频回调那条读路径（`SnapshotReader::begin_block`）一位没动
-    // [ARCH-RT-001 / MUST-GATE-001]。
+    // [ARCH-RT-001 / MUST-GATE-001]：本跳只**读**队列，从不给音频侧加任何东西。
     //
-    // 启停：句柄必须活到事件循环结束（drop 掉它 = 取消回调）。窗口关闭 ⇒
-    // `ComponentHandle::run` 返回 ⇒ `run_gui` 返回 ⇒ 句柄被 drop ⇒ 心跳停止；
-    // 控制面会话被关掉 ⇒ `try_project()` 读到 `None` ⇒ 发布自然停止（回收继续跑到
-    // 窗口关闭为止）。
+    // 启停：句柄必须活到事件循环结束（drop 掉它 = 取消回调；上游
+    // `i-slint-core-1.18.1/timers.rs:253` 的 `impl Drop for Timer` 就是"从定时器表里摘掉
+    // 这个槽并 drop 回调"）。窗口关闭 ⇒ `ComponentHandle::run` 返回 ⇒ `run_gui` 返回 ⇒
+    // 句柄被 drop ⇒ tick 停 ⇒ **不再 poll**；控制面会话被关掉 ⇒ `try_project()` 读到
+    // `None` ⇒ 发布自然停止（回收与电平继续跑到窗口关闭为止）。
     let heartbeat = slint::Timer::default();
+    // 长度契约被换工程打破时**只出声一次**（16 ms 一跳的 eprintln 会淹掉终端）。
+    let meter_mismatch_warned = Rc::new(std::cell::Cell::new(false));
+    // `ProductionLoop` 归心跳闭包所有（`Rc` +1）：闭包被 drop（窗口关闭）即释放，
+    // 里面的电平消费端随之 drop ⇒ tick 停 ⇒ **不再 poll**。
+    // 走带回调拿的是**同一个** `EngineHost`（`engine_handle()` 只是 `Rc` 计数 +1）。
+    let production = Rc::new(RefCell::new(engine));
     {
-        let engine = Rc::clone(&engine);
+        let production_tick = Rc::clone(&production);
         let port = Rc::clone(&undo_port);
+        let ui_tick = slint::ComponentHandle::clone_strong(&ui);
+        let view_tick = view.clone();
+        let warned = Rc::clone(&meter_mismatch_warned);
         heartbeat.start(
             slint::TimerMode::Repeated,
             std::time::Duration::from_millis(HEARTBEAT_PERIOD_MS),
             move || {
                 let mark = EditMark::from_display(&port.display());
-                let mut engine = engine.borrow_mut();
-                if !engine.has_engine() {
-                    return;
-                }
-                if engine.should_publish(mark)
-                    && let Some(project) = port.try_project()
-                    && let Err(error) = engine.publish_project(&project, mark)
+                let mut production = production_tick.borrow_mut();
+                // "没改就不克隆工程"是这一跳的成本契约 ⇒ 先问标记，再决定要不要 `try_project`。
+                let project = if production.should_publish(mark) {
+                    port.try_project()
+                } else {
+                    None
+                };
+                let tick = production.tick(&ui_tick, &view_tick, mark, project.as_ref());
+                if let host::MeterPump::LengthMismatch { rows, projected } = tick.meters
+                    && !warned.get()
                 {
-                    // 投影失败**不改播放侧**（旧快照原样保留）⇒ 如实出声，不静默。
-                    eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
+                    eprintln!(
+                        "[yeban-app] 电平未注入: 界面有 {rows} 条轨道、手里那份投影有 \
+                         {projected} 条 —— 控制面换过工程? 电平表停在静音值"
+                    );
+                    warned.set(true);
                 }
-                let _ = engine.heartbeat();
             },
         );
     }
-
-    wire_callbacks(&ui, &engine);
+    wire_callbacks(&ui, &production.borrow().engine_handle());
     // `[UI-A11Y-002]` §7.2 的**事件源**：BPM 敲入控件里真 `TextInput` 的
     // `preedit-text` / `has-focus` 变化 → `ime-composition-changed` / `ime-focus-changed`
     // → `InputContext`（合成态的唯一载体）。
@@ -552,7 +587,10 @@ fn mount_in_process_mcp(
 ///
 /// 回调跑在 UI 线程上; `[ARCH-TOP-002]` / `[ARCH-RT-001]` 约束的是音频线程,
 /// 所以这里的 `eprintln!` 不触碰红线 —— 但接线真实动作时**仍然不许**做长阻塞等待。
-fn wire_callbacks(ui: &yeban_app::ui::MainWindow, engine: &Rc<RefCell<EngineHost>>) {
+fn wire_callbacks(
+    ui: &yeban_app::ui::MainWindow,
+    engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
+) {
     host::wire_transport(ui, Rc::clone(engine));
     host::wire_view_callbacks(ui);
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));

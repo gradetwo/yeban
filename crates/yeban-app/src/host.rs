@@ -47,9 +47,9 @@ use slint::{ModelRc, SharedString, VecModel};
 use yeban_engine::transport::TransportReading;
 
 use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
-use crate::engine_host::EngineHost;
+use crate::engine_host::{EditMark, EngineHost, EngineHostError, HeartbeatReadings};
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
-use crate::meters::{MeterSnapshot, silent_snapshot};
+use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
 use crate::ui::{MainWindow, ThemeState, YebanTheme};
 use crate::undo::{UiAction, UndoPort};
@@ -1156,6 +1156,245 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     ui.set_master_meter_peak(snapshot.master_peak_label().into());
     ui.set_master_meter_rms(snapshot.master_rms_label().into());
     ui.set_master_meter_level(snapshot.master_level());
+}
+
+// ===========================================================================
+// 生产心跳：引擎（增量发布 ＋ 回收）与电平（抽干 ＋ 注入）的**唯一**一跳
+// ===========================================================================
+
+/// 一次**生产心跳**的完整读数（`src/main.rs` 的 16 ms 定时器与判据**共用**这一处）。
+///
+/// 为什么把三样东西捆成一个返回值：这一跳的三件事有**顺序契约**
+/// （发布 ⇒ 回收 ⇒ 抽电平），而"哪一跳真的做了哪几件"正是判据要读的字面读数。
+#[derive(Debug)]
+pub struct ProductionTick {
+    /// 这一跳增量发布的快照版本号；`None` = 没发布（标记没变 / 没有工程可发 / 发布失败）。
+    pub published_revision: Option<u64>,
+    /// 这一跳的回收读数；`None` = **没有引擎**（这一跳一位没动）。
+    pub readings: Option<HeartbeatReadings>,
+    /// 电平腿的结局。
+    pub meters: MeterPump,
+}
+
+/// 电平腿（[`pump_meters`]）的三种结局 —— 三种都能被调用方与判据**分开**读。
+///
+/// 用枚举而不是 `Option<MeterSnapshot>`：`None` 会把"没有引擎"与"长度契约不成立"
+/// 混成同一件事，而这两种情况的处置完全不同（一个什么都不做，一个只抽干不注入）。
+#[derive(Debug)]
+pub enum MeterPump {
+    /// 没有引擎（`reload` 从未成功过）⇒ 一位没写，电平表停在 [`apply_view`] 写的静音值。
+    NoEngine,
+    /// 这一轮的电平已经写进界面（经由 [`apply_meters`]）。
+    Applied(MeterSnapshot),
+    /// 界面**此刻**的轨道数与手里那份投影**不等长** ⇒ 只抽干、**不注入**。
+    ///
+    /// 造出这种状态的只有一件事：**控制面换了工程**（`yeban_open_project` 换掉轨道集合，
+    /// `crate::reproject::AuthorityMirror` 随后用新投影调 [`apply_view`]）。界面自己是对的
+    /// ——`apply_view` 已经按新工程把电平数组重置成静音——但持有本循环的那一段代码手里
+    /// 的 `view` 还是旧的那一份。拿它注入会让 [`apply_meters`] 的"等长"契约失效
+    /// （`.slint` 按下标取 ⇒ A 轨的电平画到 B 轨上）。
+    ///
+    /// 因此这一跳**仍然抽干队列**（音频侧不该因为界面换了工程而积压/丢帧），
+    /// 只是不注入。两个长度如实回报，让调用方能出声。
+    LengthMismatch {
+        /// 界面此刻 `track-names` 的长度。
+        rows: usize,
+        /// 调用方手里那份投影的轨道数。
+        projected: usize,
+    },
+}
+
+/// GUI 主线程的**生产心跳**：引擎与电平两条腿的装配，以及逐跳驱动。
+///
+/// ## 它补的是哪一个洞（本票的核心，实测）
+///
+/// 在它之前，`src/main.rs` 的 `run_gui` 写的是
+/// `if let Err(error) = engine.reload(&project, 0) { … }` —— 于是 `Ok` 那一侧
+/// **整个被丢掉**，而 `Ok` 装的 [`crate::engine_host::EngineRebuild`] 里就有
+/// [`crate::engine_host::EngineRebuild::collector`]（新引擎的电平消费端，
+/// `engine_host.rs:224` 的注释写着"**UI 线程必须采纳它**"）。
+/// 后果有两条，都在生产窗口里：引擎侧那条 SPSC **没有消费者**（满则丢最新帧），
+/// 而界面上的电平表永远停在 `apply_view` 写下的静音值。
+///
+/// 把"建引擎 ＋ 采纳消费端 ＋ 每一跳"收进**这一个**类型之后，产品路径与判据走的是
+/// 同一段代码：在 `run_gui` 里"丢掉消费端"这件事**已经无法表达**（它拿不到 collector）。
+///
+/// ## 线程
+///
+/// 全部方法都跑在 **UI / 主线程**上（`slint::Timer` 的回调线程就是建这一代引擎的线程）。
+/// 因此 [`crate::engine_host::EngineHost::heartbeat`] 的
+/// `RetireQueue::release_thread_is_main()` 保持为真，而音频回调那条读路径
+/// （`SnapshotReader::begin_block`）一位没动 `[ARCH-RT-001 / MUST-GATE-001]`。
+pub struct ProductionLoop {
+    /// 引擎宿主。`run_gui` 还要把它交给走带回调（[`wire_transport`]），
+    /// 因此这里存 `Rc<RefCell<..>>` 而不是裸值 —— [`Self::engine_handle`] 交出**同一个**实例。
+    engine: Rc<RefCell<EngineHost>>,
+    /// UI 线程持有的电平消费端（[`crate::meters::MeterRuntime`]）。
+    meters: MeterRuntime,
+}
+
+impl ProductionLoop {
+    /// **生产方式**：真的建一代引擎，并把 `reload` 交出的电平**消费端**采纳进来。
+    ///
+    /// 这是电平腿的**唯一**开关。`EngineRebuild::collector` 是**所有权**
+    /// （消费端只能被采纳一次），因此"丢掉它"在这里等价于删掉下面那一行 ——
+    /// 而删掉之后 [`Self::tick`] 的 `MeterPump` 会一直停在"没有读数"
+    /// （判据 `production_tick_drains_the_engine_meter_queue_and_advances_the_quantum`
+    /// 因此变红）。
+    ///
+    /// # Errors
+    ///
+    /// [`EngineHostError`]：工程投影不成快照（没有主总线 / 路由图成环 / 模型校验失败）。
+    /// 这时调用方改用 [`Self::without_engine`] —— 界面照常打开，与接电平之前**一位不变**。
+    pub fn start(
+        project: &yeban_model::YebanProjectV1,
+        quanta: u64,
+    ) -> Result<Self, EngineHostError> {
+        let mut engine = EngineHost::new();
+        let rebuild = engine.reload(project, quanta)?;
+        let mut meters = MeterRuntime::empty();
+        // ⛔ 本票修的那一处。`adopt` 的语义是"引擎换代 ⇒ 旧读数全部作废"
+        // （见 `crate::meters::MeterRuntime::adopt`），它同时把消费端的所有权接过来。
+        meters.adopt(rebuild.collector);
+        Ok(Self {
+            engine: Rc::new(RefCell::new(engine)),
+            meters,
+        })
+    }
+
+    /// **没有引擎**的形态（`reload` 返回 `Err` 时用它）。
+    ///
+    /// 语义与接电平之前**逐字相同**：窗口照常开、走带回调明确报告"没有引擎"、
+    /// 电平表停在 [`apply_view`] 写的静音值（[`MeterPump::NoEngine`]）。
+    #[must_use]
+    pub fn without_engine() -> Self {
+        Self {
+            engine: Rc::new(RefCell::new(EngineHost::new())),
+            meters: MeterRuntime::empty(),
+        }
+    }
+
+    /// 引擎在这个进程里活没活着（`reload` 成功过）。
+    #[must_use]
+    pub fn has_engine(&self) -> bool {
+        self.engine.borrow().has_engine()
+    }
+
+    /// 引擎宿主句柄 —— 与 [`wire_transport`] 共用**同一个** `EngineHost`
+    /// （`Rc` 计数 +1，不是复制一份宿主）。
+    #[must_use]
+    pub fn engine_handle(&self) -> Rc<RefCell<EngineHost>> {
+        Rc::clone(&self.engine)
+    }
+
+    /// UI 线程持有的电平消费端（判据读它的面板与计数器）。
+    #[must_use]
+    pub const fn meters(&self) -> &MeterRuntime {
+        &self.meters
+    }
+
+    /// 电平消费端的**可写**入口。
+    ///
+    /// 存在的理由与 [`crate::meters::MeterRuntime::adopt`] 相同：引擎换代（`ui/reload_engine`
+    /// 那一类动作）会把**新**的消费端交给 UI 线程，而持有本循环的那一侧是唯一的落点。
+    /// 生产路径上没有任何调用者（生产只有 [`Self::start`] 一处装配）。
+    pub const fn meters_mut(&mut self) -> &mut MeterRuntime {
+        &mut self.meters
+    }
+
+    /// 这一跳要不要读工程（`true` = 标记变了）。
+    ///
+    /// 单独暴露它，是为了让调用方在**克隆工程之前**问这一句：
+    /// 生产路径传进来的是 `UndoPort::try_project()`（整份工程的克隆），
+    /// "没改就不克隆"是 [`Self::tick`] 的成本契约。
+    #[must_use]
+    pub fn should_publish(&self, mark: EditMark) -> bool {
+        self.engine.borrow().should_publish(mark)
+    }
+
+    /// **一跳**（`run_gui` 的 16 ms 定时器体）。
+    ///
+    /// 顺序是契约，三步在**同一个** tick 上：
+    ///
+    /// 1. 标记变了且有工程可发 ⇒ [`EngineHost::publish_project`] **增量**发布
+    ///    （只换快照；**不用** `reload`，那会改掉 `ui/reload_engine` 的 `quanta` 契约）；
+    /// 2. 不论改没改 ⇒ [`EngineHost::heartbeat`]：`SnapshotSlot::prune` ＋ `RetireQueue::drain`
+    ///    （⛔ 不做 ② ⇒ ①就是一条"只涨不回收"的慢泄漏）；
+    /// 3. 不论改没改 ⇒ [`pump_meters`]：抽干 SPSC → 对齐投影 → 写 Slint 属性。
+    ///
+    /// ## 为什么电平与发布**共用**这一个 tick
+    ///
+    /// - `[ARCH-UI-002]` 要的就是"UI 线程定时器"这一条腿，两者的目标频率同为 60Hz；
+    /// - 共用一跳给出一个**顺序保证**：电平永远在"快照已经换过"之后被抽。
+    ///   两个定时器要做到同一件事，得再论证一次两者的先后；
+    /// - 成本上没有拆的理由：标记没变时 ① 是一次 `u64` 比较，② 是两条队列的长度检查，
+    ///   ③ 是一次 SPSC 抽干（空队列时零拷贝）。三件都是 O(1)～O(轨道数)，且都不分配
+    ///   （分配只发生在 `MeterRuntime::poll` 第一次扩容搬运缓冲时，那也在 UI 线程上）。
+    ///
+    /// 没有引擎 ⇒ **一位不动**（不发布、不回收、不注入），与接电平之前逐字相同。
+    #[must_use]
+    pub fn tick(
+        &mut self,
+        ui: &MainWindow,
+        view: &ViewState,
+        mark: EditMark,
+        project: Option<&yeban_model::YebanProjectV1>,
+    ) -> ProductionTick {
+        let mut engine = self.engine.borrow_mut();
+        if !engine.has_engine() {
+            return ProductionTick {
+                published_revision: None,
+                readings: None,
+                meters: MeterPump::NoEngine,
+            };
+        }
+        let mut published_revision = None;
+        if engine.should_publish(mark)
+            && let Some(project) = project
+        {
+            match engine.publish_project(project, mark) {
+                Ok(revision) => published_revision = Some(revision),
+                // 投影失败**不改播放侧**（旧快照原样保留）⇒ 如实出声，不静默。
+                Err(error) => {
+                    eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
+                }
+            }
+        }
+        let readings = engine.heartbeat();
+        drop(engine);
+        ProductionTick {
+            published_revision,
+            readings: Some(readings),
+            meters: pump_meters(ui, &mut self.meters, view),
+        }
+    }
+}
+
+/// **电平腿的一跳**：抽干队列 → 对齐投影 → 写进界面。
+///
+/// 顺序是契约：先抽干（把队列里的积压全部消费掉），再对齐，最后注入。
+///
+/// ⚠ **长度契约**：注入之前先比"界面此刻的 `track-names` 长度"与
+/// `snapshot.tracks.len()`。不等长时**跳过注入**并如实回报两个长度
+/// （理由见 [`MeterPump::LengthMismatch`]）。抽干**照做** —— 音频侧不该因为
+/// 界面的轨道集合换了而积压。
+///
+/// 这个函数跑在 UI 线程上，因此它**允许**分配（`MeterRuntime::poll` 可能扩容搬运缓冲）；
+/// 红线 7（`MUST-GATE-001`）约束的是音频线程，而这里没有一行代码跑在音频线程上。
+pub fn pump_meters(ui: &MainWindow, meters: &mut MeterRuntime, view: &ViewState) -> MeterPump {
+    // `+ 1` 是主总线：引擎每个量子发布的帧数是"非母线轨数 + 1"
+    // （`docs/ledger/engine-meters-notes.md` §2 的结构性契约）。
+    meters.poll(view.tracks.len() + 1);
+    let snapshot = meters.snapshot(view);
+    let rows = slint::Model::row_count(&ui.get_track_names());
+    if rows != snapshot.tracks.len() {
+        return MeterPump::LengthMismatch {
+            rows,
+            projected: snapshot.tracks.len(),
+        };
+    }
+    apply_meters(ui, &snapshot);
+    MeterPump::Applied(snapshot)
 }
 
 /// 把**引擎的**走带读数注入界面（`playing` 显示态 + 时间码）。
