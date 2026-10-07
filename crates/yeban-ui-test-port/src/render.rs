@@ -41,6 +41,7 @@
 //! 一个 `#[test]` 里装一次、用完即弃是最稳的用法。`cargo test` 默认每个测试一个线程，
 //! 所以"每个测试各装一次"是安全的（不要在同一测试里装两次）。
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -145,6 +146,16 @@ impl Platform for Tier1Platform {
 #[derive(Clone)]
 pub struct Tier1Window {
     window: Rc<MinimalSoftwareWindow>,
+    /// 已经真的光栅化过的帧数（**探针**，不参与任何渲染决策）。
+    ///
+    /// 存在的理由只有一条：把"**读控件树不得渲染一帧**"变成可断言的不变量 ——
+    /// 控件树是**元数据**，一次全树内省（85 个节点）是毫秒级，而一帧 1920×1080 的
+    /// Tier-1 全量软件光栅化是百毫秒级；把渲染挂在读路径上会让每一次 `ui/tree`
+    /// 白渲染一张没人看的帧，而**没有任何断言会因此变红**。
+    ///
+    /// `Rc<Cell<_>>` ⇒ 同一窗口的所有 `Clone` 共享同一个计数（与 `window` 字段同款：
+    /// 这是共享句柄，不是第二份窗口状态）。
+    renders: Rc<Cell<usize>>,
 }
 
 impl Tier1Window {
@@ -166,7 +177,10 @@ impl Tier1Window {
                 message: err.to_string(),
             }
         })?;
-        Ok(Self { window })
+        Ok(Self {
+            window,
+            renders: Rc::new(Cell::new(0)),
+        })
     }
 
     /// 当前窗口尺寸（物理像素）。
@@ -191,6 +205,14 @@ impl Tier1Window {
         self.window.request_redraw();
     }
 
+    /// 已经真的光栅化过的帧数（**探针**；见 [`Tier1Window::renders`] 字段的文档）。
+    ///
+    /// 判据用它钉住"读控件树不得渲染一帧"这条**成本**不变量。
+    #[must_use]
+    pub fn rendered_frames(&self) -> usize {
+        self.renders.get()
+    }
+
     /// 渲染当前窗口到内存缓冲，返回零 Slint 依赖的图像。
     ///
     /// 注意：`draw_if_needed` 只在"需要重绘"时调用回调，所以这里先显式
@@ -204,9 +226,13 @@ impl Tier1Window {
         let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(requested.width, requested.height);
         let stride = buffer.width() as usize;
         let mut drew = false;
+        let renders = Rc::clone(&self.renders);
         self.request_redraw();
         let redrawn = self.window.draw_if_needed(|renderer| {
             renderer.render(buffer.make_mut_slice(), stride);
+            // 计数点在**回调真的跑过**之后：`draw_if_needed` 说"不需要重绘"时不算一帧
+            // （那正是本探针要区分的两种情形）。
+            renders.set(renders.get() + 1);
             drew = true;
         });
         if !redrawn || !drew {

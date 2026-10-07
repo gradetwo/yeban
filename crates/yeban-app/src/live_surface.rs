@@ -130,7 +130,7 @@ use yeban_ui_mcp::surface::{
     AdminReport, PortAdapter, PreviewArguments, PreviewEffect, ReportValue, UiSurface,
 };
 use yeban_ui_test_port::port::{KeyCode, Permission, PointerButton, PortError, UiTestPort};
-use yeban_ui_test_port::render::{LivePort, RenderError};
+use yeban_ui_test_port::render::{LivePort, RenderError, Tier1Window};
 use yeban_ui_test_port::tree::{ControlTree, TreeError};
 use yeban_ui_test_port::{Rgb8Image, Size};
 
@@ -442,14 +442,33 @@ fn arrangement_view_of(view: &str) -> Option<bool> {
 impl LiveAdminSurface {
     /// 重抓运行时控件树（几何 / 可见性变了之后必须做，否则 `ui/tree` 还是旧的）。
     ///
-    /// **先做一次渲染再抓树**：Slint 的几何与 `visible` 是在渲染（布局）之后才更新的，
-    /// 而 `tree_from_element_root` 的遍历是"几何裁剪相交"的结论（不可见的分支不进树，
-    /// 见 `[ARCH-UI-005]` 的实测）。少了这一步，属性刚改完就抓树可能拿到**上一帧**的
-    /// 可见性 —— 既有判据（`test_port_adapter.rs` 的"换工程 ⇒ 换树"）用的也是
-    /// "改属性 → `capture()` → `refresh_tree()`"的顺序，这里把那次 `capture()` 收进来，
-    /// 让"改完立刻抓"与"抓之前截一张"不再有语义差别。抓帧失败不影响重抓（界面没坏）。
+    /// ## 为什么这里**不**先渲染一次（**更正** `bd9fbb6` 的取舍，依据是本轮实测）
+    ///
+    /// `bd9fbb6` 在这里加过一次 `window().capture()`，理由是"Slint 的几何与 `visible`
+    /// 是在渲染（布局）之后才更新的"⇒"改完立刻抓"可能与"抓之前截一张"不同。
+    /// 那一句是**从既有判据的调用顺序推出来的**，不是实测的结论（原提交信息自己写的是
+    /// "**可能**抓到上一帧的可见性"）。本轮把它量了：
+    ///
+    /// 1. **行为**：一次真实点击（`toggle-sidebar`，同时改**可见性**与**几何**）之后，
+    ///    不经过任何渲染、只做一次全树内省，`ui/tree` 的节点数 **85→81**、
+    ///    `sidebar-search-field` **在树里 → 不在树里**、`ui/node` 的
+    ///    `sidebar-collapse-button.x` **210→6**（判据
+    ///    `a_tree_read_sees_a_click_that_just_happened` 的字面读数）；
+    /// 2. **机理**：内省读的是元素的**属性**（`i-slint-backend-testing` 的
+    ///    `ElementHandle::absolute_position` / `size` → `ItemRc::geometry`，见上游
+    ///    `i-slint-backend-testing-1.18.1/search_api.rs:881` 与 `:893`），而几何在生成的
+    ///    代码里就是 `x` / `y` / `width` / `height` 这几个**属性**的惰性求值结果 ——
+    ///    属性一读就重算，不需要一次光栅化来"冲刷布局"；
+    /// 3. **代价**：`capture()` 是 1920×1080 的 Tier-1 全量软件光栅化，本机实测
+    ///    **100.23 ms**；同一次重抓里的全树内省（85 个节点）只有约 **5 ms**
+    ///    （`pump_meters()` 105.02 ms − `capture()` 100.23 ms）。这一步现在跑在
+    ///    **每一次 `ui/*` 读**上（`refresh_runtime_tree`），留着它等于让每次读都白渲染
+    ///    一张没人看的 6 MB 帧。
+    ///
+    /// ⚠ **未核实（如实登记）**：是否存在某种"只有渲染才 flush"的布局变化。本轮在
+    /// 本仓库现有判据覆盖到的变化里**没有找到**（两种 feature 配置下全部判据绿），
+    /// 但这条不是证明 —— 若将来出现，症状是"`ui/tree` 的几何/可见性落后一帧"。
     fn refresh_tree(&mut self) -> Result<usize, LiveWiringError> {
-        let _ = self.inner.port().window().capture();
         Ok(self
             .inner
             .port_mut()
@@ -844,6 +863,19 @@ impl UiSurface for LiveAdminSurface {
         self.inner.capture_image()
     }
 
+    /// 读方法在返回前调它：把控制面的运行时树**重抓到当下**（`ui/tree` / `ui/node` /
+    /// `ui/property` / `ui/dynamic_regions` / `ui/coverage` / `ui/screenshot` 都走这里）。
+    ///
+    /// 语义主体是 [`Self::refresh_tree`]（先 `capture()` 再全树内省 —— 几何与 `visible`
+    /// 在渲染之后才更新）。注册表必须传**自己那一份**：`apply_project` 会把它和投影一起换掉
+    /// （见 [`LiveUi`] 的文档：注册表**不存第二份**）。
+    ///
+    /// 失败时报 `Rejected` ⇒ 服务层在只读上下文里映射成既有的 `-32602`
+    /// （`D25`：不新增错误码），**不回退到旧缓存**。
+    fn refresh_runtime_tree(&mut self) -> Result<(), PortError> {
+        self.refresh_tree().map(|_| ()).map_err(wiring_rejected)
+    }
+
     fn take_admin_report(&mut self) -> Option<AdminReport> {
         self.report.take()
     }
@@ -1001,6 +1033,9 @@ impl LiveUi {
         // （`apply_project` 换掉的也是它）。顺序反了就是 E0382（CI 第一次抓到的就是这条）。
         let view = self.surface.view.clone();
         let registry = self.surface.registry.clone();
+        // 窗口句柄也在装箱前取出：它是 `Rc` **共享**（不是第二份窗口状态），
+        // 只用来读"这个窗口渲染了几帧"这个探针（见 [`LiveControlPlane::rendered_frames`]）。
+        let window = self.surface.inner.port().window().clone();
         let plane = match permission {
             Permission::ReadOnly => ControlPlane::read_only(Box::new(self.surface)),
             // 交互 / 管理两级都需要测试模式：`ui:inject` 在生产模式被硬禁
@@ -1018,6 +1053,7 @@ impl LiveUi {
             registry,
             scene: self.scene,
             reference: self.reference,
+            window,
         }
     }
 
@@ -1037,6 +1073,7 @@ impl LiveUi {
     pub fn into_production_control_plane(self, permission: Permission) -> LiveControlPlane {
         let view = self.surface.view.clone();
         let registry = self.surface.registry.clone();
+        let window = self.surface.inner.port().window().clone();
         let plane = ControlPlane::production(permission, Box::new(self.surface));
         LiveControlPlane {
             plane,
@@ -1044,6 +1081,7 @@ impl LiveUi {
             registry,
             scene: self.scene,
             reference: self.reference,
+            window,
         }
     }
 
@@ -1063,6 +1101,14 @@ impl LiveUi {
     /// 光栅化 / 抓帧失败。
     pub fn capture(&self) -> Result<Rgb8Image, PortError> {
         self.surface.capture_image()
+    }
+
+    /// 这个活窗口**已经真的光栅化过**的帧数（**探针**，见 [`Tier1Window::rendered_frames`]）。
+    ///
+    /// 判据用它钉住"重抓运行时树（全树内省）不得渲染一帧"这条**成本**不变量。
+    #[must_use]
+    pub fn rendered_frames(&self) -> usize {
+        self.surface.inner.port().window().rendered_frames()
     }
 
     /// 采纳一条新的电平队列（测试注入 / 引擎换代）。
@@ -1155,12 +1201,28 @@ pub struct LiveControlPlane {
     registry: ControlTree,
     scene: DemoScene,
     reference: Rgb8Image,
+    /// 活窗口的句柄（`Rc` **共享**，不是第二份窗口状态）。
+    ///
+    /// 只用来读一个探针：[`Self::rendered_frames`]。它是"读控件树不得渲染一帧"
+    /// 这条**成本**不变量的观测点 —— 没有它，`refresh_tree` 里被重新加回一次
+    /// `capture()` 也不会有任何判据变红。
+    window: Tier1Window,
 }
 
 impl LiveControlPlane {
     /// 借出控制面（发 `ui/*` 调用）。
     pub fn plane(&mut self) -> &mut ControlPlane {
         &mut self.plane
+    }
+
+    /// 这个活窗口**已经真的光栅化过**的帧数（**探针**，见 [`Tier1Window::rendered_frames`]）。
+    ///
+    /// 判据用它钉住：`ui/tree` / `ui/node` / `ui/property` 这些**读元数据**的方法
+    /// 不得渲染一帧；`ui/screenshot` 必须**恰好**渲染一帧（多一帧 = 白渲染，
+    /// 少一帧 = 像素来源可疑）。
+    #[must_use]
+    pub fn rendered_frames(&self) -> usize {
+        self.window.rendered_frames()
     }
 
     /// **取走服务本体**（`--enable-ui-mcp-http` 的环回传输按值持有它：

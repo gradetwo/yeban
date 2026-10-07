@@ -260,6 +260,20 @@ impl UiService {
         (status, payload)
     }
 
+    /// 读方法的新鲜度契约：**进入任何一个读运行时树的分支之前**，先让执行面把树缓存
+    /// 更新到"当下"（[`UiSurface::refresh_runtime_tree`]）。
+    ///
+    /// 三条口径：
+    /// 1. 失败的映射走**既有的只读上下文**（`PortContext::Read` ⇒ `-32602`，`D25`：
+    ///    不新增 JSON-RPC 错误码）；
+    /// 2. **不回退到旧缓存** —— 把一棵已知过期的树当成"当下的界面"发出去是最坏的一种成功；
+    /// 3. 没有活窗口的执行面（默认实现）什么都不做，因此"零 Slint 假面"的行为逐字不变。
+    fn refresh_before_read(&mut self) -> Result<(), ErrorObject> {
+        self.surface
+            .refresh_runtime_tree()
+            .map_err(|error| port_error(PortContext::Read, error))
+    }
+
     /// 方法实现（每一条都必须落到 [`UiSurface`]，**不允许**在这里编造数据）。
     ///
     /// ## `dryRun`（ADR-0001 **D48**）在这条函数里的位置
@@ -281,6 +295,7 @@ impl UiService {
         match spec.name {
             methods::METHOD_METHODS => Ok(self.describe()),
             methods::METHOD_TREE => {
+                self.refresh_before_read()?;
                 let projection = UiTree::from_runtime(self.surface.tree());
                 let prefix = text_param(params, "prefix");
                 let dynamic_only = bool_param(params, "dynamicOnly").unwrap_or(false);
@@ -297,6 +312,7 @@ impl UiService {
             }
             methods::METHOD_NODE => {
                 let id = required_text(params, "elementId");
+                self.refresh_before_read()?;
                 let projection = UiTree::from_runtime(self.surface.tree());
                 let node = projection.find(&id).ok_or_else(|| element_not_found(&id))?;
                 let mut root = Map::new();
@@ -306,6 +322,11 @@ impl UiService {
             methods::METHOD_PROPERTY => {
                 let id = required_text(params, "elementId");
                 let name = required_text(params, "name");
+                // 读之前先刷新：`ui/property` 的**值**本来就来自活组件，但它的
+                // "这个 ID 在不在树里"那一问走的是同一棵缓存树
+                // （`LivePort::read_property` 的第一行）⇒ 不刷新就会把
+                // "刚刚出现的元素"报成 `-32006`。
+                self.refresh_before_read()?;
                 // `[UI-A11Y-002]` 的 IME 合成态是**虚拟属性**：它的载体是执行面的
                 // IME 状态机，不是 Slint 的响应式属性，因此不走 `read_property`。
                 if ime::is_ime_property(&name) {
@@ -322,6 +343,7 @@ impl UiService {
                 Ok(Value::Object(root))
             }
             methods::METHOD_DYNAMIC_REGIONS => {
+                self.refresh_before_read()?;
                 let projection = UiTree::from_runtime(self.surface.tree());
                 let rects = projection
                     .mask_rects()
@@ -344,6 +366,7 @@ impl UiService {
             methods::METHOD_SCREENSHOT => self.screenshot(params),
             methods::METHOD_COVERAGE => {
                 let ids = registry_ids(params)?;
+                self.refresh_before_read()?;
                 let projection = UiTree::from_runtime(self.surface.tree());
                 Ok(json_of(&Coverage::between(&projection, &ids)))
             }
@@ -592,6 +615,10 @@ impl UiService {
     }
 
     /// `ui/screenshot`：抓帧 → （可选）遮罩 → 证据 → PNG。
+    ///
+    /// ⚠ **进函数先刷新运行时树**：§12.5 的遮罩矩形来自树（`dynamic_region` + 几何），
+    /// 不刷新就会出现"像素是新的、遮罩按旧几何置黑"这种更难查的不一致 ——
+    /// 而 `ui/screenshot` 存在的唯一用途就是视觉回归比对。
     fn screenshot(&mut self, params: &Map<String, Value>) -> Result<Value, ErrorObject> {
         // 默认 **遮罩**：§12.5 把动态区遮罩写成 MUST，而本方法的唯一用途就是视觉回归比对
         // (AI Agent 拿它做断言)。要原始帧请显式 `maskDynamic: false`。
@@ -599,6 +626,7 @@ impl UiService {
         let max_bytes =
             integer_param(params, "maxBytes").map_or(DEFAULT_MAX_PNG_BYTES, |value| value as usize);
 
+        self.refresh_before_read()?;
         let projection = UiTree::from_runtime(self.surface.tree());
         let mut image = self
             .surface
@@ -1235,6 +1263,172 @@ mod tests {
             &request(methods::METHOD_TREE, serde_json::json!({"prefix": "nope-"})),
         );
         assert_eq!(none["tree"]["count"], 0);
+    }
+
+    /// 判据 ④′: **读方法在返回前把运行时树刷到"当下"** —— 六条读路径**逐条**钉住。
+    ///
+    /// ## 判别力（为什么不是"对着 mock 断言 mock"）
+    ///
+    /// 夹具预置的"下一棵树"里多一个**带序号**的探针节点（`refresh-probe-{n}`，
+    /// 动态区 + 有几何）。每一条读方法各自预置**新的一版**，然后要求两件事同时成立：
+    ///
+    /// 1. 这一版的读数里**有** `refresh-probe-{n}`；
+    /// 2. 这一版的读数里**没有** `refresh-probe-{n-1}`。
+    ///
+    /// ⇒ 把 `refresh_before_read()` 从**任何一条**分支里摘掉，那一条读到的是上一版
+    /// （或原始夹具树）⇒ 参数 1 或缺、参数 2 破 ⇒ **那一条**变红。
+    ///
+    /// ⚠ **序号不是装饰**：第一版探针用固定 ID，实测"只摘掉 `ui/node` 的刷新"**仍然绿** ——
+    /// 因为 `ui/tree` 先跑、它刷新过了，后面每一条读的树里都已经有那个固定 ID。
+    /// 那种写法只证明"树被刷新过至少一次"，证明不了"每一条都刷新"。序号是那条教训的产物。
+    #[test]
+    fn read_methods_refresh_the_runtime_tree_before_answering() {
+        let state = shared(Permission::ReadOnly);
+        let (mut service, token) = build_read_service(&state);
+
+        // ---- 起点：树里一个探针都没有（否则下面每一条断言都恒真） ----
+        let before = result_of(
+            &mut service,
+            &token,
+            &request(methods::METHOD_TREE, Value::Null),
+        );
+        assert_eq!(before["tree"]["count"], 3, "夹具树就是 3 个节点");
+        assert!(
+            !before.to_string().contains(REFRESH_PROBE_PREFIX),
+            "预置之前线上 JSON 里不可能有探针"
+        );
+
+        // `ui/tree`：整棵树的节点集合。
+        {
+            let probe = set_refreshed_tree_with_probe(&state);
+            let stale = previous_probe_id(&state);
+            let tree = result_of(
+                &mut service,
+                &token,
+                &request(methods::METHOD_TREE, Value::Null),
+            );
+            assert_eq!(tree["tree"]["count"], 4, "3 个夹具节点 + 1 个探针");
+            assert!(tree.to_string().contains(&probe), "{tree}");
+            assert!(
+                !tree.to_string().contains(&stale),
+                "`ui/tree` 不得还在读上一版 `{stale}`: {tree}"
+            );
+        }
+
+        // `ui/node`：少了刷新就是 `-32006`（`result_of` 会因为 400 直接失败）。
+        {
+            let probe = set_refreshed_tree_with_probe(&state);
+            let stale = previous_probe_id(&state);
+            let node = result_of(
+                &mut service,
+                &token,
+                &request(
+                    methods::METHOD_NODE,
+                    serde_json::json!({"elementId": probe}),
+                ),
+            );
+            assert_eq!(node["node"]["id"], probe);
+            assert!(!node.to_string().contains(&stale), "{node}");
+        }
+
+        // `ui/property`：存在性一问走同一棵缓存树。
+        {
+            let probe = set_refreshed_tree_with_probe(&state);
+            let stale = previous_probe_id(&state);
+            let property = result_of(
+                &mut service,
+                &token,
+                &request(
+                    methods::METHOD_PROPERTY,
+                    serde_json::json!({"elementId": probe, "name": "width"}),
+                ),
+            );
+            assert_eq!(property["value"], "width=1");
+            assert!(!property.to_string().contains(&stale), "{property}");
+        }
+
+        // `ui/dynamic_regions`：探针是动态区 ⇒ 必须恰好多一格。
+        {
+            let probe = set_refreshed_tree_with_probe(&state);
+            let stale = previous_probe_id(&state);
+            let regions = result_of(
+                &mut service,
+                &token,
+                &request(methods::METHOD_DYNAMIC_REGIONS, Value::Null),
+            );
+            assert_eq!(
+                regions["count"], 3,
+                "夹具的 2 个动态区 + 刷新进来的探针: {regions}"
+            );
+            assert!(regions.to_string().contains(&probe), "{regions}");
+            assert!(
+                !regions.to_string().contains(&stale),
+                "`ui/dynamic_regions` 不得还在读上一版 `{stale}`: {regions}"
+            );
+        }
+
+        // `ui/coverage`：这一版探针在运行时树里、上一版不在 ⇒ 缺失清单**恰好**是上一版。
+        {
+            let probe = set_refreshed_tree_with_probe(&state);
+            let stale = previous_probe_id(&state);
+            let coverage = result_of(
+                &mut service,
+                &token,
+                &request(
+                    methods::METHOD_COVERAGE,
+                    serde_json::json!({"ids": [probe, stale]}),
+                ),
+            );
+            assert_eq!(coverage["runtimeCount"], 4);
+            assert_eq!(
+                coverage["missingAtRuntime"],
+                serde_json::json!([stale]),
+                "只有**上一版**探针该被报成缺失（这一版必须在运行时树里）: {coverage}"
+            );
+        }
+
+        // `ui/screenshot`：遮罩矩形来自树 ⇒ 多一个动态区就多遮一格
+        //（少了刷新会是 2 格）。
+        {
+            let _probe = set_refreshed_tree_with_probe(&state);
+            let shot = result_of(
+                &mut service,
+                &token,
+                &request(
+                    methods::METHOD_SCREENSHOT,
+                    serde_json::json!({"maskDynamic": true}),
+                ),
+            );
+            assert_eq!(
+                shot["maskedRegions"], 3,
+                "遮罩必须按**刷新后**的树算（夹具 2 + 探针 1）: {shot}"
+            );
+            assert_eq!(shot["maskEffective"], true, "{shot}");
+        }
+
+        // ---- 反证：刷新是**读**路径的行为，注入路径不刷新 ----
+        //
+        // 注入那一段用**另一个**夹具（端口权限需要 `Interactive`；上面那个夹具是
+        // `ReadOnly`，只够读路径）。它不是"另造一个事实源"：作用域与端口闸门是
+        // 两层独立判定，这里的差别只是"这具夹具让不让注入"。
+        let inject_state = shared(Permission::Interactive);
+        let (mut test_mode, test_token) =
+            build_service(&inject_state, ScopeSet::all(), RunMode::Test);
+        let seen = refreshes(&inject_state);
+        let _ = result_of(
+            &mut test_mode,
+            &test_token,
+            &request(
+                methods::METHOD_DISPATCH_KEY_PRESS,
+                serde_json::json!({"keyCode": "Tab"}),
+            ),
+        );
+        assert_eq!(
+            refreshes(&inject_state),
+            seen,
+            "`ui/dispatch_key_press` 不是读路径 ⇒ 不得触发刷新（重抓是**读**的新鲜度契约，\
+             不是注入的副作用）"
+        );
     }
 
     /// 判据 ⑤: 按不存在的语义 ID 查节点 → **明确错误**（不是空成功）；属性同理。

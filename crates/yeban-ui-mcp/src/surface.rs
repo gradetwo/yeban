@@ -112,6 +112,31 @@ pub trait UiSurface: UiTestPort {
     /// 光栅化失败（`PortError::Capture`）。
     fn capture_image(&self) -> Result<Rgb8Image, PortError>;
 
+    /// 把执行面持有的**运行时树缓存**刷到"当下"。读运行时树的 `ui/*` 方法在返回前都调它。
+    ///
+    /// ## 为什么需要它（本方法就是"AI 能看见当下的界面"的承重点）
+    ///
+    /// [`UiTestPort::tree`] 借出的是一棵**缓存**树：`yeban_ui_test_port::render::LivePort`
+    /// 只在构造与显式 `refresh_tree` 时重抓它。同一份控制面里 `ui/property` 与
+    /// `ui/screenshot` 读的却是**活窗口** ⇒ 两种读法的"新鲜度"会分叉：
+    /// 人点一下按钮改了可见性，`ui/property` 立刻读到新值，`ui/tree` / `ui/node`
+    /// 却还是上一次重抓那一棵。本方法把这个分叉合上：**读之前先刷新**。
+    ///
+    /// ## 默认实现为什么是"什么都不做"（而不是一个错误）
+    ///
+    /// 不是每个执行面都有"活的运行时树"可刷：判据里的零 Slint 假面
+    /// （[`crate::testing`]）持有一棵**静态**树，它没有可刷新的来源。对它报错会把
+    /// "这个执行面没有活的树"变成一个失败 —— 而那不是失败，是那个执行面的事实。
+    /// 有活窗口的执行面（`yeban-app` 的 `LiveAdminSurface`）覆写本方法。
+    ///
+    /// # Errors
+    ///
+    /// 重抓失败（执行面自己的错误）。**不回退到旧缓存**：把一棵已知过期的树当成
+    /// "当下的界面"发出去，正是本方法要消灭的那种假成功。
+    fn refresh_runtime_tree(&mut self) -> Result<(), PortError> {
+        Ok(())
+    }
+
     /// 取走**上一个管理动作**的结构化回执（`ui/switch_main_view` / `ui/force_save` /
     /// `ui/reload_engine`）。默认 `None`。
     ///

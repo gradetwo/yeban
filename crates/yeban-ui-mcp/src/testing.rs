@@ -59,6 +59,23 @@ pub(crate) struct Fixture {
     /// `ui/set_track_height` 真的会写的那个数（真执行面上是 `MainWindow` 的
     /// `track-height-override-pxs`，`ADR-0004` S1）。
     pub(crate) track_height_px: u32,
+    /// **探针**：读方法在返回前调了几次 [`UiSurface::refresh_runtime_tree`]。
+    ///
+    /// 它是仪器，**不是**领域状态 ⇒ 刻意**不进** [`Fixture::snapshot`]：
+    /// `snapshot` 是 `dryRun` 的对照文档（"只会改状态的那 7 条方法有没有越界"），
+    /// 把一个读路径的计数器塞进去会改掉那份对照的含义。
+    pub(crate) refreshes: usize,
+    /// 下一次刷新要换上的运行时树（`None` = 树不动）。
+    ///
+    /// 判据用它证明"刷新真的发生在**读之前**"：预置一棵带探针节点的树，
+    /// 紧接着读一次 `ui/tree` 就应当看见那个探针。真执行面上"换树"由
+    /// `LiveAdminSurface::refresh_tree` 从**活窗口**重抓完成。
+    pub(crate) refreshed_tree: Option<ControlTree>,
+    /// 探针序号（每调一次 [`set_refreshed_tree_with_probe`] 自增）。
+    ///
+    /// 它的存在是为了让"每一条读方法都刷新"可以被**逐条**判定 ——
+    /// 理由见 [`set_refreshed_tree_with_probe`] 的文档。
+    pub(crate) refresh_serial: usize,
 }
 
 impl Fixture {
@@ -156,6 +173,58 @@ pub(crate) fn tree_with_bounds(id: &str, bounds: Option<Rect>) -> ControlTree {
     tree
 }
 
+/// 刷新探针的 ID 前缀（完整 ID = 前缀 + 序号，见 [`set_refreshed_tree_with_probe`]）。
+pub(crate) const REFRESH_PROBE_PREFIX: &str = "refresh-probe-";
+
+/// 预置"下一次刷新要换上的树"：在夹具树之外**多一个** [`REFRESH_SENTINEL_ID`]。
+///
+/// 哨兵是**动态区且有几何**：于是它可以同时钉住六条读路径 ——
+/// `ui/tree` 的节点集合、`ui/node` / `ui/property` 的按 ID 寻址、
+/// `ui/dynamic_regions` 的一格、`ui/coverage` 的 `missingAtRuntime`、
+/// `ui/screenshot` 的 `maskedRegions`。
+///
+/// ## ⚠ 探针 ID 为什么带**序号**（这条是从一次"没红的注入"换来的）
+///
+/// 第一版用一个**固定** ID。它有一个致命弱点：`ui/tree` 先读、它刷新了，于是
+/// **后面**每一条读方法的树里都**已经有**那个固定 ID 了 —— 此时把 `ui/node` 的刷新
+/// 单独摘掉，判据**仍然绿**（实测）。也就是说那种写法只证明了"树被刷新过至少一次"，
+/// 没有证明"**每一条**读方法都刷新"。
+///
+/// 序号把每一版探针区分开：判据对每一条方法都要求"看见**这一版**的新探针、
+/// 且看不见上一版"。摘掉任何一条的刷新 ⇒ 它读到的是上一版或原始树 ⇒ 红。
+pub(crate) fn set_refreshed_tree_with_probe(state: &Rc<RefCell<Fixture>>) -> String {
+    let serial = {
+        let mut state = state.borrow_mut();
+        state.refresh_serial += 1;
+        state.refresh_serial
+    };
+    let id = format!("{REFRESH_PROBE_PREFIX}{serial}");
+    let mut tree = fixture_tree();
+    tree.insert(
+        ControlNode::new(
+            id.as_str(),
+            Role::parse("progress-indicator").expect("合法角色"),
+            "刷新探针",
+        )
+        .with_bounds(Rect::new(0, 0, 4, 4))
+        .as_dynamic(),
+    )
+    .expect("插入");
+    state.borrow_mut().refreshed_tree = Some(tree);
+    id
+}
+
+/// 上一版探针的 ID（`set_refreshed_tree_with_probe` 的序号 − 1）。
+pub(crate) fn previous_probe_id(state: &Rc<RefCell<Fixture>>) -> String {
+    let serial = state.borrow().refresh_serial;
+    format!("{REFRESH_PROBE_PREFIX}{}", serial.saturating_sub(1))
+}
+
+/// 探针读数：读方法一共触发了几次刷新（见 [`Fixture::refreshes`]）。
+pub(crate) fn refreshes(state: &Rc<RefCell<Fixture>>) -> usize {
+    state.borrow().refreshes
+}
+
 pub(crate) fn fixture_image() -> Rgb8Image {
     let mut image = Rgb8Image::new(Size::new(200, 120));
     image.fill_rect(Rect::new(0, 0, 200, 120), [24, 26, 32]);
@@ -178,6 +247,9 @@ pub(crate) fn shared(permission: Permission) -> Rc<RefCell<Fixture>> {
         // 与投影的默认基准行高同值（`bridge::DEFAULT_TRACK_HEIGHT_PX = 56`）——
         // 假面不认识那个常量（零依赖方向），因此这里写死同一个数并说明来源。
         track_height_px: 56,
+        refreshes: 0,
+        refreshed_tree: None,
+        refresh_serial: 0,
     }))
 }
 
@@ -206,6 +278,21 @@ impl UiSurface for FakeSurface {
     }
     fn capture_image(&self) -> Result<Rgb8Image, PortError> {
         Ok(self.state.borrow().image.clone())
+    }
+
+    /// 假面的"刷新运行时树"：探针 +1，并在夹具预置了下一棵树时把它换进 `self.tree`。
+    ///
+    /// 它**不**写 [`Fixture::calls`]：`calls` 记的是"假面收到的**动作**"，
+    /// 而刷新是一次读内部的缓存更新 —— 混进去会让既有的"注入日志逐字相等"判据
+    /// 变成在数一次读的开销。默认（`refreshed_tree == None`）树一位不动，
+    /// 因此既有的 `tree_method_result_is_byte_stable_across_two_calls` 等判据逐字不变。
+    fn refresh_runtime_tree(&mut self) -> Result<(), PortError> {
+        let mut state = self.state.borrow_mut();
+        state.refreshes += 1;
+        if let Some(next) = state.refreshed_tree.take() {
+            self.tree = next;
+        }
+        Ok(())
     }
 
     /// 交出（并取走）夹具里预置的回执 —— 与真实执行面同语义。

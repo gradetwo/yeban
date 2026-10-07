@@ -9,6 +9,8 @@
 //! | `live_control_plane_coverage_matches_the_projected_registry` | 运行时树 ⊆ 投影注册表（`visible: false` 的分支不在树里 ⇒ 缺失非空），两个方向的差异都被 `ui/coverage` 如实报出来 |
 //! | `production_plane_hard_denies_injection_on_the_live_window` | §12.3 / `ARCH-SEC-002`：生产模式下 `ui:inject` 在**真实执行面**上也是 403 硬禁（并且之后的只读调用照常可用） |
 //! | `interactive_test_mode_plane_injects_into_the_live_window` | §12.4：测试模式 + `Interactive` 权限下，事件注入真的落进窗口；`ui/methods` 如实报出 `injectAllowed` |
+//! | `a_tree_read_sees_a_click_that_just_happened` | **新鲜度**：一次真实点击（`toggle-sidebar`）之后，`ui/tree` / `ui/node` / `ui/property` 三条读同时看见它（节点 **85→81**、`x` **210→6**、宽度 `"240.00"→"36.00"`），再点一次全部回去 |
+//! | `a_tree_regrab_costs_one_introspection_not_one_full_render` | **代价**：一次重抓 = 一次全树内省（85 节点），不是一次 1920×1080 的 Tier-1 全量渲染（两者并排打出来） |
 //!
 //! ## 为什么判据住在两个文件里而不是这里
 //!
@@ -3951,13 +3953,19 @@ fn view_state_reading(window: &yeban_app::ui::MainWindow) -> String {
 /// | 摘掉 `host::wire_view_callbacks(&window);` | `src/live_surface.rs` | 四段的"注入后"读数与"注入前"逐字相同 ⇒ 四段一起红 |
 /// | 把 `root.arrangement-view = !root.arrangement-view;` 加回转发块 | `ui/app.slint` | `.slint` 与宿主各翻转一次 ⇒ 互相抵消 ⇒ `toggle-view` 段红 |
 ///
-/// ## 一条**如实报告**的边界（不是本切片的缺陷，是控制面的快照语义）
+/// ## 快照语义**已经取消**（本轮更正 `Round 431` 登记的那条边界）
 ///
-/// `ui/tree` 是**快照**：`LiveAdminSurface` 只在它自己那几个动作点重抓树
-/// （`ui/switch_main_view` / `apply_project` / 电平轮询）。因此"点击改了可见性"不会让
-/// **下一次** `ui/tree` 自动变新 —— 本判据把这条读数**原样打出来**（`树节点 N→N`），
-/// 并在第二条判据里用"属性 ⇒ 树"那一半补上可见性证据。
-/// ⛔ 这里**不**断言"树必须不变"：那是把快照语义钉成契约，下一轮真去加刷新反而会红。
+/// `Round 431` 在这里写过一条"如实报告的边界"：`ui/tree` 是**快照**、`LiveAdminSurface`
+/// 只在三个动作点重抓树 ⇒"点击改了可见性不会让下一次 `ui/tree` 变新"（那一轮把
+/// `树节点 85→85` 原样打了出来）。**那条边界现在不成立了**：读方法在返回前会调
+/// `UiSurface::refresh_runtime_tree`（`crates/yeban-ui-mcp/src/service.rs` 的
+/// `refresh_before_read`），而 `LiveAdminSurface` 覆写它去重抓活窗口的树。因此判据 1
+/// 的 `树节点 N→N` 读数**已经换成**真的变化（见判据
+/// `a_tree_read_sees_a_click_that_just_happened` 的字面读数：点击 `toggle-sidebar` ⇒
+/// 节点 **85→81**、`sidebar-search-field` 离开树、折叠按钮 `x` **210→6**）。
+///
+/// ⛔ 这里仍然**不**断言"两次读之间树必须不变"：那是把某一种缓存语义钉成契约。
+/// 钉住的是**新鲜度** —— 读必须看见刚发生的变化。
 ///
 /// ## 为什么不断言像素
 ///
@@ -4197,4 +4205,255 @@ fn the_view_state_properties_drive_the_runtime_tree() {
         !closed.contains("musical-pr-drawer"),
         "反证失败：抽屉关掉之后仍在树里 ⇒ 上面那条断言没有判别力"
     );
+}
+
+// =====================================================================================
+// 判据：**读方法看见当下的界面**（`ui/tree` / `ui/node` / `ui/property` 的新鲜度一致）
+//
+// 背景：`ui/tree` / `ui/node` 读的是执行面持有的**运行时树缓存**，而 `ui/property`
+// 与 `ui/screenshot` 读的是**活窗口**。两种读法的"新鲜度"因此不一致 ⇒
+// 「人点一下按钮、AI 立刻读 `ui/tree`」看不见那一击。本判据把这条链钉住：
+// **注入前**的读数（那时刻树是旧的）与**点击后**的读数必须一起报出来。
+// =====================================================================================
+
+/// 判据：一次**真实点击**之后，下一次 `ui/tree` / `ui/node` / `ui/property` 必须看见它。
+///
+/// | 段 | 做什么 | 期望 |
+/// | :--- | :--- | :--- |
+/// | ① 改前 | 注入前读 `ui/property {"sidebar","width"}` / `ui/tree` / `ui/node` | `"240.00"`；树里**有** `sidebar-search-field`；折叠按钮 `bounds.x = 210` |
+/// | ② 点击 | `ui/dispatch_pointer_*` 点 `sidebar-collapse-button` | 活窗口 `sidebar-collapsed=false→true`（属性读数证明那一击真的生效） |
+/// | ③ 改后 | 读同样三件 | `"36.00"`；树里**没有** `sidebar-search-field`；折叠按钮 `bounds.x = 6` |
+///
+/// ## 判别力从哪来（为什么不是"我写进去所以我说它对"）
+///
+/// ① 与 ③ 的三件读数全部**经控制面**取回（`ui/property` / `ui/tree` / `ui/node`），
+/// 没有任何一处直接读 `MainWindow` 的 Rust getter。② 走的是 §12.4 的真实指针注入
+/// （按下 → 移动 → 松手 → Slint 命中测试 → `.slint` 的 `TouchArea` → 回调 → 宿主写属性），
+/// 与用户点那一下是同一条链。
+#[test]
+fn a_tree_read_sees_a_click_that_just_happened() {
+    use yeban_ui_mcp::methods::METHOD_TREE;
+
+    let (window, mut plane) = assemble_view_state_callbacks();
+
+    /// `ui/tree` 一次读的线上节点数 + 是否含某个语义 ID + 这次调用的墙钟（毫秒）。
+    ///
+    /// ⚠ 耗时是**代理指标**：它数的是"一次 `ui/tree` 请求从服务层进到出"的墙钟，
+    /// 含 JSON 编码与请求包装，**不是**纯重抓耗时。
+    fn tree_read(plane: &mut LiveControlPlane, seq: i64, needle: &str) -> (usize, bool, f64) {
+        let started = std::time::Instant::now();
+        let line =
+            plane
+                .plane()
+                .try_line(&yeban_ui_mcp::live::request_line(seq, METHOD_TREE, None));
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(!line.is_error(), "`ui/tree` 必须成功: {line:?}");
+        let result = line.result.expect("有 result");
+        let count = result["filter"]["totalCount"].as_u64().expect("totalCount") as usize;
+        let json = result["tree"].to_string();
+        (count, json.contains(needle), elapsed_ms)
+    }
+
+    /// `ui/node` 的一次读数（几何包围盒，经控制面）。
+    fn node_bounds(plane: &mut LiveControlPlane, seq: i64, id: &str) -> serde_json::Value {
+        let node = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+            seq,
+            "ui/node",
+            Some(serde_json::json!({ "elementId": id })),
+        ));
+        assert!(!node.is_error(), "`ui/node {id}` 必须成功: {node:?}");
+        node.result.expect("有 result")["node"]["bounds"].clone()
+    }
+
+    let needle = "sidebar-search-field";
+
+    // ---------------------------------------------------------------- ① 改前
+    let width_before = read_property(&mut plane, 400, "sidebar", "width");
+    let (nodes_before, has_before, ms_before) = tree_read(&mut plane, 401, needle);
+    let collapse_before = node_bounds(&mut plane, 402, "sidebar-collapse-button");
+    assert_eq!(
+        width_before.as_str(),
+        Some("240.00"),
+        "默认左资源栏宽 = `Tokens.left-rail-width`"
+    );
+    assert!(
+        has_before,
+        "注入前 `{needle}` 必须在树里（否则本判据的对照不成立）"
+    );
+
+    // ---------------------------------------------------------------- ② 真实点击
+    click_element(&mut plane, 410, "sidebar-collapse-button");
+    let collapsed = window.get_sidebar_collapsed();
+    assert!(collapsed, "② 点击必须把 `sidebar-collapsed` 翻成 true");
+
+    // ---------------------------------------------------------------- ③ 改后
+    let width_after = read_property(&mut plane, 420, "sidebar", "width");
+    let (nodes_after, has_after, ms_after) = tree_read(&mut plane, 421, needle);
+    let collapse_after = node_bounds(&mut plane, 422, "sidebar-collapse-button");
+
+    report_line(&format!(
+        "[fresh-read] `toggle-sidebar` 点击: `ui/property sidebar.width` {width_before}→{width_after}; \
+         `ui/tree` 节点 {nodes_before}→{nodes_after}、含 `{needle}` {has_before}→{has_after}; \
+         `ui/node sidebar-collapse-button` x {}→{}; 一次 `ui/tree` 墙钟 {ms_before:.2}ms→{ms_after:.2}ms（代理）",
+        collapse_before["x"], collapse_after["x"]
+    ));
+
+    assert_eq!(
+        width_after.as_str(),
+        Some("36.00"),
+        "属性读数必须跟着点击走（`ui/property` 与 `ui/tree` 的新鲜度不许分叉）"
+    );
+    assert!(
+        !has_after,
+        "点击之后 `{needle}` 必须离开运行时树（`visible: !compact`）—— \
+         它还在树里就说明这一次 `ui/tree` 读的是**旧快照**，看不见刚发生的变化"
+    );
+    assert!(
+        collapse_after["x"].as_f64() < collapse_before["x"].as_f64(),
+        "折叠按钮必须跟着左栏变窄：x {} → {}",
+        collapse_before["x"],
+        collapse_after["x"]
+    );
+
+    // ---------------------------------------------------------------- ④ 反证：再点一次必须回去
+    //
+    // 少了这一段，③ 只证明"某个方向变了"，证明不了"读的是**当下**"——
+    // 一个恒读旧快照的实现也会让 ③ 的读数停在另一侧。反向点击把这条堵死。
+    click_element(&mut plane, 430, "sidebar-collapse-button");
+    assert!(
+        !window.get_sidebar_collapsed(),
+        "④ 第二次点击必须把 `sidebar-collapsed` 翻回 false"
+    );
+    let width_back = read_property(&mut plane, 440, "sidebar", "width");
+    let (nodes_back, has_back, _) = tree_read(&mut plane, 441, needle);
+    let collapse_back = node_bounds(&mut plane, 442, "sidebar-collapse-button");
+    report_line(&format!(
+        "[fresh-read] 反证（展开回去）: `ui/property sidebar.width` {width_after}→{width_back}; \
+         `ui/tree` 节点 {nodes_after}→{nodes_back}、含 `{needle}` {has_after}→{has_back}; \
+         `ui/node sidebar-collapse-button` x {}→{}",
+        collapse_after["x"], collapse_back["x"]
+    ));
+    assert_eq!(width_back.as_str(), Some("240.00"));
+    assert!(has_back, "展开之后 `{needle}` 必须回到运行时树里");
+    assert_eq!(nodes_back, nodes_before, "展开回去 ⇒ 节点数回到起点");
+    assert_eq!(
+        collapse_back["x"], collapse_before["x"],
+        "展开回去 ⇒ 折叠按钮回到原来的 x"
+    );
+}
+
+/// 判据：**读元数据不得渲染一帧**（`ui/tree` / `ui/node` / `ui/property` /
+/// `ui/dynamic_regions` / `ui/coverage`），而 `ui/screenshot` **恰好**渲染一帧。
+///
+/// ## 这条判据在防什么（不是防"读变慢"，是防"读悄悄开始渲染"）
+///
+/// `refresh_tree` 曾经（`bd9fbb6`）在重抓前先 `capture()` 一次 —— 那是 1920×1080 的
+/// Tier-1 全量软件光栅化。读路径现在**每次读**都重抓，因此那一步一旦被加回来，
+/// 每一次 `ui/tree` 都会白渲染一张没人看的 6 MB 帧，而**没有任何断言会红**。
+/// 本判据把这条不变量钉住：探针是 `Tier1Window::rendered_frames()`
+/// （窗口上真的跑过渲染回调的次数），判据读的是 [`LiveControlPlane::rendered_frames`]。
+///
+/// ⚠ 断言**不是**计时（墙钟随机器浮动，不适合做判据）：它数的是**事件次数**，
+/// 因此是确定性的。
+#[test]
+fn a_tree_read_does_not_rasterize_a_frame() {
+    use serde_json::json;
+    use yeban_ui_mcp::methods::{METHOD_NODE, METHOD_PROPERTY, METHOD_TREE};
+
+    let (_window, mut plane) = assemble_view_state_callbacks();
+    let baseline = plane.rendered_frames();
+
+    // ---- 五条读元数据的方法：一个像素都不该渲染 ----
+    let reads: [(i64, &str, serde_json::Value); 5] = [
+        (500, METHOD_TREE, json!({})),
+        (501, METHOD_NODE, json!({"elementId": "sidebar"})),
+        (
+            502,
+            METHOD_PROPERTY,
+            json!({"elementId": "sidebar", "name": "width"}),
+        ),
+        (503, "ui/dynamic_regions", json!({})),
+        (504, "ui/coverage", json!({"ids": ["sidebar"]})),
+    ];
+    for (seq, method, params) in reads {
+        let line =
+            plane
+                .plane()
+                .try_line(&yeban_ui_mcp::live::request_line(seq, method, Some(params)));
+        assert!(!line.is_error(), "`{method}` 必须成功: {line:?}");
+        assert_eq!(
+            plane.rendered_frames(),
+            baseline,
+            "`{method}` 读的是**元数据** ⇒ 不得渲染一帧（渲染的是 `capture()`，它只属于 `ui/screenshot`）"
+        );
+    }
+
+    // ---- 反证：`ui/screenshot` 必须**恰好**渲染一帧 ----
+    let shot = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        510,
+        "ui/screenshot",
+        Some(json!({"maskDynamic": false})),
+    ));
+    assert!(!shot.is_error(), "`ui/screenshot` 必须成功: {shot:?}");
+    assert_eq!(
+        plane.rendered_frames(),
+        baseline + 1,
+        "`ui/screenshot` 必须恰好渲染一帧（多一帧 = 白渲染；少一帧 = 像素来源可疑）"
+    );
+}
+
+/// 判据：**一次重抓的代价 = 一次全树内省，不是一次全量渲染**。
+///
+/// 这条判据存在的原因：`refresh_tree` 曾经（`bd9fbb6`）在重抓前先 `capture()` 一次，
+/// 而读路径现在**每次读**都要重抓 ⇒ 那一步会把 1920×1080 的 Tier-1 全量软件光栅化
+/// 挂在每一次 `ui/tree` 上。本判据把两个数字并排打出来，让"重抓很便宜、渲染很贵"
+/// 这件事有可复跑的读数（**只报不判时间**：墙钟是机器相关的代理指标，不适合做断言；
+/// 断言只落在"两条路都真的产出了东西"上）。
+///
+/// | 量什么 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- |
+/// | Tier-1 全量渲染一帧 | `LiveUi::capture()` 一次（先预热一次剔除首次初始化） | ms（墙钟） |
+/// | 重抓一次运行时树 | `LiveUi::pump_meters()` 一次（抽干 → 注入 → 全树内省） | ms（墙钟） |
+/// | 树规模 | `tree_snapshot().len()` | 节点数 |
+#[test]
+fn a_tree_regrab_costs_one_introspection_not_one_full_render() {
+    let project = yeban_model::samples::filled_project();
+    let mut ui = build_live_ui(&project, Permission::ReadOnly).expect("装配");
+
+    // 预热一次：`capture()` 的首次调用含平台/缓冲的初始化成本，混进去会污染对照。
+    let warm = ui.capture().expect("预热帧必须成功");
+    assert!(!warm.is_all_black(), "预热帧不能是全黑（[MUST-GATE-015]）");
+
+    let before_capture = ui.rendered_frames();
+    let started = std::time::Instant::now();
+    let frame = ui.capture().expect("对照帧必须成功");
+    let capture_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let after_capture = ui.rendered_frames();
+
+    let started = std::time::Instant::now();
+    let _ = ui.pump_meters();
+    let regrab_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let after_regrab = ui.rendered_frames();
+
+    let nodes = ui.tree_snapshot().len();
+    report_line(&format!(
+        "[refresh-cost] Tier-1 全量渲染一帧 `capture()` = {capture_ms:.2}ms（1920x1080 软件光栅化）; \
+         重抓一次树 `pump_meters()` = {regrab_ms:.2}ms（含电平注入 + 全树内省, {nodes} 个节点）; \
+         ⇒ 重抓比渲染一帧便宜 {:.2}ms; 探针读数：渲染帧数 {before_capture}→{after_capture}→{after_regrab}\
+         （两次墙钟都是**代理**指标）",
+        capture_ms - regrab_ms
+    ));
+
+    assert!(!frame.is_all_black(), "对照帧不能是全黑（[MUST-GATE-015]）");
+    assert_eq!(
+        after_capture,
+        before_capture + 1,
+        "`capture()` 必须恰好渲染一帧（探针数的是真的跑过渲染回调的次数）"
+    );
+    assert_eq!(
+        after_regrab, after_capture,
+        "重抓运行时树（全树内省）不得渲染一帧：capture() 之后 {after_capture} 帧，\
+         pump_meters() 之后 {after_regrab} 帧"
+    );
+    assert!(nodes >= 40, "运行时控件树只有 {nodes} 个节点");
 }
