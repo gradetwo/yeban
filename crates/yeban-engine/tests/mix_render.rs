@@ -13,12 +13,14 @@
 //! | M5 | 未过阈值的工程**逐位**不被篡改（`reductions == 0` + 两次渲染逐位一致） | 在母线里加抖动/旁路重采样 |
 //! | M6 | 同输入两次渲染**逐位相同**（含混音链全部器件） | 引入真熵源 |
 //! | M7 | 静音工程（含音色/声相配置）仍然**逐位**静音 | 限制器直流泄漏 / 滤波器自激 |
+//! | M8 | **主总线推子**改变输出：0 dB 与 −6 dB 的样本满足 `out₋₆ = f32(out₀ × g)`（逐位） | 主总线增益不参与混音（快照字段接线断在实时侧） |
+//! | M9 | 主总线推子在**母线限制器之前**：−6 dB 把过阈值夹具拉回透明区 | 把推子移到限制器之后 |
 //!
 //! 判据的**实测数字**与口径表见 `docs/ledger/engine-mix-notes.md`。
 
 mod support;
 
-use support::{MixSpec, NoteSpec, empty_project, render, rms_peak, tuned_project};
+use support::{MixSpec, NoteSpec, empty_project, render, render_with, rms_peak, tuned_project};
 
 /// 声相定律的声明值：等功率 −3 dB 居中 ⇒ `cos(π/4) = sin(π/4) = √2/2`。
 const CENTRE_GAIN: f64 = core::f64::consts::FRAC_1_SQRT_2;
@@ -255,4 +257,205 @@ fn silent_projects_stay_bit_silent_through_the_mix_chain() {
         "静音不得驱动限制器"
     );
     assert_eq!(rendered.peak(), 0.0);
+}
+
+/// M8：**主总线推子端到端** —— 同一工程、同一输入，主总线 `volume_db = 0` 与 `= −6`
+/// 各渲染一次；两次输出必须**逐样本逐位**满足 `out₋₆[n] == f32(out₀[n] × g)`，
+/// 其中 `g` 是实时侧**真的武装**的那个增益（[`EngineRuntime::armed_master_gain`]）。
+///
+/// 为什么这是"声音"的证据（而不是"数据"的证据）：断言作用在**真实渲染路径**产出的
+/// 样本位模式上 —— `EngineSnapshot::from_project` → `SnapshotSlot` →
+/// `EngineRuntime::process_quantum`（`support` 模块刻意只走产品路径）。
+///
+/// 夹具刻意整体低于限制器阈值（音轨 −6 dB）：两次渲染都断言
+/// `limiter_gain_reductions == 0`，因此限制器是**逐位恒等**映射
+/// （`x * 1.0f32 == x`），比值不会掺入限制器的非线性。过阈值下的行为由 M9 钉住。
+#[test]
+fn master_fader_scales_the_rendered_output_sample_by_sample() {
+    let notes = [NoteSpec::at(0, 960, 69, 127)];
+    let fixture = tuned_project(
+        &notes,
+        MixSpec {
+            volume_db: -6.0,
+            ..MixSpec::pan(0.0)
+        },
+    );
+    let master = fixture.master;
+
+    let mut unity_project = fixture.project.clone();
+    unity_project
+        .tracks
+        .get_mut(&master)
+        .expect("`tuned_project` 的母线在 tracks 里")
+        .volume_db = 0.0;
+    let mut quiet_project = fixture.project.clone();
+    quiet_project
+        .tracks
+        .get_mut(&master)
+        .expect("`tuned_project` 的母线在 tracks 里")
+        .volume_db = -6.0;
+
+    // 抓**实时侧真的武装**的那个数（而不是自己算一个期望值）。
+    let mut armed_unity = f32::NAN;
+    let mut armed_quiet = f32::NAN;
+    let unity = render_with(&unity_project, 120, 1, |quantum, rig| {
+        if quantum == 2 {
+            armed_unity = rig.runtime.armed_master_gain();
+        }
+    });
+    let quiet = render_with(&quiet_project, 120, 1, |quantum, rig| {
+        if quantum == 2 {
+            armed_quiet = rig.runtime.armed_master_gain();
+        }
+    });
+
+    let (unity_rms, unity_peak) = rms_peak(&unity.left);
+    let (quiet_rms, quiet_peak) = rms_peak(&quiet.left);
+    println!(
+        "[engine-master] M8 armed: 0 dB = {armed_unity:.9} ({:#010x}) (−6 dB = {armed_quiet:.9} \
+         ({:#010x})) peak: {unity_peak:.9} → {quiet_peak:.9} (ratio {:.9}) \
+         rms: {unity_rms:.9} → {quiet_rms:.9} (ratio {:.9}) \
+         fingerprint: {:#018x} → {:#018x}",
+        armed_unity.to_bits(),
+        armed_quiet.to_bits(),
+        quiet_peak / unity_peak,
+        quiet_rms / unity_rms,
+        unity.fingerprint(),
+        quiet.fingerprint(),
+    );
+
+    // 覆盖度（防"什么都没跑"的假绿）：
+    assert!(unity_rms > 0.01, "对照渲染必须真的出声");
+    assert_eq!(
+        armed_unity.to_bits(),
+        1.0f32.to_bits(),
+        "0 dB 必须武装单位增益"
+    );
+    assert_ne!(
+        armed_quiet.to_bits(),
+        1.0f32.to_bits(),
+        "−6 dB 必须武装**非**单位增益（否则下面的逐位断言会永真）"
+    );
+    assert_eq!(
+        unity.stats.limiter_gain_reductions, 0,
+        "夹具必须整体低于阈值（否则测的是限制器的非线性）"
+    );
+    assert_eq!(
+        quiet.stats.limiter_gain_reductions, 0,
+        "−6 dB 之后必须仍在阈值以下"
+    );
+    assert!(
+        unity.peak() < yeban_engine::mixer::LIMITER_THRESHOLD
+            && quiet.peak() < yeban_engine::mixer::LIMITER_THRESHOLD,
+        "两次渲染都必须整体低于阈值: unity={} quiet={}",
+        unity.peak(),
+        quiet.peak()
+    );
+
+    // 差异必须是 −6 dB：峰值与有效值都按同一个线性标量缩放。
+    let peak_ratio = f64::from(quiet_peak) / f64::from(unity_peak);
+    let rms_ratio = quiet_rms / unity_rms;
+    let expected = f64::from(armed_quiet);
+    assert!(
+        (peak_ratio - expected).abs() < 1e-6,
+        "峰值比必须等于武装增益 {expected}（实测 {peak_ratio}）"
+    );
+    assert!(
+        (rms_ratio - expected).abs() < 1e-6,
+        "有效值比必须等于武装增益 {expected}（实测 {rms_ratio}）"
+    );
+    // 差 −6 dB 的算术（`10^(-6/20) = 0.5011872…`）。
+    assert!(
+        (peak_ratio - 0.501_187_2).abs() < 1e-6,
+        "峰值比必须 ≈ 0.5011872（−6 dB）, 实测 {peak_ratio}"
+    );
+    assert_ne!(
+        unity.fingerprint(),
+        quiet.fingerprint(),
+        "两次渲染的位模式必须不同（否则'没接线'也会绿）"
+    );
+
+    // **最强形式**：逐样本逐位恒等 `out₋₆[n] == f32(out₀[n] × g)`。
+    assert_eq!(quiet.left.len(), unity.left.len());
+    let mut worst = 0.0f64;
+    for (quiet_sample, unity_sample) in quiet.left.iter().zip(unity.left.iter()) {
+        let expected_sample = *unity_sample * armed_quiet;
+        worst = worst.max((f64::from(*quiet_sample) - f64::from(expected_sample)).abs());
+        assert_eq!(
+            quiet_sample.to_bits(),
+            expected_sample.to_bits(),
+            "主总线推子必须是逐样本的 f32 标量乘: {unity_sample} × {armed_quiet}"
+        );
+    }
+    for (quiet_sample, unity_sample) in quiet.right.iter().zip(unity.right.iter()) {
+        let expected_sample = *unity_sample * armed_quiet;
+        assert_eq!(
+            quiet_sample.to_bits(),
+            expected_sample.to_bits(),
+            "右声道同理: {unity_sample} × {armed_quiet}"
+        );
+    }
+    println!("[engine-master] M8 worst |out₋₆ − out₀×g| = {worst:e}（要求逐位 0）");
+    assert_eq!(worst, 0.0, "逐样本偏差必须为 0（浮点比较，不是容差）");
+}
+
+/// M9：主总线推子在**母线限制器之前**（[`yeban_engine`] 的接线位置决定，见 `rt::scale_bus`）。
+///
+/// 判别力来源：音轨 +6 dB 时，0 dB 主总线的信号**越过**阈值 ⇒ 限制器真的压；
+/// 主总线 −6 dB 先把它拉回阈值以下 ⇒ 限制器**不再**介入（`reductions == 0`）。
+/// 若把推子移到限制器**之后**，两次渲染的限制器都会介入，`reductions == 0`
+/// 这一半立即变红。这条判据把"位置"这个设计选择钉成可执行的事实。
+#[test]
+fn master_fader_sits_upstream_of_the_bus_limiter() {
+    let notes = [NoteSpec::at(0, 960, 69, 127)];
+    let fixture = tuned_project(&notes, MixSpec::volume(6.0));
+    let master = fixture.master;
+
+    let mut unity_project = fixture.project.clone();
+    unity_project
+        .tracks
+        .get_mut(&master)
+        .expect("`tuned_project` 的母线在 tracks 里")
+        .volume_db = 0.0;
+    let mut quiet_project = fixture.project.clone();
+    quiet_project
+        .tracks
+        .get_mut(&master)
+        .expect("`tuned_project` 的母线在 tracks 里")
+        .volume_db = -6.0;
+
+    let unity = render(&unity_project, 120);
+    let quiet = render(&quiet_project, 120);
+    println!(
+        "[engine-master] M9 0 dB: peak={:.6} reductions={} | −6 dB: peak={:.6} reductions={}",
+        unity.peak(),
+        unity.stats.limiter_gain_reductions,
+        quiet.peak(),
+        quiet.stats.limiter_gain_reductions,
+    );
+
+    assert!(
+        unity.stats.limiter_gain_reductions > 0,
+        "夹具必须先越过阈值（reductions = 0 ⇒ 这条判据会变成永真）"
+    );
+    assert!(
+        unity.peak() <= yeban_engine::mixer::LIMITER_CEILING,
+        "限制后的峰值 {} 超过天花板",
+        unity.peak()
+    );
+    assert_eq!(
+        quiet.stats.limiter_gain_reductions, 0,
+        "推子在限制器**之前** ⇒ −6 dB 必须先离开限制区（reductions 必须为 0）"
+    );
+    assert!(
+        quiet.peak() < yeban_engine::mixer::LIMITER_THRESHOLD,
+        "−6 dB 之后的峰值必须回到阈值以下: {}",
+        quiet.peak()
+    );
+    assert!(
+        quiet.peak() < unity.peak(),
+        "拉低推子必须让输出变小: {} vs {}",
+        quiet.peak(),
+        unity.peak()
+    );
 }

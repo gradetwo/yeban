@@ -336,6 +336,12 @@ pub struct EngineRuntime {
     armed_pan_gains: [(EntityId, f32, f32); MAX_TRACK_SLOTS],
     /// 本快照武装的声相增益条数（前 `n` 项有效）。
     armed_pan_slots: usize,
+    /// 本快照武装的**主总线线性增益**（构造期由
+    /// [`crate::snapshot::EngineSnapshot::master_gain`] 算好）。
+    ///
+    /// 与声相增益表同一个理由：`dB → 线性` 含 `exp2`（超越函数类），只能在快照
+    /// 边界读一次；逐样本路径只做乘法（见 [`Self::armed_master_gain`]）。
+    armed_master_gain: f32,
     /// 累计被限制器压过的样本数（与 [`EngineStats::limiter_gain_reductions`] 同源）。
     limiter_gain_reductions: u64,
     /// 累计最大压限量（与 [`EngineStats::limiter_max_reduction`] 同源）。
@@ -404,6 +410,7 @@ impl EngineRuntime {
                 core::f32::consts::FRAC_1_SQRT_2,
             ); MAX_TRACK_SLOTS],
             armed_pan_slots: 0,
+            armed_master_gain: 1.0,
             limiter_gain_reductions: 0,
             limiter_max_reduction: 0.0,
             armed_revision: None,
@@ -569,6 +576,15 @@ impl EngineRuntime {
         self.armed_pan_slots
     }
 
+    /// 本快照武装的**主总线线性增益**（诊断/判据用）。
+    ///
+    /// 与 [`Self::armed_pan_gain`] 同族：把"武装进去的那个数"变成**可读**的，
+    /// 判据不必从音频输出反推。单位增益（`1.0`，默认 0 dB）时逐样本路径**整段跳过**。
+    #[must_use]
+    pub const fn armed_master_gain(&self) -> f32 {
+        self.armed_master_gain
+    }
+
     /// 播放头当前所在的绝对样本位置（0 = 工程 tick 0）。
     ///
     /// 走带是时钟的**唯一**事实源（[`crate::transport`]）：Running 时两者按同一
@@ -654,6 +670,7 @@ impl EngineRuntime {
             pdc_unarmed_nodes,
             pdc_clamped_frames,
             armed_revision,
+            armed_master_gain,
             armed_scheduled_notes,
             armed_note_schedule_drops,
             quanta,
@@ -759,6 +776,13 @@ impl EngineRuntime {
                 }
                 pan_gains[..self.armed_pan_slots]
                     .copy_from_slice(&self.armed_pan_gains[..self.armed_pan_slots]);
+
+                // --- 2c') 主总线推子：与声相表同一个形状（构造期标量，逐样本只乘）---
+                // `dB → 线性` 已经在快照构造期算完（`EngineSnapshot::master_gain`）；
+                // 这里只把这个 `f32` **读**进实时侧。主总线**不**进声相表（见上面
+                // 的 `*id == master` 分支）：母带的声相由总线求和决定，与 `yeban-mcp`
+                // 的 `masterPan` 登记同一口径。
+                *armed_master_gain = current.master_gain();
             }
 
             block.silence();
@@ -834,6 +858,18 @@ impl EngineRuntime {
                 );
                 sum_into_bus(block, &track_scratch[..frames], gain_l, gain_r);
             }
+
+            // --- 3a'') 主总线推子：**逐轨汇流之后、母线限制器之前** ---
+            // 增益在**构造期**算好（[`EngineSnapshot::master_gain`]；`exp2` 属超越函数类），
+            // 实时侧只有一次乘（[`scale_bus`]）—— 零分配、零锁、零 I/O、零除法、零超越函数
+            // [MUST-GATE-001]。
+            // `== 1.0`（默认 0 dB）时**整段跳过** ⇒ 单位增益下的输出与接线前**逐位**相同。
+            // 这个数在整份快照的生命周期内不变（快照不可变，见 2c'）。
+            let master_gain = *armed_master_gain;
+            if master_gain != 1.0 {
+                scale_bus(block, master_gain);
+            }
+
             // 播放头前进：**每个量子一次**（与轨道数无关）。
             //
             // 走带是**唯一**的时钟事实源：`Running` 时合成器与走带位置同步前进
@@ -846,6 +882,8 @@ impl EngineRuntime {
 
             // --- 3b) 母线限制器（[ARCH-DSP-001]）：逐轨汇流之后、母线电平之前 ---
             // 前瞻式峰值限制、立体声联动、逐样本确定（`mixer` 模块文档 §2–§4）。
+            //
+            // ⚠ 主总线推子（步骤 3a''）在**它之前**：见 [`scale_bus`] 的位置说明。
             let before = limiter.reduction_count();
             limiter.apply(block, frames);
             let reduced = limiter.reduction_count().saturating_sub(before);
@@ -909,6 +947,38 @@ fn sum_into_bus(
     for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono) {
         *l += *m * gain_l;
         *r += *m * gain_r;
+    }
+}
+
+/// 主总线推子：把**已汇流**的立体声块按构造期算好的标量缩放（左右各一次乘）。
+///
+/// ## 位置（为什么在**限制器之前**）
+///
+/// 调用点是 [`EngineRuntime::render_block`] 的步骤 3a''：**逐轨汇流之后、
+/// [`crate::mixer::BusLimiter::apply`] 之前**。这个顺序有两条理由：
+///
+/// 1. 限制器是母线输出的**最后一道**约束 —— 它自己的契约是"限制后峰值 ≤ 天花板"
+///    （[`crate::mixer`] 模块文档 §4 的上界证明）。推子放在它的**输入侧**，
+///    这条约束对**任何**主总线音量都成立：推子推高时限制器压得更狠，而**不是**
+///    让输出越过天花板；
+/// 2. `yeban-mcp` 的离线母带把 Master 轨增益放在**整条渲染之后**
+///    （`crates/yeban-mcp/src/domain/render.rs` 第 9 步），那条链路里**没有**限制器
+///    ⇒ 两者不冲突。本引擎里限制器是**总线器件**，推子接在它的输入侧。
+///
+/// ⚠ 顺序**没有**规范原文（`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` 与
+/// `docs/adr/**` 里查不到"主总线推子 vs 母线限制器"的先后），本实现按上面两条
+/// 理由选择，并登记为待裁决（见报告与 needs）。
+///
+/// ## 实时约束
+///
+/// 逐样本只有一次乘（[ADR-0001 D32] 的 IEEE 精确类）：**没有**除法、**没有**
+/// 超越函数、**没有**分配/锁/I-O。增益非 `1.0` 时才被调用（见 3a'' 的跳过分支）。
+fn scale_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, gain: f32) {
+    // 与 `sum_into_bus` 同源：`stereo_mut()` 只给出**有效帧**。
+    let (left, right) = block.stereo_mut();
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        *l *= gain;
+        *r *= gain;
     }
 }
 
@@ -1298,6 +1368,26 @@ mod tests {
         sum_into_bus(&mut block, &[1.0; DEFAULT_BLOCK_FRAMES], 1.0, 1.0);
         assert_eq!(block.left()[0], 1.25);
         assert_eq!(block.left().len(), 4);
+    }
+
+    /// 判据：主总线推子只在**有效帧**上乘，且每个有效样本恰好乘一次增益。
+    ///
+    /// 有效帧范围由 [`AudioBlock::stereo_mut`] 按 `set_frames` 截断给出（与
+    /// [`sum_into_bus`] 共用同一个契约）；`frames` 之外的槽位**不由公共 API 暴露**，
+    /// 因此本判据钉住的是"缩放的长度 == 有效帧数"。
+    #[test]
+    fn scale_bus_multiplies_valid_frames_only() {
+        let mut block = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        block.set_frames(3);
+        {
+            let (left, right) = block.stereo_mut();
+            left.fill(2.0);
+            right.fill(-4.0);
+        }
+        scale_bus(&mut block, 0.5);
+        assert_eq!(block.left(), &[1.0f32, 1.0, 1.0][..]);
+        assert_eq!(block.right(), &[-2.0f32, -2.0, -2.0][..]);
+        assert_eq!(block.left().len(), 3, "只缩放有效帧");
     }
 
     /// 判据：轨道数超过电平状态容量时**不 panic、不扩容**，而是计数并保留母线。

@@ -44,7 +44,7 @@
 //! | ③ | 走带 200 轮命令 + 2 000 量子播放 + 500 量子停住 | `EngineEvent::Transport` 出队应用、整数 tick 推进、`SeekTicks` 的声部释放、停住分支 |
 //! | ④ | 电平计量 10 000 量子 + UI 侧 60Hz 抽干 | 每轨/母线电平状态机 + **每量子恰好一次**批量发布 |
 //! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`） | 控制侧 `automation_value_at` → SPSC → 实时侧出队（**见 §needs：实时侧只计数，不改 DSP**） |
-//! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + 前瞻限制 + 声部窃取） | `BusLimiter::apply`、声相增益乘加、声部窃取路径 |
+//! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + **主总线推子** + 前瞻限制 + 声部窃取） | `BusLimiter::apply`、声相增益乘加、`scale_bus` 的主总线逐样本乘、声部窃取路径 |
 //! | ⑬ | 回调缓冲长度边界：1/2/3/127/128/129/1024/1025 帧 × 25 轮 + 非帧对齐缓冲 | `process_quantum` 的**任意长度**切块与逐帧交错拷贝、尾部残余样本契约 |
 //! | ⑭ | 采样率 × 项目声明 `block_size` 全组合切换（2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`、`Transport::arm` |
 //! | ⑮ | 播放中「`Op` 层编辑 / 撤销 → 重新发布快照」2 000 轮 + 主线程排空 | `Op::apply`/`apply_inverse` 的模型改写 → 快照重建 → 原子发布 → 切换 + 旧快照入退役队列 |
@@ -1060,7 +1060,7 @@ fn scenario_mix_chain(report: &mut Report) {
     // cutoff 2 kHz ⇒ 声部低通真的被调用；40 个同时起音的长音符 ⇒ 逼出声部窃取。
     let mut notes = saturated_notes();
     notes.extend((0..40u64).map(|index| NoteSpec::at(0, 96_000, 48 + (index % 12) as u8, 100)));
-    let fixture = tuned_project(
+    let mut fixture = tuned_project(
         &notes,
         MixSpec {
             volume_db: 6.0,
@@ -1069,6 +1069,16 @@ fn scenario_mix_chain(report: &mut Report) {
             resonance: 0.4,
         },
     );
+    // **主总线推子**也要在窗口内被走到：母线 +6 dB ⇒ `rt::scale_bus` 的逐样本乘
+    // 真的执行（否则这条 `[MUST-GATE-001]` 判据对新增的那一次乘是**零覆盖**）。
+    // 取 +6 dB（而不是 −6 dB）是因为推子在限制器**之前**：抬高只会让限制器压得更多，
+    // 因此 ⑥c 的 `limiter_gain_reductions > 0` 这条覆盖度断言仍然确定成立。
+    fixture
+        .project
+        .tracks
+        .get_mut(&fixture.master)
+        .expect("`tuned_project` 的母线在 tracks 里")
+        .volume_db = 6.0;
 
     let mut rig = Rig::new(&fixture.project, 1, 8192);
     rig.preheat();
@@ -1084,6 +1094,7 @@ fn scenario_mix_chain(report: &mut Report) {
     scenario.absorb(MIX_QUANTA, &reading);
 
     let stats = rig.stats();
+    let armed_master_gain = rig.runtime.armed_master_gain();
     let right_nonzero = rig
         .output
         .iter()
@@ -1092,7 +1103,8 @@ fn scenario_mix_chain(report: &mut Report) {
         .filter(|sample| **sample != 0.0)
         .count();
     scenario.note(format!(
-        "限制器压过={} 最大压限={:.4} 声部窃取={} 触发音符={} NaN={nan} 右声道非零={right_nonzero}",
+        "限制器压过={} 最大压限={:.4} 声部窃取={} 触发音符={} NaN={nan} 右声道非零={right_nonzero} \
+         主总线武装增益={armed_master_gain:.4}",
         stats.limiter_gain_reductions,
         stats.limiter_max_reduction,
         stats.voice_steals,
@@ -1106,13 +1118,16 @@ fn scenario_mix_chain(report: &mut Report) {
 
     report.assert(
         "⑥c",
-        "覆盖度：限制器真的压过、声部窃取真的发生、声相真的在线、输出无 NaN",
+        "覆盖度：限制器真的压过、声部窃取真的发生、声相真的在线、\
+         **主总线推子**真的被武装成非单位增益、输出无 NaN",
         stats.limiter_gain_reductions > 0
             && stats.voice_steals > 0
             && right_nonzero == 0
-            && nan == 0,
+            && nan == 0
+            && armed_master_gain.to_bits() != 1.0f32.to_bits(),
         format!(
-            "压过样本={}（要求 > 0）窃取={}（要求 > 0）右声道非零={right_nonzero}（要求 0）NaN={nan}（要求 0）",
+            "压过样本={}（要求 > 0）窃取={}（要求 > 0）右声道非零={right_nonzero}（要求 0）\
+             NaN={nan}（要求 0）主总线武装增益={armed_master_gain}（要求 ≠ 1.0，否则新增的乘没被走到）",
             stats.limiter_gain_reductions, stats.voice_steals
         ),
     );

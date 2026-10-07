@@ -338,6 +338,27 @@ pub struct EngineSnapshot {
     /// 投影进来之后，"声相定律影响输出"才是端到端可判据的；曲线本身仍在构造期
     /// 展开成两个 `f32`（[`TrackParams::pan_gains`]），实时侧只做乘法。
     pan_law: PanLaw,
+    /// 主总线**线性增益**（`master_bus_track_id` 那条轨的 `volume_db` 投影）。
+    ///
+    /// 为什么主总线需要**自己**的增益：[`TrackParams::volume_db`] 对普通轨在
+    /// **合成期**生效（逐音符增益，调用点见 [`crate::synth::track_gain`]），
+    /// 而母线**没有音源**（`rt::render_block` 的逐轨循环显式跳过母线）
+    /// ⇒ 母线的 `volume_db` 在接线前不参与任何混音，主控推子改变不了输出。
+    ///
+    /// 口径（与 `yeban-mcp` 的离线母带同源：`crates/yeban-mcp/src/domain/render.rs`
+    /// 的 "Master 轨增益"一段）：
+    ///
+    /// - 取 `master` 那条 [`TrackParams::volume_db`]；`master` 不在 `tracks` 里
+    ///   （例如只有母线的空工程）⇒ **单位增益** `1.0`；
+    /// - **非有限** dB 按静音 `0.0`（与 [`crate::synth::track_gain`] 同口径）；
+    /// - ⛔ **不看 `mute`**：本仓库对主总线静音没有语义（母线不合成任何音符），
+    ///   接线它只会把"静音"变成一个假入口（见 `line/app-mixer` 的裁决）；
+    /// - ⛔ **不看 `pan`**：母带的声相由总线求和决定（`yeban-mcp` 把 `masterPan`
+    ///   登记为 `unsupported`，口径相同）。
+    ///
+    /// `dB → 线性` 含 `exp2`，属 [ADR-0001 D32] 的**超越函数类**，因此只在
+    /// **构造期**算这一次；实时侧只读这个 `f32` 并做乘法（[MUST-GATE-001]）。
+    master_gain: f32,
     /// 当前快照里已调度的音符总条数（诊断/判据用）。
     scheduled_notes: usize,
     /// 因 [`MAX_NOTES_PER_TRACK`] 容量上限而被丢弃的音符条数（构造期计数）。
@@ -433,6 +454,11 @@ impl EngineSnapshot {
         latencies: &LatencyTable,
     ) -> Result<Self, SnapshotError> {
         let pdc = PdcPlan::compute(routing, master, latencies)?;
+        // 主总线推子：**构造期**算一次（`dB → 线性` 含 `exp2`，属超越函数类，
+        // 不进逐样本路径）。口径见 `EngineSnapshot::master_gain` 的字段文档。
+        let master_gain = tracks
+            .get(&master)
+            .map_or(1.0, |params| crate::synth::track_gain(params.volume_db()));
         Ok(Self {
             revision,
             sample_rate,
@@ -444,6 +470,7 @@ impl EngineSnapshot {
             schedules: BTreeMap::new(),
             tones: BTreeMap::new(),
             pan_law: PanLaw::default(),
+            master_gain,
             scheduled_notes: 0,
             note_schedule_drops: 0,
             pdc,
@@ -571,6 +598,15 @@ impl EngineSnapshot {
     #[must_use]
     pub const fn pan_law(&self) -> PanLaw {
         self.pan_law
+    }
+
+    /// 主总线**线性增益**（构造期由 `master` 那条 [`TrackParams::volume_db`] 算出）。
+    ///
+    /// 口径（含"不看 `mute` / 不看 `pan`"以及 `master` 不在 `tracks` 里的退化情形）
+    /// 见字段文档。实时侧唯一的用途是**一次乘**（`rt::scale_bus`）。
+    #[must_use]
+    pub const fn master_gain(&self) -> f32 {
+        self.master_gain
     }
 
     /// 本快照已调度的音符总条数。
@@ -1484,6 +1520,97 @@ mod tests {
         assert_eq!(params.device_count(), 0);
         assert_eq!(snapshot.pdc().total_latency(), 0);
         assert_eq!(snapshot.pdc().compensation(&snapshot.master()), Some(0));
+    }
+
+    /// 主总线推子：**构造期**把 `master` 那条轨的 `volume_db` 投影成线性增益。
+    ///
+    /// ⚠ 这条判据只钉住**投影口径**（含退化情形），**不**证明"声音变了" ——
+    /// 后者由 `tests/mix_render.rs` 的端到端判据（真实渲染路径的逐样本比较）钉住。
+    /// 两条必须成对读：只证明快照字段变了不构成"接线完成"。
+    #[test]
+    fn master_gain_is_projected_from_the_master_track_volume_db() {
+        // 1) 0 dB ⇒ **恰好** 1.0（实时侧据此整段跳过缩放）。
+        let mut project = simple_project();
+        let master = project.master_bus_track_id;
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                kind: TrackKind::Master,
+                volume_db: 0.0,
+                ..TrackV3::default()
+            },
+        );
+        let snapshot = EngineSnapshot::from_project(&project, 1).expect("投影成功");
+        assert_eq!(
+            snapshot.master_gain().to_bits(),
+            1.0f32.to_bits(),
+            "0 dB 必须逐位等于单位增益 1.0"
+        );
+
+        // 2) −6 dB ⇒ 与**音轨音量**同一个函数（`synth::track_gain`）同值。
+        project
+            .tracks
+            .get_mut(&master)
+            .expect("刚插入的母线参数")
+            .volume_db = -6.0;
+        let snapshot = EngineSnapshot::from_project(&project, 2).expect("投影成功");
+        let expected = crate::synth::track_gain(-6.0);
+        println!(
+            "[engine-master] snapshot master_gain(-6 dB) = {:.9} (synth::track_gain = {:.9})",
+            snapshot.master_gain(),
+            expected
+        );
+        assert_eq!(
+            snapshot.master_gain(),
+            expected,
+            "主总线增益必须与音轨音量走同一个 dB → 线性函数"
+        );
+        // `10^(-6/20) = 0.5011872…`：`db_to_gain` 用 `2^(db/6.0206)` 近似，偏差在 1e-6 内。
+        assert!(
+            (snapshot.master_gain() - 0.501_187_2).abs() < 1e-6,
+            "−6 dB 的线性增益必须是 0.5011872, 实际 {}",
+            snapshot.master_gain()
+        );
+
+        // 3) 母线**不在** `tracks` 里（`simple_project` 的原样）⇒ 单位增益。
+        let bare = EngineSnapshot::from_project(&simple_project(), 3).expect("投影成功");
+        assert_eq!(
+            bare.master_gain().to_bits(),
+            1.0f32.to_bits(),
+            "母线不在 tracks 里时必须取单位增益（而不是 0）"
+        );
+
+        // 4) 非有限 dB ⇒ 静音 0.0（与 `synth::track_gain` 同口径）。
+        project
+            .tracks
+            .get_mut(&master)
+            .expect("母线参数还在")
+            .volume_db = f32::NAN;
+        let snapshot = EngineSnapshot::from_project(&project, 4).expect("投影成功");
+        assert_eq!(snapshot.master_gain(), 0.0, "非有限 dB 必须按静音处理");
+
+        // 5) `mute` / `pan` 刻意**不**参与：主总线静音无语义（母线不合成音符），
+        //    主总线声相待裁决（`yeban-mcp` 把 `masterPan` 登记为 unsupported）。
+        let mut project = simple_project();
+        let master = project.master_bus_track_id;
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                kind: TrackKind::Master,
+                volume_db: 0.0,
+                pan: 1.0,
+                mute: true,
+                ..TrackV3::default()
+            },
+        );
+        let snapshot = EngineSnapshot::from_project(&project, 5).expect("投影成功");
+        assert_eq!(
+            snapshot.master_gain().to_bits(),
+            1.0f32.to_bits(),
+            "母线 mute / pan 不得改变主总线增益"
+        );
     }
 
     #[test]
