@@ -1194,6 +1194,43 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
     );
 }
 
+/// 判据 B11c: `Delete/Backspace → 删除` 已落地 —— 宿主认它, 快捷表也说能用, 渲染不带标记。
+///
+/// 这一条是"删除回退成不实现"的**直接牙**：把 `Action::DeleteSelection` 放回
+/// `host::action_has_implementation` 的 `!matches!` 名单（或把 `cli.rs` 的
+/// `implemented` 改回 `false`）⇒ 这里立刻红。B11b 也覆盖这一条, 但它的失败信息是
+/// "三面之一分叉"; 本判据的失败信息直接点名"删除被回退了"。
+#[test]
+fn delete_selection_is_implemented_in_the_host_table_and_rendered_output() {
+    use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::Action;
+
+    assert!(
+        action_has_implementation(Action::DeleteSelection),
+        "宿主必须认 `DeleteSelection`（回退成不实现即红）"
+    );
+    let row = shortcut_rows()
+        .iter()
+        .find(|row| row.action == Action::DeleteSelection)
+        .expect("快捷表必须有 `Delete/Backspace` 这一条");
+    assert!(
+        row.implemented,
+        "快捷表必须说 `Delete/Backspace` 能用（否则用户看到 `(未实现)`）"
+    );
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+    let delete_line = run
+        .stdout
+        .lines()
+        .find(|line| line.contains("Delete/Backspace"))
+        .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到删除那一行:\n{}", run.stdout));
+    assert!(
+        !delete_line.contains(UNIMPLEMENTED_MARKER),
+        "已实现的删除行**不得**带 `{UNIMPLEMENTED_MARKER}`: {delete_line}"
+    );
+}
+
 /// 判据 B12: `--export-midi` 从**真二进制**导出的字节可被 SMF 读取面读回，
 /// 逐音符与工程一致，`MThd` 的 PPQ 字段是 960，且两次导出逐字节相同
 /// （① 回读 / ② 逐音符 / ③ PPQ 头 / ④ 确定性，全部在**进程级**再证一次）。

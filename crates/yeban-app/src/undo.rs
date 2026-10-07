@@ -616,6 +616,57 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_selection_commits_as_one_atomic_undoable_step() {
+        // 判据：一次按键 = **一次** `commit_ops` 删 k 个音符 ⇒ 撤销**一步**必须 k 个全回来。
+        //
+        // 怎么变红：把整批拆成 k 次 `commit_ops`（非原子）⇒ `undoable` 前进 k，
+        // 而下面那次单步 `Undo` 只回 1 个 ⇒ 两处断言同时红。
+        let port = port();
+        let project = port.project();
+        let ids: Vec<String> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.keys().map(ToString::to_string))
+            .collect();
+        assert!(ids.len() >= 3, "夹具至少要有 3 个音符, 实际 {}", ids.len());
+        let chosen = &ids[..3];
+        let ops = crate::host::delete_ops_for(&project, chosen);
+        assert_eq!(ops.len(), 3, "三个选中身份 ⇒ 三条 `DeleteNote`");
+
+        let count = |project: &yeban_model::YebanProjectV1| -> usize {
+            project
+                .clip_pool
+                .values()
+                .filter_map(|entry| entry.content.notes())
+                .map(std::collections::BTreeMap::len)
+                .sum()
+        };
+        let before = count(&port.project());
+        let undoable_before = port.display().undoable;
+
+        port.commit_ops(NOW + 1, "delete selection", ops)
+            .expect("整批提交必须成功");
+        assert_eq!(count(&port.project()), before - 3, "三个音符必须都离开工程");
+        assert_eq!(
+            port.display().undoable,
+            undoable_before + 1,
+            "一次按键必须只推进一步（原子）—— 非原子实现这里是 +3"
+        );
+
+        let outcome = port.perform(UiAction::Undo);
+        assert!(
+            matches!(outcome, ActionOutcome::Changed { steps: 1, .. }),
+            "必须是一步撤销: {outcome:?}"
+        );
+        assert_eq!(
+            count(&port.project()),
+            before,
+            "撤销**一次**必须三个音符全回来"
+        );
+    }
+
+    #[test]
     fn select_tool_is_dispatched_and_named_but_carries_no_model_action() {
         // 判据: 工具选择经**唯一下发点** `dispatch_key` 得到 `UiAction::SelectTool`, 名字固定,
         // 且端口侧只报显示态（视图状态不进提交图, 也不改工程）。

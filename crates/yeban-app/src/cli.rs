@@ -2090,7 +2090,7 @@ const SHORTCUTS: [ShortcutRow; 18] = [
         action: Action::DeleteSelection,
         key: PhysicalKey::Delete,
         modifiers: Modifiers::none(),
-        implemented: false,
+        implemented: true,
     },
     ShortcutRow {
         label: "B → 箭头/铅笔切换",

@@ -156,6 +156,9 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
         save_path: loaded.source.save_target(),
         // 装配阶段不推量子（`ui/reload_engine` 才建引擎）。
         engine_quanta: 0,
+        // 产品形态的键盘撤销端口：本执行面只服务 `ui/*` 控制面，GUI 键盘路径由
+        // `main.rs` 的装配负责 ⇒ 这里如实 `None`（撤销族按键不被这一份消费）。
+        undo: None,
     };
     let live =
         build_live_ui_with(&loaded.archive.project, &wiring).map_err(|error| CliError::Ui {

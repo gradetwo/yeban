@@ -910,16 +910,19 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// `shortcut_table_status_matches_the_resolution_and_host_pipeline` 把快捷键表逐行与它
 /// 对账 —— 表与行为因此不可能各说各话。
 ///
-/// 返回 `false` 的八条（`DeleteSelection` / `Duplicate` / `ZoomToSelection` / `ZoomToFit` /
-/// `AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion` / `Cancel`）是模型侧的编辑 /
+/// 返回 `false` 的六条（`Duplicate` / `ZoomToSelection` / `ZoomToFit` /
+/// `AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion`）是模型侧的编辑 /
 /// 视口语义还没落地的动作。**不消费**它们是刻意的：把键吞掉却什么都不做，比不处理更糟 ——
 /// 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
+///
+/// `DeleteSelection` 曾在这张名单里；它现在有落地实现（下面的 `apply_action` 分支），
+/// 因此**同时**从这张名单与 `cli.rs` 的快捷表 `implemented` 标记里移出 ——
+/// B11b（`tests/cli_contract.rs`）把这两处与 `--print-shortcuts` 的渲染逐条对账。
 #[must_use]
 pub fn action_has_implementation(action: Action) -> bool {
     !matches!(
         action,
-        Action::DeleteSelection
-            | Action::Duplicate
+        Action::Duplicate
             | Action::ZoomToSelection
             | Action::ZoomToFit
             | Action::AuditionMain
@@ -1011,6 +1014,49 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             port.perform(ui_action);
             // 工程真的变了就重新投影（`Undo`/`Redo` 会改工程；时光机只开关弹窗）。
             refresh_undo_window(ui, port, matches!(action, Action::Undo | Action::Redo));
+            true
+        }
+        // `Delete` / `Backspace`：删除**当前选区**（`[UI-NOTE-003]`）。
+        //
+        // 语义（三条都是决定, 不是意外）：
+        // 1. 选区是**视图态**，事实源是界面属性 `selected-ulids`（`apply_view` 每次由它重算
+        //    `note-selected` 标志, 见本文件 `apply_view`）—— 这里读它, 不读第二份状态；
+        // 2. **无选区（或选中的身份已不存在）⇒ 什么都不做**，返回 `false`（不吞键）。
+        //    这比"删最后一个音符"安全：没有选区时的删除意图**没有**可判定的对象,
+        //    猜一个对象去删是数据损失。它与 `Action::Cancel`（没有手势在手时返回 `false`）同一取向；
+        // 3. 一次按键 = **一次** `commit_ops`。`undo_session::commit` 把整批包成**一个**
+        //    `Op::Batch` ⇒ 删 k 个音符**一步撤销**全部回来（`ARCH-OPS-002` 的原子性）。
+        //    这里**不自己**构造 `Batch`：那会在模型之外长出第二个批次语义。
+        //
+        // 提交后必须重新投影：删掉的音符仍在界面数组里, 不重投影就是"模型删了、画面还在"。
+        Action::DeleteSelection => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let selected: Vec<String> = {
+                use slint::Model as _;
+                ui.get_selected_ulids()
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect()
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let ops = delete_ops_for(&project, &selected);
+            if ops.is_empty() {
+                // 选区的对象一个都不在工程里 ⇒ 没有可停靠的编辑, 如实不消费。
+                return false;
+            }
+            if port.commit_ops(now_ms(), "delete selection", ops).is_err() {
+                return false;
+            }
+            // 被删的身份已经不存在 ⇒ 选区必须清空, 否则 `selected-note-count` 会停在旧值上
+            // （下一次 `apply_view` 重算的标志会全为 `false`, 于是"选中数"与标志分叉）。
+            let cleared: Vec<slint::SharedString> = Vec::new();
+            ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(cleared)));
+            ui.set_selected_note_count(0);
+            refresh_undo_window(ui, port, true);
             true
         }
         // 其余取值已在函数开头被 `action_has_implementation` 挡下；这一支只为让 match 穷尽。
@@ -1142,6 +1188,74 @@ pub const PENCIL_TOOL_DIGIT: u8 = 2;
 /// 当前吸附网格（tick）：1/16 = 240。将来若可配, 应由配置注入而不是在这里长第二个真相源。
 pub const ROLL_SNAP_GRID_TICKS: u64 = 240;
 
+/// 当前 UNIX 毫秒（提交时间戳）。溢出与时钟倒退都夹到 `0` / `u64::MAX`，**不 panic**。
+///
+/// 抽出来是因为它有两个调用点（铅笔与删除）：两处各写一遍 `SystemTime` 就是第二个真相源。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// `[UI-NOTE-003]` 把"选中的音符身份"解析成待提交的 **`Op::DeleteNote` 集合**（纯函数, 有判据）。
+///
+/// 返回**空 `Vec`** 的两种情形都是**决定**：选区为空；选中的身份在工程里一个都解析不到
+/// （例如它们已被上一次删除移除）—— 那时调用方**什么都不做**。
+///
+/// 为什么一次返回**一批**而不是一个：`undo_session::commit` 把整批包成一个 `Op::Batch`，
+/// 于是"一次按键 = 一次提交 = 一步撤销"是构造上的（`ARCH-OPS-002`）。逐个提交会让
+/// 删 5 个音符需要按 5 次 `Cmd+Z` 才回来 —— 那不是原子。
+///
+/// `track_id` 只用于 `DeleteNote::precondition` 的"这条轨道存在吗"检查（音符住在
+/// **片段池**里, 不住在轨道上）。这里取**摆放了该片段的第一条轨道**（键序确定）；
+/// 一个谁都没摆放的片段池条目回退到工程的**第一条轨道**。工程一条轨道都没有 ⇒ 跳过该音符。
+#[must_use]
+pub fn delete_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // 身份集合：`BTreeSet` 迭代确定（与红线 4 的取向一致），顺带自动去重。
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    // "片段池条目 → 摆放它的第一条轨道"（`or_insert` ⇒ 第一次命中胜出, 键序确定）。
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback_track = project.tracks.keys().next().copied();
+    let mut ops = Vec::new();
+    // 片段池键序 → 音符键序：与 `ViewState.notes` 的既有顺序同源（`bridge.rs` 的投影顺序）。
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in notes {
+            if !targets.contains(note_id) {
+                continue;
+            }
+            let Some(track_id) = owner.get(clip_id).copied().or(fallback_track) else {
+                continue;
+            };
+            ops.push(yeban_model::ops::Op::DeleteNote {
+                track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                // 自带撤销载荷：撤销不需要回放历史（`ops.rs` 的设计约束 2）。
+                previous_note: note.clone(),
+            });
+        }
+    }
+    ops
+}
+
 /// `[UI-NOTE-003]` 把卷帘的点击接到**撤销端口**上（目前只接铅笔的工具语义）。
 ///
 /// 解析本身在 [`pencil_op_for`] 里（纯函数, 有判据）；这里只做三件事: 读界面状态、
@@ -1173,9 +1287,7 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             // 工具不对、吸附不出计划、或位置不在任何片段内 ⇒ **拒绝**（第 234 轮的决定）。
             return;
         };
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let now_ms = now_ms();
         if port
             .commit_ops(now_ms, "pencil: add note", vec![op])
             .is_err()
@@ -1548,5 +1660,53 @@ mod pencil_op_tests {
             Some(other) => panic!("铅笔必须产生 AddNote, 实际是 {other:?}"),
             None => panic!("片段所在区域**必须**存在能给出操作的点击位置"),
         }
+    }
+
+    #[test]
+    fn delete_ops_for_covers_every_selected_note_and_the_batch_reverses_whole() {
+        // 判据：`delete_ops_for` 是"选区身份 → 待提交 op"的**唯一**解析点。
+        // 空选区与垃圾身份 ⇒ **空批**（"什么都不做"是返回空, 不是 panic, 也不是删一个猜的对象）。
+        use yeban_model::ops::Op;
+        let project = filled_project();
+        let count = |project: &yeban_model::YebanProjectV1| -> usize {
+            project
+                .clip_pool
+                .values()
+                .filter_map(|entry| entry.content.notes())
+                .map(std::collections::BTreeMap::len)
+                .sum()
+        };
+        let total = count(&project);
+        assert!(total >= 3, "夹具至少要有 3 个音符, 实际 {total}");
+        let ids: Vec<String> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.keys().map(ToString::to_string))
+            .collect();
+
+        assert!(delete_ops_for(&project, &[]).is_empty(), "空选区 ⇒ 空批");
+        assert!(
+            delete_ops_for(&project, &["not-a-ulid".to_owned()]).is_empty(),
+            "解析不出的身份 ⇒ 空批"
+        );
+
+        let ops = delete_ops_for(&project, &ids);
+        assert_eq!(ops.len(), total, "每个选中的音符恰好一条 `DeleteNote`");
+        assert!(
+            ops.iter().all(|op| matches!(op, Op::DeleteNote { .. })),
+            "只允许 `DeleteNote`"
+        );
+
+        // 原子 + 可逆：`Op::Batch` 的逆是**逆序**的逆操作批 —— 与 `undo_session::commit` 同一条路。
+        let batch = Op::Batch {
+            ops,
+            description: "delete selection".to_owned(),
+        };
+        let mut doc = project.clone();
+        batch.apply(&mut doc).expect("整批必须可应用（原子）");
+        assert_eq!(count(&doc), 0, "全选删除后一个音符都不剩");
+        batch.apply_inverse(&mut doc).expect("一步撤销必须整批回来");
+        assert_eq!(count(&doc), total, "撤销一次必须**全部**回来");
     }
 }

@@ -163,6 +163,7 @@ fn capture_tier1(port: &LivePort<MainWindow>) -> Result<Rgb8Image, PortError> {
 /// | `console_tab` | 混音台（Tab 1）只在被选中时进入运行时控件树 —— "通道条数 == 轨道数"这条判据必须先让它可见 |
 /// | `save_path` | `ui/force_save` 必须写到一个**真的路径**；不给路径时它**如实报错**（不是假成功） |
 /// | `engine_quanta` | `ui/reload_engine` 重建后推多少个量子；0 = 只重建不推进（合法） |
+/// | `undo` | 撤销端口（`None` ⇒ 撤销族与删除如实 `reject`，与产品里没有会话时同款）；判据用它见证"按键 → 可撤销提交" |
 #[derive(Debug, Clone)]
 pub struct LiveWiringOptions {
     /// 端口三级权限（`[UI-MCP-001]`）。`into_control_plane` 的 `permission` 通常与它相同。
@@ -173,6 +174,11 @@ pub struct LiveWiringOptions {
     pub save_path: Option<PathBuf>,
     /// `ui/reload_engine` 每次重建后推进的量子数。
     pub engine_quanta: u64,
+    /// 键盘路径的撤销端口（`host::wire_keys` 的第三个参数）。
+    ///
+    /// 生产 GUI 在 `main.rs` 传的是 `Some(undo_port)`；这里默认 `None`，
+    /// 因此"没有撤销会话的装配"照旧如实 `reject`（既有判据 16 的第 ⑥/⑦ 步不变）。
+    pub undo: Option<Rc<yeban_app::undo::UndoPort>>,
 }
 
 impl Default for LiveWiringOptions {
@@ -182,6 +188,7 @@ impl Default for LiveWiringOptions {
             console_tab: 0,
             save_path: None,
             engine_quanta: 8,
+            undo: None,
         }
     }
 }
@@ -1123,6 +1130,22 @@ impl LiveUi {
     pub fn ui(&self) -> &MainWindow {
         &self.surface.window
     }
+
+    /// 在真实执行面上注入一次按键（`[UI-TEST-002]` §12.4 的 `ui/dispatch_key_press` **本体**）。
+    ///
+    /// 判据用它把"注入 → Slint 事件源 → `key-handler` 回调 → 宿主"这一段走全，
+    /// **同时**保留 [`Self::sync_authority`] / [`Self::tree_snapshot`] 的树读数能力
+    /// （`into_control_plane` 会把执行面装箱取走，两者不可兼得）。
+    ///
+    /// # Errors
+    ///
+    /// 端口拒绝（权限不足 / 未知键 / 执行面已失效）。
+    pub fn dispatch_key_press(
+        &mut self,
+        key: yeban_ui_test_port::port::KeyCode,
+    ) -> Result<(), PortError> {
+        self.surface.inner.dispatch_key_press(key)
+    }
 }
 
 /// 控制面 + 装配时留下的证据（判据用）。
@@ -1301,9 +1324,10 @@ pub fn build_live_ui_with(
     // 因此"界面上的合成态"与"界面看到的合成态"不可能各说各话（不新造状态机）。
     host::wire_input(&window, Rc::clone(&input));
     // `N2` 裁决 (1)：GUI 的**逻辑键**事件源（`ui/app.slint` 的 `key-handler` FocusScope）。
-    // 判据侧这里**没有**撤销会话（`UndoPort` 住生产 `main.rs`），因此撤销族快捷键
-    // 如实 `reject`（不被消费）；工具 / 视图 / 走带这类界面动作照常生效 —— 判据 16 判的就是它们。
-    host::wire_keys(&window, Rc::clone(&input), None);
+    // 撤销端口来自装配选项：默认 `None`（判据侧没有撤销会话时，撤销族如实 `reject`，
+    // 工具 / 视图 / 走带这类界面动作照常生效 —— 判据 16 判的就是它们）。判据用
+    // [`LiveWiringOptions::undo`] 把它接上，从而见证"按键 → 撤销端口提交 → 重投影"整段。
+    host::wire_keys(&window, Rc::clone(&input), options.undo.clone());
     let admin = LiveAdminSurface {
         inner: surface,
         window,

@@ -410,6 +410,8 @@ fn options(permission: Permission, console_tab: i32) -> LiveWiringOptions {
         console_tab,
         save_path: None,
         engine_quanta: 4,
+        // 这条装配不接撤销端口（与既有判据 16 的"没有撤销会话"形态一致）。
+        undo: None,
     }
 }
 
@@ -3454,6 +3456,8 @@ fn production_plane_denies_injection_and_really_switches_the_live_view() {
         // 与产品路径"样本没有磁盘对应物"的形态一致。
         save_path: None,
         engine_quanta: 0,
+        // 本判据只判生产模式的注入闸门，不接撤销端口。
+        undo: None,
     };
     let mut plane = build_live_ui_with(&project, &wiring)
         .expect("真实界面 + Tier-1 执行面")
@@ -3561,5 +3565,252 @@ fn the_ui_mcp_http_switch_literals_match_the_ui_mcp_crate() {
     report_line(&format!(
         "[ui-mcp-http] 字面值对账: {UI_MCP_HTTP_SWITCH} / feature {UI_MCP_HTTP_FEATURE} / \
          端点 {UI_MCP_PATH} 与 yeban-ui-mcp 的权威定义逐字节相同"
+    ));
+}
+
+// ===========================================================================
+// 删除选区（`Delete`/`Backspace`）：真实事件源 → 一次可撤销提交
+// ===========================================================================
+
+/// 运行树里的**真**音符身份：`note-{26 字符 ULID}-rect` 的 `{ulid}` 段。
+///
+/// 不能只按 `note-` / `-rect` 前后缀取：静态叠加层 `note-suggestion-overlay-rect`
+/// 也满足那对前后缀（实测：一棵 85 节点的树里 5 个候选、其中 1 个是叠加层）。
+fn note_ulids_in_tree(tree: &ControlTree) -> Vec<String> {
+    tree.with_prefix("note-")
+        .filter_map(|node| {
+            node.id
+                .strip_prefix("note-")
+                .and_then(|rest| rest.strip_suffix("-rect"))
+                .map(str::to_owned)
+        })
+        .filter(|ulid| ulid.len() == 26 && ulid.chars().all(|c| c.is_ascii_alphanumeric()))
+        .collect()
+}
+
+/// 音符族规模 = [`note_ulids_in_tree`] 的条目数（**条目**, 不是行）。
+fn note_rects(tree: &ControlTree) -> usize {
+    note_ulids_in_tree(tree).len()
+}
+
+/// 工程里的音符**条目**数（片段池键序 → 音符键序；与投影同源）。
+fn model_note_count(project: &YebanProjectV1) -> usize {
+    project
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes())
+        .map(std::collections::BTreeMap::len)
+        .sum()
+}
+
+/// 判据 D1（删除选区, **默认构建**）：`Backspace` 经真实事件源删除当前选区,
+/// 且**一次撤销整批回来**。
+///
+/// ## 三行读数（全部来自活窗口）
+///
+/// | 步 | 动作 | 读数 |
+/// | :--- | :--- | :--- |
+/// | ① | 注入前 | 运行时树里的音符元素数 = N |
+/// | ② | 注入 `Backspace` | N − k（k = 选区大小） |
+/// | ③ | `Cmd+Z` | 回到 N |
+///
+/// ## 怎么变红
+///
+/// 把 `apply_action` 的 `DeleteSelection` 分支摘掉（或让按键被吞却不提交）⇒ ② 步读数不变。
+/// 把整批拆成 k 次 `commit_ops`（非原子）⇒ ③ 步只回来 1 个。
+#[test]
+fn backspace_deletes_the_selection_through_the_event_source_and_one_undo_restores_all() {
+    use slint::Model as _;
+    use std::rc::Rc;
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_ui_test_port::port::KeyCode;
+
+    const NOW: u64 = 1_760_000_000_000;
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据:删除选区>", "yeban-app", project.clone(), NOW)
+            .expect("打开撤销会话"),
+    ));
+    let wiring = LiveWiringOptions {
+        permission: Permission::Interactive,
+        console_tab: 0,
+        save_path: None,
+        engine_quanta: 0,
+        undo: Some(Rc::clone(&port)),
+    };
+    let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
+
+    // 选区 = 界面属性 `selected-ulids`（删除的唯一事实源）。选运行时树里**全部**音符元素
+    // （这样"树里数到 k 个"与"选中 k 个"是同一份集合, 不存在树/投影口径差）。
+    let selected = note_ulids_in_tree(&ui.tree_snapshot());
+    let k = selected.len();
+    assert!(
+        k >= 1,
+        "夹具必须至少有一个可见音符（否则本判据的对照不成立）"
+    );
+    ui.ui()
+        .set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(
+            selected
+                .iter()
+                .map(|id| slint::SharedString::from(id.as_str()))
+                .collect::<Vec<_>>(),
+        )));
+    ui.ui()
+        .set_selected_note_count(i32::try_from(k).unwrap_or(i32::MAX));
+
+    let before_tree = note_rects(&ui.tree_snapshot());
+    let before_model = model_note_count(&port.project());
+    assert_eq!(
+        before_tree, k,
+        "① 起点: 树里的音符元素数必须等于被选中的身份数"
+    );
+
+    // ① → ②：真实事件源注入 `Backspace`（端口 → 窗口事件 → key-handler → wire_keys → apply_action）。
+    ui.dispatch_key_press(KeyCode::Backspace)
+        .expect("注入 Backspace");
+    assert_eq!(
+        ui.ui().get_note_ulids().row_count(),
+        before_tree - k,
+        "宿主自己的重投影必须立刻把界面音符数组减掉 k 个"
+    );
+    // 键盘路径直接写窗口属性 ⇒ 控制面的树缓存要显式重抓（按端口工程重新投影）。
+    ui.apply_project(&port.project()).expect("按端口工程重抓树");
+    let after_tree = note_rects(&ui.tree_snapshot());
+    let after_model = model_note_count(&port.project());
+    assert_eq!(
+        after_tree,
+        before_tree - k,
+        "② 树里的音符元素数必须 = N − k"
+    );
+    assert_eq!(after_model, before_model - k, "模型侧也必须少 k 个音符");
+
+    // ③：`Cmd+Z`（`ui/dispatch_key_press` 表达不了修饰键 chord ⇒ 走 `.slint` 回调那一格,
+    // 与既有判据 16 的第 ④ 步同款）。
+    assert!(
+        ui.ui()
+            .invoke_key_action("z".into(), false, true, false, false),
+        "`Cmd+Z` 必须被消费"
+    );
+    ui.apply_project(&port.project()).expect("撤销后重抓树");
+    let restored_tree = note_rects(&ui.tree_snapshot());
+    let restored_model = model_note_count(&port.project());
+    assert_eq!(
+        restored_tree, before_tree,
+        "③ 一次撤销必须让 k 个音符**全部**回到树里"
+    );
+    assert_eq!(restored_model, before_model, "模型侧也必须回到 N");
+
+    report_line(&format!(
+        "[delete-selection] 默认装配: 注入前 音符元素 N={before_tree}; 注入 `Backspace` 后 \
+         N−k={after_tree}（k={k}）; `Cmd+Z` 后 N={restored_tree}"
+    ));
+}
+
+/// 判据 D2（删除选区, `in-process-mcp`）：同一次按键的删除落在**唯一权威**上,
+/// 且 `Cmd+Z` 从**同一个**权威回来（`ROAD-M4-008` 选项 (a)）。
+///
+/// 与判据 D1 的差别是**结构性的**：这里没有本地会话, 工程的唯一来源是控制面 `Domain`；
+/// 因此"删除进的是同一个会话"由 `apply_revision` 的前进来见证, 而不是由本地端口自证。
+#[cfg(feature = "in-process-mcp")]
+#[test]
+fn a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
+    use std::rc::Rc;
+    use yeban_app::mcp_mount::{InProcessMcp, SessionSource};
+    use yeban_app::undo::UndoPort;
+    use yeban_ui_test_port::port::KeyCode;
+
+    let project = yeban_model::samples::filled_project();
+    let mount = InProcessMcp::start_for_project(
+        true,
+        project,
+        SessionSource::InMemory(PathBuf::from("sample:delete-selection")),
+    )
+    .expect("挂载决策")
+    .expect("运行期开关打开时必须真的挂载");
+    let authority = mount.project_authority();
+    let port = Rc::new(UndoPort::from_authority(authority.clone()));
+    let wiring = LiveWiringOptions {
+        permission: Permission::Interactive,
+        console_tab: 0,
+        save_path: None,
+        engine_quanta: 0,
+        undo: Some(Rc::clone(&port)),
+    };
+    let mut ui = live::build_live_ui_from_authority_with(&authority, &wiring).expect("装配");
+
+    let before_revision = authority.apply_revision();
+    let before_tree = note_rects(&ui.tree_snapshot());
+    let before_model = model_note_count(&authority.project().expect("权威有活跃工程"));
+    // 选区 = 运行时树里的全部音符元素（与 `note_rects` 同一份集合）。
+    let selected = note_ulids_in_tree(&ui.tree_snapshot());
+    let k = selected.len();
+    assert!(k >= 1, "夹具必须至少有一个可见音符");
+    ui.ui()
+        .set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(
+            selected
+                .iter()
+                .map(|id| slint::SharedString::from(id.as_str()))
+                .collect::<Vec<_>>(),
+        )));
+    ui.ui()
+        .set_selected_note_count(i32::try_from(k).unwrap_or(i32::MAX));
+
+    // ① → ②：注入 `Backspace` ⇒ 权威工程少 k 个、修订号 +1。
+    ui.dispatch_key_press(KeyCode::Backspace)
+        .expect("注入 Backspace");
+    assert_eq!(
+        authority.apply_revision(),
+        before_revision + 1,
+        "GUI 的删除必须推进**同一个**权威的施加修订号"
+    );
+    assert_eq!(
+        model_note_count(&authority.project().expect("权威有活跃工程")),
+        before_model - k,
+        "② 权威工程里的音符必须少 k 个"
+    );
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: before_revision + 1
+        }
+    );
+    let after_tree = note_rects(&ui.tree_snapshot());
+    assert_eq!(
+        after_tree,
+        before_tree - k,
+        "② 树里的音符元素数必须 = N − k"
+    );
+
+    // ③：`Cmd+Z` ⇒ 权威修订号再 +1、k 个音符全部回来。
+    assert!(
+        ui.ui()
+            .invoke_key_action("z".into(), false, true, false, false),
+        "`Cmd+Z` 必须被消费"
+    );
+    assert_eq!(
+        authority.apply_revision(),
+        before_revision + 2,
+        "撤销也必须落在**同一个**权威上"
+    );
+    assert_eq!(
+        model_note_count(&authority.project().expect("权威有活跃工程")),
+        before_model,
+        "③ 一次撤销必须让 k 个音符全部回到权威工程"
+    );
+    assert_eq!(
+        ui.sync_authority().expect("刷新投影"),
+        AuthoritySync::Reprojected {
+            revision: before_revision + 2
+        }
+    );
+    let restored_tree = note_rects(&ui.tree_snapshot());
+    assert_eq!(restored_tree, before_tree, "③ 树里的音符元素数必须回到 N");
+
+    report_line(&format!(
+        "[delete-selection-authority] 注入前 音符元素 N={before_tree}; 注入 `Backspace` 后 \
+         N−k={after_tree}（k={k}）; `Cmd+Z` 后 N={restored_tree}; 权威修订号 \
+         {before_revision}→{}→{}",
+        before_revision + 1,
+        before_revision + 2
     ));
 }
