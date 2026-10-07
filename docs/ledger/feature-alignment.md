@@ -319,8 +319,12 @@
 ### 错位 7（**三档中的"部分"已成常态**）："系统有 + UI 有控件"但**回调一律未接线**
 
 - **功能**：走带播放、撤销树、AI 提案采纳/拒绝、声学诊断（写下本行时是四类共 9 个回调）。
-- **证据（2026-10-07 复测，机械读数）**：`grep -rn "trace(" crates/yeban-app/src/main.rs` 命中 **7** 条
-  （`main.rs:490-492` 三条 + `main.rs:496` 的 `trace()` 定义 + 三条 doc 里的字面引用），
+- **证据（2026-10-07 复测，机械读数；两侧都量，避免把改写后的状态当改前状态）**：
+  改**前**（`29c604a`，工作树干净）`git show 29c604a:crates/yeban-app/src/main.rs | grep -c "trace("` ⇒ **8** = 7 条回调（`main.rs:472-478`）+ `trace()` 的定义
+  （`trace()` 的打字行自己含 `trace(` 这个子串）；改**后**（本轮代码提交 `79a8e5e`）同一条 grep ⇒ **4** = 3 条回调（`main.rs:490-492`）
+  + 定义（`main.rs:496`）。⚠ 本行**原稿**写的是「命中 **7** 条（`main.rs:490-492` 三条 + `main.rs:496` 的定义 +
+  **三条 doc 里的字面引用**）」—— 那个"三条 doc"是**没有出处**的（同一条 grep 实测只有 4 行，doc 注释里的 `trace(` 命中 0 条），
+  且把"改后的行号"与"改前的条数"混在一句里；两处都已按实测更正（更正轮见 `docs/DEVELOPMENT_LEDGER.md` 第 431 轮的补记）。
   真正未接线的回调是 **3** 条：`accept-ai-proposal` / `reject-ai-proposal` / `run-acoustic-diagnosis`。
   原写的「9 个 / `main.rs:141-151` / `trace()` 在 `main.rs:154-156`」是**当时的**真话 ——
   `d5275c0` 的 9 条逐字为 `toggle-play` / `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` /
