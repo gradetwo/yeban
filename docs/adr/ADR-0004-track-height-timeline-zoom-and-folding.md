@@ -438,7 +438,7 @@ A 可作为第一片的最小步，但 B 只多一条派生数组，收益是「
 | 切片 | 交付 | 依赖的裁决 | 落地什么 | schema | golden |
 | :-- | :--- | :--- | :--- | :--- | :--- |
 | **S0（共享前置，必须最先）— 已落地 `ee7fad5`（2026-10-07）** | 投影供行几何 | Q1（单位）、Q2（夹紧住投影）、Q3（带同行）、Q9-B/C | `ViewState` / `host` 供 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`（前缀和）；`TrackView` / `ClipView` 带 `y`/`height`；`automation.rs` 的带从**同一份**行几何派生（新入口 `project_lanes_with_rows`）；`arrangement_view.slint` 三处改读注入数组；`lane_element_ids_match_the_slint_template` 的文本层断言改写成「`.slint` 不做行算术」 | **否** | **默认几何不变 ⇒ 5 张 Linux Tier-1 Golden 不变**（这条本身就是判据：重构必须逐字节保持默认帧） |
-| **S1（纵向轨道高度）** | 每轨高度 + 全局高度缩放级 | Q1、Q2、Q3、Q4 | `row-heights` 由 `clamp(height_px × 百分比 / 100)` 得到；一个拖拽手势；S0 的**第一个真消费者** | 只在 Q1 = A/C 时要 | 只在默认几何或新增可视控件时变 |
+| **S1（纵向轨道高度）** —— **已落地 `483707b`（2026-10-07）**；**拖拽手势与 `ui/*` / `Action` 入口未随之落地，留给后续切片**（本 ADR 的裁决与代价一节**未改**，只标该切片的落地状态） | 每轨高度 + 全局高度缩放级 | Q1、Q2、Q3、Q4 | `row-heights` 由 `clamp(height_px × 百分比 / 100)` 得到；一个拖拽手势；S0 的**第一个真消费者** | 只在 Q1 = A/C 时要 | 只在默认几何或新增可视控件时变 |
 | **S2（横向时间轴缩放 + 编排滚动）** | 滚动 + 缩放级 | Q5、Q6、Q7 | 宿主拥有 `ticks_per_pixel`（离散整数阶梯）+ `arrangement_scroll_x`；`from_project_with_zoom` **第一个生产调用点**；`arrangement_view.slint` 加 `scroll-requested`（复用钢琴卷帘形状，**不用 `Flickable`**）；剪辑/小节线/自动化顶点在投影里减偏移；`host.rs:548` + `cli.rs` 的表 + B11b **同提交**一起动 | 只在 Q5 = A 时要 | 只在默认缩放 ≠ 30 或新增可视控件时变 |
 | **S3（轨道折叠）** | 折叠（含 Q13 前置） | Q8、Q9、Q10、Q11、Q12（+ Q13 先落） | `validate()` 加固（Q13，可先单独落）；投影加 `visible`/`folded` + 隐藏行高 0；标尺并集跨度（Q10-B）；混音台保留（Q11-B）；`collapsed` 位按 Q12 | 只在 Q12 = B 时要 | 折叠默认「不折叠」时可能不要；一旦新增折叠按钮即要（5 张） |
 
