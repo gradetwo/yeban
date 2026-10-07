@@ -208,6 +208,10 @@ impl ChildHolder {
             .expect("启动子进程");
         let pid = child.id();
         let deadline = Instant::now() + Duration::from_secs(30);
+        // 这里的判据是"标记**完整地**存在"：子进程用同目录 `rename` 原子落盘
+        // （见 `write_handshake_atomically`），所以 `exists()` 为真就等于内容已完整。
+        // 若写入方改回非原子写，这里就会读到空文件/半截文件 —— 那是写入方的缺陷，
+        // 本判据**不**用重试去掩盖它（`serde_json` 那条断言会立刻红）。
         while !ready.exists() {
             assert!(
                 Instant::now() < deadline,
@@ -266,6 +270,34 @@ impl Drop for ChildHolder {
     }
 }
 
+/// 把子进程那次 `yeban_open_project` 的**真实响应**原子地写成握手标记：
+/// 同目录临时文件 → `rename`。
+///
+/// 为什么必须原子（真跑复现的竞态，不是猜测）：`fs::write` 等价于
+/// `File::create` + `write_all`。`File::create` 一返回，文件**就已经存在**，
+/// 但内容还是空的。父进程的轮询判据是 `exists()`，于是它可能在子进程被抢占到
+/// `write_all` 之前就读到空文件 ⇒ `serde_json` 报
+/// `EOF while parsing a value at line 1 column 0`。
+/// 同目录 `rename(2)` 是原子的 ⇒ "标记存在"就等于"标记完整"，
+/// 父进程那条 `exists()` 判据因此才成立（先例: `[ARCH-SEC-004]` 的
+/// `crates/yeban-mcp/src/domain/store.rs` `write_then_replace` 与
+/// `crates/yeban-app/src/save.rs`）。
+///
+/// **不重试、不放宽**：写失败照样 `expect` 报错；写出的内容不合法，
+/// 父进程那条 `serde_json` 断言照样立刻红。
+fn write_handshake_atomically(ready: &Path, value: &Value) -> std::io::Result<()> {
+    // 临时文件与目标**同目录**：跨目录 `rename` 不是原子替换，还可能 `EXDEV`。
+    let mut temp = ready.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let text = serde_json::to_string(value).expect("序列化子进程响应");
+    let outcome = fs::write(&temp, text).and_then(|()| fs::rename(&temp, ready));
+    if outcome.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    outcome
+}
+
 /// 子进程角色：拿锁 → 写握手标记 → 停下等被杀。
 ///
 /// 父进程运行时它既是一个"另一进程的 yeban-mcp"，也是一个 `#[test]`：
@@ -286,11 +318,9 @@ fn cross_process_child_holder() {
     let value = open(&mut dispatcher, &auth, &project, !exclusive);
     // 无论成功还是 `PROJECT_LOCKED`，都把**真实响应**写进握手文件：
     // 父进程据此断言"另一个进程到底看到了什么"，而不是靠猜。
-    fs::write(
-        &ready,
-        serde_json::to_string(&value).expect("序列化子进程响应"),
-    )
-    .expect("写握手标记");
+    // 原子落盘是**父进程那条 `exists()` 轮询判据**成立的前提
+    // （理由见 `write_handshake_atomically` 的注释）。
+    write_handshake_atomically(&ready, &value).expect("写握手标记");
 
     // 停下来等父进程杀死自己。真崩溃（SIGKILL）不会走 `Drop`，
     // 因此"锁被释放"只可能来自**内核**在进程死亡时的清理。
