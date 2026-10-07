@@ -626,22 +626,42 @@ jobs:
           sudo apt-get install -y -qq \
             pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev \
             libgl1-mesa-dev libasound2-dev fonts-noto-cjk
-      - name: 10 万音符帧率 (release + ignored 用例)
+      - name: 10 万音符帧率 —— **GPU 路径** (winit + FemtoVG/OpenGL, release)
         run: |
           set -euo pipefail
           # 为什么用手动档而不是 ci.yml: 帧率判决**不能**用托管 runner 的读数
-          # (spikes/README.md 第 36 行), 且该用例是 600 帧 × 10 万音符的软光栅化循环,
-          # debug 构建跑不完 (实测 run 37348640469 40+ 分钟仍未结束) ⇒ 只在这里跑。
-          # 口径依 HD-45: 接受参考机上自适应刷新率的读数, 局限写进 BASELINE-003 行。
+          # (spikes/README.md 第 36 行)，且这一档真的要开窗口、跑满 600 帧。
+          #
+          # 2026-10-07 换轨（仪器变更，**门限未动**，仍是 p99 ≤ 8.3 ms）：
+          # 旧档 (`--test test_port_adapter ... frame_time_under_one_hundred_thousand_notes...`)
+          # 走的是 `LivePort` -> `Tier1Window` -> `MinimalSoftwareWindow` + `SoftwareRenderer`
+          # ⇒ 它在**任何**机器上量的都是**软件光栅化**，而规格的预算假设 GPU 路径
+          # (docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:172-174)。
+          # 现在量的是产品 GUI 用的那条路径 (`examples/fps_gpu.rs` 显式选择
+          # winit + femtovg + require_opengl；选不到就**非零退出**，绝不回退成软件读数)。
+          #
+          # 为什么必须开窗口: winit 的事件循环只能在**进程主线程**上创建
+          # (winit-0.30.13/src/platform_impl/macos/event_loop.rs:221)，而 `cargo test`
+          # 的用例跑在测试线程上 ⇒ 这一档是 example(真 main())，不是 `#[test]`。
+          # runner 上有 X11 + mesa（上面那步装了 libgl1-mesa-dev），窗口开在虚拟显示上。
+          #
+          # 口径依 HD-45: 接受参考机上自适应刷新率的读数，局限写进 BASELINE-003 行。
           LOG=/tmp/fps.log
           set -o pipefail
-          cargo test -p yeban-app --locked --release --features ui-test-port \
-            --test test_port_adapter \
-            frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness \
-            -- --ignored --nocapture 2>&1 | tee "$LOG"
+          cargo run --release -p yeban-app --locked --example fps_gpu 2>&1 | tee "$LOG"
+          # **不许**"没读到 GPU 证据也算过": 读数行必须逐字证明它来自 GPU 路径。
+          grep -a '路径=GPU(winit+FemtoVG/OpenGL) 结果=已测' "$LOG" \
+            || { echo "::error::没有从日志里读到 GPU 路径的读数行 (路径=GPU(...) 结果=已测) —— 本档**不**出读数"; exit 1; }
           # 先 tee 到日志, 再把**同一份字节**送进 summary —— 否则日志里什么都读不到
           # (docs/CI_CD.md 第八个坑, 守卫 G13 会拦)。
-          { echo '## BASELINE-003 10 万音符帧率'; grep -a 'BASELINE-003' "$LOG" || echo '(未找到 BASELINE-003 行 —— 用例可能没跑起来)'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '## BASELINE-003 10 万音符帧率 (GPU 路径: winit + FemtoVG/OpenGL)'; grep -aE 'BASELINE-003\(10万音符\) 路径=GPU' "$LOG" || echo '(未找到 BASELINE-003 行 —— 用例可能没跑起来)'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: 派遣器判据 (机械校验"读数来自 GPU 路径")
+        run: |
+          set -euo pipefail
+          # 这条判据**只**断言"读数来自 GPU 路径"(入口/声明行/窗口见证/退出码),
+          # **不**宣布门禁通过(帧时是否 ≤ 8.3ms 由人读数字判定)。
+          set -o pipefail
+          cargo test -p yeban-app --locked --test fps_gpu_path -- --ignored --nocapture 2>&1 | tee -a /tmp/fps.log
       - name: 上传数字日志
         uses: actions/upload-artifact@v4
         with:
