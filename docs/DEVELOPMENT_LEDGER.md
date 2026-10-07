@@ -10421,3 +10421,200 @@ fn write_handshake_atomically(ready: &Path, value: &Value) -> std::io::Result<()
 **红线与门禁计数。** 三条红线未动（本轮没有任何音频线程代码、没有 `unsafe`、没有改逐位一致判据）。门禁表仍 **19 已接线 / 0 部分 / 2 PENDING**，Phase 4 仍 **7 完成 / 4 部分 / 0 PENDING**，MCP 工具仍 **17** 个，守卫编号仍 `G01`–`G14` 共 **14** 条。本轮只改一个测试辅助文件（`crates/yeban-app/tests/in_process_mcp_lock.rs`）与 `docs/**`；`crates/**/src/**`、`schemas/**`、`assets/**`、基准图、法务文件一律未碰；没有新增依赖、没有新增 `#[ignore]`、没有新增 `#[should_panic]`、没有放大任何超时。
 
 **验证，字面（本轮）。** `cargo check -p yeban-app --all-targets` 退出 0（**8.17 s**）；加 `--features in-process-mcp` 退出 0（**8.07 s**）。`cargo clippy -p yeban-app --all-targets -- -D warnings` 退出 0（**7.02 s**）；加 `--features in-process-mcp` 退出 0（**8.06 s**）。`cargo fmt --all --check` 退出 0。`cargo test -p yeban-app --tests` 全绿 **3/3**（**80 / 27 / 25 s**，15 个目标，0 failed，2 ignored 是既有 `#[ignore]`）；加 `--features in-process-mcp` 全绿 **3/3**（**95 / 39 / 37 s**，15 个目标：201 + 21 + 3 + 31 + 5 + 2 + 4 + 1 + 1 + 18 + 5 + 11 + 10 + …，0 failed）。`bash scripts/gates/run-gates.sh light` 退出 **0**，末行 `门禁通过 (mode=light)`。`python3 scripts/guards/policy_check.py` 退出 0 并打印 `守卫全部通过 (14 条)。`。⚠ `light` **跳过** `yeban-app`（重依赖档打印 `[skip] … clippy 交给 CI`）⇒ 上面四条 `yeban-app` 的真编译/真测试命令才是代码那一半的证据。⚠ 本机是 macOS：`cargo test -p yeban-app --tests` 里的 5 张 Tier-1 黄金判据打印「平台 `macos` 无基准 ⇒ 视觉回归**未被判定**（不等于通过）」—— **那不是通过**，本轮不据此声称任何像素不变（本轮没有改任何产品代码，故也不声称像素变化）。
+
+### Round 431: 七条"空壳回调"里四条真的接上了，另外三条按纪律**保持空壳**并写明为什么接不上
+
+本轮两件事。第一件是**代码**：把 `crates/yeban-app/src/main.rs` 里仍然指向 `trace()` 的**纯视图态**四条回调（`toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr`）接到宿主，并把 `.slint` 转发块里**重复的**属性翻转删掉（同一条动作不能有两个写者）。第二件是**文档**：把负责人的一条裁决记进本台账（见末尾"裁决"一节）。
+
+**先量，再报 `file:line`（不信转述）。** 任务书说 `main.rs:472-478` 有 7 个回调只指向 `trace()`。本轮先复核，再动手。
+
+**真实清单（机械读数，`29c604a`，改前）。** `grep -rn "trace(" crates/yeban-app/src/main.rs` 命中 **7 条回调 + 1 条定义**，逐条如下（"改前的行为"这一列是本轮实测的事实，不是推测）：
+
+| 回调 | `.slint` 声明处 | `main.rs` 接线处（改前） | 改前**真正**发生的事 |
+| :--- | :--- | :--- | :--- |
+| `toggle-view` | `ui/app.slint:237`（转发源 `ui/transport.slint:48`，按钮 `transport-view-toggle-button`） | `main.rs:472` | 宿主只打 stderr；**`.slint` 的转发块自己翻转 `root.arrangement-view`**（`app.slint:496`，原） |
+| `toggle-sidebar` | `ui/app.slint:238`（转发源 `ui/sidebar.slint:71` 的 `sidebar-collapse-button`） | `main.rs:473` | 宿主只打 stderr；**`.slint` 自己翻转 `root.sidebar-collapsed`**（`app.slint:526`，原） |
+| `toggle-ai-drawer` | `ui/app.slint:239`（转发源 `ui/transport.slint:51`，按钮 `transport-ai-drawer-button`） | `main.rs:474` | 宿主只打 stderr；**`.slint` 自己翻转 `root.ai-drawer-open`**（`app.slint:502`，原） |
+| `open-musical-pr` | `ui/app.slint:255`（两处转发：`app.slint:600` / `:686`，按钮 `ai-rail-musical-pr-button`） | `main.rs:475` | 宿主只打 stderr；**`.slint` 自己写 `root.musical-pr-open = true`** |
+| `accept-ai-proposal` | `ui/app.slint:256`（源 `dialogs/musical_pr_drawer.slint:231` 的 `musical-pr-accept-button`） | `main.rs:476` | 宿主只打 stderr；`.slint` 关掉抽屉（`root.musical-pr-open = false`） |
+| `reject-ai-proposal` | `ui/app.slint:257`（源 `dialogs/musical_pr_drawer.slint:296` 的 `musical-pr-reject-button`） | `main.rs:477` | 同上 |
+| `run-acoustic-diagnosis` | `ui/app.slint:258`（源 `app.slint:130`，按钮 `ai-rail-diagnose-button`） | `main.rs:478` | 宿主只打 stderr；**没有任何其它路径** |
+
+⇒ **数量确实是 7**，与普查一致。但普查那句"点下去什么都不发生"**只对后三条成立**：前四条的用户可见行为**已经在 `.slint` 里生效**，空的是**回调**，不是**功能**。这是本轮最重要的更正 —— 它把问题从"没实现"改成"**两个写者**"。
+
+**"9 → 7"的算法对不上（如实记）。** `git show d5275c0:crates/yeban-app/src/main.rs | grep -n 'trace("'` ⇒ **9** 条（`toggle-play` / `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `toggle-undo-tree` / `open-musical-pr` / `accept-ai-proposal` / `reject-ai-proposal` / `run-acoustic-diagnosis`）。`69c153d`（确定性走带）把 `toggle-play` 接走 ⇒ 8；`2256299`（`D45` 撤销两侧同接）把 `toggle-undo-tree` 接走 ⇒ 7。⚠ 所以"播放 + 撤销树 = 减 2"这句话**只在计数上成立**：那两个 wire 函数各自接了两条回调 —— `host::wire_transport`（`host.rs:693`）是 `toggle-play` **和** `stop`、`host::wire_undo`（`host.rs:1181`）是 `toggle-undo-tree` **和** `undo-step`，而 `stop` / `undo-step` **从来没进过** `trace()` 名单（它们一出生就接在宿主上）。`feature-alignment.md` 错位 7 原写的「9 个 / `main.rs:141-151` / `trace()` 在 `main.rs:154-156`」是 `d5275c0` 那一刻的**真话**，本轮按 §6「更正活声明、标注带日期的记录」改写（并写明这次改写的理由）。
+
+**为什么"再翻转一次"是缺陷而不是冗余。** `arrangement-view` 与 `sidebar-collapsed` 已经有两个宿主写者：键盘路径 `host::apply_action` 的 `Action::ToggleView` / `Action::ShowView` / `Action::ToggleSidebar`（`host.rs:977`–`:991`），以及 `ui/switch_main_view`（`live_surface.rs:572` 写同一个属性）。`.slint` 再翻转一次 = 同一条动作两个真相源。这与 `playing` 那条**已经付过学费**的契约同型 —— `ui/app.slint` 的 `toggle-play` 注释明文记着删掉 `root.playing = !root.playing;` 的理由，`feature-alignment.md` 错位 7 把它记作"控件存在 ≠ 回调接线"的来源。
+
+**改动（原文 → 改后）。** 五处，逐处给出原文与改后文本。
+
+（1）`crates/yeban-app/src/host.rs`：**新增** `wire_view_callbacks`（新文件 `:752`），形状照抄既有的 `host::wire_track_height_drag` / `host::wire_transport`（`slint::Weak` + `upgrade()` + `debug_assert!(false, "MainWindow 在回调执行期间被销毁")`）。四条回调各自写一个属性：
+
+```ignore
+pub fn wire_view_callbacks(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_toggle_view({ let weak = weak.clone(); move || { /* … */ ui.set_arrangement_view(!ui.get_arrangement_view()); } });
+    ui.on_toggle_sidebar({ /* … */ ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed()); });
+    ui.on_toggle_ai_drawer({ /* … */ ui.set_ai_drawer_open(!ui.get_ai_drawer_open()); });
+    ui.on_open_musical_pr({ /* … */ ui.set_musical_pr_open(true); });   // **只打开**
+}
+```
+
+（2）`crates/yeban-app/src/main.rs`：`wire_callbacks` 里四条 `trace(...)` 换成一行 `host::wire_view_callbacks(ui);`（`:489`），函数文档注释同步改写（原文写"其余**六个**回调仍然故意什么都不做" —— 那个数字在更早的两次接线之后就已经过期）。
+
+（3）`crates/yeban-app/src/live_surface.rs:1336`：`build_live_ui_with` 里加 `host::wire_view_callbacks(&window);`。**位置与理由**：紧跟在既有的 `host::wire_input` / `host::wire_keys` 之后，用的是**与产品进程同一个接线函数** —— 于是"端口注入的点击"与"用户点击"走的是同一条链，产品路径与判据路径不可能分叉。
+
+（4）`crates/yeban-app/ui/app.slint`：删掉四处重复翻转（原文 → 改后）：
+
+```ignore
+            toggle-view => {
+                root.arrangement-view = !root.arrangement-view;     // ← 删
+                root.toggle-view();
+            }
+            toggle-ai-drawer => {
+                root.ai-drawer-open = !root.ai-drawer-open;         // ← 删
+                root.toggle-ai-drawer();
+            }
+                toggle-collapse => {
+                    root.sidebar-collapsed = !root.sidebar-collapsed;   // ← 删
+                    root.toggle-sidebar();
+                }
+                open-musical-pr => { root.musical-pr-open = true; root.open-musical-pr(); }   // ← 删 `root.musical-pr-open = true;`
+```
+
+（5）`crates/yeban-app/tests/live_ui_mcp.rs`：**新增两条判据**（见下）。`close`（关抽屉）**没有**动：`.slint` 的 `close =>` 本来就没有对应的 Rust 回调，本函数不发明第五条回调。
+
+**判定表（7 条，逐条给判定与理由）。**
+
+| 回调 | 判定 | 理由（本轮实测） |
+| :--- | :--- | :--- |
+| `toggle-view` | **接** | 纯视图态（`arrangement-view`），已有宿主写者（`apply_action` / `switch_main_view`）；`.slint` 的重复翻转删除后行为逐位不变 |
+| `toggle-sidebar` | **接** | 同上（`sidebar-collapsed`；`Action::ToggleSidebar` 已写同一属性） |
+| `toggle-ai-drawer` | **接** | 纯视图态（`ai-drawer-open`）；**没有**键盘 `Action`，因此这条回调是唯一入口 |
+| `open-musical-pr` | **接**（**只**打开） | 纯视图态（`musical-pr-open`）；PR 的生成 / 合并 / 拒绝**不在**本切片范围 |
+| `accept-ai-proposal` | **不接**（登记缺口） | 提案在**界面侧没有表示**：`musical_pr_drawer.slint:18-25` 的四个数组全是内联演示常量（`:12` 自陈"静态骨架 + 演示数据"、`:194` 是固定三条），界面上没有"当前提案身份"属性；领域侧 `yeban_merge_proposal` 要 `proposalId`。在界面侧新造提案状态会与领域权威冲突（`ADR-0005`）⇒ **接上只能是什么都不做**，按纪律保持空壳 |
+| `reject-ai-proposal` | **不接**（登记缺口） | 同上 |
+| `run-acoustic-diagnosis` | **不接**（登记缺口） | 仓库里**没有**声学分析（掩蔽 / 相位 / 动态范围）的实现；最近的既有机制 `[D56]` 的 `UiAction::ExportDiagnostics` 已被 `host::wire_undo`（`host.rs:1181`）接在**另一个**按钮 `diagnostics-export-action`（`elements.rs:380`）上，产物是 env/git/日志的诊断 zip，**不是**声学读数 ⇒ 接上去 = 用一个无关产物消费掉这一次点击 |
+
+⇒ 结论：**接 4 条 / 不接 3 条**。三条不接的都是"缺**能力**"而不是"缺接线"，因此它们**留空壳 + 登记缺口**，不假装接上。
+
+**判据（新增两条，形状照抄既有）。** 都住在 `crates/yeban-app/tests/live_ui_mcp.rs`：
+
+1. `the_view_state_callbacks_really_change_the_view_state` —— **真实点击**（§12.4 的 `ui/dispatch_pointer_down` + `dispatch_pointer_move` + `ui/dispatch_pointer_up`，与 `the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly` 同手法）⇒ 视图态属性真的翻。读数一律从**活窗口**或**控制面**取回来（不是"我写进去所以我说它对"）。
+2. `the_view_state_properties_drive_the_runtime_tree` —— **属性 ⇒ 运行时控件树**（`ArrangementView` / `SessionView` 的 `visible` 互斥、`ai-rail` 抽屉的 `visible: root.compact && root.ai-drawer-open`、`MusicalPrDrawer` 的 `visible: root.musical-pr-open`）。两条合起来才是完整的链：**点击 ⇒ 属性 ⇒ 可见性 ⇒ 树**。
+
+⚠ 为什么分成两条 `#[test]`：`slint::platform::set_platform` 是**线程局部**的（本文件模块文档写明"每个 `#[test]` 只装一次 Tier-1 平台"），同一个测试里不能装第二遍。
+
+⚠ **一条如实报告的边界（不是本切片的缺陷）**：`ui/tree` 是**快照** —— `LiveAdminSurface` 只在它自己那三个动作点重抓树（`ui/switch_main_view` / `apply_project` / 电平轮询），**没有任何 `ui/*` 方法能按需重抓**（`crates/yeban-ui-mcp/src/service.rs` 里 `grep -n "refresh"` 命中 0）。因此"人点了一下、AI 立刻从 `ui/tree` 看见"在判据里**不成立**：判据 1 的实测读数就是 `ui/tree` 快照节点 **85→85**（属性已经翻了，树没变）。本判据把这条读数**原样打出来**，并**故意不断言"树必须不变"**（那是把快照语义钉成契约，下一轮真去加刷新反而会红）；可见性证据由判据 2 用既有的重抓点（`LiveUi::pump_meters`）补上。⇒ 登记的缺口：**`ui/tree` 缺一个按需重抓的触发点**（不在本切片范围，未改任何 `ui/*` 方法）。
+
+**端到端读数（字面，判据 1 的 `--nocapture` 输出）。**
+
+```text
+[view-state] toggle-view: 注入前 [arrangement-view=true sidebar-collapsed=false ai-drawer-open=false musical-pr-open=false] → 注入后 [arrangement-view=false sidebar-collapsed=false ai-drawer-open=false musical-pr-open=false]; 帧指纹 379ed3da9a10a1a1→7fd0bac71cfb3617; 非黑 2073600→2073600; `ui/tree` 快照节点 85→85（快照语义，见判据文档）
+[view-state] toggle-sidebar: 注入前 [sidebar-collapsed=false] → 注入后 [arrangement-view=false sidebar-collapsed=true ai-drawer-open=false musical-pr-open=false]; `ui/property` 的 `sidebar.width` "240.00"→"36.00"
+[view-state] toggle-ai-drawer: 注入前 [ai-drawer-open=false, compact=true] → 注入后 [arrangement-view=false sidebar-collapsed=true ai-drawer-open=true musical-pr-open=false]; 帧指纹 d9a2971c5450ee81→525c4711e86c0d6a; 非黑 2073600
+[view-state] open-musical-pr: 注入前 [musical-pr-open=false] → 注入后 [arrangement-view=false sidebar-collapsed=true ai-drawer-open=true musical-pr-open=true]; 帧指纹 8713f6013ee554e2→ec3816fceb659dfa
+  ⇒ `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 11.28s`
+```
+
+判据 2 的读数（**完整两行，逐字**）：
+
+```text
+[view-state] 属性 ⇒ 树: 节点 85→78; `workspace-arrangement-canvas` true→false; `workspace-session-canvas` false→true; `ai-rail`（compact 且抽屉关）0→1; `musical-pr-drawer` false→true; `musical-pr-proposal-*-item` 0→3
+[view-state] 反证: `musical-pr-open=false` ⇒ `musical-pr-drawer` 在树里 = false; 节点 70
+  ⇒ `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 11.28s`
+```
+（上面那次运行的 `test result` 同属第一条判据的行区间：两条新判据 + 一条既有的 `track_height_view_state_…` 一起跑完 = `3 passed; 0 failed`。）
+
+⚠ 判据 2 **故意不断言"节点数变多"**：那一格里节点数由 **85 降到 78**（实测），因为同时发生的还有两件**减少**节点的事（`compact` 关掉常驻右栏那棵子树、`arrangement-view=false` 把编曲画布换成元素更少的矩阵画布）。判别力来自**集合**（`contains`）与那个 **0→1** 的 `ai-rail`，不是来自计数。
+
+**三次注入（先红 → 抓字面红行 → 还原 → `cmp` + sha256）。**
+
+| 注入 | 位置 | 字面红行 | 还原证明 |
+| :--- | :--- | :--- | :--- |
+| **I1** 删掉 `host::wire_view_callbacks(&window);` | `src/live_surface.rs:1336` | `thread 'the_view_state_callbacks_really_change_the_view_state' (4092698) panicked at crates/yeban-app/tests/live_ui_mcp.rs:3993:5:` ＋ `` ① `toggle-view` 必须把 `arrangement-view` 翻成 false `` ＋ `test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 6.77s` | `cmp` 退出 0；sha256 两侧同为 `93af46813ecc8c8aa61e488197371544c6df757580673fc7d89ca4e57590edc8` |
+| **I2** 把 `root.arrangement-view = !root.arrangement-view;` 加回转发块 | `ui/app.slint:500` | 同一行 `panicked at …live_ui_mcp.rs:3993:5:` ＋ 同一句 ＋ `test result: FAILED. 0 passed; 1 failed; …; finished in 7.95s`（**两次翻转互相抵消**：注入后 `arrangement-view` 仍是 `true`） | `cmp` 退出 0；sha256 同为 `b0aa4e52349f046b6a1c19d206d5e7bf5c2e75a29e589b26510b300f5e2977d8` |
+| **I3** 把 `MusicalPrDrawer` 的 `visible: root.musical-pr-open;` 改成 `visible: false;` | `ui/app.slint:701` | `thread 'the_view_state_properties_drive_the_runtime_tree' (4095238) panicked at crates/yeban-app/tests/live_ui_mcp.rs:4139:5:` ＋ `` `musical-pr-open=true` ⇒ 提案抽屉进树 `` ＋ `test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 6.42s` | `cmp` 退出 0；sha256 同为 `b0aa4e52349f046b6a1c19d206d5e7bf5c2e75a29e589b26510b300f5e2977d8` |
+
+**没有红的注入：无。** 三次注入全部变红，没有"注入了还是绿"的情形。判据 1 单独覆盖 I1 / I2，判据 2 单独覆盖 I3（两条判据各自有牙，不是一条承担全部）。
+
+**像素影响（A/B，从 PNG 字节读 sha256）。** 默认外观（**未注入任何点击**）逐字节不变。同一台机器、同一条 Tier-1 装配、同一个判据 `live_control_plane_reads_the_project_backed_window_end_to_end` 的产物 `target/ui-test-port/live-port-filled-project-unmasked-1920x1080.png`：
+
+| 时刻 | 字节数 | sha256 | 帧内指纹（FNV-1a，判据自己打的） | 非黑像素 / 颜色数 |
+| :--- | :--- | :--- | :--- | :--- |
+| 改前（`29c604a` 工作树干净） | **6 222 418** | `6273831cfabdeb294a5c8957e7676ccd8eebd6ba510d7b170663d7062812fe8a` | `379ed3da9a10a1a1` | 2073600 / 2683 |
+| 改后（本切片） | **6 222 418** | `6273831cfabdeb294a5c8957e7676ccd8eebd6ba510d7b170663d7062812fe8a` | `379ed3da9a10a1a1` | 2073600 / 2683 |
+
+⇒ **sha256 逐字节相同** ⇒ 默认外观没变 ⇒ **不牵动任何 Linux 基准图**（那 5 张本轮一个字节都没碰）。⚠ 注意"字节数相同"本身**不蕴含**任何东西（存储式 deflate 下 1920×1080 恒为 6 222 418 字节，见 §6.3 第 3 条）—— 结论只由 sha256 与帧内指纹给出。
+
+**红线与门禁计数。** 三条红线未动：本轮没有任何音频线程代码（`wire_view_callbacks` 跑在 UI 线程，只写 Slint 属性，不做 I/O、不分配长活对象）、没有 `unsafe`、没有改逐位一致判据。门禁表仍 **19 已接线 / 0 部分 / 2 PENDING**，Phase 4 仍 **7 完成 / 4 部分 / 0 PENDING**，MCP 工具仍 **17** 个，`ui/*` 方法仍 **15** 条（**没有新增任何 `ui/*` 方法**，因此 `METHOD_COUNT` / `service.rs` 的 `execute` 分支都没有动），守卫编号仍 `G01`–`G14` 共 **14** 条。没有新增依赖、没有新增 `#[ignore]`、没有弱化任何断言、没有新增守卫编号。
+
+**改到的文件。** `crates/yeban-app/src/host.rs`（新增一个函数）、`crates/yeban-app/src/main.rs`（四条 trace → 一行接线 + 文档）、`crates/yeban-app/src/live_surface.rs`（一行接线）、`crates/yeban-app/ui/app.slint`（删四处重复翻转 + 注释）、`crates/yeban-app/tests/live_ui_mcp.rs`（两条判据）、`docs/ledger/feature-alignment.md`（错位 7 改写 + 行 79 / 168 的点名更正）。`schemas/**`、`assets/**`、基准图、法务文件、其它 `docs/**` 一律未碰。
+
+**裁决（负责人 2026-10-07，本轮必写内容）。** 关于「删除选区」那五项行为 —— ① 无选区按 `Delete`、② 删除后选区状态、③ 撤销粒度、④ `Delete` 与 `Backspace` 是否区分、⑤ 删最后一个音符后的光标滚动 —— 负责人原话：「**不管主流了，按现有取舍就行**」。⇒ **保留现有取舍**（逐条都在代码里，出处是本轮实测的 `file:line`）：
+
+1. 无选区按 `Delete` ⇒ **什么都不做，且不消费该键**（`host.rs` 的 `Action::DeleteSelection`：选区为空 ⇒ `delete_ops_for` 返回空 ⇒ `return false`，键放行给焦点系统）；
+2. 删除后 ⇒ **清空选区**（`selected-ulids` 置空 + `selected-note-count = 0`；不清就会与下一次 `apply_view` 重算的标志分叉）；
+3. 撤销粒度 ⇒ **一次按键 = 一步撤销**（`undo_session::commit` 把整批包成**一个** `Op::Batch`；`DeleteSelection` 分支**不自己**构造 `Batch`，批次语义只有一处）；
+4. `Delete` 与 `Backspace` ⇒ **不区分**（`crates/yeban-app/src/input.rs:730` 的既有契约逐字为 `Key::Delete | Key::Backspace => Resolution::Action(Action::DeleteSelection),`）；
+5. 删最后一个音符后 ⇒ **不动光标与滚动**。
+
+⚠ **同时如实记下为什么没能借鉴主流。** 2026-10-07 那一轮去找行业参照时：Ableton 手册返回 **404**、Cockos 论坛被 **bot 校验**挡住、audeobox **403**、Bitwig / Reaper 手册是 **PDF**（当时的抓取工具不支持 PDF）。集成者随后**自己**用 `web_search` 复查，结果同样只拿到 **PDF 与论坛墙**，仅两条**弱片段** —— Logic Pro 手册 PDF 里的「replace a deleted note」与 Logic Pro iPad 手册里的 Invert Selection 定义 —— **不构成结论**（两条都没有"无选区时按 Delete 会怎样"的直接陈述）。⇒ 这五项的取舍**没有**行业证据支撑，是**本仓库自己的取舍**；负责人据此刻了"不管主流"的口径。
+
+⚠ **并记**：本机**装有 Logic Pro**（`/Applications/Logic Pro.app`，本轮用 `ls -d` 复核该路径存在），但它是 **GUI 应用、不能命令行驱动**（没有可脚本化的批处理入口）。⇒ 若将来要真的比对主流行为，唯一符合本仓库判定口径（「真实运行的结果」或「读回的 CI 判决」）的办法是**人工在 Logic Pro 里实操观察**，并把观察结果当作**人类证据**记进本台账 —— 不是"我查了文档"。
+
+⚠ **这条"不管主流"不撤销更早的通用方针。** 负责人更早还给过一条**通用**方针：「开发过程中一定要**借鉴行业顶级软件和主流软件的设计方案和解决问题思路**，取其精华去其糟粕，遇到棘手问题也是。」⇒ 本条的"不管主流"是**针对这五项具体行为**的口径（原因是那一轮**取不到**可信的主流证据），**不撤销**那条通用方针；其它功能仍按通用方针办。
+
+**未做到 / 未核实（本轮如实登记）。**
+
+- **未做到**：`accept-ai-proposal` / `reject-ai-proposal` / `run-acoustic-diagnosis` 三条**仍是空壳**（有意）。它们缺的是**能力**：提案在界面侧没有表示、仓库里没有声学分析器。
+- **未做到**：`ui/tree` 仍然**没有按需重抓**的触发点。本轮**没有**新增任何 `ui/*` 方法（因此 `METHOD_COUNT` 仍 15、`service.rs` 的 `execute` 分支未动、`feature-alignment.md` 的方法点名未变）；这条缺口的后果是"人点了界面、AI 的下一次 `ui/tree` 可能还是旧快照"，已在判据文档与错位 7 里写明。
+- **未核实**：`show-session` / `show-arrangement`（`ui/app.slint:502-503`）这两条转发**仍然**由 `.slint` 直接写 `root.arrangement-view`。它们**不在**本切片的 7 条清单里（没有对应的 Rust 回调），因此本轮**一个字都没动** —— 这意味着 `arrangement-view` 目前仍有**第二个写者**（组件内部的两个直达分支）。是否要把它们也升成回调，需要先裁决"要不要给 `show-session` / `show-arrangement` 各加一条 Rust 回调"（那会改 `.slint` 的回调面与元素注册表），本轮**不发明**这个决定。
+- **未核实**：本机是 macOS，Tier-1 的 5 张 Linux 黄金判据在本机打印「未被判定（不等于通过）」。本轮据此**不声称**任何黄金判据的通过；像素结论只来自上面那张 sha256 A/B 表（本机同一路径、同一判据）。
+- **未核实**：`.slint` 的属性翻转删除之后，**真实显示器上的 GUI**（`--open` 起窗口、人手点按钮）本轮**没有**跑过 —— 判据覆盖的是 Tier-1 无头执行面（真实控件树 + 真实指针事件 + 软件光栅化），不是 winit 真窗口。两者的差别是"平台后端"，事件源与宿主接线是同一份代码（`host::wire_view_callbacks`）。
+
+**验证，字面（本轮）。** 工具链口径：`CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable`（`cargo 1.99.0 (5f94df478 2026-08-27)`）。
+
+| 命令 | 字面结果 | 耗时（`time` 的 `real`） |
+| :--- | :--- | :--- |
+| `cargo check -p yeban-app --all-targets` | 退出 0，`Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 10.95s` | **10.991 s** |
+| `cargo check -p yeban-app --all-targets --features in-process-mcp` | 退出 0，同形，`in 8.97s` | **9.017 s** |
+| `cargo clippy -p yeban-app --all-targets -- -D warnings` | 退出 0（**零告警**），`in 9.04s` | **9.134 s** |
+| `cargo clippy -p yeban-app --all-targets --features in-process-mcp -- -D warnings` | 退出 0（**零告警**），`in 9.88s` | **9.973 s** |
+| `cargo test -p yeban-app --tests` | 退出 0；**15** 个目标全部 `test result: ok.`；**301 passed / 0 failed / 2 ignored**（2 ignored 是既有 `#[ignore]`） | 首跑（含编译）**1 m 23.836 s**；同代码再跑 **29.689 s** |
+| `cargo test -p yeban-app --tests --features in-process-mcp` | 退出 0；**15** 个目标全部 `test result: ok.`；**321 passed / 0 failed / 2 ignored** | 首跑 **1 m 41.821 s**；再跑 **37.530 s** |
+
+**没有重依赖从头重编（任务书的中止条件未触发）。** 证据：`cargo check -p yeban-app --all-targets 2>&1 | grep -E "Compiling (slint|cpal|symphonia|rubato|rayon|i-slint)"` ⇒ **0 行**；同一条命令的收尾行是 `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 0.37s`（只重编了 `yeban-app` 自己，`build.rs` 因 `.slint` 改动重跑 Slint 编译器）。clippy 那一档的完整输出里也只有 `Compiling yeban-app v0.0.1`。
+
+**格式化（提交前的硬要求）。** `cargo fmt --all` 已跑；`cargo fmt --all --check` 退出 **0**。
+
+**门禁与守卫，字面。**
+
+```text
+$ bash scripts/gates/run-gates.sh light
+…
+[ok] golden-manifest(linux): 核对了 5 行——5 个 sha256 + 5 个字节数(表内 5 个文件全部与磁盘一致; 目录内无未登记文件; 表内字节合计 31112090)
+[skip] yeban-app 含重依赖 ⇒ 本机不编译, clippy 交给 CI
+…
+门禁通过 (mode=light)
+$ echo $?
+0
+```
+
+⚠ `light` **跳过** `yeban-app`（上面那行 `[skip]` 是它自己打的）⇒ **它不构成本切片代码那一半的证据**；真正的证据是上面四条 `yeban-app` 的真编译 / 真测试命令。
+
+```text
+$ python3 scripts/guards/policy_check.py   # 退出 0
+守卫全部通过 (14 条)。
+
+$ python3 scripts/gates/check_feature_alignment.py   # 退出 0
+[ok] feature-alignment.md: 74 行功能 / 17 个 MCP 工具 / 15 条 ui 方法全部点名，三方齐全 32，系统+UI（MCP 无） 6，系统+MCP（UI 无） 14，仅系统 11，仅计划（系统也未实现） 7，UI 或 MCP 独有（系统没有） 4；3 处行号交叉引用全部落在目标行；58 处源码引用点名了**存在**的构件（…10 处行号已漂移 —— 按新口径只提示、不判红…）
+
+$ python3 scripts/gates/check_gate_status.py   # 退出 0
+[ok] gate-status.md: 15 条 MUST-GATE + 6 条 BASELINE 均已登记且带证据/原因; 共 21 条 = 已接线 19 / 部分 0 / PENDING 2; …
+
+$ python3 scripts/gates/check_phase_status.py   # 退出 0（`docs/ledger/phase-status.md:121` 仍逐字为「- Phase 4：已完成 7 / 部分 4 / PENDING 0（共 11 项）」）
+[ok] phase-status.md: 47 项阶段要求, 已完成 18 / 部分 23 / PENDING 6；2 处行号交叉引用全部落在目标行
+```
+
+**macOS 上的黄金判据：未被判定（不是通过）。** `cargo test -p yeban-app --test real_ui_tier1 -- --nocapture` 的字面行：`[UI-MCP-003] 平台 \`macos\` 无基准 \`app-model-driven-filled-project-1920x1080\` ⇒ 视觉回归**未被判定**（不等于通过）`。⚠ 同一次运行还打印了几张本机 Tier-1 帧的指纹（例如 `状态 A (Arrangement / 全展开 1920x1080): Tier-1 Golden: 1920x1080 (2073600 px), 非黑 2073600 (100%), 颜色 3273 种, PNG 6222418 字节, 指纹 d646d3da94b265af`）—— 这些是**改后**的读数，本轮**没有**它们的改前对照，因此**不作为**本切片的证据（证据只有上文那张 sha256 A/B 表）。
