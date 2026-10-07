@@ -2,10 +2,11 @@
 
 > **项目信息**：夜半 (Yeban DAW) | 协议：GPLv3（附 CLAP 插件动态加载例外条款） | 仓库：`https://github.com/yeban/yeban`  
 > **规范状态**：Advisory / Reference (建议与参考，**非绑定**；原 Normative UI/UX Specification)  
-> **版本**：`v1.0.0-rev1` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`  
+> **版本**：`v1.0.0-rev2` (2026-10-04) | 项目研发起步版本：`v0.0.1` | 原规划 v3.0 正式确立为首个正式生产基线 `v1.0.0`  
 > **替代关系**：`Supersedes: GROOVE_V3_WEB_UI_UX_AND_INTERACTION_REDESIGN.md, GROOVE_V3_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md (v3.0-rev7 及更早版本)`  
 > **文档依赖**：`Depends-on: ARCHITECTURE v1.0.0, ROADMAP v1.0.0, LEGAL.md, AGENTS.md`  
 > **权威降级（负责人裁决，2026-10-06）**：本文档自 Normative 规范降级为**建议与参考** —— 它是参考设计，**不是要求**；正文（含设计推理与修订记录）作为参考材料原样保留。  
+> **唯一正文（负责人裁决，2026-10-07，「规范保留独立那份」）**：本文件是夜半 (Yeban) 桌面 UI/UX 布局与交互重构设计规范的**唯一正文**。`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` 里原先另有一份**内嵌副本**（原 774–1237 行，`v1.0.0-rev2`），已按同一裁决**去重为指向本文件的指针**；副本独有、而本文件原先缺少的内容已迁入本文件（`v1.0.0-rev2` 修订记录、`UI-A11Y-003` 第 3/4 条、`UI-MCP-003` 的 Golden 截图产出方式）。逐条审计读数见 `docs/ledger/human-decisions.md` 的 `HD-57`。  
 
 > [!IMPORTANT]
 > ### 🌟 夜半 (Yeban) 核心工程宪章与研发准则 (Core Mandates)
@@ -16,6 +17,13 @@
 
 > **修订记录 (Revision Log)**：  
 
+> - `v1.0.0-rev2` (2026-10-04)：**事实核验与规范补强**。  
+>   1. **Slint Testing Backend 行为修正**：修正 `i-slint-backend-testing` 的描述——该后端默认**不渲染像素**，文本以固定字号测量，仅适用于组件属性断言与逻辑测试，不适用于视觉回归截图。视觉回归必须走 Tier 1 软件光栅化（`SoftwareRenderer` + Framebuffer 捕获）；  
+>   2. **Testing Backend 版本约束补强**：补充 `i-slint-backend-testing` 为 Slint 内部 crate、不遵循 semver、必须精确版本匹配的关键使用约束；  
+>   3. **ASIO 策略说明更新**：反映 Steinberg 2025 年 10 月将 ASIO SDK 切换为 GPLv3 开源许可的事实，保持默认 WASAPI 策略不变但补充法务确认要求；  
+>   4. **PDC 延迟预算修正**：内部 DSP 调度延迟修正为 1.0ms，端到端总时延修正为 5.5ms，新增低功耗场景降级建议；  
+>   5. **无障碍规范补强**：补充 WCAG 2.1 AA 对比度具体要求与屏幕阅读器测试用例；  
+>   6. **视觉回归基准修正**：初版 SSIM 基准 ≥ 0.98 不变，但补充 Testing Backend 不产像素、Golden 图必须由 Tier 1 软件光栅化产出的约束。  
 > - `v1.0.0-rev1` (2026-10-04)：**语义化版本重构 (Semantic Versioning Alignment)**。  
 >   1. **版本体系从零起步**：确立全新从头研发模式，工程起步版本为 `v0.0.1`；  
 >   2. **核心首发版本重定位**：原规划中的 `v3.0` 正式确立为首发生产版本 **`v1.0.0`**（工业基石与纯血原生首发版）；  
@@ -316,7 +324,9 @@ stateDiagram-v2
 
 `[UI-A11Y-003]` **全键盘无障碍与辅助技术集成 (Accessibility Tree & Focus)**：
 1. **焦点路径无陷阱**：全界面焦点流转遵循严密的 Tab 序列，弹窗与模态对话框内自动实现焦点闭环（Focus Trap），关闭时焦点精准复位至触发控件；
-2. **OS 辅助树暴露**：向操作系统无障碍服务暴露标准的 UI 控件树元数据，支持屏幕阅读器（Orca on Linux / VoiceOver on macOS / Narrator on Windows）精确朗读当前音轨名称、推子分贝值、BPM 速度与当前光标所在小节拍号。
+2. **OS 辅助树暴露**：向操作系统无障碍服务暴露标准的 UI 控件树元数据，支持屏幕阅读器（Orca on Linux / VoiceOver on macOS / Narrator on Windows）精确朗读当前音轨名称、推子分贝值、BPM 速度与当前光标所在小节拍号；
+3. **对比度要求 (MUST)**：所有文本与背景的对比度必须满足 **WCAG 2.1 AA 级标准（正常文本 ≥ 4.5:1，大文本 ≥ 3:1）**；高对比度模式目标达到 AAA 级（正常文本 ≥ 7:1）；
+4. **屏幕阅读器测试用例 (MUST)**：CI 流水线中必须包含至少 3 个屏幕阅读器集成测试用例：① 遍历主界面所有交互控件并断言无障碍名称非空；② 模拟 Tab 焦点轮转并断言焦点顺序符合逻辑阅读顺序；③ 验证模态对话框打开/关闭时焦点正确陷阱与复位。
 
 ### 7.4 色盲友好三向视觉 Diff 与高对比度规范
 
@@ -408,6 +418,7 @@ crates/yeban-app/ui/
 # 下面这行是**本规范点名的原样命令行**：夜半的 CLI 接受它并折算成自研哨兵值 `--headless`
 # （不构造 Slint 组件、不初始化后端、不进事件循环，打印 `headless ok` 后退出 0）。
 # 它证明的是"无显示器环境能跑起来"，**不证明控件树正确** —— 后者由 yeban-ui-test-port 负责。
+# 启动集成测试并在无头模式下运行
 SLINT_BACKEND=headless \
 cargo test -p yeban-app --test headless_ui_test
 
@@ -456,6 +467,7 @@ YEBAN_UI_TEST_PORT=9315 \
    - **强制遮罩规范**：图像比对算法在执行 SSIM 计算前，根据元素树元数据自动获取上述高频刷新组件的矩形包围盒，并在比对矩阵中将其坐标区域强制置为纯黑（`#000000`）或完全排除，仅比对静态界面排布与音符几何；
 3. `[UI-MCP-003]` **分平台 Golden 截图基准库与 SSIM 目标**：
    - 因 Linux (FreeType)、macOS (CoreText) 与 Windows (DirectWrite) 系统的底层字体光栅化与亚像素抗锯齿算法存在微弱渲染差异，CI 视觉回归测试严禁跨平台混用同一张 Golden 图，必须按操作系统独立维护基准图集；
+   - **Golden 截图产出方式 (MUST)**：Golden 图必须由 **Tier 1 软件光栅化方案**（`slint::platform::SoftwareRenderer` + Framebuffer 捕获）产出，而非 `i-slint-backend-testing`（该后端不渲染像素）；
    - **初版工程基准目标收敛为 SSIM ≥ 0.98**（像素差异占比 < 2%），平衡跨平台字体渲染差异与视觉回归敏锐度；关键静态视觉缺陷（如元素缺失、布局错位）可 100% 灵敏检出。
 
 ---

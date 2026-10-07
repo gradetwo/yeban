@@ -603,6 +603,14 @@ panicked at crates/yeban-mcp/tests/extension_tools.rs:835:9:
 | 人类裁决 | `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md:554-559`（**D53**）："「Token 中位数 ≤600 用哪个 tokenizer 数」**暂不裁决**"；`docs/ledger/human-decisions.md:88`（`HD-47`）"`BASELINE-006` 的 tokenizer 口径 … A 用通用分词器 / B 用本仓自己的分词器 / C 负责人指定另一个" | 被延后的是**分词器口径**，不是响度 |
 | 响度的规范来源 | `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016`："主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与响度范围（LRA）数值显示"；`:396`（真峰值限制器需要 BS.1770-4 的 4× 过采样）；`:461`（RF64 `bext` 的"响度元数据 EBU R128"）；`YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:107`（限制器"符合 ITU-R BS.1770-4"） | 响度的规范族是 **EBU R128 / ITU-R BS.1770**，与 tokenizer 无关 |
 
+> **注（2026-10-07，带日期的记录只标注不改写）**：上表与 §10.3 里的 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016`
+> 是**当时**的行号。它指向的是**内嵌在架构文档里的 UI/UX 规范副本**（UI §5.2「调音台通道条」），
+> 不是架构文档自身的 §5.2（那是「广播级 RF64/BW64 自研写入器」）。该副本已于 2026-10-07 去重
+> （负责人裁决「规范保留独立那份」，见 `docs/ledger/human-decisions.md` 的 `HD-57`）：
+> 这句 LUFS/LRA 原文现在的出处是 `docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md` 的
+> `§5.2 调音台通道条`。**旧行号 `:1016` 在架构文档里已不存在**；今后的引用请写「文件名 + `§5.2`」。
+> （本行的 `:396` 与 `:461` 都小于当时的 774，未受本次去重影响。）
+
 ⇒ §6.4 把两件不相干的事用一个编号绑在了一起（"响度目标（`BASELINE-006`）"），
 并且由此得出"MCP 侧可测依赖 Token 口径"这个**不成立**的因果。
 `BASELINE-006` **仍然** PENDING（D53 的延后继续有效），本切片**没有**动它一行。
