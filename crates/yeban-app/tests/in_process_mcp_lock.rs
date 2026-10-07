@@ -39,6 +39,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -144,6 +145,9 @@ impl ChildHolder {
             .expect("启动子进程");
         let pid = child.id();
         let deadline = Instant::now() + Duration::from_secs(30);
+        // 「标记存在」= 「标记完整」这件事由**写入方**保证
+        // （见 `write_handshake_atomically`）：子进程用同目录临时文件 + `rename`
+        // 落盘，所以这条 `exists()` 判据的声明语义在源头为真。
         while !ready.exists() {
             assert!(
                 Instant::now() < deadline,
@@ -204,6 +208,56 @@ impl Drop for ChildHolder {
     }
 }
 
+/// 握手标记的**常量**权限：这是 `fs::write` 在这份夹具上的既有口径
+/// （`0o666 & !umask`；本机 umask 022 ⇒ `0o644`）。它在**创建时**就定死，
+/// 因此临时文件不会先以更宽（或更窄）的权限出现。
+#[cfg(unix)]
+const HANDSHAKE_FILE_MODE: u32 = 0o644;
+
+/// 把子进程那次 `yeban_open_project` 的**真实响应**原子地写成握手标记：
+/// 同目录临时文件 → 常量权限 → `sync_all` → `rename` 覆盖目标。
+///
+/// 为什么必须原子（真跑复现的竞态，不是猜测）：`fs::write` 等价于
+/// `File::create` + `write_all`。`File::create` 一返回，文件**就已经存在**，
+/// 但内容还是空的。父进程的轮询判据是 `exists()`（见 `ChildHolder::spawn`），
+/// 于是它可能在子进程被抢占到 `write_all` 之前就读到空文件 ⇒ `serde_json` 报
+/// `EOF while parsing a value at line 1 column 0`（30 次
+/// `cargo test -p yeban-app --features in-process-mcp --test in_process_mcp_lock`
+/// 里复现 1 次；36 并发 × 15 轮 = 540 次执行里复现 462 次）。
+/// 同目录 `rename(2)` 是原子的 ⇒ 「标记存在」就等于「标记完整」，父进程那条
+/// `exists()` 判据因此才成立（先例: `[ARCH-SEC-004]` 的
+/// `crates/yeban-mcp/src/domain/store.rs` `write_then_replace`、
+/// `crates/yeban-mcp/src/security.rs` 的令牌文件，以及
+/// `crates/yeban-mcp/tests/lock_advisory.rs` 的同名修法）。
+///
+/// **不重试、不放宽**：写失败照样 `expect` 报错；写出的内容不合法，
+/// 父进程那条 `serde_json` 断言照样立刻红。
+fn write_handshake_atomically(ready: &Path, value: &Value) -> std::io::Result<()> {
+    // 临时文件与目标**同目录**：跨目录 `rename` 不是原子替换，还可能 `EXDEV`。
+    let mut temp = ready.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let text = serde_json::to_string(value).expect("序列化子进程响应");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(HANDSHAKE_FILE_MODE);
+    }
+    let outcome = options
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&temp, ready));
+    if outcome.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    outcome
+}
+
 /// 子进程角色：拿锁 → 写握手标记 → 停下等被杀。
 ///
 /// 父进程运行时它既是"另一个进程的 yeban-mcp"，也是一个 `#[test]`：
@@ -250,11 +304,9 @@ fn lock_child_process_opens_the_project_and_holds_it() {
         .unwrap_or_else(|| panic!("不该有 JSON-RPC 层错误: {:?}", response.error));
     // 无论成功还是 `PROJECT_LOCKED`，都把**真实响应**写进握手文件：
     // 父进程据此断言"另一个进程到底看到了什么"，而不是靠猜。
-    fs::write(
-        &ready,
-        serde_json::to_string(&value).expect("序列化子进程响应"),
-    )
-    .expect("写握手标记");
+    // 原子落盘是**父进程那条 `exists()` 轮询判据**成立的前提
+    // （理由见 `write_handshake_atomically` 的注释）。
+    write_handshake_atomically(&ready, &value).expect("写握手标记");
 
     // 停下来等父进程杀死自己（真崩溃 ⇒ 只可能由内核释放建议锁）。
     std::thread::sleep(Duration::from_secs(60));
