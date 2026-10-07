@@ -623,20 +623,20 @@ panicked at crates/yeban-mcp/tests/extension_tools.rs:835:9:
 
 ### 10.4 依赖方向：**没有**新增依赖边（也没有复制第二个实现）
 
-- 计量器的唯一实现在 `yeban-dsp`，而 `scripts/gates/check_mcp_dependency_direction.py:19-25`
-  **禁止** MCP 直接依赖 `yeban-dsp`（"不拖音频栈进 MCP"）；
+- 计量器的唯一实现在 `yeban-dsp`，而 `scripts/gates/check_mcp_dependency_direction.py`
+  的 `FORBIDDEN` 元组**禁止** MCP 直接依赖 `yeban-dsp`（"不拖音频栈进 MCP"）；
 - 因此走 `yeban-render` 的**再导出**：`crates/yeban-render/src/lib.rs` 的
   `pub use yeban_dsp::loudness;`（与既有的 `pub use yeban_midi::midi;` 同一手法、同一理由：
   "编解码已下移到独立 crate，此处再导出以保持路径可用"）。一个表达式都没有复制。
 - `Cargo.toml` / `Cargo.lock` **零改动**（依赖 metric 不变）。
-- ⚠ **顺手发现的守卫缺口（登记，不在本切片修）**：`check_mcp_dependency_direction.py:46`
-  取依赖键的方式是 `line.split("=", 1)[0].strip()`，而本仓的成员依赖写法是
+- ⚠ **顺手发现的守卫缺口（已由后续切片修复，见 §11）**：该守卫取依赖键的方式是
+  `line.split("=", 1)[0].strip()`（旧文件第 46 行那一带），而本仓的成员依赖写法是
   `yeban-dsp.workspace = true` ⇒ 键是 `"yeban-dsp.workspace"`，**不等于** 黑名单里的
   `"yeban-dsp"` ⇒ 这条守卫对"用 `.workspace = true` 写法加的禁用依赖"**是瞎的**。
   实测：把 `yeban-render`（已在 `[dependencies]` 里、写法同为 `.workspace = true`）
   代入同一段逻辑，`hits == []`，而守卫照样打印 `[ok] … 5 个被禁 crate 均未被直接依赖`。
   这是**独立的**缺陷（牵动禁用清单的语义与 `yeban-mcp → yeban-render` 这条既有边），
-  归属与修法留给集成者，本节只登记。
+  归属与修法留给集成者，本节只登记。**修复与它当场抓到的违规记在 §11。**
 
 ### 10.5 判据与负向测量
 
@@ -705,3 +705,229 @@ test result: FAILED. 14 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out
 | `cargo test -p yeban-render --doc` | `0 passed; 0 failed`（再导出不为本 crate 收集 doctest；`loudness` 的 doctest 仍由 `yeban-dsp` 收集） |
 
 ⚠ **CI 判决未读回**：本切片没有推送，因此 `yeban-mcp` 的 CI 腿记 **pending**，不得写成"通过"。
+
+---
+
+## 11. 后续切片：修好了 §10.4 登记的守卫缺口 —— 并当场抓到一条真违规
+
+**改动范围**：只有 `scripts/gates/check_mcp_dependency_direction.py` 与本笔记。
+**没有**碰任何 `crates/**/Cargo.toml`（那条违规**不是**本切片引入的），没有动黑名单，
+没有动 `policy_check.py` 的注册（"14 条守卫"仍是 14 条）。
+
+### 11.1 缺陷（§10.4 登记的那一条）与它的机械复现
+
+- 旧键提取：`line.split("=", 1)[0].strip()`（**旧**文件的第 46 行 —— 修复后本笔记不再按
+  行号引用该脚本，因为行号引用正是本仓反复腐烂的东西，见 `check_feature_alignment.py` 判据 6）；
+- 于是 `yeban-dsp.workspace = true` 给出的键是 `"yeban-dsp.workspace"`，
+  **永不等于** 黑名单项 `"yeban-dsp"`；
+- 复现（在一份**干净基线**上注入 `yeban-dsp.workspace = true`，再用 `git show HEAD:` 取回的旧逻辑跑）：
+  旧逻辑 `hits == []`，打印 `[ok] … 5 个被禁 crate 均未被直接依赖`；
+  同一份字节交给修好后的守卫 ⇒ **exit=1**，点名 `.scratch-mcp-guard-teeth/injected-forbidden.toml:33`。
+- 同一份干净基线上换一个**合法** crate（`yeban-diagnostics.workspace = true`，同一种写法）
+  ⇒ 新守卫 **exit=0**（`yeban-mcp 未直接依赖 5 个被禁 crate 中的任何一个 (读了 10 条声明 …)`）
+  ⇒ 它既不是恒红、也不是恒绿。
+  （这两份注入清单只活在临时目录 `.scratch-mcp-guard-teeth/` 里，**跑完已删**，
+   `git status` 无残留 —— 仓库里**没有**任何时刻存在过这条禁用依赖。）
+
+### 11.2 修法（为什么不是 `tomllib`）
+
+改成一段**只面向依赖表的小型文本扫描器**（`scan_dependencies`），键 = 真正的依赖名：
+点号写法取第一个点号之前的标识符；重命名依赖另读 `package = "..."`；内联表跨行按花括号配平
+（续行不是新声明）；认不出的行**逐行报错**而不是跳过。
+
+不用标准库 `tomllib` 的理由：它给不出**行号**，而本仓报错必须指到 `file:line`；它也**不会**
+说"这里有一条我看不懂的声明"，只会整份解析失败 ⇒ 要么假红整份、要么退化成 try/except 后
+静默跳过（本仓最怕的假绿）。新增第三方依赖同样不行（守卫必须零依赖、离线、快）。
+
+**覆盖的形态**（metric = 根清单 + 16 个 `crates/*/Cargo.toml` 里的**依赖声明条数**，
+声明 = `[*dependencies*]` 表里的一个键；多行内联表只算一条）：
+
+| 形态 | 条数 |
+| :--- | ---: |
+| `name.workspace = true`（点号继承，本仓标准写法） | 38 |
+| `name = { workspace = true, ... }` | 22 |
+| `name = { path = "../…" }` / 其它内联表 | 9 |
+| **合计（16 个成员 crate）** | **69** |
+| 另有 **根清单** `[workspace.dependencies]` 的版本目录条目 | 42 |
+
+`[dependencies]` / `[dev-dependencies]` / `[build-dependencies]` 三段都在射程内；
+本仓当前**没有** `[target.'cfg(…)'.dependencies]`、`[dependencies.name]` 子表、
+`name = "0.1"` 纯字符串或 `package = "…"` 重命名 —— 这四种写法**没有实际样本**，
+由 `--self-test` 的注入用例覆盖（守卫不会因为它们不在场就崩）。
+**判不了的形态只有一种**：`[[dependencies]]` 数组表 —— Cargo 不接受它，但它能骗过
+朴素的段头匹配，所以扫描器认出后**报错并计数**（exit=1，不假装通过），
+而不是静默当成空段。扫描器与 `tomllib` 独立对账：**17 份清单、69 条声明、
+0 处分歧、0 行判不了**。
+
+### 11.3 ⚠ 修好后的守卫**是红的** —— 它抓到一条真实存在的违规
+
+```text
+[FAIL] yeban-mcp 直接依赖了被禁 crate:
+        crates/yeban-mcp/Cargo.toml:73 [dependencies] yeban-render
+```
+
+- 该行逐字为 `yeban-render.workspace = true`，由 `feat(mcp-render)`（切片 `line/mcp-render`）
+  引入 —— 正是 §10.4 说的"这条依赖边让本 crate 传递性地依赖 rayon / hound / midly"。
+  `yeban-render` 自己依赖 `yeban-dsp` + `hound`（见 `crates/yeban-render/Cargo.toml:40-56`）。
+- 所以问题**不是**守卫误报：这条边确实存在，而且是在旧守卫"瞎"的情况下被放行的。
+  **本切片不弱化黑名单、不加白名单、不抑制这条发现** —— 修好判据就是本切片的目的。
+- 集成者需要在两件事之间裁决（本切片不替它选）：
+  ① 按账本第 273 轮的方案**把 MCP 需要的共享件下移**（`yeban-midi` 就是那次的产物），
+     让 `yeban-mcp` 回到"只依赖轻量 crate"；或
+  ② 由负责人正式裁决"MCP 可以依赖 `yeban-render`"并**据此改黑名单/改那句自述规则**。
+  在裁决之前，`run-gates.sh light` 的 `mcp-dependency-direction` 一步会**红**：
+   该档位里只有这一步红（实测 `[ok]` 行 24 条 / `[FAIL]` 行 1 条，见 §11.5）。
+  本节留下的这抹红**不是**由弱化判据变绿的：§12 用一张**逐字登记、每次运行都打印、
+  陈旧即红**的例外表把它落绿，判据本身（黑名单 / 扫描器 / 空判据红线）一条没松。
+
+### 11.4 牙测在哪、怎么复跑
+
+- `python3 scripts/gates/check_mcp_dependency_direction.py --self-test`
+  ⇒ **15 组**注入/放行/盲区判据（8 注入必红、5 放行必绿、2 盲区必出声），exit=0；
+- 注入一律落在 `tempfile.TemporaryDirectory()` 里，**不写工作树**；
+- 本次的手工注入复现落在 `.scratch-mcp-guard-teeth/`（**跑完即删**；`git status` 干净）。
+
+### 11.5 本机读数（字面输出；CI 未推送 ⇒ 一律 `pending`）
+
+| 命令 | 修复**前**（HEAD） | 修复**后** |
+| :--- | :--- | :--- |
+| `bash scripts/gates/run-gates.sh light` | 最后一行 `门禁通过 (mode=light)`，**EXIT=0** | 最后一行 `FAIL mcp-dependency-direction (exit=1)`，**EXIT=1** |
+| `python3 scripts/gates/check_mcp_dependency_direction.py` | `[ok] mcp-dependency-direction: 5 个被禁 crate 均未被直接依赖`，EXIT=0 | `[FAIL] yeban-mcp 直接依赖了被禁 crate: crates/yeban-mcp/Cargo.toml:73 [dependencies] yeban-render`，**EXIT=1** |
+| `... --self-test` | （当时没有这个开关） | `15 组注入/放行/盲区判据全部成立`，EXIT=0 |
+| `python3 scripts/guards/policy_check.py` | `守卫全部通过 (14 条)。` EXIT=0 | `守卫全部通过 (14 条)。` EXIT=0（**未动**注册） |
+| `python3 scripts/gates/check_gate_status.py` | `已接线 19 / 部分 0 / PENDING 2`，EXIT=0 | 同左，EXIT=0（**状态零移动**） |
+
+**本切片不涉及任何 Rust**：没有 `cargo build/clippy/test`，没有改 `crates/**`、golden、
+`docs/adr/**`、`docs/DEVELOPMENT_LEDGER.md` 或任何别的活表。
+`light` 档的其余步骤（`fmt`、G01–G14、规范 ID / ID 字典 / 决策 / 门禁状态表 / 阶段状态表 /
+三方对齐 / 文档链接 / clippy-changed / 交接快照 / 诊断单实现 / 视口边界 / 依赖许可清单）
+**全部照旧通过**。
+
+⚠ **CI 判决未读回**：本切片没有推送（也**没有提交** —— 门禁合法为红时提交等于提交一个红
+门槛，留给集成者裁决），因此一切 CI 结论记 **pending**。
+
+---
+
+## 12. 同一提交的收尾：把那条违规**登记**成逐字例外（不弱化黑名单）
+
+**改动范围**：`scripts/gates/check_mcp_dependency_direction.py` + 本笔记 §11.3/§12。
+**没有**碰任何 `Cargo.toml`（含 `crates/yeban-mcp/Cargo.toml:73`），没有动 `policy_check.py`
+的注册（仍 14 条），没有动 golden、`docs/adr/**`、`docs/DEVELOPMENT_LEDGER.md` 或任何别的活表。
+
+### 12.1 为什么不能"把 `yeban-render` 从黑名单里删掉"
+
+§11 修好的判据是对的：`yeban-mcp` 里确实有 `yeban-render.workspace = true`。让门槛变绿有三条路：
+① 删掉这条依赖边（是工程/负责人的决定，§11.3 已列出两个选项，本切片不替它选）；
+② 把 `yeban-render` 从 `FORBIDDEN` 里删掉（**这是真的弱化**：此后任何新加的、任何形态的
+`yeban-render` 依赖都会被一起放过）；③ 把这一处已知偏离**登记**下来，判据继续对新违规生效。
+本切片走 ③ —— 黑名单、扫描器、空判据红线一条没松。
+
+### 12.2 机制形状：逐字 `(crate, 依赖)` 键，不是白名单
+
+`EXCEPTIONS` 里每条记录的键是 `(crate, dep)` 两个**字面量**：
+
+| 字段 | 作用 |
+| :--- | :--- |
+| `crate` / `dep` | 命中键。必须是 `[A-Za-z0-9_-]+` 单标识符；`dep` 还必须**逐字**是 `FORBIDDEN` 的一项 |
+| `authority` | 谁给的容忍权（这里是 crate 自述规则本身，并注明**规则未被废除**） |
+| `provenance` | 引入提交 `f11de2c` / `yeban-render` 的音频栈证据 / 账本 Round 261、273 / 本笔记 §10.4、§11 |
+| `tolerated_because` | 为什么在裁决前容忍 |
+| `removal_condition` | 什么条件下必须删掉这条登记 |
+
+刻意**不**在例外里记行号：行号引用在本仓反复腐烂（`check_feature_alignment.py` 判据 6），
+而依赖名是稳定的键；当前行号由守卫每次运行**现场打印**（`[EXC] … 本次命中 <file>:<line>`）。
+
+### 12.3 选定的 fail-closed 规则：例外要在**三个方向**上都活着
+
+1. **陈旧即红（exit=1）**：登记在某个 crate 上的例外，如果该 crate 的清单里**一条都没命中**
+   它，守卫打印 `[FAIL] 已登记例外**陈旧**…` 并 exit=1。⇒ 那条边一被移除，例外**必须**在
+   同一次改动里一起删掉，否则门禁红。这就是"例外不许在违规修好之后悄悄留下"。
+2. **登记表本身不合法即闭死（exit=2）**：`validate_exception_registry` 拒绝 —— 通配/正则键
+   （`yeban-*`）、指向 `FORBIDDEN` 以外的依赖、**登记在门禁并不检查的 crate 上**（那种例外
+   每次都"不在射程"，陈旧永远没机会被发现 ⇒ 等于一条射程外的放行）、重复的 `(crate, dep)`、
+   空的依据/来源/理由/失效条件。任一条不合法，**一条违规都放行不了**（不是只忽略那条坏记录）。
+   ⇒ 负责人若正式裁决并**改黑名单**（删掉 `yeban-render`），这条例外当场变成"指向一条并不
+   被禁的依赖" ⇒ exit=2，逼着同一次把登记删掉。例外**不能**比它所记录的违规活得久。
+3. **不是"跳过整个 crate"**：`resolve_hits` 只按 `(crate, dep)` 字面配对 ⇒ `yeban-mcp` 上的
+   **第二条**被禁依赖（例如 `yeban-dsp.workspace = true`）照红，输出里还会写明
+   "已登记例外只对**它逐字记录的那一对**生效"。
+
+选这条的理由：例外表最典型的腐烂方式是"违规修好了、例外留着"，其次是"例外被写宽成通配"
+或"挪到门禁查不到的地方"。上面 1+2 把这些方向都变成**机械的**红，而不是靠 review 记得。
+
+### 12.4 每次运行都可见（不是只有 `[ok]`）
+
+守卫**无条件**打印整张例外表（绿/红两条路径都打印），`[ok]` 行本身也点名被容忍的依赖：
+
+```text
+[EXC] 已登记例外 1 条：按键 (crate, 被禁依赖) 逐字精确匹配，不是通配、不是正则、不是「跳过整个 crate」
+[EXC]   #1 yeban-mcp → yeban-render   [本次命中 crates/yeban-mcp/Cargo.toml:73 [dependencies]]
+[EXC]        依据: crates/yeban-mcp/Cargo.toml:30-31 的 crate 自述规则「轻量 crate: 不拖音频栈进 MCP」…
+[EXC]        来源: 引入该依赖边的提交 f11de2c feat(mcp-render): yeban_render_master 真渲染接线 [MCP-TOOL-008]
+[EXC]        来源: crates/yeban-render/Cargo.toml:40-56 显示 yeban-render -> yeban-dsp + hound…
+[EXC]        来源: docs/DEVELOPMENT_LEDGER.md Round 261 / Round 273…
+[EXC]        来源: docs/ledger/mcp-tools-expansion-notes.md §10.4 / §11…
+[EXC]        容忍理由: …
+[EXC]        失效条件: …
+[ok] mcp-dependency-direction: yeban-mcp: 被禁 5 个 crate 里 0 条未登记违规、1 条已登记例外（yeban-render）；读了 10 条声明 / 1 个依赖段
+```
+
+`[ok]` 行**不再**是 §11.1 里那句"未直接依赖 5 个被禁 crate 中的任何一个" —— 那句话在有例外
+命中时是假的，已改成"0 条未登记违规、N 条已登记例外"。
+
+### 12.5 扩展后的牙测（判据与实测）
+
+`python3 scripts/gates/check_mcp_dependency_direction.py --self-test` ⇒
+**23 组注入/放行/盲区判据 + 12 组例外表结构判据全部成立**，exit=0。相对 §11.4 的 15 组，
+新增/改写的是：
+
+| 判据 | 证明什么 | 实测 |
+| :--- | :--- | :--- |
+| `registered-exception-passes` | 登记的那一对放行，且输出含 `[EXC]` / `f11de2c` / `1 条已登记例外` | exit=0 |
+| `second-forbidden-same-crate-still-red` | 同 crate 上第二条 `name.workspace = true` 被禁依赖仍红，例外照常显示 | exit=1，点名 `yeban-dsp` |
+| `dotted-forbidden` | `name.workspace = true` 形态（无例外的 crate）仍必红 | exit=1 |
+| `stale-exception-fails` | 例外登记的边不在清单里 ⇒ 陈旧 ⇒ 红 | exit=1 |
+| `invalid-registry-fails-closed` | 通配键（`yeban-*`）的例外表 ⇒ 一条都不放行 | exit=2 |
+| `out-of-scope-exception-fails-closed` | 登记在门禁不检查的 crate（`yeban-app`）上的例外 ⇒ 一条都不放行 | exit=2 |
+| `unjudgeable-no-equals` / `unjudgeable-array-table` | 判不了的声明仍逐行报错 | exit=1 |
+| `dependencies-extra-is-not-a-section` | `[dependencies-extra]` **不**被当成依赖段（`(?![-\w])` 是承重的） | exit=0 |
+| 结构判据 ×7 | 逐字配对 / 陈旧检出 / 只对本 crate 生效 / 坏表六种全拒（含射程外 crate）/ 真表合法 | 全部成立 |
+
+注入一律落在 `tempfile.TemporaryDirectory()`；本次手工注入（第二条禁用依赖、删掉被容忍的那条边、
+判不了的声明）落在 `mktemp -d` 的**仓库外**临时目录，跑完即删。
+
+### 12.6 本机读数（字面输出；CI 未推送 ⇒ 一律 `pending`）
+
+| 命令 | 读数 |
+| :--- | :--- |
+| `bash scripts/gates/run-gates.sh light` | 最后一行 `门禁通过 (mode=light)`，**EXIT=0** |
+| `python3 scripts/gates/check_mcp_dependency_direction.py` | `[ok] …0 条未登记违规、1 条已登记例外（yeban-render）…` + `[EXC]` 块，**EXIT=0** |
+| `… --self-test` | `23 组注入/放行/盲区判据 + 12 组例外表结构判据全部成立`，EXIT=0 |
+| `python3 scripts/guards/policy_check.py` | `守卫全部通过 (14 条)。` EXIT=0（**未动**注册） |
+| `python3 scripts/gates/check_gate_status.py` | `已接线 19 / 部分 0 / PENDING 2`，EXIT=0（**状态零移动**） |
+| `git status` | 只有这份笔记与那个守卫；无 `Cargo.toml`、无 golden、无 `.pyc` |
+
+**本切片不涉及任何 Rust**：没有 `cargo build/clippy/test`，没有动 `crates/**`。
+
+### 12.7 给集成者的两个真实选项（代价按本机可测的部分给出）
+
+① **把 MCP 需要的共享件下移**（Round 261/273 的手法是 `yeban-midi`）。本机实测 MCP 从
+`yeban-render` 取用的面是 5 处：`dither` / `render`（6 个符号 + 类型）/ `loudness`（`yeban-dsp`
+的再导出）/ `rf64`（5 个符号）/ `rng`。这些实现落在 `dither.rs`(480) + `render.rs`(1388) +
+`rf64.rs`(1574) + `rng.rs`(203) = **约 3 645 行**；其中 `rng.rs` 与 `loudness` 依赖
+`yeban-dsp`、`render.rs`/`sum.rs` 依赖 `rayon` ⇒ **单纯搬模块会把音频栈与 rayon 一起带上**，
+要让新 crate 真的"轻量"，必须先切断这两处耦合（不是一次机械搬运）。另按 Round 276 的实测，
+新 crate 还会牵动 `license_inventory.py` 与 vendor 检查，而这两条**不在 `light` 档**，
+只能在 CI 重新生成与复核。
+
+② **负责人正式裁决"MCP 可以依赖 `yeban-render`"**：代价是一次裁决 + 一次黑名单/自述规则的
+改动；那次改动会让本切片这条例外因为"指向一条并不被禁的依赖"而 **exit=2**，因此必须同一次
+删掉 §12.2 的登记条目（这正是 fail-closed 规则 2 想要的耦合）。
+
+### 12.8 ⚠ 顺手发现、**刻意未处置**的一处：黑名单对 `yeban-decode` 是瞎的
+
+`crates/yeban-mcp/Cargo.toml:84` 有 `yeban-decode.workspace = true`，而 `yeban-decode` 的清单
+显示它直接依赖 **symphonia + rubato**（`crates/yeban-decode/Cargo.toml:27-40`）—— 这与自述规则
+"不拖音频栈进 MCP"是同一族问题，但 `yeban-decode` **不在** `FORBIDDEN` 里，所以它今天不会被
+这条守卫看见，也不受本次例外机制影响。本切片**不**把它加进黑名单：那会当场制造第二条违规、
+把 `light` 重新推红，而"哪条边算音频栈"属于 §12.7 的同一个裁决。登记在此，供裁决时一并考虑。
