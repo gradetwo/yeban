@@ -74,6 +74,14 @@ export component ConsoleTabs inherits Rectangle {
     callback mixer-pan-release(int);
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
+    // 主控通道条的**写入面**透传（与上面八个同款：本组件只上抛，不解释、不改任何值）。
+    // 这六个**不带下标** —— 主总线不在 `track-names` 里，它的身份由宿主从权威工程取。
+    callback mixer-master-fader-grab(length);
+    callback mixer-master-fader-drag(length);
+    callback mixer-master-fader-release();
+    callback mixer-master-pan-grab(length);
+    callback mixer-master-pan-drag(length);
+    callback mixer-master-pan-release();
 
     min-height: 32px;
     background: Tokens.bg-panel;
@@ -228,6 +236,25 @@ export component ConsoleTabs inherits Rectangle {
         }
         mixer-solo-toggle(index) => {
             root.mixer-solo-toggle(index);
+        }
+        // 主控写入面：同样只上抛，**不带下标**（宿主在按下那一刻从权威工程取主总线身份）。
+        mixer-master-fader-grab(y) => {
+            root.mixer-master-fader-grab(y);
+        }
+        mixer-master-fader-drag(y) => {
+            root.mixer-master-fader-drag(y);
+        }
+        mixer-master-fader-release() => {
+            root.mixer-master-fader-release();
+        }
+        mixer-master-pan-grab(x) => {
+            root.mixer-master-pan-grab(x);
+        }
+        mixer-master-pan-drag(x) => {
+            root.mixer-master-pan-drag(x);
+        }
+        mixer-master-pan-release() => {
+            root.mixer-master-pan-release();
         }
     }
 

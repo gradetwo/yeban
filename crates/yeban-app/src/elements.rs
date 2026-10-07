@@ -739,6 +739,19 @@ impl ElementRegistry {
             "主控推子",
             false,
         );
+        // 主控声相读出 / 拖动面（`mixer_console.slint` 的 `"PAN " + root.master-pan`）。
+        //
+        // 与 `track-{i}-pan` 同一个角色、同一个理由：`.slint` 的手势只报"哪一类面板 +
+        // 本地坐标"，而"主控声相到底是多少"必须能从**控件树**读回来
+        // （`ui/property {name:"value"}` 读 `accessible-value`）—— 否则"拖得动"这一半
+        // 只能靠窗口属性证明，控制面看不见它。本切片起它有 `accessible-value`。
+        registry.add(
+            "mixer-master-pan",
+            ElementKind::Slider,
+            "console/mixer_console.slint",
+            "主控声相",
+            false,
+        );
         registry.add(
             "mixer-master-mute-button",
             ElementKind::Button,
@@ -1716,6 +1729,7 @@ mod tests {
             // 主控同源
             "root.master-meter-level",
             "root.master-volume-fraction",
+            "root.master-pan",
             "root.master-color",
             // dBFS 必须出现在**控件树可读**的属性里（`[UI-TEST-001]` 只允许语义 ID 寻址；
             // `ui/property` 的属性名是 `value`，取自 Slint 的 `accessible-value`（`b37f6ad`
@@ -1758,6 +1772,12 @@ mod tests {
     /// 这些语义 ID、值来自投影）**全绿**。这条判据把"输入面"变成机械事实：
     /// 四个 `TouchArea`（推子 / 声相 / 静音 / 独奏）少一个就红。
     ///
+    /// **通道条之后再加的两格（本切片）**：主控通道条的推子与声相
+    /// （`mixer-master-fader` / `mixer-master-pan`，六个**不带下标**的回调）。
+    /// 它们与通道条那四个**同一口径**：少一个就红；另加一条**负向**断言 ——
+    /// 主控那一块里不许出现 `track_index`、也不许复用带下标的通道条回调
+    /// （主总线不在 `track-names` / `track-ids` 里，按下标寻址对它不存在）。
+    ///
     /// ## 第二半：像素行程常量必须与 `.slint` 的几何**同源**
     ///
     /// `MIXER_FADER_TRAVEL_PX` 与 `MIXER_PAN_TRAVEL_PX`（`src/host.rs`）是"拖 1 像素 =
@@ -1768,10 +1788,11 @@ mod tests {
         let source = std::fs::read_to_string(ui_dir().join("console/mixer_console.slint"))
             .expect("读 mixer_console.slint");
 
-        // ① 输入面：四个 `TouchArea`（每个都是循环体里的一份 ⇒ 源码里各出现一次）。
+        // ① 输入面：六个 `TouchArea`（通道条四个各是循环体里的一份；主控两个各出现一次）。
         assert!(
-            source.matches("TouchArea").count() >= 4,
-            "混音台必须有 ≥ 4 个 `TouchArea`（推子 / 声相 / 静音 / 独奏），实测 {}",
+            source.matches("TouchArea").count() >= 6,
+            "混音台必须有 ≥ 6 个 `TouchArea`（通道条：推子 / 声相 / 静音 / 独奏；\
+             主控：推子 / 声相），实测 {}",
             source.matches("TouchArea").count()
         );
         for (what, marker) in [
@@ -1787,10 +1808,40 @@ mod tests {
             ("声相收尾", "root.mixer-pan-release(track_index)"),
             ("静音点击", "root.mixer-mute-toggle(track_index)"),
             ("独奏点击", "root.mixer-solo-toggle(track_index)"),
+            // 主控：**不带下标**的六个成员（本切片补的那一格）。
+            ("主控推子按下", "root.mixer-master-fader-grab(self.mouse-y)"),
+            ("主控推子拖动", "root.mixer-master-fader-drag(self.mouse-y)"),
+            ("主控推子收尾", "root.mixer-master-fader-release()"),
+            ("主控声相按下", "root.mixer-master-pan-grab(self.mouse-x)"),
+            ("主控声相拖动", "root.mixer-master-pan-drag(self.mouse-x)"),
+            ("主控声相收尾", "root.mixer-master-pan-release()"),
         ] {
             assert!(
                 source.contains(marker),
                 "混音台缺少「{what}」的输入面：源码里找不到 `{marker}`"
+            );
+        }
+
+        // ①b 主控通道条的**负向**断言（"主控回退成不可操作" / "主控按下标寻址"都会被这里抓到）：
+        // 主总线不在 `track-names` / `track-ids` 里 ⇒ 主控那一块里**不许**出现轨道下标，
+        // 也不许复用带 `int` 下标的通道条回调（那会要求发明一个哨兵下标）。
+        let master_block = source
+            .split_once("mixer-master-strip")
+            .map(|(_, tail)| tail)
+            .expect("`mixer-master-strip` 必须在源码里（主控通道条）");
+        assert!(
+            !master_block.contains("track_index"),
+            "主控通道条里不许出现 `track_index` —— 身份→下标的算术只有一处来源（宿主）"
+        );
+        for forbidden in [
+            "mixer-fader-grab(track",
+            "mixer-pan-grab(track",
+            "mixer-fader-release(track",
+            "mixer-pan-release(track",
+        ] {
+            assert!(
+                !master_block.contains(forbidden),
+                "主控通道条不许复用带下标的通道条回调：源码里出现 `{forbidden}`"
             );
         }
 
@@ -1813,6 +1864,12 @@ mod tests {
             "声相拖动漫面的几何（宽 36px）必须与 `MIXER_PAN_TRAVEL_PX` 一致"
         );
         assert_eq!(crate::host::MIXER_PAN_TRAVEL_PX, 36.0);
+
+        // ④ 主控推子帽的位置表达式与通道条**同一个像素系数**（88px ⇒ 共用一个行程常量）。
+        assert!(
+            source.contains("60px + 88px * (1.0 - root.master-volume-fraction)"),
+            "主控推子帽的位置表达式必须与 `MIXER_FADER_TRAVEL_PX`（88px）同源"
+        );
     }
 
     /// 判据（文本层）：**转发链两侧对齐** —— `app.slint → ConsoleTabs → MixerConsole`

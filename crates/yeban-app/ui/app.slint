@@ -373,6 +373,22 @@ export component MainWindow inherits Window {
     callback mixer-mute-toggle(int);
     /// 独奏按钮点击。
     callback mixer-solo-toggle(int);
+    // 主控通道条的**写入面**：与上面那六个手势逐条同形，唯一区别是**不带下标**
+    // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
+    // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
+    // 因此 `.slint` 里**没有**任何身份→下标的算术。
+    /// 主控推子按下（推子面坐标系里的 y）。
+    callback mixer-master-fader-grab(length);
+    /// 主控推子拖动（当前 y；位移由宿主算）。
+    callback mixer-master-fader-drag(length);
+    /// 主控推子收尾（松手 / 指针离开窗口）。
+    callback mixer-master-fader-release();
+    /// 主控声相按下（声相面坐标系里的 x）。
+    callback mixer-master-pan-grab(length);
+    /// 主控声相拖动。
+    callback mixer-master-pan-drag(length);
+    /// 主控声相收尾。
+    callback mixer-master-pan-release();
     // 混音台手势（推子 / 声相）的**进行态**读数：宿主拥有、界面只报事件。
     //
     // 与上面的 `track-height-drag-active` 同一个角色：它是"混音手势是否还没结束"的**唯一**
@@ -734,6 +750,25 @@ export component MainWindow inherits Window {
             }
             mixer-solo-toggle(index) => {
                 root.mixer-solo-toggle(index);
+            }
+            // 主控写入面：只上抛、不带下标（身份由 `host::wire_mixer_edit` 从权威工程取）。
+            mixer-master-fader-grab(y) => {
+                root.mixer-master-fader-grab(y);
+            }
+            mixer-master-fader-drag(y) => {
+                root.mixer-master-fader-drag(y);
+            }
+            mixer-master-fader-release() => {
+                root.mixer-master-fader-release();
+            }
+            mixer-master-pan-grab(x) => {
+                root.mixer-master-pan-grab(x);
+            }
+            mixer-master-pan-drag(x) => {
+                root.mixer-master-pan-drag(x);
+            }
+            mixer-master-pan-release() => {
+                root.mixer-master-pan-release();
             }
         }
 

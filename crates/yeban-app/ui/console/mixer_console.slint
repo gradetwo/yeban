@@ -65,6 +65,25 @@ export component MixerConsole inherits Rectangle {
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
 
+    // ---- 主控通道条的**写入面**（本切片新增）----
+    //
+    // ⭐ 为什么主控是**另一组回调**、而不是把主控编成一个下标送进上面那八个：
+    // 主总线**不在** `track-names` / `track-ids`（投影刻意排除它，它单独走
+    // `ViewState::master`）⇒ 上面那八个回调的 `int` 参数里**没有任何**一个合法值
+    // 能指到主控。要么发明一个哨兵下标（`u32::MAX` / `-1`），要么给主控自己的通道。
+    // 本仓库选后者：`.slint` 只报"哪一类面板 + 本地坐标"，**不做身份→下标的算术**
+    // （与 `host::apply_row_geometry` 把行几何的唯一来源放在宿主是同一条纪律）。
+    // 主控的身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`）。
+    //
+    // 形状与上面三条手势逐条相同 ⇒ 一次拖动 = 一次 `commit_ops`，`Escape` 走**同一个**
+    // `mixer-cancel-gesture`（两类目标共用一条取消路径）。
+    callback mixer-master-fader-grab(length);
+    callback mixer-master-fader-drag(length);
+    callback mixer-master-fader-release();
+    callback mixer-master-pan-grab(length);
+    callback mixer-master-pan-drag(length);
+    callback mixer-master-pan-release();
+
     // ---- 由 src/host.rs 注入的**电平**数据 (60Hz 抽帧的结果) ----
     // `track-meter-peaks` / `track-meter-rmss` 是 `{:.1}` dBFS 文本（**已按 -120 下限钳位**，
     // 且 NaN/±∞ 已在 `src/meters.rs` 落成下限）。`track-meter-levels` 是 0.0–1.0 的柱高。
@@ -380,6 +399,17 @@ export component MixerConsole inherits Rectangle {
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             overflow: elide;
+            // 主控声相**拖动面**的语义落点（与 `track-{i}-pan` 同一个角色）：
+            // `accessible-value` 让主控声相第一次能从控件树读回来（`ui/property` 的
+            // `value`），否则"主控声相拖得动但读不回"只能靠窗口属性证明。
+            accessible-role: slider;
+            accessible-id: "mixer-master-pan";
+            accessible-label: "主控声相";
+            accessible-orientation: horizontal;
+            accessible-value-minimum: -100;
+            accessible-value-maximum: 100;
+            accessible-value-step: 1;
+            accessible-value: root.master-pan;
         }
 
         Rectangle {
@@ -506,6 +536,49 @@ export component MixerConsole inherits Rectangle {
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
+        }
+
+        // ---------------------------------------------------------------- 主控输入面
+        //
+        // 与通道条的两个 `TouchArea` **逐条同形**（同样的手法、同样的理由）：
+        // 它们是**静态矩形**，只做命中与坐标上报、**不画任何像素**（默认外观因此逐字节
+        // 不变）；声明顺序排在它们覆盖的视觉元素**之后**，所以按在推子帽 / 声相文本上
+        // 也能抓到（Slint 自后往前做命中测试）。
+        //
+        // 范围：推子面 x 24–72 / y 54–170 盖住导轨（x 40–46）与推子帽（x 32–54，
+        // y ∈ [60, 164]）；声相面 x 4–40 / y 18–36 盖住 `PAN …` 文本（x 4–34）。
+        // 两者都**不**碰静音 / 独奏（y 38–54）、电平表（x 4–18）与色标（x 48–58）。
+        TouchArea {
+            x: 24px;
+            y: 54px;
+            width: 48px;
+            height: 116px;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.mixer-master-fader-grab(self.mouse-y);
+                } else if event.kind == PointerEventKind.move {
+                    root.mixer-master-fader-drag(self.mouse-y);
+                } else {
+                    // `up` 与 `cancel` 都是收尾（与通道条同款）。
+                    root.mixer-master-fader-release();
+                }
+            }
+        }
+
+        TouchArea {
+            x: Tokens.space-3;
+            y: 18px;
+            width: 36px;
+            height: 18px;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.mixer-master-pan-grab(self.mouse-x);
+                } else if event.kind == PointerEventKind.move {
+                    root.mixer-master-pan-drag(self.mouse-x);
+                } else {
+                    root.mixer-master-pan-release();
+                }
+            }
         }
     }
 }

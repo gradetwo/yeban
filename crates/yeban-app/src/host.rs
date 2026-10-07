@@ -679,6 +679,33 @@ fn cancel_track_height_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> boo
 // `:1132`），且 `AutomationTarget`（`project.rs:512`）没有布尔变体 ⇒ 静音 / 独奏必须有自己的
 // `Op`（`Op::SetTrackMute` / `Op::SetTrackSolo`，本切片新增；裁决见交付报告）。
 // 音量 / 声相**复用**既有的 `Op::SetParam` + `AutomationTarget::TrackVolume` / `TrackPan`。
+//
+// ## 主控通道条（`mixer-master-*`）：接了**音量 ＋ 声相**，没接**静音 / 独奏**
+//
+// 主总线是一条普通的 `TrackV3`（`TrackKind::Master`，`crates/yeban-model/src/project.rs`
+// 的 `TrackV3::kind`），它同样有 `volume_db` / `pan` / `mute` / `solo`
+// （同文件 `project.rs:1125-1132`）⇒ 既有 `Op` **够用**，不需要新的 `Op`、也不需要动
+// `crates/yeban-model/**`：`Op::SetParam` 的 `read_param` / `write_param`
+// （`ops.rs:1555-1556` / `ops.rs:1596-1600`）只按 `track_id` 取轨道
+// （`YebanProjectV1::track` / `track_mut`，`project.rs:1765/1776`），**没有任何**"排除主总线"
+// 的前置条件；`validate_param_value`（`ops.rs:1655`）也只管值域。
+//
+// 主控**只接音量与声相**，理由（静音 / 独奏的语义在本仓库里**不成立**）：
+// - 本仓库的规范文档没有主控静音 / 独奏的定义（`grep -n "solo" docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md`
+//   零命中）⇒ 没有可引用的明文语义；
+// - **独奏会主动制造错误结果**：`any_solo = project.tracks.values().any(|track| track.solo)`
+//   （`crates/yeban-engine/src/snapshot.rs:645`）把主总线的 `solo` 也算进去，而
+//   `track_is_audible(mute, solo, solo_safe, any_solo) = !mute && (!any_solo || solo || solo_safe)`
+//   （`synth.rs:1194`）⇒ 主总线一独奏，**每一条别的轨道都变成不可闻**，母线只剩静音；
+// - **静音是空操作**：母线自己不产生音符（`project_schedules` 只按 `track.clips` 生成调度表），
+//   而母线的渲染与电平都与 `TrackV3::mute` 无关 ⇒ 那个开关改了模型却什么也不改。
+// 因此这两项**登记为缺口**，不接线：`.slint` 里那两个 `Rectangle` 保持原样
+// （没有 `TouchArea`，与接线之前**外观和行为都逐字节相同**），不做一个"点了没反应"的假入口。
+//
+// ⚠ 未接线的另一半（**引擎侧**，不是本文件的问题，登记在交付报告里）：引擎今天
+// **不消费**主总线的 `volume_db` / `pan` —— `crates/yeban-engine/src/rt.rs:752` 的声相表
+// 明确 `if *id == master … continue`，母线也没有自己的增益级。因此主控推子的写入面是
+// "模型 ＋ 视图态 + 撤销栈"闭环，**听觉效果未接线**。
 
 /// 推子面的**像素行程**（逻辑像素）。
 ///
@@ -693,6 +720,42 @@ pub const MIXER_FADER_TRAVEL_PX: f32 = 88.0;
 /// 口径：走完这个宽度 = `pan` 从 `-1.0` 走到 `+1.0`（2.0 的跨度）。
 pub const MIXER_PAN_TRAVEL_PX: f32 = 36.0;
 
+/// 一次混音手势**寻址的目标** —— 通道条（下标 ＋ 身份）或主控通道条（只有身份）。
+///
+/// ## 为什么主控没有下标（本切片的测量结论）
+///
+/// 主总线**不在** `track-names` / `track-ids` / `track-volumes` / `track-pans` 这些平行
+/// 数组里：投影刻意排除它（[`crate::bridge::ViewState::tracks`] 只装非主总线轨道；
+/// `bridge.rs` 的 `track_rows_with_layout` 与 `ViewState::track_names` 都按
+/// `master_bus_track_id` 过滤），它单独走 `ViewState::master: Option<TrackView>`。
+/// 因此"按下标寻址"这条路对主控**不存在** —— `0..len` 里没有一个格子是主控。
+///
+/// ## 方案：主控走自己的一组回调，身份从权威工程取（不做身份→下标算术）
+///
+/// `.slint` 侧给主控声明 `mixer-master-fader-grab(length)` 等 6 个**不带下标**的回调，
+/// 宿主在**手势开始**那一刻从权威工程取身份
+/// （`UndoPort::try_project().master_bus_track_id`，要求非 nil 且真的在 `tracks` 里）。
+/// 于是：
+/// - `.slint` 里**没有任何**身份→下标的算术（[`apply_row_geometry`] 之后的同一条纪律）；
+/// - 不发明哨兵下标（`u32::MAX` / `-1`）：哨兵会与"真实下标"共用同一个参数位，
+///   读代码的人必须记住一个魔法值，而且 `track_id_at(哨兵)` 只会静默返回 `None`；
+/// - 身份**每次按下都重新读**（不是装配期快照），换工程之后不会拿旧身份去改新工程。
+#[derive(Clone, Debug, PartialEq)]
+enum MixerTarget {
+    /// 通道条：下标（写视图态那一格用）＋ 身份（提交用）。
+    Track {
+        /// 本次手势按下那一轨的**下标**（`track-volumes` / `track-pans` 的索引集）。
+        index: i32,
+        /// 本次手势按下那一轨的身份（26 字符 `EntityId` 文本）。
+        track_id: String,
+    },
+    /// 主控通道条：**只有身份**（理由见本枚举的文档）。
+    Master {
+        /// `master_bus_track_id` 的 26 字符 `EntityId` 文本。
+        track_id: String,
+    },
+}
+
 /// 一次混音手势（推子 / 声相）的状态。
 ///
 /// 为什么住在宿主而不是界面上：它只在**一次拖动**里有意义，而且必须在 `release`
@@ -702,18 +765,16 @@ pub const MIXER_PAN_TRAVEL_PX: f32 = 36.0;
 /// 窗口上的读数**（`mixer-drag-active`）—— 与 `track-height-drag-active` 同一个角色。
 /// 取消本身走窗口回调 `mixer-cancel-gesture`，落回持有这份记录的**同一个闭包**
 /// （[`cancel_mixer_gesture`]）：记录因此只有一份，没有第二份状态要同步。
+///
+/// 寻址的目标是 [`MixerTarget`]（通道条**下标**或主控**身份**）。
 #[derive(Clone, Debug, PartialEq)]
 enum MixerGesture {
     /// 没有进行中的手势。
     Idle,
     /// 推子拖动中。
     Fader {
-        /// 本次手势按下那一轨的**下标**（`track-volumes` / `track-pans` 的索引集）。
-        ///
-        /// `Escape` 的取消要用它把起点值写回**那一格**视图态，因此它必须跟着手势走。
-        index: i32,
-        /// 本次手势按下那一轨的身份（26 字符 `EntityId` 文本）。
-        track_id: String,
+        /// 本次手势寻址的目标（通道条 / 主控）。
+        target: MixerTarget,
         /// 手势开始时的音量 (dB) —— 提交时的 `old_val`。
         start_db: f32,
         /// 按下时的指针 y（推子面坐标系）。
@@ -733,10 +794,8 @@ enum MixerGesture {
     },
     /// 声相拖动中。
     Pan {
-        /// 本次手势按下那一轨的**下标**（理由同 [`MixerGesture::Fader::index`]）。
-        index: i32,
-        /// 本次手势按下那一轨的身份。
-        track_id: String,
+        /// 本次手势寻址的目标（理由同 [`MixerGesture::Fader::target`]）。
+        target: MixerTarget,
         /// 手势开始时的声相 -1.0..=1.0 —— 提交时的 `old_val`。
         start_pan: f32,
         /// 按下时的指针 x（声相面坐标系）。
@@ -826,10 +885,10 @@ fn volume_display_of(volume_db: f32) -> String {
 
 /// 把某一轨的**视图态预览**写进界面（拖动期唯一的写入面）。
 ///
-/// 只写三个数组、只改一个下标：不重投影（重投影会重建 repeater 条目、把正在拖拽的
+/// 只写两个数组、只改一个下标：不重投影（重投影会重建 repeater 条目、把正在拖拽的
 /// `TouchArea` 连同指针抓取一起丢掉 —— 实测记录见 [`apply_row_geometry`] 的文档）。
 /// `index` 越界时**什么都不做**（不 panic、也不猜一条轨道）。
-fn preview_volume(ui: &MainWindow, index: i32, volume_db: f32) {
+fn preview_track_volume(ui: &MainWindow, index: i32, volume_db: f32) {
     let Ok(index) = usize::try_from(index) else {
         return;
     };
@@ -844,8 +903,8 @@ fn preview_volume(ui: &MainWindow, index: i32, volume_db: f32) {
     ui.set_track_volume_fractions(lengths(&fractions));
 }
 
-/// 同 [`preview_volume`]，写声相数组（文本与千分位整数同源）。
-fn preview_pan(ui: &MainWindow, index: i32, pan: f32) {
+/// 同 [`preview_track_volume`]，写声相数组（文本与千分位整数同源）。
+fn preview_track_pan(ui: &MainWindow, index: i32, pan: f32) {
     let Ok(index) = usize::try_from(index) else {
         return;
     };
@@ -855,6 +914,56 @@ fn preview_pan(ui: &MainWindow, index: i32, pan: f32) {
     }
     pans[index] = crate::bridge::pan_display(pan_millis_of(pan));
     ui.set_track_pans(strings(&pans));
+}
+
+/// **主控通道条**的视图态预览（音量）：只写那两个**标量**属性。
+///
+/// 与 [`preview_track_volume`] 是同一个写入面的两种形态（数组一格 vs 标量），
+/// 写出的文本 / 位置与投影层**同源**：`{:.1}`（[`volume_display_of`]）与
+/// [`crate::bridge::volume_fraction`]，而 `apply_master` 写的正是同一对函数的结果
+/// ⇒ "取消时写回起点"写出的字节与一次完整重投影逐位相同。
+fn preview_master_volume(ui: &MainWindow, volume_db: f32) {
+    ui.set_master_volume_display(volume_display_of(volume_db).into());
+    ui.set_master_volume_fraction(crate::bridge::volume_fraction(volume_db));
+}
+
+/// **主控通道条**的视图态预览（声相）：写 `master-pan`（口径同 [`preview_track_pan`]）。
+fn preview_master_pan(ui: &MainWindow, pan: f32) {
+    ui.set_master_pan(crate::bridge::pan_display(pan_millis_of(pan)).into());
+}
+
+/// 按**目标**分派音量预览（[`cancel_mixer_gesture`] 与收尾路径的唯一入口）。
+fn preview_target_volume(ui: &MainWindow, target: &MixerTarget, volume_db: f32) {
+    match target {
+        MixerTarget::Track { index, .. } => preview_track_volume(ui, *index, volume_db),
+        MixerTarget::Master { .. } => preview_master_volume(ui, volume_db),
+    }
+}
+
+/// 按**目标**分派声相预览（理由同 [`preview_target_volume`]）。
+fn preview_target_pan(ui: &MainWindow, target: &MixerTarget, pan: f32) {
+    match target {
+        MixerTarget::Track { index, .. } => preview_track_pan(ui, *index, pan),
+        MixerTarget::Master { .. } => preview_master_pan(ui, pan),
+    }
+}
+
+/// 权威工程里**主总线**的身份文本（26 字符 `EntityId`）。
+///
+/// 主总线**不在**注入给界面的 `track-ids` 里（投影刻意排除它），因此这里按**身份**从
+/// [`UndoPort::try_project`] 的权威工程取：`master_bus_track_id` 非 nil **且**真的在
+/// `tracks` 里 ⇒ `Some(身份文本)`；否则 `None`（调用方**不留手势**，不猜）。
+///
+/// 口径与模型校验同源：`YebanProjectV1::validate`（`project.rs:1646-1665`）要求
+/// 非空工程里 `master_bus_track_id` 必须指向一条 `TrackKind::Master`。
+fn master_track_id(port: &UndoPort) -> Option<String> {
+    let project = port.try_project()?;
+    let id = project.master_bus_track_id;
+    if id.is_nil() {
+        return None;
+    }
+    project.tracks.get(&id)?;
+    Some(id.to_canonical_string())
 }
 
 /// 权威工程里按**身份文本**取音轨的音量 / 声相 / 静音 / 独奏读数。
@@ -921,26 +1030,29 @@ fn end_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) -> Mi
 /// 工程内容（`ADR-0005`），因此"不提交"意味着 `UndoPort` 一次都不碰 —— 工程与撤销栈
 /// 与拖动之前逐位相同。
 ///
-/// 写回走的是 [`preview_volume`] / [`preview_pan`]（拖动期那**同一个**视图态写入面），
-/// 而**不是**一次完整重投影：那两个函数与投影层同源（`bridge.rs` 的
+/// 写回走的是 [`preview_target_volume`] / [`preview_target_pan`]（拖动期那**同一个**视图态
+/// 写入面），而**不是**一次完整重投影：那几个函数与投影层同源（`bridge.rs` 的
 /// `format!("{:.1}")` / `volume_fraction` / `pan_display(pan_millis)`），写出的字节与
 /// 重投影逐位相同；反过来，完整 `apply_view` 会重建 repeater 条目、把**此刻仍被按住**的
 /// 那个 `TouchArea` 连同指针抓取一起丢掉（实测记录见 [`reproject_track_heights`]）。
+///
+/// 通道条与主控走**同一条**取消路径（同一个 `mixer-cancel-gesture` 回调）：两类目标只在
+/// 写回的那一个函数上分派，因此不存在"只有轨道能 `Escape`、主控不能"这种半接线状态。
 ///
 /// 返回 `false` = 此刻没有混音手势 ⇒ 这一键与混音台无关，照旧放行。
 fn cancel_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) -> bool {
     match end_mixer_gesture(ui, gesture) {
         MixerGesture::Idle => false,
         MixerGesture::Fader {
-            index, start_db, ..
+            target, start_db, ..
         } => {
-            preview_volume(ui, index, start_db);
+            preview_target_volume(ui, &target, start_db);
             true
         }
         MixerGesture::Pan {
-            index, start_pan, ..
+            target, start_pan, ..
         } => {
-            preview_pan(ui, index, start_pan);
+            preview_target_pan(ui, &target, start_pan);
             true
         }
     }
@@ -948,12 +1060,20 @@ fn cancel_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) ->
 
 /// **混音台写入面的接线**（唯一实现；`main.rs` 与 `live_surface` 调的是同一个函数）。
 ///
-/// 五个入口分两类：
-/// - **手势**（推子竖直 / 声相水平）：按下记起点 → 移动只写视图态 → 松手提交**一次**；
+/// 十四个入口分三类：
+/// - **通道条手势**（推子竖直 / 声相水平）：按下记起点 → 移动只写视图态 → 松手提交**一次**；
+/// - **主控手势**（`mixer-master-fader-*` / `mixer-master-pan-*`）：与通道条逐条同形，
+///   区别只有寻址方式（身份，见 [`MixerTarget`]）与视图态的落点（标量属性）；
 /// - **开关**（静音 / 独奏）：点击即提交**一次**（没有中间态）。
 ///
 /// 提交失败（控制面拒绝、工程被关掉）⇒ **什么都不回写**并打一行 stderr：
 /// 不假装成功，也不 panic（与 `wire_roll_edit` 同款）。
+///
+/// ## 两类手势**互不串扰**（这是一条机械性质，不是约定）
+///
+/// 通道条回调只驱动 [`MixerTarget::Track`]、主控回调只驱动 [`MixerTarget::Master`]：
+/// 每一条 `drag` 都**先核对目标**再动记录（`moved` / `last_*`），目标不符就原地返回。
+/// 因此"主控拖动期间来一次轨道 `move`"（或反过来）既不写视图态、也不污染收尾要提交的值。
 pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
     let gesture = Rc::new(RefCell::new(MixerGesture::Idle));
@@ -978,8 +1098,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                     &ui,
                     &gesture,
                     MixerGesture::Fader {
-                        index,
-                        track_id,
+                        target: MixerTarget::Track { index, track_id },
                         start_db: state.volume_db,
                         start_y: pointer_y,
                         last_db: state.volume_db,
@@ -1009,26 +1128,34 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             if !ui.get_mixer_drag_active() {
                 return;
             }
-            let (track_id, next_db) = match &mut *gesture.borrow_mut() {
+            // **先核对目标、再动记录**：被拒的 `move`（错下标 / 主控手势）不许改
+            // `moved` / `last_db`，否则收尾会提交一个没人拖出来的值。
+            let (gesture_index, track_id, start_db, start_y) = match &*gesture.borrow() {
                 MixerGesture::Fader {
-                    track_id,
+                    target:
+                        MixerTarget::Track {
+                            index: gesture_index,
+                            track_id,
+                        },
                     start_db,
                     start_y,
-                    last_db,
-                    moved,
                     ..
-                } => {
-                    *moved = true;
-                    let next_db = dragged_fader_db(*start_db, *start_y - pointer_y);
-                    *last_db = next_db;
-                    (track_id.clone(), next_db)
-                }
+                } => (*gesture_index, track_id.clone(), *start_db, *start_y),
+                // 主控手势（或空手势）：轨道下标寻址的 `move` 与它无关。
                 _ => return,
             };
+            if gesture_index != index {
+                return;
+            }
             if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
                 return;
             }
-            preview_volume(&ui, index, next_db);
+            let next_db = dragged_fader_db(start_db, start_y - pointer_y);
+            if let MixerGesture::Fader { last_db, moved, .. } = &mut *gesture.borrow_mut() {
+                *moved = true;
+                *last_db = next_db;
+            }
+            preview_track_volume(&ui, index, next_db);
         }
     });
     ui.on_mixer_fader_release({
@@ -1044,17 +1171,25 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             // 因此 `Escape` 已经取消过之后，这一松手读到的是 `Idle` ⇒ 什么都不提交。
             let taken = end_mixer_gesture(&ui, &gesture);
             let MixerGesture::Fader {
-                track_id,
+                target:
+                    MixerTarget::Track {
+                        index: gesture_index,
+                        track_id,
+                    },
                 start_db,
                 last_db,
                 moved,
                 ..
             } = taken
             else {
+                // 主控手势 / 空手势：轨道下标寻址的松手与它无关（**不许**顺手提交）。
                 return;
             };
             if !moved {
                 // 按下就松手（一个 `drag` 都没收到）⇒ **不提交**：不留一步什么都没改的撤销。
+                return;
+            }
+            if gesture_index != index {
                 return;
             }
             if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
@@ -1105,8 +1240,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                     &ui,
                     &gesture,
                     MixerGesture::Pan {
-                        index,
-                        track_id,
+                        target: MixerTarget::Track { index, track_id },
                         start_pan: state.pan,
                         start_x: pointer_x,
                         last_pan: state.pan,
@@ -1131,26 +1265,35 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             if !ui.get_mixer_drag_active() {
                 return;
             }
-            let (track_id, next_pan) = match &mut *gesture.borrow_mut() {
+            // 先核对目标、再动记录（理由同推子的 `drag`）。
+            let (gesture_index, track_id, start_pan, start_x) = match &*gesture.borrow() {
                 MixerGesture::Pan {
-                    track_id,
+                    target:
+                        MixerTarget::Track {
+                            index: gesture_index,
+                            track_id,
+                        },
                     start_pan,
                     start_x,
-                    last_pan,
-                    moved,
                     ..
-                } => {
-                    *moved = true;
-                    let next_pan = dragged_pan(*start_pan, pointer_x - *start_x);
-                    *last_pan = next_pan;
-                    (track_id.clone(), next_pan)
-                }
+                } => (*gesture_index, track_id.clone(), *start_pan, *start_x),
                 _ => return,
             };
+            if gesture_index != index {
+                return;
+            }
             if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
                 return;
             }
-            preview_pan(&ui, index, next_pan);
+            let next_pan = dragged_pan(start_pan, pointer_x - start_x);
+            if let MixerGesture::Pan {
+                last_pan, moved, ..
+            } = &mut *gesture.borrow_mut()
+            {
+                *moved = true;
+                *last_pan = next_pan;
+            }
+            preview_track_pan(&ui, index, next_pan);
         }
     });
     ui.on_mixer_pan_release({
@@ -1165,7 +1308,11 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             // 收尾走唯一清零点（理由同推子）：`Escape` 取消过之后这一松手读到 `Idle`。
             let taken = end_mixer_gesture(&ui, &gesture);
             let MixerGesture::Pan {
-                track_id,
+                target:
+                    MixerTarget::Track {
+                        index: gesture_index,
+                        track_id,
+                    },
                 start_pan,
                 last_pan,
                 moved,
@@ -1176,6 +1323,9 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             if !moved {
                 // 按下就松手 ⇒ 不提交（同推子）。
+                return;
+            }
+            if gesture_index != index {
                 return;
             }
             if track_id_at(&ui, index).as_deref() != Some(track_id.as_str()) {
@@ -1200,6 +1350,230 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 .is_err()
             {
                 eprintln!("[yeban-app] 声相提交被拒绝（工程未改）");
+                return;
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- 主控推子
+    //
+    // 形状与上面的通道条推子**逐条相同**，只有两处不同（都是 [`MixerTarget`] 带来的）：
+    // ① 寻址：`.slint` 不送下标（主总线不在 `track-names` 里），身份在按下那一刻从权威
+    //    工程取（[`master_track_id`]）；② 视图态：写 `master-volume-display` /
+    //    `master-volume-fraction` 两个标量，而不是数组的一格。
+    ui.on_mixer_master_fader_grab({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(track_id) = master_track_id(&port) else {
+                // 工程没有主总线（`master_bus_track_id` 是 nil 或不在 `tracks` 里）
+                // ⇒ **不留手势**：标志与记录一起归零。
+                end_mixer_gesture(&ui, &gesture);
+                return;
+            };
+            match mixer_track_state(&port, &track_id) {
+                Some(state) => begin_mixer_gesture(
+                    &ui,
+                    &gesture,
+                    MixerGesture::Fader {
+                        target: MixerTarget::Master { track_id },
+                        start_db: state.volume_db,
+                        start_y: pointer_y,
+                        last_db: state.volume_db,
+                        moved: false,
+                    },
+                ),
+                None => {
+                    end_mixer_gesture(&ui, &gesture);
+                }
+            }
+        }
+    });
+    ui.on_mixer_master_fader_drag({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move |pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if !ui.get_mixer_drag_active() {
+                return;
+            }
+            // 先核对目标、再动记录（理由同推子的 `drag`）：只有**主控**手势能走这一格。
+            let (start_db, start_y) = match &*gesture.borrow() {
+                MixerGesture::Fader {
+                    target: MixerTarget::Master { .. },
+                    start_db,
+                    start_y,
+                    ..
+                } => (*start_db, *start_y),
+                _ => return,
+            };
+            let next_db = dragged_fader_db(start_db, start_y - pointer_y);
+            if let MixerGesture::Fader { last_db, moved, .. } = &mut *gesture.borrow_mut() {
+                *moved = true;
+                *last_db = next_db;
+            }
+            preview_master_volume(&ui, next_db);
+        }
+    });
+    ui.on_mixer_master_fader_release({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 收尾走唯一清零点（理由同推子）。
+            let taken = end_mixer_gesture(&ui, &gesture);
+            let MixerGesture::Fader {
+                target: MixerTarget::Master { track_id },
+                start_db,
+                last_db,
+                moved,
+                ..
+            } = taken
+            else {
+                // 通道条手势 / 空手势：主控松手与它无关。
+                return;
+            };
+            if !moved {
+                return;
+            }
+            if last_db.to_bits() == start_db.to_bits() {
+                return;
+            }
+            let Ok(track_id) = track_id.parse::<yeban_model::EntityId>() else {
+                return;
+            };
+            let op = yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::TrackVolume { track_id },
+                old_val: start_db,
+                new_val: last_db,
+            };
+            if port
+                .commit_ops(now_ms(), "mixer: set master volume", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] 主控推子提交被拒绝（工程未改）");
+                return;
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- 主控声相
+    ui.on_mixer_master_pan_grab({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |pointer_x| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(track_id) = master_track_id(&port) else {
+                end_mixer_gesture(&ui, &gesture);
+                return;
+            };
+            match mixer_track_state(&port, &track_id) {
+                Some(state) => begin_mixer_gesture(
+                    &ui,
+                    &gesture,
+                    MixerGesture::Pan {
+                        target: MixerTarget::Master { track_id },
+                        start_pan: state.pan,
+                        start_x: pointer_x,
+                        last_pan: state.pan,
+                        moved: false,
+                    },
+                ),
+                None => {
+                    end_mixer_gesture(&ui, &gesture);
+                }
+            }
+        }
+    });
+    ui.on_mixer_master_pan_drag({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move |pointer_x| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if !ui.get_mixer_drag_active() {
+                return;
+            }
+            // 先核对目标、再动记录（理由同推子的 `drag`）。
+            let (start_pan, start_x) = match &*gesture.borrow() {
+                MixerGesture::Pan {
+                    target: MixerTarget::Master { .. },
+                    start_pan,
+                    start_x,
+                    ..
+                } => (*start_pan, *start_x),
+                _ => return,
+            };
+            let next_pan = dragged_pan(start_pan, pointer_x - start_x);
+            if let MixerGesture::Pan {
+                last_pan, moved, ..
+            } = &mut *gesture.borrow_mut()
+            {
+                *moved = true;
+                *last_pan = next_pan;
+            }
+            preview_master_pan(&ui, next_pan);
+        }
+    });
+    ui.on_mixer_master_pan_release({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let taken = end_mixer_gesture(&ui, &gesture);
+            let MixerGesture::Pan {
+                target: MixerTarget::Master { track_id },
+                start_pan,
+                last_pan,
+                moved,
+                ..
+            } = taken
+            else {
+                return;
+            };
+            if !moved {
+                return;
+            }
+            if last_pan.to_bits() == start_pan.to_bits() {
+                return;
+            }
+            let Ok(track_id) = track_id.parse::<yeban_model::EntityId>() else {
+                return;
+            };
+            let op = yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::TrackPan { track_id },
+                old_val: start_pan,
+                new_val: last_pan,
+            };
+            if port
+                .commit_ops(now_ms(), "mixer: set master pan", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] 主控声相提交被拒绝（工程未改）");
                 return;
             }
             refresh_undo_window(&ui, &port, true);
@@ -2768,6 +3142,59 @@ mod tests {
         // 起点越界（模型不该给，但投影不假设输入可信）：先夹再施加位移。
         assert_eq!(dragged_pan(5.0, 0.0), 1.0);
         assert_eq!(dragged_pan(-5.0, 0.0), -1.0);
+    }
+
+    /// 判据（**主总线身份的取法**）：`master_track_id` 只认权威工程里非 nil、且真的在
+    /// `tracks` 里的 `master_bus_track_id`。
+    ///
+    /// 为什么这条必须存在：主控手势的寻址**完全**依赖这一个函数（主总线不在注入给界面的
+    /// `track-ids` / `track-names` 里，见 `host.rs` 的 `wire_mixer_edit` 模块文档）。
+    /// 它返回 `None` 时调用方**不留手势**（不是猜一条轨道），因此"nil 工程 ⇒ 主控不可操作"
+    /// 是设计行为而不是缺陷。
+    #[test]
+    fn master_track_id_reads_the_authoritative_project_and_refuses_nil() {
+        use std::rc::Rc;
+
+        use crate::undo::{UndoPort, UndoSession};
+
+        let demo = crate::bridge::demo_project();
+        let port = Rc::new(UndoPort::new(
+            UndoSession::open("<判据>", "yeban-app", demo.clone(), 0).expect("打开"),
+        ));
+        let expected = demo.master_bus_track_id.to_canonical_string();
+        assert_eq!(
+            super::master_track_id(&port).as_deref(),
+            Some(expected.as_str())
+        );
+        // 主总线必须是 `TrackKind::Master`（与 `YebanProjectV1::validate` 同一口径）。
+        let master = demo
+            .tracks
+            .get(&demo.master_bus_track_id)
+            .expect("主总线必须在 `tracks` 里");
+        assert_eq!(master.kind, yeban_model::project::TrackKind::Master);
+        // 既有 `Op` 对主总线**没有**额外的前置条件：`SetParam` 的 `read_param` / `write_param`
+        // 只按 `track_id` 取轨道（`crates/yeban-model/src/ops.rs`）。这里用**真实提交**证明：
+        // 一次 `TrackVolume{master}` 的 `SetParam` 必须被接受，且模型真的改了。
+        let before = master.volume_db;
+        let op = yeban_model::Op::SetParam {
+            target: yeban_model::AutomationTarget::TrackVolume {
+                track_id: demo.master_bus_track_id,
+            },
+            old_val: before,
+            new_val: -12.5,
+        };
+        port.commit_ops(0, "probe: master volume", vec![op])
+            .expect("主总线上的 `SetParam` 必须被接受（既有 `Op` 够用）");
+        let after = super::mixer_track_state(&port, &expected).expect("主总线读数");
+        assert_eq!(after.volume_db.to_bits(), (-12.5_f32).to_bits());
+
+        // `master_bus_track_id` 是 nil 的工程（`YebanProjectV1::default()`）⇒ `None`。
+        let empty = yeban_model::project::YebanProjectV1::default();
+        assert!(empty.master_bus_track_id.is_nil());
+        let port = Rc::new(UndoPort::new(
+            UndoSession::open("<判据>", "yeban-app", empty, 0).expect("打开"),
+        ));
+        assert_eq!(super::master_track_id(&port), None);
     }
 
     #[test]
