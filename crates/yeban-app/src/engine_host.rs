@@ -29,9 +29,19 @@
 //!
 //! ## 诚实边界（不要误读）
 //!
-//! - **引擎仍然不发声**：轨道渲染是占位静音，因此引擎实际发布的电平恒为静音
-//!   （`docs/ledger/engine-meters-notes.md` §0.1）。"重建是真的"指的是快照/队列/量子
-//!   驱动是真的，而不是"有声音了"。
+//! - **引擎在合成**（2026-10-08 就地改正）：轨道渲染**不再**是占位静音 ——
+//!   `project_schedules` 真的按摆放生成调度表、`synth.render_track` 真的渲染，
+//!   因此 `process_quantum` 发布的电平**不是**恒为静音。实测（本机
+//!   `cargo test -p yeban-app --test production_meter_leg production_loop_start -- --nocapture`，
+//!   8 跳）：0 号轨峰值 `-17.3 / -7.1 / -6.8 / -7.3 / -7.6 / -7.9 / -8.3 / -8.5` dBFS，
+//!   主总线 `-20.4 / -13.1 / -9.8 / -10.0 / -10.6 / -10.9 / -11.1 / -11.5` dBFS；
+//!   同 crate 的判据 `production_loop_start_adopts_the_engine_meter_consumer` 正是断言
+//!   "至少一条轨的读数必须离开显示下限"。
+//!   ⚠ 本行原文写「**引擎仍然不发声**：轨道渲染是占位静音，因此引擎实际发布的电平恒为静音
+//!   （`docs/ledger/engine-meters-notes.md` §0.1）」—— 那句话与上面那条判据**矛盾**，
+//!   也与这份实测矛盾，因此**就地改正**。残留（本票不许碰其它 `docs/**`）：
+//!   `docs/ledger/engine-meters-notes.md` §0.1 至今仍写同一条旧结论，需要它自己的所有者更正。
+//!   "重建是真的"仍然指快照/队列/量子驱动是真的 —— 这一半没有变。
 //! - **没有开声卡**：本切片不调用 `yeban_engine::device`（红线 6 与 D19 都要求设备 I/O
 //!   单独裁决）。`process_quantum` 由控制面/测试线程显式驱动，因此在"设备回调"这条路上
 //!   它是**同一个函数**（`EngineRuntime::process_quantum` 就是 cpal 回调会调的那个），
