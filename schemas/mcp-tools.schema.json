@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yeban.org/schemas/mcp-tools.schema.json",
   "title": "YebanMcpTools",
-  "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse)：工具调用与工具响应的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
+  "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse, ReplayedToolResponse)：工具调用、工具响应与幂等重放信封的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
   "definitions": {
     "ToolCall": {
       "type": "object",
@@ -42,7 +42,8 @@
               "default": false
             },
             "idempotencyKey": {
-              "type": "string"
+              "type": "string",
+              "description": "幂等重放键。同一个非空键的第二次 `tools/call` 不执行工具, 直接返回首次结果的缓存; 该响应是 `ReplayedToolResponse` 信封(`replayed: true` + `response`), 而不是裸 `ToolResponse`。空串按\"未提供\"处理。"
             }
           }
         }
@@ -237,6 +238,80 @@
             }
           }
         }
+      }
+    },
+    "ReplayedToolResponse": {
+      "title": "ReplayedToolResponse",
+      "description": "幂等重放的响应形状。`tools/call` 的 `arguments.idempotencyKey` 命中幂等缓存时, `result` 不是裸 `ToolResponse`, 而是本信封: `replayed` 恒 `true`; `response` 是拿**当前请求 id** 重新组装的一份完整 JSON-RPC 响应, 其 `result` 才是**首次执行**产出的 `ToolResponse`(逐字节相同, 只有 `id` 换成当前请求的)。构造点 = `crates/yeban-mcp/src/dispatch.rs` 的 `replay_value`; 真实管线样本 = `mcp-tools.response.replayed.json`。",
+      "type": "object",
+      "required": [
+        "replayed",
+        "response"
+      ],
+      "properties": {
+        "replayed": {
+          "const": true
+        },
+        "response": {
+          "$ref": "#/definitions/JsonRpcResponse"
+        }
+      }
+    },
+    "JsonRpcResponse": {
+      "title": "JsonRpcResponse",
+      "description": "JSON-RPC 2.0 响应对象(`crates/yeban-mcp/src/jsonrpc.rs` 的 `Response::to_value`): `id` 回显当前请求, 且恰好有 `result` 或 `error` 之一。本定义只服务于 `ReplayedToolResponse.response` —— 根 `oneOf` 描述的是 `tools/call` 的 `params`(`ToolCall`)与 `result` 载荷(`ToolResponse`), 不是线上的 JSON-RPC 信封。",
+      "type": "object",
+      "required": [
+        "jsonrpc",
+        "id"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "$ref": "#/definitions/ToolResponse"
+        },
+        "error": {
+          "$ref": "#/definitions/JsonRpcError"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "result"
+          ]
+        },
+        {
+          "required": [
+            "error"
+          ]
+        }
+      ]
+    },
+    "JsonRpcError": {
+      "title": "JsonRpcError",
+      "description": "JSON-RPC 2.0 错误对象(`crates/yeban-mcp/src/jsonrpc.rs` 的 `ErrorObject`)。领域失败**不**走这里(领域失败是 `ToolResponse{status:\"error\"}`); 只有实现级状况(例如 `NOT_IMPLEMENTED`)才产生它。",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": {}
       }
     },
     "ExtensionToolArguments": {
@@ -479,6 +554,9 @@
     },
     {
       "$ref": "#/definitions/ToolResponse"
+    },
+    {
+      "$ref": "#/definitions/ReplayedToolResponse"
     }
   ]
 }

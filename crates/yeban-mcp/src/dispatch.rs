@@ -36,6 +36,10 @@
 //! 缓存是 `BTreeMap`（红线 4 的确定性精神），因此缓存快照的顺序逐字节稳定。
 //! 幂等缓存存的是**首次执行的完整结果**，因此"同 key 不重复施加"是结构性的：
 //! 第 6 步在第 7 步之前，命中缓存就永远走不到 `domain::execute`。
+//! 命中时返回的是 `ReplayedToolResponse` 信封（契约
+//! `definitions.ReplayedToolResponse`，见 [`replay_value`]）：`replayed: true` +
+//! 用当前 `id` 重新组装的那次响应。副作用、`commitCount`、`projectDigest`
+//! 都停在首次的值上（缓存里就是首次的载荷，重放不改任何状态）。
 
 use std::collections::BTreeMap;
 
@@ -396,6 +400,12 @@ impl Dispatcher {
 ///
 /// 结果主体逐字节相同（判据会断言），只在外面加一层 `replayed` 信封，
 /// 让调用方**看得见**自己拿到的是缓存而不是一次新的执行。
+///
+/// 信封是**契约的一部分**：`schemas/mcp-tools.schema.json` 的
+/// `definitions.ReplayedToolResponse`（根 `oneOf` 的第三个分支），因此会校验 schema
+/// 的客户端不会拒收它。`response` 装的是**完整 JSON-RPC 响应**（`jsonrpc` / `id` /
+/// `result` 或 `error`），用**当前** `id` 重新组装；那个 `result` 才是首次执行产出的
+/// `ToolResponse`。真实管线样本 = `mcp-tools.response.replayed.json`。
 fn replay_value(cached: &CachedOutcome, id: Id) -> Value {
     let replayed = cached.to_response(id);
     let mut map = Map::new();

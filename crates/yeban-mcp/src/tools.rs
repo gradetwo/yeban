@@ -362,7 +362,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         name: IDEMPOTENCY_KEY_PARAM,
         json_type: "string",
         required: false,
-        doc: "幂等重放键: 相同键的重复调用返回首次结果 (不重复执行副作用)",
+        doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存; 该响应是 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`), 而不是裸 `ToolResponse`; 空串按未提供处理",
     },
 ];
 
@@ -536,7 +536,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param("trackId", "string", true, "音轨 EntityId (26 字符 ULID)"),
             param("clipId", "string", true, "片段 EntityId"),
             param("ops", "array", true, "音符操作列表 (NoteOp)"),
-            param("idempotencyKey", "string", false, "幂等重放键"),
+            param(
+                "idempotencyKey",
+                "string",
+                false,
+                "幂等重放键: 同键第二次调用返回 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`)",
+            ),
         ],
         errors: &[ErrorCode::ClipNotFound, ErrorCode::OutOfRange],
     },

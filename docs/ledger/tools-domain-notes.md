@@ -136,6 +136,16 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>   // &Domai
 
 还原后两侧全绿。
 
+**重放响应的形状**（自 2026-10-07 起是契约的一部分）：命中缓存的 `result` **不是**裸
+`ToolResponse`，而是 `{"replayed": true, "response": <用当前 id 重组的完整 JSON-RPC 响应>}`
+（构造点 = `crates/yeban-mcp/src/dispatch.rs` 的 `replay_value`；内层 `response.result`
+才是首次的 `ToolResponse`，逐字节相同）。契约的根因此是
+`oneOf(ToolCall, ToolResponse, ReplayedToolResponse)`，并有**真实管线**产出的样本
+`mcp-tools.response.replayed.json` 与 `tests/contract.rs` 的结构断言。
+在这之前，这个信封**不在** `schemas/mcp-tools.schema.json` 里
+（实测 `grep -c 'replayed' schemas/mcp-tools.schema.json` ⇒ `0`），会校验 schema 的客户端
+会拒收重放响应。
+
 ### 3.3 原子保存的证据
 
 `tests/tools_e2e.rs::save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original`：

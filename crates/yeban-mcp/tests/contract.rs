@@ -273,21 +273,26 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
 
         let looks_like_call = value.get("name").is_some() || value.get("arguments").is_some();
         let looks_like_response = value.get("status").is_some();
+        let looks_like_replay = value.get("replayed").is_some() && value.get("response").is_some();
 
         if name.contains(".meta.") {
             // 文档样本: 顶层是清单/快照, **不许**长得像契约实例 (否则就是在用 .meta. 藏实例)。
             assert!(
-                !looks_like_call && !looks_like_response,
+                !looks_like_call && !looks_like_response && !looks_like_replay,
                 "文档样本 `{name}` 顶层出现了契约实例的判别键"
             );
             meta_samples += 1;
             continue;
         }
 
-        // 根的 oneOf 语义: 契约实例必须**恰好**是两种形状之一, 不能两边都像。
-        assert!(
-            looks_like_call ^ looks_like_response,
-            "样本 `{name}` 必须恰好是 ToolCall 或 ToolResponse 之一"
+        // 根的 oneOf 语义: 契约实例必须**恰好**是三种形状之一, 不能两边都像。
+        let matched = [looks_like_call, looks_like_response, looks_like_replay]
+            .iter()
+            .filter(|flag| **flag)
+            .count();
+        assert_eq!(
+            matched, 1,
+            "样本 `{name}` 必须恰好是 ToolCall / ToolResponse / ReplayedToolResponse 之一"
         );
 
         if name.starts_with(yeban_mcp::samples::CALL_FILE_PREFIX) {
@@ -303,6 +308,17 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
                     "样本 `{name}` 的 arguments 缺少契约键 `{key}`"
                 );
             }
+        } else if name == yeban_mcp::samples::RESPONSE_REPLAYED_FILE {
+            response_samples += 1;
+            assert_eq!(
+                value["replayed"], true,
+                "重放样本的 `replayed` 必须恰好是 true"
+            );
+            assert_eq!(value["response"]["jsonrpc"], "2.0");
+            assert!(
+                value["response"]["result"]["status"].is_string(),
+                "重放样本的内层 result 必须是 ToolResponse"
+            );
         } else {
             response_samples += 1;
             let status = value["status"].as_str().expect("ToolResponse.status");
@@ -322,8 +338,8 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
         "每个工具一份 ToolCall 契约实例"
     );
     assert_eq!(
-        response_samples, 1,
-        "根 oneOf 的第二个分支必须至少被一份真实例覆盖"
+        response_samples, 2,
+        "根 oneOf 的第二、第三个分支各须至少一份真实例覆盖"
     );
     assert_eq!(meta_samples, 2, "注册表与错误码目录各一份 .meta. 文档样本");
     std::fs::remove_dir_all(&dir).ok();
@@ -334,13 +350,15 @@ fn exported_call_samples_are_contract_shaped_tool_calls() {
 /// `.meta.` 是"不对账 schema"的**命名约定**, 不是 schema 能力 —— 谁都能把一份本该对账的
 /// 实例改名成 `.meta.` 来逃逸。脚本侧的守卫只挡得住"整段逃逸"(每个前缀至少一份真实例);
 /// 这条纯函数挡住"部分逃逸": 非 meta 的实例集合必须**恰好**是
-/// `{mcp-tools.call.<tool>.json | tool ∈ 契约工具集} ∪ {mcp-tools.response.dry-run.json}`。
+/// `{mcp-tools.call.<tool>.json | tool ∈ 契约工具集} ∪ {mcp-tools.response.dry-run.json,
+/// mcp-tools.response.replayed.json}`。
 fn check_instance_set(names: &[String]) -> Result<(), String> {
     let mut expected: Vec<String> = tools::TOOLS
         .iter()
         .map(|spec| yeban_mcp::samples::call_file(spec.name))
         .collect();
     expected.push(yeban_mcp::samples::RESPONSE_DRY_RUN_FILE.to_owned());
+    expected.push(yeban_mcp::samples::RESPONSE_REPLAYED_FILE.to_owned());
 
     let mut instances: Vec<String> = names
         .iter()
@@ -411,31 +429,66 @@ fn exported_instance_set_is_exactly_the_tool_set() {
     no_response.retain(|name| name != yeban_mcp::samples::RESPONSE_DRY_RUN_FILE);
     assert!(check_instance_set(&no_response).is_err());
 
+    // 反例 5: 把 ReplayedToolResponse 实例删掉 ⇒ 第三个分支就没人覆盖了。
+    let mut no_replay = names.clone();
+    no_replay.retain(|name| name != yeban_mcp::samples::RESPONSE_REPLAYED_FILE);
+    assert!(check_instance_set(&no_replay).is_err());
+
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn contract_root_is_one_of_tool_call_and_tool_response() {
     // ADR-0001 D25: 根从"空对象"改成 oneOf($ref ToolCall, $ref ToolResponse)。
+    // 之后新增第三个分支 $ref ReplayedToolResponse —— 幂等重放的 `result` 不是裸
+    // `ToolResponse`, 把信封放在契约外会让会校验 schema 的客户端拒收重放响应。
     // 这条判据钉住"契约引用 definitions"这个**结构事实**;
     // 下一条判据钉住"这个引用真的在判定"。
     let root = contract();
     let branches = root["oneOf"]
         .as_array()
         .expect("根的 oneOf 必须是数组 (ADR-0001 D25)");
-    assert_eq!(branches.len(), 2, "oneOf(ToolCall, ToolResponse)");
+    assert_eq!(
+        branches.len(),
+        3,
+        "oneOf(ToolCall, ToolResponse, ReplayedToolResponse)"
+    );
     let refs: Vec<&str> = branches
         .iter()
         .map(|branch| branch["$ref"].as_str().expect("每个分支必须是 $ref"))
         .collect();
     assert!(refs.contains(&"#/definitions/ToolCall"));
     assert!(refs.contains(&"#/definitions/ToolResponse"));
+    assert!(refs.contains(&"#/definitions/ReplayedToolResponse"));
     for key in ["properties", "allOf", "anyOf"] {
         assert!(
             root.get(key).is_none(),
             "根不应该再有 `{key}` —— 契约的判定入口应当只有 oneOf"
         );
     }
+
+    // 信封的判据口径必须与实现一致: `replayed` 恒 true, `response` 是完整 JSON-RPC 响应。
+    let envelope = &root["definitions"]["ReplayedToolResponse"];
+    assert_eq!(
+        envelope["required"],
+        serde_json::json!(["replayed", "response"]),
+        "信封必填 `replayed` + `response`"
+    );
+    assert_eq!(envelope["properties"]["replayed"]["const"], true);
+    assert_eq!(
+        envelope["properties"]["response"]["$ref"],
+        "#/definitions/JsonRpcResponse"
+    );
+    let jsonrpc = &root["definitions"]["JsonRpcResponse"];
+    assert_eq!(jsonrpc["properties"]["jsonrpc"]["const"], "2.0");
+    assert_eq!(
+        jsonrpc["properties"]["result"]["$ref"], "#/definitions/ToolResponse",
+        "信封内层的 result 是 ToolResponse, 不是 JSON-RPC 响应"
+    );
+    assert_eq!(
+        jsonrpc["properties"]["error"]["$ref"],
+        "#/definitions/JsonRpcError"
+    );
 }
 
 #[test]

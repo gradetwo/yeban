@@ -7,13 +7,14 @@
 //! 文件名前缀 `mcp-tools.` 已映射到 `schemas/mcp-tools.schema.json`
 //! （见 `validate_schemas.py` 的 `SAMPLE_SCHEMA_MAP`）。
 //!
-//! ## 导出什么（份数由注册表派生：每工具一份实例 + 1 份 ToolResponse + 2 份文档样本）
+//! ## 导出什么（份数由注册表派生：每工具一份实例 + 2 份 ToolResponse 实例 + 2 份文档样本）
 //!
 //! | 文件 | 内容 | 为什么 |
 //! | :--- | :--- | :--- |
 //! | `mcp-tools.registry.meta.json`（文档样本，非契约实例） | 全部工具的注册表快照（含 scope / 副作用 / 参数 / 错误码） | 工具名集合、`dryRun`、`idempotencyKey` 的机器可读清单 |
 //! | `mcp-tools.error-codes.meta.json`（文档样本，非契约实例） | 错误码全集 + **契约缺口清单** | 让"schema 的 7 个 enum 装不下表格的 16 个错误码"这件事可被机器读到 |
 //! | `mcp-tools.response.dry-run.json` | **真实管线**产出的 `ToolResponse`（dryRun 结果） | 覆盖根 `oneOf` 的**第二个分支**：否则契约定义了没人用的类型 |
+//! | `mcp-tools.response.replayed.json` | **真实管线**产出的 `ReplayedToolResponse`（同键第二次调用） | 覆盖根 `oneOf` 的**第三个分支**：幂等重放的 `result` 不是裸 `ToolResponse`，这条路径此前完全不在契约里 |
 //! | `mcp-tools.call.<tool>.json` ×`TOOLS.len()` | 每个工具一份**规范 `ToolCall`** | 每个工具名都要被契约的 enum 认下来 |
 //!
 //! ## 契约实例 vs 文档样本（`.meta.` 约定 + 承重的根）
@@ -36,12 +37,16 @@
 //! - `mcp-tools.<name>.meta.json` —— **文档样本**，显式 `[skip]`，不对账 schema。
 //!
 //! 本模块导出的样本因此分成两侧：**契约实例**（每个工具一份规范 `ToolCall`，
-//! 外加一份**真实管线**产出的 `ToolResponse`）+ **2 份文档样本**。
+//! 外加两份**真实管线**产出的 `ToolResponse` / `ReplayedToolResponse`）+ **2 份文档样本**。
 //!
 //! 为什么非要那份 `ToolResponse` 实例：根是 `oneOf(ToolCall, ToolResponse)`，
 //! 全是 `ToolCall` 的话，第二个分支**从未被任何样本覆盖** —— 那正是"契约定义了
 //! 没人用的类型"。这份样本由 [`crate::dispatch`] 的 `dryRun` 短路真实产出，
 //! 因此它同时钉住"实现产出的 `ToolResponse` 必须被契约接受"。
+//!
+//! 同理，那份 `ReplayedToolResponse` 实例由**同一个** `Dispatcher` 上的同键两次
+//! `tools/call` 真实产出：幂等命中的 `result` 是信封而不是裸 `ToolResponse`，
+//! 没有这份样本时第三个分支同样"定义了没人用的类型"。
 //!
 //! ### 3) `.meta.` 是命名约定，不是 schema 能力 —— 所以要两道守卫
 //!
@@ -63,6 +68,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::dispatch::Dispatcher;
+use crate::security::Channel;
 use crate::tools::{ErrorCode, ParamSpec, TOOLS, ToolSpec};
 
 /// 默认样本目录名（相对工作区 `target/`）。
@@ -88,6 +95,20 @@ pub const CALL_FILE_PREFIX: &str = "mcp-tools.call.";
 /// 这份样本走的是**真实分发管线**（[`crate::dispatch`] 的 `dryRun` 短路），
 /// 不是手写的形状，因此它同时钉住了"实现产出的 `ToolResponse` 必须被契约接受"。
 pub const RESPONSE_DRY_RUN_FILE: &str = "mcp-tools.response.dry-run.json";
+
+/// **`ReplayedToolResponse` 契约实例**样本：真实管线产出的幂等重放信封。
+///
+/// 为什么必须有它：在它之前，根 `oneOf` 的第三个分支（`ReplayedToolResponse`）
+/// **没有**任何样本覆盖，而这条路径是**真实存在**的 —— `arguments.idempotencyKey`
+/// 命中缓存时 `tools/call` 的 `result` 就是那个信封（`crates/yeban-mcp/src/dispatch.rs`
+/// 的 `replay_value`）。没有这份样本时，"信封不在契约里"这件事对
+/// `validate_schemas.py` 是**不可见的**（2026-10-07 实测：`grep -c 'replayed'
+/// schemas/mcp-tools.schema.json` ⇒ 0）。
+///
+/// 这份样本同样走**真实分发管线**（同一个 `Dispatcher` 上同键调两次，取第二次），
+/// 因此它钉住"实现产出的重放信封必须被契约接受"；重放路径若改回裸 `ToolResponse`，
+/// [`check_replayed_response_instance`] 在写盘前就会变红。
+pub const RESPONSE_REPLAYED_FILE: &str = "mcp-tools.response.replayed.json";
 
 /// 样本导出失败。
 #[derive(Debug, thiserror::Error)]
@@ -121,6 +142,7 @@ pub fn sample_file_names() -> Vec<String> {
         REGISTRY_FILE.to_owned(),
         ERROR_CODES_FILE.to_owned(),
         RESPONSE_DRY_RUN_FILE.to_owned(),
+        RESPONSE_REPLAYED_FILE.to_owned(),
     ];
     names.extend(TOOLS.iter().map(|spec| call_file(spec.name)));
     names
@@ -267,21 +289,7 @@ pub fn error_codes_sample() -> Value {
 ///   成功形状 + 真实差异预览（`projectDigestBefore/After`、`commitCount*`）都被覆盖。
 #[must_use]
 pub fn dry_run_response_sample() -> Value {
-    use crate::dispatch::Dispatcher;
-    use crate::security::{BearerToken, Channel, RunMode, ScopeSet};
-
-    let token = BearerToken::generate().token;
-    let authorization = format!("Bearer {}", token.expose());
-    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
-    dispatcher.domain_mut().set_now_ms(0);
-    dispatcher
-        .domain_mut()
-        .open_in_memory(
-            PathBuf::from("/tmp/yeban-sample/demo.yeban"),
-            yeban_model::samples::filled_project(),
-            true,
-        )
-        .expect("规范样本工程必须通过结构校验");
+    let (mut dispatcher, authorization) = sample_dispatcher();
     let line = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "sample-dry-run",
@@ -300,6 +308,81 @@ pub fn dry_run_response_sample() -> Value {
     let outcome = dispatcher.handle_line(Channel::Http, Some(&authorization), &line);
     let response = outcome.response.expect("dryRun 调用必须产生响应");
     response.result.expect("dryRun 必须成功并返回 ToolResponse")
+}
+
+/// 一份**确定性的**样本会话：规范工程 + 全作用域 + 时钟钉在 0。
+///
+/// 两份 `ToolResponse` 契约实例（dryRun 与幂等重放）共用它，于是两者的
+/// 逐字节稳定性只取决于各自的 `tools/call` 载荷。
+fn sample_dispatcher() -> (Dispatcher, String) {
+    use crate::security::{BearerToken, RunMode, ScopeSet};
+
+    let token = BearerToken::generate().token;
+    let authorization = format!("Bearer {}", token.expose());
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(0);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(
+            PathBuf::from("/tmp/yeban-sample/demo.yeban"),
+            yeban_model::samples::filled_project(),
+            true,
+        )
+        .expect("规范样本工程必须通过结构校验");
+    (dispatcher, authorization)
+}
+
+/// **`ReplayedToolResponse` 契约实例**样本：真实管线产出的幂等重放信封。
+///
+/// 做法与 [`dry_run_response_sample`] 同一形态（**真实分发管线**，不是手写形状）：
+/// 对只读的 `yeban_query_project` 用**同一个** `idempotencyKey` 调**两次**，
+/// 返回第二次的 `result` —— 那就是 [`crate::dispatch`] 的 `replay_value` 信封。
+///
+/// 确定性：键与请求都固定，时钟钉在 0，因此两次导出逐字节相同。
+#[must_use]
+pub fn replay_response_sample() -> Value {
+    let (mut dispatcher, authorization) = sample_dispatcher();
+    let call = |id: &str| {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "yeban_query_project",
+                "arguments": {
+                    "limit": 3,
+                    "offset": 0,
+                    "fields": ["title", "bpm", "tracks.name"],
+                    "idempotencyKey": "sample-replayed"
+                }
+            }
+        })
+        .to_string()
+    };
+    let first = dispatcher.handle_line(
+        Channel::Http,
+        Some(&authorization),
+        &call("sample-replayed"),
+    );
+    let first = first.response.expect("首次调用必须产生响应");
+    let first_result = first.result.expect("首次调用必须返回裸 ToolResponse");
+    assert!(
+        first_result.get("status").is_some() && first_result.get("replayed").is_none(),
+        "首次调用必须是裸 ToolResponse"
+    );
+    let second = dispatcher.handle_line(
+        Channel::Http,
+        Some(&authorization),
+        &call("sample-replayed"),
+    );
+    assert_eq!(dispatcher.replayed(), 1, "第二次必须真的命中幂等缓存");
+    let second = second.response.expect("重放调用必须产生响应");
+    let envelope = second.result.expect("重放必须成功并返回信封");
+    assert_eq!(
+        envelope["response"]["result"], first_result,
+        "重放的主体必须与首次逐字节相同 (信封里只有 id 换成当前请求)"
+    );
+    envelope
 }
 
 /// `ToolResponse` **契约实例**的 Rust 侧自检。
@@ -345,6 +428,80 @@ pub fn check_tool_response_instance(file: &str, sample: &Value) -> Result<(), Sa
             return Err(invalid(format!(
                 "`error.code` `{code}` 不在契约 enum 里 (NOT_IMPLEMENTED 属于 JSON-RPC 层, 不许混进来)"
             )));
+        }
+    }
+    Ok(())
+}
+
+/// `ReplayedToolResponse` **契约实例**的 Rust 侧自检。
+///
+/// 判据口径与 `schemas/mcp-tools.schema.json` 的 `definitions.ReplayedToolResponse`
+/// （+ `definitions.JsonRpcResponse`）对齐：
+///
+/// - 顶层是对象，且 `replayed` **恰好** `true`、`response` 是对象；
+/// - `response.jsonrpc` **恰好** `"2.0"`，`response.id` 是整数 / 字符串 / `null`；
+/// - `response` 恰好有 `result` 或 `error` 之一；
+/// - 若 `response.result` 在场，它必须是一份合法 `ToolResponse`
+///   （复用 [`check_tool_response_instance`] 的口径）；
+/// - 若 `response.error` 在场，`code` 必须是整数、`message` 必须是字符串。
+///
+/// 这条自检是"重放路径改回裸 `ToolResponse`"的**红线**：那时 `replayed` 不在场，
+/// [`export_all`] 会在写盘前返回 [`SampleExportError::InvalidSample`]。
+///
+/// # Errors
+///
+/// 违反上述任一条。
+pub fn check_replayed_response_instance(
+    file: &str,
+    sample: &Value,
+) -> Result<(), SampleExportError> {
+    let invalid = |detail: String| SampleExportError::InvalidSample {
+        file: file.to_owned(),
+        detail,
+    };
+    let object = sample
+        .as_object()
+        .ok_or_else(|| invalid("ReplayedToolResponse 必须是 JSON 对象".to_owned()))?;
+    if object.get("replayed") != Some(&Value::Bool(true)) {
+        return Err(invalid(
+            "`replayed` 必须**恰好**是 `true` —— 裸 `ToolResponse` 不是重放信封".to_owned(),
+        ));
+    }
+    let response = object
+        .get("response")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("`response` 必须是对象 (完整 JSON-RPC 响应)".to_owned()))?;
+    if response.get("jsonrpc") != Some(&Value::from("2.0")) {
+        return Err(invalid(
+            "`response.jsonrpc` 必须恰好是 `\"2.0\"`".to_owned(),
+        ));
+    }
+    match response.get("id") {
+        Some(Value::Number(number)) if number.is_i64() => {}
+        Some(Value::String(_) | Value::Null) => {}
+        _ => {
+            return Err(invalid(
+                "`response.id` 必须是整数 / 字符串 / null".to_owned(),
+            ));
+        }
+    }
+    let has_result = response.contains_key("result");
+    let has_error = response.contains_key("error");
+    if has_result == has_error {
+        return Err(invalid(
+            "`response` 必须恰好有 `result` 或 `error` 之一".to_owned(),
+        ));
+    }
+    if let Some(result) = response.get("result") {
+        let inner = format!("{file}#response.result");
+        check_tool_response_instance(&inner, result)?;
+    }
+    if let Some(error) = response.get("error") {
+        if !error.get("code").is_some_and(Value::is_i64) {
+            return Err(invalid("`response.error.code` 必须是整数".to_owned()));
+        }
+        if error.get("message").and_then(Value::as_str).is_none() {
+            return Err(invalid("`response.error.message` 必须是字符串".to_owned()));
         }
     }
     Ok(())
@@ -443,6 +600,10 @@ pub fn export_all(out_dir: &Path) -> Result<Vec<PathBuf>, SampleExportError> {
     let response = dry_run_response_sample();
     check_tool_response_instance(RESPONSE_DRY_RUN_FILE, &response)?;
     written.push(write_json(out_dir, RESPONSE_DRY_RUN_FILE, &response)?);
+    // 一份 ReplayedToolResponse **契约实例**: 真实管线产出的幂等重放信封。
+    let replay = replay_response_sample();
+    check_replayed_response_instance(RESPONSE_REPLAYED_FILE, &replay)?;
+    written.push(write_json(out_dir, RESPONSE_REPLAYED_FILE, &replay)?);
     // 十份 ToolCall **契约实例** (每个工具一份规范 ToolCall)。
     for spec in &TOOLS {
         let file = call_file(spec.name);
@@ -557,8 +718,8 @@ mod tests {
         assert_eq!(names, sample_file_names());
         assert_eq!(
             names.len(),
-            crate::tools::TOOL_COUNT + 3,
-            "每个工具一份 ToolCall 实例 + 1 份 ToolResponse 实例 + 2 份文档样本"
+            crate::tools::TOOL_COUNT + 4,
+            "每个工具一份 ToolCall 实例 + 2 份 ToolResponse 实例 + 2 份文档样本"
         );
         for name in &names {
             assert!(
@@ -698,6 +859,58 @@ mod tests {
         .expect("DISK_FULL 在契约 enum 里");
     }
 
+    /// 幂等重放信封的样本自检 —— "重放路径改回裸 `ToolResponse`"的红线在这里。
+    #[test]
+    fn replay_response_sample_is_a_contract_valid_envelope() {
+        let sample = replay_response_sample();
+        check_replayed_response_instance(RESPONSE_REPLAYED_FILE, &sample).expect("必须自洽");
+        assert_eq!(sample["replayed"], true);
+        let response = &sample["response"];
+        assert_eq!(response["jsonrpc"], "2.0");
+        assert_eq!(response["id"], "sample-replayed", "id 必须回显当前请求");
+        assert_eq!(response["result"]["status"], "success");
+        assert!(response.get("error").is_none(), "成功重放不该有 error");
+        assert!(response["result"]["data"].is_object());
+        // 逐字节稳定: 键与请求都固定, 两次生成完全一致。
+        assert_eq!(sample, replay_response_sample());
+
+        // 反例 1 (**承重的那一条**): 重放路径改回裸 ToolResponse ⇒ 必须被拦下。
+        let bare = sample["response"]["result"].clone();
+        assert!(bare.get("status").is_some(), "夹具取的就是裸 ToolResponse");
+        let error = check_replayed_response_instance(RESPONSE_REPLAYED_FILE, &bare)
+            .expect_err("裸 ToolResponse 不是重放信封");
+        assert!(format!("{error}").contains("replayed"), "{error}");
+
+        // 反例 2: `replayed` 不是恰好 true。
+        let mut wrong = sample.clone();
+        wrong["replayed"] = Value::from(false);
+        assert!(check_replayed_response_instance("x.json", &wrong).is_err());
+
+        // 反例 3: `response` 同时有 result 与 error。
+        let mut both = sample.clone();
+        both["response"]["error"] = serde_json::json!({"code": -32005, "message": "x"});
+        assert!(check_replayed_response_instance("x.json", &both).is_err());
+
+        // 反例 4: `response.id` 类型非法 (浮点不是合法的 JSON-RPC id)。
+        let mut bad_id = sample.clone();
+        bad_id["response"]["id"] = Value::from(1.5);
+        assert!(check_replayed_response_instance("x.json", &bad_id).is_err());
+
+        // 反例 5: 实现了级错误的重放 (result 不在场, error 在场) 是合法的。
+        check_replayed_response_instance(
+            "x.json",
+            &serde_json::json!({
+                "replayed": true,
+                "response": {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "error": {"code": -32005, "message": "尚未接线"}
+                }
+            }),
+        )
+        .expect("实现级失败也会被幂等缓存, 它的重放信封必须合法");
+    }
+
     #[test]
     fn catalogue_samples_are_documents_not_instances() {
         for (file, sample) in [
@@ -776,6 +989,6 @@ mod tests {
         // 与 yeban-model 同一做法: 本机门禁顺带把样本落到 target/schema-samples,
         // 供 `validate_schemas.py --samples-dir` 对账 (CI 的 checks job 已接线)。
         let written = export_to_default_dir().expect("导出到 target/schema-samples");
-        assert_eq!(written.len(), crate::tools::TOOL_COUNT + 3);
+        assert_eq!(written.len(), crate::tools::TOOL_COUNT + 4);
     }
 }
