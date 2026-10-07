@@ -138,9 +138,11 @@
 //!
 //! ### 规范沉默处（**这是工程选择，必须登记**）
 //!
-//! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016` 只要求
+//! - `docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md` §5.2 只要求
 //!   "主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与
-//!   响度范围（LRA）数值显示" —— 是**显示**要求，不是**目标**要求；
+//!   响度范围（LRA）数值显示" —— 是**显示**要求，不是**目标**要求
+//!   （原引 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016`：该行号在
+//!   架构文档的内嵌副本里，副本已由 `HD-57` 去重删除，正文唯一副本即上面那份）；
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` 通篇没有响度目标条目
 //!   （`grep -n '响度\|loudness\|LUFS'` 只命中 `:107` 的"符合 ITU-R BS.1770-4 的
 //!   真峰值多相插值砖墙限制器"）；
@@ -256,8 +258,10 @@ pub const NORMALIZE_TARGET: f32 = 1.0;
 ///
 /// ## 为什么是 ±0.5 LU（这是**规范沉默处的选择**，必须登记）
 ///
-/// `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §5.2 只要求"提供 LUFS
-/// (Momentary / Short-term / Integrated) 与 LRA 数值显示"（`:1016`），
+/// `docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md` §5.2 只要求"提供 LUFS
+/// (Momentary / Short-term / Integrated) 与 LRA 数值显示"（原引
+/// `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016`；该行号在架构文档的**内嵌副本**里，
+/// 该副本已由 `HD-57` 去重删除，正文唯一副本即上面那份），
 /// `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` 的通篇没有"响度目标"条目
 /// （`grep -n '响度\|loudness\|LUFS' …ROADMAP.md` 只命中 `:107` 的限制器那句）。
 /// 也就是说：**没有任何规范文字给出容差**。本常量因此是**工程选择**，不是规范读数。
