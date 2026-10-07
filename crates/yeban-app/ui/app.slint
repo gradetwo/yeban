@@ -373,6 +373,19 @@ export component MainWindow inherits Window {
     callback mixer-mute-toggle(int);
     /// 独奏按钮点击。
     callback mixer-solo-toggle(int);
+    // 混音台手势（推子 / 声相）的**进行态**读数：宿主拥有、界面只报事件。
+    //
+    // 与上面的 `track-height-drag-active` 同一个角色：它是"混音手势是否还没结束"的**唯一**
+    // 窗口读数。三条收尾路径（松开 / 指针离开窗口 / `Escape`）都必须把它写回 `false`，
+    // 因此不存在"取消之后一次孤立的 move 继续改音量"这种粘住的手势态。
+    in-out property <bool> mixer-drag-active: false;
+    /// 取消进行中的混音手势（推子竖直拖 / 声相水平拖）。
+    ///
+    /// 宿主侧唯一实现是 `host::wire_mixer_edit` 里的 `on_mixer_cancel_gesture`，
+    /// 它把值写回**起点**（视图态）并**不提交** —— 与 `cancel_track_height_drag` 同口径。
+    /// 返回 `true` = 确实有手势在手、已经取消；`false` = 此刻没有混音手势
+    /// ⇒ `Escape` 与混音台无关，照旧放行（没人接线时 Slint 返回 `bool` 的默认值 `false`）。
+    callback mixer-cancel-gesture() -> bool;
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];

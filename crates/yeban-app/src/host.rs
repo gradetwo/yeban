@@ -655,6 +655,17 @@ fn cancel_track_height_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> boo
 //                  └─ `refresh_undo_window` 重投影（值回到"从工程读出来"的形态）
 // ```
 //
+// ## 三条收尾路径（一条都不能少）
+//
+// | 路径 | 谁发出 | 语义 |
+// | :--- | :--- | :--- |
+// | 松手 | `.slint` 的 `PointerEventKind.up` | 这一拖算数（`commit_ops` 一次） |
+// | 指针离开窗口 | 上游导出的 `PointerEventKind.cancel` | 这一拖算数（最后位置）；既有语义，未改 |
+// | `Escape` | `Action::Cancel` → `mixer-cancel-gesture` → [`cancel_mixer_gesture`] | **取消**这一拖（写回起点值，**不提交**） |
+//
+// 三条都汇到 [`end_mixer_gesture`]：**手势记录与 `mixer-drag-active` 在那一处一起清零**，
+// 因此不存在"拖到一半松在窗口外 ⇒ 下一次移动继续改音量"这种粘住的手势态。
+//
 // ## 为什么"一次拖动 = 一次提交"（照抄 `wire_track_height_drag` 的形状）
 //
 // 每一个 `move` 都提交会把"拖一次推子"碎成几百步撤销，用户按一次 `Cmd+Z` 只回退一个像素。
@@ -685,15 +696,22 @@ pub const MIXER_PAN_TRAVEL_PX: f32 = 36.0;
 /// 一次混音手势（推子 / 声相）的状态。
 ///
 /// 为什么住在宿主而不是界面上：它只在**一次拖动**里有意义，而且必须在 `release`
-/// 那一刻拿得到"这一拖从哪开始"（提交的 `old_val` 就是它）。与
-/// `track-height-drag-*` 三个属性是同一个角色，只是本切片不需要 `Escape` 的取消路径，
-/// 因此不必让界面持有它（少三个注入属性 = 少三处转发对账）。
+/// 那一刻拿得到"这一拖从哪开始"（提交的 `old_val` 就是它）。
+///
+/// `Escape`（`Action::Cancel`）要**取消**这一拖，于是"手势是否还没结束"必须有**一个
+/// 窗口上的读数**（`mixer-drag-active`）—— 与 `track-height-drag-active` 同一个角色。
+/// 取消本身走窗口回调 `mixer-cancel-gesture`，落回持有这份记录的**同一个闭包**
+/// （[`cancel_mixer_gesture`]）：记录因此只有一份，没有第二份状态要同步。
 #[derive(Clone, Debug, PartialEq)]
 enum MixerGesture {
     /// 没有进行中的手势。
     Idle,
     /// 推子拖动中。
     Fader {
+        /// 本次手势按下那一轨的**下标**（`track-volumes` / `track-pans` 的索引集）。
+        ///
+        /// `Escape` 的取消要用它把起点值写回**那一格**视图态，因此它必须跟着手势走。
+        index: i32,
         /// 本次手势按下那一轨的身份（26 字符 `EntityId` 文本）。
         track_id: String,
         /// 手势开始时的音量 (dB) —— 提交时的 `old_val`。
@@ -715,6 +733,8 @@ enum MixerGesture {
     },
     /// 声相拖动中。
     Pan {
+        /// 本次手势按下那一轨的**下标**（理由同 [`MixerGesture::Fader::index`]）。
+        index: i32,
         /// 本次手势按下那一轨的身份。
         track_id: String,
         /// 手势开始时的声相 -1.0..=1.0 —— 提交时的 `old_val`。
@@ -868,6 +888,64 @@ struct MixerTrackState {
     solo: bool,
 }
 
+/// **开始**一次混音手势：把记录写进宿主，最后写"进行中"标志。
+///
+/// `active` 最后写（与 [`begin_track_height_drag`] 同款）：读者要么看到"还没开始"，
+/// 要么看到一份**完整**的起点记录。
+fn begin_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>, next: MixerGesture) {
+    *gesture.borrow_mut() = next;
+    ui.set_mixer_drag_active(true);
+}
+
+/// **一次混音手势的收尾**（松开 / 指针离开窗口 / `Escape` 三条路径的唯一落点）。
+///
+/// 返回被取走的记录；[`MixerGesture::Idle`] 表示"此刻没有手势在手"。
+///
+/// 无论哪条路径，`mixer-drag-active` 都在这里归位 —— 它是"混音手势是否还没结束"的
+/// 唯一窗口读数（与 [`end_track_height_drag`] 的形状逐条相同：先读标志、再清零、
+/// 返回"是否确实有手势在手"）。标志已经归位时顺手把记录也归零，因此不可能留下
+/// "标志 `false` 而记录还在"的不一致状态。
+fn end_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) -> MixerGesture {
+    if !ui.get_mixer_drag_active() {
+        *gesture.borrow_mut() = MixerGesture::Idle;
+        return MixerGesture::Idle;
+    }
+    let taken = std::mem::replace(&mut *gesture.borrow_mut(), MixerGesture::Idle);
+    ui.set_mixer_drag_active(false);
+    taken
+}
+
+/// `Escape`（`Action::Cancel`）在**有混音手势在手**时的收尾：取消这一拖并写回起点值。
+///
+/// 语义与 [`cancel_track_height_drag`] 同口径：**写回起点**、**不提交**。推子 / 声相是
+/// 工程内容（`ADR-0005`），因此"不提交"意味着 `UndoPort` 一次都不碰 —— 工程与撤销栈
+/// 与拖动之前逐位相同。
+///
+/// 写回走的是 [`preview_volume`] / [`preview_pan`]（拖动期那**同一个**视图态写入面），
+/// 而**不是**一次完整重投影：那两个函数与投影层同源（`bridge.rs` 的
+/// `format!("{:.1}")` / `volume_fraction` / `pan_display(pan_millis)`），写出的字节与
+/// 重投影逐位相同；反过来，完整 `apply_view` 会重建 repeater 条目、把**此刻仍被按住**的
+/// 那个 `TouchArea` 连同指针抓取一起丢掉（实测记录见 [`reproject_track_heights`]）。
+///
+/// 返回 `false` = 此刻没有混音手势 ⇒ 这一键与混音台无关，照旧放行。
+fn cancel_mixer_gesture(ui: &MainWindow, gesture: &Rc<RefCell<MixerGesture>>) -> bool {
+    match end_mixer_gesture(ui, gesture) {
+        MixerGesture::Idle => false,
+        MixerGesture::Fader {
+            index, start_db, ..
+        } => {
+            preview_volume(ui, index, start_db);
+            true
+        }
+        MixerGesture::Pan {
+            index, start_pan, ..
+        } => {
+            preview_pan(ui, index, start_pan);
+            true
+        }
+    }
+}
+
 /// **混音台写入面的接线**（唯一实现；`main.rs` 与 `live_surface` 调的是同一个函数）。
 ///
 /// 五个入口分两类：
@@ -891,20 +969,26 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             };
             let Some(track_id) = track_id_at(&ui, index) else {
-                *gesture.borrow_mut() = MixerGesture::Idle;
+                // 按下落在没有身份的格子上 ⇒ **不留手势**：标志与记录一起归零。
+                end_mixer_gesture(&ui, &gesture);
                 return;
             };
             match mixer_track_state(&port, &track_id) {
-                Some(state) => {
-                    *gesture.borrow_mut() = MixerGesture::Fader {
+                Some(state) => begin_mixer_gesture(
+                    &ui,
+                    &gesture,
+                    MixerGesture::Fader {
+                        index,
                         track_id,
                         start_db: state.volume_db,
                         start_y: pointer_y,
                         last_db: state.volume_db,
                         moved: false,
-                    };
+                    },
+                ),
+                None => {
+                    end_mixer_gesture(&ui, &gesture);
                 }
-                None => *gesture.borrow_mut() = MixerGesture::Idle,
             }
         }
     });
@@ -917,9 +1001,14 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             };
             // 没有进行中的手势 / 下标不是按下那一轨 ⇒ **什么都不做**（黏住的拖拽态第一道防线）。
+            // 第一道防线就是下面这一行标志：`Escape` 已经取消过这一拖之后，迟到的 `move`
+            // 在这里就被挡下（与 `track_height_drag_target_px` 的开头同款）。
             // 每一次 `drag` 都从**起点**重算（不从上一个结果累加）：累加会让 f32 的
             // 舍入误差随移动次数漂移，同一个指针位置在"直着拖过去"与"绕一圈拖过去"
             // 两种走法下会给出不同的数。
+            if !ui.get_mixer_drag_active() {
+                return;
+            }
             let (track_id, next_db) = match &mut *gesture.borrow_mut() {
                 MixerGesture::Fader {
                     track_id,
@@ -927,6 +1016,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                     start_y,
                     last_db,
                     moved,
+                    ..
                 } => {
                     *moved = true;
                     let next_db = dragged_fader_db(*start_db, *start_y - pointer_y);
@@ -950,7 +1040,9 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let taken = std::mem::replace(&mut *gesture.borrow_mut(), MixerGesture::Idle);
+            // 收尾走**唯一清零点**（与 `Escape` 的取消路径共用）：标志与记录一起归零，
+            // 因此 `Escape` 已经取消过之后，这一松手读到的是 `Idle` ⇒ 什么都不提交。
+            let taken = end_mixer_gesture(&ui, &gesture);
             let MixerGesture::Fader {
                 track_id,
                 start_db,
@@ -1004,20 +1096,26 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             };
             let Some(track_id) = track_id_at(&ui, index) else {
-                *gesture.borrow_mut() = MixerGesture::Idle;
+                // 按下落在没有身份的格子上 ⇒ **不留手势**（同推子）。
+                end_mixer_gesture(&ui, &gesture);
                 return;
             };
             match mixer_track_state(&port, &track_id) {
-                Some(state) => {
-                    *gesture.borrow_mut() = MixerGesture::Pan {
+                Some(state) => begin_mixer_gesture(
+                    &ui,
+                    &gesture,
+                    MixerGesture::Pan {
+                        index,
                         track_id,
                         start_pan: state.pan,
                         start_x: pointer_x,
                         last_pan: state.pan,
                         moved: false,
-                    };
+                    },
+                ),
+                None => {
+                    end_mixer_gesture(&ui, &gesture);
                 }
-                None => *gesture.borrow_mut() = MixerGesture::Idle,
             }
         }
     });
@@ -1029,6 +1127,10 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // 标志是第一道防线（理由同推子的 `drag`）。
+            if !ui.get_mixer_drag_active() {
+                return;
+            }
             let (track_id, next_pan) = match &mut *gesture.borrow_mut() {
                 MixerGesture::Pan {
                     track_id,
@@ -1036,6 +1138,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                     start_x,
                     last_pan,
                     moved,
+                    ..
                 } => {
                     *moved = true;
                     let next_pan = dragged_pan(*start_pan, pointer_x - *start_x);
@@ -1059,7 +1162,8 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let taken = std::mem::replace(&mut *gesture.borrow_mut(), MixerGesture::Idle);
+            // 收尾走唯一清零点（理由同推子）：`Escape` 取消过之后这一松手读到 `Idle`。
+            let taken = end_mixer_gesture(&ui, &gesture);
             let MixerGesture::Pan {
                 track_id,
                 start_pan,
@@ -1099,6 +1203,25 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             }
             refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- 取消（`Escape`）
+    //
+    // 这是 `Escape`（`Action::Cancel`）在混音台上的落点：`apply_action` 调
+    // `ui.invoke_mixer_cancel_gesture()`，落到这里持有手势记录的**同一个闭包**
+    // ⇒ 取消与记录只有一份状态（与 `cancel_track_height_drag` 同一个角色）。
+    // 没人接线时（装配没有 `UndoPort` ⇒ 没有写入面）Slint 返回 `bool` 的默认值
+    // `false`，因此"没有混音手势"这一读数在两种装配下都成立。
+    ui.on_mixer_cancel_gesture({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move || -> bool {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return false;
+            };
+            cancel_mixer_gesture(&ui, &gesture)
         }
     });
 
@@ -1891,15 +2014,23 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             ui.set_active_tool(next);
             true
         }
-        // `Escape` = **取消当前手势**（`ADR-0004` S1 的纵向拖拽）。
+        // `Escape` = **取消当前手势**（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的推子与声相）。
         //
-        // 没有手势在手时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 两条手势各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 纵向那条落 [`cancel_track_height_drag`]（写回起点高度），混音那条落窗口回调
+        // `mixer-cancel-gesture` → [`cancel_mixer_gesture`]（写回起点音量 / 声相）。
+        //
+        // 两条都没有手势在手时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
         // 它也不进 `--print-shortcuts` 的表（`cli.rs` 的 18 条里没有 `Escape`），
         // 因此判据 B11b 的三面（渲染 / 解析 / 宿主）一位不动。
-        Action::Cancel => cancel_track_height_drag(ui, undo),
+        Action::Cancel => {
+            let height = cancel_track_height_drag(ui, undo);
+            let mixer = ui.invoke_mixer_cancel_gesture();
+            height || mixer
+        }
         // 双视图：`Tab` 是切换，`F5`/`F6`/`Alt+1`/`Alt+2` 是直达。写的是**界面属性**，
         // 与 `ui/switch_main_view` 走的是同一个属性（管理动作那边有回读判据）。
         Action::ToggleView => {

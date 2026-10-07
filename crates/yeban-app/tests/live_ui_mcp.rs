@@ -1249,6 +1249,507 @@ fn the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
     ));
 }
 
+/// 判据（`ADR-0005` S1 的**第三条收尾路径**）：`Escape` **取消**混音手势（推子 / 声相），
+/// 写回起点值、**不提交**，并且手势标志归位 —— 与 `cancel_track_height_drag` 同口径。
+///
+/// ## 这条判据为什么必须存在
+///
+/// 在本次改动之前，混音手势只有"松手"这一条收尾路径：`.slint` 的 `pointer-event` 把
+/// `up` / `cancel` 都送到 `mixer-*-release`，宿主在 `release` 里提交。拖动中途按 `Escape`
+/// **什么都不发生** —— 用户按了取消，界面上数值仍停在拖到的位置，随后松手还会提交。
+///
+/// ## 四条路径各自的字面读数（都在本判据里当场读出来）
+///
+/// | # | 情形 | 语义元素 | 轨道下标 | 模型字段 | 期望 |
+/// | :--- | :--- | :--- | :--- | :--- | :--- |
+/// | ① | 拖动期 | `track-0-fader` | 0 | `TrackV3::volume_db` | 文本已动、工程逐位未动、`undoable` 0、标志 `true` |
+/// | ② | `Escape`（**真事件源**） | 同上 | 0 | 同上 | 文本写回起点、工程逐位未动、`undoable` 0、标志 `false` |
+/// | ③ | `Escape` 后的孤立 `move` ＋ 迟到的松手 | 同上 | 0 | 同上 | 文本仍是起点、`undoable` 仍 0（手势真的结束了） |
+/// | ④ | `Escape`（**回调那一格**）＋ 孤立 `move` | `track-1-pan` | 1 | `TrackV3::pan` | 文本 `R50 → C`、工程逐位未动、`undoable` 0 |
+/// | ⑤ | 只松手（对照） | `track-2-fader` | 2 | `TrackV3::volume_db` | **恰一步** `undoable`、`Cmd+Z` 逐位回退 |
+///
+/// ## 怎么变红（注入的字面红行见交付报告）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 摘掉 `ui.on_mixer_cancel_gesture(..)` | `src/host.rs` 的 `wire_mixer_edit` | ② 步：标志仍是 `true`、文本仍是 `-33.2` ⇒ 红 |
+/// | 摘掉 `cancel_mixer_gesture` 里的 `preview_volume` 写回 | `src/host.rs` | ② 步：文本仍是 `-33.2` ⇒ 红 |
+/// | 让取消走提交（`cancel_mixer_gesture` 里 `commit_ops`） | `src/host.rs` | ② 步：`undoable` 涨到 1、工程字段被改 ⇒ 红 |
+#[test]
+fn escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
+    use std::rc::Rc;
+
+    use serde_json::json;
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_ui_mcp::methods::{
+        METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE,
+        METHOD_DISPATCH_POINTER_UP,
+    };
+
+    /// 会话打开时刻（与既有两个混音台判据同一个夹具常量）。
+    const NOW: u64 = 1_760_000_000_000;
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    assert!(view.tracks.len() >= 3, "本判据需要至少 3 条非主总线轨道");
+    // 起点读数（从**投影**读，与界面上的下标同源）。每一项能力用**互不共享**的
+    // `(轨道下标, 模型字段)`：破坏推子那一条不会让声相那一条跟着绿（本会话的教训）。
+    let before: Vec<(f32, f32, bool, bool)> = (0..3)
+        .map(|index| mixer_readings(&project, &view, index))
+        .collect();
+
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+
+    // ---- 像素命题 ①：「默认帧可复现」= **确定性**（同一条装配、同一次运行抓两帧）----
+    //
+    // 这里**不碰 golden**（比的是同一次运行的两帧），也**不**用尺寸当证据：本仓 PNG 是
+    // 存储式 deflate，1920×1080 恒为 6,222,418 字节。读数记为 PNG 字节的 sha256。
+    // 命题 ②（"手势之后画面变了"）另有一条判据，见
+    // `a_committed_mixer_fader_gesture_changes_the_frame`。
+    let frame_default = live.capture().expect("默认外观帧");
+    let frame_default_again = live.capture().expect("默认外观帧（第二次）");
+    let (default_png, _default_evidence) =
+        encode_with_evidence(&frame_default, DEFAULT_MAX_PNG_BYTES).expect("默认帧必须可编码");
+    let (default_png_again, _) = encode_with_evidence(&frame_default_again, DEFAULT_MAX_PNG_BYTES)
+        .expect("默认帧必须可编码");
+    assert_eq!(
+        default_png, default_png_again,
+        "同一条装配、同一次运行里两次抓帧编码出的 PNG 必须逐字节相同（确定性）"
+    );
+    let default_digest = yeban_model::ids::ContentHash::of_bytes(&default_png);
+    let artifact = write_artifact_bytes("mixer-escape-default-1920x1080.png", &default_png);
+    report_line(&format!(
+        "[mixer-escape-pixel] 默认外观（未注入任何手势）: {} 字节 / sha256={} / artifact={artifact}",
+        default_png.len(),
+        default_digest.as_str()
+    ));
+
+    let mut plane = live.into_control_plane(Permission::Interactive);
+    assert_eq!(port.display().undoable, 0, "起点不该有可撤销的编辑");
+    assert!(
+        !window.get_mixer_drag_active(),
+        "起点不该有混音手势在手（标志是「手势是否还没结束」的唯一窗口读数）"
+    );
+
+    // ================================================================ ① 推子：拖动期
+    let fader = element_bounds(&mut plane, 601, "track-0-fader");
+    let fader_x = fader["x"].as_f64().expect("x") + 11.0;
+    let fader_y = fader["y"].as_f64().expect("y") + 8.0;
+    let volume_before_text = injected_strings(&window.get_track_volumes())[0].clone();
+    assert_eq!(volume_before_text, "-3.2", "① 注入前的推子文本");
+
+    let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        602,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(
+            json!({"elementId": "track-0-fader", "xOffset": 11.0, "yOffset": 8.0, "button": "left"}),
+        ),
+    ));
+    assert!(!down.is_error(), "① 推子按下必须落到真实窗口: {down:?}");
+    assert!(
+        window.get_mixer_drag_active(),
+        "① 按下之后手势标志必须是 true（否则没有可取消的对象）"
+    );
+    // 向下拖 40px：88px 走完 66 dB（`-60..=6`）⇒ 40 ÷ 88 × 66 = 30 dB ⇒ -3.2 − 30 = -33.2。
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        603,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": fader_x, "y": fader_y + 40.0})),
+    ));
+    assert!(!moved.is_error(), "① 推子拖动必须落到真实窗口: {moved:?}");
+    let volume_dragging_text = injected_strings(&window.get_track_volumes())[0].clone();
+    assert_eq!(
+        volume_dragging_text, "-33.2",
+        "① 拖动期数值文本必须**立即**跟着动"
+    );
+    assert_eq!(
+        port.display().undoable,
+        0,
+        "① 拖动期不许提交（每像素一次提交会把一步撤销碎成几百步）"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0.to_bits(),
+        before[0].0.to_bits(),
+        "① 拖动期工程里的 volume_db 必须**逐位**没动（视图态 ≠ 工程）"
+    );
+    assert!(window.get_mixer_drag_active(), "① 拖动期手势标志仍是 true");
+
+    // ================================================================ ② `Escape`（真事件源）
+    let pressed = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        604,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({"keyCode": "Escape"})),
+    ));
+    assert!(!pressed.is_error(), "② `Escape` 注入必须成功: {pressed:?}");
+    // 先判"取消 ≠ 提交"（工程与撤销栈一位不动），再判"视图态写回了起点"：
+    // 两条失败模式（取消却提交 / 取消了但不写回）因此各有**指名**的红行。
+    assert!(
+        !window.get_mixer_drag_active(),
+        "② `Escape` 必须让手势标志归位（否则就是粘住的手势态）：标志 = {}",
+        window.get_mixer_drag_active()
+    );
+    assert_eq!(
+        port.display().undoable,
+        0,
+        "② 取消**不是**提交：撤销栈一位不许涨"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0.to_bits(),
+        before[0].0.to_bits(),
+        "② 取消之后工程里的 volume_db 必须**逐位**等于起点"
+    );
+    let volume_after_escape_text = injected_strings(&window.get_track_volumes())[0].clone();
+    assert_eq!(
+        volume_after_escape_text, volume_before_text,
+        "② `Escape` 必须把数值文本写回**起点**（与 `cancel_track_height_drag` 同口径）"
+    );
+
+    // ================================================================ ③ 孤立 move ＋ 迟到的松手
+    let stray = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        605,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": fader_x, "y": fader_y + 64.0})),
+    ));
+    assert!(!stray.is_error(), "③ 孤立 move 必须落到真实窗口: {stray:?}");
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0].clone(),
+        volume_before_text,
+        "③ 手势已经结束 ⇒ 孤立的 `move` 不许再改音量"
+    );
+    assert_eq!(port.display().undoable, 0, "③ 孤立 `move` 不许提交");
+    // 取消之后**真正的松手**也不许提交：这证明记录真的被取走了，而不只是标志翻了个面。
+    let late_up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        606,
+        METHOD_DISPATCH_POINTER_UP,
+        Some(json!({"button": "left"})),
+    ));
+    assert!(
+        !late_up.is_error(),
+        "③ 迟到松手必须落到真实窗口: {late_up:?}"
+    );
+    assert_eq!(
+        port.display().undoable,
+        0,
+        "③ `Escape` 之后迟到的松手不许提交（否则「取消」是假的）"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 0).0.to_bits(),
+        before[0].0.to_bits(),
+        "③ 迟到松手之后工程仍必须逐位等于起点"
+    );
+    report_line(&format!(
+        "[mixer-escape-①fader] 起点 {volume_before_text} dB → 拖动期 {volume_dragging_text} dB\
+         （工程仍 {} / undoable 0 / 标志 true）→ `Escape` 后文本 {volume_after_escape_text:?}\
+         （工程逐位仍 {} / undoable {} / 标志 {}）→ 孤立 move ＋ 迟到松手之后 undoable {}",
+        before[0].0,
+        mixer_readings(&port.project(), &view, 0).0,
+        port.display().undoable,
+        window.get_mixer_drag_active(),
+        port.display().undoable
+    ));
+
+    // ================================================================ ④ 声相：`Escape` 走**回调那一格**
+    //
+    // 第二条路径故意不经过端口：`invoke_key_action` 直接驱动 `.slint` 的 `key-action`
+    // 回调（与平台事件源是同一个回调、同一张策略表）。两条路径都坏才会绿，反之都红。
+    let pan = element_bounds(&mut plane, 611, "track-1-pan");
+    let pan_x = pan["x"].as_f64().expect("x") + 10.0;
+    let pan_y = pan["y"].as_f64().expect("y") + 7.0;
+    let pan_before_text = injected_strings(&window.get_track_pans())[1].clone();
+    assert_eq!(pan_before_text, "C", "④ 注入前的声相文本");
+    let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        612,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(
+            json!({"elementId": "track-1-pan", "xOffset": 10.0, "yOffset": 7.0, "button": "left"}),
+        ),
+    ));
+    assert!(!down.is_error(), "④ 声相按下必须落到真实窗口: {down:?}");
+    assert!(window.get_mixer_drag_active(), "④ 声相手势在手");
+    // 向右拖 9px：声相面 36px 走完 -1.0..=+1.0（跨度 2.0）⇒ 9 ÷ 36 × 2.0 = +0.5 ⇒ `R50`。
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        613,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": pan_x + 9.0, "y": pan_y})),
+    ));
+    assert!(!moved.is_error(), "④ 声相拖动必须落到真实窗口: {moved:?}");
+    let pan_dragging_text = injected_strings(&window.get_track_pans())[1].clone();
+    assert_eq!(pan_dragging_text, "R50", "④ 拖动期声相文本必须立即跟着动");
+    assert_eq!(port.display().undoable, 0, "④ 拖动期不许提交");
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).1.to_bits(),
+        before[1].1.to_bits(),
+        "④ 拖动期工程里的 pan 必须逐位没动"
+    );
+    assert!(
+        window.invoke_key_action("\u{1b}".into(), false, false, false, false),
+        "④ 声相手势在手时 `Escape` 必须被 DAW 消费（取消是落地实现）"
+    );
+    let pan_after_escape_text = injected_strings(&window.get_track_pans())[1].clone();
+    assert_eq!(
+        pan_after_escape_text, pan_before_text,
+        "④ `Escape` 写回起点声相"
+    );
+    assert!(!window.get_mixer_drag_active(), "④ `Escape` 让手势标志归位");
+    assert_eq!(port.display().undoable, 0, "④ 取消不是提交");
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 1).1.to_bits(),
+        before[1].1.to_bits(),
+        "④ 取消之后工程里的 pan 必须逐位等于起点"
+    );
+    let stray = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        614,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": pan_x + 30.0, "y": pan_y})),
+    ));
+    assert!(!stray.is_error(), "④ 孤立 move 必须落到真实窗口: {stray:?}");
+    assert_eq!(
+        injected_strings(&window.get_track_pans())[1].clone(),
+        pan_before_text,
+        "④ 手势已经结束 ⇒ 孤立的 `move` 不许再改声相"
+    );
+    // 每条情形都以一次**真正的松手**收场：`Escape` 已经取走了记录，这一松手因此什么都不做
+    // —— 顺带证明"取消之后迟到的收尾"是干净的（指针抓取不会被留给下一条情形）。
+    let late_up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        615,
+        METHOD_DISPATCH_POINTER_UP,
+        Some(json!({"button": "left"})),
+    ));
+    assert!(
+        !late_up.is_error(),
+        "④ 迟到松手必须落到真实窗口: {late_up:?}"
+    );
+    assert_eq!(port.display().undoable, 0, "④ 迟到松手不许提交");
+    assert!(
+        !window.get_mixer_drag_active(),
+        "④ 迟到松手之后标志仍是 false"
+    );
+    report_line(&format!(
+        "[mixer-escape-②pan] 起点 {pan_before_text} → 拖动期 {pan_dragging_text}\
+         （工程仍 {} / undoable 0）→ `Escape`（回调那一格）后文本 {pan_after_escape_text:?}\
+         （工程逐位仍 {} / undoable {} / 标志 {}）→ 孤立 move 后文本 {:?}",
+        before[1].1,
+        mixer_readings(&port.project(), &view, 1).1,
+        port.display().undoable,
+        window.get_mixer_drag_active(),
+        injected_strings(&window.get_track_pans())[1].clone()
+    ));
+
+    // 没有手势在手时 `Escape` 照旧**放行**（既有取向：`Action::Cancel` 的语义一位不改）。
+    assert!(
+        !window.invoke_key_action("\u{1b}".into(), false, false, false, false),
+        "没有手势在手时 `Escape` 必须如实放行（而不是假装处理了）"
+    );
+
+    // ================================================================ ⑤ 对照：只松手 ⇒ 提交一次
+    let fader2 = element_bounds(&mut plane, 621, "track-2-fader");
+    let fader2_x = fader2["x"].as_f64().expect("x") + 11.0;
+    let fader2_y = fader2["y"].as_f64().expect("y") + 8.0;
+    let volume2_before_text = injected_strings(&window.get_track_volumes())[2].clone();
+    assert_eq!(volume2_before_text, format!("{:.1}", before[2].0));
+    let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        622,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(
+            json!({"elementId": "track-2-fader", "xOffset": 11.0, "yOffset": 8.0, "button": "left"}),
+        ),
+    ));
+    assert!(!down.is_error(), "⑤ 按下必须落到真实窗口: {down:?}");
+    assert!(
+        window.get_mixer_drag_active(),
+        "⑤ 按下之后手势标志必须是 true（否则这一拖根本没有开始）"
+    );
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        623,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": fader2_x, "y": fader2_y + 40.0})),
+    ));
+    assert!(!moved.is_error(), "⑤ 拖动必须落到真实窗口: {moved:?}");
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[2].clone(),
+        "-38.4",
+        "⑤ 拖动期文本必须立即跟着动（-8.4 − 30 = -38.4）"
+    );
+    assert_eq!(port.display().undoable, 0, "⑤ 松手之前仍不许提交");
+    let up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        624,
+        METHOD_DISPATCH_POINTER_UP,
+        Some(json!({"button": "left"})),
+    ));
+    assert!(!up.is_error(), "⑤ 松手必须落到真实窗口: {up:?}");
+    assert!(
+        !window.get_mixer_drag_active(),
+        "⑤ 松手之后手势标志必须归位（三条路径一条都不能留下粘住的状态）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        1,
+        "⑤ 对照：**只松手**（不按 `Escape`）⇒ 恰一步可撤销的编辑"
+    );
+    let committed = mixer_readings(&port.project(), &view, 2).0;
+    assert_eq!(
+        format!("{committed:.1}"),
+        "-38.4",
+        "⑤ 松手后工程里的 volume_db 必须真的是 -8.4 − 30 = -38.4 dB（读回来证明）"
+    );
+    assert!(
+        window.invoke_key_action("z".into(), false, false, false, true),
+        "⑤ `Cmd+Z` 必须被 DAW 消费"
+    );
+    assert_eq!(
+        mixer_readings(&port.project(), &view, 2).0.to_bits(),
+        before[2].0.to_bits(),
+        "⑤ `Cmd+Z` 必须把 volume_db **逐位**还原到起点"
+    );
+    assert_eq!(port.display().undoable, 0, "⑤ 回退之后没有可撤销的编辑");
+    report_line(&format!(
+        "[mixer-escape-③release-commits] 起点 {volume2_before_text} dB → 拖动期\
+         undoable 0 → 只松手 ⇒ 工程 {committed:.4} dB / undoable 1 → `Cmd+Z` ⇒\
+         工程 {} dB（起点 {:?}）/ undoable 0",
+        mixer_readings(&port.project(), &view, 2).0,
+        before[2].0,
+    ));
+
+    // 收尾：三条轨道都必须逐位回到起点（取消与回退都不许残留）。
+    for (index, expected) in before.iter().enumerate() {
+        assert_eq!(
+            mixer_readings(&port.project(), &view, index),
+            *expected,
+            "第 {index} 轨在本判据收尾时必须逐位回到起点"
+        );
+    }
+}
+
+/// 判据（像素**命题 ②**）：一次**提交了的**推子手势真的换了画面 —— 与 `Escape` 那条判据的
+/// 命题 ①（「默认帧可复现」= 确定性）**分开陈述**，两者不可互相代替。
+///
+/// 驱动入口是 `MainWindow` 的三个混音台回调（`.slint` 的 `TouchArea` 调的就是它们，
+/// 见 `ui/console/mixer_console.slint:318-328`）—— 与真实指针事件同一条链。
+/// `LiveUi::capture` 是 `ui/screenshot` 内部用的**同一个** `capture_tier1`，因此这里
+/// 不需要第二套像素路径，也**不碰 golden**（比的是同一次运行的两帧）。
+#[test]
+fn a_committed_mixer_fader_gesture_changes_the_frame() {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    /// 会话打开时刻（与其它混音台判据同一个夹具常量）。
+    const NOW: u64 = 1_760_000_000_000;
+
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示投影");
+    assert_eq!(
+        mixer_readings(&project, &view, 0).0,
+        -3.2,
+        "0 号轨的音量起点是 -3.2 dB"
+    );
+
+    // 混音台的写入面只在装配给了撤销端口时接上（`live_surface` 的既有契约）。
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 1,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+    // 推子元素的运行时几何（抓帧之前先读树：像素证据要能指名"差在哪个元素上"）。
+    let fader_bounds = live
+        .tree_snapshot()
+        .find_by_id("track-0-fader")
+        .and_then(|node| node.bounds)
+        .expect("`track-0-fader` 必须在运行时树里带几何");
+
+    let frame_before = live.capture().expect("手势之前抓帧");
+    let frame_before_again = live.capture().expect("手势之前再抓一帧");
+    assert_eq!(
+        frame_before, frame_before_again,
+        "同一次运行里两次抓帧必须逐像素相同（确定性；命题 ① 的另一面）"
+    );
+
+    // 一次推子手势：按下 → 向下拖 40px（-3.2 → -33.2 dB）→ 松手（提交）。
+    window.invoke_mixer_fader_grab(0, 100.0);
+    assert!(window.get_mixer_drag_active(), "手势在手");
+    window.invoke_mixer_fader_drag(0, 140.0);
+    window.invoke_mixer_fader_release(0);
+    assert!(!window.get_mixer_drag_active(), "松手之后手势标志归位");
+    assert_eq!(
+        injected_strings(&window.get_track_volumes())[0].clone(),
+        "-33.2",
+        "手势之后推子文本是 -33.2 dB"
+    );
+
+    let frame_after = live.capture().expect("手势之后抓帧");
+    let frame_after_again = live.capture().expect("手势之后再抓一帧");
+    let diff = frame_diff(&frame_before, &frame_after).unwrap_or_else(|| {
+        panic!("工程真的改了、界面文本也变了，但两帧**逐字节相同** —— 画面没有跟着动")
+    });
+    assert_eq!(
+        frame_after, frame_after_again,
+        "手势之后两次抓帧也必须逐像素相同（否则上面的差异里混进了不确定性）"
+    );
+    assert!(
+        diff.bbox.x < fader_bounds.right()
+            && diff.bbox.right() > fader_bounds.x
+            && diff.bbox.y < fader_bounds.bottom()
+            && diff.bbox.bottom() > fader_bounds.y,
+        "差异必须触及推子元素的运行时几何 {fader_bounds:?}（数值文本与推子帽都在它周围）: diff {:?}",
+        diff.bbox
+    );
+    // 差异**落在哪**：混音台自身的矩形之外改了多少像素。这一格是**读数**而不是断言 ——
+    // 提交会连带刷新撤销显示，那一处本来就在混音台之外；"不该动的地方动了"要靠这个数
+    // 说话，而不是靠"差异非空"。
+    let console_bounds = live
+        .tree_snapshot()
+        .find_by_id("mixer-console")
+        .and_then(|node| node.bounds)
+        .unwrap_or(fader_bounds);
+    let mut outside_console = 0_u64;
+    for y in 0..frame_before.height() {
+        for x in 0..frame_before.width() {
+            let inside = (x as i32) >= console_bounds.x
+                && (x as i32) < console_bounds.right()
+                && (y as i32) >= console_bounds.y
+                && (y as i32) < console_bounds.bottom();
+            if !inside && frame_before.pixel(x, y) != frame_after.pixel(x, y) {
+                outside_console += 1;
+            }
+        }
+    }
+    report_line(&format!(
+        "[mixer-pixel-②] 提交一次推子手势（-3.2 → -33.2 dB）之后: 差异 {} 像素 / 包围盒 {:?}\
+         （推子元素几何 {:?} / 混音台矩形 {:?}）；混音台之外差异 {outside_console} 像素；\
+         手势前两帧逐像素相同 = {}、手势后两帧逐像素相同 = {}",
+        diff.count,
+        diff.bbox,
+        fader_bounds,
+        console_bounds,
+        frame_before == frame_before_again,
+        frame_after == frame_after_again
+    ));
+}
+
 /// 判据 20（**编辑 ⇒ 发声**端到端，本票）：在**同一个活窗口**上做一次真实的混音台推子
 /// 手势 ⇒ `UndoPort` 真的提交一步 ⇒ 控制线程心跳一跳 ⇒ **引擎快照里那一个字段**变了。
 ///
