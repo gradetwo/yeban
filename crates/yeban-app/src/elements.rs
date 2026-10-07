@@ -2222,6 +2222,147 @@ mod tests {
         }
     }
 
+    /// 判据（**"录音今天确实不可用"钉死**，`[ARCH-REC-001]` 的缺口）：录音键**没有**点击处理器，
+    /// 而且这不是"忘了接线"——**录音能力在仓库里一处都不存在**。
+    ///
+    /// 与上一条判据（`the_three_transport_document_actions_are_not_wired_today`）同款：
+    /// 它钉的是**今天**的状态，不是永久禁令。将来谁真接了录音，**必须**一并更新本判据。
+    ///
+    /// ## 规范说"要有"，代码说"没有"
+    ///
+    /// - **规范（Normative）**：`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §10.1 第 1 条
+    ///   `[ARCH-REC-001]` 逐字要求"点击录音 Arm 按钮后，音频线程直接从声卡物理输入捕获 PCM 流
+    ///   并写入预分配的无锁环形缓冲区，由后台 I/O 线程刷盘至 CAS 临时暂存…"——
+    ///   规范**定义了**它，实现**一处都没有**。
+    /// - **引擎**：`crates/yeban-engine/src/transport.rs` 的 `TransportState::Recording` 是**预留档**，
+    ///   注释逐字写着"`Recording` 已**预留**但本切片不产生它：录音路径（`ARCH-REC-*`）还没有实现…
+    ///   因此枚举里有这一档、状态机里没有入口"；`crates/yeban-engine/src/lib.rs` 同款。
+    ///   `TransportCommand`（`crates/yeban-engine/src/ring.rs`）只有 `Play` / `Stop` / `Pause` /
+    ///   `SeekTicks` 四条，**没有**任何一条能到 `Recording`。
+    /// - **模型**：`TrackV3`（`crates/yeban-model/src/project.rs`）没有"已挂载 / 输入源"字段；
+    ///   `grep -rn 'armed' crates/yeban-model/src` 命中 **0**。唯一的输入设备记录是
+    ///   `crates/yeban-model/src/local_config.rs` 的 `AudioPortBinding::input_device` ——
+    ///   它是**本机端口绑定**（`MODEL-ISO-001` 第 3 层，永不进工程文件），全仓库**没有**消费者
+    ///   （除 model 自己的测试），不是"录音已挂载"。
+    /// - **MCP**：`grep -n 'record\|Record' crates/yeban-mcp/src/tools.rs` 命中 **0**
+    ///   （17 个工具里没有录音工具）。
+    ///
+    /// ## 三条独立探针（破坏任何一条都变红）
+    ///
+    /// 1. `ui/transport.slint` 的 `rec_area`（`TouchArea`）**没有** `clicked`；
+    /// 2. 该文件**不声明** `callback record`，`ui/app.slint` 也**不转发** `record =>`
+    ///    —— 声明了却接不上（或接了却没人转发）就是假契约；
+    /// 3. `transport-record-button` **仍然登记**在语义注册表里（登记与接线是两件事）。
+    ///
+    /// ## 为什么本判据不顺手把按钮置灰 / 删掉
+    ///
+    /// 任何**用户可见**的处置都会改默认帧 ⇒ `crates/yeban-app/tests/golden/linux/` 的 5 张基准
+    /// **确定性**过期，而基准只许按手动档 `gates-manual.yml` 的 `goldens` 档重录 ＋ 人工复核。
+    /// 而且 `transport-record-button` 同时在 `tests/golden` 无关的三处清单里：
+    /// 语义注册表、`src/test_port_adapter.rs` 的 `DEFAULT_VIEW_MUST_HAVE` 与 `VISIBLE_SINGLETONS`。
+    ///
+    /// ## 已知的**假象**（登记，不在本票处置）
+    ///
+    /// 录音键今天声明 `accessible-checkable: true` ＋ `accessible-checked: false`，而宿主**没有**
+    /// 任何写者 ⇒ 屏读器会把它读成"一个永远是关的可勾选按钮"（与 `ffb3dcc` 修掉的 AI 徽章
+    /// "假装有状态"同族）。它的运行时可观测面由 `src/test_port_adapter.rs` 的
+    /// `pressing_the_record_button_today_changes_nothing` 钉住（`checked` 必须恒为 `Some(false)`）。
+    /// 处置它（改成不可勾选，或真接录音）会动 `accessible-checkable` —— 那要么是**能力**裁决，
+    /// 要么是**另一票**（可能连带重录基准），因此本票只如实登记。
+    #[test]
+    fn the_record_button_has_no_click_handler_and_recording_is_unimplemented() {
+        let transport = code_only(
+            &std::fs::read_to_string(ui_dir().join("transport.slint")).expect("读 transport.slint"),
+        );
+
+        // ① `rec_area` 留在源文件里，而且**没有** `clicked`。
+        //    它今天只在按下时换底色（`background: rec_area.pressed ? …`），松手什么都不发生。
+        let body = touch_area_body(&transport, "rec_area").unwrap_or_else(|| {
+            panic!("`rec_area` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）")
+        });
+        assert!(
+            !body.contains("clicked"),
+            "`rec_area` 今天不得有 `clicked` —— 录音能力一处都不存在 \
+             （`[ARCH-REC-001]` 只有规范、没有实现）；谁真接了录音就一并更新本判据\n{body}"
+        );
+
+        // ② 回调**不声明**、也**不转发**。
+        assert!(
+            !transport.contains("callback record"),
+            "`transport.slint` 今天不得声明 `callback record` —— 声明了却接不上就是假契约"
+        );
+        let app =
+            code_only(&std::fs::read_to_string(ui_dir().join("app.slint")).expect("读 app.slint"));
+        for spelling in ["record =>", "record=>"] {
+            assert!(
+                !app.contains(spelling),
+                "`app.slint` 今天不得转发 `{spelling}` —— 谁接上了就一并更新本判据"
+            );
+        }
+
+        // ③ 语义 ID **仍然登记**：登记与接线是两件事。这样"顺手把控件删掉"也会走到这里，
+        //    逼作者显式改判据（删或接，都要留痕；删还要重录 5 张 Linux 基准）。
+        assert!(
+            registry().contains("transport-record-button"),
+            "`transport-record-button` 必须留在语义注册表里 —— 移除它是另一票（要重录基准）"
+        );
+    }
+
+    /// 判据（**"两键今天不可区分"钉死**）：`Space` 与 `Shift+Space` 在宿主侧共用**一个** match 臂。
+    ///
+    /// `crates/yeban-app/src/input.rs` 把两键解析成**两个不同**的 `Action`
+    /// （`Key::Space` → `Action::PlayPause`、`Shift` + `Key::Space` → `Action::ResumeFromCursor`），
+    /// `crates/yeban-app/src/cli.rs` 的 `SHORTCUTS` 表也把它们当成两条规范快捷键
+    /// （两条的 `implemented` 都是 `true` ⇒ `--print-shortcuts` 都不打 `(未实现)`）。
+    /// 但 `src/host.rs` 的 `apply_action` 里，两键落到**同一个**臂：
+    ///
+    /// ```text
+    /// Action::PlayPause | Action::ResumeFromCursor => { ui.invoke_toggle_play(); true }
+    /// ```
+    ///
+    /// ⇒ 今天**没有**任何可观测差异。本判据把这件事钉成机械事实：
+    /// 将来谁做出"从光标续播"的独立语义，这里会红，作者必须一并更新本判据与 `cli.rs` 的表述。
+    /// 运行时那一半（两键的引擎读数逐位相等）由 `src/test_port_adapter.rs` 的
+    /// `shift_space_and_space_are_the_same_transport_path_today` 见证 —— 两条路径彼此独立。
+    ///
+    /// **为什么查源码而不是只查运行时**：运行时那句话是"读数相同"，
+    /// 它证明不了"同一个臂"（两段等价的代码也会给出相同读数）。源码文本证明的是**耦合本身**。
+    #[test]
+    fn space_and_shift_space_share_one_host_arm_today() {
+        // `include_str!`（而不是运行时读盘）：同一目录下的兄弟文件，编译期就把正文嵌进来，
+        // 因此这条源码探针与当前目录无关、也不会因工作目录不同而失效。
+        let host = code_only(include_str!("host.rs"));
+
+        // ① 两个 `Action` 在 `host.rs` 的**代码**里各自只出现一次 —— 出现两次就是第二个落点。
+        for needle in ["Action::PlayPause", "Action::ResumeFromCursor"] {
+            assert_eq!(
+                host.matches(needle).count(),
+                1,
+                "`host.rs` 的代码里 `{needle}` 今天必须**恰好出现一次**（唯一落点）—— \
+                 多出来的那一次是第二条走带语义，本判据与 `cli.rs` 的表述都要一起更新"
+            );
+        }
+
+        // ② 那唯一的落点是**合起来的**一个臂，臂体里只有 `ui.invoke_toggle_play()`。
+        let arm_start = host
+            .find("Action::PlayPause | Action::ResumeFromCursor")
+            .expect("两键必须共用 `Action::PlayPause | Action::ResumeFromCursor` 这一个臂");
+        let arm_rest = &host[arm_start..];
+        let arm_end = arm_rest
+            .find("Action::Undo")
+            .expect("走带臂之后必须紧跟撤销族臂（把它当作本臂的右边界）");
+        let arm = &arm_rest[..arm_end];
+        assert!(
+            arm.contains("ui.invoke_toggle_play()"),
+            "走带臂必须落到界面已有的 `toggle-play`（`wire_transport` 接到引擎的那一个回调）\n{arm}"
+        );
+        assert!(
+            !arm.contains("stop_and_rewind"),
+            "走带臂今天**不回到起点**（`Action::PlayPause` 的文档注释写\"暂停时播放头回起始点\"，\
+             与实现不符；`Stop` 才回起点）。若这里出现 `stop_and_rewind`，语义变了 ⇒ 更新本判据\n{arm}"
+        );
+    }
+
     /// 判据（**多路径探针：源码文本 + 属性默认值 + 循环规模**）：抽屉里没有任何假提案。
     ///
     /// 三条路径各自独立, 破坏任何一条都变红：

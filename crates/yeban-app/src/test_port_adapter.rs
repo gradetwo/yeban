@@ -2074,6 +2074,24 @@ impl TransportHarness {
         self.engine.borrow().transport_journal().to_vec()
     }
 
+    /// 把**键盘事件源**接上（`N2` 裁决 (1) 的 GUI 路径）。
+    ///
+    /// 它调的是产品路径（`main.rs` 的 `wire_input` + `wire_keys`）与判据装配
+    /// （`live_surface.rs` 的 `build_live_ui_with`）调的**同一对**函数，因此经
+    /// `ui/dispatch_key_press` 注入的 `WindowEvent::KeyPressed` 走的就是用户按键那条链。
+    ///
+    /// 返回值是那个 `InputContext`：判据必须**先断言**前置条件（主画布焦点、非合成态）
+    /// 再注入按键 —— 否则"这一键被输入法吞掉"会被误读成"走带接线坏了"。
+    ///
+    /// ⚠ 撤销端口传 `None`：走带不经过撤销族（`playing` 是显示态，不是工程内容），
+    /// 因此本夹具不需要撤销会话。
+    fn wire_keyboard(&self) -> Rc<RefCell<yeban_app::input::InputContext>> {
+        let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+        host::wire_input(self.port.ui(), Rc::clone(&context));
+        host::wire_keys(self.port.ui(), Rc::clone(&context), None);
+        context
+    }
+
     /// 把引擎定位到 `ticks` 并**重新注入**一次走带读数（产品路径同款：
     /// `host::apply_transport` 是唯一写 `timecode` 的地方）。
     fn seek_and_inject(&mut self, ticks: u64) -> TransportReading {
@@ -2132,11 +2150,19 @@ fn transport_callbacks_really_drive_the_engine_and_the_display_follows_it() {
 
     // **动作记录**（注入点）：命令、命令后的引擎状态与位置、推了几个量子。
     //
-    // 第 0 条是 `EngineHost::reload` 末尾**自动**发的那条 `Stop`（它把新的一代停在
-    // Stopped，与界面初始显示一致）—— 它同样是一次真的、改变过引擎状态的命令，
-    // 所以它**必须**在记录里，而不是被悄悄跳过。
+    // ⚠ 就地改正（2026-10-08，走带票）：本行原文写「第 0 条是 `EngineHost::reload`
+    // 末尾**自动**发的那条 `Stop`」—— **与事实不符**。`reload` 的第 5 步明文
+    // 「**刻意不做**：`reload` 不碰走带状态」（`src/engine_host.rs` 的 `reload` 文档，
+    // 原因写在那里：顺手发 `Stop` 会多推一个量子，`ui/reload_engine` 的 `quanta` 读数当场错）。
+    // 第 0 条其实是 `TransportHarness::new` 在 `reload` 之后**显式**调的那次
+    // `engine.stop()`（"加载即停住"是控制面的显式动作）。条数断言（2 / 3 / 5）本来就是对的，
+    // 错的只有归属；本票新增的判据要按"日志的真实组成"算增量，因此这里一并说清。
     let journal = harness.journal();
-    assert_eq!(journal.len(), 2, "reload 的 Stop + 本次点击的 Play");
+    assert_eq!(
+        journal.len(),
+        2,
+        "`TransportHarness::new` 的显式 Stop + 本次点击的 Play"
+    );
     assert_eq!(journal[0].command, TransportCommand::Stop);
     assert_eq!(journal[0].state_after, TransportState::Stopped);
     assert_eq!(journal[1].command, TransportCommand::Play);
@@ -2166,7 +2192,11 @@ fn transport_callbacks_really_drive_the_engine_and_the_display_follows_it() {
         after_stop.position_ticks, playing_position,
         "引擎的 `Stop` 保留位置（\"回到起点\"是界面停止按钮的语义, 见下一条判据）"
     );
-    assert_eq!(harness.journal().len(), 3, "reload 的 Stop + Play + Stop");
+    assert_eq!(
+        harness.journal().len(),
+        3,
+        "夹具的显式 Stop + Play + 本次 Stop"
+    );
 
     // ---- `stop` 回调：停住 + 回到起点（与 `transport.slint` 的 accessible-label 一致）----
     ui.invoke_stop();
@@ -2518,4 +2548,431 @@ fn an_unwired_window_changes_neither_the_engine_nor_the_display() {
         !unwired.get_playing(),
         "显示态不再由界面自翻转 ⇒ 没接线时它必须保持停住"
     );
+}
+
+// ===========================================================================
+// 走带 / 播放 / 录音（2026-10-08，负责人优先级：走带、播放、录音先完成）
+// ===========================================================================
+//
+// 上一节（判据 ⑧ + ⑨）证明的是**回调那一格**接线正确（`invoke_toggle_play()` /
+// `invoke_stop()`）。本节把注入点往**上游**推一格，证明**事件源**那一格也通 ——
+// 用户按下键 / 点下按钮的那条链，而不是宿主直接调自己的回调。
+//
+// | 情形 | 本节的注入点 | 中间层 |
+// | :--- | :--- | :--- |
+// | `Space` | `ui/dispatch_key_press(KeyCode::Space)`（真 `WindowEvent`） | `app.slint` 的 `key-handler` → `key-action` → `host::wire_keys` → `input::resolve_logical` → `apply_action` → `MainWindow.toggle-play` → `host::wire_transport` |
+// | `Shift+Space` | `MainWindow.invoke_key_action(text, shift, …)`（端口**表达不了** chord —— 见判据 ② 的文档） | 同上，去掉端口那两格 |
+// | `stop` | `ui/dispatch_pointer_down/up("transport-stop-button")`（真指针事件） | Slint 命中测试 → `stop_area.clicked` → `root.stop()` → `MainWindow.stop` → `host::wire_transport` |
+// | 录音 | `ui/dispatch_pointer_down/up("transport-record-button")`（真指针事件） | `rec_area` **没有** `clicked` ⇒ 什么都不发生（今天的事实） |
+//
+// **本节的判据不重复既有判据的断言**：既有判据已经钉住"回调 → 引擎"，
+// 本节的牙咬在"事件源 → 回调"这一格（破坏它就是"按键/点击没反应"，而控件树照样"有"）。
+
+/// 判据（**本票的端到端 ①**）：`Space` 经真键盘事件真的切换播放态；停止按钮经真指针事件真的回起点。
+///
+/// ## 量什么 / 怎么量 / 单位
+///
+/// | 量 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- |
+/// | 引擎走带状态 | `EngineHost::transport().state` | 枚举（`Stopped` / `Playing` / `Recording`） |
+/// | 引擎位置 | `EngineHost::transport().position_ticks` | tick（960 PPQ） |
+/// | 引擎命令日志 | `EngineHost::transport_journal()`（每条 = 命令 + 命令后状态/位置 + 推了几个量子） | 条 |
+/// | 界面显示态 | `MainWindow.get_playing()` | 布尔 |
+/// | 时间码 | `MainWindow.get_timecode()` | `BBB.BB.BBB` 字符串 |
+///
+/// ## 算术（整数；期望值手算，**不引用被测函数**）
+///
+/// 起点 = `TransportHarness::new()` 之后：日志 **1** 条（夹具的显式 `Stop`）、位置 `0`、`Stopped`。
+/// - 一次 `Space` ⇒ 日志 **+1** 条，命令 `[Play]`，状态 `Playing`，位置 `> 0`；
+/// - 再一次 `Space` ⇒ 日志 **+1** 条，命令 `[Stop]`，位置**等于**上一次（`Stop` 保留位置）；
+/// - 定位到 `3 × 960 = 2880` tick 后点停止 ⇒ 日志 **+2** 条，命令 `[Stop, SeekTicks(0)]`，
+///   位置 `0`（`stop_and_rewind` 是**一个批量里的两条命令**）。
+///
+/// ## 怎么变红（注入实测见交付报告）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 把 `PlayPause` 从 `action_has_implementation` 的名单里去掉（改成不消费） | `src/host.rs` | ① 步状态仍是 `Stopped`、日志 **+0** |
+/// | 把 `key-action` 的返回永远取反（`reject`） | `ui/app.slint` | ① 步状态仍是 `Stopped`（Slint 不再把键交给宿主） |
+/// | 让 `stop_area.clicked` 调 `root.toggle-play()` | `ui/transport.slint` | ③ 步位置停在 `2880`（不回到 `0`） |
+#[test]
+fn space_from_the_real_key_event_source_toggles_playback_and_the_stop_button_rewinds() {
+    let mut harness = TransportHarness::new();
+    let context = harness.wire_keyboard();
+    // 强句柄：下面要用 `&mut harness.port` 注入事件，不能同时借出 `port.ui()` 的 `&`。
+    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+
+    // ---- 前置条件（**先证明注入源是活的**；否则"没反应"会被误读成"接线坏了"）----
+    assert!(
+        !context.borrow().is_composing(),
+        "注入前必须是非合成态，否则 §7.2 会把 Space 吞掉"
+    );
+    assert_eq!(
+        context.borrow().focus(),
+        yeban_app::input::Focus::MainCanvas,
+        "注入前焦点必须在主画布，否则 Space 归文本控件"
+    );
+    let start = harness.reading();
+    assert_eq!(start.state, TransportState::Stopped, "起点必须是停住");
+    assert_eq!(start.position_ticks, 0, "起点必须在 tick 0");
+    assert!(!ui.get_playing(), "起点显示态必须是停住");
+    let journal_at_start = harness.journal().len();
+
+    // ---- ① `Space`（真 `WindowEvent::KeyPressed`）⇒ 引擎真的开始播 ----
+    harness
+        .port
+        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
+        .expect("注入 Space 必须被端口接受（Interactive 权限）");
+    let after_space = harness.reading();
+    assert_eq!(
+        after_space.state,
+        TransportState::Playing,
+        "`Space` 必须真的把引擎推进到 `Playing`（不是\"控件树里有这个按钮\"）"
+    );
+    assert!(after_space.position_ticks > 0, "播放必须真的推进 tick");
+    assert!(ui.get_playing(), "显示态必须跟着引擎走");
+    assert_eq!(
+        ui.get_timecode(),
+        harness.view.timecode_at(after_space.position_ticks),
+        "时间码必须等于**投影**在这个 tick 上的读数"
+    );
+    let journal_after_space = harness.journal();
+    assert_eq!(
+        journal_after_space.len(),
+        journal_at_start + 1,
+        "一次 `Space` 恰好产生一条引擎命令"
+    );
+    let play_record = journal_after_space.last().expect("非空");
+    assert_eq!(play_record.command, TransportCommand::Play);
+    assert_eq!(play_record.state_after, TransportState::Playing);
+    assert_eq!(play_record.position_ticks_after, after_space.position_ticks);
+    assert_eq!(play_record.quanta_pumped, 1, "命令必须在量子边界被应用");
+    observe(&format!(
+        "[transport-e2e] ① 注入 `ui/dispatch_key_press(Space)` ⇒ 命令[Play] 状态={:?} \
+         位置={} tick 推量子={} 显示态={} 时间码={}（日志 {} → {} 条）",
+        play_record.state_after,
+        play_record.position_ticks_after,
+        play_record.quanta_pumped,
+        ui.get_playing(),
+        ui.get_timecode(),
+        journal_at_start,
+        journal_after_space.len(),
+    ));
+
+    // ---- ② 再按一次 `Space` ⇒ 停住，且**位置保留**（回到起点是停止按钮的语义）----
+    harness
+        .port
+        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
+        .expect("再次注入 Space");
+    let after_second_space = harness.reading();
+    assert_eq!(
+        after_second_space.state,
+        TransportState::Stopped,
+        "第二次 `Space` 必须停住"
+    );
+    assert_eq!(
+        after_second_space.position_ticks, after_space.position_ticks,
+        "`Space` 的停住**保留位置** —— 位置必须逐 tick 相等（差一位就是语义变了）"
+    );
+    assert!(!ui.get_playing(), "显示态必须跟着回到停住");
+    let journal_after_second = harness.journal();
+    assert_eq!(
+        journal_after_second.len(),
+        journal_at_start + 2,
+        "第二次 `Space` 恰好再加一条命令"
+    );
+    assert_eq!(
+        journal_after_second.last().expect("非空").command,
+        TransportCommand::Stop
+    );
+    observe(&format!(
+        "[transport-e2e] ② 再注入一次 `Space` ⇒ 命令[Stop] 状态={:?} 位置={} tick\
+         （与 ① 后逐 tick 相等 ⇒ 位置保留）显示态={}",
+        after_second_space.state,
+        after_second_space.position_ticks,
+        ui.get_playing()
+    ));
+
+    // ---- ③ 停止按钮（真指针事件）⇒ 停住 **并回到 tick 0** ----
+    // 先把位置挪到非零，否则"回到起点"与"位置保留"读数相同 ⇒ 判据没有牙。
+    let moved = harness.seek_and_inject(3 * 960);
+    assert_eq!(moved.position_ticks, 3 * 960, "定位必须真的改位置");
+    assert_eq!(ui.get_timecode(), harness.view.timecode_at(3 * 960));
+    let journal_before_stop = harness.journal().len();
+    harness
+        .port
+        .dispatch_pointer_down(
+            "transport-stop-button",
+            16.0,
+            16.0,
+            yeban_ui_test_port::PointerButton::Left,
+        )
+        .expect("真实指针按下停止按钮");
+    harness
+        .port
+        .dispatch_pointer_up(yeban_ui_test_port::PointerButton::Left)
+        .expect("真实指针释放停止按钮");
+    let after_stop = harness.reading();
+    assert_eq!(after_stop.state, TransportState::Stopped);
+    assert_eq!(
+        after_stop.position_ticks, 0,
+        "停止按钮必须回到 tick 0（`accessible-label` 的\"回到起始点\"）"
+    );
+    assert_eq!(
+        ui.get_timecode(),
+        "001.01.000",
+        "回到起点后时间码必须是第 1 小节第 1 拍"
+    );
+    let journal_after_stop = harness.journal();
+    assert_eq!(
+        journal_after_stop.len(),
+        journal_before_stop + 2,
+        "`stop_and_rewind` 是**一个批量里的两条命令**"
+    );
+    assert_eq!(
+        journal_after_stop[journal_before_stop].command,
+        TransportCommand::Stop
+    );
+    assert_eq!(
+        journal_after_stop[journal_before_stop + 1].command,
+        TransportCommand::SeekTicks(0)
+    );
+    assert_eq!(
+        journal_after_stop[journal_before_stop].quanta_pumped, 1,
+        "两条命令在**同一个**量子边界一起生效（一次批量推一个量子）"
+    );
+    observe(&format!(
+        "[transport-e2e] ③ 真指针点击停止按钮（注入前位置=2880 tick）⇒ 命令[Stop, SeekTicks(0)] \
+         状态={:?} 位置={} tick 时间码={}（日志 {} → {} 条）",
+        after_stop.state,
+        after_stop.position_ticks,
+        ui.get_timecode(),
+        journal_before_stop,
+        journal_after_stop.len(),
+    ));
+}
+
+/// 判据（**本票的端到端 ②：如实登记"今天无法区分"**）：`Shift+Space` 与 `Space` 走**同一条**走带路径。
+///
+/// `input.rs` 把两键解析成**两个不同**的 `Action`（`Space` → `PlayPause`、
+/// `Shift+Space` → `ResumeFromCursor`），`cli.rs` 的快捷表也把它们当成两条规范快捷键
+/// （两条的 `implemented` 都是 `true`，`--print-shortcuts` 都不打 `(未实现)`）。
+/// 但宿主的落点是**一个** match 臂 —— `src/host.rs` 的
+/// `Action::PlayPause | Action::ResumeFromCursor => ui.invoke_toggle_play()` ——
+/// 因此两键的引擎读数**逐位相同**：今天**没有任何可观测差异**。
+///
+/// ⚠ 本判据**不假装**它们有区别。它把"今天不可区分"钉成机械事实：
+/// 将来谁真的做出"从光标续播"的独立语义（例如 `PlayPause` 也回到起点、
+/// 或 `ResumeFromCursor` 带上光标定位），本判据会红，作者必须一并更新本判据
+/// 与 `cli.rs` 的表述。**这不是永久禁令，是今天的状态。**
+///
+/// ## 注入面（为什么 `Shift+Space` 不走端口）
+///
+/// `[UI-TEST-002]` 的 `ui/dispatch_key_press(keyCode)` 只携带 `text`：
+/// `slint::platform::WindowEvent::KeyPressed { text }` **没有**修饰位字段
+/// （`crates/yeban-ui-test-port/src/render.rs` 的 `Tier1Window::key_press` 逐字只发 `text`），
+/// 端口的 `KeyCode` 也没有 `ShiftSpace`。因此 chord 只能注入到 `.slint` 回调那一格
+/// `MainWindow.invoke_key_action(text, shift, ctrl, alt, meta)` —— 它就是
+/// `ui/app.slint` 的 `key-handler` 在 `key-pressed` 里调的那**一个**回调
+/// （`event.modifiers.shift` 由 Slint 逐位传下来）。仓库既有的 `Cmd+Z` 判据用的是同一格
+/// （`crates/yeban-app/tests/live_ui_mcp.rs` 的注释逐字写着"`ui/dispatch_key_press`
+/// 表达不了修饰键 chord"）。
+///
+/// ## 怎么变红
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 把 `ResumeFromCursor` 从那个 match 臂里拿掉 | `src/host.rs` | ② 步命令序列变 `[]`（不消费）⇒ 与 ① 不等 |
+/// | 让 `ResumeFromCursor` 改走 `stop_and_rewind` 再播 | `src/host.rs` | ② 步位置仍是起点 `0` 或命令序列不同 ⇒ 与 ① 不等 |
+#[test]
+fn shift_space_and_space_are_the_same_transport_path_today() {
+    /// 把夹具复位到"停住 @ tick 0"。两次注入的起点必须逐位相同，否则比较不成立。
+    /// 返回复位后的日志长度（增量测量的基线）。
+    fn rewind(harness: &mut TransportHarness) -> usize {
+        harness.engine.borrow_mut().stop_and_rewind();
+        let reading = harness.reading();
+        host::apply_transport(harness.port.ui(), reading);
+        assert_eq!(reading.state, TransportState::Stopped, "复位后必须停住");
+        assert_eq!(reading.position_ticks, 0, "复位后必须在 tick 0");
+        harness.journal().len()
+    }
+
+    let mut harness = TransportHarness::new();
+    let context = harness.wire_keyboard();
+    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+
+    // ---- ① `Space`：**端口**注入一个真 `WindowEvent` ----
+    assert_eq!(
+        context.borrow().focus(),
+        yeban_app::input::Focus::MainCanvas,
+        "注入前焦点必须在主画布"
+    );
+    let base_key = rewind(&mut harness);
+    harness
+        .port
+        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
+        .expect("注入 Space");
+    let after_key = harness.reading();
+    let key_commands: Vec<TransportCommand> = harness.journal()[base_key..]
+        .iter()
+        .map(|record| record.command)
+        .collect();
+
+    // ---- ② `Shift+Space`：端口表达不了 chord ⇒ 注入到 `.slint` 回调那一格 ----
+    let base_shift = rewind(&mut harness);
+    let consumed = ui.invoke_key_action(" ".into(), true, false, false, false);
+    let after_shift = harness.reading();
+    let shift_commands: Vec<TransportCommand> = harness.journal()[base_shift..]
+        .iter()
+        .map(|record| record.command)
+        .collect();
+
+    // ---- ③ 读数的**逐位相等**（这就是"今天无法区分"的字面证据）----
+    assert!(
+        consumed,
+        "`Shift+Space` 今天必须被消费 —— `cli.rs` 的快捷表把它标成 `implemented: true`"
+    );
+    assert!(
+        ui.invoke_key_action(" ".into(), false, false, false, false),
+        "对照：无修饰的 `Space` 也必须被消费"
+    );
+    assert_eq!(key_commands, vec![TransportCommand::Play], "① 的命令序列");
+    assert_eq!(
+        shift_commands, key_commands,
+        "② 的命令序列必须与 ① 逐条相同 —— 不同就说明两键的落点已经分叉，\
+         本判据与 `cli.rs` 的表述都要一起更新"
+    );
+    assert_eq!(
+        after_shift.state, after_key.state,
+        "两键后的引擎状态必须相同"
+    );
+    assert_eq!(
+        after_shift.position_ticks, after_key.position_ticks,
+        "两键后的位置必须逐 tick 相同（今天没有任何可观测差异）"
+    );
+    observe(&format!(
+        "[transport-e2e] ④ `Space`（端口真事件）⇒ 状态={:?} 位置={} tick 命令={:?}；\
+         `Shift+Space`（`.slint` 回调那一格）⇒ 状态={:?} 位置={} tick 命令={:?} \
+         ⇒ **两键今天不可区分**（`host.rs` 的 `Action::PlayPause | Action::ResumeFromCursor` \
+         是同一个 match 臂）",
+        after_key.state,
+        after_key.position_ticks,
+        key_commands,
+        after_shift.state,
+        after_shift.position_ticks,
+        shift_commands,
+    ));
+}
+
+/// 判据（**本票的端到端 ③：如实登记，不许假实现**）：录音键今天按下去**什么都不发生**。
+///
+/// ⚠ 这不是"忘了接线"，是**能力不存在**。逐条证据（本判据在运行时可观测的那一半 ＋
+/// `src/elements.rs` 的 `the_record_button_has_no_click_handler_and_recording_is_unimplemented`
+/// 在源码侧钉住另一半）：
+///
+/// - **规范**：`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §10.1 有**明文**要求
+///   `[ARCH-REC-001]`（"点击录音 Arm 按钮后，音频线程直接从声卡物理输入捕获 PCM 流
+///   并写入预分配的无锁环形缓冲区…"）—— 规范定义了它，实现一处都没有；
+/// - **引擎**：`crates/yeban-engine/src/transport.rs` 的 `TransportState::Recording`
+///   是**预留档**，注释逐字写着"`Recording` 已**预留**但本切片不产生它：录音路径
+///   （`ARCH-REC-*`）还没有实现…状态机里没有入口"；`yeban-engine/src/lib.rs` 同款
+///   （"录音（`TransportState::Recording` 已预留但没有入口）"）；
+/// - **模型**：`TrackV3`（`crates/yeban-model/src/project.rs`）没有"已挂载 / 输入源"字段，
+///   `grep -rn 'armed' crates/yeban-model/src` 命中 **0**；
+/// - **MCP**：`grep -n 'record\|Record' crates/yeban-mcp/src/tools.rs` 命中 **0**
+///   （17 个工具里没有录音工具）；
+/// - **界面**：`ui/transport.slint` 的 `rec_area` 是 `TouchArea`，**没有** `clicked`；
+///   该文件也**没有** `callback record`，`ui/app.slint` 也**不转发**它。
+///
+/// **本判据不做的两件事**（刻意的）：① 不把录音键删掉、也不改它的像素 ——
+/// `transport-record-button` 同时在语义注册表、`DEFAULT_VIEW_MUST_HAVE` 与
+/// `VISIBLE_SINGLETONS` 里，删它要重录 5 张 Linux 基准（那是另一票）；
+/// ② 不写一条"点了会置位 `checked`"的假实现 —— 那是负责人明令禁止的假绿。
+///
+/// ## 怎么变红
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 给 `rec_area` 加 `clicked` 并接一个空回调 | `ui/transport.slint` | 源码判据（`src/elements.rs`）红 |
+/// | 让引擎真的能进 `Recording` | `crates/yeban-engine/**` | ② 步的"从没有 `Recording`"红 |
+#[test]
+fn pressing_the_record_button_today_changes_nothing() {
+    let mut harness = TransportHarness::new();
+    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+
+    // ---- 起点读数：引擎 + 日志 + 控件**自己**的勾选位 ----
+    let before = harness.reading();
+    let journal_before = harness.journal().len();
+    let checked_before = harness
+        .port
+        .tree()
+        .find_by_id("transport-record-button")
+        .expect("录音键必须在运行时控件树里（语义注册表与 DEFAULT_VIEW_MUST_HAVE 都要求它）")
+        .checked;
+    assert_eq!(
+        checked_before,
+        Some(false),
+        "录音键今天声明了 `accessible-checkable: true` 且宿主**没有**写者 ⇒ 恒为 `false`"
+    );
+
+    // ---- ① 真实指针事件：按下 + 抬起录音键 ----
+    harness
+        .port
+        .dispatch_pointer_down(
+            "transport-record-button",
+            16.0,
+            16.0,
+            yeban_ui_test_port::PointerButton::Left,
+        )
+        .expect("真实指针按下录音键（控件在树里且几何非空）");
+    harness
+        .port
+        .dispatch_pointer_up(yeban_ui_test_port::PointerButton::Left)
+        .expect("真实指针释放录音键");
+
+    // ---- ② 字面读数：一位都没动 ----
+    let after = harness.reading();
+    assert_eq!(
+        after, before,
+        "按下录音键**不得**改变引擎读数（今天没有任何录音能力）"
+    );
+    assert_eq!(
+        harness.journal().len(),
+        journal_before,
+        "按下录音键**不得**产生任何引擎命令"
+    );
+    assert!(!ui.get_playing(), "录音键不得顺手改播放态");
+    let checked_after = harness
+        .port
+        .tree()
+        .find_by_id("transport-record-button")
+        .expect("录音键仍在树里")
+        .checked;
+    assert_eq!(
+        checked_after, checked_before,
+        "录音键的勾选位必须一动不动（没有宿主写者 ⇒ 不会因为点击而置位）"
+    );
+
+    // ---- ③ `Recording` 这一档今天**没有入口**：把 `EngineHost` 公开的走带命令全发一遍 ----
+    let observed: Vec<(&str, TransportState)> = {
+        let mut engine = harness.engine.borrow_mut();
+        vec![
+            ("play", engine.play().state),
+            ("stop", engine.stop().state),
+            ("stop_and_rewind", engine.stop_and_rewind().state),
+            ("seek(960)", engine.seek(960).state),
+        ]
+    };
+    assert!(
+        observed
+            .iter()
+            .all(|(_, state)| *state != TransportState::Recording),
+        "`TransportState::Recording` 今天必须**不可达**（引擎没有任何录音入口）：{observed:?}"
+    );
+    observe(&format!(
+        "[transport-e2e] ⑤ 真指针点击录音键 ⇒ 引擎读数一位未变（状态={:?} 位置={} tick，\
+         日志恒 {} 条），`accessible-checked` 恒 {:?}；`EngineHost` 四条公开走带命令的状态读数={:?} \
+         —— 没有一条是 `Recording`（能力不存在，如实登记，不假实现）",
+        after.state, after.position_ticks, journal_before, checked_after, observed,
+    ));
 }
