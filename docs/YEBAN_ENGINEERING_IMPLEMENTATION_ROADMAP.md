@@ -160,7 +160,7 @@ AI Agent 全自主驱动工程重构全周期 (Pure Rust Cargo Workspace, v0.0.1
    - *Go 准入*：无物理显示器环境下成功启动，本地 JSON-RPC 查询响应 ≤ 15ms，截图导出时间 ≤ 50ms。
 6. **[ROAD-M0-006] Spike 6: 虚拟化钢琴卷帘渲染基准与多视口压力测试**
    - *目标*：使用 Slint 自定义渲染/视口裁剪渲染 100,000 个密集音符，测试高频水平与垂直缩放滚动。
-   - *Go 准入*：视口平滑移动，维持稳定 120 FPS（单帧渲染耗时 ≤ 8.3ms），无内存泄漏。
+   - *Go 准入*：视口平滑移动；**绘制回调耗时（不含呈现）p99 ≤ 2ms**（规格 `[UI-NOTE-001]` 步骤 ④ 的预算），无内存泄漏。（墙钟帧周期**另记为环境读数**、不作门限：自适应刷新率面板的节奏不是产品开销。）
 7. **[ROAD-M0-007] Spike 7: 双 MCP 活会话挂载与 `.yeban.lock` 排他文件锁 PoC**
    - *目标*：验证进程内内嵌 Streamable HTTP MCP 服务（带本地 Token 鉴权）与独立 stdio CLI 互斥访问工程文件。
    - *Go 准入*：外部 Agent 成功 attach 运行中 DAW 并驱动 UI 刷新；并发打开同一工程立即触发 `PROJECT_LOCKED` 拦截。
@@ -355,7 +355,7 @@ flowchart TD
 | **[BASELINE-001]** | **离线母带渲染** | 32 轨参考工程 A 导出速度 | `yeban-render` 多线程并行导出 24-bit 48kHz WAV | **≥ 100× 真实时间** (180s 工程 ≤ 1.8s) | Phase 4 |
 | - | **离线母带渲染** | 32 轨参考工程 B (SFZ) | `yeban-render` 结合 NVMe 磁盘读取并行导出母带 | **≥ 30× 真实时间** (180s 工程 ≤ 6.0s) | Phase 4 |
 | **[BASELINE-002]** | **常驻内存基线** | 空工程空闲内存占用 | 操作系统内存工作集（Working Set）统计 | **≤ 35 MB** | Phase 0 |
-| **[BASELINE-003]** | **界面渲染帧率** | 10 万音符高频滚动与缩放 | Slint 硬件加速视口连续缩放与滚动测试 | **稳定 120 FPS** (零丢帧，帧耗时 ≤ 8.3ms) | Phase 3 |
+| **[BASELINE-003]** | **界面渲染绘制成本**（帧率另记为环境读数） | 10 万音符高频滚动与缩放 | GPU 路径（`winit` + FemtoVG/OpenGL）下测量 **Slint 绘制回调耗时**：`set_rendering_notifier` 的 `BeforeRendering` → `AfterRendering` 区间（**不含呈现/缓冲交换**） | **绘制回调 p99 ≤ 2 毫秒**（`[UI-NOTE-001]` 步骤 ④ 的规格预算）；墙钟帧周期另记为**环境读数**（自适应刷新率面板的节奏不是产品开销） | Phase 3 |
 | **[BASELINE-004]** | **单步撤销时延** | 模型层逆操作应用耗时 | 测量 `Op` 逆向应用至状态树的 p99 耗时 | **≤ 0.2 毫秒** | Phase 1 |
 | **[BASELINE-005]** | **音频硬件时延** | 硬件声卡往返处理延迟 | 以 64 采样点缓冲运行于 cpal 驱动下，通过底层平台原生系统 API 实测回路延迟：macOS CoreAudio 查询 `kAudioDevicePropertyLatency` 与 `kAudioStreamPropertyLatency`；Windows WASAPI 查询 `IAudioClient::GetStreamLatency`；Linux PipeWire/JACK 借助硬件回环测试 | **≤ 5.5 毫秒**（分解见 ARCH §3.5） | Phase 2 |
 | **[BASELINE-006]** | **AI 交互效率** | 单次段落生成数据负载与 Token 开销 | 统计生成 16 小节段落的完整 MCP 工具往返载荷 | **序列化 JSON 载荷 ≤ 4 KB，结构化字段传输，Token 开销中位数 ≤ 600 Tokens (测试参考基准)** | Phase 4 |
@@ -490,5 +490,5 @@ AI Agent 必须执行八重自动化质量保障防线：
 | 原措辞（已不准确） | 修订后的措辞 | 裁决 | 依据 |
 | :--- | :--- | :--- | :--- |
 | `MUST-GATE-014` 要求"323 款采样指纹对账" | 门禁的**机制**（清单 + SHA-256 + 许可/署名对账 + `--repo-assets` 校验）已可运行，但**入库哪些素材是付费/许可决策**，必须由负责人选定。在选定之前 `assets/samples/` 为空、该门禁记 **PENDING**；**不得**用自造夹具冒充"323 款采样" | HD-31 | `scripts/gates/validate_schemas.py --repo-assets` 与 `assets/samples/` 现状 |
-| BASELINE 系列"在 CI 上跑" | 其中 **BASELINE-003（帧率）/005（音频往返时延）必须固定频率参考硬件**，托管 runner 的频率不固定 ⇒ 它们的**绝对值**在 CI 上不可判定；**BASELINE-001（渲染吞吐）与 004（单步撤销 p99）**可以在 CI 上给**数量级**读数，达标判定仍需参考机复跑。自托管 runner 的接入是**预算决策**，未接入前这些门禁按 PENDING/部分记录，**不许**用托管 runner 读数宣布达标 | HD-38, D7 | `docs/ledger/gate-status.md` 的 BASELINE 各行 |
+| BASELINE 系列"在 CI 上跑" | 其中 **BASELINE-005（音频往返时延）必须参考硬件**（托管 runner 没有声卡）⇒ 其**绝对值**在 CI 上不可判定；**BASELINE-003** 自 2026-10-07 起正式口径 = **绘制回调耗时（不含呈现）≤ 2ms**，它同样只在**参考机**上取正式读数（托管 runner 不是规范指定的参考硬件），而其**前提不再是"固定刷新率"** —— 面板的自适应节奏只影响已降级为**环境记录**的墙钟帧周期；**BASELINE-001（渲染吞吐）与 004（单步撤销 p99）**可以在 CI 上给**数量级**读数，达标判定仍需参考机复跑。自托管 runner 的接入是**预算决策**，未接入前这些门禁按 PENDING/部分记录，**不许**用托管 runner 读数宣布达标 | HD-38, D7, HD-59 | `docs/ledger/gate-status.md` 的 BASELINE 各行 |
 | 手动门禁"按需触发" | 手动档的**默认时长/次数**要与规范的目标对齐：`fuzz` 档现按**执行次数**（默认 **10 000 000**，即规范说的"千万次"）而不是秒数 —— 实测稳态速率随语料增长而下降（10 415 → 3 519 → 2 126 exec/s），**按秒数估次数必然估错**；作业超时相应提到 180 分钟 | HD-40 | `.github/workflows/gates-manual.yml` + 三轮 fuzz 实测读数 |
