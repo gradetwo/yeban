@@ -7,21 +7,17 @@ run id **37695374534**（conclusion=success）；该档跑 `YEBAN_WRITE_GOLDEN=1
 生成时间(UTC): 2026-10-07T22:20:55Z（该 run 的窗口 22:18:55Z–22:20:55Z，取自 `gh run view`）
 入库时间(UTC): 2026-10-07T22:23:48Z（本次提交，复核记录见下）
 
-**为什么会有这一次再生成**: 提交 `ffb3dcc` 把顶栏 AI 徽章的**可见文案**从「AI提案 (待审查)」改成「AI提案」（诚实性审计：它原先声称有 1 条待审查提案，而没有任何宿主写者）。该文案在顶栏默认可见 ⇒ 默认帧像素改变 ⇒ 5 张旧基准确定性过期。
-把 **JetBrains Mono** 与 **Noto Serif SC** 两款字体**编译期内嵌**进二进制（`crates/yeban-app/ui/tokens.slint` 的
-`import` + 注册进二进制），并随包携带 OFL-1.1 许可文本。于是 UI 的**文字像素**改变，旧基准**确定性地**过期。
-macOS 侧实测 **6,982 个差异单元**（13 条文字带）—— 族 `Menlo` / `Songti SC` 被真正的 `JetBrains Mono` /
-`Noto Serif SC` 取代。**Linux 侧的差异更大，这是预期的**：这两族在 `6fca8b5` 之前**在本平台根本不存在**，
-那些单元原先落在 `[SansSerif, SystemUi]` 兜底上；现在它们解析到内嵌字面 ⇒ **族名这一半在 Linux 上不再是空操作**。
-差异只落在**文字带**（见下复核第 2 条），判据一条未放宽、未加 `#[ignore]`。这不是 flake：`6fca8b5` 之后 CI 的
-`rust (workspace 全量)` 是**确定性的基准过期**（run **37589910042** / job **112688708360** 的失败原文：
-`[UI-MCP-003] \`app-model-driven-filled-project-1920x1080\` 与基准不一致：基准 6222418 字节 / 当前 6222418 字节`、
-`[UI-MCP-003] \`app-main-window-arrangement-full-1920x1080\` 与基准不一致：基准 6222418 字节 / 当前 6222418 字节`），
-重跑不会绿，只能按 `docs/adr/ADR-0003-save-button-top-bar-slot.md`「批准后的再生成程序」重出。`HD-56`
-（`docs/ledger/human-decisions.md` §F，2026-10-07）已把「1.0.0 之前没有任何东西不可改、收益够大就可以改」记为
-**最高规则**，并明确「5 张 Linux 基准可以按手动档 `gates-manual.yml` 的 `gate=goldens` 重新录制 + 人工复核」——
-本次即按该已批准路径执行（收益 = 负责人**直接下令**内嵌这两款字体）。**没有任何一张基准被手工编辑或合成**：
-5 张全部来自该 run 的 `golden-linux` artifact，逐字节安装。
+**为什么会有这一次再生成**: 提交 `ffb3dcc` 把顶栏 AI 徽章的**可见文案**从「AI提案 (待审查)」改成
+「AI提案」。原因是诚实性审计发现它声称"1 条待审查提案"，而该读数**没有任何宿主写者**。该文案在顶栏**默认可见**
+⇒ 默认帧像素改变 ⇒ 5 张旧基准确定性过期。本次没有改变任何 `.slint` 的几何、颜色或字体，差异只在顶栏徽章的文字带。
+
+**上一次再生成的原因（保留，勿与本段混淆）**: 提交 `6fca8b5`（"bundle JetBrains Mono and Noto Serif SC and register
+them with Slint"）把 **JetBrains Mono** 与 **Noto Serif SC** 两款字体**编译期内嵌**进二进制（`crates/yeban-app/ui/tokens.slint`
+的 `import` + 注册进二进制），并随包携带 OFL-1.1 许可文本。于是 UI 的**文字像素**改变，旧基准**确定性地**过期。
+那次 macOS 侧实测 **6,982 个差异单元**（13 条文字带）—— 族 `Menlo` / `Songti SC` 被真正的 `JetBrains Mono` / `Noto Serif SC`
+取代。**Linux 侧的差异更大，这是预期的**：这两族在 `6fca8b5` 之前**在本平台根本不存在**，那些单元原先落在
+`[SansSerif, SystemUi]` 兜底上；现在它们解析到内嵌字面 ⇒ **族名这一半在 Linux 上不再是空操作**。
+差异只落在**文字带**，判据一条未放宽、未加 `#[ignore]`。
 
 **入库前的复核（口径写在前面）**: 下面每条比的是**哈希**或**逐像素单元 (cell)**，**不是文件大小** ——
 本仓 PNG 写入器是存储式 deflate，1920 × 1080 恒为 6,222,418 字节，长度相等不含信息。
