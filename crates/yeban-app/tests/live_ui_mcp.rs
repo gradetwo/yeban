@@ -5978,6 +5978,282 @@ fn backspace_deletes_the_selection_through_the_event_source_and_one_undo_restore
     ));
 }
 
+// ===========================================================================
+// 复制选区（`Cmd`/`Ctrl+D`）：真实事件源 → 一次可撤销提交（右移一个吸附网格）
+// ===========================================================================
+
+/// 判据 D3（复制选区, **默认构建**）：`Cmd+D` 经真实事件源把选区里的每个音符
+/// **复制到下一格**（右移一个吸附网格）, 副本拿**全新身份**; 且**一次撤销整批撤掉**;
+/// 空选区**不消费**（`reject`）且一位不变。
+///
+/// ## 量什么 / 怎么量 / 单位
+///
+/// | 量 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- |
+/// | 音符条目数 | [`model_note_count`]（**模型**侧 oracle, 走 `clip_pool`） | 条目 |
+/// | 音符元素数 | [`note_rects`]（运行时控制树的 `note-{ulid}-rect`） | 条目 |
+/// | 副本位置 | `(start_tick, pitch, id)` 三元组, 从 `port.project()` 读 | tick / 半音 / 身份 |
+/// | 键是否被消费 | `invoke_key_action` 的**返回值**（`true` = `accept`） | 布尔 |
+/// | 提交数 | `port.display().commit_count`（`CommitGraph` 的模型读数） | 次 |
+/// | 画面变化 | [`frame_diff`] 的差异**像素数** + 包围盒（逐像素比 RGB） | 像素 |
+///
+/// ## 算术（全部整数；期望值在这里手算, **不引用被测函数**）
+///
+/// - 夹具（`filled_project`）：**4** 个音符, 起点 `0 / 960 / 1920 / 2880`,
+///   音高 `60 / 64 / 67 / 72`, 时值各 `480`。
+///   出处：`crates/yeban-model/src/samples.rs` 的 `filled_project`。
+/// - 吸附网格 = **240** tick（1/16）—— 与 `host::ROLL_SNAP_GRID_TICKS` 同值, 本文件写成
+///   字面量当独立 oracle。
+/// - 全选（`k = 4`）⇒ 复制后 `N + k = 4 + 4 = 8` 条。
+/// - 副本起点 = 原文 + 240 ⇒ `240 / 1200 / 2160 / 3120`; 音高**不变**（`60 / 64 / 67 / 72`）。
+///   两个 tick 集合**不相交** ⇒ 副本与原文可区分。
+/// - 一次 `Cmd+Z` ⇒ 回到 `4` 条 ⇒ 整批是**一个** `Op::Batch`（`ARCH-OPS-002`）。
+/// - 一次 `Cmd+D` ⇒ `commit_count` 恰好 `+1`（不是 `+k`）。
+///
+/// ## 怎么变红（注入实测, 见本提交的说明）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 把 `Duplicate` 放回 `action_has_implementation` 的 `!matches!` | `src/host.rs` | ② 步音符数不变（键被 `reject`）, `cli_contract.rs` 的 B11e 也红 |
+/// | 让副本复用原文的 `id` | `src/host.rs` 的 `duplicate_ops_for` | ② 步为 0：`AddNote::precondition` 以 `DuplicateEntityId` 拒绝整批 |
+/// | 把整批拆成 k 次 `commit_ops` | `src/host.rs` 的 `Duplicate` 分支 | ③ 步只回来 1 条, 且 ② 步 `commit_count` 变成 `+k` |
+#[test]
+fn cmd_d_duplicates_the_selection_one_grid_to_the_right_and_one_undo_restores_all() {
+    use slint::Model as _;
+    use std::collections::BTreeSet;
+    use std::rc::Rc;
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    /// 吸附网格（1/16）。独立 oracle：与 `host::ROLL_SNAP_GRID_TICKS` 同值但分开写。
+    const GRID: u64 = 240;
+    const NOW: u64 = 1_760_000_000_000;
+
+    /// 模型里全部音符的 `(start_tick, pitch, id)` 三元组, 按字典序排序。
+    /// 单位：tick / 半音 / 26 字符规范文本身份。**模型侧 oracle**, 不走投影。
+    fn model_note_keys(project: &YebanProjectV1) -> Vec<(u64, u8, String)> {
+        let mut all: Vec<(u64, u8, String)> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.values())
+            .map(|note| (note.start_tick, note.pitch, note.id.to_canonical_string()))
+            .collect();
+        all.sort();
+        all
+    }
+
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据:复制选区>", "yeban-app", project.clone(), NOW)
+            .expect("打开撤销会话"),
+    ));
+    let wiring = LiveWiringOptions {
+        permission: Permission::Interactive,
+        console_tab: 0,
+        save_path: None,
+        engine_quanta: 0,
+        undo: Some(Rc::clone(&port)),
+    };
+    let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
+
+    // ---- ① 注入前：音符数 N + 选区 ----
+    // 选区 = 界面属性 `selected-ulids`（唯一事实源）。选运行时树里**全部**音符元素,
+    // 这样"树里数到 k 个"与"选中 k 个"是同一份集合。
+    let selected = note_ulids_in_tree(&ui.tree_snapshot());
+    let k = selected.len();
+    assert_eq!(
+        k, 4,
+        "夹具（`filled_project`）写入了 4 个音符, 运行时树里必须数到 4 个"
+    );
+    select_ulids(ui.ui(), &selected);
+    // 选中标志由 `apply_view` 从 `selected-ulids` 重算 ⇒ 改选区之后必须重投影一次。
+    ui.apply_project(&port.project()).expect("重抓树（全选）");
+
+    let before_model = model_note_count(&port.project());
+    let before_tree = note_rects(&ui.tree_snapshot());
+    assert_eq!(
+        (before_model, before_tree),
+        (4, 4),
+        "① 起点: 模型条目数与树元素数都必须是 4"
+    );
+    let before_keys = model_note_keys(&port.project());
+    assert_eq!(
+        before_keys
+            .iter()
+            .map(|(tick, pitch, _)| (*tick, *pitch))
+            .collect::<Vec<_>>(),
+        vec![(0, 60), (960, 64), (1920, 67), (2880, 72)],
+        "① 起点: 夹具的 (tick, pitch) 与 `samples.rs` 逐项一致"
+    );
+    assert_eq!(
+        port.display().undoable,
+        0,
+        "① 起点不该有可撤销的编辑（会话打开时的首个提交已经落在 `commit_count` 里）"
+    );
+    let before_commits = port.display().commit_count;
+
+    // 默认真外观（**未注入按键**）：同一状态两次抓帧逐字节相同 = 命题①（确定性）。
+    // sha256 是**PNG 字节**的读数（本仓 PNG 是存储式 deflate ⇒ 尺寸证明不了内容）。
+    let frame_before = ui.capture().expect("复制前的帧");
+    let frame_before_again = ui.capture().expect("复制前的帧（第二次）");
+    assert!(
+        frame_diff(&frame_before, &frame_before_again).is_none(),
+        "命题①: 同一状态的两次抓帧必须逐字节相同（默认帧可复现）"
+    );
+    let (before_png, before_evidence) =
+        encode_with_evidence(&frame_before, DEFAULT_MAX_PNG_BYTES).expect("默认帧必须可编码");
+    let before_digest = yeban_model::ids::ContentHash::of_bytes(&before_png);
+    report_line(&format!(
+        "[duplicate-pixel] 默认外观（未注入按键）: {}x{} PNG {} 字节 / non_black={} / 颜色 {} 种 / \
+         指纹 {:016x} / sha256={}（PNG 字节的 sha256）",
+        frame_before.width(),
+        frame_before.height(),
+        before_png.len(),
+        before_evidence.non_black_pixels,
+        before_evidence.distinct_colors,
+        before_evidence.fingerprint,
+        before_digest.as_str()
+    ));
+
+    // ---- ② 注入 `Cmd+D`：N → N + k，副本右移一个网格 ----
+    // `.slint` 表达不了修饰键 chord ⇒ 走 `key-action` 回调那一格（与 D1 的 `Cmd+Z` 同款）。
+    assert!(
+        ui.ui()
+            .invoke_key_action("d".into(), false, true, false, false),
+        "② `Cmd+D` 必须被消费（`accept`）"
+    );
+    ui.apply_project(&port.project()).expect("复制后重抓树");
+    let after_model = model_note_count(&port.project());
+    let after_tree = note_rects(&ui.tree_snapshot());
+    assert_eq!(after_model, before_model + k, "② 模型条目数必须 = N + k");
+    assert_eq!(
+        after_tree,
+        before_tree + k,
+        "② 树里的音符元素数必须 = N + k"
+    );
+    assert_eq!(
+        ui.ui().get_note_ulids().row_count(),
+        before_tree + k,
+        "② 宿主自己的重投影必须立刻让界面音符数组长出 k 条"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        before_commits + 1,
+        "② 一次按键 = **一次**提交（不是 k 次；这是原子性的模型读数）"
+    );
+
+    // 副本 = 出现在复制后、但不在复制前的那些三元组。
+    let originals: BTreeSet<(u64, u8, String)> = before_keys.iter().cloned().collect();
+    let after_keys = model_note_keys(&port.project());
+    let copies: Vec<&(u64, u8, String)> = after_keys
+        .iter()
+        .filter(|key| !originals.contains(*key))
+        .collect();
+    assert_eq!(copies.len(), k, "② 恰好 k 条**新**条目（原文必须还在）");
+    let mut copy_pairs: Vec<(u64, u8)> = copies
+        .iter()
+        .map(|(tick, pitch, _)| (*tick, *pitch))
+        .collect();
+    copy_pairs.sort_unstable();
+    assert_eq!(
+        copy_pairs,
+        // 原文起点 `0 / 960 / 1920 / 2880` 各加一个网格（`0 + GRID` 就是 `GRID`）。
+        vec![
+            (GRID, 60),
+            (960 + GRID, 64),
+            (1920 + GRID, 67),
+            (2880 + GRID, 72)
+        ],
+        "② 副本必须是原文**右移一个吸附网格**、音高不变（算术见文档）"
+    );
+    // 原文与副本的 tick 集合不相交 ⇒ 二者可区分（不是"覆盖掉原文"）。
+    let original_ticks: BTreeSet<u64> = before_keys.iter().map(|(tick, _, _)| *tick).collect();
+    let copy_ticks: BTreeSet<u64> = copy_pairs.iter().map(|(tick, _)| *tick).collect();
+    assert!(
+        original_ticks.is_disjoint(&copy_ticks),
+        "② 原文起点 {original_ticks:?} 与副本起点 {copy_ticks:?} 必须不相交"
+    );
+    // 身份全新且互不相同：复制后 8 条, 身份也必须是 8 个不同的字符串。
+    let distinct_ids: BTreeSet<&String> = after_keys.iter().map(|(_, _, id)| id).collect();
+    assert_eq!(
+        distinct_ids.len(),
+        after_keys.len(),
+        "② 复制后全部身份必须互不相同（不复用原文的 id）"
+    );
+
+    // 命题②: **复制后画面必然变**（多了 k 个音符矩形）。默认外观那一次抓帧是基线。
+    let frame_after_dup = ui.capture().expect("复制后的帧");
+    let diff = frame_diff(&frame_before, &frame_after_dup)
+        .unwrap_or_else(|| panic!("② 复制后画面必须变（模型多了 {k} 个音符）, 实际逐字节相同"));
+    report_line(&format!(
+        "[duplicate-pixel] 复制后: 差异像素 {} / 包围盒 x={} y={} w={} h={}（复制前后各抓一帧逐像素比 RGB）",
+        diff.count, diff.bbox.x, diff.bbox.y, diff.bbox.width, diff.bbox.height
+    ));
+
+    // ---- ③ 一次 `Cmd+Z`：回到 N（证明整批是一个 `Op::Batch`）----
+    assert!(
+        ui.ui()
+            .invoke_key_action("z".into(), false, true, false, false),
+        "③ `Cmd+Z` 必须被消费"
+    );
+    ui.apply_project(&port.project()).expect("撤销后重抓树");
+    assert_eq!(
+        model_note_count(&port.project()),
+        before_model,
+        "③ 一次撤销必须回到 N（k 条副本一起消失 ⇒ 原子）"
+    );
+    assert_eq!(
+        note_rects(&ui.tree_snapshot()),
+        before_tree,
+        "③ 树里的音符元素数也必须回到 N"
+    );
+    assert_eq!(
+        model_note_keys(&port.project()),
+        before_keys,
+        "③ (tick, pitch, id) 三元组必须逐项回到起点"
+    );
+
+    // ---- ④ 空选区按 `Cmd+D`：**不消费**且一位不变 ----
+    select_ulids(ui.ui(), &[]);
+    ui.apply_project(&port.project()).expect("重抓树（空选区）");
+    // "一位不变"的探针: 注入**紧邻**前后各抓一帧（选区状态相同 ⇒ 唯一变量就是那次按键）。
+    let frame_empty_before = ui.capture().expect("空选区注入前的帧");
+    let consumed_empty = ui
+        .ui()
+        .invoke_key_action("d".into(), false, true, false, false);
+    assert!(
+        !consumed_empty,
+        "④ 空选区按 `Cmd+D` 必须**不消费**（`reject`, 与 `DeleteSelection` 同一取向）"
+    );
+    let frame_empty_after = ui.capture().expect("空选区注入后的帧");
+    assert!(
+        frame_diff(&frame_empty_before, &frame_empty_after).is_none(),
+        "④ 空选区按 `Cmd+D` 之后画面必须逐字节不变"
+    );
+    assert_eq!(
+        model_note_count(&port.project()),
+        before_model,
+        "④ 空选区按 `Cmd+D` 之后模型条目数一位不变"
+    );
+    assert_eq!(
+        model_note_keys(&port.project()),
+        before_keys,
+        "④ 空选区按 `Cmd+D` 之后 (tick, pitch, id) 三元组一位不变"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        before_commits + 1,
+        "④ 空选区按 `Cmd+D` 不得新增提交（仍是那一次复制的提交）"
+    );
+
+    report_line(&format!(
+        "[duplicate-selection] 默认装配: 注入前 音符条目 N={before_model}（选中 k={k}）; \
+         注入 `Cmd+D` 后 N+k={after_model}（副本起点 {copy_ticks:?}, 原文起点 {original_ticks:?}）; \
+         `Cmd+Z` 后 N={}; 空选区按 `Cmd+D` 消费={consumed_empty}（要求 false）",
+        model_note_count(&port.project())
+    ));
+}
+
 /// 判据 D2（删除选区, `in-process-mcp`）：同一次按键的删除落在**唯一权威**上,
 /// 且 `Cmd+Z` 从**同一个**权威回来（`ROAD-M4-008` 选项 (a)）。
 ///

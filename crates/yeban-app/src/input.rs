@@ -185,7 +185,7 @@ pub enum PhysicalKey {
     KeyZ,
     /// `H` —— 与 `Cmd/Ctrl+Shift` 组合呼出时光机。
     KeyH,
-    /// `D` —— 与 `Cmd/Ctrl` 组合做原位复制。
+    /// `D` —— 与 `Cmd/Ctrl` 组合把选中的音符复制到下一格（右移一个吸附网格）。
     KeyD,
     /// `M` —— 与 `Cmd/Ctrl+Alt` 组合最大化/还原底部控制台。
     KeyM,

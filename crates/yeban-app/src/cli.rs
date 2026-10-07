@@ -2079,11 +2079,11 @@ const SHORTCUTS: [ShortcutRow; 18] = [
         implemented: true,
     },
     ShortcutRow {
-        label: "Cmd/Ctrl+D → 原位复制",
+        label: "Cmd/Ctrl+D → 复制到下一格",
         action: Action::Duplicate,
         key: PhysicalKey::KeyD,
         modifiers: Modifiers::meta(),
-        implemented: false,
+        implemented: true,
     },
     ShortcutRow {
         label: "Delete/Backspace → 删除",

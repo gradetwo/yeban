@@ -1110,9 +1110,9 @@ fn print_shortcuts_is_a_batch_command() {
 /// 3. **宿主**：`host::action_has_implementation(action)` 必须等于这一行的 `implemented`
 ///    —— 宿主说没有实现的动作, 表就必须标 `(未实现)`; 反之亦然。
 ///
-/// 实例会变、判据不变：`Z → 选区撑满视口` 曾是这条判据的样板谎（表说能用、宿主 `reject`），
-/// 它现在已有落地实现（见 B11d）；今天的样例是 `Cmd/Ctrl+D → 原位复制` 与
-/// `Shift+Enter → 采纳 AI 建议`。
+/// 实例会变、判据不变：`Z → 选区撑满视口` 与 `Cmd/Ctrl+D → 复制到下一格` 都曾是这条判据的
+/// 样板谎（表说能用、宿主 `reject`），它们现在都有落地实现（见 B11d / B11e）；
+/// 今天的样例是 `Shift+Enter → 采纳 AI 建议` 与 `[ → 试听主线`。
 ///
 /// 能无头查的就是这三面。`apply_action` 对 `Undo`/`Redo`/`OpenTimeMachine` 在**没有撤销
 /// 端口**的装配下也返回 `false` —— 那是装配缺件, 不是动作没实现, 所以这条判据判的是
@@ -1193,8 +1193,8 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
 
     eprintln!(
         "[shortcut-honesty] 逐条对账 {checked} 条快捷键: 渲染列 / resolve / host::action_has_implementation \
-         三面一致; 其中标记 `{UNIMPLEMENTED_MARKER}` 的 {marked} 条（例如 `Cmd/Ctrl+D → 原位复制` 与 \
-         `Shift+Enter → 采纳 AI 建议`）被宿主如实拒绝"
+         三面一致; 其中标记 `{UNIMPLEMENTED_MARKER}` 的 {marked} 条（例如 `Shift+Enter → 采纳 AI 建议` 与 \
+         `[ → 试听主线`）被宿主如实拒绝"
     );
 }
 
@@ -1279,6 +1279,53 @@ fn zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output() {
             "已实现的缩放行**不得**带 `{UNIMPLEMENTED_MARKER}`: {line}"
         );
     }
+}
+
+/// 判据 B11e: `Cmd/Ctrl+D → 复制到下一格` 已落地 —— 宿主认它, 快捷表也说能用, 渲染不带 `(未实现)`。
+///
+/// 这一条是"复制回退成不实现"的**直接牙**：把 `Action::Duplicate` 放回
+/// `host::action_has_implementation` 的 `!matches!` 名单（或把 `cli.rs` 的 `implemented`
+/// 改回 `false`）⇒ 这里立刻红。B11b 也覆盖这一条, 但它的失败信息是"三面之一分叉";
+/// 本判据的失败信息直接点名"复制被回退了"。
+///
+/// 运行时的四条语义（音符数 `N → N+k`、副本与原文可区分、一次 `Cmd+Z` 全部回来、
+/// 空选区**不消费**）由 `tests/live_ui_mcp.rs` 的端到端判据用真事件源见证 ——
+/// 本判据只回答"这个动作有没有落点"。
+#[test]
+fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
+    use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::Action;
+
+    assert!(
+        action_has_implementation(Action::Duplicate),
+        "宿主必须认 `Duplicate`（回退成不实现即红）"
+    );
+    let row = shortcut_rows()
+        .iter()
+        .find(|row| row.action == Action::Duplicate)
+        .expect("快捷表必须有 `Cmd/Ctrl+D` 这一条");
+    assert!(
+        row.implemented,
+        "快捷表必须说 `Cmd/Ctrl+D` 能用（否则用户看到 `{UNIMPLEMENTED_MARKER}`）"
+    );
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+    let line = run
+        .stdout
+        .lines()
+        .find(|line| line.contains("Cmd/Ctrl+D"))
+        .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到复制那一行:\n{}", run.stdout));
+    assert!(
+        !line.contains(UNIMPLEMENTED_MARKER),
+        "已实现的复制行**不得**带 `{UNIMPLEMENTED_MARKER}`: {line}"
+    );
+    // 标签必须写明**偏移**（不是"原位"）：读者据此知道副本会落在下一格。
+    assert!(
+        row.label.contains("复制到下一格"),
+        "标签必须命名偏移量, 实际 `{}`",
+        row.label
+    );
 }
 
 /// 判据 B12: `--export-midi` 从**真二进制**导出的字节可被 SMF 读取面读回，

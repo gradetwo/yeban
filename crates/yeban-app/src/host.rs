@@ -2334,24 +2334,22 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// `shortcut_table_status_matches_the_resolution_and_host_pipeline` 把快捷键表逐行与它
 /// 对账 —— 表与行为因此不可能各说各话。
 ///
-/// 返回 `false` 的四条（`Duplicate` / `AuditionMain` / `AuditionProposal` /
-/// `AcceptAiSuggestion`）是模型侧的编辑 / 视口语义还没落地的动作。**不消费**它们是刻意的：
+/// 返回 `false` 的三条（`AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion`）
+/// 是模型侧的视口语义还没落地的动作。**不消费**它们是刻意的：
 /// 把键吞掉却什么都不做，比不处理更糟 —— 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
 ///
-/// `DeleteSelection` 与 `ZoomToSelection` / `ZoomToFit` 都曾在这张名单里；它们现在都有落地实现
-/// （下面的 `apply_action` 分支），因此**同时**从这张名单与 `cli.rs` 的快捷表 `implemented`
-/// 标记里移出 —— B11b（`tests/cli_contract.rs`）把这两处与 `--print-shortcuts` 的渲染逐条对账。
-/// 注：`ZoomToSelection` / `ZoomToFit` 的**运行时**语义比"有实现"更细一层 ——
-/// 空选区 / 空工程时 `apply_action` 仍返回 `false`（不消费）；那一条由
-/// `tests/live_ui_mcp.rs` 的端到端判据见证，本名单回答的是"这个动作有没有落点"。
+/// `DeleteSelection` / `ZoomToSelection` / `ZoomToFit` / `Duplicate` 都曾在这张名单里；
+/// 它们现在都有落地实现（下面的 `apply_action` 分支），因此**同时**从这张名单与 `cli.rs`
+/// 的快捷表 `implemented` 标记里移出 —— B11b（`tests/cli_contract.rs`）把这两处与
+/// `--print-shortcuts` 的渲染逐条对账。
+/// 注：`ZoomToSelection` / `ZoomToFit` 与 `Duplicate` 的**运行时**语义比"有实现"更细一层 ——
+/// 空选区（或选中的身份一个都解析不到）时 `apply_action` 仍返回 `false`（不消费）；
+/// 那一条由 `tests/live_ui_mcp.rs` 的端到端判据见证，本名单回答的是"这个动作有没有落点"。
 #[must_use]
 pub fn action_has_implementation(action: Action) -> bool {
     !matches!(
         action,
-        Action::Duplicate
-            | Action::AuditionMain
-            | Action::AuditionProposal
-            | Action::AcceptAiSuggestion
+        Action::AuditionMain | Action::AuditionProposal | Action::AcceptAiSuggestion
     )
 }
 
@@ -2488,6 +2486,50 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             let cleared: Vec<slint::SharedString> = Vec::new();
             ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(cleared)));
             ui.set_selected_note_count(0);
+            refresh_undo_window(ui, port, true);
+            true
+        }
+        // `Cmd`/`Ctrl+D`：**原位复制**当前选区的音符（`[UI-NOTE-003]`）。
+        //
+        // 语义（四条都是决定, 不是意外）：
+        // 1. 选区是**视图态**，事实源是界面属性 `selected-ulids`（与 `DeleteSelection` 同一个读点）
+        //    —— 这里读它, 不读第二份状态；
+        // 2. **无选区（或选中的身份已不存在）⇒ 什么都不做**，返回 `false`（不吞键）。
+        //    与 `DeleteSelection` / `ZoomToSelection` / `Action::Cancel` 同一取向；
+        // 3. 一次按键 = **一次** `commit_ops`。`undo_session::commit` 把整批包成**一个**
+        //    `Op::Batch` ⇒ 复制 k 个音符**一步撤销**全部撤掉（`ARCH-OPS-002` 的原子性）。
+        //    这里**不自己**构造 `Batch`：那会在模型之外长出第二个批次语义；
+        // 4. **选区留在原文上**（不迁到副本）。这不是省事, 是选区一致性的要求：
+        //    `selected-ulids` 是**视图态**，撤销不回滚它。若把选区写到副本身份上,
+        //    一次 `Cmd+Z` 撤掉副本之后选区就指向**不存在的身份** —— 正是
+        //    `DeleteSelection` 那一段警告的"选中数与标志分叉"。原文始终存在, 因此选它最稳。
+        //
+        // 提交后必须重新投影：副本是新身份, 不重投影就是"模型加了、画面没有"。
+        Action::Duplicate => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let selected: Vec<String> = {
+                use slint::Model as _;
+                ui.get_selected_ulids()
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect()
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let ops = duplicate_ops_for(&project, &selected, ROLL_SNAP_GRID_TICKS);
+            if ops.is_empty() {
+                // 选区的对象一个都不在工程里 ⇒ 没有可复制的对象, 如实不消费。
+                return false;
+            }
+            if port
+                .commit_ops(now_ms(), "duplicate selection", ops)
+                .is_err()
+            {
+                return false;
+            }
             refresh_undo_window(ui, port, true);
             true
         }
@@ -2786,6 +2828,87 @@ pub fn delete_ops_for(
                 note_id: *note_id,
                 // 自带撤销载荷：撤销不需要回放历史（`ops.rs` 的设计约束 2）。
                 previous_note: note.clone(),
+            });
+        }
+    }
+    ops
+}
+
+/// `[UI-NOTE-003]` 把"选中的音符身份"解析成待提交的 **`Op::AddNote` 副本集合**（纯函数, 有判据）。
+///
+/// 返回**空 `Vec`** 的两种情形都是**决定**：选区为空；选中的身份在工程里一个都解析不到
+/// （例如它们已被上一次删除移除）—— 那时调用方**什么都不做**（`apply_action` 返回 `false`,
+/// 与 `DeleteSelection` / `ZoomToSelection` 同一取向）。
+///
+/// ## 副本的形状（三条都是决定）
+///
+/// 1. **新身份**：每条副本取一个 [`yeban_model::EntityId::new`]（内部是
+///    `ulid::Ulid::generate`）。复用原文的身份会被 `Op::AddNote::precondition` 以
+///    `ModelError::DuplicateEntityId` 拒绝（`crates/yeban-model/src/ops.rs` 的前置条件 /
+///    `crates/yeban-model/src/project.rs` 的 `insert_note`）—— 这是 `AddNote` 唯一的冲突判据。
+/// 2. **右移一个吸附网格**（`grid_ticks`）：`start_tick.saturating_add(grid_ticks)`。
+///    音高 / 时值 / 力度与全部表现力字段逐项沿用原文（`MidiNote` 的 `clone`, 只改
+///    `id` 与 `start_tick` 两处）。取"**一个网格**"而不是"一个时值"：选区因此**保持内部
+///    相对形状**（整块平移）, 且网格值已经有唯一真相源（`ROLL_SNAP_GRID_TICKS`）,
+///    不新增第二个几何常量。
+/// 3. **落在原文所在的片段里**（同一个 `clip_id`）。音符住在**片段池**里, 不住在轨道上；
+///    选区跨片段 / 跨轨时**每条副本跟着自己的原文**, 不跨片段搬运。`track_id` 只用于
+///    `AddNote::precondition` 的"这条轨道存在吗"检查, 取**摆放了该片段的第一条轨道**
+///    （键序确定）；一个谁都没摆放的片段池条目回退到工程的**第一条轨道**;
+///    工程一条轨道都没有 ⇒ 跳过该音符（与 [`delete_ops_for`] 同一口径）。
+///
+/// ⚠️ **重叠是允许的**：`AddNote` 的前置条件只拒绝**重复身份**, 不拒绝同 tick / 同音高的
+/// 既有音符。因此右移一格压到别的音符（或压到原文自己）上**不会失败**, 不需要夹紧。
+///
+/// ⚠️ **`grid_ticks == 0` 时副本与原文完全重叠**（同 tick 同音高, 只有身份不同）。
+/// 生产路径传的是 [`ROLL_SNAP_GRID_TICKS`]（240）, 因此这条只在调用方显式传 0 时成立。
+///
+/// 为什么一次返回**一批**而不是一个：与 [`delete_ops_for`] 逐字同理 ——
+/// `undo_session::commit` 把整批包成一个 `Op::Batch`, 于是"一次按键 = 一次提交 = 一步撤销"
+/// 是构造上的（`ARCH-OPS-002`）。逐个提交会让复制 5 个音符需要按 5 次 `Cmd+Z` 才回来。
+#[must_use]
+pub fn duplicate_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+    grid_ticks: u64,
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // 身份集合：`BTreeSet` 迭代确定（与红线 4 的取向一致），顺带自动去重。
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    // "片段池条目 → 摆放它的第一条轨道"（`or_insert` ⇒ 第一次命中胜出, 键序确定）。
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback_track = project.tracks.keys().next().copied();
+    let mut ops = Vec::new();
+    // 片段池键序 → 音符键序：与 `ViewState.notes` 的既有顺序同源（`bridge.rs` 的投影顺序）。
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in notes {
+            if !targets.contains(note_id) {
+                continue;
+            }
+            let Some(track_id) = owner.get(clip_id).copied().or(fallback_track) else {
+                continue;
+            };
+            let mut copy = note.clone();
+            copy.id = yeban_model::EntityId::new();
+            copy.start_tick = note.start_tick.saturating_add(grid_ticks);
+            ops.push(yeban_model::ops::Op::AddNote {
+                track_id,
+                clip_id: *clip_id,
+                note: copy,
             });
         }
     }
@@ -3367,5 +3490,157 @@ mod pencil_op_tests {
         assert_eq!(count(&doc), 0, "全选删除后一个音符都不剩");
         batch.apply_inverse(&mut doc).expect("一步撤销必须整批回来");
         assert_eq!(count(&doc), total, "撤销一次必须**全部**回来");
+    }
+
+    #[test]
+    fn duplicate_ops_for_gives_every_selected_note_a_fresh_id_one_grid_to_the_right() {
+        // 判据：`duplicate_ops_for` 是"选区身份 → 待提交副本"的**唯一**解析点。
+        // 空选区与垃圾身份 ⇒ **空批**（"什么都不做"是返回空, 不是 panic, 也不是复制一个猜的对象）。
+        use std::collections::{BTreeMap, BTreeSet};
+        use yeban_model::ModelError;
+        use yeban_model::ops::Op;
+
+        let project = filled_project();
+        let count = |project: &yeban_model::YebanProjectV1| -> usize {
+            project
+                .clip_pool
+                .values()
+                .filter_map(|entry| entry.content.notes())
+                .map(BTreeMap::len)
+                .sum()
+        };
+        // 原文表：身份 → (所在片段, 音符)。键序确定（`BTreeMap`），单位是**条目**。
+        let mut originals: BTreeMap<
+            yeban_model::EntityId,
+            (yeban_model::EntityId, yeban_model::MidiNote),
+        > = BTreeMap::new();
+        for (clip_id, entry) in &project.clip_pool {
+            let Some(notes) = entry.content.notes() else {
+                continue;
+            };
+            for (note_id, note) in notes {
+                originals.insert(*note_id, (*clip_id, note.clone()));
+            }
+        }
+        let total = originals.len();
+        assert!(total >= 4, "夹具至少有 4 个音符, 实际 {total}");
+
+        // ① 空选区 / 垃圾身份 ⇒ 空批（不消费, 与 `delete_ops_for` 同一取向）。
+        assert!(
+            duplicate_ops_for(&project, &[], ROLL_SNAP_GRID_TICKS).is_empty(),
+            "空选区 ⇒ 空批"
+        );
+        assert!(
+            duplicate_ops_for(&project, &["not-a-ulid".to_owned()], ROLL_SNAP_GRID_TICKS)
+                .is_empty(),
+            "解析不出的身份 ⇒ 空批"
+        );
+
+        let ids: Vec<String> = originals.keys().map(ToString::to_string).collect();
+        let ops = duplicate_ops_for(&project, &ids, ROLL_SNAP_GRID_TICKS);
+        assert_eq!(ops.len(), total, "每个选中的音符恰好一条 `AddNote`");
+
+        // ② 每条副本：身份**全新**、起点**恰好右移一个网格**、其余字段逐项沿用原文。
+        let mut copy_ids: BTreeSet<yeban_model::EntityId> = BTreeSet::new();
+        for op in &ops {
+            let Op::AddNote {
+                track_id,
+                clip_id,
+                note,
+            } = op
+            else {
+                panic!("只允许 `AddNote`, 实际是 {op:?}");
+            };
+            assert!(
+                !originals.contains_key(&note.id),
+                "副本身份 {} 撞上了一个原文身份 —— 复用 id 会被 `AddNote::precondition` 以 \
+                 `DuplicateEntityId` 拒绝",
+                note.id
+            );
+            assert!(copy_ids.insert(note.id), "副本身份必须互不相同");
+            // 原文 = 起点减去一个网格、音高相同的那一条（夹具的 (tick, pitch) 互不相同）。
+            let (source_clip, source) = originals
+                .values()
+                .find(|(_, original)| {
+                    original.start_tick.saturating_add(ROLL_SNAP_GRID_TICKS) == note.start_tick
+                        && original.pitch == note.pitch
+                })
+                .unwrap_or_else(|| panic!("副本 {} 找不到对应的原文", note.id));
+            assert_eq!(
+                note.start_tick,
+                source.start_tick + ROLL_SNAP_GRID_TICKS,
+                "副本必须右移恰好一个吸附网格"
+            );
+            // 除 `id` 与 `start_tick` 外**逐项**相同（力度 / 时值 / 全部表现力字段）。
+            let mut expected = source.clone();
+            expected.id = note.id;
+            expected.start_tick = note.start_tick;
+            assert_eq!(*note, expected, "副本只允许改 `id` 与 `start_tick` 两处");
+            // 副本落在原文**所在的片段**里（同一个 `clip_id`）, 不跨片段搬运。
+            assert_eq!(
+                *clip_id, *source_clip,
+                "副本必须进原文所在的那个片段, 不跨片段搬运"
+            );
+            assert!(
+                project
+                    .clip_pool
+                    .get(clip_id)
+                    .is_some_and(|entry| entry.content.notes().is_some()),
+                "目标片段必须存在且是 MIDI 片段（`insert_note` 的前置条件）"
+            );
+            // `track_id` 必须真的摆放过这个片段（`AddNote::precondition` 会查它存在）。
+            assert!(
+                project.tracks.get(track_id).is_some_and(|track| {
+                    track
+                        .clips
+                        .values()
+                        .any(|placement| placement.clip_id == *clip_id)
+                }),
+                "副本的轨道必须真的摆放过它的片段"
+            );
+        }
+
+        // ③ 模型只拒绝**重复身份**, 不拒绝**重叠**：每条副本的前置条件单独成立。
+        for op in &ops {
+            op.precondition(&project)
+                .unwrap_or_else(|error| panic!("副本必须合法（重叠不构成拒绝）, 实际 {error:?}"));
+        }
+        // 把一条**原文的身份原样**再插一遍（夹具的四个音符同在一个片段里）⇒ 唯一冲突判据必须拒绝。
+        let Op::AddNote {
+            track_id,
+            clip_id,
+            note,
+        } = &ops[0]
+        else {
+            unreachable!("上面已断言全部是 `AddNote`")
+        };
+        let mut same_id = note.clone();
+        same_id.id = *originals.keys().next().expect("至少一个原文");
+        let clash = Op::AddNote {
+            track_id: *track_id,
+            clip_id: *clip_id,
+            note: same_id.clone(),
+        };
+        assert!(
+            matches!(
+                clash.precondition(&project),
+                Err(ModelError::DuplicateEntityId { id }) if id == same_id.id
+            ),
+            "复用原本身份必须被 `DuplicateEntityId` 拒绝, 实际 {:?}",
+            clash.precondition(&project)
+        );
+
+        // ④ 原子 + 可逆：`Op::Batch` 的逆是**逆序**的逆操作批 —— 与 `undo_session::commit` 同一条路。
+        let batch = Op::Batch {
+            ops: ops.clone(),
+            description: "duplicate selection".to_owned(),
+        };
+        let mut doc = project.clone();
+        batch
+            .apply(&mut doc)
+            .expect("整批必须可应用（原子；重叠不是拒绝）");
+        assert_eq!(count(&doc), 2 * total, "复制后音符条目数必须翻倍");
+        batch.apply_inverse(&mut doc).expect("一步撤销必须整批撤掉");
+        assert_eq!(count(&doc), total, "撤销一次必须回到 N");
     }
 }
