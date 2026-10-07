@@ -746,6 +746,11 @@ pub fn project_lanes_with_rows(
             .unwrap_or(crate::bridge::RowGeometry {
                 y: TRACK_LANE_TOP_PX,
                 stride: TRACK_LANE_HEIGHT_PX,
+                // 回退几何就是**默认布局**的行：整数真相与 `stride` 必须是同一个数
+                // （判据 `default_layout_geometry_is_bit_for_bit_the_s0_geometry` 钉住
+                // `DEFAULT_TRACK_HEIGHT_PX as f32 == TRACK_LANE_HEIGHT_PX`，
+                // 所以这里不会与 `stride` 分叉）。
+                height_px: crate::bridge::DEFAULT_TRACK_HEIGHT_PX,
             });
         #[allow(clippy::cast_precision_loss)]
         let band_height = (row.stride - 2.0 * AUTOMATION_BAND_INSET_PX) / lane_count as f32;

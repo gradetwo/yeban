@@ -312,6 +312,19 @@ export component MainWindow inherits Window {
     // 与 `track-names` 同索引集；`.slint` 不再做 `42px + 56px * i`。
     in property <[length]> track-ys: [];
     in property <[length]> track-heights: [];
+    // =====================================================================
+    // 轨道高度的**会话/视图态**（ADR-0004 S1 / Q4-A）：宿主拥有、重新注入，零 schema。
+    // =====================================================================
+    // 这三个是**输入**（不是投影输出）：宿主读它们造投影参数，而投影算出的每行高仍从
+    // `track-ys` / `track-heights` 注入（唯一注入实现仍是 `host::apply_view`）。
+    // - `track-height-percent`：全局高度缩放级（100 = 不缩放）；
+    // - `track-height-override-ids` / `-pxs`：按轨道**身份**（26 字符 EntityId 文本）
+    //   配对的每轨基准高（整数逻辑像素）。用身份而不是下标，插/删轨道才不会把高度
+    //   错配到别的轨道上（`UI-TEST-001` 的语义寻址口径）。
+    // 进程退出即失（不持久化，见 `bridge::TrackHeightLayout` 的文档）。
+    in-out property <int> track-height-percent: 100;
+    in-out property <[string]> track-height-override-ids: [];
+    in-out property <[length]> track-height-override-pxs: [];
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];

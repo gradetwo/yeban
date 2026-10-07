@@ -2600,3 +2600,86 @@ fn a_gui_pencil_edit_lands_in_the_same_authority_as_the_session() {
     ));
     mount.stop().expect("停机必须成功（有 5 秒上限）");
 }
+
+/// `[length]` 属性 → `Vec<f32>`（本文件只读注入面；生产侧的读回在 `host::read_lengths`）。
+fn injected_lengths(model: &slint::ModelRc<f32>) -> Vec<f32> {
+    use slint::Model as _;
+    model.iter().collect()
+}
+
+/// 判据（`ADR-0004` **S1**）：轨道高度的**视图态**真的走到了注入的行几何上 ——
+/// 即"每轨高度 + 全局乘子"这条能力**在真实窗口上有消费者**，而不是一个没人调用的参数。
+///
+/// 链路（每一步都是既有实现，本判据不新增测试专用路径）：
+///
+/// ```text
+/// MainWindow 的 track-height-* 三个属性        ← host::set_track_height_override / _percent
+///   └─ host::track_height_layout（唯一读点）
+///        └─ ViewState::from_project_with_layout（唯一的 clamp：base × percent / 100，再夹紧）
+///             └─ host::apply_view → track-ys / track-heights
+///                  └─ 活窗口上的 ModelRc（本判据直接读）
+/// ```
+///
+/// 驱动入口是**既有的**重投影点 `LiveUi::apply_project`（不是为判据新开的口子）：
+/// 它读回窗口上的布局再投影 —— 若不读回来，"设置行高之后再重投影"会把高度静默清零，
+/// 这条判据就会红。
+///
+/// 行高的**取值范围**是 `[16, 320]`（`MIN/MAX_TRACK_HEIGHT_PX`，`ADR-0004` Q2 点名常量、
+/// 未给数字 ⇒ 本仓登记的工程选择；理由见常量文档）。这里取的 120/150% 落在区间内，
+/// 因此断言的是"公式"，不是夹紧。
+#[test]
+fn track_height_view_state_reaches_the_injected_row_geometry() {
+    let project = yeban_model::samples::demo_project();
+    let mut ui = build_live_ui(&project, Permission::ReadOnly).expect("装配");
+    // 第 0 条非主总线轨道的**身份**（`track-{i}-*` 的 `i` 就是投影下标 —— 语义 ID 用它）。
+    let view = yeban_app::bridge::ViewState::from_project(&project).expect("投影");
+    let first_id = view.tracks[0].id.clone();
+
+    // 默认：注入的行矩形高 = 56 − 2（S0 的 `height: 54px`），一位没变。
+    let before = injected_lengths(&ui.ui().get_track_heights());
+    assert!(before.len() >= 2, "演示工程必须有多条轨道");
+    assert!(
+        before.iter().all(|height| *height == 54.0),
+        "默认布局的注入几何必须是 54.0（S0 的字面量）: {before:?}"
+    );
+
+    // 设置"第 0 轨 120px + 全局 150%"，然后走**既有**重投影入口。
+    assert!(
+        yeban_app::host::set_track_height_override(ui.ui(), &first_id, 120),
+        "第一次设置必须报告布局变了"
+    );
+    assert!(
+        !yeban_app::host::set_track_height_override(ui.ui(), &first_id, 120),
+        "同一个值 ⇒ 没变（幂等：调用方不必重投影）"
+    );
+    assert!(
+        yeban_app::host::set_track_height_percent(ui.ui(), 150),
+        "乘子必须写进视图态"
+    );
+    ui.apply_project(&project).expect("重投影");
+
+    let ys = injected_lengths(&ui.ui().get_track_ys());
+    let heights = injected_lengths(&ui.ui().get_track_heights());
+    // 120 × 150% = 180（行矩形高 178）；未覆盖的行是默认基准 56 × 150% = 84（行矩形高 82）。
+    assert_eq!(heights[0], 178.0, "第 0 轨：120 × 150% − 2");
+    assert_eq!(heights[1], 82.0, "第 1 轨：默认 56 × 150% − 2");
+    assert_eq!(ys[0], 42.0, "第 0 行的顶沿仍是 S0 的 42px");
+    assert_eq!(ys[1], 42.0 + 180.0, "前缀和必须用**逐行**行高");
+
+    // 复位（`px == 0` = 删除覆盖）之后几何回到默认 —— 视图态的"回到默认"也是可达的。
+    assert!(yeban_app::host::set_track_height_override(
+        ui.ui(),
+        &first_id,
+        0
+    ));
+    assert!(yeban_app::host::set_track_height_percent(ui.ui(), 100));
+    ui.apply_project(&project).expect("重投影");
+    let after = injected_lengths(&ui.ui().get_track_heights());
+    assert_eq!(after, before, "复位之后必须逐位回到默认几何");
+
+    report_line(&format!(
+        "[adr-0004-s1] 行高视图态: 第 0 轨 120px × 150% ⇒ 注入 {:.0}px / y {:.0}px; \
+         未覆盖轨 {:.0}px; 复位后逐位回到默认 {:?}",
+        heights[0], ys[1], heights[1], after
+    ));
+}

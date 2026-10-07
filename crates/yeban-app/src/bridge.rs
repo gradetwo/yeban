@@ -45,7 +45,7 @@
 //!    非法 / 缺失回退到 [`DEFAULT_TRACK_COLOR`]；规范化的 `#RRGGBB` 文本进 `.slint`
 //!    与语义注册表，于是"投影 ↔ 控件树"两侧可以对账。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 // 账本第 314-318 轮：夹具家族（demo_*）下移到 `yeban-model::samples`；这里再导出, 调用方不变。
@@ -631,8 +631,16 @@ impl VisibleNotes {
 pub struct RowGeometry {
     /// 行顶沿 y（逻辑像素）。第 0 行 = [`crate::automation::TRACK_LANE_TOP_PX`]。
     pub y: f32,
-    /// 行槽高（相邻两行顶沿之差）。S0 恒为 [`crate::automation::TRACK_LANE_HEIGHT_PX`]。
+    /// 行槽高（相邻两行顶沿之差）。默认布局下 = [`crate::automation::TRACK_LANE_HEIGHT_PX`]。
     pub stride: f32,
+    /// 这一行的**整数**有效行高（逻辑像素）—— `RowGeometry` 的**整数真相**。
+    ///
+    /// `ADR-0004` S1（Q1-C / Q2-B）：有效高由 [`TrackHeightLayout::effective_px`] 在投影里
+    /// 一次算出（整数），`stride` 只是它加宽成 `.slint` 需要的 `length` 的**渲染形态**。
+    /// 判据 `effective_height_is_clamped_inside_the_named_bounds_and_stays_integer`
+    /// 钉住 `stride == height_px as f32`（逐位），
+    /// 所以两者不会各说各话。
+    pub height_px: u32,
 }
 
 /// 包头 / 车道矩形相对行槽高的上下留白（逻辑像素）。
@@ -644,6 +652,71 @@ pub const TRACK_ROW_GAP_PX: f32 = 2.0;
 ///
 /// 取值来自旧 `.slint` 的 `+ 4px` 与 `46px`（`54px − 2×4px`）。
 pub const CLIP_ROW_INSET_PX: f32 = 4.0;
+
+/// 编排视图一条车道的**默认**行高（整数逻辑像素）—— `ADR-0004` Q2 点名的
+/// `DEFAULT_TRACK_HEIGHT_PX = 56`。
+///
+/// 来源与"数字不变"的保证：S0 的行距常量 [`crate::automation::TRACK_LANE_HEIGHT_PX`]
+/// 是 `56.0`，S1 把它**照抄**成整数默认值。默认布局（无每轨覆盖、乘子 100）下
+/// 有效高 = `clamp(56 × 100 / 100)` = `56`，`as f32` 逐位等于 `56.0`
+/// ⇒ 默认帧的几何一位不变（判据 `default_layout_geometry_is_bit_for_bit_the_s0_geometry`
+/// 同时断言 `DEFAULT_TRACK_HEIGHT_PX as f32 == TRACK_LANE_HEIGHT_PX`）。
+pub const DEFAULT_TRACK_HEIGHT_PX: u32 = 56;
+
+/// 有效行高的**下界**（整数逻辑像素）。
+///
+/// `ADR-0004` Q2 点名了这个常量但**没有给数字**（规范/ADR 在这一点上是沉默的 ⇒
+/// 本仓登记为工程选择）。取值理由（全部是**几何退化**约束，不是手感）：
+///
+/// - 剪辑矩形的可画高 = `stride − TRACK_ROW_GAP_PX − 2 × CLIP_ROW_INSET_PX`
+///   = `stride − 10`；`stride ≤ 10` 时它是 0 或负 —— 而 0 面积/亚像素的元素会被
+///   上游裁剪语义过滤掉，于是"语义 ID 登记了却查不到"（`AUTOMATION_BAND_INSET_PX`
+///   的注释与 `app-binding-notes.md` §4.1 记录了同一类问题）；
+/// - 自动化带高 = `(stride − 2 × AUTOMATION_BAND_INSET_PX) / 泳道数`；下界 16 让
+///   `stride − 4 = 12`，即**12 条泳道以内**的轨道带高 ≥ 1px
+///   （`app-automation-ui-notes.md:466` 登记了 ">52 条泳道时带高 <1px" 的既有风险；
+///   那条风险由**泳道数**决定，任何行高下界都消不掉它，这里只是不让下界自己制造它）。
+///
+/// 11 是纯算术地板（`stride − 10 > 0`），16 取在其上并留出 6px 的剪辑矩形余量。
+pub const MIN_TRACK_HEIGHT_PX: u32 = 16;
+
+/// 有效行高的**上界**（整数逻辑像素）。
+///
+/// 同 [`MIN_TRACK_HEIGHT_PX`]：`ADR-0004` 点名常量、未给数字（登记为工程选择）。
+/// 取值理由：320 约等于 1080 逻辑像素高窗口的三分之一 —— 一条车道再高就不再是
+/// "车道"（一条轨就吃掉整个编排视图），也让前缀和在 `f32` 里远离 2^24 的精确表示边界。
+pub const MAX_TRACK_HEIGHT_PX: u32 = 320;
+
+/// 全局高度缩放级的**默认**百分比（`100` = 不缩放）。
+pub const DEFAULT_TRACK_HEIGHT_PERCENT: u32 = 100;
+
+/// 一次投影里**唯一**的有效行高计算（纯函数，本机可判据）—— `ADR-0004` Q2-B。
+///
+/// ```text
+/// effective(base_px, percent) = clamp(base_px × percent / 100, MIN, MAX)
+/// ```
+///
+/// 三条口径（各有判据，逐条可被注入打红）：
+///
+/// 1. **整数**：`base_px` / `percent` 都是 `u32`，中间量用 `saturating_mul`（不 panic、
+///    不回绕），除法是整数除法（向下取整）。返回值是 `u32` ⇒ "结果是整数"是**类型**保证；
+///    投影另外断言加宽成 `f32` 之后逐位等于该整数（`f32` 在 2^24 以内精确表示整数）。
+/// 2. **乘子在基准之后**：先乘再除**再**夹紧。夹紧只发生一次、且在最后 ——
+///    于是"每轨差异"（`base_px`）与"全局缩放"（`percent`）作用在**同一个**量上，
+///    优先级写死在这一处，界面没有第二处（`ADR-0004` Q1-C 的代价条款）。
+///    模型侧**不设**布局边界（`Q2-C` 已否决）：`from_project` 不调用 `validate()`，
+///    边界放模型会留下"投影不设防"的第二条路径。
+/// 3. **全函数**：任意 `u32` 输入都返回 `[MIN, MAX]` 内的值；`percent = 0`（或窗口属性
+///    上的负数折算出的 0）表示"缩到最小"，**不是**"这一行消失" —— 行高 0 是损坏值，
+///    不可能由这条公式产生。
+///
+/// 退化值 `0` 的处置见 [`TrackHeightLayout::set_track_px`]（视图侧拒绝）与
+/// `ADR-0004` Q2 的"模型只拒绝退化值 0"（那一半要 `height_px` 进工程才成立，
+/// 属 Q1 的负责人裁决，见 [`TrackHeightLayout`] 的文档）。
+#[must_use]
+pub fn effective_track_height_px(base_px: u32, percent: u32) -> u32 {
+    (base_px.saturating_mul(percent) / 100).clamp(MIN_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX)
+}
 
 impl RowGeometry {
     /// 包头 / 车道矩形的可画高（逻辑像素）= 行槽高 − 上下留白。
@@ -665,27 +738,207 @@ impl RowGeometry {
     }
 }
 
-/// 投影**全部非主总线轨道**的行几何（`BTreeMap` 键序 ⇒ 与 [`TrackView::index`] 同序）。
+/// 轨道高度的**视图状态**（`ADR-0004` Q1-C 的"视图那一半" + Q4-A 第 2 层）。
+///
+/// ## 两个旋钮、一个量、一处公式
+///
+/// | 字段 | 是什么 | 住哪一层 | 默认 |
+/// | :--- | :--- | :--- | :--- |
+/// | `per_track_px` | **每轨基准行高**（整数逻辑像素） | 本片：**视图态**（`Q1` 若裁"进工程"则改为 `TrackV3::height_px`） | 无覆盖 ⇒ [`DEFAULT_TRACK_HEIGHT_PX`] |
+/// | `percent` | **全局高度缩放级**（乘子，百分比） | 视图态（`Q4-A`） | [`DEFAULT_TRACK_HEIGHT_PERCENT`] = 100 |
+///
+/// 优先级写在**唯一**一处：`effective = clamp(base × percent / 100, MIN, MAX)`
+/// （[`effective_track_height_px`]）。`base` 来自每轨覆盖，`percent` 乘在它**之后**、
+/// 夹紧发生在**最后** —— 于是"这条鼓轨比那条总线高"（每轨值）与"整体放大一档"
+/// （全局乘子）不会被压成一个旋钮（`ADR-0004` Q1 否决单一全局缩放的理由）。
+///
+/// ## 为什么 key 是**身份**而不是下标
+///
+/// `per_track_px` 的键是轨道的 26 字符 `EntityId` 规范文本（与 [`TrackView::id`] 同口径，
+/// 也是 `[UI-TEST-001]` 语义寻址用的那个身份）。用下标做键的话，插入/删除一条轨道会让
+/// 所有后续轨道的高度**静默错配**到别的轨道上 —— 判据
+/// `per_track_height_is_keyed_by_identity_not_by_index` 钉住这一点。
+///
+/// ## 零 schema（本片），以及"重启丢什么"
+///
+/// 它**不进** `YebanProjectV1`（不进 `.yeban` 容器、不动 223 条冻结键路径、不动
+/// `canonical_lines`/schema）、**也不进** `local_config`。它作为**会话/视图态**住在
+/// `MainWindow` 的属性里（`host::track_height_layout` 是唯一读入口）。
+/// 因此进程退出后（含 GUI 重启 / `yeban-app` 重启）：
+///
+/// - 每一条每轨高度覆盖**全部丢失** ⇒ 回到 [`DEFAULT_TRACK_HEIGHT_PX`]；
+/// - 全局乘子**丢失** ⇒ 回到 100%。
+///
+/// 这是 `ADR-0004` Q4-A 明确的代价（"第 2 层按构造不能持久化"，`model_isolation.rs:539`
+/// 机械断言 `session.rs` 无 serde 字样）。`Q1` 的负责人裁决若把 `height_px` 放进工程，
+/// **投影一行都不用改**：变的只是这个 map 的**来源**（模型字段 → 视图态）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackHeightLayout {
+    percent: u32,
+    per_track_px: BTreeMap<String, u32>,
+}
+
+impl Default for TrackHeightLayout {
+    /// 默认布局：乘子 100、无每轨覆盖 —— 即 S0 的几何（判据钉住逐位相等）。
+    fn default() -> Self {
+        Self {
+            percent: DEFAULT_TRACK_HEIGHT_PERCENT,
+            per_track_px: BTreeMap::new(),
+        }
+    }
+}
+
+impl TrackHeightLayout {
+    /// 一个每轨高度覆盖的键（轨道身份的 26 字符规范文本）是否合法。
+    ///
+    /// 只拒绝空串：投影**不**解析 `EntityId`（那会让视图态依赖模型的解析错误），
+    /// 它只是把键当不透明身份；不在工程里的身份自然匹配不到任何行（无害）。
+    #[must_use]
+    fn is_valid_key(track_id: &str) -> bool {
+        !track_id.is_empty()
+    }
+
+    /// 全局高度缩放级的百分比（100 = 不缩放）。
+    #[must_use]
+    pub fn percent(&self) -> u32 {
+        self.percent
+    }
+
+    /// 每轨基准高的覆盖表（身份 → 整数逻辑像素）。
+    #[must_use]
+    pub fn overrides(&self) -> &BTreeMap<String, u32> {
+        &self.per_track_px
+    }
+
+    /// 本布局是否就是默认布局（乘子 100 且无覆盖）—— 默认路径的快速判据。
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// 设置全局高度缩放级；返回"是否真的变了"（同一个值 ⇒ `false`，调用方不必重投影）。
+    pub fn set_percent(&mut self, percent: u32) -> bool {
+        if self.percent == percent {
+            return false;
+        }
+        self.percent = percent;
+        true
+    }
+
+    /// 去掉一条轨道的每轨覆盖（回到 [`DEFAULT_TRACK_HEIGHT_PX`]）；返回是否真的变了。
+    pub fn remove_track_px(&mut self, track_id: &str) -> bool {
+        self.per_track_px.remove(track_id).is_some()
+    }
+
+    /// 设置/替换一条轨道的**基准**高（整数逻辑像素，乘子尚未作用）。
+    ///
+    /// `px == 0` 是**退化值**（`ADR-0004` Q2：损坏，不是布局选择），这里按"删除覆盖"
+    /// 处置并返回 `false`（视图态不是文档，不 panic；但 0 也**不会**被当成一个高度）。
+    /// 空身份同样拒绝（`false`）。
+    ///
+    /// 边界**不在这里**：本函数不夹紧 `px`（哪怕 `px > MAX_TRACK_HEIGHT_PX`），
+    /// 夹紧是 [`effective_track_height_px`] 的事 —— 于是"边界只有一处"（`Q2-B`）；
+    /// 把上界也写进 setter 会造出第二个边界（`Q2-C` 被否决的同一个理由）。
+    /// 返回 `true` 表示布局真的变了。
+    pub fn set_track_px(&mut self, track_id: &str, px: u32) -> bool {
+        if px == 0 {
+            return self.remove_track_px(track_id);
+        }
+        if !Self::is_valid_key(track_id) {
+            return false;
+        }
+        self.per_track_px.insert(track_id.to_owned(), px) != Some(px)
+    }
+
+    /// 一条轨道的**基准**高：有覆盖用覆盖，否则用 [`DEFAULT_TRACK_HEIGHT_PX`]。
+    #[must_use]
+    pub fn base_px(&self, track_id: &str) -> u32 {
+        self.per_track_px
+            .get(track_id)
+            .copied()
+            .unwrap_or(DEFAULT_TRACK_HEIGHT_PX)
+    }
+
+    /// 一条轨道的**有效**行高（整数逻辑像素）—— 投影里唯一的那次计算。
+    #[must_use]
+    pub fn effective_px(&self, track_id: &str) -> u32 {
+        effective_track_height_px(self.base_px(track_id), self.percent)
+    }
+
+    /// 从宿主窗口的**三个**视图态属性构造布局（纯函数；`host::track_height_layout` 是唯一调用点）。
+    ///
+    /// - `ids` / `pxs` 是**按身份配对**的两个平行数组（与 `selected-ulids` 同款形状）：
+    ///   逐下标 zip（长度不等时按短的那个截断，多出来的尾部**不会**被当成高度）；
+    /// - `px` 是 Slint 的 `length`（`f32`），这里 `round` 到最近整数（`D28` 的整数口径）：
+    ///   非有限值（`NaN`/`±∞`）与 `≤ 0` 一律视为"没有覆盖"（视图态不 panic，
+    ///   但也**不会**把坏值变成布局选择 —— 它退回默认行高）；
+    /// - `percent` 是 Slint 的 `int`：负数/0 折算成 `0` ⇒ [`effective_track_height_px`]
+    ///   把它夹到 [`MIN_TRACK_HEIGHT_PX`]（"缩到最小"，不是"这一行消失"）。
+    #[must_use]
+    pub fn from_view_state(ids: &[String], pxs: &[f32], percent: i32) -> Self {
+        let mut layout = Self {
+            percent: u32::try_from(percent).unwrap_or(0),
+            per_track_px: BTreeMap::new(),
+        };
+        for (id, px) in ids.iter().zip(pxs.iter()) {
+            if !Self::is_valid_key(id) || !px.is_finite() {
+                continue;
+            }
+            let rounded = px.round();
+            if rounded <= 0.0 {
+                continue;
+            }
+            // `f32 → u32`：`round` 之后仍在 `u32` 范围外的（> u32::MAX / NaN 已排除）
+            // 视为没有覆盖，而不是饱和成一个巨大的行高。
+            if let Ok(px) = u32::try_from(rounded as i64) {
+                layout.per_track_px.insert(id.clone(), px);
+            }
+        }
+        layout
+    }
+}
+
+/// 投影**全部非主总线轨道**的行几何（`BTreeMap` 键序 ⇒ 与 [`TrackView::index`] 同序），
+/// 行高来自给定的[视图态布局](TrackHeightLayout)。
 ///
 /// 这是编排视图纵向布局的**唯一**事实源：包头 / 车道（[`TrackView`]）、剪辑（[`ClipView`]）
 /// 与自动化带（[`crate::automation::project_lanes_with_rows`]）全部由它派生 ——
 /// 旧版「`.slint` 算一遍 `42px + 56px * i`、`automation.rs` 再算一遍
 /// `TRACK_LANE_HEIGHT_PX * i`」的两份事实源在 S0 合并成这一处。
+///
+/// `y` 仍是**前缀和**（`ADR-0004` S0 的形状）：S0 里 `stride` 恒 56 ⇒ 前缀和与闭式
+/// `top + 56 × i` 逐位相等；S1 起 `stride` 逐行不同，**闭式不再成立**，前缀和是唯一的算法。
 #[must_use]
-pub fn track_rows(project: &YebanProjectV1) -> Vec<RowGeometry> {
+pub fn track_rows_with_layout(
+    project: &YebanProjectV1,
+    layout: &TrackHeightLayout,
+) -> Vec<RowGeometry> {
     let mut rows = Vec::new();
     let mut y = crate::automation::TRACK_LANE_TOP_PX;
     for track in project.tracks.values() {
         if track.id == project.master_bus_track_id {
             continue;
         }
+        let height_px = layout.effective_px(&track.id.to_canonical_string());
+        #[allow(clippy::cast_precision_loss)] // ≤ MAX_TRACK_HEIGHT_PX = 320 ≪ 2^24 ⇒ 精确
+        let stride = height_px as f32;
         rows.push(RowGeometry {
             y,
-            stride: crate::automation::TRACK_LANE_HEIGHT_PX,
+            stride,
+            height_px,
         });
-        y += crate::automation::TRACK_LANE_HEIGHT_PX;
+        y += stride;
     }
     rows
+}
+
+/// 投影**全部非主总线轨道**的行几何，行高用**默认布局**（无每轨覆盖、乘子 100）。
+///
+/// 等价于 [`track_rows_with_layout`] 传入 [`TrackHeightLayout::default`]：默认路径的几何
+/// 因此**逐位**等于 S0 的几何（判据 `default_layout_geometry_is_bit_for_bit_the_s0_geometry`）。
+#[must_use]
+pub fn track_rows(project: &YebanProjectV1) -> Vec<RowGeometry> {
+    track_rows_with_layout(project, &TrackHeightLayout::default())
 }
 
 /// 视图里的一个轨道（**不是**模型实体 —— 它是投影结果，可以带界面派生字段）。
@@ -737,6 +990,14 @@ pub struct TrackView {
     ///
     /// 主总线没有行 ⇒ 恒 `0.0`。旧 `.slint` 里这是包头 / 车道的 `height: 54px`。
     pub height: f32,
+    /// 这一行的**有效行高**（整数逻辑像素，`ADR-0004` S1）—— 投影的**整数真相**：
+    /// `height` = `row_height_px as f32 − TRACK_ROW_GAP_PX`（判据逐位断言）。
+    ///
+    /// 它由 [`TrackHeightLayout::effective_px`] 从"每轨基准 × 全局乘子"一次算出
+    /// （唯一的夹紧点）；界面今天不读它，但它是**下一次拖拽的起点**（拖拽必须从
+    /// "当前有多高"开始，而不是从 `.slint` 里猜），也是"整数结果"这条判据的读点。
+    /// 主总线没有行 ⇒ 恒 `0`。
+    pub row_height_px: u32,
 }
 
 /// 视图里的一个 MIDI 音符（`MidiNote` + 它落在哪个片段池条目上 + 投影算出的位置）。
@@ -923,7 +1184,7 @@ pub struct ViewState {
 }
 
 impl ViewState {
-    /// 投影一个工程（默认缩放 [`DEFAULT_TICKS_PER_PIXEL`]）。
+    /// 投影一个工程（默认缩放 [`DEFAULT_TICKS_PER_PIXEL`]、**默认**布局）。
     ///
     /// # Errors
     ///
@@ -932,7 +1193,7 @@ impl ViewState {
         Self::from_project_with_zoom(project, DEFAULT_TICKS_PER_PIXEL)
     }
 
-    /// 投影一个工程并指定缩放（`ticks_per_pixel`）。
+    /// 投影一个工程并指定缩放（`ticks_per_pixel`），布局取默认。
     ///
     /// # Errors
     ///
@@ -948,7 +1209,7 @@ impl ViewState {
         )
     }
 
-    /// 投影一个工程、指定缩放，并指定自动化"当前值"的求值 tick。
+    /// 投影一个工程、指定缩放，并指定自动化"当前值"的求值 tick（布局取默认）。
     ///
     /// 走带位置属**会话运行态**（`[MODEL-ISO-001]` 的第二层），不在 `YebanProjectV1` 里，
     /// 因此静态投影固定用 [`crate::automation::AUTOMATION_CURSOR_TICK`]；需要真实播放头时
@@ -962,6 +1223,51 @@ impl ViewState {
         ticks_per_pixel: u64,
         cursor_tick: u64,
     ) -> Result<Self, BridgeError> {
+        Self::from_project_with_zoom_cursor_and_layout(
+            project,
+            ticks_per_pixel,
+            cursor_tick,
+            &TrackHeightLayout::default(),
+        )
+    }
+
+    /// 投影一个工程并给出**轨道高度布局**（每轨基准 + 全局乘子），缩放取默认
+    /// [`DEFAULT_TICKS_PER_PIXEL`]。
+    ///
+    /// 这是 S1 的生产入口：宿主（`host::track_height_layout` 是唯一读点）从会话/视图态
+    /// 造出布局，投影在这里把 `clamp(base × percent / 100)` 算成每行 `stride`
+    /// （**唯一**的夹紧点）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。
+    pub fn from_project_with_layout(
+        project: &YebanProjectV1,
+        layout: &TrackHeightLayout,
+    ) -> Result<Self, BridgeError> {
+        Self::from_project_with_zoom_cursor_and_layout(
+            project,
+            DEFAULT_TICKS_PER_PIXEL,
+            crate::automation::AUTOMATION_CURSOR_TICK,
+            layout,
+        )
+    }
+
+    /// 投影的本体：缩放 + 光标 tick + 轨道高度布局**全部**显式给全。
+    ///
+    /// 另外三个入口（[`Self::from_project`] / [`Self::from_project_with_zoom`] /
+    /// [`Self::from_project_with_zoom_and_cursor`]）都转发到这里并传**默认布局**，
+    /// 因此"默认路径"与"自定义布局路径"走的是同一段代码 —— 不存在第二条投影实现。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。
+    pub fn from_project_with_zoom_cursor_and_layout(
+        project: &YebanProjectV1,
+        ticks_per_pixel: u64,
+        cursor_tick: u64,
+        layout: &TrackHeightLayout,
+    ) -> Result<Self, BridgeError> {
         if ticks_per_pixel == 0 {
             return Err(BridgeError::ZeroTicksPerPixel);
         }
@@ -969,8 +1275,9 @@ impl ViewState {
         let bar_ticks = bar_length_ticks(project.time_signature)?;
 
         // 行几何：**投影算一次**（前缀和），包头 / 车道 / 剪辑 / 自动化带全部读它。
-        // `ADR-0004` S0 —— 旧版这里没有行几何，`.slint` 与 `automation.rs` 各算一份。
-        let rows = track_rows(project);
+        // `ADR-0004` S0 把这三处收敛到一条 `track_rows`；S1 让行高来自布局参数
+        // （`clamp(每轨基准 × 全局乘子 / 100)`，唯一的夹紧点就在这里的那一次调用里）。
+        let rows = track_rows_with_layout(project, layout);
 
         let mut tracks: Vec<TrackView> = Vec::new();
         let mut master: Option<TrackView> = None;
@@ -1771,8 +2078,12 @@ fn track_view(
     let pan_millis = (f64::from(track.pan) * 1000.0).round() as i32;
     // 色标：**在这里**（唯一一处）解析 + 回退；界面与判据都只读解析结果。
     let color_rgb = track_color_or_default(track.color.as_deref());
-    // 编排行几何：主总线没有行 ⇒ 宽高恒 0（界面也不会画它 —— `track-names` 不含主总线）。
-    let (y, height) = row.map_or((0.0, 0.0), |row| (row.y, row.drawn_height()));
+    // 编排行几何：主总线没有行 ⇒ 宽高与整数行高恒 0（界面也不会画它 ——
+    // `track-names` 不含主总线）。整数真相（`row_height_px`）与 `height` 同源，
+    // 后者是前一者减去上下留白。
+    let (y, height, row_height_px) = row.map_or((0.0, 0.0, 0), |row| {
+        (row.y, row.drawn_height(), row.height_px)
+    });
     TrackView {
         index,
         id: track.id.to_canonical_string(),
@@ -1793,6 +2104,7 @@ fn track_view(
         is_master,
         y,
         height,
+        row_height_px,
     }
 }
 
@@ -3402,5 +3714,479 @@ mod tests {
             assert_eq!(*fraction, volume_fraction(track.volume_db));
             assert!((0.0..=1.0).contains(fraction), "推子位置必须归一化");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0004 **S1**：每轨高度 + 全局高度乘子
+    //
+    // 判据分组（每条都在提交说明里对应一次注入）：
+    // 1. 默认路径的几何**逐位**不变（byte-identical geometry）；
+    // 2. 有效行高的夹紧边界（上下界）+ 整数口径（floor 除法，不是四舍五入）；
+    // 3. 全局乘子与每轨基准的交互（先乘、再除、**最后**夹紧）；
+    // 4. 每轨覆盖按**身份**而不是下标生效；
+    // 5. 自动化带跟随每轨高度（Q3 的"同一份行几何"）；
+    // 6. 视图态 ↔ 布局的转换契约（退化值 0 的处置、变更检测）。
+    // ------------------------------------------------------------------
+
+    /// 第 `index` 条**非主总线**轨道（投影下标序）的身份规范文本。
+    fn track_id_at(project: &YebanProjectV1, index: usize) -> String {
+        project
+            .tracks
+            .values()
+            .filter(|track| track.id != project.master_bus_track_id)
+            .nth(index)
+            .expect("夹具必须有这么多非主总线轨道")
+            .id
+            .to_canonical_string()
+    }
+
+    /// 非主总线轨道数（`rows` / `track-*` 数组的长度）。
+    fn arrangement_track_count(project: &YebanProjectV1) -> usize {
+        project
+            .tracks
+            .values()
+            .filter(|track| track.id != project.master_bus_track_id)
+            .count()
+    }
+
+    /// S1 判据 ①（**默认渲染的保证**）：默认布局（无每轨覆盖、乘子 100）的几何必须
+    /// 与 S0 **逐位**相同 —— 不是"看起来一样"，而是 f32 的位模式相同。
+    ///
+    /// 它替 `ADR-0004` 判据 14（5 张 Linux Tier-1 Golden）在本机做投影侧的等价断言：
+    /// 本机 macOS **判不了** golden（`test_port_adapter.rs:174` 打印"未被判定"并 return），
+    /// 因此"默认帧没变"只能靠投影侧的逐位断言 + 注入（把 `DEFAULT_TRACK_HEIGHT_PX`
+    /// 改成 57 这条判据立刻变红）。
+    #[test]
+    fn default_layout_geometry_is_bit_for_bit_the_s0_geometry() {
+        // 整数默认高与 S0 的 f32 行距必须是**同一个数**（否则默认帧必变）。
+        assert_eq!(
+            DEFAULT_TRACK_HEIGHT_PX as f32,
+            crate::automation::TRACK_LANE_HEIGHT_PX,
+            "S1 的整数默认行高必须逐位等于 S0 的 f32 行距"
+        );
+        for project in [
+            demo_project(),
+            filled_project(),
+            default_project(),
+            YebanProjectV1::default(),
+        ] {
+            // ⓪ 两个入口（有/无布局参数）必须给出**同一个** `ViewState`
+            //（`PartialEq` 逐字段比较 ⇒ 所有 f32 几何逐位比较）。
+            let view = ViewState::from_project(&project).expect("投影");
+            let via_layout =
+                ViewState::from_project_with_layout(&project, &TrackHeightLayout::default())
+                    .expect("投影");
+            assert_eq!(
+                view, via_layout,
+                "默认布局必须与默认路径是同一个视图（逐字段、逐位）"
+            );
+
+            let rows = track_rows(&project);
+            assert_eq!(rows.len(), view.tracks.len());
+            assert_eq!(view.track_ys().len(), view.tracks.len());
+            assert_eq!(view.track_heights().len(), view.tracks.len());
+            for (index, row) in rows.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let closed_form = crate::automation::TRACK_LANE_TOP_PX
+                    + crate::automation::TRACK_LANE_HEIGHT_PX * index as f32;
+                assert_eq!(
+                    row.y.to_bits(),
+                    closed_form.to_bits(),
+                    "第 {index} 行的前缀和必须逐位等于 S0 的闭式 top + 56 × i"
+                );
+                assert_eq!(
+                    row.stride.to_bits(),
+                    crate::automation::TRACK_LANE_HEIGHT_PX.to_bits()
+                );
+                assert_eq!(row.height_px, DEFAULT_TRACK_HEIGHT_PX);
+                assert_eq!(view.tracks[index].row_height_px, DEFAULT_TRACK_HEIGHT_PX);
+                assert_eq!(view.track_ys()[index].to_bits(), row.y.to_bits());
+                assert_eq!(
+                    view.track_heights()[index].to_bits(),
+                    row.drawn_height().to_bits()
+                );
+                // 旧 `.slint` 的 `height: 54px`（= 56 − 2）。
+                assert_eq!(row.drawn_height().to_bits(), 54.0_f32.to_bits());
+            }
+            // 剪辑的行几何同源（旧 `.slint` 的 `+ 4px` / `height: 46px`）。
+            for clip in &view.clips {
+                let row = rows[clip.track_index];
+                assert_eq!(clip.y.to_bits(), row.clip_y().to_bits());
+                assert_eq!(clip.height.to_bits(), row.clip_height().to_bits());
+                assert_eq!(row.clip_height().to_bits(), 46.0_f32.to_bits());
+            }
+            // 主总线在编排视图没有行 —— 整数行高必须显式为 0（不是编造一行）。
+            if let Some(master) = &view.master {
+                assert_eq!(master.y, 0.0);
+                assert_eq!(master.height, 0.0);
+                assert_eq!(master.row_height_px, 0);
+            }
+        }
+    }
+
+    /// S1 判据 ②：有效行高的**夹紧边界**（`MIN_TRACK_HEIGHT_PX` / `MAX_TRACK_HEIGHT_PX`）
+    /// 与**整数**口径（整数除法 = floor，不是四舍五入），以及投影侧"加宽成 f32 之后
+    /// 仍是精确整数"。
+    ///
+    /// 边界数字的权威：`ADR-0004` Q2 **点名了这两个常量但没给数字**（规范与 ADR 在此沉默），
+    /// 因此取值是工程选择，理由写在两个常量的文档里（几何退化约束：剪辑矩形 `stride − 10`、
+    /// 自动化带 `(stride − 4) / 泳道数`）。这条判据把"选择"钉成"事实"。
+    #[test]
+    fn effective_height_is_clamped_inside_the_named_bounds_and_stays_integer() {
+        // 下界：0、1、MIN 本身与 MIN 之下全部落到 MIN。
+        assert_eq!(effective_track_height_px(0, 100), MIN_TRACK_HEIGHT_PX);
+        assert_eq!(effective_track_height_px(1, 100), MIN_TRACK_HEIGHT_PX);
+        assert_eq!(
+            effective_track_height_px(MIN_TRACK_HEIGHT_PX - 1, 100),
+            MIN_TRACK_HEIGHT_PX
+        );
+        assert_eq!(
+            effective_track_height_px(MIN_TRACK_HEIGHT_PX, 100),
+            MIN_TRACK_HEIGHT_PX
+        );
+        // 默认点：56 × 100% = 56（S1 的"数字不变"承诺）。
+        assert_eq!(
+            effective_track_height_px(DEFAULT_TRACK_HEIGHT_PX, DEFAULT_TRACK_HEIGHT_PERCENT),
+            DEFAULT_TRACK_HEIGHT_PX
+        );
+        // 上界：MAX 本身、MAX 之上、以及放大到荒谬的乘子全部落到 MAX。
+        assert_eq!(
+            effective_track_height_px(MAX_TRACK_HEIGHT_PX, 100),
+            MAX_TRACK_HEIGHT_PX
+        );
+        assert_eq!(
+            effective_track_height_px(MAX_TRACK_HEIGHT_PX + 1, 100),
+            MAX_TRACK_HEIGHT_PX
+        );
+        assert_eq!(
+            effective_track_height_px(DEFAULT_TRACK_HEIGHT_PX, 1000),
+            MAX_TRACK_HEIGHT_PX
+        );
+        assert_eq!(
+            effective_track_height_px(u32::MAX, u32::MAX),
+            MAX_TRACK_HEIGHT_PX,
+            "饱和乘法 + 最后夹紧：荒谬输入不 panic、不回绕"
+        );
+        // 乘子为 0（窗口属性上的负数折算而来）⇒ 下界，而不是"这一行消失"。
+        assert_eq!(
+            effective_track_height_px(DEFAULT_TRACK_HEIGHT_PX, 0),
+            MIN_TRACK_HEIGHT_PX
+        );
+        // **整数除法（floor）**，不是四舍五入：56 × 35 = 1960 → 1960 / 100 = **19**
+        //（19.6 四舍五入是 20 ⇒ 用 `round` 的实现会在这里变红）。
+        assert_eq!(effective_track_height_px(56, 35), 19);
+        assert_eq!(effective_track_height_px(56, 33), 18);
+        assert_eq!(effective_track_height_px(56, 150), 84);
+        assert_eq!(effective_track_height_px(120, 25), 30);
+        // 14 = 56 × 25% 会**低于**下界 ⇒ 被夹到 16（下界管着"缩到最小"）。
+        assert_eq!(effective_track_height_px(56, 25), MIN_TRACK_HEIGHT_PX);
+
+        // 全量扫描：结果恒在 [MIN, MAX]、对两个输入都单调（非严格）。
+        let bases = [
+            0_u32,
+            1,
+            15,
+            16,
+            17,
+            55,
+            56,
+            57,
+            100,
+            319,
+            320,
+            321,
+            10_000,
+            u32::MAX,
+        ];
+        let percents = [0_u32, 1, 33, 50, 99, 100, 101, 150, 200, 1000, u32::MAX];
+        for base in bases {
+            let mut previous = 0_u32;
+            for (index, percent) in percents.iter().enumerate() {
+                let px = effective_track_height_px(base, *percent);
+                assert!(
+                    (MIN_TRACK_HEIGHT_PX..=MAX_TRACK_HEIGHT_PX).contains(&px),
+                    "base={base} percent={percent} ⇒ {px} 掉出了命名边界"
+                );
+                if index > 0 {
+                    assert!(px >= previous, "乘子变大 ⇒ 有效高不得变小");
+                }
+                previous = px;
+            }
+        }
+        for percent in percents {
+            let mut previous = 0_u32;
+            for (index, base) in bases.iter().enumerate() {
+                let px = effective_track_height_px(*base, percent);
+                if index > 0 {
+                    assert!(px >= previous, "基准变大 ⇒ 有效高不得变小");
+                }
+                previous = px;
+            }
+        }
+
+        // 投影侧：每一个 `stride` 都是**精确整数**（f32 加宽无损），而且与整数真相同源。
+        let project = demo_project();
+        let id0 = track_id_at(&project, 0);
+        let id1 = track_id_at(&project, 1);
+        let mut tall = TrackHeightLayout::default();
+        assert!(tall.set_track_px(&id0, MAX_TRACK_HEIGHT_PX + 5));
+        assert!(tall.set_track_px(&id1, 3));
+        let mut tiny = TrackHeightLayout::default();
+        assert!(tiny.set_percent(1));
+        for layout in [
+            TrackHeightLayout::default(),
+            tall,
+            tiny,
+            TrackHeightLayout::from_view_state(&[], &[], -1),
+        ] {
+            let rows = track_rows_with_layout(&project, &layout);
+            let view = ViewState::from_project_with_layout(&project, &layout).expect("投影");
+            for (index, row) in rows.iter().enumerate() {
+                assert_eq!(row.stride, row.height_px as f32, "stride 必须是精确整数");
+                assert_eq!(row.stride.fract(), 0.0, "行高不许有小数部分");
+                assert!((MIN_TRACK_HEIGHT_PX..=MAX_TRACK_HEIGHT_PX).contains(&row.height_px));
+                assert_eq!(view.tracks[index].row_height_px, row.height_px);
+                assert_eq!(
+                    view.tracks[index].height,
+                    row.height_px as f32 - TRACK_ROW_GAP_PX
+                );
+                assert_eq!(view.track_ys()[index], row.y);
+            }
+        }
+    }
+
+    /// S1 判据 ③：**全局乘子与每轨基准的交互** —— 公式只有一处、顺序写死为
+    /// "先乘（每轨基准 × 乘子）、再整除、**最后**夹紧"。
+    ///
+    /// 后果两条（都可注入打红）：① 每轨差异在**任何**乘子下都保持（同一乘子下基准大的行不矮）；
+    /// ② 夹紧发生在乘子**之后** —— 1000% 的 56 变成 320（MAX）而不是"56 先是 56、乘子被丢掉"。
+    #[test]
+    fn percent_multiplies_each_per_track_height_and_the_clamp_comes_last() {
+        // 先乘再除：50% / 200% 逐位可算。
+        assert_eq!(effective_track_height_px(56, 200), 112);
+        assert_eq!(effective_track_height_px(120, 50), 60);
+        assert_eq!(effective_track_height_px(56, 100), 56);
+        // 夹紧在**最后**：这条把"先夹基准再乘"（一个容易写出的顺序错误）分辨出来。
+        // 基准 2×MAX（视图态允许存任意正整数，见 `set_track_px` 的文档）：
+        //   先乘后夹（正确）= clamp(640 × 25 / 100) = clamp(160) = 160；
+        //   先夹后乘（错误）= clamp(320) × 25 / 100 = 80。
+        assert_eq!(
+            effective_track_height_px(MAX_TRACK_HEIGHT_PX * 2, 25),
+            160,
+            "夹紧必须发生在乘子**之后**（先夹基准会得到 80）"
+        );
+        assert_eq!(
+            effective_track_height_px(MAX_TRACK_HEIGHT_PX, 200),
+            MAX_TRACK_HEIGHT_PX
+        );
+        assert_eq!(
+            effective_track_height_px(DEFAULT_TRACK_HEIGHT_PX, 1000),
+            MAX_TRACK_HEIGHT_PX,
+            "乘子把默认行放大到荒谬时，夹紧给出 MAX（而不是回绕/饱和出一个坏几何）"
+        );
+        for percent in [50_u32, 75, 100, 125, 150, 200, 1000] {
+            assert!(
+                effective_track_height_px(120, percent) >= effective_track_height_px(56, percent),
+                "同一乘子下，基准更高的行不得更矮（每轨差异必须活下来）"
+            );
+        }
+        // 单调（乘子）在**夹紧区内**也必须成立：56 的 100% → 150% → 200%。
+        assert!(effective_track_height_px(56, 100) < effective_track_height_px(56, 150));
+        assert!(effective_track_height_px(56, 150) < effective_track_height_px(56, 200));
+
+        // 端到端：两轨不同基准 + 150% 乘子 ⇒ 行高、前缀和、剪辑几何全部跟着走。
+        let project = demo_project();
+        let id0 = track_id_at(&project, 0);
+        let id1 = track_id_at(&project, 1);
+        let mut layout = TrackHeightLayout::default();
+        assert!(layout.set_track_px(&id0, 100));
+        assert!(layout.set_track_px(&id1, 40));
+        assert!(layout.set_percent(150));
+        let rows = track_rows_with_layout(&project, &layout);
+        assert_eq!(rows[0].height_px, 150, "100 × 150%");
+        assert_eq!(rows[1].height_px, 60, "40 × 150%");
+        for row in &rows[2..] {
+            // 没有每轨覆盖的行用**默认基准** 56，乘子照样作用在它上面。
+            assert_eq!(row.height_px, 84, "56 × 150%");
+        }
+        assert_eq!(rows[1].y, rows[0].y + 150.0, "前缀和必须用逐行行高");
+        assert_eq!(rows[2].y, rows[1].y + 60.0);
+        let view = ViewState::from_project_with_layout(&project, &layout).expect("投影");
+        for clip in &view.clips {
+            let row = rows[clip.track_index];
+            assert_eq!(clip.y, row.clip_y());
+            assert_eq!(clip.height, row.clip_height());
+        }
+        // 乘子把**整份**几何放大：默认视图与 150% 视图的行高不相等。
+        let default_view = ViewState::from_project(&project).expect("投影");
+        assert_ne!(view.track_heights(), default_view.track_heights());
+    }
+
+    /// S1 判据 ④：每轨高度按**身份**（26 字符 `EntityId` 文本）生效，**不是**按下标。
+    ///
+    /// 这条的代价是真实的：按下标存高度，插入/删除一条轨道会把所有后续轨道的高度
+    /// **静默错配**到别的轨道上（而 `[UI-TEST-001]` 的语义寻址正是按身份）。
+    #[test]
+    fn per_track_height_is_keyed_by_identity_not_by_index() {
+        let project = demo_project();
+        let count = arrangement_track_count(&project);
+        assert!(count >= 3, "这条判据需要至少 3 条非主总线轨道");
+        let first = track_id_at(&project, 0);
+        let last = track_id_at(&project, count - 1);
+
+        // (a) 视图态数组的**顺序不决定行**：反序输入的覆盖仍落到正确的身份上。
+        let layout = TrackHeightLayout::from_view_state(
+            &[last.clone(), first.clone()],
+            &[200.0, 100.0],
+            100,
+        );
+        assert_eq!(layout.effective_px(&first), 100);
+        assert_eq!(layout.effective_px(&last), 200);
+        let rows = track_rows_with_layout(&project, &layout);
+        assert_eq!(rows[0].height_px, 100, "身份 `first` 在第 0 行");
+        assert_eq!(
+            rows[count - 1].height_px,
+            200,
+            "身份 `last` 在最后一行（而不是数组里的第 0 位）"
+        );
+        for (index, row) in rows.iter().enumerate().take(count - 1).skip(1) {
+            assert_eq!(
+                row.height_px, DEFAULT_TRACK_HEIGHT_PX,
+                "第 {index} 行没有被覆盖 ⇒ 默认高"
+            );
+        }
+        // (b) 不存在的身份**不匹配任何行**（而不是匹配到第 0 行）。
+        assert_eq!(
+            layout.effective_px("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+            DEFAULT_TRACK_HEIGHT_PX
+        );
+        // (c) 删掉键序最前的**非主总线**轨道 ⇒ 所有下标前移一位，
+        //     但"同一条身份的行高"一位不变（下标寻址会在这里错配）。
+        let mut shrunk = project.clone();
+        shrunk
+            .tracks
+            .remove(&EntityId::from_str(&first).expect("夹具身份必须可解析"));
+        assert_eq!(arrangement_track_count(&shrunk), count - 1);
+        let shrunk_rows = track_rows_with_layout(&shrunk, &layout);
+        assert_eq!(shrunk_rows.len(), count - 1);
+        for (index, row) in shrunk_rows.iter().enumerate() {
+            let id = track_id_at(&shrunk, index);
+            assert_eq!(
+                row.height_px,
+                layout.effective_px(&id),
+                "第 {index} 行（身份 {id}）的行高必须跟着身份走"
+            );
+        }
+    }
+
+    /// S1 判据 ⑤（`ADR-0004` Q3 的纵向那一半）：自动化带与剪辑车道读**同一份**行几何 ——
+    /// 变高之后每条带仍落在它所**属行**的 `[row.y, row.y + row.stride]` 之内，且真的变高了。
+    #[test]
+    fn automation_bands_follow_the_per_track_row_heights() {
+        let project = demo_project();
+        let id0 = track_id_at(&project, 0);
+        let mut layout = TrackHeightLayout::default();
+        assert!(layout.set_track_px(&id0, 200));
+        let rows = track_rows_with_layout(&project, &layout);
+        let view = ViewState::from_project_with_layout(&project, &layout).expect("投影");
+        let default_view = ViewState::from_project(&project).expect("投影");
+        assert_eq!(rows[0].height_px, 200);
+        assert!(!view.automation_lanes.is_empty(), "演示工程必须有泳道");
+        assert_eq!(
+            view.automation_lanes.len(),
+            default_view.automation_lanes.len(),
+            "变行高**不**增删泳道"
+        );
+        let mut seen_taller_band = false;
+        for (lane, default_lane) in view
+            .automation_lanes
+            .iter()
+            .zip(default_view.automation_lanes.iter())
+        {
+            let row = rows[lane.track_index];
+            assert!(
+                lane.band_y >= row.y,
+                "泳道 `{}` 的带顶掉出了所属行",
+                lane.element_id
+            );
+            assert!(
+                lane.band_y + lane.band_height <= row.y + row.stride,
+                "泳道 `{}` 的带底掉出了所属行",
+                lane.element_id
+            );
+            if lane.track_index == 0 {
+                assert!(
+                    lane.band_height > default_lane.band_height,
+                    "第 0 条轨道变高之后它的带必须跟着变高（否则带与行是两份几何）"
+                );
+                seen_taller_band = true;
+            }
+        }
+        assert!(seen_taller_band, "演示工程第 0 条轨道必须有自动化带");
+    }
+
+    /// S1 判据 ⑥：**视图态 ↔ 布局**的转换契约 —— 平行数组按身份配对、长度不等按短的截断、
+    /// 坏值（空身份 / `NaN` / 非正）不算覆盖、退化值 0 与"变更检测"的返回值语义。
+    #[test]
+    fn view_state_layout_conversion_rejects_degenerate_values() {
+        let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned();
+        // ⓪ 读写往返：身份 → 整数，长度不等按短的截断。
+        let layout = TrackHeightLayout::from_view_state(
+            &[
+                id.clone(),
+                String::new(),
+                "other".to_owned(),
+                "truncated".to_owned(),
+            ],
+            &[120.0, 300.0, f32::NAN],
+            150,
+        );
+        assert_eq!(layout.percent(), 150);
+        assert_eq!(
+            layout.overrides().len(),
+            1,
+            "空身份 / NaN / 长度不等时被截断的尾部都不算覆盖"
+        );
+        assert_eq!(layout.base_px(&id), 120);
+        assert_eq!(
+            layout.effective_px(&id),
+            effective_track_height_px(120, 150)
+        );
+        assert_eq!(layout.overrides()[&id], 120);
+
+        // ① `set_track_px`：0 是退化值（**不是**高度），按"删除覆盖"处置。
+        let mut layout = TrackHeightLayout::default();
+        assert!(!layout.set_track_px(&id, 0), "0 不是布局选择 ⇒ 布局没变");
+        assert_eq!(layout.base_px(&id), DEFAULT_TRACK_HEIGHT_PX);
+        assert!(layout.set_track_px(&id, 120));
+        assert!(!layout.set_track_px(&id, 120), "同一个值 ⇒ 没变");
+        assert!(!layout.is_default());
+        assert_eq!(layout.effective_px(&id), 120);
+        assert!(!layout.set_track_px("", 120), "空身份不是键");
+        assert!(!layout.remove_track_px("nobody"));
+        assert!(layout.set_track_px(&id, 0), "删掉已有覆盖 ⇒ 变了");
+        assert!(layout.is_default());
+
+        // ② 边界**不**在 setter 里（只有投影夹紧）：设一个大得荒谬的基准也照存，
+        //    有效值由投影夹到 MAX —— 这一条把"两处边界"挡在门外。
+        assert!(layout.set_track_px(&id, 100_000));
+        assert_eq!(layout.base_px(&id), 100_000);
+        assert_eq!(layout.effective_px(&id), MAX_TRACK_HEIGHT_PX);
+
+        // ③ `percent`：窗口属性是 `int` ⇒ 负数折算成 0 ⇒ 投影夹到下界（全函数，不 panic）。
+        let zero = TrackHeightLayout::from_view_state(&[], &[], -5);
+        assert_eq!(zero.percent(), 0);
+        assert_eq!(zero.effective_px(&id), MIN_TRACK_HEIGHT_PX);
+        assert_eq!(
+            TrackHeightLayout::from_view_state(&[], &[], i32::MIN).percent(),
+            0
+        );
+        // ④ 变更检测：`set_percent` 的返回值就是"要不要重投影"。
+        let mut layout = TrackHeightLayout::default();
+        assert!(layout.is_default());
+        assert!(!layout.set_percent(DEFAULT_TRACK_HEIGHT_PERCENT));
+        assert!(layout.set_percent(200));
+        assert!(!layout.set_percent(200));
+        assert!(!layout.is_default());
     }
 }

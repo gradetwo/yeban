@@ -156,7 +156,9 @@ impl AuthorityMirror {
         let Some(project) = authority.project() else {
             return ProjectionOutcome::NoActiveProject { revision };
         };
-        match ViewState::from_project(&project) {
+        // 行高布局（`ADR-0004` S1）与卷帘偏移同款：从窗口读回来再投影，
+        // 于是"会话侧改了工程"的重投影**不会**把手动调过的行高静默清零。
+        match ViewState::from_project_with_layout(&project, &host::track_height_layout(ui)) {
             Ok(view) => {
                 let scroll_x = ui.get_roll_scroll_x();
                 host::apply_view(

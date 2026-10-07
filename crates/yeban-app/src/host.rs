@@ -46,7 +46,7 @@ use std::rc::Rc;
 use slint::{ModelRc, SharedString, VecModel};
 use yeban_engine::transport::TransportReading;
 
-use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, ViewState};
+use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
 use crate::engine_host::EngineHost;
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterSnapshot, silent_snapshot};
@@ -199,6 +199,100 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     apply_master(ui, view);
     // 电平：先重置成"与当前工程等长的静音"，再由 `apply_meters` 填真实读数（见模块文档）。
     apply_meters(ui, &silent_snapshot(view));
+}
+
+/// 轨道高度的**会话/视图态**读入口（`ADR-0004` S1 / Q4-A）—— **唯一**的一处
+/// "窗口上的三个属性 → 投影参数"的转换。
+///
+/// 数据流（与卷帘偏移 `roll-scroll-x` 同款："宿主拥有、重新注入"）：
+///
+/// ```text
+/// MainWindow 的 track-height-* 三个 in-out 属性        ← 宿主/界面写（set_* 两个函数）
+///   └─ host::track_height_layout(ui)                   ← 本函数（唯一读点）
+///        └─ ViewState::from_project_with_layout(...)   ← 投影（唯一的 clamp）
+///             └─ host::apply_view(ui, view, ..)        ← 行几何注入 track-ys / track-heights
+/// ```
+///
+/// 属性缺失 / 空数组 ⇒ [`TrackHeightLayout::default`]（乘子 100、无覆盖）⇒ 默认几何
+/// **逐位**等于 S0（判据 `default_layout_geometry_is_bit_for_bit_the_s0_geometry`）。
+/// 因此"没有任何人碰过高度"这条路径不引入任何渲染差异。
+///
+/// 它**不是**第二份权威：布局只影响**投影输入**，工程（`Domain` / `YebanProjectV1`）
+/// 一位没动；反方向的写仍然是 `Op` + `apply`（`ADR-0005`）。
+#[must_use]
+pub fn track_height_layout(ui: &MainWindow) -> TrackHeightLayout {
+    TrackHeightLayout::from_view_state(
+        &read_strings(&ui.get_track_height_override_ids()),
+        &read_lengths(&ui.get_track_height_override_pxs()),
+        ui.get_track_height_percent(),
+    )
+}
+
+/// 把一份布局写回窗口的三个属性（**唯一**的写点）。
+///
+/// 覆盖表按身份键序（`BTreeMap`）落成两个平行数组：顺序是确定的（跨进程同一结果），
+/// 且总与 [`track_height_layout`] 的解读一致（`ids[i]` ↔ `pxs[i]`）。
+fn write_track_height_layout(ui: &MainWindow, layout: &TrackHeightLayout) {
+    let ids: Vec<String> = layout.overrides().keys().cloned().collect();
+    #[allow(clippy::cast_precision_loss)] // ≤ u32：Slint 的 `length` 就是 f32
+    let pxs: Vec<f32> = layout.overrides().values().map(|px| *px as f32).collect();
+    ui.set_track_height_override_ids(strings(&ids));
+    ui.set_track_height_override_pxs(lengths(&pxs));
+    ui.set_track_height_percent(i32::try_from(layout.percent()).unwrap_or(i32::MAX));
+}
+
+/// 设置一条轨道的**每轨基准高**（整数逻辑像素）—— S1 唯一的"设高度"入口。
+///
+/// 契约（每条都可判据）：
+///
+/// - **按身份**：`track_id` 是轨道的 26 字符 `EntityId` 规范文本（与 `TrackView::id`
+///   同一个身份）。不是视图下标 ⇒ 插/删轨道不会把高度错配到别的轨道；
+/// - `px == 0` ⇒ **删除**该轨覆盖（回到 [`crate::bridge::DEFAULT_TRACK_HEIGHT_PX`]）并返回"是否真的变了"。
+///   0 是退化值（`ADR-0004` Q2：损坏，不是布局选择），在这里被当成"取消覆盖"而不是
+///   "高 0 的行"；
+/// - 返回值 `false` = 布局**一位没变**（同一个值 / 未知身份 / 没有可删的覆盖）⇒
+///   调用方不必重投影、不必重注入；
+/// - 本函数**只改视图态**，不重投影：重投影由调用方走既有路径
+///   （GUI：`refresh_undo_window`；测试/执行面：`live_surface` 的 `apply_project`）,
+///   因为"什么工程"不属于视图态（本函数拿不到也不该拿）。
+///
+/// 不发明任何新的 JSON-RPC 错误码（`D25`）：这里没有错误分支 —— 身份不合法/值没变
+/// 就是 `false`，"改不动"与"没改"在返回值上不可区分是有意的（**幂等**优先）。
+pub fn set_track_height_override(ui: &MainWindow, track_id: &str, px: u32) -> bool {
+    let mut layout = track_height_layout(ui);
+    if !layout.set_track_px(track_id, px) {
+        return false;
+    }
+    write_track_height_layout(ui, &layout);
+    true
+}
+
+/// 设置**全局高度缩放级**（百分比，100 = 不缩放）—— S1 的第二个旋钮。
+///
+/// 返回"是否真的变了"（同 [`set_track_height_override`]）。夹紧**不在这里**：
+/// 任何 `percent` 都写进视图态，有意义的上/下界由投影
+/// （[`crate::bridge::effective_track_height_px`]）在执行时施加 —— 边界只有一处
+/// （`ADR-0004` Q2-B）。因此 `percent = 0` 不是错误：它表示"缩到最小"（有效高被夹到
+/// [`crate::bridge::MIN_TRACK_HEIGHT_PX`]），不是一个 0 高的行。
+pub fn set_track_height_percent(ui: &MainWindow, percent: u32) -> bool {
+    let mut layout = track_height_layout(ui);
+    if !layout.set_percent(percent) {
+        return false;
+    }
+    write_track_height_layout(ui, &layout);
+    true
+}
+
+/// `[string]` 属性 → `Vec<String>`（读回视图态；写方向是 [`strings`]）。
+fn read_strings(model: &ModelRc<SharedString>) -> Vec<String> {
+    use slint::Model as _;
+    model.iter().map(|value| value.to_string()).collect()
+}
+
+/// `[length]` 属性 → `Vec<f32>`（读回视图态；写方向是 [`lengths`]）。
+fn read_lengths(model: &ModelRc<f32>) -> Vec<f32> {
+    use slint::Model as _;
+    model.iter().collect()
 }
 
 /// 主控通道条的**投影**字段（名字 / 音量 / 声相 / 静音 / 独奏 / 色标）。
@@ -726,6 +820,9 @@ pub fn pencil_op_for(
     if active_tool != i32::from(PENCIL_TOOL_DIGIT) {
         return None;
     }
+    // 这里的命中测试**只**看卷帘的 14px 音高泳道（`lane_at_y`）与 tick 落在哪个片段，
+    // 与编排行高无关：行高变高/变矮**不**改这条路径的答案（因此 S1 不给它加布局参数
+    // —— 一个不影响结果的参数是假依赖）。
     let view = ViewState::from_project(project).ok()?;
     let plan = view.pencil_plan(scroll_x, x, y, grid_ticks)?;
     let mut target: Option<(yeban_model::EntityId, yeban_model::EntityId)> = None;
@@ -802,9 +899,12 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             return;
         }
         // 重新投影, 让新音符出现在界面上（与 `refresh_undo` 同一手法）。
+        // 行高布局（`ADR-0004` S1）是视图态 ⇒ 重投影必须读回来，
+        // 否则"设了行高之后用铅笔写一个音符"会把行高静默清零。
+        let layout = track_height_layout(&ui);
         if let Some(refreshed) = port
             .try_project()
-            .and_then(|project| ViewState::from_project(&project).ok())
+            .and_then(|project| ViewState::from_project_with_layout(&project, &layout).ok())
         {
             apply_view(&ui, &refreshed, width, scroll);
         }
@@ -838,7 +938,9 @@ fn refresh_undo_window(ui: &MainWindow, port: &UndoPort, reproject: bool) {
         eprintln!("[yeban-app] 撤销后没有可投影的工程: 权威会话此刻没有活跃工程");
         return;
     };
-    match ViewState::from_project(&project) {
+    // 撤销只改工程，**不该**丢掉视图态：行高布局从窗口读回来（与 `scroll_x` 同款）。
+    let layout = track_height_layout(ui);
+    match ViewState::from_project_with_layout(&project, &layout) {
         Ok(view) => {
             // 复用当前偏移：撤销**不应**把卷帘滚回起点（账本第 200 轮记录的缺陷）。
             let scroll_x = ui.get_roll_scroll_x();

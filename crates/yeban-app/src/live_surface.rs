@@ -456,8 +456,15 @@ impl LiveAdminSurface {
     /// （`ViewState::from_project` → `host::apply_view`），只是发生在**已存在的窗口**上。
     /// 因此"换工程 ⇒ 换界面"这件事在同一个活窗口上可判据（不需要第二个窗口，
     /// 也就不需要第二个 Tier-1 平台 —— 那是 `set_platform` 每线程一次的限制）。
+    ///
+    /// `ADR-0004` S1：行高布局是**视图态**，所以重投影要把它读回来
+    /// （`yeban_app::host::track_height_layout`，与卷帘偏移同款"宿主拥有、重新注入"）。
+    /// 不读它的话，"设置行高之后再换工程/刷新"会把高度**静默清零**。
     fn apply_project(&mut self, project: &YebanProjectV1) -> Result<(), LiveWiringError> {
-        let view = ViewState::from_project(project)?;
+        let view = ViewState::from_project_with_layout(
+            project,
+            &yeban_app::host::track_height_layout(&self.window),
+        )?;
         let registry = control_tree_from_registry(&ElementRegistry::from_view(&view))?;
         host::apply_view(
             &self.window,
