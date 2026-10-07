@@ -10620,3 +10620,238 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0（`docs/ledger/phase-
 **macOS 上的黄金判据：未被判定（不是通过）。** `cargo test -p yeban-app --test real_ui_tier1 -- --nocapture` 的字面行：`[UI-MCP-003] 平台 \`macos\` 无基准 \`app-model-driven-filled-project-1920x1080\` ⇒ 视觉回归**未被判定**（不等于通过）`。⚠ 同一次运行还打印了几张本机 Tier-1 帧的指纹（例如 `状态 A (Arrangement / 全展开 1920x1080): Tier-1 Golden: 1920x1080 (2073600 px), 非黑 2073600 (100%), 颜色 3273 种, PNG 6222418 字节, 指纹 d646d3da94b265af`）—— 这些是**改后**的读数，本轮**没有**它们的改前对照，因此**不作为**本切片的证据（证据只有上文那张 sha256 A/B 表）。
 
 **Round 431 补记（同日，自我更正）。** 本轮 `docs/ledger/feature-alignment.md` 错位 7 的**原稿**里有一处**没有出处**的数字：原稿写「`grep -rn "trace(" crates/yeban-app/src/main.rs` 命中 **7** 条（`main.rs:490-492` 三条 + `main.rs:496` 的 `trace()` 定义 + **三条 doc 里的字面引用**）」。本轮把那条 grep **两侧都量了一遍**：改**前**（`29c604a`，工作树干净）`git show 29c604a:crates/yeban-app/src/main.rs | grep -c "trace("` ⇒ **8** 行（7 条回调 `main.rs:472-478` + `trace()` 的定义，因为定义那一行自己含 `trace(` 这个子串）；改**后**（本轮代码提交 `79a8e5e`）⇒ **4** 行（3 条回调 `main.rs:490-492` + 定义 `main.rs:496`）。⇒ 原稿里的"三条 doc 里的字面引用"**不存在**（doc 注释里 `trace(` 的命中是 **0** 行），而且那一句把"改后的行号"与"改前的条数"混在同一句里。已按实测改写该行，并把这个错误**留在原地**（写成"本行**原稿**写的是…"）而不是悄悄删掉 —— 与 §6「不许把'看起来有'当成'有'」、以及"宁可少写一个数字，也不要留一个没有出处的数字"同一条纪律。⚠ 本补记**不改**任何代码、不改任何状态词、不改任何计数。
+
+### Round 432: `ui/tree` 的**快照语义被取消** —— 读方法返回前重抓到"当下的界面"；并记 Logic Pro 原文与两条方法教训
+
+本轮两件事。第一件是**代码**：`ui/*` 里**读运行时树**的六条方法（`ui/tree` / `ui/node` / `ui/property` / `ui/dynamic_regions` / `ui/coverage` / `ui/screenshot`）在返回前先让执行面把树重抓到**当下**（新的 `UiSurface::refresh_runtime_tree`），从而关掉 `Round 431` 登记的那条缺口（"人点一下按钮、AI 立刻读 `ui/tree` 看不见"）。第二件是**文档**：把负责人的裁决与 Logic Pro 的三条原文（本轮由集成者用本机 `pdftotext` 取到，见文末）记进本台账。
+
+**先量，再报 `file:line`（不信转述）。** 任务书给了两条"上一轮的字面证据"。本轮逐条复核：一条成立，一条**要更正**。
+
+**1. 快照到底是什么、谁持有它。**
+
+| 问题 | 答案 | 出处 |
+| :--- | :--- | :--- |
+| 快照的**类型** | `yeban_ui_test_port::tree::ControlTree`（`BTreeMap<String, ControlNode>`；静态注册表与运行时树**同一个类型**） | `crates/yeban-ui-test-port/src/tree.rs:128`（`ControlNode`）、`tree.rs` 的 `ControlTree` |
+| 谁**持有**它 | `LivePort<T>` 的私有字段 `tree` —— **唯一**一份运行时树缓存 | `crates/yeban-ui-test-port/src/render.rs:435` |
+| 谁能换掉它 | `LivePort::refresh_tree(registry)`（重抓；`registry` 用于重新注入动态区标记） | `crates/yeban-ui-test-port/src/render.rs:484` |
+| `ui/tree` 怎么拿到它 | `UiTestPort::tree(&self) -> &ControlTree`（**借出**缓存，不是重建） | `port.rs:346` → `surface.rs:518` → `service.rs:298` |
+| app 侧的包装 | `LiveAdminSurface.inner`（`PortAdapter<LivePort<MainWindow>, fn>`）；同结构体里**另一个** `registry` 字段是**静态**注册表，不是运行时树 | `crates/yeban-app/src/live_surface.rs:318`（`struct LiveAdminSurface`） |
+
+**2. 重抓点在哪（这是本轮更正转述的第一处）。**
+
+任务书写"只在 `ui/switch_main_view` / `apply_project` / 电平轮询**三个**点重抓"。实测（`grep -n "refresh_tree\|pump_meters" crates/yeban-app/src/live_surface.rs`）是**四类入口**：
+
+| 重抓入口 | 位置（`crates/yeban-app/src/live_surface.rs`） | 谁触发 |
+| :--- | :--- | :--- |
+| 装配时抓一次 | `LivePort::new`（`crates/yeban-ui-test-port/src/render.rs:447`） | 装配 |
+| `LiveAdminSurface::apply_main_view` | `:592` | `ui/switch_main_view` |
+| `LiveAdminSurface::pump_meters` | `:496`（内部 `refresh_tree`） | 电平轮询；**并且被 `apply_project`（`:533`）/ `apply_track_height`（`:656`）/ `reload_engine_now`（`:755`）调用** |
+| 读方法（**本轮新增**） | `:875`（`refresh_runtime_tree`） | 六条读方法，见下 |
+
+⇒ "`apply_project` 是一个独立重抓点"这句**不成立**：它自己不调 `refresh_tree`，是经 `pump_meters`。⇒ 更正后的口径：**重抓入口 = 装配 / 换主视图 / 电平轮询（三个动作共用）/ 读方法**。
+
+**3. 三条读方法各自读什么（缺口的核心：同一份控制面里两种"新鲜度"）。**
+
+| 方法 | 值从哪来 | 出处 |
+| :--- | :--- | :--- |
+| `ui/tree` | **快照**（`&ControlTree` ⇒ `UiTree::from_runtime`）—— 全是缓存，不碰窗口 | `service.rs:297-311`（改前） |
+| `ui/node` | **快照**（同一棵树里按 ID 查） | `service.rs:313`（改前） |
+| `ui/property` | **值**来自**活组件**（`inspect::property_of` → `ElementHandle` 的 `accessible-*`），但"这个 ID 在不在树里"那一问走**快照** | `render.rs:516`：第一行 `self.tree.contains(element_id)`，之后才 `find_by_accessible_id` |
+| `ui/screenshot` | **像素**来自**活窗口**（`capture_image` → Tier-1 光栅化），**遮罩矩形**来自**快照** | `service.rs:622`（`screenshot`）的 `UiTree::from_runtime(self.surface.tree())` 与随后的 `capture_image()` |
+
+⇒ 所以"截图是新的、树是旧的"**这句成立**：`ui/screenshot` 的像素是当下渲染的，而同一函数体里算出来的遮罩矩形来自上一次重抓的树。⇒ 两种读法的新鲜度在同一份控制面里分叉，这就是缺口。
+
+**4. 缺口复现（改动前的字面读数）。**
+
+判据 `a_tree_read_sees_a_click_that_just_happened`（`crates/yeban-app/tests/live_ui_mcp.rs`）在同一会话里做：读 `ui/property` / `ui/tree` / `ui/node` → **真实指针注入**点击 `sidebar-collapse-button` → 再读同样三件。**改动前**（也等于把读路径重抓摘掉之后，见下表的注入 I1）的字面行：
+
+```text
+[fresh-read] `toggle-sidebar` 点击: `ui/property sidebar.width` "240.00"→"36.00"; `ui/tree` 节点 85→85、含 `sidebar-search-field` true→true; `ui/node sidebar-collapse-button` x 210→210; 一次 `ui/tree` 墙钟 0.70ms→0.60ms（代理）
+```
+
+⇒ **`ui/property` 是新的（240.00→36.00），`ui/tree` 与 `ui/node` 是旧的（85→85、x 210→210、搜索框还在树里）**。缺口**复现**。第一次跑（未做反转那一段的版本）给的是同一形状：`85→85`、`x 210→210`。
+
+**5. 成本（量什么、怎么量、单位）。**
+
+| 量什么 | 怎么量 | 单位 | 读数 |
+| :--- | :--- | :--- | :--- |
+| Tier-1 **全量渲染一帧**（1920×1080 软件光栅化） | `LiveUi::capture()` 一次（先预热一次） | ms（墙钟，**代理**） | **96.00 / 100.23 / 101.42 / 101.64**（四次不同运行） |
+| **重抓一次运行时树**（全树内省，85 个节点） | `LiveUi::pump_meters()` 一次（抽干 → 注入 → 内省） | ms（墙钟，**代理**） | **4.44 / 4.83 / 5.03** |
+| 树的克隆 | `LiveUi::tree_snapshot()` | ms | **0.073** |
+| 一次 `ui/tree` 端到端（含服务层 JSON） | 判据里 `Instant` 包住 `try_line` | ms（**代理**：含 JSON 编码） | 改前 **0.66–0.70**；加读时重抓后 **5.25–5.39**；若重抓里再带回渲染 ⇒ **105.57–106.59** |
+
+⇒ **重抓本体是毫秒级（≈5 ms）；`capture()` 是百毫秒级**。⇒ 若把渲染留在重抓里，**每一次 `ui/tree` 都会白渲染一张没人看的 6 MB 帧**。
+
+**6. 既有语义：快照是**有意**的吗？找到原文了 —— 但那条理由**不覆盖**"读时重抓"。**
+
+- **意图原文**（`docs/ledger/app-mixer-notes.md:291`，§7 未实现项第 5 条）："**指针/键盘注入之后不自动重抓树** …… 若一次点击会改变可见分支（例如点 `tab-mixer-button`），运行时树要等下一次 `pump_meters` / 管理动作 / 换工程才更新。**没有**自动刷新是刻意的：`ui/tree` 的字节稳定性判据依赖'没有别的写入者'"。同一行右列还写着"**需要一次裁决**：注入后是否强制 `refresh_tree`（代价：每次注入一次全树内省）"。
+- ⇒ 原文说的是"**注入之后不自动重抓**"，而"注入"的语义是**写**窗口属性。**本轮没有**给注入加自动重抓（注入路径一条都没动，反证见判据）。本轮改的是**读**：读之前先把缓存对齐到当下。**读不写窗口**，因此原文那条"没有别的写入者"的顾虑对应的判据（两次 `ui/tree` 逐字节相同）**仍然成立**（实测：`crates/yeban-ui-mcp/src/service.rs` 的 `tree_method_result_is_byte_stable_across_two_calls` 与 `crates/yeban-app/tests/live_ui_mcp.rs:264-267` 两条都绿）。
+- ⇒ 而且原文自己把这件事写成"**需要一次裁决**"，即它当时是**未决问题**，不是已决设计。本轮就是做这个裁决。
+- **另一处要更正的"意图"**：`bd9fbb6` 在 `refresh_tree` 里加过一次 `capture()`，提交信息写的是"⇒ **可能**抓到上一帧的可见性"——那句话是**从既有判据的调用顺序推出来的**，不是实测结论。本轮把它量了（见下"选择"一节）。
+
+**7. 既有判据的影响面（先报出来，再改）。**
+
+| 判据 | 位置 | 它钉住什么 | 本轮改动后 |
+| :--- | :--- | :--- | :--- |
+| `tree_method_result_is_byte_stable_across_two_calls` | `crates/yeban-ui-mcp/src/service.rs:1196`（零 Slint） | 同一执行面**两次** `ui/tree` **逐字节相同** | **绿**：假面的刷新默认不换树（`refreshed_tree == None`） |
+| `live_control_plane_reads_the_project_backed_window_end_to_end` 的方向 5 | `crates/yeban-app/tests/live_ui_mcp.rs:264-267` | 两次 `probe` 的 `tree_json` / `node_json` / 截图指纹相同 | **绿**：重抓只读窗口，不改窗口 |
+| `live_control_plane_coverage_matches_the_projected_registry` | `:291` | 运行时树 ⊆ 注册表、缺失非空 | **绿** |
+| 判据 17 第 ⑥ 步 | `crates/yeban-app/tests/live_ui_mcp.rs:2227-2231` | `Unchanged` 同步之后 `tree_snapshot().len()` 不动 | **绿**：`tree_snapshot()` 走 `LiveUi`（不经服务层），与读时重抓无关 |
+| 判据 17 第 2 步的"故意分叉" | `crates/yeban-app/tests/live_ui_mcp.rs:1247-1251` | 权威改了工程但**不同步** ⇒ 树里**仍然没有**那条泳道 | **绿**：这条钉的是**窗口投影**的滞后（`.slint` 属性没被 `apply_view` 写），不是**树缓存**的滞后 —— 重抓读的是同一个（旧的）窗口 |
+
+⇒ **结论：没有任何既有判据依赖"树缓存必须是旧的"**。这是"可以改"的前提证据。唯一一行**依赖快照语义的叙述**是判据文档（`live_ui_mcp.rs:3954-3960`，`Round 431` 写的"如实报告的边界"）与 `app-mixer-notes.md:291`：前者本轮**改写**（原文 → 改后见下），后者是**带日期的记录**，按纪律**保留不改**，由本条轮次记录取而代之。
+
+**选择：甲（读时重抓），不选乙、不选丙。理由先量后说。**
+
+| 选项 | 判定 | 理由（本轮实测） |
+| :--- | :--- | :--- |
+| **甲：读时重抓** | **选它** | 语义最直白（"读就是读当下"），与 `ui/property`（本来就活）和 `ui/screenshot`（本来就活）**对齐**；零新增方法 ⇒ `ui/*` 方法数不变（仍 **15**）、`dryRun` 分类不变、契约面不变 |
+| 乙：只加 `ui/refresh` | **不选** | 它把"记得先刷新"推给调用方；AI 忘一次就回到缺口，而**没有任何判据**能判"调用方忘了刷" |
+| 丙：两者都要 | **不选** | 甲落地之后 `ui/refresh` 是**空转**（读路径自己会刷）；为一条没人需要的语义新增 `ui/*` 方法会改方法数、scope 表与文档三处，收益为 0 |
+| 甲＋**去掉重抓里的渲染** | **选它**（见下） | 渲染不是新鲜度的必要条件（实测），却把每次读从 5 ms 抬到 106 ms |
+
+**为什么把 `bd9fbb6` 加的 `capture()` 从重抓里去掉（原文 → 改后）。**
+
+原文（`crates/yeban-app/src/live_surface.rs`，`bd9fbb6`）：`refresh_tree` 的第一行是 `let _ = self.inner.port().window().capture();`，doc 说"Slint 的几何与 `visible` 是在渲染（布局）之后才更新的"。改后：**删掉那一行**，并把 doc 改写成"为什么这里**不**先渲染 + 依据 + 未核实项"。依据三条：
+
+1. **行为**：一次同时改**可见性**与**几何**的真实点击之后，**不做任何渲染**、只做一次全树内省，`ui/tree` 就看见全部变化（字面读数见下）；
+2. **机理**：内省读的是元素的**属性** —— `ElementHandle::absolute_position` / `size` 走 `ItemRc::geometry()`（上游 `i-slint-backend-testing-1.18.1/search_api.rs:881` 与 `:893`），而生成的代码里 `item_geometry` 就是把 `x`/`y`/`width`/`height` 这几个**属性**取出来（Slint 的布局是属性依赖图，属性一读就重算），不需要一次光栅化来"冲刷布局"；
+3. **代价**：见上表（100 ms vs 5 ms）。
+
+⚠ 这条改动**同时**改了 `pump_meters` / `apply_main_view` / `apply_project` / `apply_track_height` / `reload_engine_now` 五个既有调用点的行为（它们共用同一个 `refresh_tree`）。**证据**是两种 feature 配置下的全部判据绿（含几何那几条：`the_set_track_height_method_reaches_the_injected_row_geometry`、`the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly`、`the_default_row_geometry_is_bit_for_bit_the_s0_literals`）。
+
+**改动（逐处给出原文 → 改后）。**
+
+1. `crates/yeban-ui-mcp/src/surface.rs:136`：`UiSurface` **新增**默认方法 `refresh_runtime_tree(&mut self) -> Result<(), PortError>` —— 默认体 `Ok(())`，doc 写明"不是每个执行面都有活的运行时树（零 Slint 假面持静态树）⇒ 对它报错是把事实当成失败"。**返回形状没有变**（新增方法，不改任何既有方法）。
+2. `crates/yeban-ui-mcp/src/service.rs:271`：**新增私有助手** `refresh_before_read()`（`self.surface.refresh_runtime_tree()` + 失败映射走既有的 `PortContext::Read` ⇒ **不新增 JSON-RPC 错误码**，D25）。
+3. `crates/yeban-ui-mcp/src/service.rs`：六条读分支各加一行 `self.refresh_before_read()?;` —— `:298`（`ui/tree`）、`:315`（`ui/node`）、`:329`（`ui/property`）、`:346`（`ui/dynamic_regions`）、`:369`（`ui/coverage`）、`:629`（`screenshot()` 的开头，故 `ui/screenshot` 也在内）。**注入族与三个管理动作一行都没动。**
+4. `crates/yeban-app/src/live_surface.rs:875`：`impl UiSurface for LiveAdminSurface` **覆写** `refresh_runtime_tree` ⇒ 调 `self.refresh_tree()`（传**自己那一份** registry；`apply_project` 会把它连同投影一起换掉 ⇒ 不存第二份）。
+5. `crates/yeban-app/src/live_surface.rs:471`：删掉 `refresh_tree` 里的 `capture()`（见上）。
+6. `crates/yeban-ui-test-port/src/render.rs:158 / :182 / :212`：`Tier1Window` **新增探针**字段 `renders: Rc<Cell<usize>>` 与访问器 `rendered_frames()`（计数点在渲染回调**真的跑过**之后）。它存在的理由见"判据"一节：没有它，"重抓悄悄开始渲染"不会有任何判据变红。
+7. `crates/yeban-app/src/live_surface.rs:1209 / 1224`：`LiveControlPlane` 新增 `window: Tier1Window` 字段（`Rc` **共享**，不是第二份窗口状态）+ `rendered_frames()`；`LiveUi` 也加同名访问器（`:1110`）。`into_control_plane` / `into_production_control_plane` 在装箱**之前**取出该句柄。
+8. `crates/yeban-app/tests/live_ui_mcp.rs:3956-3962`：把 `Round 431` 那条"如实报告的边界"改写成"**快照语义已经取消**"（原文 → 改后，同一节）。**没有**改判据 1 的断言（它本来就只报读数、不断言"树必须不变"）。
+9. `crates/yeban-ui-mcp/src/testing.rs`：假面 `FakeSurface` **覆写** `refresh_runtime_tree`（探针 `refreshes` +1；夹具预置了 `refreshed_tree` 时换树）+ 新的带**序号**探针助手（见"判据"一节的 I4 教训）。
+
+**端到端读数（字面，同一会话的同一序列 —— 改动前 / 改动后对照）。**
+
+改动前（= 注入 I1 后的字面行，`--nocapture`）：
+
+```text
+[fresh-read] `toggle-sidebar` 点击: `ui/property sidebar.width` "240.00"→"36.00"; `ui/tree` 节点 85→85、含 `sidebar-search-field` true→true; `ui/node sidebar-collapse-button` x 210→210; 一次 `ui/tree` 墙钟 0.70ms→0.60ms（代理）
+```
+
+改动后（同一判据、同一序列）：
+
+```text
+[fresh-read] `toggle-sidebar` 点击: `ui/property sidebar.width` "240.00"→"36.00"; `ui/tree` 节点 85→81、含 `sidebar-search-field` true→false; `ui/node sidebar-collapse-button` x 210→6; 一次 `ui/tree` 墙钟 5.26ms→5.25ms（代理）
+[fresh-read] 反证（展开回去）: `ui/property sidebar.width` "36.00"→"240.00"; `ui/tree` 节点 81→85、含 `sidebar-search-field` false→true; `ui/node sidebar-collapse-button` x 6→210
+  ⇒ `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 5.02s`
+```
+
+成本判据的字面行（探针读数就是"渲染帧数"）：
+
+```text
+[refresh-cost] Tier-1 全量渲染一帧 `capture()` = 96.00ms（1920x1080 软件光栅化）; 重抓一次树 `pump_meters()` = 4.44ms（含电平注入 + 全树内省, 85 个节点）; ⇒ 重抓比渲染一帧便宜 91.56ms; 探针读数：渲染帧数 2→3→3（两次墙钟都是**代理**指标）
+  ⇒ `capture()` +1 帧、`pump_meters()`（= 重抓）+0 帧
+```
+
+**判据（新增三条，形状照抄既有）。** 都在 `crates/yeban-app/tests/live_ui_mcp.rs` 与 `crates/yeban-ui-mcp/src/service.rs`：
+
+1. `a_tree_read_sees_a_click_that_just_happened`（**新鲜度**，`live_ui_mcp.rs`）—— 真实点击 ⇒ 三条读同时看见；再点一次必须全部回去（否则"只证明某方向变了"，一个恒读旧快照的实现也能让第一次断言停在另一侧）。
+2. `a_tree_read_does_not_rasterize_a_frame`（**成本不变量**）—— 五条读元数据的方法**一个像素都不渲染**、`ui/screenshot` **恰好**渲染一帧。断言的是**事件次数**（确定性），不是墙钟。
+3. `read_methods_refresh_the_runtime_tree_before_answering`（**零 Slint**，`service.rs`）—— 六条读路径**逐条**判定。
+
+**四次注入（先红 → 抓字面红行 → 还原 → `cmp` + sha256）。**
+
+| # | 注入 | 位置 | 字面红行 | 还原证明 |
+| :--- | :--- | :--- | :--- | :--- |
+| **I1** | 把 `refresh_before_read` 改成"什么都不做"（读路径回退成只读快照） | `crates/yeban-ui-mcp/src/service.rs:271` | ① `panicked at crates/yeban-ui-mcp/src/service.rs:1310:13: assertion left == right failed: 3 个夹具节点 + 1 个探针 / left: Number(3) / right: 4`；② `panicked at crates/yeban-app/tests/live_ui_mcp.rs:4306:5:` ＋ 读数字面行 `… 85→85 … true→true … x 210→210 …` ＋ `test result: FAILED. 0 passed; 1 failed; …; finished in 4.95s` | `cmp` 退出 **0**；sha256 回到 `5ad4486c56833f2fbc210487e46ab93ad0f317f6d0e0c0a35e818ec2a8ae33d4` |
+| **I2** | 去掉 `LiveAdminSurface::refresh_runtime_tree` 的覆写（落回默认 no-op） | `crates/yeban-app/src/live_surface.rs:875` | `panicked at crates/yeban-app/tests/live_ui_mcp.rs:4306:5:` ＋ 同一句 ＋ 同一字面读数行 | `cmp` 退出 **0**；sha256 回到 `7365b53e10537793f21f0d8ac56220be045dee25fa2d8a88f84ef7d155f99953` |
+| **I3** | 把 `bd9fbb6` 的 `capture()` 加回 `refresh_tree` | `crates/yeban-app/src/live_surface.rs:471` | `panicked at crates/yeban-app/tests/live_ui_mcp.rs:4384:9: assertion left == right failed: ui/tree 读的是**元数据** ⇒ 不得渲染一帧 / left: 2 / right: 1` | `cmp` 退出 **0**；sha256 同上 |
+| **I4** | 只摘掉 `ui/node` 那一条的 `refresh_before_read()?` | `crates/yeban-ui-mcp/src/service.rs:315` | `panicked at crates/yeban-ui-mcp/src/testing.rs:560:5: assertion left == right failed: 期望成功: … code: -32006, message: "控件树里没有语义 ID \`refresh-probe-2\`" … left: 400 / right: 200` | `cmp` 退出 **0**；sha256 同上 |
+
+⚠ **一次"没红的注入"（如实报，不许弱化断言）**：判据 3 的**第一版**用一个**固定 ID** 的哨兵。实测：只摘掉 `ui/node` 的刷新（= I4）时它**仍然绿** —— 因为 `ui/tree` 先跑、它刷新过了，后面每条读的树里都已经有那个固定 ID。⇒ 那种写法只证明"树被刷新过**至少一次**"。修法是把探针 ID 改成**带序号**（`refresh-probe-{n}`），每条方法各自要求"看见**这一版**、看不见**上一版**"。改法之后 I4 **变红**（上表那一行）。⚠ 这条"没红的注入"是本轮唯一一次，其余四次全部一次到位变红。
+
+**像素影响（A/B）。** 默认外观（**未注入任何点击**）逐字节不变：
+
+| 时刻 | 字节数 | sha256 | 帧内指纹（FNV-1a，判据自己打的） | 非黑像素 / 颜色数 |
+| :--- | :--- | :--- | :--- | :--- |
+| `Round 431` 记录值（`docs/DEVELOPMENT_LEDGER.md`，上一轮的"改前 = 改后"那一行） | **6 222 418** | `6273831cfabdeb294a5c8957e7676ccd8eebd6ba510d7b170663d7062812fe8a` | `379ed3da9a10a1a1` | 2073600 / 2683 |
+| 本轮（`cargo test -p yeban-app --test live_ui_mcp live_control_plane_reads_the_project_backed_window_end_to_end`） | **6 222 418** | `6273831cfabdeb294a5c8957e7676ccd8eebd6ba510d7b170663d7062812fe8a` | `379ed3da9a10a1a1` | 2073600 / 2683 |
+
+⇒ **sha256 与帧内指纹都与上一轮记录逐字节相同** ⇒ 本轮的读时重抓**不牵动像素**、也不牵动任何 Linux 基准图。⚠ 字节数相同本身不蕴含任何东西（存储式 deflate 下 1920×1080 恒为 6 222 418 字节，§6.3 第 3 条）；结论只由 sha256 与帧内指纹给出。⚠ 产物路径 `target/ui-test-port/live-port-filled-project-unmasked-1920x1080.png` 是**过程产物**（`.gitignore` 已忽略），这里引用的是**从该文件算出的 sha256 与判据自己打印的帧内指纹**，不是 `target/**` 下的日志。
+
+**红线与门禁计数。** 三条红线未动：本轮没有任何音频线程代码（新代码全部跑在控制面/UI 线程上）、没有 `unsafe`、没有改逐位一致判据。门禁表仍 **19 已接线 / 0 部分 / 2 PENDING**，Phase 4 仍 **7 完成 / 4 部分 / 0 PENDING**（`docs/ledger/phase-status.md:121` 逐字为「- Phase 4：已完成 7 / 部分 4 / PENDING 0（共 11 项）」），MCP 工具仍 **17** 个，`ui/*` 方法仍 **15** 条（**没有新增任何 `ui/*` 方法** —— 新增的是 `UiSurface` trait 的一个默认方法与一个私有助手，都不进方法注册表），守卫编号仍 `G01`–`G14` 共 **14** 条。没有新增依赖、没有新增 `#[ignore]`、没有弱化任何断言、没有新增守卫编号。
+
+**改到的文件（6 个）。** `crates/yeban-ui-test-port/src/render.rs`（探针字段 + 访问器）、`crates/yeban-ui-mcp/src/surface.rs`（`UiSurface` 默认方法）、`crates/yeban-ui-mcp/src/service.rs`（助手 + 六处调用 + 一条零 Slint 判据）、`crates/yeban-ui-mcp/src/testing.rs`（假面覆写 + 探针助手）、`crates/yeban-app/src/live_surface.rs`（覆写 + 删渲染 + 探针访问器 + 一处 doc）、`crates/yeban-app/tests/live_ui_mcp.rs`（三条判据中的两条 + 一处 doc 改写）。`schemas/**`、`assets/**`、基准图、法务文件、`crates/yeban-mcp/**`、`crates/yeban-model|render|engine/**`、其它 `docs/**` 一律未碰。
+
+**裁决与 Logic Pro 原文（本轮必写内容）。** 负责人的口径不变：**保留现有五项取舍**（负责人原话「**不管主流了，按现有取舍就行**」，`Round 431` 已逐条登记）。本轮的增量是：**Logic Pro 的原文取到了**，因此"当时取不到主流证据"这条理由**部分解除**，但**结论不变**（负责人已裁定按现有取舍）。三条摘录（**本轮由集成者完成抽取；本条的复核者又用同一份抽取文本逐条 `grep` 复核过，见下"出处与取得方式"**）：
+
+| # | 手册原文 | 出处（`/tmp/logic-guide.txt` 的行号） | 它说明什么 |
+| :--- | :--- | :--- | :--- |
+| 1 | "Delete all selected events and select the next one" → "2. Use the **Delete and Select Next Region/Event** key command." | `:18712` / `:18715`（同一节；`Delete and Select Next Region/Event` 另在 `:15329` 出现一次） | ⇒ ⭐ "删除后选中下一个"在 Logic 里是一条**独立键命令**，**不是** `Delete` 的默认行为。⇒ 登记为**将来可做的独立键命令**，**不是**当前缺陷 |
+| 2 | "Delete unselected events within the selection" → "All unselected notes **between the start of the first selected note and the end of the last selected note** are deleted." | `:18701` / `:18705-18706` | ⇒ 这条是"删除选区"那一族里我们**没有**实现的一种独立语义（删**选区外**的音符）；登记为将来可做项 |
+| 3 | "To delete an audio file from the multitrack set: Select the row for the audio file and **press the Delete or Backspace key**." | `:36531`（Smart Tempo 多轨窗口一节） | ⇒ ✅ 支持我们「**不区分 `Delete` 与 `Backspace`**」的取舍（第 ④ 项） |
+
+⚠ **出处与取得方式（逐字照录，不转述）**：负责人把三份手册 PDF 放到 `/tmp/`（`logic-pro-mac-user-guide.pdf` 等）；集成者用本机 `pdftotext -layout`（`/opt/homebrew/bin/pdftotext`，`pdftotext version 26.09.0`）抽正文到 `/tmp/logic-guide.txt`。**本轮复核时的实测**：`stat -f%z /tmp/logic-guide.txt` ⇒ **3 481 850** 字节（与任务书所述一致）；三个 PDF 与抽取文本在**本轮结束时仍在 `/tmp`**（`ls -la` 命中 `logic-pro-mac-user-guide.pdf` 48 051 535 字节、`logic-pro-mac-effects-user-guide.pdf`、`logic-pro-mac-instruments-user-guide.pdf`）。⚠ `/tmp` 可能被清理 ⇒ **本摘录即长期存证**；上面的行号是**抽取文本**的行号，不是 PDF 页码。⇒ **结论：保留现有五项取舍**；Logic 的"选中下一个"（与"删选区外的音符"）登记为**将来可做的独立键命令 / 独立语义**，不是当前缺陷。
+
+**方法教训（本轮必写，两条）。**
+
+1. ⚠ **先查设备能力，再下"做不到"的结论。** 本会话**第四次**同类：之前两条线（含集成者）都判定「手册是 PDF ⇒ 取不到原文」并据此放弃 ✗ —— 而**本机就有 `pdftotext`** ✓（`/opt/homebrew/bin/pdftotext` → poppler 26.09.0，实测能抽取 48 MB 的 PDF 并把三条原文取回来）。⇒ 纪律：**"取不到"是一个需要证据的结论**；下它之前先问"本机有没有工具能做这件事"。⚠ 本轮**没有**逐条复核前三次同类事件的具体轮次号（任务书所述），因此本行只记录**纪律**，不claim那三次的细节。
+2. ⚠ **转述不是来源。** 集成者自己的错：本会话已因此抓到**六次"没有出处的数字"**（三次是集成者写的、一次是工作线自己写的、两次是台账里的旧数字 —— 任务书所述；本轮**未逐条复核**这六次的具体位置）。⇒ 纪律：**报数前必须写清"量什么、怎么量、单位"；引用必须写出来处；代理指标必须标明是代理。** 本轮自己踩到两次同族，都已在正文标明：① `ui/tree` 墙钟是**代理**（含服务层 JSON 编码，不是纯重抓耗时）；② 探针行号来自**抽取文本**（不是 PDF 页码）。⚠ 任务书给的两条"字面证据"里有一条经复核**不成立**（"`apply_project` 是独立重抓点"），这正是"转述不是来源"的当场实例。
+
+**未做到 / 未核实（本轮如实登记）。**
+
+- **未核实**：是否存在某种"**只有渲染才 flush**"的布局变化。本轮在本仓库现有判据覆盖到的变化里**没有找到**（两种 feature 配置下全部判据绿，含几何那三条），但那**不是证明**；若将来出现，症状是"`ui/tree` 的几何/可见性落后一帧"。已写进 `refresh_tree` 的 doc。
+- **未做到**：`dryRun` 的只读前置校验 `ensure_geometry`（`crates/yeban-ui-mcp/src/service.rs:605`）**仍然读缓存树**，本轮**故意没动** —— `dryRun` 的规范语义是"只做参数与领域合法性校验"（`D48`），一次重抓虽然只是"读窗口"，但它会让一次 `dryRun` 产生可观测的额外工作；是否算"改了状态"需要一次裁决，本轮**不发明**这个决定。
+- **未核实**：`.slint` 与宿主接线在**真实显示器上的 GUI**（`--open` 起窗口、人手点按钮）本轮**没有**跑过 —— 判据覆盖的是 Tier-1 无头执行面（真实控件树 + 真实指针事件 + 软件光栅化）。而且控制面**还没有**进发行路径（`main.rs` 事件循环一行未动，`app-mixer-notes.md` §7 第 9 条）：因此"生产窗口上读时重抓"这件事本身**也没有端到端判据**。
+- **未核实**：本机是 macOS，Tier-1 的 5 张 Linux 黄金判据在本机打印「未被判定（不等于通过）」。本轮据此**不声称**任何黄金判据通过；像素结论只来自上面那张 sha256 与帧内指纹的 A/B 表。
+- **未做到**：`docs/ledger/app-mixer-notes.md:291`（§7 第 5 条）**没有改** —— 它是带日期的记录，且本工作区硬约束禁止改 `docs/**`（除本台账）。它与本轮的结论相反（写的是"没有自动刷新是刻意的"），**由本条轮次记录取而代之**；将来若有人读那一行，请连同本条一起读。判据文档（`live_ui_mcp.rs` 的同一段）已按"更正活声明"的口径改写。
+
+**验证，字面（本轮）。** 工具链口径：`CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable`（`cargo 1.99.0 (5f94df478 2026-08-27)`、`rustc 1.99.0 (b940084d7 2026-09-28)`）。
+
+| 命令 | 字面结果 | 耗时（`real`） |
+| :--- | :--- | :--- |
+| `cargo fmt --all` ＋ `cargo fmt --all --check` | 退出 **0**（**提交前已跑**） | — |
+| `cargo check -p yeban-ui-test-port --all-targets` | 退出 0 | 首跑（改后）**7.15 s**；缓存后 **0.28 s** |
+| `cargo check -p yeban-ui-mcp --all-targets` | 退出 0 | 首跑 **2.35 s** |
+| `cargo check -p yeban-ui-mcp --all-features --all-targets` | 退出 0 | **2.01 s** |
+| `cargo check -p yeban-app --all-targets` | 退出 0 | 首跑（改后）**7.32 s** |
+| `cargo check -p yeban-app --all-targets --features in-process-mcp` | 退出 0 | **6.32 s** |
+| `cargo clippy -p yeban-ui-test-port --all-targets -- -D warnings` | 退出 0（**零告警**） | **1.26 s** |
+| `cargo clippy -p yeban-ui-mcp --all-targets -- -D warnings` | 退出 0（**零告警**） | **2.79 s** |
+| `cargo clippy -p yeban-ui-mcp --all-features --all-targets -- -D warnings` | 退出 0（**零告警**，`Round 431` 的手动档口径） | **2.29 s** |
+| `cargo clippy -p yeban-app --all-targets -- -D warnings` | 退出 0（**零告警**） | **7.36 s** |
+| `cargo clippy -p yeban-app --all-targets --features in-process-mcp -- -D warnings` | 退出 0（**零告警**） | **8.01 s** |
+| `cargo test -p yeban-ui-test-port --all-targets` | 退出 0；`49 passed; 0 failed; 0 ignored` | **16.12 s** |
+| `cargo test -p yeban-ui-mcp --all-targets` | 退出 0；**94 passed**（lib）+ **5 passed**（contract）+ `0 passed`（doc，1 ignored） | **10.98 s** |
+| `cargo test -p yeban-app --tests` | 退出 0；15 个目标全部 `ok`；**304 passed / 0 failed / 2 ignored**（`live_ui_mcp` 由 29 条增到 **32** 条） | **94.15 s** |
+| `cargo test -p yeban-app --tests --features in-process-mcp` | 退出 0；15 个目标全部 `ok`；**324 passed / 0 failed / 2 ignored**（`live_ui_mcp` 由 35 条增到 **38** 条） | **98.71 s** |
+
+**没有重依赖从头重编（任务书的中止条件未触发）。** 证据：`touch crates/yeban-ui-mcp/src/service.rs && cargo check -p yeban-ui-mcp --all-targets 2>&1 | grep -cE "Compiling (slint|cpal|symphonia|rubato|rayon|i-slint)"` ⇒ **0**；同一条命令只有 `Checking yeban-ui-mcp v0.0.1` 这一行。`yeban-app` 那一档同样只重编 `yeban-ui-test-port` / `yeban-ui-mcp` / `yeban-app` 三个本仓库 crate。
+
+**门禁与守卫，字面。**
+
+```text
+$ bash scripts/gates/run-gates.sh light      # 退出 0; real 1m30.406s
+[skip] yeban-app 含重依赖 ⇒ 本机不编译, clippy 交给 CI
+[skip] yeban-ui-mcp 含重依赖 ⇒ 本机不编译, clippy 交给 CI
+[skip] yeban-ui-test-port 含重依赖 ⇒ 本机不编译, clippy 交给 CI
+门禁通过 (mode=light)
+
+$ python3 scripts/guards/policy_check.py      # 退出 0
+守卫全部通过 (14 条)。
+
+$ python3 scripts/gates/check_feature_alignment.py   # 退出 0
+[ok] feature-alignment.md: 74 行功能 / 17 个 MCP 工具 / 15 条 ui 方法全部点名，三方齐全 32，…；58 处源码引用点名了**存在**的构件（另有 185 处路径歧义 / 未点名构件，按构造跳过、未假装通过；10 处行号已漂移 —— 按新口径只提示、不判红；…）
+
+$ python3 scripts/gates/check_gate_status.py   # 退出 0
+[ok] gate-status.md: 15 条 MUST-GATE + 6 条 BASELINE 均已登记且带证据/原因; 共 21 条 = 已接线 19 / 部分 0 / PENDING 2; …
+
+$ python3 scripts/gates/check_phase_status.py   # 退出 0
+[ok] phase-status.md: 47 项阶段要求, 已完成 18 / 部分 23 / PENDING 6；2 处行号交叉引用全部落在目标行
+```
+
+⚠ `light` **跳过**本轮改到的**全部三个** crate（上面三行 `[skip]` 是它自己打的）⇒ **它不构成本轮代码的任何证据**；真正的证据是上面那批真编译 / 真测试命令。**`ui` 方法计数仍是 15**（`check_feature_alignment.py` 的机械读数），因为本轮**没有**新增 `ui/*` 方法。
+
+**macOS 上的黄金判据：未被判定（不是通过）。** `cargo test -p yeban-app --test real_ui_tier1 -- --nocapture` 的字面行：`[UI-MCP-003] 平台 \`macos\` 无基准 \`app-model-driven-filled-project-1920x1080\` ⇒ 视觉回归**未被判定**（不等于通过）`（同一次运行另有 4 条同形行）。⚠ 同一次运行打印了本机 Tier-1 帧的指纹（`状态 A (由 filled_project 驱动 / Arrangement): … 颜色 2683 种, PNG 6222418 字节, 指纹 379ed3da9a10a1a1`）—— 那张指纹与 `Round 431` 记录值逐字节相同，因此它**是**本切片"像素未变"的一条旁证（见上文 A/B 表）。
