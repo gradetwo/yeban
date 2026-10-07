@@ -13,6 +13,7 @@
 //! | ⑥ | 不许出现第二份实现（自动化求值必须走 `automation_value_at`） | `no_second_automation_evaluation_in_production_sources`、`the_write_paths_commit_through_the_single_undo_entry`、`dry_run_entry_points_take_shared_references_only` |
 //! | ⑦ | 与既有十工具不冲突 | `the_documented_ten_tools_are_untouched`（契约侧）+ 既有 6 个测试文件原样通过 |
 //! | ⑧ | 门禁 | `cargo fmt` / `run-gates.sh light`（本机）+ CI（重活） |
+//! | ⑨ | `[D56]` 诊断包：响应 `projectIncluded` 与**包内字节**不许互相矛盾（隐私默认有牙） | `diagnostics_bundle_content_matches_the_project_included_flag` |
 //!
 //! ## 为什么还有"文本级守卫"这一半
 //!
@@ -1644,4 +1645,121 @@ fn export_midi_dry_run_preview_equals_the_real_call() {
         real_run.domain().project_digest(),
         "dryRun 之后两侧工程仍然相同"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⑨ [D56] 诊断包：响应 flag 与包内字节的一致性（隐私默认的牙）
+// ---------------------------------------------------------------------------
+
+/// 诊断包的输出目录（保证此刻不存在；测试自己建、自己删）。
+fn diagnostics_out_dir(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "yeban-mcp-diag-{}-{tag}-{}",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ))
+}
+
+/// `[D56]` **包内字节与响应 `projectIncluded` 不许互相矛盾**。
+///
+/// 判据的牙长在"**iff**"上，而不是"包里有/没有某个文件"：
+///
+/// 1. 标记集合**从已知工程派生**（标题 / 音轨名 / 音轨 id / 片段 id / 资产哈希），
+///    不是硬编码字面量 —— 换一份样本，标记跟着换；
+/// 2. **阳性对照**：每个标记都断言**真的**出现在工程文档里。少了这一步，
+///    "标记没命中"既可能是"包干净"，也可能是"标记根本不存在"，判据就是空的；
+/// 3. 打开**真实 zip**（`yeban_model::container::read_container`，与读 `.yeban` 容器同一
+///    读取器 ⇒ 零新增依赖），逐条目扫描：命中任一标记 ⟺ `projectIncluded == true`。
+///
+/// 方向是双向的：包内偷偷塞进工程文档 ⇒ 红（flag 说 false，字节说 true）；
+/// flag 被改成 true 而包里没有工程 ⇒ 也红。注入实验（换回
+/// `serde_json::to_string(project)` 喂 `state_json`）实测输出见提交说明。
+#[test]
+fn diagnostics_bundle_content_matches_the_project_included_flag() {
+    let project = filled_project();
+    // 标记从工程派生：标题 + 音轨名 + 音轨 id + 片段 id + 资产哈希。
+    let mut markers: Vec<String> = vec![project.title.clone()];
+    markers.extend(project.tracks.values().map(|track| track.name.clone()));
+    markers.extend(project.tracks.keys().map(EntityId::to_canonical_string));
+    markers.extend(project.clip_pool.keys().map(EntityId::to_canonical_string));
+    markers.extend(project.assets.keys().map(|hash| hash.as_str().to_owned()));
+    // 去重 + 防空：空标记集合会让"未命中"恒真 —— 那就是没有牙。
+    let markers: Vec<String> = markers
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert!(markers.len() >= 8, "标记集合太小, 判据无牙: {markers:?}");
+
+    // 阳性对照：每个标记**必须真的**在工程文档里出现（否则它是假标记）。
+    let project_json = serde_json::to_string(&project).expect("序列化工程");
+    for marker in &markers {
+        assert!(
+            project_json.contains(marker.as_str()),
+            "标记 {marker:?} 不在工程文档里 —— 它不能用来判定包是否含工程"
+        );
+    }
+
+    let out_dir = diagnostics_out_dir("privacy");
+    std::fs::create_dir_all(&out_dir).expect("建诊断包输出目录");
+    let mut dispatcher = dispatcher_with_project(project);
+    let response = call_tool(
+        &mut dispatcher,
+        "yeban_export_diagnostics",
+        serde_json::json!({ "outDir": out_dir.display().to_string() }),
+    );
+    assert_eq!(response["status"], "success", "{response}");
+    let flag = response["data"]["projectIncluded"]
+        .as_bool()
+        .expect("`projectIncluded` 必须是布尔 —— 它是这个包唯一的隐私读数");
+
+    // 打开**真实产物**（不是计划里的中间值）。
+    let zip = std::fs::read(
+        response["data"]["path"]
+            .as_str()
+            .expect("响应必须给出完整包路径"),
+    )
+    .expect("读回诊断包");
+    let archive = yeban_model::container::read_container(
+        &zip,
+        &yeban_model::container::ContainerLimits::default(),
+    )
+    .expect("诊断包必须是可解析的 zip");
+
+    // 去掉工程内容之后包**依然有用**：四类必需条目一个都不能少。
+    for required in [
+        "MANIFEST.txt",
+        "env.txt",
+        "git.txt",
+        "engine-state.json",
+        "config.json",
+    ] {
+        assert!(
+            archive.get(required).is_some(),
+            "诊断包缺必需条目 {required}: {:?}",
+            archive.names().collect::<Vec<_>>()
+        );
+    }
+
+    let hits: Vec<(String, String)> = archive
+        .entries()
+        .iter()
+        .flat_map(|entry| {
+            let text = String::from_utf8_lossy(&entry.data).into_owned();
+            markers
+                .iter()
+                .filter(|marker| text.contains(marker.as_str()))
+                .map(|marker| (entry.name.clone(), marker.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    assert_eq!(
+        hits.is_empty(),
+        !flag,
+        "包内字节与 `projectIncluded` 矛盾: flag={flag}, 命中={hits:?} —— \
+         要么把工程文档从包里彻底拿掉 (改 `domain/diagnostics.rs` 里喂 `state_json` 的东西), \
+         要么把 flag 改成 true 并同步模块文档/注册表"
+    );
+    std::fs::remove_dir_all(&out_dir).ok();
 }

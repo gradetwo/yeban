@@ -4,13 +4,22 @@
 //! - [`plan`] **不**需要活跃工程：出问题时常常连工程都打不开，日志与环境信息恰恰最该能采。
 //! - [`apply`] 调 `yeban_diagnostics::export_diagnostics`（**同一实现**，D56 判据 4）。
 //!
-//! 隐私默认：`project/` 为空即不含工程；`config.json` 在本版本里**写明不可用**而不是留空（不留"看起来有"）。
+//! 隐私默认：**整个包**都不含工程文档 —— `project/` 为空即不含工程文件，而
+//! `engine-state.json` 也只承载 [`super::engine_state`] 的**投影**（走带 / 采样率 /
+//! 缓冲 / 响度 / 撤销游标），**不是** `YebanProjectV1` 的序列化。`config.json` 在本版本里
+//! **写明不可用**而不是留空（不留"看起来有"）。
+//!
+//! 为什么把这条写进模块文档而不是只写一句注释：诊断包的用途是"贴进 issue 复现"，
+//! 拿到包的人**看不进 zip**，只能相信响应里的 `projectIncluded`。所以"包内字节"与
+//! "响应 flag"是同一件事的两个面，必须逐字一致 —— 判据
+//! `diagnostics_bundle_content_matches_the_project_included_flag`（`tests/extension_tools.rs`）
+//! 就是钉这条的。
 use serde_json::{Map, Value, json};
 
 use crate::tools::ErrorCode;
 
 use super::error::Fault;
-use super::{ToolResponse, require_active};
+use super::{ToolResponse, engine_state, require_active};
 
 /// `plan` 的产物：已校验的输出目录 + 要在 `apply` 阶段采集的内容。
 #[derive(Debug, Clone)]
@@ -70,9 +79,37 @@ pub fn apply(
         })?;
     }
 
-    // 会话/引擎快照：有活跃工程就序列化它；没有就**什么都不写**（不伪造状态）。
+    // 引擎/会话快照：有活跃工程就投影它；没有就**什么都不写**（不伪造状态）。
+    //
+    // ⛔ 这里**不许**写 `serde_json::to_string(project)`。那是 `YebanProjectV1` 的**完整文档**
+    // （tracks / clip_pool / 音符 / 自动化 / assets 索引），而工程文档有**自己**的通道
+    // `BundleInputs::project`（D56 判据 6：只在用户显式勾选时才非空，默认不含 = 隐私决定）。
+    // 曾把整个工程塞进 `state_json`，于是包内 `engine-state.json` 与保存容器的 `project.json`
+    // **逐字节相同**，而响应仍写 `projectIncluded:false` —— flag 与字节互相矛盾。
+    // 拿这个包去贴 issue 的人看不进 zip，只能相信 flag：这正是最坏的失败形态。
+    // 现在的快照走**既有投影** [`engine_state::snapshot`]（D56 判据 4 的"既有投影即可"），
+    // 与 `yeban_query_engine_state` 同一份拼装，不引入第二份状态表示。
     let state_json: Option<String> = match require_active(domain) {
-        Ok(project) => serde_json::to_string(project).ok(),
+        Ok(project) => {
+            // `track_id = None` ⇒ 投影里 `track: null`，不点名任何音轨（点名也是工程内容）。
+            let snapshot = engine_state::snapshot(
+                project,
+                domain.session(),
+                domain.engine_readings(),
+                domain.undo_state().undone(),
+                None,
+                engine_state::ReadingsCursor {
+                    revision: domain.readings_revision(),
+                    tail: domain.readings_tail(),
+                    since: None,
+                },
+            );
+            // `track_id = None` 时 `snapshot` 唯一的失败态（音轨不存在）不可达；序列化失败
+            // 也只是"这次没有快照"，不该让整包导出失败（包里的 env/git/config 仍然有用）。
+            snapshot
+                .ok()
+                .and_then(|value| serde_json::to_string(&value).ok())
+        }
         Err(_) => None,
     };
 
@@ -83,7 +120,8 @@ pub fn apply(
 
     let logs: Vec<(String, Vec<u8>)> = Vec::new();
     let crashes: Vec<(String, Vec<u8>)> = Vec::new();
-    // 隐私默认：不含工程文件。用户要带工程时应走 UI 的勾选项，而不是这个默认路径。
+    // 隐私默认：不含工程文件。用户要带工程时应走 UI 的勾选项，而不是这个默认路径；
+    // MCP 侧**没有**"带工程"的开关，所以这里恒为空，响应里的 `projectIncluded` 因此恒为 false。
     let project_files: Vec<(String, Vec<u8>)> = Vec::new();
 
     let inputs = yeban_diagnostics::BundleInputs {
@@ -113,6 +151,10 @@ pub fn apply(
         "bytes": report.bytes,
         "sha256": report.sha256,
         "entries": entries,
+        // 口径：`true` ⇔ 包内**真的有**工程文档（`project/` 条目或 `engine-state.json` 里的
+        // 工程文档）。本工具没有"带工程"的入参，`project/` 恒空、`engine-state.json` 恒为
+        // 引擎/会话**投影** ⇒ 恒 `false`。判据 `diagnostics_bundle_content_matches_the_project_included_flag`
+        // 逐条读回包内字节来钉这个不变量（flag 与字节只要有一个动了就必须红）。
         "projectIncluded": false,
     })))
 }
