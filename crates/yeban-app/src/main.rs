@@ -452,7 +452,7 @@ fn mount_in_process_mcp(
 
 /// 把 `MainWindow` 的回调接到动作上。
 ///
-/// **走带两条已经真的接线**（本切片）：
+/// **走带两条已经真的接线**：
 /// `toggle-play` / `stop` → [`host::wire_transport`] → `EngineHost` → 无锁事件通道
 /// → `EngineRuntime` 的量子边界。显示态（`playing` / `timecode`）由
 /// `host::apply_transport` 从**引擎读数**回写，界面不再自己翻转状态。
@@ -461,18 +461,32 @@ fn mount_in_process_mcp(
 /// "撤销一步"按钮由 [`host::wire_undo`] 接到 [`yeban_app::undo::UndoPort`]，
 /// 动作真的会走 `CommitGraph::undo_with`，显示态由 `host::apply_undo` 从模型读数回写。
 ///
-/// 其余六个回调**仍然故意什么都不做**, 只打一行 stderr。原因不是省事:
-/// Op 归约、AI 采纳的语义都住在 `yeban-engine` / `yeban-model`,
-/// 在这里写一个"看起来在工作"的本地状态翻转, 只会制造"UI 已经通了"的假象。
+/// **视图态四条也已经真的接线**（本切片）：`toggle-view` / `toggle-sidebar` /
+/// `toggle-ai-drawer` / `open-musical-pr` → [`host::wire_view_callbacks`] →
+/// 分别写 `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open`。
+/// `.slint` 里那四处 `root.* = !root.*` 的翻转**已删除** —— 同一条动作只有一个写者。
+///
+/// 其余**三条**回调仍然故意什么都不做，只打一行 stderr。原因不是省事，而是
+/// "接上也只能是什么都不做"（本仓库的明文纪律：把动作吞掉却什么都不做，比不处理更糟）：
+///
+/// - `accept-ai-proposal` / `reject-ai-proposal`：**提案在界面侧没有表示** ——
+///   `ui/dialogs/musical_pr_drawer.slint` 的 `proposal-count` / `proposal-labels` /
+///   `proposal-kinds` / `confidences` 全是内联演示常量（该文件自陈"静态骨架 + 演示数据"），
+///   界面上没有任何"当前提案身份"的属性；而 `yeban_merge_proposal` /
+///   `yeban_reject_proposal` 要 `proposalId`。在界面侧新造一条提案状态会与领域权威冲突
+///   （`ADR-0005`）⇒ 登记为缺口，不接。
+/// - `run-acoustic-diagnosis`：仓库里**没有**声学分析（掩蔽 / 相位 / 动态范围）的实现。
+///   最近的既有机制是 `[D56]` 的 `UiAction::ExportDiagnostics`，而 [`host::wire_undo`]
+///   已经把它接在**另一个**按钮（`diagnostics-export-action`）上，产物是 env/git/日志的
+///   诊断 zip，不是声学读数 ⇒ 接上去等于用一个无关产物消费掉这一次点击。
+///
+/// 三条逐条登记在 `docs/ledger/feature-alignment.md` 的错位 7。
 ///
 /// 回调跑在 UI 线程上; `[ARCH-TOP-002]` / `[ARCH-RT-001]` 约束的是音频线程,
 /// 所以这里的 `eprintln!` 不触碰红线 —— 但接线真实动作时**仍然不许**做长阻塞等待。
 fn wire_callbacks(ui: &yeban_app::ui::MainWindow, engine: &Rc<RefCell<EngineHost>>) {
     host::wire_transport(ui, Rc::clone(engine));
-    ui.on_toggle_view(|| trace("toggle-view"));
-    ui.on_toggle_sidebar(|| trace("toggle-sidebar"));
-    ui.on_toggle_ai_drawer(|| trace("toggle-ai-drawer"));
-    ui.on_open_musical_pr(|| trace("open-musical-pr"));
+    host::wire_view_callbacks(ui);
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
     ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));
     ui.on_run_acoustic_diagnosis(|| trace("run-acoustic-diagnosis"));

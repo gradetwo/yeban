@@ -76,7 +76,7 @@
 | 三层状态物理隔离（`MODEL-ISO-001`：持久化 / 会话运行态 / 本机配置） | 部分｜持久化层已实现（`crates/yeban-model/src/project.rs:57`）；`SessionRuntimeState` 与 `LocalMachineConfig` **两个类型都存在**（`crates/yeban-model/src/session.rs:193`、`crates/yeban-model/src/local_config.rs:582`，由 `35f8ad0` 于 2026-10-05 13:31 补齐）——本行原写"两个类型不存在（`grep -rn "struct SessionRuntimeState\|struct LocalMachineConfig" crates/` 命中 0，见 `docs/ledger/phase-status.md` §3 `ROAD-M1-001`）"，那是本行写下时（2026-10-05 09:31，`9440bb0`）的真话，四小时后即**过期**（同一命令现命中 **4** 行 = 2 处声明 + `crates/yeban-model/tests/model_isolation.rs:9-10` 引用该 grep 的历史注记；`phase-status.md` 里同一句亦陈旧）；两层的 serde 边界由 `crates/yeban-model/tests/model_isolation.rs:539` 的 `session_state_has_no_serde_surface` 守住 —— 它问的是 **`session.rs` 里没有 serde 记号**（同判据的反向对照要求 `local_config.rs` **含** `Serialize`），**不是**"类型是否存在" | 无｜占位常量 `SESSION_TIMECODE` / `SESSION_BRANCH_NAME` 在 `crates/yeban-app/src/scene.rs` | 无｜十个领域工具里没有会话运行态检索面 | 原因：三层类型已就位（`35f8ad0`），缺口从"类型未定义"变为"接线" —— UI 仍是占位常量、未持有 `SessionRuntimeState`；计划：UI 占位常量改由 `SessionRuntimeState` 驱动；状态：PENDING |
 | 声学路由唯一真理源 `RoutingGraph`（`folder_id` 只做 UI 折叠） | 已实现｜`crates/yeban-model/src/project.rs:1376` + `validate()`；文档口径 `project.rs:1115`；契约 `schemas/project.schema.json` 的 `routing_graph`；`ROAD-M1-002` | 无｜没有路由/连线视图（`folder_id` 明文"仅用于界面层树状折叠"，`project.rs:1115`） | 部分｜`yeban_propose_section`（`sectionName`/`stylePreset`/`bars`/`scale`/`dryRun`）会判环路 `CYCLE_DETECTED`，但**声部连接不产出**：`crates/yeban-mcp/src/domain/section.rs:109` 报 `data.unwired = ["clipPoolEntries","routingEdges"]` | 原因：MCP 侧仍按"`Op` 全集缺 `AddClip`/`AddRoutingNode`"的**旧假设**实现（`crates/yeban-mcp/src/domain/section.rs:8-16`），而 `crates/yeban-model/src/ops.rs:190,197` 已有该变体（`HD-12` 已裁决、提交 `4190651` 落地）；计划：`yeban-mcp` 线改用 `Op::AddClip` / `Op::AddRoutingNode` 并删 `unwired` 上报；状态：PENDING |
 | 领域操作日志 + `CommitGraph` 撤销树（匿名分叉 / 命名分支 / 每 256 次快照） | 已实现｜`crates/yeban-model/src/ops.rs:122`（29 个 `Op` 变体）；`crates/yeban-model/src/commit.rs:39`（`SNAPSHOT_INTERVAL=256`）、`commit.rs:342`（`fork_anonymous`）；`ROAD-M1-003` | 部分｜载体 `crates/yeban-app/ui/dialogs/undo_tree_modal.slint` + `elements.rs` 的 `undo-tree-*` 与 `transport-commit-button` / `-revert-button` / `-branch-button`；但 `crates/yeban-app/src/main.rs:141` 的 `wire_callbacks` **只打 stderr**（`main.rs:135-140` 明文"故意什么都不做"） | 无｜十工具与 `ui/*` 14 条方法都没有撤销 / 重做 / 提交图谱面 | 原因：UI→模型写入方向被显式推迟（避免制造"UI 已经通了"的假象）；计划：`yeban-app` 事件循环接 `yeban-model::Op` 归约；状态：待接线 |
-| AI 提案分支（Musical PR）的建 / 合 / 拒 | 已实现｜`crates/yeban-model/src/commit.rs:342` + `crates/yeban-mcp/src/domain/proposal.rs` | 部分｜`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint` + `elements.rs` 的 `musical-pr-accept-button` / `musical-pr-reject-button` / `musical-pr-drawer`；回调 `accept-ai-proposal` / `reject-ai-proposal`（`crates/yeban-app/ui/app.slint:179-180`）在 `main.rs:148-149` **未接线** | 有｜`yeban_propose_section`（`sectionName`/`stylePreset`/`bars`/`scale`/`dryRun`）、`yeban_merge_proposal`（`proposalId`/`commitMessage`）、`yeban_reject_proposal`（`proposalId`/`reason`） | 原因：UI 回调未接线（同一根因）；计划：`yeban-app` 接控制面，或按 `ROAD-M4-001` 引入与 `yeban-mcp` 的依赖边；状态：待接线 |
+| AI 提案分支（Musical PR）的建 / 合 / 拒 | 已实现｜`crates/yeban-model/src/commit.rs:342` + `crates/yeban-mcp/src/domain/proposal.rs` | 部分｜`crates/yeban-app/ui/dialogs/musical_pr_drawer.slint` + `elements.rs` 的 `musical-pr-accept-button` / `musical-pr-reject-button` / `musical-pr-drawer`；回调 `accept-ai-proposal` / `reject-ai-proposal`（`crates/yeban-app/ui/app.slint:256-257`）在 `crates/yeban-app/src/main.rs:490-491` **仍然未接线** —— 2026-10-07 查明**接不上**：界面侧**没有提案表示**（`musical_pr_drawer.slint:18-25` 的 `proposal-count` / `proposal-labels` / `proposal-kinds` / `confidences` 全是内联演示常量），而领域侧要 `proposalId` | 有｜`yeban_propose_section`（`sectionName`/`stylePreset`/`bars`/`scale`/`dryRun`）、`yeban_merge_proposal`（`proposalId`/`commitMessage`）、`yeban_reject_proposal`（`proposalId`/`reason`） | 原因：UI 回调未接线，且界面侧没有"当前提案身份"的表示（见 UI 列）⇒ 在界面侧新造一条提案状态会与领域权威冲突（`ADR-0005`），故本轮**有意**保持空壳而不是假装接上；计划：先由界面投影给出"当前提案身份"（`proposalId` 的只读来源），再接 `yeban_merge_proposal` / `yeban_reject_proposal`；状态：待接线 |
 
 ## 4. 分组 B —— 操作与撤销
 
@@ -165,7 +165,7 @@
 | 语义元素 ID 注册表 + 控件树内省（含无障碍角色与标签） | 已实现｜`crates/yeban-app/src/elements.rs`（`is_well_formed_id`、`MODEL_DRIVEN_FAMILIES` 9 族）；`crates/yeban-ui-test-port/src/tree.rs:128`（`ControlNode`）、`src/inspect.rs:158`（`node_from_handle`）；`ARCH-UI-004` / `UI-TEST-001` | 有｜`crates/yeban-app/ui/**/*.slint` 的 `accessible-id`（实测 87 处）与 `accessible-role` / `accessible-label` / `accessible-item-index` | 有｜`ui/methods`（无参数）、`ui/tree`（`prefix`/`source`/`dynamicOnly`）、`ui/node`（`elementId`）、`ui/coverage`（`ids`） | 状态：三方齐全 |
 | 响应式属性读取 | 已实现｜12 个属性（`crates/yeban-ui-test-port/src/inspect.rs:282` 的 `property_of`）：`role` / `label` / `id` / `type` / `value` / `checked` / `x` / `y` / `width` / `height` / `opacity` / `valid`；`value` / `checked` 取自**活组件**的 `accessible-value` / `accessible-checked`（`b37f6ad` 落地 `[ARCH-UI-004]`；规范原文 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:236`："AI Agent 可通过 JSON-RPC 查询控件树（Widget Tree），提取坐标、尺寸、可见性及**自定义绑定状态（如推子电平**、音符方块包围盒）" —— 本行只引这一句，不替规范扩写）。**边界**：静态注册表路径（`registry_tree` / `test_port_adapter`）**读不到值** —— `ElementMeta` 没有该字段 ⇒ 那棵树的 `value` / `checked` 恒为 `null`；`pan` 读不到（只活在标签文本里，见分组 F） | 有｜`ui/node` / `ui/tree` 的 `ControlNode`（`crates/yeban-ui-test-port/src/tree.rs:128`）投影 `value` / `checked`，缺席写 JSON `null`（不编造 `""` / `false`）；但它们取自宿主 `refresh_tree` 的**快照**，只与最后一次刷新同新鲜度（`label` / `bounds` 同款） | 有｜`ui/property`（`elementId`/`name`）—— 12 个名字；`value` / `checked` **每次查询重读活组件**（不是快照）；"元素没声明"与"属性名不支持"用不同话术、同在 `-32602`（`ADR-0001 D25` 不发明新码）；**只读**，没有写路径 | 原因：`[ARCH-UI-004]` 要求的"自定义绑定状态"已可读；剩余的是**先天边界**：`pan` 只在标签文本 `PAN L50` 里（`.slint` 没有 `accessible-value` ⇒ 无从读起），静态注册表路径无值可读；规范对**字段名 / 类型 / "没有值"如何表达沉默**（`UI-NODE-*` ID 族在 `docs/YEBAN_*.md` 里根本不存在，实测 `grep -rn "UI-NODE-" docs/*.md` 命中 0）—— 本行不替规范发明结论；计划：无（有缺口再补）；状态：三方齐全 |
 | 指针 / 键盘事件注入 | 已实现｜`crates/yeban-ui-test-port/src/port.rs`（`Operation::DispatchPointer` / `DispatchKey`、三级 `Permission`，默认 `ReadOnly`）；`UI-TEST-002` | 有｜所有 `TouchArea` 与快捷键动作（`crates/yeban-app/src/input.rs`） | 有｜`ui/dispatch_pointer_down`（`elementId`/`xOffset`/`yOffset`/`button`）、`ui/dispatch_pointer_move`（`x`/`y`）、`ui/dispatch_pointer_up`（`button`）、`ui/dispatch_key_press`（`keyCode`） | 状态：三方齐全 |
-| 走带（播放 / 停止 / 录音 / BPM / 时间码 / 分支） | 部分｜**只有配置数据，没有走带引擎**：`crates/yeban-model/src/project.rs:378`（`TransportConfig`：bpm / metronome / count-in / launch）；`grep -rn "fn stop" crates/ --include=*.rs` 命中 0；`crates/yeban-engine/src/device.rs:327` 的 `fn play` 是**启动音频流**，不是 DAW 走带（`docs/ledger/engine-sound-notes.md` 明文"无走带控制，默认从 tick 0 起滚"）；录音与自动保存另见分组 E | 部分｜`crates/yeban-app/ui/transport.slint` 的 `playing` 属性与 `callback toggle-play()`（11 个 property/callback）+ `elements.rs` 的 `transport-play-button` / `-stop-button` / `-record-button` / `-bpm-field` / `-timecode` / `-branch-button`；`toggle-play` 在 `crates/yeban-app/src/main.rs:142` 只打 stderr | 无｜十工具无走带工具；只能经 `ui/dispatch_pointer_down`（`elementId`/`xOffset`/`yOffset`/`button`）盲点注入，且注入后同样不生效 | 原因：引擎侧走带未实现（`ROAD-M2-*` 的剩余工作），UI 控件先占位；加上走带位置属会话运行态（`[MODEL-ISO-001]` 第二层，未定义）；计划：Phase 2 剩余工作 + 会话层出 `SessionRuntimeState`；状态：PENDING |
+| 走带（播放 / 停止 / 录音 / BPM / 时间码 / 分支） | 部分｜**只有配置数据，没有走带引擎**：`crates/yeban-model/src/project.rs:378`（`TransportConfig`：bpm / metronome / count-in / launch）；`grep -rn "fn stop" crates/ --include=*.rs` 命中 0；`crates/yeban-engine/src/device.rs:327` 的 `fn play` 是**启动音频流**，不是 DAW 走带（`docs/ledger/engine-sound-notes.md` 明文"无走带控制，默认从 tick 0 起滚"）；录音与自动保存另见分组 E | 部分｜`crates/yeban-app/ui/transport.slint` 的 `playing` 属性与 `callback toggle-play()`（11 个 property/callback）+ `elements.rs` 的 `transport-play-button` / `-stop-button` / `-record-button` / `-bpm-field` / `-timecode` / `-branch-button`；`toggle-play` **已经真的接线**（`crates/yeban-app/src/host.rs:693` 的 `host::wire_transport` → `EngineHost` → 无锁通道 → 量子边界；`ui/app.slint` 的转发块**不**再翻转 `playing`）；本行的 UI `部分` 只指『走带引擎』那一半 | 无｜十工具无走带工具；只能经 `ui/dispatch_pointer_down`（`elementId`/`xOffset`/`yOffset`/`button`）盲点注入，且注入后同样不生效 | 原因：引擎侧走带未实现（`ROAD-M2-*` 的剩余工作），UI 控件先占位；加上走带位置属会话运行态（`[MODEL-ISO-001]` 第二层，未定义）；计划：Phase 2 剩余工作 + 会话层出 `SessionRuntimeState`；状态：PENDING |
 | 卷帘视口裁剪 / **坐标映射与吸附** / 工具状态机（`[UI-NOTE-001/002/003]`） | 部分｜**投影层已落地**：裁剪 `notes_visible_in` + 六数组 `VisibleNotes`、视口边界属性 `roll-min/max-tick`/`roll-min/max-pitch`、按 x 的二分子集索引（`crates/yeban-app/src/bridge.rs`）；**仍缺**批量绘制路径；**工具状态机已实现**（三列矩阵 + `active-tool` 三级镜像 + `UiAction::SelectTool` 进入唯一下发点，均有判据与守卫 —— 第 557–563/607/608 轮更正旧文）；**R-Tree 有意未采用**（改用按 x 排序的二分索引，零新依赖）。⚠ 本节曾引 `piano_roll.slint:4,11` 的"本骨架没有实现"，**该源码注释已于第 608 轮更正**（引用保留于此作为历史） | 部分｜`piano-roll-grid` / `piano-roll-keys` / `piano-roll-tool-{name}-button` / `note-{ulid}-rect` / `velocity-{i}-bar` 元素齐；五个工具是 **UI 状态**，不是能作用到模型的编辑操作 | 无｜无工具 | 原因：虚拟化与编辑语义未实现（`docs/ledger/phase-status.md` §5 的 `ROAD-M3-001` / `ROAD-M3-002`）；计划：`yeban-render` 像素管线 + 会话运行态（当前编辑片段）；状态：PENDING | **第 563 轮补（工具状态）**：`active-tool` 已**镜像到 MainWindow**（宿主可读，判据在 `test_port_adapter.rs`），`UiAction::SelectTool` 已进入**唯一下发点** `undo.rs::dispatch_key` 并有判据。**本处更正（`N2` 裁决 (1) 已执行，2026-10-06）**：快捷键**不再卡在 N2** —— GUI 绑**逻辑键**（`ui/app.slint` 的 `forward-focus: key-handler;` + `FocusScope.key-pressed` → `host::wire_keys` → `input::resolve_logical`），无头端口保留**物理码**判据（`physical_key_of` + `InputContext::resolve`，一条未改）。判据：`tests/live_ui_mcp.rs::a_logical_key_shortcut_from_the_event_source_reaches_the_host_action`（无头端口注入逻辑键 `"3"` ⇒ `active-tool` 真的变 3；负向实测：摘掉 `wire_keys` 即变红）。逻辑绑定**结构上表达不了**的残余（与布局无关的**键位**意图、Shift 改了字符的键如美式 `Shift+1` = `"!"`）逐条写在 `docs/ledger/app-projection-notes.md` 的 `N2` 行。
 | **全键盘音符操控**（`[UI-NOTE-005]`：方向键按网格平移 / `Alt` 1 tick 微调 / 上下半音 / `Shift+上下` 八度 / `Shift+左右` 改时值 / `Space`·`Enter` 试听） | 计划｜规范 §3.5 定义，**尚未实现**：`grep -rn "Arrow" crates/yeban-app/src/input.rs` **无命中**，`grep -rni "nudge" crates/yeban-app/src/*.rs` **无命中**（2026-10-05 实测；**刻意不用带半角竖线的 alternation** —— 那会把表格单元格切开） | 无｜卷帘没有键盘分支（同上第一次 grep 的结果） | 无｜无对应工具 | 原因：规范 §3.5 未接线，且**此前未被任何表追踪**（账本第 240 轮）；计划：待负责人决定是否纳入 Phase 4（未纳则保持本行如实为"未实现"）；状态：PENDING（未实现：两条 grep 均无命中；是否纳入 Phase 4 由负责人决定） |
 | 截图（Tier-1 软件光栅化）与动态区域遮罩 | 已实现｜`crates/yeban-ui-test-port/src/render.rs:6,10`（自研 `Platform` → `MinimalSoftwareWindow` → `SoftwareRenderer`，明文禁 `i-slint-backend-testing` 出图）；`src/mask.rs`（`apply_masks` / `mask_is_effective` / `mask_rects_from_tree`）；`MUST-GATE-015` | 有｜真实窗口实例 `crates/yeban-app/src/live_surface.rs`；动态区标记在 `crates/yeban-app/src/elements.rs` | 有｜`ui/screenshot`（`maskDynamic`/`maxBytes`）、`ui/dynamic_regions`（无参数） | 状态：三方齐全 |
@@ -318,14 +318,46 @@
 
 ### 错位 7（**三档中的"部分"已成常态**）："系统有 + UI 有控件"但**回调一律未接线**
 
-- **功能**：走带播放、撤销树、AI 提案采纳/拒绝、声学诊断（四类共 9 个回调）。
-- **证据**：`crates/yeban-app/src/main.rs:141-151` 的 `wire_callbacks` 把 9 个回调全部指向 `trace()`，
-  而 `trace()`（`main.rs:154-156`）只打印"`ui callback ... (未接线: 等待 yeban-engine / yeban-model)`"。
+- **功能**：走带播放、撤销树、AI 提案采纳/拒绝、声学诊断（写下本行时是四类共 9 个回调）。
+- **证据（2026-10-07 复测，机械读数）**：`grep -rn "trace(" crates/yeban-app/src/main.rs` 命中 **7** 条
+  （`main.rs:490-492` 三条 + `main.rs:496` 的 `trace()` 定义 + 三条 doc 里的字面引用），
+  真正未接线的回调是 **3** 条：`accept-ai-proposal` / `reject-ai-proposal` / `run-acoustic-diagnosis`。
+  原写的「9 个 / `main.rs:141-151` / `trace()` 在 `main.rs:154-156`」是**当时的**真话 ——
+  `d5275c0` 的 9 条逐字为 `toggle-play` / `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` /
+  `toggle-undo-tree` / `open-musical-pr` / `accept-ai-proposal` / `reject-ai-proposal` /
+  `run-acoustic-diagnosis`；其中 `toggle-play` 由 `69c153d` 接线（`host::wire_transport`），
+  `toggle-undo-tree` 由 `2256299` 接线（`host::wire_undo`）。
+  ⚠ 所以"9 − 2 = 7"的算法**对不上**：那两个 wire 函数各自接了两条回调
+  （`wire_transport` = `toggle-play` + `stop`、`wire_undo` = `toggle-undo-tree` + `undo-step`），
+  而 `stop` / `undo-step` **从来不在** `trace()` 名单里 —— 它们一出生就接在宿主上。
+- **本轮的处置（2026-10-07，代码是判据）**：7 条里另有 **4 条**已经真的生效 ——
+  `host::wire_view_callbacks`（`crates/yeban-app/src/host.rs:752`）把
+  `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` / `open-musical-pr` 分别写到
+  `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` / `musical-pr-open` 四个**视图态**属性上
+  （`ui/app.slint:500` / `:505` / `:530` / `:604` / `:690` 的转发块里那四处
+  `root.* = !root.*` 的翻转**已删除** —— 同一条动作不能有两个写者）。
+  **剩余 3 条仍然只打 stderr**，而且这一轮查明它们**接不上**（缺的是**能力**，不是"接线"）：
+  - `accept-ai-proposal` / `reject-ai-proposal`：提案在**界面侧没有表示** ——
+    `crates/yeban-app/ui/dialogs/musical_pr_drawer.slint:18-25` 的
+    `proposal-count` / `proposal-labels` / `proposal-kinds` / `confidences` 全是内联演示常量
+    （该文件 `:12` 自陈"静态骨架 + 演示数据"、`:194` 是 `for proposal_index in 3` 的固定三条），
+    界面上没有任何"当前提案身份"的属性；而领域的 `yeban_merge_proposal` / `yeban_reject_proposal`
+    要 `proposalId`。⇒ 在界面侧新造一条提案状态会与领域权威冲突（`ADR-0005`）。
+  - `run-acoustic-diagnosis`：仓库里**没有**声学分析（掩蔽 / 相位 / 动态范围）的实现。
+    最近的既有机制是 `[D56]` 的 `UiAction::ExportDiagnostics` —— `host::wire_undo`
+    （`crates/yeban-app/src/host.rs:1181`）已经把它接在**另一个**按钮
+    （`diagnostics-export-action`，元素登记见 `crates/yeban-app/src/elements.rs:380`）上，
+    产物是 env/git/日志的诊断 zip，不是声学读数 ⇒ 接上去等于用一个无关产物消费掉这一次点击
+    （违反"不消费没有实现的动作"）。
 - **影响**：从**控件树与截图**看，界面上有按钮、有标签、有语义 ID，`ui/coverage` 也全绿；
   但点下去什么都不发生。⇒ 任何"以控件树存在为证据"的对齐断言都会把这一批判成"UI 已暴露"。
   本表因此对这批一律记 `部分`，并在"缺口"列点名 `main.rs` 的行号。
-- **建议处置**：这**不是**缺陷（理由写在 `main.rs:135-140`，是为了不制造"UI 已经通了"的假象），
-  但需要一次**专门**的接线切片；在此之前，任何"UI 暴露度"的统计都应把"控件存在"与"回调接线"分开计。
+- **建议处置**：剩余 3 条**不是**缺陷（理由写在 `main.rs` 的 `wire_callbacks` 文档注释里，
+  是为了不制造"UI 已经通了"的假象），且它们各自缺的是**能力**（提案的界面表示 / 声学分析器）
+  而不是"接线"；在此之前，任何"UI 暴露度"的统计都应把"控件存在"与"回调接线"分开计。
+- **本轮的判据**：`crates/yeban-app/tests/live_ui_mcp.rs` 的
+  `the_view_state_callbacks_really_change_the_view_state`（真实点击 ⇒ 属性真的翻）
+  与 `the_view_state_properties_drive_the_runtime_tree`（属性 ⇒ 运行时树里 `visible` 真的换）。
 
 ### 错位 8（**反方向**）：`ui/*` 与 `yeban_*` 的功能面**几乎不相交**
 

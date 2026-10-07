@@ -3814,3 +3814,387 @@ fn a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
         before_revision + 2
     ));
 }
+
+// =====================================================================================
+// 纯视图态的四条回调（本切片）：`toggle-view` / `toggle-sidebar` / `toggle-ai-drawer`
+// / `open-musical-pr` —— 判据证明"入口真的能用"，不是"控件存在"。
+//
+// 两半，缺一不可（两条 `#[test]`，因为 Tier-1 平台是线程局部的：
+// `slint::platform::set_platform` 每个测试各装一次，同一个测试里不能装第二遍）：
+//
+// | 判据 | 回答的问题 |
+// | :--- | :--- |
+// | [`the_view_state_callbacks_really_change_the_view_state`] | **真实点击**（§12.4 指针注入）⇒ 视图态属性真的翻了 |
+// | [`the_view_state_properties_drive_the_runtime_tree`] | 属性 ⇒ **运行时控件树**里 `visible` 真的换了（`ui/tree` 的元素数与互斥画布） |
+// =====================================================================================
+
+/// 一条视图态判据的装配：真实界面 + 可注入的控制面（`Interactive` 才允许指针注入）。
+///
+/// **不需要额外接线**：装配路径（`src/live_surface.rs` 的 `build_live_ui_with`）与产品进程
+/// 调的是**同一个** `host::wire_view_callbacks`（`src/main.rs` 的 `wire_callbacks` 逐字相同），
+/// 因此这里注入的点击与用户点击走同一条链。
+fn assemble_view_state_callbacks() -> (yeban_app::ui::MainWindow, LiveControlPlane) {
+    let project = yeban_model::samples::filled_project();
+    let ui = build_live_ui(&project, Permission::Interactive).expect("装配");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let plane = ui.into_control_plane(Permission::Interactive);
+    (window, plane)
+}
+
+/// 一个语义元素的**绝对**包围盒（经 `ui/node` 读，不写死像素 —— 布局一改坐标跟着走）。
+fn element_bounds(plane: &mut LiveControlPlane, seq: i64, element_id: &str) -> serde_json::Value {
+    let node = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        seq,
+        "ui/node",
+        Some(serde_json::json!({ "elementId": element_id })),
+    ));
+    assert!(
+        !node.is_error(),
+        "`{element_id}` 必须在运行时树里: {node:?}"
+    );
+    let bounds = node.result.expect("有 result")["node"]["bounds"].clone();
+    assert!(!bounds.is_null(), "`{element_id}` 必须有几何包围盒");
+    bounds
+}
+
+/// 一次**真实**点击：按下 → 移到同一点 → 松手。
+///
+/// 三步都走 §12.4 的注入方法（真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea`），
+/// 因此它命中的是**用户点的那一下**，而不是"直接调 Rust 回调"
+/// （与 `the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly` 同手法）。
+fn click_element(plane: &mut LiveControlPlane, seq: i64, element_id: &str) {
+    use serde_json::json;
+    use yeban_ui_mcp::methods::{METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE};
+
+    let bounds = element_bounds(plane, seq, element_id);
+    let x_offset = bounds["width"].as_f64().expect("width") / 2.0;
+    let y_offset = bounds["height"].as_f64().expect("height") / 2.0;
+    let absolute_x = bounds["x"].as_f64().expect("x") + x_offset;
+    let absolute_y = bounds["y"].as_f64().expect("y") + y_offset;
+
+    let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        seq + 1,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(json!({
+            "elementId": element_id,
+            "xOffset": x_offset,
+            "yOffset": y_offset,
+            "button": "left"
+        })),
+    ));
+    assert!(
+        !down.is_error(),
+        "`{element_id}` 按下必须落到真实窗口: {down:?}"
+    );
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        seq + 2,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({ "x": absolute_x, "y": absolute_y })),
+    ));
+    assert!(
+        !moved.is_error(),
+        "`{element_id}` 移动必须落到真实窗口: {moved:?}"
+    );
+    let up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        seq + 3,
+        "ui/dispatch_pointer_up",
+        Some(json!({ "button": "left" })),
+    ));
+    assert!(
+        !up.is_error(),
+        "`{element_id}` 松手必须落到真实窗口: {up:?}"
+    );
+}
+
+/// `ui/property` 读一个元素的属性（读数一律经控制面）。
+fn read_property(
+    plane: &mut LiveControlPlane,
+    seq: i64,
+    element_id: &str,
+    name: &str,
+) -> serde_json::Value {
+    let line = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        seq,
+        "ui/property",
+        Some(serde_json::json!({ "elementId": element_id, "name": name })),
+    ));
+    assert!(!line.is_error(), "`{element_id}.{name}` 必须可读: {line:?}");
+    line.result.expect("有 result")["value"].clone()
+}
+
+/// 一条视图态属性在**活窗口**上的字面读数（与判据 16 读 `arrangement-view` 同一手法）。
+fn view_state_reading(window: &yeban_app::ui::MainWindow) -> String {
+    format!(
+        "arrangement-view={} sidebar-collapsed={} ai-drawer-open={} musical-pr-open={}",
+        window.get_arrangement_view(),
+        window.get_sidebar_collapsed(),
+        window.get_ai_drawer_open(),
+        window.get_musical_pr_open(),
+    )
+}
+
+/// 判据（`ADR-0004` S1 同款口径）：**四条纯视图态回调真的被真实点击驱动**。
+///
+/// ## 每一段都钉住"注入前 ≠ 注入后"的字面读数
+///
+/// | 段 | 注入的元素 | 读回来的东西 | 期望 |
+/// | :--- | :--- | :--- | :--- |
+/// | `toggle-view` | `transport-view-toggle-button` | `arrangement-view` + 帧指纹 | `true` → `false`；指纹必须变 |
+/// | `toggle-sidebar` | `sidebar-collapse-button` | `ui/property` 读 `sidebar.width` + `sidebar-collapsed` | 240.00 → 36.00 |
+/// | `toggle-ai-drawer` | `transport-ai-drawer-button` | `ai-drawer-open` + 帧指纹（`compact=true`） | `false` → `true`；指纹必须变 |
+/// | `open-musical-pr` | `ai-rail-musical-pr-button` | `musical-pr-open` + 帧指纹 | `false` → `true`；指纹必须变 |
+///
+/// ## 两条会变红的注入（都实测过，见账本当轮条目）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 摘掉 `host::wire_view_callbacks(&window);` | `src/live_surface.rs` | 四段的"注入后"读数与"注入前"逐字相同 ⇒ 四段一起红 |
+/// | 把 `root.arrangement-view = !root.arrangement-view;` 加回转发块 | `ui/app.slint` | `.slint` 与宿主各翻转一次 ⇒ 互相抵消 ⇒ `toggle-view` 段红 |
+///
+/// ## 一条**如实报告**的边界（不是本切片的缺陷，是控制面的快照语义）
+///
+/// `ui/tree` 是**快照**：`LiveAdminSurface` 只在它自己那几个动作点重抓树
+/// （`ui/switch_main_view` / `apply_project` / 电平轮询）。因此"点击改了可见性"不会让
+/// **下一次** `ui/tree` 自动变新 —— 本判据把这条读数**原样打出来**（`树节点 N→N`），
+/// 并在第二条判据里用"属性 ⇒ 树"那一半补上可见性证据。
+/// ⛔ 这里**不**断言"树必须不变"：那是把快照语义钉成契约，下一轮真去加刷新反而会红。
+///
+/// ## 为什么不断言像素
+///
+/// 这四条回调**只有点击之后**才改属性；默认外观（未注入任何点击）的帧必须逐字节不变，
+/// 那一条是渲染帧 sha256 的 A/B（`live-port-filled-project-unmasked-1920x1080.png`，
+/// 6,222,418 字节），见账本当轮条目的"像素影响"。
+#[test]
+fn the_view_state_callbacks_really_change_the_view_state() {
+    use serde_json::json;
+    use yeban_ui_mcp::methods::METHOD_SCREENSHOT;
+
+    let (window, mut plane) = assemble_view_state_callbacks();
+
+    /// 抓一帧，返回（指纹, 非黑像素数）—— 像素是**活**读数，因此不经过快照树。
+    ///
+    /// `ui/screenshot` 的载荷是**平铺**的（`shot_payload` 的键序固定），所以
+    /// `fingerprint` / `nonBlackPixels` 直接在 `result` 上（`crates/yeban-ui-mcp/src/service.rs:765`）。
+    fn frame(plane: &mut LiveControlPlane, seq: i64) -> (String, u64) {
+        let line = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+            seq,
+            METHOD_SCREENSHOT,
+            Some(json!({ "maskDynamic": false })),
+        ));
+        assert!(!line.is_error(), "抓帧必须成功: {line:?}");
+        let shot = line.result.expect("有 result");
+        (
+            shot["fingerprint"].as_str().expect("指纹").to_owned(),
+            shot["nonBlackPixels"].as_u64().expect("nonBlackPixels"),
+        )
+    }
+
+    // ------------------------------------------------- ① toggle-view
+    let before = view_state_reading(&window);
+    let (frame_before, non_black_before) = frame(&mut plane, 300);
+    let tree_before = plane.plane().tree().expect("ui/tree").0.count;
+    click_element(&mut plane, 302, "transport-view-toggle-button");
+    let after = view_state_reading(&window);
+    let (frame_after, non_black_after) = frame(&mut plane, 306);
+    let tree_after = plane.plane().tree().expect("ui/tree").0.count;
+    report_line(&format!(
+        "[view-state] toggle-view: 注入前 [{before}] → 注入后 [{after}]; \
+         帧指纹 {frame_before}→{frame_after}; 非黑 {non_black_before}→{non_black_after}; \
+         `ui/tree` 快照节点 {tree_before}→{tree_after}（快照语义，见判据文档）"
+    ));
+    assert!(
+        !window.get_arrangement_view(),
+        "① `toggle-view` 必须把 `arrangement-view` 翻成 false"
+    );
+    assert!(
+        frame_before != frame_after,
+        "① 视图真的换了 ⇒ 帧字节必须不同（同一执行面同一帧 → 同一指纹）"
+    );
+
+    // ------------------------------------------------- ② toggle-sidebar
+    let sidebar_before = read_property(&mut plane, 310, "sidebar", "width");
+    assert_eq!(
+        sidebar_before.as_str(),
+        Some("240.00"),
+        "默认左资源栏宽 = `Tokens.left-rail-width`"
+    );
+    click_element(&mut plane, 312, "sidebar-collapse-button");
+    let sidebar_after = read_property(&mut plane, 316, "sidebar", "width");
+    report_line(&format!(
+        "[view-state] toggle-sidebar: 注入前 [{}] → 注入后 [{}]; \
+         `ui/property` 的 `sidebar.width` {sidebar_before}→{sidebar_after}",
+        "sidebar-collapsed=false",
+        view_state_reading(&window),
+    ));
+    assert!(
+        window.get_sidebar_collapsed(),
+        "② `toggle-sidebar` 必须把 `sidebar-collapsed` 翻成 true"
+    );
+    assert_eq!(
+        sidebar_after.as_str(),
+        Some("36.00"),
+        "② 折叠后左栏必须是 `Tokens.left-rail-collapsed-width`（几何跟着属性走）"
+    );
+
+    // ------------------------------------------------- ③ toggle-ai-drawer
+    // 抽屉的 `visible` 是 `root.compact && root.ai-drawer-open` ⇒ 默认（非 compact）下
+    // 展开它**不改变任何像素**。为了拿到"切换前后有差异"，这一段先把断点切到 compact
+    // （那是投影的既有输入之一，写同一个属性），于是像素只由 `ai-drawer-open` 决定。
+    assert!(!window.get_ai_drawer_open(), "默认不展开 AI 抽屉");
+    window.set_compact(true);
+    let (drawer_frame_before, _) = frame(&mut plane, 320);
+    click_element(&mut plane, 322, "transport-ai-drawer-button");
+    let (drawer_frame_after, drawer_non_black_after) = frame(&mut plane, 326);
+    report_line(&format!(
+        "[view-state] toggle-ai-drawer: 注入前 [ai-drawer-open=false, compact=true] → 注入后 [{}]; \
+         帧指纹 {drawer_frame_before}→{drawer_frame_after}; 非黑 {drawer_non_black_after}",
+        view_state_reading(&window),
+    ));
+    assert!(
+        window.get_ai_drawer_open(),
+        "③ `toggle-ai-drawer` 必须把 `ai-drawer-open` 翻成 true"
+    );
+    assert!(
+        drawer_frame_before != drawer_frame_after,
+        "③ compact 断点下抽屉是**可见**的 ⇒ 帧字节必须不同"
+    );
+    window.set_compact(false);
+
+    // ------------------------------------------------- ④ open-musical-pr
+    assert!(!window.get_musical_pr_open(), "默认不打开提案抽屉");
+    let (pr_frame_before, _) = frame(&mut plane, 330);
+    click_element(&mut plane, 332, "ai-rail-musical-pr-button");
+    let (pr_frame_after, _) = frame(&mut plane, 336);
+    report_line(&format!(
+        "[view-state] open-musical-pr: 注入前 [musical-pr-open=false] → 注入后 [{}]; \
+         帧指纹 {pr_frame_before}→{pr_frame_after}",
+        view_state_reading(&window),
+    ));
+    assert!(
+        window.get_musical_pr_open(),
+        "④ `open-musical-pr` 必须把 `musical-pr-open` 写成 true"
+    );
+    assert!(
+        pr_frame_before != pr_frame_after,
+        "④ 抽屉是 360px 宽的覆盖层 ⇒ 帧字节必须不同"
+    );
+}
+
+/// 判据：**属性 ⇒ 运行时控件树**（`visible` 真的跟着那四个属性走）。
+///
+/// 这一条与上一条合起来才是完整的链：**真实点击 ⇒ 属性 ⇒ 可见性 ⇒ 树**。
+/// 上一条证明前半段（点击 ⇒ 属性），这一条证明后半段（属性 ⇒ 树）。
+///
+/// ## 它为什么不是"自己写进去再自己读回来"的空转
+///
+/// 断言的**方向**是 `.slint` 的 `visible:` 绑定，不是宿主的能力：
+/// `ArrangementView` / `SessionView` 的 `visible` 互斥、两个 `ai-rail` 实例的
+/// `visible: root.compact && root.ai-drawer-open`、`MusicalPrDrawer` 的
+/// `visible: root.musical-pr-open`。把任何一处 `visible:` 写坏（或改成常量）⇒ 本条红。
+///
+/// ## 树为什么要显式重抓
+///
+/// `ui/tree` 是快照，重抓点是既有的几个动作（见上一条判据的边界说明）。
+/// 这里用 `LiveUi::pump_meters()`（既有的"电平轮询腿"：抽干 → 注入 → **重抓树**），
+/// 因为它是**唯一**不需要 `UndoPort`、也不改工程的重抓触发点。
+#[test]
+fn the_view_state_properties_drive_the_runtime_tree() {
+    let project = yeban_model::samples::filled_project();
+    let mut ui = build_live_ui(&project, Permission::ReadOnly).expect("装配");
+
+    // ---- 默认态（`compact = false`）：编曲画布在树里、矩阵画布不在、没有提案抽屉；
+    //      `ai-rail` 恰好 **1** 个 —— 那是**常驻右栏**（`visible: !root.compact`），
+    //      不是抽屉。两种断点下都恰好 1 个，所以"数 `ai-rail`"本身不是判据，
+    //      判别力来自下面"compact 且 `ai-drawer-open: false` ⇒ 0 个"这一格。
+    ui.pump_meters();
+    let before = ui.tree_snapshot();
+    assert!(
+        before.contains("workspace-arrangement-canvas"),
+        "默认必须有编曲画布"
+    );
+    assert!(
+        !before.contains("workspace-session-canvas"),
+        "默认不该有矩阵画布"
+    );
+    assert!(!before.contains("musical-pr-drawer"), "默认不该有提案抽屉");
+    let rail_before = before.ids().filter(|id| *id == "ai-rail").count();
+    assert_eq!(
+        rail_before, 1,
+        "非 compact ⇒ 常驻右栏那一个 `ai-rail` 实例在树里"
+    );
+
+    // ---- 切到 compact 断点、抽屉**关着**：这一格把两个 `ai-rail` 实例都从树里排除
+    //      （常驻栏被 `!compact` 关掉，抽屉被 `ai-drawer-open` 关掉）。
+    ui.ui().set_compact(true);
+    ui.pump_meters();
+    let compact_closed = ui.tree_snapshot();
+    let rail_compact_closed = compact_closed.ids().filter(|id| *id == "ai-rail").count();
+    assert_eq!(
+        rail_compact_closed, 0,
+        "`compact && !ai-drawer-open` ⇒ 两个 `ai-rail` 实例都不在树里"
+    );
+
+    // ---- 写入四个视图态属性（**与四条回调写的是同一个属性**），再让既有的重抓点重抓。
+    ui.ui().set_arrangement_view(false);
+    ui.ui().set_sidebar_collapsed(true);
+    ui.ui().set_ai_drawer_open(true);
+    ui.ui().set_musical_pr_open(true);
+    ui.pump_meters();
+    let after = ui.tree_snapshot();
+
+    let rail_after = after.ids().filter(|id| *id == "ai-rail").count();
+    let proposal_items = after
+        .ids()
+        .filter(|id| id.starts_with("musical-pr-proposal-"))
+        .count();
+    report_line(&format!(
+        "[view-state] 属性 ⇒ 树: 节点 {}→{}; `workspace-arrangement-canvas` {}→{}; \
+         `workspace-session-canvas` {}→{}; `ai-rail`（compact 且抽屉关）{rail_compact_closed}→{rail_after}; \
+         `musical-pr-drawer` {}→{}; `musical-pr-proposal-*-item` 0→{proposal_items}",
+        before.len(),
+        after.len(),
+        before.contains("workspace-arrangement-canvas"),
+        after.contains("workspace-arrangement-canvas"),
+        before.contains("workspace-session-canvas"),
+        after.contains("workspace-session-canvas"),
+        compact_closed.contains("musical-pr-drawer"),
+        after.contains("musical-pr-drawer"),
+    ));
+
+    assert!(
+        !after.contains("workspace-arrangement-canvas")
+            && after.contains("workspace-session-canvas"),
+        "`arrangement-view=false` ⇒ 两条画布必须在树里互换"
+    );
+    assert_eq!(
+        rail_after, 1,
+        "`compact && ai-drawer-open` ⇒ 抽屉那一个 `ai-rail` 实例进树（关着时是 0）"
+    );
+    assert!(
+        after.contains("musical-pr-drawer"),
+        "`musical-pr-open=true` ⇒ 提案抽屉进树"
+    );
+    assert_eq!(
+        proposal_items, 3,
+        "抽屉里的三条提案条目在树里（`for … in 3`）"
+    );
+    // ⚠ **不断言总节点数增加**：这一格里节点数由 85 降到 78（实测），因为同时发生的
+    // 还有两件**减少**节点的事 —— `compact` 关掉常驻右栏那整棵子树、`arrangement-view=false`
+    // 把编曲画布换成元素更少的矩阵画布。判别力因此来自**集合**（`contains`）与
+    // 那个 0→1 的 `ai-rail`，不是来自计数。这一行是有意的**不**断言：把"变多"写成
+    // 契约，下一轮任何让画布变大的切片都会无谓地红。
+
+    // ---- 反证：把抽屉关回去 ⇒ 它必须离开树（否则上面那条 `contains` 恒真）。
+    ui.ui().set_musical_pr_open(false);
+    ui.pump_meters();
+    let closed = ui.tree_snapshot();
+    report_line(&format!(
+        "[view-state] 反证: `musical-pr-open=false` ⇒ `musical-pr-drawer` 在树里 = {}; 节点 {}",
+        closed.contains("musical-pr-drawer"),
+        closed.len()
+    ));
+    assert!(
+        !closed.contains("musical-pr-drawer"),
+        "反证失败：抽屉关掉之后仍在树里 ⇒ 上面那条断言没有判别力"
+    );
+}

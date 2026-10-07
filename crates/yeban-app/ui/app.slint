@@ -492,14 +492,16 @@ export component MainWindow inherits Window {
             save-project => {
                 root.save-project();
             }
+            // ⚠ 界面**不**自己翻转 `root.arrangement-view` / `root.ai-drawer-open`：
+            // 这两个属性与 `playing` 同款 —— 唯一写者是宿主（`host::wire_view_callbacks`，
+            // 与键盘路径的 `host::apply_action` 写的是**同一个**属性）。
+            // 转发块里再翻转一次就会有两个真相源（`docs/ledger/feature-alignment.md` 错位 7）。
             toggle-view => {
-                root.arrangement-view = !root.arrangement-view;
                 root.toggle-view();
             }
             show-session => { root.arrangement-view = false; }
             show-arrangement => { root.arrangement-view = true; }
             toggle-ai-drawer => {
-                root.ai-drawer-open = !root.ai-drawer-open;
                 root.toggle-ai-drawer();
             }
             // §7.2：合成态 / 焦点是**事件**，不是状态 —— 界面原样转给宿主，
@@ -522,8 +524,9 @@ export component MainWindow inherits Window {
                 min-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
                 max-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
 
+                // 同 `toggle-view`：折叠态是**视图态**，唯一写者是 `host::wire_view_callbacks`
+                // （键盘路径的 `Action::ToggleSidebar` 也写同一个属性）。
                 toggle-collapse => {
-                    root.sidebar-collapsed = !root.sidebar-collapsed;
                     root.toggle-sidebar();
                 }
             }
@@ -597,7 +600,8 @@ export component MainWindow inherits Window {
                 min-width: root.compact ? 0px : Tokens.right-rail-width;
                 max-width: root.compact ? 0px : Tokens.right-rail-width;
 
-                open-musical-pr => { root.musical-pr-open = true; root.open-musical-pr(); }
+                // 打开抽屉是**视图态**，唯一写者是宿主（`host::wire_view_callbacks`）。
+                open-musical-pr => { root.open-musical-pr(); }
                 run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
                 export-diagnostics => { root.export-diagnostics(); }
             }
@@ -683,7 +687,7 @@ export component MainWindow inherits Window {
         height: root.height;
         visible: root.compact && root.ai-drawer-open;
 
-        open-musical-pr => { root.musical-pr-open = true; root.open-musical-pr(); }
+        open-musical-pr => { root.open-musical-pr(); }
         run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
         export-diagnostics => { root.export-diagnostics(); }
     }

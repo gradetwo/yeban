@@ -1328,6 +1328,12 @@ pub fn build_live_ui_with(
     // 工具 / 视图 / 走带这类界面动作照常生效 —— 判据 16 判的就是它们）。判据用
     // [`LiveWiringOptions::undo`] 把它接上，从而见证"按键 → 撤销端口提交 → 重投影"整段。
     host::wire_keys(&window, Rc::clone(&input), options.undo.clone());
+    // **纯视图态的四条回调**（`toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` /
+    // `open-musical-pr`）：与产品进程**同一个**接线函数（`main.rs` 的 `wire_callbacks`
+    // 也调它），因此端口注入的点击与用户点击走的是同一条链
+    // （真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea` → 宿主写属性）。
+    // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
+    host::wire_view_callbacks(&window);
     let admin = LiveAdminSurface {
         inner: surface,
         window,
