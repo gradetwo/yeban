@@ -36,3 +36,6 @@ artifacts/
 
 # gh / cargo 等工具的缓存（含 CI 日志 zip）——绝不入库；G12 会一票否决
 .cache/
+# cargo 的沙箱兜底缓存目录（scripts/dev/local-env.sh）—— 同上，绝不入库。
+# 不带前导 `/`：worktree 布局下（`.worktrees/<line>/`）任意深度都拦得住。
+.cargo-home/

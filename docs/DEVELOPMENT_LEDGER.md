@@ -10858,3 +10858,70 @@ $ python3 scripts/gates/check_phase_status.py   # 退出 0
 ⚠ `light` **跳过**本轮改到的**全部三个** crate（上面三行 `[skip]` 是它自己打的）⇒ **它不构成本轮代码的任何证据**；真正的证据是上面那批真编译 / 真测试命令。**`ui` 方法计数仍是 15**（`check_feature_alignment.py` 的机械读数），因为本轮**没有**新增 `ui/*` 方法。
 
 **macOS 上的黄金判据：未被判定（不是通过）。** `cargo test -p yeban-app --test real_ui_tier1 -- --nocapture` 的字面行：`[UI-MCP-003] 平台 \`macos\` 无基准 \`app-model-driven-filled-project-1920x1080\` ⇒ 视觉回归**未被判定**（不等于通过）`（同一次运行另有 4 条同形行）。⚠ 同一次运行打印了本机 Tier-1 帧的指纹（`状态 A (由 filled_project 驱动 / Arrangement): … 颜色 2683 种, PNG 6222418 字节, 指纹 379ed3da9a10a1a1`）—— 那张指纹与 `Round 431` 记录值逐字节相同，因此它**是**本切片"像素未变"的一条旁证（见上文 A/B 表）。
+
+---
+
+### Round 433: 共享脚本 `local-env.sh` 的默认值改成"从仓库根显式推导"、缓存目录加一道"不许落在仓库内"的机械守卫，并给 `.cargo-home/` 补上 `.gitignore` 安全网
+
+本轮只改三处共享工具链文件，**不改任何 `crates/**` 产品代码**：`scripts/dev/local-env.sh`、`.gitignore`、本台账。
+
+**症状（谁提出、我量到什么）。** 任务书说：`CARGO_HOME` 未设或不可写时，`local-env.sh` 会把缓存目录建成**仓库里面的** `.cargo-home`，而 `.cargo-home` **没有被 gitignore** ⇒ 一次 `git add -A` 就有把体积巨大的缓存提交进历史的风险。任务书给的缓存体量是 **446 MB**（**此数未被我复核**：那个目录在上一票已被删除，`ls -la /Users/crow/work/music/yeban/.cargo-home` ⇒ `No such file or directory`；我只把它当线索，不当证据）。**我从已提交文件里找不到 446 MB 的出处**（`grep -rn "446" docs/DEVELOPMENT_LEDGER.md` 只命中门禁 run id 里的数字；`git log --all -- .cargo-home` 为空 ⇒ 历史里从未出现过这个路径）。
+
+**根因，逐条量（`file:line` 都是改前文本）。**
+
+| 项 | 观测 | 出处（改前） |
+| :--- | :--- | :--- |
+| 仓库根怎么算 | `_yeban_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"` | `scripts/dev/local-env.sh:19` |
+| 工作区根怎么算 | `_yeban_workspace_root="$(cd "$_yeban_repo_root/.." && pwd)"` ⇒ **仓库根的父目录**，本工作区 = `/Users/crow/work/music` | `local-env.sh:20` |
+| 默认值表达式 | `${YEBAN_LOCAL_CARGO_HOME:-$_yeban_workspace_root/.cargo-home}` | `local-env.sh:37` |
+| `mkdir -p` | `mkdir -p "$CARGO_HOME" 2>/dev/null \|\| true` | `local-env.sh:39` |
+| 触发条件 | 只有 `CI` 为空**且**（`YEBAN_FORCE_LOCAL_ENV` 非空 或 `~/.cargo`/`~/.rustup` 不可写）才走这一段 | `local-env.sh:23`、`:27-34` |
+
+**任务书的前提要更正一处（这是本轮最重要的一条）。** 任务书写"本仓的 workspace root 是 `/Users/crow/work/music/yeban`"。实测**不是**：`local-env.sh:20` 取的是仓库根的**父目录**。干净子 shell 的字面读数（量什么：`source` 之后的 `CARGO_HOME` 字面值；怎么量：`env -u CARGO_HOME -u RUSTUP_TOOLCHAIN -u YEBAN_LOCAL_CARGO_HOME bash -c '. scripts/dev/local-env.sh; echo "$CARGO_HOME"'`）：`CARGO_HOME=/Users/crow/work/music/.cargo-home` ⇒ 判定 `OUTSIDE`（`case` 比对 `/Users/crow/work/music/yeban/*`）。同一次读数后 `ls -d /Users/crow/work/music/yeban/.cargo-home` ⇒ `No such file or directory` ⇒ **改前也没有在仓库里建出目录**。
+
+**那么为什么这仍然是一个真缺陷（我用 `/tmp` 里的隔离探针实测，没碰共享工作区；**探针的读数也推翻了我自己的第一版论据，如实记下**）。** 改前的不变式没有一行代码在维护它。它成立**只因为**第 19 行的 `../..` 恰好解析到仓库根：`CARGO_HOME` 等于"`$_yeban_repo_root` 的父目录 + `/.cargo-home`"。我用 `HEAD:scripts/dev/local-env.sh`（旧文本）与工作树里的新文本在**同一个布局**下对跑：
+
+| 探针布局（脚本位置） | `../..` 解析成 | 旧文本 `CARGO_HOME` | 判定（对探针仓库根） |
+| :--- | :--- | :--- | :--- |
+| `/tmp/zz_le_probe4/repo/scripts/dev/`（= 本仓的真实形态） | `/tmp/zz_le_probe4/repo` | `/tmp/zz_le_probe4/.cargo-home` | `OUTSIDE`（但 `mkdir -p` 失败 ⇒ 该目录不存在） |
+| `/tmp/zz_le_probe6/x/repo/yeban/scripts/`（git 仓库根 = `x/repo`） | `/tmp/zz_le_probe6/x/repo` | `/tmp/zz_le_probe6/x/.cargo-home`（**建出来了**） | `OUTSIDE` |
+| `/tmp/zz_le_probe2/repo/`（脚本被拷到只有一层深的目录） | `/` | `//.cargo-home` ⇒ `/.cargo-home` | `OUTSIDE`（且 `mkdir -p` 失败） |
+
+⇒ **我复测了 3 种布局，旧文本都没有把缓存建进探针仓库内**。第一版论据写"脚本位置浅一层就会落进仓库"，**那是错的**：浅一层只会让缓存落到**更外层**（甚至是 `/.cargo-home`）。**所以本工作区里"上一票在仓库内重建了 446 MB `.cargo-home`"这条前提，我无法证实，只能标注为未核实。** 但缺陷本身是真的，只是性质不同：**"缓存不在仓库里"这条不变式完全依赖脚本自身的位置**（`../..` 恰好 = 仓库根），**没有任何一行代码在检查它**。位置一变（脚本被拷成别的形状、仓库被搬成顶层 checkout、有人把这段逻辑复制进别的脚本），默认值就跟着变，而它落到哪里**没有任何机械判据**。⇒ 本轮把它换成"显式比对仓库根"，是把这个**隐式巧合**变成**显式判据**。
+
+**`.gitignore` 现状（改前）。** 仓库里**没有**任何 `.cargo-home` 条目（`git check-ignore -v .cargo-home` ⇒ 退出码 1、无输出）。既有缓存条目只有两条：`/.cache/`（`.gitignore:24`，**带**前导斜杠 ⇒ 只锚定仓库根）与 `.cache/`（`.gitignore:37`，**不带**前导斜杠 ⇒ 任意深度）；实测 `git check-ignore -v foo/.cache/x` ⇒ 命中第 37 行，而 `foo/.cargo-home/x` ⇒ 不命中。
+
+**修法（成本与收益的取舍）。**
+
+1. **甲，但要机械化，不只是改个路径。** 默认值改成从**仓库根**推导：`${YEBAN_LOCAL_CARGO_HOME:-$_yeban_repo_root/../.cargo-home}`（`local-env.sh:66`）。**为什么不写死 `/Users/crow/work/music/.cargo-home`**：那会让脚本换一台机器就失效，也会让 worktree 布局下的每条线共用一个与本机强绑定的路径。**为什么仍用仓库的父目录而不是 `$HOME/.cache/yeban-cargo`**：① 这是本仓既有口径 —— 本台账第 260 行记着"`ci-verdict.sh` / `local-env.sh` 的缓存目录改到**仓库之外**的工作区根"，`scripts/dev/ci-verdict.sh:43` 也把 `XDG_CACHE_HOME` 放在 `$(cd "$REPO_ROOT/.." && pwd)/.cache`；② 它是 `.cache` 的兄弟目录，不新增第二种约定。
+2. **新增机械守卫 `yeban_local_cache_dir()`**（`local-env.sh:26-46`，函数体 `:30-46`）：候选位置先与 `$_yeban_repo_root` 比对，命中仓库内就跳过；再要求"现在可写"或"父目录可写（⇒ `mkdir -p` 能建出来）"。兜底顺序：候选值 ⇒ `$HOME/.cargo` ⇒ `/tmp/yeban-cargo-home`。**为什么值得多这 20 行**：这条不变式从此不再依赖"脚本位置恰好比仓库根高一层"，而是**显式比较仓库根**；脚本被搬去任何地方，"缓存不在仓库里"仍然成立。
+3. **`YEBAN_LOCAL_CARGO_HOME` 仍然被尊重**，且**未设时不再有任何情况静默落到仓库内**：`CI` 存在时整段不执行（`local-env.sh:49-51`，改前行为不变）。
+4. **乙（安全网）：`.gitignore:41` 加 `.cargo-home/`**（不带前导斜杠，与第 37 行的风格一致 ⇒ worktree 任意深度都拦得住）。**为什么两层都做**：脚本的守卫管"这一条路径"，`.gitignore` 管"任何脚本、任何原因"在这个目录名下写出的东西。
+5. `XDG_CACHE_HOME` 的兜底同样过守卫（`local-env.sh:79`），不再各自散落一份路径表达式。
+
+**验证：读数与命令（都是本轮字面输出）。**
+
+| 验证 | 命令（摘要） | 字面读数 |
+| :--- | :--- | :--- |
+| 默认值在仓库外 | 干净子 shell `source`（`CI` 空、`YEBAN_FORCE_LOCAL_ENV=1`、`mkdir -p` **失败**的沙箱） | `CARGO_HOME=[/tmp/yeban-cargo-home]`、`判定=OUTSIDE`（`YEBAN_FORCE_LOCAL_ENV=1` 那一路；**代理说明**：`/tmp/yeban-cargo-home` 是兜底档，不是首选档） |
+| 首选档的判定式（看路径算术） | `cd "$_yeban_repo_root/.." && pwd` | `/Users/crow/work/music` ⇒ `OUTSIDE`（首选档 = `$_yeban_repo_root/../.cargo-home`） |
+| 没有在仓库里建东西 | 同一次 `source` 之后 `ls` | `ls: /Users/crow/work/music/yeban/.cargo-home: No such file or directory`；`git status --short --untracked-files=all` 无新增行 |
+| 覆盖被尊重 | `YEBAN_LOCAL_CARGO_HOME=/Users/crow/work/music/.cargo-home` | `CARGO_HOME=[/Users/crow/work/music/.cargo-home]`（目录已存在；`advisory-dbs` `registry` 两个子目录可见） |
+| 守卫能改道 | `YEBAN_LOCAL_CARGO_HOME=/Users/crow/work/music/yeban/.cargo-home`（**故意指向仓库内**） | `CARGO_HOME=[/tmp/yeban-cargo-home]`、`判定=OUTSIDE (守卫改道)` |
+| `CI` 档不动环境 | `CI=true` + `source` | `CARGO_HOME=[<unset>]`、`RUSTUP_TOOLCHAIN=[<unset>]` |
+| `.gitignore` 旧/新对照 | 把 `HEAD:.gitignore` 放进一个临时 `git init` 仓库，同一相对路径 `.cargo-home/registry/probe-file` | 旧：`rc=1`（不忽略）且 `git add -A --dry-run` ⇒ `add '.cargo-home/registry/probe-file'`；新：`git check-ignore -v` ⇒ `.gitignore:41:.cargo-home/`，`git add -A --dry-run` 不再列它 |
+| 既有缓存体量（**代理指标**：`du -sk` 数磁盘占用，不是内容长度） | `du -sk /Users/crow/work/music/.cargo-home` | `947116` KiB ≈ 925 MiB、32833 个文件。⚠ 这是**上一个会话残留**的缓存，**不是**任务书说的 446 MB，也不是仓库内目录的读数 |
+| 主调用者仍然可用 | `CARGO_HOME=/Users/crow/work/music/.cargo-home bash scripts/dev/cargo-local.sh --version` | 退出 0；`cargo 1.99.0 (5f94df478 2026-08-27)` |
+| 会 `source` 本脚本的门禁 | `check_vendor.sh` / `check_release_defaults.sh` / `clippy-changed.sh` | 三条退出 0（vendor 打印 `Cargo.lock 确定`、`14 个` `.slint`） |
+| 守卫 | `python3 scripts/guards/policy_check.py` | 退出 0、末行 `守卫全部通过 (14 条)。` |
+| 门禁表 | `python3 scripts/gates/check_gate_status.py` | `共 21 条 = 已接线 19 / 部分 0 / PENDING 2` |
+| 阶段表 | `python3 scripts/gates/check_phase_status.py` | `47 项阶段要求, 已完成 19 / 部分 22 / PENDING 6`；Phase 4 行（`docs/ledger/phase-status.md:121`）= `已完成 7 / 部分 4 / PENDING 0` |
+| 三方对齐 | `python3 scripts/gates/check_feature_alignment.py` | `74 行功能 / 17 个 MCP 工具 / 16 条 ui 方法` |
+
+**`light` 档本轮红在 `fmt`，且红点不是我改的文件。** 字面末行：`FAIL fmt (exit=1)`（退出码 1）。`cargo fmt --all --check` 只点了两个文件：`crates/yeban-app/src/host.rs` 与 `crates/yeban-app/tests/live_ui_mcp.rs` —— 都是**另一条线**在共享工作区里未格式化的改动（`git status --short`：` M crates/yeban-app/src/{cli,host,input}.rs`、` M crates/yeban-app/tests/{cli_contract,live_ui_mcp}.rs`）。我的三个路径（`local-env.sh` / `.gitignore` / 本台账）**没有出现在 fmt 报告里**，本轮也没有改任何 `.rs`。`run-gates.sh` 在 `fmt` 处用 `fail()` 立即退出（`scripts/gates/run-gates.sh:37` 的 `fail()`、`:46-48` 的 `gate_fmt`），所以 `light` 后面的步骤没有执行；我把 `light` 档余下的脚本**逐条单独跑了一遍**（`spec_id_audit --check` / `id_dictionary_audit` / `check_decisions` / `clippy-changed.sh` / `check_handoff_snapshot` / `check_diagnostics_single_implementation` / `check_viewport_bounds_wiring` / `check_golden_manifest` / `check_mcp_dependency_direction` / `license_inventory --check` / `check_docs_links` / `check_gate_status` / `check_phase_status` / `check_feature_alignment`），**14 条全部退出 0**。⚠ 按本仓纪律如实标注：**`light` 本轮不是绿的**（未读回 CI 判决前，任何人都不该把这轮写成"全绿"）。
+
+**对 CI 的影响：零。** `.github/` 下**没有任何**文件 `source` 这个脚本（`grep -rn "local-env" .github/` ⇒ 无输出）；脚本第一段在 `CI` 非空时直接 `return 0`（`local-env.sh:49-51`，改前行为未变）。⇒ CI runner 的 `CARGO_HOME` / `RUSTUP_TOOLCHAIN` / `XDG_CACHE_HOME` 与改前完全一致。`source` 本脚本的**本机**调用点共 6 处、都是门禁或包装器：`run-gates.sh:26`、`clippy-changed.sh:14`、`check_vendor.sh:24`、`check_release_defaults.sh:17`、`cargo-local.sh:16`，另加 `license_inventory.py:53/55` 的**提示文本**（不是调用）。
+
+**为什么值得记。** 一个共享脚本的**默认值**，能让**任何** sibling 在**不知情**的情况下制造体积巨大的误提交风险 —— 受害的不是调用者，是仓库的历史。而且事后保护很弱：`G12` 守卫会红，但那时文件**已经进了索引或历史**（`scripts/guards/policy_check.py:418` 把 `.cargo-home` 列进 `cache_dirs`、`:426` 判红），历史里的大对象要清除就得重写历史。⇒ 结论两条：① 缓存目录的位置必须**从仓库之外推导**，且这个"不在仓库里"要**机械地比对仓库根**，不能只靠相对层级；② "脚本能建出目录"与"沙箱允许写"是**两把尺子** —— 沙箱可能只是不抛错（本轮 `mkdir -p ... || true` 就是这样沉默的）。
+
+**本轮未核实的事（明确标注）。** ① **446 MB 未复核**（来源只有任务书；目录已删；已提交文件里没有这个数字）。② **"上一票真的在仓库内重建过一个 446 MB 的 `.cargo-home`"未复核**：我复测的 3 种脚本位置都没有建进探针仓库内；我**没有**找到一种布局能复现"缓存落在仓库内"。③ 我**没有**在本机跑 `light` 的完整通过态：`fmt` 红由另一条线的未格式化 Rust 文件造成，我按"不碰另一条线"的硬约束**没有**去格式化或回退那两个文件，也没有改动自己以外的任何 `.rs`。④ `du -sk` 的 925 MiB 是**代理指标**（磁盘占用），不是那 446 MB 的复核。
