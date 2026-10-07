@@ -1099,7 +1099,7 @@ fn print_shortcuts_is_a_batch_command() {
 /// 判据 B11b: 快捷键表**说能用**的键, 解析 + 宿主必须真的接受; 表里标 `(未实现)` 的键,
 /// 宿主必须真的拒绝。
 ///
-/// 这一条针对一类具体的谎：表里写着 `Z → 选区撑满视口`, 而 `host::apply_action` 对它
+/// 这一条针对一类具体的谎：表里写着某个键能用, 而 `host::apply_action` 对它
 /// 返回 `false`（`reject`）—— 用户按了没反应, 表却已经许下了承诺。判据把三个观测面
 /// **逐条对账**（单位是**条目**, 不是行）：
 ///
@@ -1109,6 +1109,10 @@ fn print_shortcuts_is_a_batch_command() {
 ///    `Action`（标签与它绑的键不能各说各话），且 stdout 那一行的"画布聚焦"列与它一致；
 /// 3. **宿主**：`host::action_has_implementation(action)` 必须等于这一行的 `implemented`
 ///    —— 宿主说没有实现的动作, 表就必须标 `(未实现)`; 反之亦然。
+///
+/// 实例会变、判据不变：`Z → 选区撑满视口` 曾是这条判据的样板谎（表说能用、宿主 `reject`），
+/// 它现在已有落地实现（见 B11d）；今天的样例是 `Cmd/Ctrl+D → 原位复制` 与
+/// `Shift+Enter → 采纳 AI 建议`。
 ///
 /// 能无头查的就是这三面。`apply_action` 对 `Undo`/`Redo`/`OpenTimeMachine` 在**没有撤销
 /// 端口**的装配下也返回 `false` —— 那是装配缺件, 不是动作没实现, 所以这条判据判的是
@@ -1189,8 +1193,8 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
 
     eprintln!(
         "[shortcut-honesty] 逐条对账 {checked} 条快捷键: 渲染列 / resolve / host::action_has_implementation \
-         三面一致; 其中标记 `{UNIMPLEMENTED_MARKER}` 的 {marked} 条（含 `Z → 选区撑满视口` 与 \
-         `Shift+Z → 全曲总览`）被宿主如实拒绝"
+         三面一致; 其中标记 `{UNIMPLEMENTED_MARKER}` 的 {marked} 条（例如 `Cmd/Ctrl+D → 原位复制` 与 \
+         `Shift+Enter → 采纳 AI 建议`）被宿主如实拒绝"
     );
 }
 
@@ -1229,6 +1233,52 @@ fn delete_selection_is_implemented_in_the_host_table_and_rendered_output() {
         !delete_line.contains(UNIMPLEMENTED_MARKER),
         "已实现的删除行**不得**带 `{UNIMPLEMENTED_MARKER}`: {delete_line}"
     );
+}
+
+/// 判据 B11d: `Z → 选区撑满视口` 与 `Shift+Z → 全曲总览` 已落地 —— 宿主认它们,
+/// 快捷表也说能用, 渲染不带 `(未实现)`。
+///
+/// 这一条是"缩放回退成不实现"的**直接牙**：把 `Action::ZoomToSelection` /
+/// `Action::ZoomToFit` 放回 `host::action_has_implementation` 的 `!matches!` 名单
+/// （或把 `cli.rs` 的 `implemented` 改回 `false`）⇒ 这里立刻红。B11b 也覆盖这两条,
+/// 但它的失败信息是"三面之一分叉"; 本判据的失败信息直接点名"缩放被回退了"。
+///
+/// 运行时语义（空选区 / 空工程时**不消费**）由 `tests/live_ui_mcp.rs` 的判据 Z1
+/// 用真事件源见证 —— 本判据只回答"这个动作有没有落点"。
+#[test]
+fn zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output() {
+    use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::Action;
+
+    for action in [Action::ZoomToSelection, Action::ZoomToFit] {
+        assert!(
+            action_has_implementation(action),
+            "宿主必须认 `{action:?}`（回退成不实现即红）"
+        );
+        let row = shortcut_rows()
+            .iter()
+            .find(|row| row.action == action)
+            .unwrap_or_else(|| panic!("快捷表必须有 `{action:?}` 这一条"));
+        assert!(
+            row.implemented,
+            "快捷表必须说 `{}` 能用（否则用户看到 `{UNIMPLEMENTED_MARKER}`）",
+            row.label
+        );
+    }
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+    for label in ["Z → 选区撑满视口", "Shift+Z → 全曲总览"] {
+        let line = run
+            .stdout
+            .lines()
+            .find(|line| line.trim_start().starts_with(label))
+            .unwrap_or_else(|| panic!("`--print-shortcuts` 里找不到 `{label}`:\n{}", run.stdout));
+        assert!(
+            !line.contains(UNIMPLEMENTED_MARKER),
+            "已实现的缩放行**不得**带 `{UNIMPLEMENTED_MARKER}`: {line}"
+        );
+    }
 }
 
 /// 判据 B12: `--export-midi` 从**真二进制**导出的字节可被 SMF 读取面读回，

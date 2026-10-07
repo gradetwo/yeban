@@ -42,9 +42,11 @@ use live::{
 #[cfg(feature = "in-process-mcp")]
 use live::{AuthoritySync, build_live_ui_from_authority};
 
-// 判据 17 的**同案差分像素**（`ADR-0005` S1）：只被 non-default feature 下的那一条
-// 用例用到，因此连同常量 / 助手一起 cfg —— 否则默认构建里它们是 dead_code（`-D warnings`）。
-#[cfg(feature = "in-process-mcp")]
+// 判据 17 的**同案差分像素**（`ADR-0005` S1）与横向缩放的**像素 A/B**：
+// 帧差分读数在默认构建里也被用到（`ui_zoom_shortcuts_...`），因此 `Rect` / `Rgb8Image`
+// 与 [`frame_diff`] **不再** cfg —— 只被 non-default feature 用到的那几个助手
+// （`diff_pixels_outside` / `projected_lane_stack_box` / 容差常量）继续 cfg，否则默认构建
+// 里它们是 dead_code（`-D warnings`）。
 use yeban_ui_test_port::{Rect, Rgb8Image};
 
 use yeban_app::elements::is_model_driven_family;
@@ -520,7 +522,6 @@ const LANE_DIFF_TOLERANCE_PX: i32 = 2;
 const LANE_DIFF_TOLERANCE_MAX_PX: i32 = 4;
 
 /// 两帧的**差异像素**读数（逐像素比较 RGB 三字节；相等即逐字节相同）。
-#[cfg(feature = "in-process-mcp")]
 struct FrameDiff {
     /// 差异像素数。
     count: u64,
@@ -529,7 +530,6 @@ struct FrameDiff {
 }
 
 /// 逐像素比较两帧；**逐字节相同** ⇒ `None`（"界面一位没动"）。
-#[cfg(feature = "in-process-mcp")]
 fn frame_diff(before: &Rgb8Image, after: &Rgb8Image) -> Option<FrameDiff> {
     assert_eq!(
         (before.width(), before.height()),
@@ -4976,4 +4976,317 @@ fn a_tree_regrab_costs_one_introspection_not_one_full_render() {
          pump_meters() 之后 {after_regrab} 帧"
     );
     assert!(nodes >= 40, "运行时控件树只有 {nodes} 个节点");
+}
+
+// ===========================================================================
+// 横向缩放（`Z` / `Shift+Z`）：真实事件源 → 投影参数 → 像素
+// ===========================================================================
+
+/// 从**模型**算选区的 tick 跨度（`min start_tick`, `max start_tick + duration_ticks`）。
+///
+/// 这是**独立 oracle**：它走 `clip_pool` 的模型数据，不走 `ViewState`。
+/// 于是"投影算错跨度"会在判据里显形（拿投影自己的读数当 oracle 是自我确认）。
+/// 返回 `None` = 选中的身份一个都不在工程里（空选区 / 陈旧身份）。
+fn model_span_of(project: &YebanProjectV1, selected_ulids: &[String]) -> Option<(u64, u64)> {
+    let wanted: std::collections::BTreeSet<&str> =
+        selected_ulids.iter().map(String::as_str).collect();
+    let mut span: Option<(u64, u64)> = None;
+    for entry in project.clip_pool.values() {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for note in notes.values() {
+            let id = note.id.to_canonical_string();
+            if !wanted.contains(id.as_str()) {
+                continue;
+            }
+            let end = note.start_tick + note.duration_ticks;
+            span = Some(match span {
+                None => (note.start_tick, end),
+                Some((start, best_end)) => (start.min(note.start_tick), best_end.max(end)),
+            });
+        }
+    }
+    span
+}
+
+/// 从**模型**算工程的**内容末端 tick**：全部剪辑摆放 `start + duration` 与全部段落
+/// `end_tick` 的最大值（`Shift+Z` 的独立 oracle）。
+fn model_content_end(project: &YebanProjectV1) -> u64 {
+    let clip_end = project
+        .tracks
+        .values()
+        .flat_map(|track| track.clips.values())
+        .map(|placement| placement.start_tick + placement.duration_ticks)
+        .max()
+        .unwrap_or(0);
+    let section_end = project
+        .sections
+        .values()
+        .map(|section| section.end_tick)
+        .max()
+        .unwrap_or(0);
+    clip_end.max(section_end)
+}
+
+/// 把一批音符身份写进选区的**唯一事实源** `selected-ulids`（并把计数同步过去）。
+fn select_ulids(window: &yeban_app::ui::MainWindow, ids: &[String]) {
+    window.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(
+        ids.iter()
+            .map(|id| slint::SharedString::from(id.as_str()))
+            .collect::<Vec<_>>(),
+    )));
+    window.set_selected_note_count(i32::try_from(ids.len()).unwrap_or(i32::MAX));
+}
+
+/// 判据 Z1（横向缩放，**默认构建**）：`Z` ⇒ 选区撑满视口；`Shift+Z` ⇒ 全曲总览；
+/// **空选区按 `Z` ⇒ 没有变化且键未被消费**；缩放**不进撤销栈**。
+///
+/// ## 量什么 / 怎么量 / 单位
+///
+/// | 量 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- |
+/// | 当前缩放 | `MainWindow.roll-ticks-per-pixel`（`host::roll_ticks_per_pixel` 是唯一读点） | tick / 逻辑像素 |
+/// | 滚动偏移 | `MainWindow.roll-scroll-x` | 逻辑像素 |
+/// | 选区跨度 | [`model_span_of`]（**模型**侧 oracle） | tick |
+/// | 内容末端 | [`model_content_end`]（**模型**侧 oracle） | tick |
+/// | 视口宽 | `slint::Window::size().width`（与 `apply_view` / 裁剪同一个读数） | 逻辑像素 |
+/// | 画面变化 | [`frame_diff`] 的差异**像素数** + 包围盒（逐像素比 RGB） | 像素 |
+///
+/// ## 算术（全部整数、**向上取整**；期望值在这里手算，不引用被测函数）
+///
+/// - 夹具（`filled_project`）：4 个音符，起点 `0 / 960 / 1920 / 2880`，
+///   时值各 `480` ⇒ 终点 `480 / 1440 / 2400 / 3360`。工程内容末端 **`15360`**
+///   （两个段落 `Intro = 0..7680`、`Drop = 7680..15360` 的较大者；剪辑末端 `3840` 更短）
+///   —— 出处：`crates/yeban-model/src/samples.rs` 的 `filled_project`。
+/// - 视口 `1920` px。夹紧上下界是 `1` / `960`。
+/// - 全选（并集跨度 `3360 − 0 = 3360`）⇒ `ceil(3360 / 1920) = 2`，滚动 `0 / 2 = 0`。
+/// - 只选**最后一个**音符（跨度 `3360 − 2880 = 480`）⇒ `ceil(480 / 1920) = 1`，
+///   滚动 `2880 / 1 = 2880`。
+/// - `Shift+Z`（内容末端 `15360`）⇒ `ceil(15360 / 1920) = 8`，滚动 `0`。
+///
+/// ## 怎么变红（每条都实测过）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 把 `ZoomToSelection` / `ZoomToFit` 放回 `action_has_implementation` 的 `!matches!` | `src/host.rs` | 注入之后缩放一位不变（本判据第一段红），`cli_contract.rs` 的 B11d 也红 |
+/// | 跨度只取**一个**音符的区间（不取并集） | `src/bridge.rs` 的 `selection_tick_span` | 全选那一步的期望值 `2` 变成 `1` ⇒ 红 |
+/// | 换算改成**向下取整**（`span / px`） | `src/bridge.rs` 的 `ticks_per_pixel_to_fit` | 全选那一步 `3360 / 1920` 的向下取整 = `1`，期望 `2` ⇒ 红（**这一步是"向上取整"的牙**；`3841 / 1920` 那条边界由 `bridge` 的单元判据钉住） |
+/// | 选区总览不写 `scroll-x` | `src/host.rs` 的 `zoom_action` | 最后一步 `roll-scroll-x` 期望 `2880`、实得 `0` ⇒ 红 |
+#[test]
+fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() {
+    use std::rc::Rc;
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_ui_test_port::port::KeyCode;
+
+    /// 缩放的上下界（`bridge::MIN/MAX_TICKS_PER_PIXEL`）—— 写成**字面量**做独立 oracle；
+    /// 常量本身由 `bridge` 的单元判据钉住。单位：tick / 逻辑像素。
+    const MIN_TPP: u64 = 1;
+    const MAX_TPP: u64 = 960;
+
+    const NOW: u64 = 1_760_000_000_000;
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据:横向缩放>", "yeban-app", project.clone(), NOW)
+            .expect("打开撤销会话"),
+    ));
+    let wiring = LiveWiringOptions {
+        permission: Permission::Interactive,
+        console_tab: 0,
+        save_path: None,
+        engine_quanta: 0,
+        undo: Some(Rc::clone(&port)),
+    };
+    let mut ui = build_live_ui_with(&project, &wiring).expect("真实界面 + Tier-1 执行面");
+
+    // ---- 起点读数 ----
+    let viewport_px = slint::ComponentHandle::window(ui.ui()).size().width;
+    assert_eq!(viewport_px, 1920, "Tier-1 装配的视口宽 = DemoScene 的 1920");
+    let vw = u64::from(viewport_px);
+    let fit = |span: u64| span.div_ceil(vw).clamp(MIN_TPP, MAX_TPP);
+    assert_eq!(
+        ui.ui().get_roll_ticks_per_pixel(),
+        30,
+        "起点缩放 = `DEFAULT_TICKS_PER_PIXEL`（属性默认值）"
+    );
+    assert_eq!(ui.ui().get_roll_scroll_x(), 0.0, "起点偏移 = 0");
+    assert_eq!(port.display().undoable, 0, "起点不该有可撤销的编辑");
+
+    // 默认帧（**未注入任何按键**）：同一状态两次抓帧逐字节相同 = 命题①（确定性）。
+    // sha256 是这次运行的读数（逐字节；本仓 PNG 是存储式 deflate ⇒ 尺寸证明不了内容）。
+    let frame_default = ui.capture().expect("默认外观帧");
+    let frame_default_again = ui.capture().expect("默认外观帧（第二次）");
+    assert!(
+        frame_diff(&frame_default, &frame_default_again).is_none(),
+        "同一状态的两次抓帧必须逐字节相同（命题①：默认帧可复现）"
+    );
+    let (default_png, default_evidence) =
+        encode_with_evidence(&frame_default, DEFAULT_MAX_PNG_BYTES).expect("默认帧必须可编码");
+    let default_digest = yeban_model::ids::ContentHash::of_bytes(&default_png);
+    report_line(&format!(
+        "[zoom-pixel] 默认外观（未注入按键）: {}x{} PNG {} 字节 / non_black={} / 颜色 {} 种 / \
+         指纹 {:016x} / sha256={}（帧字节的 sha256，从 PNG 字节读）",
+        frame_default.width(),
+        frame_default.height(),
+        default_png.len(),
+        default_evidence.non_black_pixels,
+        default_evidence.distinct_colors,
+        default_evidence.fingerprint,
+        default_digest.as_str()
+    ));
+
+    // ---- 选区 = 运行时树里**全部**可见音符身份（与删除判据同一份集合口径）----
+    let all_selected = note_ulids_in_tree(&ui.tree_snapshot());
+    assert!(
+        all_selected.len() >= 2,
+        "夹具必须至少有两个可见音符（否则「并集跨度」与「单音符跨度」无法区分）: {all_selected:?}"
+    );
+    let model_notes = model_note_count(&project);
+
+    // ================= ① `Z`：全选 ⇒ 撑满视口 =================
+    select_ulids(ui.ui(), &all_selected);
+    let (span_start, span_end) =
+        model_span_of(&project, &all_selected).expect("全选的身份必须都能在模型里解析出来");
+    let span_all = span_end - span_start;
+    let expected_all = fit(span_all);
+    assert_ne!(
+        expected_all,
+        fit(model_span_of(&project, &all_selected[..1])
+            .expect("第一个音符")
+            .1
+            - model_span_of(&project, &all_selected[..1])
+                .expect("第一个音符")
+                .0),
+        "夹具要能让「并集跨度」与「单音符跨度」给出**不同**的期望值（否则这条判据没有牙）"
+    );
+    // **无头 Tier-1 端口的真实事件源**：注入未修饰的 `z`。
+    ui.dispatch_key_press(KeyCode::Character('z'))
+        .expect("注入 `Z`");
+    assert_eq!(
+        ui.ui().get_roll_ticks_per_pixel(),
+        i32::try_from(expected_all).expect("tpp 落在 i32 内"),
+        "① `Z` 之后缩放 = ceil({span_all} / {vw}) = {expected_all}"
+    );
+    assert_eq!(
+        ui.ui().get_roll_scroll_x(),
+        0.0,
+        "① 选区从 tick 0 开始 ⇒ 滚动 0 / {expected_all} = 0"
+    );
+
+    // ================= ② `Z`：只选最后一个音符 ⇒ 撑满 + 把选区滚到左沿 =================
+    let last_only = vec![all_selected.last().expect("最后一个").clone()];
+    select_ulids(ui.ui(), &last_only);
+    let (last_start, last_end) = model_span_of(&project, &last_only).expect("最后一个音符");
+    let span_last = last_end - last_start;
+    let expected_last = fit(span_last);
+    ui.dispatch_key_press(KeyCode::Character('z'))
+        .expect("注入 `Z`（单音符选区）");
+    assert_eq!(
+        ui.ui().get_roll_ticks_per_pixel(),
+        i32::try_from(expected_last).expect("tpp 落在 i32 内"),
+        "② 单音符跨度 ceil({span_last} / {vw}) = {expected_last}"
+    );
+    assert_eq!(
+        ui.ui().get_roll_scroll_x(),
+        last_start as f32,
+        "② 选区左沿（tick {last_start} / {expected_last} = {}px）必须滚到视口左沿",
+        last_start / expected_last
+    );
+
+    // ================= ③ `Shift+Z`：全曲总览 =================
+    //
+    // 端口表达不了修饰键 chord（`KeyCode` 只有 `ShiftEnter` 一个组合变体，新增变体要动
+    // `yeban-ui-test-port`，不在本切片的改动面）⇒ 走 `.slint` 回调那一格，
+    // 与既有判据 16 的第 ④ 步同款。
+    let content_end = model_content_end(&project);
+    let expected_fit = fit(content_end);
+    assert!(
+        ui.ui()
+            .invoke_key_action("z".into(), true, false, false, false),
+        "`Shift+Z` 必须被消费"
+    );
+    assert_eq!(
+        ui.ui().get_roll_ticks_per_pixel(),
+        i32::try_from(expected_fit).expect("tpp 落在 i32 内"),
+        "③ `Shift+Z` 之后缩放 = ceil({content_end} / {vw}) = {expected_fit}"
+    );
+    assert_eq!(
+        ui.ui().get_roll_scroll_x(),
+        0.0,
+        "③ 全曲总览必须回到原点（滚动 0）"
+    );
+
+    // ---- 命题②：缩放之后画面**真的变了**（不同像素数 + 包围盒）----
+    //
+    // 这一条与命题①（可复现）是两件事：① 只证明"同一状态同一帧"，② 证明"注入之后
+    // 画面跟着投影动"。判据不碰 golden（比的是**同一次运行**的两帧）。
+    let frame_zoomed = ui.capture().expect("全曲总览帧");
+    let diff = frame_diff(&frame_default, &frame_zoomed).unwrap_or_else(|| {
+        panic!("`Shift+Z` 真的改了投影参数，但两帧逐字节相同 —— 界面没有跟着投影动")
+    });
+    assert!(
+        diff.count > 1000,
+        "缩放改动的时间轴区域必须有大片像素差: {} 个像素，包围盒 {:?}",
+        diff.count,
+        diff.bbox
+    );
+    report_line(&format!(
+        "[zoom-pixel] 注入 `Z` / `Shift+Z` 之后: 差异 {} 像素, 包围盒 {}x{} @({},{}) \
+         （命题②：画面变了；命题①的 sha256 见上）",
+        diff.count, diff.bbox.width, diff.bbox.height, diff.bbox.x, diff.bbox.y
+    ));
+
+    // ================= ④ 空选区按 `Z` ⇒ 没有变化 且 键未被消费 =================
+    select_ulids(ui.ui(), &[]);
+    let before_tpp = ui.ui().get_roll_ticks_per_pixel();
+    let before_scroll = ui.ui().get_roll_scroll_x();
+    let frame_before_empty = ui.capture().expect("空选区之前那一帧");
+    // 先读**返回值**（消费与否），再走端口的真实事件源确认状态一位没动。
+    assert!(
+        !ui.ui()
+            .invoke_key_action("z".into(), false, false, false, false),
+        "空选区按 `Z` 必须**不消费**（返回 false）—— 没有可作用的对象"
+    );
+    ui.dispatch_key_press(KeyCode::Character('z'))
+        .expect("注入 `Z`（空选区）");
+    assert_eq!(
+        ui.ui().get_roll_ticks_per_pixel(),
+        before_tpp,
+        "④ 空选区按 `Z` 之后缩放必须**一位不变**"
+    );
+    assert_eq!(
+        ui.ui().get_roll_scroll_x(),
+        before_scroll,
+        "④ 空选区按 `Z` 之后滚动必须**一位不变**"
+    );
+    let frame_after_empty = ui.capture().expect("空选区之后那一帧");
+    assert!(
+        frame_diff(&frame_before_empty, &frame_after_empty).is_none(),
+        "④ 空选区按 `Z` 之后画面必须逐字节不变（不消费的可见后果）"
+    );
+    // 陈旧身份（工程里不存在）与空选区同义。
+    select_ulids(ui.ui(), &["01J8Z5Q0R7K3M9X2V4B6N8P0PZ".to_owned()]);
+    assert!(
+        !ui.ui()
+            .invoke_key_action("z".into(), false, false, false, false),
+        "选中的身份一个都不在工程里时，`Z` 同样不消费"
+    );
+
+    // ================= ⑤ 缩放是**视图态**：不进撤销栈、不动工程 =================
+    assert_eq!(
+        port.display().undoable,
+        0,
+        "缩放**不进撤销栈**（撤销记的是工程内容 `Op`，缩放只是这一帧画多宽）"
+    );
+    assert_eq!(
+        model_note_count(&port.project()),
+        model_notes,
+        "缩放一位没动工程（音符数不变）"
+    );
+
+    report_line(&format!(
+        "[zoom] `Z`: 全选跨度 {span_all} ⇒ tpp {expected_all}（滚动 0）; 单音符跨度 {span_last} ⇒ \
+         tpp {expected_last}（滚动 {last_start}）; `Shift+Z`: 内容末端 {content_end} ⇒ tpp \
+         {expected_fit}（滚动 0）; 空选区 `Z` ⇒ 返回 false 且读数不变; 撤销栈深度 0"
+    ));
 }

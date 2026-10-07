@@ -400,6 +400,15 @@ export component MainWindow inherits Window {
     /// `[ROAD-M3-002]` 卷帘当前水平偏移（逻辑像素）。
     /// 用 `<float>` 而非 `<length>`：宿主只需读写一个数，避免 `f32 -> Length` 转换与组件链转发。
     in-out property <float> roll-scroll-x: 0.0;
+    /// 时间轴的**横向缩放**（每逻辑像素多少 tick；越大越缩小）。
+    ///
+    /// 它由宿主拥有（与 `track-height-percent` / `roll-scroll-x` 同款"宿主拥有、重新注入"）：
+    /// 写入口只有 `host::set_roll_ticks_per_pixel` 一处，读点只有
+    /// `host::roll_ticks_per_pixel`（唯一）。**进程退出即失**（零 schema、不进 `.yeban`、
+    /// 不进撤销栈）—— 缩放是**视图态**，与 `ADR-0004` Q5 的裁决同口径。
+    /// 默认值与 `bridge::DEFAULT_TICKS_PER_PIXEL` 同值；`<= 0` 或超出
+    /// `bridge` 的 `MIN/MAX_TICKS_PER_PIXEL` 时宿主回退到默认值。
+    in-out property <int> roll-ticks-per-pixel: 30;
     /// `[UI-NOTE-001]` 步骤 ①：当前视口的 tick 上下界（由宿主按裁剪窗口算出）。
     /// 用 `<int>`：i32 在 960 PPQ 下可表示约 8.9 天音频, 且**精确**（`<float>` 在 2^24=1677 万 tick 以上会丢整数精度,
     /// 而本项目 10 万音符夹具已跨 2400 万 tick）。转换必须**饱和**, 不得回绕（见 `tick_to_i32_saturating` 的判据）。

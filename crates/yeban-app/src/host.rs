@@ -316,6 +316,82 @@ pub fn set_track_height_percent(ui: &MainWindow, percent: u32) -> bool {
     true
 }
 
+// ===========================================================================
+// 横向缩放（`Z` / `Shift+Z`）的**视图态**：一个属性、两个函数
+// ===========================================================================
+//
+// 数据流与行高**同款**（"宿主拥有、重新注入"）：
+//
+// ```text
+// MainWindow.roll-ticks-per-pixel              ← host::set_roll_ticks_per_pixel（唯一写点）
+//   └─ host::roll_ticks_per_pixel(ui)          ← 唯一读点（读回 + 回退到默认）
+//        └─ host::project_with_view_state(..)  ← 唯一的"窗口 → 投影"入口
+//             └─ host::apply_view              ← 注入 x / 宽度 / 小节线
+// ```
+//
+// 它是**视图态**（`ADR-0004` Q5：横向缩放的数字归宿主 / 会话暂态），因此：
+// 零 schema、不进 `.yeban`、重启丢失、**不进撤销栈**（撤销是工程内容的事）。
+
+/// 时间轴当前的横向缩放（`ticks_per_pixel`）—— 窗口属性的**唯一读点**。
+///
+/// 回退规则（两条都是决定，不是意外）：
+///
+/// - 属性 `<= 0`（含 Slint 的默认 0 与任何外力写入）⇒ [`crate::bridge::DEFAULT_TICKS_PER_PIXEL`]；
+/// - 属性超出 [`crate::bridge::MIN_TICKS_PER_PIXEL`]..=[`crate::bridge::MAX_TICKS_PER_PIXEL`]
+///   ⇒ 夹到区间内（走 [`crate::bridge::clamp_ticks_per_pixel`]，**同一个**夹紧函数）。
+///
+/// 这样"没人碰过缩放"的路径与 `from_project_with_layout` **逐位**同值（默认 30），
+/// 因此默认外观不引入任何渲染差异。
+#[must_use]
+pub fn roll_ticks_per_pixel(ui: &MainWindow) -> u64 {
+    let raw = ui.get_roll_ticks_per_pixel();
+    match u64::try_from(raw) {
+        Ok(value) if value > 0 => crate::bridge::clamp_ticks_per_pixel(value),
+        _ => crate::bridge::DEFAULT_TICKS_PER_PIXEL,
+    }
+}
+
+/// 写时间轴横向缩放（整数 tick / 逻辑像素）—— 唯一的写点。
+///
+/// 返回"是否真的变了"（与 [`set_track_height_override`] 同款：`false` = 一位没变，
+/// 调用方不必重投影）。写入前先夹紧（[`crate::bridge::clamp_ticks_per_pixel`]），
+/// 因此属性里**永远**是一个投影能接受的合法值。
+///
+/// **不重投影**：重投影由调用方走既有路径（缩放动作走 [`project_with_view_state`]），
+/// 因为"画哪一份工程"不属于视图态（本函数拿不到工程）。
+pub fn set_roll_ticks_per_pixel(ui: &MainWindow, ticks_per_pixel: u64) -> bool {
+    let clamped = crate::bridge::clamp_ticks_per_pixel(ticks_per_pixel);
+    let Ok(value) = i32::try_from(clamped) else {
+        return false;
+    };
+    if ui.get_roll_ticks_per_pixel() == value {
+        return false;
+    }
+    ui.set_roll_ticks_per_pixel(value);
+    true
+}
+
+/// **窗口的视图态 → 一份投影**（唯一的"从窗口造投影"入口）。
+///
+/// 它把两个视图态拼在一起：横向缩放（[`roll_ticks_per_pixel`]）与行高布局
+/// （[`track_height_layout`]），一起交给 [`ViewState::from_project_with_zoom_and_layout`]。
+/// 存在的理由是**别让每个重投影点各拼一遍** —— 拼漏一处，那一条路径就会
+/// 把用户调过的缩放静默清零（行高在 `ADR-0004` S1 已经付过同一种学费）。
+///
+/// # Errors
+///
+/// 见 [`crate::bridge::BridgeError`]（缩放为 0 / 拍号退化 / 溢出）。
+pub fn project_with_view_state(
+    project: &yeban_model::YebanProjectV1,
+    ui: &MainWindow,
+) -> Result<ViewState, crate::bridge::BridgeError> {
+    ViewState::from_project_with_zoom_and_layout(
+        project,
+        roll_ticks_per_pixel(ui),
+        &track_height_layout(ui),
+    )
+}
+
 /// 拖拽手势的**像素换算**（纯函数，可判据）：把"从按下点开始的指针纵向位移"换算成这一轨的
 /// **基准**行高（整数逻辑像素）。
 ///
@@ -393,8 +469,9 @@ fn reproject_track_heights(ui: &MainWindow, port: &UndoPort) {
     let Some(project) = port.try_project() else {
         return;
     };
-    let layout = track_height_layout(ui);
-    match ViewState::from_project_with_layout(&project, &layout) {
+    // 从**窗口**造投影（`project_with_view_state`）：行高与横向缩放一起读回来 ——
+    // 只读一个的话，拖动行高会把用户调过的缩放静默清零。
+    match project_with_view_state(&project, ui) {
         Ok(view) => apply_row_geometry(ui, &view),
         Err(error) => {
             // 投影失败**出声**：视图态在内存里已经变了，但这一帧画不出来。
@@ -1760,21 +1837,21 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// `shortcut_table_status_matches_the_resolution_and_host_pipeline` 把快捷键表逐行与它
 /// 对账 —— 表与行为因此不可能各说各话。
 ///
-/// 返回 `false` 的六条（`Duplicate` / `ZoomToSelection` / `ZoomToFit` /
-/// `AuditionMain` / `AuditionProposal` / `AcceptAiSuggestion`）是模型侧的编辑 /
-/// 视口语义还没落地的动作。**不消费**它们是刻意的：把键吞掉却什么都不做，比不处理更糟 ——
-/// 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
+/// 返回 `false` 的四条（`Duplicate` / `AuditionMain` / `AuditionProposal` /
+/// `AcceptAiSuggestion`）是模型侧的编辑 / 视口语义还没落地的动作。**不消费**它们是刻意的：
+/// 把键吞掉却什么都不做，比不处理更糟 —— 用户会以为"这个功能坏了"，而日志里没有任何东西能解释。
 ///
-/// `DeleteSelection` 曾在这张名单里；它现在有落地实现（下面的 `apply_action` 分支），
-/// 因此**同时**从这张名单与 `cli.rs` 的快捷表 `implemented` 标记里移出 ——
-/// B11b（`tests/cli_contract.rs`）把这两处与 `--print-shortcuts` 的渲染逐条对账。
+/// `DeleteSelection` 与 `ZoomToSelection` / `ZoomToFit` 都曾在这张名单里；它们现在都有落地实现
+/// （下面的 `apply_action` 分支），因此**同时**从这张名单与 `cli.rs` 的快捷表 `implemented`
+/// 标记里移出 —— B11b（`tests/cli_contract.rs`）把这两处与 `--print-shortcuts` 的渲染逐条对账。
+/// 注：`ZoomToSelection` / `ZoomToFit` 的**运行时**语义比"有实现"更细一层 ——
+/// 空选区 / 空工程时 `apply_action` 仍返回 `false`（不消费）；那一条由
+/// `tests/live_ui_mcp.rs` 的端到端判据见证，本名单回答的是"这个动作有没有落点"。
 #[must_use]
 pub fn action_has_implementation(action: Action) -> bool {
     !matches!(
         action,
         Action::Duplicate
-            | Action::ZoomToSelection
-            | Action::ZoomToFit
             | Action::AuditionMain
             | Action::AuditionProposal
             | Action::AcceptAiSuggestion
@@ -1909,9 +1986,113 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             refresh_undo_window(ui, port, true);
             true
         }
+        // 横向缩放（`Z` / `Shift+Z`）：**视图态**，不碰 `Op`、不进撤销栈。
+        //
+        // 语义（三条都是决定）：
+        // 1. 输入是**投影自己的读数**：选区跨度走 `ViewState::selection_tick_span`
+        //    （`selected-ulids` 解析到投影里的音符），全曲长度走 `ViewState::content_end_tick`
+        //    （与铺标尺的那次 `max` 同一口径）—— 宿主**不**再遍历一遍工程去算第二份几何；
+        // 2. **没有可作用的对象 ⇒ 不消费**：空选区（或选中的身份已不存在）按 `Z`、
+        //    空工程按 `Shift+Z` 都返回 `false`。这与 `DeleteSelection`（空选区返回 `false`）
+        //    和 `Action::Cancel`（没有手势返回 `false`）同一取向：吞掉一个没有对象的键，
+        //    用户只会看到"这个功能坏了"；
+        // 3. 目标值由 [`crate::bridge::ticks_per_pixel_to_fit`] 一次算出（**唯一**的换算 +
+        //    夹紧），再走 [`project_with_view_state`] 重新投影 ⇒ 没有第二套几何。
+        Action::ZoomToSelection | Action::ZoomToFit => {
+            let Some(port) = undo else {
+                return false;
+            };
+            zoom_action(ui, port, action)
+        }
         // 其余取值已在函数开头被 `action_has_implementation` 挡下；这一支只为让 match 穷尽。
         _ => false,
     }
+}
+
+/// `Z`（选区撑满视口）/ `Shift+Z`（全曲总览）的**唯一**落点（纯宿主，走投影）。
+///
+/// 链路（每一步都是既有实现）：
+///
+/// ```text
+/// Action::ZoomToSelection / ZoomToFit
+///   ├─ UndoPort::try_project           ← 权威工程（视图态不持有工程）
+///   ├─ host::project_with_view_state   ← 当前缩放 + 行高 → 当前投影（读**投影**的读数）
+///   │    ├─ ViewState::selection_tick_span(selected-ulids)   （`Z`）
+///   │    └─ ViewState::content_end_tick()                    （`Shift+Z`）
+///   ├─ bridge::ticks_per_pixel_to_fit  ← ceil(跨度 / 视口像素) + 唯一夹紧
+///   └─ host::set_roll_ticks_per_pixel → host::project_with_view_state → host::apply_view
+/// ```
+///
+/// ## 返回值（= 这一键是否被消费）
+///
+/// | 情形 | 返回 | 理由 |
+/// | :--- | :--- | :--- |
+/// | 空选区按 `Z` / 空工程按 `Shift+Z` | `false` | 没有可作用的对象（与 `DeleteSelection` 同取向） |
+/// | 没有撤销端口 / 端口没有活跃工程 / 视口宽度为 0 | `false` | 没有可投影的输入；不假装处理 |
+/// | 已经有这个缩放 | `true` | 对象在、语义已达成；重投影是白费（画面本来就对） |
+/// | 真的改了缩放 | `true` | 投影 + 注入都做了 |
+///
+/// ## 为什么不进撤销栈
+///
+/// 本函数**不**调用 `UndoPort::commit_ops`，因此 `port.display().undoable` 一位不涨。
+/// 撤销是**工程内容**的事（`ADR-0001` 的提交图谱记的是 `Op`）；缩放只是"这一帧画多宽"，
+/// 与 `roll-scroll-x` / `track-height-*` 同属视图态。
+fn zoom_action(ui: &MainWindow, port: &UndoPort, action: Action) -> bool {
+    let Some(project) = port.try_project() else {
+        return false;
+    };
+    // 当前投影：选区身份与内容长度都从它读，不另建索引。
+    let Ok(current) = project_with_view_state(&project, ui) else {
+        return false;
+    };
+    let span = match action {
+        Action::ZoomToSelection => {
+            let selected: Vec<String> = {
+                use slint::Model as _;
+                ui.get_selected_ulids()
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect()
+            };
+            current.selection_tick_span(&selected)
+        }
+        // 全曲总览：从 tick 0 到内容末端。内容为 0 ⇒ 没有可看的东西 ⇒ 不消费。
+        _ => {
+            let end = current.content_end_tick();
+            (end > 0).then_some((0, end))
+        }
+    };
+    let Some((start_tick, end_tick)) = span else {
+        return false;
+    };
+    // 视口宽度：与 `apply_view` / 裁剪用的是**同一个**读数（窗口逻辑宽度）。
+    // `slint::Window::size()` 的 `width` 是 `u32`（`PhysicalSize`），因此不需要转换检查。
+    let viewport_px = slint::ComponentHandle::window(ui).size().width;
+    let Some(target) =
+        crate::bridge::ticks_per_pixel_to_fit(end_tick.saturating_sub(start_tick), viewport_px)
+    else {
+        return false;
+    };
+    if target == current.ticks_per_pixel {
+        // 已经在这个缩放上：对象在、语义已达成 ⇒ 消费，但不重投影。
+        return true;
+    }
+    if !set_roll_ticks_per_pixel(ui, target) {
+        // `target != current.ticks_per_pixel` 时不该发生；如实不消费而不是假装改了。
+        return false;
+    }
+    let Ok(next) = project_with_view_state(&project, ui) else {
+        return false;
+    };
+    // 选区总览要**看得见选区**：把它的左沿滚到视口左沿。换算走 `tick_to_px`
+    // （与投影同一个整数除法），不新写第二套。
+    let scroll_x = if action == Action::ZoomToSelection {
+        crate::bridge::tick_to_px(start_tick, target).map_or(0.0, |px| px as f32)
+    } else {
+        0.0
+    };
+    apply_view(ui, &next, viewport_px as f32, scroll_x);
+    true
 }
 
 /// 把**撤销的**模型读数注入界面（显示态 + 时光机弹窗开关）。
@@ -2145,12 +2326,11 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             return;
         }
         // 重新投影, 让新音符出现在界面上（与 `refresh_undo` 同一手法）。
-        // 行高布局（`ADR-0004` S1）是视图态 ⇒ 重投影必须读回来，
-        // 否则"设了行高之后用铅笔写一个音符"会把行高静默清零。
-        let layout = track_height_layout(&ui);
+        // 行高布局与横向缩放（`ADR-0004` S1 / Q5）都是视图态 ⇒ 重投影必须从窗口读回来，
+        // 否则"调过缩放之后用铅笔写一个音符"会把缩放静默清零。
         if let Some(refreshed) = port
             .try_project()
-            .and_then(|project| ViewState::from_project_with_layout(&project, &layout).ok())
+            .and_then(|project| project_with_view_state(&project, &ui).ok())
         {
             apply_view(&ui, &refreshed, width, scroll);
         }
@@ -2184,9 +2364,8 @@ fn refresh_undo_window(ui: &MainWindow, port: &UndoPort, reproject: bool) {
         eprintln!("[yeban-app] 撤销后没有可投影的工程: 权威会话此刻没有活跃工程");
         return;
     };
-    // 撤销只改工程，**不该**丢掉视图态：行高布局从窗口读回来（与 `scroll_x` 同款）。
-    let layout = track_height_layout(ui);
-    match ViewState::from_project_with_layout(&project, &layout) {
+    // 撤销只改工程，**不该**丢掉视图态：行高布局与横向缩放从窗口读回来（与 `scroll_x` 同款）。
+    match project_with_view_state(&project, ui) {
         Ok(view) => {
             // 复用当前偏移：撤销**不应**把卷帘滚回起点（账本第 200 轮记录的缺陷）。
             let scroll_x = ui.get_roll_scroll_x();

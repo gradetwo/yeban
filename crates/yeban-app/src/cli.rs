@@ -2111,14 +2111,14 @@ const SHORTCUTS: [ShortcutRow; 18] = [
         action: Action::ZoomToSelection,
         key: PhysicalKey::KeyZ,
         modifiers: Modifiers::none(),
-        implemented: false,
+        implemented: true,
     },
     ShortcutRow {
         label: "Shift+Z → 全曲总览",
         action: Action::ZoomToFit,
         key: PhysicalKey::KeyZ,
         modifiers: Modifiers::shift(),
-        implemented: false,
+        implemented: true,
     },
     ShortcutRow {
         label: "Cmd/Ctrl+Alt+M → 控制台最大化",

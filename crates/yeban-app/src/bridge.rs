@@ -71,6 +71,58 @@ pub use yeban_model::PPQ;
 ///   往返判据立即变红。这个数字本身就是"不许用浮点算位置"的**活判据**（不是巧合）。
 pub const DEFAULT_TICKS_PER_PIXEL: u64 = 30;
 
+/// 横向缩放的**下界**（`ticks_per_pixel` 的最小合法值）：1 tick / 逻辑像素 = 最大放大。
+///
+/// 数字**不是新发明的**：判据 `tick_to_pixel_round_trips_in_both_directions`
+/// （`bridge.rs` 的 `#[cfg(test)]` 模块）已经在 `ticks_per_pixel = 1` 上把两个方向
+/// 的往返逐项断言过，极端值 `960`（= 最小放大，一个四分音符 1px）同属那一族。
+/// 因此夹紧区间落在**投影已被判据覆盖**的范围之内，不引入没测过的档位。
+pub const MIN_TICKS_PER_PIXEL: u64 = 1;
+
+/// 横向缩放的**上界**（`ticks_per_pixel` 的最大合法值）：960 tick / 逻辑像素。
+///
+/// 960 = [`PPQ`] ⇒ 一个四分音符恰好 1 逻辑像素（最小放大）。
+/// 出处同 [`MIN_TICKS_PER_PIXEL`]：同一个往返判据覆盖的档位之一。
+pub const MAX_TICKS_PER_PIXEL: u64 = 960;
+
+/// 把任意 `ticks_per_pixel` 夹进 [`MIN_TICKS_PER_PIXEL`]..=[`MAX_TICKS_PER_PIXEL`]。
+///
+/// **这是缩放的唯一夹紧点**（`ADR-0004` Q2 对"有意义的上下界放投影（纯函数）"的同一条取向）。
+/// `0` 也走这里：它被夹成 `1`（最小 = 1，所以"0"没有第二条解释）。
+/// 投影本体仍然对 `0` 报 [`BridgeError::ZeroTicksPerPixel`] —— 那个错误码与它的语义不变，
+/// 本函数只是保证**宿主算出来的**值永远不落在那里。
+#[must_use]
+pub fn clamp_ticks_per_pixel(ticks_per_pixel: u64) -> u64 {
+    ticks_per_pixel.clamp(MIN_TICKS_PER_PIXEL, MAX_TICKS_PER_PIXEL)
+}
+
+/// 把"要撑满视口的 tick 跨度"换算成夹紧后的 `ticks_per_pixel`（**纯函数**，整数口径）。
+///
+/// 口径（"撑满"= 跨度**装得下**且尽可能大）：
+///
+/// ```text
+/// target = clamp( ceil(span_ticks / viewport_px) )
+/// ```
+///
+/// - **向上取整**而不是向下：`tick_to_px` 是整数除法，向下取整会让画出的宽度**超过**视口；
+///   向上取整保证画出的跨度 `<= viewport_px`（"装得下"），同时取到最小的合法 `ticks_per_pixel`
+///   （= 尽量放大）。
+/// - 返回 `None` 的两种情形都是**决定**：跨度为 0（选区里没有音符 / 工程没有任何内容）
+///   与视口宽度为 0（没有可撑满的画布）。调用方据此**不消费**这一键 ——
+///   与 `Action::DeleteSelection`（空选区返回 `false`）、`Action::Cancel`（没有手势返回
+///   `false`）同一取向：一个没有可作用对象的键不该被吞掉。
+/// - 夹紧的后果**如实登记**：若 `ceil(span / px) > ` [`MAX_TICKS_PER_PIXEL`]，
+///   跨度在最小放大下仍然装不下 —— 那时本函数给出上界值，而不是假装装得下。
+#[must_use]
+pub fn ticks_per_pixel_to_fit(span_ticks: u64, viewport_px: u32) -> Option<u64> {
+    if span_ticks == 0 || viewport_px == 0 {
+        return None;
+    }
+    Some(clamp_ticks_per_pixel(
+        span_ticks.div_ceil(u64::from(viewport_px)),
+    ))
+}
+
 /// 一个剪辑 / 段落在时间轴上的最小可见宽度（逻辑像素）。
 ///
 /// 亚像素宽的块会被 Slint 的裁剪语义过滤掉（`i-slint-core` 的
@@ -1253,6 +1305,31 @@ impl ViewState {
         )
     }
 
+    /// 投影一个工程、给出**横向缩放**与**轨道高度布局**（光标 tick 取默认）。
+    ///
+    /// 它与 [`Self::from_project_with_layout`] 是同一件事的两个参数面：那个用默认缩放
+    /// （[`DEFAULT_TICKS_PER_PIXEL`]），这个让调用方给缩放。两者都转发到
+    /// [`Self::from_project_with_zoom_cursor_and_layout`] —— **不存在第三条投影实现**。
+    ///
+    /// 生产调用点是宿主：`host::project_with_view_state`（窗口上的
+    /// `roll-ticks-per-pixel` + `track-height-*` 三个视图态属性 → 一次投影）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。
+    pub fn from_project_with_zoom_and_layout(
+        project: &YebanProjectV1,
+        ticks_per_pixel: u64,
+        layout: &TrackHeightLayout,
+    ) -> Result<Self, BridgeError> {
+        Self::from_project_with_zoom_cursor_and_layout(
+            project,
+            ticks_per_pixel,
+            crate::automation::AUTOMATION_CURSOR_TICK,
+            layout,
+        )
+    }
+
     /// 投影的本体：缩放 + 光标 tick + 轨道高度布局**全部**显式给全。
     ///
     /// 另外三个入口（[`Self::from_project`] / [`Self::from_project_with_zoom`] /
@@ -1708,6 +1785,52 @@ impl ViewState {
     #[must_use]
     pub fn note_widths(&self) -> Vec<f32> {
         self.notes.iter().map(|note| note.width).collect()
+    }
+
+    /// 选区（`MainWindow` 的 `selected-ulids`）在**这份投影里**解析出的 tick 跨度。
+    ///
+    /// 返回 `(min start_tick, max end_tick)`：**不是一个音符的跨度**，而是整个选区并集的
+    /// 跨度（多选时要全部装进视口）。身份解析走**投影自己的** `notes`
+    /// （[`NoteView::id`]）—— 于是"选中的身份"与"画面上的音符"是同一份事实，
+    /// 不存在第二张 `ulid → tick` 表。
+    ///
+    /// 返回 `None` = 选区为空，或选中的身份一个都不在工程里：两种情形都**没有可作用的
+    /// 对象**，调用方据此不消费按键（与 [`crate::host`] 里 `DeleteSelection` 的取向相同）。
+    #[must_use]
+    pub fn selection_tick_span(&self, selected_ulids: &[String]) -> Option<(u64, u64)> {
+        let mut span: Option<(u64, u64)> = None;
+        for id in selected_ulids {
+            for note in &self.notes {
+                if &note.id != id {
+                    continue;
+                }
+                span = Some(match span {
+                    None => (note.start_tick, note.end_tick),
+                    Some((start, end)) => (start.min(note.start_tick), end.max(note.end_tick)),
+                });
+                break;
+            }
+        }
+        span
+    }
+
+    /// 工程的**内容末端 tick**：全部剪辑摆放与全部段落的 `end_tick` 的最大值。
+    ///
+    /// 它与投影内部用来铺标尺的那一次 `max` **同一口径**（`from_project_with_zoom_cursor_and_layout`
+    /// 里的 `end_tick` 循环）；这里把那个读数发布出来，供"全曲总览"当输入，
+    /// 而不是在宿主里再遍历一遍工程（那会是第二份几何）。
+    ///
+    /// `0` = 工程没有任何可看的内容（空工程 / 没有任何摆放与段落）—— 调用方据此不消费按键。
+    #[must_use]
+    pub fn content_end_tick(&self) -> u64 {
+        let mut end = 0_u64;
+        for clip in &self.clips {
+            end = end.max(clip.end_tick);
+        }
+        for section in &self.sections {
+            end = end.max(section.end_tick);
+        }
+        end
     }
 
     /// 音符块顶沿 y（逻辑像素，由 [`pitch_lane`] 的车道索引一次乘法得到）。
@@ -2501,6 +2624,102 @@ mod tests {
         // 30 不是 2 的幂 ⇒ 这条断言是"不许用浮点算位置"的探针。
         assert_eq!(tick_to_px(30, 30), Ok(1));
         assert_eq!(px_to_tick(1, 30), Ok(30));
+    }
+
+    /// 判据（`Z` / `Shift+Z` 的**算术**那一半）：`ticks_per_pixel_to_fit` 向上取整 + 夹紧。
+    ///
+    /// 期望值是**手算表**（不是拿实现算一遍再和实现比）：
+    ///
+    /// | 跨度 tick | 视口 px | `ceil(跨度/px)` | 夹紧后 | 备注 |
+    /// | ---: | ---: | ---: | ---: | :--- |
+    /// | 3840 | 1920 | 2 | 2 | 整除（4/4 一小节正好一屏的一半） |
+    /// | 3841 | 1920 | 3 | 3 | 多 1 tick ⇒ 向上取整进一位（"装得下"） |
+    /// | 1 | 1920 | 1 | 1 | 下界 |
+    /// | 100000000 | 1920 | 52084 | 960 | 上界（夹紧的后果如实登记：仍装不下） |
+    #[test]
+    fn zooms_to_fit_are_ceiling_rounded_and_clamped() {
+        assert_eq!(ticks_per_pixel_to_fit(3_840, 1_920), Some(2));
+        assert_eq!(ticks_per_pixel_to_fit(3_841, 1_920), Some(3));
+        assert_eq!(ticks_per_pixel_to_fit(1, 1_920), Some(1));
+        assert_eq!(
+            ticks_per_pixel_to_fit(100_000_000, 1_920),
+            Some(MAX_TICKS_PER_PIXEL)
+        );
+        // 没有可作用对象 / 没有画布 ⇒ `None`（调用方据此**不消费**按键）。
+        assert_eq!(
+            ticks_per_pixel_to_fit(0, 1_920),
+            None,
+            "跨度为 0 = 没有对象"
+        );
+        assert_eq!(
+            ticks_per_pixel_to_fit(3_840, 0),
+            None,
+            "视口宽 0 = 没有画布"
+        );
+        // 夹紧：0 与越界值都被收进 [MIN, MAX]（投影本体仍独立拒绝 0）。
+        assert_eq!(clamp_ticks_per_pixel(0), MIN_TICKS_PER_PIXEL);
+        assert_eq!(clamp_ticks_per_pixel(u64::MAX), MAX_TICKS_PER_PIXEL);
+        assert_eq!(clamp_ticks_per_pixel(MIN_TICKS_PER_PIXEL), 1);
+        assert_eq!(clamp_ticks_per_pixel(MAX_TICKS_PER_PIXEL), 960);
+    }
+
+    /// 判据：`ViewState` 发布的**选区跨度**与**内容末端**与模型读数一致。
+    ///
+    /// 口径是"投影读自己的音符"：跨度取选中身份的并集（`min 起点` / `max 终点`）。
+    /// 这里对账的是**同一批**音符的两个来源：投影的 `notes` 与模型的 `clip_pool`。
+    #[test]
+    fn view_state_publishes_the_selection_span_and_the_content_end() {
+        let project = filled_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        assert!(view.notes.len() >= 2, "夹具必须有多个音符");
+        let first = view.notes.first().expect("音符").clone();
+        let last = view.notes.last().expect("音符").clone();
+        assert_eq!(
+            view.selection_tick_span(std::slice::from_ref(&first.id)),
+            Some((first.start_tick, first.end_tick)),
+            "单个音符的跨度就是它自己的区间"
+        );
+        assert_eq!(
+            view.selection_tick_span(&[first.id.clone(), last.id.clone()]),
+            Some((
+                first.start_tick.min(last.start_tick),
+                first.end_tick.max(last.end_tick)
+            )),
+            "多选 = 整个选区的并集跨度（不是第一个音符的跨度）"
+        );
+        assert_eq!(view.selection_tick_span(&[]), None, "空选区 ⇒ None");
+        assert_eq!(
+            view.selection_tick_span(&["01J8Z5Q0R7K3M9X2V4B6N8P0PZ".to_owned()]),
+            None,
+            "选中的身份不在工程里 ⇒ None"
+        );
+        // 内容末端：模型侧的独立口径（剪辑 `start + duration` 与段落 `end_tick` 的最大值）。
+        let clip_end = project
+            .tracks
+            .values()
+            .flat_map(|track| track.clips.values())
+            .map(|placement| placement.start_tick + placement.duration_ticks)
+            .max()
+            .unwrap_or(0);
+        let section_end = project
+            .sections
+            .values()
+            .map(|section| section.end_tick)
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            view.content_end_tick(),
+            clip_end.max(section_end),
+            "内容末端 = 剪辑末端 ∪ 段落末端的最大值（与铺标尺那次 max 同口径）"
+        );
+        assert!(view.content_end_tick() > 0, "filled 夹具必须有内容");
+        // 空工程：没有任何可看的内容 ⇒ 0（`Shift+Z` 据此不消费）。
+        assert_eq!(
+            ViewState::from_project(&default_project())
+                .expect("空工程")
+                .content_end_tick(),
+            0
+        );
     }
 
     /// 判据 3: **空工程不 panic**，且投影成空视图（轨道 / 剪辑 / 段落 / 场景全空）。

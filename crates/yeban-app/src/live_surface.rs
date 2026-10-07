@@ -549,14 +549,11 @@ impl LiveAdminSurface {
     /// 因此"换工程 ⇒ 换界面"这件事在同一个活窗口上可判据（不需要第二个窗口，
     /// 也就不需要第二个 Tier-1 平台 —— 那是 `set_platform` 每线程一次的限制）。
     ///
-    /// `ADR-0004` S1：行高布局是**视图态**，所以重投影要把它读回来
-    /// （`yeban_app::host::track_height_layout`，与卷帘偏移同款"宿主拥有、重新注入"）。
-    /// 不读它的话，"设置行高之后再换工程/刷新"会把高度**静默清零**。
+    /// `ADR-0004` S1 / Q5：行高布局与横向缩放都是**视图态**，所以重投影要把它们读回来
+    /// （`yeban_app::host::project_with_view_state`，与卷帘偏移同款"宿主拥有、重新注入"）。
+    /// 不读它的话，"设置行高（或调过缩放）之后再换工程/刷新"会把它们**静默清零**。
     fn apply_project(&mut self, project: &YebanProjectV1) -> Result<(), LiveWiringError> {
-        let view = ViewState::from_project_with_layout(
-            project,
-            &yeban_app::host::track_height_layout(&self.window),
-        )?;
+        let view = yeban_app::host::project_with_view_state(project, &self.window)?;
         let registry = control_tree_from_registry(&ElementRegistry::from_view(&view))?;
         host::apply_view(
             &self.window,
@@ -672,13 +669,12 @@ impl LiveAdminSurface {
         })?;
         let changed =
             yeban_app::host::set_track_height_override(&self.window, &track_id, height_px);
-        let view = ViewState::from_project_with_layout(
-            &self.project,
-            &yeban_app::host::track_height_layout(&self.window),
-        )
-        .map_err(|error| PortError::Rejected {
-            message: format!("轨道高度重投影失败: {error}"),
-        })?;
+        // 行高与横向缩放都从窗口读回来（`project_with_view_state`）：改行高不该把缩放弄丢。
+        let view = yeban_app::host::project_with_view_state(&self.project, &self.window).map_err(
+            |error| PortError::Rejected {
+                message: format!("轨道高度重投影失败: {error}"),
+            },
+        )?;
         let registry =
             control_tree_from_registry(&ElementRegistry::from_view(&view)).map_err(|error| {
                 PortError::Rejected {

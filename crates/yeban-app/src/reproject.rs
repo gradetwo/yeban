@@ -57,7 +57,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::bridge::ViewState;
 use crate::host;
 use crate::mcp_mount::{InProcessMcp, ProjectAuthorityHandle, WeakProjectAuthorityHandle};
 use crate::ui::MainWindow;
@@ -139,7 +138,8 @@ impl AuthorityMirror {
     /// 顺序是契约（与 `live_surface::LiveAdminSurface::sync_authority` 同款）：
     /// 1. 读修订号；`projected` 已经不小于它 ⇒ [`ProjectionOutcome::Unchanged`]；
     /// 2. 取权威工程；`None` ⇒ [`ProjectionOutcome::NoActiveProject`]（**不**假装清空界面）；
-    /// 3. 投影（`ViewState::from_project`）并注入（`host::apply_view`）——
+    /// 3. 投影（`host::project_with_view_state`：窗口的缩放 + 行高视图态 → `ViewState`）
+    ///    并注入（`host::apply_view`）——
     ///    **只有成功了**才把 `projected` 推上去：投影失败会让下一次重试，
     ///    而不是把"已经投影过了"记成一句不成立的话。
     ///
@@ -156,9 +156,9 @@ impl AuthorityMirror {
         let Some(project) = authority.project() else {
             return ProjectionOutcome::NoActiveProject { revision };
         };
-        // 行高布局（`ADR-0004` S1）与卷帘偏移同款：从窗口读回来再投影，
-        // 于是"会话侧改了工程"的重投影**不会**把手动调过的行高静默清零。
-        match ViewState::from_project_with_layout(&project, &host::track_height_layout(ui)) {
+        // 行高布局（`ADR-0004` S1）与横向缩放（Q5）与卷帘偏移同款：从窗口读回来再投影，
+        // 于是"会话侧改了工程"的重投影**不会**把手动调过的行高 / 缩放静默清零。
+        match host::project_with_view_state(&project, ui) {
             Ok(view) => {
                 let scroll_x = ui.get_roll_scroll_x();
                 host::apply_view(
