@@ -211,6 +211,20 @@ pub fn clip_label(source: &str, name: &str, gain_db: f32) -> String {
     format!("audio-clip:{source}:{name}:{gain_db}")
 }
 
+/// 一个音频片段**摆放**的确定性标签：`(片段身份, 音轨身份, 起始 tick)`。
+///
+/// 为什么起始 tick 参与身份：同一个片段在同一轨道上的**两个不同位置**是两次摆放，
+/// 不是同一次摆放的两次请求。反过来，"同一片段 + 同一轨道 + 同一位置"重复提交
+/// 必须命中**同一条**摆放记录（因此它是这三个分量的纯函数）。
+///
+/// 时值**不在**标签里：同一位置的时值变化是一次"改长度"，不是第二条摆放。重复提交
+/// 同一个位置但不同时值会被 `plan` 判为 `CONFLICT`（与"同身份不同内容的片段"同一口径），
+/// 而不是静默地多出一条重叠的摆放。
+#[must_use]
+pub fn placement_label(clip_id: &str, track_id: &str, start_tick: u64) -> String {
+    format!("audio-placement:{clip_id}:{track_id}:{start_tick}")
+}
+
 /// 音轨身份之外的**可选**寻址分量（`deviceParam` / `macro` 用），默认 0。
 #[must_use]
 pub fn optional_index(raw: Option<u64>) -> u64 {
@@ -352,6 +366,27 @@ mod tests {
         assert_ne!(
             clip_label("asset:ab", "Kick", 0.0),
             clip_label("disk:/tmp/a.wav", "Kick", 0.0)
+        );
+    }
+
+    #[test]
+    fn placement_label_is_a_pure_function_of_clip_track_and_start() {
+        assert_eq!(
+            placement_label("clip-a", "track-1", 0),
+            placement_label("clip-a", "track-1", 0)
+        );
+        assert_ne!(
+            placement_label("clip-a", "track-1", 0),
+            placement_label("clip-a", "track-1", 960),
+            "同一轨道的两个位置是两次摆放"
+        );
+        assert_ne!(
+            placement_label("clip-a", "track-1", 0),
+            placement_label("clip-a", "track-2", 0)
+        );
+        assert_ne!(
+            placement_label("clip-a", "track-1", 0),
+            placement_label("clip-b", "track-1", 0)
         );
     }
 

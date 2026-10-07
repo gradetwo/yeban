@@ -44,6 +44,34 @@ pub fn ticks_to_frames(end_tick: u64, ppq: u64, bpm: f64, sample_rate: u32) -> u
     frames as u64
 }
 
+/// 帧 → tick（**向上取整**）。
+///
+/// 这是 [`ticks_to_frames`] 的反函数，用在"把一段音频的全部帧数换算成摆放时值"这件事上
+/// （`yeban_import_audio` 的 `durationTicks` 缺省值）：**向上**取整保证素材尾部的
+/// 不足一 tick 不会被切掉 —— 向下取整会让最后几帧永远听不到，那是一种静默的丢音。
+///
+/// `seconds = frames / sample_rate`，再换算成 tick：`frames * ppq * bpm / (sample_rate * 60)`。
+/// 病态输入（`ppq == 0`、`bpm <= 0`、非有限 `bpm`、采样率 0、非有限结果）返回 `None` ——
+/// 与 [`ticks_to_frames`] 返回 `0` 不同，这里**没有**一个安全的哨兵值：
+/// [`yeban_model::ClipPlacement::validate`] 拒绝零时值的摆放，因此调用方必须明确拒绝，
+/// 而不是悄悄写一个会被模型层拒掉的 `0`。
+///
+/// 结果的下界是 1（0 帧素材也不产出 0 tick）。
+#[must_use]
+pub fn frames_to_ticks_ceil(frames: u64, ppq: u64, bpm: f64, sample_rate: u32) -> Option<u64> {
+    if ppq == 0 || !bpm.is_finite() || bpm <= 0.0 || sample_rate == 0 {
+        return None;
+    }
+    let ticks = (frames as f64) * (ppq as f64) * bpm / (f64::from(sample_rate) * 60.0);
+    if !ticks.is_finite() || ticks < 0.0 {
+        return None;
+    }
+    if ticks >= u64::MAX as f64 {
+        return Some(u64::MAX);
+    }
+    Some((ticks.ceil() as u64).max(1))
+}
+
 /// 峰值（最大绝对值）。
 ///
 /// 非有限样本**不计入**：`NaN` 参与比较会让"全零 ⇒ 峰值 0"这条边界失效，
@@ -247,6 +275,62 @@ mod tests {
             assert_eq!(
                 ticks_to_frames(1_000, ppq, bpm, rate),
                 0,
+                "{ppq}/{bpm}/{rate}"
+            );
+        }
+    }
+
+    /// 判据 3: 帧 → tick 与 tick → 帧在整数关系上互逆，且**向上**取整。
+    ///
+    /// 这条判据的牙齿：把 `ceil` 换成 `floor`/`round`，下列"不足一 tick"的两行立刻变红
+    /// （那些帧会落在一整个 tick 之外，等于被硬切掉）。
+    #[test]
+    fn frames_round_trip_through_ticks_and_never_cut_a_partial_tick() {
+        // 1920 tick = 1 秒 @120 BPM / 960 PPQ ⇒ 48000 帧正好回到 1920 tick。
+        assert_eq!(
+            frames_to_ticks_ceil(48_000, 960, 120.0, 48_000),
+            Some(1_920)
+        );
+        assert_eq!(frames_to_ticks_ceil(24_000, 960, 120.0, 48_000), Some(960));
+        // 4800 帧 = 100 ms @128 BPM ⇒ 204.8 tick ⇒ 向上取整 205。
+        assert_eq!(frames_to_ticks_ceil(4_800, 960, 128.0, 48_000), Some(205));
+        // 小数部分 < 0.5 的一例：4300 帧 @48k = 0.089583 s ⇒ 183.466… tick。
+        // `ceil` ⇒ 184；`round` 会给出 183（丢掉尾部不足半 tick 的那部分）。
+        // 这一行专门让"把 ceil 换成 round"变红。
+        assert_eq!(frames_to_ticks_ceil(4_300, 960, 128.0, 48_000), Some(184));
+        // 0 帧仍给 1 tick（0 会被模型层拒绝）。
+        assert_eq!(frames_to_ticks_ceil(0, 960, 120.0, 48_000), Some(1));
+        // 1 帧远小于一 tick ⇒ 向上取整给它完整的一 tick，而不是 0。
+        assert_eq!(frames_to_ticks_ceil(1, 960, 120.0, 48_000), Some(1));
+        // 44.1 kHz 上的一秒：44100 帧 ⇒ 1920 tick（@120 BPM），浮点不引入 off-by-one。
+        assert_eq!(
+            frames_to_ticks_ceil(44_100, 960, 120.0, 44_100),
+            Some(1_920)
+        );
+        // 互逆：帧 → tick → 帧 不得少于原帧数（向上取整的语义）。
+        for frames in [1_u64, 7, 44_100, 48_000, 96_001] {
+            let ticks = frames_to_ticks_ceil(frames, 960, 120.0, 48_000).expect("合法速度");
+            assert!(
+                ticks_to_frames(ticks, 960, 120.0, 48_000) >= frames,
+                "{frames} 帧经 {ticks} tick 回来变少了"
+            );
+        }
+    }
+
+    /// 判据 4: 病态速度参数返回 `None`（不猜一个会被模型层拒绝的 0）。
+    #[test]
+    fn degenerate_tempo_inputs_yield_no_ticks() {
+        for (ppq, bpm, rate) in [
+            (0u64, 120.0f64, 48_000u32),
+            (960, 0.0, 48_000),
+            (960, -120.0, 48_000),
+            (960, f64::NAN, 48_000),
+            (960, f64::INFINITY, 48_000),
+            (960, 120.0, 0),
+        ] {
+            assert_eq!(
+                frames_to_ticks_ceil(4_800, ppq, bpm, rate),
+                None,
                 "{ppq}/{bpm}/{rate}"
             );
         }

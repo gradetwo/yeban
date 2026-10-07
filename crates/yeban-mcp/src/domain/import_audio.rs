@@ -27,6 +27,39 @@
 //! 登记本身是一条领域操作：`clip_pool` 里多一条 `ClipContent::Audio { asset, gain_db }`。
 //! 因此撤销是模型自己的 [`Op::invert`]（`AddClip` ⇄ `RemoveClip`），本层**不写**逆操作。
 //!
+//! ## 摆放：`trackId` 一给，同一次调用就把片段落到轨道上（`Op::AddClipPlacement`）
+//!
+//! 只登记片段是**不可渲染**的：渲染只遍历 `track.clips`（`render.rs` 的
+//! `audio_clip_source`），`clip_pool` 里没有摆放引用的条目在母带里**一帧都不出现**。
+//! 模型的 `Op` 全集里**已经有** [`Op::AddClipPlacement`]（`crates/yeban-model/src/ops.rs`），
+//! 缺的只是工具面：本工具此前**只有** `AddClip` 这一半。
+//!
+//! 因此本工具新增五个**可选**实参，形状与既有参数一致（缺省 = 一位都不改）：
+//!
+//! | 实参 | 缺省 | 语义 |
+//! | :--- | :--- | :--- |
+//! | `trackId` | 不给 | 目标音轨；**给了才摆放**（不给 = 只登记，与从前逐字节相同） |
+//! | `startTick` | `0` | 摆放起点（tick） |
+//! | `durationTicks` | 由素材全长换算 | 摆放时值（tick，`>= 1`）；这是**剪辑边界**（硬切） |
+//! | `placementId` | 由 `(片段, 音轨, 起点)` 确定性派生 | 摆放的显式身份 |
+//! | `muted` | `false` | 摆放是否静音 |
+//!
+//! 三条刻意的口径：
+//!
+//! 1. **不给 `trackId` 就不许给其余四个**（`INVALID_PARAMETER_RANGE` +
+//!    `data.reason = "placementWithoutTrack"`）：没有轨道就无处摆放，静默忽略会让
+//!    调用方以为片段已经落轨；
+//! 2. **时值缺省是"素材全长"**：`ceil(frames * PPQ * bpm / (sampleRate * 60))`（见
+//!    [`super::render_math::frames_to_ticks_ceil`]）。向上取整保证尾部的不足一 tick
+//!    不被切掉；工程速度不可用时**明确拒绝**，而不是写一个会被模型层拒掉的 `0`；
+//! 3. **确认（幂等）按"片段 + 摆放"两段各自判定**：片段逐字段相同就不重复登记，
+//!    摆放逐字段相同就不重复摆放。两次调用因此**一位都不改**（`unchanged: true`）。
+//!    同身份但内容不同（片段或摆放）一律 `CONFLICT`。
+//!
+//! 两条 `Op` 在**同一次提交**里按 `AddClip` → `AddClipPlacement` 的顺序施加
+//! （`undo_session::commit` 用 `Op::Batch` 包住它们，模型层的 `Batch` 是顺序施加 +
+//! 整体原子），因此"片段还没进池子就先摆放"这个中间态不可能被观察到。
+//!
 //! ### 操作来源：`OpOrigin::McpEdit`（不再借 `Import`）
 //!
 //! 本工具**直接**在活跃工程上落一条片段、**不**创建提案 ⇒ 作者标签是
@@ -59,12 +92,16 @@
 use serde_json::{Map, Value};
 
 use yeban_decode::{DecodeError, DecodeOptions, DecodedAsset};
-use yeban_model::{AssetHash, ClipContent, ClipPoolEntry, EntityId, Op, OpOrigin, YebanProjectV1};
+use yeban_model::{
+    AssetHash, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, Op, OpOrigin, PPQ,
+    YebanProjectV1,
+};
 
 use super::error::{self, Fault};
 use super::extension_pure::{self, ImportSource};
 use super::ids::deterministic_id;
 use super::render::AssetStore;
+use super::render_math;
 use crate::tools::{ErrorCode, ToolResponse};
 
 /// 一次音频导入的**完整只读规划**（`dryRun` 与真做共用）。
@@ -72,8 +109,16 @@ use crate::tools::{ErrorCode, ToolResponse};
 pub struct AudioImport {
     /// 将要（或已经）登记进 `clip_pool` 的条目。
     pub clip: ClipPoolEntry,
-    /// 将要提交的领域操作；`None` = 池里已有逐字段相同的条目（幂等命中，不改任何东西）。
-    pub op: Option<Op>,
+    /// 将要提交的领域操作（**顺序即施加顺序**：`AddClip` 在 `AddClipPlacement` 之前）。
+    ///
+    /// 空 = 片段与摆放都已逐字段存在（幂等命中，一位都不改）。
+    pub ops: Vec<Op>,
+    /// 将要（或已经）落到轨道上的摆放；`None` = 本次没有要求摆放。
+    pub placement: Option<ClipPlacement>,
+    /// 摆放的目标音轨（`placement.is_some()` 时必定 `Some`）。
+    pub placement_track: Option<EntityId>,
+    /// 摆放时值是否由**素材全长**换算而来（`false` = 调用方显式给出）。
+    pub placement_duration_derived: bool,
     /// 来源类别。
     pub source: ImportSource,
     /// 来源的稳定引用（`asset:<sha256>` 或 `disk:<path>`）。
@@ -166,6 +211,29 @@ impl AudioImport {
         }
     }
 
+    /// 本次是否会**新增**片段池条目（`Op::AddClip` 在场）。
+    ///
+    /// 与 `unchanged` 分开：片段已存在、只补一次摆放时 `created` 是 `false` ——
+    /// 那一次调用没有新建任何片段，把它报成 `created` 会让调用方以为池里多了一条。
+    #[must_use]
+    pub fn clip_created(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, Op::AddClip { .. }))
+    }
+
+    /// 本次是否会**新增**摆放（`Op::AddClipPlacement` 在场）。
+    #[must_use]
+    pub fn placement_created(&self) -> bool {
+        self.ops
+            .iter()
+            .any(|op| matches!(op, Op::AddClipPlacement { .. }))
+    }
+
+    /// 本次是否一位都不改（片段与摆放都已逐字段存在）。
+    #[must_use]
+    pub fn unchanged(&self) -> bool {
+        self.ops.is_empty()
+    }
+
     /// 响应的 `data`（`dryRun` 预览与真做**共用这一个函数**）。
     ///
     /// # Errors
@@ -175,8 +243,8 @@ impl AudioImport {
         let (asset, gain_db) = self.asset_ref()?;
         Ok(serde_json::json!({
             "imported": true,
-            "created": self.op.is_some(),
-            "unchanged": self.op.is_none(),
+            "created": self.clip_created(),
+            "unchanged": self.unchanged(),
             "clip": {
                 "clipId": self.clip.id.to_canonical_string(),
                 "name": self.clip.name.clone(),
@@ -184,6 +252,7 @@ impl AudioImport {
                 "gainDb": gain_db,
                 "contentKind": "Audio",
             },
+            "placement": self.placement_value(),
             "source": {
                 "kind": match self.source {
                     ImportSource::AssetPool => "assetPool",
@@ -197,8 +266,33 @@ impl AudioImport {
             "declaredInIndex": self.declared_in_index,
             "projectDigestBefore": self.digest_before.clone(),
             "projectDigestAfter": self.digest_after.clone().map_or(Value::Null, Value::from),
-            "notes": notes(self.bytes.is_some()),
+            "notes": notes(
+                self.bytes.is_some(),
+                self.placement.as_ref().map(|_| self.placement_created()),
+            ),
         }))
+    }
+
+    /// `data.placement`：没要求摆放时是 `null`（**不是**一个"全零摆放"）。
+    fn placement_value(&self) -> Value {
+        let Some(placement) = &self.placement else {
+            return Value::Null;
+        };
+        serde_json::json!({
+            "placementId": placement.id.to_canonical_string(),
+            "trackId": self
+                .placement_track
+                .map_or(Value::Null, |track| Value::from(track.to_canonical_string())),
+            "startTick": placement.start_tick,
+            "durationTicks": placement.duration_ticks,
+            "muted": placement.muted,
+            "placed": self.placement_created(),
+            "durationRule": if self.placement_duration_derived {
+                "素材全长换算: ceil(frames * PPQ * bpm / (sampleRate * 60))"
+            } else {
+                "调用方显式给出的 durationTicks"
+            },
+        })
     }
 }
 
@@ -220,15 +314,29 @@ pub fn budget_value() -> Value {
 }
 
 /// 如实登记的边界（不藏在错误码后面）。
-fn notes(registered_bytes: bool) -> Vec<&'static str> {
+///
+/// `placement_created` 是**三态**：`None` = 本次没要求摆放，`Some(true)` = 本次真的提交了
+/// `Op::AddClipPlacement`，`Some(false)` = 摆放已逐字段存在（未重复提交）。
+/// 用三态而不是"要求了就写提交"：后者会在幂等重放时**谎报**一次提交。
+fn notes(registered_bytes: bool, placement_created: Option<bool>) -> Vec<&'static str> {
     let mut notes = vec![
         "CAS 池的字节不是 Op 的载荷 (模型 Op 全集没有资产变体) ⇒ 撤销 clip_pool 条目不会回收池里的字节 (needs-2)",
-        "工程 assets 索引 (许可/原路径/字节数) 同样没有 Op ⇒ 本工具只登记 clip_pool 条目, 不写索引 (needs-3)",
+        "工程 assets 索引 (许可/原路径/字节数) 同样没有 Op ⇒ 本工具只登记 clip_pool 条目, 不写索引 (needs-3): 索引是许可留痕 (MUST-GATE-014) 而非字节来源, 渲染读的是会话 CAS 池",
     ];
     if registered_bytes {
         notes.push("本次真的向会话 CAS 池登记了容器字节 (内容寻址: 同一份字节不会重复登记)");
     } else {
         notes.push("字节已在会话 CAS 池里 (按哈希引用, 未重复登记)");
+    }
+    match placement_created {
+        Some(true) => notes.push(
+            "本次同时提交了 Op::AddClipPlacement ⇒ 片段真的落在轨道上 (渲染只遍历 track.clips; \
+             只有 clip_pool 条目的片段在母带里一帧都不会出现)",
+        ),
+        Some(false) => notes.push("摆放已逐字段存在 ⇒ 未重复提交 Op::AddClipPlacement (幂等命中)"),
+        None => {
+            notes.push("本次没有要求摆放 (未给 trackId) ⇒ 片段只在 clip_pool 里, 渲染不会遍历到它")
+        }
     }
     notes
 }
@@ -243,6 +351,9 @@ fn notes(registered_bytes: bool) -> Vec<&'static str> {
 /// - 解码失败 → `RENDER_FAILED`（+ `data.decodeError` 分类）；
 /// - 超出 `PcmBudget` → `INVALID_PARAMETER_RANGE`（+ `data.budget = true`）；
 /// - 同身份但内容不同的片段已存在 → `CONFLICT`；
+/// - 摆放形状非法（给了 `startTick`/`durationTicks`/`placementId`/`muted` 却没给 `trackId`、
+///   `durationTicks == 0`、工程速度无法换算时值）→ `INVALID_PARAMETER_RANGE`；
+/// - 摆放的目标音轨不存在 → `TRACK_NOT_FOUND`；同身份但内容不同的摆放已存在 → `CONFLICT`；
 /// - 增益/身份形状非法 → `INVALID_PARAMETER_RANGE`。
 pub fn plan(
     project: &YebanProjectV1,
@@ -333,12 +444,14 @@ pub fn plan(
         },
     };
 
-    // ---- 幂等 / 冲突（按内容与意图，不靠幂等键） ----
-    let mut op = None;
-    let mut digest_after = None;
+    // ---- 摆放（可选；`trackId` 一给就摆放） ----
+    let placement = plan_placement(project, arguments, clip_id, &facts)?;
+
+    // ---- 幂等 / 冲突（按内容与意图，不靠幂等键；片段与摆放各自判定） ----
+    let mut ops: Vec<Op> = Vec::new();
     match project.clip_pool.get(&clip_id) {
         Some(existing) if *existing == clip => {
-            // 逐字段相同 ⇒ 一位都不改（幂等命中）。
+            // 逐字段相同 ⇒ 不重复登记。
         }
         Some(existing) => {
             return Err(Fault::domain_with_data(
@@ -352,23 +465,62 @@ pub fn plan(
                 }),
             ));
         }
-        None => {
-            let candidate = Op::AddClip { clip: clip.clone() };
-            let mut simulated = project.clone();
-            candidate
-                .apply(&mut simulated)
-                .map_err(|error| error::from_model("音频片段登记模拟", &error))?;
-            simulated
-                .validate()
-                .map_err(|error| error::from_model("音频片段登记校验", &error))?;
-            digest_after = Some(digest_of(&simulated)?);
-            op = Some(candidate);
+        None => ops.push(Op::AddClip { clip: clip.clone() }),
+    }
+    if let Some(request) = &placement {
+        let track = project
+            .track(&request.track)
+            .map_err(|error| error::from_model("摆放的目标音轨", &error))?;
+        match track.clips.get(&request.placement.id) {
+            Some(existing) if *existing == request.placement => {
+                // 逐字段相同 ⇒ 不重复摆放。
+            }
+            Some(existing) => {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::Conflict,
+                    format!(
+                        "音轨 {} 上已有身份 {}, 但摆放内容不同",
+                        request.track, request.placement.id
+                    ),
+                    serde_json::json!({
+                        "trackId": request.track.to_canonical_string(),
+                        "placementId": request.placement.id.to_canonical_string(),
+                        "existing": serde_json::to_value(existing).unwrap_or(Value::Null),
+                        "requested": serde_json::to_value(request.placement).unwrap_or(Value::Null),
+                        "hint": "换一个 `placementId`/`startTick`, 或用同一条摆放的逐字段相同载荷重放",
+                    }),
+                ));
+            }
+            None => ops.push(Op::AddClipPlacement {
+                track_id: request.track,
+                placement: request.placement,
+            }),
         }
+    }
+
+    let mut digest_after = None;
+    if !ops.is_empty() {
+        // 与 `undo_session::commit` **同一口径**：`Batch` 是按顺序施加的，
+        // 因此这里也按顺序施加，好让预览的预测逐字节等于真做后的实测摘要。
+        let mut simulated = project.clone();
+        for op in &ops {
+            op.apply(&mut simulated)
+                .map_err(|error| error::from_model("音频片段登记模拟", &error))?;
+        }
+        simulated
+            .validate()
+            .map_err(|error| error::from_model("音频片段登记校验", &error))?;
+        digest_after = Some(digest_of(&simulated)?);
     }
 
     Ok(AudioImport {
         clip,
-        op,
+        ops,
+        placement_track: placement.as_ref().map(|request| request.track),
+        placement: placement.as_ref().map(|request| request.placement),
+        placement_duration_derived: placement
+            .as_ref()
+            .is_some_and(|request| request.duration_derived),
         source,
         source_ref,
         asset,
@@ -377,6 +529,159 @@ pub fn plan(
         facts,
         digest_before: digest_of(project)?,
         digest_after,
+    })
+}
+
+/// 一次**已校验**的摆放请求（`trackId` 给定时才存在）。
+#[derive(Clone, Debug, PartialEq)]
+struct PlacementRequest {
+    /// 目标音轨。
+    track: EntityId,
+    /// 摆放载荷。
+    placement: ClipPlacement,
+    /// 时值是否由素材全长换算而来。
+    duration_derived: bool,
+}
+
+/// 读摆放实参并构造摆放载荷（`trackId` 不给 ⇒ `None`；给了 ⇒ 四个兄弟实参才有意义）。
+///
+/// 形状判定是**严格**的：给了 `startTick` / `durationTicks` / `placementId` / `muted`
+/// 却不给 `trackId` 一律 `INVALID_PARAMETER_RANGE`（`data.reason = "placementWithoutTrack"`）——
+/// 静默忽略会让调用方以为片段已经落轨。
+fn plan_placement(
+    project: &YebanProjectV1,
+    arguments: &Map<String, Value>,
+    clip_id: EntityId,
+    facts: &DecodeFactsValue,
+) -> Result<Option<PlacementRequest>, Fault> {
+    let start_raw = arguments.get("startTick");
+    let duration_raw = arguments.get("durationTicks");
+    let placement_id_raw = arguments.get("placementId");
+    let muted_raw = arguments.get("muted");
+    let Some(track_raw) = arguments.get("trackId") else {
+        if let Some(name) = ["startTick", "durationTicks", "placementId", "muted"]
+            .into_iter()
+            .find(|name| arguments.contains_key(*name))
+        {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "给了 `{name}` 却没有给 `trackId` —— 没有目标音轨就无处摆放; \
+                     要么给出 `trackId`, 要么去掉这四个摆放实参"
+                ),
+                serde_json::json!({ "reason": "placementWithoutTrack", "field": name }),
+            ));
+        }
+        return Ok(None);
+    };
+    let track_text = track_raw.as_str().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`trackId` 必须是 26 字符 ULID 字符串",
+        )
+    })?;
+    let track = parse_entity("trackId", track_text)?;
+    // 目标音轨必须**真的存在**（`TrackNotFound`），且它的 `clips` 是摆放的落点。
+    project
+        .track(&track)
+        .map_err(|error| error::from_model("摆放的目标音轨", &error))?;
+
+    let start_tick = parse_optional_u64("startTick", start_raw)?.unwrap_or(0);
+    let (duration_ticks, duration_derived) =
+        match parse_optional_u64("durationTicks", duration_raw)? {
+            Some(0) => {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    "`durationTicks` 必须 >= 1 (模型层拒绝零时值的摆放)",
+                    serde_json::json!({ "field": "durationTicks", "value": 0 }),
+                ));
+            }
+            Some(value) => (value, false),
+            None => {
+                let derived = render_math::frames_to_ticks_ceil(
+                    facts.frames,
+                    PPQ,
+                    project.bpm,
+                    facts.sample_rate,
+                )
+                .ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        "工程 BPM 或素材采样率无法把帧数换算成 tick ⇒ 必须显式给出 `durationTicks`",
+                        serde_json::json!({
+                            "reason": "tempoUnusable",
+                            "field": "durationTicks",
+                            "bpm": project.bpm,
+                            "sampleRate": facts.sample_rate,
+                            "frames": facts.frames,
+                        }),
+                    )
+                })?;
+                (derived, true)
+            }
+        };
+    let placement_id = match placement_id_raw {
+        Some(raw) => {
+            let text = raw.as_str().ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    "`placementId` 必须是 26 字符 ULID 字符串",
+                )
+            })?;
+            parse_entity("placementId", text)?
+        }
+        None => deterministic_id(&extension_pure::placement_label(
+            &clip_id.to_canonical_string(),
+            &track.to_canonical_string(),
+            start_tick,
+        )),
+    };
+    let placement = ClipPlacement {
+        id: placement_id,
+        clip_id,
+        start_tick,
+        duration_ticks,
+        // 循环配置是模型的**必需**子结构 [ADR-0001 D43]：缺省 = 关闭（不重复）。
+        // "循环重复"本来就不在渲染的已支持面里（`unsupported: clipLoopRepetition`），
+        // 因此这里刻意不暴露 `loopEnabled`：那会给出一个渲染不了的旋钮。
+        loop_config: LoopConfig::default(),
+        muted: parse_optional_bool("muted", muted_raw)?.unwrap_or(false),
+    };
+    placement
+        .validate()
+        .map_err(|error| error::from_model("摆放载荷", &error))?;
+    Ok(Some(PlacementRequest {
+        track,
+        placement,
+        duration_derived,
+    }))
+}
+
+/// 读一个可选的非负整数实参。
+fn parse_optional_u64(field: &str, raw: Option<&Value>) -> Result<Option<u64>, Fault> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    value.as_u64().map(Some).ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是 >= 0 的整数"),
+            serde_json::json!({ "field": field, "value": value.clone() }),
+        )
+    })
+}
+
+/// 读一个可选的布尔实参。
+fn parse_optional_bool(field: &str, raw: Option<&Value>) -> Result<Option<bool>, Fault> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    value.as_bool().map(Some).ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是布尔值"),
+            serde_json::json!({ "field": field, "value": value.clone() }),
+        )
     })
 }
 
@@ -457,7 +762,8 @@ fn digest_of(project: &YebanProjectV1) -> Result<String, Fault> {
     Ok(super::store::digest_of(json.as_bytes()))
 }
 
-/// **施加**一次音频导入：先登记 CAS 字节（内容寻址），再提交 `Op::AddClip`。
+/// **施加**一次音频导入：先登记 CAS 字节（内容寻址），再提交领域操作
+/// （`AddClip` 与可选的 `AddClipPlacement`，**同一次提交**）。
 ///
 /// 顺序是刻意的：**先**把字节放进池子，**再**提交引用它的片段。反过来会让"片段已经存在、
 /// 字节还没到"的窗口存在（渲染那一刻会得到一个缺字节的资产）。
@@ -483,8 +789,8 @@ pub fn apply(domain: &mut super::Domain, import: &AudioImport) -> Result<ToolRes
             ));
         }
     }
-    // 2) 提交片段条目（唯一会改工程文档的那一步）。
-    if let Some(op) = &import.op {
+    // 2) 提交片段（与摆放，如果有）—— 唯一会改工程文档的那一步。
+    if !import.ops.is_empty() {
         let now_ms = domain.now_ms();
         {
             let super::Domain {
@@ -501,13 +807,13 @@ pub fn apply(domain: &mut super::Domain, import: &AudioImport) -> Result<ToolRes
                 super::CommitRequest {
                     now_ms,
                     // `McpEdit` = "MCP 代理的直接编辑"：本工具在活跃工程上直接落一条
-                    // 片段，**不**创建提案 ⇒ `McpProposal` 不适用。
+                    // 片段（以及它的摆放），**不**创建提案 ⇒ `McpProposal` 不适用。
                     // （此前借的 `Import` 描述的是"外部工程/格式导入"，不是这件事。）
                     origin: OpOrigin::McpEdit {
                         agent_name: super::AGENT_NAME.to_owned(),
                     },
                     message: format!("import_audio {} ({})", import.clip.name, import.source_ref),
-                    ops: vec![op.clone()],
+                    ops: import.ops.clone(),
                 },
             )
             .map_err(super::undo_refusal_to_fault)?;
@@ -530,7 +836,7 @@ pub fn apply(domain: &mut super::Domain, import: &AudioImport) -> Result<ToolRes
     }
     let mut data = import.data()?;
     if let Value::Object(map) = &mut data {
-        map.insert("applied".to_owned(), Value::from(import.op.is_some()));
+        map.insert("applied".to_owned(), Value::from(!import.ops.is_empty()));
         map.insert(
             "assetPoolSize".to_owned(),
             Value::from(domain.asset_count()),
@@ -545,7 +851,18 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    use yeban_model::TrackKind;
     use yeban_model::samples::filled_project;
+
+    /// 样本里那条 `TrackKind::Audio` 音轨（摆放的落点）。
+    fn audio_track(project: &YebanProjectV1) -> EntityId {
+        *project
+            .tracks
+            .iter()
+            .find(|(_, track)| track.kind == TrackKind::Audio)
+            .expect("规范样本里有一条音频轨")
+            .0
+    }
 
     /// 一份最小的 16-bit 单声道 WAV（判据自己构造，不依赖任何样本文件）。
     fn wav_s16(sample_rate: u32, samples: &[i16]) -> Vec<u8> {
@@ -575,6 +892,25 @@ mod tests {
         value.as_object().expect("对象").clone()
     }
 
+    /// 在克隆体上按**顺序**施加计划里的全部 `Op`。
+    ///
+    /// 与 [`super::super::undo_session::commit`] 的行为同一口径：那里把 `ops` 包成
+    /// `Op::Batch`，而模型层的 `Batch` 是顺序施加 + 整体原子（`ops.rs` 的 `commit`）。
+    fn apply_ops(project: &YebanProjectV1, import: &AudioImport) -> YebanProjectV1 {
+        let mut after = project.clone();
+        for op in &import.ops {
+            op.apply(&mut after).expect("施加");
+        }
+        after
+    }
+
+    /// 按**逆序**施加全部逆操作（`Batch` 的逆也是逆序）。
+    fn apply_inverse_ops(project: &mut YebanProjectV1, import: &AudioImport) {
+        for op in import.ops.iter().rev() {
+            op.apply_inverse(project).expect("撤销");
+        }
+    }
+
     #[test]
     fn asset_pool_source_records_the_measured_facts() {
         let project = filled_project();
@@ -593,7 +929,12 @@ mod tests {
         assert_eq!(import.facts.pcm_format, "s16");
         assert_eq!(import.facts.model_bit_depth.as_deref(), Some("Int16"));
         assert!(import.bytes.is_none(), "池里已有字节 ⇒ 不重复登记");
-        assert!(import.op.is_some(), "池里没有这个片段 ⇒ 要登记");
+        assert!(import.clip_created(), "池里没有这个片段 ⇒ 要登记");
+        assert!(
+            import.placement.is_none(),
+            "不给 `trackId` ⇒ 一位都不摆放 (与从前逐字节相同)"
+        );
+        assert!(!import.unchanged(), "有 op 就不是幂等命中");
         assert!(!import.declared_in_index);
         assert_eq!(import.asset, hash, "内容寻址: 计划里的资产就是池里的哈希");
         assert_eq!(import.source, ImportSource::AssetPool);
@@ -736,15 +1077,11 @@ mod tests {
             "gainDb": -1.5,
         }));
         let first = plan(&project, &pool, &arguments).expect("规划");
-        let mut after = project.clone();
-        first
-            .op
-            .as_ref()
-            .expect("要登记")
-            .apply(&mut after)
-            .expect("施加");
+        let mut after = apply_ops(&project, &first);
         let second = plan(&after, &pool, &arguments).expect("再规划");
-        assert!(second.op.is_none(), "内容相同 ⇒ 一位都不改");
+        assert!(second.unchanged(), "内容相同 ⇒ 一位都不改");
+        assert!(second.ops.is_empty(), "幂等命中 ⇒ 一条 Op 都不产出");
+        assert!(second.digest_after.is_none(), "一位都不改 ⇒ 没有预测摘要");
         assert_eq!(
             first.clip.id, second.clip.id,
             "同一 (来源, 名字, 增益) ⇒ 同一片段身份"
@@ -760,12 +1097,7 @@ mod tests {
             second.clip.id
         );
         // 逆操作逐字节回退 clip_pool。
-        first
-            .op
-            .as_ref()
-            .expect("要登记")
-            .apply_inverse(&mut after)
-            .expect("撤销");
+        apply_inverse_ops(&mut after, &first);
         assert_eq!(after, project, "逆操作必须逐字节回退");
     }
 
@@ -783,13 +1115,7 @@ mod tests {
             &args(&serde_json::json!({"name": "Kick", "assetHash": hash.as_str()})),
         )
         .expect("规划");
-        let mut after = project.clone();
-        first
-            .op
-            .as_ref()
-            .expect("要登记")
-            .apply(&mut after)
-            .expect("施加");
+        let after = apply_ops(&project, &first);
         // 同一个显式 clipId, 但换一个名字 ⇒ 同身份不同内容 ⇒ CONFLICT。
         let fault = plan(
             &after,
@@ -816,6 +1142,300 @@ mod tests {
         assert_eq!(
             value["interleavedSamplesLimit"],
             budget.interleaved_samples_limit()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 摆放（`trackId` 一给就摆放）：`Op::AddClipPlacement` 那一半
+    // -----------------------------------------------------------------------
+
+    /// 摆放真的落在目标音轨上，时值缺省 = 素材全长换算，逆操作逐字节回退。
+    #[test]
+    fn a_placement_lands_on_the_track_and_reverses_byte_for_byte() {
+        let project = filled_project();
+        let track = audio_track(&project);
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]); // 4 帧（很短，但换算关系可断言）
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let import = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "assetHash": hash.as_str(),
+                "trackId": track.to_canonical_string(),
+                "startTick": 960,
+            })),
+        )
+        .expect("规划");
+        assert!(import.clip_created(), "片段是新的 ⇒ 要登记");
+        assert!(import.placement_created(), "摆放是新的 ⇒ 要摆放");
+        assert_eq!(import.ops.len(), 2, "两条 Op: AddClip + AddClipPlacement");
+        assert_eq!(
+            import.ops[0].name(),
+            "AddClip",
+            "AddClip 必须在 AddClipPlacement 之前 (后者要求片段已在池里)"
+        );
+        assert_eq!(import.ops[1].name(), "AddClipPlacement");
+        assert_eq!(import.placement_track, Some(track));
+        let placement = import.placement.as_ref().expect("有摆放");
+        assert_eq!(placement.clip_id, import.clip.id);
+        assert_eq!(placement.start_tick, 960);
+        assert!(!placement.muted);
+        assert!(!placement.loop_config.enabled, "缺省不循环");
+        assert!(import.placement_duration_derived, "时值来自素材全长");
+        // 4 帧 @48k = 1/12000 s；128 BPM / 960 PPQ ⇒ 每秒 2048 tick ⇒ 0.1707 tick ⇒ 向上取整 1。
+        assert_eq!(placement.duration_ticks, 1, "不足一 tick 也要给一整 tick");
+
+        let after = apply_ops(&project, &import);
+        let landed = after
+            .tracks
+            .get(&track)
+            .expect("音轨还在")
+            .clips
+            .get(&placement.id)
+            .expect("摆放必须落在这条音轨的 clips 上");
+        assert_eq!(landed, placement, "落地的摆放必须逐字段等于计划");
+        assert!(after.clip_pool.contains_key(&import.clip.id));
+
+        let mut undone = after;
+        apply_inverse_ops(&mut undone, &import);
+        assert_eq!(
+            undone, project,
+            "逆操作 (RemoveClipPlacement → RemoveClip) 必须逐字节回退"
+        );
+    }
+
+    /// 时值缺省 = `ceil(frames * PPQ * bpm / (sampleRate * 60))`（这里 4800 帧 @128 BPM）。
+    #[test]
+    fn the_default_duration_covers_the_whole_asset() {
+        let project = filled_project();
+        let track = audio_track(&project);
+        let samples: Vec<i16> = (0..4_800)
+            .map(|i| i16::try_from(i % 100).expect("小"))
+            .collect();
+        let bytes = wav_s16(48_000, &samples);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let import = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "assetHash": hash.as_str(),
+                "trackId": track.to_canonical_string(),
+            })),
+        )
+        .expect("规划");
+        // 4800 帧 @48k = 0.1 s；128 BPM / 960 PPQ ⇒ 0.1 * 2048 = 204.8 ⇒ ceil = 205。
+        assert_eq!(
+            import.placement.as_ref().expect("有摆放").duration_ticks,
+            205
+        );
+        assert_eq!(import.facts.frames, 4_800);
+    }
+
+    /// 不给 `trackId` 就不许给其余四个：静默忽略会让调用方以为片段已经落轨。
+    #[test]
+    fn placement_siblings_without_a_track_are_rejected_not_ignored() {
+        let project = filled_project();
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        for (field, value) in [
+            ("startTick", serde_json::json!(10)),
+            ("durationTicks", serde_json::json!(960)),
+            (
+                "placementId",
+                serde_json::json!("01J8ZQ00000000000000000099"),
+            ),
+            ("muted", serde_json::json!(true)),
+        ] {
+            let mut arguments = serde_json::json!({"name": "Kick", "assetHash": hash.as_str()});
+            arguments[field] = value;
+            let fault = plan(&project, &pool, &args(&arguments)).expect_err("没有 trackId");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{field}"
+            );
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], "placementWithoutTrack");
+            assert_eq!(value["error"]["data"]["field"], field);
+        }
+    }
+
+    /// 显式时值 / `muted` 生效；同一位置重放幂等；同一身份换内容 ⇒ `CONFLICT`。
+    #[test]
+    fn explicit_duration_is_honoured_and_a_changed_placement_is_a_conflict() {
+        let project = filled_project();
+        let track = audio_track(&project);
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let arguments = args(&serde_json::json!({
+            "name": "Kick",
+            "assetHash": hash.as_str(),
+            "trackId": track.to_canonical_string(),
+            "startTick": 0,
+            "durationTicks": 960,
+            "muted": true,
+        }));
+        let first = plan(&project, &pool, &arguments).expect("规划");
+        let placement = first.placement.expect("有摆放");
+        assert_eq!(placement.duration_ticks, 960);
+        assert!(placement.muted);
+        assert!(!first.placement_duration_derived, "时值是显式给的");
+
+        let after = apply_ops(&project, &first);
+        // 逐字段相同的重放 ⇒ 一位都不改（片段与摆放都已存在）。
+        let replay = plan(&after, &pool, &arguments).expect("重放");
+        assert!(replay.unchanged(), "同一意图重放必须幂等: {:?}", replay.ops);
+        // 幂等重放**不得**谎报一次摆放提交（`notes` 是三态而不是"要求了就写提交"）。
+        let replay_notes = replay.data().expect("data")["notes"].clone();
+        assert!(
+            replay_notes
+                .as_array()
+                .expect("notes")
+                .iter()
+                .any(|note| note
+                    .as_str()
+                    .is_some_and(|text| text.contains("未重复提交"))),
+            "幂等重放必须如实说明没有新提交: {replay_notes}"
+        );
+
+        // 同一 (片段, 音轨, 起点) 换时值 ⇒ 同身份不同内容 ⇒ CONFLICT。
+        let mut changed = arguments.clone();
+        changed.insert("durationTicks".to_owned(), Value::from(480));
+        let fault = plan(&after, &pool, &changed).expect_err("同一摆放身份换内容");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(
+            value["error"]["data"]["placementId"],
+            placement.id.to_canonical_string()
+        );
+
+        // 换起点 ⇒ 换摆放身份 ⇒ 只补一条摆放（片段不再重复登记）。
+        let mut moved = arguments.clone();
+        moved.insert("startTick".to_owned(), Value::from(960));
+        let second = plan(&after, &pool, &moved).expect("换位置");
+        assert!(!second.clip_created(), "片段已存在 ⇒ 不重复登记");
+        assert!(second.placement_created(), "新位置 ⇒ 新摆放");
+        assert_eq!(second.ops.len(), 1, "只补摆放那一条 Op");
+        assert_eq!(second.ops[0].name(), "AddClipPlacement");
+    }
+
+    /// 目标音轨不存在 ⇒ `TRACK_NOT_FOUND`（不是静默建一条）。
+    #[test]
+    fn a_placement_on_a_missing_track_is_track_not_found() {
+        let project = filled_project();
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let ghost = EntityId::new().to_canonical_string();
+        let fault = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "assetHash": hash.as_str(),
+                "trackId": ghost,
+            })),
+        )
+        .expect_err("音轨不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
+    }
+
+    /// 零时值 / 非法时值类型都被明确拒绝（模型层也拒绝零时值，这里必须更早）。
+    #[test]
+    fn a_zero_duration_placement_is_rejected_before_the_model() {
+        let project = filled_project();
+        let track = audio_track(&project);
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let fault = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "assetHash": hash.as_str(),
+                "trackId": track.to_canonical_string(),
+                "durationTicks": 0,
+            })),
+        )
+        .expect_err("零时值");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["field"], "durationTicks");
+    }
+
+    /// 响应的 `data.placement`：不给 `trackId` 时是 `null`，给了就是逐字段的事实。
+    #[test]
+    fn the_response_reports_the_placement_and_its_duration_rule() {
+        let project = filled_project();
+        let track = audio_track(&project);
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+
+        let without = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({"name": "Kick", "assetHash": hash.as_str()})),
+        )
+        .expect("规划");
+        let data = without.data().expect("data");
+        assert_eq!(data["placement"], Value::Null, "没要求摆放 ⇒ null");
+        assert_eq!(data["created"], true);
+        assert_eq!(data["unchanged"], false);
+        assert!(
+            data["notes"]
+                .as_array()
+                .expect("notes")
+                .iter()
+                .any(|note| note
+                    .as_str()
+                    .is_some_and(|text| text.contains("没有要求摆放"))),
+            "必须如实说明片段不在任何轨道上: {data}"
+        );
+
+        let with = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "assetHash": hash.as_str(),
+                "trackId": track.to_canonical_string(),
+                "startTick": 1920,
+                "durationTicks": 3840,
+            })),
+        )
+        .expect("规划");
+        let data = with.data().expect("data");
+        assert_eq!(data["placement"]["trackId"], track.to_canonical_string());
+        assert_eq!(data["placement"]["startTick"], 1920);
+        assert_eq!(data["placement"]["durationTicks"], 3840);
+        assert_eq!(data["placement"]["muted"], false);
+        assert_eq!(
+            data["placement"]["placed"], true,
+            "本次真的会摆放 (dryRun 预览与真做共用这一个函数)"
+        );
+        assert!(
+            data["placement"]["durationRule"]
+                .as_str()
+                .is_some_and(|text| text.contains("显式")),
+            "{data}"
+        );
+        assert!(
+            data["notes"]
+                .as_array()
+                .expect("notes")
+                .iter()
+                .any(|note| note
+                    .as_str()
+                    .is_some_and(|text| text.contains("Op::AddClipPlacement"))),
+            "必须说明片段真的落轨了: {data}"
         );
     }
 }

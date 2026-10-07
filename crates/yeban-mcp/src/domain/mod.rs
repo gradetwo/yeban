@@ -859,7 +859,7 @@ impl Plan {
             // 只写一个点的自动化编辑 = 一条提交；只读调用（没有 `point`）= 0。
             Self::EditAutomation { edit } => usize::from(edit.write.is_some()),
             // 真登记才提交；幂等命中（内容已存在）一位都不改。
-            Self::ImportAudio { import } => usize::from(import.op.is_some()),
+            Self::ImportAudio { import } => usize::from(!import.ops.is_empty()),
             // 宿主动作：提交恰好一条 `Op::Batch`；撤销 / 重做不动图谱。
             Self::Host(action) => match action {
                 HostAction::Commit { ops, .. } => usize::from(!ops.is_empty()),
@@ -918,7 +918,7 @@ impl Plan {
             // 只写一个点的自动化编辑改工程；只读调用（没有 `point`）一位都不改。
             Self::EditAutomation { edit } => edit.write.is_some(),
             // 真登记才改工程；幂等命中（内容已存在）一位都不改。
-            Self::ImportAudio { import } => import.op.is_some(),
+            Self::ImportAudio { import } => !import.ops.is_empty(),
             // 宿主动作：撤销 / 重做真的动工程字节；提交在携带 op 时才算（空批不改文档）。
             Self::Host(action) => match action {
                 HostAction::Commit { ops, .. } => !ops.is_empty(),
@@ -997,13 +997,17 @@ impl Plan {
                 Ok(Some(simulated))
             }
             Self::ImportAudio { import } => {
-                let Some(op) = import.op.as_ref() else {
+                if import.ops.is_empty() {
                     return Ok(None);
-                };
+                }
                 let current = domain.active_project().ok_or_else(no_active_project)?;
                 let mut simulated = current.clone();
-                op.apply(&mut simulated)
-                    .map_err(|failure| error::from_model("音频登记模拟", &failure))?;
+                // 与 `undo_session::commit` 同一口径：`ops` 是**顺序**施加的
+                // （`commit` 把它们包成 `Op::Batch`，而模型层的 `Batch` 就是顺序 + 原子）。
+                for op in &import.ops {
+                    op.apply(&mut simulated)
+                        .map_err(|failure| error::from_model("音频登记模拟", &failure))?;
+                }
                 Ok(Some(simulated))
             }
             // 宿主动作的差异预览：与真做**共用**同一个 `undo_session` / `Op::apply`
@@ -1294,7 +1298,7 @@ impl Plan {
                         preview.insert(key, value);
                     }
                 }
-                preview.insert("wouldApply".to_owned(), Value::from(import.op.is_some()));
+                preview.insert("wouldApply".to_owned(), Value::from(!import.ops.is_empty()));
             }
             // SMF 导出：**只读**且不做差异模拟 —— 与引擎读数同一个做法
             // （共用 `MidiExportArtifact::data()`，于是预览与真做逐字段一致）。

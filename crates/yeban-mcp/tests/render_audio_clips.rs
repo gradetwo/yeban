@@ -954,11 +954,16 @@ fn dispatcher_with(fixture: &Fixture, path: &Path) -> (Dispatcher, String) {
 
 /// 走真实 `tools/call` 管线（工具路径上不允许 JSON-RPC 层错误）。
 fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
+    call_named(dispatcher, auth, "yeban_render_master", arguments)
+}
+
+/// 与 [`call`] 同一条管线，但**点名工具**（`yeban_import_audio` 等也走这里）。
+fn call_named(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -> Value {
     let line = json!({
         "jsonrpc": "2.0",
         "id": "t",
         "method": "tools/call",
-        "params": {"name": "yeban_render_master", "arguments": arguments}
+        "params": {"name": name, "arguments": arguments}
     })
     .to_string();
     let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
@@ -1243,5 +1248,272 @@ fn pdc_shifts_the_audio_clip_branch_by_exactly_the_device_latency() {
     assert_eq!(
         fast_only, 48,
         "480..528 共 48 帧只剩快支路的 −0.25 —— 这就是 48 帧补偿的**尾部**证据"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 14 / 15：**只用 MCP 工具**从零把音频片段放上轨道并渲染出来
+// ---------------------------------------------------------------------------
+
+/// 一份"有音轨、没有片段池条目、没有摆放、池里没有字节"的起点工程。
+///
+/// 这正是 `yeban_import_audio` + `trackId` 要驱动的那条链路的起点：17 个工具里
+/// **没有任何**工具能造出片段池条目或摆放（`propose_section` 需要工程里先有 MIDI 材料），
+/// 因此本判据从"工程有音轨、音频侧一切为空"开始，把"登记 + 摆放"整件事交给工具。
+fn empty_audio_project_around(bytes: &[u8]) -> Fixture {
+    let mut fixture = fixture(
+        bytes.to_vec(),
+        &Tune {
+            declare_in_index: false,
+            provide_bytes: false,
+            ..Tune::default()
+        },
+    );
+    fixture.project.clip_pool.clear();
+    for track in fixture.project.tracks.values_mut() {
+        track.clips.clear();
+    }
+    fixture.project.assets.clear();
+    fixture.bytes = None;
+    fixture.project.validate().expect("起点工程必须合法");
+    fixture
+}
+
+/// 判据 14 [端到端]：`yeban_import_audio`（带 `trackId`）→ `yeban_render_master`，
+/// **不带任何判据旁路**：全程走真实 `tools/call` 管线。
+///
+/// 这条判据的牙齿：
+/// - 把 `yeban_import_audio` 的摆放那一半去掉（只登记 `clip_pool`）⇒
+///   `clipsRendered` 变 0、母带里没有素材样本 ⇒ 红；
+/// - 把 `trackId` 悄悄忽略掉 ⇒ 同上；
+/// - 把池里的字节当成"声明即可"（读 `project.assets` 而不是 CAS 池）⇒
+///   `bytesPresent` 变 `false` ⇒ 红。
+#[test]
+fn the_mcp_tools_alone_place_and_render_an_audio_clip_from_zero() {
+    let scratch = Scratch::new("tool-e2e");
+    // 单声道 4800 帧 @48 kHz = 100 ms、恒定 0.5（母带里必须能测到这个电平）。
+    let samples = vec![0.5f32; 4_800];
+    let bytes = wav_f32(1, 48_000, &samples);
+    let fixture = empty_audio_project_around(&bytes);
+    let wav = scratch.join("kick.wav");
+    fs::write(&wav, &bytes).expect("写素材文件");
+    let out = scratch.join("master.wav");
+    let (mut dispatcher, auth) = dispatcher_with(&fixture, &scratch.join("demo.yeban"));
+
+    // ---- ① 导入 + 摆放：一个工具、一次提交、两个字面事实 ----
+    let imported = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_import_audio",
+        json!({
+            "name": "Kick",
+            "path": wav.display().to_string(),
+            "trackId": id(2).to_canonical_string(),
+            "startTick": 0,
+            "gainDb": 0.0,
+        }),
+    );
+    assert_eq!(imported["status"], "success", "{imported}");
+    let data = &imported["data"];
+    assert_eq!(data["created"], true, "片段是新的: {data}");
+    assert_eq!(
+        data["placement"]["placed"], true,
+        "摆放必须真的提交: {data}"
+    );
+    assert_eq!(data["placement"]["trackId"], id(2).to_canonical_string());
+    assert_eq!(data["placement"]["startTick"], 0);
+    assert_eq!(data["decoded"]["frames"], 4_800, "单声道 4800 帧: {data}");
+    assert_eq!(
+        data["placement"]["durationTicks"], 192,
+        "4800 帧 @48k / 120 BPM ⇒ 0.1 s = 0.2 拍 ⇒ 192 tick (整数关系): {data}"
+    );
+    let placement_id = data["placement"]["placementId"]
+        .as_str()
+        .expect("placementId")
+        .to_owned();
+
+    // 工程侧：摆放真的落在音轨上（不是只出现在响应里）。
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let landed = project
+        .tracks
+        .get(&id(2))
+        .expect("音轨在场")
+        .clips
+        .get(&EntityId::from_str(&placement_id).expect("ULID"))
+        .expect("摆放必须在音轨的 clips 上");
+    assert_eq!(landed.duration_ticks, 192);
+    assert!(
+        project.assets.is_empty(),
+        "工程 assets 索引仍是空的 (needs-3)"
+    );
+
+    // ---- ② 渲染：片段真的进母带，且字节真的从会话 CAS 池里读到 ----
+    let rendered = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    assert_eq!(data["audio"]["clipsRendered"], 1, "{data}");
+    let assets = data["audio"]["assets"].as_array().expect("assets");
+    assert_eq!(assets.len(), 1);
+    assert_eq!(
+        assets[0]["bytesPresent"], true,
+        "渲染读的是会话 CAS 池, 不是 project.assets 索引: {assets:?}"
+    );
+    assert_eq!(assets[0]["renderedFrames"], 4_800, "{assets:?}");
+    assert_eq!(assets[0]["resampled"], false, "同为 48 kHz ⇒ 不重采样");
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|key| key == "audioClips"),
+        "已渲染的片段不得登记为 unsupported: {data}"
+    );
+    let source = data["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .find(|source| source["node"] == id(2).to_canonical_string())
+        .expect("音频轨必须在 sources 里");
+    assert_eq!(source["audioClips"], 1, "{source}");
+    assert_eq!(source["audioClipsUnrendered"], 0, "{source}");
+    assert_eq!(source["kind"], "audio-clip", "{source}");
+
+    // ---- ③ 母带载荷里真的有那段素材（不是"报了个数字"） ----
+    let produced = fs::read(&out).expect("读产物");
+    let parsed = parse_container(&produced).expect("产物必须是合法 WAVE 容器");
+    let rendered_samples = decode_i24(&produced[parsed.data.clone()]);
+    // 实测口径（音频片段路径）：`pan == 0` 时增益**不做** −3 dB 衰减 ⇒ 单声道 0.5
+    // 原样进两个输出声道（与 MIDI 合成源总是走等功率声相不同）。
+    let expected = 0.5f32;
+    assert!(
+        (peak(&rendered_samples) - expected).abs() < 1.0e-3,
+        "素材电平 0.5 必须出现在母带里 (实测口径期望 {expected}): 实测 {}",
+        peak(&rendered_samples)
+    );
+    assert!(
+        (frame_value(&rendered_samples, 0) - expected).abs() < 1.0e-3,
+        "第 0 帧就是素材: 实测 {}",
+        frame_value(&rendered_samples, 0)
+    );
+    assert!(
+        (frame_value(&rendered_samples, 4_799) - expected).abs() < 1.0e-3,
+        "第 4799 帧仍在摆放时值内: 实测 {}",
+        frame_value(&rendered_samples, 4_799)
+    );
+}
+
+/// 判据 15 [端到端 + 确定性的载体]：导入 + 摆放 ⇒ 保存 ⇒ 关闭 ⇒ 重开 ⇒ 再渲染，
+/// **两处的事实与产物摘要必须一致**。
+///
+/// 这条判据钉住的是"字节从哪来"的**结论**：`yeban_import_audio` **不写**
+/// `project.assets` 索引（`needs-3`），而容器的 `assets/{sha256}` 条目由会话 CAS 池写出，
+/// 与索引无关。因此重开之后渲染仍然读得到字节（`bytesPresent: true`）。
+///
+/// 牙齿：谁把"保存/打开"改成以 `project.assets` 索引为字节的准入条件，
+/// 这一条立刻红（重开之后 `bytesPresent` 变 `false`、`clipsRendered` 变 0）。
+#[test]
+fn a_placed_audio_clip_survives_save_close_reopen_without_an_assets_index() {
+    let scratch = Scratch::new("tool-e2e-reopen");
+    let samples = vec![0.5f32; 4_800];
+    let bytes = wav_f32(1, 48_000, &samples);
+    let fixture = empty_audio_project_around(&bytes);
+    let project_path = scratch.join("demo.yeban");
+    let wav = scratch.join("kick.wav");
+    fs::write(&wav, &bytes).expect("写素材文件");
+    let first_out = scratch.join("first.wav");
+    let second_out = scratch.join("second.wav");
+    let (mut dispatcher, auth) = dispatcher_with(&fixture, &project_path);
+
+    let imported = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_import_audio",
+        json!({
+            "name": "Kick",
+            "path": wav.display().to_string(),
+            "trackId": id(2).to_canonical_string(),
+            "startTick": 0,
+        }),
+    );
+    assert_eq!(imported["data"]["placement"]["placed"], true, "{imported}");
+
+    let saved = call_named(&mut dispatcher, &auth, "yeban_save_project", json!({}));
+    assert_eq!(saved["status"], "success", "{saved}");
+    assert_eq!(saved["data"]["saved"], true, "{saved}");
+    assert_eq!(
+        saved["data"]["assets"], 1,
+        "容器里必须有 1 条 assets/{{sha256}}（字节随池走, 与索引无关）: {saved}"
+    );
+
+    let first = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({"format": "wav", "sampleRate": 48000, "path": first_out.display().to_string()}),
+    );
+    assert_eq!(first["data"]["audio"]["clipsRendered"], 1, "{first}");
+
+    // 关闭（保存并释放锁）⇒ 重新打开 ⇒ 再渲染。
+    let closed = call_named(&mut dispatcher, &auth, "yeban_close_project", json!({}));
+    assert_eq!(closed["status"], "success", "{closed}");
+    let reopened = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({"path": project_path.display().to_string()}),
+    );
+    assert_eq!(reopened["status"], "success", "{reopened}");
+    assert_eq!(
+        reopened["data"]["assets"], 1,
+        "重开后池里必须有那份字节: {reopened}"
+    );
+    assert_eq!(
+        reopened["data"]["project"]["clipCount"], 1,
+        "片段池条目跨保存存活: {reopened}"
+    );
+    // `project.assets` 索引**仍然**是空的：登记写入的是会话 CAS 池 + `clip_pool`，
+    // 索引由**没有任何工具**写入（`needs-3`）。这条断言刻意钉住现状 ——
+    // 若将来给索引补一条 `Op`（那是模型层 + 契约的改动），这里必须**显式**改，
+    // 而不是让"索引悄悄多了一条"在别处漂移。
+    assert!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("活跃工程")
+            .assets
+            .is_empty(),
+        "重开之后 project.assets 索引仍然是空的 (needs-3)"
+    );
+
+    let second = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({"format": "wav", "sampleRate": 48000, "path": second_out.display().to_string()}),
+    );
+    assert_eq!(second["status"], "success", "{second}");
+    assert_eq!(
+        second["data"]["audio"]["clipsRendered"], 1,
+        "重开之后片段仍然进母带: {second}"
+    );
+    assert_eq!(
+        second["data"]["audio"]["assets"][0]["bytesPresent"], true,
+        "重开之后字节仍然在会话 CAS 池里: {second}"
+    );
+    // 两次渲染：注入时钟固定 ⇒ `bext` 的墙钟字段也固定 ⇒ 产物逐字节相同。
+    let first_bytes = fs::read(&first_out).expect("第一次产物");
+    let second_bytes = fs::read(&second_out).expect("第二次产物");
+    assert_eq!(
+        first_bytes, second_bytes,
+        "同一工程 + 同一注入时钟 ⇒ 两次渲染必须逐字节相同"
+    );
+    assert_eq!(
+        first["data"]["sha256"], second["data"]["sha256"],
+        "同一工程 + 同一注入时钟 ⇒ 同一 sha256"
     );
 }

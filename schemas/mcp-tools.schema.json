@@ -384,7 +384,7 @@
         "yeban_import_audio": {
           "title": "yeban_import_audio",
           "type": "object",
-          "description": "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目 (走既有 yeban-decode + Op::AddClip; PcmBudget 全程生效)。assetHash 与 path 恰好给一个。",
+          "description": "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目 (走既有 yeban-decode + Op::AddClip; PcmBudget 全程生效)。assetHash 与 path 恰好给一个。给了 trackId 就在同一次提交里用 Op::AddClipPlacement 摆放片段 (渲染只遍历 track.clips, 只有 clip_pool 条目的片段在母带里一帧都不会出现); 不给 trackId 就只登记, 且此时其余四个摆放实参 (startTick / durationTicks / placementId / muted) 一律被拒绝。",
           "properties": {
             "name": {
               "type": "string",
@@ -405,6 +405,26 @@
             "clipId": {
               "type": "string",
               "description": "片段的显式 EntityId; 缺省由 (来源, 名字, 增益) 确定性派生"
+            },
+            "trackId": {
+              "type": "string",
+              "description": "目标音轨 EntityId (26 字符 ULID); 给了就摆放, 不给就只登记 (片段在母带里不会出现)"
+            },
+            "startTick": {
+              "type": "integer",
+              "description": "摆放起点 (tick); 默认 0 (只在给了 trackId 时有效)"
+            },
+            "durationTicks": {
+              "type": "integer",
+              "description": "摆放时值 (tick, >= 1, 剪辑边界); 缺省由素材全长换算 ceil(frames * PPQ * bpm / (sampleRate * 60)) (只在给了 trackId 时有效)"
+            },
+            "placementId": {
+              "type": "string",
+              "description": "摆放的显式 EntityId; 缺省由 (片段, 音轨, 起点) 确定性派生 (只在给了 trackId 时有效)"
+            },
+            "muted": {
+              "type": "boolean",
+              "description": "摆放是否静音; 默认 false (只在给了 trackId 时有效)"
             },
             "dryRun": {
               "type": "boolean",

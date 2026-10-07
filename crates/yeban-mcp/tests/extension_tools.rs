@@ -933,6 +933,7 @@ fn preview_keys(tool: &str) -> &'static [&'static str] {
             "created",
             "unchanged",
             "clip",
+            "placement",
             "source",
             "decoded",
             "budget",
@@ -970,6 +971,18 @@ fn dry_run_preview_equals_the_real_call_for_all_three_tools() {
                 "name": "Kick",
                 "path": path.display().to_string(),
                 "gainDb": -2.0,
+            }),
+        ),
+        // 同一个工具**带摆放**的那条路径也要走一遍预览对账：摆放的实参解析、
+        // 时值缺省换算与确定性 `placementId` 都必须在 dryRun 与真做之间逐字段相同。
+        (
+            "yeban_import_audio",
+            serde_json::json!({
+                "name": "KickPlaced",
+                "path": path.display().to_string(),
+                "trackId": track.to_canonical_string(),
+                "startTick": 960,
+                "muted": true,
             }),
         ),
     ];

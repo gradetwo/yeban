@@ -756,7 +756,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-IMPORT-AUDIO",
         name: "yeban_import_audio",
-        summary: "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目 (走 yeban-decode + Op)",
+        summary: "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目 (走 yeban-decode + Op); 给了 trackId 就在同一次调用里摆放 (Op::AddClipPlacement)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -780,6 +780,36 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "片段的显式 EntityId; 缺省由 (来源, 名字, 增益) 确定性派生",
             ),
+            param(
+                "trackId",
+                "string",
+                false,
+                "目标音轨 EntityId (26 字符 ULID); 给了就摆放, 不给就只登记 (片段在母带里不会出现)",
+            ),
+            param(
+                "startTick",
+                "integer",
+                false,
+                "摆放起点 (tick); 默认 0 (只在给了 trackId 时有效)",
+            ),
+            param(
+                "durationTicks",
+                "integer",
+                false,
+                "摆放时值 (tick, >= 1, 剪辑边界); 缺省由素材全长换算 ceil(frames * PPQ * bpm / (sampleRate * 60)) (只在给了 trackId 时有效)",
+            ),
+            param(
+                "placementId",
+                "string",
+                false,
+                "摆放的显式 EntityId; 缺省由 (片段, 音轨, 起点) 确定性派生 (只在给了 trackId 时有效)",
+            ),
+            param(
+                "muted",
+                "boolean",
+                false,
+                "摆放是否静音; 默认 false (只在给了 trackId 时有效)",
+            ),
         ],
         errors: &[
             ErrorCode::NoActiveProject,
@@ -789,6 +819,9 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::InvalidParameterRange,
             ErrorCode::RenderFailed,
             ErrorCode::Conflict,
+            // 摆放新增的一条出口：目标音轨不存在。它本来就是 D25 联集里的既有码
+            // （`yeban_edit_automation` 已声明同一个码），**不是**新码。
+            ErrorCode::TrackNotFound,
         ],
     },
     ToolSpec {
