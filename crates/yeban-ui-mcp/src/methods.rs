@@ -20,7 +20,11 @@
 //! 2. **`ui/` 之后是 §12.4 / §12.2 点名的能力名**：`tree` / `property` / `screenshot` /
 //!    `dynamic_regions`，事件注入**逐字采用 §12.4 的函数名**
 //!    （`dispatch_pointer_down` / `dispatch_pointer_move` / `dispatch_pointer_up` /
-//!    `dispatch_key_press`）—— 这样"规范里写了什么"与"线上叫什么"可以逐字对账；
+//!    `dispatch_key_press`）—— 这样"规范里写了什么"与"线上叫什么"可以逐字对账。
+//!    ⚠ **一条例外（本切片新增）**：`ui/set_track_height`。规范**没有**给它名字与签名 ——
+//!    它是 `ADR-0004` S1（轨道高度）的纵向入口在控制面上的工程裁决；命名与参数沿用本节的
+//!    三条规则，但"逐字来自 §12.4"这句话对它不成立（原文写在该条的
+//!    [`MethodSpec::signature`] 里）；
 //! 3. **参数用 camelCase**（`elementId` / `xOffset` / `keyCode`），与领域契约
 //!    `schemas/mcp-tools.schema.json` 的既有风格一致（`idempotencyKey` / `sectionName`）。
 //!    规范 §12.4 写的是 Rust 侧形参名 `element_id`，两者的对应关系写在每条方法的
@@ -76,6 +80,10 @@ pub const METHOD_SWITCH_MAIN_VIEW: &str = "ui/switch_main_view";
 pub const METHOD_FORCE_SAVE: &str = "ui/force_save";
 /// 方法名：§12.3 `Administrative` 的"重载音频引擎"。
 pub const METHOD_RELOAD_ENGINE: &str = "ui/reload_engine";
+/// 方法名：`ADR-0004` S1 的**纵向入口**（轨道头拖拽手势）在控制面上的孪生。
+///
+/// 规范里**没有**这个方法名与签名 —— 它是工程裁决（理由与口径写在方法表的 `signature` 里）。
+pub const METHOD_SET_TRACK_HEIGHT: &str = "ui/set_track_height";
 
 /// 「未知参数一律拒绝」的例外前缀（MCP 保留键），与 `yeban-mcp` 的口径一致。
 ///
@@ -218,6 +226,14 @@ const KEY_CODE: ParamSpec = ParamSpec {
     allowed: None,
     description: "键名（§12.4 的 `key_code`；解析口径 = `yeban_ui_test_port::port::KeyCode::parse`）",
 };
+const HEIGHT_PX: ParamSpec = ParamSpec {
+    name: "heightPx",
+    json_type: "integer",
+    required: true,
+    allowed: None,
+    description: "这条轨道的**基准**行高（整数逻辑像素；`0` = 取消这条覆盖，回到默认 56）。\
+                  生效值仍是投影的 `clamp(基准 × 百分比 / 100, 16, 320)`（无效的负值报 `-32602`）",
+};
 const VIEW: ParamSpec = ParamSpec {
     name: "view",
     json_type: "string",
@@ -236,7 +252,7 @@ const VIEW: ParamSpec = ParamSpec {
 /// 默认 `false`，与领域侧逐字一致（判据 [crate::dry_run] 的
 /// `dry_run_defaults_to_false_exactly_like_the_domain`）。
 ///
-/// **只出现在会改状态的方法上**（`mutating == true` 的 7 条）：只读方法收到它会被
+/// **只出现在会改状态的方法上**（`mutating == true` 的 8 条）：只读方法收到它会被
 /// 未知参数规则**响亮拒绝**（`-32602`），而不是静默忽略 —— 理由见 [crate::dry_run] 的模块头。
 const DRY_RUN: ParamSpec = ParamSpec {
     name: DRY_RUN_PARAM,
@@ -248,7 +264,7 @@ const DRY_RUN: ParamSpec = ParamSpec {
 };
 
 /// 全部方法，**注册表顺序 = 文档顺序**（不依赖任何容器迭代顺序）。
-pub const METHODS: [MethodSpec; 14] = [
+pub const METHODS: [MethodSpec; 15] = [
     MethodSpec {
         name: METHOD_METHODS,
         spec_ids: &["ARCH-UI-004", "MCP-DUAL-001"],
@@ -383,6 +399,21 @@ pub const METHODS: [MethodSpec; 14] = [
         params: &[DRY_RUN],
         signature: "UI/UX §12.3 [UI-MCP-001] Administrative: 强制执行工程保存",
         description: "强制执行工程保存（Administrative 层；scope `app:save`）",
+        mutating: true,
+    },
+    MethodSpec {
+        name: METHOD_SET_TRACK_HEIGHT,
+        spec_ids: &["UI-MCP-001", "UI-TEST-001", "ARCH-UI-004"],
+        // `Interactive` 层（`ui:inject`）：它改的是**视图态**（行高），与事件注入同层；
+        // 生产模式下 `ui:inject` 族被硬禁（与 `ui/dispatch_*` 逐字相同），因此这条入口
+        // 只在测试 / 交互层可用 —— 产品窗口里的用户入口是**拖拽手势**本身。
+        scope: Scope::UiInject,
+        port_operation: Some(Operation::SetTrackHeight),
+        params: &[ELEMENT_ID, HEIGHT_PX, DRY_RUN],
+        signature: "规范里没有这个方法名与签名 —— 它是 `ADR-0004` S1（轨道高度）的纵向入口在\
+                    控制面上的工程裁决；寻址沿用 §12.2 [UI-TEST-001] 的语义 ID（`track-{i}-header`），\
+                    参数名沿用 §12.3 [UI-MCP-001] 的 camelCase 风格，权限落在 Interactive 层",
+        description: "设置一条轨道的基准行高（`0` = 取消覆盖）；回执里给出回读的行几何",
         mutating: true,
     },
     MethodSpec {
@@ -648,7 +679,7 @@ mod tests {
     fn method_names_are_unique_and_well_formed() {
         let names = names();
         assert_eq!(names.len(), METHOD_COUNT);
-        assert_eq!(METHOD_COUNT, 14);
+        assert_eq!(METHOD_COUNT, 15);
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
         assert_eq!(unique.len(), names.len(), "方法名不得重复");
 
@@ -698,7 +729,11 @@ mod tests {
                 Scope::UiInject => assert!(
                     matches!(
                         spec.port_operation,
-                        Some(Operation::DispatchPointer | Operation::DispatchKey)
+                        Some(
+                            Operation::DispatchPointer
+                                | Operation::DispatchKey
+                                | Operation::SetTrackHeight
+                        )
                     ),
                     "{} 是注入 scope 却没挂注入操作",
                     spec.name
@@ -774,7 +809,7 @@ mod tests {
 
     /// 判据 6（**ADR-0001 D48**）: `dryRun` 的**可发现性**与**适用范围**。
     ///
-    /// - 会改状态的 7 条方法**全部**声明 `dryRun`，且它是**可选布尔**；
+    /// - 会改状态的 8 条方法**全部**声明 `dryRun`，且它是**可选布尔**；
     /// - 只读的 7 条方法**一条都不声明**（只读没有副作用可短路，见 [`crate::dry_run`]）；
     /// - `ui/methods` 的自描述里能**直接看出**哪些方法支持它（`dryRunSupported` +
     ///   顶层 `dryRunParam`），调用方不必读文档。
@@ -810,7 +845,7 @@ mod tests {
                 without.push(spec.name);
             }
         }
-        assert_eq!(with.len(), 7, "会改状态的方法: {with:?}");
+        assert_eq!(with.len(), 8, "会改状态的方法: {with:?}");
         assert_eq!(without.len(), 7, "只读方法: {without:?}");
         assert_eq!(with.len() + without.len(), METHOD_COUNT);
 
@@ -926,7 +961,7 @@ mod tests {
     }
 
     /// 判据 5: `ui/methods` 的载荷是**清单**而不是契约实例（顶层不含 `name`/`arguments`/`status`），
-    /// 且 14 条方法与注册表逐条对应（顺序也一致）。
+    /// 且 15 条方法与注册表逐条对应（顺序也一致）。
     #[test]
     fn catalogue_is_a_document_and_matches_the_registry() {
         let snapshot = catalogue();

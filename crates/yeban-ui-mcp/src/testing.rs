@@ -56,6 +56,9 @@ pub(crate) struct Fixture {
     pub(crate) ime_composing: bool,
     /// IME 状态机的焦点分类。
     pub(crate) ime_focus: ImeFocus,
+    /// `ui/set_track_height` 真的会写的那个数（真执行面上是 `MainWindow` 的
+    /// `track-height-override-pxs`，`ADR-0004` S1）。
+    pub(crate) track_height_px: u32,
 }
 
 impl Fixture {
@@ -91,6 +94,7 @@ impl Fixture {
             "arrangementView": self.arrangement_view,
             "saveEpoch": self.save_epoch,
             "engineGeneration": self.engine_generation,
+            "trackHeightPx": self.track_height_px,
             "imeComposing": self.ime_composing,
             "imeFocus": self.ime_focus.as_str(),
             "calls": self.calls,
@@ -171,6 +175,9 @@ pub(crate) fn shared(permission: Permission) -> Rc<RefCell<Fixture>> {
         engine_generation: 0,
         ime_composing: false,
         ime_focus: ImeFocus::MainCanvas,
+        // 与投影的默认基准行高同值（`bridge::DEFAULT_TRACK_HEIGHT_PX = 56`）——
+        // 假面不认识那个常量（零依赖方向），因此这里写死同一个数并说明来源。
+        track_height_px: 56,
     }))
 }
 
@@ -258,6 +265,17 @@ impl UiSurface for FakeSurface {
                 "generation",
                 ReportValue::Uint(state.engine_generation.saturating_add(1)),
             )]),
+            // `ADR-0004` S1：将要写的**基准**行高 + 当前读数（只读回读）。
+            crate::methods::METHOD_SET_TRACK_HEIGHT => {
+                let requested = arguments.number("heightPx").map_or(0, |value| value as u64);
+                PreviewEffect::new(vec![
+                    (
+                        "currentBasePx",
+                        ReportValue::Uint(u64::from(state.track_height_px)),
+                    ),
+                    ("requestedPx", ReportValue::Uint(requested)),
+                ])
+            }
             // `[UI-A11Y-002]`：这一键在当前 IME/焦点状态下会被怎么处置。
             //
             // ⚠ 假面**只知道两档**：它没有 `[UI-A11Y-001]` 的扫描码表（那是
@@ -386,6 +404,19 @@ impl yeban_ui_test_port::port::UiTestPort for FakeSurface {
         let mut state = self.state.borrow_mut();
         state.calls.push("reload_engine".to_owned());
         state.engine_generation = state.engine_generation.saturating_add(1);
+        Ok(())
+    }
+    /// `ui/set_track_height`：**真的**改夹具里的那个数（真执行面上是视图态 + 重投影）。
+    ///
+    /// 它是**唯一**一条带默认实现的 `*_impl`（见 `UiTestPort::set_track_height_impl` 的
+    /// 文档：底层 crate 不认识上层 app 的行高属性）。假面覆写它，于是"dryRun 前后状态
+    /// 逐字段相同"与"真调用确实改了状态"这两条判据在这一条方法上也成立。
+    fn set_track_height_impl(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
+        let mut state = self.state.borrow_mut();
+        state
+            .calls
+            .push(format!("set_track_height:{element_id}:{height_px}"));
+        state.track_height_px = height_px;
         Ok(())
     }
 }

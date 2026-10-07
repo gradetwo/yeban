@@ -1449,6 +1449,21 @@ impl ViewState {
         self.tracks.iter().map(|track| track.name.clone()).collect()
     }
 
+    /// 每条非主总线轨道的**身份**（[`TrackView::id`]，26 字符 `EntityId` 规范文本）——
+    /// 与 `track-names` / `track-ys` / `track-heights` **同索引集**。
+    ///
+    /// 存在的理由只有一个：每轨高度覆盖按**身份**键控（`ADR-0004` S1 的
+    /// [`TrackHeightLayout`]），而界面上的拖拽手势只能报告**下标**
+    /// （`arrangement_view.slint` 的 `track-height-grab(track_index, …)`）⇒ 宿主需要一格
+    /// "下标 → 身份"的查表。
+    ///
+    /// 宿主**不**拿别的快照去猜身份：这个数组与行几何由**同一个** `host::apply_view`
+    /// 一次性注入，因此换工程之后与行几何同步更新（不是一份会过期的副本）。
+    #[must_use]
+    pub fn track_ids(&self) -> Vec<String> {
+        self.tracks.iter().map(|track| track.id.clone()).collect()
+    }
+
     /// 每条非主总线轨道的**行顶沿 y**（逻辑像素，前缀和）—— `.slint` 直接画它。
     ///
     /// 与 `track-names` **同索引集**（都来自 `self.tracks`）：`.slint` 的

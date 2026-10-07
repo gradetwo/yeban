@@ -419,6 +419,37 @@ impl UiService {
                 root.insert("keyCode".to_owned(), Value::from(key.as_str()));
                 Ok(Value::Object(root))
             }
+            methods::METHOD_SET_TRACK_HEIGHT => {
+                let id = required_text(params, "elementId");
+                // `integer` 类型由第 4 步的校验钉住；这里把**取值范围**也钉住
+                // （`as_u64` 对负数 / 超 `u64` 的整数返回 `None`）。
+                //
+                // 为什么范围检查在执行分支而不是 `validate_params`：`ParamSpec` 没有"数值下界"
+                // 这个面（加它要改 `ui/methods` 的载荷形状，只为一个方法），而"非法取值"
+                // 仍然用**既有**的 `-32602 INVALID_PARAMS`（D25：不发明新错误码）。
+                let height_px = integer_param(params, "heightPx")
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        ErrorObject::invalid_params(format!(
+                            "`ui/set_track_height` 的 `heightPx` 必须是 0..=4294967295 的整数 \
+                             （`0` = 取消这条覆盖），收到 {}",
+                            params.get("heightPx").cloned().unwrap_or(Value::Null)
+                        ))
+                    })?;
+                if dry_run {
+                    return self.preview(spec, params);
+                }
+                self.surface
+                    .set_track_height(&id, height_px)
+                    .map_err(|error| port_error(port_context(spec), error))?;
+                let mut root = Map::new();
+                root.insert("accepted".to_owned(), Value::from(true));
+                root.insert("operation".to_owned(), Value::from("set_track_height"));
+                root.insert("elementId".to_owned(), Value::from(id));
+                root.insert("heightPx".to_owned(), Value::from(height_px));
+                attach_admin_report(&mut root, self.surface.take_admin_report());
+                Ok(Value::Object(root))
+            }
             methods::METHOD_SWITCH_MAIN_VIEW => {
                 let view = required_text(params, "view");
                 if dry_run {
@@ -1762,6 +1793,10 @@ mod tests {
                 methods::METHOD_SWITCH_MAIN_VIEW,
                 serde_json::json!({"view": "arrangement"}),
             ),
+            (
+                methods::METHOD_SET_TRACK_HEIGHT,
+                serde_json::json!({"elementId": "track-0-header", "heightPx": 96}),
+            ),
             (methods::METHOD_FORCE_SAVE, serde_json::json!({})),
             (methods::METHOD_RELOAD_ENGINE, serde_json::json!({})),
         ]
@@ -1800,6 +1835,11 @@ mod tests {
             }
             methods::METHOD_DISPATCH_POINTER_UP => format!("pointer_up:{}", text("button")),
             methods::METHOD_DISPATCH_KEY_PRESS => format!("key_press:{}", text("keyCode")),
+            methods::METHOD_SET_TRACK_HEIGHT => format!(
+                "set_track_height:{}:{}",
+                text("elementId"),
+                number("heightPx")
+            ),
             methods::METHOD_SWITCH_MAIN_VIEW => format!("switch_main_view:{}", text("view")),
             methods::METHOD_FORCE_SAVE => "force_save".to_owned(),
             methods::METHOD_RELOAD_ENGINE => "reload_engine".to_owned(),
@@ -1994,6 +2034,13 @@ mod tests {
                         effect["resolution"],
                         Value::from(ime::RESOLUTION_PASS_THROUGH)
                     );
+                }
+                methods::METHOD_SET_TRACK_HEIGHT => {
+                    // 预览报出"将要写进去的基准高"；真做之后夹具里就是它。
+                    // `currentBasePx` 是**只读**回读 —— 判据 ① 的"dryRun 一个状态位都不变"
+                    // 正是靠它与 `before` 相等来作证。
+                    assert_eq!(effect["requestedPx"], after["trackHeightPx"]);
+                    assert_eq!(effect["currentBasePx"], before["trackHeightPx"]);
                 }
                 // 指针事件的影响只有窗口自己知道 ⇒ 如实报 null（不编造）。
                 _ => assert_eq!(effect, &Value::Null, "`{method}` 不该编造影响预览"),
@@ -2350,7 +2397,7 @@ mod tests {
             .filter(|entry| entry["dryRunSupported"].as_bool() == Some(true))
             .map(|entry| entry["name"].as_str().expect("字符串"))
             .collect();
-        assert_eq!(supporting.len(), 7, "支持 dryRun 的方法: {supporting:?}");
+        assert_eq!(supporting.len(), 8, "支持 dryRun 的方法: {supporting:?}");
         for method in supporting {
             assert!(
                 methods::method(method).expect("注册表里有").mutating,

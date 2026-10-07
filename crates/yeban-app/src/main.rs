@@ -276,6 +276,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::wire_undo(&ui, &undo_port);
     // `[UI-NOTE-003]` 卷帘编辑入口（铅笔）：与撤销端口共用同一实现 ⇒ 可撤销是构造上的。
     host::wire_roll_edit(&ui, &undo_port);
+    // `ADR-0004` S1 的**纵向入口**：轨道头按住并上下拖动 ⇒ 改这一轨的行高。
+    //
+    // 高度是**视图态**（不进 `.yeban`、不进 schema），因此它落到的不是 `UndoPort::perform`
+    // 而是 `host::set_track_height_override`（唯一 setter）+ 用同一个端口重投影；
+    // 端口在这里的作用与 `wire_roll_edit` 逐字相同：给出此刻权威的工程。
+    // `Escape`（`Action::Cancel`）也经同一个 `wire_keys` 端口取消这一拖（见 `apply_action`）。
+    host::wire_track_height_drag(&ui, &undo_port);
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
     host::apply_undo(&ui, &undo_port);
     let undo_display = undo_port.display();

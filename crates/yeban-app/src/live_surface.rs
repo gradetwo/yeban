@@ -400,6 +400,26 @@ fn key_resolution(state: &InputContext, key: KeyCode) -> &'static str {
     }
 }
 
+/// `track-{i}-header`（`[UI-TEST-001]` §12.2）→ 轨道身份（26 字符 `EntityId` 文本）。
+///
+/// **唯一**的一处解析。为什么需要它：控制面按**语义 ID**寻址（调用方能从 `ui/tree` 发现
+/// `track-0-header` 这样的名字），而每轨高度覆盖按**身份**键控（`ADR-0004` S1 /
+/// `bridge::TrackHeightLayout`）⇒ 这一格转换不可省。
+///
+/// 解析不出来 / 下标越界 / 身份为空 ⇒ `None`（调用方报 `-32006 ELEMENT_NOT_FOUND`，
+/// 而不是猜第一条轨道）。
+fn track_id_of_header(element_id: &str, view: &ViewState) -> Option<String> {
+    let index = element_id
+        .strip_prefix("track-")?
+        .strip_suffix("-header")?
+        .parse::<usize>()
+        .ok()?;
+    view.tracks
+        .get(index)
+        .map(|track| track.id.clone())
+        .filter(|id| !id.is_empty())
+}
+
 /// `ui/switch_main_view` 的视图名 → `arrangement-view` 布尔（**唯一**的映射点）。
 ///
 /// 预览与真动作都走它：两处各写一遍 `match` 迟早会出现"预览说 arrangement、
@@ -556,6 +576,66 @@ impl LiveAdminSurface {
                     ReportValue::Int(i64::from(self.window.get_console_tab())),
                 ),
                 ("treeNodes", ReportValue::Uint(nodes as u64)),
+            ],
+        ));
+        Ok(())
+    }
+
+    /// `ui/set_track_height`：**真的**改行高视图态并重新投影，回执里给出回读的几何。
+    ///
+    /// ## 顺序是契约（与 `apply_project` 同一条数据流）
+    ///
+    /// 1. 按 §12.2 的语义 ID（`track-{i}-header`）解析出**轨道身份**（每轨高度覆盖按身份键控）；
+    /// 2. 走**唯一**的 setter `yeban_app::host::set_track_height_override` 写视图态
+    ///    （`height_px == 0` = 取消这条覆盖，与那个 setter 的契约逐字相同）；
+    /// 3. 读回视图态重投影（不读回来就会把刚设的高度静默清零）；
+    /// 4. 换注册表 → 注入 → `pump_meters`（**先注入、后重抓树**：顺序是契约）；
+    /// 5. 回执里给出 `changed` 与回读的**矩形高**，服务层原样放进 `result.report`。
+    ///
+    /// 它**不**碰工程、不落盘、不过引擎：行高是视图态（`ADR-0004` S1 / Q4-A，零 schema）。
+    fn apply_track_height(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
+        let track_id = track_id_of_header(element_id, &self.view).ok_or_else(|| {
+            PortError::UnknownElement {
+                id: element_id.to_owned(),
+            }
+        })?;
+        let changed =
+            yeban_app::host::set_track_height_override(&self.window, &track_id, height_px);
+        let view = ViewState::from_project_with_layout(
+            &self.project,
+            &yeban_app::host::track_height_layout(&self.window),
+        )
+        .map_err(|error| PortError::Rejected {
+            message: format!("轨道高度重投影失败: {error}"),
+        })?;
+        let registry =
+            control_tree_from_registry(&ElementRegistry::from_view(&view)).map_err(|error| {
+                PortError::Rejected {
+                    message: error.to_string(),
+                }
+            })?;
+        let width = slint::ComponentHandle::window(&self.window).size().width as f32;
+        // 卷帘偏移原样保留：改行高不该把别的视图态弄丢。
+        let scroll_x = self.window.get_roll_scroll_x();
+        host::apply_view(&self.window, &view, width, scroll_x);
+        // 回读（不是回显入参）：`track-heights` 注入的是**矩形高**（行槽高 − 2px 间隙）。
+        let drawn_px = view
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .map_or(0.0_f32, |track| track.height);
+        self.view = view;
+        self.registry = registry;
+        // 电平对齐 + 重抓树（顺序是契约：注入必须在重抓之前）。
+        self.pump_meters();
+        self.report = Some(AdminReport::new(
+            "set_track_height",
+            vec![
+                ("elementId", ReportValue::Text(element_id.to_owned())),
+                ("trackId", ReportValue::Text(track_id)),
+                ("heightPx", ReportValue::Uint(u64::from(height_px))),
+                ("changed", ReportValue::Bool(changed)),
+                ("drawnPx", ReportValue::Float(f64::from(drawn_px))),
             ],
         ));
         Ok(())
@@ -738,6 +818,14 @@ impl UiTestPort for LiveAdminSurface {
     fn reload_engine_impl(&mut self) -> Result<(), PortError> {
         self.reload_engine_now()
     }
+
+    /// `ui/set_track_height` 的**真实载体**（`ADR-0004` S1 的纵向入口）。
+    ///
+    /// 语义主体在 [`Self::apply_track_height`]（与 `switch_main_view_impl` →
+    /// `apply_main_view` 同款分工：trait 里这一份只是委托，读代码的人不该猜哪一份在跑）。
+    fn set_track_height_impl(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
+        self.apply_track_height(element_id, height_px)
+    }
 }
 
 impl UiSurface for LiveAdminSurface {
@@ -807,6 +895,37 @@ impl UiSurface for LiveAdminSurface {
                     ),
                     // 容器布局：`project.json` + `history.dag`（见 `crate::save` 的边界）。
                     ("containerEntries", ReportValue::Uint(2)),
+                ])
+            }
+            yeban_ui_mcp::methods::METHOD_SET_TRACK_HEIGHT => {
+                let element_id = arguments.text("elementId").unwrap_or_default();
+                let Some(track_id) = track_id_of_header(element_id, &self.view) else {
+                    // 语义 ID 不是轨道头 ⇒ 真调用会报 `-32006`；dryRun 也如实报"这条预测不了"。
+                    return Ok(None);
+                };
+                let layout = yeban_app::host::track_height_layout(&self.window);
+                let drawn_px = self
+                    .view
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == track_id)
+                    .map_or(0.0_f32, |track| track.height);
+                PreviewEffect::new(vec![
+                    ("trackId", ReportValue::Text(track_id.clone())),
+                    (
+                        "currentBasePx",
+                        ReportValue::Uint(u64::from(layout.base_px(&track_id))),
+                    ),
+                    ("currentDrawnPx", ReportValue::Float(f64::from(drawn_px))),
+                    (
+                        "requestedPx",
+                        ReportValue::Uint(
+                            arguments
+                                .number("heightPx")
+                                .and_then(|value| u64::try_from(value as i64).ok())
+                                .unwrap_or(0),
+                        ),
+                    ),
                 ])
             }
             yeban_ui_mcp::methods::METHOD_RELOAD_ENGINE => PreviewEffect::new(vec![

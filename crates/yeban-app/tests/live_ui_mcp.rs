@@ -2607,6 +2607,109 @@ fn injected_lengths(model: &slint::ModelRc<f32>) -> Vec<f32> {
     model.iter().collect()
 }
 
+/// `[string]` 属性 → `Vec<String>`（本文件只读注入面；生产侧的读回在 `host::read_strings`）。
+fn injected_strings(model: &slint::ModelRc<slint::SharedString>) -> Vec<String> {
+    use slint::Model as _;
+    model.iter().map(|value| value.to_string()).collect()
+}
+
+/// 窗口上那 7 个行几何数组的快照（顺序 = `host::apply_row_geometry` 的写入顺序）。
+fn row_geometry_snapshot(window: &yeban_app::ui::MainWindow) -> (Vec<Vec<f32>>, Vec<String>) {
+    (
+        vec![
+            injected_lengths(&window.get_track_ys()),
+            injected_lengths(&window.get_track_heights()),
+            injected_lengths(&window.get_clip_ys()),
+            injected_lengths(&window.get_clip_heights()),
+            injected_lengths(&window.get_automation_lane_band_ys()),
+            injected_lengths(&window.get_automation_lane_band_heights()),
+        ],
+        injected_strings(&window.get_automation_path_commands()),
+    )
+}
+
+/// **投影**里同样那 7 个字段的快照（本判据的独立基准；不是"另一个注入写者"）。
+fn projection_geometry_snapshot(view: &ViewState) -> (Vec<Vec<f32>>, Vec<String>) {
+    (
+        vec![
+            view.track_ys(),
+            view.track_heights(),
+            view.clip_ys(),
+            view.clip_heights(),
+            view.automation_lane_band_ys(),
+            view.automation_lane_band_heights(),
+        ],
+        view.automation_path_commands(),
+    )
+}
+
+/// 轨道头 `track-0-header` 在**运行时树**里的几何原点与行高（窗口逻辑坐标）。
+///
+/// 判据用它取注入坐标，而不是写死像素 —— 侧栏宽度 / 顶栏高度一改，坐标跟着走。
+fn header_box(plane: &mut LiveControlPlane, id: i64) -> (f64, f64, f64) {
+    let bounds = header_bounds(plane, id);
+    (
+        bounds["x"].as_f64().expect("x"),
+        bounds["y"].as_f64().expect("y"),
+        bounds["height"].as_f64().expect("height"),
+    )
+}
+
+/// 同 [`header_box`]，但给宽度（日志里用）。
+fn header_box_width(plane: &mut LiveControlPlane, id: i64) -> f64 {
+    header_bounds(plane, id)["width"].as_f64().expect("width")
+}
+
+/// `ui/node` 读 `track-0-header` 的 `bounds` —— 没有它（元素不在树里 / 没有几何）就**响亮失败**。
+fn header_bounds(plane: &mut LiveControlPlane, id: i64) -> serde_json::Value {
+    let node = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        id,
+        "ui/node",
+        Some(serde_json::json!({"elementId": "track-0-header"})),
+    ));
+    assert!(!node.is_error(), "轨道头必须在运行时树里: {node:?}");
+    let bounds = node.result.expect("有 result")["node"]["bounds"].clone();
+    assert!(!bounds.is_null(), "轨道头必须有几何包围盒");
+    bounds
+}
+
+/// `tests/undo_wiring_ui.rs` 用的同一个时间戳夹具（会话打开时刻）。
+const TRACK_HEIGHT_DRAG_NOW: u64 = 1_760_000_000_000;
+
+/// 拖拽手势判据的装配：真实界面 + **同一份工程**的撤销端口 + 生产形态的两条接线。
+///
+/// 返回 `(window, port, plane)`：
+/// - `window` 是活窗口的强引用（`clone_strong` —— 与执行面持有的是**同一个**组件实例），
+///   判据用它读注入面（`track-ys` / `track-heights` / `track-height-*`）与直接驱动回调；
+/// - `plane` 是同一个窗口上的控制面（注入真实指针 / 键盘事件）。
+///
+/// 两条接线都是**产品路径上的既有调用**（`src/main.rs` 里逐字相同）：
+/// `host::wire_track_height_drag`（手势本体）与 `host::wire_keys`（`Escape` 的取消路径
+/// 需要用端口把几何重新投影回起点）。`build_live_ui` 内部已经用 `None` 接过一次
+/// `wire_keys`；这里按**生产形态**（`Some(port)`）再接一次 —— 两次接的是同一个
+/// `InputContext`，后一次覆盖前一次（Slint 的回调 setter 是覆盖语义）。
+fn assemble_track_height_drag() -> (
+    yeban_app::ui::MainWindow,
+    std::rc::Rc<yeban_app::undo::UndoPort>,
+    LiveControlPlane,
+) {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    let project = yeban_model::samples::filled_project();
+    let ui = build_live_ui(&project, Permission::Interactive).expect("装配");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    // 端口持有的是**同一份**工程（`filled_project()` 的身份是固定夹具 ⇒ 身份逐位相同）。
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据>", "yeban-app", project, TRACK_HEIGHT_DRAG_NOW).expect("打开"),
+    ));
+    yeban_app::host::wire_track_height_drag(&window, &port);
+    yeban_app::host::wire_keys(&window, ui.input_context(), Some(Rc::clone(&port)));
+    let plane = ui.into_control_plane(Permission::Interactive);
+    (window, port, plane)
+}
+
 /// 判据（`ADR-0004` **S1**）：轨道高度的**视图态**真的走到了注入的行几何上 ——
 /// 即"每轨高度 + 全局乘子"这条能力**在真实窗口上有消费者**，而不是一个没人调用的参数。
 ///
@@ -2681,6 +2784,647 @@ fn track_height_view_state_reaches_the_injected_row_geometry() {
         "[adr-0004-s1] 行高视图态: 第 0 轨 120px × 150% ⇒ 注入 {:.0}px / y {:.0}px; \
          未覆盖轨 {:.0}px; 复位后逐位回到默认 {:?}",
         heights[0], ys[1], heights[1], after
+    ));
+}
+
+/// 判据（`ADR-0004` **S1 的纵向入口**）：轨道头**拖拽手势**真的改行高，而且收尾干净。
+///
+/// ## 为什么这条判据用 `ui/dispatch_pointer_*` 而不是新加一个 `ui/set_track_height`
+///
+/// §12.4 的两个注入方法**已经**在方法表里（`ui/dispatch_pointer_*`），而它们驱动的是与用户
+/// **一模一样**的事件源：真实指针事件 → Slint 命中测试 → `.slint` 的轨道头 `TouchArea` →
+/// `host::wire_track_height_drag`。于是这条判据证明的是"**手势真的能用**"，
+/// 比"存在一个把数字写进去的设置器"更强（后者证明不了 `.slint` 那一半接上了）。
+///
+/// ## 三条会变红的注入（每条都实测过）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | 摘掉 `.slint` 里的 `track-height-grab/drag/release` 转发 | `arrangement_view.slint` | 指针注入之后行几何一位不变（本判据第一段红） |
+/// | 摘掉 `host::wire_track_height_drag` 里的 `set_track_height_override` | `src/host.rs` | 同上 |
+/// | 摘掉 `end_track_height_drag` 里的 `set_track_height_drag_active(false)` | `src/host.rs` | 收尾断言红（粘住的拖拽态） |
+#[test]
+fn the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly() {
+    use serde_json::json;
+    use yeban_ui_mcp::methods::{METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE};
+
+    let (window, _port, mut plane) = assemble_track_height_drag();
+
+    // ---- 起点：默认布局（无覆盖、乘子 100）⇒ S0 的几何一位没变 ----
+    let before_heights = injected_lengths(&window.get_track_heights());
+    let before_ys = injected_lengths(&window.get_track_ys());
+    assert!(before_heights.len() >= 2, "夹具必须有多条轨道");
+    assert!(
+        before_heights.iter().all(|px| *px == 54.0),
+        "默认布局下注入的行矩形高必须是 54.0（S0 的字面量）: {before_heights:?}"
+    );
+    assert_eq!(before_ys[0], 42.0, "第 0 行的顶沿是 S0 的 42px");
+    assert!(
+        injected_strings(&window.get_track_height_override_ids()).is_empty(),
+        "起点不该有任何每轨覆盖"
+    );
+    assert_eq!(window.get_track_height_percent(), 100);
+    assert!(
+        !window.get_track_height_drag_active(),
+        "起点不该有进行中的手势"
+    );
+
+    // ---- 轨道头的**真实几何**（由控制面自己的树读出来，不写死坐标）----
+    let (header_x, header_y, header_h) = header_box(&mut plane, 201);
+    let header_w = header_box_width(&mut plane, 201);
+    assert_eq!(header_h, 54.0, "默认行高的包头高就是注入的 54px");
+    // 取包头**靠右**的一点（躲开左上角的静音 / 独奏按钮与色标），纵向取行中。
+    let grab_x = header_x + 150.0;
+    let grab_y = header_y + header_h / 2.0;
+
+    // ---- 按下 + 向上拖 40px ----
+    let down = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        202,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(json!({
+            "elementId": "track-0-header",
+            "xOffset": 150.0,
+            "yOffset": header_h / 2.0,
+            "button": "left"
+        })),
+    ));
+    assert!(!down.is_error(), "按下必须落到真实窗口: {down:?}");
+    assert!(
+        window.get_track_height_drag_active(),
+        "按下之后手势必须处于进行中（`.slint` 的 down 转发接上了）"
+    );
+
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        203,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({"x": grab_x, "y": grab_y - 40.0})),
+    ));
+    assert!(!moved.is_error(), "拖动必须落到真实窗口: {moved:?}");
+
+    // 拖动过程中：视图态里已经写进了**基准** 56 + 40 = 96（整数像素）。
+    let track_id = injected_strings(&window.get_track_ids())[0].clone();
+    let ids = injected_strings(&window.get_track_height_override_ids());
+    assert_eq!(ids, vec![track_id.clone()], "覆盖表按**身份**键控");
+    let pxs = injected_lengths(&window.get_track_height_override_pxs());
+    assert_eq!(pxs, vec![96.0], "基准高 = 起点 56 + 位移 40（乘子 100）");
+    let dragging_heights = injected_lengths(&window.get_track_heights());
+    assert_eq!(
+        dragging_heights[0], 94.0,
+        "第 0 行的矩形高 = 96 − 2（间隙常量不变）"
+    );
+    assert_eq!(
+        dragging_heights[1], 54.0,
+        "别的轨道不受影响（手势只作用于按下那一行）"
+    );
+    assert_eq!(
+        injected_lengths(&window.get_track_ys())[1],
+        42.0 + 96.0,
+        "前缀和必须用**新的**行高：第 1 行的顶沿随之下移"
+    );
+
+    // ---- 松手：手势必须收尾（这是"不留粘住的拖拽态"的第一条路径）----
+    let up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        204,
+        "ui/dispatch_pointer_up",
+        Some(json!({"button": "left"})),
+    ));
+    assert!(!up.is_error(), "松手必须落到真实窗口: {up:?}");
+    assert!(
+        !window.get_track_height_drag_active(),
+        "松手之后手势必须结束（否则下一次孤立的 move 会继续改高度）"
+    );
+    assert_eq!(
+        window.get_track_height_drag_track(),
+        "",
+        "收尾必须把「拖的是哪一行」也清掉"
+    );
+    // 松手之后几何**保留**（松手 = 这一拖算数）。
+    let after = injected_lengths(&window.get_track_heights());
+    assert_eq!(after[0], 94.0, "松手不该回退高度");
+
+    report_line(&format!(
+        "[adr-0004-s1-drag] 轨道头拖拽: 包头 {:.0}x{:.0} @ ({:.0},{:.0}) 按住向上拖 40px ⇒ \
+         基准 {}px（授权身份 {}…）、注入矩形高 {:.0}px、第 1 行顶沿 {:.0}px；松手后 active={}",
+        header_w,
+        header_h,
+        header_x,
+        header_y,
+        pxs[0],
+        &track_id[..track_id.len().min(8)],
+        after[0],
+        injected_lengths(&window.get_track_ys())[1],
+        window.get_track_height_drag_active()
+    ));
+}
+
+/// 判据（`ADR-0004` S1 的纵向入口）：`Escape` **取消**这一拖（写回按下时的高度）并收尾。
+///
+/// 三条收尾路径里，`Escape` 是唯一"取消"语义的那条（松手与指针离开窗口都是"算数"）。
+/// 它与另外两条共用 `host::end_track_height_drag`（手势状态的唯一清零点），
+/// 但多一步"把基准高写回起点 + 重投影" —— 少了那一步，用户看到的是"按了 Esc 没反应"。
+///
+/// ## 怎么变红
+///
+/// 把 `apply_action` 里的 `Action::Cancel => cancel_track_height_drag(ui, undo)` 摘掉：
+/// `Escape` 回到"未实现 ⇒ 放行"的老行为，行高**留在 116px** ⇒ 本判据红。
+#[test]
+fn escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
+    use serde_json::json;
+    use yeban_ui_mcp::methods::{METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_DOWN};
+
+    let (window, _port, mut plane) = assemble_track_height_drag();
+    let grab = |plane: &mut LiveControlPlane, id: i64, x_offset: f64, y_offset: f64| {
+        plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+            id,
+            METHOD_DISPATCH_POINTER_DOWN,
+            Some(json!({
+                "elementId": "track-0-header",
+                "xOffset": x_offset,
+                "yOffset": y_offset,
+                "button": "left"
+            })),
+        ))
+    };
+
+    // ---- 坐标来自**运行时树**（不写死像素：布局一改判据跟着走）----
+    let (header_x, header_y, header_h) = header_box(&mut plane, 210);
+    let grab_x = header_x + 150.0;
+    let grab_y = header_y + header_h / 2.0;
+    assert_eq!(header_h, 54.0, "默认行高的包头高就是注入的 54px");
+
+    // ---- 第一次手势：拖到 96px 并**松手**（这一拖算数）----
+    let down = grab(&mut plane, 211, 150.0, header_h / 2.0);
+    assert!(!down.is_error(), "{down:?}");
+    let moved = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        212,
+        "ui/dispatch_pointer_move",
+        Some(json!({"x": grab_x, "y": grab_y - 40.0})),
+    ));
+    assert!(!moved.is_error(), "{moved:?}");
+    let up = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        213,
+        "ui/dispatch_pointer_up",
+        Some(json!({"button": "left"})),
+    ));
+    assert!(!up.is_error(), "{up:?}");
+    let committed = injected_lengths(&window.get_track_heights());
+    assert_eq!(committed[0], 94.0, "第一次拖到 96px（矩形高 94）");
+    assert!(!window.get_track_height_drag_active());
+
+    // ---- 第二次手势：从 96px 再拖 20px（到 116），然后按 `Escape` ----
+    let down2 = grab(&mut plane, 214, 150.0, header_h / 2.0);
+    assert!(!down2.is_error(), "{down2:?}");
+    let moved2 = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        215,
+        "ui/dispatch_pointer_move",
+        Some(json!({"x": grab_x, "y": grab_y - 20.0})),
+    ));
+    assert!(!moved2.is_error(), "{moved2:?}");
+    assert_eq!(
+        injected_lengths(&window.get_track_heights())[0],
+        114.0,
+        "第二次拖到 116px（矩形高 114）"
+    );
+    assert!(
+        window.get_track_height_drag_active(),
+        "`Escape` 之前手势必须还在进行中（否则没有可取消的对象）"
+    );
+
+    let pressed = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        216,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({"keyCode": "Escape"})),
+    ));
+    assert!(!pressed.is_error(), "`Escape` 注入必须成功: {pressed:?}");
+
+    // ---- 取消之后：几何回到**第一次松手时**的高度，且手势收尾 ----
+    assert!(
+        !window.get_track_height_drag_active(),
+        "`Escape` 必须收尾（手势状态清零）"
+    );
+    assert_eq!(
+        injected_lengths(&window.get_track_heights())[0],
+        94.0,
+        "`Escape` 取消这一拖 ⇒ 回到按下时的 96px（矩形高 94）"
+    );
+    assert_eq!(
+        injected_lengths(&window.get_track_ys())[1],
+        42.0 + 96.0,
+        "取消之后前缀和也必须回到起点（`track-ys` 是**画布**坐标，行 0 恒为 S0 的 42px）"
+    );
+    assert_eq!(
+        injected_lengths(&window.get_track_height_override_pxs()),
+        vec![96.0],
+        "取消写回的是**起点**基准高，不是默认 56"
+    );
+
+    // ---- 没有手势在手时，`Escape` 照旧不被消费（行为与接线之前逐位相同）----
+    assert!(
+        !window.invoke_key_action("\u{1b}".into(), false, false, false, false),
+        "没有手势在手时 `Escape` 必须如实放行（而不是假装处理了）"
+    );
+
+    report_line(&format!(
+        "[adr-0004-s1-drag] `Escape` 取消: 第一次松手后 {:.0}px（基准 96）→ 第二次拖到 {:.0}px \
+         ⇒ `Escape` 之后回到 {:.0}px、active={}；无手势时 `Escape` 被消费 = {}",
+        committed[0],
+        114.0,
+        injected_lengths(&window.get_track_heights())[0],
+        window.get_track_height_drag_active(),
+        window.invoke_key_action("\u{1b}".into(), false, false, false, false)
+    ));
+}
+
+/// 判据（`ADR-0004` S1 的纵向入口）：**孤立的拖拽事件一位都改不动几何** ——
+/// 这是"粘住的拖拽态"那一类缺陷的机械防线。
+///
+/// 四种形态（每一种都对应一个真实的失败模式）：
+///
+/// | # | 形态 | 真实的失败模式 |
+/// | :--- | :--- | :--- |
+/// | ① | 没有按下的 `move` | 松在窗口外 / 事件丢失之后，下一次移动继续改高度 |
+/// | ② | 没有手势的 `release` | 收尾代码把"没有手势"当成"手势结束"并写坏状态 |
+/// | ③ | 下标越界的 `grab` | 索引越界时猜第一条轨道（高度被改到别的轨上） |
+/// | ④ | 手势进行中、**另一个下标**发来的 `move` | 多指 / 事件串扰把高度改到别的轨上 |
+#[test]
+fn a_stray_drag_event_without_a_grab_never_touches_the_row_geometry() {
+    let (window, _port, _plane) = assemble_track_height_drag();
+    let before = injected_lengths(&window.get_track_heights());
+
+    // ① 没有按下的 move。
+    window.invoke_track_height_drag(0, 10.0);
+    assert_eq!(
+        injected_lengths(&window.get_track_heights()),
+        before,
+        "没有按下的 move 不得改几何"
+    );
+    assert!(
+        !window.get_track_height_drag_active(),
+        "孤立的 move 不得把手势点亮"
+    );
+
+    // ② 没有手势的 release。
+    window.invoke_track_height_release(0);
+    assert_eq!(injected_lengths(&window.get_track_heights()), before);
+    assert!(injected_strings(&window.get_track_height_override_ids()).is_empty());
+
+    // ③ 下标越界的 grab：手势**不开始**。
+    window.invoke_track_height_grab(9_999, 0.0);
+    assert!(
+        !window.get_track_height_drag_active(),
+        "下标越界时手势不得开始"
+    );
+    window.invoke_track_height_drag(9_999, -400.0);
+    assert_eq!(
+        injected_lengths(&window.get_track_heights()),
+        before,
+        "下标越界的 move 不得改任何一条轨道"
+    );
+
+    // ④ 手势进行中、另一个下标发来的 move。
+    window.invoke_track_height_grab(0, 200.0);
+    assert!(window.get_track_height_drag_active());
+    assert_eq!(
+        window.get_track_height_drag_start_px(),
+        56,
+        "起点基准 = 默认 56"
+    );
+    window.invoke_track_height_drag(1, 0.0);
+    assert_eq!(
+        injected_lengths(&window.get_track_heights()),
+        before,
+        "手势进行中，别的行发来的 move 不得改几何"
+    );
+    assert!(
+        injected_strings(&window.get_track_height_override_ids()).is_empty(),
+        "别的行发来的 move 不得写进覆盖表"
+    );
+    // 收尾（并证明收尾之后仍然改不动）。
+    window.invoke_track_height_release(0);
+    assert!(!window.get_track_height_drag_active());
+    window.invoke_track_height_drag(0, -400.0);
+    assert_eq!(
+        injected_lengths(&window.get_track_heights()),
+        before,
+        "收尾之后的 move 不得改几何"
+    );
+
+    report_line(
+        "[adr-0004-s1-drag] 孤立的拖拽事件（move/release/越界 grab/串扰 move 共 5 次）\
+         之后注入几何逐位等于起点 ⇒ 没有粘住的拖拽态",
+    );
+}
+
+/// 判据（`ADR-0004` S1 的**控制面入口**）：`ui/set_track_height` 真的改行高，且**两个观测面**
+/// 都能回读出来。
+///
+/// ## 为什么这条判据有两个观测面
+///
+/// | # | 观测面 | 读法 | 证明的是 |
+/// | :--- | :--- | :--- | :--- |
+/// | 1 | 注入的投影数组 | `MainWindow.get_track_heights()` | 视图态 → 投影 → 界面的那条链真的走到了 |
+/// | 2 | 控制面**自己的**运行时树 | `ui/node` 的 `bounds.height` | 执行面在改完之后**重抓过树**（否则 `ui/tree` 会一直卖旧几何给 AI） |
+///
+/// ## 顺带钉住的口径（每条一行断言）
+///
+/// - `heightPx: 0` = **取消覆盖**（回到默认基准），与 `host::set_track_height_override` 逐字相同；
+/// - 幂等：同一个值再来一次 ⇒ 回执里 `changed: false`，几何一位不动；
+/// - `dryRun: true` ⇒ 预览给出"将要写进去的基准高"，而**状态一位不变**；
+/// - **非法参数用既有错误码**（D25）：负数是 `-32602 INVALID_PARAMS`、不是轨道头是 `-32006`；
+/// - 权限层：`ui/methods` 里它的 `requiredScope` 是 `ui:inject`（`Interactive` 层）。
+#[test]
+fn the_set_track_height_method_reaches_the_injected_row_geometry() {
+    use serde_json::json;
+    use yeban_ui_mcp::methods::METHOD_SET_TRACK_HEIGHT;
+
+    let (window, _port, mut plane) = assemble_track_height_drag();
+    let track_id = injected_strings(&window.get_track_ids())[0].clone();
+
+    // ---- 起点：默认几何 ----
+    assert_eq!(injected_lengths(&window.get_track_heights())[0], 54.0);
+    assert_eq!(injected_lengths(&window.get_track_ys())[1], 42.0 + 56.0);
+
+    // ---- ① 设 96px ⇒ 注入的几何 + 控制面自己的树几何都必须跟着走 ----
+    let set = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        301,
+        METHOD_SET_TRACK_HEIGHT,
+        Some(json!({"elementId": "track-0-header", "heightPx": 96})),
+    ));
+    assert!(
+        !set.is_error(),
+        "`{METHOD_SET_TRACK_HEIGHT}` 必须成功: {set:?}"
+    );
+    let result = set.result.expect("有 result");
+    assert_eq!(result["accepted"], json!(true));
+    assert_eq!(result["operation"], json!("set_track_height"));
+    assert_eq!(result["heightPx"], json!(96));
+    let report = &result["report"];
+    assert_eq!(report["operation"], json!("set_track_height"));
+    assert_eq!(report["changed"], json!(true));
+    assert_eq!(report["trackId"], json!(track_id));
+    assert_eq!(report["drawnPx"], json!(94.0));
+
+    assert_eq!(
+        injected_lengths(&window.get_track_heights())[0],
+        94.0,
+        "观测面 1：注入的矩形高 = 基准 96 − 2（间隙）"
+    );
+    assert_eq!(
+        injected_lengths(&window.get_track_ys())[1],
+        42.0 + 96.0,
+        "观测面 1：前缀和用的是新的行槽高"
+    );
+    assert_eq!(
+        injected_lengths(&window.get_track_height_override_pxs()),
+        vec![96.0]
+    );
+    let (_, _, header_h) = header_box(&mut plane, 302);
+    assert_eq!(
+        header_h, 94.0,
+        "观测面 2：控制面的运行时树必须看到新的包头高（没重抓树就会卖旧几何）"
+    );
+
+    // ---- ② 幂等：同一个值再来一次 ⇒ `changed: false`，几何一位不动 ----
+    let again = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        303,
+        METHOD_SET_TRACK_HEIGHT,
+        Some(json!({"elementId": "track-0-header", "heightPx": 96})),
+    ));
+    assert!(!again.is_error(), "{again:?}");
+    assert_eq!(
+        again.result.expect("有 result")["report"]["changed"],
+        json!(false),
+        "同一个值必须如实报 `changed: false`"
+    );
+    assert_eq!(injected_lengths(&window.get_track_heights())[0], 94.0);
+
+    // ---- ③ dryRun：预览报出将要写的值，状态一位不变 ----
+    let dry = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        304,
+        METHOD_SET_TRACK_HEIGHT,
+        Some(json!({"elementId": "track-0-header", "heightPx": 200, "dryRun": true})),
+    ));
+    assert!(!dry.is_error(), "{dry:?}");
+    let dry_result = dry.result.expect("有 result");
+    assert_eq!(dry_result["preview"]["effect"]["requestedPx"], json!(200));
+    assert_eq!(dry_result["preview"]["effect"]["currentBasePx"], json!(96));
+    assert_eq!(
+        injected_lengths(&window.get_track_heights())[0],
+        94.0,
+        "`dryRun` 之后几何一位不变"
+    );
+    assert_eq!(
+        injected_lengths(&window.get_track_height_override_pxs()),
+        vec![96.0],
+        "`dryRun` 不得改视图态"
+    );
+
+    // ---- ④ 取消覆盖：`heightPx: 0` ⇒ 回默认基准 ----
+    let cleared = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        305,
+        METHOD_SET_TRACK_HEIGHT,
+        Some(json!({"elementId": "track-0-header", "heightPx": 0})),
+    ));
+    assert!(!cleared.is_error(), "{cleared:?}");
+    assert!(
+        injected_strings(&window.get_track_height_override_ids()).is_empty(),
+        "`0` 必须**取消**这条覆盖（与 setter 的契约逐字相同）"
+    );
+    assert_eq!(injected_lengths(&window.get_track_heights())[0], 54.0);
+    assert_eq!(injected_lengths(&window.get_track_ys())[1], 42.0 + 56.0);
+
+    // ---- ⑤ 非法参数用**既有**错误码（D25：不发明新码）----
+    let negative = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        306,
+        METHOD_SET_TRACK_HEIGHT,
+        Some(json!({"elementId": "track-0-header", "heightPx": -1})),
+    ));
+    assert_eq!(
+        negative.code,
+        Some(-32602),
+        "负数是**参数**错误（既有 `INVALID_PARAMS`）: {negative:?}"
+    );
+    let not_a_header = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        307,
+        METHOD_SET_TRACK_HEIGHT,
+        Some(json!({"elementId": "transport-play-button", "heightPx": 96})),
+    ));
+    assert_eq!(
+        not_a_header.code,
+        Some(-32006),
+        "不是轨道头 ⇒ 既有 `ELEMENT_NOT_FOUND`: {not_a_header:?}"
+    );
+    assert!(
+        injected_strings(&window.get_track_height_override_ids()).is_empty(),
+        "两次被拒的调用都不得留下状态"
+    );
+
+    // ---- ⑥ 权限层：`ui/methods` 如实报 `ui:inject` ----
+    let catalogue = plane.plane().methods().expect("ui/methods");
+    let listed = catalogue["methods"].as_array().expect("数组");
+    let entry = listed
+        .iter()
+        .find(|entry| entry["name"] == json!(METHOD_SET_TRACK_HEIGHT))
+        .expect("方法表里必须有它");
+    assert_eq!(entry["requiredScope"], json!("ui:inject"));
+    assert_eq!(entry["dryRunSupported"], json!(true));
+
+    report_line(&format!(
+        "[adr-0004-s1-method] `{METHOD_SET_TRACK_HEIGHT}`: 96px ⇒ 注入矩形高 94.0 / 第 1 行顶沿 138.0 / \
+         控制面树的包头高 94.0（两个观测面）；幂等 changed=false；dryRun 预览 requestedPx=200 且状态不变；\
+         `0` 取消覆盖回 54.0；负值 ⇒ -32602，非轨道头 ⇒ -32006"
+    ));
+}
+
+/// 判据（`ADR-0004` S0/S1 的**接线纪律**）：两条注入路径写进界面的行几何**逐位等于投影**。
+///
+/// ## 判据用的是什么"尺"（这是本判据有牙的关键）
+///
+/// 它拿 **`ViewState`（投影本身）** 当独立基准，而不是拿"另一条注入路径"当基准。
+/// 理由是一次真测得来的：我最初写成"窄注入 == 完整注入"，注入验证（从
+/// `host::apply_row_geometry` 里删掉 `set_clip_ys`）**没有让它变红** —— 因为
+/// `apply_view` 调用的就是 `apply_row_geometry`，两条路一起漏 ⇒ 两边相等。
+/// 那就是一条**空转的判据**。
+///
+/// 现在两条路各自与投影对账：
+///
+/// | 注入路径 | 谁用 | 断言 |
+/// | :--- | :--- | :--- |
+/// | `host::apply_row_geometry`（窄，7 个数组） | 拖拽手势的每一次 move | 窗口上的 7 个数组 == `ViewState` 的对应字段 |
+/// | `host::apply_view`（完整） | 换工程 / 撤销 / 打开工程 | 同上 |
+///
+/// 于是"漏掉任何一个行几何数组"（无论在哪条路里）都会红。
+///
+/// ## 怎么变红（实测）
+///
+/// 从 `apply_row_geometry` 里删掉 `set_clip_ys` / `set_clip_heights` ⇒ 窗口上的
+/// `clip-ys` 停在旧值、投影给了新值 ⇒ 本判据红。
+#[test]
+fn the_row_geometry_writers_carry_the_projections_geometry_bit_for_bit() {
+    let (window, _port, _plane) = assemble_track_height_drag();
+    let project = yeban_model::samples::filled_project();
+    let default_view = ViewState::from_project_with_layout(
+        &project,
+        &yeban_app::host::track_height_layout(&window),
+    )
+    .expect("投影");
+    // 起点（默认几何）：先让窗口处于默认几何，作为"必须真的变过"的对照。
+    yeban_app::host::apply_row_geometry(&window, &default_view);
+    let default_snapshot = row_geometry_snapshot(&window);
+    assert_eq!(
+        default_snapshot,
+        projection_geometry_snapshot(&default_view),
+        "默认几何也必须逐位等于投影"
+    );
+
+    // 造一份**非默认**布局（第 0 轨 137px、乘子 150%）——137 × 150% = 205（夹紧区间内）。
+    assert!(yeban_app::host::set_track_height_override(
+        &window,
+        &default_view.tracks[0].id,
+        137
+    ));
+    assert!(yeban_app::host::set_track_height_percent(&window, 150));
+    let view = ViewState::from_project_with_layout(
+        &project,
+        &yeban_app::host::track_height_layout(&window),
+    )
+    .expect("投影");
+    let oracle = projection_geometry_snapshot(&view);
+    assert_ne!(
+        oracle, default_snapshot,
+        "夹具必须真的画出非默认几何（否则本判据是空转）"
+    );
+
+    // ① 窄注入（拖拽手势那条路）。
+    yeban_app::host::apply_row_geometry(&window, &view);
+    assert_eq!(
+        row_geometry_snapshot(&window),
+        oracle,
+        "窄注入（`apply_row_geometry`）的 7 个数组必须逐位等于投影 —— \
+         漏掉任何一个行几何数组都会在这里红"
+    );
+
+    // ② 完整注入（换工程那条路）：先把窗口推回默认，再完整注入一次。
+    yeban_app::host::apply_row_geometry(&window, &default_view);
+    assert_eq!(row_geometry_snapshot(&window), default_snapshot);
+    yeban_app::host::apply_view(&window, &view, 1920.0, 0.0);
+    assert_eq!(
+        row_geometry_snapshot(&window),
+        oracle,
+        "完整注入（`apply_view`）的 7 个数组必须逐位等于投影"
+    );
+
+    let (lengths, commands) = oracle;
+    report_line(&format!(
+        "[adr-0004-s1-drag] 行几何 ↔ 投影逐位对账: 窄注入与完整注入各自等于投影 \
+         （track-ys/heights {}/{}, clip-ys/heights {}/{}, automation-band-ys/heights {}/{}, \
+         path-commands {}）；第 0 轨 137px × 150% ⇒ 有效 205px",
+        lengths[0].len(),
+        lengths[1].len(),
+        lengths[2].len(),
+        lengths[3].len(),
+        lengths[4].len(),
+        lengths[5].len(),
+        commands.len()
+    ));
+}
+
+/// 判据（`ADR-0004` S0/S1）：**默认外观一位不变** —— 没有人碰过高度时，注入的行几何逐字段
+/// 等于 S0 的字面量，而且拖拽手势的四个状态位全是默认值。
+///
+/// 这条是"像素影响"的可判据那一半（另一half 是渲染帧 sha256 的 A/B，见交付报告）：
+/// 新的 `TouchArea` **不画任何东西**，新的属性与回调**不进像素**，因此默认帧的输入
+/// （`track-ys` / `track-heights` / `clip-ys` / `clip-heights` / 自动化带与折线）
+/// 必须与加手势之前**逐位相同**。
+#[test]
+fn the_default_row_geometry_is_bit_for_bit_the_s0_literals() {
+    let (window, _port, _plane) = assemble_track_height_drag();
+
+    // ① 视图态：没有覆盖、乘子 100、没有进行中的手势。
+    assert!(
+        injected_strings(&window.get_track_height_override_ids()).is_empty(),
+        "默认装配不该有每轨覆盖"
+    );
+    assert!(
+        injected_lengths(&window.get_track_height_override_pxs()).is_empty(),
+        "默认装配不该有每轨覆盖"
+    );
+    assert_eq!(window.get_track_height_percent(), 100);
+    assert!(!window.get_track_height_drag_active());
+    assert_eq!(window.get_track_height_drag_track(), "");
+    assert_eq!(window.get_track_height_drag_start_px(), 0);
+    assert_eq!(window.get_track_height_drag_start_y(), 0.0);
+
+    // ② 行几何：逐字段等于 S0 的字面量（行 0 从 42 起、每行 56 的槽高、矩形高 54）。
+    let ys = injected_lengths(&window.get_track_ys());
+    let heights = injected_lengths(&window.get_track_heights());
+    assert!(ys.len() >= 3, "夹具必须有多条轨道");
+    for (index, y) in ys.iter().enumerate() {
+        assert_eq!(
+            *y,
+            42.0 + 56.0 * index as f32,
+            "第 {index} 行的顶沿必须是 S0 的前缀和（42 + 56 × i）"
+        );
+    }
+    for (index, height) in heights.iter().enumerate() {
+        assert_eq!(*height, 54.0, "第 {index} 行的矩形高必须是 S0 的字面量 54");
+    }
+    // 剪辑与自动化带同源：默认几何下它们的 y 也落在 S0 的前缀和上。
+    let clip_ys = injected_lengths(&window.get_clip_ys());
+    assert!(
+        clip_ys
+            .iter()
+            .all(|y| (*y - 46.0).rem_euclid(56.0).abs() < f32::EPSILON),
+        "默认几何下每个剪辑的顶沿必须落在某一行内（S0：行顶沿 + 4px 内缩）: {clip_ys:?}"
+    );
+
+    report_line(&format!(
+        "[adr-0004-s1-drag] 默认外观: {} 行 ⇒ ys {:?} / heights {:?}（S0 字面量）；\
+         clip-ys {} 项全部落在 S0 行内；手势状态位全为默认",
+        ys.len(),
+        &ys[..ys.len().min(4)],
+        &heights[..heights.len().min(4)],
+        clip_ys.len()
     ));
 }
 

@@ -78,18 +78,28 @@
    同一目标出现**两个以上不同行号**时，这一行是在记录变更而不是主张现状，按构造整行豁免；
    ③ 只说"第 36 行"而不点目标路径的散文**不是本规则认得的引用形态**，永远不是候选。
 
-7. **源码行号引用必须指向它点名的构件**：本表里每一处 `` `源码.rs:NN` `` / `` `界面.slint:NN` ``，
-   若**紧邻**它有一个**以代码片段开头**的括注（`` …`ids.rs:26`（`PPQ=960`）… ``），
-   则该括注里的**第一个**反引号片段就是它点名的构件；被引的那一行里必须出现该构件的
-   至少一个标识符。实测（本条要防的）：本次落规则前，本表里已有 **12 处**这样的引用
-   （**11 个不同的 `path:line`**）指错对象
-   —— 上一次切片手工修掉的三处（`inspect.rs:71` 指无关文档行、`automation.rs:377` 指 `}`、
-   `piano_roll.slint:68-70` 漂到 `77-79`）只是**症状**：判据 6 只绑"本表 → 其它活表"的
-   ID 行号，源码文件的行号**此前一条守卫都没有**，于是同样的腐烂又积累了 11 处。
+7. **源码引用必须点名一个真的存在的构件**（**2026-10-08 改口径**：由"必须落在第 `NN` 行"
+   改成"**按符号**"；改动的原规则、阻塞、授权与红线状态记录在
+   `docs/DEVELOPMENT_LEDGER.md` 的当轮条目里）：本表里每一处 `` `源码.rs:NN` `` /
+   `` `界面.slint:NN` ``，若**紧邻**它有一个**以代码片段开头**的括注
+   （`` …`ids.rs:26`（`PPQ=960`）… ``），则该括注里的**第一个**反引号片段就是它点名的
+   构件；守卫检查**该构件在目标文件里存在**（任意一行），**不再**要求它落在 `NN` 那一行：
+
+   - **符号是判据**：构件被删除或被改名 ⇒ 红（"引用的对象没了"是真腐烂）；
+   - **行号是提示**：符号对、行号漂了（含越过文件末尾）⇒ **不红**，只进 `[ok]` 行的
+     "行号已漂移"计数。
+
+   **为什么改**（旧口径实测的代价）：行号是**位置**，不是**身份**。任何在引用点之前插入
+   代码的切片都会让一批行号静默变假，而修法（按新行号手改文档）与代码改动一一绑定，
+   下一轮还会漂 —— 实测：本次在 `crates/yeban-app/src/host.rs` 里加一条能力之后，
+   3 个锚点（`wire_input` / `Action::Undo` / `on_undo_step`）整体下移，5 条引用立刻变红；
+   而按旧口径"修好"它们只能靠删既有注释来凑零行（净增量最小 +4 行）。改成按符号之后，
+   **抓引用腐烂的能力保留**（删 / 改名仍然红），"代码长了就红"这条噪音消失。
+   旧口径落规则那一刻的读数（12 处错、0 处假红）是历史真话，留在账本里不改。
 
    **为什么只认"紧邻的、以代码开头的括注"**：构件名与行号的绑定必须是**结构**的。
    本仓库试过"把同行散文里的符号名映射到行号"，在活文档上产出 24/27 处假红（见判据 6）；
-   而紧邻括注里的第一个代码片段是作者**主动**给出的命名。拿它去核对被引行，落这条规则时
+   而紧邻括注里的第一个代码片段是作者**主动**给出的命名。拿它去目标文件里核对，落这条规则时
    实测：120 处引用里核对 33 处、其中 12 处为真错、**0 处假红**；其余 87 处按下列边界跳过。
    这 4 个数是**落规则那一刻**的读数，不是常数 —— `[ok]` 行每次打印**当前**的
    "已核对 / 跳过"两数（文档一改就会动）。
@@ -570,15 +580,20 @@ def named_construct(text: str, start: int, end: int) -> str | None:
     return None
 
 
-def source_line_problems(path: Path) -> tuple[list[str], int, int]:
-    """判据 7：射程内**每一张**活表的源码行号引用必须指向它点名的构件。
+def source_line_problems(path: Path) -> tuple[list[str], int, int, int]:
+    """判据 7：射程内**每一张**活表的源码引用必须点名一个**真的存在**的构件。
 
-    返回 `(问题列表, 已核对处数, 按构造跳过处数)`。跳过的一律**不假装通过**：路径不能
-    唯一定位、旁边没有代码括注、括注抽不出标识符 —— 三类都计入跳过并在 `[ok]` 行报数。
+    返回 `(问题列表, 已核对处数, 按构造跳过处数, 行号已漂移处数)`。跳过的一律**不假装
+    通过**：路径不能唯一定位、旁边没有代码括注、括注抽不出标识符 —— 三类都计入跳过并在
+    `[ok]` 行报数。
+
+    **符号是判据、行号是提示**（2026-10-08 改口径，理由见模块头第 7 条）：构件在目标文件里
+    **任意一行**存在即通过；行号不参与成败判定，只统计漂移（漂了**不红**）。
     """
     problems: list[str] = []
     checked = 0
     skipped = 0
+    hints = 0
     text = path.read_text(encoding="utf-8")
     citing = path.relative_to(REPO)
     for matched in SOURCE_CITATION_RE.finditer(text):
@@ -614,22 +629,27 @@ def source_line_problems(path: Path) -> tuple[list[str], int, int]:
         source = target.read_text(encoding="utf-8", errors="ignore").splitlines()
         cited = cited_line_numbers(spec)
         named = " / ".join(f"`{symbol}`" for symbol in symbols)
-        if not cited or max(cited) > len(source):
+
+        def mentioned(symbol: str, line: str) -> bool:
+            """该行里是否出现这个标识符（按**词边界**，免得 `undo` 命中 `undoable`）。"""
+            return re.search(r"\b" + re.escape(symbol) + r"\b", line) is not None
+
+        # **符号是判据**：构件必须在文件里存在（哪一行都行）。
+        present = {
+            index
+            for index, line in enumerate(source, 1)
+            if any(mentioned(symbol, line) for symbol in symbols)
+        }
+        if not present:
             problems.append(
-                f"{citing}:{lineno} 的源码行引用 `{path}:{spec}` 越过文件末尾"
-                f"（`{path}` 只有 {len(source)} 行）"
+                f"{citing}:{lineno} 的源码引用 `{path}:{spec}` 点名 {named}，"
+                f"但 `{path}` 里没有它（构件被删除或被改名）"
             )
             continue
-        if not any(
-            1 <= line <= len(source)
-            and any(re.search(r"\b" + re.escape(symbol) + r"\b", source[line - 1]) for symbol in symbols)
-            for line in cited
-        ):
-            problems.append(
-                f"{citing}:{lineno} 的源码行引用 `{path}:{spec}` 点名 {named}，"
-                "但被引行里没有它（构件应指到它所在的那一行）"
-            )
-    return problems, checked, skipped
+        # **行号是提示**：符号对而行号漂了（含越界）⇒ 只计数，不红。
+        if not cited or not (cited & present):
+            hints += 1
+    return problems, checked, skipped, hints
 
 
 def main() -> int:
@@ -816,9 +836,9 @@ def main() -> int:
         if not citing_doc.is_file():
             problems.append(f"缺少活表 {citing_doc.relative_to(REPO)}（判据 7 无法复核其源码行引用）")
             continue
-        doc_problems, doc_checked, doc_skipped = source_line_problems(citing_doc)
+        doc_problems, doc_checked, doc_skipped, doc_hints = source_line_problems(citing_doc)
         source_problems.extend(doc_problems)
-        source_per_doc.append((citing_doc, doc_checked, doc_skipped))
+        source_per_doc.append((citing_doc, doc_checked, doc_skipped, doc_hints))
     problems.extend(source_problems)
 
     if problems:
@@ -827,18 +847,21 @@ def main() -> int:
             print(f"  - {item}", file=sys.stderr)
         return 1
 
-    source_checked = sum(checked for _, checked, _ in source_per_doc)
-    source_skipped = sum(skipped for _, _, skipped in source_per_doc)
+    source_checked = sum(checked for _, checked, _, _ in source_per_doc)
+    source_skipped = sum(skipped for _, _, skipped, _ in source_per_doc)
+    source_hints = sum(hints for _, _, _, hints in source_per_doc)
     source_breakdown = " / ".join(
-        f"{doc.name} 核对 {checked} 跳过 {skipped}" for doc, checked, skipped in source_per_doc
+        f"{doc.name} 核对 {checked} 跳过 {skipped} 行号漂移 {hints}"
+        for doc, checked, skipped, hints in source_per_doc
     )
     print(
         f"[ok] feature-alignment.md: {len(rows)} 行功能 / "
         f"{len(expected_tools)} 个 MCP 工具 / {len(expected_methods)} 条 ui 方法全部点名，"
         + "，".join(f"{category} {derived[category]}" for category in CATEGORIES)
         + f"；{citations_checked} 处行号交叉引用全部落在目标行"
-        + f"；{source_checked} 处源码行引用指向点名构件"
+        + f"；{source_checked} 处源码引用点名了**存在**的构件"
         + f"（另有 {source_skipped} 处路径歧义 / 未点名构件，按构造跳过、未假装通过；"
+        + f"{source_hints} 处行号已漂移 —— 按新口径只提示、不判红；"
         + f"分表：{source_breakdown}）"
     )
     return 0

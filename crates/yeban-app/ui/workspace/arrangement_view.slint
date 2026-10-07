@@ -90,6 +90,24 @@ export component ArrangementView inherits Rectangle {
     accessible-id: "workspace-arrangement-canvas";
     accessible-label: "Arrangement 线性编曲时间轴";
 
+    // ---------------------------------------------------------------- 轨道高度拖拽手势
+    //
+    // `ADR-0004` S1 的**纵向入口**（该切片落地时，入口被明确留给后续切片）。
+    // 三条回调只**报告事件**，界面**不做任何算术**：
+    //
+    // - 行几何的唯一来源仍是投影注入的 `track-ys` / `track-heights`（S0）；
+    // - 有效行高的夹紧仍只发生在投影（`bridge::effective_track_height_px`，Q2-B）；
+    // - 视图态的**唯一** setter 是 `host::set_track_height_override`（不建第二条高度状态路径）。
+    //
+    // 宿主（`src/host.rs` 的 `wire_track_height_drag`）把指针的纵向位移换算成**基准像素**，
+    // 经那个 setter 写进视图态并重投影 —— 界面只报"按下 / 拖动 / 收尾"三件事。
+    /// 按下：`(轨道下标, 指针在轨道头坐标系里的 y)`。
+    callback track-height-grab(int, length);
+    /// 拖动：同一个下标、同一个坐标系里的当前 y（位移由宿主算）。
+    callback track-height-drag(int, length);
+    /// 收尾：松开 / 指针离开窗口（上游把离开导出成 `PointerEventKind.cancel`）/ 打断。
+    callback track-height-release(int);
+
     // ---------------------------------------------------------------- 章节卡片层 (§4.3)
     for section_name[section_index] in root.sections : Rectangle {
         x: 168px + root.section-positions[section_index];
@@ -180,6 +198,32 @@ export component ArrangementView inherits Rectangle {
         accessible-item-count: root.tracks.length;
         accessible-item-selectable: true;
         accessible-item-selected: false;
+
+        // 轨道头拖拽面（`ADR-0004` S1 的纵向入口）。
+        //
+        // - **零视觉**：`TouchArea` 不画任何东西 ⇒ 默认帧一位不变（没有覆盖、乘子 100 时
+        //   注入的行几何也一位不变）；
+        // - **零算术**：它只把 `mouse-y` 原样报给宿主，位移与像素换算都在宿主侧；
+        // - 它是包头矩形的**第一个**子元素（最底层）：静音 / 独奏两个 `TouchArea` 排在它
+        //   之后，Slint 的命中测试自前往后 ⇒ 那两个按钮照旧先拿到点击，拖拽面只接管
+        //   剩下的区域（这才是"轨道头可以按"与"按钮还能按"同时成立的原因）。
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.track-height-grab(track_index, self.mouse-y);
+                } else if event.kind == PointerEventKind.move {
+                    root.track-height-drag(track_index, self.mouse-y);
+                } else {
+                    // `up` 与 `cancel` 都是收尾。`cancel` 由上游在"指针离开窗口 /
+                    // 控件被禁用"时导出（`i-slint-core` 的 `input_items.rs`：
+                    // `MouseEvent::Exit` ⇒ `PointerEventKind::Cancel`）⇒ 拖到窗口外松手
+                    // 也走这条路，不会留下粘住的拖拽态。
+                    root.track-height-release(track_index);
+                }
+            }
+        }
 
         UiMediumText {
             x: Tokens.space-4;

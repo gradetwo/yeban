@@ -92,16 +92,22 @@ pub enum Operation {
     ForceSave,
     /// 重载音频引擎（`Administrative`）。
     ReloadEngine,
+    /// 设置一条轨道的行高（`Interactive`）—— `ADR-0004` S1 的纵向入口在控制面上的孪生。
+    ///
+    /// 它落在 `Interactive` 层（与事件注入同层）而不是 `Administrative`：改的是**视图态**
+    /// （`track-height-*` 属性，零 schema、重启即失），不动工程、不落盘、不过引擎。
+    SetTrackHeight,
 }
 
 impl Operation {
     /// 全部操作，供"三级 × 全部操作"的穷举判据使用。
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::ReadTree,
         Self::ReadProperty,
         Self::CaptureScreenshot,
         Self::DispatchPointer,
         Self::DispatchKey,
+        Self::SetTrackHeight,
         Self::SwitchMainView,
         Self::ForceSave,
         Self::ReloadEngine,
@@ -112,7 +118,9 @@ impl Operation {
     pub const fn required_permission(self) -> Permission {
         match self {
             Self::ReadTree | Self::ReadProperty | Self::CaptureScreenshot => Permission::ReadOnly,
-            Self::DispatchPointer | Self::DispatchKey => Permission::Interactive,
+            Self::DispatchPointer | Self::DispatchKey | Self::SetTrackHeight => {
+                Permission::Interactive
+            }
             Self::SwitchMainView | Self::ForceSave | Self::ReloadEngine => {
                 Permission::Administrative
             }
@@ -128,6 +136,7 @@ impl Operation {
             Self::CaptureScreenshot => "capture_screenshot",
             Self::DispatchPointer => "dispatch_pointer",
             Self::DispatchKey => "dispatch_key",
+            Self::SetTrackHeight => "set_track_height",
             Self::SwitchMainView => "switch_main_view",
             Self::ForceSave => "force_save",
             Self::ReloadEngine => "reload_engine",
@@ -369,6 +378,27 @@ pub trait UiTestPort {
     /// 重载音频引擎（`Administrative`）。
     fn reload_engine_impl(&mut self) -> Result<(), PortError>;
 
+    /// 设置一条轨道的行高（`Interactive`；`element_id` 是 §12.2 的 `track-{i}-header`，
+    /// `height_px == 0` 表示取消这条覆盖）。
+    ///
+    /// ## 为什么这一条**有默认实现**（其余 `*_impl` 都没有）
+    ///
+    /// 行高是 `yeban-app` 的**视图态**（`ADR-0004` S1 的 `track-height-*` 属性）。本 crate 的
+    /// `LivePort<T>` 是**泛型**的（`T: ComponentHandle`），既不认识那些属性、也**不该**认识 ——
+    /// 依赖方向不允许本 crate 依赖 `yeban-app`（红线 3 的精神：底层不认识上层）。
+    ///
+    /// 默认体因此**如实报"没有载体"**（`PortError::Rejected`）：服务层把它映射成既有的
+    /// `-32005 NOT_IMPLEMENTED`（**不新增 JSON-RPC 错误码**，D25），而不是假装成功。
+    /// 真实载体是 `yeban-app/src/live_surface.rs` 的 `LiveAdminSurface`（它覆写的是
+    /// [`crate::UiSurface`] 的 `set_track_height`，并在这里先过一遍权限闸门）。
+    fn set_track_height_impl(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
+        let _ = (element_id, height_px);
+        Err(PortError::Rejected {
+            message: "这个执行面没有行高档位（`UiTestPort::set_track_height_impl` 用的是默认实现）"
+                .to_owned(),
+        })
+    }
+
     /// 就地做一次权限判定（供实现侧在更复杂的动作前复用同一套规则）。
     fn authorize_here(&self, operation: Operation) -> Result<(), PortError> {
         authorize(self.permission(), operation)
@@ -420,6 +450,12 @@ pub trait UiTestPort {
     fn reload_engine(&mut self) -> Result<(), PortError> {
         self.authorize_here(Operation::ReloadEngine)?;
         self.reload_engine_impl()
+    }
+
+    /// 设置一条轨道的行高（`Interactive`）。闸门不可绕过：先判权限，再落到实现。
+    fn set_track_height(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
+        self.authorize_here(Operation::SetTrackHeight)?;
+        self.set_track_height_impl(element_id, height_px)
     }
 }
 
@@ -507,6 +543,14 @@ mod tests {
             self.calls.push("reload_engine");
             Ok(())
         }
+        fn set_track_height_impl(
+            &mut self,
+            _element_id: &str,
+            _height_px: u32,
+        ) -> Result<(), PortError> {
+            self.calls.push("set_track_height");
+            Ok(())
+        }
     }
 
     /// 判据 1: 默认权限必须是 `ReadOnly`（§12.3 原文"默认只读层"），且操作→权限表逐条正确。
@@ -523,6 +567,7 @@ mod tests {
             (Operation::CaptureScreenshot, Permission::ReadOnly),
             (Operation::DispatchPointer, Permission::Interactive),
             (Operation::DispatchKey, Permission::Interactive),
+            (Operation::SetTrackHeight, Permission::Interactive),
             (Operation::SwitchMainView, Permission::Administrative),
             (Operation::ForceSave, Permission::Administrative),
             (Operation::ReloadEngine, Permission::Administrative),
@@ -576,6 +621,14 @@ mod tests {
                 actual: Permission::ReadOnly,
             })
         );
+        assert_eq!(
+            port.set_track_height("track-0-header", 96),
+            Err(PortError::PermissionDenied {
+                operation: Operation::SetTrackHeight,
+                required: Permission::Interactive,
+                actual: Permission::ReadOnly,
+            })
+        );
         assert!(port.switch_main_view("arrangement").is_err());
         assert!(port.force_save().is_err());
         assert!(port.reload_engine().is_err());
@@ -606,9 +659,17 @@ mod tests {
             .expect("Interactive 应当允许指针释放");
         port.dispatch_key_press(KeyCode::ShiftEnter)
             .expect("Interactive 应当允许键盘注入");
+        port.set_track_height("track-0-header", 96)
+            .expect("Interactive 应当允许设置行高（与事件注入同层）");
         assert_eq!(
             port.calls,
-            ["pointer_down", "pointer_move", "pointer_up", "key_press"]
+            [
+                "pointer_down",
+                "pointer_move",
+                "pointer_up",
+                "key_press",
+                "set_track_height"
+            ]
         );
 
         assert_eq!(
@@ -623,7 +684,7 @@ mod tests {
         assert!(port.reload_engine().is_err());
     }
 
-    /// 判据 4: `Administrative` 放行全部 8 个操作 —— 穷举，不抽样。
+    /// 判据 4: `Administrative` 放行全部 9 个操作 —— 穷举，不抽样。
     #[test]
     fn administrative_allows_every_operation() {
         for operation in Operation::ALL {
@@ -643,7 +704,7 @@ mod tests {
         );
     }
 
-    /// 判据 5: `authorize` 是纯函数 —— 三级 × 8 操作共 24 组判定必须与 `rank` 比较完全一致，
+    /// 判据 5: `authorize` 是纯函数 —— 三级 × 9 操作共 27 组判定必须与 `rank` 比较完全一致，
     /// 且重复调用结果恒同（无状态、无环境依赖）。
     #[test]
     fn authorize_is_a_pure_total_function() {

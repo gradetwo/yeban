@@ -325,6 +325,33 @@ export component MainWindow inherits Window {
     in-out property <int> track-height-percent: 100;
     in-out property <[string]> track-height-override-ids: [];
     in-out property <[length]> track-height-override-pxs: [];
+    // 轨道身份的 26 字符 `EntityId` 规范文本，与 `track-names` / `track-ys` **同索引集**。
+    // 它是**投影输出**（`ViewState::track_ids`），存在的理由只有一个：每轨高度覆盖按
+    // **身份**键控，而拖拽手势落在轨道头上时只能报告**下标** ⇒ 宿主需要"下标 → 身份"
+    // 这一格。没有它，宿主只能拿一个会在换工程后过期的快照去猜身份。
+    in property <[string]> track-ids: [];
+    // =====================================================================
+    // 轨道高度**拖拽手势的进行态**（ADR-0004 S1 的纵向入口）：宿主拥有、界面只报事件。
+    // =====================================================================
+    // 这四个是宿主的手势状态机（不是第二份高度权威 —— 高度仍只住在上面那三个属性里，
+    // 写入口仍只有 `host::set_track_height_override` 一处）。它们住在窗口上的理由与
+    // `roll-scroll-x` 相同：宿主在两个回调之间要记住"这一拖是从哪一行的哪一个高度开始的"，
+    // 而 `Escape`（`Action::Cancel`）也必须能读到同一份状态去收尾。
+    //
+    // `track-height-drag-active` 是"手势是否还没结束"的唯一读数：松开 / 离开窗口 /
+    // `Escape` 三条收尾路径都必须把它写回 `false`（判据钉住"不留粘住的拖拽态"）。
+    in-out property <bool> track-height-drag-active: false;
+    in-out property <string> track-height-drag-track: "";
+    in-out property <int> track-height-drag-start-px: 0;
+    in-out property <float> track-height-drag-start-y: 0.0;
+    // `ADR-0004` S1 的纵向拖拽手势（三个回调都由 `ui/workspace/arrangement_view.slint`
+    // 的轨道头 `TouchArea` 发出；宿主侧唯一实现是 `host::wire_track_height_drag`）。
+    /// 按下：`(轨道下标, 指针在轨道头坐标系里的 y)`。
+    callback track-height-grab(int, length);
+    /// 拖动：同一个下标、同一个坐标系里的当前 y（位移由宿主算）。
+    callback track-height-drag(int, length);
+    /// 收尾：松开 / 指针离开窗口（`PointerEventKind.cancel`）/ 打断。
+    callback track-height-release(int);
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
@@ -526,6 +553,17 @@ export component MainWindow inherits Window {
                     tracks: root.track-names;
                     track-ys: root.track-ys;
                     track-heights: root.track-heights;
+                    // `ADR-0004` S1 的纵向入口：轨道头 `TouchArea` 的事件原样转给宿主
+                    // （界面不做位移 / 像素 / 夹紧中的任何一件）。
+                    track-height-grab(track_index, pointer_y) => {
+                        root.track-height-grab(track_index, pointer_y);
+                    }
+                    track-height-drag(track_index, pointer_y) => {
+                        root.track-height-drag(track_index, pointer_y);
+                    }
+                    track-height-release(track_index) => {
+                        root.track-height-release(track_index);
+                    }
                     track-volumes: root.track-volumes;
                     track-mutes: root.track-mutes;
                     track-solos: root.track-solos;

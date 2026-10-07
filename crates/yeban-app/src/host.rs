@@ -129,10 +129,13 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
         grid.map_or(0, |grid| i32::try_from(grid.ticks_per_bar()).unwrap_or(0)),
     );
     ui.set_track_names(strings(&view.track_names()));
-    // 编排行几何：`y` / `height` 由投影的**前缀和**算一次（`ADR-0004` S0），
-    // `.slint` 直接画注入值、不做 `42px + 56px * i`。
-    ui.set_track_ys(lengths(&view.track_ys()));
-    ui.set_track_heights(lengths(&view.track_heights()));
+    // 轨道**身份**数组：拖拽手势落在轨道头上（界面只能报下标），而每轨高度覆盖按
+    // **身份**键控 ⇒ 宿主需要这一格"下标 → 身份"的查表。它与下面两行的行几何来自同一次
+    // 注入，因此换工程之后两者一起更新，不会有一份过期的身份副本。
+    ui.set_track_ids(strings(&view.track_ids()));
+    // 编排行几何（`y` / `height` 与它们的全部消费者）：**唯一**的一份列表在
+    // `apply_row_geometry` 里 —— 拖拽手势的每一次 move 也调它，两条路因此不可能漂移。
+    apply_row_geometry(ui, view);
     ui.set_track_volumes(strings(&view.track_volumes()));
     ui.set_track_volume_fractions(lengths(&view.track_volume_fractions()));
     ui.set_track_pans(strings(&view.track_pans()));
@@ -144,9 +147,6 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_clip_labels(strings(&view.clip_labels()));
     ui.set_clip_positions(lengths(&view.clip_positions()));
     ui.set_clip_widths(lengths(&view.clip_widths()));
-    // 剪辑的行几何同源：由所在行的 `RowGeometry` 给出（旧版 `.slint` 自己乘 `clip-lanes`）。
-    ui.set_clip_ys(lengths(&view.clip_ys()));
-    ui.set_clip_heights(lengths(&view.clip_heights()));
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
@@ -191,14 +191,47 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_automation_lane_track_indexes(integers(&view.automation_lane_track_indexes()));
     ui.set_automation_lane_labels(strings(&view.automation_lane_labels()));
     ui.set_automation_lane_axis_labels(strings(&view.automation_lane_axis_labels()));
-    ui.set_automation_lane_band_ys(lengths(&view.automation_lane_band_ys()));
-    ui.set_automation_lane_band_heights(lengths(&view.automation_lane_band_heights()));
     ui.set_automation_lane_read_enabled(booleans(&view.automation_lane_read_enabled()));
     ui.set_automation_lane_badges(strings(&view.automation_lane_badges()));
-    ui.set_automation_path_commands(strings(&view.automation_path_commands()));
     apply_master(ui, view);
     // 电平：先重置成"与当前工程等长的静音"，再由 `apply_meters` 填真实读数（见模块文档）。
     apply_meters(ui, &silent_snapshot(view));
+}
+
+/// **行几何**（`ADR-0004` S0/S1）的全部注入数组 —— [`apply_view`] 的**子集**，
+/// 而且列表**只有这一份**：[`apply_view`] 自己调用的就是这个函数。
+///
+/// ## 为什么需要一个子集（它不是"第二个注入点"）
+///
+/// 7 个数组只在这里列出来，`apply_view` 不再各写一遍 ⇒ 不存在"两份必须一致的列表"。
+/// 它单独存在的理由是**指针抓取**，实测换来的：
+///
+/// - [`apply_view`] 会把 repeater 的**模型**（`track-names` / `clip-ulids` /
+///   `automation-lane-target-keys`）换成**新的** `ModelRc`，Slint 因此**重建**那些条目
+///   —— 包括正在被拖拽的那个轨道头 `TouchArea`。条目一被重建，指针抓取就没了：
+///   实测连发第二次 `ui/dispatch_pointer_move` 时 `.slint` 收不到事件，行高停在第 1 个像素；
+/// - 本函数只写条目**内部**用到的属性，属性变化只触发布局、不重建条目 ⇒ 抓取活到手势结束。
+///
+/// 于是分工是：**高频的手势**（每移动 1 像素一次）走本函数；**完整**重投影（换工程 /
+/// 撤销 / 打开工程）走 [`apply_view`]。两条路给出的几何由判据
+/// `the_row_geometry_subset_agrees_with_the_full_injection` 逐位对账（把新的行几何派生物
+/// 加进 `apply_view` 却忘记加到这里时，那条判据会红）。
+///
+/// 7 个数组就是行几何的**全部**消费者：包头 / 车道（`track-ys` / `track-heights`）、
+/// 剪辑（`clip-ys` / `clip-heights`）、自动化带（`automation-lane-band-ys` /
+/// `-band-heights`）与自动化折线（`automation-path-commands` —— 顶点是逐像素的逻辑坐标，
+/// 行高一变它就得重算）。
+pub fn apply_row_geometry(ui: &MainWindow, view: &ViewState) {
+    // `.slint` 直接画注入值、不做 `42px + 56px * i`（`ADR-0004` S0 的前缀和）。
+    ui.set_track_ys(lengths(&view.track_ys()));
+    ui.set_track_heights(lengths(&view.track_heights()));
+    // 剪辑的行几何同源：由所在行的 `RowGeometry` 给出（旧版 `.slint` 自己乘 `clip-lanes`）。
+    ui.set_clip_ys(lengths(&view.clip_ys()));
+    ui.set_clip_heights(lengths(&view.clip_heights()));
+    // 自动化带与折线：带高 = (行槽高 − 2 × 内缩) / 泳道数，顶点 y 也出自同一份行几何。
+    ui.set_automation_lane_band_ys(lengths(&view.automation_lane_band_ys()));
+    ui.set_automation_lane_band_heights(lengths(&view.automation_lane_band_heights()));
+    ui.set_automation_path_commands(strings(&view.automation_path_commands()));
 }
 
 /// 轨道高度的**会话/视图态**读入口（`ADR-0004` S1 / Q4-A）—— **唯一**的一处
@@ -280,6 +313,249 @@ pub fn set_track_height_percent(ui: &MainWindow, percent: u32) -> bool {
         return false;
     }
     write_track_height_layout(ui, &layout);
+    true
+}
+
+/// 拖拽手势的**像素换算**（纯函数，可判据）：把"从按下点开始的指针纵向位移"换算成这一轨的
+/// **基准**行高（整数逻辑像素）。
+///
+/// ## 三条口径（每条都可被注入打红）
+///
+/// 1. **向上拖 = 变高**：`delta_px = 按下时的 y − 当前的 y`（Slint 的 y 轴向下），
+///    因此 `delta_px > 0` 表示"把这一行拖高"；
+/// 2. **乘子的逆**：视图态里住的是**基准**像素，而用户在屏幕上看到的是**有效**像素
+///    （`有效 = clamp(基准 × 百分比 / 100)`，`ADR-0004` Q2-B / Q1-C）⇒ 基准增量取
+///    `位移 × 100 / 百分比`，这样"拖 n 像素，画面就长 n 像素"在**任何**乘子下都成立。
+///    本函数**不夹上界**：夹紧仍只在 [`crate::bridge::effective_track_height_px`] 里发生
+///    一次（边界只有一处）。`percent == 0` 是"缩到最小"的退化设置 —— 那时乘子不可反演
+///    （任何基准都映到 `MIN_TRACK_HEIGHT_PX`，手势在画面上本来就看不见），因此按
+///    "当作 100"处理，而**不是**除以 0；
+/// 3. **整数**：结果四舍五入到整数像素（与 `[length] → 基准像素` 的读取口径一致，
+///    `ADR-0004` D28）。下界取 `1` 而**不是** `0`：[`TrackHeightLayout::set_track_px`]
+///    把 `0` 当作"删除这条覆盖"（`ADR-0004` Q2 的退化值处置）—— 手势**不借用**那个语义，
+///    因此它永远不会把一次拖拽变成"这条轨回到默认高"。真正的行高下界仍由投影给出
+///    （[`crate::bridge::MIN_TRACK_HEIGHT_PX`]）。
+#[must_use]
+pub fn dragged_track_base_px(start_px: u32, delta_px: f32, percent: u32) -> u32 {
+    #[allow(clippy::cast_precision_loss)] // ≤ u32：Slint 的 `length` 与它同为 f32
+    let start = start_px as f32;
+    let scaled = if percent == 0 {
+        delta_px
+    } else {
+        #[allow(clippy::cast_precision_loss)]
+        let percent = percent as f32;
+        delta_px * 100.0 / percent
+    };
+    let target = (start + scaled).round();
+    if !target.is_finite() {
+        // 非有限位移（NaN / ±∞）**不**改写这一轨的高度：原地返回合法的起点值。
+        return start_px.max(1);
+    }
+    // `f32 → u32` 的 `as` 转换在 Rust 里**饱和**（1.45 起），NaN 已在上面排除。
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let px = target.max(1.0) as u32;
+    px.max(1)
+}
+
+/// 第 `index` 条轨道的**身份**（[`crate::bridge::TrackView::id`]，26 字符 `EntityId` 文本）。
+///
+/// 身份从**注入的** `track-ids` 读（与行几何同一次注入），因此换工程之后不会拿旧身份
+/// 去改新工程。下标越界 / 身份为空 ⇒ `None`（调用方什么都不做，而不是猜第一条轨道）。
+fn track_id_at(ui: &MainWindow, index: i32) -> Option<String> {
+    let index = usize::try_from(index).ok()?;
+    read_strings(&ui.get_track_ids())
+        .into_iter()
+        .nth(index)
+        .filter(|id| !id.is_empty())
+}
+
+/// 行高视图态变了之后的**重投影**（**唯一**一处，拖拽的每一次 move 与 `Escape` 的收尾都用它）。
+///
+/// 与 `wire_roll_edit` 同一手法（那里是"工程从端口来、视图态从窗口读回"）：
+/// [`UndoPort::try_project`] 给出此刻**权威**的工程，[`track_height_layout`] 给出视图态，
+/// 于是"重投影"不会把刚设好的行高清零，也不会拿一个装配期的快照去画换过工程之后的界面。
+///
+/// 端口此刻没有活跃工程（控制面关掉了工程）⇒ **什么都不做**：视图态已经写进去了，
+/// 下一次重投影会带上它 —— 不 panic、也不编一帧。
+/// 行高视图态变了之后的**重投影**（**唯一**一处，拖拽的每一次 move 与 `Escape` 的收尾都用它）。
+///
+/// 与 `wire_roll_edit` 同一手法（那里是"工程从端口来、视图态从窗口读回"）：
+/// [`UndoPort::try_project`] 给出此刻**权威**的工程，[`track_height_layout`] 给出视图态，
+/// 于是"重投影"不会把刚设好的行高清零，也不会拿一个装配期的快照去画换过工程之后的界面。
+///
+/// 写的是 [`apply_row_geometry`]（**不是** `apply_view`）：拖动是每像素一次的高频写入，
+/// 而完整注入会重建 repeater 条目、把正在拖拽的那个 `TouchArea` 连同指针抓取一起丢掉
+/// （实测：第二次 `ui/dispatch_pointer_move` 到不了界面）。两者的几何由判据逐位对账。
+///
+/// 端口此刻没有活跃工程（控制面关掉了工程）⇒ **什么都不做**：视图态已经写进去了，
+/// 下一次重投影会带上它 —— 不 panic、也不编一帧。
+fn reproject_track_heights(ui: &MainWindow, port: &UndoPort) {
+    let Some(project) = port.try_project() else {
+        return;
+    };
+    let layout = track_height_layout(ui);
+    match ViewState::from_project_with_layout(&project, &layout) {
+        Ok(view) => apply_row_geometry(ui, &view),
+        Err(error) => {
+            // 投影失败**出声**：视图态在内存里已经变了，但这一帧画不出来。
+            eprintln!("[yeban-app] 轨道高度重投影失败: {error}");
+        }
+    }
+}
+
+/// **轨道高度拖拽手势的宿主侧接线**（`ADR-0004` S1 的纵向入口，唯一实现）。
+///
+/// ## 数据流（三条回调，全部落在既有 setter 上）
+///
+/// ```text
+/// arrangement_view.slint 的轨道头 TouchArea
+///   --track-height-grab(index, mouse-y)----> 记下"这一拖从哪一行、哪个基准高、哪个 y 开始"
+///   --track-height-drag(index, mouse-y)----> dragged_track_base_px(基准, 位移, 乘子)
+///                                              └─ host::set_track_height_override（唯一 setter）
+///                                                   └─ 重投影 → apply_view → track-ys / track-heights
+///   --track-height-release(index)----------> 手势状态清零（= 收尾）
+/// ```
+///
+/// ## 三条收尾路径（一条都不能少）
+///
+/// | 路径 | 谁发出 | 语义 |
+/// | :--- | :--- | :--- |
+/// | 松手 | `.slint` 的 `PointerEventKind.up` | 这一拖算数 |
+/// | 指针离开窗口 / 控件被禁用 | 上游导出的 `PointerEventKind.cancel` | 这一拖算数（最后位置） |
+/// | `Escape` | `Action::Cancel` → [`cancel_track_height_drag`] | **取消**这一拖（写回起点高度） |
+///
+/// 三条都汇到 [`end_track_height_drag`]：**手势状态在那一处清零**，因此不存在"拖到一半
+/// 松在窗口外 ⇒ 下一次移动继续改高度"这种粘住的状态（判据
+/// `a_stray_pointer_move_without_a_grab_never_touches_the_row_geometry` 钉住这一点）。
+///
+/// 本函数只做接线，不做像素算术（算术在 [`dragged_track_base_px`] 里，可单独判据）。
+pub fn wire_track_height_drag(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_track_height_grab({
+        let weak = weak.clone();
+        move |index, pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            begin_track_height_drag(&ui, index, pointer_y);
+        }
+    });
+    ui.on_track_height_drag({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index, pointer_y| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some((track_id, px)) = track_height_drag_target_px(&ui, index, pointer_y) else {
+                // 没有进行中的手势 / 下标不是开始那一行 ⇒ **什么都不做**。
+                // 这是"粘住的拖拽态"的第一道防线：一个孤立的 move 永远改不动几何。
+                return;
+            };
+            if !set_track_height_override(&ui, &track_id, px) {
+                // 同一个值（例如指针在同一像素格内抖动）⇒ 不必重投影。
+                return;
+            }
+            reproject_track_heights(&ui, &port);
+        }
+    });
+    ui.on_track_height_release({
+        let weak = weak.clone();
+        move |_index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 松手 / 离开窗口都是"这一拖算数"：值已经在视图态里，这里只收尾。
+            end_track_height_drag(&ui, false);
+        }
+    });
+}
+
+/// 开始一次拖拽：记下这一拖的**行身份 / 起点基准高 / 起点指针 y**。
+///
+/// 已经有一次手势在手时**重新开始**（而不是叠加）：新的一次按下覆盖旧状态，
+/// 因此"上一次没收尾"最多影响这一次拖拽，不会累积成一个改不掉的偏移。
+fn begin_track_height_drag(ui: &MainWindow, index: i32, pointer_y: f32) {
+    let Some(track_id) = track_id_at(ui, index) else {
+        return;
+    };
+    // 起点基准高 = **当前**布局里这一轨的基准（有覆盖就用覆盖）—— 于是"再拖一次"
+    // 从用户看到的高度继续，而不是从默认 56 重新开始。
+    let start_px = track_height_layout(ui).base_px(&track_id);
+    ui.set_track_height_drag_track(track_id.into());
+    ui.set_track_height_drag_start_px(i32::try_from(start_px).unwrap_or(i32::MAX));
+    ui.set_track_height_drag_start_y(pointer_y);
+    // `active` 最后写：读者要么看到"还没开始"，要么看到一份**完整**的起点状态。
+    ui.set_track_height_drag_active(true);
+}
+
+/// 一次 move 的目标基准像素（`None` = 这个 move 不属于当前手势 ⇒ 调用方什么都不做）。
+fn track_height_drag_target_px(
+    ui: &MainWindow,
+    index: i32,
+    pointer_y: f32,
+) -> Option<(String, u32)> {
+    if !ui.get_track_height_drag_active() {
+        return None;
+    }
+    let track_id = ui.get_track_height_drag_track().to_string();
+    // 手势只作用于**按下那一行**：另一个下标发来的 move（多指 / 事件串扰）一律忽略。
+    if track_id_at(ui, index).as_deref() != Some(track_id.as_str()) {
+        return None;
+    }
+    let delta_px = ui.get_track_height_drag_start_y() - pointer_y;
+    let start_px = u32::try_from(ui.get_track_height_drag_start_px()).unwrap_or(0);
+    let percent = u32::try_from(ui.get_track_height_percent()).unwrap_or(0);
+    Some((track_id, dragged_track_base_px(start_px, delta_px, percent)))
+}
+
+/// **一次拖拽手势的收尾**（松手 / 指针离开窗口 / `Escape` 三条路径的唯一落点）。
+///
+/// `revert == true` 时把基准高写回**按下时**的值 —— 那是 `Escape` 的语义（取消这一拖）；
+/// `revert == false` 时保留拖出来的值（松手 / 离开窗口）。
+///
+/// 无论哪条路径，四个手势状态位**一律清零**，返回 `true` 表示"确实有手势在手、
+/// 已经收尾"。没有手势在手时返回 `false` 且一位不动 —— 调用方（`Action::Cancel`）
+/// 因此可以如实说"这一键与 DAW 无关"（`Escape` 在别的语义下照旧放行）。
+///
+/// ## 为什么下界是 `start_px > 0` 才回写
+///
+/// 手势起点记录的是 [`TrackHeightLayout::base_px`] 的读数，它恒 `> 0`
+/// （`base_px` 的兜底是 `DEFAULT_TRACK_HEIGHT_PX`）；`0` 只可能来自"这个属性被外力
+/// 改成了 0" ⇒ 那时**不**回写，免得把 `0`（= 删除覆盖）当成一次高度设置。
+pub fn end_track_height_drag(ui: &MainWindow, revert: bool) -> bool {
+    if !ui.get_track_height_drag_active() {
+        return false;
+    }
+    let track_id = ui.get_track_height_drag_track().to_string();
+    let start_px = u32::try_from(ui.get_track_height_drag_start_px()).unwrap_or(0);
+    ui.set_track_height_drag_active(false);
+    ui.set_track_height_drag_track("".into());
+    ui.set_track_height_drag_start_px(0);
+    ui.set_track_height_drag_start_y(0.0);
+    if revert && start_px > 0 && !track_id.is_empty() {
+        set_track_height_override(ui, &track_id, start_px);
+    }
+    true
+}
+
+/// `Escape`（`Action::Cancel`）在**有手势在手**时的收尾：取消这一拖（写回起点高度）并重投影。
+///
+/// 返回 `false` = 此刻没有进行中的手势 ⇒ 这一键与 DAW 无关，照旧放行
+/// （与 `Escape` 接线之前的行为**逐位相同**）。
+///
+/// `port` 是 [`UndoPort`]（生产路径上就是 `wire_keys` 拿到的那一个）：取消之后必须把
+/// **几何**也拉回起点，否则用户看到的是一帧"按了 Esc 没反应"的界面。
+fn cancel_track_height_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> bool {
+    if !end_track_height_drag(ui, true) {
+        return false;
+    }
+    if let Some(port) = port {
+        reproject_track_heights(ui, port);
+    }
     true
 }
 
@@ -649,7 +925,6 @@ pub fn action_has_implementation(action: Action) -> bool {
             | Action::AuditionMain
             | Action::AuditionProposal
             | Action::AcceptAiSuggestion
-            | Action::Cancel
     )
 }
 
@@ -686,6 +961,15 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             ui.set_active_tool(next);
             true
         }
+        // `Escape` = **取消当前手势**（`ADR-0004` S1 的纵向拖拽）。
+        //
+        // 没有手势在手时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
+        // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
+        // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
+        // 它也不进 `--print-shortcuts` 的表（`cli.rs` 的 18 条里没有 `Escape`），
+        // 因此判据 B11b 的三面（渲染 / 解析 / 宿主）一位不动。
+        Action::Cancel => cancel_track_height_drag(ui, undo),
         // 双视图：`Tab` 是切换，`F5`/`F6`/`Alt+1`/`Alt+2` 是直达。写的是**界面属性**，
         // 与 `ui/switch_main_view` 走的是同一个属性（管理动作那边有回读判据）。
         Action::ToggleView => {
@@ -1166,6 +1450,52 @@ mod tests {
         assert!(
             super::tick_to_i32_saturating(u32::MAX as u64) > 0,
             "不得为负"
+        );
+    }
+
+    /// 判据（`ADR-0004` S1 的纵向入口）：拖拽手势的**像素换算**（纯函数）。
+    ///
+    /// 六条口径，每条都能单独被打红：
+    ///
+    /// 1. **向上拖 = 变高**（`delta_px > 0`），向下拖 = 变矮；
+    /// 2. **乘子的逆**：乘子 150% 时"拖 30 像素"⇒ 基准 +20（画面上仍然长 30 像素）；
+    /// 3. **整数**：结果四舍五入（`D28`）；
+    /// 4. **下界是 1 而不是 0**：`0` 在 `set_track_px` 的契约里是"删除这条覆盖"
+    ///    （`ADR-0004` Q2 的退化值处置）—— 手势不许借用那个语义；
+    /// 5. **不夹上界**：夹紧只在 `bridge::effective_track_height_px` 里发生一次（Q2-B），
+    ///    因此 1000 像素的位移给出 1056 的**基准**（投影再把它夹到 `MAX_TRACK_HEIGHT_PX`）；
+    /// 6. **非有限位移不改写**：`NaN` / `±∞` 原样返回起点（合法的、`> 0` 的高度）。
+    #[test]
+    fn dragged_track_base_px_is_the_inverse_of_the_percent_multiplier_and_stays_positive() {
+        use super::dragged_track_base_px;
+
+        // ① 方向：向上拖（delta > 0）变高，向下拖变矮。
+        assert_eq!(dragged_track_base_px(56, 40.0, 100), 96);
+        assert_eq!(dragged_track_base_px(96, -40.0, 100), 56);
+        assert_eq!(dragged_track_base_px(56, 0.0, 100), 56);
+        // ② 乘子的逆：150% 下拖 30 像素 ⇒ 基准 +20（画面增量仍是 30）。
+        assert_eq!(dragged_track_base_px(80, 30.0, 150), 100);
+        assert_eq!(dragged_track_base_px(80, -30.0, 150), 60);
+        // ③ 整数：四舍五入，不是截断（0.6 ⇒ +1）。
+        assert_eq!(dragged_track_base_px(56, 0.6, 100), 57);
+        assert_eq!(dragged_track_base_px(56, 0.4, 100), 56);
+        // ④ 下界 1：往下拖到底也**不会**变成 0（0 = 删除覆盖，不是"高 0 的行"）。
+        assert_eq!(dragged_track_base_px(56, -10_000.0, 100), 1);
+        assert_eq!(dragged_track_base_px(1, -10_000.0, 100), 1);
+        // ⑤ 上界不在这里：投影才夹紧（本函数原样给出基准）。
+        assert_eq!(dragged_track_base_px(56, 1_000.0, 100), 1_056);
+        assert!(
+            dragged_track_base_px(56, 1_000.0, 100) > crate::bridge::MAX_TRACK_HEIGHT_PX,
+            "基准可以超过上界 —— 夹紧是投影的事（边界只有一处）"
+        );
+        // ⑥ 非有限位移 / 乘子为 0（"缩到最小"的退化设置）都有确定行为。
+        assert_eq!(dragged_track_base_px(56, f32::NAN, 100), 56);
+        assert_eq!(dragged_track_base_px(56, f32::INFINITY, 100), 56);
+        assert_eq!(dragged_track_base_px(56, -40.0, 0), 16);
+        assert_eq!(
+            dragged_track_base_px(0, 0.0, 100),
+            1,
+            "起点 0 也不可能产出 0"
         );
     }
 }

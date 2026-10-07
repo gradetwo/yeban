@@ -696,8 +696,8 @@ mod tests {
         assert_eq!(inject["productionForbidden"], true);
         assert_eq!(
             inject["methods"].as_array().expect("数组").len(),
-            4,
-            "§12.4 的四个注入方法"
+            5,
+            "`ui:inject` 一族 = §12.4 的四个注入方法 + `ADR-0004` S1 的 `ui/set_track_height`"
         );
         assert_eq!(security["defaults"]["bindAddress"], "127.0.0.1");
         assert_eq!(security["defaults"]["injectInProduction"], "denied");
