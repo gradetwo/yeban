@@ -53,9 +53,9 @@
 //!    —— 两个前提因此同时被满足，且不会产生"重复节点"的 `DUPLICATE_ENTITY_ID`；
 //! 2. **默认给内容**：一条 MIDI 轨 + 4 个音符 + 一拍一音的摆放。没有内容的工程
 //!    渲染必然 `RENDER_FAILED`（"工程里没有可渲染的内容 (0 帧)"，
-//!    `render.rs:1190`），那样"可渲染"就只是句口号；
+//!    `render.rs:1192`），那样"可渲染"就只是句口号；
 //! 3. **`propose_section` 仍然要材料**：它要求 `clip_pool` 里至少有一条
-//!    MIDI 片段（`section_build.rs:812`，缺了报 `CLIP_NOT_FOUND`）。
+//!    MIDI 片段（`section_build.rs:818`，缺了报 `CLIP_NOT_FOUND`）。
 //!    默认的 `clip-0` 就是配器骨架的第一份材料 —— 新建之后 `propose_section`
 //!    可以直接跑，不需要先绕 `yeban_import_audio`（那个工具只登记 **Audio**
 //!    片段，`import_audio.rs:23`，永远满足不了 MIDI 材料的要求）。
@@ -304,7 +304,7 @@ pub fn build(config: &CreateConfig, path: &Path) -> Result<CreatedProject, Fault
     }
     // 2a. 第一条轨道上有真实材料：一条 MIDI 片段 + 它的一小节摆放。
     //     `propose_section` 要求 `clip_pool` 里至少有一条带音符的 MIDI 条目
-    //     （`section_build.rs:812`），因此这不是"装饰"，是配器骨架的前置条件。
+    //     （`section_build.rs:818`），因此这不是"装饰"，是配器骨架的前置条件。
     if let Some(first) = track_ids.first().copied() {
         let clip_id = deterministic_id(&format!("project:{label}:clip:0"));
         let notes: BTreeMap<EntityId, MidiNote> = config
