@@ -187,7 +187,7 @@ mod tests {
             [-32006, -32008, -32009]
         );
 
-        assert_eq!(METHOD_COUNT, 15);
+        assert_eq!(METHOD_COUNT, 16);
         assert_eq!(SERVICE_NAME, "yeban-ui-mcp");
         assert_eq!(ENABLE_HTTP_FLAG, "--enable-ui-mcp-http");
         assert_eq!(HTTP_FEATURE_NAME, "ui-mcp-http");

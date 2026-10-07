@@ -513,6 +513,27 @@ impl UiService {
                     self.surface.take_admin_report(),
                 ))
             }
+            methods::METHOD_OPEN_PROJECT => {
+                let path = required_text(params, "path");
+                // 默认值与 `yeban_close_project` 逐字相同（`saveFirst` 缺省 = true）。
+                // 缺省值在**这里**算一次，并与 `dryRun` 的预览共用（下面的 `preview` 走
+                // `preview_effect`，而 `preview_effect` 也从实参里取同一个缺省）——
+                // 因此"预览说的"与"真做的"不可能对同一个请求给出不同的 `saveFirst`。
+                let save_first = bool_param(params, "saveFirst").unwrap_or(true);
+                if dry_run {
+                    return self.preview(spec, params);
+                }
+                self.surface
+                    .open_project(&path, save_first)
+                    .map_err(|error| port_error(PortContext::Admin, error))?;
+                let mut root = Map::new();
+                root.insert("accepted".to_owned(), Value::from(true));
+                root.insert("operation".to_owned(), Value::from("open_project"));
+                root.insert("path".to_owned(), Value::from(path));
+                root.insert("saveFirst".to_owned(), Value::from(save_first));
+                attach_admin_report(&mut root, self.surface.take_admin_report());
+                Ok(Value::Object(root))
+            }
             // 注册表是 `const`，不可能走到这里；真走到了要**响亮报错**而不是返回空成功。
             other => Err(ErrorObject::new(
                 jsonrpc::INTERNAL_ERROR,
@@ -1958,7 +1979,7 @@ mod tests {
     //   2. dryRun 说的"将要做的事"必须与真做之后的**实际变化**一致；
     //   3. 词表/默认值靠**跨 crate 的类型与真管线载荷**对齐，不靠人眼比对。
 
-    /// 7 条会改状态的方法 + 它们的一次**合法**调用（`dryRun` 由判据自己加）。
+    /// 9 条会改状态的方法 + 它们的一次**合法**调用（`dryRun` 由判据自己加）。
     ///
     /// `pointer_down` 用 `mixer-vu-track-0`（夹具里有几何）：`dryRun` 会做真校验，
     /// 而无几何的 `track-0-fader` 是既有判据用来钉 `visible: null` 的，见 `testing.rs`。
@@ -1993,6 +2014,10 @@ mod tests {
             ),
             (methods::METHOD_FORCE_SAVE, serde_json::json!({})),
             (methods::METHOD_RELOAD_ENGINE, serde_json::json!({})),
+            (
+                methods::METHOD_OPEN_PROJECT,
+                serde_json::json!({"path": "/tmp/yeban-fixture.yeban", "saveFirst": false}),
+            ),
         ]
     }
 
@@ -2037,11 +2062,22 @@ mod tests {
             methods::METHOD_SWITCH_MAIN_VIEW => format!("switch_main_view:{}", text("view")),
             methods::METHOD_FORCE_SAVE => "force_save".to_owned(),
             methods::METHOD_RELOAD_ENGINE => "reload_engine".to_owned(),
+            // `saveFirst` 的**缺省**由执行面与服务层各自从实参里取同一个默认值；
+            // 这里按归一化实参算，因此"预览报的 saveFirst"与"真做用的 saveFirst"
+            // 若不一致，本函数算出的日志就会与执行面收到的不符 ⇒ 判据红。
+            methods::METHOD_OPEN_PROJECT => format!(
+                "open_project:{}:{}",
+                text("path"),
+                arguments
+                    .get("saveFirst")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+            ),
             other => panic!("`{other}` 不是会改状态的方法"),
         }
     }
 
-    /// 判据 ①（D48）: `dryRun=true` 下**状态一位都不许变** —— 对 7 条方法逐一证明。
+    /// 判据 ①（D48）: `dryRun=true` 下**状态一位都不许变** —— 对 9 条方法逐一证明。
     ///
     /// **逐字段**比较（`Fixture::snapshot` 的每一个键），并额外钉住三件事：
     /// 执行面的调用日志为空（一次都没被调用）、`ui/tree` 的线上 JSON 逐字节相同、
@@ -2235,6 +2271,12 @@ mod tests {
                     // 正是靠它与 `before` 相等来作证。
                     assert_eq!(effect["requestedPx"], after["trackHeightPx"]);
                     assert_eq!(effect["currentBasePx"], before["trackHeightPx"]);
+                }
+                methods::METHOD_OPEN_PROJECT => {
+                    // 预览报的那个路径必须**就是**真做之后夹具打开的那个路径
+                    // （`FakeSurface` 把 `path` 记进 `Fixture::opened_path`）。
+                    assert_eq!(effect["path"], after["openedPath"]);
+                    assert_eq!(effect["path"], previewed["path"]);
                 }
                 // 指针事件的影响只有窗口自己知道 ⇒ 如实报 null（不编造）。
                 _ => assert_eq!(effect, &Value::Null, "`{method}` 不该编造影响预览"),
@@ -2591,7 +2633,7 @@ mod tests {
             .filter(|entry| entry["dryRunSupported"].as_bool() == Some(true))
             .map(|entry| entry["name"].as_str().expect("字符串"))
             .collect();
-        assert_eq!(supporting.len(), 8, "支持 dryRun 的方法: {supporting:?}");
+        assert_eq!(supporting.len(), 9, "支持 dryRun 的方法: {supporting:?}");
         for method in supporting {
             assert!(
                 methods::method(method).expect("注册表里有").mutating,

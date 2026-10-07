@@ -2924,6 +2924,506 @@ fn admin_force_save_really_writes_a_readable_container() {
     assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
 }
 
+/// 判据 21（**运行中换工程 1/2：控制面入口**）：`ui/open_project` 走**真的** JSON-RPC 文本
+/// 换掉整份工程 —— 语义元素族、行几何、电平元素族与像素全部跟着换；失败路径
+/// **当前工程一位不动**。
+///
+/// ## 它钉的缺口
+///
+/// 在这一条之前，产品与控制面**在进程跑起来之后**都无法换工程：唯一的打开入口是启动时的
+/// CLI `--open`（`crates/yeban-app/src/main.rs` 的 `cli::load_project`），控制面 15 条
+/// `ui/*` 方法里没有一条叫 `ui/open_project`。本判据证明新方法真的落到**同一个活窗口**上，
+/// 而且复用**同一条**权威打开路径（`yeban_app::open::open_project_file`）与**同一个**注入点
+/// （`LiveAdminSurface::apply_project`）—— 因此它不造第二个权威。
+///
+/// ## 两个工程的选取（分辨力）
+///
+/// `filled`（3 条非主总线轨）与 `demo`（6 条）互不相同 ⇒ "轨道数真的变了"是一个有分辨力的
+/// 读数；两者都带真实摆放，因此换工程后像素**必须**变。
+#[test]
+fn admin_open_project_swaps_the_whole_projection_through_the_control_plane() {
+    use yeban_ui_mcp::live::ScreenshotProbe;
+    use yeban_ui_mcp::methods::METHOD_OPEN_PROJECT;
+
+    let a = yeban_model::samples::filled_project();
+    let b = demo_project();
+    assert_eq!(track_ids(&a).len(), 3, "A 有 3 条非主总线轨道");
+    assert_eq!(track_ids(&b).len(), 6, "B 有 6 条非主总线轨道");
+
+    let dir = scratch_dir("open-project-plane");
+    let b_path = dir.join("b.yeban");
+    // 目标是**真的落在磁盘上**的容器（`ui/open_project` 读的是文件，不是内存里的投影）。
+    yeban_app::save::save_project_file(&b, &b_path).expect("写 B 容器");
+    assert_eq!(
+        open_project_file(&b_path).expect("B 可被权威入口读回"),
+        b,
+        "磁盘上的 B 必须与内存里的 B 逐字段相同（否则下面的读数不是 B 的）"
+    );
+    let a_path = dir.join("a.yeban");
+    let mut wiring = options(Permission::Administrative, 1);
+    wiring.save_path = Some(a_path.clone());
+    let mut plane = build_live_ui_with(&a, &wiring)
+        .expect("装配")
+        .into_control_plane(Permission::Administrative);
+
+    // ---- 起点（A）：3 条轨 / 3 个电平元素 / 没有第 4 条 / 落点还不存在 ----
+    let (tree_a, json_a) = plane.plane().tree().expect("ui/tree(A)");
+    assert_eq!(
+        family_member_count(&tree_a, "track-", "-header"),
+        3,
+        "A 应当有 3 个轨道头"
+    );
+    assert_eq!(
+        family_member_count(&tree_a, "track-", "-meter"),
+        3,
+        "A 应当有 3 个电平元素（Tab 1 = 调音台 ⇒ 电平元素族在运行时树里）"
+    );
+    assert!(tree_a.find("track-3-header").is_none());
+    assert!(!a_path.exists(), "打开之前 A 的落点不该存在");
+    let shot_a = ScreenshotProbe::parse(
+        &plane
+            .plane()
+            .call(
+                "ui/screenshot",
+                Some(serde_json::json!({"maskDynamic": false})),
+            )
+            .expect("ui/screenshot(A)"),
+    )
+    .expect("A 的截图证据链必须闭合");
+    report_line(&format!(
+        "[open-project-plane] A: headers={} meters={} pngBytes={} fingerprint={}",
+        family_member_count(&tree_a, "track-", "-header"),
+        family_member_count(&tree_a, "track-", "-meter"),
+        shot_a.png_bytes,
+        shot_a.fingerprint
+    ));
+
+    // ---- 换工程：真的发一行 JSON-RPC 文本 ----
+    let opened = plane
+        .plane()
+        .call(
+            METHOD_OPEN_PROJECT,
+            Some(serde_json::json!({
+                "path": b_path.to_string_lossy(),
+                "saveFirst": true,
+            })),
+        )
+        .unwrap_or_else(|error| panic!("`{METHOD_OPEN_PROJECT}` 必须成功: {error}"));
+    assert_eq!(opened["accepted"], true);
+    assert_eq!(opened["operation"], "open_project");
+    assert_eq!(opened["saveFirst"], true);
+    let report = &opened["report"];
+    assert_eq!(report["operation"], "open_project");
+    assert_eq!(report["savedFirst"], true);
+    // 三个**回读**读数：投影轨道数 / 界面行数 / 界面电平数组长度。
+    assert_eq!(report["tracks"], 6, "投影的轨道数必须变成 B 的 6");
+    assert_eq!(report["rows"], 6, "界面 `track-names` 的行数必须跟着变");
+    assert_eq!(
+        report["meterRows"], 6,
+        "电平数组必须与轨道数组**等长**（这正是 `MeterPump::LengthMismatch` 要防的串轨）"
+    );
+    assert_eq!(report["tracks"], report["rows"]);
+    assert_eq!(report["rows"], report["meterRows"]);
+
+    // ---- 终点（B）：三条**独立**读法都必须看见新工程 ----
+    let (tree_b, json_b) = plane.plane().tree().expect("ui/tree(B)");
+    assert_eq!(
+        family_member_count(&tree_b, "track-", "-header"),
+        6,
+        "B 应当有 6 个轨道头（轨道数真的变了）"
+    );
+    assert_eq!(
+        family_member_count(&tree_b, "track-", "-meter"),
+        6,
+        "电平元素也必须变成 6 个（一个轨道一个电平元素 ⇒ 没有串轨）"
+    );
+    assert!(
+        tree_b.find("track-5-header").is_some(),
+        "B 的第 6 个轨道头必须真的进运行时树"
+    );
+    assert_ne!(json_a, json_b, "线上树文本必须变");
+    // 行几何跟着变：B 的最后一个轨道头的包围盒必须比 A 的树里任何东西都靠下。
+    let node_b = plane
+        .plane()
+        .probe(&ProbeOptions::new("track-5-header", "轨道").without_masking())
+        .expect("ui/node 必须看见 B 的最后一个轨道头");
+    let bounds_b = node_b.node.bounds.expect("轨道头必须有几何");
+    assert!(bounds_b.width > 0 && bounds_b.height > 0, "{bounds_b:?}");
+    report_line(&format!(
+        "[open-project-plane] B: headers=6 meters=6 track-5-header bounds={bounds_b:?}"
+    ));
+
+    // ---- `saveFirst`：旧工程被原样写到**它自己的**落点 ----
+    assert!(
+        a_path.is_file(),
+        "`saveFirst: true` 必须先把旧工程落盘（否则那条默认值是一句空话）"
+    );
+    assert_eq!(
+        open_project_file(&a_path).expect("A 的落点可读回"),
+        a,
+        "写出去的必须是**旧**工程（不是刚打开的那一份）"
+    );
+
+    // ---- 像素：换工程后画面变了（**两个命题分开**） ----
+    // 命题①"默认帧可复现"＝确定性，由本文件既有的像素判据与本次交付报告里的 sha256 覆盖；
+    // 命题②"换工程后画面变了"＝本判据的读数。PNG 是**存储式 deflate** ⇒ 字节数不随内容变
+    // （1920×1080 恒 6,222,418），所以判内容只能比**指纹/sha256**，不能比长度。
+    let shot_b = ScreenshotProbe::parse(
+        &plane
+            .plane()
+            .call(
+                "ui/screenshot",
+                Some(serde_json::json!({"maskDynamic": false})),
+            )
+            .expect("ui/screenshot(B)"),
+    )
+    .expect("B 的截图证据链必须闭合");
+    assert_eq!(
+        (shot_b.width, shot_b.height),
+        (shot_a.width, shot_a.height),
+        "换工程不改视口尺寸"
+    );
+    assert_ne!(
+        shot_b.fingerprint, shot_a.fingerprint,
+        "换工程必须改变画面（指纹相同 ⇒ 界面根本没换）"
+    );
+    report_line(&format!(
+        "[open-project-plane] 换工程前后像素: A fingerprint={} B fingerprint={} (pngBytes {} / {})",
+        shot_a.fingerprint, shot_b.fingerprint, shot_a.png_bytes, shot_b.png_bytes
+    ));
+
+    // ---- 失败路径 1：不存在的路径 ⇒ 既有错误码 ＋ 当前工程一位不动 ----
+    let missing = dir.join("does-not-exist.yeban");
+    let failure = plane
+        .plane()
+        .call(
+            METHOD_OPEN_PROJECT,
+            Some(serde_json::json!({"path": missing.to_string_lossy(), "saveFirst": false})),
+        )
+        .expect_err("不存在的路径必须失败");
+    let yeban_ui_mcp::live::ProbeError::RpcFailed { code, .. } = failure else {
+        panic!("必须是 JSON-RPC 错误: {failure:?}");
+    };
+    assert_eq!(
+        code, -32005,
+        "端口拒绝走**既有**的 `NOT_IMPLEMENTED`（D25: 不发明新错误码）"
+    );
+    let (tree_after_failure, json_after_failure) = plane.plane().tree().expect("ui/tree(失败之后)");
+    assert_eq!(
+        json_after_failure, json_b,
+        "失败的打开必须让当前工程一位不动（半换是硬错误）"
+    );
+    assert_eq!(
+        family_member_count(&tree_after_failure, "track-", "-header"),
+        6
+    );
+    let shot_after_failure = ScreenshotProbe::parse(
+        &plane
+            .plane()
+            .call(
+                "ui/screenshot",
+                Some(serde_json::json!({"maskDynamic": false})),
+            )
+            .expect("ui/screenshot(失败之后)"),
+    )
+    .expect("证据链必须闭合");
+    assert_eq!(
+        shot_after_failure.fingerprint, shot_b.fingerprint,
+        "失败的打开必须一个像素都不改"
+    );
+
+    // ---- `dryRun`（先问后做，D48）：只读预览必须**真读盘**，且一个字节都不改 ----
+    let preview = plane
+        .plane()
+        .call(
+            METHOD_OPEN_PROJECT,
+            Some(serde_json::json!({
+                "path": b_path.to_string_lossy(),
+                "saveFirst": true,
+                "dryRun": true,
+            })),
+        )
+        .expect("这个装配（A 的落点已配置）的 dryRun 必须成功");
+    assert_eq!(preview["dryRun"], true);
+    assert_eq!(preview["stateUnchanged"], true);
+    assert_eq!(
+        preview["preview"]["effect"]["openedTracks"], 6,
+        "预览必须报出**真读盘**得到的轨道数（不是编的）"
+    );
+    assert_eq!(preview["preview"]["effect"]["currentTracks"], 6);
+    let (tree_after_dry_run, json_after_dry_run) = plane.plane().tree().expect("ui/tree(dryRun)");
+    assert_eq!(json_after_dry_run, json_b, "dryRun 必须一个字节都不改");
+    assert_eq!(
+        family_member_count(&tree_after_dry_run, "track-", "-header"),
+        6
+    );
+    report_line(&format!(
+        "[open-project-plane] dryRun 预览: path={} saveFirst={} currentTracks={} openedTracks={}",
+        preview["preview"]["effect"]["path"],
+        preview["preview"]["effect"]["saveFirst"],
+        preview["preview"]["effect"]["currentTracks"],
+        preview["preview"]["effect"]["openedTracks"]
+    ));
+}
+
+/// 判据 21b（**运行中换工程 1b：旧工程的未保存改动**）：`saveFirst` 默认 `true` ⇒
+/// 当前工程**没有落点**时 `ui/open_project` **拒绝**（既有错误码），当前工程一位不动；
+/// 显式给 `saveFirst: false`（＝明确同意丢弃）时才放行。
+///
+/// ## 为什么这条判据有分辨力
+///
+/// 同一次调用在同一份装配上给出**两个相反**的结局（拒绝 / 成功），因此它证明的不是
+/// "这条方法总是失败"，而是"拒绝的**原因**真的是没有落点"。
+/// 默认值取自既有工具 `yeban_close_project` 的 `saveFirst`（`arg_bool(call, "saveFirst", true)`）
+/// —— 不是本切片发明的口径。
+#[test]
+fn open_project_refuses_to_discard_unsaved_work_when_there_is_no_save_target() {
+    use yeban_ui_mcp::live::ProbeError;
+    use yeban_ui_mcp::methods::METHOD_OPEN_PROJECT;
+
+    let a = yeban_model::samples::filled_project();
+    let b = demo_project();
+    let dir = scratch_dir("open-project-unsaved");
+    let b_path = dir.join("b.yeban");
+    yeban_app::save::save_project_file(&b, &b_path).expect("写 B 容器");
+    // 关键：**没有** `save_path`（样本形态 / 从没保存过）。
+    let wiring = options(Permission::Administrative, 1);
+    assert!(
+        wiring.save_path.is_none(),
+        "本判据的前提就是当前工程没有落点"
+    );
+    let mut plane = build_live_ui_with(&a, &wiring)
+        .expect("装配")
+        .into_control_plane(Permission::Administrative);
+    let (_, json_before) = plane.plane().tree().expect("ui/tree(起点)");
+    assert_eq!(
+        family_member_count(
+            &plane.plane().tree().expect("ui/tree").0,
+            "track-",
+            "-header"
+        ),
+        3
+    );
+
+    // ---- 默认（`saveFirst` 缺省 = true）⇒ 拒绝，因为无处可存 ----
+    let refused = plane
+        .plane()
+        .call(
+            METHOD_OPEN_PROJECT,
+            Some(serde_json::json!({"path": b_path.to_string_lossy()})),
+        )
+        .expect_err("没有落点时默认的 saveFirst=true 必须被拒绝");
+    let ProbeError::RpcFailed { code, message, .. } = refused else {
+        panic!("必须是 JSON-RPC 错误: {refused:?}");
+    };
+    assert_eq!(code, -32005, "既有错误码（D25）");
+    assert!(
+        message.contains("saveFirst") && message.contains("落点"),
+        "错误消息必须点名原因（并且与 `dryRun` 报的是**同一句话**）: {message}"
+    );
+    let (_, json_after_refusal) = plane.plane().tree().expect("ui/tree(拒绝之后)");
+    assert_eq!(
+        json_after_refusal, json_before,
+        "被拒绝的打开必须让当前工程一位不动"
+    );
+    report_line(&format!(
+        "[open-project-unsaved] saveFirst 缺省 ⇒ 拒绝 (code {code}): {message}"
+    ));
+
+    // ---- 同一条请求的 `dryRun` 必须报**同一句话**（D48："预览说的 == 真做会得到的"） ----
+    let preview_refusal = plane
+        .plane()
+        .call(
+            METHOD_OPEN_PROJECT,
+            Some(serde_json::json!({
+                "path": b_path.to_string_lossy(),
+                "saveFirst": true,
+                "dryRun": true,
+            })),
+        )
+        .expect_err("dryRun 也必须拒绝（『注定失败』不许被预览成成功）");
+    let ProbeError::RpcFailed {
+        code: preview_code,
+        message: preview_message,
+        ..
+    } = preview_refusal
+    else {
+        panic!("必须是 JSON-RPC 错误: {preview_refusal:?}");
+    };
+    assert_eq!(preview_code, code, "预览与真调用必须是同一个错误码");
+    assert_eq!(
+        preview_message, message,
+        "预览与真调用必须是**同一句话**（两处各写一遍就会漂移）"
+    );
+
+    // ---- `saveFirst: false`（明确同意丢弃）⇒ 放行，同一个装配、同一份文件 ----
+    let opened = plane
+        .plane()
+        .call(
+            METHOD_OPEN_PROJECT,
+            Some(serde_json::json!({
+                "path": b_path.to_string_lossy(),
+                "saveFirst": false,
+            })),
+        )
+        .expect("`saveFirst: false` 必须放行（拒绝的原因确实是没有落点）");
+    assert_eq!(opened["saveFirst"], false);
+    assert_eq!(opened["report"]["savedFirst"], false);
+    assert_eq!(opened["report"]["tracks"], 6);
+    assert_eq!(opened["report"]["rows"], 6);
+    assert_eq!(opened["report"]["meterRows"], 6);
+    let (tree_after, _) = plane.plane().tree().expect("ui/tree(放行之后)");
+    assert_eq!(family_member_count(&tree_after, "track-", "-header"), 6);
+    report_line(&format!(
+        "[open-project-unsaved] saveFirst=false ⇒ 放行: tracks={} rows={} meterRows={}",
+        opened["report"]["tracks"], opened["report"]["rows"], opened["report"]["meterRows"]
+    ));
+}
+
+/// 判据 22（**运行中换工程 2/2：窗口读数**）：换工程后**行数与电平数组等长**（没有串轨）、
+/// 行几何跟着换，并且画面**真的**变了（不同像素数 + 包围盒）。
+///
+/// 为什么这一条不能并进判据 21：判据 21 走控制面（`ui/tree` / `ui/node` / `ui/screenshot`
+/// 的**线上形态**），而"电平数组与轨道数组等长"这件事住在**活窗口的属性**上
+/// （`track-names` / `track-meter-levels`），控制面没有把它们暴露成 `ui/property` 的读法。
+/// `into_control_plane` 会把执行面装箱取走 ⇒ 窗口读数与控制面读数**不可兼得**，因此两条判据
+/// 各走一条路（与 `live_surface.rs` 的 `dispatch_key_press` 存在同一个理由）。
+///
+/// ## 为什么"等长"是可判据的（而不是一句注释）
+///
+/// `host::apply_meters` 的第一件事就是 `debug_assert_eq!(row_count(track_names),
+/// snapshot.tracks.len())`，而 `cargo test` 默认开着 debug 断言 ⇒ 电平数组与行数一旦不等长，
+/// 这一跳会**直接 panic**（不是静默串轨）。本判据另外把两个长度**读出来**逐个断言，
+/// 因为"没 panic"与"长度真的相等"不是同一句话。
+#[test]
+fn open_project_keeps_the_meter_arrays_aligned_with_the_track_rows() {
+    let a = yeban_model::samples::filled_project();
+    let b = demo_project();
+
+    let dir = scratch_dir("open-project-window");
+    let b_path = dir.join("b.yeban");
+    yeban_app::save::save_project_file(&b, &b_path).expect("写 B 容器");
+    let a_path = dir.join("a.yeban");
+    let mut wiring = options(Permission::Administrative, 1);
+    wiring.save_path = Some(a_path.clone());
+    let mut live = build_live_ui_with(&a, &wiring).expect("装配");
+
+    // ---- 起点（A）：3 行 / 3 条电平 / 轨道几何数组 3 长 ----
+    let names_a = injected_strings(&live.ui().get_track_names());
+    let meters_a = injected_lengths(&live.ui().get_track_meter_levels());
+    let peaks_a = injected_strings(&live.ui().get_track_meter_peaks());
+    let (geometry_a, _) = row_geometry_snapshot(live.ui());
+    assert_eq!(names_a.len(), 3, "A 的界面行数");
+    assert_eq!(meters_a.len(), names_a.len(), "起点就必须等长");
+    assert_eq!(peaks_a.len(), names_a.len(), "起点就必须等长");
+    assert_eq!(geometry_a[0].len(), 3, "A 的 `track-ys` 行数");
+    assert_eq!(geometry_a[1].len(), 3, "A 的 `track-heights` 行数");
+    let frame_a = live.capture().expect("Tier-1 截图(A)");
+
+    // ---- 真的打开 B（同一条载体路径；权限闸门照过） ----
+    live.open_project(&b_path.to_string_lossy(), true)
+        .expect("`ui/open_project` 必须成功");
+
+    // ---- ⭐ 串轨的第一道读数：这一跳**不许**是 `LengthMismatch` ----
+    //
+    // `host::pump_meters` 在注入前比"界面 `track-names` 行数 vs 手里那份投影的轨道数"。
+    // 换工程之后两者必须**等长**；`LengthMismatch` 的含义正是"界面此刻的 6 行电平会与
+    // 手里那份 3 轨的投影错位"（`MeterPump::LengthMismatch` 的文档点名它就是
+    // "控制面换了工程"造出来的）。因此这一跳是**最直接**的串轨判据。
+    let pump_after_open = live.pump_meters();
+    assert!(
+        !matches!(pump_after_open, MeterPump::LengthMismatch { .. }),
+        "换工程之后手里那份投影必须与界面等长（LengthMismatch = 电平按下标串轨）: {pump_after_open:?}"
+    );
+    report_line(&format!(
+        "[open-project-window] 换工程之后的一跳电平: {pump_after_open:?}"
+    ));
+
+    // ---- 终点（B）：行数 / 两条电平数组 / 两条**轨道**几何数组全部 6 长 ----
+    // ⚠ 只断言 `track-ys` / `track-heights` 这两条**逐轨**数组：同一份快照里的
+    // `clip-*` 与 `automation-lane-band-*` 是**逐片段 / 逐泳道**的，它们与轨道数不同长
+    // 是正常的（把"行数"当成"所有几何数组的长度"是本仓库点名过的一种口径错误）。
+    let names_b = injected_strings(&live.ui().get_track_names());
+    let meters_b = injected_lengths(&live.ui().get_track_meter_levels());
+    let peaks_b = injected_strings(&live.ui().get_track_meter_peaks());
+    let (geometry_b, _) = row_geometry_snapshot(live.ui());
+    assert_eq!(names_b.len(), 6, "B 的界面行数");
+    assert_eq!(
+        meters_b.len(),
+        names_b.len(),
+        "⭐ 电平数组必须与轨道数组**等长**（不等长 = `.slint` 按下标取会串轨）"
+    );
+    assert_eq!(
+        peaks_b.len(),
+        names_b.len(),
+        "峰值标签数组也必须等长（同一个契约的另一个数组）"
+    );
+    for (index, label) in ["`track-ys`", "`track-heights`"].iter().enumerate() {
+        assert_eq!(
+            geometry_b[index].len(),
+            6,
+            "轨道几何数组 {label} 必须跟着换工程变成 6 长"
+        );
+    }
+    assert_ne!(geometry_a, geometry_b, "行几何必须跟着换工程变");
+    report_line(&format!(
+        "[open-project-window] rows {} -> {}; meterLevels {} -> {}; meterPeaks {} -> {}; \
+         trackYs {} -> {}; trackHeights {} -> {}",
+        names_a.len(),
+        names_b.len(),
+        meters_a.len(),
+        meters_b.len(),
+        peaks_a.len(),
+        peaks_b.len(),
+        geometry_a[0].len(),
+        geometry_b[0].len(),
+        geometry_a[1].len(),
+        geometry_b[1].len()
+    ));
+
+    // ---- 命题②：换工程后画面变了 —— 给**不同像素数 + 包围盒**（不是"看起来不一样"） ----
+    let frame_b = live.capture().expect("Tier-1 截图(B)");
+    let diff = frame_diff(&frame_a, &frame_b).expect("换工程必须改变像素");
+    assert_eq!(
+        (frame_b.width(), frame_b.height()),
+        (frame_a.width(), frame_a.height()),
+        "换工程不改视口尺寸"
+    );
+    report_line(&format!(
+        "[open-project-window] 换工程前后像素: 不同像素 {} 个, 包围盒 {:?} (视口 {}x{})",
+        diff.count,
+        diff.bbox,
+        frame_a.width(),
+        frame_a.height()
+    ));
+
+    // ---- 旧工程被先保存，且**落点跟着新工程走** ----
+    assert_eq!(
+        open_project_file(&a_path).expect("A 的落点可读回"),
+        a,
+        "`saveFirst: true` 必须把旧工程写到它自己的落点"
+    );
+    // 落点必须已经指向 B：再抓一次 A 的落点内容并与 B 比，若落点没换，下一次保存会把
+    // B 的内容写进 A 的文件里。
+    let mut plane = live.into_control_plane(Permission::Administrative);
+    let saved = plane
+        .plane()
+        .call("ui/force_save", None)
+        .expect("换工程之后的保存必须成功");
+    assert_eq!(saved["report"]["saveEpoch"], 1);
+    // 落点 = `b_path` ⇒ B 的文件被重写；A 的文件**保持**上一跳写进去的内容。
+    assert_eq!(
+        open_project_file(&b_path).expect("B 的落点可读回"),
+        b,
+        "保存必须写到**新**工程的路径"
+    );
+    assert_eq!(
+        open_project_file(&a_path).expect("A 的落点仍可读回"),
+        a,
+        "A 的文件不得被新工程覆盖（落点没换的话这里就红了）"
+    );
+}
+
 /// 判据 20（`ROAD-M4-008` 选项 (a)：**单一写者会话**的 GUI 侧）：挂在控制面上时，
 /// `ui/force_save` 写出的**不是**界面缓存，而是**权威会话当前那一版**。
 ///

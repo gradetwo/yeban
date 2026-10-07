@@ -97,11 +97,18 @@ pub enum Operation {
     /// 它落在 `Interactive` 层（与事件注入同层）而不是 `Administrative`：改的是**视图态**
     /// （`track-height-*` 属性，零 schema、重启即失），不动工程、不落盘、不过引擎。
     SetTrackHeight,
+    /// 在**正在运行的**执行面上换一份当前工程（`Administrative`）—— CLI `--open` 的
+    /// 控制面孪生。
+    ///
+    /// 它落在 `Administrative` 层而不是 [`Self::SetTrackHeight`] 那一层：换的是**工程整体**
+    /// （轨道集合 / 走带 / 路由图），随后要换注册表、作废旧电平、重建引擎。
+    /// 权限层级与 `ui/switch_main_view` / `ui/force_save` / `ui/reload_engine` 相同。
+    OpenProject,
 }
 
 impl Operation {
     /// 全部操作，供"三级 × 全部操作"的穷举判据使用。
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::ReadTree,
         Self::ReadProperty,
         Self::CaptureScreenshot,
@@ -111,6 +118,7 @@ impl Operation {
         Self::SwitchMainView,
         Self::ForceSave,
         Self::ReloadEngine,
+        Self::OpenProject,
     ];
 
     /// 该操作要求的最低权限（§12.3 的三级划分，逐条对应）。
@@ -121,7 +129,7 @@ impl Operation {
             Self::DispatchPointer | Self::DispatchKey | Self::SetTrackHeight => {
                 Permission::Interactive
             }
-            Self::SwitchMainView | Self::ForceSave | Self::ReloadEngine => {
+            Self::SwitchMainView | Self::ForceSave | Self::ReloadEngine | Self::OpenProject => {
                 Permission::Administrative
             }
         }
@@ -140,6 +148,7 @@ impl Operation {
             Self::SwitchMainView => "switch_main_view",
             Self::ForceSave => "force_save",
             Self::ReloadEngine => "reload_engine",
+            Self::OpenProject => "open_project",
         }
     }
 }
@@ -399,6 +408,24 @@ pub trait UiTestPort {
         })
     }
 
+    /// 在**正在运行的**执行面上换一份当前工程（`Administrative`）；`save_first` 为真时
+    /// 先把当前工程落盘到它自己的路径（见下面的实现说明），为假时直接丢弃它。
+    ///
+    /// ## 为什么这一条也有默认实现
+    ///
+    /// 与 [`Self::set_track_height_impl`] 同因：本 crate 的 `LivePort<T>` 是**泛型**的，
+    /// 既不认识"当前工程"这个概念，也不该把 `yeban-app` 的打开路径引进来（依赖方向是
+    /// 底层不认识上层）。因此默认体**如实报"没有载体"**（`PortError::Rejected` ⇒
+    /// 既有的 `-32005 NOT_IMPLEMENTED`，D25：不新增 JSON-RPC 错误码），而不是假装成功。
+    /// 真实载体是 `yeban-app/src/live_surface.rs` 的 `LiveAdminSurface`。
+    fn open_project_impl(&mut self, path: &str, save_first: bool) -> Result<(), PortError> {
+        let _ = (path, save_first);
+        Err(PortError::Rejected {
+            message: "这个执行面没有换工程的载体（`UiTestPort::open_project_impl` 用的是默认实现）"
+                .to_owned(),
+        })
+    }
+
     /// 就地做一次权限判定（供实现侧在更复杂的动作前复用同一套规则）。
     fn authorize_here(&self, operation: Operation) -> Result<(), PortError> {
         authorize(self.permission(), operation)
@@ -456,6 +483,13 @@ pub trait UiTestPort {
     fn set_track_height(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
         self.authorize_here(Operation::SetTrackHeight)?;
         self.set_track_height_impl(element_id, height_px)
+    }
+
+    /// 在**正在运行的**执行面上换一份当前工程（`Administrative`）。闸门不可绕过：
+    /// 先判权限，再落到实现。
+    fn open_project(&mut self, path: &str, save_first: bool) -> Result<(), PortError> {
+        self.authorize_here(Operation::OpenProject)?;
+        self.open_project_impl(path, save_first)
     }
 }
 
@@ -551,6 +585,10 @@ mod tests {
             self.calls.push("set_track_height");
             Ok(())
         }
+        fn open_project_impl(&mut self, _path: &str, _save_first: bool) -> Result<(), PortError> {
+            self.calls.push("open_project");
+            Ok(())
+        }
     }
 
     /// 判据 1: 默认权限必须是 `ReadOnly`（§12.3 原文"默认只读层"），且操作→权限表逐条正确。
@@ -571,6 +609,7 @@ mod tests {
             (Operation::SwitchMainView, Permission::Administrative),
             (Operation::ForceSave, Permission::Administrative),
             (Operation::ReloadEngine, Permission::Administrative),
+            (Operation::OpenProject, Permission::Administrative),
         ];
         assert_eq!(
             Operation::ALL.len(),
@@ -632,6 +671,7 @@ mod tests {
         assert!(port.switch_main_view("arrangement").is_err());
         assert!(port.force_save().is_err());
         assert!(port.reload_engine().is_err());
+        assert!(port.open_project("somewhere.yeban", true).is_err());
         assert!(
             port.calls.is_empty(),
             "越权时实现侧不得被调用: {:?}",
@@ -647,7 +687,7 @@ mod tests {
         assert!(!port.capture_png().expect("只读允许截图").is_empty());
     }
 
-    /// 判据 3: `Interactive` 放行事件注入，但仍拒绝 `Administrative` 的三个操作。
+    /// 判据 3: `Interactive` 放行事件注入，但仍拒绝 `Administrative` 的四个操作。
     #[test]
     fn interactive_allows_injection_but_not_administration() {
         let mut port = FakePort::with(Permission::Interactive);
@@ -682,9 +722,10 @@ mod tests {
         );
         assert!(port.switch_main_view("session").is_err());
         assert!(port.reload_engine().is_err());
+        assert!(port.open_project("somewhere.yeban", true).is_err());
     }
 
-    /// 判据 4: `Administrative` 放行全部 9 个操作 —— 穷举，不抽样。
+    /// 判据 4: `Administrative` 放行全部 10 个操作 —— 穷举，不抽样。
     #[test]
     fn administrative_allows_every_operation() {
         for operation in Operation::ALL {
@@ -698,13 +739,20 @@ mod tests {
         port.switch_main_view("arrangement").expect("应当放行");
         port.force_save().expect("应当放行");
         port.reload_engine().expect("应当放行");
+        port.open_project("somewhere.yeban", true)
+            .expect("应当放行");
         assert_eq!(
             port.calls,
-            ["switch_main_view", "force_save", "reload_engine"]
+            [
+                "switch_main_view",
+                "force_save",
+                "reload_engine",
+                "open_project"
+            ]
         );
     }
 
-    /// 判据 5: `authorize` 是纯函数 —— 三级 × 9 操作共 27 组判定必须与 `rank` 比较完全一致，
+    /// 判据 5: `authorize` 是纯函数 —— 三级 × 10 操作共 30 组判定必须与 `rank` 比较完全一致，
     /// 且重复调用结果恒同（无状态、无环境依赖）。
     #[test]
     fn authorize_is_a_pure_total_function() {

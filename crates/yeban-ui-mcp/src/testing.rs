@@ -59,10 +59,13 @@ pub(crate) struct Fixture {
     /// `ui/set_track_height` 真的会写的那个数（真执行面上是 `MainWindow` 的
     /// `track-height-override-pxs`，`ADR-0004` S1）。
     pub(crate) track_height_px: u32,
+    /// `ui/open_project` 真的会打开的那个路径（真执行面上是 `LiveAdminSurface` 换掉的
+    /// 那一份工程；这里只记路径 —— 假面没有容器层）。
+    pub(crate) opened_path: Option<String>,
     /// **探针**：读方法在返回前调了几次 [`UiSurface::refresh_runtime_tree`]。
     ///
     /// 它是仪器，**不是**领域状态 ⇒ 刻意**不进** [`Fixture::snapshot`]：
-    /// `snapshot` 是 `dryRun` 的对照文档（"只会改状态的那 7 条方法有没有越界"），
+    /// `snapshot` 是 `dryRun` 的对照文档（"只会改状态的那 9 条方法有没有越界"），
     /// 把一个读路径的计数器塞进去会改掉那份对照的含义。
     pub(crate) refreshes: usize,
     /// 下一次刷新要换上的运行时树（`None` = 树不动）。
@@ -112,6 +115,7 @@ impl Fixture {
             "saveEpoch": self.save_epoch,
             "engineGeneration": self.engine_generation,
             "trackHeightPx": self.track_height_px,
+            "openedPath": self.opened_path,
             "imeComposing": self.ime_composing,
             "imeFocus": self.ime_focus.as_str(),
             "calls": self.calls,
@@ -247,6 +251,7 @@ pub(crate) fn shared(permission: Permission) -> Rc<RefCell<Fixture>> {
         // 与投影的默认基准行高同值（`bridge::DEFAULT_TRACK_HEIGHT_PX = 56`）——
         // 假面不认识那个常量（零依赖方向），因此这里写死同一个数并说明来源。
         track_height_px: 56,
+        opened_path: None,
         refreshes: 0,
         refreshed_tree: None,
         refresh_serial: 0,
@@ -392,6 +397,30 @@ impl UiSurface for FakeSurface {
                     ),
                 ])
             }
+            // `ui/open_project`：将要打开的路径 + 当前已打开的路径（**只读**回读）。
+            //
+            // 假面没有容器层（零依赖方向：它不认识 `yeban-app` 的 `open_project_file`），
+            // 因此它**不**校验路径存在与否、也**不**模拟 `saveFirst` 的落盘 ——
+            // 那些是真实载体 `LiveAdminSurface::open_project_now` 的职责，它们由
+            // `crates/yeban-app/tests/live_ui_mcp.rs` 的端到端判据覆盖。这里只保证
+            // "预览说的路径"与"真做之后夹具里的路径"是同一个。
+            crate::methods::METHOD_OPEN_PROJECT => {
+                let path = arguments.text("path").unwrap_or_default();
+                PreviewEffect::new(vec![
+                    ("path", ReportValue::Text(path.to_owned())),
+                    (
+                        "saveFirst",
+                        ReportValue::Bool(arguments.is_true("saveFirst").unwrap_or(true)),
+                    ),
+                    (
+                        "currentPath",
+                        state
+                            .opened_path
+                            .clone()
+                            .map_or(ReportValue::Text(String::new()), ReportValue::Text),
+                    ),
+                ])
+            }
             // 指针事件的影响只有窗口自己知道 ⇒ 如实报 `None`（不编造）。
             _ => return Ok(None),
         };
@@ -495,7 +524,7 @@ impl yeban_ui_test_port::port::UiTestPort for FakeSurface {
     }
     /// `ui/set_track_height`：**真的**改夹具里的那个数（真执行面上是视图态 + 重投影）。
     ///
-    /// 它是**唯一**一条带默认实现的 `*_impl`（见 `UiTestPort::set_track_height_impl` 的
+    /// 它是**一条**带默认实现的 `*_impl`（见 `UiTestPort::set_track_height_impl` 的
     /// 文档：底层 crate 不认识上层 app 的行高属性）。假面覆写它，于是"dryRun 前后状态
     /// 逐字段相同"与"真调用确实改了状态"这两条判据在这一条方法上也成立。
     fn set_track_height_impl(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
@@ -504,6 +533,19 @@ impl yeban_ui_test_port::port::UiTestPort for FakeSurface {
             .calls
             .push(format!("set_track_height:{element_id}:{height_px}"));
         state.track_height_px = height_px;
+        Ok(())
+    }
+    /// `ui/open_project`：**真的**改夹具里"当前打开的路径"那个数（真执行面上是
+    /// `LiveAdminSurface` 换掉整份工程 + 重投影）。
+    ///
+    /// 与 [`Self::set_track_height_impl`] 同款：底层 crate 不认识"当前工程"这个概念，
+    /// 因此真实载体在上层；假面覆写它，好让 D48 的三条判据在这一条方法上也成立。
+    fn open_project_impl(&mut self, path: &str, save_first: bool) -> Result<(), PortError> {
+        let mut state = self.state.borrow_mut();
+        state
+            .calls
+            .push(format!("open_project:{path}:{save_first}"));
+        state.opened_path = Some(path.to_owned());
         Ok(())
     }
 }

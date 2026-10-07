@@ -85,6 +85,13 @@ pub const METHOD_RELOAD_ENGINE: &str = "ui/reload_engine";
 /// 规范里**没有**这个方法名与签名 —— 它是工程裁决（理由与口径写在方法表的 `signature` 里）。
 pub const METHOD_SET_TRACK_HEIGHT: &str = "ui/set_track_height";
 
+/// 方法名：CLI `--open` 在控制面上的孪生 —— **在正在运行的执行面上换一份当前工程**。
+///
+/// 规范里**没有**这个方法名与签名 —— 它是工程裁决（理由与口径写在方法表的 `signature` 里），
+/// 与 [`METHOD_SET_TRACK_HEIGHT`] 同一族。它补的缺口是：产品/控制面**在进程已经跑起来之后**
+/// 无法换工程（`grep -rn "ui/open_project" crates/` 在本切片之前 0 命中）。
+pub const METHOD_OPEN_PROJECT: &str = "ui/open_project";
+
 /// 「未知参数一律拒绝」的例外前缀（MCP 保留键），与 `yeban-mcp` 的口径一致。
 ///
 /// 静默忽略一个拼错的参数会让调用方以为自己的意图生效了 —— 那是最坏的一种"成功"
@@ -245,6 +252,34 @@ const VIEW: ParamSpec = ParamSpec {
     allowed: Some(&["arrangement", "session"]),
     description: "目标主视图名（`arrangement` = 线性编曲 / `session` = 触发矩阵）",
 };
+/// `ui/open_project` 的目标路径（`path`，必填）。
+///
+/// 取值不是白名单：它是一个**文件系统路径**，合法性只能由执行面自己判
+/// （`crates/yeban-app/src/open.rs` 的 `open_project_file`：读失败 / 超上限 / 容器拒绝）。
+/// 与 `yeban_open_project` 的 `path` 同名同义（`crates/yeban-mcp/src/domain/mod.rs:1620`）。
+const PATH: ParamSpec = ParamSpec {
+    name: "path",
+    json_type: "string",
+    required: true,
+    allowed: None,
+    description: "要打开的 `.yeban` 容器路径；不存在 / 不是容器 / 容器坏了 ⇒ 如实报错，\
+                  当前工程**一位不动**",
+};
+/// `ui/open_project` 的 `saveFirst`（可选布尔，**默认 true**）。
+///
+/// 默认值与语义都取自既有工具 `yeban_close_project`（`crates/yeban-mcp/src/domain/mod.rs:1813`
+/// 的 `arg_bool(call, "saveFirst", true)`）：**先保存当前工程，再放开它**。
+/// 这里同理：换工程会丢弃内存里那一份，因此默认先把旧工程落盘到它自己的路径。
+/// 没有落点时（样本形态 / 从没保存过）**必须显式给 `false`** —— 否则拒绝，
+/// 不会静默丢弃用户的未保存改动。
+const SAVE_FIRST: ParamSpec = ParamSpec {
+    name: "saveFirst",
+    json_type: "boolean",
+    required: false,
+    allowed: None,
+    description: "换工程之前先把当前工程落盘到它自己的路径（默认 true，与 `yeban_close_project` \
+                  的 `saveFirst` 同义）；当前工程没有落点时必须显式给 false（拒绝静默丢弃）",
+};
 /// **`dryRun`（先问后做）** 的参数声明 —— ADR-0001 **D48**。
 ///
 /// 名字取自 [`DRY_RUN_PARAM`]，而它是 `yeban_mcp::tools::DRY_RUN_PARAM` 的**再导出**
@@ -252,7 +287,7 @@ const VIEW: ParamSpec = ParamSpec {
 /// 默认 `false`，与领域侧逐字一致（判据 [crate::dry_run] 的
 /// `dry_run_defaults_to_false_exactly_like_the_domain`）。
 ///
-/// **只出现在会改状态的方法上**（`mutating == true` 的 8 条）：只读方法收到它会被
+/// **只出现在会改状态的方法上**（`mutating == true` 的 9 条）：只读方法收到它会被
 /// 未知参数规则**响亮拒绝**（`-32602`），而不是静默忽略 —— 理由见 [crate::dry_run] 的模块头。
 const DRY_RUN: ParamSpec = ParamSpec {
     name: DRY_RUN_PARAM,
@@ -264,7 +299,7 @@ const DRY_RUN: ParamSpec = ParamSpec {
 };
 
 /// 全部方法，**注册表顺序 = 文档顺序**（不依赖任何容器迭代顺序）。
-pub const METHODS: [MethodSpec; 15] = [
+pub const METHODS: [MethodSpec; 16] = [
     MethodSpec {
         name: METHOD_METHODS,
         spec_ids: &["ARCH-UI-004", "MCP-DUAL-001"],
@@ -424,6 +459,28 @@ pub const METHODS: [MethodSpec; 15] = [
         params: &[DRY_RUN],
         signature: "UI/UX §12.3 [UI-MCP-001] Administrative: 重载音频引擎",
         description: "重载音频引擎（Administrative 层；scope `app:reload-engine`）",
+        mutating: true,
+    },
+    MethodSpec {
+        name: METHOD_OPEN_PROJECT,
+        spec_ids: &["UI-MCP-001", "ARCH-SEC-002", "ARCH-UI-004"],
+        // `Administrative` 层：换的是**工程整体**（轨道集合 / 走带 / 路由图），
+        // 随后要换注册表、作废旧电平、重建引擎。与只改视图态的 `ui/set_track_height`
+        // 不是一个量级，因此不落在 `ui:inject`。
+        //
+        // 六级 scope 里**没有**"换工程"这一级（`ADR-0001` **D29** 已把"没有界面状态写这一级"
+        // 登记为待人类裁决），因此按 D29 的既有口径把管理类动作挂在 `app:admin` 上
+        // （与 `ui/switch_main_view` 同一个 scope）。
+        scope: Scope::AppAdmin,
+        port_operation: Some(Operation::OpenProject),
+        params: &[PATH, SAVE_FIRST, DRY_RUN],
+        signature: "规范里没有这个方法名与签名 —— 它是 CLI `--open`（`crates/yeban-app/src/open.rs`）\
+                    在控制面上的工程裁决：在**正在运行的**执行面上换一份当前工程。参数名沿用 \
+                    §12.3 [UI-MCP-001] 的 camelCase 风格（`path` 与 `yeban_open_project` 同名同义；\
+                    `saveFirst` 与 `yeban_close_project` 同名同义、默认值也相同），\
+                    权限沿用 D29 给管理类动作的 `app:admin`",
+        description: "在正在运行的执行面上换一份当前工程（`path`；`saveFirst` 默认 true）；\
+                      回执里给出回读的轨道数与界面行数（长度契约为证）",
         mutating: true,
     },
 ];
@@ -679,7 +736,7 @@ mod tests {
     fn method_names_are_unique_and_well_formed() {
         let names = names();
         assert_eq!(names.len(), METHOD_COUNT);
-        assert_eq!(METHOD_COUNT, 15);
+        assert_eq!(METHOD_COUNT, 16);
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
         assert_eq!(unique.len(), names.len(), "方法名不得重复");
 
@@ -743,7 +800,19 @@ mod tests {
                     assert_eq!(spec.port_operation, Some(Operation::ReloadEngine));
                 }
                 Scope::AppAdmin => {
-                    assert_eq!(spec.port_operation, Some(Operation::SwitchMainView));
+                    // `app:admin` 是**管理类动作**的挂靠 scope（`ADR-0001` D29：六级 scope 里
+                    // 没有"界面状态写"与"换工程"这两级）。它今天挂着两条方法：切换主视图与
+                    // `ui/open_project`。断言写成**闭集**（枚举变体）而不是"什么操作都行"
+                    // —— 一张挂错 scope 的表仍然会红。
+                    assert!(
+                        matches!(
+                            spec.port_operation,
+                            Some(Operation::SwitchMainView | Operation::OpenProject)
+                        ),
+                        "{} 是 app:admin 却挂了 {:?}",
+                        spec.name,
+                        spec.port_operation
+                    );
                 }
             }
             assert_eq!(
@@ -845,7 +914,7 @@ mod tests {
                 without.push(spec.name);
             }
         }
-        assert_eq!(with.len(), 8, "会改状态的方法: {with:?}");
+        assert_eq!(with.len(), 9, "会改状态的方法: {with:?}");
         assert_eq!(without.len(), 7, "只读方法: {without:?}");
         assert_eq!(with.len() + without.len(), METHOD_COUNT);
 
@@ -961,7 +1030,7 @@ mod tests {
     }
 
     /// 判据 5: `ui/methods` 的载荷是**清单**而不是契约实例（顶层不含 `name`/`arguments`/`status`），
-    /// 且 15 条方法与注册表逐条对应（顺序也一致）。
+    /// 且 16 条方法与注册表逐条对应（顺序也一致）。
     #[test]
     fn catalogue_is_a_document_and_matches_the_registry() {
         let snapshot = catalogue();

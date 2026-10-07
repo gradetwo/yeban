@@ -303,17 +303,18 @@ pub enum AuthoritySync {
 
 /// **管理动作的真正落地 + 电平消费** —— 包住 `PortAdapter<LivePort<MainWindow>>`。
 ///
-/// 它只覆写三个 `*_impl`（`[UI-MCP-001]` §12.3 的 Administrative 一级），其余全部原样
+/// 它只覆写四个 `*_impl`（`[UI-MCP-001]` §12.3 的 Administrative 一级），其余全部原样
 /// 委托给内层执行面。**不**改 `PortAdapter` / `LivePort` / `yeban-ui-test-port` 的公开 API：
 /// 那三个 crate 不是本线的地盘，而且"给一个测试端口加产品语义"会污染它们的依赖方向。
 ///
-/// 三个动作各自的可观测副作用：
+/// 四个动作各自的可观测副作用：
 ///
 /// | 动作 | 真的做了什么 | 界面/接口上能看到什么 |
 /// | :--- | :--- | :--- |
 /// | `ui/switch_main_view` | `MainWindow.arrangement-view = view == "arrangement"` | 重抓控件树后 `workspace-session-canvas` / `workspace-arrangement-canvas` 互换；回执里带回读值 |
 /// | `ui/force_save` | `save::save_project_file`（临时文件 → `sync_all` → 原子重命名） | 磁盘上真的出现可被 `open_project_file` 读回的容器；回执里有 `bytes` / `saveEpoch` |
 /// | `ui/reload_engine` | `EngineHost::reload`（新快照 + 新队列 + 推 N 个量子） | **新**的电平队列被采纳 ⇒ 混音台电平回到下限；回执里有 `generation` / `quanta` / `meterFrames` |
+/// | `ui/open_project` | `open::open_project_file`（**同一个** CLI `--open` 入口）＋ [`Self::apply_project`]（投影 → 注册表 → 电平 → 引擎换代） | 同一个活窗口上换成新工程：语义 ID 族、行几何、走带、电平长度全部跟着换；回执里有 `tracks` / `rows` / `meterRows`（三个数等长 ⇒ 无串轨） |
 ///
 /// ## `[UI-A11Y-002]` 的 `is_composing` 防护住在哪里（本文件与 `input.rs` 的分工）
 ///
@@ -362,6 +363,14 @@ struct LiveAdminSurface {
     /// 已经把哪一版权威投影进来了（`sync_authority` 的比较基准）。
     #[cfg(feature = "in-process-mcp")]
     authority_revision: u64,
+    /// 装配时交给键盘路径的撤销端口（[`LiveWiringOptions::undo`]）的**同一份** `Rc`。
+    ///
+    /// 本字段**不**用来做撤销动作（那是 `host::wire_keys` / `host::wire_mixer_edit` 的
+    /// 闭包干的）。它存在的唯一理由在 [`Self::open_project_now`]：那个端口**自己持有一份
+    /// 工程**（`UndoPort::try_project` 就是生产心跳的发布来源），因此在它挂着的时候换工程
+    /// 会让端口写回旧工程 ⇒ 那种装配下 `ui/open_project` 如实**拒绝**（不留两条事实源）。
+    /// `None` ⇒ 本执行面是工程的唯一持有者，换工程可以就地做。
+    undo: Option<Rc<yeban_app::undo::UndoPort>>,
 }
 
 /// `yeban_app::input::Focus` → 线格式的 [`ImeFocus`]（**唯一**的映射点）。
@@ -790,6 +799,118 @@ impl LiveAdminSurface {
         Ok(())
     }
 
+    /// `saveFirst` 为真、而当前工程**没有落点**时的那一句话。
+    ///
+    /// **唯一**一处：`open_project_now`（真调用）与 `preview_effect`（`dryRun`）都调它，
+    /// 因此"预览报的失败"与"真调用报的失败"是同一句话（`ADR-0001` D48 的口径）。
+    fn no_save_target_for_open() -> PortError {
+        PortError::Rejected {
+            message: "`saveFirst` 为真但当前工程没有落点（`LiveWiringOptions::save_path`）\
+                      ⇒ 拒绝静默丢弃；要丢弃就给 `saveFirst: false`"
+                .to_owned(),
+        }
+    }
+
+    /// `ui/open_project`：在**这个活窗口**上换一份当前工程（CLI `--open` 的控制面孪生）。
+    ///
+    /// ## 权威（`ADR-0005`：**不造第二个权威**）
+    ///
+    /// 「打开」只有一条实现：[`yeban_app::open::open_project_file`] —— 与 CLI `--open` 与
+    /// `--headless` 用的是**同一个**入口（`crates/yeban-app/src/main.rs` 的
+    /// `cli::load_project` 最终落到它）。「注入」也只有一条：[`Self::apply_project`]
+    /// （`ViewState` → `host::apply_view` → 换注册表 → 作废旧电平 → `EngineHost::reload`
+    /// 换代 → `pump_meters`）—— 与权威重投影 [`Self::sync_authority`] 逐字同一条数据流。
+    /// 本方法**不**新增打开实现、**不**新增注入点。
+    ///
+    /// ## 工程**别的持有者**在场时：拒绝（不留两条事实源）
+    ///
+    /// | 本执行面持有 | 为什么拒绝 |
+    /// | :--- | :--- |
+    /// | `authority`（进程内控制面会话） | 工程的唯一可变权威是那个 `Domain`（`ADR-0005`）。在这里换一份会让"界面画的是哪一份"与"会话读写的是哪一份"立刻分叉；而宿主的写入口 `HostAction` 只有 `Undo` / `Redo` / `Commit` —— **没有**"打开工程"这一项（`crates/yeban-mcp/src/domain/mod.rs:669`）⇒ 本执行面无法把这次打开交给权威 |
+    /// | `undo`（外部撤销端口） | 那个端口**自己持有一份工程**（`UndoPort::try_project` 是生产心跳的发布来源）⇒ 换工程而不换端口会让端口把旧工程写回引擎。而「打开一个工程 = **新会话**」今天只有一条实现（`crates/yeban-app/src/main.rs:447` 的 `open_undo_session`，它造的是 GUI **自己**那一份会话），本执行面拿不到调用方手里的那个端口 ⇒ 如实拒绝，而不是换一半 |
+    ///
+    /// 两种情况都用**既有**的 `PortError::Rejected` ⇒ 服务层既有的 `-32005 NOT_IMPLEMENTED`
+    /// （`ADR-0001` D25：不发明新错误码），消息点名是哪一个持有者。
+    /// 产品形态 `--enable-ui-mcp-http` 恰好两种持有者都没有 ⇒ 那里本方法可用。
+    ///
+    /// ## 顺序是契约（**失败时当前工程一位不动**）
+    ///
+    /// 1. 先读**新**文件 —— 读失败（不存在 / 不是容器 / 容器坏了 / 超上限）⇒ 立即返回，
+    ///    当前工程、窗口、电平、引擎**一个都没碰**；
+    /// 2. `save_first` 为真 ⇒ 先保存**当前**工程（与 `ui/force_save` **同一个**落点、
+    ///    同一套锁语义）；当前工程没有落点 ⇒ 拒绝并把选择权交回调用方
+    ///    （`saveFirst: false` = 明确同意丢弃）。默认 `true` 与 `yeban_close_project` 的
+    ///    `saveFirst` 同义（`crates/yeban-mcp/src/domain/mod.rs:1813`）；
+    /// 3. 才换投影（[`Self::apply_project`]）；
+    /// 4. 落点跟着新工程走 ⇒ 下一次 `ui/force_save` 写的是**新**文件
+    ///    （否则新内容会被写进旧工程的文件里）。
+    ///
+    /// ⚠ 如实登记的边界：若第 3 步在 `host::apply_view` **之后**失败（引擎换代失败），
+    /// 窗口已经是新工程而引擎还是旧一代 —— 这是既有的 [`Self::apply_project`] 语义
+    /// （`sync_authority` 那条路同款），因此本方法与权威重投影**同一条**边界，不是新增的。
+    fn open_project_now(&mut self, path: &str, save_first: bool) -> Result<(), PortError> {
+        #[cfg(feature = "in-process-mcp")]
+        if self.authority.is_some() {
+            return Err(PortError::Rejected {
+                message: "本执行面的工程来自进程内控制面会话（唯一可变权威）⇒ `ui/open_project` \
+                          不在这里换工程（宿主的写入口没有『打开工程』这一项）；\
+                          请用领域 MCP 的 `yeban_close_project` / `yeban_open_project`"
+                    .to_owned(),
+            });
+        }
+        if self.undo.is_some() {
+            return Err(PortError::Rejected {
+                message: "本执行面挂着外部的撤销端口（它自己持有一份工程）⇒ 在这里换工程会让它\
+                          把旧工程写回引擎。「打开一个工程 = 新会话」今天只有\
+                          `crates/yeban-app/src/main.rs:447`（`open_undo_session`）那一条实现，\
+                          而本执行面拿不到那个端口 ⇒ 如实拒绝，而不是换一半；\
+                          请用**没有**撤销端口的装配（产品形态 `--enable-ui-mcp-http` 就是这一种）"
+                    .to_owned(),
+            });
+        }
+        // ① 权威打开路径。读失败 ⇒ 到这里就返回：下面一个字节都没改。
+        let project =
+            yeban_app::open::open_project_file(path).map_err(|error| PortError::Rejected {
+                message: format!("打开 `{path}` 失败（当前工程一位没动）: {error}"),
+            })?;
+        // ② 先保存当前工程（与 `ui/force_save` 同一个落点）。
+        //
+        // `saveFirst` 要保存而没有落点 ⇒ 拒绝，并把选择权交回调用方。这一句与
+        // `preview_effect` **共用同一个构造函数**：D48 要求 `dryRun` 报的失败与真调用
+        // 报的失败是同一句话，两处各写一遍迟早会漂移。
+        if save_first && self.save_path.is_none() {
+            return Err(Self::no_save_target_for_open());
+        }
+        if save_first {
+            self.save_now()?;
+        }
+        // ③ 唯一注入路径。
+        self.apply_project(&project).map_err(wiring_rejected)?;
+        // ④ 落点跟着新工程走。
+        self.save_path = Some(PathBuf::from(path));
+        // 三个**回读**读数（不是回显入参，也不是"我知道它应该是几"）：
+        // `tracks` = 手里那份投影的轨道数（投影的权威形状）；
+        // `rows` = 界面 `track-names` 的行数；
+        // `meterRows` = 界面电平数组的长度。
+        // 三者等长正是"没有串轨"的可断言形态（`host::apply_meters` 的 `debug_assert_eq!` 钉的
+        // 就是前两者；`.slint` 按下标取，不等长会把 A 轨的电平画到 B 轨上）。
+        let tracks = self.view.tracks.len() as u64;
+        let rows = slint::Model::row_count(&self.window.get_track_names()) as u64;
+        let meter_rows = slint::Model::row_count(&self.window.get_track_meter_levels()) as u64;
+        self.report = Some(AdminReport::new(
+            "open_project",
+            vec![
+                ("path", ReportValue::Text(path.to_owned())),
+                ("savedFirst", ReportValue::Bool(save_first)),
+                ("tracks", ReportValue::Uint(tracks)),
+                ("rows", ReportValue::Uint(rows)),
+                ("meterRows", ReportValue::Uint(meter_rows)),
+                ("saveTarget", ReportValue::Text(path.to_owned())),
+            ],
+        ));
+        Ok(())
+    }
+
     /// `ui/reload_engine`：**真的**重建引擎（新快照 / 新队列 / 推 N 个量子）并交还消费端。
     fn reload_engine_now(&mut self) -> Result<(), PortError> {
         let rebuild = self.rebuild_engine().map_err(wiring_rejected)?;
@@ -908,6 +1029,13 @@ impl UiTestPort for LiveAdminSurface {
     /// `apply_main_view` 同款分工：trait 里这一份只是委托，读代码的人不该猜哪一份在跑）。
     fn set_track_height_impl(&mut self, element_id: &str, height_px: u32) -> Result<(), PortError> {
         self.apply_track_height(element_id, height_px)
+    }
+
+    /// `ui/open_project` 的**真实载体**（CLI `--open` 在控制面上的孪生）。
+    ///
+    /// 语义主体在 [`Self::open_project_now`]（同上：trait 里这一份只是委托）。
+    fn open_project_impl(&mut self, path: &str, save_first: bool) -> Result<(), PortError> {
+        self.open_project_now(path, save_first)
     }
 }
 
@@ -1032,6 +1160,67 @@ impl UiSurface for LiveAdminSurface {
                 ("quanta", ReportValue::Uint(self.engine_quanta)),
                 ("tracks", ReportValue::Uint(self.view.tracks.len() as u64)),
             ]),
+            yeban_ui_mcp::methods::METHOD_OPEN_PROJECT => {
+                let path = arguments.text("path").unwrap_or_default();
+                let save_first = arguments.is_true("saveFirst").unwrap_or(true);
+                // **真校验**（`&self`：一个状态位都不改）：
+                // ① 有别的持有者 ⇒ 与真调用**同一句话**地拒绝（dryRun 不许把注定失败说成成功）；
+                if self.undo.is_some() {
+                    return Err(PortError::Rejected {
+                        message:
+                            "本执行面挂着外部的撤销端口（它自己持有一份工程）⇒ 在这里换工程会让它\
+                                  把旧工程写回引擎。「打开一个工程 = 新会话」今天只有\
+                                  `crates/yeban-app/src/main.rs:447`（`open_undo_session`）那一条实现，\
+                                  而本执行面拿不到那个端口 ⇒ 如实拒绝，而不是换一半；\
+                                  请用**没有**撤销端口的装配（产品形态 `--enable-ui-mcp-http` 就是这一种）"
+                                .to_owned(),
+                    });
+                }
+                #[cfg(feature = "in-process-mcp")]
+                if self.authority.is_some() {
+                    return Err(PortError::Rejected {
+                        message:
+                            "本执行面的工程来自进程内控制面会话（唯一可变权威）⇒ `ui/open_project` \
+                                  不在这里换工程（宿主的写入口没有『打开工程』这一项）；\
+                                  请用领域 MCP 的 `yeban_close_project` / `yeban_open_project`"
+                                .to_owned(),
+                    });
+                }
+                // ② 预读**新**文件（只读）—— 与真调用**同一顺序**：真调用也是先读文件、
+                //    再问 `saveFirst`，因此"预览报的失败"就是"真调用会报的那个失败"。
+                let opened = yeban_app::open::open_project_file(path).map_err(|error| {
+                    PortError::Rejected {
+                        message: format!("打开 `{path}` 失败（当前工程一位没动）: {error}"),
+                    }
+                })?;
+                let opened_tracks = ViewState::from_project(&opened)
+                    .map(|view| view.tracks.len() as u64)
+                    .map_err(|error| PortError::Rejected {
+                        message: format!("`{path}` 投影失败: {error}"),
+                    })?;
+                // ③ `saveFirst` 要保存旧工程，而没有落点 ⇒ 与真调用**同一个构造函数**
+                //    （同一句话，不是"两句意思差不多的话"）。
+                if save_first && self.save_path.is_none() {
+                    return Err(Self::no_save_target_for_open());
+                }
+                PreviewEffect::new(vec![
+                    ("path", ReportValue::Text(path.to_owned())),
+                    ("saveFirst", ReportValue::Bool(save_first)),
+                    (
+                        "currentTracks",
+                        ReportValue::Uint(self.view.tracks.len() as u64),
+                    ),
+                    ("openedTracks", ReportValue::Uint(opened_tracks)),
+                    (
+                        "currentSaveTarget",
+                        ReportValue::Text(
+                            self.save_path
+                                .as_ref()
+                                .map_or_else(String::new, |target| target.display().to_string()),
+                        ),
+                    ),
+                ])
+            }
             yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS => {
                 let raw = arguments.text("keyCode").unwrap_or_default();
                 // 键名解析与真调用**同一条**（拼错的键在参数/执行面阶段就会被拒，
@@ -1316,6 +1505,28 @@ impl LiveUi {
     ) -> Result<(), PortError> {
         self.surface.inner.dispatch_key_press(key)
     }
+
+    /// 在**这个活窗口**上换一份当前工程（`ui/open_project` 的**本体**，CLI `--open` 的孪生）。
+    ///
+    /// 存在的理由与 [`Self::dispatch_key_press`] 逐字相同：端到端判据既要走"打开 → 重投影"
+    /// 这一段，又要保留 `LiveUi` 自己的读数能力（[`Self::tree_snapshot`] /
+    /// [`Self::capture`] / [`Self::pump_meters`] / [`Self::engine_snapshot_counts`] /
+    /// [`Self::ui`] 上的窗口属性数组）—— 而把执行面装箱交给控制面
+    /// （[`Self::into_control_plane`]）之后，两者不可兼得。
+    ///
+    /// 它走的是**权限闸门**（`UiTestPort::open_project` ⇒ `Operation::OpenProject`），
+    /// 不是绕过它直接调 [`LiveAdminSurface::open_project_now`]：因此"权限不足时实现侧
+    /// 一次都没被调用"这条既有的闸门语义在这条入口上也成立。
+    ///
+    /// 控制面那条路（真的 JSON-RPC 文本 + `ui/tree` / `ui/node` / `ui/screenshot` 读数）
+    /// 由 `crates/yeban-app/tests/live_ui_mcp.rs` 的**另一条**判据覆盖。
+    ///
+    /// # Errors
+    ///
+    /// 端口拒绝（权限不足 / 当前工程没有落点 / 目标打不开 / 权威或撤销端口在场）。
+    pub fn open_project(&mut self, path: &str, save_first: bool) -> Result<(), PortError> {
+        UiTestPort::open_project(&mut self.surface, path, save_first)
+    }
 }
 
 /// 控制面 + 装配时留下的证据（判据用）。
@@ -1545,6 +1756,9 @@ pub fn build_live_ui_with(
         authority: None,
         #[cfg(feature = "in-process-mcp")]
         authority_revision: 0,
+        // 撤销端口的**同一份** `Rc`（不是第二份）：键盘路径的闭包与这里共享它，
+        // 因此 [`LiveAdminSurface::open_project_now`] 能如实判断"工程是不是还有别的持有者"。
+        undo: options.undo.clone(),
     };
     Ok(LiveUi {
         reference,
