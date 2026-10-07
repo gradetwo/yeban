@@ -492,9 +492,13 @@ impl Sample {
 /// 能让我们的像素跟着走的，是 [`crate::host::apply_theme`] 把
 /// `ui/tokens.slint` 的 `ThemeState.theme` 写成下面的值：`Brand` 走**今天那一串十六进制
 /// 字面量**（默认外观因此一位未改），`Yeban` / `InkMoor` / `Plume` 各走**负责人下发的
-/// 另一串十六进制字面量**，剩下四个走 Slint 设计系统的 `Palette.*` 角色。
+/// 另一串十六进制字面量**（`.slint` 侧写作 `yeban` / `inkmoor` / `plume`；Slint 的 Rust
+/// 生成器只把每段首字母大写，所以 `inkmoor` **生成出来**是 `YebanTheme::Inkmoor`，
+/// 与本枚举的 **CLI 变体名** `Theme::InkMoor` 差一个大写 —— 两个名字各属于一层，别混用），
+/// 剩下四个走 Slint 设计系统的 `Palette.*` 角色。
 ///
-/// 于是八支主题分成两族：**四支自绘**（`Brand` / `Yeban` / `InkMoor` / `Plume`，
+/// 于是八支主题分成两族：**四支自绘**（`Brand` / `Yeban` / `InkMoor` / `Plume` —— 都是
+/// 本枚举的变体名；它们在 `YebanTheme` 里对应 `Brand` / `Yeban` / `Inkmoor` / `Plume`，
 /// [`Self::uses_design_system`] 为假、[`Self::requested_slint_style`] 为 `None`）与
 /// **四个设计系统名字**（`Material` / `Fluent` / `Cupertino` / `Native`）。
 ///

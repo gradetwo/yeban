@@ -17,8 +17,8 @@
 //! | ③ | **生效的调色板真的跟着选择变**：从活的 Slint 组件**回读** `Tokens.*` | 真 `MainWindow` 的 token 值（无像素） |
 //! | ④ | `yeban` / `inkmoor` / `plume` 的每一支颜色 == 负责人下发的那个字面量（回读 + 对比度断言） | 真 `MainWindow` 的 token 值 |
 //! | ⑤ | 四支自绘调色板的**源码钉**：`ui/tokens.slint` 里每个 token 的四个字面量分支 | `tokens.slint` 的文本 |
-//! | ⑥ | `accent`（唯一强调色）在整份界面里**恰好出现一次**；`bg-control` 也恰好一次 | 全部 `ui/**/*.slint` 的文本 |
-//! | ⑦ | 原则「暖强调色唯一」「无投影/无渐变」的机械形态（三支自绘皮肤各一条）；`--print-theme` 的出处行 | token 值的色相 + 全部 `ui/**/*.slint` 的文本 + 真进程 stdout |
+//! | ⑥ | `accent`（唯一强调色）在整份界面里**恰好出现一次**，且那一处是**录音键的 ●**（`HD-54`）；`bg-control` 也恰好一次 | 全部 `ui/**/*.slint` 的文本 |
+//! | ⑦ | 原则「暖强调色唯一」「无投影/无渐变」的机械形态（三支自绘皮肤各一条，含落点搬走后 AI 徽章必须冷、以及 `accent != record-red`）；`--print-theme` 的出处行 | token 值的色相 + 全部 `ui/**/*.slint` 的文本 + 真进程 stdout |
 //!
 //! ## 2026-10-07：三支自绘皮肤（`yeban` / `inkmoor` / `plume`）
 //!
@@ -51,6 +51,21 @@
 //!
 //! ③ 是这条工作线的核心 —— 因为"换主题"这件事最容易做成"改了命令行、什么都没变"。
 //! 它读的是 `ui/tokens.slint` 里那十三支颜色令牌的**实际取值**，不是像素、不是文件内容。
+//!
+//! ## 2026-10-07 `HD-54`：唯一暖强调的**落点**从 AI 徽章搬到录音键的 ●
+//!
+//! 负责人裁决：录音键——落日，唯一带光环的圆；`accent` 的落点要从 AI 徽章**移到录音键**，
+//! AI 徽章另找角色（本仓取 `ai-suggestion`）。因此本文件里有四处**随落点一起移动**：
+//!   * ③ 的品牌表：`accent` 的 brand 值写成 `#d94a4a`（= 录音键的 ● 原来画的
+//!     `record-red`），并新增 `accent == record-red`、`ai-suggestion == #a855f7`
+//!     （= `accent` **移动前**的 brand 值）两条机械保证 —— 这是 `--theme default`
+//!     逐像素不变的两个前提;
+//!   * `wcag_cases`：录音键的静置板 `bg-panel-alt`、按下板 `bg-raised` 两对，加上旧落点
+//!     AI 徽章的 `ai-suggestion / bg-panel-alt`（16 → 18 对）;
+//!   * ⑥：唯一那一处的落点判据从"AI 徽章的 `border-color`"改成"**录音键的 ●**"，并反向
+//!     钉住旧落点必须已换成 `ai-suggestion`（`accent` 一旦被复制回徽章, 计数先红）;
+//!   * ⑦a / ⑦a-bis：新增两条随落点走的断言 —— 旧落点的新角色必须是**冷**色相、
+//!     `accent` 不许等于录音键的功能色 `record-red`（否则"移动"只是改了个名）。
 //!
 //! ## 为什么 ③ 需要自己装一个平台
 //!
@@ -290,7 +305,7 @@ fn the_effective_palette_follows_the_selection() {
 
     // ---- ① 默认 = 今天的外观（**逐字节**的品牌字面量）----
     host::apply_theme(&ui, Theme::Brand);
-    let brand: [(&str, Color, u8, u8, u8); 10] = [
+    let brand: [(&str, Color, u8, u8, u8); 12] = [
         ("bg-panel", tokens.get_bg_panel(), 0x15, 0x1d, 0x38),
         ("bg-panel-alt", tokens.get_bg_panel_alt(), 0x1b, 0x24, 0x47),
         ("bg-raised", tokens.get_bg_raised(), 0x23, 0x2f, 0x5c),
@@ -302,7 +317,20 @@ fn the_effective_palette_follows_the_selection() {
         // 2026-10-06 新增的两支（见 `ui/tokens.slint` §6c）: 默认主题下它们必须**分别**
         // 等于被它们替换掉的那两个字面量，否则顶栏的渲染字节就变了。
         ("bg-control", tokens.get_bg_control(), 0x1b, 0x24, 0x47),
-        ("accent", tokens.get_accent(), 0xa8, 0x55, 0xf7),
+        // 2026-10-07（`HD-54`）: 唯一强调色的**落点**从 AI 徽章描边移到录音键的 ●。
+        // 落点移动不许改默认像素 ⇒ 被碰到的两支令牌各写出它们的 brand 值:
+        //   `accent`        = #d94a4a = 录音键的 ● 原来画的 `record-red`（brand）;
+        //   `record-red`    = #d94a4a（取值一位未改）;
+        //   `ai-suggestion` = #a855f7 = AI 徽章描边原来画的 `accent`（移动前）的 brand 值。
+        ("accent", tokens.get_accent(), 0xd9, 0x4a, 0x4a),
+        ("record-red", tokens.get_record_red(), 0xd9, 0x4a, 0x4a),
+        (
+            "ai-suggestion",
+            tokens.get_ai_suggestion(),
+            0xa8,
+            0x55,
+            0xf7,
+        ),
     ];
     for (name, value, red, green, blue) in brand {
         assert_eq!(
@@ -312,9 +340,12 @@ fn the_effective_palette_follows_the_selection() {
              —— 它变了就意味着 Linux golden 基线要重生成"
         );
     }
-    // 这两条是**顶栏缺陷修复的机械保证**（2026-10-06）:
-    // 保存键的板与 AI 提案徽章的板必须分别等于它们原来用的那个字面量,
-    // 于是 `transport.slint` 里那两处替换在默认主题下是**零像素差**的。
+    // 这三条是**顶栏两处令牌替换的机械保证**:
+    //   ① 2026-10-06 保存键的板: `bg-control` == `bg-panel-alt`（它原来用的就是后者）;
+    //   ② 2026-10-07 `HD-54` 录音键的 ●: `accent` == `record-red`（落点移动后它画的还是
+    //      那个红, 所以 `--theme default` 一位未变）;
+    //   ③ 2026-10-07 `HD-54` AI 徽章的描边: `ai-suggestion` == 移动前 `accent` 的 brand 值
+    //      #a855f7（徽章也因此一位未变）。
     assert_eq!(
         tokens.get_bg_control(),
         tokens.get_bg_panel_alt(),
@@ -323,9 +354,15 @@ fn the_effective_palette_follows_the_selection() {
     );
     assert_eq!(
         tokens.get_accent(),
+        tokens.get_record_red(),
+        "默认主题下 `accent` 必须逐字节等于 `record-red` —— 录音键的 ● 换成 `accent` 之后 \
+         渲染字节不许变（它原来画的就是 record-red 的 #d94a4a）"
+    );
+    assert_eq!(
         tokens.get_ai_suggestion(),
-        "默认主题下 `accent` 必须逐字节等于 `ai-suggestion` —— AI 提案徽章的描边换了令牌 \
-         之后渲染字节不许变（它原来用的就是 ai-suggestion）"
+        Color::from_rgb_u8(0xa8, 0x55, 0xf7),
+        "默认主题下 `ai-suggestion` 必须仍是 #a855f7 —— AI 徽章的描边从 `accent` 换成它 \
+         之后渲染字节不许变（`accent` **移动前**的 brand 值就是 #a855f7）"
     );
 
     // ---- ①b `yeban`: 每一支都必须等于负责人下发的那个字面量 ----
@@ -660,10 +697,13 @@ fn the_effective_palette_follows_the_selection() {
          的 panel↔panel-alt 那一档 (1.10:1) ⇒ 两块板仍然分不开"
     );
     // 强调色也必须真的不同 (否则「唯一强调色只用一次」就只是把 AI 语义色换了个名字)。
+    // 2026-10-07（`HD-54`）之后这两支还在**两个不同的落点**上: `accent` 画录音键的 ●,
+    // `ai-suggestion` 画 AI 徽章的描边 —— 它们不同色正是"暖强调离开了 AI 徽章"的见证。
     assert_ne!(
         tokens.get_accent(),
         tokens.get_ai_suggestion(),
-        "`yeban` 的 `accent` 不许等于 AI 建议的语义色 —— 那意味着强调色其实没换"
+        "`yeban` 的 `accent`（录音键的 ●）不许等于 `ai-suggestion`（AI 徽章描边）—— \
+         那意味着强调色其实没换"
     );
 
     // ---- ② 非默认主题必须**真的**换掉调色板 ----
@@ -780,7 +820,16 @@ fn contrast_ratio(a: Color, b: Color) -> f64 {
 /// 阈值是 WCAG 2.1 的原值，一条都没为某支皮肤放宽：正文 7:1 (AAA) / 4.5:1 (AA) /
 /// 3:1 (AA 大字与非文本 UI 边界 [1.4.11])。表只写一遍 ⇒ `yeban` / `inkmoor` / `plume`
 /// 三支皮肤测的是**同一组**配对，不会出现"某一支偷偷少测几对"。
-fn wcag_cases(tokens: &Tokens<'_>) -> [(&'static str, Color, Color, f64); 16] {
+///
+/// 2026-10-07（`HD-54`）：唯一强调色的落点从 AI 徽章描边移到**录音键的 ●**，因此这张表
+/// **随落点一起移动**（16 → 18 对）：
+///   * `accent / bg-panel-alt` —— 录音键的 ● 静置时画在 `bg-panel-alt` 上（原来这一对读
+///     的是"AI 徽章描边画在它自己的板上"，同样的两支令牌、同一个背景）;
+///   * `accent / bg-raised` —— **新增**：`transport-record-button` 按下时板变成 `bg-raised`
+///     （`transport.slint` 的 `background: rec_area.pressed ? …`），● 就在它上面;
+///   * `ai-suggestion / bg-panel-alt` —— **新增**：AI 徽章的描边改用 `ai-suggestion` 之后，
+///     这是徽章那一处的真实配对（旧落点腾空后也得有人看着）。
+fn wcag_cases(tokens: &Tokens<'_>) -> [(&'static str, Color, Color, f64); 18] {
     [
         (
             "ink-0 / bg-void",
@@ -855,8 +904,23 @@ fn wcag_cases(tokens: &Tokens<'_>) -> [(&'static str, Color, Color, f64); 16] {
             4.5,
         ),
         (
+            // 落点（`HD-54`）= 录音键的 ● 静置在 `bg-panel-alt` 上。
             "accent / bg-panel-alt",
             tokens.get_accent(),
+            tokens.get_bg_panel_alt(),
+            3.0,
+        ),
+        (
+            // 落点（`HD-54`）= 录音键**按下**时的板（`bg-raised`）。
+            "accent / bg-raised",
+            tokens.get_accent(),
+            tokens.get_bg_raised(),
+            3.0,
+        ),
+        (
+            // `HD-54` 腾空后的旧落点：AI 徽章的描边现在画 `ai-suggestion`。
+            "ai-suggestion / bg-panel-alt",
+            tokens.get_ai_suggestion(),
             tokens.get_bg_panel_alt(),
             3.0,
         ),
@@ -957,7 +1021,9 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
         .expect("必须存在 ui/tokens.slint");
 
     // (token, brand, yeban, inkmoor, plume) —— 四支自绘调色板各一列。
-    // `brand` / `yeban` 两列是 2026-10-07 之前的既有值（本切片一位未改）；
+    // `brand` / `yeban` 两列是 2026-10-07 之前的既有值；`yeban` 列本切片之后仍然一位未改，
+    // `brand` 列**只有 `accent` 一行**因 `HD-54` 的落点移动而改动（#a855f7 → #d94a4a，
+    // 见那一行的注释）；
     // `inkmoor` / `plume` 两列是负责人设计稿（HTML mock）的原话，逐条映射见 §6e。
     let table: [(&str, &str, &str, &str, &str); 23] = [
         ("bg-void", "#060a14", "#0e1216", "#0e1114", "#14100d"),
@@ -977,7 +1043,10 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
         ("gold-bright", "#f7e6b0", "#e7dfc8", "#efe9da", "#eae2d3"),
         ("gold", "#e2c77e", "#c6a47c", "#c9a26b", "#c68252"),
         ("gold-deep", "#b8933e", "#6d88a1", "#7c93a8", "#6f8d96"),
-        ("accent", "#a855f7", "#c6a47c", "#c9a26b", "#c68252"),
+        // 2026-10-07（`HD-54`）: `accent` 的 brand 列随**落点**改动 —— 落点是录音键的 ●,
+        // 而它原来画的是 `record-red` 的 brand 值 #d94a4a, 所以 `accent` 的 brand 分支
+        // 必须写 #d94a4a（yeban / inkmoor / plume 三列一位未改）。
+        ("accent", "#d94a4a", "#c6a47c", "#c9a26b", "#c68252"),
         ("ai-suggestion", "#a855f7", "#8e86a6", "#9e97ae", "#9c93a2"),
         ("record-red", "#d94a4a", "#ac6e60", "#b4715f", "#b25c43"),
         ("playing", "#e2c77e", "#6e9488", "#85a794", "#7f9483"),
@@ -1018,13 +1087,17 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
     );
 }
 
-/// **判据 ⑥**：唯一的强调色在整份界面里**恰好引用一次**，而且那一处就是 AI 提案徽章的描边。
+/// **判据 ⑥**：唯一的强调色在整份界面里**恰好引用一次**，而且那一处就是**录音键的 ●**
+/// （2026-10-07 `HD-54` 把落点从 AI 提案徽章的描边移到了这里）。
 ///
 /// 这是"强调色必须唯一"那条设计原则的机械形态：任何第二处引用（例如顺手也把保存键
-/// 描成 渔火）都会让这条红。`bg-control` 同样只准一处 —— 它是为那一块板而加的。
+/// 描成 渔火、或把 AI 徽章的描边改回 `accent`）都会让这条红。`bg-control` 同样只准
+/// 一处 —— 它是为那一块板而加的。
 ///
-/// 位置与令牌纪律在 2026-10-07 的换色里**一位未改**：改的只是 `accent` 的取值
-/// （原来是我们采到的红 `#d94a4a`，现在是负责人下发的 渔火 `#c6a47c`）。
+/// 落点怎么钉（判据随 `HD-54` **一起移动**）：那一行必须是**颜色**表达式（不是
+/// `border-color`），而且从它往上数最近的一个 `accessible-id` 必须是
+/// `transport-record-button` —— 也就是它画在录音键上。旧落点同时被**反向**钉住：
+/// AI 徽章最近的那条 `border-color` 必须是 `Tokens.ai-suggestion`，不许再是 `accent`。
 #[test]
 fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     // ⚠ 数的是**代码**，不是注释：源码里用反引号提到某个令牌名是文档，不是引用。
@@ -1041,11 +1114,25 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
             .collect()
     };
 
-    let mut hits = Vec::new();
+    // (文件, 行号, 那一行, 从它往上数最近的 `accessible-id`)
+    let mut hits: Vec<(String, usize, String, Option<String>)> = Vec::new();
     for (path, text) in &sources {
+        let mut enclosing: Option<String> = None;
         for (line_no, line) in text.lines().enumerate() {
+            if let Some(id) = line
+                .split("accessible-id:")
+                .nth(1)
+                .and_then(|rest| rest.split('"').nth(1))
+            {
+                enclosing = Some(id.to_string());
+            }
             if line.contains("Tokens.accent") {
-                hits.push(format!("{path}:{}: {}", line_no + 1, line.trim()));
+                hits.push((
+                    path.clone(),
+                    line_no + 1,
+                    line.trim().to_string(),
+                    enclosing.clone(),
+                ));
             }
         }
     }
@@ -1055,11 +1142,48 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
         "`Tokens.accent`（唯一强调色）必须**恰好**出现一次, 实际 {} 处: {hits:#?}",
         hits.len()
     );
+    let (path, line_no, line, enclosing) = &hits[0];
     assert!(
-        hits[0].contains("transport.slint") && hits[0].contains("border-color"),
-        "唯一那一处必须是顶栏 AI 提案徽章的 `border-color`（保存键与它相隔 4 px, \
-         强调色必须落在一个唯一的位置）; 实际 {}",
-        hits[0]
+        path.ends_with("ui/transport.slint"),
+        "唯一那一处必须仍住在顶栏 `transport.slint`（录音键与 AI 徽章都在那里）; \
+         实际 {path}:{line_no}"
+    );
+    assert!(
+        line.contains("color:") && !line.contains("border-color:"),
+        "唯一那一处必须是**颜色**表达式（录音键 ● 的 `color:`），不是描边 —— `HD-54` 的 \
+         落点是录音键; 实际 {path}:{line_no}: {line}"
+    );
+    assert_eq!(
+        enclosing.as_deref(),
+        Some("transport-record-button"),
+        "唯一那一处必须画在**录音键**上（`HD-54`：暖强调的落点 = 录音键的 ●）; \
+         实际它属于 {enclosing:?}（{path}:{line_no}: {line}）"
+    );
+
+    // 旧落点（`HD-54` 移走的那一处）必须真的腾空: AI 徽章最近的一条 `border-color`
+    // 只能是 `Tokens.ai-suggestion`。把徽章的描边改回 `accent` 会先撞上面那条
+    // "恰好一次", 再撞这一条。
+    let (_, transport) = sources
+        .iter()
+        .find(|(p, _)| p.ends_with("ui/transport.slint"))
+        .expect("必须存在 ui/transport.slint");
+    let badge = transport
+        .lines()
+        .position(|l| l.contains("accessible-id: \"transport-ai-proposal-badge\""))
+        .expect("transport.slint 里必须有 AI 提案徽章");
+    let (border_no, border) = transport
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.contains("border-color:"))
+        .min_by_key(|(i, _)| i.abs_diff(badge))
+        .expect("transport.slint 里必须有 `border-color:`");
+    assert!(
+        border.contains("Tokens.ai-suggestion"),
+        "AI 徽章（旧落点）的 `border-color` 必须是 `Tokens.ai-suggestion` —— 暖强调移走后 \
+         它必须换角色, 且换到的正是 brand 值等于移动前 `accent` 的那一支; \
+         实际 ui/transport.slint:{}: {}",
+        border_no + 1,
+        border.trim()
     );
 
     let control = files_with("Tokens.bg-control");
@@ -1072,7 +1196,8 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     // 语义色不许被我们顺手删掉: `ai-suggestion` 仍必须按 §9.1 用在 AI 建议层上。
     assert!(
         !files_with("Tokens.ai-suggestion").is_empty(),
-        "`ai-suggestion` 仍是 AI 建议层的语义色（AI 徽章换用 `accent` 之后它不该消失）"
+        "`ai-suggestion` 仍是 AI 建议层的语义色（AI 徽章**改用** `ai-suggestion` 之后它 \
+         也不该只在徽章上）"
     );
 
     // 2026-10-07 新增的一支: 负责人把「选区=愁眠」与「播放头=月华」分给了**两个**令牌
@@ -1099,6 +1224,13 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
 ///   ② 渔火 必须是**暖**色相（H ∈ [0°,60°]）。
 ///   ③ 功能/AI 侧的两支强调（`gold-deep` 客船、`selection` 愁眠）必须是**冷**色相
 ///      （H ∈ [150°,300°]）—— 也就是说, 它们不是第二个暖强调。
+///
+/// 2026-10-07 `HD-54` 把 `accent` 的**落点**移到录音键的 ●（落点本身由判据 ⑥ 钉住），
+/// 因此这条"暖强调"判据长出两条随落点走的断言：
+///   ④ **旧落点必须冷下来** —— AI 徽章的新描边 `ai-suggestion` 在 yeban 下必须是冷色相
+///      （否则暖强调只是从一个暖色换成另一个暖色, 落点根本没动）;
+///   ⑤ **录音键的功能色不许顶替** —— `accent` 不许等于 `record-red`（相等就说明这次
+///      "移动"只是把录音键原来的红改了个名, 暖强调并没有真的落到录音键上）。
 ///
 /// 为什么用「指定的两支必须同色 + 其余强调必须冷」而不是「数暖色相的个数」：负责人
 /// 自己的调色板里 月华 `#e7dfc8` 与 江枫 `#ac6e60` 也在暖区（前者是播放头、后者是
@@ -1143,6 +1275,25 @@ fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
              否则它就是负责人原则 ② 禁止的第二个暖强调色"
         );
     }
+
+    // ④ `HD-54`: 旧落点 (AI 徽章) 拿到的新角色必须是冷色 —— 否则暖强调没真的离开徽章。
+    let badge = yeban_of("ai-suggestion");
+    let badge_hue = hue_of(&badge).expect("ai-suggestion 必须有彩度");
+    assert!(
+        (150.0..=300.0).contains(&badge_hue),
+        "yeban 的 `ai-suggestion`（AI 徽章 `HD-54` 之后的新描边色 {badge}）必须是冷色相 \
+         (150°..=300°), 实测 H={badge_hue:.1}° —— 否则徽章上还留着第二个暖强调"
+    );
+
+    // ⑤ `HD-54`: 录音键的**功能**色不许顶替暖强调 —— 相等就说明这次"移动"只是把
+    // 录音键原来的红改了个名。(brand 下两者**故意**相等: 那是默认像素不变的机械前提,
+    // 见测试 ③ 的 ① 段与 `ui/tokens.slint` §6e 的「值重合」登记。)
+    assert_ne!(
+        accent,
+        yeban_of("record-red"),
+        "yeban 的 `accent`（录音键的 ●）不许等于 `record-red`（录音功能色）—— 相等说明\
+         暖强调只是被改了个名, 并没有落到录音键上"
+    );
 }
 
 /// **判据 ⑦a-bis**：两支新皮肤的「唯一暖强调」也必须是**机械形态**的，而不是一句形容。
@@ -1157,6 +1308,10 @@ fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
 ///   * 孤烟：「落日橙 `#C68252` …… 全界面唯一暖强调」（诗句→UI 语义表）。
 ///
 /// 因此两支皮肤的 `accent` 与 `gold` 各自同色，但**它们彼此不同色** —— 这一条也断言。
+///
+/// 2026-10-07 `HD-54` 之后（落点 = 录音键的 ●，落点本身由 ⑥ 钉住）这条还逐支断言：
+///   ④ 旧落点冷下来 —— `ai-suggestion`（AI 徽章的新描边色）必须是冷色相;
+///   ⑤ 功能色不许顶替 —— `accent` 不许等于 `record-red`（否则只是改了个名）。
 #[test]
 fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
     let sources = all_ui_sources();
@@ -1203,6 +1358,23 @@ fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
                  H={hue:.1}° —— 否则它就是「唯一暖强调」原则禁止的第二个暖强调色"
             );
         }
+
+        // ④ `HD-54`: 旧落点 (AI 徽章) 拿到的新角色必须是冷色。
+        let badge = of("ai-suggestion");
+        let badge_hue = hue_of(&badge).expect("ai-suggestion 必须有彩度");
+        assert!(
+            (150.0..=300.0).contains(&badge_hue),
+            "`{skin}` 的 `ai-suggestion`（AI 徽章 `HD-54` 之后的新描边色 {badge}）必须是 \
+             冷色相 (150°..=300°), 实测 H={badge_hue:.1}° —— 否则徽章上还留着第二个暖强调"
+        );
+
+        // ⑤ `HD-54`: 录音键的功能色不许顶替暖强调。
+        assert_ne!(
+            accent,
+            of("record-red"),
+            "`{skin}` 的 `accent`（录音键的 ●）不许等于 `record-red`（录音功能色）—— \
+             相等说明暖强调只是被改了个名, 并没有落到录音键上"
+        );
         seen_accent.push((skin, accent));
     }
 

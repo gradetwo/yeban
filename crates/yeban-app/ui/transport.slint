@@ -128,6 +128,11 @@ export component Transport inherits Rectangle {
     }
 
     // 录音 — 规范未定义快捷键, 只登记控件与 ID
+    //
+    // 圆点 (●) 的颜色是 `Tokens.accent`（2026-10-07 `HD-54`）：负责人裁决「录音键——
+    // 落日：唯一带光环的圆」⇒ 整份界面**唯一**的暖强调色落在**录音键**上，AI 徽章
+    // 改用别的角色。这里只换**颜色表达式**：`accent` 的 brand 分支 = #d94a4a =
+    // `record-red` 的 brand 值（圆点原来画的就是它），所以 `--theme default` 一位未变。
     Rectangle {
         x: 80px;
         y: Tokens.space-4;
@@ -147,7 +152,7 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "●";
-            color: Tokens.record-red;
+            color: Tokens.accent;
             font-size: Tokens.font-size-lg;
             horizontal-alignment: center;
         }
@@ -380,11 +385,13 @@ export component Transport inherits Rectangle {
 
     // ------------------------------------------------- AI 提案徽章 (§10 时光机入口)
     //
-    // 描边用 `Tokens.accent` 而**不是** `ai-suggestion`（2026-10-06）：`accent` 是整份
-    // 界面**只准出现一次**的那一个强调色。它在 `--theme default` 下的取值就是
-    // `#a855f7`（= 原来的 `ai-suggestion`），因此默认渲染一位未变；`--theme yeban`
-    // 下它是测量出来的朱砂 `#d94a4a`。`ai-suggestion` 本身仍按 §9.1 的语义用在
-    // 钢琴卷帘的 AI 建议层（45% 半透明 + 虚线描边），**没有**改语义。
+    // 描边用 `Tokens.ai-suggestion`（2026-10-07 `HD-54` 改）：整份界面**唯一**的暖强调色
+    // 已移到**录音键**的 ● 上，AI 徽章因此**另找角色**。这一处原来画的是 `accent`，
+    // 而 `accent` 移动前的 brand 值就是 `#a855f7` (= `ai-suggestion` 的 brand 分支)，
+    // 所以 `--theme default` 下这 1 px 描边一位未变。三支自绘皮肤下它现在拿到的是
+    // 愁眠 / 愁眠 / 归雁的**冷**色（对 bg-panel-alt 4.89 / 6.10 / 5.93:1，≥ 3:1），
+    // 暖强调确实不在徽章上了。`ai-suggestion` 本身仍按 §9.1 的语义用在钢琴卷帘的
+    // AI 建议层（45% 半透明 + 虚线描边），**没有**改语义。
     Rectangle {
         x: 640px;
         y: Tokens.space-4;
@@ -393,7 +400,7 @@ export component Transport inherits Rectangle {
         background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
         border-width: 1px;
-        border-color: Tokens.accent;
+        border-color: Tokens.ai-suggestion;
         accessible-role: button;
         accessible-id: "transport-ai-proposal-badge";
         accessible-label: "AI 编曲提案待审查";

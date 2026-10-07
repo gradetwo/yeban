@@ -920,7 +920,12 @@ pub fn build_main_window(
 /// [`crate::cli::Theme::InkMoor`] / [`crate::cli::Theme::Plume`] 是 2026-10-07 新增的
 /// **同款第三类**：负责人设计稿「墨泊 InkMoor」/「孤烟 Plume」各是一串自己的十六进制
 /// 字面量（`ui/tokens.slint` §6e 的逐条映射），同样不读 `Palette`。四支自绘调色板
-/// (`Brand` / `Yeban` / `InkMoor` / `Plume`) 与四个设计系统名字共享**这一个**写入口。
+/// (`Brand` / `Yeban` / `InkMoor` / `Plume` —— 这四个是 **CLI 侧** [`crate::cli::Theme`]
+/// 的变体名；`.slint` 侧写的是 `YebanTheme.brand` / `.yeban` / `.inkmoor` / `.plume`，
+/// 而 Slint 的 Rust 生成器只把每段的**首字母**大写，所以 `inkmoor` 那支**生成出来**
+/// 是 `Brand` / `Yeban` / `Inkmoor` / `Plume` —— `Inkmoor` 与本段列出的 CLI 变体名
+/// `InkMoor` 差一个大写，两者不是同一个名字，别混用；实测见 `target/debug/build/
+/// yeban-app-*/out/app.rs` 的 `pub enum YebanTheme`) 与四个设计系统名字共享**这一个**写入口。
 ///
 /// 为什么仍然值得给 `Brand` 之外的主题留四个名字：`Brand` ↔ 其余四个的差别是**真实的**
 /// 像素差别（品牌色 vs 设计系统 `Palette` 角色），而且 `Palette` 会跟随系统的浅色/深色

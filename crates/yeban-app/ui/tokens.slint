@@ -213,7 +213,7 @@ export global Tokens {
     //   gold-bright    <- #e7dfc8  月华      yuehua     播放头 / 时间码 / 读数
     //   gold           <- #c6a47c  渔火      yuhuo      片段 / 音符头 / 章节名 = 主强调
     //   gold-deep      <- #6d88a1  客船      kechuan    副强调: 片段描边 / solo / 自动化徽章
-    //   accent         <- #c6a47c  渔火      yuhuo      唯一那一处强调 (AI 徽章描边)
+    //   accent         <- #c6a47c  渔火      yuhuo      唯一那一处强调 (装点录音键的 ●; 2026-10-07 HD-54)
     //   ai-suggestion  <- #8e86a6  愁眠      choumian   AI 建议层
     //   record-red     <- #ac6e60  江枫      jiangfeng  录音 / 静音
     //   playing        <- #6e9488  铜绿      tonglv     播放 / 走带
@@ -283,16 +283,34 @@ export global Tokens {
     //     yeban = 绀灰 #1e2733 (负责人的 bg-raise 那一档 —— 墨阶里比 鸦青·暗 再亮的只有它)
     //     ⇒ 比徽章板 (鸦青·暗 #161e28) 亮 **1.11:1** (默认那两块之间是 1.00:1 —— 完全相同)。
     //     这一档只比判据的 1.10 门槛高 0.01, 是负责人墨阶自身给不出更大间距的结果, 如实登记。
-    //   - `accent`: **整份界面只准出现一次**的那一个强调色。
-    //     brand = #a855f7 (**就是** AI 建议语义色, 因此默认不变);
-    //     yeban = 渔火 #c6a47c —— 负责人 mock 的原则 ② 原话: "渔火 #C6A47C 是全界面**唯一**
-    //     的暖强调色"。它只用在 AI 提案徽章的 1 px 描边上 (对 bg-panel-alt 7.20:1 ≥ 3:1,
-    //     非文本 UI 边界 [WCAG 1.4.11]); 判据 `the_accent_appears_in_exactly_one_role_in_the_ui_sources`
-    //     扫源码点名要求恰好 1 处 —— 位置没变, 只换了数字。
-    //     (角色与取值的张力如实登记: 这一处的**位置**是 AI 徽章, 而负责人把 AI 归给 愁眠;
-    //      但**令牌**叫 accent, 负责人把 渔火 叫"唯一暖强调色" ⇒ 按令牌取 渔火。)
+    //   - `accent`: **整份界面只准出现一次**的那一个强调色。2026-10-07 的 `HD-54`
+    //     把它的**落点**从 AI 徽章描边移到了**录音键的 ●**（负责人原话：「录音键——
+    //     落日：唯一带光环的圆」）。落点移动时**取值必须随落点走**, 否则默认主题就会
+    //     变像素:
+    //     brand = #d94a4a (**就是** `record-red` 的 brand 值 = 录音键的 ● 今天画的那个
+    //     红, 因此默认渲染一位未变);
+    //     yeban / inkmoor / plume = 渔火 / 渔火 / 落日 (取值与移动前**完全一样**, 仍是
+    //     负责人下发的「唯一暖强调」)。
+    //     对录音键的板实测 (bg-panel-alt 静置 / bg-raised 按下): brand 3.62 / 3.08:1,
+    //     yeban 7.20 / 6.46:1, inkmoor 7.22 / 6.66:1, plume 5.60 / 5.18:1 —— 都 ≥ 3:1
+    //     (非文本 UI 边界 [WCAG 1.4.11]); 判据
+    //     `the_accent_appears_in_exactly_one_role_in_the_ui_sources` 扫源码要求恰好
+    //     1 处, 并点名那一处必须是录音键的 ●(不再是 AI 徽章描边)。
+    //     AI 徽章的 1 px 描边改用 `ai-suggestion`: brand = #a855f7 (**就是** `accent`
+    //     移动前的 brand 值, 因此徽章默认渲染也一位未变); yeban / inkmoor / plume 下
+    //     它是 愁眠 / 愁眠 / 归雁 的冷色 (对 bg-panel-alt 4.89 / 6.10 / 5.93:1, 同样
+    //     ≥ 3:1), 于是「唯一暖强调」确实离开了 AI 徽章。
+    //     **设计系统四支如实登记**: 那里 `accent` 仍是 `Palette.accent-background`、
+    //     `ai-suggestion` 仍是硬编码 `#a855f7`, 所以这四支下录音键的 ● 与徽章描边**都
+    //     换了取值**(默认主题与三支自绘皮肤不受影响; golden 只覆盖默认主题)。
+    //     **权衡登记 (2026-10-07)**: 负责人当日的规则是"1.0.0 之前一切可改, 收益够大
+    //     就改", 而改 `--theme default` 的代价是 5 张 Linux 基准要走手动档
+    //     `gates-manual.yml` 的 `goldens` 重新生成 + 人工复核。这次**不动**默认像素:
+    //     brand 不是负责人下发的皮肤, 给它另造一个"暖强调"值等于替负责人发明颜色; 而
+    //     "把落点搬到录音键"本身**不需要**动默认像素 —— 录音键的 ● 今天画的就是这个红。
+    //     收益为 0 ⇒ 按规则不改, 基准不需要重录。
     out property <color> bg-control: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? #1e2733 : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
-    out property <color> accent: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #c6a47c : (ThemeState.theme == YebanTheme.inkmoor ? #c9a26b : (ThemeState.theme == YebanTheme.plume ? #c68252 : Palette.accent-background)));
+    out property <color> accent: ThemeState.theme == YebanTheme.brand ? #d94a4a : (ThemeState.theme == YebanTheme.yeban ? #c6a47c : (ThemeState.theme == YebanTheme.inkmoor ? #c9a26b : (ThemeState.theme == YebanTheme.plume ? #c68252 : Palette.accent-background)));
 
     // 文字/墨色与次级灰蓝。设计系统侧没有"三级灰"这个角色, 用 foreground →
     // alternate-foreground → control-foreground 这条**真实存在的**层级代替。
@@ -351,7 +369,7 @@ export global Tokens {
     //   gold-bright     <- #efe9da     月华      moon      播放头 / 时间码 / 读数
     //   gold            <- #c9a26b     渔火      gold      片段 / 音符头 / 章节名 = 主强调
     //   gold-deep       <- #7c93a8     客船      boat      副强调: 片段描边 / solo / 自动化徽章
-    //   accent          <- #c9a26b     渔火      gold      唯一那一处强调 (AI 徽章描边)
+    //   accent          <- #c9a26b     渔火      gold      唯一那一处强调 (装点录音键的 ●; HD-54)
     //   ai-suggestion   <- #9e97ae     愁眠      frost     AI 建议层
     //   record-red      <- #b4715f     江枫      maple     录音 / 静音
     //   playing         <- #85a794     铜绿      verd      播放 / 走带
@@ -376,7 +394,7 @@ export global Tokens {
     //   gold-bright     <- #eae2d3     孤烟      moon      播放头 / 时间码 / 读数
     //   gold            <- #c68252     落日      gold      主强调 (mock 原文: 「全界面唯一暖强调」)
     //   gold-deep       <- #6f8d96     长河      boat      副强调 (波形 / 标尺「河光」)
-    //   accent          <- #c68252     落日      gold      唯一那一处强调 (AI 徽章描边)
+    //   accent          <- #c68252     落日      gold      唯一那一处强调 (装点录音键的 ●; HD-54)
     //   ai-suggestion   <- #9c93a2     归雁      frost     雁书 / AI 建议层
     //   record-red      <- #b25c43     落霞      maple     录音激活 / 电平峰值
     //   playing         <- #7f9483     燕然/石绿 verd      播放 / 走带
@@ -440,6 +458,14 @@ export global Tokens {
     //   * `accent` == `gold` (两支皮肤都是): 负责人把「唯一暖强调」(渔火 / 落日) 与
     //     「主强调 / 片段」给了同一个色 ⇒ **暖强调色相唯一**, 但**令牌不唯一**。
     //     与 `yeban` 的取舍同款 (§6b 末段)。
+    //   * `accent` == `record-red` (**只在 brand 下**, 都是 #d94a4a): `HD-54` 把 `accent`
+    //     的落点移到录音键的 ● 之后, 要让默认主题一位未变, `accent` 的 brand 分支就必须
+    //     等于那一处**原来画的** `record-red`。这是"为了让一个主题范围内的令牌能换落点"
+    //     而登记的重合, **不是**把两支令牌合并: 三支自绘皮肤下它们立刻分开
+    //     (yeban #c6a47c vs #ac6e60 / inkmoor #c9a26b vs #b4715f / plume #c68252 vs #b25c43),
+    //     判据 `the_single_warm_accent_*` 也逐支断言它们不等。
+    //   * `ai-suggestion` (**brand**) == `accent` **移动前**的 brand 值 (#a855f7): 这也是
+    //     落点移动的机械前提 —— AI 徽章的描边换成 `ai-suggestion` 之后默认渲染一位未变。
     //   * `bg-panel-alt` == `bg-head`: 负责人只给了一级「包头」色, 而我们在结构上有两个
     //     角色 ⇒ 共用 (与 yeban 同款取舍)。
     //   * `bg-control` == `bg-raised`, `bg-shell` == `bg-lane`, `ai-suggestion` == `selection`:
@@ -448,18 +474,28 @@ export global Tokens {
     //     `hill` == `verd` (#7f9483) —— 负责人自己稿子里的重合, 登记不评判。
     //
     // ---------------------------------------------------------------
-    // 待负责人裁决 (本切片**不替他们决定**)
+    // 裁决状态 (2026-10-07 之后; 已裁决的在这里回填 `HD-nn`, 不再当待办读)
     // ---------------------------------------------------------------
     //   1. `yeban` 与 `inkmoor` 的取值**逐条不同** (同一套"枫桥夜泊"意象、两版数字)。
-    //      本切片按硬约束保留 `yeban` 原值、新增 `inkmoor`; "是否让 inkmoor 取代 yeban"
-    //      是负责人的取舍, 不是本次改动的授权范围。
+    //      **已裁决 `HD-53` (2026-10-07): 两支都留** —— `yeban` / `inkmoor` 并存, 两版都
+    //      要能选, 没有谁取代谁 (`Theme::ALL` 因此是 8 支)。本行的旧措辞("是否让 inkmoor
+    //      取代 yeban 由负责人裁决")在裁决后已旧, 按 `HD-53` 的登记在此更正。
     //   2. Plume 文稿的散文把**录音键**写成「落日: 唯一带光环的圆」(落日 = `--gold` =
     //      主强调), 而 mock 的实现 (`.sun-dot{background:var(--maple)}` 与 `--maple:#b25c43`)
-    //      把录音键画成 **落霞**。我们的 `record-red` 是录音键的色 ⇒ 取 mock 的
-    //      `--maple` #b25c43 (实现是更完整的那份), 与散文的措辞冲突**登记在此**。
-    //   3. Plume 的「唯一暖强调」在负责人稿子里落在**录音键/落日**上, 而本仓 `accent`
+    //      把录音键画成 **落霞**。**2026-10-07 `HD-54` 按散文落定**: 录音键的圆点用暖
+    //      强调 (落日 / 渔火), 所以 `record-red` 在我们这里**不再画录音键的 ●** —— 它仍是
+    //      静音键 / 录音待命 / 存档失败那几处的功能色 (取值一位未改)。mock 的
+    //      `.sun-dot{--maple}` 因此在本仓**没有落点**: 登记, 不发明第二个录音键元素。
+    //   3. ~~Plume 的「唯一暖强调」在负责人稿子里落在**录音键/落日**上, 而本仓 `accent`
     //      令牌落在 **AI 徽章描边**上 (位置由既有判据钉住, 本切片不许移动像素) ⇒
-    //      取值取 落日, 位置不动; 语义错位由负责人裁决。
+    //      取值取 落日, 位置不动; 语义错位由负责人裁决。~~
+    //      **已裁决并已实现 (`HD-54`, 2026-10-07)**: `accent` 的落点已从 AI 徽章描边移到
+    //      录音键的 ●, AI 徽章改用 `ai-suggestion`; 「唯一暖强调」与「恰好被引用一次」
+    //      两条判据随落点一起移动 (见 `theme_selection.rs` 判据 ⑥/⑦a/⑦a-bis)。
+    //      **裁决原文只点名 Plume**, 而 `accent` 是**一支主题范围内的令牌、只有一个落点**,
+    //      所以这次移动对**八支主题同时生效** (brand 下它的值 = 录音键原来的红 #d94a4a;
+    //      设计系统四支下 = `Palette.accent-background`)。"对 yeban / inkmoor 也移动"是从
+    //      「一支令牌一个落点」推出来的, **不是裁决原话** ⇒ 如实登记, 待负责人确认。
     //   4. `piano-key` 在负责人稿子里是**两段渐变**的白键, 我们只能给一个不透明值;
     //      取的是他们变量表里的 `reed` (InkMoor) / `dune`==`reed` (Plume)。若要更贴近
     //      他们画出来的键, 需要的是「渐变」而不是「另一个单色」。
@@ -474,7 +510,8 @@ export global Tokens {
     //   只有颜色、本切片**已随令牌实现**:
     //     - 墨阶/沙阶表面系统 (§6e 的 5 级背景) —— 纯粹换令牌值;
     //     - 发丝线由 alpha 换成不透明值 (§6e 的 rgba 处理) —— 有代价, 已登记;
-    //     - 唯一暖强调 (渔火 / 落日) —— `accent` + `gold` 的值;
+    //     - 唯一暖强调 (渔火 / 落日) —— `accent` + `gold` 的值。**2026-10-07 `HD-54` 之后
+    //       它的落点是录音键的 ●**(§6c): 这一格因此从"只有值"变成"值 + 落点"。
     //     - 功能色降饱和 (录音 / 播放 / 选区 / 副强调) —— `record-red`/`playing`/
     //       `selection`/`gold-deep` 的值;
     //     - 文本三级灰 —— `ink-0/1/2`.
@@ -489,7 +526,9 @@ export global Tokens {
     //     - 标题栏的**主题标签** (`<span class="theme-tag">孤烟 PLUME</span>`)、
     //       印章 `.seal`、红黄绿窗钮 —— 标题栏的结构改动 (硬约束: 本切片不许动标题栏);
     //     - 走带指针的形态差异 (月华柔光 ↔ 孤烟直上/底部消散) 与录音键光环
-    //       (`Theme.playhead-glow` / `playhead-fade` / `rec-halo`) —— 几何 + 动画;
+    //       (`Theme.playhead-glow` / `playhead-fade` / `rec-halo`) —— 几何 + 动画。
+    //       `HD-54` 只把**颜色**那一半放到了录音键的 ● 上 (见 §6c); 光环本身仍是几何 +
+    //       动画, 本仓**没有**实现;
     //     - 圆角 4/6/8 ↔ 2/4/6 与 pill 16 ↔ 4 —— **几何**, 明令不许动;
     //     - 段落名 (起承转合 ↔ 出塞/大漠/落日/燕然)、诗句、库脚注等**文案**.
 
@@ -521,6 +560,10 @@ export global Tokens {
     // 2026-10-07: 负责人点名「选区=愁眠 / AI=愁眠」⇒ 这一支**第一次有了 yeban 分支**
     // (在此之前语义色一律不跟随主题, 见文件头 §8 的既有纪律)。brand 分支仍是 #a855f7,
     // 所以默认外观不变; 设计系统主题也仍是 #a855f7 (第三个分支), 行为与改前逐位相同。
+    //
+    // 同日 `HD-54` 之后它还多了一个**使用点**: AI 提案徽章的 1 px 描边 (§6c 的落点移动
+    // —— 那处原来画的是 `accent` 移动前的 brand 值 #a855f7, 与本支的 brand 分支同值,
+    // 因此默认渲染一位未变)。它**仍然**按 §9.1 的语义用在钢琴卷帘的 AI 建议层上。
     out property <color> ai-suggestion: ThemeState.theme == YebanTheme.brand ? #a855f7 : (ThemeState.theme == YebanTheme.yeban ? #8e86a6 : (ThemeState.theme == YebanTheme.inkmoor ? #9e97ae : (ThemeState.theme == YebanTheme.plume ? #9c93a2 : #a855f7)));
 
     // =====================================================================
@@ -529,6 +572,11 @@ export global Tokens {
     // 2026-10-07: 负责人点名「录音=江枫」(原则 ③) ⇒ `record-red` 有了 yeban 分支。
     // brand 分支仍是 #d94a4a (默认外观一位未改); 设计系统主题仍是 #d94a4a, 行为不变。
     // `ok-green` / `warn-amber` 负责人**没有**命名 ⇒ 原样不动, 不替他们发明。
+    //
+    // 同日 `HD-54` 之后: 录音键的 ● **不再**用这一支 (改用 `accent`, 见 §6c)。它仍是
+    // 本仓的功能色 —— 静音键 (`console/mixer_console.slint`、`workspace/arrangement_view.slint`)、
+    // 录音待命/激活 (`workspace/session_view.slint`) 与状态栏的「存档失败」红
+    // (`status_bar.slint`)。取值一位未改。
     out property <color> record-red: ThemeState.theme == YebanTheme.brand ? #d94a4a : (ThemeState.theme == YebanTheme.yeban ? #ac6e60 : (ThemeState.theme == YebanTheme.inkmoor ? #b4715f : (ThemeState.theme == YebanTheme.plume ? #b25c43 : #d94a4a)));
     out property <color> ok-green: #3fa96a;
     out property <color> warn-amber: #d9a441;
