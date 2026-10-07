@@ -35,7 +35,7 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 十一个场景（在既有 `harness = false` 风格上扩展）
+//! # 十三个场景（在既有 `harness = false` 风格上扩展）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -50,6 +50,8 @@
 //! | ⑮ | 播放中「`Op` 层编辑 / 撤销 → 重新发布快照」2 000 轮 + 主线程排空 | `Op::apply`/`apply_inverse` 的模型改写 → 快照重建 → 原子发布 → 切换 + 旧快照入退役队列 |
 //! | ⑯ | 满批事件洪峰 128 条/量子 × 500 量子（参数 + 音符 + 走带混排） | `EventReceiver::drain_with` 的**满块**边界（`[EngineEvent; SCRATCH_EVENTS]`） |
 //! | ⑰ | PDC 补偿延迟线：2 000 量子稳态 + 1 000 量子跨快照**重新武装**（32 → 96 帧） | `CompensationBank::rearm` 的 `set_delay` 分支 + 逐样本环形延迟读写（`ROAD-M2-004` 接线之后新增；行为判据在 `tests/pdc_mix_path.rs`） |
+//! | ⑱ | 退役队列欠容（容量 1 + 控制面**故意**不排空）64 轮 | `SnapshotReader::retire_or_stash` 的 `PushError::Full` 分支 ⇒ `note_suppressed(SnapshotRetireStash)`（`N6` 选项 A） |
+//! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A） |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -58,7 +60,7 @@
 //! | cpal 真回调线程 / 设备开流关流 | **未覆盖** | 需要 `device` feature（cpal）与一台有声卡的机器；本机按纪律不编译重依赖，托管 runner 无音频设备 ⇒ 登记为 needs，**不用** `NullBackend` 冒充 |
 //! | 插件（VST3/CLAP）路径 | **不存在** | `yeban-plugin-host` / `yeban-vst` 是**故意空的**骨架（v2.0.0 阶段，见 `AGENTS.md` 附录 C.4）⇒ 没有路径可覆盖，不是缺口 |
 //! | 采样器磁盘流式读 | **不存在** | `yeban-sfz` 尚未接入 `synth`（`synth` 目前是内置波表） |
-//! | **退役队列欠容 / 电平容量溢出** | **会到达 `diag` 边界** | `SnapshotReader::retire_or_stash`（退役队列满 ⇒ `SnapshotRetireStash`）与 `EngineRuntime::render_block`（计量容量不足 ⇒ `MeterCapacityDrop`）两条溢出分支都调用 `rt_probe::diag`。**判据要求 `io_requests == 0` ⇒ 这两条路径不在本判据的覆盖集内**（把它们纳入就会变红）。无 sink 时 `diag` 只是两次原子自增（无系统调用）⇒ 生产红线未破，但"实时路径上从不产生诊断事件"这句话**不成立**。详见 `docs/ledger/gate-rt-zero-alloc-notes.md` §13 |
+//! | **退役队列欠容 / 电平容量溢出** | **已覆盖（纯计数）** | `N6` 裁决 = **选项 A** 已落地：这两条溢出分支（`SnapshotReader::retire_or_stash` 的 `PushError::Full` 与 `EngineRuntime::render_block` 的电平容量不足）**只调** `rt_probe::note_suppressed` —— 一个**不读** `SINK` 的纯计数出口（`crates/yeban-engine/src/rt_probe.rs`）。本文件新增两条场景把它们纳入覆盖集：⑱ 退役队列容量 1 + 控制面不排空；⑲ 轨道数 `SCRATCH_METERS + 44`。两条都断言**四元组全 0**（含 `io_requests == 0 && io_ops == 0`，而 witness sink 是**真的装着**的）**且** `suppressed_diag_events > 0`（那条出口真的被走到 ⇒ "零 I/O"是**跑出来的**，不是"没跑到"）。历史（选项 A 之前，**实测**）：这两条路径走的是 `diag`，在装了 sink 的判据二进制里实测 `io_requests == io_ops`（退役欠容 `400`、电平容量 `10000`）⇒ 当时它们**不在**本判据的覆盖集内，且"实时路径上从不产生诊断事件"**不成立** |
 //!
 //! # 为什么必须 `harness = false`（实测教训 L22）
 //!
@@ -90,6 +92,28 @@
 //! | I6 | `render_block` 的重新武装分支里按 `sample_rate != 48_000` 加一次分配 | **仅** ⑭（采样率切换） |
 //! | I7 | 同上的分支里按"有轨 `volume_db > 0`"（= 编辑已生效）加一次分配 | **仅** ⑮（播放中的编辑/撤销） |
 //! | I8 | `events.drain_with` 的闭包里按 `applied == SCRATCH_EVENTS` 加一次分配 | **仅** ⑯（满批出队边界） |
+//! | I9 | `rt.rs::render_block` 的电平容量不足分支把 `note_suppressed` **换回** `rt_probe::diag` | **仅** ⑲（溢出路径的 I/O 分量） |
+//!
+//! # I9 的实测记录（`N6` 选项 A 的验收证据；本节只在本文件里留档，账本由集成者补记）
+//!
+//! **注入**（`crates/yeban-engine/src/rt.rs` 电平容量不足分支加回一行
+//! `rt_probe::diag(RtDiagEvent::MeterCapacityDrop);`）后逐字重跑本判据：
+//!
+//! ```text
+//! [MUST-GATE-001] 判据 ⑲ FAIL [MUST-GATE-001] 电平容量不足走纯计数：四元组全 0（含 io_requests/io_ops）
+//!              ⑲电平容量不足；四元组[alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=100 io_ops=100]；子窗口=1 探针经过=100（期望 100）试探成功=100 试探失败=0；纯计数诊断=100；…
+//! [MUST-GATE-001] 判据汇总: 37 / 38 通过
+//! [MUST-GATE-001] FAIL: 1 条判据未通过
+//! ```
+//!
+//! 三条要点：① 变红的**只有** ⑲（溢出路径的 I/O 分量），⑲c 与其它 36 条不动；
+//! ② `io_requests == io_ops == 100` = 100 个量子各一次真实写（sink 装着）；
+//! ③ `alloc=0 dealloc=0` ⇒ 归因**干净**：红的原因是 I/O，不是分配。
+//!
+//! **还原**：`cp` 回注入前的副本后
+//! `cmp crates/yeban-engine/src/rt.rs <备份>` ⇒ 无差异（exit 0），
+//! `shasum -a 256` 两侧同为 `ad8b283b0feb87891205ccb02a8004824e19cb97ea748455ef9f99f0595f5358`；
+//! 重跑本判据 ⇒ **38 / 38 通过**（退出码 0）。
 //!
 //! # 覆盖范围的诚实边界（**必须和读数一起读**）
 //!
@@ -114,19 +138,22 @@ use std::time::{Duration, Instant};
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::graph::{LatencyTable, PdcPlan};
-use yeban_engine::meter::{MeterCollector, MeterFrame, meter_channel};
+use yeban_engine::meter::{MeterCollector, MeterFrame, SCRATCH_METERS, meter_channel};
 use yeban_engine::ring::{
     DEFAULT_EVENT_CAPACITY, EngineEvent, EventSender, ParamAddress, SCRATCH_EVENTS,
     TransportCommand, event_channel,
 };
 use yeban_engine::rt::{EngineRuntime, EngineStats};
 use yeban_engine::rt_probe::{self, RtDiagEvent, RtDiagSink, RtLockProbe};
-use yeban_engine::snapshot::{EngineSnapshot, RetireQueue, SnapshotSlot, retire_channel};
+use yeban_engine::snapshot::{
+    EngineSnapshot, RetireQueue, SnapshotSlot, TrackParams, retire_channel,
+};
 use yeban_engine::transport::TransportState;
 use yeban_model::samples::filled_project;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, BlockSize, CurveType,
-    EntityId, Op, SampleRate, StampedOp, YebanProjectV1,
+    EntityId, Op, RoutingEdge, RoutingGraph, RoutingKind, SampleRate, StampedOp, TrackV3,
+    YebanProjectV1,
 };
 
 mod support;
@@ -191,6 +218,19 @@ const FLOOD_QUANTA: u64 = 500;
 const PDC_QUANTA: u64 = 2_000;
 /// ⑰ PDC **跨快照重新武装**窗口的量子数（覆盖 `rearm` 的 `set_delay` 分支）。
 const PDC_REARM_QUANTA: u64 = 1_000;
+/// ⑱ 故意不足的**退役队列容量**（条）：生产装配是 64（`Rig::new`）。
+///
+/// 取 1 是**实测过的**语义（`rt.rs::stats_flag_snapshot_lagging_when_the_reader_cannot_keep_up`）：
+/// 容量 1 + 控制面不排空 ⇒ 恰好发生**一次**寄存，之后读者**停止切换**快照
+/// （`begin_block` 见到 `stash.is_some()` 就直接用旧快照）。
+const STASH_RETIRE_CAPACITY: usize = 1;
+/// ⑱ 的快照交换轮数（每轮：窗口外发布 + 窗口内 1 个量子）。
+const STASH_ROUNDS: u64 = 64;
+/// ⑲ 的轨道数：**故意超过**电平暂存容量（`SCRATCH_METERS`）—— 母线要占一个槽，
+/// 因此真正的预算只有 `SCRATCH_METERS - 1`。多出的 44 条是"每条量子被丢一次"的量。
+const OVERSIZE_TRACKS: usize = SCRATCH_METERS + 44;
+/// ⑲ 的量子数（每个量子都会在 `render_block` 的电平容量分支产生**一次**纯计数诊断）。
+const METER_OVERFLOW_QUANTA: u64 = 100;
 
 // ---------------------------------------------------------------------------
 // 计数型全局分配器（**按线程**武装：判据 ⑪ 要在窗口里跑别的线程）
@@ -310,6 +350,11 @@ struct Reading {
     try_successes: u64,
     /// 窗口内探针试探失败的次数（正常情况下 0：实时路径上无人持有那把锁）。
     try_failures: u64,
+    /// 窗口内走 `rt_probe::note_suppressed`（**纯计数**的实时诊断出口）的次数。
+    ///
+    /// 它不是违规（那条出口到不了 sink），而是**见证**：溢出场景靠它区分
+    /// "溢出分支真的被走到、而且没有 I/O"与"根本没跑到溢出分支"。
+    suppressed: u64,
 }
 
 /// 在"必须四元组全 0"的窗口内执行 `body`。
@@ -340,6 +385,7 @@ fn window<F: FnOnce()>(body: F) -> Reading {
         visits: probe.quanta_visits,
         try_successes: probe.lock_try_successes,
         try_failures: probe.lock_try_failures,
+        suppressed: probe.suppressed_diag_events,
     }
 }
 
@@ -356,6 +402,8 @@ struct Scenario {
     visits: u64,
     try_successes: u64,
     try_failures: u64,
+    /// 窗口内走纯计数诊断出口的次数（见 [`Reading::suppressed`]）。
+    suppressed: u64,
     quad: Quad,
     mismatches: Vec<String>,
     notes: Vec<String>,
@@ -376,6 +424,7 @@ impl Scenario {
         self.visits = self.visits.saturating_add(reading.visits);
         self.try_successes = self.try_successes.saturating_add(reading.try_successes);
         self.try_failures = self.try_failures.saturating_add(reading.try_failures);
+        self.suppressed = self.suppressed.saturating_add(reading.suppressed);
         self.quad.add(&reading.quad);
         if reading.visits != expected_quanta {
             self.mismatches.push(format!(
@@ -400,7 +449,7 @@ impl Scenario {
 
     fn detail(&self) -> String {
         format!(
-            "{}；四元组[{}]；子窗口={} 探针经过={}（期望 {}）试探成功={} 试探失败={}；{}",
+            "{}；四元组[{}]；子窗口={} 探针经过={}（期望 {}）试探成功={} 试探失败={}；纯计数诊断={}；{}",
             self.label,
             self.quad.describe(),
             self.windows,
@@ -408,6 +457,7 @@ impl Scenario {
             self.expected_quanta,
             self.try_successes,
             self.try_failures,
+            self.suppressed,
             if self.notes.is_empty() {
                 "（无附加证据）".to_owned()
             } else {
@@ -451,9 +501,12 @@ impl Report {
         });
     }
 
-    /// 六场景共用的判定：四元组全 0 **且** 见证成立。
+    /// 普通场景共用的判定：四元组全 0 **且** 见证成立 **且** 连"纯计数诊断"都为 0。
+    ///
+    /// 最后那一条是 `N6` 选项 A 之后**收紧**的：普通场景里没有溢出 ⇒ 那条纯计数出口
+    /// 根本不该被走到。溢出场景**不用**本方法（它们要求 `suppressed > 0`，见 ⑱/⑲）。
     fn scenario(&mut self, id: &'static str, title: &'static str, scenario: &Scenario) {
-        let ok = scenario.quad.is_zero() && scenario.witness_ok();
+        let ok = scenario.quad.is_zero() && scenario.witness_ok() && scenario.suppressed == 0;
         self.assert(id, title, ok, scenario.detail());
     }
 
@@ -476,9 +529,11 @@ impl Report {
         println!("[MUST-GATE-001] 判据汇总: {passed} / {total} 通过");
         if self.failures() == 0 {
             println!(
-                "[MUST-GATE-001] ok: 十一场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
+                "[MUST-GATE-001] ok: 十三场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
                  回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰 / \
-                 PDC 补偿延迟线）四元组全 0；控制面读取 EngineStats 的读取路径同样全 0；\
+                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足）四元组全 0；两条溢出路径（N6 选项 A）\
+                 走纯计数出口而**仍然** io_requests==0 && io_ops==0（且 suppressed_diag_events>0 ⇒ \
+                 真的跑到了溢出）；控制面读取 EngineStats 的读取路径同样全 0；\
                  探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
             );
             ExitCode::SUCCESS
@@ -596,6 +651,17 @@ impl Rig {
     ) -> Self {
         let snapshot =
             EngineSnapshot::from_project(project, revision).expect("夹具工程必须能编译成快照");
+        Self::from_snapshot(snapshot, meter_capacity, retire_capacity, event_capacity)
+    }
+
+    /// 用**已经构造好的快照**装配（⑲ 需要"轨道数超过电平暂存容量"的快照，
+    /// 那不是任何真实工程投影得出来的 —— 走 [`EngineSnapshot::from_parts`] 直接造）。
+    fn from_snapshot(
+        snapshot: EngineSnapshot,
+        meter_capacity: usize,
+        retire_capacity: usize,
+        event_capacity: usize,
+    ) -> Self {
         let slot = SnapshotSlot::new(snapshot);
         let (retire, queue) = retire_channel(retire_capacity);
         let (sender, receiver) = event_channel(event_capacity);
@@ -1557,6 +1623,192 @@ fn armed_pdc(rig: &Rig, project: &YebanProjectV1, plan: &PdcPlan) -> ArmedPdc {
 }
 
 // ---------------------------------------------------------------------------
+// 场景 ⑱ / ⑲ 溢出路径（`N6` 裁决 = 选项 A：纯计数，不经 sink）
+// ---------------------------------------------------------------------------
+//
+// 这两条场景补的是本判据**历史上明确登记为"不在覆盖集内"**的两条路径
+// （见模块文档的边界表与 `docs/ledger/gate-rt-zero-alloc-notes.md` §13 的实测）：
+// 它们曾经调用 `rt_probe::diag` ⇒ 在装了 witness sink 的这个二进制里实测
+// `io_requests == io_ops == 400`（退役欠容）与 `10000`（电平容量），
+// 因此当时把它们纳入就会把判据打红 —— 而"红"的正是它们**真的做了 I/O**。
+//
+// 选项 A 之后它们走 `rt_probe::note_suppressed`（不读 `SINK`），于是这两条场景
+// 可以**同时**断言两件事：
+//   1. 四元组全 0 —— 尤其 `io_requests == 0 && io_ops == 0`（sink 是真的装着的）；
+//   2. `suppressed_diag_events > 0` —— 那条纯计数出口**真的被走到**。
+// 只断言 (1) 会有一个致命的假绿：把溢出分支删掉/绕开，读数**一模一样**。
+// 两条合起来才是"**跑到了溢出，也没有任何 I/O**"。
+
+/// ⑱：退役队列**容量不足**（容量 1 + 控制面**故意**不排空）64 轮。
+///
+/// 覆盖的实时路径：`render_block` → `SnapshotReader::begin_block` → `retire_or_stash`
+/// 的 `Err(rtrb::PushError::Full)` 分支。生产的正确处置是"控制面降速 + 排空"
+/// （见 `EngineStats::is_snapshot_lagging`）；本场景测的是**降速之前**那一刻：
+/// 溢出确实发生、诊断只记数、音频线程上一次 I/O 都没有。
+fn scenario_retire_queue_overflow(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::with_capacities(&project, 1, 4096, STASH_RETIRE_CAPACITY, 64);
+    rig.preheat();
+    // 预热之后读一次基线（寄存是**粘滞**的，见 `begin_block` 的 `stash.is_none()` 前提）。
+    let stash_before = rig.stats().snapshot_stash_events;
+
+    let mut scenario = Scenario::new("⑱退役队列欠容");
+    for revision in 2..=(STASH_ROUNDS + 1) {
+        // 发布在窗口之外（控制线程允许分配），窗口里只处理 1 个量子。
+        let next = EngineSnapshot::from_project(&project, revision).expect("快照必须能编译");
+        rig.slot.publish(next);
+        scenario.absorb(1, &rig.pump(1));
+    }
+
+    let stats = rig.stats();
+    let stash_events = stats.snapshot_stash_events.saturating_sub(stash_before);
+    scenario.note(format!(
+        "退役队列容量={STASH_RETIRE_CAPACITY} 发布={STASH_ROUNDS} 实际切换={} 领域计数 stash_events={stash_events} \
+         （读者停在 revision={:?}）；纯计数诊断={}（按种类累计到进程为止 stash={}）",
+        stats.snapshot_switches,
+        rig.runtime.revision(),
+        scenario.suppressed,
+        rt_probe::suppressed_by_kind(RtDiagEvent::SnapshotRetireStash)
+    ));
+
+    report.assert(
+        "⑱",
+        "[MUST-GATE-001] 退役队列欠容走纯计数：四元组全 0（含 io_requests/io_ops）",
+        scenario.quad.is_zero() && scenario.witness_ok() && scenario.suppressed >= 1,
+        scenario.detail(),
+    );
+
+    // 覆盖度 + **两个计数器的交叉核对**：纯计数出口的次数必须**恰好等于**那条路径
+    // 自己的领域计数（`retire_or_stash` 里两者在同一分支上各加一次）。
+    report.assert(
+        "⑱c",
+        "覆盖度：溢出真的发生（领域计数 > 0）且纯计数出口次数与它逐次相等",
+        stash_events >= 1 && scenario.suppressed == stash_events,
+        format!(
+            "领域计数 stash_events={stash_events}（要求 ≥1）纯计数诊断={}（要求相等）；\
+             退役队列里滞留={}（容量 {STASH_RETIRE_CAPACITY}）",
+            scenario.suppressed, stats.retire_pending
+        ),
+    );
+}
+
+/// ⑲：电平计量**容量不足**（轨道数 > `SCRATCH_METERS - 1`）100 量子。
+///
+/// 快照用 [`EngineSnapshot::from_parts`] 直接造（真实的工程投影不会给出 300 条轨，
+/// 而"轨道数超过暂存槽"正是要测的那条分支）。覆盖的实时路径：
+/// `render_block` 的"轨道数 > 预算 ⇒ 记 `meter_capacity_drops` + 纯计数诊断"分支。
+fn scenario_meter_capacity_overflow(report: &mut Report) {
+    let mut rig = Rig::from_snapshot(oversized_meter_snapshot(1), 4096, 64, 64);
+    rig.preheat();
+
+    // 每量子被丢掉的节点数 = 轨道数 − (暂存槽 − 1 个母线槽)。
+    let drops_per_quantum = (OVERSIZE_TRACKS - (SCRATCH_METERS - 1)) as u64;
+    let before = rig.stats();
+
+    let mut scenario = Scenario::new("⑲电平容量不足");
+    scenario.absorb(METER_OVERFLOW_QUANTA, &rig.pump(METER_OVERFLOW_QUANTA));
+
+    let stats = rig.stats();
+    let drops = stats
+        .meter_capacity_drops
+        .saturating_sub(before.meter_capacity_drops);
+    let publishes = stats
+        .meter_bulk_publishes
+        .saturating_sub(before.meter_bulk_publishes);
+    let frames = stats.meter_frames.saturating_sub(before.meter_frames);
+    scenario.note(format!(
+        "轨道数={OVERSIZE_TRACKS}（母线 + {} 条普通轨；暂存槽={SCRATCH_METERS}，母线占 1）\
+         量子={METER_OVERFLOW_QUANTA}；容量丢弃={drops}（要求 {drops_per_quantum}/量子）\
+         批量发布={publishes}（要求 1/量子）；纯计数诊断={}；\
+         ⚠ 电平队列写入帧数={frames} **不是**计量工作量：SPSC 环容量 4096、本场景不抽干 \
+         ⇒ 15 个满批（{SCRATCH_METERS} 帧/量子）之后 `publish` 只能写 0 条",
+        OVERSIZE_TRACKS - 1,
+        scenario.suppressed
+    ));
+
+    report.assert(
+        "⑲",
+        "[MUST-GATE-001] 电平容量不足走纯计数：四元组全 0（含 io_requests/io_ops）",
+        scenario.quad.is_zero() && scenario.witness_ok() && scenario.suppressed >= 1,
+        scenario.detail(),
+    );
+
+    report.assert(
+        "⑲c",
+        "覆盖度：容量溢出真的发生（丢弃计数逐量子对得上、每量子一次批量发布）且纯计数出口每量子恰好一次",
+        drops == drops_per_quantum * METER_OVERFLOW_QUANTA
+            && publishes == METER_OVERFLOW_QUANTA
+            && scenario.suppressed == METER_OVERFLOW_QUANTA,
+        format!(
+            "容量丢弃={drops}（要求 {} = {drops_per_quantum}×{METER_OVERFLOW_QUANTA}；含 MeterBank 淘汰数，\
+             因此这条等式也证明电平槽从未溢出）批量发布={publishes}（要求 {METER_OVERFLOW_QUANTA}）\
+             纯计数诊断={}（要求 {METER_OVERFLOW_QUANTA}）",
+            drops_per_quantum * METER_OVERFLOW_QUANTA,
+            scenario.suppressed
+        ),
+    );
+}
+
+/// 造一份**轨道数超过电平暂存容量**的快照：母线 + [`OVERSIZE_TRACKS`] 条普通轨。
+///
+/// 走的是与真实投影**同一套**下层构造（`TrackParams::from_track` + `from_parts`），
+/// 只是绕开了"工程 → 快照"的投影（真实工程不会长成这样）。
+fn oversized_meter_snapshot(revision: u64) -> EngineSnapshot {
+    let master = EntityId::new();
+    let mut routing = RoutingGraph {
+        nodes: vec![master],
+        ..RoutingGraph::default()
+    };
+    let mut tracks: BTreeMap<EntityId, TrackParams> = BTreeMap::new();
+    tracks.insert(
+        master,
+        TrackParams::from_track(
+            &TrackV3 {
+                id: master,
+                ..TrackV3::default()
+            },
+            0,
+        ),
+    );
+    for _ in 0..OVERSIZE_TRACKS {
+        let track = EntityId::new();
+        routing.nodes.push(track);
+        let edge = EntityId::new();
+        routing.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        tracks.insert(
+            track,
+            TrackParams::from_track(
+                &TrackV3 {
+                    id: track,
+                    ..TrackV3::default()
+                },
+                0,
+            ),
+        );
+    }
+    EngineSnapshot::from_parts(
+        revision,
+        SampleRate::Hz48000.hz(),
+        DEFAULT_BLOCK_FRAMES,
+        2,
+        master,
+        tracks,
+        &routing,
+        &LatencyTable::new(),
+    )
+    .expect("超量轨道快照必须能编译")
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ⑦ 探针有牙（正对照：非 RT 路径上让读数非 0）
 // ---------------------------------------------------------------------------
 
@@ -2002,6 +2254,8 @@ fn main() -> ExitCode {
     scenario_undo_churn_while_playing(&mut report);
     scenario_event_flood(&mut report);
     scenario_pdc_delay_lines(&mut report);
+    scenario_retire_queue_overflow(&mut report);
+    scenario_meter_capacity_overflow(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);

@@ -777,9 +777,10 @@ impl EngineRuntime {
             if metered_tracks > track_budget {
                 *meter_capacity_drops =
                     meter_capacity_drops.wrapping_add((metered_tracks - track_budget) as u64);
-                // [MUST-GATE-001] 诊断事件必须走 `rt_probe::diag` 这个**唯一**的 I/O 边界，
-                // 否则"实时路径上没有 I/O"就只是"没写"而不是"运行期可判定"。
-                rt_probe::diag(RtDiagEvent::MeterCapacityDrop);
+                // [MUST-GATE-001, N6 选项 A] 诊断走 `rt_probe::note_suppressed` ——
+                // 它是**纯计数**出口（不读 sink、不分配、不加锁、不阻塞），
+                // 因为本函数就是音频回调：实时路径上不许有任何到 I/O 边界的调用。
+                rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
             }
             for id in current.tracks().keys() {
                 if *id == master || produced >= track_budget {
@@ -804,7 +805,7 @@ impl EngineRuntime {
                     produced += 1;
                 } else {
                     *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
-                    rt_probe::diag(RtDiagEvent::MeterCapacityDrop);
+                    rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
                 }
                 // --- PDC：本轨输出 → 补偿延迟线 → 声相/母线求和 ---
                 // [ARCH-PDC-001, ROAD-M2-004] 位置就是规范 §3.4 第 3 条说的
@@ -863,13 +864,13 @@ impl EngineRuntime {
                 produced += 1;
             } else {
                 *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
-                rt_probe::diag(RtDiagEvent::MeterCapacityDrop);
+                rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
             }
         } else {
             // 极端情况（写者尚未发布任何快照）：输出静音但绝不 panic。
             block.silence();
             block.set_frames(frames);
-            rt_probe::diag(RtDiagEvent::NoSnapshot);
+            rt_probe::note_suppressed(RtDiagEvent::NoSnapshot);
         }
         snapshot.end_block();
 

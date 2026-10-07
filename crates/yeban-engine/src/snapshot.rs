@@ -1356,16 +1356,22 @@ impl SnapshotReader {
     /// 把旧快照推进退役队列；队列满则寄存到 `stash`（下次块边界重试）。
     ///
     /// 队列满是一条真正的告警（主线程 60Hz 轮询没跟上）⇒ 走
-    /// [`crate::rt_probe::diag`] 这个**唯一**的诊断/I-O 边界：它把"实时路径上想产生 I/O"
-    /// 变成可数的读数（[MUST-GATE-001] 要求实时窗口内 `io_requests == 0`），
-    /// 而不是让调用方各自去 `println!`。
+    /// [`crate::rt_probe::note_suppressed`] 这个**纯计数**的实时诊断出口
+    /// （`N6` 裁决 = 选项 A）：本函数在音频回调的调用树里
+    /// （`begin_block` ← `render_block`），因此**不许**触到 [`crate::rt_probe::diag`]
+    /// 那个 I/O 边界 —— 一旦有人给发布构建装了写文件的 sink，后者就是实时线程上的
+    /// 真实阻塞 I/O（历史实测：容量不足时 `io_requests == io_ops == 400`）。
+    ///
+    /// 事实没有丢：`stash_events` 是本路径自己的计数器
+    /// （[`SnapshotReader::stash_events`] → [`crate::rt::EngineStats::snapshot_stash_events`]，
+    /// 控制面 60Hz 可读），`rt_probe` 一侧另有按种类的累计读数。
     fn retire_or_stash(&mut self, old: Arc<EngineSnapshot>) {
         match self.retire.push(old) {
             Ok(()) => {}
             Err(rtrb::PushError::Full(arc)) => {
                 self.stash = Some(arc);
                 self.stash_events = self.stash_events.saturating_add(1);
-                crate::rt_probe::diag(crate::rt_probe::RtDiagEvent::SnapshotRetireStash);
+                crate::rt_probe::note_suppressed(crate::rt_probe::RtDiagEvent::SnapshotRetireStash);
             }
         }
     }

@@ -83,7 +83,31 @@
 //!    另有一条**结构性**防线兜住"新写一把锁"这种改动：`scripts/guards/policy_check.py`
 //!    与代码审查看的是源码形状；本模块把"运行期真的发生了"这一半补齐。
 //! 3. [`diag`] **不能阻止** I/O，它只把"I/O 发生了"变成可数的读数。真正的处置在调用方：
-//!    实时路径上**不允许**产生诊断事件（本判据要求 `io_requests == 0 && io_ops == 0`）。
+//!    **实时回调的调用树里不许出现 [`diag`]**（见下一节）。
+//!
+//! # `N6` 裁决 = **选项 A**：实时回调上的诊断只记数，`diag` 留给非实时路径
+//!
+//! 历史（**实测**，`docs/ledger/gate-rt-zero-alloc-notes.md` §13）：实时回调的调用树里
+//! 曾有 **5 个** [`diag`] 调用点 —— `rt.rs::render_block` 的电平容量溢出 ×3
+//! （"轨道数 > 预算"的预检、`MeterBank::measure` 返回 `None`、母线放不下）、
+//! 无快照分支 ×1，以及 `SnapshotReader::retire_or_stash` 的退役队列欠容 ×1。
+//! 发布构建**不安装 sink** ⇒ 那时它们只是原子自增；
+//! 但只要有人给发布构建装了写文件的 sink，**这些路径就是音频线程上的真实阻塞 I/O**
+//! （本机实测：容量不足时 `io_requests == io_ops` 为 `400` / `10000`）。
+//!
+//! 选项 A 的处置：实时路径上的诊断改走 [`note_suppressed`] —— 一个**不读**
+//! [`SINK`] 的纯计数入口。于是"实时回调不做 I/O"这句话对**实现**成立，
+//! 而不是只对"今天没装 sink"这个配置成立。代价（负责人已接受）：溢出路径
+//! **丢掉 sink 里那条逐事件记录**；留下的**计数**在
+//! [`RtProbeTotals::suppressed_diag_events`] / [`suppressed_by_kind`]、
+//! 以及那两条路径自己的领域读数
+//! [`crate::rt::EngineStats::meter_capacity_drops`] /
+//! [`crate::rt::EngineStats::snapshot_stash_events`] 里（都可从非 RT 线程查询）。
+//!
+//! ⚠ 这条裁决**没有**把 [`diag`] 变成私有/删除：它仍是"唯一 I/O 边界"，
+//! 非实时路径（控制面自己的诊断）与判据的**正对照**（⑦c 证明边界真的有牙）都要用它。
+//! 判据一侧的机械形式是"实时窗口里 `io_requests == 0 && io_ops == 0`"照旧成立，
+//! **同时**要求溢出场景里 `suppressed_diag_events > 0`（那条纯计数出口真的被走到过）。
 //! 4. **不覆盖** cpal/系统库内部自己的日志与内存操作、OS 缺页、`mmap`、
 //!    以及"未来的采样器从磁盘流式读"这类尚未实现的路径 —— 它们不在本 crate 的调用树里。
 //!    详见 `docs/ledger/gate-rt-zero-alloc-notes.md` §5 的覆盖范围表。
@@ -114,6 +138,12 @@ thread_local! {
     static IO_REQUESTS: Cell<u64> = const { Cell::new(0) };
     /// 窗口内**真的转交给了已安装 sink** 的次数（**必须为 0**）。
     static IO_OPS: Cell<u64> = const { Cell::new(0) };
+    /// 窗口内走 [`note_suppressed`]（**只记数**的实时诊断出口）的次数。
+    ///
+    /// 它不是违规：这条出口**物理上到不了 sink**。它的作用是**见证** ——
+    /// 判据可以同时断言"溢出路径真的被走到"（本计数 > 0）与"窗口里没有任何 I/O"
+    /// （`io_requests == 0 && io_ops == 0`）⇒ 把"零 I/O"从"没跑到"升级为"跑到了也没有"。
+    static SUPPRESSED: Cell<u64> = const { Cell::new(0) };
     /// 本线程的探针身份（0 = 尚未分配；首次需要时从全局计数器取一个）。
     static TOKEN: Cell<u64> = const { Cell::new(0) };
 }
@@ -140,6 +170,16 @@ static FOREIGN_LOCK_WAITS: AtomicU64 = AtomicU64::new(0);
 static FOREIGN_IO_REQUESTS: AtomicU64 = AtomicU64::new(0);
 /// 非声明 RT 线程上的"真的转交给 sink"的次数。
 static FOREIGN_IO_OPS: AtomicU64 = AtomicU64::new(0);
+/// 进程内累计的**被抑制诊断**（[`note_suppressed`]；所有线程）。
+static SUPPRESSED_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// 被抑制诊断按**事件种类**的累计分布（下标 = [`RtDiagEvent::index`]）。
+///
+/// 为什么按种类留一份：`NoSnapshot` 除了这里**没有别的家**（它不像那两条溢出路径
+/// 那样有 `EngineStats` 的领域计数器）⇒ 不按种类留就等于"悄悄丢掉一个事实"。
+static SUPPRESSED_BY_KIND: [AtomicU64; RtDiagEvent::COUNT] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+/// 非声明 RT 线程上的被抑制诊断（防串账的对照量）。
+static FOREIGN_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
 /// 线程身份发号器（`ThreadId` 的数值形态在 stable 上不可用，因此自己发号）。
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(0);
 /// 被判据声明为"实时线程"的那个身份（0 = 未声明）。
@@ -244,6 +284,7 @@ pub fn reset_current_thread() {
         &LOCK_WAITS,
         &IO_REQUESTS,
         &IO_OPS,
+        &SUPPRESSED,
     ] {
         let _ = cell.try_with(|count| count.set(0));
     }
@@ -266,6 +307,11 @@ pub struct RtProbeWindow {
     pub io_requests: u64,
     /// **真的转交给已安装 sink**（即真的发生 I/O）的次数（`MUST-GATE-001` 要求 0）。
     pub io_ops: u64,
+    /// 走 [`note_suppressed`]（**纯计数**的实时诊断出口）的次数。
+    ///
+    /// 普通场景**要求 0**（没有溢出 ⇒ 那条出口根本不该被走到，见 `tests/rt_zero_alloc.rs`）；
+    /// 溢出场景要求 **> 0** 作为"真的走到了、而且没有 I/O"的见证。
+    pub suppressed_diag_events: u64,
 }
 
 /// 读回本线程的窗口读数。
@@ -279,6 +325,7 @@ pub fn window_current_thread() -> RtProbeWindow {
         lock_waits: read(&LOCK_WAITS),
         io_requests: read(&IO_REQUESTS),
         io_ops: read(&IO_OPS),
+        suppressed_diag_events: read(&SUPPRESSED),
     }
 }
 
@@ -303,6 +350,15 @@ pub struct RtProbeTotals {
     pub foreign_io_requests: u64,
     /// 非声明 RT 线程上的"真的转交给 sink"的次数。
     pub foreign_io_ops: u64,
+    /// 所有线程累计的**被抑制诊断**（[`note_suppressed`]；这些调用**没有**产生 I/O）。
+    pub suppressed_diag_events: u64,
+    /// 被抑制诊断按事件种类的累计分布（下标 = [`RtDiagEvent::index`]）。
+    ///
+    /// 它是"溢出路径丢掉的细节"里**唯一**被刻意留下的那一半：没有文件行、没有时间戳，
+    /// 但"哪一类事件被抑制了多少次"不丢。
+    pub suppressed_by_kind: [u64; RtDiagEvent::COUNT],
+    /// 非声明 RT 线程上的被抑制诊断次数。
+    pub foreign_suppressed_diag_events: u64,
 }
 
 /// 读回进程总量。
@@ -318,6 +374,13 @@ pub fn totals() -> RtProbeTotals {
         foreign_lock_waits: FOREIGN_LOCK_WAITS.load(Ordering::Relaxed),
         foreign_io_requests: FOREIGN_IO_REQUESTS.load(Ordering::Relaxed),
         foreign_io_ops: FOREIGN_IO_OPS.load(Ordering::Relaxed),
+        suppressed_diag_events: SUPPRESSED_TOTAL.load(Ordering::Relaxed),
+        suppressed_by_kind: [
+            SUPPRESSED_BY_KIND[0].load(Ordering::Relaxed),
+            SUPPRESSED_BY_KIND[1].load(Ordering::Relaxed),
+            SUPPRESSED_BY_KIND[2].load(Ordering::Relaxed),
+        ],
+        foreign_suppressed_diag_events: FOREIGN_SUPPRESSED.load(Ordering::Relaxed),
     }
 }
 
@@ -366,6 +429,9 @@ pub fn rt_path_lock() -> &'static RtLockProbe {
 /// 每次调用都会真的走一遍 sink 的 I/O —— 判据用它证明"这个边界真的有牙"。
 ///
 /// [`RtDiagEvent`] 是 `Copy` 且无负载：实时路径上不构造字符串、不分配。
+///
+/// ⚠ **实时回调的调用树里不许调用本函数**（`N6` 裁决 = 选项 A，见模块文档）：
+/// 那里一律走 [`note_suppressed`]。本函数留给非实时路径与判据的正对照。
 pub fn diag(event: RtDiagEvent) {
     let token = current_thread_token();
     let armed = armed_here();
@@ -391,6 +457,50 @@ pub fn diag(event: RtDiagEvent) {
     }
 }
 
+/// **只记数、绝不产生 I/O** 的实时诊断出口（`N6` 裁决 = 选项 A）。
+///
+/// 与 [`diag`] 的唯一区别：本函数**从不读** [`SINK`] ⇒ 实时回调到 `sink.emit`
+/// **不存在**调用路径。成本是三次 `Relaxed` 原子加（总量 + 种类分布 + 可能的
+/// 外线程桶）与至多一次线程局部 `Cell` 写；**不分配、不加锁、不等待、不做系统调用**。
+///
+/// # 计数在哪读（非 RT 读者）
+///
+/// | 读数 | 位置 | 覆盖到哪一层 |
+/// | :--- | :--- | :--- |
+/// | 本窗口走了几次纯计数出口 | [`RtProbeWindow::suppressed_diag_events`] | 判据窗口（线程局部） |
+/// | 进程总量 + 按种类分布 + 外线程桶 | [`totals`]（[`RtProbeTotals`]） | 任何线程都能查 |
+/// | 便利读取单个种类 | [`suppressed_by_kind`] | 同上 |
+/// | 那两条溢出路径的**领域**计数 | [`crate::rt::EngineStats::meter_capacity_drops`] / [`crate::rt::EngineStats::snapshot_stash_events`] | 控制面 60Hz 循环（`EngineRuntime::stats()`） |
+///
+/// # 什么时候用哪一个
+///
+/// - **实时回调的调用树**（`EngineRuntime::render_block`、
+///   `SnapshotReader::retire_or_stash`）：只能用本函数；
+/// - **非实时路径**（控制面自己的诊断、判据的正对照）：用 [`diag`]。
+///
+/// 两者**都**是"可数的"：本函数记的是"实时路径上有一条想产生 I/O 的诊断，
+/// 但按裁决**只记数**"；[`diag`] 记的是"真的走了 I/O 边界"。
+pub fn note_suppressed(event: RtDiagEvent) {
+    let token = current_thread_token();
+    let armed = armed_here();
+    let foreign = foreign_here(token);
+
+    SUPPRESSED_TOTAL.fetch_add(1, Ordering::Relaxed);
+    SUPPRESSED_BY_KIND[event.index()].fetch_add(1, Ordering::Relaxed);
+    if foreign {
+        FOREIGN_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
+    }
+    if armed {
+        bump(&SUPPRESSED);
+    }
+}
+
+/// 某一类被抑制诊断的**进程累计**次数（非 RT 读者用；`totals()` 的按种类视图）。
+#[must_use]
+pub fn suppressed_by_kind(event: RtDiagEvent) -> u64 {
+    SUPPRESSED_BY_KIND[event.index()].load(Ordering::Relaxed)
+}
+
 /// 实时路径可能产生的诊断事件（无负载、`Copy`，因此热路径上零分配）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RtDiagEvent {
@@ -403,6 +513,21 @@ pub enum RtDiagEvent {
 }
 
 impl RtDiagEvent {
+    /// 事件种类数（[`Self::index`] 的取值范围是 `0..COUNT`）。
+    pub const COUNT: usize = 3;
+
+    /// 稳定下标：只用于把被抑制诊断分进 [`SUPPRESSED_BY_KIND`] 的桶。
+    ///
+    /// 改动这些数字就等于改动"按种类的累计读数"的口径，因此它是**契约**而非实现细节。
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::SnapshotRetireStash => 0,
+            Self::MeterCapacityDrop => 1,
+            Self::NoSnapshot => 2,
+        }
+    }
+
     /// 供 sink 打的固定文本（**不含**任何格式化参数 ⇒ 实时路径上不分配）。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -592,5 +717,61 @@ mod tests {
             "meter-capacity-drop"
         );
         assert_eq!(RtDiagEvent::NoSnapshot.as_str(), "no-snapshot");
+    }
+
+    /// 按种类的下标是**稳定的双射**（错一个就会让两类的读数串账）。
+    #[test]
+    fn diag_event_indices_are_distinct_and_in_range() {
+        let indices = [
+            RtDiagEvent::SnapshotRetireStash.index(),
+            RtDiagEvent::MeterCapacityDrop.index(),
+            RtDiagEvent::NoSnapshot.index(),
+        ];
+        assert_eq!(RtDiagEvent::COUNT, indices.len());
+        for (position, index) in indices.iter().enumerate() {
+            assert!(*index < RtDiagEvent::COUNT, "下标必须落在桶内");
+            assert_eq!(
+                indices.iter().position(|other| other == index),
+                Some(position),
+                "下标必须互不相同"
+            );
+        }
+    }
+
+    /// `N6` 选项 A 的核心不变式：`note_suppressed` **只记数** ——
+    /// 窗口里看得见它（>`0`），同时 `io_requests`/`io_ops` 仍为 `0`；
+    /// 种类分布与外线程桶照样对账。
+    #[test]
+    fn note_suppressed_counts_without_crossing_the_io_boundary() {
+        let totals_before = totals();
+        reset_current_thread();
+        watch_current_thread();
+        note_suppressed(RtDiagEvent::MeterCapacityDrop);
+        note_suppressed(RtDiagEvent::MeterCapacityDrop);
+        note_suppressed(RtDiagEvent::NoSnapshot);
+        let window = window_current_thread();
+        unwatch_current_thread();
+        let totals_after = totals();
+
+        assert_eq!(window.suppressed_diag_events, 3, "窗口必须看得见纯计数出口");
+        assert_eq!(
+            window.io_requests, 0,
+            "纯计数出口不得进入 I/O 边界（N6 选项 A）"
+        );
+        assert_eq!(window.io_ops, 0, "纯计数出口不得转发给 sink");
+        assert!(
+            totals_after.suppressed_diag_events > totals_before.suppressed_diag_events,
+            "进程总量必须无条件累加"
+        );
+        assert!(
+            totals_after.suppressed_by_kind[RtDiagEvent::MeterCapacityDrop.index()]
+                >= totals_before.suppressed_by_kind[RtDiagEvent::MeterCapacityDrop.index()] + 2,
+            "按种类分布必须记下那两次电平容量抑制"
+        );
+        assert!(
+            suppressed_by_kind(RtDiagEvent::NoSnapshot)
+                > totals_before.suppressed_by_kind[RtDiagEvent::NoSnapshot.index()],
+            "便利读取器与 totals() 的按种类视图必须同源"
+        );
     }
 }
