@@ -1114,6 +1114,61 @@ mod tests {
         assert_eq!(output.samples[96], 1.0, "延迟 96 帧后出现");
     }
 
+    /// 判据: PDC 的补偿延迟**只插在真正合并支路的求和节点上**。
+    ///
+    /// `slow_bus` 自身报 96 帧延迟, 但它只有**一条**入边 ⇒ 它不是求和节点, 没有可对齐的
+    /// 对象 ⇒ 它的入边不得补偿。旧实现在这条入边上插了 **96 帧**（用 Master 的全局
+    /// `L_max` 减源节点的 `output_latency`）, 于是长支路反而多绕一圈, 并在 Master 上
+    /// 与其它支路分成两波 —— [ARCH-PDC-001] 要消灭的正是这个。
+    ///
+    /// 与 `pdc::tests::every_branch_arrives_at_its_summing_node_together` 的分工:
+    /// 那一条验**图上的对齐数学**, 这一条验**计划真的把该延迟交给了渲染器**。
+    #[test]
+    fn pdc_compensation_is_inserted_only_where_branches_merge() {
+        let master = ulid(0xFFFF);
+        let fast = ulid(1);
+        let slow_bus = ulid(2);
+        let slow_in = ulid(3);
+        let routing = graph(
+            &[master, fast, slow_bus, slow_in],
+            vec![
+                edge(fast, master, None),
+                edge(slow_bus, master, None),
+                edge(slow_in, slow_bus, None),
+            ],
+        );
+        let mut latencies = BTreeMap::new();
+        latencies.insert(slow_bus, 96u32);
+        let plan = RenderPlan::compile_with_latencies(
+            &routing,
+            master,
+            RenderOptions::l1(128, 1, 48_000, 0),
+            &latencies,
+        )
+        .expect("编译");
+        assert_eq!(plan.longest_path_frames(), 96);
+
+        // 单入边节点: 不补。旧实现这里是 `Some(96)`。
+        let interior = plan.bus_reduction_order(slow_bus).expect("slow_bus 有入边");
+        assert_eq!(interior.len(), 1, "slow_bus 只有一条入边");
+        assert_eq!(interior[0].source_node, slow_in);
+        assert_eq!(
+            interior[0].delay_frames, 0,
+            "单入边节点不是求和节点, 不得插补偿延迟"
+        );
+
+        // 求和节点 (Master): 短支路补满, 长支路不补。
+        let merging = plan.bus_reduction_order(master).expect("master 有入边");
+        let delay_of = |node| {
+            merging
+                .iter()
+                .find(|entry| entry.source_node == node)
+                .map(|entry| entry.delay_frames)
+        };
+        assert_eq!(delay_of(fast), Some(96), "短支路必须补满 L_max");
+        assert_eq!(delay_of(slow_bus), Some(0), "长支路不补");
+    }
+
     /// 判据: 悬挂节点 (到不了 Master) 被剪掉, 且不需要为它注册样本源。
     #[test]
     fn nodes_not_reaching_master_are_pruned() {

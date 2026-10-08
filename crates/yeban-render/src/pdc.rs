@@ -26,11 +26,27 @@
 //!
 //! 这一条已登记进 `docs/ledger/render-master-notes.md` 的 `needs` 清单。
 //!
-//! ## 为什么用**全局** `L_max` 而不是"每个求和节点各自对齐"
+//! ## 补偿延迟插在哪条边上: `D = arrival[目的] − output_latency[源]`
 //!
-//! 两者给出的**相对**对齐完全相同; 全局形式额外给整条链引入一个统一的 `L_max`
-//! 前滚延迟, 这正是规范字面要求的形式 ("确定最长延迟关键路径 L_max ... D_i = L_max − L_i")。
-//! 母线求和的正确性不受影响: 每条分支到达任一求和节点时都恰好是 `L_max`。
+//! 规范正文写的是 `D_i = L_max − L_i`, 并指定插在"进入总线求和节点前"。
+//! 本实现把同一个式子**逐边**求解成 `Plan::edge_delay`:
+//!
+//! ```text
+//! D(s → d) = arrival[d] − output_latency[s]      (饱和减; 结果恒 ≥ 0)
+//! ```
+//!
+//! `arrival[d]` 是 `d` 全部入边 `output_latency` 的**最大值**, 也就是 `d` 自己的 `L_max`。
+//! 三条可算的后果:
+//!
+//! 1. **单入边节点不补**。入边只有一条时 `arrival[d] == output_latency[s]` ⇒ `D = 0`。
+//!    ⇒ 补偿只出现在**多入边**（真正的求和）节点上, 与规范的"进入总线求和节点前"一致。
+//! 2. **求和节点用自己的 `arrival`, 不用 Master 的全局 `L_max`**。用全局值会把下游节点
+//!    的**自身延迟补偿第二次**: 同一份信号在 Master 上分成相差数十帧的两波, 正是
+//!    [ARCH-PDC-001] 要消灭的低频相位干涉。判据
+//!    `a_deeper_bus_uses_its_own_arrival_not_the_master_critical_path` 钉住这一点。
+//! 3. **`longest_path` 就是补偿后的实际前滚量**。逐边按上式补偿后 `A(n) == output_latency[n]`
+//!    （归纳见 `every_branch_arrives_at_its_summing_node_together` 的文档）,
+//!    因此 Master 的输出时刻恰好是 `longest_path` 而不是"比它更大"。
 //!
 //! ## 本模块零第三方依赖
 //!
@@ -96,9 +112,13 @@ pub struct Plan<K> {
     pub arrival: BTreeMap<K, u32>,
     /// 离开各节点的累积延迟 = `arrival + 该节点自身延迟`。
     pub output_latency: BTreeMap<K, u32>,
-    /// 最长延迟关键路径 `L_max` = Master 的 `output_latency`。
+    /// 最长延迟关键路径 `L_max` = Master 的 `output_latency`。补偿之后, 它同时是
+    /// Master 输出的**实际前滚量**（帧）。
     pub longest_path: u32,
-    /// 每条边需要插入的补偿延迟 `D_e = L_max − output_latency[source]`。
+    /// 每条边需要插入的补偿延迟（帧）: `arrival[destination] − output_latency[source]`。
+    ///
+    /// 单入边节点上的值恒为 `0`（见模块文档第 1 条）; 多入边（求和）节点上, 它就是
+    /// 规范 `D_i = L_max − L_i` 在**该节点**上的取值（`L_max` 取该节点自己的 `arrival`）。
     pub edge_delay: BTreeMap<(K, K), u32>,
     /// 确定性拓扑序 (Kahn + 最小键优先)。
     ///
@@ -116,6 +136,9 @@ impl<K: Ord + Copy> Plan<K> {
 }
 
 /// 分析 `graph` 到 `master` 的延迟, 分配每条边的补偿延迟。
+///
+/// 每条边的补偿延迟是 `D(s → d) = arrival[d] − output_latency[s]`（见模块文档）。
+/// 单入边节点因此恒得 `0`; 补偿只出现在真正合并多条支路的求和节点上。
 ///
 /// # Errors
 ///
@@ -204,9 +227,14 @@ where
     let mut edge_delay: BTreeMap<(K, K), u32> = BTreeMap::new();
     for &(source, destination) in &graph.edges {
         let source_latency = output_latency.get(&source).copied().unwrap_or(0);
+        // 目的节点的 `arrival` 是它全部入边 `output_latency` 的最大值, 因此对**每一条**
+        // 入边都有 `arrival[destination] >= output_latency[source]`。取 `arrival` 而不是
+        // Master 的 `longest_path`: 后者会把目的节点下游堆起来的自身延迟补偿第二次,
+        // 让同一份信号在 Master 上分成两波（见模块文档的第 2 条）。
+        let destination_arrival = arrival.get(&destination).copied().unwrap_or(0);
         edge_delay.insert(
             (source, destination),
-            longest_path.saturating_sub(source_latency),
+            destination_arrival.saturating_sub(source_latency),
         );
     }
 
@@ -334,6 +362,51 @@ mod tests {
         }
     }
 
+    /// 每个节点的入边源节点（用于"各路到达时刻"的对齐断言）。
+    fn incoming(graph: &Graph<&'static str>) -> BTreeMap<&'static str, Vec<&'static str>> {
+        let mut out: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+        for &(source, destination) in &graph.edges {
+            out.entry(destination).or_default().push(source);
+        }
+        out
+    }
+
+    /// 沿图传播一遍"节点输出代表输入 t = 0 的绝对时刻"（帧）。
+    ///
+    /// 模型与真实设备链一致: `latency_samples` 是设备**自己**引入的延迟, 设备内部已经
+    /// 晚 `own` 帧输出, 渲染器因此**只**插延迟线, 不再额外补 `own`。于是
+    ///
+    /// ```text
+    /// A(源) = own(源)                                     (无入边)
+    /// A(n)  = max_(s→n) [ A(s) + D(s→n) ] + own(n)
+    /// ```
+    ///
+    /// 这是对 `Plan` 的**独立复算**: 它只读每条边的 `D` 与每个节点的 `own`, 不重算
+    /// `arrival` / `output_latency`。
+    fn propagate(
+        graph: &Graph<&'static str>,
+        plan: &Plan<&'static str>,
+    ) -> BTreeMap<&'static str, u32> {
+        let mut arrivals: BTreeMap<&'static str, u32> = BTreeMap::new();
+        for &node in &plan.topological_order {
+            let own = graph.latencies.get(&node).copied().unwrap_or(0);
+            let delivered = graph
+                .edges
+                .iter()
+                .filter(|(_, destination)| *destination == node)
+                .map(|(source, destination)| {
+                    arrivals.get(source).copied().unwrap_or(0)
+                        + plan
+                            .delay_of(*source, *destination)
+                            .expect("每条边都有补偿延迟")
+                })
+                .max()
+                .unwrap_or(0);
+            arrivals.insert(node, delivered + own);
+        }
+        arrivals
+    }
+
     /// [ARCH-PDC-002] 的预算表是规范正文里的硬数字, 这里把它变成可执行判据。
     #[test]
     fn latency_budget_table_matches_the_spec() {
@@ -361,7 +434,16 @@ mod tests {
         assert_eq!(plan.delay_of("track-slow", "master"), Some(0));
     }
 
-    /// 串接: 两级各 10 帧 + 母线自身 5 帧 => L_max = 25, 源节点补偿 25。
+    /// 串接: 两级各 10 帧 + 母线自身 5 帧 => `L_max = 25`。
+    ///
+    /// 串接链上**没有并行支路**, 因此两个节点都只有一条入边 ⇒ 两条边都不补
+    /// （`D = 0`）。补偿的语义是"把短支路补齐到与长支路同一时刻", 单支路没有可对齐的
+    /// 对象。自身延迟仍然算进 `output_latency` 与 `L_max`, 它们决定实际前滚量。
+    ///
+    /// ⚠ 本判据的两条期望值**在本次提交里被改写**: 旧实现给 `a → b` 补 15、给
+    /// `b → master` 补 5（用 Master 的全局 `L_max`）。那会让一条**单支路**多绕 20 帧,
+    /// 并在有并行支路时把下游节点的自身延迟补偿第二次 —— 见模块文档第 2 条与
+    /// `every_branch_arrives_at_its_summing_node_together`。
     #[test]
     fn serial_latency_accumulates_along_the_path() {
         let g = graph(
@@ -374,9 +456,13 @@ mod tests {
         assert_eq!(plan.output_latency["a"], 10);
         assert_eq!(plan.arrival["b"], 10);
         assert_eq!(plan.output_latency["b"], 20);
+        assert_eq!(plan.arrival["master"], 20);
         assert_eq!(plan.longest_path, 25);
-        assert_eq!(plan.delay_of("a", "b"), Some(15));
-        assert_eq!(plan.delay_of("b", "master"), Some(5));
+        assert_eq!(plan.delay_of("a", "b"), Some(0), "单入边节点不补");
+        assert_eq!(plan.delay_of("b", "master"), Some(0), "单入边节点不补");
+        // 补偿为 0 时, 实际前滚量仍然等于 `L_max`。
+        let arrivals = propagate(&g, &plan);
+        assert_eq!(arrivals["master"], plan.longest_path);
     }
 
     /// 菱形: a -> b -> master 与 a -> master 两条路径。
@@ -423,6 +509,110 @@ mod tests {
                 plan.longest_path
             );
         }
+    }
+
+    /// **绝对相位对齐的可执行形式**: 把每条边的补偿延迟与每个节点的**自身延迟**
+    /// 沿图传播一遍, 再断言到每个求和节点的**每一路**贡献都在同一时刻到达。
+    ///
+    /// # 归纳（为什么 `D = arrival[d] − output_latency[s]` 使 `A(n) == output_latency[n]`）
+    ///
+    /// 假设全部上游满足 `A(s) == output_latency[s]`, 则到 `d` 的每一路贡献是
+    /// `output_latency[s] + arrival[d] − output_latency[s] == arrival[d]` —— **与 `s` 无关**
+    /// ⇒ 全路对齐, 且 `A(d) == arrival[d] + own(d) == output_latency[d]`。归纳成立;
+    /// 源节点是基例 (`A == own == output_latency`)。于是 `A(master) == longest_path`。
+    ///
+    /// # 这条判据在旧实现上是**红**的
+    ///
+    /// 旧公式是 `D = longest_path − output_latency[s]`（Master 的全局值）。它对
+    /// `bus-a` 这样**自身有延迟**的中间节点把该延迟补偿了第二次: 旧实现下三路到达
+    /// Master 的时刻是 **81 / 44 / 42**（本判据实测到的那组字面量, 见提交说明）,
+    /// 相差 39 帧 —— 正是 [ARCH-PDC-001] 要消灭的低频相位干涉。
+    #[test]
+    fn every_branch_arrives_at_its_summing_node_together() {
+        let g = graph(
+            &["drums", "bus-a", "vox", "bus-b", "master"],
+            &[
+                ("drums", "bus-a"),
+                ("bus-a", "master"),
+                ("vox", "bus-b"),
+                ("bus-b", "master"),
+                ("drums", "master"),
+            ],
+            &[("drums", 3), ("bus-a", 11), ("vox", 40), ("bus-b", 2)],
+        );
+        let plan = plan(&g, "master").expect("无环");
+        let arrivals = propagate(&g, &plan);
+        let inbound = incoming(&g);
+
+        // 1. 实际前滚量 == 计划预测的 `output_latency`（逐节点, 不是只查 Master）。
+        for (&node, &predicted) in &plan.output_latency {
+            assert_eq!(
+                arrivals[node], predicted,
+                "{node}: 实际前滚 {} != 计划 {predicted}",
+                arrivals[node]
+            );
+        }
+
+        // 2. 每一路到达每个求和节点的时刻都相同 —— 这就是"绝对相位对齐"。
+        for (&destination, sources) in &inbound {
+            if sources.len() < 2 {
+                continue;
+            }
+            let times: Vec<u32> = sources
+                .iter()
+                .map(|source| {
+                    arrivals[source] + plan.delay_of(*source, destination).expect("有补偿延迟")
+                })
+                .collect();
+            assert!(
+                times.windows(2).all(|pair| pair[0] == pair[1]),
+                "{destination} 的各路到达时刻必须一致, 实际 {times:?}"
+            );
+        }
+
+        // 3. 手算的定点: 关键路径是 `bus-b` 那一条 (40 + 2 = 42)。
+        assert_eq!(plan.longest_path, 42);
+        assert_eq!(arrivals["master"], 42);
+        assert_eq!(plan.delay_of("drums", "master"), Some(39));
+        assert_eq!(plan.delay_of("bus-a", "master"), Some(28));
+        assert_eq!(plan.delay_of("bus-b", "master"), Some(0));
+        // 中间节点的自身延迟**不得**在它的入边上被补偿第二次。
+        assert_eq!(plan.delay_of("drums", "bus-a"), Some(0));
+        assert_eq!(plan.delay_of("vox", "bus-b"), Some(0));
+    }
+
+    /// **回归护栏**: 求和节点用自己的 `arrival`, 不用 Master 的全局 `L_max`。
+    ///
+    /// 图: `s`(自身 100) 直连 Master; `d`(求和, 自身 0) 由 `x`(10) 与 `y`(20) 喂。
+    /// ⇒ `arrival[d] = 20`（`d` 自己的 `L_max`）, `longest_path = 100`（Master 的）。
+    ///
+    /// 这条判据同时拒绝**两种**写法: "每条边都用全局 `L_max`"（旧实现）与
+    /// "只给求和节点补, 但用全局 `L_max`"。两者都会给 `d → master` 补 80 而让
+    /// `s` 支路与 `d` 支路在 Master 上相差 80 帧。
+    #[test]
+    fn a_deeper_bus_uses_its_own_arrival_not_the_master_critical_path() {
+        let g = graph(
+            &["s", "x", "y", "d", "master"],
+            &[("s", "master"), ("x", "d"), ("y", "d"), ("d", "master")],
+            &[("s", 100), ("x", 10), ("y", 20)],
+        );
+        let plan = plan(&g, "master").expect("无环");
+        assert_eq!(plan.arrival["d"], 20, "d 自己的 L_max 是 20, 不是 100");
+        assert_eq!(plan.longest_path, 100);
+        // 手算: d 的两路各自对齐到 20; Master 的两路各自对齐到 100。
+        assert_eq!(plan.delay_of("x", "d"), Some(10));
+        assert_eq!(plan.delay_of("y", "d"), Some(0));
+        assert_eq!(plan.delay_of("d", "master"), Some(80));
+        assert_eq!(plan.delay_of("s", "master"), Some(0));
+
+        let arrivals = propagate(&g, &plan);
+        assert_eq!(arrivals["d"], 20);
+        assert_eq!(arrivals["master"], 100);
+        assert_eq!(
+            arrivals["d"] + plan.delay_of("d", "master").unwrap(),
+            arrivals["s"] + plan.delay_of("s", "master").unwrap(),
+            "两条支路必须在 Master 上同时到达"
+        );
     }
 
     #[test]
