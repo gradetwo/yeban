@@ -14,22 +14,51 @@
 //
 // ⚠ **诚实性审计登记（2026-10-08，本次未修，如实登记不假装）**：
 // 上面那句原来写的是"所有值都是**演示数据**，由 app.slint 的 MainWindow 传入" —— 那是**假的**：
-// `selection`（`:17`）/ `chord`（`:18`）/ `device`（`:20`）三个属性
+// `selection` / `chord` / `device` 三个属性
+// （基线提交 `18a8874` 里它们是 `:37` / `:38` / `:40`；本票只改注释 ⇒ 行号会漂，
+// 因此判据按**属性名**寻址，见 `tests/status_bar_honesty.rs`）
 // **没有任何宿主写者**（`git grep -n 'set_selection\|set_chord\|set_device' crates/yeban-app/src`
 // 命中 0），而 `crates/yeban-app/ui/app.slint` 的 `StatusBar { … }` 实例只传了
 // `save-status` / `save-succeeded` ⇒ **界面显示的就是这三条属性默认值**。
 // 三条里最糟的是 `device` 的 `"DSP 3.2%"`：那是一个**编造的性能读数**。
 // 而这三格在**默认帧里就可见**（与 AI 徽章同一类，且更显眼）。
 //
-// 为什么本次不修（留给下一票，按"能真接就真接"排序）：
-//   ① `selection` —— **可以真接**：`MainWindow.selected-note-count` 是真实读数
-//      （写者 `src/host.rs` 的点击/删除路径），把**它**接到这一格即可让"无选区"变成真话；
-//      **区间文本**（`1.1.000 – 5.4.480`）需要选中音符的 tick 极值，今天没有这条投影。
-//   ② `chord` —— **能力不存在**：全仓没有和弦识别被接到界面（`yeban-theory` 不在 app 的依赖图上）。
-//   ③ `device` —— **部分可接**：`project.audio_config.sample_rate` 是模型里的真数据
-//      （`yeban_query_engine_state` 已暴露），但"DSP 3.2%"与"目标 120 FPS"没有数据源。
-//   代价：任何**用户可见**的处置都会改默认帧 ⇒ 5 张 Linux 基准按手动档 `gates-manual.yml`
-//   的 `gate=goldens` 重录一次（本票为 AI 徽章已经要重录一次，这一票可搭车）。
+// **本票（`line/app-r9`，2026-10-08）复测** —— 三条默认值**一个字符都没动**（动它必改基准），
+// 本票只把代价量清楚并登记。四条读数都是本机跑出来的，每条带出处：
+//
+//   ① 5 张 Linux 基准**没有遮罩**这三格。基准 PNG 里
+//      `status-bar-selection (8,1056,220,24)` 非黑像素 **5280/5280**、
+//      `status-bar-chord (236,1056,96,24)` **2304/2304**、
+//      `status-bar-device (1652,1056,256,24)` **6144/6144**（不同颜色 127 / 155 / 167）
+//      ⇒ 这三格**逐字节**参与比对 —— 动态区遮罩只走 MCP 预览那条路
+//      （`crates/yeban-ui-mcp/src/surface.rs:631`、`src/test_port_adapter.rs:958`），
+//      不进 `src/test_port_adapter.rs:174` 的 golden 比对。
+//      改这三条中的**任何一条** ⇒ `crates/yeban-app/tests/golden/linux/**` 的 5 张**确定性过期**。
+//   ② `selection` 连**格式**都与 app 自己的唯一时间码不一致：基准里走带那一格渲染的是
+//      `001.01.000`（`bridge.rs:615` 的 `{bar:03}.{beat:02}.{in_beat:03}`），而这里写 `1.1.000`。
+//      ⇒「接线真实数据但文本格式不变」对 `selection` **不成立**：要么改格式，要么写第二份
+//      格式化实现 —— 而 `bridge.rs:624` 明确只许一份（`timecode_for_ticks`）。
+//   ③ `24-bit` 与两处权威默认值都矛盾：模型 `ProjectAudioConfig.bit_depth` 的默认值是
+//      `BitDepth::Float32`（`crates/yeban-model/src/project.rs:137,143`），引擎只协商 `f32`
+//      （`src/engine_host.rs:307`）。`48 kHz` 那一半与默认值一致：`SampleRate::default() = Hz48000`
+//      （`crates/yeban-model/src/project.rs:216`）与 `EngineConfig::default().sample_rate = 48_000`
+//      （`crates/yeban-engine/src/device.rs:83`）。
+//   ④ `"DSP 3.2%"` 与 `"目标 120 FPS"` 今天**没有数据源**（本票实测）：`grep -rni
+//      'dsp_load|cpu_load|load_percent' crates/yeban-app/src` 命中 **0**；app 里也没有运行时
+//      FPS 读数（唯一相关的是 `src/test_port_adapter.rs:1451` 那条 `#[ignore]` 的手动档基准）。
+//
+// **逐条处置（按"能真接就真接"排序；三条都卡在同一处：改可见文本）**：
+//   ① `selection` —— 可接线面是 `bridge.rs:1800` 的 `ViewState::selection_tick_span`
+//      （`Z` 键已在用：`src/host.rs:2683`）；但如 ② 所述，接上**必然**改格式或加第二份实现。
+//   ② `chord` —— **只登记，不加依赖**：实测 `cargo tree -p yeban-app -e normal --locked` 里
+//      `yeban-theory` 命中 **0** ⇒ 能力不存在；本票**不**为它加依赖边。
+//   ③ `device` —— 真读数在 `src/engine_host.rs:312` 的 `DeviceOpening`
+//      （`sample_rate` / `channels`；生产路径 `src/main.rs:277,282` 已经拿到它），
+//      但 `24-bit` 要换成真位深、`"DSP 3.2%"` 必须删 ⇒ 同样是改可见文本。
+//   ⇒ 三条的**用户可见**处置都要一次基准重录（手动档 `gates-manual.yml` 的 `gate=goldens`，
+//     重录后由人复核）。本票**停在测量**：等负责人排重录，再落文本。
+//
+// 这份登记与"三条默认值 = 基准里那三格"的绑定由 `tests/status_bar_honesty.rs` 机械看守。
 
 import { Tokens, UiText, UiMonoText } from "tokens.slint";
 
