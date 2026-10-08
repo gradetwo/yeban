@@ -18,6 +18,7 @@
 //! | [`graph`] | `RoutingGraph` 拓扑排序、关键路径 `L_max`、`D_i` 分配、环形延迟线 | [ARCH-PDC-001]、[ROAD-M2-004] |
 //! | [`latency`] | `BASELINE-005` 的**纯计算**一半：标称时延换算、回调抖动统计、机器可读行、以及"没测到 ≠ 达标"的判定（**零 cpal 依赖**，可用 `rustc --test` 单跑） | [BASELINE-005]、[ARCH-PDC-002] |
 //! | [`level`] | **再导出** `yeban_dsp::meter` 的电平口径（峰值/峰值保持/RMS/平滑/dBFS/钳位/取最新/真峰值）——本 crate 不再持有实现 | [ARCH-UI-002]、[ROAD-M2-008] |
+//! | [`insert`] | **每轨插入器件**：`InternalEffect` 设备 → 压缩器（`yeban_dsp::compressor` 的再导出 + 约定参数名投影） | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-006] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
@@ -37,9 +38,9 @@
 //! | :--- | :---: | :--- |
 //! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
 //!
-//! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `latency` / `ring` /
+//! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `insert` / `latency` / `ring` /
 //! `snapshot` / `meter` / `synth` / `rt` / `rt_probe` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
-//! + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
+//! + **每轨插入** + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
 //!
 //! ⚠ [`latency`] 是 `BASELINE-005` 的**工具**那一半，**不是**门禁本身：门禁要求的是
 //! **硬件往返时延**，而本 crate 在任何环境下都无法测它（cpal 0.18.2 不暴露硬件时延 API，
@@ -115,6 +116,7 @@ pub mod block;
 pub mod device;
 pub mod fpu;
 pub mod graph;
+pub mod insert;
 pub mod latency;
 pub mod level;
 pub mod meter;

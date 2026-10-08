@@ -29,6 +29,7 @@
 //!       d) 节拍器按同一份快照武装开关与拍栅格（波形已在构造期算好）
 //! 3) 渲染 + 电平：对快照里**每条非母线轨**
 //!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch（声相之前、单声道）
+//!         →  **插入链：该轨的压缩器**（`TrackV3.devices` 的内置效果器投影；没有则整段跳过）
 //!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
 //!         →  **PDC 补偿延迟线（`D(v) = L_max − arrival(v)` 采样点）** [ARCH-PDC-001]
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
@@ -59,7 +60,7 @@
 //!   clips → ClipPlacement → clip_pool(Midi) → MidiNote ──(tick → sample)──►
 //!     ScheduledNote { start_sample, end_sample, phase_inc, freq_hz, gain }
 //! ──(RT: 游标触发 → 定长声部池 → 整数相位波表读数 → 声部低通)──► track_scratch
-//! ──(声相增益)──► 母线 L/R ──(前瞻峰值限制器)──► AudioBlock ──► cpal / NullBackend
+//! ──(该轨的插入压缩器, 若有)──► 声相增益 ──► 母线 L/R ──(前瞻峰值限制器)──► AudioBlock ──► cpal / NullBackend
 //! ```
 //!
 //! 实时侧仍然是零分配/零锁/零 I/O：声部池是 `[TrackSlot; 16]`（每槽 16 个声部），
@@ -86,6 +87,7 @@
 //! - [`crate::metronome::render_quantum`]：`[usize; 4]` + `[f32; 4]`（本量子的拍点，栈上定长）
 //! - [`EngineRuntime::block`]：`AudioBlock<128>`（`[f32; 128]` × 2）
 //! - [`EngineRuntime::synth`]：`[TrackSlot; 16]` × `[Voice; 16]`（声部池，定长）
+//! - [`EngineRuntime::armed_compressors`]：`[(EntityId, Option<Compressor>); 16]`（每轨插入链，定长；`Compressor` 全是标量字段 ⇒ 无堆）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
 //! 唯一允许的"共享状态"是原子量与 rtrb 队列；唯一的系统调用级别操作是
@@ -98,6 +100,7 @@ use yeban_model::EntityId;
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
 use crate::graph::CompensationBank;
+use crate::insert::{Compressor, CompressorParams};
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
@@ -178,6 +181,18 @@ pub struct EngineStats {
     pub limiter_gain_reductions: u64,
     /// 母线限制器累计的**最大**瞬时压限量（1.0 − 最小增益；0 = 从未压过）。
     pub limiter_max_reduction: f32,
+    /// **每轨插入压缩器**累计压过的样本数（[`crate::insert`]；0 = 从未压过）。
+    ///
+    /// 与 [`Self::limiter_gain_reductions`] 同族、但**不是**同一个读数：它把"插入器件
+    /// 真的接在轨上、并且真的在工作"变成可读的数，而不是从音频输出反推。
+    /// 全部轨都没有压缩器时（默认）**恒为 0**。
+    pub insert_gain_reductions: u64,
+    /// 每轨插入压缩器累计的**最大**增益衰减（dB，`≥ 0`；0 = 从未压过）。
+    ///
+    /// ⚠ 单位是 **dB**（与 [`Self::limiter_max_reduction`] 的"1.0 − 增益"线性口径**不同**）：
+    /// 压缩器的 [`Compressor::max_reduction_db`] 本来就以 dB 报数，这里**不换算**，
+    /// 免得引入第二套口径。
+    pub insert_max_reduction_db: f32,
     /// 因实时侧 PDC 延迟线池**槽位用尽**而未能武装的节点数（累计；正常恒为 0）[ROAD-M2-004]。
     ///
     /// 非 0 = 那一份计划里有节点**没有**得到补偿。它是"容量不足不静默"的机械形式：
@@ -369,6 +384,20 @@ pub struct EngineRuntime {
     limiter_gain_reductions: u64,
     /// 累计最大压限量（与 [`EngineStats::limiter_max_reduction`] 同源）。
     limiter_max_reduction: f32,
+    /// **每轨插入链**：`(轨道, 压缩器)`，前 [`Self::armed_insert_slots`] 项有效。
+    ///
+    /// 与 `armed_pan_gains` 同一个形状与同一个理由：**构造期**（快照边界）把器件建好，
+    /// 逐样本路径只做"查表 + 调用"。槽位是**预分配**的定长数组 ⇒ 武装步骤
+    /// （`Compressor::new` / `set_params`，含 `exp`）**零分配** [MUST-GATE-001]。
+    ///
+    /// `None` 的槽位不参与查找（[`Self::armed_insert_slots`] 之外的内容一律无效）。
+    armed_compressors: [(EntityId, Option<Compressor>); MAX_TRACK_SLOTS],
+    /// 本快照武装的插入器件条数（前 `n` 项有效）。
+    armed_insert_slots: usize,
+    /// 累计被**插入压缩器**压过的样本数（与 [`EngineStats::insert_gain_reductions`] 同源）。
+    insert_gain_reductions: u64,
+    /// 插入压缩器累计最大衰减（dB；与 [`EngineStats::insert_max_reduction_db`] 同源）。
+    insert_max_reduction_db: f32,
     /// 已按哪一份快照的采样率/块长设置过弹道系数。
     armed_revision: Option<u64>,
     quanta: u64,
@@ -440,6 +469,11 @@ impl EngineRuntime {
             metronome: MetronomeVoice::new(),
             limiter_gain_reductions: 0,
             limiter_max_reduction: 0.0,
+            // 插入链：**构造期**预分配全部槽位（回调内绝不再分配）。
+            armed_compressors: [(EntityId::default(), None); MAX_TRACK_SLOTS],
+            armed_insert_slots: 0,
+            insert_gain_reductions: 0,
+            insert_max_reduction_db: 0.0,
             armed_revision: None,
             quanta: 0,
             events_applied: 0,
@@ -515,6 +549,8 @@ impl EngineRuntime {
             notes_triggered: self.synth.notes_triggered(),
             limiter_gain_reductions: self.limiter_gain_reductions,
             limiter_max_reduction: self.limiter_max_reduction,
+            insert_gain_reductions: self.insert_gain_reductions,
+            insert_max_reduction_db: self.insert_max_reduction_db,
             pdc_unarmed_nodes: self.pdc_unarmed_nodes,
             pdc_clamped_frames: self.pdc_clamped_frames,
             pdc_processed_blocks: self.pdc.processed_blocks(),
@@ -602,6 +638,28 @@ impl EngineRuntime {
     #[must_use]
     pub const fn armed_pan_slot_count(&self) -> usize {
         self.armed_pan_slots
+    }
+
+    /// 本快照武装的**每轨插入压缩器参数**（诊断/判据用）。
+    ///
+    /// 返回 `None` = 这条轨**没有**插入压缩器（实时侧整段跳过）。
+    /// 存在的理由与 [`Self::armed_pan_gain`] 同族：把"武装进去的那个数"变成**可读**的，
+    /// 判据就不必从音频输出反推 —— 引擎线第一次接入声相时的那个 bug
+    /// （武装表与投影各自都对、错在武装表）正是这样定位的。
+    /// [crate::insert] 模块文档 §5 说明了本读数的**构造期/逐样本**归属。
+    #[must_use]
+    pub fn armed_compressor(&self, track: &EntityId) -> Option<CompressorParams> {
+        self.armed_compressors[..self.armed_insert_slots]
+            .iter()
+            .find(|(id, _)| id == track)
+            .and_then(|(_, compressor)| compressor.as_ref())
+            .map(Compressor::params)
+    }
+
+    /// 武装表里的**插入压缩器**条数。
+    #[must_use]
+    pub const fn armed_insert_slot_count(&self) -> usize {
+        self.armed_insert_slots
     }
 
     /// 本快照武装的**主总线线性增益**（诊断/判据用）。
@@ -723,6 +781,10 @@ impl EngineRuntime {
             limiter,
             limiter_gain_reductions,
             limiter_max_reduction,
+            armed_compressors,
+            armed_insert_slots,
+            insert_gain_reductions,
+            insert_max_reduction_db,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
             armed_revision,
@@ -848,6 +910,45 @@ impl EngineRuntime {
                 // 的 `masterPan` 登记同一口径。
                 *armed_master_gain = current.master_gain();
 
+                // --- 2c'') 每轨**插入器件**（压缩器）：与声相表同一个形状 ---
+                // [crate::insert]。计划（哪条轨挂压缩器、参数是多少）在**控制线程**的
+                // `EngineSnapshot::from_project` 里算好；这里只做**定长槽位内**的
+                // `Compressor::new` / `set_params`（都只写标量，**零分配**）。
+                //
+                // ⚠ `set_params` / `set_sample_rate` 会重算三个一阶低通系数（含 `exp`）
+                // ⇒ 属 [ADR-0001 D32] 的**超越函数类**，因此**只能**在这里（快照边界、
+                // 每个修订一次）调用，绝不进逐样本路径 —— 与同一个分支里的
+                // `params.pan_gains(...)`（`cos`/`sin`）是同一条纪律。
+                //
+                // 默认口径：`current.inserts()` 在工程没有已识别的效果器设备时是**空表**
+                // ⇒ 本循环不执行、`armed_insert_slots` 为 0 ⇒ 逐样本路径整段跳过。
+                *armed_insert_slots = 0;
+                for (id, insert) in current.inserts() {
+                    if *id == master || *armed_insert_slots >= MAX_TRACK_SLOTS {
+                        continue;
+                    }
+                    let Some(params) = insert.compressor() else {
+                        continue;
+                    };
+                    let slot = *armed_insert_slots;
+                    let sample_rate = current.sample_rate() as f32;
+                    match &mut armed_compressors[slot] {
+                        // 同一条轨仍占同一个槽位 ⇒ 只换参数 + 校准采样率：
+                        // **弹道状态保留**（重建 `Compressor` 会把增益跳回 0 dB，
+                        // 那是一次听得见的阶跃）。轨→槽位的分配由 `BTreeMap` 的确定性
+                        // 迭代顺序决定 [MODEL-AST-003]。
+                        (existing, Some(compressor)) if *existing == *id => {
+                            compressor.set_params(params);
+                            compressor.set_sample_rate(sample_rate);
+                        }
+                        // 新占用该槽位 ⇒ 建一个新的器件（弹道状态从 0 起）。
+                        entry => {
+                            *entry = (*id, Some(Compressor::new(params, sample_rate)));
+                        }
+                    }
+                    *armed_insert_slots += 1;
+                }
+
                 // --- 2d) 节拍器：波形与拍栅格都在**构造期**算好（`sin` 属超越函数类），
                 // 这里只把两个整数（每拍 tick / 每小节拍数）与一个开关读进实时侧
                 // （[`crate::metronome`]）。**关掉时**把武装标志置假并丢掉可能正在响的
@@ -914,6 +1015,36 @@ impl EngineRuntime {
                 } else {
                     // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
                     track_scratch[..frames].fill(0.0);
+                }
+                // --- 3a') 插入链：本轨的压缩器（若有）**逐样本**处理 ---
+                // [crate::insert]。位置：**轨道自己的渲染之后、逐轨电平与 PDC 之前**
+                // ⇒ 电平读数（`EngineStats::meter_frames`）与汇入母线的信号都是
+                // "插入之后"的结果。
+                //
+                // **默认口径**：本轨没有压缩器（`armed_compressors` 里查不到）⇒
+                // 这个分支**整段跳过**（不是"参数取成透明"）⇒ 这类轨的输出与接线前
+                // **逐位相同**（证据见 `tests/compressor_insert.rs` 的 C0）。
+                //
+                // 停住时喂的是静音：压缩器的弹道是**时间状态**，喂静音让增益按释放
+                // 常数回到 0 dB —— 与 PDC 延迟线"停住也喂静音"是同一条纪律。
+                //
+                // 逐样本路径上只有器件的乘加与一阶低通（器件把 `exp` 全部留在
+                // `set_params` 里）；这里**零分配、零锁、零 I/O** [MUST-GATE-001]。
+                if let Some(index) = armed_compressors[..*armed_insert_slots]
+                    .iter()
+                    .position(|(id, _)| id == &track)
+                    && let (_, Some(compressor)) = &mut armed_compressors[index]
+                {
+                    let before_reductions = compressor.reduction_count();
+                    compressor.process_mono(&mut track_scratch[..frames]);
+                    let reduced = compressor
+                        .reduction_count()
+                        .saturating_sub(before_reductions);
+                    *insert_gain_reductions = insert_gain_reductions.wrapping_add(reduced);
+                    let reduction_db = compressor.max_reduction_db();
+                    if reduction_db > *insert_max_reduction_db {
+                        *insert_max_reduction_db = reduction_db;
+                    }
                 }
                 if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {
                     scratch_meters[produced] = frame;

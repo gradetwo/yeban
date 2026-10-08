@@ -84,6 +84,7 @@ use yeban_model::{
 };
 
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
+use crate::insert::InsertParams;
 use crate::metronome::MetronomePlan;
 use crate::mixer::{PanLaw, pan_gains};
 use crate::synth::{
@@ -333,6 +334,18 @@ pub struct EngineSnapshot {
     /// 它**不是**模型的第二份定义，等模型线补齐后应整体删除
     /// （见 `docs/ledger/engine-mix-notes.md` 的 needs 与 [`crate::synth::ToneParams`]）。
     tones: BTreeMap<EntityId, ToneParams>,
+    /// 每轨的**插入链**（当前只有压缩器）[ARCH-RT-001, ARCH-DET-001]。
+    ///
+    /// ⚠ **引擎侧临时形状**（与 [`Self::tones`] 同族）：`yeban-model` 还没有
+    /// "效果器参数 → 音频线程"的投影（`docs/ledger/engine-mix-notes.md` §8.2 的 N5），
+    /// 因此这里由 [`InsertParams::from_devices`] 从 `TrackV3.devices` 的
+    /// `InternalEffect` 设备的 `params` 里按**约定参数名**抽取。
+    /// 模型线补齐后本投影应整体删除（见 [`crate::insert`] 模块文档 §4）。
+    ///
+    /// 只收录**非空**的链（[`InsertParams::is_empty`] 为假的那些）：
+    /// "不在表里"与"表里是空链"在实时侧同解 ⇒ 这个容器的大小只与"真的挂了几台压缩器"有关，
+    /// 与工程轨道数无关。**没有一台压缩器时它是空表 ⇒ 实时侧整段跳过**。
+    inserts: BTreeMap<EntityId, InsertParams>,
     /// 声相衰减律（`audio_config.pan_law` 的投影）[MODEL-AST-002]。
     ///
     /// 模型层已有这个枚举，但**快照此前没有投影它**（`line/engine-sound` 的 needs N4）。
@@ -419,9 +432,15 @@ impl EngineSnapshot {
 
         let mut tracks: BTreeMap<EntityId, TrackParams> = BTreeMap::new();
         let mut tones: BTreeMap<EntityId, ToneParams> = BTreeMap::new();
+        // 只收录非空的插入链（见 `EngineSnapshot::inserts` 的字段文档）。
+        let mut inserts: BTreeMap<EntityId, InsertParams> = BTreeMap::new();
         for (id, track) in &project.tracks {
             tracks.insert(*id, TrackParams::from_track(track, latencies.get(id)));
             tones.insert(*id, ToneParams::from_devices(&track.devices));
+            let insert = InsertParams::from_devices(&track.devices);
+            if !insert.is_empty() {
+                inserts.insert(*id, insert);
+            }
         }
         let block = project.audio_config.block_size.frames() as usize;
         let (schedules, dropped) = project_schedules(project);
@@ -439,6 +458,7 @@ impl EngineSnapshot {
             snapshot
                 .with_schedules(schedules, dropped)
                 .with_tones(tones)
+                .with_inserts(inserts)
                 .with_pan_law(PanLaw::from_model(project.audio_config.pan_law))
                 .with_bpm(project.bpm)
                 .with_metronome(project.transport.metronome_enabled.then(|| {
@@ -487,6 +507,7 @@ impl EngineSnapshot {
             tracks,
             schedules: BTreeMap::new(),
             tones: BTreeMap::new(),
+            inserts: BTreeMap::new(),
             pan_law: PanLaw::default(),
             master_gain,
             scheduled_notes: 0,
@@ -518,6 +539,15 @@ impl EngineSnapshot {
     #[must_use]
     pub fn with_tones(mut self, tones: BTreeMap<EntityId, ToneParams>) -> Self {
         self.tones = tones;
+        self
+    }
+
+    /// 附上每轨的**插入链**（**引擎侧临时形状**，见 [`crate::insert::InsertParams`]）。
+    ///
+    /// 不在表里的轨道 ⇒ 插入链为空 ⇒ 实时侧整段跳过 ⇒ 逐位不变（这是默认口径）。
+    #[must_use]
+    pub fn with_inserts(mut self, inserts: BTreeMap<EntityId, InsertParams>) -> Self {
+        self.inserts = inserts;
         self
     }
 
@@ -638,6 +668,22 @@ impl EngineSnapshot {
     #[must_use]
     pub fn tone(&self, id: &EntityId) -> Option<&ToneParams> {
         self.tones.get(id)
+    }
+
+    /// 全部音轨的**插入链**（只含**非空**的链；`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    ///
+    /// ⚠ **引擎侧临时形状**：见字段文档与 [`crate::insert::InsertParams`]。
+    /// 判据用它断言"模型层的效果器设备真的投影进了快照"，而不必从音频输出反推
+    /// （与 [`Self::tones`] / [`Self::metronome`] 同族）。
+    #[must_use]
+    pub const fn inserts(&self) -> &BTreeMap<EntityId, InsertParams> {
+        &self.inserts
+    }
+
+    /// 单轨的插入链（没有该轨时为 `None` ⇒ 实时侧整段跳过）。
+    #[must_use]
+    pub fn insert_params(&self, id: &EntityId) -> Option<&InsertParams> {
+        self.inserts.get(id)
     }
 
     /// 声相衰减律（`audio_config.pan_law` 的投影）。

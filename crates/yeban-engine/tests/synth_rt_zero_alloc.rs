@@ -12,6 +12,16 @@
 //! 计数型全局分配器是**进程全局**的，libtest 自己的线程会污染计数
 //! （第一版实测 `allocations=9`），因此这里与既有目标一样关掉 libtest
 //! （`[[test]] harness = false`），只让主线程跑测量。
+//!
+//! # 场景 5 / 6（`line/engine-wiring` 追加）：每轨插入压缩器
+//!
+//! `crate::insert` 把 `TrackV3.devices` 的内置效果器投影成**每轨压缩器**之后，
+//! 逐样本路径多了"查表 + `Compressor::process_mono`"、快照边界多了
+//! `Compressor::new` / `set_params` / `set_sample_rate`（含 `exp`）。前四个场景的夹具
+//! **没有**已识别的效果器设备 ⇒ 插入链整段跳过 ⇒ 对它是空转。
+//! 因此追加两个场景：**10,000 量子**（逐样本路径）与 **31 次快照交换**（重新武装路径），
+//! 两者都断言 `allocations == 0 && deallocations == 0`，并对"压缩器真的在压"
+//! （`insert_gain_reductions > 0`）与"窗口里真的有声"做覆盖度自检。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -25,6 +35,7 @@ use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
 mod support;
 
 use support::{MixSpec, NoteSpec, note_project, tuned_project};
+use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue};
 
 /// 包住 [`System`] 的计数型分配器。
 struct CountingAllocator;
@@ -290,6 +301,130 @@ fn main() -> ExitCode {
         mix_stats.limiter_max_reduction,
     );
 
+    // ---- 场景 5：**每轨插入压缩器**（`crate::insert`）在实时窗口内零分配 ----
+    //
+    // 为什么必须单独一个场景：前四个场景的夹具都**没有**已识别的效果器设备
+    // ⇒ `armed_compressors` 全是 `None` ⇒ 插入链**整段跳过**，"零分配"对它是空转。
+    // 接线之后逐样本路径多了"查表 + `Compressor::process_mono`"，快照边界多了
+    // `Compressor::new` / `set_params` / `set_sample_rate`（三者都会重算含 `exp` 的
+    // 一阶低通系数）—— 这两条路径都必须证明不分配 [MUST-GATE-001, ARCH-RT-001]。
+    //
+    // 夹具设计（每一项都对应一件事）：
+    //   * 256 个交叠音符（沿用 `saturated_notes`）⇒ 整个窗口有声部在跑；
+    //   * 阈值 −30 dBFS / 比率 8 ⇒ 压缩器**每个量子真的在压**（行为覆盖，防假绿）；
+    //   * 场景 6 再叠"每量子换一次快照" ⇒ 覆盖**重新武装**路径（`set_params`）。
+    let mut insert_fixture = note_project(&saturated_notes());
+    let insert_track = insert_fixture.track;
+    {
+        let entry = insert_fixture
+            .project
+            .tracks
+            .get_mut(&insert_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Comp".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "threshold_db".to_owned(),
+                    value: -30.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "ratio".to_owned(),
+                    value: 8.0,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    let insert_snapshot =
+        EngineSnapshot::from_project(&insert_fixture.project, 1).expect("插入链夹具快照");
+    assert!(
+        !insert_snapshot.inserts().is_empty(),
+        "插入链夹具必须真的挂上压缩器，否则本场景是空转"
+    );
+    let insert_slot = SnapshotSlot::new(insert_snapshot);
+    let (insert_retire, mut insert_queue) = retire_channel(64);
+    let (_sender, insert_receiver) = event_channel(64);
+    let (insert_publisher, _insert_collector) = meter_channel(8192);
+    let mut insert_runtime = EngineRuntime::new(
+        &insert_slot,
+        insert_retire,
+        insert_receiver,
+        insert_publisher,
+    );
+    let mut insert_output = vec![0.0f32; 128 * 2];
+    // 预热：首次武装（`Compressor::new`）与首个量子的一次性路径。
+    insert_runtime.process_quantum(&mut insert_output, 2);
+    if insert_runtime.armed_insert_slot_count() != 1 {
+        failures.push(format!(
+            "插入链夹具应武装 1 台压缩器，实际 {} 台",
+            insert_runtime.armed_insert_slot_count()
+        ));
+    }
+
+    let mut insert_nonzero = 0usize;
+    let (allocations, deallocations) = measure("insert compressor 10_000 quanta", || {
+        for _ in 0..10_000 {
+            insert_runtime.process_quantum(&mut insert_output, 2);
+            for sample in &insert_output {
+                if *sample != 0.0 {
+                    insert_nonzero += 1;
+                }
+            }
+        }
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "每轨插入压缩器在实时窗口内分配/释放了内存: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    if insert_nonzero == 0 {
+        failures.push("插入链窗口里没有任何非零样本 —— 零分配判据是空转（假绿）".to_owned());
+    }
+    let insert_stats = insert_runtime.stats();
+    if insert_stats.insert_gain_reductions == 0 {
+        failures.push(
+            "插入压缩器一次都没压到样本（reductions = 0）—— 这条零分配判据没有覆盖压缩器"
+                .to_owned(),
+        );
+    }
+    println!(
+        "[engine-wiring/J5] 插入压缩器: quanta={} 压过样本={} 最大衰减={:.3} dB 非零样本={insert_nonzero}",
+        insert_stats.quanta,
+        insert_stats.insert_gain_reductions,
+        insert_stats.insert_max_reduction_db,
+    );
+
+    // ---- 场景 6：快照交换时**重新武装**压缩器（`set_params` / `set_sample_rate`）----
+    let mut insert_switches = 0u64;
+    for revision in 2..=32u64 {
+        // 发布在窗口**之外**：控制线程允许分配。
+        let next = EngineSnapshot::from_project(&insert_fixture.project, revision).expect("快照");
+        insert_slot.publish(next);
+        let (allocations, deallocations) = measure("insert re-arm + quantum", || {
+            insert_runtime.process_quantum(&mut insert_output, 2);
+        });
+        if allocations != 0 {
+            failures.push(format!(
+                "重新武装插入压缩器时实时路径分配了 {allocations} 次（revision={revision}）"
+            ));
+        }
+        if deallocations != 0 {
+            failures.push(format!(
+                "重新武装插入压缩器时实时线程释放了 {deallocations} 次（revision={revision}）"
+            ));
+        }
+        insert_switches += insert_queue.drain(64) as u64;
+    }
+    if insert_switches == 0 {
+        failures.push("插入链场景没有从退役队列回收任何旧快照 —— 场景 6 是空转".to_owned());
+    }
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -304,7 +439,8 @@ fn main() -> ExitCode {
     if failures.is_empty() {
         println!(
             "[engine-sound/J5] ok: 10,000 量子（音符铺满窗口）+ 63 次快照交换 + \
-             filled_project 4,000 量子 + 2,000 量子整条混音链，实时窗口内零分配零释放"
+             filled_project 4,000 量子 + 2,000 量子整条混音链 + 10,000 量子每轨插入压缩器 \
+             + 31 次插入链重新武装，实时窗口内零分配零释放"
         );
         ExitCode::SUCCESS
     } else {
