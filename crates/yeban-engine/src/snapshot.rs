@@ -334,12 +334,14 @@ pub struct EngineSnapshot {
     /// 它**不是**模型的第二份定义，等模型线补齐后应整体删除
     /// （见 `docs/ledger/engine-mix-notes.md` 的 needs 与 [`crate::synth::ToneParams`]）。
     tones: BTreeMap<EntityId, ToneParams>,
-    /// 每轨的**插入链**（当前只有一件器件：通道条，其动态级即压缩器）[ARCH-RT-001, ARCH-DET-001]。
+    /// 每轨的**插入链**（两件器件：通道条（其动态级即压缩器）与混响）
+    /// [ARCH-RT-001, ARCH-DET-001]。
     ///
     /// ⚠ **引擎侧临时形状**（与 [`Self::tones`] 同族）：`yeban-model` 还没有
     /// "效果器参数 → 音频线程"的投影（`docs/ledger/engine-mix-notes.md` §8.2 的 N5），
     /// 因此这里由 [`InsertParams::from_devices`] 从 `TrackV3.devices` 的
-    /// `InternalEffect` 设备的 `params` 里按**约定参数名**抽取。
+    /// `InternalEffect` 设备的 `params` 里按**约定参数名**抽取
+    /// （两件器件各自的规则见 [`crate::insert`] 模块文档 §4 与 §8）。
     /// 模型线补齐后本投影应整体删除（见 [`crate::insert`] 模块文档 §5）。
     ///
     /// 只收录**非空**的链（[`InsertParams::is_empty`] 为假的那些）：

@@ -155,6 +155,93 @@
 //! 逐位一致的**实测**证据（原始样本落盘 + `shasum -a 256`）见
 //! `crates/yeban-engine/tests/compressor_insert.rs` 的 C0（未武装）与
 //! `crates/yeban-engine/tests/channel_strip_insert.rs` 的 C8（未武装的四条口径）。
+//!
+//! ## 8. 第二件器件（本票）：每轨**插入混响**（`yeban_dsp::reverb`）
+//!
+//! `crates/yeban-dsp/src/reverb.rs` 是 Freeverb 拓扑的立体声混响，**早已实现并自带判据**
+//! （`docs/ledger/dsp-core-provenance.md:216` 列出其中 6 条）。接线前它在 `crates/yeban-engine`
+//! 里**只作为参数字符串**出现（`crates/yeban-engine/tests/compressor_insert.rs:121` 的
+//! `("reverb_mix", 0.3)`）—— 没有任何调用点。本模块补的就是那条调用点。
+//!
+//! ### 8.1 已识别的名字与**两个刻意的拒绝**
+//!
+//! | 目标字段 | 名字（全部别名） |
+//! | :--- | :--- |
+//! | `size` | `reverb_size` |
+//! | `damp` | `reverb_damp` |
+//! | `mix` | `reverb_wet`、`reverb_wet_mix` |
+//! | `predelay`（秒） | `reverb_predelay`、`reverb_predelay_s` |
+//!
+//! ⛔ **不认** `reverb_mix`：`crates/yeban-engine/tests/compressor_insert.rs:121` 与
+//! `crates/yeban-engine/tests/channel_strip_insert.rs:126` 用 `("reverb_mix", 0.3)` 表达
+//! "**弄不懂的**效果器"，而它们各自带着一条"逐字节相同"的既有判据（C0 / C8）。
+//! 把那台设备从"不认识"变成"一台 25 % 湿声的混响"会让那两条判据变红 ⇒ 那是接线在
+//! 改变既有输出。本票的裁决与 `db1850f` 对 `filter_cutoff_hz` 的裁决（模块文档 §4.3）
+//! **同款**：**不收这个名字**；湿/干旋钮叫 `reverb_wet`。
+//!
+//! ⛔ **不认** `reverb_width`：本模块的插入点是**单声道**（见 §8.3）⇒ 立体声展宽在那里
+//! **没有作用面**。收下一个不能生效的旋钮 = 界面上有、音频上没有 —— 本仓库把那种形状
+//! 叫"说假话"。宽度参数因此登记为**未接线缺口**（是明说的取舍，不是遗漏）。
+//!
+//! ### 8.2 基值与"装置即生效"
+//!
+//! 与通道条不同，混响**没有**逐级开关（`ReverbParams` 的五个字段都参与每次处理）。
+//! 因此口径是：**出现任何一个已识别名字 ⇒ 这台设备就是一台混响**，未出现的字段取
+//! `ReverbParams::default()`（`crates/yeban-dsp/src/reverb.rs:155`）：
+//! `size = 0.45` / `damp = 0.35` / `mix = 0.25` / `width = 0.8` / `predelay = 0.012` 秒。
+//! 一个已识别名字都没有 ⇒ [`InsertParams::reverb`] 为 `None` ⇒ 实时侧**整段跳过**
+//! （不是"参数取成透明"）⇒ 那类工程与接线前**逐位相同**。
+//!
+//! 钳制由器件自己做：`Reverb::set_params`（`crates/yeban-dsp/src/reverb.rs:279`）把非有限值
+//! 换成默认值、把每个字段钳进合法域 ⇒ 快照里存的数与音频线程将要用的数之间有定义
+//! （与 `ChannelStripParams::sanitised` 同目的，只是这里由器件自己负责）。
+//!
+//! ### 8.3 插入点与单声道口径（`width` 为什么拒收）
+//!
+//! `Reverb::process` 是**立体声块**接口（`&mut [f32], &mut [f32]`），而引擎的逐轨信号在
+//! 插入点是**单声道**（`crate::rt` 的 `track_scratch`；逐轨电平、PDC 与声相都在它之后）。
+//! 本模块的处理：把该单声道信号**同时喂给左右两路**，取两路输出的**中值**
+//! `(out_l + out_r) · 0.5`。
+//!
+//! 这不是近似，是恒等式：器件湿路径的输入是 `(dl + dr) · 0.5 · 0.015`
+//! （`crates/yeban-dsp/src/reverb.rs:364`）——`dl = dr = m` 时它等于 `m · 0.015`，与单声道
+//! 输入同解；宽度只进 `side` 项（`crates/yeban-dsp/src/reverb.rs:382`），而
+//! `out_l + out_r = 2 · mid` ⇒ 中值恰好等于 `mid`，`width` 在其中**代数抵消**。
+//! 这就是 §8.1 拒收 `reverb_width` 的全部理由。
+//!
+//! ### 8.4 实时分类（[ADR-0001 D32]）
+//!
+//! - **构造期**（控制线程，[`InsertParams::from_devices`]）：字符串比较、`Vec` 扫描。
+//! - **构造期**（控制线程，`crate::rt::EngineRuntime::new`）：延迟线的**唯一**分配点
+//!   （`Reverb::set_sample_rate`，`crates/yeban-dsp/src/reverb.rs:242`）。它**必须**在音频
+//!   回调之外调用 —— 这是本器件与通道条最大的结构差别（通道条没有堆）。
+//! - **快照边界**（音频线程，每个修订一次）：只调 `Reverb::set_params`（标量赋值，
+//!   **零分配**）。快照的采样率若与武装时不同：**不**调 `set_sample_rate`，而是整段不武装
+//!   并累加一个读数（`EngineStats::insert_reverb_rate_rejects`）。理由见 §8.5。
+//! - **逐样本**（`Reverb::process`）：乘加与环形缓冲读写；零分配、零锁、零 I/O、零日志。
+//!
+//! ### 8.5 为什么"采样率变了就不武装"（明说的取舍）
+//!
+//! `Reverb::set_sample_rate` 按 `sr_scale` **重建**每条延迟线：缓冲区长度
+//! `buf.len() != self.len` 时它做 `Vec` 重分配（`crates/yeban-dsp/src/reverb.rs:73`、
+//! `:115`）。音频线程不允许分配/释放 [MUST-GATE-001] ⇒ 那个方法只能在
+//! `EngineRuntime::new`（回调之前）调用一次，用**初始快照**的采样率。
+//!
+//! 引擎的其余部分**支持**运行期换采样率（`crates/yeban-engine/tests/rt_zero_alloc.rs`
+//! 的场景⑭把 5 个采样率逐个发布到同一个运行时，断言四元组全 0）。混响是唯一一个
+//! "换采样率就要重新分配"的器件 ⇒ 本票的裁决：**换采样率 ⇒ 这一份快照不武装混响**，
+//! 并累加 `insert_reverb_rate_rejects`。宁可少一个器件，也不在回调里分配、也不拿旧采样率
+//! 的延迟线去处理新采样率的信号（后者是听不出来的错，本仓库不收）。
+//!
+//! 可达性（**实测**）：`EngineHost::reload`（`crates/yeban-app/src/engine_host.rs:496`）
+//! **重建**运行时并把新采样率带进构造期；运行期换采样率只有
+//! `EngineHost::publish_project`（`:716`）一条路径。
+//! `grep -rn 'audio_config' crates/yeban-app/src crates/yeban-mcp/src` 命中 **4** 行
+//! （`crates/yeban-mcp/src/domain/engine_state.rs:10,146,335` 与
+//! `crates/yeban-mcp/src/domain/view.rs:42`），**全部是只读**（JSON 字段名 / 视图白名单），
+//! **没有**任何一行给 `audio_config.sample_rate` 赋值
+//! （`grep -rn 'audio_config\.sample_rate\s*=' crates/*/src` 在非 model 侧零命中）
+//! ⇒ 今天没有任何界面/工具写入者能改它。这条守卫因此是**安全网**，不是日常路径。
 
 use yeban_model::{DeviceDefinition, DeviceKind};
 
@@ -180,46 +267,71 @@ pub use yeban_dsp::shaping::EqParams;
 // `ChannelStrip` 这个名字已经被本模块上面的再导出占用，故再给一个**别名**让判据能写出
 // "dsp 类型 ← engine 路径构造"的赋值（与 `mixer.rs` 的 `Limiter as BusLimiter` 同款）。
 pub use yeban_dsp::channel_strip::ChannelStrip as DspChannelStrip;
+// 混响的**唯一实现**住在 `yeban-dsp`（`crates/yeban-dsp/src/reverb.rs`）。本模块只转发：
+// 类型 + 参数类型。判据（`tests/reverb_insert.rs` 的 R7）按这两个名字断言
+// "引擎的混响**就是** dsp 的混响"（类型同一性 + `process`/`set_params` 的函数地址同一性）。
+pub use yeban_dsp::reverb::{Reverb, ReverbParams};
+// 与 `DspChannelStrip` 同一个理由：让判据能写出"dsp 类型 ← engine 路径"的赋值。
+pub use yeban_dsp::reverb::Reverb as DspReverb;
 
-/// 一条轨的**插入链**投影（当前只有一件器件：通道条，其动态级即 `c792fdc` 的压缩器）。
+/// 一条轨的**插入链**投影（两件器件：通道条与混响）。
 ///
-/// 结构体保留一个"链"的形状而不是裸 `Option<ChannelStripParams>`：后续器件
-/// （`drums` / `reverb`）接线时在这里**加字段**即可，实时侧的
-/// "逐轨查找 + 整段跳过"骨架不必改。
+/// 结构体保留一个"链"的形状而不是裸 `Option<ChannelStripParams>`：后续器件接线时
+/// 在这里**加字段**即可，实时侧的"逐轨查找 + 整段跳过"骨架不必改。
 ///
-/// ⚠ 本票**没有**为 `drums` / `reverb` 加字段：它们仍然**未接线**
-/// （核实方式见 `docs/ledger/integration-rulings-notes.md:83` 的口径）。
+/// 本票按这个形状加了第二个字段 [`Self::reverb`]（`yeban_dsp::reverb`，见模块文档 §8）。
+/// `drums` 仍然**未接线**（核实方式见 `docs/ledger/integration-rulings-notes.md:83` 的口径）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InsertParams {
-    /// 本轨的通道条参数：`None` = 本轨**没有**插入器件（实时侧整段跳过）。
+    /// 本轨的通道条参数：`None` = 本轨**没有**通道条（实时侧那段跳过）。
     strip: Option<ChannelStripParams>,
+    /// 本轨的混响参数：`None` = 本轨**没有**混响（实时侧那段跳过）。
+    ///
+    /// ⚠ 与通道条不同，这里**没有**"级开关"：`ReverbParams` 的五个字段全参与处理，
+    /// 未出现的字段取 `ReverbParams::default()`（模块文档 §8.2）。
+    reverb: Option<ReverbParams>,
 }
 
 impl InsertParams {
     /// **空链**：实时侧对这条轨整段跳过 ⇒ 输出逐位不变。
     #[must_use]
     pub const fn empty() -> Self {
-        Self { strip: None }
+        Self {
+            strip: None,
+            reverb: None,
+        }
     }
 
-    /// 从模型层的设备链投影（**构造期**；见模块文档 §4 的规则表）。
+    /// 从模型层的设备链投影（**构造期**；见模块文档 §4 与 §8 的规则表）。
+    ///
+    /// 两件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，混响取第一个含
+    /// 混响参数名的设备（同一台设备可以同时是两者的来源）。这与"第一条含已识别参数的
+    /// 设备是唯一来源"是同一个口径 —— 已识别的名字集合变大了，但每一件的**首个**来源
+    /// 仍然是首个（先命中者不被后来的覆盖）。
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition]) -> Self {
         let mut strip: Option<ChannelStripParams> = None;
+        let mut reverb: Option<ReverbParams> = None;
         for device in devices {
             // 规则 1 + 2：只看非旁通的内置效果器。
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
                 continue;
             }
-            // 规则 3：`None` = 本设备一个已识别参数都没有 ⇒ 它不是通道条来源。
-            strip = Self::strip_of(device);
-            if strip.is_some() {
+            // 规则 3：`None` = 本设备一个已识别参数都没有 ⇒ 它不是那件器件的来源。
+            if strip.is_none() {
+                strip = Self::strip_of(device);
+            }
+            if reverb.is_none() {
+                reverb = Self::reverb_of(device);
+            }
+            if strip.is_some() && reverb.is_some() {
                 break;
             }
         }
         // 规则 7：快照里存的就是音频线程将要用的那一份数。
         Self {
             strip: strip.map(ChannelStripParams::sanitised),
+            reverb,
         }
     }
 
@@ -238,10 +350,31 @@ impl InsertParams {
         resolved.into_params()
     }
 
+    /// 单台设备 → 混响参数（`None` = 一个已识别的混响名字都没有）。
+    ///
+    /// 基值是 `yeban_dsp` 的设备默认值；只有**出现**的名字才覆盖它（模块文档 §8.2）。
+    fn reverb_of(device: &DeviceDefinition) -> Option<ReverbParams> {
+        let mut resolved = ReverbProjection::default();
+        for param in &device.params {
+            let name = param.name.to_ascii_lowercase();
+            resolved.apply(&name, param.value);
+        }
+        resolved.into_params()
+    }
+
     /// 本轨的**通道条参数**；`None` = 整段跳过。
     #[must_use]
     pub const fn strip(&self) -> Option<ChannelStripParams> {
         self.strip
+    }
+
+    /// 本轨的**混响参数**；`None` = 整段跳过。
+    ///
+    /// 存在的理由与 [`Self::strip`] 相同：把"投影出来的那个数"变成可读的，
+    /// 判据就不必从音频输出反推。**只**被音频线程用来调 `Reverb::set_params`。
+    #[must_use]
+    pub const fn reverb(&self) -> Option<ReverbParams> {
+        self.reverb
     }
 
     /// 本轨通道条的**动态级**参数（`ChannelStripParams::compressor` 的直读）。
@@ -259,7 +392,7 @@ impl InsertParams {
     /// 快照只收录**非空**的链 ⇒ "不在表里"与"表里是空链"在实时侧同解。
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.strip.is_none()
+        self.strip.is_none() && self.reverb.is_none()
     }
 }
 
@@ -471,6 +604,52 @@ impl StripProjection {
         params.filter_enabled = self.filter_enabled.unwrap_or(self.filter_seen);
         params.compressor_enabled = self.compressor_enabled.unwrap_or(self.compressor_seen);
         Some(params)
+    }
+}
+
+/// 一台设备的**混响投影中间态**（`insert.rs` 私有）。
+///
+/// 比通道条那一份简单得多：混响没有逐级开关，只有"这台设备到底算不算一台混响"
+/// （`seen`）与四个可覆盖的字段。`seen` 不能由"字段 != 默认值"推出来 ——
+/// 写一个**恰好等于默认值**的旋钮同样是"这是一台混响"（模块文档 §8.2）。
+#[derive(Clone, Copy, Debug, Default)]
+struct ReverbProjection {
+    /// 出现过的混响旋钮（或 `reverb_wet` 等）。
+    seen: bool,
+    /// 基值 = 器件默认值（模块文档 §8.2）。
+    params: ReverbParams,
+}
+
+impl ReverbProjection {
+    /// 把一条参数写进投影（**构造期**；名字已转小写）。
+    ///
+    /// ⚠ `reverb_mix` 与 `reverb_width` **刻意不在**这个 `match` 里：
+    /// 理由（C0/C8 的逐位一致判据、单声道插入点）见模块文档 §8.1。
+    fn apply(&mut self, name: &str, value: f32) {
+        match name {
+            "reverb_size" => {
+                self.params.size = value;
+                self.seen = true;
+            }
+            "reverb_damp" => {
+                self.params.damp = value;
+                self.seen = true;
+            }
+            "reverb_wet" | "reverb_wet_mix" => {
+                self.params.mix = value;
+                self.seen = true;
+            }
+            "reverb_predelay" | "reverb_predelay_s" => {
+                self.params.predelay = value;
+                self.seen = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// 收尾：`None` = 一个已识别的混响名字都没有 ⇒ 本设备不是混响来源。
+    fn into_params(self) -> Option<ReverbParams> {
+        if self.seen { Some(self.params) } else { None }
     }
 }
 
@@ -716,6 +895,159 @@ mod tests {
         assert!(
             source.contains("pub use yeban_dsp::channel_strip::{"),
             "engine 的 insert.rs 必须是 dsp 通道条与其参数类型的再导出"
+        );
+    }
+
+    /// 判据：**没有已识别混响参数**的设备不武装混响（模块文档 §8.1 / §8.2）。
+    ///
+    /// ⚠ 这里钉住两个**刻意的拒绝**：`reverb_mix`（C0/C8 用来表达"弄不懂的效果器"）
+    /// 与 `reverb_width`（单声道插入点没有作用面）。把任一个收下 ⇒ 本判据变红。
+    #[test]
+    fn devices_without_recognised_reverb_params_do_not_arm_a_reverb() {
+        assert!(InsertParams::from_devices(&[]).reverb().is_none());
+        assert!(
+            InsertParams::from_devices(&[device(DeviceKind::InternalEffect, false, &[])])
+                .reverb()
+                .is_none()
+        );
+        // ⛔ `reverb_mix` 与 `reverb_width` 都不认（模块文档 §8.1）。
+        assert!(
+            InsertParams::from_devices(&[device(
+                DeviceKind::InternalEffect,
+                false,
+                &[("reverb_mix", 0.3), ("reverb_width", 0.9)]
+            )])
+            .is_empty(),
+            "`reverb_mix` / `reverb_width` 不许让一台设备变成混响"
+        );
+        // 内置乐器（音源）不是插入器件 —— 同一个名字也不认。
+        assert!(
+            InsertParams::from_devices(&[device(
+                DeviceKind::InternalInstrument,
+                false,
+                &[("reverb_size", 0.8)]
+            )])
+            .reverb()
+            .is_none()
+        );
+        // 旁通的效果器就是旁通：不许"取默认参数偷偷接回来"。
+        assert!(
+            InsertParams::from_devices(&[device(
+                DeviceKind::InternalEffect,
+                true,
+                &[("reverb_size", 0.8)]
+            )])
+            .reverb()
+            .is_none()
+        );
+    }
+
+    /// **命中**：出现的名字覆盖默认值，未出现的字段保持器件的默认值（模块文档 §8.2）。
+    ///
+    /// 同时钉住"写一个**恰好等于默认值**的旋钮仍然算一台混响"（`seen` 与
+    /// "字段 != 默认值"不是同一件事）。
+    #[test]
+    fn recognised_reverb_params_override_the_defaults_field_by_field() {
+        let insert = InsertParams::from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[
+                ("REVERB_SIZE", 0.9),
+                ("reverb_damp", 0.1),
+                ("reverb_wet", 0.6),
+            ],
+        )]);
+        let params = insert.reverb().expect("必须武装混响");
+        assert_eq!(params.size.to_bits(), 0.9f32.to_bits(), "名字大小写不敏感");
+        assert_eq!(params.damp.to_bits(), 0.1f32.to_bits());
+        assert_eq!(params.mix.to_bits(), 0.6f32.to_bits());
+        // 未出现的字段 = 器件默认值（逐位）。
+        let default = ReverbParams::default();
+        assert_eq!(params.width.to_bits(), default.width.to_bits());
+        assert_eq!(params.predelay.to_bits(), default.predelay.to_bits());
+        // 混响**没有**级开关：这台设备不产生通道条（一个通道条旋钮都没写）。
+        assert!(insert.strip().is_none(), "混响旋钮不许顺带启用通道条");
+
+        // 写一个**恰好等于默认值**的旋钮 ⇒ 仍然是一台混响（`seen` 的口径）。
+        let defaulted = InsertParams::from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("reverb_size", default.size)],
+        )]);
+        assert!(
+            defaulted.reverb().is_some(),
+            "写了一个等于默认值的旋钮仍然说明这是一台混响"
+        );
+    }
+
+    /// 两件器件**各自独立**取来源：同一台设备可以同时是通道条与混响的来源；
+    /// 两台设备可以各出一件（模块文档 §8 的 `from_devices` 文档）。
+    #[test]
+    fn the_two_devices_take_their_sources_independently() {
+        // 同一台设备同时带通道条与混响旋钮。
+        let both = InsertParams::from_devices(&[device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("threshold_db", -20.0), ("reverb_size", 0.7)],
+        )]);
+        assert!(both.strip().is_some(), "同一台设备要能同时出通道条");
+        assert!(both.reverb().is_some(), "同一台设备要能同时出混响");
+        assert!(!both.is_empty());
+
+        // 两台设备各出一件：先出现的那一台是各自的首个来源。
+        let split = InsertParams::from_devices(&[
+            device(DeviceKind::InternalEffect, false, &[("reverb_size", 0.7)]),
+            device(DeviceKind::InternalEffect, false, &[("ratio", 4.0)]),
+        ]);
+        assert!(split.strip().is_some(), "后一台设备要能补上通道条");
+        assert!(split.reverb().is_some(), "前一台设备要能补上混响");
+        assert_eq!(
+            split.reverb().expect("混响").size.to_bits(),
+            0.7f32.to_bits()
+        );
+
+        // 首个来源不被后来的覆盖。
+        let ordered = InsertParams::from_devices(&[
+            device(DeviceKind::InternalEffect, false, &[("reverb_size", 0.7)]),
+            device(DeviceKind::InternalEffect, false, &[("reverb_size", 0.2)]),
+        ]);
+        assert_eq!(
+            ordered.reverb().expect("混响").size.to_bits(),
+            0.7f32.to_bits(),
+            "首个来源不被后来的覆盖"
+        );
+    }
+
+    /// 判据：**engine 侧没有第二份混响实现**（源码级机械检查）。
+    ///
+    /// 与前两条同款、对准 `yeban_dsp::reverb`。注入：在本文件里复制 `Reverb` 的
+    /// 类型定义、延迟线结构或它的任何一个逐样本内核 ⇒ 本判据立即变红。
+    /// ⚠ 与前两条同样的自我命中风险：本条注释里也**不许**出现被禁字面量。
+    #[test]
+    fn engine_insert_module_has_no_second_reverb_implementation() {
+        let source = include_str!("insert.rs");
+        let forbidden = [
+            concat!("struct", " Reverb", " {"),
+            // ⚠ 这一条的记号必须带空格与花括号：不带花括号的版本会把本文件的
+            // `impl ReverbProjection {` 一起命中（第一版实测就是这样自我变红的）。
+            concat!("impl", " Reverb", " {"),
+            concat!("struct", " ReverbParams", " {"),
+            concat!("struct", " Comb", " {"),
+            concat!("impl", " Comb"),
+            concat!("struct", " Allpass", " {"),
+            concat!("fn", " setup("),
+            concat!("const", " COMB_TUNING"),
+            concat!("const", " WET_GAIN"),
+        ];
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "engine 的 insert.rs 里出现了实现记号 `{needle}` —— 这里只允许投影 + `pub use`"
+            );
+        }
+        assert!(
+            source.contains("pub use yeban_dsp::reverb::{Reverb, ReverbParams};"),
+            "engine 的 insert.rs 必须把 dsp 混响的**类型与参数类型**都再导出（R7 的同一性判据靠它）"
         );
     }
 }

@@ -30,6 +30,7 @@
 //! 3) 渲染 + 电平：对快照里**每条非母线轨**
 //!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch（声相之前、单声道）
 //!         →  **插入链：该轨的通道条**（`TrackV3.devices` 的内置效果器投影 ⇒ `yeban_dsp::channel_strip`；没有则整段跳过）
+//!         →  **插入链：该轨的混响**（同一份设备链 ⇒ `yeban_dsp::reverb`，单声道喂两路取中值；没有则整段跳过）
 //!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
 //!         →  **PDC 补偿延迟线（`D(v) = L_max − arrival(v)` 采样点）** [ARCH-PDC-001]
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
@@ -60,7 +61,7 @@
 //!   clips → ClipPlacement → clip_pool(Midi) → MidiNote ──(tick → sample)──►
 //!     ScheduledNote { start_sample, end_sample, phase_inc, freq_hz, gain }
 //! ──(RT: 游标触发 → 定长声部池 → 整数相位波表读数 → 声部低通)──► track_scratch
-//! ──(该轨的插入通道条, 若有)──► 声相增益 ──► 母线 L/R ──(前瞻峰值限制器)──► AudioBlock ──► cpal / NullBackend
+//! ──(该轨的插入通道条, 若有)──► (该轨的插入混响, 若有；单声道取中值) ──► 声相增益 ──► 母线 L/R ──(前瞻峰值限制器)──► AudioBlock ──► cpal / NullBackend
 //! ```
 //!
 //! 实时侧仍然是零分配/零锁/零 I/O：声部池是 `[TrackSlot; 16]`（每槽 16 个声部），
@@ -88,7 +89,14 @@
 //! - [`EngineRuntime::block`]：`AudioBlock<128>`（`[f32; 128]` × 2）
 //! - [`EngineRuntime::synth`]：`[TrackSlot; 16]` × `[Voice; 16]`（声部池，定长）
 //! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 16]`（每轨插入链，定长；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
+//! - [`EngineRuntime::reverb_pool`]：`[Reverb; 16]`（每轨混响，**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
+//! - [`EngineRuntime::reverb_scratch`]：`[[f32; 128]; 2]`（混响的单声道取中值暂存，栈/内联）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
+//!
+//! ⚠ [`EngineRuntime::reverb_pool`] 是这份清单里**唯一**持有堆的字段（每个混响实例有
+//! 自己的延迟线 `Vec`）。它满足禁令的方式不是"没有堆"，而是"**堆只在构造期建立**"
+//! （[`EngineRuntime::new`]）：回调内一次也不分配、不释放。见 [`crate::insert`] 模块文档
+//! §8.4 与 §8.5（为什么连"换采样率"也不能在回调里重建延迟线）。
 //!
 //! 唯一允许的"共享状态"是原子量与 rtrb 队列；唯一的系统调用级别操作是
 //! FTZ/DAZ 控制寄存器写入（一次）。
@@ -100,7 +108,7 @@ use yeban_model::EntityId;
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
 use crate::graph::CompensationBank;
-use crate::insert::{ChannelStrip, ChannelStripParams, CompressorParams};
+use crate::insert::{ChannelStrip, ChannelStripParams, CompressorParams, Reverb, ReverbParams};
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
@@ -205,6 +213,20 @@ pub struct EngineStats {
     /// 而一个**只有 EQ／滤波**的通道条不产生任何压缩量 ⇒ 没有这条读数，
     /// "EQ 级真的接在轨上"就只能从音频输出反推。全部轨都没有插入器件时**恒为 0**。
     pub insert_strip_frames: u64,
+    /// **每轨插入器件的混响级**累计处理过的帧数（[`crate::insert`]；0 = 从未处理）。
+    ///
+    /// 口径：读数由引擎在**真的调用了** [`Reverb::process`] 的那一条分支上累加
+    /// （条件 = 本轨武装了混响 **且** `Reverb::is_active()`，即 `mix > 1e-4`）。
+    /// 与 [`Self::insert_strip_frames`] 同族：没有它，"混响真的接在轨上"就只能从
+    /// 音频输出反推。全部轨都没有混响时（默认）**恒为 0**。
+    pub insert_reverb_frames: u64,
+    /// 因**混响延迟线的采样率与武装时不同**而整段未武装的快照修订次数
+    /// （[`crate::insert`] 模块文档 §8.5；正常恒为 0）。
+    ///
+    /// 非 0 = 这一份快照里有混响设备，但引擎**拒绝**在音频线程重建延迟线
+    /// （那会分配 + 释放 [MUST-GATE-001]）⇒ 那一份快照里混响不工作。它是"容量/
+    /// 配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
+    pub insert_reverb_rate_rejects: u64,
     /// 因实时侧 PDC 延迟线池**槽位用尽**而未能武装的节点数（累计；正常恒为 0）[ROAD-M2-004]。
     ///
     /// 非 0 = 那一份计划里有节点**没有**得到补偿。它是"容量不足不静默"的机械形式：
@@ -410,12 +432,38 @@ pub struct EngineRuntime {
     armed_strips: [(EntityId, Option<ChannelStrip>); MAX_TRACK_SLOTS],
     /// 本快照武装的插入器件条数（前 `n` 项有效）。
     armed_insert_slots: usize,
+    /// **混响延迟线池**：每槽一台，**构造期**按初始快照的采样率预分配
+    /// [ARCH-RT-001, MUST-GATE-001]。
+    ///
+    /// 与 [`Self::armed_strips`] 同一个槽位表形状，但有一个**结构差别**：
+    /// [`Reverb::set_sample_rate`] 会分配（并因此释放）延迟线，是本器件**唯一**的
+    /// 分配点 ⇒ 它只在 [`Self::new`]（音频回调之外）调用一次。快照边界只允许
+    /// `set_params`（标量赋值，零分配）。理由见 [`crate::insert`] 模块文档 §8.4 / §8.5。
+    reverb_pool: [Reverb; MAX_TRACK_SLOTS],
+    /// 本快照武装的混响 `(轨道, 是否武装)`；前 [`Self::armed_reverb_slots`] 项有效。
+    ///
+    /// ⚠ 槽位里装的**不是** `Option<Reverb>`：延迟线必须是**构造期**建好的那一批，
+    /// 因此 `Option` 只表达"这一槽本快照是否武装、武装给哪条轨"，实例本身恒存在。
+    armed_reverbs: [(EntityId, bool); MAX_TRACK_SLOTS],
+    /// 本快照武装的混响条数（前 `n` 项有效）。
+    armed_reverb_slots: usize,
+    /// 混响延迟线池武装时用的采样率（**构造期**定，运行期不变；§8.5）。
+    armed_reverb_sample_rate: u32,
+    /// 混响的**单声道取中值**暂存：`[左, 右]` 各一个量子长度（[`crate::insert`] §8.3）。
+    ///
+    /// 复用一个定长缓冲（与 [`Self::track_scratch`] 同一个形状）⇒ 零分配。
+    reverb_scratch: [[f32; DEFAULT_BLOCK_FRAMES]; 2],
     /// 累计被**插入器件的动态级**压过的帧数（与 [`EngineStats::insert_gain_reductions`] 同源）。
     insert_gain_reductions: u64,
     /// 插入器件累计最大衰减（dB；与 [`EngineStats::insert_max_reduction_db`] 同源）。
     insert_max_reduction_db: f32,
     /// 累计被**插入器件**处理过的帧数（与 [`EngineStats::insert_strip_frames`] 同源）。
     insert_strip_frames: u64,
+    /// 累计被**插入器件的混响级**处理过的帧数（与 [`EngineStats::insert_reverb_frames`] 同源）。
+    insert_reverb_frames: u64,
+    /// 因混响延迟线的采样率不匹配而未武装的修订次数
+    /// （与 [`EngineStats::insert_reverb_rate_rejects`] 同源）。
+    insert_reverb_rate_rejects: u64,
     /// 已按哪一份快照的采样率/块长设置过弹道系数。
     armed_revision: Option<u64>,
     quanta: u64,
@@ -441,6 +489,15 @@ impl EngineRuntime {
     /// `events` / `meters` 来自 [`crate::ring::event_channel`] 与 [`crate::meter::meter_channel`]。
     /// 全部通道都必须在**打开设备之前**建立（回调内不允许分配）。
     ///
+    /// ## 这里是混响延迟线的**唯一**分配点
+    ///
+    /// 本函数是**非实时**路径（调用方必须在打开设备之前建好运行时），因此它是
+    /// [`Reverb::set_sample_rate`] 唯一合法的地方：那个方法会 `Vec` 重分配 + 释放
+    /// 延迟线（[`crate::insert`] 模块文档 §8.4 / §8.5）。采样率取自 `slot` 里的
+    /// **初始快照** —— 两个调用方（`EngineHost::reload` 与设备腿）都是先用工程建好
+    /// 快照、再建运行时，因此这里拿到的是本工程将要用的那一个采样率。
+    /// `slot.current()` 会在写者锁上短暂等待，因此**只允许**在非实时路径调用。
+    ///
     /// `retire` 是 [`RetireProducer`]（`rtrb::Producer` 的薄包装）：它带着退役队列的
     /// 跨线程记账 ⇒ [`Self::stats`] 能直接报出退役队列的 `pending` / `drained` /
     /// 释放线程归属，**控制面不需要额外接线**（`retire_channel` 的调用点一字未改）。
@@ -451,6 +508,17 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Self {
+        // 混响延迟线的**唯一**分配点（[`crate::insert`] 模块文档 §8.4 / §8.5）：
+        // 采样率取自**初始快照**——调用方（`EngineHost::reload` / `device` 腿）都是
+        // 先用工程建好快照、再建运行时，因此这里拿到的就是本工程将要用的采样率。
+        // `SnapshotSlot::current` 会在写者锁上短暂等待，因此只允许在**非实时**路径调用
+        // （本函数就是那条路径：全部通道必须在打开设备之前建立）。
+        let armed_reverb_sample_rate = slot.current().sample_rate();
+        let mut reverb_pool: [Reverb; MAX_TRACK_SLOTS] = core::array::from_fn(|_| Reverb::new());
+        for reverb in &mut reverb_pool {
+            // 构造期允许分配（`Vec` 延迟线在这里建好，回调内一次也不重建）。
+            reverb.set_sample_rate(armed_reverb_sample_rate as f32);
+        }
         let runtime = Self {
             snapshot: SnapshotReader::attach(slot, retire),
             events,
@@ -496,6 +564,14 @@ impl EngineRuntime {
             insert_gain_reductions: 0,
             insert_max_reduction_db: 0.0,
             insert_strip_frames: 0,
+            insert_reverb_frames: 0,
+            insert_reverb_rate_rejects: 0,
+            // 混响延迟线池：**构造期**按初始快照的采样率预分配（回调内绝不再分配）。
+            reverb_pool,
+            armed_reverbs: [(EntityId::default(), false); MAX_TRACK_SLOTS],
+            armed_reverb_slots: 0,
+            armed_reverb_sample_rate,
+            reverb_scratch: [[0.0; DEFAULT_BLOCK_FRAMES]; 2],
             armed_revision: None,
             quanta: 0,
             events_applied: 0,
@@ -574,6 +650,8 @@ impl EngineRuntime {
             insert_gain_reductions: self.insert_gain_reductions,
             insert_max_reduction_db: self.insert_max_reduction_db,
             insert_strip_frames: self.insert_strip_frames,
+            insert_reverb_frames: self.insert_reverb_frames,
+            insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
             pdc_unarmed_nodes: self.pdc_unarmed_nodes,
             pdc_clamped_frames: self.pdc_clamped_frames,
             pdc_processed_blocks: self.pdc.processed_blocks(),
@@ -693,6 +771,32 @@ impl EngineRuntime {
     #[must_use]
     pub const fn armed_insert_slot_count(&self) -> usize {
         self.armed_insert_slots
+    }
+
+    /// 本快照武装的**每轨插入器件（混响）参数**（诊断/判据用）。
+    ///
+    /// 返回 `None` = 这条轨**没有**混响（实时侧整段跳过）。
+    /// 与 [`Self::armed_strip`] 同族，但读数取自器件自己的 `params()`（混响没有
+    /// "级开关"这一类中间读数，模块文档 §8.2）。
+    #[must_use]
+    pub fn armed_reverb(&self, track: &EntityId) -> Option<ReverbParams> {
+        // 槽位下标就是池的下标（同一张表）⇒ 先找下标，再读池里那一台的当前参数。
+        self.armed_reverbs[..self.armed_reverb_slots]
+            .iter()
+            .position(|(id, armed)| *armed && id == track)
+            .map(|index| self.reverb_pool[index].params())
+    }
+
+    /// 武装表里的**混响**条数。
+    #[must_use]
+    pub const fn armed_reverb_slot_count(&self) -> usize {
+        self.armed_reverb_slots
+    }
+
+    /// 混响延迟线池武装时用的采样率（**构造期**定；诊断/判据用）。
+    #[must_use]
+    pub const fn armed_reverb_sample_rate(&self) -> u32 {
+        self.armed_reverb_sample_rate
     }
 
     /// 本快照武装的**主总线线性增益**（诊断/判据用）。
@@ -819,6 +923,13 @@ impl EngineRuntime {
             insert_gain_reductions,
             insert_max_reduction_db,
             insert_strip_frames,
+            reverb_pool,
+            armed_reverbs,
+            armed_reverb_slots,
+            armed_reverb_sample_rate,
+            reverb_scratch,
+            insert_reverb_frames,
+            insert_reverb_rate_rejects,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
             armed_revision,
@@ -988,6 +1099,50 @@ impl EngineRuntime {
                     *armed_insert_slots += 1;
                 }
 
+                // --- 2c''') 每轨插入器件的**混响级**：与通道条同一个槽位表形状 ---
+                // [crate::insert]。延迟线在 `Self::new` 里就按**初始快照的采样率**
+                // 分配好了（`Reverb::set_sample_rate` 是本器件唯一的分配点）⇒ 这里
+                // **只允许** `set_params`（标量赋值 + 非有限值回落，零分配）。
+                //
+                // ⚠ **采样率与武装时不同 ⇒ 整段不武装**（模块文档 §8.5）：
+                // `set_sample_rate` 会重建延迟线（`Vec` 重分配 + 释放），音频线程不允许
+                // [MUST-GATE-001]。宁可少一个器件，也不在回调里分配、也不拿旧采样率的
+                // 延迟线去处理新采样率的信号。拒绝次数进 `insert_reverb_rate_rejects`。
+                //
+                // 默认口径：`insert.reverb()` 在设备没有已识别混响参数时是 `None`
+                // ⇒ 本循环那一项 `continue`、`armed_reverb_slots` 保持 0 ⇒ 逐样本路径
+                // 整段跳过（不是"参数取成透明"）⇒ 那类轨的输出与接线前**逐位相同**。
+                *armed_reverb_slots = 0;
+                if current.sample_rate() == *armed_reverb_sample_rate {
+                    for (id, insert) in current.inserts() {
+                        if *id == master || *armed_reverb_slots >= MAX_TRACK_SLOTS {
+                            continue;
+                        }
+                        let Some(params) = insert.reverb() else {
+                            continue;
+                        };
+                        let slot = *armed_reverb_slots;
+                        let sample_rate = current.sample_rate() as f32;
+                        let (existing, was_armed) = armed_reverbs[slot];
+                        if existing == *id && was_armed {
+                            // 同一条轨仍占同一个槽位 ⇒ 只换参数：**器件状态保留**
+                            // （重建会把延迟线清空 ⇒ 一次听得见的尾巴切断）。
+                            reverb_pool[slot].set_params(params);
+                        } else {
+                            // 新占用该槽位：**不重建**（重建会 `Drop` 旧延迟线 = 回调内
+                            // 释放），改为按**同一采样率**重新初始化 = 状态复位。
+                            // 采样率与武装时逐位相同 ⇒ `setup` 走 `fill(0.0)` 分支，
+                            // **零分配**（这正是守卫存在的理由）。
+                            reverb_pool[slot].set_sample_rate(sample_rate);
+                            reverb_pool[slot].set_params(params);
+                            armed_reverbs[slot] = (*id, true);
+                        }
+                        *armed_reverb_slots += 1;
+                    }
+                } else {
+                    *insert_reverb_rate_rejects = insert_reverb_rate_rejects.wrapping_add(1);
+                }
+
                 // --- 2d) 节拍器：波形与拍栅格都在**构造期**算好（`sin` 属超越函数类），
                 // 这里只把两个整数（每拍 tick / 每小节拍数）与一个开关读进实时侧
                 // （[`crate::metronome`]）。**关掉时**把武装标志置假并丢掉可能正在响的
@@ -1088,6 +1243,38 @@ impl EngineRuntime {
                     let reduction_db = strip.max_gain_reduction_db();
                     if reduction_db > *insert_max_reduction_db {
                         *insert_max_reduction_db = reduction_db;
+                    }
+                }
+                // --- 3a''') 插入链的**混响级**：逐样本（器件的接口是立体声块）---
+                // [crate::insert] 模块文档 §8.3。位置与通道条**同一条链上的后一级**：
+                // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
+                //
+                // 单声道口径：把 `track_scratch` 同时喂给左右两路，取两路输出的中值
+                // `(out_l + out_r) · 0.5`。那是恒等式而不是近似（§8.3 给了代数证明）：
+                // 湿路径的输入与"单声道输入"同解，而宽度项在中值里恰好抵消。
+                //
+                // **默认口径**：本轨没有混响（`armed_reverbs` 里查不到武装项）⇒
+                // 整段跳过；`Reverb::is_active()`（`mix ≤ 1e-4`）为假时同样跳过 ⇒
+                // 这两种情形下器件的状态**不推进**（与器件自己的早返回守卫同口径）。
+                //
+                // 逐样本只有环形缓冲读写与乘加；**零分配、零锁、零 I/O、零日志**
+                // [MUST-GATE-001]。
+                if let Some(index) = armed_reverbs[..*armed_reverb_slots]
+                    .iter()
+                    .position(|(id, armed)| *armed && id == &track)
+                {
+                    let reverb = &mut reverb_pool[index];
+                    if reverb.is_active() {
+                        let frames = frames.min(DEFAULT_BLOCK_FRAMES);
+                        reverb_scratch[0][..frames].copy_from_slice(&track_scratch[..frames]);
+                        reverb_scratch[1][..frames].copy_from_slice(&track_scratch[..frames]);
+                        let (left, right) = reverb_scratch.split_at_mut(1);
+                        reverb.process(&mut left[0][..frames], &mut right[0][..frames]);
+                        for index in 0..frames {
+                            track_scratch[index] =
+                                (reverb_scratch[0][index] + reverb_scratch[1][index]) * 0.5;
+                        }
+                        *insert_reverb_frames = insert_reverb_frames.wrapping_add(frames as u64);
                     }
                 }
                 if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {

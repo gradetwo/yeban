@@ -37,6 +37,18 @@
 //! （`ChannelStrip::set_params` / `set_sample_rate`，含 EQ 系数与 `exp`）。
 //! 两个场景都做覆盖度自检：`insert_strip_frames > 0`（整链处理过）与
 //! `insert_gain_reductions > 0`（动态级真的压过）。
+//!
+//! # 场景 9 / 10（`line/engine-reverb` 追加）：每轨插入**混响**
+//!
+//! 这是本文件里**唯一**一个"武装一件器件需要堆"的器件：`Reverb::set_sample_rate`
+//! 会分配并释放延迟线（`crates/yeban-dsp/src/reverb.rs:73`）。本票把那条分配钉在
+//! **构造期**（`EngineRuntime::new`，音频回调之外），快照边界只允许 `set_params`。
+//! 场景 9 用两条轨（一条同时带通道条＋混响、一条只有混响）跑 10,000 个量子；
+//! 场景 10 做 31 次同采样率重新武装，随后发布一份 **44.1 kHz** 的快照 ——
+//! 引擎在那里**拒绝**重建延迟线（`insert_reverb_rate_rejects` +1）而不是在音频线程
+//! 分配，最后换回 48 kHz 证明重武装仍然可行。三段的每一个窗口都断言
+//! `allocations == 0 && deallocations == 0`。覆盖度自检取**整窗的精确帧数**
+//! （`2 × 10,001 × 128`）而不是"大于 0"。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -50,7 +62,7 @@ use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
 mod support;
 
 use support::{MixSpec, NoteSpec, note_project, tuned_project, two_track_project};
-use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue};
+use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, SampleRate};
 
 /// 包住 [`System`] 的计数型分配器。
 struct CountingAllocator;
@@ -615,6 +627,270 @@ fn main() -> ExitCode {
         failures.push("通道条场景没有从退役队列回收任何旧快照 —— 场景 8 是空转".to_owned());
     }
 
+    // ---- 场景 9：**每轨插入混响**（`crate::insert` 的 `reverb`）在实时窗口内零分配 ----
+    //
+    // 为什么必须单独一个场景（本场景与前面所有场景的**结构差别**）：
+    // `Reverb::set_sample_rate` 会分配并释放延迟线（`Vec`）—— 它是整个引擎里唯一一个
+    // "武装一件器件需要堆"的器件。本票把那条分配**钉在构造期**
+    // （`EngineRuntime::new`），快照边界只允许 `set_params`。这条判据就是那个说法的
+    // 运行期证据：10,000 个量子（逐样本路径）与 31 次快照交换（重新武装路径）
+    // 都必须零分配零释放 [MUST-GATE-001, ARCH-RT-001]。
+    //
+    // 夹具设计（每一项都对应一件事）：
+    //   * 两条轨，各自的音符都铺满整个窗口（沿用 `saturated_notes`）；
+    //   * 轨 A 同时带**通道条**与**混响**旋钮（同一台设备两件器件，覆盖"一条轨两级"）；
+    //   * 轨 B 只有混响旋钮（覆盖"一台设备只出混响"）；
+    //   * 湿声 1.0 + 衰减最长（`size = 1.0`）⇒ 混响**每个量子都在处理**，
+    //     且尾巴足够长（覆盖度自检因此不是空转）。
+    let reverb_notes = saturated_notes();
+    let (mut reverb_project, reverb_both_track, reverb_only_track) =
+        two_track_project(&reverb_notes, &reverb_notes);
+    {
+        let entry = reverb_project
+            .tracks
+            .get_mut(&reverb_both_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Strip+Reverb".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                // 通道条：EQ ＋ 滤波 ＋ 动态（复用场景 7 的口径）。
+                ParameterValue {
+                    name: "eq_low_gain".to_owned(),
+                    value: 6.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "cutoff_hz".to_owned(),
+                    value: 6_000.0,
+                    unit: Some("Hz".to_owned()),
+                },
+                ParameterValue {
+                    name: "threshold_db".to_owned(),
+                    value: -30.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "ratio".to_owned(),
+                    value: 8.0,
+                    unit: None,
+                },
+                // 混响：全湿、最长衰减、带预延迟。
+                ParameterValue {
+                    name: "reverb_size".to_owned(),
+                    value: 1.0,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "reverb_wet".to_owned(),
+                    value: 1.0,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "reverb_predelay".to_owned(),
+                    value: 0.02,
+                    unit: Some("s".to_owned()),
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    {
+        let entry = reverb_project
+            .tracks
+            .get_mut(&reverb_only_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Reverb".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "reverb_size".to_owned(),
+                    value: 0.9,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "reverb_wet".to_owned(),
+                    value: 0.8,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    let reverb_snapshot = EngineSnapshot::from_project(&reverb_project, 1).expect("混响夹具快照");
+    if reverb_snapshot.inserts().len() != 2 {
+        failures.push(format!(
+            "混响夹具应有 2 条插入链（两条轨各一台器件），实际 {} 条",
+            reverb_snapshot.inserts().len()
+        ));
+    }
+    let reverb_slot = SnapshotSlot::new(reverb_snapshot);
+    let (reverb_retire, mut reverb_queue) = retire_channel(64);
+    let (_sender, reverb_receiver) = event_channel(64);
+    let (reverb_publisher, _reverb_collector) = meter_channel(8192);
+    let mut reverb_runtime = EngineRuntime::new(
+        &reverb_slot,
+        reverb_retire,
+        reverb_receiver,
+        reverb_publisher,
+    );
+    let mut reverb_output = vec![0.0f32; 128 * 2];
+    // 预热：首次武装（`Reverb::set_params`）与首个量子。延迟线本身在 `new` 里就分配好了。
+    reverb_runtime.process_quantum(&mut reverb_output, 2);
+    if reverb_runtime.armed_reverb_slot_count() != 2 {
+        failures.push(format!(
+            "混响夹具应武装 2 台混响，实际 {} 台",
+            reverb_runtime.armed_reverb_slot_count()
+        ));
+    }
+    if reverb_runtime.armed_reverb_sample_rate() != 48_000 {
+        failures.push(format!(
+            "混响延迟线池应按初始快照的 48 kHz 武装，实际 {} Hz",
+            reverb_runtime.armed_reverb_sample_rate()
+        ));
+    }
+    if reverb_runtime.armed_reverb(&reverb_both_track).is_none()
+        || reverb_runtime.armed_reverb(&reverb_only_track).is_none()
+    {
+        failures.push("混响夹具的两条轨都必须武装进实时侧".to_owned());
+    }
+
+    let mut reverb_nonzero = 0usize;
+    let (allocations, deallocations) = measure("insert reverb 10_000 quanta", || {
+        for _ in 0..10_000 {
+            reverb_runtime.process_quantum(&mut reverb_output, 2);
+            for sample in &reverb_output {
+                if *sample != 0.0 {
+                    reverb_nonzero += 1;
+                }
+            }
+        }
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "每轨插入混响在实时窗口内分配/释放了内存: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    if reverb_nonzero == 0 {
+        failures.push("混响窗口里没有任何非零样本 —— 零分配判据是空转（假绿）".to_owned());
+    }
+    let reverb_stats = reverb_runtime.stats();
+    // 覆盖度：混响真的处理过帧。门槛取**场景 9 的实际规模**而不是 0：
+    // `> 0` 对"只跑了一个量子"也成立，那条读数无法区分"整窗都在处理"与"只处理了一次"。
+    let expected_reverb_frames = 2 * (10_000 + 1) * 128;
+    if reverb_stats.insert_reverb_frames != expected_reverb_frames {
+        failures.push(format!(
+            "混响整窗处理帧数={}（期望 {} = 2 条轨 × 10,001 个量子 × 128 帧）—— \
+             这条零分配判据没有覆盖整条逐样本路径",
+            reverb_stats.insert_reverb_frames, expected_reverb_frames
+        ));
+    }
+    if reverb_stats.insert_reverb_rate_rejects != 0 {
+        failures.push(format!(
+            "采样率没有变，混响不该被拒绝武装，实际拒绝 {} 次",
+            reverb_stats.insert_reverb_rate_rejects
+        ));
+    }
+    println!(
+        "[engine-wiring-3/J9] 插入混响: quanta={} 混响处理帧数={} 非零样本={reverb_nonzero} 武装采样率={}",
+        reverb_stats.quanta,
+        reverb_stats.insert_reverb_frames,
+        reverb_runtime.armed_reverb_sample_rate(),
+    );
+
+    // ---- 场景 10：重新武装混响 + **换采样率时拒绝重建延迟线**（都零分配）----
+    //
+    // 两半各自对应一条真实路径：
+    //   * 前 31 次交换 = **同一个采样率** ⇒ 走 `set_params`（以及槽位重占时的
+    //     `set_sample_rate` 同值复位，它走 `fill(0.0)` 分支、**零分配**）；
+    //   * 最后一次 = **换采样率**（44.1 kHz）⇒ 引擎**拒绝**重建延迟线
+    //     （`Reverb::set_sample_rate` 会 `Vec` 重分配 + 释放），整段不武装并计数。
+    //     一个"照着场景 7/8 写"的实现会在这里调用 `set_sample_rate` ⇒ 本场景变红。
+    let mut reverb_switches = 0u64;
+    for revision in 2..=32u64 {
+        // 发布在窗口**之外**：控制线程允许分配。
+        let next = EngineSnapshot::from_project(&reverb_project, revision).expect("快照");
+        reverb_slot.publish(next);
+        let (allocations, deallocations) = measure("reverb re-arm + quantum", || {
+            reverb_runtime.process_quantum(&mut reverb_output, 2);
+        });
+        if allocations != 0 {
+            failures.push(format!(
+                "重新武装插入混响时实时路径分配了 {allocations} 次（revision={revision}）"
+            ));
+        }
+        if deallocations != 0 {
+            failures.push(format!(
+                "重新武装插入混响时实时线程释放了 {deallocations} 次（revision={revision}）"
+            ));
+        }
+        reverb_switches += reverb_queue.drain(64) as u64;
+    }
+    if reverb_switches == 0 {
+        failures.push("混响场景没有从退役队列回收任何旧快照 —— 场景 10 是空转".to_owned());
+    }
+    if reverb_runtime.armed_reverb_slot_count() != 2 {
+        failures.push("同采样率重新武装之后两条轨的混响都必须仍被武装".to_owned());
+    }
+
+    // 换采样率：44.1 kHz 的快照**不**武装混响（延迟线不为新采样率重建）。
+    let mut shifted = reverb_project.clone();
+    shifted.audio_config.sample_rate = SampleRate::Hz44100;
+    let shifted_snapshot = EngineSnapshot::from_project(&shifted, 33).expect("换采样率快照");
+    reverb_slot.publish(shifted_snapshot);
+    let before_rejects = reverb_runtime.stats().insert_reverb_rate_rejects;
+    let (allocations, deallocations) = measure("reverb rate-mismatch re-arm + quantum", || {
+        reverb_runtime.process_quantum(&mut reverb_output, 2);
+    });
+    if allocations != 0 {
+        failures.push(format!(
+            "换采样率时实时路径分配了 {allocations} 次 —— 延迟线绝不能在音频线程重建"
+        ));
+    }
+    if deallocations != 0 {
+        failures.push(format!(
+            "换采样率时实时线程释放了 {deallocations} 次 —— 延迟线绝不能在音频线程重建"
+        ));
+    }
+    let after = reverb_runtime.stats();
+    if after.insert_reverb_rate_rejects != before_rejects + 1 {
+        failures.push(format!(
+            "换采样率应恰好累加 1 次拒绝，实测 {} -> {}",
+            before_rejects, after.insert_reverb_rate_rejects
+        ));
+    }
+    if reverb_runtime.armed_reverb_slot_count() != 0 {
+        failures.push(format!(
+            "换采样率之后混响必须整段不武装，实际仍武装 {} 台",
+            reverb_runtime.armed_reverb_slot_count()
+        ));
+    }
+    // 换回 48 kHz：必须能重新武装（守卫是"拒绝这一份"，不是"永久停用"）。
+    let back_snapshot = EngineSnapshot::from_project(&reverb_project, 34).expect("换回快照");
+    reverb_slot.publish(back_snapshot);
+    let (allocations, deallocations) = measure("reverb rate-restore re-arm + quantum", || {
+        reverb_runtime.process_quantum(&mut reverb_output, 2);
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "换回 48 kHz 重新武装混响时分配/释放: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    if reverb_runtime.armed_reverb_slot_count() != 2 {
+        failures.push("换回 48 kHz 之后两条轨的混响必须重新武装".to_owned());
+    }
+    println!(
+        "[engine-wiring-3/J10] 混响重新武装: 交换={} 次；换采样率后拒绝累计={} 次；武装采样率={} Hz",
+        reverb_switches,
+        reverb_runtime.stats().insert_reverb_rate_rejects,
+        reverb_runtime.armed_reverb_sample_rate(),
+    );
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -631,7 +907,8 @@ fn main() -> ExitCode {
             "[engine-sound/J5] ok: 10,000 量子（音符铺满窗口）+ 63 次快照交换 + \
              filled_project 4,000 量子 + 2,000 量子整条混音链 + 10,000 量子每轨插入压缩器 \
              + 31 次插入链重新武装 + 10,000 量子每轨插入通道条（EQ＋滤波＋动态） \
-             + 31 次通道条重新武装，实时窗口内零分配零释放"
+             + 31 次通道条重新武装 + 10,000 量子每轨插入混响（两条轨，含通道条＋混响同一台设备） \
+             + 31 次混响重新武装 + 换采样率时的拒绝路径，实时窗口内零分配零释放"
         );
         ExitCode::SUCCESS
     } else {

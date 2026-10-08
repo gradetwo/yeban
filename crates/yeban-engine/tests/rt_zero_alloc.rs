@@ -35,7 +35,7 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 十五个场景（在既有 `harness = false` 风格上扩展）
+//! # 十六个场景（在既有 `harness = false` 风格上扩展）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -54,6 +54,7 @@
 //! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A） |
 //! | ⑳ | 设备回调体 2 000 次（`yeban_engine::device::render_callback`） | cpal 建流的闭包、`NullBackend::render` 与判据调用的**同一个**函数 ⇒ "回调里多做了事"（分配/锁/I-O/日志）在这里变红；**feature `device` 门控**（`--no-default-features` 下本场景不跑） |
 //! | ㉑ | 节拍器 2 000 量子全程打拍（`transport.metronome_enabled = true`；关闭侧另 200 量子） | `render_block` 的 3a'（`metronome::render_quantum`）：每拍帧位置反算（`Transport::frames_until_tick` 的整数 `div_ceil`）、强弱拍增益选择、逐样本"比对 + 一次乘 + 两次加"、**跨量子延续**的游标；关闭侧覆盖"整段跳过"分支。行为判据在 `tests/metronome_render.rs` |
+//! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -98,6 +99,7 @@
 //! | I9 | `rt.rs::render_block` 的电平容量不足分支把 `note_suppressed` **换回** `rt_probe::diag` | **仅** ⑲（溢出路径的 I/O 分量） |
 //! | I10 | `device.rs::render_callback` 里加一次 `Vec::<u8>::with_capacity(1)`（或 `Mutex::lock` / `println!`） | **仅** ⑳（设备回调体）—— ①~⑲ 全部不动（它们不执行那个函数） |
 //! | I11 | `rt.rs::render_block` 的 3a' 节拍器分支里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉑（节拍器开启侧）—— ㉑b（关闭侧）与其它场景不动（跳过分支里没有那句）；实测红行：`㉑ FAIL … 四元组[alloc=2000 dealloc=2000 …]` 且汇总 `41 / 42 通过`，还原后 `42 / 42`（记录在本票的交付报告里；`gate-rt-zero-alloc-notes.md` 是**带日期的历史读数**、不属本票、一字未改） |
+//! | I12 | 删掉 `rt.rs::render_block` 的混响采样率守卫（`if current.sample_rate() == *armed_reverb_sample_rate`）**并**把"同轨同槽只 `set_params`"的快路径也去掉（⇒ 每次重新武装都调 `Reverb::set_sample_rate`） | **仅** ㉒（换采样率那一段）的**分配/释放**分量；实测红行：`reverb rate-mismatch re-arm + quantum: allocations=48 deallocations=48` ⇒ `㉒ FAIL … 实时路径分配了 48 次`，汇总 `43 / 44`；⚠ **只删守卫、保留快路径的注入不会变红**（同轨同槽不调 `set_sample_rate` ⇒ 零分配）—— 那条半注入的实测红行是 `㉒c FAIL … 换采样率之后混响必须整段不武装`，见本票报告 |
 //!
 //! # I9 的实测记录（`N6` 选项 A 的验收证据；本节只在本文件里留档，账本由集成者补记）
 //!
@@ -157,8 +159,8 @@ use yeban_engine::transport::TransportState;
 use yeban_model::samples::filled_project;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, BlockSize, CurveType,
-    EntityId, Op, RoutingEdge, RoutingGraph, RoutingKind, SampleRate, StampedOp, TrackV3,
-    YebanProjectV1,
+    DeviceDefinition, DeviceKind, EntityId, Op, ParameterValue, RoutingEdge, RoutingGraph,
+    RoutingKind, SampleRate, StampedOp, TrackV3, YebanProjectV1,
 };
 
 mod support;
@@ -243,6 +245,10 @@ const METRONOME_OFF_QUANTA: u64 = 200;
 /// ㉑ 夹具的一拍帧数：`filled_project` = 128 BPM / 48 kHz / 4-4
 /// ⇒ 960 tick = `60 × 48000 / 128 = 22 500` 帧。
 const METRONOME_FRAMES_PER_BEAT: u64 = 22_500;
+/// ㉒ 每轨插入混响：逐样本窗口的量子数（两条轨 ⇒ 2 × 10 000 × 128 帧）。
+const REVERB_QUANTA: u64 = 10_000;
+/// ㉒ 同采样率的重新武装轮数（每轮：窗口外发布 + 窗口内 1 个量子）。
+const REVERB_REARM_ROUNDS: u64 = 31;
 
 // ---------------------------------------------------------------------------
 // 计数型全局分配器（**按线程**武装：判据 ⑪ 要在窗口里跑别的线程）
@@ -541,9 +547,9 @@ impl Report {
         println!("[MUST-GATE-001] 判据汇总: {passed} / {total} 通过");
         if self.failures() == 0 {
             println!(
-                "[MUST-GATE-001] ok: 十四场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
+                "[MUST-GATE-001] ok: 十六场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
                  回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰 / \
-                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器）四元组全 0；两条溢出路径（N6 选项 A）\
+                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器 / 每轨插入混响）四元组全 0；两条溢出路径（N6 选项 A）\
                  走纯计数出口而**仍然** io_requests==0 && io_ops==0（且 suppressed_diag_events>0 ⇒ \
                  真的跑到了溢出）；控制面读取 EngineStats 的读取路径同样全 0；\
                  探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
@@ -1878,6 +1884,154 @@ fn scenario_metronome(report: &mut Report) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 场景 ㉒ 每轨插入混响（`line/engine-reverb`）
+// ---------------------------------------------------------------------------
+
+/// 一张效果器设备（本场景用）。
+fn insert_effect(name: &str, params: &[(&str, f32)]) -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: name.to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: params
+            .iter()
+            .map(|(name, value)| ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: None,
+            })
+            .collect(),
+        latency_samples: 0,
+    }
+}
+
+/// ㉒：每轨插入**混响** —— 预分配 + 逐样本处理 + **换采样率守卫**，四元组全 0。
+///
+/// 为什么这条场景必须在**四元组**判据里（而不是只在 `synth_rt_zero_alloc` 里）：
+/// 混响是引擎里唯一一个"**武装一件器件需要堆**"的器件
+/// （`Reverb::set_sample_rate` 会重建延迟线：`crates/yeban-dsp/src/reverb.rs:73`）。
+/// 它满足 [MUST-GATE-001] 的方式是"**构造期**分配 + 回调内零分配"，
+/// 而 `synth_rt_zero_alloc` 只数分配/释放两个分量；这里同时把**锁**与**I/O**量出来。
+///
+/// 夹具：两条轨，一条同时带通道条与混响（同一台设备两件器件），一条只有混响；
+/// 音符铺满整个窗口（沿用 [`saturated_notes`]）。三段窗口：
+///
+/// ① 10 000 个量子 = 逐样本路径（单声道喂两路取中值 + 环形缓冲）；
+/// ② 31 次**同采样率**的重新武装（槽位重占走 `set_sample_rate` 的 `fill` 分支）；
+/// ③ **一次换采样率**（48 kHz → 44.1 kHz）= 负向守卫：引擎宁可整段不武装，
+///    也不在音频线程 `Vec` 重分配/释放延迟线。
+fn scenario_reverb_insert(report: &mut Report) {
+    let notes = saturated_notes();
+    let (mut project, both_track, only_track) = support::two_track_project(&notes, &notes);
+    {
+        let entry = project
+            .tracks
+            .get_mut(&both_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![insert_effect(
+            "Strip+Reverb",
+            &[
+                // 通道条三级都开（与场景 7 同口径）：同一台设备出两件器件。
+                ("eq_low_gain", 6.0),
+                ("cutoff_hz", 6_000.0),
+                ("threshold_db", -30.0),
+                ("ratio", 8.0),
+                // 混响：全湿、最长衰减。
+                ("reverb_size", 1.0),
+                ("reverb_wet", 1.0),
+                ("reverb_predelay", 0.02),
+            ],
+        )];
+    }
+    {
+        let entry = project
+            .tracks
+            .get_mut(&only_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![insert_effect(
+            "Reverb",
+            &[("reverb_size", 0.9), ("reverb_wet", 0.8)],
+        )];
+    }
+
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+    assert_eq!(
+        rig.runtime.armed_reverb_slot_count(),
+        2,
+        "夹具的两条轨都必须武装混响（否则本场景是空转）"
+    );
+    assert_eq!(
+        rig.runtime.armed_reverb_sample_rate(),
+        48_000,
+        "延迟线池必须按初始快照的采样率武装"
+    );
+
+    let mut scenario = Scenario::new("㉒每轨插入混响");
+    let before = rig.stats().insert_reverb_frames;
+    scenario.absorb(REVERB_QUANTA, &rig.pump(REVERB_QUANTA));
+    let after_render = rig.stats();
+    let rendered_frames = after_render.insert_reverb_frames.saturating_sub(before);
+
+    // ② 同采样率重新武装（窗口外发布 + 窗口内 1 个量子）。
+    let mut revision = 2u64;
+    for _ in 0..REVERB_REARM_ROUNDS {
+        let next = EngineSnapshot::from_project(&project, revision).expect("快照");
+        rig.slot.publish(next);
+        revision += 1;
+        scenario.absorb(1, &rig.pump(1));
+        let _ = rig.queue.drain(64);
+    }
+    let after_rearm = rig.stats();
+    let rearmed_slots = rig.runtime.armed_reverb_slot_count();
+    assert_eq!(
+        rearmed_slots, 2,
+        "同采样率重新武装之后混响必须仍然武装（否则 ② 是空转）"
+    );
+
+    // ③ 换采样率：44.1 kHz 的快照**不**武装混响。
+    let mut shifted = project.clone();
+    shifted.audio_config.sample_rate = SampleRate::Hz44100;
+    let shifted_snapshot = EngineSnapshot::from_project(&shifted, revision).expect("换采样率快照");
+    rig.slot.publish(shifted_snapshot);
+    scenario.absorb(1, &rig.pump(1));
+    let after_shift = rig.stats();
+    let shifted_slots = rig.runtime.armed_reverb_slot_count();
+    let shifted_delta = after_shift
+        .insert_reverb_frames
+        .saturating_sub(after_rearm.insert_reverb_frames);
+
+    let expected_frames = 2 * REVERB_QUANTA * DEFAULT_BLOCK_FRAMES as u64;
+    scenario.note(format!(
+        "① 混响处理帧数 {before} -> {}（本窗口 {rendered_frames}，期望 {expected_frames} = \
+         2 轨 × {REVERB_QUANTA} 量子 × {DEFAULT_BLOCK_FRAMES} 帧；预热那 1 个量子不计入本窗口）；\
+         ② {REVERB_REARM_ROUNDS} 次重新武装后槽位={rearmed_slots}；\
+         ③ 换 44.1 kHz 后槽位={shifted_slots} 拒绝累计={} 该量子新增处理帧数={shifted_delta}",
+        after_render.insert_reverb_frames, after_shift.insert_reverb_rate_rejects,
+    ));
+    report.scenario(
+        "㉒",
+        "[MUST-GATE-001] 每轨插入混响 10 032 量子（含 31 次重新武装与 1 次换采样率）：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㉒c",
+        "覆盖度：混响整窗都在处理（帧数 = 2 轨 × 量子数 × 128）＋ 换采样率时整段不武装并计数",
+        rendered_frames == expected_frames
+            && shifted_slots == 0
+            && after_shift.insert_reverb_rate_rejects == 1
+            && shifted_delta == 0,
+        format!(
+            "本窗口处理帧数={rendered_frames}（要求 {expected_frames}）；\
+             换采样率后槽位={shifted_slots}（要求 0）拒绝累计={}（要求 1）\
+             该量子新增处理帧数={shifted_delta}（要求 0）",
+            after_shift.insert_reverb_rate_rejects
+        ),
+    );
+}
+
 /// 造一份**轨道数超过电平暂存容量**的快照：母线 + [`OVERSIZE_TRACKS`] 条普通轨。
 ///
 /// 走的是与真实投影**同一套**下层构造（`TrackParams::from_track` + `from_parts`），
@@ -2460,6 +2614,7 @@ fn main() -> ExitCode {
     #[cfg(feature = "device")]
     scenario_device_callback_body(&mut report);
     scenario_metronome(&mut report);
+    scenario_reverb_insert(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);
