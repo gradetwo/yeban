@@ -84,6 +84,7 @@ use yeban_model::{
 };
 
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
+use crate::metronome::MetronomePlan;
 use crate::mixer::{PanLaw, pan_gains};
 use crate::synth::{
     MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, ToneParams, tick_to_sample, velocity_gain,
@@ -364,6 +365,17 @@ pub struct EngineSnapshot {
     /// 因 [`MAX_NOTES_PER_TRACK`] 容量上限而被丢弃的音符条数（构造期计数）。
     note_schedule_drops: u64,
     pdc: PdcPlan,
+    /// **节拍器计划**（`transport.metronome_enabled` 的投影）。
+    ///
+    /// `None` = 关（`metronome_enabled = false`，**默认**）⇒ 实时侧整段咔哒声代码
+    /// 不被执行 ⇒ 输出与接线前**逐字节相同**。
+    /// `Some(plan)` = 开：点击波形（`sin` + 二次衰减包络，构造期算一次、峰值归一）
+    /// 与拍栅格（`PPQ × 4 / 分母` tick、`分子` 拍一小节）随快照一起共享给音频线程。
+    ///
+    /// 为什么波形在快照里而不是实时侧：`sin` 属 [ADR-0001 D32] 的**超越函数类**，
+    /// 只能在构造期算（与 [`TrackParams::pan_gains`] 的 `cos`/`sin`、
+    /// [`Self::master_gain`] 的 `exp2` 同一条理由，见 `crate::metronome` 模块文档）。
+    metronome: Option<MetronomePlan>,
 }
 
 impl EngineSnapshot {
@@ -429,6 +441,12 @@ impl EngineSnapshot {
                 .with_tones(tones)
                 .with_pan_law(PanLaw::from_model(project.audio_config.pan_law))
                 .with_bpm(project.bpm)
+                .with_metronome(project.transport.metronome_enabled.then(|| {
+                    MetronomePlan::new(
+                        project.audio_config.sample_rate.hz(),
+                        project.time_signature,
+                    )
+                }))
         })
     }
 
@@ -474,6 +492,7 @@ impl EngineSnapshot {
             scheduled_notes: 0,
             note_schedule_drops: 0,
             pdc,
+            metronome: None,
         })
     }
 
@@ -518,6 +537,33 @@ impl EngineSnapshot {
     pub const fn with_bpm(mut self, bpm: f64) -> Self {
         self.bpm = bpm;
         self
+    }
+
+    /// 附上**节拍器计划**（**投影自 `transport.metronome_enabled` 与 `time_signature`**）。
+    ///
+    /// `None` = 关（低层构造 [`Self::from_parts`] 的默认值）⇒ 实时侧整段跳过
+    /// ⇒ 输出逐位不变。构造期**允许分配/超越函数**：这一步在控制线程上。
+    #[must_use]
+    pub fn with_metronome(mut self, metronome: Option<MetronomePlan>) -> Self {
+        self.metronome = metronome;
+        self
+    }
+
+    /// 节拍器计划：`None` = 本快照关闭（`transport.metronome_enabled = false`）。
+    ///
+    /// 判据用它断言"模型字段真的投影进了快照"，而不必从音频输出反推。
+    #[must_use]
+    pub const fn metronome(&self) -> Option<&MetronomePlan> {
+        match &self.metronome {
+            Some(plan) => Some(plan),
+            None => None,
+        }
+    }
+
+    /// 本快照是否开启节拍器（`transport.metronome_enabled` 的投影）。
+    #[must_use]
+    pub const fn metronome_enabled(&self) -> bool {
+        self.metronome.is_some()
     }
 
     /// 模型层提交版本号。

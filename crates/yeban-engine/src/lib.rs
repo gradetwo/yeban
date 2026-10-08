@@ -77,8 +77,12 @@
 //! 2. **走带已实现（本切片）**：播放头由 [`rt::EngineRuntime`] 自己持有
 //!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），每量子按 [`transport`] 的
 //!    整数有理数推进 tick；`Play`/`Stop`/`Pause`/`SeekTicks` 经既有的无锁事件通道
-//!    在量子边界生效，停住时输出静音且时钟冻结。**仍未实现**：节拍器、预备拍
-//!    （count-in）、录音（[`transport::TransportState::Recording`] 已预留但没有入口）、
+//!    在量子边界生效，停住时输出静音且时钟冻结。**节拍器已接入**（[`metronome`]）：
+//!    `transport.metronome_enabled` 投影成快照里的 [`metronome::MetronomePlan`]
+//!    （点击波形与拍栅格都在**构造期**算好），实时侧只做"比对 tick + 混一个短包络"；
+//!    关掉时整段跳过 ⇒ 输出逐位不变（判据见 `tests/metronome_render.rs`）。
+//!    **仍未实现**：预备拍（count-in，`transport.count_in_bars`）、录音
+//!    （[`transport::TransportState::Recording`] 已预留但没有入口）、
 //!    循环播放、BPM 自动化、时间码显示（UI 侧只做了"从引擎读数格式化"）。
 //!    边界见 `docs/ledger/transport-engine-notes.md`。
 //! 2. **实时线程优先级**（[ROAD-M2-001]）未实现，理由见 `device` 模块文档与
@@ -114,6 +118,7 @@ pub mod graph;
 pub mod latency;
 pub mod level;
 pub mod meter;
+pub mod metronome;
 pub mod mixer;
 pub mod ring;
 pub mod rt;

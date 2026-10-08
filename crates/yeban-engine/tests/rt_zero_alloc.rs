@@ -35,7 +35,7 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 十四个场景（在既有 `harness = false` 风格上扩展）
+//! # 十五个场景（在既有 `harness = false` 风格上扩展）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -53,6 +53,7 @@
 //! | ⑱ | 退役队列欠容（容量 1 + 控制面**故意**不排空）64 轮 | `SnapshotReader::retire_or_stash` 的 `PushError::Full` 分支 ⇒ `note_suppressed(SnapshotRetireStash)`（`N6` 选项 A） |
 //! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A） |
 //! | ⑳ | 设备回调体 2 000 次（`yeban_engine::device::render_callback`） | cpal 建流的闭包、`NullBackend::render` 与判据调用的**同一个**函数 ⇒ "回调里多做了事"（分配/锁/I-O/日志）在这里变红；**feature `device` 门控**（`--no-default-features` 下本场景不跑） |
+//! | ㉑ | 节拍器 2 000 量子全程打拍（`transport.metronome_enabled = true`；关闭侧另 200 量子） | `render_block` 的 3a'（`metronome::render_quantum`）：每拍帧位置反算（`Transport::frames_until_tick` 的整数 `div_ceil`）、强弱拍增益选择、逐样本"比对 + 一次乘 + 两次加"、**跨量子延续**的游标；关闭侧覆盖"整段跳过"分支。行为判据在 `tests/metronome_render.rs` |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -82,7 +83,7 @@
 //! 否则"控制面能看见"就要拿渲染路径来换。⑫b 同时实测**注入口径**：
 //! `Vec::new()` 不分配（无效注入），`Vec::with_capacity(1)` 才分配（有效注入）。
 //!
-//! # 本判据怎么变红（十组注入，实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4 与 §12）
+//! # 本判据怎么变红（十一组注入；I1~I10 的实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4 与 §12，I11 见上表与交付报告）
 //!
 //! | # | 注入点（`crates/yeban-engine/src/`） | 变红的判据 |
 //! | :-: | :--- | :--- |
@@ -96,6 +97,7 @@
 //! | I8 | `events.drain_with` 的闭包里按 `applied == SCRATCH_EVENTS` 加一次分配 | **仅** ⑯（满批出队边界） |
 //! | I9 | `rt.rs::render_block` 的电平容量不足分支把 `note_suppressed` **换回** `rt_probe::diag` | **仅** ⑲（溢出路径的 I/O 分量） |
 //! | I10 | `device.rs::render_callback` 里加一次 `Vec::<u8>::with_capacity(1)`（或 `Mutex::lock` / `println!`） | **仅** ⑳（设备回调体）—— ①~⑲ 全部不动（它们不执行那个函数） |
+//! | I11 | `rt.rs::render_block` 的 3a' 节拍器分支里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉑（节拍器开启侧）—— ㉑b（关闭侧）与其它场景不动（跳过分支里没有那句）；实测红行：`㉑ FAIL … 四元组[alloc=2000 dealloc=2000 …]` 且汇总 `41 / 42 通过`，还原后 `42 / 42`（记录在本票的交付报告里；`gate-rt-zero-alloc-notes.md` 是**带日期的历史读数**、不属本票、一字未改） |
 //!
 //! # I9 的实测记录（`N6` 选项 A 的验收证据；本节只在本文件里留档，账本由集成者补记）
 //!
@@ -234,6 +236,13 @@ const STASH_ROUNDS: u64 = 64;
 const OVERSIZE_TRACKS: usize = SCRATCH_METERS + 44;
 /// ⑲ 的量子数（每个量子都会在 `render_block` 的电平容量分支产生**一次**纯计数诊断）。
 const METER_OVERFLOW_QUANTA: u64 = 100;
+/// ㉑ 节拍器**开启**侧的量子数（全程打拍：帧位置反算 + 逐样本乘加 + 跨量子游标）。
+const METRONOME_QUANTA: u64 = 2_000;
+/// ㉑ 节拍器**关闭**侧的量子数（覆盖"整段跳过"的分支）。
+const METRONOME_OFF_QUANTA: u64 = 200;
+/// ㉑ 夹具的一拍帧数：`filled_project` = 128 BPM / 48 kHz / 4-4
+/// ⇒ 960 tick = `60 × 48000 / 128 = 22 500` 帧。
+const METRONOME_FRAMES_PER_BEAT: u64 = 22_500;
 
 // ---------------------------------------------------------------------------
 // 计数型全局分配器（**按线程**武装：判据 ⑪ 要在窗口里跑别的线程）
@@ -532,9 +541,9 @@ impl Report {
         println!("[MUST-GATE-001] 判据汇总: {passed} / {total} 通过");
         if self.failures() == 0 {
             println!(
-                "[MUST-GATE-001] ok: 十三场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
+                "[MUST-GATE-001] ok: 十四场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
                  回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰 / \
-                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足）四元组全 0；两条溢出路径（N6 选项 A）\
+                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器）四元组全 0；两条溢出路径（N6 选项 A）\
                  走纯计数出口而**仍然** io_requests==0 && io_ops==0（且 suppressed_diag_events>0 ⇒ \
                  真的跑到了溢出）；控制面读取 EngineStats 的读取路径同样全 0；\
                  探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
@@ -1767,6 +1776,108 @@ fn scenario_meter_capacity_overflow(report: &mut Report) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 场景 ㉑ 节拍器（咔哒声）
+// ---------------------------------------------------------------------------
+
+/// ㉑：节拍器**开启**（2 000 量子全程打拍）+ **关闭**（200 量子，整段跳过）。
+///
+/// ## 这条场景覆盖什么
+///
+/// `render_block` 的步骤 3a'（[`yeban_engine::metronome::render_quantum`]）：
+///
+/// - 每拍的**帧位置反算**（`Transport::frames_until_tick` 的整数 `div_ceil`；
+///   本量子里没有拍点时走"只比较、不触发"的分支）；
+/// - 逐样本的"整数比对 + 一次乘 + 两次加"，以及强弱拍增益选择（`tick / 每拍 tick % 拍数`）；
+/// - **跨量子延续**的游标（4 ms 的咔哒声 = 192 帧 > 128 帧的量子 ⇒ 每个拍点的
+///   咔哒声都跨量子，游标路径每个拍点都被走到一次）；
+/// - 关闭时的**整段跳过**（`armed_metronome_enabled == false` ⇒ 3a' 的 `if` 不进）。
+///
+/// ## 为什么必须有这条场景
+///
+/// 其它全部场景（①~⑥、⑬~⑳）用的夹具都是**默认关**节拍器的工程
+/// （`filled_project` 的 `metronome_enabled = false`）⇒ 3a' 整段被跳过，
+/// 那些场景对这条新路径是**零覆盖**。本场景的开/关两侧各把一条分支跑满。
+fn scenario_metronome(report: &mut Report) {
+    // ---- 开侧：128 BPM / 4-4 / 48 kHz ⇒ 一拍 22500 帧 ----
+    let mut project = filled_project();
+    project.transport.metronome_enabled = true;
+    assert_eq!(project.bpm, 128.0, "夹具速度是判据算术的一部分");
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+
+    let mut scenario = Scenario::new("㉑节拍器");
+    scenario.absorb(METRONOME_QUANTA, &rig.pump(METRONOME_QUANTA));
+
+    let stats = rig.stats();
+    let armed = rig.runtime.armed_metronome_enabled();
+    let ticks_per_beat = rig.runtime.armed_metronome_ticks_per_beat();
+    let beats_per_bar = rig.runtime.armed_metronome_beats_per_bar();
+    // 预热 1 个量子 + 窗口 2 000 个量子；tick 0 的强拍落在预热里。
+    let total_frames = (METRONOME_QUANTA + 1) * DEFAULT_BLOCK_FRAMES as u64;
+    let expected_clicks = total_frames / METRONOME_FRAMES_PER_BEAT + 1;
+    scenario.note(format!(
+        "武装开关={armed} 每拍 tick={ticks_per_beat} 每小节拍数={beats_per_bar}；\
+         点击次数={}（期望 {expected_clicks} = {total_frames} 帧 ÷ {METRONOME_FRAMES_PER_BEAT} + 1）；\
+         位置 tick={}",
+        stats.metronome_clicks, stats.position_ticks
+    ));
+    report.scenario(
+        "㉑",
+        "[MUST-GATE-001] 节拍器 2 000 量子（全程打拍）：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㉑c",
+        "覆盖度：节拍器开关与拍栅格真的来自快照（4/4 = 960 tick、4 拍一小节），\
+         且咔哒声按拍栅格逐拍触发（次数与算术相等）",
+        armed
+            && ticks_per_beat == 960
+            && beats_per_bar == 4
+            && stats.metronome_clicks == expected_clicks,
+        format!(
+            "武装开关={armed}（要求 true）每拍 tick={ticks_per_beat}（要求 960）\
+             每小节拍数={beats_per_bar}（要求 4）点击次数={}（要求 {expected_clicks}）",
+            stats.metronome_clicks
+        ),
+    );
+
+    // ---- 关侧：同一份夹具、`metronome_enabled = false`（默认）⇒ 3a' 整段跳过 ----
+    let off_project = filled_project();
+    assert!(
+        !off_project.transport.metronome_enabled,
+        "关侧的夹具前提：模型默认关节拍器"
+    );
+    let mut off_rig = Rig::new(&off_project, 1, 4096);
+    off_rig.preheat();
+    let mut off_scenario = Scenario::new("㉑关闭侧");
+    off_scenario.absorb(METRONOME_OFF_QUANTA, &off_rig.pump(METRONOME_OFF_QUANTA));
+    let off_stats = off_rig.stats();
+    let off_armed = off_rig.runtime.armed_metronome_enabled();
+    off_scenario.note(format!(
+        "武装开关={off_armed} 点击次数={} 位置 tick={}；\
+         ⚠ 本窗口 {METRONOME_OFF_QUANTA} 个量子 = {} 帧，覆盖 2 个拍点 \
+         （0 / {METRONOME_FRAMES_PER_BEAT}）⇒ '一次都不触发'不是'没走到拍点'",
+        off_stats.metronome_clicks,
+        off_stats.position_ticks,
+        METRONOME_OFF_QUANTA * DEFAULT_BLOCK_FRAMES as u64
+    ));
+    report.scenario(
+        "㉑b",
+        "[MUST-GATE-001] 节拍器关闭 200 量子（整段跳过）：四元组全 0",
+        &off_scenario,
+    );
+    report.assert(
+        "㉑d",
+        "关闭时武装标志为假、一次都不触发（这是'关掉时逐位不变'的运行期前提）",
+        !off_armed && off_stats.metronome_clicks == 0,
+        format!(
+            "武装开关={off_armed}（要求 false）点击次数={}（要求 0；本窗口跨过 2 个拍点）",
+            off_stats.metronome_clicks
+        ),
+    );
+}
+
 /// 造一份**轨道数超过电平暂存容量**的快照：母线 + [`OVERSIZE_TRACKS`] 条普通轨。
 ///
 /// 走的是与真实投影**同一套**下层构造（`TrackParams::from_track` + `from_parts`），
@@ -2348,6 +2459,7 @@ fn main() -> ExitCode {
     scenario_meter_capacity_overflow(&mut report);
     #[cfg(feature = "device")]
     scenario_device_callback_body(&mut report);
+    scenario_metronome(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);

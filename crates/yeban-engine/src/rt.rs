@@ -25,13 +25,16 @@
 //!        合成器播放头对齐到该 tick 的帧位置
 //! 2) 快照：begin_block() 无锁切换 [ARCH-RT-002]；revision 变化时
 //!       a) 重设电平弹道系数；b) 声部池对齐到新轨道集合 + 游标校正（只增不减）；
-//!       c) 走带按同一份快照的 `sample_rate` / `bpm` 武装（位置不动 ⇒ 不跳变）
+//!       c) 走带按同一份快照的 `sample_rate` / `bpm` 武装（位置不动 ⇒ 不跳变）；
+//!       d) 节拍器按同一份快照武装开关与拍栅格（波形已在构造期算好）
 //! 3) 渲染 + 电平：对快照里**每条非母线轨**
 //!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch（声相之前、单声道）
 //!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
 //!         →  **PDC 补偿延迟线（`D(v) = L_max − arrival(v)` 采样点）** [ARCH-PDC-001]
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
-//!    然后 **BusLimiter::apply(block)**                    ← 母线峰值限制（前瞻 33 帧）
+//!    然后 **节拍器咔哒声**（`transport.metronome_enabled` 的投影；默认关 ⇒ 整段跳过）
+//!    然后 **主总线推子**（构造期标量，逐样本只乘）
+//!    再 **BusLimiter::apply(block)**                     ← 母线峰值限制（前瞻 33 帧）
 //!    再对母线（stereo-linked）MeterBank::measure_bus_stereo(block)   ← **限制之后**的读数
 //!    最后播放头前进 frames（**每量子一次**，与轨道数无关）；
 //!      **走带停住时**这一步被跳过、逐轨渲染也被跳过（输出静音、不触发音符）——
@@ -80,6 +83,7 @@
 //! - [`EngineRuntime::scratch_events`]：`[EngineEvent; 128]`（栈/内联）
 //! - [`EngineRuntime::scratch_meters`]：`[MeterFrame; 256]`（本量子的发布批次）
 //! - [`EngineRuntime::track_scratch`]：`[f32; 128]`（单轨渲染结果，复用一个缓冲）
+//! - [`crate::metronome::render_quantum`]：`[usize; 4]` + `[f32; 4]`（本量子的拍点，栈上定长）
 //! - [`EngineRuntime::block`]：`AudioBlock<128>`（`[f32; 128]` × 2）
 //! - [`EngineRuntime::synth`]：`[TrackSlot; 16]` × `[Voice; 16]`（声部池，定长）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
@@ -95,6 +99,7 @@ use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
 use crate::graph::CompensationBank;
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
+use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::rt_probe::{self, RtDiagEvent};
@@ -188,6 +193,11 @@ pub struct EngineStats {
     /// 在读数上完全一样（相位错位不会 panic、也不会让峰值判据变红）。
     /// `delay == 0` 的直通节点不计入（它们没有工作可做）。
     pub pdc_processed_blocks: u64,
+    /// **节拍器累计触发过的咔哒声次数**（[`crate::metronome`]）。
+    ///
+    /// 与 [`Self::pdc_processed_blocks`] 同族：它把"节拍器真的在打拍子"变成可读的
+    /// 读数，而不是从音频输出反推。`metronome_enabled = false`（默认）时**恒为 0**。
+    pub metronome_clicks: u64,
     /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
     ///
     /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
@@ -342,6 +352,19 @@ pub struct EngineRuntime {
     /// 与声相增益表同一个理由：`dB → 线性` 含 `exp2`（超越函数类），只能在快照
     /// 边界读一次；逐样本路径只做乘法（见 [`Self::armed_master_gain`]）。
     armed_master_gain: f32,
+    /// 本快照是否开启节拍器（`transport.metronome_enabled` 的投影）。
+    ///
+    /// `false`（默认）时**整段咔哒声代码不被执行** ⇒ 输出与接线前逐字节相同。
+    armed_metronome_enabled: bool,
+    /// 本快照武装的**拍栅格**：一拍多少 tick（`PPQ × 4 / 拍号分母`，构造期算好）。
+    armed_metronome_ticks_per_beat: u64,
+    /// 本快照武装的一小节拍数（拍号分子）。
+    armed_metronome_beats_per_bar: u64,
+    /// **节拍器运行态**（游标 / 下一拍 / 累计触发数）。
+    ///
+    /// 像走带位置一样属于挥发性会话运行态（[MODEL-ISO-001]），**不进快照**；
+    /// 波形与栅格来自快照，因此"换快照 ⇒ 一起换"。
+    metronome: MetronomeVoice,
     /// 累计被限制器压过的样本数（与 [`EngineStats::limiter_gain_reductions`] 同源）。
     limiter_gain_reductions: u64,
     /// 累计最大压限量（与 [`EngineStats::limiter_max_reduction`] 同源）。
@@ -411,6 +434,10 @@ impl EngineRuntime {
             ); MAX_TRACK_SLOTS],
             armed_pan_slots: 0,
             armed_master_gain: 1.0,
+            armed_metronome_enabled: false,
+            armed_metronome_ticks_per_beat: 0,
+            armed_metronome_beats_per_bar: 0,
+            metronome: MetronomeVoice::new(),
             limiter_gain_reductions: 0,
             limiter_max_reduction: 0.0,
             armed_revision: None,
@@ -491,6 +518,7 @@ impl EngineRuntime {
             pdc_unarmed_nodes: self.pdc_unarmed_nodes,
             pdc_clamped_frames: self.pdc_clamped_frames,
             pdc_processed_blocks: self.pdc.processed_blocks(),
+            metronome_clicks: self.metronome.clicks(),
             quanta_per_second: self.armed_quanta_per_second,
             transport_state: self.transport.state(),
             position_ticks: self.transport.position_ticks(),
@@ -585,6 +613,34 @@ impl EngineRuntime {
         self.armed_master_gain
     }
 
+    /// 本快照武装的**节拍器开关**（`transport.metronome_enabled` 的投影；
+    /// 诊断/判据用）。
+    ///
+    /// 与 [`Self::armed_master_gain`] 同族：它证明"模型字段真的走到了实时侧"，
+    /// 而不是"快照里有、实时侧没读"。`false` 时逐样本路径**整段跳过**。
+    #[must_use]
+    pub const fn armed_metronome_enabled(&self) -> bool {
+        self.armed_metronome_enabled
+    }
+
+    /// 本快照武装的**每拍 tick 数**（`PPQ × 4 / 拍号分母`；诊断/判据用）。
+    #[must_use]
+    pub const fn armed_metronome_ticks_per_beat(&self) -> u64 {
+        self.armed_metronome_ticks_per_beat
+    }
+
+    /// 本快照武装的**一小节拍数**（拍号分子；诊断/判据用）。
+    #[must_use]
+    pub const fn armed_metronome_beats_per_bar(&self) -> u64 {
+        self.armed_metronome_beats_per_bar
+    }
+
+    /// 累计触发过的咔哒声次数（= [`EngineStats::metronome_clicks`]）。
+    #[must_use]
+    pub const fn metronome_clicks(&self) -> u64 {
+        self.metronome.clicks()
+    }
+
     /// 播放头当前所在的绝对样本位置（0 = 工程 tick 0）。
     ///
     /// 走带是时钟的**唯一**事实源（[`crate::transport`]）：Running 时两者按同一
@@ -671,6 +727,10 @@ impl EngineRuntime {
             pdc_clamped_frames,
             armed_revision,
             armed_master_gain,
+            armed_metronome_enabled,
+            armed_metronome_ticks_per_beat,
+            armed_metronome_beats_per_bar,
+            metronome,
             armed_scheduled_notes,
             armed_note_schedule_drops,
             quanta,
@@ -706,6 +766,10 @@ impl EngineRuntime {
                 && let TransportEffect::Seeked { frames, .. } = transport.apply(command)
             {
                 synth.seek(frames);
+                // 节拍器也要重新对齐：从第 8 小节跳回第 1 小节之后，下一拍必须落在
+                // 新位置之后的拍栅格上，而不是继续等第 9 小节的强拍（`ticks_per_beat`
+                // 为 0 = 还没有任何快照被武装 ⇒ `resync` 不发明栅格）。
+                metronome.resync(transport.position_ticks(), *armed_metronome_ticks_per_beat);
             }
         });
         *event_bulk_pops = event_bulk_pops.wrapping_add(1);
@@ -783,6 +847,33 @@ impl EngineRuntime {
                 // 的 `*id == master` 分支）：母带的声相由总线求和决定，与 `yeban-mcp`
                 // 的 `masterPan` 登记同一口径。
                 *armed_master_gain = current.master_gain();
+
+                // --- 2d) 节拍器：波形与拍栅格都在**构造期**算好（`sin` 属超越函数类），
+                // 这里只把两个整数（每拍 tick / 每小节拍数）与一个开关读进实时侧
+                // （[`crate::metronome`]）。**关掉时**把武装标志置假并丢掉可能正在响的
+                // 尾巴 ⇒ 输出与"从未开过节拍器"逐字节相同（见 `tests/metronome_render.rs`）。
+                // 换快照**不重置** `next_beat_tick`：拍栅格以 tick 为单位、与 BPM 无关，
+                // 因此改速度不会让拍点跳一格；陈旧对齐由 `render_quantum` 就地拉回。
+                // ⚠ **拍格本身变了**（拍号分母换档，例如 4/4 的 960 tick ⟶ 3/2 的 1920 tick）
+                // 时旧的下拍 tick 不再落在新格上，而且每拍加 `ticks_per_beat` 会**一直**
+                // 偏半格 —— 因此这里显式重对齐一次（整数比较 + 一次 `div_ceil`，零分配）。
+                match current.metronome() {
+                    Some(plan) => {
+                        let grid_changed = *armed_metronome_ticks_per_beat != plan.ticks_per_beat();
+                        *armed_metronome_enabled = true;
+                        *armed_metronome_ticks_per_beat = plan.ticks_per_beat();
+                        *armed_metronome_beats_per_bar = plan.beats_per_bar();
+                        if grid_changed {
+                            metronome.resync(transport.position_ticks(), plan.ticks_per_beat());
+                        }
+                    }
+                    None => {
+                        *armed_metronome_enabled = false;
+                        *armed_metronome_ticks_per_beat = 0;
+                        *armed_metronome_beats_per_bar = 0;
+                        metronome.silence();
+                    }
+                }
             }
 
             block.silence();
@@ -857,6 +948,31 @@ impl EngineRuntime {
                     |(_, l, r)| (*l, *r),
                 );
                 sum_into_bus(block, &track_scratch[..frames], gain_l, gain_r);
+            }
+
+            // --- 3a') 节拍器咔哒声：**逐轨汇流之后、主总线推子与母线限制器之前** ---
+            //
+            // ## 位置（为什么在这里）
+            //
+            // 1. **在限制器之前**：限制器是母线输出的最后一道约束（[`crate::mixer`] 模块文档
+            //    §4 的上界证明）。咔哒声作为**母线信号**混进来 ⇒ "限制后峰值 ≤ 天花板"这条
+            //    约束对它同样成立。放到限制器**之后**会让咔哒声直接推高输出（可能越过天花板），
+            //    那等于给总线开了一个不受约束的入口。
+            // 2. **在主总线推子之前**：推子是"整条母线输出"的音量（[`scale_bus`] 的位置说明）。
+            //    咔哒声也是母线输出的一部分 ⇒ 推子对它同样有效：拉低推子时整条总线（含咔哒声）
+            //    一起变小。取舍是**明说的**：主总线静音时听不到节拍器。另一半方案（放在推子
+            //    之后）能让节拍器不受推子影响，但它会让"母线音量"对两个信号有两种含义 ——
+            //    本仓库宁可口径单一。
+            // 3. 混进来的是**本快照的波形**（`current.metronome()`）：`None` ⇒ 开关为假
+            //    ⇒ **整段跳过**（零分支代价、输出逐位不变）。
+            //
+            // ## 实时约束
+            //
+            // 逐样本只有"整数比对 + 一次乘 + 两次加"（[`crate::metronome::render_quantum`]）；
+            // 唯一的整数除法在每拍的帧位置反算里（[`Transport::frames_until_tick`]）。
+            // **没有**分配/释放/锁/I-O/日志/超越函数 [MUST-GATE-001, ADR-0001 D32]。
+            if *armed_metronome_enabled && let Some(plan) = current.metronome() {
+                render_metronome_quantum(metronome, plan, transport, block, frames);
             }
 
             // --- 3a'') 主总线推子：**逐轨汇流之后、母线限制器之前** ---

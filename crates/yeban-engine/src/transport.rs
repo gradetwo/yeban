@@ -446,6 +446,46 @@ impl Transport {
         self.tempo.frames_for(tick)
     }
 
+    /// 从当前位置到 `tick` **还差多少帧**（向上取整；整数精确）。
+    ///
+    /// 语义：这是 [`Self::advance_frames`] 的逆运算 —— 返回值是使
+    /// `position_ticks >= tick` 成立的**最小**帧数 `f`。也就是说，调用方在
+    /// 当前位置推进 `f` 帧，播放头就**恰好**第一次碰到 `tick`。
+    ///
+    /// 用途：节拍器要把咔哒声放在**采样点精确**的拍边界上（[`crate::metronome`]），
+    /// 而"拍"是 tick 栅格上的整数点。实时侧因此只做整数乘/除/取余：
+    /// **没有**浮点、没有超越函数、没有分配/锁/I-O [MUST-GATE-001]。
+    ///
+    /// 推导（与 [`Self::advance_frames`] 同一份有理数）：
+    ///
+    /// ```text
+    /// advance_frames(f) ⇒ position_ticks += floor((remainder + f × tick_num) / tick_den)
+    /// 要求 floor((remainder + f × tick_num) / tick_den) >= tick − position_ticks
+    /// ⇔ remainder + f × tick_num >= Δtick × tick_den
+    /// ⇔ f >= (Δtick × tick_den − remainder) / tick_num
+    /// ⇒ f = ceil(…)
+    /// ```
+    ///
+    /// - `tick <= position_ticks` ⇒ `0`（已经到达或越过；不回绕、不返回负数）；
+    /// - 速度有理数退化（`tick_num == 0` 或 `tick_den == 0`）⇒ `u64::MAX`
+    ///   （"永远到不了"的显式表示，而不是猜一个帧数）。
+    #[must_use]
+    pub fn frames_until_tick(&self, tick: u64) -> u64 {
+        let position = self.position_ticks;
+        if tick <= position {
+            return 0;
+        }
+        if self.tempo.tick_num == 0 || self.tempo.tick_den == 0 {
+            return u64::MAX;
+        }
+        // `tick > position` ⇒ `delta >= 1` ⇒ `target >= tick_den > remainder`
+        // ⇒ 下面的减法恒不下溢（`remainder` 恒 `< tick_den`，见 `advance_frames`）。
+        let delta = u128::from(tick - position);
+        let target = delta * u128::from(self.tempo.tick_den);
+        let numerator = target - u128::from(self.remainder);
+        u64::try_from(numerator.div_ceil(u128::from(self.tempo.tick_num))).unwrap_or(u64::MAX)
+    }
+
     /// 把当前读数发布到原子镜面（**实时路径**：只有原子写）。
     pub fn publish(&self, mirror: &TransportMirror) {
         mirror.store(self);
@@ -731,6 +771,58 @@ mod tests {
             trace
         }
         assert_eq!(run(), run(), "同一输入序列必须给出逐位相同的 tick 轨迹");
+    }
+
+    /// 判据：`frames_until_tick` 是 `advance_frames` 的**精确逆**（最小帧数）。
+    ///
+    /// 三件可证伪的事：
+    /// 1. 整除速度（120 / 128 BPM @48 kHz）给出**字面**帧数（960 tick = 24000 / 22500 帧）；
+    /// 2. 不整除速度（133.7 BPM）满足"最小性"：推进 `f` 帧到了、推进 `f-1` 帧没到；
+    /// 3. 已到达/越过的目标返回 0（不回绕）。
+    #[test]
+    fn frames_until_tick_is_the_exact_inverse_of_advance_frames() {
+        assert_eq!(
+            Transport::free_running(48_000, 120.0).frames_until_tick(960),
+            24_000,
+            "120 BPM: 960 tick = 1 秒 = 48000 帧的一半"
+        );
+        assert_eq!(
+            Transport::free_running(48_000, 128.0).frames_until_tick(960),
+            22_500,
+            "128 BPM: 60 × 48000 / 128"
+        );
+        assert_eq!(
+            Transport::free_running(48_000, 128.0).frames_until_tick(0),
+            0
+        );
+
+        // 最小性（不整除速度）：这是"贪心 +1"与"精确逆"的分界。
+        for bpm in [133.7, 99.9, 187.3] {
+            let mut transport = Transport::free_running(48_000, bpm);
+            let frames = transport.frames_until_tick(960);
+            assert!(frames > 0);
+            let mut early = Transport::free_running(48_000, bpm);
+            early.advance_frames(frames - 1);
+            assert!(
+                early.position_ticks() < 960,
+                "{bpm} BPM: 推进 {} 帧就到了 ⇒ 不是最小帧数",
+                frames - 1
+            );
+            transport.advance_frames(frames);
+            assert_eq!(
+                transport.position_ticks(),
+                960,
+                "{bpm} BPM: 推进 {frames} 帧必须**恰好**到达 960 tick"
+            );
+            assert_eq!(transport.frames_until_tick(960), 0, "到达之后是 0");
+            assert_eq!(transport.frames_until_tick(959), 0, "越过的目标也是 0");
+        }
+
+        // 44.1 kHz 不按 48 kHz 硬编码：960 tick @120 BPM = 22050 帧。
+        assert_eq!(
+            Transport::free_running(44_100, 120.0).frames_until_tick(960),
+            22_050
+        );
     }
 
     /// 判据 ⑩（负向）：`Stop` 状态下的推进路径**不产生任何 tick 推进**。
