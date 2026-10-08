@@ -13,16 +13,58 @@
 //! `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.2 只写 `ops: Vec<NoteOp>`。
 //! 本模块因此**定义了**四种 `kind`（`add` / `delete` / `move` / `velocity`）作为
 //! 本地决策，并把它登记为待裁决项（见 `docs/ledger/tools-domain-notes.md`）。
+//!
+//! ## 材料创建形态（`arguments.create: true`）—— 关闭 needs-8 的 MIDI 那一半
+//!
+//! 台账 `docs/ledger/tools-domain-notes.md:283` 的 **needs-8** 记的事实是：
+//! `yeban_propose_section` 要求 `clip_pool` 里至少有一条"MIDI 且至少一个音符"的材料
+//! （`section_build.rs` 的 `usable_materials`，缺了报 `CLIP_NOT_FOUND`），
+//! 而"没有任何 MCP 工具能让 Agent 把片段放进池子"⇒ 空池工程做不了配器。
+//!
+//! 那一半缺口由 [`compile_create`] 关闭：`create: true` 时 `clipId` 是**将要新建的**
+//! 片段身份（§7.2 的参数表因此**一字不动** —— `clipId` 仍然是必填的"目标片段"），
+//! `ops` 里的 `add` 折成一条 `Op::AddClip` 的**初始内容**。
+//!
+//! 为什么是"扩 `yeban_edit_notes` 的参数"而不是新增工具：
+//! `ADR-0001` **D46** 的扩张原则是"先扩既有工具的参数，只有确实不合适才新增工具"，
+//! 而新增工具必须同步 `schemas/mcp-tools.schema.json` 的
+//! `properties.name.enum` + `ExtensionToolArguments.$defs` + `allOf` 三处
+//!（本线禁改 `schemas/**`）。已有的先例是同一条原则下的
+//! `yeban_open_project` 的 `create`/`seed`（`domain/project_create.rs`）。
+//!
+//! 三条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | `create: true` 且池里**已有** `clipId` | `CONFLICT`（`reason = clipAlreadyExists`）—— 与 `yeban_open_project` 的 `create` 同款：绝不覆盖 |
+//! | `create: true` 且 `ops` 里有 `delete`/`move`/`velocity` | `INVALID_PARAMETER_RANGE`（`reason = createRequiresAddOps`）—— 新片段里还没有音符可以被它们指向 |
+//! | `create: true` 且两个 `add` 抢同一个音符身份 | `INVALID_PARAMETER_RANGE`（`reason = duplicateNoteId`）—— 不静默去重 |
+//!
+//! 创建出来的片段**只在池子里**（本工具不摆放；摆放是 `Op::AddClipPlacement` 的事，
+//! 而"配器"只要求池里有材料）。这一点如实写在 [`compile_create`] 的文档与响应里。
 
+use std::collections::BTreeMap;
 use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
 
-use yeban_model::{EntityId, MidiNote, Op, YebanProjectV1};
+use yeban_model::{ClipContent, ClipPoolEntry, EntityId, MidiNote, Op, YebanProjectV1};
 
 use super::error::{Fault, from_model};
 use super::ids::deterministic_id;
 use crate::tools::ErrorCode;
+
+/// `create: true` 且没给 `clipName` 时的片段名（**不是**身份，只是给人看的标签）。
+pub const DEFAULT_NEW_CLIP_NAME: &str = "Clip";
+
+/// 材料创建形态的开关实参名（`arguments.create`，缺省 `false` = 旧行为）。
+///
+/// 名字与 `yeban_open_project` 的 `create` **同词同义**（`ADR-0001` D48 的口径：
+/// 同一个词必须同一个意思）—— "目标不存在才新建，已存在就响亮拒绝"。
+pub const CREATE_PARAM: &str = "create";
+
+/// 材料创建形态的片段名实参（`arguments.clipName`，可选）。
+pub const CLIP_NAME_PARAM: &str = "clipName";
 
 /// 单个片段的**发声数**上限（同时发声的音符数）。
 ///
@@ -61,6 +103,19 @@ pub enum NoteOp {
         /// 新力度 `0..=127`。
         velocity: u8,
     },
+}
+
+impl NoteOp {
+    /// 该操作在 `arguments.ops[].kind` 里的字面名字（错误信息与判据共用同一份真相）。
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Add { .. } => "add",
+            Self::Delete { .. } => "delete",
+            Self::Move { .. } => "move",
+            Self::Velocity { .. } => "velocity",
+        }
+    }
 }
 
 /// 解析 `arguments.ops`。
@@ -285,6 +340,97 @@ pub fn compile(
     Ok(compiled)
 }
 
+/// **材料创建**形态的编译（`arguments.create: true`）：把一组 `add` 折成**一条**
+/// [`Op::AddClip`]。
+///
+/// 与 [`compile`] 的分工：`compile` 改**已存在**的片段（每条 `NoteOp` 一条 `Op`），
+/// 本函数建**新**片段（`ops` 全部折进 `AddClip` 的初始内容，因此产物恰好一条 `Op`）。
+/// 两者共用同一个 `NoteOp` 解析器与同一个发声数上限常量。
+///
+/// ⚠ 本函数**不摆放**：新片段只在 `clip_pool` 里。渲染与 `yeban_export_midi` 只遍历
+/// `track.clips`，因此未摆放的片段不出声 —— 这是刻意的（"配器材料"只要求池里有材料），
+/// 并且如实写在响应 `willCreate.clipPoolEntries` 里，不假装它已经上了时间轴。
+///
+/// # Errors
+///
+/// - 音轨不存在 → `TRACK_NOT_FOUND`；
+/// - 池里已有该 `clipId` → `CONFLICT`（`data.reason = "clipAlreadyExists"`）；
+/// - `ops` 里出现 `add` 之外的操作 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "createRequiresAddOps"`）；
+/// - 两个 `add` 用同一个音符身份 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "duplicateNoteId"`）。
+pub fn compile_create(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    clip_id: &EntityId,
+    clip_name: &str,
+    ops: &[NoteOp],
+) -> Result<Vec<Op>, Fault> {
+    // 与 `compile` 同口径的入口校验：`trackId` 必须是工程里真实存在的音轨。
+    project
+        .track(track_id)
+        .map_err(|error| from_model("音轨查找", &error))?;
+    if project.clip_pool.contains_key(clip_id) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!("片段池里已经有身份 {clip_id}, `create: true` 不覆盖既有片段"),
+            serde_json::json!({
+                "clipId": clip_id.to_canonical_string(),
+                "reason": "clipAlreadyExists",
+                "hint": "把 `create` 去掉就是一次普通编辑; 要新建请换一个 `clipId`",
+            }),
+        ));
+    }
+    let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+    for op in ops {
+        match op {
+            NoteOp::Add { note } => {
+                if notes.insert(note.id, (**note).clone()).is_some() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!("两个 `add` 用了同一个音符身份 {}", note.id),
+                        serde_json::json!({
+                            "reason": "duplicateNoteId",
+                            "noteId": note.id.to_canonical_string(),
+                        }),
+                    ));
+                }
+            }
+            other => {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`create: true` 时 `ops` 只允许 `add` (新片段里还没有音符可以被 \
+                         `delete`/`move`/`velocity` 指向), 实际收到 `{}`",
+                        other.kind_name()
+                    ),
+                    serde_json::json!({
+                        "reason": "createRequiresAddOps",
+                        "supportedKindsWhenCreating": ["add"],
+                        "received": other.kind_name(),
+                    }),
+                ));
+            }
+        }
+    }
+    // `parse_ops` 已经拒绝空数组, 且上面只放行 `add` ⇒ `notes` 至少一条。
+    // 仍显式断言: "空 MIDI 片段"不是可用材料 (`section_build` 的 `usable_materials`),
+    // 建出它等于把 needs-8 的死角换一个地方。
+    if notes.is_empty() {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`create: true` 至少需要一个 `add` 音符: 空片段不是可用材料",
+        ));
+    }
+    Ok(vec![Op::AddClip {
+        clip: ClipPoolEntry {
+            id: *clip_id,
+            name: clip_name.to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    }])
+}
+
 /// 峰值同时发声数（在 `[start, start + duration)` 上的最大重叠）。
 #[must_use]
 pub fn peak_polyphony(notes: impl IntoIterator<Item = (u64, u64)>) -> usize {
@@ -306,9 +452,14 @@ pub fn peak_polyphony(notes: impl IntoIterator<Item = (u64, u64)>) -> usize {
 
 /// 检查某片段在施加 `ops` **之后**的发声数（在克隆体上模拟，不改原文档）。
 ///
+/// 这条路径**同时覆盖**两个形态：`ops` 是编辑操作时它读的是既有片段的新状态；
+/// `ops` 是 [`compile_create`] 的那一条 `Op::AddClip` 时，模拟里新片段已经存在
+/// ⇒ 读到的就是**新片段**的峰值。因此材料创建不需要第二份发声数检查。
+///
 /// # Errors
 ///
-/// 超过 [`MAX_POLYPHONY`] → `OUT_OF_RANGE`（带 `peak` / `limit` / `clipId`）。
+/// - 模拟时模型层失败 → [`from_model`] 给出的契约码；
+/// - 超过 [`MAX_POLYPHONY`] → `OUT_OF_RANGE`（带 `peak` / `limit` / `clipId`）。
 pub fn check_polyphony(
     project: &YebanProjectV1,
     clip_id: &EntityId,
@@ -561,6 +712,218 @@ mod tests {
         // 样本片段在 tick 0 已经有一个音符, 而注入的音符都在 tick 0 ⇒ 峰值 = 注入数 + 1。
         // 因此去掉 2 个（33 - 2 + 1 = 32）刚好落在上限之内。
         let ok = compile(&project, &track_id, &clip_id, &ops[2..]).expect("编译");
+        assert_eq!(
+            check_polyphony(&project, &clip_id, &ok).expect("上限之内"),
+            MAX_POLYPHONY
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 材料创建形态（`create: true`）—— 关闭 needs-8 的 MIDI 那一半
+    // -----------------------------------------------------------------------
+
+    /// 一条 `add` 的 JSON（身份缺省 ⇒ 由 `parse_note` 确定性派生）。
+    fn add_json(start: u64, pitch: u8) -> Value {
+        serde_json::json!({
+            "kind": "add",
+            "note": {"startTick": start, "pitch": pitch, "durationTicks": 480},
+        })
+    }
+
+    /// 池子里**没有** MIDI 片段的工程（needs-8 的负样本：只剩音频条目）。
+    fn project_without_midi_clips() -> YebanProjectV1 {
+        let mut project = filled_project();
+        project
+            .clip_pool
+            .retain(|_, entry| entry.content.notes().is_none());
+        project
+    }
+
+    /// `create: true` ⇒ 恰好**一条** `Op::AddClip`，内容 = 全部 `add`，名字/身份逐字段可控。
+    #[test]
+    fn create_compiles_adds_into_one_add_clip_op() {
+        let project = project_without_midi_clips();
+        assert!(
+            project
+                .clip_pool
+                .values()
+                .all(|entry| entry.content.notes().is_none()),
+            "负样本里不得有 MIDI 片段"
+        );
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:material");
+        let ops =
+            parse_ops(&serde_json::json!([add_json(0, 60), add_json(480, 64)])).expect("解析");
+
+        let compiled = compile_create(&project, &track_id, &clip_id, "Seed", &ops).expect("创建");
+        assert_eq!(compiled.len(), 1, "整批 `add` 只折成一条 Op");
+        let Op::AddClip { clip } = &compiled[0] else {
+            panic!("必须是 Op::AddClip, 实际 {}", compiled[0].name());
+        };
+        assert_eq!(clip.id, clip_id);
+        assert_eq!(clip.name, "Seed");
+        let notes = clip.content.notes().expect("必须是 MIDI 内容");
+        assert_eq!(notes.len(), 2);
+        // `notes` 是 `BTreeMap<EntityId, _>` ⇒ 迭代序是**身份序**，不是插入序。
+        let mut pitches: Vec<u8> = notes.values().map(|note| note.pitch).collect();
+        pitches.sort_unstable();
+        assert_eq!(pitches, vec![60, 64]);
+
+        // 确定性：同一请求 ⇒ 同一份载荷（`dryRun` 预览才能等于真做）。
+        let again = compile_create(&project, &track_id, &clip_id, "Seed", &ops).expect("创建");
+        assert_eq!(compiled, again, "同一请求必须产出逐字段相同的 op");
+
+        // 结果真的进得了池子，且**这就是** `propose_section` 要的材料口径。
+        let mut after = project.clone();
+        Op::Batch {
+            ops: compiled,
+            description: "判据".to_owned(),
+        }
+        .apply(&mut after)
+        .expect("施加");
+        let entry = after.clip_pool.get(&clip_id).expect("池里必须有新条目");
+        assert!(
+            entry.content.notes().is_some_and(|notes| !notes.is_empty()),
+            "新条目必须是 `usable_materials` 认的形态 (MIDI 且至少一个音符)"
+        );
+    }
+
+    /// `create: true` 且池里已有该身份 ⇒ `CONFLICT`（绝不覆盖别人的片段）。
+    #[test]
+    fn create_refuses_an_existing_clip_identity() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let ops = parse_ops(&serde_json::json!([add_json(0, 60)])).expect("解析");
+        let fault =
+            compile_create(&project, &track_id, &clip_id, "Seed", &ops).expect_err("必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["code"], "CONFLICT");
+        assert_eq!(value["error"]["data"]["reason"], "clipAlreadyExists");
+    }
+
+    /// `create: true` 只允许 `add`；`delete`/`move`/`velocity` 必须响亮失败。
+    #[test]
+    fn create_refuses_every_non_add_operation() {
+        let project = project_without_midi_clips();
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:kinds");
+        let note = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        for (kind, op) in [
+            (
+                "delete",
+                serde_json::json!({"kind": "delete", "noteId": note}),
+            ),
+            (
+                "move",
+                serde_json::json!({"kind": "move", "noteId": note, "deltaTick": 1, "deltaPitch": 0}),
+            ),
+            (
+                "velocity",
+                serde_json::json!({"kind": "velocity", "noteId": note, "velocity": 1}),
+            ),
+        ] {
+            let mut items = vec![add_json(0, 60)];
+            items.push(op);
+            let ops = parse_ops(&Value::Array(items)).expect("解析");
+            let fault =
+                compile_create(&project, &track_id, &clip_id, "Seed", &ops).expect_err("必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{kind}"
+            );
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], "createRequiresAddOps");
+            assert_eq!(value["error"]["data"]["received"], kind);
+        }
+    }
+
+    /// 两个 `add` 抢同一个音符身份 ⇒ 响亮失败（不静默去重）。
+    #[test]
+    fn create_refuses_duplicate_note_identities() {
+        let project = project_without_midi_clips();
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:dupes");
+        let shared = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "add", "note": {"id": shared, "startTick": 0, "pitch": 60, "durationTicks": 480}},
+            {"kind": "add", "note": {"id": shared, "startTick": 0, "pitch": 64, "durationTicks": 480}},
+        ]))
+        .expect("解析");
+        let fault =
+            compile_create(&project, &track_id, &clip_id, "Seed", &ops).expect_err("必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "duplicateNoteId");
+    }
+
+    /// 空音符集不是可用材料 —— 直接调 [`compile_create`]（**绕过** `parse_ops` 的
+    /// "空数组不是一次编辑请求"那条规则）才能碰到这个分支。
+    ///
+    /// 为什么值得一条判据：`parse_ops` 今天恰好拦住了空数组，于是这个守卫从工具面
+    /// **不可达**；不可达的守卫没有任何判据能证明它还在（注入证明：删掉它，全绿）。
+    /// 这条判据让它可达一次，代价是一行 `Vec::new()`。
+    #[test]
+    fn create_refuses_an_empty_note_set() {
+        let project = project_without_midi_clips();
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:empty");
+        let fault = compile_create(&project, &track_id, &clip_id, "Seed", &[])
+            .expect_err("空音符集必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["code"], "INVALID_PARAMETER_RANGE");
+    }
+
+    /// 发声数上限在**材料创建**这条路上也有牙：`check_polyphony` 先施加 `ops`
+    /// 再读池子，因此 `compile_create` 的 `Op::AddClip` 一进模拟体，读到的
+    /// 就是**新片段**的峰值 —— 换句话说，创建形态不需要第二份发声数检查，
+    /// 但它继承了同一份上限。判据钉住这一点（把 `check_polyphony` 从创建路径上
+    /// 摘掉，这条会红）。
+    #[test]
+    fn create_enforces_the_polyphony_limit() {
+        let project = project_without_midi_clips();
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:polyphony");
+        let flood: Vec<Value> = (0..=MAX_POLYPHONY)
+            .map(|index| {
+                // ⚠ 音高必须**逐条不同**：`parse_note` 在缺 `id` 时按
+                // `(start, pitch, duration)` 派生身份，重复的音高会撞成 duplicateNoteId。
+                serde_json::json!({
+                    "kind": "add",
+                    "note": {
+                        "startTick": 0,
+                        "pitch": u8::try_from(60 + index).expect("音高"),
+                        "durationTicks": 960,
+                    },
+                })
+            })
+            .collect();
+        let ops = parse_ops(&Value::Array(flood)).expect("解析");
+        let compiled = compile_create(&project, &track_id, &clip_id, "Seed", &ops).expect("建");
+        let fault = check_polyphony(&project, &clip_id, &compiled).expect_err("必须越界");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["peak"], MAX_POLYPHONY + 1);
+        assert_eq!(value["error"]["data"]["limit"], MAX_POLYPHONY);
+        // 去掉一个 ⇒ 峰值 = 上限 ⇒ 通过（上限本身合法）。
+        let ok_ops = parse_ops(&Value::Array(
+            (1..=MAX_POLYPHONY)
+                .map(|index| {
+                    serde_json::json!({
+                        "kind": "add",
+                        "note": {
+                            "startTick": 0,
+                            "pitch": u8::try_from(60 + index).expect("音高"),
+                            "durationTicks": 960,
+                        },
+                    })
+                })
+                .collect(),
+        ))
+        .expect("解析");
+        let ok = compile_create(&project, &track_id, &clip_id, "Seed", &ok_ops).expect("建");
         assert_eq!(
             check_polyphony(&project, &clip_id, &ok).expect("上限之内"),
             MAX_POLYPHONY

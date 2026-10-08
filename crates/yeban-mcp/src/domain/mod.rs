@@ -1926,6 +1926,15 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 }
 
 /// `yeban_edit_notes`。
+///
+/// 两个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
+///
+/// - **编辑**（缺省，`create: false`）：`clipId` 必须已经在 `clip_pool` 里，
+///   每条 `NoteOp` 编译成一条 `Op` —— **缺省路径逐字节不变**；
+/// - **创建材料**（`create: true`）：`clipId` 是**将要新建的**片段身份，
+///   `ops` 只允许 `add`，整批折成**一条** `Op::AddClip` ⇒ 池子里多一条
+///   "MIDI 且至少一个音符"的材料（关闭 `docs/ledger/tools-domain-notes.md:283`
+///   的 needs-8：空池工程从此能做 `yeban_propose_section`）。
 fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let track_id = arg_id(call, "trackId")?;
@@ -1935,6 +1944,22 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .get("ops")
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "缺少 `ops`"))?;
     let note_ops = notes::parse_ops(raw_ops)?;
+    if arg_bool(call, notes::CREATE_PARAM, false) {
+        let clip_name = arg_str(call, notes::CLIP_NAME_PARAM)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(notes::DEFAULT_NEW_CLIP_NAME);
+        let compiled = notes::compile_create(project, &track_id, &clip_id, clip_name, &note_ops)?;
+        notes::check_polyphony(project, &clip_id, &compiled)?;
+        return propose_draft(
+            domain,
+            project,
+            "notes",
+            format!("新建 MIDI 片段: {clip_name} ({} 个音符)", note_ops.len()),
+            format!("edit_notes create {clip_id}"),
+            compiled,
+            include_ops(call),
+        );
+    }
     let compiled = notes::compile(project, &track_id, &clip_id, &note_ops)?;
     notes::check_polyphony(project, &clip_id, &compiled)?;
     propose_draft(

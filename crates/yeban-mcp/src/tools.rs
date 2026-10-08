@@ -596,13 +596,37 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验",
+        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
             param("trackId", "string", true, "音轨 EntityId (26 字符 ULID)"),
-            param("clipId", "string", true, "片段 EntityId"),
+            param(
+                "clipId",
+                "string",
+                true,
+                "片段 EntityId; `create:true` 时是**将要新建的**片段身份 (池里已有该身份 ⇒ `CONFLICT`)",
+            ),
             param("ops", "array", true, "音符操作列表 (NoteOp)"),
+            // `create` / `clipName` 是**可选**实参（缺省 = 逐字节等于旧行为），
+            // 与 `yeban_open_project` 的 `create` 同词同义（ADR-0001 D48）。
+            //
+            // 为什么扩本工具而不新增工具：`ADR-0001` D46 的扩张原则是"先扩既有工具的
+            // 参数，只有确实不合适才新增工具"；新增工具要同步 `schemas/mcp-tools.schema.json`
+            // 的 `name.enum` + `ExtensionToolArguments.$defs` + `allOf` 三处（本线禁改
+            // `schemas/**`）。§7.2 的参数表因此**一字未动**：`clipId` 仍是必填的"目标片段"。
+            param(
+                "create",
+                "boolean",
+                false,
+                "用 `clipId` 新建一条 MIDI 片段池条目 (缺省 false = 编辑已存在的片段)。`create:true` 时 `ops` 只允许 `add` (它们成为新片段的初始内容): 池里已有该身份 ⇒ `CONFLICT`, 出现其他 `kind` ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "clipName",
+                "string",
+                false,
+                "`create:true` 时的片段名 (缺省 `Clip`; 只是给人看的标签, 不参与身份)",
+            ),
             param(
                 "idempotencyKey",
                 "string",
@@ -616,7 +640,15 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
             ),
         ],
-        errors: &[ErrorCode::ClipNotFound, ErrorCode::OutOfRange],
+        // `CONFLICT` 是 §7.2 表格 16 个里的既有码（`MCP-TOOL-001` 的 `create` 同款语义：
+        // "目标已存在就响亮拒绝"，见 `domain/project_create.rs`）。`INVALID_PARAMETER_RANGE`
+        // 是本工具**本来就**在产的 schema 独有码（`parse_ops` 的缺字段 / 未知 `kind`），
+        // 按既有口径不列进文档工具的错误码表（那条表只收 §7.2 的 16 个）。
+        errors: &[
+            ErrorCode::ClipNotFound,
+            ErrorCode::OutOfRange,
+            ErrorCode::Conflict,
+        ],
     },
     ToolSpec {
         spec_id: "MCP-TOOL-007",

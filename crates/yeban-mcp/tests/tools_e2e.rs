@@ -1826,6 +1826,259 @@ fn propose_section_without_usable_material_is_a_clear_clip_not_found() {
     assert_eq!(dispatcher.domain().proposal_count(), 0, "失败不得留下提案");
 }
 
+/// **needs-8 的关闭判据**（`docs/ledger/tools-domain-notes.md:283`）：空材料工程
+/// 做不了配器 ⇒ 现在有一条**材料创建**的路，且它真的把死角打开。
+///
+/// 这条判据故意把**同一份工程**走两遍：先证明死角存在（`CLIP_NOT_FOUND`），
+/// 再用 `yeban_edit_notes {create: true}` 造出 MIDI 材料、合并、然后证明
+/// `yeban_propose_section` **成功**。把 `create` 那一半摘掉，第 ③ 段立刻变红。
+#[test]
+fn needs_8_create_true_supplies_the_midi_material_arranging_requires() {
+    let scratch = Scratch::new("needs-8");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = write_project_of(&scratch, "naked.yeban", &project_without_midi_material());
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+
+    // ① 负样本本身必须真的"没有可用材料"（否则下面测的不是 needs-8）。
+    let project = dispatcher.domain().active_project().expect("工程").clone();
+    assert!(
+        project
+            .clip_pool
+            .values()
+            .all(|entry| entry.content.notes().is_none()),
+        "负样本里不得有 MIDI 片段"
+    );
+    let source_track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Midi)
+        .expect("样本里必须有 MIDI 音轨")
+        .id
+        .to_canonical_string();
+
+    // ② 死角：配器要材料，工程没有，任何既有工具也给不出来。
+    let blocked = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
+    );
+    assert_domain_error(&blocked, "CLIP_NOT_FOUND", "空材料工程配器必须响亮失败");
+    assert_eq!(
+        blocked["error"]["data"]["missing"], "usableClipPoolEntries",
+        "{blocked}"
+    );
+
+    // ③ 材料创建：`create: true` ⇒ 恰好一条 `Op::AddClip`，内容 = 两条 `add`。
+    let clip_id = yeban_mcp::domain::ids::deterministic_id("clip:needs-8:e2e");
+    let clip_id = clip_id.to_canonical_string();
+    let bytes_before = project_bytes(&dispatcher);
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": source_track,
+            "clipId": clip_id,
+            "clipName": "Motif",
+            "create": true,
+            "includeOps": true,
+            "ops": [
+                {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}},
+                {"kind": "add", "note": {"startTick": 480, "pitch": 67, "durationTicks": 480}},
+            ],
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(created["data"]["proposal"]["kind"], "notes", "{created}");
+    assert_eq!(
+        created["data"]["willCreate"]["opKinds"],
+        json!(["AddClip"]),
+        "整批 `add` 必须折成**一条** AddClip: {created}"
+    );
+    assert_eq!(
+        created["data"]["willCreate"]["clipPoolEntries"],
+        json!([{ "id": clip_id, "name": "Motif", "notes": 2 }]),
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["projectUnchanged"], true,
+        "提案不得直接改工程: {created}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "提案不得改工程字节"
+    );
+
+    // ④ 合并 ⇒ 池子里真的多了一条 MIDI 材料。
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "材料" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher.domain().active_project().expect("工程").clone();
+    assert_eq!(
+        after.clip_pool.len(),
+        project.clip_pool.len() + 1,
+        "池子里必须恰好多一条"
+    );
+    let entry = after
+        .clip_pool
+        .values()
+        .find(|entry| entry.id.to_canonical_string() == clip_id)
+        .expect("池里必须有新片段");
+    assert_eq!(entry.name, "Motif");
+    assert_eq!(
+        entry.content.notes().map(std::collections::BTreeMap::len),
+        Some(2)
+    );
+    // 材料只在池子里 —— 本工具不摆放（如实口径，不是缺陷）。
+    assert!(
+        after.tracks.values().all(|track| track
+            .clips
+            .values()
+            .all(|p| p.clip_id.to_canonical_string() != clip_id)),
+        "`create: true` 不摆放 (摆放是 AddClipPlacement 的事)"
+    );
+
+    // ⑤ 死角**打开**：同一个请求现在成功，且骨架的每个声部都带真实材料。
+    let arranged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
+    );
+    assert_eq!(
+        arranged["status"], "success",
+        "有了 MIDI 材料之后配器必须成功: {arranged}"
+    );
+    assert_eq!(
+        arranged["data"]["willCreate"]["opKinds"]
+            .as_array()
+            .map(|kinds| kinds.iter().filter(|kind| *kind == "AddClip").count()),
+        Some(3),
+        "3 个声部各一条新片段: {arranged}"
+    );
+}
+
+/// `create: true` 的三条**响亮失败**口径（端到端；每条都在真实文件系统上）。
+#[test]
+fn needs_8_create_true_refuses_what_it_cannot_honour() {
+    let scratch = Scratch::new("needs-8-refusals");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let project = dispatcher.domain().active_project().expect("工程").clone();
+    let source_track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Midi)
+        .expect("MIDI 音轨")
+        .id
+        .to_canonical_string();
+    let existing_clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("既有 MIDI 片段")
+        .id
+        .to_canonical_string();
+    let fresh_clip =
+        yeban_mcp::domain::ids::deterministic_id("clip:needs-8:refusals").to_canonical_string();
+    let add = json!({"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}});
+
+    let bytes_before = project_bytes(&dispatcher);
+    let proposals_before = dispatcher.domain().proposal_count();
+
+    // (a) 池里已有该身份 ⇒ CONFLICT（绝不覆盖既有片段）。
+    let clash = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": source_track, "clipId": existing_clip, "create": true, "ops": [add],
+        }),
+    );
+    assert_domain_error(&clash, "CONFLICT", "create 不得覆盖既有片段");
+    assert_eq!(clash["error"]["data"]["reason"], "clipAlreadyExists");
+
+    // (b) `create: true` 时 `delete`/`move`/`velocity` 没有可指向的音符 ⇒ 拒绝。
+    for op in [
+        json!({"kind": "delete", "noteId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}),
+        json!({"kind": "move", "noteId": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "deltaTick": 1, "deltaPitch": 0}),
+        json!({"kind": "velocity", "noteId": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "velocity": 1}),
+    ] {
+        let outcome = call(
+            &mut dispatcher,
+            &auth,
+            "yeban_edit_notes",
+            json!({
+                "trackId": source_track, "clipId": fresh_clip, "create": true,
+                "ops": [add.clone(), op.clone()],
+            }),
+        );
+        assert_domain_error(&outcome, "INVALID_PARAMETER_RANGE", "create 只允许 add");
+        assert_eq!(outcome["error"]["data"]["reason"], "createRequiresAddOps");
+    }
+
+    // (c) 不给 `create` ⇒ 旧行为逐字不变：片段不存在仍是 CLIP_NOT_FOUND。
+    let legacy = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({ "trackId": source_track, "clipId": fresh_clip, "ops": [add] }),
+    );
+    assert_domain_error(&legacy, "CLIP_NOT_FOUND", "缺省路径必须与旧行为一致");
+
+    // (d) 发声数上限在**创建路径上**也生效。这是**接线**判据：模块级的
+    //     `compile_create` + `check_polyphony` 判据盖不住 `plan_edit_notes` 里那一行调用
+    //     （注入证明：把那行删掉，模块级判据仍然全绿）。
+    //     33 个同时发声的音符 > 上限 32 ⇒ OUT_OF_RANGE，且带 peak/limit。
+    let flood: Vec<Value> = (0..=32_u8)
+        .map(|index| {
+            json!({
+                "kind": "add",
+                "note": {
+                    "startTick": 0,
+                    "pitch": 60 + index,
+                    "durationTicks": 960,
+                },
+            })
+        })
+        .collect();
+    let over = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": source_track, "clipId": fresh_clip, "create": true,
+            "ops": flood,
+        }),
+    );
+    assert_domain_error(&over, "OUT_OF_RANGE", "创建路径必须继承发声数上限");
+    assert_eq!(over["error"]["data"]["peak"], 33, "{over}");
+    assert_eq!(over["error"]["data"]["limit"], 32, "{over}");
+
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "失败不得改工程");
+    assert_eq!(
+        dispatcher.domain().proposal_count(),
+        proposals_before,
+        "失败不得留下提案"
+    );
+}
+
 /// 判据 ⑥：同一个 `idempotencyKey` 重复调用 ⇒ 不重复生成（复用既有幂等层）。
 #[test]
 fn propose_section_same_idempotency_key_does_not_duplicate_the_skeleton() {
