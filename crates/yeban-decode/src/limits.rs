@@ -268,6 +268,13 @@ pub const DURATION_TOLERANCE_FRAMES: u64 = 0;
 /// 而不是报错（`symphonia-core-0.6.1/src/io/mod.rs:553-584`）。
 /// 结果是"解析器不报错、也不推进"——没有这道闸门，解码线程会**永远转下去**。
 ///
+/// **2026-10-08 实测更正**：上面推出来的那条路径**没有复现**。同一形状的输入
+/// （44 字节头 + 64 字节真实样本，`data` 声明 65535 字节）在三次运行里都返回
+/// `Err(Io(UnexpectedEof))`，耗时 25–83 µs：symphonia 的 `MediaSourceStream` 在底层
+/// 真实字节耗尽时把 EOF 报给 `next_packet`，而不是持续返回空包。把 `decode.rs` 的
+/// 记账停掉后读数**逐字相同**。因此本闸门的正当性目前是"防御一个**未复现**的上游
+/// 路径"，不是"已复现的挂死"；见 [`IdleGuard`] 的覆盖现状声明。原数字保留不改写。
+///
 /// 1024 这个数字对合法输入是极宽松的：WAV / FLAC 的音频包之间最多夹几个非音频包，
 /// 不可能连续 1024 个包一帧音频都不出。而任何"不推进"的病态输入都会在 1024 轮内被拒。
 pub const MAX_IDLE_PACKETS: u32 = 1_024;
@@ -275,7 +282,15 @@ pub const MAX_IDLE_PACKETS: u32 = 1_024;
 /// "解码不推进"计数器。
 ///
 /// 纯逻辑、零依赖，因此**闸门本身的行为可以在本机单独跑**（见 `#[cfg(test)]`）。
-/// CI 上另有一条集成路径证明它真的被接进了解码循环。
+///
+/// **覆盖现状（实测，2026-10-08）**：本闸门**没有**端到端判据。`decode.rs` 侧的入口
+/// 判据 `a_declared_data_length_far_beyond_the_real_bytes_returns_instead_of_looping`
+/// 只钉"有界返回"这条不变量；把 `decode.rs` 的 `bump_idle` 记账停掉之后，该判据
+/// 与全部既有判据**照样通过** —— 因为 symphonia 的 RIFF/WAVE 读端在真实字节耗尽时
+/// 先返回 `UnexpectedEof`（44 字节头 + 64 字节样本、`data` 声明 128 / 4096 / 65535
+/// 的实测全部是 `Err(Io(UnexpectedEof))`），"每轮返回空包、永不推进"那条路径没有出现。
+/// 因此**不得**把本闸门当作"已被端到端证明"；它是一个防御性不变量，只有上面那条
+/// 计数器的单元判据覆盖它的算术。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IdleGuard {
     idle: u32,

@@ -479,6 +479,7 @@ mod tests {
     use super::*;
     use crate::testfix::{
         FlacSpec, WavFormat, WavSpec, encode_f32_samples, encode_int_samples, flac_constant, wav,
+        wav_with_declared_len,
     };
 
     fn int_spec(channels: u16, bits: u16) -> WavSpec {
@@ -966,5 +967,47 @@ mod tests {
     fn the_default_options_carry_the_derived_budget() {
         // 单一事实源：默认预算只在 `PcmBudget::default()` 里推导一次。
         assert_eq!(DecodeOptions::default().budget, PcmBudget::default());
+    }
+
+    /// 判据 (MUST-GATE-011 防挂死)：`data` 块**谎报**长度时必须返回类型化错误，而且
+    /// **必须返回** —— 这条判据的对照物是"解码循环永远转下去"。
+    ///
+    /// 为什么需要它：`truncated_wav_is_an_error_not_a_panic` 只截断**真实字节**，
+    /// 因此 `data` 头里声明的长度始终等于真实长度；`[limits::MAX_IDLE_PACKETS]` 的
+    /// 长注释点名的那一类输入（"`data` 头完整、但数据体被截断"）此前**没有任何判据**
+    /// 走过：夹具 `crate::testfix::wav_with_declared_len` 的存在就是为它准备的，
+    /// 但它在**解码侧一次也没有被调用过**（只有 `testfix` 自己的夹具判据用它）。
+    ///
+    /// 本判据把那一类输入钉成"有界返回"：`decode_bytes` 面对"声明 16 MiB / 真实 64 B"
+    /// 的文件必须在**有限步**内返回 `Err`。若将来某次重构让解码循环对
+    /// `frames_in_buffer == 0` 的包不再返回、也不再记账，这条判据就会挂住 ——
+    /// 这正是它存在的意义。
+    ///
+    /// **诚实声明**：本判据**不能**证明 [`limits::IdleGuard`] 是跳闸的那道闸门。
+    /// 实测（见提交信息）是 symphonia 的 RIFF/WAVE 读端在真实字节耗尽时先返回
+    /// `UnexpectedEof`：把 `decode.rs` 的 `bump_idle` 记账停掉（临时注入
+    /// `if idle.bump() && false`）之后重新编译，本判据与全部既有判据**照样通过**，
+    /// 字面读数与基线**完全相同**（`declared=128/4096/65535` 全部
+    /// `Err(Io(UnexpectedEof))`）。本判据钉的是不变量（有界返回），不是那条记账路径本身。
+    #[test]
+    fn a_declared_data_length_far_beyond_the_real_bytes_returns_instead_of_looping() {
+        let spec = int_spec(1, 16);
+        let real_data = encode_int_samples(16, &[1_000; 32]); // 32 帧 = 64 字节
+        for declared in [real_data.len() as u32 + 64, 4_096, 16 * 1024 * 1024] {
+            let bytes = wav_with_declared_len(&spec, &real_data, declared);
+            // 头里声称的长度是真的，真实字节远少于此。
+            assert!(
+                u64::from(declared) > real_data.len() as u64,
+                "fixture must lie about its data length"
+            );
+            let outcome = decode_bytes(&bytes, &DecodeOptions::default());
+            assert!(
+                outcome.is_err(),
+                "declared {declared} bytes with {} real bytes must not decode \
+                 as a complete asset, got {:?}",
+                bytes.len(),
+                outcome.map(|asset| asset.frame_count())
+            );
+        }
     }
 }
