@@ -18,6 +18,10 @@ use proptest::prelude::*;
 use yeban_theory::TheoryError;
 use yeban_theory::chord::{Chord, ChordKind, Tonality};
 use yeban_theory::genre::GenreLibrary;
+use yeban_theory::melody::{
+    CHORD_TONE_WEIGHT_FLOOR, MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND,
+    MelodyConstraints, genre_melody, melody_over_chords,
+};
 use yeban_theory::pitch::{Pitch, PitchClass, note_to_hz, parse_pitch_class};
 use yeban_theory::progression::{Degree, Meter, Progression, RomanQuality, expand_progression};
 use yeban_theory::rhythm::{MAX_METRIC_WEIGHT, cells_per_bar, metric_grid, swung_metric_grid};
@@ -671,6 +675,217 @@ proptest! {
             if moved.cell % 2 == 0 {
                 prop_assert_eq!(moved.tick, plain.tick);
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. 端到端：旋律生成（`pending 4`）
+// ---------------------------------------------------------------------------
+
+/// 公开阈值（crate 常量）被钉成字面量。
+///
+/// 行为判据一律用**字面量**门槛，不引用这些常量，因此常量被改坏时
+/// 行为判据不会跟着空转：本测试负责抓常量本身，行为判据负责抓行为。
+#[test]
+fn melody_public_thresholds_are_pinned_to_literals() {
+    assert_eq!(MELODY_LOWER_BOUND, 48);
+    assert_eq!(MELODY_UPPER_BOUND, 84);
+    assert_eq!(MELODY_MAX_LEAP, 12);
+    assert_eq!(CHORD_TONE_WEIGHT_FLOOR, 1);
+}
+
+/// 全部流派都能产出一条**在它自己的音阶里**、跳进不超上界、首尾相接的旋律。
+///
+/// 度量口径：本测试遍历 `GenreLibrary::all()`，对每一行取 4 小节 × 4 onset × 4 个种子，
+/// 逐音检查不变量，最后断言 `checked == GenreLibrary::len()`（那条数字由
+/// `genre.rs::tests::library_size_is_pinned_to_the_measured_number` 钉住）。
+#[test]
+fn every_genre_produces_a_melody_in_its_own_scale() {
+    let bars = 4u32;
+    let onsets = 4u32;
+    let mut checked = 0usize;
+    let mut notes_checked = 0usize;
+    let mut strong_beats_checked = 0usize;
+    for rule in GenreLibrary::all() {
+        let key = rule
+            .primary_scale(PitchClass::C)
+            .unwrap_or_else(|err| panic!("{}: primary scale failed: {err}", rule.id));
+        let spans = rule
+            .sketch(PitchClass::C, bars)
+            .unwrap_or_else(|err| panic!("{}: sketch failed: {err}", rule.id));
+        let grid = rule
+            .rhythm_grid(bars, onsets)
+            .unwrap_or_else(|err| panic!("{}: rhythm grid failed: {err}", rule.id));
+        assert_eq!(
+            grid.total_ticks(),
+            u64::from(bars) * rule.meter_value().ticks_per_bar()
+        );
+        let mut seed_variants = std::collections::BTreeSet::new();
+        for seed in 0u64..4 {
+            let melody = genre_melody(rule, PitchClass::C, bars, onsets, seed)
+                .unwrap_or_else(|err| panic!("{}: melody failed: {err}", rule.id));
+            seed_variants.insert(
+                melody
+                    .notes()
+                    .iter()
+                    .map(|note| note.pitch)
+                    .collect::<Vec<u8>>(),
+            );
+            assert_eq!(melody.len(), grid.len(), "{}", rule.id);
+            assert_eq!(melody.total_ticks(), grid.total_ticks(), "{}", rule.id);
+            assert_eq!(melody.key(), key, "{}", rule.id);
+            assert_eq!(melody.meter(), rule.meter_value(), "{}", rule.id);
+            assert_eq!(melody.swing_permille(), rule.swing_permille().unwrap());
+            assert_eq!(melody.seed(), seed);
+            // onset 逐位取自网格。
+            for (note, hit) in melody.notes().iter().zip(grid.hits()) {
+                assert_eq!(note.start_tick, hit.tick, "{}", rule.id);
+                assert_eq!(note.bar, hit.bar, "{}", rule.id);
+                assert_eq!(note.cell, hit.cell, "{}", rule.id);
+                assert_eq!(note.weight, hit.weight, "{}", rule.id);
+            }
+            // 音高在音阶内、在音域内；时值为正、首尾相接、铺满 total_ticks。
+            for note in melody.notes() {
+                let pc = PitchClass::new(note.pitch % 12).unwrap();
+                assert!(
+                    key.contains(pc),
+                    "{}: pitch {} escapes {key}",
+                    rule.id,
+                    note.pitch
+                );
+                assert!(
+                    (48..=84).contains(&note.pitch),
+                    "{}: pitch {} leaves the default window",
+                    rule.id,
+                    note.pitch
+                );
+                assert!(note.duration_ticks > 0, "{}", rule.id);
+                notes_checked += 1;
+            }
+            for pair in melody.notes().windows(2) {
+                assert!(
+                    pair[0].pitch.abs_diff(pair[1].pitch) <= 12,
+                    "{}: leap {} exceeds the bound",
+                    rule.id,
+                    pair[0].pitch.abs_diff(pair[1].pitch)
+                );
+                assert_eq!(pair[0].end_tick(), pair[1].start_tick, "{}", rule.id);
+            }
+            assert_eq!(
+                melody.notes().last().unwrap().end_tick(),
+                grid.total_ticks(),
+                "{}",
+                rule.id
+            );
+            // 纯函数：同输入同输出。
+            assert_eq!(
+                genre_melody(rule, PitchClass::C, bars, onsets, seed).unwrap(),
+                melody,
+                "{}",
+                rule.id
+            );
+            // 强拍：窗口里有和弦音时，那个音必须是和弦音（默认窗口下恒成立）。
+            for note in melody.notes() {
+                if note.weight < 1 {
+                    continue;
+                }
+                let span = spans
+                    .iter()
+                    .find(|span| {
+                        span.start_tick <= note.start_tick && note.start_tick < span.end_tick()
+                    })
+                    .expect("every onset sits inside the tile of spans");
+                let chord_pcs: Vec<u8> = span
+                    .chord
+                    .pitch_classes()
+                    .iter()
+                    .map(|pc| pc.semitones())
+                    .collect();
+                let window_has_chord_tone =
+                    (48..=84).any(|pitch| chord_pcs.contains(&(pitch % 12)));
+                if window_has_chord_tone {
+                    assert!(
+                        note.chord_tone,
+                        "{}: seed {seed}, strong beat {note:?} is not a chord tone",
+                        rule.id
+                    );
+                    strong_beats_checked += 1;
+                }
+            }
+        }
+        // 种子必须真的影响输出：4 个种子给出至少 2 条不同的音高序列。
+        assert!(
+            seed_variants.len() >= 2,
+            "{}: seeds do not change the melody",
+            rule.id
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, GenreLibrary::len());
+    assert!(notes_checked > 0);
+    assert!(strong_beats_checked > 0);
+}
+
+proptest! {
+    /// 任意流派、任意小节数、任意 onset 数、任意种子：旋律与网格同形、
+    /// 逐音在音阶内、跳进不超上界、首尾相接铺满。
+    #[test]
+    fn every_genre_melody_matches_its_grid_and_stays_in_scale(
+        index in 0usize..GenreLibrary::all().len(),
+        bars in 1u32..6,
+        onsets in 1u32..=8,
+        seed in any::<u64>(),
+    ) {
+        let rule = &GenreLibrary::all()[index];
+        let key = rule.primary_scale(PitchClass::C)?;
+        let grid = rule.rhythm_grid(bars, onsets)?;
+        let melody = genre_melody(rule, PitchClass::C, bars, onsets, seed)?;
+        prop_assert_eq!(melody.len(), grid.len());
+        prop_assert_eq!(melody.total_ticks(), grid.total_ticks());
+        prop_assert_eq!(melody.meter(), rule.meter_value());
+        for (note, hit) in melody.notes().iter().zip(grid.hits()) {
+            prop_assert_eq!(note.start_tick, hit.tick);
+            prop_assert_eq!(note.bar, hit.bar);
+            prop_assert_eq!(note.cell, hit.cell);
+            let pc = PitchClass::new(note.pitch % 12)?;
+            prop_assert!(key.contains(pc));
+        }
+        for pair in melody.notes().windows(2) {
+            prop_assert!(pair[0].pitch.abs_diff(pair[1].pitch) <= 12);
+            prop_assert_eq!(pair[0].end_tick(), pair[1].start_tick);
+        }
+        prop_assert_eq!(melody.notes().last().unwrap().end_tick(), grid.total_ticks());
+    }
+
+    /// 任意窗口与跳进上界：要么产出一条**从不离开窗口**的旋律，要么如实报
+    /// `NoFeasibleVoicing`（窗口里没有音阶音）。绝无第三种结果。
+    #[test]
+    fn a_narrow_window_never_produces_an_out_of_window_note(
+        index in 0usize..GenreLibrary::all().len(),
+        lower in 48u8..=72,
+        width in 0u8..=24,
+        max_leap in 0u8..=12,
+        seed in any::<u64>(),
+    ) {
+        let rule = &GenreLibrary::all()[index];
+        let key = rule.primary_scale(PitchClass::C)?;
+        let spans = rule.sketch(PitchClass::C, 3)?;
+        let grid = rule.rhythm_grid(3, 6)?;
+        let upper = lower.saturating_add(width).min(127);
+        let constraints = MelodyConstraints::new(lower, upper, max_leap)?;
+        match melody_over_chords(&key, &spans, &grid, constraints, seed) {
+            Ok(melody) => {
+                for note in melody.notes() {
+                    prop_assert!(note.pitch >= lower && note.pitch <= upper);
+                    let pc = PitchClass::new(note.pitch % 12)?;
+                    prop_assert!(key.contains(pc));
+                }
+                for pair in melody.notes().windows(2) {
+                    prop_assert!(pair[0].pitch.abs_diff(pair[1].pitch) <= max_leap);
+                }
+            }
+            Err(err) => prop_assert_eq!(err, TheoryError::NoFeasibleVoicing),
         }
     }
 }

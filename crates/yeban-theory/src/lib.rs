@@ -90,12 +90,18 @@
 //! [`genre::GenreRule::rhythm_grid`] 直接读该流派登记的拍号与摇摆比例。
 //! 另一半（逐流派的鼓点型数据）**没有**做：登记的 `note_density_hint` 计的是
 //! 音符数而不是 onset 数（见 [`rhythm`] 的模块文档），要补它需要新增登记数据。
+//!
+//! 同一台账的 `pending 4`（"没有实现旋律生成"）由 [`melody`] 关闭：
+//! [`melody::melody_over_chords`] 在既有的音阶 + 和声区段 + 节奏网格上落出
+//! 一条确定性的单声部旋律（种子驱动，[`melody::genre_melody`] 读流派的登记数据）。
+//! 它**不新增任何登记数据**，也不做"好听"的判定（见 [`melody`] 的边界声明）。
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 pub mod chord;
 pub mod error;
 pub mod genre;
+pub mod melody;
 pub mod pitch;
 pub mod progression;
 pub mod rhythm;
@@ -106,6 +112,10 @@ pub mod voice_leading;
 pub use chord::{Chord, ChordKind, Tonality};
 pub use error::TheoryError;
 pub use genre::{GenreLibrary, GenreRule};
+pub use melody::{
+    CHORD_TONE_WEIGHT_FLOOR, MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND, Melody,
+    MelodyConstraints, MelodyNote, genre_melody, genre_melody_with, melody_over_chords,
+};
 pub use pitch::{Interval, NoteName, Pitch, PitchClass, note_to_hz, parse_pitch_class};
 pub use progression::{
     ChordSpan, Degree, Meter, PPQ, Progression, RomanQuality, expand_progression,
@@ -217,7 +227,7 @@ mod tests {
         //
         // 检查口径：只看**非注释行**，且只看到本模块为止（忽略测试模块本身，
         // 那里允许使用 `&` 与 `Vec` 等辅助工具）。
-        const SOURCES: [(&str, &str); 10] = [
+        const SOURCES: [(&str, &str); 11] = [
             ("lib.rs", include_str!("lib.rs")),
             ("pitch.rs", include_str!("pitch.rs")),
             ("scale.rs", include_str!("scale.rs")),
@@ -227,6 +237,7 @@ mod tests {
             ("genre.rs", include_str!("genre.rs")),
             ("swing.rs", include_str!("swing.rs")),
             ("rhythm.rs", include_str!("rhythm.rs")),
+            ("melody.rs", include_str!("melody.rs")),
             ("error.rs", include_str!("error.rs")),
         ];
         // 逐字节拼出禁词，避免这段代码自己包含禁词字面量。
