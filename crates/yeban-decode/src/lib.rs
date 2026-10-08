@@ -116,6 +116,10 @@ mod testfix;
 pub use asset::{
     DecodeFacts, DecodedAsset, ImportedAsset, PcmFormat, asset_index, import_bytes, import_path,
 };
+// `AssetHash` / `AssetHasher` 住在 `yeban-model`（[MODEL-AST-007]），但它们是本 crate
+// **公共 API 形状**的一部分：`DecodedAsset::pcm_hash` / `ImportedAsset::asset_hash` 都
+// 返回 `AssetHash`，`pcm_hash` 内部就是对 `AssetHasher` 的分块喂入。重新导出一次，
+// 调用方（含本 crate 的集成判据）因此不必自己声明 `yeban-model` 依赖就能写出类型。
 pub use decode::{
     DecodeOptions, MeasuredSource, decode_bytes, decode_path, decode_reader, decode_source,
 };
@@ -126,3 +130,4 @@ pub use resample::{
     resample_asset, resample_asset_with_budget, resample_interleaved,
     resample_interleaved_with_budget,
 };
+pub use yeban_model::{AssetHash, AssetHasher};

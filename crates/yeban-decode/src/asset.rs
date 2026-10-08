@@ -3,8 +3,10 @@
 //! 这一层回答的是产品问题："导入一个文件 → 得到一个内容寻址的不可变 PCM 资产"。
 //! 链路只有三步，每一步都可以单独核验：
 //!
-//! 1. **原始字节 → [`yeban_model::AssetHash`]**：`AssetHash::of_bytes` 的 SHA-256 是
-//!    CAS 的键（`.yeban` 归档里的 `assets/{sha256}`），见 [MODEL-AST-007]；
+//! 1. **原始字节 → [`yeban_model::AssetHash`]**：SHA-256 是 CAS 的键
+//!    （`.yeban` 归档里的 `assets/{sha256}`），见 [MODEL-AST-007]。摘要由
+//!    [`yeban_model::AssetHasher`] **增量**算出，因此磁盘入口 [`import_path`] 不需要
+//!    把容器整份读进内存（[`hash_reader`] 只驻留一个定长缓冲）；
 //! 2. **原始字节 → [`DecodedAsset`]**：解码事实（声道/采样率/位深/帧数/时长对账）+ 交织 `f32` PCM；
 //! 3. **解码结果 → [`DecodedAsset::pcm_hash`]**：把"解出来的样本"本身也做成内容摘要，
 //!    用来给 [ARCH-DET-001] 的"同输入 → 同输出"提供一条**可比较的指纹**
@@ -15,6 +17,7 @@
 //! 因此它可以被 `Arc` 起来在实时线程里只读消费 —— 实时回调路径上永远不会调用本模块的
 //! 任何构造/解码函数。
 
+use std::io::Read;
 use std::path::Path;
 
 use yeban_model::{AssetHash, AssetHasher, AssetMetadata, BitDepth, MediaKind};
@@ -143,6 +146,13 @@ pub struct DecodedAsset {
 
 /// `pcm_hash` 的域分隔前缀（改它等于改摘要口径，必须同时改 notes 与判据）。
 const PCM_HASH_DOMAIN: &[u8] = b"yeban.pcm.f32le.v1";
+
+/// [`hash_reader`] 一次从流里读入的字节数：64 KiB。
+///
+/// 这个数字只决定 **I/O 缓冲**的大小，不参与摘要口径：SHA-256 的分块方式不影响结果
+/// （`yeban_model::AssetHasher` 的契约）。64 KiB 与常见文件系统的块大小同量级，
+/// 因此顺序读的 syscall 次数少，而缓冲本身小到与素材长度无关。
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
 
 /// `pcm_hash` 一次编码进暂存缓冲的样本数上限。
 ///
@@ -305,6 +315,36 @@ pub fn asset_index(bytes: &[u8], original_path: &str, license: &str) -> AssetMet
     }
 }
 
+/// 读一个流并按 [MODEL-AST-007] 的 CAS 口径算出内容摘要（SHA-256）。
+///
+/// 摘要状态机住在 `yeban-model`（[`AssetHasher`]），因此本 crate 不需要 `sha2` 依赖，
+/// 也不必自己维护一份摘要状态。这里**分块**喂入，所以驻留内存只有一个
+/// [`HASH_BUFFER_BYTES`] 的缓冲 —— 与流的长度无关。这正是
+/// `docs/ledger/decode-limits-notes.md` §8 那条 needs 的落点：
+/// 摘要是增量的，因此 `import_path` 不必把容器整份读进内存。
+///
+/// 返回值与 `AssetHash::of_bytes` 对**同一条字节流**的结果相同；这条等价由
+/// `yeban_model` 自己的判据保证（`AssetHasher` 的契约），本 crate 的
+/// `tests/import_streaming.rs` 再从"真实文件"一侧复算一遍。
+///
+/// # Errors
+///
+/// 流自身的 I/O 失败原样上报（[`DecodeError::Io`]）。
+fn hash_reader<R: Read>(mut reader: R) -> DecodeResult<AssetHash> {
+    let mut hasher = AssetHasher::new();
+    let mut buffer = vec![0u8; HASH_BUFFER_BYTES];
+    loop {
+        match reader.read(&mut buffer) {
+            // 读到 0 字节即流结束。`read` 对空缓冲返回 0 是合法的，因此这里不靠
+            // "缓冲是否填满"判断结束，只有 `Ok(0)` 才是终点。
+            Ok(0) => return Ok(hasher.finalize()),
+            Ok(filled) => hasher.update(&buffer[..filled]),
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+}
+
 /// 从内存字节导入：摘要 + 解码，一次完成。
 ///
 /// # Errors
@@ -321,14 +361,22 @@ pub fn import_bytes(
     Ok(ImportedAsset { index, decoded })
 }
 
-/// 从磁盘路径导入：先把文件读进内存（受 [`PcmBudget::max_input_bytes`] 约束）以计算摘要，再解码。
+/// 从磁盘路径导入：流式算摘要 + 流式解码，容器**不整份驻留**。
 ///
-/// 为什么不流式哈希：`AssetHash::of_bytes` 的契约是"对完整字节做 SHA-256"，
-/// 而流式哈希需要在解码器之外再维护一份 `sha2::Sha256` 状态机。当前口径是
-/// **预算之内走内存**（默认预算见 [`limits::PcmBudget::default`]，推导依据见模块文档），
-/// 超过上限直接拒绝 —— 见 notes 的 `needs` 条目。
+/// 两次遍历同一个文件：
+/// 1. 只读地顺序读一遍算 SHA-256（[`hash_reader`]，驻留一个
+///    [`HASH_BUFFER_BYTES`] 缓冲）；
+/// 2. 再把 `File` 交给 [`decode::decode_path`]，由 symphonia 自己流式解封装。
 ///
-/// [`PcmBudget::max_input_bytes`]: crate::limits::PcmBudget::max_input_bytes
+/// 因此建成后的峰值内存是 **×1 份 PCM**（`docs/ledger/decode-limits-notes.md` §2.3
+/// 的 `import_path` 行），而改建前是 ×1 + 整份容器字节。
+///
+/// 为什么是两遍而不是"边解码边摘要"：symphonia 的解封装会**回退 seek**（探测、块头
+/// 重读），因此"在 `Read::read` 上顺手 `update`"会把回读的字节重复计进摘要。两遍
+/// 顺序读的代价是一次顺序 I/O，换来的是摘要口径与 `AssetHash::of_bytes` 恒等。
+///
+/// 摘要**写不进**逐字节的预算声明：读的过程中文件可能变大，因此第二遍的边界仍由
+/// `decode_path` 自己的闸门把守（见 [`DecodeError::Budget`]）。
 ///
 /// # Errors
 ///
@@ -338,14 +386,22 @@ pub fn import_path(
     license: &str,
     options: &DecodeOptions,
 ) -> DecodeResult<ImportedAsset> {
+    // 第一道闸门：先看声明长度，比打开文件更便宜（畸形/超大素材在这里就被拒）。
     let declared_len = std::fs::metadata(path)?.len();
     limits::check_input_len(declared_len, &options.budget)?;
-    let bytes = std::fs::read(path)?;
-    // 文件可能在元数据检查之后变大：读到之后再核一次，绝不"先读了再说"。
-    let actual_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let hash = hash_reader(std::fs::File::open(path)?)?;
+    // 第一遍读完后的真实长度：文件可能在 `metadata` 之后变大，绝不"先读了再说"。
+    let actual_len = std::fs::metadata(path)?.len();
     limits::check_input_len(actual_len, &options.budget)?;
-    let original_path = path.to_string_lossy().into_owned();
-    import_bytes(&bytes, &original_path, license, options)
+    let decoded = decode::decode_path(path, options)?;
+    let index = AssetMetadata {
+        hash,
+        original_path: path.to_string_lossy().into_owned(),
+        byte_len: actual_len,
+        media_kind: MediaKind::Audio,
+        license: license.to_owned(),
+    };
+    Ok(ImportedAsset { index, decoded })
 }
 
 #[cfg(test)]
