@@ -49,6 +49,7 @@
 //! | [`shaping`] | bitcrusher / shaping EQ / transient shaper | `fx_shaping.rs` |
 //! | [`compressor`] | 前馈式压缩器：软膝静态曲线 + RMS 检波 + 线性域增益弹道（**零延迟**） | 新写 [ARCH-RT-001]；本机无移植源，见该模块 §8 |
 //! | [`channel_strip`] | 通道条：输入增益 → EQ → 滤波 → 动态（压缩） → 输出增益（**组合**既有器件，零延迟） | 组合 [ARCH-DSP-001]，见该模块 §2 |
+//! | [`limiter`] | 母线前瞻式峰值限制器（立体声联动、33 帧延迟、立即攻击/速率上限释放、软膝天花板） | engine `mixer.rs` 上移 [ARCH-DSP-001, ARCH-PDC-001]，见该模块 §0 |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -66,6 +67,7 @@ pub mod compressor;
 pub mod delay;
 pub mod envelope;
 pub mod filter;
+pub mod limiter;
 pub mod loop_window;
 pub mod loudness;
 pub mod math;

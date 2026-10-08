@@ -34,7 +34,7 @@
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
 //!    然后 **节拍器咔哒声**（`transport.metronome_enabled` 的投影；默认关 ⇒ 整段跳过）
 //!    然后 **主总线推子**（构造期标量，逐样本只乘）
-//!    再 **BusLimiter::apply(block)**                     ← 母线峰值限制（前瞻 33 帧）
+//!    再 **BusLimiter::process_stereo(block)**              ← 母线峰值限制（前瞻 33 帧）
 //!    再对母线（stereo-linked）MeterBank::measure_bus_stereo(block)   ← **限制之后**的读数
 //!    最后播放头前进 frames（**每量子一次**，与轨道数无关）；
 //!      **走带停住时**这一步被跳过、逐轨渲染也被跳过（输出静音、不触发音符）——
@@ -997,11 +997,20 @@ impl EngineRuntime {
             }
 
             // --- 3b) 母线限制器（[ARCH-DSP-001]）：逐轨汇流之后、母线电平之前 ---
-            // 前瞻式峰值限制、立体声联动、逐样本确定（`mixer` 模块文档 §2–§4）。
+            // 前瞻式峰值限制、立体声联动、逐样本确定（实现与上界证明住在
+            // `yeban_dsp::limiter`；本 crate 只 re-export，见 `crate::mixer` 模块文档 §2）。
             //
             // ⚠ 主总线推子（步骤 3a''）在**它之前**：见 [`scale_bus`] 的位置说明。
             let before = limiter.reduction_count();
-            limiter.apply(block, frames);
+            {
+                // 上移之后器件入口是**切片**（`Limiter::process_stereo`，与
+                // `yeban_dsp::compressor`/`channel_strip` 同风格）：本量子的帧数在这里
+                // 切出来。钳制口径与上移前的 `apply(&mut AudioBlock, frames)` **相同**
+                // （`frames.min(块容量)`）⇒ 行为逐位不变。
+                let limiter_frames = frames.min(block.capacity());
+                let (left, right) = block.stereo_mut();
+                limiter.process_stereo(&mut left[..limiter_frames], &mut right[..limiter_frames]);
+            }
             let reduced = limiter.reduction_count().saturating_sub(before);
             if reduced > 0 {
                 *limiter_gain_reductions = limiter_gain_reductions.wrapping_add(reduced);
@@ -1071,10 +1080,10 @@ fn sum_into_bus(
 /// ## 位置（为什么在**限制器之前**）
 ///
 /// 调用点是 [`EngineRuntime::render_block`] 的步骤 3a''：**逐轨汇流之后、
-/// [`crate::mixer::BusLimiter::apply`] 之前**。这个顺序有两条理由：
+/// [`crate::mixer::BusLimiter::process_stereo`] 之前**。这个顺序有两条理由：
 ///
 /// 1. 限制器是母线输出的**最后一道**约束 —— 它自己的契约是"限制后峰值 ≤ 天花板"
-///    （[`crate::mixer`] 模块文档 §4 的上界证明）。推子放在它的**输入侧**，
+///    （[`crate::mixer`] 模块文档 §2 指向的上界证明）。推子放在它的**输入侧**，
 ///    这条约束对**任何**主总线音量都成立：推子推高时限制器压得更狠，而**不是**
 ///    让输出越过天花板；
 /// 2. `yeban-mcp` 的离线母带把 Master 轨增益放在**整条渲染之后**

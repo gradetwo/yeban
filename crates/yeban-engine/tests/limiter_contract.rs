@@ -7,7 +7,7 @@
 //! 上的作用、确定性、静音）。这里测的是 [`BusLimiter`] **器件本身**的契约：
 //! 上界、透明、弹道、确定性、顶点。器件级判据的价值是"注入能精确定位到哪一行代码"。
 //!
-//! 口径（实现细节与理由见 `yeban_engine::mixer` 的模块文档）：
+//! 口径（实现细节与理由见 `yeban_dsp::limiter` 的模块文档；本 crate 只 re-export）：
 //!
 //! | 量 | 值 | 说明 |
 //! | :--- | :--- | :--- |
@@ -35,6 +35,22 @@ use yeban_engine::mixer::{
 
 /// 一个量子的帧数。
 const FRAMES: usize = 128;
+
+/// 上移之后的器件入口是**切片**（[`BusLimiter::process_stereo`]，与
+/// `yeban_dsp::compressor` / `yeban_dsp::channel_strip` 同风格）。
+///
+/// 本辅助函数给出与上移前 `apply(&mut block, frames)` **等价**的调用形状：
+/// `frames` 先按块容量钳制，再把两条声道切片交给器件（`rt.rs` 的调用点同形）。
+/// ⚠ 判据的**断言值一个都没改** —— 只换了调用形状。
+fn limit<const FRAMES: usize>(
+    limiter: &mut BusLimiter,
+    block: &mut AudioBlock<FRAMES>,
+    frames: usize,
+) {
+    let frames = frames.min(block.capacity());
+    let (left, right) = block.stereo_mut();
+    limiter.process_stereo(&mut left[..frames], &mut right[..frames]);
+}
 
 /// 左/右声道完全相同的块。
 fn mono_block(samples: &[f32]) -> AudioBlock<FRAMES> {
@@ -66,7 +82,7 @@ fn over_threshold_peaks_are_capped_at_the_ceiling() {
         let source = sine(2.0, 997.0, offset);
         offset += FRAMES;
         let mut block = mono_block(&source);
-        limiter.apply(&mut block, FRAMES);
+        limit(&mut limiter, &mut block, FRAMES);
         for sample in block.left() {
             peak = peak.max(sample.abs());
         }
@@ -137,7 +153,7 @@ fn every_overload_shape_stays_under_the_ceiling() {
         let mut peak = 0.0f32;
         for source in &blocks {
             let mut block = mono_block(source);
-            limiter.apply(&mut block, FRAMES);
+            limit(&mut limiter, &mut block, FRAMES);
             for sample in block.left() {
                 peak = peak.max(sample.abs());
             }
@@ -164,7 +180,7 @@ fn sub_threshold_blocks_pass_bit_identically() {
         let source = sine(0.4, 440.0, offset);
         offset += FRAMES;
         let mut block = mono_block(&source);
-        limiter.apply(&mut block, FRAMES);
+        limit(&mut limiter, &mut block, FRAMES);
         all_source.extend_from_slice(&source);
         all_output.extend_from_slice(block.left());
     }
@@ -227,7 +243,7 @@ fn stereo_limiting_is_linked() {
                     };
                 }
             }
-            limiter.apply(&mut block, FRAMES);
+            limit(&mut limiter, &mut block, FRAMES);
             left_out.extend_from_slice(block.left());
         }
         left_out
@@ -284,7 +300,7 @@ fn release_is_rate_limited_and_attack_is_immediate() {
             left[0] = value;
             right[0] = value;
         }
-        limiter.apply(&mut block, 1);
+        limit(&mut limiter, &mut block, 1);
         let gain = limiter.gain();
         let rise = gain - previous;
         if rise > LIMITER_RELEASE_PER_SAMPLE + LIMITER_RELEASE_PER_SAMPLE * 1e-3 {
@@ -318,7 +334,7 @@ fn release_is_rate_limited_and_attack_is_immediate() {
             left[0] = value;
             right[0] = value;
         }
-        limiter.apply(&mut block, 1);
+        limit(&mut limiter, &mut block, 1);
         gains.push(limiter.gain());
     }
     println!(
@@ -353,8 +369,8 @@ fn limiter_is_byte_deterministic() {
         }
         let mut block_a = block.clone();
         let mut block_b = block;
-        first.apply(&mut block_a, FRAMES);
-        second.apply(&mut block_b, FRAMES);
+        limit(&mut first, &mut block_a, FRAMES);
+        limit(&mut second, &mut block_b, FRAMES);
         for (l, r) in block_a.left().iter().zip(block_b.left().iter()) {
             first_out.push(l.to_bits());
             second_out.push(r.to_bits());
@@ -370,13 +386,13 @@ fn edges_never_panic_and_never_leak() {
     // (a) 零帧：不推进状态。
     let mut limiter = BusLimiter::new();
     let mut block = mono_block(&[0.5; FRAMES]);
-    limiter.apply(&mut block, 0);
+    limit(&mut limiter, &mut block, 0);
     assert_eq!(limiter.gain(), 1.0);
     assert!(!limiter.engaged());
 
     // (b) 纯静音：输出逐位 0，增益保持 1.0。
     let mut silence = mono_block(&[0.0; FRAMES]);
-    limiter.apply(&mut silence, FRAMES);
+    limit(&mut limiter, &mut silence, FRAMES);
     assert!(silence.left().iter().all(|s| *s == 0.0));
     assert_eq!(limiter.gain(), 1.0);
 
@@ -390,7 +406,7 @@ fn edges_never_panic_and_never_leak() {
         left[10] = 1.5;
         right[10] = 1.5;
     }
-    limiter.apply(&mut poisoned, FRAMES);
+    limit(&mut limiter, &mut poisoned, FRAMES);
     assert!(
         poisoned.left().iter().all(|s| s.is_finite()),
         "NaN 泄漏到输出"
@@ -403,7 +419,7 @@ fn edges_never_panic_and_never_leak() {
     assert!(!limiter.engaged());
     assert_eq!(limiter.reduction_count(), 0);
     let mut after_reset = mono_block(&sine(2.0, 997.0, 0));
-    limiter.apply(&mut after_reset, FRAMES);
+    limit(&mut limiter, &mut after_reset, FRAMES);
     let peak = after_reset
         .left()
         .iter()

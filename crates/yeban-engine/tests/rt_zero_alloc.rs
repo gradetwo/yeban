@@ -44,7 +44,7 @@
 //! | ③ | 走带 200 轮命令 + 2 000 量子播放 + 500 量子停住 | `EngineEvent::Transport` 出队应用、整数 tick 推进、`SeekTicks` 的声部释放、停住分支 |
 //! | ④ | 电平计量 10 000 量子 + UI 侧 60Hz 抽干 | 每轨/母线电平状态机 + **每量子恰好一次**批量发布 |
 //! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`） | 控制侧 `automation_value_at` → SPSC → 实时侧出队（**见 §needs：实时侧只计数，不改 DSP**） |
-//! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + **主总线推子** + 前瞻限制 + 声部窃取） | `BusLimiter::apply`、声相增益乘加、`scale_bus` 的主总线逐样本乘、声部窃取路径 |
+//! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + **主总线推子** + 前瞻限制 + 声部窃取） | `BusLimiter::process_stereo`、声相增益乘加、`scale_bus` 的主总线逐样本乘、声部窃取路径 |
 //! | ⑬ | 回调缓冲长度边界：1/2/3/127/128/129/1024/1025 帧 × 25 轮 + 非帧对齐缓冲 | `process_quantum` 的**任意长度**切块与逐帧交错拷贝、尾部残余样本契约 |
 //! | ⑭ | 采样率 × 项目声明 `block_size` 全组合切换（2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`、`Transport::arm` |
 //! | ⑮ | 播放中「`Op` 层编辑 / 撤销 → 重新发布快照」2 000 轮 + 主线程排空 | `Op::apply`/`apply_inverse` 的模型改写 → 快照重建 → 原子发布 → 切换 + 旧快照入退役队列 |
