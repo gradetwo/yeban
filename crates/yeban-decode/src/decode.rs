@@ -131,10 +131,13 @@ where
 ///
 /// 见 [`DecodeError`]。
 pub fn decode_source<'s>(
-    source: Box<dyn MediaSource + 's>,
+    mut source: Box<dyn MediaSource + 's>,
     hint: &Hint,
     options: &DecodeOptions,
 ) -> DecodeResult<DecodedAsset> {
+    // 上游的 RIFF/WAVE 解析器在一条畸形声明上会整型溢出并 panic。本 crate 的契约是
+    // "不可信输入只返回 DecodeError"，而我们不能改上游，因此在探测之前先走一遍块头。
+    precheck_riff_wave_fmt(&mut *source)?;
     let stream = MediaSourceStream::new(source, Default::default());
     let mut reader = symphonia::default::get_probe()
         .probe(
@@ -309,6 +312,92 @@ pub fn decode_source<'s>(
         },
         samples,
     ))
+}
+
+/// RIFF 块头的扫描上界（畸形文件可以声明无数个 0 长度块）。
+const RIFF_PRECHECK_MAX_CHUNKS: u32 = 4_096;
+
+/// 在探测之前拒掉会让上游 RIFF 解析器整型溢出的 `fmt ` 声明。
+///
+/// 上游事实（逐行读源码得到；本 crate **不能**修改上游）：
+/// `symphonia-format-riff-0.6.1/src/wave/chunks.rs:100`
+/// `let expected_block_align = num_channels * (bits_per_sample / 8);`
+/// 两个操作数都是 `u16`。乘积大于 `u16::MAX` 时，debug 与 release 都会 panic ——
+/// 根 `Cargo.toml` 的 `[profile.release] overflow-checks = true` 让它在生产构建里也炸。
+/// 那次乘法只有**一个**调用点：`WAVE_FORMAT_PCM`（tag `0x0001`，同文件 `chunks.rs:438-440`）。
+/// 复现基线：44 字节 WAV 头 + 2 个 16-bit 样本（共 48 字节），`num_channels = 32769` ⇒
+/// `32769 × 2 = 65538 > 65535`。
+///
+/// 这道闸门是**只拒**的：它只在"上游那次乘法确实会溢出"时报错。上游能正常解析的文件
+/// 一个都不会被它拒掉。扫描不到 `fmt ` 块时它什么都不做，把判定留给探测器。
+fn precheck_riff_wave_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
+    if !source.is_seekable() {
+        return Ok(());
+    }
+    // `MediaSource` 在这里是 trait 对象，而 `Seek::stream_position` 要求 `Self: Sized`
+    // （clippy 的建议在此不可用），因此只能用 `SeekFrom::Current(0)` 取当前位置。
+    #[allow(clippy::seek_from_current)]
+    let Ok(start) = source.seek(SeekFrom::Current(0)) else {
+        return Ok(());
+    };
+    let outcome = scan_riff_for_fmt(source);
+    // 无论扫描结果如何，都把位置还给探测器 —— 后面的 `probe` 必须从头读。
+    source.seek(SeekFrom::Start(start))?;
+    outcome
+}
+
+/// [`precheck_riff_wave_fmt`] 的扫描主体。
+fn scan_riff_for_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
+    let mut header = [0u8; 12];
+    if source.read_exact(&mut header).is_err() {
+        return Ok(());
+    }
+    if header[0..4] != b"RIFF"[..] || header[8..12] != b"WAVE"[..] {
+        return Ok(());
+    }
+    for _ in 0..RIFF_PRECHECK_MAX_CHUNKS {
+        let mut chunk = [0u8; 8];
+        if source.read_exact(&mut chunk).is_err() {
+            return Ok(());
+        }
+        let size = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        if chunk[0..4] == b"fmt "[..] {
+            // 上游不看 `fmt ` 的声明长度，一律先读 16 字节字段（`chunks.rs:415-424`），
+            // 所以这里也读 16 字节，而不是相信 `size`。
+            let mut body = [0u8; 16];
+            if source.read_exact(&mut body).is_err() {
+                return Ok(());
+            }
+            let format_tag = u16::from_le_bytes([body[0], body[1]]);
+            let num_channels = u16::from_le_bytes([body[2], body[3]]);
+            let bits_per_sample = u16::from_le_bytes([body[14], body[15]]);
+            // 只有 tag 1 + 上游接受的位深才会走到那次乘法；其余形状上游自己会报错。
+            let bytes_per_sample = match bits_per_sample {
+                8 | 16 | 24 | 32 => u32::from(bits_per_sample / 8),
+                _ => return Ok(()),
+            };
+            if format_tag == 1 && u32::from(num_channels) * bytes_per_sample > u32::from(u16::MAX) {
+                return Err(DecodeError::Malformed {
+                    detail: format!(
+                        "WAV fmt declares {num_channels} channels at {bits_per_sample} bits per \
+                         sample: the RIFF parser computes num_channels * (bits_per_sample / 8) in \
+                         u16 and would overflow (symphonia-format-riff src/wave/chunks.rs:100)"
+                    ),
+                });
+            }
+            return Ok(());
+        }
+        // 下一个块 = 8 字节块头 + 块体 + 奇数长度块的填充字节。
+        let advance = i64::try_from(
+            8u64.saturating_add(u64::from(size))
+                .saturating_add(u64::from(size & 1)),
+        )
+        .unwrap_or(i64::MAX);
+        if source.seek(SeekFrom::Current(advance)).is_err() {
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 /// 记录"这一轮没有产出样本"，超过闸门即报错 [MUST-GATE-011]。
@@ -644,6 +733,32 @@ mod tests {
     }
 
     #[test]
+    fn a_wave_fmt_that_overflows_the_parser_is_rejected_not_a_panic() {
+        // 实测缺陷（由 `propcheck::untrusted_bytes_never_panic_and_ok_results_are_self_consistent`
+        // 找到）：上游 `symphonia-format-riff-0.6.1/src/wave/chunks.rs:100` 把
+        // `num_channels * (bits_per_sample / 8)` 放在 `u16` 里算。`num_channels = 32769`
+        // 与 16-bit 样本相乘溢出 ⇒ 整进程 panic（根 `Cargo.toml` 的
+        // `[profile.release] overflow-checks = true` 让它在 release 也一样）。
+        let spec = int_spec(1, 16);
+        let mut bytes = wav(&spec, &encode_int_samples(16, &[0x1234, -0x1234]));
+        // 布局：`fmt ` 在偏移 12，`num_channels` 在块体 +2 ⇒ 文件偏移 22。
+        bytes[22..24].copy_from_slice(&32_769u16.to_le_bytes());
+        let err = decode_bytes(&bytes, &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("32769")),
+            "expected a typed refusal naming 32769 channels, got {err}"
+        );
+        // 同一份字节只把声道数改回 1 ⇒ 正常解出。上面红的必须是那道闸门，不是夹具坏了。
+        bytes[22..24].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(
+            decode_bytes(&bytes, &DecodeOptions::default())
+                .unwrap()
+                .frame_count(),
+            2
+        );
+    }
+
+    #[test]
     fn decoding_the_same_bytes_twice_is_bit_identical() {
         // [ARCH-DET-001] 判据：同输入 → 同输出，逐样本相同、内容摘要相同。
         let bytes = int_wav(2, 16, &[1, -2, 3, -4, 5, -6, 7, -8]);
@@ -663,6 +778,26 @@ mod tests {
                 .map(|s| s.to_bits())
                 .collect::<Vec<_>>(),
             "bit pattern (not just value) must match"
+        );
+    }
+
+    #[test]
+    fn a_data_region_mutation_still_decodes_and_changes_the_hash() {
+        // 这条是 `propcheck::untrusted_bytes_never_panic_and_ok_results_are_self_consistent`
+        // 的**非空洞证据**：那条属性判据的第三族输入（只改 `data` 区）确实会走到 Ok 分支，
+        // 所以它的 Ok 不变量不是空判据。同时它把 `pcm_hash` 的敏感性从"手搭的
+        // `DecodedAsset`"推到"真实解码出来的样本"。
+        let spec = int_spec(1, 16);
+        let mut bytes = wav(&spec, &encode_int_samples(16, &[100, -100, 200, -200]));
+        let baseline = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        let mutated = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        assert_eq!(mutated.frame_count(), baseline.frame_count());
+        assert_ne!(
+            mutated.pcm_hash(),
+            baseline.pcm_hash(),
+            "改一个真实样本字节必须改内容摘要"
         );
     }
 
