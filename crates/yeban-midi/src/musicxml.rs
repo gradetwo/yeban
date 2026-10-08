@@ -49,10 +49,12 @@
 //!
 //! ## 未实现清单（⛔ 不许把这些读成"已支持"）
 //!
-//! 1. ⛔ **`.mxl`（ZIP/deflate 容器）**：本模块只吃**纯文本** `.musicxml`。
+//! 1. ⛔ **`.mxl`（ZIP/deflate 容器）**：**本模块**只吃**纯文本** `.musicxml`。
 //!    `.mxl` 的字节不是 UTF-8 ⇒ 明确 `Err`（本仓库自造夹具的**字面**读数是
 //!    `InvalidUtf8 { offset: 17 }`；判据见 `tests/musicxml_contract.rs`）。
-//!    inflate 属另立票（`docs/ledger/integration-rulings-notes.md:37-38`）。
+//!    inflate 属另立票（`docs/ledger/integration-rulings-notes.md:37-38`）
+//!    ⇒ ⭐ **那一票已交付**：容器层在 [`crate::mxl`]（`parse_mxl`，路线 B）。
+//!    ⚠️ 本函数的**行为与判据一个字节都没改**：它仍然只吃纯文本。
 //!
 //!    **代价（本机实测，2026-10-08；量法与逐件读数见 `tests/fixtures/README.md` 第 6 节）**：
 //!    6 个真 `.mxl`（本机 `/tmp/musicxml/**`，**未提交**）每个都是 **2** 个条目
@@ -67,8 +69,8 @@
 //!
 //!    | # | 路线 | 实测代价 | 本票处置 |
 //!    | :-: | :--- | :--- | :--- |
-//!    | A | 加 `flate2`（根清单已登记第 79 行；`rust_backend` = 纯 Rust，无 C） | 依赖树**新增 5 个 crate**：`adler2` / `crc32fast` / `flate2` / `miniz_oxide` / `simd-adler32`（测法：`cargo tree -p yeban-render --prefix none \| sort -u` 的行数 104 → 109） | ⛔ 未采用（本票禁加依赖） |
-//!    | B | 手写 raw-DEFLATE inflate（零依赖） | 需 stored + fixed + dynamic 三种块与 32 KiB 窗口；本机 Python 原型在 6/6 上与 `zlib` 输出**逐字节相同** | ⛔ 未采用（另立票的工作量） |
+//!    | A | 加 `flate2`（根清单已登记第 79 行；`rust_backend` = 纯 Rust，无 C） | 依赖树**新增 5 个 crate**：`adler2` / `crc32fast` / `flate2` / `miniz_oxide` / `simd-adler32`（测法：`cargo tree -p yeban-render --prefix none \| sort -u` 的行数 104 → 109） | ⛔ 未采用（本票禁加依赖；**后一票实测**：这条依赖边还会强制改 `Cargo.lock` 并让 `scripts/gates/license_inventory.py --check` 变红 ⇒ 见 [`crate::mxl`] 的模块文档） |
+//!    | B | 手写 raw-DEFLATE inflate（零依赖） | 需 stored + fixed + dynamic 三种块与 32 KiB 窗口；本机 Python 原型在 6/6 上与 `zlib` 输出**逐字节相同** | ✅ **后一票采用** ⇒ [`crate::mxl`]（Rust 实现 `src/mxl/inflate.rs`） |
 //!    | C | 复用 `yeban_model::container` 的 ZIP 读取器 | **不通**：`read_zip` 是 `pub(crate)`，且**第一个**条目就按压缩法拒绝（`crates/yeban-model/src/container/zip.rs:486-490`） | 判据钉住今天的读数 |
 //!    | D | 走根清单已登记的 `zip` crate | `zip`（`default-features = false`）自带 **8 个 crate**（探针 crate 的 `cargo tree` 行数 9，含根）；其 `deflate` 特性**额外**要 `zopfli`（本机 registry 缓存**没有** ⇒ 离线解析失败）且选 `flate2/zlib-rs`（与根清单登记的后端不同） | ⛔ 未采用 |
 //!

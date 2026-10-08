@@ -145,7 +145,8 @@ SOFTWARE.
 ### 5.7 本节**没有**证明什么
 
 1. ⛔ 不证明 MusicXML 导入已接入引擎 / MCP / 界面：本 crate 只提供**只读**解析。
-2. ⛔ 不证明 `.mxl`（ZIP/deflate）可读：那**没有实现**（见 `src/musicxml.rs` 的未实现清单）。
+2. ⛔ 不证明 `.mxl`（ZIP/deflate）可读：**本节**的 7 个文件都是纯文本。
+   `.mxl` 的只读导入在**第 7 节**（另一份夹具 + 另一条实现），与本节的 7 个文件无关。
 3. ⛔ 不证明完整 MusicXML 4.0 语义：`forward` / `grace` / `unpitched` / `transpose`
    只被**登记为未实现**。
 4. ⛔ 不证明上游仓库的**全部**文件可用：本票只取了 5 个文件，且逐个核对了 SHA-256。
@@ -153,7 +154,8 @@ SOFTWARE.
 ## 6. `.mxl`（压缩 MusicXML）夹具与构造配方（本票新增）
 
 本节的读者是 `crates/yeban-midi/tests/musicxml_contract.rs` 的 `mxl_*` 三条判据。
-⛔ 本节**不**意味着 `.mxl` 可以被导入：本票只登记**代价与路线**，**没有**实现 inflate。
+⛔ 本节**不**意味着 `.mxl` 可以被导入：**本节的票**（`a29d280`）只登记**代价与路线**，
+**没有**实现 inflate。**导入本身**在**第 7 节**（另一票、另一份夹具、另一个模块）。
 
 ### 6.1 为什么需要一个**自造**的 `.mxl`
 
@@ -222,9 +224,99 @@ open("handmade_mvp_partwise.mxl", "wb").write(buf.getvalue())
 
 ### 6.5 本节**没有**证明什么
 
-1. ⛔ 不证明 `.mxl` 可读：`src/musicxml.rs` 只吃纯文本字节，判据钉的是**明确拒绝**。
+1. ⛔ 不证明 `.mxl` 可读：`src/musicxml.rs` 只吃纯文本字节，判据钉的是**明确拒绝**
+   （导入在 `src/mxl.rs` + 本文件第 7 节）。
 2. ⛔ 不证明本夹具代表**全部** `.mxl`：它只覆盖 2 个条目、deflate、无 data descriptor、
    无 ZIP64、无加密。本机那 6 个真文件也只是同一台机器上的一个样本。
 3. ⛔ 不证明依赖增量的**构建时间或体积**：只数了 crate 条目数（代理指标，已标明单位）。
-4. ⛔ 不证明"手写 inflate 是真的可行"：只有本机 Python 原型（6/6 与 `zlib` 逐字节相同）；
-   **Rust** 实现未写。
+4. ⛔ 不证明"手写 inflate 是真的可行"：**本节的票**只有本机 Python 原型
+   （6/6 与 `zlib` 逐字节相同）；**Rust** 实现由**第 7 节**的票交付。
+
+## 7. `.mxl` 只读导入的夹具与配方（本票新增）
+
+本节的读者是 `crates/yeban-midi/tests/musicxml_contract.rs` 的**导入**判据（`mxl_container_*` /
+`mxl_import_*` / `mxl_rootfile_*` / `mxl_limits_*` / `mxl_container_fuzz_*`）与
+`crates/yeban-midi/src/mxl.rs`（容器 + 手写 inflate）。
+
+### 7.1 为什么还需要**第二份** `.mxl` 夹具
+
+第 6 节那份（`1435` 字节）解出的两个 DEFLATE 流的**首块类型**由容器自己给出（判据
+`mxl_import_readings_are_pinned_by_listing_the_containers` 逐位读数）：
+
+| 第 6 节夹具的条目 | 首块 `BTYPE` | 覆盖的码表路径 |
+| :--- | ---: | :--- |
+| `META-INF/container.xml`（146 → 104 字节） | **1**（固定 Huffman） | 固定表 |
+| `score.xml`（2716 → 1095 字节） | **2**（dynamic Huffman） | dynamic 表 |
+
+⇒ 第 6 节已经覆盖 `BTYPE=1` 与 `BTYPE=2`，但那两个 `BTYPE=1` 的载荷只有 **146 字节**
+（解出的 104 字节）。**本节**补一份 `score.xml` 走**固定 Huffman** 的容器
+（载荷 **2716** 字节 ⇒ 固定表要跨过更多符号与匹配），使"固定表只在小输入上侥幸可用"这种
+错法有判据。
+
+### 7.2 逐件登记（来源 · 许可 · SHA-256）
+
+| 本目录文件 | 字节 | SHA-256 | 来源 | 许可 |
+| :--- | ---: | :--- | :--- | :--- |
+| `handmade_mvp_partwise_deflate_fixed.mxl` | 1533 | `a65de35df05a11c36cc117f37ad4aa24819314ede57f9c0e0be4377d8cf2c0af` | 夜半项目自造（本票）：`handmade_mvp_partwise.musicxml` 的 **Z_FIXED** deflate ZIP 容器 | 本仓库许可 |
+
+容器内有 **2** 个条目，两个的压缩法都是 **8**（deflate），且**首块都是 `BTYPE=1`**：
+`META-INF/container.xml`（146 → 104 字节，CRC-32 `0xae69681f`）与
+`score.xml`（2716 → 1193 字节，CRC-32 `0xcbb005a0`）。
+`score.xml` 的 CRC-32 与未压缩长度**等于**第 6 节那份纯文本夹具
+（⇒ 容器载荷就是同一份字节，与压缩级别无关）。
+
+### 7.3 构造配方（**确定性**：同一份输入 ⇒ 同一份字节）
+
+用 `zlib.compressobj(..., strategy=zlib.Z_FIXED)` 生成 DEFLATE 流，再按 APPNOTE 4.3.x
+**手写** ZIP 三节（⚠️ 标准库 `zipfile` **不暴露** `strategy` ⇒ 本配方自己拼字节）：
+
+```python
+import struct, zlib
+CONTAINER = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    "<container>\n  <rootfiles>\n"
+    '    <rootfile full-path="score.xml">\n    </rootfile>\n'
+    "  </rootfiles>\n</container>\n"
+).encode()
+
+def deflate_fixed(data):
+    c = zlib.compressobj(level=9, wbits=-15, strategy=zlib.Z_FIXED)
+    return c.compress(data) + c.flush()
+
+def build_zip(entries):          # entries: (name, payload, method, compressed_body)
+    body, central = bytearray(), bytearray()
+    for name, payload, method, blob in entries:
+        crc = zlib.crc32(payload) & 0xffffffff
+        offset = len(body)
+        body += b"PK\x03\x04" + struct.pack("<HHHHHIIIHH", 20, 0, method, 0, 0,
+                                             crc, len(blob), len(payload), len(name), 0)
+        body += name + blob
+        central += b"PK\x01\x02" + struct.pack("<HHHHHHIIIHHHHHII", 20, 20, 0, method, 0, 0,
+                                                crc, len(blob), len(payload), len(name),
+                                                0, 0, 0, 0, 0, offset)
+        central += name
+    cd_offset = len(body); body += central
+    body += b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, len(entries), len(entries),
+                                          len(central), cd_offset, 0)
+    return bytes(body)
+
+score = open("handmade_mvp_partwise.musicxml", "rb").read()
+open("handmade_mvp_partwise_deflate_fixed.mxl", "wb").write(build_zip([
+    (b"META-INF/container.xml", CONTAINER, 8, deflate_fixed(CONTAINER)),
+    (b"score.xml", score, 8, deflate_fixed(score)),
+]))
+```
+
+复核（本票实测，全部为**真**）：配方连跑两次字节相同；`score.xml` 的 DEFLATE 流首块的
+`(BFINAL, BTYPE) = (1, 1)`；`zlib.decompress(stream, -15) == score`。
+
+### 7.4 本节**没有**证明什么
+
+1. ⛔ 不证明 `.mxl` 的**全部**形态可读：本节与第 6 节合起来只覆盖 `stored` 与 `deflate`
+   两种压缩法、`BTYPE` 1 与 2，以及判据自造的 `BTYPE=0`（`tests/musicxml_contract.rs` 的
+   `deflate_stored_block`，**不在**本目录）。
+2. ⛔ 不证明 **ZIP64 / 加密 / 非 deflate 压缩法 / data descriptor** 的**接受**：
+   前三者有**拒绝**判据，`data descriptor` **完全**没有判据。
+3. ⛔ 不证明本夹具代表真实生产者的输出：本机 6 个真 `.mxl`（`/tmp/musicxml/**`，**未提交**）
+   与本节的两份都是**不同**生产者的样本，不是全集。
+4. ⛔ 不证明 `.mxl` 导入已接入引擎 / MCP / 界面：本 crate 只提供**只读**解析。

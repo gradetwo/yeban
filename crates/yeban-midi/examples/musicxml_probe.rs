@@ -9,6 +9,10 @@
 //!
 //! 每个路径可以是文件或目录；目录会被**排序**后逐个处理（顺序确定）。
 //!
+//! `.mxl`（ZIP 容器）走 `yeban_midi::mxl::parse_mxl`，纯文本走
+//! `yeban_midi::musicxml::parse_musicxml`；判据是首 4 字节是不是 `PK\x03\x04`。
+//! 因此输出里的 `container=` 字段是**实测**读数（`text` / `mxl`）。
+//!
 //! 打印的读数（单位写明）：
 //!
 //! - `bytes`：文件字节数（`stat` 的 `st_size`，不是磁盘占用）；
@@ -26,6 +30,7 @@
 use std::path::{Path, PathBuf};
 
 use yeban_midi::musicxml::{MusicXmlScore, parse_musicxml};
+use yeban_midi::mxl::parse_mxl;
 
 /// FNV-1a 64：与 Python 参考模型用**同一常数**，便于逐文件对账。
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -73,7 +78,15 @@ fn main() {
                 continue;
             }
         };
-        match parse_musicxml(&bytes) {
+        // `.mxl` 是 ZIP 容器（`PK\x03\x04`）⇒ 走容器层；其余按纯文本走文本层。
+        // 两条路都只读，且都不 panic（见各自的模块文档）。
+        let is_zip = bytes.starts_with(b"PK\x03\x04");
+        let parsed = if is_zip {
+            parse_mxl(&bytes).map_err(|error| error.to_string())
+        } else {
+            parse_musicxml(&bytes).map_err(|error| error.to_string())
+        };
+        match parsed {
             Ok(score) => {
                 let parts: Vec<String> = score
                     .parts
@@ -85,9 +98,10 @@ fn main() {
                     None => ("-".to_owned(), "-".to_owned()),
                 };
                 println!(
-                    "{}: OK bytes={} divisions={} notes={} ticks={}..{} digest={:016x} \
+                    "{}: OK container={} bytes={} divisions={} notes={} ticks={}..{} digest={:016x} \
                      ignored_names={} unsupported={:?} parts=[{}]",
                     label(path),
+                    if is_zip { "mxl" } else { "text" },
                     bytes.len(),
                     score.divisions,
                     score.note_count(),
@@ -120,15 +134,22 @@ fn label(path: &Path) -> String {
 fn fuzz(path: &Path, bytes: &[u8]) -> usize {
     let mut runs = 0usize;
     let label = label(path);
+    let attempt = |candidate: &[u8]| {
+        if candidate.starts_with(b"PK\x03\x04") {
+            let _ = parse_mxl(candidate);
+        } else {
+            let _ = parse_musicxml(candidate);
+        }
+    };
     for cut in (0..bytes.len()).step_by(9973) {
-        let _ = parse_musicxml(&bytes[..cut]);
+        attempt(&bytes[..cut]);
         runs += 1;
     }
     let mut copy = bytes.to_vec();
     for index in (0..bytes.len()).step_by(9973) {
         for replacement in [0x00u8, b'&', b'<', 0xff] {
             copy[index] = replacement;
-            let _ = parse_musicxml(&copy);
+            attempt(&copy);
             runs += 1;
         }
         copy[index] = bytes[index];
@@ -136,7 +157,7 @@ fn fuzz(path: &Path, bytes: &[u8]) -> usize {
     let mut inserted = bytes.to_vec();
     for index in (0..bytes.len()).step_by(19997) {
         inserted.insert(index, b'<');
-        let _ = parse_musicxml(&inserted);
+        attempt(&inserted);
         runs += 1;
         inserted.remove(index);
     }

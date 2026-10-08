@@ -14,6 +14,10 @@
 //! ⑤ **`.mxl`（ZIP 容器）的代价与路线**：自造的 deflate 容器必须在 UTF-8 这一步就明确 `Err`，
 //!    容器**自己**的 CRC-32 / 尺寸字段用来（**不解压**地）证明 `score.xml` 的内容与纯文本夹具
 //!    逐字节相同，并钉住"复用 `yeban-model` 的 ZIP 读取器"这条路线今天**不通**。
+//! ⑥ **`.mxl` 只读导入**（本票新增，`yeban_midi::mxl`）：容器解开后必须交出与纯文本**同一个**
+//!    [`MusicXmlScore`]；根文件名只认 `META-INF/container.xml` 的 `<rootfile full-path>`（⛔ 不猜）；
+//!    字段不符 / 压缩法不认识 / 加密 / ZIP64 / 两种炸弹（声明超界、实际膨胀超界）都明确 `Err`；
+//!    容器层的变形（截断 / 翻转）不 panic。容器由**判据自己**拼 ⇒ 受测代码不是自己的裁判。
 //!
 //! ## 规范出处
 //!
@@ -23,8 +27,10 @@
 //!
 //! ## 本文件**没有**证明什么
 //!
-//! - ⛔ 不证明 `.mxl`（ZIP）可读：那**没有实现**（见模块文档的未实现清单）。
-//!   本文件只证明"今天被明确拒绝"，并把代价/路线钉成会变红的判据。
+//! - ⛔ 不证明 `.mxl` 的**全部**形态可读：只覆盖 2 个已提交夹具（`score.xml` 分别是
+//!   dynamic 与 fixed Huffman 块）与判据自造的容器（stored 条目、stored DEFLATE 块）。
+//!   ZIP64 / 加密 / 非 deflate 压缩法 / data descriptor 的**接受**都**没有**判据
+//!   —— 前三者的**拒绝**有判据，`data descriptor` 连判据都没有（见 `src/mxl.rs` 的边界 7）。
 //! - ⛔ 不证明导出、引擎接线、界面可用：都不存在。
 //! - ⛔ 不证明完整 MusicXML 4.0 语义：`forward` / `grace` / `unpitched` / `transpose`
 //!   只证明"被登记为未实现"，不证明语义正确。
@@ -37,6 +43,7 @@ use yeban_midi::midi::{DEFAULT_PPQ, MidiTempo};
 use yeban_midi::musicxml::{
     DEFAULT_VELOCITY, MAX_DEPTH, MusicXmlError, MusicXmlNote, MusicXmlScore, parse_musicxml,
 };
+use yeban_midi::mxl::{MxlError, MxlLimits, parse_mxl, parse_mxl_with_limits};
 use yeban_model::container::{ContainerError, ContainerLimits, read_container};
 
 /// 自造夹具：覆盖六项要求（单声部 / 和弦 / 延音 / backup 多声部 / divisions≠1 / 速度）。
@@ -56,6 +63,10 @@ const W3C_41H: &[u8] = include_bytes!("fixtures/w3c_41h_multi_part.musicxml");
 /// 自造夹具：把 [`HANDMADE_MVP`] 打包成 deflate ZIP（`.mxl`）。
 /// 构造配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 6 节。
 const HANDMADE_MXL: &[u8] = include_bytes!("fixtures/handmade_mvp_partwise.mxl");
+/// 自造夹具：同上，但 `score.xml` 的 DEFLATE 流是**固定 Huffman**（`BTYPE=1`）块。
+/// 构造配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 7 节。
+const HANDMADE_MXL_FIXED: &[u8] =
+    include_bytes!("fixtures/handmade_mvp_partwise_deflate_fixed.mxl");
 
 /// 全部已提交的**纯文本**夹具（名字 + 字节）。
 ///
@@ -522,4 +533,490 @@ fn mxl_cost_is_pinned_by_the_container_fields_without_inflating() {
             .map(|entry| (entry.name, entry.method, entry.crc32))
             .collect::<Vec<_>>()
     );
+}
+
+// ---------------------------------------------------------------------------
+// `.mxl`（ZIP/deflate 容器）：**只读导入**（本票新增）
+//
+// 上面三条判据钉的是**代价与拒绝**（上一票 `a29d280`）。下面这些钉的是导入本身：
+// `parse_mxl` 必须把容器解开，并交出与纯文本**同一个** `MusicXmlScore`。
+// 容器要么是**独立生产者**（CPython `zipfile` / `zlib`）写的已提交夹具，
+// 要么由**判据自己**拼（`build_zip`）⇒ 受测代码不是自己的裁判。
+// ---------------------------------------------------------------------------
+
+/// 判据侧的 ZIP 条目：**每个字段都可改** ⇒ 能造出"字段与数据不符"的容器。
+struct ZipEntrySpec {
+    name: Vec<u8>,
+    flags: u16,
+    method: u16,
+    crc: u32,
+    compressed: u32,
+    uncompressed: u32,
+    body: Vec<u8>,
+}
+
+impl ZipEntrySpec {
+    /// 压缩法 **0**（stored）的条目：数据区就是载荷本身。
+    fn stored(name: &str, payload: &[u8]) -> Self {
+        Self {
+            name: name.as_bytes().to_vec(),
+            flags: 0,
+            method: 0,
+            crc: crc32(payload),
+            compressed: payload.len() as u32,
+            uncompressed: payload.len() as u32,
+            body: payload.to_vec(),
+        }
+    }
+
+    /// 压缩法 **8**（deflate）的条目，其 DEFLATE 流**只用一个 stored 块**（`BTYPE=00`）。
+    ///
+    /// ⛔ 这是判据侧的编码器：它不调用受测的解码器，因此"能读回来"不是同义反复。
+    fn deflate_stored(name: &str, payload: &[u8]) -> Self {
+        let body = deflate_stored_block(payload);
+        Self {
+            name: name.as_bytes().to_vec(),
+            flags: 0,
+            method: 8,
+            crc: crc32(payload),
+            compressed: body.len() as u32,
+            uncompressed: payload.len() as u32,
+            body,
+        }
+    }
+}
+
+/// 一个 stored 块（`BFINAL=1` / `BTYPE=00`）的 **raw DEFLATE** 流（RFC 1951 §3.2.4）。
+fn deflate_stored_block(payload: &[u8]) -> Vec<u8> {
+    assert!(payload.len() <= 0xffff, "单个 stored 块的 LEN 是 16 位");
+    let mut out = vec![0x01u8]; // bit0 = BFINAL = 1，bit1..2 = BTYPE = 00（低位先出）
+    let length = payload.len() as u16;
+    out.extend_from_slice(&length.to_le_bytes());
+    out.extend_from_slice(&(!length).to_le_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// 判据侧的 ZIP 写出器（APPNOTE 的 local file header / central directory / EOCD 三节）。
+///
+/// `total_override` 用来伪造 EOCD 里的条目数（ZIP64 标记 `0xFFFF` 就靠它）。
+fn build_zip(entries: &[ZipEntrySpec], total_override: Option<u16>) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut central: Vec<u8> = Vec::new();
+    for entry in entries {
+        let offset = out.len() as u32;
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        out.extend_from_slice(&entry.flags.to_le_bytes());
+        out.extend_from_slice(&entry.method.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        out.extend_from_slice(&entry.crc.to_le_bytes());
+        out.extend_from_slice(&entry.compressed.to_le_bytes());
+        out.extend_from_slice(&entry.uncompressed.to_le_bytes());
+        out.extend_from_slice(&(entry.name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        out.extend_from_slice(&entry.name);
+        out.extend_from_slice(&entry.body);
+
+        central.extend_from_slice(b"PK\x01\x02");
+        central.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        central.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        central.extend_from_slice(&entry.flags.to_le_bytes());
+        central.extend_from_slice(&entry.method.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        central.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        central.extend_from_slice(&entry.crc.to_le_bytes());
+        central.extend_from_slice(&entry.compressed.to_le_bytes());
+        central.extend_from_slice(&entry.uncompressed.to_le_bytes());
+        central.extend_from_slice(&(entry.name.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes()); // extra
+        central.extend_from_slice(&0u16.to_le_bytes()); // comment
+        central.extend_from_slice(&0u16.to_le_bytes()); // disk
+        central.extend_from_slice(&0u16.to_le_bytes()); // internal attr
+        central.extend_from_slice(&0u32.to_le_bytes()); // external attr
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(&entry.name);
+    }
+    let cd_offset = out.len() as u32;
+    let cd_size = central.len() as u32;
+    out.extend_from_slice(&central);
+    let total = total_override.unwrap_or(entries.len() as u16);
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&0u16.to_le_bytes()); // disk
+    out.extend_from_slice(&0u16.to_le_bytes()); // central directory disk
+    out.extend_from_slice(&total.to_le_bytes()); // 本盘条目数
+    out.extend_from_slice(&total.to_le_bytes()); // 总条目数
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+    out
+}
+
+/// 一份最小的 OPC `META-INF/container.xml`（形状与已提交夹具相同，只换 `full-path`）。
+fn container_xml(full_path: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container>\n  <rootfiles>\n    \
+         <rootfile full-path=\"{full_path}\">\n    </rootfile>\n  </rootfiles>\n</container>\n"
+    )
+    .into_bytes()
+}
+
+/// 与 [`local_entries`] 同一遍 local header 扫描，但给出每个条目的**数据区**。
+///
+/// 为什么单独一支（而不是改 `local_entries`）：上面三条 mxl 判据读的是**同一份夹具**，
+/// 本票不动它们的形态。
+fn local_bodies(bytes: &[u8]) -> Vec<&[u8]> {
+    let mut bodies = Vec::new();
+    let mut pos = 0usize;
+    while bytes.get(pos..pos + 4) == Some(b"PK\x03\x04") {
+        if bytes.len() < pos + 30 {
+            break;
+        }
+        let compressed = le32(bytes, pos + 18) as usize;
+        let name_len = usize::from(le16(bytes, pos + 26));
+        let extra_len = usize::from(le16(bytes, pos + 28));
+        let start = pos + 30 + name_len + extra_len;
+        let Some(body) = bytes.get(start..start + compressed) else {
+            break;
+        };
+        if start + compressed <= pos {
+            break;
+        }
+        bodies.push(body);
+        pos = start + compressed;
+    }
+    bodies
+}
+
+/// 读一个 raw DEFLATE 流的**首块**类型：返回 `(BFINAL, BTYPE)`（RFC 1951 §3.1.1 的低位先出）。
+fn first_deflate_block(body: &[u8]) -> (u8, u8) {
+    let byte = body.first().copied().unwrap_or(0);
+    (byte & 1, (byte >> 1) & 0b11)
+}
+
+#[test]
+fn mxl_container_imports_the_same_score_as_the_plain_text() {
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    // 两个已提交夹具的 score.xml 分别走 **dynamic**（BTYPE=2，`1435` 字节那份）与
+    // **fixed**（BTYPE=1，`1533` 字节那份）Huffman 表 ⇒ 两条码表路径都必须可用。
+    let dynamic = parse_mxl(HANDMADE_MXL).expect("dynamic Huffman 容器必须可读");
+    let fixed = parse_mxl(HANDMADE_MXL_FIXED).expect("fixed Huffman 容器必须可读");
+    assert_eq!(dynamic, text, "容器导入与纯文本解析必须是同一个 score");
+    assert_eq!(fixed, text, "换一张 Huffman 表不该改变 score");
+
+    // 字面读数（单位写清）：divisions=4（每四分音符 4 单位）、音符条目数=4、部件 id=P1。
+    assert_eq!(dynamic.divisions, 4);
+    assert_eq!(dynamic.note_count(), 4);
+    assert_eq!(dynamic.parts[0].id, "P1");
+    assert_eq!(dynamic.parts[0].name, "Handmade MVP");
+    // 确定性 [ARCH-DET-001]：同一份字节两次结果相同。
+    assert_eq!(parse_mxl(HANDMADE_MXL), Ok(dynamic));
+}
+
+#[test]
+fn mxl_import_readings_are_pinned_by_listing_the_containers() {
+    // 两个夹具都是 **2** 个条目、**2/2** deflate；`score.xml` 的载荷就是纯文本夹具
+    // （用容器**自己**的 CRC-32 与未压缩长度核对 ⇒ 不需要相信本模块的 inflate）。
+    // `compressed` 是**实测**读数：1435 那份 1095 字节、1533 那份 1193 字节。
+    for (name, bytes, compressed_score, btype) in [
+        ("handmade_mvp_partwise.mxl", HANDMADE_MXL, 1095u32, 2u8),
+        (
+            "handmade_mvp_partwise_deflate_fixed.mxl",
+            HANDMADE_MXL_FIXED,
+            1193,
+            1,
+        ),
+    ] {
+        let entries = local_entries(bytes);
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name).collect();
+        assert_eq!(names, vec!["META-INF/container.xml", "score.xml"], "{name}");
+        assert!(entries.iter().all(|entry| entry.method == 8), "{name}");
+        assert_eq!(entries[0].crc32, 0xae69_681f, "{name} 的 container.xml");
+        assert_eq!(
+            (entries[0].uncompressed, entries[0].compressed),
+            (146, 104),
+            "{name}"
+        );
+        assert_eq!(entries[1].crc32, crc32(HANDMADE_MVP), "{name} 的 score.xml");
+        assert_eq!(
+            (entries[1].uncompressed, entries[1].compressed),
+            (2716, compressed_score),
+            "{name}"
+        );
+        // 首块的 BTYPE 是**逐位**读出来的（不是本模块说的，是判据自己数的）。
+        let bodies = local_bodies(bytes);
+        assert_eq!(bodies.len(), 2, "{name}");
+        assert_eq!(
+            first_deflate_block(bodies[1]),
+            (1, btype),
+            "{name} 的 score.xml 首块"
+        );
+    }
+}
+
+#[test]
+fn mxl_rootfile_path_is_followed_and_its_absence_is_explicit() {
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+
+    // ① 根文件名**不是猜的**：container.xml 指向 `nested/part.xml`，条目也在那儿。
+    let nested = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("nested/part.xml")),
+            ZipEntrySpec::stored("nested/part.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(parse_mxl(&nested), Ok(text));
+
+    // ② full-path 指向的条目不存在 ⇒ 明确 Err（⛔ 不回退成"唯一的 xml 条目就是根文件"）。
+    let missing = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("absent.xml")),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&missing),
+        Err(MxlError::MissingRootFile {
+            path: "absent.xml".to_owned()
+        })
+    );
+
+    // ③ 没有 container.xml ⇒ 明确 Err（OPC 要求根文件由它指定）。
+    let no_container = build_zip(&[ZipEntrySpec::stored("score.xml", HANDMADE_MVP)], None);
+    assert_eq!(parse_mxl(&no_container), Err(MxlError::NoContainer));
+
+    // ④ container.xml 里没有 <rootfile> ⇒ 明确 Err。
+    let no_rootfile = build_zip(
+        &[
+            ZipEntrySpec::stored(
+                "META-INF/container.xml",
+                b"<container><rootfiles/></container>",
+            ),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(parse_mxl(&no_rootfile), Err(MxlError::NoRootFile));
+}
+
+#[test]
+fn mxl_container_field_mismatches_are_rejected_by_name() {
+    let container = container_xml("score.xml");
+    let wrap = |spec: ZipEntrySpec| {
+        build_zip(
+            &[
+                ZipEntrySpec::stored("META-INF/container.xml", &container),
+                spec,
+            ],
+            None,
+        )
+    };
+
+    // ① CRC-32 与数据不符 ⇒ 报**两个**读数（声明的与实际算出的）。
+    let mut spec = ZipEntrySpec::stored("score.xml", HANDMADE_MVP);
+    spec.crc ^= 1;
+    assert_eq!(
+        parse_mxl(&wrap(spec)),
+        Err(MxlError::CrcMismatch {
+            name: "score.xml".to_owned(),
+            declared: crc32(HANDMADE_MVP) ^ 1,
+            actual: crc32(HANDMADE_MVP),
+        })
+    );
+
+    // ② 声明的未压缩长度与载荷不符。
+    let mut spec = ZipEntrySpec::stored("score.xml", HANDMADE_MVP);
+    spec.uncompressed -= 1;
+    assert_eq!(
+        parse_mxl(&wrap(spec)),
+        Err(MxlError::SizeMismatch {
+            name: "score.xml".to_owned(),
+            declared: 2715,
+            actual: 2716,
+        })
+    );
+
+    // ③ 压缩法不是 0/8 ⇒ 点名压缩法（12 = bzip2）。
+    let mut spec = ZipEntrySpec::stored("score.xml", HANDMADE_MVP);
+    spec.method = 12;
+    assert_eq!(
+        parse_mxl(&wrap(spec)),
+        Err(MxlError::UnsupportedCompression {
+            name: "score.xml".to_owned(),
+            method: 12,
+        })
+    );
+
+    // ④ 加密位（general purpose flag 的 bit 0）⇒ 明确拒绝，⛔ 不尝试解密。
+    let mut spec = ZipEntrySpec::stored("score.xml", HANDMADE_MVP);
+    spec.flags = 0x0001;
+    assert_eq!(
+        parse_mxl(&wrap(spec)),
+        Err(MxlError::Encrypted {
+            name: "score.xml".to_owned()
+        })
+    );
+
+    // ⑤ ZIP64 标记（EOCD 的条目数是 `0xFFFF`）⇒ 明确拒绝。
+    let zip64 = build_zip(
+        &[ZipEntrySpec::stored("score.xml", HANDMADE_MVP)],
+        Some(0xffff),
+    );
+    assert_eq!(parse_mxl(&zip64), Err(MxlError::UnsupportedZip64));
+
+    // ⑥ 不是容器 ⇒ NotZip（既不是 panic，也不是"文本层的 UTF-8 错误"）。
+    assert_eq!(parse_mxl(HANDMADE_MVP), Err(MxlError::NotZip));
+    assert_eq!(parse_mxl(b""), Err(MxlError::NotZip));
+
+    // ⑦ 载荷是合法容器但**不是** MusicXML ⇒ 文本层的错误原样上传（⛔ 不吞掉）。
+    let not_score = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", b"<score-timewise></score-timewise>"),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&not_score),
+        Err(MxlError::MusicXml(MusicXmlError::UnsupportedRoot {
+            root: "score-timewise".to_owned()
+        }))
+    );
+}
+
+#[test]
+fn mxl_limits_stop_both_declared_and_actual_blowups() {
+    let container = container_xml("score.xml");
+
+    // ① 声明的未压缩长度超界 ⇒ **解压前**拒绝（第一项就是 container.xml 的 146 > 64）。
+    let declared = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    let tiny = MxlLimits {
+        max_entry_bytes: 64,
+        ..MxlLimits::default()
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&declared, &tiny),
+        Err(MxlError::LimitExceeded {
+            limit: "entry_bytes",
+            value: 146,
+            max: 64,
+        })
+    );
+
+    // ② 声明**撒谎**：score.xml 声明 10 字节，DEFLATE 流实际膨胀到 2716 字节。
+    //    上界（1024）在**每次写入前**检查 ⇒ 在上界处截停，⛔ 不是先把 2716 字节全读出来。
+    let mut lying = ZipEntrySpec::deflate_stored("score.xml", HANDMADE_MVP);
+    lying.uncompressed = 10;
+    let bomb = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            lying,
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl_with_limits(
+            &bomb,
+            &MxlLimits {
+                max_entry_bytes: 1024,
+                ..MxlLimits::default()
+            }
+        ),
+        Err(MxlError::InflatedTooLarge {
+            name: "score.xml".to_owned(),
+            max: 1024,
+        })
+    );
+
+    // ③ 同一条流换个更大的上界就能读 ⇒ ②拒绝的是**上界**，不是流本身（对照臂）。
+    assert_eq!(
+        parse_mxl_with_limits(
+            &bomb,
+            &MxlLimits {
+                max_entry_bytes: 4096,
+                ..MxlLimits::default()
+            }
+        ),
+        Err(MxlError::SizeMismatch {
+            name: "score.xml".to_owned(),
+            declared: 10,
+            actual: 2716,
+        })
+    );
+
+    // ④ 条目数上界（中央目录声明 3 个、上界 2）⇒ 在**读目录之前**拒绝。
+    let three = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+            ZipEntrySpec::stored("extra.xml", b"<x/>"),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl_with_limits(
+            &three,
+            &MxlLimits {
+                max_entries: 2,
+                ..MxlLimits::default()
+            }
+        ),
+        Err(MxlError::LimitExceeded {
+            limit: "entries",
+            value: 3,
+            max: 2,
+        })
+    );
+}
+
+#[test]
+fn mxl_container_fuzz_never_panics() {
+    // 3 个容器：2 个已提交夹具 + 1 个判据自造（stored 条目 + stored DEFLATE 块）。
+    // 对每个做**截断 / 翻转**，只允许 Ok 或 Err。
+    let built = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
+            ZipEntrySpec::deflate_stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    let containers: [(&str, &[u8]); 3] = [
+        ("handmade_mvp_partwise.mxl", HANDMADE_MXL),
+        (
+            "handmade_mvp_partwise_deflate_fixed.mxl",
+            HANDMADE_MXL_FIXED,
+        ),
+        ("built_stored_and_deflate_stored", &built),
+    ];
+    let mut runs = 0usize;
+    for (name, bytes) in containers {
+        assert!(
+            parse_mxl(bytes).is_ok(),
+            "{name} 在变形之前就必须是可读的（否则本判据没有意义）"
+        );
+        for cut in 0..bytes.len() {
+            let _ = parse_mxl(&bytes[..cut]);
+            runs += 1;
+        }
+        for index in (0..bytes.len()).step_by(3) {
+            for replacement in [0x00u8, 0xff, b'P', b'K'] {
+                let mut copy = bytes.to_vec();
+                copy[index] = replacement;
+                let _ = parse_mxl(&copy);
+                runs += 1;
+            }
+        }
+    }
+    // 判据本身是"没 panic"；这个数字让"到底跑了多少次"可复核。
+    println!("mxl_container_fuzz_never_panics: runs={runs}");
+    assert!(runs >= 5_000, "探针只跑了 {runs} 次，样本太少");
 }

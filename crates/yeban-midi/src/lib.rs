@@ -24,5 +24,11 @@ pub mod midi;
 /// ⚠️ 规范**未定义** MusicXML（四份规范里命中数为 0）；本模块是工程选择，
 /// 出处见 `docs/ledger/integration-rulings-notes.md` 的 R1。
 pub mod musicxml;
+/// `.mxl`（**压缩** MusicXML，ZIP 容器）的**只读**导入 —— 手写 raw-DEFLATE inflate，
+/// 零新依赖（路线 B；裁决出处见 `docs/ledger/integration-rulings-notes.md` 的 R1，
+/// 那是"另立票"的下游）。
+///
+/// ⚠️ 与 [`musicxml`] 同口径：规范**未定义** MusicXML / `.mxl`；本模块是工程选择。
+pub mod mxl;
 /// MIDI 可变长度量（VLQ）的零依赖参考编解码 —— `midi` 的字节级核验依赖它。
 pub mod vlq;
