@@ -29,6 +29,27 @@
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
+//! 把一次 note-on 变成**可渲染的采样描述**（音高比 / 步进比 / 线性增益 / 循环窗口）：
+//!
+//! ```
+//! use yeban_sfz::{ParseLimits, RegionQuery, RenderRates, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<group>key=36 seq_length=2\n\
+//!      <region>seq_position=1 sample=k1.wav pitch_keycenter=48 volume=-3\n\
+//!      <region>seq_position=2 sample=k2.wav pitch_keycenter=48 volume=-3",
+//!     &ParseLimits::default(),
+//! )?;
+//! let rates = RenderRates::new(44_100.0, 48_000.0);
+//! let play = instrument
+//!     .playback_for(RegionQuery::new(36, 100).with_occurrence(0), rates)
+//!     .expect("region covers note 36");
+//! assert_eq!(play.region.sample, "k1.wav");
+//! assert_eq!(play.spec.pitch_ratio, 0.5); // 36 比根音 48 低一个八度
+//! assert!(play.spec.rate < 0.5); // 再乘上 44100/48000 的采样率换算
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
 //! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
 //!
 //! ```no_run
@@ -49,22 +70,35 @@
 //! 3. **不可信输入不 panic**：解析路径全部 `Result`，无 `unwrap` / `expect`。
 //! 4. **实时路径零分配** [ARCH-RT-001]：`VoicePool::note_on` / `process` / `retire` 不触碰堆。
 //!
-//! ## 与实时引擎的接口（**预留，Pending**）
+//! ## 与实时引擎的接口
 //!
 //! 本 crate 已经能解析乐器（[`parse_text`] → [`Instrument::region_for`]）并持有预分配的
 //! [`VoicePool`]（默认 [`DEFAULT_VOICE_CAPACITY`] / 上限 [`MAX_VOICE_CAPACITY`]，
-//! 含 [`StealFade`] 的 3 ms 淡出）。但**还没有任何调用方**把它接到音源上，
-//! 因为缺少三个前提（全部登记在 `docs/ledger/engine-sound-notes.md` §5.3 与 needs N6）：
+//! 含 [`StealFade`] 的 3 ms 淡出）。
+//!
+//! **纯数值的桥已经就位**：[`Instrument::playback_for`] 一次调用完成
+//! 「选 region → 可渲染的采样描述」（[`PlaybackSpec`]：音高比 / 步进比 / 线性增益 /
+//! 循环窗口 / 独占组）。该调用零堆分配，可在实时路径使用。它只做换算，
+//! **不**做 I/O、不解码音频、不猜采样率。
+//!
+//! 真正发声仍缺两个前提（登记在 `docs/ledger/engine-sound-notes.md` §5.3 与 needs N6）：
 //!
 //! ```text
-//! 1) 采样数据解码（WAV/FLAC）—— 需要依赖裁决（symphonia/hound）或自研解码器；
-//! 2) 重采样（region 的 keycenter/tune/采样率 ≠ 工程采样率）—— 需要 rubato 或自研；
-//! 3) 数据本身：`assets/samples/` 是**登记式(registry-only)**的 —— `manifest.json` 已登记
+//! 1) 采样数据解码（WAV/FLAC）—— 需要依赖裁决（symphonia/hound）或自研解码器。
+//!    解码器还必须提供采样文件自身的采样率（[`RenderRates::sample_hz`]）与真实循环点；
+//! 2) 数据本身：`assets/samples/` 是**登记式(registry-only)**的 —— `manifest.json` 已登记
 //!    30 款乐器 / 20 594 个文件的许可 + SHA-256（每条 `optional: true`，**字节不入库**），
 //!    `ATTRIBUTION.md` 逐条署名。要让本 crate 真正发声，仍需按清单的 `repo` + `pin`
 //!    拉取采样字节（拉取与校验步骤见该清单 §5 与 `docs/ledger/samples-attribution-notes.md`）。
 //!    注意 `MUST-GATE-014` 的规范目标是 323 款，当前登记 30 款，差额 293 款。
 //! ```
+//!
+//! 重采样本身**不再需要**新依赖来做决策：region 的 `pitch_keycenter` / `transpose` /
+//! `tune` / 采样率差异已经归约成一个 [`PlaybackSpec::rate`]（每输出采样前进多少源采样）。
+//! 引擎可以用它驱动任意插值器。
+//!
+//! [`Region::sample_path`] 给出采样身份，供**加载期**把 region 映射到已解码缓冲；
+//! 实时路径只读 [`PlaybackSpec`]。
 //!
 //! **引擎侧的接入点已经就位**：`yeban-engine` 的 `SynthEngine::trigger` 是"选一个声部并
 //! 初始化它"的唯一位置（`docs/ledger/engine-sound-notes.md` §5.3 有精确说明）。
@@ -77,6 +111,7 @@
 pub mod error;
 pub mod instrument;
 pub mod parser;
+pub mod playback;
 pub mod voice_pool;
 
 pub use error::SfzError;
@@ -85,6 +120,7 @@ pub use parser::{
     Header, IncludeResolver, OpcodeValue, ParseLimits, SfzSource, Warning, parse_f32, parse_int,
     parse_note, parse_sources, parse_text,
 };
+pub use playback::{FALLBACK_SAMPLE_RATE, LoopWindow, PlaybackSpec, RegionPlay, RenderRates};
 pub use voice_pool::{
     DEFAULT_VOICE_CAPACITY, MAX_VOICE_CAPACITY, NoteOnOutcome, SILENT_DBFS, STEAL_FADE_FLOOR,
     STEAL_FADE_MILLIS, StealFade, VoiceHandle, VoiceInfo, VoicePool, VoiceStage,

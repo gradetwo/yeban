@@ -64,6 +64,9 @@ pub struct CcGate {
 ///
 /// 字符串字段用 [`Cow`]：无 `$VAR` 宏替换时是 `Borrowed`（零拷贝借用源缓冲），
 /// 只有发生文本替换时才拥有所有权。
+///
+/// 采样播放的数值换算（音高比 / 步进比 / 线性增益 / 循环窗口）见
+/// [`crate::playback`]。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Region<'a> {
     /// `sample` opcode 的原始取值（未拼接 `default_path`）。
@@ -262,6 +265,9 @@ impl<'q> RegionQuery<'q> {
 }
 
 /// 一个已解析的 SFZ 乐器：region 列表 + 解析警告。
+///
+/// 一次调用完成「选 region → 可渲染的采样描述」见 [`Instrument::playback_for`]
+/// （实现在 [`crate::playback`]）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Instrument<'a> {
     regions: Vec<Region<'a>>,
