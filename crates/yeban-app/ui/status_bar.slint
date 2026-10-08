@@ -9,10 +9,67 @@
 // 本文件是 ADR-0001 D2 为了承载 24px 状态栏而**新增**的组件 (UI/UX §8 的清单里没有它,
 // architecture §8 的 4 文件清单里也没有)。裁决留痕见 ADR-0001 D2 与 notes。
 //
-// 数据流方向: 只读。只有 `save-status` / `save-succeeded` 真的由 `app.slint` 的
-// `MainWindow` 传入（宿主 `host::apply_save_outcome` 是唯一写者）。
+// 数据流方向: 只读。`save-status` / `save-succeeded` 由 `app.slint` 的 `MainWindow`
+// 传入（宿主 `host::apply_save_outcome` 是唯一写者）；`selection` / `device` 由
+// `MainWindow.status-selection` / `.status-device` 传入（宿主 `host::apply_view`
+// 经 `host::publish_status_bar` 是唯一写者）。见下面的 R9 关闭登记。
 //
-// ⚠ **诚实性审计登记（2026-10-08，本次未修，如实登记不假装）**：
+// ⚠ **R9 关闭登记（2026-10-08，`line/app-r9pix`）—— 本段关闭台账 R9，取代下面那段"未修"登记**。
+// 本票把 `selection` / `device` 接上真实读数，并把 `chord` 的假读数换成"无读数"。
+// 三条都改**可见文本** ⇒ 默认帧像素改变 ⇒ `crates/yeban-app/tests/golden/linux/**`
+// 的 5 张基准**确定性过期**，必须按手动档 `gates-manual.yml` 的 `gate=goldens` 重录。
+// **本票未重录基准**：本机是 macOS（`PlatformTag::current()` 走 Macos 目录），
+// 且 `AGENTS.md` §5.2 禁止在本机编 slint ⇒ 无法产出 Linux 基准。物理影响面见提交说明。
+//
+// 逐条（原文 ⇒ 改后，以及真实数据源的 `file:line`）：
+//   ① `selection`: `"选区 1.1.000 – 5.4.480"` ⇒ `"选区 无"`。
+//      写者 = `host::apply_view` → `host::publish_status_bar`（`crates/yeban-app/src/host.rs`）。
+//      数据源 = `ViewState::selection_tick_span`（`crates/yeban-app/src/bridge.rs` 的
+//      `pub fn selection_tick_span`）解析 `MainWindow.selected-ulids`；
+//      格式化 = `bridge::timecode_for_ticks`（`crates/yeban-app/src/bridge.rs` 的
+//      `pub fn timecode_for_ticks`）—— **不写第二份格式化实现**。
+//      有选区 ⇒ `选区 001.01.000 – 005.04.480`（与走带那一格**同一个**格式）；
+//      空选区 ⇒ `选区 无`。原文的 `1.1.000` 连格式都与本 app 不一致。
+//   ② `chord`: `"Cmaj7"` ⇒ `"(none)"`（**能力缺口登记，不是接线**）。
+//      `crates/yeban-app/Cargo.toml` 里没有 `yeban-theory` 依赖键 ⇒ app 侧**没有**
+//      和弦识别能力，本票**不加**这条依赖边。`chord` 因此是三条里**唯一没有宿主写者**
+//      的一条。⚠ 这一格**必须**保留 ASCII 字符（`(none)` = 6 个带墨迹的字形，
+//      不少于原文 `Cmaj7` 的 5 个），而不是空串或纯汉字 —— 那是**为了让
+//      `src/test_port_adapter.rs` 的 `[D24]`「字体非 tofu」对照样本仍然有牙**：
+//      该判据是 `cjk_ink > reference_ink` 且对照就是这一格；对照若是纯汉字，
+//      在没有 CJK 字体的 runner 上两侧一起塌到 0，判据会**变成永远绿**。
+//   ③ `device`: `"48 kHz / 24-bit · DSP 3.2% · 目标 120 FPS"`
+//      ⇒ `"48 kHz / 32-bit float · 目标 120 FPS"`。
+//      写者 = `host::apply_view` → `host::publish_status_bar`。
+//      数据源 = `ViewState::audio_config_display`，它在 `bridge::ViewState` 的构造里由
+//      `project.audio_config.sample_rate` / `project.audio_config.bit_depth` 经
+//      `bridge::audio_config_display`（`crates/yeban-app/src/bridge.rs`）唯一一次格式化。
+//      模型默认值：`BitDepth::Float32`（`crates/yeban-model/src/project.rs` 的
+//      `enum BitDepth` 上的 `#[default]`）与 `SampleRate::default()` = `Hz48000`
+//      （同文件的 `impl Default for SampleRate`）；引擎只协商 `f32`（`DeviceOpening`
+//      的文档，`crates/yeban-app/src/engine_host.rs`）。
+//      ⇒ `24-bit` 是假的；`DSP 3.2%` 是**编造的性能读数** ⇒ **删掉那一格**：
+//      没有真实读数就不填。口径（先说单位再量）：对象 = `crates/yeban-app/src` 下全部
+//      `.rs` **去掉 `//` 注释之后**的代码文本，单位 = 命中行数，`dsp_load` / `cpu_load` /
+//      `load_percent` 合计命中 **0**。⚠ 复核要**先去掉注释**（登记与注释自身含这三个词）。
+//      `目标 120 FPS` 保留 —— 它是 `[UI-GRID-004]` 的**目标值**，文本自己写着"目标"，
+//      不是实测读数。
+//   ④ `device` 的 `accessible-label`: `"硬件声卡采样率与性能状态"` ⇒
+//      `"音频配置与性能目标"`。那两格读数来自**工程音频配置**（引擎据此向声卡协商），
+//      不是声卡**协商回来**的读数 —— 原文标签把前者说成了后者。注册表标签同步改
+//      （`crates/yeban-app/src/elements.rs`；判据 `src/test_port_adapter.rs` 断言
+//      运行时 `accessible-label` == 注册表 `label`）。
+//
+// ⚠ **仍未做（本票明文不做，如实登记）**：这三格只有 `accessible-label`、**没有**
+// `accessible-value` ⇒ 屏读器念得出"选区信息"这个名字，念不出**选区本身**；
+// 运行时的内省面（`ui/tree` 的 `value`）也因此读不到这三格的文本。
+// 于是"接线真的到了界面"这件事今天只有两条观测面：① 像素（基准逐字节）；
+// ② `tests/status_bar_honesty.rs` 的源码文本判据。补 `accessible-value` 属
+// `[UI-A11Y-003]` 的独立切片（它改无障碍树、要配套的运行时判据），不在本票改动面。
+//
+// 下面这段是**本票之前**的登记，按纪律保留原文（带日期的历史记录不改写）：
+//
+// ⚠ **诚实性审计登记（2026-10-08，那一票未修，如实登记不假装）**：
 // 上面那句原来写的是"所有值都是**演示数据**，由 app.slint 的 MainWindow 传入" —— 那是**假的**：
 // `selection` / `chord` / `device` 三个属性
 // （基线提交 `18a8874` 里它们是 `:37` / `:38` / `:40`；本票只改注释 ⇒ 行号会漂，
@@ -58,15 +115,22 @@
 //   ⇒ 三条的**用户可见**处置都要一次基准重录（手动档 `gates-manual.yml` 的 `gate=goldens`，
 //     重录后由人复核）。本票**停在测量**：等负责人排重录，再落文本。
 //
-// 这份登记与"三条默认值 = 基准里那三格"的绑定由 `tests/status_bar_honesty.rs` 机械看守。
+// ⚠ **上面这段的结论已被本文件顶部的 R9 关闭登记取代**（三条里 `selection` / `device`
+// 已有宿主写者、`chord` 已改成"无读数"）。保留它是为了留下测量过程。
+//
+// 这份登记与"三条默认值 = 基准里那三格"的绑定，现在由 `tests/status_bar_honesty.rs` 的
+// **六条**判据看守（无读数形态 / 登记点名数据源 / 写者唯一且 `chord` 无写者 /
+// `yeban-theory` 边仍不存在 / 空选区文本只有一个口径 / 负载读数仍为 0）。
 
 import { Tokens, UiText, UiMonoText } from "tokens.slint";
 
 export component StatusBar inherits Rectangle {
-    in property <string> selection: "选区 1.1.000 – 5.4.480";
-    in property <string> chord: "Cmaj7";
+    // 下面三条是**"还没有读数"的形态**，不是任何具体读数 —— 有读数的形态由宿主写者
+    // 注入（`selection` / `device`），`chord` 则永远停在无读数形态（能力不存在）。
+    in property <string> selection: "选区 无";
+    in property <string> chord: "(none)";
     in property <string> tip: "空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听";
-    in property <string> device: "48 kHz / 24-bit · DSP 3.2% · 目标 120 FPS";
+    in property <string> device: "—";
     // `ROAD-M4-008` 选项 (a)：最近一次**保存**的结果原话（宿主唯一写者）。
     // 它取代"快捷键提示"这一格（提示仍然在 `accessible-label` 里）；
     // 空串（还没按过保存）⇒ 回落到提示文本，状态栏不会空着一块。
@@ -157,6 +221,9 @@ export component StatusBar inherits Rectangle {
         horizontal-alignment: right;
         accessible-role: text;
         accessible-id: "status-bar-device";
-        accessible-label: "硬件声卡采样率与性能状态";
+        // 标签说"音频配置"而不是"硬件声卡"：这两格读数是**工程音频配置**
+        // （`project.audio_config`，引擎据此向声卡协商），不是声卡协商回来的结果。
+        // 注册表标签必须逐字相同（`crates/yeban-app/src/elements.rs`）。
+        accessible-label: "音频配置与性能目标";
     }
 }

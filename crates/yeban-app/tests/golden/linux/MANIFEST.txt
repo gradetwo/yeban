@@ -46,6 +46,17 @@ FreeType/fontconfig，字形与抗锯齿不同 ⇒ 像素必然不同。拿 macO
 判据口径: 与 `../macos/MANIFEST.txt` 同 —— 渲染 → `png::encode_rgb8` → **逐字节**比对；不一致即红并给出两侧字节数；
 平台无基准时打印「未被判定」（不等于通过）。
 
+**⚠ 待重录声明（2026-10-08，`line/app-r9pix`，台账 R9）**: 下面这张表的 5 行仍然**逐字节等于本目录磁盘上的
+5 个 PNG**（本票一个 PNG 都没动，因此表的 sha256 / 字节数**一位未改**，`scripts/gates/check_golden_manifest.py`
+的读数不变）。但这 5 张**已经与本票之后的源码确定性不一致** —— 状态栏三格是**默认帧里可见且未被遮罩**的像素，
+本票把它们的文本从假值改成真值（`selection` / `chord` / `device`，逐条见
+`crates/yeban-app/ui/status_bar.slint` 顶部的 R9 关闭登记）⇒ `src/test_port_adapter.rs` 的
+`[UI-MCP-003]` 逐字节比对**会红**，直到按手动档 `gates-manual.yml` 的
+`gate=goldens`（`YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`）
+重录这 5 张并由人复核。**本票未重录**：执行环境是 macOS，`PlatformTag::current()` 会指向
+`golden/macos/`（本仓库没有该目录），且 `AGENTS.md` §5.2 禁止在本机编译 slint。
+⇒ 本次**没有**用 `--write-table` 重写表：表没有漂移，重写它不会产生任何信息，只会留下一次无谓的写入。
+
 文件	sha256	字节
 app-main-window-arrangement-compact-1920x1080.png	09d8de7e52af256bef808d8894bcbe1b1030f3e7730401baf62591173d250c3f	6222418
 app-main-window-arrangement-full-1920x1080.png	0ecf9f625e099938b78a9a1c620f8b90435eae140015fb604b4efd4156c6e459	6222418

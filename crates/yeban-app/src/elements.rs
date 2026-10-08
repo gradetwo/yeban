@@ -356,7 +356,11 @@ impl ElementRegistry {
             "status-bar-device",
             ElementKind::Text,
             "status_bar.slint",
-            "硬件声卡采样率与性能状态",
+            // 台账 R9：标签必须与 `ui/status_bar.slint` 的 `accessible-label` **逐字相同**
+            // （判据 `test_port_adapter` 断言运行时 label == 注册表 label）。
+            // 原文写"硬件声卡采样率"，而这一格显示的是**工程音频配置**
+            // （引擎据此向声卡协商），不是声卡协商回来的读数。
+            "音频配置与性能目标",
             true,
         );
 

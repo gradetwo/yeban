@@ -1167,6 +1167,67 @@ pub struct SceneView {
     pub color: Option<String>,
 }
 
+/// 状态栏「音频配置」那一格的**整串文本**（台账 R9）—— 唯一的格式化实现。
+///
+/// 两个读数都来自 `YebanProjectV1::audio_config`（`[MODEL-AST-002]` 的
+/// [`yeban_model::project::ProjectAudioConfig`]），即**引擎据此向声卡协商的那一份配置**：
+/// `crates/yeban-engine/src/device.rs` 的 `EngineConfig::from_project` 就是取
+/// `project.audio_config.sample_rate.hz()` 与 `block_size.frames()`。
+///
+/// ⇒ 它**不是**声卡协商**回来**的读数（那一个在 `DeviceOpening.sample_rate` /
+/// `NegotiatedConfig`，只有设备腿真的打开时才存在，且生产路径只把它打到 CLI）。
+/// `.slint` 侧不做字符串拼接：整串由这里产出，因为"哪几个数、什么单位、什么顺序"
+/// 是一条语义，不是布局。
+///
+/// `"目标 120 FPS"` 是 `[UI-GRID-004]` 的**目标值**，文本自带"目标"二字 ⇒ 不是实测读数。
+/// **没有** DSP / CPU 负载那一格：app 里没有任何真实负载读数。口径（先说单位再量）：对象 =
+/// `crates/yeban-app/src` 下全部 `.rs` **去掉 `//` 注释之后**的代码文本，单位 = 命中行数，
+/// `dsp_load` / `cpu_load` / `load_percent` 三个模式合计命中 **0**
+/// （判据 `tests/status_bar_honesty.rs` 的 `no_dsp_load_reading_exists_in_the_app_source`）。
+/// ⚠ 复核时必须**先去掉注释**：本行注释自身就含这三个词，不过滤注释的 grep 会得到 1。
+/// 宁可少一格也不编。
+#[must_use]
+pub fn audio_config_display(
+    sample_rate: yeban_model::project::SampleRate,
+    bit_depth: yeban_model::project::BitDepth,
+) -> String {
+    format!(
+        "{} / {} · 目标 120 FPS",
+        sample_rate_display(sample_rate),
+        bit_depth_display(bit_depth)
+    )
+}
+
+/// 采样率的显示形态（`44100` ⇒ `"44.1 kHz"`，`48000` ⇒ `"48 kHz"`）。
+///
+/// 只做整数除法与取余：不引浮点。`SampleRate::ALL` 的 5 个取值都是 100 的整数倍
+/// （44100 / 48000 / 88200 / 96000 / 192000）⇒ `hz % 1000 / 100` 就是 kHz 的**十分位**，
+/// 于是只有"十分位为 0"与"十分位非 0"两种情形，不需要四舍五入也不需要格式化浮点。
+#[must_use]
+fn sample_rate_display(sample_rate: yeban_model::project::SampleRate) -> String {
+    let hz = sample_rate.hz();
+    let tenths = (hz % 1_000) / 100;
+    if tenths == 0 {
+        format!("{} kHz", hz / 1_000)
+    } else {
+        format!("{}.{} kHz", hz / 1_000, tenths)
+    }
+}
+
+/// 位深的显示形态（`[MODEL-AST-002]` 的三档）。
+///
+/// 用**穷尽** `match` 而不是 `{:?}`：派生的 `Debug` 会在有人给枚举加变体时静默变成
+/// 一个用户可见的英文标识符（`"Int24"`），那时没有任何判据会红。
+#[must_use]
+fn bit_depth_display(bit_depth: yeban_model::project::BitDepth) -> String {
+    use yeban_model::project::BitDepth;
+    match bit_depth {
+        BitDepth::Int16 => "16-bit int".to_owned(),
+        BitDepth::Int24 => "24-bit int".to_owned(),
+        BitDepth::Float32 => "32-bit float".to_owned(),
+    }
+}
+
 /// 一次投影的完整结果：界面侧**唯一**的数据来源。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewState {
@@ -1186,6 +1247,11 @@ pub struct ViewState {
     pub time_signature_denominator: u8,
     /// 拍号显示文本（`"4/4"`）。
     pub time_signature_display: String,
+    /// 状态栏「音频配置」那一格的整串文本（台账 R9）。
+    ///
+    /// 由 [`audio_config_display`] 从 `project.audio_config` 算出，**在投影期算一次**
+    /// ⇒ 每一帧的状态栏读数是这份投影的读数，宿主不再自己拼第二份。
+    pub audio_config_display: String,
     /// 每四分音符 tick 数（恒为 [`PPQ`]）。
     pub ppq: u64,
     /// 缩放：每逻辑像素多少 tick。
@@ -1448,6 +1514,10 @@ impl ViewState {
             time_signature_display: format!(
                 "{}/{}",
                 project.time_signature.numerator, project.time_signature.denominator
+            ),
+            audio_config_display: self::audio_config_display(
+                project.audio_config.sample_rate,
+                project.audio_config.bit_depth,
             ),
             ppq: PPQ,
             ticks_per_pixel,

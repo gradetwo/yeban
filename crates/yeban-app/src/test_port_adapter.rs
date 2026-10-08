@@ -1205,7 +1205,16 @@ fn runtime_control_tree_cross_check_against_the_registry() {
     //
     // D24 把这条判据明确划给本线（原文建议"可用字符包围盒非零或与已知 tofu 图样比对"）。
     // 这里用墨迹量化：`ai-rail-diagnose-button` 的内容是两行汉字（12 个汉字 + `:`/`/` 三个 ASCII），
-    // 对照是状态栏的 `status-bar-chord`（2 个汉字 + 5 个 ASCII，同为 font-size-xs）。
+    // 对照是状态栏的 `status-bar-chord`（2 个汉字 + 6 个 ASCII，同为 font-size-xs）。
+    //
+    // ⚠ **2026-10-08（`line/app-r9pix`，台账 R9）**：对照文本由「和弦 Cmaj7」
+    //   改成「和弦 (none)」—— `Cmaj7` 是一个**编造的和弦读数**（app 没有和弦识别能力，
+    //   `yeban-theory` 不在 `crates/yeban-app/Cargo.toml` 的依赖图上）。
+    //   本判据的**断言一个字未改**，改的只是对照样本的文本；ASCII 由 5 个带墨迹的字形
+    //   变成 6 个 ⇒ 对照侧墨迹**不减少**，`24/119 = 0.20` 那条"没有字体"的实测读数
+    //   仍然抓得到（判据方向与灵敏度都不变）。
+    //   ⚠ 对照文本**必须**含 ASCII：若改成纯汉字，在没有 CJK 字体的 runner 上
+    //   两侧都会塌到 0，这条判据会从"抓得到"变成"永远绿"。
     let cjk_card = runtime
         .find_by_id("ai-rail-diagnose-button")
         .and_then(|node| node.bounds)
@@ -1243,7 +1252,7 @@ fn runtime_control_tree_cross_check_against_the_registry() {
     );
     observe(&format!(
         "[D24] 汉字墨迹: 声学诊断卡(12 汉字+3 ASCII) {cjk_ink} px (包围盒 {cjk_bbox:?}, 颜色 {cjk_colors}); \
-         对照 `status-bar-chord`(2 汉字+5 ASCII) {reference_ink} px (包围盒 {reference_bbox:?}, 颜色 {reference_colors}); \
+         对照 `status-bar-chord`(2 汉字+6 ASCII, 2026-10-08 起对照文本为「和弦 (none)」) {reference_ink} px (包围盒 {reference_bbox:?}, 颜色 {reference_colors}); \
          意图生成卡(14 汉字+2 ASCII) {intent_ink} px; \
          混合卡 Musical PR(4 汉字+12 ASCII) {mixed_ink} px; 下限 {MIN_CJK_INK_PIXELS} px"
     ));
@@ -1261,7 +1270,11 @@ fn runtime_control_tree_cross_check_against_the_registry() {
     assert!(
         cjk_ink > reference_ink,
         "D24: 以汉字为主的卡片({cjk_ink} px) 的墨迹必须多于以 ASCII 为主的对照卡({reference_ink} px) —— \
-         没有 CJK 字体时实测是 24/119 = 0.20, 有字体时约为 3–5"
+         没有 CJK 字体时实测是 24/119 = 0.20, 有字体时约为 3–5。\
+         ⚠ 2026-10-08（台账 R9）：对照文本由「和弦 Cmaj7」改为「和弦 (none)」，\
+         带墨迹的 ASCII 字形由 5 个变成 6 个 ⇒ 上面那对历史实测值（24 / 119）在新文本下\
+         的分母**只增不减**：无 CJK 字体时比值更小、**更**容易判红。判据方向不变，\
+         也没有放宽。"
     );
 
     // ---- `[UI-MCP-001]` ReadOnly 的属性读取（需要运行时元素） ----

@@ -196,6 +196,8 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     apply_master(ui, view);
     // 电平：先重置成"与当前工程等长的静音"，再由 `apply_meters` 填真实读数（见模块文档）。
     apply_meters(ui, &silent_snapshot(view));
+    // 状态栏：与上面同一份投影（选区跨度 + 工程音频配置）。台账 R9 —— 见 `publish_status_bar`。
+    publish_status_bar(ui, view);
 }
 
 /// **行几何**（`ADR-0004` S0/S1）的全部注入数组 —— [`apply_view`] 的**子集**，
@@ -3167,6 +3169,62 @@ fn refresh_undo(weak: &slint::Weak<MainWindow>, port: &UndoPort, reproject: bool
     refresh_undo_window(&ui, port, reproject);
 }
 
+/// 状态栏「选区信息」那一格在**没有选区**时的文本（台账 R9）。
+///
+/// 它必须与 `crates/yeban-app/ui/status_bar.slint` 的 `selection` 默认值**逐字符相同**：
+/// 那一格在宿主写者跑之前显示的就是那条默认值，两者不同就是"没选区时显示什么"
+/// 有两个口径。由 `crates/yeban-app/tests/status_bar_honesty.rs` 机械看守。
+pub const STATUS_SELECTION_EMPTY: &str = "选区 无";
+
+/// 把状态栏的 `status-selection` / `status-device` 两格写进界面（台账 R9）。
+///
+/// # 调用点（只有两处，都在本文件）
+///
+/// 1. [`apply_view`] 的末尾 —— 每一次重新投影（换工程 / 撤销 / 打开工程 / 滚动）；
+/// 2. [`build_main_window_with_console_tab`] 里音符点击回调 —— 它改 `selected-ulids`
+///    但**不**重投影（`apply_view` 不在那条路上）。
+///
+/// ⇒ 状态栏读数与画面来自**同一份投影**：没有"第三份选区状态"。
+///
+/// # 每一格的数据源（都可追到 `file:line`）
+///
+/// - `status-selection` ← [`ViewState::selection_tick_span`]（`crate::bridge`）解析界面属性
+///   `selected-ulids`；格式化走**唯一**的 [`crate::bridge::timecode_for_ticks`]
+///   （与走带时间码同一个实现）。该函数返回 `None`（空选区 / 选中的身份已不在工程里）
+///   ⇒ 写 [`STATUS_SELECTION_EMPTY`]，**不**编一个区间。
+/// - `status-device` ← [`ViewState::audio_config_display`]，它在投影期由
+///   `project.audio_config.sample_rate` / `.bit_depth` 经
+///   [`crate::bridge::audio_config_display`] 算出。
+///
+/// # 它**不**写什么
+///
+/// `chord` 那一格不在这里：app 侧没有和弦识别能力（见 `ui/status_bar.slint` 的 R9 登记），
+/// 因此那一格停在"无读数"形态，而不是被谁填一个看起来像和弦的值。
+fn publish_status_bar(ui: &MainWindow, view: &ViewState) {
+    let selected: Vec<String> = {
+        use slint::Model as _;
+        ui.get_selected_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    // 两个端点各格式化一次：`timecode_for_ticks` 是纯函数，两次调用同一个网格
+    // ⇒ 不存在"起点与终点用了两个网格"的可能。
+    let selection = match view.selection_tick_span(&selected) {
+        Some((start_tick, end_tick)) => {
+            let grid = view.timecode_grid();
+            format!(
+                "选区 {} – {}",
+                crate::bridge::timecode_for_ticks(grid, start_tick),
+                crate::bridge::timecode_for_ticks(grid, end_tick),
+            )
+        }
+        None => STATUS_SELECTION_EMPTY.to_owned(),
+    };
+    ui.set_status_selection(selection.into());
+    ui.set_status_device(view.audio_config_display.clone().into());
+}
+
 /// 同 [`refresh_undo`]，但调用方**已经**持有活窗口（键盘路径就是这样）。
 ///
 /// 抽出来的理由不是省一次 `upgrade`：两条入口必须回写**同一批**属性与投影，
@@ -3376,6 +3434,9 @@ pub fn build_main_window_with_console_tab(
                 &visible.ulids,
             );
             ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
+            // 台账 R9：这一次点击**改的就是** `selected-ulids`，而这条回调**不**重投影
+            // ⇒ 状态栏那一格必须在这里同步刷新，否则点击之后它停在旧选区上（= 新的假话）。
+            publish_status_bar(&ui, &view_snapshot);
         });
     }
     Ok(ui)
