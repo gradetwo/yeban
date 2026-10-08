@@ -58,7 +58,9 @@
 //! 音高/增益使用 `exp2`（与 `crate::voice_pool::StealFade::gain_at` 同类的浮点原语）；
 //! 跨架构逐位一致性 (ARCH-DET-002) 未验证，与 `StealFade` 登记在同一条 pending 上。
 
-use crate::instrument::{Instrument, LoopMode, PlayDirection, Region, RegionQuery, SampleEnd};
+use crate::instrument::{
+    Instrument, LoopMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
+};
 
 /// 采样率回退值 (Hz)：输入采样率非有限或非正时使用，与
 /// [`crate::voice_pool::StealFade::new`] 的回退口径一致。
@@ -205,7 +207,10 @@ pub struct PlaybackSpec {
     pub gain: f32,
     /// 该 region 的 `pan`（百分比，原样；声相定律由调用方决定）。
     pub pan: f32,
-    /// 循环模式（原样）。
+    /// 该 region 的 `trigger`（原样）。
+    pub trigger: Trigger,
+    /// 生效的循环模式（原样，**但** `trigger=release` / `release_key` 强制
+    /// [`LoopMode::OneShot`]，见 [`Region::effective_loop_mode`]）。
     pub loop_mode: LoopMode,
     /// 有效循环窗口；`None` 表示按不循环渲染。
     pub loop_window: Option<LoopWindow>,
@@ -302,13 +307,14 @@ impl<'a> Region<'a> {
 
     /// 有效循环窗口。
     ///
-    /// 返回 `Some` 的条件：`loop_mode` 是 `loop_continuous` 或 `loop_sustain`，
-    /// **且** `loop_end > loop_start`。`no_loop` / `one_shot` 恒返回 `None`
-    /// （即使文件写了 `loop_start` / `loop_end`）。
+    /// 返回 `Some` 的条件：**生效的**循环模式（[`Region::effective_loop_mode`]，
+    /// `trigger=release` / `release_key` 会被覆盖成 `one_shot`）是 `loop_continuous`
+    /// 或 `loop_sustain`，**且** `loop_end > loop_start`。`no_loop` / `one_shot`
+    /// 恒返回 `None`（即使文件写了 `loop_start` / `loop_end`）。
     #[must_use]
     pub fn loop_window(&self) -> Option<LoopWindow> {
         if !matches!(
-            self.loop_mode,
+            self.effective_loop_mode(),
             LoopMode::LoopContinuous | LoopMode::LoopSustain
         ) {
             return None;
@@ -375,7 +381,8 @@ impl<'a> Region<'a> {
             volume_db: self.volume,
             gain: self.linear_gain(),
             pan: self.pan,
-            loop_mode: self.loop_mode,
+            trigger: self.trigger,
+            loop_mode: self.effective_loop_mode(),
             loop_window: self.loop_window(),
             offset: self.offset,
             end: self.end,
@@ -746,6 +753,7 @@ mod tests {
                             hikey: 127,
                             pitch_keycenter,
                             trigger_by_note: true,
+                            trigger: Trigger::Attack,
                             lovel: 0,
                             hivel: 127,
                             lochan: 1,
@@ -885,5 +893,50 @@ mod tests {
         assert_eq!(muted.spec.span, None);
         assert_eq!((muted.spec.group, muted.spec.off_by), (5, 5));
         assert!(!muted.spec.plays_reverse());
+    }
+
+    #[test]
+    fn playback_spec_carries_the_trigger_and_forces_one_shot_for_releases() {
+        // `PlaybackSpec` 是实时路径唯一读取的结构：`trigger` 原样带出，
+        // `loop_mode` 带出**生效值**（release 家族强制 one_shot）。
+        let instrument = parse_text(
+            "<region>sample=release.wav trigger=release loop_mode=loop_continuous \
+             loop_start=10 loop_end=20",
+            &Default::default(),
+        )
+        .expect("parses");
+        let play = instrument
+            .playback_for(RegionQuery::note_off(60, 100, false), RATES_EQUAL)
+            .expect("note-off selects the release region");
+        assert_eq!(play.spec.trigger, Trigger::Release);
+        assert_eq!(play.spec.loop_mode, LoopMode::OneShot, "forced by trigger");
+        assert_eq!(play.spec.loop_window, None);
+        assert!(!play.spec.loops());
+        assert!(play.spec.ignores_note_off());
+
+        // note-on 对同一个乐器没有可播的 region：release region 被事件门控挡掉。
+        assert!(
+            instrument
+                .playback_for(RegionQuery::new(60, 100), RATES_EQUAL)
+                .is_none()
+        );
+
+        // `trigger=attack` 的对照：loop_mode 原样，循环窗口有效。
+        let attack = parse_text(
+            "<region>sample=a.wav loop_mode=loop_continuous loop_start=10 loop_end=20",
+            &Default::default(),
+        )
+        .expect("parses");
+        let looping = attack
+            .playback_for(RegionQuery::new(60, 100), RATES_EQUAL)
+            .expect("note-on selects the attack region");
+        assert_eq!(looping.spec.trigger, Trigger::Attack);
+        assert_eq!(looping.spec.loop_mode, LoopMode::LoopContinuous);
+        assert_eq!(
+            looping.spec.loop_window,
+            Some(LoopWindow { start: 10, end: 20 })
+        );
+        assert!(looping.spec.loops());
+        assert!(!looping.spec.ignores_note_off());
     }
 }

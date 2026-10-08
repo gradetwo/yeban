@@ -87,6 +87,103 @@ impl PlayDirection {
     pub const ALLOWED: &'static str = "forward, reverse";
 }
 
+/// region 收到的 MIDI 事件：`trigger` 门控的**事件口径**。
+///
+/// 本枚举只描述「发生了哪一类事件」，不含「由哪个 region 播放」的判断 ——
+/// 后者是 [`Trigger::responds_to`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerEvent {
+    /// 一个 note-on。
+    NoteOn,
+    /// 一个 note-off。
+    ///
+    /// `pedal_down` 报告延音踏板此刻是否踩下：规范里 `trigger=release` 的 region
+    /// 「will play on note-off **or** sustain pedal off」，因此踏板踩下时它**不**发声
+    /// （等踏板松开再报一次本事件）；`release_key` 则完全忽略踏板。
+    /// 出处：<https://sfzformat.com/opcodes/trigger/>。
+    NoteOff {
+        /// 延音踏板此刻是否踩下。
+        pedal_down: bool,
+    },
+}
+
+/// `trigger` opcode：region 由哪一类 MIDI 事件触发。
+///
+/// 规范事实（<https://sfzformat.com/opcodes/trigger/>）：
+/// `attack` 是缺省值；`first` / `legato` 也是 note-on 家族，但额外要求
+/// 「触发时有没有**其它**音符按着」；`release` 由 note-off / 踏板松开触发；
+/// `release_key`（SFZ v2）由 note-off 触发并**忽略**踏板。
+///
+/// 同一页还规定：`trigger=release` / `release_key` 的 region
+/// 「will play as if `loop_mode` was set to `one_shot`」。该覆盖由
+/// [`Region::effective_loop_mode`] 实现。
+///
+/// **本切片刻意不建模**（登记在 `docs/ledger/sfz-core-notes.md`）：
+/// ARIA / DropZone 要求 release region 存在「对应的 attack region」才发声，
+/// 并按 `rt_decay` 缩放音量；规范自己写明这一族行为
+/// 「varies considerably between SFZ players」。本 crate 只做**事件门控**，
+/// 不发明「对应 attack region」的判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// `attack`（缺省）：note-on 触发。
+    Attack,
+    /// `release`：note-off 触发；踏板踩下时推迟到踏板松开。
+    Release,
+    /// `release_key`（SFZ v2）：note-off 触发，忽略延音踏板。
+    ReleaseKey,
+    /// `first`：note-on 触发，且触发时没有其它音符按着。
+    First,
+    /// `legato`：note-on 触发，且触发时有其它音符按着。
+    Legato,
+}
+
+impl Trigger {
+    /// 白名单（`opcode=value` 的大小写不敏感匹配集合）。
+    pub const OPTIONS: &'static [(&'static str, Trigger)] = &[
+        ("attack", Trigger::Attack),
+        ("release", Trigger::Release),
+        ("release_key", Trigger::ReleaseKey),
+        ("first", Trigger::First),
+        ("legato", Trigger::Legato),
+    ];
+
+    /// 用于错误信息的允许值列表。
+    pub const ALLOWED: &'static str = "attack, release, first, legato, release_key";
+
+    /// 是否属于 release 家族（`release` / `release_key`）：由 note-off 触发，
+    /// 且按规范强制 `loop_mode=one_shot`。
+    #[must_use]
+    pub fn is_release_family(self) -> bool {
+        matches!(self, Trigger::Release | Trigger::ReleaseKey)
+    }
+
+    /// 该 region 是否响应这个事件。
+    #[must_use]
+    pub fn responds_to(self, event: TriggerEvent) -> bool {
+        match self {
+            Trigger::Attack | Trigger::First | Trigger::Legato => event == TriggerEvent::NoteOn,
+            // 踏板踩下时 `release` 不发声，等踏板松开。
+            Trigger::Release => event == TriggerEvent::NoteOff { pedal_down: false },
+            // `release_key` 忽略踏板：踏板踩不踩都发声。
+            Trigger::ReleaseKey => matches!(event, TriggerEvent::NoteOff { .. }),
+        }
+    }
+
+    /// `first` / `legato` 的「其它按住的音符数」门控是否满足；其它取值恒 `true`。
+    ///
+    /// `held_notes` 是**其它**音符的当前按住数，由调用方给出。严格策略与
+    /// [`RegionQuery`] 的 keyswitch / CC 门控一致：region 需要该状态而查询没有提供时
+    /// 返回 `false` —— 不猜「大概没有别的音」，也不悄悄发声。
+    #[must_use]
+    pub fn held_notes_ok(self, held_notes: Option<u32>) -> bool {
+        match self {
+            Trigger::First => held_notes == Some(0),
+            Trigger::Legato => held_notes.is_some_and(|held| held > 0),
+            Trigger::Attack | Trigger::Release | Trigger::ReleaseKey => true,
+        }
+    }
+}
+
 /// 一个 MIDI CC 门控：`loccN` / `hiccN` 归约成 `[lo, hi]` 闭区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CcGate {
@@ -119,6 +216,12 @@ pub struct Region<'a> {
     pub pitch_keycenter: i32,
     /// `false` 表示 `key=-1`：该 region 不由音符触发（例如纯 CC 触发）。
     pub trigger_by_note: bool,
+    /// `trigger`：该 region 由哪一类 MIDI 事件触发（缺省 [`Trigger::Attack`]）。
+    ///
+    /// 与 [`Region::trigger_by_note`] 的分工：`trigger_by_note` 是 `key=-1`
+    /// 的布尔投影（「是否由音符触发**这件事**」），本字段是 `trigger` opcode 的原样取值
+    /// （「由 note-on 还是 note-off 触发」）。二者都成立才在对应事件上播放。
+    pub trigger: Trigger,
     /// 力度下界（含）。
     pub lovel: u8,
     /// 力度上界（含）。
@@ -239,13 +342,36 @@ impl<'a> Region<'a> {
     pub fn has_keyswitch_gate(&self) -> bool {
         self.sw_last.is_some() || self.sw_down.is_some() || self.sw_up.is_some()
     }
+
+    /// 生效的循环模式：`trigger=release` / `release_key` 的 region 覆盖成
+    /// [`LoopMode::OneShot`]。
+    ///
+    /// 规范事实（<https://sfzformat.com/opcodes/trigger/>）：「Setting trigger to
+    /// release or release_key will cause the region to play as if `loop_mode` was
+    /// set to **one_shot**」。该覆盖是**读取语义**上的，不改写 `region.loop_mode`
+    /// 存的原样取值；[`Region::loop_window`] 与 [`crate::PlaybackSpec`] 用本方法。
+    #[must_use]
+    pub fn effective_loop_mode(&self) -> LoopMode {
+        if self.trigger.is_release_family() {
+            LoopMode::OneShot
+        } else {
+            self.loop_mode
+        }
+    }
+
+    /// 该 region 是否需要「其它按住的音符数」这类外部状态（`trigger=first` /
+    /// `legato`）。
+    #[must_use]
+    pub fn has_held_notes_gate(&self) -> bool {
+        matches!(self.trigger, Trigger::First | Trigger::Legato)
+    }
 }
 
-/// 一次 note-on 的查询条件。
+/// 一次触发查询的条件。
 ///
-/// **严格策略**（刻意选择，记在 notes）：region 声明了 keyswitch / CC 门控，
-/// 而查询没有提供对应状态时，该 region **不**匹配。这样「未接线的门控」不会
-/// 悄悄发声，也保证同一输入永远同一结果 [ARCH-DET-001]。
+/// **严格策略**（刻意选择，记在 notes）：region 声明了 keyswitch / CC / `first` /
+/// `legato` 门控，而查询没有提供对应状态时，该 region **不**匹配。这样「未接线的门控」
+/// 不会悄悄发声，也保证同一输入永远同一结果 [ARCH-DET-001]。
 pub struct RegionQuery<'q> {
     /// 触发的音符（MIDI 号 0..=127）。
     pub note: u8,
@@ -255,6 +381,12 @@ pub struct RegionQuery<'q> {
     pub channel: u8,
     /// 第几次触发（0-based）。轮替 `seq_length` 靠它确定性选择。
     pub occurrence: u64,
+    /// 触发事件：note-on（[`RegionQuery::new`] 的缺省）或 note-off。
+    pub event: TriggerEvent,
+    /// **其它**音符此刻的按住数（`trigger=first` / `legato` 用）。
+    ///
+    /// `None` 表示调用方未提供该状态；严格策略下 `first` / `legato` region 因此不匹配。
+    pub held_notes: Option<u32>,
     /// `[sw_lokey, sw_hikey]` 范围内最后按下的音。
     pub last_keyswitch: Option<u8>,
     /// 某音此刻是否按下。
@@ -264,7 +396,7 @@ pub struct RegionQuery<'q> {
 }
 
 impl<'q> RegionQuery<'q> {
-    /// 最简查询：只有音符与力度，通道默认 1，轮替序号 0，门控状态未提供。
+    /// 最简查询：note-on，只有音符与力度，通道默认 1，轮替序号 0，门控状态未提供。
     #[must_use]
     pub fn new(note: u8, velocity: u8) -> Self {
         Self {
@@ -272,10 +404,35 @@ impl<'q> RegionQuery<'q> {
             velocity,
             channel: 1,
             occurrence: 0,
+            event: TriggerEvent::NoteOn,
+            held_notes: None,
             last_keyswitch: None,
             keys_down: None,
             cc: None,
         }
+    }
+
+    /// note-off 查询（`trigger=release` / `release_key` 用）。
+    ///
+    /// `pedal_down` 是延音踏板此刻是否踩下：踩下时 `release` region 不匹配，
+    /// `release_key` 仍然匹配（见 [`TriggerEvent::NoteOff`]）。
+    #[must_use]
+    pub fn note_off(note: u8, velocity: u8, pedal_down: bool) -> Self {
+        Self::new(note, velocity).with_event(TriggerEvent::NoteOff { pedal_down })
+    }
+
+    /// 设置触发事件。
+    #[must_use]
+    pub fn with_event(mut self, event: TriggerEvent) -> Self {
+        self.event = event;
+        self
+    }
+
+    /// 设置「其它音符的按住数」（`trigger=first` / `legato` 用）。
+    #[must_use]
+    pub fn with_held_notes(mut self, held_notes: u32) -> Self {
+        self.held_notes = Some(held_notes);
+        self
     }
 
     /// 设置轮替触发序号（确定性轮替）。
@@ -368,9 +525,11 @@ impl<'a> Instrument<'a> {
         &self.warnings
     }
 
-    /// 选择该音符 / 力度应该演奏的 region（轮替序号为 0）。
+    /// 选择该音符 / 力度应该演奏的 region（note-on 事件，轮替序号为 0）。
     ///
     /// 等价于 `region_for_with(RegionQuery::new(note, velocity))`。
+    /// note-on 事件**不会**选中 `trigger=release` / `release_key` 的 region
+    /// （它们由 [`RegionQuery::note_off`] 选中）。
     #[must_use]
     pub fn region_for(&self, note: u8, velocity: u8) -> Option<&Region<'a>> {
         self.region_for_with(RegionQuery::new(note, velocity))
@@ -422,6 +581,12 @@ fn region_matches(region: &Region<'_>, query: &RegionQuery<'_>) -> bool {
         || !region.matches_velocity(query.velocity)
         || !region.matches_channel(query.channel)
     {
+        return false;
+    }
+
+    // `trigger` 事件门控：note-on 事件永不选中 `trigger=release` / `release_key`
+    // 的 region，note-off 事件永不选中 note-on 家族的 region。
+    if !region.trigger.responds_to(query.event) || !region.trigger.held_notes_ok(query.held_notes) {
         return false;
     }
 
@@ -508,6 +673,12 @@ pub(crate) fn build_region<'a>(
         return Ok(None);
     }
     let sample = sample_value.value;
+
+    // ---- 触发事件（`trigger`，见 <https://sfzformat.com/opcodes/trigger/>） ----
+    let trigger = match scopes.get("trigger") {
+        Some(value) => value.as_option(Trigger::OPTIONS, Trigger::ALLOWED)?,
+        None => Trigger::Attack,
+    };
 
     // ---- 键映射 ----
     let key = match scopes.get("key") {
@@ -639,6 +810,7 @@ pub(crate) fn build_region<'a>(
         hikey,
         pitch_keycenter,
         trigger_by_note,
+        trigger,
         lovel,
         hivel,
         lochan,
@@ -735,6 +907,7 @@ mod tests {
             hikey: i32::from(note),
             pitch_keycenter: i32::from(note),
             trigger_by_note: true,
+            trigger: Trigger::Attack,
             lovel: 0,
             hivel: 127,
             lochan: 1,
@@ -1181,5 +1354,313 @@ mod tests {
         .expect("the documented upper bound is in range");
         assert_eq!(max.regions()[0].offset, u32::MAX);
         assert_eq!(max.regions()[0].end, SampleEnd::Inclusive(u32::MAX));
+    }
+
+    // -----------------------------------------------------------------------
+    // `trigger`（<https://sfzformat.com/opcodes/trigger/>）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn trigger_defaults_to_attack_and_accepts_the_five_documented_values() {
+        // 规范表：默认 `attack`，Options `attack, release, first, legato`（SFZ v1）
+        // 加 `release_key`（SFZ v2）。五个取值逐一读回。
+        let default = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(default.regions()[0].trigger, Trigger::Attack);
+
+        for (text, expected) in [
+            ("attack", Trigger::Attack),
+            ("release", Trigger::Release),
+            ("release_key", Trigger::ReleaseKey),
+            ("first", Trigger::First),
+            ("legato", Trigger::Legato),
+            // 取值匹配大小写不敏感（与 `loop_mode` 同一条 `as_option` 路径）。
+            ("RELEASE", Trigger::Release),
+        ] {
+            let source = format!("<region>sample=a.wav trigger={text}");
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            assert_eq!(instrument.regions()[0].trigger, expected, "trigger={text}");
+        }
+
+        assert!(matches!(
+            parse_text("<region>sample=a.wav trigger=sustain", &Default::default()),
+            Err(SfzError::InvalidOption { .. })
+        ));
+    }
+
+    #[test]
+    fn trigger_is_read_from_the_four_scope_chain() {
+        // 与其它 opcode 同一条 `region → group → master → global` 查找链：
+        // region 覆盖 group，group 覆盖 master。
+        let inherited = parse_text(
+            "<master>trigger=release\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(inherited.regions()[0].trigger, Trigger::Release);
+
+        let overridden = parse_text(
+            "<global>trigger=release\n<group>trigger=legato\n\
+             <region>sample=a.wav trigger=first",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(overridden.regions()[0].trigger, Trigger::First);
+    }
+
+    #[test]
+    fn a_release_region_is_not_selected_by_a_note_on() {
+        // 缺口修复判据：改动前 `trigger=release` 的 region 会在 note-on 被选中
+        // （把 release 采样当成 attack 采样播放）。改动后 note-on 永不选中它。
+        let instrument = parse_text(
+            "<region>sample=release.wav trigger=release",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 1, "the region is still parsed");
+        assert!(
+            instrument.region_for(60, 100).is_none(),
+            "a trigger=release region must not be selected by a note-on"
+        );
+        // 它仍然由 note-off（踏板松开）选中。
+        let picked = instrument
+            .region_for_with(RegionQuery::note_off(60, 100, false))
+            .expect("note-off selects the release region");
+        assert_eq!(picked.sample, "release.wav");
+    }
+
+    #[test]
+    fn release_and_release_key_differ_on_the_sustain_pedal() {
+        // 规范：「`release` will play on note-off **or** sustain pedal off」，
+        // 「`release_key` will play on note-off. Ignores sustain pedal.」
+        let release = parse_text("<region>sample=r.wav trigger=release", &Default::default())
+            .expect("parses");
+        assert!(
+            release
+                .region_for_with(RegionQuery::note_off(60, 100, false))
+                .is_some(),
+            "release plays when the pedal is up"
+        );
+        assert!(
+            release
+                .region_for_with(RegionQuery::note_off(60, 100, true))
+                .is_none(),
+            "release waits for the pedal to come up"
+        );
+
+        let key = parse_text(
+            "<region>sample=k.wav trigger=release_key",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(
+            key.region_for_with(RegionQuery::note_off(60, 100, true))
+                .is_some(),
+            "release_key ignores the pedal"
+        );
+        assert!(
+            key.region_for_with(RegionQuery::note_off(60, 100, false))
+                .is_some(),
+            "release_key also plays with the pedal up"
+        );
+        assert!(
+            key.region_for(60, 100).is_none(),
+            "release_key is still not a note-on trigger"
+        );
+    }
+
+    #[test]
+    fn attack_regions_are_not_selected_by_a_note_off() {
+        // 反向门控：note-off 事件永不选中 note-on 家族的 region。
+        let instrument = parse_text(
+            "<region>sample=a.wav\n<region>sample=b.wav trigger=first\n\
+             <region>sample=c.wav trigger=legato",
+            &Default::default(),
+        )
+        .expect("parses");
+        for pedal_down in [false, true] {
+            assert!(
+                instrument
+                    .region_for_with(RegionQuery::note_off(60, 100, pedal_down))
+                    .is_none(),
+                "note-off must not select note-on regions (pedal_down={pedal_down})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mixed_instrument_switches_region_family_with_the_event() {
+        let instrument = parse_text(
+            "<region>sample=attack.wav trigger=attack\n\
+             <region>sample=release.wav trigger=release",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.region_for(60, 100).map(|r| r.sample.as_ref()),
+            Some("attack.wav")
+        );
+        assert_eq!(
+            instrument
+                .region_for_with(RegionQuery::note_off(60, 100, false))
+                .map(|r| r.sample.as_ref()),
+            Some("release.wav")
+        );
+    }
+
+    #[test]
+    fn first_and_legato_require_the_held_note_count() {
+        // `first`：note-on 且没有**其它**音符按着；`legato`：note-on 且有其它音符按着。
+        // 严格策略：调用方不给按住数 ⇒ 两者都不匹配（不猜「大概没有别的音」）。
+        let first =
+            parse_text("<region>sample=f.wav trigger=first", &Default::default()).expect("parses");
+        assert!(first.region_for(60, 100).is_none(), "state not provided");
+        assert!(
+            first
+                .region_for_with(RegionQuery::new(60, 100).with_held_notes(0))
+                .is_some(),
+            "first plays when no other note is held"
+        );
+        assert!(
+            first
+                .region_for_with(RegionQuery::new(60, 100).with_held_notes(1))
+                .is_none(),
+            "first must not play inside a legato phrase"
+        );
+
+        let legato =
+            parse_text("<region>sample=l.wav trigger=legato", &Default::default()).expect("parses");
+        assert!(legato.region_for(60, 100).is_none(), "state not provided");
+        assert!(
+            legato
+                .region_for_with(RegionQuery::new(60, 100).with_held_notes(1))
+                .is_some(),
+            "legato plays when another note is held"
+        );
+        assert!(
+            legato
+                .region_for_with(RegionQuery::new(60, 100).with_held_notes(0))
+                .is_none(),
+            "legato must not play on the first note"
+        );
+
+        assert!(first.regions()[0].has_held_notes_gate());
+        assert!(
+            !parse_text("<region>sample=a.wav", &Default::default())
+                .unwrap()
+                .regions()[0]
+                .has_held_notes_gate()
+        );
+    }
+
+    #[test]
+    fn key_minus_one_release_regions_never_trigger() {
+        // `key=-1`（`trigger_by_note == false`）与 `trigger` 是两道独立的门：
+        // 两道都过才播放。
+        let instrument = parse_text(
+            "<region>key=-1 sample=r.wav trigger=release",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(!instrument.regions()[0].trigger_by_note);
+        assert!(
+            instrument
+                .region_for_with(RegionQuery::note_off(60, 100, false))
+                .is_none(),
+            "key=-1 blocks note-off triggering too"
+        );
+    }
+
+    #[test]
+    fn release_regions_force_one_shot_loop_mode() {
+        // 规范：「Setting trigger to release or release_key will cause the region to
+        // play as if `loop_mode` was set to one_shot」。
+        let instrument = parse_text(
+            "<region>sample=r.wav trigger=release loop_mode=loop_continuous \
+             loop_start=10 loop_end=20",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            region.loop_mode,
+            LoopMode::LoopContinuous,
+            "stored as written"
+        );
+        assert_eq!(
+            region.effective_loop_mode(),
+            LoopMode::OneShot,
+            "overridden"
+        );
+        assert_eq!(region.loop_window(), None, "one_shot does not loop");
+
+        let attack = parse_text(
+            "<region>sample=a.wav loop_mode=loop_continuous loop_start=10 loop_end=20",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            attack.regions()[0].effective_loop_mode(),
+            LoopMode::LoopContinuous
+        );
+        assert!(attack.regions()[0].loop_window().is_some());
+    }
+
+    #[test]
+    fn trigger_event_matching_table_is_total() {
+        // 事件口径逐条固定（4 条规则），避免以后被"顺手"改宽。
+        let cases = [
+            (Trigger::Attack, TriggerEvent::NoteOn, true),
+            (
+                Trigger::Attack,
+                TriggerEvent::NoteOff { pedal_down: false },
+                false,
+            ),
+            (Trigger::Release, TriggerEvent::NoteOn, false),
+            (
+                Trigger::Release,
+                TriggerEvent::NoteOff { pedal_down: false },
+                true,
+            ),
+            (
+                Trigger::Release,
+                TriggerEvent::NoteOff { pedal_down: true },
+                false,
+            ),
+            (Trigger::ReleaseKey, TriggerEvent::NoteOn, false),
+            (
+                Trigger::ReleaseKey,
+                TriggerEvent::NoteOff { pedal_down: false },
+                true,
+            ),
+            (
+                Trigger::ReleaseKey,
+                TriggerEvent::NoteOff { pedal_down: true },
+                true,
+            ),
+            (Trigger::First, TriggerEvent::NoteOn, true),
+            (
+                Trigger::First,
+                TriggerEvent::NoteOff { pedal_down: false },
+                false,
+            ),
+            (Trigger::Legato, TriggerEvent::NoteOn, true),
+            (
+                Trigger::Legato,
+                TriggerEvent::NoteOff { pedal_down: true },
+                false,
+            ),
+        ];
+        for (trigger, event, expected) in cases {
+            assert_eq!(
+                trigger.responds_to(event),
+                expected,
+                "{trigger:?} vs {event:?}"
+            );
+        }
+        assert!(Trigger::Release.is_release_family());
+        assert!(Trigger::ReleaseKey.is_release_family());
+        assert!(!Trigger::Attack.is_release_family());
+        assert!(!Trigger::First.is_release_family());
+        assert!(!Trigger::Legato.is_release_family());
     }
 }
