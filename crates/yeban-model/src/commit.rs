@@ -10,6 +10,11 @@
 //!   直到撤销步数用满（或到达根提交）。
 //! - [`CommitGraph::fork_anonymous`] — 撤销数步后继续编辑时自动派生**匿名分支**，
 //!   被撤销的操作 100% 永久保全（原分支头不动，成为只读孤岛）。
+//! - [`CommitGraph::create_branch`] — 在**指定提交**上创建一条**命名**分支（不写提交）：
+//!   "Musical PR" 那类隔离分支不再只能建成孤立根提交。
+//! - [`CommitGraph::append_merge`] — **多父**合并提交：第一父仍是当前分支头，因此
+//!   [`CommitGraph::ancestry`] 与撤销链的主干方向不变，被并进来的一侧留在
+//!   [`Commit::parents`] 里，DAG 关系由本图谱自己承担。
 //!
 //! ## 快照策略
 //!
@@ -91,6 +96,12 @@ impl Commit {
     #[must_use]
     pub fn first_parent(&self) -> Option<EntityId> {
         self.parents.first().copied()
+    }
+
+    /// 是否为**合并提交**（父提交多于一个）。
+    #[must_use]
+    pub fn is_merge(&self) -> bool {
+        self.parents.len() > 1
     }
 }
 
@@ -252,31 +263,12 @@ impl CommitGraph {
         if self.branches.contains_key(&draft.branch_id) {
             return Err(ModelError::OpStateMismatch { op: "genesis" });
         }
-        let id = draft.id;
-        let snapshot_ref = Some(
-            draft
-                .snapshot_ref
-                .unwrap_or_else(|| default_snapshot_hash(&draft.ops)),
-        );
-        self.commits.insert(
-            id,
-            Commit {
-                id,
-                parents: Vec::new(),
-                branch_id: draft.branch_id.clone(),
-                author: draft.author,
-                message: draft.message,
-                created_at: draft.created_at,
-                rng_seed: draft.rng_seed,
-                ops: draft.ops,
-                snapshot_ref,
-            },
-        );
-        self.depths.insert(id, 1);
+        let branch_name = draft.branch_id.clone();
+        let id = self.insert_commit(draft, Vec::new(), 1);
         self.branches.insert(
-            draft.branch_id.clone(),
+            branch_name.clone(),
             BranchHead {
-                name: draft.branch_id,
+                name: branch_name,
                 head: id,
                 anonymous: false,
             },
@@ -300,32 +292,88 @@ impl CommitGraph {
         }
         let head = self.branch_head(&draft.branch_id)?.head;
         let depth = self.depth_of(&head)? + 1;
-        let snapshot_ref = if snapshot_due_at_depth(depth) {
-            Some(
-                draft
-                    .snapshot_ref
-                    .unwrap_or_else(|| default_snapshot_hash(&draft.ops)),
-            )
-        } else {
-            None
+        let branch_name = draft.branch_id.clone();
+        let id = self.insert_commit(draft, vec![head], depth);
+        if let Some(branch) = self.branches.get_mut(&branch_name) {
+            branch.head = id;
+        }
+        Ok(id)
+    }
+
+    /// 在**指定提交**上创建一条**命名**分支（不写入任何提交）[ARCH-OPS-002]。
+    ///
+    /// 与 [`CommitGraph::genesis`]（建根提交）和 [`CommitGraph::fork_anonymous`]
+    /// （把分支名强制成 `anon-<提交 ULID>`）互补：隔离分支可以直接指向一个**已存在**
+    /// 的提交，分支名由调用方决定，且本方法**不**产生提交、**不**动任何既有分支头。
+    ///
+    /// # Errors
+    ///
+    /// `from` 不是已知提交 → [`ModelError::CommitNotFound`]；
+    /// 分支名已被占用（含匿名分支）→ [`ModelError::OpStateMismatch`]。
+    pub fn create_branch(
+        &mut self,
+        name: impl Into<String>,
+        from: &EntityId,
+    ) -> Result<BranchHead, ModelError> {
+        if !self.commits.contains_key(from) {
+            return Err(ModelError::CommitNotFound { id: *from });
+        }
+        let name = name.into();
+        if self.branches.contains_key(&name) {
+            return Err(ModelError::OpStateMismatch {
+                op: "create_branch",
+            });
+        }
+        let head = BranchHead {
+            name: name.clone(),
+            head: *from,
+            anonymous: false,
         };
-        let id = draft.id;
-        self.commits.insert(
-            id,
-            Commit {
-                id,
-                parents: vec![head],
-                branch_id: draft.branch_id.clone(),
-                author: draft.author,
-                message: draft.message,
-                created_at: draft.created_at,
-                rng_seed: draft.rng_seed,
-                ops: draft.ops,
-                snapshot_ref,
-            },
-        );
-        self.depths.insert(id, depth);
-        if let Some(branch) = self.branches.get_mut(&draft.branch_id) {
+        self.branches.insert(name, head.clone());
+        Ok(head)
+    }
+
+    /// 在当前分支头上追加一次**多父合并提交** [ARCH-OPS-002]。
+    ///
+    /// 父集合 = `[当前分支头] ++ extra_parents`。**第一父恒为当前分支头**，
+    /// 因此 [`CommitGraph::ancestry`] 与跨提交撤销的主干方向**不变**：
+    /// `main` 的祖先链上不会出现被合并那一侧的提交，撤销仍然是
+    /// "一次回退整套被合并的操作"。
+    ///
+    /// 深度 = 所有父的最大深度 + 1（DAG 的**因果序号**）；快照策略与
+    /// [`CommitGraph::append`] 相同。
+    ///
+    /// # Errors
+    ///
+    /// `extra_parents` 为空 → [`ModelError::OpStateMismatch`]（单父提交请用
+    /// [`CommitGraph::append`]）；父集合内有重复 → 同上；任一父不是已知提交 →
+    /// [`ModelError::CommitNotFound`]；分支不存在 → [`ModelError::BranchNotFound`]；
+    /// 提交身份已存在 → [`ModelError::DuplicateEntityId`]。
+    pub fn append_merge(
+        &mut self,
+        draft: CommitDraft,
+        extra_parents: &[EntityId],
+    ) -> Result<EntityId, ModelError> {
+        if self.commits.contains_key(&draft.id) {
+            return Err(ModelError::DuplicateEntityId { id: draft.id });
+        }
+        if extra_parents.is_empty() {
+            return Err(ModelError::OpStateMismatch { op: "append_merge" });
+        }
+        let head = self.branch_head(&draft.branch_id)?.head;
+        let mut parents = Vec::with_capacity(extra_parents.len() + 1);
+        parents.push(head);
+        parents.extend_from_slice(extra_parents);
+        let mut depth = 0_u64;
+        for (index, parent) in parents.iter().enumerate() {
+            if parents[..index].contains(parent) {
+                return Err(ModelError::OpStateMismatch { op: "append_merge" });
+            }
+            depth = depth.max(self.depth_of(parent)?);
+        }
+        let branch_name = draft.branch_id.clone();
+        let id = self.insert_commit(draft, parents, depth + 1);
+        if let Some(branch) = self.branches.get_mut(&branch_name) {
             branch.head = id;
         }
         Ok(id)
@@ -353,6 +401,31 @@ impl CommitGraph {
             "{ANONYMOUS_BRANCH_PREFIX}{}",
             draft.id.to_canonical_string()
         );
+        let mut draft = draft;
+        draft.branch_id.clone_from(&branch_name);
+        let id = self.insert_commit(draft, vec![*from], depth);
+        self.branches.insert(
+            branch_name.clone(),
+            BranchHead {
+                name: branch_name.clone(),
+                head: id,
+                anonymous: true,
+            },
+        );
+        Ok((branch_name, id))
+    }
+
+    /// 四个写提交的 API 共用的下半段：按快照策略构造 [`Commit`]，写入
+    /// `commits` 与 `depths` 两个集合，返回提交身份。
+    ///
+    /// 上半段（校验身份/分支、算父集合与深度、更新分支头）各调用点不同，
+    /// 因此留在各自的 `pub fn` 里；这一段在四处完全相同，只有它被收进本函数。
+    fn insert_commit(
+        &mut self,
+        draft: CommitDraft,
+        parents: Vec<EntityId>,
+        depth: u64,
+    ) -> EntityId {
         let snapshot_ref = if snapshot_due_at_depth(depth) {
             Some(
                 draft
@@ -367,8 +440,8 @@ impl CommitGraph {
             id,
             Commit {
                 id,
-                parents: vec![*from],
-                branch_id: branch_name.clone(),
+                parents,
+                branch_id: draft.branch_id,
                 author: draft.author,
                 message: draft.message,
                 created_at: draft.created_at,
@@ -378,15 +451,7 @@ impl CommitGraph {
             },
         );
         self.depths.insert(id, depth);
-        self.branches.insert(
-            branch_name.clone(),
-            BranchHead {
-                name: branch_name.clone(),
-                head: id,
-                anonymous: true,
-            },
-        );
-        Ok((branch_name, id))
+        id
     }
 
     /// 只读读取提交。
@@ -936,6 +1001,269 @@ mod tests {
         // 匿名提交自身也可以被撤销。
         assert_eq!(graph.undo(&mut doc, &fork_commit, 1).expect("undo"), 1);
         assert!(!doc.tracks.contains_key(&new_track));
+    }
+
+    #[test]
+    fn create_branch_points_at_an_existing_commit_without_writing_one() {
+        let mut graph = CommitGraph::new();
+        let base = graph
+            .genesis(CommitDraft::new(fixture_id(1), "main", "agent", "genesis"))
+            .expect("genesis");
+        let head = graph
+            .append(CommitDraft::new(fixture_id(2), "main", "agent", "second"))
+            .expect("append");
+        let commits_before = graph.commit_count();
+
+        // 分支指向 `base`（不是最新头）——命名分支不必等于"当前头"。
+        let branch = graph.create_branch("ai/proposal-1", &base).expect("branch");
+        assert_eq!(branch.name, "ai/proposal-1");
+        assert_eq!(branch.head, base);
+        assert!(!branch.anonymous, "create_branch 只建命名分支");
+        assert_eq!(graph.branch_count(), 2);
+        assert_eq!(
+            graph.commit_count(),
+            commits_before,
+            "create_branch 不产生提交"
+        );
+        assert_eq!(
+            graph.branch_head("main").expect("main").head,
+            head,
+            "既有分支头不动"
+        );
+        assert_eq!(graph.branch_head("ai/proposal-1").expect("p1").head, base);
+
+        // 新分支上可以继续 `append`，且不影响 main。
+        let proposal_head = graph
+            .append(CommitDraft::new(
+                fixture_id(3),
+                "ai/proposal-1",
+                "agent",
+                "proposal commit",
+            ))
+            .expect("append on the new branch");
+        assert_eq!(
+            graph.commit(&proposal_head).expect("commit").parents,
+            vec![base],
+            "提案分支从 base 长出去，而不是从 main 的头长出去"
+        );
+        assert_eq!(graph.depth_of(&proposal_head).expect("depth"), 2);
+        assert_eq!(graph.branch_head("main").expect("main").head, head);
+    }
+
+    #[test]
+    fn create_branch_rejects_unknown_commits_and_taken_names() {
+        let mut graph = CommitGraph::new();
+        let genesis = fixture_id(1);
+        graph
+            .genesis(CommitDraft::new(genesis, "main", "agent", "genesis"))
+            .expect("genesis");
+
+        let ghost = fixture_id(77);
+        assert_eq!(
+            graph.create_branch("ghost-branch", &ghost),
+            Err(ModelError::CommitNotFound { id: ghost })
+        );
+        assert_eq!(
+            graph.create_branch("main", &genesis),
+            Err(ModelError::OpStateMismatch {
+                op: "create_branch"
+            }),
+            "分支名已被占用（含既有命名分支）必须拒绝"
+        );
+
+        // 匿名分支也占用名字空间：`fork_anonymous` 派生出的名字不能再被命名分支重用。
+        let (anon, _) = graph
+            .fork_anonymous(
+                &genesis,
+                CommitDraft::new(fixture_id(3), "", "agent", "fork"),
+            )
+            .expect("fork");
+        assert_eq!(
+            graph.create_branch(anon.clone(), &genesis),
+            Err(ModelError::OpStateMismatch {
+                op: "create_branch"
+            })
+        );
+        assert_eq!(graph.branch_count(), 2, "两次被拒的调用不得留下分支");
+    }
+
+    #[test]
+    fn merge_commit_records_every_parent_and_keeps_the_main_line_on_the_first() {
+        let mut graph = CommitGraph::new();
+        let mut doc = project_with_master();
+        let base = graph
+            .genesis(
+                CommitDraft::new(fixture_id(1), "main", "agent", "c1")
+                    .with_ops(vec![add_section_op(11)]),
+            )
+            .expect("genesis");
+        let main_head = graph
+            .append(
+                CommitDraft::new(fixture_id(2), "main", "agent", "c2")
+                    .with_ops(vec![add_section_op(12)]),
+            )
+            .expect("append");
+
+        // 隔离的提案分支：从 `base` 派生命名分支，长出**两条**提交
+        // ⇒ 提案侧比 main 侧更深，`深度 = 最大父深度 + 1` 才有判别力
+        // （只取第一父深度的实现会得到 3，而正确值是 4）。
+        graph.create_branch("ai/proposal-1", &base).expect("branch");
+        let proposal_first = graph
+            .append(
+                CommitDraft::new(fixture_id(3), "ai/proposal-1", "agent", "proposal 1")
+                    .with_ops(vec![add_section_op(13)]),
+            )
+            .expect("append proposal 1");
+        let proposal_head = graph
+            .append(CommitDraft::new(
+                fixture_id(5),
+                "ai/proposal-1",
+                "agent",
+                "proposal 2",
+            ))
+            .expect("append proposal 2");
+        assert_eq!(graph.depth_of(&proposal_first).expect("depth"), 2);
+        assert_eq!(graph.depth_of(&proposal_head).expect("depth"), 3);
+
+        // 合并：第一父 = main 的头（深度 2），第二父 = 提案分支头（深度 3）。
+        let merge = graph
+            .append_merge(
+                CommitDraft::new(fixture_id(4), "main", "agent", "merge proposal")
+                    .with_ops(vec![add_section_op(14)]),
+                &[proposal_head],
+            )
+            .expect("merge");
+        let merged = graph.commit(&merge).expect("merge commit");
+        assert_eq!(merged.parents, vec![main_head, proposal_head]);
+        assert!(merged.is_merge());
+        assert_eq!(merged.first_parent(), Some(main_head));
+        assert_eq!(merged.branch_id, "main");
+        assert_eq!(
+            graph.depth_of(&merge).expect("depth"),
+            4,
+            "深度 = 最大父深度 + 1（第一父 2，第二父 3）"
+        );
+        assert_ne!(
+            graph.depth_of(&merge).expect("depth"),
+            graph.depth_of(&main_head).expect("depth") + 1,
+            "深度不得只看第一父"
+        );
+        assert_eq!(graph.branch_head("main").expect("main").head, merge);
+        assert_eq!(
+            graph.branch_head("ai/proposal-1").expect("p1").head,
+            proposal_head,
+            "被合并的一侧不动"
+        );
+
+        // 主干方向不变：ancestry 沿第一父走，提案提交**不在** main 的祖先链上。
+        assert_eq!(
+            graph.ancestry(&merge).expect("ancestry"),
+            vec![merge, main_head, base]
+        );
+        assert!(
+            !graph
+                .ancestry(&merge)
+                .expect("ancestry")
+                .contains(&proposal_head)
+        );
+
+        // 撤销链同样只含第一父那一侧：提案分支的 op 不混进主分支。
+        let undoable = graph.ops_backwards(&merge, 10).expect("ops");
+        assert_eq!(undoable.len(), 3, "merge 自己的 op + main 两个提交的 op");
+        let touched: Vec<EntityId> = undoable
+            .iter()
+            .filter_map(|stamped| match &stamped.op {
+                Op::SetSection { section_id, .. } => Some(*section_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            touched,
+            vec![fixture_id(14), fixture_id(12), fixture_id(11)]
+        );
+        assert!(
+            !touched.contains(&fixture_id(13)),
+            "提案分支的 op 不得进入主分支的撤销链"
+        );
+
+        // 合并提交与普通提交一样可逆：一次撤销回退它携带的 op。
+        forward(&mut doc, &graph, &merge, 2);
+        assert!(doc.sections.contains_key(&fixture_id(12)));
+        assert!(doc.sections.contains_key(&fixture_id(14)));
+        assert!(!doc.sections.contains_key(&fixture_id(13)));
+        assert_eq!(graph.undo(&mut doc, &merge, 1).expect("undo"), 1);
+        assert!(!doc.sections.contains_key(&fixture_id(14)));
+        assert!(doc.sections.contains_key(&fixture_id(12)));
+    }
+
+    #[test]
+    fn append_merge_rejects_degenerate_parent_sets() {
+        let mut graph = CommitGraph::new();
+        let base = graph
+            .genesis(CommitDraft::new(fixture_id(1), "main", "agent", "genesis"))
+            .expect("genesis");
+        let head = graph
+            .append(CommitDraft::new(fixture_id(2), "main", "agent", "second"))
+            .expect("append");
+
+        // 空 `extra_parents` ⇒ 单父提交，请走 `append`。
+        assert_eq!(
+            graph.append_merge(
+                CommitDraft::new(fixture_id(3), "main", "agent", "not a merge"),
+                &[],
+            ),
+            Err(ModelError::OpStateMismatch { op: "append_merge" })
+        );
+        // 重复父（当前头自己在 `extra_parents` 里）。
+        assert_eq!(
+            graph.append_merge(
+                CommitDraft::new(fixture_id(3), "main", "agent", "self parent"),
+                &[head],
+            ),
+            Err(ModelError::OpStateMismatch { op: "append_merge" })
+        );
+        // 重复父（`extra_parents` 内部重复）。
+        assert_eq!(
+            graph.append_merge(
+                CommitDraft::new(fixture_id(3), "main", "agent", "twice"),
+                &[base, base],
+            ),
+            Err(ModelError::OpStateMismatch { op: "append_merge" })
+        );
+        // 未知父。
+        let ghost = fixture_id(77);
+        assert_eq!(
+            graph.append_merge(
+                CommitDraft::new(fixture_id(3), "main", "agent", "ghost"),
+                &[ghost],
+            ),
+            Err(ModelError::CommitNotFound { id: ghost })
+        );
+        // 未知分支。
+        assert_eq!(
+            graph.append_merge(
+                CommitDraft::new(fixture_id(3), "ghost", "agent", "branch"),
+                &[base],
+            ),
+            Err(ModelError::BranchNotFound {
+                name: "ghost".to_owned()
+            })
+        );
+        // 提交身份已存在。
+        assert_eq!(
+            graph.append_merge(
+                CommitDraft::new(fixture_id(2), "main", "agent", "duplicate id"),
+                &[base],
+            ),
+            Err(ModelError::DuplicateEntityId { id: fixture_id(2) })
+        );
+        assert_eq!(graph.commit_count(), 2, "五次被拒的调用不得留下提交");
+        assert_eq!(graph.branch_count(), 1);
+        assert_eq!(
+            graph.branch_head("main").expect("main").head,
+            head,
+            "被拒的合并不得推进分支头"
+        );
     }
 
     #[test]
