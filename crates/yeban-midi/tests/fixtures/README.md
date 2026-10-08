@@ -315,8 +315,110 @@ open("handmade_mvp_partwise_deflate_fixed.mxl", "wb").write(build_zip([
 1. ⛔ 不证明 `.mxl` 的**全部**形态可读：本节与第 6 节合起来只覆盖 `stored` 与 `deflate`
    两种压缩法、`BTYPE` 1 与 2，以及判据自造的 `BTYPE=0`（`tests/musicxml_contract.rs` 的
    `deflate_stored_block`，**不在**本目录）。
-2. ⛔ 不证明 **ZIP64 / 加密 / 非 deflate 压缩法 / data descriptor** 的**接受**：
-   前三者有**拒绝**判据，`data descriptor` **完全**没有判据。
+2. ⛔ 不证明 **ZIP64 / 加密 / 非 deflate 压缩法** 的**接受**：这三者只有**拒绝**判据。
+   `data descriptor` 的**接受**由**第 8 节**钉住（本票新增）。
 3. ⛔ 不证明本夹具代表真实生产者的输出：本机 6 个真 `.mxl`（`/tmp/musicxml/**`，**未提交**）
    与本节的两份都是**不同**生产者的样本，不是全集。
 4. ⛔ 不证明 `.mxl` 导入已接入引擎 / MCP / 界面：本 crate 只提供**只读**解析。
+
+## 8. `.mxl` 的两种"形状"夹具：data descriptor 与多块 DEFLATE（本票新增）
+
+本节的读者是 `crates/yeban-midi/tests/musicxml_contract.rs` 的两条判据
+`mxl_data_descriptor_container_is_read_from_the_central_directory` 与
+`mxl_multiblock_deflate_stream_is_read_to_its_last_block`，以及
+`crates/yeban-midi/src/mxl.rs`（边界 7 / 9）与 `crates/yeban-midi/src/mxl/inflate.rs`（多块流）。
+
+### 8.1 为什么需要这两份
+
+第 6 / 7 节的两份夹具与 6 个真 `.mxl` 都不含这两种形状。**实测**（本机，2026-10-09）：
+
+| 读数 | 单位 | 值 | 怎么量 |
+| :--- | :--- | ---: | :--- |
+| general purpose flag 的 **bit 3** 置位的条目 | 条目 | **0 / 16** | 读每份 `.mxl` 的 local file header（偏移 6）与 central directory 条目（偏移 8）的 flags |
+| 本地头的 `(CRC-32, 压缩长度, 未压缩长度)` 与中央目录**相等**的条目 | 条目 | **16 / 16** | 逐条目比本地头偏移 14 / 18 / 22 与中央目录偏移 16 / 20 / 24 |
+| 只有**一个**顶层 DEFLATE 块（首块 `BFINAL=1`）的流 | 流 | **16 / 16** | 手写 raw-DEFLATE 块走查（固定表用 RFC 1951 §3.2.6 的码长、dynamic 块先解 §3.2.7 的码长表） |
+
+⇒ 两种形状**只能自造**：`data descriptor` 的读取路径与多块链在已提交语料里**一次都没被接受过**。
+
+### 8.2 逐件登记（来源 · 许可 · SHA-256）
+
+| 本目录文件 | 字节 | SHA-256 | 来源 | 许可 |
+| :--- | ---: | :--- | :--- | :--- |
+| `handmade_mvp_partwise_data_descriptor.mxl` | 1467 | `e893179d52885d1520a366c5233c10382680fc11c8f32f59dd53aca2e30f0904` | 夜半项目自造（本票）：CPython `zipfile` 在**不可 seek** 的输出上写的 deflate 容器 | 本仓库许可 |
+| `handmade_mvp_partwise_multiblock.mxl` | 1487 | `95d3ed7e5be06464cc6bbd1d0cb0b2041d3c3c2fc2bf5dceb7316edd55a22280` | 夜半项目自造（本票）：`score.xml` 走 `zlib.compressobj` + `Z_FULL_FLUSH` 的 deflate 容器 | 本仓库许可 |
+
+两份都是 **2** 个条目、**2/2** deflate，载荷都是 `handmade_mvp_partwise.musicxml`
+（`score.xml` 的 CRC-32 `0xcbb005a0`、未压缩长度 **2716** 与第 6 / 7 节一致）。
+
+**`handmade_mvp_partwise_data_descriptor.mxl` 的容器字段**（判据逐项读数）：
+
+| 条目 | 本地头偏移 | 本地头 bit 3 | 本地头 `(CRC, 压缩, 原始)` | 中央头 `(CRC, 压缩, 原始)` | 描述符偏移 |
+| :--- | ---: | ---: | :--- | :--- | ---: |
+| `META-INF/container.xml`（22 字节名） | 0 | 置位 | `(0, 0, 0)` | `(0xae69681f, 104, 146)` | 156 |
+| `score.xml`（9 字节名） | 172 | 置位 | `(0, 0, 0)` | `(0xcbb005a0, 1095, 2716)` | 1306 |
+
+描述符是 **16** 字节 = 签名 `PK\x07\x08` + 3 个 `u32` 小端；条目 0 的描述符在 `[156, 172)`
+⇒ 下一条本地头正好落在 172（判据钉住这一对读数）。
+
+**`handmade_mvp_partwise_multiblock.mxl` 的块结构**（`score.xml`，块走查读数）：
+
+| # | `BFINAL` | `BTYPE` | 位区间 | 备注 |
+| ---: | ---: | ---: | :--- | :--- |
+| 1 | 0 | 2（dynamic） | `0..6684` | 不是最后一块，且结束在**半字节**上 |
+| 2 | 0 | 0（stored） | `6684..6720` | `LEN=0`；`align_to_byte` 丢掉 4 位余量 |
+| 3 | 1 | 2（dynamic） | `6720..9174` | 最后一块 |
+
+### 8.3 构造配方（**确定性**：同一份输入 ⇒ 同一份字节）
+
+```python
+import io, struct, zipfile, zlib
+
+SCORE = open("handmade_mvp_partwise.musicxml", "rb").read()
+CONTAINER = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    "<container>\n  <rootfiles>\n"
+    '    <rootfile full-path="score.xml">\n    </rootfile>\n'
+    "  </rootfiles>\n</container>\n"
+).encode()
+
+class NonSeekable(io.RawIOBase):        # zipfile 见 seekable()=False ⇒ 改用 data descriptor
+    def __init__(self, f): self._f = f
+    def writable(self): return True
+    def seekable(self): return False
+    def write(self, b): return self._f.write(b)
+
+buf = io.BytesIO()
+with zipfile.ZipFile(NonSeekable(buf), "w", zipfile.ZIP_DEFLATED) as z:
+    for name, payload in (("META-INF/container.xml", CONTAINER), ("score.xml", SCORE)):
+        info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))   # ⚠ 缺省是 localtime ⇒ 非确定
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0
+        z.writestr(info, payload)
+open("handmade_mvp_partwise_data_descriptor.mxl", "wb").write(buf.getvalue())
+```
+
+多块那份沿用第 7 节的手写 ZIP 写出器（`build_zip`），只把 `score.xml` 的 DEFLATE 流换成
+"两半之间插一次 `Z_FULL_FLUSH`"：
+
+```python
+c = zlib.compressobj(level=6, wbits=-15)
+half = len(SCORE) // 2
+blob = (c.compress(SCORE[:half]) + c.flush(zlib.Z_FULL_FLUSH)
+        + c.compress(SCORE[half:]) + c.flush(zlib.Z_FINISH))
+# container.xml 的流仍用 c2.compress(CONTAINER) + c2.flush()（单块）
+```
+
+复核（本票实测，全部为**真**）：配方连跑两次，两份文件的 SHA-256 与上表相同；
+`zlib.decompress(流, -15) == SCORE`（2/2）；多块那份的首块 `(BFINAL, BTYPE) = (0, 2)`。
+
+### 8.4 本节**没有**证明什么
+
+1. ⛔ 不证明**任意** data descriptor 容器可读：只覆盖"bit 3 在本地头与中央头都置位、
+   描述符带 `PK\x07\x08` 签名、16 字节"这一种形态；**不带签名**的 12 字节形态与 ZIP64 的
+   20 / 24 字节描述符**没有**判据（本模块 ⛔ 不支持 ZIP64）。
+2. ⛔ 不证明**任意**多块流可读：只覆盖"dynamic → stored(LEN=0) → dynamic"这一种链；
+   其余组合（如 `stored` 开头、两块都是 `stored`、`BFINAL` 链更长）**没有**判据。
+3. ⛔ 不证明 6 个真 `.mxl` 里**永远**没有这两种形状：那 6 个文件只是一个样本（
+   `/tmp/musicxml/**`，**未提交**）。
+4. ⛔ 不证明这两个生产者（CPython / zlib）的**版本间**输出稳定：夹具字节已冻结，
+   判据读的是冻结字节，不是"重新跑配方"。

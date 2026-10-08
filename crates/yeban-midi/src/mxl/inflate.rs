@@ -16,6 +16,19 @@
 //! 本模块**不**校验 Adler-32 或 gzip CRC：完整性由 ZIP 条目**自己**的 CRC-32 字段保证
 //! （见 [`super`] 的 `read_entry`）。
 //!
+//! ## 多块流（`BFINAL` 链）与其判据
+//!
+//! RFC 1951 §3.2.3 允许一条流由**多个**块组成：只有 `BFINAL=1` 的块是最后一块。
+//! [`inflate_raw`] 因此**循环**读块，并在 `stored` 块之前把比特游标对齐到字节边界
+//! （§3.1.1 的余量丢弃）。
+//!
+//! 已提交语料**碰不到**这条路径：本机 8 个 `.mxl`（2 份已提交夹具 + 6 个真文件
+//! `/tmp/musicxml/**`，**未提交**）的 **16/16** 个 DEFLATE 流都是**单块**
+//! （首块 `BFINAL=1`；单位 = **流**；量法 = 本机手写的 raw-DEFLATE 块走查）。
+//! 该形状由 `crates/yeban-midi/tests/fixtures/README.md` 第 8 节的**自造**夹具
+//! （`zlib.compressobj` + `Z_FULL_FLUSH` ⇒ 3 块，中间那块是 `stored`）与判据
+//! `mxl_multiblock_deflate_stream_is_read_to_its_last_block` 钉住。
+//!
 //! ## 为什么 `.mxl` 需要**完整**窗口
 //!
 //! 本仓库实测：6 个真 `.mxl`（本机 `/tmp/musicxml/**`，**未提交**）的 `score.xml`

@@ -18,6 +18,11 @@
 //!    [`MusicXmlScore`]；根文件名只认 `META-INF/container.xml` 的 `<rootfile full-path>`（⛔ 不猜）；
 //!    字段不符 / 压缩法不认识 / 加密 / ZIP64 / 两种炸弹（声明超界、实际膨胀超界）都明确 `Err`；
 //!    容器层的变形（截断 / 翻转）不 panic。容器由**判据自己**拼 ⇒ 受测代码不是自己的裁判。
+//! ⑦ **容器 / DEFLATE 的两种"形状"**（本票新增，`mxl_data_descriptor_*` 与 `mxl_multiblock_*`）：
+//!    真 data descriptor 容器（bit 3、本地头尺寸为 0、描述符在数据之后）与**多块** DEFLATE 流
+//!    都必须读成同一个 score。这两种形状由**独立生产者**（CPython `zipfile` / `zlib`）写的
+//!    已提交夹具钉住 —— 已提交的另两份夹具与本机 6 个真 `.mxl` 的容器都**不是**这两种形状
+//!    （实测：16/16 个条目的 bit 3 = 0；16/16 个 DEFLATE 流只有单块且 `BFINAL=1`）。
 //!
 //! ## 规范出处
 //!
@@ -27,10 +32,11 @@
 //!
 //! ## 本文件**没有**证明什么
 //!
-//! - ⛔ 不证明 `.mxl` 的**全部**形态可读：只覆盖 2 个已提交夹具（`score.xml` 分别是
-//!   dynamic 与 fixed Huffman 块）与判据自造的容器（stored 条目、stored DEFLATE 块）。
-//!   ZIP64 / 加密 / 非 deflate 压缩法 / data descriptor 的**接受**都**没有**判据
-//!   —— 前三者的**拒绝**有判据，`data descriptor` 连判据都没有（见 `src/mxl.rs` 的边界 7）。
+//! - ⛔ 不证明 `.mxl` 的**全部**形态可读：只覆盖 4 个已提交夹具（`score.xml` 分别是
+//!   dynamic 与 fixed Huffman 块、真 data descriptor 容器、**多块** DEFLATE 流）与判据自造的
+//!   容器（stored 条目、stored DEFLATE 块）。ZIP64 / 加密 / 非 deflate 压缩法的**接受**仍然
+//!   **没有**判据 —— 这三者的**拒绝**有判据（见 `src/mxl.rs` 的边界 1/2/3）。
+//!   `data descriptor` 与多块流的**接受**由本票新增的判据钉住（边界 7 与 `src/mxl/inflate.rs`）。
 //! - ⛔ 不证明导出、引擎接线、界面可用：都不存在。
 //! - ⛔ 不证明完整 MusicXML 4.0 语义：`forward` / `grace` / `unpitched` / `transpose`
 //!   只证明"被登记为未实现"，不证明语义正确。
@@ -67,6 +73,16 @@ const HANDMADE_MXL: &[u8] = include_bytes!("fixtures/handmade_mvp_partwise.mxl")
 /// 构造配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 7 节。
 const HANDMADE_MXL_FIXED: &[u8] =
     include_bytes!("fixtures/handmade_mvp_partwise_deflate_fixed.mxl");
+/// 自造夹具：真 **data descriptor** 形态的容器（生产者 = CPython `zipfile` 在**不可 seek** 的
+/// 输出上写）。两份头都置 general purpose flag 的 bit 3，本地头的 CRC / 尺寸是 **0**，
+/// 真值写在数据区**之后**的 16 字节描述符里。配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 8 节。
+const HANDMADE_MXL_DATA_DESCRIPTOR: &[u8] =
+    include_bytes!("fixtures/handmade_mvp_partwise_data_descriptor.mxl");
+/// 自造夹具：`score.xml` 的 DEFLATE 流是**多块**的容器（生产者 = `zlib.compressobj` +
+/// `Z_FULL_FLUSH`）⇒ 首块 `BFINAL=0`，必须走完后续的 stored 块与最后一个 dynamic 块。
+/// 配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 8 节。
+const HANDMADE_MXL_MULTIBLOCK: &[u8] =
+    include_bytes!("fixtures/handmade_mvp_partwise_multiblock.mxl");
 
 /// 全部已提交的**纯文本**夹具（名字 + 字节）。
 ///
@@ -689,6 +705,53 @@ fn local_bodies(bytes: &[u8]) -> Vec<&[u8]> {
     bodies
 }
 
+/// 一个**中央目录**条目的字面字段（APPNOTE 4.3.12）。
+///
+/// 判据单位：本结构只服务"data descriptor"这一条判据 —— 它要证明**权威**字段（CRC / 尺寸）
+/// 在中央目录里，而本地头那三个字段是 0。
+struct CentralEntry<'a> {
+    name: &'a [u8],
+    flags: u16,
+    crc32: u32,
+    compressed: u32,
+    uncompressed: u32,
+    local_offset: u32,
+}
+
+/// 从文件尾的 EOCD（APPNOTE 4.3.16）走进中央目录，逐条读固定 46 字节 + 条目名。
+///
+/// ⚠️ 与 [`local_entries`] 分开：那支读**本地头**（证明容器字段），本支读**中央目录**
+/// （`parse_mxl` 按这份的尺寸 / CRC 切数据区）。
+fn central_entries(bytes: &[u8]) -> Vec<CentralEntry<'_>> {
+    let Some(eocd) = bytes.windows(4).rposition(|window| window == b"PK\x05\x06") else {
+        return Vec::new();
+    };
+    let total = usize::from(le16(bytes, eocd + 10));
+    let mut pos = le32(bytes, eocd + 16) as usize;
+    let mut entries = Vec::new();
+    for _ in 0..total {
+        if bytes.get(pos..pos + 4) != Some(b"PK\x01\x02") {
+            break;
+        }
+        let name_len = usize::from(le16(bytes, pos + 28));
+        let extra_len = usize::from(le16(bytes, pos + 30));
+        let comment_len = usize::from(le16(bytes, pos + 32));
+        let Some(name) = bytes.get(pos + 46..pos + 46 + name_len) else {
+            break;
+        };
+        entries.push(CentralEntry {
+            name,
+            flags: le16(bytes, pos + 8),
+            crc32: le32(bytes, pos + 16),
+            compressed: le32(bytes, pos + 20),
+            uncompressed: le32(bytes, pos + 24),
+            local_offset: le32(bytes, pos + 42),
+        });
+        pos += 46 + name_len + extra_len + comment_len;
+    }
+    entries
+}
+
 /// 给一个**还没有注释**的容器补一段 EOCD 注释（同时把 EOCD 的注释长度字段改成它的长度）。
 fn append_eocd_comment(zip: &mut Vec<u8>, comment: &[u8]) {
     let eocd = zip.len() - 22;
@@ -770,6 +833,142 @@ fn mxl_import_readings_are_pinned_by_listing_the_containers() {
             "{name} 的 score.xml 首块"
         );
     }
+}
+
+#[test]
+fn mxl_data_descriptor_container_is_read_from_the_central_directory() {
+    // ## 量什么（单位 = 字节 / 条目数）
+    //
+    // 夹具 `handmade_mvp_partwise_data_descriptor.mxl`（`1467` 字节）由 CPython `zipfile`
+    // 在**不可 seek** 的输出上写 ⇒ 真 data descriptor 形态：
+    // 两份头都置 general purpose flag 的 **bit 3**（`0x0008`），本地头的
+    // `(CRC-32, 压缩长度, 未压缩长度)` 三个字段**全是 0**，真值写在数据区**之后**的
+    // 16 字节描述符里（`PK\x07\x08` + 3 个 `u32` 小端）。⇒ 只信本地头的读取器连数据区都切不出来。
+    let bytes = HANDMADE_MXL_DATA_DESCRIPTOR;
+    let centrals = central_entries(bytes);
+    assert_eq!(centrals.len(), 2, "中央目录声明 2 个条目");
+    let names: Vec<&[u8]> = centrals.iter().map(|entry| entry.name).collect();
+    assert_eq!(
+        names,
+        vec![
+            b"META-INF/container.xml".as_slice(),
+            b"score.xml".as_slice()
+        ]
+    );
+
+    let mut descriptor_offsets = Vec::new();
+    for (index, entry) in centrals.iter().enumerate() {
+        assert_eq!(
+            entry.flags & 0x0008,
+            0x0008,
+            "第 {index} 个条目的**中央**头必须置 bit 3（否则本判据没在测 data descriptor）"
+        );
+        let at = entry.local_offset as usize;
+        assert_eq!(
+            le16(bytes, at + 6) & 0x0008,
+            0x0008,
+            "第 {index} 个条目的**本地**头必须置 bit 3"
+        );
+        assert_eq!(
+            (
+                le32(bytes, at + 14),
+                le32(bytes, at + 18),
+                le32(bytes, at + 22)
+            ),
+            (0, 0, 0),
+            "第 {index} 个条目的本地头三个字段全是 0 —— 真值在数据之后"
+        );
+        // 数据区之后就是描述符：签名 + 与中央目录**逐字段相同**的 CRC / 两个长度。
+        let after = at
+            + 30
+            + usize::from(le16(bytes, at + 26))
+            + usize::from(le16(bytes, at + 28))
+            + entry.compressed as usize;
+        assert_eq!(
+            &bytes[after..after + 4],
+            b"PK\x07\x08",
+            "第 {index} 个条目的数据区之后必须是 data descriptor 签名"
+        );
+        assert_eq!(
+            le32(bytes, after + 4),
+            entry.crc32,
+            "第 {index} 个条目的 CRC-32"
+        );
+        assert_eq!(
+            le32(bytes, after + 8),
+            entry.compressed,
+            "第 {index} 个条目的压缩长度"
+        );
+        assert_eq!(
+            le32(bytes, after + 12),
+            entry.uncompressed,
+            "第 {index} 个条目的未压缩长度"
+        );
+        descriptor_offsets.push(after);
+    }
+    // 条目 0 的数据区 [52, 156) 之后紧跟 16 字节描述符，下一条本地头落在 172 ⇒ 描述符长度是 **16**。
+    assert_eq!(
+        (descriptor_offsets[0], centrals[1].local_offset as usize),
+        (156, 172),
+        "描述符 16 字节（4 签名 + 3×u32）"
+    );
+
+    // ## 接受：同一个 score
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    assert_eq!(parse_mxl(bytes), Ok(text.clone()));
+    // 中央目录声明的载荷就是纯文本夹具本身（⇒ 不接受"少读/多读"）。
+    assert_eq!(centrals[1].crc32, crc32(HANDMADE_MVP));
+    assert_eq!(centrals[1].uncompressed as usize, HANDMADE_MVP.len());
+
+    // ## 描述符**不是**权威字段：把条目 0 描述符的三个字段全改成 `0xff`，读取结果不变。
+    // （`MxlError` 的字段以中央目录为准；模块文档的"尺寸与 CRC 一律以中央目录为准"这一句靠本条钉住。）
+    let mut tampered = bytes.to_vec();
+    let after = descriptor_offsets[0];
+    tampered[after + 4..after + 16].copy_from_slice(&[0xff; 12]);
+    assert_eq!(
+        parse_mxl(&tampered),
+        Ok(text.clone()),
+        "描述符里的三个字段不是权威读数"
+    );
+
+    // 确定性 [ARCH-DET-001]：同一份字节两次结果相同。
+    assert_eq!(parse_mxl(bytes), parse_mxl(bytes));
+}
+
+#[test]
+fn mxl_multiblock_deflate_stream_is_read_to_its_last_block() {
+    // ## 量什么（单位 = 字节 / 块）
+    //
+    // 夹具 `handmade_mvp_partwise_multiblock.mxl`（`1487` 字节）的 `score.xml` 流由
+    // `zlib.compressobj` + `Z_FULL_FLUSH` 产出 ⇒ **3** 个顶层块：
+    // `dynamic BFINAL=0` / `stored BFINAL=0 LEN=0` / `dynamic BFINAL=1`
+    // （块数与位边界由本机手写的 raw-DEFLATE 块走查读出，配方见 `tests/fixtures/README.md` 第 8 节）。
+    // 第 1 块在**位** 6684 结束（不是字节边界）⇒ 也钉住 stored 块之前的 `align_to_byte`。
+    let bodies = local_bodies(HANDMADE_MXL_MULTIBLOCK);
+    assert_eq!(bodies.len(), 2, "本夹具是 2 个条目");
+    // 首块 `BFINAL=0` ⇒ "读完一块就返回"的读取器必然拿不到 2716 字节。
+    assert_eq!(first_deflate_block(bodies[1]), (0, 2), "score.xml 的首块");
+    assert_eq!(bodies[1].len(), 1147, "score.xml 压缩后 1147 字节");
+    // 对照臂：同一容器里的 `container.xml` 仍是**单块**固定表（不是所有条目都多块）。
+    assert_eq!(
+        first_deflate_block(bodies[0]),
+        (1, 1),
+        "container.xml 的首块"
+    );
+
+    // ## 接受：同一个 score。中间那个 `stored` 块的 `LEN`/`NLEN` 互补检查（RFC 1951 §3.2.4）
+    // 因此在返回 2716 字节**之前**必须先通过。
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    assert_eq!(parse_mxl(HANDMADE_MXL_MULTIBLOCK), Ok(text.clone()));
+    let centrals = central_entries(HANDMADE_MXL_MULTIBLOCK);
+    assert_eq!(centrals[1].uncompressed, 2716, "中央目录声明的未压缩长度");
+    assert_eq!(centrals[1].crc32, crc32(HANDMADE_MVP));
+
+    // 确定性 [ARCH-DET-001]。
+    assert_eq!(
+        parse_mxl(HANDMADE_MXL_MULTIBLOCK),
+        parse_mxl(HANDMADE_MXL_MULTIBLOCK)
+    );
 }
 
 #[test]

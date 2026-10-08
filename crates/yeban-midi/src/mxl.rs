@@ -48,8 +48,19 @@
 //! 6. ⛔ **无 `META-INF/container.xml` 时不猜**：即使容器里只有一个 XML 条目也不回退
 //!    （OPC 要求根文件由 `container.xml` 指定）⇒ 明确 [`MxlError::NoContainer`](crate::mxl::MxlError::NoContainer)。
 //! 7. ⛔ **data descriptor**（general purpose flag bit 3）本身不需要额外代码：尺寸与 CRC 全部
-//!    取**中央目录**的值 ⇒ 声明写在数据之后的容器也能读。但**没有**针对它的独立判据。
+//!    取**中央目录**的值 ⇒ 声明写在数据之后的容器也能读。判据
+//!    `mxl_data_descriptor_container_is_read_from_the_central_directory` 用一份由 CPython
+//!    `zipfile` 在**不可 seek** 的输出上写的已提交夹具（两份头都置 bit 3、本地头的
+//!    CRC / 两个长度字段为 0、数据区之后是 16 字节 `PK\x07\x08` 描述符）钉住这条：
+//!    **接受**，且描述符里的字段**不是**权威读数（中央目录才是）。
+//!    本机 8 个 `.mxl`（2 份已提交夹具 + 6 个真文件）的 **16/16** 个条目的 bit 3 都是 0
+//!    （单位 = **条目**）⇒ 这条路径只能靠自造夹具，语料碰不到。
 //! 8. ⛔ **接线**：引擎 / MCP / 界面**都不**调用本模块（与 `musicxml` 同口径）。
+//! 9. ⛔ **多块 DEFLATE**：`inflate::inflate_raw` 按 RFC 1951 §3.2.3 的 `BFINAL` 链读**全部**块，
+//!    但本机 8 个 `.mxl` 的 **16/16** 个 DEFLATE 流都是**单块**（首块 `BFINAL=1`；单位 = **流**）
+//!    ⇒ 已提交判据碰不到多块链。该形状由判据
+//!    `mxl_multiblock_deflate_stream_is_read_to_its_last_block` 与
+//!    `tests/fixtures/README.md` 第 8 节的自造夹具钉住（3 块，中间那块是 `stored`）。
 //!
 //! ## 分配（MusicXML **不在**音频线程 ⇒ 零分配不适用，但必须有界）
 //!
