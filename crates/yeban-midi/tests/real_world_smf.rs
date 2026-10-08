@@ -63,6 +63,11 @@
 //! - 力度在这三个夹具里**全部相同**（实测 62）。因此力度往返没有被真文件覆盖。
 //! - `MidiError::UnclosedNote` / `UnmatchedNoteOff` 没有被真文件触发。
 //!   本机对 16 个真文件全部解析成功（探针读数），没有找到能触发它们的真文件。
+//! - ⚠️ **`FF 58` 的后两个字节（`cc` / `bb`）不在往返里回传**：判据 ⑦ 的量具
+//!   [`tempo_map_events`] 只取前两个字节 ⇒ 它看不见这个漂移。判据 ⑨
+//!   （`time_signature_metronome_fields_are_not_round_tripped`）用一支保留全部四个字节的
+//!   量具（[`time_signature_payloads`]）钉住实测读数：WoO 59 的 `cc` 从 `0x12`(18)
+//!   变成 `0x18`(24)，而两个 PPQ 480 的《致爱丽丝》恰好写着 `0x18` ⇒ **不**漂移。
 
 use std::collections::BTreeMap;
 
@@ -836,6 +841,136 @@ fn the_real_files_do_not_trip_any_documented_rejection() {
             chunks.first().map(|c| c.len()),
             Some(6),
             "{label}: MThd 负载是 6 字节"
+        );
+    }
+}
+
+/// 量具: 收集每个 `FF 58` 元事件的**全部四个**数据字节。
+///
+/// 与 [`tempo_map_events`] 同一套独立扫描（不经过 `midly`），但**保留** `cc` / `bb`
+/// —— 那两个字节正是 [`tempo_map_events`] 丢掉的（它只取 `data[0]` / `data[1]`）。
+///
+/// 返回 `(绝对 tick, [numerator, denominator_pow2, cc, bb])` 的**多重集**（已排序）。
+/// 单位 = 事件条数。
+fn time_signature_payloads(bytes: &[u8]) -> Vec<(u64, [u8; 4])> {
+    let mut out: Vec<(u64, [u8; 4])> = Vec::new();
+    for chunk in track_chunks(bytes).expect("chunk 布局") {
+        if &chunk.fourcc != b"MTrk" {
+            continue;
+        }
+        let payload = &bytes[chunk.payload.clone()];
+        let mut tick = 0u64;
+        let mut index = 0usize;
+        let mut status = 0u8;
+        while index < payload.len() {
+            let delta =
+                yeban_midi::vlq::decode(payload, &mut index).expect("delta-time 必须是合法 VLQ");
+            tick += u64::from(delta);
+            let first = payload[index];
+            if first == 0xFF {
+                index += 1;
+                let meta = payload[index];
+                index += 1;
+                let length = yeban_midi::vlq::decode(payload, &mut index)
+                    .expect("meta 长度必须是合法 VLQ") as usize;
+                let data = &payload[index..index + length];
+                index += length;
+                if meta == 0x58 {
+                    assert_eq!(length, 4, "TimeSignature 元事件的数据区恒为 4 字节");
+                    out.push((tick, [data[0], data[1], data[2], data[3]]));
+                }
+                status = 0;
+                if meta == 0x2F {
+                    break;
+                }
+            } else if first == 0xF0 || first == 0xF7 {
+                index += 1;
+                let length = yeban_midi::vlq::decode(payload, &mut index)
+                    .expect("sysex 长度必须是合法 VLQ") as usize;
+                index += length;
+                status = 0;
+            } else if first & 0x80 != 0 {
+                status = first;
+                index += 1 + channel_data_len(first);
+            } else {
+                index += channel_data_len(status);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// 判据 ⑨（⚠️ **钉住今天实测到的缺陷读数，不是承诺**）:
+/// `FF 58` 的后两个数据字节（`cc` = 每个节拍点击的 MIDI 时钟数、
+/// `bb` = 每个四分音符的 32 分音符数）**不在往返里回传** ——
+/// `parse_smf` 把这两个字节丢掉（本文件 `Reading` 的 tempo 记录只有
+/// `(tick, mpqn, 分子, 分母的幂)`），`to_smf_bytes` 恒写 `24, 8`。
+///
+/// ## 量什么（单位 = 事件条数）
+///
+/// 用 [`time_signature_payloads`]（**不经过** `midly` 的独立扫描器）比较
+/// 「源文件」与「再导出文件」里每个 `FF 58` 的**全部四个**数据字节。
+///
+/// ## 为什么必须单独钉一条
+///
+/// 判据 ⑦ `tempo_map_round_trips_faithfully` 声称"往返后的 tempo/timesig 事件
+/// 多重集必须与源文件逐条一致"，但它的量具 [`tempo_map_events`] **只取 `data[0]` /
+/// `data[1]`** ⇒ 后两个字节漂移时它**看不见**（代理指标，不是保真的证明）。本条把
+/// 那两个字节也纳入读数。
+///
+/// ## 实测
+///
+/// `fur_elise_woo59_384ppq_3mtrk.mid` 的 `FF 58` 数据区是 `03 03 12 08`
+/// （`cc = 0x12 = 18`）⇒ 往返后变成 `03 03 18 08`（`cc = 0x18 = 24`）：
+/// **同一条代码路径在两组输入上表现不同**（两个 PPQ 480 的《致爱丽丝》恰好写着
+/// `cc = 0x18` ⇒ 它们**不**漂移）—— 这是"侥幸成功不是成功"的形状。
+///
+/// ⚠️ 本条会在缺陷被修好时**变红**。那时**应当改写**本条（改成断言保真，
+/// 像 R5 的判据 ⑦ 那样），⛔ 不要删掉它。
+///
+/// ## 为什么本票不修
+///
+/// 修法只有一条：给公共结构体 `MidiTempo` 加两个字段（`parse_smf` 填、
+/// `to_smf_bytes` 写）。那会让**既有判据**里对 `MidiTempo` 的穷尽字面量
+/// （本文件判据 ①②、`musicxml_contract.rs`、`smf_contract.rs`）必须逐个改字段
+/// ⇒ 触碰"不许改既有判据"的纪律 ⇒ 本票按纪律**停下报告**，只钉读数。
+#[test]
+fn time_signature_metronome_fields_are_not_round_tripped() {
+    // ---- WoO 59: cc = 18 ⇒ 往返后 24（漂移）----
+    let source = time_signature_payloads(WOO59);
+    assert_eq!(
+        source,
+        vec![(0, [3, 3, 0x12, 0x08])],
+        "WoO 59 的 FF 58 数据区实测是 03 03 12 08（cc = 18）"
+    );
+    let first = parse_smf(WOO59).expect("夹具必须被接受");
+    let reemitted = reexport(&first, MidiFormat::Parallel)
+        .to_smf_bytes()
+        .expect("编码");
+    assert_eq!(
+        time_signature_payloads(&reemitted),
+        vec![(0, [3, 3, 0x18, 0x08])],
+        "已知缺陷: 往返后 cc 从 0x12(18) 变成 0x18(24)；这一行就是登记在案的漂移"
+    );
+
+    // ---- 两个 PPQ 480 的《致爱丽丝》: cc 本来就是 0x18 ⇒ 读数不变（**不**漂移）----
+    for (label, bytes) in [("Elise 1", ELISE_1), ("Elise 2", ELISE_2)] {
+        let source = time_signature_payloads(bytes);
+        assert_eq!(
+            source,
+            vec![(0, [3, 3, 0x18, 0x08]), (0, [4, 2, 0x18, 0x08])],
+            "{label}: FF 58 数据区实测是 03 03 18 08 与 04 02 18 08"
+        );
+        let first = parse_smf(bytes).expect("夹具必须被接受");
+        let reemitted = reexport(&first, MidiFormat::Parallel)
+            .to_smf_bytes()
+            .expect("编码");
+        assert_eq!(
+            time_signature_payloads(&reemitted),
+            source,
+            "{label}: cc/bb 恰好是 24/8 ⇒ 这一份的读数**逐字节相同** \
+             (同一代码路径, 只因源文件恰好写了 24/8)"
         );
     }
 }

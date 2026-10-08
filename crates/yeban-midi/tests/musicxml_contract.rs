@@ -1079,6 +1079,100 @@ fn mxl_container_fuzz_never_panics() {
     assert!(runs >= 5_000, "探针只跑了 {runs} 次，样本太少");
 }
 
+// ---------------------------------------------------------------------------
+// `<forward>`: **今天被忽略的代价**（钉住读数，不是承诺）
+//
+// 本票**没有**实现 `forward`。原因不是"做不到"（修法是 `on_end("forward")` 里一行：
+// 把 `<duration>` 换算成 tick 后前进 cursor，与 `backup` 完全对称），而是它**必然**
+// 改掉一条**既有判据**的期望值：`crates/yeban-midi/src/musicxml.rs` 的单元测试
+// `unsupported_elements_are_registered_separately` 断言
+// `unsupported_elements.get("forward") == Some(&1)`（那个文件里现位于第 1505 行）
+// —— 实现了就不再登记。本票纪律是"不许改既有判据期望值（要改 ⇒ 停下报告）"
+// ⇒ 本票只把**代价**钉成读数，把红行交给下一票。
+//
+// ⛔ 公开语料里没有 `forward` 用例：已提交的 5 个 W3C 夹具与 2 个自造夹具里
+// `forward` 的出现次数都是 **0**（测法：对 `tests/fixtures/*.musicxml` 逐文件数
+// `<forward>` 的出现次数，全部 0）⇒ 只能自造（本票纪律：夹具只许自造或公有领域）。
+// ---------------------------------------------------------------------------
+
+/// 自造夹具：`<forward>` 的三种形状（带 `duration` / `duration=0` / 没有 `duration`）。
+///
+/// 构造配方就在本函数里，没有第二个来源。`divisions=4` ⇒ 1 unit = 240 tick。
+fn forward_fixture() -> Vec<u8> {
+    concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 4.0 Partwise//EN\" ",
+        "\"http://www.musicxml.org/dtds/partwise.dtd\">\n",
+        "<score-partwise version=\"4.0\">\n",
+        "  <part-list><score-part id=\"P1\"><part-name>Forward</part-name></score-part></part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>",
+        "<voice>1</voice></note>\n",
+        "    <backup><duration>4</duration></backup>\n",
+        "    <forward><duration>8</duration><voice>2</voice></forward>\n",
+        "    <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration>",
+        "<voice>2</voice></note>\n",
+        "    <forward><duration>0</duration></forward>\n",
+        "    <forward/>\n",
+        "    <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration>",
+        "<voice>2</voice></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    )
+    .as_bytes()
+    .to_vec()
+}
+
+/// 判据（⚠️ **钉住今天的读数，不是承诺**）: `<forward>` 被忽略 ⇒ 它之后的每个
+/// `start_tick` 都**少了 `forward` 的那一段**。
+///
+/// ## 量什么（单位 = tick，960 PPQ）
+///
+/// 夹具 `divisions=4` ⇒ 1 unit = 240 tick。`backup` 把 cursor 从 4 unit 送回 0；
+/// 接着一个 `forward` 声明 8 unit（= 1920 tick）；再一个四分音符。
+/// 读数 = 那个音符的 `start_tick`。
+///
+/// - **今天**（`forward` 未实现）: `1920 → 0`、`2880 → 960`
+///   （两个空 `forward` 不声明 duration，本来就不该移动 ⇒ 它们的读数不变）。
+/// - **实现之后**（cursor 前进）应当是: `(0, 1920, 2880)`。
+///
+/// 注入证据（本票实测，两个方向都跑过）: 把本票写好的 `on_end("forward")` 前进逻辑
+/// 放进 `src/musicxml.rs` 后，本条的字面红行正是
+/// `left: [(0, 60, 1, 1, 960), (0, 64, 2, 1, 960), (960, 67, 2, 1, 960)]` 对
+/// `right: [(0, 60, 1, 1, 960), (1920, 64, 2, 1, 960), (2880, 67, 2, 1, 960)]`。
+///
+/// ⚠️ 本条会在 `forward` 被实现时**变红**。那时**应当改写**本条（改成断言正确的
+/// tick，并把 `unsupported_elements` 的断言去掉），⛔ 不要删掉它。
+#[test]
+fn forward_is_ignored_and_shifts_every_later_tick() {
+    let bytes = forward_fixture();
+    let score = parse("forward_fixture", &bytes);
+    assert_eq!(score.divisions, 4, "夹具声明 divisions=4");
+    let actual: Vec<(u64, u8, u16, u16, u64)> = score.parts[0].notes.iter().map(literal).collect();
+    //（`<staff>` 在夹具里没有出现 ⇒ 三个音符的 staff 都是缺省值 1。）
+    assert_eq!(
+        actual,
+        vec![
+            (0, 60, 1, 1, 960),   // C4：四分音符
+            (0, 64, 2, 1, 960),   // E4：今天在 tick 0 —— forward 的 8 unit 被丢掉
+            (960, 67, 2, 1, 960), // G4：今天在 960 —— 两个空 forward 不动 cursor
+        ],
+        "已知缺陷: <forward> 被忽略 ⇒ 其后 tick 少了 forward 的那一段"
+    );
+    // `forward` 今天登记在"已知未实现"表里（3 次出现 = 夹具里的 3 个 `<forward>`）。
+    assert_eq!(score.unsupported_elements.get("forward"), Some(&3));
+    // 夹具里没有白名单外的元素。
+    assert!(
+        score.ignored_elements.is_empty(),
+        "白名单外的元素: {:?}",
+        score.ignored_elements
+    );
+    assert_eq!(score.tick_range(), Some((0, 1920)));
+    // 确定性 [ARCH-DET-001]：同一份字节两次解析相同。
+    assert_eq!(parse_musicxml(&bytes), Ok(score));
+}
+
 #[test]
 fn mxl_eocd_scan_honours_the_comment_length() {
     // EOCD 的注释是**任意字节**（APPNOTE 4.3.16）⇒ 注释里可以逐字节出现 `PK\x05\x06`。
