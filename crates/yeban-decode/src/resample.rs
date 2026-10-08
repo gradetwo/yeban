@@ -265,6 +265,17 @@ pub fn resample_asset_with_budget(
     budget: &PcmBudget,
 ) -> DecodeResult<DecodedAsset> {
     if out_rate == asset.sample_rate() {
+        // 恒等路径**也**过调用方的预算：`asset.clone()` 深拷贝一整份 PCM（`DecodedAsset`
+        // 持有 `Vec<f32>`），与 `resample_interleaved_with_budget` 的恒等路径是同一件事。
+        // 不查预算就等于留下一个"绕过 `budget` 复制整份资产"的入口（[ARCH-SEC-003]）。
+        // 这里**不**另查长度契约：恒等转换的输出长度就是输入长度，`produced == input`
+        // 是恒真式，查它不携带任何信息。
+        limits::check_layout(
+            asset.channels(),
+            asset.sample_rate(),
+            asset.frame_count(),
+            budget,
+        )?;
         return Ok(asset.clone());
     }
     let samples = resample_interleaved_with_budget(
@@ -606,6 +617,45 @@ mod tests {
                 .len(),
             input.len()
         );
+    }
+
+    /// 判据 ⑧（`HD-24` 预算闸门，[ARCH-SEC-003]）：**资产级**恒等路径同样走调用方预算。
+    ///
+    /// 为什么需要它：`resample_asset_with_budget` 的恒等分支走 `asset.clone()`，而
+    /// [`DecodedAsset`] 持有 `Vec<f32>`（`#[derive(Clone)]`），因此它是一次**整份 PCM
+    /// 的深拷贝**。既有判据 `the_identity_path_still_obeys_the_budget` 只覆盖样本级入口
+    /// `resample_interleaved_with_budget`，于是资产级入口成了"绕过 `budget` 复制整份
+    /// 资产"的口子 —— 与 `docs/ledger/decode-limits-notes.md` §3 写明的改建后口径
+    /// "恒等路径也查（它同样复制一整份 PCM）"不符。
+    ///
+    /// 判定是闭区间：恰好装得下资产的预算**必须**通过（否则就是把闸门焊死），而少一个
+    /// 样本即拒；通过时必须逐位不变 —— 预算只挡分配，不改内容。
+    #[test]
+    fn the_asset_identity_path_still_obeys_the_budget() {
+        let bytes = wav_f32(2_000, 2, 48_000, 0.5);
+        let asset = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        let frames = asset.frame_count();
+        let samples = frames * u64::from(asset.channels());
+        assert_eq!(frames, 2_000);
+
+        // 少一个样本的预算：恒等路径仍要复制整份 PCM，因此必须被拒。
+        let one_sample_short = PcmBudget::new(u64::MAX, (samples - 1) * 4, 64, 96_000, 60);
+        assert!(
+            matches!(
+                resample_asset_with_budget(&asset, 48_000, &one_sample_short),
+                Err(DecodeError::Budget(
+                    LimitViolation::PcmBudgetExceeded { .. }
+                ))
+            ),
+            "the asset-level identity path copies the whole PCM, so it must obey the budget"
+        );
+
+        // 恰好够的预算必须通过，且样本 / 事实 / 摘要逐位不变。
+        let exact = PcmBudget::new(u64::MAX, samples * 4, 64, 96_000, 60);
+        let same = resample_asset_with_budget(&asset, 48_000, &exact).unwrap();
+        assert_eq!(same.pcm_hash(), asset.pcm_hash());
+        assert_eq!(same.facts(), asset.facts());
+        assert_eq!(same.samples(), asset.samples());
     }
 
     /// 判据 ⑧：`resample_asset_with_budget` 把同一预算应用到"转换后的新资产"。
