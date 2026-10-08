@@ -13,7 +13,7 @@
 ## 仍未闭环的门禁（逐条）
 
 - `BASELINE-003` — **PENDING**。理由：**2026-10-07 口径裁决（负责人批准，`HD-59`；见 `docs/adr/ADR-0002-baseline-verdict-hardware.md` 的「裁决」一节）—— 正式口径 = 绘制回调耗时（不含呈现），门限 = 规格自己的 `[UI-NOTE-001]` 步骤 ④ 的 ≤ 2 ms；墙钟帧周期降级为环境读数、不作判决。** ⚠ 本行此前那句"**有意挂起**（**负责人裁
-- `BASELINE-006` — **PENDING**。理由：需要"生成 16 小节段落"的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**，且 Token 口径需人类裁决用哪个 tokenizer
+- `BASELINE-006` — **PENDING**。理由：**JSON ≤4 KB 那一半已可复核并低于门限；只剩 Token 那一半**（⚠️ 2026-10-08 就地更正：原写"**载荷统计未接**" ✗，该半已接）：`crates/yeban-mcp/src/payload.rs` 量"生成 16 小节段落"的**完整 MCP 往返**，单位 = **UTF-8 字节**（`crates/yeban-mcp/src/payload.rs:23`、
 
 ## 仍未闭环的阶段项（逐条）
 

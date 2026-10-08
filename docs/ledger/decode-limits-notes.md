@@ -289,6 +289,12 @@ CI 专属的集成判据（C56–C72）与注入 ①/③ **共享同一个** `ch
 | `pending` | **OGG/Vorbis 与 ADPCM 的字节级夹具** | 继承 `decode-core` 的 pending，与本线无关。 |
 | 已关闭 | `HD-24` 的"上限形态"问题 | 本线给出定性 + 可配置实现 + 默认值依据 + 判据 + 注入；`HD-24` 在实现侧可以结案（文档侧见上面 needs）。 |
 
+> ⚠️ **2026-10-08 更正注（上面的 `needs`「增量 / 流式 SHA-256」点名的两条路径**都已落地**；原句保留不改写）**
+> 该 `needs` 只说对一个"缺口"，而两条路径都已经改成**流式**（不新增 `AssetHasher` 的公开面）：
+> - **① `pcm_hash`**：由 `ccee870`（`perf(decode): stream the PCM digest instead of copying the whole asset [ARCH-DET-001]`）落地。复核：`crates/yeban-decode/src/asset.rs:258` 的 `pcm_hash(&self) -> AssetHash` 现在按分块喂哈希（`:274` 的 `hasher.update(&staging[..filled])`）；只有头部字段（通道数 / 采样率 / 帧数）在分块之前喂入。
+> - **② `import_path` 的容器摘要**：由 `ab42c82`（`perf(decode): stream the CAS digest of import_path instead of buffering the container [MODEL-AST-007]`）落地。复核：`crates/yeban-decode/src/asset.rs:333` 的 `fn hash_reader<R: Read>(mut reader: R) -> DecodeResult<AssetHash>` 用固定缓冲循环读（`:341` 的 `hasher.update(&buffer[..filled])`），因此容器**不再整份进内存**；判据 `crates/yeban-decode/tests/import_streaming.rs`（172 行，`ab42c82` 新增）从"真实文件"一侧复算同一摘要。
+> ⇒ 该 `needs` 的验收标准（"两条路径都压到 O(块)"）**已满足**；本表里剩下的流式相关条目只有「流式 / 分块解码」（峰值目标与文件长度无关）。
+
 ---
 
 ## 9. 修改文件清单与净行数

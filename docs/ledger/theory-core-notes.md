@@ -305,6 +305,20 @@ reggaeton, amapiano
 7. **没有 benchmark**：本机禁跑基准；`BASELINE-*` 的指标未测。
 8. **未做跨架构确定性对账**（L2 级，属 CI）。
 
+> ⚠️ **2026-10-08 更正注（`pending 6` 已关闭；原句保留不改写）**
+> 提交 `e191abd`（`feat(yeban-theory): apply GenreRule::swing via an integer swing grid`）落地了**整数摇摆网格** ⇒ 上面第 6 条（"`swing` 只登记不应用"）**已关闭**。
+> **新增公开面**（本次逐条复核：`grep -n 'pub fn\|pub struct\|pub const' crates/yeban-theory/src/swing.rs`，签名照抄）：
+> - `pub const SWING_PERMILLE_STRAIGHT: u16 = 500;`（`crates/yeban-theory/src/swing.rs:56`）、`pub const SWING_PERMILLE_MAX: u16 = 1000;`（`:59`）；
+> - `pub struct SwingPair { pub first: u64, pub second: u64 }`（`:65`）＋ `pub const fn total(self) -> u64`（`:75`）＋ `pub const fn offbeat_offset(self) -> u64`（`:81`）；
+> - `pub const fn validate_swing_permille(permille: u16) -> Result<(), TheoryError>`（`:93`）；
+> - `pub fn swung_onset_offset(pair_ticks: u64, permille: u16) -> Result<i64, TheoryError>`（`:108`）；
+> - `pub fn swung_pair_span(pair_ticks: u64, permille: u16) -> Result<SwingPair, TheoryError>`（`:124`）；
+> - `pub fn quantize_onset(onset_ticks: u64, pair_ticks: u64, permille: u16) -> Result<u64, TheoryError>`（`:153`）；
+> - `GenreRule::swing_permille(&self) -> Result<Option<u16>, TheoryError>`（`crates/yeban-theory/src/genre.rs:178`）；错误变体 `TheoryError::SwingOutOfRange`（`crates/yeban-theory/src/error.rs:114`）；
+> - 再导出：`crates/yeban-theory/src/lib.rs:102` 的 `pub use swing::{SWING_PERMILLE_MAX, SWING_PERMILLE_STRAIGHT, SwingPair, quantize_onset, swung_onset_offset, swung_pair_span};`。
+> **口径**（出自 `crates/yeban-theory/src/swing.rs` 的模块文档）：输入是 `u16` **千分比**（`500` = 平直、`1000` = 附点八分）；`GenreRule::swing` 的 `f32` 百分数只在 `GenreRule::swing_permille` **一处**转换，其后**全部是整数运算** ⇒ 与 [ARCH-DET-001] 同口径、结果逐位一致。⛔ 越界比例**不被静默钳制**，返回 `SwingOutOfRange`。
+> ⚠️ 本条只关闭"只登记不应用"；`pending` 1–5 与 7–8 **仍然开放**。
+
 ---
 
 ## 7. 判据纪律：被故意破坏过的判据（SKILL 规则 2）

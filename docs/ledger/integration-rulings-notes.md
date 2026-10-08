@@ -18,7 +18,7 @@
 | R5 | MIDI tempo map 往返不保真 | **修**（真缺陷；修后把"字面读数"判据改成断言） | ✅ 已执行 `0e3c990` |
 | R6 | 17 处源码行号漂移 | **清**（机械修正，不改语义） | ✅ 已执行 `f1ec03b` ＋ `bbad010` |
 | R7 | `engine-mix-notes.md:52/464` 的 `BusLimiter::apply` | **改为 `process_stereo`** | ✅ 已执行 `f1ec03b` |
-| R8 | "真峰值限制器"口径缺口（实现按样本峰值） | **登记，暂不实现**（真峰值需 4× 过采样，属独立器件票） | 已裁决 |
+| R8 | "真峰值限制器"口径缺口（实现按样本峰值） | **登记，暂不实现**（真峰值需 4× 过采样 ＋ 前瞻缓冲，出处 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:396` 的 §3.4；属独立器件票） | 已裁决 |
 | R9 | 状态栏三处说假话（`selection` / `chord` / `device`） | **修**，但**先处理 D24 对照样本** | 待开票 |
 | R10 | `branch-name` 双写者无判据 | **登记**，低优先级 | 已裁决 |
 | R11 | 录音键 `accessible-checkable: true` 恒假 | **修**（诚实性小修） | 待开票 |
@@ -56,6 +56,8 @@
 ### R8 "真峰值"口径：登记，暂不实现
 - 事实：`yeban-dsp/Cargo.toml:3` 与 `roadmap:107` 写「真峰值」，而实现按**样本峰值**工作（原 `mixer.rs:174-179` 自陈）。
 - 裁决理由：真峰值需要 **4× 过采样 ＋ BS.1770 滤波**，属**独立器件**规模 ✗。⇒ **登记**，并在文档里保留"按样本峰值"的事实措辞。⛔ 不许把现状写成"真峰值已实现"。
+- ⭐ **出处（2026-10-08 补）**：这句话的**唯一**规范落点是 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:396`（**§3.4 内部插件延迟补偿架构 (PDC)** 一节的正文），逐字为"为确保真峰值限制器（BS.1770-4 规范需要 4× 过采样滤波与前瞻 Lookahead 缓冲）…"。
+- ⚠️ **出处更正（2026-10-08）**：集成者的指令曾把这句归给 `[ARCH-FMT-001]` ✗ —— `ARCH-FMT-001` 落在 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:459` 的 **§5.2 广播级 RF64 / BW64 自研写入器**（`:459-462` 讲 RF64/BW64 ＋ `bext` ＋ TPDF 抖动），**不含**过采样或前瞻缓冲。复核量法：`grep -rn --exclude-dir=.git -E '真峰值|过采样|oversampl' . | grep 'ARCH-FMT'` ⇒ **0 命中** ⇒ 没有任何**已提交文件**把这句话归给 `ARCH-FMT-*`；该归错**只存在于指令里，未落盘**，因此本台账只登记出处与这次更正。
 
 ### R12 `libc` 依赖：延后
 - 事实：cpal 0.18 的 `realtime` feature 只覆盖 WASAPI/AAudio/PipeWire/JACK；macOS 与 Linux-ALSA 要自研 `pthread_setschedparam` ⇒ **新依赖 `libc`** ＋ 平台 `unsafe` 审计。
@@ -80,7 +82,10 @@
 
 ## 3. 边界（本台账**不**主张的事）
 
-- 不主张 `yeban-dsp` 的器件已接入引擎（`compressor` / `channel_strip` / `limiter` 之外的器件**未接线**）。
+- ⚠️ **此前的陈述有误（2026-10-08 就地改正）**：原句写「`compressor` / `channel_strip` / `limiter` 之外的器件**未接线**」✗ —— 它把 `compressor` 与 `channel_strip` 都读成"已接线"。**实测**：**接线前**两者在整个 `crates/yeban-engine/**` 里**没有任何调用点**，只出现在注释里（`crates/yeban-engine/src/mixer.rs:92-93`、`crates/yeban-engine/src/rt.rs:1007`；后者在该文件里现已下移到 `:1138`）。
+  **量法（可复跑）**：`grep -rn 'use yeban_dsp' crates/yeban-engine/src`，**只数真实 `use` / `pub use` 行**命中的模块名（⛔ 注释行不算；本次读数：16 行命中里 3 行是注释 ⇒ **13** 行真实引用）。
+  **已接线（8 个模块名）**：`compressor`（`crates/yeban-engine/src/insert.rs:93`，由 `c792fdc` 接进 `rt.rs` 的逐轨插入）、`limiter`（`crates/yeban-engine/src/mixer.rs:111`）、`meter`（`crates/yeban-engine/src/level.rs:34`）、`polysynth`（`crates/yeban-engine/src/synth.rs:98` ＋ `:108`；判据 `crates/yeban-engine/tests/synth_rt_zero_alloc.rs` 一直在量化它）、`envelope` / `filter` / `math` / `oscillator`（`crates/yeban-engine/src/synth.rs:94-97` ＋ `crates/yeban-engine/src/snapshot.rs:80`）。
+  **仍未接线（3 个模块名，2026-10-08 读数）**：`channel_strip` / `reverb` / `drums` —— 量法 `grep -rn '<模块名>' crates/yeban-engine`：`channel_strip` **只命中注释**（`crates/yeban-engine/src/mixer.rs:93`、`crates/yeban-engine/src/rt.rs:1138`、`crates/yeban-engine/src/insert.rs:10`、`crates/yeban-engine/tests/limiter_contract.rs:40`）；`reverb` **只作为参数字符串**出现（`crates/yeban-engine/src/insert.rs:237`、`crates/yeban-engine/tests/compressor_insert.rs:121`）；`drums` **零命中**。
 - 不主张 `drums` 实现了 808/909 的物理建模（见 R14）。
 - 不主张 MusicXML 已可导入（见 R1）。
 - 不主张跨架构对账（`ARCH-DET-002`）已完成（本机只有一条工具链）。
@@ -97,8 +102,8 @@
 | R11b | 录音键保留的 `accessible-checked: false`（可证明惰性） | **登记**；真接录音时连同 `test_port_adapter.rs:2905-2915` 一起改成真实状态源 | 已登记 |
 | R11c | 另两处假 `accessible-checkable` 声明（`device_rack.slint` 旁通开关 · `app.slint` 声学诊断） | **修**（删声明；两处的 `accessible-checked` 一并删，因为没有判据读它们） | ✅ 已执行 `7de4f9f` ＋ `042c3a5` |
 | R15 | 编曲视图静音/独奏按钮点了没反应（`arrangement_view.slint` 的两个 `TouchArea` 无 `clicked`） | **修**（只转发到既有宿主面，不发明状态） | ✅ 已执行 `d3c954f` |
-| R16 | `piano_roll.slint` 的工具按钮没有 `TouchArea`、也没有工具选择回调（`active-tool` 只由键盘写） | **修需新宿主回调 ⇒ `src/**` 票** | 待开票 |
-| R17 | 复用宿主面带来的标签错位：`host.rs:1649`/`:1657` 硬写 `"mixer: toggle track mute/solo"`，该消息成为撤销树节点标签 ⇒ 在编曲视图点击后标签仍写 "mixer:" | **修**（改中性文本，或给编曲视图自己的宿主回调） | 待开票 |
+| R16 | `piano_roll.slint` 的工具按钮没有 `TouchArea`、也没有工具选择回调（`active-tool` 只由键盘写） | **修需新宿主回调 ⇒ `src/**` 票** | ✅ 已执行 `1114f05` |
+| R17 | 复用宿主面带来的标签错位：`host.rs:1649`/`:1657` 硬写 `"mixer: toggle track mute/solo"`，该消息成为撤销树节点标签 ⇒ 在编曲视图点击后标签仍写 "mixer:" | **修**（改中性文本，或给编曲视图自己的宿主回调） | ✅ 已执行 `1114f05` |
 
 ## 0.2 流程教训（本台账自身的）
 

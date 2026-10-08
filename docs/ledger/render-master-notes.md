@@ -122,6 +122,15 @@ midly = { workspace = true, features = ["std"] }
 | 24 | PDC：短支路被补 `L_max`，长支路不补；每条入边到达 Master 的时刻都等于 `L_max` | `pdc::tests::every_branch_arrives_at_master_at_exactly_l_max` + `render::tests::pdc_compensation_delays_the_short_branch` | 前者 ✅ / 后者 ❌ CI |
 | 25 | `track_latencies` 累加未旁通设备的 `latency_samples`、跳过旁通设备；`0` 按"未上报"处理 | `render::tests::track_latencies_sum_unbypassed_devices_only` | ❌ CI |
 
+> ⚠️ **2026-10-08 补记（`c234996`：延迟线补齐"最短切片"契约；上表第 23 行是这条语义在 `docs/ledger/` 里的最近登记点，原文保留不改写）**
+> 第 23 行的判据通配 `pdc::tests::delay_line_*` 现在**多覆盖四条**判据。**缺口与修法**（逐字出自提交 `c234996` 与代码文档）：
+> - **契约原文**在 `crates/yeban-render/src/pdc.rs:282`："长度不等时按最短者处理, 不越界、不分配、不 panic"；
+> - **实测的违反**：非旁路路径的尾巴直通写成 `out[tail..]` ↔ `input[tail..]`，只有 `input.len() == out.len()` 时两边等长 ⇒ 不等长时 panic（`copy_from_slice: source slice length (0) does not match destination slice length (4)`）；旁路路径不 panic，但**静默丢掉**参差的尾巴 ⇒ 两条路径对同一份文档化契约不一致；
+> - **修法**：只算一次 `common = input.len().min(out.len())`，绝不写过 `common`（`crates/yeban-render/src/pdc.rs:295`、`:317`）；`channels == 0` 在任何除法**之前**返回；
+> - **新判据 4 条**（都**不** ignore）：`delay_line_takes_the_shortest_of_the_two_slices`、`delay_line_passes_a_ragged_tail_through_across_unequal_lengths`、`delay_line_bypass_copies_the_shortest_length_bit_for_bit`、`delay_line_with_zero_channels_writes_nothing`；
+> - **注入证据**（提交内登记，先红后还原、`cmp` ＋ sha256 `971ee19a…` 证明逐字节还原）：3 次注入各自让对应判据变红。
+> ⚠️ **未登记的事（如实说明）**：本次复核用 `grep -rn '最短切片\|最短者\|ragged\|不等长\|块切分不变' docs/ --include=*.md` 全库搜索 ⇒ **没有任何** `docs/ledger/` 条目把这条契约写成"缺口 / needs"；上表第 23 行只把它记成"延迟线语义正确 ✅ 本机"。因此本注是**补记**，不是更正。
+
 ## 5. 本机做了什么 / 没做什么
 
 **做了（零重依赖编译）**：
