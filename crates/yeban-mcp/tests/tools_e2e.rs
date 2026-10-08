@@ -2990,3 +2990,96 @@ fn create_without_a_key_rejects_the_second_attempt() {
         "{second}"
     );
 }
+
+/// **概率触发在工具面上可达**：`yeban_edit_notes` 的 `add.note.probability` 真的
+/// 进了工程（合并后逐字段可读），并且**真的可回退**（撤销逐字节复原）。
+///
+/// 改动之前 `parse_note` 根本不读这个字段 ⇒ 模型的 `probability` 能力在 MCP 工具面
+/// 上不可达（渲染器也忽略它）。这条判据从**工具调用**开始，因此注入"删掉这个字段的
+/// 解析"会立刻变红。
+#[test]
+fn edit_notes_add_carries_probability_into_the_project_and_undo_restores_it() {
+    let scratch = Scratch::new("probability-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let clip = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("MIDI")
+        .id
+        .to_canonical_string();
+
+    // 越界必须先响亮失败（不是静默夹紧到 1.0）。
+    let bad = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip,
+            "ops": [{"kind": "add", "note": {
+                "startTick": 0, "pitch": 60, "durationTicks": 480, "probability": 1.5
+            }}]
+        }),
+    );
+    assert_domain_error(&bad, "OUT_OF_RANGE", "probability 1.5");
+    assert_eq!(bad["error"]["data"]["field"], "probability", "{bad}");
+
+    let bytes_before = project_bytes(&dispatcher);
+    let note_id = yeban_mcp::domain::ids::deterministic_id("note:probability:e2e");
+    let note_id = note_id.to_canonical_string();
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip, "includeOps": true,
+            "ops": [{"kind": "add", "note": {
+                "id": note_id, "startTick": 0, "pitch": 60,
+                "durationTicks": 480, "probability": 0.25
+            }}]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["AddNote"]["note"]["probability"], 0.25,
+        "提案的 op 载荷必须带着概率: {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "概率音符" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let note = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes())
+        .flat_map(|notes| notes.values())
+        .find(|note| note.id.to_canonical_string() == note_id)
+        .expect("新音符必须在池里的那个片段里");
+    assert_eq!(note.probability, Some(0.25), "合并后工程里必须带着概率");
+
+    // 可回退：撤销一次 ⇒ 逐字节回到提案之前的工程。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (概率字段随 AddNote 一起可逆)"
+    );
+}

@@ -36,7 +36,7 @@
 //! **真做**：**音频片段**（`ClipContent::Audio`——CAS 资产字节 → 解码 → 采样率不一致时
 //! `rubato` sinc 重采样 → 按 placement 的帧区间落位、按 placement 的 `muted` 与片段的
 //! `gain_db` 门控、参与 [ARCH-PDC-001] 的延迟对齐）、MIDI 音符（起止 tick、音高、力度、
-//! 微时值）、placement 的 `start_tick`（缺省 0）、`muted`、音轨 `volume_db` /
+//! 微时值、**概率触发**——见下）、placement 的 `start_tick`（缺省 0）、`muted`、音轨 `volume_db` /
 //! `pan`（等功率 −3 dB）/ `mute` / `solo`（见下）、**未旁通设备的 `latency_samples`**
 //! （PDC 对齐）、边增益 `gain_db`、Master 轨的 `volume_db`、确定性 TPDF 抖动与
 //! 24-bit 量化、RIFF/RF64/BW64 容器与 `bext` 元数据、峰值归一化。
@@ -51,7 +51,6 @@
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
 //! | `clipLoopRepetition` | `loop_config` 的**重复**没有渲染（只渲染第一遍） |
-//! | `noteProbability` | `probability < 1.0` 的音符被当作必然触发（没有引入熵源） |
 //! | `noteRatchet` | `ratchet > 1` 的连击没有展开 |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
@@ -63,6 +62,28 @@
 //!
 //! "工程里有 MIDI 音符或音频片段"这一条是渲染的**前提**：完全没有可渲染内容（0 帧）
 //! 时返回 `RENDER_FAILED`，而不是写一个 0 帧的文件冒充成功。
+//!
+//! ## 概率触发：判定的**唯一**入口在模型层（本线接线）
+//!
+//! `MidiNote::probability` 的语义是"这个音符有多大概率被触发"，规范
+//! （`MODEL-AST-005`）要求它按 `rng_seed + note.id` **确定性**计算。模型层因此提供了
+//! [`yeban_model::MidiNote::triggers`]（splitmix64 稳定哈希，无熵源、无 `unsafe`），
+//! 实时引擎用它（`yeban-engine/src/snapshot.rs` 的 `project_schedules`）。
+//!
+//! 本渲染器此前**忽略**它：`probability < 1.0` 的音符被当作**必然触发**照常发声，
+//! 同时把 `noteProbability` 登记进 `unsupported`。后果是同一份工程
+//! **监听时听到的**与**导出的母带**不是同一个作品（引擎丢掉的音符在母带里响了）。
+//!
+//! 接线之后：
+//!
+//! - 判定只调用 [`yeban_model::MidiNote::triggers`]（本层不掷骰子、不写第二份哈希）；
+//! - 未触发的音符**一位都不贡献**：不进排程，也不延长母带长度（它不发声，就没有时值）；
+//! - `noteProbability` **不再**出现在 `unsupported` 里 —— 报一个已经做到的键就是假话；
+//! - 判为不触发的音符数进 `data.sources[].notesSilenced` 与
+//!   `data.probability.notesSilenced`，`: rng_seed` 也一并报出（复现判定的唯一熵输入）。
+//!
+//! 边界（如实登记）：概率触发**不产生**多个变体、不做多次渲染平均 —— 它只是
+//! "这个音符这一遍响不响"的确定性裁决，与引擎同一口径。
 //!
 //! ## 采样率：请求率 ≠ 工程率**不再**是错误
 //!
@@ -715,6 +736,12 @@ pub struct SourceReport {
     /// （这类摆放**不做解码** —— 静音轨的资产坏了不该让整份母带导出失败，
     /// 但它必须被数出来，而不是看起来"这段工程里没有音频片段"）。
     pub audio_clips_gated: u64,
+    /// 被 [`yeban_model::MidiNote::triggers`] 的**确定性**概率判定判为"不触发"、
+    /// 因而不发声的音符数 [MODEL-AST-005, ARCH-DET-001]。
+    ///
+    /// 这是"母带里少了的音符"的**可见**读数：没有它，一个 `probability: 0.0`
+    /// 的音符与"这个音符根本不存在"在响应里长得一模一样。
+    pub notes_silenced: u64,
     /// 该源贡献的时间轴末端（tick）。
     pub end_tick: u64,
 }
@@ -732,6 +759,7 @@ impl SourceReport {
             "audioClips": self.audio_clips,
             "audioClipsUnrendered": self.audio_clips_unrendered,
             "audioClipsGated": self.audio_clips_gated,
+            "notesSilenced": self.notes_silenced,
             "endTick": self.end_tick,
         })
     }
@@ -850,6 +878,18 @@ pub struct RenderArtifact {
     pub sources: Vec<SourceReport>,
     /// **真的参与渲染**的音频片段摆放数（全部源节点合计）。
     pub audio_clips: u64,
+    /// 被**确定性**概率判定判为"不触发"、因而不发声的 MIDI 音符数
+    /// （全部源节点合计）[MODEL-AST-005, ARCH-DET-001]。
+    ///
+    /// 判定的**唯一**入口是 [`yeban_model::MidiNote::triggers`]；实时引擎
+    /// (`yeban-engine/src/snapshot.rs`) 用的是同一个入口，因此"监听时听到的"
+    /// 与"导出的母带"在这一点上一致。
+    pub notes_silenced: u64,
+    /// 这次渲染**实际使用**的工程随机种子（`YebanProjectV1::rng_seed`）。
+    ///
+    /// 它是概率触发判定的唯一熵输入 ⇒ 响应必须报出来，否则"为什么这个音符
+    /// 没发声"无法从响应本身复现。
+    pub rng_seed: u64,
     /// 每个被引用的音频资产的实测事实（键序 = 哈希字典序）。
     pub audio_assets: Vec<AudioAssetReport>,
     /// 归一化前的峰值。
@@ -962,6 +1002,19 @@ impl RenderArtifact {
         map.insert(
             "sources".to_owned(),
             Value::Array(self.sources.iter().map(SourceReport::to_value).collect()),
+        );
+        // 概率触发的**实测**读数：`probability < 1.0` 的音符里有多少被判为不触发。
+        // 这是"母带里少了的音符"的可见证据 —— 判定走模型层唯一入口
+        // (`MidiNote::triggers`)，与实时引擎同一份实现 [MODEL-AST-005]。
+        map.insert(
+            "probability".to_owned(),
+            serde_json::json!({
+                "decision": "MidiNote::triggers(project.rng_seed)",
+                "specId": "MODEL-AST-005",
+                "adr": "ADR-0001 (ARCH-DET-001)",
+                "notesSilenced": self.notes_silenced,
+                "rngSeed": self.rng_seed,
+            }),
         );
         map.insert(
             "audio".to_owned(),
@@ -1307,6 +1360,7 @@ pub fn build(
     })?;
     let project_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
+    let notes_silenced: u64 = reports.iter().map(|report| report.notes_silenced).sum();
     Ok(RenderArtifact {
         request: request.clone(),
         path,
@@ -1327,6 +1381,8 @@ pub fn build(
         source_nodes,
         sources: reports,
         audio_clips,
+        notes_silenced,
+        rng_seed: project.rng_seed,
         audio_assets: asset_reports.into_values().collect(),
         peak_before,
         peak_after,
@@ -1913,6 +1969,7 @@ fn build_source(
     let mut per_asset: BTreeMap<AssetHash, (Arc<PreparedAsset>, Vec<ClipSpan>)> = BTreeMap::new();
     let mut clips_unrendered = 0u64;
     let mut clips_gated = 0u64;
+    let mut notes_silenced = 0u64;
     let mut end_tick = 0u64;
     for placement in track.clips.values() {
         if placement.muted {
@@ -1940,11 +1997,18 @@ fn build_source(
         match &clip.content {
             ClipContent::Midi { notes } => {
                 for note in notes.values() {
-                    if note
-                        .probability
-                        .is_some_and(|probability| probability < 1.0)
-                    {
-                        note_unsupported(unsupported, counts, "noteProbability");
+                    // 概率触发：**唯一**判定入口是模型层的 `MidiNote::triggers`
+                    // [MODEL-AST-005, ARCH-DET-001]。本层**不**自己掷骰子、不引入熵源，
+                    // 也不再看 `probability` 的字面值 —— 否则这里就会出现第二份
+                    // "什么算触发"的实现，与实时引擎
+                    // (`yeban-engine/src/snapshot.rs` 的 `project_schedules`) 漂移，
+                    // 于是"监听时听到的"与"导出的母带"不再是同一个作品。
+                    //
+                    // 未触发的音符**一位都不贡献**：不进排程、不延长 `end_tick`
+                    // （它不发声，因此没有时值可占）。
+                    if !note.triggers(project.rng_seed) {
+                        notes_silenced = notes_silenced.saturating_add(1);
+                        continue;
                     }
                     if note.ratchet.is_some_and(|ratchet| ratchet > 1) {
                         note_unsupported(unsupported, counts, "noteRatchet");
@@ -2096,6 +2160,7 @@ fn build_source(
         audio_clips,
         audio_clips_unrendered: clips_unrendered,
         audio_clips_gated: clips_gated,
+        notes_silenced,
         end_tick,
     };
     Ok((source, report))

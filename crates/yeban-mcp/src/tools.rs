@@ -607,7 +607,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 true,
                 "片段 EntityId; `create:true` 时是**将要新建的**片段身份 (池里已有该身份 ⇒ `CONFLICT`)",
             ),
-            param("ops", "array", true, "音符操作列表 (NoteOp)"),
+            param(
+                "ops",
+                "array",
+                true,
+                "音符操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,probability?}}` / `delete` / `move` / `velocity`。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]",
+            ),
             // `create` / `clipName` 是**可选**实参（缺省 = 逐字节等于旧行为），
             // 与 `yeban_open_project` 的 `create` 同词同义（ADR-0001 D48）。
             //

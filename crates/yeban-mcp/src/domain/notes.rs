@@ -14,6 +14,17 @@
 //! 本模块因此**定义了**四种 `kind`（`add` / `delete` / `move` / `velocity`）作为
 //! 本地决策，并把它登记为待裁决项（见 `docs/ledger/tools-domain-notes.md`）。
 //!
+//! ## `add.note.probability`：让概率触发从工具面**可达**
+//!
+//! `MidiNote::probability` 是模型既有字段，但改动之前**没有任何工具**能设置它
+//! （`parse_note` 不读它）⇒ 模型的概率触发能力在 MCP 工具面上不可达。本模块新增
+//! 一个**可选**字段 [`PROBABILITY_FIELD`]（缺省 = 不写 = 必然触发 = 逐字节等于旧行为），
+//! 把字面值搬进 `MidiNote`；"这一遍响不响"的裁决**不在本层**，而在
+//! `MidiNote::triggers(rng_seed)`（`MODEL-AST-005`，实时引擎与离线母带共用）。
+//!
+//! 取值的权威判定也在模型层（[`MidiNote::validate`]）：越界 → `ProbabilityOutOfRange`
+//! → 契约码 `OUT_OF_RANGE`。本层只额外拦下"不是数字"这类 JSON 形状错误。
+//!
 //! ## 材料创建形态（`arguments.create: true`）—— 关闭 needs-8 的 MIDI 那一半
 //!
 //! 台账 `docs/ledger/tools-domain-notes.md:283` 的 **needs-8** 记的事实是：
@@ -65,6 +76,17 @@ pub const CREATE_PARAM: &str = "create";
 
 /// 材料创建形态的片段名实参（`arguments.clipName`，可选）。
 pub const CLIP_NAME_PARAM: &str = "clipName";
+
+/// `add` 音符对象里的**概率触发**字段名（`ops[].note.probability`，可选）。
+///
+/// 语义与判定入口都在**模型层**，本层只负责搬运字面值：
+///
+/// - 取值域 `0.0..=1.0`（含端点），由 [`MidiNote::validate`] 把关 ⇒ 越界是
+///   `ProbabilityOutOfRange` ⇒ 契约码 `OUT_OF_RANGE`（见 [`super::error::code_for_model`]）；
+/// - 缺省（不写这个字段）= `None` = **必然触发**，与加这个字段之前逐字节相同；
+/// - "这一遍响不响"由 `MidiNote::triggers(rng_seed)` **确定性**裁决
+///   （`MODEL-AST-005`），实时引擎与离线母带用的是同一个入口。
+pub const PROBABILITY_FIELD: &str = "probability";
 
 /// 单个片段的**发声数**上限（同时发声的音符数）。
 ///
@@ -124,17 +146,20 @@ impl NoteOp {
 ///
 /// ```json
 /// {"kind":"add","note":{"id":"<可选 26 字符 ULID>","startTick":0,"pitch":60,
-///                       "durationTicks":480,"velocity":100}}
+///                       "durationTicks":480,"velocity":100,"probability":0.5}}
 /// {"kind":"delete","noteId":"<ULID>"}
 /// {"kind":"move","noteId":"<ULID>","deltaTick":960,"deltaPitch":12}
 /// {"kind":"velocity","noteId":"<ULID>","velocity":80}
 /// ```
 ///
+/// `note.probability` 是**可选**字段（缺省 = 必然触发，逐字节等于旧行为）：给了就是
+/// [`MidiNote::probability`] 的字面值，语义与判定入口见 [`PROBABILITY_FIELD`]。
+///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`）；
-/// - 音高、力度、时值越界 → `OUT_OF_RANGE`；
+/// - 音高、力度、时值、概率越界 → `OUT_OF_RANGE`；
 /// - 身份文本不是合法 ULID → `INVALID_PARAMETER_RANGE`。
 pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
     let Value::Array(items) = value else {
@@ -227,9 +252,45 @@ fn parse_note(object: &Map<String, Value>) -> Result<MidiNote, Fault> {
     };
     let mut note = MidiNote::new(id, start_tick, pitch, duration_ticks);
     note.velocity = velocity;
+    note.probability = read_probability(object)?;
     note.validate()
         .map_err(|error| from_model("音符校验", &error))?;
     Ok(note)
+}
+
+/// 读可选的 `note.probability`（缺省 = `None` = 必然触发）。
+///
+/// 取值的**权威**判定在模型层（[`MidiNote::validate`] 的 `0.0..=1.0` 与有限性）；
+/// 这里额外拦一次同类区间，好让越界带上 `field` / `value` / `min` / `max` 的 `data`
+/// 载荷（与 `pitch` / `velocity` 的既有口径一致），并把"不是数字"这类 JSON 形状
+/// 错误与区间错误分成两个契约码。
+fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
+    let Some(value) = object.get(PROBABILITY_FIELD) else {
+        return Ok(None);
+    };
+    let raw = value.as_f64().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PROBABILITY_FIELD}` 必须是数字, 实际收到 {value}"),
+        )
+    })?;
+    if raw.is_nan() || raw < 0.0 || raw > 1.0 {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`{PROBABILITY_FIELD}` 越界: {raw} 不在 0.0..=1.0"),
+            serde_json::json!({
+                "field": PROBABILITY_FIELD,
+                "value": raw,
+                "min": 0.0,
+                "max": 1.0,
+            }),
+        ));
+    }
+    // `MidiNote::probability` 的类型就是 `f32`，所以这一步的 f64 → f32 舍入是**模型
+    // 类型本身**要求的（不是本层多加的一次精度损失）：JSON 数字先按 f64 读出、判完区间
+    // 再落到 f32，舍入是 IEEE 最近偶数（确定性），存进工程的就是判定用的那个值。
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(Some(raw as f32))
 }
 
 /// 把解析过的操作编译成 [`Op`]（**读文档**补齐撤销载荷，但绝不改文档）。
@@ -716,6 +777,102 @@ mod tests {
             check_polyphony(&project, &clip_id, &ok).expect("上限之内"),
             MAX_POLYPHONY
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 概率触发字段（`add.note.probability`）—— 让模型能力在工具面可达
+    // -----------------------------------------------------------------------
+
+    /// 缺省不写 ⇒ `None`（= 必然触发 = 加这个字段之前的逐字节行为）。
+    #[test]
+    fn add_without_probability_stays_none() {
+        let ops = parse_ops(&Value::Array(vec![add_json(0, 60)])).expect("解析");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert_eq!(note.probability, None, "缺省必须是不写这个字段");
+    }
+
+    /// 给了就**逐值**搬进 `MidiNote`（判定不在这一层）。
+    #[test]
+    fn add_carries_the_probability_verbatim() {
+        for (literal, expected) in [(0.0f64, 0.0f32), (0.5, 0.5), (1.0, 1.0), (0.25, 0.25)] {
+            let mut item = add_json(0, 60);
+            item["note"][PROBABILITY_FIELD] = serde_json::json!(literal);
+            let ops = parse_ops(&Value::Array(vec![item])).expect("解析");
+            let NoteOp::Add { note } = &ops[0] else {
+                panic!("必须是 add");
+            };
+            assert_eq!(note.probability, Some(expected), "字面值 {literal}");
+        }
+    }
+
+    /// 越界 ⇒ `OUT_OF_RANGE`（带 `field` / `value` / `min` / `max`），不是静默夹紧。
+    #[test]
+    fn probability_out_of_range_is_out_of_range() {
+        for bad in [-0.001f64, 1.001, 2.0, 1e9] {
+            let mut item = add_json(0, 60);
+            item["note"][PROBABILITY_FIELD] = serde_json::json!(bad);
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange), "值 {bad}");
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("必须是领域失败");
+            };
+            let data = data.as_ref().expect("必须带 data");
+            assert_eq!(data["field"], PROBABILITY_FIELD);
+            assert_eq!(data["min"], 0.0);
+            assert_eq!(data["max"], 1.0);
+        }
+    }
+
+    /// 形状错（不是数字）⇒ `INVALID_PARAMETER_RANGE`，而不是被当成 0 或 1。
+    #[test]
+    fn probability_must_be_a_number() {
+        for bad in [
+            serde_json::json!("0.5"),
+            serde_json::json!(true),
+            serde_json::json!([0.5]),
+        ] {
+            let mut item = add_json(0, 60);
+            item["note"][PROBABILITY_FIELD] = bad.clone();
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "值 {bad}"
+            );
+        }
+    }
+
+    /// 概率随 `add` 一路进 `Op::AddNote`（`create: true` 的新片段也一样），
+    /// 因此它**真的**进工程、也**真的**可回退。
+    #[test]
+    fn probability_reaches_the_add_note_op_and_the_create_form() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let mut item = add_json(0, 72);
+        item["note"][PROBABILITY_FIELD] = serde_json::json!(0.5);
+        let ops = parse_ops(&Value::Array(vec![item])).expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::AddNote { note, .. } => assert_eq!(note.probability, Some(0.5)),
+            other => panic!("必须是 AddNote, 实际 {other:?}"),
+        }
+        // `create: true` 走同一个 [`parse_note`] ⇒ 新片段里的音符也带着它。
+        let fresh = project_without_midi_clips();
+        let seed_id = deterministic_id("probability-create");
+        let created = compile_create(&fresh, &track_id, &seed_id, "Seed", &ops).expect("创建");
+        let Op::AddClip { clip } = &created[0] else {
+            panic!("必须是 AddClip");
+        };
+        let note = clip
+            .content
+            .notes()
+            .expect("MIDI")
+            .values()
+            .next()
+            .expect("至少一个音符");
+        assert_eq!(note.probability, Some(0.5));
     }
 
     // -----------------------------------------------------------------------

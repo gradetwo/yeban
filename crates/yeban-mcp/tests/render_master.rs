@@ -119,6 +119,12 @@ struct Spec {
     devices: Vec<DeviceDefinition>,
     loop_config: LoopConfig,
     with_placement: bool,
+    /// 音符的**概率触发**取值（`None` = 必然触发，逐字节等于加这个旋钮之前）。
+    probability: Option<f32>,
+    /// 工程随机种子（`YebanProjectV1::rng_seed`）—— 概率判定的**唯一**熵输入。
+    rng_seed: u64,
+    /// 音符身份种子（改它 = 换一个音符身份 ⇒ 触发判定可能翻转）。
+    note_seed: u32,
 }
 
 impl Default for Spec {
@@ -132,9 +138,15 @@ impl Default for Spec {
             devices: Vec::new(),
             loop_config: LoopConfig::default(),
             with_placement: true,
+            probability: None,
+            rng_seed: DEFAULT_RNG_SEED,
+            note_seed: 30,
         }
     }
 }
+
+/// 夹具的默认工程种子（沿用改这个旋钮之前的硬编码值）。
+const DEFAULT_RNG_SEED: u64 = 0x5945_4241_4E00_0001;
 
 /// 设备夹具。
 fn device(seed: u32, latency_samples: u32, bypassed: bool) -> DeviceDefinition {
@@ -154,13 +166,13 @@ fn project(spec: &Spec) -> YebanProjectV1 {
     let lead = id(2);
     let clip = id(10);
     let placement = id(20);
-    let note = id(30);
+    let note = id(spec.note_seed);
     let edge = id(40);
     let mut project = YebanProjectV1 {
         id: id(999),
         title: "render fixture".to_owned(),
         bpm: spec.bpm,
-        rng_seed: 0x5945_4241_4E00_0001,
+        rng_seed: spec.rng_seed,
         master_bus_track_id: master,
         ..YebanProjectV1::default()
     };
@@ -200,6 +212,7 @@ fn project(spec: &Spec) -> YebanProjectV1 {
             note,
             MidiNote {
                 velocity: spec.velocity,
+                probability: spec.probability,
                 ..MidiNote::new(note, 0, 69, spec.end_tick)
             },
         );
@@ -1519,4 +1532,274 @@ fn unsupported_features_are_named_and_counted_only_when_present() {
         "干净工程不该有 unsupported 项: {result}"
     );
     assert_eq!(result["data"]["unsupportedCounts"], json!({}));
+}
+
+// ---------------------------------------------------------------------------
+// 判据 13：概率触发（`probability`）走**模型层唯一判定入口**，不是本地掷骰子
+// ---------------------------------------------------------------------------
+
+/// 一条**只含 TPDF 抖动**的母带的幅度上界（单位：满量程）。
+///
+/// `yeban-render` 的 TPDF 抽样落在 `(-1, +1)` LSB 内（`dither::TPDF_PEAK_LSB = 1.0`），
+/// 再叠加 24-bit 量化的 `±0.5` LSB 舍入 ⇒ **数字静音**的输入产出的每个样本都在
+/// `±1.5` LSB 内。取 `2` LSB 作判据上界（`2 / 2^23 ≈ 2.4e-7`）。
+///
+/// 为什么需要这个常数：母带**永远**带抖动，所以"不发声"在文件里**不是**全零字节
+/// —— 它是"只有抖动"（见下一行的 `peak.after == 0.0`：抖动前的浮点母带才是严格 0）。
+const DITHER_ONLY_PEAK: f32 = 2.0 / 8_388_608.0;
+
+/// 渲染一个"单独可调概率"的夹具工程，返回（响应, 解码后的样本）。
+fn render_probability(
+    scratch: &Scratch,
+    tag: &str,
+    probability: Option<f32>,
+    rng_seed: u64,
+    note_seed: u32,
+) -> (Value, Vec<f32>) {
+    let spec = Spec {
+        probability,
+        rng_seed,
+        note_seed,
+        ..Spec::default()
+    };
+    let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("p.yeban"));
+    let out = scratch.join(&format!("{tag}.wav"));
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(result["status"], "success", "{tag}: {result}");
+    let samples = verify_file_shape(&result, &out);
+    (result, samples)
+}
+
+/// **模型层的判定就是渲染器的判定**：对一批 `(概率, 身份)` 组合，逐条比较
+/// `MidiNote::triggers(rng_seed)` 与"母带里这个音符到底响没响"。
+///
+/// 这条判据是"没有第二份实现"的机械证据：它**不**断言某个固定的静音/发声表
+/// （那会把模型的哈希抄成第二份事实源），而是**现场问模型**再要求渲染器同意。
+///
+/// 可被什么注入破坏：把 `note.triggers(project.rng_seed)` 换成任何本地判定
+/// （恒真 / 恒假 / `probability >= 0.5` / 换一个哈希）都会让某一行的两边不等。
+#[test]
+fn the_probability_decision_is_the_models_own_triggers_function() {
+    let scratch = Scratch::new("probability-parity");
+    // 覆盖端点（必然/永不）与中间值；身份种子变化让中间值的判定两侧都出现。
+    let probabilities = [0.0f32, 1.0, 0.25, 0.5, 0.75];
+    let mut silenced = 0usize;
+    let mut audible = 0usize;
+    for (index, note_seed) in [30u32, 31, 32, 33, 34, 35].into_iter().enumerate() {
+        let note_id = id(note_seed);
+        for probability in probabilities {
+            let expected = MidiNote {
+                probability: Some(probability),
+                ..MidiNote::new(note_id, 0, 69, 1_920)
+            }
+            .triggers(DEFAULT_RNG_SEED);
+            let (result, samples) = render_probability(
+                &scratch,
+                &format!("p{index}-{probability}"),
+                Some(probability),
+                DEFAULT_RNG_SEED,
+                note_seed,
+            );
+            let sounds = peak(&samples) > DITHER_ONLY_PEAK;
+            assert_eq!(
+                sounds, expected,
+                "概率 {probability} / 身份 {note_seed}: 模型说 {expected}, 母带说 {sounds}: {result}"
+            );
+            assert_eq!(
+                result["data"]["probability"]["notesSilenced"],
+                u64::from(!expected),
+                "被静音的音符数必须等于模型判定为不触发的条数: {result}"
+            );
+            assert_eq!(
+                result["data"]["sources"][0]["notesSilenced"],
+                u64::from(!expected),
+                "逐轨读数也要一致: {result}"
+            );
+            if expected {
+                audible += 1;
+            } else {
+                silenced += 1;
+            }
+            // `noteProbability` 已经**做到**了 ⇒ 报它"没渲染"就是假话。
+            assert!(
+                !result["data"]["unsupported"]
+                    .as_array()
+                    .expect("unsupported")
+                    .iter()
+                    .any(|key| key == "noteProbability"),
+                "概率触发已接线, 不得再登记 noteProbability: {result}"
+            );
+        }
+    }
+    // 判据必须**真的**把两边都覆盖到, 否则"恒静音"或"恒发声"的注入也能全绿。
+    assert!(silenced > 0, "这批组合里必须有被判为不触发的音符");
+    assert!(audible > 0, "这批组合里必须有被判为触发的音符");
+}
+
+/// 概率的**每一半**都是承重的：`0.0` 是不发声的数字静音（不是"小音量"），
+/// `1.0` 与缺省是必然发声；且 `rng_seed` 真的参与判定（换种子会翻转某个身份）。
+#[test]
+fn probability_endpoints_and_the_seed_are_load_bearing() {
+    let scratch = Scratch::new("probability-endpoints");
+    // `0.0` ⇒ 母带**只有抖动**（抖动前的浮点母带逐样本为 0），响应如实报告一个被静音的音符。
+    let (zero, samples) = render_probability(&scratch, "zero", Some(0.0), DEFAULT_RNG_SEED, 30);
+    assert!(
+        peak(&samples) <= DITHER_ONLY_PEAK,
+        "probability=0.0 的音符必须一点声音都不出 (只允许 TPDF 抖动): 实测峰值 {}",
+        peak(&samples)
+    );
+    assert_eq!(
+        zero["data"]["peak"]["after"], 0.0,
+        "抖动前的浮点母带必须严格为 0: {zero}"
+    );
+    assert_eq!(zero["data"]["probability"]["notesSilenced"], 1, "{zero}");
+    assert_eq!(
+        zero["data"]["probability"]["rngSeed"], DEFAULT_RNG_SEED,
+        "响应必须报出判定用的种子: {zero}"
+    );
+
+    // `1.0` 与**缺省**（不写 `probability`）都必须发声 —— 缺省 = 旧行为。
+    let (one, samples) = render_probability(&scratch, "one", Some(1.0), DEFAULT_RNG_SEED, 30);
+    assert!(
+        peak(&samples) > 0.1,
+        "probability=1.0 必须发声 (远高于抖动底噪)"
+    );
+    assert_eq!(one["data"]["probability"]["notesSilenced"], 0, "{one}");
+    let (absent, samples) = render_probability(&scratch, "absent", None, DEFAULT_RNG_SEED, 30);
+    assert!(
+        peak(&samples) > 0.1,
+        "缺省 probability 必须发声 (远高于抖动底噪)"
+    );
+    assert_eq!(
+        absent["data"]["probability"]["notesSilenced"], 0,
+        "{absent}"
+    );
+
+    // 种子真的进判定：在同一个**身份**上扫种子，找到一对判定不同的种子，
+    // 再**渲染两个工程**要求母带的"响没响"跟着变 —— 只查模型不算数，
+    // 因为要判的是**渲染器**有没有消费 `rng_seed`。
+    let note_id = id(30);
+    let decision = |seed: u64| {
+        MidiNote {
+            probability: Some(0.5),
+            ..MidiNote::new(note_id, 0, 69, 1_920)
+        }
+        .triggers(seed)
+    };
+    let chosen = (0u64..64).find(|seed| decision(*seed) != decision(DEFAULT_RNG_SEED));
+    let Some(other_seed) = chosen else {
+        panic!("64 个种子里 0.5 的判定一次都没翻转 ⇒ 种子没被消费");
+    };
+    let (other, other_samples) =
+        render_probability(&scratch, "other-seed", Some(0.5), other_seed, 30);
+    let other_sounds = peak(&other_samples) > DITHER_ONLY_PEAK;
+    assert_ne!(
+        other_sounds,
+        peak(&samples) > DITHER_ONLY_PEAK,
+        "种子 {other_seed} 与 {DEFAULT_RNG_SEED} 的判定不同, 母带也必须跟着不同: {other}"
+    );
+    assert_eq!(
+        other["data"]["probability"]["rngSeed"], other_seed,
+        "响应报的种子必须是这次用的那个: {other}"
+    );
+}
+
+/// 判定属于**身份**而不是**位置**：把同一个音符在时间轴上平移（以及改力度），
+/// 触发结论不变 —— 与模型文档的承诺一致（"概率属于身份"）。
+///
+/// 可被什么注入破坏：把哈希的输入从 `note.id` 换成 `note.start_tick` 之类。
+#[test]
+fn the_probability_decision_follows_the_note_identity_not_its_position() {
+    for probability in [0.25f32, 0.5, 0.75] {
+        let mut decisions = Vec::new();
+        for start_tick in [0u64, 480, 960, 1_440] {
+            let note_id = id(37);
+            let note = MidiNote {
+                probability: Some(probability),
+                ..MidiNote::new(note_id, start_tick, 69, 240)
+            };
+            decisions.push(note.triggers(DEFAULT_RNG_SEED));
+        }
+        assert!(
+            decisions.windows(2).all(|pair| pair[0] == pair[1]),
+            "概率 {probability}: 平移不该改变触发判定, 实测 {decisions:?}"
+        );
+    }
+
+    // 端到端复核：同一个身份/概率, 只改起点, 母带里的"响没响"必须一致。
+    let scratch = Scratch::new("probability-identity");
+    let mut verdicts = Vec::new();
+    for (index, start_tick) in [0u64, 480, 960].into_iter().enumerate() {
+        let note_id = id(37);
+        let spec = Spec {
+            probability: Some(0.35),
+            note_seed: 37,
+            ..Spec::default()
+        };
+        let mut fixture = project(&spec);
+        // 平移音符（**身份不变**，只动位置与摆放下的一小段时值）。
+        if let Some(ClipPoolEntry {
+            content: ClipContent::Midi { notes },
+            ..
+        }) = fixture.clip_pool.get_mut(&id(10))
+            && let Some(note) = notes.get_mut(&note_id)
+        {
+            note.start_tick = start_tick;
+            note.duration_ticks = 240;
+        }
+        let (mut dispatcher, auth) = dispatcher_with(&fixture, &scratch.join("i.yeban"));
+        let out = scratch.join(&format!("i{index}.wav"));
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+        );
+        assert_eq!(result["status"], "success", "{result}");
+        verdicts.push(result["data"]["probability"]["notesSilenced"].clone());
+    }
+    assert!(
+        verdicts.windows(2).all(|pair| pair[0] == pair[1]),
+        "同一身份平移起点后判定必须不变, 实测 {verdicts:?}"
+    );
+}
+
+/// 两次渲染**逐位相同**（概率判定不引入任何熵），且不同种子确实产出不同母带。
+///
+/// 可被什么注入破坏：把确定性哈希换成平台 RNG / 线程局部状态。
+#[test]
+fn probability_renders_are_bit_identical_and_seed_sensitive() {
+    let scratch = Scratch::new("probability-determinism");
+    let (first, _) = render_probability(&scratch, "once", Some(0.5), DEFAULT_RNG_SEED, 30);
+    let (second, _) = render_probability(&scratch, "twice", Some(0.5), DEFAULT_RNG_SEED, 30);
+    assert_eq!(
+        first["data"]["masterDigest"], second["data"]["masterDigest"],
+        "同输入两次渲染的母带摘要必须相同"
+    );
+    assert_eq!(
+        first["data"]["sha256"], second["data"]["sha256"],
+        "文件必须逐字节相同"
+    );
+
+    // 换一个**判定翻转**的种子 ⇒ 母带摘要必须跟着变（证明种子真的进了渲染）。
+    let note_id = id(30);
+    let decision = |seed: u64| {
+        MidiNote {
+            probability: Some(0.5),
+            ..MidiNote::new(note_id, 0, 69, 1_920)
+        }
+        .triggers(seed)
+    };
+    let Some(other_seed) = (0u64..64).find(|seed| decision(*seed) != decision(DEFAULT_RNG_SEED))
+    else {
+        panic!("64 个种子里 0.5 的判定一次都没翻转 ⇒ 种子没被消费");
+    };
+    let (other, _) = render_probability(&scratch, "seed-flip", Some(0.5), other_seed, 30);
+    assert_ne!(
+        first["data"]["masterDigest"], other["data"]["masterDigest"],
+        "判定翻转的种子必须产出不同的母带摘要: {other}"
+    );
 }
