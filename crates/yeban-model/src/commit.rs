@@ -213,6 +213,92 @@ impl UndoCursor {
     }
 }
 
+/// [`CommitGraph`] 的**结构自洽**错误 [ARCH-OPS-002, ARCH-SEC-003]。
+///
+/// 与 [`HistoryDagError`] 的分工：那个说的是"这串字节根本不是一份图谱"，
+/// 这里说的是"这份图谱自己不自洽"（引用了不存在的提交、深度缓存与父集合矛盾等）。
+/// 图谱有两个来源：本 crate 的四个写入 API（恒自洽），以及磁盘 / 第三方归档里的
+/// `history.dag`（**不可信**）。因此自洽性必须在**解读的边界**上检查一次，
+/// 见 [`decode_history_dag`]。
+///
+/// ## 为什么必须有这一层
+///
+/// `commits`、`branches`、`depths` 是**分开保存**的三个集合：写入 API 负责让它们同步，
+/// 反序列化不做这件事。一份"JSON 合法、但集合互相矛盾"的 `history.dag` 带来两类故障，
+/// 两者都不是"数据难看"，而是**行为错**：
+///
+/// 1. **深度缓存与父集合矛盾** ⇒ 快照点（深度 `1, 257, 513, …`）从此算错，且
+///    [`CommitGraph::depth_of`] 会报一个并非"提交不存在"的假事实；
+/// 2. **父集合成环** ⇒ [`CommitGraph::ancestry`] 与 [`CommitGraph::ops_backwards`] 沿
+///    第一父无限前进（两者都没有 visited 集），表现为**进程挂死**而不是报错。
+///
+/// 校验通过的图谱，父链上的声明深度**严格递减**，因此它必然无环：每一次遍历都保证终止。
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum CommitGraphError {
+    /// `commits` 的键与提交内嵌的 `id` 不一致。
+    #[error("commit key `{key}` does not match the embedded id `{embedded}`")]
+    CommitKeyMismatch {
+        /// 集合键。
+        key: EntityId,
+        /// 提交内嵌的身份。
+        embedded: EntityId,
+    },
+    /// 提交引用了不在 `commits` 里的父提交。
+    #[error("commit `{commit}` references unknown parent `{parent}`")]
+    ParentNotFound {
+        /// 引用者。
+        commit: EntityId,
+        /// 不存在的父提交。
+        parent: EntityId,
+    },
+    /// 提交在深度缓存里没有条目。
+    #[error("commit `{commit}` has no entry in `depths`")]
+    DepthMissing {
+        /// 缺少深度条目的提交。
+        commit: EntityId,
+    },
+    /// 深度缓存里有条目，但它不对应任何提交。
+    #[error("`depths` has an entry for unknown commit `{commit}`")]
+    DepthOrphan {
+        /// 深度缓存里多出来的键。
+        commit: EntityId,
+    },
+    /// 声明的深度与由父提交推导出的深度不一致。
+    #[error("commit `{commit}` declares depth {declared} but its parents imply {derived}")]
+    DepthInconsistent {
+        /// 提交身份。
+        commit: EntityId,
+        /// 深度缓存里声明的值。
+        declared: u64,
+        /// 由父提交**声明的**深度推导出的值。
+        derived: u64,
+    },
+    /// 某父提交声明的深度是 `u64::MAX`，因此本提交的深度无法用 `u64` 表示。
+    #[error("commit `{commit}` cannot be assigned a depth: parent declares {parent_depth}")]
+    DepthOverflow {
+        /// 提交身份。
+        commit: EntityId,
+        /// 父提交声明的深度。
+        parent_depth: u64,
+    },
+    /// 分支头指向不在 `commits` 里的提交。
+    #[error("branch `{name}` points at unknown commit `{head}`")]
+    BranchHeadNotFound {
+        /// 分支名。
+        name: String,
+        /// 分支头指向的身份。
+        head: EntityId,
+    },
+    /// `branches` 的键与分支内嵌的 `name` 不一致。
+    #[error("branch key `{key}` does not match the embedded name `{embedded}`")]
+    BranchKeyMismatch {
+        /// 集合键。
+        key: String,
+        /// 分支内嵌的名字。
+        embedded: String,
+    },
+}
+
 /// 提交图谱：提交、分支与深度缓存的唯一事实源 [ARCH-OPS-002]。
 ///
 /// 三个集合全部是 `BTreeMap`（红线 4 / [MODEL-AST-003]），
@@ -245,6 +331,99 @@ impl CommitGraph {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 检查三个集合互相自洽（**不可信输入的边界**，见 [`CommitGraphError`]）
+    /// [ARCH-OPS-002, ARCH-SEC-003]。
+    ///
+    /// 逐条不变量（全部由四个写入 API 保证，因此它们产出的图谱恒通过）：
+    ///
+    /// 1. `commits` 的每个键等于该提交内嵌的 `id`；
+    /// 2. 每个提交的 `parents` 都在 `commits` 里；
+    /// 3. `commits` 与 `depths` 的键集合**完全相同**（不多不少 —— 深度缓存在写提交时
+    ///    维护，缺条目会让 [`CommitGraph::depth_of`] 退化成误导性的
+    ///    [`ModelError::CommitNotFound`]）；
+    /// 4. 每个提交声明的深度 = `max(父提交声明的深度) + 1`（根提交恒为 1）。
+    ///    沿父边声明深度**严格递减**，因此这一条本身就排除了环；
+    /// 5. 每个分支头的 `head` 在 `commits` 里，且 `branches` 的键等于该分支的 `name`。
+    ///
+    /// 遍历是单趟、迭代、无递归、不分配的：`O(提交数 + 父边数)`。
+    /// **不**要求每个提交都能从某个分支头到达（孤岛提交合法：写入 API 不产生它，
+    /// 但它不构成矛盾）。
+    ///
+    /// # Errors
+    ///
+    /// 任一条不变量被破坏时返回对应的 [`CommitGraphError`]。
+    pub fn validate(&self) -> Result<(), CommitGraphError> {
+        for (key, commit) in &self.commits {
+            if *key != commit.id {
+                return Err(CommitGraphError::CommitKeyMismatch {
+                    key: *key,
+                    embedded: commit.id,
+                });
+            }
+            let Some(&declared) = self.depths.get(key) else {
+                return Err(CommitGraphError::DepthMissing { commit: *key });
+            };
+            // 只读父提交**声明的**深度（不用任何推导值），因此迭代顺序不影响结论。
+            let mut deepest_parent: Option<u64> = None;
+            for parent in &commit.parents {
+                if !self.commits.contains_key(parent) {
+                    return Err(CommitGraphError::ParentNotFound {
+                        commit: *key,
+                        parent: *parent,
+                    });
+                }
+                let parent_depth = self
+                    .depths
+                    .get(parent)
+                    .copied()
+                    .ok_or(CommitGraphError::DepthMissing { commit: *parent })?;
+                deepest_parent = Some(match deepest_parent {
+                    Some(current) => current.max(parent_depth),
+                    None => parent_depth,
+                });
+            }
+            let derived = match deepest_parent {
+                None => 1,
+                Some(parent_depth) => {
+                    parent_depth
+                        .checked_add(1)
+                        .ok_or(CommitGraphError::DepthOverflow {
+                            commit: *key,
+                            parent_depth,
+                        })?
+                }
+            };
+            if declared != derived {
+                return Err(CommitGraphError::DepthInconsistent {
+                    commit: *key,
+                    declared,
+                    derived,
+                });
+            }
+        }
+        // `depths` 不得有 `commits` 里没有的键（上面只检查了反方向）。
+        for key in self.depths.keys() {
+            if !self.commits.contains_key(key) {
+                return Err(CommitGraphError::DepthOrphan { commit: *key });
+            }
+        }
+        for (name, head) in &self.branches {
+            if name != &head.name {
+                return Err(CommitGraphError::BranchKeyMismatch {
+                    key: name.clone(),
+                    embedded: head.name.clone(),
+                });
+            }
+            if !self.commits.contains_key(&head.head) {
+                return Err(CommitGraphError::BranchHeadNotFound {
+                    name: name.clone(),
+                    head: head.head,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// 创建根提交并建立命名分支 [ARCH-OPS-002]。
@@ -622,10 +801,19 @@ impl CommitGraph {
 /// "写"的那一侧见 [`encode_history_dag`] —— 它是全函数，不产生错误。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum HistoryDagError {
-    /// 字节不是合法的 `CommitGraph` JSON（含"JSON 合法但形状不符"）。
+    /// 字节不是合法的 `CommitGraph` JSON（serde 层：语法错、缺必需键、类型不符）。
     #[error("`history.dag` is not a valid CommitGraph JSON: {detail}")]
     InvalidJson {
         /// `serde_json` 的错误文本（含行列位置）。
+        detail: String,
+    },
+    /// JSON 合法、但图谱**自己不自洽**（见 [`CommitGraphError`]）[ARCH-OPS-002]。
+    ///
+    /// 与 [`HistoryDagError::InvalidJson`] 分开是刻意的：这条错误的主语是**图谱**，
+    /// 不是字节的语法。它同样**绝不**降级成"空历史" —— 那等于把用户的历史悄悄丢掉。
+    #[error("`history.dag` is not a self-consistent CommitGraph: {detail}")]
+    InconsistentGraph {
+        /// [`CommitGraph::validate`] 的错误文本。
         detail: String,
     },
 }
@@ -669,10 +857,24 @@ pub fn encode_history_dag(graph: &CommitGraph) -> Vec<u8> {
 ///
 /// - 空字节 ⇒ `Ok(None)`（容器条目存在，但还没有历史）；
 /// - 零提交图谱（`{"commits":{},"branches":{},"depths":{}}`）⇒ `Ok(None)`（同上）；
-/// - 合法图谱 ⇒ `Ok(Some(graph))`；
-/// - 其余（非法 JSON、或 JSON 合法但形状不符 —— 例如缺 `commits` / `branches` / `depths`
-///   这三个必需键 [ADR-0001 D43]）⇒ [`HistoryDagError::InvalidJson`]。
-///   **绝不**静默降级成"空历史"：那等于把用户的历史悄悄丢掉。
+/// - 合法且**自洽**的图谱 ⇒ `Ok(Some(graph))`；
+/// - 非法 JSON，或 JSON 合法但形状不符（例如缺 `commits` / `branches` / `depths`
+///   这三个必需键 [ADR-0001 D43]）⇒ [`HistoryDagError::InvalidJson`]；
+/// - JSON 合法、但图谱自己不自洽（引用不存在的父提交、深度缓存与父集合矛盾、
+///   父集合成环、分支头悬空 …）⇒ [`HistoryDagError::InconsistentGraph`]，
+///   判据就是 [`CommitGraph::validate`]。
+///
+/// **绝不**静默降级成"空历史"：那等于把用户的历史悄悄丢掉。
+///
+/// ## 为什么自洽性属于本层
+///
+/// 这是**不可信输入**进入模型层的那一格。放行一份父集合成环的图谱会让
+/// [`CommitGraph::ancestry`] / [`CommitGraph::ops_backwards`] 无限前进（挂死），
+/// 放行一份深度缓存被改过的图谱会让快照点从此算错 —— 两者都不会在读取时发出任何信号，
+/// 因此必须在**读取的那一刻**拒绝。容器层（`read_project_container`）刻意**不**做这件事：
+/// 它按规范只搬运字节、不解读 `history.dag`（判据
+/// `history_dag_bytes_land_in_the_named_entry` 把"任意字节都逐字节往返"钉死），
+/// 所以边界只能在这里。
 ///
 /// ## 刻意**不**在这一层做的判定
 ///
@@ -682,13 +884,21 @@ pub fn encode_history_dag(graph: &CommitGraph) -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// 字节不是合法的 `CommitGraph` JSON 时返回 [`HistoryDagError::InvalidJson`]。
+/// 字节不是合法的 `CommitGraph` JSON 时返回 [`HistoryDagError::InvalidJson`]；
+/// 语法合法但图谱不自洽时返回 [`HistoryDagError::InconsistentGraph`]。
 pub fn decode_history_dag(raw: &[u8]) -> Result<Option<CommitGraph>, HistoryDagError> {
     if raw.is_empty() {
         return Ok(None);
     }
     let graph: CommitGraph =
         serde_json::from_slice(raw).map_err(|error| HistoryDagError::InvalidJson {
+            detail: error.to_string(),
+        })?;
+    // 自洽性**先于**"零提交 ⇒ None"：一份声明了分支但没有任何提交的图谱不是
+    // "还没有历史"，而是自相矛盾，必须报错而不是被静默读成空历史。
+    graph
+        .validate()
+        .map_err(|error| HistoryDagError::InconsistentGraph {
             detail: error.to_string(),
         })?;
     if graph.commits.is_empty() {
@@ -1465,5 +1675,165 @@ mod tests {
             decode_history_dag(&bytes),
             Err(HistoryDagError::InvalidJson { .. })
         ));
+    }
+
+    /// 直接构造一个提交（不经过写入 API）—— 对抗性判据需要它。
+    fn bare_commit(id: EntityId, parents: Vec<EntityId>) -> Commit {
+        Commit {
+            id,
+            parents,
+            branch_id: "main".to_owned(),
+            author: "agent".to_owned(),
+            message: "m".to_owned(),
+            created_at: 0,
+            rng_seed: 0,
+            ops: Vec::new(),
+            snapshot_ref: None,
+        }
+    }
+
+    /// 一个只有 `main` 分支、指向 `head` 的最小图谱（三个集合都非空）。
+    fn bare_graph(
+        commits: Vec<Commit>,
+        head: EntityId,
+        depths: Vec<(EntityId, u64)>,
+    ) -> CommitGraph {
+        let mut graph = CommitGraph::new();
+        for commit in commits {
+            graph.commits.insert(commit.id, commit);
+        }
+        for (id, depth) in depths {
+            graph.depths.insert(id, depth);
+        }
+        graph.branches.insert(
+            "main".to_owned(),
+            BranchHead {
+                name: "main".to_owned(),
+                head,
+                anonymous: false,
+            },
+        );
+        graph
+    }
+
+    #[test]
+    fn validate_accepts_every_graph_the_write_apis_produce() {
+        let mut graph = fixture_graph();
+        graph.validate().expect("genesis / append / fork_anonymous");
+
+        // `create_branch` 不写提交，只在既有提交上挂一个命名分支头。
+        graph
+            .create_branch("proposal", &fixture_id(1))
+            .expect("create_branch");
+        graph.validate().expect("create_branch");
+
+        // 多父合并：第一父是 `main` 的头，另一父取匿名分支的头。
+        let anon_name = graph
+            .branches
+            .keys()
+            .find(|name| name.starts_with(ANONYMOUS_BRANCH_PREFIX))
+            .cloned()
+            .expect("fork_anonymous 必须派生匿名分支");
+        let anon_head = graph.branch_head(&anon_name).expect("anon").head;
+        let merge = graph
+            .append_merge(
+                CommitDraft::new(fixture_id(9), "main", "agent", "merge")
+                    .with_ops(vec![add_section_op(19)]),
+                &[anon_head],
+            )
+            .expect("append_merge");
+        assert!(graph.commit(&merge).expect("merge").is_merge());
+        assert_eq!(graph.depth_of(&merge).expect("depth"), 3);
+        graph.validate().expect("append_merge");
+
+        // 深度跨过快照间隔（257）的长链同样必须自洽。
+        let mut deep = CommitGraph::new();
+        deep.genesis(CommitDraft::new(fixture_id(1), "main", "agent", "genesis"))
+            .expect("genesis");
+        for index in 2..=258_u128 {
+            deep.append(CommitDraft::new(fixture_id(index), "main", "agent", "step"))
+                .expect("append");
+        }
+        let head = deep.branch_head("main").expect("main").head;
+        assert_eq!(deep.depth_of(&head).expect("depth"), 258);
+        assert!(
+            deep.commit(&fixture_id(257))
+                .expect("depth 257")
+                .has_snapshot(),
+            "深度 257 的提交必须带全量快照"
+        );
+        deep.validate().expect("258 条提交的链");
+    }
+
+    #[test]
+    fn validate_rejects_a_cycle_and_names_the_depth_contradiction() {
+        // 两个提交互为父提交：两个身份都存在，父边都存在，因此"引用完整性"查不出它。
+        // 只有深度递推能抓住它 —— 也正是这条递推保证了解码后的遍历必然终止。
+        let a = fixture_id(1);
+        let b = fixture_id(2);
+        let graph = bare_graph(
+            vec![bare_commit(a, vec![b]), bare_commit(b, vec![a])],
+            a,
+            vec![(a, 2), (b, 2)],
+        );
+        let error = graph.validate().expect_err("环必须被拒绝");
+        assert!(
+            matches!(error, CommitGraphError::DepthInconsistent { .. }),
+            "环应表现为深度矛盾，实测：{error}"
+        );
+        assert!(
+            error.to_string().contains("declares depth"),
+            "错误文本必须点名深度矛盾，实测：{error}"
+        );
+        // 同一个图谱经"编解码"（= 不可信输入的真实形状）同样被拒。
+        assert!(
+            matches!(
+                decode_history_dag(&encode_history_dag(&graph)),
+                Err(HistoryDagError::InconsistentGraph { .. })
+            ),
+            "解码边界必须拒绝它，否则 ancestry / ops_backwards 会挂死"
+        );
+    }
+
+    #[test]
+    fn a_poisoned_depth_cache_is_rejected_before_it_can_shift_the_snapshot_grid() {
+        // 三提交链，深度缓存被改成"全是 1"。放行它会让下一次 append 得到深度 2，
+        // 于是快照点（1, 257, 513, …）从此算错；这里必须在读取时拒绝。
+        let a = fixture_id(1);
+        let b = fixture_id(2);
+        let c = fixture_id(3);
+        let graph = bare_graph(
+            vec![
+                bare_commit(a, Vec::new()),
+                bare_commit(b, vec![a]),
+                bare_commit(c, vec![b]),
+            ],
+            c,
+            vec![(a, 1), (b, 1), (c, 1)],
+        );
+        let error = graph.validate().expect_err("被改过的深度缓存必须被拒绝");
+        match error {
+            CommitGraphError::DepthInconsistent {
+                commit,
+                declared,
+                derived,
+            } => {
+                assert_eq!(commit, b, "先被查出的应当是链上第二个提交");
+                assert_eq!(declared, 1);
+                assert_eq!(derived, 2);
+            }
+            other => panic!("期望 DepthInconsistent，实测 {other}"),
+        }
+        // 对照：同一形状但深度自洽（1/2/3）必须通过。
+        let sound = bare_graph(
+            vec![
+                bare_commit(a, Vec::new()),
+                bare_commit(b, vec![a]),
+                bare_commit(c, vec![b]),
+            ],
+            c,
+            vec![(a, 1), (b, 2), (c, 3)],
+        );
+        sound.validate().expect("自洽的深度缓存必须通过");
     }
 }

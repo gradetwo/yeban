@@ -50,8 +50,9 @@ pub mod session;
 
 pub use automation::{NOMINAL_GAIN_MAX_DB, NOMINAL_GAIN_MIN_DB};
 pub use commit::{
-    ANONYMOUS_BRANCH_PREFIX, BranchHead, Commit, CommitDraft, CommitGraph, HistoryDagError,
-    SNAPSHOT_INTERVAL, UndoCursor, decode_history_dag, encode_history_dag, snapshot_due_at_depth,
+    ANONYMOUS_BRANCH_PREFIX, BranchHead, Commit, CommitDraft, CommitGraph, CommitGraphError,
+    HistoryDagError, SNAPSHOT_INTERVAL, UndoCursor, decode_history_dag, encode_history_dag,
+    snapshot_due_at_depth,
 };
 pub use container::{
     ContainerArchive, ContainerEntry, ContainerError, ContainerLimits, ProjectArchive,

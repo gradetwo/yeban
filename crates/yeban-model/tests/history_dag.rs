@@ -25,13 +25,15 @@
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
 
+use serde_json::json;
+
 use yeban_model::container::{
     ContainerLimits, HISTORY_DAG_NAME, read_container, read_project_container,
     write_project_container,
 };
 use yeban_model::{
-    CommitDraft, CommitGraph, EntityId, Op, OpOrigin, StampedOp, decode_history_dag,
-    encode_history_dag,
+    CommitDraft, CommitGraph, EntityId, HistoryDagError, Op, OpOrigin, StampedOp,
+    decode_history_dag, encode_history_dag,
 };
 
 /// 与 `src/commit.rs` 的判据同一套夹具 ULID（26 字符 Crockford Base32）。
@@ -137,4 +139,184 @@ fn app_style_empty_history_dag_is_read_back_as_no_history() {
         decode_history_dag(&archive.history_dag).expect("解码"),
         None
     );
+}
+
+// ---------------------------------------------------------------------------
+// 不可信 `history.dag` 的边界（`[ARCH-OPS-002]`）
+// ---------------------------------------------------------------------------
+//
+// `history.dag` 来自磁盘或第三方归档。三个集合（`commits` / `branches` / `depths`）
+// 是分开保存的，**写入 API** 负责让它们同步，反序列化不做这件事 ⇒ 一份
+// "JSON 合法、但集合互相矛盾"的文件在解码时不会发出任何信号。
+// 两条被实测的后果（见 `docs/ledger/store-container-notes.md` 的
+// `history.dag` 相关条目）：
+//
+// - 父集合成环 ⇒ `CommitGraph::ancestry` / `ops_backwards` 沿第一父无限前进，
+//   进程**挂死**（判据用"① 环"这一条钉住）；
+// - 深度缓存被改 ⇒ 快照点（深度 `1, 257, 513, …`）从此算错。
+//
+// 因此解码边界必须拒绝它们，且**绝不**降级成"空历史"。
+
+/// 三条提交、两个分支头（`main` + 一条匿名分支）的图谱。
+///
+/// [`fixture_graph`] 只有一条线性分支，不足以覆盖"挪一个分支头"这类改动；
+/// 本夹具就是它加上一次 `fork_anonymous`（在根提交上派生）。
+fn forkable_graph() -> CommitGraph {
+    let mut graph = fixture_graph();
+    graph
+        .fork_anonymous(
+            &fixture_id(1),
+            CommitDraft::new(fixture_id(3), "anon-placeholder", "agent", "fork"),
+        )
+        .expect("fork_anonymous");
+    graph
+}
+
+/// 一份"**JSON 合法、图谱不自洽**"的 `history.dag` 构造表。
+///
+/// 每一条都是对一份**合法**图谱（本文件的 `forkable_graph`）的**最小**改动
+/// （改一条父边 / 删一个深度条目 / 挪一个分支头 …），因此失败只可能来自被改的那条不变量。
+/// 三元组 = `(名字, 字节, 错误文本里必须出现的字样)`。
+fn inconsistent_dags() -> Vec<(&'static str, Vec<u8>, &'static str)> {
+    let first = fixture_id(1).to_canonical_string();
+    let second = fixture_id(2).to_canonical_string();
+    let third = fixture_id(3).to_canonical_string();
+    let ghost = fixture_id(99).to_canonical_string();
+
+    let base = || serde_json::to_value(forkable_graph()).expect("合法图谱可序列化");
+    let bytes = |value: &serde_json::Value| serde_json::to_vec(value).expect("可序列化");
+    let mut cases: Vec<(&'static str, Vec<u8>, &'static str)> = Vec::new();
+
+    // ① 父集合成环：两个身份都存在、父边都存在 ⇒ 只有深度递推抓得住它。
+    let mut value = base();
+    value["commits"][first.as_str()]["parents"] = json!([third]);
+    value["commits"][third.as_str()]["parents"] = json!([first]);
+    cases.push(("cycle", bytes(&value), "declares depth"));
+
+    // ② 悬空父提交。
+    let mut value = base();
+    value["commits"][first.as_str()]["parents"] = json!([ghost]);
+    cases.push((
+        "dangling_parent",
+        bytes(&value),
+        "references unknown parent",
+    ));
+
+    // ③ 深度缓存缺条目（截断文件）。
+    let mut value = base();
+    value["depths"]
+        .as_object_mut()
+        .expect("depths 是对象")
+        .remove(&second);
+    cases.push(("missing_depth", bytes(&value), "has no entry in `depths`"));
+
+    // ④ 深度缓存被改（放行它会让快照点算错）。
+    let mut value = base();
+    value["depths"][third.as_str()] = json!(1);
+    cases.push(("poisoned_depth", bytes(&value), "declares depth"));
+
+    // ⑤ 深度缓存里有不属于任何提交的条目。
+    let mut value = base();
+    value["depths"][ghost.as_str()] = json!(1);
+    cases.push(("orphan_depth", bytes(&value), "entry for unknown commit"));
+
+    // ⑥ 分支头悬空。
+    let mut value = base();
+    value["branches"]["main"]["head"] = json!(ghost);
+    cases.push((
+        "dangling_branch_head",
+        bytes(&value),
+        "points at unknown commit",
+    ));
+
+    // ⑦ `commits` 的键与提交内嵌的 `id` 不一致。
+    let mut value = base();
+    value["commits"][first.as_str()]["id"] = json!(second);
+    cases.push((
+        "commit_key_mismatch",
+        bytes(&value),
+        "does not match the embedded id",
+    ));
+
+    // ⑧ `branches` 的键与分支内嵌的 `name` 不一致。
+    let mut value = base();
+    value["branches"]["main"]["name"] = json!("other");
+    cases.push((
+        "branch_key_mismatch",
+        bytes(&value),
+        "does not match the embedded name",
+    ));
+
+    // ⑨ 声明了分支却一条提交都没有：这是**自相矛盾**，不是"还没有历史"
+    //    （自洽性检查必须先于"零提交 ⇒ None"，否则分支声明被静默丢掉）。
+    let value = json!({
+        "commits": {},
+        "branches": {"main": {"name": "main", "head": first, "anonymous": false}},
+        "depths": {},
+    });
+    cases.push((
+        "branch_without_any_commit",
+        bytes(&value),
+        "points at unknown commit",
+    ));
+
+    cases
+}
+
+#[test]
+fn json_valid_but_inconsistent_history_dags_are_rejected_at_the_decode_boundary() {
+    let cases = inconsistent_dags();
+    assert_eq!(cases.len(), 9, "构造表的条数（每一条不变量至少一条）");
+    let mut rejected = 0_usize;
+    for (name, raw, needle) in cases {
+        // 前提一：字节**真的**是合法 JSON；前提二：它能过 serde 的形状层。
+        // 两条件同时成立才说明下面拒绝的原因是"图谱不自洽"，而不是"字节读不出来"。
+        let parsed: serde_json::Value = serde_json::from_slice(&raw)
+            .unwrap_or_else(|error| panic!("{name}: 夹具必须是合法 JSON（{error}）"));
+        assert!(parsed.is_object(), "{name}: 夹具必须是 JSON 对象");
+        serde_json::from_slice::<CommitGraph>(&raw)
+            .unwrap_or_else(|error| panic!("{name}: 夹具必须能过 serde 形状层（{error}）"));
+
+        match decode_history_dag(&raw) {
+            Err(HistoryDagError::InconsistentGraph { detail }) => {
+                assert!(
+                    detail.contains(needle),
+                    "{name}: 错误必须点名 `{needle}`，实测：{detail}"
+                );
+                rejected += 1;
+            }
+            other => panic!("{name}: 必须被拒绝为 InconsistentGraph，实测：{other:?}"),
+        }
+    }
+    assert_eq!(rejected, 9, "每一条夹具都必须真的被检查过（不许静默跳过）");
+}
+
+#[test]
+fn a_decoded_graph_is_always_walkable_to_its_root() {
+    // 正面方向：解码**成功**的图谱，每个分支头都能走到根，且祖先链长度恰好等于
+    // 它声明的深度。上一条判据拒绝环，这一条钉住"拒绝环"换来的那条性质本身 ——
+    // 遍历必然终止，且深度缓存不是装饰品。
+    let graph = forkable_graph();
+    let decoded = decode_history_dag(&encode_history_dag(&graph))
+        .expect("解码")
+        .expect("非空图谱");
+    assert_eq!(decoded.branches.len(), 2, "夹具：main + 一条匿名分支");
+    let mut walked = 0_usize;
+    for (name, branch) in &decoded.branches {
+        let chain = decoded
+            .ancestry(&branch.head)
+            .unwrap_or_else(|error| panic!("分支 `{name}` 的祖先链必须走得通：{error}"));
+        assert_eq!(
+            chain.len() as u64,
+            decoded.depth_of(&branch.head).expect("深度"),
+            "分支 `{name}` 的链长必须等于声明的深度"
+        );
+        let root = *chain.last().expect("链非空");
+        assert!(
+            decoded.commit(&root).expect("root").parents.is_empty(),
+            "分支 `{name}` 的链尾必须是根提交"
+        );
+        walked += 1;
+    }
+    assert_eq!(walked, 2, "两个分支头都必须真的走过");
 }
