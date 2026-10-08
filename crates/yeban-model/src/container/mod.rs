@@ -551,6 +551,9 @@ pub fn read_container(
 /// 的 `assets` 索引也是 `BTreeMap`）⇒ 同一工程内容两次写出的字节完全相同
 /// （`ARCH-DET-001`，由判据 `project_container_ignores_btreemap_insertion_order` 钉住）。
 ///
+/// 本函数是 [`write_project_container_borrowed`] 的适配层：它只借用 `BTreeMap` 里的
+/// 资产字节 ⇒ 写出路径**不再为任何一条资产复制一份 `Vec<u8>`**。
+///
 /// # Errors
 ///
 /// - 工程文档序列化失败（[`ContainerError::ContainerSerialization`]）；
@@ -561,14 +564,46 @@ pub fn write_project_container(
     history_dag: &[u8],
     assets: &BTreeMap<AssetHash, Vec<u8>>,
 ) -> Result<Vec<u8>, ContainerError> {
-    let mut entries: Vec<ContainerEntry> = Vec::with_capacity(2 + assets.len());
+    let borrowed: Vec<(&AssetHash, &[u8])> = assets
+        .iter()
+        .map(|(hash, data)| (hash, data.as_slice()))
+        .collect();
+    write_project_container_borrowed(project, history_dag, &borrowed)
+}
+
+/// 按 §5.3 的布局写出工程容器，资产以**借用**的 `(哈希, 字节)` 切片给出。
+///
+/// 存在的理由（`docs/ledger/app-cli-notes.md` §8 needs-2）：调用方通常已经持有
+/// `Vec<(AssetHash, Vec<u8>)>`（[`ProjectArchive::assets`] 就是这个形状）。把它重建成
+/// [`write_project_container`] 要的 `BTreeMap` 会对**每一条资产**多复制一份字节；
+/// 本入口不要求所有权 ⇒ 除最终归档缓冲本身之外，写出路径不再复制资产内容。
+///
+/// 顺序：资产按哈希**升序**写出（与 `BTreeMap` 的迭代顺序一致）⇒
+/// **输入切片本身的顺序不影响归档字节**（`ARCH-DET-001`）。
+///
+/// # Errors
+///
+/// - 工程文档序列化失败（[`ContainerError::ContainerSerialization`]）；
+/// - 资产字节的 SHA-256 与其 CAS 键不符（[`ContainerError::AssetHashMismatch`]）；
+/// - 两个资产的哈希相同（[`ContainerError::DuplicateEntryName`] —— 同名条目由
+///   [`write_container`] 拒绝，与 `BTreeMap` 形态"键不可能重复"的语义对齐）；
+/// - 以及 [`write_container`] 的全部错误。
+pub fn write_project_container_borrowed(
+    project: &YebanProjectV1,
+    history_dag: &[u8],
+    assets: &[(&AssetHash, &[u8])],
+) -> Result<Vec<u8>, ContainerError> {
     let json =
         serde_json::to_vec(project).map_err(|error| ContainerError::ContainerSerialization {
             detail: error.to_string(),
         })?;
-    entries.push(ContainerEntry::new(PROJECT_JSON_NAME, json));
-    entries.push(ContainerEntry::new(HISTORY_DAG_NAME, history_dag.to_vec()));
-    for (hash, data) in assets {
+
+    // 按哈希升序（= `BTreeMap` 键序 = 归档确定性）。排序只搬运引用，不碰资产字节。
+    let mut ordered: Vec<(&AssetHash, &[u8])> = assets.to_vec();
+    ordered.sort_by(|left, right| left.0.cmp(right.0));
+
+    let mut names: Vec<String> = Vec::with_capacity(ordered.len());
+    for &(hash, data) in &ordered {
         let actual = AssetHash::of_bytes(data);
         if &actual != hash {
             return Err(ContainerError::AssetHashMismatch {
@@ -576,9 +611,16 @@ pub fn write_project_container(
                 actual: actual.to_string(),
             });
         }
-        entries.push(ContainerEntry::new(asset_entry_name(hash), data.clone()));
+        names.push(asset_entry_name(hash));
     }
-    write_container(&entries)
+
+    let mut entries: Vec<(&str, &[u8])> = Vec::with_capacity(2 + ordered.len());
+    entries.push((PROJECT_JSON_NAME, json.as_slice()));
+    entries.push((HISTORY_DAG_NAME, history_dag));
+    for (index, &(_, data)) in ordered.iter().enumerate() {
+        entries.push((names[index].as_str(), data));
+    }
+    zip::write_zip_borrowed(&entries)
 }
 
 /// 读取一个按 §5.3 布局写出的工程容器，并校验 CAS 完整性。

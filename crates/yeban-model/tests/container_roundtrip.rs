@@ -14,7 +14,7 @@ use proptest::prelude::*;
 use yeban_model::container::{
     ASSETS_DIR, ContainerEntry, ContainerError, ContainerLimits, HISTORY_DAG_NAME,
     PROJECT_JSON_NAME, ProjectArchive, asset_entry_name, read_container, read_project_container,
-    write_container, write_project_container,
+    write_container, write_project_container, write_project_container_borrowed,
 };
 use yeban_model::{AssetHash, YebanProjectV1};
 
@@ -223,6 +223,91 @@ fn project_container_is_independent_of_btreemap_insertion_order() {
     assert_eq!(first, second, "资产插入顺序不得影响归档字节");
 }
 
+// ======================================================================
+// 借用形态的资产写出面（`docs/ledger/app-cli-notes.md` §8 needs-2）
+// ======================================================================
+
+/// 借用形态与 `BTreeMap` 形态**逐字节一致**：两条入口共用同一份写入核心,
+/// 因此接入借用形态不改变任何既有 `.yeban` 文件的字节。
+#[test]
+fn borrowed_asset_writer_is_byte_identical_to_the_btreemap_writer() {
+    let (project, history, assets) = project_fixture();
+    let borrowed: Vec<(&AssetHash, &[u8])> = assets
+        .iter()
+        .map(|(hash, data)| (hash, data.as_slice()))
+        .collect();
+
+    let from_owned = write_project_container(&project, &history, &assets).expect("写入必须成功");
+    let from_borrowed =
+        write_project_container_borrowed(&project, &history, &borrowed).expect("写入必须成功");
+    assert_eq!(
+        from_owned, from_borrowed,
+        "同一工程内容经两条入口必须写出逐字节相同的归档"
+    );
+
+    // 借用形态同样守恒：读回的工程 / 提交树 / 资产池与输入相同。
+    let archive =
+        read_project_container(&from_borrowed, &ContainerLimits::default()).expect("读回必须成功");
+    assert_eq!(archive.project, project);
+    assert_eq!(archive.history_dag, history);
+    let expected: Vec<(AssetHash, Vec<u8>)> = assets.into_iter().collect();
+    assert_eq!(archive.assets, expected);
+}
+
+/// `ARCH-DET-001`：借用形态的**输入切片顺序**不影响归档字节（写出前按哈希升序）。
+#[test]
+fn borrowed_asset_writer_is_independent_of_input_slice_order() {
+    let (project, history, assets) = project_fixture();
+    let mut borrowed: Vec<(&AssetHash, &[u8])> = assets
+        .iter()
+        .map(|(hash, data)| (hash, data.as_slice()))
+        .collect();
+    assert_eq!(borrowed.len(), 2, "夹具必须有两份资产才能谈顺序");
+
+    let first =
+        write_project_container_borrowed(&project, &history, &borrowed).expect("写入必须成功");
+    borrowed.reverse();
+    let second =
+        write_project_container_borrowed(&project, &history, &borrowed).expect("写入必须成功");
+    assert_eq!(first, second, "资产切片顺序不得影响归档字节");
+    assert_eq!(
+        first,
+        write_project_container(&project, &history, &assets).expect("写入必须成功"),
+        "借用形态的字节必须等于 BTreeMap 形态（键序是唯一权威顺序）"
+    );
+}
+
+/// CAS 完整性：借用形态同样拒绝"字节与哈希不符"。
+#[test]
+fn borrowed_asset_writer_rejects_a_hash_mismatch() {
+    let (project, history, _) = project_fixture();
+    let claimed = AssetHash::of_bytes(b"claimed");
+    let assets: Vec<(&AssetHash, &[u8])> = vec![(&claimed, b"actual".as_slice())];
+    match write_project_container_borrowed(&project, &history, &assets) {
+        Err(ContainerError::AssetHashMismatch { declared, actual }) => {
+            assert_eq!(declared, claimed.to_string());
+            assert_eq!(actual, AssetHash::of_bytes(b"actual").to_string());
+        }
+        other => panic!("期望 AssetHashMismatch，实际 {other:?}"),
+    }
+}
+
+/// 同一条资产出现两次（哈希重复）必须拒绝：`BTreeMap` 形态**不可能**表达这种输入,
+/// 因此这条判据只可能落在借用形态上。
+#[test]
+fn borrowed_asset_writer_rejects_duplicate_asset_hashes() {
+    let (project, history, _) = project_fixture();
+    let data = b"kick-bytes";
+    let hash = AssetHash::of_bytes(data);
+    let assets: Vec<(&AssetHash, &[u8])> = vec![(&hash, data.as_slice()), (&hash, data.as_slice())];
+    match write_project_container_borrowed(&project, &history, &assets) {
+        Err(ContainerError::DuplicateEntryName { name }) => {
+            assert_eq!(name, asset_entry_name(&hash), "重复的条目名必须被点名");
+        }
+        other => panic!("期望 DuplicateEntryName，实际 {other:?}"),
+    }
+}
+
 /// CAS 完整性：资产字节与条目名（哈希）不符必须拒绝。
 #[test]
 fn asset_hash_mismatch_is_rejected() {
@@ -360,5 +445,47 @@ proptest! {
 
         let archive = read_container(&first, &ContainerLimits::default()).expect("读回必须成功");
         prop_assert_eq!(archive.entries(), entries.as_slice());
+    }
+
+    /// 借用形态对**任意输入顺序**都写出同一份字节（写出前按哈希升序）,
+    /// 且读回的资产池与输入集合逐字节相同（同样按哈希升序）。
+    #[test]
+    fn borrowed_asset_writer_is_permutation_invariant(
+        seeds in prop::collection::vec(any::<u64>(), 1..5)
+    ) {
+        let project = YebanProjectV1::default();
+        let history = b"history".to_vec();
+        let mut owned: Vec<(AssetHash, Vec<u8>)> = Vec::new();
+        for seed in &seeds {
+            let len = 1 + (seed % 64) as usize;
+            let data = pseudo_random_bytes(len, *seed);
+            let hash = AssetHash::of_bytes(&data);
+            if owned.iter().any(|(existing, _)| existing == &hash) {
+                continue;
+            }
+            owned.push((hash, data));
+        }
+        prop_assume!(!owned.is_empty());
+        owned.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let reference: Vec<(&AssetHash, &[u8])> = owned
+            .iter()
+            .map(|(hash, data)| (hash, data.as_slice()))
+            .collect();
+        let baseline =
+            write_project_container_borrowed(&project, &history, &reference).expect("写入必须成功");
+
+        let mut rotated = reference.clone();
+        if rotated.len() >= 2 {
+            // 旋转 1 位在 `len >= 2` 时**一定**改变顺序（`% len` 会退化成恒等变换）。
+            rotated.rotate_left(1);
+        }
+        let again =
+            write_project_container_borrowed(&project, &history, &rotated).expect("写入必须成功");
+        prop_assert_eq!(&baseline, &again);
+
+        let archive =
+            read_project_container(&baseline, &ContainerLimits::default()).expect("读回必须成功");
+        prop_assert_eq!(archive.assets, owned);
     }
 }

@@ -172,7 +172,11 @@ struct CentralRecord {
     local_header_offset: u32,
 }
 
-/// 把条目序列写成标准 ZIP 字节流。
+/// 把**借用**形态的条目序列 `(名字, 字节)` 写成标准 ZIP 字节流。
+///
+/// 这是写入路径的**唯一**实现：拥有所有权的 [`ContainerEntry`] 形态（[`write_zip`]）
+/// 只是本函数的一层适配。借用形态让"工程容器写出"不必为每一条资产先复制一份
+/// `Vec<u8>`（见 [`super::write_project_container_borrowed`] 的文档）。
 ///
 /// # Errors
 ///
@@ -181,7 +185,7 @@ struct CentralRecord {
 /// - 条目数超过 ZIP32 上限 65535（[`ContainerError::TooManyEntries`]）；
 /// - 单条目或全归档超过 ZIP32 的 `u32` 上限（[`ContainerError::EntryTooLarge`] /
 ///   [`ContainerError::ArchiveTooLarge`]）。
-pub(crate) fn write_zip(entries: &[ContainerEntry]) -> Result<Vec<u8>, ContainerError> {
+pub(crate) fn write_zip_borrowed(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, ContainerError> {
     // EOCD 的条目数字段是 `u16`，而 `0xFFFF` 是"见 ZIP64"的哨兵 ⇒ 本写入器最多 65534 条，
     // 否则它自己写出的归档会被本读取器按 ZIP64 拒绝（"写得出、读不回"是必须拦住的失配）。
     let max_zip32_entries = usize::from(ZIP64_SENTINEL_U16) - 1;
@@ -197,8 +201,8 @@ pub(crate) fn write_zip(entries: &[ContainerEntry]) -> Result<Vec<u8>, Container
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut total: u64 = 0;
 
-    for entry in entries {
-        let name = super::normalize_entry_name(&entry.name)?;
+    for (raw_name, data) in entries {
+        let name = super::normalize_entry_name(raw_name)?;
         if !seen.insert(name.to_ascii_lowercase()) {
             return Err(ContainerError::DuplicateEntryName { name });
         }
@@ -208,8 +212,8 @@ pub(crate) fn write_zip(entries: &[ContainerEntry]) -> Result<Vec<u8>, Container
                 max: usize::from(u16::MAX),
             });
         }
-        let size = u32::try_from(entry.data.len()).map_err(|_| ContainerError::EntryTooLarge {
-            declared: entry.data.len() as u64,
+        let size = u32::try_from(data.len()).map_err(|_| ContainerError::EntryTooLarge {
+            declared: data.len() as u64,
             max: u64::from(ZIP64_SENTINEL_U32),
         })?;
         total += u64::from(size);
@@ -223,7 +227,7 @@ pub(crate) fn write_zip(entries: &[ContainerEntry]) -> Result<Vec<u8>, Container
             actual: out.len() as u64,
             max: u64::from(ZIP64_SENTINEL_U32),
         })?;
-        let signature = crc32(&entry.data);
+        let signature = crc32(data);
         let name_len = name.len() as u16;
 
         // --- local file header (APPNOTE 4.3.7) ---
@@ -239,7 +243,7 @@ pub(crate) fn write_zip(entries: &[ContainerEntry]) -> Result<Vec<u8>, Container
         out.extend_from_slice(&name_len.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(&entry.data);
+        out.extend_from_slice(data);
 
         // --- central directory file header (APPNOTE 4.3.12) ---
         central.extend_from_slice(&CENTRAL_DIRECTORY_SIGNATURE.to_le_bytes());
@@ -285,6 +289,23 @@ pub(crate) fn write_zip(entries: &[ContainerEntry]) -> Result<Vec<u8>, Container
     out.extend_from_slice(&0u16.to_le_bytes());
 
     Ok(out)
+}
+
+/// 把拥有所有权的 [`ContainerEntry`] 序列写成标准 ZIP 字节流。
+///
+/// 这是 [`write_zip_borrowed`] 的适配层：它只借用每个条目的名字与字节，
+/// 因此**不再复制**条目内容。判据 `write_zip_and_write_zip_borrowed_agree_byte_for_byte`
+/// 钉住两条入口逐字节一致。
+///
+/// # Errors
+///
+/// 同 [`write_zip_borrowed`]。
+pub(crate) fn write_zip(entries: &[ContainerEntry]) -> Result<Vec<u8>, ContainerError> {
+    let borrowed: Vec<(&str, &[u8])> = entries
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.data.as_slice()))
+        .collect();
+    write_zip_borrowed(&borrowed)
 }
 
 /// 从后往前定位 EOCD，并校验注释长度与文件长度相符。
@@ -663,7 +684,7 @@ fn ratio_exceeded(uncompressed: u64, compressed: u64, max_ratio: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EOCD_SIGNATURE, find_eocd, ratio_exceeded, u32_at, write_zip};
+    use super::{EOCD_SIGNATURE, find_eocd, ratio_exceeded, u32_at, write_zip, write_zip_borrowed};
     use crate::container::{ContainerEntry, ContainerError};
 
     /// `MUST-GATE-007` 的核心算术：`≤ 100:1` 放行、`> 100:1` 拒绝（边界必须精确）。
@@ -724,5 +745,26 @@ mod tests {
     fn truncated_eocd_is_an_error_not_a_panic() {
         assert_eq!(find_eocd(&[]), Err(ContainerError::EocdNotFound));
         assert_eq!(find_eocd(&[0u8; 21]), Err(ContainerError::EocdNotFound));
+    }
+
+    /// 拥有所有权形态与借用形态**逐字节一致**：借用形态是唯一实现，拥有形态只是适配层。
+    #[test]
+    fn write_zip_and_write_zip_borrowed_agree_byte_for_byte() {
+        let owned = [
+            ContainerEntry::new("project.json", b"{}".to_vec()),
+            ContainerEntry::new("assets/aa", vec![0u8, 1, 2, 3]),
+            ContainerEntry::new("assets/bb", vec![255u8; 64]),
+        ];
+        let borrowed: Vec<(&str, &[u8])> = owned
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.data.as_slice()))
+            .collect();
+
+        let from_owned = write_zip(&owned).expect("拥有形态写入必须成功");
+        let from_borrowed = write_zip_borrowed(&borrowed).expect("借用形态写入必须成功");
+        assert_eq!(
+            from_owned, from_borrowed,
+            "两条写入入口必须写出同一份字节（否则读者会看到两种归档）"
+        );
     }
 }
