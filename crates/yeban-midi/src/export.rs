@@ -677,10 +677,11 @@ mod tests {
         }
     }
 
-    /// 判据 ⑧: 落盘是**原子**的 —— 目标目录不存在 ⇒ 精确错误且**不留下半个文件**。
-    /// 判据 ⑧b（`unix`）: 只读目录下导出失败, 且**已有文件一字未改**。
-    #[cfg(unix)]
-    /// 判据 ⑨: 拍号分母映射到 SMF 的 `dd`；非法分母被拒绝。
+    /// 判据: 拍号分母映射到 SMF 的 `dd`；非法分母被拒绝。
+    ///
+    /// **落盘的原子性不由本 crate 的判据覆盖**：文件写入留在消费方
+    /// (`ADR-0001` D47；commit `c847450` 把落盘移出本 crate)。原子写实现与它的
+    /// 判据在 `crates/yeban-app/src/save.rs` 的 `write_file_atomically`。
     #[test]
     fn time_signature_denominator_maps_to_its_power_of_two() {
         for (denominator, pow2) in [(1_u8, 0_u8), (2, 1), (4, 2), (8, 3), (16, 4), (32, 5)] {
