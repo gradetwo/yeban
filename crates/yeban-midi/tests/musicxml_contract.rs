@@ -902,6 +902,31 @@ fn mxl_container_field_mismatches_are_rejected_by_name() {
             root: "score-timewise".to_owned()
         }))
     );
+
+    // ⑧ 压缩法是 deflate 但流本身非法 ⇒ 在文本层之前就报，且报的是 inflate 的**字面**偏移
+    //    （`0x07` 的低 3 位是 `BFINAL=1` / `BTYPE=11` ⇒ 未定义的块类型）。
+    let broken_stream = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec {
+                name: b"score.xml".to_vec(),
+                flags: 0,
+                method: 8,
+                crc: 0,
+                compressed: 1,
+                uncompressed: 1,
+                body: vec![0x07],
+            },
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&broken_stream),
+        Err(MxlError::InvalidDeflate {
+            offset: 1,
+            detail: "块类型 3 未定义（RFC 1951 §3.2.3）",
+        })
+    );
 }
 
 #[test]
@@ -970,7 +995,23 @@ fn mxl_limits_stop_both_declared_and_actual_blowups() {
         })
     );
 
-    // ④ 条目数上界（中央目录声明 3 个、上界 2）⇒ 在**读目录之前**拒绝。
+    // ④ 条目名长度上界（`META-INF/container.xml` 是 22 字节、上界 4）⇒ 在**读名字之前**拒绝。
+    assert_eq!(
+        parse_mxl_with_limits(
+            &declared,
+            &MxlLimits {
+                max_name_bytes: 4,
+                ..MxlLimits::default()
+            }
+        ),
+        Err(MxlError::LimitExceeded {
+            limit: "name_bytes",
+            value: 22,
+            max: 4,
+        })
+    );
+
+    // ⑤ 条目数上界（中央目录声明 3 个、上界 2）⇒ 在**读目录之前**拒绝。
     let three = build_zip(
         &[
             ZipEntrySpec::stored("META-INF/container.xml", &container),
