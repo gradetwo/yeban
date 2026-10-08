@@ -393,6 +393,23 @@ TrackV3.devices[?]                          TrackV3.instrument: Option<Instrumen
 3 ms 指数（`yeban-dsp::envelope::STEAL_RELEASE_SECONDS` 已经是这个值，
 `Adsr::start_steal_fade` 也已经是这个 API），并把冲突登记为 needs（§8 N4）。
 
+> **2026-10-08 补记（R4）**：本节两条原文的读数精确化，并登记一枚**缺失的规范行**。
+>
+> - `ARCH-DSP-001` 的 **5.0 ms 升余弦窗**原文在 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:426`；
+>   该行是 §4.1 的**第一条**，标题逐字为「**语音偷取 (Voice Stealing) 与切音平滑**」
+>   ⇒ 它说的对象就是**被偷取声部**（与本节"同一个动作"的读法一致）。
+> - `ARCH-RT-004` 的「3ms 快速指数衰减」原文在 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:385`
+>   （`:383` 是 `ARCH-RT-004` 的小节标题行，该行本身不含这句）。
+> - 实现与 `ARCH-RT-004` 一致、与 `ARCH-DSP-001:426` 不一致：
+>   `crates/yeban-dsp/src/envelope.rs:31` 的 `pub const STEAL_RELEASE_SECONDS: f32 = 0.003;`
+>   （唯一事实源；`Adsr::start_steal_fade` 取它）。
+> - ⇒ 这是**口径缺口**：两条**规范正文本身**应当对齐（改哪一条、怎么改由人类定）。
+> - ⚠ **未核实 / 缺失项**：`ADR-0001` 的 **D44(a)**（`docs/adr/ADR-0001-workspace-topology-and-version-pinning.md:455-459`）
+>   写「已写进架构规范 errata」，但该规范的 Errata 表（`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:794` 起，
+>   实测数据行 `:801-806` 共 **6** 行）**没有**任何一行讲 3 ms / 5 ms 或语音偷取
+>   ⇒ 那条**被承诺的 errata 行在仓库里找不到**。本补记只登记这个读数，**不改** D44(a) 的结论。
+> - 本节与 §8.2 `N4` 的既有结论（本线按 `ARCH-RT-004` 实现；改写规范正文需要人类）**不变**。
+
 ---
 
 ## 6. 判据表与注入（5 条，本机真跑）
@@ -476,6 +493,7 @@ TrackV3.devices[?]                          TrackV3.instrument: Option<Instrumen
 | **限制器的增益衰减表（GR）上报** | 只暴露了 `limiter_gain_reductions` 与 `limiter_max_reduction` 两个累计量，没有按量子发布"当前 GR"给 UI | `meter::MeterFrame` 的扩展 |
 | **参数自动化平滑（τ≈5 ms）** | [ARCH-DSP-001] 要求"所有瞬变自动化事件经单极点低通"；本切片的参数全部来自**不可变快照**，没有"实时改参数"的路径 | `yeban_dsp::smoothing` + 事件通道 |
 | **滤波器类型不止一种** | 只有四极梯形低通（`LadderFilter`）；高通/带通/EQ/压缩未接 | `ToneParams` 的扩展 |
+| **波形 / 第二条振荡器在引擎侧不可选**（**2026-10-08 补记，R4**） | 器件侧的**双振荡器是真的** —— `crates/yeban-dsp/src/polysynth.rs:254` 的 `PolySynthParams::with_oscillators(osc1, osc2)` 设两条支路（各自波表下标、电平、失谐音分）。缺口在**投影**：引擎的临时形状 `ToneParams` 只有滤波器三个旋钮（`crates/yeban-engine/src/synth.rs:179`），`poly_synth_params()` 只调 `PolySynthParams::new().with_filter(..)`（`crates/yeban-engine/src/synth.rs:301-303`）⇒ `osc2` 恒为 `OscSettings::off()`（`crates/yeban-dsp/src/polysynth.rs:240`）、波表恒为 `new()` 的单振荡器默认值。⇒ 引擎**选不了波形、也开不了第二条振荡器**（`crates/yeban-engine/src/synth.rs:68-72` 与 `:295-299` 自陈为「登记在案的缺口」；**本条即那条登记** —— 此前本表与 §8.2 都没有它） | `ToneParams` 扩字段（波形下标、`osc2` 电平、失谐）+ `poly_synth_params` 投影 `with_oscillators`；上游形状卡在 §8.2 **N5**（`DeviceDefinition::params` 没有参数名规范） |
 
 ### 8.2 needs（需要别人 / 需要裁决）
 
