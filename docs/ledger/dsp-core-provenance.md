@@ -7,6 +7,7 @@
 - **上游来源库**: `/Users/crow/work/music/synth/crates/synth-core`（单 crate、零依赖、MIT）
 - **上游审计结论**: [`legacy-reuse-audit.md`](legacy-reuse-audit.md) §2 复用纪律
 - **本次落地的目标 crate**: `crates/yeban-dsp`（13 模块，6,680 行，108 单元测试 + 1 文档测试）
+- ⚠ **就地更正（2026-10-08，R6c）**：上一行的「13 模块，6,680 行」是**记录时刻（2026-10-05）的读数**，本台账保留原文不改。复音合成器上移（`4f6e2eb`）之后该读数已陈旧；今天按同一方法读出的数与逐项差量见 §2.1 之后的更正注。
 
 > 本文件回答四个问题：**每一行代码从哪来**、**改了哪里以及为什么**、
 > **哪些来源文件被明确拒绝以及理由**、**许可归属要怎么写进 `THIRD_PARTY_LICENSES.md`**。
@@ -69,6 +70,14 @@ grep -l "Ported from synth-core (MIT, Copyright (c) 2026 GROOVE SYNTH GS-1 contr
 | :--- | ---: | :--- | :--- |
 | `smoothing.rs` | 354 | [ARCH-DSP-001]（§4.1 参数自动化平滑）/ [ARCH-RT-003] | 规范只给了公式 `y[n] = (1−α)x[n] + αy[n−1]`、τ ≈ 5 ms，没有给代码 |
 | `loop_window.rs` | 258 | [ARCH-DSP-001]（§3.3 循环点微平滑窗） | 规范只给了公式 `w(n) = ½[1 − cos(πn/(N−1))]`、N = 64，没有给代码 |
+
+> ⚠ **就地更正（2026-10-08，R6c）：本节表格与 §1 的「13 模块，6,680 行」在复音合成器上移之后已陈旧。原文保留，这里逐项给出更正。**
+>
+> - **模块数**（量什么：`crates/yeban-dsp/src/` 顶层 `.rs` 文件数；怎么量：`ls -1 crates/yeban-dsp/src/*.rs | wc -l`；单位：个）：记录时刻 **14**（13 个模块 + `lib.rs`）⇒ 今天 **20**。按 `grep -c '^pub mod ' crates/yeban-dsp/src/lib.rs` 数也是 **20**（19 个顶层模块文件 + 目录模块 `drums/`）。
+> - **行数**（量什么：上述顶层 `.rs` 文件的总行数；怎么量：`cat crates/yeban-dsp/src/*.rs | wc -l`；单位：行）：记录时刻 **6,680** ⇒ 今天 **16,218**。记录时刻的数可在记录提交 `141ad13` 上用同法复现（`git ls-tree 141ad13 crates/yeban-dsp/src/ --name-only | wc -l` = 14，逐文件取行数合计 = 6,680）。
+> - **复音合成器上移（提交 `4f6e2eb`）贡献的那一格**：新增 `crates/yeban-dsp/src/polysynth.rs` = **1,482** 行（`wc -l`；该提交的 diff stat 同报 1482 insertions），模块数 **+1**。⇒「14 → 20 个文件」这个差**不能**全记在它名下：`channel_strip.rs` / `compressor.rs` / `limiter.rs` / `loudness.rs` / `meter.rs` / `drums/` 六个模块也在记录时刻之后落地（记录时刻的 13 个模块 + 这 6 个 + `polysynth.rs` = 20）。
+> - **表格的缺口，不是数字错**：`polysynth.rs` **没有** `synth-core` 上游来源（它从 `crates/yeban-engine/src/synth.rs` 上移进本 crate），因此不属 §2 的逐文件**来源**表；按本节标题它应进本节的"无上游来源"表，而本节表格（记录时刻 2026-10-05）还没有它一行。本表已列的两行行数**仍然准确**：`smoothing.rs` = **354**、`loop_window.rs` = **258**（`wc -l` 实测）。
+> - **§1 的第三个数字「108 单元测试 + 1 文档测试」本注不重报**：`#[test]` 出现次数与 `cargo test` 报的"单元测试"不是同一个量，且本票不跑全量测试 ⇒ **未核实**，不写数。
 
 ---
 

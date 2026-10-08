@@ -89,6 +89,8 @@ tick → 帧（seek 用）    frames = round(tick × tick_den / tick_num)      �
 与它同口径（`tick_to_sample` 也是 `.round()`）—— 因此"定位到 tick t"落在投影层给 t 处音符安排的
 同一个样本上。
 
+> ⚠ **就地更正（2026-10-08，R6c）**：上一段的 `synth.rs:1170` 是**复音合成器上移（`4f6e2eb`）之前**的行号，原文保留。上移后目标句在 `crates/yeban-engine/src/synth.rs:889`（`pub fn samples_per_tick`；同法实测：`4f6e2eb^` 时该函数在 `:1170`，上移后 `crates/yeban-engine/src/synth.rs` 由 1,449 行缩到 1,175 行）。
+
 ### 2.3 为什么整数精确、为什么不随采样率漂移（论证）
 
 1. **构造上就是 `floor(Σ)`**：每一帧的分数部分被**精确地**放进 `remainder`（整数，`< tick_den`），
