@@ -180,7 +180,8 @@ impl ContainerArchive {
 pub struct ProjectArchive {
     /// `project.json` 反序列化出的工程文档。
     pub project: YebanProjectV1,
-    /// `history.dag` 的原始字节（提交树的序列化形式由上层 `store` 决定）。
+    /// `history.dag` 的原始字节（本层**不**解读：编解码口径见
+    /// [`crate::commit::encode_history_dag`] / [`crate::commit::decode_history_dag`]）。
     pub history_dag: Vec<u8>,
     /// `assets/{sha256}` 资产池，按哈希升序（= 容器内顺序 = `BTreeMap` 顺序）。
     pub assets: Vec<(AssetHash, Vec<u8>)>,

@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::error::ModelError;
 use crate::ids::{ContentHash, EntityId};
@@ -550,6 +551,87 @@ impl CommitGraph {
     }
 }
 
+/// `history.dag`（规范 §5.3 的提交树条目）的**编解码**错误 [ARCH-OPS-002, ARCH-SEC-003]。
+///
+/// 只有"读"会失败：`history.dag` 来自磁盘或第三方归档，属不可信输入。
+/// "写"的那一侧见 [`encode_history_dag`] —— 它是全函数，不产生错误。
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum HistoryDagError {
+    /// 字节不是合法的 `CommitGraph` JSON（含"JSON 合法但形状不符"）。
+    #[error("`history.dag` is not a valid CommitGraph JSON: {detail}")]
+    InvalidJson {
+        /// `serde_json` 的错误文本（含行列位置）。
+        detail: String,
+    },
+}
+
+/// `history.dag` 的**唯一**编码口径 [ARCH-OPS-002, ARCH-SEC-003]。
+///
+/// ## 为什么这一份口径住在 `yeban-model`
+///
+/// 条目载荷就是 [`CommitGraph`]。口径若由每个消费者各写一遍就会漂移：
+/// `crates/yeban-mcp/src/domain/store.rs` 已有私有的 `decode_history_dag` 与内联的
+/// `serde_json::to_vec(graph)`，而 `crates/yeban-app` 不依赖 `serde_json`，于是它
+/// **写不出**真实的提交图谱（`force_save` 落的是空字节 `history.dag`）。两条跨 crate 的
+/// needs（`docs/ledger/undo-wiring-notes.md` §9 needs-2、`docs/ledger/app-mixer-notes.md`
+/// §7 第 7 条）都指向本 crate 提供这一公开面。
+///
+/// ## 格式
+///
+/// `serde_json::to_vec(CommitGraph)` —— 紧凑 JSON、无结尾换行，与 `yeban-mcp` 已经在写的
+/// 字节**逐字节相同**（判据 `mcp_caliber_bytes_are_accepted`）。键序由 `BTreeMap` 决定
+/// （[MODEL-AST-003]），因此同一图谱恒同字节。
+///
+/// ## 返回值为什么不是 `Result`
+///
+/// `CommitGraph` 的 JSON 编码是**全函数**：`serde_json` 只有两条失败路径 —— "JSON 对象键
+/// 不是字符串"与"自定义 `Serialize` 返回错误" —— 而本类型两者都不存在（对象键只来自
+/// [`EntityId`] 与 `String`，两者都序列化成字符串；没有手写的 `Serialize`）。非有限浮点
+/// 被 `serde_json` 写成语义等价的 `null`，不是错误。判据
+/// `non_finite_op_payload_still_encodes_and_decode_rejects_it` 钉住这一条。
+///
+/// # Panics
+///
+/// 仅当上面那条不变量被将来的改动破坏时才会 panic；本函数**不**接收不可信输入。
+#[must_use]
+pub fn encode_history_dag(graph: &CommitGraph) -> Vec<u8> {
+    serde_json::to_vec(graph).expect("CommitGraph 的 JSON 编码不会失败（见函数文档的不变量）")
+}
+
+/// 解析 `history.dag` 的字节 [ARCH-OPS-002, ARCH-SEC-003]。
+///
+/// ## 口径（与 `yeban-mcp` 既有私有实现一致的部分）
+///
+/// - 空字节 ⇒ `Ok(None)`（容器条目存在，但还没有历史）；
+/// - 零提交图谱（`{"commits":{},"branches":{},"depths":{}}`）⇒ `Ok(None)`（同上）；
+/// - 合法图谱 ⇒ `Ok(Some(graph))`；
+/// - 其余（非法 JSON、或 JSON 合法但形状不符 —— 例如缺 `commits` / `branches` / `depths`
+///   这三个必需键 [ADR-0001 D43]）⇒ [`HistoryDagError::InvalidJson`]。
+///   **绝不**静默降级成"空历史"：那等于把用户的历史悄悄丢掉。
+///
+/// ## 刻意**不**在这一层做的判定
+///
+/// 分支命名策略（`yeban-mcp` 要求非空图谱必须有 `main` 分支）留在 MCP 的工具面 ——
+/// 那是工具的行为契约，不是 `history.dag` 的格式契约。判据
+/// `decode_does_not_impose_branch_naming_policy` 把这条分工钉住。
+///
+/// # Errors
+///
+/// 字节不是合法的 `CommitGraph` JSON 时返回 [`HistoryDagError::InvalidJson`]。
+pub fn decode_history_dag(raw: &[u8]) -> Result<Option<CommitGraph>, HistoryDagError> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let graph: CommitGraph =
+        serde_json::from_slice(raw).map_err(|error| HistoryDagError::InvalidJson {
+            detail: error.to_string(),
+        })?;
+    if graph.commits.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(graph))
+}
+
 /// 按 ops 计算确定性内容摘要（缺省快照引用）。
 ///
 /// 真实的全量快照哈希由存储引擎在落盘时计算（`ARCH-OPS-002`）；
@@ -926,5 +1008,134 @@ mod tests {
         different.push(add_section_op(13));
         assert_ne!(first, default_snapshot_hash(&different));
         assert_eq!(first.as_str().len(), 64);
+    }
+
+    /// 一个有形状的图谱：根提交 + 一次追加 + 一条匿名分支。
+    ///
+    /// 三个集合（`commits` / `branches` / `depths`）都非空，且同时含命名分支与匿名分支
+    /// ⇒ 编码漏写任一处都会让字节比较变红。
+    fn fixture_graph() -> CommitGraph {
+        let mut graph = CommitGraph::new();
+        graph
+            .genesis(
+                CommitDraft::new(fixture_id(1), "main", "agent", "genesis")
+                    .with_created_at(1_760_000_000_000)
+                    .with_rng_seed(3)
+                    .with_ops(vec![add_section_op(11)]),
+            )
+            .expect("genesis");
+        graph
+            .append(
+                CommitDraft::new(fixture_id(2), "main", "agent", "second")
+                    .with_created_at(1_760_000_000_001)
+                    .with_rng_seed(4)
+                    .with_ops(vec![add_section_op(12)]),
+            )
+            .expect("append");
+        graph
+            .fork_anonymous(
+                &fixture_id(1),
+                CommitDraft::new(fixture_id(3), "anon-placeholder", "agent", "fork")
+                    .with_created_at(1_760_000_000_002)
+                    .with_rng_seed(5)
+                    .with_ops(vec![add_section_op(13)]),
+            )
+            .expect("fork");
+        graph
+    }
+
+    #[test]
+    fn history_dag_round_trips_and_is_byte_stable() {
+        let graph = fixture_graph();
+        let bytes = encode_history_dag(&graph);
+        assert!(!bytes.is_empty());
+        assert_eq!(
+            decode_history_dag(&bytes).expect("decode"),
+            Some(graph.clone()),
+            "编码后必须逐字段读回同一图谱"
+        );
+        assert_eq!(bytes, encode_history_dag(&graph), "同一图谱必须恒同字节");
+        assert_eq!(
+            bytes,
+            serde_json::to_vec(&graph).expect("serde_json"),
+            "口径 = serde_json::to_vec(CommitGraph)，即 yeban-mcp 已在写的同一份字节"
+        );
+    }
+
+    #[test]
+    fn empty_or_zero_commit_history_dag_is_none() {
+        assert_eq!(decode_history_dag(b"").expect("空条目"), None);
+        let zero = CommitGraph::new();
+        assert_eq!(zero.commit_count(), 0);
+        assert_eq!(
+            decode_history_dag(&encode_history_dag(&zero)).expect("零提交图谱"),
+            None,
+            "零提交图谱与空条目同义：都表示`还没有历史`"
+        );
+    }
+
+    #[test]
+    fn history_dag_rejects_broken_bytes_without_panicking() {
+        let graph = fixture_graph();
+        let bytes = encode_history_dag(&graph);
+        let cases: [&[u8]; 6] = [
+            b"not json",
+            b"[]",
+            b"null",
+            b"{}",
+            b"{\"commits\":{},\"branches\":{}}",
+            &bytes[..bytes.len() / 2],
+        ];
+        for raw in cases {
+            let error = decode_history_dag(raw).expect_err("必须拒绝，不得静默降级成空历史");
+            assert!(
+                matches!(error, HistoryDagError::InvalidJson { .. }),
+                "字节 {raw:?} ⇒ {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_does_not_impose_branch_naming_policy() {
+        // 只有 `trunk`、没有 `main`：格式层接受；"非空图谱必须有 main" 是 MCP 工具面的策略。
+        let mut graph = CommitGraph::new();
+        graph
+            .genesis(CommitDraft::new(fixture_id(1), "trunk", "agent", "genesis"))
+            .expect("genesis");
+        assert!(!graph.branches.contains_key("main"));
+        assert_eq!(
+            decode_history_dag(&encode_history_dag(&graph)).expect("decode"),
+            Some(graph)
+        );
+    }
+
+    #[test]
+    fn non_finite_op_payload_still_encodes_and_decode_rejects_it() {
+        // 人工构造的非有限载荷。正常写入路径不可达（`Op::apply` 先报 `NonFiniteValue`），
+        // 但它钉住两件事：`encode_history_dag` 是全函数（`serde_json` 把非有限浮点写成
+        // `null`，不是错误），而 `null` 回到 `f32` 字段会被解码拒绝。
+        let mut graph = CommitGraph::new();
+        graph
+            .genesis(
+                CommitDraft::new(fixture_id(1), "main", "agent", "genesis").with_ops(vec![
+                    stamped(Op::SetParam {
+                        target: crate::project::AutomationTarget::TrackVolume {
+                            track_id: fixture_id(1),
+                        },
+                        old_val: 0.0,
+                        new_val: f32::NAN,
+                    }),
+                ]),
+            )
+            .expect("genesis");
+        let bytes = encode_history_dag(&graph);
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("null"),
+            "非有限浮点必须被写成 null"
+        );
+        assert!(matches!(
+            decode_history_dag(&bytes),
+            Err(HistoryDagError::InvalidJson { .. })
+        ));
     }
 }
