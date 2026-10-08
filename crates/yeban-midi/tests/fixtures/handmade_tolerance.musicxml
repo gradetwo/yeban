@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd" [
+  <!ENTITY unused "this internal subset must be skipped, not fetched">
+]>
+<!-- 夜半自造夹具：容错路径。注释里有 <标签> 与裸 & 符号。 -->
+<?yeban-probe value="ignored"?>
+<!--
+  作者 = 本仓库（版权归夜半项目）。
+  覆盖：DOCTYPE 带内部子集 · XML 声明 · 处理指令 · 注释 · 实体引用 · 非 ASCII 文本 ·
+        自闭合标签 · 未知容器包住 <tied> · 未知元素登记 · <alter> 为负 · 休止符。
+  期望读数（960 PPQ，divisions 缺省 -> 1，1 unit = 960 tick）：
+    divisions = 1
+    音符（一个）：0, 61, 1, 1, 1920   —— D♭4，两个全音符被 tie 合成一个
+    ignored_elements = {left-margin:1, print:1, slur:1, system-layout:1, system-margins:1}
+    part-name = "Handmade & tolerance — 夜半"
+-->
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="A">
+      <part-name>Handmade &amp; tolerance &#8212; 夜半</part-name>
+    </score-part>
+  </part-list>
+  <part id="A">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+      </attributes>
+      <print>
+        <system-layout>
+          <system-margins>
+            <left-margin>50</left-margin>
+          </system-margins>
+        </system-layout>
+      </print>
+      <note>
+        <pitch><step>D</step><alter>-1</alter><octave>4</octave></pitch>
+        <duration>1</duration>
+        <voice>1</voice>
+        <type>whole</type>
+        <notations>
+          <slur type="start" number="1"/>
+          <tied type="start"/>
+        </notations>
+      </note>
+      <note>
+        <pitch><step>D</step><alter>-1</alter><octave>4</octave></pitch>
+        <duration>1</duration>
+        <voice>1</voice>
+        <type>whole</type>
+        <notations>
+          <tied type="stop"/>
+        </notations>
+      </note>
+      <note>
+        <rest measure="yes"/>
+        <duration>2</duration>
+        <voice>1</voice>
+      </note>
+    </measure>
+  </part>
+</score-partwise>

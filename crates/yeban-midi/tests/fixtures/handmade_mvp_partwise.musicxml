@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<!--
+  夜半 (Yeban) 自造夹具：MusicXML 只读导入 MVP 的逐字段判据。
+  作者 = 本仓库（版权归夜半项目），可自由提交。
+  覆盖：单声部音符 · 一个和弦 · 一个延音 (tie) · 一个 backup 多声部 ·
+        divisions != 1 (4) · 速度标记 · 拍号。
+  期望读数（960 PPQ，1 unit = 240 tick）：
+    divisions = 4；tempo 90 BPM -> mpqn 666667；拍号 3/8 -> numerator 3, denominator_pow2 3
+    音符（按 (start_tick, key, voice, staff, duration) 排序）：
+      0,    48, 2, 2, 1920  低音 C3（voice 2 / staff 2，backup 之后）
+      0,    60, 1, 1,  960  主音 C4（四分音符）
+      0,    64, 1, 1,  960  和弦音 E4（<chord/>）
+      960,  67, 1, 1,  960  G4：两个八分音符被 tie 合成一个四分音符
+-->
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Handmade MVP</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <time>
+          <beats>3</beats>
+          <beat-type>8</beat-type>
+        </time>
+      </attributes>
+      <direction placement="above">
+        <direction-type>
+          <metronome>
+            <beat-unit>quarter</beat-unit>
+            <per-minute>90</per-minute>
+          </metronome>
+        </direction-type>
+        <sound tempo="90"/>
+      </direction>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+      <note>
+        <chord/>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>G</step><octave>4</octave></pitch>
+        <duration>2</duration>
+        <tie type="start"/>
+        <voice>1</voice>
+        <type>eighth</type>
+        <notations><tied type="start"/></notations>
+      </note>
+      <note>
+        <pitch><step>G</step><octave>4</octave></pitch>
+        <duration>2</duration>
+        <tie type="stop"/>
+        <voice>1</voice>
+        <type>eighth</type>
+        <notations><tied type="stop"/></notations>
+      </note>
+      <backup>
+        <duration>8</duration>
+      </backup>
+      <note>
+        <pitch><step>C</step><octave>3</octave></pitch>
+        <duration>8</duration>
+        <voice>2</voice>
+        <staff>2</staff>
+        <type>half</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>

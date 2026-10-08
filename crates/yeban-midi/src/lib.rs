@@ -10,7 +10,19 @@
 //! 编解码本身**只**需要 `yeban-model` + `midly`，因此把它下移到这里：
 //! `yeban-render` 经再导出继续提供 `yeban_render::midi::*`（调用方一行不改），
 //! `yeban-mcp` 则可以直接依赖本 crate ⇒ **两侧共用同一实现**。
+//!
+//! ## 内存安全
+//!
+//! 本 crate 不出现 `unsafe`，因此与引擎层四个 crate 同口径加 `#![forbid(unsafe_code)]`
+//! （先例：`crates/yeban-decode/src/lib.rs:99`）。
+#![forbid(unsafe_code)]
+
 pub mod export;
 pub mod midi;
+/// MusicXML (`.musicxml`) 的**只读**导入 MVP —— 手写 pull parser，零新依赖。
+///
+/// ⚠️ 规范**未定义** MusicXML（四份规范里命中数为 0）；本模块是工程选择，
+/// 出处见 `docs/ledger/integration-rulings-notes.md` 的 R1。
+pub mod musicxml;
 /// MIDI 可变长度量（VLQ）的零依赖参考编解码 —— `midi` 的字节级核验依赖它。
 pub mod vlq;
