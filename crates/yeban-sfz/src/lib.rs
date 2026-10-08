@@ -4,6 +4,11 @@
 //! [ARCH-RT-004]。解析器是不可信输入边界：必须能承受 `cargo-fuzz` 千万次变异零崩溃
 //! [MUST-GATE-011]。
 //!
+//! 识别的段头是 `<control>` / `<global>` / `<master>` / `<group>` / `<region>`，
+//! 作用域链 `region → group → master → global`（[`Header::Master`] 是 ARIA 扩展，
+//! 见 <https://sfzformat.com/headers/>）。其余段头（`<curve>` / `<effect>` / `<midi>` /
+//! `<sample>`）产生 [`Warning::IgnoredHeader`] 并丢弃其 opcode。
+//!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2 ARCH-RT-001 / ARCH-RT-004

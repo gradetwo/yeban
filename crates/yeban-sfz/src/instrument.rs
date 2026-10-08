@@ -410,33 +410,41 @@ fn region_matches(region: &Region<'_>, query: &RegionQuery<'_>) -> bool {
 // <region> 归约
 // ---------------------------------------------------------------------------
 
-/// 按 `region → group → global` 的优先级读取 opcode。
+/// 按 `region → group → master → global` 的优先级读取 opcode。
+///
+/// 四级链的规范依据："The master header is an extra level added inbetween group and
+/// global for the ARIA player." <https://sfzformat.com/headers/>
 struct Scopes<'m, 'a> {
     region: &'m OpcodeMap<'a>,
     group: &'m OpcodeMap<'a>,
+    master: &'m OpcodeMap<'a>,
     global: &'m OpcodeMap<'a>,
     line: usize,
 }
 
 impl<'a> Scopes<'_, 'a> {
     fn get(&self, name: &'static str) -> Option<OpcodeValue<'a>> {
-        [self.region, self.group, self.global]
+        [self.region, self.group, self.master, self.global]
             .into_iter()
             .find_map(|map| map.get(name))
             .map(|value| OpcodeValue::new(name, value.clone(), self.line))
     }
 }
 
-/// 把三个作用域归约成一个可播放的 [`Region`]。
+/// 把四个作用域归约成一个可播放的 [`Region`]。
 ///
 /// 返回 `Ok(None)` 表示该 `<region>` 没有 `sample`（例如纯 keyswitch 映射）：
 /// 调用方应丢弃它并记一条 [`Warning::RegionWithoutSample`]。
 ///
 /// **优先级**（与 ARIA 一致，见 <https://sfzformat.com/opcodes/key/>）：
 /// 显式 `pitch_keycenter` 永远胜过 `key`；显式 `lokey` / `hikey` 胜过 `key` 推导值。
+/// 作用域优先级是 `region → group → master → global`
+/// （`<master>` 是 ARIA 在 `group` 与 `global` 之间加的一层，见
+/// <https://sfzformat.com/headers/>）。
 pub(crate) fn build_region<'a>(
     region_map: &OpcodeMap<'a>,
     group_map: &OpcodeMap<'a>,
+    master_map: &OpcodeMap<'a>,
     global_map: &OpcodeMap<'a>,
     default_path: Option<Cow<'a, str>>,
     line: usize,
@@ -444,6 +452,7 @@ pub(crate) fn build_region<'a>(
     let scopes = Scopes {
         region: region_map,
         group: group_map,
+        master: master_map,
         global: global_map,
         line,
     };
@@ -524,9 +533,9 @@ pub(crate) fn build_region<'a>(
         None => None,
     };
 
-    // ---- CC 门控（global → group → region 覆盖） ----
+    // ---- CC 门控（global → master → group → region 覆盖） ----
     let mut gates: BTreeMap<u8, (Option<u8>, Option<u8>)> = BTreeMap::new();
-    for map in [global_map, group_map, region_map] {
+    for map in [global_map, master_map, group_map, region_map] {
         for (name, value) in map {
             let Some((is_low, cc)) = parse_cc_gate_name(name.as_ref()) else {
                 continue;
@@ -653,7 +662,7 @@ fn read_u32(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_text;
+    use crate::parser::{Header, parse_text};
 
     fn region(note: u8, seq_position: u32, seq_length: u32) -> Region<'static> {
         Region {
@@ -744,6 +753,165 @@ mod tests {
         assert_eq!(instrument.regions()[0].hikey, 36);
         assert_eq!(instrument.regions()[1].lokey, 48);
         assert_eq!(instrument.regions()[1].hikey, 48);
+    }
+
+    #[test]
+    fn master_values_are_looked_up_between_group_and_global() {
+        // 四级作用域链：region → group → master → global。
+        // 每一行都比上一行少一个更内层的作用域，因此 `volume` 的读数逐级外退。
+        let volume_of = |text: &str| {
+            parse_text(text, &Default::default())
+                .expect("parses")
+                .regions()[0]
+                .volume
+        };
+        let all_four = volume_of(
+            "<global>volume=-1\n\
+             <master>volume=-2\n\
+             <group>volume=-3\n\
+             <region>sample=a.wav volume=-4",
+        );
+        assert_eq!(all_four, -4.0, "region wins over group/master/global");
+
+        let without_region = volume_of(
+            "<global>volume=-1\n\
+             <master>volume=-2\n\
+             <group>volume=-3\n\
+             <region>sample=a.wav",
+        );
+        assert_eq!(without_region, -3.0, "group wins over master/global");
+
+        let without_group = volume_of(
+            "<global>volume=-1\n\
+             <master>volume=-2\n\
+             <region>sample=a.wav",
+        );
+        assert_eq!(without_group, -2.0, "master wins over global");
+
+        let only_global = volume_of("<global>volume=-1\n<region>sample=a.wav");
+        assert_eq!(
+            only_global, -1.0,
+            "global applies when no inner scope sets it"
+        );
+    }
+
+    #[test]
+    fn master_values_drive_region_matching_and_pitch() {
+        // 价值主张：`<master>` 层写 `key` 的库现在能被正确触发。
+        // 改动前 `<master>` 被忽略 ⇒ lokey/hikey 保持 0/127，note 90 也会命中。
+        let instrument = parse_text("<master>key=36\n<region>sample=a.wav", &Default::default())
+            .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!((region.lokey, region.hikey), (36, 36));
+        assert_eq!(region.pitch_keycenter, 36);
+        assert!(instrument.region_for(36, 100).is_some());
+        assert!(instrument.region_for(90, 100).is_none());
+    }
+
+    #[test]
+    fn master_section_persists_across_group_headers() {
+        // 规范示例的形状（<https://sfzformat.com/headers/master/>）：一个 `<master>`
+        // 段里可以出现多个 `<group>`，master 层取值跨这些 `<group>` 保持有效。
+        let instrument = parse_text(
+            "<global>volume=0\n\
+             <master>volume=-6\n\
+             <group>key=36\n\
+             <region>sample=a.wav\n\
+             <region>sample=b.wav\n\
+             <group>key=38\n\
+             <region>sample=c.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 3);
+        for region in instrument.regions() {
+            assert_eq!(region.volume, -6.0, "master value must survive <group>");
+        }
+        assert_eq!(instrument.regions()[0].lokey, 36);
+        assert_eq!(instrument.regions()[1].lokey, 36);
+        assert_eq!(instrument.regions()[2].lokey, 38);
+    }
+
+    #[test]
+    fn a_new_master_header_resets_the_previous_group() {
+        // 工程裁决：新 `<master>` 清空 `<group>`（与「新 `<global>` 清空 master+group」一致）。
+        // 若不清空，第二个 master 的 region 会继承第一个 master 的 `group` 取值。
+        let instrument = parse_text(
+            "<master>volume=-1\n\
+             <group>key=36\n\
+             <region>sample=a.wav\n\
+             <master>volume=-2\n\
+             <region>sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 2);
+        assert_eq!(
+            (instrument.regions()[0].lokey, instrument.regions()[0].hikey),
+            (36, 36)
+        );
+        assert_eq!(instrument.regions()[0].volume, -1.0);
+        // 第二个 region 不再看到任何 group：回到 0..=127 默认音域。
+        assert_eq!(
+            (instrument.regions()[1].lokey, instrument.regions()[1].hikey),
+            (0, 127)
+        );
+        assert_eq!(instrument.regions()[1].volume, -2.0);
+    }
+
+    #[test]
+    fn master_header_is_recognized_instead_of_ignored() {
+        let instrument = parse_text("<master>key=36", &Default::default()).expect("parses");
+        assert!(
+            !instrument.warnings().iter().any(
+                |warning| matches!(warning, Warning::IgnoredHeader { name, .. } if name == "master")
+            ),
+            "master must not be reported as an ignored header"
+        );
+        assert_eq!(Header::from_name("master"), Some(Header::Master));
+        assert_eq!(Header::from_name("MASTER"), Some(Header::Master));
+        assert_eq!(Header::Master.name(), "master");
+    }
+
+    #[test]
+    fn master_cc_gates_override_global_and_yield_to_group_and_region() {
+        // CC 门控走的是与普通 opcode 不同的合并代码路径，必须单独证明。
+        let gate_of = |text: &str| {
+            parse_text(text, &Default::default())
+                .expect("parses")
+                .regions()[0]
+                .cc_gates
+                .clone()
+        };
+        assert_eq!(
+            gate_of(
+                "<global>locc1=0 hicc1=10\n<master>locc1=20\n<group>hicc1=30\n<region>sample=a.wav"
+            ),
+            vec![CcGate {
+                cc: 1,
+                lo: 20,
+                hi: 30
+            }],
+            "master overrides global; group overrides master"
+        );
+        assert_eq!(
+            gate_of("<global>locc1=0\n<master>locc1=20\n<group>locc1=40\n<region>sample=a.wav"),
+            vec![CcGate {
+                cc: 1,
+                lo: 40,
+                hi: 127
+            }],
+            "group beats master"
+        );
+        assert_eq!(
+            gate_of("<global>locc1=0\n<master>locc1=20\n<region>sample=a.wav locc1=60"),
+            vec![CcGate {
+                cc: 1,
+                lo: 60,
+                hi: 127
+            }],
+            "region beats master"
+        );
     }
 
     #[test]

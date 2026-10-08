@@ -151,7 +151,7 @@ impl ParseLimits {
 
 /// 本解析器识别的 SFZ 段头。
 ///
-/// 其余规范段头（`<master>` ARIA、`<curve>` / `<effect>` / `<midi>` / `<sample>` SFZ v2）
+/// 其余规范段头（`<curve>` / `<effect>` / `<midi>` / `<sample>` SFZ v2）
 /// 会被识别为「忽略」：产生 [`Warning::IgnoredHeader`] 并跳过其 opcode，
 /// 而不是静默当作 region 处理。见 <https://sfzformat.com/headers/>。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +160,13 @@ pub enum Header {
     Control,
     /// `<global>`（SFZ v2）：对所有 region 生效。
     Global,
+    /// `<master>`（ARIA）：`global` 与 `group` 之间的中间层。
+    ///
+    /// 作用域链是 `region → group → master → global`。规范原文：
+    /// "The master header is an extra level added inbetween group and global for the
+    /// ARIA player. So, the global/group/region or global/master/group/region hierarchy…"
+    /// <https://sfzformat.com/headers/>
+    Master,
     /// `<group>`（SFZ v1）：对组内 region 生效。
     Group,
     /// `<region>`（SFZ v1）：最基本的可播放单位。
@@ -174,6 +181,8 @@ impl Header {
             Some(Self::Control)
         } else if name.eq_ignore_ascii_case("global") {
             Some(Self::Global)
+        } else if name.eq_ignore_ascii_case("master") {
+            Some(Self::Master)
         } else if name.eq_ignore_ascii_case("group") {
             Some(Self::Group)
         } else if name.eq_ignore_ascii_case("region") {
@@ -189,6 +198,7 @@ impl Header {
         match self {
             Self::Control => "control",
             Self::Global => "global",
+            Self::Master => "master",
             Self::Group => "group",
             Self::Region => "region",
         }
@@ -202,7 +212,7 @@ impl Header {
 /// 非致命的解析异常。**不**中断解析，只是告诉调用方「这段输入被降级处理了」。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
-    /// 未知 / 未实现的段头被跳过（`<master>` / `<curve>` / `<effect>` / `<midi>` …）。
+    /// 未知 / 未实现的段头被跳过（`<curve>` / `<effect>` / `<midi>` / `<sample>` …）。
     IgnoredHeader {
         /// 1-based 行号（折算回原文件）。
         line: usize,
@@ -647,6 +657,7 @@ struct Parser<'a> {
     macros: MacroTable<'a>,
     control: OpcodeMap<'a>,
     global: OpcodeMap<'a>,
+    master: OpcodeMap<'a>,
     group: OpcodeMap<'a>,
     region: OpcodeMap<'a>,
     /// 当前 opcode 应该写进哪个作用域。
@@ -662,6 +673,7 @@ struct Parser<'a> {
 enum Scope {
     Control,
     Global,
+    Master,
     Group,
     Region,
     /// 空行 / 注释 / 未知段头之后：丢弃 opcode，但 `#define` 仍然生效。
@@ -675,6 +687,7 @@ impl<'a> Parser<'a> {
             macros: MacroTable::new(),
             control: OpcodeMap::new(),
             global: OpcodeMap::new(),
+            master: OpcodeMap::new(),
             group: OpcodeMap::new(),
             region: OpcodeMap::new(),
             // 规范要求显式段头；没有段头的裸 opcode 按 `<global>` 处理（宽松但无损）。
@@ -698,6 +711,7 @@ impl<'a> Parser<'a> {
         match scope {
             Scope::Control => Some((&mut self.control, "control")),
             Scope::Global => Some((&mut self.global, "global")),
+            Scope::Master => Some((&mut self.master, "master")),
             Scope::Group => Some((&mut self.group, "group")),
             Scope::Region => Some((&mut self.region, "region")),
             Scope::Ignored => None,
@@ -727,7 +741,14 @@ impl<'a> Parser<'a> {
         }
         let line = self.region_line;
         let default_path = self.control.get("default_path").cloned();
-        let built = build_region(&self.region, &self.group, &self.global, default_path, line)?;
+        let built = build_region(
+            &self.region,
+            &self.group,
+            &self.master,
+            &self.global,
+            default_path,
+            line,
+        )?;
         match built {
             Some(region) => self.regions.push(region),
             None => self.warn(Warning::RegionWithoutSample { line }),
@@ -889,8 +910,19 @@ impl<'a> Parser<'a> {
             }
             Some(Header::Global) => {
                 self.global.clear();
+                self.master.clear();
                 self.group.clear();
                 self.scope = Scope::Global;
+            }
+            Some(Header::Master) => {
+                // 工程裁决（见 notes「需要人类裁决」）：新 `<master>` 同时清空 `<group>`，
+                // 与上面新 `<global>` 清空 `<master>`+`<group>` 的做法一致。
+                // 理由：`<master>` 是 `global` 与 `group` 之间的层，若不清空，上一个
+                // master 段的 group 取值会泄漏到下一个 master 段（规范未明文规定，
+                // 但泄漏会让 `sw_last` 之类的分组映射串味）。
+                self.master.clear();
+                self.group.clear();
+                self.scope = Scope::Master;
             }
             Some(Header::Group) => {
                 self.group.clear();

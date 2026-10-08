@@ -599,6 +599,29 @@ mod tests {
     }
 
     #[test]
+    fn master_scope_reaches_the_playback_spec() {
+        // 端到端：`<master>` 层的音量与根音必须出现在可渲染描述里。
+        // 改动前 `<master>` 被忽略 ⇒ volume_db 取 global 的 -12、pitch_keycenter 取 60。
+        let instrument = parse_text(
+            "<global>volume=-12\n\
+             <master>volume=-6 pitch_keycenter=48\n\
+             <group>key=36\n\
+             <region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let play = instrument
+            .playback_for(RegionQuery::new(36, 100), RATES_EQUAL)
+            .expect("region matches note 36");
+        assert_eq!(play.spec.volume_db, -6.0);
+        assert!(close(play.spec.gain, 10.0f32.powf(-6.0 / 20.0), 1.0e-6));
+        assert_eq!(play.spec.pitch_keycenter, 48);
+        // 36 是根音 48 的低一个八度 ⇒ 音高比 0.5。
+        assert_eq!(play.spec.pitch_ratio, 0.5);
+        assert!(close(play.spec.rate, 0.5, 1.0e-9));
+    }
+
+    #[test]
     fn pitch_ratio_is_finite_positive_over_the_parsed_field_ranges() {
         // 字段范围来自 instrument.rs 的字段声明：note 0..=127、pitch_keycenter -127..=127、
         // transpose -127..=127、tune -100..=100（解析期已强制）。
