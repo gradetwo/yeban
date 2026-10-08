@@ -51,6 +51,7 @@
 //! | [`channel_strip`] | 通道条：输入增益 → EQ → 滤波 → 动态（压缩） → 输出增益（**组合**既有器件，零延迟） | 组合 [ARCH-DSP-001]，见该模块 §2 |
 //! | [`limiter`] | 母线前瞻式峰值限制器（立体声联动、33 帧延迟、立即攻击/速率上限释放、软膝天花板） | engine `mixer.rs` 上移 [ARCH-DSP-001, ARCH-PDC-001]，见该模块 §0 |
 //! | [`polysynth`] | 双振荡器减法复音合成器（定容声部池 + 确定性窃取 + 3 ms 指数淡出 + 整数相位波表 + 声部级梯形低通） | engine `synth.rs` 上移 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001]，见该模块 §0 |
+//! | [`drums`] | 4 音色鼓机（底鼓/军鼓/踩镲/拍手）的**合成配方** + 定容槽位池 + 确定性窃取 + 3 ms 指数淡出 + 闭镲 choke 开镲。⚠ **不是** 808/909 电路建模（未实现清单见该模块 §0.1） | 新写 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001] |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -66,6 +67,7 @@ pub mod channel_strip;
 pub mod comb;
 pub mod compressor;
 pub mod delay;
+pub mod drums;
 pub mod envelope;
 pub mod filter;
 pub mod limiter;
