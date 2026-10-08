@@ -111,8 +111,15 @@ component AiRail inherits Rectangle {
         accessible-role: button;
         accessible-id: "ai-rail-diagnose-button";
         accessible-label: "声学诊断";
-        accessible-checkable: true;
-        accessible-checked: false;
+        // **不得**声明 `accessible-checkable`（台账 R11c）：这是**瞬态动作**，不是切换，
+        // 故"可勾选"是假话。实测（落这一行时，本文件删掉本注释块后的行号）：本处有真的
+        // 点击源 `TouchArea`（`:134`）＋ `clicked => { root.run-acoustic-diagnosis(); }`（`:137`），
+        // 而该回调的宿主实现 `crates/yeban-app/src/main.rs:645` 的
+        // `ui.on_run_acoustic_diagnosis(..)` 只打一行 stderr —— **不置位任何状态**
+        // （全仓 `run_acoustic_diagnosis` 的命中里没有一处是状态写者）。
+        // `accessible-role: button` 与标签保留，它们是真话。
+        // `accessible-checked: false` **一并删除**：全仓**没有**判据读它
+        // （`.checked` 只有 `test_port_adapter.rs:2911` 与 `:2950` 两处，都在录音键上）。
 
         UiText {
             x: Tokens.space-3;

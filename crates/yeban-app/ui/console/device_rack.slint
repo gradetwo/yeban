@@ -194,8 +194,19 @@ export component DeviceRack inherits Rectangle {
             accessible-role: switch;
             accessible-id: "device-" + device_index + "-bypass-switch";
             accessible-label: "旁通 " + root.device-names[device_index];
-            accessible-checkable: true;
-            accessible-checked: false;
+            // **不得**声明 `accessible-checkable`（台账 R11c）：旁通今天没有任何状态，
+            // 故"可勾选"是假话。落这一行时的实测（`e284b77` 的工作树）三条：
+            // ① 旁通开关是**无处理器件** —— `device_rack.slint` 里
+            //    `grep -n 'TouchArea {\|clicked =>' …` 命中 **0**（这条现在会命中本注释本身，
+            //    故请按"命中行里是否含 `//`"复核：真代码命中会是缩进开头的声明）；
+            // ② `ui/**` 里没有宿主写者写设备/旁通状态：`grep -rn 'bypass' crates/yeban-app/ui/`
+            //    当时只回 `accessible-id` 那 1 行；
+            // ③ `device-names`（本文件 `:29`）是内联演示常量，宿主写者为零：
+            //    `git grep -n 'set_device_names\|set_band_gains' crates/yeban-app/src` 回 0 行。
+            // 同文件的 `accessible-role: switch` 与 `accessible-label` 保留 —— 静态词表不是状态。
+            // `accessible-checked: false` **一并删除**：全仓**没有**判据读它
+            // （`grep -rn '\.checked' crates/yeban-app/src/` 只有 `test_port_adapter.rs:2911`
+            // 与 `:2950` 两处，两处都在 `transport-record-button` 上），故留着它只剩噪音。
 
             UiText {
                 x: 0;
