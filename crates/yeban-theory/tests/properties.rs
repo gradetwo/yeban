@@ -24,7 +24,10 @@ use yeban_theory::melody::{
 };
 use yeban_theory::pitch::{Pitch, PitchClass, note_to_hz, parse_pitch_class};
 use yeban_theory::progression::{Degree, Meter, Progression, RomanQuality, expand_progression};
-use yeban_theory::rhythm::{MAX_METRIC_WEIGHT, cells_per_bar, metric_grid, swung_metric_grid};
+use yeban_theory::rhythm::{
+    MAX_METRIC_WEIGHT, cells_per_bar, felt_beats_per_bar, is_compound_meter, metric_grid,
+    metric_weight_in, swung_metric_grid,
+};
 use yeban_theory::scale::{Scale, ScaleKind};
 use yeban_theory::voice_leading::{VoicingConstraints, realize, realize_three_voices};
 use yeban_theory::{
@@ -629,6 +632,8 @@ proptest! {
             let bar_start = u64::from(hit.bar) * bar_ticks;
             prop_assert!(hit.tick >= bar_start && hit.tick < bar_start + bar_ticks);
             prop_assert!(u64::from(hit.cell) * 240 < bar_ticks);
+            // 重量按**拍号**算，不是只看格点下标（6/8 与 3/4 的小节一样长）。
+            prop_assert_eq!(hit.weight, metric_weight_in(rule.meter_value(), hit.cell));
         }
         for bar in 0..bars {
             let slice = grid.hits_in_bar(bar);
@@ -677,6 +682,84 @@ proptest! {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 7.5 度量重量必须读拍号（6/8 ≠ 3/4）
+// ---------------------------------------------------------------------------
+
+/// 用一个 flow 数出**拍号重量**的核心不变量：
+/// 以"该拍号自己的拍数"作为每小节 onset 数时，选出的格点**恰好**是每一拍的起点。
+///
+/// 单位：`checked` 数的是**不同的登记拍号**（不是流派条数）。
+/// 这条判据在 6/8 上必须抓到"第 0、8 格"这种把 6/8 当 3/4 读的结果：
+/// 6/8 的两拍是第 0、6 格（1440 tick 的附点四分）。
+#[test]
+fn a_bar_of_beats_selects_exactly_the_beat_grid() {
+    let mut meters = std::collections::BTreeSet::new();
+    for rule in GenreLibrary::all() {
+        meters.insert(rule.meter);
+    }
+    let mut checked = 0usize;
+    for (numerator, denominator) in meters {
+        let meter = Meter::new(numerator, denominator)
+            .unwrap_or_else(|err| panic!("{numerator}/{denominator}: {err}"));
+        let beats = u32::from(felt_beats_per_bar(meter));
+        assert!(beats > 0, "{numerator}/{denominator}");
+        let cells = u32::try_from(cells_per_bar(meter).unwrap()).unwrap();
+        assert_eq!(cells % beats, 0, "{numerator}/{denominator}");
+        let cells_per_beat = cells / beats;
+        let grid = metric_grid(meter, 1, beats).unwrap();
+        let got: Vec<u32> = grid.hits().iter().map(|hit| hit.cell).collect();
+        let want: Vec<u32> = (0..beats).map(|beat| beat * cells_per_beat).collect();
+        assert_eq!(got, want, "{numerator}/{denominator}");
+        // 每个 onset 的 tick 恒是"每拍 tick 数"的整数倍。
+        let ticks_per_beat = meter.ticks_per_bar() / u64::from(beats);
+        for hit in grid.hits() {
+            assert_eq!(hit.tick % ticks_per_beat, 0, "{numerator}/{denominator}");
+        }
+        checked += 1;
+    }
+    // 防真空：登记表里的不同拍号是 5 种（2/4、3/4、4/4、6/8、7/8）。
+    // 拍号种类变了就必须改这里，并重新量 6/8 与 3/4 的读数。
+    assert_eq!(checked, 5, "registered meter kinds changed");
+}
+
+/// 6/8 与 3/4 的小节长度相同，但网格**不许**逐位相同。
+///
+/// 实测（改前）：两条网格逐位相同，6/8 的两拍被选成第 0、8 格。
+/// 实测（改后）：6/8 的第 6 格重量 3、第 4/8 格重量 1；3/4 的第 4/8 格重量 2。
+#[test]
+fn compound_duple_and_waltz_are_not_the_same_grid() {
+    let compound = Meter::COMPOUND_DUPLE;
+    let waltz = Meter::WALTZ;
+    assert!(is_compound_meter(compound));
+    assert!(!is_compound_meter(waltz));
+    assert_eq!(compound.ticks_per_bar(), waltz.ticks_per_bar());
+    assert_eq!(cells_per_bar(compound), cells_per_bar(waltz));
+
+    // 6/8 的全部 12 个格位的重量（字面量）。
+    let compound_weights: Vec<u8> = (0..12)
+        .map(|cell| metric_weight_in(compound, cell))
+        .collect();
+    assert_eq!(compound_weights, vec![8, 0, 1, 0, 1, 0, 3, 0, 1, 0, 1, 0]);
+    // 3/4 的全部 12 个格位的重量（字面量）：只有第 8 格不同（3 → 2）。
+    let waltz_weights: Vec<u8> = (0..12).map(|cell| metric_weight_in(waltz, cell)).collect();
+    assert_eq!(waltz_weights, vec![8, 0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0]);
+    assert_ne!(compound_weights, waltz_weights);
+
+    let a = metric_grid(compound, 2, 2).unwrap();
+    let b = metric_grid(waltz, 2, 2).unwrap();
+    assert_eq!(a.total_ticks(), b.total_ticks());
+    assert_ne!(a.hits(), b.hits());
+    assert_eq!(
+        a.hits().iter().map(|hit| hit.cell).collect::<Vec<_>>(),
+        vec![0, 6, 0, 6]
+    );
+    assert_eq!(
+        a.hits().iter().map(|hit| hit.tick).collect::<Vec<_>>(),
+        vec![0, 1440, 2880, 4320]
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -88,6 +88,8 @@
 //! 同一台账的 `pending 3`（"没有具体的鼓点网格"）由 [`rhythm`] 补上**网格**那一半：
 //! [`rhythm::swung_metric_grid`] 把拍号与摇摆比例落成逐 16 分音符的 onset 网格，
 //! [`genre::GenreRule::rhythm_grid`] 直接读该流派登记的拍号与摇摆比例。
+//! 网格的度量重量由 [`rhythm::metric_weight_in`] 按**拍号**算出，因此
+//! 6/8（复合二拍）与 3/4（三拍）虽然小节长度相同，得到的网格不同。
 //! 另一半（逐流派的鼓点型数据）**没有**做：登记的 `note_density_hint` 计的是
 //! 音符数而不是 onset 数（见 [`rhythm`] 的模块文档），要补它需要新增登记数据。
 //!
@@ -121,7 +123,9 @@ pub use progression::{
     ChordSpan, Degree, Meter, PPQ, Progression, RomanQuality, expand_progression,
 };
 pub use rhythm::{
-    GridHit, MAX_METRIC_WEIGHT, MetricGrid, cells_per_bar, metric_grid, metric_weight,
+    BEAT_WEIGHT, GridHit, MAX_METRIC_WEIGHT, MetricGrid, OFFBEAT_WEIGHT, STRONG_BEAT_WEIGHT,
+    cells_per_bar, felt_beats_per_bar, is_compound_meter, metric_grid, metric_weight,
+    metric_weight_in,
 };
 pub use scale::{Scale, ScaleKind};
 pub use swing::{

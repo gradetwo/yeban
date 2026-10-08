@@ -28,10 +28,19 @@
 //!    = 240 tick（一个 16 分音符），与 crate 既有的"最小时间分辨率"口径同源。
 //! 2. 每小节格点数 = `ticks_per_bar / GRID_CELL_TICKS`（整数）。拍号由
 //!    [`Meter::new`] 校验为 2 的幂分母，因此这个除法恒为整除。
-//! 3. **选哪些格点**：按**度量重量**从强到弱取。重量用二分度量层级
-//!    （Lerdahl–Jackendoff 式）：小节起点最重，其次是小节对半处，再是四分位……
+//! 3. **选哪些格点**：按**度量重量**从强到弱取，重量由 [`metric_weight_in`]
+//!    按**拍号**算出（Lerdahl–Jackendoff 式的度量层级）：小节起点最重；
+//!    简单拍再取半小节处的强拍；其余拍等重；拍内再区分正拍与细分。
 //!    同重量按格点下标升序打破平局。判定全部是整数，无浮点比较 ⇒
 //!    同输入同输出、跨平台逐位一致 [ARCH-DET-001]。
+//!
+//!    ⚠ 重量**必须**读拍号，不能只看格点下标：6/8 与 3/4 的小节长度都是
+//!    2880 tick、都是 12 个 16 分格位，但 6/8 是**复合二拍**（每拍 = 三连八分
+//!    = 6 格，第二拍起于第 6 格），3/4 是**三拍**（每拍 = 四分 = 4 格，
+//!    各拍起于第 0、4、8 格）。只看下标的旧口径把两者判成同一条重量序列，
+//!    于是 6/8 的两拍被选成第 0、8 格而不是第 0、6 格。
+//!    见 [`metric_weight`]（拍号无关的旧口径，保留为公开面）与
+//!    [`metric_weight_in`]（本模块使用的新口径）。
 //! 4. **摇摆**：给出千分比时，把每个摇摆对（= 一个八分音符 = 480 tick）**切开**：
 //!    前半格点不动，后半格点落在 [`crate::swing::SwingPair::first`] 处
 //!    （上限为对长 - 1 tick）。因此每对的起点始终落在平直网格上，
@@ -89,15 +98,22 @@ pub const fn cells_per_bar(meter: Meter) -> Option<u64> {
     Some(meter.ticks_per_bar() / GRID_CELL_TICKS)
 }
 
-/// 小节内第 `cell` 个格点的**度量重量**（越大越强）。
+/// 小节内第 `cell` 个格点的**度量重量**（越大越强），**只看格点下标**。
 ///
 /// 口径：二分度量层级。`cell == 0` 取 [`MAX_METRIC_WEIGHT`]；
 /// 其余取 `cell` 二进制末尾零的个数（上限 [`MAX_METRIC_WEIGHT`]）。
 /// 4/4（16 格）因此得到：格点 0 → 8、格点 8 → 3、格点 4/12 → 2、
 /// 格点 2/6/10/14 → 1、奇数格点 → 0。
 ///
-/// 这是二拍子体系的经典口径；对 3/4、5/4、7/8 这类非二倍分子只做近似，
-/// 本函数不假装它给出各地区的节拍分组（那需要逐流派数据，属 `pending 3` 的另一半）。
+/// ⚠ 本函数**不读拍号**，因此它隐含"每拍 4 格、小节是 2 的幂"这一假设。
+/// 对 2/4 与 4/4 它与 [`metric_weight_in`] 逐位相同；对 3/4、5/4、7/8
+/// 它只给近似；对 6/8 它给出**错的**结构 —— 6/8 与 3/4 的小节长度都是
+/// 2880 tick、都是 12 个 16 分格位，本函数把两者判成同一条重量序列，
+/// 而 6/8 的第二拍其实起于第 6 格（见 [`is_compound_meter`]）。
+///
+/// 保留本函数是为了不破坏既有公开面；新调用方请用 [`metric_weight_in`]。
+/// 各地区的节拍分组（例如 5/4 的 3+2 与 2+3）本函数与 [`metric_weight_in`]
+/// 都**不**给：那需要逐流派数据，属 `pending 3` 的另一半。
 #[must_use]
 pub const fn metric_weight(cell: u32) -> u8 {
     if cell == 0 {
@@ -111,6 +127,117 @@ pub const fn metric_weight(cell: u32) -> u8 {
     }
 }
 
+/// 非首拍的**强拍**重量：简单拍的半小节拍，以及复合拍的每一拍。
+///
+/// 取 3 的依据：它必须严格大于 [`BEAT_WEIGHT`]（普通拍）且严格小于
+/// [`MAX_METRIC_WEIGHT`]（小节起点），这样"重量降序取格点"选出的前几名
+/// 恰好是小节起点、强拍、普通拍。4/4 的第 8 格沿用本值（旧口径
+/// [`metric_weight`] 在那里也取 3）。
+pub const STRONG_BEAT_WEIGHT: u8 = 3;
+
+/// 非首拍、非强拍的**普通拍**重量（例如 4/4 的第 4、12 格）。取 2。
+pub const BEAT_WEIGHT: u8 = 2;
+
+/// **拍内细分**的重量（例如 4/4 的第 2、6、10、14 格，即八分反拍）。取 1。
+///
+/// [`crate::melody::CHORD_TONE_WEIGHT_FLOOR`] 取 1：重量 ≥ 1 的位置优先取
+/// 和弦构成音。因此在**每拍格位数为偶数**的拍号上，"重量 ≥ 1"恒等价于
+/// "格点下标为偶数"，与该常量的文档一致。
+pub const OFFBEAT_WEIGHT: u8 = 1;
+
+/// 该拍号是否是**复合拍 (compound meter)**。
+///
+/// 口径：分母为 8、分子是 3 的倍数且大于 3 ⇒ 6/8、9/8、12/8 是复合拍，
+/// 它们的"拍"是三连八分（附点四分），不是八分。
+/// 3/8（分子不大于 3）与 8/8（分子不是 3 的倍数）**不**算复合拍：
+/// 两者的拍都取八分，因此 3/8 是 3 拍、8/8 是 8 拍。
+/// 8/8 的 3+3+2 分组属作品选择，本条不发明它（与 5/4 的 3+2 同理）。
+#[must_use]
+pub const fn is_compound_meter(meter: Meter) -> bool {
+    meter.denominator == 8 && meter.numerator > 3 && meter.numerator.is_multiple_of(3)
+}
+
+/// 每小节的**拍数**（felt beats）：简单拍取分子，复合拍取分子 / 3。
+///
+/// 单位是"拍"。`6/8` ⇒ 2、`3/4` ⇒ 3、`4/4` ⇒ 4、`7/8` ⇒ 7。
+/// 分子为 0（只能由直接赋值公有字段得到的非法 [`Meter`]）时返回 0。
+#[must_use]
+pub const fn felt_beats_per_bar(meter: Meter) -> u8 {
+    if is_compound_meter(meter) {
+        meter.numerator / 3
+    } else {
+        meter.numerator
+    }
+}
+
+/// 按**拍号**算出小节内第 `cell` 个格点的度量重量（越大越强）。
+///
+/// ## 层级
+///
+/// 每小节的格点被分成 [`felt_beats_per_bar`] 个等长的**拍**，每拍含
+/// `cells_per_bar / 拍数` 个格点。重量按下面的固定规则给（全部是整数）：
+///
+/// 1. 小节起点（拍 0 的格点 0）⇒ [`MAX_METRIC_WEIGHT`]；
+/// 2. 复合拍的非首拍 ⇒ [`STRONG_BEAT_WEIGHT`]（6/8 的第 6 格是 1440 tick
+///    处的第二个强拍）；
+/// 3. 简单拍且拍数为偶数且拍数 ≥ 4 时，半小节处的拍 ⇒ [`STRONG_BEAT_WEIGHT`]
+///    （4/4 的第 8 格），其余拍 ⇒ [`BEAT_WEIGHT`]；
+/// 4. 拍内格点下标为偶数 ⇒ [`OFFBEAT_WEIGHT`]，为奇数 ⇒ 0。
+///
+/// 该规则在 2/4 与 4/4 上与 [`metric_weight`] **逐位相同**（回归护栏见测试
+/// `metric_weight_in_keeps_binary_meters_bit_identical_to_metric_weight`）。
+///
+/// ## 回退
+///
+/// 下列三种输入退到拍号无关的 [`metric_weight`]，**不** panic：公有的 [`Meter`]
+/// 字段可以绕过 [`crate::progression::Meter::new`] 直接赋值。
+///
+/// 1. 拍号非法 ⇒ [`cells_per_bar`] 为 `None`；
+/// 2. `cell` 越界（≥ 每小节格点数）。这也覆盖"每小节不足 1 格"的病态拍号
+///    （例如分母 128：`cells_per_bar` 为 0，此时任何 `cell` 都越界）；
+/// 3. 每拍格位数为 0（例如 2/32：每小节 1 格却有 2 拍）。
+///
+/// 拍数恒不为 0：`cells_per_bar` 返回 `Some` 蕴含分子不为 0，因此简单拍的
+/// 拍数 ≥ 1、复合拍的拍数 ≥ 2。这里不再写一条不可达的 `beats == 0` 分支
+/// —— 不可达的分支无法被注入判据覆盖（实测：删掉它没有判据变红）。
+///
+/// ## 与 4/4 的对照（16 格）
+///
+/// 格点 0 → 8、8 → 3、4/12 → 2、2/6/10/14 → 1、奇数 → 0，与旧口径一致。
+/// 6/8（12 格）得到 0 → 8、6 → 3、2/4/8/10 → 1、其余 → 0。
+#[must_use]
+pub const fn metric_weight_in(meter: Meter, cell: u32) -> u8 {
+    let Some(cells) = cells_per_bar(meter) else {
+        return metric_weight(cell);
+    };
+    if cell as u64 >= cells {
+        return metric_weight(cell);
+    }
+    let beats = felt_beats_per_bar(meter) as u64;
+    let cells_per_beat = cells / beats;
+    if cells_per_beat == 0 {
+        return metric_weight(cell);
+    }
+    let beat_index = cell as u64 / cells_per_beat;
+    let offset = cell as u64 % cells_per_beat;
+    if offset == 0 {
+        if beat_index == 0 {
+            return MAX_METRIC_WEIGHT;
+        }
+        if is_compound_meter(meter) {
+            return STRONG_BEAT_WEIGHT;
+        }
+        if beats >= 4 && beats.is_multiple_of(2) && beat_index == beats / 2 {
+            return STRONG_BEAT_WEIGHT;
+        }
+        BEAT_WEIGHT
+    } else if offset.is_multiple_of(2) {
+        OFFBEAT_WEIGHT
+    } else {
+        0
+    }
+}
+
 /// 网格里的一个 onset。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GridHit {
@@ -120,7 +247,7 @@ pub struct GridHit {
     pub bar: u32,
     /// 小节内的格点下标（0 基）。
     pub cell: u32,
-    /// 该格点的度量重量，见 [`metric_weight`]。
+    /// 该格点的度量重量，见 [`metric_weight_in`]（按拍号算，不是只看下标）。
     pub weight: u8,
 }
 
@@ -257,8 +384,10 @@ pub fn swung_metric_grid(
     }
 
     // 选格点：重量降序、同重量按格点升序。排序键是整数，因此结果确定。
+    // 重量读**拍号**（`metric_weight_in`）：6/8 的第二拍在第 6 格，
+    // 只看下标的 `metric_weight` 会把第 8 格排到它前面。
     let mut order: Vec<u32> = (0..cells as u32).collect();
-    order.sort_by_key(|&cell| (core::cmp::Reverse(metric_weight(cell)), cell));
+    order.sort_by_key(|&cell| (core::cmp::Reverse(metric_weight_in(meter, cell)), cell));
     order.truncate(wanted);
     order.sort_unstable();
 
@@ -300,7 +429,7 @@ pub fn swung_metric_grid(
                 tick: bar_start + local_tick,
                 bar,
                 cell,
-                weight: metric_weight(cell),
+                weight: metric_weight_in(meter, cell),
             });
         }
     }
@@ -375,6 +504,168 @@ mod tests {
                 "cell {cell} should be weaker than its half"
             );
         }
+    }
+
+    #[test]
+    fn metric_weight_in_keeps_binary_meters_bit_identical_to_metric_weight() {
+        // 2/4 与 4/4 是纯二分层级 ⇒ 新旧两条口径必须**逐位**相同。
+        // 这是回归护栏：新口径若在常用拍号上悄悄改了读数，这条先红。
+        for meter in [COMMON, Meter::MARCH] {
+            let cells = cells_per_bar(meter).unwrap();
+            for cell in 0..cells as u32 {
+                assert_eq!(
+                    metric_weight_in(meter, cell),
+                    metric_weight(cell),
+                    "{meter:?} cell {cell}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn metric_weight_in_separates_compound_duple_from_waltz() {
+        // 6/8 与 3/4 的小节长度都是 2880 tick、都是 12 个格位，但拍结构不同：
+        // 6/8 = 复合二拍（每拍 = 三连八分 = 6 格），3/4 = 三拍（每拍 = 四分 = 4 格）。
+        let waltz: Vec<u8> = (0..12)
+            .map(|cell| metric_weight_in(Meter::WALTZ, cell))
+            .collect();
+        assert_eq!(waltz, vec![8, 0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0]);
+        let compound: Vec<u8> = (0..12)
+            .map(|cell| metric_weight_in(Meter::COMPOUND_DUPLE, cell))
+            .collect();
+        assert_eq!(compound, vec![8, 0, 1, 0, 1, 0, 3, 0, 1, 0, 1, 0]);
+        assert_ne!(waltz, compound, "6/8 must not be ranked like 3/4");
+
+        // 6/8 的两个强拍在第 0、6 格（0 与 1440 tick = 附点四分），不在第 8 格。
+        let grid = metric_grid(Meter::COMPOUND_DUPLE, 1, 2).unwrap();
+        assert_eq!(
+            grid.hits().iter().map(|hit| hit.cell).collect::<Vec<_>>(),
+            vec![0, 6]
+        );
+        assert_eq!(
+            grid.hits().iter().map(|hit| hit.tick).collect::<Vec<_>>(),
+            vec![0, 1440]
+        );
+        // 3/4 的三拍在小节的三等分处。
+        let grid = metric_grid(Meter::WALTZ, 1, 3).unwrap();
+        assert_eq!(
+            grid.hits().iter().map(|hit| hit.cell).collect::<Vec<_>>(),
+            vec![0, 4, 8]
+        );
+        // 整条网格（全部 12 个格位）也不再相同。
+        assert_ne!(
+            metric_grid(Meter::COMPOUND_DUPLE, 1, 12).unwrap().hits(),
+            metric_grid(Meter::WALTZ, 1, 12).unwrap().hits()
+        );
+    }
+
+    #[test]
+    fn metric_weight_in_ranks_seven_eight_and_quintuple_beats_equally() {
+        // 7/8：七拍都是八分（每拍 2 格）⇒ 偶数格点是拍（2），奇数格点是十六分（0）。
+        let seven: Vec<u8> = (0..14)
+            .map(|cell| metric_weight_in(Meter::SEVEN_EIGHT, cell))
+            .collect();
+        assert_eq!(seven, vec![8, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0]);
+        // 5/4：五拍都是四分（每拍 4 格）⇒ 第 16 格（第 5 拍）不再比第 8 格强。
+        // 3+2 / 2+3 的分组是作品选择，本口径不发明它（五拍等重）。
+        let five: Vec<u8> = (0..20)
+            .map(|cell| metric_weight_in(Meter::QUINTUPLE, cell))
+            .collect();
+        assert_eq!(
+            five,
+            vec![8, 0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0]
+        );
+        assert_eq!(metric_weight(16), 4, "旧口径在第 5 拍给出 4");
+        assert_eq!(metric_weight_in(Meter::QUINTUPLE, 16), 2);
+    }
+
+    #[test]
+    fn compound_meter_boundary_is_pinned() {
+        let meter = |numerator: u8, denominator: u8| {
+            Meter::new(numerator, denominator).expect("test meters are legal")
+        };
+        // 复合拍：分母 8、分子是 3 的倍数且大于 3。
+        assert!(is_compound_meter(meter(6, 8)));
+        assert!(is_compound_meter(meter(9, 8)));
+        assert!(is_compound_meter(meter(12, 8)));
+        // 边界之外：3/8 与 8/8 的拍都是八分；6/4 的分母不是 8。
+        assert!(!is_compound_meter(meter(3, 8)));
+        assert!(!is_compound_meter(meter(8, 8)));
+        assert!(!is_compound_meter(meter(6, 4)));
+        assert!(!is_compound_meter(meter(4, 4)));
+        // 拍数：简单拍取分子，复合拍取分子 / 3。
+        assert_eq!(felt_beats_per_bar(meter(6, 8)), 2);
+        assert_eq!(felt_beats_per_bar(meter(9, 8)), 3);
+        assert_eq!(felt_beats_per_bar(meter(12, 8)), 4);
+        assert_eq!(felt_beats_per_bar(meter(3, 8)), 3);
+        assert_eq!(felt_beats_per_bar(meter(8, 8)), 8);
+        assert_eq!(felt_beats_per_bar(meter(6, 4)), 6);
+        assert_eq!(felt_beats_per_bar(meter(7, 8)), 7);
+        assert_eq!(
+            felt_beats_per_bar(Meter {
+                numerator: 0,
+                denominator: 4
+            }),
+            0
+        );
+        // 9/8：三个复合拍起于第 0、6、12 格（0、1440、2880 tick）。
+        let nine: Vec<u8> = (0..18)
+            .map(|cell| metric_weight_in(meter(9, 8), cell))
+            .collect();
+        assert_eq!(
+            nine,
+            vec![8, 0, 1, 0, 1, 0, 3, 0, 1, 0, 1, 0, 3, 0, 1, 0, 1, 0]
+        );
+        let grid = metric_grid(meter(9, 8), 1, 3).unwrap();
+        assert_eq!(
+            grid.hits().iter().map(|hit| hit.cell).collect::<Vec<_>>(),
+            vec![0, 6, 12]
+        );
+        assert_eq!(
+            grid.hits().iter().map(|hit| hit.tick).collect::<Vec<_>>(),
+            vec![0, 1440, 2880]
+        );
+    }
+
+    #[test]
+    fn metric_weight_in_falls_back_instead_of_panicking() {
+        // 公有的 Meter 字段可以绕过构造器 ⇒ 非法拍号必须回退，不 panic、不除零。
+        let invalid = Meter {
+            numerator: 4,
+            denominator: 0,
+        };
+        assert_eq!(metric_weight_in(invalid, 3), metric_weight(3));
+        let zero_numerator = Meter {
+            numerator: 0,
+            denominator: 4,
+        };
+        assert_eq!(metric_weight_in(zero_numerator, 3), metric_weight(3));
+        let not_power_of_two = Meter {
+            numerator: 4,
+            denominator: 3,
+        };
+        assert_eq!(metric_weight_in(not_power_of_two, 3), metric_weight(3));
+        // 越界格点回退（网格永远只产出 cell < 每小节格点数的 hit）。
+        // 边界两侧都要钉：cell == 每小节格点数 已经越界（4/4 的第 16 格）。
+        assert_eq!(cells_per_bar(COMMON), Some(16));
+        assert_eq!(metric_weight_in(COMMON, 15), 0);
+        assert_eq!(metric_weight_in(COMMON, 16), metric_weight(16));
+        assert_eq!(metric_weight_in(COMMON, 999), metric_weight(999));
+        // 分母为 128 时每小节不足 1 格 ⇒ cells_per_bar 为 0 ⇒ 回退，不除零。
+        let tiny = Meter {
+            numerator: 2,
+            denominator: 128,
+        };
+        assert_eq!(cells_per_bar(tiny), Some(0));
+        assert_eq!(metric_weight_in(tiny, 1), metric_weight(1));
+        // 分母为 32 时每小节只有 1 格、却有 2 拍 ⇒ 每拍格位数为 0 ⇒ 回退，不除零。
+        let thirty_second = Meter {
+            numerator: 2,
+            denominator: 32,
+        };
+        assert_eq!(cells_per_bar(thirty_second), Some(1));
+        assert_eq!(felt_beats_per_bar(thirty_second), 2);
+        assert_eq!(metric_weight_in(thirty_second, 0), metric_weight(0));
     }
 
     #[test]
