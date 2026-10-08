@@ -47,6 +47,7 @@
 //! | [`comb`] | 梳状/全通滤波单元 | `dsp/comb.rs` |
 //! | [`reverb`] | Freeverb 风格混响 | `dsp/reverb.rs` |
 //! | [`shaping`] | bitcrusher / shaping EQ / transient shaper | `fx_shaping.rs` |
+//! | [`compressor`] | 前馈式压缩器：软膝静态曲线 + RMS 检波 + 线性域增益弹道（**零延迟**） | 新写 [ARCH-RT-001]；本机无移植源，见该模块 §8 |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -59,6 +60,7 @@
 
 pub mod block;
 pub mod comb;
+pub mod compressor;
 pub mod delay;
 pub mod envelope;
 pub mod filter;
