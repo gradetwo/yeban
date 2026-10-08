@@ -50,6 +50,7 @@
 //! | [`compressor`] | 前馈式压缩器：软膝静态曲线 + RMS 检波 + 线性域增益弹道（**零延迟**） | 新写 [ARCH-RT-001]；本机无移植源，见该模块 §8 |
 //! | [`channel_strip`] | 通道条：输入增益 → EQ → 滤波 → 动态（压缩） → 输出增益（**组合**既有器件，零延迟） | 组合 [ARCH-DSP-001]，见该模块 §2 |
 //! | [`limiter`] | 母线前瞻式峰值限制器（立体声联动、33 帧延迟、立即攻击/速率上限释放、软膝天花板） | engine `mixer.rs` 上移 [ARCH-DSP-001, ARCH-PDC-001]，见该模块 §0 |
+//! | [`polysynth`] | 双振荡器减法复音合成器（定容声部池 + 确定性窃取 + 3 ms 指数淡出 + 整数相位波表 + 声部级梯形低通） | engine `synth.rs` 上移 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001]，见该模块 §0 |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -75,6 +76,7 @@ pub mod meter;
 pub mod noise;
 pub mod oscillator;
 pub mod oversample;
+pub mod polysynth;
 pub mod reverb;
 pub mod shaping;
 pub mod smoothing;
