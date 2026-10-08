@@ -278,17 +278,25 @@ impl DelayLine {
 
     /// 交错块的延迟处理: 读写 `input` 指向的交错块, 把延迟后的样本写进 `out`。
     ///
-    /// 输出比输入晚 `delay_frames` 帧; 长度按最短者处理, 不越界、不分配。
-    /// 延迟为 0 时是**逐位拷贝** —— 旁路路径不得引入任何浮点运算, 否则确定性
-    /// 契约会在"有/无 PDC"之间出现 LSB 差异。
+    /// **只处理两条切片共有的那一段**, 即 `common = input.len().min(out.len())`:
+    /// 长度不等时按最短者处理, 不越界、不分配、不 panic。
+    /// `out[common..]` **不被本函数写入** —— 那是调用方的字节。
+    ///
+    /// 整帧 (每帧 `channels` 个样本) 走延迟线; 不足一整帧的尾巴**逐位透传**。
+    /// 零延迟时是整段 `common` 的**逐位拷贝** —— 旁路路径不得引入任何浮点运算,
+    /// 否则确定性契约会在"有/无 PDC"之间出现 LSB 差异。
+    /// `channels == 0` 退化为"丢弃一切": 一个字节都不写。
     pub fn process(&mut self, input: &[f32], out: &mut [f32]) {
-        let frames = input.len().min(out.len()) / self.channels.max(1);
-        if self.is_bypass() || self.channels == 0 {
-            let end = frames * self.channels;
-            out[..end].copy_from_slice(&input[..end]);
+        let common = input.len().min(out.len());
+        if self.channels == 0 {
+            return;
+        }
+        if self.is_bypass() {
+            out[..common].copy_from_slice(&input[..common]);
             return;
         }
         let channels = self.channels;
+        let frames = common / channels;
         let capacity_frames = self.delay_frames;
         for frame in 0..frames {
             let in_base = frame * channels;
@@ -304,8 +312,9 @@ impl DelayLine {
             }
         }
         // 尾部 (不足一整帧的部分) 原样透传, 避免调用方读到未初始化的旧数据。
-        let tail = frames * self.channels;
-        out[tail..].copy_from_slice(&input[tail..]);
+        // 上界是 `common` 而不是 `input.len()`: 两条切片长度不等时只写共有段。
+        let tail = frames * channels;
+        out[tail..common].copy_from_slice(&input[tail..common]);
     }
 }
 
@@ -557,5 +566,77 @@ mod tests {
         let mut out = [f32::MAX; 5];
         line.process(&input, &mut out);
         assert_eq!(out, [0.0, 0.0, 0.0, 0.0, 5.0]);
+    }
+
+    /// 两条切片长度不等时按**最短者**处理 (函数文档的承诺), 不得 panic;
+    /// `out` 超出共有段的部分**不被写入**。
+    ///
+    /// 这条判据在旧实现上是**红**的: 尾部透传写的是 `out[tail..]` 与 `input[tail..]`,
+    /// 两条切片不等长时长度不匹配 ⇒ `copy_from_slice: source slice length (0) does
+    /// not match destination slice length (4)`。
+    #[test]
+    fn delay_line_takes_the_shortest_of_the_two_slices() {
+        // out 比 input 长: 只写 input 有的那一段。
+        let mut line = DelayLine::new(2, 2);
+        let input = [1.0f32, 2.0, 3.0, 4.0];
+        let mut out = [f32::MAX; 8];
+        line.process(&input, &mut out);
+        assert_eq!(
+            out,
+            [0.0, 0.0, 0.0, 0.0, f32::MAX, f32::MAX, f32::MAX, f32::MAX]
+        );
+
+        // input 比 out 长: 只算 out 放得下的那两帧, 多余的输入被忽略。
+        let mut line = DelayLine::new(2, 2);
+        let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut out = [f32::MAX; 4];
+        line.process(&input, &mut out);
+        assert_eq!(out, [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// 共有段里的**尾巴** (不足一整帧) 在两条切片长度不等时也逐位透传。
+    #[test]
+    fn delay_line_passes_a_ragged_tail_through_across_unequal_lengths() {
+        let mut line = DelayLine::new(2, 2);
+        let input = [1.0f32, 2.0, 3.0, 4.0, 5.0];
+        let mut out = [f32::MAX; 7];
+        line.process(&input, &mut out);
+        assert_eq!(out, [0.0, 0.0, 0.0, 0.0, 5.0, f32::MAX, f32::MAX]);
+    }
+
+    /// 旁路 (零延迟) 同样是"按最短者的逐位拷贝": 尾巴也逐位拷贝, `out` 的其余部分不动。
+    ///
+    /// 尾巴这一格在旧实现上是**红**的: 旧旁路只拷贝 `frames * channels` 个样本,
+    /// 不足一整帧的尾巴**被丢掉** —— 那不是"逐位拷贝", 也与延迟路径的尾巴透传不一致。
+    #[test]
+    fn delay_line_bypass_copies_the_shortest_length_bit_for_bit() {
+        let mut line = DelayLine::new(0, 2);
+        let input = [0.1f32, -0.2, 0.3, -0.4, 0.5];
+        let mut out = [f32::MAX; 5];
+        line.process(&input, &mut out);
+        assert_eq!(
+            out.map(f32::to_bits),
+            input.map(f32::to_bits),
+            "把尾巴丢掉就不是逐位拷贝"
+        );
+
+        let mut line = DelayLine::new(0, 2);
+        let input = [1.0f32, 2.0];
+        let mut out = [f32::MAX; 4];
+        line.process(&input, &mut out);
+        assert_eq!(out, [1.0, 2.0, f32::MAX, f32::MAX]);
+    }
+
+    /// `channels == 0` 退化为"丢弃一切": 一个字节都不写, 且**不 panic**。
+    ///
+    /// 这条判据钉住函数顶部的 `channels == 0` 早退: 少了它, 帧数计算就是 `x / 0`。
+    #[test]
+    fn delay_line_with_zero_channels_writes_nothing() {
+        let mut line = DelayLine::new(4, 0);
+        assert_eq!(line.channels(), 0);
+        assert!(!line.is_bypass(), "延迟 4 帧, 不是旁路");
+        let mut out = [f32::MAX; 3];
+        line.process(&[1.0f32, 2.0, 3.0], &mut out);
+        assert_eq!(out, [f32::MAX; 3]);
     }
 }
