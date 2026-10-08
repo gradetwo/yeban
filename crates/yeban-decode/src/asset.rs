@@ -8,7 +8,8 @@
 //! 2. **原始字节 → [`DecodedAsset`]**：解码事实（声道/采样率/位深/帧数/时长对账）+ 交织 `f32` PCM；
 //! 3. **解码结果 → [`DecodedAsset::pcm_hash`]**：把"解出来的样本"本身也做成内容摘要，
 //!    用来给 [ARCH-DET-001] 的"同输入 → 同输出"提供一条**可比较的指纹**
-//!    （逐样本 `to_bits()` 比较在高帧数下太贵，摘要足够红）。
+//!    （逐样本 `to_bits()` 比较在高帧数下太贵，摘要足够红）。摘要按定长分块
+//!    喂给 [`AssetHasher`]，因此**不**复制样本缓冲。
 //!
 //! 不可变性 [ARCH-TOP-002]：`DecodedAsset` 只提供只读访问器，没有任何 `&mut` 出口，
 //! 因此它可以被 `Arc` 起来在实时线程里只读消费 —— 实时回调路径上永远不会调用本模块的
@@ -16,7 +17,7 @@
 
 use std::path::Path;
 
-use yeban_model::{AssetHash, AssetMetadata, BitDepth, MediaKind};
+use yeban_model::{AssetHash, AssetHasher, AssetMetadata, BitDepth, MediaKind};
 
 use crate::decode::{self, DecodeOptions};
 use crate::duration::Reconciliation;
@@ -143,6 +144,17 @@ pub struct DecodedAsset {
 /// `pcm_hash` 的域分隔前缀（改它等于改摘要口径，必须同时改 notes 与判据）。
 const PCM_HASH_DOMAIN: &[u8] = b"yeban.pcm.f32le.v1";
 
+/// `pcm_hash` 一次编码进暂存缓冲的样本数上限。
+///
+/// 256 个 `f32` = 1 KiB，落在栈上而不是堆上。规范字节流因此被切成定长块喂给
+/// [`AssetHasher`]：摘要路径**不持有与样本数成比例的任何缓冲**。这就是
+/// `docs/ledger/decode-limits-notes.md` §2.3 峰值表里 `DecodedAsset::pcm_hash`
+/// 从"×2 份 PCM"变成"×1 份 PCM"的全部机制。
+const PCM_HASH_CHUNK_SAMPLES: usize = 256;
+
+/// 暂存缓冲的字节数（= [`PCM_HASH_CHUNK_SAMPLES`] × 4）。
+const PCM_HASH_STAGING_BYTES: usize = PCM_HASH_CHUNK_SAMPLES * 4;
+
 impl DecodedAsset {
     /// 由解码器构造（crate 内部唯一入口，避免外部拼出一个自相矛盾的资产）。
     pub(crate) fn new(facts: DecodeFacts, samples: Vec<f32>) -> Self {
@@ -224,17 +236,34 @@ impl DecodedAsset {
     ///
     /// 注意：摘要对**位模式**敏感，`-0.0` 与 `0.0` 是不同的摘要 —— 这正是确定性判据
     /// 想要的（"值相等"不够，位级相等才算）。
+    ///
+    /// 上面这串字节流**不再**先拼成一个 `Vec<u8>`：它按 [`PCM_HASH_CHUNK_SAMPLES`]
+    /// 分块喂给 [`AssetHasher`]（`update` / `finalize`），因此本方法不分配与样本数成
+    /// 比例的临时缓冲。改建前这里是 `Vec::with_capacity(32 + samples.len() * 4)`，
+    /// 等于在资产之外再复制一整份 PCM（`docs/ledger/decode-limits-notes.md` §2.3）。
+    /// 摘要值本身逐位未变 —— 判据
+    /// [`tests::pcm_hash_matches_an_independent_python_oracle`] 用一个不由本 crate
+    /// 生成的期望值把它钉住。
     #[must_use]
     pub fn pcm_hash(&self) -> AssetHash {
-        let mut bytes = Vec::with_capacity(32 + self.samples.len() * 4);
-        bytes.extend_from_slice(PCM_HASH_DOMAIN);
-        bytes.extend_from_slice(&self.facts.channels.to_le_bytes());
-        bytes.extend_from_slice(&self.facts.sample_rate.to_le_bytes());
-        bytes.extend_from_slice(&self.frame_count().to_le_bytes());
-        for sample in &self.samples {
-            bytes.extend_from_slice(&sample.to_le_bytes());
+        let mut hasher = AssetHasher::new();
+        hasher.update(PCM_HASH_DOMAIN);
+        hasher.update(&self.facts.channels.to_le_bytes());
+        hasher.update(&self.facts.sample_rate.to_le_bytes());
+        hasher.update(&self.frame_count().to_le_bytes());
+        // `chunks` 最后一块可能短于 `PCM_HASH_CHUNK_SAMPLES`，因此每次只把前
+        // `chunk.len() * 4` 字节交给摘要器；`as_chunks_mut` 把暂存缓冲切成定长 4 字节
+        // 槽位，于是 `copy_from_slice` 不会因为长度不符而 panic。
+        let mut staging = [0u8; PCM_HASH_STAGING_BYTES];
+        for chunk in self.samples.chunks(PCM_HASH_CHUNK_SAMPLES) {
+            let (slots, _) = staging.as_chunks_mut::<4>();
+            for (slot, sample) in slots.iter_mut().zip(chunk) {
+                slot.copy_from_slice(&sample.to_le_bytes());
+            }
+            let filled = chunk.len() * 4;
+            hasher.update(&staging[..filled]);
         }
-        AssetHash::of_bytes(&bytes)
+        hasher.finalize()
     }
 }
 
@@ -390,6 +419,101 @@ mod tests {
         let neg_zero = DecodedAsset::new(facts, vec![-0.0]);
         assert_eq!(zero.samples(), neg_zero.samples());
         assert_ne!(zero.pcm_hash(), neg_zero.pcm_hash());
+    }
+
+    /// `pcm_hash` 的**独立预言机**：期望摘要由 Python `hashlib` 按资产模块文档写死的
+    /// 口径（`"yeban.pcm.f32le.v1"` ‖ `channels` u16 LE ‖ `sample_rate` u32 LE ‖
+    /// `frame_count` u64 LE ‖ 逐样本 `f32::to_le_bytes()`）算出，**不**由本 crate 的任何
+    /// 代码生成。四个样本值都是 2 的幂（0.25 / -0.5 / 0.125 / -0.0625），在 IEEE-754
+    /// `f32` 里无舍入，因此 Python 与 Rust 的字节必然一致。
+    ///
+    /// 复算命令（本机跑过，2026-10-08）：
+    /// `python3 -B -c "...struct.pack('<H'/'<I'/'<Q'/'<f')..."` ⇒ 48 字节被摘要的输入。
+    ///
+    /// 这条判据同时钉住两件事：① 摘要口径不变 —— `yeban-mcp` 的 `yeban_import_audio`
+    /// 把 `pcmHash` 直接交给客户端（`crates/yeban-mcp/src/domain/import_audio.rs:179`），
+    /// 改口径是破坏性变更；② 分块喂入 `AssetHasher` 与一次性 `AssetHash::of_bytes` 等价。
+    #[test]
+    fn pcm_hash_matches_an_independent_python_oracle() {
+        let facts = DecodeFacts {
+            channels: 2,
+            sample_rate: 48_000,
+            pcm_format: PcmFormat::F32,
+            declared_bit_depth: Some(32),
+            declared_frames: Some(2),
+            encoder_delay_frames: None,
+            encoder_padding_frames: None,
+            duration: Reconciliation::Exact,
+        };
+        let asset = DecodedAsset::new(facts, vec![0.25, -0.5, 0.125, -0.0625]);
+        assert_eq!(asset.frame_count(), 2);
+        assert_eq!(
+            asset.pcm_hash().as_str(),
+            "048efb90fd774c80d271f6c8c66c8ca2d867403f392c06d03b3b2f7e9b2bff70"
+        );
+    }
+
+    /// 零样本资产的摘要 = **只有头部**的字节流（`channels` / `sample_rate` /
+    /// `frame_count = 0`）。第二个 Python `hashlib` 预言机，覆盖"没有样本可喂"的分支。
+    #[test]
+    fn pcm_hash_of_a_zero_sample_asset_is_the_header_only_stream() {
+        let facts = DecodeFacts {
+            channels: 1,
+            sample_rate: 44_100,
+            pcm_format: PcmFormat::S16,
+            declared_bit_depth: Some(16),
+            declared_frames: Some(0),
+            encoder_delay_frames: None,
+            encoder_padding_frames: None,
+            duration: Reconciliation::Exact,
+        };
+        let asset = DecodedAsset::new(facts, Vec::new());
+        assert_eq!(asset.frame_count(), 0);
+        assert_eq!(
+            asset.pcm_hash().as_str(),
+            "102adb8e3c1846e00eaf8f05a0b47812502894cdc8a1c932ccf94b09d47bd39a"
+        );
+    }
+
+    /// 摘要与"分块方式"无关，且覆盖 `chunks(...)` 的**每一种余数**：1..=600 个样本，
+    /// 逐个与测试内**独立重建**的规范字节流（`AssetHash::of_bytes` 一次性摘要）比对。
+    ///
+    /// 600 > 2 × 分块大小（256），因此跨块、块边界与尾巴三种情形都被走到；
+    /// 120 000 个样本再加一条"很多块"（391 块）的读数。
+    #[test]
+    fn pcm_hash_is_independent_of_the_staging_chunking() {
+        let facts = DecodeFacts {
+            channels: 1,
+            sample_rate: 48_000,
+            pcm_format: PcmFormat::F32,
+            declared_bit_depth: Some(32),
+            declared_frames: None,
+            encoder_delay_frames: None,
+            encoder_padding_frames: None,
+            duration: Reconciliation::DeclaredUnknown,
+        };
+        let check = |count: usize| {
+            let samples: Vec<f32> = (0..count).map(|index| index as f32 * 0.031_25).collect();
+            let asset = DecodedAsset::new(facts.clone(), samples.clone());
+            // 独立重建规范字节流 —— 这份代码不看 `pcm_hash` 的实现，只按模块文档的口径写。
+            let mut stream: Vec<u8> = Vec::new();
+            stream.extend_from_slice(b"yeban.pcm.f32le.v1");
+            stream.extend_from_slice(&1u16.to_le_bytes());
+            stream.extend_from_slice(&48_000u32.to_le_bytes());
+            stream.extend_from_slice(&u64::try_from(count).unwrap().to_le_bytes());
+            for sample in &samples {
+                stream.extend_from_slice(&sample.to_le_bytes());
+            }
+            assert_eq!(
+                asset.pcm_hash(),
+                AssetHash::of_bytes(&stream),
+                "sample count {count}"
+            );
+        };
+        for count in 1..=600usize {
+            check(count);
+        }
+        check(120_000);
     }
 
     #[test]
