@@ -37,7 +37,7 @@
 //! | [`pdc`] | 关键路径延迟分析与环形延迟线（**待 engine 线提供后改为复用**） | `ARCH-PDC-001/002` |
 //! | [`rf64`] | RF64/BW64 容器与 `bext`(v1/v2) 的自研读写（零第三方依赖） | `ARCH-FMT-001` |
 //! | [`dither`] | TPDF 抖动与 16/24/32f 位深转换 | `ARCH-FMT-001`, `ARCH-DET-001` |
-//! | [`mastering`] | 母带导出的 LRA（响度范围）测量与响度归一化预设 | `ARCH-FMT-001`（`bext` 响度块） |
+//! | [`mastering`] | 母带导出的 LRA（响度范围）测量、响度归一化预设, 以及把实测响度写进 `bext` 的导出落点 | `ARCH-FMT-001`（`bext` 响度块） |
 //! | [`wav`] | 普通 RIFF WAV 的读写, 用 `hound` 当独立第三方裁判 | `ARCH-FMT-001` |
 //! | [`midi`] | SMF 0/1 导出与回读, 含独立 VLQ/chunk 字节级核验 | `ARCH-FMT-001 §5.5` |
 //! | `als`（feature `experimental-als-export`） | 实验性 Ableton `.als` 导出：Gzip XML + 映射损失表 | `ARCH-FMT-002`, `ROAD-M4-007` |
@@ -158,6 +158,29 @@ mod contract_tests {
         ) -> Result<(), RenderError> {
             out.fill(self.0);
             let _ = context;
+            Ok(())
+        }
+    }
+
+    /// 997 Hz 正弦样本源（幅度线性）。
+    ///
+    /// 相位由 `first_frame` 决定而不是由内部状态累加: 因此同一个源无论被调度成
+    /// 多少个块、按什么顺序, 产出的样本都一样 —— 这条判据要的是信号, 不是调度。
+    struct Tone(f64);
+
+    impl AudioSource for Tone {
+        fn render_block(
+            &mut self,
+            context: BlockContext,
+            out: &mut [f32],
+        ) -> Result<(), RenderError> {
+            let rate = f64::from(context.sample_rate);
+            for (frame, slot) in out.chunks_exact_mut(context.channels).enumerate() {
+                let index = context.first_frame + frame as u64;
+                let value =
+                    (self.0 * (core::f64::consts::TAU * 997.0 * index as f64 / rate).sin()) as f32;
+                slot.fill(value);
+            }
             Ok(())
         }
     }
@@ -314,6 +337,76 @@ mod contract_tests {
             buffer
                 .byte_len()
                 .is_multiple_of(usize::from(format.block_align()))
+        );
+    }
+
+    /// 判据 E (**端到端导出落点**): 一次真实渲染（[`RenderPlan::execute`]）的产物直接
+    /// 落成一个 RF64 文件, 且文件里的 `bext` 写着**归一化之后实测**的响度。
+    ///
+    /// 手算: 单轨 997 Hz、幅度 0.1（= −20 dBFS）⇒ **−20 LUFS**; 流媒体预设的目标是
+    /// −14 LUFS ⇒ 增益 **+6 dB** ⇒ `bext` 的 `LoudnessValue` 应是 **−1400**
+    /// （0.01 LUFS 刻度）, 真峰值 ≈ −14 dBTP（−1400, 0.01 dBTP 刻度）。
+    ///
+    /// 这条判据把 [ARCH-DET-002]（渲染）、[ARCH-FMT-001]（容器 + `bext` 响度元数据）
+    /// 与本切片的导出落点串在一根线上: 任何一环把响度写成哨兵, 这里就变红。
+    #[test]
+    fn a_rendered_master_lands_in_a_file_with_a_measured_loudness_block() {
+        let (routing, master, sources) = star(1);
+        let frames = 96_000u64; // 2 s @ 48 kHz
+        let options = RenderOptions::l1(frames, 2, 48_000, 0x0BAD_C0DE_DEAD_BEEF);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+
+        let mut injected: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+        for node in &sources {
+            injected.insert(*node, Box::new(Tone(0.1)));
+        }
+        let mut output = plan.execute(injected).expect("渲染");
+        assert_eq!(output.samples.len(), 96_000 * 2);
+
+        let metadata = Bext::for_project("01J8ZK9WQ7F5N2V4B6C8D0E1F2", "2026-10-08", "13:37:00");
+        let mut rng = crate::rng::dither_rng_for(options.seed, master);
+        let export = crate::mastering::export_master(
+            48_000,
+            &mut output,
+            crate::mastering::ExportPreset::streaming(),
+            BitDepth::Int24,
+            ContainerKind::Rf64,
+            &metadata,
+            &mut rng,
+        )
+        .expect("导出");
+
+        assert_eq!(
+            export.outcome.bound,
+            crate::mastering::GainBound::LoudnessTarget
+        );
+        assert!(
+            (export.outcome.gain_db - 6.0).abs() < 0.05,
+            "实际 {} dB",
+            export.outcome.gain_db
+        );
+
+        let parsed = crate::rf64::parse_container(&export.file).expect("读回");
+        assert_eq!(parsed.sizes.sample_count, 96_000);
+        assert_eq!(parsed.format.bits_per_sample, 24);
+        let loudness = parsed
+            .bext
+            .expect("导出必须带 bext")
+            .loudness
+            .expect("版本 2 必须带 EBU R128 响度块");
+        assert_eq!(
+            loudness.loudness_value,
+            crate::rf64::Loudness::from_lufs(export.outcome.after.integrated_lufs)
+        );
+        assert!(
+            (f32::from(loudness.loudness_value) / 100.0 + 14.0).abs() < 0.05,
+            "手算 −1400, 实际 {}",
+            loudness.loudness_value
+        );
+        assert!(
+            (f32::from(loudness.max_true_peak_level) / 100.0 + 14.0).abs() < 0.15,
+            "手算 ≈ −1400, 实际 {}",
+            loudness.max_true_peak_level
         );
     }
 }

@@ -60,6 +60,27 @@
 //!   `libm::log10f` / `libm::pow`, **不用** `yeban_dsp::meter::dbfs`（它走 std 的 `f32::log10`）。
 //!   两者在**最后一位**上可能不同。理由: 母带读数是可复算的交付物, 不该随宿主 libm 漂移。
 //!
+//! ## 导出落点：把测量写进容器（[ARCH-FMT-001] 的那一条）
+//!
+//! [`export_master`] 把链子接起来：渲染产物 [`crate::render::RenderOutput`] →
+//! [`ExportPreset::apply`]（增益）→ [`crate::dither::quantize`]（TPDF 抖动/降位深）→
+//! [`crate::rf64::write_container`]（RF64 / BW64 / RIFF），并把**实测**响度写进
+//! `bext` v2 的 EBU R128 块。
+//!
+//! 依据是原文：`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:461`（`ARCH-FMT-001`）
+//! 要求"完整内嵌广播级 `bext` (Broadcast Extension) 元数据块（录制起始时间码、
+//! **响度元数据 EBU R128**、工程 ULID 全局唯一标识）"。
+//!
+//! **这条落点此前不存在**，两处独立证据：
+//!
+//! - `crates/yeban-render/src/rf64.rs:414`（`Bext::for_project` 的注释）：
+//!   "导出时尚未测量响度: 按哨兵 `UNKNOWN` 写入 …… **母带链测出真值后应改写这些字段**";
+//! - `crates/yeban-mcp/src/domain/render.rs:1280` 是仓库里唯一的**非测试**构造点,
+//!   它构造完 `Bext` 后只改写 `coding_history`, **没有**改写 `loudness`。
+//!
+//! 因此 [`MasterLoudness::to_bext_loudness`] 在 [`export_master`] 出现之前**没有调用方**
+//! （判据 `the_bext_bridge_scales_finite_readings_and_sentinels_the_rest` 只在测试内部调它）。
+//!
 //! ## 边界（这一层没有证明什么）
 //!
 //! - **单声道口径**: 立体声接口把左右两路都算进能量（`G = 1`）。本模块**不**做"同信号喂两路"的
@@ -88,9 +109,12 @@
 //! assert!((outcome.after.integrated_lufs + 14.0).abs() < 0.05);
 //! ```
 
+use crate::dither::{BitDepth, DitherRng, quantize};
 use crate::loudness::{ABSOLUTE_GATE_LUFS, GatedLoudness, LUFS_OFFSET_DB};
-use crate::render::db_to_linear;
-use crate::rf64::Loudness;
+use crate::render::{RenderOutput, db_to_linear};
+use crate::rf64::{
+    Bext, ContainerKind, ContainerPlan, Loudness, PcmFormat, Rf64Error, write_container,
+};
 use yeban_dsp::meter::TruePeakDetector;
 
 /// LRA 的**相对门限**（LU）: 相对"过了绝对门限的短时值的平均响度"再降 20 LU。
@@ -310,6 +334,212 @@ impl ExportPreset {
             after,
         })
     }
+}
+
+/// 母带导出被拒绝的原因。
+///
+/// 每一种拒绝都是**有意的**：静默降级会把一个自相矛盾或元数据缺失的文件交给用户。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MasterExportError {
+    /// 采样率不在内置四档（44.1 / 48 / 88.2 / 96 kHz）里 ⇒ 响度读数会错 ⇒ 拒绝。
+    UnsupportedSampleRate(u32),
+    /// 声道数不是 2（响度计量与常设预设都是立体声口径）⇒ 拒绝, **不**做下混。
+    NotStereo(usize),
+    /// 交错缓冲的长度不是偶数 ⇒ 最后一个样本落单 ⇒ 拒绝, **不**静默丢弃它。
+    RaggedInterleavedBuffer(usize),
+    /// `bext` 模板的版本小于 2 ⇒ 它没有 EBU R128 响度字段 [ARCH-FMT-001]。
+    ///
+    /// 拒绝而不是把版本改成 2：版本是调用方给的元数据语义, 本函数不改写它;
+    /// 而 [`crate::rf64::Bext::to_bytes`] 对"版本 2 但无响度"会 panic, 对
+    /// "版本 1 却有响度"也会 panic —— 两条路都只能靠拒绝避开。
+    BextCannotCarryLoudness(u16),
+    /// 容器写入失败（透传 [`Rf64Error`]）。
+    Container(Rf64Error),
+}
+
+impl core::fmt::Display for MasterExportError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnsupportedSampleRate(rate) => {
+                write!(
+                    f,
+                    "响度计量不支持 {rate} Hz（内置档位: 44.1/48/88.2/96 kHz）"
+                )
+            }
+            Self::NotStereo(channels) => {
+                write!(f, "母带导出只支持立体声, 实际 {channels} 声道")
+            }
+            Self::RaggedInterleavedBuffer(len) => {
+                write!(f, "交错缓冲长度 {len} 不是偶数（立体声的帧必须成对）")
+            }
+            Self::BextCannotCarryLoudness(version) => write!(
+                f,
+                "bext 版本 {version} 没有 EBU R128 响度字段, 无法承载实测响度 [ARCH-FMT-001]"
+            ),
+            Self::Container(error) => write!(f, "容器写入失败: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for MasterExportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Container(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// 一次母带导出的产物。
+///
+/// 全部字段都是**构造期**的产物（本 crate 的契约是"完全离线", 见 crate 模块头）:
+/// 没有一项会在实时音频线程上被求值。
+#[derive(Clone, Debug, PartialEq)]
+pub struct MasterExport {
+    /// 整个容器文件的字节（头部 + `data` 负载 + 补位字节）。
+    pub file: Vec<u8>,
+    /// `data` chunk 的负载（抖动/量化之后的 PCM 字节）。
+    pub payload: Vec<u8>,
+    /// 写进容器的 `bext` 块。它的 `loudness` 是**实测**值, 不是模板里的哨兵。
+    pub bext: Bext,
+    /// 预设的结果（实际增益、谁定下它、增益前后两次测量）。
+    pub outcome: NormalizeOutcome,
+    /// 导出的位深。
+    pub depth: BitDepth,
+    /// 导出的帧数（= 交错缓冲长度 / 2）。
+    pub frames: u64,
+    /// **文件字节**的 SHA-256（判"同种子 ⇒ 逐字节相同"的载体; 不是样本的摘要）。
+    pub digest: [u8; 32],
+}
+
+/// 把一次渲染产物落成带**实测**响度元数据的广播级容器文件 [ARCH-FMT-001]。
+///
+/// 这一步把三条既有能力接成一条链, 顺序如下（每一步的顺序都有理由）:
+///
+/// 1. **校验**: 立体声、交错长度成对、`bext` 版本 ≥ 2（见 [`MasterExportError`]）;
+/// 2. **[`ExportPreset::apply`]**: 按目标响度与真峰值上限**就地**施加增益
+///    （上限赢时减小增益, 不削顶）;
+/// 3. **测量**: 用第 2 步返回的 `after`（在**抖动之前**的浮点母带上测的），
+///    经 [`MasterLoudness::to_bext_loudness`] 写进 `bext` v2 的 EBU R128 块;
+/// 4. **抖动/量化**: [`crate::dither::quantize`]（16/24 位走 TPDF, 32f 透传）;
+/// 5. **容器**: [`ContainerPlan::for_payload`] + [`write_container`]。
+///
+/// # 就地改写
+///
+/// 增益施加在 `master.samples` 上, 并且**重算** `master.digest`
+/// （[`RenderOutput::digest_of`]）—— 否则缓冲与它的位级摘要会不一致, 而那份摘要是
+/// L1 判据的载体。调用方因此既拿到文件, 也拿到归一化后的母带。
+///
+/// # 构造期与逐样本
+///
+/// 本函数**全部在构造期**：反交错、交错、`bext`、头部、文件缓冲各分配一次
+/// （离线路径允许分配）。逐样本的循环只有两处 —— [`crate::dither::quantize`] 内部
+/// 的量化, 以及本函数里 32f 用的交错拷贝。本函数**不在**音频线程上被调用。
+///
+/// # Errors
+///
+/// 见 [`MasterExportError`]。`sample_rate` 不受支持时**不静默回落**到 48 kHz。
+pub fn export_master(
+    sample_rate: u32,
+    master: &mut RenderOutput,
+    preset: ExportPreset,
+    depth: BitDepth,
+    preferred: ContainerKind,
+    metadata: &Bext,
+    rng: &mut impl DitherRng,
+) -> Result<MasterExport, MasterExportError> {
+    if master.channels != 2 {
+        return Err(MasterExportError::NotStereo(master.channels));
+    }
+    if !master.samples.len().is_multiple_of(2) {
+        return Err(MasterExportError::RaggedInterleavedBuffer(
+            master.samples.len(),
+        ));
+    }
+    if metadata.version < 2 {
+        return Err(MasterExportError::BextCannotCarryLoudness(metadata.version));
+    }
+
+    // 帧数取自**缓冲的实际长度**（不是 `master.frames`）: 写进 `ds64` 的必须是
+    // 文件里真有的帧数, 否则容器会声明一段不存在的音频。
+    let frames = master.samples.len() / 2;
+
+    // 反交错: `ExportPreset::apply` 的接口是左右两路切片（与本模块其余接口一致）。
+    let mut left: Vec<f32> = Vec::with_capacity(frames);
+    let mut right: Vec<f32> = Vec::with_capacity(frames);
+    for pair in master.samples.as_chunks::<2>().0 {
+        left.push(pair[0]);
+        right.push(pair[1]);
+    }
+
+    let outcome = preset
+        .apply(sample_rate, &mut left, &mut right)
+        .ok_or(MasterExportError::UnsupportedSampleRate(sample_rate))?;
+
+    // 把归一化后的母带回写, 并让位级摘要跟上传缓冲 —— 摘要不许过期。
+    for (slot, (left_sample, right_sample)) in master
+        .samples
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .zip(left.iter().zip(right.iter()))
+    {
+        slot[0] = *left_sample;
+        slot[1] = *right_sample;
+    }
+    master.digest = RenderOutput::digest_of(&master.samples);
+
+    // 实测响度进 `bext` v2 的 EBU R128 块。测不出的量由 `to_bext_loudness` 写哨兵。
+    let mut bext = metadata.clone();
+    bext.loudness = Some(outcome.after.to_bext_loudness());
+
+    let mut interleaved: Vec<f32> = Vec::with_capacity(frames * 2);
+    for (left_sample, right_sample) in left.iter().zip(right.iter()) {
+        interleaved.push(*left_sample);
+        interleaved.push(*right_sample);
+    }
+    let payload = quantize(&interleaved, depth, rng).to_le_bytes();
+
+    let format = if depth.is_integer() {
+        PcmFormat::integer(2, sample_rate, depth.bits())
+    } else {
+        PcmFormat::float(2, sample_rate, depth.bits())
+    };
+    let plan = ContainerPlan::for_payload(
+        preferred,
+        format,
+        payload.len() as u64,
+        frames as u64,
+        Some(bext.clone()),
+    );
+    let mut file: Vec<u8> = Vec::with_capacity(plan.header_bytes().len() + payload.len() + 1);
+    write_container(&mut file, &plan, &payload).map_err(MasterExportError::Container)?;
+
+    Ok(MasterExport {
+        digest: sha256_of(&file),
+        file,
+        payload,
+        bext,
+        outcome,
+        depth,
+        frames: frames as u64,
+    })
+}
+
+/// 对任意字节串取 SHA-256。
+///
+/// 与 [`RenderOutput::digest_of`] 的区别是**输入**: 那个对 `f32` 位型取摘要,
+/// 这个对文件字节取摘要。同种子导出的两个文件靠它比较。
+fn sha256_of(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let output = hasher.finalize();
+    let mut digest = [0u8; 32];
+    for (slot, byte) in digest.iter_mut().zip(output.iter()) {
+        *slot = *byte;
+    }
+    digest
 }
 
 /// 测一段母带的全部读数; 采样率不受支持 ⇒ `None`。
@@ -757,5 +987,384 @@ mod tests {
         assert!((percentile(&values, 0.10) - 1.0).abs() < 1e-6);
         assert!((percentile(&values, 0.95) - 9.5).abs() < 1e-6);
         assert_eq!(percentile(&[3.0f32], 0.10), 3.0);
+    }
+
+    /// 测试用的抖动节点身份（与 `lib.rs` 契约测试同一枚 ULID）。
+    fn dither_node() -> yeban_model::EntityId {
+        use core::str::FromStr;
+        yeban_model::EntityId::from_str("01J8ZK9WQ7F5N2V4B6C8D0E1F2").expect("合法 ULID")
+    }
+
+    /// 生产路径上的抖动随机源（种子由调用方给, [ARCH-DET-001]）。
+    fn seed_rng(seed: u64) -> crate::rng::DeterministicDitherRng {
+        crate::rng::dither_rng_for(seed, dither_node())
+    }
+
+    /// 手工构造一个立体声交错的渲染产物（这些判据不需要真的跑 Rayon 调度）。
+    fn master_output(left: &[f32], right: &[f32]) -> RenderOutput {
+        let mut samples: Vec<f32> = Vec::with_capacity(left.len().min(right.len()) * 2);
+        for (left_sample, right_sample) in left.iter().zip(right.iter()) {
+            samples.push(*left_sample);
+            samples.push(*right_sample);
+        }
+        let digest = RenderOutput::digest_of(&samples);
+        let frames = (samples.len() / 2) as u64;
+        RenderOutput {
+            samples,
+            frames,
+            channels: 2,
+            blocks: 0,
+            longest_path_frames: 0,
+            digest,
+        }
+    }
+
+    /// 一个版本 2 的 `bext` 模板: 响度字段是哨兵, 与 `Bext::for_project` 一致。
+    fn metadata() -> Bext {
+        Bext::for_project("01J8ZK9WQ7F5N2V4B6C8D0E1F2", "2026-10-08", "13:37:00")
+    }
+
+    /// **导出落点判据**: 归一化之后母带的**实测**响度必须出现在容器的 `bext` 里。
+    ///
+    /// 手算: −20 LUFS 的 997 Hz 标定音 + 流媒体预设（目标 −14 LUFS、上限 −1 dBTP）
+    /// ⇒ 增益 **+6 dB** ⇒ 文件里应写 **−1400**（0.01 LUFS 刻度）。
+    ///
+    /// **有鉴别力**: 若写模板里的哨兵 `UNKNOWN`, 或写**增益之前**的读数（−2000）,
+    /// 这条判据变红 —— 那正是本切片之前仓库里的行为。
+    #[test]
+    fn the_export_embeds_the_measured_loudness_of_the_normalized_master() {
+        let tone = sine_997(0.1, 48_000 * 8);
+        let mut master = master_output(&tone, &tone);
+        let template = metadata();
+        let mut rng = seed_rng(0x0BAD_C0DE_DEAD_BEEF);
+
+        let export = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::streaming(),
+            BitDepth::Int24,
+            ContainerKind::Rf64,
+            &template,
+            &mut rng,
+        )
+        .expect("48 kHz 立体声 + v2 模板");
+
+        assert_eq!(export.outcome.bound, GainBound::LoudnessTarget);
+        assert!(
+            (export.outcome.gain_db - 6.0).abs() < 0.05,
+            "实际 {} dB",
+            export.outcome.gain_db
+        );
+        assert_eq!(export.frames, 48_000 * 8);
+        assert_eq!(
+            export.payload.len(),
+            48_000 * 8 * 2 * 3,
+            "24-bit 立体声 ⇒ 每帧 6 字节"
+        );
+
+        let parsed = crate::rf64::parse_container(&export.file).expect("读回自研容器");
+        assert_eq!(parsed.kind, ContainerKind::Rf64);
+        assert_eq!(parsed.sizes.sample_count, export.frames);
+        assert_eq!(&export.file[parsed.data.clone()], export.payload.as_slice());
+
+        let bext = parsed.bext.expect("导出必须带 bext");
+        let loudness = bext.loudness.expect("版本 2 必须带 EBU R128 响度块");
+        // 数字的来源被钉死: 它是增益**之后**那一次测量的桥接结果。
+        assert_eq!(
+            loudness.loudness_value,
+            Loudness::from_lufs(export.outcome.after.integrated_lufs)
+        );
+        assert_eq!(
+            loudness.max_true_peak_level,
+            Loudness::from_dbtp(export.outcome.after.true_peak_dbtp)
+        );
+        assert!(
+            (f32::from(loudness.loudness_value) / 100.0 + 14.0).abs() < 0.05,
+            "手算 −1400, 实际 {}",
+            loudness.loudness_value
+        );
+        assert!(
+            (f32::from(loudness.max_true_peak_level) / 100.0 + 14.0).abs() < 0.15,
+            "手算 ≈ −1400, 实际 {}",
+            loudness.max_true_peak_level
+        );
+        assert_ne!(loudness.loudness_range, Loudness::UNKNOWN, "8 s ⇒ LRA 可写");
+
+        // 模板的其余字段原样保留 —— 只有响度被改写。
+        assert_eq!(bext.originator_reference, template.originator_reference);
+        assert_eq!(bext.description, template.description);
+        assert_eq!(bext.coding_history, template.coding_history);
+        assert_eq!(bext.version, 2);
+        // 摘要描述的是**文件字节**, 不是样本。
+        assert_eq!(export.digest, sha256_of(&export.file));
+    }
+
+    /// 静音母带: 五个响度字段全部写哨兵 `UNKNOWN`（**不是** 0.0 LUFS 的假读数）,
+    /// 增益为 0, 负载逐字节全零。
+    #[test]
+    fn a_silent_master_writes_unknown_in_every_loudness_field() {
+        let silence = vec![0.0f32; 48_000 * 4];
+        let mut master = master_output(&silence, &silence);
+        let mut rng = seed_rng(1);
+        let export = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::streaming(),
+            BitDepth::Int24,
+            ContainerKind::Rf64,
+            &metadata(),
+            &mut rng,
+        )
+        .expect("导出");
+
+        assert_eq!(export.outcome.bound, GainBound::NothingToDo);
+        assert_eq!(export.outcome.gain_db, 0.0);
+        let loudness = crate::rf64::parse_container(&export.file)
+            .expect("读回")
+            .bext
+            .expect("有 bext")
+            .loudness
+            .expect("版本 2 有响度块");
+        assert_eq!(loudness.loudness_value, Loudness::UNKNOWN);
+        assert_eq!(loudness.loudness_range, Loudness::UNKNOWN);
+        assert_eq!(loudness.max_true_peak_level, Loudness::UNKNOWN);
+        assert_eq!(loudness.max_momentary_loudness, Loudness::UNKNOWN);
+        assert_eq!(loudness.max_short_term_loudness, Loudness::UNKNOWN);
+        // 增益 0 ⇒ 浮点母带逐位不变。
+        assert!(master.samples.iter().all(|sample| *sample == 0.0));
+        // 但**负载不是全零字节**: TPDF 抖动在四舍五入**之前**加入
+        // （`crate::dither::quantize_i24`）, 因此数字静音得到 ±1 LSB 的噪声。
+        // 这是抖动模块的既有契约, 本判据把它写成可执行的读数。
+        let quantized: Vec<i32> = export
+            .payload
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|bytes| i32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]) << 8 >> 8)
+            .collect();
+        assert_eq!(quantized.len(), 48_000 * 4 * 2);
+        assert!(
+            quantized.iter().all(|value| value.abs() <= 1),
+            "抖动幅度必须 ≤ 1 LSB"
+        );
+        assert!(
+            quantized.iter().any(|value| *value != 0),
+            "数字静音也必须带抖动噪声, 而不是被优化成全零"
+        );
+    }
+
+    /// 三种容器 × 三种位深的九种组合都往返, 且每一个产物都带实测响度块。
+    ///
+    /// 这条判据让"多格式"变成可执行的读数: 位深标签写错（例如 32f 写成整数标签）
+    /// 或容器种类没有按请求写出, 都会在这里变红。
+    #[test]
+    fn every_container_and_depth_combination_round_trips_with_the_loudness_block() {
+        for kind in [
+            ContainerKind::Riff,
+            ContainerKind::Rf64,
+            ContainerKind::Bw64,
+        ] {
+            for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
+                let tone = sine_997(0.1, 48_000 * 2);
+                let mut master = master_output(&tone, &tone);
+                let mut rng = seed_rng(0x5EED);
+                let export = export_master(
+                    48_000,
+                    &mut master,
+                    ExportPreset::new(Some(-23.0), None),
+                    depth,
+                    kind,
+                    &metadata(),
+                    &mut rng,
+                )
+                .expect("容器 × 位深组合必须能导出");
+
+                let frames = 96_000usize;
+                assert_eq!(export.frames, frames as u64);
+                assert_eq!(
+                    export.payload.len(),
+                    frames * 2 * depth.bytes_per_sample(),
+                    "{kind:?} × {depth:?}"
+                );
+                let parsed = crate::rf64::parse_container(&export.file).expect("读回");
+                assert_eq!(parsed.kind, kind, "{kind:?} × {depth:?}");
+                assert_eq!(
+                    parsed.format.bits_per_sample,
+                    depth.bits(),
+                    "{kind:?} × {depth:?}"
+                );
+                assert_eq!(
+                    parsed.format.is_float,
+                    !depth.is_integer(),
+                    "{kind:?} × {depth:?}"
+                );
+                assert_eq!(parsed.format.channels, 2);
+                assert_eq!(parsed.format.sample_rate, 48_000);
+                assert_eq!(parsed.sizes.sample_count, frames as u64);
+                assert_eq!(&export.file[parsed.data.clone()], export.payload.as_slice());
+                let loudness = parsed.bext.expect("有 bext").loudness.expect("版本 2");
+                assert_ne!(
+                    loudness.loudness_value,
+                    Loudness::UNKNOWN,
+                    "{kind:?} × {depth:?} 必须写实测响度"
+                );
+                assert_eq!(
+                    loudness.loudness_value,
+                    Loudness::from_lufs(export.outcome.after.integrated_lufs)
+                );
+            }
+        }
+    }
+
+    /// 同种子导出两次 ⇒ **文件逐字节相同**; 换种子 ⇒ 字节必须不同。
+    ///
+    /// 后半条是 [ARCH-DET-001] 的落地证据: 抖动的随机源只能来自调用方给的 `rng`,
+    /// 不能有隐式熵源。
+    #[test]
+    fn the_same_seed_is_byte_identical_and_a_different_seed_is_not() {
+        let tone = sine_997(0.1, 48_000 * 2);
+        let run = |seed: u64| {
+            let mut master = master_output(&tone, &tone);
+            let mut rng = seed_rng(seed);
+            export_master(
+                48_000,
+                &mut master,
+                ExportPreset::streaming(),
+                BitDepth::Int16,
+                ContainerKind::Rf64,
+                &metadata(),
+                &mut rng,
+            )
+            .expect("导出")
+        };
+
+        let first = run(0xABCD);
+        let second = run(0xABCD);
+        assert_eq!(first.file, second.file, "同种子必须逐字节相同");
+        assert_eq!(first.digest, second.digest);
+        assert_eq!(
+            first.digest,
+            sha256_of(&first.file),
+            "digest 必须是文件字节的 SHA-256"
+        );
+
+        let other = run(0xABCE);
+        assert_ne!(first.file, other.file, "不同抖动种子必须产出不同字节");
+        assert_ne!(first.digest, other.digest);
+    }
+
+    /// 四种输入缺陷都被**拒绝**, 不静默降级。
+    #[test]
+    fn malformed_exports_are_refused_instead_of_silently_degraded() {
+        // 非立体声: 拒绝, 不做下混。
+        for channels in [1usize, 4] {
+            let mut master = RenderOutput {
+                samples: vec![0.0f32; channels * 10],
+                frames: 10,
+                channels,
+                blocks: 0,
+                longest_path_frames: 0,
+                digest: [0u8; 32],
+            };
+            let mut rng = seed_rng(1);
+            assert_eq!(
+                export_master(
+                    48_000,
+                    &mut master,
+                    ExportPreset::streaming(),
+                    BitDepth::Int16,
+                    ContainerKind::Riff,
+                    &metadata(),
+                    &mut rng
+                ),
+                Err(MasterExportError::NotStereo(channels))
+            );
+        }
+
+        // 交错长度落单: 拒绝, 不丢弃最后一个样本。
+        let mut odd = RenderOutput {
+            samples: vec![0.0f32; 101],
+            frames: 50,
+            channels: 2,
+            blocks: 0,
+            longest_path_frames: 0,
+            digest: [0u8; 32],
+        };
+        let mut rng = seed_rng(1);
+        assert_eq!(
+            export_master(
+                48_000,
+                &mut odd,
+                ExportPreset::streaming(),
+                BitDepth::Int16,
+                ContainerKind::Riff,
+                &metadata(),
+                &mut rng
+            ),
+            Err(MasterExportError::RaggedInterleavedBuffer(101))
+        );
+
+        // `bext` v1 模板放不下 EBU R128 响度块 [ARCH-FMT-001]: 拒绝, 不改调用方的版本。
+        let mut version_one = metadata();
+        version_one.version = 1;
+        version_one.loudness = None;
+        let tone = sine_997(0.1, 48_000);
+        let mut master = master_output(&tone, &tone);
+        let mut rng = seed_rng(1);
+        assert_eq!(
+            export_master(
+                48_000,
+                &mut master,
+                ExportPreset::streaming(),
+                BitDepth::Int16,
+                ContainerKind::Riff,
+                &version_one,
+                &mut rng
+            ),
+            Err(MasterExportError::BextCannotCarryLoudness(1))
+        );
+
+        // 采样率不在内置四档: 拒绝, 不静默回落到 48 kHz 的系数。
+        let mut master = master_output(&tone, &tone);
+        let mut rng = seed_rng(1);
+        assert_eq!(
+            export_master(
+                22_050,
+                &mut master,
+                ExportPreset::streaming(),
+                BitDepth::Int16,
+                ContainerKind::Riff,
+                &metadata(),
+                &mut rng
+            ),
+            Err(MasterExportError::UnsupportedSampleRate(22_050))
+        );
+    }
+
+    /// 就地施加增益后, `master.digest` 必须跟上缓冲 —— 摘要不许过期。
+    #[test]
+    fn the_normalized_master_digest_never_goes_stale() {
+        let tone = sine_997(0.1, 48_000 * 4);
+        let mut master = master_output(&tone, &tone);
+        let before = master.digest;
+        let mut rng = seed_rng(1);
+        let export = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::streaming(),
+            BitDepth::Int24,
+            ContainerKind::Rf64,
+            &metadata(),
+            &mut rng,
+        )
+        .expect("导出");
+
+        assert_ne!(master.digest, before, "增益改了样本 ⇒ 位级摘要必须变");
+        assert_eq!(master.digest, RenderOutput::digest_of(&master.samples));
+
+        // 第 500 帧: 正弦在该点非零, 因此"乘过同一个线性增益"是可观测的。
+        let gain = db_to_linear(export.outcome.gain_db);
+        assert!((master.samples[500 * 2] - tone[500] * gain).abs() < 1e-6);
+        assert!((master.samples[500 * 2 + 1] - tone[500] * gain).abs() < 1e-6);
     }
 }
