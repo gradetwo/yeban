@@ -378,6 +378,104 @@ pub fn build(notes: &[NoteSpec], kind: TrackKind, without_clip: bool) -> Fixture
     }
 }
 
+/// 主总线 + **两条** MIDI 轨（各自的片段与音符）+ 两条 `TrackToBus` 边。
+///
+/// `line/engine-wiring-2` 新增：插入链的判据需要**同一次渲染里两条轨挂不同器件**
+/// （一条只有动态级、一条是完整通道条）⇒ 一次测量窗口就覆盖两条逐样本路径。
+/// 与 [`note_project`] 同一个形状（同样的时间栅格、同样的产品路径），只是轨道数 = 2。
+#[must_use]
+pub fn two_track_project(
+    first_notes: &[NoteSpec],
+    second_notes: &[NoteSpec],
+) -> (YebanProjectV1, EntityId, EntityId) {
+    let master = EntityId::new();
+    let first = EntityId::new();
+    let second = EntityId::new();
+    let mut tracks = BTreeMap::new();
+    let mut pool = BTreeMap::new();
+    let mut routing = RoutingGraph {
+        nodes: vec![first, second, master],
+        ..RoutingGraph::default()
+    };
+
+    for (track, notes) in [(first, first_notes), (second, second_notes)] {
+        let clip = EntityId::new();
+        let placement = EntityId::new();
+        let mut note_map = BTreeMap::new();
+        for spec in notes {
+            let id = EntityId::new();
+            let mut note = MidiNote::new(id, spec.start_tick, spec.pitch, spec.duration_ticks);
+            note.velocity = spec.velocity;
+            note_map.insert(id, note);
+        }
+        pool.insert(
+            clip,
+            ClipPoolEntry {
+                id: clip,
+                name: "Clip".to_owned(),
+                content: ClipContent::Midi { notes: note_map },
+            },
+        );
+        let span = notes
+            .iter()
+            .map(|spec| spec.start_tick + spec.duration_ticks)
+            .max()
+            .unwrap_or(960);
+        let mut midi_track = TrackV3 {
+            id: track,
+            name: "Track".to_owned(),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        };
+        midi_track.clips.insert(
+            placement,
+            ClipPlacement {
+                id: placement,
+                clip_id: clip,
+                start_tick: 0,
+                duration_ticks: span,
+                loop_config: LoopConfig::default(),
+                muted: false,
+            },
+        );
+        tracks.insert(track, midi_track);
+
+        let edge = EntityId::new();
+        routing.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+    }
+    tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+
+    (
+        YebanProjectV1 {
+            bpm: FIXTURE_BPM,
+            master_bus_track_id: master,
+            tracks,
+            routing_graph: routing,
+            clip_pool: pool,
+            ..YebanProjectV1::default()
+        },
+        first,
+        second,
+    )
+}
+
 /// 一次端到端渲染的结果。
 #[derive(Clone, Debug)]
 pub struct Render {

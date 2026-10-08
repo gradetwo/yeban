@@ -22,6 +22,21 @@
 //! 因此追加两个场景：**10,000 量子**（逐样本路径）与 **31 次快照交换**（重新武装路径），
 //! 两者都断言 `allocations == 0 && deallocations == 0`，并对"压缩器真的在压"
 //! （`insert_gain_reductions > 0`）与"窗口里真的有声"做覆盖度自检。
+//!
+//! # 场景 7 / 8（`line/engine-wiring-2` 追加）：每轨插入**通道条**
+//!
+//! 场景 5 / 6 的夹具只有**动态参数** ⇒ 投影出来的通道条 `eq_enabled = false` /
+//! `filter_enabled = false`（见 `crate::insert` 模块文档 §4.1）⇒ **EQ 级与滤波级
+//! 在那些场景里整级不执行**，"零分配"对它们是空转。而 EQ 级是通道条里**唯一**
+//! 用栈数组做块处理的一级（`yeban_dsp::channel_strip` 模块注释 §3 的
+//! `[f32; 64]` × 2）⇒ 必须单独覆盖。
+//!
+//! 场景 7 因此用**两条轨的工程**：轨 A 只有动态参数，轨 B 是完整通道条
+//! （EQ ＋ 滤波 ＋ 动态）⇒ 一次 10,000 量子窗口同时覆盖两条逐样本路径与两个
+//! 武装槽位。场景 8 对同一份工程做 31 次快照交换 ⇒ 覆盖**重新武装**
+//! （`ChannelStrip::set_params` / `set_sample_rate`，含 EQ 系数与 `exp`）。
+//! 两个场景都做覆盖度自检：`insert_strip_frames > 0`（整链处理过）与
+//! `insert_gain_reductions > 0`（动态级真的压过）。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -34,7 +49,7 @@ use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
 
 mod support;
 
-use support::{MixSpec, NoteSpec, note_project, tuned_project};
+use support::{MixSpec, NoteSpec, note_project, tuned_project, two_track_project};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue};
 
 /// 包住 [`System`] 的计数型分配器。
@@ -425,6 +440,181 @@ fn main() -> ExitCode {
         failures.push("插入链场景没有从退役队列回收任何旧快照 —— 场景 6 是空转".to_owned());
     }
 
+    // ---- 场景 7：**每轨插入通道条**（`crate::insert`）在实时窗口内零分配 ----
+    //
+    // 为什么必须单独一个场景：见文件头 "场景 7 / 8"。要点是场景 5 / 6 的夹具只让
+    // **动态级**启用 ⇒ 通道条里那一级用**栈数组**做块处理的 EQ（以及滤波级）没有被覆盖。
+    //
+    // 夹具设计（每一项都对应一件事）：
+    //   * 两条轨，各自的音符都铺满整个窗口（沿用 `saturated_notes`）；
+    //   * 轨 A 只有动态参数（`threshold_db = −30` / `ratio = 8`）⇒ 只有动态级启用；
+    //   * 轨 B 有 EQ ＋ 滤波 ＋ 动态参数 ⇒ **EQ 级与滤波级真的执行**（块路径被走到）；
+    //   * 两条轨 ⇒ 两个武装槽位（覆盖"多轨各占一槽"）。
+    let insert_notes = saturated_notes();
+    let (mut strip_project, strip_only_track, compressor_only_track) =
+        two_track_project(&insert_notes, &insert_notes);
+    {
+        let entry = strip_project
+            .tracks
+            .get_mut(&compressor_only_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Comp".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "threshold_db".to_owned(),
+                    value: -30.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "ratio".to_owned(),
+                    value: 8.0,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    {
+        let entry = strip_project
+            .tracks
+            .get_mut(&strip_only_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Strip".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                // EQ 级：低架提升 ＋ 高架衰减（⇒ 三个双二阶都真的跑）。
+                ParameterValue {
+                    name: "eq_low_gain".to_owned(),
+                    value: 6.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "eq_high_gain".to_owned(),
+                    value: -12.0,
+                    unit: Some("dB".to_owned()),
+                },
+                // 滤波级：900 Hz 低通 ⇒ 两个声道各一份四极梯形状态都真的跑。
+                ParameterValue {
+                    name: "cutoff_hz".to_owned(),
+                    value: 900.0,
+                    unit: Some("Hz".to_owned()),
+                },
+                // 动态级：与轨 A 同一口径 ⇒ 两条轨都会压。
+                ParameterValue {
+                    name: "threshold_db".to_owned(),
+                    value: -30.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "ratio".to_owned(),
+                    value: 8.0,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    let strip_snapshot = EngineSnapshot::from_project(&strip_project, 1).expect("通道条夹具快照");
+    if strip_snapshot.inserts().len() != 2 {
+        failures.push(format!(
+            "通道条夹具应有 2 条插入链（两条轨各一台器件），实际 {} 条",
+            strip_snapshot.inserts().len()
+        ));
+    }
+    let strip_slot = SnapshotSlot::new(strip_snapshot);
+    let (strip_retire, mut strip_queue) = retire_channel(64);
+    let (_sender, strip_receiver) = event_channel(64);
+    let (strip_publisher, _strip_collector) = meter_channel(8192);
+    let mut strip_runtime =
+        EngineRuntime::new(&strip_slot, strip_retire, strip_receiver, strip_publisher);
+    let mut strip_output = vec![0.0f32; 128 * 2];
+    // 预热：首次武装（`ChannelStrip::new` 的 EQ／滤波／压缩系数计算）与首个量子。
+    strip_runtime.process_quantum(&mut strip_output, 2);
+    if strip_runtime.armed_insert_slot_count() != 2 {
+        failures.push(format!(
+            "通道条夹具应武装 2 台器件（两条轨各一台），实际 {} 台",
+            strip_runtime.armed_insert_slot_count()
+        ));
+    }
+    if strip_runtime.armed_strip(&strip_only_track).is_none()
+        || strip_runtime.armed_strip(&compressor_only_track).is_none()
+    {
+        failures.push("通道条夹具的两条轨都必须武装进实时侧".to_owned());
+    }
+
+    let mut strip_nonzero = 0usize;
+    let (allocations, deallocations) = measure("insert channel strip 10_000 quanta", || {
+        for _ in 0..10_000 {
+            strip_runtime.process_quantum(&mut strip_output, 2);
+            for sample in &strip_output {
+                if *sample != 0.0 {
+                    strip_nonzero += 1;
+                }
+            }
+        }
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "每轨插入通道条在实时窗口内分配/释放了内存: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    if strip_nonzero == 0 {
+        failures.push("通道条窗口里没有任何非零样本 —— 零分配判据是空转（假绿）".to_owned());
+    }
+    let strip_stats = strip_runtime.stats();
+    // 覆盖度：整链处理过帧（EQ／滤波／动态三级都在被调用），且动态级真的压过。
+    if strip_stats.insert_strip_frames == 0 {
+        failures.push(
+            "通道条一次都没有处理过帧（insert_strip_frames = 0）—— 这条零分配判据没有覆盖通道条"
+                .to_owned(),
+        );
+    }
+    if strip_stats.insert_gain_reductions == 0 {
+        failures.push(
+            "通道条的动态级一次都没压到帧（reductions = 0）—— 这条零分配判据没有覆盖动态级"
+                .to_owned(),
+        );
+    }
+    println!(
+        "[engine-wiring-2/J7] 插入通道条: quanta={} 整链处理帧数={} 动态级压过帧数={} 最大衰减={:.3} dB 非零样本={strip_nonzero}",
+        strip_stats.quanta,
+        strip_stats.insert_strip_frames,
+        strip_stats.insert_gain_reductions,
+        strip_stats.insert_max_reduction_db,
+    );
+
+    // ---- 场景 8：快照交换时**重新武装**通道条（`set_params` / `set_sample_rate`）----
+    let mut strip_switches = 0u64;
+    for revision in 2..=32u64 {
+        // 发布在窗口**之外**：控制线程允许分配。
+        let next = EngineSnapshot::from_project(&strip_project, revision).expect("快照");
+        strip_slot.publish(next);
+        let (allocations, deallocations) = measure("strip re-arm + quantum", || {
+            strip_runtime.process_quantum(&mut strip_output, 2);
+        });
+        if allocations != 0 {
+            failures.push(format!(
+                "重新武装插入通道条时实时路径分配了 {allocations} 次（revision={revision}）"
+            ));
+        }
+        if deallocations != 0 {
+            failures.push(format!(
+                "重新武装插入通道条时实时线程释放了 {deallocations} 次（revision={revision}）"
+            ));
+        }
+        strip_switches += strip_queue.drain(64) as u64;
+    }
+    if strip_switches == 0 {
+        failures.push("通道条场景没有从退役队列回收任何旧快照 —— 场景 8 是空转".to_owned());
+    }
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -440,7 +630,8 @@ fn main() -> ExitCode {
         println!(
             "[engine-sound/J5] ok: 10,000 量子（音符铺满窗口）+ 63 次快照交换 + \
              filled_project 4,000 量子 + 2,000 量子整条混音链 + 10,000 量子每轨插入压缩器 \
-             + 31 次插入链重新武装，实时窗口内零分配零释放"
+             + 31 次插入链重新武装 + 10,000 量子每轨插入通道条（EQ＋滤波＋动态） \
+             + 31 次通道条重新武装，实时窗口内零分配零释放"
         );
         ExitCode::SUCCESS
     } else {
