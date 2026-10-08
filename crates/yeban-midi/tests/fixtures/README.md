@@ -138,7 +138,7 @@ SOFTWARE.
 
 ### 5.6 ⚠️ `/tmp/musicxml` 的文件一个都没提交
 
-`/tmp/musicxml` 的 12 个文件（8 个 `.musicxml` + 4 个 `.mxl`）**只用于本机验证**
+`/tmp/musicxml` 的 12 个文件（**6** 个 `.musicxml` + **6** 个 `.mxl`；测法：`ls /tmp/musicxml | grep -c '\.musicxml$'` = 6、`grep -c '\.mxl$'` = 6）**只用于本机验证**
 （读数见本票报告），**没有**任何文件被复制进本目录。第 3 节的那条判定**继续成立**。
 本节的 7 个文件来自**另外两个**来源（W3C CG 测试套件、夜半自造），与 `/tmp/musicxml` 无关。
 
