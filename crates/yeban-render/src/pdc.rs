@@ -524,9 +524,9 @@ mod tests {
     /// # 这条判据在旧实现上是**红**的
     ///
     /// 旧公式是 `D = longest_path − output_latency[s]`（Master 的全局值）。它对
-    /// `bus-a` 这样**自身有延迟**的中间节点把该延迟补偿了第二次: 旧实现下三路到达
-    /// Master 的时刻是 **81 / 44 / 42**（本判据实测到的那组字面量, 见提交说明）,
-    /// 相差 39 帧 —— 正是 [ARCH-PDC-001] 要消灭的低频相位干涉。
+    /// `bus-a` 这样**自身有延迟**的中间节点把该延迟补偿了第二次: 旧实现下第 1 条断言
+    /// 打出的字面量是 `[("bus-a", 81), ("bus-b", 44), ("drums", 42)]`, 相差 39 帧 ——
+    /// 正是 [ARCH-PDC-001] 要消灭的低频相位干涉。
     #[test]
     fn every_branch_arrives_at_its_summing_node_together() {
         let g = graph(
@@ -544,7 +544,25 @@ mod tests {
         let arrivals = propagate(&g, &plan);
         let inbound = incoming(&g);
 
-        // 1. 实际前滚量 == 计划预测的 `output_latency`（逐节点, 不是只查 Master）。
+        // 1. Master 的每一路到达时刻必须**相同**。旧实现的字面值是
+        //    `[("bus-a", 81), ("bus-b", 44), ("drums", 42)]` —— 相差 39 帧。
+        let mut master_deliveries: Vec<(&str, u32)> = inbound["master"]
+            .iter()
+            .map(|source| {
+                (
+                    *source,
+                    arrivals[source] + plan.delay_of(*source, "master").expect("有补偿延迟"),
+                )
+            })
+            .collect();
+        master_deliveries.sort_unstable();
+        let times: Vec<u32> = master_deliveries.iter().map(|(_, at)| *at).collect();
+        assert!(
+            times.windows(2).all(|pair| pair[0] == pair[1]),
+            "Master 的各路到达时刻必须一致, 实际 {master_deliveries:?}"
+        );
+
+        // 2. 实际前滚量 == 计划预测的 `output_latency`（逐节点, 不是只查 Master）。
         for (&node, &predicted) in &plan.output_latency {
             assert_eq!(
                 arrivals[node], predicted,
@@ -553,7 +571,7 @@ mod tests {
             );
         }
 
-        // 2. 每一路到达每个求和节点的时刻都相同 —— 这就是"绝对相位对齐"。
+        // 3. 每个**多入边**节点的每一路都同时到达 —— 这就是"绝对相位对齐"。
         for (&destination, sources) in &inbound {
             if sources.len() < 2 {
                 continue;
@@ -570,7 +588,7 @@ mod tests {
             );
         }
 
-        // 3. 手算的定点: 关键路径是 `bus-b` 那一条 (40 + 2 = 42)。
+        // 4. 手算的定点: 关键路径是 `bus-b` 那一条 (40 + 2 = 42)。
         assert_eq!(plan.longest_path, 42);
         assert_eq!(arrivals["master"], 42);
         assert_eq!(plan.delay_of("drums", "master"), Some(39));
