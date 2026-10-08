@@ -57,13 +57,20 @@ pub struct MidiExportTrack {
     pub notes: Vec<MidiNote>,
 }
 
-/// 一条 tempo 事件。
+/// tempo map 里的一条记录。
+///
+/// 一条记录最多携带**两个** SMF 元事件: 一个 `Tempo` (`FF 51 03`) 与一个
+/// `TimeSignature` (`FF 58 04`)。两个字段各自可以为 `None`
+/// ⇒ 记录因此能如实表达真文件的三种形状: "只有 tempo"、"只有拍号"、"两者都有"。
+/// "只有拍号"**不必**再凭空合成一条 `500000 µs` 的 tempo
+/// （凭空合成是被修掉的缺陷; 见 `docs/ledger/integration-rulings-notes.md` 的 R5）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiTempo {
     /// 绝对 tick。
     pub tick: u64,
-    /// 每四分音符的微秒数 (`mpqn`)。
-    pub microseconds_per_quarter: u32,
+    /// 每四分音符的微秒数 (`mpqn`)。`None` = 这条记录**不写** `Tempo` 事件
+    /// （只写拍号）。
+    pub microseconds_per_quarter: Option<u32>,
     /// 拍号分子 (拍/小节)。`None` 表示不写拍号事件。
     pub numerator: Option<u8>,
     /// 拍号分母的以 2 为底的幂 (4 = 四分音符)。
@@ -84,7 +91,7 @@ impl MidiTempo {
         };
         Self {
             tick: 0,
-            microseconds_per_quarter: mpqn,
+            microseconds_per_quarter: Some(mpqn),
             numerator: None,
             denominator_pow2: None,
         }
@@ -138,7 +145,10 @@ pub struct MidiExport {
     pub format: MidiFormat,
     /// 时间分度 (PPQ)。
     pub ppq: u16,
-    /// Tempo map（按 tick 升序; 会被自动排序）。
+    /// Tempo map。每条记录带 `tick` 与可选的事件对 (tempo / 拍号)。
+    ///
+    /// 写出前按**内容**规范化排序（不是按本 `Vec` 的输入顺序）⇒ 导出字节只由内容
+    /// 决定; 同一 tick 上"只有拍号"的记录排在"带 tempo"的记录之前。
     pub tempos: Vec<MidiTempo>,
     /// 轨道。
     pub tracks: Vec<MidiExportTrack>,
@@ -221,6 +231,44 @@ impl core::fmt::Display for MidiError {
 
 impl std::error::Error for MidiError {}
 
+/// `to_smf_bytes` 内部的一个**事件组**: 一条 [`MidiTempo`] 折成的
+/// "可选 `Tempo` + 可选拍号"。
+///
+/// 它同时是排序键 (`Ord` 按字段顺序): 先 `tick`, 再 `Option<u32>` 的 `None < Some`
+/// ⇒ "只有拍号"的组排在"带 tempo"的组之前。这正是回读规则的逆: 回读把拍号挂到
+/// **紧邻的前一条**未配拍号的 tempo 上, 因此没有前驱 tempo 的拍号必然落成
+/// "只有拍号"的记录, 而带 tempo 的组里两个事件相邻 ⇒ 配对原样回来。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TempoGroup {
+    /// 绝对 tick。
+    tick: u64,
+    /// 折进 u24 的 `mpqn`; `None` = 这一组不写 `Tempo` 事件。
+    microseconds_per_quarter: Option<u32>,
+    /// 拍号 `(numerator, denominator_pow2)`; `None` = 这一组不写拍号事件。
+    signature: Option<(u8, u8)>,
+}
+
+impl TempoGroup {
+    /// 由一条 [`MidiTempo`] 折成一组 (两个事件值都取 u8/u24 的可表达范围)。
+    fn of(tempo: &MidiTempo) -> Self {
+        Self {
+            tick: tempo.tick,
+            microseconds_per_quarter: tempo
+                .microseconds_per_quarter
+                .map(|mpqn| mpqn.min(0x00FF_FFFF)),
+            signature: match (tempo.numerator, tempo.denominator_pow2) {
+                (Some(numerator), Some(denominator_pow2)) => Some((numerator, denominator_pow2)),
+                _ => None,
+            },
+        }
+    }
+
+    /// 这一组是否会写出至少一个事件 (两个都是 `None` 的组写不出任何字节)。
+    fn carries_an_event(&self) -> bool {
+        self.microseconds_per_quarter.is_some() || self.signature.is_some()
+    }
+}
+
 /// 内部规范化事件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RawEvent {
@@ -237,10 +285,15 @@ enum RawEvent {
     },
     Tempo {
         tick: u64,
+        /// tempo map 里的**组号**: 同一条 [`MidiTempo`] 的两个事件共享它 ⇒
+        /// 它们相邻落盘, 回读时才能配对回同一条记录。
+        group: u32,
         microseconds_per_quarter: u32,
     },
     TimeSignature {
         tick: u64,
+        /// 见 [`RawEvent::Tempo`] 的 `group`。
+        group: u32,
         numerator: u8,
         denominator_pow2: u8,
     },
@@ -256,28 +309,46 @@ impl RawEvent {
         }
     }
 
-    /// 同一 tick 内的全序键: `(rank, channel, key, velocity/值)`。
+    /// 同一 tick 内的全序键: `(rank, 组, 组内序, 值)`。
     ///
     /// 必须给出**全序**, 否则同一 tick 的多个事件会按输入顺序落到文件里,
     /// 让"同一工程两次导出字节不同"。
-    fn tie_break(self) -> (u8, u8, u8, u32) {
+    ///
+    /// tempo map 的两类事件同属 `rank 2`, 且以 `(组, 组内序)` 排序:
+    /// 一条记录的 `Tempo` 是组内序 `0`、它的拍号是组内序 `1`
+    /// ⇒ 两者**相邻**, 而回读时"拍号挂到紧邻的前一条未配拍号的 tempo"
+    /// 恰好把它配回同一条记录。组号由内容决定 (见 `to_smf_bytes`), 因此字节仍然
+    /// 只由内容决定。
+    fn tie_break(self) -> (u8, u32, u8, u32) {
         match self {
-            Self::NoteOff { channel, key, .. } => (0, channel, key, 0),
+            Self::NoteOff { channel, key, .. } => (0, u32::from(channel), 0, u32::from(key)),
             Self::NoteOn {
                 channel,
                 key,
                 velocity,
                 ..
-            } => (1, channel, key, u32::from(velocity)),
+            } => (
+                1,
+                u32::from(channel),
+                0,
+                (u32::from(key) << 8) | u32::from(velocity),
+            ),
             Self::Tempo {
+                group,
                 microseconds_per_quarter,
                 ..
-            } => (2, 0, 0, microseconds_per_quarter),
+            } => (2, group, 0, microseconds_per_quarter),
             Self::TimeSignature {
+                group,
                 numerator,
                 denominator_pow2,
                 ..
-            } => (3, 0, numerator, u32::from(denominator_pow2)),
+            } => (
+                2,
+                group,
+                1,
+                (u32::from(numerator) << 8) | u32::from(denominator_pow2),
+            ),
         }
     }
 }
@@ -367,17 +438,29 @@ impl MidiExport {
         }
 
         // tempo map 独立于轨道, 先规范化。
+        //
+        // 步骤 ①: 把每条 `MidiTempo` 折成一个**组** [`TempoGroup`], 丢掉两个事件都
+        // 没有的空组; 步骤 ②: 组按**内容**升序排列 (不是按 `self.tempos` 的
+        // 输入顺序) ⇒ 字节只由内容决定; 步骤 ③: 组号就是排序后的下标, 同一组的两个
+        // 事件共享组号 ⇒ 它们相邻落盘 (见 `RawEvent::tie_break`)。
+        let mut groups: Vec<TempoGroup> = self.tempos.iter().map(TempoGroup::of).collect();
+        groups.retain(TempoGroup::carries_an_event);
+        groups.sort_unstable();
+
         let mut tempo_events: Vec<RawEvent> = Vec::new();
-        for tempo in &self.tempos {
-            tempo_events.push(RawEvent::Tempo {
-                tick: tempo.tick,
-                microseconds_per_quarter: tempo.microseconds_per_quarter.min(0x00FF_FFFF),
-            });
-            if let (Some(numerator), Some(denominator_pow2)) =
-                (tempo.numerator, tempo.denominator_pow2)
-            {
+        for (group, entry) in groups.into_iter().enumerate() {
+            let group = u32::try_from(group).expect("组的条数远小于 u32 的上限");
+            if let Some(microseconds_per_quarter) = entry.microseconds_per_quarter {
+                tempo_events.push(RawEvent::Tempo {
+                    tick: entry.tick,
+                    group,
+                    microseconds_per_quarter,
+                });
+            }
+            if let Some((numerator, denominator_pow2)) = entry.signature {
                 tempo_events.push(RawEvent::TimeSignature {
-                    tick: tempo.tick,
+                    tick: entry.tick,
+                    group,
                     numerator,
                     denominator_pow2,
                 });
@@ -648,7 +731,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                 }
                 TrackEventKind::Meta(MetaMessage::Tempo(mpqn)) => tempos.push(MidiTempo {
                     tick,
-                    microseconds_per_quarter: mpqn.as_int(),
+                    microseconds_per_quarter: Some(mpqn.as_int()),
                     numerator: None,
                     denominator_pow2: None,
                 }),
@@ -658,13 +741,26 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                     _clocks,
                     _notes,
                 )) => {
-                    if let Some(last) = tempos.iter_mut().rev().find(|tempo| tempo.tick == tick) {
-                        last.numerator = Some(numerator);
-                        last.denominator_pow2 = Some(denominator_pow2);
-                    } else {
+                    // 配对按**出现顺序**, 且只看**紧邻的前一条**记录:
+                    // 拍号挂到紧邻的那条同 tick、有 tempo、还没配拍号的记录上。
+                    // 没有这样的前驱 ⇒ 这条拍号**如实**落成"只有拍号"的记录,
+                    // **不**凭空合成 tempo (R5 修掉的正是合成)。
+                    let attached = match tempos.last_mut() {
+                        Some(last)
+                            if last.tick == tick
+                                && last.microseconds_per_quarter.is_some()
+                                && last.numerator.is_none() =>
+                        {
+                            last.numerator = Some(numerator);
+                            last.denominator_pow2 = Some(denominator_pow2);
+                            true
+                        }
+                        _ => false,
+                    };
+                    if !attached {
                         tempos.push(MidiTempo {
                             tick,
-                            microseconds_per_quarter: 500_000,
+                            microseconds_per_quarter: None,
                             numerator: Some(numerator),
                             denominator_pow2: Some(denominator_pow2),
                         });
@@ -942,16 +1038,107 @@ mod tests {
         let parsed = parse_smf(&bytes).expect("回读");
         assert_eq!(parsed.tempos.len(), 2);
         assert_eq!(
-            parsed.tempos[0].microseconds_per_quarter, 500_000,
+            parsed.tempos[0].microseconds_per_quarter,
+            Some(500_000),
             "120 BPM"
         );
         assert_eq!(parsed.tempos[0].numerator, Some(4));
         assert_eq!(parsed.tempos[0].denominator_pow2, Some(2));
         assert_eq!(parsed.tempos[1].tick, 960);
-        assert_eq!(parsed.tempos[1].microseconds_per_quarter, 666_667, "90 BPM");
+        assert_eq!(
+            parsed.tempos[1].microseconds_per_quarter,
+            Some(666_667),
+            "90 BPM"
+        );
         // conductor 轨道存在 -> 格式 1 有两条 MTrk
         let chunks = track_chunks(&bytes).expect("chunk 布局");
         assert_eq!(chunks.len(), 3, "MThd + conductor + 一条音符轨");
+    }
+
+    /// 判据 5b (R5): 同一 tick 上"只有拍号"的记录与"tempo + 拍号"的记录
+    /// 往返后**逐条不变**, 且不凭空多出 tempo 事件。
+    ///
+    /// 台账 `docs/ledger/integration-rulings-notes.md` 的 R5 (MIDI tempo map
+    /// 往返不保真) 修复后加牙: 修好之前, `parse_smf` 会给"只有拍号"的记录合成一条
+    /// `500000 µs` 的 tempo, 而 `to_smf_bytes` 再把它写进文件 ⇒ 事件集合多一条。
+    #[test]
+    fn a_signature_only_record_survives_the_round_trip_without_a_synthesised_tempo() {
+        // tick 0: 只有拍号 3/8; tick 0 之后 960: 120 BPM + 4/4。
+        let source = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: vec![
+                MidiTempo {
+                    tick: 0,
+                    microseconds_per_quarter: None,
+                    numerator: Some(3),
+                    denominator_pow2: Some(3),
+                },
+                MidiTempo {
+                    tick: 960,
+                    ..MidiTempo::with_time_signature(120.0, 4, 2)
+                },
+            ],
+            tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+        };
+        let bytes = source.to_smf_bytes().expect("导出");
+        let parsed = parse_smf(&bytes).expect("回读");
+
+        assert_eq!(
+            parsed.tempos, source.tempos,
+            "只有拍号的记录必须原样回来, 且不得多出合成的 tempo"
+        );
+        assert_eq!(parsed.tempos.len(), 2, "两条记录 ⇒ 两个事件组");
+        assert_eq!(
+            parsed.tempos[0].microseconds_per_quarter, None,
+            "源文件里 tick 0 没有 tempo 事件 ⇒ 回读也不许有"
+        );
+        assert_eq!(parsed.tempos[1].microseconds_per_quarter, Some(500_000));
+    }
+
+    /// 判据 5c (R5): 同一 tick 上**两条** tempo + **两条**拍号, 源顺序交错 ⇒
+    /// 往返后配对不换人, 事件集合逐条不变。
+    #[test]
+    fn two_tempos_and_two_signatures_on_one_tick_keep_their_pairing() {
+        // 输出顺序由内容决定: 带 tempo 的组按 (tempo, 拍号) 升序相邻写出。
+        // 这里两条记录各自带自己的拍号, 因此回读必须配回**同一条**记录。
+        let source = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: vec![
+                MidiTempo {
+                    tick: 0,
+                    microseconds_per_quarter: Some(833_333),
+                    numerator: Some(3),
+                    denominator_pow2: Some(2),
+                },
+                MidiTempo {
+                    tick: 0,
+                    microseconds_per_quarter: Some(500_000),
+                    numerator: Some(4),
+                    denominator_pow2: Some(2),
+                },
+            ],
+            tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+        };
+        let parsed = parse_smf(&source.to_smf_bytes().expect("导出")).expect("回读");
+        // 记录**多重集**相等（`tick, tempo, 拍号` 三者成组比较 ⇒ 配对也在此断言里）。
+        let key = |tempo: &MidiTempo| {
+            (
+                tempo.tick,
+                tempo.microseconds_per_quarter,
+                tempo.numerator,
+                tempo.denominator_pow2,
+            )
+        };
+        let mut want: Vec<_> = source.tempos.iter().map(key).collect();
+        want.sort_unstable();
+        let mut got: Vec<_> = parsed.tempos.iter().map(key).collect();
+        got.sort_unstable();
+        assert_eq!(
+            got, want,
+            "同一 tick 的两条记录必须配回各自的原值 (不许换人)"
+        );
     }
 
     /// 判据 6: 同一导出两次调用产出**逐字节相同**的文件。
@@ -1134,17 +1321,23 @@ mod tests {
     /// 判据 12: `from_bpm` 的取整与钳制。
     #[test]
     fn bpm_conversion_is_correct_and_clamped() {
-        assert_eq!(MidiTempo::from_bpm(120.0).microseconds_per_quarter, 500_000);
-        assert_eq!(MidiTempo::from_bpm(90.0).microseconds_per_quarter, 666_667);
+        assert_eq!(
+            MidiTempo::from_bpm(120.0).microseconds_per_quarter,
+            Some(500_000)
+        );
+        assert_eq!(
+            MidiTempo::from_bpm(90.0).microseconds_per_quarter,
+            Some(666_667)
+        );
         assert_eq!(
             MidiTempo::from_bpm(60.0).microseconds_per_quarter,
-            1_000_000
+            Some(1_000_000)
         );
         assert_eq!(
             MidiTempo::from_bpm(0.0).microseconds_per_quarter,
-            500_000,
+            Some(500_000),
             "非法 BPM 回退到 120"
         );
-        assert!(MidiTempo::from_bpm(1.0e12).microseconds_per_quarter <= 0x00FF_FFFF);
+        assert!(MidiTempo::from_bpm(1.0e12).microseconds_per_quarter <= Some(0x00FF_FFFF));
     }
 }

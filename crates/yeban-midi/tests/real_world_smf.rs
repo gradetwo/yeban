@@ -26,24 +26,35 @@
 //!
 //! `include_bytes!` 相对本文件所在目录解析 ⇒ 判据不依赖运行时工作目录。
 //!
-//! ## 本票在真素材上实测到的一条**缺陷**（判据 ⑦登记，本票**不**修）
+//! ## R5: 真素材上实测到的 tempo map 往返缺陷 —— **本票已修**
 //!
-//! 真文件的 tempo map 在 `parse_smf` → `to_smf_bytes` → `parse_smf` 之后**不保真**：
-//! 当**两条 tempo 事件落在同一 tick** 时，拍号与 tempo 的配对会丢失，
-//! 且 `parse_smf` 为"孤儿拍号"合成的默认 tempo 会被**写进文件**。
-//! 实测的导线级证据（量法：`/tmp` 探针用 `midly::Smf::parse` 枚举
-//! `MetaMessage::Tempo` / `TimeSignature`，按 `(tick, 值)` 归一后比多重集）：
+//! 修之前, 真文件的 tempo map 在 `parse_smf` → `to_smf_bytes` → `parse_smf` 之后
+//! **不保真**: `parse_smf` 为"孤儿拍号"（同一 tick 上没有前驱 tempo 的拍号）合成一条
+//! `500000 µs` 的 tempo, `to_smf_bytes` 又把它**写进文件** ⇒ 源文件的事件集合被凭空
+//! 撑大。实测的导线级证据（量法: `/tmp` 探针用 `midly::Smf::parse` 枚举
+//! `MetaMessage::Tempo` / `TimeSignature`, 按 `(tick, 值)` 归一后比多重集;
+//! 夹具 `fur_elise_woo59_384ppq_3mtrk.mid` 的 tick 0 在**文件顺序**上是
+//! `TIMESIG 3/3` 之后才 `TEMPO 833333`）:
 //!
 //! ```text
-//! 原始   : ["tick=0 TEMPO 833333", "tick=0 TIMESIG 3/3", "tick=0 TIMESIG 4/2"]        (3 条)
-//! 再导出 : ["tick=0 TEMPO 500000", "tick=0 TEMPO 833333", "tick=0 TIMESIG 3/3",
-//!           "tick=0 TIMESIG 4/2"]                                                     (4 条)
+//! 原始   : ["tick=0 TEMPO 833333", "tick=0 TIMESIG 3/3"]                              (2 条)
+//! 再导出 : ["tick=0 TEMPO 500000", "tick=0 TEMPO 833333", "tick=0 TIMESIG 3/3"]        (3 条)
 //! ```
 //!
-//! 量法（`/tmp` 探针）：数 `ParsedMidi.tempos` 里 `tick == 0` 的条目 ≥ 2 的文件个数。
-//! 读数：**9 / 16** 个真文件具备"同一 tick 两条 tempo"这个形状。
-//! 修它要改 `MidiTempo` 的语义或 `parse_smf` 的配对规则 ⇒ 那是**跨 crate**的语义裁决，
-//! 不在本票范围。判据 ⑦把当前行为钉成**字面读数**：日后有人修它，这条会**故意**变红。
+//! 量法（`/tmp` 探针, 16 个真文件, 单位 = 文件个数）:
+//! - 孤儿拍号的文件: **9 / 16**; 往返后导线级事件多重集不相等的文件: **7 / 16**
+//!   （另 2 个文件因音符时值为 0 本来就**不能**再导出, 不计入）;
+//! - 源文件里"同一 tick 有 ≥ 2 条 `TEMPO`"的文件: **0 / 16**
+//!   ⇒ 触发条件**不是**"同一 tick 有 ≥ 2 条 tempo", 而是"拍号没有可配对的 tempo"。
+//!
+//! 台账 `docs/ledger/integration-rulings-notes.md` 的 **R5** 裁决是"**修**"。修法是:
+//! `MidiTempo::microseconds_per_quarter` 改成 `Option<u32>`（`None` = 这条记录只带
+//! 拍号, 不写 `Tempo` 事件）, `parse_smf` 不再合成 tempo, `to_smf_bytes` 把同一条
+//! 记录的 `Tempo` 与拍号**相邻**写出 ⇒ 回读按出现顺序配回同一条记录。
+//! 判据 ⑦由此从"钉住字面读数"改成**断言正确行为**。
+//!
+//! 触发的形状因此是: 同一 tick 上**至少两条** tempo map 事件里出现"只有拍号"的
+//! 记录, 或同一 tick 上有**两条带 tempo 的记录**（配对可能换人）。
 //!
 //! ## 本文件**没有**证明什么
 //!
@@ -52,7 +63,6 @@
 //! - 力度在这三个夹具里**全部相同**（实测 62）。因此力度往返没有被真文件覆盖。
 //! - `MidiError::UnclosedNote` / `UnmatchedNoteOff` 没有被真文件触发。
 //!   本机对 16 个真文件全部解析成功（探针读数），没有找到能触发它们的真文件。
-//! - tempo map 的往返保真**不成立**（见上一节）。判据 ⑦只登记，不承诺。
 
 use std::collections::BTreeMap;
 
@@ -141,6 +151,30 @@ fn sorted_keys(parsed: &ParsedMidi) -> Vec<(u8, u8, u8, u64, u64)> {
     keys
 }
 
+/// 一条 tempo 记录在判据里的规范化形状: `(tick, tempo, 拍号分子, 拍号分母的幂)`。
+type TempoRecord = (u64, Option<u32>, Option<u8>, Option<u8>);
+
+/// 把 tempo map 归一成**多重集**:
+/// `(tick, tempo, 拍号分子, 拍号分母的幂)`。
+///
+/// 同一条记录里的 tempo 与拍号**成组**进这个元组 ⇒ 这个多重集同时断言了配对
+/// （"换人"会改变元组）。排序 ⇒ 比较的是多重集, 不是"文件顺序碰巧一样"。
+fn tempo_records(tempos: &[MidiTempo]) -> Vec<TempoRecord> {
+    let mut records: Vec<_> = tempos
+        .iter()
+        .map(|tempo| {
+            (
+                tempo.tick,
+                tempo.microseconds_per_quarter,
+                tempo.numerator,
+                tempo.denominator_pow2,
+            )
+        })
+        .collect();
+    records.sort_unstable();
+    records
+}
+
 /// 把回读结果重新装成一次导出（真文件 → `MidiExport`）。
 ///
 /// 力度从回读结果里搬过来，因为 `MidiNote::new` 会把力度固定成默认值。
@@ -192,18 +226,19 @@ fn woo59_real_file_is_accepted_with_measured_readings() {
         min_start_tick: Some(0),
         max_end_tick: Some(60_096),
         per_channel: BTreeMap::from([(0u8, 517usize), (1, 388)]),
-        // 第 0 条 MTrk 是 conductor：3/8 拍 + 500000 µs/四分音符。
-        // 另一条 833333 µs 的 tempo 在**同一 tick**上，且没有配对的拍号事件。
+        // conductor 轨在**文件顺序**上先发 `TIMESIG 3/3`、再发 `TEMPO 833333`
+        // ⇒ 拍号没有可配对的前驱 tempo, 因此它如实落成"只有拍号"的记录。
+        // (R5 修好之前这里读成 `500000 µs + 3/3`, 那个 500000 是凭空合成的。)
         tempos: vec![
             MidiTempo {
                 tick: 0,
-                microseconds_per_quarter: 500_000,
+                microseconds_per_quarter: None,
                 numerator: Some(3),
                 denominator_pow2: Some(3),
             },
             MidiTempo {
                 tick: 0,
-                microseconds_per_quarter: 833_333,
+                microseconds_per_quarter: Some(833_333),
                 numerator: None,
                 denominator_pow2: None,
             },
@@ -230,17 +265,19 @@ fn fur_elise_480ppq_real_files_are_accepted_with_measured_readings() {
             min_start_tick: Some(0),
             max_end_tick: Some(75_120),
             per_channel: BTreeMap::from([(0u8, 517usize)]),
-            // 格式 0 把 tempo 事件与音符塞进同一条 MTrk。拍号在 tempo 的同一 tick 上。
+            // 格式 0 把 tempo 事件与音符塞进同一条 MTrk。文件顺序是
+            // `TIMESIG 3/3`, `TEMPO 833333`, `TIMESIG 4/2` ⇒ 3/3 没有前驱 tempo,
+            // 因此它落成"只有拍号"的记录; 833333 与紧随其后的 4/2 配成一条。
             tempos: vec![
                 MidiTempo {
                     tick: 0,
-                    microseconds_per_quarter: 500_000,
+                    microseconds_per_quarter: None,
                     numerator: Some(3),
                     denominator_pow2: Some(3),
                 },
                 MidiTempo {
                     tick: 0,
-                    microseconds_per_quarter: 833_333,
+                    microseconds_per_quarter: Some(833_333),
                     numerator: Some(4),
                     denominator_pow2: Some(2),
                 },
@@ -264,16 +301,17 @@ fn fur_elise_480ppq_real_files_are_accepted_with_measured_readings() {
             min_start_tick: Some(0),
             max_end_tick: Some(75_120),
             per_channel: BTreeMap::from([(0u8, 517usize), (1, 388)]),
+            // 与单 MTrk 版本同一份 conductor 事件 (文件顺序同上)。
             tempos: vec![
                 MidiTempo {
                     tick: 0,
-                    microseconds_per_quarter: 500_000,
+                    microseconds_per_quarter: None,
                     numerator: Some(3),
                     denominator_pow2: Some(3),
                 },
                 MidiTempo {
                     tick: 0,
-                    microseconds_per_quarter: 833_333,
+                    microseconds_per_quarter: Some(833_333),
                     numerator: Some(4),
                     denominator_pow2: Some(2),
                 },
@@ -381,7 +419,7 @@ fn woo59_and_480ppq_versions_carry_the_same_notes_at_scaled_ticks() {
     );
 
     // tempo 的 (tick, µs/四分音符) 序列相同。故意**不**比较拍号：
-    // 480 版本的第 2 条 tempo 带 4/4，384 版本那条不带（见判据 ①②的实测值）。
+    // 480 版本的第 2 条记录带 4/4，384 版本那条不带（见判据 ①②的实测值）。
     assert_eq!(
         slow.tempos
             .iter()
@@ -400,7 +438,7 @@ fn woo59_and_480ppq_versions_carry_the_same_notes_at_scaled_ticks() {
 /// 这是本文件唯一的**端到端**判据：它让编码器面对真世界的音符形状
 /// （905 颗音符、两个通道、音高 33..100、tick 到 75120），而不是手工造的样本。
 ///
-/// 只断言 PPQ 与音符。tempo map **不**在此断言 —— 它不保真，见判据 ⑦。
+/// 只断言 PPQ 与音符。tempo map 的往返在判据 ⑦（`tempo_map_round_trips_faithfully`）。
 #[test]
 fn public_domain_files_survive_an_export_readback_round_trip() {
     let cases: [(&str, &[u8], MidiFormat); 3] = [
@@ -506,87 +544,117 @@ fn the_track_count_assertion_has_teeth_when_a_real_track_is_dropped() {
     assert_eq!(ELISE_2.len(), 6687, "夹具本身没有被改动");
 }
 
-/// 判据 ⑦（**登记缺陷，不是承诺**）: 真文件的 tempo map 往返**不保真**。
+/// 判据 ⑦（**R5 修复后: 断言正确行为; 修复前这条钉的是字面读数**）:
+/// tempo map 往返**保真** —— 事件多重集与配对都不许漂移。
 ///
-/// 实测的两步：
-/// 1. `parse_smf` 为"孤儿拍号"（同一 tick 上没有前驱 tempo 的拍号）合成一条
-///    `500000 µs` 的 tempo（`src/midi.rs:665-671`）。
-/// 2. `to_smf_bytes` 把 tempo 事件的排序键设成 `rank 2`、拍号设成 `rank 3`
-///    （`src/midi.rs:272-281`）⇒ 同一 tick 上**全部** tempo 排在**全部**拍号之前。
-///    回读时 `parse_smf` 把拍号挂到"同一 tick 的**最后一条** tempo"上
-///    （`src/midi.rs:661`）⇒ 配对换人。
+/// 本条曾是登记的缺陷字面读数（"同一 tick 上的 tempo/拍号配对在往返后换人,
+/// 且凭空多出一条 `500000 µs` 的 tempo"）。台账
+/// `docs/ledger/integration-rulings-notes.md` 的 **R5** 裁决为"**修**", 并明确
+/// "修后把'字面读数'判据改成断言" ⇒ 本票把 `assert_ne!` 改成 `assert_eq!`。
 ///
-/// 这条判据把当前的字面读数钉住。日后有人修它，这条会**故意**变红。
-/// 修它需要裁决 `MidiTempo`（把 tempo 与拍号合成一个结构）的语义，
-/// 那会改变 `yeban-mcp` 的 `yeban_export_midi` 输出字节 ⇒ **不在本票范围**。
+/// 量法（单位 = 事件条数; 量具 = 本文件的 `tempo_map_events`, 一个不经过 `midly`
+/// 的独立扫描器）: 比较 `(绝对 tick, 类型, 值)` 的**多重集**; 另比较
+/// `ParsedMidi.tempos` 的多重集（同一条记录里的 tempo 与拍号成组比较 ⇒ 配对在此被断言）。
 #[test]
-fn measured_tempo_map_round_trip_is_lossy_pending_adjudication() {
-    let first = parse_smf(ELISE_2).expect("接受");
-    // 原始：3/8 挂在 500000 上。
+fn tempo_map_round_trips_faithfully() {
+    // ---- ① 真夹具: 源文件的导线级事件多重集 == 再导出文件的 ----
+    let cases: [(&str, &[u8], MidiFormat); 3] = [
+        ("WoO 59 (384 PPQ)", WOO59, MidiFormat::Parallel),
+        (
+            "Für Elise 1 MTrk (480 PPQ)",
+            ELISE_1,
+            MidiFormat::SingleTrack,
+        ),
+        ("Für Elise 3 MTrk (480 PPQ)", ELISE_2, MidiFormat::Parallel),
+    ];
+    for (label, bytes, format) in cases {
+        let first = parse_smf(bytes).expect("夹具必须被接受");
+        let reemitted = reexport(&first, format).to_smf_bytes().expect("编码");
+        let second = parse_smf(&reemitted).expect("回读");
+
+        assert_eq!(
+            tempo_map_events(&reemitted),
+            tempo_map_events(bytes),
+            "{label}: 往返后的 tempo/timesig 事件多重集必须与源文件逐条一致"
+        );
+        assert_eq!(
+            tempo_records(&second.tempos),
+            tempo_records(&first.tempos),
+            "{label}: tempo map 的记录 (含配对) 必须逐条回来"
+        );
+        assert_eq!(
+            sorted_keys(&second),
+            sorted_keys(&first),
+            "{label}: 音符往返仍然逐键相同"
+        );
+    }
+
+    // ---- ② 真夹具的字面读数（导线级, 排序后 = 多重集）----
+    // 源文件 tick 0 的文件顺序是 `TIMESIG 3/3` 再 `TEMPO 833333`; 源文件里
+    // **没有**任何 `500000 µs` 的 tempo 事件。
     assert_eq!(
-        first.tempos,
-        vec![
-            MidiTempo {
-                tick: 0,
-                microseconds_per_quarter: 500_000,
-                numerator: Some(3),
-                denominator_pow2: Some(3),
-            },
-            MidiTempo {
-                tick: 0,
-                microseconds_per_quarter: 833_333,
-                numerator: Some(4),
-                denominator_pow2: Some(2),
-            },
-        ],
-        "原始真文件的 tempo map 实测读数"
+        tempo_map_events(WOO59),
+        vec![(0, 0, 833_333), (0, 1, (3 << 8) | 3)],
+        "WoO 59 的 tick 0 实测只有 2 条 tempo map 事件"
     );
 
-    let reemitted = reexport(&first, MidiFormat::Parallel)
+    // ---- ③ 合成夹具（手工拼字节, 同一 tick 2 条 tempo + 2 条拍号, 交错）----
+    let synthetic = hand_built_tempo_map_smf0();
+    assert_eq!(
+        tempo_map_events(&synthetic),
+        vec![
+            (0, 0, 500_000),
+            (0, 0, 833_333),
+            (0, 1, (3 << 8) | 2),
+            (0, 1, (4 << 8) | 2),
+        ],
+        "合成夹具的读数: 同一 tick 4 条事件 (2 tempo + 2 拍号)"
+    );
+    let first = parse_smf(&synthetic).expect("合成夹具必须被接受");
+    assert_eq!(first.notes.len(), 1, "合成夹具一颗音符");
+    let reemitted = reexport(&first, MidiFormat::SingleTrack)
         .to_smf_bytes()
         .expect("编码");
     let second = parse_smf(&reemitted).expect("回读");
+    assert_eq!(
+        tempo_map_events(&reemitted),
+        tempo_map_events(&synthetic),
+        "合成夹具: 往返后事件多重集逐条不变 (不许合成 tempo, 也不许丢事件)"
+    );
+    assert_eq!(
+        tempo_records(&second.tempos),
+        tempo_records(&first.tempos),
+        "合成夹具: 500000↔4/4 与 833333↔3/4 的配对必须原样回来 (不许换人)"
+    );
+    assert_eq!(second.notes.len(), 1, "合成夹具的音符不变");
 
-    // 音符仍然保真 ⇒ 缺陷被隔离在 tempo map 一层。
+    // ---- ③b 合成夹具 (第二条形状): **一条** tempo 之后跟着**两条**拍号 ----
+    // 源事件 3 条。第二条拍号没有可配对的 tempo ⇒ 它必须落成"只有拍号"的记录,
+    // **不许**覆盖第一条拍号（覆盖会丢事件 ⇒ 事件多重集 3 → 2）。
+    let two_signatures = hand_built_two_signatures_smf0();
     assert_eq!(
-        sorted_keys(&second),
-        sorted_keys(&first),
-        "音符往返仍然逐键相同"
+        tempo_map_events(&two_signatures),
+        vec![(0, 0, 500_000), (0, 1, (3 << 8) | 2), (0, 1, (4 << 8) | 2),],
+        "第二条合成夹具的读数: 同一 tick 1 条 tempo + 2 条拍号"
     );
-    assert_eq!(second.ppq, first.ppq);
-
-    // 字面读数：3/8 的配对丢失，500000 那条变成"无拍号"。
+    let first = parse_smf(&two_signatures).expect("合成夹具必须被接受");
+    let reemitted = reexport(&first, MidiFormat::SingleTrack)
+        .to_smf_bytes()
+        .expect("编码");
+    let second = parse_smf(&reemitted).expect("回读");
     assert_eq!(
-        second.tempos,
-        vec![
-            MidiTempo {
-                tick: 0,
-                microseconds_per_quarter: 500_000,
-                numerator: None,
-                denominator_pow2: None,
-            },
-            MidiTempo {
-                tick: 0,
-                microseconds_per_quarter: 833_333,
-                numerator: Some(4),
-                denominator_pow2: Some(2),
-            },
-        ],
-        "登记：同一 tick 上的 tempo/拍号配对在往返后换人"
+        tempo_map_events(&reemitted),
+        tempo_map_events(&two_signatures),
+        "第二条合成夹具: 两条拍号都必须留下 (第二条不许覆盖第一条)"
     );
-    assert_ne!(
-        second.tempos, first.tempos,
-        "这条判据的存在理由：往返**不**保真；修好后请改成 assert_eq!"
-    );
-    // 条目数不变，因此"丢配对"不是"丢事件"。
     assert_eq!(
-        second.tempos.len(),
-        first.tempos.len(),
-        "tempo 条目数不变，只有配对变了"
+        tempo_records(&second.tempos),
+        tempo_records(&first.tempos),
+        "第二条合成夹具: 记录多重集与配对必须原样回来"
     );
 
-    // 对照：tick 互不相同的 tempo map 往返是保真的
-    //（既有单元测试 `midi::tests::tempo_map_round_trips` 覆盖这一情形）。
+    // ---- ④ 对照: tick 互不相同的 tempo map 往返本来就保真 ----
+    //（既有单元测试 `midi::tests::tempo_map_round_trips` 覆盖这一情形。）
     let distinct = MidiExport {
         format: MidiFormat::Parallel,
         ppq: 480,
@@ -605,9 +673,134 @@ fn measured_tempo_map_round_trip_is_lossy_pending_adjudication() {
     };
     let round = parse_smf(&distinct.to_smf_bytes().expect("编码")).expect("回读");
     assert_eq!(
-        round.tempos, distinct.tempos,
-        "tick 互不相同时 tempo map 往返保真 ⇒ 缺陷只在同一 tick 的多条 tempo 上"
+        tempo_records(&round.tempos),
+        tempo_records(&distinct.tempos),
+        "tick 互不相同时 tempo map 往返保真"
     );
+}
+
+/// 量具: 一个**独立**的 SMF 扫描器, 收集 tempo map 的两个元事件。
+///
+/// 它**不经过** `midly`, 因此与 `parse_smf` 是两个独立实现（本 crate 的既定纪律:
+/// 独立实现互相钉住）。delta-time 与 meta 长度都用参考解码器
+/// [`yeban_midi::vlq::decode`]; 每条轨道的绝对 tick 各自从 0 起算。
+///
+/// 返回 `(绝对 tick, 类型, 值)` 的**多重集**（已排序）。类型 `0` = `Tempo`
+/// （值 = µs/四分音符）, 类型 `1` = `TimeSignature`
+/// （值 = `numerator << 8 | denominator_pow2`）。单位 = 事件条数。
+fn tempo_map_events(bytes: &[u8]) -> Vec<(u64, u8, u32)> {
+    let mut out: Vec<(u64, u8, u32)> = Vec::new();
+    for chunk in track_chunks(bytes).expect("chunk 布局") {
+        if &chunk.fourcc != b"MTrk" {
+            continue;
+        }
+        let payload = &bytes[chunk.payload.clone()];
+        let mut tick = 0u64;
+        let mut index = 0usize;
+        let mut status = 0u8;
+        while index < payload.len() {
+            let delta =
+                yeban_midi::vlq::decode(payload, &mut index).expect("delta-time 必须是合法 VLQ");
+            tick += u64::from(delta);
+            let first = payload[index];
+            if first == 0xFF {
+                index += 1;
+                let meta = payload[index];
+                index += 1;
+                let length = yeban_midi::vlq::decode(payload, &mut index)
+                    .expect("meta 长度必须是合法 VLQ") as usize;
+                let data = &payload[index..index + length];
+                index += length;
+                match meta {
+                    0x51 => out.push((
+                        tick,
+                        0,
+                        (u32::from(data[0]) << 16) | (u32::from(data[1]) << 8) | u32::from(data[2]),
+                    )),
+                    0x58 => out.push((tick, 1, (u32::from(data[0]) << 8) | u32::from(data[1]))),
+                    _ => {}
+                }
+                status = 0;
+                if meta == 0x2F {
+                    break;
+                }
+            } else if first == 0xF0 || first == 0xF7 {
+                // 系统独占: 长度前缀的负载, 跳过。
+                index += 1;
+                let length = yeban_midi::vlq::decode(payload, &mut index)
+                    .expect("sysex 长度必须是合法 VLQ") as usize;
+                index += length;
+                status = 0;
+            } else if first & 0x80 != 0 {
+                status = first;
+                index += 1 + channel_data_len(first);
+            } else {
+                // running status: 这个字节就是第一个数据字节。
+                index += channel_data_len(status);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// 通道消息的数据字节数（由状态字节的高 4 位决定）。
+fn channel_data_len(status: u8) -> usize {
+    match status >> 4 {
+        0xC | 0xD => 1,
+        _ => 2,
+    }
+}
+
+/// 手工拼的 **SMF 0** 字节（不由本 crate 产出）: PPQ 480, 一条 `MTrk`。
+///
+/// tick 0 上按 `TEMPO 500000, TIMESIG 4/4, TEMPO 833333, TIMESIG 3/4` 的顺序发事件
+/// —— 同一 tick 上**两条** tempo 与**两条**拍号**交错**。这正是 R5 的第二个形状:
+/// 每条 tempo 各有自己的拍号, 往返后**不许**换人。颗音符 (key 60, 时值 480) 让格式 0
+/// 的编码路径也被覆盖。
+fn hand_built_tempo_map_smf0() -> Vec<u8> {
+    let track: &[u8] = &[
+        0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // Tempo 0x07A120 = 500000
+        0x00, 0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08, // 4/4
+        0x00, 0xFF, 0x51, 0x03, 0x0C, 0xB7, 0x35, // Tempo 0x0CB735 = 833333
+        0x00, 0xFF, 0x58, 0x04, 0x03, 0x02, 0x18, 0x08, // 3/4
+        0x00, 0x90, 0x3C, 0x40, // NoteOn  ch0 key60 vel64
+        0x83, 0x60, 0x80, 0x3C, 0x00, // +480 NoteOff ch0 key60
+        0x00, 0xFF, 0x2F, 0x00, // EndOfTrack
+    ];
+    hand_built_smf0(track)
+}
+
+/// 手工拼的 **SMF 0** 字节: tick 0 上 `TEMPO 500000, TIMESIG 4/4, TIMESIG 3/4`
+/// —— **一条** tempo 之后跟着**两条**拍号（第二条没有可配对的 tempo）。
+fn hand_built_two_signatures_smf0() -> Vec<u8> {
+    let track: &[u8] = &[
+        0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // Tempo 0x07A120 = 500000
+        0x00, 0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08, // 4/4
+        0x00, 0xFF, 0x58, 0x04, 0x03, 0x02, 0x18, 0x08, // 3/4
+        0x00, 0x90, 0x3C, 0x40, // NoteOn  ch0 key60 vel64
+        0x83, 0x60, 0x80, 0x3C, 0x00, // +480 NoteOff ch0 key60
+        0x00, 0xFF, 0x2F, 0x00, // EndOfTrack
+    ];
+    hand_built_smf0(track)
+}
+
+/// 把一条 `MTrk` 负载包成完整的 **SMF 0 / PPQ 480 / 1 条轨道** 字节。
+fn hand_built_smf0(track: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"MThd");
+    bytes.extend_from_slice(&6u32.to_be_bytes());
+    bytes.extend_from_slice(&0u16.to_be_bytes()); // 格式 0
+    bytes.extend_from_slice(&1u16.to_be_bytes()); // 1 条 MTrk
+    bytes.extend_from_slice(&480u16.to_be_bytes()); // PPQ 480
+    bytes.extend_from_slice(b"MTrk");
+    bytes.extend_from_slice(
+        &u32::try_from(track.len())
+            .expect("轨道小于 4 GiB")
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(track);
+    bytes
 }
 
 /// 判据 ⑧: 从外面看，真文件的拒绝路径保持沉默（不存在假阳性拒绝）。

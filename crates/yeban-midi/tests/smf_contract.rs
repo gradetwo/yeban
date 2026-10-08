@@ -112,7 +112,8 @@ fn hand_built_smf1_bytes_parse_note_by_note() {
     assert_eq!(parsed.tempos.len(), 1, "tick 0 的 Tempo 与拍号合并成一条");
     assert_eq!(parsed.tempos[0].tick, 0);
     assert_eq!(
-        parsed.tempos[0].microseconds_per_quarter, 500_000,
+        parsed.tempos[0].microseconds_per_quarter,
+        Some(500_000),
         "120 BPM"
     );
     assert_eq!(parsed.tempos[0].numerator, Some(4));
@@ -478,7 +479,7 @@ fn encoder_boundaries_are_rejected_precisely() {
         ppq: DEFAULT_PPQ,
         tempos: vec![MidiTempo {
             tick: 0,
-            microseconds_per_quarter: 0x00FF_FFFF + 1,
+            microseconds_per_quarter: Some(0x00FF_FFFF + 1),
             numerator: None,
             denominator_pow2: None,
         }],
@@ -491,7 +492,7 @@ fn encoder_boundaries_are_rejected_precisely() {
     let bytes = clamped.to_smf_bytes().expect("钳制后必须能编码");
     assert_eq!(
         parse_smf(&bytes).expect("回读").tempos[0].microseconds_per_quarter,
-        0x00FF_FFFF,
+        Some(0x00FF_FFFF),
         "超过 u24 的 mpqn 被钳到 0x00FFFFFF"
     );
 }

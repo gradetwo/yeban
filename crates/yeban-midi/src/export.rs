@@ -534,7 +534,8 @@ mod tests {
         assert_eq!(parsed.tempos.len(), 1, "顶层 bpm ⇒ 恰好一条 tempo 事件");
         assert_eq!(parsed.tempos[0].tick, 0);
         assert_eq!(
-            parsed.tempos[0].microseconds_per_quarter, 468_750,
+            parsed.tempos[0].microseconds_per_quarter,
+            Some(468_750),
             "filled 样本的 128 BPM ⇒ 60_000_000 / 128 = 468_750"
         );
         assert_eq!(parsed.tempos[0].numerator, Some(4));
