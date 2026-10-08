@@ -372,7 +372,9 @@ fn the_reading_counts_utf8_bytes_not_characters() {
     );
     assert_eq!(
         reading.request,
-        line.as_bytes().len(),
+        // `str::len()` 就是 UTF-8 字节数（`chars().count()` 才是字符数；上面那条断言
+        // 用多字节章节名把两个口径分开，否则这条判据在纯 ASCII 上是空的）。
+        line.len(),
         "请求计数必须是 UTF-8 字节数"
     );
 
@@ -394,19 +396,22 @@ fn the_reading_counts_utf8_bytes_not_characters() {
 // ---------------------------------------------------------------------------
 //
 // 五条注入逐个施加在**生产代码**上，读回**字面**红行，再用 `cp` 还原并用
-// `cmp` + sha256 证明逐字节相同。注入期写在源码里的临时标记注释（形如 `INJECT-I1`）
-// **已随还原全部消失**：还原后 `grep -rn 'INJECT-I[1-5]' crates/` 只命中本段文档
-// （即这两处提到标记名字的地方），源码与测试代码里一处都不剩。
-// 逐次还原的 `cmp` 与 sha256 读数见下表最后一列。
+// `cmp` + sha256 证明逐字节相同。下表是**最终代码上重跑一遍**的读数（行号即本
+// 文件/`src/payload.rs` 当前的行号）。注入期写在源码里的临时标记注释（形如
+// `INJECT-I1`）**已随还原全部消失**：还原后 `grep -rn 'INJECT-I[1-5]' crates/`
+// 只命中本段文档（即这两处提到标记名字的地方），源码与测试代码里一处都不剩。
 //
 // | # | 注入（生产代码） | 字面红行 | 还原证明 |
 // | --- | :--- | :--- | :--- |
-// | I1 | `domain::include_ops` 缺省 `false` → `true` | `缺省形状**不得**回传完整 op 载荷` @ 本文件:138；`缺省预览不得回传完整 op 载荷` @ :299；`缺省不得带 ops` @ :188；`3 passed; 3 failed` | `cmp` 相同 / sha256 `f23f2b8c…` |
-// | I2 | `apply_propose` 忽略 `includeOps`（恒回 `summary`） | `includeOps=true 必须回传逐条 ops` @ :194；`5 passed; 1 failed` | `cmp` 相同 / sha256 `f23f2b8c…` |
-// | I3 | `payload::measure` 的请求计数改用 `chars().count()` | `请求计数必须是 UTF-8 字节数` @ :371，`left: 192 / right: 196`；`5 passed; 1 failed` | `cmp` 相同 / sha256 `7b5b343f…` |
-// | I4 | `RoundTripPayload::total` 去掉饱和加法 | `attempt to add with overflow` @ `src/payload.rs:81`；`4 passed; 1 failed` | `cmp` 相同 / sha256 `7b5b343f…` |
-// | I5 | `BASELINE_006_JSON_LIMIT_BYTES` `4096` → `1024` | `16 小节段落生成的往返 JSON 必须 ≤ 1024 B, 实测 request 196 B + response 2747 B = 2943 B` @ :143 与 `dryRun 往返也必须 ≤ 1024 B, 实测 … 2918 B` @ :303；`4 passed; 2 failed`；lib 侧 `left: 1024 / right: 4096` | `cmp` 相同 / sha256 `7b5b343f…` |
+// | I1 | `domain::include_ops` 缺省 `false` → `true` | `panicked at tests/payload_budget.rs:140`（缺省形状不得回传 ops）、`:190`（缺省不得带 ops）、`:301`（缺省预览不得回传 ops）；`test result: FAILED. 3 passed; 3 failed` | `cmp` 相同 / sha256 `f23f2b8c…` |
+// | I2 | `apply_propose` 忽略 `includeOps`（恒回 `summary`） | `panicked at tests/payload_budget.rs:196`：`includeOps=true 必须回传逐条 ops`；`FAILED. 5 passed; 1 failed` | `cmp` 相同 / sha256 `f23f2b8c…` |
+// | I3 | `payload::measure` 的请求计数改用 `chars().count()` | `panicked at tests/payload_budget.rs:373`：`请求计数必须是 UTF-8 字节数`，`left: 192 / right: 196`；`FAILED. 5 passed; 1 failed` | `cmp` 相同 / sha256 `7b5b343f…` |
+// | I4 | `RoundTripPayload::total` 去掉饱和加法 | `panicked at src/payload.rs:80`：`attempt to add with overflow`；lib `FAILED. 4 passed; 1 failed`（集成侧 6 条仍绿 —— 它们不碰溢出路径） | `cmp` 相同 / sha256 `7b5b343f…` |
+// | I5 | `BASELINE_006_JSON_LIMIT_BYTES` `4096` → `1024` | `panicked at tests/payload_budget.rs:145`：`往返 JSON 必须 ≤ 1024 B, 实测 request 196 B + response 2747 B = 2943 B`、`:305`：`dryRun 往返也必须 ≤ 1024 B, 实测 … 2918 B`；`FAILED. 4 passed; 2 failed`；lib 侧 `left: 1024 / right: 4096` | `cmp` 相同 / sha256 `7b5b343f…` |
 //
 // **I3 值得单独说**：只有它变红，其余五条判据全绿 —— 因为 BASELINE-006 的
 // 场景载荷全是 ASCII，此时"字节数"与"字符数"相等。判据 ⑥ 用一条含 CJK 的请求
 // 把这个区别变成可观测的，否则"单位是字节"这句话在判据里是**空的**。
+//
+// **I4 值得单独说**：它只让 lib 侧的单元判据变红，六条集成判据全绿。因此
+// "饱和加法"这件事由 `src/payload.rs` 自己的单元判据承重，不由本文件承重。
