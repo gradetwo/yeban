@@ -125,6 +125,8 @@ struct Spec {
     rng_seed: u64,
     /// 音符身份种子（改它 = 换一个音符身份 ⇒ 触发判定可能翻转）。
     note_seed: u32,
+    /// 音符的**连击**细分次数（`None` = 不连击）。
+    ratchet: Option<u8>,
 }
 
 impl Default for Spec {
@@ -141,12 +143,24 @@ impl Default for Spec {
             probability: None,
             rng_seed: DEFAULT_RNG_SEED,
             note_seed: 30,
+            ratchet: None,
         }
     }
 }
 
 /// 夹具的默认工程种子（沿用改这个旋钮之前的硬编码值）。
 const DEFAULT_RNG_SEED: u64 = 0x5945_4241_4E00_0001;
+
+/// 默认夹具（`Spec::default()`：无概率、无连击）的**母带样本**位级摘要 —— 钉死的常量。
+///
+/// 它是"默认路径逐位不变"的锚：任何改动（连击展开是一例）只要碰了默认路径，
+/// 这里就会红。判据见 `two_renders_of_the_same_project_are_byte_identical`。
+const DEFAULT_MASTER_DIGEST: &str =
+    "b242d510d581541732134d3c0e233a11d6045ffb65535675adc73501fb28eefb";
+
+/// 同一份默认夹具的 RIFF **文件字节** SHA-256 —— 钉死的常量。
+const DEFAULT_MASTER_SHA256: &str =
+    "b9472fcd20086efd4953d457dde26169d1374f592bc90a0cf7b81304e0b69cc4";
 
 /// 设备夹具。
 fn device(seed: u32, latency_samples: u32, bypassed: bool) -> DeviceDefinition {
@@ -213,6 +227,7 @@ fn project(spec: &Spec) -> YebanProjectV1 {
             MidiNote {
                 velocity: spec.velocity,
                 probability: spec.probability,
+                ratchet: spec.ratchet,
                 ..MidiNote::new(note, 0, 69, spec.end_tick)
             },
         );
@@ -322,6 +337,43 @@ fn channel_rms(samples: &[f32], channels: usize, channel: usize) -> f32 {
         return 0.0;
     }
     (sum / count as f64).sqrt() as f32
+}
+
+/// 判据用的**独立**时间换算：1 tick 等于多少母带帧。
+///
+/// 夹具固定 120 BPM / 960 PPQ / 48 kHz ⇒ `48000 * 60 / (120 * 960) = 25`。
+/// 这里显式算出来（不是抄一个 25），这样换了夹具参数这条换算会跟着变。
+fn frames_per_tick() -> usize {
+    const SAMPLE_RATE: usize = 48_000;
+    const BPM: usize = 120;
+    const PPQ: usize = 960;
+    SAMPLE_RATE * 60 / (BPM * PPQ)
+}
+
+/// 左声道 `[start, start + frames)` 的 RMS（帧号是**母带帧**，不是 tick）。
+fn window_rms(samples: &[f32], channels: usize, start: usize, frames: usize) -> f64 {
+    let available = samples.len() / channels;
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for index in start..(start + frames).min(available) {
+        let value = f64::from(samples[index * channels]);
+        sum += value * value;
+        count += 1;
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    (sum / count as f64).sqrt()
+}
+
+/// 左声道 `[start, start + frames)` 的峰值（帧号是**母带帧**）。
+fn window_peak(samples: &[f32], channels: usize, start: usize, frames: usize) -> f32 {
+    let available = samples.len() / channels;
+    let mut peak = 0.0f32;
+    for index in start..(start + frames).min(available) {
+        peak = peak.max(samples[index * channels].abs());
+    }
+    peak
 }
 
 /// **独立**的头部长度预言（规范常量手算，不用生产代码的 `header_bytes()`）。
@@ -480,12 +532,11 @@ fn two_renders_of_the_same_project_are_byte_identical() {
     // 这条判据同时是 L1 位级一致 [ARCH-DET-002] 的可比形式:
     // 若它变红, 要么夹具漂了, 要么合成/抖动路径引入了平台相关行为 —— 两种都必须查。
     assert_eq!(
-        first["data"]["masterDigest"],
-        "b242d510d581541732134d3c0e233a11d6045ffb65535675adc73501fb28eefb",
+        first["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
         "母带样本的位级摘要必须逐位固定"
     );
     assert_eq!(
-        first["data"]["sha256"], "b9472fcd20086efd4953d457dde26169d1374f592bc90a0cf7b81304e0b69cc4",
+        first["data"]["sha256"], DEFAULT_MASTER_SHA256,
         "RIFF 文件字节的 SHA-256 必须逐位固定"
     );
 }
@@ -1801,5 +1852,220 @@ fn probability_renders_are_bit_identical_and_seed_sensitive() {
     assert_ne!(
         first["data"]["masterDigest"], other["data"]["masterDigest"],
         "判定翻转的种子必须产出不同的母带摘要: {other}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 16：连击（`ratchet`）展开 —— 格点与实时引擎同一条公式
+// ---------------------------------------------------------------------------
+
+/// 渲染一个"连击次数 / 概率触发 / 音符时值可调"的单音符夹具，返回（响应, 解码样本）。
+///
+/// 夹具形状与 [`render_probability`] 一致（Master + 一条 MIDI 轨 + 一个摆放），
+/// 只多一个 `ratchet` 旋钮。
+fn render_note(
+    scratch: &Scratch,
+    tag: &str,
+    ratchet: Option<u8>,
+    probability: Option<f32>,
+    end_tick: u64,
+) -> (Value, Vec<f32>) {
+    let spec = Spec {
+        ratchet,
+        probability,
+        end_tick,
+        ..Spec::default()
+    };
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&spec), &scratch.join(&format!("{tag}.yeban")));
+    let out = scratch.join(&format!("{tag}.wav"));
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(result["status"], "success", "{tag}: {result}");
+    let samples = verify_file_shape(&result, &out);
+    (result, samples)
+}
+
+/// 一个音符被展开成**恰好 `ratchet` 个脉冲**，格点就是实时引擎的那条公式
+/// （`step = duration_ticks / ratchet`，第 `p` 个脉冲起于 `p * step`）。
+///
+/// "真的重新触发"的机械证据：每个脉冲都从**自己的起音包络**开始 ⇒ 在预期的脉冲
+/// 起点上取 60 帧，能量必须远低于脉冲中段。若渲染器忽略 `ratchet`（旧的
+/// "一个长音"行为），除第 0 个之外的所有起点都落在长音的**平段**上，这条就红。
+#[test]
+fn ratchet_expands_one_note_into_exactly_n_pulses_on_the_engines_grid() {
+    let scratch = Scratch::new("ratchet-expansion");
+    let per_tick = frames_per_tick();
+    let duration_ticks = 1_920u64;
+    for ratchet in [2u8, 3, 4, 6, 8, 16] {
+        let pulses = usize::from(ratchet);
+        let (result, samples) = render_note(
+            &scratch,
+            &format!("r{ratchet}"),
+            Some(ratchet),
+            None,
+            duration_ticks,
+        );
+        // 机械读数: 排程音符数 = 脉冲数（每条都在响应里，不是估算）。
+        assert_eq!(
+            result["data"]["sources"][0]["notes"], pulses,
+            "ratchet={ratchet}: 排程音符数必须等于脉冲数: {result}"
+        );
+        assert_eq!(
+            result["data"]["sources"][0]["notesRatcheted"], 1,
+            "ratchet={ratchet}: 必须有 1 个音符被登记为连击: {result}"
+        );
+        assert_eq!(
+            result["data"]["sources"][0]["ratchetPulses"], pulses,
+            "ratchet={ratchet}: 逐轨脉冲数: {result}"
+        );
+        assert_eq!(
+            result["data"]["ratchet"]["notesExpanded"], 1,
+            "ratchet={ratchet}: 顶层读数: {result}"
+        );
+        assert_eq!(
+            result["data"]["ratchet"]["pulses"], pulses,
+            "ratchet={ratchet}: 顶层脉冲数: {result}"
+        );
+        // 格点: 第 p 个脉冲起于 p * step 个 tick。
+        let step_ticks = duration_ticks / u64::from(ratchet);
+        assert!(step_ticks > 0, "夹具的步长必须为正");
+        let body = window_rms(&samples, 2, (step_ticks as usize * per_tick) / 2, 1_000);
+        assert!(body > 0.1, "ratchet={ratchet}: 脉冲中段必须真的有声音");
+        for pulse in 0..pulses {
+            let start = pulse * step_ticks as usize * per_tick;
+            let head = window_rms(&samples, 2, start, 60);
+            assert!(
+                head < body * 0.3,
+                "ratchet={ratchet}: 脉冲 {pulse} 的起点 {start} 帧能量 {head:.6} \
+                 必须显著低于脉冲中段 {body:.6}（起点必须是一次新的起音）"
+            );
+        }
+        // 已经**做到**了 ⇒ 再报"没渲染"就是假话。
+        assert!(
+            !result["data"]["unsupported"]
+                .as_array()
+                .expect("unsupported")
+                .iter()
+                .any(|key| key == "noteRatchet"),
+            "ratchet={ratchet}: 连击已展开, 不得再登记 noteRatchet: {result}"
+        );
+    }
+}
+
+/// 余数**不补**：整数除法算出的最后一个脉冲在音符时值**之前**结束，
+/// 剩下的那几 tick 必须是静音（只允许抖动底噪）。
+///
+/// 这条判据钉死"向下取整 + 不补齐"这两个方向：
+/// 用**向上**取整（`div_ceil`）或把最后一个脉冲拉到音符末端，尾部都会出现真声音 ⇒ 红。
+#[test]
+fn the_ratchet_grid_uses_integer_division_and_leaves_the_remainder_silent() {
+    let scratch = Scratch::new("ratchet-remainder");
+    let per_tick = frames_per_tick();
+    // 三组都**有**余数（否则这条判据没有牙齿）。
+    for (ratchet, duration_ticks) in [(3u8, 1_000u64), (7, 1_920), (6, 1_000)] {
+        let pulses = u64::from(ratchet);
+        let step_ticks = duration_ticks / pulses;
+        let remainder = duration_ticks - pulses * step_ticks;
+        assert!(
+            remainder > 0,
+            "夹具 ({ratchet}, {duration_ticks}) 必须有余数, 否则判据无意义"
+        );
+        let (result, samples) = render_note(
+            &scratch,
+            &format!("rem{ratchet}-{duration_ticks}"),
+            Some(ratchet),
+            None,
+            duration_ticks,
+        );
+        assert_eq!(result["data"]["sources"][0]["notes"], pulses, "{result}");
+        let content_end = (pulses * step_ticks) as usize * per_tick;
+        let note_end = duration_ticks as usize * per_tick;
+        assert_eq!(
+            samples.len() / 2,
+            note_end,
+            "母带长度 = 摆放时值（余数也占帧, 只是没有声音）"
+        );
+        // 尾部的余数区间只能是抖动。
+        let tail = window_peak(&samples, 2, content_end, note_end - content_end);
+        assert!(
+            tail <= DITHER_ONLY_PEAK,
+            "ratchet={ratchet} / {duration_ticks} tick: 余数区间 \
+             [{content_end}, {note_end}) 必须静音（只允许抖动）, 实测峰值 {tail}"
+        );
+        // 而脉冲中段是真声音 ⇒ 上面那条不是"整段都静音"的巧合。
+        let body = window_rms(&samples, 2, (step_ticks as usize * per_tick) / 2, 200);
+        assert!(
+            body > 0.1,
+            "ratchet={ratchet}: 脉冲中段必须真的有声音, 实测 RMS {body:.6}"
+        );
+    }
+}
+
+/// 连击**不引入熵**：同输入两次渲染逐位相同；且 `ratchet = 1` 与**缺省**必须
+/// 逐字节等于加这个旋钮之前的默认夹具（钉死的摘要常量）。
+#[test]
+fn ratchet_renders_are_bit_identical_and_the_default_path_is_unchanged() {
+    let scratch = Scratch::new("ratchet-determinism");
+    let (first, _) = render_note(&scratch, "det-a", Some(4), None, 1_920);
+    let (second, _) = render_note(&scratch, "det-b", Some(4), None, 1_920);
+    assert_eq!(
+        first["data"]["masterDigest"], second["data"]["masterDigest"],
+        "同输入两次渲染的母带摘要必须相同"
+    );
+    assert_eq!(
+        first["data"]["sha256"], second["data"]["sha256"],
+        "产物文件必须逐字节相同"
+    );
+    // 缺省与 = 1 都是"没有连击": 逐位等于钉死的默认夹具常量。
+    let (absent, _) = render_note(&scratch, "det-absent", None, None, 1_920);
+    let (one, _) = render_note(&scratch, "det-one", Some(1), None, 1_920);
+    for (tag, result) in [("absent", &absent), ("one", &one)] {
+        assert_eq!(
+            result["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+            "ratchet {tag}: 默认路径必须逐位不变"
+        );
+        assert_eq!(
+            result["data"]["sha256"], DEFAULT_MASTER_SHA256,
+            "ratchet {tag}: 默认路径的文件字节必须逐位不变"
+        );
+        assert_eq!(result["data"]["sources"][0]["notes"], 1, "{result}");
+        assert_eq!(result["data"]["ratchet"]["notesExpanded"], 0, "{result}");
+        assert_eq!(result["data"]["ratchet"]["pulses"], 0, "{result}");
+        assert_eq!(result["data"]["unsupported"], json!([]), "{result}");
+    }
+    assert_eq!(absent["data"]["sha256"], one["data"]["sha256"]);
+    // 连击真的改了母带 —— 否则"展开"是一句空话。
+    assert_ne!(
+        first["data"]["masterDigest"], absent["data"]["masterDigest"],
+        "ratchet=4 与缺省的母带摘要必须不同: {first}"
+    );
+}
+
+/// 被概率判定判为**不触发**的音符不产生任何脉冲：判定在展开**之前**，
+/// 否则"静音的音符"会以连击脉冲的形式留下读数（`ratchetPulses` 不为 0）。
+#[test]
+fn a_note_that_does_not_trigger_contributes_no_ratchet_pulses() {
+    let scratch = Scratch::new("ratchet-silenced");
+    let (result, samples) = render_note(&scratch, "silent", Some(4), Some(0.0), 1_920);
+    assert_eq!(
+        result["data"]["probability"]["notesSilenced"], 1,
+        "probability=0.0 的音符必须被判为不触发: {result}"
+    );
+    assert_eq!(result["data"]["sources"][0]["notes"], 0, "{result}");
+    assert_eq!(
+        result["data"]["sources"][0]["notesRatcheted"], 0,
+        "{result}"
+    );
+    assert_eq!(result["data"]["sources"][0]["ratchetPulses"], 0, "{result}");
+    assert_eq!(result["data"]["ratchet"]["notesExpanded"], 0, "{result}");
+    assert_eq!(result["data"]["ratchet"]["pulses"], 0, "{result}");
+    assert!(
+        peak(&samples) <= DITHER_ONLY_PEAK,
+        "被判为不触发的连击音符必须一点声音都不出 (只允许 TPDF 抖动): 实测峰值 {}",
+        peak(&samples)
     );
 }

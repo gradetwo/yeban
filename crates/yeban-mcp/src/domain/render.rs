@@ -36,7 +36,7 @@
 //! **真做**：**音频片段**（`ClipContent::Audio`——CAS 资产字节 → 解码 → 采样率不一致时
 //! `rubato` sinc 重采样 → 按 placement 的帧区间落位、按 placement 的 `muted` 与片段的
 //! `gain_db` 门控、参与 [ARCH-PDC-001] 的延迟对齐）、MIDI 音符（起止 tick、音高、力度、
-//! 微时值、**概率触发**——见下）、placement 的 `start_tick`（缺省 0）、`muted`、音轨 `volume_db` /
+//! 微时值、**概率触发**、**连击**——见下）、placement 的 `start_tick`（缺省 0）、`muted`、音轨 `volume_db` /
 //! `pan`（等功率 −3 dB）/ `mute` / `solo`（见下）、**未旁通设备的 `latency_samples`**
 //! （PDC 对齐）、边增益 `gain_db`、Master 轨的 `volume_db`、确定性 TPDF 抖动与
 //! 24-bit 量化、RIFF/RF64/BW64 容器与 `bext` 元数据、峰值归一化。
@@ -51,7 +51,6 @@
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
 //! | `clipLoopRepetition` | `loop_config` 的**重复**没有渲染（只渲染第一遍） |
-//! | `noteRatchet` | `ratchet > 1` 的连击没有展开 |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -84,6 +83,34 @@
 //!
 //! 边界（如实登记）：概率触发**不产生**多个变体、不做多次渲染平均 —— 它只是
 //! "这个音符这一遍响不响"的确定性裁决，与引擎同一口径。
+//!
+//! ## 连击（`ratchet`）：格点与实时引擎**同一裁决**（本线接线）
+//!
+//! `MidiNote::ratchet` 的语义是"把这一个音符的时值细分成几次触发"（`1..=16`，
+//! `MODEL-AST-005`）。实时引擎真的展开它：`project_schedules` 用**整数除法**把时值
+//! 等分成 `ratchet` 个脉冲（余数不补），逐脉冲排程（`yeban-engine/src/snapshot.rs`；
+//! 该裁决登记在 `docs/ledger/engine-sound-notes.md`）。
+//!
+//! 本渲染器此前**忽略**它：`ratchet = 4` 的音符在母带里是**一个**长音，
+//! 同时把 `noteRatchet` 登记进 `unsupported`。后果与概率触发那一条同类 ——
+//! 同一份工程**监听时听到的**与**导出的母带**不是同一个作品（引擎的连击在母带里消失）。
+//!
+//! 接线之后：
+//!
+//! - 格点用引擎的那条公式：`step = (duration_ticks / ratchet).max(1)`，
+//!   第 `p` 个脉冲起于音符起点 `+ p * step`，长为 `step`（余数不补）；
+//! - 本层**不**另立一份"怎么分"的规则，也不改 `yeban_render` 的任何东西；
+//! - `ratchet` 缺省或 `= 1` 时 `step == duration_ticks` ⇒ 排程结果与加这个旋钮之前
+//!   **逐位相同**（判据钉住：默认夹具的摘要常量不变）；
+//! - `noteRatchet` **不再**出现在 `unsupported` 里 —— 报一个已经做到的键就是假话；
+//! - 展开读数进 `data.sources[].notesRatcheted` / `.ratchetPulses` 与
+//!   `data.ratchet`，否则"连击没展开"与"这个音符本来就只有一响"在响应里长得一样。
+//!
+//! 边界（如实登记）：`ratchet` 只做**时值细分**，不引入多次渲染平均、不改音高/力度；
+//! 脉冲之间没有静音间隔（整数除法把时值**铺满**，余数不补）—— 分离感只来自
+//! 每个脉冲自带的起音/释音包络。对齐的**只是格点**：每个脉冲的帧区间仍走本渲染器
+//! 既有的 `note_frame_span`（它只看音符自身的时值与微时值，**没有**摆放区间参数），
+//! "音符是否被裁剪到摆放区间"这一条与引擎口径的差异**不在本切片内**，本线不改它。
 //!
 //! ## 采样率：请求率 ≠ 工程率**不再**是错误
 //!
@@ -236,6 +263,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use yeban_decode::{DecodeError, DecodeOptions, resample_interleaved};
+use yeban_model::music::{RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AssetHash, ClipContent, DeviceKind, EntityId, PPQ, RoutingKind, SampleRate, TrackV3,
     YebanProjectV1,
@@ -742,6 +770,13 @@ pub struct SourceReport {
     /// 这是"母带里少了的音符"的**可见**读数：没有它，一个 `probability: 0.0`
     /// 的音符与"这个音符根本不存在"在响应里长得一模一样。
     pub notes_silenced: u64,
+    /// 被**连击**细分的音符数（`ratchet > 1` 的、且真的进了排程的音符）。
+    pub notes_ratcheted: u64,
+    /// 这些连击音符一共产生了多少个脉冲（每个 ≥ 2）。
+    ///
+    /// 没有它，"连击没展开"（一个脉冲）与"这个音符本来就只有一响"在响应里
+    /// 长得一模一样 —— 与 `notes_silenced` 同一条理由。
+    pub ratchet_pulses: u64,
     /// 该源贡献的时间轴末端（tick）。
     pub end_tick: u64,
 }
@@ -760,6 +795,8 @@ impl SourceReport {
             "audioClipsUnrendered": self.audio_clips_unrendered,
             "audioClipsGated": self.audio_clips_gated,
             "notesSilenced": self.notes_silenced,
+            "notesRatcheted": self.notes_ratcheted,
+            "ratchetPulses": self.ratchet_pulses,
             "endTick": self.end_tick,
         })
     }
@@ -885,6 +922,13 @@ pub struct RenderArtifact {
     /// (`yeban-engine/src/snapshot.rs`) 用的是同一个入口，因此"监听时听到的"
     /// 与"导出的母带"在这一点上一致。
     pub notes_silenced: u64,
+    /// 被**连击**细分的 MIDI 音符数（全部源节点合计，`ratchet > 1` 的排程音符）。
+    ///
+    /// 格点与实时引擎同一裁决（整数除法等分时值，余数不补）；
+    /// `ratchet` 的合法范围 `1..=16` 由模型层 `MidiNote::validate` 把关。
+    pub notes_ratcheted: u64,
+    /// 连击一共产生了多少个脉冲（全部源节点合计）。
+    pub ratchet_pulses: u64,
     /// 这次渲染**实际使用**的工程随机种子（`YebanProjectV1::rng_seed`）。
     ///
     /// 它是概率触发判定的唯一熵输入 ⇒ 响应必须报出来，否则"为什么这个音符
@@ -1014,6 +1058,23 @@ impl RenderArtifact {
                 "adr": "ADR-0001 (ARCH-DET-001)",
                 "notesSilenced": self.notes_silenced,
                 "rngSeed": self.rng_seed,
+            }),
+        );
+        map.insert(
+            "ratchet".to_owned(),
+            serde_json::json!({
+                // 格点公式与实时引擎 `project_schedules` 是同一条裁决：
+                // 整数除法等分时值（余数不补），脉冲 p 起于 `p * step`。
+                "grid": "step = (duration_ticks / ratchet).max(1); pulse p starts at p * step",
+                "specId": "MODEL-AST-005",
+                "engineParity": "yeban-engine/src/snapshot.rs 的 project_schedules",
+                // 规范只给了 `ratchet: 1..=16`；"怎么分"是**登记在本线台账里的本地裁决**
+                // （不是 ADR），因此如实叫 ruling 而不是 adr。
+                "ruling": "docs/ledger/engine-sound-notes.md 的 ratchet 语义 (整数除法等分时值, 余数不补)",
+                "minPerNote": RATCHET_MIN,
+                "notesExpanded": self.notes_ratcheted,
+                "pulses": self.ratchet_pulses,
+                "maxPerNote": RATCHET_MAX,
             }),
         );
         map.insert(
@@ -1361,6 +1422,8 @@ pub fn build(
     let project_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
     let notes_silenced: u64 = reports.iter().map(|report| report.notes_silenced).sum();
+    let notes_ratcheted: u64 = reports.iter().map(|report| report.notes_ratcheted).sum();
+    let ratchet_pulses: u64 = reports.iter().map(|report| report.ratchet_pulses).sum();
     Ok(RenderArtifact {
         request: request.clone(),
         path,
@@ -1382,6 +1445,8 @@ pub fn build(
         sources: reports,
         audio_clips,
         notes_silenced,
+        notes_ratcheted,
+        ratchet_pulses,
         rng_seed: project.rng_seed,
         audio_assets: asset_reports.into_values().collect(),
         peak_before,
@@ -1970,6 +2035,8 @@ fn build_source(
     let mut clips_unrendered = 0u64;
     let mut clips_gated = 0u64;
     let mut notes_silenced = 0u64;
+    let mut notes_ratcheted = 0u64;
+    let mut ratchet_pulses = 0u64;
     let mut end_tick = 0u64;
     for placement in track.clips.values() {
         if placement.muted {
@@ -2010,9 +2077,6 @@ fn build_source(
                         notes_silenced = notes_silenced.saturating_add(1);
                         continue;
                     }
-                    if note.ratchet.is_some_and(|ratchet| ratchet > 1) {
-                        note_unsupported(unsupported, counts, "noteRatchet");
-                    }
                     if note.slide.is_some() {
                         note_unsupported(unsupported, counts, "noteSlide");
                     }
@@ -2023,20 +2087,40 @@ fn build_source(
                         note_unsupported(unsupported, counts, "noteLyrics");
                     }
                     let micro = i64::from(note.micro_timing_ticks.unwrap_or(0));
-                    let (start, end) = math::note_frame_span(
-                        placement.start_tick.saturating_add(note.start_tick),
-                        note.duration_ticks,
-                        micro,
-                        PPQ,
-                        project.bpm,
-                        sample_rate,
+                    // 连击：**格点与实时引擎同一裁决** —— 时值用整数除法等分成
+                    // `ratchet` 个脉冲，余数不补（`docs/ledger/engine-sound-notes.md`；
+                    // 引擎侧见 `yeban-engine/src/snapshot.rs` 的 `project_schedules`）。
+                    // 本层不另立一份"怎么分"的规则。`ratchet` 缺省或 `= 1` 时
+                    // `step == duration_ticks` ⇒ 正好是加这个旋钮之前的那一个区间，
+                    // 因此默认路径逐位不变（判据：默认夹具的母带摘要常量）。
+                    // `ratchet` 的合法范围由模型层唯一定义（`MidiNote::validate` 用同两个常量）。
+                    let ratchet = u64::from(
+                        note.ratchet
+                            .unwrap_or(RATCHET_MIN)
+                            .clamp(RATCHET_MIN, RATCHET_MAX),
                     );
-                    scheduled.push(ScheduledNote {
-                        start,
-                        end,
-                        frequency: pitch_to_hz(note.pitch),
-                        amplitude: f32::from(note.velocity) / 127.0,
-                    });
+                    let step = (note.duration_ticks / ratchet).max(1);
+                    if ratchet > 1 {
+                        notes_ratcheted = notes_ratcheted.saturating_add(1);
+                        ratchet_pulses = ratchet_pulses.saturating_add(ratchet);
+                    }
+                    let base_tick = placement.start_tick.saturating_add(note.start_tick);
+                    for pulse in 0..ratchet {
+                        let (start, end) = math::note_frame_span(
+                            base_tick.saturating_add(pulse.saturating_mul(step)),
+                            step,
+                            micro,
+                            PPQ,
+                            project.bpm,
+                            sample_rate,
+                        );
+                        scheduled.push(ScheduledNote {
+                            start,
+                            end,
+                            frequency: pitch_to_hz(note.pitch),
+                            amplitude: f32::from(note.velocity) / 127.0,
+                        });
+                    }
                     let shifted_micro = u64::try_from(micro.max(0)).unwrap_or(0);
                     end_tick = end_tick.max(
                         placement
@@ -2161,6 +2245,8 @@ fn build_source(
         audio_clips_unrendered: clips_unrendered,
         audio_clips_gated: clips_gated,
         notes_silenced,
+        notes_ratcheted,
+        ratchet_pulses,
         end_tick,
     };
     Ok((source, report))
