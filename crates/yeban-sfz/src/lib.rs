@@ -120,12 +120,14 @@ pub mod playback;
 pub mod voice_pool;
 
 pub use error::SfzError;
-pub use instrument::{CcGate, Instrument, LoopMode, Region, RegionQuery};
+pub use instrument::{CcGate, Instrument, LoopMode, PlayDirection, Region, RegionQuery, SampleEnd};
 pub use parser::{
     Header, IncludeResolver, OpcodeValue, ParseLimits, SfzSource, Warning, parse_f32, parse_int,
     parse_note, parse_sources, parse_text,
 };
-pub use playback::{FALLBACK_SAMPLE_RATE, LoopWindow, PlaybackSpec, RegionPlay, RenderRates};
+pub use playback::{
+    FALLBACK_SAMPLE_RATE, LoopWindow, PlaybackSpec, RegionPlay, RenderRates, SampleSpan,
+};
 pub use voice_pool::{
     DEFAULT_VOICE_CAPACITY, MAX_VOICE_CAPACITY, NoteOnOutcome, SILENT_DBFS, STEAL_FADE_FLOOR,
     STEAL_FADE_MILLIS, StealFade, VoiceHandle, VoiceInfo, VoicePool, VoiceStage,

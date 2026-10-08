@@ -49,6 +49,44 @@ impl LoopMode {
     pub const ALLOWED: &'static str = "no_loop, one_shot, loop_continuous, loop_sustain";
 }
 
+/// 采样播放区间的终点（`end` opcode，取值**含**端点，单位采样点）。
+///
+/// 规范事实（<https://sfzformat.com/opcodes/end/>）：默认 `unspecified`（播到采样末尾）；
+/// `end` **是含端点的**（「`end` is inclusive, so if set to 133000, the sample will play
+/// all samples up to and including 133000」）；`end=-1` 时「the sample will not play」，
+/// 但该 region **仍然被触发**，因此可以用 `group` / `off_by` 关掉别的 region。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleEnd {
+    /// 未指定 `end`：播放到采样末尾（终点只能由解码器给出）。
+    Unspecified,
+    /// `end=-1`：不产生采样输出，但仍参与触发与 `group` / `off_by` 互斥。
+    Silent,
+    /// 显式终点（采样点，**含**该点）。
+    Inclusive(u32),
+}
+
+/// 采样播放方向（`direction` opcode，SFZ v2，默认 `forward`）。
+///
+/// 出处：<https://sfzformat.com/opcodes/direction/>（`Options: forward, reverse`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayDirection {
+    /// `forward`（默认）：从起点向终点播放。
+    Forward,
+    /// `reverse`：从终点向起点播放。
+    Reverse,
+}
+
+impl PlayDirection {
+    /// 白名单（`opcode=value` 的大小写不敏感匹配集合）。
+    pub const OPTIONS: &'static [(&'static str, PlayDirection)] = &[
+        ("forward", PlayDirection::Forward),
+        ("reverse", PlayDirection::Reverse),
+    ];
+
+    /// 用于错误信息的允许值列表。
+    pub const ALLOWED: &'static str = "forward, reverse";
+}
+
 /// 一个 MIDI CC 门控：`loccN` / `hiccN` 归约成 `[lo, hi]` 闭区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CcGate {
@@ -95,6 +133,12 @@ pub struct Region<'a> {
     pub loop_end: u32,
     /// 循环模式。
     pub loop_mode: LoopMode,
+    /// 采样起始偏移（`offset`，单位采样点，规范默认 0）。
+    pub offset: u32,
+    /// 采样播放终点（`end`，规范默认 `unspecified`）。
+    pub end: SampleEnd,
+    /// 播放方向（`direction`，SFZ v2，规范默认 `forward`）。
+    pub direction: PlayDirection,
     /// 微调（cents，规范范围 -100..=100）。
     pub tune: i32,
     /// 移调（半音，规范范围 -127..=127）。
@@ -499,6 +543,22 @@ pub(crate) fn build_region<'a>(
         None => LoopMode::NoLoop,
     };
 
+    // ---- 播放区间 / 方向（显式区间与方向，见 <https://sfzformat.com/opcodes/offset/>、
+    //      <https://sfzformat.com/opcodes/end/>、<https://sfzformat.com/opcodes/direction/>） ----
+    let offset = read_u32(&scopes, "offset", None, 0)?;
+    let end = match scopes.get("end") {
+        // 规范取值域是 `0 to 4294967296` 再加上文档化的 `-1`（不发声）哨兵。
+        Some(value) => match value.as_int(-1, i64::from(u32::MAX))? {
+            -1 => SampleEnd::Silent,
+            end => SampleEnd::Inclusive(end as u32),
+        },
+        None => SampleEnd::Unspecified,
+    };
+    let direction = match scopes.get("direction") {
+        Some(value) => value.as_option(PlayDirection::OPTIONS, PlayDirection::ALLOWED)?,
+        None => PlayDirection::Forward,
+    };
+
     // ---- 音高 / 电平 ----
     let tune = read_i32(&scopes, "tune", -100, 100, 0)?;
     let transpose = read_i32(&scopes, "transpose", -127, 127, 0)?;
@@ -586,6 +646,9 @@ pub(crate) fn build_region<'a>(
         loop_start,
         loop_end,
         loop_mode,
+        offset,
+        end,
+        direction,
         tune,
         transpose,
         volume,
@@ -679,6 +742,9 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             loop_mode: LoopMode::NoLoop,
+            offset: 0,
+            end: SampleEnd::Unspecified,
+            direction: PlayDirection::Forward,
             tune: 0,
             transpose: 0,
             volume: 0.0,
@@ -1026,5 +1092,94 @@ mod tests {
         assert_eq!(instrument.region_for(60, 100).map(|r| r.lokey), Some(60));
         assert_eq!(instrument.region_for(62, 100).map(|r| r.lokey), Some(62));
         assert!(instrument.region_for(61, 100).is_none());
+    }
+
+    #[test]
+    fn offset_end_and_direction_default_to_the_spec_values() {
+        // 规范默认值：`offset` 0、`end` unspecified、`direction` forward。
+        // 出处 <https://sfzformat.com/opcodes/offset/>、`.../end/`、`.../direction/`。
+        let instrument = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.offset, 0);
+        assert_eq!(region.end, SampleEnd::Unspecified);
+        assert_eq!(region.direction, PlayDirection::Forward);
+    }
+
+    #[test]
+    fn offset_end_and_direction_are_read_from_the_four_scope_chain() {
+        let instrument = parse_text(
+            "<global>offset=1 end=99\n\
+             <master>direction=reverse\n\
+             <group>offset=10\n\
+             <region>sample=a.wav end=19",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.offset, 10, "group beats global");
+        assert_eq!(region.end, SampleEnd::Inclusive(19), "region beats global");
+        assert_eq!(region.direction, PlayDirection::Reverse, "master applies");
+        // `direction` 的取值匹配大小写不敏感（与 `loop_mode` 同一条 `as_option` 路径）。
+        let upper = parse_text(
+            "<region>sample=a.wav direction=REVERSE",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(upper.regions()[0].direction, PlayDirection::Reverse);
+    }
+
+    #[test]
+    fn end_minus_one_keeps_a_silent_region_that_still_triggers() {
+        // 规范：`end=-1` 时采样不发声，但 region「is still triggered」，
+        // 于是可以用 `group` / `off_by` 关掉别的 region。
+        // <https://sfzformat.com/opcodes/end/>
+        let instrument = parse_text(
+            "<region>sample=silence.wav end=-1 group=3 off_by=4",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 1, "silent region must not be dropped");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.end, SampleEnd::Silent);
+        assert_eq!((region.group, region.off_by), (3, 4));
+        assert!(
+            instrument.region_for(60, 100).is_some(),
+            "a silent region still triggers"
+        );
+    }
+
+    #[test]
+    fn out_of_range_offset_end_and_direction_are_err_not_panic() {
+        // `end` 的文档化取值域是 `-1`（哨兵）加 `0..=4294967295`。
+        assert!(matches!(
+            parse_text("<region>sample=a.wav end=-2", &Default::default()),
+            Err(SfzError::IntegerOutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_text(
+                "<region>sample=a.wav offset=4294967296",
+                &Default::default()
+            ),
+            Err(SfzError::IntegerOutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_text("<region>sample=a.wav end=abc", &Default::default()),
+            Err(SfzError::InvalidInteger { .. })
+        ));
+        assert!(matches!(
+            parse_text(
+                "<region>sample=a.wav direction=sideways",
+                &Default::default()
+            ),
+            Err(SfzError::InvalidOption { .. })
+        ));
+        // 上界本身必须被接受（规范 Range `0 to 4294967296`）。
+        let max = parse_text(
+            "<region>sample=a.wav offset=4294967295 end=4294967295",
+            &Default::default(),
+        )
+        .expect("the documented upper bound is in range");
+        assert_eq!(max.regions()[0].offset, u32::MAX);
+        assert_eq!(max.regions()[0].end, SampleEnd::Inclusive(u32::MAX));
     }
 }

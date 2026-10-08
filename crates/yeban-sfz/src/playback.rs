@@ -17,6 +17,12 @@
 //!   <https://sfzformat.com/opcodes/tune/>
 //! - `volume`：音量，单位 dB，默认 0，规范范围 -144..=6。
 //!   <https://sfzformat.com/opcodes/volume/>
+//! - `offset`：采样起始偏移，单位采样点，默认 0。
+//!   <https://sfzformat.com/opcodes/offset/>
+//! - `end`：采样播放终点，单位采样点，**含**端点；默认 unspecified；`end=-1` 不发声。
+//!   <https://sfzformat.com/opcodes/end/>
+//! - `direction`：`forward`（默认）/ `reverse`（SFZ v2）。
+//!   <https://sfzformat.com/opcodes/direction/>
 //!
 //! # 换算口径
 //!
@@ -24,6 +30,7 @@
 //! 音高比 pitch_ratio = 2 ^ ( ((note - pitch_keycenter + transpose) * 100 + tune) / 1200 )
 //! 步进比 rate        = pitch_ratio * (sample_hz / engine_hz)
 //! 线性增益 gain      = 2 ^ ( volume_db * log2(10) / 20 )
+//! 采样区间 span      = [ offset , end + 1 )   （end 缺省 ⇒ 终点由解码器给出）
 //! ```
 //!
 //! `rate` 的单位是「每输出一个采样所前进的**源采样**个数」。`region.pitch_keycenter`、
@@ -41,6 +48,8 @@
 //! - **无有效循环窗口的降级**：`loop_mode` 要求循环、而 `loop_end <= loop_start` 时，
 //!   [`Region::loop_window`] 返回 `None`。这是本模块的工程裁决：零长度循环没有定义，
 //!   返回 `None` 表示「按不循环渲染」，绝不返回一个 `start == end` 的死循环窗口。
+//! - **`direction=reverse` 只作为字段传递**：本 crate 不做逐样本读取，因此**不规定**
+//!   反向播放时循环窗口的移动方向（那是渲染器的语义），只把规范给出的取值原样带出。
 //!
 //! # 实时安全
 //!
@@ -49,7 +58,7 @@
 //! 音高/增益使用 `exp2`（与 `crate::voice_pool::StealFade::gain_at` 同类的浮点原语）；
 //! 跨架构逐位一致性 (ARCH-DET-002) 未验证，与 `StealFade` 登记在同一条 pending 上。
 
-use crate::instrument::{Instrument, LoopMode, Region, RegionQuery};
+use crate::instrument::{Instrument, LoopMode, PlayDirection, Region, RegionQuery, SampleEnd};
 
 /// 采样率回退值 (Hz)：输入采样率非有限或非正时使用，与
 /// [`crate::voice_pool::StealFade::new`] 的回退口径一致。
@@ -133,6 +142,40 @@ impl LoopWindow {
     }
 }
 
+/// 一次 note-on 读取的**源采样区间**，半开区间 `[start, end)`，单位是**源采样点**。
+///
+/// 来源：`offset`（起点，含）与 `end`（终点，**含**）——
+/// <https://sfzformat.com/opcodes/offset/>、<https://sfzformat.com/opcodes/end/>。
+///
+/// # 为什么终点是 `u64`
+///
+/// [`LoopWindow`] 用 `u32`，本结构用 `u64`：`end` 的规范上界是 `4294967295`，
+/// 而半开区间的终点需要 `end + 1 = 4294967296`，`u32` 装不下 ——
+/// 饱和到 `u32::MAX` 会少播最后一个采样点，闭区间语义就无法无歧义地表达。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampleSpan {
+    /// 起始采样点（含）。等于 `offset`。
+    pub start: u64,
+    /// 终点采样点（**不含**）。`None` 表示「到采样末尾」，终点只能由解码器给出。
+    pub end: Option<u64>,
+}
+
+impl SampleSpan {
+    /// 区间长度（采样点）。终点未知（播到采样末尾）时返回 `None`。
+    ///
+    /// 用 `saturating_sub`：字段是 `pub`，手工构造出 `end < start` 也不 panic。
+    #[must_use]
+    pub fn len(self) -> Option<u64> {
+        self.end.map(|end| end.saturating_sub(self.start))
+    }
+
+    /// 是否为空区间（构造上为 `false`；保留为 `len()` 的配对 API）。
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.len() == Some(0)
+    }
+}
+
 /// 一次 note-on 的可渲染采样描述。
 ///
 /// `Copy`、不含指针、不含堆数据：渲染器可以把它存进自己的预分配声部槽，
@@ -166,6 +209,15 @@ pub struct PlaybackSpec {
     pub loop_mode: LoopMode,
     /// 有效循环窗口；`None` 表示按不循环渲染。
     pub loop_window: Option<LoopWindow>,
+    /// 该 region 的 `offset`（采样点，原样）。
+    pub offset: u32,
+    /// 该 region 的 `end`（原样；`Inclusive` 时**含**端点）。
+    pub end: SampleEnd,
+    /// 该 region 的 `direction`（原样）。
+    pub direction: PlayDirection,
+    /// `offset` / `end` 归约出的源采样区间；`None` 表示不产生采样输出
+    /// （`end=-1`，或显式区间落在 `offset` 之前）。
+    pub span: Option<SampleSpan>,
     /// 独占组（`group`）。
     pub group: u32,
     /// 被谁关掉（`off_by`）。
@@ -185,6 +237,22 @@ impl PlaybackSpec {
     #[must_use]
     pub fn ignores_note_off(&self) -> bool {
         self.loop_mode == LoopMode::OneShot
+    }
+
+    /// 是否不产生采样输出（`end=-1`，或显式区间为空）。
+    ///
+    /// **该 region 仍然被触发**：调用方仍然可以用 [`PlaybackSpec::group`] /
+    /// [`PlaybackSpec::off_by`] 让它关掉别的 region —— 这正是规范为 `end=-1` 给出的用途
+    /// （<https://sfzformat.com/opcodes/end/>）。
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        self.span.is_none()
+    }
+
+    /// 是否反向播放（`direction=reverse`）。
+    #[must_use]
+    pub fn plays_reverse(&self) -> bool {
+        self.direction == PlayDirection::Reverse
     }
 }
 
@@ -255,6 +323,43 @@ impl<'a> Region<'a> {
         }
     }
 
+    /// 该 region 实际读取的源采样区间；`None` 表示不产生采样输出。
+    ///
+    /// 规则全部来自 `offset` / `end` 的规范语义
+    /// （<https://sfzformat.com/opcodes/offset/>、<https://sfzformat.com/opcodes/end/>）：
+    ///
+    /// | `end` | 结果 |
+    /// | :--- | :--- |
+    /// | 未指定 | `Some(SampleSpan { start: offset, end: None })`（播到采样末尾） |
+    /// | `-1` | `None`（不发声，但 region 仍然被触发） |
+    /// | 显式 `n` | `Some(SampleSpan { start: offset, end: Some(n + 1) })`（`end` **含**端点） |
+    ///
+    /// **工程裁决**：显式 `end` 落在 `offset` 之前（`end + 1 <= offset`）时返回 `None`
+    /// —— 没有任何采样点可读。这与 [`Region::loop_window`] 拒绝零长度窗口是同一条口径：
+    /// 不返回反向区间，也不发明「反向自动交换两端」的语义。
+    ///
+    /// 零分配，可在实时路径调用。
+    #[must_use]
+    pub fn playback_span(&self) -> Option<SampleSpan> {
+        let start = u64::from(self.offset);
+        match self.end {
+            SampleEnd::Silent => None,
+            SampleEnd::Unspecified => Some(SampleSpan { start, end: None }),
+            SampleEnd::Inclusive(end) => {
+                // `u64` 加法：`end = u32::MAX` 时终点是 4294967296，不回绕。
+                let end = u64::from(end) + 1;
+                if end <= start {
+                    None
+                } else {
+                    Some(SampleSpan {
+                        start,
+                        end: Some(end),
+                    })
+                }
+            }
+        }
+    }
+
     /// 生成该 region 的可渲染采样描述。零分配，可在实时路径调用。
     #[must_use]
     pub fn playback_spec(&self, note: u8, velocity: u8, rates: RenderRates) -> PlaybackSpec {
@@ -272,6 +377,10 @@ impl<'a> Region<'a> {
             pan: self.pan,
             loop_mode: self.loop_mode,
             loop_window: self.loop_window(),
+            offset: self.offset,
+            end: self.end,
+            direction: self.direction,
+            span: self.playback_span(),
             group: self.group,
             off_by: self.off_by,
             source_line: self.source_line,
@@ -644,6 +753,9 @@ mod tests {
                             loop_start: 0,
                             loop_end: 0,
                             loop_mode: LoopMode::NoLoop,
+                            offset: 0,
+                            end: SampleEnd::Unspecified,
+                            direction: PlayDirection::Forward,
                             tune,
                             transpose,
                             volume: 0.0,
@@ -673,5 +785,105 @@ mod tests {
         }
         assert_eq!(ratios.len(), 5 * 4 * 5 * 3);
         assert!(ratios.iter().all(|ratio| ratio.is_finite()));
+    }
+
+    #[test]
+    fn playback_span_is_half_open_from_an_inclusive_end() {
+        let span_of = |text: &str| {
+            parse_text(text, &Default::default())
+                .expect("parses")
+                .regions()[0]
+                .playback_span()
+        };
+        // 缺省：从采样点 0 播到采样末尾（终点只能由解码器给出）。
+        assert_eq!(
+            span_of("<region>sample=a.wav"),
+            Some(SampleSpan {
+                start: 0,
+                end: None
+            })
+        );
+        assert_eq!(
+            span_of("<region>sample=a.wav").and_then(SampleSpan::len),
+            None
+        );
+        // `end` **含**端点 ⇒ 半开区间终点 = end + 1（出处 .../opcodes/end/）。
+        let span = span_of("<region>sample=a.wav offset=100 end=199").expect("span");
+        assert_eq!(
+            span,
+            SampleSpan {
+                start: 100,
+                end: Some(200)
+            }
+        );
+        assert_eq!(span.len(), Some(100));
+        assert!(!span.is_empty());
+        // 单点区间：`offset == end` 仍然读 1 个采样点（含端点的直接推论）。
+        assert_eq!(
+            span_of("<region>sample=a.wav offset=7 end=7").and_then(SampleSpan::len),
+            Some(1)
+        );
+        // `end=-1` ⇒ 不发声。
+        assert_eq!(span_of("<region>sample=a.wav end=-1"), None);
+        // 显式终点落在 offset 之前 ⇒ 没有采样点可读（不返回反向区间，不 panic）。
+        assert_eq!(span_of("<region>sample=a.wav offset=200 end=100"), None);
+        assert_eq!(span_of("<region>sample=a.wav offset=1 end=0"), None);
+        // 规范上界：`end=4294967295` 的半开终点是 4294967296，必须用 u64 容纳。
+        let top = span_of("<region>sample=a.wav offset=4294967295 end=4294967295").expect("span");
+        assert_eq!(
+            top,
+            SampleSpan {
+                start: u64::from(u32::MAX),
+                end: Some(4_294_967_296),
+            }
+        );
+        assert_eq!(top.len(), Some(1));
+        // 手工构造出 `end < start` 的区间也不 panic（`saturating_sub`）。
+        assert_eq!(
+            SampleSpan {
+                start: 10,
+                end: Some(4)
+            }
+            .len(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn playback_spec_carries_offset_end_direction_and_silence() {
+        let instrument = parse_text(
+            "<region>sample=a.wav key=36 offset=100 end=199 direction=reverse",
+            &Default::default(),
+        )
+        .expect("parses");
+        let play = instrument
+            .playback_for(RegionQuery::new(36, 100), RATES_EQUAL)
+            .expect("region matches note 36");
+        assert_eq!(play.spec.offset, 100);
+        assert_eq!(play.spec.end, SampleEnd::Inclusive(199));
+        assert_eq!(play.spec.direction, PlayDirection::Reverse);
+        assert!(play.spec.plays_reverse());
+        assert!(!play.spec.is_silent());
+        assert_eq!(
+            play.spec.span,
+            Some(SampleSpan {
+                start: 100,
+                end: Some(200)
+            })
+        );
+
+        // `end=-1` 的静音 region 必须**仍然**被选中：它是 `group` / `off_by` 的互斥源。
+        let silent = parse_text(
+            "<region>sample=silence.wav end=-1 group=5 off_by=5",
+            &Default::default(),
+        )
+        .expect("parses");
+        let muted = silent
+            .playback_for(RegionQuery::new(60, 100), RATES_EQUAL)
+            .expect("a silent region is still triggered");
+        assert!(muted.spec.is_silent());
+        assert_eq!(muted.spec.span, None);
+        assert_eq!((muted.spec.group, muted.spec.off_by), (5, 5));
+        assert!(!muted.spec.plays_reverse());
     }
 }
