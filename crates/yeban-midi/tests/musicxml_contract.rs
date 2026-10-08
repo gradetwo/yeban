@@ -689,6 +689,23 @@ fn local_bodies(bytes: &[u8]) -> Vec<&[u8]> {
     bodies
 }
 
+/// 给一个**还没有注释**的容器补一段 EOCD 注释（同时把 EOCD 的注释长度字段改成它的长度）。
+fn append_eocd_comment(zip: &mut Vec<u8>, comment: &[u8]) {
+    let eocd = zip.len() - 22;
+    assert_eq!(
+        &zip[eocd..eocd + 4],
+        b"PK\x05\x06",
+        "EOCD 必须正好在最后 22 字节"
+    );
+    assert_eq!(
+        (le16(zip, eocd + 20), zip.len()),
+        (0, eocd + 22),
+        "本助手只接受还没有注释的容器"
+    );
+    zip[eocd + 20..eocd + 22].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+    zip.extend_from_slice(comment);
+}
+
 /// 读一个 raw DEFLATE 流的**首块**类型：返回 `(BFINAL, BTYPE)`（RFC 1951 §3.1.1 的低位先出）。
 fn first_deflate_block(body: &[u8]) -> (u8, u8) {
     let byte = body.first().copied().unwrap_or(0);
@@ -1019,4 +1036,28 @@ fn mxl_container_fuzz_never_panics() {
     // 判据本身是"没 panic"；这个数字让"到底跑了多少次"可复核。
     println!("mxl_container_fuzz_never_panics: runs={runs}");
     assert!(runs >= 5_000, "探针只跑了 {runs} 次，样本太少");
+}
+
+#[test]
+fn mxl_eocd_scan_honours_the_comment_length() {
+    // EOCD 的注释是**任意字节**（APPNOTE 4.3.16）⇒ 注释里可以逐字节出现 `PK\x05\x06`。
+    // 一个只认"从文件尾往前第一个签名"的扫描会被注释里的**假** EOCD 顶替。
+    // 本条钉住 `find_eocd` 的 `pos + 22 + comment == 文件长度` 那一句。
+    let mut bytes = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    let expected = parse_mxl(&bytes).expect("加注释之前必须可读");
+    // 24 字节的注释：4 字节假签名 + 20 个 0 ⇒ 假 EOCD 的条目数 / 目录尺寸 / 目录偏移全是 0。
+    let mut comment = b"PK\x05\x06".to_vec();
+    comment.extend_from_slice(&[0u8; 20]);
+    append_eocd_comment(&mut bytes, &comment);
+    assert_eq!(
+        parse_mxl(&bytes),
+        Ok(expected),
+        "注释里的假 EOCD 不该顶替真的 EOCD"
+    );
 }
