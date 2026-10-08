@@ -37,6 +37,7 @@
 //! | [`pdc`] | 关键路径延迟分析与环形延迟线（**待 engine 线提供后改为复用**） | `ARCH-PDC-001/002` |
 //! | [`rf64`] | RF64/BW64 容器与 `bext`(v1/v2) 的自研读写（零第三方依赖） | `ARCH-FMT-001` |
 //! | [`dither`] | TPDF 抖动与 16/24/32f 位深转换 | `ARCH-FMT-001`, `ARCH-DET-001` |
+//! | [`mastering`] | 母带导出的 LRA（响度范围）测量与响度归一化预设 | `ARCH-FMT-001`（`bext` 响度块） |
 //! | [`wav`] | 普通 RIFF WAV 的读写, 用 `hound` 当独立第三方裁判 | `ARCH-FMT-001` |
 //! | [`midi`] | SMF 0/1 导出与回读, 含独立 VLQ/chunk 字节级核验 | `ARCH-FMT-001 §5.5` |
 //! | `als`（feature `experimental-als-export`） | 实验性 Ableton `.als` 导出：Gzip XML + 映射损失表 | `ARCH-FMT-002`, `ROAD-M4-007` |
@@ -87,6 +88,9 @@
 #![deny(missing_docs)]
 
 pub mod dither;
+// 母带导出的**LRA 测量**与**响度归一化预设**（本 crate 新增; 补 `yeban-dsp` 侧
+// `N4`（LRA 未实现）与仓库里"没有响度归一化"这两个缺口, 见该模块头的规范状态一节）。
+pub mod mastering;
 // 账本第 283/284 轮：编解码已**下移**到独立 crate `yeban-midi`（MCP 也能依赖它, 见该 crate 的文档）。
 // 这里**再导出**同一个模块 ⇒ `yeban_render::midi::*` 的既有调用方（app 与其判据）一行不改。
 pub use yeban_midi::midi;
