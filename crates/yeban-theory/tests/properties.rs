@@ -20,6 +20,7 @@ use yeban_theory::chord::{Chord, ChordKind, Tonality};
 use yeban_theory::genre::GenreLibrary;
 use yeban_theory::pitch::{Pitch, PitchClass, note_to_hz, parse_pitch_class};
 use yeban_theory::progression::{Degree, Meter, Progression, RomanQuality, expand_progression};
+use yeban_theory::rhythm::{MAX_METRIC_WEIGHT, cells_per_bar, metric_grid, swung_metric_grid};
 use yeban_theory::scale::{Scale, ScaleKind};
 use yeban_theory::voice_leading::{VoicingConstraints, realize, realize_three_voices};
 use yeban_theory::{
@@ -598,6 +599,77 @@ proptest! {
                 prop_assert!((500..=1000).contains(&permille));
                 let pair = swung_pair_span(480, permille)?;
                 prop_assert_eq!(pair.total(), 480);
+            }
+        }
+    }
+
+    /// 每条流派规则都能产出节奏网格：每小节恰好 `onsets` 个 onset、
+    /// tick 严格升序、全部落在本小节内、`hits_in_bar` 与全局序列一致。
+    #[test]
+    fn every_genre_produces_a_metric_grid_with_the_requested_onsets(
+        index in 0usize..GenreLibrary::all().len(),
+        bars in 1u32..8,
+        onsets in 1u32..=8,
+    ) {
+        let rule = &GenreLibrary::all()[index];
+        let grid = rule.rhythm_grid(bars, onsets)?;
+        prop_assert_eq!(grid.len(), bars as usize * onsets as usize);
+        prop_assert_eq!(grid.meter(), rule.meter_value());
+        prop_assert_eq!(grid.swing_permille(), rule.swing_permille()?);
+        prop_assert_eq!(grid.total_ticks(), u64::from(bars) * rule.meter_value().ticks_per_bar());
+        let bar_ticks = rule.meter_value().ticks_per_bar();
+        for pair in grid.hits().windows(2) {
+            prop_assert!(pair[0].tick < pair[1].tick);
+        }
+        for hit in grid.hits() {
+            let bar_start = u64::from(hit.bar) * bar_ticks;
+            prop_assert!(hit.tick >= bar_start && hit.tick < bar_start + bar_ticks);
+            prop_assert!(u64::from(hit.cell) * 240 < bar_ticks);
+        }
+        for bar in 0..bars {
+            let slice = grid.hits_in_bar(bar);
+            prop_assert_eq!(slice.len(), onsets as usize);
+            prop_assert!(slice.iter().all(|hit| hit.bar == bar));
+        }
+        // 第 0 小节的第一个 onset 恒是小节起点（度量重量最大）。
+        prop_assert_eq!(grid.hits()[0].tick, 0);
+        prop_assert_eq!(grid.hits()[0].cell, 0);
+        prop_assert_eq!(grid.hits()[0].weight, MAX_METRIC_WEIGHT);
+        // 纯函数：同输入同输出。
+        prop_assert_eq!(rule.rhythm_grid(bars, onsets)?, grid);
+    }
+
+    /// 摇摆网格永不丢 onset：没有两个格点重合，且每个基格点都留在自己的小节里。
+    /// 覆盖 **全部** 流派登记的拍号与全部合法千分比端点。
+    #[test]
+    fn swing_never_collapses_a_grid(index in 0usize..GenreLibrary::all().len(), bars in 1u32..6) {
+        let rule = &GenreLibrary::all()[index];
+        let meter = rule.meter_value();
+        let cells = cells_per_bar(meter).unwrap();
+        let onsets = u32::try_from(cells).unwrap();
+        let straight = metric_grid(meter, bars, onsets)?;
+        let swung = swung_metric_grid(meter, bars, onsets, Some(1000))?;
+        prop_assert_eq!(straight.len(), swung.len());
+        // 平直网格必须正好落在 16 分格点上。
+        for hit in straight.hits() {
+            prop_assert_eq!(hit.tick % 240, 0);
+        }
+        // 最大摇摆下仍然两两不同、严格升序。
+        let mut ticks: Vec<u64> = swung.hits().iter().map(|hit| hit.tick).collect();
+        let count = ticks.len();
+        ticks.sort_unstable();
+        ticks.dedup();
+        prop_assert_eq!(ticks.len(), count);
+        for pair in swung.hits().windows(2) {
+            prop_assert!(pair[0].tick < pair[1].tick);
+        }
+        // 摇摆只把后半格点向右移，前半格点逐位不动。
+        for (plain, moved) in straight.hits().iter().zip(swung.hits()) {
+            prop_assert_eq!(plain.bar, moved.bar);
+            prop_assert_eq!(plain.cell, moved.cell);
+            prop_assert!(moved.tick >= plain.tick);
+            if moved.cell % 2 == 0 {
+                prop_assert_eq!(moved.tick, plain.tick);
             }
         }
     }

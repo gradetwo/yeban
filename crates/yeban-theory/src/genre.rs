@@ -187,6 +187,35 @@ impl GenreRule {
         crate::swing::validate_swing_permille(permille)?;
         Ok(Some(permille))
     }
+
+    /// 用该流派**登记的**拍号与摇摆比例生成节奏网格（每小节 `onsets_per_bar` 个 onset）。
+    ///
+    /// 这是 `pending 3` 所说"具体的鼓点网格"的**网格**那一半：拍号来自
+    /// [`GenreRule::meter_value`]，摇摆比例来自 [`GenreRule::swing_permille`]，
+    /// onset 的选取与推移见 [`crate::rhythm`]。
+    ///
+    /// onset 数**不**读 [`GenreRule::note_density_hint`]：那个字段登记的是
+    /// **每小节的音符数**（含和弦内的复音，最大区间到 160），而 4/4 一小节只有
+    /// 16 个 16 分格位，两者不是同一个量。理由见 [`crate::rhythm`] 的模块文档。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`crate::rhythm::swung_metric_grid`]：
+    /// `bars == 0` 或拍号非法 ⇒ [`TheoryError::ZeroBars`]；
+    /// `onsets_per_bar` 超过小节内的格位数 ⇒ [`TheoryError::ProgressionTooDense`]；
+    /// 登记的摇摆比例折算后越界 ⇒ [`TheoryError::SwingOutOfRange`]。
+    pub fn rhythm_grid(
+        &self,
+        bars: u32,
+        onsets_per_bar: u32,
+    ) -> Result<crate::rhythm::MetricGrid, TheoryError> {
+        crate::rhythm::swung_metric_grid(
+            self.meter_value(),
+            bars,
+            onsets_per_bar,
+            self.swing_permille()?,
+        )
+    }
 }
 
 /// 流派规则表。

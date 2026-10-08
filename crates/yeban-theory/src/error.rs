@@ -66,9 +66,13 @@ pub enum TheoryError {
     ///
     /// 这里选择**显式报错**而不是静默丢级数或产出零长度区段 —— MCP 层据此回
     /// `INVALID_PARAMS`，让调用方自己把 `bars` 调大。
+    ///
+    /// 同一个变体也承载节奏网格的同类错误：请求的 `onsets_per_bar` 超过小节内的
+    /// 16 分格位数时，[`crate::rhythm::metric_grid`] 用它报错（`degrees` 承载
+    /// 请求的 onset 数，`slots` 承载可用格位数），同样**不**静默钳制。
     #[error("progression is too dense: {degrees} degrees do not fit {slots} sixteenth-note slots")]
     ProgressionTooDense {
-        /// 级数个数。
+        /// 级数个数（节奏网格复用本变体时承载请求的 onset 数）。
         degrees: usize,
         /// 可用槽位数（每槽 = 一个 16 分音符 = 240 tick）。
         slots: usize,
@@ -109,8 +113,8 @@ pub enum TheoryError {
     #[error("genre id not found in library")]
     GenreNotFound,
 
-    /// 摇摆比例越界：合法区间是千分之 `50..=100`（50 = 平直，100 = 附点）。
-    #[error("swing permille {value} out of range 50..=100")]
+    /// 摇摆比例越界：合法区间是千分之 `500..=1000`（500 = 平直，1000 = 附点）。
+    #[error("swing permille {value} out of range 500..=1000")]
     SwingOutOfRange {
         /// 实际收到的千分比。
         value: u16,
@@ -180,5 +184,19 @@ mod tests {
             TheoryError::PitchOutOfRange { value: 200 }.to_string(),
             "pitch 200 out of range 0..=127"
         );
+    }
+
+    #[test]
+    fn the_swing_error_message_states_the_real_legal_range() {
+        // 判据：错误文本里的区间必须与 `swing::SWING_PERMILLE_STRAIGHT..=MAX` 同值。
+        // 这条判据在修复前是红的：文本写的是 "50..=100"，而真实区间是 500..=1000。
+        let message = TheoryError::SwingOutOfRange { value: 1 }.to_string();
+        assert_eq!(message, "swing permille 1 out of range 500..=1000");
+        let expected = format!(
+            "swing permille 1 out of range {}..={}",
+            crate::swing::SWING_PERMILLE_STRAIGHT,
+            crate::swing::SWING_PERMILLE_MAX
+        );
+        assert_eq!(message, expected);
     }
 }

@@ -27,8 +27,13 @@
 //! 下标的纯函数。同一个种子、同一份输入，在任何机器、任何编译器上得到同一个结果；
 //! 反过来，调用方只要换种子就能得到不同的编排。
 //!
-//! 浮点只出现在一个地方：[`pitch::note_to_hz`] 的频率输出。而且它也走
-//! `libm`（与架构文档对 L1 确定性"统一启用纯 Rust `libm` 数学库"的要求一致），
+//! 浮点只出现在**两个**地方，两处都走 `libm`（与架构文档对 L1 确定性
+//! "统一启用纯 Rust `libm` 数学库"的要求一致）：
+//!
+//! 1. [`pitch::note_to_hz`] 的频率输出；
+//! 2. [`genre::GenreRule::swing_permille`] 把登记的 `f32` 百分数折成整数千分比
+//!    （唯一一次乘法与取整）。此后 [`swing`] 与 [`rhythm`] 的全部运算都是整数。
+//!
 //! 没有任何判定逻辑依赖浮点比较。
 //!
 //! ## 确定性集合 [MODEL-AST-003 / 红线 4]
@@ -79,6 +84,12 @@
 //! 由 [`swing`] 关闭：[`GenreRule::swing_permille`] 把登记表里的 `f32` 百分数
 //! 折成整数千分比，[`swing::swung_pair_span`] / [`swing::quantize_onset`]
 //! 按该比例切分与量化 tick。
+//!
+//! 同一台账的 `pending 3`（"没有具体的鼓点网格"）由 [`rhythm`] 补上**网格**那一半：
+//! [`rhythm::swung_metric_grid`] 把拍号与摇摆比例落成逐 16 分音符的 onset 网格，
+//! [`genre::GenreRule::rhythm_grid`] 直接读该流派登记的拍号与摇摆比例。
+//! 另一半（逐流派的鼓点型数据）**没有**做：登记的 `note_density_hint` 计的是
+//! 音符数而不是 onset 数（见 [`rhythm`] 的模块文档），要补它需要新增登记数据。
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
@@ -87,6 +98,7 @@ pub mod error;
 pub mod genre;
 pub mod pitch;
 pub mod progression;
+pub mod rhythm;
 pub mod scale;
 pub mod swing;
 pub mod voice_leading;
@@ -97,6 +109,9 @@ pub use genre::{GenreLibrary, GenreRule};
 pub use pitch::{Interval, NoteName, Pitch, PitchClass, note_to_hz, parse_pitch_class};
 pub use progression::{
     ChordSpan, Degree, Meter, PPQ, Progression, RomanQuality, expand_progression,
+};
+pub use rhythm::{
+    GridHit, MAX_METRIC_WEIGHT, MetricGrid, cells_per_bar, metric_grid, metric_weight,
 };
 pub use scale::{Scale, ScaleKind};
 pub use swing::{
@@ -202,7 +217,7 @@ mod tests {
         //
         // 检查口径：只看**非注释行**，且只看到本模块为止（忽略测试模块本身，
         // 那里允许使用 `&` 与 `Vec` 等辅助工具）。
-        const SOURCES: [(&str, &str); 9] = [
+        const SOURCES: [(&str, &str); 10] = [
             ("lib.rs", include_str!("lib.rs")),
             ("pitch.rs", include_str!("pitch.rs")),
             ("scale.rs", include_str!("scale.rs")),
@@ -211,6 +226,7 @@ mod tests {
             ("voice_leading.rs", include_str!("voice_leading.rs")),
             ("genre.rs", include_str!("genre.rs")),
             ("swing.rs", include_str!("swing.rs")),
+            ("rhythm.rs", include_str!("rhythm.rs")),
             ("error.rs", include_str!("error.rs")),
         ];
         // 逐字节拼出禁词，避免这段代码自己包含禁词字面量。
