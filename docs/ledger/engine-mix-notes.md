@@ -56,6 +56,14 @@ RT: render_block
 AudioBlock<128> ──► cpal / NullBackend
 ```
 
+> ⚠ **就地加注（2026-10-08；上面第 52 行的更正）**：第 52 行的 `BusLimiter::apply` 是
+> **2026-10-05 那一刻**的入口名，**已经是历史**。限制器此后由 `b251348` 上移到 `yeban-dsp`：
+> 现行入口是 `yeban_dsp::limiter::Limiter::process_stereo`
+> （`crates/yeban-dsp/src/limiter.rs:305`），`yeban-engine` 侧**只剩 `pub use` re-export**
+> （`crates/yeban-engine/src/mixer.rs:111-113` 的 `Limiter as BusLimiter`）
+> ⇒ **现在的入口写作 `BusLimiter::process_stereo`**。
+> 本文件是**带日期的记录**，上面的图与原文按纪律**只标注、不改写**。
+
 ---
 
 ## 1. 声相定律（口径 + 规范依据 + 实测）
@@ -461,7 +469,7 @@ TrackV3.devices[?]                          TrackV3.instrument: Option<Instrumen
 | 项 | 为什么没做 | 接入点 |
 | :--- | :--- | :--- |
 | **PDC 回填限制器延迟** | 限制器给母线引入了 **33 帧（0.688 ms）** 延迟，但 `LatencyTable` 里没有这一项（`from_project` 只读设备的 `latency_samples`） | `graph::LatencyTable::from_project` + `EngineSnapshot::from_project` |
-| **真峰值（inter-sample peak）限制** | 限制器按**样本峰值**工作；真峰值可以比样本峰值高 1–3 dB。`yeban_dsp::meter` 有 4× 真峰值检测器，但没有接到限制器上（需要 4× 过采样 + 前瞻缓冲，属母带切片） | `BusLimiter::apply` 之前串一个 4× 过采样级 |
+| **真峰值（inter-sample peak）限制** | 限制器按**样本峰值**工作；真峰值可以比样本峰值高 1–3 dB。`yeban_dsp::meter` 有 4× 真峰值检测器，但没有接到限制器上（需要 4× 过采样 + 前瞻缓冲，属母带切片） | `BusLimiter::apply` 之前串一个 4× 过采样级（⚠ **2026-10-08 就地加注**：`apply` 是**当时**（2026-10-05）的入口名，**已经是历史**；限制器已由 `b251348` 上移到 `yeban-dsp`，**现在的入口是 `BusLimiter::process_stereo`**（`crates/yeban-dsp/src/limiter.rs:305`），`yeban-engine` 侧只剩 `pub use` re-export（`crates/yeban-engine/src/mixer.rs:111-113`）。本文件是带日期的记录，原句保留不改写） |
 | **`PanLaw` 的另三个变体** | 规范只有枚举名、没有曲线定义（见 §1.3） | `mixer::pan_gains` |
 | **立体声源 / 多声道** | 每条轨只渲染单声道；`ClipContent::Audio` 与立体声像未接 | `synth::render_track` 的返回类型 |
 | **发送 / 辅助汇流、路由边 `gain_db`** | `RoutingEdge::gain_db` 目前被忽略；母线汇流是"所有非母线轨直接进 master"的扁平模型 | `rt::render_block` 的逐轨循环 |
