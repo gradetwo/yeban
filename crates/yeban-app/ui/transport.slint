@@ -148,7 +148,14 @@ export component Transport inherits Rectangle {
         accessible-role: button;
         accessible-id: "transport-record-button";
         accessible-label: "录音";
-        accessible-checkable: true;
+        // **不得**声明 `accessible-checkable`：录音今天没有任何状态（`[ARCH-REC-001]` 只有
+        // 规范、没有实现），所以"可勾选"是假话。Slint 的 winit/accesskit 后端只在
+        // `accessible-checkable` 为真时才把勾选态交给屏读器
+        // （`i-slint-backend-winit-1.18.1/accesskit.rs` 的 `is_checkable` / `is_checked`），
+        // 故下面这行留下的 `accessible-checked` 对无障碍树**不再产生任何输出** ——
+        // 它只是为了不动 `src/test_port_adapter.rs` 的既有读数而**原样保留**
+        // （见判据 `pressing_the_record_button_today_changes_nothing`）。谁真接了录音，
+        // 就把这行连同该判据一并改成真实状态源。
         accessible-checked: false;
 
         UiText {
