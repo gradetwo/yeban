@@ -5,15 +5,26 @@
 //! `crates/yeban-engine/tests/rt_zero_alloc.rs` 覆盖的是**引擎的音频路径**
 //! （`EngineRuntime::render_block` → 逐轨合成/电平 → 母线限制器 → SPSC 发布）。
 //!
-//! 本模块的 [`yeban_dsp::channel_strip`] **还没有被引擎调用**，核实依据：
+//! 本模块的 [`yeban_dsp::channel_strip`] **已经被引擎引用并构造**（`db1850f` 起），
+//! 核实依据：
 //!
 //! ```text
-//! $ grep -rn 'channel_strip' crates/yeban-engine/
-//! （零命中）
+//! $ grep -rn 'ChannelStrip::new' crates/yeban-engine/src/
+//! crates/yeban-engine/src/rt.rs:985: *entry = (*id, Some(ChannelStrip::new(params, sample_rate)));
+//! $ grep -n 'pub use yeban_dsp::channel_strip' crates/yeban-engine/src/insert.rs
+//! 165:pub use yeban_dsp::channel_strip::{
 //! ```
 //!
-//! ⇒ 引擎那条判据的"全 0"**不构成**本器件零分配的证据。⛔ 不许把它当成
-//! `channel_strip` 的读数引用。本文件把同一套仪器**对准** `channel_strip` 本身。
+//! 但引擎那条判据**没有武装**通道条，因此它的"全 0"仍然**不构成**本器件零分配的
+//! 证据（同一条核实纪律，换成"引擎侧有没有走到这条路径"的问法）：
+//!
+//! ```text
+//! $ grep -c 'strip' crates/yeban-engine/tests/rt_zero_alloc.rs
+//! 0
+//! ```
+//!
+//! ⛔ 不许把引擎那条判据的全 0 当成 `channel_strip` 的读数引用。本文件把同一套仪器
+//! **对准** `channel_strip` 本身。
 //!
 //! ⚠ 本文件**只**覆盖"堆分配 / 堆释放"两个分量。锁与阻塞 I/O 的分量由引擎的
 //! `rt_probe`（`RtLockProbe` / `diag`）承担，本 crate **没有**那套探针 ⇒
