@@ -35,7 +35,7 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 十六个场景（在既有 `harness = false` 风格上扩展）
+//! # 十七个场景（在既有 `harness = false` 风格上扩展；㉓ 由 `line/engine-drums` 追加）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -55,6 +55,7 @@
 //! | ⑳ | 设备回调体 2 000 次（`yeban_engine::device::render_callback`） | cpal 建流的闭包、`NullBackend::render` 与判据调用的**同一个**函数 ⇒ "回调里多做了事"（分配/锁/I-O/日志）在这里变红；**feature `device` 门控**（`--no-default-features` 下本场景不跑） |
 //! | ㉑ | 节拍器 2 000 量子全程打拍（`transport.metronome_enabled = true`；关闭侧另 200 量子） | `render_block` 的 3a'（`metronome::render_quantum`）：每拍帧位置反算（`Transport::frames_until_tick` 的整数 `div_ceil`）、强弱拍增益选择、逐样本"比对 + 一次乘 + 两次加"、**跨量子延续**的游标；关闭侧覆盖"整段跳过"分支。行为判据在 `tests/metronome_render.rs` |
 //! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
+//! | ㉓ | 每轨**鼓机音源** 10 000 量子（两条轨：一条鼓机、一条复音）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz）＋ **1 次换回复音合成器** | `SynthEngine::render_track` 的鼓机分支（`DrumNoteMap::voice_for` → `DrumMachine::trigger` → `DrumMachine::render`）与快照边界的 `DrumMachine::set_params` / `set_sample_rate`。⚠ 与 ㉒ **相反**：鼓机没有延迟线 ⇒ 换采样率**照常武装**（不分配），因此本场景是「换采样率也必须零分配」的唯一判据。行为判据在 `tests/drums_instrument.rs` |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -100,6 +101,7 @@
 //! | I10 | `device.rs::render_callback` 里加一次 `Vec::<u8>::with_capacity(1)`（或 `Mutex::lock` / `println!`） | **仅** ⑳（设备回调体）—— ①~⑲ 全部不动（它们不执行那个函数） |
 //! | I11 | `rt.rs::render_block` 的 3a' 节拍器分支里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉑（节拍器开启侧）—— ㉑b（关闭侧）与其它场景不动（跳过分支里没有那句）；实测红行：`㉑ FAIL … 四元组[alloc=2000 dealloc=2000 …]` 且汇总 `41 / 42 通过`，还原后 `42 / 42`（记录在本票的交付报告里；`gate-rt-zero-alloc-notes.md` 是**带日期的历史读数**、不属本票、一字未改） |
 //! | I12 | 删掉 `rt.rs::render_block` 的混响采样率守卫（`if current.sample_rate() == *armed_reverb_sample_rate`）**并**把"同轨同槽只 `set_params`"的快路径也去掉（⇒ 每次重新武装都调 `Reverb::set_sample_rate`） | **仅** ㉒（换采样率那一段）的**分配/释放**分量；实测红行：`reverb rate-mismatch re-arm + quantum: allocations=48 deallocations=48` ⇒ `㉒ FAIL … 实时路径分配了 48 次`，汇总 `43 / 44`；⚠ **只删守卫、保留快路径的注入不会变红**（同轨同槽不调 `set_sample_rate` ⇒ 零分配）—— 那条半注入的实测红行是 `㉒c FAIL … 换采样率之后混响必须整段不武装`，见本票报告 |
+//! | I13 | `synth.rs::render_track` 的**鼓机触发分支**里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉓（鼓机音源侧）的**分配/释放**分量；实测红行：`㉓ FAIL … 四元组[alloc=216 dealloc=216 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]` ⇒ 汇总 `45 / 46`。同一个注入也打红 `synth_rt_zero_alloc` 的 J11（`drum instrument 10_000 quanta: allocations=213 deallocations=213`；213 = 那个窗口的鼓击数）；还原后 `46 / 46` 与 J11 全窗 `allocations=0 deallocations=0` |
 //!
 //! # I9 的实测记录（`N6` 选项 A 的验收证据；本节只在本文件里留档，账本由集成者补记）
 //!
@@ -547,9 +549,9 @@ impl Report {
         println!("[MUST-GATE-001] 判据汇总: {passed} / {total} 通过");
         if self.failures() == 0 {
             println!(
-                "[MUST-GATE-001] ok: 十六场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
+                "[MUST-GATE-001] ok: 十七场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
                  回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰 / \
-                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器 / 每轨插入混响）四元组全 0；两条溢出路径（N6 选项 A）\
+                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器 / 每轨插入混响 / 每轨鼓机音源）四元组全 0；两条溢出路径（N6 选项 A）\
                  走纯计数出口而**仍然** io_requests==0 && io_ops==0（且 suppressed_diag_events>0 ⇒ \
                  真的跑到了溢出）；控制面读取 EngineStats 的读取路径同样全 0；\
                  探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
@@ -2032,6 +2034,190 @@ fn scenario_reverb_insert(report: &mut Report) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 场景 ㉓ 每轨鼓机音源（`line/engine-drums`）
+// ---------------------------------------------------------------------------
+
+/// ㉓ 的量子数（与 ㉒ 同量级）。
+const DRUM_QUANTA: u64 = 10_000;
+/// ㉓ 的重新武装轮数。
+const DRUM_REARM_ROUNDS: u64 = 31;
+/// ㉓ 的鼓机键位映射（五个鼓件各一个音高）。
+const DRUM_SCENE_MAP: [f32; 5] = [36.0, 38.0, 42.0, 46.0, 39.0];
+
+/// 一张**内置乐器**设备（㉓ 用；与 [`insert_effect`] 的区别只有 `kind`）。
+fn instrument_device(name: &str, params: &[(&str, f32)]) -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: name.to_owned(),
+        kind: DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: params
+            .iter()
+            .map(|(name, value)| ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: None,
+            })
+            .collect(),
+        latency_samples: 0,
+    }
+}
+
+/// 一台**键位映射写全**的鼓机设备。
+fn drum_scene_device(extra: &[(&str, f32)]) -> DeviceDefinition {
+    let mut params = vec![
+        ("kick_note", DRUM_SCENE_MAP[0]),
+        ("snare_note", DRUM_SCENE_MAP[1]),
+        ("closed_hat_note", DRUM_SCENE_MAP[2]),
+        ("open_hat_note", DRUM_SCENE_MAP[3]),
+        ("clap_note", DRUM_SCENE_MAP[4]),
+    ];
+    params.extend_from_slice(extra);
+    instrument_device("Yeban Drums", &params)
+}
+
+/// ㉓ 的鼓机音符：与 [`saturated_notes`] 同一个时间栅格（每 240 tick 起音），
+/// 但音高轮流落在 [`DRUM_SCENE_MAP`] 的五个音高上 ⇒ 每一记都命中一个鼓件。
+fn drum_scene_notes() -> Vec<NoteSpec> {
+    (0..256u64)
+        .map(|index| {
+            NoteSpec::at(
+                index * 240,
+                480,
+                DRUM_SCENE_MAP[(index % 5) as usize] as u8,
+                100,
+            )
+        })
+        .collect()
+}
+
+/// ㉓：每轨**鼓机音源** —— 逐样本触发/渲染 + 重新武装 + 换采样率 + 换回音源，四元组全 0。
+///
+/// 为什么这条场景必须在**四元组**判据里（而不是只在 `synth_rt_zero_alloc` 里）：
+/// 那个目标只数分配/释放两个分量；鼓机的逐样本路径（`DrumHit` 构造 + 键位映射查找 +
+/// 器件内的槽位池遍历）会不会碰锁或 I/O，只有在这里量得出来。
+///
+/// 与 ㉒ 的**结构差别**（这条场景的全部价值）：
+///
+/// * 鼓机是**音源**（触发式），不是插入链上的逐样本变换；
+/// * 鼓机**没有延迟线** ⇒ `DrumMachine::set_sample_rate` 只重算系数、不碰堆
+///   ⇒ 换采样率**照常武装**。㉒ 在同一个分支里恰恰是**拒绝**（混响要重建延迟线）
+///   ⇒ 本场景是「换采样率也必须零分配」的唯一判据。
+///
+/// 夹具：两条轨（一条鼓机、一条复音合成器），两条轨的音符都铺满整个窗口。四段窗口：
+///
+/// ① 10 000 个量子 = 触发 + 渲染（覆盖度：本窗口鼓击数 = 窗口内起音数）；
+/// ② 31 次**同采样率**重新武装（一个字段都不写 ⇒ 器件状态全保留）；
+/// ③ 1 次**换采样率**（48 → 44.1 kHz）⇒ 鼓机仍武装（对比 ㉒ 的拒绝）；
+/// ④ 1 次**换回复音合成器** ⇒ 鼓机不武装（`DrumMachine::reset`，不是释放）。
+fn scenario_drum_instrument(report: &mut Report) {
+    let (mut project, drum_track, poly_track) =
+        support::two_track_project(&drum_scene_notes(), &saturated_notes());
+    {
+        let entry = project
+            .tracks
+            .get_mut(&drum_track)
+            .expect("夹具里必须有那条鼓机轨");
+        entry.devices = vec![drum_scene_device(&[
+            ("kick_decay_s", 0.40),
+            ("master_level", 0.9),
+        ])];
+    }
+    {
+        let entry = project
+            .tracks
+            .get_mut(&poly_track)
+            .expect("夹具里必须有那条复音轨");
+        entry.devices = vec![instrument_device(
+            "Hollow",
+            &[("cutoff_hz", 800.0), ("resonance", 0.3)],
+        )];
+    }
+
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+    assert_eq!(
+        rig.runtime.armed_drum_slot_count(),
+        1,
+        "夹具的鼓机轨必须被武装（否则本场景是空转）"
+    );
+    assert!(rig.runtime.armed_drums(&drum_track).is_some());
+
+    // 覆盖度自检的**精确**期望：**本窗口内**的起音数（由夹具栅格算出，不是"大于 0"）。
+    // 窗口 = 预热之后的那 10 000 个量子 ⇒ 帧区间 `[128, (1 + 10 000) × 128)`。
+    let window_start = DEFAULT_BLOCK_FRAMES as u64;
+    let window_end = (DRUM_QUANTA + 1) * DEFAULT_BLOCK_FRAMES as u64;
+    let expected_hits = (0..256u64)
+        .filter(|index| {
+            let start = index * 240 * 25;
+            start >= window_start && start < window_end
+        })
+        .count() as u64;
+
+    let mut scenario = Scenario::new("㉓鼓机音源");
+    let before_hits = rig.stats().drum_hits;
+    scenario.absorb(DRUM_QUANTA, &rig.pump(DRUM_QUANTA));
+    let after_render = rig.stats();
+    let hits = after_render.drum_hits.saturating_sub(before_hits);
+
+    // ② 同采样率重新武装（窗口外发布 + 窗口内 1 个量子）。
+    let mut revision = 2u64;
+    for _ in 0..DRUM_REARM_ROUNDS {
+        let next = EngineSnapshot::from_project(&project, revision).expect("快照");
+        rig.slot.publish(next);
+        revision += 1;
+        scenario.absorb(1, &rig.pump(1));
+        let _ = rig.queue.drain(64);
+    }
+    let rearmed_slots = rig.runtime.armed_drum_slot_count();
+
+    // ③ 换采样率（44.1 kHz）：鼓机**照常武装**（对比 ㉒ 的混响：那里必须为 0）。
+    let mut shifted = project.clone();
+    shifted.audio_config.sample_rate = SampleRate::Hz44100;
+    let shifted_snapshot = EngineSnapshot::from_project(&shifted, revision).expect("换采样率快照");
+    rig.slot.publish(shifted_snapshot);
+    scenario.absorb(1, &rig.pump(1));
+    let shifted_slots = rig.runtime.armed_drum_slot_count();
+    revision += 1;
+
+    // ④ 换回复音合成器：鼓机不武装。
+    let mut swapped = project.clone();
+    {
+        let entry = swapped
+            .tracks
+            .get_mut(&drum_track)
+            .expect("夹具里必须有那条鼓机轨");
+        entry.devices = vec![instrument_device("Hollow", &[("cutoff_hz", 800.0)])];
+    }
+    let swapped_snapshot = EngineSnapshot::from_project(&swapped, revision).expect("换回快照");
+    rig.slot.publish(swapped_snapshot);
+    scenario.absorb(1, &rig.pump(1));
+    let swapped_slots = rig.runtime.armed_drum_slot_count();
+
+    scenario.note(format!(
+        "① 鼓击 {before_hits} -> {}（本窗口 {hits}，期望 {expected_hits} = 窗口内起音数；\
+         预热那 1 个量子不计入本窗口）；② {DRUM_REARM_ROUNDS} 次重新武装后槽位={rearmed_slots}；\
+         ③ 换 44.1 kHz 后槽位={shifted_slots}（对比 ㉒ 的混响：那里要求 0）；\
+         ④ 换回复音合成器后槽位={swapped_slots}",
+        after_render.drum_hits
+    ));
+    report.scenario(
+        "㉓",
+        "[MUST-GATE-001] 每轨鼓机音源 10 034 量子（含 31 次重新武装、1 次换采样率、1 次换回音源）：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㉓c",
+        "覆盖度：整窗鼓击数 = 窗口内起音数；换采样率后仍武装（对比 ㉒ 的拒绝）；换回复音后不武装",
+        hits == expected_hits && rearmed_slots == 1 && shifted_slots == 1 && swapped_slots == 0,
+        format!(
+            "本窗口鼓击={hits}（要求 {expected_hits}）；重新武装后槽位={rearmed_slots}（要求 1）；\
+             换采样率后槽位={shifted_slots}（要求 1）；换回复音后槽位={swapped_slots}（要求 0）"
+        ),
+    );
+}
+
 /// 造一份**轨道数超过电平暂存容量**的快照：母线 + [`OVERSIZE_TRACKS`] 条普通轨。
 ///
 /// 走的是与真实投影**同一套**下层构造（`TrackParams::from_track` + `from_parts`），
@@ -2615,6 +2801,7 @@ fn main() -> ExitCode {
     scenario_device_callback_body(&mut report);
     scenario_metronome(&mut report);
     scenario_reverb_insert(&mut report);
+    scenario_drum_instrument(&mut report);
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);
