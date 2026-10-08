@@ -77,6 +77,35 @@ fn bypass_is_bit_identical_to_no_filter_path() {
             .collect::<Vec<u32>>(),
         "接了 300 Hz 低通的渲染必须与旁通不同"
     );
+
+    // 第三个臂（本票新增）：旁通与"**透明**低通"必须不同。
+    //
+    // ⚠ **缺口来源**：`docs/ledger/integration-rulings-notes.md` 的 R3
+    //（"`synth_filter.rs` F1 缺第三个臂"）。上面两个臂**各自**都有对照，
+    // 但对照物都不足以钉住"旁通 = 20 kHz 透明滤波"这种错法：
+    // - 第一个臂的两边是 `ToneParams::bypass()` 与 `ToneParams::default()`，
+    //   而按 `synth.rs:306-310` 后者**就是**前者（也是旁通）⇒ 那种错法下
+    //   两边**同时**被滤波 ⇒ 仍然逐位相等（判据看不见）；
+    // - 第二个臂（300 Hz）在那种错法下仍然**不等**。
+    //
+    // ⚠ **上一票的注入 I7**（`polysynth` 票把 `render` 里两处 `if !filter_bypass`
+    // 改成恒真）对**本判据 F1 不红**，原因就是上面第一条。
+    //
+    // ⭐ 准确说法是"**F1 缺一个臂，本票补上**"，不是"F1 以前是错的"。
+    //
+    // 参照 `yeban-dsp` 的同款判据 `bypass_is_not_a_transparent_filter`
+    //（`crates/yeban-dsp/src/polysynth.rs:1436`）：把"旁通"与"显式在旁通占位截止频率
+    //（20 kHz，见 `synth.rs:136`）上**真的**开一个低通"直接对比。
+    let mut transparent = SynthRig::new(&ToneParams::new(20_000.0, 0.0, 0.0));
+    let with_transparent = transparent.render(&schedule, 40);
+    assert_ne!(
+        bypass_bits,
+        with_transparent
+            .iter()
+            .map(|s| s.to_bits())
+            .collect::<Vec<u32>>(),
+        "旁通与'20 kHz 透明低通'必须是不同的位模式（否则旁通等于没做）"
+    );
 }
 
 /// F2：直流（准直流）通过低通后的稳态增益 ≈ 1。
