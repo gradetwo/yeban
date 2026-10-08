@@ -1099,6 +1099,76 @@ mod tests {
         assert_eq!(export.digest, sha256_of(&export.file));
     }
 
+    /// **导出落点判据（格式参数）**: 用 [`Bext::for_project_with_format`] 当模板时,
+    /// 导出的**文件字节**里必须出现真实的 `F=`/`W=`, 且**不得**出现任何
+    /// `<sample_rate>` / `<bits>` 占位符字面量。
+    ///
+    /// # 这条判据钉住的是什么
+    ///
+    /// `export_master` 是**唯一**同时知道 `sample_rate` 与 `depth` 的地方,
+    /// 因此"编码历史写真实格式"这件事只能落在调用方给它的模板上。修复前
+    /// `Bext::for_project` 的字面量是 `A=PCM,F=<sample_rate>,W=<bits>,M=stereo,T=Yeban`,
+    /// 于是导出文件会**声称自己的采样率是一个尖括号标记**（本机实测, 见提交说明）。
+    ///
+    /// 两档一起钉: 24-bit ⇒ `W=24`, 32f ⇒ `W=32`（`BitDepth::bits()` 的机械读数）。
+    #[test]
+    fn the_export_lands_the_real_format_in_the_coding_history() {
+        fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+            haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+        }
+
+        let tone = sine_997(0.1, 48_000 * 4);
+        let cases: [(BitDepth, &str); 2] = [
+            (BitDepth::Int24, "A=PCM,F=48000,W=24,M=stereo,T=Yeban"),
+            (BitDepth::Float32, "A=PCM,F=48000,W=32,M=stereo,T=Yeban"),
+        ];
+        for (depth, expected) in cases {
+            let mut master = master_output(&tone, &tone);
+            let template = Bext::for_project_with_format(
+                "01J8ZK9WQ7F5N2V4B6C8D0E1F2",
+                "2026-10-08",
+                "13:37:00",
+                48_000,
+                depth.bits(),
+            );
+            let mut rng = seed_rng(0x0BAD_C0DE_DEAD_BEEF);
+            let export = export_master(
+                48_000,
+                &mut master,
+                ExportPreset::streaming(),
+                depth,
+                ContainerKind::Rf64,
+                &template,
+                &mut rng,
+            )
+            .expect("48 kHz 立体声 + v2 模板");
+
+            let parsed = crate::rf64::parse_container(&export.file).expect("读回自研容器");
+            let bext = parsed.bext.expect("导出必须带 bext");
+            assert_eq!(
+                bext.coding_history, expected,
+                "{depth:?} 的编码历史必须带真实 F=/W="
+            );
+            // 判据落在**文件字节**上, 不是落在一个字符串字段上:
+            // 真实参数必须真的被写进容器, 而占位符必须真的不在文件里。
+            assert!(
+                contains(&export.file, expected.as_bytes()),
+                "{depth:?}: 编码历史必须逐字节出现在文件里"
+            );
+            assert!(
+                !contains(&export.file, b"<sample_rate>") && !contains(&export.file, b"<bits>"),
+                "{depth:?}: 交付文件里不得出现模板占位符"
+            );
+            // 响度落点不受本判据影响（同一次导出里两条落点各自独立）。
+            assert_eq!(
+                bext.loudness.expect("v2 必须带响度块").loudness_value,
+                Loudness::from_lufs(export.outcome.after.integrated_lufs)
+            );
+        }
+    }
+
     /// 静音母带: 五个响度字段全部写哨兵 `UNKNOWN`（**不是** 0.0 LUFS 的假读数）,
     /// 增益为 0, 负载逐字节全零。
     #[test]

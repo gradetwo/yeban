@@ -393,6 +393,28 @@ impl Default for Bext {
     }
 }
 
+/// `CodingHistory` 的字面内容。
+///
+/// BWF 的编码历史是一串逗号分隔的 `键=值`（`A=` 算法、`F=` 采样率 Hz、
+/// `W=` 字长 bit、`M=` 声道、`T=` 自由文本）。**每一项都是可选的** —— 因此
+/// "构造时还不知道的项"的正确写法是**省略**, 绝不是写一个 `<sample_rate>`
+/// 这样的**占位符字面量**: 那会让文件声称它的采样率是一个尖括号标记。
+///
+/// 本 crate 里 `A=PCM` 与 `M=stereo` 是工程级选择（母带导出恒为立体声, 见
+/// [`crate::mastering::MasterExportError::NotStereo`]）, `T=Yeban` 是发起者标记;
+/// 只有 `F=` 与 `W=` 依赖导出格式, 因此在拿到格式前省略。
+fn coding_history(sample_rate: Option<u32>, bits_per_sample: Option<u16>) -> String {
+    let mut out = String::from("A=PCM");
+    if let Some(sample_rate) = sample_rate {
+        out.push_str(&format!(",F={sample_rate}"));
+    }
+    if let Some(bits_per_sample) = bits_per_sample {
+        out.push_str(&format!(",W={bits_per_sample}"));
+    }
+    out.push_str(",M=stereo,T=Yeban");
+    out
+}
+
 impl Bext {
     /// 为一次母带导出构造 `bext` 块: 工程 ULID 写进 `OriginatorReference`。
     ///
@@ -403,6 +425,13 @@ impl Bext {
     /// 长度放得下 26 字符 ULID 的自由文本字段, 因此选它承载, 并登记在 notes 的
     /// `needs`: 若后续引入 `axml`（BS.2088 的 `<ULID>` 元素是更规范的落点），
     /// 应改为写 `axml` 同时保留 `OriginatorReference` 以向后兼容。
+    ///
+    /// # `CodingHistory`
+    ///
+    /// 本函数在构造时**不知道**采样率与字长, 因此它的编码历史是
+    /// `A=PCM,M=stereo,T=Yeban` —— 只写已知项, **不写占位符**。
+    /// 需要把 `F=`/`W=` 一并写进交付文件的调用方用
+    /// [`Self::for_project_with_format`]。
     #[must_use]
     pub fn for_project(ulid: &str, origination_date: &str, origination_time: &str) -> Self {
         Self {
@@ -420,8 +449,41 @@ impl Bext {
                 max_momentary_loudness: Loudness::UNKNOWN,
                 max_short_term_loudness: Loudness::UNKNOWN,
             }),
-            coding_history: "A=PCM,F=<sample_rate>,W=<bits>,M=stereo,T=Yeban".to_owned(),
+            coding_history: coding_history(None, None),
             ..Self::default()
+        }
+    }
+
+    /// 与 [`Self::for_project`] 相同, 但 `CodingHistory` 携带**真实的**导出格式参数。
+    ///
+    /// # 与 `for_project` 的唯一差别
+    ///
+    /// `A=PCM,F=<sampling frequency>,W=<word length>,M=stereo,T=Yeban`。
+    /// `F=` 与 `W=` 取自**调用方实际会写出的**格式（`sample_rate` 是 Hz,
+    /// `bits_per_sample` 是位）。模板函数 `for_project` 在构造时并不知道这两项,
+    /// 因此它只能给出不带 `F=`/`W=` 的诚实子集; 想要完整编码历史的调用方用本函数。
+    ///
+    /// # 为什么要单独一个入口（实测的缺口）
+    ///
+    /// 导出路径上唯一知道格式的地方就是导出调用本身。本 crate 的两条下游都因此
+    /// 被迫在**别处**手工拼这条字符串, 例如
+    /// `crates/yeban-mcp/src/domain/render.rs:1279` 自己 `format!` 了一份
+    /// （并在注释里点名 `for_project` 的编码历史"是模板字符串(带 `<sample_rate>`
+    /// 字面量)"）。把"真实参数"这一档做成 crate 自己的构造器, 下游就不必各自复刻。
+    ///
+    /// 参数**不做校验**: 本函数无法知道 `bits_per_sample` 是否是一个本 crate 能写出的
+    /// 位深, 它只如实转录调用方声称的格式（与 [`PcmFormat`] 一样不设白名单）。
+    #[must_use]
+    pub fn for_project_with_format(
+        ulid: &str,
+        origination_date: &str,
+        origination_time: &str,
+        sample_rate: u32,
+        bits_per_sample: u16,
+    ) -> Self {
+        Self {
+            coding_history: coding_history(Some(sample_rate), Some(bits_per_sample)),
+            ..Self::for_project(ulid, origination_date, origination_time)
         }
     }
 
@@ -1570,5 +1632,81 @@ mod tests {
         let lengths = chunk_lengths(&parsed.chunks);
         assert_eq!(lengths.get("fmt "), Some(&16));
         assert_eq!(lengths.get("data"), Some(&data.len()));
+    }
+
+    /// 判据 19: 工程模板的 `CodingHistory` **不含占位符字面量**, 且真实参数入口
+    /// 写出的 `F=`/`W=` 就是调用方给的格式。
+    ///
+    /// 为什么这是一条判据而不是注释: 修复前 `for_project` 的字面量是
+    /// `A=PCM,F=<sample_rate>,W=<bits>,M=stereo,T=Yeban` —— 一个交付文件会因此
+    /// **声称自己的采样率是尖括号标记**。这条判据同时钉住两档:
+    /// 不知道格式时**省略** `F=`/`W=`（BWF 的每一项都可选）, 知道时写**数字**。
+    #[test]
+    fn project_templates_never_write_placeholder_coding_history() {
+        let unknown = Bext::for_project("01J8ZK9WQ7F5N2V4B6C8D0E1F2", "2026-10-08", "13:37:00");
+        assert_eq!(unknown.coding_history, "A=PCM,M=stereo,T=Yeban");
+        assert!(
+            !unknown.coding_history.contains('<') && !unknown.coding_history.contains('>'),
+            "构造期不知道格式 ⇒ 省略 F=/W=, 绝不写占位符: {:?}",
+            unknown.coding_history
+        );
+
+        let known = Bext::for_project_with_format(
+            "01J8ZK9WQ7F5N2V4B6C8D0E1F2",
+            "2026-10-08",
+            "13:37:00",
+            48_000,
+            24,
+        );
+        assert_eq!(known.coding_history, "A=PCM,F=48000,W=24,M=stereo,T=Yeban");
+        // 其余字段两档必须完全一致 —— 差别**只有**编码历史这一项。
+        assert_eq!(known.originator_reference, unknown.originator_reference);
+        assert_eq!(known.originator, unknown.originator);
+        assert_eq!(known.version, unknown.version);
+        assert_eq!(known.loudness, unknown.loudness);
+        assert_eq!(known.origination_date, unknown.origination_date);
+        assert_eq!(known.origination_time, unknown.origination_time);
+
+        // 参数如实转录, 不做任何单位换算或白名单。
+        let other = Bext::for_project_with_format("u", "2026-10-08", "13:37:00", 44_100, 16);
+        assert_eq!(other.coding_history, "A=PCM,F=44100,W=16,M=stereo,T=Yeban");
+    }
+
+    /// 判据 20: 两档编码历史都**逐字节落在 `CodingHistory` 偏移**（602）上,
+    /// 并能被自己的读取器原样读回。
+    ///
+    /// 这条判据把"字符串对不对"升级为"字节落点对不对": 即使字符串正确, 若它
+    /// 被写进了保留区, 文件依然没有一个可读的 `CodingHistory`。
+    #[test]
+    fn both_coding_history_flavours_land_at_offset_602_and_round_trip() {
+        let cases = [
+            (
+                Bext::for_project("01J8ZK9WQ7F5N2V4B6C8D0E1F2", "2026-10-08", "13:37:00"),
+                "A=PCM,M=stereo,T=Yeban",
+            ),
+            (
+                Bext::for_project_with_format(
+                    "01J8ZK9WQ7F5N2V4B6C8D0E1F2",
+                    "2026-10-08",
+                    "13:37:00",
+                    96_000,
+                    32,
+                ),
+                "A=PCM,F=96000,W=32,M=stereo,T=Yeban",
+            ),
+        ];
+        for (block, expected) in cases {
+            assert_eq!(block.coding_history, expected);
+            let bytes = block.to_bytes();
+            assert_eq!(bytes.len(), BEXT_FIXED_LEN + expected.len());
+            assert_eq!(
+                &bytes[BEXT_FIXED_LEN..],
+                expected.as_bytes(),
+                "CodingHistory 必须从固定前缀之后开始"
+            );
+            let decoded = Bext::from_bytes(&bytes).expect("解码");
+            assert_eq!(decoded.coding_history, expected);
+            assert_eq!(decoded, block, "带真实编码历史的块必须原样往返");
+        }
     }
 }
