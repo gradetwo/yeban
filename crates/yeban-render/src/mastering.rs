@@ -339,7 +339,10 @@ impl ExportPreset {
 /// 母带导出被拒绝的原因。
 ///
 /// 每一种拒绝都是**有意的**：静默降级会把一个自相矛盾或元数据缺失的文件交给用户。
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// 本枚举**不实现 `Eq`**：[`Self::NonFiniteSamples`] 携带 `f32`, 而 `NaN` 让比较退化成
+/// 偏序。`PartialEq` 仍然可用（判据用 `assert_eq!` 比错误值）。
+#[derive(Clone, Debug, PartialEq)]
 pub enum MasterExportError {
     /// 采样率不在内置四档（44.1 / 48 / 88.2 / 96 kHz）里 ⇒ 响度读数会错 ⇒ 拒绝。
     UnsupportedSampleRate(u32),
@@ -353,6 +356,24 @@ pub enum MasterExportError {
     /// 而 [`crate::rf64::Bext::to_bytes`] 对"版本 2 但无响度"会 panic, 对
     /// "版本 1 却有响度"也会 panic —— 两条路都只能靠拒绝避开。
     BextCannotCarryLoudness(u16),
+    /// 母带缓冲里有 `NaN` / `±inf` 样本 ⇒ 拒绝, **不**静默换成一个 0 样本。
+    ///
+    /// `index` 是**交错缓冲里第一个**非有限样本的下标, `value` 是那个样本本身。
+    ///
+    /// # 为什么拒绝而不是让抖动层替换
+    ///
+    /// [`crate::dither::quantize`] 的契约是"别把 `NaN` 写进容器", 它把非有限样本换成
+    /// `0.0`（32f 路径）或钳成一个整数端点（16/24 位路径）。若导出就此放行, 出来的文件
+    /// 是一段**静音或端点直流**, 而 `bext` 的 EBU R128 块仍写着"实测"的响度与真峰值 ——
+    /// 元数据与音频互相矛盾, 且调用方拿不到任何信号。同一条纪律的既有落点是
+    /// [`crate::wav::check_match`]: 越界样本在那里也是**拒绝**（`RejectedFormat`）,
+    /// 不是替换。
+    NonFiniteSamples {
+        /// 交错缓冲里第一个非有限样本的下标（样本计数, 不是帧计数）。
+        index: usize,
+        /// 那个非有限样本本身（`NaN` / `+inf` / `-inf`）。
+        value: f32,
+    },
     /// 容器写入失败（透传 [`Rf64Error`]）。
     Container(Rf64Error),
 }
@@ -375,6 +396,10 @@ impl core::fmt::Display for MasterExportError {
             Self::BextCannotCarryLoudness(version) => write!(
                 f,
                 "bext 版本 {version} 没有 EBU R128 响度字段, 无法承载实测响度 [ARCH-FMT-001]"
+            ),
+            Self::NonFiniteSamples { index, value } => write!(
+                f,
+                "母带缓冲的第 {index} 个样本是 {value}（非有限）; 导出会静默丢弃它, 因此拒绝"
             ),
             Self::Container(error) => write!(f, "容器写入失败: {error}"),
         }
@@ -412,13 +437,35 @@ pub struct MasterExport {
     pub digest: [u8; 32],
 }
 
+/// 扫出交错缓冲里**第一个** `NaN` / `±inf` 样本; 全部有限 ⇒ `Ok(())`。
+///
+/// 只读一遍缓冲, 零分配。它存在的理由是 [`crate::dither::quantize`] 的既有契约:
+/// 非有限样本在量化时被**替换**成 `0.0`（32f）或一个整数端点（16/24 位）。替换本身
+/// 是对的（容器里不许出现 `NaN` 位型）, 但导出不能因此**静默**产出一段静音:
+/// `bext` 会同时写着"实测"的响度与真峰值, 元数据与音频于是互相矛盾。
+///
+/// 返回**第一个**命中的下标而不是"有/没有"两态: 调用方要能定位是哪一帧坏的。
+fn require_finite_samples(samples: &[f32]) -> Result<(), MasterExportError> {
+    match samples
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        Some((index, value)) => Err(MasterExportError::NonFiniteSamples { index, value }),
+        None => Ok(()),
+    }
+}
+
 /// 把一次渲染产物落成带**实测**响度元数据的广播级容器文件 [ARCH-FMT-001]。
 ///
 /// 这一步把三条既有能力接成一条链, 顺序如下（每一步的顺序都有理由）:
 ///
-/// 1. **校验**: 立体声、交错长度成对、`bext` 版本 ≥ 2（见 [`MasterExportError`]）;
+/// 1. **校验**: 立体声、交错长度成对、`bext` 版本 ≥ 2、全部样本有限
+///    （见 [`MasterExportError`]。非有限样本在**施加增益之前**就被拒绝）;
 /// 2. **[`ExportPreset::apply`]**: 按目标响度与真峰值上限**就地**施加增益
-///    （上限赢时减小增益, 不削顶）;
+///    （上限赢时减小增益, 不削顶）; 它只施加由**有限**读数算出的增益, 因此有限输入
+///    不会在这里变成非有限值（论证见函数体内那段注释）;
 /// 3. **测量**: 用第 2 步返回的 `after`（在**抖动之前**的浮点母带上测的），
 ///    经 [`MasterLoudness::to_bext_loudness`] 写进 `bext` v2 的 EBU R128 块;
 /// 4. **抖动/量化**: [`crate::dither::quantize`]（16/24 位走 TPDF, 32f 透传）;
@@ -438,7 +485,8 @@ pub struct MasterExport {
 ///
 /// # Errors
 ///
-/// 见 [`MasterExportError`]。`sample_rate` 不受支持时**不静默回落**到 48 kHz。
+/// 见 [`MasterExportError`]。`sample_rate` 不受支持时**不静默回落**到 48 kHz;
+/// 母带里有 `NaN` / `±inf` 样本时**不静默替换成 0**。
 pub fn export_master(
     sample_rate: u32,
     master: &mut RenderOutput,
@@ -459,6 +507,9 @@ pub fn export_master(
     if metadata.version < 2 {
         return Err(MasterExportError::BextCannotCarryLoudness(metadata.version));
     }
+    // 非有限样本在**任何**改写之前就拒绝: 这样 `master` 保持调用方交进来的原样
+    // （不触发"先施加增益、再报错"的半成品状态）, 且 `NaN` 不会先污染响度读数。
+    require_finite_samples(&master.samples)?;
 
     // 帧数取自**缓冲的实际长度**（不是 `master.frames`）: 写进 `ds64` 的必须是
     // 文件里真有的帧数, 否则容器会声明一段不存在的音频。
@@ -487,6 +538,13 @@ pub fn export_master(
         slot[0] = *left_sample;
         slot[1] = *right_sample;
     }
+    // 施加增益**之后**不再查一遍有限性。理由: [`ExportPreset::apply`] 只会施加一个
+    // 由**有限**读数算出的增益 —— 目标响度与实测响度之差, 或真峰值上限与实测真峰值之差,
+    // 且它在 `gain_db` 非有限时根本不动样本（`db_to_linear` 对非有限输入返回 1.0）。
+    // 有限的 f32 样本乘上有限的线性增益不会产生 `NaN`; 溢出成 `±inf` 需要那个增益远超
+    // 实测读数所能给出的范围。本机实测（满量程 997 Hz 正弦 + 目标 −1 LUFS）: 实测积分
+    // 响度 16.04 LUFS ⇒ 增益 **−17.04 dB**, 输出真峰值 +1.96 dBTP, 全程有限。
+    // 因此上面那一遍查的调用方缓冲就是唯一可能的非有限来源。
     master.digest = RenderOutput::digest_of(&master.samples);
 
     // 实测响度进 `bext` v2 的 EBU R128 块。测不出的量由 `to_bext_loudness` 写哨兵。
@@ -1436,5 +1494,93 @@ mod tests {
         let gain = db_to_linear(export.outcome.gain_db);
         assert!((master.samples[500 * 2] - tone[500] * gain).abs() < 1e-6);
         assert!((master.samples[500 * 2 + 1] - tone[500] * gain).abs() < 1e-6);
+    }
+
+    /// **非有限样本必须被拒绝, 不能被静默替换成 0。**
+    ///
+    /// # 这条判据针对的实测行为
+    ///
+    /// 修复前, [`crate::dither::quantize`] 会把非有限样本**替换**成 `0.0`（32f 路径）
+    /// 或一个整数端点（16/24 位路径）, 而 `bext` 仍然写着**实测**的响度与真峰值。
+    /// 本机实测（本次改动之前, 用 480 帧的夹具）: 第 10 个样本 `NaN`、第 11 个 `+inf`,
+    /// `export_master` 返回 **`Ok`**, 2596 字节的 RIFF 文件, `Float32` 载荷里那两个位置
+    /// 是 `0.0`, 而 `bext.max_true_peak_level` = **2408**（+24.08 dBTP）。元数据说"峰值
+    /// 很高", 音频说"这里是静音" —— 两者互相矛盾, 调用方拿不到任何信号。
+    ///
+    /// 同类纪律的既有落点是 [`crate::wav::check_match`]: 越界样本在那里也是**拒绝**。
+    #[test]
+    fn a_non_finite_master_is_refused_before_the_quantizer_can_zero_it() {
+        let frames = 480usize;
+        let tone = sine_997(0.1, frames);
+        // 交点: 第 10 帧的**右**声道 = 交错下标 21。
+        let mut samples: Vec<f32> = Vec::with_capacity(frames * 2);
+        for (index, value) in tone.iter().enumerate() {
+            samples.push(*value);
+            samples.push(if index == 10 { f32::NAN } else { *value });
+        }
+        let pristine = samples
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>();
+        let mut master = master_output(&tone, &tone);
+        master.samples = samples;
+
+        for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
+            let mut attempt = master.clone();
+            let mut rng = seed_rng(1);
+            let error = export_master(
+                48_000,
+                &mut attempt,
+                ExportPreset::new(None, None),
+                depth,
+                ContainerKind::Riff,
+                &metadata(),
+                &mut rng,
+            )
+            .expect_err("NaN 必须在量化**之前**被拒绝, 而不是被替换成 0.0");
+            // 不能直接 `assert_eq!(error, NonFiniteSamples { value: f32::NAN })`:
+            // `NaN != NaN`, 所以这里先比**变体**, 再单独比下标的字面读数。
+            match error {
+                MasterExportError::NonFiniteSamples { index, value } => {
+                    assert_eq!(index, 21, "{depth:?}: 第 10 帧的右声道 = 交错下标 21");
+                    assert!(value.is_nan(), "{depth:?}: 报出的取值必须是那个 NaN");
+                }
+                other => panic!("{depth:?}: 期望 NonFiniteSamples, 得到 {other:?}"),
+            }
+            // 拒绝是**纯**的: 缓冲逐位保持调用方交进来的样子（没有"先改写再报错"）。
+            assert_eq!(
+                attempt
+                    .samples
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                pristine,
+                "{depth:?}: 被拒的导出不许改动母带"
+            );
+        }
+
+        // `±inf` 走同一条路, 且报出的下标/取值就是那个样本本身。
+        for (offset, value) in [(3usize, f32::INFINITY), (7usize, f32::NEG_INFINITY)] {
+            let mut samples = vec![0.0f32; 32];
+            samples[offset] = value;
+            let mut master = master_output(&[0.0f32; 16], &[0.0f32; 16]);
+            master.samples = samples;
+            let mut rng = seed_rng(1);
+            assert_eq!(
+                export_master(
+                    48_000,
+                    &mut master,
+                    ExportPreset::streaming(),
+                    BitDepth::Int24,
+                    ContainerKind::Rf64,
+                    &metadata(),
+                    &mut rng
+                ),
+                Err(MasterExportError::NonFiniteSamples {
+                    index: offset,
+                    value
+                })
+            );
+        }
     }
 }
