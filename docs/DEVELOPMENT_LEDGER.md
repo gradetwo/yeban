@@ -1773,6 +1773,13 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   1. **撤销/重做：有能力、有判据、零调用者（最严重）**。系统侧完整 —— `crates/yeban-model/src/commit.rs:505`（`CommitGraph::undo`）、
      `:521`（`undo_with`）、`:533`（`apply_inverse`，在 `#[cfg(test)]`（`commit.rs:568`）**之前** ⇒ 是生产代码），
      `crates/yeban-model/src/ops.rs:112,954`，时延判据 `BASELINE-004`（p99 **0.084 µs**，`gate-status.md:44`）。
+
+     > **⚠ 2026-10-09 更正注（只加注，原文一字未改）**：上面三条引用的行号已漂移。今天实测
+     > （在 `crates/yeban-model/` 内 `grep -n` 取声明行，单位 = 行号）：`CommitGraph::undo` 的 `pub fn undo` **现位于
+     > 第 506 行**；`undo_with` 的 `pub fn undo_with` **现位于第 524 行**；`op.apply_inverse(doc)?` 调用 **现位于第 534 行**；
+     > 测试模块的 `#[cfg(test)]` **现位于第 650 行**；`apply_inverse` 的两个 `pub fn` 声明 **现位于第 140 行与第 1029 行**。
+     > 本注**不改写**上面的历史读数（`AGENTS.md` §6：带日期的记录只标注、不改写）。
+     > 另：同段的 `b)` 项（`BASELINE-004` 的行号）今日由守卫读回，`gate-status.md` 侧 **0 处行号漂移**。
      但 `grep -rn "UndoCursor" crates/` 只命中 `crates/yeban-model/` 自己 ⇒ **`yeban-model` 之外零调用者**；
       UI 侧 `crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 的**唯一** callback 是 `close`（只展示，不操作），
      `main.rs:146` 的快捷键派发未接线；MCP 侧 `tools.rs` 与 `schemas/mcp-tools.schema.json` 里 `undo|redo` **0 命中**，
