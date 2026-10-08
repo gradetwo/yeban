@@ -40,6 +40,10 @@ export component PianoRoll inherits Rectangle {
     callback scroll-requested(length);
     // `[UI-NOTE-003]` 左键单击：只**报告坐标**, 命中与选区由 Rust 侧决定（账本第 495/496 轮）。
     callback clicked(length, length);
+    // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口：工具行号（1..5，与 `Tool::digit` 同一口径）。
+    // 界面只上报"点了哪一行"; `active-tool` 的写入与动作日志由宿主唯一落点
+    // (`host::wire_tool_select` → `host::apply_action` 的 `Action::SelectTool` 臂) 完成。
+    callback tool-selected(int);
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
@@ -65,7 +69,18 @@ export component PianoRoll inherits Rectangle {
     accessible-label: "虚拟化钢琴卷帘";
 
     // ---------------------------------------------------------------- 工具矩阵 (§3.3)
-    // 与 src/input.rs 的 1..5 数字键是同一份状态: 键盘改 active-tool, 这里只读。
+    // 与 src/input.rs 的 1..5 数字键是同一份状态: 只读 `active-tool` 的**唯一**写者住在宿主
+    // (`host::apply_action` 的 `Action::SelectTool` 臂) —— 键盘与这里的点击**共用**那一个臂
+    // (判据 `tests/tool_matrix_wiring.rs` 的第三条路径)。
+    //
+    // 本节点是 `Rectangle` + 一个**就地**的子 `TouchArea`（2026-10-08 修台账 R16）: 原先它只有
+    // `Rectangle` + `UiText` —— **没有**输入面、**没有**回调 ⇒ 用户点它没有任何反应
+    // (而 `accessible-role: button` 已经声称它是按钮)。几何 (x/y/width/height) 与外观逐像素不变。
+    //
+    // 为什么输入面是**子**节点而不是把节点自己改成 `TouchArea`: 实测 `slint-build` 1.18.1
+    // 拒绝 `TouchArea` 上的 `background` / `border-radius`（`Unknown property … in TouchArea`）
+    // —— 外观只能住在 `Rectangle` 上，因此两者叠起来（与 `console/mixer_console.slint` 的
+    // 静音 / 独奏按钮逐字同款：矩形在外、`TouchArea` 在内）。
     for tool_index in 5 : Rectangle {
         x: Tokens.space-4 + 52px * tool_index;
         y: Tokens.space-2;
@@ -73,6 +88,10 @@ export component PianoRoll inherits Rectangle {
         height: 20px;
         background: root.active-tool == tool_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
+        // 最前: 本组件末尾那条覆盖全高的滚动手势 `TouchArea` 也是 `root` 的兄弟,
+        // 且声明在更后面。这条 `z` 让工具行**确定**先被本节点接住
+        // (否则 Slint 的 `FrontToBack` 命中测试会把整块卷帘交给收发滚动手势的那一个)。
+        z: 1;
         accessible-role: button;
         accessible-id: "piano-roll-tool-" + root.tool-names[tool_index] + "-button";
         accessible-label: root.tool-labels[tool_index] + "工具";
@@ -92,6 +111,16 @@ export component PianoRoll inherits Rectangle {
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
             overflow: elide;
+        }
+
+        // 一次点击 = 一次工具选择。界面只上报**数字口径**（矩阵行号 = `Tool::digit`），
+        // 与 src/input.rs 的 1..5 数字键、与 `active-tool` 属主是同一份。
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.tool-selected(tool_index + 1);
+            }
         }
     }
 

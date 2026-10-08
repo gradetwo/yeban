@@ -411,6 +411,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // （唯一下发点）落到 `UndoPort`，因此 `Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`
     // 与时光机按钮是**同一条链**（ADR-0001 D45 的"人按 `Cmd+Z` 真的能撤销"）。
     host::wire_keys(&ui, Rc::clone(&input), Some(Rc::clone(&undo_port)));
+    // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口（台账 R16）：界面报行号，宿主把它送进
+    // **同一个** `Action::SelectTool` 臂（与上面 `wire_keys` 的 `1`..`5` 数字键同一条链）。
+    // 因此"点工具按钮"与"按数字键"不可能分叉。
+    host::wire_tool_select(&ui, Some(Rc::clone(&undo_port)));
     // 撤销的两条界面入口（弹窗开关 + "撤销一步"按钮）都汇到**同一个** `UndoPort`。
     host::wire_undo(&ui, &undo_port);
     // `[UI-NOTE-003]` 卷帘编辑入口（铅笔）：与撤销端口共用同一实现 ⇒ 可撤销是构造上的。

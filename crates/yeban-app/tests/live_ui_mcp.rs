@@ -7336,6 +7336,161 @@ fn the_ai_badge_has_a_real_action_and_no_fake_state_at_runtime() {
 }
 
 // =====================================================================================
+// 判据：钢琴卷帘的工具矩阵**点得动**（台账 R16）
+// =====================================================================================
+
+/// 判据：五个工具按钮各自被一次**真实指针注入**点中之后，`active-tool` 必须变成那一行的行号。
+///
+/// ## 缺陷的形状（为什么这条判据有判别力）
+///
+/// 改动前 `ui/console/piano_roll.slint` 的五个工具按钮是纯 `Rectangle` + `UiText`：
+/// 声明了 `accessible-role: button` 与 `accessible-checked`，但**没有** `TouchArea`、
+/// 也**没有**回调 ⇒ 用户在界面上点它**没有任何反应**，`active-tool` 只由键盘写。
+/// 本判据走的是 §12.4 的真实指针注入（按下 → 移动 → 松手 → Slint 命中测试 →
+/// `.slint` 的输入面 → 回调 → 宿主 `Action::SelectTool` 臂写属性），
+/// 与"用户点那一下"是同一条链。因此把 `TouchArea` 换回 `Rectangle`（或删掉那条回调）
+/// 一定会红 —— 那时点击落到卷帘的滚动手势面上，`active-tool` 一位不变。
+///
+/// ## 为什么五个都点（而不是只点一个）
+///
+/// 只点一个的话，"行号 → 工具"的换算错了（例如 `tool_index` 与 `tool_index + 1` 混用）
+/// 有一半的组合看不出来。五行逐个点 ⇒ 行号口径与 `Tool::digit`（`1`..`5`）的对账是完整的。
+#[test]
+fn the_piano_roll_tool_buttons_change_the_active_tool_at_runtime() {
+    let (window, mut plane) = assemble_view_state_callbacks();
+
+    // 面板的默认标签必须是卷帘 —— 否则工具按钮 `visible: false`，注入会如实地在树里找不到它。
+    assert_eq!(
+        window.get_console_tab(),
+        0,
+        "默认底部标签必须是卷帘（工具按钮只在那时可见）"
+    );
+    assert_eq!(window.get_active_tool(), 1, "默认工具是选择（矩阵第 1 行）");
+
+    let before = (window.get_arrangement_view(), window.get_musical_pr_open());
+
+    let mut read_back: Vec<(&str, i32)> = Vec::new();
+    for (row, name) in yeban_app::scene::TOOL_NAMES.iter().enumerate() {
+        let tool_digit = i32::try_from(row).expect("行号") + 1;
+        let element_id = format!("piano-roll-tool-{name}-button");
+        click_element(
+            &mut plane,
+            970 + 10 * i64::try_from(row).expect("行号"),
+            &element_id,
+        );
+        let observed = window.get_active_tool();
+        read_back.push((name, observed));
+        assert_eq!(
+            observed, tool_digit,
+            "点 `{element_id}` 之后 `active-tool` 必须是矩阵第 {tool_digit} 行，实际 {observed}"
+        );
+    }
+
+    let after = (window.get_arrangement_view(), window.get_musical_pr_open());
+    report_line(&format!(
+        "[piano-roll-tools] 真实点击五行 ⇒ active-tool 读数 {read_back:?}；\
+         工具选择**不该**动别的视图态: 双视图 / 抽屉 改前 {before:?} → 改后 {after:?}"
+    ));
+    assert_eq!(
+        after, before,
+        "工具选择是**视图状态**：它只改 `active-tool`，不得顺手改双视图 / 抽屉"
+    );
+}
+
+// =====================================================================================
+// 判据：在**编曲视图**点静音 ⇒ 撤销树的节点标签必须如实（台账 R17）
+// =====================================================================================
+
+/// 判据：编曲视图轨道头的静音开关点一下之后，撤销树里多出来的那条提交消息**不得**声称
+/// 动作来自"混音台"。
+///
+/// ## 缺陷的形状（为什么这条判据有判别力）
+///
+/// 编曲视图的轨道头开关与调音台通道条的开关**共用同一个**宿主面
+/// （`ui/workspace/arrangement_view.slint` 的 `track-mute-toggle` → `app.slint` →
+/// `MainWindow.mixer-mute-toggle` → `host::wire_mixer_switch`）。那条 `commit_ops` 的
+/// `message` 就是撤销树的**节点标签**（`Commit::message`）。改动前它写死
+/// `"mixer: toggle track mute"` ⇒ 用户在编曲视图点一下，历史里却写着"混音台"。
+///
+/// 本判据走的是 §12.4 的真实指针注入（按下 → 移动 → 松手 → Slint 命中测试 → `.slint`
+/// 的 `TouchArea` → 回调 → `Op::SetTrackMute` → `commit_ops`），因此它读到的标签是**真的
+/// 那一条**，不是判据自己拼的字符串。
+///
+/// ## 为什么同时断言"工程真的变了"
+///
+/// 只看标签的话，"点击根本没生效"也能让标签断言通过（历史里那条消息还是旧提交的）。
+/// 工程侧读数（模型里的 `TrackV3::mute`）证明这一击真的落了地 ⇒ 标签确实是这一击写下的。
+#[test]
+fn a_mute_click_in_the_arrangement_view_writes_an_honest_history_label() {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    /// 会话打开时刻（与既有判据同一个夹具常量）。
+    const NOW: u64 = 1_760_000_000_000;
+
+    /// 视图名的黑名单：标签里出现它们就是把"哪个视图"写进了历史（本缺陷的字面形态）。
+    const VIEW_NAMES: [&str; 5] = ["mixer", "arrangement", "session", "console", "workspace"];
+
+    let project = yeban_model::samples::filled_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据:R17 编曲静音>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    // 装配带撤销端口的活界面：`host::wire_mixer_switch` 是**生产形态**的接线
+    // （`build_live_ui_with` 的 `options.undo` 交给 `host::wire_mixer_edit`）。
+    let live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 0,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    let window = slint::ComponentHandle::clone_strong(live.ui());
+    // 切到编曲视图（与 `Tab` / `F6` 写的是**同一个**属性）：不切的话轨道头不在树里。
+    window.set_arrangement_view(true);
+    let mut plane = live.into_control_plane(Permission::Interactive);
+
+    let before = mixer_readings(&port.project(), &view, 0);
+    assert!(!before.2, "0 号轨起点不静音（与既有混音判据同一个夹具）");
+
+    click_element(&mut plane, 990, "track-0-mute-button");
+
+    let after = mixer_readings(&port.project(), &view, 0);
+    assert!(
+        after.2,
+        "编曲视图点静音之后模型里的 `mute` 必须真的是 true（否则标签断言没有意义）"
+    );
+    let last = port
+        .graph()
+        .commits
+        .values()
+        .next_back()
+        .expect("点击之后图谱必须有提交")
+        .message
+        .clone();
+    report_line(&format!(
+        "[r17-history-label] 编曲视图点静音: mute {} → {}；最新提交消息 = {last:?}",
+        before.2, after.2
+    ));
+    for name in VIEW_NAMES {
+        assert!(
+            !last.contains(&format!("{name}:")),
+            "撤销树的节点标签不得声称动作来自 `{name}` —— 这一击来自**编曲视图**，\
+             而宿主面与调音台共用（R17），实际标签 {last:?}"
+        );
+    }
+    assert!(
+        last.contains("mute"),
+        "标签必须带上它真正改的字段名 `mute`（中性不等于含糊），实际 {last:?}"
+    );
+}
+
+// =====================================================================================
 // 判据：**读方法看见当下的界面**（`ui/tree` / `ui/node` / `ui/property` 的新鲜度一致）
 //
 // 背景：`ui/tree` / `ui/node` 读的是执行面持有的**运行时树缓存**，而 `ui/property`

@@ -1617,6 +1617,17 @@ enum MixerSwitch {
 ///
 /// 点击 = 读现值 → 取反 → `commit_ops` **一次** → 重投影。没有中间态，
 /// 因此不存在"拖动期视图态"这一档（与推子 / 声相的形状差异是有意的）。
+///
+/// ## 为什么提交消息**不带** `mixer:` 前缀（台账 R17）
+///
+/// 这条消息就是撤销树的**节点标签**（`UndoPort::commit_ops` → `Commit::message`）。
+/// 而本函数有**两个**界面入口：调音台的开关（`console/mixer_console.slint`）与**编曲视图**
+/// 轨道头上的开关（`ui/workspace/arrangement_view.slint` 的 `track-mute-toggle` /
+/// `track-solo-toggle` 经 `app.slint` 转到同一个 `mixer-mute-toggle`）。
+/// 原先写死的 `"mixer: …"` 于是会在编曲视图里说一句**假话** —— 用户在编曲视图点了一下，
+/// 撤销树的节点却声称那是"混音台"的动作。改中性文本（去掉来源前缀）后，这条标签在两个
+/// 入口下都成立；带来源的措辞要等宿主能**分别**知道是哪个入口点的（那需要两条回调 + 两条
+/// 标签，本票不做）。
 fn wire_mixer_switch(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
@@ -1646,7 +1657,7 @@ fn wire_mixer_switch(
                     old_mute: state.mute,
                     new_mute: !state.mute,
                 },
-                "mixer: toggle track mute",
+                "toggle track mute",
             ),
             MixerSwitch::Solo => (
                 yeban_model::Op::SetTrackSolo {
@@ -1654,7 +1665,7 @@ fn wire_mixer_switch(
                     old_solo: state.solo,
                     new_solo: !state.solo,
                 },
-                "mixer: toggle track solo",
+                "toggle track solo",
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
@@ -2825,6 +2836,44 @@ pub fn wire_undo(ui: &MainWindow, port: &Rc<UndoPort>) {
             refresh_undo(&weak, &port, true);
         });
     }
+}
+
+/// `[UI-NOTE-003]` §3.3 工具矩阵的**点击**接线（台账 R16）。
+///
+/// 修复的是这一条真缺陷：`ui/console/piano_roll.slint` 的五个工具按钮原先声明了
+/// `accessible-role: button`，但既没有 `TouchArea` 也没有回调 ⇒ 用户点它**没有任何反应**
+/// （`active-tool` 只由键盘写）。
+///
+/// ## 为什么这里不重复键盘的落点
+///
+/// 数字键那条链是 `wire_keys` → `input::resolve_logical` → [`apply_action`] 的
+/// `Action::SelectTool` 臂。本函数把那**同一个**臂当作唯一落点：界面报上来的行号经
+/// [`Tool::from_digit`] 还原成 [`Tool`]，随后调用 [`apply_action`]。
+/// 因此"点了哪个工具"与"按了哪个数字键"在宿主侧**不可能**分叉
+/// （动作日志 `UiAction::SelectTool` 与 `ui.set_active_tool` 都发生在那一个臂里）。
+///
+/// 不在 1..5 内的行号**什么都不做**（`Tool::from_digit` 返回 `None`）—— 界面上没有
+/// 第六个按钮，若真出现就说明是第二个真相源，宁可不动也不猜一个工具。
+///
+/// 端口可有可无：`None` 时照旧写界面属性（与 [`apply_action`] 的口径一致 —— 没有撤销
+/// 会话不等于工具不可选）。
+pub fn wire_tool_select(ui: &MainWindow, undo: Option<Rc<UndoPort>>) {
+    let weak = slint::ComponentHandle::as_weak(ui);
+    ui.on_tool_selected(move |tool_index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 界面报的是行号（1..5）；出界的行号不是工具 ⇒ 拒绝，不猜。
+        let Ok(digit) = u8::try_from(tool_index) else {
+            return;
+        };
+        let Some(tool) = crate::input::Tool::from_digit(digit) else {
+            return;
+        };
+        // 与键盘**同一个**臂（唯一写者）：不在这里复制 `set_active_tool` 或动作日志。
+        let _ = apply_action(&ui, undo.as_ref(), Action::SelectTool(tool));
+    });
 }
 
 /// `[UI-NOTE-003]` 卷帘的**编辑入口**（目前只接铅笔）：把一次点击变成**可撤销**的模型操作。

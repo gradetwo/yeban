@@ -443,6 +443,10 @@ export component MainWindow inherits Window {
     callback scroll-requested(length);
     /// `[UI-NOTE-003]` 卷帘左键单击（坐标由界面报告, 语义由宿主决定）。
     callback clicked(length, length);
+    /// `[UI-NOTE-003]` §3.3 工具矩阵的点击（工具行号 1..5）。
+    /// 唯一落点是 `host::wire_tool_select` → `host::apply_action` 的
+    /// `Action::SelectTool` 臂 —— 与 `1`..`5` 数字键**同一条**链。
+    callback tool-selected(int);
     /// `[ROAD-M3-002]` 卷帘当前水平偏移（逻辑像素）。
     /// 用 `<float>` 而非 `<length>`：宿主只需读写一个数，避免 `f32 -> Length` 转换与组件链转发。
     in-out property <float> roll-scroll-x: 0.0;
@@ -730,6 +734,7 @@ export component MainWindow inherits Window {
             active-tool: root.active-tool;
             scroll-requested(d) => { root.scroll-requested(d); }
             clicked(x, y) => { root.clicked(x, y); }
+            tool-selected(tool) => { root.tool-selected(tool); }
             note-ys: root.note-ys;
             note-widths: root.note-widths;
             // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。

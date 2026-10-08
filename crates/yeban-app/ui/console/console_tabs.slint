@@ -33,6 +33,9 @@ export component ConsoleTabs inherits Rectangle {
     // 透传卷帘的滚动手势。
     callback scroll-requested(length);
     callback clicked(length, length);
+    // `[UI-NOTE-003]` 工具矩阵的点击透传（工具行号 1..5）。本组件不解释它，也不改
+    // `active-tool`（那是 MainWindow 的宿主侧唯一落点）。
+    callback tool-selected(int);
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     // 调音台通道条（Tab 2）的**透传**属性 —— 本组件不解释它们：
@@ -180,6 +183,7 @@ export component ConsoleTabs inherits Rectangle {
         active-tool: root.active-tool;
         scroll-requested(d) => { root.scroll-requested(d); }
         clicked(x, y) => { root.clicked(x, y); }
+        tool-selected(tool) => { root.tool-selected(tool); }
         note-ys: root.note-ys;
         note-widths: root.note-widths;
     }
