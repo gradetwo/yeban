@@ -651,6 +651,16 @@ export component MainWindow inherits Window {
                     track-height-release(track_index) => {
                         root.track-height-release(track_index);
                     }
+                    // 静音 / 独奏开关：点击原样上抛给宿主，界面不改任何工程值。
+                    // 落点是 MainWindow 上**已有**的两条回调 —— 它们的唯一实现
+                    // （`host::wire_mixer_switch`）按下标查宿主注入的 `track-ids`，
+                    // 与编排视图包头的 `track_index` 同一索引集。
+                    track-mute-toggle(track_index) => {
+                        root.mixer-mute-toggle(track_index);
+                    }
+                    track-solo-toggle(track_index) => {
+                        root.mixer-solo-toggle(track_index);
+                    }
                     track-volumes: root.track-volumes;
                     track-mutes: root.track-mutes;
                     track-solos: root.track-solos;

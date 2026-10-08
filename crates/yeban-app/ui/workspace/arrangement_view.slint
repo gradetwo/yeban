@@ -108,6 +108,24 @@ export component ArrangementView inherits Rectangle {
     /// 收尾：松开 / 指针离开窗口（上游把离开导出成 `PointerEventKind.cancel`）/ 打断。
     callback track-height-release(int);
 
+    // ---------------------------------------------------------------- 静音 / 独奏开关
+    //
+    // 与上面三条同族：界面只**报告事件**（哪条轨道的哪个开关被点了），取反与提交都在宿主。
+    //
+    // - 界面**不留**开关状态：勾选态的**唯一**来源仍是投影注入的 `track-mutes` /
+    //   `track-solos`（本文件的 `background` 与 `accessible-checked` 都读它们）
+    //   ⇒ 这里既不新增 `in-out property`，也不新增本地 `bool`，数据流方向不变；
+    // - 身份→下标的算术不在界面：这两条回调只上报 `track_index`；
+    // - 宿主侧的落点是 MainWindow 上**已有**的 `mixer-mute-toggle` / `mixer-solo-toggle`
+    //   （`app.slint` 的声明，唯一实现是 `host::wire_mixer_switch`）。那个实现按下标经
+    //   `host::track_id_at` 查宿主注入的 `track-ids`，而 `track-ids` 与 `track-names`
+    //   同索引集（`bridge::ViewState::track_ids` / `track_names` 都遍历同一份 `tracks`）
+    //   —— 所以编排视图包头用的这个下标就是它要的那个下标。
+    /// 点击轨道头的静音开关：`(轨道下标)`。取反与 `Op::SetTrackMute` 由宿主提交。
+    callback track-mute-toggle(int);
+    /// 点击轨道头的独奏开关：`(轨道下标)`。取反与 `Op::SetTrackSolo` 由宿主提交。
+    callback track-solo-toggle(int);
+
     // ---------------------------------------------------------------- 章节卡片层 (§4.3)
     for section_name[section_index] in root.sections : Rectangle {
         x: 168px + root.section-positions[section_index];
@@ -281,6 +299,12 @@ export component ArrangementView inherits Rectangle {
             TouchArea {
                 width: parent.width;
                 height: parent.height;
+                // 点击 ⇒ `Op::SetTrackMute`（一次点击 = 一次可撤销的编辑）。
+                // 与混音台同款：`console/mixer_console.slint` 的静音 `TouchArea` 调的也是
+                // 同一个宿主面（`MainWindow::mixer-mute-toggle`）。界面只报下标，不改值。
+                clicked => {
+                    root.track-mute-toggle(track_index);
+                }
             }
         }
 
@@ -312,6 +336,10 @@ export component ArrangementView inherits Rectangle {
             TouchArea {
                 width: parent.width;
                 height: parent.height;
+                // 点击 ⇒ `Op::SetTrackSolo`。与静音开关**成对同款**，只换目标字段。
+                clicked => {
+                    root.track-solo-toggle(track_index);
+                }
             }
         }
 
