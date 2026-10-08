@@ -442,7 +442,9 @@ fn dry_run_preview_matches_what_the_real_call_commits() {
     let (mut dispatcher, auth) = dispatcher();
     open(&scratch, &mut dispatcher, &auth);
     let track = macro_track(&dispatcher);
-    let arguments = json!({ "trackId": track, "macroIndex": 0, "value": 0.4 });
+    // 这条判据比"预览的 op"与"提交的 op"两侧的**完整载荷** ⇒ 两侧都显式索取
+    // （缺省形状只回结构化字段, 见 `yeban_mcp::tools::INCLUDE_OPS_PARAM`）。
+    let arguments = json!({ "trackId": track, "macroIndex": 0, "value": 0.4, "includeOps": true });
 
     let preview = call(&mut dispatcher, &auth, "yeban_set_macro", {
         let mut with_dry = arguments.clone();
@@ -1438,7 +1440,10 @@ fn propose_section_creates_a_real_section_and_is_deterministic() {
         .len();
 
     let arguments = json!({
-        "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8, "scale": "C minor"
+        "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8, "scale": "C minor",
+        // 这条判据比的是**完整 op 载荷**的逐字节确定性 ⇒ 显式索取它
+        // （缺省只回结构化字段, 见 `yeban_mcp::tools::INCLUDE_OPS_PARAM`）。
+        "includeOps": true,
     });
     // 同一基态下的两条提案：确定性身份 ⇒ 载荷必须**逐字节**相同。
     let first = call(
@@ -1751,7 +1756,10 @@ fn propose_section_dry_run_previews_without_touching_bytes() {
         "yeban_propose_section",
         json!({
             "sectionName": "Intro", "stylePreset": "folk", "bars": 2,
-            "scale": "G major", "dryRun": true
+            "scale": "G major", "dryRun": true,
+            // "预览必须给出完整 op 载荷"这条能力由 `includeOps` 显式打开
+            // （缺省形状是结构化字段, 见 `yeban_mcp::tools::INCLUDE_OPS_PARAM`）。
+            "includeOps": true
         }),
     );
     assert_eq!(planned["status"], "success", "{planned}");
@@ -1898,13 +1906,15 @@ fn propose_section_outputs_track_the_inputs() {
         &mut dispatcher_a,
         &auth_a,
         "yeban_propose_section",
-        json!({ "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8, "scale": "C minor" }),
+        json!({ "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8,
+                "scale": "C minor", "includeOps": true }),
     );
     let d_minor = call(
         &mut dispatcher_b,
         &auth_b,
         "yeban_propose_section",
-        json!({ "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8, "scale": "D minor" }),
+        json!({ "sectionName": "Chorus", "stylePreset": "synthwave", "bars": 8,
+                "scale": "D minor", "includeOps": true }),
     );
     assert_ne!(
         op_bodies(&c_minor["data"]["proposal"]),
@@ -2271,7 +2281,7 @@ fn set_macro_checks_track_index_and_value_range() {
         &mut dispatcher,
         &auth,
         "yeban_set_macro",
-        json!({ "trackId": track, "macroIndex": 0, "value": 0.25 }),
+        json!({ "trackId": track, "macroIndex": 0, "value": 0.25, "includeOps": true }),
     );
     let ops = ok["data"]["proposal"]["ops"].as_array().expect("ops");
     assert_eq!(ops.len(), 3, "SetMacro + 每个映射 2 个级联点");

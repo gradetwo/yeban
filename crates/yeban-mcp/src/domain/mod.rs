@@ -777,6 +777,12 @@ pub enum Plan {
     Propose {
         /// 待创建的提案。
         draft: Box<ProposalDraft>,
+        /// 响应是否回传**完整 op 载荷**（`arguments.includeOps`）`[BASELINE-006]`。
+        ///
+        /// `false`（缺省）⇒ 预览与提交响应只带结构化字段；`true` ⇒ 额外带逐条 `ops`。
+        /// 这个标志放在 [`Plan`] 上而不是 [`ProposalDraft`] 上：它是**响应的形状**，
+        /// 不是提案的领域内容（提案在两种取值下逐字节相同）。
+        include_ops: bool,
     },
     /// `yeban_merge_proposal`
     Merge {
@@ -1182,7 +1188,7 @@ impl Plan {
                     }),
                 );
             }
-            Self::Propose { draft } => {
+            Self::Propose { draft, include_ops } => {
                 preview.insert("kind".to_owned(), Value::from(draft.kind));
                 preview.insert("title".to_owned(), Value::from(draft.title.clone()));
                 preview.insert(
@@ -1194,7 +1200,12 @@ impl Plan {
                     Value::from(draft.base_commit.to_canonical_string()),
                 );
                 preview.insert("opCount".to_owned(), Value::from(draft.ops.len()));
-                preview.insert("ops".to_owned(), draft_ops_value(draft));
+                // 完整 op 载荷是**可选**的（`arguments.includeOps`，缺省 false）：
+                // `[BASELINE-006]` 要求 16 小节段落生成的往返 JSON ≤ 4 KB 且
+                // "结构化字段传输"，而逐条 op 载荷正是把这条判据顶破的那一块。
+                if *include_ops {
+                    preview.insert("ops".to_owned(), draft_ops_value(draft));
+                }
                 // "将要做什么"的**派生**清单（从同一份 `ops` 数出来, 因此不可能漂移）。
                 preview.insert(
                     "willCreate".to_owned(),
@@ -1844,6 +1855,10 @@ fn plan_query(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 }
 
 /// 三个提案类工具共用的收尾：先模拟，再打包成 [`Plan::Propose`]。
+///
+/// `include_ops` 直接来自 `arguments.includeOps`（缺省 `false`）—— 它只影响
+/// **响应的形状**，不影响提案内容：两种取值下被创建的隔离分支、op 日志与提交
+/// 逐字节相同（判据 `tests/payload_budget.rs::include_ops_only_changes_the_response_shape`）。
 fn propose_draft(
     domain: &Domain,
     project: &YebanProjectV1,
@@ -1851,6 +1866,7 @@ fn propose_draft(
     title: String,
     description: String,
     ops: Vec<Op>,
+    include_ops: bool,
 ) -> Result<Plan, Fault> {
     let base_commit = domain.active_head().ok_or_else(|| {
         Fault::domain(ErrorCode::Conflict, "主分支没有头提交（提交图谱未初始化）")
@@ -1876,6 +1892,7 @@ fn propose_draft(
             base_commit,
             base_digest,
         }),
+        include_ops,
     })
 }
 
@@ -1904,6 +1921,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
         format!("章节骨架: {section_name} ({style_preset}, {bars} 小节)"),
         format!("propose_section {section_name}"),
         section_plan.ops,
+        include_ops(call),
     )
 }
 
@@ -1926,6 +1944,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("音符编辑: {} 步", note_ops.len()),
         format!("edit_notes {clip_id}"),
         compiled,
+        include_ops(call),
     )
 }
 
@@ -1956,7 +1975,14 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("宏调整: 音轨 {track_id} 宏 #{macro_index} → {value}"),
         format!("set_macro {track_id}#{macro_index}"),
         macro_plan.ops,
+        include_ops(call),
     )
+}
+
+/// `arguments.includeOps`（缺省 `false`）—— 三个提案类工具共用的**响应形状**开关
+/// `[BASELINE-006]`，见 [`crate::tools::INCLUDE_OPS_PARAM`]。
+fn include_ops(call: &ToolCall) -> bool {
+    arg_bool(call, crate::tools::INCLUDE_OPS_PARAM, false)
 }
 
 /// `yeban_render_master`。
@@ -2344,7 +2370,7 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
             path,
         } => apply_close(domain, save_first, save, path),
         Plan::Query { data } => Ok(ToolResponse::success(data)),
-        Plan::Propose { draft } => apply_propose(domain, *draft),
+        Plan::Propose { draft, include_ops } => apply_propose(domain, *draft, include_ops),
         Plan::Merge {
             proposal_id,
             commit_message,
@@ -2659,7 +2685,16 @@ fn apply_close(
 }
 
 /// 提案类工具：创建隔离分支 + 提交 + 记录。
-fn apply_propose(domain: &mut Domain, draft: ProposalDraft) -> Result<ToolResponse, Fault> {
+///
+/// `include_ops` 只选择**回传哪一份记录投影**：`true` ⇒ [`Proposal::detail`]（含逐条
+/// op 载荷，审查用途）；`false`（缺省）⇒ [`Proposal::summary`]（结构化字段）
+/// `[BASELINE-006]`。两种取值下**被创建的提案逐字节相同** —— 同一份 `record` 先插进
+/// `domain.proposals`，只有回传的那一份 JSON 不同。
+fn apply_propose(
+    domain: &mut Domain,
+    draft: ProposalDraft,
+    include_ops: bool,
+) -> Result<ToolResponse, Fault> {
     let project = domain
         .active_project()
         .cloned()
@@ -2715,19 +2750,24 @@ fn apply_propose(domain: &mut Domain, draft: ProposalDraft) -> Result<ToolRespon
         resolved_at: None,
         resolution: None,
     };
-    let detail = record.detail();
+    // 回传哪一份记录投影：缺省只回结构化字段；`includeOps: true` 才回逐条 op 载荷。
+    let wire_projection = if include_ops {
+        record.detail()
+    } else {
+        record.summary()
+    };
     domain.proposals.insert(proposal_id, record);
 
     // 提案**不**改工程内容 —— 这两行是给调用方的证据, 不是顺手加的字段。
     let project_digest = store::digest_of(store::serialize_project(&project)?.as_bytes());
-    let unwired = draft_unwired(&detail);
+    let unwired = draft_unwired(&wire_projection);
     Ok(ToolResponse::success(serde_json::json!({
         "created": true,
         "projectUnchanged": true,
         "projectDigest": project_digest,
         "unwired": unwired,
         "willCreate": will_create,
-        "proposal": detail,
+        "proposal": wire_projection,
     })))
 }
 
@@ -3516,10 +3556,13 @@ mod tests {
     fn dry_run_preview_ops_equal_the_ops_actually_committed() {
         let mut domain = domain();
         let track = fixture_track(&domain);
+        // `includeOps: true`：这条判据比的是**完整 op 载荷**，所以两侧都显式索取它
+        // （缺省形状只回结构化字段, 见 `crate::tools::INCLUDE_OPS_PARAM`）。
         let arguments = serde_json::json!({
             "trackId": track.to_canonical_string(),
             "macroIndex": 0,
             "value": 0.3,
+            "includeOps": true,
         });
         let call = call("yeban_set_macro", arguments);
         let preview = preview(&domain, &call).expect("预览");

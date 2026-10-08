@@ -20,6 +20,7 @@
 //! | [`dispatch`] | 解析 → 鉴权 → scope → 分发 → `dryRun` 短路 → 幂等去重 | `MCP-TOOL-001..010` |
 //! | [`transport`] | [`transport::stdio`]（默认）与 [`transport::http`]（环回、显式开关） | `ARCH-SEC-002` |
 //! | [`samples`] | 规范样本导出（跨语言契约对账的输入） | `MUST-GATE-010`, `TEST-SPEC-005` |
+//! | [`payload`] | MCP 往返**载荷统计**（字节；Token 半边等口径裁决） | `BASELINE-006` |
 //!
 //! ## `dryRun` 与 `idempotencyKey` 是怎么被保证的
 //!
@@ -128,6 +129,7 @@
 pub mod dispatch;
 pub mod domain;
 pub mod jsonrpc;
+pub mod payload;
 pub mod samples;
 pub mod security;
 pub mod tools;

@@ -155,6 +155,12 @@ impl Proposal {
     }
 
     /// 提案的**完整**载荷（op 逐条，供审查者比对；`ARCH-OPS-002` 的 Musical PR 审查）。
+    ///
+    /// ⚠ 它**不是**提案类工具的缺省回传形状 `[BASELINE-006]`：回传完整 op 载荷
+    /// （16 小节段落生成，`ops` 数组本身实测 6,702 字节）会把往返 JSON 顶到
+    /// 9,670 字节，是规范 4 KB 上限的 2.36 倍。缺省回传的是 [`Self::summary`]
+    /// （结构化字段），完整载荷由 `arguments.includeOps: true` 显式索取 —— 见
+    /// [`crate::tools::INCLUDE_OPS_PARAM`] 与 [`crate::payload`]。
     #[must_use]
     pub fn detail(&self) -> Value {
         let mut map = self.summary().as_object().cloned().unwrap_or_default();

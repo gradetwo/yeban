@@ -57,6 +57,27 @@ pub const DRY_RUN_PARAM: &str = "dryRun";
 /// 每个工具都必须支持的"幂等重放"参数名。
 pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 
+/// 三个提案类工具（`yeban_propose_section` / `yeban_edit_notes` / `yeban_set_macro`）
+/// 的可选实参：是否在响应里回传**完整 op 载荷** `[BASELINE-006]`。
+///
+/// - 缺省 `false` ⇒ 响应只带**结构化字段**（`willCreate` + 提案摘要的
+///   `opCount` / `opKinds`），完整 `Op` 载荷留在隔离分支与 op 日志里；
+/// - 给 `true` ⇒ 响应额外回传逐条 `ops`（审查用途），代价是载荷变大。
+///
+/// 为什么缺省是 `false`：规范 `[BASELINE-006]` 对"生成 16 小节段落的完整 MCP
+/// 工具往返载荷"的判据是**序列化 JSON 载荷 ≤ 4 KB** 且**结构化字段传输**。
+/// 本 crate 实测（`tests/payload_budget.rs`）：
+///
+/// | 16 小节 `yeban_propose_section` 往返 | 请求 | 响应 | 合计 |
+/// | :--- | ---: | ---: | ---: |
+/// | 回传完整 op 载荷（旧默认） | 214 | 9,456 | **9,670** |
+/// | 只回结构化字段（现默认） | 196 | 2,747 | **2,943** |
+///
+/// ⚠ 这条实参的缺省值**改变**了本 crate 早先的默认响应形状（那时
+/// `data.proposal.ops` 恒在）。判定依据是上面那条规范判据，不是偏好；
+/// 完整记账见 `src/payload.rs` 的文件头与 `tests/payload_budget.rs`。
+pub const INCLUDE_OPS_PARAM: &str = "includeOps";
+
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
 pub const TOOL_COUNT: usize = 17;
 
@@ -563,6 +584,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param("bars", "integer", true, "小节数"),
             param("scale", "string", false, "音阶"),
             param("dryRun", "boolean", false, "只读模拟校验"),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
         ],
         errors: &[ErrorCode::StyleNotFound, ErrorCode::CycleDetected],
     },
@@ -582,6 +609,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "幂等重放键: 同键第二次调用返回 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`)",
             ),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
         ],
         errors: &[ErrorCode::ClipNotFound, ErrorCode::OutOfRange],
     },
@@ -595,6 +628,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param("trackId", "string", true, "音轨 EntityId"),
             param("macroIndex", "integer", true, "宏索引"),
             param("value", "number", true, "目标值"),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
         ],
         errors: &[ErrorCode::TrackNotFound, ErrorCode::IndexOutOfBounds],
     },
