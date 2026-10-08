@@ -57,7 +57,7 @@ pub use container::{
     ContainerArchive, ContainerEntry, ContainerError, ContainerLimits, ProjectArchive,
 };
 pub use error::ModelError;
-pub use ids::{AssetHash, ContentHash, EntityId, PPQ, ULID_TEXT_LEN};
+pub use ids::{AssetHash, AssetHasher, ContentHash, EntityId, PPQ, ULID_TEXT_LEN};
 pub use local_config::{
     AudioPortBinding, DEFAULT_SECRET_BACKEND, EditorRole, ExternalEditor, KNOWN_SECRET_BACKENDS,
     LOCAL_CONFIG_DIR_NAME, LOCAL_CONFIG_FILE_NAME, LOCAL_CONFIG_VERSION, LocalConfigError,

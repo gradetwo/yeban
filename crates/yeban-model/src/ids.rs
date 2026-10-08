@@ -173,6 +173,71 @@ impl<'de> Deserialize<'de> for AssetHash {
     }
 }
 
+/// [`AssetHash`] 的**增量（流式）**计算器 [MODEL-AST-007]。
+///
+/// ## 为什么模型层要有它
+///
+/// [`AssetHash::of_bytes`] 要求**完整字节**同时在内存里。`crates/yeban-decode` 的
+/// `import_path` 因此只能把整份输入文件读进内存，`DecodedAsset::pcm_hash` 还会为此
+/// 再分配一整份样本缓冲。该线把这一点登记成 needs，原文（`docs/ledger/decode-limits-notes.md` §8）：
+///
+/// > **增量 / 流式 SHA-256** | `AssetHash::of_bytes` 要求完整字节……
+/// > 建议在 `yeban-model` 侧提供 `AssetHasher`（`update`/`finalize`），本 crate 就能把两条路径都压到 O(块)。
+///
+/// 障碍不是"没人想到流式"，而是**状态机没有归属**：`crates/yeban-decode` 依赖表里
+/// **没有 `sha2`**（`crates/yeban-decode/Cargo.toml`），自己维护一份摘要状态机等于新增依赖。
+/// 把状态机放进模型层（`sha2` 已是本 crate 的既有依赖）后，消费者可以按块喂入。
+///
+/// ## 契约
+///
+/// 对**任意**分块方式，逐块 `update` 之后 `finalize` 的结果恒等于
+/// [`AssetHash::of_bytes`] 对同一字节串的结果。判据：
+/// `ids::tests::streaming_hash_equals_of_bytes_for_every_chunking`（单元）与
+/// `tests/hash_streaming.rs`（属性测试，随机切点）。
+///
+/// ## 用法
+///
+/// ```
+/// # use yeban_model::{AssetHash, AssetHasher};
+/// let mut hasher = AssetHasher::new();
+/// hasher.update(b"ye");
+/// hasher.update(b"ban");
+/// assert_eq!(hasher.finalize(), AssetHash::of_bytes(b"yeban"));
+/// ```
+#[derive(Clone, Debug)]
+pub struct AssetHasher {
+    /// 底层的 `sha2` 摘要状态机（唯一持有者，不进任何持久化结构）。
+    inner: Sha256,
+}
+
+impl AssetHasher {
+    /// 未喂入任何字节的新状态。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Sha256::new(),
+        }
+    }
+
+    /// 喂入下一块字节。可调用任意多次，调用次数与分块大小都不影响结果。
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.inner.update(bytes);
+    }
+
+    /// 结束计算并产出规范 [`AssetHash`]（64 字符小写十六进制）。
+    #[must_use]
+    pub fn finalize(self) -> AssetHash {
+        AssetHash(hex_lower(&self.inner.finalize()))
+    }
+}
+
+impl Default for AssetHasher {
+    /// 与 [`AssetHasher::new`] 等价（空状态）。
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 提交快照树的 SHA-256 摘要 [ARCH-OPS-002]。
 ///
 /// 与 [`AssetHash`] 同为内容寻址键，但语义不同：`ContentHash` 标识一次
@@ -326,6 +391,57 @@ mod tests {
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(hash.as_str().len(), SHA256_HEX_LEN);
+    }
+
+    #[test]
+    fn streaming_hash_equals_of_bytes_for_every_chunking() {
+        // 分块边界必须落在 SHA-256 分组边界（64 字节）的**内外**都成立，
+        // 因此样本长度取 0 / 1 / 63 / 64 / 65。
+        let cases: [&[u8]; 5] = [b"", b"a", &[0x5a; 63], &[0x5a; 64], &[0x5a; 65]];
+        for bytes in cases {
+            let expected = AssetHash::of_bytes(bytes);
+            for chunk in [1_usize, 7, 64, 1000] {
+                let mut hasher = AssetHasher::new();
+                for part in bytes.chunks(chunk) {
+                    hasher.update(part);
+                }
+                assert_eq!(
+                    hasher.finalize(),
+                    expected,
+                    "chunk={chunk} len={} 的分块结果必须与 of_bytes 相同",
+                    bytes.len()
+                );
+            }
+            // 一次喂完是 `chunks(len)` 的退化情形，单独钉住。
+            let mut one_shot = AssetHasher::new();
+            one_shot.update(bytes);
+            assert_eq!(one_shot.finalize(), expected);
+        }
+    }
+
+    #[test]
+    fn default_asset_hasher_is_the_empty_digest() {
+        // 空状态必须等于空字节串的摘要（另一个独立已知向量）。
+        assert_eq!(AssetHasher::default().finalize(), AssetHash::of_bytes(b""));
+        assert_eq!(
+            AssetHasher::new().finalize().as_str(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn streaming_hash_is_sensitive_to_the_last_bit() {
+        // "喂了字节"本身要被证明：只差最后一位 ⇒ 摘要必须不同。
+        let mut differing = AssetHasher::new();
+        differing.update(&[0x00, 0x01]);
+        let mut base = AssetHasher::new();
+        base.update(&[0x00, 0x00]);
+        assert_ne!(differing.finalize(), base.finalize());
+        // 分块位置也不能改变结果（同一位翻转，换一个切点喂）。
+        let mut split = AssetHasher::new();
+        split.update(&[0x00]);
+        split.update(&[0x01]);
+        assert_eq!(split.finalize(), AssetHash::of_bytes(&[0x00, 0x01]));
     }
 
     #[test]
