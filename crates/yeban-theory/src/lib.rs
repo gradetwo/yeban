@@ -74,6 +74,11 @@
 //!
 //! `Phase 1` 可编译可测试的实现切片（不再是 scaffold）。尚未实现的见
 //! `docs/ledger/theory-core-notes.md` 的 `pending` 与缺口清单。
+//!
+//! `docs/ledger/theory-core-notes.md:304` 的 `pending 6`（"`swing` 只登记不应用"）
+//! 由 [`swing`] 关闭：[`GenreRule::swing_permille`] 把登记表里的 `f32` 百分数
+//! 折成整数千分比，[`swing::swung_pair_span`] / [`swing::quantize_onset`]
+//! 按该比例切分与量化 tick。
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
@@ -83,6 +88,7 @@ pub mod genre;
 pub mod pitch;
 pub mod progression;
 pub mod scale;
+pub mod swing;
 pub mod voice_leading;
 
 pub use chord::{Chord, ChordKind, Tonality};
@@ -93,6 +99,10 @@ pub use progression::{
     ChordSpan, Degree, Meter, PPQ, Progression, RomanQuality, expand_progression,
 };
 pub use scale::{Scale, ScaleKind};
+pub use swing::{
+    SWING_PERMILLE_MAX, SWING_PERMILLE_STRAIGHT, SwingPair, quantize_onset, swung_onset_offset,
+    swung_pair_span,
+};
 pub use voice_leading::{
     VoiceLeadingResult, VoiceRange, VoicingConstraints, realize, realize_three_voices,
 };
@@ -192,7 +202,7 @@ mod tests {
         //
         // 检查口径：只看**非注释行**，且只看到本模块为止（忽略测试模块本身，
         // 那里允许使用 `&` 与 `Vec` 等辅助工具）。
-        const SOURCES: [(&str, &str); 8] = [
+        const SOURCES: [(&str, &str); 9] = [
             ("lib.rs", include_str!("lib.rs")),
             ("pitch.rs", include_str!("pitch.rs")),
             ("scale.rs", include_str!("scale.rs")),
@@ -200,6 +210,7 @@ mod tests {
             ("progression.rs", include_str!("progression.rs")),
             ("voice_leading.rs", include_str!("voice_leading.rs")),
             ("genre.rs", include_str!("genre.rs")),
+            ("swing.rs", include_str!("swing.rs")),
             ("error.rs", include_str!("error.rs")),
         ];
         // 逐字节拼出禁词，避免这段代码自己包含禁词字面量。

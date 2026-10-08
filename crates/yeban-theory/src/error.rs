@@ -109,6 +109,13 @@ pub enum TheoryError {
     #[error("genre id not found in library")]
     GenreNotFound,
 
+    /// 摇摆比例越界：合法区间是千分之 `50..=100`（50 = 平直，100 = 附点）。
+    #[error("swing permille {value} out of range 50..=100")]
+    SwingOutOfRange {
+        /// 实际收到的千分比。
+        value: u16,
+    },
+
     /// 五度圈距离计算失败：音级映射缺失（内部一致性错误）。
     #[error("fifth-circle mapping failed for this scale")]
     FifthCircleUnavailable,
@@ -149,6 +156,7 @@ impl TheoryError {
                 | Self::VoiceRangeOutOfMidi
                 | Self::NoFeasibleVoicing
                 | Self::GenreNotFound
+                | Self::SwingOutOfRange { .. }
         )
     }
 }

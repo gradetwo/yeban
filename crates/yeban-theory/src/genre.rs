@@ -160,6 +160,33 @@ impl GenreRule {
             .with_bars(4)
             .map(|p| p.chords(&scale))
     }
+
+    /// 把 [`GenreRule::swing`]（百分数 `f32`）折成 [`crate::swing`] 的千分比整数。
+    ///
+    /// - `swing == None` ⇒ `Ok(None)`：该流派不适用摇摆，调用方保持平直网格。
+    /// - `swing == Some(p)` ⇒ `Ok(Some(permille))`，`permille = round(p * 10)`。
+    ///
+    /// 浮点只出现在这一步：`f32` 是**登记数据**（通行实践的近似值），
+    /// 一旦进入 [`crate::swing`]，全部判定都是整数运算 [ARCH-DET-001]。
+    /// 取整走 `libm`（与 [`crate::pitch::note_to_hz`] 同一口径），
+    /// 避免落到各平台的标准库实现。越界值钳制到区间端点，再交
+    /// [`crate::swing::validate_swing_permille`] 校验（防御性分支）。
+    ///
+    /// # Errors
+    ///
+    /// 钳制后的千分比仍越界时返回 [`TheoryError::SwingOutOfRange`]。
+    pub fn swing_permille(&self) -> Result<Option<u16>, TheoryError> {
+        let Some(percent) = self.swing else {
+            return Ok(None);
+        };
+        let clamped = libm::roundf(percent * 10.0).clamp(
+            f32::from(crate::swing::SWING_PERMILLE_STRAIGHT),
+            f32::from(crate::swing::SWING_PERMILLE_MAX),
+        );
+        let permille = clamped as u16;
+        crate::swing::validate_swing_permille(permille)?;
+        Ok(Some(permille))
+    }
 }
 
 /// 流派规则表。

@@ -10,7 +10,8 @@
 //! 3. 声部连接的**单声部跳进上界**（默认 12 半音）在任何走向上都成立；
 //! 4. 展开后的 tick 区段首尾相接，且总时长恒等于 `bars × ticks_per_bar`；
 //! 5. 频率 `note_to_hz` 严格单调递增；
-//! 6. `derive_index` 的输出永远落在 `0..count` 且同种子同输出。
+//! 6. `derive_index` 的输出永远落在 `0..count` 且同种子同输出；
+//! 7. 摇摆切分不丢 tick、不移动一对的起点、量化幂等（§7）。
 
 use proptest::prelude::*;
 
@@ -21,7 +22,9 @@ use yeban_theory::pitch::{Pitch, PitchClass, note_to_hz, parse_pitch_class};
 use yeban_theory::progression::{Degree, Meter, Progression, RomanQuality, expand_progression};
 use yeban_theory::scale::{Scale, ScaleKind};
 use yeban_theory::voice_leading::{VoicingConstraints, realize, realize_three_voices};
-use yeban_theory::{derive_index, derive_range_i64};
+use yeban_theory::{
+    derive_index, derive_range_i64, quantize_onset, swung_onset_offset, swung_pair_span,
+};
 
 /// 全部 [`ScaleKind`]（含别名），属性测试的取值范围。
 const ALL_SCALE_KINDS: [ScaleKind; 16] = [
@@ -532,4 +535,70 @@ fn note_name_parsing_rejects_garbage_without_panicking() {
     assert_eq!(Pitch::new(127).unwrap().value(), 127);
     assert!(Pitch::new(128).is_err());
     assert!(Pitch::new(-1).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// 7. 摇摆：切分不丢 tick、不移动对起点、量化幂等
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// `first + second` 恒等于整对长度，且前半覆盖整对的一半以上（比例 >= 500）。
+    ///
+    /// 注意：`pair.first >= pair.second` 对**奇数**长度的对在 500 千分比下**不成立**
+    /// （例如 `pair_ticks = 3` ⇒ 前半 1、后半 2，向下取整）。判据写
+    /// `2 * first >= pair_ticks - 1`（离散网格上"不短于一半减一个 tick"）。
+    #[test]
+    fn swing_never_loses_or_creates_ticks(pair_ticks in 1u64..8192, permille in 500u16..=1000) {
+        let pair = swung_pair_span(pair_ticks, permille)?;
+        prop_assert_eq!(pair.total(), pair_ticks);
+        prop_assert!(pair.first <= pair_ticks);
+        prop_assert!(2 * pair.first + 1 >= pair_ticks);
+        prop_assert_eq!(pair.offbeat_offset(), pair.first);
+        // 摇摆偏移与前半的算术必须一致，不允许两条路径各算一份。
+        prop_assert_eq!(
+            swung_onset_offset(pair_ticks, permille)?,
+            pair.first as i64 - (pair_ticks / 2) as i64
+        );
+    }
+
+    /// 量化把 onset 放进它自己那一对的槽位上；再量化一次得到同一个值（幂等）。
+    #[test]
+    fn quantized_onsets_stay_in_their_own_pair_and_are_idempotent(
+        onset in 0u64..8192,
+        pair_ticks in 1u64..2048,
+        permille in 500u16..=1000,
+    ) {
+        let once = quantize_onset(onset, pair_ticks, permille)?;
+        prop_assert_eq!(once / pair_ticks, onset / pair_ticks);
+        let first = swung_pair_span(pair_ticks, permille)?.first;
+        // 第二个槽位在 `permille == 1000` 时退回本对最后一个 tick。
+        let second_slot = first.min(pair_ticks - 1);
+        let in_pair = once % pair_ticks;
+        prop_assert!(in_pair == 0 || in_pair == second_slot);
+        prop_assert_eq!(quantize_onset(once, pair_ticks, permille)?, once);
+    }
+
+    /// 越界比例必须报错，绝不静默钳制成平直。
+    #[test]
+    fn out_of_range_swing_is_always_an_error(pair_ticks in 1u64..4096, permille in 0u16..=499) {
+        prop_assert!(swung_pair_span(pair_ticks, permille).is_err());
+        prop_assert!(swung_onset_offset(pair_ticks, permille).is_err());
+        prop_assert!(quantize_onset(0, pair_ticks, permille).is_err());
+    }
+
+    /// 登记表里的每一个 `swing` 值都必须能折成合法千分比，并且 `None` 保持平直。
+    #[test]
+    fn every_genre_swing_value_converts_to_a_legal_permille(index in 0usize..GenreLibrary::all().len()) {
+        let rule = &GenreLibrary::all()[index];
+        match rule.swing_permille()? {
+            None => prop_assert!(rule.swing.is_none()),
+            Some(permille) => {
+                prop_assert!((500..=1000).contains(&permille));
+                let pair = swung_pair_span(480, permille)?;
+                prop_assert_eq!(pair.total(), 480);
+            }
+        }
+    }
 }
