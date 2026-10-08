@@ -29,7 +29,7 @@ use std::sync::OnceLock;
 
 use crate::chord::Chord;
 use crate::error::TheoryError;
-use crate::progression::{ChordSpan, Meter, Progression, expand_progression};
+use crate::progression::{ChordSpan, Meter, Progression};
 use crate::scale::{Scale, ScaleKind};
 
 /// 来源标记：传统音乐理论（公有领域）。
@@ -120,9 +120,15 @@ impl GenreRule {
 
     /// 用该流派的第一条典型走向生成小节骨架。
     ///
+    /// `bars` 的单位是**该流派自己的小节**，不是 4/4 的小节：展开前把
+    /// [`GenreRule::meter_value`]（即 [`GenreRule::meter`]）灌进走向，
+    /// 因此 `waltz.sketch(C, 4)` 得到 `4 * 2880 = 11520` tick，
+    /// 而不是 `4 * 3840 = 15360` tick。`meter_value()` 若不被消费，
+    /// 规则数据与实际时长就会静默不一致。
+    ///
     /// # Errors
     ///
-    /// 没有典型走向、走向或音阶无法解析时返回相应错误。
+    /// 没有典型走向、走向或音阶无法解析、`bars` 为 0 时返回相应错误。
     pub fn sketch(
         &self,
         tonic: crate::pitch::PitchClass,
@@ -133,8 +139,10 @@ impl GenreRule {
             .first()
             .ok_or(TheoryError::EmptyProgression)?;
         let scale = self.primary_scale(tonic)?;
-        let spans = expand_progression(&scale, progression, bars)?;
-        Ok(spans)
+        Progression::parse(progression)?
+            .with_meter(self.meter_value())
+            .with_bars(bars)?
+            .expand(&scale)
     }
 
     /// 该流派第一条典型走向的和弦序列（不含时间信息）。
@@ -2655,11 +2663,15 @@ mod tests {
             });
             let total: u64 = spans.iter().map(|s| s.duration_ticks).sum();
             assert!(!spans.is_empty(), "{}", rule.id);
-            // 4 小节至少覆盖 4 小节的时长（级数多于小节时会更长）。
-            assert!(
-                total >= 4 * rule.meter_value().ticks_per_bar(),
-                "{}: total {total} shorter than 4 bars",
-                rule.id
+            // 4 小节**恰好**覆盖该流派自己拍号的 4 小节（相等，不是"至少"：
+            // 原先的 `>=` 会放过"3/4 的曲子按 4/4 计时"这种静默不一致）。
+            assert_eq!(
+                total,
+                4 * rule.meter_value().ticks_per_bar(),
+                "{}: total {total} is not 4 bars of {}/{}",
+                rule.id,
+                rule.meter.0,
+                rule.meter.1
             );
             // 区段必须首尾相接、严格升序。
             let mut cursor = 0u64;
@@ -2669,6 +2681,84 @@ mod tests {
                 cursor = span.end_tick();
             }
         }
+    }
+
+    #[test]
+    fn every_rule_sketch_uses_the_rules_own_meter() {
+        // `GenreRule.meter` 是该流派自己的拍号（waltz 3/4、march 2/4、
+        // jig 6/8 之类）。`sketch(tonic, bars)` 产出的**小节**必须是**这个**
+        // 拍号的小节；否则 `meter_value()` 这个公开取值口没有任何消费者，
+        // 规则数据与实际时长静默不一致。
+        let mut non_common = 0usize;
+        for rule in GenreLibrary::all() {
+            let meter = rule.meter_value();
+            let bars = 4u64;
+            let spans = rule
+                .sketch(PitchClass::C, bars as u32)
+                .unwrap_or_else(|err| panic!("{}: sketch failed: {err}", rule.id));
+            let total: u64 = spans.iter().map(|span| span.duration_ticks).sum();
+            assert_eq!(
+                total,
+                bars * meter.ticks_per_bar(),
+                "{}: {bars} bars of {}/{} must total {} ticks, got {total}",
+                rule.id,
+                meter.numerator,
+                meter.denominator,
+                bars * meter.ticks_per_bar()
+            );
+            // 级数不多于小节时，每小节恰好一个和弦，且每段正好一小节。
+            let degrees = Progression::parse(rule.typical_progressions[0])
+                .expect("idiomatic_data_is_structurally_valid pins this")
+                .degrees()
+                .len();
+            if degrees <= bars as usize {
+                assert_eq!(spans.len(), bars as usize, "{}", rule.id);
+                for span in &spans {
+                    assert_eq!(span.duration_ticks, meter.ticks_per_bar(), "{}", rule.id);
+                }
+            }
+            if meter != Meter::COMMON {
+                non_common += 1;
+            }
+        }
+        // 防真空：若不是 4/4 的规则一条都不剩，这条判据就测不到任何东西。
+        assert_eq!(
+            non_common, 28,
+            "非 4/4 拍号的规则条数变了（实测 182 条中 28 条:3/4=13, 2/4=8, 7/8=4, 6/8=3）"
+        );
+    }
+
+    #[test]
+    fn waltz_sketch_is_in_three_four_not_four_four() {
+        // 定点读数：这条判据用**字面数字**，避免上面那条循环判据被改成
+        // "两边取自同一个来源"而不自知。圆舞曲 = 3/4 ⇒ 一小节
+        // 960 * 4 * 3 / 4 = 2880 tick。
+        let waltz = GenreLibrary::get("waltz").unwrap();
+        assert_eq!(waltz.meter, (3, 4));
+        let spans = waltz.sketch(PitchClass::C, 4).unwrap();
+        assert_eq!(spans.len(), 4);
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.duration_ticks)
+                .collect::<Vec<_>>(),
+            vec![2880, 2880, 2880, 2880]
+        );
+        assert_eq!(
+            spans.iter().map(|span| span.duration_ticks).sum::<u64>(),
+            11520
+        );
+        assert_eq!(spans[3].start_tick, 8640);
+        // 走向 "I-V-I" 铺 4 小节 ⇒ C G C C（级数按小节循环取用）。
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.chord.symbol())
+                .collect::<Vec<_>>(),
+            vec!["C", "G", "C", "C"]
+        );
+        // 反例锚点：同样的 4 小节若按 4/4 计会是 4 * 3840 = 15360 tick。
+        assert_eq!(Meter::COMMON.ticks_per_bar(), 3840);
     }
 
     #[test]
