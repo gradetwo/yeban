@@ -91,8 +91,9 @@
 
 | # | 事项 | 裁决 | 状态 |
 | :-: | :--- | :--- | :--- |
-| R4b | `feature-alignment.md:163` 含一条假陈述（"`DeviceRack` 在 `ui/**` 里没有被任何组件实例化"） | **修**（活表 ⇒ 就地改正） | 待开票 |
-| R6c | 判据 7 够不到的陈旧行号（`phase-status.md:78` 的 `synth.rs:69` · `dsp-core-provenance.md` §2.1 · 以及新出现的 1 处漂移） | **清** | 待开票 |
+| R4b | `feature-alignment.md:163` 含一条假陈述（"`DeviceRack` 在 `ui/**` 里没有被任何组件实例化"）**——根因是那条 `grep` 只扫 `ui/` 一层，漏掉 `ui/console/`** | **修**（活表 ⇒ 就地改正；原句保留、依据从"不存在"换成 `visible: active-tab == 2`） | ✅ 已执行 `677fa3f` |
+| R6c | 判据 7 够不到的陈旧行号（`phase-status.md:78` 的 `synth.rs:69` · `dsp-core-provenance.md` §1/§2.1 的模块数与行数 · 以及那 1 处漂移 `feature-alignment.md:143`） | **清**（活表就地改正；日期化记录加注）⇒ **漂移 1 → 0** | ✅ 已执行 `677fa3f` |
+| R6d | `phase-status.md:108` 手抄的旧读数（`已完成 18 / 部分 23 / PENDING 6`；守卫今天算 `19 / 22 / 6`） | **加带日期的更正注，不改原句**（它引用一次过去的机械读数 ⇒ 就地改写会篡改日期化引文） | 待开票 |
 | R11b | 录音键保留的 `accessible-checked: false`（可证明惰性） | **登记**；真接录音时连同 `test_port_adapter.rs:2905-2915` 一起改成真实状态源 | 已登记 |
 | R11c | 另两处假 `accessible-checkable` 声明（`device_rack.slint` 旁通开关 · `app.slint` 声学诊断） | **修**（删声明；两处的 `accessible-checked` 一并删，因为没有判据读它们） | ✅ 已执行 `7de4f9f` ＋ `042c3a5` |
 | R15 | 编曲视图静音/独奏按钮点了没反应（`arrangement_view.slint` 的两个 `TouchArea` 无 `clicked`） | **修**（只转发到既有宿主面，不发明状态） | ✅ 已执行 `d3c954f` |
