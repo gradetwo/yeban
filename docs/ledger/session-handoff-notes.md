@@ -115,3 +115,30 @@
 7. ⭐ **"没有判据"必须全仓 grep**，不能只搜 `tests/`（判据常住在 `src/test_port_adapter.rs`）。
 8. ⭐ **体裁纪律**：活表（`feature-alignment.md` / `gate-status.md` / `phase-status.md` / `human-decisions.md`）⇒ **就地改正**；`docs/ledger/*-notes.md` 与 `DEVELOPMENT_LEDGER.md` ⇒ **加带日期的注，保留原文**。
 9. ⭐ **编造出处是最贵的错误**：本会话集成者写错过三处（"除 limiter 外都没接线"、"台账里 compressor 已接线"、"4× 过采样归给 ARCH-FMT-001"），**三处都被执行票核出并更正**。⇒ **凡在指令里给出处，必须可核对**。
+
+---
+
+## 6. 续做入口（2026-10-09 追加，关机前收尾）
+
+### 6.1 ⚠️ 一件**已完工但未入库**的工作（在 worktree 里，磁盘上安全）
+- ⭐ **`.worktrees/app-r9pix`，分支 `line/app-r9pix`，提交 `d6e6b64`**（基线 `95b15c5`）——**R9 状态栏诚实性**：
+  - `selection`：`选区 1.1.000 – 5.4.480` ⇒ `选区 无`（有选区时 `选区 001.01.000 – 005.04.480`）；数据源 `bridge.rs:1866 selection_tick_span` ＋ `bridge.rs:630 timecode_for_ticks`。
+  - `chord`：`Cmaj7` ⇒ `(none)`；⚠️ **它没有宿主写者**（`yeban-theory` 与 `yeban-app` 之间**零依赖边**，实测 `cargo tree` = 0）⇒ 只登记，**不许为它加依赖**。
+  - `device`：`48 kHz / 24-bit · DSP 3.2% · 目标 120 FPS` ⇒ `48 kHz / 32-bit float · 目标 120 FPS`；`DSP 3.2%` 整格删除（实测 `src/**` 去注释后 `dsp_load|cpu_load|load_percent` = 0 行）。
+  - 写者唯一：`host::publish_status_bar`（`host.rs:3182`）。
+- ⛔ **它刻意没有 push**：⭐ **推上去会让 `cargo test -p yeban-app` 的 `[UI-MCP-003]` 逐字节比对变红**，因为**5 张 Linux 基准图全部过期**（状态栏条带 `y=1056..1079` 在 5 张里逐像素相同 ⇒ 一起变）。
+
+### 6.2 ⚠️ 把这件工作入库的**四步**（顺序不能反）
+1. `git push origin line/app-r9pix:main`（⚠️ 推前先 `git fetch && git rebase origin/main`）。
+2. 触发手动档重录：`gh workflow run gates-manual.yml -f gate=goldens`（job 定义 `.github/workflows/gates-manual.yml:681-683`；步骤命令 `:696-701` = `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1`）。
+3. 下载 `golden-linux` artifact、**人复核**，再以**只碰 `crates/yeban-app/tests/golden/linux/**`** 的提交入库。
+4. 入库后读回判决，确认 5 张都打出「与基准逐字节一致」。
+- ⭐ 本机**生不出 Linux 基准**（两条独立原因）：① bless 开关 `YEBAN_WRITE_GOLDEN=1` 只在 `cargo test -p yeban-app` 里生效，而本机禁编 slint（AGENTS.md §5.2）；② `PlatformTag::current()` 在 macOS 指向 `tests/golden/macos/`，而仓库里 `linux/` 有 6 个文件、`macos/` 有 **0** 个。
+- ⚠️ **`MANIFEST.txt` 已加「待重录声明」，表本身未改**（表仍与磁盘逐字节一致 ⇒ `--write-table` 会是空动作）；`check_golden_manifest.py` 改前=改后 `[ok]`。
+
+### 6.3 其他待办（未动）
+- ⚠️ **`docs/ledger/integration-rulings-notes.md` 的 R9 行状态词仍是「待开票」** ⇒ 入库后应改成「✅ 已执行 `d6e6b64`」＋ 重录提交的 sha。
+- ⚠️ **`6448db5`**（midi `.mxl` 判据）无独立 run（与 tip 同批推）⇒ 若要独立判决须补推。
+- ⚠️ **`audit-crossarch` 的完整表**未细读（⭐ 它已找到 `ADR-0001:379-383` 的跨架构分策：IEEE 精确类逐位相同、超越函数类 4096 ulp 预算且冻结架构 aarch64 逐位相同 ✓）。
+- ⚠️ **漂移 2 处**（结构性地板：`feature-alignment.md` 第 16 节的日期化记录，改它们就要改写日期化原文 ⇒ 按纪律保留）。
+- ⚠️ **`drums` 接线**已在 `main`（⭐ 且 L1 假红已由 `6ce0ec8` ＋ `2269ca3` 修清 ✓）。
