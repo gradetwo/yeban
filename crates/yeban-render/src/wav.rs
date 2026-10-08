@@ -42,6 +42,13 @@ pub enum WavError {
     },
     /// `hound` 不支持的位深。
     UnsupportedDepth(u16),
+    /// 格式整体不可用：声道数为 0、采样率为 0，或缓冲里有越界样本。
+    RejectedFormat {
+        /// 被拒绝的字段或量（人读）。
+        field: &'static str,
+        /// 被拒绝的值或原因（人读）。
+        detail: String,
+    },
 }
 
 impl core::fmt::Display for WavError {
@@ -52,6 +59,7 @@ impl core::fmt::Display for WavError {
                 write!(f, "格式不匹配: 期望 {expected}, 实际 {got}")
             }
             Self::UnsupportedDepth(bits) => write!(f, "不支持的位深: {bits}"),
+            Self::RejectedFormat { field, detail } => write!(f, "格式不可用: {field} = {detail}"),
         }
     }
 }
@@ -64,16 +72,51 @@ impl From<hound::Error> for WavError {
     }
 }
 
+/// 校验格式的**容器级**约束：`hound` 只接受非零声道数与非零采样率。
+///
+/// # 为什么必须由这里挡（实测，两处都是 `hound` 的 panic，不是 `Result`）
+///
+/// - `channels == 0` ⇒ hound 的 `WavWriter::update_header` **现位于第 502 行**做
+///   `data_bytes_written % spec.channels`，除数为 0 ⇒ **panic**。本机实测：
+///   `check_match` 与 `hound_spec` 都返回 `Ok`，`write_plain_wav` 在被拒之前已经
+///   建好文件（实测留下 68 字节的残缺头）。
+/// - `sample_rate == 0` ⇒ hound 写 `nBlockAlign` 时 **现位于第 332 行**做
+///   `bytes_per_sec / spec.sample_rate`，除数为 0 ⇒ **panic**（空缓冲也一样）。
+///
+/// 因此这一层必须在**创建文件之前**说"不"：`write_plain_wav` 拒绝时**不得**留下
+/// 任何字节，这与 [`crate::rf64`] 那条"绝不产出声明了不存在音频的容器"同一条纪律。
+///
+/// # Errors
+///
+/// 声道数为 0、采样率为 0，或位深不在 16 / 24 / 32。
+fn check_container_fields(format: &PcmFormat) -> Result<(), WavError> {
+    if format.channels == 0 {
+        return Err(WavError::RejectedFormat {
+            field: "channels",
+            detail: "0".into(),
+        });
+    }
+    if format.sample_rate == 0 {
+        return Err(WavError::RejectedFormat {
+            field: "sample_rate",
+            detail: "0".into(),
+        });
+    }
+    if !matches!(format.bits_per_sample, 16 | 24 | 32) {
+        return Err(WavError::UnsupportedDepth(format.bits_per_sample));
+    }
+    Ok(())
+}
+
 /// 把本 crate 的 [`PcmFormat`] 转成 `hound::WavSpec`。
 ///
 /// # Errors
 ///
-/// `bits_per_sample` 不是 16 / 24 / 32 时返回
-/// [`WavError::UnsupportedDepth`] —— `hound` 的 `WavSpec` 没有这些位深的写入路径。
+/// `bits_per_sample` 不是 16 / 24 / 32 时返回 [`WavError::UnsupportedDepth`];
+/// 声道数或采样率为 0 时返回 [`WavError::RejectedFormat`] —— 这两个值会让 `hound`
+/// 的写入器**panic**（见 [`check_container_fields`]），不是 `Result`。
 pub fn hound_spec(format: &PcmFormat) -> Result<WavSpec, WavError> {
-    if !matches!(format.bits_per_sample, 16 | 24 | 32) {
-        return Err(WavError::UnsupportedDepth(format.bits_per_sample));
-    }
+    check_container_fields(format)?;
     Ok(WavSpec {
         channels: format.channels,
         sample_rate: format.sample_rate,
@@ -98,31 +141,62 @@ pub fn format_of(buffer: &PcmBuffer, channels: u16, sample_rate: u32) -> PcmForm
 
 /// 校验格式与缓冲互相匹配。
 ///
+/// 三项一起查，因此**任一**不匹配时返回的都是一个明确的错误，不会走到 `hound`：
+///
+/// 1. 容器字段可用（声道数 ≠ 0、采样率 ≠ 0、位深 ∈ {16, 24, 32}，
+///    [`WavError::RejectedFormat`] / [`WavError::UnsupportedDepth`]）；
+/// 2. 位深与整数/浮点类别一致（[`WavError::FormatMismatch`]）；
+/// 3. 缓冲里的每个样本都在自己位深的合法区间里（[`WavError::RejectedFormat`]）。
+///
+/// 注意顺序：容器字段在**位深匹配之前**查。理由是位深先查会让
+/// `channels == 0` + 位深不匹配的组合报出"位深"这个**次要**原因，而真正会让
+/// `hound` panic 的是声道数。判据 `a_zero_channel_count_is_refused_before_any_file_exists`
+/// 直读这一点。
+///
+/// 第 3 项的来源是 [`PcmBuffer::is_in_range`]：整数变体是公开的，`Int24` 里可以装
+/// 装不下 24 位的值，而越界样本会被[`PcmBuffer::to_le_bytes`]静默丢高位。
+///
 /// # Errors
 ///
-/// 位深或整数/浮点类别不一致。
+/// 见上面三条。
 pub fn check_match(format: &PcmFormat, buffer: &PcmBuffer) -> Result<(), WavError> {
+    check_container_fields(format)?;
     let expected_depth = buffer.depth();
-    let ok = format.bits_per_sample == expected_depth.bits()
-        && format.is_float == matches!(expected_depth, BitDepth::Float32);
-    if ok {
-        Ok(())
-    } else {
+    if format.bits_per_sample != expected_depth.bits()
+        || format.is_float != matches!(expected_depth, BitDepth::Float32)
+    {
         let expected_bits = expected_depth.bits();
         let actual_bits = format.bits_per_sample;
         let actual_kind = if format.is_float { "浮点" } else { "整数" };
-        Err(WavError::FormatMismatch {
+        return Err(WavError::FormatMismatch {
             expected: format!("{expected_depth:?} ({expected_bits} 位)"),
             got: format!("{actual_bits} 位, {actual_kind}"),
-        })
+        });
     }
+    if !buffer.is_in_range() {
+        return Err(WavError::RejectedFormat {
+            field: "samples",
+            detail: format!(
+                "越界样本: {:?} 的合法区间是 [{}, {}]",
+                expected_depth,
+                expected_depth.full_scale_min(),
+                expected_depth.full_scale_max()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// 用 `hound` 写一份普通 RIFF WAV。
 ///
+/// **拒绝时不留字节**：全部校验（格式、容器字段、样本范围）都在
+/// [`WavWriter::create`] 之前完成，因此一个被拒的缓冲不会留下残缺文件。
+/// 这条纪律的来源是实测：此前越界样本会在 `hound` 的第 3 个样本处报错，
+/// 而文件已经存在（本机实测 68 字节的 `RIFF`/`fmt `/`data` 头）。
+///
 /// # Errors
 ///
-/// 格式与缓冲不匹配、位深不受支持、或 `hound` I/O 失败。
+/// 格式与缓冲不匹配、容器字段不可用、有越界样本、位深不受支持，或 `hound` I/O 失败。
 pub fn write_plain_wav(
     path: impl AsRef<Path>,
     format: &PcmFormat,
@@ -159,7 +233,9 @@ pub fn write_plain_wav(
 ///
 /// # Errors
 ///
-/// 位深不受支持或 `hound` I/O 失败。
+/// 位深不受支持、**读到的格式整体不可用（声道数为 0 / 采样率为 0 / 有越界样本）**，
+/// 或 `hound` I/O 失败。第三类不是多余的：读回的值来自**外部文件的内容**，
+/// 不校验就等于把"文件说了什么"当成自己的数据。这条与 [`check_match`] 同源。
 pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), WavError> {
     let mut reader = WavReader::open(path)?;
     let spec = reader.spec();
@@ -170,6 +246,7 @@ pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), 
         is_float: spec.sample_format == SampleFormat::Float,
         channel_mask: None,
     };
+    check_container_fields(&format)?;
     let buffer = match (spec.sample_format, spec.bits_per_sample) {
         (SampleFormat::Int, 16) => {
             PcmBuffer::Int16(reader.samples::<i16>().collect::<Result<Vec<_>, _>>()?)
@@ -182,6 +259,12 @@ pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), 
         }
         (_, bits) => return Err(WavError::UnsupportedDepth(bits)),
     };
+    if !buffer.is_in_range() {
+        return Err(WavError::RejectedFormat {
+            field: "samples",
+            detail: format!("读到的样本越界: {:?}", buffer.depth()),
+        });
+    }
     Ok((format, buffer))
 }
 
@@ -383,7 +466,133 @@ mod tests {
         assert_eq!(hound_spec(&odd), Err(WavError::UnsupportedDepth(8)));
 
         let directory = tempfile::tempdir().expect("临时目录");
-        assert!(write_plain_wav(directory.path().join("x.wav"), &format, &buffer).is_err());
+        let rejected = directory.path().join("x.wav");
+        assert!(write_plain_wav(&rejected, &format, &buffer).is_err());
+        assert!(
+            !rejected.exists(),
+            "被拒的写入**不得**留下任何字节; 实测此前会留下 68 字节的残缺头"
+        );
+    }
+
+    /// 判据 8: `PcmBuffer::is_in_range` 的读数与规范端点**逐点**一致。
+    ///
+    /// 这是"位深边界"那条契约的机械读数：24-bit 的合法上界是 `2^23 − 1`
+    /// （[`BitDepth::full_scale_max`] 的文档），**不是** `2^23`。
+    /// 判据同时把两个端点（合法）与四个越界值（不合法）都走一遍，
+    /// 因此"把上界改成 `2^23`"这一类注入会让它变红。
+    #[test]
+    fn pcm_buffer_knows_its_legal_sample_range() {
+        // 三个变体的合法端点。
+        assert!(PcmBuffer::Int16(vec![i16::MIN, i16::MAX, 0]).is_in_range());
+        assert!(PcmBuffer::Int24(vec![-8_388_608, 8_388_607, 0]).is_in_range());
+        assert!(PcmBuffer::Float32(vec![-1.0, 1.0, 0.0, f32::MIN, f32::MAX]).is_in_range());
+        assert!(PcmBuffer::Int16(Vec::new()).is_in_range(), "空缓冲合法");
+
+        // 越界样本：24-bit 的上界再加一个 LSB。
+        assert!(!PcmBuffer::Int24(vec![8_388_608]).is_in_range());
+        assert!(!PcmBuffer::Int24(vec![-8_388_609]).is_in_range());
+        assert!(!PcmBuffer::Int24(vec![i32::MAX]).is_in_range());
+        assert!(!PcmBuffer::Int24(vec![0, 1, i32::MIN]).is_in_range());
+
+        // 浮点的"合法"就是有限。
+        assert!(!PcmBuffer::Float32(vec![f32::NAN]).is_in_range());
+        assert!(!PcmBuffer::Float32(vec![0.0, f32::INFINITY]).is_in_range());
+        assert!(!PcmBuffer::Float32(vec![f32::NEG_INFINITY]).is_in_range());
+
+        // 越界值的字节读数是**丢高位**, 不是截断到合法范围 —— 这条是"为什么要拦"的
+        // 字面证据: `8_388_608` 的三个字节读回来是 −8_388_608（符号翻转）。
+        assert_eq!(
+            PcmBuffer::Int24(vec![8_388_608]).to_le_bytes(),
+            [0x00, 0x00, 0x80]
+        );
+        assert_eq!(
+            PcmBuffer::Int24(vec![i32::MAX]).to_le_bytes(),
+            [0xFF, 0xFF, 0xFF]
+        );
+    }
+
+    /// 判据 9: **零声道数**与**零采样率**在创建文件之前被明确拒绝 —— 不是 panic。
+    ///
+    /// 注入证明：改回旧行为（`check_match` 只看位深匹配）会让这条**以 panic 结束**：
+    /// hound 的 `update_header` **现位于第 502 行**对 `spec.channels` 取模（除数为 0）；
+    /// 写 `nBlockAlign` 的那处 **现位于第 332 行**对 `spec.sample_rate` 做除法。
+    /// 两处都是**除数为 0 的 panic**，因此这条判据不是风格检查，是崩溃闸门。
+    ///
+    /// 同时钉住"拒绝时不留字节"：被拒之后路径上**没有**文件。
+    #[test]
+    fn a_zero_channel_count_is_refused_before_any_file_exists() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let mono = PcmBuffer::Int16(vec![0, 1, -1, 0]);
+
+        // 零声道：格式校验、spec 转换、写入三处都拒绝，且都没有副作用。
+        let zero_channels = PcmFormat::integer(0, 48_000, 16);
+        assert!(matches!(
+            check_match(&zero_channels, &mono),
+            Err(WavError::RejectedFormat {
+                field: "channels",
+                ..
+            })
+        ));
+        assert!(matches!(
+            hound_spec(&zero_channels),
+            Err(WavError::RejectedFormat {
+                field: "channels",
+                ..
+            })
+        ));
+        let no_channels_path = directory.path().join("zero_channels.wav");
+        assert!(write_plain_wav(&no_channels_path, &zero_channels, &mono).is_err());
+        assert!(!no_channels_path.exists(), "被拒时不得留下文件");
+
+        // 零采样率：空缓冲也一样（旧行为在空缓冲上也 panic）。
+        let zero_rate = PcmFormat::integer(1, 0, 16);
+        assert!(matches!(
+            check_match(&zero_rate, &mono),
+            Err(WavError::RejectedFormat {
+                field: "sample_rate",
+                ..
+            })
+        ));
+        assert!(matches!(
+            hound_spec(&zero_rate),
+            Err(WavError::RejectedFormat {
+                field: "sample_rate",
+                ..
+            })
+        ));
+        let no_rate_path = directory.path().join("zero_rate.wav");
+        assert!(write_plain_wav(&no_rate_path, &zero_rate, &mono).is_err());
+        assert!(
+            write_plain_wav(
+                directory.path().join("zero_rate_empty.wav"),
+                &zero_rate,
+                &PcmBuffer::Int16(Vec::new())
+            )
+            .is_err()
+        );
+        assert!(!no_rate_path.exists(), "被拒时不得留下文件");
+
+        // 越界样本也走同一个"留不下文件"的出口。
+        let over = PcmBuffer::Int24(vec![0, 8_388_608]);
+        let int24 = PcmFormat::integer(1, 48_000, 24);
+        assert!(matches!(
+            check_match(&int24, &over),
+            Err(WavError::RejectedFormat {
+                field: "samples",
+                ..
+            })
+        ));
+        let over_path = directory.path().join("over.wav");
+        assert!(write_plain_wav(&over_path, &int24, &over).is_err());
+        assert!(!over_path.exists(), "越界样本被拒时不得留下文件");
+
+        // 合法端点必须仍然写得进去（否则这条判据只是把功能关掉）。
+        let edge = PcmBuffer::Int24(vec![8_388_607, -8_388_608]);
+        let edge_path = directory.path().join("edge.wav");
+        write_plain_wav(&edge_path, &int24, &edge).expect("合法端点必须能写");
+        let (read_format, read_pcm) = read_plain_wav(&edge_path).expect("读回");
+        assert_eq!(read_format, int24);
+        assert_eq!(read_pcm, edge);
     }
 
     /// 判据 6: 空缓冲也能往返（0 帧文件是合法的）。

@@ -228,10 +228,46 @@ impl PcmBuffer {
         self.len() * self.depth().bytes_per_sample()
     }
 
+    /// `true` 表示每个样本都落在它自己位深的合法闭区间里
+    /// （[`BitDepth::full_scale_min`] ..= [`BitDepth::full_scale_max`]）。
+    ///
+    /// [`Self::Float32`] 的合法性就是**有限**: `NaN` / `±inf` 被拒绝
+    /// （[`quantize`] 已把非有限值换成 `0.0`, 因此手工构造的缓冲才是唯一的来源）。
+    ///
+    /// # 为什么需要这条
+    ///
+    /// 枚举变体是公开的, 所以 `Int24` 里可以装进 `8_388_608` 或 `i32::MAX` 这类
+    /// **装不下 24 位**的值。它们不被拦下来时, [`Self::to_le_bytes`] 会把高位**静默丢掉**:
+    /// 实测 `8_388_608` ⇒ 字节 `00 00 80`（读回来是 −8_388_608, 符号翻转）,
+    /// `i32::MAX` ⇒ `FF FF FF`。这不是"截断到合法范围", 是**产出错误的样本**。
+    /// [`BitDepth::full_scale_max`] 的文档（"24-bit 的合法上界是 8388607"）就是这条契约。
+    #[must_use]
+    pub fn is_in_range(&self) -> bool {
+        // `Int16` 的元素宽度本身就把范围钉死在 `i16` 上, 因此这里只需要看
+        // `Int24`（唯一一个用更宽的 `i32` 承载的整数变体）与 `Float32`。
+        // `Int16` 仍然被逐个检查, 是为了让这条契约在**三个变体上都成立**,
+        // 而不是靠"类型恰好够宽"这一个巧合。
+        match self {
+            Self::Int16(samples) => samples.iter().all(|&sample| {
+                i32::from(sample) >= BitDepth::Int16.full_scale_min()
+                    && i32::from(sample) <= BitDepth::Int16.full_scale_max()
+            }),
+            Self::Int24(samples) => samples.iter().all(|&sample| {
+                sample >= BitDepth::Int24.full_scale_min()
+                    && sample <= BitDepth::Int24.full_scale_max()
+            }),
+            Self::Float32(samples) => samples.iter().all(|sample| sample.is_finite()),
+        }
+    }
+
     /// 编码为**小端**交织字节流 —— RIFF/RF64 的 `data` chunk 载荷就是这个。
     ///
     /// 24-bit 取低 3 字节小端: 规范的 24-bit PCM 就是"3 字节小端有符号",
     /// 第 4 字节是 `i32` 承载带来的符号扩展, **不得**写进文件。
+    ///
+    /// 本函数**假设** [`Self::is_in_range`] 为真; 越界样本的高位会被丢掉
+    /// （见该函数的"为什么需要这条"）。整数变体的元素宽度本身就保证了这个前提:
+    /// [`Self::Int16`] 装的是 `i16`, [`Self::Int24`] 的合法值范围由 [`quantize`] 钳出。
     #[must_use]
     pub fn to_le_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.byte_len());
