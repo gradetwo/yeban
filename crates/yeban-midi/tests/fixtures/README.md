@@ -149,3 +149,82 @@ SOFTWARE.
 3. ⛔ 不证明完整 MusicXML 4.0 语义：`forward` / `grace` / `unpitched` / `transpose`
    只被**登记为未实现**。
 4. ⛔ 不证明上游仓库的**全部**文件可用：本票只取了 5 个文件，且逐个核对了 SHA-256。
+
+## 6. `.mxl`（压缩 MusicXML）夹具与构造配方（本票新增）
+
+本节的读者是 `crates/yeban-midi/tests/musicxml_contract.rs` 的 `mxl_*` 三条判据。
+⛔ 本节**不**意味着 `.mxl` 可以被导入：本票只登记**代价与路线**，**没有**实现 inflate。
+
+### 6.1 为什么需要一个**自造**的 `.mxl`
+
+1. 既有判据 `mxl_zip_bytes_are_rejected_without_panicking` 用的是 **6 个合成字节**
+   （`PK\x03\x04` + 手工拼的尾巴）——它不是容器，没有条目、没有 CRC、没有 deflate 数据。
+2. 真 `.mxl` 只在**上游文件**里以**受版权保护**的作品出现（第 3 节与第 5.5 节）。
+   因此本票的做法是：**把本目录已有的自造纯文本夹具打成容器**。版权仍是本仓库的。
+3. 于是判据可以钉住"真容器的形状"（2 个条目 / 压缩法 8 / CRC-32 / 尺寸），
+   而**不需要**提交任何外部 `.mxl`。
+
+### 6.2 逐件登记（来源 · 许可 · SHA-256）
+
+| 本目录文件 | 字节 | SHA-256 | 来源 | 许可 |
+| :--- | ---: | :--- | :--- | :--- |
+| `handmade_mvp_partwise.mxl` | 1435 | `70d3c8abe31258f6e6255e3a6a28ba1204a54ed01dfe79fe3c709aabcd88cd31` | 夜半项目自造（本票）：`handmade_mvp_partwise.musicxml` 的 deflate ZIP 容器 | 本仓库许可 |
+
+容器内有 **2** 个条目：`META-INF/container.xml`（146 → 104 字节，CRC-32 `0xae69681f`）与
+`score.xml`（2716 → 1095 字节，CRC-32 `0xcbb005a0`）。`score.xml` 的 CRC-32 与尺寸**等于**
+`handmade_mvp_partwise.musicxml` 的 CRC-32 与尺寸 ⇒ 容器的载荷就是**同一份**纯文本夹具
+（判据 `mxl_cost_is_pinned_by_the_container_fields_without_inflating` 每次运行都复核这一点）。
+
+⚠️ **与本机那 6 个真 `.mxl` 的已知差异**：真文件（`/tmp/musicxml/**`，**未提交**）的
+local header 里 `general purpose bit 11`（UTF-8 文件名标志）为 1（`flags=0x0800`），
+本夹具为 0（`flags=0x0000`，python 的 `zipfile` 对纯 ASCII 名字不置该位）。
+两者的压缩法（8）与条目布局（`META-INF/container.xml` + `score.xml`）相同。
+
+### 6.3 构造配方（**确定性**：同一份输入 ⇒ 同一份字节）
+
+用标准库 `zipfile` 打包，**固定**压缩级别（9）与时间戳（1980-01-01），并清掉 `external_attr`：
+
+```python
+import io, zipfile
+
+CONTAINER = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    "<container>\n  <rootfiles>\n"
+    '    <rootfile full-path="score.xml">\n    </rootfile>\n'
+    "  </rootfiles>\n</container>\n"
+).encode()
+
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+    for name, payload in (("META-INF/container.xml", CONTAINER),
+                          ("score.xml", open("handmade_mvp_partwise.musicxml", "rb").read())):
+        info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.create_system = 0
+        info.external_attr = 0
+        info.internal_attr = 0
+        z.writestr(info, payload)
+open("handmade_mvp_partwise.mxl", "wb").write(buf.getvalue())
+```
+
+复核：配方**连跑两次**的字节相同；写出的文件与已提交文件的 SHA-256 相同
+（`shasum -a 256 handmade_mvp_partwise.mxl` = 上表的值）。
+
+### 6.4 代价与路线的**量法**（数字本身登记在 `src/musicxml.rs` 的未实现清单第 1 条）
+
+| 读数 | 怎么量（单位） |
+| :--- | :--- |
+| 真 `.mxl` 的条目名 / 压缩法 / 压缩前后字节数 | `python3 -B`：读 local file header（APPNOTE 4.3.7）与 `zipfile` 的 `infolist()`；单位 = **字节** / **条目数** |
+| "膨胀结果 == 同名 `.musicxml`" | `zipfile.read("score.xml")` 与同名纯文本文件做 `==`（单位 = 布尔）；**逐件**一次，不是抽样 |
+| DEFLATE 块的类型 / 最长匹配 / 最远匹配距离 | 本机手写的 raw-DEFLATE 解码器（`zlib.decompressobj(-15)` 为参照，输出必须逐字节相同才采信）；单位 = **块数** / **字节** |
+| 路线 A 的依赖增量 | `cargo tree -p yeban-render --prefix none --offline \| sort -u \| wc -l`：104（无该特性）→ 109（`--features experimental-als-export`）；单位 = **不同的 `name version` 行数** |
+| 路线 D 的依赖增量 | 独立探针 crate（`/tmp`，不入库）里 `cargo tree --prefix none --offline \| sort -u \| wc -l`：`zip`（`default-features = false`）= **9** 行（含根）；再加 `deflate-flate2` = **10** 行 |
+
+### 6.5 本节**没有**证明什么
+
+1. ⛔ 不证明 `.mxl` 可读：`src/musicxml.rs` 只吃纯文本字节，判据钉的是**明确拒绝**。
+2. ⛔ 不证明本夹具代表**全部** `.mxl`：它只覆盖 2 个条目、deflate、无 data descriptor、
+   无 ZIP64、无加密。本机那 6 个真文件也只是同一台机器上的一个样本。
+3. ⛔ 不证明依赖增量的**构建时间或体积**：只数了 crate 条目数（代理指标，已标明单位）。
+4. ⛔ 不证明"手写 inflate 是真的可行"：只有本机 Python 原型（6/6 与 `zlib` 逐字节相同）；
+   **Rust** 实现未写。

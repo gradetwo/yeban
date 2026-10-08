@@ -50,8 +50,28 @@
 //! ## 未实现清单（⛔ 不许把这些读成"已支持"）
 //!
 //! 1. ⛔ **`.mxl`（ZIP/deflate 容器）**：本模块只吃**纯文本** `.musicxml`。
-//!    `.mxl` 的字节不是 UTF-8 ⇒ 明确 `Err`。inflate 属另立票
-//!    （`docs/ledger/integration-rulings-notes.md:37-38`）。
+//!    `.mxl` 的字节不是 UTF-8 ⇒ 明确 `Err`（本仓库自造夹具的**字面**读数是
+//!    `InvalidUtf8 { offset: 17 }`；判据见 `tests/musicxml_contract.rs`）。
+//!    inflate 属另立票（`docs/ledger/integration-rulings-notes.md:37-38`）。
+//!
+//!    **代价（本机实测，2026-10-08；量法与逐件读数见 `tests/fixtures/README.md` 第 6 节）**：
+//!    6 个真 `.mxl`（本机 `/tmp/musicxml/**`，**未提交**）每个都是 **2** 个条目
+//!    （`META-INF/container.xml` + `score.xml`），压缩法 **6/6 = 8**（deflate）；
+//!    `score.xml` 膨胀后与同名 `.musicxml` **逐字节相同**（6/6）
+//!    ⇒ 代价**全在"容器 + inflate"**，不在解析：膨胀结果可直接喂 [`parse_musicxml`]。
+//!    6/6 的 `score.xml` DEFLATE 流是**单个 dynamic-Huffman 块**（BTYPE=2），最长匹配 258、
+//!    最远匹配距离 29393..32502；上界 **32502 > 16384**（16 KiB）⇒ 16 KiB 窗口的捷径不够，
+//!    必须支持 RFC 1951 的**完整 32 KiB 窗口**（RFC 1951 是**外部**规范，不在本仓库）。
+//!
+//!    **路线（⛔ 本票只登记代价，不引入任何依赖）**：
+//!
+//!    | # | 路线 | 实测代价 | 本票处置 |
+//!    | :-: | :--- | :--- | :--- |
+//!    | A | 加 `flate2`（根清单已登记第 79 行；`rust_backend` = 纯 Rust，无 C） | 依赖树**新增 5 个 crate**：`adler2` / `crc32fast` / `flate2` / `miniz_oxide` / `simd-adler32`（测法：`cargo tree -p yeban-render --prefix none \| sort -u` 的行数 104 → 109） | ⛔ 未采用（本票禁加依赖） |
+//!    | B | 手写 raw-DEFLATE inflate（零依赖） | 需 stored + fixed + dynamic 三种块与 32 KiB 窗口；本机 Python 原型在 6/6 上与 `zlib` 输出**逐字节相同** | ⛔ 未采用（另立票的工作量） |
+//!    | C | 复用 `yeban_model::container` 的 ZIP 读取器 | **不通**：`read_zip` 是 `pub(crate)`，且**第一个**条目就按压缩法拒绝（`crates/yeban-model/src/container/zip.rs:486-490`） | 判据钉住今天的读数 |
+//!    | D | 走根清单已登记的 `zip` crate | `zip`（`default-features = false`）自带 **8 个 crate**（探针 crate 的 `cargo tree` 行数 9，含根）；其 `deflate` 特性**额外**要 `zopfli`（本机 registry 缓存**没有** ⇒ 离线解析失败）且选 `flate2/zlib-rs`（与根清单登记的后端不同） | ⛔ 未采用 |
+//!
 //! 2. ⛔ **导出**：本模块只读。`.musicxml` 写出不存在。
 //! 3. ⛔ **接线**：引擎 / MCP / 界面**都不**调用本模块（集成者裁决）。
 //! 4. ⛔ **`forward` / `grace` / `unpitched` / `transpose`**：不实现，逐次登记在

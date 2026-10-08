@@ -10,7 +10,10 @@
 //! ② **外部夹具（W3C CG 测试套件，MIT）的读数**：来源 / 许可 / SHA-256 见
 //!    `tests/fixtures/README.md` 第 5 节；
 //! ③ **任意字节零 panic**：对夹具字节做截断 / 翻转 / 插入，只允许 `Ok` 或 `Err`；
-//! ④ **确定性** [ARCH-DET-001]：同一份字节解析两次必须 `Eq`。
+//! ④ **确定性** [ARCH-DET-001]：同一份字节解析两次必须 `Eq`；
+//! ⑤ **`.mxl`（ZIP 容器）的代价与路线**：自造的 deflate 容器必须在 UTF-8 这一步就明确 `Err`，
+//!    容器**自己**的 CRC-32 / 尺寸字段用来（**不解压**地）证明 `score.xml` 的内容与纯文本夹具
+//!    逐字节相同，并钉住"复用 `yeban-model` 的 ZIP 读取器"这条路线今天**不通**。
 //!
 //! ## 规范出处
 //!
@@ -21,6 +24,7 @@
 //! ## 本文件**没有**证明什么
 //!
 //! - ⛔ 不证明 `.mxl`（ZIP）可读：那**没有实现**（见模块文档的未实现清单）。
+//!   本文件只证明"今天被明确拒绝"，并把代价/路线钉成会变红的判据。
 //! - ⛔ 不证明导出、引擎接线、界面可用：都不存在。
 //! - ⛔ 不证明完整 MusicXML 4.0 语义：`forward` / `grace` / `unpitched` / `transpose`
 //!   只证明"被登记为未实现"，不证明语义正确。
@@ -33,6 +37,7 @@ use yeban_midi::midi::{DEFAULT_PPQ, MidiTempo};
 use yeban_midi::musicxml::{
     DEFAULT_VELOCITY, MAX_DEPTH, MusicXmlError, MusicXmlNote, MusicXmlScore, parse_musicxml,
 };
+use yeban_model::container::{ContainerError, ContainerLimits, read_container};
 
 /// 自造夹具：覆盖六项要求（单声部 / 和弦 / 延音 / backup 多声部 / divisions≠1 / 速度）。
 const HANDMADE_MVP: &[u8] = include_bytes!("fixtures/handmade_mvp_partwise.musicxml");
@@ -48,8 +53,14 @@ const W3C_43A: &[u8] = include_bytes!("fixtures/w3c_43a_piano_staff.musicxml");
 const W3C_03E: &[u8] = include_bytes!("fixtures/w3c_03e_no_divisions.musicxml");
 /// W3C CG 测试套件 `41h-TooManyParts.musicxml`（MIT）。
 const W3C_41H: &[u8] = include_bytes!("fixtures/w3c_41h_multi_part.musicxml");
+/// 自造夹具：把 [`HANDMADE_MVP`] 打包成 deflate ZIP（`.mxl`）。
+/// 构造配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 6 节。
+const HANDMADE_MXL: &[u8] = include_bytes!("fixtures/handmade_mvp_partwise.mxl");
 
-/// 全部已提交夹具（名字 + 字节）。
+/// 全部已提交的**纯文本**夹具（名字 + 字节）。
+///
+/// ⚠️ [`HANDMADE_MXL`] **不在**这里：本列表的读者之一 `parsing_is_deterministic_for_every_fixture`
+/// 要求每个夹具都 `Ok`（`.mxl` 必然 `Err`）⇒ 它由 `mxl_*` 三条判据单独覆盖。
 const FIXTURES: &[(&str, &[u8])] = &[
     ("handmade_mvp_partwise", HANDMADE_MVP),
     ("handmade_tolerance", HANDMADE_TOLERANCE),
@@ -357,4 +368,158 @@ fn arbitrary_bytes_never_panic() {
     // 判据本身是"没 panic"；这个数字让"到底跑了多少次"可复核。
     println!("arbitrary_bytes_never_panic: runs={runs}");
     assert!(runs >= 5_000, "探针只跑了 {runs} 次，样本太少");
+}
+
+// ---------------------------------------------------------------------------
+// `.mxl`（ZIP/deflate 容器）：代价与路线
+//
+// 本票**不**实现 `.mxl`（inflate 需依赖或有规模的手写解码器；
+// `docs/ledger/integration-rulings-notes.md:37-38` 已裁决另立票）。
+// 下面三条判据把"代价"与"路线"钉成会变红的字面值，并**不**引入任何依赖。
+// ---------------------------------------------------------------------------
+
+/// ZIP local file header 的字段（APPNOTE 4.3.7 的 local file header 布局）。
+struct LocalEntry<'a> {
+    /// 条目名（UTF-8，本夹具全是 ASCII）。
+    name: &'a str,
+    /// 压缩法：0 = stored，8 = deflate。
+    method: u16,
+    /// 未压缩内容的 CRC-32（IEEE 802.3，反射，多项式 `0xEDB88320`）。
+    crc32: u32,
+    /// 压缩后字节数（数据区长度）。
+    compressed: u32,
+    /// 未压缩字节数（**声明值**）。
+    uncompressed: u32,
+}
+
+fn le16(bytes: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([bytes[at], bytes[at + 1]])
+}
+
+fn le32(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+}
+
+/// 按顺序读 local file header。**不解压**，因此本文件不需要 inflate 依赖。
+///
+/// 遇到非 `PK\x03\x04`（= central directory 或尾随字节）就停：本夹具没有 data descriptor，
+/// 所以"下一条 local header"恰好跟着上一条的数据区。
+fn local_entries(bytes: &[u8]) -> Vec<LocalEntry<'_>> {
+    let mut entries = Vec::new();
+    let mut pos = 0usize;
+    while bytes.get(pos..pos + 4) == Some(b"PK\x03\x04") {
+        if bytes.len() < pos + 30 {
+            break;
+        }
+        let method = le16(bytes, pos + 8);
+        let crc32 = le32(bytes, pos + 14);
+        let compressed = le32(bytes, pos + 18);
+        let uncompressed = le32(bytes, pos + 22);
+        let name_len = usize::from(le16(bytes, pos + 26));
+        let extra_len = usize::from(le16(bytes, pos + 28));
+        let Some(raw_name) = bytes.get(pos + 30..pos + 30 + name_len) else {
+            break;
+        };
+        let Ok(name) = core::str::from_utf8(raw_name) else {
+            break;
+        };
+        entries.push(LocalEntry {
+            name,
+            method,
+            crc32,
+            compressed,
+            uncompressed,
+        });
+        let next = pos + 30 + name_len + extra_len + compressed as usize;
+        if next <= pos {
+            break;
+        }
+        pos = next;
+    }
+    entries
+}
+
+/// CRC-32（IEEE 802.3，反射多项式 `0xEDB88320`）—— 容器**自己**的完整性字段。
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+#[test]
+fn mxl_container_is_rejected_at_the_zip_header_not_by_a_parser_bug() {
+    // 字面读数：本夹具第 0 个 local file header 长 52 字节（30 + 条目名 22 + 额外字段 0）；
+    // 它的 CRC-32 字段（偏移 14..18）里 0xae 出现在偏移 17 ⇒ 不是合法 UTF-8
+    // ⇒ parser 在**任何压缩字节之前**就停了（`score.xml` 的数据区从偏移 195 开始）。
+    assert_eq!(HANDMADE_MXL.len(), 1435);
+    assert_eq!(&HANDMADE_MXL[..4], b"PK\x03\x04");
+    assert_eq!(HANDMADE_MXL[17], 0xae);
+    assert_eq!(
+        parse_musicxml(HANDMADE_MXL),
+        Err(MusicXmlError::InvalidUtf8 { offset: 17 })
+    );
+    // 确定性 [ARCH-DET-001]：同一份字节两次结果相同。
+    assert_eq!(parse_musicxml(HANDMADE_MXL), parse_musicxml(HANDMADE_MXL));
+    // ⛔ 不主张这里是"最好的报错"：它只是**今天**的读数（容器层拦住了文本层）。
+}
+
+#[test]
+fn the_existing_zip_reader_rejects_the_mxl_container_before_any_name_check() {
+    // 路线 C 的实测：`yeban_model::container::read_container` 在**第一个**条目上就按压缩法拒绝
+    // （`crates/yeban-model/src/container/zip.rs:486-490` 的 (3.1)），
+    // 因此"复用 `.yeban` 容器的 ZIP 读取器来读 `.mxl`"这条路今天**不通**。
+    //
+    // ⚠️ 这钉的是**今天的读数**，不是承诺：若后来有票让 `read_zip` 支持 deflate，
+    // 本判据会变红 —— 那时应当**改写**本判据（记录新路线），⛔ 不要删掉它。
+    assert_eq!(
+        read_container(HANDMADE_MXL, &ContainerLimits::default()),
+        Err(ContainerError::UnsupportedCompression {
+            index: 0,
+            method: 8
+        })
+    );
+}
+
+#[test]
+fn mxl_cost_is_pinned_by_the_container_fields_without_inflating() {
+    let entries = local_entries(HANDMADE_MXL);
+    assert_eq!(entries.len(), 2, "本夹具是 2 个条目的容器");
+    let names: Vec<&str> = entries.iter().map(|entry| entry.name).collect();
+    assert_eq!(names, vec!["META-INF/container.xml", "score.xml"]);
+    // 2/2 都是 deflate ⇒ 只会读 `stored` 的读取器**一个条目**都读不出（路线 C 的根因）。
+    assert!(entries.iter().all(|entry| entry.method == 8));
+
+    // 条目 0：`META-INF/container.xml`（146 → 104 字节）。
+    assert_eq!(entries[0].crc32, 0xae69_681f);
+    assert_eq!((entries[0].uncompressed, entries[0].compressed), (146, 104));
+    // 条目 1：`score.xml`（2716 → 1095 字节）。
+    assert_eq!(entries[1].crc32, 0xcbb0_05a0);
+    assert_eq!(
+        (entries[1].uncompressed, entries[1].compressed),
+        (2716, 1095)
+    );
+
+    // ⭐ 不解压也能证明"膨胀结果与纯文本夹具逐字节相同"：用容器**自己**的 CRC-32 与尺寸字段。
+    // 于是新增的成本只可能是"容器 + inflate"，不可能来自格式差异。
+    assert_eq!(HANDMADE_MVP.len(), entries[1].uncompressed as usize);
+    assert_eq!(crc32(HANDMADE_MVP), entries[1].crc32);
+    // 压缩比（无量纲）：2716 / 1095 = 2.48。
+    assert!(entries[1].uncompressed > entries[1].compressed);
+    // 同一份字节两次读出的字段相同（容器层也是确定性 [ARCH-DET-001]）。
+    assert_eq!(
+        local_entries(HANDMADE_MXL)
+            .iter()
+            .map(|entry| (entry.name, entry.method, entry.crc32))
+            .collect::<Vec<_>>(),
+        entries
+            .iter()
+            .map(|entry| (entry.name, entry.method, entry.crc32))
+            .collect::<Vec<_>>()
+    );
 }
