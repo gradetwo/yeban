@@ -60,7 +60,7 @@
 //!    6 个真 `.mxl`（本机 `/tmp/musicxml/**`，**未提交**）每个都是 **2** 个条目
 //!    （`META-INF/container.xml` + `score.xml`），压缩法 **6/6 = 8**（deflate）；
 //!    `score.xml` 膨胀后与同名 `.musicxml` **逐字节相同**（6/6）
-//!    ⇒ 代价**全在"容器 + inflate"**，不在解析：膨胀结果可直接喂 [`parse_musicxml`]。
+//!    ⇒ 代价**全在"容器 + inflate"**，不在解析：膨胀结果可直接喂 [`parse_musicxml`](crate::musicxml::parse_musicxml)。
 //!    6/6 的 `score.xml` DEFLATE 流是**单个 dynamic-Huffman 块**（BTYPE=2），最长匹配 258、
 //!    最远匹配距离 29393..32502；上界 **32502 > 16384**（16 KiB）⇒ 16 KiB 窗口的捷径不够，
 //!    必须支持 RFC 1951 的**完整 32 KiB 窗口**（RFC 1951 是**外部**规范，不在本仓库）。

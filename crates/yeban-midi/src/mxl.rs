@@ -25,28 +25,28 @@
 //! | End of Central Directory（EOCD） | 从文件尾向前找签名 `PK\x05\x06`，取中央目录的偏移 / 尺寸 / 条目数 |
 //! | 中央目录 | 逐条读签名 `PK\x01\x02` 的固定 46 字节 + 条目名（尺寸与 CRC 以**中央目录**为准） |
 //! | 根文件定位 | 解压 `META-INF/container.xml`，取**第一个** `<rootfile full-path="…">` 的属性值 |
-//! | 条目解码 | 压缩法 **0**（stored）原样取；**8**（deflate）走 [`inflate::inflate_raw`]；其余明确 `Err` |
+//! | 条目解码 | 压缩法 **0**（stored）原样取；**8**（deflate）走 `inflate::inflate_raw`；其余明确 `Err` |
 //! | 完整性 | 膨胀后长度必须等于声明的未压缩长度；CRC-32（IEEE 802.3）必须等于条目的 CRC 字段 |
 //! | 载荷 | 直接喂 [`parse_musicxml`](crate::musicxml::parse_musicxml)（⛔ 不复制第二份 XML 解析器） |
 //!
 //! ZIP 的字段布局出自 APPNOTE（PKWARE `.ZIP` File Format Specification）4.3.x 的
 //! local file header / central directory 两节 —— 那是**外部**规范，⛔ 本仓库不含其正文。
-//! raw DEFLATE 出自 RFC 1951，同样是外部规范，见 [`inflate`] 的模块文档。
+//! raw DEFLATE 出自 RFC 1951，同样是外部规范，见 `src/mxl/inflate.rs` 的模块文档。
 //!
 //! ## 未实现清单（⛔ 不许把这些读成"已支持"）
 //!
 //! 1. ⛔ **ZIP64**：条目数 `0xFFFF` 或尺寸/偏移 `0xFFFFFFFF` ⇒ 明确
-//!    [`MxlError::UnsupportedZip64`]。因此 **>4 GiB 的容器、>65535 个条目的容器读不了**。
-//! 2. ⛔ **加密**：general purpose flag 的 bit 0 ⇒ 明确 [`MxlError::Encrypted`]。
+//!    [`MxlError::UnsupportedZip64`](crate::mxl::MxlError::UnsupportedZip64)。因此 **>4 GiB 的容器、>65535 个条目的容器读不了**。
+//! 2. ⛔ **加密**：general purpose flag 的 bit 0 ⇒ 明确 [`MxlError::Encrypted`](crate::mxl::MxlError::Encrypted)。
 //! 3. ⛔ **其它压缩法**：只认 0 与 8（deflate）。`bzip2`(12) / `lzma`(14) / `zstd`(93) 等明确
-//!    [`MxlError::UnsupportedCompression`]。
+//!    [`MxlError::UnsupportedCompression`](crate::mxl::MxlError::UnsupportedCompression)。
 //! 4. ⛔ **写出**：本模块只读。`.mxl` 打包不存在。
 //! 5. ⛔ **不做 XML 解析器**：`META-INF/container.xml` 只用一个小扫描器取 `<rootfile>`
 //!    标签的 `full-path` 属性；属性值里只解 5 个预定义实体（`&amp;` `&lt;` `&gt;`
 //!    `&quot;` `&apos;`），**数字字符引用原样保留**（⇒ 路径对不上条目名时是明确的
-//!    [`MxlError::MissingRootFile`]，⛔ 不会静默读错文件）。
+//!    [`MxlError::MissingRootFile`](crate::mxl::MxlError::MissingRootFile)，⛔ 不会静默读错文件）。
 //! 6. ⛔ **无 `META-INF/container.xml` 时不猜**：即使容器里只有一个 XML 条目也不回退
-//!    （OPC 要求根文件由 `container.xml` 指定）⇒ 明确 [`MxlError::NoContainer`]。
+//!    （OPC 要求根文件由 `container.xml` 指定）⇒ 明确 [`MxlError::NoContainer`](crate::mxl::MxlError::NoContainer)。
 //! 7. ⛔ **data descriptor**（general purpose flag bit 3）本身不需要额外代码：尺寸与 CRC 全部
 //!    取**中央目录**的值 ⇒ 声明写在数据之后的容器也能读。但**没有**针对它的独立判据。
 //! 8. ⛔ **接线**：引擎 / MCP / 界面**都不**调用本模块（与 `musicxml` 同口径）。
@@ -54,11 +54,11 @@
 //! ## 分配（MusicXML **不在**音频线程 ⇒ 零分配不适用，但必须有界）
 //!
 //! - 输入是**借用**的切片；只在解压一个条目时分配。
-//! - 上界：声明长度 > [`MxlLimits::max_entry_bytes`] ⇒ **解压前**就
-//!   [`MxlError::LimitExceeded`]；inflate 的**每次**写入也查同一个上界 ⇒ 声明小、实际膨胀大的
-//!   容器在上界处 [`MxlError::InflatedTooLarge`]（一个 `max_entry_bytes` 同时挡住两种炸弹，
+//! - 上界：声明长度 > [`MxlLimits::max_entry_bytes`](crate::mxl::MxlLimits::max_entry_bytes) ⇒ **解压前**就
+//!   [`MxlError::LimitExceeded`](crate::mxl::MxlError::LimitExceeded)；inflate 的**每次**写入也查同一个上界 ⇒ 声明小、实际膨胀大的
+//!   容器在上界处 [`MxlError::InflatedTooLarge`](crate::mxl::MxlError::InflatedTooLarge)（一个 `max_entry_bytes` 同时挡住两种炸弹，
 //!   而两种拒绝**分开报**：前者看的是**声明**，后者看的是**实际**）。
-//! - 条目名字节数、条目数各有一个上界（[`MxlLimits`]）。
+//! - 条目名字节数、条目数各有一个上界（[`MxlLimits`](crate::mxl::MxlLimits)）。
 //!
 //! ## 确定性 [ARCH-DET-001]
 //!
@@ -67,7 +67,7 @@
 //!
 //! ## 不 panic 的承诺
 //!
-//! 任意字节输入只产生 `Ok` 或 [`MxlError`]：没有 `unwrap` / `expect` / 索引恐慌 /
+//! 任意字节输入只产生 `Ok` 或 [`MxlError`](crate::mxl::MxlError)：没有 `unwrap` / `expect` / 索引恐慌 /
 //! 算术溢出（长度相加一律先查上界或用 `checked_add`）。
 //! 判据 `mxl_container_fuzz_never_panics` 对本目录的 4 个容器夹具做截断 / 翻转 / 插入。
 
@@ -270,8 +270,7 @@ impl CentralEntry<'_> {
     }
 }
 
-/// 解析 `.mxl` 字节（**只读**），返回与 [`parse_musicxml`](crate::musicxml::parse_musicxml)
-/// 同一个 [`MusicXmlScore`](crate::musicxml::MusicXmlScore)（默认上界）。
+/// 解析 `.mxl` 字节（**只读**），返回与 [`parse_musicxml`] 同一个 [`MusicXmlScore`]（默认上界）。
 ///
 /// # Errors
 ///
