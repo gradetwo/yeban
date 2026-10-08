@@ -657,7 +657,7 @@ impl SynthRig {
     pub fn new(tones: &yeban_engine::synth::ToneParams) -> Self {
         let track = EntityId::new();
         let mut engine = yeban_engine::synth::SynthEngine::new(48_000);
-        engine.begin_snapshot(48_000, &[track], [(&track, tones)]);
+        engine.begin_snapshot(48_000, &[track], [(&track, tones)], []);
         Self {
             engine,
             track,

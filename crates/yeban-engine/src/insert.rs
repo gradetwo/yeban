@@ -280,7 +280,13 @@ pub use yeban_dsp::reverb::Reverb as DspReverb;
 /// 在这里**加字段**即可，实时侧的"逐轨查找 + 整段跳过"骨架不必改。
 ///
 /// 本票按这个形状加了第二个字段 [`Self::reverb`]（`yeban_dsp::reverb`，见模块文档 §8）。
-/// `drums` 仍然**未接线**（核实方式见 `docs/ledger/integration-rulings-notes.md:83` 的口径）。
+///
+/// ⚠ **本链的第三个器件仍然是"没有"**（`crate::drums` 接线后这里一个字没改）：
+/// `drums` 是**音源**（触发式），不是插入器件 ⇒ 它住在 [`crate::synth`] 里，
+/// 位置在本链**之前**。理由（插入链没有事件输入、`DrumMachine` 没有 `process_*`）
+/// 见 [`crate::drums`] 模块文档 §2。`grep -rn 'use yeban_dsp' crates/yeban-engine/src`
+/// 现在有 **16** 行真实引用、**12** 个不同的模块名（本票把 `drums` 从"零命中"变成
+/// 真实引用；判据见 `crates/yeban-engine/tests/drums_instrument.rs` 的 D2）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InsertParams {
     /// 本轨的通道条参数：`None` = 本轨**没有**通道条（实时侧那段跳过）。

@@ -35,8 +35,9 @@
 //! `rt.rs` 的**构造期预分配** / **快照边界武装** / **逐样本调用** / **采样率守卫**。
 //! 它**不**覆盖 `yeban-dsp` 内部混响算法的正确性（那是
 //! `crates/yeban-dsp/src/reverb.rs` 的 8 条单元判据的职责），也不覆盖 `drums`
-//! ——它仍未接线。`reverb_width` 是**刻意未接线**的（单声道插入点，见
-//! `crate::insert` 模块文档 §8.1）。
+//! ——它已接线，但它是**音源**而不是插入器件（判据在
+//! `crates/yeban-engine/tests/drums_instrument.rs`）。`reverb_width` 是**刻意未接线**的
+//! （单声道插入点，见 `crate::insert` 模块文档 §8.1）。
 
 mod support;
 

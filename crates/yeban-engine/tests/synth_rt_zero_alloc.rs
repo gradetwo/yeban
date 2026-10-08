@@ -49,6 +49,22 @@
 //! 分配，最后换回 48 kHz 证明重武装仍然可行。三段的每一个窗口都断言
 //! `allocations == 0 && deallocations == 0`。覆盖度自检取**整窗的精确帧数**
 //! （`2 × 10,001 × 128`）而不是"大于 0"。
+//!
+//! # 场景 11 / 12（`line/engine-drums` 追加）：每轨**鼓机音源**
+//!
+//! 鼓机（`yeban_dsp::drums`）与前面所有器件有**两处结构差别**，两处都必须被覆盖：
+//!
+//! 1. 它是**音源**（`trigger` + `render(position, out)`），不是插入链上的逐样本变换
+//!    ⇒ 它的逐样本路径在 `SynthEngine::render_track` 里，**且**每个起音要过
+//!    `DrumHit` 的构造与键位映射查找（`DrumNoteMap::voice_for`）；
+//! 2. 它**不持有堆**：`set_sample_rate` 只重算在响槽位的系数（对比：混响在那里
+//!    **拒绝**武装）⇒ **换采样率也必须零分配**，而这条路径前面的场景从没走过
+//!    （场景 10 的换采样率分支恰恰是"拒绝"）。
+//!
+//! 场景 11 用两条轨（一条鼓机、一条复音合成器）跑 10,000 个量子，覆盖度自检取
+//! **精确的触发数**（由夹具的音符栅格算出，不是"大于 0"）；场景 12 做 31 次同采样率
+//! 重新武装 ＋ 一次 **44.1 kHz**（鼓机照常武装）＋ 换回 48 kHz ＋ 换一套键位映射
+//! ＋ 换回复音合成器，每一步都断言零分配零释放。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -123,6 +139,61 @@ fn saturated_notes() -> Vec<NoteSpec> {
     (0..256u64)
         .map(|index| NoteSpec::at(index * 240, 480, 60 + (index % 12) as u8, 100))
         .collect()
+}
+
+/// 场景 11 / 12 的**键位映射**（五个鼓件各一个音高）。
+const DRUM_MAP: [u8; 5] = [36, 38, 42, 46, 39];
+
+/// 场景 11 / 12 的鼓机音符：与 [`saturated_notes`] 同一个时间栅格（每 240 tick 起音），
+/// 但音高**轮流落在 [`DRUM_MAP`] 的五个音高上** ⇒ 每一记都命中一个鼓件。
+fn drum_notes() -> Vec<NoteSpec> {
+    (0..256u64)
+        .map(|index| NoteSpec::at(index * 240, 480, DRUM_MAP[(index % 5) as usize], 100))
+        .collect()
+}
+
+/// 一台**完整键位映射**的鼓机设备（`InternalInstrument`）。
+fn drum_device(extra: &[(&str, f32)], map: [f32; 5]) -> DeviceDefinition {
+    let mut params = vec![
+        ParameterValue {
+            name: "kick_note".to_owned(),
+            value: map[0],
+            unit: None,
+        },
+        ParameterValue {
+            name: "snare_note".to_owned(),
+            value: map[1],
+            unit: None,
+        },
+        ParameterValue {
+            name: "closed_hat_note".to_owned(),
+            value: map[2],
+            unit: None,
+        },
+        ParameterValue {
+            name: "open_hat_note".to_owned(),
+            value: map[3],
+            unit: None,
+        },
+        ParameterValue {
+            name: "clap_note".to_owned(),
+            value: map[4],
+            unit: None,
+        },
+    ];
+    params.extend(extra.iter().map(|(name, value)| ParameterValue {
+        name: (*name).to_owned(),
+        value: *value,
+        unit: None,
+    }));
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: "Yeban Drums".to_owned(),
+        kind: DeviceKind::InternalInstrument,
+        bypassed: false,
+        params,
+        latency_samples: 0,
+    }
 }
 
 fn main() -> ExitCode {
@@ -891,6 +962,261 @@ fn main() -> ExitCode {
         reverb_runtime.armed_reverb_sample_rate(),
     );
 
+    // ---- 场景 11：**每轨鼓机音源**（`crate::drums`）在实时窗口内零分配 ----
+    //
+    // 为什么必须单独一个场景（见文件头 "场景 11 / 12"）：鼓机是**音源**，它的逐样本
+    // 路径在 `SynthEngine::render_track` 里（触发 + 渲染），而不是插入链上的变换；
+    // 且它的 `set_sample_rate` **不分配**（与混响相反）。
+    //
+    // 夹具设计（每一项都对应一件事）：
+    //   * 两条轨：一根鼓机轨（音符的音高轮流命中五个鼓件）＋ 一条复音合成器轨
+    //     （`cutoff_hz` ⇒ 同一窗口里另一条音源仍在跑）；
+    //   * 鼓机的尾巴取器件默认值（底鼓 0.40 s）⇒ 整窗都有槽位在响。
+    let (mut drum_project, drum_track, drum_synth_track) =
+        two_track_project(&drum_notes(), &saturated_notes());
+    {
+        let entry = drum_project
+            .tracks
+            .get_mut(&drum_track)
+            .expect("夹具里必须有那条鼓机轨");
+        entry.devices = vec![drum_device(
+            &[("kick_decay_s", 0.40), ("master_level", 0.9)],
+            [36.0, 38.0, 42.0, 46.0, 39.0],
+        )];
+    }
+    {
+        let entry = drum_project
+            .tracks
+            .get_mut(&drum_synth_track)
+            .expect("夹具里必须有那条复音轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Hollow".to_owned(),
+            kind: DeviceKind::InternalInstrument,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "cutoff_hz".to_owned(),
+                    value: 800.0,
+                    unit: Some("Hz".to_owned()),
+                },
+                ParameterValue {
+                    name: "resonance".to_owned(),
+                    value: 0.3,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    let drum_snapshot = EngineSnapshot::from_project(&drum_project, 1).expect("鼓机夹具快照");
+    if drum_snapshot.drums().len() != 1 {
+        failures.push(format!(
+            "鼓机夹具应只有 1 条鼓机轨，实际 {} 条（只写了 cutoff_hz 的那条不算）",
+            drum_snapshot.drums().len()
+        ));
+    }
+    let drum_slot = SnapshotSlot::new(drum_snapshot);
+    let (drum_retire, mut drum_queue) = retire_channel(64);
+    let (_drum_sender, drum_receiver) = event_channel(64);
+    let (drum_publisher, _drum_collector) = meter_channel(8192);
+    let mut drum_runtime =
+        EngineRuntime::new(&drum_slot, drum_retire, drum_receiver, drum_publisher);
+    let mut drum_output = vec![0.0f32; 128 * 2];
+    // 预热：首次武装（`DrumMachine::set_params`）与首个量子。
+    drum_runtime.process_quantum(&mut drum_output, 2);
+    if drum_runtime.armed_drum_slot_count() != 1 {
+        failures.push(format!(
+            "鼓机夹具应武装 1 台鼓机，实际 {} 台",
+            drum_runtime.armed_drum_slot_count()
+        ));
+    }
+    if drum_runtime.armed_drums(&drum_track).is_none() {
+        failures.push("鼓机轨必须武装进实时侧（复音轨不得武装）".to_owned());
+    }
+
+    // 覆盖度自检的**精确**期望：落在整窗里的起音数（由夹具栅格算出，不是"大于 0"）。
+    // 窗口 = 预热 1 个量子 ＋ 下面 10,000 个量子 = 10,001 × 128 帧。
+    let window_end = (10_001u64) * 128;
+    let expected_drum_hits = (0..256u64)
+        .filter(|index| index * 240 * 25 < window_end)
+        .count();
+    let mut drum_nonzero = 0usize;
+    let (allocations, deallocations) = measure("drum instrument 10_000 quanta", || {
+        for _ in 0..10_000 {
+            drum_runtime.process_quantum(&mut drum_output, 2);
+            for sample in &drum_output {
+                if *sample != 0.0 {
+                    drum_nonzero += 1;
+                }
+            }
+        }
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "每轨鼓机音源在实时窗口内分配/释放了内存: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    if drum_nonzero == 0 {
+        failures.push("鼓机窗口里没有任何非零样本 —— 零分配判据是空转（假绿）".to_owned());
+    }
+    let drum_stats = drum_runtime.stats();
+    if drum_stats.drum_hits != expected_drum_hits as u64 {
+        failures.push(format!(
+            "鼓击数={}（期望 {expected_drum_hits} = 窗口内的起音数）—— 这条零分配判据\
+             没有覆盖整条触发路径",
+            drum_stats.drum_hits
+        ));
+    }
+    if drum_stats.insert_strip_frames != 0 {
+        failures.push("鼓机是音源、不是插入器件：`insert_strip_frames` 必须为 0".to_owned());
+    }
+    println!(
+        "[engine-drums/J11] 鼓机音源: quanta={} 鼓击={} 非零样本={drum_nonzero} 武装槽位={}",
+        drum_stats.quanta,
+        drum_stats.drum_hits,
+        drum_runtime.armed_drum_slot_count(),
+    );
+
+    // ---- 场景 12：重新武装鼓机（同采样率 / 换采样率 / 换映射 / 换回复音合成器）----
+    //
+    // 四段各自对应一条真实路径：
+    //   * 前 31 次交换 = **同一个采样率、同一份映射** ⇒ 一个字段都不写（状态全保留）；
+    //   * 第 32 次 = **换采样率**（44.1 kHz）⇒ `DrumMachine::set_sample_rate` 重算在响
+    //     槽位的系数。⚠ 这与混响**相反**（混响在那里拒绝武装）：鼓机没有延迟线，
+    //     所以它必须能跟着采样率走，而且**不许分配**；
+    //   * 第 33 次 = **换一套键位映射**（同一轨）⇒ 只 `set_params`（状态保留）；
+    //   * 第 34 次 = **换回复音合成器** ⇒ 鼓机 `reset`、武装槽位归 0。
+    let mut drum_switches = 0u64;
+    for revision in 2..=32u64 {
+        let next = EngineSnapshot::from_project(&drum_project, revision).expect("快照");
+        drum_slot.publish(next);
+        let (allocations, deallocations) = measure("drum re-arm + quantum", || {
+            drum_runtime.process_quantum(&mut drum_output, 2);
+        });
+        if allocations != 0 || deallocations != 0 {
+            failures.push(format!(
+                "重新武装鼓机时实时路径分配/释放: allocations={allocations} deallocations={deallocations}（revision={revision}）"
+            ));
+        }
+        drum_switches += drum_queue.drain(64) as u64;
+    }
+    if drum_switches == 0 {
+        failures.push("鼓机场景没有从退役队列回收任何旧快照 —— 场景 12 是空转".to_owned());
+    }
+    if drum_runtime.armed_drum_slot_count() != 1 {
+        failures.push("同采样率重新武装之后鼓机必须仍被武装".to_owned());
+    }
+
+    // 换采样率：鼓机照常武装（它没有需要重建的缓冲），且零分配。
+    let mut shifted_drums = drum_project.clone();
+    shifted_drums.audio_config.sample_rate = SampleRate::Hz44100;
+    let shifted_drum_snapshot =
+        EngineSnapshot::from_project(&shifted_drums, 33).expect("换采样率快照");
+    drum_slot.publish(shifted_drum_snapshot);
+    let (allocations, deallocations) = measure("drum rate-change re-arm + quantum", || {
+        drum_runtime.process_quantum(&mut drum_output, 2);
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "换采样率重新武装鼓机时分配/释放: allocations={allocations} deallocations={deallocations}\
+             —— `DrumMachine::set_sample_rate` 只重算系数，不许碰堆"
+        ));
+    }
+    let armed_after_rate_change = drum_runtime.armed_drum_slot_count();
+    if armed_after_rate_change != 1 {
+        failures.push(format!(
+            "换采样率之后鼓机必须仍被武装（对比：混响在同样的分支里拒绝），实际 {armed_after_rate_change} 台"
+        ));
+    }
+
+    // 换回 48 kHz。
+    let back_drum_snapshot = EngineSnapshot::from_project(&drum_project, 34).expect("换回快照");
+    drum_slot.publish(back_drum_snapshot);
+    let (allocations, deallocations) = measure("drum rate-restore re-arm + quantum", || {
+        drum_runtime.process_quantum(&mut drum_output, 2);
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "换回 48 kHz 重新武装鼓机时分配/释放: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+
+    // 换一套键位映射（同一轨）：整体上移一个八度。
+    let mut remapped = drum_project.clone();
+    {
+        let entry = remapped
+            .tracks
+            .get_mut(&drum_track)
+            .expect("夹具里必须有那条鼓机轨");
+        entry.devices = vec![drum_device(&[], [48.0, 50.0, 54.0, 58.0, 51.0])];
+    }
+    let remapped_snapshot = EngineSnapshot::from_project(&remapped, 35).expect("换映射快照");
+    drum_slot.publish(remapped_snapshot);
+    let (allocations, deallocations) = measure("drum remap re-arm + quantum", || {
+        drum_runtime.process_quantum(&mut drum_output, 2);
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "换键位映射重新武装鼓机时分配/释放: allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    let remapped_params = drum_runtime.armed_drums(&drum_track);
+    if remapped_params.map(|params| params.notes().kick()) != Some(48) {
+        failures.push(format!(
+            "换映射之后实时侧读到的底鼓音高不是 48：{remapped_params:?}"
+        ));
+    }
+
+    // 换回复音合成器：鼓机必须被 `reset`、武装槽位归 0，且零分配。
+    let mut synth_again = drum_project.clone();
+    {
+        let entry = synth_again
+            .tracks
+            .get_mut(&drum_track)
+            .expect("夹具里必须有那条鼓机轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Hollow".to_owned(),
+            kind: DeviceKind::InternalInstrument,
+            bypassed: false,
+            params: vec![ParameterValue {
+                name: "cutoff_hz".to_owned(),
+                value: 800.0,
+                unit: Some("Hz".to_owned()),
+            }],
+            latency_samples: 0,
+        }];
+    }
+    let synth_again_snapshot = EngineSnapshot::from_project(&synth_again, 36).expect("换回快照");
+    drum_slot.publish(synth_again_snapshot);
+    let (allocations, deallocations) = measure("drum -> poly synth re-arm + quantum", || {
+        drum_runtime.process_quantum(&mut drum_output, 2);
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "从鼓机换回复音合成器时分配/释放: allocations={allocations} deallocations={deallocations}\
+             —— `DrumMachine::reset` 是赋值，不许释放"
+        ));
+    }
+    let armed_after_swap = drum_runtime.armed_drum_slot_count();
+    if armed_after_swap != 0 {
+        failures.push(format!(
+            "换回复音合成器之后鼓机必须不武装，实际仍武装 {armed_after_swap} 台"
+        ));
+    }
+    if drum_runtime.armed_drums(&drum_track).is_some() {
+        failures.push("换回复音合成器之后该轨的鼓机读数必须变 None".to_owned());
+    }
+    println!(
+        "[engine-drums/J12] 鼓机重新武装: 同采样率交换={} 次；换采样率后武装槽位={}；\
+         换映射后底鼓音高={:?}；换回复音后武装槽位={}",
+        drum_switches,
+        armed_after_rate_change,
+        remapped_params.map(|params| params.notes().kick()),
+        armed_after_swap,
+    );
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -908,7 +1234,9 @@ fn main() -> ExitCode {
              filled_project 4,000 量子 + 2,000 量子整条混音链 + 10,000 量子每轨插入压缩器 \
              + 31 次插入链重新武装 + 10,000 量子每轨插入通道条（EQ＋滤波＋动态） \
              + 31 次通道条重新武装 + 10,000 量子每轨插入混响（两条轨，含通道条＋混响同一台设备） \
-             + 31 次混响重新武装 + 换采样率时的拒绝路径，实时窗口内零分配零释放"
+             + 31 次混响重新武装 + 换采样率时的拒绝路径 \
+             + 10,000 量子每轨鼓机音源（两条轨，一条鼓机＋一条复音） \
+             + 31 次鼓机重新武装 + 换采样率 / 换键位映射 / 换回复音合成器，实时窗口内零分配零释放"
         );
         ExitCode::SUCCESS
     } else {

@@ -32,7 +32,8 @@
 //!
 //! 本文件覆盖：`insert.rs` 的投影、`snapshot.rs` 的武装字段、`rt.rs` 的
 //! **快照边界武装**与**逐样本调用**。它**不**覆盖：`yeban-dsp` 内部三级算法的正确性
-//! （那是 `crates/yeban-dsp/tests/**` 的职责），**也**不覆盖 `drums`（仍未接线）
+//! （那是 `crates/yeban-dsp/tests/**` 的职责），**也**不覆盖 `drums`
+//! （已接线，但它是**音源**而不是插入器件 ⇒ 判据在 `crates/yeban-engine/tests/drums_instrument.rs`）
 //! 与 `reverb`（已接线，但它的判据在**另一个文件**：`crates/yeban-engine/tests/reverb_insert.rs`
 //! —— 本文件的夹具里 `reverb_mix` 是**刻意不认**的名字，见 `crate::insert` 模块文档 §8.1）。
 

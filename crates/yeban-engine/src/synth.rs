@@ -28,6 +28,26 @@
 //!   SynthEngine::render_track ──► PolySynth::render ──► [f32; 128] ──► 电平 ──► 母线
 //! ```
 //!
+//! ## 0.1 本票追加：轨道的**音源**可以是鼓机（`crate::drums`）
+//!
+//! `line/engine-drums` 之后，一条轨的音源由快照决定：
+//!
+//! - **默认**：复音合成器（上面的流程，一个字没改）；
+//! - **识别出鼓机**（[`crate::drums::DrumsParams::from_devices`] 返回 `Some`）：
+//!   同一张音符调度表改成驱动 `yeban_dsp::drums` —— 游标逻辑、窗口判定与增益
+//!   完全一样，只有"音符 → 什么器件"这一步不同：
+//!
+//! ```text
+//!   ScheduledNote { start_sample, pitch, gain }
+//!         │  RT: 游标 → DrumNoteMap::voice_for(pitch) → DrumMachine::trigger
+//!         ▼
+//!   SynthEngine::render_track ──► DrumMachine::render(position) ──► [f32; 128] ──► 电平 ──► 母线
+//! ```
+//!
+//! ⚠ **一条轨至多一件音源**：识别出鼓机时该槽的复音合成器**不渲染**
+//! （理由与裁决见 [`crate::drums`] 模块文档 §4.1）。识别不出来 ⇒ 走复音合成器
+//! ⇒ 既有工程逐位不变（实测读数见同一处 §6）。
+//!
 //! ## 1. 为什么"音符 → 样本位置"必须在构造期算完
 //!
 //! [ARCH-DET-001] 的 L1 契约要求同输入逐位相同。tick → sample 的换算含 `bpm`
@@ -99,6 +119,8 @@ use yeban_dsp::polysynth::{
     NoteEvent, PolySynth, PolySynthParams, PolySynthTables, phase_increment, steal_fade_frames_for,
 };
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, PPQ};
+
+use crate::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumsParams};
 
 /// 每个轨道槽的声部数（复音上限）。
 ///
@@ -534,6 +556,31 @@ pub struct SynthEngine {
     slots: [TrackSlot; MAX_TRACK_SLOTS],
     track_drops: u64,
     notes_triggered: u64,
+    /// **每槽一台鼓机**（`line/engine-drums`）。下标与 [`Self::slots`] 同源。
+    ///
+    /// ⚠ 这是**唯一**被 `Box` 起来的字段，理由是**尺寸**（实测，
+    /// `size_of::<DrumMachine<16>>() = 13616`）：16 槽 **inline** 会让
+    /// `SynthEngine` 从实测 `68416` 变成 `68416 + 16 × 13616 = 286272` 字节，
+    /// 而 [`crate::rt::EngineRuntime`] 是按值构造并按值搬进回调的。
+    /// `Box` 之后实测 `SynthEngine` = `71248`、`EngineRuntime` = `137920`
+    /// （原 `68416` / `135088`）⇒ 增量 `2832 = 16 × 176`（`drum_slots`，
+    /// 实测 `size_of::<Option<(EntityId, DrumsParams)>>() = 176`）
+    /// `+ 8`（`Box` 指针）`+ 8`（`drum_hits`）；这 `217856` 字节因此落在
+    /// **构造期一次性分配**的堆上（`SynthEngine::new` 不在音频线程上），实时对象
+    /// 只多一个指针。分配次数 **1**，且与 `PolySynthTables`（≈ 72 KiB 波表）
+    /// 同一条纪律：**只在打开设备之前**。
+    drums: Box<[DrumMachine<DRUM_SLOTS>]>,
+    /// 每槽的**鼓机投影**（`None` = 本槽的音源是复音合成器）。
+    ///
+    /// 同时是审计状态：快照边界用它做"参数变了才 `set_params`"的比较、
+    /// "换轨 ⇒ `reset`"，以及 [`SynthEngine::drum_params`] 的读数。
+    /// 槽位身份一起存（`EntityId`），因为"本槽被另一条轨接管"必须能分辨。
+    drum_slots: [Option<(EntityId, DrumsParams)>; MAX_TRACK_SLOTS],
+    /// 累计的**鼓击触发数**（每触发一次 [`DrumMachine::trigger`] 记 1）。
+    ///
+    /// 它是"鼓机真的接在信号路径上"的覆盖度读数 —— 与 `EngineStats::metronome_clicks`
+    /// 同族：`armed_drum_slots() > 0` 只说明"武装了"，这个数才说明"真的打了鼓"。
+    drum_hits: u64,
 }
 
 impl SynthEngine {
@@ -552,6 +599,11 @@ impl SynthEngine {
             slots: [TrackSlot::empty(sample_rate); MAX_TRACK_SLOTS],
             track_drops: 0,
             notes_triggered: 0,
+            // 鼓机池：**构造期一次性分配**（`vec!` 在这里，不在 `begin_snapshot` 里），
+            // 分配次数 1（见字段文档的尺寸读数与理由）。
+            drums: vec![DrumMachine::new(sample_rate); MAX_TRACK_SLOTS].into_boxed_slice(),
+            drum_slots: [None; MAX_TRACK_SLOTS],
+            drum_hits: 0,
         }
     }
 
@@ -611,6 +663,37 @@ impl SynthEngine {
         self.notes_triggered
     }
 
+    /// 累计的**鼓击触发数**（覆盖度读数：> 0 才说明鼓机真的在打鼓）。
+    #[must_use]
+    pub const fn drum_hits(&self) -> u64 {
+        self.drum_hits
+    }
+
+    /// 本快照武装为**鼓机音源**的槽位数。
+    #[must_use]
+    pub fn armed_drum_slots(&self) -> usize {
+        self.drum_slots.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// 某轨的鼓机投影（`None` = 本轨的音源是复音合成器）。
+    ///
+    /// 存在的理由与 [`Self::table_levels`] 同族：把"武装进去的那个数"变成**可读**的，
+    /// 判据就不必从音频输出反推它。
+    #[must_use]
+    pub fn drum_params(&self, track: EntityId) -> Option<DrumsParams> {
+        self.slot_index(track)
+            .and_then(|index| self.drum_slots[index])
+            .map(|(_, params)| params)
+    }
+
+    /// 轨道身份 → 槽位下标（`None` = 该轨没有占槽或不在本快照里）。
+    #[must_use]
+    fn slot_index(&self, track: EntityId) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|slot| slot.assigned && slot.present && slot.id == track)
+    }
+
     /// 声部池的诊断转储（**仅 debug 构建**；`tests/` 判据用来定位"为什么没有窃取"）。
     ///
     /// 返回 `(活跃, end_sample, 包络阶段, 淡出剩余)`，逐条来自该槽器件的
@@ -651,10 +734,17 @@ impl SynthEngine {
     ///
     /// 释放全部声部并把播放头设到 `position`。**不**重算游标：下一个量子的触发
     /// 循环会把"起点已过"的音符直接消费掉（不触发），因此不需要额外的扫描。
+    ///
+    /// ⚠ 鼓机也要释放：`DrumMachine::reset` 把槽位池清空（否则一次定位之后
+    /// 旧的鼓声尾巴会继续从新位置响出来）。武装记录**保留**（配置没变，
+    /// 下一个量子照旧是鼓机轨）。
     pub fn seek(&mut self, position: u64) {
         self.position = position;
         for slot in &mut self.slots {
             slot.synth.reset();
+        }
+        for machine in &mut self.drums {
+            machine.reset();
         }
     }
 
@@ -673,13 +763,23 @@ impl SynthEngine {
     /// 4. **音色参数按新快照刷新**：`tones` 给出每轨的 [`ToneParams`]，
     ///    滤波器系数在此处（构造期语义）按当前采样率算好，逐样本路径不再出现 `tan`。
     ///    不在 `tones` 里的轨道退回旁通（`tone` 变了才重算系数）。
+    /// 5. **音源按新快照刷新**（`line/engine-drums`）：`drums` 给出每轨的
+    ///    [`DrumsParams`]（`crate::drums`），在 `tones` 之后写入。不在 `drums` 里的
+    ///    轨道 ⇒ `drum_slots[i]` 置 `None` ⇒ 音源是复音合成器；从鼓机**换回**
+    ///    复音合成器时该槽的鼓机被 `reset`（丢掉可能正在响的尾巴，与节拍器关闭时
+    ///    `MetronomeVoice::silence` 同一条口径）。
     ///
     /// 采样率变化时重算包络模板与全部轨道槽的滤波器系数（`exp`/`tan` 因此落在
     /// "每修订一次"而不是"每样本"）。
-    pub fn begin_snapshot<'a, I, T>(&mut self, sample_rate: u32, tracks: I, tones: T)
+    ///
+    /// ⚠ **签名扩展**：第三个参数之外多了 `drums`（`line/engine-drums`）。
+    /// 与 `line/engine-sound` 给本函数加 `tones` 那次同款（见
+    /// `docs/ledger/engine-mix-notes.md` §8.3 的跨线提醒）：调用点必须一起改。
+    pub fn begin_snapshot<'a, I, T, D>(&mut self, sample_rate: u32, tracks: I, tones: T, drums: D)
     where
         I: IntoIterator<Item = &'a EntityId>,
         T: IntoIterator<Item = (&'a EntityId, &'a ToneParams)>,
+        D: IntoIterator<Item = (&'a EntityId, &'a DrumsParams)>,
     {
         let sample_rate_u32 = sample_rate;
         let sample_rate = sanitise_sample_rate(sample_rate);
@@ -700,6 +800,21 @@ impl SynthEngine {
             }
             wanted[wanted_len] = (*id, *tone);
             wanted_len += 1;
+        }
+
+        // 同理收鼓机投影（**定长数组，栈上，无分配**）：`DrumsParams` 是 `Copy`
+        // 值类型（`DrumKitParams` 128 字节 + 五个 `u8`），16 项 ≈ 2.7 KiB 栈。
+        // 用 `Option` 而不是哨兵值：本 crate 的槽位身份是 `EntityId`，而"未占用"
+        // 槽位的 id 就是 nil —— 哨兵会让"未占用槽位"误命中。
+        let mut wanted_drums: [Option<(EntityId, DrumsParams)>; MAX_TRACK_SLOTS] =
+            [None; MAX_TRACK_SLOTS];
+        let mut wanted_drums_len = 0usize;
+        for (id, params) in drums {
+            if wanted_drums_len >= MAX_TRACK_SLOTS {
+                break;
+            }
+            wanted_drums[wanted_drums_len] = Some((*id, *params));
+            wanted_drums_len += 1;
         }
 
         // ⚠ 顺序是**判据的一部分**：先按 `tracks` 完成槽位分配（`slot.id` 写进去），
@@ -753,6 +868,70 @@ impl SynthEngine {
                 slot.synth.set_params(tone.poly_synth_params(), tables);
             }
         }
+
+        // --- 鼓机武装（**构造期语义**，音频线程上运行 ⇒ 必须零分配）---
+        // [`DrumMachine::set_params`] / [`DrumMachine::set_sample_rate`] 会重算在响槽位的
+        // 包络与滤波器系数（`exp`/`tan`），但**不碰堆**（器件是定长数组）
+        // —— 与同一个分支里的 `poly_synth_params` 是同一条纪律。
+        //
+        // 三条口径（与 §0.1 的"一条轨至多一件音源"配套）：
+        // 1. 同一轨仍占同一槽、且参数逐位相同 ⇒ **一个字段都不写**（状态全保留）；
+        // 2. 同一轨的参数变了 ⇒ 只 `set_params`（相位/包络/RNG/滤波器状态保留，
+        //    这是器件的契约：`drums/mod.rs` 的 `set_params` 文档）；
+        // 3. **换轨**（另一条轨接管本槽）或本轨不再是鼓机 ⇒ `reset` 丢掉上一件音源的
+        //    尾巴；`present = false`（本轨暂时不在快照里）**不** reset
+        //    —— 与声部池"等它回来时连续"同口径。
+        let Self {
+            slots,
+            drums,
+            drum_slots,
+            ..
+        } = self;
+        for index in 0..MAX_TRACK_SLOTS {
+            let present_id = if slots[index].assigned && slots[index].present {
+                Some(slots[index].id)
+            } else {
+                None
+            };
+            let desired = present_id.and_then(|id| {
+                wanted_drums[..wanted_drums_len]
+                    .iter()
+                    .flatten()
+                    .find(|(want, _)| *want == id)
+                    .map(|(_, params)| (id, *params))
+            });
+            let armed = drum_slots[index];
+            match desired {
+                Some((track, params)) => {
+                    let same_track = armed.map(|(id, _)| id) == Some(track);
+                    if !same_track {
+                        drums[index].reset();
+                        drums[index].set_sample_rate(sample_rate_u32);
+                    } else if sample_rate_changed {
+                        drums[index].set_sample_rate(sample_rate_u32);
+                    }
+                    if !same_track || armed.map(|(_, prev)| prev) != Some(params) {
+                        drums[index].set_params(params.kit());
+                    }
+                    drum_slots[index] = Some((track, params));
+                }
+                None => match armed {
+                    // 同一轨仍然 present、但不再是鼓机 ⇒ 丢掉正在响的尾巴。
+                    Some((id, _)) if present_id == Some(id) => {
+                        drums[index].reset();
+                        drum_slots[index] = None;
+                    }
+                    // 本轨暂时不在快照里 ⇒ 保留状态与武装记录。
+                    Some(_) if present_id.is_none() => {}
+                    // 另一条轨接管本槽 ⇒ 丢掉上一件音源的尾巴。
+                    Some(_) => {
+                        drums[index].reset();
+                        drum_slots[index] = None;
+                    }
+                    None => drum_slots[index] = None,
+                },
+            }
+        }
     }
 
     /// 快照边界处的游标校正 + 声部回收（需要调度表，故与
@@ -786,6 +965,12 @@ impl SynthEngine {
     /// `schedule` 为 `None`（本轨没有调度表）时输出静音但不 panic；
     /// `out` 的长度就是本量子的有效帧数（尾块可以小于
     /// [`crate::block::DEFAULT_BLOCK_FRAMES`]）。
+    ///
+    /// 音源由**快照**决定（见模块文档 §0.1）：本槽武装了鼓机（
+    /// [`Self::drum_params`] 为 `Some`）⇒ 同一张调度表驱动
+    /// [`DrumMachine::trigger`] / [`DrumMachine::render`]；否则走复音合成器。
+    /// 两条路都只用"整数比较 + 器件内的乘加"，**零分配、零锁、零 I/O**
+    /// [MUST-GATE-001]。
     pub fn render_track(
         &mut self,
         track: EntityId,
@@ -809,16 +994,23 @@ impl SynthEngine {
         let Self {
             tables,
             slots,
+            drums,
+            drum_slots,
             notes_triggered,
+            drum_hits,
             ..
         } = self;
         let slot = &mut slots[index];
+        // 本槽的音源：`Some(map)` = 鼓机（键位映射）。
+        let drum_map: Option<DrumNoteMap> = drum_slots[index].map(|(_, params)| params.notes());
 
         // --- 1) 触发本量子窗口内起音、且尚未结束的音符 ---
         // 游标只增不减 ⇒ 已触发过的音符永远不会被再次触发。
         //
         // "分配声部 / 池满时软窃取 / 3 ms 淡出"全部在器件的 `note_on` 里
         // （[ARCH-RT-004]）；引擎只负责"哪个音符、在哪个量子边界"。
+        // 鼓机分支共用同一个游标与同一个窗口判定，只有"音符 → 器件"这一步不同：
+        // 键位映射里没有的音高**不触发任何鼓件**（也不改动器件状态）。
         if let Some(schedule) = schedule {
             let notes = schedule.notes();
             while let Some(note) = notes.get(slot.cursor) {
@@ -826,18 +1018,43 @@ impl SynthEngine {
                     break;
                 }
                 if note.end_sample > position {
-                    slot.synth.note_on(
-                        NoteEvent::new(note.start_sample, note.end_sample, note.freq_hz, note.gain),
-                        tables,
-                    );
-                    *notes_triggered = notes_triggered.saturating_add(1);
+                    match drum_map {
+                        Some(map) => {
+                            if let Some(voice) = map.voice_for(note.pitch) {
+                                drums[index].trigger(DrumHit::new(
+                                    voice,
+                                    note.start_sample,
+                                    note.gain,
+                                ));
+                                *drum_hits = drum_hits.saturating_add(1);
+                                *notes_triggered = notes_triggered.saturating_add(1);
+                            }
+                        }
+                        None => {
+                            slot.synth.note_on(
+                                NoteEvent::new(
+                                    note.start_sample,
+                                    note.end_sample,
+                                    note.freq_hz,
+                                    note.gain,
+                                ),
+                                tables,
+                            );
+                            *notes_triggered = notes_triggered.saturating_add(1);
+                        }
+                    }
                 }
                 slot.cursor += 1;
             }
         }
 
         // --- 2) 逐样本合成：全部在器件里（整数相位 + ADSR + 可选低通）---
-        slot.synth.render(tables, position, out);
+        match drum_map {
+            // 鼓机：器件自己把 `out` 清零再落样本（"无占用槽位 ⇒ 逐位静音"）。
+            // 尾音的回收也在 `render` 里（包络走完的槽位被置回空闲）。
+            Some(_) => drums[index].render(position, out),
+            None => slot.synth.render(tables, position, out),
+        }
     }
 }
 
@@ -950,7 +1167,7 @@ mod tests {
 
     fn rig(id: EntityId) -> SynthEngine {
         let mut engine = SynthEngine::new(48_000);
-        engine.begin_snapshot(48_000, &[id], []);
+        engine.begin_snapshot(48_000, &[id], [], []);
         engine
     }
 
@@ -1095,7 +1312,7 @@ mod tests {
     fn slot_exhaustion_is_counted_and_never_panics() {
         let mut engine = SynthEngine::new(48_000);
         let ids: Vec<EntityId> = (0..MAX_TRACK_SLOTS + 3).map(|_| EntityId::new()).collect();
-        engine.begin_snapshot(48_000, &ids, []);
+        engine.begin_snapshot(48_000, &ids, [], []);
         assert_eq!(engine.track_drops(), 3);
         assert_eq!(engine.table_levels(), yeban_dsp::oscillator::LEVELS);
     }
@@ -1146,7 +1363,7 @@ mod tests {
         let mut actual = Vec::new();
         for quantum in 0..32 {
             if quantum == 16 {
-                switched.begin_snapshot(48_000, &[id], []);
+                switched.begin_snapshot(48_000, &[id], [], []);
                 switched.align_cursors(std::iter::once((&id, &schedule)));
             }
             actual.extend(render(&mut switched, id, &schedule, 128));

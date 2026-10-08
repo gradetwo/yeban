@@ -91,12 +91,16 @@
 //! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 16]`（每轨插入链，定长；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
 //! - [`EngineRuntime::reverb_pool`]：`[Reverb; 16]`（每轨混响，**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
 //! - [`EngineRuntime::reverb_scratch`]：`[[f32; 128]; 2]`（混响的单声道取中值暂存，栈/内联）
+//! - [`EngineRuntime::synth`] 的 `drums`：`Box<[DrumMachine<16>; 16]>`（每槽一台鼓机，
+//!   **构造期一次性分配**；回调内只 `set_params` / `trigger` / `render`）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
-//! ⚠ [`EngineRuntime::reverb_pool`] 是这份清单里**唯一**持有堆的字段（每个混响实例有
-//! 自己的延迟线 `Vec`）。它满足禁令的方式不是"没有堆"，而是"**堆只在构造期建立**"
-//! （[`EngineRuntime::new`]）：回调内一次也不分配、不释放。见 [`crate::insert`] 模块文档
-//! §8.4 与 §8.5（为什么连"换采样率"也不能在回调里重建延迟线）。
+//! ⚠ [`EngineRuntime::reverb_pool`] 与 [`SynthEngine`] 的鼓机池是这份清单里**仅有的**
+//! 持有堆的字段（混响有自己的延迟线 `Vec`，鼓机池是 `Box<[_; 16]>`）。它们满足禁令的
+//! 方式不是"没有堆"，而是"**堆只在构造期建立**"（[`EngineRuntime::new`]）：
+//! 回调内一次也不分配、不释放。见 [`crate::insert`] 模块文档 §8.4 与 §8.5
+//! （为什么连"换采样率"也不能在回调里重建延迟线）与 [`crate::synth`] 的
+//! `drums` 字段文档（为什么鼓机池要 `Box`：实测 `DrumMachine<16>` = 13 616 字节）。
 //!
 //! 唯一允许的"共享状态"是原子量与 rtrb 队列；唯一的系统调用级别操作是
 //! FTZ/DAZ 控制寄存器写入（一次）。
@@ -247,6 +251,12 @@ pub struct EngineStats {
     /// 与 [`Self::pdc_processed_blocks`] 同族：它把"节拍器真的在打拍子"变成可读的
     /// 读数，而不是从音频输出反推。`metronome_enabled = false`（默认）时**恒为 0**。
     pub metronome_clicks: u64,
+    /// **鼓机累计触发过的鼓击次数**（[`crate::drums`]；0 = 从没打过鼓）。
+    ///
+    /// 与 [`Self::metronome_clicks`] 同族：`EngineRuntime::armed_drum_slot_count()` 只说明
+    /// "本快照里有几轨武装了鼓机"，这个数才说明"鼓击真的落到了器件上"。
+    /// 全部轨都不是鼓机时（默认）**恒为 0**。
+    pub drum_hits: u64,
     /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
     ///
     /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
@@ -656,6 +666,7 @@ impl EngineRuntime {
             pdc_clamped_frames: self.pdc_clamped_frames,
             pdc_processed_blocks: self.pdc.processed_blocks(),
             metronome_clicks: self.metronome.clicks(),
+            drum_hits: self.synth.drum_hits(),
             quanta_per_second: self.armed_quanta_per_second,
             transport_state: self.transport.state(),
             position_ticks: self.transport.position_ticks(),
@@ -797,6 +808,23 @@ impl EngineRuntime {
     #[must_use]
     pub const fn armed_reverb_sample_rate(&self) -> u32 {
         self.armed_reverb_sample_rate
+    }
+
+    /// 本快照武装的**每轨鼓机音源**（[`crate::drums`]；诊断/判据用）。
+    ///
+    /// 与 [`Self::armed_reverb`] 同族：把"武装进去的那一份投影"变成**可读**的，
+    /// 判据不必从音频输出反推。`None` = 该轨的音源是复音合成器（默认口径）。
+    /// 鼓机与插入链**不是**同一张表：它住在 [`SynthEngine`] 里（音源在上游，
+    /// 见 [`crate::drums`] 模块文档 §2）。
+    #[must_use]
+    pub fn armed_drums(&self, track: &EntityId) -> Option<crate::drums::DrumsParams> {
+        self.synth.drum_params(*track)
+    }
+
+    /// 武装为**鼓机音源**的槽位数（诊断/判据用）。
+    #[must_use]
+    pub fn armed_drum_slot_count(&self) -> usize {
+        self.synth.armed_drum_slots()
     }
 
     /// 本快照武装的**主总线线性增益**（诊断/判据用）。
@@ -1011,6 +1039,7 @@ impl EngineRuntime {
                     current.sample_rate(),
                     current.tracks().keys().filter(|id| **id != master),
                     current.tones().iter().filter(|(id, _)| **id != master),
+                    current.drums().iter().filter(|(id, _)| **id != master),
                 );
                 synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
                 // --- 2b') 走带武装：采样率与 BPM 必须来自**同一份快照**（见快照的 `bpm` 字段）。
