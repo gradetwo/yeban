@@ -48,6 +48,7 @@
 //! | [`reverb`] | Freeverb 风格混响 | `dsp/reverb.rs` |
 //! | [`shaping`] | bitcrusher / shaping EQ / transient shaper | `fx_shaping.rs` |
 //! | [`compressor`] | 前馈式压缩器：软膝静态曲线 + RMS 检波 + 线性域增益弹道（**零延迟**） | 新写 [ARCH-RT-001]；本机无移植源，见该模块 §8 |
+//! | [`channel_strip`] | 通道条：输入增益 → EQ → 滤波 → 动态（压缩） → 输出增益（**组合**既有器件，零延迟） | 组合 [ARCH-DSP-001]，见该模块 §2 |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -59,6 +60,7 @@
 #![deny(missing_docs)]
 
 pub mod block;
+pub mod channel_strip;
 pub mod comb;
 pub mod compressor;
 pub mod delay;
