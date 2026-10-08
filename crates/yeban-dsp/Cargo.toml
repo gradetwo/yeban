@@ -16,6 +16,9 @@ path = "src/lib.rs"
 # [ARCH-DSP-004 / HD-44=A] 弹性拉伸（C++ 实现 + Rust 包装）。
 # `unsafe` 落在依赖内部，本 crate 的 `#![forbid(unsafe_code)]` 仍成立。
 signalsmith-stretch.workspace = true
+# L1 确定性要求"统一启用纯 Rust libm"、禁止平台 libm [ARCH-DET-001]:
+# ADSR 的一极点系数等超越函数一律走 libm, 结果与宿主 libm 实现无关。
+libm.workspace = true
 
 [lints]
 workspace = true

@@ -39,6 +39,10 @@ thiserror.workspace = true
 # `workspace = true`（继承出来是 `*` + path），由 ADR-0001 D21 的
 # `allow-wildcard-paths = true` 放行 —— 与下面的 `yeban-model` 同一条裁决。
 yeban-dsp.workspace = true
+# L1 确定性要求"统一启用纯 Rust libm"、禁止平台 libm [ARCH-DET-001]:
+# 本 crate 自身不调用超越函数, 但 L1 前提按依赖闭包显式登记,
+# 与 `yeban-dsp` 一起保证引擎链路上的 `exp`/`log`/`pow` 全部落在 libm。
+libm.workspace = true
 # 路由与轨道参数的唯一权威事实源 (RoutingGraph / TrackV3 / YebanProjectV1 /
 # DeviceDefinition::latency_samples) [MODEL-AST-004, ARCH-PDC-001]。
 #

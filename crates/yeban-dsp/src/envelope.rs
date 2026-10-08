@@ -262,13 +262,16 @@ impl Adsr {
 
 /// 一极点系数：该段在 `time_s` 秒内走完自身跨度的约 99.8%
 ///（因此"release = 0.3 s"听起来就是 0.3 s，而不是 3 s）。
+///
+/// 指数走纯 Rust `libm::expf`，**不用** `f32::exp`：后者的实现来自宿主 libm，
+/// 换架构/OS 末位可能不同，会把 L1 的逐位对账变成跨平台假红 `[ARCH-DET-001]`。
 fn time_coefficient(time_s: f32, sample_rate: f32) -> f32 {
     /// 6 个时间常数 → `1 − e⁻⁶ ≈ 99.75%`。
     const TIME_CONSTANTS: f32 = 6.0;
     if time_s <= 1e-5 {
         0.0
     } else {
-        (-TIME_CONSTANTS / (time_s * sample_rate)).exp()
+        libm::expf(-TIME_CONSTANTS / (time_s * sample_rate))
     }
 }
 

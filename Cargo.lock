@@ -6368,6 +6368,7 @@ dependencies = [
 name = "yeban-dsp"
 version = "0.0.1"
 dependencies = [
+ "libm",
  "signalsmith-stretch",
 ]
 
@@ -6376,6 +6377,7 @@ name = "yeban-engine"
 version = "0.0.1"
 dependencies = [
  "cpal",
+ "libm",
  "rtrb",
  "thiserror 2.0.21",
  "yeban-dsp",

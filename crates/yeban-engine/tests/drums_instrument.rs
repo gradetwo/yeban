@@ -66,6 +66,82 @@ const BASELINE_TUNED: u64 = 7_993_387_413_444_691_233;
 /// 设备链只有音色旋钮、没有键位映射 ⇒ 与 `BASELINE_PLAIN` **同一个数**。
 const BASELINE_KNOBS_ONLY: u64 = 8_204_613_887_399_841_269;
 
+/// 上面三个字面值的**测量平台**：`aarch64` + `macos`。
+///
+/// L1 只承诺"相同 OS 与 CPU 架构 + 纯 Rust libm"下的逐位一致
+/// `[ARCH-DET-001]`（规范正文见 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md`
+/// 的"L1 级确定性"一条）；跨架构的位级哈希差异是 L2 的领域（`max|Δ| < 1e-6`），
+/// 拿它当本判据的失败就是**假红**。
+const MEASURED_ARCH: &str = "aarch64";
+/// 见 [`MEASURED_ARCH`]。
+const MEASURED_OS: &str = "macos";
+
+/// 本机（**编译期事实**）是否就是上面那个测量平台。
+///
+/// 取 `cfg!` 而不是运行期探测：`target_arch`/`target_os` 是编译期确定的，
+/// 比运行期比较更不容易想错。
+const ON_MEASURED_PLATFORM: bool = cfg!(target_arch = "aarch64") && cfg!(target_os = "macos");
+
+/// 本平台的 `arch/os`（只用于打印，让人一眼看出为什么跳过）。
+const CURRENT_PLATFORM: &str = if cfg!(target_arch = "aarch64") {
+    if cfg!(target_os = "macos") {
+        "aarch64/macos"
+    } else {
+        "aarch64/非macos"
+    }
+} else if cfg!(target_arch = "x86_64") {
+    "x86_64/非aarch64"
+} else {
+    "非aarch64"
+};
+
+/// 判据 D0 的字面值对账：**同平台硬红，异平台如实跳过并点名原因**。
+///
+/// 返回 `false` 表示"本轮没有判定"（异平台）—— **不等于通过**。
+///
+/// 为什么要有这一层：`BASELINE_*` 是某一台机器上的 libm/LLVM 实现读数，
+/// 不是规范常数。在 `x86_64` 的 CI runner 上拿它判红，量到的是架构差异而不是缺陷。
+/// 因此这里照 `crates/yeban-render/tests/l1_digest_parity.rs` 的既有形态
+/// （异平台 SKIP + 打印原因、同平台仍硬红）改成本平台的运行时判定，
+/// 而**不是**去改 `BASELINE_*` 迁就 `x86_64`。
+fn check_fingerprint(label: &str, actual: u64, expected: u64) -> bool {
+    check_fingerprint_on(
+        label,
+        actual,
+        expected,
+        ON_MEASURED_PLATFORM,
+        CURRENT_PLATFORM,
+    )
+}
+
+/// [`check_fingerprint`] 的**纯函数形态**：把"是否同平台"当作参数传进来。
+///
+/// 这样"同平台硬红 / 异平台跳过"这条规则本身可被单独对账
+/// （见 `the_same_platform_rule_is_hard_red_and_foreign_platforms_only_skip`），
+/// 而不是靠 `cfg!` 恰好命中本机来"碰运气验证"。
+fn check_fingerprint_on(
+    label: &str,
+    actual: u64,
+    expected: u64,
+    on_measured_platform: bool,
+    current_platform: &str,
+) -> bool {
+    if on_measured_platform {
+        assert_eq!(
+            actual, expected,
+            "{label}: 同平台 ({current_platform} == 测量平台 {MEASURED_ARCH}/{MEASURED_OS}) \
+             ⇒ 指纹必须逐位等于实测值; 不同就是真缺陷"
+        );
+        return true;
+    }
+    println!(
+        "[engine-drums/D0] SKIP (未判定, 不是通过): {label} 的字面值 {expected} \
+         (0x{expected:016x}) 实测于 {MEASURED_ARCH}/{MEASURED_OS}, 而本机是 {current_platform}; \
+         跨架构的位级差异是 L2 的领域 (max|Δ| < 1e-6), 不是本判据的失败"
+    );
+    false
+}
+
 /// 判据用的**键位映射**（五个鼓件各一个音高）。
 const NOTES: [(&str, f32); 5] = [
     ("kick_note", 36.0),
@@ -191,11 +267,7 @@ fn projects_without_a_complete_note_map_are_bit_identical() {
         bare.peak(),
         bare.fingerprint()
     );
-    assert_eq!(
-        bare.fingerprint(),
-        BASELINE_PLAIN,
-        "无设备链的指纹必须等于**接线前**实测的那个数"
-    );
+    check_fingerprint("无设备链", bare.fingerprint(), BASELINE_PLAIN);
     assert!(bare.peak() > 0.0, "夹具必须真的出声（否则逐位相同是空转）");
     assert_eq!(bare.stats.drum_hits, 0, "没有鼓机设备 ⇒ 鼓击数必须为 0");
 
@@ -215,11 +287,7 @@ fn projects_without_a_complete_note_map_are_bit_identical() {
         assert_eq!(other.left_bits(), bare.left_bits(), "{label}: 左声道逐位");
         assert_eq!(other.stats.drum_hits, 0, "{label}: 鼓击数必须为 0");
     }
-    assert_eq!(
-        knobs.fingerprint(),
-        BASELINE_KNOBS_ONLY,
-        "只有旋钮 ⇒ 同一个字面值"
-    );
+    check_fingerprint("只有旋钮", knobs.fingerprint(), BASELINE_KNOBS_ONLY);
 
     // 第二个字面值：复音合成器路径（`cutoff_hz`）。
     let tuned = tuned_project(&BASELINE_NOTES, MixSpec::tone(800.0, 0.3));
@@ -228,11 +296,7 @@ fn projects_without_a_complete_note_map_are_bit_identical() {
         "[engine-drums/D0] tuned(800,0.3): 指纹={} (0x{BASELINE_TUNED:016x})",
         tuned_render.fingerprint()
     );
-    assert_eq!(
-        tuned_render.fingerprint(),
-        BASELINE_TUNED,
-        "滤波器路径逐位不变"
-    );
+    check_fingerprint("滤波器路径", tuned_render.fingerprint(), BASELINE_TUNED);
 }
 
 /// D1：快照层只收录**识别出鼓机**的轨道；没有设备的工程是空表。
@@ -597,4 +661,85 @@ fn swapping_the_kit_across_snapshots_is_reported() {
     let map = DrumNoteMap::new(48, 50, 54, 58, 51);
     assert_eq!(map.voice_for(48), Some(DrumVoice::Kick));
     assert_eq!(map.voice_for(36), None);
+}
+
+/// 临时把 panic hook 换成静默，离开作用域时**一定**还原。
+///
+/// 只服务下面那条"故意 panic 的负面对照"：`catch_unwind` 抓住了 panic，
+/// 但默认 hook 仍会往 stderr 打一条看起来像失败的记录。用 RAII 还原，
+/// 保证即使中途再 panic 也不会把 hook 永久留在静默状态。
+struct SilentPanic {
+    previous: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>,
+}
+
+impl SilentPanic {
+    fn install() -> Self {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        Self { previous }
+    }
+}
+
+impl Drop for SilentPanic {
+    fn drop(&mut self) {
+        std::panic::set_hook(core::mem::replace(&mut self.previous, Box::new(|_| {})));
+    }
+}
+
+/// D0 的**平台规则本身**：同平台硬红、异平台只跳过（**不是**通过）。
+///
+/// 为什么单独钉这一条：`check_fingerprint` 在 `x86_64` 的 CI 上走的是"跳过"分支，
+/// 那条分支永远不会被 D0 的主判据执行到 —— 于是"异平台不许冒充通过"这件事
+/// 靠主判据是**验证不到**的。这里用纯函数的两个方向把它钉死：
+///
+/// 1. 同平台 + 指纹不同 ⇒ `assert_eq!` 必须**真的红**（负面对照，
+///    防止"改了期望值换绿"这类假绿）；
+/// 2. 异平台 + 指纹不同 ⇒ 只返回 `false` 并打印点名的 SKIP，
+///    **不得** `panic`（跨架构位差是 L2 的领域，判红就是本票要消灭的假红）。
+#[test]
+fn the_same_platform_rule_is_hard_red_and_foreign_platforms_only_skip() {
+    let expected = BASELINE_PLAIN;
+    // 反向的前提：注入用的"坏指纹"必须真的与期望值不同，否则这一条是空转。
+    let injected = expected ^ 0x0000_0000_0000_0001;
+
+    // 1) 同平台 ⇒ 硬红。用 `catch_unwind` 抓住它，证明"红色真的被触发"。
+    //    这里**故意**让它 panic，因此临时换成静默 hook：不然那条 panic 会被读成
+    //    "测试失败了"，而它恰恰是判据生效的证据。
+    let silence = SilentPanic::install();
+    let same_platform = std::panic::catch_unwind(|| {
+        check_fingerprint_on("注入", injected, expected, true, "aarch64/macos")
+    });
+    drop(silence);
+    assert!(
+        same_platform.is_err(),
+        "同平台且指纹不符必须 panic(红); 没红说明门禁被削弱了"
+    );
+
+    // 2) 同平台且相符 ⇒ 绿（正向对照：硬红不是"永远红"）。
+    assert!(
+        check_fingerprint_on("正向", expected, expected, true, "aarch64/macos"),
+        "同平台相符必须通过"
+    );
+
+    // 3) 异平台 ⇒ 只跳过并点名原因, 不许 panic。
+    let foreign = std::panic::catch_unwind(|| {
+        check_fingerprint_on("注入", injected, expected, false, "x86_64/非aarch64")
+    });
+    assert!(
+        foreign.is_ok(),
+        "异平台不得判红 —— 跨架构的位级差异是 L2 的领域, 判红就是假红"
+    );
+    assert!(
+        !check_fingerprint_on("注入", injected, expected, false, "x86_64/非aarch64"),
+        "异平台必须返回 false（未判定）, 不许当成通过"
+    );
+
+    // 4) 常量自洽：测量平台就是本判据点名的那一对 `arch/os`。
+    assert_eq!(MEASURED_ARCH, "aarch64");
+    assert_eq!(MEASURED_OS, "macos");
+    assert_eq!(
+        ON_MEASURED_PLATFORM,
+        cfg!(target_arch = "aarch64") && cfg!(target_os = "macos"),
+        "`ON_MEASURED_PLATFORM` 必须就是编译期平台事实"
+    );
 }
