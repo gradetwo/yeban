@@ -241,6 +241,20 @@ pub enum SfzError {
         value: String,
     },
 
+    /// 时长类浮点 opcode 取到负数（时长的取反没有定义，拒绝而不静默钳位）。
+    ///
+    /// 目前只有 `off_time`（<https://sfzformat.com/opcodes/off_time/>）：规范表格的
+    /// Range 为空、Default 为 0.006 秒，因此本 crate 只额外要求**非负**。
+    #[error("line {line}: `{opcode}` must not be negative, got {value}")]
+    InvalidDuration {
+        /// 1-based 行号。
+        line: usize,
+        /// opcode 名。
+        opcode: String,
+        /// 实际取值。
+        value: f32,
+    },
+
     /// 音名 / MIDI 号无法解析。音名遵循 sfzformat 的 IPN 记法（`C4` = 60）。
     #[error("line {line}: `{opcode}` expects a note name or MIDI number 0..=127, got `{value}`")]
     InvalidNote {

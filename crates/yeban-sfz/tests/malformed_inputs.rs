@@ -143,6 +143,21 @@ const MALFORMED_SAMPLES: &[&str] = &[
     "=a.wav",
     "key=36",
     "<region>sample=a.wav key=36 key=48",
+    // `off_time` 已建模（见 `off_time_is_modeled_and_range_checked_explicitly`）：
+    // 这里只要求「任何字节都只允许 Ok / Err，不允许 panic」。
+    "<region>sample=a.wav off_mode=time off_time=0.05",
+    "<region>sample=a.wav off_mode=time off_time=0",
+    "<region>sample=a.wav off_time=",
+    "<region>sample=a.wav off_time=abc",
+    "<region>sample=a.wav off_time=NaN",
+    "<region>sample=a.wav off_time=inf",
+    "<region>sample=a.wav off_time=-inf",
+    "<region>sample=a.wav off_time=-0.0",
+    "<region>sample=a.wav off_time=-1",
+    "<region>sample=a.wav off_time=1e999",
+    "<region>sample=a.wav off_time=99999999999999999999",
+    "<region>sample=a.wav off_time=0.05 off_time=-0.05",
+    "<group>off_time=0.25\n<region>sample=a.wav",
 ];
 
 #[test]
@@ -568,4 +583,47 @@ fn include_resolution_is_deterministic_across_runs() {
         (paths, samples)
     };
     assert_eq!(run(), run());
+}
+
+#[test]
+fn off_time_is_modeled_and_range_checked_explicitly() {
+    let limits = ParseLimits::default();
+
+    // 缺省：`None` + 规范缺省 0.006 秒；显式 0 必须存活为 0（二者不是同一个请求）。
+    let default = parse_text("<region>sample=a.wav", &limits).expect("parses");
+    assert_eq!(default.regions()[0].off_time, None);
+    assert_eq!(default.regions()[0].effective_off_time(), 0.006);
+    let zero = parse_text("<region>sample=a.wav off_time=0", &limits).expect("parses");
+    assert_eq!(zero.regions()[0].off_time, Some(0.0));
+    assert_eq!(zero.regions()[0].effective_off_time(), 0.0);
+
+    // 语料里出现的 6 个不同取值全部读得到（扫描口径见本票报告）
+    for text in ["0.05", "0.5", "0.25", "0.2", "0.4", "0.3"] {
+        let source = format!("<group>off_mode=time off_time={text}\n<region>sample=a.wav");
+        let instrument = parse_text(&source, &limits).expect("parses");
+        let expected: f32 = text.parse().expect("literal parses as f32");
+        assert_eq!(
+            instrument.regions()[0].off_time,
+            Some(expected),
+            "off_time={text}"
+        );
+    }
+
+    // 负数是明确 Err；非数字 / 非有限值是明确 Err；两者都**不**静默回退到缺省。
+    let negative = parse_text("<region>sample=a.wav off_time=-0.05", &limits);
+    assert!(
+        matches!(negative, Err(SfzError::InvalidDuration { .. })),
+        "a negative off_time must be an explicit Err, got {negative:?}"
+    );
+    for bad in ["", "abc", "NaN", "inf", "-inf", "1e999"] {
+        let source = format!("<region>sample=a.wav off_time={bad}");
+        let outcome = parse_text(&source, &limits);
+        assert!(
+            matches!(
+                outcome,
+                Err(SfzError::InvalidFloat { .. } | SfzError::NonFiniteFloat { .. })
+            ),
+            "off_time={bad:?} must be an explicit Err, got {outcome:?}"
+        );
+    }
 }

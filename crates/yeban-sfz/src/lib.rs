@@ -13,6 +13,11 @@
 //! 只进 [`Effect`]（经 [`Instrument::effects`] 读取），同样不进继承链、也不清空继承链。
 //! 其余段头（`<midi>` / `<sample>`）产生 [`Warning::IgnoredHeader`] 并丢弃其 opcode。
 //!
+//! 关断语义由 `off_mode`（[`OffMode`]）与 `off_time`（[`Region::off_time`]，缺省
+//! [`OFF_TIME_DEFAULT_SECONDS`]）成对带出；后者只在 `off_mode=time` 时生效
+//! （<https://sfzformat.com/opcodes/off_time/>），不改写 [ARCH-RT-004] 的 3 ms
+//! 窃取淡出常量。
+//!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2 ARCH-RT-001 / ARCH-RT-004
@@ -169,8 +174,8 @@ pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};
 pub use error::SfzError;
 pub use instrument::{
-    CcGate, Instrument, LoopMode, OffMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
-    TriggerEvent,
+    CcGate, Instrument, LoopMode, OFF_TIME_DEFAULT_SECONDS, OffMode, PlayDirection, Region,
+    RegionQuery, SampleEnd, Trigger, TriggerEvent,
 };
 pub use parser::{
     Header, IncludeResolver, OpcodeValue, ParseLimits, SfzSource, Warning, parse_f32, parse_int,

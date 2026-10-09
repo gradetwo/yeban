@@ -186,32 +186,51 @@ impl Trigger {
     }
 }
 
-/// `off_mode` opcode：note-off（或 `off_by` 关断）到达时，声部**如何结束**。
+/// `off_time` opcode 的规范缺省值，单位**秒**。
+///
+/// 出处：<https://sfzformat.com/opcodes/off_time/> 的表格（Type = float，Default = 0.006，
+/// 无 Range）以及同页正文第一句 "When `off_mode` is set to `time`, this specifies the
+/// fadeout time for regions being muted by voice-stealing"。
+///
+/// **它不是 [ARCH-RT-004] 的 3 ms 窃取淡出常量**：3 ms 是本 crate 在窃取路径上的工程常量
+/// （见 `crate::voice_pool::StealFade`），本常量只是 [`Region::off_time`] 缺省时的回退值，
+/// 由消费方决定何时使用。两者不互相改写。
+pub const OFF_TIME_DEFAULT_SECONDS: f32 = 0.006;
+
+/// `off_mode` opcode：region 被**关断**时声部如何结束。
 ///
 /// 取值集合与缺省值取自登记语料的 opcode 普查（三个取值 `normal` / `fast` / `time`，
-/// 后者的出现次数为 818 / 87 / 4，合计 909），见
+/// 出现次数为 818 / 87 / 4，合计 909），见
 /// `docs/ledger/sfz-core-notes.md` 第 11 节；格式出处
 /// <https://sfzformat.com/opcodes/off_mode/>。
 ///
 /// **出处分工**：取值集合、出现次数与缺省值 `fast` 来自上面那份**登记语料普查**；
 /// 三个取值各自的含义来自上面那个**格式页**。其中「`fast` ＝ 立刻结束」一条另有台账佐证：
-/// 同节写明缺省值 `fast`「与现行为等价」，而现行为就是在 note-off 立刻结束声部。
+/// 同节写明缺省值 `fast`「与现行为等价」，而现行为就是在关断时立刻结束声部。
 ///
-/// - [`OffMode::Fast`]（缺省）：立刻结束声部。
-/// - [`OffMode::Normal`]：按正常（包络）release 结束声部。
-/// - [`OffMode::Time`]：在 `off_time` 秒之后结束声部。
+/// 格式页正文第一句界定了这一族 opcode 的作用面：它决定「region 如何被 `off_by`
+/// opcode 关断」，而不是 note-off 的包络释放：
 ///
-/// **本 crate 只做类型化建模，不决定 release 的实现**：包络属于引擎侧；
-/// 而 per-region `off_time` 与 [ARCH-RT-004] 的 3 ms 窃取淡出冲突、正等人类裁决
-/// （`docs/ledger/sfz-core-notes.md` 第 6 节第 4 条），因此本切片刻意**不**读 `off_time`。
+/// - [`OffMode::Fast`]（缺省）：立刻关断声部；release 设置不起作用。
+/// - [`OffMode::Normal`]：进入 release 阶段 —— 所有包络发生器进入 release，
+///   声部在**放大器包络**耗尽时结束（需要包络，引擎侧）。
+/// - [`OffMode::Time`]（ARIA 扩展）：用一段**与采样 release 无关**的时间关断声部，
+///   时长由 [`Region::off_time`] 给出（缺省 `OFF_TIME_DEFAULT_SECONDS`）。
+///   格式页写明该时长同样落在声部窃取的淡出路径上：
+///   "this specifies the fadeout time for regions being muted by voice-stealing"
+///   （<https://sfzformat.com/opcodes/off_time/>）。
+///
+/// **本 crate 只做类型化建模，不决定包络 / 淡化的实现**（那属于引擎侧）。
+/// 因此 [`OffMode::Time`] 的时长不与 [ARCH-RT-004] 的 3 ms 窃取淡出冲突：
+/// 后者是本 crate 在窃取路径上给出的工程常量，本 crate 不读取采样字节、也不实现淡化。
 /// 消费方得到的是一条明确契约：只有 [`OffMode::Fast`] 允许立刻切断声部。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OffMode {
     /// `fast`（缺省）：立刻结束声部。
     Fast,
-    /// `normal`：按正常 release 结束声部（需要包络，引擎侧）。
+    /// `normal`：进入 release 阶段，按放大器包络结束声部（需要包络，引擎侧）。
     Normal,
-    /// `time`：在 `off_time` 秒后结束声部（`off_time` 未建模，见类型文档）。
+    /// `time`（ARIA 扩展）：在 [`Region::off_time`] 秒后结束声部。
     Time,
 }
 
@@ -228,8 +247,9 @@ impl OffMode {
 
     /// 是否允许**立刻**切断声部：只有 `fast`。
     ///
-    /// 另外两个取值要求一段 release（`normal`）或一段 `off_time` 保持（`time`），
-    /// 因此调用方**不得**把它们当成立刻切断 —— 这正是规范区分三者的目的。
+    /// 另外两个取值要求一段放大器包络 release（`normal`）或一段由 `off_time`
+    /// 给定的淡化时长（`time`），因此调用方**不得**把它们当成立刻切断
+    /// —— 这正是规范区分三者的目的。
     #[must_use]
     pub fn cuts_voice_immediately(self) -> bool {
         self == Self::Fast
@@ -279,6 +299,20 @@ pub struct Region<'a> {
     /// 与 [`Region::effective_loop_mode`] 的分工：`one_shot` 说的是「**不理会** note-off」，
     /// `off_mode` 说的是「note-off 真的到达之后**怎么结束**」。
     pub off_mode: OffMode,
+    /// `off_time`（ARIA，单位**秒**）：`off_mode=time` 关断声部时的淡化时长。
+    ///
+    /// `None` 表示源文件**没有**给出该 opcode；此时规范缺省是
+    /// [`OFF_TIME_DEFAULT_SECONDS`]，见 [`Region::effective_off_time`]。刻意区分
+    /// `None` 与 `Some(0.0)`：前者是「没说」，后者是「显式要求 0 秒」。
+    ///
+    /// 格式页（<https://sfzformat.com/opcodes/off_time/>）只把该时长挂在
+    /// `off_mode=time` 上："When `off_mode` is set to `time`, this specifies the fadeout
+    /// time for regions being muted by voice-stealing"。因此它**不**改写
+    /// [ARCH-RT-004] 的 3 ms 窃取淡出常量，也**不**是 `off_mode=normal` 的包络 release。
+    ///
+    /// 取值域：规范表格的 Range 为空 ⇒ 只要求**有限**且**非负**
+    /// （负时长的取反是明确 `Err`，不静默钳位）。
+    pub off_time: Option<f32>,
     /// 力度下界（含）。
     pub lovel: u8,
     /// 力度上界（含）。
@@ -414,6 +448,19 @@ impl<'a> Region<'a> {
         } else {
             self.loop_mode
         }
+    }
+
+    /// 生效的 `off_time`（秒）：源文件给出则原样返回，否则返回规范缺省
+    /// [`OFF_TIME_DEFAULT_SECONDS`]（0.006 s）。
+    ///
+    /// 该时长只在 `off_mode=time` 关断声部时使用（见
+    /// <https://sfzformat.com/opcodes/off_time/>）；`off_mode=fast` / `normal` 的
+    /// 关断语义不由它决定。
+    ///
+    /// 零分配、可在实时路径调用（读两个标量字段）。
+    #[must_use]
+    pub fn effective_off_time(&self) -> f32 {
+        self.off_time.unwrap_or(OFF_TIME_DEFAULT_SECONDS)
     }
 
     /// 该 region 是否需要「其它按住的音符数」这类外部状态（`trigger=first` /
@@ -786,11 +833,28 @@ pub(crate) fn build_region<'a>(
 
     // ---- off 语义（`off_mode`，见 <https://sfzformat.com/opcodes/off_mode/>） ----
     // 三个取值与缺省 `fast` 的出处是登记语料普查（`docs/ledger/sfz-core-notes.md` 第 11 节）。
-    // 刻意不读 `off_time`：它与 [ARCH-RT-004] 的 3 ms 窃取淡出的冲突待人类裁决
-    // （同文件第 6 节第 4 条）。
+    // `off_time` 一并读取：格式页把它定义为「`off_mode=time` 时被窃取静音的 region 的
+    // 淡化时长」，与 [ARCH-RT-004] 的 3 ms 窃取淡出是**两个**量（后者是本 crate 的工程常量），
+    // 因此这里只带出原样取值，不改写任何既定行为。
     let off_mode = match scopes.get("off_mode") {
         Some(value) => value.as_option(OffMode::OPTIONS, OffMode::ALLOWED)?,
         None => OffMode::Fast,
+    };
+    let off_time = match scopes.get("off_time") {
+        // 规范表格 Range 为空、Default = 0.006（<https://sfzformat.com/opcodes/off_time/>）：
+        // 只要求有限且非负；缺省记 `None`（未给出），由 `effective_off_time` 回退。
+        Some(value) => {
+            let seconds = value.as_f32()?;
+            if seconds < 0.0 {
+                return Err(SfzError::InvalidDuration {
+                    line,
+                    opcode: "off_time".to_string(),
+                    value: seconds,
+                });
+            }
+            Some(seconds)
+        }
+        None => None,
     };
 
     // ---- 键映射 ----
@@ -925,6 +989,7 @@ pub(crate) fn build_region<'a>(
         trigger_by_note,
         trigger,
         off_mode,
+        off_time,
         lovel,
         hivel,
         lochan,
@@ -1024,6 +1089,7 @@ mod tests {
             trigger_by_note: true,
             trigger: Trigger::Attack,
             off_mode: OffMode::Fast,
+            off_time: None,
             lovel: 0,
             hivel: 127,
             lochan: 1,
@@ -1618,6 +1684,112 @@ mod tests {
         let region = &instrument.regions()[0];
         assert_eq!(region.effective_loop_mode(), LoopMode::OneShot);
         assert_eq!(region.off_mode, OffMode::Normal);
+    }
+
+    // -----------------------------------------------------------------------
+    // `off_time`（<https://sfzformat.com/opcodes/off_time/>）
+    // -----------------------------------------------------------------------
+    //
+    // 观测方式：`assert_eq!` 直接比较 f32 值，**不**用 `abs() < eps` 容差比较 ——
+    // 判目标字面量就是 f32 字面量本身，不需要放宽。`off_time` 只有两条产生路径
+    // （解析期十进制字面量取最近 f32、缺省常量），没有超越函数参与，逐位确定。
+
+    #[test]
+    fn off_time_defaults_to_the_spec_value_and_is_not_folded_into_a_zero() {
+        // 规范表格 Default = 0.006 秒（<https://sfzformat.com/opcodes/off_time/>）。
+        // 缺省必须是「未给出」（`None`）+ 生效值 0.006，**不是** 0.0：
+        // 0.0 会让 `off_mode=time` 变成"立刻切断"，与 fast 混淆。
+        let default = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let region = &default.regions()[0];
+        assert_eq!(region.off_time, None);
+        assert_eq!(region.effective_off_time(), 0.006);
+        assert_ne!(region.effective_off_time(), 0.0);
+
+        // 扫描语料实测（1398 个登记 `.sfz` 里 `off_time=` 的取值分布，
+        // 重复次数：0.05×8、0.5×2、0.25×2、0.2×2、0.4×1、0.3×1）都落在这个回退之上：
+        // 没有一个取值是 0，因此把缺省读成 0.0 会让整批 region 静默变成立刻切断。
+        let explicit =
+            parse_text("<region>sample=a.wav off_time=0.0", &Default::default()).expect("parses");
+        assert_eq!(explicit.regions()[0].off_time, Some(0.0));
+        assert_eq!(
+            explicit.regions()[0].effective_off_time(),
+            0.0,
+            "an explicit 0 must survive as 0 (it is not the same request as `unspecified`)"
+        );
+    }
+
+    #[test]
+    fn off_time_reads_every_distinct_value_found_in_the_registered_corpus() {
+        // 出处：对 `git ls-files` 的 1398 个登记 `.sfz` 逐文件取
+        // `off_time=<literal>`（探针命令见本票报告）；不同取值共 6 个，这里是全部 6 个。
+        for text in ["0.05", "0.5", "0.25", "0.2", "0.4", "0.3"] {
+            let source = format!("<region>sample=a.wav off_mode=time off_time={text}");
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            let region = &instrument.regions()[0];
+            let expected: f32 = text.parse().expect("literal parses as f32");
+            assert_eq!(region.off_time, Some(expected), "off_time={text}");
+            assert_eq!(region.effective_off_time(), expected, "off_time={text}");
+        }
+    }
+
+    #[test]
+    fn off_time_is_read_from_the_four_scope_chain() {
+        // 与其它 opcode 同一条 `region → group → master → global` 查找链。
+        let inherited = parse_text(
+            "<master>off_time=0.25\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(inherited.regions()[0].off_time, Some(0.25));
+
+        let overridden = parse_text(
+            "<global>off_time=0.4\n<group>off_time=0.3\n\
+             <region>sample=a.wav off_time=0.05",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(overridden.regions()[0].off_time, Some(0.05));
+    }
+
+    #[test]
+    fn a_negative_off_time_is_an_error_not_a_silent_zero() {
+        // 规范表格的 Range 为空，但时长取反没有定义：明确 `Err`，不静默钳位成 0。
+        assert!(
+            matches!(
+                parse_text("<region>sample=a.wav off_time=-0.5", &Default::default()),
+                Err(SfzError::InvalidDuration { value: -0.5, .. })
+            ),
+            "a negative off_time must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_non_finite_or_non_numeric_off_time_is_an_error() {
+        for bad in ["nan", "inf", "-inf", "abc", ""] {
+            let source = format!("<region>sample=a.wav off_time={bad}");
+            let outcome = parse_text(&source, &Default::default());
+            assert!(
+                matches!(
+                    outcome,
+                    Err(SfzError::NonFiniteFloat { .. } | SfzError::InvalidFloat { .. })
+                ),
+                "off_time={bad:?} must be an explicit error, got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn off_time_does_not_change_region_selection_or_the_loop_override() {
+        // `off_time` 只喂给关断时长，**不**参与 region 选择，也不碰 `loop_mode`。
+        let source = "<region>sample=a.wav off_mode=time off_time=0.25 trigger=release";
+        let instrument = parse_text(source, &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.off_time, Some(0.25));
+        assert_eq!(region.effective_loop_mode(), LoopMode::OneShot);
+        assert!(
+            instrument.region_for(60, 100).is_none(),
+            "a trigger=release region must stay out of note-on selection"
+        );
     }
 
     #[test]

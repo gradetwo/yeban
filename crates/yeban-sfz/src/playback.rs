@@ -215,6 +215,12 @@ pub struct PlaybackSpec {
     /// 声部（`loop_mode=one_shot`）；本字段描述 note-off **真的到达之后**怎么结束。
     /// 只有 [`OffMode::Fast`] 允许立刻切断，见 [`PlaybackSpec::cuts_at_note_off`]。
     pub off_mode: OffMode,
+    /// 该 region 的 `off_time`（秒，原样；`None` ＝ 源文件未给出）。
+    ///
+    /// 原始取值，**不**做缺省回填：消费方用 [`PlaybackSpec::effective_off_time`] 取
+    /// 生效值（缺省 [`crate::OFF_TIME_DEFAULT_SECONDS`]）。该时长只对
+    /// `off_mode=time` 的关断有意义（<https://sfzformat.com/opcodes/off_time/>）。
+    pub off_time: Option<f32>,
     /// 生效的循环模式（原样，**但** `trigger=release` / `release_key` 强制
     /// [`LoopMode::OneShot`]，见 [`Region::effective_loop_mode`]）。
     pub loop_mode: LoopMode,
@@ -252,13 +258,24 @@ impl PlaybackSpec {
 
     /// note-off 到达时，声部是否**可以立刻**结束（`off_mode=fast`，规范缺省）。
     ///
-    /// `false` 表示规范要求一段 release（`off_mode=normal`）或一段 `off_time` 保持
-    /// （`off_mode=time`）：实现属于引擎侧，本 crate 只报告契约。
+    /// `false` 表示规范要求一段放大器包络 release（`off_mode=normal`）或一段由
+    /// [`PlaybackSpec::off_time`] 给定的淡化时长（`off_mode=time`）：
+    /// 实现属于引擎侧，本 crate 只报告契约。
     /// 与 [`PlaybackSpec::ignores_note_off`] 相互独立：后者为真时 note-off 不结束声部，
     /// 本谓词就无从谈起。
     #[must_use]
     pub fn cuts_at_note_off(&self) -> bool {
         self.off_mode.cuts_voice_immediately()
+    }
+
+    /// 生效的 `off_time`（秒）：源文件给出则原样返回，否则是规范缺省
+    /// [`crate::OFF_TIME_DEFAULT_SECONDS`]（0.006 s）。
+    ///
+    /// 只在 `off_mode=time` 的关断路径上有意义（见
+    /// <https://sfzformat.com/opcodes/off_time/>）。零分配，可在实时路径调用。
+    #[must_use]
+    pub fn effective_off_time(&self) -> f32 {
+        self.off_time.unwrap_or(crate::OFF_TIME_DEFAULT_SECONDS)
     }
 
     /// 是否不产生采样输出（`end=-1`，或显式区间为空）。
@@ -400,6 +417,7 @@ impl<'a> Region<'a> {
             pan: self.pan,
             trigger: self.trigger,
             off_mode: self.off_mode,
+            off_time: self.off_time,
             loop_mode: self.effective_loop_mode(),
             loop_window: self.loop_window(),
             offset: self.offset,
@@ -773,6 +791,7 @@ mod tests {
                             trigger_by_note: true,
                             trigger: Trigger::Attack,
                             off_mode: OffMode::Fast,
+                            off_time: None,
                             lovel: 0,
                             hivel: 127,
                             lochan: 1,
@@ -998,5 +1017,46 @@ mod tests {
         assert!(spec.ignores_note_off());
         assert_eq!(spec.off_mode, OffMode::Normal);
         assert!(!spec.cuts_at_note_off());
+    }
+
+    #[test]
+    fn playback_spec_carries_off_time_and_resolves_the_spec_default() {
+        // 缺省：`off_time` 原样是 `None`，生效值取规范缺省 0.006 秒
+        // （<https://sfzformat.com/opcodes/off_time/> 的 Default 列）。
+        let default =
+            parse_text("<region>sample=a.wav off_mode=time", &Default::default()).expect("parses");
+        let spec = default.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.off_time, None);
+        assert_eq!(spec.effective_off_time(), 0.006);
+
+        // 显式给出：原样带出，且与缺省值不同 —— 该字段不是恒等回退。
+        let explicit = parse_text(
+            "<region>sample=a.wav off_mode=time off_time=0.25",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = explicit.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.off_time, Some(0.25));
+        assert_eq!(spec.effective_off_time(), 0.25);
+        assert_ne!(spec.effective_off_time(), crate::OFF_TIME_DEFAULT_SECONDS);
+    }
+
+    #[test]
+    fn off_time_is_independent_of_the_steal_fade_constant() {
+        // 裁决留痕：`off_time` 是 per-region 的关断时长，[ARCH-RT-004] 的 3 ms 是
+        // 声部窃取淡出的工程常量。本条判据钉住"建模 `off_time` 不改写那个常量"。
+        let steal_millis = crate::STEAL_FADE_MILLIS;
+        let instrument = parse_text(
+            "<region>sample=a.wav off_mode=time off_time=0.05",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = instrument.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.effective_off_time(), 0.05);
+        assert_eq!(
+            crate::STEAL_FADE_MILLIS,
+            steal_millis,
+            "the region-level off_time must not rewrite the ARCH-RT-004 steal fade"
+        );
     }
 }
