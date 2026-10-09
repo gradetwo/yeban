@@ -3087,4 +3087,550 @@ mod tests {
             "one below max_channels must be refused"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // 本批新增判据的辅助：线上原始字节、压缩容器、第三族容器、前缀、不可回退源。
+    // -----------------------------------------------------------------------
+
+    /// 把 `fmt ` 的 `sampleRate`（块体 +4）与 `byteRate`（块体 +8）改写成给定的**线上**值。
+    ///
+    /// 存在理由：`testfix::WavSpec::byte_rate()` 用 `sample_rate * block_align` 算字节率，
+    /// 采样率接近 `u32::MAX` 时那次乘法**故意**在夹具里溢出（夹具的约定是"越界立刻炸"，
+    /// 见 `testfix::tests`）。因此"线上极大采样率"这类输入不能经 `WavSpec` 构造 ——
+    /// 只能先生成一份合法头，再改这两个字段。
+    fn patch_declared_rate(bytes: &mut [u8], rate: u32, byte_rate: u32) {
+        let body = fmt_body_offset(bytes).expect("the fixture must contain a fmt chunk");
+        bytes[body + 4..body + 8].copy_from_slice(&rate.to_le_bytes());
+        bytes[body + 8..body + 12].copy_from_slice(&byte_rate.to_le_bytes());
+    }
+
+    /// FLAC 夹具里元数据区的末尾偏移：`fLaC`(4) + 元数据块头(4) + `STREAMINFO`(34)。
+    ///
+    /// 从这一个偏移到文件末尾就是**帧区**。
+    const FLAC_METADATA_END: usize = 42;
+
+    /// `STREAMINFO` 的 16 字节 MD5（音频指纹）在文件内的起点。
+    ///
+    /// `STREAMINFO` 从文件偏移 8 开始：`min/max blocksize`(4 字节) + `min/max framesize`
+    /// (6 字节) + `sample_rate`(20 位) + `channels`(3 位) + `bits`(5 位) + `total_samples`
+    /// (36 位) 恰好 18 字节，因此 MD5 是文件偏移 26…42。
+    const FLAC_MD5_OFFSET: usize = 26;
+
+    /// 固定块大小、单声道、16 位的 FLAC 夹具（直流 1 000，每帧 256 帧）。
+    fn flac_fixture(frames: u16) -> Vec<u8> {
+        flac_constant(
+            &FlacSpec {
+                sample_rate: 8_000,
+                channels: 1,
+                bits: 16,
+                block_frames: 256,
+                total_samples_override: None,
+            },
+            frames,
+            1_000,
+        )
+    }
+
+    /// 判据（类别④ 数值极值 / [ARCH-SEC-003]）：采样率闸门在**解码入口**读的是容器线上
+    /// 声明的那个 `u32`，判定是闭区间，并且"大到 `u32::MAX`"的声明不会让任何一处算术回绕。
+    ///
+    /// 量什么：`decode_bytes` 对一串线上采样率取值的返回值，以及错误里回放的 `rate`/`limit`。
+    /// 怎么量：先生成合法的 8 kHz 单声道 WAV，再用 [`patch_declared_rate`] 把 `fmt ` 的
+    /// `sampleRate` 与 `byteRate` 改写成目标值。既有判据只在"素材 8 kHz 对预算 4 kHz"
+    /// 这一格上量过这道闸门（`the_channel_and_rate_gates_fire_on_their_own`），而闸门的
+    /// **上边界**、以及 `u32::MAX` 这个可达的畸形声明，在解码入口上没有判据。
+    ///
+    /// 读数（本机、debug 构建）：768 000 Hz（[`limits::DEFAULT_MAX_SAMPLE_RATE`]）解出
+    /// 2 帧、`sample_rate()` 就是 768 000；768 001、1 000 000、`u32::MAX - 1`、`u32::MAX`
+    /// 四个取值全部以 `SampleRateTooHigh { rate: <线上值>, limit: 768000 }` 拒绝 ——
+    /// 报的是**线上那个数**，不是任何折算值。
+    ///
+    /// 注入：把 `check_layout` 里 `sample_rate > budget.max_sample_rate` 改成 `>=` ⇒
+    /// 本条以"768 000 Hz 必须通过"红。
+    #[test]
+    fn the_sample_rate_gate_is_closed_at_the_documented_cap_on_the_wire() {
+        let cap = limits::DEFAULT_MAX_SAMPLE_RATE;
+        let values = [1_000i32, -1_000];
+
+        let mut at_cap = int_wav(1, 16, &values);
+        patch_declared_rate(&mut at_cap, cap, cap * 2);
+        let asset = decode_bytes(&at_cap, &DecodeOptions::default())
+            .expect("exactly the documented cap must pass the sample-rate gate");
+        assert_eq!(asset.sample_rate(), cap);
+        assert_eq!(asset.frame_count(), 2);
+
+        for over in [cap + 1, 1_000_000, u32::MAX - 1, u32::MAX] {
+            let mut bytes = int_wav(1, 16, &values);
+            patch_declared_rate(&mut bytes, over, over.wrapping_mul(2));
+            match decode_bytes(&bytes, &DecodeOptions::default()) {
+                Err(DecodeError::Budget(LimitViolation::SampleRateTooHigh { rate, limit })) => {
+                    assert_eq!(
+                        (rate, limit),
+                        (over, cap),
+                        "the gate must replay the wire-declared rate verbatim"
+                    );
+                }
+                other => panic!("{over} Hz must trip the sample-rate gate, got {other:?}"),
+            }
+        }
+    }
+
+    /// 判据（压缩容器的解压边界 / 任意字节不许 panic）：FLAC 的**帧区**是一段被校验和
+    /// 保护的字节；改一个字节就必须被拒，而且任何改动都不许 panic。
+    ///
+    /// 量什么：`decode_bytes` 在"合法 FLAC 的帧区被改写一个字节"上的结果分布
+    /// （被接受 / 被拒 / panic 三类）。panic 会让本判据直接失败，因此它是隐式计数。
+    /// 怎么量：元数据区是前 [`FLAC_METADATA_END`] 字节（`fLaC` + 块头 + `STREAMINFO`），
+    /// 其后到文件末尾是帧区。单帧夹具上逐偏移 × 全部 256 个取值（跳过原值）；三帧夹具上
+    /// 逐偏移 × 五个代表值（`0x00`/`0x01`/`0x7F`/`0x80`/`0xFF`，同样跳过原值）。
+    ///
+    /// 读数（本机、debug 构建）：单帧夹具 12 个帧区偏移 × 255 个非本值 = **3 060** 次改动，
+    /// 全部 `Err`、**0** 次被接受；三帧夹具 36 个偏移 × 5 个取值 = 180 次候选改动，其中
+    /// 14 次与**原值**相同被跳过，其余 **166** 次全部 `Err`。
+    /// 机制：上游按帧头 CRC-8 与帧 CRC-16 逐帧校验；校验不过的帧被 `decode_source` 的宽容
+    /// 分支跳过，于是帧数少于声明、[`crate::duration::reconcile`] 的对账失败而整份拒绝。
+    ///
+    /// 同一份夹具的**元数据区**不是这样（见下一条判据：16 字节 MD5 的 4 080 次改动全部被
+    /// 接受且摘要不变），因此本条的边界必须写成"帧区"，不能写成"整个容器"。
+    ///
+    /// 注入（实测）：把 `decode_source` 里 `if options.verify_declared_duration
+    /// { outcome.into_result()?; }` 改成不生效 ⇒ 本条**变红**。机制是把"声明帧数 ↔ 解出
+    /// 帧数"的对账拿掉之后，被上游 CRC 丢掉一帧的那份流会解出一份**帧数偏少**的资产而
+    /// 变成 `Ok`。因此本条同时钉住两件事：上游逐帧校验的强度，以及本 crate 的对账闸门是
+    /// 那种"少一帧也看不出来"的差异的唯一出口。
+    #[test]
+    fn a_one_byte_change_in_a_flac_frame_region_is_always_detected() {
+        let single = flac_fixture(1);
+        assert_eq!(
+            single.len(),
+            FLAC_METADATA_END + 12,
+            "one FLAC frame is 12 bytes here"
+        );
+        let base = decode_bytes(&single, &DecodeOptions::default()).unwrap();
+        assert_eq!(base.frame_count(), 256);
+        assert_eq!(base.declared_frames(), Some(256));
+
+        let mut cases = 0usize;
+        let mut accepted = 0usize;
+        for offset in FLAC_METADATA_END..single.len() {
+            for value in 0u16..=255 {
+                let value = u8::try_from(value).expect("a byte value fits u8");
+                if single[offset] == value {
+                    continue;
+                }
+                let mut mutated = single.clone();
+                mutated[offset] = value;
+                cases += 1;
+                if decode_bytes(&mutated, &DecodeOptions::default()).is_ok() {
+                    accepted += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 12 * 255);
+        assert_eq!(cases, 3_060);
+        assert_eq!(
+            accepted, 0,
+            "no single-byte change to a FLAC frame region may decode as audio"
+        );
+
+        let triple = flac_fixture(3);
+        assert_eq!(
+            triple.len(),
+            FLAC_METADATA_END + 36,
+            "three FLAC frames are 36 bytes"
+        );
+        assert_eq!(
+            decode_bytes(&triple, &DecodeOptions::default())
+                .unwrap()
+                .frame_count(),
+            768
+        );
+        let mut cases = 0usize;
+        let mut accepted = 0usize;
+        for offset in FLAC_METADATA_END..triple.len() {
+            for value in [0x00u8, 0x01, 0x7F, 0x80, 0xFF] {
+                if triple[offset] == value {
+                    continue;
+                }
+                let mut mutated = triple.clone();
+                mutated[offset] = value;
+                cases += 1;
+                if decode_bytes(&mutated, &DecodeOptions::default()).is_ok() {
+                    accepted += 1;
+                }
+            }
+        }
+        // 逐个取值里与原值相同的那些被跳过。本夹具实测 14 个：每个帧的同步码 `0xFF`、
+        // 帧头里的 `0x00` 与子帧类型 `0x00`（各 2 个/帧，共 12 个），加上帧 0 与帧 1 的
+        // 帧号字节恰好是 `0x00` 与 `0x01`（2 个）。
+        let skipped = (FLAC_METADATA_END..triple.len())
+            .filter(|&offset| matches!(triple[offset], 0x00 | 0x01 | 0x7F | 0x80 | 0xFF))
+            .count();
+        assert_eq!(skipped, 14);
+        assert_eq!(cases, 36 * 5 - skipped);
+        assert_eq!(cases, 166);
+        assert_eq!(accepted, 0);
+    }
+
+    /// 判据（压缩容器的元数据边界）：`STREAMINFO` 的 16 字节 MD5（音频指纹）由容器
+    /// **声明**，但解码路径不校验它 —— 拒绝决策只依赖帧 CRC 与"声明帧数 ↔ 解出帧数"的对账。
+    ///
+    /// 量什么：把 [`FLAC_MD5_OFFSET`] 起的 16 个字节逐个改成其余 255 个取值之后，
+    /// `decode_bytes` 的返回类别，以及与未改动输入的 `pcm_hash` 是否逐位相同。
+    /// 怎么量：三帧 FLAC 夹具；MD5 区间与帧区的分界由 [`FLAC_MD5_OFFSET`] 与
+    /// [`FLAC_METADATA_END`] 两个常量写死。
+    ///
+    /// 读数（本机、debug 构建）：16 × 255 = **4 080** 次改动**全部** `Ok`，并且全部与
+    /// 未改动输入的 `pcm_hash` **逐位相同**；同一份夹具的帧区改动 166 次全部 `Err`
+    /// （上一条判据）。两个极端的对照就是"这条容器级保证的边界在哪"。
+    ///
+    /// 把这条边界写下来，是为了让下面两种变化各自有一条判据可以红：升级后 MD5 开始被校验
+    /// （4 080 次 `Ok` 变成 `Err`），或者声明帧数被忽略（`Ok` 的摘要改变）。
+    ///
+    /// 这不是缺陷登记：把 MD5 拉进拒绝决策会改变错误分类（同一份音频会因为"指纹不符"
+    /// 而不是"帧数不符"被拒），那需要一次裁决。本 crate 的对账口径写在
+    /// [`crate::duration::reconcile`] 上。
+    #[test]
+    fn the_flac_streaminfo_fingerprint_is_declared_but_never_verified() {
+        let bytes = flac_fixture(3);
+        let base = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        assert_eq!(base.frame_count(), 768);
+        let base_hash = base.pcm_hash();
+
+        let mut cases = 0usize;
+        let mut same_hash = 0usize;
+        let mut other = 0usize;
+        for offset in FLAC_MD5_OFFSET..FLAC_METADATA_END {
+            for value in 0u16..=255 {
+                let value = u8::try_from(value).expect("a byte value fits u8");
+                if bytes[offset] == value {
+                    continue;
+                }
+                let mut mutated = bytes.clone();
+                mutated[offset] = value;
+                cases += 1;
+                match decode_bytes(&mutated, &DecodeOptions::default()) {
+                    Ok(asset) if asset.pcm_hash() == base_hash => same_hash += 1,
+                    _ => other += 1,
+                }
+            }
+        }
+        assert_eq!(cases, 16 * 255);
+        assert_eq!(cases, 4_080);
+        assert_eq!(
+            same_hash, cases,
+            "the declared MD5 must not take part in the decode decision"
+        );
+        assert_eq!(other, 0);
+    }
+
+    /// 判据（任意字节不许 panic / 第三族容器）：本 crate 启用了 Ogg 容器与 Vorbis 解码器，
+    /// 但此前没有任何 Ogg 的字节级判据（`channel_count_extremes_are_refused_...` 的文档
+    /// 自己登记了这条空白）。
+    ///
+    /// 量什么：两份 Ogg 形状的字节串，以及它们"改一个字节 × 五个代表值"的邻居，
+    /// `decode_bytes` 的结果分布（被拒 / 被接受 / panic）；panic 会让本判据直接失败。
+    /// 怎么量：第一份按 Ogg 页结构手工拼 —— 27 字节页头（`OggS` + 版本 + 头类型 +
+    /// 粒度位置 + 序列号 + 页序号 + CRC + 段数）+ 1 字节段表 + 30 字节体（一个 Vorbis
+    /// 标识包的开头），共 58 字节；第二份是 `OggS` 后跟 60 个 `0xFF`。两者各自逐偏移 ×
+    /// 五个代表值地改一个字节。
+    ///
+    /// 读数（本机、debug 构建）：两份种子本身都以带 `ogg` 标记的 `Malformed` 拒绝
+    /// （本机实测文案分别是 `ogg: crc mismatch` 与 `ogg: invalid ogg version`）；
+    /// 全部邻居改动共 **503** 次（58 与 64 个偏移 × 5 个取值 = 610 次候选，减去与原值相同的
+    /// 107 次），**0** 次被接受、0 次 panic。
+    ///
+    /// 覆盖边界（如实登记）：本条只覆盖"Ogg 形状的字节不许 panic"，**不**覆盖"串联 Ogg
+    /// 中途换声道布局"那条 [ARCH-DET-001] 路径 —— 走到它需要一份**合法**的多物理流 Ogg，
+    /// 本 crate 没有构造它的夹具。
+    #[test]
+    fn ogg_shaped_bytes_and_their_neighbours_are_errors_not_panics() {
+        let mut page = Vec::new();
+        page.extend_from_slice(b"OggS");
+        page.push(0); // stream_structure_version
+        page.push(0); // header_type
+        page.extend_from_slice(&[0u8; 8]); // granule position
+        page.extend_from_slice(&[0u8; 4]); // bitstream serial number
+        page.extend_from_slice(&[0u8; 4]); // page sequence number
+        page.extend_from_slice(&[0u8; 4]); // CRC
+        page.push(1); // page_segments
+        page.push(30); // segment table: one 30-byte packet
+        page.extend_from_slice(b"\x01vorbis");
+        page.extend_from_slice(&[0u8; 23]);
+        assert_eq!(page.len(), 58);
+
+        let mut flooded = Vec::from(*b"OggS");
+        flooded.extend_from_slice(&[0xFFu8; 60]);
+        assert_eq!(flooded.len(), 64);
+
+        for (label, seed) in [("page", &page), ("flood", &flooded)] {
+            let err = decode_bytes(seed, &DecodeOptions::default()).unwrap_err();
+            assert!(
+                err.to_string().contains("ogg"),
+                "{label}: an Ogg-shaped seed must be refused by the Ogg reader, got {err}"
+            );
+        }
+
+        let mut cases = 0usize;
+        let mut accepted = 0usize;
+        for seed in [&page, &flooded] {
+            for offset in 0..seed.len() {
+                for value in [0x00u8, 0x01, 0x7F, 0x80, 0xFF] {
+                    if seed[offset] == value {
+                        continue;
+                    }
+                    let mut mutated = seed.clone();
+                    mutated[offset] = value;
+                    cases += 1;
+                    if decode_bytes(&mutated, &DecodeOptions::default()).is_ok() {
+                        accepted += 1;
+                    }
+                }
+            }
+        }
+        let skipped: usize = [&page, &flooded]
+            .iter()
+            .map(|seed| {
+                seed.iter()
+                    .filter(|byte| matches!(byte, 0x00 | 0x01 | 0x7F | 0x80 | 0xFF))
+                    .count()
+            })
+            .sum();
+        assert_eq!(skipped, 107);
+        assert_eq!(cases, (page.len() + flooded.len()) * 5 - skipped);
+        assert_eq!(cases, 503);
+        assert_eq!(accepted, 0);
+    }
+
+    /// 判据（长度闸门 / 任意字节不许 panic）：一份能解出的容器的**每一个真前缀**都必须被拒，
+    /// 只有整份才允许解出。
+    ///
+    /// 量什么：对每个字节长度 `cut ∈ [0, len)` 调用 `decode_bytes(&bytes[..cut])` 的结果
+    /// 类别；以及整份输入解出的帧数。panic 会让本判据直接失败。
+    /// 怎么量：三份夹具 —— WAV（44 字节头 + 4 个 16-bit 样本 = 52 字节）、单帧 FLAC
+    /// （54 字节）、三帧 FLAC（78 字节）。
+    ///
+    /// 读数（本机、debug 构建）：52 + 54 + 78 = **184** 个真前缀全部 `Err`、0 次 panic；
+    /// 三份整份输入分别解出 4 / 256 / 768 帧。
+    /// 既有判据 `truncated_wav_is_an_error_not_a_panic` 只取 7 个固定的 WAV 截断点，
+    /// 且不覆盖 FLAC；"每一个前缀"是全量读法，因此它能抓到"某个中间长度恰好解成一份短
+    /// 资产"这类只在特定偏移暴露的缺陷。
+    ///
+    /// 注入（实测）：让 `decode_source` 里 `if options.verify_declared_duration
+    /// { outcome.into_result()?; }` 不生效 ⇒ 两个 FLAC 夹具在**整帧边界**上的前缀会解出
+    /// 比声明少的帧而变成 `Ok`，本条以
+    /// `one-frame FLAC: the 54-byte prefix of a 54-byte container must not decode` 一类文案红。
+    #[test]
+    fn every_proper_prefix_of_a_decodable_container_is_refused() {
+        let cases: [(&str, Vec<u8>, u64); 3] = [
+            ("WAV", int_wav(1, 16, &[1_000, -1_000, 2_000, -2_000]), 4),
+            ("one-frame FLAC", flac_fixture(1), 256),
+            ("three-frame FLAC", flac_fixture(3), 768),
+        ];
+        let mut refused = 0usize;
+        for (label, bytes, frames) in cases {
+            for cut in 0..bytes.len() {
+                let outcome = decode_bytes(&bytes[..cut], &DecodeOptions::default());
+                assert!(
+                    outcome.is_err(),
+                    "{label}: the {cut}-byte prefix of a {}-byte container must not decode, \
+                     got {outcome:?}",
+                    bytes.len()
+                );
+                refused += 1;
+            }
+            let full = decode_bytes(&bytes, &DecodeOptions::default()).unwrap_or_else(|err| {
+                panic!("{label}: the whole container must decode, got {err}")
+            });
+            assert_eq!(full.frame_count(), frames, "{label}: frame count");
+        }
+        assert_eq!(refused, 52 + 54 + 78);
+        assert_eq!(refused, 184);
+    }
+
+    /// 一个**不可回退**的源：前 `interrupts` 次 `read` 返回
+    /// [`std::io::ErrorKind::Interrupted`]，之后转为正常读取；`seek` 一律失败。
+    ///
+    /// 存在理由：[`slurp_unseekable`] 有一条 `Err(err) if err.kind() == Interrupted => {}`
+    /// 的重试分支，此前**零判据**。真实来源是带 `EINTR` 的读取路径（std 对 `File` 自己会
+    /// 重试，但 `MediaSource` 是 trait 对象，调用方的实现可以把 `EINTR` 原样交上来）。
+    struct InterruptingSource {
+        inner: Cursor<Vec<u8>>,
+        interrupts: u32,
+    }
+
+    impl InterruptingSource {
+        fn new(bytes: Vec<u8>, interrupts: u32) -> Self {
+            Self {
+                inner: Cursor::new(bytes),
+                interrupts,
+            }
+        }
+    }
+
+    impl Read for InterruptingSource {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.interrupts > 0 {
+                self.interrupts -= 1;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "interrupted by a signal",
+                ));
+            }
+            self.inner.read(buf)
+        }
+    }
+
+    impl Seek for InterruptingSource {
+        fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this source cannot seek",
+            ))
+        }
+    }
+
+    impl MediaSource for InterruptingSource {
+        fn is_seekable(&self) -> bool {
+            false
+        }
+
+        fn byte_len(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    /// 判据（闸门可达性 / 不可信输入零 panic）：`slurp_unseekable` 的 `Interrupted`
+    /// 重试分支**可达**，而且重试之后解出的资产与内存入口**逐位相同**。
+    ///
+    /// 量什么：一个"前 N 次 `read` 报 `Interrupted`、之后正常"的不可回退源经
+    /// `decode_source` 的返回值、帧数与 `pcm_hash`。
+    /// 怎么量：N ∈ {1, 3, 64}，输入是一份合法的 2 声道 16-bit WAV。
+    ///
+    /// 读数（本机、debug 构建）：三档 N 全部解出，帧数与 `pcm_hash` 与 `decode_bytes` 的
+    /// 结果逐位相同。
+    ///
+    /// 注入（实测）：把 `slurp_unseekable` 的
+    /// `Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}` 那一行删掉 ⇒
+    /// 本条以 `the Interrupted arm must be retried, got io error: interrupted by a signal` 红。
+    ///
+    /// 覆盖边界（如实登记，待裁决）：本条只证明这个重试分支**存在且可达**，不证明它有界 ——
+    /// 一个永远报 `Interrupted` 的源会让这个循环不返回。要判"有界"必须在判据里放一个墙钟
+    /// 超时（违反"判据不得依赖墙钟速度"），或者给这个循环加一个重试上限（产线改动，不在
+    /// 本批判据的范围）。因此这一格登记为待裁决，不写成"已覆盖"。
+    #[test]
+    fn an_unseekable_source_that_reports_interrupted_is_retried_not_failed() {
+        let legal = int_wav(2, 16, &[1, -2, 3, -4, 5, -6, 7, -8]);
+        let direct = decode_bytes(&legal, &DecodeOptions::default()).unwrap();
+        for interrupts in [1u32, 3, 64] {
+            let asset = decode_source(
+                Box::new(InterruptingSource::new(legal.clone(), interrupts)),
+                &Hint::new(),
+                &DecodeOptions::default(),
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "the Interrupted arm must be retried, got {err} after {interrupts} interrupts"
+                )
+            });
+            assert_eq!(asset.frame_count(), direct.frame_count());
+            assert_eq!(asset.pcm_hash(), direct.pcm_hash());
+        }
+    }
+
+    /// 判据（预检的可回退性）：[`precheck_riff_wave_fmt`] 必须在返回前把游标还给调用方给
+    /// 它的那个位置 —— 它先读 12 字节 RIFF 头、再扫块网格，最后必须原样还回去。
+    ///
+    /// 量什么：`Cursor<&[u8]>::position()` 在预检前后是否相同（单位：字节偏移）。
+    /// 怎么量：直接调用私有的 [`precheck_riff_wave_fmt`]（本模块的判据可以访问它），
+    /// 输入取四类 —— 带 `fmt ` 的合法 WAV、`fmt ` 前面有 `JUNK` 块的布局、不是 RIFF 的
+    /// 垃圾、空输入；四格都把起点设在 **3**，用来钉住"还原到 `start`"而不是"还原到 0"。
+    ///
+    /// 读数（本机、debug 构建）：四格全部 `position() == 3`。
+    ///
+    /// 为什么需要它：本批注入实测把 `precheck_riff_wave_fmt` 末尾的
+    /// `source.seek(SeekFrom::Start(start))?;` 整行删掉之后，**全部 160 条判据照旧通过**
+    /// （上游的 `probe` 自己会 seek 回起点，因此从解码结果上看不出差别）。也就是说这条
+    /// "位置复原"契约此前没有判据。
+    ///
+    /// 注入（实测）：删掉那一行 ⇒ 本条以
+    /// `a WAV with a fmt chunk: the precheck must leave the cursor where it found it` 红。
+    #[test]
+    fn the_riff_precheck_restores_the_source_position() {
+        let junk = wav_with_chunks_before_fmt(
+            &int_spec(1, 16),
+            &[(*b"JUNK", &[0xEEu8; 4])],
+            &encode_int_samples(16, &[0x1234, -0x1234]),
+        );
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("a WAV with a fmt chunk", int_wav(1, 16, &[0x1234, -0x1234])),
+            ("a WAV whose fmt sits behind a JUNK chunk", junk),
+            (
+                "bytes that are not RIFF at all",
+                b"not a riff file at all".to_vec(),
+            ),
+            ("an empty input", Vec::new()),
+        ];
+        for (label, bytes) in cases {
+            // 起点不是 0：预检必须还原到 `start`，不是还原到 0。
+            let mut cursor = Cursor::new(bytes);
+            cursor.set_position(3);
+            precheck_riff_wave_fmt(&mut cursor).expect("the precheck must return Ok here");
+            assert_eq!(
+                cursor.position(),
+                3,
+                "{label}: the precheck must leave the cursor where it found it"
+            );
+        }
+    }
+
+    /// 判据（块扫描预算 / 流式 WAV）：`riff_len == u32::MAX`（上游语义是"长度未知"）时父块
+    /// **没有**上界，因此块扫描的唯一上界是 [`RIFF_PRECHECK_MAX_CHUNKS`] —— 超过就必须保守
+    /// 拒绝。
+    ///
+    /// 量什么：把 RIFF 长度字段改写成 `u32::MAX` 之后，`fmt ` 之前的零长度块数 `N` 与
+    /// [`RIFF_PRECHECK_MAX_CHUNKS`] 相等 / 少一时的 `decode_bytes` 结果。
+    /// 怎么量：`wav_with_chunks_before_fmt` 生成合法的 `fmt ` + `data`，前面插 `N` 个零长度
+    /// `JUNK` 块，再把偏移 4…8 的 RIFF 长度改成 `u32::MAX`。
+    ///
+    /// 读数（本机、debug 构建）：N = 4 096 时以 `Malformed`（文案含 `before its fmt chunk`）
+    /// 拒绝；N = 4 095 时解出 2 帧。既有判据
+    /// `a_wave_with_more_chunks_than_the_scan_budget_is_refused_not_probed` 用的是**有限**的
+    /// RIFF 长度，因此"父块无上界"这一格此前没有判据 —— 而它正是扫描预算唯一还在生效的
+    /// 一格：有限长度下 `consumed >= limit` 会先结束扫描。
+    ///
+    /// 注入（实测）：把 `RIFF_PRECHECK_MAX_CHUNKS` 由 4 096 改成 8 192 ⇒ N = 4 096 的那一格
+    /// 会被扫到 `fmt ` 并放行给上游，上游能正常解析这份文件，本条以
+    /// `the scan budget must fail closed on a streaming WAV` 红。
+    #[test]
+    fn a_streaming_wav_obeys_the_scan_budget_because_its_parent_has_no_limit() {
+        let spec = int_spec(1, 16);
+        let data = encode_int_samples(16, &[0x1234, -0x1234]);
+        let zero: &[u8] = &[];
+        // 常量本身必须被钉住：只比较"常量与常量减一"的话，判据会跟着常量一起挪，
+        // 改常量**不会**变红（本批注入实测：4 096 -> 8 192 时那一对比较全绿）。
+        assert_eq!(RIFF_PRECHECK_MAX_CHUNKS, 4_096);
+        let cap = RIFF_PRECHECK_MAX_CHUNKS as usize;
+        assert_eq!(cap, 4_096);
+
+        let at_cap = vec![(*b"JUNK", zero); 4_096];
+        let mut bytes = wav_with_chunks_before_fmt(&spec, &at_cap, &data);
+        bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        let err = decode_bytes(&bytes, &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("before its fmt chunk")),
+            "the scan budget must fail closed on a streaming WAV, got {err}"
+        );
+
+        // 预算减一 ⇒ 仍然看得见 `fmt ` 并照常解出（证明上面红的是预算，不是夹具坏了）。
+        let under_cap = vec![(*b"JUNK", zero); 4_095];
+        let mut bytes = wav_with_chunks_before_fmt(&spec, &under_cap, &data);
+        bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            decode_bytes(&bytes, &DecodeOptions::default())
+                .expect("one chunk below the scan budget is a legal streaming WAV")
+                .frame_count(),
+            2
+        );
+    }
 }

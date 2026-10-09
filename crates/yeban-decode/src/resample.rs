@@ -1983,4 +1983,147 @@ mod tests {
         // 对照：正常素材的放大是 1.0× 量级。
         assert_eq!(long_ppm / 1_000_000, 1);
     }
+
+    /// 判据（类别② 比率极值 / 六道闸门在两条**恒等**路径上的一致性）：`out_rate ==
+    /// in_rate` 时，样本级入口与资产级入口在前五道闸门上给出逐字相同的拒绝，在**第六道**
+    /// （比例）上给出相反结论。
+    ///
+    /// 量什么：同一份资产、同一个预算下，[`resample_interleaved_with_budget`] 与
+    /// [`resample_asset_with_budget`] 的返回值（以及 `DecodeError` 的呈现文本）。
+    /// 怎么量：逐道把某一道闸门收紧到必拒（PCM 字节 / 声道数 / 采样率 / 时长），比较两个
+    /// 入口的 [`LimitViolation`] 变体与呈现文本；再单独把 `max_resample_ratio` 设成 0 与 1。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 收紧的那道闸门 | 样本级入口 | 资产级入口 |
+    /// | :--- | :--- | :--- |
+    /// | `max_pcm_bytes = 1` | `PcmBudgetExceeded` | `PcmBudgetExceeded`（文本逐字相同） |
+    /// | `max_channels = 1` | `TooManyChannels` | `TooManyChannels`（文本逐字相同） |
+    /// | `max_sample_rate = 1` | `SampleRateTooHigh` | `SampleRateTooHigh`（文本逐字相同） |
+    /// | `max_duration_secs = 0` | `DurationTooLong` | `DurationTooLong`（文本逐字相同） |
+    /// | `max_resample_ratio = 0` | `ResampleRatioTooHigh` | **`Ok`（原资产）** |
+    /// | `max_resample_ratio = 1` | `Ok` | `Ok` |
+    ///
+    /// 机制：`resample_interleaved_with_budget` 的第六道闸门排在**恒等分支之前**，因此它
+    /// 连"输出率 == 输入率"（比例 1.0）这一对也按闭区间判定；而
+    /// `resample_asset_with_budget` 的恒等分支在调用它之前就 `asset.clone()` 返回，于是
+    /// 第六道闸门在资产级恒等路径上**从不运行**。其余五道闸门两条路径都走
+    /// [`limits::check_layout`]，因此逐字一致。
+    ///
+    /// 这一格是**待裁决**的判据材料，与 `the_asset_identity_path_still_obeys_the_budget`
+    /// 属同一族（同一条闸门在两个入口上位置不同 —— 那一族已经因为 PCM 字节闸门被修过一次）。
+    /// 两个方向都有依据：资产级也判第六道 ⇒ `max_resample_ratio = 0` 在两个入口都拒绝；
+    /// 把样本级比例闸门移到恒等分支之后 ⇒ 按本模块文档"比例是重采样工作集的唯一放大来源"
+    /// 行事，恒等对（根本没有 `rubato` 参与）在两边都放行。本条只钉当前可观测事实，并且
+    /// **双向**钉住（两个入口的读数都写进断言），不替任何一方下结论。
+    ///
+    /// 注入（实测）：删掉 `resample_interleaved_with_budget` 里的
+    /// `limits::check_resample_ratio(in_rate, out_rate, budget)?;` ⇒ 本条与既有的
+    /// `an_over_the_cap_sample_rate_ratio_is_refused_before_any_resampling` 一起红。
+    #[test]
+    fn the_two_identity_paths_agree_on_five_gates_and_diverge_on_the_sixth() {
+        let bytes = wav_f32(4, 2, 48_000, 0.5);
+        let asset = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        assert_eq!(asset.frame_count(), 4);
+        assert_eq!(asset.channels(), 2);
+        let samples = asset.samples();
+        let channels = asset.channels();
+        let rate = asset.sample_rate();
+
+        // 前五道闸门：两个入口必须给出同一个变体，而且呈现文本逐字相同。
+        let cases: [(&str, PcmBudget); 4] = [
+            (
+                "max_pcm_bytes",
+                PcmBudget {
+                    max_pcm_bytes: 1,
+                    ..PcmBudget::default()
+                },
+            ),
+            (
+                "max_channels",
+                PcmBudget {
+                    max_channels: 1,
+                    ..PcmBudget::default()
+                },
+            ),
+            (
+                "max_sample_rate",
+                PcmBudget {
+                    max_sample_rate: 1,
+                    ..PcmBudget::default()
+                },
+            ),
+            (
+                "max_duration_secs",
+                PcmBudget {
+                    max_duration_secs: 0,
+                    ..PcmBudget::default()
+                },
+            ),
+        ];
+        for (what, budget) in cases {
+            let interleaved =
+                resample_interleaved_with_budget(samples, channels, rate, rate, &budget)
+                    .expect_err("the tightened gate must refuse the sample-level identity path");
+            let asset_level = resample_asset_with_budget(&asset, rate, &budget)
+                .expect_err("the tightened gate must refuse the asset-level identity path");
+            // `DecodeError` 不实现 `PartialEq`（它包裹 `std::io::Error`），因此用
+            // `Debug` 的规范呈现比较"变体 + 字段"，再用 `Display` 比较用户可见文本。
+            assert_eq!(
+                format!("{interleaved:?}"),
+                format!("{asset_level:?}"),
+                "{what}: the two identity paths must report the same violation"
+            );
+            assert_eq!(
+                interleaved.to_string(),
+                asset_level.to_string(),
+                "{what}: the two identity paths must render the same text"
+            );
+        }
+
+        // 第六道闸门：两条路径**不**一致。闭区间语义（`out == in × 上限` 通过）在两处都
+        // 成立，但基准不同：样本级以比例 1.0 去比上限，资产级根本不比。
+        let zero_cap = PcmBudget {
+            max_resample_ratio: 0,
+            ..PcmBudget::default()
+        };
+        match resample_interleaved_with_budget(samples, channels, rate, rate, &zero_cap) {
+            Err(DecodeError::Budget(LimitViolation::ResampleRatioTooHigh {
+                in_rate,
+                out_rate,
+                limit,
+            })) => {
+                assert_eq!((in_rate, out_rate, limit), (rate, rate, 0));
+            }
+            other => panic!(
+                "the sample-level identity path judges the sixth gate, so a 0x cap must refuse \
+                 it, got {other:?}"
+            ),
+        }
+        let kept = resample_asset_with_budget(&asset, rate, &zero_cap).expect(
+            "KNOWN DIVERGENCE: the asset-level identity path short-circuits before the sixth \
+             gate, so it returns the original asset; see this criterion's doc for the \
+             pending adjudication",
+        );
+        assert_eq!(kept.frame_count(), asset.frame_count());
+        assert_eq!(kept.pcm_hash(), asset.pcm_hash());
+
+        // 上限恰好 1 时两条路径都放行（比例 1.0 落在闭区间内）。
+        let unit_cap = PcmBudget {
+            max_resample_ratio: 1,
+            ..PcmBudget::default()
+        };
+        assert_eq!(
+            resample_interleaved_with_budget(samples, channels, rate, rate, &unit_cap)
+                .expect("ratio 1.0 is inside a 1x cap")
+                .len(),
+            samples.len()
+        );
+        assert_eq!(
+            resample_asset_with_budget(&asset, rate, &unit_cap)
+                .expect("ratio 1.0 is inside a 1x cap")
+                .frame_count(),
+            asset.frame_count()
+        );
+    }
 }

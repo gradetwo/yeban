@@ -1803,4 +1803,82 @@ mod tests {
             })
         );
     }
+
+    /// 判据（类别④ 数值参数与预算推导）：[`PcmBudget::for_layout`] 的**比例**字段是一个
+    /// 与它自己的采样率包络无关的常量，因此"该构造函数返回的预算恰好容纳这个布局"这句话
+    /// **不覆盖采样率对**。
+    ///
+    /// 量什么：`for_layout(1, 768 000, 1)` 返回的预算上，[`check_resample_ratio`] 对采样率
+    /// 对的判定；顺带钉住同一预算的采样率闸门对这两端都放行。
+    /// 怎么量：`for_layout` 把 `max_sample_rate` 设成要求值 768 000，因此 1 Hz 与 768 kHz
+    /// 两端各自都过采样率闸门；再看比例闸门。闭区间用"恰好等于上限"的那一对复算。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 采样率对 | 比例 | `for_layout(1, 768 000, 1)` 的结论 |
+    /// | :--- | :--- | :--- |
+    /// | 768 Hz → 768 kHz | 1 000（恰好等于上限） | `Ok` |
+    /// | 767 Hz → 768 kHz | 1 001.3 | `ResampleRatioTooHigh` |
+    /// | 1 Hz → 768 kHz | 768 000 | `ResampleRatioTooHigh` |
+    ///
+    /// 结论：`for_layout` 的 `max_resample_ratio` **恒为** [`DEFAULT_MAX_RESAMPLE_RATIO`]，
+    /// 与 `seconds` / `sample_rate` / `channels` 三个要求无关。既有的
+    /// `the_default_resample_ratio_cap_admits_every_standard_audio_rate_pair` 在**默认预算**
+    /// 上问过同一个问题（结论：标准音频速率对全通过）；本条把同一条问题在 `for_layout`
+    /// 上问一遍，结论相反 —— 因为默认预算的采样率上限（768 kHz）远宽于它的比例上限所覆盖
+    /// 的下限（768 Hz），而 `for_layout` 的采样率上限是**要求值**，可以低到 1 Hz。
+    ///
+    /// 这一格是**待裁决**的判据材料：要么 `for_layout` 按它自己的 `sample_rate` 推导比例
+    /// 上限（使"包络内任意采样率对都能转换"成立），要么在它的文档里写明"比例上限与会话
+    /// 要求无关，恒为 1 000×"。本条只钉当前可观测事实，不替任何一方下结论。
+    ///
+    /// 注入（实测）：把 `for_layout` 里的 `max_resample_ratio: DEFAULT_MAX_RESAMPLE_RATIO`
+    /// 改成 `u64::MAX` ⇒ 本条以"767 Hz → 768 kHz 必须被拒"红。
+    #[test]
+    fn for_layout_pins_a_ratio_cap_that_is_narrower_than_its_own_rate_envelope() {
+        let budget = PcmBudget::for_layout(1, DEFAULT_MAX_SAMPLE_RATE, 1)
+            .expect("1 s of 768 kHz mono is a representable layout");
+        // 该构造函数的采样率上限就是要求值：包络的两端都在闸门内。
+        assert_eq!(budget.max_sample_rate, DEFAULT_MAX_SAMPLE_RATE);
+        assert_eq!(budget.max_resample_ratio, DEFAULT_MAX_RESAMPLE_RATIO);
+        assert_eq!(check_layout(1, 1, 1, &budget), Ok(()));
+        assert_eq!(check_layout(1, DEFAULT_MAX_SAMPLE_RATE, 1, &budget), Ok(()));
+
+        // 闭区间：恰好等于上限的一对通过，越界一档即拒，且报的数就是调用方给的那两个。
+        // 比例上限是 `u64`，采样率是 `u32`，因此这里显式折算一次（上限本身就小于 u32 量程）。
+        let cap = u32::try_from(DEFAULT_MAX_RESAMPLE_RATIO).expect("the cap fits in u32");
+        let at_cap = DEFAULT_MAX_SAMPLE_RATE / cap;
+        assert_eq!(
+            at_cap * cap,
+            DEFAULT_MAX_SAMPLE_RATE,
+            "the cap must divide evenly here"
+        );
+        assert_eq!(
+            check_resample_ratio(at_cap, DEFAULT_MAX_SAMPLE_RATE, &budget),
+            Ok(())
+        );
+        assert_eq!(
+            check_resample_ratio(at_cap - 1, DEFAULT_MAX_SAMPLE_RATE, &budget),
+            Err(LimitViolation::ResampleRatioTooHigh {
+                in_rate: at_cap - 1,
+                out_rate: DEFAULT_MAX_SAMPLE_RATE,
+                limit: DEFAULT_MAX_RESAMPLE_RATIO,
+            })
+        );
+
+        // 包络的两端互转：两道闸门都放行这两个采样率，只有比例闸门拒绝。
+        assert_eq!(
+            check_resample_ratio(1, DEFAULT_MAX_SAMPLE_RATE, &budget),
+            Err(LimitViolation::ResampleRatioTooHigh {
+                in_rate: 1,
+                out_rate: DEFAULT_MAX_SAMPLE_RATE,
+                limit: DEFAULT_MAX_RESAMPLE_RATIO,
+            })
+        );
+        // 下采样方向（比例 < 1）不受约束 —— 这一格与默认预算一致。
+        assert_eq!(
+            check_resample_ratio(DEFAULT_MAX_SAMPLE_RATE, 1, &budget),
+            Ok(())
+        );
+    }
 }
