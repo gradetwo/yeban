@@ -1664,4 +1664,120 @@ mod tests {
             assert!(frame.iter().all(|&s| s == 0.125), "四个声道必须一致");
         }
     }
+
+    /// 逐帧变化的样本源: 每一帧的**所有声道**写入同一个值（值由帧号决定）。
+    ///
+    /// 与 [`ConstantSource`] 的区别是"同一信号喂给每一路"这件事在**逐帧**上被验证 ——
+    /// 常量源下"四路一致"也可能只是"源恰好填了同一个常数"。
+    struct FrameRamp;
+
+    impl AudioSource for FrameRamp {
+        fn render_block(
+            &mut self,
+            context: BlockContext,
+            out: &mut [f32],
+        ) -> Result<(), RenderError> {
+            for (frame, slot) in out.chunks_mut(context.channels).enumerate() {
+                let value = (context.first_frame as usize + frame) as f32 * 0.125 - 1.0;
+                slot.fill(value);
+            }
+            Ok(())
+        }
+    }
+
+    /// 只写**第 0 声道**的样本源: "单声道信号喂进一个立体声节点"在交错缓冲里的形状。
+    ///
+    /// 它**故意**不碰其余声道 —— [`AudioSource::render_block`] 的契约是"`out` 在调用前
+    /// 已被清零", 这条判据就是那条契约的可执行形式。
+    struct FirstChannelOnly(f32);
+
+    impl AudioSource for FirstChannelOnly {
+        fn render_block(
+            &mut self,
+            context: BlockContext,
+            out: &mut [f32],
+        ) -> Result<(), RenderError> {
+            for slot in out.chunks_mut(context.channels) {
+                slot[0] = self.0;
+            }
+            Ok(())
+        }
+    }
+
+    /// 判据 (**类别 6: 多声道一致性**): 同一个信号喂给左右两路 ⇒ 两路输出**逐位相同**。
+    ///
+    /// 信号是**逐帧变化的**（[`FrameRamp`]）, 因此这条判据不只是"常数在四路上相等";
+    /// 比较用位型而不是数值 —— `+0.0` 与 `-0.0` 在数值上相等, 在位级判据下才现形。
+    #[test]
+    fn both_channels_carry_the_same_signal_bit_for_bit() {
+        let (routing, master, sources) = star_graph(1);
+        let options = RenderOptions::l1(16, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let output = plan
+            .execute(BTreeMap::from([(
+                sources[0],
+                Box::new(FrameRamp) as Box<dyn AudioSource>,
+            )]))
+            .expect("渲染");
+
+        assert_eq!(output.samples.len(), 16 * 2);
+        let mut values = Vec::new();
+        for (index, frame) in output.samples.chunks(2).enumerate() {
+            assert_eq!(
+                frame[0].to_bits(),
+                frame[1].to_bits(),
+                "第 {index} 帧的左右两路位型不同: {} vs {}",
+                frame[0],
+                frame[1]
+            );
+            values.push(frame[0]);
+        }
+        // 敏感度自证: 这条判据不是"每一帧都相同"的空判据 —— 帧与帧之间必须不同。
+        assert!(
+            values
+                .windows(2)
+                .any(|pair| pair[0].to_bits() != pair[1].to_bits()),
+            "信号在逐帧上是常数 ⇒ 本判据测不到声道错位"
+        );
+    }
+
+    /// 判据 (**类别 6: 单声道信号喂立体声器件**): 一个只写第 0 声道的源
+    /// **不得**把它的值漏进第 1 声道, 也**不得**让第 1 声道读到上一轮执行留在缓冲里的样本。
+    ///
+    /// 第 1 声道必须是 `+0.0`（位型 `0x0000_0000`）, 不是"数值上等于 0"的 `-0.0`。
+    /// 两段都用同一个计划: 第一段把两个声道都填上 `0.25`（把缓冲弄"脏"）,
+    /// 第二段只写第 0 声道 —— 因此这条判据同时是"执行之间不留残留"的落点。
+    #[test]
+    fn a_mono_source_does_not_leak_into_the_other_channel() {
+        let (routing, master, sources) = star_graph(1);
+        let options = RenderOptions::l1(16, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+
+        let filled = plan
+            .execute(BTreeMap::from([(
+                sources[0],
+                Box::new(ConstantSource(0.25)) as Box<dyn AudioSource>,
+            )]))
+            .expect("第一段渲染");
+        assert!(
+            filled.samples.iter().all(|&sample| sample == 0.25),
+            "第一段必须把两个声道都填上 0.25, 否则本判据测不到残留"
+        );
+
+        let mono = plan
+            .execute(BTreeMap::from([(
+                sources[0],
+                Box::new(FirstChannelOnly(0.5)) as Box<dyn AudioSource>,
+            )]))
+            .expect("第二段渲染");
+        assert_eq!(mono.samples.len(), 16 * 2);
+        for (index, frame) in mono.samples.chunks(2).enumerate() {
+            assert_eq!(frame[0], 0.5, "第 {index} 帧的第 0 声道");
+            assert_eq!(
+                frame[1].to_bits(),
+                0.0f32.to_bits(),
+                "第 {index} 帧的第 1 声道必须是 +0.0（不得是上一段的 0.25, 也不得是 -0.0）"
+            );
+        }
+    }
 }

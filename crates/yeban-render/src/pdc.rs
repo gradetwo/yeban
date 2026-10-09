@@ -919,4 +919,95 @@ mod tests {
         );
         assert!(!reused.is_bypass(), "复位不得把延迟量改掉 (只动缓冲与游标)");
     }
+
+    /// 判据 (**类别 5: 幂等性**): 连续复位多次与复位一次**逐位等价**。
+    ///
+    /// `reset` 只是"环清零 + 游标归零", 因此它天然应该幂等; 这条判据是那段推理的
+    /// 可执行形式。它同时钉住"复位不改配置": 延迟量与声道数在复位前后必须一样 ——
+    /// 一个把 `delay_frames` 也顺手清掉的实现会让这条判据红（那会把延迟线变成旁路）。
+    #[test]
+    fn resetting_twice_is_the_same_as_resetting_once() {
+        let signal = [1.0f32, -2.0, 3.0, -4.0, 5.0, -6.0];
+
+        let mut once = DelayLine::new(3, 2);
+        let mut warm_up = [0.0f32; 6];
+        once.process(&signal, &mut warm_up);
+        once.reset();
+        let mut once_out = [f32::MAX; 6];
+        once.process(&signal, &mut once_out);
+
+        let mut thrice = DelayLine::new(3, 2);
+        let mut warm_up = [0.0f32; 6];
+        thrice.process(&signal, &mut warm_up);
+        thrice.reset();
+        thrice.reset();
+        thrice.reset();
+        let mut thrice_out = [f32::MAX; 6];
+        thrice.process(&signal, &mut thrice_out);
+
+        assert_eq!(
+            thrice_out.map(f32::to_bits),
+            once_out.map(f32::to_bits),
+            "复位三次必须与复位一次逐位一致"
+        );
+        assert_eq!(thrice.delay_frames(), once.delay_frames());
+        assert_eq!(thrice.channels(), once.channels());
+        assert!(
+            !thrice.is_bypass(),
+            "复位不得把延迟量清成 0（那会静默变成旁路）"
+        );
+
+        // 敏感度自证: 这一段"先喂一次"的信号真的在环里留下了东西 ——
+        // 不复位的第二次处理必须给出不同的位型。
+        let mut stale = DelayLine::new(3, 2);
+        let mut warm_up = [0.0f32; 6];
+        stale.process(&signal, &mut warm_up);
+        let mut stale_out = [f32::MAX; 6];
+        stale.process(&signal, &mut stale_out);
+        assert_ne!(
+            stale_out.map(f32::to_bits),
+            once_out.map(f32::to_bits),
+            "不复位与复位一样 ⇒ 本判据没有区分力"
+        );
+    }
+
+    /// 判据 (**类别 6: 单声道信号喂立体声器件**): 一路有信号、另一路恒 0 时,
+    /// 静音的那一路必须**逐位**留在 `+0.0`, 有信号的那一路必须与它单独跑一遍**逐位相同**。
+    ///
+    /// 这一格与既有的 `delay_line_keeps_channels_separate` 不同: 那条喂的是 `[x, −x]`
+    /// （两路都非零, 只能发现"两路被写成了同一个值"）; 本条喂的是 `[x, 0]`,
+    /// 因此它能发现**串台**（静音路读到邻路的样本）与**符号零**（`-0.0` 在数值比较下
+    /// 与 `0.0` 相等, 只在位级判据下现形）。
+    #[test]
+    fn a_silent_channel_stays_bit_zero_and_does_not_borrow_its_neighbour() {
+        let mono: Vec<f32> = (0..8).map(|i| i as f32 * 0.5 - 2.0).collect();
+
+        let mut line = DelayLine::new(2, 2);
+        let interleaved: Vec<f32> = mono.iter().flat_map(|&value| [value, 0.0]).collect();
+        let mut out = vec![f32::MAX; interleaved.len()];
+        line.process(&interleaved, &mut out);
+
+        let mut solo = DelayLine::new(2, 1);
+        let mut solo_out = vec![f32::MAX; mono.len()];
+        solo.process(&mono, &mut solo_out);
+
+        for (index, frame) in out.chunks(2).enumerate() {
+            assert_eq!(
+                frame[1].to_bits(),
+                0.0f32.to_bits(),
+                "第 {index} 帧的静音声道必须是 +0.0, 实际 {}",
+                frame[1]
+            );
+            assert_eq!(
+                frame[0].to_bits(),
+                solo_out[index].to_bits(),
+                "第 {index} 帧的有信号声道必须与单声道独立跑一致（不得被静音声道影响）"
+            );
+        }
+        // 敏感度自证: 这条信号真的会让延迟线输出非零（前 2 帧静音不算）。
+        assert!(
+            out.chunks(2).skip(2).any(|frame| frame[0] != 0.0),
+            "信号在延迟之后必须出现, 否则本判据是空的"
+        );
+    }
 }

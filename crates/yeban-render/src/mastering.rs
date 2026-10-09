@@ -356,6 +356,8 @@ impl ExportPreset {
     ///
     /// 增益为 `0.0` 时**不碰任何样本**（逐位不变）—— 判据
     /// `a_zero_gain_preset_leaves_every_sample_bit_identical` 钉住这一点。
+    /// 同一预设**重复施加是不动点**（第二次起逐位不改样本）—— 见
+    /// [`Self::apply_at`] 的 §"重复施加同一个预设"。
     /// 两声道按**较短者**测量并施加（与 [`measure_master`] 同一约定）。
     ///
     /// # 非有限的目标与上限**不是约束**
@@ -389,6 +391,29 @@ impl ExportPreset {
     /// # Errors
     ///
     /// 与 [`Self::apply`] 相同（采样率不受支持 ⇒ `None`）。
+    ///
+    /// # 重复施加同一个预设
+    ///
+    /// 本函数是一个"**测一遍 → 算增益 → 施加 → 再测一遍**"的伺服, 而两次测量都落在
+    /// `f32` 上。因此第一次施加之后, 目标与实测值之间**仍然**可能差一个读数量化单位 ——
+    /// 本机实测（2 s 的 0.1 幅度 997 Hz 正弦 + [`ExportPreset::streaming`]）:
+    /// 第一次的 `gain_db = 5.9999523`, 母带落在 `−13.9999990463257 LUFS`,
+    /// 第二次测出来的残差是 `−9.5367431640625e-7 dB` —— 恰好是那个读数处的**一个 ULP**,
+    /// 且非零。
+    ///
+    /// 若不处理这个残差, 它会被当成一个真的要施加的增益: 实测它改掉
+    /// **191,998 / 192,000** 个样本的位型（每个最多差 2 个最低有效位）。后果不是"听得出",
+    /// 而是"同一份母带第二次导出得到**不同的文件字节**" —— 判据
+    /// `the_same_master_exported_twice_is_byte_identical` 钉住这一条。
+    ///
+    /// 因此本函数把**落在测量分辨率里**（≤ 1 ULP, 见下面的
+    /// `within_measurement_resolution`）的残差当成 `0.0`: 不施加, 样本逐位不动。
+    /// [`NormalizeOutcome::gain_db`] 于是报 `0.0`, 而 [`NormalizeOutcome::bound`]
+    /// 仍是那个**已经满足**的约束 —— 与"目标恰好等于实测值"的既有行为一致
+    /// （判据 `a_zero_gain_preset_leaves_every_sample_bit_identical`）。
+    /// 这一条**不削弱**任何真实增益: 判据
+    /// `applying_the_same_preset_twice_is_a_bit_exact_no_op` 同时自证"那个残差真的非零,
+    /// 而且真的会改掉样本"。
     #[must_use]
     pub fn apply_at(
         &self,
@@ -400,6 +425,10 @@ impl ExportPreset {
         let before = measure_master_at(sample_rate, left, right, oversampling)?;
         let mut gain_db = 0.0f32;
         let mut bound = GainBound::NothingToDo;
+        // 定下 `gain_db` 的那条约束的**两个操作数**（请求值, 实测值）。它们的量级决定
+        // 这次测量的分辨率, 也就是"多小的残差已经不可区分"（见上面的
+        // §"重复施加同一个预设"）。`NothingToDo` 时没有操作数, 也就没有残差要处理。
+        let mut operands: Option<(f32, f32)> = None;
 
         if let Some(target) = self.target_lufs
             && target.is_finite()
@@ -407,6 +436,7 @@ impl ExportPreset {
         {
             gain_db = target - before.integrated_lufs;
             bound = GainBound::LoudnessTarget;
+            operands = Some((target, before.integrated_lufs));
         }
 
         if let Some(ceiling) = self.true_peak_ceiling_dbtp
@@ -418,7 +448,17 @@ impl ExportPreset {
             if allowed_db < gain_db {
                 gain_db = allowed_db;
                 bound = GainBound::TruePeakCeiling;
+                operands = Some((ceiling, before.true_peak_dbtp));
             }
+        }
+
+        // 已在目标上 ⇒ **不乘**。这一句必须落在下面那次乘法**之前**: 它让
+        // "同一个预设施加两次"与"施加一次"逐位相同（见上面的
+        // §"重复施加同一个预设"）。
+        if let Some((demand, actual)) = operands
+            && within_measurement_resolution(demand, actual, gain_db)
+        {
+            gain_db = 0.0;
         }
 
         if gain_db != 0.0 {
@@ -437,6 +477,40 @@ impl ExportPreset {
             after,
         })
     }
+}
+
+/// 残差是否**小到不能与测量本身的舍入区分**: `≤ 1 ULP`（按两个操作数里量级较大的那个取）。
+///
+/// # 为什么要有这条判据
+///
+/// [`ExportPreset::apply_at`] 的增益是**两个 `f32` 读数之差**（目标 − 实测）。两个读数
+/// 各自带着自己的舍入误差, 量级 `M` 处的 `f32` 间距是 1 ULP。于是"差一个 ULP 的残差"
+/// 这件事本身**分不出来**是"真的还差一点"还是"两次舍入的差" —— 它落在测量精度之下。
+///
+/// 而施加它不是无害的: `*sample *= db_to_linear(残差)` 里的因子不等于 `1.0`
+/// （实测 `db_to_linear(-9.5367431640625e-7) = 0.99999994`）, 于是每个样本的位型都可能
+/// 被改掉。**不施加**才是"已经在目标上"的正确表达。
+///
+/// # 为什么取**较大**的那个操作数
+///
+/// `f32` 的间距随量级增长, 读数的舍入误差也随量级增长, 因此两个操作数里较大的那个
+/// 给出较大的分辨率 —— 这是保守的一侧（阈值更大, 更不容易把"真的还差一点"当成已达标）。
+/// 量级恰为 2 的幂时 [`f32::next_up`] 给出的是**上方**那一档间距（比下方大一倍）,
+/// 于是该点上的阈值偏宽一倍: 那是亚微分贝量级, 不影响任何可听的判断。
+///
+/// # 它**不**吞掉真实增益
+///
+/// 阈值只覆盖"读数最后一位"这一档。任何真实的归一化增益（例如把 −19.999952 LUFS 抬到
+/// −14 LUFS 的 `+5.9999523 dB`）比它大 6 个数量级。判据
+/// `applying_the_same_preset_twice_is_a_bit_exact_no_op` 里那条"残差真的非零、且真的会
+/// 改掉样本"的自证, 就是这条边界的守门人。
+///
+/// 两个操作数都已被调用方确认有限（目标/上限 `is_finite`, 实测读数有限）, 因此
+/// `next_up` 不会碰到 `NaN`/`±inf`。
+fn within_measurement_resolution(demand: f32, actual: f32, residual: f32) -> bool {
+    let magnitude = demand.abs().max(actual.abs());
+    let resolution = magnitude.next_up() - magnitude;
+    residual.abs() <= resolution
 }
 
 /// 母带导出被拒绝的原因。
@@ -627,6 +701,24 @@ fn require_finite_samples(samples: &[f32]) -> Result<(), MasterExportError> {
 /// 增益施加在 `master.samples` 上, 并且**重算** `master.digest`
 /// （[`RenderOutput::digest_of`]）—— 否则缓冲与它的位级摘要会不一致, 而那份摘要是
 /// L1 判据的载体。调用方因此既拿到文件, 也拿到归一化后的母带。
+///
+/// # 重复导出是幂等的（同一份母带 + 同一个预设 + 同一种子 ⇒ 同一份字节）
+///
+/// 在**同一个** `master` 上连续调用本函数两次（预设、位深、容器、种子都不变）⇒
+/// 两次的 `file` / `payload` / `bext` / `digest` **逐字节相同**
+/// （判据 `the_same_master_exported_twice_is_byte_identical`）。第二次的
+/// `outcome.gain_db` 是 `0.0`: 第一次施加之后的残差落在**读数量化单位**以内
+/// （本机实测恰好 1 ULP）, [`ExportPreset::apply`] 因此把它当成已达标
+/// （见它的 §"重复施加同一个预设"）。
+///
+/// # 抖动源必须**从种子新建**, 不能跨两次导出复用同一个实例
+///
+/// 这一条是**允许的**非确定性, 但调用方必须照做: `rng` 是 `&mut`, 16/24 位路径上
+/// 每个样本从中取两次抽样 —— 复用同一个实例意味着第二次导出的抖动序列与第一次不同,
+/// 于是同一份母带、同一份参数会得到不同的字节。生产路径因此一律
+/// [`crate::rng::dither_rng_for`]`(seed, node)` 现造一个（`lib.rs` 的端到端契约判据与
+/// `mastering` 的判据都这么做）。32f 路径不取抽样, 因此不受影响
+/// （`crate::rng` 的 `float_path_does_not_consume_the_rng` 钉住这一点）。
 ///
 /// # 构造期与逐样本
 ///
@@ -1274,6 +1366,74 @@ mod tests {
         );
     }
 
+    /// 判据 (**类别 5: 幂等性**): 同一个预设**重复施加是不动点** —— 第二次施加不改任何
+    /// 样本的位型, 且 `gain_db` 报 `0.0`。
+    ///
+    /// 这条判据钉住的是一个真实的缺口（本机实测, 修复前）: 第一次施加之后母带落在
+    /// `−13.9999990463257 LUFS`, 第二次算出的残差是 `−9.5367431640625e-7 dB`
+    /// （非零, 恰好是一个读数量化单位）, 于是 `*sample *= 0.99999994` 改掉了
+    /// **191,998 / 192,000** 个样本的位型（每个最多差 2 个最低有效位）。
+    #[test]
+    fn applying_the_same_preset_twice_is_a_bit_exact_no_op() {
+        let (mut left, mut right) = (sine_997(0.1, 48_000 * 2), sine_997(0.1, 48_000 * 2));
+
+        let first = ExportPreset::streaming()
+            .apply(48_000, &mut left, &mut right)
+            .expect("48 kHz");
+        assert!(
+            first.gain_db > 5.0,
+            "第一次必须真的抬了电平, 实际 {} dB",
+            first.gain_db
+        );
+        let after_first: Vec<u32> = left.iter().map(|sample| sample.to_bits()).collect();
+
+        let second = ExportPreset::streaming()
+            .apply(48_000, &mut left, &mut right)
+            .expect("48 kHz");
+        assert_eq!(second.gain_db, 0.0, "残差必须被当成 0");
+        assert_eq!(
+            first.bound,
+            GainBound::LoudnessTarget,
+            "目标响度是那条已经满足的约束"
+        );
+        assert_eq!(
+            left.iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            after_first,
+            "第二次施加必须逐位不动样本"
+        );
+
+        // ---- 敏感度自证: 那个残差真的非零, 而且真的会改掉样本 ----
+        //
+        // 没有这一段, 上面那条 `assert_eq!` 可能只是"残差恰好是 0"的空判据。
+        let residual = STREAMING_TARGET_LUFS - second.before.integrated_lufs;
+        assert_ne!(residual, 0.0, "残差为 0 ⇒ 本判据测不到任何东西, 换一段信号");
+        assert!(
+            within_measurement_resolution(
+                STREAMING_TARGET_LUFS,
+                second.before.integrated_lufs,
+                residual
+            ),
+            "残差 {residual} 不落在测量分辨率里 ⇒ 它是一条真实增益, 不该被吃掉"
+        );
+        let factor = db_to_linear(residual);
+        assert_ne!(factor, 1.0, "因子恰好是 1.0 ⇒ 乘不乘都一样, 判据为空");
+        let mut if_applied: Vec<f32> = left.clone();
+        for sample in &mut if_applied {
+            *sample *= factor;
+        }
+        let changed = if_applied
+            .iter()
+            .zip(left.iter())
+            .filter(|(scaled, kept)| scaled.to_bits() != kept.to_bits())
+            .count();
+        assert!(
+            changed > 0,
+            "修复前的代码路径必须真的会改掉样本, 否则本判据没有守门人"
+        );
+    }
+
     /// 静音: 响度测不出 ⇒ **不动样本**, 不产生 NaN。
     #[test]
     fn silence_is_never_normalized_and_never_becomes_nan() {
@@ -1690,6 +1850,73 @@ mod tests {
         let other = run(0xABCE);
         assert_ne!(first.file, other.file, "不同抖动种子必须产出不同字节");
         assert_ne!(first.digest, other.digest);
+    }
+
+    /// 判据 (**类别 5: 幂等性, 端到端**): 在**同一个** `RenderOutput` 上连续导出两次
+    /// （同一个预设、同一种子、同一个容器与位深）⇒ 两次的**文件字节逐字节相同**。
+    ///
+    /// 与上面那条 [`Self::the_same_seed_is_byte_identical_and_a_different_seed_is_not`] 的
+    /// 区别是**输入是不是同一个对象**: 那条每次新建一份母带（"同一输入的两份拷贝"),
+    /// 这条是"同一份母带被导出两次"。修复前**这条是红的** —— 第二次导出会把
+    /// [`ExportPreset::apply`] 的读数量化残差当成真实增益, 于是母带里
+    /// 191,998 / 192,000 个样本的位型被改掉, `file` / `digest` / 负载字节全都不同
+    /// （本机实测）。
+    ///
+    /// 第二次的 `gain_db` 必须是 `0.0`, 而 `bext` 必须与第一次**逐字段相同**
+    /// （两次测量的是同一段样本）—— 后者顺带钉住"`bext` 写的是实测值, 不是推算值"。
+    #[test]
+    fn the_same_master_exported_twice_is_byte_identical() {
+        let tone = sine_997(0.1, 48_000 * 2);
+        let mut master = master_output(&tone, &tone);
+
+        let first = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::streaming(),
+            BitDepth::Int16,
+            ContainerKind::Rf64,
+            &metadata(),
+            &mut seed_rng(0xABCD),
+        )
+        .expect("第一次导出");
+        let audio_after_first = master.samples.clone();
+
+        let second = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::streaming(),
+            BitDepth::Int16,
+            ContainerKind::Rf64,
+            &metadata(),
+            &mut seed_rng(0xABCD),
+        )
+        .expect("第二次导出");
+
+        assert!(
+            first.outcome.gain_db > 5.0,
+            "第一次必须真的抬了电平, 实际 {} dB",
+            first.outcome.gain_db
+        );
+        assert_eq!(
+            second.outcome.gain_db, 0.0,
+            "第二次的残差必须被当成 0（否则下面几条会红）"
+        );
+        assert_eq!(
+            master.samples, audio_after_first,
+            "第二次导出不得再改母带样本"
+        );
+        assert_eq!(
+            second.file, first.file,
+            "同一个母带两次导出的文件必须逐字节相同"
+        );
+        assert_eq!(second.digest, first.digest);
+        assert_eq!(
+            second.digest,
+            sha256_of(&second.file),
+            "digest 必须是文件字节的 SHA-256"
+        );
+        assert_eq!(second.payload, first.payload, "负载字节必须相同");
+        assert_eq!(second.bext, first.bext, "bext 的实测响度必须逐字段相同");
     }
 
     /// 四种输入缺陷都被**拒绝**, 不静默降级。
