@@ -990,6 +990,25 @@ mod tests {
         assert_eq!(SNAPSHOT_INTERVAL, 256);
     }
 
+    /// `Commit::is_merge` 的**负向**判据：只有"父提交多于一个"才是合并。
+    ///
+    /// 实测：把实现从 `parents.len() > 1` 改成 `>= 1`（于是每个非根提交都被算成合并）
+    /// 时，全仓判据保持全绿 —— 既有判据只从"确实是合并 ⇒ 为真"这一侧钉住
+    /// （`merge_commit_records_every_parent_and_keeps_the_main_line_on_the_first` 与
+    /// `tests/commit_merge.rs`），从没有钉住"不是合并 ⇒ 为假"。
+    #[test]
+    fn is_merge_is_false_for_root_and_single_parent_commits() {
+        let root = bare_commit(fixture_id(1), Vec::new());
+        let linear = bare_commit(fixture_id(2), vec![fixture_id(1)]);
+        let merge = bare_commit(fixture_id(3), vec![fixture_id(1), fixture_id(2)]);
+        assert!(!root.is_merge(), "根提交不是合并（parents 为空）");
+        assert!(!linear.is_merge(), "单父提交不是合并");
+        // 正侧对照：本判据不得退化成"恒为假"的假绿。
+        assert!(merge.is_merge(), "两父提交必须是合并");
+        assert_eq!(merge.first_parent(), Some(fixture_id(1)));
+        assert_eq!(root.first_parent(), None);
+    }
+
     #[test]
     fn only_snapshot_depths_carry_a_snapshot_ref() {
         let mut graph = CommitGraph::new();

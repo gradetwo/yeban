@@ -55,7 +55,7 @@ use yeban_model::local_config::{
 };
 use yeban_model::samples::{default_project, filled_project};
 use yeban_model::session::{
-    PluginProcess, SessionRuntimeState, TaskId, TaskKind, TaskProgress, WindowId,
+    PluginProcess, SessionRuntimeState, SessionStateError, TaskId, TaskKind, TaskProgress, WindowId,
 };
 use yeban_model::{EntityId, PPQ, YebanProjectV1};
 
@@ -1027,6 +1027,84 @@ fn repeated_saves_overwrite_in_place_and_are_byte_identical() {
     );
 }
 
+/// 覆盖写的**尖锐**形态：先写一份更长的配置，再写一份更短的，磁盘上必须恰好是
+/// 第二次的字节（上一次的尾巴不许留下）。
+///
+/// 为什么需要：上一条判据两次写的是**同一份**配置（长度相同），因此"先截断再写"与
+/// "只覆盖前 N 个字节"在那里不可区分。实测：把 `save_to` 的 `.truncate(true)` 改成
+/// `.truncate(false)` 时，全仓判据保持全绿 —— 而留下的尾巴会让下一次
+/// `load_from` 在 JSON 尾随垃圾上失败（配置被静默损坏），正是上一条判据的文档
+/// 警告过的那种破损。
+#[test]
+fn a_shorter_save_leaves_no_stale_tail() {
+    let home = TempDir::new("shorter-save");
+    let path = LocalMachineConfig::path_for_home(&home.path);
+
+    let mut long = populated_config();
+    long.cloud_tokens.insert(
+        "a-very-long-provider-name".to_owned(),
+        SecretRef::new("yeban/cloud/a-very-long-provider-name").expect("条目名"),
+    );
+    long.save_to(&path).expect("写长配置");
+    let long_bytes = std::fs::read(&path).expect("读长配置");
+    let short_bytes = populated_config().to_json().expect("序列化短配置");
+    assert!(
+        long_bytes.len() > short_bytes.len(),
+        "夹具必须真的更长 ({} vs {})",
+        long_bytes.len(),
+        short_bytes.len()
+    );
+
+    populated_config().save_to(&path).expect("写短配置");
+    assert_eq!(
+        std::fs::read(&path).expect("读短配置"),
+        short_bytes,
+        "更短的一次保存必须把文件截断成恰好这一串字节（不得留上一次的尾巴）"
+    );
+    LocalMachineConfig::load_from(&path).expect("留下的字节必须还能读回来");
+}
+
+/// `SecretMaterial::drop` 的 best-effort 清零必须还在。
+///
+/// 为什么用源码扫描而不是运行时断言：清零的观察面是"释放后的堆页"，而本 crate
+/// `forbid(unsafe_code)`，安全代码读不到已释放内存 ⇒ 没有运行时判据。既有的
+/// `secret_material_never_reaches_disk` 只钉住**不落盘**，`Debug` 打码由另一条
+/// 判据钉住。实测：删掉 `Drop` 里的 `self.bytes.fill(0);` 时全仓判据保持全绿。
+///
+/// 扫描器自身有牙：同一手法（`include_str!` + 定点取块）在
+/// `session_state_has_no_serde_surface` 里已有正/负对照的先例。
+#[test]
+fn secret_material_is_wiped_on_drop() {
+    const LOCAL_SRC: &str = include_str!("../src/local_config.rs");
+
+    /// 从源码里取出 `impl Drop for SecretMaterial` 的函数体文本。
+    fn drop_body(source: &str) -> String {
+        let start = source
+            .find("impl Drop for SecretMaterial")
+            .expect("SecretMaterial 必须实现 Drop");
+        let end = source[start..].find("\n}").expect("Drop 实现必须有结尾") + start;
+        source[start..end].to_owned()
+    }
+
+    let body = drop_body(LOCAL_SRC);
+    assert!(
+        body.contains("fn drop(&mut self)"),
+        "取到的块不是 Drop 实现体: {body}"
+    );
+    assert!(
+        body.contains("self.bytes.fill(0);"),
+        "SecretMaterial::drop 的 best-effort 清零不见了: {body}"
+    );
+    // 扫描器自身有牙：同一手法在"清零被删掉"的合成输入上必须给出不同的结论
+    // （否则本判据可能只是在扫描器恒真上通过）。
+    let withered = LOCAL_SRC.replace("self.bytes.fill(0);", "");
+    assert_ne!(withered, LOCAL_SRC, "合成输入必须真的被改动过");
+    assert!(
+        !drop_body(&withered).contains("self.bytes.fill(0);"),
+        "扫描器对'清零被删掉'的输入必须报否"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ⑪ 密钥本体不入盘：只有引用名
 // ---------------------------------------------------------------------------
@@ -1355,6 +1433,44 @@ fn window_and_pid_sets_are_deterministic() {
             .expect("任务")
             .is_finished()
     );
+}
+
+/// `total_units == 0` 必须报**具体**的 [`SessionStateError::TaskTotalZero`]。
+///
+/// 为什么需要：上面那条判据只断言 `validate().is_err()`，而
+/// `completed = 2 > total = 0` 会**顺带**给出 `TaskProgressOutOfRange`
+/// ⇒ "错误码正确"这一条没有被钉住。实测：把 `progress.total_units == 0` 改成
+/// `== 1` 时全仓判据保持全绿。这里把 `completed_units` 也置零，于是唯一的拒绝
+/// 理由只能是 `TaskTotalZero`。
+#[test]
+fn a_zero_unit_task_is_rejected_with_the_total_zero_error() {
+    let mut session = SessionRuntimeState::default();
+    session.set_task(
+        TaskId::new(7),
+        TaskProgress {
+            kind: TaskKind::Render,
+            completed_units: 0,
+            total_units: 0,
+            cancellable: false,
+            label: String::new(),
+        },
+    );
+    assert_eq!(
+        session.validate(),
+        Err(SessionStateError::TaskTotalZero { task: 7 })
+    );
+    // 正侧对照：1/1 必须合法（否则本判据会退化成"什么都拒绝"的假绿）。
+    session.set_task(
+        TaskId::new(7),
+        TaskProgress {
+            kind: TaskKind::Render,
+            completed_units: 1,
+            total_units: 1,
+            cancellable: false,
+            label: String::new(),
+        },
+    );
+    assert_eq!(session.validate(), Ok(()));
 }
 
 // ---------------------------------------------------------------------------

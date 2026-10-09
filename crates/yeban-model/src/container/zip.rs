@@ -684,8 +684,87 @@ fn ratio_exceeded(uncompressed: u64, compressed: u64, max_ratio: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EOCD_SIGNATURE, find_eocd, ratio_exceeded, u32_at, write_zip, write_zip_borrowed};
+    use super::{
+        CENTRAL_DIRECTORY_SIGNATURE, DOS_DATE, DOS_TIME, EOCD_SIGNATURE,
+        LOCAL_FILE_HEADER_SIGNATURE, find_eocd, ratio_exceeded, u16_at, u32_at, write_zip,
+        write_zip_borrowed,
+    };
     use crate::container::{ContainerEntry, ContainerError};
+
+    /// ZIP 头部里 `last mod file time` / `last mod file date` 的**字段顺序**必须与
+    /// APPNOTE 4.3.7（local）与 4.3.12（central）一致：time 在前、date 在后。
+    ///
+    /// 为什么需要：读侧**刻意忽略**这两个字段（`read_zip` 只搬运不解释时间戳），
+    /// `unzip -t` 也不会因为两个常量互换而报错 ⇒ 把它们写反是一个**静默**的格式违背，
+    /// `.yeban` 的时间戳从此变成一个语义不同的常量。实测：把 local header 或 central
+    /// header 的这两行互换时，全仓判据保持全绿。
+    #[test]
+    fn zip_headers_put_the_time_field_before_the_date_field() {
+        // 两个常量必须真的不同，否则本判据对"互换"没有判别力。
+        assert_ne!(DOS_TIME, DOS_DATE);
+        let bytes = write_zip_borrowed(&[("a", b"x".as_slice())]).expect("写容器");
+        // APPNOTE 4.3.7：signature 0、version 4、flags 6、method 8、time 10、date 12。
+        assert_eq!(u32_at(&bytes, 0), Some(LOCAL_FILE_HEADER_SIGNATURE));
+        assert_eq!(
+            u16_at(&bytes, 10),
+            Some(DOS_TIME),
+            "local header 的 time 在 +10"
+        );
+        assert_eq!(
+            u16_at(&bytes, 12),
+            Some(DOS_DATE),
+            "local header 的 date 在 +12"
+        );
+        // APPNOTE 4.3.12：signature 0、version made by 4、version needed 6、flags 8、
+        // method 10、time 12、date 14。
+        let eocd = find_eocd(&bytes).expect("EOCD 必须存在");
+        let central =
+            usize::try_from(u32_at(&bytes, eocd + 16).expect("central 偏移")).expect("usize");
+        assert_eq!(u32_at(&bytes, central), Some(CENTRAL_DIRECTORY_SIGNATURE));
+        assert_eq!(
+            u16_at(&bytes, central + 12),
+            Some(DOS_TIME),
+            "central header 的 time 在 +12"
+        );
+        assert_eq!(
+            u16_at(&bytes, central + 14),
+            Some(DOS_DATE),
+            "central header 的 date 在 +14"
+        );
+    }
+
+    /// 写入口的 ZIP32 条目数**精确边界**：65534 条放行、65535 条拒绝。
+    ///
+    /// 为什么是 65534：EOCD 的条目数字段是 `u16`，`0xFFFF` 是"见 ZIP64"哨兵 ⇒
+    /// 写出一条 65535 条的归档会立刻被本读取器按 ZIP64 拒绝（"写得出、读不回"）。
+    /// 实测：把 `entries.len() > max_zip32_entries` 改成 `>=` 时，全仓判据保持全绿
+    /// —— 既有判据从没有走到这个边界，于是写入器的上界被**少算一条**也看不出来。
+    #[test]
+    fn the_writer_accepts_exactly_zip32_entries() {
+        let names: Vec<String> = (0..65_534).map(|index| format!("e{index}")).collect();
+        let entries: Vec<(&str, &[u8])> = names
+            .iter()
+            .map(|name| (name.as_str(), b"x".as_slice()))
+            .collect();
+        let written = write_zip_borrowed(&entries).expect("65534 条必须放行");
+        let eocd = find_eocd(&written).expect("EOCD 必须存在");
+        assert_eq!(
+            u16::from_le_bytes([written[eocd + 10], written[eocd + 11]]),
+            65_534,
+            "EOCD 的总条目数字段必须写在 +10"
+        );
+
+        let mut one_more = entries.clone();
+        one_more.push(("last", b"x".as_slice()));
+        assert_eq!(
+            write_zip_borrowed(&one_more),
+            Err(ContainerError::TooManyEntries {
+                found: 65_535,
+                max: 65_534,
+            }),
+            "65535 条会撞上 ZIP64 哨兵, 必须拒绝"
+        );
+    }
 
     /// `MUST-GATE-007` 的核心算术：`≤ 100:1` 放行、`> 100:1` 拒绝（边界必须精确）。
     #[test]

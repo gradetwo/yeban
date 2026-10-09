@@ -2086,6 +2086,26 @@ mod tests {
         }
     }
 
+    /// 拍号分子是**闭区间** `1..=32`：两个端点都必须放行。
+    ///
+    /// 实测：把 `!(1..=32).contains(&self.numerator)` 改成 `!(1..32)` 时，全仓判据
+    /// 保持全绿 —— 既有判据钉住了 0 与 33 这两个**区间外**的点，却没有钉住区间内
+    /// 的上端点 32。
+    #[test]
+    fn the_time_signature_numerator_upper_bound_is_inclusive() {
+        for numerator in [1_u8, 32] {
+            assert_eq!(
+                TimeSignature {
+                    numerator,
+                    denominator: 4,
+                }
+                .validate(),
+                Ok(()),
+                "分子 {numerator} 是闭区间的端点, 必须合法"
+            );
+        }
+    }
+
     #[test]
     fn sample_rate_and_block_size_enums_reject_unknown_values() {
         assert_eq!(SampleRate::from_hz(48_000), Ok(SampleRate::Hz48000));
@@ -3131,13 +3151,35 @@ mod tests {
         out
     }
 
+    /// 剥掉字段声明前的可见性前缀（`pub` / `pub(crate)` / `pub(super)` / `pub(in …)`）。
+    ///
+    /// 字段的**数值性**与它的可见性无关，因此扫描器不得因为可见性写法不同而漏掉字段
+    /// （实测：`pub(super) gain_db: f32` 对改动前的清单判据完全不可见）。
+    fn strip_visibility(fragment: &str) -> &str {
+        let Some(rest) = fragment.strip_prefix("pub") else {
+            return fragment;
+        };
+        if let Some(rest) = rest.strip_prefix('(') {
+            return rest
+                .find(')')
+                .map_or(fragment, |close| rest[close + 1..].trim_start());
+        }
+        if rest.starts_with(char::is_whitespace) {
+            return rest.trim_start();
+        }
+        // 例如字段名 `public`：`pub` 只是它的前缀，不是可见性关键字。
+        fragment
+    }
+
     /// 从一个 `name: type` 片段解析数值字段名；不是 `f32`／`f64` 字段则 `None`。
     fn numeric_field(fragment: &str) -> Option<String> {
         let fragment = fragment.trim().trim_end_matches(',').trim();
+        // 属性与可见性都只是前缀：`#[serde(default)] pub(super) x: f32` 也是数值字段。
         let fragment = fragment
-            .strip_prefix("pub(crate) ")
-            .or_else(|| fragment.strip_prefix("pub "))
-            .unwrap_or(fragment);
+            .strip_prefix("#[")
+            .and_then(|rest| rest.find(']').map(|close| &rest[close + 1..]))
+            .map_or(fragment, str::trim_start);
+        let fragment = strip_visibility(fragment);
         let (name, ty) = fragment.split_once(':')?;
         let name = name.trim();
         if name.is_empty()
@@ -3149,6 +3191,56 @@ mod tests {
         }
         let ty = ty.trim();
         matches!(ty, "f32" | "f64" | "Option<f32>" | "Option<f64>").then(|| name.to_owned())
+    }
+
+    /// 一行声明里的**全部**数值字段名。
+    ///
+    /// 三种形态必须都看得见（改动前它们都是盲区：把这样一个字段加进 `src/**`
+    /// 不会让任何判据变红）：
+    ///
+    /// - 一行多个载荷字段：`One { gain_db: f32, pan: f32 },`；
+    /// - 写在一行里的载荷：`enum P { One { gain_db: f32 } }`；
+    /// - 写在一行里的声明：`struct S { pub gain_db: f32 }`。
+    ///
+    /// 做法：先剥掉行尾注释，再取出每一对花括号里的内容（嵌套时外层与内层都取出，
+    /// 于是 `enum P { One { gain_db: f32 } }` 的内层能被看到），按 `,` 拆开逐段判定；
+    /// 一行里一个花括号都没有时（普通的 `struct` 字段行）整行就是一段。
+    fn numeric_fields_on_line(line: &str) -> Vec<String> {
+        let line = line.split("//").next().unwrap_or(line);
+        let mut groups: Vec<&str> = Vec::new();
+        let mut starts: Vec<usize> = Vec::new();
+        for (index, ch) in line.char_indices() {
+            match ch {
+                '{' => starts.push(index + 1),
+                '}' => {
+                    if let Some(start) = starts.pop() {
+                        groups.push(&line[start..index]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if groups.is_empty() {
+            groups.push(line);
+        }
+        let mut found = Vec::new();
+        for group in groups {
+            for piece in group.split(',') {
+                if let Some(field) = numeric_field(piece) {
+                    found.push(field);
+                }
+            }
+        }
+        found
+    }
+
+    /// 声明行上第一个载荷变体的名字（`enum P { One { … } }` ⇒ `One`）。
+    fn variant_on_declaration_line(line: &str) -> String {
+        let body = line.find('{').map_or("", |open| &line[open + 1..]);
+        body.trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect()
     }
 
     /// 识别 `struct`／`enum` 声明行（必须同一行开 `{`），返回 `(是否枚举, 类型名)`。
@@ -3209,7 +3301,7 @@ mod tests {
                             variant.clone_from(&candidate);
                         }
                     }
-                    if let Some(field) = numeric_field(trimmed) {
+                    for field in numeric_fields_on_line(trimmed) {
                         let member = if is_enum && !variant.is_empty() {
                             format!("{variant}.{field}")
                         } else {
@@ -3220,8 +3312,24 @@ mod tests {
                     continue;
                 }
                 if let Some((is_enum, name)) = type_declaration(trimmed) {
+                    // 声明行**自己**也可能带载荷（`enum P { One { gain_db: f32 } }` 或
+                    // `struct S { pub gain_db: f32 }` 一行写完），因此声明行同样要走一遍
+                    // 字段抽取；否则这类字段对清单判据不可见（纪律 B：多行签名要看得见）。
+                    let variant_here = if is_enum {
+                        variant_on_declaration_line(trimmed)
+                    } else {
+                        String::new()
+                    };
+                    for field in numeric_fields_on_line(trimmed) {
+                        let member = if is_enum && !variant_here.is_empty() {
+                            format!("{variant_here}.{field}")
+                        } else {
+                            field
+                        };
+                        found.push(format!("{relative}::{name}::{member}"));
+                    }
                     owner = Some((is_enum, name, indent));
-                    variant.clear();
+                    variant = variant_here;
                 }
             }
         }
@@ -3909,6 +4017,63 @@ mod tests {
             apply_accepted(&mut doc, &op, "SetRoutingGain(有限或 None)")?;
         }
         Ok(())
+    }
+
+    /// 扫描器的**正向对照**：写在一行里的载荷字段必须被看见。
+    ///
+    /// 为什么需要：`every_numeric_field_in_the_model_is_inventoried` 的全部判别力都来自
+    /// `scan_numeric_fields` 的识别器。实测（改动前）：下面三种形态对识别器**完全不可见** ——
+    /// 把任意一种加进 `src/**`，那条判据保持全绿，于是"新数值字段必被登记"这条常驻判据
+    /// 可以被三种常见写法绕过。这条判据按合成输入逐个钉住识别器的牙口
+    /// （与 `tests/model_isolation.rs` 里 `code_has` 的正向对照同一手法）。
+    ///
+    /// 期望值口径：每行返回的字段名按出现顺序、允许重复（外层与内层花括号都会被扫描，
+    /// 因此 `numeric_field` 对同样的 `name: f32` 可能命中两次）；调用方
+    /// `scan_numeric_fields` 负责排序与去重。
+    #[test]
+    fn the_numeric_field_scanner_sees_one_line_payloads_and_restricted_visibility() {
+        // 一行多个载荷字段。
+        assert_eq!(
+            numeric_fields_on_line("One { gain_db: f32, pan: f32 },"),
+            vec!["gain_db".to_owned(), "pan".to_owned()]
+        );
+        // 写在一行里的载荷（整个 `enum` 一行写完）。
+        assert_eq!(
+            numeric_fields_on_line("pub enum P { One { gain_db: f32 } }"),
+            vec!["gain_db".to_owned()]
+        );
+        // 写在一行里的声明（`struct` 字段在声明行自己身上）。
+        assert_eq!(
+            numeric_fields_on_line("struct S { pub gain_db: f32 }"),
+            vec!["gain_db".to_owned()]
+        );
+        // 受限可见性、`Option<f32>`、属性前缀三种写法都要看得见。
+        assert_eq!(
+            numeric_fields_on_line("    pub(super) gain_db: f32,"),
+            vec!["gain_db".to_owned()]
+        );
+        assert_eq!(
+            numeric_fields_on_line("    pub(crate) level: Option<f32>,"),
+            vec!["level".to_owned()]
+        );
+        assert_eq!(
+            numeric_fields_on_line("#[serde(default)] pub x: Option<f64>,"),
+            vec!["x".to_owned()]
+        );
+        // 负向对照：非数值字段、注释、属性行不许被收进来（否则判据会变成"什么都收"的假绿）。
+        assert!(numeric_fields_on_line("    pub name: String,").is_empty());
+        assert!(numeric_fields_on_line("    pub n: u64,").is_empty());
+        assert!(numeric_fields_on_line("    /// 示例 { gain: f32 }").is_empty());
+        assert!(numeric_fields_on_line("    #[serde(default)]").is_empty());
+        assert_eq!(
+            numeric_fields_on_line("    pub gain_db: f32, // 备注 { x: f32 }"),
+            vec!["gain_db".to_owned()]
+        );
+        // `public` 只是以 `pub` 开头，它不是可见性关键字。
+        assert_eq!(
+            numeric_fields_on_line("    public: f32,"),
+            vec!["public".to_owned()]
+        );
     }
 
     /// 类别 1／4 的**机械清单**：源码里每一个 `f32`／`f64` 字段都必须在冻结表里。

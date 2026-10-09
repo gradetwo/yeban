@@ -481,6 +481,66 @@ fn entry_count_over_limit_is_rejected() {
     );
 }
 
+/// 四道可注入上限都是**闭区间**：`== 上限` 放行、`上限 + 1` 拒绝。
+///
+/// 为什么需要：`src/container/mod.rs` 的模块文档写明"判据用结构体字面量把上限压到
+/// 极小的值"，但改动前本文件**全部**上限判据用的都是"超限"一侧（例如 300 > 250）或
+/// `ContainerLimits::default()`（2 GB / 8 GB / 4096 条），因此 `>` 与 `>=` 在实现里
+/// 不可区分。实测：把 `count > limits.max_entries`、`declared > limits.max_entry_bytes`、
+/// `actual > limits.max_entry_bytes`、`actual_total > limits.max_total_bytes` 四条里的
+/// 任意一条改成 `>=`，全仓判据保持全绿 —— 四道上限各自被**少放行一格**。
+#[test]
+fn the_injectable_container_limits_are_inclusive() {
+    let sized = |count: usize, size: usize| -> Vec<ContainerEntry> {
+        (0..count)
+            .map(|index| ContainerEntry::new(format!("e{index}"), vec![0x5a; size]))
+            .collect()
+    };
+
+    // 条目数：恰好等于上限放行，多一条拒绝。
+    let two = write_container(&sized(2, 1)).expect("写两条");
+    assert!(
+        read_container(&two, &limits(64, 64, 100, 2)).is_ok(),
+        "条目数 == max_entries 必须放行"
+    );
+    assert_rejected(
+        &two,
+        &limits(64, 64, 100, 1),
+        ContainerError::TooManyEntries { found: 2, max: 1 },
+    );
+
+    // 单条目字节：恰好等于上限放行（`declared` 与 `actual` 两道都走这一格），
+    // 少一个字节就拒绝。
+    let one = write_container(&sized(1, 8)).expect("写一条 8 字节");
+    assert!(
+        read_container(&one, &limits(8, 64, 100, 4)).is_ok(),
+        "单条字节 == max_entry_bytes 必须放行"
+    );
+    assert_rejected(
+        &one,
+        &limits(7, 64, 100, 4),
+        ContainerError::EntryTooLarge {
+            declared: 8,
+            max: 7,
+        },
+    );
+
+    // 全归档总体积：恰好等于上限放行，少一个字节就拒绝。
+    let three = write_container(&sized(3, 4)).expect("写三条 4 字节");
+    assert!(
+        read_container(&three, &limits(64, 12, 100, 8)).is_ok(),
+        "总体积 == max_total_bytes 必须放行"
+    );
+    assert_rejected(
+        &three,
+        &limits(64, 11, 100, 8),
+        ContainerError::ArchiveTooLarge {
+            actual: 12,
+            max: 11,
+        },
+    );
+}
+
 /// 阈值**可注入**：同一个 64 字节的归档，默认阈值放行，注入极小阈值后逐条触发。
 #[test]
 fn limits_are_injectable_on_tiny_data() {

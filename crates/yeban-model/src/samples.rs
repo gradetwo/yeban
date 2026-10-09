@@ -1085,6 +1085,38 @@ mod tests {
         assert_eq!(project.min_reader_version, MIN_READER_VERSION);
     }
 
+    /// 写样本前必须过 `validate()`，不只是 `check_readable()`。
+    ///
+    /// 为什么需要：模块文档承诺"磁盘上永远不会出现一份连自己都不合法的样本"。
+    /// 实测：把 `write_project` 里的 `document.validate()` 整段删掉时，全仓判据保持
+    /// 全绿 —— 既有判据只喂合法样本，因此两条校验在那些输入上不可区分。这里喂一份
+    /// **可读但不合法**的文档（`bpm = 0.0` 越出 20.0..=999.0），磁盘上不得出现它。
+    #[test]
+    fn write_project_refuses_a_readable_but_invalid_document() {
+        let dir = std::env::temp_dir().join(format!("yeban-sample-invalid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let invalid = YebanProjectV1 {
+            bpm: 0.0,
+            ..default_project()
+        };
+        assert_eq!(
+            invalid.check_readable(),
+            Ok(()),
+            "夹具必须**可读**，否则测的不是 validate()"
+        );
+        assert!(invalid.validate().is_err(), "夹具必须**不合法**");
+        let error = write_project(&dir, "invalid.json", &invalid).expect_err("不合法样本必须被拒");
+        assert!(
+            matches!(error, SampleExportError::InvalidProject { .. }),
+            "实际 {error:?}"
+        );
+        assert!(
+            !dir.join("invalid.json").exists(),
+            "被拒之后磁盘上不得出现该样本"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn filled_project_sample_is_legal_and_rich() {
         let project = filled_project();

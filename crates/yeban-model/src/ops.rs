@@ -3354,6 +3354,96 @@ mod tests {
         assert_eq!(doc, snapshot, "失败的 apply 绝不能改文档");
     }
 
+    /// "旧值必须与文档现值**逐位**相同"是三个入口（`SetParam` / `SetMacro` /
+    /// `SetRoutingGain`）共用的契约，而 `-0.0` 与 `+0.0` 的**位**不同。
+    ///
+    /// 实测：把 `left.to_bits() == right.to_bits()` 换成 `left == right` 时，全仓判据
+    /// 保持全绿 —— 既有判据只用正数与 `NaN` 探过"不相等"，从没有用**符号零**探过
+    /// "位不同但 `==` 相等"的那一格；而同载荷的 `NaN` 在 `==` 下也变成"不相等"。
+    #[test]
+    fn same_f32_is_bitwise_so_signed_zero_and_nan_payloads_are_not_equal() {
+        assert!(same_f32(0.0, 0.0));
+        assert!(same_f32(-0.0, -0.0));
+        assert!(!same_f32(0.0, -0.0), "-0.0 与 +0.0 逐位不同, 必须判为不同");
+        assert!(!same_f32(-0.0, 0.0));
+        // 同一个 NaN 位模式必须逐位相等（`==` 会把它判成不相等）。
+        assert!(same_f32(f32::NAN, f32::NAN));
+        assert!(!same_f32(f32::NAN, 1.0));
+        // 一个 ULP 也必须不同。
+        assert!(!same_f32(1.0, f32::from_bits(1.0_f32.to_bits() + 1)));
+        // `Option` 形态走同一把尺子（`SetRoutingGain` 用它）。
+        assert!(same_gain(None, None));
+        assert!(!same_gain(None, Some(0.0)));
+        assert!(!same_gain(Some(0.0), Some(-0.0)));
+    }
+
+    /// 音高平移的合法区间是**闭区间** `0..=127`：上端点 127 必须可达。
+    ///
+    /// 实测：把 `(0..=127).contains(&shifted)` 改成 `(0..127)` 时，全仓判据保持全绿
+    /// —— 既有判据只钉住"越界（`delta_pitch = 100`）被拒"这一侧，于是"最高音再也
+    /// 移不到"这个缺陷没有任何判据看得见。
+    #[test]
+    fn moving_a_note_onto_the_top_pitch_is_accepted() {
+        assert_eq!(shifted_pitch(0, 0), Some(0));
+        assert_eq!(shifted_pitch(127, 0), Some(127));
+        assert_eq!(shifted_pitch(127, 1), None);
+        assert_eq!(shifted_pitch(0, -1), None);
+
+        let f = fixture();
+        let mut doc = fixture_document();
+        let pitch = doc.note(&f.clip, &f.note).expect("音符存在").pitch;
+        assert_eq!(pitch, 60, "夹具的音高变了, 本判据的增量要跟着改");
+        let to_top = Op::MoveNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            delta_tick: 0,
+            delta_pitch: i8::try_from(i16::from(127_u8) - i16::from(pitch)).expect("差值在 i8 内"),
+        };
+        to_top.apply(&mut doc).expect("移到音高 127 必须被接受");
+        assert_eq!(doc.note(&f.clip, &f.note).expect("音符存在").pitch, 127);
+
+        let beyond = Op::MoveNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            delta_tick: 0,
+            delta_pitch: 1,
+        };
+        assert_eq!(
+            beyond.apply(&mut doc),
+            Err(ModelError::PitchOutOfRange { value: 127 }),
+            "127 之上必须被拒"
+        );
+    }
+
+    /// `SetParam` **永不**接受发送增益目标：那条路径必须用 `SetRoutingGain`
+    /// （否则 `Option<f32>` 的"`None` = 单位增益"语义会被压平）。
+    ///
+    /// 实测：把 `read_param` 的 `SendGain` 分支改成 `Ok(0.0)` 时，全仓判据保持全绿
+    /// —— 既有判据用的 `old_val` 恰好是 `0.0`，于是前置条件放行后由 `write_param`
+    /// 报出同一个错误码，"两处守卫"里少掉一处也看不出来。这里用一个**陈旧的**
+    /// `old_val`，于是唯一的拒绝理由只能是目标不适用。
+    #[test]
+    fn set_param_never_edits_send_gain_even_with_a_stale_old_value() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let snapshot = doc.clone();
+        let send_gain = Op::SetParam {
+            target: AutomationTarget::SendGain {
+                track_id: f.lead,
+                edge_id: f.edge,
+            },
+            old_val: 1.0,
+            new_val: 0.0,
+        };
+        assert!(matches!(
+            send_gain.apply(&mut doc),
+            Err(ModelError::AutomationTargetNotApplicable { .. })
+        ));
+        assert_eq!(doc, snapshot, "被拒之后文档必须逐字节不动");
+    }
+
     #[test]
     fn out_of_range_payloads_are_rejected() {
         let f = fixture();

@@ -470,6 +470,35 @@ mod tests {
         assert_eq!(ContentHash::parse(ok.clone()).expect("parse").as_str(), ok);
     }
 
+    /// SHA-256 摘要的规范文本是**恰好** 64 个小写十六进制字符，多一位也不行。
+    ///
+    /// 实测：把 `value.len() == SHA256_HEX_LEN` 改成 `>=` 时全仓判据保持全绿 ——
+    /// 既有判据覆盖了"太短""非十六进制""大写"，却没有覆盖"太长"。超长摘要不是外观
+    /// 问题：它会作为 `assets/{hash}` 的 CAS 键落进归档，而 CAS 键必须是内容寻址的
+    /// 规范形态（`MODEL-AST-007`）。
+    #[test]
+    fn hash_parsing_requires_exactly_sixty_four_hex_digits() {
+        let too_short = "e".repeat(SHA256_HEX_LEN - 1);
+        let too_long = "e".repeat(SHA256_HEX_LEN + 1);
+        assert_eq!(
+            AssetHash::parse(too_short.clone()),
+            Err(ModelError::InvalidHash { value: too_short })
+        );
+        assert_eq!(
+            ContentHash::parse(too_long.clone()),
+            Err(ModelError::InvalidHash {
+                value: too_long.clone()
+            })
+        );
+        // serde 入口同一把尺子（`assets/{hash}` 的键是从 JSON 读进来的）。
+        assert!(
+            serde_json::from_str::<AssetHash>(&format!("\"{too_long}\"")).is_err(),
+            "超长摘要不得从 JSON 进来"
+        );
+        // 正侧对照：恰好 64 位必须放行（否则本判据会退化成"什么都拒绝"）。
+        assert!(AssetHash::parse("e".repeat(SHA256_HEX_LEN)).is_ok());
+    }
+
     #[test]
     fn hash_serde_round_trip() {
         let hash = AssetHash::of_bytes(b"2026-10-05");

@@ -489,6 +489,25 @@ mod tests {
         assert!(note.validate().is_err(), "滑音错误必须冒泡到音符校验");
     }
 
+    /// 滑音目标音高是**闭区间** `0..=127`：上端点 127 必须放行。
+    ///
+    /// 实测：把 `self.target_pitch > MIDI_PITCH_MAX` 改成 `>=` 时，全仓判据保持全绿
+    /// —— 既有判据只钉住 200（区间外）被拒，没有钉住区间内的上端点。
+    #[test]
+    fn a_slide_may_target_the_top_pitch() {
+        for target_pitch in [0_u8, 127] {
+            assert_eq!(
+                SlideConfig {
+                    target_pitch,
+                    ..SlideConfig::default()
+                }
+                .validate(),
+                Ok(()),
+                "目标音高 {target_pitch} 是闭区间的端点, 必须合法"
+            );
+        }
+    }
+
     #[test]
     fn none_probability_always_triggers() {
         let note = MidiNote::default();
@@ -593,6 +612,69 @@ mod tests {
         // splitmix64 的公开测试向量: 种子 0 的首个输出。
         assert_eq!(splitmix64(0), 0xE220_A839_7B1D_CDAF);
         assert_eq!(splitmix64(1), 0x910A_2DEC_8902_5CC1);
+    }
+
+    /// **跨版本可复现性**：概率触发的哈希与 `(id, seed) ⇒ 判定` 被冻结。
+    ///
+    /// 为什么需要：既有判据只断言"同一进程内两次一致"与"`p = 0.5` 在 512 个种子上的
+    /// 命中数落在宽裕的 1/3..2/3 带内"。实测：把 `trigger_hash` 的
+    /// `low ^ splitmix64(high)` 改成 `low.wrapping_add(splitmix64(high))` 时，全仓判据
+    /// 保持全绿 —— 也就是说**每个概率音符到底触不触发**可以随一次重构整体改变而无人
+    /// 察觉，`ARCH-DET-001` 的"同一 `(seed, id, probability)` 三元组恒给出同一结果"
+    /// 因此只覆盖了单进程重放，不覆盖跨版本。
+    ///
+    /// 期望值来源：**独立实现**（Python，按本模块文档的公开 splitmix64 与组合公式）
+    /// 算出的常量，不是本实现的运行读数；公开 splitmix64 向量已在
+    /// `splitmix64_matches_published_vector` 里逐位核对。路径上只有整数与 2 的幂除法
+    /// （无超越函数），按 ADR-0001 D32 属"IEEE 精确类零容差"，因此可在所有架构上硬断言。
+    #[test]
+    fn trigger_decisions_are_frozen_against_an_independent_implementation() {
+        // (ULID 原始 u128, 种子, trigger_hash 的期望值)
+        const FROZEN_HASHES: &[(u128, u64, u64)] = &[
+            (0, 0, 0x2382_75BC_38FC_BE91),
+            (0, 99, 0xCE8C_385E_28B1_97FA),
+            (1, 0, 0x44E5_B981_00C6_7FB0),
+            (1, 99, 0xF2BB_C0EE_19EC_F0C2),
+            (2, 0, 0xD5F0_95A9_9714_7825),
+            (2, 99, 0x578A_ABEB_49C4_D8B2),
+            (777, 0, 0xDA77_E771_92AD_4C68),
+            (777, 99, 0x59D8_7EDC_BC60_7AD8),
+            (12345, 0, 0x559B_725A_95A0_6C4D),
+            (12345, 99, 0x3B38_F39B_8088_3A98),
+        ];
+        for &(raw, seed, expected) in FROZEN_HASHES {
+            let id = EntityId::from_ulid(ulid::Ulid::from(raw));
+            assert_eq!(
+                trigger_hash(seed, id),
+                expected,
+                "(raw={raw}, seed={seed}) 的触发哈希必须逐位冻结"
+            );
+        }
+
+        // 用户可见的判定：`p = 0.5` 时上面每一条都由同一个哈希决定。
+        const FROZEN_TRIGGERS: &[(u128, u64, bool)] = &[
+            (0, 0, true),
+            (0, 99, false),
+            (1, 0, true),
+            (1, 99, false),
+            (2, 0, false),
+            (2, 99, true),
+            (777, 0, false),
+            (777, 99, true),
+            (12345, 0, true),
+            (12345, 99, true),
+        ];
+        for &(raw, seed, expected) in FROZEN_TRIGGERS {
+            let note = MidiNote {
+                probability: Some(0.5),
+                ..MidiNote::new(EntityId::from_ulid(ulid::Ulid::from(raw)), 0, 60, 960)
+            };
+            assert_eq!(
+                note.triggers(seed),
+                expected,
+                "(raw={raw}, seed={seed}, p=0.5) 的触发判定必须冻结"
+            );
+        }
     }
 
     #[test]
