@@ -361,6 +361,13 @@ pub struct SfzSource {
     /// 该片段的文本。
     pub text: String,
     /// 该片段第一行在原文件中的 1-based 行号（错误定位用）。
+    ///
+    /// 本字段是 `pub`，因此它是调用方数据：本 crate **不**校验它的域（`0` 与
+    /// `usize::MAX` 都是类型合法取值），但保证越界取值既不 panic 也不回绕 ——
+    /// 行号按饱和加法计算，因此「片段最后一行在 `usize` 里不可表示」时，
+    /// 该片段所有行的行号都读作 `usize::MAX`（实测：`first_line = usize::MAX`
+    /// 加两行以上文本曾让 debug 构建 panic）。`first_line + 行偏移` 可表示的
+    /// 输入逐位不变。
     pub first_line: usize,
 }
 
@@ -1210,7 +1217,15 @@ impl<'a> Parser<'a> {
     ) -> Result<(), SfzError> {
         let limits = self.limits;
         for (index, raw_line) in text.split_inclusive('\n').enumerate() {
-            let line_no = first_line + index;
+            // `first_line` 是公开结构体 [`SfzSource`] 的 `pub` 字段，因此它是**调用方数据**：
+            // `usize::MAX` 是一个类型合法、域非法的取值。普通的 `+` 会在这条输入上
+            // panic（debug）或回绕（release）—— 实测：`parse_sources` 传
+            // `first_line = usize::MAX` 与两行以上文本时，debug 下在本行抛
+            // `attempt to add with overflow`。饱和加法与本 crate 对「字段是 `pub`」的
+            // 其余算术同一条口径（`LoopWindow::len` / `SampleSpan::len` /
+            // `Region::bend_cents`）：不回绕、不 panic。合法输入（`first_line + index`
+            // 可表示）逐位不变。
+            let line_no = first_line.saturating_add(index);
             if raw_line.len() > limits.max_line_bytes {
                 return Err(SfzError::LineTooLong {
                     line: line_no,

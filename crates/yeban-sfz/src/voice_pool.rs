@@ -1246,6 +1246,36 @@ mod tests {
     }
 
     #[test]
+    fn a_rate_change_does_not_rescale_an_in_flight_steal_fade_in() {
+        // 类别 2（变更后沿用旧系数）的第二条轴：淡**入**计数。
+        // 上一条判据钉的是 `retire` 的淡出计数；这条钉窃取路径的 `fade_in_remaining`：
+        // 它的长度同样是**窃取那一刻**由 `StealFade` 定下的，换采样率只影响此后
+        // 新发生的窃取，绝不改写已经在飞的那一条。
+        let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
+        pool.note_on(60, 100, -6.0);
+        pool.note_on(61, 100, -6.0);
+        let stolen = pool.note_on(62, 100, -6.0).started();
+        let in_flight = pool.voice(stolen).expect("still active").fade_in_remaining;
+        assert_eq!(in_flight, 144, "3ms @ 48kHz");
+
+        pool.set_sample_rate(96_000.0);
+        assert_eq!(
+            pool.voice(stolen).expect("still active").fade_in_remaining,
+            in_flight,
+            "the rate change must not rescale a fade-in that is already in flight"
+        );
+        assert_eq!(pool.steal_fade().samples(), 288, "3ms @ 96kHz");
+
+        // 新发生的窃取用新采样率定下的长度。
+        let next = pool.note_on(63, 100, -6.0).started();
+        assert_eq!(
+            pool.voice(next).expect("still active").fade_in_remaining,
+            288,
+            "a fade-in armed after the rate change uses the new length"
+        );
+    }
+
+    #[test]
     fn retire_without_an_intervening_process_is_idempotent() {
         let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
         let handle = pool.note_on(60, 100, -6.0).started();

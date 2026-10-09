@@ -384,6 +384,115 @@ fn parse_sources_on_empty_input_is_an_empty_instrument() {
     assert!(instrument.is_empty());
 }
 
+/// 参数轴的极值：本 crate 唯一一处「调用方直接给的域外整数」是
+/// [`yeban_sfz::SfzSource::first_line`]（`pub` 字段，类型合法、域非法），而解析器要算
+/// `first_line + 行偏移`。
+///
+/// 修复前实测（`/tmp` 的 `catch_unwind` 探针；352 个参数组合 = `parse_text` 的文本 × 上限变体
+/// 与 `parse_sources` 的 `first_line` 变体，其中 **4 次 panic，全部同一根因**）：
+///
+/// - debug 构建（`cfg(debug_assertions)=true`）：`first_line = usize::MAX` 配两行以上文本
+///   ⇒ `attempt to add with overflow`（那个加法就在 `Parser::run` 的逐行循环里）。
+/// - release 构建（同一探针，不 panic）：同一输入的 `source_line` 读数是
+///   `[18446744073709551615, 0]` —— 第二行**回绕到 0**，即行号静默失真。
+///
+/// 修复后同一组 352 个组合 0 次 panic；可表示的 `first_line` 逐位不变。
+#[test]
+fn a_first_line_near_the_top_of_usize_neither_panics_nor_wraps() {
+    let limits = ParseLimits::default();
+
+    // 对照读数（必须逐位不变）：可表示的 `first_line` 与行偏移正常相加。
+    let ordinary = [yeban_sfz::SfzSource {
+        path: "p.sfz".to_string(),
+        text: "<region>sample=a.wav\n<region>sample=b.wav\n".to_string(),
+        first_line: 7,
+    }];
+    let instrument = parse_sources(&ordinary, &limits).expect("ordinary first_line parses");
+    let lines: Vec<usize> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.source_line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![7, 8],
+        "representable line numbers are unchanged"
+    );
+
+    // 边界（必须**不**提前饱和）：`usize::MAX - 1` 配两行，行号恰好是 MAX-1 与 MAX。
+    let boundary = [yeban_sfz::SfzSource {
+        path: "p.sfz".to_string(),
+        text: "<region>sample=a.wav\n<region>sample=b.wav\n".to_string(),
+        first_line: usize::MAX - 1,
+    }];
+    let instrument = parse_sources(&boundary, &limits).expect("the last representable line parses");
+    let lines: Vec<usize> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.source_line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![usize::MAX - 1, usize::MAX],
+        "the highest representable line must not saturate early"
+    );
+
+    // 越界参数：不得 panic、不得回绕。饱和后两行都读 `usize::MAX`（回绕会读成 0）。
+    let saturated = [yeban_sfz::SfzSource {
+        path: "p.sfz".to_string(),
+        text: "<region>sample=a.wav\n<region>sample=b.wav\n".to_string(),
+        first_line: usize::MAX,
+    }];
+    let instrument =
+        parse_sources(&saturated, &limits).expect("an extreme first_line must not panic");
+    let lines: Vec<usize> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.source_line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![usize::MAX, usize::MAX],
+        "an unrepresentable line number saturates instead of wrapping to 0"
+    );
+
+    // 错误载荷走同一条加法：坏 opcode 落在饱和的那一行，报出的行号也必须是 MAX（不是 0）。
+    let bad = [yeban_sfz::SfzSource {
+        path: "p.sfz".to_string(),
+        text: "<region>sample=a.wav\n<region>sample=b.wav volume=zzz\n".to_string(),
+        first_line: usize::MAX,
+    }];
+    let error = parse_sources(&bad, &limits).expect_err("zzz is not a float");
+    assert!(
+        matches!(
+            error,
+            SfzError::InvalidFloat {
+                line: usize::MAX,
+                ..
+            }
+        ),
+        "unexpected verdict: {error:?}"
+    );
+
+    // 单行片段在 `usize::MAX` 上仍然可表示 ⇒ 行号原样，不饱和。
+    let single = [yeban_sfz::SfzSource {
+        path: "p.sfz".to_string(),
+        text: "<region>sample=a.wav volume=zzz\n".to_string(),
+        first_line: usize::MAX,
+    }];
+    let error = parse_sources(&single, &limits).expect_err("zzz is not a float");
+    assert!(
+        matches!(
+            error,
+            SfzError::InvalidFloat {
+                line: usize::MAX,
+                ..
+            }
+        ),
+        "unexpected verdict: {error:?}"
+    );
+}
+
 #[test]
 fn parse_text_reports_includes_it_did_not_resolve() {
     let instrument =
