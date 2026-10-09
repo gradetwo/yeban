@@ -2496,6 +2496,130 @@ mod tests {
         assert_eq!(project.validate(), Ok(()));
     }
 
+    /// 类别⑤（幂等性）：[`YebanProjectV1`] 的六个**增删入口**重复调用第二遍必须被拒绝，
+    /// 且文档**逐字节不动**。
+    ///
+    /// 为什么需要这条：既有判据 `note_insertion_and_removal_are_checked` 只覆盖
+    /// `insert_note` / `remove_note` 的错误码，**没有**断言"被拒之后文档没变"，
+    /// 而 `insert_track` / `insert_clip` / `remove_track` / `remove_clip` 四条
+    /// **连错误码都没有判据**。"先改一半再发现身份重复"正是这类入口最容易犯的错。
+    /// 读数（改动前，在 `src/project.rs` 的测试区内取行号）：`TrackNotFound` 只有 1 处命中，
+    /// 落在 `validate()` 判据 `dangling_folder_and_clip_references_are_rejected` 里；
+    /// `ClipNotFound` 同理 1 处；`DuplicateEntityId` 2 处，分别在路由节点与音符上 ——
+    /// 四条增删入口一个都没有。
+    ///
+    /// 单位：六个入口各一对调用，比较的是 `serde_json::to_vec` 的字节数组。
+    #[test]
+    fn repeated_insert_and_remove_are_rejected_without_touching_the_document() {
+        /// 先记下"第一遍之前"的字节，再断言"第一遍真的改了"，
+        /// 最后断言第二遍返回**指定错误码**且字节回到第一遍之后的那一串。
+        fn assert_repeat_rejected(
+            label: &str,
+            mut project: YebanProjectV1,
+            expected: ModelError,
+            apply: impl Fn(&mut YebanProjectV1) -> Result<(), ModelError>,
+        ) {
+            let before = serde_json::to_vec(&project).expect("序列化");
+            apply(&mut project).unwrap_or_else(|error| panic!("{label} 第一遍必须成功: {error}"));
+            let after_first = serde_json::to_vec(&project).expect("序列化");
+            assert_ne!(before, after_first, "{label} 第一遍必须真的改变文档");
+            assert_eq!(
+                apply(&mut project),
+                Err(expected),
+                "{label} 第二遍必须被拒绝"
+            );
+            assert_eq!(
+                serde_json::to_vec(&project).expect("序列化"),
+                after_first,
+                "{label} 第二遍被拒之后文档必须逐字节不动"
+            );
+            project
+                .validate()
+                .unwrap_or_else(|error| panic!("{label} 两次调用之后文档必须仍合法: {error}"));
+        }
+
+        let track_id = fixture_id(1);
+        let master_id = fixture_id(2);
+        let clip_id = fixture_id(3);
+        let note_id = fixture_id(4);
+
+        // 夹具：一条主总线 + 一个 MIDI 片段（主总线必须在 `nodes` 里，否则 `validate()` 拒绝）。
+        let fixture = || {
+            let mut project = YebanProjectV1 {
+                tracks: BTreeMap::from([(master_id, master_track(master_id))]),
+                master_bus_track_id: master_id,
+                routing_graph: RoutingGraph {
+                    nodes: vec![master_id],
+                    edges: BTreeMap::new(),
+                },
+                ..YebanProjectV1::default()
+            };
+            project
+                .insert_clip(midi_clip(clip_id))
+                .expect("夹具片段必须能插入");
+            project
+        };
+
+        // ① 同一音轨插入两次。
+        let track = midi_track(track_id);
+        assert_repeat_rejected(
+            "insert_track",
+            fixture(),
+            ModelError::DuplicateEntityId { id: track_id },
+            |project| project.insert_track(track.clone()),
+        );
+
+        // ② 同一片段插入两次。
+        let extra_clip = midi_clip(fixture_id(5));
+        assert_repeat_rejected(
+            "insert_clip",
+            fixture(),
+            ModelError::DuplicateEntityId { id: fixture_id(5) },
+            |project| project.insert_clip(extra_clip.clone()),
+        );
+
+        // ③ 同一音轨移除两次（先建一条待移除的音轨）。
+        let mut with_track = fixture();
+        with_track
+            .insert_track(midi_track(track_id))
+            .expect("建待移除音轨");
+        assert_repeat_rejected(
+            "remove_track",
+            with_track,
+            ModelError::TrackNotFound { id: track_id },
+            |project| project.remove_track(&track_id).map(|_removed| ()),
+        );
+
+        // ④ 同一片段移除两次。
+        assert_repeat_rejected(
+            "remove_clip",
+            fixture(),
+            ModelError::ClipNotFound { id: clip_id },
+            |project| project.remove_clip(&clip_id).map(|_removed| ()),
+        );
+
+        // ⑤ 同一音符插入两次。
+        let note = MidiNote::new(note_id, 0, 60, 240);
+        assert_repeat_rejected(
+            "insert_note",
+            fixture(),
+            ModelError::DuplicateEntityId { id: note_id },
+            |project| project.insert_note(&clip_id, note.clone()),
+        );
+
+        // ⑥ 同一音符移除两次。
+        let mut with_note = fixture();
+        with_note
+            .insert_note(&clip_id, MidiNote::new(note_id, 0, 60, 240))
+            .expect("建待移除音符");
+        assert_repeat_rejected(
+            "remove_note",
+            with_note,
+            ModelError::NoteNotFound { id: note_id },
+            |project| project.remove_note(&clip_id, &note_id).map(|_removed| ()),
+        );
+    }
+
     #[test]
     fn audio_clip_rejects_note_operations() {
         let clip_id = fixture_id(3);

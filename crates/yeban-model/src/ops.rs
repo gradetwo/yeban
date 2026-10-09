@@ -169,6 +169,17 @@ pub enum Op {
         previous_note: MidiNote,
     },
     /// 平移音符（tick 与音高增量）。
+    ///
+    /// ⚠ **本变体是全集里唯一的相对变换**：载荷是**增量**（`delta_*`）而不是旧值，
+    /// 因此前置条件**无法**判定"这一遍是不是重复施加" —— 同一 `MoveNote` 连续施加两次
+    /// 会把增量**再加一次**（对比 [`Op::MoveClipPlacement`]：那个携带 `old_start_tick`
+    /// 与 `new_start_tick`，第二遍必然被前置条件拒绝）。
+    ///
+    /// 这是契约本身（字段形状由 `schemas/ops.schema.json` 规定，模型层改不动），
+    /// 不是可以在这里修掉的缺陷；但它意味着**调用方不得盲目重试**同一 `MoveNote`。
+    /// 工具面的重放由 `yeban-mcp` 的 `idempotencyKey` 缓存挡住（不是本 crate 的职责）。
+    /// 该"唯一例外"由判据 `re_applying_the_same_op_is_rejected_and_leaves_the_document_byte_identical`
+    /// 双向登记：谁把 `MoveNote` 改成绝对值形态，那条判据会要求同步更新登记表。
     MoveNote {
         /// 所属音轨。
         track_id: EntityId,
@@ -2510,6 +2521,125 @@ mod tests {
             assert_eq!(doc, snapshot, "{} 的逆操作必须精确还原", op.name());
             doc.validate()
                 .unwrap_or_else(|error| panic!("{} 撤销后文档必须仍合法: {error}", op.name()));
+        }
+    }
+
+    /// 类别⑤（幂等性）：同一 `Op` 连续施加**两次**之后，文档必须与只施加一次**逐字节相同**。
+    ///
+    /// 为什么需要这条：`MUST-GATE-010` 的 `proptest` 量的是"施加 N 步再逆序撤销 N 步 ⇒
+    /// 状态守恒"，也就是**逆向**幂等；改动前 `ops.rs` 的测试模块里 **19** 条 `#[test]`
+    /// （读数：`grep -c '^\s*#\[test\]' src/ops.rs`）没有一条量**正向重放**。
+    /// 而"重放同一条 op 会不会把状态改两遍"恰恰是重试 / 重连 / AI 代理重复提交的安全前提
+    /// （`MCP-TOOL-006` 的 `idempotencyKey` 就是为它存在的）。
+    ///
+    /// 机械枚举：`showcase_ops()` 的 **35** 条覆盖 `Op` 的**全部 31 个变体**
+    /// （由 `every_op_variant_is_declared_in_the_contract` 从源码的穷举 `match` 机械抽取证明），
+    /// 每一条都在**全新** `fixture_document()` 上跑（与
+    /// `every_variant_applies_and_inverts_exactly` 同一前提：脚本里的每条 op 都针对初始文档构造）。
+    ///
+    /// 判定分三类，**双向**登记：
+    ///
+    /// | 类 | 行为 | 期望 |
+    /// | :--- | :--- | :--- |
+    /// | 值变换（绝大多数） | 第二遍被前置条件拒绝（`Err`） | 文档与第一遍之后**逐字节相同** |
+    /// | 相对变换（[`Op::MoveNote`]） | 第二遍被接受，增量**再加一次** | 必须在登记表里，且差值恰好是那一个增量 |
+    /// | 其它 | —— | 红 |
+    ///
+    /// 登记表是双向的：漏登记（观察到的"被接受"不在表里）与多登记（表里的名字没被接受）
+    /// 都会让判据变红。因此谁把某个变体从相对改成绝对值（或反之），都必须同步改这张表。
+    #[test]
+    fn re_applying_the_same_op_is_rejected_and_leaves_the_document_byte_identical() {
+        /// 集合里**唯一**的相对变换（见 [`Op::MoveNote`] 的文档）。
+        const RELATIVE_TRANSFORMS: [&str; 1] = ["MoveNote"];
+
+        let all_ops = showcase_ops();
+        let mut accepted_second_apply: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
+
+        for op in &all_ops {
+            let name = op.name();
+            let mut doc = fixture_document();
+            op.apply(&mut doc)
+                .unwrap_or_else(|error| panic!("{name} 第一遍必须成功: {error}"));
+            // 空转的前提对照：这条 op 必须真的改变了文档，否则下面的比较没有内容。
+            assert_ne!(doc, fixture_document(), "{name} 必须真的改变文档");
+
+            let after_once = serde_json::to_vec(&doc).expect("序列化第一遍之后的状态");
+            let second = op.apply(&mut doc);
+            let after_twice = serde_json::to_vec(&doc).expect("序列化第二遍之后的状态");
+
+            match second {
+                Ok(()) => {
+                    accepted_second_apply.insert(name);
+                    assert!(
+                        RELATIVE_TRANSFORMS.contains(&name),
+                        "{name} 的第二遍被接受了，但它不在相对变换登记表里 —— \
+                         要么它是缺陷，要么请把它登记进 RELATIVE_TRANSFORMS 并写清理由"
+                    );
+                    assert_ne!(
+                        after_once, after_twice,
+                        "{name} 被登记为相对变换，第二遍就必须真的**再动一次**状态"
+                    );
+                }
+                Err(_) => {
+                    assert!(
+                        !RELATIVE_TRANSFORMS.contains(&name),
+                        "{name} 已在相对变换登记表里，第二遍却被拒绝了 —— 请同步删掉登记"
+                    );
+                    assert_eq!(
+                        after_once, after_twice,
+                        "{name} 的第二遍被拒绝，文档就必须逐字节不动"
+                    );
+                }
+            }
+        }
+
+        assert_eq!(
+            accepted_second_apply,
+            RELATIVE_TRANSFORMS
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            "相对变换登记表必须与实测的\"第二遍被接受\"集合**一一对应**（双向）"
+        );
+        assert_eq!(
+            all_ops.len(),
+            35,
+            "showcase 脚本的条数变了 —— 新变体必须同时进脚本与本判据的登记表"
+        );
+    }
+
+    /// 类别⑤（确定性）：同一条 `Op` / 同一条 `StampedOp` 连续序列化两次必须**逐字节相同**。
+    ///
+    /// 判什么：`serde_json::to_vec` 两次的字节数组长度与内容（单位 = 字节）。
+    /// 为什么需要：`Op` 的载荷里有 `f32`（`SetParam` / `SetRoutingGain` / `SetMacro`）、
+    /// 嵌套的 `BTreeMap`（自动化点）与外部标签枚举；任何一处引入哈希序或浮点格式化抖动，
+    /// 都会让"同一份 op 日志导出两次不同"，而既有判据只做了一次 `to_value` 往返。
+    #[test]
+    fn every_op_and_stamped_op_serializes_twice_byte_identically() {
+        for op in showcase_ops() {
+            let name = op.name();
+            let first = serde_json::to_vec(&op).expect("序列化第一遍");
+            let second = serde_json::to_vec(&op).expect("序列化第二遍");
+            assert_eq!(first, second, "{name} 两次序列化必须逐字节相同");
+
+            let after_round_trip: Op = serde_json::from_slice(&first).expect("反序列化必须成功");
+            assert_eq!(
+                serde_json::to_vec(&after_round_trip).expect("往返后再序列化"),
+                first,
+                "{name} 反序列化后再序列化必须回到同一串字节"
+            );
+        }
+
+        for origin in all_origin_variants() {
+            let stamped = StampedOp::new(origin, 42, showcase_ops()[0].clone());
+            let first = serde_json::to_vec(&stamped).expect("序列化第一遍");
+            let second = serde_json::to_vec(&stamped).expect("序列化第二遍");
+            assert_eq!(
+                first, second,
+                "来源 {:?} 的 StampedOp 两次序列化必须逐字节相同",
+                stamped.origin
+            );
         }
     }
 

@@ -523,6 +523,18 @@ pub fn asset_entry_name(hash: &AssetHash) -> String {
 /// **同样**做路径与重复名校验，否则我们能写出自己读不回来的容器
 /// （"写得出、读不回"就是最坏的一种失配，必须让它变成编译期可见的 `Result`）。
 ///
+/// # 顺序与确定性
+///
+/// 条目**按调用方给的顺序**写出，两级时间戳常量化为 `DOS_TIME` ⇒ 同一份输入两次写出
+/// 逐字节相同（`ARCH-DET-001`，由公共断言 `assert_round_trip` 钉住，它被 4 条判据调用：
+/// `empty_container_round_trips` / `single_entry_round_trips` / `multi_entry_round_trips` /
+/// `megabyte_payload_round_trips_byte_exact`）。
+/// **输入顺序本身是输入的一部分**：同一个逻辑内容换一个条目顺序会得到不同的归档字节。
+/// 需要"顺序无关"请用 [`write_project_container`]（按资产哈希升序排）或
+/// [`write_project_container_borrowed`]（同样按哈希升序排，判据
+/// `project_container_is_independent_of_btreemap_insertion_order` 与
+/// `borrowed_asset_writer_is_independent_of_input_slice_order` 钉住）。
+///
 /// # Errors
 ///
 /// 条目名不安全（见 [`normalize_entry_name`]）、大小写折叠后重名、条目数或体积超出 ZIP32 上限。
@@ -550,7 +562,7 @@ pub fn read_container(
 ///
 /// 资产以调用方给的 `BTreeMap` 顺序写出（**键序确定**，[`crate::project::YebanProjectV1`]
 /// 的 `assets` 索引也是 `BTreeMap`）⇒ 同一工程内容两次写出的字节完全相同
-/// （`ARCH-DET-001`，由判据 `project_container_ignores_btreemap_insertion_order` 钉住）。
+/// （`ARCH-DET-001`，由判据 `project_container_is_independent_of_btreemap_insertion_order` 钉住）。
 ///
 /// 本函数是 [`write_project_container_borrowed`] 的适配层：它只借用 `BTreeMap` 里的
 /// 资产字节 ⇒ 写出路径**不再为任何一条资产复制一份 `Vec<u8>`**。

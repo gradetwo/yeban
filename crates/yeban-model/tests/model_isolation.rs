@@ -989,6 +989,44 @@ fn local_config_round_trip_is_field_exact_and_deterministic() {
     assert!(relative.to_json().is_err(), "相对路径必须拒绝");
 }
 
+/// 类别⑤／③：同一份本机配置**写两次**必须把文件覆盖成**同一串字节**，
+/// 而且"读回来的配置再写一次"仍是同一串字节。
+///
+/// 判什么：`std::fs::read` 回来的文件字节（单位 = 字节）。
+/// 为什么需要：同一个文件的 `to_json` 两次逐字节相同已有判据
+/// （`local_config_round_trip_is_field_exact_and_deterministic`），但**落盘那一步**没有：
+/// `save_to` 一旦从 `truncate(true)` 变成追加（`append(true)` 或漏掉 `truncate`），
+/// 多次保存会让文件里叠出多份 JSON —— `to_json` 的判据全绿，坏掉的却正是磁盘上的事实源。
+#[test]
+fn repeated_saves_overwrite_in_place_and_are_byte_identical() {
+    let config = populated_config();
+    let home = TempDir::new("repeated-save");
+    let path = LocalMachineConfig::path_for_home(&home.path);
+
+    config.save_to(&path).expect("第一次保存");
+    let first = std::fs::read(&path).expect("读文件");
+    config.save_to(&path).expect("第二次保存");
+    let second = std::fs::read(&path).expect("读文件");
+    assert_eq!(
+        first, second,
+        "同一配置连续两次保存必须把文件写成同一串字节（不得追加）"
+    );
+    assert_eq!(
+        first,
+        config.to_json().expect("序列化"),
+        "落盘字节必须就是 to_json 的字节（不得多出包装或补白）"
+    );
+
+    // 重载再写：字节必须原样回到磁盘（类别③ 的"重新加载后与全新实例一致"）。
+    let reloaded = LocalMachineConfig::load_from(&path).expect("重载");
+    reloaded.save_to(&path).expect("重载后再保存");
+    assert_eq!(
+        std::fs::read(&path).expect("读文件"),
+        first,
+        "重载再写必须逐字节回到同一串字节"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ⑪ 密钥本体不入盘：只有引用名
 // ---------------------------------------------------------------------------

@@ -209,6 +209,12 @@ fn project_container_round_trips() {
 }
 
 /// `ARCH-DET-001`：`BTreeMap` 的插入顺序不影响归档字节（键序确定 ⇒ 字节确定）。
+///
+/// ⚠ 注意本条的**判别力有限**：`BTreeMap` 的迭代序由键序决定，与插入顺序无关，
+/// 因此下面的 `.rev()` 之后迭代序与原来**逐元素相同** —— 它证明的是
+/// "`write_project_container` 不读 `BTreeMap` 的内部布局"，**不是**"写入器对任意
+/// 输入顺序免疫"。后者由 `borrowed_asset_writer_is_independent_of_input_slice_order`
+/// （确定性反转）与 `borrowed_asset_writer_is_permutation_invariant`（proptest 旋转）承担。
 #[test]
 fn project_container_is_independent_of_btreemap_insertion_order() {
     let (project, history, assets) = project_fixture();
