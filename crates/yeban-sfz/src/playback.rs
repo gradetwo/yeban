@@ -1100,6 +1100,7 @@ mod tests {
                             sw_up: None,
                             cc_gates: Vec::new(),
                             crossfades: Vec::new(),
+                            labels: crate::label::Labels::default(),
                             source_line: 1,
                         };
                         let ratio = region.pitch_ratio(note);

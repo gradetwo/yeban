@@ -42,6 +42,14 @@
 //! —— 两条取舍都登记在 [`crossfade`] 的模块文档里。改动前这一族被完全忽略；在登记的
 //! 1267 个可解析音色上它命中 68 个文件、7812 个 region（共 9259 段）。
 //!
+//! 标签族（`sw_label` / `label_ccN` / `region_label` / `group_label` / `master_label` /
+//! `global_label`）是 ARIA 的 GUI 元数据：它**不改变**任何 region 选择或渲染结果。
+//! 归约进 [`Region::labels`]（[`Labels`]），文件级 `<control>` 里的 `label_ccN` 另见
+//! [`Instrument::cc_labels`]，「当前选中的 keyswitch 名字」见
+//! [`Instrument::keyswitch_label`]。取值全是 [`std::borrow::Cow`]，无宏替换时零拷贝。
+//! 这一族的规范出处、`label_ccN` 下标上界与 `scope_label` 优先序两条工程裁决
+//! 都登记在 [`label`] 的模块文档里。
+//!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2 ARCH-RT-001 / ARCH-RT-004
@@ -302,6 +310,7 @@ pub mod curve;
 pub mod effect;
 pub mod error;
 pub mod instrument;
+pub mod label;
 pub mod midi;
 pub mod parser;
 pub mod playback;
@@ -317,6 +326,7 @@ pub use instrument::{
     LoopMode, OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PlayDirection, Region,
     RegionQuery, SampleEnd, Trigger, TriggerEvent,
 };
+pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use midi::{MidiOpcode, MidiSection};
 pub use parser::{
     Header, IncludeResolver, OpcodeValue, ParseLimits, SfzSource, Warning, parse_f32, parse_int,

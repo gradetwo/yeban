@@ -205,6 +205,43 @@ const MALFORMED_SAMPLES: &[&str] = &[
     "<global>amp_velcurve_64=0.1\n<master>amp_velcurve_64=0.2\n<group>amp_velcurve_64=0.3\n<region>sample=a.wav amp_velcurve_64=0.4",
     "<region>sample=a.wav amp_velcurve_1=0.2 amp_velcurve_3=0.3",
     "<region>sample=a.wav amp_veltrack=0 amp_velcurve_1=0.5",
+    // `*_label` 头族已建模（见 `labels_are_modeled_and_the_cc_index_is_range_checked_explicitly`）：
+    // 这里只要求「任何字节都只允许 Ok / Err，不允许 panic」。
+    "<region>sample=a.wav sw_label=",
+    "<region>sample=a.wav sw_label",
+    "<region>sample=a.wav sw_label=$",
+    "<region>sample=a.wav sw_label=$UNDEFINED_VAR",
+    "<region>sample=a.wav sw_label=\"unterminated",
+    "<region>sample=a.wav sw_label=\"\"",
+    "<region>sample=a.wav sw_label=//comment-only",
+    "<region>sample=a.wav sw_label=中文字\u{1F600}",
+    "<region>sample=a.wav group_label=",
+    "<region>sample=a.wav master_label=",
+    "<region>sample=a.wav global_label=",
+    "<region>sample=a.wav region_label=$UNDEFINED_VAR",
+    "<region>sample=a.wav label_cc",
+    "<region>sample=a.wav label_cc=",
+    "<region>sample=a.wav label_cc=1",
+    "<region>sample=a.wav label_ccX=1",
+    "<region>sample=a.wav label_cc7x=1",
+    "<region>sample=a.wav label_cc-1=1",
+    "<region>sample=a.wav label_cc7 =1",
+    "<region>sample=a.wav label_cc0=Zero",
+    "<region>sample=a.wav label_cc65535=Top",
+    "<region>sample=a.wav label_cc65536=Over",
+    "<region>sample=a.wav label_cc99999999999999999999999999=Over",
+    "<region>sample=a.wav label_cc00000000000000000000000007=Seven",
+    "<region>sample=a.wav label_cc7=a label_cc7=b",
+    "<global>label_cc7=a\n<master>label_cc7=b\n<group>label_cc7=c\n<region>sample=a.wav label_cc7=d",
+    "<control>label_cc7=a\n<control>label_cc7=b\n<region>sample=a.wav",
+    "<curve>label_cc7=x\n<region>sample=a.wav",
+    "<effect>label_cc7=x\n<region>sample=a.wav",
+    "<midi>label_cc7=x\n<region>sample=a.wav",
+    "<midi>sw_label=x\n<region>sample=a.wav",
+    "<curve>curve_index=7\nsw_label=x\n<region>sample=a.wav",
+    "<region>sample=a.wav sw_last=36 sw_label=A - F#m",
+    "<region>sample=a.wav sw_last=36 sw_label=4'+8'",
+    "<region>sample=a.wav sw_last=36 sw_label=Loud Pedal key=36",
 ];
 
 #[test]
@@ -905,6 +942,104 @@ fn bend_range_is_modeled_and_range_checked_explicitly() {
                 .to_bits(),
             plain.regions()[0].pitch_ratio(note).to_bits(),
             "note {note}"
+        );
+    }
+}
+
+#[test]
+fn labels_are_modeled_and_the_cc_index_is_range_checked_explicitly() {
+    let limits = ParseLimits::default();
+
+    // 缺省：「没说」= `None` / 空表（规范表这一族的 Default 列全是 `N/A`）。
+    let default = parse_text("<region>sample=a.wav", &limits).expect("parses");
+    let labels = &default.regions()[0].labels;
+    assert!(labels.is_empty());
+    assert_eq!(labels.scope_label(), None);
+    assert_eq!(labels.cc_label(7), None);
+    assert!(default.cc_labels().is_empty());
+    assert_eq!(default.keyswitch_label(None), None);
+
+    // `sw_label` 的四级链与登记语料的形态（`assets/samples/vcsl/` 写在 `<group>` 段）。
+    let inherited = parse_text(
+        "<group>sw_last=93 sw_label=Bowed\n<region>sample=a.wav",
+        &limits,
+    )
+    .expect("parses");
+    assert_eq!(
+        inherited.regions()[0].labels.keyswitch_label.as_deref(),
+        Some("Bowed")
+    );
+
+    // `label_ccN` 的下标上界是 u16 的容器界；越界是明确 Err，不静默丢弃。
+    assert_eq!(
+        parse_text("<region>sample=a.wav label_cc65535=Top", &limits)
+            .expect("65535 is the container bound")
+            .regions()[0]
+            .labels
+            .cc_label(65535),
+        Some("Top")
+    );
+    let over = parse_text("<region>sample=a.wav label_cc65536=Over", &limits);
+    assert!(
+        matches!(
+            over,
+            Err(SfzError::IntegerOutOfRange { ref opcode, value, min, max, .. })
+                if opcode == "label_cc65536" && value == 65536 && min == 0 && max == 65535
+        ),
+        "label_cc65536 must be an explicit IntegerOutOfRange, got {over:?}"
+    );
+    // 超长数字串同样只能得到 `Ok` / `Err`，不能 panic（载荷按 i64 饱和）。
+    let absurd = parse_text(
+        "<region>sample=a.wav label_cc99999999999999999999999999=Over",
+        &limits,
+    );
+    assert!(
+        matches!(absurd, Err(SfzError::IntegerOutOfRange { .. })),
+        "an absurd index must be an explicit Err, got {absurd:?}"
+    );
+
+    // 「名字不像 `label_ccN`」与「下标越界」不是同一件事：前者按未知 opcode 忽略。
+    let ignored = parse_text(
+        "<region>sample=a.wav label_cc=Empty label_ccX=Bad label_cc7x=Bad label_cc-1=Bad",
+        &limits,
+    )
+    .expect("these names are not label_ccN and must not be errors");
+    assert!(ignored.regions()[0].labels.cc_labels.is_empty());
+
+    // 定义段（`<curve>` / `<effect>` / `<midi>`）里的标签不进继承链。
+    for header in ["<curve>", "<effect>", "<midi>"] {
+        let source = format!("{header}label_cc7=x sw_label=y\n<region>sample=a.wav");
+        let instrument = parse_text(&source, &limits).expect("parses");
+        assert!(
+            instrument.regions()[0].labels.is_empty(),
+            "{header} must not leak labels into a region"
+        );
+        assert!(
+            instrument.cc_labels().is_empty(),
+            "{header} is not <control>"
+        );
+    }
+}
+
+#[test]
+fn structured_label_inputs_never_panic_and_are_deterministic() {
+    // 把「标签名字」的字母表做成偏置流：真正打到 `label_ccN` 的解析分支
+    // （前缀、全数字后缀、u16 溢出、前导零）。判据只有「Ok / Err 都合法」+ 确定性。
+    const ALPHABET: &[u8] = b"label_cc0123456789sw_= \n\"$<>";
+    let limits = ParseLimits::default();
+    let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+    for _ in 0..2_000 {
+        let len = (rng.next() % 64) as usize;
+        let mut text = String::from("label_cc");
+        for _ in 0..len {
+            text.push(char::from(ALPHABET[(rng.next() as usize) % ALPHABET.len()]));
+        }
+        let first = parse_text(&text, &limits);
+        let second = parse_text(&text, &limits);
+        assert_eq!(
+            format!("{first:?}"),
+            format!("{second:?}"),
+            "non-deterministic verdict for {text:?}"
         );
     }
 }

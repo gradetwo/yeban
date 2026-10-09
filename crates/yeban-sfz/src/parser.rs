@@ -768,6 +768,16 @@ struct Parser<'a> {
     midi_opcode_total: usize,
     /// 当前 `<region>` 段头所在行（归约时用于错误定位）。
     region_line: usize,
+    /// `<control>` 段声明的 `label_ccN`（乐器级，见 [`Instrument::cc_labels`]）。
+    ///
+    /// 与 `control` 表的区别：`control` 会被新的 `<control>` 段**清空**
+    /// （ARIA 的 `default_path` 重置语义），而标签是声明式元数据，按「后者覆盖前者」
+    /// 累积，不被段头重置。
+    ///
+    /// **条目数上界**：只有写在 `<control>` 段里的名字才可能进这里，而每个新名字都要
+    /// 经过 `control` 表的 [`ParseLimits::max_opcodes_per_header`] 检查（超限即整段
+    /// `Err`）。因此本表的长度与 `control` 表同级，不需要第二条上限。
+    control_cc_labels: BTreeMap<u16, Cow<'a, str>>,
     warnings: Vec<Warning>,
     warnings_truncated: bool,
 }
@@ -816,6 +826,7 @@ impl<'a> Parser<'a> {
             midi_opcodes: Vec::new(),
             midi_opcode_total: 0,
             region_line: 1,
+            control_cc_labels: BTreeMap::new(),
             warnings: Vec::new(),
             warnings_truncated: false,
         }
@@ -857,6 +868,15 @@ impl<'a> Parser<'a> {
         }
         let limit = self.limits.max_opcodes_per_header;
         let scope = self.scope;
+        // `<control>` 是**文件级**作用域，不属于 `region → group → master → global`
+        // 继承链（本 crate 此前只用它读 `default_path`）。`label_ccN` 也在这里声明：
+        // 登记语料里它的 1672 处出现全部落在 `<control>` 段。因此在写进控制表之前
+        // 先抄一份到乐器级的 CC 标签表（见 [`Instrument::cc_labels`]）。
+        if scope == Scope::Control
+            && let Some(index) = crate::label::cc_label_index(name.as_ref(), line)?
+        {
+            self.control_cc_labels.insert(index, value.clone());
+        }
         let Some((map, scope_name)) = self.map_for(scope) else {
             return Ok(());
         };
@@ -1366,6 +1386,7 @@ impl<'a> Parser<'a> {
             self.curves,
             self.effects,
             self.midi_sections,
+            self.control_cc_labels,
             self.warnings,
         )
     }

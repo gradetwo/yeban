@@ -19,6 +19,7 @@ use crate::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use crate::curve::{Curve, CurvePoint};
 use crate::effect::{Effect, EffectBus};
 use crate::error::SfzError;
+use crate::label::{Labels, cc_label_index};
 use crate::midi::MidiSection;
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
@@ -469,6 +470,14 @@ pub struct Region<'a> {
     /// 再按 CC 号升序的 CC 淡出。空集合表示该 region 没有任何 `xfin_*` / `xfout_*`，
     /// 此时 [`Region::crossfade_gain`] 恒为 1.0。
     pub crossfades: Vec<Crossfade>,
+    /// 标签集合（`sw_label` / `label_ccN` / `region_label` / `group_label` /
+    /// `master_label` / `global_label`，见 [`crate::label`]）。
+    ///
+    /// 标签是 ARIA 的 GUI 元数据：它**不改变**任何 region 选择、门控或渲染结果，
+    /// 因此没有对应的求值方法。此处只做归约；读取助手见 [`Labels::scope_label`] /
+    /// [`Labels::cc_label`]，文件级 `<control>label_ccN=…` 另见
+    /// [`Instrument::cc_labels`]。
+    pub labels: Labels<'a>,
     /// 该 region 的 `<region>` 段头所在行号（1-based）。
     pub source_line: usize,
 }
@@ -785,6 +794,13 @@ pub struct Instrument<'a> {
     /// `<midi>` 段定义的 MIDI 预处理器声明（文件出现顺序，确定性；不去重、空段也登记、
     /// 段内 opcode 原样保存不解释）。
     midi_sections: Vec<MidiSection<'a>>,
+    /// `<control>` 段里的 `label_ccN`（按 CC 下标升序，确定性；同一下标后者覆盖前者）。
+    ///
+    /// 与 [`Region::labels`] 的分工：`<control>` 是**文件级**作用域
+    /// （规范里 `<control>` 的 opcode 不属于 `region → group → master → global` 继承链，
+    /// 本 crate 此前只用它读 `default_path`），因此这些标签放在乐器上而不是每个 region 上。
+    /// 登记语料里 `label_ccN` 的 1672 处出现**全部**在 `<control>` 段里。
+    control_cc_labels: BTreeMap<u16, Cow<'a, str>>,
     /// 按音符分桶的 region 下标（加速 `region_for`，构造后只读）。
     key_buckets: Vec<Vec<u32>>,
     warnings: Vec<Warning>,
@@ -797,6 +813,7 @@ impl<'a> Instrument<'a> {
         curves: Vec<Curve>,
         effects: Vec<Effect<'a>>,
         midi_sections: Vec<MidiSection<'a>>,
+        control_cc_labels: BTreeMap<u16, Cow<'a, str>>,
         warnings: Vec<Warning>,
     ) -> Self {
         let mut key_buckets: Vec<Vec<u32>> = vec![Vec::new(); 128];
@@ -818,6 +835,7 @@ impl<'a> Instrument<'a> {
             curves,
             effects,
             midi_sections,
+            control_cc_labels,
             key_buckets,
             warnings,
         }
@@ -890,6 +908,51 @@ impl<'a> Instrument<'a> {
             return Some(curve.value_at(x));
         }
         Curve::built_in(index).map(|curve| curve.value_at(x))
+    }
+
+    /// `<control>` 段里声明的 `label_ccN` 标签表（按 CC 下标升序，确定性）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/label_ccN/>："Creates a label for the
+    /// MIDI CC."。`<control>` 不是 `region → group → master → global` 继承链的一环，
+    /// 因此这些标签挂在乐器上；写在四个继承作用域里的 `label_ccN` 则在
+    /// [`Region::labels`] 的 `cc_labels` 上（更具体的作用域优先，由调用方合并）。
+    ///
+    /// 下标上界 [`crate::label::MAX_CC_LABEL_INDEX`] 的理由见 [`crate::label`] 的模块文档。
+    /// 该调用零分配、无锁、无 I/O，可在实时路径使用。
+    #[must_use]
+    pub fn cc_labels(&self) -> &BTreeMap<u16, Cow<'a, str>> {
+        &self.control_cc_labels
+    }
+
+    /// 「当前生效的 keyswitch」对应的 `sw_label`（ARIA 的 GUI 行为）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/sw_label/> 的 "Practical
+    /// Considerations"："`sw_label` causes ARIA/Sforzando to display the most recent
+    /// selected keyswitch label appear on its interface."。
+    ///
+    /// `last` 是 `[sw_lokey, sw_hikey]` 范围内最后按下的音（与
+    /// [`Region::keyswitch_ok`] 的入参同口径）；传 [`None`] 表示调用方从未按过任何
+    /// keyswitch，此时按 `sw_default` 的「开机缺省值」语义取值
+    /// （出处 <https://sfzformat.com/opcodes/sw_default/>）。
+    ///
+    /// **判定规则**（工程裁决，规范只说要显示，没给算法）：按**文件出现顺序**扫描
+    /// region，返回第一个满足下面两条的 region 的 [`Labels::keyswitch_label`]：
+    ///
+    /// 1. 它声明了 `sw_last`（只有 `sw_label` 而没有 `sw_last` 的 region 不参与 ——
+    ///    没有 keyswitch 就没有「选中的 keyswitch」）；
+    /// 2. `sw_last == last.unwrap_or(该 region 生效的 sw_default)`。
+    ///
+    /// 因此 `last` 给出时**永远**胜过 `sw_default`（与 [`Region::keyswitch_ok`] 一致）。
+    /// 返回值借用 `self`；该调用零分配、无锁、无 I/O（线性扫描），可在实时路径使用。
+    #[must_use]
+    pub fn keyswitch_label(&self, last: Option<u8>) -> Option<&str> {
+        self.regions.iter().find_map(|region| {
+            let expected = region.sw_last?;
+            if last.or(region.sw_default) != Some(expected) {
+                return None;
+            }
+            region.labels.keyswitch_label.as_deref()
+        })
     }
 
     /// region 数量。
@@ -1273,6 +1336,9 @@ pub(crate) fn build_region<'a>(
     // ---- 交叉淡化（xfin_* / xfout_*，见 crate::crossfade） ----
     let crossfades = read_crossfades(&scopes, line)?;
 
+    // ---- 标签（`*_label` 头族，见 crate::label） ----
+    let labels = read_labels(&scopes, line)?;
+
     Ok(Some(Region {
         sample,
         default_path: default_path.filter(|path| !path.is_empty()),
@@ -1313,6 +1379,7 @@ pub(crate) fn build_region<'a>(
         sw_up,
         cc_gates,
         crossfades,
+        labels,
         source_line: line,
     }))
 }
@@ -1493,6 +1560,38 @@ fn read_xf_endpoint(name: &str, value: &str, line: usize) -> Result<u8, SfzError
         });
     }
     Ok(parsed as u8)
+}
+
+/// 把四个作用域里的 `*_label` 归约成一个 [`Labels`]。
+///
+/// 规范出处与工程裁决见 [`crate::label`] 的模块文档。三条口径：
+///
+/// - **五个单值标签**走 [`Scopes::get`] 的四级链（`region → group → master → global`），
+///   所以 `<group>sw_label=X` 会被该组下所有 region 继承 —— 这正是登记语料里的主流形态
+///   （`assets/samples/vcsl/` 把 `sw_label` 写在 `<group>` 段，`sw_last` 也写在同一段）。
+/// - **`label_ccN`** 与 CC 门控同一条归约方式：按 `global → master → group → region`
+///   的顺序喂入，同一 CC 下标后者覆盖前者。
+/// - **`label_ccN` 的下标越界**（大于 [`crate::label::MAX_CC_LABEL_INDEX`]）是明确
+///   [`SfzError::IntegerOutOfRange`]，不静默丢弃、也不静默截断。
+fn read_labels<'a>(scopes: &Scopes<'_, 'a>, line: usize) -> Result<Labels<'a>, SfzError> {
+    let mut cc_labels: BTreeMap<u16, Cow<'a, str>> = BTreeMap::new();
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let Some(index) = cc_label_index(name.as_ref(), line)? else {
+                continue;
+            };
+            cc_labels.insert(index, value.clone());
+        }
+    }
+    let single = |name: &'static str| scopes.get(name).map(|value| value.value);
+    Ok(Labels {
+        region_label: single("region_label"),
+        group_label: single("group_label"),
+        master_label: single("master_label"),
+        global_label: single("global_label"),
+        keyswitch_label: single("sw_label"),
+        cc_labels,
+    })
 }
 
 /// 把四个作用域里的 `xfin_*` / `xfout_*` 归约成一段交叉淡化集合。
@@ -1699,6 +1798,7 @@ mod tests {
             sw_up: None,
             cc_gates: Vec::new(),
             crossfades: Vec::new(),
+            labels: Labels::default(),
             source_line: 1,
         }
     }
@@ -2181,12 +2281,287 @@ mod tests {
     }
 
     #[test]
+    fn a_region_without_any_label_has_an_empty_label_set() {
+        // 规范表里这一族的 Default 列全是 N/A ⇒「没说」= `None` / 空表。
+        let instrument = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let labels = &instrument.regions()[0].labels;
+        assert!(labels.is_empty());
+        assert_eq!(labels.scope_label(), None);
+        assert_eq!(labels.keyswitch_label, None);
+        assert_eq!(labels.cc_label_count(), 0);
+        assert!(instrument.cc_labels().is_empty());
+        assert_eq!(instrument.keyswitch_label(None), None);
+    }
+
+    #[test]
+    fn sw_label_is_inherited_from_the_group_like_sw_last() {
+        // 登记语料的形态：`assets/samples/vcsl/` 把 `sw_last` 与 `sw_label` 一起写在
+        // `<group>` 段，`<region>` 只带 `sample`。
+        let instrument = parse_text(
+            "<group>sw_last=93 sw_label=Bowed\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.regions()[0].labels.keyswitch_label.as_deref(),
+            Some("Bowed")
+        );
+    }
+
+    #[test]
+    fn sw_label_keeps_spaces_and_punctuation_verbatim() {
+        // 登记语料里的真实取值：`A - F#m`（含空格与 `#`）、`4'+8'`（含撇号）、
+        // `Loud Pedal`（同一行后面还跟着别的 opcode 时的切分边界）。
+        let instrument = parse_text(
+            "<region>sample=a.wav sw_label=A - F#m\n\
+             <region>sample=b.wav sw_label=4'+8'\n\
+             <region>sample=c.wav sw_label=Loud Pedal key=36",
+            &Default::default(),
+        )
+        .expect("parses");
+        let regions = instrument.regions();
+        assert_eq!(
+            regions[0].labels.keyswitch_label.as_deref(),
+            Some("A - F#m")
+        );
+        assert_eq!(regions[1].labels.keyswitch_label.as_deref(), Some("4'+8'"));
+        assert_eq!(
+            regions[2].labels.keyswitch_label.as_deref(),
+            Some("Loud Pedal")
+        );
+        // 「一行多 opcode」的切分没有把后面的 `key=36` 吃进取值。
+        assert_eq!(regions[2].lokey, 36);
+        assert_eq!(regions[2].hikey, 36);
+    }
+
+    #[test]
+    fn a_label_without_macro_substitution_borrows_the_source_buffer() {
+        // 零拷贝契约：无 `$VAR` 时必须是 `Cow::Borrowed`。
+        let instrument = parse_text(
+            "<region>sample=a.wav sw_label=Loud Pedal group_label=Edge label_cc7=Volume",
+            &Default::default(),
+        )
+        .expect("parses");
+        let labels = &instrument.regions()[0].labels;
+        assert!(matches!(
+            labels.keyswitch_label,
+            Some(Cow::Borrowed("Loud Pedal"))
+        ));
+        assert!(matches!(labels.group_label, Some(Cow::Borrowed("Edge"))));
+        assert!(matches!(
+            labels.cc_labels.get(&7),
+            Some(Cow::Borrowed("Volume"))
+        ));
+    }
+
+    #[test]
+    fn a_label_with_macro_substitution_is_owned_and_still_exact() {
+        // 宏替换后那一行降级为 `Cow::Owned`，取值仍是替换后的文本（与 `sample` 同口径）。
+        let instrument = parse_text(
+            "#define $ART marcato\n<region>sample=a.wav sw_label=$ART",
+            &Default::default(),
+        )
+        .expect("parses");
+        let labels = &instrument.regions()[0].labels;
+        assert!(matches!(labels.keyswitch_label, Some(Cow::Owned(_))));
+        assert_eq!(labels.keyswitch_label.as_deref(), Some("marcato"));
+    }
+
+    #[test]
+    fn the_four_scope_labels_are_read_along_the_four_level_chain() {
+        let instrument = parse_text(
+            "<global>global_label=G\n\
+             <master>master_label=M\n\
+             <group>group_label=Grp\n\
+             <region>sample=a.wav region_label=R\n\
+             <region>sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let regions = instrument.regions();
+        assert_eq!(regions[0].labels.global_label.as_deref(), Some("G"));
+        assert_eq!(regions[0].labels.master_label.as_deref(), Some("M"));
+        assert_eq!(regions[0].labels.group_label.as_deref(), Some("Grp"));
+        assert_eq!(regions[0].labels.region_label.as_deref(), Some("R"));
+        // 生效标签取最具体的一个（工程裁决第 2 条，见 `crate::label`）。
+        assert_eq!(regions[0].labels.scope_label(), Some("R"));
+        // 第二个 region 没有自己的 `region_label`，退回 group 的。
+        assert_eq!(regions[1].labels.region_label, None);
+        assert_eq!(regions[1].labels.scope_label(), Some("Grp"));
+    }
+
+    #[test]
+    fn control_scope_cc_labels_are_file_level_and_not_regions() {
+        // 登记语料里 `label_ccN` 的 1672 处出现全部在 `<control>` 段。
+        let instrument = parse_text(
+            "<control>label_cc7=Volume label_cc400=Limiter thresh\n\
+             <region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.cc_labels().get(&7).map(Cow::as_ref),
+            Some("Volume")
+        );
+        assert_eq!(
+            instrument.cc_labels().get(&400).map(Cow::as_ref),
+            Some("Limiter thresh")
+        );
+        // `<control>` 不是继承链的一环：region 上不重复出现这些标签。
+        assert!(instrument.regions()[0].labels.cc_labels.is_empty());
+    }
+
+    #[test]
+    fn region_scope_cc_labels_follow_the_inheritance_chain() {
+        let instrument = parse_text(
+            "<global>label_cc7=Global volume\n\
+             <group>label_cc7=Group volume label_cc10=Pan\n\
+             <region>sample=a.wav label_cc7=Region volume",
+            &Default::default(),
+        )
+        .expect("parses");
+        let labels = &instrument.regions()[0].labels;
+        // 更具体的作用域覆盖更宽的（与 CC 门控同一条归约方式）。
+        assert_eq!(labels.cc_label(7), Some("Region volume"));
+        assert_eq!(labels.cc_label(10), Some("Pan"));
+        assert_eq!(labels.cc_label_count(), 2);
+    }
+
+    #[test]
+    fn an_out_of_container_cc_label_index_is_an_explicit_error() {
+        // 上界是 u16 的容器界（`crate::label::MAX_CC_LABEL_INDEX`）；越界明确 Err，
+        // 不静默丢弃。名字不像 `label_ccN` 的仍旧按未知 opcode 忽略。
+        let error = parse_text("<region>sample=a.wav label_cc65536=x", &Default::default())
+            .expect_err("65536 is above the u16 container bound");
+        assert!(
+            matches!(
+                &error,
+                SfzError::IntegerOutOfRange { opcode, value, min, max, .. }
+                    if opcode == "label_cc65536" && *value == 65536 && *min == 0
+                        && *max == i64::from(crate::label::MAX_CC_LABEL_INDEX)
+            ),
+            "unexpected error: {error:?}"
+        );
+        // 上界本身是合法的。
+        let instrument = parse_text(
+            "<control>label_cc65535=Top\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.cc_labels().get(&65535).map(Cow::as_ref),
+            Some("Top")
+        );
+        // 不像 `label_ccN` 的名字仍旧被忽略（不是错误）。
+        let instrument = parse_text(
+            "<region>sample=a.wav label_cc=Empty label_ccX=Bad label_cc7x=Bad",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(instrument.regions()[0].labels.cc_labels.is_empty());
+    }
+
+    #[test]
+    fn keyswitch_label_reads_the_active_keyswitch_and_the_power_on_default() {
+        // 与 <https://sfzformat.com/opcodes/sw_label/> 的示例结构一致：
+        // `sw_default` 开机缺省 36，三个 region 各自 `sw_last` + `sw_label`。
+        let instrument = parse_text(
+            "<global>sw_lokey=36 sw_hikey=40 sw_default=36\n\
+             <region>sw_last=36 sw_label=Sine lokey=41 sample=*sine\n\
+             <region>sw_last=38 sw_label=Triangle lokey=41 sample=*triangle\n\
+             <region>sw_last=40 sw_label=Saw lokey=41 sample=*saw",
+            &Default::default(),
+        )
+        .expect("parses");
+        // 从未按过任何 keyswitch ⇒ 走 `sw_default` 的开机缺省。
+        assert_eq!(instrument.keyswitch_label(None), Some("Sine"));
+        assert_eq!(instrument.keyswitch_label(Some(36)), Some("Sine"));
+        assert_eq!(instrument.keyswitch_label(Some(38)), Some("Triangle"));
+        assert_eq!(instrument.keyswitch_label(Some(40)), Some("Saw"));
+        // 落在 keyswitch 音域之外的值没有对应 region。
+        assert_eq!(instrument.keyswitch_label(Some(37)), None);
+    }
+
+    #[test]
+    fn keyswitch_label_needs_sw_last_and_an_explicit_default() {
+        // 只有 `sw_label` 而没有 `sw_last` 的 region 不参与：没有 keyswitch 就没有
+        // 「选中的 keyswitch」。
+        let instrument = parse_text("<region>sample=a.wav sw_label=Orphan", &Default::default())
+            .expect("parses");
+        assert_eq!(instrument.keyswitch_label(None), None);
+        assert_eq!(instrument.keyswitch_label(Some(60)), None);
+
+        // 有 `sw_last` 但没有 `sw_default` 时，`None` 不匹配任何 keyswitch。
+        let instrument = parse_text(
+            "<region>sample=a.wav sw_last=36 sw_label=Sine",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.keyswitch_label(None), None);
+        assert_eq!(instrument.keyswitch_label(Some(36)), Some("Sine"));
+    }
+
+    #[test]
+    fn keyswitch_label_is_deterministic_and_keeps_file_order() {
+        // 同一 keyswitch 值被多个 region 声明时取**文件顺序的第一个**（ARCH-DET-001）。
+        let source = "<region>sw_last=36 sw_label=First sample=a.wav\n\
+                      <region>sw_last=36 sw_label=Second sample=b.wav";
+        let first = parse_text(source, &Default::default()).expect("parses");
+        let second = parse_text(source, &Default::default()).expect("parses");
+        assert_eq!(first.keyswitch_label(Some(36)), Some("First"));
+        assert_eq!(
+            first.keyswitch_label(Some(36)),
+            second.keyswitch_label(Some(36))
+        );
+    }
+
+    #[test]
+    fn labels_do_not_change_region_selection() {
+        // 标签是纯元数据：加不加它们，**选中的 region** 与**可渲染描述**必须相同。
+        // 判据比 `PlaybackSpec`（`Copy` + `PartialEq`，不含任何标签字段），
+        // 不比 `Region`（标签是它的字段，本来就该不同）。
+        // 两份源码的**行数相同**：`PlaybackSpec` 带 `source_line`，行号不同会让判据
+        // 比出无关的差异。
+        let plain = parse_text(
+            "<control>\n\
+             <group>sw_last=36 sw_default=36\n\
+             <region>sample=a.wav\n<region>sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let labelled = parse_text(
+            "<control>label_cc7=Volume\n\
+             <group>sw_last=36 sw_default=36 sw_label=Sine group_label=Edge\n\
+             <region>sample=a.wav\n<region>sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let rates = crate::playback::RenderRates::default();
+        // 两个乐器都真的选中了一个 region（否则下面的相等是空绿）。
+        let plain_play = plain
+            .playback_for(RegionQuery::new(60, 100), rates)
+            .expect("sw_default makes the keyswitch region selectable");
+        let labelled_play = labelled
+            .playback_for(RegionQuery::new(60, 100), rates)
+            .expect("sw_default makes the keyswitch region selectable");
+        assert_eq!(plain_play.region.sample, labelled_play.region.sample);
+        assert_eq!(plain_play.spec, labelled_play.spec);
+        // 标签确实进了 `Region`（否则这条判据没有对照物）。
+        assert_eq!(
+            labelled_play.region.labels.keyswitch_label.as_deref(),
+            Some("Sine")
+        );
+        assert_eq!(plain_play.region.labels.keyswitch_label, None);
+    }
+
+    #[test]
     fn instrument_region_lookup_uses_key_range() {
         let instrument = Instrument::new(
             vec![region(60, 1, 1), region(62, 1, 1)],
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            BTreeMap::new(),
             Vec::new(),
         );
         assert_eq!(instrument.region_for(60, 100).map(|r| r.lokey), Some(60));
