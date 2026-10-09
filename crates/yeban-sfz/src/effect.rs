@@ -477,4 +477,29 @@ mod tests {
             "no per-section counter leaks between sections"
         );
     }
+
+    #[test]
+    fn only_a_single_digit_selects_a_send_lane() {
+        // 规范 opcode 只有 `effect1`..=`effect4`（`/opcodes/effect1/` 一族）。
+        // `effect0` / `effect5` / `effect10` / `effect` 都不是规范 opcode ⇒ 与其余未知
+        // opcode 同口径地被忽略。`effect10` 是唯一一个**看起来**像已知名字的越界形态：
+        // 若实现只取后缀的第一个数字，它会被静默当成 `effect1` 而写进第 0 路。
+        for source in [
+            "<effect>effect0=50\n<region>sample=a.wav",
+            "<effect>effect5=50\n<region>sample=a.wav",
+            "<effect>effect10=50\n<region>sample=a.wav",
+            "<effect>effect=50\n<region>sample=a.wav",
+        ] {
+            let effects = effects_of(source);
+            assert!(
+                effects.is_empty(),
+                "{source:?} writes no normative opcode, got {effects:?}"
+            );
+        }
+        // 与规范 opcode 混写时也不得串到第 0 路。
+        let mixed = effects_of("<effect>bus=aux1\neffect10=50\n<region>sample=a.wav");
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].bus(), EffectBus::Aux(1));
+        assert_eq!(mixed[0].sends(), &[0.0, 0.0, 0.0, 0.0]);
+    }
 }

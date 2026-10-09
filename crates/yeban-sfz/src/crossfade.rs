@@ -499,6 +499,29 @@ mod tests {
     }
 
     #[test]
+    fn position_is_pinned_on_a_non_zero_low_range() {
+        // 上面几条判据只读 `value <= low` 与 `value >= high` 这两个早退分支；
+        // `gain_curve_is_linear_and_power_curve_is_the_square_root` 用的区间是 `[0, 4]`，
+        // 那里 `low == 0`，于是分母 `(high - low)` 与 `high` 数值相同 —— 抓不到
+        // 「分母漏掉 low 偏移」的改写。这里用一个 low 非零的区间把插值本身钉在字面上。
+        // 链路只有整数→f32 转换、一次减法、一次除法与（`power` 档）一次 `sqrt`，
+        // 全是 IEEE 正确舍入的运算 ⇒ 裁决 ADR-0001 的 IEEE 精确类，跨架构逐位相同。
+        let range = XfRange { low: 64, high: 127 };
+        // (65 - 64) / (127 - 64) = 1/63：与 `curve::tests` 里的 1/63 同一位型。
+        assert_eq!(bits(fade_in(range, 65, XfCurve::Gain)), 0x3c82_0821);
+        // (100 - 64) / 63 = 36/63。
+        assert_eq!(bits(fade_in(range, 100, XfCurve::Gain)), 0x3f12_4925);
+        assert_eq!(bits(fade_out(range, 100, XfCurve::Gain)), 0x3edb_6db6);
+        assert_eq!(bits(fade_in(range, 100, XfCurve::Power)), 0x3f41_848f);
+        // 非空证明：漏掉 low 偏移的分母在这一点上给出的是 36/127，位型不同。
+        assert_ne!(
+            bits(fade_in(range, 100, XfCurve::Gain)),
+            bits(36.0f32 / 127.0)
+        );
+        assert_eq!(fade_in(range, 100, XfCurve::Gain), 36.0f32 / 63.0);
+    }
+
+    #[test]
     fn the_ledger_divergence_from_sfizz_stays_within_a_ten_thousandth() {
         // 与 sfizz 的 gapOffset 差异（见模块文档）：`[0, 127]` 上的最大差 3.09e-5
         // （在 value = 126 处），这里对全区间钉一个 1e-4 的上界。

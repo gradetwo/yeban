@@ -280,6 +280,28 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_point_is_hit_where_the_segment_formula_would_not_round_back() {
+        // 上面那条夹具的三个纵坐标是 `(-0.0, 0.5, 1.0)`，它们的相邻段上
+        // `low + (high - low)` 恰好逐位回到 `high`，因此只钉住「`velocity <= first.at`
+        // 的早退分支」，钉不住「查段用闭下界 `point.at <= velocity`」。这里取一对
+        // `low + (high - low) != high` 的取值，让**两个**机制同时可观测：
+        // 闭下界时 64 落在 `[0, 64]` 段的右端点上（走公式，位型 0x3cfc0c60），
+        // 严格下界时 64 命中已定义点（走早退分支，位型 0x3cfc0c67）。
+        // 只有比较与 `+ - * /` ⇒ 裁决 ADR-0001 的 IEEE 精确类。
+        let curve = VelocityCurve::from_points([
+            point(0, 0.872_187_7),
+            point(64, 0.030_767_633),
+            point(127, 1.0),
+        ]);
+        assert_eq!(curve.amplitude(64).to_bits(), 0x3cfc_0c67);
+        // 非空证明：两种查段口径在这一对值上**确实**给出不同位型。
+        let low = 0.872_187_7f32;
+        let high = 0.030_767_633f32;
+        assert_ne!((low + (high - low)).to_bits(), high.to_bits());
+        assert_eq!((low + (high - low)).to_bits(), 0x3cfc_0c60);
+    }
+
+    #[test]
     fn amplitude_is_monotone_between_two_adjacent_points() {
         let curve = VelocityCurve::from_points([point(10, 0.0), point(20, 1.0)]);
         let mut previous = f32::NEG_INFINITY;

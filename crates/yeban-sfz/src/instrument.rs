@@ -4113,6 +4113,12 @@ v127=1
             ),
             "unexpected verdict: {error:?}"
         );
+        // 边界另一侧：正好 `limit` 行必须被接受。少了这一半，「上限」实际是
+        // `limit - 1`，而上面那条只会看到「Err 仍然是 Err」⇒ 抓不到差一。
+        let at_limit = parse_text("<curve>curve_index=7\nv000=0", &limits)
+            .expect("exactly max_opcodes_per_header lines must be accepted");
+        assert_eq!(at_limit.curves().len(), 1);
+        assert_eq!(at_limit.curve_value_at(7, 0.0), Some(0.0));
     }
 
     #[test]
@@ -4161,6 +4167,38 @@ v127=1
     // ------------------------------------------------------------------
     // `<effect>` 头（规范 <https://sfzformat.com/headers/effect/>）
     // ------------------------------------------------------------------
+
+    #[test]
+    fn definition_headers_are_recognized_case_insensitively() {
+        // `Header::from_name` 的大小写不敏感是全段头的口径（`<MASTER>` 已由
+        // `master_header_is_recognized_instead_of_ignored` 钉住）。`<curve>` 与
+        // `<effect>` 是后加的两个定义段，必须同口径 —— 否则大写写法会被降级成
+        // 「未知段头」告警，整段 opcode 被丢掉且不产生条目。
+        let instrument = parse_text(
+            "<CURVE>curve_index=7\nv000=0\nv095=1\n<EFFECT>bus=aux1\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(
+            !instrument.warnings().iter().any(|warning| matches!(
+                warning,
+                Warning::IgnoredHeader { name, .. }
+                    if name.eq_ignore_ascii_case("curve") || name.eq_ignore_ascii_case("effect")
+            )),
+            "uppercase definition headers must not be ignored: {:?}",
+            instrument.warnings()
+        );
+        assert_eq!(instrument.curves().len(), 1, "the <CURVE> block is modeled");
+        assert_eq!(instrument.curve_value_at(7, 95.0), Some(1.0));
+        assert_eq!(
+            instrument.effects().len(),
+            1,
+            "the <EFFECT> block is modeled"
+        );
+        assert_eq!(instrument.effects()[0].bus(), EffectBus::Aux(1));
+        assert_eq!(Header::from_name("CURVE"), Some(Header::Curve));
+        assert_eq!(Header::from_name("EFFECT"), Some(Header::Effect));
+    }
 
     /// 登记语料里的真实 `<effect>` 形状（`assets/samples/karoryfer-big-rusty-drums/Programs/`
     /// 下 8 个**可解析**文件里的那两行；`param_offset` + ARIA MDA `type`）。
@@ -4220,6 +4258,11 @@ type=com.mda.Limiter
             ),
             "unexpected verdict: {error:?}"
         );
+        // 边界另一侧：正好 `limit` 行必须被接受（与 `<curve>` 同口径）。
+        let at_limit = parse_text("<effect>bus=aux1\ntype=comp", &limits)
+            .expect("exactly max_opcodes_per_header lines must be accepted");
+        assert_eq!(at_limit.effects().len(), 1);
+        assert_eq!(at_limit.effects()[0].type_name(), Some("comp"));
     }
 
     #[test]
@@ -4847,6 +4890,37 @@ type=com.mda.Limiter
         let ignored =
             first_region("<region>sample=a.wav xfin_hicc131=10 xfin_hicc=10 xfin_hiccfoo=10");
         assert!(ignored.crossfades.is_empty(), "{:?}", ignored.crossfades);
+        // 上界的**闭**性质：CC 127 是合法的 7-bit 值，必须被识别（不是被当成未知
+        // opcode 丢掉）；128 才是越界。少了 127 这一半，判定 `cc <= 127` 与
+        // `cc < 127` 就无从区分。
+        let cc127 = first_region("<region>sample=a.wav xfin_hicc127=64");
+        assert_eq!(
+            cc127.crossfades,
+            vec![Crossfade::new(
+                XfAxis::Cc(127),
+                XfDirection::In,
+                XfRange { low: 0, high: 64 },
+                XfCurve::Power,
+            )],
+            "xfin_hicc127 is a crossfade on CC 127"
+        );
+        let locc127 = first_region("<region>sample=a.wav xfout_locc127=10");
+        assert_eq!(
+            locc127.crossfades,
+            vec![Crossfade::new(
+                XfAxis::Cc(127),
+                XfDirection::Out,
+                XfRange { low: 10, high: 127 },
+                XfCurve::Power,
+            )],
+            "xfout_locc127 is a crossfade on CC 127"
+        );
+        let cc128 = first_region("<region>sample=a.wav xfin_hicc128=10");
+        assert!(
+            cc128.crossfades.is_empty(),
+            "128 is above the 7-bit CC domain: {:?}",
+            cc128.crossfades
+        );
         let outcome = parse_text("<region>sample=a.wav xfin_hicc1=", &Default::default());
         assert!(
             matches!(outcome, Err(SfzError::InvalidInteger { ref opcode, .. }) if opcode == "xfin_hicc1"),

@@ -247,6 +247,24 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_point_is_hit_where_the_segment_formula_would_not_round_back() {
+        // `defined_points_are_hit_bit_exactly` 的夹具是 `(0.0, 1.0, 0.0)`：相邻段上
+        // `low + (high - low)` 恰好逐位回到 `high`，所以那条判据只钉住「`x >= last.at`
+        // 之类的早退分支」，钉不住「查段用闭下界 `point.at <= x`」。这里取一对
+        // `low + (high - low) != high` 的取值，让查段口径本身可观测：
+        // 闭下界时 64 命中已定义点（早退，位型 0x3cfc0c67），
+        // 严格下界时 64 落在 `[0, 64]` 段的右端点上（走公式，位型 0x3cfc0c60）。
+        // 只有比较与 `+ - * /` ⇒ 裁决 ADR-0001 的 IEEE 精确类。
+        let curve = curve(12, &[(0, 0.872_187_7), (64, 0.030_767_633), (127, 1.0)]);
+        assert_eq!(curve.value_at(64.0).to_bits(), 0x3cfc_0c67);
+        // 非空证明：两种查段口径在这一对值上**确实**给出不同位型。
+        let low = 0.872_187_7f32;
+        let high = 0.030_767_633f32;
+        assert_ne!((low + (high - low)).to_bits(), high.to_bits());
+        assert_eq!((low + (high - low)).to_bits(), 0x3cfc_0c60);
+    }
+
+    #[test]
     fn interpolation_is_ieee_exact_class() {
         // 逐位字面量：`1/63` 的 binary32 位型（只有 `+ - * /`，无超越函数 ⇒ 跨架构逐位相同）。
         let exact = curve(7, &[(0, 0.0), (63, 1.0), (127, 0.0)]);
