@@ -1950,4 +1950,37 @@ mod tests {
             "第 {MAX_DEPTH} 层嵌套必须被拒绝"
         );
     }
+
+    /// 判据: 延音配对要求**恰好相接**，不是"重叠就算" —— 起在同一 tick、落在前一颗
+    /// **内部**的同音高音符**不许**被并成一颗。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把配对条件从
+    /// `existing.end_tick() == note.start_tick` 放宽成 `>=`（注入 X21）后全部判据
+    /// **保持绿** —— 既有的 `a_tie_stop_pairs_only_with_an_exactly_adjacent_note`
+    /// 只有"**缺口**没接上"那一侧（`end < start`），"**已经重叠**"那一侧
+    /// （`end > start`）没有判据。
+    #[test]
+    fn a_tie_stop_does_not_merge_an_overlapping_note() {
+        // divisions = 2 ⇒ 1 unit = 480 tick。第一颗 2 unit（960 tick，tie start），
+        // 第二颗是 `<chord/>`（起在同一 tick，1 unit，tie stop）⇒ 第二颗整颗落在
+        // 第一颗**内部**（`end_tick() = 960 > start_tick = 0`）。
+        let xml = "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><divisions>2</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration>\
+             <tie type=\"start\"/></note>\
+             <note><chord/><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration>\
+             <tie type=\"stop\"/></note>\
+             </measure></part></score-partwise>";
+        let parsed = score(xml);
+        let notes: Vec<(u64, u64)> = parsed.parts[0]
+            .notes
+            .iter()
+            .map(|note| (note.start_tick, note.duration_ticks))
+            .collect();
+        assert_eq!(
+            notes,
+            vec![(0, 480), (0, 960)],
+            "两颗重叠（不是恰好相接）⇒ 必须如实落成两颗，⛔ 不许并成一颗"
+        );
+    }
 }

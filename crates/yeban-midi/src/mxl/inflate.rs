@@ -1042,4 +1042,32 @@ mod tests {
             "多一个码 ⇒ Kraft 和 > 1 ⇒ 必须拒绝"
         );
     }
+
+    /// 判据: 压缩块的**匹配**（LZ77 回拷）路径在输出上界处同样是"字节数"：
+    /// 一次匹配令输出**恰好**等于上界时必须接受。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `codes` 里匹配那一步的
+    /// `out.len() + length > max_output` 改成 `>=`（注入 F10）后全部判据**保持绿**
+    /// —— `a_literal_run_cannot_exceed_the_output_limit` 只走**字面量**那一步，
+    /// `a_stored_payload_exactly_equal_to_the_limit_is_accepted` 走的是 `stored` 块，
+    /// `full_window_match_...` 的上界断言是"少 1 字节必须拒绝" ⇒ 匹配路径上
+    /// "**恰好**落在上界"那一侧没有判据。
+    #[test]
+    fn a_match_that_lands_exactly_on_the_output_limit_is_accepted() {
+        // `fixed_stream(32768)`：1 个字面 + 127 次长度 258 的匹配 + 1 个字面 = 32768 字节，
+        // 再放一次长度 **3** / 距离 32768 的匹配 ⇒ 输出恰好 **32771** 字节。
+        let stream = fixed_stream(32768);
+        assert_eq!(
+            inflate_raw(&stream, 32771).map(|out| out.len()),
+            Ok(32771),
+            "匹配令输出恰好等于上界 ⇒ 必须接受（上界数的是字节数）"
+        );
+        match inflate_raw(&stream, 32770) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("少一个字节的上界必须报 Limit，得到 {other:?}"),
+        }
+    }
 }

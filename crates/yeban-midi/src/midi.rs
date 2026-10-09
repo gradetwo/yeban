@@ -1511,4 +1511,97 @@ mod tests {
             );
         }
     }
+
+    /// 判据 (类别⑥ 通道一致性 / 格式号): `MidiFormat` 的**格式号**与反解互为逆。
+    ///
+    /// 这两个公开方法是 `MThd` 那个 `u16` 格式号的唯一权威映射。补的是哪个缺口
+    /// （本票注入实测）：把 `number()` 的 0/1 两臂互换、把 `from_number()` 的
+    /// 0/1 两臂互换，**4 次注入全部全绿** —— 本 crate 内部对这两个函数**零调用点**
+    /// （`to_smf_bytes` 直接 `match` 枚举、`parse_smf` 直接构造枚举）
+    /// ⇒ 这对公开函数此前既无判据也无覆盖。
+    #[test]
+    fn midi_format_numbers_round_trip_through_from_number() {
+        assert_eq!(MidiFormat::SingleTrack.number(), 0, "SMF 格式 0");
+        assert_eq!(MidiFormat::Parallel.number(), 1, "SMF 格式 1");
+        for format in [MidiFormat::SingleTrack, MidiFormat::Parallel] {
+            assert_eq!(
+                MidiFormat::from_number(format.number()),
+                Some(format),
+                "{format:?} 的格式号必须能原样反解回来"
+            );
+        }
+        assert_eq!(
+            MidiFormat::from_number(2),
+            None,
+            "格式 2 (Sequential) 不在本枚举里 ⇒ 明确的 None"
+        );
+        assert_eq!(MidiFormat::from_number(u16::MAX), None);
+    }
+
+    /// 判据 (类别⑥ 通道一致性 / 字节全序): 同一 tick 上音符的**关闭**必须先于
+    /// **开启**写出 —— 跨通道时也一样。
+    ///
+    /// `RawEvent::tie_break` 给 `NoteOff` 的 rank 是 `0`、`NoteOn` 是 `1`，
+    /// 这条全序就是"先关后开"的实现。补的是哪个缺口（本票注入实测）：把
+    /// `NoteOff` 的 rank 从 `0` 改成 `1`（注入 M21）后全部判据**保持绿** ——
+    /// 既有的 `note_off_precedes_note_on_at_the_same_tick` 用的是**同通道同音高**
+    /// 的两颗音符，那种情形下 rank 相同也仍按 `key < (key << 8)` 排对。
+    ///
+    /// ⚠️ 只有 `NoteOff` 的通道号**大于** `NoteOn` 的通道号时，rank 才是唯一的分辨者：
+    /// 同 rank 时通道号先比较 ⇒ 关闭在**低**通道上时两种 rank 排出同一个顺序。
+    /// 本判据因此把关闭放在通道 **1**、开启放在通道 **0**。
+    #[test]
+    fn a_note_off_precedes_a_note_on_of_another_channel_at_the_same_tick() {
+        let source = export(
+            MidiFormat::SingleTrack,
+            vec![
+                track_from_notes("High", 1, &[note(0, 60, 480, 100)]),
+                track_from_notes("Low", 0, &[note(480, 62, 480, 100)]),
+            ],
+        );
+        let bytes = source.to_smf_bytes().expect("导出");
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        let payload = &bytes[chunks[1].payload.clone()];
+
+        let find = |needle: &[u8]| {
+            payload
+                .windows(needle.len())
+                .position(|window| window == needle)
+                .unwrap_or_else(|| panic!("负载里找不到 {needle:02X?}: {payload:02X?}"))
+        };
+        // 只按**状态字节 + 数据字节**定位（不带 delta：tick 480 上先出的那个事件的
+        // delta 是 480 而不是 0 ⇒ 把 delta 写进 needle 会把判据钉在 delta 编码细节上）。
+        let close = find(&[0x81, 0x3C, 0x00]); // NoteOff ch1 key 60
+        let open = find(&[0x90, 0x3E, 0x64]); // NoteOn  ch0 key 62 vel 100
+        assert!(
+            close < open,
+            "同一 tick 480 上必须先写 NoteOff (ch1) 再写 NoteOn (ch0); \
+             实际 NoteOff 在 {close}, NoteOn 在 {open}: {payload:02X?}"
+        );
+    }
+
+    /// 判据 (类别⑦ 块长度): 文件尾一个**负载长度 0** 的 chunk（它的头恰好占满
+    /// 最后 8 字节）也必须被列出。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `track_chunks` 的循环条件从
+    /// `cursor + 8 <= bytes.len()` 收紧成 `<`（注入 M32）后全部判据**保持绿**
+    /// —— 已提交夹具里最后一条 `MTrk` 的负载都非空，"头落在文件尾"这一步没被走到。
+    /// 本判据同时是 `TrackChunk::len()` / `is_empty()` 的**零值面**。
+    #[test]
+    fn a_zero_length_chunk_at_the_end_of_the_file_is_listed() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x03, 0xC0]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        assert_eq!(bytes.len(), 22, "MThd 头 8 + 负载 6 + 空 MTrk 头 8");
+
+        let chunks = track_chunks(&bytes).expect("两个 chunk 都必须被列出");
+        assert_eq!(chunks.len(), 2, "尾部负载为 0 的 chunk 不许被静默丢掉");
+        assert_eq!(&chunks[1].fourcc, b"MTrk");
+        assert_eq!(chunks[1].len(), 0);
+        assert!(chunks[1].is_empty());
+        assert_eq!(chunks[1].payload, 22..22, "空负载的范围是空的");
+    }
 }

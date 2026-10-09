@@ -139,4 +139,21 @@ mod tests {
         assert_eq!(decode(&bogus, &mut pos), None);
         assert!(pos <= bogus.len());
     }
+
+    /// 判据 (类别④ 参数极值, VLQ 上界的**拒绝侧**): `write_into` 对 `VLQ_MAX + 1`
+    /// **必须 panic**。
+    ///
+    /// 这是 `write_into` 的文档写明的契约（"上界是规范硬约束, 不是可恢复错误"），
+    /// 由调用方 `midi.rs` 负责在进入它之前把"tick 越界"变成 `Result`。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把断言从 `value <= VLQ_MAX` 放宽到
+    /// `value <= VLQ_MAX + 1`（注入 V09）后，本 crate 的全部判据**保持绿**
+    /// ⇒ 上界此前只有**接受侧**（`max_value_uses_exactly_four_bytes` 里的
+    /// `VLQ_MAX`），"多 1 就必须炸"这一步没有判据。
+    #[test]
+    #[should_panic(expected = "VLQ 只能表示 28 位")]
+    fn write_into_panics_one_past_the_vlq_maximum() {
+        let mut out = Vec::new();
+        write_into(VLQ_MAX + 1, &mut out);
+    }
 }

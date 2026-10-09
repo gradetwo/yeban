@@ -2367,3 +2367,124 @@ fn mxl_central_entry_comment_is_skipped_not_read_as_the_next_entry() {
         "条目注释必须被跳过, 不许当成下一条目的签名"
     );
 }
+/// 判据 (类别③ 静默丢弃 vs 明确 Err / OPC 条目名): `.mxl` 的条目名按**字节**匹配，
+/// ⛔ 不做大小写折叠。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `find_entry` 的 `entry.name == name` 换成
+/// `entry.name.eq_ignore_ascii_case(name)`（注入 Z30）后全部判据**保持绿** —— 已提交
+/// 夹具里 `META-INF/container.xml` 与 `score.xml` 全是小写 ⇒ 折叠与否读的是同一条目。
+/// 本判据把容器里的条目名**故意写成另一个大小写**：按字节匹配必须报
+/// `MissingRootFile`，折叠就会**静默读错文件**（同一份字节，两个读取器读出不同结果）。
+#[test]
+fn mxl_entry_names_are_matched_byte_for_byte() {
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("Score.xml")),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&zip),
+        Err(MxlError::MissingRootFile {
+            path: "Score.xml".to_owned()
+        }),
+        "条目名必须逐字节比较: `Score.xml` 与 `score.xml` 不是同一条目"
+    );
+
+    // 对照臂：把 full-path 改成与条目名逐字节相同 ⇒ 同一份载荷必须读得到。
+    let exact = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&exact).expect("对照臂必须能读").parts.len(),
+        1,
+        "对照臂证明上面的 Err 只来自名字不相等"
+    );
+}
+
+/// 判据 (类别③ 静默丢弃 vs 明确 Err / OPC 属性实体): `full-path` 属性值里的
+/// `&amp;` 必须**最后**解 —— `&amp;lt;` 是"被转义过的尖括号**文本**"，不是 `<`。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `decode_entities` 的替换顺序改成先解
+/// `&amp;` 再解 `&lt;`（注入 Z29）后全部判据**保持绿** —— 既有夹具的路径里没有
+/// "二次转义"。本判据的容器里**真的**有一个名字叫 `a&lt;b.xml` 的条目，而
+/// `container.xml` 写的是 `a&amp;lt;b.xml` ⇒ 只有"`&amp;` 最后解"才读得到它；
+/// 顺序反了会去找 `a<b.xml`。
+#[test]
+fn an_escaped_markup_entity_in_the_rootfile_path_stays_text() {
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("a&amp;lt;b.xml")),
+            ZipEntrySpec::stored("a&lt;b.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&zip)
+            .expect("`&amp;lt;` 必须解成字面的 `&lt;`")
+            .parts
+            .len(),
+        1,
+        "条目名里的 `&lt;` 是四个字符，不是 `<`"
+    );
+
+    // 反向臂：容器里只有 `a<b.xml` 时，同一个 full-path 必须报缺失（⛔ 不静默换文件）。
+    let only_plain = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("a&amp;lt;b.xml")),
+            ZipEntrySpec::stored("a<b.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&only_plain),
+        Err(MxlError::MissingRootFile {
+            path: "a&lt;b.xml".to_owned()
+        })
+    );
+}
+
+/// 判据 (类别① 越界输入 / 实体表): XML 的 **5** 个预定义实体在**元素文本**里各解成
+/// 对应的一个字符。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `push_text` 的 `"apos"` 分支从 `'\''` 改成
+/// `'"'`（注入 X31）后全部判据**保持绿** —— 在本 crate 的 `tests/` 与 `src/` 里数
+/// `&apos;` / `&quot;` / `&lt;` / `&gt;` 的出现，**四个全是 0**（只有 `&amp;` 与数字
+/// 字符引用被用过）⇒ 五个预定义实体里有四个此前没有任何判据。
+#[test]
+fn every_predefined_entity_is_decoded_in_a_text_element() {
+    let xml = b"<score-partwise version=\"4.0\"><part-list>\
+                <score-part id=\"P\"><part-name>&amp;&lt;&gt;&quot;&apos;</part-name>\
+                </score-part></part-list><part id=\"P\"></part></score-partwise>";
+    let score = parse_musicxml(xml).expect("五个预定义实体都必须能解");
+    assert_eq!(score.parts.len(), 1);
+    assert_eq!(
+        score.parts[0].name, "&<>\"'",
+        "&amp; &lt; &gt; &quot; &apos; 各解成一个字符，顺序不变"
+    );
+}
+
+/// 判据 (类别⑤ 幂等 / 重复声明的定序): 两个 `<score-part>` 用**同一个 id** 时，
+/// `<part-name>` 以**最后**声明的那条为准（`BTreeMap::insert` 的覆盖语义）。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `part_names.insert(id, text)` 换成
+/// `part_names.entry(id).or_insert(text)`（先到先得，注入 X24）后全部判据**保持绿**
+/// —— 既有夹具里每个 `score-part@id` 只声明一次。
+#[test]
+fn two_score_parts_with_the_same_id_take_the_last_part_name() {
+    let xml = b"<score-partwise version=\"4.0\"><part-list>\
+                <score-part id=\"P\"><part-name>First</part-name></score-part>\
+                <score-part id=\"P\"><part-name>Second</part-name></score-part>\
+                </part-list><part id=\"P\"></part></score-partwise>";
+    let score = parse_musicxml(xml).expect("同 id 重复声明仍是可解析的输入");
+    assert_eq!(score.parts.len(), 1);
+    assert_eq!(
+        score.parts[0].name, "Second",
+        "重复 id 时以最后一条 <part-name> 为准"
+    );
+}

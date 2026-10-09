@@ -941,4 +941,86 @@ mod tests {
         assert_eq!(channels[16], 0, "第 17 条轨道回绕到通道 0");
         assert_eq!(channels[19], 3);
     }
+
+    /// 判据 (类别③ 静默丢弃 vs 明确 Err): 一条轨道里的**音频片段**不会截断它
+    /// 后面的 MIDI 摆放。
+    ///
+    /// `track_notes` 对非 MIDI 的片段是 `continue`（如实跳过**这一个**摆放），
+    /// ⛔ 不是 `return`。补的是哪个缺口（本票注入实测）：把那条 `continue` 换成
+    /// `return Ok(notes)`（注入 E10）后全部判据**保持绿** —— 既有夹具里没有任何一条
+    /// 轨道同时含音频与 MIDI 摆放。
+    ///
+    /// ⚠️ 摆放按 `EntityId` 升序遍历 ⇒ 判据用**显式 ULID 文本**造身份
+    /// （`…0000/…0001` 与 `…0002/…0003`），不借 `EntityId::new()` 的随机性。
+    #[test]
+    fn an_audio_clip_does_not_truncate_the_rest_of_the_track() {
+        let mut project = YebanProjectV1::default();
+        let audio_clip = crate::midi::entity_id("00000000000000000000000000").expect("ULID");
+        let midi_clip = crate::midi::entity_id("00000000000000000000000001").expect("ULID");
+        project.clip_pool.insert(
+            audio_clip,
+            yeban_model::project::ClipPoolEntry {
+                id: audio_clip,
+                name: "Audio".to_owned(),
+                content: ClipContent::Audio {
+                    asset: yeban_model::AssetHash::of_bytes(b"yeban-midi criterion"),
+                    gain_db: 0.0,
+                },
+            },
+        );
+        let note_id = EntityId::new();
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(note_id, MidiNote::new(note_id, 0, 60, 480));
+        project.clip_pool.insert(
+            midi_clip,
+            yeban_model::project::ClipPoolEntry {
+                id: midi_clip,
+                name: "Midi".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+
+        let track_id = EntityId::new();
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "Mixed".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        let audio_placement = crate::midi::entity_id("00000000000000000000000002").expect("ULID");
+        let midi_placement = crate::midi::entity_id("00000000000000000000000003").expect("ULID");
+        track.clips.insert(
+            audio_placement,
+            ClipPlacement {
+                id: audio_placement,
+                clip_id: audio_clip,
+                start_tick: 0,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        );
+        track.clips.insert(
+            midi_placement,
+            ClipPlacement {
+                id: midi_placement,
+                clip_id: midi_clip,
+                start_tick: 1920,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+
+        let export = export_from_project(&project).expect("含音频片段的工程必须可投影");
+        let starts: Vec<u64> = export
+            .tracks
+            .iter()
+            .flat_map(|track| track.notes.iter())
+            .map(|note| note.start_tick)
+            .collect();
+        assert_eq!(
+            starts,
+            vec![1920],
+            "音频摆放只是被跳过（continue），排在它后面的 MIDI 摆放必须照旧导出"
+        );
+    }
 }
