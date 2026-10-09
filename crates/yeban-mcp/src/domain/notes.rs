@@ -621,10 +621,17 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
 
 /// 读一个**有限**的 JSON 数字（`f64` → `f32`，与 `value` 的模型类型同宽）。
 ///
-/// 非有限值（`NaN` / `±inf`）在**本层**就被拒：模型 [`Op::SetParam`] 的
-/// `validate_param_value` 也把它判成 `NonFiniteValue` ⇒ 契约码
-/// `INVALID_PARAMETER_RANGE`（`domain/error.rs` 的映射），两侧**同一个码**，
-/// 不是两份口径。范围（声相 `-1.0..=1.0`）**不在这里**：那是模型的事。
+/// 两条防线各管一段，**没有一条是摆设**：
+///
+/// - JSON 解析器本身不会产出非有限的 `f64`（`serde_json` 对溢出成 `±inf` 的字面量
+///   返回 `NumberOutOfRange`），所以"输入是 `NaN` / `±inf`"这条路走不通；
+/// - **但收窄到 `f32` 会**：`1e300` 是有限 `f64`，`as f32` 之后是 `inf`。因此有限性
+///   检查放在**收窄之后**，判的是模型真正收到的那个 `f32`。
+///
+/// 越界时本层报 `INVALID_PARAMETER_RANGE`（`data.reason = "nonFiniteValue"`）；
+/// 模型 [`Op::SetParam`] 的 `validate_param_value` 对同一个 `f32` 也判 `NonFiniteValue`
+/// ⇒ 契约码一致（`domain/error.rs` 的映射），不是两份口径。
+/// 范围（声相 `-1.0..=1.0`）**不在这里**：那是模型的事。
 fn read_number(object: &Map<String, Value>, field: &str) -> Result<f32, Fault> {
     let raw = object.get(field).ok_or_else(|| missing(field, "数字"))?;
     let number = raw.as_f64().ok_or_else(|| {
@@ -634,17 +641,23 @@ fn read_number(object: &Map<String, Value>, field: &str) -> Result<f32, Fault> {
             serde_json::json!({ "field": field, "reason": "valueMustBeNumber" }),
         )
     })?;
-    if !number.is_finite() {
-        return Err(Fault::domain_with_data(
-            ErrorCode::InvalidParameterRange,
-            format!("`{field}` 必须是有限数, 实际收到 {number}"),
-            serde_json::json!({ "field": field, "value": number, "reason": "nonFiniteValue" }),
-        ));
-    }
     // `Op::SetParam` 的载荷类型就是 `f32`, 所以这一步的 f64 → f32 舍入是模型类型本身
     // 要求的 (与 `read_probability` 同型): IEEE 最近偶数, 确定性。
     #[allow(clippy::cast_possible_truncation)]
-    Ok(number as f32)
+    let value = number as f32;
+    if !value.is_finite() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 收窄到 f32 后不是有限数: 输入 {number}, f32 {value}"),
+            serde_json::json!({
+                "field": field,
+                "value": number,
+                "narrowedToF32": value.to_string(),
+                "reason": "nonFiniteValue",
+            }),
+        ));
+    }
+    Ok(value)
 }
 
 /// 解析 `note` 对象。
@@ -1904,6 +1917,11 @@ mod tests {
             (
                 serde_json::json!([{"kind": "setParam", "value": 0.0}]),
                 None,
+            ),
+            // 有限 `f64` 收窄到 `f32` 会溢出成 `inf` ⇒ 这一条**可达**（不是摆设）。
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "TrackVolume", "value": 1e300}]),
+                Some("nonFiniteValue"),
             ),
         ] {
             let fault = parse_ops(&payload).expect_err(&format!("必须被拒: {payload}"));
