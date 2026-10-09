@@ -2465,19 +2465,40 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             ui.set_active_tool(next);
             true
         }
-        // `Escape` = **取消当前手势**（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的推子与声相）。
+        // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
+        // 推子与声相），或关闭全屏时光机（`[UI-A11Y-003]` §7.3）。
         //
-        // 两条手势各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
-        // 纵向那条落 [`cancel_track_height_drag`]（写回起点高度），混音那条落窗口回调
-        // `mixer-cancel-gesture` → [`cancel_mixer_gesture`]（写回起点音量 / 声相）。
+        // 三个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
+        // 2. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
+        // 3. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
+        //    （写回起点音量 / 声相）。
         //
-        // 两条都没有手势在手时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
+        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。三条各自独立：关掉时光机
+        // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
+        // 关闭动作算作"已收尾"。
+        //
+        // 三条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
         // 它也不进 `--print-shortcuts` 的表（`cli.rs` 的 18 条里没有 `Escape`），
         // 因此判据 B11b 的三面（渲染 / 解析 / 宿主）一位不动。
         Action::Cancel => {
+            // 时光机是模态面板，且 `.slint` 的底部提示行本来就写着 "Esc 关闭" ——
+            // 在本次接线之前**没有任何**落点能读到 `UiAction::CloseUndoTree`
+            // （全仓只有 `undo.rs` 的定义与自判据），因此那句话在真实界面上是假的。
+            // 这里复用按钮那条链：[`UndoPort::perform`] 写运行态，[`refresh_undo_window`]
+            // 把同一批显示态属性回写 —— 关闭与打开/切换因此**不可能**分叉。
+            // `reproject = false`：关闭不改工程（与 `ToggleUndoTree` 同口径）。
+            if let Some(port) = undo {
+                if port.undo_tree_open() {
+                    port.perform(UiAction::CloseUndoTree);
+                    refresh_undo_window(ui, port, false);
+                    return true;
+                }
+            }
             let height = cancel_track_height_drag(ui, undo);
             let mixer = ui.invoke_mixer_cancel_gesture();
             height || mixer

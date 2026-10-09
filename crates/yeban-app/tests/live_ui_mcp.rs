@@ -11,6 +11,7 @@
 //! | `interactive_test_mode_plane_injects_into_the_live_window` | §12.4：测试模式 + `Interactive` 权限下，事件注入真的落进窗口；`ui/methods` 如实报出 `injectAllowed` |
 //! | `a_tree_read_sees_a_click_that_just_happened` | **新鲜度**：一次真实点击（`toggle-sidebar`）之后，`ui/tree` / `ui/node` / `ui/property` 三条读同时看见它（节点 **85→81**、`x` **210→6**、宽度 `"240.00"→"36.00"`），再点一次全部回去 |
 //! | `a_tree_regrab_costs_one_introspection_not_one_full_render` | **代价**：一次重抓 = 一次全树内省（85 节点），不是一次 1920×1080 的 Tier-1 全量渲染（两者并排打出来） |
+//! | `escape_closes_the_time_machine_modal_for_real` | **`Escape` 真的关得掉全屏时光机**（`[UI-A11Y-003]` §7.3 与 `.slint` 的 "Esc 关闭" 那句）：端口读数 `true→false`、运行时树里 `undo-tree-modal` 消失、最后一条动作记录是 `close-undo-tree`，而工程与撤销栈一位未动 |
 //!
 //! ## 为什么判据住在两个文件里而不是这里
 //!
@@ -2005,10 +2006,16 @@ fn escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
         injected_strings(&window.get_track_pans())[1].clone()
     ));
 
-    // 没有手势在手时 `Escape` 照旧**放行**（既有取向：`Action::Cancel` 的语义一位不改）。
+    // 没有手势在手、**且时光机是关的**时，`Escape` 照旧**放行**（既有取向：`Action::Cancel`
+    // 的语义在"没有可收尾的东西"这一点上一位不改；时光机关着时的收尾项就是零个）。
+    let tree_open_before = port.undo_tree_open();
+    assert!(
+        !tree_open_before,
+        "本步的前提是时光机**关着**（`Escape` 此时没有可收尾的对象）"
+    );
     assert!(
         !window.invoke_key_action("\u{1b}".into(), false, false, false, false),
-        "没有手势在手时 `Escape` 必须如实放行（而不是假装处理了）"
+        "没有手势在手、时光机关着时 `Escape` 必须如实放行（而不是假装处理了）"
     );
 
     // ================================================================ ⑤ 对照：只松手 ⇒ 提交一次
@@ -5206,7 +5213,7 @@ fn escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
     use serde_json::json;
     use yeban_ui_mcp::methods::{METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_DOWN};
 
-    let (window, _port, mut plane) = assemble_track_height_drag();
+    let (window, port, mut plane) = assemble_track_height_drag();
     let grab = |plane: &mut LiveControlPlane, id: i64, x_offset: f64, y_offset: f64| {
         plane.plane().try_line(&yeban_ui_mcp::live::request_line(
             id,
@@ -5292,10 +5299,15 @@ fn escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
         "取消写回的是**起点**基准高，不是默认 56"
     );
 
-    // ---- 没有手势在手时，`Escape` 照旧不被消费（行为与接线之前逐位相同）----
+    // ---- 没有手势在手、**且时光机关着**时，`Escape` 照旧不被消费
+    //（行为与接线之前逐位相同；时光机关着时的收尾项是零个）----
+    assert!(
+        !port.undo_tree_open(),
+        "本步的前提是时光机**关着** —— 这是「没有可收尾的对象」这句断言成立的条件"
+    );
     assert!(
         !window.invoke_key_action("\u{1b}".into(), false, false, false, false),
-        "没有手势在手时 `Escape` 必须如实放行（而不是假装处理了）"
+        "没有手势在手、时光机关着时 `Escape` 必须如实放行（而不是假装处理了）"
     );
 
     report_line(&format!(
@@ -8241,5 +8253,136 @@ fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
          commit_count={commits_before}（不变）、帧差异=0 像素; 阳性对照 `B` ⇒ active-tool \
          {tool_before}→{tool_after_b}, 帧差异 {} 像素（本判据关心的是前者为 0）",
         positive_diff.as_ref().map_or(0, |diff| diff.count)
+    ));
+}
+
+// =====================================================================================
+// 判据：`Escape` 关闭**全屏时光机**（`[UI-A11Y-003]` §7.3 / `.slint` 的 "Esc 关闭" 那句）
+// =====================================================================================
+
+/// 判据：时光机开着时，`Escape` 经**真事件源**注入必须把它关掉，并且**不碰工程**。
+///
+/// ## 缺陷的形状（为什么这条判据有判别力）
+///
+/// `ui/dialogs/undo_tree_modal.slint` 的底部提示行写着 `… · Esc 关闭`，而
+/// `host::apply_action` 的 `Action::Cancel` 分支此前**只**问两条拖拽手势
+/// （`cancel_track_height_drag` 与窗口回调 `mixer-cancel-gesture`）。时光机开着时
+/// 两条都不在手 ⇒ 返回 `false`（`reject`）⇒ 弹窗**关不掉**，那句话是假的。
+/// 更强的证据：全仓**没有**任何调用点读 `UiAction::CloseUndoTree`
+/// （改动前只有 `undo.rs` 的变体定义、它的 `name()` 与它自己的自判据）。
+///
+/// ## 为什么关弹窗**必须**走 `UndoPort`
+///
+/// `undo-tree-open` 的**唯一写者**是 `host::apply_undo`，它每一跳都从
+/// `port.undo_tree_open()` 回写 ⇒ 直接 `window.set_undo_tree_open(false)` 会在下一次
+/// 回写时被宿主的读数覆盖。因此这条判据断言的是"端口读数 + 运行时树"两处同时变化，
+/// 而不是只断言一个可以被覆盖的属性。
+///
+/// ## 端到端链（每一步都是字面读数）
+///
+/// | 步 | 动作 | 断言 |
+/// | :--- | :--- | :--- |
+/// | ① | 经端口打开时光机 → `apply_undo` | 端口读数 `true`；运行时树里**有** `undo-tree-modal` |
+/// | ② | `ui/dispatch_key_press` 注入 `Escape` | 注入成功；端口读数 `false`（弹窗关掉） |
+/// | ③ | 读运行时树 | `undo-tree-modal` **不在**树里（`.slint` 的 `visible` 归位） |
+/// | ④ | 动作日志 + 工程读数 | 最后一条记录的动作名 == `"close-undo-tree"`；撤销栈与提交数一位未动 |
+///
+/// ## 注入（负向实测）
+///
+/// 把 `host.rs` 的 `Action::Cancel` 分支里那段 `CloseUndoTree` 落点删掉（或把
+/// `undo_tree_open()` 的判定改成恒 `false`）⇒ ② 的端口读数与 ③ 的树读数**同时**变红。
+#[test]
+fn escape_closes_the_time_machine_modal_for_real() {
+    use std::rc::Rc;
+
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_ui_test_port::port::KeyCode;
+
+    /// 会话打开时刻（与既有判据同一个夹具常量）。
+    const NOW: u64 = 1_760_000_000_000;
+
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<判据:Esc 关时光机>", "yeban-app", project.clone(), NOW).expect("打开"),
+    ));
+    let mut ui = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            console_tab: 0,
+            save_path: None,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+        },
+    )
+    .expect("装配");
+    yeban_app::host::apply_undo(ui.ui(), &port);
+    ui.pump_meters();
+
+    // ---- ① 经**端口**打开 ⇒ 弹窗进树 ----
+    port.perform(yeban_app::undo::UiAction::OpenUndoTree);
+    yeban_app::host::apply_undo(ui.ui(), &port);
+    ui.pump_meters();
+    assert!(
+        port.undo_tree_open(),
+        "① 经端口打开之后端口读数必须是 `true`"
+    );
+    let tree_open = ui.tree_snapshot();
+    assert!(
+        tree_open.contains("undo-tree-modal"),
+        "① 时光机开着 ⇒ 它必须进运行时树（否则本判据的 ③ 步没有判别力）"
+    );
+    let (undoable_before, commits_before) = {
+        let display = port.display();
+        (display.undoable, display.commit_count)
+    };
+    report_line(&format!(
+        "[escape-close-tree] ① 打开: 端口读数={} / 树里有 `undo-tree-modal`={} / \
+         可撤销 {undoable_before} 步 / 提交 {commits_before} 条",
+        port.undo_tree_open(),
+        tree_open.contains("undo-tree-modal"),
+    ));
+
+    // ---- ② `Escape` 经**真事件源**注入 ----
+    ui.dispatch_key_press(KeyCode::Escape)
+        .expect("② `Escape` 注入必须落到真实窗口（Interactive 档）");
+    assert!(
+        !port.undo_tree_open(),
+        "② `Escape` 必须让端口读数归 `false` —— 这是 `Action::Cancel` 真的读到了 \
+         `UiAction::CloseUndoTree` 的证据（改动前这里恒 `true`）"
+    );
+
+    // ---- ③ 运行时树：模态面板必须消失 ----
+    ui.pump_meters();
+    let tree_closed = ui.tree_snapshot();
+    assert!(
+        !tree_closed.contains("undo-tree-modal"),
+        "③ `undo-tree-open=false` ⇒ 时光机**不许**再在运行时树里（`.slint` 的 `visible` 归位）"
+    );
+
+    // ---- ④ 动作日志 + 工程读数 ----
+    let last = port
+        .records()
+        .last()
+        .cloned()
+        .expect("② 之后必须有动作记录");
+    assert_eq!(
+        last.action, "close-undo-tree",
+        "④ 最后一条动作记录必须逐字是 `close-undo-tree`（走的是那一个唯一下发点）"
+    );
+    let display_after = port.display();
+    assert_eq!(
+        (display_after.undoable, display_after.commit_count),
+        (undoable_before, commits_before),
+        "④ 关闭弹窗**只改界面运行态**：可撤销步数与提交数一位都不许动"
+    );
+    report_line(&format!(
+        "[escape-close-tree] ②③④ 注入 `Escape`: 端口读数={} / 树里有 `undo-tree-modal`={} / \
+         最后一条动作={:?} / 可撤销 {undoable_before}→{} / 提交 {commits_before}→{}",
+        port.undo_tree_open(),
+        tree_closed.contains("undo-tree-modal"),
+        last.action,
+        display_after.undoable,
+        display_after.commit_count,
     ));
 }

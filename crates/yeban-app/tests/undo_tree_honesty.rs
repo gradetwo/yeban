@@ -369,3 +369,63 @@ fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
         "徽章与右栏按钮必须落到**同一个** `open-musical-pr` 回调"
     );
 }
+
+// =========================================================================
+// ④ 时光机的 "Esc 关闭"：那句提示必须有一个**真的**落点
+// =========================================================================
+
+/// 判据（**配对探针：`.slint` 的可见承诺 + `src/host.rs` 的落点**）。
+///
+/// ## 缺陷的形状（为什么这条判据有判别力）
+///
+/// `ui/dialogs/undo_tree_modal.slint` 的底部提示行逐字写着 `… · Esc 关闭`。
+/// 改动前 `host::apply_action` 的 `Action::Cancel` 分支只问两条拖拽手势
+/// （`cancel_track_height_drag` 与窗口回调 `mixer-cancel-gesture`）⇒ 时光机开着时
+/// `Escape` 返回 `false`（`reject`）⇒ **弹窗关不掉**，那句提示是假的。
+/// 全仓另有更强的证据：**没有任何调用点**读 `UiAction::CloseUndoTree`
+/// （改动前只有它的变体定义、`name()` 与 `undo.rs` 自己的判据）。
+///
+/// ## 两条路径为什么**必须配对**
+///
+/// 1. **承诺侧**：提示那句话在 `.slint` 的**代码**里（不是注释）；
+/// 2. **落点侧**：`Action::Cancel` 分支必须**又**读运行态（`undo_tree_open`）、
+///    **又**下发关闭动作（`UiAction::CloseUndoTree`）。
+///
+/// 只查一侧都能被骗：删掉提示能骗过"落点侧"单查，而只查提示就回到改动前
+/// "源码里写着、行为上没有"的形态。两侧同时查 ⇒ 要么两边都在，要么至少一处红。
+///
+/// ⚠ 本判据是**结构**判据：它证明那段代码在，不证明它跑起来对。
+/// 行为侧的端到端证据住在 `tests/live_ui_mcp.rs` 的
+/// [`escape_closes_the_time_machine_modal_for_real`]（真事件源注入 `Escape`）。
+#[test]
+fn the_time_machine_escape_hint_matches_a_real_close_path() {
+    // ---- ① 承诺侧：提示在 `.slint` 的代码文本里 ----
+    let modal = code_only(&read("ui/dialogs/undo_tree_modal.slint"));
+    assert!(
+        modal.contains("Esc 关闭"),
+        "`ui/dialogs/undo_tree_modal.slint` 的代码里必须有 `Esc 关闭` 这句提示 —— \
+         它是本判据的**前提**：提示不存在时，下面的落点判据就只能自证"
+    );
+
+    // ---- ② 落点侧：`Action::Cancel` 分支真的关得掉时光机 ----
+    let host = code_only(&read("src/host.rs"));
+    let matches = count(&host, "Action::Cancel => {");
+    assert_eq!(
+        matches, 1,
+        "`src/host.rs` 里必须**恰好一条** `Action::Cancel => {{` 分支（实际 {matches} 条）—— \
+         零条说明 `Escape` 没有落点，多于一条说明有第二个真相源"
+    );
+    let arm = host
+        .split("Action::Cancel => {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n        }\n").next())
+        .expect("`Action::Cancel` 分支体");
+    assert!(
+        arm.contains("undo_tree_open()"),
+        "`Action::Cancel` 必须读时光机的**运行态**（`undo_tree_open()`）才能决定要不要关它：{arm}"
+    );
+    assert!(
+        arm.contains("UiAction::CloseUndoTree"),
+        "`Action::Cancel` 必须把关闭动作下发到**唯一下发点**（`UiAction::CloseUndoTree`）：{arm}"
+    );
+}
