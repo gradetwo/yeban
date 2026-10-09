@@ -314,7 +314,12 @@ pub fn decode_source<'s>(
     ))
 }
 
-/// RIFF 块头的扫描上界（畸形文件可以声明无数个 0 长度块）。
+/// RIFF 块头的扫描预算（畸形文件可以声明无数个 0 长度块）。
+///
+/// 语义：这是**预算**，不是"超过就放行"。预算用尽仍未找到 `fmt ` 时，
+/// [`scan_riff_for_fmt`] **保守拒绝**该文件 —— 预算的存在理由就是"不能再往下走"，
+/// 而把没看过的字节交给上游解析器，等于把 [`precheck_riff_wave_fmt`] 要挡的那次
+/// `u16` 溢出乘法重新暴露出来。代价写在 [`precheck_riff_wave_fmt`] 的文档里。
 const RIFF_PRECHECK_MAX_CHUNKS: u32 = 4_096;
 
 /// 在探测之前拒掉会让上游 RIFF 解析器整型溢出的 `fmt ` 声明。
@@ -329,7 +334,13 @@ const RIFF_PRECHECK_MAX_CHUNKS: u32 = 4_096;
 /// `32769 × 2 = 65538 > 65535`。
 ///
 /// 这道闸门是**只拒**的：它只在"上游那次乘法确实会溢出"时报错。上游能正常解析的文件
-/// 一个都不会被它拒掉。扫描不到 `fmt ` 块时它什么都不做，把判定留给探测器。
+/// 一个都不会被它拒掉 —— **唯一**的例外是块数超过 [`RIFF_PRECHECK_MAX_CHUNKS`] 的文件
+/// （那种文件的块结构已经不可信，宁可立刻报错也不放行；见 [`scan_riff_for_fmt`]）。
+/// 扫描不到 `fmt ` 块时它什么都不做，把判定留给探测器。
+///
+/// ⚠ 2026-10-09 实测更正：改建前这里的扫描**算错过前进量**，于是本闸门在
+/// "`fmt ` 前面有非零长度块"的布局上完全失效（放行 ⇒ 上游 panic）。反例与读数见
+/// `decode::tests::a_wave_fmt_behind_other_chunks_is_refused_not_a_panic`。
 fn precheck_riff_wave_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
     if !source.is_seekable() {
         return Ok(());
@@ -347,6 +358,24 @@ fn precheck_riff_wave_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
 }
 
 /// [`precheck_riff_wave_fmt`] 的扫描主体。
+///
+/// 走法与上游 `symphonia-format-riff-0.6.1` 的 `ChunksReader::next` +
+/// `WavReader::try_new` **逐条对齐**。对齐不是洁癖：本闸门的判据是"只拒上游真的会
+/// panic 的那一份输入"，走法一旦与上游不同，两侧都会出错 ——
+/// 走得**少**是漏洞（放行 ⇒ panic），走得**多**是误拒（上游根本不解析的字节被本闸门判死）。
+///
+/// | 上游行为 | 本函数的镜像 |
+/// | :--- | :--- |
+/// | `riff_len < 4` ⇒ `wav: invalid riff length`（报错，不 panic） | 直接 `Ok(())`，把报错留给上游 |
+/// | `riff_len == u32::MAX`（流式 WAV）⇒ 父块长度未知 | `parent_len = None` |
+/// | 否则父块上界 = `riff_len - 4`（`ChunksReader::new(Some(riff_len - 4), ..)`，`wave/mod.rs`） | 同值；越界即 `Ok(())` |
+/// | 每个块头之前按 2 字节对齐（`consumed & 1`） | 同 |
+/// | 未知块的块体用 `ignore_bytes(chunk_len)` 跳过 | `seek(size + (size & 1))` |
+///
+/// # Errors
+///
+/// 只在"上游那次 `u16` 乘法确实会溢出"，或扫描预算用尽时返回
+/// [`DecodeError::Malformed`]。
 fn scan_riff_for_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
     let mut header = [0u8; 12];
     if source.read_exact(&mut header).is_err() {
@@ -355,11 +384,39 @@ fn scan_riff_for_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
     if header[0..4] != b"RIFF"[..] || header[8..12] != b"WAVE"[..] {
         return Ok(());
     }
+    // 上游只走"RIFF 声明的那段块区"，所以本扫描也必须停在那里。
+    let riff_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+    if riff_len < 4 {
+        return Ok(());
+    }
+    let parent_len = if riff_len == u32::MAX {
+        None
+    } else {
+        Some(u64::from(riff_len) - 4)
+    };
+
+    // 父块内已消耗的字节数（含填充字节），口径与上游 `ChunksReader.consumed` 相同。
+    let mut consumed: u64 = 0;
     for _ in 0..RIFF_PRECHECK_MAX_CHUNKS {
+        // 上游的顺序：先判"到父块末尾了吗"，再对齐，再判"还够一个 8 字节块头吗"。
+        if parent_len.is_some_and(|limit| consumed >= limit) {
+            return Ok(());
+        }
+        if consumed & 1 == 1 {
+            let mut pad = [0u8; 1];
+            if source.read_exact(&mut pad).is_err() {
+                return Ok(());
+            }
+            consumed += 1;
+        }
+        if parent_len.is_some_and(|limit| consumed + 8 > limit) {
+            return Ok(());
+        }
         let mut chunk = [0u8; 8];
         if source.read_exact(&mut chunk).is_err() {
             return Ok(());
         }
+        consumed += 8;
         let size = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
         if chunk[0..4] == b"fmt "[..] {
             // 上游不看 `fmt ` 的声明长度，一律先读 16 字节字段（`chunks.rs:415-424`），
@@ -387,17 +444,30 @@ fn scan_riff_for_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
             }
             return Ok(());
         }
-        // 下一个块 = 8 字节块头 + 块体 + 奇数长度块的填充字节。
-        let advance = i64::try_from(
-            8u64.saturating_add(u64::from(size))
-                .saturating_add(u64::from(size & 1)),
-        )
-        .unwrap_or(i64::MAX);
+        // 未知块。上游用 `ignore_bytes(chunk_len)` 跳过块体，**不会**再多吃一个块头：
+        // 块头那 8 字节已经在上面读掉了，所以这里只前进"块体 + 奇数长度的填充字节"。
+        //
+        // ⚠ 2026-10-09 实测更正：改建前这里写的是 `8 + size + (size & 1)`，即每跳一个块
+        // 就多走 8 字节，扫描从此脱离块网格。后果是只要 `fmt ` 前面有任何**非零长度**
+        // 的块（真实 WAV 里的 `JUNK` / `LIST` / `bext` 很常见），或者有**奇数个** 0 长度
+        // 块，扫描就再也找不到 `fmt `，于是放行给上游，而上游那次 `u16` 乘法
+        // （现位于 `wave/chunks.rs` 第 100 行）把进程 panic 掉 —— 这道闸门存在的
+        // 唯一理由正好被它自己的前进量抵消了。
+        let skip = u64::from(size).saturating_add(u64::from(size & 1));
+        consumed = consumed.saturating_add(skip);
+        let advance = i64::try_from(skip).unwrap_or(i64::MAX);
         if source.seek(SeekFrom::Current(advance)).is_err() {
             return Ok(());
         }
     }
-    Ok(())
+    // 扫描预算用尽：**保守拒绝**。此时的块结构已经不可信，放行等于把没看过的字节
+    // 交给上游那个会 panic 的乘法（[ARCH-SEC-003]、不可信输入零 panic）。
+    Err(DecodeError::Malformed {
+        detail: format!(
+            "RIFF/WAVE has more than {RIFF_PRECHECK_MAX_CHUNKS} chunks before its fmt chunk; \
+             refusing to hand the file to the parser"
+        ),
+    })
 }
 
 /// 记录"这一轮没有产出样本"，超过闸门即报错 [MUST-GATE-011]。
@@ -478,8 +548,8 @@ where
 mod tests {
     use super::*;
     use crate::testfix::{
-        FlacSpec, WavFormat, WavSpec, encode_f32_samples, encode_int_samples, flac_constant, wav,
-        wav_with_declared_len,
+        FlacSpec, WavFormat, WavSpec, encode_f32_samples, encode_int_samples, flac_constant,
+        fmt_body_offset, wav, wav_with_chunks_before_fmt, wav_with_declared_len,
     };
 
     fn int_spec(channels: u16, bits: u16) -> WavSpec {
@@ -751,6 +821,125 @@ mod tests {
         );
         // 同一份字节只把声道数改回 1 ⇒ 正常解出。上面红的必须是那道闸门，不是夹具坏了。
         bytes[22..24].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(
+            decode_bytes(&bytes, &DecodeOptions::default())
+                .unwrap()
+                .frame_count(),
+            2
+        );
+    }
+
+    /// 把 `fmt ` 块体里的 `num_channels` 改成 `channels`（畸形声明不能在夹具构造期写，
+    /// 否则 [`WavSpec::block_align`] 自己会先溢出）。
+    fn patch_declared_channels(bytes: &mut [u8], channels: u16) {
+        let body = fmt_body_offset(bytes).expect("fixture must contain a fmt chunk");
+        bytes[body + 2..body + 4].copy_from_slice(&channels.to_le_bytes());
+    }
+
+    /// 判据 ([ARCH-SEC-003] / 不可信输入零 panic)：`fmt ` **前面还有别的块**时，
+    /// 上游溢出闸门必须照样在探测之前拦下它。
+    ///
+    /// 为什么需要它：`precheck_riff_wave_fmt` 是一台**块网格**走查器。改建前它把块头的
+    /// 8 字节重复计进 `seek` 的前进量（`8 + size + pad`，而游标本来就在块头之后），
+    /// 于是每跳一个块就多走 8 字节、脱离块网格。后果：只要 `fmt ` 前面有**非零长度**的
+    /// 块（真实 WAV 里的 `JUNK` / `LIST` / `bext` 很常见），或有**奇数个** 0 长度块，
+    /// 扫描就找不到 `fmt ` 而放行 ⇒ 上游 `symphonia-format-riff` 的
+    /// `num_channels * (bits_per_sample / 8)` 在 `u16` 里溢出、**进程 panic**。
+    /// 既有判据 `a_wave_fmt_that_overflows_the_parser_is_rejected_not_a_panic` 只覆盖
+    /// "`fmt ` 是第一个块"这一种布局，因此对此完全免疫。
+    ///
+    /// 本判据对每种布局都要求**类型化拒绝**（点名 32769 声道）；panic 会让本判据红。
+    /// 最后两个用例是"闸门不得误拒"那一侧：同一批布局 + 合法 `fmt ` 必须照常解出。
+    #[test]
+    fn a_wave_fmt_behind_other_chunks_is_refused_not_a_panic() {
+        let spec = int_spec(1, 16);
+        let data = encode_int_samples(16, &[0x1234, -0x1234]);
+        let zero: &[u8] = &[];
+        let four = [0xEEu8; 4];
+        let twelve = [0xEEu8; 12];
+        let three = [0xEEu8; 3];
+        let layouts: [&[([u8; 4], &[u8])]; 8] = [
+            &[],
+            &[(*b"JUNK", zero)],
+            &[(*b"JUNK", zero), (*b"JUNK", zero)],
+            &[(*b"JUNK", &four)],
+            &[(*b"LIST", &twelve)],
+            &[(*b"JUNK", &four), (*b"JUNK", &four), (*b"JUNK", &four)],
+            &[(*b"bext", &three)],
+            &[(*b"JUNK", &four), (*b"JUNK", zero), (*b"LIST", &twelve)],
+        ];
+        for junk in layouts {
+            let mut bytes = wav_with_chunks_before_fmt(&spec, junk, &data);
+            patch_declared_channels(&mut bytes, 32_769);
+            let err = decode_bytes(&bytes, &DecodeOptions::default()).unwrap_err();
+            assert!(
+                matches!(&err, DecodeError::Malformed { detail } if detail.contains("32769")),
+                "junk layout {junk:?} must be refused by the precheck, got {err}"
+            );
+
+            // 反向对照：同一布局、合法声道数 ⇒ 正常解出（闸门只拒，不误伤）。
+            let mut legal = wav_with_chunks_before_fmt(&spec, junk, &data);
+            patch_declared_channels(&mut legal, 1);
+            assert_eq!(
+                decode_bytes(&legal, &DecodeOptions::default())
+                    .unwrap()
+                    .frame_count(),
+                2,
+                "junk layout {junk:?} is a legal WAV and must still decode"
+            );
+        }
+
+        // `riff_len == u32::MAX`：上游把长度当"未知"（流式 WAV），父块**无**上界。
+        // 本闸门必须同样不设上界，否则这种布局会漏过去。
+        let mut streaming = wav_with_chunks_before_fmt(&spec, &[(*b"JUNK", &four)], &data);
+        streaming[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        patch_declared_channels(&mut streaming, 32_769);
+        let err = decode_bytes(&streaming, &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("32769")),
+            "a streaming WAV (riff_len = u32::MAX) must still be refused, got {err}"
+        );
+
+        // `riff_len < 4`：上游自己会以 `wav: invalid riff length` 报错（不 panic），
+        // 因此这里只钉"有界返回"，不钉具体是谁报的错。
+        let mut short_riff = wav_with_chunks_before_fmt(&spec, &[(*b"JUNK", &four)], &data);
+        short_riff[4..8].copy_from_slice(&0u32.to_le_bytes());
+        patch_declared_channels(&mut short_riff, 32_769);
+        assert!(
+            decode_bytes(&short_riff, &DecodeOptions::default()).is_err(),
+            "a RIFF length below 4 must not decode"
+        );
+    }
+
+    /// 判据 ([ARCH-SEC-003])：扫描预算用尽时必须**保守拒绝**，不得放行给上游。
+    ///
+    /// 为什么需要它：块网格修好之后，每个块只前进一个块的距离，于是"预算是多少"真正
+    /// 决定了"最多能看穿多少个块"。改建前预算是 `4096`，但走查器每轮跳 2~3 个块，
+    /// 到达范围与常量对不上；修好之后 `4096` 个块之后的 `fmt ` 会落在预算之外 ——
+    /// 若此时返回"放行"，同一个 panic 就会从另一个门回来。
+    ///
+    /// 边界是闭区间：`RIFF_PRECHECK_MAX_CHUNKS - 1` 个前导块仍然看得见 `fmt `，
+    /// 恰好 `RIFF_PRECHECK_MAX_CHUNKS` 个就用尽预算、保守拒绝。
+    #[test]
+    fn a_wave_with_more_chunks_than_the_scan_budget_is_refused_not_probed() {
+        let spec = int_spec(1, 16);
+        let data = encode_int_samples(16, &[0x1234, -0x1234]);
+        let zero: &[u8] = &[];
+        let cap = RIFF_PRECHECK_MAX_CHUNKS as usize;
+
+        // 恰好用尽预算 ⇒ 保守拒绝（这里用的是**合法** fmt：拒绝的理由是块结构，
+        // 不是那个溢出声明 —— 这正是"宁可报错也不放行"的诚实代价）。
+        let at_cap = vec![(*b"JUNK", zero); cap];
+        let bytes = wav_with_chunks_before_fmt(&spec, &at_cap, &data);
+        let err = decode_bytes(&bytes, &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("before its fmt chunk")),
+            "expected the scan budget to fail closed, got {err}"
+        );
+
+        // 预算减一 ⇒ 仍然看得见 `fmt `，照常解出（证明上面红的是预算，不是夹具坏了）。
+        let under_cap = vec![(*b"JUNK", zero); cap - 1];
+        let bytes = wav_with_chunks_before_fmt(&spec, &under_cap, &data);
         assert_eq!(
             decode_bytes(&bytes, &DecodeOptions::default())
                 .unwrap()

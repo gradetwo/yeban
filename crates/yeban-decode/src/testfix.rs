@@ -96,6 +96,94 @@ pub fn wav(spec: &WavSpec, data: &[u8]) -> Vec<u8> {
     wav_with_declared_len(spec, data, len)
 }
 
+/// 在 `fmt ` **之前**插入任意个未知块，再写标准的 `fmt ` + `data`。
+///
+/// 存在的理由：`crate::decode` 的 RIFF 预检是一台**块网格**走查器，它的前进量一旦算错，
+/// 就只在"`fmt ` 恰好是第一个块"这一种布局下还看得见 `fmt `。真实 WAV 在 `fmt ` 之前
+/// 常有 `JUNK` / `LIST` / `bext` 这些块，所以"只有最小 44 字节头"的夹具**测不出**那类
+/// 错位。本构造器因此允许把块放在 `fmt ` 之前，并且：
+/// - 块体长度为奇数时补 1 个 RIFF 约定的填充字节（与 `wav_with_declared_len` 同规则）；
+/// - RIFF 尺寸按**最终真实长度**回填（`文件长度 - 8`），因此当 `fmt ` 合法时，
+///   生成的文件是上游能正常解析的合法文件（"闸门不得误拒"那一侧的对照物）。
+///
+/// `junk` 是 `(块标签, 块体)` 序列。`data` 是 `data` 块的块体。
+#[must_use]
+pub fn wav_with_chunks_before_fmt(
+    spec: &WavSpec,
+    junk: &[([u8; 4], &[u8])],
+    data: &[u8],
+) -> Vec<u8> {
+    let format_tag: u16 = match spec.format {
+        WavFormat::Integer => 1, // WAVE_FORMAT_PCM
+        WavFormat::Float => 3,   // WAVE_FORMAT_IEEE_FLOAT
+    };
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&0u32.to_le_bytes()); // 占位，最后回填真实长度
+    out.extend_from_slice(b"WAVE");
+    for (tag, body) in junk {
+        out.extend_from_slice(tag);
+        out.extend_from_slice(
+            &u32::try_from(body.len())
+                .expect("junk body fits u32")
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            out.push(0);
+        }
+    }
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&format_tag.to_le_bytes());
+    out.extend_from_slice(&spec.channels.to_le_bytes());
+    out.extend_from_slice(&spec.sample_rate.to_le_bytes());
+    out.extend_from_slice(&spec.byte_rate().to_le_bytes());
+    out.extend_from_slice(&spec.block_align().to_le_bytes());
+    out.extend_from_slice(&spec.bits.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(
+        &u32::try_from(data.len())
+            .expect("fixture data fits u32")
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(data);
+    if data.len() % 2 == 1 {
+        out.push(0);
+    }
+    let riff_len = u32::try_from(out.len() - 8).expect("fixture fits u32");
+    out[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    out
+}
+
+/// `fmt ` 块**块体**在 [`wav_with_chunks_before_fmt`] 产物里的偏移。
+///
+/// 判据要靠它去改写 `num_channels`（"32769 声道"这种畸形声明不能在构造期写进
+/// [`WavSpec`] —— 那会让夹具自己先溢出）。返回 `None` 表示前 12 字节不是 RIFF/WAVE。
+#[must_use]
+pub fn fmt_body_offset(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut offset = 12usize;
+    while offset + 8 <= bytes.len() {
+        let size = usize::try_from(u32::from_le_bytes([
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ]))
+        .ok()?;
+        if &bytes[offset..offset + 4] == b"fmt " {
+            return Some(offset + 8);
+        }
+        offset = offset
+            .checked_add(8)?
+            .checked_add(size.checked_add(size & 1)?)?;
+    }
+    None
+}
+
 /// 把整数样本编码为 `bits` 位小端字节流（8-bit 为无符号偏移 128 的约定）。
 #[must_use]
 pub fn encode_int_samples(bits: u16, values: &[i32]) -> Vec<u8> {
@@ -452,6 +540,76 @@ mod tests {
         let declared = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]);
         assert_eq!(declared, 4_096);
         assert_eq!(bytes.len() - 44, 2);
+    }
+
+    #[test]
+    fn wav_fixture_places_chunks_before_fmt_and_backfills_the_riff_size() {
+        // 判据 (夹具自检): `fmt ` 之前确实有那些块，偏移与填充字节都与 RIFF 约定一致，
+        // 且 RIFF 尺寸等于"文件长度 - 8"。没有这条判据，用本夹具写出来的"错位"判据
+        // 会把夹具自身的布局错误读成解码器的缺陷。
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: 8_000,
+            bits: 16,
+            format: WavFormat::Integer,
+        };
+        let four = [0xEEu8; 4];
+        let three = [0xEEu8; 3];
+        let data = [0u8; 4];
+        let junk: [([u8; 4], &[u8]); 3] = [(*b"JUNK", &four), (*b"LIST", &[]), (*b"bext", &three)];
+        let bytes = wav_with_chunks_before_fmt(&spec, &junk, &data);
+
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(
+            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize,
+            bytes.len() - 8,
+            "RIFF size must be backfilled from the real length"
+        );
+        // 块链：JUNK(8+4) | LIST(8+0) | bext(8+3+1 pad) | fmt(8+16) | data(8+4)
+        let mut offset = 12usize;
+        assert_eq!(&bytes[offset..offset + 4], b"JUNK");
+        assert_eq!(
+            u32::from_le_bytes([
+                bytes[offset + 4],
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7]
+            ]),
+            4
+        );
+        offset += 8 + 4;
+        assert_eq!(&bytes[offset..offset + 4], b"LIST");
+        offset += 8;
+        assert_eq!(&bytes[offset..offset + 4], b"bext");
+        assert_eq!(
+            u32::from_le_bytes([
+                bytes[offset + 4],
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7]
+            ]),
+            3
+        );
+        offset += 8;
+        assert_eq!(&bytes[offset..offset + 3], &three);
+        assert_eq!(bytes[offset + 3], 0, "odd chunk must be padded to even");
+        offset += 4;
+        assert_eq!(&bytes[offset..offset + 4], b"fmt ");
+        assert_eq!(
+            fmt_body_offset(&bytes),
+            Some(offset + 8),
+            "the helper must find the very fmt chunk the constructor wrote"
+        );
+        assert_eq!(bytes.len(), offset + 8 + 16 + 8 + 4);
+
+        // 没有 `fmt ` 的结构必须报 `None`，而不是猜一个偏移。
+        assert_eq!(fmt_body_offset(b"not a riff file"), None);
+        assert_eq!(
+            fmt_body_offset(&bytes[..12]),
+            None,
+            "a header-only RIFF has no fmt chunk"
+        );
     }
 
     #[test]
