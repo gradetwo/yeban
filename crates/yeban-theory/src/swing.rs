@@ -101,6 +101,10 @@ pub const fn validate_swing_permille(permille: u16) -> Result<(), TheoryError> {
 ///
 /// 正值 = 后半的起点**向右**移动（推迟），负值 = 向左。平直时返回 `0`。
 ///
+/// `permille` 合法时前半恒不短于一半（`permille >= 500`），因此真实偏移恒非负；
+/// 在 `i128` 上相减，只有"偏移本身装不进 `i64`"（`pair_ticks` 大于 `i64::MAX`）
+/// 时才饱和到 `i64::MAX` —— 返回类型装不下更大的值，这里不 panic。
+///
 /// # Errors
 ///
 /// `permille` 越界时返回 [`TheoryError::SwingOutOfRange`]；
@@ -112,7 +116,8 @@ pub fn swung_onset_offset(pair_ticks: u64, permille: u16) -> Result<i64, TheoryE
     }
     let half = pair_ticks / 2;
     let first = swung_first(pair_ticks, permille);
-    Ok(first as i64 - half as i64)
+    let offset = i128::from(first) - i128::from(half);
+    Ok(i64::try_from(offset).unwrap_or(i64::MAX))
 }
 
 /// 把一对网格单位按摇摆比例切成两段。
@@ -163,9 +168,17 @@ pub fn quantize_onset(
     let first = swung_first(pair_ticks, permille);
     // 第二个槽位不得等于 `pair_ticks`（那是下一对的起点）。
     let second_slot = first.min(pair_ticks - 1);
-    // 正中间归前半：`2 * in_pair <= first` 时取槽位 0。
-    let slot = if 2 * in_pair <= first { 0 } else { second_slot };
-    Ok(onset_ticks - in_pair + slot)
+    // 正中间归前半：`2 * in_pair <= first` 时取槽位 0。比较在 `u128` 上做：
+    // `in_pair` 可以大于 `u64::MAX / 2`（极长的对），`2 * in_pair` 在 `u64` 上会
+    // 溢出（debug 下 panic，release 下回绕后把后半误判成前半）。
+    let slot = if u128::from(in_pair) * 2 <= u128::from(first) {
+        0
+    } else {
+        second_slot
+    };
+    // `onset_ticks - in_pair` 是本对起点（不会下溢）；对尾超出 `u64` 值域时
+    // （`onset_ticks` 逼近 `u64::MAX`）饱和到 `u64::MAX`，不 panic。
+    Ok((onset_ticks - in_pair).saturating_add(slot))
 }
 
 /// 前半段长度（tick）。**唯一**的除法就在这一行。
@@ -303,6 +316,64 @@ mod tests {
                 assert!(in_pair == 0 || in_pair == second_slot, "onset {onset}");
             }
         }
+    }
+
+    #[test]
+    fn extreme_pair_lengths_do_not_overflow() {
+        // `pair_ticks` 可以取到 `u64::MAX`：`2 * in_pair`（判"是否过了中点"）
+        // 与 `对起点 + 槽位` 都会溢出。溢出在 debug 下 panic、在 release 下回绕
+        // 成错的槽位 ⇒ 同输入不同结果。这条判据钉住两条后置条件：
+        // 结果不离开本对，且函数在全部合法比例上幂等。
+        for pair_ticks in [
+            1u64,
+            2,
+            3,
+            479,
+            480,
+            u64::MAX / 2,
+            u64::MAX / 2 + 1,
+            u64::MAX - 2,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            for permille in [500u16, 501, 667, 999, 1000] {
+                let onsets = [
+                    0u64,
+                    1,
+                    pair_ticks / 2,
+                    pair_ticks.saturating_sub(1),
+                    pair_ticks,
+                    u64::MAX - 1,
+                    u64::MAX,
+                ];
+                for onset in onsets {
+                    let quantized = quantize_onset(onset, pair_ticks, permille).unwrap();
+                    assert_eq!(
+                        quantized / pair_ticks,
+                        onset / pair_ticks,
+                        "pair {pair_ticks} onset {onset} permille {permille}"
+                    );
+                    assert_eq!(
+                        quantize_onset(quantized, pair_ticks, permille).unwrap(),
+                        quantized,
+                        "not idempotent: pair {pair_ticks} onset {onset} permille {permille}"
+                    );
+                }
+                // 偏移恒非负（`permille >= 500`），且与"前半减一半"一致；
+                // 只有该差装不进 `i64`（`pair_ticks > i64::MAX`）时才饱和。
+                let offset = swung_onset_offset(pair_ticks, permille).unwrap();
+                assert!(offset >= 0, "pair {pair_ticks} permille {permille}");
+                let span = swung_pair_span(pair_ticks, permille).unwrap();
+                let exact = i128::from(span.first) - i128::from(pair_ticks / 2);
+                assert_eq!(offset, i64::try_from(exact).unwrap_or(i64::MAX));
+            }
+        }
+        // 逐位一致读数：整段 `u64` 值域上的饱和点。
+        assert_eq!(swung_onset_offset(u64::MAX, 1000).unwrap(), i64::MAX);
+        assert_eq!(
+            quantize_onset(u64::MAX - 1, u64::MAX, 1000).unwrap(),
+            u64::MAX - 1
+        );
     }
 
     #[test]

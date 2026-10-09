@@ -388,9 +388,13 @@ impl PitchClass {
     }
 
     /// 向上移调 `semitones` 个半音（对 12 取模）。
+    ///
+    /// 加法在 `i32` 上做：`self` 最大 11，`semitones` 可以取 `i16::MAX`
+    /// （`11 + 32767` 已经超出 `i16`），在 `i16` 上相加会溢出
+    /// （debug 下 panic，release 下回绕后给出错的音级）。
     #[must_use]
     pub fn transpose(self, semitones: i16) -> Self {
-        Self(((self.0 as i16 + semitones).rem_euclid(12)) as u8)
+        Self((i32::from(self.0) + i32::from(semitones)).rem_euclid(12) as u8)
     }
 
     /// 从 `self` 到 `other` 的**上行**音程半音数（0..12）。
@@ -936,5 +940,28 @@ mod tests {
         assert_eq!(b_sharp.pitch_class(), PitchClass::C);
         assert_eq!(b_sharp.with_letter(0).unwrap().to_string(), "C");
         assert_eq!(PitchClass::AS.default_name().to_string(), "A#");
+    }
+
+    #[test]
+    fn transpose_is_a_modular_rotation_over_the_whole_i16_range() {
+        // `self.0 + semitones` 在 `i16` 上相加会溢出（`11 + i16::MAX`）：
+        // debug 下 panic、release 下回绕后给出错的音级。这条判据在**整段**
+        // `i16` 值域上钉住"对 12 取模的旋转"这一语义。
+        for pc in 0u8..12 {
+            let pitch_class = PitchClass::new(pc).unwrap();
+            for semitones in -32768i32..=32767 {
+                let semitones = semitones as i16;
+                let expected = (i32::from(pc) + i32::from(semitones)).rem_euclid(12) as u8;
+                assert_eq!(
+                    pitch_class.transpose(semitones).semitones(),
+                    expected,
+                    "{pitch_class:?} + {semitones}"
+                );
+            }
+        }
+        // 逐位一致读数：两个端点。
+        assert_eq!(PitchClass::B.transpose(i16::MAX), PitchClass::FS);
+        // -32768 mod 12 == 4：C 向下 32768 个半音落在 E。
+        assert_eq!(PitchClass::C.transpose(i16::MIN), PitchClass::E);
     }
 }

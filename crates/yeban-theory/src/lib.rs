@@ -223,13 +223,19 @@ pub fn derive_index(rng_seed: u64, salt: u64, count: usize) -> usize {
 /// 用 `(rng_seed, salt)` 在闭区间 `[low, high]` 中确定性地挑一个整数。
 ///
 /// `low >= high` 时返回 `low`。
+///
+/// 区间宽度在 `i64` 上**可能装不下**：例如 `low == i64::MIN, high == 0` 的宽度是
+/// `2^63`，`high - low` 已经溢出。因此宽度在 `i128` 上算、偏移也在 `i128` 上算，
+/// 结果必然落在 `low..=high` 内，且与"宽度装得下"时的旧口径**逐位相同**
+/// （判据 `derive_range_stays_within_bounds` 的域内外都成立）。
 #[must_use]
 pub fn derive_range_i64(rng_seed: u64, salt: u64, low: i64, high: i64) -> i64 {
     if low >= high {
         return low;
     }
-    let span = (high - low) as u64 + 1;
-    low + (splitmix64(rng_seed, salt) % span) as i64
+    let span = (i128::from(high) - i128::from(low) + 1) as u128;
+    let offset = u128::from(splitmix64(rng_seed, salt)) % span;
+    (i128::from(low) + offset as i128) as i64
 }
 
 #[cfg(test)]
@@ -274,6 +280,33 @@ mod tests {
         }
         assert_eq!(derive_range_i64(0, 0, 5, 5), 5);
         assert_eq!(derive_range_i64(0, 0, 9, 3), 9);
+    }
+
+    #[test]
+    fn derive_range_survives_widths_that_do_not_fit_in_i64() {
+        // 宽度可以是 `2^64 - 1`（`i64::MIN..=i64::MAX`）。在 `i64` 上算宽度会溢出
+        // （debug 下 panic、release 下取余除零），因此这条判据同时钉住
+        // "不 panic" 与 "仍在闭区间内"。
+        for seed in 0u64..64 {
+            for (low, high) in [
+                (i64::MIN, i64::MAX),
+                (i64::MIN, 0),
+                (i64::MIN, i64::MIN + 1),
+                (-5, i64::MAX),
+                (0, i64::MAX),
+            ] {
+                let value = derive_range_i64(seed, 9, low, high);
+                assert!(
+                    (low..=high).contains(&value),
+                    "seed {seed}: {value} outside [{low}, {high}]"
+                );
+            }
+        }
+        // 逐位一致读数：整段 `i64` 值域上的第 0 个种子。
+        assert_eq!(
+            derive_range_i64(0, 0, i64::MIN, i64::MAX),
+            7_070_836_379_803_831_727
+        );
     }
 
     #[test]

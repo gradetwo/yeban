@@ -330,9 +330,12 @@ impl Scale {
         }
         let index = degree % u16::from(count);
         let octaves = degree / u16::from(count);
-        let semitones = self.tonic.semitones() as u16
-            + u16::from(self.intervals()[index as usize])
-            + 12 * octaves;
+        // 累加在 `u32` 上做：`degree` 取 `u16::MAX` 且音阶有 7 级时 `octaves` 是
+        // 9362，`12 * octaves` 已经超出 `u16`（debug 下 panic，release 下回绕后
+        // 给出错的音级）。取模 12 之后的读数与旧口径逐位相同。
+        let semitones = u32::from(self.tonic.semitones())
+            + u32::from(self.intervals()[index as usize])
+            + 12 * u32::from(octaves);
         PitchClass::new((semitones % 12) as u8)
     }
 
@@ -351,8 +354,7 @@ impl Scale {
         let index = degree % u16::from(count);
         let octaves = degree / u16::from(count);
         let base = (i32::from(tonic_octave) + 1) * 12 + i32::from(self.tonic.semitones());
-        let value =
-            base + i32::from(self.intervals()[index as usize]) + 12 * i32::from(octaves as i16);
+        let value = base + i32::from(self.intervals()[index as usize]) + 12 * i32::from(octaves);
         Pitch::new(value)
     }
 
@@ -427,11 +429,15 @@ impl Scale {
         if count == 0 {
             return ChordKind::Major;
         }
-        let span = |offset: u16| -> u16 {
-            let target = degree + offset;
-            let index = target % count;
-            let octaves = target / count;
-            12 * octaves + u16::from(self.intervals()[index as usize])
+        // 级数累加与八度累计都在 `u32` 上做：`degree` 取 `u16::MAX` 时
+        // `degree + offset` 与 `12 * octaves` 都会超出 `u16`（debug 下 panic，
+        // release 下回绕后给出错的性质）。两个读数都只用于取模 12，
+        // 因此在装得下的输入上与旧口径逐位相同。
+        let span = |offset: u32| -> u32 {
+            let target = u32::from(degree) + offset;
+            let index = target % u32::from(count);
+            let octaves = target / u32::from(count);
+            12 * octaves + u32::from(self.intervals()[index as usize])
         };
         let third = (span(2) - span(0)) % 12;
         let fifth = (span(4) - span(0)) % 12;
@@ -524,6 +530,60 @@ mod tests {
         assert_eq!(c.degree_to_pitch(4, 0).unwrap().value(), 60);
         assert_eq!(c.degree_to_pitch(4, 7).unwrap().value(), 72);
         assert_eq!(c.degree_to_pitch(4, 9).unwrap().value(), 76); // D5
+    }
+
+    #[test]
+    fn degree_readings_are_total_across_the_whole_u16_domain() {
+        // `degree + offset` 与 `12 * octaves` 在 `u16` 上都会溢出
+        // （`degree` 取 `u16::MAX` 时八度累计是 9362）：debug 下 panic、
+        // release 下回绕后给出错的音级/性质。两条读数都只用于取模 12，
+        // 因此这条判据在**整段** `u16` 值域上钉住"八度累计不影响读数"。
+        for kind in [
+            ScaleKind::Major,
+            ScaleKind::NaturalMinor,
+            ScaleKind::HarmonicMinor,
+            ScaleKind::PentatonicMinor,
+            ScaleKind::Blues,
+        ] {
+            let scale = Scale::new(PitchClass::C, kind);
+            let intervals = kind.intervals();
+            let count = intervals.len() as u32;
+            for degree in 0u16..=u16::MAX {
+                let expected = intervals[(u32::from(degree) % count) as usize];
+                assert_eq!(
+                    scale.degree_pitch_class(degree).unwrap().semitones(),
+                    expected,
+                    "{} degree {degree}",
+                    kind.name()
+                );
+                let _ = scale.triad_quality(degree);
+            }
+            // 三度/五度读数在跨八度的级上必须与"八度累计"口径一致。
+            for degree in [0u16, 1, 6, 7, 8, 100, 60_000, u16::MAX - 1, u16::MAX] {
+                let span = |offset: u32| -> u32 {
+                    let target = u32::from(degree) + offset;
+                    12 * (target / count) + u32::from(intervals[(target % count) as usize])
+                };
+                let expected = match ((span(2) - span(0)) % 12, (span(4) - span(0)) % 12) {
+                    (4, 7) => crate::chord::ChordKind::Major,
+                    (3, 7) => crate::chord::ChordKind::Minor,
+                    (3, 6) => crate::chord::ChordKind::Diminished,
+                    (4, 8) => crate::chord::ChordKind::Augmented,
+                    _ => crate::chord::ChordKind::Major,
+                };
+                assert_eq!(
+                    scale.triad_quality(degree),
+                    expected,
+                    "{} degree {degree}",
+                    kind.name()
+                );
+            }
+        }
+        // 逐位一致读数：整段 `u16` 值域的上端点。
+        let c = Scale::new(PitchClass::C, ScaleKind::Major);
+        // 65535 = 9362 * 7 + 1 ⇒ 音级下标 1 = D，八度累计被取模消掉。
+        assert_eq!(c.degree_pitch_class(u16::MAX).unwrap(), PitchClass::D);
+        assert_eq!(c.triad_quality(u16::MAX), crate::chord::ChordKind::Minor);
     }
 
     #[test]

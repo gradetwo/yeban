@@ -2917,7 +2917,9 @@ pub static GENRES: &[GenreRule] = &[
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GenreLibrary;
 
-/// 从未在文档里出现过的默认音阶名，用于 `primary_scale` 的零值回退。
+/// ID → `GENRES` 下标的只读索引（[`BTreeMap`]，因此 `ids()` 是字典序）。
+///
+/// 由 `OnceLock` 惰性构建一次，只读常量表，不含可变状态或随机性。
 fn library_index() -> &'static BTreeMap<&'static str, usize> {
     static INDEX: OnceLock<BTreeMap<&'static str, usize>> = OnceLock::new();
     INDEX.get_or_init(|| {
