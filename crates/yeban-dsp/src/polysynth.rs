@@ -117,7 +117,7 @@
 //! 做的是相反的事（重算系数、保留状态）。
 //!
 //! 现在 `set_sample_rate` 用 [`OscState::retune`] 把在响声部（含被窃取声部**挂起**的
-//! 新音符）重算到新采样率上，重算用的是**触发路径的同一对函数**
+//! 新音符：它的两条支路与那只包络）重算到新采样率上，重算用的是**触发路径的同一对函数**
 //!（[`phase_increment`] 与 [`crate::oscillator::level_for_freq`]）⇒ 换采样率之后的
 //! 在响声部与"在新采样率下同刻新触发的声部"在系数上**逐位相同**。相位、波表下标、
 //! 增益、包络电平与阶段、滤波器状态、起止样本、淡出剩余**一个都不动**
@@ -133,6 +133,38 @@
 //! `p10_a_sample_rate_change_keeps_the_sounding_pitch`，系数逐位对账与包络时标在
 //! 本文件的 `a_sample_rate_change_retunes_the_sounding_voices` /
 //! `a_sample_rate_change_keeps_the_envelope_time_scale`。
+//!
+//! ## 8. 窃取淡出之后的**常规释放**：挂起的新音符带自己那只包络（本轮补齐的成员）
+//!
+//! 软窃取（`steal_fade_frames != 0`，即默认路径）把新音符**挂起**在被窃取声部的
+//! `pending` 上，淡出走完的那一帧才起音。过去那一帧做的是
+//! `voice.env.reset(); voice.env.gate_on();` —— 复用**旧声部那只**包络。而旧声部的
+//! release 已经被 [`Adsr::start_steal_fade`] 覆盖成 [`STEAL_RELEASE_SECONDS`]（3 ms）。
+//! 于是"下一次松键时的释放"用的是 **3 ms**，而不是 patch 里配的
+//! `PolySynthParams::release_s`（本机实测：`release_s = 0.5 s` 时，窃取臂的释放尾巴
+//! **221** 帧、全新实例上同一音符 **36839** 帧，比值 **166.69**）。
+//!
+//! 同一个 crate 的 [`crate::drums::DrumMachine`] 没有这个问题：它的 `PendingHit` 带
+//! 一整份**触发时造好**的 `Generator`（含四只包络），复用时
+//! `Slot::arm` 直接把那份新状态装进槽位 ⇒ 旧一击被覆盖成 3 ms 的那只包络随旧
+//! `Generator` 一起被丢弃。
+//!
+//! 现在 [`PendingNote`] 与它同形：多带一只 [`Adsr`]（[`PendingNote::env`]，
+//! 由 [`PolySynth::env_for`] 在 `note_on` 里造好），淡出走完的那一帧
+//! `voice.env = pending.env`。因此**空槽路径、硬窃取路径、软窃取路径**装的是
+//! **同一份构造**的包络（`fresh_voice` 因此不再自己造包络：一次 `note_on` 只造
+//! 一只，三条路径共用）。
+//!
+//! ⚠ 明说的边界：`note_on` 因此比过去多一次 `env_for`（含两次 `exp`），只在
+//! **软窃取**那一条路径上；`note_on` 本来就是允许 `exp` 的触发路径
+//!（空槽路径早就走 `env_for`）。逐样本的 `render` 路径**一次超越函数都没有加**。
+//! 换采样率时挂起包络的系数一起重算（[`PolySynth::retune_sounding_voices`]），
+//! 否则新音符的起振/释放时标会停在旧采样率上。
+//!
+//! 运行期判据：`tests/polysynth_rt_zero_alloc.rs`（窃取在窗口内反复发生 ⇒
+//! 新分支的运行期零分配是被测的）；行为判据两条 —— 释放时标在
+//! `a_stolen_voice_starts_its_new_note_with_the_configured_release`，
+//! 挂起包络的换采样率重算在 `a_sample_rate_change_retunes_a_pending_note`。
 
 use crate::MIN_SAMPLE_RATE;
 use crate::envelope::{Adsr, AdsrStage, STEAL_RELEASE_SECONDS};
@@ -674,6 +706,13 @@ impl OscState {
 }
 
 /// 一个**已挂起**的新音符：窃取淡出走完的那一帧才启用。
+///
+/// 它带**整份起音状态**：两条振荡器支路 ＋ 一只**在触发那一刻新造的包络**
+/// （[`PendingNote::env`]）。这与 [`crate::drums`] 的 `PendingHit` 带整份
+/// `Generator` 是同一条纪律，理由也一样：被窃取声部身上那只包络已经被
+/// [`Adsr::start_steal_fade`] 改成 **3 ms** 释放，**复用**它当新音符的包络，
+/// 等于让"窃取用的 3 ms 淡出"变成新音符的**常规释放**（本机实测：同一个音符
+/// 在窃取臂上释放 **221** 帧、在全新实例上 **36839** 帧，比值 **166.69**）。
 #[derive(Clone, Copy, Debug)]
 struct PendingNote {
     start_sample: u64,
@@ -681,6 +720,9 @@ struct PendingNote {
     gain: f32,
     osc1: OscState,
     osc2: OscState,
+    /// 新音符的包络：由 [`PolySynth::env_for`] 在 `note_on` 里造好（已 `gate_on`、
+    /// 电平 `0`），与 [`PolySynth::fresh_voice`] 给空槽装的那一只**同一份构造**。
+    env: Adsr,
 }
 
 /// 一个声部的全部状态。
@@ -953,7 +995,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// 覆盖三种在响声部的状态：两个振荡器支路（[`OscState::retune`]）、包络
     /// （[`Adsr::set_sample_rate`]，只重算系数）、声部低通（[`LadderFilter::configure`]，
     /// 只重算系数）；被窃取声部**挂起**的新音符（`pending`）也一起重算 —— 它还没发声，
-    /// 但它的两条支路同样是按旧采样率解析出来的。
+    /// 但它的两条支路与**那只包络**同样是按旧采样率造的。
     ///
     /// 正在走 3 ms 窃取淡出的声部**照重算**（与 [`crate::drums::DrumMachine`] 的
     /// "跳过淡出槽位"不同，理由是本函数只动**系数**）：`Adsr::set_sample_rate`
@@ -974,6 +1016,11 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             if let Some(pending) = &mut voice.pending {
                 pending.osc1.retune(sample_rate);
                 pending.osc2.retune(sample_rate);
+                // 挂起新音符的**包络**也是按旧采样率造的（三段系数都是采样率的
+                // 函数）⇒ 一起重算。只重算系数、不改写时间与电平（`Adsr` 的
+                // `set_sample_rate` 语义），因此新音符的起振/释放**时标**跟着
+                // 新采样率走（判据 `a_sample_rate_change_retunes_a_pending_note`）。
+                pending.env.set_sample_rate(sample_rate);
             }
             voice.env.set_sample_rate(sample_rate);
             voice
@@ -1036,6 +1083,8 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// 2. **淡出**：被窃取声部进入 `fade_remaining = steal_fade_frames` 帧的指数淡出
     ///    （默认 3 ms），新音符**挂起**在同一槽位上，淡出走完立刻从 0 起 attack。
     ///    池满时"旧声部淡出"与"新音符起音"因此**永不同时发声** ⇒ 不可能叠加爆音。
+    ///    新音符带**自己那只**在本次 `note_on` 里造好的包络（[`PendingNote::env`]）
+    ///    ⇒ 那条 3 ms 只属于被窃取声部的淡出，**不**变成新音符的常规释放（模块文档 §8）。
     /// 3. **`fade_frames == 0` 退化为硬窃取**（判据注入用）：不动旧声部，直接覆盖。
     ///    这时输出会出现"旧波形硬切到新波形"的样本间跃变。
     ///
@@ -1069,6 +1118,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             gain: note.gain,
             osc1,
             osc2,
+            env: self.env_for(),
         };
 
         if let Some(index) = self.voices.iter().position(|voice| !voice.active) {
@@ -1149,9 +1199,9 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                     let envelope = voice.env.process(false);
                     if voice.fade_remaining == 0 && voice.pending.is_some() {
                         // 新音符从 0 起 attack：相位归零、起始位置改为当前帧、
-                        // 包络 reset + gate_on。新音符**从这一帧**开始发声，
-                        // 而旧音符在上一帧已经衰减到 ≈0（`Adsr` 在 < 1e-4 时归零）
-                        // ⇒ 中间不存在"两个波形的和"。
+                        // 包络换成**触发那一刻造好的那一只**。新音符**从这一帧**
+                        // 开始发声，而旧音符在上一帧已经衰减到 ≈0（`Adsr` 在 < 1e-4
+                        // 时归零）⇒ 中间不存在"两个波形的和"。
                         if let Some(pending) = voice.pending.take() {
                             voice.osc1 = OscState {
                                 phase: 0,
@@ -1164,8 +1214,11 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                             voice.gain = pending.gain;
                             voice.start_sample = pending.start_sample.max(now);
                             voice.end_sample = pending.end_sample;
-                            voice.env.reset();
-                            voice.env.gate_on();
+                            // ⚠ 换包络，**不**复用旧声部那只：旧声部的 release 已被
+                            // `start_steal_fade` 覆盖成 3 ms，复用会让新音符的常规
+                            // 释放变成 3 ms。新包络与 `fresh_voice`（空槽路径）装的
+                            // 是同一份构造 ⇒ 两条窃取路径与空槽路径给出同一条释放。
+                            voice.env = pending.env;
                         }
                     } else {
                         let mut sample =
@@ -1219,7 +1272,12 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         })
     }
 
-    /// 新建一个"刚起音"的声部（触发路径用；含包络系数的 `exp`，每次触发一次）。
+    /// 新建一个"刚起音"的声部（空槽路径与硬窃取路径用）。
+    ///
+    /// 包络取 [`PendingNote::env`] —— 它在 `note_on` 里由 [`Self::env_for`] 造好
+    /// （含三段系数的 `exp`，每次触发一次）。**两条窃取路径与这条空槽路径因此装的
+    /// 是同一份构造**：`pending.env` 在淡出走完的那一帧被原样搬进声部
+    /// （见 [`Self::render`]），这里只是同一件事在"槽位本来就空"时的形态。
     #[must_use]
     fn fresh_voice(&self, pending: &PendingNote) -> PolyVoice {
         PolyVoice {
@@ -1229,7 +1287,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             gain: pending.gain,
             start_sample: pending.start_sample,
             end_sample: pending.end_sample,
-            env: self.env_for(),
+            env: pending.env,
             filter: self.filter_template,
             fade_remaining: 0,
             pending: None,
@@ -1779,6 +1837,181 @@ mod tests {
             crossing.abs_diff(EXPECTED_ATTACK_FRAMES) <= 2,
             "换采样率之后起振用了 {crossing} 帧，期望 {EXPECTED_ATTACK_FRAMES} 帧（±2）\
              —— 包络系数还停在旧采样率上"
+        );
+    }
+
+    /// 判据夹具用的包络参数：`A 1 ms / D 10 ms / S 1.0 / R 500 ms`。
+    ///
+    /// `sustain = 1.0` 且 `decay = 10 ms` ⇒ 两支夹具在音符终点处的包络电平都
+    /// **恰好**是 `1.0`（`Adsr` 的 Decay 段在 `|value − sustain| < 1e-4` 时把
+    /// `value` 写成 `sustain` 并转入 Sustain），因此释放从同一个值出发，
+    /// 尾巴长度可以**逐位相等**地比较，不需要容差。
+    fn release_fixture_params() -> PolySynthParams {
+        PolySynthParams::new()
+            .with_oscillators(OscSettings::new(0, 1.0, 0.0), OscSettings::off())
+            .with_filter(20_000.0, 0.0, 0.0, true)
+            .with_envelope(0.001, 0.010, 1.0, 0.5)
+    }
+
+    /// 从 `from` 起到最后一个**非零**样本的帧数（单位：帧；`from` 是音符终点）。
+    fn release_tail(out: &[f32], from: usize) -> usize {
+        out[from..]
+            .iter()
+            .rposition(|sample| *sample != 0.0)
+            .map_or(0, |index| index + 1)
+    }
+
+    /// 段内峰值（覆盖度自检用：证明夹具真的出声）。
+    fn peak_before(out: &[f32], until: usize) -> f32 {
+        out[..until]
+            .iter()
+            .fold(0.0f32, |worst, sample| worst.max(sample.abs()))
+    }
+
+    /// **判据（新写，可红）**：软窃取之后，新音符用的是**它自己那只**包络 ——
+    /// 释放尾巴与"同一音符在一台全新实例上触发"**逐位同长**。
+    ///
+    /// 量什么：从音符终点（`end_sample`）到最后一个非零样本的帧数（单位：帧）。
+    /// 两支夹具的参数、采样率、音符（起点/终点/频率/力度）完全相同，唯一差别是
+    /// 甲臂先有一个音符占住声部池、乙臂直接把该音符触在空槽上。夹具的
+    /// `sustain = 1.0` ⇒ 两支在终点处包络电平恰好 `1.0` ⇒ 尾巴长度**必须相等**。
+    ///
+    /// 为什么两支都要：只断言"窃取臂的尾巴 > N 帧"会被一条与 patch 无关的硬编码
+    /// 释放蒙混；"与全新实例逐位同长"才钉住"新音符带的是按当前参数造的包络"。
+    ///
+    /// 注入（本机实测）：把淡出完成那一帧的 `voice.env = pending.env` 换回
+    /// `voice.env.reset(); voice.env.gate_on();`（复用旧声部那只被
+    /// `start_steal_fade` 覆盖成 3 ms 的包络）⇒ 本判据变红，实测
+    /// **221** 帧（窃取臂）对 **36839** 帧（全新实例），比值 **166.69**。
+    #[test]
+    fn a_stolen_voice_starts_its_new_note_with_the_configured_release() {
+        /// 预热帧数（`warm-up` 之后声部处于 sustain，才可能被选为被窃取者）。
+        const WARM: usize = 2_048;
+        /// 挂起新音符的终点（绝对样本位置）。
+        const END: u64 = 4_048;
+        /// 渲染窗口（帧）。`0.5 s` 的释放 @48 kHz 实测 36 839 帧 ⇒ 窗口留一倍余量。
+        const WINDOW: usize = 80_000;
+
+        let tables = tables();
+        let params = release_fixture_params();
+
+        // 甲臂：软窃取 —— 旧音符占住唯一的声部，新音符挂在它身上。
+        let mut stolen_arm = PolySynth::<1>::new(48_000);
+        stolen_arm.set_params(params, &tables);
+        stolen_arm.note_on(NoteEvent::new(0, 10_000_000, 220.0, 1.0), &tables);
+        let mut warm = vec![0.0f32; WARM];
+        stolen_arm.render(&tables, 0, &mut warm);
+        stolen_arm.note_on(NoteEvent::new(WARM as u64, END, 440.0, 1.0), &tables);
+        assert_eq!(
+            stolen_arm.voice_steals(),
+            1,
+            "夹具必须真的走软窃取：池只有 1 个声部，第二个音符必须窃取"
+        );
+        let mut stolen = vec![0.0f32; WINDOW];
+        stolen_arm.render(&tables, WARM as u64, &mut stolen);
+
+        // 乙臂：对照 —— 同一个音符直接触在空槽上（不经过窃取）。
+        let mut fresh_arm = PolySynth::<1>::new(48_000);
+        fresh_arm.set_params(params, &tables);
+        fresh_arm.note_on(NoteEvent::new(WARM as u64, END, 440.0, 1.0), &tables);
+        assert_eq!(fresh_arm.voice_steals(), 0, "对照臂不许窃取");
+        let mut fresh = vec![0.0f32; WINDOW];
+        fresh_arm.render(&tables, WARM as u64, &mut fresh);
+
+        let from = (END - WARM as u64) as usize;
+        let stolen_tail = release_tail(&stolen, from);
+        let fresh_tail = release_tail(&fresh, from);
+        let stolen_peak = peak_before(&stolen, from);
+        let fresh_peak = peak_before(&fresh, from);
+        println!(
+            "[yeban-dsp/polysynth] 窃取后的常规释放: 窃取臂={stolen_tail} 帧 \
+             (sustain 峰值={stolen_peak:.6}); 全新实例={fresh_tail} 帧 \
+             (峰值={fresh_peak:.6}); 逐位同长={}",
+            stolen_tail == fresh_tail
+        );
+
+        // 覆盖度自检：两支都必须真的出声，否则"尾巴长度"是在静音上读的。
+        assert!(
+            stolen_peak > 0.1 && fresh_peak > 0.1,
+            "夹具必须出声: 窃取臂峰值 {stolen_peak:.6} / 对照臂峰值 {fresh_peak:.6}"
+        );
+        // 判别力自检：配置的释放是 0.5 s ⇒ 尾巴必须是上万帧；
+        // 停在 3 ms 上时只有约 221 帧。
+        assert!(
+            fresh_tail > 10_000,
+            "对照臂的释放尾巴只有 {fresh_tail} 帧 —— 夹具没有把 0.5 s 的释放测出来"
+        );
+        assert_eq!(
+            stolen_tail, fresh_tail,
+            "窃取后新音符的释放尾巴（{stolen_tail} 帧）必须与全新实例（{fresh_tail} 帧）同长 \
+             —— 新音符带的是自己那只按 patch 造的包络，不是被窃取声部那只 3 ms 的"
+        );
+    }
+
+    /// **判据（新写，可红）**：换采样率时**挂起**新音符（软窃取还没走完淡出）的
+    /// 包络一起重算 ⇒ 新音符的释放时标按**新**采样率走。
+    ///
+    /// 量什么：从新音符终点到最后一个非零样本的帧数（单位：帧），与"在 96 kHz 上
+    /// 全新触发的同一音符"**逐位同长**。
+    /// `0.5 s` 的释放 @96 kHz 是 **73683** 帧；若包络系数停在 48 kHz 上则是
+    /// **36839** 帧 —— 相差一倍，读数有判别力。
+    ///
+    /// 注入（本机实测）：注释掉 `retune_sounding_voices` 里的
+    /// `pending.env.set_sample_rate(sample_rate);` ⇒ 本判据变红（窃取臂实得
+    /// **36839** 帧，对照臂 **73683** 帧）。
+    #[test]
+    fn a_sample_rate_change_retunes_a_pending_note() {
+        /// 预热帧数（同 [`a_stolen_voice_starts_its_new_note_with_the_configured_release`]）。
+        const WARM: usize = 2_048;
+        /// 挂起新音符的终点（绝对样本位置）。
+        const END: u64 = 6_048;
+        /// 渲染窗口（帧）。`0.5 s` 的释放 @96 kHz 是 73 728 帧 ⇒ 窗口留一倍余量。
+        const WINDOW: usize = 160_000;
+
+        let tables = tables();
+        let params = release_fixture_params();
+
+        // 甲臂：48 kHz 上软窃取 ⇒ **淡出还没走完**就换到 96 kHz。
+        let mut stolen_arm = PolySynth::<1>::new(48_000);
+        stolen_arm.set_params(params, &tables);
+        stolen_arm.note_on(NoteEvent::new(0, 10_000_000, 220.0, 1.0), &tables);
+        let mut warm = vec![0.0f32; WARM];
+        stolen_arm.render(&tables, 0, &mut warm);
+        stolen_arm.note_on(NoteEvent::new(WARM as u64, END, 440.0, 1.0), &tables);
+        assert_eq!(stolen_arm.voice_steals(), 1, "夹具必须真的窃取");
+        stolen_arm.set_sample_rate(96_000);
+        let mut stolen = vec![0.0f32; WINDOW];
+        stolen_arm.render(&tables, WARM as u64, &mut stolen);
+
+        // 乙臂：对照 —— 从一开始就是 96 kHz，同一个音符触在空槽上。
+        let mut fresh_arm = PolySynth::<1>::new(48_000);
+        fresh_arm.set_params(params, &tables);
+        fresh_arm.set_sample_rate(96_000);
+        fresh_arm.note_on(NoteEvent::new(WARM as u64, END, 440.0, 1.0), &tables);
+        let mut fresh = vec![0.0f32; WINDOW];
+        fresh_arm.render(&tables, WARM as u64, &mut fresh);
+
+        let from = (END - WARM as u64) as usize;
+        let stolen_tail = release_tail(&stolen, from);
+        let fresh_tail = release_tail(&fresh, from);
+        println!(
+            "[yeban-dsp/polysynth] 挂起包络换采样率: 窃取臂={stolen_tail} 帧; \
+             96 kHz 全新实例={fresh_tail} 帧; 逐位同长={} (48 kHz 系数会是 36839 帧)",
+            stolen_tail == fresh_tail
+        );
+
+        assert!(
+            peak_before(&stolen, from) > 0.1 && peak_before(&fresh, from) > 0.1,
+            "夹具必须出声"
+        );
+        assert!(
+            fresh_tail > 60_000,
+            "对照臂的释放尾巴只有 {fresh_tail} 帧 —— 96 kHz 的 0.5 s 释放没被测出来"
+        );
+        assert_eq!(
+            stolen_tail, fresh_tail,
+            "换采样率之后挂起新音符的释放尾巴（{stolen_tail} 帧）必须与 96 kHz 上全新触发的\
+             音符（{fresh_tail} 帧）同长 —— 挂起那只包络的系数还停在 48 kHz 上"
         );
     }
 }
