@@ -3959,6 +3959,243 @@ fn edit_notes_automation_lane_writes_the_read_switch_and_undo_restores_it() {
     );
 }
 
+/// **工具面真的能取走一个自动化点**：`ops[].kind == "removeAutomationPoint"` 走完
+/// `tools/call` → 提案 → 合并 → 撤销 的整条管线，点真的从文档里消失，撤销逐字节复原。
+///
+/// 这条判据对着一处**实测缺口**：模型有 `Op::RemoveAutomationPoint`（自包含撤销载荷），
+/// `yeban_edit_automation` 的写侧只能 `Op::SetAutomationPoint`（同一 `(目标, tick)`
+/// 是**更新**）、读侧却早就报 `lane.points[].id` ⇒ 工具面"写得出、读得到、**取不走**"
+/// （量法：`git grep -c 'RemoveAutomationPoint' HEAD -- crates/yeban-mcp/src`
+/// 在改动前命中 **0** 个文件）。
+///
+/// 判据的**牙齿**：第一步用**另一个工具**（`yeban_edit_automation`，McpEdit 直接编辑）
+/// 写一个**显式身份**的点，第二步用本工具按**同一个 tick** 取走它。因此
+/// "按 `(目标, tick)` 重新派生一个身份"的实现在这里报 `ENTITY_NOT_FOUND`
+/// （文档里的身份是调用方给的，不是派生值），只有**在文档上查找**才能命中。
+///
+/// 注入（都能让它变红）：删掉 `parse_one` 的 `removeAutomationPoint` 分支（未知 `kind`）；
+/// 把 `previous_point` 换成常量（模型报 `OpStateMismatch` ⇒ `CONFLICT`）；
+/// 把按 tick 的文档查找换成派生身份（`ENTITY_NOT_FOUND`）；
+/// 把 `NoteOp::RemovePoint` 从 `is_note_level` 的对照里去掉（描述变成"音符编辑: 1 步"）。
+#[test]
+fn edit_notes_remove_automation_point_reaches_the_document_and_undo_restores_it() {
+    let scratch = Scratch::new("remove-automation-point-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let (track_id, target) = project
+        .tracks
+        .values()
+        .find_map(|track| {
+            let target = yeban_model::AutomationTarget::TrackVolume { track_id: track.id };
+            track
+                .automation_lanes
+                .contains_key(&target)
+                .then_some((track.id, target))
+        })
+        .expect("样本里必须有一条 TrackVolume 泳道");
+    let track_text = track_id.to_canonical_string();
+    let clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("样本里必须有 MIDI 片段")
+        .id
+        .to_canonical_string();
+    let points_before = project
+        .track(&track_id)
+        .expect("音轨")
+        .automation_lanes
+        .get(&target)
+        .expect("泳道")
+        .points
+        .len();
+
+    // 第一步：**另一个工具**写一个**显式身份**的点（直接编辑, 立刻提交）。
+    let explicit = yeban_mcp::domain::ids::deterministic_id("point:e2e:remove-by-tick");
+    let explicit_text = explicit.to_canonical_string();
+    let written = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_automation",
+        json!({
+            "trackId": track_text, "lane": "TrackVolume",
+            "point": {"tick": 1920, "value": -18.0, "curve": "SCurve"},
+            "pointId": explicit_text,
+        }),
+    );
+    assert_eq!(written["status"], "success", "{written}");
+    assert_eq!(written["data"]["written"]["existed"], false, "{written}");
+    assert_eq!(
+        written["data"]["written"]["pointId"],
+        json!(explicit_text),
+        "夹具前提: 文档里的身份是调用方给的, 不是派生值: {written}"
+    );
+    assert_eq!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .track(&track_id)
+            .expect("音轨")
+            .automation_lanes
+            .get(&target)
+            .expect("泳道")
+            .points
+            .len(),
+        points_before + 1,
+        "写侧必须真的多了一个点"
+    );
+
+    // 响亮失败：两个寻址同给 / 都不给 / 顶层写 tick / 载荷里写泳道属性 / 点不存在。
+    for (arguments, code, reason) in [
+        (
+            json!({"trackId": track_text, "clipId": clip,
+                   "ops": [{"kind": "removeAutomationPoint",
+                            "point": {"lane": "TrackVolume", "tick": 1920,
+                                      "pointId": explicit_text}}]}),
+            "INVALID_PARAMETER_RANGE",
+            "pointAddressIsAmbiguous",
+        ),
+        (
+            json!({"trackId": track_text, "clipId": clip,
+                   "ops": [{"kind": "removeAutomationPoint", "point": {"lane": "TrackVolume"}}]}),
+            "INVALID_PARAMETER_RANGE",
+            "pointAddressRequired",
+        ),
+        (
+            json!({"trackId": track_text, "clipId": clip,
+                   "ops": [{"kind": "removeAutomationPoint", "tick": 1920,
+                            "point": {"lane": "TrackVolume"}}]}),
+            "INVALID_PARAMETER_RANGE",
+            "unknownPointRemovalField",
+        ),
+        (
+            json!({"trackId": track_text, "clipId": clip,
+                   "ops": [{"kind": "removeAutomationPoint",
+                            "point": {"lane": "TrackVolume", "tick": 1920,
+                                      "readEnabled": false}}]}),
+            "INVALID_PARAMETER_RANGE",
+            "lanePropertiesNotApplicableToPointRemoval",
+        ),
+        (
+            json!({"trackId": track_text, "clipId": clip,
+                   "ops": [{"kind": "removeAutomationPoint",
+                            "point": {"lane": "TrackVolume",
+                                      "pointId": yeban_mcp::domain::ids::deterministic_id("ghost-point")
+                                          .to_canonical_string()}}]}),
+            "ENTITY_NOT_FOUND",
+            "automationPointNotFound",
+        ),
+    ] {
+        let response = call(&mut dispatcher, &auth, "yeban_edit_notes", arguments);
+        assert_domain_error(&response, code, reason);
+        assert_eq!(response["error"]["data"]["reason"], reason, "{response}");
+    }
+    let bytes_before = project_bytes(&dispatcher);
+
+    // 第二步：按**同一个 tick** 取走那个点（提案一位都不改工程）。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip, "includeOps": true,
+               "ops": [{"kind": "removeAutomationPoint",
+                        "point": {"lane": "TrackVolume", "tick": 1920}}]}),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let op = &created["data"]["proposal"]["ops"][0]["op"]["RemoveAutomationPoint"];
+    assert_eq!(
+        op["point_id"],
+        json!(explicit_text),
+        "按 tick 必须命中文档里那个点 (显式身份): {created}"
+    );
+    assert_eq!(op["previous_point"]["tick"], json!(1920), "{created}");
+    assert_eq!(op["previous_point"]["value"], json!(-18.0), "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["title"], "音轨级编辑: 1 步",
+        "描述必须如实说这是音轨级编辑 (不冒充音符编辑): {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "取走一个自动化点" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    let lane_after = project
+        .track(&track_id)
+        .expect("音轨")
+        .automation_lanes
+        .get(&target)
+        .expect("泳道仍在")
+        .clone();
+    assert_eq!(
+        lane_after.points.len(),
+        points_before,
+        "被取走的点必须真的不在文档里"
+    );
+    assert!(
+        !lane_after.points.contains_key(&explicit),
+        "被取走的点身份必须不在文档里"
+    );
+    assert_ne!(
+        project.automation_value_at(&target, 1920).expect("求值"),
+        Some(-18.0),
+        "取走之后那一 tick 的值必须不再来自被取走的点"
+    );
+    let bytes_after_first_merge = project_bytes(&dispatcher);
+
+    // 撤销：逐字节回到取走之前。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (点随 Op::RemoveAutomationPoint 一起可逆)"
+    );
+
+    // 寻址的第二条路：显式 `pointId`（`yeban_edit_automation` 读侧报的就是它）。
+    let by_id = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip, "includeOps": true,
+               "ops": [{"kind": "removeAutomationPoint",
+                        "point": {"lane": "TrackVolume", "pointId": explicit_text}}]}),
+    );
+    assert_eq!(by_id["status"], "success", "{by_id}");
+    assert_eq!(
+        by_id["data"]["proposal"]["ops"][0]["op"]["RemoveAutomationPoint"]["point_id"],
+        json!(explicit_text),
+        "{by_id}"
+    );
+    let by_id_proposal = by_id["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": by_id_proposal, "commitMessage": "按身份取走" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_after_first_merge,
+        "两条寻址路径必须把工程带到**同一个**状态"
+    );
+}
+
 /// **连击与微时序在工具面上可达，且被母带渲染器真的消费**：
 /// `yeban_edit_notes` 的 `add.note.ratchet` / `add.note.microTimingTicks` 进工程
 /// （合并后逐字段可读），渲染响应的 `data.ratchet` 与逐源 `notesRatcheted` 反映它，

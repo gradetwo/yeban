@@ -211,6 +211,76 @@
 //! 前置条件天然成立，撤销仍是模型自己的 [`Op::invert`]。模型自己的不变量原样生效：
 //! `SetAutomationLane` 拒绝把泳道写成**隐式形状**（无点 + 读开 + `Off` + 无覆盖），
 //! 因此"把一条空泳道的读开关打开"是模型的响亮失败，本层不替它决定。
+//!
+//! ## 自动化点取走形态（`ops[].kind == "removeAutomationPoint"`）
+//! —— 关闭"工具面取不走一个自动化点"这一半
+//!
+//! 模型有 [`Op::RemoveAutomationPoint`]（载荷 `target` / `point_id` / `previous_point`
+//! 全部自包含），而在这个形态之前，这个变体在整个 `crates/yeban-mcp/src` 里
+//! **一次都没有被构造过**（实测：`git grep -c 'RemoveAutomationPoint' HEAD --
+//! crates/yeban-mcp/src` 命中 **0** 个文件，`git log --all -S'RemoveAutomationPoint'
+//! -- crates/yeban-mcp` 命中 **0** 次提交）。
+//!
+//! 缺口的样子与前几票同型：`yeban_edit_automation` 的**写**侧只能
+//! [`Op::SetAutomationPoint`]（同一个 `(目标, tick)` 是**更新**），**读**侧却早就在报
+//! `points[].id` ⇒ 工具面"报得出、改得动、**拿不走**"。`yeban_undo` 补不上它：
+//! 撤销是操作日志的栈顶回退，**不能**只取走一个旧点而保住之后的编辑。
+//!
+//! 为什么落在本工具的 `ops[]` 上（而不是新增工具、也不改 `yeban_edit_automation` 的实参）：
+//! 与 `setParam` / `setAutomationLane` 那两票**逐条同因** —— `NoteOp` 的 JSON 形状
+//! 没有契约（§7.2 只写 `ops: Vec<NoteOp>`，`schemas/mcp-tools.schema.json` 把 `ops`
+//! 声明为无约束数组），而扩展工具（含 `yeban_edit_automation`）的实参集合被
+//! `definitions.ExtensionToolArguments.$defs` 逐字段钉住 ⇒ 往它们身上加实参会**必须**
+//! 同步 `schemas/**`（本线禁改）；`ADR-0001` **D46** 的扩张原则是"先扩既有工具的
+//! 参数，只有确实不合适才新增工具"。
+//!
+//! 形态（`point` 是一个**自包含**对象：泳道寻址 + 点寻址）：
+//!
+//! ```json
+//! {"kind":"removeAutomationPoint","point":{"lane":"TrackVolume","tick":3840}}
+//! {"kind":"removeAutomationPoint","point":{"lane":"Macro","macroIndex":0,
+//!   "pointId":"01J8Z0000000000000000000AB"}}
+//! ```
+//!
+//! `tick` 与 `pointId` **恰好给一个**。为什么**不**照抄写侧的"两个都给、身份赢"：
+//! 写侧的 `tick` 是**载荷**（点落在哪一拍），而这里是**寻址**（取走哪一个点）；
+//! 两个寻址同给会让"删的是哪个点"取决于一条隐含优先级。恰好二选一是本仓既有的口径
+//! （`yeban_import_audio` 的 `assetHash` / `path` 同款）。
+//!
+//! 两条寻址的语义**都在文档上**判定，本层不发明第二套身份规则：
+//!
+//! - `pointId` = 模型自己的点身份（`yeban_edit_automation` 读侧 `lane.points[].id`
+//!   报的就是它）；不存在 ⇒ `ENTITY_NOT_FOUND`；
+//! - `tick` = "文档里**恰好一个**落在该 tick 上的点"：0 个 ⇒ `ENTITY_NOT_FOUND`
+//!   （`automationPointNotFound`），≥2 个 ⇒ **响亮拒绝**
+//!   （`INVALID_PARAMETER_RANGE`，`reason = "automationTickAmbiguous"`，
+//!   `data.candidatePointIds` 列出全部候选）。模型只保证 `point.id` 唯一
+//!   （`AutomationLane::validate` 查键/身份一致与取值有限），**不保证**同一泳道内
+//!   tick 唯一 —— 显式 `pointId` 的写入能在同一 tick 上留下两个点，因此"取第一个"
+//!   会删掉调用方**没指名**的那个点，而撤销载荷只记被删的那个。
+//!
+//! `previous_point` **从当前文档读**（不是调用方的声明），因此模型的
+//! 前置条件天然成立，撤销仍是模型自己的 [`Op::invert`]。
+//!
+//! 五条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | `tick` 与 `pointId` 同给 | `INVALID_PARAMETER_RANGE`（`reason = "pointAddressIsAmbiguous"`） |
+//! | 两个都不给 | `INVALID_PARAMETER_RANGE`（`reason = "pointAddressRequired"`） |
+//! | 操作对象里有 `kind` / `point` 之外的键（顶层 `tick` 是最像"写对了"的错法） | `INVALID_PARAMETER_RANGE`（`reason = "unknownPointRemovalField"`） |
+//! | `point` 对象里有 `readEnabled` / `writeMode` / `domain` / `remove`（**别处合法**、此形态不适用） | `INVALID_PARAMETER_RANGE`（`reason = "lanePropertiesNotApplicableToPointRemoval"`） |
+//! | 同一个 tick 上有多个点（`tick` 寻址） | `INVALID_PARAMETER_RANGE`（`reason = "automationTickAmbiguous"`） |
+//!
+//! 泳道不存在、或泳道上没有那个身份 / 那个 tick 的点 ⇒ `ENTITY_NOT_FOUND`
+//! （`reason` 分别是 `automationLaneNotFound` / `automationPointNotFound`），
+//! **不**静默成功。
+//!
+//! ⚠ 词表登记（`ADR-0001` D48）：本形态的 `point` 键与 `yeban_edit_automation` 的
+//! `point` **实参**同名，但形状不同 —— 后者是"要写入的点的**载荷**"
+//! （`{tick, value, curve?}`），本形态是"要取走的点的**寻址**"
+//! （`{lane, …, tick | pointId}`）。同名的理由是两者都指"那一个自动化点"，
+//! 且本对象**自带**泳道寻址（工具顶层只有一个 `trackId`，音轨之外的分量无处可放）。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -403,7 +473,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// `ops[].kind` 的**全集**（规范顺序：四个音符 / 摆放形态在前，音轨级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 8] = [
+pub const OP_KINDS: [&str; 9] = [
     "add",
     "delete",
     "move",
@@ -412,6 +482,7 @@ pub const OP_KINDS: [&str; 8] = [
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
     SET_AUTOMATION_LANE_KIND,
+    REMOVE_AUTOMATION_POINT_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -625,6 +696,67 @@ pub const SET_AUTOMATION_LANE_FIELDS: [&str; 9] = [
 /// 顺序 = 该枚举的声明顺序；名字与序列化名同源（[`write_mode_name`]）。
 pub const LANE_WRITE_MODES: [&str; 4] = ["Off", "Write", "Touch", "Latch"];
 
+/// `ops[].kind` 的**自动化点取走**形态名（写 [`Op::RemoveAutomationPoint`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveAutomationPoint` 的小驼峰），与 [`SET_PARAM_KIND`] /
+/// [`SET_TRACK_MUTE_KIND`] / [`SET_AUTOMATION_LANE_KIND`] 同一条命名规则。
+pub const REMOVE_AUTOMATION_POINT_KIND: &str = "removeAutomationPoint";
+
+/// 点形态的**载荷对象**字段名（`ops[].point`，必填）。
+///
+/// 对象**自包含**：泳道寻址（`lane` / `edgeId` / `slotIndex` / `paramIndex` /
+/// `macroIndex`，与 [`SET_AUTOMATION_LANE_FIELD`] 那一个对象同词同源）+ 点寻址
+/// （`tick` 或 `pointId`）。为什么不是两个平铺的键：工具顶层只有 `trackId`（音轨），
+/// 泳道的其余分量（边 / 槽 / 参数 / 宏下标）无处可放。
+pub const REMOVE_POINT_FIELD: &str = "point";
+
+/// 点寻址的 **tick** 字段名（`ops[].point.tick`，与 [`REMOVE_POINT_ID_FIELD`] 恰好给一个）。
+///
+/// 语义 = "文档里**恰好一个**落在该 tick 上的点"（0 个 / ≥2 个都是响亮失败，
+/// 见 [`unique_point_at`]）。与 `yeban_edit_automation` 的 `point.tick` 同义：
+/// 都是"这个自动化点的时间位置"。
+pub const REMOVE_POINT_TICK_FIELD: &str = "tick";
+
+/// 点寻址的**显式身份**字段名（`ops[].point.pointId`，与 [`REMOVE_POINT_TICK_FIELD`] 恰好给一个）。
+///
+/// 名字与 `yeban_edit_automation` 的同名实参逐字同词（`ADR-0001` D48）——
+/// `yeban_edit_automation` 的读侧 `lane.points[].id` 报的就是这个身份。
+pub const REMOVE_POINT_ID_FIELD: &str = "pointId";
+
+/// `ops[].point` 对象**允许**出现的全部键。
+///
+/// 前五个是**泳道寻址**（与 [`LANE_TARGET_FIELDS`] 同源，由判据钉住），后两个是
+/// **点寻址**。集合之外的键一律**响亮拒绝**，绝不静默丢弃 ——
+/// 与 [`NOTE_FIELDS`] / [`TRACK_FLAG_FIELDS`] / [`SET_AUTOMATION_LANE_FIELDS`] 同一口径。
+pub const REMOVE_POINT_FIELDS: [&str; 7] = [
+    SET_AUTOMATION_LANE_FIELD,
+    "edgeId",
+    "slotIndex",
+    "paramIndex",
+    "macroIndex",
+    REMOVE_POINT_TICK_FIELD,
+    REMOVE_POINT_ID_FIELD,
+];
+
+/// 泳道**寻址**字段（[`SET_AUTOMATION_LANE_FIELDS`] 的前五个）。
+///
+/// 单列一个常量是为了让"`point` 对象允许的泳道键"与"`lane` 对象允许的泳道键"
+/// **只有一份**真相：[`REMOVE_POINT_FIELDS`] 的前五项**就是**本表，判据
+/// `point_removal_field_names_are_pinned` 机械钉住这条关系（不靠人去比对）。
+pub const LANE_TARGET_FIELDS: [&str; 5] = [
+    SET_AUTOMATION_LANE_FIELD,
+    "edgeId",
+    "slotIndex",
+    "paramIndex",
+    "macroIndex",
+];
+
+/// `removeAutomationPoint` 的**操作对象**允许出现的全部键（判别键 + 载荷对象）。
+///
+/// 点寻址**不在**这里：它在 `point` 对象里（顶层写 `tick` 是"看起来对"的错法，
+/// 因此被 [`reject_point_removal_op_fields`] 点名拒绝，而不是静默忽略）。
+pub const REMOVE_POINT_OP_FIELDS: [&str; 2] = ["kind", REMOVE_POINT_FIELD];
+
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
 /// 目标名逐字等于 `project.json` 的变体名（[`LaneKind::parse`] 那一份词表）；
@@ -763,6 +895,20 @@ impl LaneTargetSpec {
     }
 }
 
+/// 一个自动化点的**寻址**（`ops[].point` 的寻址那一半，恰好二选一）。
+///
+/// 两个变体逐一对应"怎么指名一个点"的两条路：文档里的**时间位置**（`tick`），
+/// 或模型自己的**身份**（`pointId`，`yeban_edit_automation` 读侧 `lane.points[].id`
+/// 报的就是它）。本形态**不允许两个同给**（见模块头的理由）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointAddress {
+    /// 按 `tick` 寻址：**文档里恰好一个**落在该 tick 上的点
+    /// （0 个 → `ENTITY_NOT_FOUND`；≥2 个 → 响亮拒绝，绝不挑一个）。
+    Tick(u64),
+    /// 按**显式身份**寻址（点不存在 → `ENTITY_NOT_FOUND`）。
+    Id(EntityId),
+}
+
 /// 一次 `setAutomationLane` 的编译结果（目标的分量 + **替换后**的整条泳道，或"取走"）。
 ///
 /// 单列一个类型（而不是在 [`NoteOp`] 里散着放）是为了让"取走"与"改成什么"
@@ -888,6 +1034,17 @@ pub enum NoteOp {
         /// 目标与属性覆盖（或"取走"）。
         edit: LaneEdit,
     },
+    /// 取走**一个自动化点**（[`Op::RemoveAutomationPoint`]）。
+    ///
+    /// 与 [`Self::SetLane`] 同族（音轨级、目标是一条泳道），但改的不是泳道自己的
+    /// 属性而是**泳道里的一个点**：写侧只有 [`Op::SetAutomationPoint`]（同一
+    /// `(目标, tick)` 是更新）⇒ 没有本形态，工具面写进去的点就**取不走**。
+    RemovePoint {
+        /// 目标的分量（音轨身份由 [`compile`] 补上）。
+        spec: LaneTargetSpec,
+        /// 要取走的那一个点（文档上的 `tick` 或点的显式身份，恰好一个）。
+        address: PointAddress,
+    },
 }
 
 impl NoteOp {
@@ -902,19 +1059,23 @@ impl NoteOp {
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
+            Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
         }
     }
 
     /// 该形态是否**读/写音符**（即是否必须在一条 MIDI 片段上施加）。
     ///
-    /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] 都是**音轨级**的：
-    /// 它们跟片段内容无关。这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有
-    /// 音符操作时成立（旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
+    /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
+    /// 都是**音轨级**的：它们跟片段内容无关。这条区分让 [`compile`] 的"必须是 MIDI 片段"
+    /// 断言只在真的有音符操作时成立（旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
     pub const fn is_note_level(&self) -> bool {
         !matches!(
             self,
-            Self::SetParam { .. } | Self::SetTrackFlag { .. } | Self::SetLane { .. }
+            Self::SetParam { .. }
+                | Self::SetTrackFlag { .. }
+                | Self::SetLane { .. }
+                | Self::RemovePoint { .. }
         )
     }
 }
@@ -936,6 +1097,9 @@ impl NoteOp {
 /// {"kind":"setTrackSolo","value":false}
 /// {"kind":"setAutomationLane","lane":{"lane":"TrackVolume","readEnabled":false}}
 /// {"kind":"setAutomationLane","lane":{"lane":"TrackPan","remove":true}}
+/// {"kind":"removeAutomationPoint","point":{"lane":"TrackVolume","tick":3840}}
+/// {"kind":"removeAutomationPoint","point":{"lane":"Macro","macroIndex":0,
+///                                          "pointId":"<ULID>"}}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -943,13 +1107,15 @@ impl NoteOp {
 /// 见 [`PROBABILITY_FIELD`] / [`RATCHET_FIELD`] / [`MICRO_TIMING_FIELD`]。
 /// `note` 里 [`NOTE_FIELDS`] 之外的键一律**响亮拒绝**，不静默丢弃。
 ///
-/// `setParam` / `setTrackMute` / `setTrackSolo` / `setAutomationLane` 是**音轨级**形态
+/// `setParam` / `setTrackMute` / `setTrackSolo` / `setAutomationLane` /
+/// `removeAutomationPoint` 是**音轨级**形态
 /// （见 [`NoteOp::is_note_level`]）：`setParam` 的 `lane` 只认 [`StaticLane::NAMES`]，
 /// 其余三个自动化目标名（`SendGain` / `DeviceParam` / `Macro`）与未知名字都是
 /// **响亮失败**（`INVALID_PARAMETER_RANGE`，`data.allowed` 给出全集）。
 /// 值的范围判定**不在本层**（见 [`compile`]）；两个开关形态的 `value` 只收 JSON 布尔。
 /// `setAutomationLane` 的**载荷**是 `lane` 对象（见 [`parse_lane_edit`]），
-/// 三个属性键各自可选（缺省 = 保留文档现值）。
+/// 三个属性键各自可选（缺省 = 保留文档现值）；`removeAutomationPoint` 的**载荷**是
+/// `point` 对象（见 [`parse_point_removal`]），`tick` 与 `pointId` 恰好给一个。
 ///
 /// # Errors
 ///
@@ -1025,6 +1191,10 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         SET_AUTOMATION_LANE_KIND => Ok(NoteOp::SetLane {
             edit: parse_lane_edit(object)?,
         }),
+        REMOVE_AUTOMATION_POINT_KIND => {
+            let (spec, address) = parse_point_removal(object)?;
+            Ok(NoteOp::RemovePoint { spec, address })
+        }
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("未知 `kind`: `{other}`"),
@@ -1242,6 +1412,157 @@ fn reject_unknown_lane_fields(lane: &Map<String, Value>) -> Result<(), Fault> {
             "hint": "属性名与 `yeban_edit_automation` 响应里的同名 \
                      (`readEnabled` / `writeMode` / `domain`), 不是 project.json 的 \
                      下划线写法",
+        }),
+    ))
+}
+
+/// 解析 `removeAutomationPoint` 的载荷（`ops[].point`）。
+///
+/// 顺序是刻意的：先拒绝**操作对象**上不该出现的键（顶层写 `tick` 是最像"写对了"
+/// 的错法：它会被静默忽略 ⇒ 调用方以为删了 tick 1920 的点），再拒绝**载荷对象**上的键，
+/// 最后才解析寻址 —— 与 [`parse_lane_edit`] / [`parse_track_flag_value`] 同一纪律。
+///
+/// `tick` 与 `pointId` **恰好给一个**（[`PointAddress`] 的两个变体）：
+/// 两个同给是 `pointAddressIsAmbiguous`，都不给是 `pointAddressRequired`。
+///
+/// # Errors
+///
+/// - `point` 缺失 / 不是对象 → 统一的缺字段错误；
+/// - 操作对象或 `point` 对象里有不支持的键 → `INVALID_PARAMETER_RANGE`
+///   （`reason` = `unknownPointRemovalField` / `unknownPointField` /
+///   `lanePropertiesNotApplicableToPointRemoval`）；
+/// - 寻址不是恰好一个 → `pointAddressIsAmbiguous` / `pointAddressRequired`；
+/// - `tick` 不是非负整数 / `pointId` 不是合法 ULID → `INVALID_PARAMETER_RANGE`；
+/// - 泳道寻址本身非法（未知目标名 / `SendGain` 缺 `edgeId` / 下标形状错）→
+///   [`LaneTargetSpec::parse`] 给出的错误。
+fn parse_point_removal(
+    object: &Map<String, Value>,
+) -> Result<(LaneTargetSpec, PointAddress), Fault> {
+    reject_point_removal_op_fields(object)?;
+    let point = object
+        .get(REMOVE_POINT_FIELD)
+        .and_then(Value::as_object)
+        .ok_or_else(|| missing(REMOVE_POINT_FIELD, "对象"))?;
+    reject_point_fields(point)?;
+    let spec = LaneTargetSpec::parse(point)?;
+    let address = match (
+        point.get(REMOVE_POINT_TICK_FIELD),
+        point.get(REMOVE_POINT_ID_FIELD),
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`{REMOVE_POINT_TICK_FIELD}` 与 `{REMOVE_POINT_ID_FIELD}` 不能同给: \
+                     要取走的是哪一个点必须**恰好**由其中一个决定"
+                ),
+                serde_json::json!({
+                    "field": format!("{REMOVE_POINT_FIELD}.{REMOVE_POINT_ID_FIELD}"),
+                    "reason": "pointAddressIsAmbiguous",
+                    "addressFields": [REMOVE_POINT_TICK_FIELD, REMOVE_POINT_ID_FIELD],
+                }),
+            ));
+        }
+        (Some(_), None) => PointAddress::Tick(read_u64(point, REMOVE_POINT_TICK_FIELD)?),
+        (None, Some(_)) => PointAddress::Id(read_id(point, REMOVE_POINT_ID_FIELD)?),
+        (None, None) => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "必须给定 `{REMOVE_POINT_TICK_FIELD}` (文档里落在该 tick 的那个点) 或 \
+                     `{REMOVE_POINT_ID_FIELD}` (点的显式身份), 二者恰好一个"
+                ),
+                serde_json::json!({
+                    "field": REMOVE_POINT_FIELD,
+                    "reason": "pointAddressRequired",
+                    "addressFields": [REMOVE_POINT_TICK_FIELD, REMOVE_POINT_ID_FIELD],
+                }),
+            ));
+        }
+    };
+    Ok((spec, address))
+}
+
+/// 拒绝 `removeAutomationPoint` 操作对象里 [`REMOVE_POINT_OP_FIELDS`] 之外的键。
+///
+/// 与 [`reject_track_flag_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：
+/// 顶层写 `tick` / `pointId`（正确的位置是 `point` 对象里）若被静默忽略，
+/// 调用方会以为点已经取走。`data.hint` 明确写出两个正确位置。
+fn reject_point_removal_op_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_POINT_OP_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_AUTOMATION_POINT_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_POINT_OP_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownPointRemovalField",
+            "unsupportedFields": unknown,
+            "supportedPointRemovalFields": REMOVE_POINT_OP_FIELDS,
+            "hint": format!(
+                "点寻址在 `{REMOVE_POINT_FIELD}` 对象里 (`{REMOVE_POINT_TICK_FIELD}` 或 \
+                 `{REMOVE_POINT_ID_FIELD}`); 目标音轨是工具顶层的 `trackId`"
+            ),
+        }),
+    ))
+}
+
+/// 拒绝 `ops[].point` 对象里 [`REMOVE_POINT_FIELDS`] 之外的键。
+///
+/// 两档**分开点名**（不混成一句"未知键"）：四个泳道**属性**键
+/// （`readEnabled` / `writeMode` / `domain` / `remove`）在 `setAutomationLane` 里是合法的，
+/// 只是**本形态不适用**（取走一个点不改泳道的属性）—— 与摆放形态的
+/// `placementFieldNotApplicable` 同款口径；其余才是真的未知键。
+fn reject_point_fields(point: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = point
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_POINT_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    let not_applicable: Vec<&str> = unknown
+        .iter()
+        .copied()
+        .filter(|key| SET_AUTOMATION_LANE_FIELDS.contains(key))
+        .collect();
+    if !not_applicable.is_empty() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{REMOVE_POINT_FIELD}` 里有本形态不适用的泳道属性键: {} \
+                 (取走一个点不改泳道的读开关 / 写模式 / 取值域; 那些走 `{SET_AUTOMATION_LANE_KIND}`)",
+                not_applicable.join(", ")
+            ),
+            serde_json::json!({
+                "reason": "lanePropertiesNotApplicableToPointRemoval",
+                "unsupportedFields": not_applicable,
+                "supportedPointFields": REMOVE_POINT_FIELDS,
+            }),
+        ));
+    }
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_POINT_FIELD}` 里有不支持的键: {} (支持集合: {REMOVE_POINT_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownPointField",
+            "unsupportedFields": unknown,
+            "supportedPointFields": REMOVE_POINT_FIELDS,
         }),
     ))
 }
@@ -1585,12 +1906,16 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// [`NoteOp::SetTrackFlag`] 同样是**音轨级**的：`old_mute` / `old_solo` 由
 /// [`TrackFlag::read`] 从当前文档读（模型 `apply` 的前置条件读的是同一个字段）。
 ///
+/// [`NoteOp::RemovePoint`] 也是**音轨级**的：目标是一条泳道上的**一个点**；
+/// `tick` 寻址在**文档**上解析（恰好一个落在该 tick 的点），`pointId` 寻址用模型身份；
+/// `previous_point` 从当前文档读（模型 `RemoveAutomationPoint` 的前置条件读的是同一个字段）。
+///
 /// # Errors
 ///
 /// - 音轨不存在 → `TRACK_NOT_FOUND`；
 /// - 片段不存在 → `CLIP_NOT_FOUND`；**有音符操作**且片段不是 MIDI → `CLIP_NOT_FOUND`
 ///   （纯 `setParam` / 纯开关调用不要求片段是 MIDI：它们不读片段内容）；
-/// - 音符不存在 → `ENTITY_NOT_FOUND`；
+/// - 音符不存在 → `ENTITY_NOT_FOUND`；自动化泳道或点不存在 → `ENTITY_NOT_FOUND`；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
 pub fn compile(
     project: &YebanProjectV1,
@@ -1743,9 +2068,100 @@ pub fn compile(
                     }
                 }
             }
+            NoteOp::RemovePoint { spec, address } => {
+                let target = spec.target(*track_id);
+                let lane = track.automation_lanes.get(&target).ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("这条自动化泳道不存在, 没有点可以取走: {target:?}"),
+                        serde_json::json!({
+                            "lane": spec.kind.as_str(),
+                            "reason": "automationLaneNotFound",
+                        }),
+                    )
+                })?;
+                // 按 tick 寻址 = "文档里那一个**恰好**落在该 tick 上的点"：
+                // 0 个是 `ENTITY_NOT_FOUND`，≥2 个是**响亮拒绝**（不挑一个）。
+                // 模型只保证 `point.id` 唯一，**不保证** tick 唯一
+                // （`AutomationLane::validate` 只查键/身份一致与取值有限），
+                // 因此"tick 上恰好一个点"必须在**这里**判，不能假定。
+                let point_id = match address {
+                    PointAddress::Id(id) => *id,
+                    PointAddress::Tick(tick) => unique_point_at(lane, *tick, spec.kind)?,
+                };
+                let previous_point = lane.points.get(&point_id).copied().ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!(
+                            "这条泳道上没有身份 {point_id} 的点 (取走必须指向一个**存在**的点)"
+                        ),
+                        serde_json::json!({
+                            "lane": spec.kind.as_str(),
+                            "pointId": point_id.to_canonical_string(),
+                            "reason": "automationPointNotFound",
+                        }),
+                    )
+                })?;
+                // 撤销载荷来自**当前文档**（模型 `RemoveAutomationPoint` 的前置条件要求
+                // `previous_point` 等于文档现值），因此本层不采信调用方声明的旧状态。
+                Op::RemoveAutomationPoint {
+                    target,
+                    point_id,
+                    previous_point,
+                }
+            }
         });
     }
     Ok(compiled)
+}
+
+/// 文档里**恰好一个**落在 `tick` 上的点，返回它的身份（[`PointAddress::Tick`] 的解析）。
+///
+/// 三个分支都是**响亮**的：0 个 → `ENTITY_NOT_FOUND`（`automationPointNotFound`）；
+/// 1 个 → 该身份；≥2 个 → `INVALID_PARAMETER_RANGE`（`automationTickAmbiguous`，
+/// `data.candidatePointIds` 列出全部候选）。
+///
+/// 为什么 ≥2 个不是"取第一个"：模型只保证 `point.id` 唯一
+/// （[`AutomationLane::validate`] 查键/身份一致与取值有限），**不保证**同一泳道内
+/// tick 唯一 —— 显式 `pointId` 的写入可以在同一 tick 上留下两个点。
+/// 静默挑一个会删掉调用方**没指名**的那个点，而撤销载荷（`previous_point`）
+/// 只记被删的那个 ⇒ 调用方无从发现。
+fn unique_point_at(lane: &AutomationLane, tick: u64, kind: LaneKind) -> Result<EntityId, Fault> {
+    let candidates: Vec<EntityId> = lane
+        .points
+        .values()
+        .filter(|point| point.tick == tick)
+        .map(|point| point.id)
+        .collect();
+    match candidates.as_slice() {
+        [only] => Ok(*only),
+        [] => Err(Fault::domain_with_data(
+            ErrorCode::EntityNotFound,
+            format!("这条泳道上没有落在 tick {tick} 上的点"),
+            serde_json::json!({
+                "lane": kind.as_str(),
+                "tick": tick,
+                "reason": "automationPointNotFound",
+            }),
+        )),
+        many => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "这条泳道上有 {} 个点落在 tick {tick} 上, `tick` 不足以指名一个点 \
+                 (请改用 `{REMOVE_POINT_ID_FIELD}`)",
+                many.len()
+            ),
+            serde_json::json!({
+                "lane": kind.as_str(),
+                "tick": tick,
+                "reason": "automationTickAmbiguous",
+                "candidatePointIds": many
+                    .iter()
+                    .map(EntityId::to_canonical_string)
+                    .collect::<Vec<_>>(),
+            }),
+        )),
+    }
 }
 
 /// 拒绝"同一次调用里把同一条泳道写了两次"。
@@ -2548,6 +2964,7 @@ fn read_id(object: &Map<String, Value>, field: &str) -> Result<EntityId, Fault> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yeban_model::AutomationPoint;
     use yeban_model::samples::filled_project;
 
     fn lead_clip(project: &YebanProjectV1) -> (EntityId, EntityId) {
@@ -3024,11 +3441,12 @@ mod tests {
 
         // `kind` 的全集必须真的登记这四个音轨级名字
         // （错误信息的 `supportedKinds` 与判据共用同一份真相）。
-        assert_eq!(OP_KINDS.len(), 8);
+        assert_eq!(OP_KINDS.len(), 9);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
         assert!(OP_KINDS.contains(&SET_AUTOMATION_LANE_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
         assert_eq!(LANE_WRITE_MODES.len(), 4);
     }
 
@@ -3338,6 +3756,343 @@ mod tests {
         ]))
         .expect("解析");
         reject_duplicate_lane_targets(&track_id, &distinct).expect("两个不同目标必须放行");
+    }
+
+    // -----------------------------------------------------------------------
+    // 自动化点取走形态（`removeAutomationPoint`）
+    // —— 写侧早就有 `SetAutomationPoint`, 取走侧此前在工具面不可达
+    // -----------------------------------------------------------------------
+
+    /// 词表判据：形态名、两个寻址键、`point` 对象允许的键。
+    ///
+    /// `point` 对象的**泳道寻址**那五项必须与 `lane` 对象的**前五项**是同一份真相
+    /// （本判据机械钉住这条关系，不靠人去比对两张手写表）。
+    ///
+    /// 注入（实测红）：把 [`REMOVE_POINT_FIELDS`] 的第 6 项改成别的键 ⇒ 末段红。
+    #[test]
+    fn point_removal_field_names_are_pinned() {
+        assert_eq!(REMOVE_AUTOMATION_POINT_KIND, "removeAutomationPoint");
+        assert_eq!(REMOVE_POINT_FIELD, "point");
+        assert_eq!(REMOVE_POINT_TICK_FIELD, "tick");
+        assert_eq!(REMOVE_POINT_ID_FIELD, "pointId");
+        assert_eq!(REMOVE_POINT_FIELDS.len(), 7);
+        assert_eq!(REMOVE_POINT_OP_FIELDS, ["kind", REMOVE_POINT_FIELD]);
+        // 前五项 = 泳道寻址 = `lane` 对象的前五项（一份真相）。
+        assert_eq!(LANE_TARGET_FIELDS, SET_AUTOMATION_LANE_FIELDS[..5]);
+        assert_eq!(REMOVE_POINT_FIELDS[..5], LANE_TARGET_FIELDS);
+        // 后两项 = 点寻址（恰好二选一）。
+        assert_eq!(
+            REMOVE_POINT_FIELDS[5..],
+            [REMOVE_POINT_TICK_FIELD, REMOVE_POINT_ID_FIELD]
+        );
+        assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
+    }
+
+    /// 夹具里 `TrackVolume` 泳道在 `tick` 上的那个点（样本前提的**唯一**来源）。
+    fn fixture_point(project: &YebanProjectV1, track_id: EntityId, tick: u64) -> AutomationPoint {
+        let target = AutomationTarget::TrackVolume { track_id };
+        *project
+            .track(&track_id)
+            .expect("音轨")
+            .automation_lanes
+            .get(&target)
+            .expect("样本里必须有 TrackVolume 泳道")
+            .points
+            .values()
+            .find(|point| point.tick == tick)
+            .unwrap_or_else(|| panic!("夹具前提: tick {tick} 上必须有一个点"))
+    }
+
+    /// **字面**判据：按 `tick` 取走一个点 ⇒ 文档里真的少了那个点 ⇒ 逆操作逐字节回原。
+    ///
+    /// 夹具前提（样本 `TrackVolume` 泳道）：两个点（tick 0 / tick 3840），
+    /// `readEnabled = true` / `writeMode = Touch` / 有显式取值域 ⇒ 泳道**不是**隐式形状，
+    /// 因此取走一个点之后泳道仍在（本形态不顺手回收它）。
+    ///
+    /// 注入（实测红）：把 `previous_point` 换成常量 ⇒ 模型前置条件报 `OpStateMismatch`；
+    /// 把按 tick 的派生换成别的输入 ⇒ 该 tick 上找不到点（`ENTITY_NOT_FOUND`）。
+    #[test]
+    fn a_point_is_removed_by_tick_and_the_inverse_restores_it_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let target = AutomationTarget::TrackVolume { track_id };
+        let lane_before = project
+            .track(&track_id)
+            .expect("音轨")
+            .automation_lanes
+            .get(&target)
+            .expect("样本里必须有 TrackVolume 泳道")
+            .clone();
+        assert_eq!(lane_before.points.len(), 2, "夹具前提: 两个点");
+        let victim = fixture_point(&project, track_id, 3840);
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint", "point": {"lane": "TrackVolume", "tick": 3840}}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), REMOVE_AUTOMATION_POINT_KIND);
+        assert!(!ops[0].is_note_level(), "点形态是音轨级");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::RemoveAutomationPoint {
+                target: written,
+                point_id,
+                previous_point,
+            } => {
+                assert_eq!(*written, target);
+                assert_eq!(*point_id, victim.id, "按 tick 寻址必须派生出文档里那个身份");
+                assert_eq!(previous_point, &victim, "撤销载荷必须是文档现值");
+            }
+            other => panic!("应当是 RemoveAutomationPoint: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("施加");
+        let lane_after = project
+            .track(&track_id)
+            .expect("音轨")
+            .automation_lanes
+            .get(&target)
+            .expect("泳道仍在（夹具的泳道是显式形状, 不随点回收）")
+            .clone();
+        assert_eq!(lane_after.points.len(), 1, "被取走的点必须真的不在文档里");
+        assert!(!lane_after.points.contains_key(&victim.id));
+        // 唯一求值入口真的跟着变：tick 3840 不再是那个被取走的值。
+        assert_ne!(
+            project.automation_value_at(&target, 3840).expect("求值"),
+            Some(victim.value),
+            "取走之后那一点的值必须不再由自动化给出"
+        );
+
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到原状"
+        );
+    }
+
+    /// 显式身份寻址与六条响亮失败（形状错误绝不静默降级）。
+    ///
+    /// 注入（实测红）：把"恰好二选一"改成"tick 优先" ⇒ 前两条不再红；
+    /// 去掉 [`reject_point_removal_op_fields`] ⇒ 顶层 `tick` 那条不再红。
+    #[test]
+    fn point_removal_shapes_fail_loudly() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let victim = fixture_point(&project, track_id, 3840);
+        let victim_id = victim.id.to_canonical_string();
+
+        // (a) 显式身份：与按 tick 寻址指向**同一个**点。
+        let by_id = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint",
+             "point": {"lane": "TrackVolume", "pointId": victim_id.clone()}}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &by_id).expect("编译");
+        match &compiled[0] {
+            Op::RemoveAutomationPoint {
+                point_id,
+                previous_point,
+                ..
+            } => {
+                assert_eq!(*point_id, victim.id);
+                assert_eq!(previous_point, &victim);
+            }
+            other => panic!("应当是 RemoveAutomationPoint: {other:?}"),
+        }
+
+        // (b) 两个寻址同给 / 都不给。
+        for (payload, reason) in [
+            (
+                serde_json::json!([{"kind": "removeAutomationPoint",
+                    "point": {"lane": "TrackVolume", "tick": 3840, "pointId": victim_id}}]),
+                "pointAddressIsAmbiguous",
+            ),
+            (
+                serde_json::json!([{"kind": "removeAutomationPoint",
+                    "point": {"lane": "TrackVolume"}}]),
+                "pointAddressRequired",
+            ),
+        ] {
+            let fault = parse_ops(&payload).expect_err("必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{payload}"
+            );
+            assert_eq!(lane_fault_data(&fault)["reason"], reason, "{payload}");
+        }
+
+        // (c) 顶层写 `tick`（最像"写对了"的错法：寻址在 `point` 对象里）。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint", "tick": 3840, "point": {"lane": "TrackVolume"}}
+        ]))
+        .expect_err("顶层 tick 必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownPointRemovalField",
+            "{fault:?}"
+        );
+
+        // (d) `point` 对象里的泳道属性键（别处合法、此形态不适用）与真的未知键。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint",
+             "point": {"lane": "TrackVolume", "tick": 3840, "readEnabled": false}}
+        ]))
+        .expect_err("必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "lanePropertiesNotApplicableToPointRemoval",
+            "{fault:?}"
+        );
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint",
+             "point": {"lane": "TrackVolume", "tick": 3840, "tickk": 1}}
+        ]))
+        .expect_err("必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownPointField",
+            "{fault:?}"
+        );
+
+        // (e) 不存在的点 / 不存在的泳道 ⇒ `ENTITY_NOT_FOUND`（不静默成功）。
+        let missing_point = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint",
+             "point": {"lane": "TrackVolume",
+                       "pointId": deterministic_id("no-such-point").to_canonical_string()}}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &missing_point).expect_err("点不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "automationPointNotFound");
+        let missing_lane = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint",
+             "point": {"lane": "DeviceParam", "slotIndex": 99, "paramIndex": 99, "tick": 0}}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &missing_lane).expect_err("泳道不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "automationLaneNotFound");
+
+        // (f) 同一 tick 上**两个**点：`tick` 寻址不足以指名一个，必须响亮拒绝
+        //     （静默挑一个会删掉调用方没指名的那个点）。模型允许这种文档：
+        //     `AutomationLane::validate` 只查键/身份一致与取值有限，不查 tick 唯一。
+        let mut ambiguous = project.clone();
+        let target = AutomationTarget::TrackVolume { track_id };
+        let twin = deterministic_id("twin-point-at-3840");
+        Op::SetAutomationPoint {
+            target,
+            point_id: twin,
+            old_point: None,
+            new_point: AutomationPoint {
+                id: twin,
+                tick: 3840,
+                value: -3.0,
+                curve: yeban_model::CurveType::Linear,
+            },
+        }
+        .apply(&mut ambiguous)
+        .expect("同一 tick 的第二个点在模型层是合法的");
+        ambiguous.validate().expect("文档仍然合法");
+        let by_tick = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint", "point": {"lane": "TrackVolume", "tick": 3840}}
+        ]))
+        .expect("解析");
+        let fault = compile(&ambiguous, &track_id, &clip_id, &by_tick).expect_err("必须被拒");
+        assert_eq!(
+            fault.domain_code(),
+            Some(ErrorCode::InvalidParameterRange),
+            "{fault:?}"
+        );
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["reason"], "automationTickAmbiguous", "{fault:?}");
+        assert_eq!(
+            data["candidatePointIds"].as_array().map(Vec::len),
+            Some(2),
+            "两个候选都必须被点名: {data}"
+        );
+        // 同一条文档上，显式身份仍然能**精确**取走其中一个。
+        let by_id = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint",
+             "point": {"lane": "TrackVolume", "pointId": twin.to_canonical_string()}}
+        ]))
+        .expect("解析");
+        let compiled =
+            compile(&ambiguous, &track_id, &clip_id, &by_id).expect("显式身份不受歧义影响");
+        match &compiled[0] {
+            Op::RemoveAutomationPoint { point_id, .. } => assert_eq!(*point_id, twin),
+            other => panic!("应当是 RemoveAutomationPoint: {other:?}"),
+        }
+    }
+
+    /// **跨工具同源**判据：`yeban_edit_automation` 写进去的点，必须能被
+    /// `yeban_edit_notes` 按**同一个 tick** 取走。
+    ///
+    /// 两处对"tick 1920 上是哪一个点"必须给出同一个身份：写侧把它写进文档，
+    /// 取走侧从**同一个文档**读回来。这条把 `yeban_edit_automation` 的
+    /// `written.pointId` 与取走 op 的 `point_id` 钉在同一个字面值上。
+    #[test]
+    fn a_point_written_by_the_automation_tool_can_be_removed_by_tick() {
+        use super::super::automation;
+
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let mut arguments = Map::new();
+        arguments.insert("lane".to_owned(), Value::from("TrackVolume"));
+        arguments.insert(
+            "point".to_owned(),
+            serde_json::json!({"tick": 2880, "value": -12.0, "curve": "SCurve"}),
+        );
+        let planned = automation::plan(&project, &arguments, track_id).expect("写侧规划");
+        let write = planned.write.expect("给了 `point` 就必须有点要写");
+        write.op.apply(&mut project).expect("施加写侧 op");
+        let target = AutomationTarget::TrackVolume { track_id };
+        assert!(
+            project
+                .track(&track_id)
+                .expect("音轨")
+                .automation_lanes
+                .get(&target)
+                .expect("泳道")
+                .points
+                .contains_key(&write.point_id),
+            "夹具前提: 写侧的点真的进了文档"
+        );
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "removeAutomationPoint", "point": {"lane": "TrackVolume", "tick": 2880}}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::RemoveAutomationPoint {
+                point_id,
+                previous_point,
+                ..
+            } => {
+                assert_eq!(
+                    *point_id, write.point_id,
+                    "按 tick 寻址必须命中写侧那个身份"
+                );
+                assert_eq!(previous_point.id, write.point_id);
+            }
+            other => panic!("应当是 RemoveAutomationPoint: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("取走");
+        assert!(
+            !project
+                .track(&track_id)
+                .expect("音轨")
+                .automation_lanes
+                .get(&target)
+                .expect("泳道")
+                .points
+                .contains_key(&write.point_id),
+            "取走必须真的把写侧那个点从文档里拿掉"
+        );
     }
 
     #[test]

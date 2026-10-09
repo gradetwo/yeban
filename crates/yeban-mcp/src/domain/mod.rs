@@ -1970,10 +1970,14 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   （关闭 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-6：
 ///   池子里的片段此前**没有任何工具**能摆上时间轴 ⇒ 渲染器一帧都不出声）。
 ///   此时 `ops` 允许是**空数组** —— "这次调用做什么"由 `placement` 承载。
-/// - **音轨级编辑**（`ops[].kind` ∈ `setParam` / `setTrackMute` / `setTrackSolo`）：
-///   分别写 `trackId` 那条轨的 `TrackV3::volume_db` / `pan`（`Op::SetParam`）与
-///   `TrackV3::mute` / `solo`（`Op::SetTrackMute` / `Op::SetTrackSolo`）
-///   —— 关闭"17 个工具没有一个能写静态混音值 / 通道条开关"这条缺口。
+/// - **音轨级编辑**（`ops[].kind` ∈ `setParam` / `setTrackMute` / `setTrackSolo` /
+///   `setAutomationLane` / `removeAutomationPoint`）：分别写 `trackId` 那条轨的
+///   `TrackV3::volume_db` / `pan`（`Op::SetParam`）、`TrackV3::mute` / `solo`
+///   （`Op::SetTrackMute` / `Op::SetTrackSolo`）、自动化泳道自己的属性
+///   （`Op::SetAutomationLane` / `Op::RemoveAutomationLane`）与泳道里的**一个**点
+///   （`Op::RemoveAutomationPoint`，按文档上的 `tick` 或点的显式身份寻址）
+///   —— 关闭"17 个工具没有一个能写静态混音值 / 通道条开关 / 泳道属性 /
+///   取走一个自动化点"这条缺口。
 ///   它们都是**音轨级**的：`compile` 的"片段必须是 MIDI"断言只在真的有音符操作时
 ///   成立（见 `notes::NoteOp::is_note_level`）。
 ///
