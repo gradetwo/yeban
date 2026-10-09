@@ -431,6 +431,27 @@ pub struct Region<'a> {
     pub off_by: u32,
     /// keyswitch 期望值（`sw_last`）。
     pub sw_last: Option<u8>,
+    /// `sw_default`：`sw_last` 的**开机缺省值**（「power-on default」）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/sw_default/>：`sw_default` 的表格行是
+    /// Type = integer、Range = 0 to 127；正文写 "Without `sw_default`, this instrument
+    /// would be silent until a keyswitch is manually used to select an articulation"，
+    /// 即它让「**从未**按过任何 keyswitch」时也有一级被选中（本 crate 从键盘状态里读不出
+    /// 「供电以来」这件事，所以把「查询没有提供 `last_keyswitch`」当作那个时刻）。
+    ///
+    /// 与 [`Region::sw_last`] 的分工：`sw_last` 是该 region **要求**的 keyswitch 值；
+    /// 本字段只提供**缺省**的当前值，因此它**不是**一道门控 —— 单独出现
+    /// （没有 `sw_last`）时不影响任何选择，见 [`Region::has_keyswitch_gate`]。
+    ///
+    /// `None` 表示源文件**没有**给出该 opcode。刻意区分 `None` 与 `Some(0)`：
+    /// 前者是「没说」，后者是「显式要求缺省值为 0」——与 [`Region::off_time`]、
+    /// [`Region::velocity_curve`] 是同一条口径。
+    ///
+    /// 取值与 `sw_last` 走**同一条**解析路径（`OpcodeValue::as_note`），因此音名
+    /// （如 `C0`、`$NATURAL` 展开后的形态）也被接受：登记语料里
+    /// `assets/samples/salamander-grand/Salamander Grand Piano V3.sfz` 正是
+    /// `sw_default=$NATURAL` 且 `$NATURAL` 定义为 `C0`（定义现位于该文件第 22 行附近）。
+    pub sw_default: Option<u8>,
     /// keyswitch 有效音域下界（`sw_lokey`）。
     pub sw_lokey: u8,
     /// keyswitch 有效音域上界（`sw_hikey`）。
@@ -487,10 +508,16 @@ impl<'a> Region<'a> {
     ///
     /// `last` 是 `[sw_lokey, sw_hikey]` 范围内**最后按下**的音（调用方负责过滤），
     /// `down` 报告某个音此刻是否按下。未声明 keyswitch 的 region 恒为 `true`。
+    ///
+    /// `sw_default` 只在 `last` 为 `None`（调用方从未按过 keyswitch）时补位：
+    /// `last` 一旦给出就**永远**胜过 `sw_default`
+    /// （出处 <https://sfzformat.com/opcodes/sw_default/>：它是 `sw_last` 的
+    /// "power on default"，不是「每次都参与比较」的第二个门控）。
     #[must_use]
     pub fn keyswitch_ok(&self, last: Option<u8>, down: impl Fn(u8) -> bool) -> bool {
+        let effective_last = last.or(self.sw_default);
         if let Some(expected) = self.sw_last
-            && last != Some(expected)
+            && effective_last != Some(expected)
         {
             return false;
         }
@@ -516,6 +543,9 @@ impl<'a> Region<'a> {
     }
 
     /// 该 region 是否声明了任何需要外部状态的 keyswitch 门控。
+    ///
+    /// `sw_default` **不算**门控：它只给 `sw_last` 提供缺省值，
+    /// 一个只有 `sw_default` 的 region 在任何键盘状态下都匹配（与未声明 keyswitch 等价）。
     #[must_use]
     pub fn has_keyswitch_gate(&self) -> bool {
         self.sw_last.is_some() || self.sw_down.is_some() || self.sw_up.is_some()
@@ -955,7 +985,11 @@ fn region_matches(region: &Region<'_>, query: &RegionQuery<'_>) -> bool {
     }
 
     if region.has_keyswitch_gate() {
-        if region.sw_last.is_some() && query.last_keyswitch.is_none() {
+        // 严格策略：`sw_last` 需要「最后按下的 keyswitch」这份外部状态。唯一的例外是
+        // region 自己带了 `sw_default` —— 那时「没有状态」正是开机缺省值的适用时刻
+        // （见 `Region::keyswitch_ok`），不再算「未接线的门控」。
+        if region.sw_last.is_some() && query.last_keyswitch.is_none() && region.sw_default.is_none()
+        {
             return false;
         }
         if (region.sw_down.is_some() || region.sw_up.is_some()) && query.keys_down.is_none() {
@@ -1179,6 +1213,13 @@ pub(crate) fn build_region<'a>(
         Some(value) => Some(value.as_note(0, 127)? as u8),
         None => None,
     };
+    // `sw_default`：`sw_last` 的开机缺省值。取值域 0 to 127（出处
+    // <https://sfzformat.com/opcodes/sw_default/> 的表格行），与 `sw_last` 同一条
+    // `as_note` 路径 —— 因此音名（登记语料里的 `sw_default=$NATURAL` → `C0`）也被接受。
+    let sw_default = match scopes.get("sw_default") {
+        Some(value) => Some(value.as_note(0, 127)? as u8),
+        None => None,
+    };
     let sw_lokey = read_u8(&scopes, "sw_lokey", 0, 127, 0)?;
     let sw_hikey = read_u8(&scopes, "sw_hikey", 0, 127, 127)?;
     let sw_down = match scopes.get("sw_down") {
@@ -1265,6 +1306,7 @@ pub(crate) fn build_region<'a>(
         group,
         off_by,
         sw_last,
+        sw_default,
         sw_lokey,
         sw_hikey,
         sw_down,
@@ -1650,6 +1692,7 @@ mod tests {
             group: 0,
             off_by: 0,
             sw_last: None,
+            sw_default: None,
             sw_lokey: 0,
             sw_hikey: 127,
             sw_down: None,
@@ -1980,6 +2023,160 @@ mod tests {
             instrument
                 .region_for_with(RegionQuery::new(60, 100).with_keyswitch(40, &down_other))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn sw_default_makes_the_power_on_keyswitch_select_a_region() {
+        // 规范正文（<https://sfzformat.com/opcodes/sw_default/>）："Without `sw_default`,
+        // this instrument would be silent until a keyswitch is manually used"。查询没有提供
+        // `last_keyswitch` 就是那个「还没有手动用过 keyswitch」的时刻。
+        let instrument = parse_text(
+            "<global>sw_lokey=36 sw_hikey=40 sw_default=36\n\
+             <region>sw_last=36 sample=picked.wav\n\
+             <region>sw_last=38 sample=triangle.wav\n",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 2);
+        assert_eq!(instrument.regions()[0].sw_default, Some(36));
+        assert_eq!(instrument.regions()[1].sw_default, Some(36), "global 继承");
+        let picked = instrument
+            .region_for(60, 100)
+            .expect("the power-on default sw_last=36 must be selected without any state");
+        assert_eq!(picked.sample, "picked.wav");
+        // 对照：同一份文本去掉 `sw_default` 后开机是静音的（既有口径，见上一条判据）。
+        let silent = parse_text(
+            "<global>sw_lokey=36 sw_hikey=40\n\
+             <region>sw_last=36 sample=picked.wav\n\
+             <region>sw_last=38 sample=triangle.wav\n",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(silent.region_for(60, 100).is_none());
+    }
+
+    #[test]
+    fn an_explicit_keyswitch_overrides_the_power_on_default() {
+        let instrument = parse_text(
+            "<global>sw_default=36\n\
+             <region>sw_last=36 sample=picked.wav\n\
+             <region>sw_last=38 sample=triangle.wav\n",
+            &Default::default(),
+        )
+        .expect("parses");
+        let down = |_key: u8| true;
+        let triangle = instrument
+            .region_for_with(RegionQuery::new(60, 100).with_keyswitch(38, &down))
+            .expect("an explicit sw_last=38 must beat the sw_default=36");
+        assert_eq!(triangle.sample, "triangle.wav");
+        // 显式值落在两个 region 之外 ⇒ 谁都不匹配（`sw_default` 不得再补位）。
+        let down_other = |_key: u8| true;
+        assert!(
+            instrument
+                .region_for_with(RegionQuery::new(60, 100).with_keyswitch(40, &down_other))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sw_default_follows_the_four_level_scope_chain() {
+        let instrument = parse_text(
+            "<global>sw_default=36\n\
+             <master>sw_default=38\n\
+             <group>sw_default=40\n\
+             <region>sw_last=40 sample=a.wav\n\
+             <region>sw_default=42 sw_last=42 sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.regions()[0].sw_default,
+            Some(40),
+            "group beats master"
+        );
+        assert_eq!(
+            instrument.regions()[1].sw_default,
+            Some(42),
+            "region beats group"
+        );
+        assert_eq!(
+            instrument.region_for(60, 100).map(|r| r.sample.to_string()),
+            Some("a.wav".to_string())
+        );
+    }
+
+    #[test]
+    fn sw_default_reads_note_names_like_sw_last() {
+        // 登记语料的真实形态：`assets/samples/salamander-grand/Salamander Grand Piano V3.sfz`
+        // 写 `sw_default=$NATURAL`，而 `$NATURAL` 定义为 `C0`（IPN 下 C0 = 12）。
+        let instrument = parse_text(
+            "#define $NATURAL C0\n\
+             <region>sw_last=$NATURAL sw_default=$NATURAL sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].sw_last, Some(12));
+        assert_eq!(instrument.regions()[0].sw_default, Some(12));
+        assert!(instrument.region_for(60, 100).is_some());
+        // 字面音名走的是同一条 `as_note` 路径。
+        let literal = parse_text(
+            "<region>sw_last=C0 sw_default=C0 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(literal.regions()[0].sw_default, Some(12));
+    }
+
+    #[test]
+    fn an_absent_sw_default_is_not_the_same_as_an_explicit_zero() {
+        // 「没说」与「显式要求 0」必须可区分：`sw_last=0` 的 region 在开机时**不**匹配。
+        let absent =
+            parse_text("<region>sample=a.wav sw_last=0", &Default::default()).expect("parses");
+        assert_eq!(absent.regions()[0].sw_default, None);
+        assert!(absent.region_for(60, 100).is_none());
+
+        let explicit = parse_text(
+            "<region>sample=a.wav sw_last=0 sw_default=0",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(explicit.regions()[0].sw_default, Some(0));
+        assert!(explicit.region_for(60, 100).is_some());
+    }
+
+    #[test]
+    fn a_lone_sw_default_is_not_a_keyswitch_gate() {
+        // `sw_default` 只给 `sw_last` 提供缺省值，本身不是门控。
+        let instrument =
+            parse_text("<region>sample=a.wav sw_default=36", &Default::default()).expect("parses");
+        assert!(!instrument.regions()[0].has_keyswitch_gate());
+        assert!(instrument.region_for(60, 100).is_some());
+    }
+
+    #[test]
+    fn sw_default_outside_zero_to_127_is_an_explicit_error() {
+        // 表格行 Range = 0 to 127（<https://sfzformat.com/opcodes/sw_default/>）：越界是
+        // 明确 Err，不静默钳位（`sample` 必须存在，否则 region 在读到该 opcode 前就被丢弃）。
+        let error = parse_text("<region>sample=a.wav sw_default=128", &Default::default())
+            .expect_err("128 is outside 0 to 127");
+        assert!(
+            matches!(
+                &error,
+                SfzError::IntegerOutOfRange { opcode, value, min, max, .. }
+                    if opcode == "sw_default" && *value == 128 && *min == 0 && *max == 127
+            ),
+            "unexpected error: {error:?}"
+        );
+        // 非音符文本走 `InvalidNote`（与 `sw_last` 同一条 `as_note` 路径）。
+        let error = parse_text(
+            "<region>sample=a.wav sw_default=notakey",
+            &Default::default(),
+        )
+        .expect_err("notakey is not a note");
+        assert!(
+            matches!(&error, SfzError::InvalidNote { opcode, .. } if opcode == "sw_default"),
+            "unexpected error: {error:?}"
         );
     }
 

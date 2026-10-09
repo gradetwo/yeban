@@ -1093,6 +1093,7 @@ mod tests {
                             group: 0,
                             off_by: 0,
                             sw_last: None,
+                            sw_default: None,
                             sw_lokey: 0,
                             sw_hikey: 127,
                             sw_down: None,
