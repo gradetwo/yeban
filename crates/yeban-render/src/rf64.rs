@@ -3985,170 +3985,451 @@ mod tests {
             }
         }
     }
-
-    /// 判据 31: `WAVE_FORMAT_EXTENSIBLE` 的 `wValidBitsPerSample = 0` 必须**回退**到容器的
-    /// `wBitsPerSample`, 不得让 [`PcmFormat::bits_per_sample`] 变成 0。
+    /// 判据 (**类别 4: 参数极值 / 边界值**): `fmt ` 的 `nBlockAlign` 字段的可表示上界是
+    /// `u16::MAX` **本身**, 不是它减一。
+    ///
+    /// [`PcmFormat::block_align_fits_u16`] 的文档写的是"真实的帧对齐能否**装进** `fmt `
+    /// 的 `u16` `nBlockAlign` 字段" —— "装进"是**闭**区间。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把该谓词的 `exact <= u16::MAX as u32` 注入成 `exact < u16::MAX as u32`,
+    /// 全量 `cargo test -p yeban-render` **全绿**（`test result: ok. 170 passed;
+    /// 0 failed`）—— 既有的接受网格用的是 `0x3FFF × 4 = 32764`（接受）与
+    /// `0x8000 × 2 = 65536`（拒绝）两点, 恰好**跳过 65535 这一格**。
     ///
     /// # 量的是什么（对象 + 单位）
     ///
-    /// 对象: 一份 6 声道 32-bit 浮点的 EXTENSIBLE `fmt `（40 字节）, 只把负载偏移 18 的
-    /// `wValidBitsPerSample` 改成 0。单位: 位/样本。
+    /// 对象: `channels = 21845` × `bits_per_sample = 24`（`21845 × 3 = 65535`, 恰好是
+    /// 闭区间上界）与它的上邻 `channels = 21846`（`65538`）。单位: 帧对齐是**字节/帧**。
+    /// 读数: 谓词的布尔、[`ContainerPlan::validate`] / [`write_container`] 的判决、
+    /// `fmt ` 负载偏移 12 的 `nBlockAlign` 字段、以及 [`parse_container`] 读回的格式。
     ///
-    /// # 为什么这一条是契约而不是风格
+    /// # 非空证明
     ///
-    /// `PcmFormat::bits_per_sample` 的字段文档写着"每样本**有效**位深 (16 / 24 / 32)"。
-    /// 取 0 会顺着 [`PcmFormat::bytes_per_sample`]（`0.div_ceil(8) == 0`）把
-    /// `nBlockAlign` 也变成 0 —— 那正是 0 位深那一族被拒绝的理由（合规解码器按
-    /// `nBlockAlign` 求帧数就是除零）。读取器因此必须把"这个字段没填"当成"用容器位深":
-    /// 写入器拒绝**调用方**给的 0, 读取器兜住**文件里**的 0, 两件事。
-    ///
-    /// 注入证明（本机实测）: 删掉 `parse_fmt_payload` 里 `le::read_u16(payload, 18)` 后面
-    /// 的 `.filter(|&bits| bits > 0)` 之后本轮注入里的这一次**全绿**（192 条判据无一变红）;
-    /// 本判据在那条注入下变红。
+    /// `65535 == u16::MAX` 且 `65538 > u16::MAX` —— 两个操作数都不是退化值, 而
+    /// [`PcmFormat::block_align`] 的饱和乘法在 65538 那一格读出的仍是 65535,
+    /// 因此"饱和值"和"可表示"必须由谓词分开。
     #[test]
-    fn a_zero_valid_bits_field_falls_back_to_the_container_depth() {
-        let mut body = PcmFormat::float(6, 48_000, 32).fmt_payload();
-        assert_eq!(body.len(), 40, "6 声道必须走 EXTENSIBLE");
-        assert_eq!(le::read_u16(&body, 0), Some(0xFFFE), "格式标签");
-        assert_eq!(le::read_u16(&body, 18), Some(32), "写出来的有效位深");
-        body[18..20].copy_from_slice(&0u16.to_le_bytes());
-        let parsed = parse_container(&raw_riff(40, &body, true)).expect("读取器必须兜住这一格");
-        assert_eq!(
-            parsed.format.bits_per_sample, 32,
-            "wValidBitsPerSample = 0 必须回退到容器的 32 位, 不是 0"
+    fn the_block_align_boundary_is_u16_max_inclusive() {
+        let data = payload(4);
+        let at_the_edge = PcmFormat::integer(21_845, 48_000, 24);
+        assert_eq!(at_the_edge.block_align(), u16::MAX, "21845 × 3 = 65535");
+        assert!(
+            at_the_edge.block_align_fits_u16(),
+            "65535 恰好装进 u16 的 nBlockAlign 字段"
         );
-        assert_eq!(parsed.format.bytes_per_sample(), 4);
-        assert_eq!(parsed.format.block_align(), 24, "6 声道 × 4 字节");
-
-        // 对称的一格: 非 0 的 `wValidBitsPerSample` 必须**照原样**用, 不被容器位深覆盖。
-        let mut body = PcmFormat::float(6, 48_000, 32).fmt_payload();
-        body[18..20].copy_from_slice(&24u16.to_le_bytes());
-        let parsed = parse_container(&raw_riff(40, &body, true)).expect("解析");
-        assert_eq!(
-            parsed.format.bits_per_sample, 24,
-            "非 0 的有效位深必须原样读回"
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            at_the_edge,
+            data.len() as u64,
+            0,
+            None,
         );
-    }
-
-    /// 判据 32: 标准声道掩码**逐格**钉死 —— 包括没有别处断言的两个（4 与 8 声道）。
-    ///
-    /// # 为什么需要单独一条
-    ///
-    /// `fmt_chunk_switches_to_extensible_for_multichannel` 只钉 5.1 的 `0x3F`, 而
-    /// `extensible_container_round_trips` 是**自洽**往返: 掩码少一位也照样读回少一位的
-    /// 值。本机实测: 删掉 7.1 掩码的 `0x80` 之后注入那次全量 192 条判据无一变红。
-    /// 掩码是外部消费者用来解释声道顺序的东西, 因此必须在**字面值**上被钉住。
-    #[test]
-    fn the_default_channel_masks_are_pinned_entry_for_entry() {
-        assert_eq!(default_channel_mask(1), 0x4, "FC");
-        assert_eq!(default_channel_mask(2), 0x3, "FL FR");
-        assert_eq!(default_channel_mask(4), 0x33, "FL FR BL BR");
-        assert_eq!(default_channel_mask(6), 0x3F, "5.1");
-        assert_eq!(default_channel_mask(8), 0xFF, "7.1");
-        // 未列出的声道数回退为 0（无映射）—— 这是**回退**, 不是猜测。
-        for channels in [0u16, 3, 5, 7, 9, 16, 0xFFFF] {
-            assert_eq!(default_channel_mask(channels), 0, "{channels} 声道");
-        }
-        // "默认掩码真的被写进 `fmt `"这一半: 8 声道且未给掩码时, 负载偏移 20 是 0xFF。
-        let body = PcmFormat::float(8, 48_000, 32).fmt_payload();
-        assert_eq!(body.len(), 40);
-        assert_eq!(le::read_u32(&body, 20), Some(0xFF), "7.1 的默认掩码");
-    }
-
-    /// 判据 33: `ds64` 的声明长度必须**恰好** 28 —— 比 28 长的也被拒, 不是只拒短的。
-    ///
-    /// # 为什么需要单独一条
-    ///
-    /// `malformed_inputs_are_rejected_without_panicking` 用的是**短**的那一格（声明 16）。
-    /// 把判定从 `!= 28` 放宽成 `< 28` 之后它仍然全绿（本机实测: 注入那次 192 条无一变红）:
-    /// 一个声明了 36 字节、也真的有 36 字节的 `ds64` 会被当成合法, 而
-    /// [`Rf64Sizes::from_bytes`] 只读前 28 字节 —— 后 8 字节被**静默丢掉**。
-    /// 本模块的写入器只写 28 字节, 读取器的接受集必须与它相同
-    /// （"写入器只写自己读得回的字节"这条纪律的另一半）。
-    #[test]
-    fn a_ds64_chunk_longer_than_28_bytes_is_rejected() {
-        let data = payload(2);
-        // `fmt ` + `data` 这一段两种形态共用, 因此差异只可能来自 `ds64` 的长度。
-        let mut tail = Vec::new();
-        push_chunk(&mut tail, b"fmt ", &stereo_16bit().fmt_payload());
-        push_chunk(&mut tail, b"data", &data);
-
-        let mut raw = Vec::new();
-        raw.extend_from_slice(b"RF64");
-        raw.extend_from_slice(&SENTINEL_U32.to_le_bytes());
-        raw.extend_from_slice(b"WAVE");
-        raw.extend_from_slice(b"ds64");
-        raw.extend_from_slice(&36u32.to_le_bytes());
-        raw.extend_from_slice(&[0u8; 36]);
-        raw.extend_from_slice(&tail);
-        assert_eq!(parse_container(&raw), Err(Rf64Error::BadDs64Len(36)));
-
-        // 防空判据: 同一份 `fmt ` + `data` + 一个**恰好 28 字节**的 ds64 必须能解析 ——
-        // 否则上面那一条只是把功能关掉。
-        let mut good = Vec::new();
-        good.extend_from_slice(b"RF64");
-        good.extend_from_slice(&SENTINEL_U32.to_le_bytes());
-        good.extend_from_slice(b"WAVE");
-        push_chunk(
-            &mut good,
-            b"ds64",
-            &Rf64Sizes {
-                riff_size: 0,
-                data_size: data.len() as u64,
-                sample_count: 2,
-            }
-            .to_bytes(),
-        );
-        good.extend_from_slice(&tail);
-        assert!(parse_container(&good).is_ok(), "28 字节的 ds64 必须可解析");
-    }
-
-    /// 判据 34: `RF64`/`BW64` **缺 `ds64`** 就是错误 —— 即使 `data` 的长度字段不是哨兵。
-    ///
-    /// # 为什么需要单独一条
-    ///
-    /// `malformed_inputs_are_rejected_without_panicking` 用的那一格 `data` 是**哨兵**,
-    /// 于是它在更早的出口（读 `data` 长度时找不到 `ds64`）就已经报了 `MissingDs64`。
-    /// 删掉末尾那条"RF64 家族必须有 ds64"的判定之后它仍然全绿（本机实测: 注入那次 192 条
-    /// 判据无一变红）: 只有"`data` 写了真实长度、容器里仍然没有 `ds64`"这一格能测到它。
-    /// RF64 的容器选择就是靠 `ds64`（[ARCH-FMT-001]）, 因此这种文件不许被当成普通 RIFF
-    /// 读过去。
-    #[test]
-    fn an_rf64_container_without_ds64_is_rejected_even_with_a_real_data_length() {
-        let data = payload(2);
-        let mut raw = Vec::new();
-        raw.extend_from_slice(b"RF64");
-        raw.extend_from_slice(&SENTINEL_U32.to_le_bytes()); // RF64 顶层长度恒为哨兵
-        raw.extend_from_slice(b"WAVE");
-        push_chunk(&mut raw, b"fmt ", &stereo_16bit().fmt_payload());
-        push_chunk(&mut raw, b"data", &data);
-        assert_eq!(parse_container(&raw), Err(Rf64Error::MissingDs64));
-    }
-
-    /// 判据 35: `nBlockAlign` 的**可表示上界恰好是 `u16::MAX`** —— 边界值本身合法。
-    ///
-    /// # 为什么需要单独一条
-    ///
-    /// `unrepresentable_block_align_is_rejected` 用的是 `0xFFFF` 声道（远超）与 8191 声道
-    /// （远低于）, **没有**碰到"正好等于 65535"这一格。把谓词从 `exact <= u16::MAX`
-    /// 收紧成 `<` 之后它仍然全绿（本机实测: 注入那次 192 条判据无一变红）。
-    /// 21845 × 3 字节 = 65535 恰好是 `u16` 能表示的最大帧对齐 —— 它是**合法**的。
-    #[test]
-    fn the_block_align_boundary_is_exactly_u16_max() {
-        let body = PcmFormat::integer(21_845, 48_000, 24).fmt_payload();
-        assert_eq!(body.len(), 40, "多声道走 EXTENSIBLE");
-        let parsed = parse_container(&raw_riff(40, &body, true)).expect("65535 必须可表示");
+        assert_eq!(plan.validate(), Ok(()), "闭区间上界必须可写");
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("65535 必须写得出去");
+        let parsed = parse_container(&file).expect("写出去的必须读得回来");
         assert_eq!(parsed.format.channels, 21_845);
-        assert_eq!(parsed.format.block_align(), 65_535);
-
-        // 上界 + 3（21846 × 3 = 65538）必须被拒。
-        let over = PcmFormat::integer(21_846, 48_000, 24).fmt_payload();
+        assert_eq!(parsed.format.block_align(), u16::MAX);
+        let fmt = parsed
+            .chunks
+            .iter()
+            .find(|chunk| &chunk.fourcc == b"fmt ")
+            .expect("容器必须有 fmt ");
         assert_eq!(
-            parse_container(&raw_riff(40, &over, true)),
+            le::read_u16(&file, fmt.payload_offset + 12),
+            Some(u16::MAX),
+            "nBlockAlign 字段必须恰好是 65535（字节/帧）"
+        );
+
+        // 上邻一格: 65538 装不进 ⇒ 两侧一起拒绝, 且不留字节。
+        let over_the_edge = PcmFormat::integer(21_846, 48_000, 24);
+        assert_eq!(
+            over_the_edge.block_align(),
+            u16::MAX,
+            "饱和乘法把 65538 也读成 65535 —— 这正是本条要分辨的"
+        );
+        assert!(!over_the_edge.block_align_fits_u16(), "65538 > u16::MAX");
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            over_the_edge,
+            data.len() as u64,
+            0,
+            None,
+        );
+        assert_eq!(
+            plan.validate(),
             Err(Rf64Error::UnrepresentableBlockAlign {
                 channels: 21_846,
                 bytes_per_sample: 3,
             })
         );
+        let mut file = Vec::new();
+        assert_eq!(
+            write_container(&mut file, &plan, &data),
+            Err(Rf64Error::UnrepresentableBlockAlign {
+                channels: 21_846,
+                bytes_per_sample: 3,
+            })
+        );
+        assert!(file.is_empty(), "被拒的写入不得留下任何字节");
+    }
+
+    /// 判据 (**类别 7: 尺寸 / 边界值**): [`PcmFormat::bytes_per_sample`] 是**向上取整**
+    /// 的容器字节数, 不是 `bits / 8` 的地板除。
+    ///
+    /// 位深不是 8 的倍数时两条式子差一, 而 `nBlockAlign` 与 `nAvgBytesPerSec` 都是从
+    /// 它算出来的 —— 差一意味着写出去的文件声明了一个**装不下一个样本**的帧对齐。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 `self.bits_per_sample.div_ceil(8)` 注入成 `self.bits_per_sample / 8`,
+    /// 全量 `cargo test -p yeban-render` **全绿**（`test result: ok. 170 passed;
+    /// 0 failed`）—— 既有判据的位深网格（`16` / `24` / `32` / `0`）**全是 8 的倍数**,
+    /// 两条式子在那些点上逐位相同。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一串位深 `1 / 8 / 9 / 16 / 17 / 20 / 24 / 25 / 32`（单位: **位/样本**）
+    /// 与一个 20 位立体声容器。读数: [`PcmFormat::bytes_per_sample`] 的**字节/样本**、
+    /// 写出的 `fmt ` 负载偏移 12 的 `nBlockAlign`（字节/帧）与偏移 8 的
+    /// `nAvgBytesPerSec`（字节/秒）。
+    ///
+    /// # 非空证明
+    ///
+    /// `20 % 8 == 4` —— 至少一个取值的向上取整与地板除**不同**; 后半段的
+    /// `16 / 24 / 32` 三格同时钉住"是 8 的倍数时两条式子确实一致"。
+    #[test]
+    fn a_bit_depth_that_is_not_a_multiple_of_eight_rounds_up() {
+        for (bits, bytes) in [
+            (1u16, 1u16),
+            (8, 1),
+            (9, 2),
+            (16, 2),
+            (17, 3),
+            (20, 3),
+            (24, 3),
+            (25, 4),
+            (32, 4),
+        ] {
+            assert_eq!(
+                PcmFormat::integer(2, 48_000, bits).bytes_per_sample(),
+                bytes,
+                "{bits} 位的容器字节数（字节/样本）"
+            );
+        }
+        assert_ne!(20 % 8, 0, "本条必须至少含一个 8 的非倍数");
+
+        // 20 位立体声: nBlockAlign = ceil(20/8) × 2 = 6, nAvgBytesPerSec = 6 × 48000。
+        let data = payload(6);
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            PcmFormat::integer(2, 48_000, 20),
+            data.len() as u64,
+            1,
+            None,
+        );
+        assert_eq!(plan.validate(), Ok(()));
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("20 位立体声必须写得出去");
+        let parsed = parse_container(&file).expect("写出去的必须读得回来");
+        assert_eq!(parsed.format.bits_per_sample, 20, "位深必须原样读回");
+        let fmt = parsed
+            .chunks
+            .iter()
+            .find(|chunk| &chunk.fourcc == b"fmt ")
+            .expect("容器必须有 fmt ");
+        assert_eq!(
+            le::read_u16(&file, fmt.payload_offset + 12),
+            Some(6),
+            "nBlockAlign(字节/帧) 必须是 ceil(20/8) × 2 = 6"
+        );
+        assert_eq!(
+            le::read_u32(&file, fmt.payload_offset + 8),
+            Some(288_000),
+            "nAvgBytesPerSec(字节/秒) 必须是 6 × 48000"
+        );
+    }
+
+    /// 判据 (**类别 1: 非平凡输入 / 字段边界**): `CodingHistory` 是**变长**字段, 只有它的
+    /// **尾随** NUL 不可表示; **内部** NUL 逐字节往返。
+    ///
+    /// [`Bext::field_that_does_not_round_trip`] 的判定表把这两个形态分开写:
+    /// `CodingHistory` 那一格是"**以 NUL 结尾**", 与五个定长字段的"含 NUL"不同 ——
+    /// 变长字段的中间字节不是终止符。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把该函数末尾的 `.ends_with('\0')` 注入成 `.contains('\0')`,
+    /// 全量 `cargo test -p yeban-render` **全绿**（`test result: ok. 170 passed;
+    /// 0 failed`）—— 既有的 6 个"读不回同一个值"的形态里, `CodingHistory` 那一格用的是
+    /// **尾随** NUL（两种写法都命中）, 没有一格含**内部** NUL。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一条含内部 NUL 的编码历史（`"A=PCM\0M=stereo,T=Yeban"`, 单位: 字节）。
+    /// 读数: [`Bext::field_that_does_not_round_trip`] 的判决、[`Bext::to_bytes`] 的
+    /// **长度**、[`Bext::from_bytes`] 读回的字符串与重新编码的逐字节相同。
+    ///
+    /// # 非空证明
+    ///
+    /// 探针串同时满足"含内部 NUL"与"不以 NUL 结尾" ⇒ 它落在**可往返**这一侧;
+    /// 后半段用同一族的**尾随** NUL 形态钉住另一侧（两半一起, 才不是把整族判宽）。
+    #[test]
+    fn an_interior_nul_in_the_coding_history_still_round_trips() {
+        let probe = "A=PCM\u{0}M=stereo,T=Yeban";
+        assert!(
+            probe.contains('\u{0}') && !probe.ends_with('\u{0}'),
+            "探针串必须含内部 NUL 且不以 NUL 结尾"
+        );
+        let block = Bext {
+            version: 1,
+            coding_history: probe.to_owned(),
+            ..Bext::default()
+        };
+        assert_eq!(
+            block.field_that_does_not_round_trip(),
+            None,
+            "内部 NUL 不影响往返"
+        );
+
+        let bytes = block.to_bytes();
+        assert_eq!(bytes.len(), BEXT_FIXED_LEN + probe.len());
+        let decoded = Bext::from_bytes(&bytes).expect("解码");
+        assert_eq!(decoded.coding_history, probe, "内部 NUL 必须逐字节读回");
+        assert_eq!(decoded, block);
+        assert_eq!(decoded.to_bytes(), bytes, "重新编码必须逐字节相同");
+
+        // 另一半: **尾随** NUL 仍然不可表示（读取器必须裁掉它, 那是 RIFF 补位的同一形态）。
+        let trailing = Bext {
+            version: 1,
+            coding_history: "A=PCM\u{0}".to_owned(),
+            ..Bext::default()
+        };
+        assert_eq!(
+            trailing.field_that_does_not_round_trip(),
+            Some("CodingHistory")
+        );
+    }
+
+    /// 判据 (**类别 1: 非平凡输入 / 字节边界**): 读取器**只**裁掉 `CodingHistory` 的
+    /// **尾随** NUL; **前导** NUL 是数据, 必须逐字节读回。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 [`Bext::from_bytes`] 的 `.trim_end_matches('\0')` 注入成
+    /// `.trim_matches('\0')`, 全量 `cargo test -p yeban-render` **全绿**
+    /// （`test result: ok. 170 passed; 0 failed`）—— 既有的编码历史全部以可打印字符
+    /// 开头, 两种写法在那些输入上给出同一个字符串。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一条**前导** NUL 的编码历史（`"\0A=PCM,M=stereo,T=Yeban"`）。
+    /// 读数: [`Bext::from_bytes`] 读回的字符串、`Bext` 的整块相等、以及给同一份字节
+    /// **追加**一个尾随 NUL 后的读数（尾随那一侧必须被裁掉）。
+    ///
+    /// # 非空证明
+    ///
+    /// 探针串以 NUL 开头且**不**以 NUL 结尾; 后半段在同一个串后面追加一个 NUL。
+    /// 两半的期望值**相同**, 因此"裁掉尾随"与"裁掉两端"无法同时满足。
+    #[test]
+    fn a_leading_nul_in_the_coding_history_is_data_not_padding() {
+        let probe = "\u{0}A=PCM,M=stereo,T=Yeban";
+        assert!(
+            probe.starts_with('\u{0}') && !probe.ends_with('\u{0}'),
+            "探针串必须以 NUL 开头且不以 NUL 结尾"
+        );
+        let block = Bext {
+            version: 1,
+            coding_history: probe.to_owned(),
+            ..Bext::default()
+        };
+        assert_eq!(block.field_that_does_not_round_trip(), None);
+        let bytes = block.to_bytes();
+        let decoded = Bext::from_bytes(&bytes).expect("解码");
+        assert_eq!(
+            decoded.coding_history, probe,
+            "前导 NUL 是数据, 不得被当成补位裁掉"
+        );
+        assert_eq!(decoded, block);
+
+        // 尾随 NUL 仍然被裁掉: 同一个串后面追加一个 NUL, 读数必须**不变**。
+        let mut with_padding = bytes.clone();
+        with_padding.push(0);
+        let decoded = Bext::from_bytes(&with_padding).expect("解码");
+        assert_eq!(
+            decoded.coding_history, probe,
+            "尾随 NUL（RIFF 的偶数字节补位）必须被裁掉"
+        );
+    }
+
+    /// 判据 (**类别 6: 多声道一致性**): `default_channel_mask(8)` 是 7.1 的**八个**声道位
+    /// `0xFF`, 而且这个掩码要真的落进 `fmt ` 的 `dwChannelMask` 字段。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把该 match 臂里的 `0x40` 那一位取掉时, 全量 `cargo test -p yeban-render`
+    /// **全绿**（`test result: ok. 176 passed; 0 failed`）—— 既有的声道掩码判据只钉了
+    /// 5.1 那一档（`default_channel_mask(6) == 0x3F` 与 6 声道 `fmt ` 的偏移 20）,
+    /// **8 声道那一档没有任何判据, 也没有一条 8 声道的容器**。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 8 声道 / 48 kHz / 24 位的 [`PcmFormat`]（掩码留 `None`, 走默认分配）。
+    /// 单位: 掩码是**声道位集合**（bit 0 = FL … bit 7 = SR 一族）。
+    /// 读数: [`default_channel_mask`] 的 `u32` 与写出的 `fmt ` 负载**偏移 20** 的
+    /// `dwChannelMask`。
+    ///
+    /// # 非空证明
+    ///
+    /// `0xFF != 0` 且它与 5.1 的 `0x3F` **不同** —— 因此本条不是"任何声道数都给同一个
+    /// 掩码"的空判据; 后半段同时钉住 5.1 那一档不受影响。
+    #[test]
+    fn the_seven_point_one_default_mask_has_all_eight_bits() {
+        assert_eq!(
+            default_channel_mask(8),
+            0xFF,
+            "7.1 = FL FR FC LFE BL BR SL SR"
+        );
+        assert_ne!(
+            default_channel_mask(8),
+            default_channel_mask(6),
+            "7.1 与 5.1 不是同一个掩码"
+        );
+        assert_eq!(default_channel_mask(6), 0x3F, "5.1 那一档不受影响");
+
+        let data = payload(8 * 3 * 2);
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            PcmFormat::integer(8, 48_000, 24),
+            data.len() as u64,
+            2,
+            None,
+        );
+        assert_eq!(plan.validate(), Ok(()));
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("8 声道必须写得出去");
+        let parsed = parse_container(&file).expect("写出去的必须读得回来");
+        assert_eq!(parsed.format.channel_mask, Some(0xFF), "读回的掩码");
+        let fmt = parsed
+            .chunks
+            .iter()
+            .find(|chunk| &chunk.fourcc == b"fmt ")
+            .expect("容器必须有 fmt ");
+        assert_eq!(
+            le::read_u32(&file, fmt.payload_offset + 20),
+            Some(0xFF),
+            "dwChannelMask 字段必须逐位是 0xFF"
+        );
+    }
+
+    /// 判据 (**类别 7: 尺寸字段**): RIFF 容器**顶层**的 32 位大小字段必须是
+    /// **文件长度 − 8**, 与计划里的 `riffSize` 是同一个读数。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 `header_bytes` 里 RIFF 分支的 `self.sizes.riff_size` 注入成
+    /// `self.sizes.data_size` 时, 全量 `cargo test -p yeban-render` **全绿**
+    /// （`test result: ok. 176 passed; 0 failed`）—— 既有的 `riff_with_bext_round_trips`
+    /// 断言的是 `parsed.sizes.riff_size == file.len() - 8`, 而 RIFF 分支下
+    /// `parse_container` 的 `sizes` 是**从实际字节数推导**的, 根本不读那个字段。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个 RIFF + `bext` 的容器。单位: 长度是**字节**。读数: 文件偏移 4 处的
+    /// 32 位字段、文件总长度、计划里的 `riff_size` 与读取器推导的 `riff_size`。
+    ///
+    /// # 非空证明
+    ///
+    /// `data` 长度（6 字节）与 `riff_size`（654 字节）**不同** —— 因此"写成 data 长度"
+    /// 与"写成 riff_size"在这条判据上是两个不同的读数。
+    #[test]
+    fn the_riff_top_level_size_field_is_the_file_length_minus_eight() {
+        let data = payload(6);
+        let block = Bext {
+            version: 1,
+            coding_history: "CH".to_owned(),
+            ..Bext::default()
+        };
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            stereo_16bit(),
+            data.len() as u64,
+            2,
+            Some(block),
+        );
+        assert_eq!(plan.kind, ContainerKind::Riff);
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("写入");
+        let field = u64::from(le::read_u32(&file, 4).expect("顶层大小字段"));
+        assert_eq!(
+            field,
+            file.len() as u64 - 8,
+            "RIFF 顶层大小字段是文件长度 − 8 (字节)"
+        );
+        assert_ne!(field, plan.sizes.data_size, "它不是 data 的长度");
+        assert_eq!(field, plan.sizes.riff_size, "它必须等于计划里的 riffSize");
+        assert_eq!(
+            parse_container(&file).expect("解析").sizes.riff_size,
+            field,
+            "读取器推导的 riffSize 必须与字段一致"
+        );
+    }
+
+    /// 判据 (**类别 7: 尺寸下界**): 一个**短于** 602 字节固定前缀的 `bext` chunk 必须
+    /// 返回 `Err(Truncated)`, 而不是让读取器在定长字段上越界 panic。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 [`Bext::from_bytes`] 开头的 `if bytes.len() < BEXT_FIXED_LEN` 改成恒假的
+    /// 比较, 全量 `cargo test -p yeban-render` **全绿**（`test result: ok. 170 passed;
+    /// 0 failed`）—— 既有的畸形输入判据里, `bext` chunk 要么声明长度足以容纳固定前缀,
+    /// 要么被 chunk 循环的 `bytes.get(payload_offset..payload_end)` 先裁到文件边界,
+    /// 因此"**负载本身**短于前缀"这一格没有落点。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 手搭的 `RIFF` 容器 + 一个**声明并真的只有 100 字节**的 `bext` chunk
+    /// （单位: 字节）。读数: [`parse_container`] 的判决
+    /// （`Truncated { what: "bext 固定前缀 (需要 602 字节)", got: 100 }`）。
+    ///
+    /// # 非空证明
+    ///
+    /// `100 < 602`; 后半段把同一个 chunk 换成一个合法块（`602 + 2` 字节）后必须解析成功,
+    /// 因此上面那条不是"这个容器本来就坏"。
+    #[test]
+    fn a_bext_payload_shorter_than_the_fixed_prefix_is_a_clean_error() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        push_chunk(&mut raw, b"fmt ", &stereo_16bit().fmt_payload());
+        push_chunk(&mut raw, b"bext", &[0u8; 100]);
+        push_chunk(&mut raw, b"data", &payload(2));
+        assert_eq!(
+            parse_container(&raw),
+            Err(Rf64Error::Truncated {
+                what: "bext 固定前缀 (需要 602 字节)",
+                got: 100,
+            }),
+            "短于 602 的 bext 负载必须是 Err, 不是 panic"
+        );
+
+        // 非空对照: 同一个容器把 bext 换成一个合法块之后必须解析成功。
+        let good = Bext {
+            version: 1,
+            coding_history: "CH".to_owned(),
+            ..Bext::default()
+        };
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        push_chunk(&mut raw, b"fmt ", &stereo_16bit().fmt_payload());
+        push_chunk(&mut raw, b"bext", &good.to_bytes());
+        push_chunk(&mut raw, b"data", &payload(2));
+        let parsed = parse_container(&raw).expect("合法 bext 必须能解析");
+        assert_eq!(parsed.bext.expect("有 bext").coding_history, "CH");
     }
 }
