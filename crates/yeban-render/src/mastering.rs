@@ -1616,6 +1616,81 @@ mod tests {
         assert_eq!(bext.max_short_term_loudness, Loudness::UNKNOWN);
     }
 
+    /// 判据 (**类别 1/4: 零值与前哨兵的重合**): `to_bext_loudness` 的
+    /// `loudness_range` 必须按 0.01 LU 定标自**实测**的 LRA, 不能是一个常数。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 `to_bext_loudness` 里那一支
+    /// `Some(range) if range.is_finite() => Loudness::from_lufs(range)` 整支换成常数
+    /// **`0`** —— 全量 `cargo test -p yeban-render --no-default-features --lib --tests`
+    /// **全绿**（`test result: ok. 179 passed; 0 failed` + 10 + 13）。
+    ///
+    /// 两条既有判据都挡不住它, 而且**各有各的原因**（因此不能靠加强它们中的任何一条）:
+    ///
+    /// 1. `the_bext_bridge_scales_finite_readings_and_sentinels_the_rest` 对
+    ///    `loudness_range` 只断言 `assert_ne!(.., Loudness::UNKNOWN)` —— `0` 也满足它;
+    /// 2. 同一夹具（0.1 幅度、997 Hz、8 s 稳态正弦）的实测 LRA 只有 **1.9073486e-5 LU**
+    ///    （本机实测）, 经 `Loudness::from_lufs` 定标后**恰好是 0** —— 所以"拿它当夹具
+    ///    去区分 `0` 与 `from_lufs(range)`"这条捷径**在数值上不存在**: 正确实现在那个
+    ///    夹具上也给出 0。
+    ///
+    /// 因此本条判据**不改那个夹具**, 而是直接构造一个合成读数: LRA 取 **2.75 LU**
+    /// （定标 275）—— 一个 `0` 与 `from_lufs(range)` 必然分开的值。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个显式构造的 [`MasterLoudness`]（单位: LUFS / LU / dBTP）。读数:
+    /// [`MasterLoudness::to_bext_loudness`] 的五个 `i16` 字段（单位: 0.01 刻度）。
+    ///
+    /// # 非空证明
+    ///
+    /// `loudness_range_lu = Some(2.75)` ⇒ 期望 `275`; 若实现写成常数 `0`, 该断言必红
+    /// （`275 != 0`）。后半段把同一个读数换成 `None` ⇒ 期望 `UNKNOWN`, 而
+    /// `275 != UNKNOWN` —— 因此这一对不是"两格都指向同一个值"的退化判据。三个有限读数
+    /// 取三个**互不相同**的值, 因此"把三个字段写成同一个来源"也会红。
+    ///
+    /// # 运算类别（ADR-0001 的 D32）
+    ///
+    /// 定标是 `scale_hundredths`（×100 后取整）—— 纯乘法与取整, IEEE 精确类, 不含超越
+    /// 函数, 因此这里逐位断言, 不给容差。
+    #[test]
+    fn a_measurable_lra_reaches_the_bext_block_scaled_not_as_a_constant() {
+        let unit = MasterLoudness {
+            integrated_lufs: -14.0,
+            loudness_range_lu: Some(2.75),
+            max_momentary_lufs: -12.25,
+            max_short_term_lufs: -13.5,
+            true_peak_dbtp: -1.0,
+            oversampling: TruePeakOversampling::Sixteen,
+        };
+        let bext = unit.to_bext_loudness();
+        assert_eq!(bext.loudness_value, -1400);
+        assert_eq!(
+            bext.loudness_range, 275,
+            "2.75 LU ⇒ 275 (0.01 LU); 常数 0 与 275 必须是两个不同的读数"
+        );
+        assert_ne!(bext.loudness_range, 0, "本判据的夹具必须让 275 与 0 分开");
+        assert_eq!(bext.max_momentary_loudness, -1225);
+        assert_eq!(bext.max_short_term_loudness, -1350);
+        assert_eq!(bext.max_true_peak_level, -100);
+        assert_ne!(
+            bext.max_short_term_loudness, bext.max_momentary_loudness,
+            "两个最大值的夹具必须互不相同, 否则字段互换测不到"
+        );
+
+        let unmeasurable = MasterLoudness {
+            loudness_range_lu: None,
+            ..unit
+        };
+        assert_eq!(
+            unmeasurable.to_bext_loudness().loudness_range,
+            Loudness::UNKNOWN,
+            "测不出 LRA ⇒ 必须写哨兵, 不是 0"
+        );
+        assert_ne!(Loudness::UNKNOWN, 275, "哨兵与那个有限读数必须不同");
+    }
+
     /// `percentile` 的插值规则（R type 7）: 对 `[0, 10]` 取 P10 ⇒ `1.0`（不是 `0.0`）。
     #[test]
     fn percentile_interpolates_between_order_statistics() {
