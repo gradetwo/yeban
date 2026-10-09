@@ -125,6 +125,12 @@ const RT_QUANTA: u64 = 10_000;
 const NOTE_EVERY: u64 = 8;
 /// 每多少个量子换一次音色参数（覆盖 `set_params` 的器件内分支）。
 const PARAMS_EVERY: u64 = 1_000;
+/// 每多少个量子换一次**采样率**（覆盖 `set_sample_rate` 的"在响声部重算"分支）。
+///
+/// 48 kHz ⇄ 96 kHz 交替：每次都要走完整段重算（在响声部的相位增量与 mip 级、
+/// 包络系数、滤波器系数，含 `exp` 与 `tan`）⇒ 这条分支是被**逐次走到**的，
+/// 不是"从没执行过"的空转。
+const RATE_EVERY: u64 = 1_000;
 /// 每多少个量子回收一次声部（覆盖 `retire_finished`）。
 const RETIRE_EVERY: u64 = 500;
 /// 每多少个量子 `seek` 一次（覆盖 `reset`）。
@@ -242,7 +248,9 @@ fn a_delayed_trigger_shifts_the_waveform_by_exactly_the_trigger_offset() {
 /// 实时路径 = `PolySynth::note_on`（含窃取选择与 3 ms 淡出状态机）
 /// ＋ `PolySynth::render`（逐样本：整数相位 + 双振荡器 + ADSR + 可选低通）
 /// ＋ `retire_finished` / `reset`。
-/// 窗口里**同时**夹着 `set_params`（换滤波器/包络系数）。
+/// 窗口里**同时**夹着 `set_params`（换滤波器/包络系数）与 `set_sample_rate`
+/// （换采样率 ⇒ 在响声部的相位增量、mip 级、包络系数与滤波器系数整段重算，
+/// 见 [`yeban_dsp::polysynth::PolySynth::set_sample_rate`]）。
 ///
 /// ⚠ **覆盖度陷阱（第一版踩到）**：第一版的音符终点写成 `96_000`，而窗口是
 /// 1 280 000 帧 —— 第 750 个量子之后所有音符都已过终点，触发的"新音符"一进门
@@ -283,6 +291,8 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
     // 取一次读数，并把读数累加 —— 分配计数因此也覆盖这个新成员。
     let mut latency_calls: u64 = 0;
     let mut latency_sum: usize = 0;
+    // 窗口里换过多少次采样率（覆盖度自检用）。
+    let mut rate_changes: u64 = 0;
     let reading = window(|| {
         for quantum in 0..RT_QUANTA {
             latency_calls += 1;
@@ -313,6 +323,16 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
                     },
                     &tables,
                 );
+            }
+            if quantum % RATE_EVERY == 0 {
+                // 换采样率：在响声部（含被窃取声部挂起的新音符）的重算整段都在窗口内
+                // ⇒ 这条分支的零分配是被测的，不是假定的。
+                rate_changes += 1;
+                synth.set_sample_rate(if (quantum / RATE_EVERY).is_multiple_of(2) {
+                    48_000
+                } else {
+                    96_000
+                });
             }
             if quantum % RESET_EVERY == 0 {
                 synth.reset();
@@ -349,10 +369,16 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
         "延迟读数必须在窗口里的每个量子都被取一次"
     );
     assert_eq!(latency_sum, 0, "窗口里累加的延迟读数必须恒为 0 帧");
+    assert_eq!(
+        rate_changes,
+        RT_QUANTA / RATE_EVERY,
+        "换采样率分支必须在窗口里被逐次走到（否则这一段是空转）"
+    );
     eprintln!(
         "[yeban-dsp/RT] polysynth 10 000 量子 × {WINDOW_FRAMES} 帧: \
          allocations={} deallocations={} rendered_frames={} nonzero_frames={} \
-         triggered={} steals={} latency_calls={latency_calls} latency_sum={latency_sum}",
+         triggered={} steals={} latency_calls={latency_calls} latency_sum={latency_sum} \
+         rate_changes={rate_changes}",
         reading.allocations,
         reading.deallocations,
         rendered_frames,

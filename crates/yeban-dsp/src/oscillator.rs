@@ -139,6 +139,35 @@ pub enum WavetableError {
     Silent,
 }
 
+/// 某个**回放频率**在给定采样率下应选的 mip 级号 —— 与 [`Wavetable::level_for`]
+/// 是**同一条规则**，只是不需要那张表。
+///
+/// 存在的理由只有一个：[`crate::polysynth::PolySynth::set_sample_rate`] 必须在
+/// **没有波表库**的情况下把在响声部的 mip 级重选到新采样率上（那个方法的签名里
+/// 没有库，而库由调用方持有）。选级规则本身只依赖 [`LEVELS`] 与 [`level_top`]
+/// （都是编译期常量），因此可以独立成函数；[`Wavetable::level_for`] 现在**委派**
+/// 到本函数，两处因此不可能漂移（判据
+/// [`tests::level_for_freq_agrees_with_the_wavetable`] 逐频点对账）。
+///
+/// 判据规则（与 `Wavetable::level_for` 逐字相同）：谐波上限 `h` 满足 `h · f ≤ Nyquist`
+/// 的**最高**（最长）一级；没有一级满足时退到最短一级。
+#[inline]
+#[must_use]
+pub fn level_for_freq(freq_hz: f32, sample_rate: f32) -> usize {
+    let nyquist = sanitise_sample_rate(sample_rate) * 0.5;
+    let mut index = LEVELS - 1;
+    for level in 0..LEVELS {
+        // 该级含到它自己那个倍频程 Nyquist 为止的谐波；音符的第 `h` 次谐波
+        // 位于 `h * freq`，因此在 `h * freq <= nyq` 时放得下。
+        let max_harmonic = level_top(level) as f32;
+        if freq_hz * max_harmonic <= nyquist {
+            index = level;
+            break;
+        }
+    }
+    index
+}
+
 /// 一个波形的全部 mip 级。级按"最长在前"的顺序存储（所有级等长）。
 ///
 /// `Vec` 只在构造期分配，`process*` 路径上不再触碰堆 [ARCH-RT-001]。
@@ -249,20 +278,14 @@ impl Wavetable {
     }
 
     /// 某个回放频率应选的级号：谐波仍能落在 Nyquist 之下的**最高**（最长）一级。
+    ///
+    /// 规则本体在 [`level_for_freq`]（那里说明了为什么它必须能脱离表存在），本方法
+    /// 只是把它钳进这张表自己的级数 —— 由 [`Self::from_recipe`] /
+    /// [`Self::from_cycle`] 建出来的表恒有 [`LEVELS`] 级，因此这个钳制在既有构造
+    /// 路径上是恒等映射（判据 [`tests::level_for_freq_agrees_with_the_wavetable`]）。
     #[must_use]
     pub fn level_for(&self, freq_hz: f32, sample_rate: f32) -> usize {
-        let nyquist = sanitise_sample_rate(sample_rate) * 0.5;
-        let mut index = self.levels.len().saturating_sub(1);
-        for level in 0..self.levels.len() {
-            // 该级含到它自己那个倍频程 Nyquist 为止的谐波；音符的第 `h` 次谐波
-            // 位于 `h * freq`，因此在 `h * freq <= nyq` 时放得下。
-            let max_harmonic = level_top(level) as f32;
-            if freq_hz * max_harmonic <= nyquist {
-                index = level;
-                break;
-            }
-        }
-        index
+        level_for_freq(freq_hz, sample_rate).min(self.levels.len().saturating_sub(1))
     }
 
     /// 第 `level` 级的表长（越界钳制）。
@@ -625,6 +648,103 @@ mod tests {
         }
         // 键盘最顶端必须退到最短一级。
         assert_eq!(table.level_for(4186.0, 48_000.0), LEVELS - 1);
+    }
+
+    /// **判据（新写，可红）**：[`level_for_freq`] 满足选级规则本身，且与每张表自己的
+    /// [`Wavetable::level_for`] 在频点网格上**逐点同解**。
+    ///
+    /// 量什么：① 与一条**独立参照**的差（单位：级号）—— 参照在测试里用
+    /// `Iterator::position` 从一张**独立构造**的谐波上限表上取"升序第一个放得下的级"，
+    /// 没有一级放得下时取 [`LEVELS`] − 1；② 选中级的**形态**两条：放得下
+    ///（或是退路的那一级）、且任何更长的级都放不下；③ 与表自己的读数之差。
+    ///
+    /// 为什么三条都要：单看 ③ 会被"两侧同时改错"骗过 —— 表自己的
+    /// [`Wavetable::level_for`] 现在**委派**到本函数，两边同错时 ③ 仍相等
+    ///（本机实测：把 `LEVELS - 1` 改成 `LEVELS - 2` 时 ③ 全绿）。① 是第二份算式，
+    /// ② 是**不依赖任何算式**的性质，两者一起才把读数钉死。
+    ///
+    /// 注入（本机实测）：把 [`level_for_freq`] 的 `LEVELS - 1` 起点改成 `LEVELS - 2`
+    /// ⇒ ① 在"没有一级放得下"的频点（20 kHz @ 8 kHz）变红；把它内部的
+    /// `level_top(level) as f32` 乘 2 ⇒ ② 变红。
+    ///
+    /// 覆盖：全部 5 条工厂配方 + 一条导入周期（`from_cycle`）的表，
+    /// 频率 20 Hz…20 kHz 的对数网格与 4 档采样率。
+    #[test]
+    fn level_for_freq_agrees_with_the_wavetable() {
+        let imported: Vec<f32> = (0..BASE_LEN)
+            .map(|index| (core::f64::consts::TAU * index as f64 / BASE_LEN as f64).sin() as f32)
+            .collect();
+        let mut tables: Vec<Wavetable> = FACTORY_RECIPES
+            .iter()
+            .map(|(_, recipe)| Wavetable::from_recipe(recipe))
+            .collect();
+        tables.push(Wavetable::from_cycle(&imported).expect("纯正弦周期"));
+
+        // 独立参照表：各 mip 级的谐波上限（与 `level_for_freq` 的循环分离地构造一次）。
+        let tops: Vec<f32> = (0..LEVELS).map(|level| level_top(level) as f32).collect();
+
+        let mut checked = 0usize;
+        let mut fallbacks = 0usize;
+        for table in &tables {
+            assert_eq!(
+                table.level_count(),
+                LEVELS,
+                "本判据的前提是每张表恒有 {LEVELS} 级"
+            );
+            for sample_rate in [8_000.0f32, 44_100.0, 48_000.0, 96_000.0] {
+                let nyquist = sample_rate * 0.5;
+                for step in 0..64 {
+                    // 20 Hz…20 kHz 的对数网格。
+                    let freq = 20.0 * 10.0f32.powf(3.0 * step as f32 / 63.0);
+                    let level = level_for_freq(freq, sample_rate);
+
+                    // ① 与独立参照逐点同解。
+                    let expected = tops
+                        .iter()
+                        .position(|top| freq * top <= nyquist)
+                        .unwrap_or(LEVELS - 1);
+                    assert_eq!(
+                        level, expected,
+                        "freq {freq} Hz @ {sample_rate} Hz：实得级号 {level}，独立参照 {expected}"
+                    );
+
+                    // ② 形态：放得下（或无可选时的退路），且没有更长的级放得下。
+                    if freq * tops[LEVELS - 1] > nyquist {
+                        fallbacks += 1;
+                        assert_eq!(level, LEVELS - 1, "没有一级放得下时必须退到最短一级");
+                    } else {
+                        assert!(
+                            freq * tops[level] <= nyquist,
+                            "freq {freq} Hz @ {sample_rate} Hz：选中级号 {level} 放不下"
+                        );
+                        for (shorter, top) in tops.iter().enumerate().take(level) {
+                            assert!(
+                                freq * top > nyquist,
+                                "freq {freq} Hz @ {sample_rate} Hz：更长的级 {shorter} 其实放得下"
+                            );
+                        }
+                    }
+
+                    // ③ 与表自己的读数同解（委派不应被改回第二份循环）。
+                    assert_eq!(
+                        level,
+                        table.level_for(freq, sample_rate),
+                        "freq {freq} Hz @ {sample_rate} Hz：自由函数与表的读数不一致"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, tables.len() * 4 * 64, "覆盖度不足");
+        assert!(
+            fallbacks > 0,
+            "网格从没走到'没有一级放得下'的退路分支 ⇒ 那一支没有被覆盖"
+        );
+        // 退化频率：自由函数与表都不 panic，且读数落在级数之内。
+        for freq in [0.0f32, -1.0, f32::NAN, f32::INFINITY, 1.0e9] {
+            let level = level_for_freq(freq, 48_000.0);
+            assert!(level < LEVELS, "freq {freq} ⇒ 级号 {level} 越界");
+        }
     }
 
     #[test]

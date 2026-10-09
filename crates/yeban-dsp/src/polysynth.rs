@@ -105,6 +105,34 @@
 //! `tests/polysynth_render.rs` 的 P3 另有"包络起振落在第 0 个块"这条既有读数。
 //! ⚠ 上报口径的**唯一事实源**仍是模型层的 `DeviceDefinition::latency_samples`
 //!（本成员是它的构造性依据，不改变任何输出）。
+//!
+//! ## 7. 采样率变化：**在响声部**一起重算（本轮补齐的成员）
+//!
+//! [`PolySynth::set_sample_rate`] 过去只重算两样东西：窃取淡出帧数与
+//! **滤波器模板**（供此后触发的声部）。已经在响的声部**一样也不动** —— 而它们身上
+//! 的采样率相关量有**四**处：两条振荡器的相位增量 `inc = freq / 采样率`、两条振荡器
+//! 的 mip 级（`level_for` 是 `(频率, 采样率)` 的函数）、包络的三段系数、声部低通的
+//! 系数。因此"设备采样率从 48 kHz 切到 96 kHz"会让在鸣的音符**以两倍频率回放**，
+//! 而同一个 crate 里的 [`crate::drums::DrumMachine::set_sample_rate`] 对**在响槽位**
+//! 做的是相反的事（重算系数、保留状态）。
+//!
+//! 现在 `set_sample_rate` 用 [`OscState::retune`] 把在响声部（含被窃取声部**挂起**的
+//! 新音符）重算到新采样率上，重算用的是**触发路径的同一对函数**
+//!（[`phase_increment`] 与 [`crate::oscillator::level_for_freq`]）⇒ 换采样率之后的
+//! 在响声部与"在新采样率下同刻新触发的声部"在系数上**逐位相同**。相位、波表下标、
+//! 增益、包络电平与阶段、滤波器状态、起止样本、淡出剩余**一个都不动**
+//! ⇒ 换采样率不切断、不重触发在鸣的音符。
+//!
+//! ⚠ 两条明说的边界：① 音符的**时长**（`start_sample` / `end_sample` 是绝对样本位置）
+//! 由调用方按当时的采样率折算，换采样率要由调用方重新投影，本器件只保证音高与系数；
+//! ② 在响声部的滤波器系数用**调用时刻**的参数重算（细节与理由见
+//! [`PolySynth::set_sample_rate`] 的文档第 2 条）。
+//!
+//! 运行期判据：`tests/polysynth_rt_zero_alloc.rs` 的观测窗口里现在夹着换采样率
+//! （`allocations == 0`）；行为判据三条 —— 音高在 `tests/polysynth_render.rs` 的
+//! `p10_a_sample_rate_change_keeps_the_sounding_pitch`，系数逐位对账与包络时标在
+//! 本文件的 `a_sample_rate_change_retunes_the_sounding_voices` /
+//! `a_sample_rate_change_keeps_the_envelope_time_scale`。
 
 use crate::MIN_SAMPLE_RATE;
 use crate::envelope::{Adsr, AdsrStage, STEAL_RELEASE_SECONDS};
@@ -606,6 +634,13 @@ struct OscState {
     table: usize,
     /// mip 级（触发时由频率选出）。
     level: usize,
+    /// 这一支路的**回放频率**（Hz）＝ `NoteEvent::freq_hz × 失谐比`。
+    ///
+    /// 它是 `inc` 与 `level` 的唯一自变量，因此在触发时算一次并**留着**：
+    /// 采样率变化时 [`OscState::retune`] 用它把两者一起重算到新采样率上
+    /// （见 [`PolySynth::set_sample_rate`]）。留着它是**必需**的 ——
+    /// [`NoteEvent`] 只在触发那一帧经过 `note_on` 的手里，`PolyVoice` 不持有它。
+    level_freq: f32,
     /// 逐样本增益（= `OscSettings::level`）。
     gain: f32,
 }
@@ -616,8 +651,26 @@ impl OscState {
         inc: 1,
         table: 0,
         level: 0,
+        level_freq: 0.0,
         gain: 0.0,
     };
+
+    /// 把本支路的**采样率相关量**重算到 `sample_rate`。
+    ///
+    /// **只动** `inc` 与 `level`：相位、波表下标、增益、以及声部上的其余状态
+    /// （包络电平与阶段、起止样本、淡出剩余）一个比特都不碰 —— 换采样率不许切断
+    /// 在鸣的音符（与 [`PolySynth::set_params`] 同一条纪律）。
+    ///
+    /// 重算的两个式子与触发路径 [`resolve_osc`] 用的是**同两个函数**
+    /// （[`phase_increment`] 与 [`crate::oscillator::level_for_freq`]），因此
+    /// "换采样率之后的在响声部"与"在新采样率下同刻新触发的声部"在 `inc` 与 `level`
+    /// 上**逐位相同**（判据 `a_sample_rate_change_retunes_the_sounding_voices`）。
+    ///
+    /// **逐样本零分配**：两次纯标量计算，不经堆 [ARCH-RT-001]。
+    fn retune(&mut self, sample_rate: f32) {
+        self.inc = phase_increment(self.level_freq, sample_rate);
+        self.level = crate::oscillator::level_for_freq(self.level_freq, sample_rate);
+    }
 }
 
 /// 一个**已挂起**的新音符：窃取淡出走完的那一帧才启用。
@@ -753,6 +806,7 @@ fn resolve_osc(
         inc,
         table,
         level: tables.level_for(table, level_freq, sample_rate),
+        level_freq,
         gain: settings.level,
     }
 }
@@ -850,7 +904,39 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         self.params
     }
 
-    /// 校准采样率（快照边界；采样率变化时重算淡出帧数与滤波器系数）。
+    /// 校准采样率（快照边界）。采样率**真的变了**时，它重算**四类**采样率相关量，
+    /// 只重置一类：
+    ///
+    /// | 量 | 处置 |
+    /// | :--- | :--- |
+    /// | 窃取淡出帧数（3 ms × 采样率） | 重算 |
+    /// | 声部低通的**模板**（`tan(π·fc/fs)`）| 重算（供此后触发的声部） |
+    /// | **在响声部**的相位增量与 mip 级 | 重算（相位/波表/增益不动）|
+    /// | **在响声部**的包络系数与滤波器系数 | 重算（包络电平与阶段、滤波器状态不动）|
+    /// | 声部池 | **不重置**（换采样率不许切断在鸣的音符）|
+    ///
+    /// "只重算模板"是不够的：`inc` 是 `freq / 采样率`，包络与滤波器的系数也都是
+    /// 采样率的函数。一台在 48 kHz 上触发的音符，在设备切到 96 kHz 之后仍带着
+    /// `freq / 48000` 的增量 ⇒ 它以**两倍**频率回放（判据
+    /// `tests/polysynth_render.rs` 的 `p10_a_sample_rate_change_keeps_the_sounding_pitch`
+    /// 本机实测：撤掉重算时 96 kHz 那一读 **880.0000 Hz**，期望 **440.0000 Hz**）。
+    /// 同 crate 的 [`crate::drums::DrumMachine::set_sample_rate`] 早就对**在响槽位**
+    /// 做同一件事（重算系数、保留状态），本方法此前是那张表里的例外。
+    ///
+    /// ⚠ 两条明说的边界（不隐藏）：
+    ///
+    /// 1. 在响声部**没有**的采样率相关量这里一样也修不了：[`NoteEvent`] 的
+    ///    `start_sample` / `end_sample` 是**绝对样本位置**，由调用方按**当时的**
+    ///    采样率折算。换采样率会改变同一个音乐时刻对应的样本数，因此音符的**时长**
+    ///    要由调用方重新投影；本器件只保证**音高与系数**是正确的。这也是
+    ///    `set_sample_rate` 由引擎在**快照边界**调用的原因。
+    /// 2. 在响声部的滤波器系数用**调用时刻**的 [`Self::params`] 重算（与同刻新触发的
+    ///    声部一致）。这与 [`Self::set_params`] 的取舍不同：那里**不**重算在响声部的
+    ///    系数（参数不是采样率，逐块改参数不该切断在鸣的音符）。因此"先改参数、
+    ///    再换采样率"会把当前参数一并应用到在响声部的滤波器上；顺序相反则不会。
+    ///
+    /// **逐样本零分配**（只写标量），可以在实时线程的快照边界调用 [ARCH-RT-001]；
+    /// 运行期由 `tests/polysynth_rt_zero_alloc.rs` 的观测窗口钉住。
     pub fn set_sample_rate(&mut self, sample_rate: u32) {
         let sample_rate = sanitise_sample_rate(sample_rate);
         if sample_rate == self.sample_rate {
@@ -859,6 +945,41 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         self.sample_rate = sample_rate;
         self.steal_fade_frames = steal_fade_frames_for(sample_rate);
         self.filter_template = configure_filter(&self.params, sample_rate);
+        self.retune_sounding_voices(sample_rate);
+    }
+
+    /// 把**在响声部**的全部采样率相关量重算到 `sample_rate`（只重算，不重置）。
+    ///
+    /// 覆盖三种在响声部的状态：两个振荡器支路（[`OscState::retune`]）、包络
+    /// （[`Adsr::set_sample_rate`]，只重算系数）、声部低通（[`LadderFilter::configure`]，
+    /// 只重算系数）；被窃取声部**挂起**的新音符（`pending`）也一起重算 —— 它还没发声，
+    /// 但它的两条支路同样是按旧采样率解析出来的。
+    ///
+    /// 正在走 3 ms 窃取淡出的声部**照重算**（与 [`crate::drums::DrumMachine`] 的
+    /// "跳过淡出槽位"不同，理由是本函数只动**系数**）：`Adsr::set_sample_rate`
+    /// 从存下来的时间重算系数而**不**改写时间，因此 `start_steal_fade` 覆盖出来的
+    /// 3 ms release 仍然是 3 ms。
+    fn retune_sounding_voices(&mut self, sample_rate: f32) {
+        let (cutoff, resonance, drive) = (
+            self.params.cutoff_hz(),
+            self.params.resonance(),
+            self.params.drive(),
+        );
+        for voice in &mut self.voices {
+            if !voice.active {
+                continue;
+            }
+            voice.osc1.retune(sample_rate);
+            voice.osc2.retune(sample_rate);
+            if let Some(pending) = &mut voice.pending {
+                pending.osc1.retune(sample_rate);
+                pending.osc2.retune(sample_rate);
+            }
+            voice.env.set_sample_rate(sample_rate);
+            voice
+                .filter
+                .configure(sample_rate, cutoff, resonance, drive);
+        }
     }
 
     /// 写入参数（快照边界/构造期）。`tables` 只用于把波表下标钳进库长度。
@@ -1509,6 +1630,155 @@ mod tests {
         assert!(
             hard > soft,
             "硬窃取的样本跳变必须更大: 硬 {hard:.6} / 软 {soft:.6}"
+        );
+    }
+
+    /// **判据（新写，可红）**：换采样率之后，在响声部的**系数**与"在新采样率下
+    /// 同刻新触发的声部"逐位相同；而**状态**（相位、包络电平、起止、淡出）一个都不动。
+    ///
+    /// 量什么：① 每个在响声部的 `osc1`/`osc2` 的 `inc` 与 `level` 对
+    /// `phase_increment` / `level_for_freq` 的**位型比较**（单位：`u32` 与级号）；
+    /// ② 声部低通的 `coefficient()` / `feedback()` 的位型比较；③ 换采样率前后
+    /// 相位与包络电平的**不变量**（单位：`u32` / `f32`）。
+    ///
+    /// 为什么两条一起断言：只断言 ① 的话，"重算时顺手把相位清零"（等于重触发，
+    /// 会切断在鸣的音符）也会绿。③ 正是把那条错法变红的半边。
+    ///
+    /// 注入（本机实测过）：把 [`PolySynth::set_sample_rate`] 里的
+    /// `retune_sounding_voices` 调用删掉 ⇒ ① 的 `inc` 分支变红（实得 48000 Hz 下的
+    /// 增量，期望 96000 Hz 下的）；把 [`OscState::retune`] 里补一句 `self.phase = 0`
+    /// ⇒ ③ 变红。
+    #[test]
+    fn a_sample_rate_change_retunes_the_sounding_voices() {
+        let tables = tables();
+        let params = PolySynthParams::new()
+            .with_oscillators(OscSettings::new(0, 1.0, 0.0), OscSettings::new(1, 0.5, 7.0))
+            .with_filter(1_200.0, 0.4, 0.3, false)
+            .with_envelope(0.05, 0.2, 0.6, 0.2);
+
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+        synth.set_params(params, &tables);
+        // 三个音符：一个在鸣、一个短命（换采样率时已在释放段）、一个把池填满。
+        synth.note_on(NoteEvent::new(0, 10_000_000, 220.0, 1.0), &tables);
+        synth.note_on(NoteEvent::new(0, 10_000_000, 440.0, 1.0), &tables);
+        synth.note_on(NoteEvent::new(0, 1_000, 880.0, 1.0), &tables);
+        let mut warm = vec![0.0f32; 512];
+        synth.render(&tables, 0, &mut warm);
+
+        // 换采样率之前把"必须不动"的那几样抄下来。
+        let before: Vec<(u32, f32)> = synth
+            .voices
+            .iter()
+            .filter(|voice| voice.active)
+            .map(|voice| (voice.osc1.phase, voice.env.value()))
+            .collect();
+        assert_eq!(before.len(), 3, "夹具必须真的有三个在响声部");
+
+        synth.set_sample_rate(96_000);
+
+        let mut checked = 0usize;
+        for (index, voice) in synth.voices.iter().enumerate() {
+            if !voice.active {
+                continue;
+            }
+            // ① 两条支路的 inc 与 mip 级：必须等于"在 96 kHz 下重新解析同一个音符"。
+            for osc in [voice.osc1, voice.osc2] {
+                assert_eq!(
+                    osc.inc,
+                    phase_increment(osc.level_freq, 96_000.0),
+                    "声部 {index}: osc.inc 没有重算到 96 kHz"
+                );
+                assert_eq!(
+                    osc.level,
+                    tables.level_for(osc.table, osc.level_freq, 96_000.0),
+                    "声部 {index}: osc.level 没有重算到 96 kHz（换采样率后可能混叠）"
+                );
+            }
+            // ② 声部低通：与 `configure_filter(.., 96000)` 的读数逐位相同。
+            let reference = configure_filter(&params, 96_000.0);
+            assert_eq!(
+                voice.filter.coefficient().to_bits(),
+                reference.coefficient().to_bits(),
+                "声部 {index}: 滤波器系数没有重算到 96 kHz"
+            );
+            assert_eq!(
+                voice.filter.feedback().to_bits(),
+                reference.feedback().to_bits(),
+                "声部 {index}: 滤波器反馈没有重算到 96 kHz"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 3, "覆盖度不足：只有 {checked} 个在响声部被检查");
+
+        // ③ 状态不变量：相位与包络电平一个比特都没动（换采样率不是重触发）。
+        let after: Vec<(u32, f32)> = synth
+            .voices
+            .iter()
+            .filter(|voice| voice.active)
+            .map(|voice| (voice.osc1.phase, voice.env.value()))
+            .collect();
+        assert_eq!(
+            before, after,
+            "换采样率必须保留在响声部的相位与包络电平（不许重触发）"
+        );
+
+        // 对照：换回 48 kHz 之后，系数必须与"一开始就在 48 kHz"的那台逐位相同。
+        synth.set_sample_rate(48_000);
+        for voice in synth.voices.iter().filter(|voice| voice.active) {
+            for osc in [voice.osc1, voice.osc2] {
+                assert_eq!(osc.inc, phase_increment(osc.level_freq, 48_000.0));
+                assert_eq!(
+                    osc.level,
+                    tables.level_for(osc.table, osc.level_freq, 48_000.0)
+                );
+            }
+        }
+    }
+
+    /// **判据（新写，可红）**：一句话——换采样率之后，在响声部的**包络时标**跟着
+    /// 新采样率走。
+    ///
+    /// 量什么：从起振到 `AdsrStage::Decay` 的**帧数**（单位：帧）。参照是
+    /// `attack_s × 采样率`（`Adsr` 的线性起振恰好在 `value >= 1.0` 那一帧换段），
+    /// 因此这条判据与"包络系数用了哪个采样率"一一对应。
+    ///
+    /// 夹具：48000 下 `note_on`（此时声部已 `active`、包络电平 0），**一帧都不渲染**
+    /// 就换到 96000 —— 于是整个起振段都在新采样率下走。期望 `0.05 s × 96000` =
+    /// **4800 帧**；不重算包络系数时它是 2400 帧（差整整一倍）。
+    /// 容差 ±2 帧是为了容 `1/(a·fs)` 在 `f32` 上的累加舍入，不是为了放过错值。
+    ///
+    /// 注入（本机实测过）：把 [`PolySynth::set_sample_rate`] 里的
+    /// `voice.env.set_sample_rate(sample_rate)` 删掉 ⇒ 实测 2400 帧 ⇒ 本判据变红。
+    #[test]
+    fn a_sample_rate_change_keeps_the_envelope_time_scale() {
+        let tables = tables();
+        let attack_s = 0.05f32;
+        let params = PolySynthParams::new()
+            .with_oscillators(OscSettings::new(0, 1.0, 0.0), OscSettings::off())
+            .with_envelope(attack_s, 0.2, 0.6, 0.2);
+
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+        synth.set_params(params, &tables);
+        synth.note_on(NoteEvent::new(0, 10_000_000, 440.0, 1.0), &tables);
+        synth.set_sample_rate(96_000);
+
+        /// `0.05 s × 96 kHz` 的**整数**形式（帧；不写成浮点再转换，避免判据里出现
+        /// 与测量同源的舍入）。
+        const EXPECTED_ATTACK_FRAMES: u64 = 4_800;
+        let mut crossing = None;
+        let mut out = [0.0f32; 1];
+        for frame in 0..(EXPECTED_ATTACK_FRAMES * 2) {
+            synth.render(&tables, frame, &mut out);
+            if synth.debug_voice(0).map(|voice| voice.2) == Some(AdsrStage::Decay) {
+                crossing = Some(frame + 1);
+                break;
+            }
+        }
+        let crossing = crossing.expect("起振没有在 2 × attack 帧内走完");
+        assert!(
+            crossing.abs_diff(EXPECTED_ATTACK_FRAMES) <= 2,
+            "换采样率之后起振用了 {crossing} 帧，期望 {EXPECTED_ATTACK_FRAMES} 帧（±2）\
+             —— 包络系数还停在旧采样率上"
         );
     }
 }

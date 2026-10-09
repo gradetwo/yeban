@@ -679,3 +679,67 @@ fn p9_degenerate_inputs_never_produce_non_finite_output() {
     println!("[yeban-dsp/polysynth] P9 退化组合: {checked} 组, 全部输出有限=true");
     assert!(checked >= 6 * 7 * 5 * 6, "覆盖度不足: 只有 {checked} 组");
 }
+
+// ---------------------------------------------------------------------------
+// P10：采样率变化
+// ---------------------------------------------------------------------------
+
+/// P10：**换采样率不许改音高** —— 在鸣的音符要跟着新采样率重算相位增量与 mip 级。
+///
+/// 量什么：同一台器件上"换采样率**之后**"那一段的基频（单位：Hz），读数工具是
+/// 线性插值零交叉（[`fundamental_from_crossings`]）；参照是器件**真的用的**相位增量
+/// 在新采样率下对应的频率（[`closed_form_hz`]）。
+///
+/// 夹具：48 kHz 下触发一个 440 Hz 的**纯正弦**音符（`PURE` 表、默认参数 ⇒ 滤波器旁通
+/// ⇒ 波形里只有基频），渲染 4 800 帧（0.1 s，已进 sustain），然后
+/// `set_sample_rate(96_000)`，再渲染 9 600 帧（0.1 s @96 kHz）。
+///
+/// 判据：两段读数各自与自己的闭式参照相差 ≤ 0.5 Hz，且两段读数之比在 1 ± 1 % 之内。
+/// **不**断言逐位相等：换采样率改变了相位步进，两段的相位量化误差不同，波形逐位
+/// 不可比（`ARCH-DET-001` 的逐位口径只适用于**同一**采样率下的重放）。
+///
+/// 注入（本机实测，报告里有红行）：把 `PolySynth::set_sample_rate` 里的
+/// `retune_sounding_voices` 调用删掉 ⇒ 第二段读数 ≈ 876 Hz（两倍）⇒ 本判据变红。
+#[test]
+fn p10_a_sample_rate_change_keeps_the_sounding_pitch() {
+    let tables = PolySynthTables::from_recipes(&[PURE]);
+    let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+    synth.set_params(PolySynthParams::new(), &tables);
+    synth.note_on(NoteEvent::new(0, 10_000_000, 440.0, 1.0), &tables);
+
+    // 第一段：48 kHz 下 0.1 s（走完 5 ms 起振与 80 ms 衰减，落在 sustain）。
+    const FIRST_FRAMES: usize = 4_800;
+    let mut first = vec![0.0f32; FIRST_FRAMES];
+    synth.render(&tables, 0, &mut first);
+
+    // 换采样率：在响的这个声部必须被重算到 96 kHz。
+    synth.set_sample_rate(96_000);
+
+    // 第二段：96 kHz 下 0.1 s。
+    const SECOND_FRAMES: usize = 9_600;
+    let mut second = vec![0.0f32; SECOND_FRAMES];
+    synth.render(&tables, FIRST_FRAMES as u64, &mut second);
+
+    let before = fundamental_from_crossings(&first, 48_000.0);
+    let after = fundamental_from_crossings(&second, 96_000.0);
+    let want_before = closed_form_hz(440.0, 48_000.0);
+    let want_after = closed_form_hz(440.0, 96_000.0);
+    println!(
+        "[yeban-dsp/polysynth] P10 换采样率: 48k 读数 {before:.4} Hz（参照 {want_before:.4}）, \
+         96k 读数 {after:.4} Hz（参照 {want_after:.4}）, 比值 {:.6}",
+        after / before
+    );
+    assert!(
+        (before - want_before).abs() <= 0.5,
+        "第一段读数 {before:.4} Hz 与闭式参照 {want_before:.4} Hz 不符 ⇒ 夹具本身可疑"
+    );
+    assert!(
+        (after - want_after).abs() <= 0.5,
+        "换到 96 kHz 之后读数 {after:.4} Hz，参照 {want_after:.4} Hz \
+         ⇒ 在响声部没有跟着新采样率重算（相位增量还停在 48 kHz）"
+    );
+    assert!(
+        (after / before - 1.0).abs() <= 0.01,
+        "换采样率改变了在鸣音符的音高: {before:.4} Hz → {after:.4} Hz"
+    );
+}
