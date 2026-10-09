@@ -45,7 +45,11 @@
 //!   三条超大声明长度。**写入器一侧**只有 `for_payload` 的长度算术被加固成饱和；
 //!   `write_container` 仍然按调用方给的真实负载写字节。
 //! - 只实现 `bext` 版本 1 与 2 的读写; 1997 年的 v0 布局未核验, 读到即返回
-//!   [`Rf64Error::UnsupportedBextVersion`], 登记为 `pending`。
+//!   [`Rf64Error::UnsupportedBextVersion`], 登记为 `pending`。**写入器与读取器的
+//!   接受集现在是同一个** `{1, 2}`: [`Bext::to_bytes`] 对 v0 **与 v≥3** 都拒绝
+//!   （修复前只有下界, 于是 `version = 3` 会被照写进文件, 而本 crate 自己读不回来;
+//!   判据是 `every_version_the_writer_accepts_round_trips` 与
+//!   `the_writer_refuses_a_version_the_reader_cannot_read`）。
 //! - BW64 的 `axml`/`bxml`/`sxml`/`chna` 四个 XML chunk 未实现（[ARCH-FMT-001]
 //!   只要求 RF64/BW64 容器 + `bext`）, `ContainerKind::Bw64` 产出的是
 //!   "BW64 标识 + `ds64` + `fmt ` + （浮点时 `fact`）+ `bext`"这一子集, 不是完整
@@ -495,21 +499,60 @@ fn coding_history(sample_rate: Option<u32>, bits_per_sample: Option<u16>) -> Str
 ///
 /// 小时 / 分钟必须 `< 60`, 秒必须 `< 60`, **小时还必须 `< 24`** —— 参照点是"当日
 /// 零点", 而一天只有 24 小时, 因此 `25:00:00` 不是时刻（它是 1 天又 1 小时, 写进
-/// `TimeReference` 就与"当日零点"这个定义自相矛盾）。整串必须恰好是 `HH:MM:SS`。
+/// `TimeReference` 就与"当日零点"这个定义自相矛盾）。
+///
+/// # 整串必须恰好是 `HH:MM:SS`: 每个字段**恰好两位 ASCII 数字**
+///
+/// 这条比"能算出一个数"严, 而它的来源是**返回值的去处**: 同一个字符串还会被
+/// [`Bext::for_project_with_timecode`] 原样写进 `OriginationTime`（偏移 330 的
+/// **8 字节** `HH:MM:SS` 字段）。`"1:2:3"` 能算出一个数（`1·3600 + 2·60 + 3` = 3723 秒）,
+/// 但它写进那个字段后留下的字节是 `31 3A 32 3A 33 00 00 00` —— 一个 NUL 补位的
+/// 5 字符串, 不是 ASCII `HH:MM:SS`。本机实测（修复前）:
+///
+/// ```text
+/// time_reference_samples("1:2:3",      48_000) -> Some(178704000)
+/// time_reference_samples("1:02:03",    48_000) -> Some(178704000)
+/// time_reference_samples("+1:02:03",   48_000) -> Some(178704000)
+/// time_reference_samples("001:02:03",  48_000) -> Some(178704000)
+/// ```
+///
+/// 四者都被接受。因此本函数按 ASCII 的十进制数字**逐字节**解析（私有函数
+/// `two_digit_field`）, 而不是交给 `str::parse`：后者接受 `1`、`+1`、`001`
+/// 这些写法, 它们都算得出一个秒数, 却都不是一个合法的 `HH:MM:SS` 字段。判据是
+/// `a_timecode_field_must_be_exactly_two_ascii_digits`（它同时钉住"写进
+/// `OriginationTime` 的串恒为 8 字节 `HH:MM:SS`"这条后果）。
 ///
 /// 本函数是纯整数运算（IEEE 精确类, 见 `docs/adr/ADR-0001` 的裁决口径）, 不碰浮点,
 /// 因此跨架构逐位相同。
 #[must_use]
 pub fn time_reference_samples(start_timecode: &str, sample_rate: u32) -> Option<u64> {
     let mut fields = start_timecode.split(':');
-    let hours: u64 = fields.next()?.parse().ok()?;
-    let minutes: u64 = fields.next()?.parse().ok()?;
-    let seconds: u64 = fields.next()?.parse().ok()?;
+    let hours = two_digit_field(fields.next()?)?;
+    let minutes = two_digit_field(fields.next()?)?;
+    let seconds = two_digit_field(fields.next()?)?;
     if fields.next().is_some() || hours >= 24 || minutes >= 60 || seconds >= 60 {
         return None;
     }
     let rate = u64::from(sample_rate);
     (hours * 3600 + minutes * 60 + seconds).checked_mul(rate)
+}
+
+/// 解析 `HH:MM:SS` 的三个字段之一: **恰好两位 ASCII 数字**（`00`..=`99`）。
+///
+/// 为什么不是 `field.parse::<u64>()`: 它接受 `"1"` / `"+1"` / `"001"` 这些
+/// **不是** `OriginationTime` 那种 8 字节 ASCII `HH:MM:SS` 的写法。本函数的返回值会
+/// 被 [`Bext::for_project_with_timecode`] 写进定长字段, 因此"能算出一个数"不等于
+/// "写出来是一个合法字段"（见 [`time_reference_samples`] 的实测表）。
+///
+/// 位宽检查先于数值检查: 返回的值因此恒在 `0..=99`, 调用方不需要再防溢出。
+fn two_digit_field(field: &str) -> Option<u64> {
+    let bytes = field.as_bytes();
+    if bytes.len() != 2 || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let tens = u64::from(bytes[0] - b'0');
+    let ones = u64::from(bytes[1] - b'0');
+    Some(tens * 10 + ones)
 }
 
 impl Bext {
@@ -664,14 +707,26 @@ impl Bext {
     ///
     /// # Panics
     ///
-    /// `version == 0` 或 `version >= 2 && loudness.is_none()`, 以及
+    /// `version` 不在 `{1, 2}` 里、`version == 2 && loudness.is_none()`, 以及
     /// `version == 1 && loudness.is_some()` 时 panic —— 这些是**调用方的构造错误**,
     /// 静默写一个自相矛盾的 chunk 会让下游解析器读到垃圾。
+    ///
+    /// # 写入器只写 [`Self::from_bytes`] 读得回的版本
+    ///
+    /// 上界与下界都是必需的, 而且必须是**同一个**集合 `{1, 2}`。修复前只有下界
+    /// （`version >= 1`）, 于是 `version = 3` / `4` 会被照原样写进文件 —— 本机实测:
+    /// `to_bytes` 写出的 `version` 字段就是 3, 而同一份字节交给 [`Self::from_bytes`]
+    /// 得到 [`Rf64Error::UnsupportedBextVersion`]。导出器因此能产出一个**本 crate
+    /// 自己读不回来**的容器, 而调用方拿到的是成功。判据是
+    /// `the_writer_refuses_a_version_the_reader_cannot_read`; 导出路径上的对应落点是
+    /// [`crate::mastering::MasterExportError::UnsupportedBextVersion`]。
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         assert!(
-            self.version >= 1,
-            "bext 版本 0 的字段表未核验, 拒绝写入 (见 render-master-notes needs)"
+            matches!(self.version, 1 | 2),
+            "bext 版本 {} 的字段表未核验, 拒绝写入: 读取器只接受 1 与 2, \
+             写出去就是一个本 crate 读不回来的容器 (见 render-master-notes needs)",
+            self.version
         );
         if self.version >= 2 {
             assert!(
@@ -2591,5 +2646,127 @@ mod tests {
             Bext::for_project_with_format("u", "2026-10-08", "13:37:00", 48_000, 24).time_reference,
             0
         );
+    }
+
+    /// 判据 22: 起始时间码的**每个字段**必须恰好两位 ASCII 数字。
+    ///
+    /// # 这条判据钉住的是什么
+    ///
+    /// 修复前 [`time_reference_samples`] 用 `str::parse::<u64>()` 解析三个字段,
+    /// 于是 `1:2:3` / `1:02:03` / `+1:02:03` / `001:02:03` 全部被接受（本机实测,
+    /// 四者都返回 `Some(178704000)`）。它们的公共缺陷不是"算错了数", 而是
+    /// **写进 `OriginationTime` 的字节不是 ASCII `HH:MM:SS`** —— 那是偏移 330 的
+    /// 8 字节定长字段。因此本判据有两半, 缺一半就会留一条后路:
+    ///
+    /// 1. **语法半**: 不是恰好两位数字的写法必须报错（`None` / 构造返回
+    ///    [`Rf64Error::BadStartTimecode`]）;
+    /// 2. **后果半**: **凡是**被接受的串, [`Bext::for_project_with_timecode`] 写出来的
+    ///    `OriginationTime` 字段都恰好是 8 字节、且逐字节形如 `DD:DD:DD`。
+    ///    只查第 1 半, 换一个宽松解析器就会重新溜过去。
+    ///
+    /// 注入: 把 `two_digit_field` 换回 `field.parse().ok()` ⇒ 第 1 半的
+    /// `assert_eq!(.., None)` 立刻红, 并打出 `Some(178704000)`。
+    #[test]
+    fn a_timecode_field_must_be_exactly_two_ascii_digits() {
+        // --- 1. 语法半 ---
+        for bad in [
+            "1:2:3",
+            "1:02:03",
+            "01:2:03",
+            "01:02:3",
+            "+1:02:03",
+            "001:02:03",
+            " 1:02:03",
+            "01:02:03 ",
+            "0\u{ff11}:02:03",
+            "01:02:0\u{ff13}",
+        ] {
+            assert_eq!(
+                time_reference_samples(bad, 48_000),
+                None,
+                "{bad:?} 不是恰好两位 ASCII 数字的 HH:MM:SS, 必须报错"
+            );
+            assert_eq!(
+                Bext::for_project_with_timecode("u", "2026-10-08", bad, 48_000, 24),
+                Err(Rf64Error::BadStartTimecode(bad.to_owned())),
+                "{bad:?} 不得进入 OriginationTime 字段"
+            );
+        }
+        // 口径没有被顺手收紧: 合法写法给出的数一位不变。
+        assert_eq!(
+            time_reference_samples("01:02:03", 48_000),
+            Some(178_704_000)
+        );
+        assert_eq!(time_reference_samples("00:00:00", 48_000), Some(0));
+        assert_eq!(
+            time_reference_samples("23:59:59", 48_000),
+            Some(4_147_152_000)
+        );
+
+        // --- 2. 后果半: 接受 ⇒ 字段逐字节就是 8 字节 `DD:DD:DD` ---
+        for good in ["00:00:00", "01:02:03", "13:37:00", "23:59:59"] {
+            let block = Bext::for_project_with_timecode(
+                "01J8ZK9WQ7F5N2V4B6C8D0E1F2",
+                "2026-10-08",
+                good,
+                48_000,
+                24,
+            )
+            .expect("合法的 HH:MM:SS");
+            let bytes = block.to_bytes();
+            let field = &bytes[330..338];
+            assert_eq!(
+                field,
+                good.as_bytes(),
+                "OriginationTime 必须逐字节就是时间码本身"
+            );
+            assert!(
+                field[2] == b':'
+                    && field[5] == b':'
+                    && field[0..2].iter().all(u8::is_ascii_digit)
+                    && field[3..5].iter().all(u8::is_ascii_digit)
+                    && field[6..8].iter().all(u8::is_ascii_digit),
+                "OriginationTime 必须形如 DD:DD:DD, 实际 {field:?}"
+            );
+        }
+    }
+
+    /// 判据 23: `to_bytes` **只**写 [`Bext::from_bytes`] 读得回的版本。
+    ///
+    /// 修复前只有下界检查（`version >= 1`）, 于是版本 3 / 4 会被照原样写进文件:
+    /// 本机实测 `version = 3` ⇒ `to_bytes` 写出的 `version` 字段就是 3, 而
+    /// `from_bytes` 对同一串字节返回 [`Rf64Error::UnsupportedBextVersion`]。
+    /// 导出器因此能产出一个**本 crate 自己读不回来**的容器, 而调用方拿到成功。
+    ///
+    /// 两半一起钉: 接受集必须往返, 接受集之外必须拒绝。
+    #[test]
+    fn every_version_the_writer_accepts_round_trips() {
+        for version in [1u16, 2] {
+            let mut block =
+                Bext::for_project("01J8ZK9WQ7F5N2V4B6C8D0E1F2", "2026-10-08", "13:37:00");
+            block.version = version;
+            if version == 1 {
+                // 版本 1 没有 EBU R128 响度字段, 带上就是一个自相矛盾的块。
+                block.loudness = None;
+            }
+            let bytes = block.to_bytes();
+            let decoded = Bext::from_bytes(&bytes).expect("写入器只写读得回的版本");
+            assert_eq!(decoded.version, version);
+            assert_eq!(decoded, block, "版本 {version} 必须逐字段往返");
+        }
+    }
+
+    /// 判据 24: 版本 3 不得被写出去 —— 读取器的接受集是 `{1, 2}`, 写入器必须相同。
+    ///
+    /// 注入: 把 [`Bext::to_bytes`] 的 `matches!(self.version, 1 | 2)` 换回
+    /// `self.version >= 1` ⇒ 本判据不再 panic ⇒ 红（`should_panic` 未触发）。
+    #[test]
+    #[should_panic(expected = "字段表未核验")]
+    fn the_writer_refuses_a_version_the_reader_cannot_read() {
+        let mut block = Bext::for_project("01J8ZK9WQ7F5N2V4B6C8D0E1F2", "2026-10-08", "13:37:00");
+        block.version = 3;
+        // 响度字段**留着**: 版本 3 在修复前正是靠这一格溜过去的
+        // （`version >= 2` 的 `loudness.is_some()` 断言满足 ⇒ 整块照写）。
+        let _ = block.to_bytes();
     }
 }

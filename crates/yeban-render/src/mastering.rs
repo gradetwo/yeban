@@ -453,11 +453,22 @@ pub enum MasterExportError {
     NotStereo(usize),
     /// 交错缓冲的长度不是偶数 ⇒ 最后一个样本落单 ⇒ 拒绝, **不**静默丢弃它。
     RaggedInterleavedBuffer(usize),
+    /// `bext` 模板的版本不是 1 或 2 ⇒ 既不写, 也不猜。
+    ///
+    /// # 为什么需要**上界**这一半（实测缺口）
+    ///
+    /// [`crate::rf64::Bext::from_bytes`] 只接受版本 1 与 2。修复前
+    /// [`export_master`] 只挡住"版本 < 2", 于是 `version = 3` 的模板会被
+    /// `crate::rf64::Bext::to_bytes` 照原样写进文件, 而同一份字节交给本 crate 的
+    /// 读取器得到 [`Rf64Error::UnsupportedBextVersion`]`(3)` —— 调用方拿到成功,
+    /// 交付物却是一个**自己读不回来**的容器。判据是
+    /// `the_export_refuses_a_bext_version_the_reader_cannot_read`。
+    UnsupportedBextVersion(u16),
     /// `bext` 模板的版本小于 2 ⇒ 它没有 EBU R128 响度字段 [ARCH-FMT-001]。
     ///
     /// 拒绝而不是把版本改成 2：版本是调用方给的元数据语义, 本函数不改写它;
-    /// 而 [`crate::rf64::Bext::to_bytes`] 对"版本 2 但无响度"会 panic, 对
-    /// "版本 1 却有响度"也会 panic —— 两条路都只能靠拒绝避开。
+    /// 而 [`crate::rf64::Bext::to_bytes`] 对"版本 1 却有响度"会 panic,
+    /// 对"版本 2 但无响度"也会 panic —— 两条路都只能靠拒绝避开。
     BextCannotCarryLoudness(u16),
     /// 母带缓冲里有 `NaN` / `±inf` 样本 ⇒ 拒绝, **不**静默换成一个 0 样本。
     ///
@@ -500,6 +511,11 @@ impl core::fmt::Display for MasterExportError {
             Self::RaggedInterleavedBuffer(len) => {
                 write!(f, "交错缓冲长度 {len} 不是偶数（立体声的帧必须成对）")
             }
+            Self::UnsupportedBextVersion(version) => write!(
+                f,
+                "bext 版本 {version} 的字段表未核验（读取器只接受 1 与 2）; \
+                 写出去就会产出一个本 crate 读不回来的容器"
+            ),
             Self::BextCannotCarryLoudness(version) => write!(
                 f,
                 "bext 版本 {version} 没有 EBU R128 响度字段, 无法承载实测响度 [ARCH-FMT-001]"
@@ -568,8 +584,10 @@ fn require_finite_samples(samples: &[f32]) -> Result<(), MasterExportError> {
 ///
 /// 这一步把三条既有能力接成一条链, 顺序如下（每一步的顺序都有理由）:
 ///
-/// 1. **校验**: 立体声、交错长度成对、`bext` 版本 ≥ 2、全部样本有限
-///    （见 [`MasterExportError`]。非有限样本在**施加增益之前**就被拒绝）;
+/// 1. **校验**: 立体声、交错长度成对、`bext` 版本 ∈ `{1, 2}` 且 ≥ 2、全部样本有限
+///    （见 [`MasterExportError`]。非有限样本在**施加增益之前**就被拒绝。
+///    版本的上界与下界都查: 只有下界时 `version = 3` 会被写成一个
+///    [`crate::rf64::Bext::from_bytes`] 读不回来的容器）;
 /// 2. **[`ExportPreset::apply`]**: 按目标响度与真峰值上限**就地**施加增益
 ///    （上限赢时减小增益, 不削顶）; 它只施加由**有限**读数算出的增益, 因此有限输入
 ///    不会在这里变成非有限值（论证见函数体内那段注释）;
@@ -617,6 +635,9 @@ pub fn export_master(
         return Err(MasterExportError::RaggedInterleavedBuffer(
             master.samples.len(),
         ));
+    }
+    if !matches!(metadata.version, 1 | 2) {
+        return Err(MasterExportError::UnsupportedBextVersion(metadata.version));
     }
     if metadata.version < 2 {
         return Err(MasterExportError::BextCannotCarryLoudness(metadata.version));
@@ -1729,6 +1750,70 @@ mod tests {
             ),
             Err(MasterExportError::UnsupportedSampleRate(22_050))
         );
+    }
+
+    /// **导出落点判据（`bext` 版本的上界）**: 导出器**不得**产出一个本 crate 的
+    /// 读取器读不回来的容器。
+    ///
+    /// # 这条判据钉住的是什么
+    ///
+    /// [`Bext::from_bytes`] 只接受版本 1 与 2。修复前 [`export_master`] 只挡住
+    /// "版本 < 2", 于是一个 `version = 3` 的模板会被 [`Bext::to_bytes`] 照原样写进
+    /// 文件（版本 ≥ 2 的 `loudness.is_some()` 断言满足, 因此整块照写）, 而同一份字节
+    /// 交给 `crate::rf64::parse_container` 得到
+    /// [`Rf64Error::UnsupportedBextVersion`]`(3)` —— 调用方拿到 `Ok`, 交付物却是
+    /// 本 crate 自己读不回来的容器。本机实测（修复前）:
+    ///
+    /// ```text
+    /// version=3 -> to_bytes 写出 version 字段=3, from_bytes=Err(UnsupportedBextVersion(3))
+    /// ```
+    ///
+    /// 判据有两半, 缺一半就会留一条后路:
+    ///
+    /// 1. **拒绝半**: 版本 3 与版本 0 都报
+    ///    [`MasterExportError::UnsupportedBextVersion`]（版本 1 的路径仍然报既有的
+    ///    [`MasterExportError::BextCannotCarryLoudness`]）;
+    /// 2. **正对照**: 版本 2 的模板仍然导出成功, 且**产物真的能被读回来** ——
+    ///    只查第 1 半, 把导出整体关掉也会"绿"。
+    #[test]
+    fn the_export_refuses_a_bext_version_the_reader_cannot_read() {
+        let tone = sine_997(0.1, 48_000);
+
+        for version in [0u16, 3, 4] {
+            let mut template = metadata();
+            template.version = version;
+            let mut master = master_output(&tone, &tone);
+            let mut rng = seed_rng(1);
+            assert_eq!(
+                export_master(
+                    48_000,
+                    &mut master,
+                    ExportPreset::streaming(),
+                    BitDepth::Int16,
+                    ContainerKind::Riff,
+                    &template,
+                    &mut rng
+                ),
+                Err(MasterExportError::UnsupportedBextVersion(version)),
+                "bext 版本 {version} 的字段表未核验, 导出必须拒绝"
+            );
+        }
+
+        // 正对照: 版本 2 照旧导出, 且产物能被本 crate 的读取器读回来。
+        let mut master = master_output(&tone, &tone);
+        let mut rng = seed_rng(1);
+        let export = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::streaming(),
+            BitDepth::Int16,
+            ContainerKind::Riff,
+            &metadata(),
+            &mut rng,
+        )
+        .expect("版本 2 是受支持的模板");
+        let parsed = crate::rf64::parse_container(&export.file).expect("产物必须能被读回来");
+        assert_eq!(parsed.bext.expect("导出必须带 bext").version, 2);
     }
 
     /// 就地施加增益后, `master.digest` 必须跟上缓冲 —— 摘要不许过期。
