@@ -1064,7 +1064,7 @@ fn percentile(sorted: &[f32], fraction: f64) -> f32 {
 
 /// LUFS ⇒ 均方能量（BS.1770-4 的 `LUFS = −0.691 + 10·log10(z)` 反解）。
 fn loudness_to_power(lufs: f64) -> f64 {
-    libm::pow(10.0, (lufs - LUFS_OFFSET_DB) / 10.0)
+    libm::pow(10.0, (lufs - LUFS_OFFSET_DB) / 20.0)
 }
 
 /// 线性幅度 ⇒ dBTP。
@@ -1246,6 +1246,50 @@ mod tests {
             None
         );
         assert_eq!(loudness_range_from_short_term(&[]), None);
+    }
+
+    /// 判据 (**类别 7: 范围极值 / 边界值**): 绝对门限 `Γa = −70 LUFS` 是**严格**下界
+    /// —— 恰好等于 `Γa` 的短时值是"未过门限", 不是"过门限"。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 `loudness_range_from_short_term` 的
+    /// `.filter(|value| value.is_finite() && f64::from(*value) > ABSOLUTE_GATE_LUFS)`
+    /// 注入成 `>=`, 全量 `cargo test -p yeban-render` **全绿**
+    /// （`test result: ok. 170 passed; 0 failed`）—— 既有的绝对门限判据
+    /// （`everything_below_the_absolute_gate_has_no_lra`）用的是 `−80` / `−75` / `−71`,
+    /// 三个都**严格低于** `−70`, 因此两条写法在那些输入上同判; 而
+    /// `−71` 这一格离门限还有 1 LU, 不是边界值。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一组**恰好** `−70.0 LUFS` 的短时值（单位: LUFS）, 与它的**上方相邻** f32
+    /// （`−70.0f32.next_up()`, 即严格大于 `Γa` 的最小可表示读数）。读数:
+    /// [`loudness_range_from_short_term`] 的 `Option<f32>`（单位: LU）。
+    ///
+    /// # 非空证明
+    ///
+    /// 两个输入都非空, 且它们的差是**一个 ULP**（`next_up` 的定义）—— 因此这一对不是
+    /// "都用同一个数"的退化情形。上方那一格必须过门限并给出 `0.0`（所有值相等 ⇒
+    /// `P95 = P10`）, 恰好等于门限的一格必须被丢掉。
+    #[test]
+    fn the_absolute_gate_is_a_strict_lower_bound() {
+        let at_the_gate = vec![-70.0f32; 8];
+        let above_the_gate = vec![(-70.0f32).next_up(); 8];
+        assert!(
+            f64::from(above_the_gate[0]) > ABSOLUTE_GATE_LUFS,
+            "上方相邻的 f32 必须严格大于门限"
+        );
+        assert_eq!(
+            loudness_range_from_short_term(&at_the_gate),
+            None,
+            "恰好等于 −70 LUFS 的短时值是**未过**绝对门限"
+        );
+        assert_eq!(
+            loudness_range_from_short_term(&above_the_gate),
+            Some(0.0),
+            "刚过门限的一组同值短时值给出 0.0 LU"
+        );
     }
 
     /// 未满 3 s 的信号没有短时值 ⇒ LRA 是 `None`（不是 0, 也不是 NaN）。
