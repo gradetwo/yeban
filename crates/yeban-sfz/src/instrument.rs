@@ -4981,6 +4981,109 @@ type=com.mda.Limiter
         }
     }
 
+    #[test]
+    fn a_cc_crossfade_reads_the_cc_index_of_its_own_segment() {
+        // 两个 CC 段挂在**不同**的 CC 号上（`xfin_locc1` / `xfin_hicc1` 与
+        // `xfin_locc3` / `xfin_hicc3`），探针按编号给不同读数。上面那些判据的探针
+        // 全是 `cc_value`（对任何编号都给同一个数），因此「求值时把段自己的 CC 号
+        // 丢掉、恒读第 0 路」这个改写它们都观测不到。本条是唯一能观测到它的位置。
+        let region = first_region(
+            "<region>sample=a.wav xfin_locc1=0 xfin_hicc1=100 \
+             xfin_locc3=0 xfin_hicc3=100 xf_cccurve=gain",
+        );
+        let probe = |cc: u8| match cc {
+            1 => 25,
+            3 => 75,
+            _ => 0,
+        };
+        let gain = region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe));
+        // 线性档：25/100 = 0.25、75/100 = 0.75，两段相乘是 0.1875（二进制精确）。
+        // 链路只有整数→f32 转换、减、除与乘 ⇒ 裁决 ADR-0001 的 IEEE 精确类。
+        assert_eq!(gain.to_bits(), (0.25f32 * 0.75).to_bits());
+        // 非空证明：两段读到同一个读数（恒读第 0 路）时是 0.25 * 0.25，位型不同。
+        assert_ne!(gain.to_bits(), (0.25f32 * 0.25).to_bits());
+        assert_eq!(gain, 0.1875);
+    }
+
+    #[test]
+    fn the_fade_out_key_and_velocity_skeletons_stay_fade_outs() {
+        // 既有的键盘 / 力度判据只用 `xfin_*`（淡入）；CC 轴才有 `xfout_*` 的判据。
+        // 键盘与力度两个轴的**淡出**骨架（`xfout_lokey` / `xfout_hikey` /
+        // `xfout_lovel` / `xfout_hivel`）从未被读过，于是「把 `key_out` 当成淡入段
+        // 压栈」这类改写没有任何判据能看见。这里四个端点全部给出，钉住轴、方向与端点。
+        let region = first_region(
+            "<region>sample=a.wav lokey=0 hikey=127 \
+             xfout_lokey=40 xfout_hikey=100 xfout_lovel=20 xfout_hivel=110",
+        );
+        let axes: Vec<(XfAxis, XfDirection, XfRange)> = region
+            .crossfades
+            .iter()
+            .map(|crossfade| (crossfade.axis, crossfade.direction, crossfade.range))
+            .collect();
+        assert_eq!(
+            axes,
+            vec![
+                (
+                    XfAxis::Key,
+                    XfDirection::Out,
+                    XfRange { low: 40, high: 100 }
+                ),
+                (
+                    XfAxis::Velocity,
+                    XfDirection::Out,
+                    XfRange { low: 20, high: 110 }
+                ),
+            ]
+        );
+        // 规范正文（`xfout_lovel` / `xfout_loccN` 两页）：淡出在下界处满幅、
+        // 上界处归零。两个轴同时落在端点时乘积逐位是 1.0 / 0.0。
+        assert_eq!(region.crossfade_gain(&RegionQuery::new(40, 20)), 1.0);
+        assert_eq!(region.crossfade_gain(&RegionQuery::new(100, 110)), 0.0);
+    }
+
+    #[test]
+    fn the_key_and_velocity_curve_opcodes_are_not_cross_wired() {
+        // 三条曲线 opcode 各自只作用于一个轴。既有判据只给 `xf_cccurve` 做过路由
+        // （`the_curve_opcodes_are_per_axis_and_case_insensitive`），`xf_keycurve` 与
+        // `xf_velcurve` 从未被钉过 —— 把其中一条写进另一个轴的变量也没有判据会红。
+        let key_linear = first_region(
+            "<region>sample=a.wav lokey=0 hikey=127 xfin_lokey=0 xfin_hikey=100 xf_keycurve=gain",
+        );
+        let gain = key_linear.crossfade_gain(&RegionQuery::new(25, 50));
+        assert!(
+            (gain - 0.25).abs() <= 1.0e-6,
+            "key axis must use xf_keycurve: {gain}"
+        );
+
+        let velocity_linear =
+            first_region("<region>sample=a.wav xfin_lovel=0 xfin_hivel=100 xf_velcurve=gain");
+        let gain = velocity_linear.crossfade_gain(&RegionQuery::new(60, 25));
+        assert!(
+            (gain - 0.25).abs() <= 1.0e-6,
+            "velocity axis must use xf_velcurve: {gain}"
+        );
+
+        // 串线反证：只给 `xf_velcurve=gain` 时键盘轴必须仍走缺省的等功率曲线
+        // （缺省 `power` 在 0.25 处给 sqrt(0.25) = 0.5，不是线性档的 0.25）。
+        let key_default = first_region(
+            "<region>sample=a.wav lokey=0 hikey=127 xfin_lokey=0 xfin_hikey=100 xf_velcurve=gain",
+        );
+        let gain = key_default.crossfade_gain(&RegionQuery::new(25, 50));
+        assert!(
+            (gain - 0.25f32.sqrt()).abs() <= 1.0e-6,
+            "xf_velcurve must not reach the key axis: {gain}"
+        );
+
+        // 反向反证：只给 `xf_keycurve=gain` 时力度轴必须仍走缺省的等功率曲线。
+        let velocity_default =
+            first_region("<region>sample=a.wav xfin_lovel=0 xfin_hivel=100 xf_keycurve=gain");
+        let gain = velocity_default.crossfade_gain(&RegionQuery::new(60, 25));
+        assert!(
+            (gain - 0.25f32.sqrt()).abs() <= 1.0e-6,
+            "xf_keycurve must not reach the velocity axis: {gain}"
+        );
+    }
+
     // ------------------------------------------------------------------
     // 类别 3：重新加载 / 重新打开之后与全新实例一致
     // ------------------------------------------------------------------

@@ -502,4 +502,23 @@ mod tests {
         assert_eq!(mixed[0].bus(), EffectBus::Aux(1));
         assert_eq!(mixed[0].sends(), &[0.0, 0.0, 0.0, 0.0]);
     }
+
+    #[test]
+    fn an_out_of_range_send_index_is_ignored_and_never_indexed() {
+        // `EffectBuilder::set_send` 的文档契约：`index >= SEND_COUNT` 时**忽略**。
+        // 解析器只喂 `0..=3`（`send_index` 只认单个数字的 `effect1`..=`effect4`），
+        // 因此本判据钉的是 crate 内部的防御契约，而不是文件字节的可达路径：
+        // 把「`get_mut` 后忽略」改写成直接索引 `self.sends[index]`，本判据会 panic，
+        // 而本 crate 的红线是任何输入都不得 panic。
+        let mut builder = EffectBuilder::new();
+        builder.set_send(SEND_COUNT, 50.0);
+        builder.set_send(usize::MAX, 50.0);
+        assert!(
+            !builder.has_data(),
+            "an ignored index must not count as data"
+        );
+        let effect = builder.build();
+        assert_eq!(effect.sends(), &[0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(effect.send(SEND_COUNT), None);
+    }
 }

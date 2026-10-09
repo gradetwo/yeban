@@ -312,4 +312,38 @@ mod tests {
         assert_eq!(curve.value_at(32.0), 0.25);
         assert_eq!(curve.value_at(95.5), 0.75);
     }
+
+    #[test]
+    fn a_defined_point_of_negative_zero_is_hit_bit_exactly() {
+        // `defined_points_are_hit_bit_exactly` 的夹具是 `(0.0, 1.0, 0.0)`：那里
+        // `x` 正好等于下界时，`x <= first.at` 与 `x < first.at` 会走**同一条**早退
+        // 分支，因此两种写法不可区分。`-0.0` 是**可达**的曲线取值（解析路径只检查
+        // 有限性，不做符号归一，`as_f32` 原样保留 `-0.0`），而段内插值会把 `-0.0`
+        // 修成 `+0.0`（`-0.0 + 0.0` 是 `+0.0`）—— 于是「已定义点逐位命中」这条契约
+        // 在这一点上是可观测的。
+        let curve = curve(13, &[(0, -0.0), (64, 0.5), (127, 1.0)]);
+        assert_eq!(
+            curve.value_at(0.0).to_bits(),
+            (-0.0f32).to_bits(),
+            "v000 = -0.0 must be hit bit exactly"
+        );
+        // 非空证明：段内公式在 `x = 0.0` 处给出 `+0.0`，位型不同。
+        let low = -0.0f32;
+        let high = 0.5f32;
+        assert_ne!((low + 0.0 * (high - low)).to_bits(), (-0.0f32).to_bits());
+        assert_eq!((low + 0.0 * (high - low)).to_bits(), 0.0f32.to_bits());
+
+        // 可达性：同一条取值从**文件字节**进来也必须原样保留。
+        let instrument = crate::parser::parse_text(
+            "<curve>curve_index=13\nv000=-0.0\nv064=0.5\nv127=1.0",
+            &Default::default(),
+        )
+        .expect("parses");
+        let parsed = instrument.curve(13).expect("curve 13 is defined");
+        assert_eq!(
+            parsed.value_at(0.0).to_bits(),
+            (-0.0f32).to_bits(),
+            "v000=-0.0 is reachable from file bytes"
+        );
+    }
 }
