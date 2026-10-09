@@ -163,6 +163,7 @@ pub struct EngineStatsMirror {
     voice_steals: AtomicU64,
     limiter_gain_reductions: AtomicU64,
     limiter_max_reduction_bits: AtomicU32,
+    limiter_current_reduction_bits: AtomicU32,
     insert_gain_reductions: AtomicU64,
     insert_max_reduction_db_bits: AtomicU32,
     insert_strip_frames: AtomicU64,
@@ -218,6 +219,7 @@ impl EngineStatsMirror {
             voice_steals: AtomicU64::new(0),
             limiter_gain_reductions: AtomicU64::new(0),
             limiter_max_reduction_bits: AtomicU32::new(0),
+            limiter_current_reduction_bits: AtomicU32::new(0),
             insert_gain_reductions: AtomicU64::new(0),
             insert_max_reduction_db_bits: AtomicU32::new(0),
             insert_strip_frames: AtomicU64::new(0),
@@ -288,6 +290,8 @@ impl EngineStatsMirror {
             .store(stats.limiter_gain_reductions, Ordering::Relaxed);
         self.limiter_max_reduction_bits
             .store(stats.limiter_max_reduction.to_bits(), Ordering::Relaxed);
+        self.limiter_current_reduction_bits
+            .store(stats.limiter_current_reduction.to_bits(), Ordering::Relaxed);
         self.insert_gain_reductions
             .store(stats.insert_gain_reductions, Ordering::Relaxed);
         self.insert_max_reduction_db_bits
@@ -376,6 +380,9 @@ impl EngineStatsMirror {
             limiter_max_reduction: f32::from_bits(
                 self.limiter_max_reduction_bits.load(Ordering::Relaxed),
             ),
+            limiter_current_reduction: f32::from_bits(
+                self.limiter_current_reduction_bits.load(Ordering::Relaxed),
+            ),
             insert_gain_reductions: self.insert_gain_reductions.load(Ordering::Relaxed),
             insert_max_reduction_db: f32::from_bits(
                 self.insert_max_reduction_db_bits.load(Ordering::Relaxed),
@@ -455,6 +462,7 @@ mod tests {
             voice_steals: 14,
             limiter_gain_reductions: 15,
             limiter_max_reduction: 0.25,
+            limiter_current_reduction: 0.125,
             insert_gain_reductions: 17,
             insert_max_reduction_db: -6.5,
             insert_strip_frames: 19,

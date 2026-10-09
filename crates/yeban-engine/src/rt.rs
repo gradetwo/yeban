@@ -204,6 +204,26 @@ pub struct EngineStats {
     pub limiter_gain_reductions: u64,
     /// 母线限制器累计的**最大**瞬时压限量（1.0 − 最小增益；0 = 从未压过）。
     pub limiter_max_reduction: f32,
+    /// 母线限制器**上一个有快照的渲染量子结束时**的瞬时压限量
+    /// （`1.0 − gain()`；`0.0` = 那一刻完全透明）。
+    ///
+    /// 与 [`Self::limiter_max_reduction`] 的**区别是语义，不是单位**：那个是**全程最大**
+    /// （只增不减的累计量），这个是**量规**（可升可降，随限制器释放回落）。两者单位相同
+    /// （线性 `1.0 − 增益`），因此可以互相比较 —— 逐量子采样本字段再取最大值，结果
+    /// **恰好**等于同一段渲染里的 [`Self::limiter_max_reduction`]（等号判据见
+    /// `tests/mix_render.rs` 的 M10）。
+    ///
+    /// 为什么需要它：`line/engine-mix` 的台账把"限制器的增益衰减表（GR）上报"登记为
+    /// 一条缺口 —— 当时只有"累计压过多少样本"与"全程最大压限"两个数，**没有**
+    /// "当前压了多少"这个按量子可读的量。该票据的边界清单原文逐字为
+    /// "只暴露了 `limiter_gain_reductions` 与 `limiter_max_reduction` 两个累计量，
+    /// 没有按量子发布'当前 GR'给 UI"。本字段就是那一条读数（该行现位于
+    /// `docs/ledger/engine-mix-notes.md` §8.1）。
+    ///
+    /// ⚠ 语义边界（必须与判据一起读）：它取的是**量子边界**上的值，不是量子内峰值；
+    /// 没有快照的量子（输出静音、限制器不参与）**不更新**它 —— 它保持上一次的值，
+    /// 因此它描述的是"限制器最后一次工作时压了多少"，而不是"这个量子压了多少"。
+    pub limiter_current_reduction: f32,
     /// **每轨插入器件**的**动态级**累计压过的帧数（[`crate::insert`]；0 = 从未压过）。
     ///
     /// 与 [`Self::limiter_gain_reductions`] 同族、但**不是**同一个读数：它把"插入器件
@@ -499,6 +519,9 @@ pub struct EngineRuntime {
     limiter_gain_reductions: u64,
     /// 累计最大压限量（与 [`EngineStats::limiter_max_reduction`] 同源）。
     limiter_max_reduction: f32,
+    /// **上一个有快照的量子**结束时的瞬时压限量
+    /// （与 [`EngineStats::limiter_current_reduction`] 同源；**量规**，可升可降）。
+    limiter_current_reduction: f32,
     /// **每轨插入链**：`(轨道, 通道条)`，前 [`Self::armed_insert_slots`] 项有效。
     ///
     /// 与 `armed_pan_gains` 同一个形状与同一个理由：**构造期**（快照边界）把器件建好，
@@ -731,6 +754,7 @@ impl EngineRuntime {
             metronome: MetronomeVoice::new(),
             limiter_gain_reductions: 0,
             limiter_max_reduction: 0.0,
+            limiter_current_reduction: 0.0,
             // 插入链：**构造期**预分配全部槽位（回调内绝不再分配）。
             // `from_fn` 而不是 `[expr; N]`：`ChannelStrip` 没有 `const` 构造器，
             // 而 `Option<ChannelStrip>` 的"全 `None`"初值用函数形式表达最直接
@@ -867,6 +891,7 @@ impl EngineRuntime {
             notes_triggered: self.synth.notes_triggered(),
             limiter_gain_reductions: self.limiter_gain_reductions,
             limiter_max_reduction: self.limiter_max_reduction,
+            limiter_current_reduction: self.limiter_current_reduction,
             insert_gain_reductions: self.insert_gain_reductions,
             insert_max_reduction_db: self.insert_max_reduction_db,
             insert_strip_frames: self.insert_strip_frames,
@@ -1263,6 +1288,7 @@ impl EngineRuntime {
             limiter,
             limiter_gain_reductions,
             limiter_max_reduction,
+            limiter_current_reduction,
             armed_strips,
             armed_insert_slots,
             insert_gain_reductions,
@@ -1903,6 +1929,13 @@ impl EngineRuntime {
             if reduction > *limiter_max_reduction {
                 *limiter_max_reduction = reduction;
             }
+            // --- 3b') **当前**压限量：按量子覆写的**量规** ---
+            // 与上面的 `limiter_max_reduction` 用的是**同一个已读出的值**
+            // （`Limiter::gain()` 在上一行已经为了算最大值被读过一次）⇒ 本字段
+            // **不增加**任何 DSP 调用、不碰任何样本、不分配 ⇒ 渲染输出逐位不变。
+            // 它是 `line/engine-mix` 台账登记的那条"按量子发布当前 GR"读数
+            // （见 [`EngineStats::limiter_current_reduction`] 的文档）。
+            *limiter_current_reduction = reduction;
 
             // --- 3c) 母线：立体声联动电平（**限制之后**） ---
             if produced < scratch_meters.len() {

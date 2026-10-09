@@ -600,6 +600,22 @@ fn main() -> ExitCode {
     if mix_stats.voice_steals == 0 {
         failures.push("混音链夹具没有触发声部窃取 —— 淡出路径没有被这条零分配判据覆盖".to_owned());
     }
+    // ⭐ **当前压限**（`line/engine-mix` 台账登记的"按量子发布当前 GR"）的见证：
+    // 它是一个**每量子覆写**的量规 ⇒ 必须在这条零分配窗口里**非零**（限制器确实在压），
+    // 且必须 `≤` 全程最大压限（量规与累计量同单位 ⇒ 口径必须自洽）。
+    // 没有这两条断言，本窗口只走过了 `limiter_max_reduction` 那条路径，
+    // 量规的写入路径是不是实时安全的就**没有被测到**。
+    if mix_stats.limiter_current_reduction <= 0.0 {
+        failures.push(
+            "混音链的**当前**压限读数为 0 —— 这条零分配窗口没有覆盖量规的写入路径".to_owned(),
+        );
+    }
+    if mix_stats.limiter_current_reduction > mix_stats.limiter_max_reduction {
+        failures.push(format!(
+            "当前压限 {} 大于全程最大压限 {} —— 量规与累计量的口径不一致",
+            mix_stats.limiter_current_reduction, mix_stats.limiter_max_reduction
+        ));
+    }
     // 声相真的在线：全左 ⇒ 右声道必须**逐位**静音。
     let right_nonzero = mix_output
         .iter()
@@ -613,11 +629,12 @@ fn main() -> ExitCode {
         ));
     }
     println!(
-        "[engine-mix/J5] 混音链: quanta={} reductions={} steals={} 最大压限={:.4} 右声道非零={right_nonzero}",
+        "[engine-mix/J5] 混音链: quanta={} reductions={} steals={} 最大压限={:.4} 当前压限={:.4} 右声道非零={right_nonzero}",
         mix_stats.quanta,
         mix_stats.limiter_gain_reductions,
         mix_stats.voice_steals,
         mix_stats.limiter_max_reduction,
+        mix_stats.limiter_current_reduction,
     );
 
     // ---- 场景 5：**每轨插入压缩器**（`crate::insert`）在实时窗口内零分配 ----

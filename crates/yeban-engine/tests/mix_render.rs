@@ -15,6 +15,7 @@
 //! | M7 | 静音工程（含音色/声相配置）仍然**逐位**静音 | 限制器直流泄漏 / 滤波器自激 |
 //! | M8 | **主总线推子**改变输出：0 dB 与 −6 dB 的样本满足 `out₋₆ = f32(out₀ × g)`（逐位） | 主总线增益不参与混音（快照字段接线断在实时侧） |
 //! | M9 | 主总线推子在**母线限制器之前**：−6 dB 把过阈值夹具拉回透明区 | 把推子移到限制器之后 |
+//! | M10 | 母线限制器的**当前压限**是一条**量规**：逐量子采样取最大值 == 全程最大量（**逐位**）；音符结束后回落；未过阈值时**逐位**为 `0.0` | 把该读数写成常数 / 从不更新 |
 //!
 //! 判据的**实测数字**与口径表见 `docs/ledger/engine-mix-notes.md`。
 
@@ -457,5 +458,131 @@ fn master_fader_sits_upstream_of_the_bus_limiter() {
         "拉低推子必须让输出变小: {} vs {}",
         quiet.peak(),
         unity.peak()
+    );
+}
+
+/// M10：母线限制器的**当前压限**（`EngineStats::limiter_current_reduction`）是一条
+/// **量规**，且与全程最大量自洽。
+///
+/// 为什么需要这条判据：`line/engine-mix` 的台账把"限制器的增益衰减表（GR）上报"
+/// 登记为缺口 —— 当时只有"累计压过多少样本"与"全程最大压限"两个累计量，
+/// **没有**按量子可读的"当前压了多少"（原文逐字见
+/// [`yeban_engine::rt::EngineStats::limiter_current_reduction`] 的文档）。
+///
+/// 判别力来源（每一条各自打掉一种假绿）：
+///
+/// 1. **有牙**：逐量子采样该读数，其**最大值**必须与同一段渲染的
+///    `limiter_max_reduction` **逐位相等**。后者由**另一条**代码路径维护
+///    （`if reduction > max`）⇒ "只写常数" / "写错字段" / "少写一个量子"都会破这条等号；
+/// 2. **覆盖度**：采样条数必须等于渲染的量子数（少采一个就可能漏掉最大值）；
+/// 3. **是量规不是常数**：整段渲染里至少出现**两个**不同的位模式（音符结束之后
+///    限制器释放 ⇒ 读数必然移动）；
+/// 4. **可回落且释放走到底**：末次读数严格小于峰值，并在释放完成后**逐位**回到 `+0.0`
+///    —— 这一条打掉"把全程最大量直接写进去"那种偷懒实现（它会让末次值等于峰值）；
+/// 5. **透明时贴地**：未过阈值的夹具里它**逐位**为 `+0.0`（`reductions == 0` 是
+///    结构性前提，两者一起读才排除"限制器没被驱动"的假绿）。
+#[test]
+fn limiter_current_reduction_is_a_gauge_that_agrees_with_the_running_maximum() {
+    // 96 tick = 2 400 样本 ≈ 18.75 个量子；渲染 60 个量子 ⇒ 音符结束后还有
+    // ~41 个量子的**释放尾巴**（`LIMITER_RELEASE_PER_SAMPLE` = 5.0e-5/样本）。
+    let notes = [NoteSpec::at(0, 96, 69, 127)];
+    let loud = tuned_project(&notes, MixSpec::volume(6.0));
+
+    // `render_with` 的 `at` 在**每个量子的渲染之前**被调用 ⇒ `at(k)` 观察到的是
+    // 第 k−1 个量子结束时的读数；渲染结束后再补上最后一个量子（`Render::stats`）
+    // ⇒ 采样集合覆盖**每一个**有快照的量子的量子边界值。
+    let mut sampled: Vec<f32> = Vec::new();
+    let rendered = render_with(&loud.project, 60, 1, |quantum, rig| {
+        if quantum > 0 {
+            sampled.push(rig.runtime.stats().limiter_current_reduction);
+        }
+    });
+    let last = rendered.stats.limiter_current_reduction;
+    sampled.push(last);
+
+    let peak = sampled.iter().copied().fold(0.0f32, f32::max);
+    let distinct = {
+        let mut bits: Vec<u32> = sampled.iter().map(|value| value.to_bits()).collect();
+        bits.sort_unstable();
+        bits.dedup();
+        bits.len()
+    };
+    println!(
+        "[engine-mix] M10 采样={} 峰值当前压限={peak:.6} 末次={last:.6}（位模式 {:#010x}）\
+         全程最大={:.6} 不同位模式={distinct} reductions={}",
+        sampled.len(),
+        last.to_bits(),
+        rendered.stats.limiter_max_reduction,
+        rendered.stats.limiter_gain_reductions,
+    );
+
+    // (1) 夹具真的驱动了限制器 —— 否则下面每一条都可能是永真。
+    assert!(
+        rendered.stats.limiter_gain_reductions > 0,
+        "夹具没有驱动限制器（reductions = 0）—— 这条判据会变成永真"
+    );
+    // (1b) 覆盖度：采样必须覆盖**每一个**量子（少一个就可能漏掉最大值）。
+    assert_eq!(
+        sampled.len(),
+        60,
+        "采样必须覆盖每一个量子（`at` 在每个量子渲染之前被调用一次）"
+    );
+    // (2) 量规是**动**的：至少两个不同的位模式。
+    assert!(
+        distinct > 1,
+        "当前压限在整段渲染里恒为一个值（不同位模式 {distinct} 个）⇒ 它不是量规"
+    );
+    // (3) 逐量子采样取最大值 == 全程最大量（两条代码路径之间的**逐位**等号）。
+    assert_eq!(
+        peak.to_bits(),
+        rendered.stats.limiter_max_reduction.to_bits(),
+        "逐量子采样的最大值必须与 limiter_max_reduction 逐位相等: {peak} vs {}",
+        rendered.stats.limiter_max_reduction
+    );
+    // (4) 可回落：释放发生之后末次值严格小于峰值。
+    assert!(peak > 0.0, "峰值当前压限必须为正（否则'压过'只是计数错觉）");
+    assert!(
+        last < peak,
+        "音符结束之后量规必须回落: 末次={last} 峰值={peak}"
+    );
+    assert!(last >= 0.0, "压限量不得为负: {last}");
+    // (4b) 释放**走到底**：从峰值衰减 60 个量子之后回到逐位 `+0.0`（增益弹道只有
+    // f32 加/比较与一次除法，属 [ADR-0001 D32] 的 IEEE 精确类 ⇒ 这条等号跨架构成立；
+    // 它同时钉住"量规跟的是限制器的**释放**，而不是某个只减不归零的中间量"）。
+    assert_eq!(
+        last.to_bits(),
+        0.0f32.to_bits(),
+        "释放完成后当前压限必须逐位回到 +0.0: {last}"
+    );
+
+    // (5) 未过阈值：量规**逐位**贴地（限制器透明 ⇒ `1.0 − 1.0 = +0.0`）。
+    let quiet = tuned_project(&notes, MixSpec::volume(-12.0));
+    let mut quiet_samples: Vec<f32> = Vec::new();
+    let quiet_rendered = render_with(&quiet.project, 30, 1, |quantum, rig| {
+        if quantum > 0 {
+            quiet_samples.push(rig.runtime.stats().limiter_current_reduction);
+        }
+    });
+    println!(
+        "[engine-mix] M10 未过阈值: 采样={} reductions={} 末次={:.6}",
+        quiet_samples.len(),
+        quiet_rendered.stats.limiter_gain_reductions,
+        quiet_rendered.stats.limiter_current_reduction,
+    );
+    assert_eq!(
+        quiet_rendered.stats.limiter_gain_reductions, 0,
+        "未过阈值的夹具不得被限制器改写任何一个样本"
+    );
+    for (index, value) in quiet_samples.iter().enumerate() {
+        assert_eq!(
+            value.to_bits(),
+            0.0f32.to_bits(),
+            "未过阈值时当前压限必须逐位为 +0.0（第 {index} 个采样是 {value}）"
+        );
+    }
+    assert_eq!(
+        quiet_rendered.stats.limiter_current_reduction.to_bits(),
+        0.0f32.to_bits(),
+        "未过阈值时末次读数必须逐位为 +0.0"
     );
 }
