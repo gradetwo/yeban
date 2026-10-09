@@ -18,6 +18,22 @@
 //! `time_signature` 算出（[`super::section_build::ticks_per_bar`]，与配器段落长度、
 //! 种子摆放长度共用同一个函数），而不是一条写死 `4/4` 的常量：`4/4` 是 `3840` tick，
 //! `3/4` 是 `2880` tick。缺省（`4/4`）逐字节等于常量时代的行为。
+//!
+//! ## 同值重放不得改写级联的起点（类别⑤ 幂等性）
+//!
+//! 级联起点（tick 0）的幅值是 `old_value * depth`，它的意思是"参数**此刻**在哪"。
+//! 旋钮**没有移动**时（`old_value` 与本次请求的目标逐位同值）这条公式会让第二次调用
+//! 把它**自己在第一次调用里写下**的起点改写掉：一次 `set_macro(0.33)` 从 0.5 落下
+//! 时写下的是 `0.5 × depth`，紧接着再来一次同参调用会把它改成 `0.33 × depth`
+//! ⇒ 那一小节的斜坡被压平，工程 digest 变了 —— 同一份请求第二次改变了文档。
+//! `Op::SetMacro` 的注释把"值没变要不要提交"交给**调用方**决定
+//! （`crates/yeban-model/src/ops.rs`：`new_* == old_*` 是合法的无操作），
+//! 而这里是那个调用方：因此同值时**保留文档现值**（有既有起点就用它，没有才退化成平线），
+//! 只有旋钮真的移动过才按 `old_value * depth` 重算起点。
+//! 判据 `same_value_replay_leaves_the_document_byte_identical`（模块内）与
+//! `set_macro_same_value_replay_leaves_the_project_byte_identical`（`tests/tools_e2e.rs`）
+//! 钉住这条；`a_changed_value_still_ramps_from_the_current_knob_position` 钉住
+//! 它**没有**把"旋钮移动过"的那条路一起改掉。
 
 use serde_json::Value;
 
@@ -126,16 +142,16 @@ pub fn plan(
     // "一小节"由**工程拍号**算出（与配器段落长度、种子摆放长度同一个函数）：
     // 早先这里是一条写死的 `4/4` 常量，拍号可设之后它就成了同一份算法里的第二个真相。
     let cascade_ticks = super::section_build::ticks_per_bar(project);
+    // 旋钮**有没有真的移动**（逐位比较，与模型 `same_f32` 同口径：`-0.0` 与 `0.0` 不是同一个值）。
+    // 为什么它决定级联起点：起点的幅值 `old_value * depth` 是"参数此刻在哪"。
+    // 同值重放时旋钮没有移动 ⇒ 若照此重算，第二次调用会把它自己在第一次调用里写下的那个
+    // 起点**改写**掉（一小节的斜坡被压平）—— 同一份请求第二次改变了文档，类别⑤ 不成立。
+    // 因此同值时保留文档现值（既有起点），既不改写自己写的，也不覆盖别人写的自动化。
+    let knob_moved = old_value.to_bits() != value.to_bits();
     for (mapping_index, mapping) in macro_parameter.mappings.iter().enumerate() {
         let target: AutomationTarget = mapping.target;
         // 级联的形状: 本小节起点 → 一小节后, S 曲线平滑过渡; 幅值按 mapping.depth 缩放。
-        for (step, (tick, level)) in [
-            (0_u64, old_value * mapping.depth),
-            (cascade_ticks, value * mapping.depth),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (step, tick) in [0_u64, cascade_ticks].into_iter().enumerate() {
             let point_id = deterministic_id(&format!(
                 "macro-cascade:{track_id}:{macro_index}:{mapping_index}:{step}"
             ));
@@ -144,6 +160,16 @@ pub fn plan(
                 .get(&target)
                 .and_then(|lane| lane.points.get(&point_id))
                 .copied();
+            // 终点永远跟随本次请求的目标；起点只在旋钮**真的移动过**时才重算。
+            let level = if step == 0 {
+                if knob_moved {
+                    old_value * mapping.depth
+                } else {
+                    old_point.map_or(old_value * mapping.depth, |point| point.value)
+                }
+            } else {
+                value * mapping.depth
+            };
             cascade_points.push(point_id);
             ops.push(Op::SetAutomationPoint {
                 target,
@@ -326,5 +352,125 @@ mod tests {
             op.apply_inverse(&mut again).expect("可逆");
         }
         assert_eq!(again, after, "级联必须是可逆的");
+    }
+
+    /// 施加一份规划（与 `domain::apply` 走同一个 `Op::Batch`），产出施加后的文档。
+    fn applied(plan: &MacroPlan, project: &YebanProjectV1) -> YebanProjectV1 {
+        let mut after = project.clone();
+        Op::Batch {
+            ops: plan.ops.clone(),
+            description: "t".to_owned(),
+        }
+        .apply(&mut after)
+        .expect("施加");
+        after
+    }
+
+    /// 规划里 **tick 0** 那个级联点的幅值（第一个映射的起点；夹具只有一个映射）。
+    fn cascade_start_level(plan: &MacroPlan) -> f32 {
+        plan.ops
+            .iter()
+            .find_map(|op| match op {
+                Op::SetAutomationPoint { new_point, .. } if new_point.tick == 0 => {
+                    Some(new_point.value)
+                }
+                _ => None,
+            })
+            .expect("级联起点")
+    }
+
+    /// 夹具前提：样本音轨的宏值（`filled_project` 的 lead 是 `0.5`，一个映射 `depth = 0.8`）。
+    fn fixture_macro(project: &YebanProjectV1, track_id: &EntityId) -> (f32, f32) {
+        let macro_parameter = &project.tracks[track_id].macros[0];
+        (macro_parameter.value, macro_parameter.mappings[0].depth)
+    }
+
+    /// **类别⑤（幂等性）**：旋钮没有移动时，同值重放**不得**改变文档。
+    ///
+    /// 改动前实测（真二进制 `yeban-mcp --stdio`，工程 = 模型样本容器）：
+    /// 第一次 `set_macro(0.33)` 写下 DeviceParam 泳道的 `tick 0 = 0.4`、
+    /// `tick 3840 = 0.264`（一小节的斜坡）；紧接着同参第二次把 `tick 0` 改写成
+    /// `0.264` ⇒ 斜坡被压平，工程 digest 由 `eb637dbb…` 变成 `fa4c5905…`。
+    /// 本判据把"同一份请求第二次之后文档逐字段不变"钉住。
+    #[test]
+    fn same_value_replay_leaves_the_document_byte_identical() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let (macro_value, depth) = fixture_macro(&project, &track_id);
+
+        // 第一次：旋钮真的移动（0.5 → 0.33）⇒ 建立斜坡，起点 = 0.5 × depth。
+        let down = plan(&project, &track_id, 0, 0.33).expect("规划");
+        assert!((cascade_start_level(&down) - macro_value * depth).abs() < 1e-6);
+        let once = applied(&down, &project);
+
+        // 第二次：**同参**（旋钮没有移动）。
+        let replay = plan(&once, &track_id, 0, 0.33).expect("规划");
+        assert_eq!(replay.old_value, 0.33, "旧值必须来自当前文档");
+        assert!(
+            (cascade_start_level(&replay) - macro_value * depth).abs() < 1e-6,
+            "同值重放必须保留既有起点 {} × {depth}",
+            macro_value
+        );
+        assert!(
+            (cascade_start_level(&replay) - 0.33 * depth).abs() > 1e-6,
+            "起点不得被同值重放改写成 {} × {depth}",
+            0.33
+        );
+        let twice = applied(&replay, &once);
+        assert_eq!(twice, once, "同值重放之后文档必须逐字段不变");
+    }
+
+    /// 对照组：旋钮**真的移动过**时，起点仍然跟随**当前**旋钮位置（不是既有起点）。
+    ///
+    /// 没有这一条，`same_value_replay_leaves_the_document_byte_identical` 可以被
+    /// "永远保留既有起点"这种过度修正骗过 —— 那会让第二次**换值**的落点从上一小节
+    /// 的起点开始，而不是从当前旋钮位置开始。
+    #[test]
+    fn a_changed_value_still_ramps_from_the_current_knob_position() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let (_, depth) = fixture_macro(&project, &track_id);
+
+        let down = plan(&project, &track_id, 0, 0.33).expect("规划");
+        let once = applied(&down, &project);
+
+        let up = plan(&once, &track_id, 0, 0.9).expect("规划");
+        assert!(
+            (cascade_start_level(&up) - 0.33 * depth).abs() < 1e-6,
+            "旋钮移动过 ⇒ 起点 = 当前旋钮位置 × depth"
+        );
+        let after = applied(&up, &once);
+        assert_ne!(after, once, "换值必须真的改变文档");
+    }
+
+    /// 边界：同值且**没有**既有起点 ⇒ 退化成平线（起点 = 终点 = 目标 × depth）。
+    ///
+    /// 夹具前提（实测）：`filled_project` 的 lead 只有 `TrackVolume` 泳道，
+    /// `DeviceParam` 泳道不存在 ⇒ 起点没有现值可保留。
+    #[test]
+    fn same_value_without_an_existing_point_writes_a_flat_pair() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let (current, depth) = fixture_macro(&project, &track_id);
+        let before = project.tracks[&track_id].automation_lanes.len();
+
+        let flat = plan(&project, &track_id, 0, current).expect("规划");
+        assert_eq!(flat.old_value, current);
+        assert!(
+            (cascade_start_level(&flat) - current * depth).abs() < 1e-6,
+            "没有既有起点 ⇒ 起点退化成 目标 × depth"
+        );
+        let after = applied(&flat, &project);
+        assert_eq!(
+            after.tracks[&track_id].automation_lanes.len(),
+            before + 1,
+            "平线仍然要真的落进文档（这是本工具做的事）"
+        );
+        // 第二遍同值 ⇒ 文档不动（与上一条判据同一结论的另一条路径）。
+        let again = applied(
+            &plan(&after, &track_id, 0, current).expect("再规划"),
+            &after,
+        );
+        assert_eq!(again, after);
     }
 }

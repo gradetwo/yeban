@@ -573,6 +573,50 @@ fn idempotent_merge_does_not_apply_the_batch_twice() {
     assert_eq!(dispatcher.domain().commit_count(), commits_after_first);
 }
 
+/// **类别⑤（幂等性）**：`yeban_set_macro` 用**逐字节同一份实参**走两次
+/// `tools/call → 提案 → 合并`，第二次不得改变工程。
+///
+/// 为什么单列一条：级联起点（tick 0）的幅值是 `old_value × depth`（"参数此刻在哪"），
+/// 同值时重算这条公式会让第二次调用把它**自己在第一次调用里写下**的起点改写掉
+/// ⇒ 一小节的斜坡被压平。改动前实测（真二进制 stdio，模型样本容器）：
+/// 第一次把 `DeviceParam` 泳道写成 `tick 0 = 0.4` / `tick 3840 = 0.264`，
+/// 同参第二次改成 `tick 0 = 0.264`，工程 digest 由 `eb637dbb…` 变成 `fa4c5905…`。
+/// 本判据量的是**工程字节**（不是"返回了 Ok"）。
+#[test]
+fn set_macro_same_value_replay_leaves_the_project_byte_identical() {
+    let scratch = Scratch::new("macro-same-value");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+
+    // 第一次：旋钮真的移动（样本音轨的宏现值是 0.5）⇒ 建立一小节的斜坡。
+    let first = propose_macro(&mut dispatcher, &auth, &track, 0.33);
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": first, "commitMessage": "第一次" }),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+    let after_first = project_bytes(&dispatcher);
+
+    // 第二次：同一份实参（旋钮**没有**移动）。
+    let second = propose_macro(&mut dispatcher, &auth, &track, 0.33);
+    assert_ne!(first, second, "两次调用各自建自己的提案");
+    let merged_again = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": second, "commitMessage": "第二次" }),
+    );
+    assert_eq!(merged_again["data"]["merged"], true, "{merged_again}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        after_first,
+        "同值重放之后工程必须与第一次之后逐字节相同（不得压平斜坡）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 判据 ②·合并：多父合并提交必须**落进 `history.dag`**
 // ---------------------------------------------------------------------------
