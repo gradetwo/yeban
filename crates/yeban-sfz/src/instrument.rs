@@ -2197,6 +2197,41 @@ mod tests {
     }
 
     #[test]
+    fn a_header_name_with_surrounding_whitespace_is_still_recognized() {
+        // `process_line` 先把尖括号里的名字 `trim` 再交给 `Header::from_name`。
+        // 少了那个 `trim`，`<curve >` / `< region >` 会落进「未知段头」告警，
+        // 整段 opcode 被丢掉且不产生任何条目。规范没有规定段头名是否带空白，
+        // 但本 crate 的既有口径是「段头名大小写不敏感、首尾空白无关」。
+        let instrument = parse_text(
+            "<curve >curve_index=7\nv000=0\nv095=1\n<effect >bus=aux1\n< region >sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(
+            !instrument
+                .warnings()
+                .iter()
+                .any(|warning| matches!(warning, Warning::IgnoredHeader { .. })),
+            "a padded header name must not be reported as unknown: {:?}",
+            instrument.warnings()
+        );
+        assert_eq!(
+            instrument.curves().len(),
+            1,
+            "the padded <curve> is modeled"
+        );
+        assert_eq!(instrument.curve_value_at(7, 95.0), Some(1.0));
+        assert_eq!(
+            instrument.effects().len(),
+            1,
+            "the padded <effect> is modeled"
+        );
+        assert_eq!(instrument.effects()[0].bus(), EffectBus::Aux(1));
+        assert_eq!(instrument.len(), 1, "the padded <region> is modeled");
+        assert_eq!(instrument.regions()[0].sample, "a.wav");
+    }
+
+    #[test]
     fn region_without_sample_is_skipped_with_warning() {
         let instrument = parse_text("<region>key=36", &Default::default()).expect("parses");
         assert!(instrument.is_empty());
@@ -2407,6 +2442,47 @@ mod tests {
     }
 
     #[test]
+    fn sw_down_and_sw_up_gate_on_the_held_keys() {
+        // `sw_down` ＝「要求**按下**的 keyswitch」、`sw_up` ＝「要求**未按下**的 keyswitch」
+        // （两字段的文档注释）。本 crate 的 keyswitch 判据此前只读过 `sw_last`，
+        // 这两个字段**从未**被任何判据碰过 ⇒ 三个单点改写（`sw_down` 取反、`sw_up` 取反、
+        // 以及 `query.keys_down` 缺失时的严格策略只覆盖 `sw_down`）都全绿。
+        let instrument = parse_text(
+            "<region>sample=a.wav key=60 sw_down=36\n\
+             <region>sample=b.wav key=62 sw_up=36",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].sw_down, Some(36));
+        assert_eq!(instrument.regions()[1].sw_up, Some(36));
+
+        // 没有 keys-down 状态 ⇒ 严格策略：两道门控都算「未接线」，两个 region 都不选。
+        assert!(instrument.region_for(60, 100).is_none());
+        assert!(instrument.region_for(62, 100).is_none());
+
+        let held = |key: u8| key == 36;
+        let released = |_key: u8| false;
+        let held_query = |note: u8| RegionQuery::new(note, 100).with_keyswitch(0, &held);
+        let released_query = |note: u8| RegionQuery::new(note, 100).with_keyswitch(0, &released);
+        assert!(
+            instrument.region_for_with(held_query(60)).is_some(),
+            "sw_down=36 matches while 36 is held"
+        );
+        assert!(
+            instrument.region_for_with(held_query(62)).is_none(),
+            "sw_up=36 must not match while 36 is held"
+        );
+        assert!(
+            instrument.region_for_with(released_query(60)).is_none(),
+            "sw_down=36 must not match while 36 is released"
+        );
+        assert!(
+            instrument.region_for_with(released_query(62)).is_some(),
+            "sw_up=36 matches while 36 is released"
+        );
+    }
+
+    #[test]
     fn sw_default_outside_zero_to_127_is_an_explicit_error() {
         // 表格行 Range = 0 to 127（<https://sfzformat.com/opcodes/sw_default/>）：越界是
         // 明确 Err，不静默钳位（`sample` 必须存在，否则 region 在读到该 opcode 前就被丢弃）。
@@ -2561,6 +2637,30 @@ mod tests {
         );
         // `<control>` 不是继承链的一环：region 上不重复出现这些标签。
         assert!(instrument.regions()[0].labels.cc_labels.is_empty());
+    }
+
+    #[test]
+    fn a_repeated_control_cc_label_keeps_the_last_value() {
+        // `Instrument::cc_labels` 的文档写「同一下标后者覆盖前者」（与 `set_ccN` 同一条
+        // 口径）。既有判据只给过**不同**下标 ⇒ 把 `insert` 写成
+        // `entry(..).or_insert(..)`（先者胜）也全绿。
+        let instrument = parse_text(
+            "<control>label_cc7=Volume\n\
+             <control>label_cc7=Master volume\n\
+             <region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.cc_labels().get(&7).map(Cow::as_ref),
+            Some("Master volume")
+        );
+        assert_eq!(instrument.cc_labels().len(), 1, "one CC, one entry");
+        // 非空证明：先写的那个值必须确实进了同一张表的候选集。
+        assert_ne!(
+            instrument.cc_labels().get(&7).map(Cow::as_ref),
+            Some("Volume")
+        );
     }
 
     #[test]
@@ -2748,6 +2848,28 @@ mod tests {
         )
         .expect("parses");
         assert!(instrument.regions()[0].labels.cc_labels.is_empty());
+    }
+
+    #[test]
+    fn an_overflowing_cc_label_index_reports_the_saturated_value() {
+        // 名字已保证是全 ASCII 数字，因此 `parse::<u16>` 只有「超过 u16」这一种失败，
+        // 错误载荷按 `i64` 饱和取值（更长的数字串仍能报出行号与 opcode 名）。
+        // 上面那条判据只核对 65536 这个恰好可表示的值 ⇒ 把饱和值改成 0 也全绿。
+        let error = parse_text(
+            "<region>sample=a.wav label_cc99999999999999999999999=x",
+            &Default::default(),
+        )
+        .expect_err("above the u16 container");
+        assert!(
+            matches!(
+                &error,
+                SfzError::IntegerOutOfRange { opcode, value, min: 0, max, .. }
+                    if opcode == "label_cc99999999999999999999999"
+                        && *value == i64::MAX
+                        && *max == i64::from(crate::label::MAX_CC_LABEL_INDEX)
+            ),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]
@@ -3041,6 +3163,28 @@ mod tests {
                 "off_mode={bad:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn the_off_mode_error_lists_exactly_the_option_table() {
+        // `as_option` 的 `allowed` 载荷是给调用方的可读白名单。上面那条判据只核对
+        // `InvalidOption` 这个变体，因此「白名单少写一项」不可观测（改 `ALLOWED` 时
+        // 错误载荷跟着一起改，所以只核对载荷里那个字段是自证的）。这里把白名单与
+        // 选项表做**机械**对照：两边的名字与顺序必须逐项相同。
+        let listed: Vec<&str> = OffMode::ALLOWED.split(", ").collect();
+        let table: Vec<&str> = OffMode::OPTIONS.iter().map(|(text, _)| *text).collect();
+        assert_eq!(listed, table, "ALLOWED must mirror the option table");
+        assert_eq!(OffMode::ALLOWED, "fast, normal, time");
+        let error = parse_text("<region>sample=a.wav off_mode=slow", &Default::default())
+            .expect_err("slow is not an option");
+        assert!(
+            matches!(
+                &error,
+                SfzError::InvalidOption { opcode, value, allowed, .. }
+                    if opcode == "off_mode" && value == "slow" && *allowed == OffMode::ALLOWED
+            ),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]
@@ -4052,6 +4196,36 @@ v127=1
     }
 
     #[test]
+    fn a_curve_point_name_with_a_non_digit_is_ignored_like_any_unknown_opcode() {
+        // `vNNN` 的三个字符必须**全是** ASCII 数字（两条判定：长度 3、且全是数字）。
+        // 上面那条判据只覆盖了长度那一半（`v5` / `v0000`），因此「把两条判定合并成只判
+        // 长度」这类改写它看不见：`v0x0` 会被折成一个越界的横坐标（非数字字节的数值
+        // 参与十进制折叠）⇒ 整份文件变成 `IntegerOutOfRange`，而全文件口径是
+        // 「不像规范 opcode 的名字一律忽略」。
+        let instrument = parse_text(
+            "<curve>curve_index=7\nv0x0=0.5\nv1_2=0.5\nv064=0.25",
+            &Default::default(),
+        )
+        .expect("a non-digit vNNN name must be ignored, not an error");
+        assert_eq!(
+            instrument.curve(7).map(Curve::points),
+            Some(
+                &[
+                    CurvePoint { at: 0, value: 0.0 },
+                    CurvePoint {
+                        at: 64,
+                        value: 0.25
+                    },
+                    CurvePoint {
+                        at: 127,
+                        value: 1.0
+                    },
+                ][..]
+            )
+        );
+    }
+
+    #[test]
     fn a_repeated_point_in_one_block_keeps_the_last_value() {
         // 与其它作用域「后者覆盖」的 `BTreeMap` 口径一致，也保证点表没有重复 `at`
         // （重复 `at` 会让插值分母为 0）。
@@ -4225,6 +4399,43 @@ type=com.mda.Limiter
             effect.sends(),
             &[0.0, 0.0, 0.0, 0.0],
             "effect1..4 default 0"
+        );
+    }
+
+    #[test]
+    fn param_offset_accepts_the_whole_u32_range_and_rejects_one_past_it() {
+        // 规范页 <https://sfzformat.com/opcodes/param_offset/> 没有给 Range；
+        // 本 crate 的裁决是「非负且不超过 `u32` 的容器界」（与 `offset` / `loop_start`
+        // 同口径）。既有判据只读过 400，于是把上界写成 `u32::MAX - 1` 也全绿 ——
+        // 上界本身必须被接受，否则判定 `<= u32::MAX` 与 `< u32::MAX` 无从区分。
+        let top = parse_text(
+            "<effect>param_offset=4294967295\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("u32::MAX is the documented ceiling");
+        assert_eq!(top.effects()[0].param_offset(), Some(4_294_967_295));
+
+        // 下界是 0（不是 1）：`param_offset=0` 必须被接受。
+        let zero = parse_text(
+            "<effect>param_offset=0\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("zero is in range");
+        assert_eq!(zero.effects()[0].param_offset(), Some(0));
+
+        // 上界 + 1 ⇒ 明确 Err，不静默钳位、不 saturating 到上界。
+        let error = parse_text(
+            "<effect>param_offset=4294967296\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect_err("one past the container bound");
+        assert!(
+            matches!(
+                &error,
+                SfzError::IntegerOutOfRange { opcode, value, min: 0, .. }
+                    if opcode == "param_offset" && *value == 4_294_967_296
+            ),
+            "unexpected error: {error:?}"
         );
     }
 
@@ -4929,6 +5140,26 @@ type=com.mda.Limiter
     }
 
     #[test]
+    fn a_cc_index_above_the_container_is_ignored_not_read_as_cc_zero() {
+        // `parse_cc_crossfade_name` 用 `digits.parse::<u8>().ok()?` 读 CC 号：
+        // 128..=255 能装进 `u8` 但越过 7-bit 域 ⇒ 忽略；256 以上连 `u8` 都装不下
+        // ⇒ 同样忽略。把 `.ok()?` 放宽成「解析失败就取 0」会让 `xfin_hicc256` 静默变成
+        // 「CC 0 上的一段淡化」—— 这是文件字节可达的（`xfin_hicc` 之后只要全是数字
+        // 就进这条路径），而既有判据只到 131，看不见 256 这一档。
+        let region =
+            first_region("<region>sample=a.wav xfin_hicc256=10 xfin_hicc257=10 xfin_hicc99999=10");
+        assert!(
+            region.crossfades.is_empty(),
+            "a CC index above the u8 container must be ignored: {:?}",
+            region.crossfades
+        );
+        // 对照（非空证明）：上界 127 是合法 CC，必须被认出来。
+        let cc127 = first_region("<region>sample=a.wav xfin_hicc127=10");
+        assert_eq!(cc127.crossfades.len(), 1);
+        assert_eq!(cc127.crossfades[0].axis, XfAxis::Cc(127));
+    }
+
+    #[test]
     fn a_degenerate_crossfade_range_is_preserved_and_stays_inactive() {
         // 两端同值：区间长度 0 ⇒ 不生效（不 panic、不除零、不改音量）。
         let region = first_region("<region>sample=a.wav xfout_locc1=64 xfout_hicc1=64");
@@ -5082,6 +5313,26 @@ type=com.mda.Limiter
             (gain - 0.25f32.sqrt()).abs() <= 1.0e-6,
             "xf_keycurve must not reach the velocity axis: {gain}"
         );
+    }
+
+    #[test]
+    fn the_cc_curve_reaches_the_cc_fade_out_segments_too() {
+        // 上面那条判据只给 `xfin_*`（淡入）段配过 `xf_cccurve`。淡入与淡出在
+        // `read_crossfades` 里是两个独立的循环、各自选曲线，因此「淡出循环读错了曲线
+        // 变量」这类改写没有判据能看见。`xfout_locc1=64` 归约成区间 `[64, 127]`：
+        // 96 处的位置是 `32/63`，线性档给 `1 - 32/63`，等功率档给 `sqrt(1 - 32/63)`。
+        // 链路只有整数→f32 转换、减、除与 `sqrt` ⇒ 裁决 ADR-0001 的 IEEE 精确类。
+        let power = 1.0f32 - 32.0f32 / 63.0;
+        let linear = first_region("<region>sample=a.wav xfout_locc1=64 xf_cccurve=gain");
+        let gain = linear.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&cc_value(96)));
+        assert_eq!(gain.to_bits(), power.to_bits());
+        // 非空证明：缺省的等功率曲线在同一点给出 `sqrt(1 - 32/63)`，位型不同。
+        assert_ne!(power.to_bits(), power.sqrt().to_bits());
+
+        // 串线反证：只给 `xf_velcurve=gain` 时，CC **淡出**段必须仍走缺省的等功率曲线。
+        let not_wired = first_region("<region>sample=a.wav xfout_locc1=64 xf_velcurve=gain");
+        let gain = not_wired.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&cc_value(96)));
+        assert_eq!(gain.to_bits(), power.sqrt().to_bits());
     }
 
     // ------------------------------------------------------------------

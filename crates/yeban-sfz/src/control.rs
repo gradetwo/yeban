@@ -343,4 +343,24 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn an_overflowing_index_reports_the_saturated_value() {
+        // 与 `label_ccN`（`crate::label::cc_label_index`）同一条形状：名字已保证是
+        // 全 ASCII 数字，因此 `parse::<u16>` 只有「超过 u16」这一种失败，错误载荷按
+        // `i64` 饱和取值（更长的数字串仍能报出行号与 opcode 名）。
+        // 上面那条判据只核对 65536 这个恰好可表示的值 ⇒ 把饱和值改成 0 也全绿。
+        let error = set_cc_declaration("set_cc99999999999999999999999", "1", 7)
+            .expect_err("above the u16 container");
+        assert!(
+            matches!(
+                &error,
+                SfzError::IntegerOutOfRange { line: 7, opcode, value, min: 0, max, .. }
+                    if opcode == "set_cc99999999999999999999999"
+                        && *value == i64::MAX
+                        && *max == i64::from(MAX_CC_DEFAULT_INDEX)
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
 }
