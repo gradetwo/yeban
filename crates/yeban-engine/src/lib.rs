@@ -21,7 +21,7 @@
 //! | [`insert`] | **每轨插入器件**：`InternalEffect` 设备 → 通道条（`yeban_dsp::channel_strip` 的再导出 + 约定参数名投影；其动态级即 `yeban_dsp::compressor`）＋ 混响（`yeban_dsp::reverb` 的再导出；延迟线只在构造期分配） | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-006] |
 //! | [`drums`] | **每轨鼓机音源**：`InternalInstrument` 设备 + **写全的五个键位名** → `yeban_dsp::drums`（再导出 + 约定参数名投影）。驱动源是**轨道自己的音符调度表**，位置在插入链**之前**；映射不完整 ⇒ 不武装 ⇒ 逐位不变 | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DSP-001]、[ARCH-DET-001] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
-//! | [`param`] | **实时侧参数目标表**：`SetParam` 事件 → 逐样本**平滑**的逐轨增益乘子（`yeban_dsp::smoothing` 的消费者） | [ARCH-DSP-001]、[ARCH-RT-001]、[ROAD-M2-007] |
+//! | [`param`] | **实时侧参数目标表**：`SetParam` 事件 → 逐样本**平滑**的增益乘子（逐轨槽位 ＋ **主总线**槽位；`yeban_dsp::smoothing` 的消费者） | [ARCH-DSP-001]、[ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`synth`] | 静态预分配声部池与逐样本合成（**真的出声**：整数相位波表 + ADSR + 力度增益；波形可选、双振荡器） | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DET-001]、[ROAD-M2-005]、[ROAD-M2-006] |

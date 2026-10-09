@@ -267,6 +267,13 @@ pub struct EngineStats {
     /// "事件出队了"，而一个出队后什么都不做的 `SetParam` 与一个正常工作的参数表
     /// 在读数上完全一样。全部轨都没有收到被接受的参数事件时（默认）**恒为 0**。
     pub param_gain_frames: u64,
+    /// **主总线**增益乘子累计乘过的帧数（[`crate::param`] 模块文档 §2.3；0 = 从未乘过）。
+    ///
+    /// 与 [`Self::param_gain_frames`] **分开**记账：两者回答两个不同的问题
+    /// （"有音轨的乘子生效了吗" vs "母线的乘子生效了吗"）。合并成一个数会让
+    /// "只自动化了主总线"与"只自动化了一条轨"在读数上无法区分。
+    /// 主总线槽位没有收到过被接受的参数事件时（默认）**恒为 0**。
+    pub param_master_gain_frames: u64,
     /// 因**取值非法**（非有限 / 负数）而被忽略的 `SetParam` 事件数（[`crate::param`] §2）。
     ///
     /// 非 0 = 控制面发过一个本槽位语义里不存在的值；引擎**不**把它钳成静音
@@ -274,7 +281,9 @@ pub struct EngineStats {
     pub param_gain_rejects: u64,
     /// 因**地址未映射**而被忽略的 `SetParam` 事件数（[`crate::param`] §2）。
     ///
-    /// 未映射 = 槽位号不是 [`crate::param::TRACK_GAIN_SLOT`]，或实体是主总线。
+    /// 未映射 = 槽位号与实体**不匹配**：实体不是主总线时槽位号须是
+    /// [`crate::param::TRACK_GAIN_SLOT`]、实体是主总线时须是
+    /// [`crate::param::MASTER_GAIN_SLOT`]（两者不通用，见 [`crate::param`] §2）。
     /// 花在"引擎根本不消费的地址"上的事件因此是**可见**的，而不是静默丢弃。
     pub param_unmapped_events: u64,
     /// 因**参数槽位表已满**而未被接受的 `SetParam` 事件数（累计；正常恒为 0）。
@@ -866,6 +875,7 @@ impl EngineRuntime {
             insert_convolution_frames: self.insert_convolution_frames,
             insert_convolution_rejects: self.insert_convolution_rejects,
             param_gain_frames: self.params.gain_frames(),
+            param_master_gain_frames: self.params.master_gain_frames(),
             param_gain_rejects: self.params.rejections(),
             param_unmapped_events: self.params.unmapped(),
             param_capacity_drops: self.params.capacity_drops(),
@@ -1017,6 +1027,26 @@ impl EngineRuntime {
     #[must_use]
     pub fn armed_param_gain(&self, track: &EntityId) -> Option<f32> {
         self.params.gain(*track)
+    }
+
+    /// 主总线参数槽位当前的**目标值**（`None` = 从未收到过被接受的目标）。
+    ///
+    /// 与 [`Self::armed_param_target`] 同族，但主总线只有**一格**、且它不属于
+    /// 逐轨槽位表（[`crate::param`] 模块文档 §2.3）⇒ 用"是否武装过"表达
+    /// "有没有槽位"这一维。
+    #[must_use]
+    pub fn armed_master_param_target(&self) -> Option<f32> {
+        self.params
+            .master_armed()
+            .then(|| self.params.master_target())
+    }
+
+    /// 主总线参数槽位当前的**输出值**（平滑中的瞬时值；同上口径）。
+    #[must_use]
+    pub fn armed_master_param_gain(&self) -> Option<f32> {
+        self.params
+            .master_armed()
+            .then(|| self.params.master_gain())
     }
 
     /// 本快照武装的**每轨插入器件（混响）参数**（诊断/判据用）。
@@ -1822,6 +1852,23 @@ impl EngineRuntime {
             if master_gain != 1.0 {
                 scale_bus(block, master_gain);
             }
+
+            // --- 3a''') 主总线增益的**自动化乘子**：与推子**同一个位置** ---
+            // [crate::param] 的第二个槽位（[`crate::param::MASTER_GAIN_SLOT`]，模块文档 §2.3）。
+            // 位置**刻意**与 3a'' 相同：本乘子作用在"整条母线输出"上（含节拍器），
+            // 与推子同口径。顺序也是契约的一部分（浮点乘法不满足结合律）：
+            // **先**静态推子 `scale_bus`、**后**本乘子 —— 与逐轨槽位"先构造期静态音量、
+            // 后运行期乘子"一致。
+            //
+            // **默认口径**：主总线槽位从未收到过被接受的 `SetParam`、或它已吸附到恒等
+            // `1.0` ⇒ `apply_master` **一个样本都不碰**并返回 0 ⇒ 没有该事件的工程与
+            // 接线前**逐位相同**（[crate::param] 模块文档 §5）。
+            //
+            // 逐样本（每帧）：一次单极点低通（`process`）＋ 两条声道各一次乘。
+            // 立体声联动是**强制**的：左右用同一个增益值（模块文档 §2.3）。
+            // **零分配、零锁、零 I/O、零日志** [MUST-GATE-001, ARCH-DSP-001]。
+            let (master_left, master_right) = block.stereo_mut();
+            params.apply_master(master_left, master_right);
 
             // 播放头前进：**每个量子一次**（与轨道数无关）。
             //

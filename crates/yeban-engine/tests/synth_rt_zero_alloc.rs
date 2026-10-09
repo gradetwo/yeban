@@ -123,6 +123,11 @@
 //! 在两个**非恒等**值之间交替 ⇒ 恒等快路径从不生效），再用一个换采样率的窗口覆盖
 //! 第三段。覆盖度自检取**精确帧数**（`10 000 × 128`），不是"大于 0"。
 //!
+//! `line/engine-9` 把这个窗口**加宽**（不另开场景）：同一批事件里再加一条**主总线**
+//! 槽位（`MASTER_GAIN_SLOT`）的事件 ⇒ 第二个逐样本入口
+//! （`ParamTable::apply_master`：每帧一次低通 ＋ 两条声道各一次乘）也在窗口里，
+//! 覆盖度自检对**两个**见证读数分别取精确帧数。
+//!
 //! ⚠ **本目标只测四元组里的两个分量**（`allocations` / `deallocations`）：
 //! 它没有锁探针，也没有 I/O 边界（那是 `tests/rt_zero_alloc.rs` 的
 //! `[MUST-GATE-001]` 目标）。因此本文件的全部场景**不**声称"六分量全 0"。
@@ -154,7 +159,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use yeban_engine::meter::meter_channel;
-use yeban_engine::param::TRACK_GAIN_SLOT;
+use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
@@ -1641,8 +1646,14 @@ fn main() -> ExitCode {
     //   * 256 个交叠音符（沿用 `saturated_notes`）⇒ 窗口里真的有信号可乘；
     //   * 目标值在两个**非恒等**值之间交替（`0.5` / `0.25`）⇒ `apply` 的恒等快路径
     //     从不生效 ⇒ 覆盖度自检可以取**精确帧数**（`10_000 × 128`）而不是"大于 0"。
+    //
+    // `line/engine-9` 追加（**同一个窗口**，不再另开一个）：每 `PARAM_RETARGET_EVERY`
+    // 个量子**同时**发一条**主总线**槽位（`MASTER_GAIN_SLOT`）的事件 ⇒ 第二个逐样本
+    // 入口（`ParamTable::apply_master`：每帧一次单极点低通 ＋ 两条声道各一次乘）
+    // 也落在零分配窗口里。两条事件打包成**一次** `publish`（批量无锁通道的用法）。
     let param_fixture = note_project(&saturated_notes());
     let param_track = param_fixture.track;
+    let param_master = param_fixture.master;
     let param_snapshot =
         EngineSnapshot::from_project(&param_fixture.project, 1).expect("参数表夹具快照");
     let param_slot = SnapshotSlot::new(param_snapshot);
@@ -1664,11 +1675,17 @@ fn main() -> ExitCode {
                 } else {
                     0.25
                 };
-                let accepted = param_sender.publish(&[EngineEvent::SetParam {
-                    target: ParamAddress::new(param_track, TRACK_GAIN_SLOT),
-                    value,
-                }]);
-                assert_eq!(accepted, 1, "参数事件必须真的进队列");
+                let accepted = param_sender.publish(&[
+                    EngineEvent::SetParam {
+                        target: ParamAddress::new(param_track, TRACK_GAIN_SLOT),
+                        value,
+                    },
+                    EngineEvent::SetParam {
+                        target: ParamAddress::new(param_master, MASTER_GAIN_SLOT),
+                        value,
+                    },
+                ]);
+                assert_eq!(accepted, 2, "两条参数事件必须真的进队列");
             }
             param_output.fill(0.0);
             param_runtime.process_quantum(&mut param_output, 2);
@@ -1678,10 +1695,12 @@ fn main() -> ExitCode {
     let param_frames = param_stats
         .param_gain_frames
         .saturating_sub(param_base_frames);
+    let param_master_frames = param_stats.param_master_gain_frames;
     let param_slots = param_runtime.armed_param_slot_count();
     println!(
         "[engine-param/J16] 实时侧参数目标表: allocations={allocations} \
-         deallocations={deallocations} 乘过的帧数={param_frames} 槽位={param_slots} \
+         deallocations={deallocations} 乘过的帧数={param_frames} \
+         主总线乘过的帧数={param_master_frames} 槽位={param_slots} \
          非法值={} 未映射={} 容量不足={}",
         param_stats.param_gain_rejects,
         param_stats.param_unmapped_events,
@@ -1704,6 +1723,18 @@ fn main() -> ExitCode {
              非恒等目标 ⇒ 每一个量子都必须走乘法）",
             PARAM_QUANTA * 128
         ));
+    }
+    if param_master_frames != (PARAM_QUANTA * 128) as u64 {
+        failures.push(format!(
+            "主总线参数槽位只乘过 {param_master_frames} 帧，期望 {}（{PARAM_QUANTA} 量子 × 128 帧；\
+             非恒等目标 ⇒ 每一个量子的两条声道都必须被乘）",
+            PARAM_QUANTA * 128
+        ));
+    }
+    if param_runtime.armed_master_param_target().is_none() {
+        failures.push(
+            "主总线参数槽位没有被武装 —— 场景 16 的第二个入口（`apply_master`）是空转".to_owned(),
+        );
     }
     if param_stats.param_gain_rejects != 0
         || param_stats.param_unmapped_events != 0

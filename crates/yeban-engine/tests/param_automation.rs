@@ -1,6 +1,9 @@
 //! `line/engine-6` 的端到端判据：**实时侧参数目标表**（`crate::param` → `rt`）。
 //! [ARCH-DSP-001, ARCH-RT-001, ROAD-M2-007]
 //!
+//! `line/engine-9` 追加了**主总线槽位**（`MASTER_GAIN_SLOT`）的判据 P9..P12；
+//! 逐轨槽位的全部既有判据（P0..P8）**一字未改**。
+//!
 //! 全部判据断言在**真实渲染路径**产出的样本上：`YebanProjectV1` →
 //! `EngineSnapshot::from_project` → `SnapshotSlot` → 事件 SPSC →
 //! `EngineRuntime::process_quantum`。`support` 模块刻意不给测试专用捷径。
@@ -8,10 +11,10 @@
 //! 本文件回答三个问题（与 `crate::param` 的模块文档一一对应）：
 //!
 //! 1. **接线不改变既有输出**：没有事件、地址未映射、值非法、目标恰为 `1.0`
-//!    这四种口径下的输出与"接线前"**逐位相同**（判据 P0 / P4 / P5）；
+//!    这四种口径下的输出与"接线前"**逐位相同**（判据 P0 / P4 / P5 / P11）；
 //! 2. **自动化真的改变了声音**：被接受的乘子**逐位**地作用到输出上
-//!    （`0.25` 是 2 的幂 ⇒ `armed == unarmed · 0.25` 是**精确等式**，判据 P2）；
-//! 3. **改变是平滑的**：阶跃目标不许在第一个样本上跳过去（判据 P3）。
+//!    （`0.25` 是 2 的幂 ⇒ `armed == unarmed · 0.25` 是**精确等式**，判据 P2 / P9）；
+//! 3. **改变是平滑的**：阶跃目标不许在第一个样本上跳过去（判据 P3 / P10）。
 //!
 //! | 编号 | 判据 | 怎么变红（注入） |
 //! | :--- | :--- | :--- |
@@ -24,22 +27,27 @@
 //! | P6 | 槽位表满时不静默：第 17 个实体被计数（`param_capacity_drops`），前 16 个仍可用 | 容量不足时静默丢弃 / 无限建槽位 |
 //! | P7 | **确定性**：同样的工程 + 同样的事件序列 ⇒ 两次独立装配逐位相同 | 引入真熵源 / 让事件顺序影响结果 |
 //! | P8 | 换采样率的快照之后**自动化仍然生效**（目标保留、平滑器跟随新采样率） | 换采样率时把平滑器复位（`snap_to(1.0)`） |
+//! | P9 | **主总线乘子逐位生效**且**两条声道共用同一个增益**：平滑走完之后 `armed[i] == unarmed[i] · 0.25`（左右各自成立）；`param_master_gain_frames` 等于被乘过的帧数、`param_gain_frames` 仍为 0 | 忘了在主总线路径上乘 / 只乘一条声道 / 左右各自平滑 / 计数不落账 |
+//! | P10 | 主总线的阶跃目标同样**被平滑**（第一个帧的相对变化 `< 1 %`，比值单调不增，最终收敛到 `0.25`） | 主总线路径走 `snap_to`（旁路单极点低通） |
+//! | P11 | 主总线槽位的地址空间：一条轨带 `MASTER_GAIN_SLOT`、主总线带 `TRACK_GAIN_SLOT`、主总线带别的槽位号、主总线的非法值 —— 四种口径的输出与接线前**逐字节相同**且被**计数**（不占逐轨槽位） | 串用两个槽位号也接受 / 非法值也 `set_target` / 不计数 |
+//! | P12 | **主总线自动化的确定性**：同样的工程 + 同样的事件序列 ⇒ 两次独立装配的两条声道都逐位相同 | 引入真熵源 / 让事件顺序影响结果 |
 //!
 //! ## 覆盖范围（**明说**）
 //!
 //! 本文件覆盖 `crate::param` 的槽位裁决与 `rt.rs` 的**事件边界**（`accept`）、
-//! **快照边界**（`set_sample_rate` 与主总线身份）与**逐样本应用**（`apply`）。
-//! 它**不**覆盖：`yeban_dsp::smoothing` 内部的一阶低通正确性（那是该模块自己的
-//! 单元判据）、参数曲线的插值（那是 `yeban_model::automation_value_at` 的职责，
-//! `tests/rt_zero_alloc.rs` 场景 ⑤ 已经在控制侧调它）、以及主总线增益的自动化
-//! （本票**没有**给它开槽位；未映射事件因此被计数，见判据 P5）。
+//! **快照边界**（`set_sample_rate` 与主总线身份）与**逐样本应用**（`apply` 与
+//! `apply_master`）。它**不**覆盖：`yeban_dsp::smoothing` 内部的一阶低通正确性
+//! （那是该模块自己的单元判据）、参数曲线的插值（那是
+//! `yeban_model::automation_value_at` 的职责，`tests/rt_zero_alloc.rs` 场景 ⑤
+//! 已经在控制侧调它）、以及**声相**与**插入器件参数**的自动化槽位（本模块
+//! 模块文档 §6 与 §7 的 P4 明说它们没有开）。
 
 mod support;
 
 use support::{NoteSpec, note_project, render};
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
-use yeban_engine::param::{PARAM_SLOTS, TRACK_GAIN_SLOT};
+use yeban_engine::param::{MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
@@ -347,4 +355,186 @@ fn automation_survives_a_sample_rate_change() {
         "换采样率之后平滑器必须仍然收敛到目标"
     );
     let _ = rig.queue.drain(64);
+}
+
+// ---------------------------------------------------------------------------
+// P9..P12（`line/engine-9`）：**主总线槽位**（`MASTER_GAIN_SLOT`）
+// ---------------------------------------------------------------------------
+
+/// 主总线槽位的参照渲染：两条声道都要（P9 断言"左右用同一个增益"）。
+fn unarmed_stereo(project: &YebanProjectV1) -> (Vec<f32>, Vec<f32>) {
+    let render = render(project, QUANTA);
+    (render.left, render.right)
+}
+
+/// 判据 P9 + P10：主总线上的被接受事件**逐位**改变整条母线，
+/// 两条声道共用同一个平滑增益，且阶跃**不是**跳变。
+#[test]
+fn a_master_gain_multiplies_the_whole_bus_bit_for_bit_and_smoothly() {
+    let fixture = note_project(&[NOTE]);
+    let (reference_left, reference_right) = unarmed_stereo(&fixture.project);
+    assert_eq!(reference_left.len(), QUANTA * 128);
+    assert!(
+        reference_left.iter().any(|sample| *sample != 0.0),
+        "参照渲染必须真的出声（否则本判据是空转）"
+    );
+
+    let mut rig = ParamRig::new(&fixture.project, 1);
+    // 与判据 P3 同一条对齐纪律：先让第 1 个量子把场景暖起来，再在**第 2 个量子之前**
+    // 发布目标 ⇒ 变化从 `track_scratch` 的下标 128 起算；母线限制器的 33 帧前瞻
+    // 让"第一个被乘的输出样本"落在 `128 + 33`（详见 P3 的对齐注释）。
+    rig.quanta(1);
+    let published = rig.set_param(fixture.master, MASTER_GAIN_SLOT, 0.25);
+    assert_eq!(published, 1, "事件必须真的进队列");
+    rig.quanta(QUANTA - 1);
+
+    let offset = 128 + BUS_LIMITER_LATENCY_FRAMES as usize;
+    let ratio = |index: usize| rig.left[index + offset] / reference_left[index + offset];
+    let first_diff = rig
+        .left
+        .iter()
+        .zip(reference_left.iter())
+        .position(|(armed, plain)| armed != plain);
+    assert_eq!(
+        first_diff,
+        Some(offset),
+        "第一个被乘的输出样本必须正好在 128 + 33 = {offset}（实得 {first_diff:?}）"
+    );
+
+    // ---- P10：平滑而不是阶跃（主总线路径也必须走单极点低通）----
+    let first = ratio(0);
+    assert!(
+        first > 0.99,
+        "主总线的阶跃不许在第一个帧上跳过去（实得比值 {first}）"
+    );
+    let mut previous = first;
+    for index in 1..RAMP.len() {
+        let current = ratio(index);
+        assert!(
+            current <= previous + f32::EPSILON,
+            "第 {index} 个帧：比值必须单调不增（{previous} → {current}）"
+        );
+        assert!(current >= 0.25, "比值不许越过目标（第 {index} 个帧）");
+        previous = current;
+    }
+
+    // ---- P9：平滑走完之后逐位生效，两条声道共用同一个增益 ----
+    let stats = rig.runtime.stats();
+    assert_eq!(
+        rig.runtime.armed_master_param_target(),
+        Some(0.25),
+        "被接受的事件必须武装主总线目标"
+    );
+    assert_eq!(
+        rig.runtime.armed_master_param_gain(),
+        Some(0.25),
+        "平滑必须已经吸附到目标（本窗口 51 200 帧 ≫ 2 700 帧）"
+    );
+    assert_ne!(
+        rig.left, reference_left,
+        "主总线上的乘子必须真的改变输出（否则就是'只计数'）"
+    );
+    assert_eq!(
+        stats.param_master_gain_frames,
+        (QUANTA - 1) as u64 * 128,
+        "主总线见证读数必须等于被乘过的帧数（第 1 个量子在事件之前 ⇒ 少 128 帧）"
+    );
+    assert_eq!(
+        stats.param_gain_frames, 0,
+        "本判据没有逐轨事件 ⇒ 逐轨见证必须仍是 0（两个读数不许互相冒充）"
+    );
+    assert_eq!(
+        rig.runtime.armed_param_slot_count(),
+        0,
+        "主总线不是逐轨槽位表里的一项"
+    );
+    assert_eq!(stats.param_unmapped_events, 0);
+    assert_eq!(stats.param_gain_rejects, 0);
+    assert_eq!(stats.param_capacity_drops, 0);
+
+    let settled = 3_000..QUANTA * 128;
+    let mut checked = 0usize;
+    for index in settled {
+        // `0.25` 是 2 的幂 ⇒ 逐位精确（不是容差比较）。
+        assert_eq!(
+            rig.left[index],
+            reference_left[index] * 0.25,
+            "第 {index} 个样本：左声道上的主总线乘子必须逐位生效"
+        );
+        assert_eq!(
+            rig.right[index],
+            reference_right[index] * 0.25,
+            "第 {index} 个样本：右声道上的主总线乘子必须逐位生效"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 40_000,
+        "窗口必须覆盖绝大多数样本（实得 {checked}）"
+    );
+}
+
+/// 判据 P11：主总线槽位的**地址空间**与非法值 —— 四种口径都与接线前逐字节相同。
+#[test]
+fn the_master_slot_address_space_rejects_crossed_slots_and_illegal_values() {
+    let fixture = note_project(&[NOTE]);
+    let (reference_left, reference_right) = unarmed_stereo(&fixture.project);
+
+    // ① 一条轨带 MASTER_GAIN_SLOT；② 主总线带 TRACK_GAIN_SLOT；
+    // ③ 主总线带别的槽位号；④ 主总线的非法值（`NaN` 与负数）。
+    let mut rig = ParamRig::new(&fixture.project, 1);
+    rig.set_param(fixture.track, MASTER_GAIN_SLOT, 0.25);
+    rig.set_param(fixture.master, TRACK_GAIN_SLOT, 0.25);
+    rig.set_param(fixture.master, MASTER_GAIN_SLOT + 1, 0.25);
+    rig.set_param(fixture.master, MASTER_GAIN_SLOT, f32::NAN);
+    rig.set_param(fixture.master, MASTER_GAIN_SLOT, -1.0);
+    rig.quanta(QUANTA);
+
+    assert_eq!(
+        rig.left, reference_left,
+        "未映射/非法的主总线事件不许改变左声道"
+    );
+    assert_eq!(
+        rig.right, reference_right,
+        "未映射/非法的主总线事件不许改变右声道"
+    );
+    let stats = rig.runtime.stats();
+    assert_eq!(
+        stats.param_unmapped_events, 3,
+        "三个串用/越界的槽位必须被计数"
+    );
+    assert_eq!(stats.param_gain_rejects, 2, "两个非法值必须被计数");
+    assert_eq!(
+        stats.param_master_gain_frames, 0,
+        "一个被接受的主总线事件都没有 ⇒ 见证必须为 0"
+    );
+    assert_eq!(
+        rig.runtime.armed_master_param_target(),
+        None,
+        "被拒/未映射的事件不许武装主总线目标"
+    );
+    assert_eq!(rig.runtime.armed_param_slot_count(), 0);
+}
+
+/// 判据 P12：主总线自动化的确定性 —— 同样的输入两次装配逐位相同（两条声道）。
+#[test]
+fn the_master_event_sequence_is_bit_identical_across_assemblies() {
+    let fixture = note_project(&[NOTE]);
+    let run = || {
+        let mut rig = ParamRig::new(&fixture.project, 1);
+        rig.set_param(fixture.master, MASTER_GAIN_SLOT, 0.5);
+        rig.quanta(64);
+        rig.set_param(fixture.master, MASTER_GAIN_SLOT, 0.125);
+        rig.quanta(64);
+        (rig.left, rig.right)
+    };
+    let (first_left, first_right) = run();
+    let (second_left, second_right) = run();
+    assert_eq!(first_left.len(), 128 * 128);
+    assert_eq!(
+        first_left, second_left,
+        "同样的输入必须逐位相同 [ARCH-DET-001]"
+    );
+    assert_eq!(first_right, second_right);
+    assert!(first_left.iter().any(|sample| *sample != 0.0), "不许是空转");
 }

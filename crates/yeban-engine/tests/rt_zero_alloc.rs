@@ -43,7 +43,7 @@
 //! | ② | 快照交换 63 次逐步 + 1 000 次高频 | `SnapshotReader::begin_block` 的原子切换 + 旧快照入退役队列 |
 //! | ③ | 走带 200 轮命令 + 2 000 量子播放 + 500 量子停住 | `EngineEvent::Transport` 出队应用、整数 tick 推进、`SeekTicks` 的声部释放、停住分支 |
 //! | ④ | 电平计量 10 000 量子 + UI 侧 60Hz 抽干 | 每轨/母线电平状态机 + **每量子恰好一次**批量发布 |
-//! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`） | 控制侧 `automation_value_at` → 控制侧换域（`db_to_gain`）→ SPSC → 实时侧**参数目标表**（`crate::param`：事件边界建槽位/更新目标 + 逐样本平滑乘法） |
+//! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`：**逐轨 ＋ 主总线**两个槽位） | 控制侧 `automation_value_at` → 控制侧换域（`db_to_gain`）→ SPSC → 实时侧**参数目标表**（`crate::param`：事件边界建槽位/更新目标 + 逐样本平滑乘法）＋ 主总线槽位的逐样本立体声乘法（`ParamTable::apply_master`） |
 //! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + **主总线推子** + 前瞻限制 + 声部窃取） | `BusLimiter::process_stereo`、声相增益乘加、`scale_bus` 的主总线逐样本乘、声部窃取路径 |
 //! | ⑬ | 回调缓冲长度边界：1/2/3/127/128/129/1024/1025 帧 × 25 轮 + 非帧对齐缓冲 | `process_quantum` 的**任意长度**切块与逐帧交错拷贝、尾部残余样本契约 |
 //! | ⑭ | 采样率 × 项目声明 `block_size` 全组合切换（2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`、`Transport::arm` |
@@ -148,6 +148,7 @@ use std::time::{Duration, Instant};
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::graph::{LatencyTable, PdcPlan};
 use yeban_engine::meter::{MeterCollector, MeterFrame, SCRATCH_METERS, meter_channel};
+use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{
     DEFAULT_EVENT_CAPACITY, EngineEvent, EventSender, ParamAddress, SCRATCH_EVENTS,
     TransportCommand, event_channel,
@@ -1020,13 +1021,50 @@ fn scenario_automation(report: &mut Report) {
         .automation_lanes
         .insert(target, lane);
 
+    // `line/engine-9` 追加：**主总线**上也放一条同类泳道 ⇒ 这个场景同时覆盖
+    // **两个**逐样本入口（逐轨 `apply` 与主总线 `apply_master`）在同一个四元组窗口里。
+    // 主总线是 `master_bus_track_id` 指的那条 `TrackKind::Master` 轨（它在 `tracks` 里
+    // 有 `TrackV3` 条目，因此"主总线音量自动化"在模型层就是
+    // `AutomationTarget::TrackVolume { track_id: master }`）。
+    let master = fixture.master;
+    let master_target = AutomationTarget::TrackVolume { track_id: master };
+    let mut master_lane = AutomationLane {
+        target: master_target,
+        points: BTreeMap::new(),
+        read_enabled: true,
+        write_mode: AutomationWriteMode::Off,
+        domain: None,
+    };
+    for (tick, value) in [(0u64, -3.0f32), (2_400, 0.0), (4_800, -9.0)] {
+        let id = EntityId::new();
+        master_lane.points.insert(
+            id,
+            AutomationPoint {
+                id,
+                tick,
+                value,
+                curve: CurveType::Linear,
+            },
+        );
+    }
+    fixture
+        .project
+        .tracks
+        .get_mut(&master)
+        .expect("夹具里必须有主总线轨")
+        .automation_lanes
+        .insert(master_target, master_lane);
+
     let mut rig = Rig::new(&fixture.project, 1, 4096);
     rig.preheat();
     let frames_before = rig.stats().param_gain_frames;
+    let master_frames_before = rig.stats().param_master_gain_frames;
 
     let mut scenario = Scenario::new("⑤自动化求值");
     let mut lowest = f32::INFINITY;
     let mut highest = f32::NEG_INFINITY;
+    let mut master_lowest = f32::INFINITY;
+    let mut master_highest = f32::NEG_INFINITY;
     let mut published = 0u64;
 
     for quantum in 0..AUTOMATION_QUANTA {
@@ -1047,11 +1085,29 @@ fn scenario_automation(report: &mut Report) {
         // 一般工程里这一步是"绝对值 ÷ 当前静态值"（登记为 `crate::param` 的 needs P1）。
         let value = yeban_dsp::math::db_to_gain(value);
 
+        // 主总线槽位同一条口径（`MASTER_GAIN_SLOT`，`line/engine-9`）：主总线轨的
+        // 静态音量也是 `0 dB` ⇒ 同一个换域公式；换算成它相对静态值的乘子那一步
+        // 同样是 needs P1（对两个槽位是同一件事）。
+        let master_value = fixture
+            .project
+            .automation_value_at(&master_target, tick)
+            .expect("主总线目标必须存在于夹具工程里")
+            .unwrap_or(0.0);
+        master_lowest = master_lowest.min(master_value);
+        master_highest = master_highest.max(master_value);
+        let master_value = yeban_dsp::math::db_to_gain(master_value);
+
         // 窗口**之外**发布（控制线程允许分配）。
-        let batch = [EngineEvent::SetParam {
-            target: ParamAddress::new(track, 0),
-            value,
-        }];
+        let batch = [
+            EngineEvent::SetParam {
+                target: ParamAddress::new(track, TRACK_GAIN_SLOT),
+                value,
+            },
+            EngineEvent::SetParam {
+                target: ParamAddress::new(master, MASTER_GAIN_SLOT),
+                value: master_value,
+            },
+        ];
         published += rig.sender.publish(&batch) as u64;
 
         scenario.absorb(1, &rig.pump(1));
@@ -1059,7 +1115,8 @@ fn scenario_automation(report: &mut Report) {
 
     let stats = rig.stats();
     scenario.note(format!(
-        "求值 {AUTOMATION_QUANTA} 次（值域 {lowest:.3} .. {highest:.3}）发布 {published} 条 实时侧应用 {} 条",
+        "求值 {AUTOMATION_QUANTA} 次（轨值域 {lowest:.3} .. {highest:.3} / \
+         主总线值域 {master_lowest:.3} .. {master_highest:.3}）发布 {published} 条 实时侧应用 {} 条",
         stats.events_applied
     ));
     report.scenario(
@@ -1096,6 +1153,27 @@ fn scenario_automation(report: &mut Report) {
             AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64,
             stats.param_gain_rejects,
             stats.param_unmapped_events
+        ),
+    );
+
+    // ⑤e（`line/engine-9` 新增）：同一条断言的**第二份见证** —— 主总线槽位
+    // （`MASTER_GAIN_SLOT`）。两份读数分开记账 ⇒ "只自动化了主总线"与"只自动化了
+    // 一条轨"在这里必须表现为不同的两个数（否则本判据没有区分力）。
+    let master_gain_frames = stats
+        .param_master_gain_frames
+        .saturating_sub(master_frames_before);
+    report.assert(
+        "⑤e",
+        "覆盖度：主总线槽位也把增益乘进了样本（见证读数 = 量子数 × 128，且逐轨读数不冒充它）",
+        master_gain_frames == AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64
+            && stats.param_unmapped_events == 0
+            && stats.param_gain_rejects == 0,
+        format!(
+            "主总线乘过的帧数={master_gain_frames}（要求 {}）；逐轨乘过的帧数={gain_frames}；\
+             未映射={} 非法值={}（都要求 0）",
+            AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64,
+            stats.param_unmapped_events,
+            stats.param_gain_rejects
         ),
     );
 }
