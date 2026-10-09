@@ -3711,6 +3711,254 @@ fn edit_notes_track_flags_write_mute_and_solo_and_undo_restores_them() {
     );
 }
 
+/// **工具面真的能写自动化泳道自己的属性**：`ops[].kind == "setAutomationLane"` 走完
+/// `tools/call` → 提案 → 合并 → 撤销 的整条管线，并且关掉读开关之后**唯一求值入口**
+/// 真的返回"无自动化值"。
+///
+/// 这条判据对着一处**实测缺口**：模型有 `Op::SetAutomationLane` /
+/// `Op::RemoveAutomationLane`（各带自包含撤销载荷），`AutomationLane::read_enabled`
+/// 真的被 `YebanProjectV1::automation_value_at` 遵守，而这两个变体在整个
+/// `crates/yeban-mcp` 里**一次都没有被构造过**（量法：对 `crates/yeban-mcp/src`
+/// 全目录数 `Op::SetAutomationLane` 的出现次数，改动前是 0 次）。
+///
+/// 判据的**牙齿**：夹具的泳道是 `readEnabled = true` / `writeMode = Touch` /
+/// `domain = Some(...)`，而这里写 `false` —— 两边不相等，因此"把 `old_lane` 写死成
+/// 常量"或"把 `new_lane` 写死成默认隐式形状"的注入都会红。撤销判据用**逐字节**
+/// 比较（不是逐字段），因为它同时覆盖三个属性。
+///
+/// 注入（都能让它变红）：删掉 `parse_one` 的 `setAutomationLane` 分支（未知 `kind`）；
+/// 把 `old_lane` 从 `track.automation_lanes.get(&target)` 换成 `None`（模型报
+/// `OpStateMismatch` ⇒ `CONFLICT`）；把 `remove` 与属性键的互斥检查删掉
+/// （`removeTakesNoProperties` 那条不再红）。
+#[test]
+fn edit_notes_automation_lane_writes_the_read_switch_and_undo_restores_it() {
+    let scratch = Scratch::new("automation-lane-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    // 样本里带 TrackVolume 泳道的那条音轨（`filled_project` 刻意给了三个属性）。
+    let (track_id, target) = project
+        .tracks
+        .values()
+        .find_map(|track| {
+            let target = yeban_model::AutomationTarget::TrackVolume { track_id: track.id };
+            track
+                .automation_lanes
+                .contains_key(&target)
+                .then_some((track.id, target))
+        })
+        .expect("样本里必须有一条 TrackVolume 泳道");
+    let lane_before = project
+        .track(&track_id)
+        .expect("音轨")
+        .automation_lanes
+        .get(&target)
+        .expect("泳道")
+        .clone();
+    assert!(lane_before.read_enabled, "夹具前提: 读开关先是打开的");
+    assert_eq!(
+        lane_before.write_mode,
+        yeban_model::AutomationWriteMode::Touch,
+        "夹具前提: 写模式是 Touch"
+    );
+    assert!(lane_before.domain.is_some(), "夹具前提: 有显式取值域覆盖");
+    // `readEnabled = true` 的泳道在唯一求值入口上**有**值（对照组的基线）。
+    assert!(
+        project
+            .automation_value_at(&target, 0)
+            .expect("求值")
+            .is_some(),
+        "读开的泳道必须在唯一求值入口上有值"
+    );
+    let track_text = track_id.to_canonical_string();
+    let clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("样本里必须有 MIDI 片段")
+        .id
+        .to_canonical_string();
+
+    // 响亮失败三条：下划线写法的属性名 / 未知目标名 / `remove` 与属性同给。
+    let underscore = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setAutomationLane",
+                        "lane": {"lane": "TrackVolume", "read_enabled": false}}]}),
+    );
+    assert_domain_error(&underscore, "INVALID_PARAMETER_RANGE", "下划线属性名");
+    assert_eq!(
+        underscore["error"]["data"]["reason"], "unknownLaneField",
+        "{underscore}"
+    );
+    let alias = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setAutomationLane", "lane": {"lane": "trackVolume"}}]}),
+    );
+    assert_domain_error(&alias, "INVALID_PARAMETER_RANGE", "目标名别名");
+    assert_eq!(
+        alias["error"]["data"]["reason"], "unknownLaneTarget",
+        "{alias}"
+    );
+    let both = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setAutomationLane",
+                        "lane": {"lane": "TrackVolume", "remove": true, "readEnabled": false}}]}),
+    );
+    assert_domain_error(&both, "INVALID_PARAMETER_RANGE", "取走与属性同给");
+    assert_eq!(
+        both["error"]["data"]["reason"], "removeTakesNoProperties",
+        "{both}"
+    );
+    let bytes_before = project_bytes(&dispatcher);
+
+    // 纯泳道写入：目标是 MIDI 片段, 但这条形态一个音符都不读（音轨级）。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip, "includeOps": true,
+            "ops": [
+                {"kind": "setAutomationLane", "lane": {
+                    "lane": "TrackVolume", "readEnabled": false,
+                    "writeMode": "Latch", "domain": null
+                }}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    // 撤销载荷必须来自**当前文档**, 不是调用方声明。
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetAutomationLane"]["old_lane"]["read_enabled"],
+        json!(true),
+        "撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetAutomationLane"]["old_lane"]["write_mode"],
+        json!("Touch"),
+        "撤销载荷必须带上文档的写模式: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["title"], "音轨级编辑: 1 步",
+        "描述必须如实说这是音轨级编辑 (不冒充音符编辑): {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "关掉读开关" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    let lane_after = project
+        .track(&track_id)
+        .expect("音轨")
+        .automation_lanes
+        .get(&target)
+        .expect("泳道仍在")
+        .clone();
+    assert!(!lane_after.read_enabled, "合并后读开关必须真的关掉");
+    assert_eq!(
+        lane_after.write_mode,
+        yeban_model::AutomationWriteMode::Latch,
+        "写模式必须真的改成 Latch"
+    );
+    assert_eq!(lane_after.domain, None, "`domain: null` 必须真的清掉覆盖");
+    assert_eq!(
+        lane_after.points, lane_before.points,
+        "属性写入不许碰采样点"
+    );
+    // 已实现的能力**真的**变了：唯一求值入口在这一刻返回"无自动化值"。
+    assert_eq!(
+        project.automation_value_at(&target, 0).expect("求值"),
+        None,
+        "读关的泳道在唯一求值入口上必须返回「无自动化值」"
+    );
+
+    // 可回退：撤销一次 ⇒ 逐字节回到提案之前的工程（三个属性一起回原）。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (泳道属性随 Op::SetAutomationLane 一起可逆)"
+    );
+    assert!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .automation_value_at(&target, 0)
+            .expect("求值")
+            .is_some(),
+        "撤销后读开关必须真的回到打开"
+    );
+
+    // 取走整条泳道也是可达的一步（`Op::RemoveAutomationLane`），撤销后逐字节回原。
+    let removed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip, "includeOps": true,
+               "ops": [{"kind": "setAutomationLane",
+                        "lane": {"lane": "TrackVolume", "remove": true}}]}),
+    );
+    assert_eq!(removed["status"], "success", "{removed}");
+    // 撤销载荷是**整条**泳道（含采样点），不是只记一个身份。
+    assert_eq!(
+        removed["data"]["proposal"]["ops"][0]["op"]["RemoveAutomationLane"]["previous_lane"]["points"]
+            .as_object()
+            .map(serde_json::Map::len),
+        Some(lane_before.points.len()),
+        "取走的撤销载荷必须带全部采样点: {removed}"
+    );
+    let removed_id = removed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": removed_id, "commitMessage": "取走泳道" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert!(
+        !dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .track(&track_id)
+            .expect("音轨")
+            .automation_lanes
+            .contains_key(&target),
+        "合并后泳道必须真的不在文档里"
+    );
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销取走必须逐字节把整条泳道装回来"
+    );
+}
+
 /// **连击与微时序在工具面上可达，且被母带渲染器真的消费**：
 /// `yeban_edit_notes` 的 `add.note.ratchet` / `add.note.microTimingTicks` 进工程
 /// （合并后逐字段可读），渲染响应的 `data.ratchet` 与逐源 `notesRatcheted` 反映它，

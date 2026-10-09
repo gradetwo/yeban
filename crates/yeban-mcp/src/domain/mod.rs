@@ -2031,6 +2031,9 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let mut compiled = if note_ops.is_empty() {
         Vec::new()
     } else {
+        // 同一个泳道在一次调用里只能被写一次：批内第二条的 `old_lane` 与文档现值
+        // 必然不符（模型会报 `OpStateMismatch`），因此在建提案之前就响亮拒绝。
+        notes::reject_duplicate_lane_targets(&track_id, &note_ops)?;
         notes::compile(project, &track_id, &clip_id, &note_ops)?
     };
     let placement_description = match placement {

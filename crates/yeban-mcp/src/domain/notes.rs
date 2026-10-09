@@ -158,6 +158,59 @@
 //!
 //! `old_mute` / `old_solo` 从**当前文档**读（不是调用方的声明），因此模型的
 //! `OpStateMismatch` 前置条件天然成立，撤销仍是模型自己的 [`Op::invert`]。
+//!
+//! ## 自动化泳道形态（`ops[].kind == "setAutomationLane"`）
+//! —— 关闭"工具面写不了泳道属性"这一半
+//!
+//! 上两票让工具面能写音轨的静态音量 / 声相 / 静音 / 独奏，但**自动化泳道自己的属性**
+//! 仍然够不着。模型有 [`Op::SetAutomationLane`] / [`Op::RemoveAutomationLane`]
+//! （各自带 `old_lane` / `previous_lane` 自包含撤销载荷），`AutomationLane::read_enabled`
+//! 与 `write_mode` **真的**是运行期开关：
+//!
+//! - `YebanProjectV1::automation_value_at`（**唯一**求值入口）在 `read_enabled == false`
+//!   时返回 `Ok(None)` ⇒ 走带/宿主求值退回 [`AutomationTarget::static_value`]；
+//! - `yeban-app` 的自动化界面按它画读开关与录制臂，`yeban-render` 的 Live 导出把它
+//!   连同 `write_mode` 一起写进"未映射"账；
+//! - `yeban_edit_automation` 的**读**侧早就把 `lane.readEnabled` / `lane.writeMode` /
+//!   `lane.domain` 报给 Agent 了，而**写**侧只写一个采样点 ⇒ 报得出、改不了。
+//!
+//! 而在本形态之前，这两个变体在整个 `crates/yeban-mcp` 里**一次都没有被构造过**
+//! ⇒ "读开关真的能关掉一条自动化"这件已实现的能力在 17 个工具的面上**不可达**，
+//! 且一条被关掉的泳道在工具面上**永远回不到开**（与 `setParam` / `setTrackMute`
+//! 之前那两票同型的缺口）。
+//!
+//! 为什么**不能**把它们塞进 `setParam`：`AutomationTarget` 里没有"泳道"这个对象，
+//! 而 `SetParam` 的载荷是 `f32`（`read_enabled` 是 `bool`、`write_mode` 是四值枚举、
+//! `domain` 是一对端点）⇒ 三者在 `SetParam` 里**不可表达**。
+//!
+//! 形态：`{"kind":"setAutomationLane","lane":{…}}`。`lane` 是一个**自包含**的对象，
+//! 目标与载荷都在里面（`lane` 的寻址字段与 `yeban_edit_automation` 的同名实参
+//! 逐字同词、同一份 [`LaneKind`] 词表 —— `ADR-0001` D48）：
+//!
+//! ```json
+//! {"kind":"setAutomationLane","lane":{"lane":"TrackVolume","readEnabled":false}}
+//! {"kind":"setAutomationLane","lane":{"lane":"DeviceParam","slotIndex":0,
+//!   "paramIndex":1,"writeMode":"Touch","domain":{"min":0.0,"max":1.0}}}
+//! {"kind":"setAutomationLane","lane":{"lane":"TrackPan","remove":true}}
+//! ```
+//!
+//! **合并语义**（不是整体替换）：`readEnabled` / `writeMode` / `domain` 三个键
+//! **各自可选**，缺省 = 保留泳道现值（没有泳道时 = 模型的隐式默认
+//! `true` / `Off` / 无覆盖）⇒ 只给一个键就只改那一个。`domain` 明写 `null`
+//! 是"清掉显式覆盖"（回到"派生自目标"），不是"不改"。
+//!
+//! 三条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | `lane` 对象里有 [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownLaneField"`） |
+//! | `remove: true` 与任何属性键同给 | `INVALID_PARAMETER_RANGE`（`reason = "removeTakesNoProperties"`）—— "取走"与"改成什么"是两件事 |
+//! | 同一个目标在一次调用里出现两次 | `INVALID_PARAMETER_RANGE`（`reason = "duplicateLaneTarget"`）—— 批内第二条的 `old_lane` 会与文档现值不符 |
+//!
+//! `old_lane` / `previous_lane` **从当前文档读**（不是调用方的声明），因此模型的
+//! 前置条件天然成立，撤销仍是模型自己的 [`Op::invert`]。模型自己的不变量原样生效：
+//! `SetAutomationLane` 拒绝把泳道写成**隐式形状**（无点 + 读开 + `Off` + 无覆盖），
+//! 因此"把一条空泳道的读开关打开"是模型的响亮失败，本层不替它决定。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -166,8 +219,8 @@ use serde_json::{Map, Value};
 
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
-    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote,
-    Op, TrackV3, YebanProjectV1,
+    AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
+    ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, TrackV3, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -350,7 +403,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// `ops[].kind` 的**全集**（规范顺序：四个音符 / 摆放形态在前，音轨级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 7] = [
+pub const OP_KINDS: [&str; 8] = [
     "add",
     "delete",
     "move",
@@ -358,6 +411,7 @@ pub const OP_KINDS: [&str; 7] = [
     SET_PARAM_KIND,
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
+    SET_AUTOMATION_LANE_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -497,6 +551,281 @@ impl PlacementEdit {
 /// 而不是编曲意图）；超过即 `OUT_OF_RANGE` 并回报**峰值重叠**与位置。
 pub const MAX_POLYPHONY: usize = 32;
 
+/// `ops[].kind` 的**自动化泳道属性**形态名（写 [`Op::SetAutomationLane`] /
+/// [`Op::RemoveAutomationLane`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetAutomationLane` 的小驼峰），与 [`SET_PARAM_KIND`] /
+/// [`SET_TRACK_MUTE_KIND`] 同一条命名规则。
+pub const SET_AUTOMATION_LANE_KIND: &str = "setAutomationLane";
+
+/// 泳道形态的**载荷对象**字段名（`ops[].lane`，必填）。
+///
+/// 目标与属性都在这个对象里（自包含）：`lane` 的寻址字段
+/// （`lane` / `edgeId` / `slotIndex` / `paramIndex` / `macroIndex`）与
+/// `yeban_edit_automation` 的**同名实参**逐字同词、共用 [`LaneKind`] 那一份词表
+/// （`ADR-0001` D48）——寻址词表本身来自 [`LaneKind::parse`]，
+/// 额外的分量名逐字照 `yeban_edit_automation` 的实参名。
+///
+/// 为什么不是把寻址放到顶层实参：本工具的顶层 `trackId` 是**音轨**身份，
+/// 而泳道目标的额外分量（边 / 槽 / 参数 / 宏下标）**只有本形态**需要；
+/// 塞进顶层就会让别的 `kind` 也凭空多出四个无关实参。
+///
+/// 为什么**不**直接复用 `super::automation::parse_target`：那个函数在**解析期**
+/// 就构造 [`AutomationTarget`]，而音轨身份在解析期**还不知道** —— 它由
+/// `arguments.trackId` 在 [`compile`] 里给出。把占位身份塞进去再事后修补，
+/// 会造出一个"看起来是身份、其实不是"的中间值。本类型因此只在解析期保留
+/// **分量**，目标在 [`LaneTargetSpec::target`] 里、拿到真实音轨身份之后才构造。
+pub const SET_AUTOMATION_LANE_FIELD: &str = "lane";
+
+/// 泳道属性的**读开关**字段名（`ops[].lane.readEnabled`，可选布尔）。
+///
+/// 与 `yeban_edit_automation` 响应里的 `lane.readEnabled` 逐字同词（D48）。
+pub const LANE_READ_ENABLED_FIELD: &str = "readEnabled";
+
+/// 泳道属性的**写模式**字段名（`ops[].lane.writeMode`，可选字符串）。
+///
+/// 取值 = `AutomationWriteMode` 的规范变体名（`Off` / `Write` / `Touch` / `Latch`），
+/// 由该枚举自己的 serde 名字派生 ⇒ 词表**只有一份**。
+pub const LANE_WRITE_MODE_FIELD: &str = "writeMode";
+
+/// 泳道属性的**取值域覆盖**字段名（`ops[].lane.domain`，可选）。
+///
+/// `{"min":…,"max":…}` = 设显式覆盖（两端点由 [`AutomationValueDomain::new`] 排序，
+/// 与模型同一份构造）；明写 `null` = 清掉覆盖（回到 `None` = 派生自目标）；
+/// **缺省** = 保留现值。三者是三件不同的事，因此不做"null 与缺省同义"的折叠。
+pub const LANE_DOMAIN_FIELD: &str = "domain";
+
+/// 泳道属性的**取走**字段名（`ops[].lane.remove`，可选布尔，缺省 `false`）。
+///
+/// `true` = 用 [`Op::RemoveAutomationLane`] 把这条泳道从文档里取走；
+/// 与任何属性键同给是**响亮失败**（见模块头的三条口径）。为什么必须有这条路：
+/// 一条被关掉读开关（或带写模式）的空泳道**不会被**模型自动回收
+/// （`AutomationLane::is_implicit` 为 `false`），没有它就会被永久卡住。
+pub const LANE_REMOVE_FIELD: &str = "remove";
+
+/// `ops[].lane` 对象**允许**出现的全部键。
+///
+/// 与 [`parse_lane_edit`] 真正读取的键**同源**（判据 `lane_field_names_are_pinned`
+/// 钉住"不多报"）：集合之外的键一律**响亮拒绝**（`unknownLaneField`），
+/// 绝不静默丢弃 —— 与 [`NOTE_FIELDS`] / [`TRACK_FLAG_FIELDS`] 同一口径。
+pub const SET_AUTOMATION_LANE_FIELDS: [&str; 9] = [
+    SET_AUTOMATION_LANE_FIELD,
+    "edgeId",
+    "slotIndex",
+    "paramIndex",
+    "macroIndex",
+    LANE_READ_ENABLED_FIELD,
+    LANE_WRITE_MODE_FIELD,
+    LANE_DOMAIN_FIELD,
+    LANE_REMOVE_FIELD,
+];
+
+/// `AutomationWriteMode` 的规范变体名（错误信息的 `allowed` 与判据共用）。
+///
+/// 顺序 = 该枚举的声明顺序；名字与序列化名同源（[`write_mode_name`]）。
+pub const LANE_WRITE_MODES: [&str; 4] = ["Off", "Write", "Touch", "Latch"];
+
+/// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
+///
+/// 目标名逐字等于 `project.json` 的变体名（[`LaneKind::parse`] 那一份词表）；
+/// `edgeId` / `slotIndex` / `paramIndex` / `macroIndex` 逐字等于
+/// `yeban_edit_automation` 的同名实参。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaneTargetSpec {
+    /// 目标变体。
+    pub kind: LaneKind,
+    /// `SendGain` 的路由边身份。
+    pub edge_id: Option<EntityId>,
+    /// `DeviceParam` 的设备链下标（其余变体不用，恒 0）。
+    pub slot_index: usize,
+    /// `DeviceParam` 的参数下标（其余变体不用，恒 0）。
+    pub param_index: usize,
+    /// `Macro` 的宏下标（其余变体不用，恒 0）。
+    pub macro_index: usize,
+}
+
+impl LaneTargetSpec {
+    /// 解析 `lane` 对象里的**寻址**部分（属性键由 [`parse_lane_patch`] 读）。
+    ///
+    /// 目标名走 [`LaneKind::parse`]（与 `yeban_edit_automation` 同一份词表）；
+    /// 额外分量按该变体**是否真的需要**读取 —— 不需要的分量恒 `0`/`None`，
+    /// 因此"同一个目标用两种写法传实参"不会派生出两个不同的目标
+    /// （与 `yeban_edit_automation` 的 `needs_*` 口径逐条一致）。
+    ///
+    /// # Errors
+    ///
+    /// - `lane` 缺失 / 不是字符串 → `INVALID_PARAMETER_RANGE`；
+    /// - 目标名不在 [`LANE_NAMES`](super::extension_pure::LANE_NAMES) 里（含别名）
+    ///   → `unknownLaneTarget`（带 `allowed` 全集）；
+    /// - `SendGain` 缺 `edgeId`（或不是合法 ULID）→ `INVALID_PARAMETER_RANGE`；
+    /// - `slotIndex` / `paramIndex` / `macroIndex` 不是非负整数或超出 `usize`。
+    fn parse(lane: &Map<String, Value>) -> Result<Self, Fault> {
+        let raw = lane
+            .get(SET_AUTOMATION_LANE_FIELD)
+            .ok_or_else(|| missing(SET_AUTOMATION_LANE_FIELD, "字符串"))?;
+        let text = raw.as_str().ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`{SET_AUTOMATION_LANE_FIELD}` 必须是字符串, 实际收到 {raw}"),
+                serde_json::json!({
+                    "field": SET_AUTOMATION_LANE_FIELD,
+                    "reason": "laneMustBeString",
+                    "allowed": super::extension_pure::LANE_NAMES,
+                }),
+            )
+        })?;
+        let Some(kind) = LaneKind::parse(text) else {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("未知自动化目标 `{text}`"),
+                serde_json::json!({
+                    "field": SET_AUTOMATION_LANE_FIELD,
+                    "reason": "unknownLaneTarget",
+                    "received": text,
+                    "allowed": super::extension_pure::LANE_NAMES,
+                    "note": "只接受 project.json 里的规范变体名 (不接受 trackVolume 这类别名)",
+                }),
+            ));
+        };
+        let edge_id = if kind.needs_edge_id() {
+            let value = lane.get("edgeId").ok_or_else(|| {
+                Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    "`SendGain` 目标必须给定 `edgeId` (路由边身份)",
+                    serde_json::json!({ "field": "edgeId", "reason": "edgeIdRequired" }),
+                )
+            })?;
+            let text = value.as_str().ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`edgeId` 必须是字符串, 实际收到 {value}"),
+                )
+            })?;
+            Some(EntityId::from_str(text).map_err(|error| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`edgeId` 不是合法 ULID: {error}"),
+                )
+            })?)
+        } else {
+            None
+        };
+        let slot_index = if kind.needs_device_slot() {
+            read_usize(lane, "slotIndex")?
+        } else {
+            0
+        };
+        let param_index = if kind.needs_device_slot() {
+            read_usize(lane, "paramIndex")?
+        } else {
+            0
+        };
+        let macro_index = if kind.needs_macro_index() {
+            read_usize(lane, "macroIndex")?
+        } else {
+            0
+        };
+        Ok(Self {
+            kind,
+            edge_id,
+            slot_index,
+            param_index,
+            macro_index,
+        })
+    }
+
+    /// 落到具体音轨身份上，构造模型的 [`AutomationTarget`]。
+    ///
+    /// `SendGain` 到这里时 `edge_id` 必然已经是 `Some`（[`Self::parse`] 强制），
+    /// 因此这里用 `expect` 而不是再造一个不可达的错误分支 —— 但**不**静默
+    /// 回退到"某个默认边"（那会把发送增益写到别的通路上）。
+    #[must_use]
+    pub fn target(self, track_id: EntityId) -> AutomationTarget {
+        match self.kind {
+            LaneKind::TrackVolume => AutomationTarget::TrackVolume { track_id },
+            LaneKind::TrackPan => AutomationTarget::TrackPan { track_id },
+            LaneKind::SendGain => AutomationTarget::SendGain {
+                track_id,
+                edge_id: self
+                    .edge_id
+                    .expect("`SendGain` 的 `edgeId` 由 `parse` 强制存在"),
+            },
+            LaneKind::DeviceParam => AutomationTarget::DeviceParam {
+                track_id,
+                slot_index: self.slot_index,
+                param_index: self.param_index,
+            },
+            LaneKind::Macro => AutomationTarget::Macro {
+                track_id,
+                macro_index: self.macro_index,
+            },
+        }
+    }
+}
+
+/// 一次 `setAutomationLane` 的编译结果（目标的分量 + **替换后**的整条泳道，或"取走"）。
+///
+/// 单列一个类型（而不是在 [`NoteOp`] 里散着放）是为了让"取走"与"改成什么"
+/// 在类型上互斥：`change` 一次只可能是其中之一。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneEdit {
+    /// 目标的分量（音轨身份由 [`compile`] 补上）。
+    pub spec: LaneTargetSpec,
+    /// 调用方给出的**属性覆盖**（`None` = 该键缺省 = 保留现值）。
+    pub change: LaneChange,
+}
+
+/// `setAutomationLane` 真正要改的东西。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LaneChange {
+    /// 把泳道替换成给定的属性组合（未给的键保留文档现值）。
+    Set(LanePatch),
+    /// 把泳道从文档里取走（[`Op::RemoveAutomationLane`]）。
+    Remove,
+}
+
+/// 泳道属性的**逐键覆盖**（`None` = 调用方没提这个键 ⇒ 保留现值）。
+///
+/// 三态刻意不折叠：`domain` 的 `Some(None)`（明写 `null` = 清掉覆盖）与 `None`
+/// （缺省 = 保留现值）是两件不同的事。
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct LanePatch {
+    /// 读开关。
+    pub read_enabled: Option<bool>,
+    /// 写模式。
+    pub write_mode: Option<AutomationWriteMode>,
+    /// 取值域覆盖（外层 `Option` = 调用方提没提；内层 = 覆盖值还是"清掉"）。
+    pub domain: Option<Option<AutomationValueDomain>>,
+}
+
+impl LanePatch {
+    /// 该覆盖是否一个键都没提（`true` ⇒ 替换结果必然等于文档现值，是一次无操作）。
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.read_enabled.is_none() && self.write_mode.is_none() && self.domain.is_none()
+    }
+
+    /// 把覆盖施加到一条**基础**泳道上（基础 = 文档现值，或没有泳道时的隐式默认）。
+    ///
+    /// 返回替换后的整条泳道。`points` **不在**覆盖范围内（采样点是
+    /// [`Op::SetAutomationPoint`] 的载荷）：这里原样保留，因此本形态不可能
+    /// 顺手丢掉既有采样点。
+    #[must_use]
+    pub fn apply_to(self, base: &AutomationLane) -> AutomationLane {
+        let mut lane = base.clone();
+        if let Some(read_enabled) = self.read_enabled {
+            lane.read_enabled = read_enabled;
+        }
+        if let Some(write_mode) = self.write_mode {
+            lane.write_mode = write_mode;
+        }
+        if let Some(domain) = self.domain {
+            lane.domain = domain;
+        }
+        lane
+    }
+}
+
 /// 一个音符编辑操作。
 #[derive(Clone, Debug, PartialEq)]
 pub enum NoteOp {
@@ -549,6 +878,16 @@ pub enum NoteOp {
         /// 目标态。
         value: bool,
     },
+    /// 写一条**自动化泳道自己的属性**（[`Op::SetAutomationLane`] /
+    /// [`Op::RemoveAutomationLane`]）。
+    ///
+    /// 与 [`Self::SetParam`] / [`Self::SetTrackFlag`] 同族（音轨级、不读不写音符），
+    /// 但目标不是整条音轨而是一条**泳道**，载荷也不是一个标量。目标与载荷都由
+    /// [`LaneEdit`] 承载（自包含的 `lane` 对象）。
+    SetLane {
+        /// 目标与属性覆盖（或"取走"）。
+        edit: LaneEdit,
+    },
 }
 
 impl NoteOp {
@@ -562,17 +901,21 @@ impl NoteOp {
             Self::Velocity { .. } => "velocity",
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
+            Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
         }
     }
 
     /// 该形态是否**读/写音符**（即是否必须在一条 MIDI 片段上施加）。
     ///
-    /// [`Self::SetParam`] 与 [`Self::SetTrackFlag`] 都是**音轨级**的：它们跟片段内容
-    /// 无关。这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
-    /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
+    /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] 都是**音轨级**的：
+    /// 它们跟片段内容无关。这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有
+    /// 音符操作时成立（旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
     pub const fn is_note_level(&self) -> bool {
-        !matches!(self, Self::SetParam { .. } | Self::SetTrackFlag { .. })
+        !matches!(
+            self,
+            Self::SetParam { .. } | Self::SetTrackFlag { .. } | Self::SetLane { .. }
+        )
     }
 }
 
@@ -591,6 +934,8 @@ impl NoteOp {
 /// {"kind":"setParam","lane":"TrackPan","value":-0.25}
 /// {"kind":"setTrackMute","value":true}
 /// {"kind":"setTrackSolo","value":false}
+/// {"kind":"setAutomationLane","lane":{"lane":"TrackVolume","readEnabled":false}}
+/// {"kind":"setAutomationLane","lane":{"lane":"TrackPan","remove":true}}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -598,18 +943,21 @@ impl NoteOp {
 /// 见 [`PROBABILITY_FIELD`] / [`RATCHET_FIELD`] / [`MICRO_TIMING_FIELD`]。
 /// `note` 里 [`NOTE_FIELDS`] 之外的键一律**响亮拒绝**，不静默丢弃。
 ///
-/// `setParam` / `setTrackMute` / `setTrackSolo` 是**音轨级**形态（见
-/// [`NoteOp::is_note_level`]）：`setParam` 的 `lane` 只认 [`StaticLane::NAMES`]，
+/// `setParam` / `setTrackMute` / `setTrackSolo` / `setAutomationLane` 是**音轨级**形态
+/// （见 [`NoteOp::is_note_level`]）：`setParam` 的 `lane` 只认 [`StaticLane::NAMES`]，
 /// 其余三个自动化目标名（`SendGain` / `DeviceParam` / `Macro`）与未知名字都是
 /// **响亮失败**（`INVALID_PARAMETER_RANGE`，`data.allowed` 给出全集）。
 /// 值的范围判定**不在本层**（见 [`compile`]）；两个开关形态的 `value` 只收 JSON 布尔。
+/// `setAutomationLane` 的**载荷**是 `lane` 对象（见 [`parse_lane_edit`]），
+/// 三个属性键各自可选（缺省 = 保留文档现值）。
 ///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
-///   开关对象里有 [`TRACK_FLAG_FIELDS`] 之外的键 →
+///   开关对象里有 [`TRACK_FLAG_FIELDS`] 之外的键 / `lane` 对象里有
+///   [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
-///   非布尔开关值）；
+///   非布尔开关值、未知写模式）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
 /// - 身份文本不是合法 ULID → `INVALID_PARAMETER_RANGE`。
 pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
@@ -673,6 +1021,9 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         SET_TRACK_SOLO_KIND => Ok(NoteOp::SetTrackFlag {
             flag: TrackFlag::Solo,
             value: parse_track_flag_value(object)?,
+        }),
+        SET_AUTOMATION_LANE_KIND => Ok(NoteOp::SetLane {
+            edit: parse_lane_edit(object)?,
         }),
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -811,6 +1162,202 @@ fn reject_track_flag_fields(object: &Map<String, Value>) -> Result<(), Fault> {
             "hint": "目标音轨是工具顶层的 `trackId`; 嵌套在操作对象里的 `trackId` 不会被读取",
         }),
     ))
+}
+
+/// 解析 `setAutomationLane` 的载荷对象（`ops[].lane`）。
+///
+/// 顺序是刻意的：先拒绝未知键（`unknownLaneField`），再判"取走"与属性互斥
+/// （`removeTakesNoProperties`），最后才解析。这样最危险的错键（把 `lane`
+/// 写成 `target`、把 `readEnabled` 写成 `read_enabled`）在任何"值看起来没问题"
+/// 的路径之前就被点名。
+///
+/// # Errors
+///
+/// - `lane` 不是对象 / 缺 `lane.lane` / 未知目标名 / 缺 `edgeId`
+///   （`SendGain`） → `INVALID_PARAMETER_RANGE`；
+/// - `lane` 里有 [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 → `unknownLaneField`；
+/// - `remove: true` 与属性键同给 → `removeTakesNoProperties`；
+/// - `readEnabled` 不是布尔 / `writeMode` 不是规范名 / `domain` 形状非法 →
+///   各自的 `reason`，绝不静默回退到默认值。
+fn parse_lane_edit(object: &Map<String, Value>) -> Result<LaneEdit, Fault> {
+    let lane = object
+        .get(SET_AUTOMATION_LANE_FIELD)
+        .and_then(Value::as_object)
+        .ok_or_else(|| missing(SET_AUTOMATION_LANE_FIELD, "对象"))?;
+    reject_unknown_lane_fields(lane)?;
+    let remove = read_optional_lane_bool(lane, LANE_REMOVE_FIELD)?.unwrap_or(false);
+    let patch = parse_lane_patch(lane)?;
+    if remove && !patch.is_empty() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`remove: true` 与属性键 (readEnabled/writeMode/domain) 不能同给: \
+             「把这条泳道取走」与「把它改成什么」是两件事",
+            serde_json::json!({
+                "field": LANE_REMOVE_FIELD,
+                "reason": "removeTakesNoProperties",
+                "properties": [
+                    LANE_READ_ENABLED_FIELD,
+                    LANE_WRITE_MODE_FIELD,
+                    LANE_DOMAIN_FIELD,
+                ],
+            }),
+        ));
+    }
+    let spec = LaneTargetSpec::parse(lane)?;
+    Ok(LaneEdit {
+        spec,
+        change: if remove {
+            LaneChange::Remove
+        } else {
+            LaneChange::Set(patch)
+        },
+    })
+}
+/// 拒绝 `ops[].lane` 对象里 [`SET_AUTOMATION_LANE_FIELDS`] 之外的键。
+///
+/// 与 [`reject_track_flag_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：
+/// 一条被静默忽略的 `read_enabled`（下划线写法）会让调用方以为读开关已经关掉，
+/// 而它其实**没关** —— 那正是本形态要修掉的那类"报得出、改不了"。
+fn reject_unknown_lane_fields(lane: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = lane
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !SET_AUTOMATION_LANE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{SET_AUTOMATION_LANE_FIELD}` 里有不支持的键: {} \
+             (支持集合: {SET_AUTOMATION_LANE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownLaneField",
+            "unsupportedFields": unknown,
+            "supportedLaneFields": SET_AUTOMATION_LANE_FIELDS,
+            "hint": "属性名与 `yeban_edit_automation` 响应里的同名 \
+                     (`readEnabled` / `writeMode` / `domain`), 不是 project.json 的 \
+                     下划线写法",
+        }),
+    ))
+}
+
+/// 解析三个**可选**属性键（缺省 = 保留现值）。
+fn parse_lane_patch(lane: &Map<String, Value>) -> Result<LanePatch, Fault> {
+    let domain = match lane.get(LANE_DOMAIN_FIELD) {
+        // 缺省 = 调用方没提这个键 ⇒ 保留现值（与"清掉覆盖"不是同一件事）。
+        None => None,
+        // 明写 `null` = 清掉显式覆盖（回到"派生自目标"）。
+        Some(Value::Null) => Some(None),
+        Some(value) => Some(Some(parse_lane_domain(value)?)),
+    };
+    Ok(LanePatch {
+        read_enabled: read_optional_lane_bool(lane, LANE_READ_ENABLED_FIELD)?,
+        write_mode: read_optional_write_mode(lane)?,
+        domain,
+    })
+}
+
+/// 读一个**可选**布尔键（`None` = 缺省；给出 `null` / 数字 / 字符串一律响亮失败）。
+///
+/// 与 [`parse_track_flag_value`] 同口径：不做真假值强转。
+fn read_optional_lane_bool(lane: &Map<String, Value>, field: &str) -> Result<Option<bool>, Fault> {
+    match lane.get(field) {
+        None => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`{field}` 必须是布尔, 实际收到 {value}"),
+                serde_json::json!({
+                    "field": format!("{SET_AUTOMATION_LANE_FIELD}.{field}"),
+                    "reason": "valueMustBeBoolean",
+                    "received": value,
+                }),
+            )
+        }),
+    }
+}
+
+/// 读**可选**写模式（`None` = 缺省）。只认 [`LANE_WRITE_MODES`] 里的规范名。
+fn read_optional_write_mode(
+    lane: &Map<String, Value>,
+) -> Result<Option<AutomationWriteMode>, Fault> {
+    let Some(raw) = lane.get(LANE_WRITE_MODE_FIELD) else {
+        return Ok(None);
+    };
+    let text = raw.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{LANE_WRITE_MODE_FIELD}` 必须是字符串, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": format!("{SET_AUTOMATION_LANE_FIELD}.{LANE_WRITE_MODE_FIELD}"),
+                "reason": "writeModeMustBeString",
+                "allowed": LANE_WRITE_MODES,
+            }),
+        )
+    })?;
+    // 词表与 `AutomationWriteMode` 的 serde 名字**同源**：判据
+    // `lane_write_modes_match_the_model_serde_names` 逐个钉住。
+    let mode = match text {
+        "Off" => AutomationWriteMode::Off,
+        "Write" => AutomationWriteMode::Write,
+        "Touch" => AutomationWriteMode::Touch,
+        "Latch" => AutomationWriteMode::Latch,
+        other => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("未知写模式 `{other}`"),
+                serde_json::json!({
+                    "field": format!("{SET_AUTOMATION_LANE_FIELD}.{LANE_WRITE_MODE_FIELD}"),
+                    "reason": "unknownWriteMode",
+                    "received": other,
+                    "allowed": LANE_WRITE_MODES,
+                }),
+            ));
+        }
+    };
+    Ok(Some(mode))
+}
+
+/// 读取值域覆盖（`{"min":…,"max":…}`）。
+///
+/// 两端点都走 [`read_number`]（`f64` → `f32` 收窄**之后**判有限性：`1e300` 是有限
+/// `f64` 而是无限 `f32`），再交给模型自己的 [`AutomationValueDomain::new`] ——
+/// "端点按定义排序"这条不变量**只有一份**实现，本层不自己 `min`/`max`。
+fn parse_lane_domain(value: &Value) -> Result<AutomationValueDomain, Fault> {
+    let object = value.as_object().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{LANE_DOMAIN_FIELD}` 必须是对象 {{\"min\":…,\"max\":…}} 或 null, \
+                 实际收到 {value}"
+            ),
+            serde_json::json!({
+                "field": format!("{SET_AUTOMATION_LANE_FIELD}.{LANE_DOMAIN_FIELD}"),
+                "reason": "domainMustBeObjectOrNull",
+            }),
+        )
+    })?;
+    let min = read_number(object, "min")?;
+    let max = read_number(object, "max")?;
+    AutomationValueDomain::new(min, max).map_err(|error| from_model("自动化取值域", &error))
+}
+
+/// 写模式的**规范名**（与 [`read_optional_write_mode`] 的词表同源）。
+///
+/// 走 `AutomationWriteMode` 自己的 serde 名字 ⇒ 模型加一个变体时，这里要么跟着
+/// 编译失败（如果改成穷举 `match`），要么由判据 `lane_write_modes_match_the_model_serde_names`
+/// 抓住漂移。绝不手写第二张会漂移的表。
+#[must_use]
+pub fn write_mode_name(mode: AutomationWriteMode) -> String {
+    serde_json::to_value(mode)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 /// 读一个**有限**的 JSON 数字（`f64` → `f32`，与 `value` 的模型类型同宽）。
@@ -1157,9 +1704,88 @@ pub fn compile(
                 // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
                 flag.compile(*track_id, flag.read(track), *value)
             }
+            NoteOp::SetLane { edit } => {
+                let target = edit.spec.target(*track_id);
+                // 撤销载荷来自**当前文档**：模型 `SetAutomationLane` 的前置条件要求
+                // `old_lane` 等于文档现值（`RemoveAutomationLane` 同理要求
+                // `previous_lane`），因此这里不采信调用方声明的"旧状态"。
+                let current = track.automation_lanes.get(&target).cloned();
+                match edit.change {
+                    LaneChange::Remove => {
+                        let previous_lane = current.ok_or_else(|| {
+                            Fault::domain_with_data(
+                                ErrorCode::EntityNotFound,
+                                format!("这条自动化泳道不存在, 没有东西可以取走: {target:?}"),
+                                serde_json::json!({
+                                    "lane": edit.spec.kind.as_str(),
+                                    "reason": "automationLaneNotFound",
+                                }),
+                            )
+                        })?;
+                        Op::RemoveAutomationLane {
+                            target,
+                            previous_lane,
+                        }
+                    }
+                    LaneChange::Set(patch) => {
+                        // 基础 = 文档现值；没有泳道时用模型的**隐式**默认形状
+                        // （`read_enabled = true` / `write_mode = Off` / `domain = None`）
+                        // —— 那是"这条泳道还不存在"的规范含义，不是本层发明的默认值。
+                        let (old_lane, base) = match current {
+                            Some(lane) => (Some(lane.clone()), lane),
+                            None => (None, AutomationLane::implicit(target)),
+                        };
+                        Op::SetAutomationLane {
+                            target,
+                            old_lane,
+                            new_lane: patch.apply_to(&base),
+                        }
+                    }
+                }
+            }
         });
     }
     Ok(compiled)
+}
+
+/// 拒绝"同一次调用里把同一条泳道写了两次"。
+///
+/// 为什么这是**响亮失败**而不是"后一条赢"：批里的每一条 `setAutomationLane` 的
+/// `old_lane` 都从**调用前**的文档读，因此第二条的前置条件必然与第一条施加后的
+/// 状态不符（模型报 `OpStateMismatch` ⇒ `CONFLICT`，一个说不清是哪条 op 的错）。
+/// 在**建提案之前**用 `INVALID_PARAMETER_RANGE` 点名重复的目标，调用方才知道
+/// 要拆成两次调用。
+///
+/// 只在真的出现 `SetLane` 时才做（其余形态逐字节等于接线之前的行为）。
+///
+/// # Errors
+///
+/// 同一目标的 `SetLane` 出现两次以上 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "duplicateLaneTarget"`，`data.lane` = 目标变体名）。
+pub fn reject_duplicate_lane_targets(track_id: &EntityId, ops: &[NoteOp]) -> Result<(), Fault> {
+    let mut seen: Vec<AutomationTarget> = Vec::new();
+    for op in ops {
+        let NoteOp::SetLane { edit } = op else {
+            continue;
+        };
+        let target = edit.spec.target(*track_id);
+        if seen.contains(&target) {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "同一次调用里同一条自动化泳道被写了两次: {} \
+                     (批内每条的撤销载荷都从调用前的文档读, 第二条必然对不上状态)",
+                    edit.spec.kind.as_str()
+                ),
+                serde_json::json!({
+                    "reason": "duplicateLaneTarget",
+                    "lane": edit.spec.kind.as_str(),
+                }),
+            ));
+        }
+        seen.push(target);
+    }
+    Ok(())
 }
 
 /// **材料创建**形态的编译（`arguments.create: true`）：把一组 `add` 折成**一条**
@@ -1857,6 +2483,26 @@ fn read_u64(object: &Map<String, Value>, field: &str) -> Result<u64, Fault> {
     })
 }
 
+/// 读一个非负整数并收窄到 `usize`（下标类字段专用）。
+///
+/// 与 [`read_u64`] 的差别只有收窄那一步：`u64` 在 32 位平台上装不进 `usize`，
+/// 静默截断会把 `slotIndex: 4294967296` 变成槽 0（写到**另一台设备**上）。
+/// 越界因此是响亮失败（`INVALID_PARAMETER_RANGE`，`reason = "indexTooLarge"`）。
+fn read_usize(object: &Map<String, Value>, field: &str) -> Result<usize, Fault> {
+    let value = read_u64(object, field)?;
+    usize::try_from(value).map_err(|_| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 超出本机 usize 表示范围: {value}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "indexTooLarge",
+                "value": value,
+            }),
+        )
+    })
+}
+
 /// 读 `i64`。
 fn read_i64(object: &Map<String, Value>, field: &str) -> Result<i64, Fault> {
     let value = object.get(field).ok_or_else(|| missing(field, "整数"))?;
@@ -1916,6 +2562,14 @@ mod tests {
             .find(|track| track.kind == yeban_model::TrackKind::Midi)
             .expect("样本里必须有 MIDI 音轨");
         (track.id, clip.id)
+    }
+
+    /// 取一个领域失败的 `data`（判据只关心结构化补充，不关心人话信息）。
+    fn lane_fault_data(fault: &Fault) -> &Value {
+        match fault {
+            Fault::Domain { data, .. } => data.as_ref().expect("本形态的失败必须带 data"),
+            Fault::Impl { error } => panic!("应当是领域失败, 实际是 {error:?}"),
+        }
     }
 
     #[test]
@@ -2368,11 +3022,322 @@ mod tests {
             compile(&project, &track_id, &audio_clip.id, &ops).expect("纯开关写入不要求 MIDI 材料");
         assert_eq!(compiled.len(), 2);
 
-        // `kind` 的全集必须真的登记这两个名字（错误信息的 `supportedKinds` 与判据共用）。
-        assert_eq!(OP_KINDS.len(), 7);
+        // `kind` 的全集必须真的登记这四个音轨级名字
+        // （错误信息的 `supportedKinds` 与判据共用同一份真相）。
+        assert_eq!(OP_KINDS.len(), 8);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
+        assert!(OP_KINDS.contains(&SET_AUTOMATION_LANE_KIND));
+        assert_eq!(LANE_WRITE_MODES.len(), 4);
+    }
+
+    /// 泳道形态的**词表**判据：键名、写模式名、目标名与模型同源。
+    ///
+    /// 注入（实测红）：往 [`LANE_WRITE_MODES`] 里加一个模型没有的名字 ⇒ 这条红。
+    #[test]
+    fn lane_field_names_are_pinned() {
+        assert_eq!(SET_AUTOMATION_LANE_KIND, "setAutomationLane");
+        assert_eq!(SET_AUTOMATION_LANE_FIELD, "lane");
+        assert_eq!(
+            SET_AUTOMATION_LANE_FIELDS,
+            [
+                "lane",
+                "edgeId",
+                "slotIndex",
+                "paramIndex",
+                "macroIndex",
+                "readEnabled",
+                "writeMode",
+                "domain",
+                "remove",
+            ]
+        );
+        // 词表与模型自己的 serde 名字同源（不手写第二张会漂移的表）。
+        assert_eq!(LANE_WRITE_MODES, ["Off", "Write", "Touch", "Latch"]);
+        for (mode, name) in [
+            (AutomationWriteMode::Off, "Off"),
+            (AutomationWriteMode::Write, "Write"),
+            (AutomationWriteMode::Touch, "Touch"),
+            (AutomationWriteMode::Latch, "Latch"),
+        ] {
+            assert_eq!(write_mode_name(mode), name, "写模式名必须与 serde 名字同源");
+        }
+        // 目标名借用 `yeban_edit_automation` 的同一份词表。
+        assert_eq!(
+            super::super::extension_pure::LANE_NAMES,
+            [
+                "TrackVolume",
+                "TrackPan",
+                "SendGain",
+                "DeviceParam",
+                "Macro"
+            ]
+        );
+    }
+
+    /// 泳道形态的**规范**形状：解析 → 编译 → 真的改工程 → 逆操作逐字节回原。
+    ///
+    /// 这一条是"工具面写不了泳道属性"缺口的**字面**判据。夹具刻意让
+    /// `readEnabled = true` / `writeMode = Touch` / `domain = Some(...)`，而调用写的是
+    /// `false` / `Latch` / `null`：两边**不相等**，因此"把三个属性写死成常量"或
+    /// "把 `old_lane` 写死"的注入都会在这里红。
+    ///
+    /// 注入（实测红）：删掉 `parse_one` 的 `setAutomationLane` 分支 ⇒ 未知 `kind`；
+    /// 把 `LaneChange::Set` 的 `old_lane` 换成 `None` ⇒ 撤销载荷不是文档现值；
+    /// 把 `patch.apply_to` 换成"直接用调用方的值"⇒ 保留语义消失（未给的键被重置）。
+    #[test]
+    fn lane_edits_compile_against_the_document_and_invert_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, _clip_id) = lead_clip(&project);
+        let target = AutomationTarget::TrackVolume { track_id };
+        let before = project
+            .track(&track_id)
+            .expect("音轨")
+            .automation_lanes
+            .get(&target)
+            .expect("样本里必须有 TrackVolume 泳道")
+            .clone();
+        assert!(before.read_enabled, "夹具前提: 读开关先是打开的");
+        assert_eq!(before.write_mode, AutomationWriteMode::Touch);
+        assert!(before.domain.is_some(), "夹具前提: 有显式取值域覆盖");
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // (1) 关闭读开关 + 改写模式 + 清掉取值域覆盖；**不**提 `domain` 的兄弟键。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setAutomationLane", "lane": {
+                "lane": "TrackVolume", "readEnabled": false,
+                "writeMode": "Latch", "domain": null
+            }}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_AUTOMATION_LANE_KIND);
+        assert!(!ops[0].is_note_level(), "泳道形态是音轨级");
+        let compiled = compile(&project, &track_id, &_clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetAutomationLane {
+                target: written,
+                old_lane,
+                new_lane,
+            } => {
+                assert_eq!(*written, target);
+                assert_eq!(old_lane.as_ref(), Some(&before), "撤销载荷必须来自当前文档");
+                assert!(!new_lane.read_enabled);
+                assert_eq!(new_lane.write_mode, AutomationWriteMode::Latch);
+                assert_eq!(new_lane.domain, None, "`domain: null` 是清掉覆盖");
+                assert_eq!(new_lane.points, before.points, "属性写入不许碰采样点");
+            }
+            other => panic!("应当是 SetAutomationLane: {other:?}"),
+        }
+
+        // (2) **合并**语义：只给 `readEnabled`，其余两个属性必须保持文档现值。
+        let merge = parse_ops(&serde_json::json!([
+            {"kind": "setAutomationLane", "lane": {"lane": "TrackVolume", "readEnabled": false}}
+        ]))
+        .expect("解析");
+        let merged = compile(&project, &track_id, &_clip_id, &merge).expect("编译");
+        match &merged[0] {
+            Op::SetAutomationLane { new_lane, .. } => {
+                assert_eq!(
+                    new_lane.write_mode, before.write_mode,
+                    "没提 `writeMode` 就必须保留文档现值"
+                );
+                assert_eq!(new_lane.domain, before.domain, "没提 `domain` 就必须保留");
+            }
+            other => panic!("应当是 SetAutomationLane: {other:?}"),
+        }
+
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "lane edit".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        let after = project
+            .track(&track_id)
+            .expect("音轨")
+            .automation_lanes
+            .get(&target)
+            .expect("泳道仍在")
+            .clone();
+        assert!(!after.read_enabled, "读开关必须真的关掉");
+        // 唯一求值入口真的遵守它（走带/宿主求值因此在这一点退回静态值）。
+        assert_eq!(
+            project.automation_value_at(&target, 0).expect("求值"),
+            None,
+            "读关的泳道在唯一求值入口上必须返回「无自动化值」"
+        );
+        // (3) 写模式与取值域在**同一次调用**里的替换也要能被撤销。
+        let latch = compile(
+            &project,
+            &track_id,
+            &_clip_id,
+            &parse_ops(&serde_json::json!([
+                {"kind": "setAutomationLane", "lane": {"lane": "TrackVolume", "writeMode": "Off"}}
+            ]))
+            .expect("解析"),
+        )
+        .expect("编译");
+        latch[0].apply(&mut project).expect("施加");
+        assert_eq!(
+            project
+                .track(&track_id)
+                .expect("音轨")
+                .automation_lanes
+                .get(&target)
+                .expect("泳道")
+                .write_mode,
+            AutomationWriteMode::Off
+        );
+        latch[0].apply_inverse(&mut project).expect("逆操作");
+
+        // (4) 取走整条泳道（`remove: true`）。
+        let remove = compile(
+            &project,
+            &track_id,
+            &_clip_id,
+            &parse_ops(&serde_json::json!([
+                {"kind": "setAutomationLane", "lane": {"lane": "TrackVolume", "remove": true}}
+            ]))
+            .expect("解析"),
+        )
+        .expect("编译");
+        match &remove[0] {
+            Op::RemoveAutomationLane {
+                target: written,
+                previous_lane,
+            } => {
+                assert_eq!(*written, target);
+                assert_eq!(previous_lane, &after, "撤销载荷必须是文档里的整条泳道");
+            }
+            other => panic!("应当是 RemoveAutomationLane: {other:?}"),
+        }
+        remove[0].apply(&mut project).expect("取走");
+        assert!(
+            !project
+                .track(&track_id)
+                .expect("音轨")
+                .automation_lanes
+                .contains_key(&target),
+            "取走后泳道必须真的不在文档里"
+        );
+        remove[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project
+                .track(&track_id)
+                .expect("音轨")
+                .automation_lanes
+                .get(&target),
+            Some(&after),
+            "逆操作必须把整条泳道（含读关状态）装回来"
+        );
+
+        // 全部逆回去（(1) 的读关 + 写模式 + 清覆盖）。
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到原状"
+        );
+    }
+
+    /// 泳道形态的**形状**错误全部响亮失败：未知键、未知目标名、非布尔读开关、
+    /// 未知写模式、`remove` 与属性同给、同一目标写两次。
+    ///
+    /// 注入（实测红）：把 [`reject_unknown_lane_fields`] 的过滤结果改成恒空 ⇒
+    /// 前两条不再红；把 `remove && !patch.is_empty()` 去掉 ⇒ `removeTakesNoProperties` 不再红。
+    #[test]
+    fn lane_edits_reject_bad_shapes_loudly() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+
+        // (a) 未知键（下划线写法是最常见的错法）。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "setAutomationLane", "lane": {"lane": "TrackVolume", "read_enabled": false}}
+        ]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownLaneField",
+            "{fault:?}"
+        );
+
+        // (b) 未知目标名（别名）与缺 `edgeId`。
+        for payload in [
+            serde_json::json!([{"kind": "setAutomationLane", "lane": {"lane": "trackVolume"}}]),
+            serde_json::json!([{"kind": "setAutomationLane", "lane": {"lane": "SendGain"}}]),
+            serde_json::json!([{"kind": "setAutomationLane"}]),
+        ] {
+            let fault = parse_ops(&payload).expect_err("必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{payload} -> {fault:?}"
+            );
+        }
+
+        // (c) 非布尔读开关 / 未知写模式 / `domain` 形状非法。
+        for payload in [
+            serde_json::json!([{"kind": "setAutomationLane",
+                "lane": {"lane": "TrackVolume", "readEnabled": 1}}]),
+            serde_json::json!([{"kind": "setAutomationLane",
+                "lane": {"lane": "TrackVolume", "writeMode": "touch"}}]),
+            serde_json::json!([{"kind": "setAutomationLane",
+                "lane": {"lane": "TrackVolume", "domain": [0.0, 1.0]}}]),
+            serde_json::json!([{"kind": "setAutomationLane",
+                "lane": {"lane": "TrackVolume", "domain": {"min": 1e300, "max": 1.0}}}]),
+        ] {
+            let fault = parse_ops(&payload).expect_err("必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{payload} -> {fault:?}"
+            );
+        }
+
+        // (d) `remove` 与属性键同给。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "setAutomationLane",
+             "lane": {"lane": "TrackVolume", "remove": true, "readEnabled": false}}
+        ]))
+        .expect_err("必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "removeTakesNoProperties",
+            "{fault:?}"
+        );
+
+        // (e) 取走一条**不存在**的泳道：`ENTITY_NOT_FOUND`，不静默成功。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "setAutomationLane", "lane": {"lane": "TrackPan", "remove": true}}
+        ]))
+        .and_then(|ops| compile(&project, &track_id, &clip_id, &ops))
+        .expect_err("不存在的泳道不能取走");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+
+        // (f) 同一目标写两次：在建提案之前就被点名。
+        let twice = parse_ops(&serde_json::json!([
+            {"kind": "setAutomationLane", "lane": {"lane": "TrackVolume", "readEnabled": false}},
+            {"kind": "setAutomationLane", "lane": {"lane": "TrackVolume", "readEnabled": true}}
+        ]))
+        .expect("解析层不管重复");
+        let fault = reject_duplicate_lane_targets(&track_id, &twice).expect_err("重复目标必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "duplicateLaneTarget",
+            "{fault:?}"
+        );
+        // 不同目标不受影响。
+        let distinct = parse_ops(&serde_json::json!([
+            {"kind": "setAutomationLane", "lane": {"lane": "TrackVolume", "readEnabled": false}},
+            {"kind": "setAutomationLane", "lane": {"lane": "TrackPan", "writeMode": "Off"}}
+        ]))
+        .expect("解析");
+        reject_duplicate_lane_targets(&track_id, &distinct).expect("两个不同目标必须放行");
     }
 
     #[test]
