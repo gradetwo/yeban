@@ -777,6 +777,39 @@ mod tests {
     }
 
     #[test]
+    fn retire_writes_every_field_of_the_slot_it_takes_over() {
+        // `retire` 一次写四个字段：`retiring` / `stage` / `fade_remaining` /
+        // `fade_in_remaining`（现位于第 546 至 549 行）。既有判据只钉住前两者中的
+        // `retiring` 与 `fade_remaining`，因此「把 `stage` 留成旧值」与「不清在飞的
+        // 窃取淡入」这两条改坏都能躲过全量判据。这里走刚被窃取、淡入尚未走完的
+        // 槽位：淡出胜过淡入 ⇒ `stage` 必须是 Release、`fade_in_remaining` 必须归零
+        // （后者是 `VoiceInfo::fade_in_remaining` 文档里的不变量）。
+        let mut pool = VoicePool::new(1, 48_000.0).expect("valid capacity");
+        pool.note_on(60, 100, -6.0);
+        let stolen = pool.note_on(61, 100, -6.0);
+        assert!(matches!(stolen, NoteOnOutcome::Stolen { .. }));
+        let live = stolen.started();
+        assert!(
+            pool.voice(live).expect("live handle").fade_in_remaining > 0,
+            "the steal path must arm a fade-in, otherwise this criterion is vacuous"
+        );
+
+        let fade = pool.retire(live).expect("live handle");
+        let info = pool.voice(live).expect("still active");
+        assert!(info.retiring);
+        assert_eq!(
+            info.stage,
+            VoiceStage::Release,
+            "the fade-out overrides the stage"
+        );
+        assert_eq!(info.fade_remaining, fade.samples());
+        assert_eq!(
+            info.fade_in_remaining, 0,
+            "the fade-out wins over the fade-in; no counter may survive"
+        );
+    }
+
+    #[test]
     fn set_stage_cancels_the_pending_fade_and_clears_its_counter() {
         let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
         let handle = pool.note_on(60, 100, -6.0).started();

@@ -254,6 +254,35 @@ mod tests {
     }
 
     #[test]
+    fn is_empty_covers_every_single_valued_label_field() {
+        // `is_empty` 的文档说「五个单值字段都是 None **且** CC 表为空」。字段全部是 `pub`，
+        // 因此「漏掉某一个字段的检查」是可达的行为缺陷（实测：删掉 `keyswitch_label`
+        // 那一项，全量判据里没有一条变红）。这里逐字段单独给出，五个都必须
+        // 让 `is_empty()` 为 false。
+        let with = |set: fn(&mut Labels<'_>)| {
+            let mut labels = Labels::default();
+            set(&mut labels);
+            assert!(
+                !labels.is_empty(),
+                "one single-valued label field must be enough for is_empty() == false"
+            );
+        };
+        with(|labels| labels.region_label = Some(Cow::Borrowed("r")));
+        with(|labels| labels.group_label = Some(Cow::Borrowed("g")));
+        with(|labels| labels.master_label = Some(Cow::Borrowed("m")));
+        with(|labels| labels.global_label = Some(Cow::Borrowed("l")));
+        with(|labels| labels.keyswitch_label = Some(Cow::Borrowed("k")));
+        // 空串也是「存在」的取值（与 `scope_label` 同一条口径，不是「没说」）。
+        with(|labels| labels.region_label = Some(Cow::Borrowed("")));
+        // CC 表一路：一条就够。
+        let mut cc_only = Labels::default();
+        cc_only.cc_labels.insert(64, Cow::Borrowed("Sustain"));
+        assert!(!cc_only.is_empty());
+        // 非空证明的另一半：什么标签都没有时它确实是 true。
+        assert!(Labels::default().is_empty());
+    }
+
+    #[test]
     fn max_cc_label_index_matches_the_u16_container() {
         assert_eq!(MAX_CC_LABEL_INDEX, 65535);
         // 上界本身可解析；再大一位就落到调用方的越界分支。

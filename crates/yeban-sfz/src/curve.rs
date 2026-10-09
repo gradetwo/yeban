@@ -249,9 +249,23 @@ mod tests {
     #[test]
     fn interpolation_is_ieee_exact_class() {
         // 逐位字面量：`1/63` 的 binary32 位型（只有 `+ - * /`，无超越函数 ⇒ 跨架构逐位相同）。
-        let curve = curve(7, &[(0, 0.0), (63, 1.0), (127, 0.0)]);
-        assert_eq!(curve.value_at(1.0).to_bits(), 0x3c82_0821);
-        assert_eq!(1.0f32 / 63.0, curve.value_at(1.0));
+        let exact = curve(7, &[(0, 0.0), (63, 1.0), (127, 0.0)]);
+        assert_eq!(exact.value_at(1.0).to_bits(), 0x3c82_0821);
+        assert_eq!(1.0f32 / 63.0, exact.value_at(1.0));
+
+        // 上面那条 fixture 的两段里 `low.value` 都是 0.0，于是
+        // `low + t*(high-low)` 退化成 `t*high`：它**抓不到**代数等价但求值顺序不同的写法
+        // （`low*(1-t) + high*t` 在 binary32 下给出不同的位型，实测见下）。
+        // 这里用两个端点值都非零的一段，把求值顺序本身钉在字面上。
+        let skewed = curve(9, &[(0, -2.5), (127, 3.5)]);
+        assert_eq!(skewed.value_at(1.5).to_bits(), 0xc01b_76ee);
+        assert_eq!(skewed.value_at(3.5).to_bits(), 0xc015_6ad6);
+        // 非空证明：两种写法在这一点上**确实**不同位，否则上面的字面量是空判据。
+        let t = 1.5f32 / 127.0;
+        assert_ne!(
+            skewed.value_at(1.5).to_bits(),
+            (-2.5f32 * (1.0 - t) + 3.5 * t).to_bits()
+        );
     }
 
     #[test]

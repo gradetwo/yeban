@@ -246,6 +246,40 @@ mod tests {
     }
 
     #[test]
+    fn interpolation_is_bit_exact_on_a_non_degenerate_segment() {
+        // 上面那条规范算例只用 1e-6 容差比较，因此它也接受代数等价但求值顺序不同的写法
+        // （`low*(1-t) + high*t`）。这里用两个端点值都非零、且两种写法**位型不同**的一段，
+        // 把与 `Curve::value_at` 相同的求值顺序 `low + t*(high-low)` 钉在字面上
+        // （binary32，只有 `+ - * /` ⇒ 裁决 ADR-0001 的 IEEE 精确类）。
+        let curve = VelocityCurve::from_points([point(0, 0.2), point(5, 0.9)]);
+        assert_eq!(curve.amplitude(2).to_bits(), 0x3ef5_c290);
+        // 非空证明：两种写法在这一点上**确实**不同位，否则上面的字面量是空判据。
+        let t = 2.0f32 / 5.0;
+        assert_ne!(
+            curve.amplitude(2).to_bits(),
+            (0.2f32 * (1.0 - t) + 0.9 * t).to_bits()
+        );
+    }
+
+    #[test]
+    fn every_explicit_point_is_hit_bit_exactly() {
+        // 与 `Curve` 的 `defined_points_are_hit_bit_exactly` 同一条契约：已定义力度上
+        // **逐位**命中该点的值。负零是可达的取值：`read_velocity_curve` 的范围检查是
+        // `(0.0..=1.0).contains(&value)`，而 `-0.0 >= 0.0` 为真 ⇒ `amp_velcurve_0=-0.0`
+        // 会被接受。它也是这条契约唯一能被「把 `velocity <= first.at` 改写成 `<`」
+        // 改坏的位置：改写后落到插值分支，`low.value + 0.0 * (high-low)` 把 `-0.0`
+        // 变成 `+0.0`。
+        let curve = VelocityCurve::from_points([point(0, -0.0), point(64, 0.5), point(127, 1.0)]);
+        for (at, value) in [(0u8, -0.0f32), (64, 0.5), (127, 1.0)] {
+            assert_eq!(
+                curve.amplitude(at).to_bits(),
+                value.to_bits(),
+                "velocity {at} must be hit bit exactly"
+            );
+        }
+    }
+
+    #[test]
     fn amplitude_is_monotone_between_two_adjacent_points() {
         let curve = VelocityCurve::from_points([point(10, 0.0), point(20, 1.0)]);
         let mut previous = f32::NEG_INFINITY;

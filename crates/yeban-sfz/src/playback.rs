@@ -397,7 +397,13 @@ impl<'a> Region<'a> {
         (cents / CENTS_PER_OCTAVE).exp2() as f32
     }
 
-    /// 步进比：`pitch_ratio(note) * sample_hz / engine_hz`。
+    /// 步进比：`pitch_ratio(note) * (sample_hz / engine_hz)`。
+    ///
+    /// 括号是求值顺序的一部分：采样率之比**先**算，再乘音高比。另一种结合
+    /// （`(pitch_ratio * sample_hz) / engine_hz`）在 binary32 下会给出不同的位型
+    /// （实测：9 组采样率 × 每组 9 组引擎采样率 × 128 个音符里 2 061 组不同），
+    /// 因此本函数**不**做逐位判据 —— [`Region::pitch_ratio`] 的 `exp2` 属于裁决
+    /// ADR-0001 的超越函数类，那一类用 4096 ulp 预算而不是位型相等来判定。
     ///
     /// 非法采样率按 [`RenderRates::sanitized`] 回退，因此返回值恒为有限正数
     /// （`pitch_ratio` 的合法输入范围是 `2^-21.2 ..= 2^31.7`，见模块测试）。
