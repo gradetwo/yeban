@@ -721,4 +721,78 @@ mod tests {
             })
         );
     }
+
+    /// 判据: **任意字节**进 `inflate_raw` 只产生 `Ok` 或 `Err`，绝不 panic。
+    ///
+    /// 量的是"跑了几次解码"（单位 = 次调用）；任何一次 panic 都会让本判据失败。
+    /// 输入分三组：
+    ///
+    /// 1. **穷举**全部 1 字节（256）与 2 字节（65536）输入 —— 短输入是"块头被切一半"
+    ///    的最密集形状，穷举它比抽样强；这一组同时用上界 `usize::MAX`（2 字节最多只能
+    ///    膨胀出几百字节，因此取出上界不会变成内存炸弹）。
+    /// 2. 种子固定的 xorshift64\* 伪随机字节（长度 0..=1024，2 万次；上界 `1 << 20`）。
+    ///    不用系统熵也不引第三方 `rand` ⇒ 可复现。
+    /// 3. 手工挑的病态形状：`stored` 的 `LEN` / `NLEN` 极值、保留块类型 3、`dynamic`
+    ///    头被切在 `HLIT` / 码长表中间、全 `0xFF`。
+    ///
+    /// 调用总数因此恒为 `256 + 65536 + 20000 + 16 = 85808`（单位 = 次调用），
+    /// 下面只断言一个下界。
+    ///
+    /// 本判据**不**证明"输出正确"（那由上面的往返与窗口判据负责），只证明"不 panic"。
+    #[test]
+    fn arbitrary_bytes_never_panic() {
+        /// 种子固定的 xorshift64\*。
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                self.0 = x;
+                x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+            }
+        }
+
+        let mut runs: usize = 0;
+        let mut probe = |bytes: &[u8], max_output: usize| {
+            let _ = inflate_raw(bytes, max_output);
+            runs += 1;
+        };
+
+        // ① 穷举 1 字节与 2 字节。
+        for a in 0..=0xffu8 {
+            probe(&[a], usize::MAX);
+            for b in 0..=0xffu8 {
+                probe(&[a, b], usize::MAX);
+            }
+        }
+
+        // ② 伪随机长度与内容。
+        let mut rng = Rng(0x0BAD_C0DE_F00D_1234);
+        for _ in 0..20_000 {
+            let len = (rng.next() % 1025) as usize;
+            let bytes: Vec<u8> = (0..len).map(|_| (rng.next() >> 33) as u8).collect();
+            probe(&bytes, 1 << 20);
+        }
+
+        // ③ 病态形状。
+        let pathological: [&[u8]; 8] = [
+            &[],
+            &[0x00],
+            &[0x01],
+            &[0x06],                         // BFINAL = 0, BTYPE = 11（保留）
+            &[0x01, 0x00, 0x00, 0xff, 0xff], // stored: LEN = 0, NLEN 互补
+            &[0x01, 0xff, 0xff, 0x00, 0x00], // stored: LEN = 65535, NLEN 互补，但载荷缺失
+            &[0x05, 0x00, 0x00, 0xff, 0xff], // 同上但 BFINAL = 1
+            &[0xff; 64],
+        ];
+        for bytes in pathological {
+            probe(bytes, usize::MAX);
+            probe(bytes, 1 << 20);
+        }
+
+        println!("arbitrary_bytes_never_panic (inflate): runs={runs}");
+        assert!(runs >= 85_000, "探针只跑了 {runs} 次，样本太少");
+    }
 }

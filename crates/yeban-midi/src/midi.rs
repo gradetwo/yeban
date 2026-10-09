@@ -64,6 +64,10 @@ pub struct MidiExportTrack {
 /// ⇒ 记录因此能如实表达真文件的三种形状: "只有 tempo"、"只有拍号"、"两者都有"。
 /// "只有拍号"**不必**再凭空合成一条 `500000 µs` 的 tempo
 /// （凭空合成是被修掉的缺陷; 见 `docs/ledger/integration-rulings-notes.md` 的 R5）。
+///
+/// ⚠️ `numerator` 与 `denominator_pow2` 是**一对**：只给其中一个时 `to_smf_bytes`
+/// 回 [`MidiError::HalfTimeSignature`]（既不写事件、也不许凭空补另一半，更不许静默
+/// 丢掉整条记录）。两个都 `None` 才是"这条记录不带拍号"。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiTempo {
     /// 绝对 tick。
@@ -201,6 +205,19 @@ pub enum MidiError {
         /// 音高。
         key: u8,
     },
+    /// tempo map 里的一条记录**只给了一半**拍号（分子与分母的以 2 为底的幂只有一个）。
+    ///
+    /// `FF 58 04` 的两个字段必须**成对**：只给一个时既写不出这个元事件，也**不许凭空补**
+    /// 另一半（R5 修掉的正是"凭空合成"）。修之前这条记录被**静默丢掉**（整个 tick 上的
+    /// 内容一起消失，调用方收到的却是 `Ok`）⇒ 现在明确拒绝。
+    HalfTimeSignature {
+        /// 出问题的 tick。
+        tick: u64,
+        /// 分子；`None` = 没给。
+        numerator: Option<u8>,
+        /// 分母的以 2 为底的幂；`None` = 没给。
+        denominator_pow2: Option<u8>,
+    },
 }
 
 impl core::fmt::Display for MidiError {
@@ -225,6 +242,15 @@ impl core::fmt::Display for MidiError {
             Self::UnmatchedNoteOff { tick, key } => {
                 write!(f, "tick {tick} 的 NoteOff (key {key}) 没有对应 NoteOn")
             }
+            Self::HalfTimeSignature {
+                tick,
+                numerator,
+                denominator_pow2,
+            } => write!(
+                f,
+                "tick {tick} 的拍号只给了一半: numerator = {numerator:?}, \
+                 denominator_pow2 = {denominator_pow2:?}"
+            ),
         }
     }
 }
@@ -250,17 +276,31 @@ struct TempoGroup {
 
 impl TempoGroup {
     /// 由一条 [`MidiTempo`] 折成一组 (两个事件值都取 u8/u24 的可表达范围)。
-    fn of(tempo: &MidiTempo) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// 拍号**只给了一半** ⇒ [`MidiError::HalfTimeSignature`]。`FF 58 04` 的两个字段必须
+    /// 成对：只给一个时既写不出拍号事件，也不许凭空补另一半（R5 修掉的正是"凭空合成"），
+    /// 而静默丢掉整条记录会让调用方以为它写出去了。
+    fn of(tempo: &MidiTempo) -> Result<Self, MidiError> {
+        let signature = match (tempo.numerator, tempo.denominator_pow2) {
+            (Some(numerator), Some(denominator_pow2)) => Some((numerator, denominator_pow2)),
+            (None, None) => None,
+            (numerator, denominator_pow2) => {
+                return Err(MidiError::HalfTimeSignature {
+                    tick: tempo.tick,
+                    numerator,
+                    denominator_pow2,
+                });
+            }
+        };
+        Ok(Self {
             tick: tempo.tick,
             microseconds_per_quarter: tempo
                 .microseconds_per_quarter
                 .map(|mpqn| mpqn.min(0x00FF_FFFF)),
-            signature: match (tempo.numerator, tempo.denominator_pow2) {
-                (Some(numerator), Some(denominator_pow2)) => Some((numerator, denominator_pow2)),
-                _ => None,
-            },
-        }
+            signature,
+        })
     }
 
     /// 这一组是否会写出至少一个事件 (两个都是 `None` 的组写不出任何字节)。
@@ -430,7 +470,12 @@ impl MidiExport {
     ///
     /// 见 [`MidiError`]。
     pub fn to_smf_bytes(&self) -> Result<Vec<u8>, MidiError> {
-        if self.ppq == 0 {
+        // `MThd` 的时间分度是 **15 位**字段, 而 `midly` 的 `u15::new` 是**掩码**
+        // (`raw & 0x7FFF`)、不是拒绝 ⇒ 超过上界的 ppq 会被**静默回绕**成另一个值。
+        // 实测 (修之前, 单位 = 无量纲的 ppq 读数): 请求 `0x8000` 落盘成 `0x0000`,
+        // 请求 `0x83C0` 落盘成 `0x03C0` (= 960), 请求 `0xFFFF` 落盘成 `0x7FFF`。
+        // 那正是 `InvalidPpq` 的文档已经点名、却只实现了一半的情形。
+        if self.ppq == 0 || self.ppq > 0x7FFF {
             return Err(MidiError::InvalidPpq(self.ppq));
         }
         if self.tracks.is_empty() {
@@ -443,7 +488,11 @@ impl MidiExport {
         // 没有的空组; 步骤 ②: 组按**内容**升序排列 (不是按 `self.tempos` 的
         // 输入顺序) ⇒ 字节只由内容决定; 步骤 ③: 组号就是排序后的下标, 同一组的两个
         // 事件共享组号 ⇒ 它们相邻落盘 (见 `RawEvent::tie_break`)。
-        let mut groups: Vec<TempoGroup> = self.tempos.iter().map(TempoGroup::of).collect();
+        let mut groups: Vec<TempoGroup> = self
+            .tempos
+            .iter()
+            .map(TempoGroup::of)
+            .collect::<Result<_, _>>()?;
         groups.retain(TempoGroup::carries_an_event);
         groups.sort_unstable();
 
@@ -685,6 +734,10 @@ pub fn track_chunks(bytes: &[u8]) -> Result<Vec<TrackChunk>, MidiError> {
 
 /// 解析 SMF 字节。
 ///
+/// SMF 1.0 要求 `MThd` 的 Metrical 时间分度是**正数** ⇒ 分度为 0 的头部明确
+/// [`MidiError::InvalidPpq`]，而不是回出一个 `ppq == 0` 的读数（下游按 ppq 换算 tick
+/// 就会除零，而本 crate 的导出侧本来就拒绝写出 0 ⇒ 只拒一半是不对称的）。
+///
 /// # Errors
 ///
 /// 见 [`MidiError`]。
@@ -701,6 +754,9 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
         Timing::Metrical(division) => division.as_int(),
         Timing::Timecode(..) => return Err(MidiError::UnsupportedTimecode),
     };
+    if ppq == 0 {
+        return Err(MidiError::InvalidPpq(ppq));
+    }
 
     let mut notes = Vec::new();
     let mut tempos = Vec::new();

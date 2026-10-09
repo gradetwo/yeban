@@ -199,7 +199,7 @@ fn exported_bytes_have_literal_smf1_header_and_terminators() {
             b'Y', b'e', b'b', b'a', b'n', b' ', b'C', b'o', b'n', b'd', b'u', b'c', b't', b'o',
             b'r', 0x00, 0xFF, 0x2F, 0x00, // EndOfTrack
         ],
-        "conductor 轨恒名为 \"Yeban Conductor\"（src/midi.rs:392）+ EndOfTrack"
+        "conductor 轨恒名为 \"Yeban Conductor\"（`to_smf_bytes` 里那条 `lanes.push`）+ EndOfTrack"
     );
 
     // --- 音符轨：delta 480 的 VLQ + NoteOn，用独立 VLQ 解码器读 ---
@@ -303,9 +303,9 @@ fn export_is_byte_deterministic_across_two_calls() {
 
 /// 判据 ⑥: 三条**已文档化**的拒绝在真实字节上真的发生。
 ///
-/// - 格式 2 ⇒ `UnsupportedFormat(2)`（`src/midi.rs:178-179`、`:613-615`）；
-/// - SMPTE 时间码 ⇒ `UnsupportedTimecode`（`src/midi.rs:176-177`、`:619`）；
-/// - chunk 声明长度超出文件 ⇒ `Decode`（`src/midi.rs:572-574`、`:587-593`）。
+/// - 格式 2 ⇒ `UnsupportedFormat(2)`（`parse_smf` 的 `Format::Sequential` 分支）；
+/// - SMPTE 时间码 ⇒ `UnsupportedTimecode`（`parse_smf` 的 `Timing::Timecode` 分支）；
+/// - chunk 声明长度超出文件 ⇒ `Decode`（`track_chunks` 里那条"声明 N 字节，但文件只剩 M 字节"）。
 #[test]
 fn documented_rejections_fire_on_real_bytes() {
     // 格式 2 (Sequential)：SMF 里有这个格式号，本切片不支持。
@@ -495,4 +495,237 @@ fn encoder_boundaries_are_rejected_precisely() {
         Some(0x00FF_FFFF),
         "超过 u24 的 mpqn 被钳到 0x00FFFFFF"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ③ 类别①/④/⑦：参数与长度的极值（本次改动补的判据）
+// ---------------------------------------------------------------------------
+
+/// 一条只有一个音符的单轨 `MidiExport`（下面几条判据的公共底座）。
+fn single_track_export(ppq: u16) -> MidiExport {
+    MidiExport {
+        format: MidiFormat::SingleTrack,
+        ppq,
+        tempos: Vec::new(),
+        tracks: vec![MidiExportTrack {
+            name: String::new(),
+            channel: 0,
+            notes: vec![note(0, 60, 120)],
+        }],
+    }
+}
+
+/// 判据 ⑩ (类别④ 参数极值): 15 位时间分度字段的**上界**必须被拒绝，不许被掩码回绕。
+///
+/// `MThd` 的时间分度是 15 位字段。修之前 `to_smf_bytes` 只查 `ppq == 0`，而
+/// `midly` 的 `u15::new` 是 `raw & 0x7FFF`（掩码、不是拒绝）⇒ 超界值被**静默**写成
+/// 另一个时间分度。实测（修之前，单位 = 无量纲的 ppq 读数）：
+///
+/// | 请求 | `MThd` 里落盘的字段 |
+/// | ---: | ---: |
+/// | `0x8000` | `0x0000` |
+/// | `0x83C0` | `0x03C0`（= 960） |
+/// | `0xC000` | `0x4000`（= 16384） |
+/// | `0xFFFF` | `0x7FFF` |
+///
+/// 这同时是"`InvalidPpq` 的文档说'或超过 15 位上限'，但只有一半落地"的证据。
+/// 对照臂在**上界本身**：`0x7FFF` 必须接受，且逐字节写进 `MThd`。
+#[test]
+fn ppq_above_the_15_bit_field_is_rejected_instead_of_masked() {
+    for ppq in [0x8000u16, 0x83C0, 0xC000, 0xFFFF] {
+        assert_eq!(
+            single_track_export(ppq).to_smf_bytes(),
+            Err(MidiError::InvalidPpq(ppq)),
+            "ppq {ppq:#06x} 必须被拒绝，不许掩码成 {:#06x}",
+            ppq & 0x7FFF
+        );
+    }
+
+    // 对照臂：15 位的上界本身合法，且原样落进 MThd。
+    let bytes = single_track_export(0x7FFF)
+        .to_smf_bytes()
+        .expect("0x7FFF 是 15 位字段的上界，必须接受");
+    assert_eq!(&bytes[12..14], &[0x7F, 0xFF], "时间分度字段原样写 0x7FFF");
+    assert_eq!(parse_smf(&bytes).expect("回读").ppq, 0x7FFF);
+}
+
+/// 判据 ⑪ (类别① 越界输入): 时间分度为 **0** 的 `MThd` 在**读**这一侧也必须被拒绝。
+///
+/// SMF 1.0 要求 Metrical 的时间分度是正数。修之前 `parse_smf` 回出
+/// `Ok { ppq: 0, .. }` —— 一个下游按 `ppq` 换算 tick 就会除零的读数，而导出侧本来
+/// 就拒绝写出 0（判据 ⑨ 的 `zero_ppq` 一行）⇒ 只拒一半是不对称的。
+#[test]
+fn a_zero_division_header_is_rejected_by_the_reader() {
+    let zero = hand_built_smf(0, [0x00, 0x00], &[&[0x00, 0xFF, 0x2F, 0x00]]);
+    assert_eq!(
+        parse_smf(&zero),
+        Err(MidiError::InvalidPpq(0)),
+        "时间分度 0 必须被拒绝（不是回出一个 ppq = 0 的读数）"
+    );
+
+    // 对照臂：同一份字节只把分度改成 1（大端 `00 01`）⇒ 接受。
+    let one = hand_built_smf(0, [0x00, 0x01], &[&[0x00, 0xFF, 0x2F, 0x00]]);
+    assert_eq!(parse_smf(&one).expect("分度 1 是合法的").ppq, 1);
+}
+
+/// 判据 ⑫ (类别④ 参数极值): 只给**一半**拍号的 tempo 记录必须被拒绝，不许静默丢弃。
+///
+/// `FF 58 04` 的分子与分母的以 2 为底的幂必须成对。修之前 `TempoGroup::of` 用的是
+/// `match (numerator, denominator_pow2) { (Some, Some) => .., _ => None }` ⇒ 只给一个时
+/// 拍号变成 `None`，而 `microseconds_per_quarter` 也是 `None` 的记录被"丢掉空组"这一步
+/// 整条删除：调用方给出一个 tick 上的记录，`to_smf_bytes` 回 `Ok`，文件里**什么都没有**。
+/// 实测（修之前）：`numerator = Some(4)`、其余 `None` ⇒ `to_smf_bytes() = Ok(65 字节)`
+/// 且回读 `tempos = []`。
+#[test]
+fn half_a_time_signature_is_rejected_instead_of_dropped() {
+    let cases = [(Some(4u8), None), (None, Some(2u8))];
+    for (index, (numerator, denominator_pow2)) in cases.into_iter().enumerate() {
+        let source = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: vec![MidiTempo {
+                tick: 0,
+                microseconds_per_quarter: None,
+                numerator,
+                denominator_pow2,
+            }],
+            tracks: vec![MidiExportTrack {
+                name: String::new(),
+                channel: 0,
+                notes: vec![note(0, 60, 120)],
+            }],
+        };
+        assert_eq!(
+            source.to_smf_bytes(),
+            Err(MidiError::HalfTimeSignature {
+                tick: 0,
+                numerator,
+                denominator_pow2,
+            }),
+            "第 {index} 个半拍号必须被拒绝，不许静默丢弃"
+        );
+    }
+
+    // 对照臂 1: 两个都**没有**（完全空的记录）仍然是"丢掉空组"，不是错误。
+    let empty = MidiExport {
+        format: MidiFormat::Parallel,
+        ppq: DEFAULT_PPQ,
+        tempos: vec![MidiTempo {
+            tick: 0,
+            microseconds_per_quarter: None,
+            numerator: None,
+            denominator_pow2: None,
+        }],
+        tracks: vec![MidiExportTrack {
+            name: String::new(),
+            channel: 0,
+            notes: vec![note(0, 60, 120)],
+        }],
+    };
+    let bytes = empty
+        .to_smf_bytes()
+        .expect("两个事件都没有的记录是空组，必须照常编码");
+    assert!(parse_smf(&bytes).expect("回读").tempos.is_empty());
+
+    // 对照臂 2: 成对的拍号照旧往返（判据 ① 已覆盖 4/4，这里覆盖一对非 4 的）。
+    let paired = MidiExport {
+        tempos: vec![MidiTempo {
+            tick: 0,
+            microseconds_per_quarter: None,
+            numerator: Some(3),
+            denominator_pow2: Some(3),
+        }],
+        ..single_track_export(DEFAULT_PPQ)
+    };
+    let parsed = parse_smf(&paired.to_smf_bytes().expect("编码")).expect("回读");
+    assert_eq!(parsed.tempos.len(), 1);
+    assert_eq!(parsed.tempos[0].numerator, Some(3));
+    assert_eq!(parsed.tempos[0].denominator_pow2, Some(3));
+}
+
+/// 判据 ⑬ (类别①/⑦ 越界字节与长度极值): SMF 两个读入口对**任意字节**只产生
+/// `Ok` 或 `Err`，绝不 panic。
+///
+/// 量的是"跑了几次解析"（单位 = 次调用）；任何一次 panic 都会让本判据失败。
+/// 输入取自：三个已提交的真夹具 + 本文件手拼的规范样本，三种变形（① 全部截断前缀、
+/// ② 逐字节翻转、③ 插入一个字节）+ 一个**种子固定**的 xorshift64\* 生成的伪随机字节
+/// （不引第三方 `rand`、不读系统熵 ⇒ 可复现）。
+#[test]
+fn smf_readers_never_panic_on_arbitrary_bytes() {
+    /// 种子固定的 xorshift64\*：判据必须可复现，因此不用系统熵。
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, bound: usize) -> usize {
+            (self.next() % bound as u64) as usize
+        }
+    }
+
+    let corpus: Vec<Vec<u8>> = vec![
+        hand_built_smf(1, [0x03, 0xC0], &[&[0x00, 0xFF, 0x2F, 0x00]]),
+        hand_built_smf(
+            0,
+            [0x03, 0xC0],
+            &[&[
+                0x00, 0x90, 0x3C, 0x40, 0x60, 0x80, 0x3C, 0x00, 0x00, 0xFF, 0x2F, 0x00,
+            ]],
+        ),
+        include_bytes!("fixtures/fur_elise_woo59_384ppq_3mtrk.mid").to_vec(),
+        include_bytes!("fixtures/fur_elise_480ppq_1mtrk.mid").to_vec(),
+        include_bytes!("fixtures/fur_elise_480ppq_3mtrk.mid").to_vec(),
+        Vec::new(),
+    ];
+
+    let mut runs: usize = 0;
+    for original in &corpus {
+        // ① 截断：每个前缀都是一个可能非法但必须不 panic 的输入。
+        for cut in (0..=original.len()).step_by(3) {
+            let slice = &original[..cut];
+            let _ = parse_smf(slice);
+            let _ = track_chunks(slice);
+            runs += 2;
+        }
+        if original.is_empty() {
+            continue;
+        }
+        // ② 逐字节翻转：每个位置翻 1 个 bit。
+        let mut copy = original.clone();
+        let mut rng = Rng(0x1234_5678_9ABC_DEF0 ^ original.len() as u64);
+        for index in (0..original.len()).step_by(5) {
+            copy[index] ^= 1u8 << rng.below(8);
+            let _ = parse_smf(&copy);
+            let _ = track_chunks(&copy);
+            runs += 2;
+            copy[index] = original[index];
+        }
+        // ③ 插入一个字节：制造新的（通常越过文件尾的）chunk 头。
+        let mut inserted = original.clone();
+        for index in (0..original.len()).step_by(97) {
+            inserted.insert(index, 0x80);
+            let _ = parse_smf(&inserted);
+            let _ = track_chunks(&inserted);
+            runs += 2;
+            inserted.remove(index);
+        }
+    }
+
+    // ④ 纯伪随机字节（长度 0..=511）。
+    let mut rng = Rng(0xDEAD_BEEF_CAFE_BABE);
+    for _ in 0..20_000 {
+        let len = rng.below(512);
+        let bytes: Vec<u8> = (0..len).map(|_| (rng.next() >> 33) as u8).collect();
+        let _ = parse_smf(&bytes);
+        let _ = track_chunks(&bytes);
+        runs += 2;
+    }
+
+    println!("smf_readers_never_panic_on_arbitrary_bytes: runs={runs}");
+    assert!(runs >= 5_000, "探针只跑了 {runs} 次，样本太少");
 }
