@@ -262,6 +262,16 @@ impl PcmBudget {
     /// 返回的预算**恰好**允许该布局（声道数/采样率/时长三个闸门都设成要求值，
     /// PCM 字节数设成要求值的精确字节数），因此"要求内的素材一定进得来"是构造上
     /// 成立的，而不是靠调数字。任一参数为 0 或字节数超出 `u64` 时返回 `None`。
+    ///
+    /// ⚠ **比例上限与会话要求无关，恒为全局默认**（[`DEFAULT_MAX_RESAMPLE_RATIO`]，
+    /// `2026-10-10` 由裁决 `R32` 写明）。这个字段**不**随 `seconds` / `sample_rate` /
+    /// `channels` 推导：它是一个全局安全帽，按调用方包络放宽会削弱资源保护
+    /// （[ARCH-SEC-003]）。因此本函数"恰好允许该布局"这句话覆盖的是**单一采样率上的
+    /// 素材**，而**不**承诺"包络内的任意采样率对都能转换" —— 例如
+    /// `for_layout(1, 768_000, 1)` 放行 1 Hz 与 768 kHz 两端各自的素材，但拒绝
+    /// 1 Hz → 768 kHz 这一次转换（比例 768 000× 超过 1 000×）。判据
+    /// `for_layout_pins_a_ratio_cap_that_is_narrower_than_its_own_rate_envelope`
+    /// 逐项钉住这个事实，并检查本段文字仍在。
     #[must_use]
     pub fn for_layout(seconds: u64, sample_rate: u32, channels: u16) -> Option<Self> {
         let pcm_bytes = pcm_bytes_for(seconds, sample_rate, channels)?;
@@ -1828,14 +1838,47 @@ mod tests {
     /// 上问一遍，结论相反 —— 因为默认预算的采样率上限（768 kHz）远宽于它的比例上限所覆盖
     /// 的下限（768 Hz），而 `for_layout` 的采样率上限是**要求值**，可以低到 1 Hz。
     ///
-    /// 这一格是**待裁决**的判据材料：要么 `for_layout` 按它自己的 `sample_rate` 推导比例
-    /// 上限（使"包络内任意采样率对都能转换"成立），要么在它的文档里写明"比例上限与会话
-    /// 要求无关，恒为 1 000×"。本条只钉当前可观测事实，不替任何一方下结论。
+    /// 这一段是裁决 `R32`（`2026-10-10`）的验收判据。裁决结论是**不改数值**：比例上限是
+    /// 全局安全帽（[ARCH-SEC-003]），按调用方包络放宽会削弱资源保护。改为在
+    /// [`PcmBudget::for_layout`] 的文档里写明它与会话要求无关，并由本条把**事实**钉住 ——
+    /// 逐档复算"四个不同布局拿到同一个上限"，以及文档句子仍在。
     ///
     /// 注入（实测）：把 `for_layout` 里的 `max_resample_ratio: DEFAULT_MAX_RESAMPLE_RATIO`
-    /// 改成 `u64::MAX` ⇒ 本条以"767 Hz → 768 kHz 必须被拒"红。
+    /// 改成 `u64::MAX` ⇒ 本条以"767 Hz → 768 kHz 必须被拒"红；把这一行改成按
+    /// `sample_rate` 推导（例如 `u64::from(sample_rate)`）⇒ 本条的逐档一致性断言红。
     #[test]
     fn for_layout_pins_a_ratio_cap_that_is_narrower_than_its_own_rate_envelope() {
+        // 事实一（裁决 R32 的核心）：上限与会话要求无关 —— 逐档复算四组互不相同的布局。
+        let layouts = [
+            (1u64, 8_000u32, 1u16),
+            (60, 48_000, 2),
+            (3 * 60 * 60, 96_000, 8),
+            (1, DEFAULT_MAX_SAMPLE_RATE, 64),
+        ];
+        for (seconds, sample_rate, channels) in layouts {
+            let derived = PcmBudget::for_layout(seconds, sample_rate, channels)
+                .expect("every listed layout is representable");
+            assert_eq!(
+                derived.max_resample_ratio, DEFAULT_MAX_RESAMPLE_RATIO,
+                "for_layout({seconds}, {sample_rate}, {channels}) must take the GLOBAL ratio cap, \
+                 not one derived from the session requirement"
+            );
+            // 同一档的其余三个字段**确实**来自要求（对照组：证明上面那一条不是"什么都没设"）。
+            assert_eq!(derived.max_sample_rate, sample_rate);
+            assert_eq!(derived.max_channels, channels);
+            assert_eq!(derived.max_duration_secs, seconds);
+        }
+
+        // 事实二：文档必须写明这一条。判据不能直接写整句 —— 那句话会在本文件里出现两次
+        // （注释一次、判据字面量一次）而**自我满足**。把它拆成两截拼起来，整句因此只出现在
+        // `for_layout` 的文档里。
+        let needle = concat!("比例上限与会话要求无关", "，恒为全局默认");
+        assert!(
+            include_str!("limits.rs").contains(needle),
+            "PcmBudget::for_layout must document that the ratio cap is independent of the \
+             session requirement (裁决 R32)"
+        );
+
         let budget = PcmBudget::for_layout(1, DEFAULT_MAX_SAMPLE_RATE, 1)
             .expect("1 s of 768 kHz mono is a representable layout");
         // 该构造函数的采样率上限就是要求值：包络的两端都在闸门内。

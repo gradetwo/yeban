@@ -821,6 +821,26 @@ fn would_channel_mask_fix_overflow(num_channels: u16, channel_mask: u32) -> bool
     (!channel_mask).leading_ones() == 0
 }
 
+/// 不可回退源允许的**连续无进展读取**次数（[`std::io::ErrorKind::Interrupted`] 重试的上界）。
+///
+/// 单位：次。这个上界**不是**一个新的魔数，而是从调用方的输入字节预算
+/// （[`crate::limits::PcmBudget::max_input_bytes`]）推导出来的：预算每容纳一个
+/// [`SLURP_CHUNK_BYTES`] 读取分块就多允许一次无进展重试，另加**一次保底** ——
+/// 一次合法的 `EINTR` 必须能被容忍，即使预算是 0（否则零预算的源会在被判定"输入过大"
+/// 之前先报一个不成理由的 I/O 错误）。
+///
+/// 为什么要上界：`Interrupted` 的语义是"这次读**没有**交出任何字节"，重试它不消耗任何
+/// 资源。于是一个**永远**报 `Interrupted` 的源会让 [`slurp_unseekable`] 的循环永不返回
+/// （挂死），而本 crate 的契约是不可信输入只返回 [`DecodeError`]（`MUST-GATE-011`）。
+///
+/// 上界取"预算能容纳的分块数 + 1"而不是写死的数字，是为了让它随预算伸缩：默认预算
+/// （约 8.3 GiB）允许约 126 500 次，预算 0 只允许 1 次。判据
+/// `consecutive_interrupts_are_bounded_by_the_input_byte_budget` 逐档复算这条公式，
+/// 并钉住"上界加一即返回源自己的 I/O 错误"。
+fn unseekable_retry_allowance(max_input_bytes: u64) -> u64 {
+    (max_input_bytes / SLURP_CHUNK_BYTES as u64).saturating_add(1)
+}
+
 /// 把一份**不可回退**的输入整份读进内存，并在读取过程中施加输入字节闸门。
 ///
 /// 为什么必须边读边查：不可回退的源无法先量长度（[`MediaSource::byte_len`] 对管道可能是
@@ -832,15 +852,25 @@ fn would_channel_mask_fix_overflow(num_channels: u16, channel_mask: u32) -> bool
 /// 读缓冲固定 [`SLURP_CHUNK_BYTES`]：与 [`crate::asset`] 的摘要缓冲同一个量级，与输入长度
 /// 无关；增长用 `try_reserve`，因此"分配器说不"是错误而不是 abort。
 ///
+/// **连续无进展的读取有上界**（`2026-10-10` 由裁决 `R33` 加上，见
+/// [`unseekable_retry_allowance`]）：`Interrupted` 重试不消耗资源，因此一个永远报
+/// `Interrupted` 的源会让本循环永不返回。上界由 `max_input_bytes` 推导，超限时报源自己的
+/// I/O 错误。判据 `consecutive_interrupts_are_bounded_by_the_input_byte_budget` 钉住它。
+///
 /// # Errors
 ///
 /// - 输入超过 `max_input_bytes` ⇒ [`LimitViolation::InputTooLarge`]；
 /// - 分配器拒绝 ⇒ [`LimitViolation::AllocationRefused`]（该变体的计数**在这里的单位是
 ///   容器字节**，因为被增长的缓冲装的是容器字节，不是音频样本）；
-/// - 源自身的 I/O 失败原样上报。
+/// - 连续无进展的读取超过 [`unseekable_retry_allowance`] ⇒ 源自身的 `Interrupted` 错误；
+/// - 源自身的其他 I/O 失败原样上报。
 fn slurp_unseekable(source: &mut dyn MediaSource, max_input_bytes: u64) -> DecodeResult<Vec<u8>> {
     let mut bytes: Vec<u8> = Vec::new();
     let mut chunk = [0u8; SLURP_CHUNK_BYTES];
+    // 连续无进展读取的次数。有进展就归零，因此它数的是**连续**重试 —— 一份长素材中间
+    // 偶发几次 `EINTR` 不受影响。
+    let mut retries: u64 = 0;
+    let allowance = unseekable_retry_allowance(max_input_bytes);
     loop {
         match source.read(&mut chunk) {
             Ok(0) => return Ok(bytes),
@@ -860,8 +890,20 @@ fn slurp_unseekable(source: &mut dyn MediaSource, max_input_bytes: u64) -> Decod
                     })
                 })?;
                 bytes.extend_from_slice(&chunk[..filled]);
+                retries = 0;
             }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
+                // 这一次读没有交出任何字节。重试本身不消耗资源，因此必须有上界，否则
+                // 一个永远报 `Interrupted` 的源会让本循环**永不返回**（挂死）。
+                //
+                // 超限报源自己的那个 I/O 错误，而不是 `InputTooLarge`：没有任何字节被
+                // 真的消耗，报一个字节数会是假话（真实字节的那道闸门在 `Ok` 分支里，
+                // 口径与 [`limits::check_input_len`] 逐字相同，本处不改动它）。
+                retries = retries.saturating_add(1);
+                if retries > allowance {
+                    return Err(err.into());
+                }
+            }
             Err(err) => return Err(err.into()),
         }
     }
@@ -3632,5 +3674,156 @@ mod tests {
                 .frame_count(),
             2
         );
+    }
+
+    /// 一个**间歇性**中断的不可回退源：每次成功读取之前先报 `interrupts_per_read` 次
+    /// `Interrupted`；`seek` 一律失败。
+    ///
+    /// 存在理由：[`unseekable_retry_allowance`] 量的是**连续**无进展次数。一份长素材中间
+    /// 偶发 `EINTR` 不该被拒 —— 只有"连续"才计入。本类型让"总中断次数远超上界、但连续
+    /// 次数始终在上界内"变成可构造的输入（判据
+    /// `consecutive_interrupts_are_bounded_by_the_input_byte_budget` 的最后一段）。
+    struct AlternatingInterruptSource {
+        inner: Cursor<Vec<u8>>,
+        interrupts_per_read: u32,
+        pending: u32,
+    }
+
+    impl AlternatingInterruptSource {
+        fn new(bytes: Vec<u8>, interrupts_per_read: u32) -> Self {
+            Self {
+                inner: Cursor::new(bytes),
+                interrupts_per_read,
+                pending: interrupts_per_read,
+            }
+        }
+    }
+
+    impl Read for AlternatingInterruptSource {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pending > 0 {
+                self.pending -= 1;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "interrupted by a signal",
+                ));
+            }
+            let filled = self.inner.read(buf)?;
+            self.pending = self.interrupts_per_read;
+            Ok(filled)
+        }
+    }
+
+    impl Seek for AlternatingInterruptSource {
+        fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this source cannot seek",
+            ))
+        }
+    }
+
+    impl MediaSource for AlternatingInterruptSource {
+        fn is_seekable(&self) -> bool {
+            false
+        }
+
+        fn byte_len(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    /// 判据（`MUST-GATE-011` 不可信输入不许挂死 / 裁决 `R33`）：`slurp_unseekable` 对
+    /// **连续无进展**的读取有**可数的上界**，上界由调用方的输入字节预算推导。
+    ///
+    /// 量什么：一个"前 N 次 `read` 报 `Interrupted`、之后交出数据"的不可回退源经
+    /// `decode_source` 的返回值；以及 [`unseekable_retry_allowance`] 在几档预算上的读数。
+    /// 怎么量：预算固定为 4 个读取分块（`4 × SLURP_CHUNK_BYTES` 字节）⇒ 上界是 5。
+    /// N = 5 必须解出，N = 6 必须返回**源自己的** I/O 错误。
+    /// 判据**不读时钟**：它数的是重试次数，不是耗时（[ARCH-DET-001] 的判据纪律）。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | `max_input_bytes` | `unseekable_retry_allowance`（次） |
+    /// | :--- | ---: |
+    /// | 0 | 1 |
+    /// | `1 × SLURP_CHUNK_BYTES` | 2 |
+    /// | `4 × SLURP_CHUNK_BYTES` | 5 |
+    /// | `u64::MAX` | `u64::MAX / SLURP_CHUNK_BYTES + 1` |
+    ///
+    /// 端到端：N = 5 解出 2 帧且 `pcm_hash` 与内存入口逐位相同；N = 6 以 `Err(Io(..))`
+    /// 返回，`kind()` 就是 `Interrupted` —— 也就是说改建前的"永不返回"变成了明确错误。
+    ///
+    /// 最后一段钉住"**连续**"这个口径：每次成功读取前中断 3 次（总量 6 > 上界 5、
+    /// 连续量 3 ≤ 5）必须照常解出。
+    ///
+    /// 注入（实测）：把 `if retries > allowance` 改成 `if false`（等于去掉上界）⇒
+    /// 本条以 `the retry cap must refuse the 6th consecutive interrupt` 红。
+    #[test]
+    fn consecutive_interrupts_are_bounded_by_the_input_byte_budget() {
+        let chunk = SLURP_CHUNK_BYTES as u64;
+        // 上界是从预算推导的公式，不是魔数：逐档复算并给出闭区间的一侧。
+        assert_eq!(unseekable_retry_allowance(0), 1);
+        assert_eq!(unseekable_retry_allowance(chunk), 2);
+        assert_eq!(unseekable_retry_allowance(4 * chunk), 5);
+        assert_eq!(unseekable_retry_allowance(u64::MAX), u64::MAX / chunk + 1);
+        // 保底那一次：预算 0 也必须先容忍一次合法的 `EINTR`。
+        assert_eq!(unseekable_retry_allowance(0), unseekable_retry_allowance(1));
+
+        let budget = PcmBudget {
+            max_input_bytes: 4 * chunk,
+            ..PcmBudget::default()
+        };
+        let options = DecodeOptions {
+            budget,
+            ..DecodeOptions::default()
+        };
+        let allowance = unseekable_retry_allowance(budget.max_input_bytes);
+        assert_eq!(allowance, 5);
+
+        let legal = int_wav(2, 16, &[1, -2, 3, -4, 5, -6, 7, -8]);
+        let direct = decode_bytes(&legal, &options).unwrap();
+
+        // 恰好用尽上界：5 次 `Interrupted` 之后仍然解出，且样本与内存入口逐位相同。
+        let buffered = decode_source(
+            Box::new(InterruptingSource::new(
+                legal.clone(),
+                u32::try_from(allowance).unwrap(),
+            )),
+            &Hint::new(),
+            &options,
+        )
+        .expect("the allowance itself must be retried");
+        assert_eq!(buffered.frame_count(), direct.frame_count());
+        assert_eq!(buffered.pcm_hash(), direct.pcm_hash());
+
+        // 上界加一：第 6 次 `Interrupted` 必须返回源自己的 I/O 错误，而不是继续转下去。
+        match decode_source(
+            Box::new(InterruptingSource::new(
+                legal.clone(),
+                u32::try_from(allowance + 1).unwrap(),
+            )),
+            &Hint::new(),
+            &options,
+        ) {
+            Err(DecodeError::Io(err)) => assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::Interrupted,
+                "the cap must surface the source's own error"
+            ),
+            other => {
+                panic!("the retry cap must refuse the 6th consecutive interrupt, got {other:?}")
+            }
+        }
+
+        // "连续"才是被上界计的量：每次成功读取前中断 3 次（总量 6 > 上界 5、连续量 3 ≤ 5）
+        // 必须照常解出。把 `retries` 的归零去掉，这一段就会以同一个错误红。
+        let alternating = decode_source(
+            Box::new(AlternatingInterruptSource::new(legal.clone(), 3)),
+            &Hint::new(),
+            &options,
+        )
+        .expect("intermittent interrupts must not accumulate: the cap counts CONSECUTIVE ones");
+        assert_eq!(alternating.pcm_hash(), direct.pcm_hash());
     }
 }
