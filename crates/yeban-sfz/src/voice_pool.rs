@@ -1391,4 +1391,203 @@ mod tests {
         assert_eq!(pool.voice_at(1), before[1]);
         assert_eq!(snapshot(&pool), before, "no read-only entry point mutates");
     }
+
+    #[test]
+    fn a_repeated_same_valued_polyphony_call_leaves_every_slot_unchanged() {
+        // 类别 5 的收口：`apply_note_polyphony` 是 11 个可变公开入口之一，既有判据只按
+        // 「第二次返回 0」读过它；这里按**逐槽位快照**判定。
+        let mut pool = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let first = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let second = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let other_pitch = pool.note_on_in_group(61, 100, -6.0, 0).started();
+        assert_eq!(
+            pool.apply_note_polyphony(second, limit(1, true))
+                .expect("live handle"),
+            1,
+            "the earlier same-key voice gives way"
+        );
+        assert!(pool.voice(first).expect("still active").retiring);
+        // 中途推进一小段，让那条让位淡出**不再**是满值：这样「第二次调用是否重新武装」
+        // 就成为一个可观测的差别（不推进时它天然看不出来）。
+        pool.process(100);
+        let once = snapshot(&pool);
+        assert_eq!(
+            pool.voice(first).expect("still active").fade_remaining,
+            pool.steal_fade().samples() - 100
+        );
+
+        // 第二次施加同一个值：已让位的声部不再计入在场数 ⇒ 0，且一个字段都不动。
+        assert_eq!(
+            pool.apply_note_polyphony(second, limit(1, true))
+                .expect("live handle"),
+            0
+        );
+        assert_eq!(
+            snapshot(&pool),
+            once,
+            "a repeated polyphony call must be slot identity"
+        );
+        assert!(!pool.voice(other_pitch).expect("still active").retiring);
+        // 与 `retire` 的 re-arm 语义相对：重复调用**不**重新武装那条让位淡出。
+        assert_eq!(
+            pool.voice(first).expect("still active").fade_remaining,
+            pool.steal_fade().samples() - 100,
+            "the repeated call must not re-arm the pending fade"
+        );
+        // 幂等不是句柄失效。
+        assert!(pool.voice(second).is_some());
+    }
+
+    #[test]
+    fn a_repeated_note_on_in_group_is_an_event_and_records_the_group() {
+        // `note_on_in_group` 是 `note_on` 之外的第二个事件入口（多一个 group 参数）：
+        // 同一事件重复两次仍是**两个**声部，且两次都记下同一个非零 group。
+        let mut pool = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let first = pool.note_on_in_group(60, 100, -6.0, 7).started();
+        let after_one = snapshot(&pool);
+        let second = pool.note_on_in_group(60, 100, -6.0, 7).started();
+        assert_ne!(first, second, "two distinct handles");
+        assert_ne!(first.index, second.index, "two distinct slots");
+        assert_eq!(pool.active_count(), 2, "two triggers start two voices");
+        assert_ne!(snapshot(&pool), after_one);
+        assert_eq!(pool.voice(first).expect("still active").group, 7);
+        assert_eq!(pool.voice(second).expect("still active").group, 7);
+
+        // 文档化的等价：`note_on` 就是 `group = 0` 的 `note_on_in_group`（句柄 + 状态）。
+        let mut plain = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let mut grouped = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        assert_eq!(
+            plain.note_on(60, 100, -6.0),
+            grouped.note_on_in_group(60, 100, -6.0, 0)
+        );
+        assert_eq!(snapshot(&plain), snapshot(&grouped));
+
+        // 不同的 group 是不同的键：这不改变「事件」这个结论，只是让键不同。
+        let mut keyed = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let g0 = keyed.note_on_in_group(60, 100, -6.0, 0).started();
+        let g1 = keyed.note_on_in_group(60, 100, -6.0, 1).started();
+        assert_eq!(
+            keyed
+                .apply_note_polyphony(g1, limit(1, true))
+                .expect("live handle"),
+            0,
+            "another group is outside the note_polyphony key"
+        );
+        assert!(!keyed.voice(g0).expect("still active").retiring);
+    }
+
+    // ------------------------------------------------------------------
+    // 块长度极值（类别 7）与它们在时间推进轴上的幂等收口（类别 5）
+    // ------------------------------------------------------------------
+
+    /// 一个含三种声部形态的池：被窃取的（带 144 采样淡入）、retiring 的（带淡出）、
+    /// 普通的。返回池、三个声部各自的句柄，以及窃取产生的新句柄。
+    fn fade_fixture() -> (VoicePool, [VoiceHandle; 3], VoiceHandle) {
+        let mut pool = VoicePool::new(3, 48_000.0).expect("valid capacity");
+        let released = pool.note_on(60, 100, -6.0).started();
+        let retiring = pool.note_on(61, 100, -6.0).started();
+        let plain = pool.note_on(62, 100, -6.0).started();
+        pool.note_off(released).expect("live handle");
+        pool.retire(retiring).expect("live handle");
+        // 池已满：窃取 tier 0 里触发最早的 `released`，新声部带 144 采样淡入。
+        let outcome = pool.note_on(63, 100, -6.0);
+        assert_eq!(outcome.victim(), Some(released));
+        let stolen = outcome.started();
+        assert_eq!(
+            pool.voice(stolen).expect("still active").fade_in_remaining,
+            144,
+            "3ms @ 48kHz"
+        );
+        (pool, [released, retiring, plain], stolen)
+    }
+
+    #[test]
+    fn process_is_invariant_under_block_splitting() {
+        // 类别 7（块长度极值）＋ 类别 5：同一个**总**推进量，切成两块推进与一次推进必须
+        // 逐位相同 —— 渲染器的块长由设备决定，池的状态不允许依赖它。
+        // 覆盖 1 帧、非 2 的幂（7 / 11 / 100 / 44）、恰好等于淡出长度（144）、
+        // 超过淡出长度（1000）与 `u32::MAX`（饱和）。
+        for (first, second) in [
+            (1u32, 1u32),
+            (7, 11),
+            (0, 144),
+            (144, 0),
+            (100, 44),
+            (1000, 5),
+            (5, 1000),
+            (u32::MAX, 1),
+            (1, u32::MAX),
+            (u32::MAX, u32::MAX),
+        ] {
+            let total = first.saturating_add(second);
+            let (mut split, split_handles, split_stolen) = fade_fixture();
+            split.process(first);
+            split.process(second);
+
+            let (mut one_shot, one_shot_handles, one_shot_stolen) = fade_fixture();
+            one_shot.process(total);
+
+            assert_eq!(
+                snapshot(&split),
+                snapshot(&one_shot),
+                "split ({first}, {second}) must equal one shot {total}"
+            );
+            for index in 0..3 {
+                assert_eq!(
+                    split.voice(split_handles[index]).is_some(),
+                    one_shot.voice(one_shot_handles[index]).is_some(),
+                    "handle {index} liveness, split ({first}, {second})"
+                );
+            }
+            assert_eq!(
+                split.voice(split_stolen).is_some(),
+                one_shot.voice(one_shot_stolen).is_some(),
+                "the stolen voice's liveness, split ({first}, {second})"
+            );
+            // 代数口径：`VoiceInfo` 不带 `generation`，用「复用同一槽位得到的新句柄」读它。
+            // 两条路径的回收次数必须相同，否则这里会差 1。
+            assert_eq!(
+                split.note_on(72, 100, -3.0).started(),
+                one_shot.note_on(72, 100, -3.0).started(),
+                "split ({first}, {second}) must reclaim a slot the same number of times"
+            );
+        }
+    }
+
+    #[test]
+    fn a_saturated_process_call_is_a_fixed_point_and_never_wraps() {
+        // 类别 7：`frames = u32::MAX` 只能是饱和，不能回绕成小数字（回绕会让一个正在
+        // 淡出的声部永远不被回收）。类别 5：饱和之后再施加同一个值就是恒等。
+        let (mut pool, handles, stolen) = fade_fixture();
+        assert!(pool.voice(handles[1]).is_some(), "the fade is in flight");
+        assert_eq!(
+            pool.voice(stolen).expect("still active").fade_in_remaining,
+            144
+        );
+
+        pool.process(u32::MAX);
+        let saturated = snapshot(&pool);
+        assert!(
+            pool.voice(handles[1]).is_none(),
+            "one saturated block must reclaim the retiring slot"
+        );
+        assert_eq!(
+            pool.voice(stolen).expect("still active").fade_in_remaining,
+            0,
+            "the fade-in bottoms out at zero, never wraps"
+        );
+        assert!(pool.voice(handles[2]).is_some(), "a plain voice survives");
+
+        pool.process(u32::MAX);
+        assert_eq!(
+            snapshot(&pool),
+            saturated,
+            "a repeated MAX is the identity on the saturated state"
+        );
+        pool.process(u32::MAX - 1);
+        assert_eq!(snapshot(&pool), saturated);
+        pool.process(0);
+        assert_eq!(snapshot(&pool), saturated);
+        assert_eq!(pool.active_count(), 2);
+    }
 }

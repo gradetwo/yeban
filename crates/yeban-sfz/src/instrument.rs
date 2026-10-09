@@ -3426,6 +3426,77 @@ mod tests {
     }
 
     #[test]
+    fn a_one_sided_declaration_leaves_the_other_lane_at_its_own_default() {
+        // 类别 6 的「只填一路 / 另一路留缺省」。本 crate 不含音频缓冲（没有左/右声道），
+        // 因此这条口径落在 SFZ 的**成对独立 opcode** 上：每一路都有自己的规范缺省，
+        // 只写一路时另一路必须原样保留自己的缺省，不被邻路污染、也不被隐式取 0。
+
+        // --- 弯音范围：bend_up（缺省 200） / bend_down（缺省 -200） ---
+        let up_only = first_region("<region>sample=a.wav bend_up=500");
+        assert_eq!(up_only.bend_up, 500);
+        assert_eq!(up_only.bend_down, BEND_DOWN_DEFAULT_CENTS);
+        // 未写的那一路仍然按**自己的**刻度参与插值（不是 0、也不是上界的值）。
+        assert_eq!(up_only.bend_cents(127), 500);
+        assert_eq!(up_only.bend_cents(0), BEND_DOWN_DEFAULT_CENTS);
+
+        let down_only = first_region("<region>sample=a.wav bend_down=500");
+        assert_eq!(down_only.bend_up, BEND_UP_DEFAULT_CENTS);
+        assert_eq!(down_only.bend_down, 500);
+        assert_eq!(down_only.bend_cents(0), 500);
+        assert_eq!(down_only.bend_cents(127), BEND_UP_DEFAULT_CENTS);
+
+        // 只写一路与「把另一路显式写成它的缺省值」逐位等价（`PlaybackSpec` 上也一样）。
+        let explicit = first_region("<region>sample=a.wav bend_up=500 bend_down=-200");
+        assert_eq!(up_only.bend_down, explicit.bend_down);
+        let rates = crate::RenderRates::default();
+        for wheel in [0u8, 1, 63, 64, 65, 127] {
+            assert_eq!(
+                up_only.bend_cents(wheel),
+                explicit.bend_cents(wheel),
+                "wheel {wheel}"
+            );
+            assert_eq!(
+                up_only.bend_ratio(60, wheel).to_bits(),
+                explicit.bend_ratio(60, wheel).to_bits(),
+                "wheel {wheel}"
+            );
+        }
+        let spec = up_only.playback_spec(60, 100, rates);
+        assert_eq!(spec.bend_up, 500);
+        assert_eq!(spec.bend_down, BEND_DOWN_DEFAULT_CENTS);
+
+        // --- 力度窗口：lovel（缺省 0） / hivel（缺省 127） ---
+        let lovel_only = first_region("<region>sample=a.wav lovel=64");
+        assert_eq!((lovel_only.lovel, lovel_only.hivel), (64, 127));
+        assert!(lovel_only.matches_velocity(64) && lovel_only.matches_velocity(127));
+        assert!(!lovel_only.matches_velocity(63));
+
+        let hivel_only = first_region("<region>sample=a.wav hivel=64");
+        assert_eq!((hivel_only.lovel, hivel_only.hivel), (0, 64));
+        assert!(hivel_only.matches_velocity(0) && hivel_only.matches_velocity(64));
+        assert!(!hivel_only.matches_velocity(65));
+
+        // --- 音域窗口：lokey（缺省 0） / hikey（缺省 127） ---
+        let lokey_only = first_region("<region>sample=a.wav lokey=41");
+        assert_eq!((lokey_only.lokey, lokey_only.hikey), (41, 127));
+        assert!(lokey_only.matches_key(41) && lokey_only.matches_key(127));
+        assert!(!lokey_only.matches_key(40));
+
+        let hikey_only = first_region("<region>sample=a.wav hikey=41");
+        assert_eq!((hikey_only.lokey, hikey_only.hikey), (0, 41));
+        assert!(hikey_only.matches_key(0) && hikey_only.matches_key(41));
+        assert!(!hikey_only.matches_key(42));
+
+        // 缺省全写（不声明任何一路）与上面每一对的「另一路缺省」一致：这条把三个族
+        // 的缺省钉成同一组常量，防止将来把某一族的缺省改成邻路的值。
+        let none_declared = first_region("<region>sample=a.wav");
+        assert_eq!(none_declared.bend_up, BEND_UP_DEFAULT_CENTS);
+        assert_eq!(none_declared.bend_down, BEND_DOWN_DEFAULT_CENTS);
+        assert_eq!((none_declared.lovel, none_declared.hivel), (0, 127));
+        assert_eq!((none_declared.lokey, none_declared.hikey), (0, 127));
+    }
+
+    #[test]
     fn an_out_of_range_bend_range_is_an_error_not_a_silent_clamp() {
         // 两个格式页的表格 Range 都是 -9600 to 9600。越界是明确 `Err`。
         for source in [

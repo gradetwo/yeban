@@ -144,13 +144,19 @@ pub struct LoopWindow {
 }
 
 impl LoopWindow {
-    /// 循环长度（采样点）。构造上恒 `>= 1`（见 [`Region::loop_window`]）。
+    /// 循环长度（采样点）。解析得到的窗口恒 `>= 1`（见 [`Region::loop_window`]）。
+    ///
+    /// 字段是 `pub`，手工构造出 `end < start` 的区间时用 `saturating_sub` 归零：
+    /// **不**回绕、**不** panic —— 与 [`SampleSpan::len`] 同一条口径（后者此前已按
+    /// 「字段是 `pub`」的理由选了饱和）。
     #[must_use]
     pub fn len(self) -> u32 {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 
-    /// 是否为空窗口。构造上恒为 `false`；保留该方法是 `len()` 的配对 API。
+    /// 是否为空窗口。解析得到的窗口恒为 `false`（见 [`Region::loop_window`]）；
+    /// 手工构造的反向窗口为 `true`（[`LoopWindow::len`] 的饱和结果）。
+    /// 保留该方法是 `len()` 的配对 API。
     #[must_use]
     pub fn is_empty(self) -> bool {
         self.len() == 0
@@ -914,6 +920,58 @@ mod tests {
             window_of("<region>sample=a.wav loop_mode=one_shot loop_start=10 loop_end=20"),
             None
         );
+    }
+
+    #[test]
+    fn an_inverted_hand_built_loop_window_saturates_instead_of_wrapping() {
+        // 类别 7（长度溢出被拒绝/归零，而不是回绕）。`LoopWindow` 的两个字段是 `pub`，
+        // 因此 `end < start` 是**可以**被下游构造出来的：`len()` 必须饱和到 0，
+        // 与 `SampleSpan::len` 的既有口径一致（该实现为 `saturating_sub`）。
+        let inverted = LoopWindow { start: 10, end: 0 };
+        assert_eq!(inverted.len(), 0, "saturating, never wrapping");
+        assert!(inverted.is_empty(), "an inverted window has no frames");
+        // 纯函数：把同一个值再读一次得到同一个读数（同一个值重复施加与一次相同）。
+        let again = inverted;
+        assert_eq!(again.len(), inverted.len());
+
+        // 兄弟类型在同一种手工构造下的口径（它是本票的参照，不是被改的对象）。
+        let sibling = SampleSpan {
+            start: 10,
+            end: Some(0),
+        };
+        assert_eq!(sibling.len(), Some(0), "the two types share one policy");
+        assert!(sibling.is_empty());
+
+        // 边界：端点相等 ⇒ 0；相邻 ⇒ 1；整段 `u32` 域 ⇒ `u32::MAX`（不回绕）。
+        let equal_ends = LoopWindow { start: 7, end: 7 };
+        let adjacent = LoopWindow { start: 7, end: 8 };
+        let whole_domain = LoopWindow {
+            start: 0,
+            end: u32::MAX,
+        };
+        let fully_reversed = LoopWindow {
+            start: u32::MAX,
+            end: 0,
+        };
+        assert_eq!(equal_ends.len(), 0);
+        assert_eq!(adjacent.len(), 1);
+        assert_eq!(whole_domain.len(), u32::MAX);
+        assert_eq!(fully_reversed.len(), 0);
+
+        // 解析路径不受本收口影响：`loop_end <= loop_start` 仍然**不产生**窗口，
+        // 也就是饱和分支只服务于手工构造的值。
+        for source in [
+            "<region>sample=a.wav loop_mode=loop_continuous loop_start=10 loop_end=0",
+            "<region>sample=a.wav loop_mode=loop_continuous loop_start=10 loop_end=10",
+            "<region>sample=a.wav loop_mode=loop_sustain loop_start=30 loop_end=20",
+        ] {
+            let instrument = parse_text(source, &Default::default()).expect("parses");
+            assert_eq!(
+                instrument.regions()[0].loop_window(),
+                None,
+                "{source} must still produce no window"
+            );
+        }
     }
 
     #[test]
