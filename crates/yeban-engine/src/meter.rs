@@ -1162,4 +1162,110 @@ mod tests {
         );
         assert_eq!(bank.active_nodes(), 0, "零容量池不得计量任何节点");
     }
+
+    /// 判据：槽位全满时**只**淘汰最久未被计量的**那一个**槽 —— 被淘汰者的状态清零，
+    /// **其余在册槽的状态原样保留**（不是整池重建，也不是淘汰多个）。
+    ///
+    /// 量什么：`MeterBank::<3>` 里第四个节点触发淘汰之后，两个**幸存**节点的
+    /// `peak_hold`（线性幅度）与被淘汰节点重新出现时的 `peak_hold`。
+    ///
+    /// 为什么单独立一条：既有的 `a_full_bank_evicts_the_least_recently_measured_slot`
+    /// 只断言**被淘汰者**从 0 重建。一个"溢出时把整个 `slots` 数组清空、再放进新节点"
+    /// 的实现同样能让那条判据全绿（被淘汰者当然从 0 起），而它丢掉了**所有**幸存节点的
+    /// 峰值保持与平滑 RMS。本判据补上"幸存者必须还在"这一半。
+    ///
+    /// 夹具前提：槽 0 的 `touched` 必须是**最大**的那个（下面在 q3 重测 `a` 正是为此），
+    /// 否则"永远淘汰槽 0"与"淘汰最久未被计量的"恰好同解、判据没有判别力。
+    #[test]
+    fn a_full_bank_replaces_exactly_one_slot_and_keeps_every_survivor_state() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let c = EntityId::new();
+        let d = EntityId::new();
+        let mut bank = MeterBank::<3>::new();
+
+        // q0..q2：三个槽依次被 a / b / c 占满，三者都满幅（peak_hold = 1.0）。
+        bank.begin_quantum();
+        let a0 = bank.measure(a, 0, &[1.0f32; 32]).expect("容量足够");
+        assert!((a0.peak_hold - 1.0).abs() < 1e-6, "夹具前提：a 满幅");
+        bank.begin_quantum();
+        assert!(bank.measure(b, 1, &[1.0f32; 32]).is_some());
+        bank.begin_quantum();
+        assert!(bank.measure(c, 2, &[1.0f32; 32]).is_some());
+        // q3：重测 a ⇒ touched 为 a = 3、b = 1、c = 2 ⇒ b 是最久未被计量的那个。
+        bank.begin_quantum();
+        assert!(bank.measure(a, 3, &[]).is_some());
+
+        // q4：d 进不来 ⇒ 恰好淘汰 b 一个槽。
+        bank.begin_quantum();
+        assert!(bank.measure(d, 4, &[1.0f32; 32]).is_some());
+        assert_eq!(bank.capacity_drops(), 1, "第四个节点只许淘汰一个槽");
+
+        // 幸存者 a 与 c 必须带着历史继续（不是被一起清掉）。
+        bank.begin_quantum();
+        let a_after = bank.measure(a, 5, &[]).expect("容量足够");
+        let c_after = bank.measure(c, 6, &[]).expect("容量足够");
+        assert!(
+            a_after.peak_hold > 0.9,
+            "a（touched = 3）是幸存者 ⇒ 峰值保持必须还在回落中，实测 {}",
+            a_after.peak_hold
+        );
+        assert!(
+            c_after.peak_hold > 0.9,
+            "c（touched = 2）同样是幸存者 ⇒ 峰值保持必须还在回落中，实测 {}",
+            c_after.peak_hold
+        );
+
+        // 被淘汰的 b 重新出现 ⇒ 从 0 起（它在 q4 已经出池）。
+        bank.begin_quantum();
+        let b_after = bank.measure(b, 7, &[]).expect("容量足够");
+        assert_eq!(
+            b_after.peak_hold, 0.0,
+            "b（touched = 1，最久未被计量）必须已被淘汰 ⇒ 重新出现时从 0 起；实测 {}",
+            b_after.peak_hold
+        );
+    }
+
+    /// 判据：零容量池（`MeterBank::<0>`）**逐次**拒绝计量并计数，节点槽位的零容量
+    /// 不得让母线路径一起失效。
+    ///
+    /// 量什么：`MeterBank::<0>` 对**两个不同节点**的 `measure` 返回值与
+    /// `capacity_drops`（次），加上 `measure_bus_stereo` 的 `peak`（线性幅度）。
+    ///
+    /// 为什么单独立一条：既有的 `a_zero_capacity_bank_counts_every_rejected_measurement`
+    /// 只重复测**同一个节点**、且不跨 `begin_quantum` ⇒ 一个"同一节点第二次被拒就不再
+    /// 计数"或"`begin_quantum` 顺手把累计拒绝数清零"的实现同样全绿；那条判据也完全没碰
+    /// 母线 —— 母线不走槽位池（`measure_bus*` 的签名不返回 `Option`）⇒ 零节点容量下
+    /// 它**必须**照常出帧，而不是被一起关掉。
+    #[test]
+    fn a_zero_capacity_bank_counts_every_rejected_node_and_keeps_the_bus_alive() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let master = EntityId::new();
+        let mut bank = MeterBank::<0>::new();
+
+        bank.begin_quantum();
+        assert!(bank.measure(a, 0, &[1.0f32; 8]).is_none());
+        assert!(bank.measure(b, 0, &[1.0f32; 8]).is_none());
+        assert_eq!(
+            bank.capacity_drops(),
+            2,
+            "两个**不同**节点被拒的计量必须各计一次（不静默）"
+        );
+        assert_eq!(bank.active_nodes(), 0, "零容量池不得计量任何节点");
+
+        // 跨量子累计：`begin_quantum` 只重置本量子的计量计数，不得吞掉拒绝数。
+        bank.begin_quantum();
+        assert!(bank.measure(a, 1, &[1.0f32; 8]).is_none());
+        assert_eq!(bank.capacity_drops(), 3, "拒绝数必须跨量子累计");
+
+        // 母线不走槽位池 ⇒ 零节点容量下仍必须真的出帧。
+        let bus = bank.measure_bus_stereo(master, 1, &[1.0f32; 8], &[1.0f32; 8]);
+        assert!(bus.is_sane(), "母线帧必须有限: {bus:?}");
+        assert!(
+            (bus.peak - 1.0).abs() < 1e-6,
+            "零节点容量不得让母线失效（实测 peak = {}）",
+            bus.peak
+        );
+    }
 }
