@@ -59,6 +59,14 @@
 //! 这一族的规范出处、`label_ccN` 下标上界与 `scope_label` 优先序两条工程裁决
 //! 都登记在 [`label`] 的模块文档里。
 //!
+//! `<control>` 段的 `set_ccN`（[`Instrument::cc_defaults`]）是**乐器加载时**的 MIDI CC
+//! 初始值，规范表格 Range = `0 to 127`，正文写明 "Used under the ‹`control`› header."
+//! （<https://sfzformat.com/opcodes/set_ccN/>）。它**不**改变本 crate 的任何判定，
+//! 但把文件声明的 CC 初值交给调用方 —— 本 crate 已用调用方给的 CC 探针判定 `loccN` /
+//! `hiccN` 门控与 `xfin_loccN` / `xfout_*` 交叉淡化，没有它就等于让那些门控从错档位起步。
+//! 下标域、取值域、只认 `<control>`、多段同名 CC 的覆盖顺序四条工程裁决与本次语料普查
+//! （105 个文件 / 1 137 处出现）都登记在 [`control`] 的模块文档里。
+//!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2 ARCH-RT-001 / ARCH-RT-004
@@ -257,6 +265,29 @@
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
+//! `<control>` 段的 `set_ccN` 是**加载时**的 CC 初值（[`Instrument::cc_defaults`]）。
+//! 本 crate 不替调用方应用它，所以 `loccN` 门控仍要靠调用方按该初值建好的 CC 状态：
+//!
+//! ```
+//! use yeban_sfz::{ParseLimits, RegionQuery, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<control>set_cc7=100\n<region>sample=a.wav locc7=64 hicc7=127",
+//!     &ParseLimits::default(),
+//! )?;
+//! assert_eq!(instrument.cc_default(7), Some(100));
+//! // 没有 CC 状态 ⇒ 严格策略下这条门控不匹配（本 crate 不替调用方初始化）。
+//! assert!(instrument.region_for(60, 100).is_none());
+//! let initial = instrument.cc_default(7).expect("declared");
+//! let applied = move |_: u8| initial;
+//! assert!(
+//!     instrument
+//!         .region_for_with(RegionQuery::new(60, 100).with_cc(&applied))
+//!         .is_some()
+//! );
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
 //! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
 //! ```no_run
 //! use yeban_sfz::{IncludeResolver, ParseLimits, parse_sources};
@@ -314,6 +345,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod control;
 pub mod crossfade;
 pub mod curve;
 pub mod effect;
@@ -326,6 +358,7 @@ pub mod playback;
 pub mod velocity;
 pub mod voice_pool;
 
+pub use control::{MAX_CC_DEFAULT_INDEX, MAX_CC_DEFAULT_VALUE, parse_set_cc_name};
 pub use crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange, fade_in, fade_out};
 pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};

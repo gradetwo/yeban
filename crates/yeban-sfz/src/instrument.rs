@@ -896,6 +896,11 @@ pub struct Instrument<'a> {
     /// 本 crate 此前只用它读 `default_path`），因此这些标签放在乐器上而不是每个 region 上。
     /// 登记语料里 `label_ccN` 的 1672 处出现**全部**在 `<control>` 段里。
     control_cc_labels: BTreeMap<u16, Cow<'a, str>>,
+    /// `<control>` 段里的 `set_ccN` 初始值（按 CC 下标升序，确定性；同一下标后者覆盖前者）。
+    ///
+    /// 规范出处、四条工程裁决与登记语料普查见 [`crate::control`]。与上面那张表同样
+    /// 放在乐器上：`<control>` 不属于继承链，且这个初值是**整份文件**的属性。
+    control_cc_defaults: BTreeMap<u16, u8>,
     /// 按音符分桶的 region 下标（加速 `region_for`，构造后只读）。
     key_buckets: Vec<Vec<u32>>,
     warnings: Vec<Warning>,
@@ -909,6 +914,7 @@ impl<'a> Instrument<'a> {
         effects: Vec<Effect<'a>>,
         midi_sections: Vec<MidiSection<'a>>,
         control_cc_labels: BTreeMap<u16, Cow<'a, str>>,
+        control_cc_defaults: BTreeMap<u16, u8>,
         warnings: Vec<Warning>,
     ) -> Self {
         let mut key_buckets: Vec<Vec<u32>> = vec![Vec::new(); 128];
@@ -931,6 +937,7 @@ impl<'a> Instrument<'a> {
             effects,
             midi_sections,
             control_cc_labels,
+            control_cc_defaults,
             key_buckets,
             warnings,
         }
@@ -1017,6 +1024,33 @@ impl<'a> Instrument<'a> {
     #[must_use]
     pub fn cc_labels(&self) -> &BTreeMap<u16, Cow<'a, str>> {
         &self.control_cc_labels
+    }
+
+    /// `<control>` 段里声明的 `set_ccN` 初始值（按 CC 下标升序，确定性）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/set_ccN/>："Sets a default initial value
+    /// for MIDI CC number N, when the instrument is initially loaded. Used under the
+    /// ‹`control`› header."；表格 Range = `0 to 127`。
+    ///
+    /// **用途**：调用方（引擎）应当在加载乐器时把每个 `cc` 置为对应 `value`，
+    /// 再让 [`Region::cc_gates_ok`] / [`Region::crossfade_gain`] 去读那个 CC 状态 ——
+    /// 否则 `loccN` / `hiccN` 门控与 `xfin_loccN` / `xfout_*` 交叉淡化会从错的档位起步。
+    /// 本 crate 自己**不**持有 CC 状态，也**不**替调用方应用这些初值。
+    ///
+    /// 与 [`Instrument::cc_labels`] 的分工：`label_ccN` 只影响显示，`set_ccN` 是初值。
+    /// 下标域、取值域与作用域口径见 [`crate::control`]。
+    /// 该调用零分配、无锁、无 I/O，可在实时路径使用。
+    #[must_use]
+    pub fn cc_defaults(&self) -> &BTreeMap<u16, u8> {
+        &self.control_cc_defaults
+    }
+
+    /// 取某个 CC 下标的 `set_ccN` 初始值（[`None`] 表示该 CC 没有声明初值）。
+    ///
+    /// `BTreeMap` 查找，零分配、无锁、无 I/O，可在实时路径使用。
+    #[must_use]
+    pub fn cc_default(&self, cc: u16) -> Option<u8> {
+        self.control_cc_defaults.get(&cc).copied()
     }
 
     /// 「当前生效的 keyswitch」对应的 `sw_label`（ARIA 的 GUI 行为）。
@@ -2530,6 +2564,143 @@ mod tests {
     }
 
     #[test]
+    fn control_scope_set_cc_defaults_are_file_level_and_not_regions() {
+        // 登记语料里 `set_ccN` 的 1137 处出现全部在 `<control>` 段（见 `crate::control`）。
+        // `set_cc400=63` 与 `label_cc400` 出现在同样 19 个文件里
+        // （`assets/samples/karoryfer-big-rusty-drums/`），因此用它做对照。
+        let instrument = parse_text(
+            "<control>set_cc7=100 set_cc101=0 set_cc400=63\n\
+             <region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.cc_default(7), Some(100));
+        assert_eq!(instrument.cc_default(101), Some(0));
+        assert_eq!(instrument.cc_default(400), Some(63));
+        assert_eq!(instrument.cc_default(8), None);
+        assert_eq!(instrument.cc_defaults().len(), 3);
+        // 确定性：表的迭代顺序由 CC 下标唯一确定（BTreeMap），不是文件出现顺序。
+        assert_eq!(
+            instrument.cc_defaults().keys().copied().collect::<Vec<_>>(),
+            vec![7, 101, 400]
+        );
+        // `<control>` 不是继承链的一环：region 上不带初值，region 选择也不看它。
+        assert_eq!(instrument.regions().len(), 1);
+        assert_eq!(
+            instrument.region_for(60, 100).map(|r| r.sample.as_ref()),
+            Some("a.wav")
+        );
+    }
+
+    #[test]
+    fn set_cc_defaults_need_the_control_header_and_the_last_value_wins() {
+        // 只认 `<control>`（规范："Used under the ‹control› header."）。
+        let region_only =
+            parse_text("<region>sample=a.wav set_cc7=100", &Default::default()).expect("parses");
+        assert!(region_only.cc_defaults().is_empty());
+        // 同一文件里后写的胜出（与 `label_ccN` 同一条口径）；语料里没有两个
+        // `<control>` 段的文件，因此这条是纯工程裁决。
+        let twice = parse_text(
+            "<control>set_cc7=1\n<region>sample=a.wav\n<control>set_cc7=2",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(twice.cc_default(7), Some(2));
+        assert_eq!(twice.cc_defaults().len(), 1);
+        // `set_cc` 系列里名字不成形的仍按未知 opcode 忽略（不误报）。
+        let malformed = parse_text(
+            "<control>set_cc=1 set_ccX=2 set_cc7x=3\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(malformed.cc_defaults().is_empty());
+    }
+
+    #[test]
+    fn an_out_of_range_set_cc_value_is_an_explicit_error() {
+        // **整数越界**是明确 Err（规范表格 Range = `0 to 127`）；登记语料里出现 0 次。
+        let error = parse_text(
+            "<control>set_cc7=128\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect_err("128 is above the specification table range");
+        assert!(
+            matches!(
+                &error,
+                SfzError::IntegerOutOfRange { line: 1, opcode, value: 128, min: 0, max: 127 }
+                    if opcode == "set_cc7"
+            ),
+            "{error:?}"
+        );
+        // **非整数取值**（登记语料里 42 处 `63.5`、10 个文件）只丢弃那一条并告警：
+        // 硬 `Err` 会让那些乐器整份无法加载（见 `crate::control` 的工程裁决第 2 条）。
+        let coerced = parse_text(
+            "<control>set_cc7=63.5 set_cc8=64\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("a non-integer value must not make the whole file unloadable");
+        assert_eq!(coerced.cc_default(7), None);
+        assert_eq!(coerced.cc_default(8), Some(64));
+        assert!(
+            matches!(
+                coerced.warnings(),
+                [Warning::MalformedSetCc { line: 1, opcode, value }]
+                    if opcode == "set_cc7" && value == "63.5"
+            ),
+            "{:?}",
+            coerced.warnings()
+        );
+        // 下标越界（u16 容器界，与 `label_ccN` 同一域）仍是明确 Err。
+        let index = parse_text(
+            "<control>set_cc65536=1\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect_err("index is above the u16 container bound");
+        assert!(
+            matches!(
+                &index,
+                SfzError::IntegerOutOfRange {
+                    line: 1,
+                    value: 65536,
+                    min: 0,
+                    max: 65535,
+                    ..
+                }
+            ),
+            "{index:?}"
+        );
+    }
+
+    #[test]
+    fn set_cc_defaults_are_not_applied_by_this_crate() {
+        // 交接契约：`set_ccN` 只是把初值交给调用方。本 crate **不**持有 CC 状态，
+        // 因此没有 CC 探针时那条 `loccN` 门控仍旧不匹配 —— 免得把「文件声明了初值」
+        // 误当成「门控已满足」。
+        let instrument = parse_text(
+            "<control>set_cc7=100\n\
+             <region>sample=a.wav locc7=64 hicc7=127",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.cc_default(7), Some(100));
+        assert!(instrument.region_for(60, 100).is_none());
+        let zero = |_cc: u8| 0u8;
+        assert!(
+            instrument
+                .region_for_with(RegionQuery::new(60, 100).with_cc(&zero))
+                .is_none()
+        );
+        // 调用方自己按 `cc_defaults()` 初始化 CC 状态之后，门控才匹配。
+        let initial = instrument.cc_default(7).expect("declared");
+        let applied = move |_cc: u8| initial;
+        assert!(
+            instrument
+                .region_for_with(RegionQuery::new(60, 100).with_cc(&applied))
+                .is_some()
+        );
+    }
+
+    #[test]
     fn region_scope_cc_labels_follow_the_inheritance_chain() {
         let instrument = parse_text(
             "<global>label_cc7=Global volume\n\
@@ -2679,6 +2850,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            BTreeMap::new(),
             BTreeMap::new(),
             Vec::new(),
         );

@@ -323,6 +323,25 @@ pub enum Warning {
         /// 1-based 行号。
         line: usize,
     },
+    /// `<control>set_ccN` 的取值不是十进制整数（登记语料里有 `set_cc32=63.5` 这类写法）：
+    /// **该条声明被丢弃**，文件继续解析。
+    ///
+    /// 规范表格把它记作 Type = integer、Range = `0 to 127`
+    /// （<https://sfzformat.com/opcodes/set_ccN/>），因此非整数取值**没有**可表示的
+    /// 7 位值；但硬 `Err` 会让登记语料里那 10 个乐器整份无法加载，
+    /// 所以这里沿用「丢弃 + 告警」的既有口径（同 [`Warning::RegionWithoutSample`]）。
+    /// 取舍与读数见 [`crate::control`] 的模块文档。
+    ///
+    /// **整数但越界**（不在 `0..=127`）不走本告警，而是明确
+    /// [`SfzError::IntegerOutOfRange`]。
+    MalformedSetCc {
+        /// 1-based 行号。
+        line: usize,
+        /// opcode 名（`set_ccN`）。
+        opcode: String,
+        /// 原始取值（超长时截断到 96 字节，与其它错误载荷同口径）。
+        value: String,
+    },
     /// 警告数达到 [`ParseLimits::max_warnings`] 后的截断标志。
     Truncated,
 }
@@ -778,6 +797,11 @@ struct Parser<'a> {
     /// 经过 `control` 表的 [`ParseLimits::max_opcodes_per_header`] 检查（超限即整段
     /// `Err`）。因此本表的长度与 `control` 表同级，不需要第二条上限。
     control_cc_labels: BTreeMap<u16, Cow<'a, str>>,
+    /// `<control>` 段声明的 `set_ccN` 初值（乐器级，见 [`Instrument::cc_defaults`]）。
+    ///
+    /// 与 `control` 表的区别同 `control_cc_labels`：不被新 `<control>` 段重置
+    /// （口径与理由见 [`crate::control`]）。
+    control_cc_defaults: BTreeMap<u16, u8>,
     warnings: Vec<Warning>,
     warnings_truncated: bool,
 }
@@ -827,6 +851,7 @@ impl<'a> Parser<'a> {
             midi_opcode_total: 0,
             region_line: 1,
             control_cc_labels: BTreeMap::new(),
+            control_cc_defaults: BTreeMap::new(),
             warnings: Vec::new(),
             warnings_truncated: false,
         }
@@ -876,6 +901,24 @@ impl<'a> Parser<'a> {
             && let Some(index) = crate::label::cc_label_index(name.as_ref(), line)?
         {
             self.control_cc_labels.insert(index, value.clone());
+        }
+        // 同一个 `<control>` 段里的 `set_ccN` 是**初值**声明（见 [`crate::control`]）：
+        // 与标签同样抄一份到乐器级，不随段头清空。整数越界是明确 `Err`；
+        // 非整数取值只丢弃该条并告警，**不**中断解析（否则登记语料里那 10 个乐器会整份失效）。
+        if scope == Scope::Control {
+            match crate::control::set_cc_declaration(name.as_ref(), value.as_ref(), line)? {
+                crate::control::SetCcOutcome::Value { cc, initial } => {
+                    self.control_cc_defaults.insert(cc, initial);
+                }
+                crate::control::SetCcOutcome::UnrepresentableValue => {
+                    self.warn(Warning::MalformedSetCc {
+                        line,
+                        opcode: name.to_string(),
+                        value: truncate_for_error(value.as_ref()),
+                    });
+                }
+                crate::control::SetCcOutcome::NotThisOpcode => {}
+            }
         }
         let Some((map, scope_name)) = self.map_for(scope) else {
             return Ok(());
@@ -1387,6 +1430,7 @@ impl<'a> Parser<'a> {
             self.effects,
             self.midi_sections,
             self.control_cc_labels,
+            self.control_cc_defaults,
             self.warnings,
         )
     }
