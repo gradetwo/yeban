@@ -23,6 +23,7 @@
 //! | D6 | 端到端：`EngineStats::drum_hits` 恰好等于**键位映射命中的**音符数；`armed_drum_slot_count` 报数 | 武装了但从不触发 / 触发不计 / 每个量子重复触发 |
 //! | D7 | 确定性：同输入两次独立装配逐位相同；**同一装配**里周期性重新武装（等价快照）不改变输出，且累计触发数单调 | 引入真熵源 / 重新武装清掉在响的鼓 |
 //! | D8 | 换快照：同一轨从鼓机换回复音合成器 ⇒ `armed_drums(轨)` 变 `None`、武装槽位归 0；换一套映射 ⇒ 读数跟着变 | 武装表只增不减 / 换轨不 `reset` |
+//! | D9 | 鼓机器件**自己**的四个计数器进 `EngineStats`：`drum_hits == drum_triggers`（等号，两侧是同一事件）、有鼓击时 `drum_sounding_slot_frames > 0`、密集敲击时 `drum_voice_steals > 0`、闭镲压开镲时 `drum_hat_chokes == 1`；未武装工程四条全 0 | 漏读器件 getter（恒 0） / 把 `drum_triggers` 写成 `drum_hits` 的副本 / 把鼓机窃取记进复音 `voice_steals` |
 //!
 //! ## D0 的指纹是**接线前**的实测值
 //!
@@ -661,6 +662,129 @@ fn swapping_the_kit_across_snapshots_is_reported() {
     let map = DrumNoteMap::new(48, 50, 54, 58, 51);
     assert_eq!(map.voice_for(48), Some(DrumVoice::Kick));
     assert_eq!(map.voice_for(36), None);
+}
+
+/// D9：鼓机器件**自己**的四个计数器进了 `EngineStats`，且触发面的两侧**恒等**。
+///
+/// 量什么（每个数字的单位与出处都写清）：
+///
+/// | 读数 | 数什么 | 单位 | 出处 |
+/// | :--- | :--- | :--- | :--- |
+/// | `drum_hits` | 引擎**派发**了几次鼓击 | 次 | `SynthEngine` 自己的计数器 |
+/// | `drum_triggers` | 器件**收到**了几次触发（各槽之和） | 次 | `DrumMachine::triggers` |
+/// | `drum_voice_steals` | 鼓机声部池满时替换在响槽位的次数 | 次 | `DrumMachine::voice_steals` |
+/// | `drum_hat_chokes` | 闭镲 choke 开镲的次数 | 次 | `DrumMachine::hat_chokes` |
+/// | `drum_sounding_slot_frames` | 器件算出非零样本的"槽位×帧"数 | 槽位×帧 | `DrumMachine::sounding_slot_frames` |
+///
+/// 四条判据：
+///
+/// 1. **内部一致性（等号，无容差）**：`drum_hits == drum_triggers`。两侧数的是
+///    同一个事件 —— 引擎派发处与器件入口 —— 因此任何"派发了却没到器件"（或反之）
+///    的接线错误都会让它不等。这条等号是**静止点**上的等号：渲染已结束、
+///    没有量子在跑。
+/// 2. **覆盖度**：有鼓击的工程 `drum_sounding_slot_frames > 0`（器件真的算出了声音，
+///    而不只是收到了触发）。
+/// 3. **池压**：密集敲击的工程 `drum_voice_steals > 0` —— 这是"`voice_steals`
+///    只走复音那条 ⇒ 鼓机池满在读数面上不可见"这条盲区的见证。
+/// 4. **跨声部行为**：闭镲压在响的开镲上 `drum_hat_chokes == 1`（等号）。
+///
+/// 外加一条**默认为零**的对照：没有鼓机设备的工程，四条读数**全为 0**
+/// （否则"读数被写死成常数"也能让上面几条成立）。
+#[test]
+fn the_drum_device_counters_are_readable_and_agree_with_the_dispatch_counter() {
+    // ---- 夹具 A：开镲 + 闭镲（choke）＋ 底鼓（覆盖度）----
+    //
+    // `DRUM_NOTES` 是"四个起音、同时发声 ≤ 4"，不触发窃取也不 choke；这里另造一张：
+    // 开镲在 tick 0（音高 46 在映射里）、闭镲在 tick 240（音高 42）⇒ 闭镲触发时
+    // 开镲槽位仍在响 ⇒ 恰好 1 次 choke（器件口径见 `DrumMachine::trigger` 的文档）。
+    let choke_notes = [
+        NoteSpec::at(0, 480, 46, 120),
+        NoteSpec::at(240, 480, 42, 100),
+        NoteSpec::at(0, 480, 36, 127),
+    ];
+    let fixture = note_project(&choke_notes);
+    let track = fixture.track;
+    let mut choke_project = fixture.project.clone();
+    mount(&mut choke_project, track, vec![kit(&[])]);
+
+    let choked = render(&choke_project, 400);
+    println!(
+        "[engine-drums/D9] choke 夹具: 派发={} 器件收到={} choke={} 发声槽位帧={} 窃取={} 非零={}",
+        choked.stats.drum_hits,
+        choked.stats.drum_triggers,
+        choked.stats.drum_hat_chokes,
+        choked.stats.drum_sounding_slot_frames,
+        choked.stats.drum_voice_steals,
+        choked.nonzero()
+    );
+    assert_eq!(choked.stats.drum_hits, 3, "夹具里三个起音都命中映射");
+    assert_eq!(
+        choked.stats.drum_triggers, choked.stats.drum_hits,
+        "触发面的两侧必须恒等：引擎派发 {}=器件收到 {}",
+        choked.stats.drum_hits, choked.stats.drum_triggers
+    );
+    assert_eq!(
+        choked.stats.drum_hat_chokes, 1,
+        "闭镲压在响的开镲上恰好 choke 一次"
+    );
+    assert!(
+        choked.stats.drum_sounding_slot_frames > 0,
+        "器件必须真的算出非零样本（否则覆盖度读数与触发读数都可能是空转）"
+    );
+    assert!(choked.nonzero() > 0, "音频输出必须真的有声");
+
+    // ---- 夹具 B：密集敲击 ⇒ 鼓机声部池满 ⇒ 窃取 ----
+    //
+    // 1 tick = 25 样本；密集的 96 记底鼓（相邻 1 tick）在远短于尾音长度的窗口里
+    // 排下去 ⇒ 16 个槽位（`DRUM_SLOTS`）必然被占满并发生替换。
+    let crowded_notes: Vec<NoteSpec> = (0..96u64)
+        .map(|index| NoteSpec::at(index, 480, 36, 100))
+        .collect();
+    let crowded_fixture = note_project(&crowded_notes);
+    let crowded_track = crowded_fixture.track;
+    let mut crowded_project = crowded_fixture.project;
+    mount(&mut crowded_project, crowded_track, vec![kit(&[])]);
+    let crowded = render(&crowded_project, 400);
+    println!(
+        "[engine-drums/D9] 密集夹具: 派发={} 器件收到={} 窃取={} 槽位容量={}",
+        crowded.stats.drum_hits,
+        crowded.stats.drum_triggers,
+        crowded.stats.drum_voice_steals,
+        DRUM_SLOTS
+    );
+    assert_eq!(
+        crowded.stats.drum_triggers, crowded.stats.drum_hits,
+        "密集夹具上触发面的两侧同样必须恒等"
+    );
+    assert!(
+        crowded.stats.drum_voice_steals > 0,
+        "96 记密集鼓击必须把 {DRUM_SLOTS} 个槽位占满并发生窃取 —— \
+         否则这条读数没有覆盖到'池满'那条分支"
+    );
+    assert!(
+        crowded.stats.voice_steals == 0,
+        "复音声部一个都没占 ⇒ `voice_steals` 必须恒为 0（鼓机的窃取不许记到它头上）"
+    );
+
+    // ---- 对照：没有鼓机设备的工程，四条读数全为 0 ----
+    let unarmed = render(&note_project(&DRUM_NOTES).project, 400);
+    println!(
+        "[engine-drums/D9] 未武装对照: 派发={} 器件收到={} choke={} 发声槽位帧={} 窃取={}",
+        unarmed.stats.drum_hits,
+        unarmed.stats.drum_triggers,
+        unarmed.stats.drum_hat_chokes,
+        unarmed.stats.drum_sounding_slot_frames,
+        unarmed.stats.drum_voice_steals
+    );
+    assert_eq!(unarmed.stats.drum_hits, 0);
+    assert_eq!(unarmed.stats.drum_triggers, 0);
+    assert_eq!(unarmed.stats.drum_hat_chokes, 0);
+    assert_eq!(unarmed.stats.drum_sounding_slot_frames, 0);
+    assert_eq!(unarmed.stats.drum_voice_steals, 0);
+    assert!(
+        unarmed.nonzero() > 0,
+        "未武装的对照臂仍须出声（复音合成器）"
+    );
 }
 
 /// 临时把 panic hook 换成静默，离开作用域时**一定**还原。

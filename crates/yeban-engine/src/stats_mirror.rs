@@ -185,6 +185,10 @@ pub struct EngineStatsMirror {
     engine_output_latency_frames: AtomicU32,
     metronome_clicks: AtomicU64,
     drum_hits: AtomicU64,
+    drum_triggers: AtomicU64,
+    drum_voice_steals: AtomicU64,
+    drum_hat_chokes: AtomicU64,
+    drum_sounding_slot_frames: AtomicU64,
     quanta_per_second: AtomicU64,
     transport_state: AtomicU8,
     position_ticks: AtomicU64,
@@ -245,6 +249,10 @@ impl EngineStatsMirror {
             engine_output_latency_frames: AtomicU32::new(0),
             metronome_clicks: AtomicU64::new(0),
             drum_hits: AtomicU64::new(0),
+            drum_triggers: AtomicU64::new(0),
+            drum_voice_steals: AtomicU64::new(0),
+            drum_hat_chokes: AtomicU64::new(0),
+            drum_sounding_slot_frames: AtomicU64::new(0),
             quanta_per_second: AtomicU64::new(0),
             // 初值 = `EngineStats::default()` 的走带状态。这里写 `Stopped` 而不是
             // `TransportState::default()` 是因为本函数是 `const`（`Default::default`
@@ -343,6 +351,14 @@ impl EngineStatsMirror {
         self.metronome_clicks
             .store(stats.metronome_clicks, Ordering::Relaxed);
         self.drum_hits.store(stats.drum_hits, Ordering::Relaxed);
+        self.drum_triggers
+            .store(stats.drum_triggers, Ordering::Relaxed);
+        self.drum_voice_steals
+            .store(stats.drum_voice_steals, Ordering::Relaxed);
+        self.drum_hat_chokes
+            .store(stats.drum_hat_chokes, Ordering::Relaxed);
+        self.drum_sounding_slot_frames
+            .store(stats.drum_sounding_slot_frames, Ordering::Relaxed);
         self.quanta_per_second.store(
             pack_optional_f32(stats.quanta_per_second),
             Ordering::Relaxed,
@@ -427,6 +443,10 @@ impl EngineStatsMirror {
             engine_output_latency_frames: self.engine_output_latency_frames.load(Ordering::Relaxed),
             metronome_clicks: self.metronome_clicks.load(Ordering::Relaxed),
             drum_hits: self.drum_hits.load(Ordering::Relaxed),
+            drum_triggers: self.drum_triggers.load(Ordering::Relaxed),
+            drum_voice_steals: self.drum_voice_steals.load(Ordering::Relaxed),
+            drum_hat_chokes: self.drum_hat_chokes.load(Ordering::Relaxed),
+            drum_sounding_slot_frames: self.drum_sounding_slot_frames.load(Ordering::Relaxed),
             quanta_per_second: unpack_optional_f32(self.quanta_per_second.load(Ordering::Relaxed)),
             transport_state: decode_transport(self.transport_state.load(Ordering::Relaxed)),
             position_ticks: self.position_ticks.load(Ordering::Relaxed),
@@ -451,7 +471,12 @@ impl Default for EngineStatsMirror {
 }
 
 impl core::fmt::Debug for EngineStatsMirror {
-    /// 打印**读出来**的那一份读数（不是 49 个原子量的内部状态）。
+    /// 打印**读出来**的那一份读数（不是 55 个原子量的内部状态）。
+    ///
+    /// 这个数是**机械读数**（`sed -n '/^pub struct EngineStatsMirror {/,/^}/p'` 里
+    /// `Atomic` 字段的行数），与 `EngineStats` 的字段数一一对应（一个字段一个原子量）。
+    /// 它此前写作 49，而当时两侧都是 51 ⇒ 那一处是手写估计的**陈旧残留**，
+    /// 本次按实测改正。
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EngineStatsMirror")
             .field("stats", &self.read())
@@ -509,6 +534,10 @@ mod tests {
             engine_output_latency_frames: 46,
             metronome_clicks: 25,
             drum_hits: 26,
+            drum_triggers: 47,
+            drum_voice_steals: 48,
+            drum_hat_chokes: 49,
+            drum_sounding_slot_frames: 50,
             quanta_per_second: Some(375.5),
             transport_state: TransportState::Playing,
             position_ticks: 29,

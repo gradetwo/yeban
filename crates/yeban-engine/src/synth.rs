@@ -965,9 +965,77 @@ impl SynthEngine {
     }
 
     /// 累计的**鼓击触发数**（覆盖度读数：> 0 才说明鼓机真的在打鼓）。
+    ///
+    /// 口径：引擎在**派发处**记 1（`render_track` 的鼓机分支，紧接着调用
+    /// `DrumMachine::trigger`）。它与 [`Self::drum_triggers`] 是同一个事件的**两侧**，
+    /// 两者在静止点上恒等（判据见 `tests/drums_instrument.rs` 的 D9）。
     #[must_use]
     pub const fn drum_hits(&self) -> u64 {
         self.drum_hits
+    }
+
+    /// 鼓机器件**自己**累计接收的触发数（各槽之和；单位：次）。
+    ///
+    /// 它不是 [`Self::drum_hits`] 的第二份副本，而是那条**内部一致性判据**的另一侧：
+    /// `drum_hits` 数的是"引擎派发了几次"，本读数数的是"器件收到了几次"。
+    /// 两边恒等（等号判据见 `tests/drums_instrument.rs` 的 D9）；任何"派发了却没到
+    /// 器件"或"到了器件却没派发"的接线错误都会让这条等号当场不成立。
+    ///
+    /// ⚠ 器件计数器**只增不减**，且 `DrumMachine::reset` 只清在响的槽位、**不**清
+    /// 计数器 ⇒ 本读数是引擎生命周期里的累计量，量法与 [`Self::drum_hits`] 同口径。
+    /// 读它只汇总 16 个 `u64` 字段，不碰样本、不分配、不加锁（器件文档指明该计数器
+    /// 不改变音频输出）。
+    #[must_use]
+    pub fn drum_triggers(&self) -> u64 {
+        self.drums.iter().fold(0u64, |total, machine| {
+            total.saturating_add(machine.triggers())
+        })
+    }
+
+    /// 鼓机**声部池**累计的窃取次数（各槽之和；单位：次）。
+    ///
+    /// 它与 [`Self::voice_steals`] 是**两个不同的池**，不能相加成"一个池"：
+    /// `voice_steals` 汇总复音合成器的 `PolySynth` 槽位，本读数汇总
+    /// `DrumMachine` 槽位 —— 两者是两件独立器件、两套独立计数器。
+    /// 为什么需要它：鼓击池满时器件会替换一个在响槽位并推进自己的计数器，
+    /// 而 `voice_steals` 只走复音那条 ⇒ **只挂鼓机的工程在池满时读数恒为 0**，
+    /// "声部窃取"这件事在读数面上不可见。本读数把那一半补上。
+    ///
+    /// 单位与 [`Self::voice_steals`] 相同（次），两者都随各自的池饱和增长。
+    #[must_use]
+    pub fn drum_voice_steals(&self) -> u64 {
+        self.drums.iter().fold(0u64, |total, machine| {
+            total.saturating_add(machine.voice_steals())
+        })
+    }
+
+    /// 累计的**闭镲 choke 开镲**次数（各槽之和；单位：次）。
+    ///
+    /// 器件口径：每当一个闭镲被触发，所有正在响的开镲槽位立刻进入同一条窃取淡出，
+    /// 每一件被 choke 的开镲记 1。反向（开镲 choke 闭镲）**不做**。
+    ///
+    /// 为什么需要它：这是一条**跨声部**行为，任何单轨电平或触发计数都看不到它
+    /// （被 choke 的开镲本来就该衰减）⇒ 只从音频输出反推不出来。
+    #[must_use]
+    pub fn drum_hat_chokes(&self) -> u64 {
+        self.drums.iter().fold(0u64, |total, machine| {
+            total.saturating_add(machine.hat_chokes())
+        })
+    }
+
+    /// 累计的**发声槽位帧**（各槽之和；单位：槽位×帧）。
+    ///
+    /// 器件口径：一次 `render` 的某一帧里某个在响槽位产出非零样本，就记 1；
+    /// 除以渲染帧数即"平均同时发声的槽位数"。器件文档明说它是**覆盖度仪器**、
+    /// **不改变音频输出**：非零只说明那个槽位在算东西，不说明它多响。
+    ///
+    /// 为什么需要它：[`Self::drum_hits`] 只证明"触发到了器件"，证明不了"器件真的
+    /// 算出了声音"（一个把槽位全部丢掉的重置 bug 会让 `drum_hits` 照常增长）。
+    #[must_use]
+    pub fn drum_sounding_slot_frames(&self) -> u64 {
+        self.drums.iter().fold(0u64, |total, machine| {
+            total.saturating_add(machine.sounding_slot_frames())
+        })
     }
 
     /// 本快照武装为**鼓机音源**的槽位数。

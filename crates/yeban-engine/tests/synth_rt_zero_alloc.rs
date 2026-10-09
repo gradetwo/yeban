@@ -186,6 +186,23 @@
 //! 也不改变任何窗口的分配断言。⚠ 本条**不**声称"六分量全 0"（那只属于
 //! `tests/rt_zero_alloc.rs` 的 `[MUST-GATE-001]` 目标）—— 它只测
 //! `allocations` / `deallocations` 两个分量与新增读数的覆盖度。
+//!
+//! # 场景 11 的覆盖度见证（`line/engine-14` 追记）：鼓机器件**自己**的四个计数器
+//!
+//! 新增读数 `EngineStats::drum_triggers` / `drum_voice_steals` / `drum_hat_chokes` /
+//! `drum_sounding_slot_frames` 的来源是 `DrumMachine` 自己的四个 `u64` 计数器，
+//! 由 `SynthEngine` 的四个 getter 汇总（各 fold 16 个槽位），读它们发生在 `stats()` 里
+//! —— 而 `stats()` 由 `process_quantum` 每次回调调用一次（收尾发布跨线程镜像）
+//! ⇒ 来源与读路径**都在**实时窗口内部。场景 11 的鼓机窗口（10 001 个量子）
+//! 因此顺带覆盖它们，见证取两条**形态**判据：① `drum_triggers == drum_hits`
+//! （触发面两侧在窗口里都在推进）；② `drum_sounding_slot_frames > 0`
+//! （器件真的算出了非零样本）。
+//!
+//! ⚠ **不**在本条断言 `drum_hat_chokes` 或 `drum_voice_steals`：场景 11 的鼓击间距
+//! 是 240 tick（6 000 样本），大于开镲尾音，且同时发声数 ≤ 5 < `DRUM_SLOTS`
+//! ⇒ 那两条分支在本夹具上**本来就不该发生**。它们的见证是 `tests/drums_instrument.rs`
+//! 的 D9（专门造池压与 choke 的夹具），本条只负责"那条读路径在实时窗口里不分配"。
+//! 本追记**不新增场景**，也不改变任何窗口的分配断言。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -1386,10 +1403,42 @@ fn main() -> ExitCode {
     if drum_stats.insert_strip_frames != 0 {
         failures.push("鼓机是音源、不是插入器件：`insert_strip_frames` 必须为 0".to_owned());
     }
+    // `line/engine-14`：鼓机器件**自己**的四个计数器现在也在 `stats()` 里读
+    // （每次 `process_quantum` 收尾发布镜像时读一次）⇒ 那条读路径落在本窗口内部。
+    // 覆盖度见证取两条**形态**判据（不是范围）：
+    //   * 触发面的两侧恒等（引擎派发 vs 器件收到）—— 两侧都在窗口里推进；
+    //   * `drum_sounding_slot_frames > 0` —— 器件真的算出了非零样本。
+    // 本夹具的鼓击间距是 240 tick（6 000 样本），远大于开镲尾音 ⇒ **不**断言
+    // `drum_hat_chokes`；窃取同理（同时发声数 ≤ 5 < `DRUM_SLOTS`）⇒ 不断言它。
+    // 那两条分支的见证在 `tests/drums_instrument.rs` 的 D9（它的夹具专门造池压与
+    // choke），本条只负责"读路径在实时窗口里不分配"。
+    if drum_stats.drum_triggers != drum_stats.drum_hits {
+        failures.push(format!(
+            "触发面的两侧不相等：引擎派发={} 器件收到={} —— 这条读路径在实时窗口里\
+             读出了不一致的值",
+            drum_stats.drum_hits, drum_stats.drum_triggers
+        ));
+    }
+    if drum_stats.drum_triggers == 0 {
+        failures.push(
+            "窗口里器件一次触发都没收到 —— 新增的四个鼓机读数在实时窗口里全是冷值（空转）"
+                .to_owned(),
+        );
+    }
+    if drum_stats.drum_sounding_slot_frames == 0 {
+        failures.push(
+            "器件一帧非零样本都没算出来 —— `drum_sounding_slot_frames` 在窗口里是冷值".to_owned(),
+        );
+    }
     println!(
-        "[engine-drums/J11] 鼓机音源: quanta={} 鼓击={} 非零样本={drum_nonzero} 武装槽位={}",
+        "[engine-drums/J11] 鼓机音源: quanta={} 鼓击={} 器件收到={} 发声槽位帧={} choke={} 窃取={} \
+         非零样本={drum_nonzero} 武装槽位={}",
         drum_stats.quanta,
         drum_stats.drum_hits,
+        drum_stats.drum_triggers,
+        drum_stats.drum_sounding_slot_frames,
+        drum_stats.drum_hat_chokes,
+        drum_stats.drum_voice_steals,
         drum_runtime.armed_drum_slot_count(),
     );
 

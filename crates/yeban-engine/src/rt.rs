@@ -425,6 +425,49 @@ pub struct EngineStats {
     /// "本快照里有几轨武装了鼓机"，这个数才说明"鼓击真的落到了器件上"。
     /// 全部轨都不是鼓机时（默认）**恒为 0**。
     pub drum_hits: u64,
+    /// 鼓机器件**自己**累计接收的触发数（各槽之和；0 = 器件从没收到过触发）。
+    ///
+    /// 它与 [`Self::drum_hits`] 是**同一个事件的两侧**：那个在引擎的派发处 `+1`，
+    /// 这个在器件的 `trigger` 入口 `+1`（器件自带的计数器，本字段只是把它搬过来）。
+    /// 两者在静止点上**恒等** —— 因此本字段的用途是把那条等号变成可读的
+    /// **内部一致性判据**（判据见 `tests/drums_instrument.rs` 的 D9）：任何"派发了却
+    /// 没到器件"（或反之）的接线错误都会让它当场不等，而从音频输出反推不出来。
+    ///
+    /// 全部轨都不是鼓机时（默认）**恒为 0**；器件计数器只增不减且 `reset` 不清它
+    /// ⇒ 本字段与 [`Self::drum_hits`] 同为引擎生命周期的累计量。
+    pub drum_triggers: u64,
+    /// 鼓机**声部池**累计的窃取次数（各槽之和；单位：次；0 = 从未窃取）。
+    ///
+    /// ⚠ 它与 [`Self::voice_steals`] 是**两个不同的池**：那个汇总复音合成器的槽位，
+    /// 本字段汇总鼓机器件的槽位。分开记账的理由是排除一个真实的读数盲区 ——
+    /// 鼓击池满时器件会替换一个在响槽位并推进自己的计数器，而 `voice_steals`
+    /// 只走复音那条 ⇒ **只挂鼓机的工程在池满时 `voice_steals` 恒为 0**，
+    /// "声部窃取"在读数面上完全不可见。合并成一个数会让"哪个池满了"无法区分。
+    ///
+    /// 单位与 [`Self::voice_steals`] 相同（线性次数），两者各自随自己的池饱和增长。
+    /// 全部轨都不是鼓机时（默认）**恒为 0**。
+    pub drum_voice_steals: u64,
+    /// 累计的**闭镲 choke 开镲**次数（各槽之和；单位：次；0 = 从未 choke 过）。
+    ///
+    /// 器件口径：触发一个闭镲时，所有正在响的开镲槽位立刻进入窃取淡出，每一件被
+    /// choke 的开镲记 1；反向（开镲 choke 闭镲）不做。
+    ///
+    /// 为什么需要它：这是一条**跨声部**行为，任何单轨电平或触发计数都看不到它
+    /// （被 choke 的开镲本来就该衰减，音频输出上看不出"是谁让它衰减的"）。
+    /// 全部轨都不是鼓机时（默认）**恒为 0**。
+    pub drum_hat_chokes: u64,
+    /// 累计的**发声槽位帧**（各槽之和；单位：槽位×帧；0 = 器件从没算出过非零样本）。
+    ///
+    /// 器件口径：一次 `render` 的某一帧里某个在响槽位产出非零样本就记 1；
+    /// 除以渲染帧数即"平均同时发声的槽位数"。器件文档明说它是**覆盖度仪器**、
+    /// **不改变音频输出**：非零只说明那个槽位在算东西，不说明它多响
+    /// （一个 −120 dB 的尾音也记）。
+    ///
+    /// 为什么需要它：[`Self::drum_hits`] 只证明"触发派发到了器件"，证明不了
+    /// "器件真的算出了声音" —— 一个把在响槽位全部丢掉的重置缺陷会让
+    /// [`Self::drum_hits`] 照常增长而输出逐位静音。本字段是那条覆盖度见证。
+    /// 全部轨都不是鼓机时（默认）**恒为 0**。
+    pub drum_sounding_slot_frames: u64,
     /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
     ///
     /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
@@ -1044,6 +1087,14 @@ impl EngineRuntime {
             engine_output_latency_frames: self.engine_output_latency_frames,
             metronome_clicks: self.metronome.clicks(),
             drum_hits: self.synth.drum_hits(),
+            // 鼓机器件**自己**的四个计数器：与上面那条只差一次字段汇总
+            // （`SynthEngine` 的四个 `drum_*` getter，各自 fold 16 个 `u64`）。
+            // 它们不碰任何样本、不分配、不加锁 ⇒ 实时路径的分配/锁/IO 读数不变
+            // （判据见 `tests/synth_rt_zero_alloc.rs` 的场景 11）。
+            drum_triggers: self.synth.drum_triggers(),
+            drum_voice_steals: self.synth.drum_voice_steals(),
+            drum_hat_chokes: self.synth.drum_hat_chokes(),
+            drum_sounding_slot_frames: self.synth.drum_sounding_slot_frames(),
             quanta_per_second: self.armed_quanta_per_second,
             transport_state: self.transport.state(),
             position_ticks: self.transport.position_ticks(),
