@@ -19,6 +19,7 @@
 //! | :-: | :--- | :--- |
 //! | P1 | 短支路的输出在**汇入母线前**整体后移 `D(v)` 帧，逐位精确 | 删掉 `render_block` 里的 `self.pdc.apply(...)` 调用 ⇒ 移位量变 0 |
 //! | P2 | 并联两条支路在求和节点上**采样级同相**（`D` 的差额被补齐） | 同上；另把 `set_delay` 的读写指针约定写反 ⇒ 逐位比对红 |
+//! | P3 | 母线限制器 33 帧**回填**进 `LatencyTable` 之后，渲染输出**逐位不变**（那 33 帧在总线求和之后） | 把 `PdcPlan::compute` 的对齐基准换回 `arrival(master)` ⇒ 每条支路 +33 帧、逐位比对红 |
 //!
 //! 两条判据都**走产品路径**：模型 `YebanProjectV1` → `EngineSnapshot::from_project`
 //! （`LatencyTable::from_project` 读 `DeviceDefinition::latency_samples`）→
@@ -44,8 +45,9 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use support::render;
-use yeban_engine::mixer::LIMITER_THRESHOLD;
+use support::{render, render_snapshot};
+use yeban_engine::graph::LatencyTable;
+use yeban_engine::mixer::{BUS_LIMITER_LATENCY_FRAMES, LIMITER_THRESHOLD};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
@@ -409,5 +411,125 @@ fn pdc_lines_up_a_parallel_diamond_sample_exactly_at_the_summing_node() {
             .iter()
             .filter(|sample| **sample != 0.0)
             .count()
+    );
+}
+
+/// P3：**母线限制器的 33 帧回填不改变渲染输出**（[ADR-0001 D44(b)]）。
+///
+/// ## 被测量
+///
+/// 同一条工程、同一份音符摆放，走**两条投影路径**：
+///
+/// ```text
+/// A（生产路径）  EngineSnapshot::from_project(project)
+///                ⇒ LatencyTable::from_project + LatencyTable::add(master, 33)
+/// B（注入路径）  EngineSnapshot::from_project_with_latencies(project, &from_project(project))
+///                ⇒ 只有设备链延迟，没有那 33 帧
+/// ```
+///
+/// 期望：`A` 的 `output_latency()` 恰好比 `B` 多 33 帧，而**每条支路的 `D(v)` 与
+/// 整个渲染缓冲逐位相同** —— 因为限制器接在**总线求和之后**，它不是任何支路的相位。
+///
+/// ## 为什么这条判据必须存在
+///
+/// "把 33 帧塞进 `LatencyTable`"有两种实现：正确的（进 `output_latency`，不碰 `D`）
+/// 与错误的（当成 `arrival(master)` 的 `L_max` ⇒ 给**每条**支路白加 33 帧延迟线）。
+/// 后者会静默改变所有工程的输出（整体后移 33 帧），而且听起来"更响"的假绿
+/// （只说"加上了延迟"）看不出来。这里用逐位比对把两者分开。
+///
+/// 变红的注入（实测）：
+///
+/// 1. 把 `crates/yeban-engine/src/graph.rs` 的
+///    `let total_latency = latency.get(&master)...` 换回 `arrival.get(&master)`；
+/// 2. 或只把 `compensation` 的基准从 `total_latency` 换成 `output_latency`。
+///
+/// 两者都让**样本级**比对变红，字面读数相同，第一处逐位差异落在 **`t == 434`**
+/// （夹具的 400 帧对齐 + 33 帧）：
+/// `声道0 t=434: 回填 0x00000000 (0e0) vs 未回填 0x39d5226a (4.0652166e-4)`。
+///
+/// ⚠ 覆盖边界（诚实登记）：本判据的样本级比对只能被"**改变了 `D(v)`**"的注入打红。
+/// 因为 `EngineSnapshot` 的 A/B 两份只差延迟表一项，而 RT 路径**不读**任何
+/// `latency`/`arrival` 读数（`grep latency_samples crates/yeban-engine/src/rt.rs`
+/// 零命中），所以"计划面相同而样本不同"的状态在当前架构里**不可达**。
+/// 样本级比对因此是**第二道**防线（防未来某次改动让 RT 路径改读别的 PDC 读数），
+/// 不是唯一防线。见报告的"没红的注入"。
+#[test]
+fn bus_limiter_latency_backfill_keeps_the_render_bit_identical() {
+    let ids = ids();
+    let project = project(ids, SLOW_LATENCY, Some(0), None);
+
+    let backfilled = EngineSnapshot::from_project(&project, 1).expect("生产路径快照");
+    let raw_table = LatencyTable::from_project(&project);
+    let explicit =
+        EngineSnapshot::from_project_with_latencies(&project, 1, &raw_table).expect("注入路径快照");
+
+    // 渲染会**接管**快照所有权 ⇒ 先把全部计划读数取出来。
+    let l_max_backfilled = backfilled.pdc().total_latency();
+    let l_max_explicit = explicit.pdc().total_latency();
+    let output_backfilled = backfilled.pdc().output_latency();
+    let output_explicit = explicit.pdc().output_latency();
+    let comp_fast = backfilled.pdc().compensation(&ids.fast);
+    let comp_slow = backfilled.pdc().compensation(&ids.slow);
+
+    // ---- 行为面（主判据）：逐位相同（左右两声道、每一位）----
+    let a = render_snapshot(backfilled, QUANTA);
+    let b = render_snapshot(explicit, QUANTA);
+    assert_eq!(a.frames(), b.frames(), "两次渲染必须等长");
+    assert_eq!(a.frames(), QUANTA * 128);
+    assert!(
+        a.nonzero() > 0,
+        "渲染必须真的出声 —— 否则下面的逐位相等是『两边都是静音』的空转假绿"
+    );
+
+    let mut mismatches: Vec<String> = Vec::new();
+    for (channel, (left, right)) in [(&a.left, &b.left), (&a.right, &b.right)]
+        .into_iter()
+        .enumerate()
+    {
+        for (index, (x, y)) in left.iter().zip(right.iter()).enumerate() {
+            if x.to_bits() != y.to_bits() && mismatches.len() < 3 {
+                mismatches.push(format!(
+                    "声道{channel} t={index}: 回填 {:#010x} ({:e}) vs 未回填 {:#010x} ({:e})",
+                    x.to_bits(),
+                    x,
+                    y.to_bits(),
+                    y
+                ));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "母线限制器延迟的回填**不得**移动任何支路（33 帧在总线求和之后）；\
+         前 3 处逐位差异：{mismatches:?}"
+    );
+    assert_eq!(
+        a.fingerprint(),
+        b.fingerprint(),
+        "逐位指纹必须相同（含左右两声道全部样本的位模式）"
+    );
+
+    // ---- 计划面（第二道防线）：唯一变化的读数是 output_latency ----
+    assert_eq!(
+        l_max_backfilled, l_max_explicit,
+        "对齐基准 L_max 不许被那 33 帧改变"
+    );
+    assert_eq!(
+        output_backfilled,
+        output_explicit + BUS_LIMITER_LATENCY_FRAMES,
+        "引擎输出延迟必须恰好多出母线限制器的 33 帧"
+    );
+    assert_eq!(
+        output_explicit, SLOW_LATENCY,
+        "注入路径只有设备链延迟（= 慢支路的 400）"
+    );
+    assert_eq!(comp_fast, Some(SLOW_LATENCY));
+    assert_eq!(comp_slow, Some(0));
+
+    println!(
+        "[pdc-mix] P3 母线限制器回填 33 帧不动渲染：非零样本={} 指纹={:#018x} \
+         （L_max={l_max_backfilled}；output_latency {output_explicit} → {output_backfilled}）",
+        a.nonzero(),
+        a.fingerprint(),
     );
 }

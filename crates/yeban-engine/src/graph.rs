@@ -10,17 +10,25 @@
 //!    成环图返回 [`PdcError::Cycle`]，**绝不死循环、绝不 panic**。
 //! 2. **关键路径**：`L(v)` = 从任一信号源到达 `v` **输入端**的最长累积延迟；
 //!    `arrival(v) = L(v) + own_latency(v)` 是信号离开 `v` 输出端的时刻。
-//!    关键路径延迟 `L_max = arrival(master)` [ARCH-PDC-001]。
-//! 3. **延迟分配**：对每条可达 master 的路径插入
+//!    关键路径延迟 `L_max = L(master)` —— **求和节点输入端**的最长支路延迟
+//!    （规范 §3.4 第 2 条："从每个信号源到 Master 总线的所有声学通路…确定最长延迟
+//!    关键路径 $L_{\max}$"）[ARCH-PDC-001]。
+//!    ⚠ **不是** `arrival(master)`：`master` 自身的处理延迟发生在**求和之后**
+//!    （母线限制器的 33 帧），它是**引擎输出延迟**的一部分，见
+//!    [`PdcPlan::output_latency`]。把 `arrival(master)` 当作 `L_max` 会给**每一条**
+//!    支路白加 33 帧延迟线，而对齐一个相位也补不回来。
+//! 3. **延迟分配**：对每条可达 master 的**支路**插入
 //!    `D(v) = L_max - arrival(v)` 个采样点的环形延迟。
 //!
 //! ### 定义性不变量（这是 PDC 的判据，不是实现细节）
 //!
 //! ```text
-//! ∀ v ∈ Reachable(master):  arrival(v) + D(v) == L_max
+//! ∀ v ∈ Reachable(master) \ {master}:  arrival(v) + D(v) == L_max
 //! ```
 //!
 //! 即"所有分支经过延迟线后总延迟相等"。任何并行支路在汇入求和节点时相位完全对齐。
+//! `master` 自己被排除在外：它是**求和节点本身**，它的自身延迟在求和**之后**，
+//! 不属于任何支路的相位（`D(master)` 因此恒为 0）。
 //! 该不变量在测试里被机械断言（见 `mod tests` 的 `pdc_alignment_invariant_*`）。
 //!
 //! ## 与离线渲染共用
@@ -29,7 +37,7 @@
 //! 输出纯数据。`yeban-render` 的 Rayon 离线母带渲染器直接复用它，从而保证
 //! "实时与离线绝对相位对齐"（规范 §3.4 第 3 条）。
 //!
-//! ## 节点延迟的来源（模型层字段，不再自造第二个事实源）
+//! ## 节点延迟的来源（**两处，且只有这两处**）
 //!
 //! [ARCH-PDC-001] 要求"每个插件与内置设备必须精确上报其引入的处理延迟
 //! (`DeviceDefinition::latency_samples`)"。该字段在 `yeban-model` 里是**必需字段**
@@ -38,8 +46,15 @@
 //! 本 crate 用 [`LatencyTable::from_project`] / [`LatencyTable::from_tracks`]
 //! 从**设备链**汇总每个节点的自身延迟：未旁通设备的 `latency_samples` 饱和求和。
 //!
+//! 第二处是**引擎自己知道**的一段固定延迟：母线总线限制器的
+//! [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES)（33 帧）。
+//! [ADR-0001 D44(b)] 要求它"必须回填进 `LatencyTable`"（"引擎链路上每一段延迟都可被
+//! PDC 看见"）⇒ [`crate::snapshot::EngineSnapshot::from_project`] 在**构造期**用
+//! [`LatencyTable::add`] 把它加到 `master` 节点上。它接在总线求和**之后**，
+//! 因此只进 [`PdcPlan::output_latency`]、**不**产生任何 `D(v)`。
+//!
 //! [`LatencyTable`] 仍然可以显式注入（[`PdcPlan::compute`] 接收它），
-//! 供离线对账/测量注入使用；但**默认路径**永远走模型字段。
+//! 供离线对账/测量注入使用；但**默认路径**永远走上面这两处。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -113,6 +128,21 @@ impl LatencyTable {
         self.entries.get(node).copied().unwrap_or(0)
     }
 
+    /// 在节点**已有**自身延迟上追加一段（饱和相加；`extra_samples == 0` 是空操作）。
+    ///
+    /// 用途：设备链之外的、**引擎自己知道**的一段固定延迟 —— 目前唯一的调用点是
+    /// 母线总线限制器的前瞻环长（[ADR-0001 D44(b)]，见
+    /// [`crate::mixer::BUS_LIMITER_LATENCY_FRAMES`]）。
+    /// 模型的 `DeviceDefinition::latency_samples` 仍然是**设备**延迟的唯一事实源；
+    /// 本方法只做"把两段延迟落在同一个节点上"这一件事，不引入第三个来源。
+    pub fn add(&mut self, node: EntityId, extra_samples: u32) {
+        if extra_samples == 0 {
+            return;
+        }
+        let current = self.get(&node);
+        self.set(node, current.saturating_add(extra_samples));
+    }
+
     /// 已登记的条目数。
     #[must_use]
     pub fn len(&self) -> usize {
@@ -132,8 +162,10 @@ impl LatencyTable {
 
     /// 从整个工程投影出延迟表 [ARCH-PDC-001]。
     ///
-    /// 这是**唯一**的延迟来源：`DeviceDefinition::latency_samples`（模型层的权威字段）。
-    /// 本 crate 不再自造第二个事实源。
+    /// **设备**延迟的唯一来源：`DeviceDefinition::latency_samples`（模型层的权威字段）。
+    /// 本函数**只**做设备链汇总；引擎自己知道的那一段固定延迟（母线限制器的 33 帧）
+    /// 由 [`crate::snapshot::EngineSnapshot::from_project`] 随后用 [`Self::add`] 追加
+    /// —— 两处来源在 `graph` 模块文档里逐条登记。
     #[must_use]
     pub fn from_project(project: &YebanProjectV1) -> Self {
         Self::from_tracks(&project.tracks)
@@ -179,6 +211,7 @@ pub struct PdcPlan {
     compensation: BTreeMap<EntityId, u32>,
     excluded: Vec<EntityId>,
     total_latency: u32,
+    output_latency: u32,
 }
 
 impl PdcPlan {
@@ -282,11 +315,19 @@ impl PdcPlan {
             latency.insert(*node, longest_input);
             arrival.insert(*node, longest_input.saturating_add(latencies.get(node)));
         }
-        let total_latency = arrival.get(&master).copied().unwrap_or(0);
+        // `L_max` = 求和节点**输入端**的最长支路延迟 = `L(master)`（规范 §3.4 第 2 条）。
+        // `master` 自身的处理延迟（母线限制器的 33 帧）发生在求和**之后**，因此它
+        // **不参与** `D(v)` 的对齐基准 —— 算进去只会给每条支路白加 N 帧延迟线，
+        // 一个相位也补不回来。它进 [`PdcPlan::output_latency`]（引擎输出的固定后移）。
+        let total_latency = latency.get(&master).copied().unwrap_or(0);
+        let output_latency = arrival.get(&master).copied().unwrap_or(0);
 
         // --- 3. 只对"能到达 master"的子图分配补偿延迟 ---
         // 若 p → v 且 v 能到达 master, 则 p 也能到达 master, 因此该子图对前驱封闭,
-        // 于是 ∀v ∈ Reachable: arrival(v) <= L_max, D(v) = L_max - arrival(v) 不会下溢。
+        // 于是 ∀v ∈ Reachable \ {master}: arrival(v) <= L_max,
+        // D(v) = L_max - arrival(v) 不会下溢。
+        // `master` 自己：`arrival(master) = L_max + own_latency(master) >= L_max`
+        // ⇒ `saturating_sub` 恒得 0（求和节点不需要、也不能有延迟线）。
         let mut reachable: BTreeSet<EntityId> = BTreeSet::new();
         let mut stack: Vec<EntityId> = vec![master];
         reachable.insert(master);
@@ -318,6 +359,7 @@ impl PdcPlan {
             compensation,
             excluded,
             total_latency,
+            output_latency,
         })
     }
 
@@ -349,10 +391,28 @@ impl PdcPlan {
         self.compensation.get(node).copied()
     }
 
-    /// 关键路径总延迟 `L_max`。
+    /// 关键路径总延迟 `L_max` = 求和节点**输入端**的最长支路延迟 [ARCH-PDC-001]。
+    ///
+    /// 它是 `D(v)` 的对齐基准，**不包含** `master` 自身的处理延迟（求和之后的
+    /// 母线限制器 33 帧）。需要"引擎输出相对工程时间轴后移多少"请读
+    /// [`Self::output_latency`]。
     #[must_use]
     pub fn total_latency(&self) -> u32 {
         self.total_latency
+    }
+
+    /// 引擎**输出**总延迟：`arrival(master) = L_max + own_latency(master)`（采样点）。
+    ///
+    /// 它是"喂进引擎第 0 帧的信号在第几帧出现在输出"的那个数 —— 既含支路对齐用的
+    /// `L_max`，也含接在**总线求和之后**的 `master` 自身延迟
+    /// （母线限制器的 [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES)
+    /// = 33 帧，[ADR-0001 D44(b)]）。
+    ///
+    /// ⚠ 它**不是** [`Self::total_latency`]：后者只是支路对齐基准。
+    /// 当 `master` 没有自身延迟时两者相等（历史行为）。
+    #[must_use]
+    pub fn output_latency(&self) -> u32 {
+        self.output_latency
     }
 
     /// 不参与 master 求和（因此无需补偿）的节点，按键升序。
@@ -763,6 +823,72 @@ mod tests {
         assert!(plan.excluded().is_empty());
     }
 
+    /// 判据 (d)：`master` 自身的处理延迟（母线限制器的 33 帧）**可见但不参与对齐**。
+    ///
+    /// [ADR-0001 D44(b)] 要求母线限制器的 33 帧回填进 `LatencyTable`。它接在
+    /// **总线求和之后**，因此：
+    ///
+    /// - `total_latency()`（对齐基准 `L_max = L(master)`）**不变**；
+    /// - 每条支路的 `D(v)` **逐位不变** ⇒ 渲染输出一个字都不动；
+    /// - `output_latency()`（`arrival(master)`）**恰好增加** `own` 帧。
+    ///
+    /// 注入：把 `compute` 里的 `total_latency` 换回 `arrival.get(&master)`
+    /// ⇒ 支路 `D(v)` 全部 +33、`total_latency` 也变，本判据立刻红
+    /// （`tests/pdc_mix_path.rs` 的 P3 会在**样本级**变红）。
+    #[test]
+    fn master_own_latency_is_visible_to_pdc_but_never_delays_branches() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let c = EntityId::new();
+        let m = EntityId::new();
+        let graph = graph_of(&[(a, b), (b, m), (a, c), (c, m)]);
+
+        // 参照：master 自身延迟为 0（回填之前的历史口径）。
+        let reference = PdcPlan::compute(&graph, m, &latency_table(&[(b, 10)])).expect("合法 DAG");
+        assert_eq!(reference.total_latency(), 10);
+        assert_eq!(reference.output_latency(), 10);
+
+        // 被测：master 自身多 33 帧（回填之后的口径）。
+        let backfilled =
+            PdcPlan::compute(&graph, m, &latency_table(&[(b, 10), (m, 33)])).expect("合法 DAG");
+
+        assert_eq!(
+            backfilled.total_latency(),
+            10,
+            "L_max 是**求和节点输入端**的最长支路延迟，与 master 自身延迟无关"
+        );
+        assert_eq!(
+            backfilled.output_latency(),
+            43,
+            "引擎输出延迟 = L_max + master 自身延迟(33)"
+        );
+        assert_eq!(backfilled.output_latency(), backfilled.total_latency() + 33);
+
+        // 对齐量逐位相同：这两条断言就是"渲染输出不变"的纯数值形式。
+        for node in [a, b, c, m] {
+            assert_eq!(
+                backfilled.compensation(&node),
+                reference.compensation(&node),
+                "节点 {node:?} 的 D(v) 必须一位不动（33 帧在求和之后）"
+            );
+        }
+        assert_eq!(
+            backfilled.compensation(&m),
+            Some(0),
+            "求和节点自己没有延迟线"
+        );
+        // 不变量在支路上仍成立；master 靠 saturating_sub 恰好落回 0。
+        for node in [a, b, c] {
+            assert_eq!(
+                backfilled.arrival(&node).expect("可达")
+                    + backfilled.compensation(&node).expect("可达"),
+                backfilled.total_latency(),
+                "支路 {node:?} 未对齐到 L_max"
+            );
+        }
+        assert_eq!(backfilled.compensated_len(), reference.compensated_len());
+    }
+
     /// 判据 (c) 的行为面：把同一脉冲喂进两条支路，补偿后**采样级同相**。
     ///
     /// 这比纯数值断言更强：它证明 `DelayLine` 的读写指针约定与 `D_i` 的语义一致
@@ -985,6 +1111,24 @@ mod tests {
         assert_eq!(table.len(), 1);
         table.set(a, 0);
         assert!(table.is_empty(), "显式置 0 等价于未登记（语义：延迟为 0）");
+    }
+
+    /// 判据：`LatencyTable::add` 在**已有**值上饱和相加，且 `0` 是空操作。
+    ///
+    /// 注入：把 `add` 写成 `set`（覆盖而不是相加）⇒ 第二段断言红；
+    /// 去掉饱和（改成 `+`）⇒ 溢出在 debug 下 panic，判据以 panic 变红。
+    #[test]
+    fn latency_table_add_accumulates_saturating() {
+        let a = EntityId::new();
+        let mut table = LatencyTable::new();
+        table.add(a, 0);
+        assert!(table.is_empty(), "加 0 不产生条目（未登记就是 0）");
+        table.add(a, 32);
+        assert_eq!(table.get(&a), 32);
+        table.add(a, 8);
+        assert_eq!(table.get(&a), 40, "两段延迟落在同一个节点上");
+        table.add(a, u32::MAX);
+        assert_eq!(table.get(&a), u32::MAX, "饱和，不回绕");
     }
 
     /// 判据 (i)：延迟表从模型的 `DeviceDefinition::latency_samples` 汇总而来

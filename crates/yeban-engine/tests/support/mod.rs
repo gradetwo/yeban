@@ -547,12 +547,29 @@ pub fn render(project: &YebanProjectV1, quanta: usize) -> Render {
 }
 
 /// 同 [`render`]，但允许在每个量子边界执行一个动作（用于"快照切换"判据）。
-pub fn render_with<F>(project: &YebanProjectV1, quanta: usize, revision: u64, mut at: F) -> Render
+pub fn render_with<F>(project: &YebanProjectV1, quanta: usize, revision: u64, at: F) -> Render
 where
     F: FnMut(usize, &mut Runtime),
 {
     let snapshot =
         EngineSnapshot::from_project(project, revision).expect("夹具工程必须能编译成快照");
+    render_snapshot_with(snapshot, quanta, at)
+}
+
+/// 同 [`render`]，但快照由调用方先构造好。
+///
+/// 用途：比较**同一条链的两条投影路径**（例如 `from_project` 与
+/// `from_project_with_latencies`）产生的渲染是否逐位相同 —— 那需要两份不同的快照，
+/// 而 [`render`] 只会自己调 `from_project`。
+pub fn render_snapshot(snapshot: EngineSnapshot, quanta: usize) -> Render {
+    render_snapshot_with(snapshot, quanta, |_, _| {})
+}
+
+/// [`render_with`] / [`render_snapshot`] 的共同实现（快照已就绪）。
+fn render_snapshot_with<F>(snapshot: EngineSnapshot, quanta: usize, mut at: F) -> Render
+where
+    F: FnMut(usize, &mut Runtime),
+{
     let slot = SnapshotSlot::new(snapshot);
     let (retire, queue) = retire_channel(64);
     let (_sender, receiver) = event_channel(64);

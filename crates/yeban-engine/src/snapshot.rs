@@ -412,9 +412,16 @@ impl EngineSnapshot {
     /// `revision` 是模型层的提交版本号（单调递增），用于让 UI/日志判断"音频线程是否
     /// 已经追上"。
     ///
-    /// 节点延迟**自动**从模型读取（[`LatencyTable::from_project`]，即
-    /// `DeviceDefinition::latency_samples` 之和）[ARCH-PDC-001]。
-    /// 需要注入测量值/构造合成场景时用 [`from_project_with_latencies`](Self::from_project_with_latencies)。
+    /// 节点延迟**自动**从**两处**读取 [ARCH-PDC-001]：
+    ///
+    /// 1. 模型字段 `DeviceDefinition::latency_samples` 的设备链之和
+    ///    （[`LatencyTable::from_project`]）；
+    /// 2. 母线总线限制器的固定 33 帧（[`crate::mixer::BUS_LIMITER_LATENCY_FRAMES`]），
+    ///    在**构造期**加到 `master` 节点上 [ADR-0001 D44(b)]。
+    ///
+    /// 需要注入测量值/构造合成场景时用
+    /// [`from_project_with_latencies`](Self::from_project_with_latencies)
+    /// —— 那条路径**不**做第 2 步（延迟表由调用方完全掌控）。
     ///
     /// # Errors
     ///
@@ -422,7 +429,18 @@ impl EngineSnapshot {
     /// - [`SnapshotError::Pdc`]：路由图成环 / 边端点缺失；
     /// - [`SnapshotError::Model`]：`RoutingGraph::validate()` 失败。
     pub fn from_project(project: &YebanProjectV1, revision: u64) -> Result<Self, SnapshotError> {
-        let latencies = LatencyTable::from_project(project);
+        let mut latencies = LatencyTable::from_project(project);
+        // [ADR-0001 D44(b)]："引擎链路上每一段延迟都可被 PDC 看见" ⇒ 母线限制器的
+        // 前瞻环长（33 帧）登记到 `master` 节点的**自身**延迟上。
+        //
+        // ⚠ 它接在**总线求和之后**（`rt::render_block` 步骤 3b），所以 `PdcPlan`
+        // 只用 `L(master)` 做支路对齐基准、**不**给任何支路插延迟线 ⇒ 这段回填
+        // 对**渲染输出零影响**（判据：`tests/pdc_mix_path.rs` 的 P3）。
+        // 它出现在 `PdcPlan::output_latency()`（引擎输出的固定后移）里。
+        latencies.add(
+            project.master_bus_track_id,
+            crate::mixer::BUS_LIMITER_LATENCY_FRAMES,
+        );
         Self::from_project_with_latencies(project, revision, &latencies)
     }
 
@@ -430,6 +448,10 @@ impl EngineSnapshot {
     ///
     /// 用途：离线对账时注入实测延迟、测试时构造"只有一条支路有延迟"的合成场景。
     /// 生产路径应当用 [`from_project`](Self::from_project)，避免出现第二个延迟事实源。
+    ///
+    /// ⚠ 本函数**不**追加母线限制器的 33 帧：传进来的 `latencies` 原样使用
+    /// （那正是"显式注入"的含义）。需要生产口径请用
+    /// [`from_project`](Self::from_project)。
     ///
     /// # Errors
     ///
@@ -2039,6 +2061,131 @@ mod tests {
             Some(32)
         );
         assert_eq!(snapshot.track(&light).map(|p| p.latency_samples()), Some(0));
+    }
+
+    /// 判据 (ii)：**母线限制器的 33 帧被回填到 `master` 节点**，但它接在总线求和
+    /// **之后** ⇒ 支路的 `D(v)` 与渲染输出**一位不动** [ADR-0001 D44(b)]。
+    ///
+    /// 这里用纯数据把三件事钉死（样本级的形式见 `tests/pdc_mix_path.rs` 的 P3）：
+    ///
+    /// 1. 生产路径（[`EngineSnapshot::from_project`]）的 `output_latency()` 恰好比
+    ///    对齐基准 `total_latency()` 多 33 帧；
+    /// 2. 显式注入路径（[`EngineSnapshot::from_project_with_latencies`]）**不**追加，
+    ///    它拿到什么就是什么；
+    /// 3. 两条路径的 `compensation` **逐节点相同** ⇒ 实时侧武装的延迟线一模一样。
+    ///
+    /// 注入：删掉 `from_project` 里的 `latencies.add(..)` ⇒ 第 1 组断言红；
+    /// 把 `add` 挪到别的节点（例如 `heavy`）⇒ 第 3 组断言红。
+    #[test]
+    fn project_snapshot_backfills_the_bus_limiter_latency_without_moving_branches() {
+        use yeban_model::{DeviceDefinition, DeviceKind};
+
+        let heavy = EntityId::new();
+        let light = EntityId::new();
+        let master = EntityId::new();
+        let mut routing = RoutingGraph {
+            nodes: vec![heavy, light, master],
+            ..RoutingGraph::default()
+        };
+        for source in [heavy, light] {
+            let id = EntityId::new();
+            routing.edges.insert(
+                id,
+                RoutingEdge {
+                    id,
+                    source_node: source,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            );
+        }
+        let mut tracks = BTreeMap::new();
+        tracks.insert(
+            heavy,
+            TrackV3 {
+                id: heavy,
+                devices: vec![DeviceDefinition {
+                    kind: DeviceKind::ExternalEffect,
+                    latency_samples: 32,
+                    ..DeviceDefinition::default()
+                }],
+                ..TrackV3::default()
+            },
+        );
+        tracks.insert(
+            light,
+            TrackV3 {
+                id: light,
+                ..TrackV3::default()
+            },
+        );
+        let project = YebanProjectV1 {
+            master_bus_track_id: master,
+            routing_graph: routing,
+            tracks,
+            ..YebanProjectV1::default()
+        };
+
+        let limiter = crate::mixer::BUS_LIMITER_LATENCY_FRAMES;
+        assert_eq!(limiter, 33, "母线限制器的前瞻环长是 33 帧");
+
+        // --- 1) 生产路径：master 带上这 33 帧 ---
+        let backfilled = EngineSnapshot::from_project(&project, 1).expect("投影成功");
+        assert_eq!(
+            backfilled.pdc().total_latency(),
+            32,
+            "对齐基准仍是 32（母线限制器在求和之后，不进 L_max）"
+        );
+        assert_eq!(
+            backfilled.pdc().output_latency(),
+            32 + limiter,
+            "引擎输出延迟 = L_max + 33"
+        );
+
+        // --- 2) 显式注入路径：拿到什么就是什么（不追加） ---
+        let raw_table = LatencyTable::from_project(&project);
+        let explicit =
+            EngineSnapshot::from_project_with_latencies(&project, 1, &raw_table).expect("投影成功");
+        assert_eq!(
+            explicit.pdc().output_latency(),
+            32,
+            "显式注入路径不追加母线限制器延迟"
+        );
+
+        // --- 3) 支路对齐量逐节点相同（这就是"渲染输出不变"的纯数值形式） ---
+        for node in [heavy, light] {
+            assert_eq!(
+                backfilled.pdc().compensation(&node),
+                explicit.pdc().compensation(&node),
+                "支路 {node:?} 的 D(v) 必须一位不动"
+            );
+            assert_eq!(
+                backfilled.pdc().arrival(&node),
+                explicit.pdc().arrival(&node),
+                "支路 {node:?} 的 arrival 也必须一位不动"
+            );
+        }
+        assert_eq!(
+            backfilled.pdc().compensation(&master),
+            explicit.pdc().compensation(&master),
+            "求和节点自己的 D 恒为 0，回填前后相同"
+        );
+        assert_eq!(
+            backfilled.pdc().latency(&master),
+            explicit.pdc().latency(&master),
+            "L(master) 是求和节点输入端的最长支路延迟，与 master 自身延迟无关"
+        );
+        // ⚠ 唯一变化的读数是 `arrival(master)`（= `output_latency()`）。
+        assert_eq!(
+            backfilled.pdc().arrival(&master),
+            Some(32 + limiter),
+            "master 的 arrival 含它自己的 33 帧"
+        );
+        assert_eq!(
+            backfilled.pdc().arrival(&master),
+            explicit.pdc().arrival(&master).map(|value| value + limiter)
+        );
     }
 
     /// 旁通设备的延迟**不计入**（它不在信号路径上）。
