@@ -381,6 +381,61 @@
 //! `setAutomationLane` 的 `lane` / `removeAutomationPoint` 的 `point` 同一纪律。
 //! `SendGain` 的自动化**点**仍走 `yeban_edit_automation` 与 [`NoteOp::SetLane`]
 //! （那是泳道的事）；本形态只管**静态**增益这一个字段。
+//!
+//! ## 路由节点取走形态（`ops[].kind == "removeRoutingNode"`）
+//! —— 关闭"工具面造得出的节点取不走"这条缺口
+//!
+//! 模型有 [`Op::RemoveRoutingNode`]（载荷只有 `node` 一个身份，**没有撤销载荷** ——
+//! 它与 `AddRoutingNode` 互为逆操作），而在这个形态之前，这个变体在整个
+//! `crates/yeban-mcp/src` 里**一次都没有被构造过**。实测（可复跑，单位 = "匹配到的构造点个数"）：
+//! `git grep -hoE '(^|[^A-Za-z0-9_])Op::RemoveRoutingNode \{' origin/main -- crates/yeban-mcp/src | wc -l`
+//! 读数是 **0**（同一个模式对 `Op::SetRoutingGain` 读数是 **5** ⇒ 模式本身**有效**，
+//! 0 不是"模式写坏了"）；`git grep -c 'Op::RemoveRoutingNode' origin/main -- crates/yeban-mcp/src`
+//! 只命中 **2 行**，而且两行**都是文字** —— 一条是 [`NoteOp::DisconnectRouting`] 的文档，
+//! 一条是 `yeban_edit_notes` 的工具说明，两条都在说"取走节点是 `Op::RemoveRoutingNode` 的事"。
+//! 工具说明甚至**许了愿**：原文说"先断开每一条引用边, 再单独一次调用取走节点"，
+//! 而那次调用**不存在**。
+//!
+//! 缺口的形状与 `setRoutingGain` / `disconnectRouting` 两票**逐条同因**：
+//!
+//! | 事实 | 依据 |
+//! | :--- | :--- |
+//! | 读侧报得出节点身份 | `yeban_query_project` 的 `routing_graph.nodes` 数组 |
+//! | 渲染器真的消费它 | `yeban-engine` 的 `PdcPlan::compute` 以"主总线在 `nodes` 里"为前置条件（否则 `UnknownMaster`，一个块都不渲染） |
+//! | 模型指定唯一写者 | 17 个工具里**没有**任何一个构造过 `Op::RemoveRoutingNode` |
+//!
+//! 于是 AI Agent 断得开边、看得见节点、却**取不走**它：一次声部连接回滚到最后会
+//! 留下一个只能在读侧看见的孤节点。
+//!
+//! 为什么是**新形态**而不是给 [`DISCONNECT_ROUTING_KIND`] 加开关：取走节点是**另一个**
+//! 模型变体，`Op::DisconnectRouting` 的前置条件（`previous_edge` 逐字段等于文档现值）
+//! 与它无关；把它并进那个形态就是让那个形态的名字说谎
+//! （与 [`SET_ROUTING_GAIN_KIND`] 单列的理由相同）。
+//!
+//! 形态：`{"kind":"removeRoutingNode","nodeId":"<ULID>"}` —— 载荷是**空**的（只有寻址）。
+//!
+//! 五条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有 `kind` / `nodeId` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownRemoveRoutingNodeField"`） |
+//! | `nodeId` 缺失 / 不是字符串 / 不是合法 ULID | `INVALID_PARAMETER_RANGE`（缺字段走统一的缺字段错误） |
+//! | `routing_graph.nodes` 里没有这个身份 | `ENTITY_NOT_FOUND`（`reason = "routingNodeNotFound"`） |
+//! | 这个身份是**主总线** | `CONFLICT`（`reason = "masterBusNodeCannotBeRemoved"`） |
+//! | 还有**任何**路由边引用它 | `CONFLICT`（模型自己的 `RoutingNodeInUse`，带 `edge_count`） |
+//!
+//! ⚠ 为什么"主总线节点"是一条**本层**的提前拒绝：模型把它放在
+//! `YebanProjectV1::validate` 里（有音轨时主总线必须在 `nodes` 里），那条校验只在
+//! **提案模拟**那一步跑；它复用的错误变体是 `RoutingNodeNotFound`（模型侧注释写明了
+//! 理由：不扩 `ModelError`），于是调用方会收到"节点不存在" —— 而那个节点**刚刚被
+//! 自己取走**。同一个结论（响亮失败）在这里用一个说得通的契约码表达。
+//!
+//! ⚠ 本层**不**复制"没有任何边引用它"那条前置条件：那是 `Op::validate` 的事，
+//! 它的载荷（`edge_count`）比本层能给的更具体 —— 与 `disconnectRouting` 让
+//! `RoutingNodeInUse` 由模型报出同一条纪律。
+//!
+//! 目标**不在**顶层 `trackId` / `clipId` 上：本形态自带寻址（`nodeId`），与
+//! `setRoutingGain` / `disconnectRouting` 同一纪律。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -574,7 +629,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 音轨级与路由级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 12] = [
+pub const OP_KINDS: [&str; 13] = [
     "add",
     "delete",
     "move",
@@ -587,6 +642,7 @@ pub const OP_KINDS: [&str; 12] = [
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
     DISCONNECT_ROUTING_KIND,
+    REMOVE_ROUTING_NODE_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -893,6 +949,17 @@ pub const SET_ROUTING_GAIN_KIND: &str = "setRoutingGain";
 /// 住在嵌套的 `lane.edgeId`（那边还带着泳道属性，两条路由级形态都只有这一个字段）。
 pub const ROUTING_EDGE_FIELD: &str = "edgeId";
 
+/// **路由节点**的寻址字段名（`ops[].nodeId`，必填）。
+///
+/// 与 [`ROUTING_EDGE_FIELD`] **不同一个实体**（节点是 `routing_graph.nodes` 里的身份，
+/// 边是 `routing_graph.edges` 里的身份），因此刻意**不共用**那个字面量 ——
+/// 共用一个词会让"边"与"节点"在工具面上无法区分。
+///
+/// 与 `yeban_query_project` 的 `routing_graph.nodes` 数组里的身份同一个东西
+/// （`ADR-0001` D48：同一个词必须同一个意思），命名与 `edgeId` / `trackId` / `noteId`
+/// 同一规则（"被寻址的实体" + `Id`）。
+pub const ROUTING_NODE_FIELD: &str = "nodeId";
+
 /// 路由边增益形态的**寻址**字段名（= [`ROUTING_EDGE_FIELD`]，同一个字面量）。
 pub const SET_ROUTING_GAIN_EDGE_FIELD: &str = ROUTING_EDGE_FIELD;
 
@@ -926,6 +993,20 @@ pub const DISCONNECT_ROUTING_KIND: &str = "disconnectRouting";
 /// 读（与 [`SET_ROUTING_GAIN_KIND`] 的 `old_gain_db` 同一条纪律）。
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const DISCONNECT_ROUTING_FIELDS: [&str; 2] = ["kind", ROUTING_EDGE_FIELD];
+
+/// `ops[].kind` 的**取走路由节点**形态名（写 [`Op::RemoveRoutingNode`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveRoutingNode` 的小驼峰），与 [`DISCONNECT_ROUTING_KIND`] /
+/// [`REMOVE_CLIP_KIND`] 同一条命名规则。
+pub const REMOVE_ROUTING_NODE_KIND: &str = "removeRoutingNode";
+
+/// 取走路由节点形态允许出现的**全部**键（判别键 + 寻址键）。
+///
+/// 目标音轨、目标片段与节点的旧状态**都不在**这里：本形态自带寻址
+/// （[`ROUTING_NODE_FIELD`]），而 `RemoveRoutingNode` 的模型载荷**只有**节点身份
+/// —— 它没有撤销载荷（与 `AddRoutingNode` 互为逆操作，两份载荷都不需要）。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const REMOVE_ROUTING_NODE_FIELDS: [&str; 2] = ["kind", ROUTING_NODE_FIELD];
 
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
@@ -1258,6 +1339,30 @@ pub enum NoteOp {
         /// 路由边身份（本形态自带寻址）。
         edge_id: EntityId,
     },
+    /// 取走**一个路由节点**（[`Op::RemoveRoutingNode`]，即把这个身份从
+    /// `routing_graph.nodes` 取走）。
+    ///
+    /// 与 [`Self::DisconnectRouting`] **同族**（路由级、目标由自带的 `nodeId` 给出、
+    /// 与顶层 `trackId` / `clipId` 无关），但取走的不是一条边而是**一个节点**：
+    /// 写侧只有 `AddRoutingNode`（本工具面只在 `yeban_propose_section` 的建批里
+    /// 构造它）⇒ 没有本形态，工具面**造得出**的节点**取不走**
+    /// （`yeban_query_project` 的 `routing_graph.nodes` 数组却一直在报它们的身份，
+    /// 而 `disconnectRouting` 的名字说了它不动节点）。
+    ///
+    /// 载荷是**空**的：只有寻址。`RemoveRoutingNode` 在模型里**没有撤销载荷**
+    /// （[`Op::invert`] 把它换成 `AddRoutingNode`，两条载荷都只有节点身份），
+    /// 因此本形态既不读文档现值，也不接受调用方送来的旧状态
+    /// （[`reject_remove_routing_node_fields`] 只认 `kind` 与 `nodeId`）。
+    ///
+    /// 模型的两条前置条件中，"没有任何边引用它"由 `Op::validate` 报
+    /// （`RoutingNodeInUse`，带 `edge_count`）；"节点存在"由 [`compile`] 提前报
+    /// （`routingNodeNotFound`），"这个节点是主总线"同样由 [`compile`] 提前报
+    /// （`masterBusNodeCannotBeRemoved`）—— 那两条在模型里分别是
+    /// `RoutingNodeNotFound` 与 `YebanProjectV1::validate` 的主总线不变量。
+    RemoveRoutingNode {
+        /// 路由节点身份（音轨或总线；本形态自带寻址）。
+        node_id: EntityId,
+    },
 }
 
 impl NoteOp {
@@ -1276,6 +1381,7 @@ impl NoteOp {
             Self::RemoveClip => REMOVE_CLIP_KIND,
             Self::SetRoutingGain { .. } => SET_ROUTING_GAIN_KIND,
             Self::DisconnectRouting { .. } => DISCONNECT_ROUTING_KIND,
+            Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
         }
     }
 
@@ -1283,8 +1389,8 @@ impl NoteOp {
     ///
     /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
     /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
-    /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] 是**路由级**的：
-    /// 它们跟片段内容无关。
+    /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] / [`Self::RemoveRoutingNode`]
+    /// 是**路由级**的：它们跟片段内容无关。
     /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
@@ -1298,19 +1404,22 @@ impl NoteOp {
                 | Self::RemoveClip
                 | Self::SetRoutingGain { .. }
                 | Self::DisconnectRouting { .. }
+                | Self::RemoveRoutingNode { .. }
         )
     }
 
-    /// 该形态改的是**路由边**（而不是音符 / 音轨 / 泳道 / 片段池）。
+    /// 该形态改的是**路由图**（而不是音符 / 音轨 / 泳道 / 片段池）。
     ///
     /// 只用于把提案标题写成**实际内容**（`domain::plan_edit_notes` 的分类）：
-    /// 一次纯 `setRoutingGain` 或纯 `disconnectRouting` 的调用不能被报成"音轨级编辑"
-    /// （那是三个不同的对象）。
+    /// 一次纯 `setRoutingGain` / 纯 `disconnectRouting` / 纯 `removeRoutingNode`
+    /// 的调用不能被报成"音轨级编辑"（那是不同的对象）。
     #[must_use]
     pub const fn is_routing_level(&self) -> bool {
         matches!(
             self,
-            Self::SetRoutingGain { .. } | Self::DisconnectRouting { .. }
+            Self::SetRoutingGain { .. }
+                | Self::DisconnectRouting { .. }
+                | Self::RemoveRoutingNode { .. }
         )
     }
 }
@@ -1339,6 +1448,7 @@ impl NoteOp {
 /// {"kind":"setRoutingGain","edgeId":"<ULID>","value":-6.0}
 /// {"kind":"setRoutingGain","edgeId":"<ULID>","value":null}
 /// {"kind":"disconnectRouting","edgeId":"<ULID>"}
+/// {"kind":"removeRoutingNode","nodeId":"<ULID>"}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -1369,13 +1479,19 @@ impl NoteOp {
 /// （见 [`NoteOp::DisconnectRouting`]）。两者都用 [`ROUTING_EDGE_FIELD`] 寻址，
 /// 因此 `disconnectRouting` 对象里 [`DISCONNECT_ROUTING_FIELDS`] 之外的键一律响亮拒绝。
 ///
+/// `removeRoutingNode` 是**第三个**路由级形态
+/// （见 [`NoteOp::RemoveRoutingNode`]）：它把 `nodeId` 那个**节点**从
+/// `routing_graph.nodes` 取走，用 [`ROUTING_NODE_FIELD`] 寻址（与边**不同的**实体），
+/// 对象里 [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键一律响亮拒绝。
+///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
 ///   开关对象里有 [`TRACK_FLAG_FIELDS`] 之外的键 / `lane` 对象里有
 ///   [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 / 路由边增益对象里有
 ///   [`SET_ROUTING_GAIN_FIELDS`] 之外的键 / 断开路由边对象里有
-///   [`DISCONNECT_ROUTING_FIELDS`] 之外的键 →
+///   [`DISCONNECT_ROUTING_FIELDS`] 之外的键 / 取走路由节点对象里有
+///   [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
 ///   非布尔开关值、未知写模式、既不是数字也不是 `null` 的增益值）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
@@ -1466,6 +1582,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 edge_id: read_id(object, ROUTING_EDGE_FIELD)?,
             })
         }
+        REMOVE_ROUTING_NODE_KIND => {
+            reject_remove_routing_node_fields(object)?;
+            Ok(NoteOp::RemoveRoutingNode {
+                node_id: read_id(object, ROUTING_NODE_FIELD)?,
+            })
+        }
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("未知 `kind`: `{other}`"),
@@ -1546,6 +1668,45 @@ fn reject_disconnect_routing_fields(object: &Map<String, Value>) -> Result<(), F
             "supportedDisconnectRoutingFields": DISCONNECT_ROUTING_FIELDS,
             "hint": "本形态的载荷是空的 (只认 `kind` 与 `edgeId`); 断开前的整条边由 \
                      `compile` 从当前文档读, 不需要 (也不接受) 调用方声明",
+        }),
+    ))
+}
+
+/// 拒绝 `removeRoutingNode` 操作对象里 [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键。
+///
+/// 与 [`reject_disconnect_routing_fields`] / [`reject_routing_gain_fields`] 同一口径
+/// （"拼错的键必须被拒绝, 不能静默忽略"）：最像"写对了"的两种错法是把**边的**寻址
+/// （`edgeId`）搬过来，或把目标写成工具顶层的 `trackId` —— 两种都会被静默忽略，
+/// 而调用方以为节点已经取走。
+///
+/// # Errors
+///
+/// 出现 `kind` / `nodeId` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownRemoveRoutingNodeField"`）。
+fn reject_remove_routing_node_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_ROUTING_NODE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_ROUTING_NODE_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_ROUTING_NODE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRemoveRoutingNodeField",
+            "unsupportedFields": unknown,
+            "supportedRemoveRoutingNodeFields": REMOVE_ROUTING_NODE_FIELDS,
+            "hint": "本形态的载荷是空的 (只认 `kind` 与 `nodeId`); 节点身份取自 \
+                     `yeban_query_project` 的 `routing_graph.nodes`, 边由 `edgeId` 寻址 \
+                     (那个键属于 `setRoutingGain` / `disconnectRouting`)",
         }),
     ))
 }
@@ -2316,12 +2477,20 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// `tick` 寻址在**文档**上解析（恰好一个落在该 tick 的点），`pointId` 寻址用模型身份；
 /// `previous_point` 从当前文档读（模型 `RemoveAutomationPoint` 的前置条件读的是同一个字段）。
 ///
+/// 三个**路由级**形态都自带寻址（与 `track_id` / `clip_id` 无关）：
+/// [`NoteOp::SetRoutingGain`] 与 [`NoteOp::DisconnectRouting`] 从当前文档读**边**的现值
+/// （`old_gain_db` / `previous_edge`），[`NoteOp::RemoveRoutingNode`] 的载荷是空的
+/// —— 它只查"节点在 `nodes` 里"与"不是主总线"两条（见该分支的注释）。
+///
 /// # Errors
 ///
 /// - 音轨不存在 → `TRACK_NOT_FOUND`；
 /// - 片段不存在 → `CLIP_NOT_FOUND`；**有音符操作**且片段不是 MIDI → `CLIP_NOT_FOUND`
 ///   （纯 `setParam` / 纯开关调用不要求片段是 MIDI：它们不读片段内容）；
 /// - 音符不存在 → `ENTITY_NOT_FOUND`；自动化泳道或点不存在 → `ENTITY_NOT_FOUND`；
+///   路由边或路由节点不存在 → `ENTITY_NOT_FOUND`（`routingEdgeNotFound` /
+///   `routingNodeNotFound`）；
+/// - 目标是主总线（`removeRoutingNode`）→ `CONFLICT`（`masterBusNodeCannotBeRemoved`）；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
 pub fn compile(
     project: &YebanProjectV1,
@@ -2579,6 +2748,57 @@ pub fn compile(
                     edge_id: *edge_id,
                     previous_edge,
                 }
+            }
+            NoteOp::RemoveRoutingNode { node_id } => {
+                // 载荷是**空**的（模型 `RemoveRoutingNode` 只有节点身份，且它与
+                // `AddRoutingNode` 互为逆操作），因此这里没有撤销载荷可读。
+                //
+                // 两条提前拒绝（与 `setRoutingGain` / `disconnectRouting` 的
+                // `routingEdgeNotFound` 同一纪律 —— 让"身份打错"在**编译期**就带上
+                // `reason` 与 `hint`，而不是在提案模拟那一步冒出一个泛化消息）：
+                //
+                // 1. 节点必须已经在 `routing_graph.nodes` 里（模型 `Op::validate`
+                //    报的是 `RoutingNodeNotFound`，契约码相同, 但那条路径只在提案
+                //    模拟里跑，消息里没有本层的 `reason` / `hint`）。
+                // 2. 主总线**不能**被取走：`YebanProjectV1::validate` 要求有音轨时
+                //    主总线在 `nodes` 里（`yeban-engine` 的 `PdcPlan::compute` 以它
+                //    为前置条件）。模型把这条不变量复用了 `RoutingNodeNotFound`
+                //    （见 `project.rs` 里那段注释的理由），于是"取走主总线"会以
+                //    "节点不存在"告终 —— 而节点刚刚被自己取走。这里用一个说得通的
+                //    契约码（`CONFLICT`）报同一个结论。
+                //
+                // "没有任何边引用它"**不在这里**复制：那是 `Op::validate` 的
+                // `RoutingNodeInUse`（带 `edge_count`），由提案模拟报出。
+                if !project.routing_graph.nodes.contains(node_id) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程的 routing_graph.nodes 里没有身份 {node_id} 的节点"),
+                        serde_json::json!({
+                            "nodeId": node_id.to_canonical_string(),
+                            "reason": "routingNodeNotFound",
+                            "hint": "节点的身份由 `yeban_query_project` 的 \
+                                     `routing_graph.nodes` 数组报出",
+                        }),
+                    ));
+                }
+                if *node_id == project.master_bus_track_id {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!(
+                            "身份 {node_id} 是工程的主总线, 模型要求主总线留在 \
+                             routing_graph.nodes 里, 不能取走"
+                        ),
+                        serde_json::json!({
+                            "nodeId": node_id.to_canonical_string(),
+                            "masterBusTrackId": project.master_bus_track_id.to_canonical_string(),
+                            "reason": "masterBusNodeCannotBeRemoved",
+                            "hint": "主总线是唯一的声学出口 (`PdcPlan::compute` 以\
+                                     「主总线在 nodes 里」为前置条件); 本形态只取走**非**\
+                                     主总线节点, 并且在取走之前必须先断开引用它的每一条边",
+                        }),
+                    ));
+                }
+                Op::RemoveRoutingNode { node: *node_id }
             }
         });
     }
@@ -3952,10 +4172,12 @@ mod tests {
             compile(&project, &track_id, &audio_clip.id, &ops).expect("纯开关写入不要求 MIDI 材料");
         assert_eq!(compiled.len(), 2);
 
-        // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字 + 一个路由级名字
+        // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字 + 两个路由级名字
         // （错误信息的 `supportedKinds` 与判据共用同一份真相）。
-        // 2026-10-09：新增 `disconnectRouting` 后全集为 12（裁决 R22，性质不变）。
-        assert_eq!(OP_KINDS.len(), 12);
+        // 2026-10-09：新增 `disconnectRouting` 后全集为 12（裁决 R22，性质不变）；
+        // 同日新增 `removeRoutingNode`（第三个路由级形态）后为 13 —— 这是**同步**
+        // 计数（多了一个真存在的 `kind`），不是弱化判据。
+        assert_eq!(OP_KINDS.len(), 13);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -3963,6 +4185,8 @@ mod tests {
         assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
         assert!(OP_KINDS.contains(&REMOVE_CLIP_KIND));
         assert!(OP_KINDS.contains(&SET_ROUTING_GAIN_KIND));
+        assert!(OP_KINDS.contains(&DISCONNECT_ROUTING_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
         assert_eq!(LANE_WRITE_MODES.len(), 4);
     }
 
@@ -5144,6 +5368,326 @@ mod tests {
             lane_fault_data(&fault)["edgeId"],
             serde_json::json!(missing.to_canonical_string())
         );
+    }
+
+    /// 样本里一条**非**主总线节点，以及当前引用它的每条边。
+    ///
+    /// 模型的 `RemoveRoutingNode` 有"没有任何边引用它"的前置条件，而 `filled_project`
+    /// 的四个节点**全部**被引用 ⇒ "取走节点"的判据必须先走一遍工具面自己的两步
+    /// （`disconnectRouting` 每一条引用边 → `removeRoutingNode`）。挑**引用边最少**的
+    /// 那个节点，让两步序列最短；`nodes` 是 `Vec`，因此这个选择是确定性的。
+    fn a_non_master_node(project: &YebanProjectV1) -> (EntityId, Vec<EntityId>) {
+        let referencing = |node: EntityId| -> Vec<EntityId> {
+            project
+                .routing_graph
+                .edges
+                .values()
+                .filter(|edge| edge.source_node == node || edge.destination_node == node)
+                .map(|edge| edge.id)
+                .collect()
+        };
+        project
+            .routing_graph
+            .nodes
+            .iter()
+            .copied()
+            .filter(|node| *node != project.master_bus_track_id)
+            .map(|node| (node, referencing(node)))
+            .min_by_key(|(_, edges)| edges.len())
+            .expect("样本里必须有非主总线节点")
+    }
+
+    /// 路由节点形态的**字面**判据：载荷只有节点身份（模型**没有**撤销载荷），
+    /// 两步序列（断开每一条引用边 → 取走节点）能被 `Op::invert` 逐步逐字节回退。
+    ///
+    /// 这一条对着"工具面造得出的节点取不走"的缺口：`yeban_propose_section` 的建批
+    /// 会构造 `Op::AddRoutingNode`，而本形态之前**没有任何工具**构造过
+    /// `Op::RemoveRoutingNode`（工具说明却已经写了"再单独一次调用取走节点"）。
+    ///
+    /// 注入（实测红）：把本形态编译出的那个模型变体由 `Op::RemoveRoutingNode` 换成
+    /// `Op::AddRoutingNode` ⇒ 节点数不减反增（`nodes.len() - 1`
+    /// 那条断言红），逆操作也不再回到原状；把 [`ROUTING_NODE_FIELD`] 由 `nodeId`
+    /// 改成 `edgeId` ⇒ 解析那一步就红。
+    #[test]
+    fn remove_routing_node_compiles_an_unreferenced_node_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (node, edges) = a_non_master_node(&project);
+        assert_eq!(
+            edges.len(),
+            1,
+            "夹具前提: 引用边最少的非主总线节点只有一条边"
+        );
+        let nodes_before = project.routing_graph.nodes.clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+        let (track_id, clip_id) = lead_clip(&project);
+
+        // 第一步: 按 `disconnectRouting` 的纪律断开引用它的每一条边。
+        let raw: Vec<Value> = edges
+            .iter()
+            .map(|edge| {
+                serde_json::json!({
+                    "kind": DISCONNECT_ROUTING_KIND,
+                    "edgeId": edge.to_canonical_string(),
+                })
+            })
+            .collect();
+        let disconnected = parse_ops(&Value::Array(raw)).expect("解析");
+        let compiled_disconnected =
+            compile(&project, &track_id, &clip_id, &disconnected).expect("编译");
+        assert_eq!(compiled_disconnected.len(), edges.len());
+        for op in &compiled_disconnected {
+            op.apply(&mut project).expect("断开");
+        }
+        assert!(
+            project.routing_graph.nodes.contains(&node),
+            "断开边一个字都不动 `nodes` (取走节点是本形态的事)"
+        );
+        let bytes_after_disconnect = serde_json::to_string(&project).expect("序列化");
+
+        // 第二步: 取走那个节点。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": node.to_canonical_string()}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), REMOVE_ROUTING_NODE_KIND);
+        assert!(!ops[0].is_note_level(), "路由级不读不写音符");
+        assert!(ops[0].is_routing_level());
+        assert_eq!(ops[0], NoteOp::RemoveRoutingNode { node_id: node });
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::RemoveRoutingNode { node: target } => assert_eq!(*target, node),
+            other => panic!("应当是 RemoveRoutingNode: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("取走");
+        assert!(
+            !project.routing_graph.nodes.contains(&node),
+            "节点必须真的从 `nodes` 里消失"
+        );
+        assert_eq!(project.routing_graph.nodes.len(), nodes_before.len() - 1);
+        assert!(project.validate().is_ok(), "取走之后工程必须仍然合法");
+
+        // 逆操作逐步回退: 先回退"取走", 再回退"断开"。
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.routing_graph.nodes, nodes_before,
+            "逆操作必须把节点放回原来的位置"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_after_disconnect,
+            "逆操作必须逐字节回到断开之后的状态"
+        );
+        for op in compiled_disconnected.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "两步都回退之后必须逐字节回到原状"
+        );
+    }
+
+    /// 路由节点形态的**字段名与支持集合**被钉住（不多报一个键，也不少报一个键）。
+    ///
+    /// 注入（实测红）：把 [`ROUTING_NODE_FIELD`] 改成 `edgeId` ⇒ 本判据红 ——
+    /// 节点与边是两种实体，共用一个词会让"取走的是哪一个"从形状上无法区分。
+    #[test]
+    fn remove_routing_node_field_names_are_pinned() {
+        assert_eq!(REMOVE_ROUTING_NODE_KIND, "removeRoutingNode");
+        assert_eq!(ROUTING_NODE_FIELD, "nodeId");
+        assert_ne!(
+            ROUTING_NODE_FIELD, ROUTING_EDGE_FIELD,
+            "节点与边不是同一个字面量"
+        );
+        assert_eq!(REMOVE_ROUTING_NODE_FIELDS, ["kind", "nodeId"]);
+        assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
+        // 与模型自己的变体名同词（不手写第二张会漂移的表）。
+        assert_eq!(
+            Op::RemoveRoutingNode {
+                node: EntityId::from_str("01J8ZQ00000000000000000060").expect("ULID"),
+            }
+            .name(),
+            "RemoveRoutingNode"
+        );
+    }
+
+    /// 路由节点形态的形状错误**响亮失败**（绝不静默丢弃），而规范形状放行。
+    ///
+    /// 注入（实测红）：去掉 [`reject_remove_routing_node_fields`] 的调用 ⇒ 第一条
+    /// （把**边**的寻址 `edgeId` 搬过来）与第二条（把工具顶层的 `trackId` 搬过来）
+    /// 被**静默接受**，本判据红。
+    #[test]
+    fn remove_routing_node_shapes_fail_loudly() {
+        let project = filled_project();
+        let (node, _) = a_non_master_node(&project);
+        let node_text = node.to_canonical_string();
+        let (track_id, clip_id) = lead_clip(&project);
+
+        for broken in [
+            // 把**边**的寻址搬过来: `nodeId` 缺失, 而且 `edgeId` 不是本形态的键。
+            serde_json::json!([{"kind": REMOVE_ROUTING_NODE_KIND, "edgeId": node_text}]),
+            // 把工具顶层的 `trackId` 搬过来（那是别的形态的寻址）。
+            serde_json::json!([{"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": node_text,
+                                "trackId": track_id.to_canonical_string()}]),
+            serde_json::json!([{"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": node_text,
+                                "value": null}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err("必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownRemoveRoutingNodeField",
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedRemoveRoutingNodeFields"],
+                serde_json::json!(["kind", "nodeId"]),
+                "{broken}"
+            );
+        }
+
+        for broken in [
+            // 缺 `nodeId`。
+            serde_json::json!([{"kind": REMOVE_ROUTING_NODE_KIND}]),
+            // `nodeId` 不是字符串。
+            serde_json::json!([{"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": 7}]),
+            // `nodeId` 不是合法 ULID。
+            serde_json::json!([{"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": "not-a-ulid"}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+        }
+
+        // 阴性对照: 规范形状必须被接受 —— 上面红的不是"全都拒"。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": node_text}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(ops[0].is_routing_level());
+        compile(&project, &track_id, &clip_id, &ops).expect("编译");
+    }
+
+    /// 三条口径：节点不存在 → 本层 `ENTITY_NOT_FOUND`；节点是主总线 → 本层
+    /// `CONFLICT`；还有边引用它 → 本层**放行**、由模型报 `RoutingNodeInUse`。
+    ///
+    /// 注入（实测红）：删掉主总线那条分支 ⇒ 第二条红（它会走到模型，而模型对
+    /// "有音轨但主总线不在 `nodes` 里"复用 `RoutingNodeNotFound` ⇒ 契约码变成
+    /// `ENTITY_NOT_FOUND`，与"节点刚刚被自己取走"的事实不符）；删掉存在性分支
+    /// ⇒ 第一条红（失败会来自提案模拟，没有本层的 `reason` / `nodeId`）。
+    #[test]
+    fn remove_routing_node_refuses_missing_and_master_and_defers_in_use_to_the_model() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let compile_one = |node: EntityId| -> Result<Vec<Op>, Fault> {
+            let ops = parse_ops(&serde_json::json!([
+                {"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": node.to_canonical_string()}
+            ]))
+            .expect("解析");
+            compile(&project, &track_id, &clip_id, &ops)
+        };
+
+        // 1. 节点不存在: 本层在编译期就报, 且带上 `reason` 与 `nodeId`。
+        let missing = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        assert!(
+            !project.routing_graph.nodes.contains(&missing),
+            "夹具前提: 这个身份不在 `nodes` 里"
+        );
+        let fault = compile_one(missing).expect_err("节点不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "routingNodeNotFound");
+        assert_eq!(
+            lane_fault_data(&fault)["nodeId"],
+            serde_json::json!(missing.to_canonical_string())
+        );
+
+        // 2. 主总线节点: 模型要求它留在 `nodes` 里 ⇒ 本层用一个说得通的码 (CONFLICT)。
+        let master = project.master_bus_track_id;
+        assert!(
+            project.routing_graph.nodes.contains(&master),
+            "夹具前提: 主总线在 `nodes` 里"
+        );
+        let fault = compile_one(master).expect_err("主总线不能取走");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "masterBusNodeCannotBeRemoved"
+        );
+        assert_eq!(
+            lane_fault_data(&fault)["masterBusTrackId"],
+            serde_json::json!(master.to_canonical_string())
+        );
+
+        // 3. 还有边引用它: 本层**不**复制那条前置条件 (模型有 `edge_count`)。
+        let (referenced, edges) = a_non_master_node(&project);
+        assert!(!edges.is_empty(), "夹具前提: 这个节点还有引用边");
+        let compiled = compile_one(referenced).expect("本层不复制模型的前置条件");
+        assert_eq!(compiled.len(), 1);
+        let mut probe = project.clone();
+        let error = compiled[0].apply(&mut probe).expect_err("还有边引用它");
+        assert!(
+            matches!(
+                error,
+                yeban_model::ModelError::RoutingNodeInUse { edge_count, .. }
+                    if edge_count == edges.len()
+            ),
+            "模型必须报 RoutingNodeInUse 并带上边数: {error:?}"
+        );
+        assert_eq!(
+            probe.routing_graph.nodes, project.routing_graph.nodes,
+            "失败的前置条件不得改文档"
+        );
+    }
+
+    /// 路由节点形态**不要求片段是 MIDI**（一个音符都不读），而且它可以在**同一个批**
+    /// 里跟在 `disconnectRouting` 后面（`Op::Batch` 在演化中的文档上逐条校验）。
+    ///
+    /// 注入（实测红）：把 `RemoveRoutingNode` 从 `is_note_level` 的对照里去掉 ⇒
+    /// 音频片段那条编译时撞上"必须是 MIDI 片段"（`CLIP_NOT_FOUND`）。
+    #[test]
+    fn remove_routing_node_does_not_need_midi_and_can_follow_a_disconnect_in_one_batch() {
+        let project = filled_project();
+        let audio_track = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let (node, edges) = a_non_master_node(&project);
+        assert_eq!(edges.len(), 1, "夹具前提: 只有一条引用边");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": DISCONNECT_ROUTING_KIND, "edgeId": edges[0].to_canonical_string()},
+            {"kind": REMOVE_ROUTING_NODE_KIND, "nodeId": node.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &audio_track, &audio_clip, &ops)
+            .expect("路由级写入不读片段内容, 非 MIDI 片段也必须被接受");
+        assert_eq!(compiled.len(), 2);
+
+        let mut probe = project.clone();
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "先断开引用边, 再取走节点".to_owned(),
+        }
+        .apply(&mut probe)
+        .expect("一个批里先断开再取走 (批在演化中的文档上逐条校验)");
+        assert!(!probe.routing_graph.nodes.contains(&node));
+        assert!(probe.validate().is_ok(), "取走之后工程必须仍然合法");
     }
 
     /// 池级形态的两条**排他性规则**：与别的 `kind` 同给 / 与 `placement` 同给都响亮失败，

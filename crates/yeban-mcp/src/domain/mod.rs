@@ -1957,7 +1957,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 
 /// `yeban_edit_notes`。
 ///
-/// 五个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
+/// 八个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
 ///
 /// - **编辑**（缺省，`create: false` 且无 `placement`）：`clipId` 必须已经在
 ///   `clip_pool` 里，每条 `NoteOp` 编译成一条 `Op` —— **缺省路径逐字节不变**；
@@ -1998,6 +1998,14 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   但改的是边**本身**而不是边上的一个值 —— 关闭"工具面造得出的边取不走"这条
 ///   缺口（`yeban_propose_section` 的建批是 `Op::ConnectRouting` 在 MCP 侧唯一的
 ///   构造点，而 `yeban_query_project` 的实体索引一直在报那些边的身份）。
+/// - **路由级节点取走**（`ops[].kind == "removeRoutingNode"`）：把操作对象**自带的**
+///   `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走
+///   （`Op::RemoveRoutingNode`，载荷只有节点身份 —— 它与 `AddRoutingNode` 互为逆操作，
+///   因此**没有**撤销载荷要读）。同一个"路由级"分类，但对象是**节点**而不是边：
+///   `yeban_propose_section` 的建批是 `Op::AddRoutingNode` 在 MCP 侧唯一的构造点，
+///   而此前**没有**任何工具能取走它 —— 工具说明甚至写了"再单独一次调用取走节点"，
+///   那次调用却不存在。本形态只有**非**主总线节点可被取走（主总线身份由 `compile`
+///   响亮拒绝），"没有任何边引用它"由模型 `RoutingNodeInUse` 报出。
 ///
 /// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
 /// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
@@ -3926,6 +3934,135 @@ mod tests {
             stamped.apply_inverse(&mut undone).expect("逆操作");
         }
         assert_eq!(undone, project, "model 的 invert 必须能回到合并前的字节");
+    }
+
+    /// `removeRoutingNode` 走**真**工具路径：两步（断开引用边 → 取走节点）各自成一次
+    /// 提案，两次合并之后工程里那个节点真的没了，而每条提案自带的 `ops` 都能用模型
+    /// 自己的 `apply_inverse` 逐步退回去。
+    ///
+    /// 这一条对着"已实现但工具面不可达"的缺口：`yeban_propose_section` 的建批是
+    /// `Op::AddRoutingNode` 在 MCP 侧**唯一**的构造点 ⇒ 本票之前没有任何工具能取走
+    /// 一个路由节点（工具说明却已经写了那一步存在）。
+    ///
+    /// 注入（实测红）：把 `notes::NoteOp::is_routing_level` 里的 `RemoveRoutingNode`
+    /// 去掉 ⇒ 第二次提案的标题变成"音轨级编辑: 1 步"（那条 `title` 断言红）。
+    #[test]
+    fn edit_notes_takes_a_routing_node_away_through_the_tool_path() {
+        let mut domain = domain();
+        let project_before = domain.active_project().cloned().expect("工程");
+        let track = fixture_track(&domain);
+        let clip = clip_id(&domain);
+        let (node, edges) = {
+            let referencing = |node: EntityId| -> Vec<EntityId> {
+                project_before
+                    .routing_graph
+                    .edges
+                    .values()
+                    .filter(|edge| edge.source_node == node || edge.destination_node == node)
+                    .map(|edge| edge.id)
+                    .collect()
+            };
+            project_before
+                .routing_graph
+                .nodes
+                .iter()
+                .copied()
+                .filter(|node| *node != project_before.master_bus_track_id)
+                .map(|node| (node, referencing(node)))
+                .min_by_key(|(_, edges)| edges.len())
+                .expect("样本里必须有非主总线节点")
+        };
+        assert_eq!(edges.len(), 1, "夹具前提: 只有一条引用边");
+        assert!(project_before.routing_graph.nodes.contains(&node));
+
+        let arguments = |ops: Value| {
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "clipId": clip.to_canonical_string(),
+                "ops": ops,
+            })
+        };
+        let proposal_id_of = |response: &Value| -> EntityId {
+            EntityId::from_str(
+                response["data"]["proposal"]["proposalId"]
+                    .as_str()
+                    .expect("提案身份"),
+            )
+            .expect("ULID")
+        };
+        let merge = |domain: &mut Domain, id: EntityId, message: &str| {
+            execute(
+                domain,
+                &call(
+                    "yeban_merge_proposal",
+                    serde_json::json!({
+                        "proposalId": id.to_canonical_string(),
+                        "commitMessage": message,
+                    }),
+                ),
+            )
+            .expect("合并");
+        };
+
+        // 第一步: 断开引用它的那一条边。
+        let first = execute(
+            &mut domain,
+            &call(
+                "yeban_edit_notes",
+                arguments(serde_json::json!([
+                    {"kind": "disconnectRouting", "edgeId": edges[0].to_canonical_string()}
+                ])),
+            ),
+        )
+        .expect("提案");
+        assert_eq!(first["status"], "success");
+        let first_id = proposal_id_of(&first);
+        let first_proposal = domain.proposal(&first_id).expect("记录").clone();
+        assert_eq!(first_proposal.kind, "notes");
+        assert_eq!(first_proposal.title, "路由级编辑: 1 步");
+        merge(&mut domain, first_id, "断开引用边");
+        let after_first = domain.active_project().cloned().expect("工程");
+        assert!(
+            after_first.routing_graph.edge(&edges[0]).is_none(),
+            "边必须真的断开了"
+        );
+        assert!(
+            after_first.routing_graph.nodes.contains(&node),
+            "断开边一个字都不动 `nodes`"
+        );
+
+        // 第二步: 在**单独一次**调用里取走那个节点（工具说明的纪律：两步各自可审查）。
+        let second = execute(
+            &mut domain,
+            &call(
+                "yeban_edit_notes",
+                arguments(serde_json::json!([
+                    {"kind": "removeRoutingNode", "nodeId": node.to_canonical_string()}
+                ])),
+            ),
+        )
+        .expect("提案");
+        assert_eq!(second["status"], "success");
+        let second_id = proposal_id_of(&second);
+        let second_proposal = domain.proposal(&second_id).expect("记录").clone();
+        assert_eq!(second_proposal.kind, "notes");
+        assert_eq!(second_proposal.title, "路由级编辑: 1 步");
+        merge(&mut domain, second_id, "取走路由节点");
+        let after_second = domain.active_project().cloned().expect("工程");
+        assert!(
+            !after_second.routing_graph.nodes.contains(&node),
+            "节点必须真的从 `nodes` 里消失"
+        );
+        assert!(after_second.validate().is_ok(), "取走之后工程必须仍然合法");
+
+        // 撤销: 两条提案的 `ops` 逆序回退 ⇒ 逐字节回到合并前。
+        let mut undone = after_second;
+        for proposal in [&second_proposal, &first_proposal] {
+            for stamped in proposal.ops.iter().rev() {
+                stamped.apply_inverse(&mut undone).expect("逆操作");
+            }
+        }
+        assert_eq!(undone, project_before, "模型自己的 invert 必须能退回原状");
     }
 
     #[test]
