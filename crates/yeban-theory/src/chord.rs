@@ -634,6 +634,123 @@ impl FromStr for Chord {
 mod tests {
     use super::*;
 
+    /// 形态 D 注入实测（本票）：把 `Major9` / `Diminished7` / `Sus2` 的叠置公式
+    /// 换成另一种和弦的公式时**没有任何既有判据变红** —— 符号往返判据只比较
+    /// `symbol()` 文本，而这三条被换的公式在音级集合上恰好与另一条**撞成同一集合**：
+    /// `[0,4,7,11,14]` → `[0,4,7,10,14]` 与属九相同、`[0,3,6,9]` → `[0,3,6,10]`
+    /// 与半减七相同、`[0,2,7]` → `[0,5,7]` 与挂四相同。
+    ///
+    /// 这里做两件事：① 要求 21 条公式的音级集合**两两不同**（`Dominant11` 与
+    /// `Dominant13` 在音乐意义上不同、集合相同，因此它们只在集合这一层被
+    /// `dedup` 掉，不参与唯一性；其余 19 条参与）；② 用 [`Chord::from_voicing`]
+    /// 的反查把"公式与其它 20 条互不相同"钉到可执行读数上。
+    #[test]
+    fn every_chord_formula_is_distinct_under_voicing_lookup() {
+        use std::collections::BTreeSet;
+        let kinds = [
+            ChordKind::Major,
+            ChordKind::Minor,
+            ChordKind::Diminished,
+            ChordKind::Augmented,
+            ChordKind::Sus2,
+            ChordKind::Sus4,
+            ChordKind::Six,
+            ChordKind::Dominant7,
+            ChordKind::Major7,
+            ChordKind::Minor7,
+            ChordKind::HalfDiminished7,
+            ChordKind::Diminished7,
+            ChordKind::MinorMajor7,
+            ChordKind::Dominant9,
+            ChordKind::Major9,
+            ChordKind::Minor9,
+            ChordKind::Dominant11,
+            ChordKind::Dominant13,
+            ChordKind::Add9,
+            ChordKind::SixNine,
+        ];
+        // 每一条的音级集合：不许有两条（除已登记的 11 / 13 之外）撞集合。
+        let mut seen: Vec<(ChordKind, BTreeSet<u8>)> = Vec::new();
+        for kind in kinds {
+            let classes: BTreeSet<u8> = Chord::new(PitchClass::C, kind)
+                .pitch_classes()
+                .iter()
+                .map(|pc| pc.semitones())
+                .collect();
+            assert!(classes.len() >= 3, "{kind:?} must have at least 3 classes");
+            for (other, earlier) in &seen {
+                let both_ninths = matches!(
+                    (kind, other),
+                    (ChordKind::Dominant11, ChordKind::Dominant13)
+                        | (ChordKind::Dominant13, ChordKind::Dominant11)
+                );
+                if !both_ninths {
+                    assert_ne!(
+                        &classes, earlier,
+                        "{kind:?} has the same pitch-class set as {other:?}"
+                    );
+                }
+            }
+            seen.push((kind, classes));
+        }
+        // 反查：`from_voicing` 只认它表里的 19 条公式（不含属十一 / 属十三 /
+        // 七挂四），其余每一条都必须逐位回到自己。
+        for kind in kinds {
+            if matches!(
+                kind,
+                ChordKind::Dominant11 | ChordKind::Dominant13 | ChordKind::Dominant7Sus4
+            ) {
+                continue;
+            }
+            let chord = Chord::new(PitchClass::C, kind);
+            let recovered = Chord::from_voicing(&chord.pitches(4).unwrap())
+                .unwrap_or_else(|| panic!("{kind:?} must be recoverable"));
+            assert_eq!(recovered.kind, kind, "{kind:?} round trip");
+        }
+        // `Dominant7Sus4` 的四音声位在反查里读到 `None`：它的音级集合是
+        // `{0, 2, 4, 7}`，与任何一条反查公式都不相等。这条读数是**文档化**的
+        // （`from_voicing` 的表里没有九音挂留）。
+        let sus4_seventh = Chord::new(PitchClass::C, ChordKind::Dominant7Sus4);
+        assert_eq!(
+            sus4_seventh
+                .pitch_classes()
+                .iter()
+                .map(|pc| pc.semitones())
+                .collect::<Vec<_>>(),
+            vec![0, 4, 7, 2]
+        );
+        assert!(Chord::from_voicing(&sus4_seventh.pitches(4).unwrap()).is_none());
+        // 三条被注入的公式以字面读数单独钉住（本机实测的规范叠置）。
+        assert_eq!(ChordKind::Major9.intervals(), &[0, 4, 7, 11, 14]);
+        assert_eq!(ChordKind::Diminished7.intervals(), &[0, 3, 6, 9]);
+        assert_eq!(ChordKind::Sus2.intervals(), &[0, 2, 7]);
+        assert_eq!(ChordKind::Sus4.intervals(), &[0, 5, 7]);
+        assert_eq!(ChordKind::Dominant9.intervals(), &[0, 4, 7, 10, 14]);
+    }
+
+    /// 形态 D 注入实测（本票）：把 `from_voicing` 的音级数上界由 `> 5` 放宽到
+    /// `> 6` 时没有判据变红 —— 既有判据只喂 3 音与 4 音。这条判据喂**下界两侧**
+    /// 与**上界之上**：2 音必须拒绝、3 音必须接受、7 个不同音级的集合必须拒绝
+    /// （没有任何一条公式能覆盖 7 个不同音级，因此它必须走 `None` 出口）。
+    #[test]
+    fn from_voicing_rejects_voicings_outside_the_documented_size_window() {
+        let p = |v: u8| Pitch::new(i32::from(v)).unwrap();
+        // 下界：2 个音高 ⇒ None（既有判据只覆盖了 3 音的成功路径）。
+        assert!(Chord::from_voicing(&[p(60), p(64)]).is_none());
+        assert!(Chord::from_voicing(&[]).is_none());
+        // 3 音：合法。
+        assert!(Chord::from_voicing(&[p(60), p(64), p(67)]).is_some());
+        // 上界之上：7 个不同音级（C D E F G A B）必须被尺寸窗口拒绝。
+        let seven: Vec<Pitch> = [60u8, 62, 64, 65, 67, 69, 71]
+            .iter()
+            .map(|&v| p(v))
+            .collect();
+        assert!(Chord::from_voicing(&seven).is_none());
+        // 6 个不同音级在音乐意义上是"没有对应公式"，也必须走 None。
+        let six: Vec<Pitch> = [60u8, 62, 64, 66, 68, 70].iter().map(|&v| p(v)).collect();
+        assert!(Chord::from_voicing(&six).is_none());
+    }
+
     #[test]
     fn required_symbols_parse_to_the_expected_kinds() {
         assert_eq!(Chord::from_symbol("Cmaj7").unwrap().kind, ChordKind::Major7);

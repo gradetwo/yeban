@@ -1095,6 +1095,62 @@ mod tests {
         }
     }
 
+    /// 形态 D 注入实测（本票）：把 `place_voices` 的"每拍格位数为 0"守卫
+    /// 放宽成 `<= 1` 时**没有任何既有判据变红**。逐输入核对（本机实测）后
+    /// 判定这是**观测等价**：合法拍号上 `cells_per_beat == 1` 要求
+    /// `cells == beats`，而 `cells = 16 × numerator / denominator`、
+    /// `felt_beats_per_bar` 对简单拍就是 `numerator`，两者相等只在
+    /// `denominator == 16` 时成立；那时 `cells == 16 × numerator / 16 = numerator`，
+    /// 但 `cells_per_bar` 对分母 16 的量级会先向下取整到 0（`numerator < 16` 时
+    /// `16 × numerator / 16` 仍是 `numerator`，而守卫的 `cells / beats` 恰好是 1）
+    /// —— 本机实测 `1/16` 与 `2/32` 两条输入在两版下读数**完全相同**（前者
+    /// `Some`、后者 `None`），因此这条判据不宣称能判死那个注入。
+    ///
+    /// 它钉住的是**合法合约**：每拍 1 格与"每拍分不到格"两种边界拍号上，
+    /// 鼓组型的行为必须稳定（前者产出、后者 `Ok(None)`），且军鼓按反拍口径落位。
+    #[test]
+    fn one_cell_per_beat_is_legal_instead_of_being_rejected() {
+        use crate::rhythm::cells_per_bar;
+        // 1/16：每小节 1 格、1 拍 ⇒ 每拍 1 格。
+        let one_sixteenth = Meter::new(1, 16).unwrap();
+        assert_eq!(cells_per_bar(one_sixteenth), Some(1));
+        assert_eq!(felt_beats_per_bar(one_sixteenth), 1);
+        let pattern = swung_drum_pattern(one_sixteenth, 2, 1, None, None, 1)
+            .unwrap()
+            .expect("1/16 must not be rejected by the cells-per-beat guard");
+        assert_eq!(pattern.bars(), 2);
+        // 每小节 1 格 ⇒ 每拍 1 格：每小节恰好一个 onset，底鼓与踩镲都在格点 0。
+        assert!(has(&pattern, DrumVoice::Kick, 0, 0));
+        assert!(has(&pattern, DrumVoice::Kick, 1, 0));
+        assert!(has(&pattern, DrumVoice::HiHat, 0, 0));
+        assert!(has(&pattern, DrumVoice::Snare, 0, 0));
+        // 2/32：2 拍而每小节只有 1 格 ⇒ `cells / beats` 向下取整为 0 ⇒
+        // 按现行口径拒绝（这条读数在 `== 0` 与 `<= 1` 两版下相同）。
+        let two_thirty_seconds = Meter::new(2, 32).unwrap();
+        assert_eq!(cells_per_bar(two_thirty_seconds), Some(1));
+        assert_eq!(felt_beats_per_bar(two_thirty_seconds), 2);
+        assert_eq!(
+            swung_drum_pattern(two_thirty_seconds, 1, 1, None, None, 1).unwrap(),
+            None
+        );
+        // 8/32：8 拍、每小节 4 格 ⇒ 每拍 0.5 格 ⇒ `Ok(None)`。
+        let eight_thirty_seconds = Meter::new(8, 32).unwrap();
+        assert_eq!(cells_per_bar(eight_thirty_seconds), Some(4));
+        assert_eq!(felt_beats_per_bar(eight_thirty_seconds), 8);
+        assert_eq!(
+            swung_drum_pattern(eight_thirty_seconds, 1, 4, None, None, 4).unwrap(),
+            None
+        );
+        // 对照侧面：4/4 每小节 2 个 onset ⇒ 第 0、8 格（第 0、2 拍），
+        // 军鼓按 `backbeat == 3` 只落在第 0 拍（第 2 拍不被 3 整除）。
+        let pattern = swung_drum_pattern(Meter::COMMON, 1, 2, None, None, 3)
+            .unwrap()
+            .expect("4/4 with two onsets per bar must still produce a pattern");
+        assert_eq!(pattern.onsets_per_bar(), 2);
+        assert_eq!(pattern.hit_count(DrumVoice::Snare), 1);
+        assert!(pattern.hit_count(DrumVoice::Kick) >= 1);
+    }
+
     #[test]
     fn two_groupings_of_the_same_meter_give_two_kick_readings() {
         // [4] 与 [2, 2] 都把第 0 拍判成组起点，也都把这一格选进网格 ⇒ 两者

@@ -250,6 +250,19 @@ pub fn derive_range_i64(rng_seed: u64, salt: u64, low: i64, high: i64) -> i64 {
 mod tests {
     use super::*;
 
+    /// 形态 D 注入实测（本票）：把 `derive_index` 的早退放宽成
+    /// `count <= 1` 时没有任何既有判据变红。该改动在观测上等价
+    /// （`count == 1` 时 `x % 1 == 0`），因此这里钉住的是**契约**：
+    /// 单元素集合上任何种子都必须取到下标 0（而不是被早退"吞掉"成别的读数）。
+    #[test]
+    fn derive_index_on_a_single_element_set_is_always_zero() {
+        for seed in 0u64..64 {
+            assert_eq!(derive_index(seed, 0, 1), 0);
+            assert_eq!(derive_index(seed, u64::MAX, 1), 0);
+        }
+        assert_eq!(derive_index(0, 0, 0), 0);
+    }
+
     #[test]
     fn splitmix64_is_a_pure_function_of_its_inputs() {
         assert_eq!(splitmix64(42, 0), splitmix64(42, 0));

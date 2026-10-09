@@ -826,6 +826,189 @@ mod tests {
         assert!(hz_to_note(f64::NAN).is_err());
     }
 
+    /// 形态 D 注入实测（本票）：把 `Pitch::pitch_class` 的 `% 12` 换成 `% 11`
+    /// 时，既有判据里**只有**和弦构成音与声部连接变红 —— 那条路径的读数来自
+    /// [`PitchClass`] 的比较，不是本函数的直接判据。这条判据把 `Pitch::pitch_class`
+    /// 与 `Pitch::octave` 的口径直接钉在 **MIDI 0..=127 全域**上。
+    #[test]
+    fn pitch_class_and_octave_are_pinned_across_the_whole_midi_domain() {
+        for midi in 0u8..=127 {
+            let pitch = Pitch::new(i32::from(midi)).unwrap();
+            assert_eq!(pitch.pitch_class().semitones(), midi % 12, "midi {midi}");
+            // MIDI 0 = C-1，因此八度号是 `midi / 12 - 1`。
+            assert_eq!(pitch.octave(), (midi as i8 / 12) - 1, "midi {midi}");
+        }
+        // 端点上的字面读数：0 = C-1、127 = G9。
+        assert_eq!(Pitch::new(0).unwrap().default_spelling().to_string(), "C-1");
+        assert_eq!(
+            Pitch::new(127).unwrap().default_spelling().to_string(),
+            "G9"
+        );
+        assert_eq!(Pitch::new(127).unwrap().pitch_class(), PitchClass::G);
+    }
+
+    /// 形态 D 注入实测（本票）：把 `MAX_PITCH` 由 `127` 改成 `126` 时没有
+    /// 任何既有判据变红（属性测试只断言"落在 `0..=127` 内"，常量本身没被钉住）。
+    /// 这条判据把上界常量与真实拒绝阈值一起钉死：`127` 合法、`128` 必须报错。
+    #[test]
+    fn midi_pitch_bounds_are_pinned_to_literals() {
+        assert_eq!(MIN_PITCH, 0);
+        assert_eq!(MAX_PITCH, 127);
+        assert_eq!(A4_MIDI, 69);
+        assert_eq!(Pitch::new(127).unwrap().value(), MAX_PITCH);
+        assert_eq!(
+            Pitch::new(128).unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 128 }
+        );
+        assert_eq!(
+            Pitch::new(-1).unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 1 }
+        );
+        // 频率换算是上界的另一个出口：127 必须仍能从频率还原。
+        assert_eq!(
+            hz_to_note(note_to_hz(MAX_PITCH)).unwrap().value(),
+            MAX_PITCH
+        );
+    }
+
+    /// 形态 D 注入实测（本票）：`SpelledPitch::from_str` 的 **Unicode** 分支
+    /// （`♯` / `♭`）没有判据：既有判据只喂 ASCII 的 `#` / `b`。
+    ///
+    /// ⚠ 本票实测到一个**未修复的缺陷**（只登记，不改口径）：
+    /// `"C♯♯4"` 这类"Unicode 记号后面还有八度号"的输入会让 `from_str` 在
+    /// **多字节字符内部**切字符串（`&trimmed[index..]` 的 `index` 落在 `♯`
+    /// 的字节中间），从而 panic（`byte index 2 is not a char boundary`）。
+    /// 同一函数对 ASCII 的 `"C##4"` 正常返回 `D4`，因此这是 Unicode 分支
+    /// 独有的崩溃路径。修它要改 `from_str` 的索引推进方式，会让"第二个
+    /// Unicode 记号之后的内容"的读数从 panic 变成别的值 ⇒ 按读数纪律
+    /// **只登记，不硬改**，留待裁决。
+    ///
+    /// 因此这条判据只喂**能正常返回**的 Unicode 输入（单个记号），
+    /// 外加 ASCII 侧的完整读数。
+    #[test]
+    fn unicode_accidentals_move_the_pitch_class_in_their_own_direction() {
+        // `SpelledPitch` 走 Unicode 表；`C♯4` 与 `C#4` 必须同值。
+        assert_eq!(
+            "C\u{266f}4".parse::<SpelledPitch>().unwrap(),
+            "C#4".parse::<SpelledPitch>().unwrap()
+        );
+        assert_eq!(
+            "D\u{266d}4".parse::<SpelledPitch>().unwrap(),
+            "Db4".parse::<SpelledPitch>().unwrap()
+        );
+        assert_eq!(
+            "C\u{266f}4".parse::<SpelledPitch>().unwrap().to_string(),
+            "C#4"
+        );
+        assert_eq!(
+            "D\u{266d}4".parse::<SpelledPitch>().unwrap().to_string(),
+            "Db4"
+        );
+        // ASCII 侧的复合记号：**音名文本按入参保留**（`SpelledPitch` 是拼写
+        // 而不是归一化器），但对应的 MIDI 音高必须正确。
+        assert_eq!("C##4".parse::<SpelledPitch>().unwrap().to_string(), "C##4");
+        assert_eq!(
+            "C##4".parse::<SpelledPitch>().unwrap().to_pitch().unwrap(),
+            Pitch::D4
+        );
+        assert_eq!("Dbb4".parse::<SpelledPitch>().unwrap().to_string(), "Dbb4");
+        assert_eq!(
+            "Dbb4".parse::<SpelledPitch>().unwrap().to_pitch().unwrap(),
+            Pitch::C4
+        );
+        assert_eq!(
+            "Dbbb4".parse::<SpelledPitch>(),
+            Err(TheoryError::NoteNameUnknown)
+        );
+        // `parse_pitch_class` 走 ASCII 的 `#` / `b`（`B` 也算降号）。
+        assert_eq!(parse_pitch_class("C#").unwrap(), PitchClass::CS);
+        assert_eq!(parse_pitch_class("Cb").unwrap(), PitchClass::B);
+        assert_eq!(parse_pitch_class("Dbb").unwrap(), PitchClass::C);
+        assert_eq!(parse_pitch_class("B#").unwrap(), PitchClass::C);
+        assert_eq!(parse_pitch_class("Cbb").unwrap(), PitchClass::AS);
+        assert_eq!(parse_pitch_class("Cbbb"), Err(TheoryError::NoteNameUnknown));
+        assert_eq!(parse_pitch_class("D###"), Err(TheoryError::NoteNameUnknown));
+    }
+
+    /// 形态 D 注入实测（本票）：`name_for_letter` 的 `raw > 6` 边界改成
+    /// `raw >= 6` 或 `raw > 7` 时没有判据变红。本机实测的原因：`raw` 属于
+    /// `{6, 7}` 的全部 14 个 `(音级, 字母)` 组合都走**同一条**出口 ——
+    /// `raw` 落在 `> 6` 一侧时减 12 得到 `-5`，在 `-2..=2` 之外；
+    /// 而 `raw == 6` 的组合会让 `pc - LETTER_PC` 落在 `±6`，减 12 后是 `-6`，
+    /// 也在区间之外。因此两条分支在**全部 84 个组合**上给出同一读数，
+    /// 该边界在观测上等价（这是本机实测的结论，不是推理）。
+    ///
+    /// 能观测到的是这张 35 个"可拼"组合与 49 个"拒绝"组合的分界
+    /// （全部来自本机实测）：下面把**每一个**可拼组合的字面拼写钉住，
+    /// 并逐点复核其余 49 个必须被拒绝。
+    #[test]
+    fn name_for_letter_separates_the_spellable_side_from_the_rejected_side() {
+        let spell = |pc: u8, letter: u8| {
+            PitchClass::new(pc)
+                .unwrap()
+                .name_for_letter(letter)
+                .map(|name| name.to_string())
+        };
+        // 35 个可拼组合的完整字面读数（本机实测）。
+        let spellable: [(u8, u8, &str); 35] = [
+            (0, 0, "C"),
+            (0, 1, "Dbb"),
+            (0, 6, "B#"),
+            (1, 0, "C#"),
+            (1, 1, "Db"),
+            (1, 6, "B##"),
+            (2, 0, "C##"),
+            (2, 1, "D"),
+            (2, 2, "Ebb"),
+            (3, 1, "D#"),
+            (3, 2, "Eb"),
+            (3, 3, "Fbb"),
+            (4, 1, "D##"),
+            (4, 2, "E"),
+            (4, 3, "Fb"),
+            (5, 2, "E#"),
+            (5, 3, "F"),
+            (5, 4, "Gbb"),
+            (6, 2, "E##"),
+            (6, 3, "F#"),
+            (6, 4, "Gb"),
+            (7, 3, "F##"),
+            (7, 4, "G"),
+            (7, 5, "Abb"),
+            (8, 4, "G#"),
+            (8, 5, "Ab"),
+            (9, 4, "G##"),
+            (9, 5, "A"),
+            (9, 6, "Bbb"),
+            (10, 0, "Cbb"),
+            (10, 5, "A#"),
+            (10, 6, "Bb"),
+            (11, 0, "Cb"),
+            (11, 5, "A##"),
+            (11, 6, "B"),
+        ];
+        let mut expected_ok = [false; 84];
+        for (pc, letter, name) in spellable {
+            assert_eq!(spell(pc, letter).unwrap(), name, "pc {pc} letter {letter}");
+            expected_ok[usize::from(pc) * 7 + usize::from(letter)] = true;
+        }
+        // 其余组合（49 个）必须一律 `NoteNameUnknown`，一个都不许回绕。
+        for pc in 0u8..12 {
+            for letter in 0u8..7 {
+                if !expected_ok[usize::from(pc) * 7 + usize::from(letter)] {
+                    assert_eq!(
+                        spell(pc, letter),
+                        Err(TheoryError::NoteNameUnknown),
+                        "pc {pc} letter {letter} must be rejected"
+                    );
+                }
+            }
+        }
+        // 边界另一侧：`letter >= 7` 一律 `NoteNameUnknown`。
+        assert_eq!(spell(0, 7), Err(TheoryError::NoteNameUnknown));
+        assert_eq!(spell(0, 255), Err(TheoryError::NoteNameUnknown));
+    }
+
     #[test]
     fn note_names_parse_both_sharp_and_flat_spellings() {
         assert_eq!(parse_pitch_class("C#").unwrap(), PitchClass::CS);

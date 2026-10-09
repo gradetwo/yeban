@@ -491,4 +491,46 @@ mod tests {
         none_rule.swing = None;
         assert_eq!(none_rule.swing_permille().unwrap(), None);
     }
+
+    /// 形态 D 注入实测（本票）：把最大摇摆下"第二个槽位"的钳制从
+    /// `first.min(pair_ticks - 1)` 放宽成 `first.min(pair_ticks)` 时，
+    /// 既有判据全绿 —— 它们只喂 `pair_ticks` 恰好让后半落在本对内的长对
+    /// （10、480），而 `in_pair == 0` 的路径不受槽位影响。
+    ///
+    /// 这条判据取一对**槽位会被钳制**的长度，并把子对起点与槽位一起钉死：
+    /// 槽位一旦等于 `pair_ticks`，第二个槽位就与下一对的起点重合，
+    /// 本对末尾的 onset 会被吸到下一对去。
+    #[test]
+    fn the_second_slot_is_pinned_one_tick_before_the_pair_ends() {
+        // 7 tick、1000 千分比 ⇒ 前半 7、后半 0 ⇒ 槽位必须退回 6。
+        assert_eq!(
+            swung_pair_span(7, SWING_PERMILLE_MAX).unwrap(),
+            SwingPair {
+                first: 7,
+                second: 0
+            }
+        );
+        // 7 的中点是 3（整除）⇒ 3 归前半、4 与 6 归后半槽位 6。
+        assert_eq!(quantize_onset(3, 7, SWING_PERMILLE_MAX).unwrap(), 0);
+        assert_eq!(quantize_onset(4, 7, SWING_PERMILLE_MAX).unwrap(), 6);
+        assert_eq!(quantize_onset(6, 7, SWING_PERMILLE_MAX).unwrap(), 6);
+        // 子对起点必须原样保留：7 是下一对的起点，量化后仍是 7。
+        assert_eq!(quantize_onset(7, 7, SWING_PERMILLE_MAX).unwrap(), 7);
+        assert_eq!(quantize_onset(13, 7, SWING_PERMILLE_MAX).unwrap(), 13);
+        // 槽位不得越到下一对：在整段 tick 域上逐点核对。
+        for pair_ticks in [2u64, 3, 5, 7, 9, 15, 100, 479] {
+            for onset in 0..(6 * pair_ticks) {
+                let quantized = quantize_onset(onset, pair_ticks, SWING_PERMILLE_MAX).unwrap();
+                assert_eq!(
+                    quantized / pair_ticks,
+                    onset / pair_ticks,
+                    "pair {pair_ticks} onset {onset}"
+                );
+                assert!(
+                    quantized % pair_ticks < pair_ticks,
+                    "pair {pair_ticks} onset {onset}: slot left the pair"
+                );
+            }
+        }
+    }
 }

@@ -3797,6 +3797,76 @@ mod tests {
         );
     }
 
+    /// 形态 D 注入实测（本票）：把 `progression_for` 的"登记表为空"守卫
+    /// 由 `is_empty()` 收紧成 `len() < 2` 时，全部既有判据仍然全绿 ——
+    /// 登记表里**每条流派都至少登记 2 条走向**（2 条 = 155、3 条 = 27），
+    /// 因此 `len() == 1` 这条路径从未被喂过。
+    ///
+    /// 这条判据用一条**只登记 1 条走向**的规则喂到该路径：它必须照常返回那
+    /// 一条，而不是被守卫当成"没有走向"。
+    #[test]
+    fn a_single_registered_progression_is_still_reachable_by_seed() {
+        let progressions: &[&str] = &["I-V-I"];
+        let rule = GenreRule {
+            id: "single_progression_probe",
+            name_zh: "探针",
+            name_en: "Probe",
+            default_bpm_range: (100, 120),
+            meter: (4, 4),
+            typical_progressions: progressions,
+            typical_scales: &["major"],
+            swing: None,
+            note_density_hint: (4, 8),
+            drum_style: DrumStyle::Metric,
+            source: SOURCE_YEBAN_ORIGINAL,
+        };
+        assert_eq!(rule.progression_count(), 1);
+        assert_eq!(rule.progression_at(0), Some("I-V-I"));
+        assert_eq!(rule.progression_at(1), None);
+        for seed in 0u64..32 {
+            assert_eq!(
+                rule.progression_for(seed).unwrap(),
+                "I-V-I",
+                "seed {seed} must still pick the only registered progression"
+            );
+        }
+        // 空登记表仍然是 `Err`（旧口径的边界不能被放宽丢掉）。
+        let empty = GenreRule {
+            typical_progressions: &[],
+            ..rule
+        };
+        assert_eq!(
+            empty.progression_for(0).unwrap_err(),
+            TheoryError::EmptyProgression
+        );
+        // 骨架同样取得到那唯一一条：走向有 3 个级数、只请求 1 小节 ⇒
+        // 按"更密的级数"规则展开成 3 个区段（不是 1 个），且每个区段都来自
+        // 那唯一一条登记走向。
+        let spans = rule.sketch(PitchClass::C, 1).unwrap();
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans.iter().map(|s| s.duration_ticks).sum::<u64>(), 3840);
+    }
+
+    /// 形态 D 注入实测（本票）：把 `has_valid_bpm_range` 的
+    /// `min <= max` 改成 `min < max` 时没有判据变红 —— 登记表里 **182 条
+    /// 流派全部满足 `min < max`**（实测 `min_eq_max = 0`），因此等号那一侧
+    /// 从未被喂过。这条判据直接喂 `min == max` 的规则。
+    #[test]
+    fn a_degenerate_but_ordered_bpm_range_is_still_valid() {
+        let mut rule = GenreLibrary::all()[0];
+        rule.default_bpm_range = (100, 100);
+        assert!(
+            rule.has_valid_bpm_range(),
+            "min == max is an ordered range, not an invalid one"
+        );
+        rule.default_bpm_range = (0, 100);
+        assert!(!rule.has_valid_bpm_range(), "min == 0 is invalid");
+        rule.default_bpm_range = (101, 100);
+        assert!(!rule.has_valid_bpm_range(), "min > max is invalid");
+        rule.default_bpm_range = (1, 1);
+        assert!(rule.has_valid_bpm_range());
+    }
+
     #[test]
     fn the_per_genre_salt_decorrelates_two_genres_with_identical_data() {
         // 两条流派的登记数据逐字节相同、只有 ID 不同：选择必须仍然分开，

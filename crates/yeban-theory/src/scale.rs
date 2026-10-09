@@ -698,6 +698,136 @@ mod tests {
         assert!(Scale::parse("F#").is_err());
     }
 
+    /// 拼写偏好：可观测的判据。
+    ///
+    /// 形态 D 注入实测（本票）：把 `prefer_flat` 的
+    /// `matches!(tonic.semitones(), 1 | 3 | 6 | 8 | 10) && minor_like`
+    /// 改成 `|| minor_like`、或把 `flat_keys` 里的 `1` 去掉时，既有判据全绿。
+    /// 本机逐组合核对后的结论是：这两处改动都是**观测等价**的 ——
+    /// `spell_with_letters` 只在"同一音级有两个可行字母且变音记号绝对值相同"
+    /// 时才用偏好打破平局，而在这些音阶里**另一个字母需要 ±7 个变音记号**，
+    /// 会被代价筛掉，因此偏好没有可观测的用武之地；`tonic_flat` 更是
+    /// `flat_keys` 的子集（`{1,3,6,8,10}` 全在 `flat_keys` 里）。
+    ///
+    /// 这条判据因此不宣称能判死那两处注入（没有可用的输入），它钉住的是
+    /// **偏好真的被消费了**：降号调读出降号拼写、升号调读出升号拼写；
+    /// 最后再加一条"同一音级在两侧都有可行字母"的显式偏好读数。
+    #[test]
+    fn spelling_preference_is_consumed_by_the_flat_and_sharp_keys() {
+        // 降号调：读出降号拼写（另一侧需要 ±7 个记号，被代价筛掉）。
+        let db_major = Scale::new(PitchClass::DS, ScaleKind::Major);
+        assert!(db_major.kind.prefer_flat(db_major.tonic));
+        assert_eq!(db_major.spell(PitchClass::CS).unwrap().to_string(), "Db");
+        assert_eq!(db_major.spell(PitchClass::FS).unwrap().to_string(), "Gb");
+        assert_eq!(db_major.spell(PitchClass::AS).unwrap().to_string(), "Bb");
+        let ab_major = Scale::new(PitchClass::GS, ScaleKind::Major);
+        assert!(ab_major.kind.prefer_flat(ab_major.tonic));
+        assert_eq!(ab_major.spell(PitchClass::CS).unwrap().to_string(), "Db");
+        assert_eq!(ab_major.spell(PitchClass::DS).unwrap().to_string(), "Eb");
+        assert_eq!(ab_major.spell(PitchClass::FS).unwrap().to_string(), "Gb");
+        let f_major = Scale::new(PitchClass::F, ScaleKind::Major);
+        assert!(f_major.kind.prefer_flat(f_major.tonic));
+        assert_eq!(f_major.spell(PitchClass::AS).unwrap().to_string(), "Bb");
+        assert_eq!(f_major.spell(PitchClass::DS).unwrap().to_string(), "Eb");
+        // 升号调：另一侧的读数必须保持升号。
+        let a_major = Scale::new(PitchClass::A, ScaleKind::Major);
+        assert!(!a_major.kind.prefer_flat(a_major.tonic));
+        assert_eq!(a_major.spell(PitchClass::CS).unwrap().to_string(), "C#");
+        assert_eq!(a_major.spell(PitchClass::FS).unwrap().to_string(), "F#");
+        let e_major = Scale::new(PitchClass::E, ScaleKind::Major);
+        assert!(!e_major.kind.prefer_flat(e_major.tonic));
+        assert_eq!(e_major.spell(PitchClass::DS).unwrap().to_string(), "D#");
+        assert_eq!(e_major.spell(PitchClass::GS).unwrap().to_string(), "G#");
+        // 小调类（`minor_like`）恒为降号侧：`D#` 必须拼成 `Eb`。
+        let c_minor = Scale::new(PitchClass::C, ScaleKind::NaturalMinor);
+        assert!(c_minor.kind.prefer_flat(c_minor.tonic));
+        assert_eq!(c_minor.spell(PitchClass::DS).unwrap().to_string(), "Eb");
+        assert_eq!(c_minor.spell(PitchClass::GS).unwrap().to_string(), "Ab");
+        // 显式灌偏好（`spell_with`）能把两个方向都读出来 —— 这是"偏好真的
+        // 参与判定"的直接证据（本机实测：C# 大调里 `Db` 与 `C#` 都可拼）。
+        let c_sharp_major = Scale::new(PitchClass::CS, ScaleKind::Major);
+        assert_eq!(
+            c_sharp_major
+                .spell_with(PitchClass::CS, true)
+                .unwrap()
+                .to_string(),
+            "Db"
+        );
+        assert_eq!(
+            c_sharp_major
+                .spell_with(PitchClass::CS, false)
+                .unwrap()
+                .to_string(),
+            "C#"
+        );
+    }
+
+    /// 形态 D 注入实测（本票）：把三度/五度的叠置换成 `ChordKind::Augmented`
+    /// 之外的另一条分支、或改任何一个半音数字面量时没有判据变红。这里直接按
+    /// 整数叠置口径独立复算一遍 `triad_quality`（不引用实现里的 `span`），
+    /// 因此三度/五度的每一条组合都被钉住。
+    #[test]
+    fn triad_quality_matches_an_independent_octave_accumulation() {
+        use crate::chord::ChordKind;
+        let kinds = [
+            ScaleKind::Major,
+            ScaleKind::NaturalMinor,
+            ScaleKind::HarmonicMinor,
+            ScaleKind::MelodicMinor,
+            ScaleKind::Dorian,
+            ScaleKind::Phrygian,
+            ScaleKind::Lydian,
+            ScaleKind::Mixolydian,
+            ScaleKind::Locrian,
+            ScaleKind::PentatonicMinor,
+            ScaleKind::Blues,
+        ];
+        for kind in kinds {
+            let scale = Scale::new(PitchClass::C, kind);
+            let count = u32::from(scale.degree_count());
+            let intervals = kind.intervals();
+            for degree in 0u16..(4 * count as u16) {
+                let span = |offset: u32| -> u32 {
+                    let target = u32::from(degree) + offset;
+                    12 * (target / count) + u32::from(intervals[(target % count) as usize])
+                };
+                let expected = match ((span(2) - span(0)) % 12, (span(4) - span(0)) % 12) {
+                    (4, 7) => ChordKind::Major,
+                    (3, 7) => ChordKind::Minor,
+                    (3, 6) => ChordKind::Diminished,
+                    (4, 8) => ChordKind::Augmented,
+                    _ => ChordKind::Major,
+                };
+                assert_eq!(
+                    scale.triad_quality(degree),
+                    expected,
+                    "{kind:?} degree {degree}"
+                );
+            }
+        }
+    }
+
+    /// 形态 D 注入实测（本票）：`degree_to_pitch` 的越界拒绝没有被既有判据
+    /// 覆盖 —— 既有判据只喂合法音域。这里钉住"越界必须报错、不回绕"，
+    /// 同时钉住 `tonic_octave + 1` 这条八度口径。
+    #[test]
+    fn degree_to_pitch_reports_out_of_range_instead_of_wrapping() {
+        let c = Scale::new(PitchClass::C, ScaleKind::Major);
+        assert_eq!(c.degree_to_pitch(4, 0).unwrap().value(), 60);
+        assert_eq!(c.degree_to_pitch(4, 7).unwrap().value(), 72);
+        // 最高合法主音八度是 9 ⇒ 第 0 级 = C10 = 132，超出 MIDI 127。
+        assert_eq!(c.degree_to_pitch(9, 0).unwrap().value(), 120);
+        assert_eq!(
+            c.degree_to_pitch(10, 0).unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 132 }
+        );
+        // 下界：主音八度 -2 的第 0 级是 -12。
+        assert_eq!(
+            c.degree_to_pitch(-2, 0).unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 12 }
+        );
+    }
+
     #[test]
     fn spelling_follows_the_key_signature() {
         let f_major = Scale::new(PitchClass::F, ScaleKind::Major);

@@ -792,6 +792,35 @@ mod tests {
         }
     }
 
+    /// `metric_weight` 的上界钳制（完整读数）。
+    ///
+    /// 形态 D 注入实测（本票）：把上界分支的判据由 `trailing >= 8` 改成
+    /// `trailing > 8` 时**没有任何判据变红**。本机核对后判定这是**观测等价**：
+    /// 该分支的两个出口都返回 `trailing`，改动只让"恰好等于 8"的情况换一条
+    /// 分支走到同一个值。因此这条判据不宣称能判死那个注入，它钉住的是
+    /// **上界契约本身**：末尾零数 ≥ 8 一律取上界、< 8 一律取零数本身。
+    #[test]
+    fn metric_weight_clamps_every_trailing_zero_count_at_or_above_the_cap() {
+        // 末尾零数恰好 8：两侧都必须取上界。
+        assert_eq!(256u32.trailing_zeros(), 8);
+        assert_eq!(metric_weight(256), MAX_METRIC_WEIGHT);
+        // 末尾零数 > 8（512 → 9、4096 → 12、2^20 → 20）：必须钳到上界。
+        for cell in [512u32, 1024, 4096, 65_536, 1 << 20] {
+            assert!(
+                cell.trailing_zeros() >= u32::from(MAX_METRIC_WEIGHT),
+                "cell {cell} must exercise the clamp"
+            );
+            assert_eq!(metric_weight(cell), MAX_METRIC_WEIGHT, "cell {cell}");
+        }
+        // 上界之下：读数必须等于末尾零数本身（不多也不少）。
+        for cell in [2u32, 4, 8, 16, 32, 64, 128] {
+            let trailing = cell.trailing_zeros() as u8;
+            assert!(trailing < MAX_METRIC_WEIGHT);
+            assert_eq!(metric_weight(cell), trailing, "cell {cell}");
+        }
+        assert_eq!(MAX_METRIC_WEIGHT, 8);
+    }
+
     #[test]
     fn metric_weight_in_keeps_binary_meters_bit_identical_to_metric_weight() {
         // 2/4 与 4/4 是纯二分层级 ⇒ 新旧两条口径必须**逐位**相同。
