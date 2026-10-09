@@ -170,6 +170,7 @@ pub struct EngineStatsMirror {
     insert_gain_reductions: AtomicU64,
     insert_max_reduction_db_bits: AtomicU32,
     insert_current_reduction_db_bits: AtomicU32,
+    insert_detector_level_db: AtomicU64,
     insert_strip_frames: AtomicU64,
     insert_reverb_frames: AtomicU64,
     insert_reverb_rate_rejects: AtomicU64,
@@ -237,6 +238,8 @@ impl EngineStatsMirror {
             insert_gain_reductions: AtomicU64::new(0),
             insert_max_reduction_db_bits: AtomicU32::new(0),
             insert_current_reduction_db_bits: AtomicU32::new(0),
+            // `Option<f32>` 打包：`0` = 缺失（= 引擎的冷值 `None`）。
+            insert_detector_level_db: AtomicU64::new(0),
             insert_strip_frames: AtomicU64::new(0),
             insert_reverb_frames: AtomicU64::new(0),
             insert_reverb_rate_rejects: AtomicU64::new(0),
@@ -326,6 +329,12 @@ impl EngineStatsMirror {
             .store(stats.insert_max_reduction_db.to_bits(), Ordering::Relaxed);
         self.insert_current_reduction_db_bits.store(
             stats.insert_current_reduction_db.to_bits(),
+            Ordering::Relaxed,
+        );
+        // `Option<f32>`：存在性与值在**同一个**原子量里（与 `quanta_per_second` 同款）
+        // ⇒ 不会读到"有值但值是上一个"的交错。
+        self.insert_detector_level_db.store(
+            pack_optional_f32(stats.insert_detector_level_db),
             Ordering::Relaxed,
         );
         self.insert_strip_frames
@@ -440,6 +449,9 @@ impl EngineStatsMirror {
                 self.insert_current_reduction_db_bits
                     .load(Ordering::Relaxed),
             ),
+            insert_detector_level_db: unpack_optional_f32(
+                self.insert_detector_level_db.load(Ordering::Relaxed),
+            ),
             insert_strip_frames: self.insert_strip_frames.load(Ordering::Relaxed),
             insert_reverb_frames: self.insert_reverb_frames.load(Ordering::Relaxed),
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects.load(Ordering::Relaxed),
@@ -486,7 +498,7 @@ impl Default for EngineStatsMirror {
 }
 
 impl core::fmt::Debug for EngineStatsMirror {
-    /// 打印**读出来**的那一份读数（不是 58 个原子量的内部状态）。
+    /// 打印**读出来**的那一份读数（不是 59 个原子量的内部状态）。
     ///
     /// 这个数是**机械读数**（`sed -n '/^pub struct EngineStatsMirror {/,/^}/p'` 里
     /// `Atomic` 字段的行数），与 `EngineStats` 的字段数一一对应（一个字段一个原子量）。
@@ -534,6 +546,7 @@ mod tests {
             insert_gain_reductions: 17,
             insert_max_reduction_db: -6.5,
             insert_current_reduction_db: 3.25,
+            insert_detector_level_db: Some(-33.75),
             insert_strip_frames: 19,
             insert_reverb_frames: 20,
             insert_reverb_rate_rejects: 21,

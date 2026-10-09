@@ -224,12 +224,23 @@
 //! **形态**判据：① 峰值 > 0（量规真的抬起来过）；② 峰值 ≤ 对应池的容量
 //! （读数不是把某个累计量搬过来 —— 累计量会远超容量）。
 //! 本追记**不新增场景**，也不改变任何窗口的分配断言。
+//!
+//! # 场景 7 的覆盖度见证（`line/engine-17` 追记）：插入链动态级的**检波器**电平
+//!
+//! 新增读数 `EngineStats::insert_detector_level_db` 的来源是逐轨插入分支里对器件
+//! getter 的一次字段读（`ChannelStrip::detector_level_db`，转发 `Compressor::level_db`）
+//! ⇒ 来源与读路径**都在**实时窗口内部。场景 7 的两轨夹具**两条轨的动态级都开**
+//! ⇒ 该读数在窗口末尾必须 `Some(L)` 且 `L > MIN_LEVEL_DB`（检波器真的看见了信号，
+//! 不是器件构造初值）。窗口里音符铺满（`saturated_notes`）⇒ 末尾仍在有声段，
+//! 因此这条见证不是"落回地板"那一条的重复。
+//! 它**不新增场景**，也不改变任何窗口的分配断言。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use yeban_dsp::compressor::MIN_LEVEL_DB;
 use yeban_engine::drums::DRUM_SLOTS;
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
@@ -1019,8 +1030,20 @@ fn main() -> ExitCode {
             "插入链的当前衰减读数没有在实时窗口里被写进去（{current_db} dB）—— 新读数的零分配判据是空转"
         ));
     }
+    // 覆盖度见证（`line/engine-17` 追记）：新增读数 `insert_detector_level_db` 的来源是
+    // 同一个逐轨插入分支里对器件 getter 的另一次字段读 ⇒ 它也落在上面 10_000 个测量
+    // 窗口的每一个里（两条轨的动态级都开）。窗口末尾它是 `Some(L)` 且 `L > MIN_LEVEL_DB`
+    // （`saturated_notes` 把整窗铺满 ⇒ 检波器看见的是信号，不是器件构造初值）。
+    // 没有这条见证，"读数恒 None（或恒地板）"也能让零分配断言绿（假绿）。
+    let detector_db = strip_stats.insert_detector_level_db;
+    if !matches!(detector_db, Some(level) if level.is_finite() && level > MIN_LEVEL_DB) {
+        failures.push(format!(
+            "插入链的检波器电平读数没有在实时窗口里被写进去（{detector_db:?} dBFS，地板 {MIN_LEVEL_DB}）\
+             —— 新读数的零分配判据是空转"
+        ));
+    }
     println!(
-        "[engine-wiring-2/J7] 插入通道条: quanta={} 整链处理帧数={} 动态级压过帧数={} 最大衰减={:.3} dB 当前衰减={:.3} dB 非零样本={strip_nonzero}",
+        "[engine-wiring-2/J7] 插入通道条: quanta={} 整链处理帧数={} 动态级压过帧数={} 最大衰减={:.3} dB 当前衰减={:.3} dB 检波器电平={detector_db:?} dBFS 非零样本={strip_nonzero}",
         strip_stats.quanta,
         strip_stats.insert_strip_frames,
         strip_stats.insert_gain_reductions,

@@ -20,6 +20,7 @@
 //! | C13 | 引擎的 `ChannelStrip` **就是** `yeban_dsp::channel_strip::ChannelStrip`（类型 + `new`/`set_params`/`process_mono` 函数地址同一性 + **零延迟**契约） | 在引擎侧留第二份通道条实现 / 器件带延迟却登记 0 |
 //! | C14 | 设备链顺序：第一个**含已识别参数名**的效果器是唯一来源；更早的无关效果器不参与、更晚的不覆盖 | 取"最后一个"或"任意一个"设备 |
 //! | C15 | `insert_current_reduction_db` 是**量规**（源静音后回落）而不是第二个累计量：任意时刻 `当前 ≤ 全程最大`、`全程最大` 单调不减、静音段末尾 `当前` 落到峰值的一小部分；未武装工程两者恒为 0 | 把"当前"直接抄成"最大"（第二个累计量） / 漏读器件 getter（恒 0） / 跨轨取"最后一条轨"而不是最大 |
+//! | C16 | `insert_detector_level_db`（**输入**侧，dBFS）是量规：冷值 `None`（不是 `Some(0.0)`）、有声段抬起、源静音段末尾逐位落回器件地板 `MIN_LEVEL_DB`、只有 EQ 的通道条报出的正是压缩器构造初值（动态级旁通⇒检波器从未跑）、跨轨口径 = 最大；同窗口的 `insert_strip_frames` / `insert_gain_reductions` / `insert_current_reduction_db` 是**对照读数**（证明扫描模式有效） | 冷值写成 `0.0` / 读数其实是累计最大值（尾部不落回地板） / 读整链电平而不是动态级检波器 / 跨轨取"最后一条轨" |
 //!
 //! ## C8 的跨提交对账（**不硬编码哈希**）
 //!
@@ -997,6 +998,291 @@ fn insert_current_reduction_is_a_gauge_not_a_second_counter() {
     println!(
         "[engine-wiring-2/C15] 跨轨口径: A 领先 {first_above} 个量子边界 / B 领先 {second_above} 个 / 共 {} 最大差异={max_separation:.4} dB 逐位最大={}",
         RELEASE_QUANTA + 1,
+        mismatches == 0
+    );
+}
+
+/// C16：`insert_detector_level_db` 是插入链动态级的**输入**侧读数（检波器电平，dBFS）。
+///
+/// # 判据（七条断言，每条都能单独变红）
+///
+/// | # | 断言 | 单位/对象 |
+/// | :-: | :--- | :--- |
+/// | 1 | 覆盖度**对照读数**：同一窗口里 `insert_strip_frames > 0`、`insert_gain_reductions > 0`、`insert_current_reduction_db > 0`（证明扫描模式有效，不是把一切都扫成冷值） | 帧 / dB |
+/// | 2 | 冷值形态与过渡：第一个量子**之前**是 `None`，窗口里抬起过 `Some(…)`，且没有武装器件的工程整段**恒为 `None`**（**不是** `Some(0.0)` —— 0 dBFS 是合法电平） | — |
+/// | 3 | 抬升：端点是 `Some(L)`，`L` 有限且 `L > MIN_LEVEL_DB`（检波器真的看见了信号） | dBFS |
+/// | 4 | 量规回落：源静音段末尾**逐位**等于器件地板 `MIN_LEVEL_DB`（−120 dBFS），而同一窗口的累计量 `insert_max_reduction_db` 仍 `> 0`（一个落回、一个不落） | dBFS |
+/// | 5 | 采样点在**动态级**：只有 EQ 的通道条（动态级旁通 ⇒ 压缩器从未被调用）报出的正是它的构造初值 `MIN_LEVEL_DB`，而该通道条整链处理帧数 `> 0`、压过帧数 `= 0` | dBFS |
+/// | 6 | 镜像搬运：静止点上 `stats_mirror().read()` 与 `stats()` 逐字段相等（新字段漏出 `publish` ⇒ 红） | — |
+/// | 7 | 跨轨口径 = **最大**：三条臂逐量子 `两轨 = max(只 A, 只 B)`（`None` 按"缺失"参与比较，不映射成某个 dB 值） | dBFS |
+///
+/// # 为什么这些断言有牙（各自打在哪条注入上）
+///
+/// - 第 2 条打"冷值写成 `0.0`"：那样未武装工程会读出 `Some(0.0)`（= 满刻度，一条**假读数**）
+///   ⇒ 第 2 条红，而第 3、4 条在有声工程上**仍然绿**；
+/// - 第 4 条打"这个读数其实是第二个累计最大值"（改成器件的 `max_reduction_db` 或累计 `max`）：
+///   源静音之后它不会落回地板 ⇒ 尾部与 `MIN_LEVEL_DB` 不等；
+/// - 第 4 条同时打"漏读器件 getter、读数不写"：那样窗口里根本没有 `Some`；
+/// - 第 5 条打"读的是整链电平而不是动态级检波器"：EQ-only 的通道条在**整链**上是有信号的
+///   （`insert_strip_frames > 0`），只有压缩器没跑 ⇒ 它必须逐位是地板。若读的是
+///   通道条的 `output_*` / `input_*` 之类整链计量，这里会读到有声电平；
+/// - 第 7 条打"跨轨取最后一条轨而不是最大"（与 C15 第 6 条同款夹具与理由）。
+///
+/// # 窗口设计（与 C15 同一份）
+///
+/// `NOTES` 的最后一条音符在 tick 2400 结束（1 tick = 25 样本 ⇒ 第 60 000 帧，即第 468.75 个
+/// 量子）；700 个量子 = 89 600 帧 ⇒ 尾部约 231 个量子（≈ 0.48 s）是源静音。
+/// 检波器的时间常数是 `CompressorParams::DEFAULT` 的 `detector_s = 5 ms`
+/// （`crates/yeban-dsp/src/compressor.rs` 现位于第 279 行）⇒ 那一段有 **30 个以上**的
+/// 时间常数：`mean_square` 早已衰减到 `POWER_FLOOR` 以下，器件因此报**逐位**的地板值。
+/// 器件自己把这条口径写成契约（同文件现位于第 1306 行的单测断言静音 ⇒ `level_db() ==
+/// MIN_LEVEL_DB`）。
+#[test]
+fn insert_detector_level_is_the_input_side_of_the_dynamics_stage() {
+    /// 渲染量子数（与 C15 同一个窗口）。
+    const RELEASE_QUANTA: usize = 700;
+    /// 跨轨口径那条对照臂的窗口（覆盖两条轨各自的音符段即可）。
+    const CROSS_QUANTA: usize = 300;
+
+    let floor = yeban_dsp::compressor::MIN_LEVEL_DB;
+    assert!(
+        floor < -100.0 && floor.is_finite(),
+        "检波器地板必须在 −100 dBFS 以下（否则'落回地板'与'还在有声'在读数上不可分）：{floor}"
+    );
+
+    let (project, _track) = armed_project();
+
+    // 逐量子采样：`samples[i]` = **第 i 个量子处理完之后**的读数
+    // （`render_with` 的回调在量子**之前**调用 ⇒ 采到的是上一个量子的结果）。
+    let mut samples: Vec<Option<f32>> = Vec::with_capacity(RELEASE_QUANTA + 1);
+    let mut mirror_matches_authoritative = true;
+    let rendered = render_with(&project, RELEASE_QUANTA, 1, |_quantum, rig| {
+        let stats = rig.runtime.stats();
+        samples.push(stats.insert_detector_level_db);
+        // 静止点等号（同一条线程、没有并发写者）：镜像的搬运必须逐字段一致。
+        // 新字段一旦漏出 `publish`，这里会立刻红（判据 6）。
+        if rig.runtime.stats_mirror().read() != stats {
+            mirror_matches_authoritative = false;
+        }
+    });
+    let final_stats = rendered.stats;
+    samples.push(final_stats.insert_detector_level_db);
+    assert_eq!(
+        samples.len(),
+        RELEASE_QUANTA + 1,
+        "逐量子采样必须覆盖每一个量子边界（含末端）"
+    );
+
+    // ---- 判据 1：覆盖度**对照读数**（同族其它成员的非零读数）----
+    assert!(
+        rendered.nonzero() > 0,
+        "窗口里必须真的有声，否则本判据是空转（假绿）"
+    );
+    assert!(
+        final_stats.insert_strip_frames > 0,
+        "对照读数：通道条必须真的处理过帧（0 ⇒ 本窗口没覆盖插入链）"
+    );
+    assert!(
+        final_stats.insert_gain_reductions > 0,
+        "对照读数：动态级必须真的压过帧（0 ⇒ 本窗口没覆盖动态级）"
+    );
+    assert!(
+        final_stats.insert_current_reduction_db > 0.0,
+        "对照读数：当前衰减必须报出非零（0.0 ⇒ 同族的量规也没被写进去）"
+    );
+
+    // ---- 判据 2：冷值 None → Some 的过渡 ----
+    assert_eq!(
+        samples[0], None,
+        "第一个量子处理**之前**必须是冷值 None（引擎构造期发布的初值）"
+    );
+    let mut peak = f32::NEG_INFINITY;
+    let mut peak_quantum = 0usize;
+    for (quantum, sample) in samples.iter().enumerate() {
+        if let Some(level) = *sample {
+            assert!(
+                level.is_finite(),
+                "检波器电平必须有限（第 {quantum} 个量子读到 {level}）"
+            );
+            if level > peak {
+                peak = level;
+                peak_quantum = quantum;
+            }
+        }
+    }
+
+    // ---- 判据 3：抬升（检波器真的看见了信号）----
+    assert!(
+        peak > floor,
+        "检波器电平在整段窗口里从没离开地板（峰值 {peak} dBFS）—— 读数没被写进去"
+    );
+    assert!(
+        peak_quantum < 468,
+        "峰值必须落在音符还在响的段里（实测第 {peak_quantum} 个量子）"
+    );
+
+    // ---- 判据 4：量规在源静音段落回器件地板，而累计量不落 ----
+    let tail = samples[RELEASE_QUANTA].expect("武装窗口末尾必须是 Some");
+    assert_eq!(
+        tail.to_bits(),
+        floor.to_bits(),
+        "源静音段末尾的检波器电平必须逐位落回器件地板 {floor} dBFS（实测 {tail}）\
+         —— 不落 ⇒ 这个读数是累计量，不是量规"
+    );
+    assert!(
+        final_stats.insert_max_reduction_db > 0.0,
+        "对照读数：同窗口的全程最大衰减必须仍 > 0 dB（它**不**随静音回落）\
+         —— 实测 {} dB",
+        final_stats.insert_max_reduction_db
+    );
+    assert!(
+        mirror_matches_authoritative,
+        "静止点上镜像必须与权威读数逐字段相等（新字段漏出 `publish` ⇒ 这里红）"
+    );
+
+    // ---- 判据 2 的后半 + 判据 5：两条**负对照**臂 ----
+    //
+    // 臂 A：同一个夹具、同一条轨、同样的音符，**只**去掉设备链 ⇒ 插入链整段跳过
+    // ⇒ 读数必须是冷值 `None`。这一条把"读数恒 None"与"没有插入链"分开。
+    let bare = tuned_project(&NOTES, MixSpec::volume(0.0));
+    let bare_rendered = render(&bare.project, RELEASE_QUANTA);
+    assert_eq!(
+        bare_rendered.stats.insert_detector_level_db, None,
+        "没有武装通道条时检波器电平必须是冷值 None（**不是** Some(0.0)：0 dBFS 是合法电平）"
+    );
+    assert_eq!(
+        bare_rendered.stats.insert_strip_frames, 0,
+        "对照读数：负对照臂必须真的没有通道条"
+    );
+    // 臂 B：只有 EQ 旋钮 ⇒ `compressor_enabled = false`（投影规则：没写旋钮的级不执行）
+    // ⇒ 压缩器**从未被调用**，它报自己的构造初值（地板）；而整链照样在跑。
+    let mut eq_only = tuned_project(&NOTES, MixSpec::volume(0.0));
+    mount(
+        &mut eq_only.project,
+        eq_only.track,
+        vec![effect(&[("eq_low_gain", 6.0)])],
+    );
+    let eq_rendered = render(&eq_only.project, RELEASE_QUANTA);
+    assert_eq!(
+        eq_rendered.stats.insert_detector_level_db.map(f32::to_bits),
+        Some(floor.to_bits()),
+        "动态级旁通的通道条必须报压缩器的构造初值（地板）—— 读到有声电平 ⇒ 读的不是动态级检波器"
+    );
+    assert!(
+        eq_rendered.stats.insert_strip_frames > 0,
+        "对照读数：EQ-only 的通道条必须真的在整链上处理过帧（否则上面那条是空转）"
+    );
+    assert_eq!(
+        eq_rendered.stats.insert_gain_reductions, 0,
+        "对照读数：动态级旁通 ⇒ 压过帧数必须为 0（否则投影没把该级关掉）"
+    );
+
+    println!(
+        "[engine-wiring-2/C16] 检波器电平: 峰值={peak:.3} dBFS（第 {peak_quantum} 个量子）\
+         端点={tail:.3} dBFS 地板={floor:.3} dBFS 整链帧={} 压过帧={} 当前衰减={:.3} dB \
+         未武装={:?} EQ-only={:?} 镜像等号={mirror_matches_authoritative}",
+        final_stats.insert_strip_frames,
+        final_stats.insert_gain_reductions,
+        final_stats.insert_current_reduction_db,
+        bare_rendered.stats.insert_detector_level_db,
+        eq_rendered.stats.insert_detector_level_db,
+    );
+
+    // ---- 判据 7：跨轨口径必须是**最大**，不是"最后一条轨" ----
+    //
+    // 夹具与理由照抄 C15 的第 6 条：三条臂用**同一份工程**（同一次 `two_track_project`
+    // ⇒ 同一批 `EntityId`、同一个 `BTreeMap` 键序），唯一差别是哪条轨还挂着自己的器件。
+    // 两条轨的**音符窗口错开**（A 在 tick 0..480、B 在 tick 960..1440）⇒ "谁更大"双向出现，
+    // 与 `BTreeMap` 的 ULID 迭代顺序无关。
+    let notes_first = [NoteSpec::at(0, 480, 60, 127)];
+    let notes_second = [NoteSpec::at(960, 480, 60, 127)];
+    let (mut two_track, first, second) = support::two_track_project(&notes_first, &notes_second);
+    let dynamics = [("threshold_db", -30.0), ("ratio", 8.0)];
+    mount(&mut two_track, first, vec![effect(&dynamics)]);
+    mount(&mut two_track, second, vec![effect(&dynamics)]);
+
+    /// 渲染一份两轨工程并逐量子采出检波器电平序列。
+    fn level_series(project: &YebanProjectV1, quanta: usize) -> Vec<Option<f32>> {
+        let mut series: Vec<Option<f32>> = Vec::with_capacity(quanta + 1);
+        let rendered = render_with(project, quanta, 1, |_quantum, rig| {
+            series.push(rig.runtime.stats().insert_detector_level_db);
+        });
+        series.push(rendered.stats.insert_detector_level_db);
+        series
+    }
+
+    let both = level_series(&two_track, CROSS_QUANTA);
+    let mut only_first_project = two_track.clone();
+    mount(&mut only_first_project, second, vec![]);
+    let only_first = level_series(&only_first_project, CROSS_QUANTA);
+    let mut only_second_project = two_track.clone();
+    mount(&mut only_second_project, first, vec![]);
+    let only_second = level_series(&only_second_project, CROSS_QUANTA);
+
+    // 牙齿：两个方向都必须真的出现（各以 > 1 dB 为准）。
+    let mut first_above = 0usize;
+    let mut second_above = 0usize;
+    let mut max_separation = 0.0f32;
+    for (single_a, single_b) in only_first.iter().zip(only_second.iter()) {
+        if let (Some(a), Some(b)) = (*single_a, *single_b) {
+            if a - b > 1.0 {
+                first_above += 1;
+            }
+            if b - a > 1.0 {
+                second_above += 1;
+            }
+            max_separation = max_separation.max((a - b).abs());
+        }
+    }
+    assert!(
+        first_above > 0 && second_above > 0,
+        "两条单轨读数必须在**两个方向**上都出现过 > 1 dB 的差（实测 A 领先 {first_above} 个量子边界、\
+         B 领先 {second_above} 个）—— 单方向夹具会让跨轨口径判据变成掷硬币"
+    );
+
+    // `None` 按"缺失"参与比较（它只在量子 0 出现：那时三条臂都还没处理过帧），
+    // **不**把 `None` 映射成某个 dB 值（那会引入一个不是读数的数）。
+    fn max_option(a: Option<f32>, b: Option<f32>) -> Option<f32> {
+        match (a, b) {
+            (Some(x), Some(y)) => Some(x.max(y)),
+            (Some(x), None) => Some(x),
+            (None, Some(y)) => Some(y),
+            (None, None) => None,
+        }
+    }
+    fn same_option(a: Option<f32>, b: Option<f32>) -> bool {
+        match (a, b) {
+            (Some(x), Some(y)) => x.to_bits() == y.to_bits(),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    /// 首个不符的现场（量子号 + 三条臂各自的读数）。
+    type Mismatch = (usize, Option<f32>, Option<f32>, Option<f32>);
+    let mut mismatches = 0usize;
+    let mut first_mismatch: Option<Mismatch> = None;
+    for quantum in 0..=CROSS_QUANTA {
+        let expected = max_option(only_first[quantum], only_second[quantum]);
+        if !same_option(both[quantum], expected) {
+            mismatches += 1;
+            if first_mismatch.is_none() {
+                first_mismatch = Some((
+                    quantum,
+                    both[quantum],
+                    only_first[quantum],
+                    only_second[quantum],
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        mismatches, 0,
+        "两轨的检波器电平必须逐量子等于两条单轨读数的**最大**（首个不符：{first_mismatch:?}）"
+    );
+    println!(
+        "[engine-wiring-2/C16] 跨轨口径: A 领先 {first_above} 个量子边界 / B 领先 {second_above} 个 / 共 {} 最大差异={max_separation:.4} dB 逐位最大={}",
+        CROSS_QUANTA + 1,
         mismatches == 0
     );
 }

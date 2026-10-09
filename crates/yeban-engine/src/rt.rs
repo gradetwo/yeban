@@ -346,6 +346,57 @@ pub struct EngineStats {
     /// （[`Self::limiter_max_reduction`] ＋ [`Self::limiter_current_reduction`]），
     /// 而插入链只有累计量 ⇒ 本字段补的是同一条读数在**插入链**上的缺项。
     pub insert_current_reduction_db: f32,
+    /// **每轨插入器件**（通道条）动态级**检波器**看到的电平
+    /// （dBFS；`None` = 从来没有一台武装通道条处理过帧）。
+    ///
+    /// 单位与 [`Self::insert_current_reduction_db`] 的**不同**：那个是 dB 衰减，本读数是
+    /// **dBFS 电平**。两者是同一台器件、同一个瞬间的**两侧**：本读数是压缩器检波器的
+    /// **输入**侧，那个是它算出来的**输出**侧（压了多少）。
+    ///
+    /// 口径（四条，都要与判据一起读）：
+    ///
+    /// 1. 读数取 [`ChannelStrip::detector_level_db`]，它是压缩器的 `level_db()`
+    ///    （`crates/yeban-dsp/src/channel_strip.rs` 现位于第 663 行，转发
+    ///    `crates/yeban-dsp/src/compressor.rs` 现位于第 663 行的同名 getter）——
+    ///    器件里**早就存在**的 getter，而 `yeban-engine` 此前**一个读者都没有**
+    ///    （量法：`grep -rnw 'detector_level_db' crates/yeban-engine` 在本次改动前
+    ///    ⇒ `src` 0 行、`tests` 0 行；同一条命令射程放到全 `crates` 也只剩 **1** 行
+    ///    = 它自己的定义 ⇒ 它在整个工作区里没有任何读者）。它只读一个 `f32` 字段
+    ///    （`const fn`）⇒ 本字段**不增加**任何 DSP 调用、不碰任何样本、不分配、不加锁
+    ///    ⇒ 渲染输出逐位不变；
+    /// 2. 采样点是**滤波级之后、动态级之前**（通道条的固定顺序是
+    ///    输入增益 → EQ → 滤波 → 动态 → 输出增益，见 `crates/yeban-dsp/src/channel_strip.rs`
+    ///    §2）⇒ 它与 [`crate::level`] 的逐轨电平读数**不是**同一个点：那个在整条插入链
+    ///    **之后**。本读数因此是这条链上的**内部探针** —— 只有它能看到"EQ 与滤波之后、
+    ///    压限之前"的那一档电平（EQ 的平坦档位不是逐位恒等，实测最大绝对差 4.566e-5，
+    ///    出处同上 §3）；
+    /// 3. 一个量子内可能有多条轨的通道条在工作 ⇒ 取**最大值**（与
+    ///    [`Self::insert_max_reduction_db`] / [`Self::insert_current_reduction_db`]
+    ///    的跨轨口径相同：都是"这条引擎里电平最高的那一台"）；
+    /// 4. 本量子**一台武装通道条都没有处理过帧** ⇒ **不更新**（保持上一次的值），
+    ///    与 [`Self::insert_current_reduction_db`] 的边界口径相同、由**同一个**判据
+    ///    条件（"本量子真的有一台武装通道条处理过帧"）驱动。
+    ///
+    /// **冷值是 `None`，不是 `0.0`**：`0.0` 是一个**合法且有意义**的检波器电平
+    /// （0 dBFS = 满刻度）⇒ 用 `0.0` 表示"从来没有过读数"会让控制面在第一个量子之前
+    /// 读到一条**假读数**。这与 [`Self::quanta_per_second`] 选 `Option<f32>` 是同一个
+    /// 理由，也是本字段与同族其它读数（它们的冷值 `0` 恰好等于语义上的"没处理过 /
+    /// 透明"）**唯一**的形状差别。
+    ///
+    /// ⚠ 语义边界：动态级被**旁通**（`compressor_enabled = false`，即设备一个动态旋钮
+    /// 都没写）的通道条照样在"处理帧"（它的其它级在跑），但它报出的是压缩器里**冻结**
+    /// 的上一次读数；从未运行过的压缩器报它的构造初值 `MIN_LEVEL_DB`
+    /// （`−120 dBFS`，定义在 `crates/yeban-dsp/src/compressor.rs` 现位于第 240 行）。
+    /// 那是**器件侧的事实**（那个 getter 的返回值），不是缺失 —— 判据
+    /// `tests/channel_strip_insert.rs` 的 C16 把这一档逐位钉住。
+    ///
+    /// 为什么需要它：[`Self::insert_gain_reductions`] /
+    /// [`Self::insert_max_reduction_db`] / [`Self::insert_current_reduction_db`] 三条
+    /// 都是压限的**输出**侧（压过多少帧、最多压了多少、此刻压了多少），而 GR 是
+    /// **增益弹道之后**的量 —— 三条一起读仍然回答不了"动态级的**工作点**在哪、
+    /// 检波器离阈值有多远"。检波器电平是唯一回答那个问题的读数（形态判据见
+    /// `tests/channel_strip_insert.rs` 的 C16）。
+    pub insert_detector_level_db: Option<f32>,
     /// **每轨插入器件**（通道条）累计处理过的帧数（[`crate::insert`]；0 = 从未处理）。
     ///
     /// 口径：读数取 [`ChannelStrip::processed_frames`]，即通道条**整级链**处理过的帧数
@@ -852,6 +903,9 @@ pub struct EngineRuntime {
     /// 插入链动态级**当前**衰减（dB；量规，可升可降。与
     /// [`EngineStats::insert_current_reduction_db`] 同源）。
     insert_current_reduction_db: f32,
+    /// 插入链动态级**检波器**看到的电平（dBFS；量规，可升可降。`None` = 从来没有一台
+    /// 武装通道条处理过帧。与 [`EngineStats::insert_detector_level_db`] 同源）。
+    insert_detector_level_db: Option<f32>,
     /// 累计被**插入器件**处理过的帧数（与 [`EngineStats::insert_strip_frames`] 同源）。
     insert_strip_frames: u64,
     /// 累计被**插入器件的混响级**处理过的帧数（与 [`EngineStats::insert_reverb_frames`] 同源）。
@@ -1006,6 +1060,9 @@ impl EngineRuntime {
             insert_gain_reductions: 0,
             insert_max_reduction_db: 0.0,
             insert_current_reduction_db: 0.0,
+            // 冷值就是 `None`（= `EngineStats::default()` 的派生值）：`0.0` 是一个合法
+            // 的检波器电平（0 dBFS）⇒ 不能用它表示"从没有过读数"。
+            insert_detector_level_db: None,
             insert_strip_frames: 0,
             insert_reverb_frames: 0,
             insert_reverb_rate_rejects: 0,
@@ -1152,6 +1209,7 @@ impl EngineRuntime {
             insert_gain_reductions: self.insert_gain_reductions,
             insert_max_reduction_db: self.insert_max_reduction_db,
             insert_current_reduction_db: self.insert_current_reduction_db,
+            insert_detector_level_db: self.insert_detector_level_db,
             insert_strip_frames: self.insert_strip_frames,
             insert_reverb_frames: self.insert_reverb_frames,
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
@@ -1565,6 +1623,7 @@ impl EngineRuntime {
             insert_gain_reductions,
             insert_max_reduction_db,
             insert_current_reduction_db,
+            insert_detector_level_db,
             insert_strip_frames,
             reverb_pool,
             armed_reverbs,
@@ -1956,17 +2015,25 @@ impl EngineRuntime {
                 // 因为本函数就是音频回调：实时路径上不许有任何到 I/O 边界的调用。
                 rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
             }
-            // 本量子插入链动态级的**当前**衰减（跨轨取最大；量规）。
+            // 本量子插入链动态级的**当前**衰减与**检波器**电平（两者都跨轨取最大；量规）。
             //
-            // 两个局部量只在**本量子**内有意义：`insert_current_db` 收集"本量子每条轨
-            // 的通道条报出的瞬时衰减"的最大值，`insert_current_seen` 记下"本量子真的
-            // 有一台武装通道条处理过帧"。循环之后只在 `seen` 为真时**覆写**读数 ——
-            // 与 `limiter_current_reduction` 的"没有快照的量子不更新"同口径
-            // （见 [`EngineStats::insert_current_reduction_db`] 的口径第 3 条）。
+            // 三个局部量只在**本量子**内有意义：`insert_current_db` / `insert_detector_db`
+            // 分别收集"本量子每条轨的通道条报出的瞬时衰减 / 检波器电平"的最大值，
+            // `insert_current_seen` 记下"本量子真的有一台武装通道条处理过帧"。循环之后
+            // 只在 `seen` 为真时**覆写**两个读数 —— 与 `limiter_current_reduction` 的
+            // "没有快照的量子不更新"同口径（见 [`EngineStats::insert_current_reduction_db`]
+            // 与 [`EngineStats::insert_detector_level_db`] 的口径第 3／4 条）。
             //
-            // ⚠ 这两个局部量是**读数的搬运**，不参与任何样本计算 ⇒ 逐样本路径**一个字
-            // 都没动** ⇒ 渲染输出逐位不变（判据见 `tests/channel_strip_insert.rs` 的 C15）。
+            // ⚠ 两条读数**共用**同一个 `seen` 标志：它们来自同一台器件、同一个瞬间
+            // （见下面对 `strip` 的那一段读），因此"本量子有没有器件工作过"是**同一个**
+            // 事实，分成两个标志只会给它们两个不同的更新口径。
+            //
+            // ⚠ 这三个局部量是**读数的搬运**，不参与任何样本计算 ⇒ 逐样本路径**一个字
+            // 都没动** ⇒ 渲染输出逐位不变（判据见 `tests/channel_strip_insert.rs` 的 C15/C16）。
             let mut insert_current_db = 0.0f32;
+            // 初值取 `-∞`：任何一台真实器件的检波器电平都 `≥ MIN_LEVEL_DB`（−120 dBFS）
+            // ⇒ 它一定被第一次赋值覆盖（`seen` 为真时至少有一台器件报过数）。
+            let mut insert_detector_db = f32::NEG_INFINITY;
             let mut insert_current_seen = false;
             for id in current.tracks().keys() {
                 if *id == master || produced >= track_budget {
@@ -2040,6 +2107,13 @@ impl EngineRuntime {
                     let current_db = strip.current_gain_reduction_db();
                     if current_db > insert_current_db {
                         insert_current_db = current_db;
+                    }
+                    // **检波器**电平（量规，单位 dBFS）：同一个器件、同一个瞬间的**输入**侧。
+                    // 它同样只读一个字段（`compressor.level_db`，一个 `const fn`）
+                    // ⇒ 不碰样本、不分配、不加锁 ⇒ 渲染输出逐位不变。
+                    let detector_db = strip.detector_level_db();
+                    if detector_db > insert_detector_db {
+                        insert_detector_db = detector_db;
                     }
                     insert_current_seen = true;
                 }
@@ -2150,21 +2224,26 @@ impl EngineRuntime {
                 sum_into_bus(block, &track_scratch[..frames], gain_l, gain_r);
             }
 
-            // --- 插入链动态级的**当前**衰减读数（3a' 的收尾）：逐轨循环之后覆写**一次** ---
+            // --- 插入链动态级的**当前**衰减与**检波器**电平读数（3a' 的收尾）：
+            //     逐轨循环之后覆写**一次** ---
             //
             // 读数的搬运（不是计算）：本量子至少有一台武装通道条处理过帧时，把
-            // `insert_current_db`（跨轨最大）覆写进统计。放在循环**之后**而不是
-            // 循环**之内**有两个理由：
+            // `insert_current_db` 与 `insert_detector_db`（两者都是跨轨最大）覆写进统计。
+            // 放在循环**之后**而不是循环**之内**有两个理由：
             //
             // 1. 一个量子只有**一个**读数（与 `insert_max_reduction_db` 的跨轨口径相同）。
             //    循环内每轨各写一次会让读数的终值取决于"最后一条轨是谁"（`BTreeMap`
             //    的键序），那是把实现细节当成语义；
-            // 2. 它是**量规**：一台都不工作时**不覆写**（保持上一次的值），
-            //    见 [`EngineStats::insert_current_reduction_db`] 的口径第 3 条。
+            // 2. 它们是**量规**：一台都不工作时**不覆写**（保持上一次的值），
+            //    见 [`EngineStats::insert_current_reduction_db`] 的口径第 3 条与
+            //    [`EngineStats::insert_detector_level_db`] 的口径第 4 条。
             //
-            // 零分配、零锁、零 I/O、零日志：一次 `f32` 字段写。
+            // 零分配、零锁、零 I/O、零日志：一次 `f32` 字段写与一次 `Option<f32>` 字段写。
             if insert_current_seen {
                 *insert_current_reduction_db = insert_current_db;
+                // `insert_detector_db` 此时必定已被至少一台器件赋值过（`seen` 的定义）
+                // ⇒ `Some(…)` 里不是 `NEG_INFINITY`。
+                *insert_detector_level_db = Some(insert_detector_db);
             }
 
             // --- 3a') 节拍器咔哒声：**逐轨汇流之后、主总线推子与母线限制器之前** ---
