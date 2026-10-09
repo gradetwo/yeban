@@ -1413,6 +1413,34 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(BuildCode::InvalidParameterRange));
     }
 
+    /// `ticks_per_bar` 在任何输入下都**不返回 0**。
+    ///
+    /// 合法工程走不到 0（`TimeSignature::validate` 把分子钉在 `1..=32`、分母钉在
+    /// `{1,2,4,8,16,32}`，且 `checked_div` 的兜底是 `PPQ`）；本判据故意喂一份
+    /// **未校验**的病态拍号，把 `.max(1)` 这条防御性下界钉住 —— 它是下游
+    /// （段落长度、级联跨度）唯一的"一小节至少 1 tick"来源，少了它就会出现
+    /// "一小节 0 tick"这种静默的错误音乐。
+    #[test]
+    fn ticks_per_bar_is_never_zero() {
+        let mut project = filled_project();
+        for (numerator, denominator) in [(0_u8, 4_u8), (0, 0), (1, 0), (32, 32), (1, 32)] {
+            project.time_signature = yeban_model::TimeSignature {
+                numerator,
+                denominator,
+            };
+            assert!(
+                ticks_per_bar(&project) >= 1,
+                "{numerator}/{denominator} 的一小节不得是 0 tick"
+            );
+        }
+        // 参照读数: 合法 4/4 仍然是 3840（闸门不是"一律 1"）。
+        project.time_signature = yeban_model::TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        assert_eq!(ticks_per_bar(&project), 3_840);
+    }
+
     #[test]
     fn plan_is_deterministic_and_applies_cleanly() {
         let project = filled_project();

@@ -1077,6 +1077,60 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// **第一道闸门是 fail-fast（不碰磁盘内容）**：声明大小超限时必须在 `metadata`
+    /// 之后立刻拒绝，而不是先 `fs::read` 再拒绝。
+    ///
+    /// 既有判据只断言"被拒绝"的载荷，而"读了内容再拒"与"没读就拒"对同一个**普通**
+    /// 文件产出**同一份**载荷（`declared == len`，`oversized_file_fault` 的两个入参
+    /// 相同）⇒ 两道闸门在那里同解。本条用一个**不可读**的文件把两道分开：
+    /// 权限位 `0000` 时 `metadata` 仍然成功（`stat` 只看目录的执行位），
+    /// `fs::read` 会 `EACCES`。第一道在 `metadata` 上就拒绝（`archive-bomb` +
+    /// `fileBytes`）；放宽它就会掉进 `fs::read` 的 `IO_ERROR`（载荷里是 `kind`/`osError`）。
+    ///
+    /// ⚠ 这是一条 `#[cfg(unix)]` 的判据，且前提是**不以 root 跑**（root 会绕过读权限位）。
+    #[test]
+    #[cfg(unix)]
+    fn the_declared_size_gate_refuses_before_reading_the_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = scratch("declared-fail-fast");
+        let path = dir.join("unreadable.yeban");
+        let tight = ContainerLimits {
+            max_entry_bytes: 8,
+            max_total_bytes: 8,
+            max_ratio: 1,
+            max_entries: 1,
+        };
+        let cap = max_container_file_bytes(&tight);
+        fs::write(&path, vec![b'x'; usize::try_from(cap).unwrap() + 1]).expect("写超限文件");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        // 夹具前提: `metadata` 读得到大小, 但内容读不出来。
+        assert_eq!(
+            fs::metadata(&path).expect("stat").len(),
+            cap + 1,
+            "夹具前提: 声明大小必须可读"
+        );
+        assert!(
+            fs::read(&path).is_err(),
+            "夹具前提: 这个文件必须读不出来（否则本条区分不了两道闸门）"
+        );
+
+        let fault = load_project_with_limits(&path, &tight).expect_err("超限文件必须被拒绝");
+        let value = fault.into_result().expect("领域失败是带内响应");
+        assert_eq!(
+            value["error"]["data"]["category"], "archive-bomb",
+            "必须在读内容之前就按声明大小拒绝: {value}"
+        );
+        assert_eq!(value["error"]["data"]["fileBytes"], cap + 1);
+        assert!(
+            value["error"]["data"]["kind"].is_null(),
+            "载荷不得来自 fs::read 的 I/O 错误（那说明第一道闸门被绕过了）: {value}"
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).ok();
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn zip_signature_tiers_non_containers_from_broken_containers() {
         // `has_zip_signature` 只服务**诊断分档**（D43 之后不再服务兼容分支）：

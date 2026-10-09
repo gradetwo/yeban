@@ -411,6 +411,25 @@ mod tests {
         assert_eq!(envelope(0, 0, 10, 10), 0.0);
     }
 
+    /// 判据 6b: `release == 0` 时，"区间外为 `0`"仍然成立。
+    ///
+    /// `offset == length` 时 `remaining == 0`，但 `release == 0` 会让 `falling`
+    /// 走 `if release == 0 { 1.0 }` 那条腿 ⇒ "起点已经越界"这件事**只能**由
+    /// `offset >= length` 那道闸门拦住，不能指望释音系数归零兜底。
+    ///
+    /// 生产调用点（现位于 `render.rs` 第 1566 行起）的循环条件是 `global < note.end`
+    /// ⇒ `offset < length` 恒成立，且起音/释音都来自 `ms_to_frames`（母带采样率下
+    /// 至少 220 / 441 帧）⇒ 本条钉的是**函数自己的文档契约**（"区间外为 `0`"），
+    /// 不是当前生产路径上的读数。
+    #[test]
+    fn envelope_outside_the_interval_is_zero_even_when_release_is_zero() {
+        assert_eq!(envelope(100, 100, 10, 0), 0.0);
+        assert_eq!(envelope(101, 100, 0, 0), 0.0);
+        assert_eq!(envelope(200, 100, 0, 0), 0.0);
+        // 反向: 区间内仍然必须有声（闸门不是"一律 0"）。
+        assert!(envelope(0, 100, 10, 0) > 0.0);
+    }
+
     /// 判据 7: 微时值可以把音符推到时间轴之前，那时它从第 0 帧开始。
     #[test]
     fn micro_timing_never_produces_a_negative_frame() {
@@ -465,7 +484,32 @@ mod tests {
         assert!(end > start);
     }
 
-    /// 判据 8: 日历换算对已知历元精确（含闰年与负 time_t 分支的整数路径）。
+    /// 判据 7c: 起点取到 `u64::MAX` 时，**终点那一次加法**也必须饱和。
+    ///
+    /// `note_frame_span` 有两次加法：`start.saturating_add(1)`（判据 7b 钉住）与
+    /// `clamped.saturating_add(duration_ticks.max(1))`（本条钉住）。后者在
+    /// `clamped == u64::MAX` 时若写成 `clamped + …` 就是 `attempt to add with overflow`。
+    ///
+    /// 工具面可达：`placement.start_tick` / `note.start_tick` 都是**无上界**的 `u64`
+    /// （`read_optional_u64` / `read_u64` 只要求非负整数），而 `render.rs` 第 2124 行起
+    /// 的 `base_tick = placement.start_tick.saturating_add(note.start_tick)` 会把它压到
+    /// `u64::MAX` 再传进来；`ClipPlacement::validate` 也不管 `start_tick` 的大小。
+    /// 端到端判据在 `tests/render_master.rs` 的极值 tick 那一条。
+    #[test]
+    fn a_maximal_start_tick_saturates_the_end_tick_addition_too() {
+        assert_eq!(
+            ticks_to_frames(u64::MAX, 960, 120.0, 48_000),
+            u64::MAX,
+            "夹具前提: 这个 tick 本身就落在 tick→帧 的饱和分支里"
+        );
+        let (start, end) = note_frame_span(u64::MAX, 480, 0, 960, 120.0, 48_000);
+        assert_eq!((start, end), (i64::MAX, i64::MAX));
+        // 微时值把起点推过 `u64::MAX` 也走同一条路（`i128` 相加后 `try_from` 失败）。
+        let (start, end) = note_frame_span(u64::MAX, 480, 240, 960, 120.0, 48_000);
+        assert_eq!((start, end), (i64::MAX, i64::MAX));
+    }
+
+    /// 判据 8: 日历换算对已知历元精确（含闰年；负天数另见判据 8b）。
     #[test]
     fn civil_calendar_matches_known_epochs() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
@@ -484,6 +528,26 @@ mod tests {
         );
         // 闰年 2 月 29 日（2024-01-01 = day 19723，+31 天到 2 月 1 日 ⇒ 2024-02-29 = 19782）。
         assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+    }
+
+    /// 判据 8b: `civil_from_days` 的**负天数分支**。
+    ///
+    /// 算法里 `shifted < 0` 时要再减 `146_096` 天，那是**另一条**算术：
+    /// 只取 `days >= 0` 的判据（判据 8）一个字节都碰不到它。
+    ///
+    /// 期望值用**独立**的儒略日算法（Fliegel–Van Flandern 的 `JDN → 公历`，
+    /// 与 Hinnant 的 `civil_from_days` 不是同一份代码）逐条对账过：
+    /// JDN `1721120` = 0000-03-01、JDN `1721119` = 0000-02-29（公元 0 年是闰年）、
+    /// JDN `2440587` = 1969-12-31。
+    #[test]
+    fn civil_from_days_covers_the_negative_era_correction() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1), "零点必须钉住");
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        assert_eq!(civil_from_days(-719_468), (0, 3, 1));
+        // 纪元修正项的分界: 再往前一天就落进 `era` 的负数侧。
+        assert_eq!(civil_from_days(-719_469), (0, 2, 29));
+        // 回程: 从 0000-02-29 起 719_469 天正好是 1970-01-01。
+        assert_eq!(civil_from_days(-719_469 + 719_469), (1970, 1, 1));
     }
 
     /// 判据 9: 缺省输出文件名规则。

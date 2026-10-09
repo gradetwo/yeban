@@ -473,4 +473,57 @@ mod tests {
         );
         assert_eq!(again, after);
     }
+
+    /// **边界**：`macroIndex` **恰好等于**宏个数时必须是 `INDEX_OUT_OF_BOUNDS`。
+    ///
+    /// 既有判据只喂了下标 `7`（宏个数是 `1`）⇒ `>=` 与 `>` 在那里同解。
+    /// 这一格不同解的地方在**恰好越界一格**：`>` 会让它掉进
+    /// `&track.macros[macro_index]`，那是数组越界 panic（进程级失败），
+    /// 而工具面的契约是带内的 `INDEX_OUT_OF_BOUNDS`（`data.macroCount` 报出真实个数）。
+    #[test]
+    fn a_macro_index_equal_to_the_count_is_out_of_bounds_not_a_panic() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let count = project.tracks[&track_id].macros.len();
+        assert_eq!(count, 1, "夹具前提: 样本音轨恰好有一个宏");
+
+        let fault = plan(&project, &track_id, count, 0.5).expect_err("恰好越界一格");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::IndexOutOfBounds));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["macroCount"], count);
+        // 反向: 合法的最后一个下标仍然必须通过（闸门不是"一律拒绝"）。
+        plan(&project, &track_id, count - 1, 0.5).expect("最后一个合法下标");
+    }
+
+    /// **值域闸门是 MCP 层自己的**：`value` 有限但越界时，报文必须来自本模块的闸门，
+    /// 而不是模拟施加后从模型层折回来的那一条。
+    ///
+    /// 两条路的**契约码相同**（都是 `OUT_OF_RANGE`，见 `error::code_for_model` 的
+    /// `MacroValueOutOfRange` 那一臂），因此只断言码的判据区分不了它们；能区分的是
+    /// `data`：本模块给 `{"value": …}` 与中文文案，模型那条给 `{"model": "<Debug>"}`。
+    #[test]
+    fn an_out_of_range_value_is_refused_here_not_by_the_model() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        for bad in [1.5_f32, -0.5] {
+            let fault = plan(&project, &track_id, 0, bad).expect_err("有限但越界");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange), "{bad}");
+            let value = fault.into_result().expect("带内");
+            assert_eq!(
+                value["error"]["data"]["value"],
+                serde_json::json!(bad),
+                "{bad} 必须由本模块的值域闸门拒绝: {value}"
+            );
+            assert!(
+                value["error"]["data"]["model"].is_null(),
+                "{bad} 不得落到模型层（那说明闸门被绕过了）: {value}"
+            );
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("宏值必须在 0.0..=1.0 且有限")),
+                "{bad}: {value}"
+            );
+        }
+    }
 }

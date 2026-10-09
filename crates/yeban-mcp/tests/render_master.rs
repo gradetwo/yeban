@@ -40,6 +40,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
+use yeban_mcp::domain::render::MAX_RENDER_FRAMES;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
@@ -551,6 +552,103 @@ fn two_renders_of_the_same_project_are_byte_identical() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 2b：墙钟字段必须来自**注入的时钟**，且换时钟只许改墙钟
+// ---------------------------------------------------------------------------
+
+/// `renderedAtUnixMs` 是渲染报文里的墙钟来源之一（另一个是 BEXT 的
+/// `originationDate` / `originationTime`，它们按 BWF 规范**写进容器字节**）。
+/// 类别③（重开与全新实例一致）把墙钟登记为**允许的**跨进程差异 —— 允许差异不等于
+/// 没有契约：本条要求读数**等于注入时钟**（`Domain::set_now_ms`，夹具注入
+/// `1_760_000_000_000`），并机械枚举**换一个注入时钟到底改动了哪几个字段**。
+///
+/// 为什么单列：BEXT 的两条 ASCII 口径被**文件字节**的摘要常量间接钉住了
+/// （判据 2 的 `DEFAULT_MASTER_SHA256` 会因为它们变化而变红），而
+/// `renderedAtUnixMs` **不进文件字节** ⇒ 把它写死成 `0` 全仓没有一条判据会红。
+#[test]
+fn the_render_report_carries_the_injected_clock_and_only_that() {
+    const INJECTED_MS: u64 = 1_760_000_000_000; // 2025-10-09T08:53:20Z
+    let scratch = Scratch::new("injected-clock");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    // **同一个**输出路径跑两轮：`data.request.path` 属于报文，换路径会让"只差墙钟"
+    // 这条枚举变成"差在路径上"。
+    let out = scratch.join("clock.wav");
+    let arguments = json!({
+        "format": "wav",
+        "sampleRate": 48000,
+        "path": out.display().to_string(),
+    });
+
+    let first = call(&mut dispatcher, &auth, arguments.clone());
+    assert_eq!(first["status"], "success", "{first}");
+    assert_eq!(
+        first["data"]["renderedAtUnixMs"], INJECTED_MS,
+        "报文必须带上注入时钟: {first}"
+    );
+    // 同一个注入时钟也算出 BEXT 的两条 ASCII 口径（`civil_from_unix_ms` 的消费者）。
+    assert_eq!(first["data"]["bwf"]["originationDate"], "2025-10-09");
+    assert_eq!(first["data"]["bwf"]["originationTime"], "08:53:20");
+    let first_bytes = fs::read(&out).expect("第一轮产物");
+
+    // 换一个注入时钟（+1 天 +1 秒 ⇒ 日期与时刻**两条**都变，枚举才完整）。
+    const SHIFTED_MS: u64 = INJECTED_MS + 86_401_000; // 2025-10-10T08:53:21Z
+    dispatcher.domain_mut().set_now_ms(SHIFTED_MS);
+    let second = call(&mut dispatcher, &auth, arguments);
+    assert_eq!(second["status"], "success", "{second}");
+    assert_eq!(second["data"]["renderedAtUnixMs"], SHIFTED_MS);
+    assert_eq!(second["data"]["bwf"]["originationDate"], "2025-10-10");
+    assert_eq!(second["data"]["bwf"]["originationTime"], "08:53:21");
+
+    /// 两份 JSON 对象里**取值不同**的键（排序后）。
+    fn changed_keys(left: &Value, right: &Value) -> Vec<String> {
+        let left = left.as_object().expect("左值是对象");
+        let right = right.as_object().expect("右值是对象");
+        let mut keys: Vec<String> = left
+            .keys()
+            .chain(right.keys())
+            .filter(|key| left.get(*key) != right.get(*key))
+            .cloned()
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    // 机械枚举: `data` 里**恰好**三个顶层键随注入时钟变 —— `bwf` 这一项出现，
+    // 只是因为**它内部**的两条戳变了（下面单独枚举），不是多出来一个字段。
+    let top_changed = changed_keys(&first["data"], &second["data"]);
+    assert_eq!(
+        top_changed,
+        vec![
+            "bwf".to_owned(),
+            "renderedAtUnixMs".to_owned(),
+            "sha256".to_owned()
+        ],
+        "换注入时钟只许改这三个顶层字段, 实际 {top_changed:?}"
+    );
+    // `data.bwf` 里恰好两条 ASCII 戳随它变。
+    assert_eq!(
+        changed_keys(&first["data"]["bwf"], &second["data"]["bwf"]),
+        vec!["originationDate".to_owned(), "originationTime".to_owned()],
+        "换注入时钟只许改 BEXT 的两条戳"
+    );
+    // 时钟**不许**碰音频：浮点母带摘要、帧数、容器长度都不动；BEXT 戳在**文件字节**
+    // 里（BWF 规范要求的字段）⇒ 容器字节会变，但长度不变。
+    assert_eq!(
+        second["data"]["masterDigest"],
+        first["data"]["masterDigest"]
+    );
+    assert_eq!(second["data"]["frames"], first["data"]["frames"]);
+    assert_eq!(second["data"]["bytes"], first["data"]["bytes"]);
+    let second_bytes = fs::read(&out).expect("第二轮产物");
+    assert_eq!(second_bytes.len(), first_bytes.len());
+    assert_ne!(
+        second_bytes, first_bytes,
+        "BEXT 的日期/时间戳必须真的写进容器字节（换时钟就该改动它们）"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 3：归一化（含全零信号边界）
 // ---------------------------------------------------------------------------
 
@@ -794,6 +892,63 @@ fn the_loudness_target_has_teeth() {
         "未达标时不许写出产品: {:?}",
         entries(&scratch.dir)
     );
+}
+
+/// 判据 3b-iv：响度容差是**闭**区间 —— `|delta|` 恰好等于 `toleranceLu` 时必须判
+/// `pass`。
+///
+/// 既有判据把目标摆在"等于实测"（差值 ~1e-4）与"实测 − 6 LU"（差值 6）两处，
+/// 离 0.5 都很远 ⇒ 把 `<=` 写成 `<` 一样全绿。本条把目标摆在**恰好差一个容差**：
+/// `measured` 与 `measured - 0.5` 同量级（Sterbenz: `y/2 ≤ x ≤ 2y` ⇒ f32 减法精确）
+/// ⇒ `deltaLu` 逐位等于 `0.5`，本判据测的就是那条边界。
+#[test]
+fn the_loudness_tolerance_boundary_is_inclusive() {
+    let scratch = Scratch::new("loudness-boundary");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+
+    let probe = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": scratch.text("probe.wav")}),
+    );
+    assert_eq!(probe["status"], "success", "{probe}");
+    let measured = probe["data"]["loudness"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("实测读数");
+
+    let at = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": measured - 0.5,
+            "path": scratch.text("at.wav"),
+        }),
+    );
+    assert_eq!(at["status"], "success", "恰好一个容差必须判 pass: {at}");
+    let loudness = &at["data"]["loudness"];
+    assert_eq!(loudness["toleranceLu"], 0.5, "{at}");
+    assert_eq!(
+        loudness["deltaLu"], 0.5,
+        "差值必须逐位等于容差（否则本条测的不是边界）: {at}"
+    );
+    assert_eq!(loudness["verdict"], "pass", "{at}");
+
+    // 反向: 一格之外必须仍然 fail（闭区间不等于"永不失败"）。
+    let over = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": measured - 0.6,
+            "path": scratch.text("over.wav"),
+        }),
+    );
+    assert_eq!(over["error"]["code"], "RENDER_FAILED", "{over}");
+    assert_eq!(over["error"]["data"]["reason"], "loudnessTargetMissed");
 }
 
 /// 判据 3b-iii：**目标被忽略时本判据变红**（"报告是常量"的负向测量）。
@@ -1581,107 +1736,197 @@ const SATURATING_START_TICK: u64 = 737_869_762_948_382_017;
 /// （实数轴上界由 `u64` 决定，工具面没有更小的上界）。这条判据钉住：那种工程再渲染
 /// 一次，得到的是契约内的 `RENDER_FAILED`（帧数超上限），**不是**整数溢出 panic。
 ///
-/// 可以变红的方式：把 `render_math::note_frame_span` 的 `start.saturating_add(1)`
-/// 写回 `start + 1` ⇒ 本判据在 `yeban_render_master` 那一步
+/// 两个极值都测：`SATURATING_START_TICK`（`ticks_to_frames` 的饱和分支**第一个**
+/// 触发点，钉住 `start.saturating_add(1)`）与 `u64::MAX` 本身（把 `clamped` 顶到
+/// `u64::MAX`，钉住终点那一次 `clamped.saturating_add(duration_ticks.max(1))` ——
+/// 元组里两次加法是**两条**算术，`render_math` 的单元判据 7b / 7c 分别覆盖它们）。
+///
+/// 可以变红的方式：把 `render_math::note_frame_span` 的任一次 `saturating_add`
+/// 写回 `+` ⇒ 本判据在 `yeban_render_master` 那一步
 /// `attempt to add with overflow`。这条判据走的是**真 `tools/call` 管线 + 真渲染**，
 /// 因此它同时钉住"工具面可达"。
 #[test]
 fn a_saturated_start_tick_from_the_tool_face_is_a_contract_error_not_a_panic() {
-    // 两条可达路径各自一条: 音符自己的起点, 与摆放的起点。
-    for (tag, extra) in [
-        (
-            "note",
-            json!({"ops": [{
-                "kind": "add",
-                "note": {
-                    "startTick": SATURATING_START_TICK,
-                    "pitch": 72,
-                    "durationTicks": 480
+    for (label, extreme) in [("saturating", SATURATING_START_TICK), ("maximal", u64::MAX)] {
+        // 两条可达路径各自一条: 音符自己的起点, 与摆放的起点。
+        for (shape, extra) in [
+            (
+                "note",
+                json!({"ops": [{
+                    "kind": "add",
+                    "note": {
+                        "startTick": extreme,
+                        "pitch": 72,
+                        "durationTicks": 480
+                    }
+                }]}),
+            ),
+            (
+                "placement",
+                json!({
+                    "ops": [],
+                    "placement": {"startTick": extreme, "durationTicks": 480}
+                }),
+            ),
+        ] {
+            let tag = format!("{label}-{shape}");
+            let scratch = Scratch::new(&tag);
+            let spec = Spec::default();
+            let (mut dispatcher, auth) =
+                dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
+            let lead = id(2).to_canonical_string();
+            let clip = id(10).to_canonical_string();
+
+            // 写入提案并合并 —— 这一半此前就已经通过（规划期只看 `u64` 的非负性）。
+            let mut arguments = json!({"trackId": lead, "clipId": clip});
+            for (key, value) in extra.as_object().expect("对象") {
+                arguments[key] = value.clone();
+            }
+            let written = call_tool(&mut dispatcher, &auth, "yeban_edit_notes", arguments);
+            assert_eq!(written["status"], "success", "{tag}: {written}");
+            let proposal_id = written["data"]["proposal"]["proposalId"]
+                .as_str()
+                .expect("proposalId")
+                .to_owned();
+            let merged = call_tool(
+                &mut dispatcher,
+                &auth,
+                "yeban_merge_proposal",
+                json!({"proposalId": proposal_id, "commitMessage": "saturating"}),
+            );
+            assert_eq!(merged["status"], "success", "{tag}: {merged}");
+
+            // 断言极值**真的**落进了文档（否则这条判据测不到那条算术）。
+            let view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+            assert_eq!(view["status"], "success", "{tag}: {view}");
+            let project_json = &view["data"]["project"];
+            let at_extreme = |value: &Value| value.as_u64() == Some(extreme);
+            match shape {
+                "note" => {
+                    let notes = &project_json["clip_pool"][&clip]["content"]["Midi"]["notes"];
+                    assert!(
+                        notes
+                            .as_object()
+                            .expect("notes")
+                            .values()
+                            .any(|note| at_extreme(&note["start_tick"])),
+                        "{tag}: 极值起点必须真的写进文档: {notes}"
+                    );
                 }
-            }]}),
-        ),
-        (
-            "placement",
-            json!({
-                "ops": [],
-                "placement": {"startTick": SATURATING_START_TICK, "durationTicks": 480}
-            }),
-        ),
-    ] {
-        let scratch = Scratch::new(&format!("saturating-{tag}"));
-        let spec = Spec::default();
-        let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
-        let lead = id(2).to_canonical_string();
-        let clip = id(10).to_canonical_string();
-
-        // 写入提案并合并 —— 这一半此前就已经通过（规划期只看 `u64` 的非负性）。
-        let mut arguments = json!({"trackId": lead, "clipId": clip});
-        for (key, value) in extra.as_object().expect("对象") {
-            arguments[key] = value.clone();
-        }
-        let written = call_tool(&mut dispatcher, &auth, "yeban_edit_notes", arguments);
-        assert_eq!(written["status"], "success", "{tag}: {written}");
-        let proposal_id = written["data"]["proposal"]["proposalId"]
-            .as_str()
-            .expect("proposalId")
-            .to_owned();
-        let merged = call_tool(
-            &mut dispatcher,
-            &auth,
-            "yeban_merge_proposal",
-            json!({"proposalId": proposal_id, "commitMessage": "saturating"}),
-        );
-        assert_eq!(merged["status"], "success", "{tag}: {merged}");
-
-        // 断言极值**真的**落进了文档（否则这条判据测不到那条算术）。
-        let view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
-        assert_eq!(view["status"], "success", "{tag}: {view}");
-        let project_json = &view["data"]["project"];
-        let at_extreme = |value: &Value| value.as_u64() == Some(SATURATING_START_TICK);
-        match tag {
-            "note" => {
-                let notes = &project_json["clip_pool"][&clip]["content"]["Midi"]["notes"];
-                assert!(
-                    notes
-                        .as_object()
-                        .expect("notes")
-                        .values()
-                        .any(|note| at_extreme(&note["start_tick"])),
-                    "{tag}: 极值起点必须真的写进文档: {notes}"
-                );
+                _ => {
+                    let clips = &project_json["tracks"][&lead]["clips"];
+                    assert!(
+                        clips
+                            .as_object()
+                            .expect("clips")
+                            .values()
+                            .any(|placement| at_extreme(&placement["start_tick"])),
+                        "{tag}: 极值摆放起点必须真的写进文档: {clips}"
+                    );
+                }
             }
-            _ => {
-                let clips = &project_json["tracks"][&lead]["clips"];
-                assert!(
-                    clips
-                        .as_object()
-                        .expect("clips")
-                        .values()
-                        .any(|placement| at_extreme(&placement["start_tick"])),
-                    "{tag}: 极值摆放起点必须真的写进文档: {clips}"
-                );
-            }
-        }
 
-        // 真渲染: 必须是契约内的 RENDER_FAILED（帧数超出 1 小时上限），不是 panic。
-        let out = scratch.join(&format!("{tag}.wav"));
-        let rendered = call(
-            &mut dispatcher,
-            &auth,
-            json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
-        );
-        assert_domain_error(&rendered, "RENDER_FAILED", tag);
-        assert!(
-            rendered["error"]["data"]["frames"]
-                .as_u64()
-                .is_some_and(|frames| frames > 172_800_000),
-            "{tag}: 必须报出真实的超限帧数: {rendered}"
-        );
-        assert!(
-            !out.exists(),
-            "{tag}: 被拒绝的渲染不得留下任何文件: {out:?}"
-        );
+            // 真渲染: 必须是契约内的 RENDER_FAILED（帧数超出 1 小时上限），不是 panic。
+            let out = scratch.join(&format!("{tag}.wav"));
+            let rendered = call(
+                &mut dispatcher,
+                &auth,
+                json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+            );
+            assert_domain_error(&rendered, "RENDER_FAILED", &tag);
+            assert!(
+                rendered["error"]["data"]["frames"]
+                    .as_u64()
+                    .is_some_and(|frames| frames > 172_800_000),
+                "{tag}: 必须报出真实的超限帧数: {rendered}"
+            );
+            assert!(
+                !out.exists(),
+                "{tag}: 被拒绝的渲染不得留下任何文件: {out:?}"
+            );
+        }
     }
+}
+
+/// 判据 9d：单次渲染的帧数上限是**发布的那一条**（1 小时 @ 48 kHz），并且真的以
+/// `maxFrames` 出现在拒绝报文里。
+///
+/// 既有判据（9c）断的是 `frames > 172_800_000`（**字面量**，只比大小）
+/// ⇒ 把常量改成两小时（`48_000 * 7_200`）一样全绿：上限**本身**从来没有进过判据。
+#[test]
+fn the_render_frame_ceiling_is_the_published_hour() {
+    const PUBLISHED_MAX_FRAMES: u64 = 48_000 * 3_600; // 172_800_000
+    assert_eq!(
+        MAX_RENDER_FRAMES, PUBLISHED_MAX_FRAMES,
+        "上限 = 1 小时 @ 48 kHz（规范那一条）"
+    );
+
+    let scratch = Scratch::new("frame-ceiling");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let lead = id(2).to_canonical_string();
+    let clip = id(10).to_canonical_string();
+    // 与判据 9c 同一个极值工程：`placement.startTick` 取到 tick→帧饱和的那一格。
+    let written = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "clipId": clip,
+            "ops": [],
+            "placement": {"startTick": SATURATING_START_TICK, "durationTicks": 480},
+        }),
+    );
+    assert_eq!(written["status"], "success", "{written}");
+    let proposal_id = written["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal_id, "commitMessage": "frame-ceiling"}),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+
+    let out = scratch.join("over.wav");
+    let over = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_domain_error(&over, "RENDER_FAILED", "帧数超限");
+    assert_eq!(
+        over["error"]["data"]["maxFrames"], PUBLISHED_MAX_FRAMES,
+        "拒绝报文必须报出**发布的那条**上限: {over}"
+    );
+    assert!(!out.exists(), "被拒绝的渲染不得留下文件: {out:?}");
+}
+
+/// 判据 9e：帧数闸门的**写形**必须紧贴上限（源码级判据）。
+///
+/// 为什么是源码级而不是行为级：区分 `frames > MAX_RENDER_FRAMES` 与
+/// `frames > MAX_RENDER_FRAMES * 2` 的输入是一个帧数落在 `(1 小时, 2 小时]` 的工程，
+/// 而**通过闸门之后**的实现会真的合成那一段（1.7e8 帧 ⇒ 约 1.0 GB 容器字节 +
+/// 1.4 GB 浮点母带）。让一条常驻判据带上"回归时会吃 2~3 GB 内存、跑几分钟"的代价
+/// 不可接受 ⇒ 这里钉**写形**，与 `contract.rs` 里
+/// `only_the_loopback_and_dynamic_port_are_used_for_binding` 同一手法。
+#[test]
+fn the_frame_ceiling_gate_uses_the_constant_itself() {
+    let text =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/domain/render.rs"))
+            .expect("读 render.rs");
+    assert!(
+        text.contains("if frames > MAX_RENDER_FRAMES {"),
+        "帧数闸门必须写成 `frames > MAX_RENDER_FRAMES`（放宽成系数会被这条判据抓住）"
+    );
+    assert_eq!(
+        text.matches("MAX_RENDER_FRAMES").count(),
+        3,
+        "上限常量只许出现三次: 定义 + 比较 + 报文里的 maxFrames"
+    );
 }
 
 // ---------------------------------------------------------------------------

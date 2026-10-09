@@ -358,6 +358,25 @@ mod tests {
         assert!(clamped.limit_clamped);
     }
 
+    /// **边界**：`limit` 恰好等于 [`MAX_LIMIT`] 时**不是**夹紧（夹紧只发生在 `>`）。
+    ///
+    /// 既有判据只喂了 `100_000`（远超上限）⇒ `>` 与 `>=` 在那里同解，而
+    /// `limitClamped` 是**响应里给调用方看**的一个字段：恰好给到上限却被报成
+    /// "被夹紧了"，调用方会以为自己要的页大小没被满足（`page.limit` 是对的，
+    /// 但那一位在说谎）。
+    #[test]
+    fn a_limit_equal_to_the_maximum_is_not_reported_as_clamped() {
+        let at_max = parse(&args(serde_json::json!({ "limit": MAX_LIMIT }))).expect("恰好上限");
+        assert_eq!(at_max.limit, MAX_LIMIT);
+        assert!(
+            !at_max.limit_clamped,
+            "恰好等于上限不得报 limitClamped: {at_max:?}"
+        );
+        let over = parse(&args(serde_json::json!({ "limit": MAX_LIMIT + 1 }))).expect("一格超限");
+        assert_eq!(over.limit, MAX_LIMIT);
+        assert!(over.limit_clamped, "超过上限一格必须报 limitClamped");
+    }
+
     #[test]
     fn pagination_is_deterministic_and_bounded() {
         let project = filled_project();

@@ -1176,6 +1176,32 @@ mod tests {
         );
     }
 
+    /// **长度是"恰好"而不是"至少"**：比 [`TOKEN_HEX_LEN`] **长**的全十六进制文本
+    /// 也必须 `MalformedToken`。
+    ///
+    /// 既有判据只喂了 `"abc"`（短）与 64 位非十六进制 ⇒ 放宽成"长度 < 64 才拒"
+    /// 一样全绿。这一格可达：令牌文件的内容走同一条 `parse`（`TokenFile::load`），
+    /// 一个被追加了字符的令牌文件会被当成合法令牌读进来，然后每一次比对都失败 ——
+    /// 契约说这种文件是 `MalformedToken`，而不是"一个谁也不认识的合法令牌"。
+    #[test]
+    fn token_parse_rejects_a_too_long_all_hex_token() {
+        let long = "a".repeat(TOKEN_HEX_LEN + 1);
+        assert!(
+            matches!(
+                BearerToken::parse(&long),
+                Err(SecurityError::MalformedToken { actual }) if actual == TOKEN_HEX_LEN + 1
+            ),
+            "比 {TOKEN_HEX_LEN} 位长的全十六进制令牌必须被拒"
+        );
+        let padded = format!("{}0", "a".repeat(TOKEN_HEX_LEN));
+        assert!(
+            BearerToken::parse(&padded).is_err(),
+            "尾随多一个十六进制字符也必须被拒"
+        );
+        // 参照: 恰好 64 位仍然可解析（闸门不是"一律拒绝"）。
+        assert!(BearerToken::parse(&"a".repeat(TOKEN_HEX_LEN)).is_ok());
+    }
+
     #[test]
     fn debug_format_never_leaks_the_token() {
         let token = fixture_token(0xAB);
@@ -1190,6 +1216,30 @@ mod tests {
         assert!(token.ct_eq(token.expose()));
         assert!(!token.ct_eq(&"5".repeat(TOKEN_HEX_LEN)));
         assert!(!token.ct_eq("short"));
+    }
+
+    /// **长度闸门不能被前缀绕过**：候选比期望**短**时，只有"长度必须相等"那道闸门
+    /// 能拦住它 —— `zip` 只走较短的一侧，若闸门写成"期望长度 < 候选长度"，
+    /// 一个**严格前缀**会让 `diff` 保持 0 ⇒ 认证通过。
+    ///
+    /// 既有判据只喂了 `"short"`（5 字符，且不是前缀）⇒ 它是靠**内容**不等才返回
+    /// false 的，那道闸门一次都没被测到。候选文本来自 `Credential::parse_header`
+    /// （`split_whitespace` 只切形状，**不**校验长度），因此这一格是可达的。
+    #[test]
+    fn constant_time_compare_rejects_a_strict_prefix_of_the_token() {
+        let token = fixture_token(0x3C);
+        let full = token.expose().to_owned();
+        for take in [TOKEN_HEX_LEN - 1, TOKEN_HEX_LEN / 2, 1] {
+            let prefix = &full[..take];
+            assert!(
+                !token.ct_eq(prefix),
+                "{take} 字符的前缀不得通过常量时间比较"
+            );
+        }
+        // 反向: 以期望为前缀、但只要更长也必须 false。
+        assert!(!token.ct_eq(&format!("{full}0")));
+        // 闸门不是"一律 false": 全等仍然通过。
+        assert!(token.ct_eq(&full));
     }
 
     #[test]
@@ -1414,6 +1464,66 @@ mod tests {
             "实际错误: {error:?}"
         );
         fs::remove_dir_all(path.parent().expect("parent")).ok();
+    }
+
+    /// **权限位是"恰好 0600"而不是"不宽于 0600"**：比 `0600` **严**的模式（例如
+    /// 只有属主可读的 `0400`）也必须拒绝。
+    ///
+    /// 既有判据只喂了 `0o644`（比 `0600` **宽**）⇒ 把闸门放宽成"mode > 0600 才拒"
+    /// 一样全绿，而 `0400` 的文件会被静默接受。契约（`load` 的文档）要求的是
+    /// **恰好** `0600`：那一位同时表达"谁能读"与"谁能写"，只读文件是另一个持有者
+    /// 摆放的，不能当成"更安全所以可以放行"。
+    #[test]
+    #[cfg(unix)]
+    fn token_file_with_stricter_than_0600_permissions_is_also_refused() {
+        let path = temp_token_path("strict");
+        let token = fixture_token(0x77);
+        fs::write(&path, format!("{}\n", token.expose())).expect("写");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).expect("chmod");
+        let error = TokenFile::new(&path).load().expect_err("0400 也必须被拒");
+        assert!(
+            matches!(
+                error,
+                SecurityError::InsecureTokenPermissions {
+                    mode: 0o400,
+                    expected: TOKEN_FILE_MODE,
+                    ..
+                }
+            ),
+            "实际错误: {error:?}"
+        );
+        fs::remove_dir_all(path.parent().expect("parent")).ok();
+    }
+
+    /// **符号链接令牌路径必须响亮拒绝**：`load` 先 `symlink_metadata` 再判
+    /// `is_symlink`，因为"权限位是 0600"这条判据在**链接目标**上成立不蕴含路径本身
+    /// 可信（`fs::metadata` 会跟随链接）。既有判据一处都没提过 `symlink`。
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_token_path_is_refused() {
+        let target = temp_token_path("symlink-target");
+        let token = fixture_token(0x88);
+        fs::write(&target, format!("{}\n", token.expose())).expect("写目标");
+        fs::set_permissions(&target, fs::Permissions::from_mode(TOKEN_FILE_MODE)).expect("chmod");
+        let link = target
+            .parent()
+            .expect("parent")
+            .join(format!("{TOKEN_FILE_NAME}{TOKEN_TEMP_INFIX}link"));
+        std::os::unix::fs::symlink(&target, &link).expect("建符号链接");
+
+        // 夹具前提: 链接**指向**一个合法令牌 ⇒ 目标本身是读得出来的。
+        assert_eq!(
+            fs::read_to_string(&link).expect("跟随链接读得到").trim(),
+            token.expose()
+        );
+        let error = TokenFile::new(&link)
+            .load()
+            .expect_err("符号链接路径必须被拒");
+        assert!(
+            matches!(error, SecurityError::TokenPathIsSymlink { .. }),
+            "实际错误: {error:?}"
+        );
+        fs::remove_dir_all(link.parent().expect("parent")).ok();
     }
 
     #[test]
