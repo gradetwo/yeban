@@ -1513,4 +1513,66 @@ mod tests {
         // `for_layout` 从不产生"几乎放行一切"的零预算：退化参数返回 `None`。
         assert_eq!(PcmBudget::for_layout(0, 0, 0), None);
     }
+
+    /// 判据（类别④ 参数极值）：长度契约在**采样率的两个类型端点**上仍然有定义，而且
+    /// 定义不住时就明确 `None`（不许退化成"放行"）。
+    ///
+    /// 逐项判定（量什么 → 单位 → 结论）：
+    ///
+    /// | `input_frames` | `out_rate` | `in_rate` | 理想输出帧数 | 结论 | 依据 |
+    /// | :--- | :--- | :--- | :--- | :--- | :--- |
+    /// | `1` | `u32::MAX` | `1` | 4 294 967 295 | 契约有表示，`ideal` 落在区间内 | `u128` 中间量 |
+    /// | `1` | `1` | `u32::MAX` | `0..=1` | 契约有表示（`floor = 0`，`ceil = 1`） | 有理数除法 |
+    /// | `u64::MAX` | `u32::MAX` | `1` | 约 `7.9e28` | `None` ⇒ `Unrepresentable` | 放不进 `u64` |
+    ///
+    /// 量的是**帧**。这一格此前没有判据：既有的极值判据用的是
+    /// `u64::MAX` 帧 × 768 kHz（`an_unrepresentable_contract_is_not_reported_as_an_undefined_ratio`），
+    /// 没有把 `out_rate` / `in_rate` 推到 `u32::MAX`。
+    ///
+    /// 注入（实测）：把 `resample_len_contract` 末尾那四个 `u64::try_from(..).ok()?`
+    /// 全部改成 `unwrap_or(u64::MAX)`（fail-closed 退化成钳位）⇒ 第 3 行不再是 `None`，
+    /// 本条以 `assertion failed: resample_len_contract(u64::MAX, u32::MAX, 1).is_none()` 红，
+    /// 读数是 `0 passed / 1 failed / 120 filtered out`。
+    #[test]
+    fn the_length_contract_is_defined_at_the_rate_endpoints() {
+        let widest = resample_len_contract(1, u32::MAX, 1)
+            .expect("u32::MAX Hz is a legal rate, and the contract still fits in u64");
+        assert_eq!(
+            (widest.ideal_floor, widest.ideal_ceil),
+            (4_294_967_295, 4_294_967_295)
+        );
+        // 容差按同一条公式复算：长片段（理想值 ≥ SHORT_CLIP_THRESHOLD_FRAMES）没有
+        // 那 256 帧的额外放宽，只剩 0.1% 相对项。
+        let slack =
+            (widest.ideal_floor * LEN_TOLERANCE_PPM / 1_000_000).max(MIN_LEN_TOLERANCE_FRAMES);
+        assert!(widest.ideal_floor >= SHORT_CLIP_THRESHOLD_FRAMES);
+        assert_eq!(slack, 4_294_967);
+        assert_eq!(widest.min, widest.ideal_floor - slack);
+        assert_eq!(widest.max, widest.ideal_ceil + slack);
+        assert_eq!((widest.min, widest.max), (4_290_672_328, 4_299_262_262));
+        assert_eq!(
+            check_resampled_len(1, u32::MAX, 1, widest.ideal_floor),
+            Ok(widest.clone())
+        );
+        // 闭区间：两个端点各自"多一个单位"即拒。
+        assert!(check_resampled_len(1, u32::MAX, 1, widest.min - 1).is_err());
+        assert!(check_resampled_len(1, u32::MAX, 1, widest.max + 1).is_err());
+
+        // 反方向：`u32::MAX` Hz → 1 Hz，1 帧输入的理想输出是 0 或 1 帧。
+        let narrowest = resample_len_contract(1, 1, u32::MAX).expect("representable");
+        assert_eq!((narrowest.ideal_floor, narrowest.ideal_ceil), (0, 1));
+        assert_eq!(narrowest.min, 0);
+        assert_eq!(narrowest.max, 1 + SINC_LEN + MIN_LEN_TOLERANCE_FRAMES);
+
+        // 两端同时拉到极大：契约放不进 `u64` ⇒ `None`（fail-closed，不是"放行"）。
+        assert!(resample_len_contract(u64::MAX, u32::MAX, 1).is_none());
+        assert_eq!(
+            check_resampled_len(u64::MAX, u32::MAX, 1, 0),
+            Err(LenContractViolation::Unrepresentable {
+                input_frames: u64::MAX,
+                in_rate: 1,
+                out_rate: u32::MAX,
+            })
+        );
+    }
 }
