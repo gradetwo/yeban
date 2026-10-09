@@ -14,6 +14,14 @@
 //! `osc2_detune_cents` 四个投影；波形库在**构造期**按
 //! `yeban_dsp::oscillator` 的五张公开配方建起来（下标 0 = 历史默认的 `HOLLOW`）。
 //!
+//! ## `line/engine-5`：剩下那条"`osc1` 电平/失谐"缺口（判据 O8）
+//!
+//! 上一票接通四条支路参数时，`osc1` 仍被写死成"满电平、不失谐"，并在
+//! `crates/yeban-engine/src/synth.rs` 与 `crates/yeban-engine/src/lib.rs` 的模块文档里
+//! 登记为**部分缺口**。本票补上 `osc1_level` / `osc1_detune_cents` 两个键。
+//! **默认值是历史默认**（`1.0` / `0.0`）⇒ 不写这两个键的工程与接通之前**逐位相同**；
+//! O8(a) 用"逐字段重建历史投影"（`OscSettings::new(table, 1.0, 0.0)`）把这条钉住。
+//!
 //! ## 判据表（"怎么变红" = 注入；实测见本票报告）
 //!
 //! | 编号 | 判据 | 怎么变红（注入） |
@@ -22,9 +30,10 @@
 //! | O2 | 库有 5 张表、名字集合 == `FACTORY_RECIPES`、下标 0 = `hollow`、越界钳到最后一张 | 少建表 / 名字表与配方表脱钩 |
 //! | O3 | 投影真的到了器件（读数 + 音频）：`osc2` 关 = 不给参数、开 = 不同、失谐 = 不同 | `poly_synth_params` 丢掉振荡器 |
 //! | O4 | 投影规则：只有振荡器键 ⇒ 滤波器旁通、只写 `resonance` 不算来源、`bypassed` 忽略、大小写不敏感、跳过非来源设备 | `is_source` 放宽 / 规则改向 |
-//! | O5 | 钳制：波形**四舍五入**再钳、非有限电平 ⇒ 关、越界电平钳到 `0..=1` | 截断代替四舍五入 / 去掉非有限守卫 |
+//! | O5 | 钳制：波形**四舍五入**再钳、非有限电平 ⇒ 回该字段的默认、越界电平钳到 `0..=1` | 截断代替四舍五入 / 去掉非有限守卫 |
 //! | O6 | **产品路径**：模型设备 → 快照 → 实时音频；换波形 ⇒ 换声音 | 投影不读振荡器键 |
 //! | O7 | 确定性 + 有限性：同输入两次逐位相同，满共振 + 第二条支路下无 `NaN`/`inf` | 引入熵源 / 让坏参数穿过去 |
+//! | O8 | `osc1` **电平/失谐**：不写 ⇒ 逐字段等于历史投影（`1.0` / `0.0`）；写了 ⇒ 换声音；电平 `0` ⇒ 静音；只写 `osc1_level` 的设备**是**音色来源 | `with_osc1` 的默认值改掉 / `poly_synth_params` 不传 `osc1` 的两个字段 / 两个键漏出识别键 |
 //!
 //! 全部判据在 **`--no-default-features`（不编译 cpal）** 下运行，与
 //! `synth_render.rs` / `synth_filter.rs` / `mix_render.rs` 同一条主路径。
@@ -32,7 +41,7 @@
 mod support;
 
 use support::{NoteSpec, SynthRig, note_project, render, scheduled};
-use yeban_dsp::polysynth::PolySynthParams;
+use yeban_dsp::polysynth::{OscSettings, PolySynthParams};
 use yeban_engine::synth::{NoteSchedule, SynthEngine, ToneParams};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue};
 
@@ -247,12 +256,14 @@ fn o4_projection_rules_are_explicit() {
         "只有振荡器键的设备必须真的改变音色（不是静默忽略）"
     );
 
-    // (b) 截止频率 + 全部振荡器键一起生效。
+    // (b) 截止频率 + 全部振荡器键（六个）一起生效。
     let full = ToneParams::from_devices(&[device(&[
         ("cutoff_hz", 1_500.0),
         ("resonance", 0.25),
         ("osc1_wave", 4.0),
         ("osc2_wave", 1.0),
+        ("osc1_level", 0.75),
+        ("osc1_detune_cents", -6.0),
         ("osc2_level", 0.5),
         ("osc2_detune_cents", 7.0),
     ])]);
@@ -261,6 +272,8 @@ fn o4_projection_rules_are_explicit() {
     assert_eq!(full.resonance(), 0.25);
     assert_eq!(full.osc1_wave(), 4);
     assert_eq!(full.osc2_wave(), 1);
+    assert_eq!(full.osc1_level(), 0.75);
+    assert_eq!(full.osc1_detune_cents(), -6.0);
     assert_eq!(full.osc2_level(), 0.5);
     assert_eq!(full.osc2_detune_cents(), 7.0);
 
@@ -304,9 +317,16 @@ fn o4_projection_rules_are_explicit() {
     );
     assert_eq!(skipped.cutoff_hz(), 800.0);
 
-    // (f) 参数名大小写不敏感。
-    let upper = ToneParams::from_devices(&[device(&[("OSC1_WAVE", 2.0), ("OSC2_LEVEL", 0.5)])]);
+    // (f) 参数名大小写不敏感（含本票新增的两个键）。
+    let upper = ToneParams::from_devices(&[device(&[
+        ("OSC1_WAVE", 2.0),
+        ("OSC1_LEVEL", 0.5),
+        ("OSC1_DETUNE_CENTS", 4.0),
+        ("OSC2_LEVEL", 0.5),
+    ])]);
     assert_eq!(upper.osc1_wave(), 2);
+    assert_eq!(upper.osc1_level(), 0.5);
+    assert_eq!(upper.osc1_detune_cents(), 4.0);
     assert_eq!(upper.osc2_level(), 0.5);
 
     // (g) 非内置设备（外部乐器）不参与投影。
@@ -347,6 +367,43 @@ fn o5_oscillator_params_are_clamped_at_construction() {
     };
     assert_eq!(detune(f32::NAN), 0.0);
     assert_eq!(detune(7.0), 7.0);
+
+    // (c2) **`osc1` 的电平/失谐**（本票）：钳制口径与 `osc1` 自己的历史默认一致
+    //      —— 电平的非有限值退回 `1.0`（满），**不是** `osc2` 的"关"。
+    let osc1_level = |value: f32| ToneParams::bypass().with_osc1(value, 0.0).osc1_level();
+    assert_eq!(osc1_level(1.5), 1.0, "越界电平钳到 1");
+    assert_eq!(osc1_level(-0.5), 0.0, "负电平钳到 0");
+    assert_eq!(
+        osc1_level(f32::NAN),
+        1.0,
+        "非有限电平必须退回 `osc1` 的历史默认（满），而不是 `osc2` 的关"
+    );
+    assert_eq!(osc1_level(0.25), 0.25);
+    let osc1_detune = |value: f32| {
+        ToneParams::bypass()
+            .with_osc1(1.0, value)
+            .osc1_detune_cents()
+    };
+    assert_eq!(osc1_detune(f32::NAN), 0.0);
+    assert_eq!(osc1_detune(-9.0), -9.0);
+    assert_eq!(
+        ToneParams::bypass().osc1_level(),
+        1.0,
+        "旁通的默认是历史默认：第一条支路满电平"
+    );
+    assert_eq!(ToneParams::bypass().osc1_detune_cents(), 0.0);
+    assert_eq!(ToneParams::new(900.0, 0.0, 0.0).osc1_level(), 1.0);
+    assert_eq!(ToneParams::new(900.0, 0.0, 0.0).osc1_detune_cents(), 0.0);
+
+    // (c3) 从设备链投影出来的非有限 `osc1` 参数也走同一条兜底（不经 `with_osc1` 的
+    //      公共入口，走 `from_projection` 的 `unwrap_or`）。
+    let nan_device = ToneParams::from_devices(&[device(&[
+        ("osc1_wave", 1.0),
+        ("osc1_level", f32::NAN),
+        ("osc1_detune_cents", f32::NAN),
+    ])]);
+    assert_eq!(nan_device.osc1_level(), 1.0);
+    assert_eq!(nan_device.osc1_detune_cents(), 0.0);
 
     // (d) 退化参数不得把输出变成非有限值，也不得弄成静音。
     for tone in [
@@ -440,5 +497,109 @@ fn o7_oscillator_path_is_deterministic_and_finite() {
     assert!(
         first.iter().all(|bits| f32::from_bits(*bits).is_finite()),
         "第二条支路开着时输出必须全部有限"
+    );
+}
+
+/// O8：**第一条支路的电平/失谐**（`line/engine-5` 补的那条投影）。
+///
+/// 三条腿：
+/// - **(a) 逐字段重建历史投影**：不写 `osc1_level` / `osc1_detune_cents` 的设备，
+///   它的 `poly_synth_params()` 必须**逐字段等于**接通之前那一份（`osc1` 支路是
+///   `OscSettings::new(下标, 1.0, 0.0)`）。这是"接线不改变既有输出"的**构造**证据：
+///   器件的逐样本算式一字未动，投影出来的参数也一字未动。
+/// - **(b) 音频腿**：写了电平/失谐 ⇒ 换声音；电平 `0.0` ⇒ 整段**静音**（第一条支路
+///   在器件里"一帧也不执行"）。
+/// - **(c) 产品路径 + 识别键**：只写 `osc1_level` 的设备**必须是**音色来源，并且
+///   `osc1_level` 经 模型 → 快照 → 实时音频 真的生效。
+#[test]
+fn o8_first_oscillator_level_and_detune_are_projected() {
+    // (a) 历史投影的逐字段重建（唯一一处"手抄旧投影"的地方）。
+    let old_keys = ToneParams::from_devices(&[device(&[
+        ("osc1_wave", 2.0),
+        ("osc2_wave", 4.0),
+        ("osc2_level", 0.5),
+        ("osc2_detune_cents", 7.0),
+    ])]);
+    assert_eq!(old_keys.osc1_level(), 1.0, "不写电平 ⇒ 历史默认（满）");
+    assert_eq!(
+        old_keys.osc1_detune_cents(),
+        0.0,
+        "不写失谐 ⇒ 历史默认（0）"
+    );
+    let historical = PolySynthParams::new()
+        .with_oscillators(OscSettings::new(2, 1.0, 0.0), OscSettings::new(4, 0.5, 7.0))
+        .with_filter(ToneParams::bypass().cutoff_hz(), 0.0, 0.0, true);
+    assert_eq!(
+        old_keys.poly_synth_params(),
+        historical,
+        "不写两个新键 ⇒ 投影出来的器件参数必须逐字段等于接通之前那一份"
+    );
+    assert_eq!(
+        render_tone(&old_keys),
+        render_tone(&ToneParams::bypass().with_oscillators(2, 4, 0.5, 7.0)),
+        "同上，行为层：逐位相同"
+    );
+
+    // (b) 音频腿：电平与失谐各自可观测；电平 0.0 ⇒ 静音。
+    let base = ToneParams::new(1_200.0, 0.0, 0.0);
+    let full = render_tone(&base);
+    let trimmed = render_tone(&base.with_osc1(0.5, 0.0));
+    let detuned = render_tone(&base.with_osc1(0.5, 7.0));
+    assert_ne!(
+        trimmed, full,
+        "`osc1_level = 0.5` 必须改变样本 —— 否则电平没进器件"
+    );
+    assert_ne!(
+        detuned, trimmed,
+        "`osc1_detune_cents = 7` 必须改变样本 —— 否则失谐没进器件"
+    );
+    let silent = render_tone(&base.with_osc1(0.0, 0.0));
+    assert!(
+        silent.iter().all(|bits| *bits == 0),
+        "`osc1_level = 0.0`（第二条支路本来就关）必须给出精确静音"
+    );
+    assert!(
+        full.iter().any(|bits| *bits != 0),
+        "对照组必须真的出声（否则上面的静音判据是空真）"
+    );
+
+    // (c) 产品路径：只写 `osc1_level` 的设备是音色来源，且这个数真的生效。
+    let mut fixture = note_project(&[NoteSpec::quarter(69)]);
+    {
+        let track = fixture.track;
+        fixture
+            .project
+            .tracks
+            .get_mut(&track)
+            .expect("夹具里必须有那条 MIDI 轨")
+            .volume_db = -6.0;
+    }
+    mount(vec![device(&[("osc1_level", 0.5)])], &mut fixture);
+    let snapshot = yeban_engine::snapshot::EngineSnapshot::from_project(&fixture.project, 1)
+        .expect("夹具工程必须能编译成快照");
+    let tone = *snapshot.tone(&fixture.track).expect("该轨必须有音色投影");
+    assert!(
+        tone.is_bypass(),
+        "只有 `osc1_level` ⇒ 没有截止频率 ⇒ 滤波器旁通"
+    );
+    assert_eq!(tone.osc1_level(), 0.5, "投影必须把电平带进快照");
+    assert_eq!(tone.osc1_detune_cents(), 0.0);
+    let half = render(&fixture.project, 60);
+    assert!(half.nonzero() > 0, "夹具必须真的出声");
+
+    mount(vec![device(&[("osc1_level", 1.0)])], &mut fixture);
+    let loud = render(&fixture.project, 60);
+    assert_ne!(
+        half.fingerprint(),
+        loud.fingerprint(),
+        "`osc1_level` 必须经产品路径改变声音"
+    );
+    println!(
+        "[engine-osc] O8 historical==rebuilt={}；0.5≠1.0={}；静音={}；产品路径指纹 {:#018x}≠{:#018x}",
+        old_keys.poly_synth_params() == historical,
+        trimmed != full,
+        silent.iter().all(|bits| *bits == 0),
+        half.fingerprint(),
+        loud.fingerprint()
     );
 }

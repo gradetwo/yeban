@@ -85,11 +85,11 @@
 //!
 //! ## 4. 边界（本模块**没有**做的）
 //!
-//! - **波形与第二条振荡器已可选**（本票）：`ToneParams` 投影了 `osc1_wave` /
-//!   `osc2_wave` / `osc2_level` / `osc2_detune_cents` 四个参数（下标 0 恒等于历史默认的
-//!   [`HOLLOW`]），器件的**双振荡器**因此真的到得了声部；仍缺的是参数名的**模型层规范**
-//!   （`DeviceDefinition::params` 是字符串键值对）——见 [`ToneParams`] 的文档与
-//!   `docs/ledger/engine-mix-notes.md` 的 needs N5；
+//! - **波形与两条支路的电平/失谐已可选**：`ToneParams` 投影了 `osc1_wave` / `osc2_wave` /
+//!   `osc1_level` / `osc1_detune_cents` / `osc2_level` / `osc2_detune_cents` 六个参数
+//!   （下标 0 恒等于历史默认的 [`HOLLOW`]；电平默认"一条满、一条关"，失谐默认 `0`）⇒
+//!   器件的**双振荡器**两条支路都到得了声部；仍缺参数名的**模型层规范**
+//!   （`DeviceDefinition::params` 是字符串键值对）——见 [`ToneParams`] 的文档与 needs N5；
 //! - **没有循环片段展开**：`ClipPlacement::loop_config` 目前被忽略，一个摆放只播一遍；
 //!   坐标语义（clip 局部 vs 时间轴）在规范里没有定义，见
 //!   `docs/ledger/engine-sound-notes.md` 的 needs；
@@ -219,7 +219,7 @@ fn wave_index(value: Option<f32>) -> u8 {
 
 /// [`ToneParams::from_devices`] 的**每设备**投影中间量（私有）。
 ///
-/// 七个 `Option` 字段各对应一个参数名；`None` = 本设备**没写**这个参数
+/// 九个 `Option` 字段各对应一个参数名；`None` = 本设备**没写**这个参数
 /// （与"写了 `0`"不同：`osc2_level = 0` 是"显式关掉第二条支路"）。
 #[derive(Clone, Copy, Default)]
 struct DeviceTone {
@@ -228,6 +228,8 @@ struct DeviceTone {
     drive: Option<f32>,
     osc1_wave: Option<f32>,
     osc2_wave: Option<f32>,
+    osc1_level: Option<f32>,
+    osc1_detune_cents: Option<f32>,
     osc2_level: Option<f32>,
     osc2_detune_cents: Option<f32>,
 }
@@ -235,13 +237,15 @@ struct DeviceTone {
 impl DeviceTone {
     /// 本设备是否是"音色来源"：至少写了一个**识别键**。
     ///
-    /// 识别键 = `cutoff_hz`/`cutoff` **或**四个振荡器键中的任意一个。
+    /// 识别键 = `cutoff_hz`/`cutoff` **或**六个振荡器键中的任意一个。
     /// 只写 `resonance`/`res`/`drive` 的设备**仍然不算**来源 —— 这是上移前的规则
     /// （滤波器的主参数是截止频率），本票只把振荡器键**并列**加进来。
     const fn is_source(&self) -> bool {
         self.cutoff_hz.is_some()
             || self.osc1_wave.is_some()
             || self.osc2_wave.is_some()
+            || self.osc1_level.is_some()
+            || self.osc1_detune_cents.is_some()
             || self.osc2_level.is_some()
             || self.osc2_detune_cents.is_some()
     }
@@ -265,8 +269,10 @@ impl DeviceTone {
 ///     {name:"cutoff_hz",  value: 1200}       ├ drive: f32
 ///     {name:"resonance",  value: 0.2}        ├ osc1_wave: u8
 ///     {name:"drive",      value: 0.0}        ├ osc2_wave: u8
-///     {name:"osc1_wave",  value: 1}          ├ osc2_level: f32
-///     {name:"osc2_wave",  value: 4}          └ osc2_detune_cents: f32
+///     {name:"osc1_wave",  value: 1}          ├ osc1_level: f32
+///     {name:"osc2_wave",  value: 4}          ├ osc1_detune_cents: f32
+///     {name:"osc1_level", value: 0.8}        ├ osc2_level: f32
+///     {name:"osc1_detune_cents", value: -6}  └ osc2_detune_cents: f32
 ///     {name:"osc2_level", value: 0.5}
 ///     {name:"osc2_detune_cents", value: 7}   ⇒ 本模块的投影整体删除，改成直读字段
 ///   ]
@@ -276,28 +282,36 @@ impl DeviceTone {
 ///
 /// 1. 只看 [`DeviceKind::InternalInstrument`] 的设备（外部乐器由插件宿主负责，
 ///    `External*` 一律忽略）；`bypassed` 的设备整体忽略；
-/// 2. **识别键**：`cutoff_hz`/`cutoff` **或**四个振荡器键中的任意一个。取值发生在
+/// 2. **识别键**：`cutoff_hz`/`cutoff` **或**六个振荡器键中的任意一个。取值发生在
 ///    **第一条**写了识别键的设备上（上移前的识别键只有截止频率；振荡器键是按
 ///    "引擎侧选不了波形 / 第二条振荡器"这条缺口登记补上的同一类键）；
-/// 3. 七个参数名（大小写不敏感）：`cutoff_hz`/`cutoff`、`resonance`/`res`、`drive`、
-///    `osc1_wave`、`osc2_wave`、`osc2_level`、`osc2_detune_cents`；
+/// 3. 九个参数名（大小写不敏感）：`cutoff_hz`/`cutoff`、`resonance`/`res`、`drive`、
+///    `osc1_wave`、`osc2_wave`、`osc1_level`、`osc1_detune_cents`、`osc2_level`、
+///    `osc2_detune_cents`；
 /// 4. **一个识别键都没有 ⇒ [`ToneParams::bypass`]**：这是刻意选的默认值，
 ///    因为"模型层没给参数"与"用户把滤波器拧到旁通"在音频上应当同解 ——
 ///    这样既有的（无设备链的）工程逐位不变，也避免了给所有轨道硬塞一个未裁决的音色；
 /// 5. 取值在构造期钳制（[`LadderFilter::configure`] 内部再钳一次 Nyquist）：
 ///    截止频率 `20 Hz ..= 0.45·fs`、共振/驱动 `0.0 ..= 1.0`；
 /// 6. 非有限值 ⇒ **该参数**按默认取（截止 `12 kHz`、共振 `0`、驱动 `0`、
-///    波形下标 `0`、`osc2_level` `0.0`（关）、`osc2_detune_cents` `0.0`），绝不 `NaN`；
+///    波形下标 `0`、`osc1_level` `1.0`（满）、`osc1_detune_cents` `0.0`、
+///    `osc2_level` `0.0`（关）、`osc2_detune_cents` `0.0`），绝不 `NaN`；
 /// 7. **只有振荡器键、没有截止频率** ⇒ 滤波器**整段旁通**，振荡器照常投影
 ///    （不是"截止取成 20 kHz 占位值"——那样状态变量仍会吸收瞬态并染色）。
 ///
-/// ## 波形下标与第二条支路
+/// ## 波形下标、两条支路的电平与失谐
 ///
 /// `osc1_wave` / `osc2_wave` 的取值是 [`ENGINE_WAVE_RECIPES`] 的**下标**
 /// （先四舍五入、再钳到 `0 ..= 255`；越界下标由器件钳到最后一张表）。
-/// `osc1` **恒为满电平、不失谐**：引擎侧没有这两个参数的投影（登记在案的部分缺口），
-/// 而第二条支路的电平与失谐本票已接通。`osc2_level == 0.0`（默认）时器件对第二条
-/// 支路**一帧也不执行**（[`yeban_dsp::polysynth`] 模块文档 §2）⇒ "关掉"是逐位恒等的。
+/// 两条支路的电平与失谐**都是可投影的**：`osc1_level` / `osc1_detune_cents` 与
+/// `osc2_level` / `osc2_detune_cents` 各指一处。
+///
+/// **默认值是历史默认**（这是"接线不改变既有输出"的全部理由）：`osc1_level = 1.0`
+/// （满）、`osc1_detune_cents = 0.0`、`osc2_level = 0.0`（关）、
+/// `osc2_detune_cents = 0.0`。因此**不写这六个键**的工程与接通振荡器投影之前**逐位
+/// 相同**（判据 O1 与 O8）。`osc2_level == 0.0`（默认）时器件对第二条支路**一帧也不
+/// 执行**（[`yeban_dsp::polysynth`] 模块文档 §2）⇒ "关掉"是逐位恒等的；`osc1_level`
+/// 取 `0.0` 时第一条支路同样一帧也不执行。
 ///
 /// ## 确定性分类（[ADR-0001 D32]）
 ///
@@ -312,6 +326,8 @@ pub struct ToneParams {
     cutoff_hz: f32,
     resonance: f32,
     drive: f32,
+    osc1_level: f32,
+    osc1_detune_cents: f32,
     osc2_level: f32,
     osc2_detune_cents: f32,
     bypass: bool,
@@ -324,12 +340,17 @@ impl ToneParams {
     ///
     /// 不是"滤波器系数取成透明"——那样状态变量仍会吸收瞬态并染色。
     /// 旁通是**逐位恒等**的：`render_track` 根本不调用 `process`。
+    ///
+    /// 振荡器取**历史默认**：`osc1_level = 1.0`（满）、`osc1_detune_cents = 0.0`、
+    /// `osc2_level = 0.0`（关）、`osc2_detune_cents = 0.0`。
     #[must_use]
     pub const fn bypass() -> Self {
         Self {
             cutoff_hz: TONE_BYPASS_CUTOFF_HZ,
             resonance: 0.0,
             drive: 0.0,
+            osc1_level: 1.0,
+            osc1_detune_cents: 0.0,
             osc2_level: 0.0,
             osc2_detune_cents: 0.0,
             bypass: true,
@@ -340,8 +361,9 @@ impl ToneParams {
 
     /// 显式配置音色（构造期调用；非有限值退回该参数的默认值）。
     ///
-    /// 振荡器取**默认**：`osc1_wave = osc2_wave = 0`（[`HOLLOW`]）、`osc2` 关。
-    /// 要选波形或开第二条支路，接着调 [`ToneParams::with_oscillators`]。
+    /// 振荡器取**默认**：`osc1_wave = osc2_wave = 0`（[`HOLLOW`]）、第一条支路满电平
+    /// 不失谐、`osc2` 关。要选波形、开第二条支路或给第一条支路设电平/失谐，接着调
+    /// [`ToneParams::with_oscillators`] 与 [`ToneParams::with_osc1`]。
     #[must_use]
     pub fn new(cutoff_hz: f32, resonance: f32, drive: f32) -> Self {
         Self {
@@ -360,6 +382,8 @@ impl ToneParams {
             } else {
                 0.0
             },
+            osc1_level: 1.0,
+            osc1_detune_cents: 0.0,
             osc2_level: 0.0,
             osc2_detune_cents: 0.0,
             bypass: false,
@@ -410,6 +434,43 @@ impl ToneParams {
         self
     }
 
+    /// 设置**第一条**振荡器支路的电平与失谐（**构造期**；非有限值退回该参数的默认值）。
+    ///
+    /// 这是把"引擎侧没有 `osc1` 电平/失谐的投影"这条登记在案的缺口补上的那条投影
+    /// （[`crate::synth`] 模块文档 §4 与 `crate::lib` 的边界清单）。它是一条**独立**的
+    /// 构造步骤，而不是 [`ToneParams::with_oscillators`] 的参数：后者在缺口存在时就
+    /// 已经在用，改它的签名会让既有的调用点全部要改（而那与"补一条投影"无关）。
+    ///
+    /// - `level`：`1.0`（**默认**）= 满电平；非有限值 ⇒ `1.0`（**本层的默认 = 满**），
+    ///   否则钳到 `0.0 ..= 1.0`（`0.0` = 关掉第一条支路）；
+    /// - `detune_cents`：非有限值 ⇒ `0.0`；量程由器件再钳一次
+    ///   （MAX_DETUNE_CENTS）。
+    ///
+    /// ⚠ 两条支路的"非有限 ⇒ 默认"**默认值不同**（`osc1` 满、`osc2` 关），因为
+    /// 历史默认音色是"一条满电平的单振荡器"。这不是两条口径：两处都是"非法输入退回
+    /// **该字段在该层的历史默认值**"，这正是判据 O1（不给振荡器键 ⇒ 逐位等于历史默认）
+    /// 能成立的原因。
+    #[must_use]
+    pub const fn with_osc1(mut self, level: f32, detune_cents: f32) -> Self {
+        self.osc1_level = if level.is_finite() {
+            if level < 0.0 {
+                0.0
+            } else if level > 1.0 {
+                1.0
+            } else {
+                level
+            }
+        } else {
+            1.0
+        };
+        self.osc1_detune_cents = if detune_cents.is_finite() {
+            detune_cents
+        } else {
+            0.0
+        };
+        self
+    }
+
     /// 从模型层的设备链投影（**控制线程**；见本节文档的投影规则）。
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition]) -> Self {
@@ -426,6 +487,8 @@ impl ToneParams {
                     "drive" => tone.drive = Some(param.value),
                     "osc1_wave" => tone.osc1_wave = Some(param.value),
                     "osc2_wave" => tone.osc2_wave = Some(param.value),
+                    "osc1_level" => tone.osc1_level = Some(param.value),
+                    "osc1_detune_cents" => tone.osc1_detune_cents = Some(param.value),
                     "osc2_level" => tone.osc2_level = Some(param.value),
                     "osc2_detune_cents" => tone.osc2_detune_cents = Some(param.value),
                     _ => {}
@@ -454,6 +517,10 @@ impl ToneParams {
             wave_index(tone.osc2_wave),
             tone.osc2_level.unwrap_or(0.0),
             tone.osc2_detune_cents.unwrap_or(0.0),
+        )
+        .with_osc1(
+            tone.osc1_level.unwrap_or(1.0),
+            tone.osc1_detune_cents.unwrap_or(0.0),
         )
     }
 
@@ -487,6 +554,18 @@ impl ToneParams {
         self.osc1_wave
     }
 
+    /// 振荡器 1 的电平（`0.0` = 关；历史默认 `1.0` = 满）。
+    #[must_use]
+    pub const fn osc1_level(&self) -> f32 {
+        self.osc1_level
+    }
+
+    /// 振荡器 1 的失谐（音分；历史默认 `0.0`）。
+    #[must_use]
+    pub const fn osc1_detune_cents(&self) -> f32 {
+        self.osc1_detune_cents
+    }
+
     /// 振荡器 2 的波形下标（见 [`ENGINE_WAVE_RECIPES`]）。
     #[must_use]
     pub const fn osc2_wave(&self) -> u8 {
@@ -517,25 +596,27 @@ impl ToneParams {
     ///
     /// 写成全路径而不 `use` 的理由与 [`ENGINE_WAVE_RECIPES`] 相同：本文件导入区的
     /// 行数被外部台账的源码引用钉住。电平与失谐的钳制由 `OscSettings::new` 负责
-    /// （本层已经在 [`ToneParams::with_oscillators`] 里把非有限值换成默认值）。
+    /// （本层已经在 [`ToneParams::with_oscillators`] 与 [`ToneParams::with_osc1`] 里
+    /// 把非有限值换成默认值）。
     fn osc_settings(table: u8, level: f32, detune_cents: f32) -> yeban_dsp::polysynth::OscSettings {
         yeban_dsp::polysynth::OscSettings::new(usize::from(table), level, detune_cents)
     }
 
     /// 投影到 DSP 器件的参数（构造期/快照边界；由 [`SynthEngine`] 调用）。
     ///
-    /// 两条振荡器支路与滤波器一起投影：`osc1` 恒为**满电平、不失谐**
-    /// （引擎侧没有这两个参数的投影），`osc2` 取
+    /// 两条振荡器支路与滤波器一起投影：`osc1` 取 [`ToneParams::osc1_level`] /
+    /// [`ToneParams::osc1_detune_cents`]，`osc2` 取
     /// [`ToneParams::osc2_level`] / [`ToneParams::osc2_detune_cents`]。
     ///
-    /// 没有振荡器参数的工程得到 `osc1_wave = 0`（[`HOLLOW`]）、`osc2_level = 0.0`
-    /// （关）⇒ 与 [`PolySynthParams::new`] 的参数**逐位相同**，
-    /// 因此输出与接通振荡器投影之前**逐位相同**（判据 O1）。
+    /// 没有振荡器参数的工程得到 `osc1_wave = 0`（[`HOLLOW`]）、`osc1_level = 1.0`、
+    /// `osc1_detune_cents = 0.0`、`osc2_level = 0.0`（关）⇒ 与
+    /// [`PolySynthParams::new`] 的参数**逐位相同**，
+    /// 因此输出与接通振荡器投影之前**逐位相同**（判据 O1 与 O8）。
     #[must_use]
     pub fn poly_synth_params(&self) -> PolySynthParams {
         PolySynthParams::new()
             .with_oscillators(
-                Self::osc_settings(self.osc1_wave, 1.0, 0.0),
+                Self::osc_settings(self.osc1_wave, self.osc1_level, self.osc1_detune_cents),
                 Self::osc_settings(self.osc2_wave, self.osc2_level, self.osc2_detune_cents),
             )
             .with_filter(self.cutoff_hz, self.resonance, self.drive, self.bypass)
