@@ -1129,6 +1129,14 @@ impl EngineRuntime {
     /// `output` 是 cpal 给出的**交错**缓冲；`channels` 是通道数。长度不是
     /// `channels * k` 时，尾部不足一帧的样本保持原值（cpal 保证输出缓冲预填静音）。
     ///
+    /// **通道映射（已由判据钉住）**：`ch0 = 左`、`ch1..chN-1 = 右`（判据
+    /// `the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right`，
+    /// N = 1/2/3/4/6/8 逐帧逐路逐位）。⚠ `channels == 1` 时因此**只写左声道**：
+    /// 这是当前的**映射**行为，不是"单声道设备应当怎么混"的裁决 —— 把它改成
+    /// `(L + R) · 0.5` 之类的下混会改变渲染输出（实测注入：判据 ⑥-10 的 N = 1
+    /// 分支当场变红）⇒ 修法属**裁决**，措辞写在
+    /// `tests/idempotency_and_channel_consistency.rs` 的模块文档 §4 发现 1。
+    ///
     /// 本函数是实时路径：零分配、零锁、零阻塞 I/O [红线 7]。
     pub fn process_quantum(&mut self, output: &mut [f32], channels: u16) {
         self.arm_fpu_once();
@@ -1138,6 +1146,9 @@ impl EngineRuntime {
         while offset < total_frames {
             let frames = (total_frames - offset).min(DEFAULT_BLOCK_FRAMES);
             self.render_block(frames);
+            // ⚠ `channels == 1` ⇒ 只有第 0 路（= 左）被写：右声道的内容在单声道设备上
+            // **无处可去**。这是**待裁决**的已知缺口，不是可以就地改掉的小事：
+            // 见 `tests/idempotency_and_channel_consistency.rs` 的模块文档 §4 发现 1。
             for channel in 0..channels {
                 for frame in 0..frames {
                     let sample = self.block.get(channel, frame).unwrap_or(0.0);

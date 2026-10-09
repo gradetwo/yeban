@@ -29,7 +29,7 @@
 //! | ⑥-7 | 母线限制器**介入**时，居中的单声道母线仍然左右逐位相同（立体声联动） | `process_stereo` 改成两路各自检波 | 联动本身由 `tests/limiter_contract.rs` 钉住 |
 //! | ⑥-8 | 全左声相 + 限制器介入：右声道**整段逐位为 `+0.0`**（"只填一路"没有串扰） | 立体声器件把左路的信号混进右路（串扰）/ 右路乘子不为 `+0.0` | 注入后变红 |
 //! | ⑥-9 | 左右两路来自**同一条标量声相曲线**：全右的左声道 == `+0.0 + 全左的左声道 × cos(π/2)`，全右的右声道 == 全左的左声道（均逐位） | 两条声道各算一份曲线（哪怕差一个 ulp） | 注入后变红 |
-//! | ⑥-10 | 交错输出的通道映射：`ch0 = 左`、`ch1..chN-1 = 右`（N = 1/2/4/6，逐量子逐路逐位） | `AudioBlock::get` 的通道判定取反 | 注入后变红（参照取自 `AudioBlock::left()/right()`，**不是**再跑一遍 `process_quantum`） |
+//! | ⑥-10 | 交错输出的通道映射：`ch0 = 左`、`ch1..chN-1 = 右`（N = 1/2/3/4/6/8，逐量子逐路逐位） | `AudioBlock::get` 的通道判定取反 | 注入后变红（参照取自 `AudioBlock::left()/right()`，**不是**再跑一遍 `process_quantum`） |
 //!
 //! ⚠ ⑤-1 的两种形态**都必须有**：两条同值事件落在同一个事件批次里时，任何
 //! "先在 `accept` 里吸附、再设目标"的实现都会被顺序抹平（实测注入：同批形态全绿、
@@ -66,7 +66,31 @@
 //! `grep -rn PcmBuffer src/` = **0** 行（两个记号加不加边界都是 0）。因此本票的
 //! 假阳性全部来自上表右侧那一列更长标识符，不是仓库别处的例子。
 //!
+//! `line/engine-22` 复核"单声道设备的通道映射"（§4 发现 1）时，为**类别⑥ 的候选词**
+//! 重做了一次计数对照。量法（数的是**命中行数**，钉在 `origin/main` 的树上，
+//! 因此改动之后仍可逐字复算）：
+//!
+//! ```text
+//! git grep -n    -e <记号> origin/main -- crates/yeban-engine/src | wc -l   # 不加边界
+//! git grep -n -w -e <记号> origin/main -- crates/yeban-engine/src | wc -l   # 加词边界
+//! ```
+//!
+//! | 记号 | 不加边界 | `-w` 加边界 | 下降的主因（实测分类） |
+//! | :--- | ---: | ---: | :--- |
+//! | `mono` | 18 | 7 | **更长标识符**，三块正好加满 11 行：`process_mono`（7 行）、`monotonic`（3 行）、`mono_impulse_response`（1 行）。⚠ `monotonic` 是**另一个词**（前缀相撞），其余同族复合名 |
+//! | `channel` | 136 | 6 | **复数与复合词**：命中 `channels` 的行 **47** 行、命中 `channel_strip*` 的行 **28** 行（两块有重叠 ⇒ 不相加），余下是判据名（`*_channel_counts_*`、`*_channel_capacity_*`）⇒ 不是词边界的功劳，是选错了词 |
+//! | `channels` | 47 | 41 | 复合词：`channels_at_once`、`channels_linked`、判据名 `*_channel_counts_*` |
+//! | `interleaved` | 3 | 3 | **没有假阳性**：3 行就是 `device.rs` 的三处（字段、初值、切片）⇒ 不为形式而加边界 |
+//!
+//! ⚠ 派单文本里那句"`mono` 实测 5 → 5（0 行被筛掉）"**在本 crate 复现不出来**：
+//! 同一个记号在 `src/` 是 **18 → 7**、在 `tests/` 是 **31 → 1**、全 crate 是 **49 → 8**
+//! （后两个口径量于未改动的树上）。三个口径都不是 5 ⇒ 那条读数属于**别的 crate
+//! 或别的口径**，不得转述成本 crate 的读数。
+//!
 //! ## 4. 本票发现（**不改**，只报告）
+//!
+//! 发现 1 与发现 2 是 `line/engine-21` 留下的；发现 1 的**复核**与发现 3 由
+//! `line/engine-22` 追加（两者都**没有**改渲染输出）。
 //!
 //! **发现 1（多声道）：单声道设备上的声道映射会把右声相的内容丢掉。**
 //! `channels == 1` 时 `process_quantum` 只写第 0 路（= 左），而 `device::negotiate`
@@ -86,6 +110,38 @@
 //! 修法（例如单声道求和 `(L+R)·0.5`）会**改变既有渲染输出** ⇒ 按本票纪律停在这里
 //! 报告，不在判据里把它写成期望值（⑥-10 只钉"通道映射"，不钉"单声道应当怎么混"）。
 //!
+//! **发现 1 的复核（`line/engine-22`）：把"能不能在不改渲染输出的前提下修"做成了
+//! 一个可实测的问题。** 做法：把唯一已知的修法（`channels == 1` 时写 `(L + R) · 0.5`）
+//! **注入**到 `process_quantum` 的交错写回里，再跑本文件。字面读数（注入版，
+//! `cargo test -p yeban-engine --no-default-features --test idempotency_and_channel_consistency`）：
+//!
+//! ```text
+//! assertion `left == right` failed: hard-right ch=1: 第 34 帧第 0 路
+//!   left: 986041409
+//!  right: 2937130592
+//! test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+//! ```
+//!
+//! ⇒ 单声道那一路的样本**已经被一条已提交的逐位判据（⑥-10 的 N = 1 分支）钉住**。
+//! 修它就必须改写那条判据的期望值，而本仓库禁止"靠改期望值变绿"
+//! ⇒ 这门修法属于**裁决**，不属于实现（注入已整体回退，仓库回到基线绿）。
+//!
+//! **需要的裁决措辞（本仓库已有两条既有口径，都指向"不许静默丢声道"）：**
+//!
+//! | 选项 | 内容 | 代价 |
+//! | :--- | :--- | :--- |
+//! | A 折叠 | `channels == 1` 时写 `(L + R) · 0.5` | 与 `crates/yeban-mcp/src/domain/render_clip_math.rs` 的 `ChannelLayout::StereoToMono`（`(L + R) / 2`）同式，也与本 crate 两处内部中值投影（插入混响级、插入卷积级）同式；但**改渲染输出**，并要求**同步授权**改写 ⑥-10 的 N = 1 期望值 |
+//! | B 拒绝 | `device::negotiate` 不接受 `channels == 1`（与 `crates/yeban-render/src/mastering.rs` 的"非立体声 ⇒ 拒绝，**不**做下混"同款） | 渲染输出一位不动；代价是只提供单声道的设备**完全不出声**（可用性下降） |
+//! | C 维持 | 维持"单声道 = 左" | 与 `render_clip_math.rs` 明写的原则（"拒绝，而不是悄悄丢声道…丢声道是不可闻的错误"）直接冲突 |
+//!
+//! 因此本票请求的裁决原文可以写成：
+//!
+//! > **`process_quantum` 在 `channels == 1` 时按 A 折叠（`(L + R) · 0.5`，抄
+//! > `ChannelLayout::StereoToMono` 的既有口径），并授权同步改写 ⑥-10 的 N = 1
+//! > 分支期望值；`channels >= 3` 时第 2 路起的映射维持 ⑥-10 已钉的"右"。**
+//!
+//! 在裁决落地之前，本票**不改**渲染输出：单声道设备仍然只放左声道。
+//!
 //! **发现 2（幂等性，口径澄清而非缺陷）：`SeekTicks(t)` 的"隔量子重发"不是幂等性问题。**
 //! 两次施加之间时钟已经推进（`position_ticks` 越过 `t`、相位余数已经攒起来），
 //! 因此第二条是一条**真正的回跳**：它把 `position_frames` 拉回 `t` 的网格帧、
@@ -100,6 +156,31 @@
 //! 差额 9 帧 = `frames_for(15) = 375` 与 seek 前的 384 帧之差（375 + 128 = 503；
 //! 不 seek 的 512 = 4 × 128）。这与"同一个值施加在同一个状态上"不是一回事 ⇒
 //! ⑤-3 只对 `SeekTicks` 测**同批**形态，并把这个界写在这里。
+//!
+//! **发现 3（类别⑥/⑦，`line/engine-22` 新报，未修）：`NullBackend` 的交错暂存恒为
+//! 2 声道容量，协商到 3 路以上就是一次越界 panic。**
+//! `src/device.rs` 的 `NullBackend` 把暂存声明成 `[f32; DEFAULT_BLOCK_FRAMES * 2]`
+//! （= **256** 样本），而 `render` 按 `let samples = quantum * channels;` 去切它。
+//! 机械读数（`/tmp/eng22_probe_mapping.py`：只读源码 + 算术，一个整量子 128 帧）：
+//!
+//! ```text
+//! N= 1: samples =  128 vs 容量 256 ⇒ OK
+//! N= 2: samples =  256 vs 容量 256 ⇒ OK
+//! N= 3: samples =  384 vs 容量 256 ⇒ 越界
+//! N= 4: samples =  512 vs 容量 256 ⇒ 越界
+//! N=32: samples = 4096 vs 容量 256 ⇒ 越界
+//! ```
+//!
+//! 同一形态的替身在运行期给出字面读数（`/tmp/eng22_probe_nullbackend.rs`）：
+//! `range end index 384 out of range for slice of length 256`。**可达性不是猜的**：
+//! 本 crate 自己的判据 `device::tests::negotiate_accepts_wider_channel_count_when_stereo_is_unavailable`
+//! 证明 `negotiate` **会**返回 4 声道，而 `NullBackend::new` 收下这个协商结果作为
+//! `channels` ⇒ 构造入口与渲染入口对"支持几路"的假设不一致（前者任意，后者 ≤ 2）。
+//!
+//! ⚠ 本发现**未在本机核实运行期**：`device` 模块需要 cpal，而本机纪律禁止编译该重依赖
+//! ⇒ 只有 CI 能给出真判决。它也不阻塞既有行为（`crates/` 里没有调用方传 >2 路）。
+//! 它因此登记为**需要 `device` feature 覆盖的一票**（本票不把"本机未编译过的改动"算成
+//! "本机全过"，所以本票只登记、不改 `device.rs` 的行为）。
 //!
 //! 判据的实测读数与探针命令见交付报告；探针一律住在 `/tmp`，不在本目录留档。
 
@@ -731,7 +812,7 @@ fn both_channels_follow_the_same_scalar_pan_curve_bit_for_bit() {
     );
 }
 
-/// ⑥-10：交错输出的**通道映射**：`ch0 = 左`、`ch1..chN-1 = 右`（N = 1/2/4/6 逐位）。
+/// ⑥-10：交错输出的**通道映射**：`ch0 = 左`、`ch1..chN-1 = 右`（N = 1/2/3/4/6/8 逐位）。
 ///
 /// 参照刻意取自**块自己的两条声道**（`AudioBlock::left()` / `right()` 直接访问
 /// `left` / `right` 数组），而不是再跑一遍两声道渲染 —— 后者与 `process_quantum`
@@ -749,7 +830,7 @@ fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
         let project = tuned_project(&notes, MixSpec::pan(pan)).project;
         assert!(render(&project, 1).peak() > 0.01, "{label}: 夹具必须出声");
 
-        for channels in [1u16, 2, 4, 6] {
+        for channels in [1u16, 2, 3, 4, 6, 8] {
             let stride = usize::from(channels);
             let mut rig = EventRig::new(&project, 1, channels);
             let mut checked = 0usize;

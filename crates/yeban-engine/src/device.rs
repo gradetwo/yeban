@@ -449,6 +449,17 @@ pub fn open_output(
 /// - CI / 无声卡环境下的端到端回调路径覆盖（事件出队 → 快照切换 → 电平上报 → 退役入队）；
 /// - 离线/无头场景下驱动引擎（例如单元测试与 MCP 的无音频模式）；
 /// - 与真实回调的差异被压到最小：唯一不同是"谁来推进缓冲区"。
+///
+/// ⚠ **已知缺口（`line/engine-22` 登记，未修）**：下面这个交错暂存的容量恒为
+/// **2 声道**（`DEFAULT_BLOCK_FRAMES * 2` = 256 样本），而 `render` 按协商到的
+/// 通道数去切它 ⇒ `negotiated.channels >= 3` 时是一次**越界 panic**
+/// （同一形态的替身实测：`range end index 384 out of range for slice of length 256`）。
+/// 可达性由本模块的判据
+/// `negotiate_accepts_wider_channel_count_when_stereo_is_unavailable` 证明：
+/// `negotiate` 会返回 4 声道，而 [`Self::new`] 收下它。它是"容量随协商通道数增长"
+/// 的一处改动，**需要能编译 `device` feature 的环境**（本机纪律禁止编译 cpal ⇒
+/// 本机 check/clippy/test 覆盖不到这个模块）。详见
+/// `tests/idempotency_and_channel_consistency.rs` 的模块文档 §4 发现 3。
 pub struct NullBackend {
     runtime: EngineRuntime,
     negotiated: NegotiatedConfig,
@@ -524,6 +535,8 @@ impl NullBackend {
         while remaining > 0 {
             let quantum = remaining.min(DEFAULT_BLOCK_FRAMES);
             let samples = quantum * channels;
+            // ⚠ `channels >= 3` 时 `samples` 超出 `interleaved` 的 256 样本容量
+            // ⇒ 这里是那条越界的现场（见 `NullBackend` 的文档与判据文件的发现 3）。
             render_callback(
                 &mut self.runtime,
                 &mut self.interleaved[..samples],
