@@ -41,6 +41,33 @@ pub const SOURCE_20C_COMMERCIAL_PRACTICE: &str = "20c-commercial-practice-facts"
 /// 来源标记：本 crate 依据传统乐理自行编码（夜半原创）。
 pub const SOURCE_YEBAN_ORIGINAL: &str = "yeban-original-encoding";
 
+/// 走向选择动作的领域分隔盐（ASCII `PROGRESS`）。
+///
+/// 见 [`GenreRule::progression_for`]：它把"选哪条走向"与"选哪个音阶"、
+/// 以及本 crate 其它用 [`crate::derive_index`] 的动作（旋律的音高选择）
+/// 从种子上分开，免得同一个种子在每个动作里都落到同一个相对位置。
+const GENRE_PROGRESSION_SALT: u64 = 0x5052_4F47_5245_5353;
+
+/// 音阶选择动作的领域分隔盐（ASCII `SCALE___`）。
+const GENRE_SCALE_SALT: u64 = 0x5343_414C_455F_5F5F;
+
+/// FNV-1a 64 位哈希（公有领域算法），只用来把流派 ID 折成一个盐。
+///
+/// 目的：两条**条数相同**的流派不该在同一个种子下同时选中同一个下标
+/// （否则"换流派"会静默退化成"换名字"）。纯整数、`const fn`、
+/// 无分配、无全局状态。
+const fn genre_id_salt(id: &str) -> u64 {
+    let bytes = id.as_bytes();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        hash ^= bytes[index] as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        index += 1;
+    }
+    hash
+}
+
 /// 一个流派的乐理规则。
 ///
 /// 全部字段都是"音乐事实"级别的数据（速度区间、拍号、级数、音阶名），
@@ -156,6 +183,209 @@ impl GenreRule {
             .first()
             .ok_or(TheoryError::EmptyProgression)?;
         let scale = self.primary_scale(tonic)?;
+        Progression::parse(progression)?
+            .with_bars(4)
+            .map(|p| p.chords(&scale))
+    }
+
+    /// 该流派登记的典型走向条数。
+    ///
+    /// 单位是"条"。登记的每一条都能被 [`GenreRule::sketch_at`] /
+    /// [`GenreRule::chords_at`] 展开（判据 `every_registered_progression_expands`
+    /// 对全部条目生效）。
+    #[must_use]
+    pub const fn progression_count(&self) -> usize {
+        self.typical_progressions.len()
+    }
+
+    /// 第 `index` 条登记走向的原文；越界返回 `None`。
+    ///
+    /// 与 [`crate::rhythm::cells_per_bar`] / [`crate::rhythm::BeatGrouping::new`]
+    /// 同口径：**不新增** [`TheoryError`] 变体（那是 `yeban-mcp` 也在消费的跨
+    /// crate 契约），越界这种"调用方索引错"用 `Option` 表达，不 panic、不截断。
+    #[must_use]
+    pub fn progression_at(&self, index: usize) -> Option<&'static str> {
+        self.typical_progressions.get(index).copied()
+    }
+
+    /// 该流派登记的典型音阶条数。
+    ///
+    /// 单位是"个"。与 [`GenreRule::primary_scale`] 只取第 0 个不同，
+    /// [`GenreRule::scale_at`] 能取到全部登记音阶。
+    #[must_use]
+    pub const fn scale_count(&self) -> usize {
+        self.typical_scales.len()
+    }
+
+    /// 第 `index` 个登记音阶名的原文；越界返回 `None`。
+    #[must_use]
+    pub fn scale_name_at(&self, index: usize) -> Option<&'static str> {
+        self.typical_scales.get(index).copied()
+    }
+
+    /// 第 `index` 个登记音阶（主音为 `tonic`）。
+    ///
+    /// # Errors
+    ///
+    /// `index` 越界（该位置没有登记音阶）或该位置的音阶名无法识别时返回
+    /// [`TheoryError::ScaleNameUnknown`] —— 两者同口径："这个位置没有可用的
+    /// 音阶名"。与 [`GenreRule::primary_scale`] 的解析路径是同一条。
+    pub fn scale_at(
+        &self,
+        tonic: crate::pitch::PitchClass,
+        index: usize,
+    ) -> Result<Scale, TheoryError> {
+        let name = self
+            .typical_scales
+            .get(index)
+            .ok_or(TheoryError::ScaleNameUnknown)?;
+        Ok(Scale::new(tonic, ScaleKind::parse(name)?))
+    }
+
+    /// 按种子确定性地选一条登记走向。
+    ///
+    /// 选择动作用 [`crate::derive_index`]（SplitMix64，纯 64 位整数），
+    /// 盐 = [`GENRE_PROGRESSION_SALT`] 与**该流派自己的 ID 哈希**异或 ⇒
+    /// 不同流派的同一条走向不会因为"条数相同"而被同一批种子同时选中。
+    /// 同种子同输出、跨进程跨平台逐位一致 [ARCH-DET-001]；没有浮点、
+    /// 没有全局可变状态。
+    ///
+    /// `seed` 的语义是"这一版编排的种子"：调用方换种子就能在**已登记的**走向
+    /// 里换一条，不必自己写索引循环。种子空间对每个流派都能取到全部登记条目
+    /// （判据 `seeds_cover_every_registered_progression_and_scale`）。
+    ///
+    /// # Errors
+    ///
+    /// 该流派没有登记任何走向时返回 [`TheoryError::EmptyProgression`]。
+    pub fn progression_for(&self, seed: u64) -> Result<&'static str, TheoryError> {
+        if self.typical_progressions.is_empty() {
+            return Err(TheoryError::EmptyProgression);
+        }
+        let index = crate::derive_index(
+            seed,
+            GENRE_PROGRESSION_SALT ^ genre_id_salt(self.id),
+            self.typical_progressions.len(),
+        );
+        Ok(self.typical_progressions[index])
+    }
+
+    /// 按种子确定性地选一个登记音阶。
+    ///
+    /// 与 [`GenreRule::progression_for`] 同口径，但用**另一个盐**
+    /// （[`GENRE_SCALE_SALT`]）⇒ 走向与音阶是两次互相独立的抽取，
+    /// 能组合出 `走向条数 × 音阶个数` 种编排。
+    ///
+    /// # Errors
+    ///
+    /// 该流派没有登记任何音阶、或选中的音阶名无法识别时返回
+    /// [`TheoryError::ScaleNameUnknown`]。
+    pub fn scale_for(
+        &self,
+        tonic: crate::pitch::PitchClass,
+        seed: u64,
+    ) -> Result<Scale, TheoryError> {
+        // 这里**故意没有**"登记表为空"的显式守卫：`derive_index(.., 0)` 返回 0，
+        // 空表上 `scale_at(tonic, 0)` 就是 `ScaleNameUnknown`，与显式守卫逐位同果。
+        // 实测：删掉那三行守卫，全部判据仍然全绿 ⇒ 不可判的分支不留
+        // （与本线在 `metric_weight_in` 上删掉 `beats == 0` 的处置同口径）。
+        let index = crate::derive_index(
+            seed,
+            GENRE_SCALE_SALT ^ genre_id_salt(self.id),
+            self.typical_scales.len(),
+        );
+        self.scale_at(tonic, index)
+    }
+
+    /// 用第 `index` 条登记走向生成小节骨架（[`GenreRule::sketch`] 的显式索引版）。
+    ///
+    /// 音阶取 [`GenreRule::primary_scale`]（与 [`GenreRule::sketch`] 同一条），
+    /// 拍号取该流派自己的 [`GenreRule::meter_value`]，`bars` 的单位也是该流派的
+    /// 小节。因此 `sketch_at(_, 4, 0)` 与 `sketch(_, 4)` **逐位相同**。
+    ///
+    /// # Errors
+    ///
+    /// `index` 越界以 [`TheoryError::EmptyProgression`] 表达（"这个位置没有走向"，
+    /// 与"一条都没登记"同口径）；其余错误见 [`GenreRule::sketch`]。
+    pub fn sketch_at(
+        &self,
+        tonic: crate::pitch::PitchClass,
+        bars: u32,
+        index: usize,
+    ) -> Result<Vec<ChordSpan>, TheoryError> {
+        let progression = self
+            .progression_at(index)
+            .ok_or(TheoryError::EmptyProgression)?;
+        let scale = self.primary_scale(tonic)?;
+        Progression::parse(progression)?
+            .with_meter(self.meter_value())
+            .with_bars(bars)?
+            .expand(&scale)
+    }
+
+    /// 用第 `index` 条登记走向的和弦序列（[`GenreRule::chords`] 的显式索引版）。
+    ///
+    /// # Errors
+    ///
+    /// `index` 越界以 [`TheoryError::EmptyProgression`] 表达；
+    /// 其余错误见 [`GenreRule::chords`]。
+    pub fn chords_at(
+        &self,
+        tonic: crate::pitch::PitchClass,
+        index: usize,
+    ) -> Result<Vec<Chord>, TheoryError> {
+        let progression = self
+            .progression_at(index)
+            .ok_or(TheoryError::EmptyProgression)?;
+        let scale = self.primary_scale(tonic)?;
+        Progression::parse(progression)?
+            .with_bars(4)
+            .map(|p| p.chords(&scale))
+    }
+
+    /// 按种子选走向**与音阶**，再生成小节骨架（一次调用拿到一版编排）。
+    ///
+    /// 与 [`GenreRule::sketch`] 的唯一差别是"读哪一条登记数据"：
+    /// 走向来自 [`GenreRule::progression_for`]，音阶来自 [`GenreRule::scale_for`]，
+    /// 两者都由同一个 `seed` 决定。拍号、`bars` 口径、
+    /// [`crate::progression::Progression::expand`] 的三级时长规则**完全不变**。
+    ///
+    /// 因此：`seed` 若恰好选中第 0 条走向与第 0 个音阶，本函数与
+    /// [`GenreRule::sketch`] **逐位相同**；换种子只会在**已登记的**数据里换，
+    /// 不发明任何新走向、新音阶 [ARCH-DET-001]。
+    ///
+    /// 每个和弦的根音恒属于**本次选中的**音阶：展开用的音阶就是选中的那一个。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`GenreRule::sketch`] 相同（错误顺序也是"先走向、后音阶"：
+    /// 没有登记走向 ⇒ [`TheoryError::EmptyProgression`]，
+    /// 没有登记音阶或音阶名无法识别 ⇒ [`TheoryError::ScaleNameUnknown`]）。
+    pub fn sketch_for(
+        &self,
+        tonic: crate::pitch::PitchClass,
+        bars: u32,
+        seed: u64,
+    ) -> Result<Vec<ChordSpan>, TheoryError> {
+        let progression = self.progression_for(seed)?;
+        let scale = self.scale_for(tonic, seed)?;
+        Progression::parse(progression)?
+            .with_meter(self.meter_value())
+            .with_bars(bars)?
+            .expand(&scale)
+    }
+
+    /// 按种子选走向与音阶，返回和弦序列（[`GenreRule::chords`] 的种子版）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`GenreRule::chords`] 相同，顺序同 [`GenreRule::sketch_for`]。
+    pub fn chords_for(
+        &self,
+        tonic: crate::pitch::PitchClass,
+        seed: u64,
+    ) -> Result<Vec<Chord>, TheoryError> {
+        let progression = self.progression_for(seed)?;
+        let scale = self.scale_for(tonic, seed)?;
         Progression::parse(progression)?
             .with_bars(4)
             .map(|p| p.chords(&scale))
@@ -2890,5 +3120,348 @@ mod tests {
     fn library_is_deterministic_across_calls() {
         assert_eq!(GenreLibrary::ids(), GenreLibrary::ids());
         assert_eq!(GenreLibrary::search("jazz"), GenreLibrary::search("jazz"));
+    }
+
+    /// 一个字段齐全、走向与音阶都是空表的流派，用来验证"没有登记数据"的路径。
+    fn empty_rule() -> GenreRule {
+        GenreRule {
+            id: "empty_probe",
+            name_zh: "空",
+            name_en: "Empty",
+            default_bpm_range: (100, 120),
+            meter: (4, 4),
+            typical_progressions: &[],
+            typical_scales: &[],
+            swing: None,
+            note_density_hint: (1, 1),
+            source: SOURCE_YEBAN_ORIGINAL,
+        }
+    }
+
+    #[test]
+    fn registered_progression_and_scale_counts_are_pinned() {
+        // 数什么：把 182 条流派的 `typical_progressions` / `typical_scales`
+        // 逐条相加。单位 = "条"（走向）与"个"（音阶）。
+        let (mut progressions, mut scales) = (0usize, 0usize);
+        let mut progression_histogram = [0usize; 8];
+        let mut scale_histogram = [0usize; 8];
+        for rule in GenreLibrary::all() {
+            progressions += rule.progression_count();
+            scales += rule.scale_count();
+            progression_histogram[rule.progression_count()] += 1;
+            scale_histogram[rule.scale_count()] += 1;
+            assert!(rule.progression_count() >= 2, "{}", rule.id);
+            assert!(rule.scale_count() >= 1, "{}", rule.id);
+        }
+        assert_eq!(progressions, 391, "registered progression texts");
+        assert_eq!(scales, 520, "registered scale names");
+        // 直方图下标 = 每条的条数，值 = 有多少条流派。
+        assert_eq!(progression_histogram, [0, 0, 155, 27, 0, 0, 0, 0]);
+        assert_eq!(scale_histogram, [0, 5, 40, 113, 24, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_bounded_accessors_answer_every_registered_index_and_nothing_beyond() {
+        for rule in GenreLibrary::all() {
+            let last = rule.progression_count() - 1;
+            assert_eq!(rule.progression_at(0), Some(rule.typical_progressions[0]));
+            assert_eq!(
+                rule.progression_at(last),
+                Some(rule.typical_progressions[last])
+            );
+            assert_eq!(rule.progression_at(rule.progression_count()), None);
+            assert_eq!(rule.progression_at(usize::MAX), None);
+
+            let last = rule.scale_count() - 1;
+            assert_eq!(rule.scale_name_at(0), Some(rule.typical_scales[0]));
+            assert_eq!(rule.scale_name_at(last), Some(rule.typical_scales[last]));
+            assert_eq!(rule.scale_name_at(rule.scale_count()), None);
+            assert_eq!(rule.scale_name_at(usize::MAX), None);
+        }
+    }
+
+    #[test]
+    fn scale_at_parses_every_registered_name_and_reports_bounds_with_the_existing_error() {
+        for rule in GenreLibrary::all() {
+            for index in 0..rule.scale_count() {
+                let scale = rule.scale_at(PitchClass::C, index).unwrap();
+                let registered = rule.scale_name_at(index).unwrap();
+                assert_eq!(scale.tonic, PitchClass::C);
+                // 语义判据：种子/索引两条路都走 `ScaleKind::parse`，与
+                // `primary_scale` 同一条解析路径。
+                assert_eq!(
+                    scale.kind,
+                    ScaleKind::parse(registered).unwrap(),
+                    "{}",
+                    rule.id
+                );
+                assert_eq!(
+                    scale.intervals(),
+                    ScaleKind::parse(registered).unwrap().intervals()
+                );
+            }
+            assert_eq!(
+                rule.scale_at(PitchClass::C, rule.scale_count()),
+                Err(TheoryError::ScaleNameUnknown),
+                "{}",
+                rule.id
+            );
+        }
+    }
+
+    #[test]
+    fn registered_scale_names_fold_onto_canonical_kinds_except_two_documented_aliases() {
+        // 实测（不是假设）：登记表里出现两个"别名"名 `ionian` 与 `aeolian`，
+        // 而 `ScaleKind::parse` 把它们折到 `Major` / `NaturalMinor`。
+        // 后果：`parse(name).name()` 的往返对这两个名字**不成立**，
+        // 且 5 条流派的音阶表里因此出现了一对**同一个 kind**。
+        // 本条判据把这件事钉住（`scale_count` 仍然如实回报**登记条数**，
+        // 不偷偷去重）。
+        let mut genres_with_an_alias = 0usize;
+        let mut duplicate_kind_entries = 0usize;
+        for rule in GenreLibrary::all() {
+            let mut kinds: Vec<&str> = Vec::new();
+            let mut aliased = false;
+            for index in 0..rule.scale_count() {
+                let registered = rule.scale_name_at(index).unwrap();
+                let kind = rule.scale_at(PitchClass::C, index).unwrap().kind;
+                if kind.name() != registered {
+                    aliased = true;
+                }
+                if kinds.contains(&kind.name()) {
+                    duplicate_kind_entries += 1;
+                } else {
+                    kinds.push(kind.name());
+                }
+            }
+            if aliased {
+                genres_with_an_alias += 1;
+            }
+        }
+        assert_eq!(genres_with_an_alias, 13);
+        assert_eq!(duplicate_kind_entries, 5);
+    }
+
+    #[test]
+    fn seeds_cover_every_registered_progression_and_every_distinct_scale_kind() {
+        // 数什么：对每条流派，种子 0..64 里能取到多少个**不同的**登记条目。
+        // 单位 = 条（走向）/ 个（音阶，按 kind 去重后的口径）。
+        let (mut distinct_kinds, mut duplicate_kind_entries) = (0usize, 0usize);
+        for rule in GenreLibrary::all() {
+            let mut registered_kinds: Vec<&str> = Vec::new();
+            for index in 0..rule.scale_count() {
+                let name = rule.scale_at(PitchClass::C, index).unwrap().kind.name();
+                if registered_kinds.contains(&name) {
+                    duplicate_kind_entries += 1;
+                } else {
+                    registered_kinds.push(name);
+                }
+            }
+            distinct_kinds += registered_kinds.len();
+
+            let mut progression_seen: Vec<&str> = Vec::new();
+            let mut kind_seen: Vec<&str> = Vec::new();
+            for seed in 0u64..64 {
+                let text = rule.progression_for(seed).unwrap();
+                if !progression_seen.contains(&text) {
+                    progression_seen.push(text);
+                }
+                let kind = rule.scale_for(PitchClass::C, seed).unwrap().kind.name();
+                if !kind_seen.contains(&kind) {
+                    kind_seen.push(kind);
+                }
+            }
+            assert_eq!(
+                progression_seen.len(),
+                rule.progression_count(),
+                "{}: seeds 0..64 do not cover every registered progression",
+                rule.id
+            );
+            assert_eq!(
+                kind_seen.len(),
+                registered_kinds.len(),
+                "{}: seeds 0..64 do not cover every distinct registered scale",
+                rule.id
+            );
+        }
+        assert_eq!(distinct_kinds, 515);
+        assert_eq!(duplicate_kind_entries, 5);
+    }
+
+    #[test]
+    fn sketch_at_zero_and_a_zero_picking_seed_match_sketch_bit_for_bit() {
+        // 旧 API 的行为是**不变契约**：显式索引 0 与"种子恰好选中第 0 条"
+        // 都必须与 `sketch` 逐位相同。
+        for rule in GenreLibrary::all() {
+            let baseline = rule.sketch(PitchClass::C, 4).unwrap();
+            assert_eq!(
+                rule.sketch_at(PitchClass::C, 4, 0).unwrap(),
+                baseline,
+                "{}",
+                rule.id
+            );
+            assert_eq!(
+                rule.chords_at(PitchClass::C, 0).unwrap(),
+                rule.chords(PitchClass::C).unwrap()
+            );
+            for seed in 0u64..32 {
+                let zero_progression =
+                    rule.progression_for(seed).unwrap() == rule.progression_at(0).unwrap();
+                let zero_scale = rule.scale_for(PitchClass::C, seed).unwrap().kind
+                    == rule.primary_scale(PitchClass::C).unwrap().kind;
+                if zero_progression && zero_scale {
+                    assert_eq!(
+                        rule.sketch_for(PitchClass::C, 4, seed).unwrap(),
+                        baseline,
+                        "{} seed {seed}",
+                        rule.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_seeded_sketch_keeps_the_sketch_invariants_and_stays_in_its_own_key() {
+        for rule in GenreLibrary::all() {
+            let bars = 4u32;
+            let meter = rule.meter_value();
+            for seed in 0u64..8 {
+                let spans = rule.sketch_for(PitchClass::C, bars, seed).unwrap();
+                let total: u64 = spans.iter().map(|span| span.duration_ticks).sum();
+                assert_eq!(
+                    total,
+                    u64::from(bars) * meter.ticks_per_bar(),
+                    "{}",
+                    rule.id
+                );
+                let key = rule.scale_for(PitchClass::C, seed).unwrap();
+                let mut cursor = 0u64;
+                for span in &spans {
+                    assert_eq!(span.start_tick, cursor, "{}", rule.id);
+                    assert!(span.duration_ticks > 0, "{}", rule.id);
+                    assert_eq!(span.duration_ticks % 240, 0, "{}", rule.id);
+                    assert!(key.contains(span.chord.root), "{} seed {seed}", rule.id);
+                    cursor = span.end_tick();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_seeded_selector_is_pinned_to_literal_readings() {
+        // 字面读数（写死，不引用常量）：waltz 有 3 条走向 / 2 个音阶，
+        // funk 有 3 条走向 / 4 个音阶。
+        let waltz = GenreLibrary::get("waltz").unwrap();
+        assert_eq!(waltz.progression_count(), 3);
+        assert_eq!(waltz.scale_count(), 2);
+        assert_eq!(waltz.progression_for(0).unwrap(), "i-VI-III-VII");
+        assert_eq!(waltz.progression_for(1).unwrap(), "I-V-I");
+        assert_eq!(waltz.progression_for(4).unwrap(), "I-IV-V-I");
+        assert_eq!(
+            waltz.scale_for(PitchClass::C, 1).unwrap().kind.name(),
+            "natural_minor"
+        );
+        assert_eq!(
+            waltz.scale_for(PitchClass::C, 2).unwrap().kind.name(),
+            "major"
+        );
+
+        // funk 的第 2 条走向 `I7-IV7` 含七和弦，旧的 `sketch` **永远取不到**它
+        // （只读第 0 条 `i-VII`）；种子 0 就能取到 ⇒ 登记数据真的可达了。
+        let funk = GenreLibrary::get("funk").unwrap();
+        assert_eq!(funk.progression_at(0).unwrap(), "i-VII");
+        assert_eq!(funk.progression_for(0).unwrap(), "I7-IV7");
+        let chords = funk.chords_for(PitchClass::C, 0).unwrap();
+        assert_eq!(
+            chords.first().unwrap().kind,
+            crate::chord::ChordKind::Dominant7
+        );
+        assert_eq!(
+            funk.chords(PitchClass::C).unwrap().first().unwrap().kind,
+            crate::chord::ChordKind::Minor
+        );
+    }
+
+    #[test]
+    fn the_per_genre_salt_decorrelates_two_genres_with_identical_data() {
+        // 两条流派的登记数据逐字节相同、只有 ID 不同：选择必须仍然分开，
+        // 否则"换流派"会静默退化成"换名字"。
+        let progressions: &[&str] = &["I-V-I", "I-IV-V-I", "i-VI-III-VII"];
+        let scales: &[&str] = &["major", "natural_minor", "dorian"];
+        let make = |id: &'static str| GenreRule {
+            id,
+            name_zh: "探针",
+            name_en: "Probe",
+            default_bpm_range: (100, 120),
+            meter: (4, 4),
+            typical_progressions: progressions,
+            typical_scales: scales,
+            swing: None,
+            note_density_hint: (4, 8),
+            source: SOURCE_YEBAN_ORIGINAL,
+        };
+        let (alpha, beta) = (make("alpha_salt_probe"), make("beta_salt_probe"));
+        let (mut progression_differs, mut scale_differs) = (0usize, 0usize);
+        for seed in 0u64..64 {
+            if alpha.progression_for(seed).unwrap() != beta.progression_for(seed).unwrap() {
+                progression_differs += 1;
+            }
+            if alpha.scale_for(PitchClass::C, seed).unwrap().kind
+                != beta.scale_for(PitchClass::C, seed).unwrap().kind
+            {
+                scale_differs += 1;
+            }
+        }
+        // 实测读数：64 个种子里走向差 42 次、音阶差 46 次（写死）。
+        assert_eq!(progression_differs, 42);
+        assert_eq!(scale_differs, 46);
+    }
+
+    #[test]
+    fn a_genre_with_no_registered_data_reports_instead_of_panicking() {
+        let empty = empty_rule();
+        assert_eq!(empty.progression_count(), 0);
+        assert_eq!(empty.progression_at(0), None);
+        assert_eq!(empty.scale_count(), 0);
+        assert_eq!(empty.scale_name_at(0), None);
+        assert_eq!(empty.progression_for(0), Err(TheoryError::EmptyProgression));
+        assert_eq!(
+            empty.scale_for(PitchClass::C, 0),
+            Err(TheoryError::ScaleNameUnknown)
+        );
+        assert_eq!(
+            empty.scale_at(PitchClass::C, 0),
+            Err(TheoryError::ScaleNameUnknown)
+        );
+        assert_eq!(
+            empty.sketch_at(PitchClass::C, 4, 0),
+            Err(TheoryError::EmptyProgression)
+        );
+        assert_eq!(
+            empty.chords_at(PitchClass::C, 0),
+            Err(TheoryError::EmptyProgression)
+        );
+        assert_eq!(
+            empty.sketch_for(PitchClass::C, 4, 0),
+            Err(TheoryError::EmptyProgression)
+        );
+        assert_eq!(
+            empty.chords_for(PitchClass::C, 0),
+            Err(TheoryError::EmptyProgression)
+        );
+        // 旧的入口行为未变（回归护栏）。
+        assert_eq!(
+            empty.primary_scale(PitchClass::C),
+            Err(TheoryError::ScaleNameUnknown)
+        );
+        assert_eq!(
+            empty.sketch(PitchClass::C, 4),
+            Err(TheoryError::EmptyProgression)
+        );
+        assert_eq!(
+            empty.chords(PitchClass::C),
+            Err(TheoryError::EmptyProgression)
+        );
     }
 }

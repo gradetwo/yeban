@@ -20,7 +20,7 @@ use yeban_theory::chord::{Chord, ChordKind, Tonality};
 use yeban_theory::genre::GenreLibrary;
 use yeban_theory::melody::{
     CHORD_TONE_WEIGHT_FLOOR, MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND,
-    MelodyConstraints, genre_melody, melody_over_chords,
+    MelodyConstraints, genre_melody, genre_melody_for, melody_over_chords,
 };
 use yeban_theory::pitch::{Pitch, PitchClass, note_to_hz, parse_pitch_class};
 use yeban_theory::progression::{Degree, Meter, Progression, RomanQuality, expand_progression};
@@ -1106,4 +1106,77 @@ proptest! {
             Err(err) => prop_assert_eq!(err, TheoryError::NoFeasibleVoicing),
         }
     }
+
+    /// 种子版骨架：与"显式索引选同一条走向"的结果逐位相同，且满足全部结构
+    /// 不变量、根音恒属于**本次选中的**音阶。
+    #[test]
+    fn a_seeded_sketch_equals_its_explicit_index_and_keeps_every_invariant(
+        index in 0usize..GenreLibrary::all().len(),
+        bars in 1u32..6,
+        seed in any::<u64>(),
+    ) {
+        let rule = &GenreLibrary::all()[index];
+        let spans = rule.sketch_for(PitchClass::C, bars, seed)?;
+        let key = rule.scale_for(PitchClass::C, seed)?;
+        let meter = rule.meter_value();
+        let total: u64 = spans.iter().map(|span| span.duration_ticks).sum();
+        prop_assert_eq!(total, u64::from(bars) * meter.ticks_per_bar());
+        let mut cursor = 0u64;
+        for span in &spans {
+            prop_assert_eq!(span.start_tick, cursor);
+            prop_assert!(span.duration_ticks > 0);
+            prop_assert_eq!(span.duration_ticks % 240, 0);
+            prop_assert!(key.contains(span.chord.root));
+            cursor = span.end_tick();
+        }
+        // 同一条走向用显式索引展开必须逐位相同（两条入口共用同一份展开规则）。
+        let explicit = rule.progression_for(seed)?;
+        let found = (0..rule.progression_count())
+            .find(|&candidate| rule.progression_at(candidate) == Some(explicit))
+            .expect("the seeded progression must be a registered one");
+        let via_index = Progression::parse(rule.progression_at(found).unwrap())?
+            .with_meter(meter)
+            .with_bars(bars)?
+            .expand(&key)?;
+        prop_assert!(spans == via_index);
+        // 旧入口在种子选中第 0 条（走向与音阶都是）时逐位不变。
+        if found == 0 && key.kind == rule.primary_scale(PitchClass::C)?.kind {
+            prop_assert!(spans == rule.sketch(PitchClass::C, bars)?);
+        }
+    }
+}
+
+/// 种子版旋律：全部音高属于**它自己那条旋律的调**；182 条流派各自都能被种子
+/// 换一版骨架（不是常量函数）。
+///
+/// 放在 `proptest!` 之外：本判据没有随机输入，遍历的是全部 182 条登记流派。
+#[test]
+fn every_genre_can_change_its_section_with_the_seed() {
+    let mut genres_that_vary = 0usize;
+    for rule in GenreLibrary::all() {
+        let baseline = rule.sketch(PitchClass::C, 4).unwrap();
+        let mut varies = false;
+        for seed in 0u64..32 {
+            if rule.sketch_for(PitchClass::C, 4, seed).unwrap() != baseline {
+                varies = true;
+                break;
+            }
+        }
+        if varies {
+            genres_that_vary += 1;
+        }
+        // 种子版旋律的音高恒在它自己的调里（音域用文档字面量 48..=84）。
+        for seed in 0u64..4 {
+            let melody = genre_melody_for(rule, PitchClass::C, 2, 4, seed).unwrap();
+            let key = rule.scale_for(PitchClass::C, seed).unwrap();
+            assert_eq!(melody.key(), key, "{}", rule.id);
+            for note in melody.notes() {
+                let pc = PitchClass::new(note.pitch % 12).unwrap();
+                assert!(key.contains(pc), "{} seed {seed}", rule.id);
+                assert!((48..=84).contains(&note.pitch), "{}", rule.id);
+            }
+        }
+    }
+    // 实测读数：182/182 条流派在种子 0..32 里至少有一版骨架与旧 API 不同。
+    assert_eq!(genres_that_vary, 182);
 }

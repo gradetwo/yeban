@@ -463,9 +463,70 @@ pub fn genre_melody_with(
     melody_over_chords(&key, &spans, &grid, constraints, seed)
 }
 
+/// 同 [`genre_melody`]，但按种子在**该流派登记的音阶与走向**里选一版。
+///
+/// 等价于 `genre_melody_for_with(genre, tonic, bars, onsets_per_bar,
+/// MelodyConstraints::DEFAULT, seed)`。
+///
+/// # Errors
+///
+/// 见 [`genre_melody_for_with`]。
+pub fn genre_melody_for(
+    genre: &GenreRule,
+    tonic: PitchClass,
+    bars: u32,
+    onsets_per_bar: u32,
+    seed: u64,
+) -> Result<Melody, TheoryError> {
+    genre_melody_for_with(
+        genre,
+        tonic,
+        bars,
+        onsets_per_bar,
+        MelodyConstraints::DEFAULT,
+        seed,
+    )
+}
+
+/// 同 [`genre_melody_with`]，但和声与音阶由 `seed` 从该流派**已登记的**数据里选。
+///
+/// 与 [`genre_melody_with`] 的唯一差别是"读哪一条登记数据"：
+///
+/// | 输入 | [`genre_melody_with`] | 本函数 |
+/// | :--- | :--- | :--- |
+/// | 音阶 | [`GenreRule::primary_scale`]（第 0 个） | [`GenreRule::scale_for`]（种子选） |
+/// | 和声 | [`GenreRule::sketch`]（第 0 条走向） | [`GenreRule::sketch_for`]（种子选） |
+/// | onset 网格 | [`GenreRule::rhythm_grid`] | 同左（不随种子变） |
+///
+/// 于是"同一个流派、同一个种子"完全决定一条旋律，而**换种子**同时换走向、
+/// 换音阶、换音高选择 —— 全部只在登记数据之内，不发明新走向/新音阶
+/// [ARCH-DET-001]。种子若恰好选中第 0 条走向与第 0 个音阶，本函数与
+/// [`genre_melody_with`] **逐位相同**。
+///
+/// 展开和声用的音阶**就是**本次选中的音阶，因此每个和弦的根音都属于旋律的
+/// 调（判据 `every_seeded_melody_note_is_in_its_own_key`）。
+///
+/// # Errors
+///
+/// 与 [`genre_melody_with`] 逐条相同，顺序也相同（先音阶、后和声、再网格）。
+pub fn genre_melody_for_with(
+    genre: &GenreRule,
+    tonic: PitchClass,
+    bars: u32,
+    onsets_per_bar: u32,
+    constraints: MelodyConstraints,
+    seed: u64,
+) -> Result<Melody, TheoryError> {
+    let key = genre.scale_for(tonic, seed)?;
+    let spans = genre.sketch_for(tonic, bars, seed)?;
+    let grid = genre.rhythm_grid(bars, onsets_per_bar)?;
+    melody_over_chords(&key, &spans, &grid, constraints, seed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::genre::GenreLibrary;
     use crate::progression::{Progression, expand_progression};
     use crate::rhythm::metric_grid;
     use crate::scale::ScaleKind;
@@ -812,5 +873,84 @@ mod tests {
             melody_over_chords(&key, &spans, &grid, MelodyConstraints::DEFAULT, 4).unwrap(),
             melody_over_chords(&key, &parsed, &grid, MelodyConstraints::DEFAULT, 4).unwrap()
         );
+    }
+
+    #[test]
+    fn genre_melody_for_matches_the_unseeded_api_when_the_seed_picks_the_first_entries() {
+        // 旧 API 的行为是不变契约：种子若选中第 0 条走向与第 0 个音阶，
+        // 种子版必须与 `genre_melody_with` 逐位相同。
+        for rule in GenreLibrary::all() {
+            let mut matched = 0usize;
+            for seed in 0u64..256 {
+                let zero_progression =
+                    rule.progression_for(seed).unwrap() == rule.progression_at(0).unwrap();
+                let zero_scale = rule.scale_for(PitchClass::C, seed).unwrap().kind
+                    == rule.primary_scale(PitchClass::C).unwrap().kind;
+                if zero_progression && zero_scale {
+                    assert_eq!(
+                        genre_melody_for(rule, PitchClass::C, 4, 4, seed).unwrap(),
+                        genre_melody_with(
+                            rule,
+                            PitchClass::C,
+                            4,
+                            4,
+                            MelodyConstraints::DEFAULT,
+                            seed
+                        )
+                        .unwrap(),
+                        "{} seed {seed}",
+                        rule.id
+                    );
+                    matched += 1;
+                }
+            }
+            assert!(matched > 0, "{}: no zero-picking seed in 0..256", rule.id);
+        }
+    }
+
+    #[test]
+    fn every_seeded_melody_stays_in_the_key_it_was_built_from() {
+        let mut differing = 0usize;
+        let mut total = 0usize;
+        for rule in GenreLibrary::all() {
+            let mut first: Option<Melody> = None;
+            for seed in 0u64..8 {
+                let melody = genre_melody_for(rule, PitchClass::C, 4, 4, seed).unwrap();
+                let key = rule.scale_for(PitchClass::C, seed).unwrap();
+                assert_eq!(melody.key(), key, "{}", rule.id);
+                assert_eq!(melody.len(), 4 * 4, "{}", rule.id);
+                assert_eq!(melody.total_ticks(), 4 * rule.meter_value().ticks_per_bar());
+                for note in melody.notes() {
+                    let pc = PitchClass::new(note.pitch % 12).unwrap();
+                    assert!(key.contains(pc), "{} seed {seed}: {}", rule.id, note.pitch);
+                    // 字面量音域（= 文档里的 48..=84）。
+                    assert!((48..=84).contains(&note.pitch), "{}", rule.id);
+                }
+                total += 1;
+                match &first {
+                    None => first = Some(melody),
+                    Some(base) => {
+                        if base != &melody {
+                            differing += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // 实测读数：182 条流派 × 7 次比较 = 1274 次里，有 1274 次与种子 0 的旋律不同。
+        assert_eq!(total, 182 * 8);
+        assert_eq!(differing, 1274);
+    }
+
+    #[test]
+    fn the_seeded_melody_is_pinned_to_a_literal_reading() {
+        // funk 的 4/4、4 onset/小节：种子 0 选 `I7-IV7` + blues。
+        let funk = GenreLibrary::get("funk").unwrap();
+        assert_eq!(funk.progression_for(0).unwrap(), "I7-IV7");
+        let melody = genre_melody_for(funk, PitchClass::C, 2, 4, 0).unwrap();
+        let pitches: Vec<u8> = melody.notes().iter().map(|note| note.pitch).collect();
+        assert_eq!(melody.key().kind.name(), "blues");
+        assert_eq!(melody.len(), 8);
+        assert_eq!(pitches, vec![70, 79, 72, 60, 58, 66, 54, 54]);
     }
 }

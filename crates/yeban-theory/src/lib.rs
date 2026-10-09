@@ -106,6 +106,28 @@
 //! [`melody::melody_over_chords`] 在既有的音阶 + 和声区段 + 节奏网格上落出
 //! 一条确定性的单声部旋律（种子驱动，[`melody::genre_melody`] 读流派的登记数据）。
 //! 它**不新增任何登记数据**，也不做"好听"的判定（见 [`melody`] 的边界声明）。
+//!
+//! ## 登记数据的"第 0 条"不再是唯一入口（本次）
+//!
+//! 规则库登记了 **391** 条典型走向与 **520** 个典型音阶，但此前**文档化的流派
+//! API** 只读第 0 条：[`GenreRule::sketch`] / [`GenreRule::chords`] /
+//! [`GenreRule::primary_scale`]。本次补上索引与种子两个入口，全部**只读已登记
+//! 数据**、不新增任何走向或音阶：
+//!
+//! - 显式索引：[`GenreRule::progression_count`] / [`GenreRule::progression_at`] /
+//!   [`GenreRule::scale_count`] / [`GenreRule::scale_name_at`] /
+//!   [`GenreRule::scale_at`] / [`GenreRule::sketch_at`] / [`GenreRule::chords_at`]；
+//!   越界用 `Option` 或既有的 [`TheoryError::EmptyProgression`] /
+//!   [`TheoryError::ScaleNameUnknown`] 表达，**不新增错误变体**；
+//! - 种子驱动（[ARCH-DET-001] 的既有口径）：[`GenreRule::progression_for`] /
+//!   [`GenreRule::scale_for`] / [`GenreRule::sketch_for`] / [`GenreRule::chords_for`]，
+//!   以及把整条链一起换版的 [`melody::genre_melody_for`] /
+//!   [`melody::genre_melody_for_with`]。
+//!
+//! 判据钉住的读数：182 条流派全部至少登记 2 条走向（2 条 = 155、3 条 = 27）与
+//! 至少 1 个音阶（1 个 = 5、2 个 = 40、3 个 = 113、4 个 = 24）；种子 0..=63 对
+//! **每一条**流派都能取到全部登记下标；种子 0..=31 里 182/182 条流派至少有一版
+//! 骨架与旧的 [`GenreRule::sketch`] 不同；种子选中第 0 条时与旧 API 逐位相同。
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
@@ -125,7 +147,8 @@ pub use error::TheoryError;
 pub use genre::{GenreLibrary, GenreRule};
 pub use melody::{
     CHORD_TONE_WEIGHT_FLOOR, MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND, Melody,
-    MelodyConstraints, MelodyNote, genre_melody, genre_melody_with, melody_over_chords,
+    MelodyConstraints, MelodyNote, genre_melody, genre_melody_for, genre_melody_for_with,
+    genre_melody_with, melody_over_chords,
 };
 pub use pitch::{Interval, NoteName, Pitch, PitchClass, note_to_hz, parse_pitch_class};
 pub use progression::{
