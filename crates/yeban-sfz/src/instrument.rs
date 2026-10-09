@@ -295,6 +295,91 @@ impl OffMode {
     }
 }
 
+/// `note_polyphony` 与 `note_selfmask` 的归约：**同一音高**上的同时发声数限制。
+///
+/// 规范来源（两页同属 SFZ v2 的 `Instrument Settings` / `Voice Lifecycle` 类）：
+///
+/// - <https://sfzformat.com/opcodes/note_polyphony/>：表格行是
+///   Type = integer、Default = N/A、Range = 空。正文规定检查的**键**是
+///   polyphony group（`group` / `polyphony_group`，无 group 时按 `group=0` 处理）：
+///   "The note polyphony is checked within a polyphony group, set by the `group` or
+///   `polyphony_group` opcodes. If no group is specified on the region (or its group,
+///   master or globally) the note polyphony applies to the default group as if
+///   `group=0` was specified."
+/// - <https://sfzformat.com/opcodes/note_selfmask/>：表格行是
+///   Type = string、Default = `on`、Options = `on, off`。正文规定缺省（`on`）行为是
+///   "higher-or-equal-velocity notes turn off lower-velocity notes, but lower-velocity
+///   notes do not turn off higher-velocity notes. A new note will always play."；
+///   设为 `off` 时 "notes turn off notes with the same pitch regardless of velocity,
+///   which ... does ensure that note polyphony is always preserved within the set limit"。
+///
+/// # 工程裁决（规范只对 `note_polyphony=1` 给出逐步规则）
+///
+/// 规范正文只用 `note_polyphony=1` 举例。本 crate 把同一条规则推广成「把同键在场数降到
+/// `limit` 为止」：反复结束**资格最优**的在场声部，直到「在场数 + 新声部」不再超过
+/// `limit`；若已无有资格的在场声部，则停止 —— 此时新声部**照常发声**（规范原句
+/// "A new note will always play."），在场数可以超过 `limit`。资格由 [`NotePolyphony::masks`]
+/// 给出（`self_mask` 为真时只允许结束力度**不高于**新声部的在场声部）。
+/// 选择顺序由 [`crate::voice_pool::VoicePool::apply_note_polyphony`] 规定
+/// （力度最低 → 触发最早 → 槽位下标最小），保证 [ARCH-DET-001] 的确定性。
+///
+/// # `limit = 0` 的读法（登记语料佐证的工程裁决）
+///
+/// 规范表格的 Range 为空，正文没有定义 `note_polyphony=0`。登记语料里 `0` 出现 26 次，
+/// 且用法是**复位**：`virtuosity-drums` 的映射文件在 `<master>` 里先写
+/// `note_polyphony=0`，随后对需要限制的 `<master>` 段再写 `note_polyphony=6`；
+/// 若 `0` 意为「零个声部」则那些段将完全无声。因此本 crate 把 `0` 读成
+/// [**不限制**](NotePolyphony::is_unlimited)，与「未给出」同义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotePolyphony {
+    /// `note_polyphony` 的最大同时发声数（原样取值）；`0` 表示不限制。
+    pub limit: u32,
+    /// `note_selfmask`（规范缺省 `true` ＝ `on`）。
+    ///
+    /// `true` 时只有力度不高于新声部的在场声部可被结束；`false` 时同音高的在场声部
+    /// **不分力度**都可被结束，因此限制是严格上限。
+    pub self_mask: bool,
+}
+
+impl NotePolyphony {
+    /// 不限制（`note_polyphony` 缺省，或显式 `note_polyphony=0`）。
+    pub const UNLIMITED: Self = Self {
+        limit: 0,
+        self_mask: true,
+    };
+
+    /// `note_selfmask` 的白名单（`on` / `off`，大小写不敏感）。
+    pub const SELF_MASK_OPTIONS: &'static [(&'static str, bool)] = &[("on", true), ("off", false)];
+
+    /// `note_selfmask` 的允许值列表（错误信息用）。
+    pub const SELF_MASK_ALLOWED: &'static str = "on, off";
+
+    /// 是否不限制同时发声数（`limit == 0`）。
+    #[must_use]
+    pub fn is_unlimited(self) -> bool {
+        self.limit == 0
+    }
+
+    /// 在场力度 `existing` 的声部是否**有资格**被新力度 `new` 的声部结束。
+    ///
+    /// `self_mask` 为真时是规范缺省的「高力度关掉低力度」：仅当
+    /// `existing <= new`。为假时（`note_selfmask=off`）恒为真。
+    #[must_use]
+    pub fn masks(self, existing: u8, new: u8) -> bool {
+        if self.self_mask {
+            existing <= new
+        } else {
+            true
+        }
+    }
+}
+
+impl Default for NotePolyphony {
+    fn default() -> Self {
+        Self::UNLIMITED
+    }
+}
+
 /// 一个 MIDI CC 门控：`loccN` / `hiccN` 归约成 `[lo, hi]` 闭区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CcGate {
@@ -430,6 +515,16 @@ pub struct Region<'a> {
     pub group: u32,
     /// 被谁关掉（`off_by`）。
     pub off_by: u32,
+    /// `note_polyphony` / `note_selfmask`：**同一音高**在同一个 polyphony group
+    /// （[`Region::group`]，缺省 0）内的同时发声数限制（缺省 [`NotePolyphony::UNLIMITED`]）。
+    ///
+    /// 两个 opcode 只在 `note_polyphony` 生效时有意义，因此归约进同一个 `Copy` 结构：
+    /// 限制量与掩蔽规则必须一起送给声部池，分开传会允许「用缺省 `self_mask` 配一个
+    /// 显式限制」这类不自洽的组合。语义、规范出处、`limit=0` 的读法与对
+    /// `note_polyphony=1` 之外取值的推广裁决都写在 [`NotePolyphony`] 的文档里。
+    ///
+    /// 判定函数是 [`crate::voice_pool::VoicePool::apply_note_polyphony`]。
+    pub note_polyphony: NotePolyphony,
     /// keyswitch 期望值（`sw_last`）。
     pub sw_last: Option<u8>,
     /// `sw_default`：`sw_last` 的**开机缺省值**（「power-on default」）。
@@ -1271,6 +1366,9 @@ pub(crate) fn build_region<'a>(
     let group = read_u32(&scopes, "group", Some("polyphony_group"), 0)?;
     let off_by = read_u32(&scopes, "off_by", Some("offby"), 0)?;
 
+    // ---- 同音复音限制（`note_polyphony` / `note_selfmask`，SFZ v2 Voice Lifecycle） ----
+    let note_polyphony = read_note_polyphony(&scopes)?;
+
     // ---- keyswitch ----
     let sw_last = match scopes.get("sw_last") {
         Some(value) => Some(value.as_note(0, 127)? as u8),
@@ -1371,6 +1469,7 @@ pub(crate) fn build_region<'a>(
         seq_length,
         group,
         off_by,
+        note_polyphony,
         sw_last,
         sw_default,
         sw_lokey,
@@ -1709,6 +1808,24 @@ fn read_crossfades(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Crossfade
     Ok(crossfades)
 }
 
+/// 读取 `note_polyphony`（同音同时发声数上限，`0` ＝ 不限制）与
+/// `note_selfmask`（缺省 `on`），归约成 [`NotePolyphony`]。
+///
+/// 取值域：`note_polyphony` 的规范 Range 列为空，因此按本 crate 对「无 Range 的整数」
+/// 的既有口径取存储类型全域（`0..=u32::MAX`，与 `group` / `off_by` 同）。
+/// `note_selfmask` 的 Options 是 `on, off`（规范表格行），大小写不敏感，其它值 → `Err`。
+fn read_note_polyphony(scopes: &Scopes<'_, '_>) -> Result<NotePolyphony, SfzError> {
+    let limit = read_u32(scopes, "note_polyphony", None, 0)?;
+    let self_mask = match scopes.get("note_selfmask") {
+        Some(value) => value.as_option(
+            NotePolyphony::SELF_MASK_OPTIONS,
+            NotePolyphony::SELF_MASK_ALLOWED,
+        )?,
+        None => true,
+    };
+    Ok(NotePolyphony { limit, self_mask })
+}
+
 fn read_u8(
     scopes: &Scopes<'_, '_>,
     name: &'static str,
@@ -1790,6 +1907,7 @@ mod tests {
             seq_length,
             group: 0,
             off_by: 0,
+            note_polyphony: NotePolyphony::UNLIMITED,
             sw_last: None,
             sw_default: None,
             sw_lokey: 0,
@@ -2891,6 +3009,151 @@ mod tests {
                 "off_time={bad:?} must be an explicit error, got {outcome:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // `note_polyphony` / `note_selfmask`（同音同时发声数限制）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn note_polyphony_defaults_to_unlimited_and_self_mask_on() {
+        // 规范两页（<https://sfzformat.com/opcodes/note_polyphony/>、
+        // <https://sfzformat.com/opcodes/note_selfmask/>）的 Default 列分别是 N/A 与 `on`：
+        // 缺省必须读成「不限制」，而不是任何正数上限。
+        let default = first_region("<region>sample=a.wav");
+        assert_eq!(default.note_polyphony, NotePolyphony::UNLIMITED);
+        assert_eq!(default.note_polyphony.limit, 0);
+        assert!(default.note_polyphony.is_unlimited());
+        assert!(default.note_polyphony.self_mask, "spec default is `on`");
+        assert_eq!(NotePolyphony::default(), NotePolyphony::UNLIMITED);
+    }
+
+    #[test]
+    fn note_polyphony_reads_every_distinct_value_found_in_the_registered_corpus() {
+        // 出处：对 `git ls-files` 的 1398 个登记 `.sfz` 逐文件取
+        // `note_polyphony=<literal>`（探针命令见本票报告）。取值只有 4 个，
+        // 重复次数 0×26、3×23、6×20、1×18，合计 87；这里是全部 4 个。
+        for (text, expected) in [("0", 0u32), ("1", 1), ("3", 3), ("6", 6)] {
+            let source = format!("<region>sample=a.wav note_polyphony={text}");
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            let policy = instrument.regions()[0].note_polyphony;
+            assert_eq!(policy.limit, expected, "note_polyphony={text}");
+            assert_eq!(
+                policy.is_unlimited(),
+                expected == 0,
+                "note_polyphony={text}"
+            );
+            assert!(policy.self_mask, "no note_selfmask in this source");
+        }
+    }
+
+    #[test]
+    fn a_zero_note_polyphony_is_unlimited_not_zero_voices() {
+        // 登记语料里 `note_polyphony=0` 出现 26 次，用法是复位：virtuosity-drums 的映射
+        // 文件在 `<master>` 里写 0，随后对需要限制的段再写 6。若 0 意为「零个声部」，
+        // 那些段将完全无声，因此本 crate 把 0 读成不限制（裁决写在 `NotePolyphony` 文档里）。
+        let region = first_region("<region>sample=a.wav note_polyphony=0");
+        assert!(region.note_polyphony.is_unlimited());
+        assert_ne!(region.note_polyphony.limit, 1, "0 is not a one-voice limit");
+    }
+
+    #[test]
+    fn note_selfmask_is_read_case_insensitively_and_rejects_other_values() {
+        // 规范表格 Options = `on, off`、Default = `on`，Type = string。
+        for (literal, expected) in [
+            ("off", false),
+            ("OFF", false),
+            ("Off", false),
+            ("on", true),
+            ("ON", true),
+        ] {
+            let source = format!("<region>sample=a.wav note_polyphony=1 note_selfmask={literal}");
+            let policy = first_region(&source).note_polyphony;
+            assert_eq!(policy.self_mask, expected, "note_selfmask={literal}");
+        }
+        assert!(matches!(
+            parse_text(
+                "<region>sample=a.wav note_selfmask=maybe",
+                &Default::default()
+            ),
+            Err(SfzError::InvalidOption { .. })
+        ));
+    }
+
+    #[test]
+    fn note_polyphony_is_read_from_the_four_scope_chain() {
+        let inherited = parse_text(
+            "<master>note_polyphony=6 note_selfmask=off\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(inherited.regions()[0].note_polyphony.limit, 6);
+        assert!(!inherited.regions()[0].note_polyphony.self_mask);
+
+        let group_wins = parse_text(
+            "<global>note_polyphony=1\n<group>note_polyphony=6\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(group_wins.regions()[0].note_polyphony.limit, 6);
+
+        let region_wins = parse_text(
+            "<global>note_polyphony=1\n<master>note_polyphony=3\n<group>note_polyphony=6\n\
+             <region>sample=a.wav note_polyphony=12",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(region_wins.regions()[0].note_polyphony.limit, 12);
+    }
+
+    #[test]
+    fn a_negative_or_non_numeric_note_polyphony_is_an_error() {
+        // 规范 Type = integer、Range 为空 ⇒ 按本 crate 对「无 Range 整数」的口径取
+        // `0..=u32::MAX`（与 `group` / `off_by` 的 `read_u32` 同一条路径）。
+        assert!(matches!(
+            parse_text(
+                "<region>sample=a.wav note_polyphony=-1",
+                &Default::default()
+            ),
+            Err(SfzError::IntegerOutOfRange { value: -1, .. })
+        ));
+        assert!(matches!(
+            parse_text(
+                "<region>sample=a.wav note_polyphony=abc",
+                &Default::default()
+            ),
+            Err(SfzError::InvalidInteger { .. })
+        ));
+        assert!(matches!(
+            parse_text(
+                "<region>sample=a.wav note_polyphony=4294967296",
+                &Default::default()
+            ),
+            Err(SfzError::IntegerOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn note_polyphony_masks_like_the_spec_default_and_like_selfmask_off() {
+        // 规范正文对 `note_polyphony=1` 的逐步规则：力度**不低**的新声部关掉在场声部，
+        // 严格更低的力度不关掉更高的在场声部（新声部照常发声）。
+        let on = NotePolyphony {
+            limit: 1,
+            self_mask: true,
+        };
+        assert!(on.masks(40, 100), "a louder note kills the quieter one");
+        assert!(on.masks(100, 100), "an equal-velocity note also kills");
+        assert!(
+            !on.masks(101, 100),
+            "a strictly quieter note does not kill a louder one"
+        );
+        // `note_selfmask=off`：同音高不分力度都可被结束。
+        let off = NotePolyphony {
+            limit: 1,
+            self_mask: false,
+        };
+        assert!(off.masks(127, 0), "selfmask off ignores velocity");
+        assert!(off.masks(0, 127));
     }
 
     #[test]

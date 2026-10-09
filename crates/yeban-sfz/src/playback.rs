@@ -71,7 +71,8 @@
 //! 跨架构逐位一致性 (ARCH-DET-002) 未验证，与 `StealFade` 登记在同一条 pending 上。
 
 use crate::instrument::{
-    Instrument, LoopMode, OffMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
+    Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region, RegionQuery, SampleEnd,
+    Trigger,
 };
 
 /// 采样率回退值 (Hz)：输入采样率非有限或非正时使用，与
@@ -293,6 +294,12 @@ pub struct PlaybackSpec {
     pub group: u32,
     /// 被谁关掉（`off_by`）。
     pub off_by: u32,
+    /// 同一音高在 polyphony group（[`PlaybackSpec::group`]）内的同时发声数限制
+    /// （`note_polyphony` + `note_selfmask`，缺省 [`NotePolyphony::UNLIMITED`]）。
+    ///
+    /// 判定函数是 [`crate::voice_pool::VoicePool::apply_note_polyphony`]；语义与
+    /// 规范出处见 [`NotePolyphony`]。
+    pub note_polyphony: NotePolyphony,
     /// 该 region 的 `<region>` 段头所在行号（1-based，诊断用）。
     pub source_line: usize,
 }
@@ -577,6 +584,7 @@ impl<'a> Region<'a> {
             span: self.playback_span(),
             group: self.group,
             off_by: self.off_by,
+            note_polyphony: self.note_polyphony,
             source_line: self.source_line,
         }
     }
@@ -1092,6 +1100,7 @@ mod tests {
                             seq_length: 1,
                             group: 0,
                             off_by: 0,
+                            note_polyphony: NotePolyphony::UNLIMITED,
                             sw_last: None,
                             sw_default: None,
                             sw_lokey: 0,
@@ -1324,6 +1333,26 @@ mod tests {
         assert_eq!(spec.off_time, Some(0.25));
         assert_eq!(spec.effective_off_time(), 0.25);
         assert_ne!(spec.effective_off_time(), crate::OFF_TIME_DEFAULT_SECONDS);
+    }
+
+    #[test]
+    fn playback_spec_carries_the_note_polyphony_policy() {
+        // 缺省：不限制，`self_mask` 是规范缺省的 `on`。
+        let default = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let spec = default.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.note_polyphony, NotePolyphony::UNLIMITED);
+        assert!(spec.note_polyphony.is_unlimited());
+
+        // 显式：限制量与掩蔽规则都原样带出；检查用的键是 `group`。
+        let explicit = parse_text(
+            "<master>note_polyphony=3 note_selfmask=off\n<region>sample=a.wav group=7",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = explicit.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.note_polyphony.limit, 3);
+        assert!(!spec.note_polyphony.self_mask);
+        assert_eq!(spec.group, 7, "the polyphony key is the group opcode");
     }
 
     #[test]

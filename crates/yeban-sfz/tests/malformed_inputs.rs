@@ -1043,3 +1043,110 @@ fn structured_label_inputs_never_panic_and_are_deterministic() {
         );
     }
 }
+
+#[test]
+fn note_polyphony_is_modeled_and_range_checked_explicitly() {
+    // 规范出处：<https://sfzformat.com/opcodes/note_polyphony/>（Type = integer、
+    // Range 为空）与 <https://sfzformat.com/opcodes/note_selfmask/>（Options = on, off）。
+    let limits = ParseLimits::default();
+
+    // 取值域按本 crate 对「无 Range 整数」的口径取 `0..=u32::MAX`（与 group / off_by 同）。
+    let valid = parse_text("<region>sample=a.wav note_polyphony=6", &limits).expect("parses");
+    assert_eq!(valid.regions()[0].note_polyphony.limit, 6);
+
+    let negative = parse_text("<region>sample=a.wav note_polyphony=-1", &limits);
+    assert!(
+        matches!(
+            negative,
+            Err(SfzError::IntegerOutOfRange {
+                value: -1,
+                min: 0,
+                ..
+            })
+        ),
+        "a negative note_polyphony must be an explicit IntegerOutOfRange, got {negative:?}"
+    );
+    let over = parse_text("<region>sample=a.wav note_polyphony=4294967296", &limits);
+    assert!(
+        matches!(over, Err(SfzError::IntegerOutOfRange { .. })),
+        "2^32 must be an explicit IntegerOutOfRange, got {over:?}"
+    );
+
+    // `note_selfmask` 是字符串白名单 `on` / `off`；其它值是显式错误，不是静默缺省。
+    for good in ["on", "off", "ON", "Off"] {
+        let source = format!("<region>sample=a.wav note_polyphony=1 note_selfmask={good}");
+        assert!(
+            parse_text(&source, &limits).is_ok(),
+            "note_selfmask={good} is a documented option"
+        );
+    }
+    let bad = parse_text("<region>sample=a.wav note_selfmask=sometimes", &limits);
+    assert!(
+        matches!(bad, Err(SfzError::InvalidOption { .. })),
+        "note_selfmask=sometimes must be an explicit InvalidOption, got {bad:?}"
+    );
+
+    // 任意字节不 panic：把两个 opcode 的赋值塞进伪随机流，判据只有「Ok / Err 都合法」+ 确定性。
+    const ALPHABET: &[u8] = b"note_polyphony_note_selfmask=onoff0123456789- \n\"$<>";
+    let mut rng = XorShift(0xD1B5_4A32_D192_ED03);
+    for _ in 0..2_000 {
+        let len = (rng.next() % 48) as usize;
+        let mut text = String::from("note_polyphony=");
+        for _ in 0..len {
+            text.push(char::from(ALPHABET[(rng.next() as usize) % ALPHABET.len()]));
+        }
+        let first = parse_text(&text, &limits);
+        let second = parse_text(&text, &limits);
+        assert_eq!(
+            format!("{first:?}"),
+            format!("{second:?}"),
+            "non-deterministic verdict for {text:?}"
+        );
+    }
+}
+
+#[test]
+fn structured_note_polyphony_inputs_never_panic_and_are_deterministic() {
+    // 两个 opcode 同处一行、在四级作用域链上互相覆盖：判据是「不 panic + 确定性 +
+    // region 段自己的取值压过所有外层作用域」。
+    const SCOPES: &[&str] = &["<global>", "<master>", "<group>"];
+    let limits = ParseLimits::default();
+    let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
+    for _ in 0..1_000 {
+        let mut text = String::new();
+        for _ in 0..(rng.next() % 4) {
+            let scope = SCOPES[(rng.next() as usize) % SCOPES.len()];
+            let outer = rng.next() % 1_000_000;
+            text.push_str(&format!("{scope} note_polyphony={outer}"));
+            text.push_str(if rng.next().is_multiple_of(2) {
+                " note_selfmask=on\n"
+            } else {
+                " note_selfmask=off\n"
+            });
+        }
+        let value = rng.next() % 1_000_000;
+        text.push_str(&format!(
+            "<region>sample=a.wav note_polyphony={value} note_selfmask={}\n",
+            if rng.next().is_multiple_of(2) {
+                "on"
+            } else {
+                "off"
+            }
+        ));
+
+        let first = parse_text(&text, &limits);
+        let second = parse_text(&text, &limits);
+        assert_eq!(
+            format!("{first:?}"),
+            format!("{second:?}"),
+            "non-deterministic verdict for {text:?}"
+        );
+        let instrument = first.expect("this source always yields exactly one region");
+        assert_eq!(instrument.regions().len(), 1, "source {text:?}");
+        assert_eq!(
+            instrument.regions()[0].note_polyphony.limit,
+            value as u32,
+            "the region-level value must win over every outer scope, source {text:?}"
+        );
+    }
+}

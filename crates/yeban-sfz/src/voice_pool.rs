@@ -25,6 +25,7 @@
 //! 并标记可复用。
 
 use crate::error::SfzError;
+use crate::instrument::NotePolyphony;
 
 /// 默认声部容量 (`ARCH-RT-001`)。
 pub const DEFAULT_VOICE_CAPACITY: usize = 512;
@@ -125,6 +126,11 @@ pub struct VoiceInfo {
     pub note: u8,
     /// 触发力度。
     pub velocity: u8,
+    /// polyphony group（`group` / `polyphony_group`，缺省 0）。
+    ///
+    /// 只是 [`VoicePool::apply_note_polyphony`] 的键：同一 group 且同一音高的声部
+    /// 才互相计入 `note_polyphony` 限制（<https://sfzformat.com/opcodes/note_polyphony/>）。
+    pub group: u32,
     /// 包络阶段。
     pub stage: VoiceStage,
     /// 注入的瞬时电平 (dBFS)。
@@ -181,6 +187,7 @@ struct Slot {
     retiring: bool,
     note: u8,
     velocity: u8,
+    group: u32,
     stage: VoiceStage,
     level_db: f32,
     order: u64,
@@ -197,6 +204,7 @@ impl Slot {
             retiring: false,
             note: 0,
             velocity: 0,
+            group: 0,
             stage: VoiceStage::Attack,
             level_db: f32::NEG_INFINITY,
             order: 0,
@@ -293,9 +301,27 @@ impl VoicePool {
     /// 触发一个音符。池满时按 [ARCH-RT-004] 的确定性规则窃取。
     ///
     /// **零分配**。窃取顺序见 [`VoicePool::select_victim`]。
+    ///
+    /// 等价于 [`VoicePool::note_on_in_group`] 取 `group = 0`（缺省 polyphony group）。
     pub fn note_on(&mut self, note: u8, velocity: u8, level_db: f32) -> NoteOnOutcome {
+        self.note_on_in_group(note, velocity, level_db, 0)
+    }
+
+    /// 触发一个音符，并记下它的 polyphony group（`group` / `polyphony_group`）。
+    ///
+    /// `group` 只参与 [`VoicePool::apply_note_polyphony`] 的键；它**不**改变任何
+    /// 窃取 / 淡出行为，也不改变返回值。**零分配**。
+    pub fn note_on_in_group(
+        &mut self,
+        note: u8,
+        velocity: u8,
+        level_db: f32,
+        group: u32,
+    ) -> NoteOnOutcome {
         if let Some(index) = self.slots.iter().position(|slot| !slot.active) {
-            return NoteOnOutcome::Started(self.activate(index, note, velocity, level_db, 0));
+            return NoteOnOutcome::Started(
+                self.activate(index, note, velocity, level_db, group, 0),
+            );
         }
         // 池已满：确定性窃取。（容量 ≥ 1 保证此处必然存在 active 槽位。）
         let index = self.select_victim();
@@ -310,10 +336,102 @@ impl VoicePool {
             },
         );
         let fade_in = self.fade.samples();
-        let started = self.activate(index, note, velocity, level_db, fade_in);
+        let started = self.activate(index, note, velocity, level_db, group, fade_in);
         self.steal_count = self.steal_count.wrapping_add(1);
         self.last_stolen = Some(victim);
         NoteOnOutcome::Stolen { victim, started }
+    }
+
+    /// 施加 `note_polyphony` 限制：结束同一 polyphony group 内**同一音高**的超额在场声部。
+    ///
+    /// `handle` 是刚触发的新声部（它的 `note` / `group` / `velocity` 已由
+    /// [`VoicePool::note_on_in_group`] 记下）。返回被结束的声部数（0 表示无需让位）。
+    /// 被结束的声部留在自己的槽位上、状态转为 `retiring` 并带 3 ms 指数淡出
+    /// （[`StealFade`]），由渲染器读 [`VoiceInfo::retiring`] 淡化、由
+    /// [`VoicePool::process`] 在淡出走完后归零回收 —— 因此**不需要**返回句柄。
+    ///
+    /// # 规则（语义与裁决见 [`NotePolyphony`]）
+    ///
+    /// 只要「同键在场数 + 新声部」超过 `limit`，就结束一个**有资格**的在场声部；
+    /// 已处于 `retiring` 的声部不计入在场数。资格由 [`NotePolyphony::masks`] 给出
+    /// （`self_mask` 为真时只允许结束力度不高于新声部的声部）。没有有资格的声部时停止，
+    /// 新声部照常发声。`limit == 0`（[`NotePolyphony::is_unlimited`]）时直接返回 0。
+    ///
+    /// 被选中的声部是排序键 `(力度, 触发序号, 槽位下标)` 的**最小者**：力度最低者优先，
+    /// 同力度取触发最早者，再同则取槽位下标最小者 —— 全序，因此同一输入序列结果唯一
+    /// （[ARCH-DET-001]）。
+    ///
+    /// **零分配**：全程线性扫描，只在已有槽位上写字段。
+    pub fn apply_note_polyphony(
+        &mut self,
+        handle: VoiceHandle,
+        policy: NotePolyphony,
+    ) -> Result<usize, SfzError> {
+        if policy.is_unlimited() {
+            return Ok(0);
+        }
+        let (note, group, velocity, index) = {
+            let slot = self.voice(handle).ok_or(SfzError::StaleVoiceHandle)?;
+            (slot.note, slot.group, slot.velocity, handle.index as usize)
+        };
+        let limit = policy.limit as usize;
+        let mut standing = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(other, slot)| {
+                *other != index
+                    && slot.active
+                    && !slot.retiring
+                    && slot.note == note
+                    && slot.group == group
+            })
+            .count();
+        let mut ended = 0usize;
+        while standing >= limit {
+            let Some(victim) = self.polyphony_victim(index, note, group, velocity, policy) else {
+                break;
+            };
+            let fade = self.fade;
+            if let Some(slot) = self.slots.get_mut(victim) {
+                slot.retiring = true;
+                slot.stage = VoiceStage::Release;
+                slot.fade_remaining = fade.samples();
+                slot.fade_in_remaining = 0;
+            }
+            standing -= 1;
+            ended += 1;
+        }
+        Ok(ended)
+    }
+
+    /// `note_polyphony` 的下一个让位对象：`(力度, 触发序号, 槽位下标)` 最小的**有资格**
+    /// 同键在场声部。没有则返回 `None`（新声部照常发声）。零分配。
+    fn polyphony_victim(
+        &self,
+        exclude: usize,
+        note: u8,
+        group: u32,
+        velocity: u8,
+        policy: NotePolyphony,
+    ) -> Option<usize> {
+        let mut best: Option<(u8, u64, usize)> = None;
+        for (other, slot) in self.slots.iter().enumerate() {
+            if other == exclude
+                || !slot.active
+                || slot.retiring
+                || slot.note != note
+                || slot.group != group
+                || !policy.masks(slot.velocity, velocity)
+            {
+                continue;
+            }
+            let key = (slot.velocity, slot.order, other);
+            if best.is_none_or(|current| key < current) {
+                best = Some(key);
+            }
+        }
+        best.map(|(_, _, index)| index)
     }
 
     /// 确定性窃取目标（**同一输入序列永远同一结果** [ARCH-DET-001]）。
@@ -443,6 +561,7 @@ impl VoicePool {
         note: u8,
         velocity: u8,
         level_db: f32,
+        group: u32,
         fade_in: u32,
     ) -> VoiceHandle {
         self.order_counter = self.order_counter.wrapping_add(1);
@@ -462,6 +581,7 @@ impl VoicePool {
             retiring: false,
             note: note.min(127),
             velocity: velocity.min(127),
+            group,
             stage: VoiceStage::Attack,
             level_db: sanitize_level(level_db),
             order,
@@ -482,6 +602,7 @@ fn voice_info(index: usize, slot: &Slot) -> VoiceInfo {
         retiring: slot.retiring,
         note: slot.note,
         velocity: slot.velocity,
+        group: slot.group,
         stage: slot.stage,
         level_db: slot.level_db,
         order: slot.order,
@@ -652,6 +773,197 @@ mod tests {
             Err(SfzError::InvalidVoiceCapacity { .. })
         ));
         assert_eq!(VoicePool::default().capacity(), DEFAULT_VOICE_CAPACITY);
+    }
+
+    // ------------------------------------------------------------------
+    // note_polyphony / note_selfmask（同音同时发声数限制）
+    // ------------------------------------------------------------------
+
+    fn limit(limit: u32, self_mask: bool) -> NotePolyphony {
+        NotePolyphony { limit, self_mask }
+    }
+
+    #[test]
+    fn note_polyphony_ends_the_lower_velocity_voice_by_default() {
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let first = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let second = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let ended = pool
+            .apply_note_polyphony(second, limit(1, true))
+            .expect("live handle");
+        assert_eq!(ended, 1);
+        assert!(pool.voice(first).expect("still active").retiring);
+        assert!(
+            !pool.voice(second).expect("still active").retiring,
+            "the new note always plays"
+        );
+    }
+
+    #[test]
+    fn a_quieter_note_does_not_end_a_louder_one_when_self_mask_is_on() {
+        // 规范：缺省 self-mask 下 note_polyphony 是「hint 而不是严格上限」——
+        // 严格更低的力度不关掉更高的在场声部，新声部照常发声。
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let loud = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let quiet = pool.note_on_in_group(60, 40, -6.0, 0).started();
+        let ended = pool
+            .apply_note_polyphony(quiet, limit(1, true))
+            .expect("live handle");
+        assert_eq!(
+            ended, 0,
+            "a strictly quieter note does not mask a louder one"
+        );
+        assert!(!pool.voice(loud).expect("still active").retiring);
+        assert!(!pool.voice(quiet).expect("still active").retiring);
+    }
+
+    #[test]
+    fn note_selfmask_off_makes_the_limit_strict() {
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let loud = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let quiet = pool.note_on_in_group(60, 40, -6.0, 0).started();
+        let ended = pool
+            .apply_note_polyphony(quiet, limit(1, false))
+            .expect("live handle");
+        assert_eq!(
+            ended, 1,
+            "selfmask off ends the same pitch regardless of velocity"
+        );
+        assert!(pool.voice(loud).expect("still active").retiring);
+    }
+
+    #[test]
+    fn the_note_polyphony_key_is_the_group_plus_the_pitch() {
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let other_group = pool.note_on_in_group(60, 100, -6.0, 1).started();
+        let other_note = pool.note_on_in_group(61, 100, -6.0, 0).started();
+        let same_key = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let ended = pool
+            .apply_note_polyphony(same_key, limit(1, true))
+            .expect("live handle");
+        assert_eq!(ended, 0, "a different group or pitch is outside the key");
+        assert!(!pool.voice(other_group).expect("still active").retiring);
+        assert!(!pool.voice(other_note).expect("still active").retiring);
+        assert_eq!(
+            pool.voice(same_key).expect("still active").group,
+            0,
+            "the group is recorded on the slot and read back"
+        );
+    }
+
+    #[test]
+    fn a_zero_note_polyphony_limit_never_ends_a_voice() {
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let mut last = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        for _ in 0..3 {
+            last = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        }
+        assert_eq!(
+            pool.apply_note_polyphony(last, NotePolyphony::UNLIMITED)
+                .expect("live handle"),
+            0
+        );
+        assert_eq!(pool.active_count(), 4, "all four same-key voices stay");
+    }
+
+    #[test]
+    fn note_polyphony_reduces_to_the_limit_deterministically() {
+        let run = || {
+            let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+            // 三个同键声部，力度 100 / 60 / 80；新声部是 80，limit = 2。
+            // 只有 60 有资格（60 <= 80），因此被结束的是它 —— 唯一的那个。
+            let handles: Vec<VoiceHandle> = [100u8, 60, 80]
+                .into_iter()
+                .map(|velocity| pool.note_on_in_group(60, velocity, -6.0, 0).started())
+                .collect();
+            let ended = pool
+                .apply_note_polyphony(*handles.last().expect("a voice"), limit(2, true))
+                .expect("live handle");
+            let retiring: Vec<bool> = handles
+                .iter()
+                .map(|handle| pool.voice(*handle).expect("still active").retiring)
+                .collect();
+            (ended, retiring)
+        };
+        let (ended, retiring) = run();
+        assert_eq!(ended, 1);
+        assert_eq!(
+            retiring,
+            vec![false, true, false],
+            "the quietest eligible same-key voice goes first"
+        );
+        assert_eq!(
+            run(),
+            (ended, retiring),
+            "same input sequence ⇒ same result"
+        );
+    }
+
+    #[test]
+    fn retiring_voices_do_not_count_toward_the_limit_twice() {
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let first = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let second = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        assert_eq!(
+            pool.apply_note_polyphony(second, limit(1, true))
+                .expect("live handle"),
+            1
+        );
+        assert!(pool.voice(first).expect("still active").retiring);
+
+        // 第二次调用（同一新声部）：未 retiring 的同键声部只剩它自己 ⇒ 无可让位者。
+        // 若 `retiring` 声部仍计入在场数，这里会再结束一个。
+        assert_eq!(
+            pool.apply_note_polyphony(second, limit(1, true))
+                .expect("live handle"),
+            0,
+            "already-retiring voices are not counted again"
+        );
+        assert!(!pool.voice(second).expect("still active").retiring);
+    }
+
+    #[test]
+    fn masking_a_voice_enters_the_existing_steal_fade_path() {
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let victim = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let start = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        pool.apply_note_polyphony(start, limit(1, true))
+            .expect("live handle");
+        let info = pool.voice(victim).expect("still active");
+        assert_eq!(info.stage, VoiceStage::Release);
+        assert_eq!(info.fade_remaining, pool.steal_fade().samples());
+
+        pool.process(pool.steal_fade().samples());
+        assert!(
+            pool.voice(victim).is_none(),
+            "the 3ms fade reclaims the slot"
+        );
+    }
+
+    #[test]
+    fn apply_note_polyphony_rejects_a_stale_handle_and_never_panics() {
+        let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
+        let handle = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        pool.finish(handle).expect("live handle");
+        assert!(matches!(
+            pool.apply_note_polyphony(handle, limit(1, true)),
+            Err(SfzError::StaleVoiceHandle)
+        ));
+        // 越界句柄同样只是 `Err`，不 panic。
+        let far = VoiceHandle {
+            index: u32::MAX,
+            generation: 1,
+        };
+        assert!(matches!(
+            pool.apply_note_polyphony(far, limit(1, true)),
+            Err(SfzError::StaleVoiceHandle)
+        ));
+        // `limit == 0` 在取句柄**之前**返回，因此连越界句柄也不报错（无锁、无索引）。
+        assert_eq!(
+            pool.apply_note_polyphony(far, NotePolyphony::UNLIMITED)
+                .expect("unlimited short-circuits"),
+            0
+        );
     }
 
     #[test]

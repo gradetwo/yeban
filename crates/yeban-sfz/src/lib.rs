@@ -22,6 +22,15 @@
 //! （<https://sfzformat.com/opcodes/off_time/>），不改写 [ARCH-RT-004] 的 3 ms
 //! 窃取淡出常量。
 //!
+//! 同音同时发声数限制由 `note_polyphony` 与 `note_selfmask`（规范缺省 `on`，缺省值即
+//! [`NotePolyphony::UNLIMITED`]）成对带出，归约进 [`Region::note_polyphony`]
+//! 与 [`PlaybackSpec::note_polyphony`]。检查的键是 polyphony group
+//! （[`Region::group`]，缺省 0）加音高（<https://sfzformat.com/opcodes/note_polyphony/>）；
+//! 判定函数是 [`VoicePool::apply_note_polyphony`]，它把让位的声部置为
+//! [`VoiceInfo::retiring`] 并进入既有 3 ms 指数淡出路径，全程零分配。
+//! `limit = 0` 读作「不限制」、以及对 `note_polyphony=1` 之外取值的推广规则
+//! 都是工程裁决，逐条登记在 [`NotePolyphony`] 的文档里。
+//!
 //! 力度 → 振幅由 `amp_veltrack`（[`Region::amp_veltrack`]，缺省
 //! [`AMP_VELTRACK_DEFAULT`]）与 `amp_velcurve_N`（[`Region::velocity_curve`]）成对带出；
 //! 求值见 [`Region::velocity_gain`]，合并进 [`PlaybackSpec::total_gain`]。
@@ -323,8 +332,8 @@ pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND
 pub use error::SfzError;
 pub use instrument::{
     BEND_DOWN_DEFAULT_CENTS, BEND_RANGE_MAX_CENTS, BEND_UP_DEFAULT_CENTS, CcGate, Instrument,
-    LoopMode, OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PlayDirection, Region,
-    RegionQuery, SampleEnd, Trigger, TriggerEvent,
+    LoopMode, NotePolyphony, OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PlayDirection,
+    Region, RegionQuery, SampleEnd, Trigger, TriggerEvent,
 };
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use midi::{MidiOpcode, MidiSection};
