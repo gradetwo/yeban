@@ -248,6 +248,17 @@ pub struct PlaybackSpec {
     /// 既有消费方（以及本 crate 的既有判据）按那个口径读；把力度并进去会静默改变
     /// 它们的电平。要用合并值请调 [`PlaybackSpec::total_gain`]。
     pub velocity_gain: f32,
+    /// 交叉淡化 → **线性振幅**的因子（0.0 = 静音，1.0 = 满幅）。
+    ///
+    /// 就是 [`Region::crossfade_gain`] 在**触发时刻**的读数：`xfin_*` / `xfout_*`
+    /// 各段各自给出一个 [0, 1] 的因子并**相乘**（出处与工程裁决见
+    /// [`crate::crossfade`]）。没有 `xfin_*` / `xfout_*` 的 region 恒为 1.0，
+    /// 因此合并值 [`PlaybackSpec::total_gain`] 对它们逐位不变。
+    ///
+    /// 这里只是快照：CC 驱动的段随 CC 值变化，逐样本路径应改用
+    /// [`Region::crossfade_gain`] 并传入当时的 CC 状态。未提供 CC 状态的构造路径
+    /// （[`Region::playback_spec`]）只折键盘与力度两个轴。
+    pub crossfade_gain: f32,
     /// 该 region 的 `pan`（百分比，原样；声相定律由调用方决定）。
     pub pan: f32,
     /// 该 region 的 `trigger`（原样）。
@@ -287,13 +298,16 @@ pub struct PlaybackSpec {
 }
 
 impl PlaybackSpec {
-    /// `volume` 与力度两段的**合并**线性增益：`gain * velocity_gain`。
+    /// `volume`、力度与交叉淡化三段的**合并**线性增益：
+    /// `gain * velocity_gain * crossfade_gain`。
     ///
-    /// 两段刻意分开（见 [`PlaybackSpec::gain`] 与 [`PlaybackSpec::velocity_gain`] 的
-    /// 文档）；本方法是唯一的合并点。逐样本路径上是两次乘法，不分配、不加锁。
+    /// 三段刻意分开（见 [`PlaybackSpec::gain`] / [`PlaybackSpec::velocity_gain`] /
+    /// [`PlaybackSpec::crossfade_gain`] 的文档）；本方法是唯一的合并点。逐样本路径上
+    /// 是两次乘法，不分配、不加锁。没有 `xfin_*` / `xfout_*` 的 region 的
+    /// `crossfade_gain` 恰为 1.0，乘以它**逐位不变**。
     #[must_use]
     pub fn total_gain(&self) -> f32 {
-        self.gain * self.velocity_gain
+        self.gain * self.velocity_gain * self.crossfade_gain
     }
 
     /// 是否循环（`loop_mode` 要求循环**且**窗口有效）。
@@ -516,8 +530,25 @@ impl<'a> Region<'a> {
     }
 
     /// 生成该 region 的可渲染采样描述。零分配，可在实时路径调用。
+    ///
+    /// 这条重载只吃 `note` / `velocity` 两个标量，因此
+    /// [`PlaybackSpec::crossfade_gain`] **只折键盘与力度两个轴**：CC 驱动的交叉淡化段
+    /// 需要 [`RegionQuery::cc`]，本方法没有那段状态，于是它们按「未提供状态」处理
+    /// （该段 1.0，见 [`Region::crossfade_gain`]）。要带上 CC 状态请用
+    /// [`Region::playback_spec_with`]。
     #[must_use]
     pub fn playback_spec(&self, note: u8, velocity: u8, rates: RenderRates) -> PlaybackSpec {
+        self.playback_spec_with(&RegionQuery::new(note, velocity), rates)
+    }
+
+    /// 生成该 region 的可渲染采样描述，交叉淡化按 `query` 的完整状态求值。
+    ///
+    /// 与 [`Region::playback_spec`] 的唯一差别是 [`PlaybackSpec::crossfade_gain`]：
+    /// 这里能看到 `query.cc`，因此 CC 轴也参与。零分配，可在实时路径调用。
+    #[must_use]
+    pub fn playback_spec_with(&self, query: &RegionQuery<'_>, rates: RenderRates) -> PlaybackSpec {
+        let note = query.note;
+        let velocity = query.velocity;
         let rates = rates.sanitized();
         PlaybackSpec {
             note,
@@ -533,6 +564,7 @@ impl<'a> Region<'a> {
             gain: self.linear_gain(),
             amp_veltrack: self.amp_veltrack,
             velocity_gain: self.velocity_gain(velocity),
+            crossfade_gain: self.crossfade_gain(query),
             pan: self.pan,
             trigger: self.trigger,
             off_mode: self.off_mode,
@@ -556,18 +588,19 @@ impl<'a> Instrument<'a> {
     /// 参数 `query` 的全部字段（音符 / 力度 / 通道 / 轮替序号 / keyswitch / CC）
     /// 都参与选择，语义与 [`Instrument::region_for_with`] 完全一致。
     /// 没有匹配 region 时返回 `None`。全程零分配，可在实时路径调用。
+    ///
+    /// 交叉淡化按**完整**的 `query` 求值（CC 轴也在内），见
+    /// [`Region::playback_spec_with`]。
     #[must_use]
     pub fn playback_for(
         &self,
         query: RegionQuery<'_>,
         rates: RenderRates,
     ) -> Option<RegionPlay<'_, 'a>> {
-        let note = query.note;
-        let velocity = query.velocity;
-        let region = self.region_for_with(query)?;
+        let region = self.region_for_query(&query)?;
         Some(RegionPlay {
             region,
-            spec: region.playback_spec(note, velocity, rates),
+            spec: region.playback_spec_with(&query, rates),
         })
     }
 }
@@ -1065,6 +1098,7 @@ mod tests {
                             sw_down: None,
                             sw_up: None,
                             cc_gates: Vec::new(),
+                            crossfades: Vec::new(),
                             source_line: 1,
                         };
                         let ratio = region.pitch_ratio(note);
@@ -1359,5 +1393,93 @@ mod tests {
             .expect("region covers note 36");
         assert_eq!(played.spec.velocity_gain, played.region.velocity_gain(100));
         assert_eq!(played.spec.velocity, 100);
+    }
+
+    #[test]
+    fn a_region_without_crossfades_keeps_total_gain_bit_identical() {
+        // 没有 `xfin_*` / `xfout_*` 的 region：新因子恰为 1.0，合并值逐位不变。
+        let instrument = parse_text(
+            "<region>sample=a.wav volume=-6 amp_velcurve_1=0.2 amp_velcurve_3=0.3",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = instrument.regions()[0].playback_spec(60, 2, RATES_EQUAL);
+        assert_eq!(spec.crossfade_gain, 1.0);
+        assert_eq!(
+            spec.total_gain().to_bits(),
+            (spec.gain * spec.velocity_gain).to_bits()
+        );
+        assert_eq!(spec.total_gain(), spec.gain * 0.25);
+    }
+
+    #[test]
+    fn playback_spec_carries_the_crossfade_gain_of_the_velocity_axis() {
+        let instrument = parse_text(
+            "<region>sample=a.wav amp_veltrack=0 xfin_lovel=0 xfin_hivel=100",
+            &Default::default(),
+        )
+        .expect("parses");
+        // 力度 50 在等功率曲线的中点是 sqrt(0.5)。
+        let spec = instrument.regions()[0].playback_spec(60, 50, RATES_EQUAL);
+        assert!((spec.crossfade_gain - 0.5f32.sqrt()).abs() <= 1.0e-6);
+        assert_eq!(
+            spec.total_gain(),
+            spec.gain * spec.velocity_gain * 0.5f32.sqrt()
+        );
+        assert!(spec.total_gain() < spec.gain);
+        // 上界处是满幅：交叉淡化不改变音量。
+        let spec = instrument.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.crossfade_gain, 1.0);
+    }
+
+    #[test]
+    fn playback_spec_without_cc_state_leaves_the_cc_axis_alone() {
+        // 无 CC 状态的重载（`playback_spec`）只折键盘与力度两个轴。
+        let instrument = parse_text(
+            "<region>sample=a.wav amp_veltrack=0 xfin_hicc1=100",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = instrument.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.crossfade_gain, 1.0);
+        // 借用版能看到 CC：读数 0 ⇒ 该 region 静音。
+        let probe = |_: u8| 0u8;
+        let query = RegionQuery::new(60, 100).with_cc(&probe);
+        let spec = instrument.regions()[0].playback_spec_with(&query, RATES_EQUAL);
+        assert_eq!(spec.crossfade_gain, 0.0);
+        assert_eq!(spec.total_gain(), 0.0);
+    }
+
+    #[test]
+    fn playback_for_passes_the_cc_state_into_the_crossfade_gain() {
+        // 端到端：`playback_for` 的一次查询同时喂给选择与交叉淡化。
+        let instrument = parse_text(
+            "<region>sample=a.wav amp_veltrack=0 xfin_hicc1=100",
+            &Default::default(),
+        )
+        .expect("parses");
+        for cc in [0u8, 50, 100, 127] {
+            let probe = move |_: u8| cc;
+            let play = instrument
+                .playback_for(RegionQuery::new(60, 100).with_cc(&probe), RATES_EQUAL)
+                .expect("region matches");
+            assert_eq!(
+                play.spec.crossfade_gain.to_bits(),
+                play.region
+                    .crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe))
+                    .to_bits(),
+                "cc {cc}"
+            );
+        }
+        let silent = |_: u8| 0u8;
+        let play = instrument
+            .playback_for(RegionQuery::new(60, 100).with_cc(&silent), RATES_EQUAL)
+            .expect("region matches");
+        assert_eq!(play.spec.crossfade_gain, 0.0);
+        // 没有 CC 状态时仍然选中同一个 region，只是该轴不贡献衰减。
+        let play = instrument
+            .playback_for(RegionQuery::new(60, 100), RATES_EQUAL)
+            .expect("region matches");
+        assert_eq!(play.spec.crossfade_gain, 1.0);
     }
 }

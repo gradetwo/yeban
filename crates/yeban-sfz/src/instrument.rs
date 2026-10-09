@@ -15,6 +15,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use crate::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use crate::curve::{Curve, CurvePoint};
 use crate::effect::{Effect, EffectBus};
 use crate::error::SfzError;
@@ -440,6 +441,13 @@ pub struct Region<'a> {
     pub sw_up: Option<u8>,
     /// MIDI CC 门控集合（按 CC 号升序，确定性）。
     pub cc_gates: Vec<CcGate>,
+    /// 交叉淡化集合（`xfin_*` / `xfout_*`，见 [`crate::crossfade`]）。
+    ///
+    /// 顺序**固定**，因此同一输入得到同一个 `Vec`（`Eq` 与判据都依赖它）：
+    /// 键盘淡入、键盘淡出、力度淡入、力度淡出，然后按 CC 号升序的 CC 淡入、
+    /// 再按 CC 号升序的 CC 淡出。空集合表示该 region 没有任何 `xfin_*` / `xfout_*`，
+    /// 此时 [`Region::crossfade_gain`] 恒为 1.0。
+    pub crossfades: Vec<Crossfade>,
     /// 该 region 的 `<region>` 段头所在行号（1-based）。
     pub source_line: usize,
 }
@@ -590,6 +598,48 @@ impl<'a> Region<'a> {
             Some(curve) => curve.amplitude(velocity),
             None => self.veltrack_gain(velocity),
         }
+    }
+
+    /// 交叉淡化增益（`xfin_*` / `xfout_*`）：0.0 = 静音，1.0 = 满幅。
+    ///
+    /// 规则（出处与工程裁决见 [`crate::crossfade`]）：
+    ///
+    /// | 条件 | 结果 |
+    /// | :--- | :--- |
+    /// | 该 region 没有任何 `xfin_*` / `xfout_*` | 1.0（恒等） |
+    /// | 一段区间长度非正（`high <= low`） | 该段 1.0（不改变音量） |
+    /// | 键盘位置轴 | `query.note` |
+    /// | 力度轴 | `query.velocity` |
+    /// | CC 轴且 `query.cc` 给出了探针 | 探针读数 |
+    /// | CC 轴且**未**给出探针 | 该段 1.0 |
+    ///
+    /// 多段（多个 CC、以及淡入与淡出同时存在）的合并方式是**相乘** ——
+    /// 规范正文说同时使用 `xfin_*` 与 `xfout_*` 时各 region「all will be triggered -
+    /// but some of them may play at zero volume」（<https://sfzformat.com/opcodes/xfin_loccN/>），
+    /// 即各段各自给出一个 [0, 1] 的音量因子。
+    ///
+    /// **未提供 CC 状态时取 1.0 而不是 0.0** 是刻意的：该轴于是**不贡献**衰减，
+    /// 与既有行为（本 crate 在此之前完全忽略这一族）一致，也不会把整层静音。
+    /// 这与 [`Region::cc_gates_ok`] 的严格策略（未提供状态 ⇒ 不匹配）不同，
+    /// 因为那条决定「region 是否发声」，这条只决定「发声的层音量多大」。
+    ///
+    /// 零分配、无锁、无阻塞 I/O、无日志：遍历已构造好的切片，逐段做整数减法、
+    /// 一次浮点除法与（`power` 曲线时）一次 `sqrt`。可在逐样本路径调用。
+    #[must_use]
+    pub fn crossfade_gain(&self, query: &RegionQuery<'_>) -> f32 {
+        let mut gain = 1.0f32;
+        for crossfade in &self.crossfades {
+            let value = match crossfade.axis {
+                XfAxis::Key => query.note,
+                XfAxis::Velocity => query.velocity,
+                XfAxis::Cc(cc) => match query.cc {
+                    Some(probe) => probe(cc),
+                    None => continue,
+                },
+            };
+            gain *= crossfade.gain_at(value);
+        }
+        gain
     }
 }
 
@@ -851,12 +901,21 @@ impl<'a> Instrument<'a> {
     /// 全过程只做三次线性扫描，**零分配**，可在实时路径调用。
     #[must_use]
     pub fn region_for_with(&self, query: RegionQuery<'_>) -> Option<&Region<'a>> {
+        self.region_for_query(&query)
+    }
+
+    /// [`Instrument::region_for_with`] 的**借用**版（同一个算法）。
+    ///
+    /// 供 [`Instrument::playback_for`] 复用同一次查询：它既要选 region，又要把
+    /// `RegionQuery` 交给 [`Region::crossfade_gain`]（那需要 CC 状态），而
+    /// `RegionQuery` 不实现 `Clone`。全过程只做三次线性扫描，**零分配**。
+    pub(crate) fn region_for_query(&self, query: &RegionQuery<'_>) -> Option<&Region<'a>> {
         let bucket = self.key_buckets.get(query.note as usize)?;
 
         let mut seq_length = 1u32;
         for &index in bucket {
             let region = &self.regions[index as usize];
-            if region_matches(region, &query) {
+            if region_matches(region, query) {
                 seq_length = region.seq_length.max(1);
                 break;
             }
@@ -865,14 +924,14 @@ impl<'a> Instrument<'a> {
         let target = (query.occurrence % u64::from(seq_length)) as u32 + 1;
         for &index in bucket {
             let region = &self.regions[index as usize];
-            if region.seq_position == target && region_matches(region, &query) {
+            if region.seq_position == target && region_matches(region, query) {
                 return Some(region);
             }
         }
 
         for &index in bucket {
             let region = &self.regions[index as usize];
-            if region_matches(region, &query) {
+            if region_matches(region, query) {
                 return Some(region);
             }
         }
@@ -1170,6 +1229,9 @@ pub(crate) fn build_region<'a>(
         })
         .collect();
 
+    // ---- 交叉淡化（xfin_* / xfout_*，见 crate::crossfade） ----
+    let crossfades = read_crossfades(&scopes, line)?;
+
     Ok(Some(Region {
         sample,
         default_path: default_path.filter(|path| !path.is_empty()),
@@ -1208,6 +1270,7 @@ pub(crate) fn build_region<'a>(
         sw_down,
         sw_up,
         cc_gates,
+        crossfades,
         source_line: line,
     }))
 }
@@ -1316,6 +1379,195 @@ fn read_velocity_curve(
     )))
 }
 
+/// 交叉淡化的一个骨架（`xfin_*` 或 `xfout_*`）在两个端点上的归约结果。
+///
+/// 两个端点各自是**独立**的 opcode（例如 `xfin_lovel` 与 `xfin_hivel`），
+/// 因此各自记「有没有被四个作用域里的任何一个提到」。
+#[derive(Debug, Default, Clone, Copy)]
+struct XfEndpoints {
+    low: Option<u8>,
+    high: Option<u8>,
+}
+
+impl XfEndpoints {
+    /// 按方向补齐缺省端点。两个端点都没被提到时返回 `None`（该骨架不产生一段交叉淡化）。
+    fn resolve(self, direction: XfDirection) -> Option<XfRange> {
+        if self.low.is_none() && self.high.is_none() {
+            return None;
+        }
+        let default = direction.default_range();
+        Some(XfRange {
+            low: self.low.unwrap_or(default.low),
+            high: self.high.unwrap_or(default.high),
+        })
+    }
+}
+
+/// 识别 `xfin_loccN` / `xfin_hiccN` / `xfout_loccN` / `xfout_hiccN`，
+/// 返回 `(方向, 是否下界, CC 号)`。
+///
+/// 只在 `locc` / `hicc` 之后是**全 ASCII 数字**且 CC 号 ≤ 127 时命中；其它形态
+/// （`xfin_hicc`、`xfin_hiccfoo`、`xfin_hicc131`）返回 `None`，按未知 opcode 忽略 ——
+/// 这条口径与 [`parse_cc_gate_name`] 一致。
+fn parse_cc_crossfade_name(name: &str) -> Option<(XfDirection, bool, u8)> {
+    let (direction, rest) = if let Some(rest) = name.strip_prefix("xfin_") {
+        (XfDirection::In, rest)
+    } else {
+        (XfDirection::Out, name.strip_prefix("xfout_")?)
+    };
+    let (is_low, digits) = if let Some(rest) = rest.strip_prefix("locc") {
+        (true, rest)
+    } else {
+        (false, rest.strip_prefix("hicc")?)
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let cc: u8 = digits.parse().ok()?;
+    if cc > 127 {
+        None
+    } else {
+        Some((direction, is_low, cc))
+    }
+}
+
+/// 读一个交叉淡化端点（规范表格 Range = `0 to 127`）。
+///
+/// 非法整数与越界都是明确 `Err`（不静默钳位、不丢弃），与 [`read_velocity_curve`]
+/// 对 `amp_velcurve_N` 取值的口径一致。
+fn read_xf_endpoint(name: &str, value: &str, line: usize) -> Result<u8, SfzError> {
+    let parsed = parse_int(value).ok_or_else(|| SfzError::InvalidInteger {
+        line,
+        opcode: name.to_string(),
+        value: value.to_string(),
+    })?;
+    if !(0..=127).contains(&parsed) {
+        return Err(SfzError::IntegerOutOfRange {
+            line,
+            opcode: name.to_string(),
+            value: parsed,
+            min: 0,
+            max: 127,
+        });
+    }
+    Ok(parsed as u8)
+}
+
+/// 把四个作用域里的 `xfin_*` / `xfout_*` 归约成一段交叉淡化集合。
+///
+/// 优先级是 `region → group → master → global`（与其它 opcode 同一条链，
+/// 见 [`Scopes::get`]），实现方式是按 `global → master → group → region` 的顺序喂入，
+/// 同一端点上后者胜。
+///
+/// 返回的 `Vec` 顺序固定：键盘淡入、键盘淡出、力度淡入、力度淡出、按 CC 号升序的
+/// CC 淡入、按 CC 号升序的 CC 淡出 —— 保证同一输入得到同一个 `Vec`（ARCH-DET-001）。
+///
+/// 曲线（`xf_keycurve` / `xf_velcurve` / `xf_cccurve`）在同一个作用域链上归约：
+/// **每个维度一条曲线**，作用在该维度的所有段上（与 sfizz 的
+/// `crossfadeKeyCurve` / `crossfadeVelCurve` / `crossfadeCCCurve` 三个字段一致）。
+fn read_crossfades(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Crossfade>, SfzError> {
+    let mut key_in = XfEndpoints::default();
+    let mut key_out = XfEndpoints::default();
+    let mut vel_in = XfEndpoints::default();
+    let mut vel_out = XfEndpoints::default();
+    let mut cc_in: BTreeMap<u8, XfEndpoints> = BTreeMap::new();
+    let mut cc_out: BTreeMap<u8, XfEndpoints> = BTreeMap::new();
+    let mut key_curve = XfCurve::DEFAULT;
+    let mut vel_curve = XfCurve::DEFAULT;
+    let mut cc_curve = XfCurve::DEFAULT;
+
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let name = name.as_ref();
+            match name {
+                "xf_keycurve" => {
+                    key_curve = OpcodeValue::new("xf_keycurve", value.clone(), line)
+                        .as_option(XfCurve::OPTIONS, XfCurve::ALLOWED)?;
+                    continue;
+                }
+                "xf_velcurve" => {
+                    vel_curve = OpcodeValue::new("xf_velcurve", value.clone(), line)
+                        .as_option(XfCurve::OPTIONS, XfCurve::ALLOWED)?;
+                    continue;
+                }
+                "xf_cccurve" => {
+                    cc_curve = OpcodeValue::new("xf_cccurve", value.clone(), line)
+                        .as_option(XfCurve::OPTIONS, XfCurve::ALLOWED)?;
+                    continue;
+                }
+                _ => {}
+            }
+
+            let endpoint = match name {
+                "xfin_lokey" => Some((&mut key_in, true)),
+                "xfin_hikey" => Some((&mut key_in, false)),
+                "xfout_lokey" => Some((&mut key_out, true)),
+                "xfout_hikey" => Some((&mut key_out, false)),
+                "xfin_lovel" => Some((&mut vel_in, true)),
+                "xfin_hivel" => Some((&mut vel_in, false)),
+                "xfout_lovel" => Some((&mut vel_out, true)),
+                "xfout_hivel" => Some((&mut vel_out, false)),
+                _ => None,
+            };
+            if let Some((slot, is_low)) = endpoint {
+                let parsed = read_xf_endpoint(name, value.as_ref(), line)?;
+                if is_low {
+                    slot.low = Some(parsed);
+                } else {
+                    slot.high = Some(parsed);
+                }
+                continue;
+            }
+
+            if let Some((direction, is_low, cc)) = parse_cc_crossfade_name(name) {
+                let parsed = read_xf_endpoint(name, value.as_ref(), line)?;
+                let slot = match direction {
+                    XfDirection::In => cc_in.entry(cc).or_default(),
+                    XfDirection::Out => cc_out.entry(cc).or_default(),
+                };
+                if is_low {
+                    slot.low = Some(parsed);
+                } else {
+                    slot.high = Some(parsed);
+                }
+            }
+        }
+    }
+
+    let mut crossfades = Vec::new();
+    for (axis, direction, endpoints, curve) in [
+        (XfAxis::Key, XfDirection::In, key_in, key_curve),
+        (XfAxis::Key, XfDirection::Out, key_out, key_curve),
+        (XfAxis::Velocity, XfDirection::In, vel_in, vel_curve),
+        (XfAxis::Velocity, XfDirection::Out, vel_out, vel_curve),
+    ] {
+        if let Some(range) = endpoints.resolve(direction) {
+            crossfades.push(Crossfade::new(axis, direction, range, curve));
+        }
+    }
+    for (cc, endpoints) in cc_in {
+        if let Some(range) = endpoints.resolve(XfDirection::In) {
+            crossfades.push(Crossfade::new(
+                XfAxis::Cc(cc),
+                XfDirection::In,
+                range,
+                cc_curve,
+            ));
+        }
+    }
+    for (cc, endpoints) in cc_out {
+        if let Some(range) = endpoints.resolve(XfDirection::Out) {
+            crossfades.push(Crossfade::new(
+                XfAxis::Cc(cc),
+                XfDirection::Out,
+                range,
+                cc_curve,
+            ));
+        }
+    }
+    Ok(crossfades)
+}
+
 fn read_u8(
     scopes: &Scopes<'_, '_>,
     name: &'static str,
@@ -1403,6 +1655,7 @@ mod tests {
             sw_down: None,
             sw_up: None,
             cc_gates: Vec::new(),
+            crossfades: Vec::new(),
             source_line: 1,
         }
     }
@@ -3294,6 +3547,284 @@ type=com.mda.Limiter
                     region.sample
                 );
                 assert_eq!(gain, region.velocity_gain(velocity), "not deterministic");
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // xfin_* / xfout_*（交叉淡化 → 振幅）
+    // ------------------------------------------------------------------
+
+    /// 固定 CC 读数的探针（判据用；`cc()` 是零分配的闭包）。
+    fn cc_value(value: u8) -> impl Fn(u8) -> u8 {
+        move |_| value
+    }
+
+    #[test]
+    fn a_region_without_any_xf_opcode_has_no_crossfade_and_identity_gain() {
+        let region = first_region("<region>sample=a.wav volume=-6");
+        assert!(region.crossfades.is_empty());
+        let query = RegionQuery::new(60, 100);
+        assert_eq!(region.crossfade_gain(&query), 1.0);
+    }
+
+    #[test]
+    fn a_lone_xfin_hicc_is_a_real_fade_in_from_zero() {
+        // 语料里的主导写法（只给上界）：下界取 `xfin_loccN` 的规范 Default 0。
+        let region = first_region("<region>sample=a.wav xfin_hicc1=100");
+        assert_eq!(
+            region.crossfades,
+            vec![Crossfade::new(
+                XfAxis::Cc(1),
+                XfDirection::In,
+                XfRange { low: 0, high: 100 },
+                XfCurve::Power,
+            )]
+        );
+        let probe = cc_value(0);
+        assert_eq!(
+            region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe)),
+            0.0
+        );
+        let probe = cc_value(100);
+        assert_eq!(
+            region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe)),
+            1.0
+        );
+        // 中点是等功率曲线 sqrt(0.5)，不是线性档的 0.5。
+        let probe = cc_value(50);
+        let half = region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe));
+        assert!((half - 0.5f32.sqrt()).abs() <= 1.0e-6, "{half}");
+    }
+
+    #[test]
+    fn a_lone_xfout_locc_is_a_real_fade_out_to_127() {
+        // `xfout_locc1` 的 Default 取 127（整个 xfout 族一致），理由见 crate::crossfade。
+        let region = first_region("<region>sample=a.wav xfout_locc1=64");
+        assert_eq!(
+            region.crossfades,
+            vec![Crossfade::new(
+                XfAxis::Cc(1),
+                XfDirection::Out,
+                XfRange { low: 64, high: 127 },
+                XfCurve::Power,
+            )]
+        );
+        let probe = cc_value(64);
+        assert_eq!(
+            region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe)),
+            1.0
+        );
+        let probe = cc_value(127);
+        assert_eq!(
+            region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn the_velocity_and_key_axes_use_the_query_fields() {
+        // 力度轴用 `xfin_lovel` / `xfin_hivel` 的显式端点（语料里的动态层写法）。
+        let velocity_fade =
+            first_region("<region>sample=a.wav xfin_lovel=45 xfin_hivel=65 amp_veltrack=0");
+        let query = RegionQuery::new(60, 45);
+        assert_eq!(velocity_fade.crossfade_gain(&query), 0.0);
+        let query = RegionQuery::new(60, 65);
+        assert_eq!(velocity_fade.crossfade_gain(&query), 1.0);
+
+        // 键盘轴用触发音号（`xfin_lokey` / `xfin_hikey`，语料里 0 次 ⇒ 规范完备性）。
+        let key_fade =
+            first_region("<region>sample=a.wav lokey=0 hikey=127 xfin_lokey=60 xfin_hikey=72");
+        assert_eq!(key_fade.crossfade_gain(&RegionQuery::new(60, 100)), 0.0);
+        assert_eq!(key_fade.crossfade_gain(&RegionQuery::new(72, 100)), 1.0);
+        assert_eq!(key_fade.crossfade_gain(&RegionQuery::new(40, 100)), 0.0);
+        assert_eq!(key_fade.crossfade_gain(&RegionQuery::new(100, 100)), 1.0);
+    }
+
+    #[test]
+    fn a_missing_cc_state_leaves_the_cc_axis_at_identity() {
+        // 与 CC 门控的严格策略不同：未提供状态只让该轴不贡献衰减，绝不静音整层。
+        let region = first_region("<region>sample=a.wav xfin_hicc1=100");
+        assert_eq!(region.crossfade_gain(&RegionQuery::new(60, 100)), 1.0);
+    }
+
+    #[test]
+    fn several_crossfades_multiply_in_a_fixed_order() {
+        // 顺序固定（键盘 in / out、力度 in / out、CC 升序 in、CC 升序 out），
+        // 因此同一个体得到同一个 `Vec`（ARCH-DET-001）。
+        let region = first_region(
+            "<region>sample=a.wav xfout_hicc2=100 xfin_locc2=0 xfin_hicc1=100 \
+             xfout_locc1=64 xfin_lovel=0 xfin_hivel=64 xfin_lokey=0 xfin_hikey=60",
+        );
+        let axes: Vec<(XfAxis, XfDirection)> = region
+            .crossfades
+            .iter()
+            .map(|crossfade| (crossfade.axis, crossfade.direction))
+            .collect();
+        assert_eq!(
+            axes,
+            vec![
+                (XfAxis::Key, XfDirection::In),
+                (XfAxis::Velocity, XfDirection::In),
+                (XfAxis::Cc(1), XfDirection::In),
+                (XfAxis::Cc(2), XfDirection::In),
+                (XfAxis::Cc(1), XfDirection::Out),
+                (XfAxis::Cc(2), XfDirection::Out),
+            ]
+        );
+        // 两段都生效时是**相乘**：CC1 的淡出段在 127 处归零，整条因此是 0；
+        // 在 50 处只有淡入段在动，读数是等功率曲线的 sqrt(0.5)。
+        let probe = cc_value(127);
+        assert_eq!(
+            region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe)),
+            0.0
+        );
+        let probe = cc_value(50);
+        let gain = region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe));
+        assert!((gain - 0.5f32.sqrt()).abs() <= 1.0e-6, "{gain}");
+    }
+
+    #[test]
+    fn the_curve_opcodes_are_per_axis_and_case_insensitive() {
+        // `xf_cccurve` 落在 CC 轴上；缺省 `power` 是 sqrt。
+        let linear =
+            first_region("<region>sample=a.wav xfin_locc1=0 xfin_hicc1=100 xf_cccurve=GAIN");
+        let probe = cc_value(25);
+        let gain = linear.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe));
+        assert!((gain - 0.25).abs() <= 1.0e-6, "{gain}");
+
+        // 力度轴**不**读 `xf_cccurve`：同一段在 `xf_velcurve=power`（缺省）下是 sqrt。
+        let velocity =
+            first_region("<region>sample=a.wav xfin_lovel=0 xfin_hivel=100 xf_cccurve=gain");
+        let gain = velocity.crossfade_gain(&RegionQuery::new(60, 25));
+        assert!((gain - 0.25f32.sqrt()).abs() <= 1.0e-6, "{gain}");
+    }
+
+    #[test]
+    fn the_crossfade_opcodes_follow_the_four_level_scope_chain() {
+        let instrument = parse_text(
+            "<global>xfin_hicc1=100 xf_cccurve=gain\n\
+             <master>xfin_hicc1=80\n\
+             <group>xfin_locc1=20\n\
+             <region>sample=a.wav xfin_hicc1=60",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            region.crossfades,
+            vec![Crossfade::new(
+                XfAxis::Cc(1),
+                XfDirection::In,
+                XfRange { low: 20, high: 60 },
+                XfCurve::Gain,
+            )],
+            "region wins for the high endpoint, group supplies the low one, \
+             and the global curve survives"
+        );
+    }
+
+    #[test]
+    fn a_curve_value_outside_the_whitelist_is_an_explicit_error() {
+        let outcome = parse_text(
+            "<region>sample=a.wav xfin_hicc1=100 xf_cccurve=linear",
+            &Default::default(),
+        );
+        assert!(
+            matches!(outcome, Err(SfzError::InvalidOption { ref opcode, .. }) if opcode == "xf_cccurve"),
+            "unexpected verdict: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn xf_endpoints_and_cc_indices_are_range_checked_explicitly() {
+        // 端点越界：明确 Err，不静默钳位。
+        let outcome = parse_text("<region>sample=a.wav xfin_hicc1=128", &Default::default());
+        assert!(
+            matches!(
+                outcome,
+                Err(SfzError::IntegerOutOfRange {
+                    ref opcode,
+                    value: 128,
+                    min: 0,
+                    max: 127,
+                    ..
+                }) if opcode == "xfin_hicc1"
+            ),
+            "unexpected verdict: {outcome:?}"
+        );
+        let outcome = parse_text("<region>sample=a.wav xfout_lovel=-1", &Default::default());
+        assert!(
+            matches!(outcome, Err(SfzError::IntegerOutOfRange { .. })),
+            "unexpected verdict: {outcome:?}"
+        );
+        // 非数字取值：明确 Err。
+        let outcome = parse_text("<region>sample=a.wav xfin_hivel=loud", &Default::default());
+        assert!(
+            matches!(outcome, Err(SfzError::InvalidInteger { .. })),
+            "unexpected verdict: {outcome:?}"
+        );
+        // CC 号 > 127 与畸形名字按未知 opcode 忽略（与 `loccN` / `hiccN` 同一条口径）；
+        // 但**认得出来的**名字配空取值是明确 Err（与 `locc1=` 同一条口径）。
+        let ignored =
+            first_region("<region>sample=a.wav xfin_hicc131=10 xfin_hicc=10 xfin_hiccfoo=10");
+        assert!(ignored.crossfades.is_empty(), "{:?}", ignored.crossfades);
+        let outcome = parse_text("<region>sample=a.wav xfin_hicc1=", &Default::default());
+        assert!(
+            matches!(outcome, Err(SfzError::InvalidInteger { ref opcode, .. }) if opcode == "xfin_hicc1"),
+            "unexpected verdict: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_crossfade_range_is_preserved_and_stays_inactive() {
+        // 两端同值：区间长度 0 ⇒ 不生效（不 panic、不除零、不改音量）。
+        let region = first_region("<region>sample=a.wav xfout_locc1=64 xfout_hicc1=64");
+        assert_eq!(
+            region.crossfades,
+            vec![Crossfade::new(
+                XfAxis::Cc(1),
+                XfDirection::Out,
+                XfRange { low: 64, high: 64 },
+                XfCurve::Power,
+            )]
+        );
+        let probe = cc_value(64);
+        assert_eq!(
+            region.crossfade_gain(&RegionQuery::new(60, 100).with_cc(&probe)),
+            1.0
+        );
+    }
+
+    #[test]
+    fn crossfade_gain_is_deterministic_and_never_panics_over_the_whole_domain() {
+        // 叶子 crate 红线：任意已解析输入都不得 panic，也不得产生 NaN / inf。
+        let instrument = parse_text(
+            "<region>sample=a.wav xfin_lovel=0 xfin_hivel=127 xfin_hicc1=64\n\
+             <region>sample=b.wav xfout_lovel=64 xfout_hivel=64 xfout_locc1=100\n\
+             <region>sample=c.wav xfin_lokey=60 xfin_hikey=60",
+            &Default::default(),
+        )
+        .expect("parses");
+        for region in instrument.regions() {
+            for note in [0u8, 1, 60, 127] {
+                for velocity in [0u8, 1, 64, 127] {
+                    for cc in [0u8, 1, 64, 127] {
+                        let probe = cc_value(cc);
+                        let query = RegionQuery::new(note, velocity).with_cc(&probe);
+                        let gain = region.crossfade_gain(&query);
+                        assert!(
+                            gain.is_finite() && (0.0..=1.0).contains(&gain),
+                            "{} gave {gain} at note {note} velocity {velocity} cc {cc}",
+                            region.sample
+                        );
+                        assert_eq!(
+                            gain.to_bits(),
+                            region.crossfade_gain(&query).to_bits(),
+                            "not deterministic"
+                        );
+                    }
+                }
             }
         }
     }

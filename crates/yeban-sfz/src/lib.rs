@@ -34,6 +34,14 @@
 //! [`Region::bend_ratio`]，字段也进 [`PlaybackSpec`]。轮值本身由调用方提供
 //! （本 crate 不接收 MIDI 输入）。
 //!
+//! 交叉淡化由 `xfin_*` / `xfout_*` 三族（键盘位置 / 力度 / MIDI CC，每族两个方向，
+//! 外加 `xf_keycurve` / `xf_velcurve` / `xf_cccurve` 三条曲线）带出，归约进
+//! [`Region::crossfades`]，求值见 [`Region::crossfade_gain`]，合并进
+//! [`PlaybackSpec::total_gain`] 的第三段 [`PlaybackSpec::crossfade_gain`]。
+//! `xfout_loccN` 的规范 Default 与同族其余 opcode 冲突、`power` 曲线的形状规范未定
+//! —— 两条取舍都登记在 [`crossfade`] 的模块文档里。改动前这一族被完全忽略；在登记的
+//! 1267 个可解析音色上它命中 68 个文件、7812 个 region（共 9259 段）。
+//!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2 ARCH-RT-001 / ARCH-RT-004
@@ -203,6 +211,35 @@
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
+//! 交叉淡化：`xfin_*` / `xfout_*` 按键盘位置、力度或 MIDI CC 缩放音量
+//! （规范缺省曲线 `power` 取等功率的 `sqrt`，见 [`crossfade`]）：
+//!
+//! ```
+//! use yeban_sfz::{ParseLimits, RegionQuery, RenderRates, XfAxis, XfDirection, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<region>key=36 sample=loud.wav xfout_locc1=64\n\
+//!      <region>key=36 sample=soft.wav xfin_hicc1=64",
+//!     &ParseLimits::default(),
+//! )?;
+//! let soft = &instrument.regions()[1];
+//! // 只给了一个端点 ⇒ 另一个取该族的规范缺省：淡入是 [0, 64]、淡出是 [64, 127]。
+//! assert_eq!(soft.crossfades[0].axis, XfAxis::Cc(1));
+//! assert_eq!(soft.crossfades[0].direction, XfDirection::In);
+//! let quiet = |_: u8| 0u8;
+//! let loud = |_: u8| 127u8;
+//! assert_eq!(soft.crossfade_gain(&RegionQuery::new(36, 100).with_cc(&quiet)), 0.0);
+//! assert_eq!(soft.crossfade_gain(&RegionQuery::new(36, 100).with_cc(&loud)), 1.0);
+//! // 选择只返回第一个匹配的 region：调制轮推满时它（大声层）已被淡出到 0，
+//! // 而小声层在同一个 CC 上正好是满幅 —— 两层随调制轮交叉。
+//! let play = instrument
+//!     .playback_for(RegionQuery::new(36, 100).with_cc(&loud), RenderRates::default())
+//!     .expect("region covers note 36");
+//! assert_eq!(play.region.sample, "loud.wav");
+//! assert_eq!(play.spec.crossfade_gain, 0.0);
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
 //! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
 //! ```no_run
 //! use yeban_sfz::{IncludeResolver, ParseLimits, parse_sources};
@@ -260,6 +297,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod crossfade;
 pub mod curve;
 pub mod effect;
 pub mod error;
@@ -270,6 +308,7 @@ pub mod playback;
 pub mod velocity;
 pub mod voice_pool;
 
+pub use crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange, fade_in, fade_out};
 pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};
 pub use error::SfzError;
