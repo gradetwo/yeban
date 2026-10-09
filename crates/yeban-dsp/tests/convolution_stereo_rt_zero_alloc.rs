@@ -3,8 +3,9 @@
 //! # 为什么需要一个独立文件
 //!
 //! `convolution_stereo` 是**新写**的模块，引擎**还没有**接线（核实方式：`docs/ledger/
-//! integration-rulings-notes.md:88` 的"未接线模块名"口径 + 本票复核，该处现记
-//! `drums` 一个模块名，`convolution` / `convolution_stereo` 都不在已接线清单里）。
+//! integration-rulings-notes.md` 的"未接线模块名"口径 —— 那段现位于**第 88 行**，
+//! 只记 `drums` 一个模块名；`convolution` / `convolution_stereo` 都不在已接线
+//! 清单里，本票复核一致）。
 //! 因此 `crates/yeban-engine/tests/rt_zero_alloc.rs` 那条判据**根本走不到**本器件，
 //! 它的"全 0"不构成这里的证据。本文件把同一套仪器**对准** `convolution_stereo`。
 //!
