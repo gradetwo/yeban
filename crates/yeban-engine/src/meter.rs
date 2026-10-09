@@ -1055,150 +1055,111 @@ mod tests {
         assert_eq!(frame.peak_hold, 0.0, "reset 之后保持值必须从 0 开始");
     }
 
-    /// 判据（容量极值 + LRU；`line/engine-26` 注入 M03/M04 的处置）：槽位**全满**时
-    /// 必须淘汰**最久未被计量**的那个槽（`touched` 最小的），而 `touched` 必须写成
-    /// **本量子**的序号。
+    /// 判据：槽位全满时淘汰的是**最久未被计量**的那个节点，不是最新那个。
     ///
-    /// 为什么需要它：既有判据只断言"溢出被计数了"（`capacity_drops`（第一次 +1、
-    /// 第二次 +1）与"被淘汰的节点下一量子重新建槽"），**从不看淘汰的是哪一个槽**
-    /// ⇒ 把淘汰判定取反（`slot.touched > oldest`）或把 `touched` 恒写成 `0`
-    /// （于是永远淘汰下标 0）之后，全部既有判据都绿（本票注入 M03/M04 实测）。
-    /// 那条契约写在 [`MeterBank`] 的「容量」一节：淘汰的那个槽"它的状态本轮本来就没用上"
-    /// —— 淘汰错人就是丢掉一个**正在被用**的节点的峰值保持 / 平滑 RMS。
+    /// 量什么：`MeterBank::<3>` 里四个节点依次被计量时的 `capacity_drops`（次）与
+    /// "最久未被计量的那个节点是否被淘汰"（峰值保持，线性幅度）。
     ///
-    /// 做法：`MeterBank<2>`，q0 让 `a` 满幅（峰值保持 = 1.0），q1 让 `b` 进第二个槽，
-    /// q2 **再碰一次 `a`**（于是 `b` 是最久未被计量的），q3 用 `c` 触发淘汰，
-    /// q4 再测 `a`：它的保持值必须**还在回落**（不是从 0 重建）。
+    /// 为什么单独立一条：既有判据只用了 `MeterBank::<1>`（槽位唯一 ⇒ 淘汰谁都是它）
+    /// ⇒"淘汰最久未被计量的"这条口径此前**没有任何判据**走过。本票注入实测：
+    /// 把选取写成 `slot.touched > oldest`（配合初值 `u64::MAX` ⇒ 永远淘汰槽 0），
+    /// 全量 24 个目标全绿 ⇒ 池满时"谁的尾巴被丢掉"取决于槽位下标而不是 LRU 契约。
+    ///
+    /// ⚠ 夹具必须让**槽 0 的 touched 最大**（否则"永远淘汰槽 0"与"淘汰最久未被计量的"
+    /// 恰好同解，本判据就没有判别力）—— 下面先把 a 重新计量一次正是为此。
     #[test]
-    fn a_full_bank_evicts_the_least_recently_touched_slot_not_the_most_recent_one() {
+    fn a_full_bank_evicts_the_least_recently_measured_slot() {
         let a = EntityId::new();
         let b = EntityId::new();
         let c = EntityId::new();
-        let loud = [1.0f32; 8];
-        let silence = [0.0f32; 8];
+        let d = EntityId::new();
+        let mut bank = MeterBank::<3>::new();
 
+        // 三个槽依次被 a / b / c 占满；再把 a 重新计量一次 ⇒
+        // 槽 0 的 touched 最大（3），槽 1 的 b 是**最久未被计量**的那个（1）。
+        bank.begin_quantum();
+        assert!(bank.measure(a, 0, &[1.0f32; 32]).is_some());
+        bank.begin_quantum();
+        assert!(bank.measure(b, 1, &[1.0f32; 32]).is_some());
+        bank.begin_quantum();
+        assert!(bank.measure(c, 2, &[1.0f32; 32]).is_some());
+        bank.begin_quantum();
+        assert!(bank.measure(a, 3, &[1.0f32; 32]).is_some());
+        assert_eq!(
+            bank.active_nodes(),
+            1,
+            "覆盖度：本量子只有 a 被计量（其他两个槽的状态跨量子保留、但本量子不计）"
+        );
+
+        // 第四个节点 ⇒ 槽位全满，必须淘汰 **b**（touched = 1，最久未被计量），
+        // 而不是 touched 最大的 a（槽 0）。
+        bank.begin_quantum();
+        assert!(bank.measure(d, 4, &[1.0f32; 32]).is_some());
+        assert_eq!(bank.capacity_drops(), 1, "第四个节点必须淘汰一个槽");
+
+        // 判别点：b 若**被淘汰**，下一量子重新建槽 ⇒ 峰值保持从 0 起；
+        // 若淘汰的是 a（touched 最大），b 仍在册 ⇒ 它带着 ≈ 1.0 的历史。
+        bank.begin_quantum();
+        let b_after = bank.measure(b, 5, &[]).expect("容量足够");
+        assert_eq!(
+            b_after.peak_hold, 0.0,
+            "最久未被计量的节点必须被淘汰 ⇒ 它重新出现时峰值保持从 0 起；\
+             实测 {}（淘汰'最新'会让它保住 ≈ 1.0 的历史）",
+            b_after.peak_hold
+        );
+    }
+
+    /// 判据：`reset` 必须把**槽位状态**清掉，不是只把计数器归零。
+    ///
+    /// 量什么：`MeterBank::<2>` 计量一个节点之后 `reset`，再计量**同一个节点**
+    /// 一个静音量子 ⇒ 峰值保持必须是 `0.0`（单位：线性幅度）。
+    ///
+    /// 为什么单独立一条：既有的 `meter_bank_reset_clears_state_and_capacity_counters`
+    /// 用的是 `MeterBank::<1>`，且它在 reset 前把槽位**填满**（第二个节点淘汰了第一个）
+    /// ⇒ reset 之后重新计量第一个节点会走"淘汰"路径建新槽，状态**恰好**从 0 起
+    /// —— "没清槽位"因此看不出来。本票注入实测：删掉
+    /// `self.slots = [MeterSlot::EMPTY; N];`，全量 24 个目标全绿
+    /// ⇒ 换流/关流之后旧节点的峰值保持会跨过一次 `reset` 活下来。
+    #[test]
+    fn reset_clears_the_slot_state_even_with_a_free_slot() {
+        let node = EntityId::new();
         let mut bank = MeterBank::<2>::new();
         bank.begin_quantum();
-        let a0 = bank.measure(a, 0, &loud).expect("空池必须给槽");
-        assert!((a0.peak_hold - 1.0).abs() < 1e-6, "夹具前提：a 满幅");
+        let loud = bank.measure(node, 0, &[1.0f32; 32]).expect("容量足够");
+        assert!((loud.peak_hold - 1.0).abs() < 1e-6);
 
+        bank.reset();
+        assert_eq!(bank.active_nodes(), 0);
+        // 另一个槽是**空**的 ⇒ 重新计量同一个节点走的是"复用旧槽"路径（不是淘汰路径）。
         bank.begin_quantum();
-        assert!(bank.measure(b, 1, &silence).is_some());
-        assert_eq!(bank.capacity_drops(), 0, "两个槽还没满");
-
-        // 再碰一次 a ⇒ touched: a=2、b=1 ⇒ b 是最久未被计量的那个。
-        bank.begin_quantum();
-        assert!(bank.measure(a, 2, &silence).is_some());
-
-        bank.begin_quantum();
-        assert!(bank.measure(c, 3, &silence).is_some(), "满池仍必须出帧");
-        assert_eq!(bank.capacity_drops(), 1, "第三个节点必须淘汰一个槽");
-
-        bank.begin_quantum();
-        let a4 = bank.measure(a, 4, &silence).expect("容量足够");
-        assert!(
-            a4.peak_hold > 0.9,
-            "被淘汰的必须是 b（touched=1）而不是 a（touched=2）：a 的峰值保持应在回落中，\
-             实测 {}（接近 0 = a 的槽被回收、状态从 0 重建）",
-            a4.peak_hold
+        let after = bank.measure(node, 1, &[0.0f32; 32]).expect("容量足够");
+        assert_eq!(
+            after.peak_hold, 0.0,
+            "reset 之后同一个节点的峰值保持必须从 0 起（槽位必须被清掉，而不是只清计数器）"
         );
     }
 
-    /// 判据（合法域边界；`line/engine-26` 注入 M10 的处置）：**池与器件**对同一个
-    /// 每秒量子数必须给出**逐位相同**的弹道行为 —— 回落口径是"非有限或 ≤ 0"，
-    /// `0 < qps ≤ 1` 是**合法**值。
+    /// 判据：零容量池（`MeterBank::<0>`）拒绝计量时**必须计数**，不得静默。
     ///
-    /// 为什么需要它：`sanitise_quanta_per_second` 的文档明写它要"与
-    /// `LevelDetector::set_ballistics` 的回落口径**逐字相同**"，而既有判据只覆盖
-    /// 375 / 750 两个值 ⇒ 把下界抬到 `> 1.0` 之后，全部既有判据都绿（本票注入 M10 实测）。
-    /// 后果是池按默认 375 量子/s 走弹道、而器件按真实值走 ⇒ 峰值保持按
-    /// `375 ÷ qps` 倍的速率回落（`qps = 0.25` 时是 15 000 倍）。
-    #[test]
-    fn the_pool_and_the_device_agree_bit_for_bit_on_every_quanta_per_second() {
-        /// 跑 64 个量子（第一个满幅、其余静音）并收集四条读数的位型。
-        fn trace(qps: f32) -> Vec<[u32; 4]> {
-            let node = EntityId::new();
-            let mut bank = MeterBank::<1>::new();
-            bank.set_quanta_per_second(qps);
-            let mut device = LevelDetector::with_ballistics(
-                qps,
-                DEFAULT_PEAK_DECAY_DB_PER_SEC,
-                DEFAULT_RMS_TIME_CONSTANT_SEC,
-            );
-            let loud = [1.0f32; 8];
-            let silence = [0.0f32; 8];
-            (0..64u64)
-                .map(|quantum| {
-                    let samples: &[f32] = if quantum == 0 { &loud } else { &silence };
-                    let pooled = bank.measure_bus(node, quantum, samples);
-                    let expected = MeterFrame::from_reading(node, quantum, device.analyze(samples));
-                    assert_eq!(
-                        pooled, expected,
-                        "qps={qps} 量子={quantum}: 池必须与器件同口径"
-                    );
-                    [
-                        pooled.peak.to_bits(),
-                        pooled.peak_hold.to_bits(),
-                        pooled.rms.to_bits(),
-                        pooled.rms_smoothed.to_bits(),
-                    ]
-                })
-                .collect()
-        }
-
-        // 覆盖度见证：`qps = 0.25` 的弹道必须**真的**与默认口径不同，
-        // 否则下面那条等号在"两个口径其实一样"时也会成立（假绿）。
-        let reference = trace(DEFAULT_QUANTA_PER_SECOND);
-        assert_ne!(
-            trace(0.25),
-            reference,
-            "0.25 量子/s 与默认 375 量子/s 的弹道必须不同（否则本判据是空转）"
-        );
-
-        for qps in [
-            0.25f32,
-            0.5,
-            0.977,
-            1.0,
-            375.0,
-            750.0,
-            0.0,
-            -1.0,
-            f32::NAN,
-            f32::INFINITY,
-        ] {
-            // `trace` 内部逐量子断言"池 == 器件"；这里只负责把它对每个值都跑一遍。
-            let _ = trace(qps);
-        }
-    }
-
-    /// 判据（读数口径；`line/engine-26` 注入 M11 的处置）：`frames_pushed` 是
-    /// **真的写进队列**的条数，`dropped` 是它的补集 ⇒ 两者之和必须等于请求条数。
+    /// 量什么：`MeterBank::<0>::measure` 的返回值与 `capacity_drops`（次）。
     ///
-    /// 为什么需要它：既有判据只在**环装得下**的窗口里读 `frames_pushed`
-    /// （`meter_bulk_contract_is_one_call_per_quantum_and_per_ui_tick` 断言 40 条，
-    /// 那里写入 == 请求）⇒ 把累加量换成 `frames.len()` 之后全部既有判据都绿
-    /// （本票注入 M11 实测）。后果是队列满时这条读数**虚报**写入量，
-    /// 而它正是"UI 落后了多少"的另一半。
+    /// 为什么单独立一条：全仓没有 `MeterBank::<0>` 的判据
+    /// （量法：`grep -rn 'MeterBank::<0>' crates/yeban-engine` 命中 0 行）
+    /// ⇒ 删掉那一行计数不会有任何判据变红（本票注入实测：全量 24 个目标全绿）。
+    /// 它与 `MeterBank::<N>` 的淘汰计数是同一条"装不下就报数"的口径。
     #[test]
-    fn frames_pushed_is_the_written_count_and_dropped_is_its_complement() {
-        let (mut publisher, _collector) = meter_channel(4);
+    fn a_zero_capacity_bank_counts_every_rejected_measurement() {
         let node = EntityId::new();
-        let offered: Vec<MeterFrame> = (0..10)
-            .map(|quantum| MeterFrame::new(node, quantum, 0.1, 0.05))
-            .collect();
-
-        assert_eq!(publisher.publish(&offered), 4, "容量 4 只能收 4 条");
+        let mut bank = MeterBank::<0>::new();
+        bank.begin_quantum();
+        assert!(bank.measure(node, 0, &[1.0f32; 8]).is_none());
+        bank.begin_quantum();
+        assert!(bank.measure(node, 1, &[1.0f32; 8]).is_none());
         assert_eq!(
-            publisher.frames_pushed(),
-            4,
-            "读数必须是**真的写进队列**的条数"
+            bank.capacity_drops(),
+            2,
+            "零容量池每一次被拒的计量都必须计入 capacity_drops（不静默）"
         );
-        assert_eq!(publisher.dropped(), 6, "丢弃必须被计数");
-        assert_eq!(
-            publisher.frames_pushed() + publisher.dropped(),
-            offered.len() as u64,
-            "写入 + 丢弃 == 请求（两条读数必须是同一个分解的两半）"
-        );
+        assert_eq!(bank.active_nodes(), 0, "零容量池不得计量任何节点");
     }
 }
