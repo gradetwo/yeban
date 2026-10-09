@@ -1054,4 +1054,112 @@ mod tests {
         let frame = bank.measure(node, 1, &[0.0f32; 4]).expect("容量足够");
         assert_eq!(frame.peak_hold, 0.0, "reset 之后保持值必须从 0 开始");
     }
+
+    /// 判据：槽位全满时淘汰的是**最久未被计量**的那个节点，不是最新那个。
+    ///
+    /// 量什么：`MeterBank::<3>` 里四个节点依次被计量时的 `capacity_drops`（次）与
+    /// "最久未被计量的那个节点是否被淘汰"（峰值保持，线性幅度）。
+    ///
+    /// 为什么单独立一条：既有判据只用了 `MeterBank::<1>`（槽位唯一 ⇒ 淘汰谁都是它）
+    /// ⇒"淘汰最久未被计量的"这条口径此前**没有任何判据**走过。本票注入实测：
+    /// 把选取写成 `slot.touched > oldest`（配合初值 `u64::MAX` ⇒ 永远淘汰槽 0），
+    /// 全量 24 个目标全绿 ⇒ 池满时"谁的尾巴被丢掉"取决于槽位下标而不是 LRU 契约。
+    ///
+    /// ⚠ 夹具必须让**槽 0 的 touched 最大**（否则"永远淘汰槽 0"与"淘汰最久未被计量的"
+    /// 恰好同解，本判据就没有判别力）—— 下面先把 a 重新计量一次正是为此。
+    #[test]
+    fn a_full_bank_evicts_the_least_recently_measured_slot() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let c = EntityId::new();
+        let d = EntityId::new();
+        let mut bank = MeterBank::<3>::new();
+
+        // 三个槽依次被 a / b / c 占满；再把 a 重新计量一次 ⇒
+        // 槽 0 的 touched 最大（3），槽 1 的 b 是**最久未被计量**的那个（1）。
+        bank.begin_quantum();
+        assert!(bank.measure(a, 0, &[1.0f32; 32]).is_some());
+        bank.begin_quantum();
+        assert!(bank.measure(b, 1, &[1.0f32; 32]).is_some());
+        bank.begin_quantum();
+        assert!(bank.measure(c, 2, &[1.0f32; 32]).is_some());
+        bank.begin_quantum();
+        assert!(bank.measure(a, 3, &[1.0f32; 32]).is_some());
+        assert_eq!(
+            bank.active_nodes(),
+            1,
+            "覆盖度：本量子只有 a 被计量（其他两个槽的状态跨量子保留、但本量子不计）"
+        );
+
+        // 第四个节点 ⇒ 槽位全满，必须淘汰 **b**（touched = 1，最久未被计量），
+        // 而不是 touched 最大的 a（槽 0）。
+        bank.begin_quantum();
+        assert!(bank.measure(d, 4, &[1.0f32; 32]).is_some());
+        assert_eq!(bank.capacity_drops(), 1, "第四个节点必须淘汰一个槽");
+
+        // 判别点：b 若**被淘汰**，下一量子重新建槽 ⇒ 峰值保持从 0 起；
+        // 若淘汰的是 a（touched 最大），b 仍在册 ⇒ 它带着 ≈ 1.0 的历史。
+        bank.begin_quantum();
+        let b_after = bank.measure(b, 5, &[]).expect("容量足够");
+        assert_eq!(
+            b_after.peak_hold, 0.0,
+            "最久未被计量的节点必须被淘汰 ⇒ 它重新出现时峰值保持从 0 起；\
+             实测 {}（淘汰'最新'会让它保住 ≈ 1.0 的历史）",
+            b_after.peak_hold
+        );
+    }
+
+    /// 判据：`reset` 必须把**槽位状态**清掉，不是只把计数器归零。
+    ///
+    /// 量什么：`MeterBank::<2>` 计量一个节点之后 `reset`，再计量**同一个节点**
+    /// 一个静音量子 ⇒ 峰值保持必须是 `0.0`（单位：线性幅度）。
+    ///
+    /// 为什么单独立一条：既有的 `meter_bank_reset_clears_state_and_capacity_counters`
+    /// 用的是 `MeterBank::<1>`，且它在 reset 前把槽位**填满**（第二个节点淘汰了第一个）
+    /// ⇒ reset 之后重新计量第一个节点会走"淘汰"路径建新槽，状态**恰好**从 0 起
+    /// —— "没清槽位"因此看不出来。本票注入实测：删掉
+    /// `self.slots = [MeterSlot::EMPTY; N];`，全量 24 个目标全绿
+    /// ⇒ 换流/关流之后旧节点的峰值保持会跨过一次 `reset` 活下来。
+    #[test]
+    fn reset_clears_the_slot_state_even_with_a_free_slot() {
+        let node = EntityId::new();
+        let mut bank = MeterBank::<2>::new();
+        bank.begin_quantum();
+        let loud = bank.measure(node, 0, &[1.0f32; 32]).expect("容量足够");
+        assert!((loud.peak_hold - 1.0).abs() < 1e-6);
+
+        bank.reset();
+        assert_eq!(bank.active_nodes(), 0);
+        // 另一个槽是**空**的 ⇒ 重新计量同一个节点走的是"复用旧槽"路径（不是淘汰路径）。
+        bank.begin_quantum();
+        let after = bank.measure(node, 1, &[0.0f32; 32]).expect("容量足够");
+        assert_eq!(
+            after.peak_hold, 0.0,
+            "reset 之后同一个节点的峰值保持必须从 0 起（槽位必须被清掉，而不是只清计数器）"
+        );
+    }
+
+    /// 判据：零容量池（`MeterBank::<0>`）拒绝计量时**必须计数**，不得静默。
+    ///
+    /// 量什么：`MeterBank::<0>::measure` 的返回值与 `capacity_drops`（次）。
+    ///
+    /// 为什么单独立一条：全仓没有 `MeterBank::<0>` 的判据
+    /// （量法：`grep -rn 'MeterBank::<0>' crates/yeban-engine` 命中 0 行）
+    /// ⇒ 删掉那一行计数不会有任何判据变红（本票注入实测：全量 24 个目标全绿）。
+    /// 它与 `MeterBank::<N>` 的淘汰计数是同一条"装不下就报数"的口径。
+    #[test]
+    fn a_zero_capacity_bank_counts_every_rejected_measurement() {
+        let node = EntityId::new();
+        let mut bank = MeterBank::<0>::new();
+        bank.begin_quantum();
+        assert!(bank.measure(node, 0, &[1.0f32; 8]).is_none());
+        bank.begin_quantum();
+        assert!(bank.measure(node, 1, &[1.0f32; 8]).is_none());
+        assert_eq!(
+            bank.capacity_drops(),
+            2,
+            "零容量池每一次被拒的计量都必须计入 capacity_drops（不静默）"
+        );
+        assert_eq!(bank.active_nodes(), 0, "零容量池不得计量任何节点");
+    }
 }

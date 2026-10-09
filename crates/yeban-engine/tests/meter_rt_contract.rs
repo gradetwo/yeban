@@ -22,8 +22,12 @@
 //! | S7 | `drain_latest` 抽干整批且自身零分配 | 在 collector 里分配临时 `Vec` |
 //! | S8 | 丢帧读数在**运行时路径**上可读（`EngineStats::meter_dropped_frames`），且 `meter_frames + dropped == 本应发布帧数`；两个臂的窗口都零分配 | 把 `stats()` 的该字段写死 `0`，或把它接到 `meter_capacity_drops` |
 //! | S9 | **换采样率之后才第一次被计量的节点**必须用新采样率的弹道：96 kHz 下"只发布一份快照"与"再发布一份等价快照"的电平帧逐位相同 | 让 `MeterSlot::fresh` 回到 `LevelDetector::new()`（器件默认 375 量子/s） |
+//! | S10 | 母线电平**立体声联动**：只有**右**声道有信号时峰值/均方必须按那个声道报数（`line/engine-27` 追加） | 把 `measure_bus_stereo` 的 `analyze_stereo(left, right)` 换成 `analyze(left)`（实测变红，见该场景文档） |
+//! | S11 | **快照的采样率必须转发到电平池**：96 kHz 的每量子释放乘子必须是 48 kHz 的**平方根**（`line/engine-27` 追加） | 把 `render_block` 的 `bank.set_quanta_per_second(quanta_per_second)` 写死 `375.0`（实测变红，见该场景文档） |
 //!
 //! 覆盖度自检（S1 末尾）：quanta / 帧数必须真的达到压测规模，避免"窗口里什么都没跑"的假绿。
+
+mod support;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -696,6 +700,157 @@ fn scenario_ballistics_follow_the_armed_sample_rate(report: &mut Report) {
     }
 }
 
+/// S10：母线电平**立体声联动**（`MeterBank::measure_bus_stereo`）：峰值取两声道最大，
+/// 均方按两声道平均。
+///
+/// 量什么：`MeterBank::<8>` 在"只有**右**声道有信号"时的 `peak` / `rms`
+/// （单位：线性幅度），以及反方向与两路满幅两个对照点。
+///
+/// 为什么单独立一条：`render_block` 步骤 3c 正是把这个函数接到**两条**声道上
+/// （`measure_bus_stereo(master, quantum, block.left(), block.right())`）。
+/// 既有的电平判据只喂过"左满 / 右零"的输入 —— **只读左声道**也全绿
+/// （本票注入实测：`analyze_stereo(left, right)` 改成 `analyze(left)`，
+/// 全量 24 个目标里无一条变红）⇒ "右声道在母线计量里消失"此前没有任何判据。
+fn scenario_bus_meter_is_stereo_linked(report: &mut Report) {
+    let master = EntityId::new();
+    let mut bank = MeterBank::<8>::new();
+
+    // 只有**右**声道有信号 ⇒ 联动峰值必须等于右声道的峰值（只读左会得到 ~0）。
+    let right_only = bank.measure_bus_stereo(master, 0, &[0.0f32; 64], &[0.75f32; 64]);
+    report.check(
+        right_only.is_sane(),
+        format!("S10 右声道独有信号的母线帧必须有限: {right_only:?}"),
+    );
+    report.check(
+        (right_only.peak - 0.75).abs() < 1e-6,
+        format!(
+            "S10 母线峰值必须取两声道最大（右声道独有 ⇒ 0.75），实际 {}",
+            right_only.peak
+        ),
+    );
+    // 均方按两声道平均 ⇒ rms = sqrt((0² + 0.75²) / 2) = 0.75 / √2。
+    let expected_rms = 0.75 / std::f32::consts::SQRT_2;
+    report.check(
+        (right_only.rms - expected_rms).abs() < 1e-5,
+        format!(
+            "S10 母线均方必须按两声道平均: 期望 rms={expected_rms}, 实际 {}",
+            right_only.rms
+        ),
+    );
+
+    // 反向：只有**左**声道有信号 —— 同一条契约的另一半。
+    let left_only = bank.measure_bus_stereo(master, 1, &[0.5f32; 64], &[0.0f32; 64]);
+    let expected_left_rms = 0.5 / std::f32::consts::SQRT_2;
+    report.check(
+        (left_only.peak - 0.5).abs() < 1e-6 && (left_only.rms - expected_left_rms).abs() < 1e-5,
+        format!("S10 左声道独有信号的母线帧必须同口径: {left_only:?}"),
+    );
+
+    // 覆盖度：两声道都给满幅 ⇒ 峰值与均方都仍是满幅（**不是**两路相加）。
+    let both = bank.measure_bus_stereo(master, 2, &[1.0f32; 64], &[1.0f32; 64]);
+    report.check(
+        (both.peak - 1.0).abs() < 1e-6 && (both.rms - 1.0).abs() < 1e-5,
+        format!("S10 两声道同为满幅时峰值/均方都必须是满幅: {both:?}"),
+    );
+    println!(
+        "[meter-rt] S10 母线立体声联动: 右独有 peak={} rms={}；两路满幅 peak={} rms={}",
+        right_only.peak, right_only.rms, both.peak, both.rms
+    );
+}
+
+/// 一条臂的**每量子释放乘子**（线性幅度之比，无量纲）与拿到的电平帧数。
+///
+/// 跑法：96 kHz / 48 kHz 的整份 `filled_project` 各跑 900 个量子，取该轨
+/// `peak > 0` 的**最后**一个量子之后连续两个静音量子的 `peak_hold` 之比 ——
+/// 静音窗口里 `peak_hold[q+1] = peak_hold[q] × 释放乘子`，因此这个比值就是
+/// 器件当前的每量子释放乘子（与电平状态无关）。
+fn release_multiplier(rate: SampleRate) -> (f32, usize) {
+    const QUANTA: usize = 300;
+    // 夹具刻意用**一条 120 tick 的短音符**（48 kHz 下 3 000 样本 ≈ 23 个量子；
+    // 96 kHz 下 6 000 样本 ≈ 47 个量子）：`filled_project` 的音符在 900 个量子内
+    // **一直出声** ⇒ 静音窗口不存在，无法读"每量子释放乘子"。
+    let fixture = support::note_project(&[support::NoteSpec::at(0, 120, 69, 127)]);
+    let track = fixture.track;
+    let mut project = fixture.project.clone();
+    project.audio_config.sample_rate = rate;
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具快照");
+    let slot = SnapshotSlot::new(snapshot);
+    let (retire, _queue) = retire_channel(64);
+    let (_sender, receiver) = event_channel(64);
+    let (publisher, mut collector) = meter_channel(65_536);
+    let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+
+    let mut output = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+    let mut frames = Vec::with_capacity(QUANTA);
+    for _ in 0..QUANTA {
+        runtime.process_quantum(&mut output, 2);
+        let mut scratch = [MeterFrame::default(); SCRATCH_METERS];
+        let drained = collector.tick(&mut scratch);
+        if let Some(frame) = scratch[..drained].iter().find(|frame| frame.node == track) {
+            frames.push(*frame);
+        }
+    }
+    let last_sound = frames
+        .iter()
+        .rposition(|frame| frame.peak > 0.0)
+        .expect("夹具必须真的出声");
+    let index = last_sound + 1;
+    assert!(
+        index + 2 < frames.len(),
+        "静音窗口必须够长（last_sound={last_sound} 帧数={}）",
+        frames.len()
+    );
+    (
+        frames[index + 2].peak_hold / frames[index + 1].peak_hold,
+        frames.len(),
+    )
+}
+
+/// S11：电平弹道必须跟随**快照的采样率**（`render_block` 的采样率转发）。
+///
+/// 量什么：同一条轨的**每量子释放乘子**（线性幅度之比，无量纲）在 48 kHz 与
+/// 96 kHz 两条臂上的读数。契约：每量子释放乘子 = `10^(−1 / qps)`，
+/// `qps = 采样率 ÷ 128` ⇒ 96 kHz 的乘子必须是 48 kHz 乘子的**平方根**。
+///
+/// 为什么单独立一条：`MeterBank::set_quanta_per_second` **自己**由 `src/meter.rs`
+/// 的单元判据覆盖（`a_slot_activated_after_the_rate_change_uses_the_armed_ballistics`），
+/// 但"`render_block` 把快照的采样率**转发**给它"这一步挡不住注入：
+/// 本票注入实测（已还原）—— 把 `bank.set_quanta_per_second(quanta_per_second)`
+/// 改写成 `bank.set_quanta_per_second(375.0)`（硬编码 48 kHz），本文件与全量
+/// 24 个目标**全绿**。后果：96 kHz 工程的峰值保持按 40 dB/s 衰减（契约值的两倍）、
+/// 平滑 RMS 的时间常数减半。
+fn scenario_ballistics_forward_the_snapshot_sample_rate(report: &mut Report) {
+    let (m48, n48) = release_multiplier(SampleRate::Hz48000);
+    let (m96, n96) = release_multiplier(SampleRate::Hz96000);
+    // 契约值：20 dB/s ÷ (20 · 375 量子/s) = 1/375 个数量级 ⇒ 10^(−1/375)。
+    let expected48 = 10f32.powf(-1.0 / 375.0);
+
+    report.check(
+        n48 == 300 && n96 == 300,
+        format!("S11 覆盖度：两臂都必须每个量子都拿到该轨的电平帧（{n48} / {n96}）"),
+    );
+    report.check(
+        m48 > 0.0 && m48 < 1.0 && m96 > 0.0 && m96 < 1.0,
+        format!("S11 覆盖度：两臂都必须真的在释放（m48={m48} m96={m96}）"),
+    );
+    report.check(
+        (m48 - expected48).abs() < 1e-5,
+        format!("S11 48 kHz 的每量子释放乘子应 = {expected48}，实际 {m48}"),
+    );
+    report.check(
+        (m96 - m48.sqrt()).abs() < 1e-5,
+        format!(
+            "S11 96 kHz 的每量子释放乘子必须是 48 kHz 的平方根（弹道必须跟随快照采样率）: \
+             m48={m48} 期望 m96={} 实际 {m96}",
+            m48.sqrt()
+        ),
+    );
+    println!(
+        "[meter-rt] S11 弹道转发: m48={m48} m96={m96} 期望 m96={}",
+        m48.sqrt()
+    );
+}
+
 fn main() -> ExitCode {
     let mut report = Report::new();
 
@@ -706,6 +861,8 @@ fn main() -> ExitCode {
     scenario_meter_drop_readout(&mut report);
     scenario_real_levels_and_zero_alloc_consumer(&mut report);
     scenario_ballistics_follow_the_armed_sample_rate(&mut report);
+    scenario_bus_meter_is_stereo_linked(&mut report);
+    scenario_ballistics_forward_the_snapshot_sample_rate(&mut report);
 
     if report.failures.is_empty() {
         println!(

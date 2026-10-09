@@ -748,4 +748,31 @@ mod tests {
             fresh_left[3_999]
         );
     }
+
+    /// 判据 ⑨：`0.0` 是**合法**增益（静音），不是非法值。
+    ///
+    /// 量什么：`ParamTable::accept(…, 0.0, …)` 的返回值、`rejections`（次）与
+    /// 目标值（线性幅度）。契约原文是"非有限 / **负**数"这两类才非法 ⇒
+    /// `0.0` 必须被接受并真的走到目标。
+    ///
+    /// 为什么单独立一条：既有判据只喂过 `NaN` / `-0.5` / `1.0` / `0.25` / `-1.0`
+    /// ⇒ 把 `value < 0.0` 改 `value <= 0.0` 没有任何判据变红
+    /// （本票注入实测：全量 24 个目标全绿）。后果是"把一条轨拉到静音"的
+    /// 自动化事件被整条丢弃，推子停在旧值。
+    #[test]
+    fn a_zero_gain_is_accepted_and_reaches_the_target() {
+        let track = EntityId::new();
+        let mut table = ParamTable::new(SR);
+        assert_eq!(
+            table.accept(address(track, TRACK_GAIN_SLOT), 0.0, EntityId::new()),
+            ParamOutcome::Accepted,
+            "0.0（静音）必须是合法增益 —— 非法的只有非有限与负数"
+        );
+        assert_eq!(table.rejections(), 0, "0.0 不得被计成非法值");
+        assert_eq!(table.target(track), Some(0.0), "目标必须真的是 0.0");
+        // 覆盖度：0.0 真的作用到样本上（不是"接受了但没接线"）。
+        let mut out = [1.0f32; 12_000];
+        assert_eq!(table.apply(track, &mut out), 12_000, "槽位必须真的乘过样本");
+        assert_eq!(out[11_999], 0.0, "静音目标必须让样本吸附到 0.0");
+    }
 }

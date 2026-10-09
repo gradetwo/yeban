@@ -32,6 +32,7 @@
 //! | P11 | 主总线槽位的地址空间：一条轨带 `MASTER_GAIN_SLOT`、主总线带 `TRACK_GAIN_SLOT`、主总线带别的槽位号、主总线的非法值 —— 四种口径的输出与接线前**逐字节相同**且被**计数**（不占逐轨槽位） | 串用两个槽位号也接受 / 非法值也 `set_target` / 不计数 |
 //! | P12 | **主总线自动化的确定性**：同样的工程 + 同样的事件序列 ⇒ 两次独立装配的两条声道都逐位相同 | 引入真熵源 / 让事件顺序影响结果 |
 //! | P13 | **先换采样率、后武装主总线槽位**：新采样率上的 `α` 与"一开始就在该采样率"逐位相同（`armed_master_param_gain` 等号） | 快照边界只把新采样率转发给**已武装**的主总线槽位（判据 ⑧ 钉住的那条不对称） |
+//! | P14 | **参数极值不得让母线出现非有限样本**：逐轨槽与主总线槽各推 `1.0e20`（两个合法值）⇒ 母线上必然 `±∞`，但输出必须**全有限**（`NaN` 与非有限样本各 0 条） | 删掉 `render_block` 里 `saturate_bus_to_finite(...)` 那一行**调用**（函数本体的判据都在 `src/rt.rs`，全是直接调用，**没有**一条走调用点） |
 //!
 //! ## 覆盖范围（**明说**）
 //!
@@ -47,6 +48,7 @@
 mod support;
 
 use support::{NoteSpec, note_project, render};
+use yeban_engine::level::MAX_LINEAR_MAGNITUDE;
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
 use yeban_engine::param::{MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT};
@@ -606,4 +608,80 @@ fn a_master_slot_armed_after_a_sample_rate_change_uses_the_new_sample_rate() {
     );
     let _ = late.queue.drain(64);
     let _ = fresh.queue.drain(64);
+}
+
+/// 判据 P14：**参数极值**不得让母线出现非有限样本 —— `render_block` 的母线有限值
+/// 守卫必须真的**接在限制器输入侧**。
+///
+/// 量什么：整段渲染里 `NaN` 与非有限样本的**条数**（单位：条），以及
+/// `limiter_max_reduction`（无量纲，1.0 = 全压）。
+///
+/// 构造：逐轨槽与主总线槽各推一个 `1.0e20` 的乘子。两者都是**合法**值（有限、非负），
+/// 但它们在母线上**相乘**（先逐轨 `apply`、后 `apply_master`）⇒ 母线样本
+/// ≈ `样本 × 1e20 × 1e20 = 样本 × 1e40`，超过 `f32::MAX`（≈ 3.4e38）⇒ `±∞`。
+/// 守卫把 `±∞` 收进 `±MAX_LINEAR_MAGNITUDE`（16.0）⇒ 限制器看到的是有限值。
+/// 少了这一步，限制器的窗口峰值 `W = ∞` ⇒ 目标增益 `T / W = 0` ⇒ `∞ · 0 = NaN`
+/// **静默**污染整条母线（`4309018` 修的正是这个缺陷）。
+///
+/// 为什么单独立一条：`src/rt.rs` 的三条守卫判据都**直接调用**
+/// `saturate_bus_to_finite`（函数本体），**没有**一条判据走 `render_block` 的
+/// 调用点 ⇒ 删掉那一行调用，全量 24 个目标全绿（本票注入实测，已还原）。
+#[test]
+fn an_extreme_gain_must_not_push_the_bus_out_of_the_finite_range() {
+    const HUGE: f32 = 1.0e20;
+    let fixture = note_project(&[NOTE]);
+    let mut rig = ParamRig::new(&fixture.project, 1);
+    assert_eq!(rig.set_param(fixture.track, TRACK_GAIN_SLOT, HUGE), 1);
+    assert_eq!(rig.set_param(fixture.master, MASTER_GAIN_SLOT, HUGE), 1);
+    rig.quanta(QUANTA);
+
+    let stats = rig.runtime.stats();
+    let track_gain = rig
+        .runtime
+        .armed_param_gain(&fixture.track)
+        .expect("逐轨槽位必须已建立");
+    let master_gain = rig
+        .runtime
+        .armed_master_param_gain()
+        .expect("主总线槽位必须已武装");
+    // 覆盖度：两个乘子必须**真的**吸附到极端值（否则"无非有限样本"是空转）。
+    assert!(
+        track_gain > HUGE / 2.0,
+        "覆盖度：逐轨乘子必须到达极端值，实测 {track_gain:e}"
+    );
+    assert!(
+        master_gain > HUGE / 2.0,
+        "覆盖度：主总线乘子必须到达极端值，实测 {master_gain:e}"
+    );
+    // 覆盖度：`1e20 × 1e20 = 1e40 > f32::MAX(≈ 3.4e38)` ⇒ 母线上必然出现 `±∞`，
+    // 而限制器随后必须**强压** —— 这是"守卫真的把 `∞` 收进了有限域"的可见后果。
+    assert!(
+        stats.limiter_max_reduction > 0.5,
+        "覆盖度：饱和后的 ±{MAX_LINEAR_MAGNITUDE} 必须让母线限制器强压，\
+         实测 limiter_max_reduction={}",
+        stats.limiter_max_reduction
+    );
+    let non_finite = rig
+        .left
+        .iter()
+        .chain(rig.right.iter())
+        .filter(|sample| !sample.is_finite())
+        .count();
+    let nan = rig
+        .left
+        .iter()
+        .chain(rig.right.iter())
+        .filter(|sample| sample.is_nan())
+        .count();
+    assert_eq!(nan, 0, "母线不得出现 NaN（{nan} 条）");
+    assert_eq!(non_finite, 0, "母线不得出现非有限样本（{non_finite} 条）");
+    assert!(
+        rig.left.iter().any(|sample| *sample != 0.0),
+        "极端增益下仍然必须出声（不是静音欺骗）"
+    );
+    println!(
+        "[engine-param/P14] 极端增益 {HUGE:e} × {HUGE:e}: 非有限={non_finite} NaN={nan} \
+         最大压限={:.4} 当前压限={:.4}",
+        stats.limiter_max_reduction, stats.limiter_current_reduction
+    );
 }
