@@ -48,6 +48,7 @@
 //! | [`reverb`] | Freeverb 风格混响 | `dsp/reverb.rs` |
 //! | [`convolution`] | 均匀分块卷积（UPOLA + 频域延迟线）：真实脉冲响应卷积混响的核，**零延迟**、逐块零分配 | 新写 [ARCH-RT-001, ARCH-PDC-001] |
 //! | [`convolution_stereo`] | 真立体声（四通路）卷积：四条 [`convolution`] 按 2×2 矩阵装配（`h_LL`/`h_LR`/`h_RL`/`h_RR`），**零延迟**、逐样本零分配 | 装配 [ARCH-RT-001, ARCH-PDC-001] |
+//! | [`convolution_reverb`] | 卷积混响**外壳**：四通路核 ＋ 湿路预延迟（≤100 ms）＋ 独立湿/干电平 ＋ IR 增益（dB），**零延迟**、逐样本零分配 | 装配 [ARCH-RT-001, ARCH-PDC-001] |
 //! | [`shaping`] | bitcrusher / shaping EQ / transient shaper | `fx_shaping.rs` |
 //! | [`compressor`] | 前馈式压缩器：软膝静态曲线 + RMS 检波 + 线性域增益弹道（**零延迟**） | 新写 [ARCH-RT-001]；本机无移植源，见该模块 §8 |
 //! | [`channel_strip`] | 通道条：输入增益 → EQ → 滤波 → 动态（压缩） → 输出增益（**组合**既有器件，零延迟） | 组合 [ARCH-DSP-001]，见该模块 §2 |
@@ -69,6 +70,7 @@ pub mod channel_strip;
 pub mod comb;
 pub mod compressor;
 pub mod convolution;
+pub mod convolution_reverb;
 pub mod convolution_stereo;
 pub mod delay;
 pub mod drums;
