@@ -40,6 +40,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::curve::{Curve, CurvePoint};
+use crate::effect::{Effect, EffectBuilder};
 use crate::error::SfzError;
 use crate::instrument::{Instrument, Region, build_region};
 
@@ -77,6 +78,12 @@ pub const DEFAULT_MAX_WARNINGS: usize = 256;
 /// **needs（集成者）**：本上限由本切片新增，`docs/ledger/sfz-core-notes.md` 第 4 节的
 /// 上限表需要补一行（该文件由集成者独占；本工作线的可改写范围只有 `crates/yeban-sfz/**`）。
 pub const DEFAULT_MAX_CURVES: usize = 4_096;
+/// 最大 `<effect>` 数量 (4096)：与 [`DEFAULT_MAX_CURVES`] 同理 —— 每个 `<effect>` 段都是
+/// 独立作用域，段内行数受 [`DEFAULT_MAX_OPCODES_PER_HEADER`] 约束，但**段数**不受它约束。
+///
+/// **needs（集成者）**：本上限由本切片新增，`docs/ledger/sfz-core-notes.md` 第 4 节的
+/// 上限表需要补一行（该文件由集成者独占）。
+pub const DEFAULT_MAX_EFFECTS: usize = 4_096;
 
 /// 解析器硬性上限。
 ///
@@ -90,6 +97,8 @@ pub struct ParseLimits {
     pub max_regions: usize,
     /// 最大 `<curve>` 数量，见 [`DEFAULT_MAX_CURVES`]。
     pub max_curves: usize,
+    /// 最大 `<effect>` 数量，见 [`DEFAULT_MAX_EFFECTS`]。
+    pub max_effects: usize,
     /// 单作用域最大 opcode 数，见 [`DEFAULT_MAX_OPCODES_PER_HEADER`]。
     pub max_opcodes_per_header: usize,
     /// 最大 `#define` 变量数，见 [`DEFAULT_MAX_DEFINES`]。
@@ -118,6 +127,7 @@ impl Default for ParseLimits {
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             max_regions: DEFAULT_MAX_REGIONS,
             max_curves: DEFAULT_MAX_CURVES,
+            max_effects: DEFAULT_MAX_EFFECTS,
             max_opcodes_per_header: DEFAULT_MAX_OPCODES_PER_HEADER,
             max_defines: DEFAULT_MAX_DEFINES,
             max_macro_expansions_per_line: DEFAULT_MAX_MACRO_EXPANSIONS_PER_LINE,
@@ -142,6 +152,7 @@ impl ParseLimits {
             max_line_bytes: usize::MAX,
             max_regions: usize::MAX,
             max_curves: usize::MAX,
+            max_effects: usize::MAX,
             max_opcodes_per_header: usize::MAX,
             max_defines: usize::MAX,
             max_macro_expansions_per_line: usize::MAX,
@@ -162,7 +173,7 @@ impl ParseLimits {
 
 /// 本解析器识别的 SFZ 段头。
 ///
-/// 其余规范段头（`<effect>` / `<midi>` / `<sample>` SFZ v2）
+/// 其余规范段头（`<midi>` / `<sample>`）
 /// 会被识别为「忽略」：产生 [`Warning::IgnoredHeader`] 并跳过其 opcode，
 /// 而不是静默当作 region 处理。见 <https://sfzformat.com/headers/>。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +199,13 @@ pub enum Header {
     /// 只进 [`crate::Curve`]（`curve_index` + `v000..v127`），绝不写进任何一个继承作用域，
     /// 也不会清空任何继承作用域。规范原文见 <https://sfzformat.com/headers/curve/>。
     Curve,
+    /// `<effect>`（SFZ v2）：定义一条效果器总线声明。
+    ///
+    /// 与 [`Header::Curve`] 同为**定义段**：段内的 opcode 只进 [`crate::Effect`]
+    /// （`bus` / `type` / `param_offset` / `dsp_order` / `effect1..4`），
+    /// 既不写进继承链、也不清空继承链。规范原文见
+    /// <https://sfzformat.com/headers/effect/>。
+    Effect,
 }
 
 impl Header {
@@ -206,6 +224,8 @@ impl Header {
             Some(Self::Region)
         } else if name.eq_ignore_ascii_case("curve") {
             Some(Self::Curve)
+        } else if name.eq_ignore_ascii_case("effect") {
+            Some(Self::Effect)
         } else {
             None
         }
@@ -221,6 +241,7 @@ impl Header {
             Self::Group => "group",
             Self::Region => "region",
             Self::Curve => "curve",
+            Self::Effect => "effect",
         }
     }
 }
@@ -232,7 +253,7 @@ impl Header {
 /// 非致命的解析异常。**不**中断解析，只是告诉调用方「这段输入被降级处理了」。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
-    /// 未知 / 未实现的段头被跳过（`<effect>` / `<midi>` / `<sample>` …）。
+    /// 未知 / 未实现的段头被跳过（`<midi>` / `<sample>` …）。
     IgnoredHeader {
         /// 1-based 行号（折算回原文件）。
         line: usize,
@@ -694,6 +715,14 @@ struct Parser<'a> {
     curve_points: Vec<CurvePoint>,
     /// 当前 `<curve>` 段里已消费的 opcode 数（DoS 上限，见 [`ParseLimits::max_opcodes_per_header`]）。
     curve_opcodes: usize,
+    /// 已归约的 `<effect>` 段（保持文件出现顺序，确定性）。
+    effects: Vec<Effect<'a>>,
+    /// 当前 `<effect>` 段头所在行（归约时用于错误定位）。
+    effect_line: usize,
+    /// 当前 `<effect>` 段累积到的规范 opcode。
+    effect: EffectBuilder<'a>,
+    /// 当前 `<effect>` 段里已消费的 opcode 数（DoS 上限，与 `<curve>` 同口径）。
+    effect_opcodes: usize,
     /// 当前 `<region>` 段头所在行（归约时用于错误定位）。
     region_line: usize,
     warnings: Vec<Warning>,
@@ -709,6 +738,8 @@ enum Scope {
     Region,
     /// `<curve>`：opcode 进 [`Parser::curve_points`] / `curve_index`，不进继承链。
     Curve,
+    /// `<effect>`：opcode 进 [`Parser::effect`]，不进继承链（同为定义段）。
+    Effect,
     /// 空行 / 注释 / 未知段头之后：丢弃 opcode，但 `#define` 仍然生效。
     Ignored,
 }
@@ -731,6 +762,10 @@ impl<'a> Parser<'a> {
             curve_index: None,
             curve_points: Vec::new(),
             curve_opcodes: 0,
+            effects: Vec::new(),
+            effect_line: 1,
+            effect: EffectBuilder::new(),
+            effect_opcodes: 0,
             region_line: 1,
             warnings: Vec::new(),
             warnings_truncated: false,
@@ -752,13 +787,16 @@ impl<'a> Parser<'a> {
             Scope::Master => Some((&mut self.master, "master")),
             Scope::Group => Some((&mut self.group, "group")),
             Scope::Region => Some((&mut self.region, "region")),
-            Scope::Curve | Scope::Ignored => None,
+            Scope::Curve | Scope::Effect | Scope::Ignored => None,
         }
     }
 
     fn insert_opcode(&mut self, name: Cow<'a, str>, value: Cow<'a, str>) -> Result<(), SfzError> {
         if self.scope == Scope::Curve {
             return self.insert_curve_opcode(name, value);
+        }
+        if self.scope == Scope::Effect {
+            return self.insert_effect_opcode(name, value);
         }
         let limit = self.limits.max_opcodes_per_header;
         let scope = self.scope;
@@ -838,6 +876,83 @@ impl<'a> Parser<'a> {
             Some(existing) => existing.value = value,
             None => self.curve_points.push(CurvePoint { at, value }),
         }
+        Ok(())
+    }
+
+    /// 把 `<effect>` 段里的一个 opcode 写进当前效果器声明。
+    ///
+    /// 只认规范表格里的 `bus` / `type` / `param_offset` / `dsp_order` / `effect1`..=`effect4`
+    /// （名字大小写敏感，与其它 opcode 的读取口径一致）；其余 opcode 与全文件口径一致地被
+    /// 忽略（未知 opcode 不报错）。
+    ///
+    /// [`ParseLimits::max_opcodes_per_header`] 与 `<curve>` 同口径按**行数**计
+    /// （效果器声明不进 `BTreeMap`）。错误定位用**段头行**。
+    fn insert_effect_opcode(
+        &mut self,
+        name: Cow<'a, str>,
+        value: Cow<'a, str>,
+    ) -> Result<(), SfzError> {
+        let limit = self.limits.max_opcodes_per_header;
+        self.effect_opcodes += 1;
+        if self.effect_opcodes > limit {
+            return Err(SfzError::TooManyOpcodes {
+                scope: "effect",
+                limit,
+            });
+        }
+        let text: &str = name.as_ref();
+        let line = self.effect_line;
+        match text {
+            "bus" => self.effect.set_bus(value.as_ref()),
+            "type" => self.effect.set_type(value),
+            "param_offset" => {
+                // 规范未给范围（<https://sfzformat.com/opcodes/param_offset/>）；
+                // 「非负整数」的口径与 `offset` / `loop_start` 一致。
+                let parsed =
+                    OpcodeValue::new("param_offset", value, line).as_int(0, i64::from(u32::MAX))?;
+                self.effect.set_param_offset(parsed);
+            }
+            "dsp_order" => {
+                // 规范范围 `0 to 14`：越界是明确 Err，不静默钳位。
+                let parsed = OpcodeValue::new("dsp_order", value, line)
+                    .as_int(0, i64::from(crate::effect::MAX_DSP_ORDER))?;
+                self.effect.set_dsp_order(parsed as u8);
+            }
+            _ => {
+                let Some(index) = send_index(text) else {
+                    // 非规范 opcode（例如 Rapture 的厂商私有 opcode）：与全文件口径一致地忽略。
+                    return Ok(());
+                };
+                let parsed = OpcodeValue::new(text, value, line).as_f32()?;
+                self.effect.set_send(index, parsed);
+            }
+        }
+        Ok(())
+    }
+
+    /// 结束当前 `<effect>`：归约成 [`Effect`] 并压栈。
+    ///
+    /// 规则（规范出处 <https://sfzformat.com/headers/effect/>）：
+    /// - **空段**（没有任何规范 opcode）不产生效果器、也不报错：没有数据可丢；
+    /// - 段数超过 [`ParseLimits::max_effects`] ⇒ [`SfzError::TooManyEffects`]。
+    ///
+    /// 与 `<curve>` 不同，`<effect>` 段没有「重复定义」这一说：同一条总线上可以串多级效果
+    /// （`dsp_order` 就是排序用的），因此**不**做去重。
+    fn finalize_effect(&mut self) -> Result<(), SfzError> {
+        if self.scope != Scope::Effect {
+            return Ok(());
+        }
+        self.effect_opcodes = 0;
+        let builder = core::mem::replace(&mut self.effect, EffectBuilder::new());
+        if !builder.has_data() {
+            return Ok(());
+        }
+        if self.effects.len() >= self.limits.max_effects {
+            return Err(SfzError::TooManyEffects {
+                limit: self.limits.max_effects,
+            });
+        }
+        self.effects.push(builder.build());
         Ok(())
     }
 
@@ -1056,6 +1171,8 @@ impl<'a> Parser<'a> {
         self.finalize_region()?;
         // `<curve>` 是定义段：先归约上一条曲线，再开新段。它**不**动继承表。
         self.finalize_curve()?;
+        // `<effect>` 同为定义段：口径与 `<curve>` 一致。
+        self.finalize_effect()?;
         match Header::from_name(name) {
             Some(Header::Control) => {
                 // ARIA 语义：新的 `<control>` 会重置 `default_path`。
@@ -1100,6 +1217,14 @@ impl<'a> Parser<'a> {
                 self.curve_opcodes = 0;
                 self.scope = Scope::Curve;
             }
+            Some(Header::Effect) => {
+                // 定义段：只重置效果器寄存器，**不**动 `global` / `master` / `group`
+                // （与 `<curve>` 同一条口径）。
+                self.effect_line = line_no;
+                self.effect = EffectBuilder::new();
+                self.effect_opcodes = 0;
+                self.scope = Scope::Effect;
+            }
             None => {
                 self.warn(Warning::IgnoredHeader {
                     line: line_no,
@@ -1112,7 +1237,21 @@ impl<'a> Parser<'a> {
     }
 
     fn finish(self) -> Instrument<'a> {
-        Instrument::new(self.regions, self.curves, self.warnings)
+        Instrument::new(self.regions, self.curves, self.effects, self.warnings)
+    }
+}
+
+/// 识别 `effect1`..=`effect4`，返回 0-based 发送量下标；其它名字返回 `None`。
+///
+/// 只接受整整一位数字（`effect0` / `effect5` / `effect10` / `effect` 都不是规范 opcode）。
+fn send_index(name: &str) -> Option<usize> {
+    let digits = name.strip_prefix("effect")?;
+    let [digit] = digits.as_bytes() else {
+        return None;
+    };
+    match *digit {
+        b'1'..=b'4' => Some(usize::from(*digit - b'1')),
+        _ => None,
     }
 }
 
@@ -1137,6 +1276,7 @@ pub fn parse_text<'a>(text: &'a str, limits: &ParseLimits) -> Result<Instrument<
     parser.run(text, 1, true)?;
     parser.finalize_region()?;
     parser.finalize_curve()?;
+    parser.finalize_effect()?;
     Ok(parser.finish())
 }
 
@@ -1153,6 +1293,7 @@ pub fn parse_sources<'a>(
     }
     parser.finalize_region()?;
     parser.finalize_curve()?;
+    parser.finalize_effect()?;
     Ok(parser.finish())
 }
 

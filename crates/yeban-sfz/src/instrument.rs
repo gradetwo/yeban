@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::curve::Curve;
+use crate::effect::Effect;
 use crate::error::SfzError;
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
@@ -530,6 +531,8 @@ pub struct Instrument<'a> {
     regions: Vec<Region<'a>>,
     /// `<curve>` 段定义的调制曲线（文件出现顺序，确定性；同一编号重复定义会被拒绝）。
     curves: Vec<Curve>,
+    /// `<effect>` 段定义的效果器总线声明（文件出现顺序，确定性；不去重）。
+    effects: Vec<Effect<'a>>,
     /// 按音符分桶的 region 下标（加速 `region_for`，构造后只读）。
     key_buckets: Vec<Vec<u32>>,
     warnings: Vec<Warning>,
@@ -540,6 +543,7 @@ impl<'a> Instrument<'a> {
     pub(crate) fn new(
         regions: Vec<Region<'a>>,
         curves: Vec<Curve>,
+        effects: Vec<Effect<'a>>,
         warnings: Vec<Warning>,
     ) -> Self {
         let mut key_buckets: Vec<Vec<u32>> = vec![Vec::new(); 128];
@@ -559,6 +563,7 @@ impl<'a> Instrument<'a> {
         Self {
             regions,
             curves,
+            effects,
             key_buckets,
             warnings,
         }
@@ -582,6 +587,15 @@ impl<'a> Instrument<'a> {
     #[must_use]
     pub fn curve(&self, index: u8) -> Option<&Curve> {
         self.curves.iter().find(|curve| curve.index() == index)
+    }
+
+    /// 全部 `<effect>` 段（保持文件出现顺序，确定性；同一个 `bus` 上可以有多条）。
+    ///
+    /// 只含登记到了至少一个规范 opcode 的段：空 `<effect>` 段（含「只写了非规范 opcode」
+    /// 的段）不产生条目，见 [`Effect`]。
+    #[must_use]
+    pub fn effects(&self) -> &[Effect<'a>] {
+        &self.effects
     }
 
     /// 求一条曲线的值：**文件内定义的优先**，否则退回 ARIA 内建曲线。
@@ -1365,6 +1379,7 @@ mod tests {
     fn instrument_region_lookup_uses_key_range() {
         let instrument = Instrument::new(
             vec![region(60, 1, 1), region(62, 1, 1)],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         );
@@ -2175,5 +2190,85 @@ v127=1
             })
             .collect();
         assert_eq!(samples, again);
+    }
+
+    // ------------------------------------------------------------------
+    // `<effect>` 头（规范 <https://sfzformat.com/headers/effect/>）
+    // ------------------------------------------------------------------
+
+    /// 登记语料里的真实 `<effect>` 形状（`assets/samples/karoryfer-big-rusty-drums/Programs/`
+    /// 下 8 个**可解析**文件里的那两行；`param_offset` + ARIA MDA `type`）。
+    const CORPUS_EFFECT: &str = "\
+<effect>
+param_offset=400
+type=com.mda.Limiter
+
+<region>sample=a.wav";
+
+    #[test]
+    fn corpus_effect_block_is_reduced_with_the_specification_defaults() {
+        let instrument = parse_text(CORPUS_EFFECT, &Default::default()).expect("parses");
+        assert_eq!(instrument.len(), 1, "the region after the effect survives");
+        let effects = instrument.effects();
+        assert_eq!(effects.len(), 1);
+        let effect = &effects[0];
+        // `bus` 未给出 ⇒ 规范缺省 `main`。
+        assert_eq!(effect.bus(), crate::effect::EffectBus::Main);
+        assert_eq!(effect.type_name(), Some("com.mda.Limiter"));
+        assert_eq!(effect.param_offset(), Some(400));
+        assert_eq!(effect.dsp_order(), None, "dsp_order not given");
+        assert_eq!(
+            effect.sends(),
+            &[0.0, 0.0, 0.0, 0.0],
+            "effect1..4 default 0"
+        );
+    }
+
+    #[test]
+    fn effect_reduction_is_deterministic_across_independent_parses() {
+        let limits: ParseLimits = Default::default();
+        let first = parse_text(CORPUS_EFFECT, &limits).expect("parses");
+        let second = parse_text(CORPUS_EFFECT, &limits).expect("parses");
+        assert_eq!(first.effects(), second.effects());
+        assert_eq!(
+            format!("{:?}", first.effects()),
+            format!("{:?}", second.effects())
+        );
+    }
+
+    #[test]
+    fn too_many_opcodes_in_an_effect_block_hits_the_explicit_limit() {
+        let limits = ParseLimits {
+            max_opcodes_per_header: 2,
+            ..ParseLimits::default()
+        };
+        let error = parse_text("<effect>bus=aux1\ntype=comp\nparam_offset=1", &limits)
+            .expect_err("third opcode exceeds the per-header limit");
+        assert!(
+            matches!(
+                error,
+                SfzError::TooManyOpcodes {
+                    scope: "effect",
+                    limit: 2
+                }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn an_effect_header_between_two_regions_keeps_both_regions() {
+        // 定义段不得吞掉相邻 region，也不得让前一个 region 丢掉继承值。
+        let instrument = parse_text(
+            "<global>volume=-6\n<region>sample=a.wav\n<effect>bus=aux1\n<region>sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 2);
+        assert_eq!(instrument.regions()[0].sample, "a.wav");
+        assert_eq!(instrument.regions()[1].sample, "b.wav");
+        assert_eq!(instrument.regions()[0].volume, -6.0);
+        assert_eq!(instrument.regions()[1].volume, -6.0);
+        assert_eq!(instrument.effects().len(), 1);
     }
 }

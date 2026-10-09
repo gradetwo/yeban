@@ -320,6 +320,13 @@ pub enum SfzError {
         limit: usize,
     },
 
+    /// `<effect>` 数量超过 [`crate::parser::ParseLimits::max_effects`]。
+    #[error("more than {limit} <effect> sections")]
+    TooManyEffects {
+        /// 上限。
+        limit: usize,
+    },
+
     /// 单个作用域内的 opcode 数量超过 [`crate::parser::ParseLimits::max_opcodes_per_header`]。
     #[error("`{scope}` scope declares more than {limit} distinct opcodes")]
     TooManyOpcodes {

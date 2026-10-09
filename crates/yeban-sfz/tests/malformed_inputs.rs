@@ -106,8 +106,37 @@ const MALFORMED_SAMPLES: &[&str] = &[
     "<CURVE>curve_index=7\nv000=0",
     "<curve>>curve_index=7",
     "<curve>curve_index=7\n\n// 注释\nv127=1",
-    "<master>key=36",
+    // `<effect>` 段（含 19 个登记语料文件用的 ARIA MDA 形状 + 各种畸形）：
+    // 任何字节都只允许 Ok / Err，不允许 panic。
+    "<effect>bus=aux1 type=com.mda.Limiter param_offset=400 dsp_order=2 effect1=50",
     "<effect>",
+    "<effect>\n",
+    "<effect>bus=",
+    "<effect>bus=aux0",
+    "<effect>bus=aux9",
+    "<effect>bus=fx5",
+    "<effect>bus=main\nbus=aux2\nbus=",
+    "<effect>dsp_order=0",
+    "<effect>dsp_order=14",
+    "<effect>dsp_order=15",
+    "<effect>dsp_order=-1",
+    "<effect>dsp_order=",
+    "<effect>dsp_order=99999999999999999999",
+    "<effect>param_offset=0",
+    "<effect>param_offset=-1",
+    "<effect>param_offset=4294967296",
+    "<effect>param_offset=",
+    "<effect>effect1=0\neffect4=100",
+    "<effect>effect1=NaN",
+    "<effect>effect2=inf",
+    "<effect>effect3=-100",
+    "<effect>effect0=1\neffect5=1\neffect=1",
+    "<effect>type=",
+    "<effect>type=com.mda.Limiter\nparam_offset=400",
+    "<effect>fx1=1\n<midi>midi_cc1=64\n<sample>sample=b.wav\n<region>sample=a.wav",
+    "<EFFECT>bus=aux1",
+    "<effect>bus=aux1\n\n// 注释\ntype=com.mda.Limiter",
+    "<master>key=36",
     "<midi>",
     "<sample>",
     "sample=a.wav",
@@ -270,23 +299,189 @@ fn parse_text_reports_includes_it_did_not_resolve() {
 
 #[test]
 fn unknown_headers_are_ignored_with_a_warning_not_treated_as_regions() {
-    // `<curve>` 已建模（见 `curve_header_is_modeled_and_is_no_longer_an_ignored_header`），
-    // 这里改用仍未建模的 `<effect>` / `<midi>` / `<sample>` 守同一条红线：
+    // `<curve>` / `<effect>` 已建模（见各自的 `*_is_no_longer_an_ignored_header` 测试），
+    // 这里用仍未建模的 `<midi>` / `<sample>` 守同一条红线：
     // 未实现的段头必须产生告警并丢掉段内 opcode，绝不当作 region。
     let instrument = parse_text(
-        "<effect>\ntype=reverb\n<midi>\nmidi_cc1=64\n<sample>\nsample=b.wav\n<region>sample=a.wav\n",
+        "<midi>\nmidi_cc1=64\n<sample>\nsample=b.wav\n<region>sample=a.wav\n",
         &ParseLimits::default(),
     )
     .expect("parses");
     assert_eq!(instrument.len(), 1, "only the <region> becomes a region");
     assert_eq!(instrument.regions()[0].sample, "a.wav");
-    for name in ["effect", "midi", "sample"] {
+    for name in ["midi", "sample"] {
         assert!(
             instrument
                 .warnings()
                 .iter()
                 .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name: got, .. } if got == name)),
             "{name} must be reported as an ignored header"
+        );
+    }
+}
+
+#[test]
+fn effect_header_is_modeled_and_is_no_longer_an_ignored_header() {
+    // 19 个登记语料文件里 `<effect>` 的形状（`assets/samples/karoryfer-big-rusty-drums/…`）：
+    // `param_offset` + ARIA 的 MDA `type`。
+    let instrument = parse_text(
+        "<effect>\nparam_offset=400\ntype=com.mda.Limiter\n\n//Curves\n<region>sample=a.wav\n",
+        &ParseLimits::default(),
+    )
+    .expect("parses");
+    assert_eq!(instrument.len(), 1, "the <region> after the effect is kept");
+    assert_eq!(instrument.regions()[0].sample, "a.wav");
+    assert!(
+        !instrument
+            .warnings()
+            .iter()
+            .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name, .. } if name == "effect")),
+        "<effect> is modeled now: it must not be reported as an ignored header"
+    );
+    let effects = instrument.effects();
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0].type_name(), Some("com.mda.Limiter"));
+    assert_eq!(effects[0].param_offset(), Some(400));
+    assert_eq!(effects[0].bus(), yeban_sfz::EffectBus::Main);
+}
+
+#[test]
+fn effect_header_does_not_clear_the_inheritance_chain() {
+    // 定义段语义：`<effect>` 既不写进继承链、也不清空它。
+    // 反例（改动前不可能发生，改动后也必须不发生的回归）：若 `<effect>` 清空作用域，
+    // 下面 region 的 `key` / `volume` 都会丢失。
+    let instrument = parse_text(
+        "<group>key=36 volume=-3\n<effect>bus=aux1 type=comp\n<region>sample=a.wav\n",
+        &ParseLimits::default(),
+    )
+    .expect("parses");
+    assert_eq!(instrument.len(), 1);
+    let region = &instrument.regions()[0];
+    assert_eq!(region.lokey, 36, "group key survives the <effect> section");
+    assert_eq!(region.hikey, 36);
+    assert_eq!(region.volume, -3.0, "group volume survives");
+    // 同一文件里多个 `<effect>`：全部保留（同一条总线上可以串多级效果，不去重）。
+    let instrument = parse_text(
+        "<effect>bus=aux1\n<effect>bus=aux1 dsp_order=1\n<effect>bus=fx2 type=comp\n",
+        &ParseLimits::default(),
+    )
+    .expect("parses");
+    let buses: Vec<yeban_sfz::EffectBus> = instrument
+        .effects()
+        .iter()
+        .map(yeban_sfz::Effect::bus)
+        .collect();
+    assert_eq!(
+        buses,
+        vec![
+            yeban_sfz::EffectBus::Aux(1),
+            yeban_sfz::EffectBus::Aux(1),
+            yeban_sfz::EffectBus::Fx(2)
+        ]
+    );
+}
+
+#[test]
+fn an_effect_section_without_normative_opcodes_produces_nothing_and_no_error() {
+    // 空段 / 只写非规范 opcode 的段：没有数据可丢 ⇒ 不产生条目也不报错（与 `<curve>` 同口径）。
+    // 注意 `param_offset` 是 ARIA 为 `<effect>` 文档化的 opcode（`/opcodes/param_offset/`），
+    // 所以它**不算**非规范；这里用的 `fx1` 才是 Rapture 的厂商私有名字。
+    for source in [
+        "<effect>",
+        "<effect>\n",
+        "<effect>foo=1\n",
+        "<effect>fx1=1\neffect0=1\neffect5=1\n",
+    ] {
+        let instrument = parse_text(source, &ParseLimits::default()).expect("parses");
+        assert!(
+            instrument.effects().is_empty(),
+            "no normative opcode in {source:?} ⇒ no effect entry, got {:?}",
+            instrument.effects()
+        );
+        assert!(
+            !instrument
+                .warnings()
+                .iter()
+                .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { .. })),
+            "a modeled header must not warn as ignored: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_bus_value_falls_back_to_main_without_an_error() {
+    // 规范原文（<https://sfzformat.com/opcodes/bus/>）：
+    // "If not set, or any other value is set, this goes to the main output."
+    // ⇒ 未知 `bus` 取值**不是** Err，而是归约到主输出；`is_option` 负责机械区分。
+    for value in ["not-a-bus", "aux9", "fx5", ""] {
+        let source = format!("<effect>bus={value}");
+        let instrument = parse_text(&source, &ParseLimits::default()).expect("parses");
+        assert_eq!(instrument.effects().len(), 1, "bus= is a normative opcode");
+        assert_eq!(
+            instrument.effects()[0].bus(),
+            yeban_sfz::EffectBus::Main,
+            "bus={value:?} resolves to the main output"
+        );
+        assert!(
+            !yeban_sfz::EffectBus::is_option(value),
+            "bus={value:?} is not a listed option"
+        );
+    }
+    // `main` 是表里的名字，大小写不敏感（与其它 option opcode 同口径）。
+    for value in ["main", "MAIN", " main "] {
+        assert!(yeban_sfz::EffectBus::is_option(value), "bus={value:?}");
+        assert_eq!(
+            yeban_sfz::EffectBus::from_value(value),
+            yeban_sfz::EffectBus::Main
+        );
+    }
+}
+
+#[test]
+fn too_many_effects_hits_the_explicit_limit() {
+    let limits = ParseLimits {
+        max_effects: 1,
+        ..ParseLimits::default()
+    };
+    let error = parse_text("<effect>bus=aux1\n<effect>bus=aux2\n", &limits)
+        .expect_err("second effect exceeds max_effects");
+    assert!(
+        matches!(error, SfzError::TooManyEffects { limit: 1 }),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn effect_dsp_order_and_param_offset_are_range_checked_explicitly() {
+    let limits = ParseLimits::default();
+    for good in ["0", "14"] {
+        let source = format!("<effect>dsp_order={good}");
+        let instrument = parse_text(&source, &limits).expect("in range");
+        assert_eq!(
+            instrument.effects()[0].dsp_order(),
+            Some(good.parse::<u8>().expect("digit")),
+            "dsp_order={good}"
+        );
+    }
+    for bad in ["15", "-1", "abc", "99999999999999999999"] {
+        let source = format!("<effect>dsp_order={bad}");
+        assert!(
+            parse_text(&source, &limits).is_err(),
+            "dsp_order={bad} must be an explicit Err, not a silent clamp/default"
+        );
+    }
+    for bad in ["-1", "abc", "4294967296"] {
+        let source = format!("<effect>param_offset={bad}");
+        assert!(
+            parse_text(&source, &limits).is_err(),
+            "param_offset={bad} must be an explicit Err"
+        );
+    }
+    for bad in ["NaN", "inf", "-inf", ""] {
+        let source = format!("<effect>effect1={bad}");
+        assert!(
+            parse_text(&source, &limits).is_err(),
+            "effect1={bad} must be an explicit Err"
         );
     }
 }

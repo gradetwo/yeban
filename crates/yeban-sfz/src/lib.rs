@@ -4,12 +4,14 @@
 //! [ARCH-RT-004]。解析器是不可信输入边界：必须能承受 `cargo-fuzz` 千万次变异零崩溃
 //! [MUST-GATE-011]。
 //!
-//! 识别的段头是 `<control>` / `<global>` / `<master>` / `<group>` / `<region>` 与
-//! `<curve>`，作用域链 `region → group → master → global`（[`Header::Master`] 是 ARIA 扩展，
-//! 见 <https://sfzformat.com/headers/>）。`<curve>` 是**定义段**：它的 `curve_index` 与
-//! `v000..v127` 只进 [`Curve`]（经 [`Instrument::curves`] / [`Instrument::curve_value_at`]
-//! 读取），不进继承链、也不清空继承链。其余段头（`<effect>` / `<midi>` / `<sample>`）
-//! 产生 [`Warning::IgnoredHeader`] 并丢弃其 opcode。
+//! 识别的段头是 `<control>` / `<global>` / `<master>` / `<group>` / `<region>`、
+//! `<curve>` 与 `<effect>`，作用域链 `region → group → master → global`（[`Header::Master`]
+//! 是 ARIA 扩展，见 <https://sfzformat.com/headers/>）。`<curve>` 是**定义段**：它的
+//! `curve_index` 与 `v000..v127` 只进 [`Curve`]（经 [`Instrument::curves`] /
+//! [`Instrument::curve_value_at`] 读取），不进继承链、也不清空继承链。`<effect>` 同为
+//! **定义段**：它的 `bus` / `type` / `param_offset` / `dsp_order` / `effect1`..`effect4`
+//! 只进 [`Effect`]（经 [`Instrument::effects`] 读取），同样不进继承链、也不清空继承链。
+//! 其余段头（`<midi>` / `<sample>`）产生 [`Warning::IgnoredHeader`] 并丢弃其 opcode。
 //!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
@@ -74,6 +76,29 @@
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
+//! `<effect>` 段定义一条效果器总线声明（`bus` / `type` / `param_offset` / `dsp_order` /
+//! `effect1`..`effect4`；定义段，不进继承链）：
+//!
+//! ```
+//! use yeban_sfz::{EffectBus, ParseLimits, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<effect>bus=aux1 type=com.mda.Limiter param_offset=400 dsp_order=2 effect1=50\n\
+//!      <region>sample=kick.wav",
+//!     &ParseLimits::default(),
+//! )?;
+//! let effect = &instrument.effects()[0];
+//! assert_eq!(effect.bus(), EffectBus::Aux(1));
+//! assert_eq!(effect.type_name(), Some("com.mda.Limiter"));
+//! assert_eq!(effect.param_offset(), Some(400));
+//! assert_eq!(effect.dsp_order(), Some(2));
+//! assert_eq!(effect.sends(), &[50.0, 0.0, 0.0, 0.0]); // effect2..4 缺省 0
+//! assert_eq!(instrument.len(), 1, "the region after the effect survives");
+//! // 规范原文："If not set, or any other value is set, this goes to the main output."
+//! assert_eq!(EffectBus::from_value("aux99"), EffectBus::Main);
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
 //! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
 //!
 //! ```no_run
@@ -133,6 +158,7 @@
 #![deny(missing_docs)]
 
 pub mod curve;
+pub mod effect;
 pub mod error;
 pub mod instrument;
 pub mod parser;
@@ -140,6 +166,7 @@ pub mod playback;
 pub mod voice_pool;
 
 pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
+pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};
 pub use error::SfzError;
 pub use instrument::{
     CcGate, Instrument, LoopMode, OffMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
