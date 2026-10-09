@@ -1851,6 +1851,11 @@ mod tests {
 
     /// 主总线**还不在**节点表里时，`AddRoutingNode` 必须被补上（否则
     /// `ConnectRouting` 的前置条件不成立）。
+    ///
+    /// ⚠ 2026-10-09（`MODEL-AST-004`，`b8e6237`）：这份输入**不再是一份合法文档**。
+    /// 模型层现在要求"有音轨 ⇒ `master_bus_track_id` 必须在 `routing_graph.nodes` 里"。
+    /// 判据的**名字与断言没有变** —— 规划器仍然必须把缺失的主总线补上、且只补一次；
+    /// 本判据只是先钉住"模型层会拒绝这份输入"这条新不变式，再证明规划器仍然修得好它。
     #[test]
     fn a_master_bus_missing_from_the_node_table_is_added_once() {
         let mut project = filled_project();
@@ -1860,7 +1865,14 @@ mod tests {
             .routing_graph
             .edges
             .retain(|_, edge| edge.source_node != bus && edge.destination_node != bus);
-        project.validate().expect("合法");
+        // [MODEL-AST-004, b8e6237]：有音轨却没有主总线节点 ⇒ 模型层必须拒绝
+        //（`yeban-engine` 的 `PdcPlan::compute`、`EngineSnapshot::from_project_with_latencies`
+        // 与 `yeban-render` 的 `RenderPlan::compile` 都以"主总线在节点表里"为前置条件）。
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::RoutingNodeNotFound { id: bus }),
+            "有音轨但没有主总线节点的文档必须被模型层拒绝"
+        );
 
         let plan = plan(&project, "Chorus", "lo_fi_hip_hop", 2, None).expect("规划");
         assert!(
