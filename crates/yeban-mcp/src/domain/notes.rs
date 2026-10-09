@@ -491,6 +491,66 @@
 //! 路由级形态同一纪律。⚠ 但工具签名的 `trackId` / `clipId` 依旧是**必填**的
 //! （`compile` 的入口先查音轨与片段池 —— 这是本工具既有的口径，三个路由级形态处在
 //! 同一处境）；段落形态一个音符都不读，因此**不要求**片段是 MIDI。
+//!
+//! ## 场景取走形态（`ops[].kind == "removeScene"`）
+//! —— 关闭"读侧报得出场景、工具面一个字都写不了"这条缺口
+//!
+//! 模型有 [`Op::RemoveScene`]（载荷 `scene_id` / `previous_scene`，语义由
+//! `SetScene { old_scene: None }` 的逆定义 —— `docs/adr/ADR-0001` 的 D12 明文写着
+//! "无自由度"），而在这个形态之前，`Op::SetScene` 与 `Op::RemoveScene` 在
+//! `crates/yeban-mcp/src` 里的构造点**都是 0**。实测（可复跑）：
+//! 作用域 = `crates/yeban-mcp/src`，ref = `origin/main`，单位 = "匹配到的个数"，
+//! 两个口径 = ① `git grep -hoE '(^|[^A-Za-z0-9_])Op::<V>[[:space:]]*\{'`（构造点）
+//! 与 ② `git grep -hoE '(^|[^A-Za-z0-9_])Op::<V>([^A-Za-z0-9_]|$)'`（任何提及）：
+//!
+//! | 变体 | ① 构造点 | ② 任何提及 | 对照读数（同一模式 / 同一作用域 / 同一 ref） |
+//! | :--- | ---: | ---: | :--- |
+//! | `Op::SetScene` | **0** | **0** | `Op::SetSection` 2 / 10 |
+//! | `Op::RemoveScene` | **0** | **0** | `Op::SetMacro` 2 / 3 |
+//! | `Op::RemoveTrack` | **0** | **0** | `Op::AddTrack` 3 / 5 |
+//! | `Op::InsertDevice` | **0** | **0** | `Op::SetParam` 2 / 17 |
+//! | `Op::RemoveDevice` | **0** | **0** | `Op::SetRoutingGain` 5 / 21 |
+//!
+//! 读法：同一份扫描模式在同一次运行里对其它成员读出**非零**（右列），因此左列的 0
+//! 是"那里真的没有"，不是"模式把一切都扫成 0"。本形态落地之后，同一模式在**工作树**上
+//! 对 `Op::RemoveScene` 读出 ① **3** / ② **20**（`compile` 的构造点 + 本节的变体定义
+//! 与两条判据里的同名模式）—— 这正是"新写下的构造点会被这个模式看见"的正向对照。
+//! ⚠ 诚实边界：本节的行文本身也会提到那几个仍然为 0 的变体名，因此在**工作树**上它们的
+//! ② 不再是 0（各 1 次，全部来自本节）；上表的 0 一律是 **`origin/main`** 上的读数。
+//! 缺口的形状是：
+//!
+//! | 事实 | 依据 |
+//! | :--- | :--- |
+//! | 读侧报得出场景身份 | `yeban_query_project` 的 `entities[]` 里 `kind == "scene"` 的条目（`domain/view.rs` 一直在推它） |
+//! | 写侧**没有**任何形态 | 17 个工具里没有任何一个构造过 `Op::SetScene` 或 `Op::RemoveScene` |
+//! | 模型侧早已实现 | `Op::validate` 报 `SceneNotFound`、`Op::apply` 真的 `scenes.remove`、`Op::invert` 把它换成 `SetScene`；`domain/error.rs` 的 `code_for_model` 也早已把 `SceneNotFound` 映到 `ENTITY_NOT_FOUND` |
+//!
+//! 于是 AI Agent 打开一份带场景的工程、看得见每个场景的身份，却**一个都动不了**。
+//! 本形态关的是其中**无自由度**的那一半：删除（D12：逆操作由 `SetScene` 定义）。
+//! ⚠ 本票**不**做创建/更新那一半（`Op::SetScene`）：它要决定"`sceneId` 是可选还是
+//! 必填""`name` 是否必填""`tempo` / `color` 是合并还是整体替换"，这些都是**有**自由度
+//! 的设计选择，该由自己的一票（连同它的判据）来定 —— 登记在此，不冒充已完成。
+//!
+//! 形态：`{"kind":"removeScene","sceneId":"<ULID>"}` —— 载荷是**空**的（只有寻址）；
+//! 撤销载荷 `previous_scene` 由 [`compile`] 从**当前文档**读。
+//!
+//! 三条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有 `kind` / `sceneId` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownRemoveSceneField"`） |
+//! | `sceneId` 缺失 / 不是字符串 / 不是合法 ULID | `INVALID_PARAMETER_RANGE`（缺字段走统一的缺字段错误） |
+//! | `project.scenes` 里没有这个身份 | `ENTITY_NOT_FOUND`（`reason = "sceneNotFound"`） |
+//!
+//! ⚠ 本层**不**把"场景存在"这条前置条件交给模型去报：理由与段落形态逐条相同
+//! （`Op::validate` 的 `SceneNotFound` 只在提案模拟那一步跑，消息里没有本层的
+//! `reason` / `hint`）。⚠ 也**不**查"还有谁引用这个场景"：`SceneV3` 不与别的实体
+//! 交叉引用（`git grep -nE '(scene_id|sceneId)' -- 'crates/**/*.rs'` 的命中只落在
+//! `yeban-model` 的 `ops.rs`、`yeban-render` 的 `als.rs` 的本地导出变量与本节所在
+//! 文件里），模型因此也没有给 `RemoveScene` 任何"仍被引用"型前置条件。
+//!
+//! 目标**不在**顶层 `trackId` / `clipId` 上：本形态自带寻址（`sceneId`），与段落级、
+//! 三个路由级形态同一纪律；场景形态一个音符都不读，因此**不要求**片段是 MIDI。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -681,10 +741,10 @@ pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
 pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 
 /// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 摆放形态在前，
-/// 音轨级、路由级与段落级形态在后）。
+/// 音轨级、路由级、段落级与场景级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 14] = [
+pub const OP_KINDS: [&str; 15] = [
     "add",
     "delete",
     "move",
@@ -699,6 +759,7 @@ pub const OP_KINDS: [&str; 14] = [
     DISCONNECT_ROUTING_KIND,
     REMOVE_ROUTING_NODE_KIND,
     REMOVE_SECTION_KIND,
+    REMOVE_SCENE_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -1083,6 +1144,26 @@ pub const SECTION_FIELD: &str = "sectionId";
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const REMOVE_SECTION_FIELDS: [&str; 2] = ["kind", SECTION_FIELD];
 
+/// `ops[].kind` 的**取走场景**形态名（写 [`Op::RemoveScene`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveScene` 的小驼峰），与 [`REMOVE_SECTION_KIND`] /
+/// [`REMOVE_ROUTING_NODE_KIND`] 同一条命名规则。
+pub const REMOVE_SCENE_KIND: &str = "removeScene";
+
+/// 取走场景形态的**目标**字段名（`ops[].sceneId`，必填）。
+///
+/// 场景身份与段落身份（[`SECTION_FIELD`]）、路由节点身份（[`ROUTING_NODE_FIELD`]）、
+/// 片段身份（顶层 `clipId`）**不是**同一个字面量：四者是四种实体，共用一个词会让
+/// "取走的是哪一个"从形状上无法区分。
+pub const SCENE_FIELD: &str = "sceneId";
+
+/// 取走场景形态允许出现的**全部**键（判别键 + 寻址键）。
+///
+/// 目标音轨、目标片段与场景的旧状态**都不在**这里：本形态自带寻址（[`SCENE_FIELD`]），
+/// 而撤销载荷 `previous_scene` 由 [`compile`] 从**当前文档**读。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const REMOVE_SCENE_FIELDS: [&str; 2] = ["kind", SCENE_FIELD];
+
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
 /// 目标名逐字等于 `project.json` 的变体名（[`LaneKind::parse`] 那一份词表）；
@@ -1459,6 +1540,28 @@ pub enum NoteOp {
         /// 曲式段落身份（本形态自带寻址）。
         section_id: EntityId,
     },
+    /// 取走**一个场景**（[`Op::RemoveScene`]，即把这个身份从 `project.scenes` 取走）。
+    ///
+    /// 这是本枚举里唯一的**场景级**形态：它不读不写任何音符，也不碰音轨、片段池、
+    /// 路由图与曲式段落，目标由**自带的** `sceneId` 给出（顶层 `trackId` / `clipId`
+    /// 与本形态无关）。
+    ///
+    /// ⚠ 写侧在本形态之前**一处都没有**：`Op::SetScene` 与 `Op::RemoveScene` 在
+    /// `crates/yeban-mcp/src` 里的构造点实测都是 0（口径与读数见模块头"场景取走形态"
+    /// 一节）⇒ 工具面**既建不出**场景、也取不走场景，而
+    /// `yeban_query_project` 的 `entities[]` 一直把 `kind == "scene"` 的身份报给客户端。
+    /// 本形态关闭的是"看得见、取不走"的那一半。`RemoveScene` 与
+    /// `SetScene { old_scene: None }` 互为逆操作（见 `docs/adr/ADR-0001` 的 D12），
+    /// 语义由那一步的逆定义，**没有自由度**。
+    ///
+    /// 载荷是**空**的：只有寻址。撤销载荷 `previous_scene` 由 [`compile`] 从
+    /// **当前文档**读（模型的前置条件要求它逐字段等于文档现值，因此本层不采信
+    /// 调用方声明的旧状态），[`reject_remove_scene_fields`] 只认 `kind` 与
+    /// `sceneId`。
+    RemoveScene {
+        /// 场景身份（本形态自带寻址）。
+        scene_id: EntityId,
+    },
 }
 
 impl NoteOp {
@@ -1479,6 +1582,7 @@ impl NoteOp {
             Self::DisconnectRouting { .. } => DISCONNECT_ROUTING_KIND,
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
+            Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
         }
     }
 
@@ -1487,7 +1591,8 @@ impl NoteOp {
     /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
     /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
     /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] / [`Self::RemoveRoutingNode`]
-    /// 是**路由级**的、[`Self::RemoveSection`] 是**段落级**的：它们跟片段内容无关。
+    /// 是**路由级**的、[`Self::RemoveSection`] 是**段落级**的、[`Self::RemoveScene`]
+    /// 是**场景级**的：它们跟片段内容无关。
     /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
@@ -1503,6 +1608,7 @@ impl NoteOp {
                 | Self::DisconnectRouting { .. }
                 | Self::RemoveRoutingNode { .. }
                 | Self::RemoveSection { .. }
+                | Self::RemoveScene { .. }
         )
     }
 
@@ -1530,6 +1636,17 @@ impl NoteOp {
     #[must_use]
     pub const fn is_section_level(&self) -> bool {
         matches!(self, Self::RemoveSection { .. })
+    }
+
+    /// 该形态改的是**场景**（而不是音符 / 音轨 / 泳道 / 片段池 / 路由图 / 曲式段落）。
+    ///
+    /// 与 [`Self::is_section_level`] 同因（`domain::plan_edit_notes` 的分类）：
+    /// 场景不是段落，一次纯 `removeScene` 的调用不能被报成"段落级编辑"
+    /// —— 本形态**不是**音轨级（[`Self::is_note_level`] 为 `false`），
+    /// 也不是路由级、不是段落级，因此必须有自己的桶。
+    #[must_use]
+    pub const fn is_scene_level(&self) -> bool {
+        matches!(self, Self::RemoveScene { .. })
     }
 }
 
@@ -1559,6 +1676,7 @@ impl NoteOp {
 /// {"kind":"disconnectRouting","edgeId":"<ULID>"}
 /// {"kind":"removeRoutingNode","nodeId":"<ULID>"}
 /// {"kind":"removeSection","sectionId":"<ULID>"}
+/// {"kind":"removeScene","sceneId":"<ULID>"}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -1600,6 +1718,12 @@ impl NoteOp {
 /// （与节点 / 边 / 片段都是**不同的**实体），撤销载荷 `previous_section` 从当前文档读，
 /// 对象里 [`REMOVE_SECTION_FIELDS`] 之外的键一律响亮拒绝。
 ///
+/// `removeScene` 是**唯一的场景级**形态（见 [`NoteOp::RemoveScene`]，
+/// [`NoteOp::is_scene_level`]）：它把 `sceneId` 那个**场景**从 `project.scenes` 取走
+/// （[`Op::RemoveScene`]），用 [`SCENE_FIELD`] 寻址（与段落 / 节点 / 边 / 片段都是
+/// **不同的**实体），撤销载荷 `previous_scene` 从当前文档读，
+/// 对象里 [`REMOVE_SCENE_FIELDS`] 之外的键一律响亮拒绝。
+///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
@@ -1608,7 +1732,8 @@ impl NoteOp {
 ///   [`SET_ROUTING_GAIN_FIELDS`] 之外的键 / 断开路由边对象里有
 ///   [`DISCONNECT_ROUTING_FIELDS`] 之外的键 / 取走路由节点对象里有
 ///   [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键 / 取走段落对象里有
-///   [`REMOVE_SECTION_FIELDS`] 之外的键 →
+///   [`REMOVE_SECTION_FIELDS`] 之外的键 / 取走场景对象里有
+///   [`REMOVE_SCENE_FIELDS`] 之外的键 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
 ///   非布尔开关值、未知写模式、既不是数字也不是 `null` 的增益值）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
@@ -1709,6 +1834,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             reject_remove_section_fields(object)?;
             Ok(NoteOp::RemoveSection {
                 section_id: read_id(object, SECTION_FIELD)?,
+            })
+        }
+        REMOVE_SCENE_KIND => {
+            reject_remove_scene_fields(object)?;
+            Ok(NoteOp::RemoveScene {
+                scene_id: read_id(object, SCENE_FIELD)?,
             })
         }
         other => Err(Fault::domain_with_data(
@@ -1870,6 +2001,46 @@ fn reject_remove_section_fields(object: &Map<String, Value>) -> Result<(), Fault
             "hint": "本形态的载荷是空的 (只认 `kind` 与 `sectionId`); 段落身份取自 \
                      `yeban_query_project` 的 `entities[]` 里 `kind == \"section\"` 的条目, \
                      撤销载荷 `previousSection` 由服务端从当前文档读 (不接受调用方声明)",
+        }),
+    ))
+}
+
+/// 拒绝 `removeScene` 操作对象里 [`REMOVE_SCENE_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_section_fields`] / [`reject_remove_routing_node_fields`]
+/// 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：最像"写对了"的三种错法是把
+/// **别的实体的**寻址搬过来（`sectionId` / `nodeId` / `edgeId` / 嵌套的 `clipId`）、
+/// 把目标写成工具顶层的 `trackId`、或以为要报告"场景取走前的状态"而多写
+/// `previousScene` —— 三种都会被静默忽略，而调用方以为场景已经取走。
+///
+/// # Errors
+///
+/// 出现 `kind` / `sceneId` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownRemoveSceneField"`）。
+fn reject_remove_scene_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_SCENE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_SCENE_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_SCENE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRemoveSceneField",
+            "unsupportedFields": unknown,
+            "supportedRemoveSceneFields": REMOVE_SCENE_FIELDS,
+            "hint": "本形态的载荷是空的 (只认 `kind` 与 `sceneId`); 场景身份取自 \
+                     `yeban_query_project` 的 `entities[]` 里 `kind == \"scene\"` 的条目, \
+                     撤销载荷 `previousScene` 由服务端从当前文档读 (不接受调用方声明)",
         }),
     ))
 }
@@ -2650,14 +2821,20 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// （`previous_section`），并且**先**查"段落真的在 `project.sections` 里"
 /// —— 那一条模型也会报（`SectionNotFound`），但那条路径只在提案模拟里跑。
 ///
+/// **场景级**形态 [`NoteOp::RemoveScene`] 与它同形：自带寻址（`sceneId`），
+/// 从当前文档读**整条**场景当撤销载荷（`previous_scene`），并且**先**查"场景真的在
+/// `project.scenes` 里"（模型报的是 `SceneNotFound`，同样只在提案模拟那一步跑）。
+///
 /// # Errors
 ///
 /// - 音轨不存在 → `TRACK_NOT_FOUND`；
 /// - 片段不存在 → `CLIP_NOT_FOUND`；**有音符操作**且片段不是 MIDI → `CLIP_NOT_FOUND`
-///   （纯 `setParam` / 纯开关 / 纯路由 / 纯段落调用不要求片段是 MIDI：它们不读片段内容）；
+///   （纯 `setParam` / 纯开关 / 纯路由 / 纯段落 / 纯场景调用不要求片段是 MIDI：
+///   它们不读片段内容）；
 /// - 音符不存在 → `ENTITY_NOT_FOUND`；自动化泳道或点不存在 → `ENTITY_NOT_FOUND`；
 ///   路由边或路由节点不存在 → `ENTITY_NOT_FOUND`（`routingEdgeNotFound` /
 ///   `routingNodeNotFound`）；曲式段落不存在 → `ENTITY_NOT_FOUND`（`sectionNotFound`）；
+///   场景不存在 → `ENTITY_NOT_FOUND`（`sceneNotFound`）；
 /// - 目标是主总线（`removeRoutingNode`）→ `CONFLICT`（`masterBusNodeCannotBeRemoved`）；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
 pub fn compile(
@@ -2990,6 +3167,34 @@ pub fn compile(
                 Op::RemoveSection {
                     section_id: *section_id,
                     previous_section,
+                }
+            }
+            NoteOp::RemoveScene { scene_id } => {
+                // 撤销载荷来自**当前文档**的**整条**场景：模型 `RemoveScene` 的前置条件
+                // 要求 `previous_scene` 逐字段等于文档现值，因此本层不采信调用方声明的
+                // 旧状态，也不接受调用方送来的载荷（`reject_remove_scene_fields` 只认
+                // `kind` 与 `sceneId`）。`SceneV3` 不与别的实体交叉引用：全仓
+                // `git grep -nE '(scene_id|sceneId)' -- 'crates/**/*.rs'` 的命中只落在
+                // 三个文件 —— `yeban-model` 的 `ops.rs`（`Op` 自己的载荷与校验/应用/取反）、
+                // `yeban-render` 的 `als.rs`（导出 .als 时**本地**生成 XML 场景号的变量）、
+                // 以及本文件；没有任何**实体**持有场景身份。因此这里**没有**
+                // "还被谁引用"这一类前置条件要查（与 `RemoveClip` / `RemoveRoutingNode`
+                // 不同 —— 那两条的模型前置条件真的存在，本层不复制）。
+                let previous_scene = project.scenes.get(scene_id).cloned().ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {scene_id} 的场景, 没有场景可以取走"),
+                        serde_json::json!({
+                            "sceneId": scene_id.to_canonical_string(),
+                            "reason": "sceneNotFound",
+                            "hint": "场景的身份由 `yeban_query_project` 的 `entities[]` 里 \
+                                     `kind == \"scene\"` 的条目报出",
+                        }),
+                    )
+                })?;
+                Op::RemoveScene {
+                    scene_id: *scene_id,
+                    previous_scene,
                 }
             }
         });
@@ -4365,12 +4570,14 @@ mod tests {
         assert_eq!(compiled.len(), 2);
 
         // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字 + 两个路由级名字
-        // + 一个段落级名字（错误信息的 `supportedKinds` 与判据共用同一份真相）。
+        // + 一个段落级名字 + 一个场景级名字（错误信息的 `supportedKinds` 与判据共用
+        // 同一份真相）。
         // 2026-10-09：新增 `disconnectRouting` 后全集为 12（裁决 R22，性质不变）；
         // 同日新增 `removeRoutingNode`（第三个路由级形态）后为 13；同日再新增
-        // `removeSection`（唯一的段落级形态）后为 14 —— 这是**同步**计数
+        // `removeSection`（唯一的段落级形态）后为 14；同日再新增 `removeScene`
+        // （唯一的场景级形态）后为 15 —— 这是**同步**计数
         // （多了一个真存在的 `kind`），不是弱化判据。
-        assert_eq!(OP_KINDS.len(), 14);
+        assert_eq!(OP_KINDS.len(), 15);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -4381,6 +4588,7 @@ mod tests {
         assert!(OP_KINDS.contains(&DISCONNECT_ROUTING_KIND));
         assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
         assert!(OP_KINDS.contains(&REMOVE_SECTION_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_SCENE_KIND));
         assert_eq!(LANE_WRITE_MODES.len(), 4);
     }
 
@@ -6128,6 +6336,252 @@ mod tests {
                 op.is_note_level(),
                 op.is_routing_level(),
                 op.is_section_level(),
+            ];
+            assert_eq!(
+                buckets.iter().filter(|flag| **flag).count(),
+                1,
+                "每个形态必须恰好落在一个桶里: {op:?}"
+            );
+        }
+    }
+
+    /// 场景形态的**字面**判据：载荷只有场景身份（撤销载荷从**当前文档**读整条场景），
+    /// 一步就能被 `Op::invert` 逐字节回退到原状。
+    ///
+    /// 这一条对着"读侧报得出场景、工具面一个字都写不了"的缺口：`yeban_query_project`
+    /// 的 `entities[]` 一直在报 `kind == "scene"` 的身份，而本形态之前**没有任何工具**
+    /// 构造过 `Op::SetScene` 或 `Op::RemoveScene`（两个口径在 `crates/yeban-mcp/src`
+    /// 的实测读数都是 0）。
+    ///
+    /// 注入（实测红）：把编译出的模型变体由 `Op::RemoveScene` 换成
+    /// `Op::SetScene`（一次什么都不删的写）⇒ 变体匹配那条红；把撤销载荷换成**另一条**
+    /// 场景的克隆（而不是文档里那一条）⇒ "撤销载荷必须是文档里那一条"红。
+    #[test]
+    fn remove_scene_compiles_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+        let expected = project.scenes[&scene_id].clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+        let (track_id, clip_id) = lead_clip(&project);
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SCENE_KIND, "sceneId": scene_id.to_canonical_string()}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), REMOVE_SCENE_KIND);
+        assert!(!ops[0].is_note_level(), "场景级不读不写音符");
+        assert!(!ops[0].is_routing_level(), "场景不是路由图的一部分");
+        assert!(!ops[0].is_section_level(), "场景不是曲式段落");
+        assert!(ops[0].is_scene_level());
+        assert_eq!(ops[0], NoteOp::RemoveScene { scene_id });
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::RemoveScene {
+                scene_id: target,
+                previous_scene,
+            } => {
+                assert_eq!(*target, scene_id);
+                assert_eq!(
+                    previous_scene, &expected,
+                    "撤销载荷必须是**文档里那一条**场景 (不是调用方声明的)"
+                );
+            }
+            other => panic!("应当是 RemoveScene: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("取走");
+        assert!(
+            !project.scenes.contains_key(&scene_id),
+            "场景必须真的从 `scenes` 里消失"
+        );
+        assert!(project.validate().is_ok(), "取走之后工程必须仍然合法");
+
+        // 逆操作: `RemoveScene` 的逆是 `SetScene { old_scene: None }`
+        // （`docs/adr/ADR-0001` 的 D12），因此必须把场景原样放回去。
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.scenes.get(&scene_id),
+            Some(&expected),
+            "逆操作必须把场景放回原来的形状"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到取走之前的文档"
+        );
+    }
+
+    /// 场景形态的**字段名与支持集合**被钉住（不多报一个键，也不少报一个键）。
+    ///
+    /// 注入（实测红）：把 [`SCENE_FIELD`] 改成 `sectionId` ⇒ 本判据红 ——
+    /// 场景与曲式段落是两种实体，共用一个词会让"取走的是哪一个"从形状上无法区分。
+    #[test]
+    fn remove_scene_field_names_are_pinned() {
+        assert_eq!(REMOVE_SCENE_KIND, "removeScene");
+        assert_eq!(SCENE_FIELD, "sceneId");
+        assert_ne!(SCENE_FIELD, SECTION_FIELD, "场景与曲式段落不是同一个字面量");
+        assert_ne!(SCENE_FIELD, ROUTING_NODE_FIELD, "场景不是路由节点");
+        assert_ne!(SCENE_FIELD, ROUTING_EDGE_FIELD, "场景不是路由边");
+        assert_eq!(REMOVE_SCENE_FIELDS, ["kind", "sceneId"]);
+        assert!(OP_KINDS.contains(&REMOVE_SCENE_KIND));
+        // 与模型自己的变体名同词（不手写第二张会漂移的表）。
+        let project = filled_project();
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+        assert_eq!(
+            Op::RemoveScene {
+                scene_id,
+                previous_scene: project.scenes[&scene_id].clone(),
+            }
+            .name(),
+            "RemoveScene"
+        );
+    }
+
+    /// 场景形态的形状错误**响亮失败**（绝不静默丢弃），而规范形状放行。
+    ///
+    /// 注入（实测红）：去掉 [`reject_remove_scene_fields`] 的调用 ⇒ 前四条
+    /// （把别的实体的寻址 `sectionId` / `nodeId` / `edgeId` / 工具顶层的 `trackId`
+    /// 搬过来）被**静默接受**，本判据红。
+    #[test]
+    fn remove_scene_shapes_fail_loudly() {
+        let project = filled_project();
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+        let scene_text = scene_id.to_canonical_string();
+        let (track_id, clip_id) = lead_clip(&project);
+        let section_id = *project
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+        let (node, _) = a_non_master_node(&project);
+
+        for broken in [
+            // 把**曲式段落**的寻址搬过来: `sceneId` 缺失, 而且 `sectionId` 不是本形态的键。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "sectionId": scene_text}]),
+            // 把**路由节点**的寻址搬过来。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "nodeId": scene_text}]),
+            // 把**路由边**的寻址搬过来。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "edgeId": scene_text}]),
+            // 把工具顶层的 `trackId` / `clipId` 搬过来（那是别的形态的寻址）。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "sceneId": scene_text,
+                                "trackId": track_id.to_canonical_string()}]),
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "sceneId": scene_text,
+                                "clipId": clip_id.to_canonical_string()}]),
+            // 以为要报告"场景删除前的状态"而多写 `previousScene`。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "sceneId": scene_text,
+                                "previousScene": null}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownRemoveSceneField",
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedRemoveSceneFields"],
+                serde_json::json!(["kind", "sceneId"]),
+                "{broken}"
+            );
+        }
+
+        for broken in [
+            // 缺 `sceneId`。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND}]),
+            // `sceneId` 不是字符串。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "sceneId": 70}]),
+            // `sceneId` 不是合法 ULID。
+            serde_json::json!([{"kind": REMOVE_SCENE_KIND, "sceneId": "not-a-ulid"}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+        }
+
+        // 阴性对照: 规范形状必须被接受 —— 上面红的不是"全都拒"。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SCENE_KIND, "sceneId": scene_text}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(ops[0].is_scene_level());
+        compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        // 别的实体的寻址字面量在本形态里**不是**合法的键, 但它们自己仍然有效。
+        assert!(project.sections.contains_key(&section_id), "夹具前提");
+        assert!(project.routing_graph.nodes.contains(&node), "夹具前提");
+    }
+
+    /// 场景不存在 ⇒ 本层 `ENTITY_NOT_FOUND`（带上 `reason` 与 `sceneId`），
+    /// 而且失败**不改文档**（编译期只读）。
+    ///
+    /// 注入（实测红）：把存在性检查换成一条**兜底**（取文档里任意一条场景当撤销载荷，
+    /// 而不是报错）⇒ 本判据红，诊断里 `previousScene` 是**另一条**场景的身份
+    /// （`Intro` 配上一个不存在的 `sceneId`）—— 那正是"静默取错载荷"的形状。
+    #[test]
+    fn remove_scene_refuses_a_missing_scene() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let missing = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        assert!(!project.scenes.contains_key(&missing), "夹具前提");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SCENE_KIND, "sceneId": missing.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("场景不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "sceneNotFound");
+        assert_eq!(
+            lane_fault_data(&fault)["sceneId"],
+            serde_json::json!(missing.to_canonical_string())
+        );
+    }
+
+    /// 场景形态**不要求片段是 MIDI**（一个音符都不读），而且它既不是音符级、也不是
+    /// 路由级、也不是段落级 —— 四个谓词必须**互斥地**说真话（提案标题的分类靠它们）。
+    ///
+    /// 注入（实测红）：把 `RemoveScene` 从 `is_note_level` 的对照里去掉 ⇒
+    /// 音频片段那条编译时撞上"必须是 MIDI 片段"（`CLIP_NOT_FOUND`）。
+    #[test]
+    fn remove_scene_does_not_need_midi_and_is_its_own_level() {
+        let project = filled_project();
+        let audio_track = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SCENE_KIND, "sceneId": scene_id.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &audio_track, &audio_clip, &ops)
+            .expect("场景级写入不读片段内容, 非 MIDI 片段也必须被接受");
+        assert_eq!(compiled.len(), 1);
+
+        // 四个谓词在**一条**操作上不能同时说真话 (分类靠它们, 说两遍会让标题多算一步)。
+        for op in &ops {
+            let buckets = [
+                op.is_note_level(),
+                op.is_routing_level(),
+                op.is_section_level(),
+                op.is_scene_level(),
             ];
             assert_eq!(
                 buckets.iter().filter(|flag| **flag).count(),
