@@ -17,6 +17,7 @@ use proptest::prelude::*;
 
 use yeban_theory::TheoryError;
 use yeban_theory::chord::{Chord, ChordKind, Tonality};
+use yeban_theory::drum::{DrumHit, DrumVoice, default_backbeat, swung_drum_pattern};
 use yeban_theory::genre::GenreLibrary;
 use yeban_theory::melody::{
     CHORD_TONE_WEIGHT_FLOOR, MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND,
@@ -25,9 +26,9 @@ use yeban_theory::melody::{
 use yeban_theory::pitch::{Pitch, PitchClass, note_to_hz, parse_pitch_class};
 use yeban_theory::progression::{Degree, Meter, Progression, RomanQuality, expand_progression};
 use yeban_theory::rhythm::{
-    BeatGrouping, MAX_METRIC_WEIGHT, cells_per_bar, felt_beats_per_bar, grouped_metric_grid,
-    grouped_swung_metric_grid, is_compound_meter, metric_grid, metric_weight_grouped,
-    metric_weight_in, swung_metric_grid,
+    BeatGrouping, MAX_METRIC_WEIGHT, STRONG_BEAT_WEIGHT, cells_per_bar, felt_beats_per_bar,
+    grouped_metric_grid, grouped_swung_metric_grid, is_compound_meter, metric_grid,
+    metric_weight_grouped, metric_weight_in, swung_metric_grid,
 };
 use yeban_theory::scale::{Scale, ScaleKind};
 use yeban_theory::voice_leading::{VoicingConstraints, realize, realize_three_voices};
@@ -1179,4 +1180,195 @@ fn every_genre_can_change_its_section_with_the_seed() {
     }
     // 实测读数：182/182 条流派在种子 0..32 里至少有一版骨架与旧 API 不同。
     assert_eq!(genres_that_vary, 182);
+}
+
+// ---------------------------------------------------------------------------
+// 9. 端到端：鼓组型（`pending 3` 的"具体鼓点"侧）
+// ---------------------------------------------------------------------------
+
+/// 全部参与鼓组属性测试的拍号（含 `GENRES` 没用到的 5/4、8/8、9/8、11/8、12/8）。
+const DRUM_METERS: [Meter; 10] = GROUPING_METERS;
+
+/// 从网格的 `(tick, bar, cell, weight)` 判断某件鼓件是否**应当**在该 onset 上响。
+///
+/// 这是判据侧独立复算的分派规则（不调用 crate 的实现），读法：底鼓 = 组的起点、
+/// 军鼓 = 反拍拍的起点、踩镲 = 每一格、吊镲 = 强位上的组起点。
+fn expected_voice(
+    voice: DrumVoice,
+    meter: Meter,
+    cell: u32,
+    weight: u8,
+    grouping: BeatGrouping<'_>,
+    backbeat: u8,
+) -> bool {
+    let beats = felt_beats_per_bar(meter);
+    let cells = cells_per_bar(meter).expect("test meters are valid");
+    let cells_per_beat = cells / u64::from(beats);
+    let offset = u64::from(cell) % cells_per_beat;
+    let on_beat_start = offset == 0;
+    let beat = (u64::from(cell) / cells_per_beat) as u8;
+    let group_start = on_beat_start && grouping.is_group_start(beat);
+    match voice {
+        DrumVoice::Kick => group_start,
+        DrumVoice::Snare => on_beat_start && backbeat != 0 && beat.is_multiple_of(backbeat),
+        DrumVoice::HiHat => true,
+        DrumVoice::Ride => group_start && weight >= STRONG_BEAT_WEIGHT,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// 任意拍号 × 任意小节数 × 任意 onset 数：鼓组型的每一件鼓件都恰好落在
+    /// **判据侧独立复算**应当命中的那些 onset 上，不多不少。
+    ///
+    /// 单位：`checked` 数的是**被接受的样本个数**（构造成功的鼓组型），
+    /// 断言的对象是"每个 (鼓件, onset) 对的命中与否"这一布尔值。
+    #[test]
+    fn every_drum_voice_lands_exactly_where_the_documented_rule_says(
+        meter_index in 0usize..DRUM_METERS.len(),
+        bars in 1u32..5,
+        onsets in 0u32..13,
+    ) {
+        let meter = DRUM_METERS[meter_index];
+        let beats = felt_beats_per_bar(meter);
+        let backbeat = default_backbeat(meter);
+        let grouping = BeatGrouping::new(meter, &[1u8; 16][..usize::from(beats)])
+            .expect("per-beat grouping is always valid");
+        let Ok(Some(pattern)) =
+            swung_drum_pattern(meter, bars, onsets, None, Some(grouping), backbeat)
+        else {
+            // 每小节不足一拍的病态拍号：如实跳过，不假装通过。
+            return Ok(());
+        };
+        let grid = pattern.grid();
+        for onset in grid.hits() {
+            for voice in DrumVoice::ALL {
+                let should = expected_voice(voice, meter, onset.cell, onset.weight, grouping, backbeat);
+                let did = pattern
+                    .hits()
+                    .iter()
+                    .any(|hit| hit.voice == voice && hit.tick == onset.tick && hit.cell == onset.cell);
+                prop_assert_eq!(did, should, "meter {:?} cell {} voice {}", meter, onset.cell, voice.name());
+            }
+        }
+        // 踩镲覆盖每一个 onset（"每格一击"）。
+        prop_assert_eq!(pattern.hit_count(DrumVoice::HiHat), grid.len());
+        // 击点总数 = 各鼓件击点数之和。
+        prop_assert_eq!(
+            pattern.len(),
+            DrumVoice::ALL.iter().map(|&voice| pattern.hit_count(voice)).sum::<usize>()
+        );
+    }
+}
+
+/// 鼓组型的结构不变量：按 `(tick, 鼓件序)` 严格升序、同一 tick 同一鼓件最多一次、
+/// 每个击点都能在网格里找到逐位相同的 onset、`total_ticks` 与网格一致。
+///
+/// 放在 `proptest!` 之外：本判据遍历的是**全部 182 条登记流派**。
+#[test]
+fn every_registered_genre_produces_a_well_formed_drum_pattern() {
+    let mut checked = 0usize;
+    let mut too_dense = 0usize;
+    for rule in GenreLibrary::all() {
+        for onsets in [1u32, 2, 3, 4, 6, 8, 12] {
+            let Ok(Some(pattern)) = rule.drum_pattern(2, onsets) else {
+                // 只允许一种"不产出"的理由：请求的 onset 数超过该拍号的格位数
+                // （`ProgressionTooDense`）。**不**静默钳制，也**不**把别的错误
+                // 当成跳过 —— 否则这条判据会变成"什么都没查"。
+                assert!(
+                    onsets as usize > cells_per_bar(rule.meter_value()).unwrap() as usize,
+                    "{} onsets {onsets} failed for a reason other than density",
+                    rule.id
+                );
+                too_dense += 1;
+                continue;
+            };
+            checked += 1;
+            let grid = pattern.grid();
+            assert_eq!(pattern.meter(), rule.meter_value(), "{}", rule.id);
+            assert_eq!(pattern.bars(), 2, "{}", rule.id);
+            assert_eq!(
+                pattern.total_ticks(),
+                2 * rule.meter_value().ticks_per_bar()
+            );
+            assert_eq!(pattern.ticks_per_bar(), rule.meter_value().ticks_per_bar());
+            assert!(pattern.hit_count(DrumVoice::HiHat) <= grid.len());
+            for pair in pattern.hits().windows(2) {
+                assert!(
+                    (pair[0].tick, pair[0].voice.ordinal())
+                        < (pair[1].tick, pair[1].voice.ordinal()),
+                    "{} {:?} then {:?}",
+                    rule.id,
+                    pair[0],
+                    pair[1]
+                );
+            }
+            for hit in pattern.hits() {
+                assert!(hit.tick < pattern.total_ticks(), "{} {hit:?}", rule.id);
+                let onset = grid.hits().iter().find(|onset| {
+                    onset.tick == hit.tick
+                        && onset.bar == hit.bar
+                        && onset.cell == hit.cell
+                        && onset.weight == hit.weight
+                });
+                assert!(onset.is_some(), "{} {hit:?} is not a grid onset", rule.id);
+                assert_eq!(hit.accent, hit.weight >= STRONG_BEAT_WEIGHT, "{}", rule.id);
+            }
+            // 每个小节的切片拼起来就是全部击点。
+            let rebuilt: Vec<DrumHit> = (0..pattern.bars())
+                .flat_map(|bar| pattern.hits_in_bar(bar).iter().copied())
+                .collect();
+            assert!(rebuilt == pattern.hits().to_vec(), "{}", rule.id);
+        }
+    }
+    // 实测读数：182 条流派 × 7 个 onset 数 = 1274 个请求；其中 **1266** 个
+    // 构造成功，**8** 个按 `ProgressionTooDense` 如实拒绝（登记表里格位数最少
+    // 的拍号是 2/4 与 7/8，只有 8 或 14 格 ⇒ 请求 12 个 onset 时 2/4 报错）。
+    assert_eq!(checked, 1266);
+    assert_eq!(too_dense, 8);
+    assert_eq!(checked + too_dense, 182 * 7);
+}
+
+/// 摇摆只移动 tick、不改鼓件分派：同一 `(cell, voice)` 对在两份鼓组型里都存在。
+#[test]
+fn swing_never_changes_which_voice_strikes_a_cell() {
+    for rule in GenreLibrary::all() {
+        let Ok(straight) = rule.rhythm_grid(1, 8) else {
+            continue;
+        };
+        let Ok(Some(plain)) = rule.drum_pattern(1, 8) else {
+            continue;
+        };
+        // 有摇摆比例的流派：鼓件分派与网格格点集合都不因摇摆改变。
+        if let Ok(Some(swung_permille)) = rule.swing_permille() {
+            let swung = swung_drum_pattern(
+                rule.meter_value(),
+                1,
+                8,
+                Some(swung_permille),
+                None,
+                default_backbeat(rule.meter_value()),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(swung.len(), plain.len(), "{}", rule.id);
+            for hit in plain.hits() {
+                assert!(
+                    swung
+                        .hits()
+                        .iter()
+                        .any(|other| other.cell == hit.cell && other.voice == hit.voice),
+                    "{} {hit:?}",
+                    rule.id
+                );
+            }
+        }
+        // 鼓组型读的网格 onset 集合必须与 rhythm_grid 的逐位相同。
+        assert!(
+            plain.grid().hits() == straight.hits(),
+            "{}: the drum pattern must read the genre's own grid",
+            rule.id
+        );
+    }
 }

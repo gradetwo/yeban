@@ -107,6 +107,14 @@
 //! 一条确定性的单声部旋律（种子驱动，[`melody::genre_melody`] 读流派的登记数据）。
 //! 它**不新增任何登记数据**，也不做"好听"的判定（见 [`melody`] 的边界声明）。
 //!
+//! 同一台账的 `pending 3` 还剩"**具体的鼓点**"这一半，由 [`drum`] 补上：
+//! [`drum::swung_drum_pattern`] 把**已经存在的** [`rhythm::MetricGrid`] 按
+//! 度量重量与拍分组分派到底鼓／军鼓／踩镲／吊镲，产出一份可逐件读回的鼓组型。
+//! 它同样**不新增登记数据**：分派只读网格既有的 `tick` / `bar` / `cell` / `weight`
+//! 与调用方传入的分组、反拍位置。**逐流派的鼓点型数据仍未登记**
+//! （`GENRES` 里没有这个字段），因此本 crate 不替任何流派猜一套鼓点
+//! （见 [`drum`] 的模块文档）。
+//!
 //! ## 登记数据的"第 0 条"不再是唯一入口（本次）
 //!
 //! 规则库登记了 **391** 条典型走向与 **520** 个典型音阶，但此前**文档化的流派
@@ -132,6 +140,7 @@
 #![deny(missing_docs)]
 
 pub mod chord;
+pub mod drum;
 pub mod error;
 pub mod genre;
 pub mod melody;
@@ -143,6 +152,10 @@ pub mod swing;
 pub mod voice_leading;
 
 pub use chord::{Chord, ChordKind, Tonality};
+pub use drum::{
+    Backbeat, DRUM_VOICE_COUNT, DrumHit, DrumPattern, DrumVoice, default_backbeat, drum_pattern,
+    is_meter_group_start, swung_drum_pattern,
+};
 pub use error::TheoryError;
 pub use genre::{GenreLibrary, GenreRule};
 pub use melody::{
@@ -264,7 +277,7 @@ mod tests {
         //
         // 检查口径：只看**非注释行**，且只看到本模块为止（忽略测试模块本身，
         // 那里允许使用 `&` 与 `Vec` 等辅助工具）。
-        const SOURCES: [(&str, &str); 11] = [
+        const SOURCES: [(&str, &str); 12] = [
             ("lib.rs", include_str!("lib.rs")),
             ("pitch.rs", include_str!("pitch.rs")),
             ("scale.rs", include_str!("scale.rs")),
@@ -275,6 +288,7 @@ mod tests {
             ("swing.rs", include_str!("swing.rs")),
             ("rhythm.rs", include_str!("rhythm.rs")),
             ("melody.rs", include_str!("melody.rs")),
+            ("drum.rs", include_str!("drum.rs")),
             ("error.rs", include_str!("error.rs")),
         ];
         // 逐字节拼出禁词，避免这段代码自己包含禁词字面量。

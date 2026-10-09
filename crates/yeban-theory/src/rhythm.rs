@@ -540,9 +540,12 @@ pub fn swung_metric_grid(
     onsets_per_bar: u32,
     permille: Option<u16>,
 ) -> Result<MetricGrid, TheoryError> {
-    build_metric_grid(meter, bars, onsets_per_bar, permille, |cell| {
-        metric_weight_in(meter, cell)
-    })
+    Ok(
+        build_weighted_grid(meter, bars, onsets_per_bar, permille, |cell| {
+            metric_weight_in(meter, cell)
+        })?
+        .grid,
+    )
 }
 
 /// 平直的**加性分组**网格：`permille == None` 的 [`grouped_swung_metric_grid`]。
@@ -584,22 +587,54 @@ pub fn grouped_swung_metric_grid(
     permille: Option<u16>,
     grouping: BeatGrouping<'_>,
 ) -> Result<MetricGrid, TheoryError> {
-    build_metric_grid(meter, bars, onsets_per_bar, permille, |cell| {
-        metric_weight_grouped(meter, cell, grouping)
-    })
+    Ok(
+        build_weighted_grid(meter, bars, onsets_per_bar, permille, |cell| {
+            metric_weight_grouped(meter, cell, grouping)
+        })?
+        .grid,
+    )
+}
+
+/// 一份**带重量表**的网格：造好的 `MetricGrid` 加上逐 onset 的一手读数。
+///
+/// [`crate::drum`] 需要后者才能把 onset 映射回"第几拍 / 是不是组起点"，
+/// 而 `GridHit` 的 `cell` 与 `tick` 之间的映射含摇摆位移，不能只靠减法倒推。
+/// 加这一份的代价与 `MetricGrid` 相同（每个 onset 一个 `GridHit`），因此
+/// **不**改变"构造期分配、逐样本零分配"的边界。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WeightedGrid {
+    grid: MetricGrid,
+    selected: Vec<GridHit>,
+}
+
+impl WeightedGrid {
+    /// 造好的网格。
+    pub(crate) fn grid(&self) -> &MetricGrid {
+        &self.grid
+    }
+
+    /// 逐 onset 的重量表，与 [`MetricGrid::hits`] **逐位相同**。
+    ///
+    /// 两份 `GridHit` 逐字段相等：这是一条有判据的恒等式，不是注释承诺。
+    pub(crate) fn selected(&self) -> &[GridHit] {
+        &self.selected
+    }
 }
 
 /// 网格构造的公共骨架：`weight_of` 给出每个格点的度量重量。
 ///
 /// 两条口径（[`metric_weight_in`] 与 [`metric_weight_grouped`]）只在**重量**
-/// 上不同，因此选点、摇摆位移与全部校验都走这一份实现 —— 免得两份实现漂移。
-fn build_metric_grid(
+/// 上不同，因此校验、选点、摇摆位移只有**这一份**实现 —— 免得两份实现漂移。
+///
+/// 返回的 [`WeightedGrid`] 同时给出"每个 onset 选的是哪个格点"，
+/// 供 [`crate::drum`] 复用同一份重心读数。
+pub(crate) fn build_weighted_grid(
     meter: Meter,
     bars: u32,
     onsets_per_bar: u32,
     permille: Option<u16>,
     weight_of: impl Fn(u32) -> u8,
-) -> Result<MetricGrid, TheoryError> {
+) -> Result<WeightedGrid, TheoryError> {
     if bars == 0 {
         return Err(TheoryError::ZeroBars);
     }
@@ -676,12 +711,15 @@ fn build_metric_grid(
             .filter(|pair| pair[0].tick >= pair[1].tick)
             .collect::<Vec<_>>()
     );
-    Ok(MetricGrid {
-        meter,
-        bars,
-        onsets_per_bar,
-        permille,
-        hits,
+    Ok(WeightedGrid {
+        selected: hits.clone(),
+        grid: MetricGrid {
+            meter,
+            bars,
+            onsets_per_bar,
+            permille,
+            hits,
+        },
     })
 }
 

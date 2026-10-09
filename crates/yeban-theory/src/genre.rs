@@ -446,6 +446,40 @@ impl GenreRule {
             self.swing_permille()?,
         )
     }
+
+    /// 用该流派**登记的**拍号与摇摆比例生成鼓组型（每小节 `onsets_per_bar` 个 onset）。
+    ///
+    /// 这是 `pending 3` 所说"具体的鼓点"那一半的**机制**侧：网格来自本流派的
+    /// 拍号与摇摆比例（见 [`GenreRule::rhythm_grid`]），分派规则见 [`crate::drum`]。
+    /// 它**不新增**登记数据：拍分组走**拍号自身**的度量层级，反拍位置走
+    /// [`crate::drum::default_backbeat`]，两者都只读拍号。
+    ///
+    /// onset 数**不**读 [`GenreRule::note_density_hint`]（理由同
+    /// [`GenreRule::rhythm_grid`]）。返回 `Ok(None)` 的两种情形：
+    /// `onsets_per_bar` 为 0（网格没有 onset，鼓组型为空是合法的，因此不会走到这里）
+    /// 不会发生；实际只有"该拍号每小节不足一拍"这一种（病态拍号，见
+    /// [`crate::drum::swung_drum_pattern`]）。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`crate::rhythm::swung_metric_grid`]：
+    /// `bars == 0` 或拍号非法 ⇒ [`TheoryError::ZeroBars`]；
+    /// `onsets_per_bar` 超过小节内的格位数 ⇒ [`TheoryError::ProgressionTooDense`]；
+    /// 登记的摇摆比例折算后越界 ⇒ [`TheoryError::SwingOutOfRange`]。
+    pub fn drum_pattern(
+        &self,
+        bars: u32,
+        onsets_per_bar: u32,
+    ) -> Result<Option<crate::drum::DrumPattern>, TheoryError> {
+        crate::drum::swung_drum_pattern(
+            self.meter_value(),
+            bars,
+            onsets_per_bar,
+            self.swing_permille()?,
+            None,
+            crate::drum::default_backbeat(self.meter_value()),
+        )
+    }
 }
 
 /// 流派规则表。

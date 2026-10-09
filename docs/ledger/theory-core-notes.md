@@ -319,6 +319,22 @@ reggaeton, amapiano
 > **口径**（出自 `crates/yeban-theory/src/swing.rs` 的模块文档）：输入是 `u16` **千分比**（`500` = 平直、`1000` = 附点八分）；`GenreRule::swing` 的 `f32` 百分数只在 `GenreRule::swing_permille` **一处**转换，其后**全部是整数运算** ⇒ 与 [ARCH-DET-001] 同口径、结果逐位一致。⛔ 越界比例**不被静默钳制**，返回 `SwingOutOfRange`。
 > ⚠️ 本条只关闭"只登记不应用"；`pending` 1–5 与 7–8 **仍然开放**。
 
+> ⚠️ **2026-10-08 更正注（`pending 3` 的"具体鼓点"那一半已补上；原句保留不改写）**
+> `pending 3` 的原句是"没有实现节奏型/鼓组 pattern …… 没有具体的鼓点网格"。
+> `crate::rhythm`（`0a1c0d2`）已补上**网格**那一半；`crates/yeban-theory/src/drum.rs`
+> 本次补上**分派**那一半：把**已经存在的** `MetricGrid` 读成一份可逐件读回的鼓组型。
+> **新增公开面**（本次逐条复核：`grep -n 'pub fn\|pub struct\|pub enum\|pub const\|pub type' crates/yeban-theory/src/drum.rs`，签名照抄；行号为本次提交时的读数）：
+> - `pub const DRUM_VOICE_COUNT: usize = 4;`（`:101`）；
+> - `pub enum DrumVoice { Kick, Snare, HiHat, Ride }`（`:109`）＋ `pub const ALL: [Self; DRUM_VOICE_COUNT]`、`pub const fn ordinal(self) -> usize`（`:129`）、`pub const fn name(self) -> &'static str`（`:140`）、`pub const fn gm_key(self) -> u8`（`:155`）；
+> - `pub struct DrumHit { pub voice, pub tick: u64, pub bar: u32, pub cell: u32, pub beat: u8, pub weight: u8, pub accent: bool }`（`:167`）；
+> - `pub type Backbeat = u8;`（`:188`）、`pub const fn default_backbeat(meter: Meter) -> Backbeat`（`:196`）、`pub const fn is_meter_group_start(meter: Meter, cell: u32, cells_per_beat: u64) -> bool`（`:224`）；
+> - `pub struct DrumPattern`（`:246`）＋ `pub fn hits(&self) -> &[DrumHit]`、`pub fn len(&self)`、`pub fn is_empty(&self)`、`pub fn hit_count(&self, voice: DrumVoice) -> usize`（`:272`）、`pub const fn grid(&self) -> &MetricGrid`、`pub const fn meter/bars/onsets_per_bar/ticks_per_bar/total_ticks`、`pub fn hits_in_bar(&self, bar: u32) -> &[DrumHit]`（`:319`）；
+> - `pub fn drum_pattern(meter, bars, onsets_per_bar, grouping: Option<BeatGrouping<'_>>, backbeat: Backbeat) -> Result<Option<DrumPattern>, TheoryError>`（`:349`）、`pub fn swung_drum_pattern(..., permille: Option<u16>, ...)`（`:369`）；
+> - `GenreRule::drum_pattern(&self, bars: u32, onsets_per_bar: u32) -> Result<Option<DrumPattern>, TheoryError>`（`crates/yeban-theory/src/genre.rs:469`，读登记拍号与摇摆比例）；
+> - 再导出：`crates/yeban-theory/src/lib.rs:155` 的 `pub use drum::{Backbeat, DRUM_VOICE_COUNT, DrumHit, DrumPattern, DrumVoice, default_backbeat, drum_pattern, is_meter_group_start, swung_drum_pattern};`。
+> **口径**（出自 `crates/yeban-theory/src/drum.rs` 的模块文档）：击点集合 **=** 网格的 onset 集合（不新增、不移动 tick）；底鼓 = 组起点、军鼓 = 反拍拍的**起点**、踩镲 = 每一格、吊镲 = 强位上的组起点；全部整数运算 ⇒ 与 [ARCH-DET-001] 同口径。⛔ 越界的 `backbeat`（0 或 > 拍数）**不被静默钳制**，返回 `Ok(None)`；本 crate **不新增** `TheoryError` 变体。
+> **`pending 3` 仍未关闭的那一半**：**逐流派的鼓点型数据**（哪条流派打什么样的鼓点序列）没有登记进 `GENRES` —— 本次只把拍号、摇摆比例与**调用方传入**的分组/反拍位置变成鼓点，`GenreRule::drum_pattern` 的缺省分组与反拍位置都只读拍号。`pending` 1、2、4–8 的状态不变（其中 4 已由 `melody` 关闭）。
+
 ---
 
 ## 7. 判据纪律：被故意破坏过的判据（SKILL 规则 2）
