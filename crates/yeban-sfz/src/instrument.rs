@@ -5487,4 +5487,373 @@ v127=1
             "unexpected verdict: {error:?}"
         );
     }
+
+    // ------------------------------------------------------------------
+    // 第六批：`<global>` 复位、key 映射、seq 轮替、off_* 与 pan 的缺省、
+    //         sample 路径、循环窗口与别名优先序
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_new_global_header_clears_master_and_group() {
+        // 与「新 `<master>` 清空 `<group>`」同一条口径：新的 `<global>` 必须把
+        // `master` 与 `group` 一起清空，否则上一个 master / group 段的取值会泄漏到
+        // 下一个 `global` 段（映射会串味）。
+        let instrument = parse_text(
+            "<master>lokey=40\n<group>hikey=41\n<global>volume=0\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            region.lokey, 0,
+            "the master value must not survive <global>"
+        );
+        assert_eq!(
+            region.hikey, 127,
+            "the group value must not survive <global>"
+        );
+    }
+
+    #[test]
+    fn a_one_character_default_path_is_kept() {
+        // `default_path` 只在**空**时被丢弃（`filter(|path| !path.is_empty())`）：
+        // 长度 1 的前缀是合法取值，必须参与拼接。
+        let instrument = parse_text(
+            "<control>\ndefault_path=A\n<region>sample=k.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].sample_path(), "A/k.wav");
+    }
+
+    #[test]
+    fn an_empty_default_path_is_stored_as_absent() {
+        // 空 `default_path` 必须等价于「没有 default_path」：`build_region` 的 `filter`
+        // 与 `sample_path` 的 `!prefix.is_empty()` 是**两道**互为冗余的防线。
+        // 这条判据同时钉住两道：字段层（第一行断言）与拼接结果（第二行断言）——
+        // 单独打坏任一道都不可观测，两道同时打坏时第二行断言变红。
+        let instrument = parse_text(
+            "<control>\ndefault_path=\n<region>sample=k.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].default_path.as_deref(), None);
+        assert_eq!(instrument.regions()[0].sample_path(), "k.wav");
+    }
+
+    #[test]
+    fn key_zero_pins_the_whole_range_to_zero() {
+        // `key=0` 是合法取值（`-1` 才是「不由音符触发」的哨兵）：推导出的
+        // lokey / hikey / pitch_keycenter 三个字段都是 0。
+        let region = first_region("<region>sample=a.wav key=0");
+        assert_eq!(
+            (region.lokey, region.hikey, region.pitch_keycenter),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn pitch_keycenter_rejects_one_below_the_documented_floor() {
+        // `pitch_keycenter` 的域是 `-127..=127`：`key=-1` 的哨兵语义不属于这个 opcode。
+        let error = parse_text(
+            "<region>sample=a.wav pitch_keycenter=-128",
+            &Default::default(),
+        )
+        .expect_err("-128 is out of range");
+        assert!(
+            matches!(
+                error,
+                SfzError::IntegerOutOfRange {
+                    min: -127,
+                    max: 127,
+                    ..
+                }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_outer_notes_of_the_key_range_are_still_bucketed() {
+        // `key_buckets` 用 `clamp(0, 127)`：`lokey=0` 与 `hikey=127` 两个端点都必须能命中。
+        let low = parse_text("<region>sample=a.wav lokey=0 hikey=0", &Default::default())
+            .expect("parses");
+        assert!(low.region_for(0, 100).is_some(), "note 0 with lokey=0");
+        let high = parse_text(
+            "<region>sample=a.wav lokey=127 hikey=127",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(
+            high.region_for(127, 100).is_some(),
+            "note 127 with hikey=127"
+        );
+    }
+
+    #[test]
+    fn a_one_step_cycle_never_reaches_the_second_position() {
+        // 周期由第一个匹配 region 的 `seq_length.max(1)` 决定：`seq_length=1` ⇒ target 恒为 1，
+        // 因此 `seq_position=2` 的 region 永远不会被轮替选中。
+        let instrument = parse_text(
+            "<region>seq_position=1 seq_length=1 sample=a.wav\n\
+             <region>seq_position=2 seq_length=1 sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let pick = |occurrence: u64| {
+            instrument
+                .region_for_with(RegionQuery::new(60, 100).with_occurrence(occurrence))
+                .map(|region| region.sample.to_string())
+        };
+        assert_eq!(pick(0).as_deref(), Some("a.wav"));
+        assert_eq!(
+            pick(1).as_deref(),
+            Some("a.wav"),
+            "a one-step cycle never reaches position 2"
+        );
+    }
+
+    #[test]
+    fn an_absent_seq_position_defaults_to_one() {
+        // 缺省 `seq_position` 是 1（不是 0）：没写它的 region 必须能在周期起点被选中。
+        let instrument = parse_text(
+            "<region>seq_position=2 seq_length=2 sample=a.wav\n\
+             <region>seq_length=2 sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        // 周期 = 2（第一个匹配 region 的 seq_length）；occurrence 0 ⇒ target 1 ⇒ 第二个 region。
+        let picked = instrument
+            .region_for_with(RegionQuery::new(60, 100).with_occurrence(0))
+            .map(|region| region.sample.to_string());
+        assert_eq!(picked.as_deref(), Some("b.wav"));
+    }
+
+    #[test]
+    fn an_absent_seq_length_and_position_are_read_as_one() {
+        // 两个 opcode 的缺省值都是 1（原样字段读数，不是 0）。
+        let region = first_region("<region>sample=a.wav");
+        assert_eq!((region.seq_length, region.seq_position), (1, 1));
+        let explicit = first_region("<region>sample=a.wav seq_length=4 seq_position=3");
+        assert_eq!((explicit.seq_length, explicit.seq_position), (4, 3));
+    }
+
+    #[test]
+    fn a_region_outside_the_cycle_is_still_selectable() {
+        // 第三个循环是兜底：没有任何 region 的 `seq_position` 命中 target 时，
+        // 仍然返回第一个满足门控的 region（不是 None）。
+        let instrument = parse_text(
+            "<region>seq_position=2 seq_length=2 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        // 周期 2：occurrence 0 ⇒ target 1，而唯一的 region 在位置 2 ⇒ 兜底必须命中它。
+        let picked = instrument
+            .region_for_with(RegionQuery::new(60, 100).with_occurrence(0))
+            .map(|region| region.sample.to_string());
+        assert_eq!(picked.as_deref(), Some("a.wav"));
+    }
+
+    #[test]
+    fn a_zero_seq_length_never_panics_and_cycles_once() {
+        // `seq_length=0` 可从文件解析出来（范围 0..=u32::MAX）。`max(1)` 把它读作
+        // 「周期 1」，所以取模**不会**除以零 —— 这是叶子 crate 的硬约束。
+        let instrument = parse_text(
+            "<region>seq_position=1 seq_length=0 sample=a.wav\n\
+             <region>seq_position=2 seq_length=0 sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.regions()[0].seq_length,
+            0,
+            "the raw value is kept"
+        );
+        for occurrence in 0..4u64 {
+            let picked = instrument
+                .region_for_with(RegionQuery::new(60, 100).with_occurrence(occurrence))
+                .map(|region| region.sample.to_string());
+            assert_eq!(picked.as_deref(), Some("a.wav"), "occurrence {occurrence}");
+        }
+    }
+
+    #[test]
+    fn the_default_group_and_off_by_are_zero() {
+        let region = first_region("<region>sample=a.wav");
+        assert_eq!(region.group, 0, "the default polyphony group is 0");
+        assert_eq!(region.off_by, 0, "off_by closes nothing by default");
+    }
+
+    #[test]
+    fn the_two_documented_group_aliases_are_read() {
+        // `polyphony_group` 是 `group` 的别名、`offby` 是 `off_by` 的别名
+        // （两条都登记在 `read_u32` 的 `alias` 参数里）。
+        let polyphony = first_region("<region>sample=a.wav polyphony_group=7");
+        assert_eq!(polyphony.group, 7);
+        let offby = first_region("<region>sample=a.wav offby=9");
+        assert_eq!(offby.off_by, 9);
+    }
+
+    #[test]
+    fn the_pan_default_is_zero_and_the_value_is_verbatim() {
+        // `pan` 缺省 0.0；取值以百分比原样带出（声相定律由调用方决定）。
+        assert_eq!(first_region("<region>sample=a.wav").pan, 0.0);
+        assert_eq!(first_region("<region>sample=a.wav pan=-100").pan, -100.0);
+        assert_eq!(first_region("<region>sample=a.wav pan=100").pan, 100.0);
+    }
+
+    #[test]
+    fn an_empty_sample_is_not_a_region() {
+        // `sample=` 有值但是空串 ⇒ 与「没有 sample」同一条路径：丢弃 + 警告。
+        let instrument = parse_text("<region>sample=", &Default::default()).expect("parses");
+        assert!(instrument.is_empty());
+        assert!(
+            instrument
+                .warnings()
+                .iter()
+                .any(|w| matches!(w, Warning::RegionWithoutSample { .. }))
+        );
+    }
+
+    #[test]
+    fn a_slash_default_path_is_a_real_prefix() {
+        // `default_path=/` 是合法前缀（不是空串）：拼接结果是 `/<sample>`。
+        let rooted = parse_text(
+            "<control>\ndefault_path=/\n<region>sample=k.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(rooted.regions()[0].sample_path(), "/k.wav");
+        let bare = parse_text(
+            "<control>\ndefault_path=Samples\n<region>sample=k.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(bare.regions()[0].sample_path(), "Samples/k.wav");
+    }
+
+    #[test]
+    fn an_interior_slash_in_the_sample_still_joins_the_prefix() {
+        // 判据是「**以** `/` 开头」（绝对路径），不是「含 `/`」：相对子路径必须拼接。
+        let instrument = parse_text(
+            "<control>\ndefault_path=Samples/\n<region>sample=kick/hard.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.regions()[0].sample_path(),
+            "Samples/kick/hard.wav"
+        );
+    }
+
+    #[test]
+    fn the_loop_window_boundary_is_one_frame() {
+        // `loop_end > loop_start` 是**严格**判据：长度 1 帧的窗口合法（`end = start + 1`）。
+        let instrument = parse_text(
+            "<region>sample=a.wav loop_mode=loop_continuous loop_start=5 loop_end=6",
+            &Default::default(),
+        )
+        .expect("parses");
+        let window = instrument.regions()[0]
+            .loop_window()
+            .expect("a one-frame window");
+        assert_eq!((window.start, window.end), (5, 6));
+        let degenerate = parse_text(
+            "<region>sample=a.wav loop_mode=loop_continuous loop_start=5 loop_end=5",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(degenerate.regions()[0].loop_window().is_none());
+    }
+
+    #[test]
+    fn no_loop_and_one_shot_are_distinct_options() {
+        // `no_loop` 与 `one_shot` 是两个不同的取值（后者让 note-off 不结束声部）。
+        let no_loop = first_region("<region>sample=a.wav loop_mode=no_loop");
+        assert_eq!(no_loop.loop_mode, LoopMode::NoLoop);
+        assert_ne!(no_loop.loop_mode, LoopMode::OneShot);
+        let one_shot = first_region("<region>sample=a.wav loop_mode=one_shot");
+        assert_eq!(one_shot.loop_mode, LoopMode::OneShot);
+    }
+
+    #[test]
+    fn the_loop_point_defaults_are_zero() {
+        let region = first_region("<region>sample=a.wav loop_mode=loop_continuous");
+        assert_eq!((region.loop_start, region.loop_end), (0, 0));
+        // 只给一个端点时另一个仍是 0，因此单端点文件里的窗口仍然成立。
+        let only_end = first_region("<region>sample=a.wav loop_mode=loop_continuous loop_end=8");
+        assert_eq!((only_end.loop_start, only_end.loop_end), (0, 8));
+        assert_eq!(
+            only_end.loop_window().map(crate::playback::LoopWindow::len),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn the_loop_mode_error_lists_exactly_the_option_table() {
+        // 与 `the_off_mode_error_lists_exactly_the_option_table` 同一条机械对照：
+        // 白名单必须与选项表逐项同序同名（少写一项否则不可观测）。
+        let listed: Vec<&str> = LoopMode::ALLOWED.split(", ").collect();
+        let table: Vec<&str> = LoopMode::OPTIONS.iter().map(|(text, _)| *text).collect();
+        assert_eq!(listed, table, "ALLOWED must mirror the option table");
+        assert_eq!(
+            LoopMode::ALLOWED,
+            "no_loop, one_shot, loop_continuous, loop_sustain"
+        );
+    }
+
+    #[test]
+    fn the_legacy_loop_point_spellings_are_read() {
+        // `loopstart` / `loopend` 是 `loop_start` / `loop_end` 的旧拼写
+        // （别名登记在 `read_u32` 的 `alias` 参数里）。
+        let region =
+            first_region("<region>sample=a.wav loop_mode=loop_continuous loopstart=3 loopend=9");
+        assert_eq!((region.loop_start, region.loop_end), (3, 9));
+    }
+
+    #[test]
+    fn the_canonical_spelling_wins_for_every_aliased_opcode() {
+        // 别名对共用「规范名先查」的口径：两个拼写同时出现时规范名胜出。
+        let volume = first_region("<region>sample=a.wav volume=-6 gain=-12");
+        assert_eq!(volume.volume, -6.0, "volume wins over gain");
+        let loop_mode =
+            first_region("<region>sample=a.wav loop_mode=loop_sustain loopmode=loop_continuous");
+        assert_eq!(loop_mode.loop_mode, LoopMode::LoopSustain);
+        let loop_start =
+            first_region("<region>sample=a.wav loop_mode=loop_continuous loop_start=2 loopstart=7");
+        assert_eq!(loop_start.loop_start, 2);
+        let loop_end =
+            first_region("<region>sample=a.wav loop_mode=loop_continuous loop_end=8 loopend=3");
+        assert_eq!(loop_end.loop_end, 8);
+        let group = first_region("<region>sample=a.wav group=1 polyphony_group=2");
+        assert_eq!(group.group, 1);
+        let off_by = first_region("<region>sample=a.wav off_by=3 offby=4");
+        assert_eq!(off_by.off_by, 3);
+    }
+
+    #[test]
+    fn sample_path_borrows_when_there_is_no_prefix() {
+        // 无前缀时 `sample_path` 必须**零拷贝**返回（`Cow::Borrowed`）；有前缀时才拥有。
+        // 这条口径同时让调用方能区分「原样返回」与「拼接结果」。
+        let plain = first_region("<region>sample=k.wav");
+        assert!(matches!(plain.sample_path(), Cow::Borrowed(_)));
+        let prefixed = first_region("<control>\ndefault_path=S/\n<region>sample=k.wav");
+        assert!(matches!(prefixed.sample_path(), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn a_hand_built_region_with_an_empty_sample_keeps_the_prefix_join() {
+        // `Region` 的字段是 `pub`：手工构造的空 `sample` 是到达该分支的**唯一**方式
+        // （解析路径由 `an_empty_sample_is_not_a_region` 挡住）。
+        let mut bare = region(60, 1, 1);
+        bare.sample = Cow::Borrowed("");
+        assert_eq!(bare.sample_path(), "");
+        let mut prefixed = bare.clone();
+        prefixed.default_path = Some(Cow::Borrowed("S"));
+        assert_eq!(
+            prefixed.sample_path(),
+            "S/",
+            "an empty sample still takes the prefix and its separator"
+        );
+    }
 }
