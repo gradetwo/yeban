@@ -63,6 +63,33 @@
 //!
 //! ⚠ 守卫**不**覆盖"有限但极大"的输入（`3e38` 仍可能溢出成 `∞`）。那条归调用方的
 //! 电平口径管，见 `math::finite_or_zero` 的文档。
+//!
+//! ## 6. 预延迟**长度变更**时清零（本轮的缺口修复）
+//!
+//! "秒 → 帧"的读数（`pre_len`）**变了**的时候，[`Reverb::set_params`] 会把两条预延迟线
+//! 清零并把写头归零。长度不变时一个字节都不动（§5 的有限样本口径与既有音色因此不受影响）。
+//!
+//! 为什么必须清：两条线都按 `PREDELAY_MAX` 一次性分配、**永不缩小**，而写头只在
+//! `0..pre_len` 上回绕。长度变长时新写头会走进 `[旧 pre_len, 新 pre_len)` 这一段 ——
+//! 里面的样本是**上一次用更长延迟**时写进去、此后从未被读出的旧音频。它们会在新延迟
+//! 该给静音的地方突然出现在湿路里（一段"幽灵回声"），而且**取决于上一次的处理历史**
+//! ⇒ 同一段输入、同一组参数，因为中间拖过一次旋钮而得到不同的输出，这不是
+//! [ARCH-DET-001] 允许的可复现输出。
+//!
+//! 器件实测（本机 aarch64，本票读数；`mix = 1.0` ⇒ 干路为 0）：短延迟 `46` 帧的两条线用
+//! `46` 帧常数灌满（读在写之前 ⇒ 这一段输出逐样本为 `0`，梳状组一次也没被激励），随后把
+//! 长度改成 `1500` 帧、喂 `3 000` 帧静音。清零前：输出峰值 `2.864376e-1`、首个非零样本在
+//! 第 `1214` 帧（= `1116 · 48000/44100`，最短梳状延迟），与"刚按 `1500` 帧装配好"的实例
+//! 相差 `2938/6000` 个比特；清零后两条读数都是 `0`、比特差异 `0/6000`。判据
+//! `reverb::tests::changing_the_pre_delay_length_never_replays_stale_audio` 钉住它。
+//!
+//! ⚠ 代价与边界（不隐藏）：本器件**没有**做交叉淡化，也**没有**做分数延迟插值 ——
+//! 那需要第二条读头与混合状态（另一张票）。长度只按整帧变化；持续拖动 `predelay` 时，
+//! 每当"秒 → 帧"的读数跨过一帧就清一次线（两条线各 `PREDELAY_MAX` = `9 600` 个 `f32`
+//! 的原地写，**零分配**，
+//! 由 `tests/reverb_rt_zero_alloc.rs` 判据 1 的"每 `250` 个量子换一次 `predelay`"与
+//! 判据 4 的全程扫描覆盖）。要平滑拖动，调用方应在器件之外做参数平滑。
+//! 口径与 [`crate::convolution_reverb`] 模块文档 §2.2 相同。
 
 use crate::math::finite_or_zero;
 
@@ -346,6 +373,11 @@ impl Reverb {
     ///
     /// 退化输入（`NaN`/`±inf`）会被替换成默认值：它们会把整个梳状组的反馈变成
     /// `NaN` 并静默毒化整条混响总线，而实时路径上无法报错，只能就地回落。
+    ///
+    /// **预延迟的帧数变了**就把两条预延迟线清零、写头归零（见模块文档 §6）。
+    /// 帧数**没变**时一个字节都不动：梳状组、全通组与两条预延迟线的历史全部保留，
+    /// 因此"同一组参数重复设置"是严格空操作。清线只对已分配的缓冲做原地写 ⇒
+    /// **零分配**，可以在实时线程上逐块调用 [ARCH-RT-001]。
     pub fn set_params(&mut self, params: ReverbParams) {
         /// 非有限值一律回落到这个默认参数集。
         const FALLBACK: ReverbParams = ReverbParams {
@@ -375,12 +407,17 @@ impl Reverb {
             }
         }
         if self.configured {
-            // 绝不在这里清空预延迟线：参数是平滑的，否则拖一次旋钮就会
-            // 在块边界上把尾巴擦掉。
-            self.pre_len =
-                ((params.predelay * self.sample_rate) as usize).clamp(1, PREDELAY_MAX - 1);
-            if self.pre_index >= self.pre_len {
+            let wanted = ((params.predelay * self.sample_rate) as usize).clamp(1, PREDELAY_MAX - 1);
+            if wanted != self.pre_len {
+                // 只有**帧数真的变了**才清线（见模块文档 §6）：线按 `PREDELAY_MAX`
+                // 预分配、永不缩小，所以长度变长时新写头会指向一段在旧的、更短的
+                // 延迟下写进缓冲、却从未被读出的旧音频 ⇒ 幽灵回声。
+                // 长度不变时一个字节都不动（梳状组与全通组的历史也不动）。
+                for line in &mut self.pre {
+                    line.fill(0.0);
+                }
                 self.pre_index = 0;
+                self.pre_len = wanted;
             }
         }
     }
@@ -423,8 +460,9 @@ impl Reverb {
     /// （`new` → `set_sample_rate` → `set_params`）逐位相同。
     ///
     /// **配置不动**：采样率、参数、各条线的长度与系数都保持不变 —— 清的只是历史。
-    /// 与 [`Self::set_params`] 的取舍不同：那里**故意不清**预延迟线（参数是平滑的，
-    /// 块边界上擦掉尾巴会听见），而 `reset()` 是调用方显式要求"从现在起当它没响过"。
+    /// 与 [`Self::set_params`] 的取舍不同：那里只在预延迟的**帧数真的变了**时清
+    /// 预延迟线（长度不变则一个字节都不动），而 `reset()` 是调用方显式要求
+    /// "从现在起当它没响过" ⇒ 历史全清。
     ///
     /// **逐样本零分配**（只对已分配的缓冲做原地写，不经堆），可以在实时线程上调用
     /// [ARCH-RT-001]。未配置时是空操作（空 `Vec` 的 `fill` 不分配也不 panic）。
@@ -1008,6 +1046,138 @@ mod tests {
             REVERB_LATENCY,
             dry_none.to_bits(),
             wet_fifty - wet_none
+        );
+    }
+
+    /// **判据（新写，可红）**：预延迟的**帧数变更**不得重放按旧长度写进缓冲的音频。
+    ///
+    /// 量什么：夹在"预延迟 `1/1024 s`（=`46` 帧）→ `1/32 s`（=`1500` 帧）"这一次长度
+    /// 变更两侧的输出。读数有三个，单位都是线性幅度（第三个是帧数）：
+    ///
+    /// ① 灌线段的输出**峰值** —— 该段喂进 `46` 帧常数 `7.0`，而 `process` 是**读在写
+    ///    之前**，所以这 `46` 帧读到的全是 `0.0`（槽位还没被写过）：峰值必须是**恰好**
+    ///    `0.0`。这是夹具的前置条件 —— 它证明梳状组与全通组**一次也没被激励**，
+    ///    因此此后任何非零输出都只可能来自预延迟线里残留的旧音频；
+    /// ② 长度变更后喂 `PROBE` 帧静音的输出**峰值**，以及它与"**刚**按 `1500` 帧装配好
+    ///    的实例"的**逐比特**比较；
+    /// ③ 正对照：同一条灌满的线，长度**不变**（仍是 `46` 帧）时喂同样长的静音，
+    ///    峰值必须 **`> 0`** —— 它证明这套夹具真的听得到线里那份旧音频（否则 ② 是空断言）。
+    ///
+    /// 判据：① `== 0.0`；② `== 0.0` 且与新建实例的时间序列**逐比特相同**；③ `> 0.0`。
+    ///
+    /// **本机实测（aarch64，本票）**：把 `set_params` 里那次 `line.fill(0.0)` 删掉 ⇒
+    /// ② 的峰值从 `0.0` 变成 `2.864376e-1`（首个非零样本在第 `1214` 帧 = `1116 · 48000/44100`，
+    /// 即最短梳状延迟），与新建实例相差 `2938/6000` 个比特 ⇒ 该断言实测可红。
+    #[test]
+    fn changing_the_pre_delay_length_never_replays_stale_audio() {
+        /// 短预延迟（秒）：`1/1024` 在 `f32` 里精确，`· 48000 = 46.875` ⇒ 帧数 `46`。
+        const SHORT_S: f32 = 1.0 / 1024.0;
+        /// 短预延迟的帧数（由 [`SHORT_S`] 与 [`SR`] 算出，见上）。
+        const SHORT_FRAMES: usize = 46;
+        /// 长预延迟（秒）：`1/32` 在 `f32` 里精确，`· 48000 = 1500` ⇒ 帧数 `1500`。
+        const LONG_S: f32 = 1.0 / 32.0;
+        /// 长预延迟的帧数（由 [`LONG_S`] 与 [`SR`] 算出，见上）。
+        const LONG_FRAMES: usize = 1_500;
+        /// 观测长度（帧）：`1500` 帧预延迟 ＋ 最短梳状延迟 `1214` 帧都装得下。
+        const PROBE: usize = 3_000;
+        /// 灌进预延迟线的常数（线性幅度）。取 `7.0` 与
+        /// `convolution_reverb::tests::changing_the_pre_delay_length_never_replays_stale_audio`
+        /// 同值：清空所需的激励远在舍入底之上。
+        const FILL: f32 = 7.0;
+
+        /// 干路恒为 `0`（`dry = 1 − mix`），所以输出**只**含湿路 —— 旧音频因此无处可藏。
+        fn wet_only(predelay: f32) -> ReverbParams {
+            ReverbParams {
+                size: 0.5,
+                damp: 0.35,
+                mix: 1.0,
+                width: 1.0,
+                predelay,
+            }
+        }
+
+        /// 两个声道的联合峰值。用 `abs()` ＋ 比较（而不是 `f32::max`）：`abs()` 把 `-0.0`
+        /// 映成 `+0.0`，于是"峰值是不是**恰好** `0.0`"这个断言不受零的符号影响。
+        fn peak(left: &[f32], right: &[f32]) -> f32 {
+            let mut peak = 0.0f32;
+            for (l, r) in left.iter().zip(right.iter()) {
+                let value = l.abs();
+                let value = if r.abs() > value { r.abs() } else { value };
+                if value > peak {
+                    peak = value;
+                }
+            }
+            peak
+        }
+
+        // ---- 把短延迟的两条线灌满：`46` 帧常数 ⇒ 这一段读到的是写之前的值，全 `0` ----
+        let mut stale = Reverb::new();
+        stale.set_sample_rate(SR);
+        stale.set_params(wet_only(SHORT_S));
+        let mut fill_l = vec![FILL; SHORT_FRAMES];
+        let mut fill_r = vec![FILL; SHORT_FRAMES];
+        stale.process(&mut fill_l, &mut fill_r);
+        let fill_peak = peak(&fill_l, &fill_r);
+
+        // ---- 长度变更：`46` → `1500` 帧，随后只有静音 ----
+        stale.set_params(wet_only(LONG_S));
+        let mut probe_l = vec![0.0f32; PROBE];
+        let mut probe_r = vec![0.0f32; PROBE];
+        stale.process(&mut probe_l, &mut probe_r);
+        let stale_peak = peak(&probe_l, &probe_r);
+
+        // ---- 参照：**刚**按长延迟装配好的实例，喂同样的静音 ----
+        let mut fresh = Reverb::new();
+        fresh.set_sample_rate(SR);
+        fresh.set_params(wet_only(LONG_S));
+        let mut fresh_l = vec![0.0f32; PROBE];
+        let mut fresh_r = vec![0.0f32; PROBE];
+        fresh.process(&mut fresh_l, &mut fresh_r);
+        let fresh_peak = peak(&fresh_l, &fresh_r);
+        let differences = probe_l
+            .iter()
+            .chain(probe_r.iter())
+            .zip(fresh_l.iter().chain(fresh_r.iter()))
+            .filter(|(out, want)| out.to_bits() != want.to_bits())
+            .count();
+
+        // ---- 正对照：线里那份旧音频在**不变**的长度下确实听得见 ----
+        let mut audible = Reverb::new();
+        audible.set_sample_rate(SR);
+        audible.set_params(wet_only(SHORT_S));
+        let mut control_l = vec![FILL; SHORT_FRAMES];
+        let mut control_r = vec![FILL; SHORT_FRAMES];
+        audible.process(&mut control_l, &mut control_r);
+        let mut tail_l = vec![0.0f32; PROBE];
+        let mut tail_r = vec![0.0f32; PROBE];
+        audible.process(&mut tail_l, &mut tail_r);
+        let control_peak = peak(&tail_l, &tail_r);
+
+        eprintln!(
+            "[yeban-dsp] reverb::predelay 长度变更读数（单位：线性幅度 / 帧）: \
+             灌线段峰值={fill_peak:e}（前置条件，须为 0）；长度 {SHORT_FRAMES}→{LONG_FRAMES} 帧后 \
+             静音段峰值={stale_peak:e}、与新建实例的比特差异={differences}/{}；\
+             长度不变的正对照峰值={control_peak:e}",
+            2 * PROBE
+        );
+        assert_eq!(
+            fill_peak, 0.0,
+            "前置条件不成立：灌线段就出声了 ⇒ 梳状组已被激励，本判据测不出预延迟线的残留"
+        );
+        assert_eq!(
+            fresh_peak, 0.0,
+            "参照实例（刚按长延迟装配）在纯静音上就出声了 ⇒ 无法用它判残留"
+        );
+        assert_eq!(
+            stale_peak,
+            0.0,
+            "预延迟变长后湿路重放了旧长度下写进缓冲的音频：峰值={stale_peak:e}、\
+             与新建实例的比特差异={differences}/{}",
+            2 * PROBE
+        );
+        assert!(
+            control_peak > 0.0,
+            "正对照不出声 ⇒ 这套夹具听不到线里的旧音频，② 是空断言"
         );
     }
 }
