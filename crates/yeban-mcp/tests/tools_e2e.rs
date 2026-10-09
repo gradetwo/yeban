@@ -3787,3 +3787,411 @@ fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it(
         "撤销之后母带必须回到摆放之前的字节: {rendered_after_undo}"
     );
 }
+
+/// **摆放编辑的关闭判据**：`placement.kind` 让一条**已经在时间轴上**的摆放可以被
+/// **平移**与**取走**（`Op::MoveClipPlacement` / `Op::RemoveClipPlacement`）。
+///
+/// 在 `ff23302`（`add` 形态）之后，工具面能**加**一条摆放，却**没有**任何工具能挪它
+/// 或取走它 —— 那两个 `Op` 在模型层早已实现（各自带自包含撤销载荷），渲染器也
+/// **真的**按 `track.clips` 出片，因此"挪不动 / 取不走"是一条可听的能力缺口：
+/// 摆错位置只剩"整次调用撤销"，而撤到那一步之前的编辑会一起丢。
+///
+/// 判据从工具调用一路走到**磁盘上的 WAV**，因此"取走真的让它不出声"是实测的：
+///
+/// 1. `add` 摆到 tick 7680 ⇒ 母带 `sha256` 变、帧数变长（阴性对照由 needs-6 那条
+///    判据承担；这一条自己再证一次"变了"）；
+/// 2. `move` 到 tick 15360 ⇒ 编译成**一条** `MoveClipPlacement`，其 `old_start_tick`
+///    必须是**文档**里的 7680（不是调用方声明的），`new_start_tick` 是 15360；
+///    合并后母带 `sha256` 再变、**帧数严格变长**；
+/// 3. `remove` ⇒ 编译成**一条** `RemoveClipPlacement`，其 `previous_placement`
+///    逐字段等于文档里那一条；合并后母带 `sha256` 与帧数**逐字节回到 `add` 之前**
+///    （阴性对照的镜像：池子里的材料还在，但时间轴上没有了 ⇒ 一帧都不出声）；
+/// 4. 两次编辑各自**逐字节可回退**（撤销一次 ⇒ 回到施加前）；
+/// 5. 五条响亮失败（未知形态 / 幽灵摆放 / 片段不一致 / 本形态不适用的键 /
+///    零位移），全部要求工程字节不变。
+#[test]
+fn placement_edits_move_and_remove_a_placement_and_the_master_follows() {
+    let scratch = Scratch::new("placement-edit");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("placement-edit.yeban");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "PlacementEdit",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+
+    // 种子里**已经摆好** MIDI 片段的那条音轨（渲染器只看得到被摆放的东西）。
+    let track = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        project
+            .tracks
+            .values()
+            .find_map(|track| {
+                track
+                    .clips
+                    .values()
+                    .any(|placement| {
+                        project
+                            .clip_pool
+                            .get(&placement.clip_id)
+                            .is_some_and(|entry| entry.content.notes().is_some())
+                    })
+                    .then(|| track.id.to_canonical_string())
+            })
+            .expect("默认种子必须有一条被摆放的 MIDI 片段")
+    };
+
+    let render = |dispatcher: &mut Dispatcher| -> Value {
+        let rendered = call(
+            dispatcher,
+            &auth,
+            "yeban_render_master",
+            json!({ "format": "wav", "sampleRate": 48_000 }),
+        );
+        assert_eq!(rendered["status"], "success", "{rendered}");
+        rendered
+    };
+
+    // ---- ⓪ 基线：还没有这条材料时的母带（下面 `remove` 之后必须逐字节回到它）----
+    let baseline = render(&mut dispatcher);
+    let sha_baseline = baseline["data"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_owned();
+    let frames_baseline = baseline["data"]["frames"].as_u64().expect("frames");
+
+    // ---- ① 建材料（进池子）再 `add` 摆到 7680 ----
+    let pool_clip = yeban_mcp::domain::ids::deterministic_id("clip:placement-edit:pool-only")
+        .to_canonical_string();
+    let material = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "clipName": "EditMe", "create": true,
+            "ops": [{"kind": "add", "note": {"startTick": 0, "pitch": 100, "durationTicks": 480}}],
+        }),
+    );
+    assert_eq!(material["status"], "success", "{material}");
+    merge(&mut dispatcher, &auth, &material, "池子材料");
+
+    let placed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"startTick": 7680},
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(placed["status"], "success", "{placed}");
+    assert_eq!(
+        placed["data"]["willCreate"]["opKinds"],
+        json!(["AddClipPlacement"]),
+        "{placed}"
+    );
+    let placement_id = placed["data"]["willCreate"]["placements"][0]["id"]
+        .as_str()
+        .expect("placement id")
+        .to_owned();
+    merge(&mut dispatcher, &auth, &placed, "摆放材料");
+
+    let after_add = render(&mut dispatcher);
+    let sha_after_add = after_add["data"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_owned();
+    let frames_after_add = after_add["data"]["frames"].as_u64().expect("frames");
+    assert_ne!(
+        sha_after_add, sha_baseline,
+        "摆了东西母带必须变: {after_add}"
+    );
+    assert!(
+        frames_after_add > frames_baseline,
+        "摆在 7680 tick 之后母带必须更长: {frames_after_add} vs {frames_baseline}"
+    );
+    let bytes_after_add = project_bytes(&dispatcher);
+
+    // ---- ② `move`: 7680 → 15360, 旧起点必须取自**文档** ----
+    let moved = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"kind": "move", "placementId": placement_id, "startTick": 15360},
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(moved["status"], "success", "{moved}");
+    assert_eq!(
+        moved["data"]["willCreate"]["opKinds"],
+        json!(["MoveClipPlacement"]),
+        "`move` 必须编译成一条 MoveClipPlacement: {moved}"
+    );
+    let move_payload = &moved["data"]["proposal"]["ops"][0]["op"]["MoveClipPlacement"];
+    assert_eq!(
+        move_payload["old_start_tick"], 7680,
+        "旧起点必须取自文档, 不是调用方声明的: {moved}"
+    );
+    assert_eq!(move_payload["new_start_tick"], 15360, "{moved}");
+    assert_eq!(move_payload["placement_id"], placement_id, "{moved}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_after_add,
+        "提案不得改工程字节"
+    );
+    merge(&mut dispatcher, &auth, &moved, "平移摆放");
+
+    // ③ 逐字段可读：真的挪了, 且**没有**多出一条摆放。
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        let track_entry = project
+            .tracks
+            .values()
+            .find(|entry| entry.id.to_canonical_string() == track)
+            .expect("目标音轨");
+        let mine: Vec<_> = track_entry
+            .clips
+            .values()
+            .filter(|placement| placement.id.to_canonical_string() == placement_id)
+            .collect();
+        assert_eq!(mine.len(), 1, "平移不得新增第二条摆放: {mine:?}");
+        assert_eq!(mine[0].start_tick, 15360);
+        assert_eq!(mine[0].clip_id.to_canonical_string(), pool_clip);
+        assert_eq!(
+            track_entry
+                .clips
+                .values()
+                .filter(|placement| placement.clip_id.to_canonical_string() == pool_clip)
+                .count(),
+            1,
+            "同一条材料在这条音轨上只该有一条摆放"
+        );
+    }
+    let after_move = render(&mut dispatcher);
+    let sha_after_move = after_move["data"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_owned();
+    let frames_after_move = after_move["data"]["frames"].as_u64().expect("frames");
+    assert_ne!(
+        sha_after_move, sha_after_add,
+        "平移之后母带必须再变 (起点的变化真的进了排程): {after_move}"
+    );
+    assert!(
+        frames_after_move > frames_after_add,
+        "挪到 15360 tick 之后母带必须更长: {frames_after_move} vs {frames_after_add}"
+    );
+    let bytes_after_move = project_bytes(&dispatcher);
+
+    // ---- ④ `remove`: 取走之后母带必须逐字节回到 `add` 之前 ----
+    let removed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"kind": "remove", "placementId": placement_id},
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(removed["status"], "success", "{removed}");
+    assert_eq!(
+        removed["data"]["willCreate"]["opKinds"],
+        json!(["RemoveClipPlacement"]),
+        "`remove` 必须编译成一条 RemoveClipPlacement: {removed}"
+    );
+    let remove_payload = &removed["data"]["proposal"]["ops"][0]["op"]["RemoveClipPlacement"];
+    assert_eq!(
+        remove_payload["previous_placement"]["start_tick"], 15360,
+        "撤销载荷必须是文档里那一条摆放 (平移之后的起点): {removed}"
+    );
+    assert_eq!(
+        remove_payload["previous_placement"]["clip_id"], pool_clip,
+        "{removed}"
+    );
+    merge(&mut dispatcher, &auth, &removed, "取走摆放");
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        assert!(
+            project.tracks.values().all(|track| track
+                .clips
+                .values()
+                .all(|placement| placement.clip_id.to_canonical_string() != pool_clip)),
+            "取走之后这条材料不得再出现在任何音轨的时间轴上"
+        );
+        assert!(
+            project
+                .clip_pool
+                .keys()
+                .any(|id| id.to_canonical_string() == pool_clip),
+            "`remove` **只**取走摆放, 池子里的材料不动"
+        );
+    }
+    let after_remove = render(&mut dispatcher);
+    assert_eq!(
+        after_remove["data"]["sha256"].as_str(),
+        Some(sha_baseline.as_str()),
+        "取走摆放之后母带必须逐字节回到 `add` 之前: {after_remove}"
+    );
+    assert_eq!(
+        after_remove["data"]["frames"].as_u64(),
+        Some(frames_baseline),
+        "取走摆放之后母带长度必须回到 `add` 之前"
+    );
+
+    // ---- ⑤ 两条编辑各自逐字节可回退 ----
+    let undo_remove = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undo_remove["status"], "success", "{undo_remove}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_after_move,
+        "撤销 `remove` 必须逐字节回到平移之后"
+    );
+    let undo_move = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undo_move["status"], "success", "{undo_move}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_after_add,
+        "撤销 `move` 必须逐字节回到 `add` 之后"
+    );
+    // 再回到"什么都还没摆"的状态：撤销 `add`。
+    let undo_add = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undo_add["status"], "success", "{undo_add}");
+    let back_to_onset = render(&mut dispatcher);
+    assert_eq!(
+        back_to_onset["data"]["sha256"].as_str(),
+        Some(sha_baseline.as_str()),
+        "三次撤销之后母带必须回到基线字节: {back_to_onset}"
+    );
+
+    // ---- ⑥ 五条响亮失败 (全部要求工程字节不变) ----
+    // 先重新摆一条，好让 (c)/(d)/(e) 有一个真实存在的摆放可以指名。
+    let re_placed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"startTick": 0},
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(re_placed["status"], "success", "{re_placed}");
+    let re_placement_id = re_placed["data"]["willCreate"]["placements"][0]["id"]
+        .as_str()
+        .expect("placement id")
+        .to_owned();
+    merge(&mut dispatcher, &auth, &re_placed, "重新摆放");
+    let bytes_before_failures = project_bytes(&dispatcher);
+    // (a) 未知形态 ⇒ INVALID_PARAMETER_RANGE + 支持集合 (不静默按 add 处理)。
+    let bad_kind = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"kind": "shift", "placementId": re_placement_id, "startTick": 0},
+        }),
+    );
+    assert_domain_error(
+        &bad_kind,
+        "INVALID_PARAMETER_RANGE",
+        "未知摆放形态不得静默按 add 处理",
+    );
+    assert_eq!(
+        bad_kind["error"]["data"]["reason"], "unknownPlacementKind",
+        "{bad_kind}"
+    );
+    // (b) 已经 `remove` 过的那条摆放 ⇒ ENTITY_NOT_FOUND (不是静默新建一条)。
+    let ghost = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"kind": "remove", "placementId": placement_id},
+        }),
+    );
+    assert_domain_error(&ghost, "ENTITY_NOT_FOUND", "幽灵摆放必须响亮失败");
+    assert_eq!(
+        ghost["error"]["data"]["reason"], "placementNotFound",
+        "{ghost}"
+    );
+    // (c) `clipId` 与文档里那条摆放引用的片段不一致 ⇒ 不静默改用文档那一条。
+    let other_clip = {
+        let project = dispatcher.domain().active_project().expect("工程");
+        project
+            .clip_pool
+            .keys()
+            .map(EntityId::to_canonical_string)
+            .find(|id| *id != pool_clip)
+            .expect("样本里必须还有第二条片段池条目")
+    };
+    let mismatch = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": other_clip, "ops": [],
+            "placement": {"kind": "remove", "placementId": re_placement_id},
+        }),
+    );
+    assert_domain_error(
+        &mismatch,
+        "INVALID_PARAMETER_RANGE",
+        "片段不一致必须响亮失败",
+    );
+    assert_eq!(
+        mismatch["error"]["data"]["reason"], "placementClipMismatch",
+        "{mismatch}"
+    );
+    // (d) 本形态不适用但别处合法的键 ⇒ `placementFieldNotApplicable` (不静默丢弃)。
+    let inapplicable = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"kind": "remove", "placementId": re_placement_id, "durationTicks": 480},
+        }),
+    );
+    assert_domain_error(
+        &inapplicable,
+        "INVALID_PARAMETER_RANGE",
+        "本形态不适用的键必须被拒",
+    );
+    assert_eq!(
+        inapplicable["error"]["data"]["reason"], "placementFieldNotApplicable",
+        "{inapplicable}"
+    );
+    // (e) 零位移 ⇒ CONFLICT (没有可提交的改动, 不制造一条空提案)。
+    let zero_move = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"kind": "move", "placementId": re_placement_id, "startTick": 0},
+        }),
+    );
+    assert_domain_error(&zero_move, "CONFLICT", "零位移必须响亮失败");
+    assert_eq!(
+        zero_move["error"]["data"]["reason"], "placementAlreadyAtStartTick",
+        "{zero_move}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before_failures,
+        "五条失败都不得改动工程字节"
+    );
+}

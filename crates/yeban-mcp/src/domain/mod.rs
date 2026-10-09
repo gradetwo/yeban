@@ -1980,8 +1980,9 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             include_ops(call),
         );
     }
-    // 摆放那一半先解析（它会拒绝未知键、越界与"推不出长度"，也拒绝已被占用的摆放身份）。
-    let placement = notes::parse_placement(project, &track_id, &clip_id, &call.arguments)?;
+    // 摆放那一半先解析（它会拒绝未知形态、未知键、越界与"推不出长度"，
+    // 也拒绝已被占用的摆放身份，以及 `move`/`remove` 找不到的摆放身份）。
+    let placement = notes::parse_placement_edit(project, &track_id, &clip_id, &call.arguments)?;
     // 空 `ops` 只在摆放在场时成立；否则仍走 `parse_ops` 的空数组守卫
     // （"空操作不是一次编辑请求"这条口径没有放松）。
     let note_ops =
@@ -1990,21 +1991,49 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         } else {
             notes::parse_ops(raw_ops)?
         };
-    // 顺序 = 施加顺序: 先改音符, 再把（此刻内容已确定的）片段摆上去。
+    // 顺序 = 施加顺序: 先改音符, 再施加（此刻内容已确定的）摆放编辑。
     let mut compiled = if note_ops.is_empty() {
         Vec::new()
     } else {
         notes::compile(project, &track_id, &clip_id, &note_ops)?
     };
-    if let Some(placement) = placement {
-        compiled.push(Op::AddClipPlacement {
-            track_id,
-            placement,
-        });
-    }
+    let placement_description = match placement {
+        Some(notes::PlacementEdit::Add(placement)) => {
+            compiled.push(Op::AddClipPlacement {
+                track_id,
+                placement,
+            });
+            format!("摆放片段: {clip_id} → 音轨 {track_id}")
+        }
+        Some(notes::PlacementEdit::Move {
+            placement_id,
+            previous_start_tick,
+            new_start_tick,
+        }) => {
+            compiled.push(Op::MoveClipPlacement {
+                track_id,
+                placement_id,
+                old_start_tick: previous_start_tick,
+                new_start_tick,
+            });
+            format!("平移摆放: {placement_id} → tick {new_start_tick}")
+        }
+        Some(notes::PlacementEdit::Remove {
+            placement_id,
+            previous_placement,
+        }) => {
+            compiled.push(Op::RemoveClipPlacement {
+                track_id,
+                placement_id,
+                previous_placement,
+            });
+            format!("取走摆放: {placement_id}")
+        }
+        None => String::new(),
+    };
     notes::check_polyphony(project, &clip_id, &compiled)?;
     let description = if note_ops.is_empty() {
-        format!("摆放片段: {clip_id} → 音轨 {track_id}")
+        placement_description
     } else {
         format!("音符编辑: {} 步", note_ops.len())
     };

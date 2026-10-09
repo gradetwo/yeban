@@ -596,7 +596,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `placement` 时把已有片段摆到音轨时间轴上 (材料摆放)",
+        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -637,11 +637,16 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             // 渲染器只遍历 `track.clips`，池子里没被摆放的片段一帧都不出声，
             // 而此前**没有任何工具**能把已有片段摆到音轨上（`create:true` 建出来的
             // MIDI 材料正是这种"在池子里但发不出声"的状态）。
+            //
+            // `kind`（缺省 `add`）让同一参数承载三种摆放编辑：`add` 之后，
+            // `move` / `remove` 分别编译成 `Op::MoveClipPlacement` /
+            // `Op::RemoveClipPlacement` —— 那两个模型变体与渲染器的出片路径
+            // 早已存在，此前工具面够不着。
             param(
                 "placement",
                 "object",
                 false,
-                "把已有的 `clipId` 摆到 `trackId` 上 (`Op::AddClipPlacement`, 渲染**真的**消费): `{startTick?: 非负整数 (默认 0), durationTicks?: >=1 (默认 = 片段内容长度; 片段推不出长度时必填), placementId?: ULID (默认由 片段+音轨+起点 确定性派生), muted?: 布尔 (默认 false)}`。这四个键之外的键一律 `INVALID_PARAMETER_RANGE`。目标音轨上已有该摆放身份 ⇒ `CONFLICT` (内容相同的重放请用 `idempotencyKey`)。与 `create:true` 同给 ⇒ `INVALID_PARAMETER_RANGE` (先建材料, 再单独一次调用摆放)",
+                "摆放编辑, 三种形态由 `kind` 选择 (缺省 `add`): `add` = `{startTick?: 非负整数 (默认 0), durationTicks?: >=1 (默认 = 片段内容长度; 片段推不出长度时必填), placementId?: ULID (默认由 片段+音轨+起点 确定性派生), muted?: 布尔 (默认 false)}` 把 `clipId` 摆到 `trackId` 上 (`Op::AddClipPlacement`); `move` = `{kind:\"move\", placementId: ULID (必填), startTick: 非负整数 (必填, 新起点)}` 平移一条已有摆放 (`Op::MoveClipPlacement`, 现值从工程读取); `remove` = `{kind:\"remove\", placementId: ULID (必填)}` 取走一条已有摆放 (`Op::RemoveClipPlacement`, 撤销载荷从工程读取)。三者的键之外的键一律 `INVALID_PARAMETER_RANGE`; 形态不适用但别处合法的键报 `placementFieldNotApplicable` (不静默丢弃)。`move`/`remove` 的 `clipId` 必须等于文档里那条摆放引用的片段, 否则 `INVALID_PARAMETER_RANGE` (`placementClipMismatch`); 该音轨上没有这条摆放 ⇒ `ENTITY_NOT_FOUND`; `move` 到原起点 ⇒ `CONFLICT` (`placementAlreadyAtStartTick`)。`add` 时目标音轨上已有该摆放身份 ⇒ `CONFLICT` (内容相同的重放请用 `idempotencyKey`)。与 `create:true` 同给 ⇒ `INVALID_PARAMETER_RANGE` (先建材料, 再单独一次调用摆放)",
             ),
             param(
                 "idempotencyKey",

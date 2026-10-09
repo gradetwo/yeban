@@ -196,12 +196,101 @@ pub const NOTE_FIELDS: &[&str] = &[
 /// （只摆放的调用给空数组，见 [`parse_ops`] 的空数组口径）。
 pub const PLACEMENT_FIELD: &str = "placement";
 
-/// `placement` 对象**允许**出现的全部键。
+/// `placement` 对象里 `add` 形态**允许**出现的全部键。
 ///
 /// 与 [`parse_placement`] 真正读取的键**同源**（判据 `placement_field_names_are_pinned`
 /// 钉住"不多报"）：集合之外的键一律**响亮拒绝**
-/// （[`reject_unknown_placement_fields`]），绝不静默丢弃 —— 与 [`NOTE_FIELDS`] 同一口径。
+/// （[`reject_placement_fields`]），绝不静默丢弃 —— 与 [`NOTE_FIELDS`] 同一口径。
+///
+/// 这个词表**只**管 `add` 形态的**内容键**：`kind` 是形态判别键，不在本表里。
 pub const PLACEMENT_FIELDS: &[&str] = &["startTick", "durationTicks", "placementId", "muted"];
+
+/// `placement.kind` 的字段名（形态判别键，可选；缺省 = [`PLACEMENT_KIND_ADD`]）。
+///
+/// 与 `ops[].kind` 同一风格：`kind` 说的是"这一次摆放编辑是哪个动词"，
+/// 其余键是那个动词的载荷。
+pub const PLACEMENT_KIND_FIELD: &str = "kind";
+
+/// `placement.kind` 的**新增**形态：把**已在池子里**的片段摆到时间轴上
+/// （[`Op::AddClipPlacement`]）。也是 `kind` 缺省时的形态 ⇒ 缺省路径逐字节不变。
+pub const PLACEMENT_KIND_ADD: &str = "add";
+
+/// `placement.kind` 的**平移**形态：改动一条**已经存在**的摆放的起点。
+pub const PLACEMENT_KIND_MOVE: &str = "move";
+
+/// `placement.kind` 的**取走**形态：把一条**已经存在**的摆放从时间轴上移除。
+pub const PLACEMENT_KIND_REMOVE: &str = "remove";
+
+/// `placement.kind` 的合法取值集合（错误信息与判据共用同一份真相）。
+pub const PLACEMENT_KINDS: [&str; 3] = [
+    PLACEMENT_KIND_ADD,
+    PLACEMENT_KIND_MOVE,
+    PLACEMENT_KIND_REMOVE,
+];
+
+/// `add` 形态允许的键 = [`PLACEMENT_FIELDS`] **加上**判别键。
+///
+/// 单列一个常量是为了不动 [`PLACEMENT_FIELDS`]：后者是 `add` 形态的内容键表，
+/// 由判据 `placement_field_names_are_pinned` 逐个钉住；扩展形态时**不改**那张表。
+pub const PLACEMENT_ADD_FIELDS: &[&str] = &[
+    PLACEMENT_KIND_FIELD,
+    "startTick",
+    "durationTicks",
+    "placementId",
+    "muted",
+];
+
+/// `move` 形态允许的键：判别键 + 被平移的摆放身份 + **新的**起点。
+///
+/// `durationTicks` / `muted` 不在表里：[`Op::MoveClipPlacement`] 的载荷**只有**
+/// `old_start_tick` / `new_start_tick`，模型层没有"改时值 / 改静音"的变体
+/// ⇒ 给出这两个键是**已知但此形态不适用**，[`reject_placement_fields`] 会响亮拒绝
+/// （`placementFieldNotApplicable`），绝不静默丢弃。
+pub const PLACEMENT_MOVE_FIELDS: &[&str] = &[PLACEMENT_KIND_FIELD, "startTick", "placementId"];
+
+/// `remove` 形态允许的键：判别键 + 被取走的摆放身份。
+pub const PLACEMENT_REMOVE_FIELDS: &[&str] = &[PLACEMENT_KIND_FIELD, "placementId"];
+
+/// 一次 `placement` 实参要做的**摆放编辑**（三种形态的编译结果）。
+///
+/// 三个变体逐一对应模型层的三个 `Op`：`Add` → [`Op::AddClipPlacement`]、
+/// `Move` → [`Op::MoveClipPlacement`]、`Remove` → [`Op::RemoveClipPlacement`]。
+/// 撤销仍然只有**一份**事实源：本层只把字面值搬进 `Op`，逆操作一律由
+/// `Op::invert` 提供（与 [`super::compile`] 同一纪律）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlacementEdit {
+    /// 把池子里的材料摆到 `trackId` 上。
+    Add(ClipPlacement),
+    /// 把 `placement_id` 这条已有摆放的起点从 `previous_start_tick` 挪到
+    /// `new_start_tick`（两者都取自 / 写回**文档**，不是调用方的声明）。
+    Move {
+        /// 被平移的摆放身份。
+        placement_id: EntityId,
+        /// 文档里的现值（模型层据此判 `OpStateMismatch`）。
+        previous_start_tick: u64,
+        /// 目标起点。
+        new_start_tick: u64,
+    },
+    /// 把 `placement_id` 这条已有摆放从时间轴上取走。
+    Remove {
+        /// 被取走的摆放身份。
+        placement_id: EntityId,
+        /// 文档里的现值（模型层的撤销载荷，必须逐字段等于文档现值）。
+        previous_placement: ClipPlacement,
+    },
+}
+
+impl PlacementEdit {
+    /// 该形态在 `placement.kind` 里的字面名字（错误信息与判据共用同一份真相）。
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Add(_) => PLACEMENT_KIND_ADD,
+            Self::Move { .. } => PLACEMENT_KIND_MOVE,
+            Self::Remove { .. } => PLACEMENT_KIND_REMOVE,
+        }
+    }
+}
 
 /// 单个片段的**发声数**上限（同时发声的音符数）。
 ///
@@ -721,21 +810,163 @@ pub fn placement_label(clip_id: &str, track_id: &str, start_tick: u64) -> String
     format!("midi-placement:{clip_id}:{track_id}:{start_tick}")
 }
 
-/// 解析 `arguments.placement`（缺省 = `None` = **不摆放** = 逐字节等于旧行为）。
+/// 解析 `arguments.placement`，按 `placement.kind` 分发到三种**摆放编辑**。
+///
+/// | `kind` | 载荷 | 编译成 |
+/// | :--- | :--- | :--- |
+/// | 缺省 / `add` | `startTick?` / `durationTicks?` / `placementId?` / `muted?` | [`Op::AddClipPlacement`] |
+/// | `move` | `placementId`（必填）+ `startTick`（必填 = **新**起点） | [`Op::MoveClipPlacement`] |
+/// | `remove` | `placementId`（必填） | [`Op::RemoveClipPlacement`] |
+///
+/// 为什么有 `move` / `remove`：`f1098e2` 让 `create: true` 把材料**建**进池子，
+/// `ff23302` 让 `add` 把材料**摆**上时间轴；到此为止工具面能**加**一条摆放，
+/// 却**没有任何**工具能挪动或取走它 —— `Op::MoveClipPlacement` 与
+/// `Op::RemoveClipPlacement` 在模型层早已实现（各自带自包含撤销载荷），
+/// 渲染器也**真的**按 `track.clips` 出片，因此那两个能力在 17 个工具的面上
+/// **不可达**：摆错位置只剩"整次调用撤销"一条路，而撤到那一步之前的编辑会一起丢。
+/// 同族缺口的先例是 `probability`（`314d2fc`）与 `ratchet`/`microTimingTicks`
+/// （`791a571`）—— 都是"模型/渲染器已经做到、工具面够不着"。
+///
+/// `placementId` 缺省派生**只**属于 `add`：派生一条新身份不可能命中一条已有摆放，
+/// 因此 `move` / `remove` 缺它就是 [`require_placement_id`] 的响亮失败。
+///
+/// # Errors
+///
+/// - `placement` 不是对象 ⇒ `INVALID_PARAMETER_RANGE`；
+/// - `kind` 不是字符串 / 不在 [`PLACEMENT_KINDS`] 里 ⇒ `INVALID_PARAMETER_RANGE`
+///   （`reason = "unknownPlacementKind"`，`data` 列出支持集合）；
+/// - 键不在本形态的词表里 ⇒ `INVALID_PARAMETER_RANGE`（见 [`reject_placement_fields`]）；
+/// - `add` 形态的一切失败 ⇒ 见 [`parse_placement`]；
+/// - `move` / `remove` 找不到那条摆放 ⇒ `ENTITY_NOT_FOUND`（`placementNotFound`）；
+/// - `clipId` 与文档里那条摆放引用不一致 ⇒ `INVALID_PARAMETER_RANGE`
+///   （`placementClipMismatch`）；
+/// - `move` 的目标起点等于现值 ⇒ `CONFLICT`（`placementAlreadyAtStartTick`）——
+///   没有可提交的改动，不制造一条空提案。
+pub fn parse_placement_edit(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    clip_id: &EntityId,
+    arguments: &Map<String, Value>,
+) -> Result<Option<PlacementEdit>, Fault> {
+    let Some(raw) = arguments.get(PLACEMENT_FIELD) else {
+        return Ok(None);
+    };
+    let object = raw.as_object().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}` 必须是对象, 实际收到 {raw}"),
+        )
+    })?;
+    let kind = match object.get(PLACEMENT_KIND_FIELD) {
+        None => PLACEMENT_KIND_ADD,
+        Some(value) => value.as_str().ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}` 必须是字符串, 实际收到 {value}"
+                ),
+                serde_json::json!({
+                    "field": format!("{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}"),
+                    "supportedPlacementKinds": PLACEMENT_KINDS,
+                }),
+            )
+        })?,
+    };
+    match kind {
+        PLACEMENT_KIND_ADD => {
+            Ok(parse_placement(project, track_id, clip_id, arguments)?.map(PlacementEdit::Add))
+        }
+        PLACEMENT_KIND_MOVE => {
+            reject_placement_fields(object, PLACEMENT_MOVE_FIELDS, PLACEMENT_KIND_MOVE)?;
+            let placement_id = require_placement_id(object, PLACEMENT_KIND_MOVE)?;
+            let Some(new_start_tick) = read_optional_u64(object, "startTick")? else {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{PLACEMENT_FIELD}` 的 `{PLACEMENT_KIND_MOVE}` 形态必须给出 `startTick` \
+                         (它是**目标**起点)"
+                    ),
+                    serde_json::json!({
+                        "reason": "moveRequiresStartTick",
+                        "field": format!("{PLACEMENT_FIELD}.startTick"),
+                        "placementKind": PLACEMENT_KIND_MOVE,
+                    }),
+                ));
+            };
+            let found = existing_placement(
+                project,
+                track_id,
+                &placement_id,
+                clip_id,
+                PLACEMENT_KIND_MOVE,
+            )?;
+            if found.start_tick == new_start_tick {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::Conflict,
+                    format!("摆放 {placement_id} 的起点已经是 {new_start_tick}, 没有可提交的改动"),
+                    serde_json::json!({
+                        "reason": "placementAlreadyAtStartTick",
+                        "placementKind": PLACEMENT_KIND_MOVE,
+                        "trackId": track_id.to_canonical_string(),
+                        "placementId": placement_id.to_canonical_string(),
+                        "startTick": new_start_tick,
+                        "hint": "幂等重放请用 `idempotencyKey`; 要挪到别处就给不同的 `startTick`",
+                    }),
+                ));
+            }
+            Ok(Some(PlacementEdit::Move {
+                placement_id,
+                previous_start_tick: found.start_tick,
+                new_start_tick,
+            }))
+        }
+        PLACEMENT_KIND_REMOVE => {
+            reject_placement_fields(object, PLACEMENT_REMOVE_FIELDS, PLACEMENT_KIND_REMOVE)?;
+            let placement_id = require_placement_id(object, PLACEMENT_KIND_REMOVE)?;
+            let found = existing_placement(
+                project,
+                track_id,
+                &placement_id,
+                clip_id,
+                PLACEMENT_KIND_REMOVE,
+            )?;
+            Ok(Some(PlacementEdit::Remove {
+                placement_id,
+                previous_placement: found,
+            }))
+        }
+        other => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}` 不支持 `{other}`"),
+            serde_json::json!({
+                "reason": "unknownPlacementKind",
+                "field": format!("{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}"),
+                "value": other,
+                "supportedPlacementKinds": PLACEMENT_KINDS,
+                "hint": "缺省 `kind` 等价于 `add`; 未知形态响亮拒绝, 不静默按 add 处理",
+            }),
+        )),
+    }
+}
+
+/// 解析 `placement` 的 **`add` 形态**（缺省 = 对象不在场 ⇒ `None` ⇒ 不摆放 =
+/// 逐字节等于旧行为）。
 ///
 /// ```json
 /// {"placement": {"startTick": 0, "durationTicks": 3840,
 ///                "placementId": "<可选 26 字符 ULID>", "muted": false}}
 /// ```
 ///
-/// 四个键全部**可选**：`startTick` 缺省 0；`durationTicks` 缺省由片段内容推导；
+/// 四个内容键全部**可选**：`startTick` 缺省 0；`durationTicks` 缺省由片段内容推导；
 /// `placementId` 缺省由 [`placement_label`] 确定性派生；`muted` 缺省 `false`。
+/// `kind` 可写可不写；写了必须是 [`PLACEMENT_KIND_ADD`]（其余形态由
+/// [`parse_placement_edit`] 分发，不走本函数）。
 ///
 /// 三条刻意设成**响亮失败**的口径（绝不静默降级）：
 ///
 /// | 情形 | 结果 |
 /// | :--- | :--- |
-/// | `placement` 对象里有 [`PLACEMENT_FIELDS`] 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownPlacementField"`，列出支持集合） |
+/// | `placement` 对象里有 [`PLACEMENT_ADD_FIELDS`] 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownPlacementField"`，列出支持集合） |
 /// | `durationTicks` 缺省、而片段**推不出**长度（非 MIDI 片段 / 空 MIDI 片段） | `INVALID_PARAMETER_RANGE`（`reason = "durationNotDerivable"`）—— 不猜一个假长度 |
 /// | 目标音轨上**已经有**这个摆放身份 | `CONFLICT`（逐字段相同 ⇒ `reason = "placementAlreadyExists"`；内容不同 ⇒ `reason = "placementIdConflict"`） |
 ///
@@ -761,7 +992,7 @@ pub fn parse_placement(
             format!("`{PLACEMENT_FIELD}` 必须是对象, 实际收到 {raw}"),
         )
     })?;
-    reject_unknown_placement_fields(object)?;
+    reject_placement_fields(object, PLACEMENT_ADD_FIELDS, PLACEMENT_KIND_ADD)?;
     // 目标音轨与片段都必须**真的存在**：摆放是"把已有材料放到已有轨道上"，
     // 两个端点缺一个都不是一次摆放（`compile` 的编辑路径有同一对前置条件）。
     //
@@ -891,33 +1122,149 @@ pub fn parse_placement(
     Ok(Some(placement))
 }
 
-/// 拒绝 `placement` 对象里 [`PLACEMENT_FIELDS`] 之外的键（与 [`reject_unknown_note_fields`]
+/// 拒绝 `placement` 对象里 `allowed` 之外的键（与 [`reject_unknown_note_fields`]
 /// 同一口径：拼错/不支持的键一律响亮拒绝，绝不静默丢弃）。
+///
+/// 两种"不在 `allowed` 里"被**分开**报（`kind` 由 `kind` 参数如实带出）：
+///
+/// | 情形 | `reason` |
+/// | :--- | :--- |
+/// | 键不在**任何**形态的词表里（拼错 / 根本不支持，例如 `loopEnabled`） | `unknownPlacementField` |
+/// | 键在别的形态里合法、但**本**形态不适用（例如 `move` 里的 `muted`） | `placementFieldNotApplicable` |
+///
+/// 分开的理由：把"这个形态改不了静音"报成"静音不是一个键"会让调用方去猜一个不存在的
+/// 替代写法。
 ///
 /// 键序是确定性的（`serde_json::Map` 在本 crate 的 feature 集合下是 `BTreeMap`），
 /// 因此同一个非法载荷每次报的是**同一个** `field` —— 判据可以逐字钉住它。
 ///
 /// # Errors
 ///
-/// 出现未知键 ⇒ `INVALID_PARAMETER_RANGE`，`data` 带 `field`（第一个未知键）、
-/// `reason`、`supportedPlacementFields`（[`PLACEMENT_FIELDS`]）与 `hint`。
-fn reject_unknown_placement_fields(object: &Map<String, Value>) -> Result<(), Fault> {
-    let Some(unknown) = object
-        .keys()
-        .find(|key| !PLACEMENT_FIELDS.contains(&key.as_str()))
-    else {
+/// 出现不属于 `allowed` 的键 ⇒ `INVALID_PARAMETER_RANGE`，`data` 带 `field`
+/// （第一个这样的键）、`reason`、`placementKind`、`supportedPlacementFields`
+/// （本形态的 `allowed`）与 `hint`。
+fn reject_placement_fields(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    kind: &str,
+) -> Result<(), Fault> {
+    let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) else {
         return Ok(());
+    };
+    let known_in_another_shape =
+        !allowed.contains(&unknown.as_str()) && PLACEMENT_ADD_FIELDS.contains(&unknown.as_str());
+    let reason = if known_in_another_shape {
+        "placementFieldNotApplicable"
+    } else {
+        "unknownPlacementField"
     };
     Err(Fault::domain_with_data(
         ErrorCode::InvalidParameterRange,
-        format!("`{PLACEMENT_FIELD}` 不接受字段 `{unknown}` (不是可选项缺失, 而是拼写/不支持)"),
+        format!(
+            "`{PLACEMENT_FIELD}` 的 `{kind}` 形态不接受字段 `{unknown}` \
+             (不是可选项缺失, 而是拼写/不支持/本形态不适用)"
+        ),
         serde_json::json!({
-            "reason": "unknownPlacementField",
+            "reason": reason,
             "field": unknown,
-            "supportedPlacementFields": PLACEMENT_FIELDS,
+            "placementKind": kind,
+            "supportedPlacementFields": allowed,
             "hint": "未知键不静默忽略: 去掉它, 或改用 supportedPlacementFields 里的字段",
         }),
     ))
+}
+
+/// 读 `placement.placementId`（**必填** ULID；缺失 / 非字符串 / 不是 ULID 都拒绝）。
+///
+/// `move` / `remove` 两个形态都要指名一条**已经存在**的摆放，因此身份是必填的 ——
+/// 缺省派生（[`placement_label`]）**只**属于 `add` 形态：派生一条新身份不可能命中
+/// 一条已有摆放。
+///
+/// # Errors
+///
+/// 缺失 ⇒ `INVALID_PARAMETER_RANGE`（`reason = "{kind}RequiresPlacementId"`）；
+/// 形状不对 ⇒ `INVALID_PARAMETER_RANGE`。
+fn require_placement_id(object: &Map<String, Value>, kind: &str) -> Result<EntityId, Fault> {
+    let Some(value) = object.get("placementId") else {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}` 的 `{kind}` 形态必须给出 `placementId`"),
+            serde_json::json!({
+                "reason": format!("{kind}RequiresPlacementId"),
+                "field": format!("{PLACEMENT_FIELD}.placementId"),
+                "placementKind": kind,
+                "hint": "`placementId` 缺省派生只属于 `add` 形态; `move`/`remove` 必须指名已有摆放",
+            }),
+        ));
+    };
+    let text = value.as_str().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`placement.placementId` 必须是 26 字符 ULID 字符串",
+        )
+    })?;
+    EntityId::from_str(text).map_err(|error| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`placement.placementId` 不是合法 ULID: {error}"),
+        )
+    })
+}
+
+/// 在目标音轨上找出 `placement_id` 这条**已经存在**的摆放，并核对调用方报的 `clip_id`。
+///
+/// `clipId` 是 `yeban_edit_notes` 的**必填**实参（`§7.2` 的参数表），因此 `move` /
+/// `remove` 也要求调用方把它写出来；它与文档里那条摆放的 `clip_id` **必须一致** ——
+/// 不一致说明调用方手上的摆放和文档里的不是同一条，这时**不**猜、也**不**静默改用文档
+/// 里的那一条，而是响亮失败（`reason = "placementClipMismatch"`）。
+///
+/// # Errors
+///
+/// - 音轨不存在 ⇒ `TRACK_NOT_FOUND`；
+/// - 该音轨上没有这条摆放 ⇒ `ENTITY_NOT_FOUND`（`reason = "placementNotFound"`）；
+/// - `clipId` 与文档不一致 ⇒ `INVALID_PARAMETER_RANGE`（`reason = "placementClipMismatch"`）。
+fn existing_placement(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    placement_id: &EntityId,
+    clip_id: &EntityId,
+    kind: &str,
+) -> Result<ClipPlacement, Fault> {
+    let track = project
+        .track(track_id)
+        .map_err(|error| from_model("摆放编辑的目标音轨", &error))?;
+    let Some(found) = track.clips.get(placement_id) else {
+        return Err(Fault::domain_with_data(
+            ErrorCode::EntityNotFound,
+            format!("音轨 {track_id} 上没有摆放 {placement_id}"),
+            serde_json::json!({
+                "reason": "placementNotFound",
+                "placementKind": kind,
+                "trackId": track_id.to_canonical_string(),
+                "placementId": placement_id.to_canonical_string(),
+                "placementCount": track.clips.len(),
+                "hint": "`add` 形态才是新建; `move`/`remove` 只能作用在**已有**的摆放上",
+            }),
+        ));
+    };
+    if found.clip_id != *clip_id {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "摆放 {placement_id} 引用的是片段 {}, 不是调用方给出的 `clipId` {clip_id}",
+                found.clip_id
+            ),
+            serde_json::json!({
+                "reason": "placementClipMismatch",
+                "placementKind": kind,
+                "trackId": track_id.to_canonical_string(),
+                "placementId": placement_id.to_canonical_string(),
+                "clipId": clip_id.to_canonical_string(),
+                "placementClipId": found.clip_id.to_canonical_string(),
+            }),
+        ));
+    }
+    Ok(*found)
 }
 
 /// 读一个**可选**的非负整数键（缺省 = `None`；负数、非整数、溢出都拒绝）。
@@ -2065,5 +2412,474 @@ mod tests {
             serde_json::to_value(&project).expect("序列化"),
             "撤销必须逐字段复原"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 摆放**编辑**形态（`placement.kind` = `move` / `remove`）
+    //
+    // 这一组钉住的是"模型层早已实现、工具面此前够不着"的那两个 `Op`：
+    // `Op::MoveClipPlacement` 与 `Op::RemoveClipPlacement`（渲染器**真的**按
+    // `track.clips` 出片 ⇒ 能不能挪 / 能不能取走是可听的能力）。
+    // -----------------------------------------------------------------------
+
+    /// 形态名与**每个形态**的词表被钉住：扩展形态不得发明内容键。
+    #[test]
+    fn placement_edit_kinds_and_field_sets_are_pinned() {
+        assert_eq!(PLACEMENT_KIND_FIELD, "kind");
+        assert_eq!(
+            PLACEMENT_KINDS,
+            [
+                PLACEMENT_KIND_ADD,
+                PLACEMENT_KIND_MOVE,
+                PLACEMENT_KIND_REMOVE
+            ]
+        );
+        assert_eq!(
+            PLACEMENT_ADD_FIELDS,
+            ["kind", "startTick", "durationTicks", "placementId", "muted"]
+        );
+        assert_eq!(PLACEMENT_MOVE_FIELDS, ["kind", "startTick", "placementId"]);
+        assert_eq!(PLACEMENT_REMOVE_FIELDS, ["kind", "placementId"]);
+        // `add` 的**内容键**表没有被这次扩展改动（判据 `placement_field_names_are_pinned`
+        // 仍逐字成立）。
+        assert_eq!(
+            PLACEMENT_FIELDS,
+            ["startTick", "durationTicks", "placementId", "muted"]
+        );
+        for fields in [PLACEMENT_MOVE_FIELDS, PLACEMENT_REMOVE_FIELDS] {
+            assert!(
+                fields.contains(&PLACEMENT_KIND_FIELD),
+                "每个形态都要能写 `kind`"
+            );
+            for field in fields
+                .iter()
+                .filter(|field| **field != PLACEMENT_KIND_FIELD)
+            {
+                assert!(
+                    PLACEMENT_FIELDS.contains(field),
+                    "扩展形态不得发明新的内容键: {field}"
+                );
+            }
+        }
+    }
+
+    /// 一份**已经摆好**一条 MIDI 片段的工程，外加那条摆放本身（`move`/`remove` 的夹具）。
+    fn placed_midi_clip() -> (YebanProjectV1, EntityId, EntityId, ClipPlacement) {
+        let (mut project, track_id, clip_id) = unplaced_midi_clip();
+        let placement = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"startTick": 960, "durationTicks": 480})),
+        )
+        .expect("解析")
+        .expect("在场");
+        Op::AddClipPlacement {
+            track_id,
+            placement,
+        }
+        .apply(&mut project)
+        .expect("施加");
+        (project, track_id, clip_id, placement)
+    }
+
+    /// `move` 的**旧**起点取自文档、**新**起点取自实参 —— 两者都不是调用方声明的。
+    #[test]
+    fn move_edit_takes_the_old_tick_from_the_document_and_the_new_tick_from_the_arguments() {
+        let (project, track_id, clip_id, existing) = placed_midi_clip();
+        let edit = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "kind": PLACEMENT_KIND_MOVE,
+                "placementId": existing.id.to_canonical_string(),
+                "startTick": 4321,
+            })),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(
+            edit,
+            PlacementEdit::Move {
+                placement_id: existing.id,
+                previous_start_tick: 960,
+                new_start_tick: 4321,
+            }
+        );
+        assert_eq!(edit.kind_name(), PLACEMENT_KIND_MOVE);
+    }
+
+    /// `remove` 的撤销载荷是**文档里那一条摆放本身**（逐字段相等）。
+    #[test]
+    fn remove_edit_carries_the_document_placement_as_the_undo_payload() {
+        let (project, track_id, clip_id, existing) = placed_midi_clip();
+        let edit = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "kind": PLACEMENT_KIND_REMOVE,
+                "placementId": existing.id.to_canonical_string(),
+            })),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(
+            edit,
+            PlacementEdit::Remove {
+                placement_id: existing.id,
+                previous_placement: existing,
+            }
+        );
+        assert_eq!(edit.kind_name(), PLACEMENT_KIND_REMOVE);
+    }
+
+    /// 两个新形态都**真的**编译成模型里对应的那一个 `Op`，并且**可逆**
+    /// （逆操作只有一份事实源：`Op::invert`）。
+    #[test]
+    fn move_and_remove_edits_are_reversible_through_the_model_inverse() {
+        let (project, track_id, clip_id, existing) = placed_midi_clip();
+        let before = serde_json::to_value(&project).expect("序列化");
+
+        // ---- move: 960 → 4321, 施加后真的挪了, 逆操作逐字节回到原位 ----
+        let moved = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "kind": PLACEMENT_KIND_MOVE,
+                "placementId": existing.id.to_canonical_string(),
+                "startTick": 4321,
+            })),
+        )
+        .expect("解析")
+        .expect("在场");
+        let PlacementEdit::Move {
+            placement_id,
+            previous_start_tick,
+            new_start_tick,
+        } = moved
+        else {
+            panic!("必须是 move 形态");
+        };
+        let move_op = Op::MoveClipPlacement {
+            track_id,
+            placement_id,
+            old_start_tick: previous_start_tick,
+            new_start_tick,
+        };
+        assert_eq!(move_op.name(), "MoveClipPlacement");
+        let mut after_move = project.clone();
+        batch(std::slice::from_ref(&move_op))
+            .apply(&mut after_move)
+            .expect("施加");
+        assert_eq!(
+            after_move.tracks[&track_id].clips[&existing.id].start_tick,
+            4321
+        );
+        assert_ne!(
+            serde_json::to_value(&after_move).expect("序列化"),
+            before,
+            "move 必须真的改变文档, 否则下面那条回退断言什么也没证明"
+        );
+        let mut back_from_move = after_move;
+        batch(&[move_op])
+            .apply_inverse(&mut back_from_move)
+            .expect("回退");
+        assert_eq!(
+            serde_json::to_value(&back_from_move).expect("序列化"),
+            before,
+            "move 的逆操作必须逐字段复原"
+        );
+
+        // ---- remove: 时间轴上真的空了一条, 逆操作逐字节回到原位 ----
+        let removed = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "kind": PLACEMENT_KIND_REMOVE,
+                "placementId": existing.id.to_canonical_string(),
+            })),
+        )
+        .expect("解析")
+        .expect("在场");
+        let PlacementEdit::Remove {
+            placement_id,
+            previous_placement,
+        } = removed
+        else {
+            panic!("必须是 remove 形态");
+        };
+        let remove_op = Op::RemoveClipPlacement {
+            track_id,
+            placement_id,
+            previous_placement,
+        };
+        assert_eq!(remove_op.name(), "RemoveClipPlacement");
+        let mut after_remove = project.clone();
+        batch(std::slice::from_ref(&remove_op))
+            .apply(&mut after_remove)
+            .expect("施加");
+        assert!(
+            after_remove.tracks[&track_id].clips.is_empty(),
+            "remove 必须真的把这条摆放从时间轴上取走"
+        );
+        assert!(
+            after_remove.clip_pool.contains_key(&clip_id),
+            "remove **只**取走摆放, 池子里的材料不动"
+        );
+        let mut back_from_remove = after_remove;
+        batch(&[remove_op])
+            .apply_inverse(&mut back_from_remove)
+            .expect("回退");
+        assert_eq!(
+            serde_json::to_value(&back_from_remove).expect("序列化"),
+            before,
+            "remove 的逆操作必须逐字段复原"
+        );
+    }
+
+    /// 缺省的 `kind` 与显式 `add` 逐字段等价，且等于 `add` 解析器的结果
+    /// （缺省路径逐字节不变）。
+    #[test]
+    fn absent_or_explicit_add_kind_parses_to_the_same_edit() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let absent = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"startTick": 480})),
+        )
+        .expect("解析")
+        .expect("在场");
+        let explicit = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"kind": PLACEMENT_KIND_ADD, "startTick": 480})),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(absent, explicit);
+        assert_eq!(absent.kind_name(), PLACEMENT_KIND_ADD);
+        let direct = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"startTick": 480})),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(absent, PlacementEdit::Add(direct));
+        // 对象不在场 ⇒ `None`（不摆放）。
+        assert_eq!(
+            parse_placement_edit(&project, &track_id, &clip_id, &Map::new()).expect("缺省"),
+            None
+        );
+    }
+
+    /// 形态判别键的坏形状与未知形态都**响亮拒绝**，并列出支持集合（不静默按 `add` 处理）。
+    #[test]
+    fn unknown_placement_kinds_are_rejected_with_the_supported_set() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        for payload in [
+            serde_json::json!({"kind": "adds"}),
+            serde_json::json!({"kind": "delete"}),
+            serde_json::json!({"kind": ""}),
+        ] {
+            let fault =
+                parse_placement_edit(&project, &track_id, &clip_id, &placement_args(payload))
+                    .expect_err("未知形态必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], "unknownPlacementKind");
+            let supported = value["error"]["data"]["supportedPlacementKinds"]
+                .as_array()
+                .expect("必须是数组");
+            for expected in PLACEMENT_KINDS {
+                assert!(
+                    supported.iter().any(|item| item == expected),
+                    "支持集合必须含 {expected}"
+                );
+            }
+        }
+        // `kind` 不是字符串 ⇒ 形状错误, 不是"未知形态"。
+        let fault = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"kind": 3})),
+        )
+        .expect_err("`kind` 必须是字符串");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(
+            value["error"]["data"]["field"],
+            format!("{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}")
+        );
+    }
+
+    /// `move` / `remove` 的**必填**载荷缺了就响亮拒绝（派生身份只属于 `add`）。
+    #[test]
+    fn move_and_remove_require_their_own_payload() {
+        let (project, track_id, clip_id, existing) = placed_midi_clip();
+        let id = existing.id.to_canonical_string();
+        let cases = [
+            (
+                serde_json::json!({"kind": PLACEMENT_KIND_MOVE, "startTick": 10}),
+                "moveRequiresPlacementId",
+            ),
+            (
+                serde_json::json!({"kind": PLACEMENT_KIND_MOVE, "placementId": id}),
+                "moveRequiresStartTick",
+            ),
+            (
+                serde_json::json!({"kind": PLACEMENT_KIND_REMOVE}),
+                "removeRequiresPlacementId",
+            ),
+        ];
+        for (payload, reason) in cases {
+            let fault =
+                parse_placement_edit(&project, &track_id, &clip_id, &placement_args(payload))
+                    .expect_err("缺必填载荷必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], reason);
+        }
+    }
+
+    /// 已知但**本形态不适用**的键报 `placementFieldNotApplicable`，真拼错的键仍报
+    /// `unknownPlacementField` —— 两者不混为一谈，也不静默丢弃。
+    #[test]
+    fn inapplicable_and_misspelled_placement_fields_are_told_apart() {
+        let (project, track_id, clip_id, existing) = placed_midi_clip();
+        let id = existing.id.to_canonical_string();
+        let inapplicable = [
+            serde_json::json!({"kind": PLACEMENT_KIND_MOVE, "placementId": id, "startTick": 1, "muted": true}),
+            serde_json::json!({"kind": PLACEMENT_KIND_MOVE, "placementId": id, "startTick": 1, "durationTicks": 480}),
+            serde_json::json!({"kind": PLACEMENT_KIND_REMOVE, "placementId": id, "startTick": 1}),
+            serde_json::json!({"kind": PLACEMENT_KIND_REMOVE, "placementId": id, "muted": false}),
+        ];
+        for payload in inapplicable {
+            let fault = parse_placement_edit(
+                &project,
+                &track_id,
+                &clip_id,
+                &placement_args(payload.clone()),
+            )
+            .expect_err("本形态不适用的键必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{payload}"
+            );
+            let value = fault.into_result().expect("带内");
+            assert_eq!(
+                value["error"]["data"]["reason"], "placementFieldNotApplicable",
+                "{payload}"
+            );
+            let supported = value["error"]["data"]["supportedPlacementFields"]
+                .as_array()
+                .expect("必须是数组");
+            assert!(
+                !supported
+                    .iter()
+                    .any(|item| *item == value["error"]["data"]["field"]),
+                "报出来的字段不得出现在本形态的支持集合里: {payload}"
+            );
+        }
+        // 真拼错 / 根本不支持的键（`mutedd` / `loopEnabled`）仍报 `unknownPlacementField`。
+        for unknown in ["mutedd", "loopEnabled"] {
+            let mut payload = serde_json::json!({
+                "kind": PLACEMENT_KIND_MOVE,
+                "placementId": id,
+                "startTick": 1,
+            });
+            payload[unknown] = serde_json::json!(true);
+            let fault =
+                parse_placement_edit(&project, &track_id, &clip_id, &placement_args(payload))
+                    .expect_err("未知键必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], "unknownPlacementField");
+            assert_eq!(value["error"]["data"]["field"], unknown);
+        }
+    }
+
+    /// 指名的摆放不在目标音轨上 ⇒ `ENTITY_NOT_FOUND`（不是静默新建一条）。
+    #[test]
+    fn move_and_remove_refuse_a_placement_that_is_not_on_the_track() {
+        let (project, track_id, clip_id, _) = placed_midi_clip();
+        let ghost = deterministic_id("placement:not-on-this-track").to_canonical_string();
+        for payload in [
+            serde_json::json!({"kind": PLACEMENT_KIND_MOVE, "placementId": ghost, "startTick": 10}),
+            serde_json::json!({"kind": PLACEMENT_KIND_REMOVE, "placementId": ghost}),
+        ] {
+            let kind = payload["kind"].as_str().expect("kind").to_owned();
+            let fault =
+                parse_placement_edit(&project, &track_id, &clip_id, &placement_args(payload))
+                    .expect_err("幽灵摆放必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], "placementNotFound");
+            assert_eq!(value["error"]["data"]["placementKind"], kind.as_str());
+        }
+    }
+
+    /// `clipId` 与文档里那条摆放引用的片段不一致 ⇒ 响亮失败（不静默改用文档那一条）。
+    #[test]
+    fn move_and_remove_refuse_a_clip_id_that_is_not_the_placed_one() {
+        let (project, track_id, clip_id, existing) = placed_midi_clip();
+        let other = project
+            .clip_pool
+            .keys()
+            .find(|id| **id != clip_id)
+            .copied()
+            .expect("样本里必须还有第二条片段池条目");
+        let id = existing.id.to_canonical_string();
+        for payload in [
+            serde_json::json!({"kind": PLACEMENT_KIND_MOVE, "placementId": id, "startTick": 10}),
+            serde_json::json!({"kind": PLACEMENT_KIND_REMOVE, "placementId": id}),
+        ] {
+            let fault = parse_placement_edit(&project, &track_id, &other, &placement_args(payload))
+                .expect_err("片段不一致必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], "placementClipMismatch");
+            assert_eq!(
+                value["error"]["data"]["placementClipId"],
+                clip_id.to_canonical_string()
+            );
+            assert_eq!(
+                value["error"]["data"]["clipId"],
+                other.to_canonical_string()
+            );
+        }
+    }
+
+    /// `move` 到**原起点** ⇒ `CONFLICT`（没有可提交的改动；不制造一条空提案）。
+    #[test]
+    fn move_to_the_current_start_tick_is_a_loud_conflict() {
+        let (project, track_id, clip_id, existing) = placed_midi_clip();
+        let fault = parse_placement_edit(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "kind": PLACEMENT_KIND_MOVE,
+                "placementId": existing.id.to_canonical_string(),
+                "startTick": existing.start_tick,
+            })),
+        )
+        .expect_err("零位移必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(
+            value["error"]["data"]["reason"],
+            "placementAlreadyAtStartTick"
+        );
+        assert_eq!(value["error"]["data"]["startTick"], existing.start_tick);
     }
 }
