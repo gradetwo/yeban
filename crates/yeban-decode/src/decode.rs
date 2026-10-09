@@ -217,9 +217,22 @@ pub fn decode_source<'s>(
     // `docs/ledger/decode-limits-notes.md` §2.2 说的"低采样率 × 少声道：字节便宜、
     // 时间昂贵"那一格，只是它当时假设声明帧数总是存在。因此循环里用**同一条**公式
     // （[`PcmBudget::max_duration_frames`]）逐包判它。
-    if let Some(frames) = declared_frames {
-        limits::check_layout(1, sample_rate, frames, &options.budget)?;
-    }
+    //
+    // ⚠ 同一处注释里的另一半：这道预检**不能**挂在 `if let Some(frames) = declared_frames`
+    // 下面。`declared_frames == None` 时那一次跳过会把"采样率是 0"的声明原样放进循环，
+    // 而循环的时长闸门要拿 `projected_frames / sample_rate` 去组错误文案 —— 0 Hz 下
+    // `max_duration_frames` 恒为 0，于是**第一个**非空包就进错误分支，撞上那次除零
+    // （实测读数 `attempt to divide by zero`，判据
+    // `a_zero_sample_rate_stream_is_refused_not_a_panic`）。0 Hz 是可达的：WAV 的
+    // `fmt ` 把 `sampleRate` 原样交上来、`data` 块声明 `0xFFFF_FFFF` 又让帧数变成
+    // "未知"。因此这里无条件判一次，`unwrap_or(0)` 只把"未知帧数"折算成 0 帧 ——
+    // 时长与 PCM 字节两道闸门对 0 帧恒真，采样率与声道数两道照常生效。
+    limits::check_layout(
+        1,
+        sample_rate,
+        declared_frames.unwrap_or(0),
+        &options.budget,
+    )?;
     let max_duration_frames = options.budget.max_duration_frames(sample_rate);
 
     let sample_budget = options.budget.interleaved_samples_limit();
@@ -1049,6 +1062,68 @@ mod tests {
                 "garbage must be rejected, got {outcome:?}"
             );
         }
+    }
+
+    /// 判据 (不可信输入零 panic)：把采样率声明成 **0** 的流必须返回 [`DecodeError`]，
+    /// 绝不允许 `decode_source` 的时长闸门在错误文案里做一次 `x / 0`。
+    ///
+    /// 可达性（实测形状：`wav_with_declared_len(spec, data, u32::MAX)`，48 字节量级）：
+    /// - `fmt ` 块把 `sampleRate` 写成 0。上游 `WaveFormatChunk::parse` 只是把那个
+    ///   `u32` 原样读进 `AudioCodecParameters`，完全不做非零校验（现位于上游
+    ///   `wave/chunks.rs` 第 421 行）；`PcmDecoder::try_new` 也只要求"有值"而不要求非零，
+    ///   因此 `sample_rate == 0` 会一路走到本函数；
+    /// - `data` 块声明 `0xFFFF_FFFF`。上游把这一取值定义为"长度未知"（`DataChunk::parse`
+    ///   做 `Some(len).filter(|&len| len != u32::MAX)`），于是 `append_data_params` 整条不跑
+    ///   ⇒ `track.num_frames == None`，`data_end_pos` 也是"未知"。
+    ///
+    /// 两者合起来正好是缺口的入口：循环之前那次 `check_layout` 挂在
+    /// `if let Some(frames) = declared_frames` 下面，`None` 就不跑；而循环里的时长闸门是
+    /// `projected_frames > max_duration_frames` —— [`PcmBudget::max_duration_frames`] 在
+    /// 0 Hz 下恒为 0，所以**第一个**非空包就进错误分支，那里要算
+    /// `projected_frames / sample_rate`。
+    ///
+    /// 缺陷读数（修复前）：`attempt to divide by zero`（panic，进程被吃）。
+    /// 修复后：`Err(Budget(ZeroSampleRate))`，文案点明 "zero sample rate"。
+    ///
+    /// 注入：把循环之前那次无条件 `check_layout` 改回 `if let Some(frames) = declared_frames`
+    /// ⇒ 本判据以 `attempt to divide by zero` 红。
+    #[test]
+    fn a_zero_sample_rate_stream_is_refused_not_a_panic() {
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: 0,
+            bits: 16,
+            format: WavFormat::Integer,
+        };
+        // `u32::MAX` 的 `data` 声明长度是上游的"流式/未知"约定 ⇒ `track.num_frames == None`。
+        let bytes =
+            wav_with_declared_len(&spec, &encode_int_samples(16, &[1_000, 2_000]), u32::MAX);
+        let err = decode_bytes(&bytes, &DecodeOptions::default())
+            .expect_err("a 0 Hz declaration must be refused, not decoded");
+        assert!(
+            matches!(err, DecodeError::Budget(LimitViolation::ZeroSampleRate)),
+            "expected ZeroSampleRate, got {err}"
+        );
+        assert!(
+            err.to_string().contains("zero sample rate"),
+            "the refusal must name the cause, got {err}"
+        );
+        // 同一个夹具只把采样率改成 8 kHz（其余字节不动）：它**不**返回 ZeroSampleRate，
+        // 而是以 I/O 错误退出（`data` 声明"未知长度"⇒ 上游解封装一直读到文件尾，而夹具
+        // 只有 2 帧真实样本）。这条对照证明上面红的是采样率闸门，而不是"这个形状的输入
+        // 在 RIFF 预检就被整类拒掉了"。
+        let legal = WavSpec {
+            sample_rate: 8_000,
+            ..spec
+        };
+        let ok_bytes =
+            wav_with_declared_len(&legal, &encode_int_samples(16, &[1_000, 2_000]), u32::MAX);
+        let outcome = decode_bytes(&ok_bytes, &DecodeOptions::default());
+        assert!(
+            matches!(outcome, Err(DecodeError::Io(_))),
+            "an 8 kHz stream with an unknown data length must pass the precheck and the \
+             rate gate, failing only on the truncated stream; got {outcome:?}"
+        );
     }
 
     #[test]
