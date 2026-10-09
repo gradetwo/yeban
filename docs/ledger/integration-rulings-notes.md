@@ -109,6 +109,7 @@
 | **R20** | `crates/yeban-mcp/tests/tools_e2e.rs:1470` 把 `PROJECT_LOCKED` 的**整个错误对象**（含随时间变化的 `heartbeatAgeSecs`）与字面量整体比较 ⇒ 慢机器上间歇红 | 判定：**判据脆弱，非实现缺陷** ⇒ 只放宽时间量，实质断言全留 | ✅ 已执行（见下一条提交）。⚠️ 明说在先：**不动的三条实质判据**＝错误码 `PROJECT_LOCKED`、`advisoryLockHeld == true`、目标文件字节不变；**只改**随时间变化的心跳年龄字段的比较方式 |
 | **R21** | 更正 R20：R20 说 `tools_e2e.rs` 用**整对象字面量**比较 `PROJECT_LOCKED` 错误 —— **不准确**。执行票 `833dd91` 读源码证明那是**逐字段**断言（`:1469` 错误码、`:1470` `lockFile`、`:1475` `advisoryLockHeld`、`:1487` 无活动项目、`:1488` 字节不变） | 判定：**保留 R20 的结论**（随时间变化的量不该钉精确值），**改正其机制描述** | ✅ 已执行。⚠️ 诚实边界：CI 那条红（run 37912390354，`52 passed; 1 failed`）是**真的**；`833dd91` 之后 `rust (yeban-mcp)` = success。但**具体是哪一条断言在慢机器上红了，我（集成者）没有逐条验证** —— 日志里 `left` 侧打印的是整个错误对象，被截断在 `heartbeatAgeSecs` 处 |
 | **R22** | 新增一个 `kind`（`disconnectRouting`）后，`crates/yeban-mcp/src/domain/notes.rs` 的 `assert_eq!(OP_KINDS.len(), 11)` 未同步（本机实测 `left: 12, right: 11`） | 判定：**同步分母 11 → 12**，判据性质不变 | ✅ 已执行。⚠️ 明说在先：该判据检查的是「`kind` 全集 = 登记真相，且错误信息的 `supportedKinds` 与判据共用同一份真相」——**这条性质没有动**，变的只是被**有意新增**的一个成员。这不是弱化判据 |
+| **R23** | 集成者的测量错误：用 `cargo fmt --all --check 2>&1 \| tail -1; echo "(exit=$?)"` 判定格式 —— `$?` 取的是 **`tail`** 的退出码，不是 `cargo fmt` 的 ⇒ 误判格式合规，把一盏红灯（`d51d947` 的 `checks` 格式步骤）送上 CI | 判定：**凡靠退出码判定的检查，绝不把命令放进管道后再取 `$?`** | ✅ 已执行 `c803960`（`style(render): rustfmt the RF64 guard`）⇒ `checks` = success。⭐ 正确写法：`cmd > /tmp/f 2>&1; echo "exit=$?"` 或 `if cmd; then …` |
 
 ## 0.2 流程教训（本台账自身的）
 
