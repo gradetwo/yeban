@@ -59,7 +59,7 @@
 //! 跨架构逐位一致性 (ARCH-DET-002) 未验证，与 `StealFade` 登记在同一条 pending 上。
 
 use crate::instrument::{
-    Instrument, LoopMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
+    Instrument, LoopMode, OffMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
 };
 
 /// 采样率回退值 (Hz)：输入采样率非有限或非正时使用，与
@@ -209,6 +209,12 @@ pub struct PlaybackSpec {
     pub pan: f32,
     /// 该 region 的 `trigger`（原样）。
     pub trigger: Trigger,
+    /// 该 region 的 `off_mode`（原样；缺省 [`OffMode::Fast`]）。
+    ///
+    /// 与 [`PlaybackSpec::ignores_note_off`] 的分工：后者为真时 note-off **根本不结束**
+    /// 声部（`loop_mode=one_shot`）；本字段描述 note-off **真的到达之后**怎么结束。
+    /// 只有 [`OffMode::Fast`] 允许立刻切断，见 [`PlaybackSpec::cuts_at_note_off`]。
+    pub off_mode: OffMode,
     /// 生效的循环模式（原样，**但** `trigger=release` / `release_key` 强制
     /// [`LoopMode::OneShot`]，见 [`Region::effective_loop_mode`]）。
     pub loop_mode: LoopMode,
@@ -242,6 +248,17 @@ impl PlaybackSpec {
     #[must_use]
     pub fn ignores_note_off(&self) -> bool {
         self.loop_mode == LoopMode::OneShot
+    }
+
+    /// note-off 到达时，声部是否**可以立刻**结束（`off_mode=fast`，规范缺省）。
+    ///
+    /// `false` 表示规范要求一段 release（`off_mode=normal`）或一段 `off_time` 保持
+    /// （`off_mode=time`）：实现属于引擎侧，本 crate 只报告契约。
+    /// 与 [`PlaybackSpec::ignores_note_off`] 相互独立：后者为真时 note-off 不结束声部，
+    /// 本谓词就无从谈起。
+    #[must_use]
+    pub fn cuts_at_note_off(&self) -> bool {
+        self.off_mode.cuts_voice_immediately()
     }
 
     /// 是否不产生采样输出（`end=-1`，或显式区间为空）。
@@ -382,6 +399,7 @@ impl<'a> Region<'a> {
             gain: self.linear_gain(),
             pan: self.pan,
             trigger: self.trigger,
+            off_mode: self.off_mode,
             loop_mode: self.effective_loop_mode(),
             loop_window: self.loop_window(),
             offset: self.offset,
@@ -754,6 +772,7 @@ mod tests {
                             pitch_keycenter,
                             trigger_by_note: true,
                             trigger: Trigger::Attack,
+                            off_mode: OffMode::Fast,
                             lovel: 0,
                             hivel: 127,
                             lochan: 1,
@@ -938,5 +957,46 @@ mod tests {
         );
         assert!(looping.spec.loops());
         assert!(!looping.spec.ignores_note_off());
+    }
+
+    #[test]
+    fn playback_spec_carries_off_mode_and_derives_the_note_off_contract() {
+        // 缺省 `fast`：note-off 到达后可以立刻切断声部。
+        let fast = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let spec = fast.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.off_mode, OffMode::Fast);
+        assert!(
+            spec.cuts_at_note_off(),
+            "off_mode=fast must allow an immediate cut at note-off"
+        );
+
+        // `normal` / `time` 要求 release / `off_time` 保持段：不得立刻切断。
+        // 二者在登记语料里分别是 818 与 4 次，缺省 `fast` 只有 87 次
+        // （`docs/ledger/sfz-core-notes.md` 第 11 节）。
+        for (text, expected) in [("normal", OffMode::Normal), ("time", OffMode::Time)] {
+            let source = format!("<region>sample=a.wav off_mode={text}");
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            let spec = instrument.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+            assert_eq!(spec.off_mode, expected, "off_mode={text}");
+            assert!(
+                !spec.cuts_at_note_off(),
+                "off_mode={text} must not allow an immediate cut"
+            );
+        }
+    }
+
+    #[test]
+    fn off_mode_is_orthogonal_to_ignores_note_off() {
+        // `loop_mode=one_shot` 让 note-off 不结束声部；`off_mode` 仍是原样取值，
+        // 两个谓词互不派生。
+        let instrument = parse_text(
+            "<region>sample=a.wav loop_mode=one_shot off_mode=normal",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = instrument.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert!(spec.ignores_note_off());
+        assert_eq!(spec.off_mode, OffMode::Normal);
+        assert!(!spec.cuts_at_note_off());
     }
 }

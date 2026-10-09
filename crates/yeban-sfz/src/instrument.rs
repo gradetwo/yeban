@@ -184,6 +184,56 @@ impl Trigger {
     }
 }
 
+/// `off_mode` opcode：note-off（或 `off_by` 关断）到达时，声部**如何结束**。
+///
+/// 取值集合与缺省值取自登记语料的 opcode 普查（三个取值 `normal` / `fast` / `time`，
+/// 后者的出现次数为 818 / 87 / 4，合计 909），见
+/// `docs/ledger/sfz-core-notes.md` 第 11 节；格式出处
+/// <https://sfzformat.com/opcodes/off_mode/>。
+///
+/// **出处分工**：取值集合、出现次数与缺省值 `fast` 来自上面那份**登记语料普查**；
+/// 三个取值各自的含义来自上面那个**格式页**。其中「`fast` ＝ 立刻结束」一条另有台账佐证：
+/// 同节写明缺省值 `fast`「与现行为等价」，而现行为就是在 note-off 立刻结束声部。
+///
+/// - [`OffMode::Fast`]（缺省）：立刻结束声部。
+/// - [`OffMode::Normal`]：按正常（包络）release 结束声部。
+/// - [`OffMode::Time`]：在 `off_time` 秒之后结束声部。
+///
+/// **本 crate 只做类型化建模，不决定 release 的实现**：包络属于引擎侧；
+/// 而 per-region `off_time` 与 [ARCH-RT-004] 的 3 ms 窃取淡出冲突、正等人类裁决
+/// （`docs/ledger/sfz-core-notes.md` 第 6 节第 4 条），因此本切片刻意**不**读 `off_time`。
+/// 消费方得到的是一条明确契约：只有 [`OffMode::Fast`] 允许立刻切断声部。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OffMode {
+    /// `fast`（缺省）：立刻结束声部。
+    Fast,
+    /// `normal`：按正常 release 结束声部（需要包络，引擎侧）。
+    Normal,
+    /// `time`：在 `off_time` 秒后结束声部（`off_time` 未建模，见类型文档）。
+    Time,
+}
+
+impl OffMode {
+    /// 白名单（`opcode=value` 的大小写不敏感匹配集合）。
+    pub const OPTIONS: &'static [(&'static str, OffMode)] = &[
+        ("fast", OffMode::Fast),
+        ("normal", OffMode::Normal),
+        ("time", OffMode::Time),
+    ];
+
+    /// 用于错误信息的允许值列表。
+    pub const ALLOWED: &'static str = "fast, normal, time";
+
+    /// 是否允许**立刻**切断声部：只有 `fast`。
+    ///
+    /// 另外两个取值要求一段 release（`normal`）或一段 `off_time` 保持（`time`），
+    /// 因此调用方**不得**把它们当成立刻切断 —— 这正是规范区分三者的目的。
+    #[must_use]
+    pub fn cuts_voice_immediately(self) -> bool {
+        self == Self::Fast
+    }
+}
+
 /// 一个 MIDI CC 门控：`loccN` / `hiccN` 归约成 `[lo, hi]` 闭区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CcGate {
@@ -222,6 +272,11 @@ pub struct Region<'a> {
     /// 的布尔投影（「是否由音符触发**这件事**」），本字段是 `trigger` opcode 的原样取值
     /// （「由 note-on 还是 note-off 触发」）。二者都成立才在对应事件上播放。
     pub trigger: Trigger,
+    /// `off_mode`：note-off / `off_by` 关断到达时声部如何结束（缺省 [`OffMode::Fast`]）。
+    ///
+    /// 与 [`Region::effective_loop_mode`] 的分工：`one_shot` 说的是「**不理会** note-off」，
+    /// `off_mode` 说的是「note-off 真的到达之后**怎么结束**」。
+    pub off_mode: OffMode,
     /// 力度下界（含）。
     pub lovel: u8,
     /// 力度上界（含）。
@@ -680,6 +735,15 @@ pub(crate) fn build_region<'a>(
         None => Trigger::Attack,
     };
 
+    // ---- off 语义（`off_mode`，见 <https://sfzformat.com/opcodes/off_mode/>） ----
+    // 三个取值与缺省 `fast` 的出处是登记语料普查（`docs/ledger/sfz-core-notes.md` 第 11 节）。
+    // 刻意不读 `off_time`：它与 [ARCH-RT-004] 的 3 ms 窃取淡出的冲突待人类裁决
+    // （同文件第 6 节第 4 条）。
+    let off_mode = match scopes.get("off_mode") {
+        Some(value) => value.as_option(OffMode::OPTIONS, OffMode::ALLOWED)?,
+        None => OffMode::Fast,
+    };
+
     // ---- 键映射 ----
     let key = match scopes.get("key") {
         Some(value) => Some(value.as_note(-1, 127)?),
@@ -811,6 +875,7 @@ pub(crate) fn build_region<'a>(
         pitch_keycenter,
         trigger_by_note,
         trigger,
+        off_mode,
         lovel,
         hivel,
         lochan,
@@ -908,6 +973,7 @@ mod tests {
             pitch_keycenter: i32::from(note),
             trigger_by_note: true,
             trigger: Trigger::Attack,
+            off_mode: OffMode::Fast,
             lovel: 0,
             hivel: 127,
             lochan: 1,
@@ -1405,6 +1471,98 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(overridden.regions()[0].trigger, Trigger::First);
+    }
+
+    // -----------------------------------------------------------------------
+    // `off_mode`（<https://sfzformat.com/opcodes/off_mode/>）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn off_mode_defaults_to_fast_and_accepts_the_three_corpus_values() {
+        // 三个取值与缺省 `fast` 的出处是登记语料普查（`docs/ledger/sfz-core-notes.md`
+        // 第 11 节）：normal 818 / fast 87 / time 4，合计 909 次，无集合外取值。
+        let default = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(default.regions()[0].off_mode, OffMode::Fast);
+
+        for (text, expected) in [
+            ("fast", OffMode::Fast),
+            ("normal", OffMode::Normal),
+            ("time", OffMode::Time),
+            // 取值匹配大小写不敏感（与 `trigger` / `loop_mode` 同一条 `as_option` 路径）。
+            ("NORMAL", OffMode::Normal),
+        ] {
+            let source = format!("<region>sample=a.wav off_mode={text}");
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            assert_eq!(
+                instrument.regions()[0].off_mode,
+                expected,
+                "off_mode={text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_out_of_set_off_mode_is_an_error_not_a_silent_default() {
+        // 改动前：`off_mode` 根本不读，任意字面量都被静默忽略。
+        // 改动后：集合外取值走 `as_option`，返回明确的 `Err` —— 不可信输入不许静默降级。
+        for bad in ["slow", "0", "fastest"] {
+            let source = format!("<region>sample=a.wav off_mode={bad}");
+            assert!(
+                matches!(
+                    parse_text(&source, &Default::default()),
+                    Err(SfzError::InvalidOption { .. })
+                ),
+                "off_mode={bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn off_mode_is_read_from_the_four_scope_chain() {
+        // 与其它 opcode 同一条 `region → group → master → global` 查找链。
+        let inherited = parse_text(
+            "<master>off_mode=normal\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(inherited.regions()[0].off_mode, OffMode::Normal);
+
+        let overridden = parse_text(
+            "<global>off_mode=normal\n<group>off_mode=time\n\
+             <region>sample=a.wav off_mode=fast",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(overridden.regions()[0].off_mode, OffMode::Fast);
+    }
+
+    #[test]
+    fn off_mode_does_not_gate_region_selection() {
+        // `off_mode` 只描述 note-off 之后怎么结束，**不**参与 region 选择：
+        // 三个取值下 note-on 都选中同一个 region。
+        for text in ["fast", "normal", "time"] {
+            let source = format!("<region>sample=a.wav off_mode={text}");
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            assert_eq!(instrument.len(), 1, "off_mode={text}");
+            assert!(
+                instrument.region_for(60, 100).is_some(),
+                "off_mode={text} must not gate region selection"
+            );
+        }
+    }
+
+    #[test]
+    fn off_mode_is_independent_of_the_one_shot_loop_override() {
+        // `trigger=release` 把 `loop_mode` 覆盖成 `one_shot`；`off_mode` 是另一个 opcode，
+        // 保持自己的取值（`one_shot` 说「不理会 note-off」，`off_mode` 说「note-off 后怎么结束」）。
+        let instrument = parse_text(
+            "<region>sample=a.wav trigger=release off_mode=normal",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.effective_loop_mode(), LoopMode::OneShot);
+        assert_eq!(region.off_mode, OffMode::Normal);
     }
 
     #[test]

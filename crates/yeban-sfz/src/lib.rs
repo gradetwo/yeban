@@ -121,7 +121,7 @@ pub mod voice_pool;
 
 pub use error::SfzError;
 pub use instrument::{
-    CcGate, Instrument, LoopMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
+    CcGate, Instrument, LoopMode, OffMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,
     TriggerEvent,
 };
 pub use parser::{
