@@ -21,6 +21,7 @@
 //! | [`insert`] | **每轨插入器件**：`InternalEffect` 设备 → 通道条（`yeban_dsp::channel_strip` 的再导出 + 约定参数名投影；其动态级即 `yeban_dsp::compressor`）＋ 混响（`yeban_dsp::reverb` 的再导出；延迟线只在构造期分配） | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-006] |
 //! | [`drums`] | **每轨鼓机音源**：`InternalInstrument` 设备 + **写全的五个键位名** → `yeban_dsp::drums`（再导出 + 约定参数名投影）。驱动源是**轨道自己的音符调度表**，位置在插入链**之前**；映射不完整 ⇒ 不武装 ⇒ 逐位不变 | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DSP-001]、[ARCH-DET-001] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
+//! | [`param`] | **实时侧参数目标表**：`SetParam` 事件 → 逐样本**平滑**的逐轨增益乘子（`yeban_dsp::smoothing` 的消费者） | [ARCH-DSP-001]、[ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`synth`] | 静态预分配声部池与逐样本合成（**真的出声**：整数相位波表 + ADSR + 力度增益；波形可选、双振荡器） | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DET-001]、[ROAD-M2-005]、[ROAD-M2-006] |
@@ -41,8 +42,8 @@
 //! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
 //!
 //! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `insert` / `latency` / `ring` /
-//! `snapshot` / `meter` / `synth` / `rt` / `rt_probe` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
-//! + **每轨插入** + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
+//! `snapshot` / `meter` / `synth` / `rt` / `rt_probe` / `param` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
+//! + **每轨插入** + **参数目标表** + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
 //!
 //! ⚠ [`latency`] 是 `BASELINE-005` 的**工具**那一半，**不是**门禁本身：门禁要求的是
 //! **硬件往返时延**，而本 crate 在任何环境下都无法测它（cpal 0.18.2 不暴露硬件时延 API，
@@ -73,10 +74,12 @@
 //! 1. **声部合成已接入（合成器是最小实现）**：`process_quantum` 现在真的把
 //!    **工程的 MIDI 音符**变成样本 —— 模型 → 快照（tick → 样本位置、确定性概率触发、
 //!    力度/音量增益）→ 实时侧（整数相位波表读数 + ADSR）→ 逐轨电平 → 立体声母线。
-//!    仍然**没有**的：参数自动化平滑（[`yeban_dsp::smoothing`] 无消费者）、
-//!    循环片段展开、采样播放与 `yeban-sfz` 接入（滤波器 / 声相定律 / 母线限制器 /
-//!    3 ms 窃取淡出 / 走带与节拍器已由后续切片接通；`osc1` 电平/失谐投影已由
-//!    `line/engine-5` 接通 —— 六个振荡器键见 [`synth::ToneParams`] 的投影规则）。
+//!    仍然**没有**的：采样播放与 `yeban-sfz` 接入、循环片段展开
+//!    （滤波器 / 声相定律 / 母线限制器 / 3 ms 窃取淡出 / 走带与节拍器已由后续切片接通；
+//!    `osc1` 电平/失谐投影已由 `line/engine-5` 接通 —— 六个振荡器键见
+//!    [`synth::ToneParams`] 的投影规则；**参数自动化平滑已由 `line/engine-6` 接通**
+//!    —— `yeban_dsp::smoothing` 的消费者是 [`param`]，它把 `SetParam` 事件变成
+//!    逐样本平滑的逐轨增益乘子）。
 //!    详见 [`synth`] 的模块文档 §4 与 `docs/ledger/engine-sound-notes.md`。
 //! 2. **走带已实现（本切片）**：播放头由 [`rt::EngineRuntime`] 自己持有
 //!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），每量子按 [`transport`] 的
@@ -126,6 +129,7 @@ pub mod level;
 pub mod meter;
 pub mod metronome;
 pub mod mixer;
+pub mod param;
 pub mod ring;
 pub mod rt;
 pub mod rt_probe;

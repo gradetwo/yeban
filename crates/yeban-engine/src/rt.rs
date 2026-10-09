@@ -116,6 +116,7 @@ use crate::insert::{ChannelStrip, ChannelStripParams, CompressorParams, Reverb, 
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
+use crate::param::ParamTable;
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::rt_probe::{self, RtDiagEvent};
 use crate::snapshot::{RetireProducer, SnapshotReader, SnapshotSlot};
@@ -232,6 +233,27 @@ pub struct EngineStats {
     /// （那会分配 + 释放 [MUST-GATE-001]）⇒ 那一份快照里混响不工作。它是"容量/
     /// 配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
     pub insert_reverb_rate_rejects: u64,
+    /// **实时侧参数目标表**累计把增益乘过的帧数（[`crate::param`]；0 = 从未乘过）。
+    ///
+    /// 它是"`SetParam` 真的改变了声音"的**见证**：没有它，`events_applied` 只能证明
+    /// "事件出队了"，而一个出队后什么都不做的 `SetParam` 与一个正常工作的参数表
+    /// 在读数上完全一样。全部轨都没有收到被接受的参数事件时（默认）**恒为 0**。
+    pub param_gain_frames: u64,
+    /// 因**取值非法**（非有限 / 负数）而被忽略的 `SetParam` 事件数（[`crate::param`] §2）。
+    ///
+    /// 非 0 = 控制面发过一个本槽位语义里不存在的值；引擎**不**把它钳成静音
+    /// （那是"听得出、读不出"的行为反转），而是忽略并计数。
+    pub param_gain_rejects: u64,
+    /// 因**地址未映射**而被忽略的 `SetParam` 事件数（[`crate::param`] §2）。
+    ///
+    /// 未映射 = 槽位号不是 [`crate::param::TRACK_GAIN_SLOT`]，或实体是主总线。
+    /// 花在"引擎根本不消费的地址"上的事件因此是**可见**的，而不是静默丢弃。
+    pub param_unmapped_events: u64,
+    /// 因**参数槽位表已满**而未被接受的 `SetParam` 事件数（累计；正常恒为 0）。
+    ///
+    /// 槽位数与声部池的轨道上限同源（[`crate::param::PARAM_SLOTS`]）；
+    /// 容量不足在这里同样**不静默**。
+    pub param_capacity_drops: u64,
     /// 因实时侧 PDC 延迟线池**槽位用尽**而未能武装的节点数（累计；正常恒为 0）[ROAD-M2-004]。
     ///
     /// 非 0 = 那一份计划里有节点**没有**得到补偿。它是"容量不足不静默"的机械形式：
@@ -486,6 +508,17 @@ pub struct EngineRuntime {
     /// 因混响延迟线的采样率不匹配而未武装的修订次数
     /// （与 [`EngineStats::insert_reverb_rate_rejects`] 同源）。
     insert_reverb_rate_rejects: u64,
+    /// **实时侧参数目标表**（[`crate::param`]）：`SetParam` → 逐样本平滑的逐轨增益乘子。
+    ///
+    /// 与 [`Self::armed_strips`] 的差别：这张表由**事件**（不是快照）驱动
+    /// ⇒ 它的槽位在音频线程里惰性分配（定长数组内部，**零分配**），
+    /// 采样率在快照边界同步给已分配的平滑器。
+    params: ParamTable,
+    /// 当前快照的主总线身份（事件边界用来判定"这个地址本表不消费"）。
+    ///
+    /// 取值在快照边界刷新；构造期先读初始快照的一份（[`Self::new`] 已经要求槽里
+    /// 有一份快照 —— 混响延迟线的预分配用的就是同一个来源）。
+    armed_master: EntityId,
     /// 已按哪一份快照的采样率/块长设置过弹道系数。
     armed_revision: Option<u64>,
     quanta: u64,
@@ -541,6 +574,10 @@ impl EngineRuntime {
             // 构造期允许分配（`Vec` 延迟线在这里建好，回调内一次也不重建）。
             reverb.set_sample_rate(armed_reverb_sample_rate as f32);
         }
+        // 参数目标表：同样在**构造期**按初始快照的采样率建满（每个平滑器的 `α`
+        // 含一次 `exp`；回调内一次也不重算 —— 采样率不变时 `set_sample_rate` 直接返回）。
+        let params = ParamTable::new(armed_reverb_sample_rate as f32);
+        let armed_master = slot.current().master();
         let runtime = Self {
             snapshot: SnapshotReader::attach(slot, retire),
             events,
@@ -590,6 +627,9 @@ impl EngineRuntime {
             insert_strip_frames: 0,
             insert_reverb_frames: 0,
             insert_reverb_rate_rejects: 0,
+            // 参数目标表：**构造期**建满（回调内惰性分配的槽位都落在这张定长表里）。
+            params,
+            armed_master,
             // 混响延迟线池：**构造期**按初始快照的采样率预分配（回调内绝不再分配）。
             reverb_pool,
             armed_reverbs: [(EntityId::default(), false); MAX_TRACK_SLOTS],
@@ -707,6 +747,10 @@ impl EngineRuntime {
             insert_strip_frames: self.insert_strip_frames,
             insert_reverb_frames: self.insert_reverb_frames,
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
+            param_gain_frames: self.params.gain_frames(),
+            param_gain_rejects: self.params.rejections(),
+            param_unmapped_events: self.params.unmapped(),
+            param_capacity_drops: self.params.capacity_drops(),
             pdc_unarmed_nodes: self.pdc_unarmed_nodes,
             pdc_clamped_frames: self.pdc_clamped_frames,
             pdc_processed_blocks: self.pdc.processed_blocks(),
@@ -827,6 +871,34 @@ impl EngineRuntime {
     #[must_use]
     pub const fn armed_insert_slot_count(&self) -> usize {
         self.armed_insert_slots
+    }
+
+    /// 参数目标表里**已分配**的槽位数（[`crate::param`]；诊断/判据用）。
+    ///
+    /// 与 [`Self::armed_insert_slot_count`] 的区别：那张表由**快照**武装，
+    /// 这张表由**事件**武装 ⇒ 它证明"事件真的建了槽位"，而不是"快照里有参数"。
+    #[must_use]
+    pub const fn armed_param_slot_count(&self) -> usize {
+        self.params.slot_count()
+    }
+
+    /// 某条轨当前的**参数增益乘子目标值**（`None` = 本表里没有它的槽位）。
+    ///
+    /// 与 [`Self::armed_reverb`] 同族：把"武装进去的那个数"变成**可读**的，
+    /// 判据不必只从音频输出反推。
+    #[must_use]
+    pub fn armed_param_target(&self, track: &EntityId) -> Option<f32> {
+        self.params.target(*track)
+    }
+
+    /// 某条轨当前的**参数增益乘子输出值**（平滑中的瞬时值；`None` = 没有槽位）。
+    ///
+    /// `is_settled` 的那一档可以逐位断言：平滑走完之后它与
+    /// [`Self::armed_param_target`] 逐位相等（器件自己的吸附语义，
+    /// 见 `yeban_dsp::smoothing`）。
+    #[must_use]
+    pub fn armed_param_gain(&self, track: &EntityId) -> Option<f32> {
+        self.params.gain(*track)
     }
 
     /// 本快照武装的**每轨插入器件（混响）参数**（诊断/判据用）。
@@ -1014,6 +1086,8 @@ impl EngineRuntime {
             reverb_scratch,
             insert_reverb_frames,
             insert_reverb_rate_rejects,
+            params,
+            armed_master,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
             armed_revision,
@@ -1048,10 +1122,20 @@ impl EngineRuntime {
         // 走带命令在**量子边界**按 FIFO 顺序应用 ⇒ "同一输入序列 ⇒ 同一 tick 轨迹"
         // （确定性来自"命令在哪一个量子生效"只由出队顺序决定，与墙钟无关）。
         // `SeekTicks` 必须同时把合成器播放头挪到目标位置，否则"定位"只改数字、不出声。
+        //
+        // `SetParam` 交给**参数目标表**（[`crate::param`]）：本块只更新目标值，
+        // 逐样本的平滑与应用在下面的逐轨循环里（位置见 `params.apply` 的调用点）。
+        // 三类"没有生效"的裁决各自计数 ⇒ "事件到了但什么都没发生"永远可见
+        // [ARCH-DSP-001, MUST-GATE-001]。
         let mut applied = 0usize;
         events.drain_with(scratch_events, |event| {
             if !event.is_idle() {
                 applied += 1;
+            }
+            if let EngineEvent::SetParam { target, value } = event {
+                // 三类"没有生效"的裁决（非法值 / 未映射地址 / 容量不足）由**表自己**
+                // 计数，随后经 `EngineStats::param_*` 读出 ⇒ 这里不重复记账。
+                let _ = params.accept(target, value, *armed_master);
             }
             if let EngineEvent::Transport { command } = event
                 && let TransportEffect::Seeked { frames, .. } = transport.apply(command)
@@ -1087,6 +1171,14 @@ impl EngineRuntime {
                 bank.set_quanta_per_second(quanta_per_second);
                 self.armed_quanta_per_second = Some(quanta_per_second);
                 *armed_revision = Some(revision);
+
+                // --- 2a') 参数目标表的采样率与主总线身份（每修订一次）---
+                // [crate::param]。采样率只用来重算平滑器的 `α`（含 `exp`）⇒ 属 [ADR-0001 D32]
+                // 的**超越函数类**，只能在快照边界做；采样率没变时器件自己直接返回。
+                // 主总线身份供**事件**边界判定"这个地址本表不消费"（母线增益的槽位未开，
+                // 见 `crate::param` 模块文档 §2 第 2 条）。
+                params.set_sample_rate(current.sample_rate() as f32);
+                *armed_master = master;
 
                 // --- 2b) 声部池对齐到新快照的轨道集合（每修订一次, 非逐样本）---
                 // 新轨道占槽、消失的轨道标记 absent（状态保留）、游标**只增不减**地校正
@@ -1295,6 +1387,21 @@ impl EngineRuntime {
                     // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
                     track_scratch[..frames].fill(0.0);
                 }
+                // --- 3a⁰) 参数目标表的**逐轨增益乘子**：逐样本 ---
+                // [crate::param]。位置：**声源之后、插入链之前** —— 与"在构造期把该轨
+                // 音量设成另一个值"同解（静态音量也是在插入链之前烧进声部增益的，
+                // 见 `crate::snapshot::project_schedules` 的 `track_gain`）。
+                //
+                // ⚠ 刻意**不**放在插入链之后：那样压缩器看到的是**未自动化**的电平，
+                // 是另一种（也不好听的）行为。理由写在 `crate::param` 模块文档 §2.2。
+                //
+                // **默认口径**：本表里没有这条轨的槽位、或它已吸附到 `1.0`（恒等）
+                // ⇒ `apply` **一个样本都不碰**并返回 0 ⇒ 没有 `SetParam` 的工程与
+                // 接线前**逐位相同**（模块文档 §5）。
+                //
+                // 逐样本只有一次乘加（平滑器）与一次乘；**零分配、零锁、零 I/O、
+                // 零日志** [MUST-GATE-001, ARCH-DSP-001]。
+                params.apply(track, &mut track_scratch[..frames]);
                 // --- 3a') 插入链：本轨的通道条（若有）**逐样本**处理 ---
                 // [crate::insert]。位置：**轨道自己的渲染之后、逐轨电平与 PDC 之前**
                 // ⇒ 电平读数（`EngineStats::meter_frames`）与汇入母线的信号都是

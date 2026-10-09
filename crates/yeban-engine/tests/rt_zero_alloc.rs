@@ -43,7 +43,7 @@
 //! | ② | 快照交换 63 次逐步 + 1 000 次高频 | `SnapshotReader::begin_block` 的原子切换 + 旧快照入退役队列 |
 //! | ③ | 走带 200 轮命令 + 2 000 量子播放 + 500 量子停住 | `EngineEvent::Transport` 出队应用、整数 tick 推进、`SeekTicks` 的声部释放、停住分支 |
 //! | ④ | 电平计量 10 000 量子 + UI 侧 60Hz 抽干 | 每轨/母线电平状态机 + **每量子恰好一次**批量发布 |
-//! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`） | 控制侧 `automation_value_at` → SPSC → 实时侧出队（**见 §needs：实时侧只计数，不改 DSP**） |
+//! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`） | 控制侧 `automation_value_at` → 控制侧换域（`db_to_gain`）→ SPSC → 实时侧**参数目标表**（`crate::param`：事件边界建槽位/更新目标 + 逐样本平滑乘法） |
 //! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + **主总线推子** + 前瞻限制 + 声部窃取） | `BusLimiter::process_stereo`、声相增益乘加、`scale_bus` 的主总线逐样本乘、声部窃取路径 |
 //! | ⑬ | 回调缓冲长度边界：1/2/3/127/128/129/1024/1025 帧 × 25 轮 + 非帧对齐缓冲 | `process_quantum` 的**任意长度**切块与逐帧交错拷贝、尾部残余样本契约 |
 //! | ⑭ | 采样率 × 项目声明 `block_size` 全组合切换（2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`、`Transport::arm` |
@@ -1022,6 +1022,7 @@ fn scenario_automation(report: &mut Report) {
 
     let mut rig = Rig::new(&fixture.project, 1, 4096);
     rig.preheat();
+    let frames_before = rig.stats().param_gain_frames;
 
     let mut scenario = Scenario::new("⑤自动化求值");
     let mut lowest = f32::INFINITY;
@@ -1038,6 +1039,13 @@ fn scenario_automation(report: &mut Report) {
             .unwrap_or(0.0);
         lowest = lowest.min(value);
         highest = highest.max(value);
+
+        // 控制侧**换域**（`line/engine-6`）：模型把 `AutomationTarget::TrackVolume`
+        // 的取值定义成**分贝**，而音频线程的槽位 `TRACK_GAIN_SLOT` 收的是**线性乘子**
+        // （`crate::ring` 的契约原话是"已是目标域值，由模型层负责换域"）。
+        // ⚠ 本夹具那条轨的静态音量是 `0 dB` ⇒ 绝对增益与"相对静态值的乘子"同值；
+        // 一般工程里这一步是"绝对值 ÷ 当前静态值"（登记为 `crate::param` 的 needs P1）。
+        let value = yeban_dsp::math::db_to_gain(value);
 
         // 窗口**之外**发布（控制线程允许分配）。
         let batch = [EngineEvent::SetParam {
@@ -1067,6 +1075,27 @@ fn scenario_automation(report: &mut Report) {
         format!(
             "值域 {lowest:.3} .. {highest:.3}（必须不同）实时侧应用={}（要求 ≥ {AUTOMATION_QUANTA}）",
             stats.events_applied
+        ),
+    );
+
+    // ⑤d（`line/engine-6` 新增）：**自动化真的改变了声音** —— 这是
+    // `docs/ledger/gate-rt-zero-alloc-notes.md` 的 needs N1 要求补上的那条断言
+    // （原文："届时 ⑤ 的判据可加'输出随自动化变化'的断言"）。
+    // 口径：本槽位的取值域是线性乘子；控制侧每量子发布的分贝值经 `db_to_gain`
+    // 换域后**全部**落在域内（本夹具的值域是 −12 … +3 dB ⇒ 0.2512 … 1.4125）
+    // ⇒ 每一个量子都必须走 `ParamTable::apply` 的乘法。
+    let gain_frames = stats.param_gain_frames.saturating_sub(frames_before);
+    report.assert(
+        "⑤d",
+        "覆盖度：参数目标表真的把增益乘进了样本（见证读数 = 量子数 × 128）",
+        gain_frames == AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64
+            && stats.param_gain_rejects == 0
+            && stats.param_unmapped_events == 0,
+        format!(
+            "乘过的帧数={gain_frames}（要求 {}）；非法值={} 未映射={}（都要求 0）",
+            AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64,
+            stats.param_gain_rejects,
+            stats.param_unmapped_events
         ),
     );
 }

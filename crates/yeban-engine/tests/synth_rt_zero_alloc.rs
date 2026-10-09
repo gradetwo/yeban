@@ -111,6 +111,18 @@
 //! 断言仍是 `allocations == 0 && deallocations == 0`；牙齿由两条注入钉住
 //! （读路径里分配 ⇒ `allocations=705335`；音频线程循环里分配 ⇒ `allocations=2000`）。
 //!
+//! # 场景 16（`line/engine-6` 追加）：实时侧**参数目标表**
+//!
+//! 接线之前音频线程对 `EngineEvent::SetParam` **只计数、不改 DSP**（缺口登记在
+//! `crate::param` 模块文档 §0）。接入之后这条路径多了三段实时侧代码：**事件边界**
+//! （`ParamTable::accept`：整数比较 + 至多 16 项的线性搜索 + 标量赋值）、
+//! **逐样本**（`ParamTable::apply`：每个样本一次乘加 + 一次乘）与**快照边界**
+//! （`ParamTable::set_sample_rate`：换采样率时重算 `α`，含 `exp`）。
+//!
+//! 场景 16 用一个 10,000 量子的窗口覆盖前两段（目标值每 500 个量子换一次，
+//! 在两个**非恒等**值之间交替 ⇒ 恒等快路径从不生效），再用一个换采样率的窗口覆盖
+//! 第三段。覆盖度自检取**精确帧数**（`10 000 × 128`），不是"大于 0"。
+//!
 //! ⚠ **本目标只测四元组里的两个分量**（`allocations` / `deallocations`）：
 //! 它没有锁探针，也没有 I/O 边界（那是 `tests/rt_zero_alloc.rs` 的
 //! `[MUST-GATE-001]` 目标）。因此本文件的全部场景**不**声称"六分量全 0"。
@@ -121,7 +133,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use yeban_engine::meter::meter_channel;
-use yeban_engine::ring::event_channel;
+use yeban_engine::param::TRACK_GAIN_SLOT;
+use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
 
@@ -200,6 +213,15 @@ const DRUM_MAP: [u8; 5] = [36, 38, 42, 46, 39];
 /// 而读者循环的迭代速度远高于一次量子（实测每量子约 0.1 ms 量级）⇒ 2_000 已经
 /// 足够产生大量不同读数，同时把"两条线程并行"的墙钟压在 1 秒以内。
 const MIRROR_QUANTA: u64 = 2_000;
+
+/// 场景 16 的量子数（与前面几个逐样本场景同量级）。
+const PARAM_QUANTA: usize = 10_000;
+
+/// 场景 16 里"每多少个量子换一次目标值"。
+///
+/// 500 ⇒ 一个窗口 20 次重新设目标：足够覆盖事件边界的命中路径（`accept` 的线性搜索
+/// 与 `set_target`），又不至于让窗口里的事件数淹掉逐样本路径。
+const PARAM_RETARGET_EVERY: usize = 500;
 
 /// 场景 11 / 12 的鼓机音符：与 [`saturated_notes`] 同一个时间栅格（每 240 tick 起音），
 /// 但音高**轮流落在 [`DRUM_MAP`] 的五个音高上** ⇒ 每一记都命中一个鼓件。
@@ -1582,6 +1604,124 @@ fn main() -> ExitCode {
         osc_stats.quanta,
     );
 
+    // ---- 场景 16：实时侧**参数目标表**（`crate::param`）----
+    //
+    // 为什么必须单独一个场景：接线之前音频线程对 `EngineEvent::SetParam` **只计数、
+    // 不改 DSP**（缺口登记在 `crate::param` 模块文档 §0）。接入之后这条路径多了三段
+    // 实时侧代码，本场景把它们**全部**放进同一个零分配窗口：
+    //
+    //   * **事件边界**（`ParamTable::accept`）：整数比较 + 至多 16 项的线性搜索 +
+    //     标量赋值（窗口里每 `PARAM_RETARGET_EVERY` 个量子发一条新目标）；
+    //   * **逐样本**（`ParamTable::apply`）：每个样本一次乘加（平滑器）与一次乘；
+    //   * **快照边界**（`ParamTable::set_sample_rate`）：换采样率时重算 `α`（含 `exp`，
+    //     单独一个窗口覆盖，见下面的 44.1 kHz 那一段）。
+    //
+    // 夹具设计（每一项都对应一件事）：
+    //   * 256 个交叠音符（沿用 `saturated_notes`）⇒ 窗口里真的有信号可乘；
+    //   * 目标值在两个**非恒等**值之间交替（`0.5` / `0.25`）⇒ `apply` 的恒等快路径
+    //     从不生效 ⇒ 覆盖度自检可以取**精确帧数**（`10_000 × 128`）而不是"大于 0"。
+    let param_fixture = note_project(&saturated_notes());
+    let param_track = param_fixture.track;
+    let param_snapshot =
+        EngineSnapshot::from_project(&param_fixture.project, 1).expect("参数表夹具快照");
+    let param_slot = SnapshotSlot::new(param_snapshot);
+    let (param_retire, _param_queue) = retire_channel(8);
+    let (mut param_sender, param_receiver) = event_channel(64);
+    let (param_publisher, _param_collector) = meter_channel(8192);
+    let mut param_runtime =
+        EngineRuntime::new(&param_slot, param_retire, param_receiver, param_publisher);
+    // 预热（窗口外）：首量子的波表/包络一次性路径。
+    let mut param_output = vec![0.0f32; 128 * 2];
+    param_runtime.process_quantum(&mut param_output, 2);
+    let param_base_frames = param_runtime.stats().param_gain_frames;
+
+    let (allocations, deallocations) = measure("param automation 10_000 quanta", || {
+        for quantum in 0..PARAM_QUANTA {
+            if quantum % PARAM_RETARGET_EVERY == 0 {
+                let value = if (quantum / PARAM_RETARGET_EVERY).is_multiple_of(2) {
+                    0.5
+                } else {
+                    0.25
+                };
+                let accepted = param_sender.publish(&[EngineEvent::SetParam {
+                    target: ParamAddress::new(param_track, TRACK_GAIN_SLOT),
+                    value,
+                }]);
+                assert_eq!(accepted, 1, "参数事件必须真的进队列");
+            }
+            param_output.fill(0.0);
+            param_runtime.process_quantum(&mut param_output, 2);
+        }
+    });
+    let param_stats = param_runtime.stats();
+    let param_frames = param_stats
+        .param_gain_frames
+        .saturating_sub(param_base_frames);
+    let param_slots = param_runtime.armed_param_slot_count();
+    println!(
+        "[engine-param/J16] 实时侧参数目标表: allocations={allocations} \
+         deallocations={deallocations} 乘过的帧数={param_frames} 槽位={param_slots} \
+         非法值={} 未映射={} 容量不足={}",
+        param_stats.param_gain_rejects,
+        param_stats.param_unmapped_events,
+        param_stats.param_capacity_drops,
+    );
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "实时侧参数目标表在窗口内分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations}（事件边界 + 逐样本乘法都在窗口里）"
+        ));
+    }
+    if param_slots != 1 {
+        failures.push(format!(
+            "参数目标表在窗口里建了 {param_slots} 个槽位，期望 1 个 —— 场景 16 是空转"
+        ));
+    }
+    if param_frames != (PARAM_QUANTA * 128) as u64 {
+        failures.push(format!(
+            "参数目标表只乘过 {param_frames} 帧，期望 {}（{PARAM_QUANTA} 量子 × 128 帧；\
+             非恒等目标 ⇒ 每一个量子都必须走乘法）",
+            PARAM_QUANTA * 128
+        ));
+    }
+    if param_stats.param_gain_rejects != 0
+        || param_stats.param_unmapped_events != 0
+        || param_stats.param_capacity_drops != 0
+    {
+        failures.push(format!(
+            "参数目标表在窗口里记了非零的拒绝读数：非法值={} 未映射={} 容量不足={}",
+            param_stats.param_gain_rejects,
+            param_stats.param_unmapped_events,
+            param_stats.param_capacity_drops
+        ));
+    }
+
+    // 换采样率：快照边界的 `ParamTable::set_sample_rate`（α 重算，含 `exp`）也必须在
+    // 窗口内零分配。快照在**窗口之外**发布，窗口里只跑那一个量子。
+    let mut param_shifted = param_fixture.project.clone();
+    param_shifted.audio_config.sample_rate = SampleRate::Hz44100;
+    let param_shifted_snapshot =
+        EngineSnapshot::from_project(&param_shifted, 2).expect("换采样率快照");
+    param_slot.publish(param_shifted_snapshot);
+    let (allocations, deallocations) = measure("param rate-change re-arm + quantum", || {
+        param_output.fill(0.0);
+        param_runtime.process_quantum(&mut param_output, 2);
+    });
+    println!(
+        "[engine-param/J16] 换采样率: allocations={allocations} deallocations={deallocations} \
+         目标保留={:?}",
+        param_runtime.armed_param_target(&param_track),
+    );
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "参数目标表在换采样率的快照边界分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations}"
+        ));
+    }
+    if param_runtime.armed_param_target(&param_track).is_none() {
+        failures.push("换采样率把已武装的参数目标丢了 —— α 重算不该复位平滑器".to_owned());
+    }
+
     // ---- 场景 15：`EngineStats` 的**跨线程只读镜像**（设备腿形态）----
     //
     // 为什么必须单独一个场景：前面 14 个场景都在**同一条线程**上既渲染又读统计
@@ -1767,6 +1907,7 @@ fn main() -> ExitCode {
              + 10,000 量子每轨鼓机音源（两条轨，一条鼓机＋一条复音） \
              + 31 次鼓机重新武装 + 换采样率 / 换键位映射 / 换回复音合成器 \
              + 10,000 量子波形选择＋两条振荡器支路 + 31 次振荡器重新武装 \
+             + 10,000 量子实时侧参数目标表（事件边界 + 逐样本乘法）+ 换采样率的 α 重算 \
              + 2,000 量子 `EngineStats` 跨线程只读镜像（写者＝音频线程 / 读者＝控制线程），\
              实时窗口内零分配零释放"
         );

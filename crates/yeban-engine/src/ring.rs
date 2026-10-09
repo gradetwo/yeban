@@ -53,6 +53,13 @@ pub const SCRATCH_EVENTS: usize = 128;
 ///
 /// **故意不用字符串**：音频线程做字符串比较意味着指针追踪与不确定的耗时。
 /// 槽位由模型层/设备层在发布快照时映射为稳定索引。
+///
+/// ⚠ **槽位词汇的现状**（`line/engine-6` 实测）：模型层**还没有**"参数槽位"的规范
+/// （`DeviceDefinition::params` 是字符串键值对；缺口登记为
+/// `docs/ledger/engine-mix-notes.md` §8.2 的 **N5**）。因此音频线程今天只认**一个**
+/// 槽位：[`crate::param::TRACK_GAIN_SLOT`]（音轨输出增益乘子，线性，默认 `1.0`）。
+/// 其余地址（别家的槽位号、主总线）由 [`crate::param`] **计数**而不是静默丢弃。
+/// N5 的裁决落下之后，这张词汇表应当改为直读模型字段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParamAddress {
     /// 承载参数的实体（音轨 / 设备）。
@@ -99,6 +106,11 @@ pub enum EngineEvent {
     /// 空事件：临时缓冲的填充值，音频线程收到后不做任何事。
     Idle,
     /// 设置一个参数值（已归一化 / 已是目标域值，由模型层负责换域）。
+    ///
+    /// 音频线程的消费者是 [`crate::param`]（参数目标表）：它按
+    /// [`ParamAddress`] 的槽位词汇决定"这个值作用到哪个 DSP 系数"，并按规范
+    /// [ARCH-DSP-001] 用单极点低通（`τ ≈ 5 ms`）平滑过去。收不下的地址**计数**，
+    /// 不静默。
     SetParam {
         /// 目标参数地址。
         target: ParamAddress,
