@@ -23,8 +23,23 @@
 //!   样本间跳变——这正是当年"每个渲染块咔哒一次"的化石；
 //! - `is_transparent_below_the_knee`：**手写加窗 DFT**，断言 2–12 次谐波总能量
 //!   比基频低 70 dB 以上。一个滤波器在未被驱动时必须透明。
+//!
+//! ## 非有限输入样本（本轮补齐）
+//!
+//! 四级积分器状态是**递归**的（`state = 2y − state`，且解出的 `u` 里含
+//! `feedback · state_sum`）。一个 `NaN`／`±∞` 样本会在同一样本就写进四级状态，
+//! 此后每一级都把它原样留下（`NaN · 系数 = NaN`），`flush_denormals` 也清不掉，
+//! **输入恢复干净也回不来** —— [`LadderFilter::reset`] 是唯一出路。
+//! 实时路径上无法报错，只能在入口回落。
+//!
+//! ⇒ [`LadderFilter::process`] 在计算之前过 `math::finite_or_zero`：`NaN` 与 `±∞`
+//! 归 `0.0`，**有限样本逐位不变**（既有音色与两条来源回归判据一个比特都不改）。
+//! [`LadderFilter::process_block`] 逐样本转调 `process`，因此自动继承这条守卫。
+//!
+//! ⚠ 守卫**不**覆盖"有限但极大"的输入：`3e38 · drive` 仍可能溢出成 `∞`。那条归
+//! 调用方的电平口径管（同 `math::finite_or_zero` 的文档）。
 
-use crate::math::{pade_tanh, sanitise_sample_rate};
+use crate::math::{finite_or_zero, pade_tanh, sanitise_sample_rate};
 
 /// 输出级的软饱和拐点：以下**完全线性**，以上平滑饱和，最多到 1.0。
 ///
@@ -132,6 +147,10 @@ impl LadderFilter {
     #[inline]
     pub fn process(&mut self, input: f32) -> f32 {
         let g = self.coeff;
+        // 入口守卫：非有限样本会在同一样本写进四级递归状态并被永久留下
+        // （`NaN · 系数 = NaN`），`flush_denormals` 清不掉 ⇒ 就地回落成 `0.0`。
+        // 有限样本逐位不变。
+        let input = finite_or_zero(input);
         // 单位驱动是透明的：输入饱和级只在旋钮拧起来之后才塑形，
         // 因此通带电平保持不变。
         let x = if self.drive > 1.0001 {

@@ -19,6 +19,22 @@
 //! 4. `process` 用 `zip` 而不是按下标写 `out[i]`：来源在 `out` 比 `input` 短时会
 //!    越界 panic，而实时路径上宁可少写也不能展开栈；
 //! 5. 白噪声测试改用本 crate 的 [`crate::noise::Rng`]（确定性相同、断言不变）。
+//!
+//! ## 非有限输入样本（本轮补齐）
+//!
+//! 本滤波器是**递归**的：`buf[i] = x + damped(buf) · feedback`，`feedback ≤ 0.96`。
+//! 一个 `NaN`／`±∞` 样本会被原样留在环里，此后读出的 `delayed` 永远非有限，
+//! 且隔直状态 `dc` 与阻尼状态也被污染，**输入恢复干净也回不来** ——
+//! [`CombFilter::reset`] 是唯一出路。实时路径上无法报错，只能在入口回落。
+//!
+//! ⇒ [`CombFilter::process`] 在更新 `dc` 与写环之前过 `math::finite_or_zero`：
+//! `NaN` 与 `±∞` 归 `0.0`，**有限样本逐位不变**（既有读数一个比特都不改）。
+//! 未准备时的直通**不**经过守卫（没有样本进入递归）。
+//!
+//! ⚠ 守卫**不**覆盖"有限但极大"的输入（`3e38 · 0.96` 仍可能溢出成 `∞`）；
+//! 那条归调用方的电平口径管（同 `math::finite_or_zero` 的文档）。
+
+use crate::math::finite_or_zero;
 
 /// 允许的最低梳状频率，它决定缓冲区大小：96 kHz 下 30 Hz 的梳需要 3200 个样本。
 pub const MIN_FREQ_HZ: f32 = 30.0;
@@ -142,13 +158,16 @@ impl CombFilter {
         }
         let len = self.len.max(2);
         for (sample, slot) in input.iter().zip(out.iter_mut()) {
+            // 入口守卫：非有限样本一旦写进环就被 `feedback ≤ 0.96` 永久留下，
+            // 隔直与阻尼状态也被污染 ⇒ 就地回落成 `0.0`。有限样本逐位不变。
+            let sample = finite_or_zero(*sample);
             let delayed = self.buf[self.index];
             // 带阻尼的反馈：环内的一极点低通。
             self.damp_state = delayed * (1.0 - self.damp) + self.damp_state * self.damp;
             // 输入端轻微隔直：梳状在直流处是单位增益，没有这一步的话，
             // 带直流偏移的音色会把环路越推越高。
-            self.dc += (*sample - self.dc) * 0.0005;
-            let x = *sample - self.dc;
+            self.dc += (sample - self.dc) * 0.0005;
+            let x = sample - self.dc;
             self.buf[self.index] = x + self.damp_state * self.feedback;
             self.index += 1;
             if self.index >= len {

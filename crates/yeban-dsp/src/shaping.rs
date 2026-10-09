@@ -57,10 +57,30 @@
 //! 其中"参数被猛砸时仍然有界且有限"这条被重新落到 DSP 层实现为
 //! `abrupt_parameter_slams_stay_bounded`，其它四条登记在
 //! `docs/ledger/dsp-core-provenance.md` 的待办里（归属 `yeban-engine`）。
+//!
+//! ## 非有限输入样本（本轮补齐）
+//!
+//! 三个效果节点都持有**递归**状态：crusher 的两级抗混叠单极点与两级插值单极点、
+//! EQ 的三个转置直接 II 型 biquad 的 `v1`/`v2`、transient shaper 的整流与两个
+//! 包络跟随器。任何一处写进 `NaN`／`±∞`，`s += c · (x − s)` 的每一次迭代都把它
+//! 原样留下（`NaN · c = NaN`、`∞ · 0.5 = ∞`），**输入恢复干净也回不来**
+//! —— 三个类型的 `reset` 是唯一出路。实时路径上无法报错，只能在入口回落。
+//!
+//! ⇒ 三个 `process` 在读取输入样本处过 `math::finite_or_zero`：`NaN` 与 `±∞`
+//! 归 `0.0`，**有限样本逐位不变**（既有音色、既有频谱判据与
+//! `abrupt_parameter_slams_stay_bounded` 一个比特都不改）。
+//!
+//! ⚠ transient shaper 的症状**不是**非有限输出：`exp2`（本 crate 的版本）对非有限
+//! 输入返回 `0`，因此中毒后增益恒为 `0`、湿信号恒为 `0` —— 输出**有限但永久错**。
+//! 这正是判据必须写成"与'该样本换成 `0.0`'的对照运行逐位相同"、而不能只写
+//! "输出有限"的原因。
+//!
+//! ⚠ 守卫**不**覆盖"有限但极大"的输入（`3e38 · 8` 仍可能溢出成 `∞`）；那条归
+//! 调用方的电平口径管（同 `math::finite_or_zero` 的文档）。
 
 use core::f32::consts::TAU;
 
-use crate::math::{db_to_gain, exp2, sanitise_sample_rate};
+use crate::math::{db_to_gain, exp2, finite_or_zero, sanitise_sample_rate};
 
 /// RBJ cookbook 要的幅度 `A = 10^(db/40)`。
 ///
@@ -215,7 +235,8 @@ impl BitCrusher {
         let pre_coeff = (1.0 - (-TAU * 0.45 * decimated / sample_rate).exp()).clamp(0.0, 1.0);
         let post_coeff = (1.0 - (-TAU * 0.30 * decimated / sample_rate).exp()).clamp(0.0, 1.0);
         for i in 0..frames {
-            let raw = [in_l[i], in_r[i]];
+            // 入口守卫见模块文档"非有限输入样本"一节。有限样本逐位不变。
+            let raw = [finite_or_zero(in_l[i]), finite_or_zero(in_r[i])];
             self.phase += 1.0;
             let capture = self.phase >= down;
             if capture {
@@ -409,8 +430,17 @@ impl ShapingEq {
             clamp_or(params.high_freq, 1000.0, 16000.0, 4000.0),
             clamp_or(params.high_gain, -18.0, 18.0, 0.0),
         );
-        out_l[..frames].copy_from_slice(&in_l[..frames]);
-        out_r[..frames].copy_from_slice(&in_r[..frames]);
+        // 入口守卫见模块文档"非有限输入样本"一节：三级 biquad 的 `v1`/`v2` 是递归
+        // 状态，非有限样本必须在写进去之前归零。有限样本逐位不变（等价于既有的
+        // 整段拷贝 ⇒ 平坦 EQ 仍然是逐位旁通）。
+        for (i, (l, r)) in out_l[..frames]
+            .iter_mut()
+            .zip(out_r[..frames].iter_mut())
+            .enumerate()
+        {
+            *l = finite_or_zero(in_l[i]);
+            *r = finite_or_zero(in_r[i]);
+        }
         self.low.process_in_place(out_l, out_r, frames);
         self.mid.process_in_place(out_l, out_r, frames);
         self.high.process_in_place(out_l, out_r, frames);
@@ -527,7 +557,9 @@ impl TransientShaper {
         // 输出逐样本等于输入。
         let neutral = attack == 0.0 && sustain == 0.0;
         for i in 0..frames {
-            let raw = [in_l[i], in_r[i]];
+            // 入口守卫见模块文档"非有限输入样本"一节：整流与两个包络跟随器都是
+            // 递归状态。有限样本逐位不变。
+            let raw = [finite_or_zero(in_l[i]), finite_or_zero(in_r[i])];
             let mut wet = [0.0f32; 2];
             for (channel, slot) in wet.iter_mut().enumerate() {
                 // 先整流再平滑：持续音的载频纹波必须在取瞬态之前消失，

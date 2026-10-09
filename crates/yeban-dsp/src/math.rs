@@ -127,6 +127,32 @@ pub(crate) fn sanitise_sample_rate(sample_rate: f32) -> f32 {
     }
 }
 
+/// 把**非有限**样本归零；**有限样本逐位不变**（含 `±0.0` 与次正规数）。
+///
+/// 这是喂给**递归状态**（反馈环、延迟线、单极点/双二阶状态、包络跟随器）的输入
+/// 样本的入口守卫。本 crate 已有三处同类守卫（`compressor` 与 `channel_strip` 各自的
+/// `finite_or_zero`、`limiter` 的 `nan_to_zero`），三者口径**互有差别**（见下）；本函数
+/// 补的是**递归**这一条：有限状态里一旦写进 `NaN`／`±∞`，`state = a·state + b·x` 的
+/// 每一次迭代都把它原样留下（`NaN · 0 = NaN`、`∞ · 0.9 = ∞`），因此 `reset()` 之外
+/// **没有任何出路**，湿路从此永久坏掉。实时路径上无法报错，只能在入口就地回落。
+///
+/// 与相邻口径的差别（**不是**同义词，别混用）：
+///
+/// - [`crate::meter::sanitize_sample`]（`channel_strip` 的入口用它）把幅度也钳到
+///   `±16`，那是**电平**口径；
+/// - `limiter` 的 `nan_to_zero` 只归零 `NaN`、**保留** `±∞`（它的窗口峰值证明需要
+///   无穷大可见）；
+/// - 本函数归零 `NaN` 与 `±∞`，且**不**钳制有限幅度 ⇒ 对任何有限输入逐位恒等，
+///   既有输出一个比特都不改。
+///
+/// 它**不**承诺"有限但极大的输入不会溢出"：`3e38 · 8` 仍是 `∞`。那条由调用方的
+/// 电平口径负责（同 [`crate::meter::sanitize_sample`]）。
+#[inline]
+#[must_use]
+pub(crate) fn finite_or_zero(sample: f32) -> f32 {
+    if sample.is_finite() { sample } else { 0.0 }
+}
+
 /// 原地迭代基 2 复数变换（正向或逆向）。
 ///
 /// 由两处非音频速率的消费者共用：波表导入分析（[`crate::oscillator`]）。
@@ -194,6 +220,55 @@ pub fn fft(re: &mut [f64], im: &mut [f64], inverse: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **判据**：`finite_or_zero` 对**任何有限**输入逐位恒等（含 `±0.0`、次正规数
+    /// 与 `f32::MAX`），对 `NaN` 与 `±∞` 恰好返回 `+0.0`。
+    ///
+    /// 量什么：返回值的 `to_bits()` 与期望位型的比较（单位：`f32` 位型）。
+    /// 为什么用位型而不是 `==`：`0.0 == -0.0` 为真，而本 crate 的混响文档
+    /// 有一条 `-0.0` 的实测例外，因此符号位必须可判。
+    #[test]
+    fn finite_or_zero_is_the_bitwise_identity_on_finite_values() {
+        // 正对照：表里必须真的含非有限值，否则"归零"这一半是空断言。
+        let table = [
+            (0.0f32, false),
+            (-0.0f32, false),
+            (1.0, false),
+            (-1.0, false),
+            (f32::MIN_POSITIVE, false),
+            (-f32::MIN_POSITIVE, false),
+            (f32::MIN_POSITIVE / 2.0, false), // 次正规数
+            (f32::MAX, false),
+            (f32::MIN, false),
+            (f32::NAN, true),
+            (f32::INFINITY, true),
+            (f32::NEG_INFINITY, true),
+        ];
+        assert!(
+            table.iter().any(|(v, hostile)| *hostile && !v.is_finite()),
+            "夹具必须包含非有限值"
+        );
+        for (value, hostile) in table {
+            let got = finite_or_zero(value);
+            if hostile {
+                assert_eq!(
+                    got.to_bits(),
+                    0.0f32.to_bits(),
+                    "非有限输入 {:?} 必须归 +0.0，实得位型 {:#010x}",
+                    value,
+                    got.to_bits()
+                );
+            } else {
+                assert_eq!(
+                    got.to_bits(),
+                    value.to_bits(),
+                    "有限输入 {:?} 必须逐位不变，实得 {:?}",
+                    value,
+                    got
+                );
+            }
+        }
+    }
 
     #[test]
     fn note_to_hz_matches_concert_pitch() {

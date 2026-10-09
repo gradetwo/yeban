@@ -16,6 +16,23 @@
 //!   夜半不允许隐式全局熵源，跨运行/跨机器必须同序 [ARCH-DET-001]。
 //! - [`NoiseGen::process`] 仍由调用方提供白噪声样本，RNG 的所有权留在调用方，
 //!   因此"噪声"与"随机数发生器"可以各自独立测试。
+//!
+//! ## 非有限输入样本（本轮补齐）
+//!
+//! [`NoiseGen::process`] 的 `white` 实参是**调用方给的样本**，而粉/棕两条颜色的
+//! 状态是**递归**的：`pink[k] = a·pink[k] + b·white`、`brown = (brown + 0.05·white)·leak`。
+//! 一个 `NaN`／`±∞` 会被原样留在状态里（`NaN · 0.99765 = NaN`），此后每一次输出
+//! 都非有限，**输入恢复干净也回不来** —— [`NoiseGen::reset`] 是唯一出路。
+//! 实时路径上无法报错，只能在入口回落。
+//!
+//! ⇒ [`NoiseGen::process`] 在滤波之前过 `math::finite_or_zero`：`NaN` 与 `±∞`
+//! 归 `0.0`，**有限样本逐位不变**（既有判据一个比特都不改）。白噪声档是纯直通，
+//! 归零后输出 `+0.0`，与"把那个样本换成 `0.0`"的对照运行逐位相同。
+//!
+//! ⚠ 守卫**不**覆盖"有限但极大"的输入（`3e38` 仍可能溢出成 `∞`）；那条归调用方
+//! 的噪声幅度口径管（同 `math::finite_or_zero` 的文档）。
+
+use crate::math::finite_or_zero;
 
 /// xorshift32 —— 无分配、跨运行确定。
 ///
@@ -136,6 +153,9 @@ impl NoiseGen {
     /// `sample_rate` 显式传入，用来把转折频率换算成系数。
     #[inline]
     pub fn process(&mut self, white: f32, sample_rate: f32) -> f32 {
+        // 入口守卫：非有限样本会被粉/棕的递归状态永久留下（见模块文档）。
+        // 有限样本逐位不变。
+        let white = finite_or_zero(white);
         match self.colour {
             NoiseColour::White => white,
             NoiseColour::Pink => {

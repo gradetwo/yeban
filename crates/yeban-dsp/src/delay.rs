@@ -19,6 +19,27 @@
 //! 3. 新增 [`Delay::is_configured`] 与"未配置即直通"的行为约束；
 //! 4. 新增判据 `the_delay_time_is_seconds_not_samples`：来源的所有测试都钉在
 //!    48 kHz，一个把 48 kHz 写死的实现能全过；这条按 96 kHz 断言回声落点。
+//!
+//! ## 非有限输入样本（本轮补齐）
+//!
+//! 延迟线是**递归**的：`line[i] = input + damped(line) · feedback`，`feedback ≤ 0.95`。
+//! 一个 `NaN`／`±∞` 样本会被反馈量原样留在环里（`NaN · 0.95 = NaN`、
+//! `∞ · 0.95 = ∞`），此后每一条输出都是非有限值，**输入恢复干净也回不来** ——
+//! [`Delay::reset`] 是唯一出路。实时路径上无法报错，只能在入口回落。
+//!
+//! ⇒ [`Delay::process`] 在写进延迟线之前过 `math::finite_or_zero`：`NaN` 与 `±∞`
+//! 归 `0.0`，**有限样本逐位不变**（既有音色与既有读数一个比特都不改）。
+//! 未配置时的直通**不**经过这个守卫（没有样本进入递归），与 [`Delay::reset`] 的
+//! "清历史、不动配置"同一条纪律。
+//!
+//! ⚠ 守卫**不**覆盖"有限但极大"的输入：`3e38 · 0.95` 仍可能溢出成 `∞`。那条归
+//! 调用方的电平口径管（同 `math::finite_or_zero` 的文档）。
+//!
+//! ⚠ 与 [`crate::convolution`] 的"逐样本净化是调用方的职责"**不矛盾**：卷积核没有
+//! 递归状态，`NaN` 写进它的频域延迟线后会在 `partitions` 个块之内被冲掉；
+//! 本模块的环是永久的。
+
+use crate::math::finite_or_zero;
 
 /// 延迟线能装下的最长时间（秒）。20 BPM 的四分音符要 3 s，
 /// 这条线到此为止，更长的时间会被钳制。
@@ -189,8 +210,11 @@ impl Delay {
         let damp_coeff = 1.0 - damp * (1.0 - DAMP_MIN);
 
         for (dry_l, dry_r) in left.iter_mut().zip(right.iter_mut()) {
-            let input_l = *dry_l;
-            let input_r = *dry_r;
+            // 入口守卫：一个非有限样本写进延迟线就会被反馈量原样留在环里
+            // （`NaN · feedback = NaN`、`∞ · 0.95 = ∞`），输入恢复干净也回不来，
+            // `reset()` 之外没有出路 ⇒ 就地回落成 `0.0`。有限样本逐位不变。
+            let input_l = finite_or_zero(*dry_l);
+            let input_r = finite_or_zero(*dry_r);
             let delayed_l = Self::read(&self.lines[0], self.index, self.samples);
             let delayed_r = Self::read(&self.lines[1], self.index, self.samples);
 
