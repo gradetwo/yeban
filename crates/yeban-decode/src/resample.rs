@@ -1927,7 +1927,16 @@ mod tests {
     #[test]
     fn a_relative_gate_cannot_separate_the_short_clip_amplification_from_a_pinned_conversion() {
         // 时长上限为 0 ⇒ 任何非零要求帧数都被时长闸门拒；判定发生在分配之前。
-        let no_time = PcmBudget::new(u64::MAX, u64::MAX, u16::MAX, u32::MAX, 0);
+        let no_time = PcmBudget::new(
+            u64::MAX,
+            u64::MAX,
+            u16::MAX,
+            u32::MAX,
+            0,
+            // ⚠️ 本判据要测**时长**闸门，所以比例闸门必须放开（u64::MAX），
+            // 否则新的比例闸门会先触发并返回 RatioTooHigh，测不到时长路径。
+            u64::MAX,
+        );
         let needed = |frames: usize, channels: u16, in_rate: u32, out_rate: u32| {
             let samples = vec![0.0f32; frames * usize::from(channels)];
             match resample_interleaved_with_budget(&samples, channels, in_rate, out_rate, &no_time)
