@@ -1434,6 +1434,60 @@ mod tests {
         );
     }
 
+    /// 判据 (守门人, **类别 5: 幂等性**): 测量分辨率的阈值取**两个操作数里量级较大的
+    /// 那个**的**上方**间距 —— 两条都必须是文档写的那一条。
+    ///
+    /// 取**较小**的那个操作数（`min` 替 `max`）时阈值减半; 取**下方**间距
+    /// （`magnitude - magnitude.next_down()` 替 `magnitude.next_up() - magnitude`）时,
+    /// 量级恰为 2 的幂的那一格阈值同样减半（文档 §"为什么取较大的那个操作数"末段写明
+    /// `next_up` 给的是上方那一档）。两者都会让一个**确实落在测量分辨率里**的残差被判成
+    /// 真实增益去施加, 于是 [`ExportPreset::apply_at`] 的"重复施加是不动点"承诺失守。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 `max` 改成 `min`、把 `next_up` 改成 `next_down` 各注入一次, **全量 168 条
+    /// 判据全绿**（两次 `test result: ok. 168 passed; 0 failed`）——
+    /// `applying_the_same_preset_twice_is_a_bit_exact_no_op` 用的是 `−14.0` 与
+    /// `−13.999999` 这一对**同一个二进制档**里的操作数, 两个操作数的间距相等, 因此分不出
+    /// 上面两种写法。本条改用一对**跨档**的操作数把差异放大成 2 倍。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: [`within_measurement_resolution`] 这一条纯函数, 输入是一对 `f32` 读数
+    /// （单位: LUFS）与它们的差（单位: dB）。读数: 布尔判决, 加上三个 `f32` 相等断言。
+    /// 本判据**不**依赖任何信号或预设, 因此与测量链的夹具无关。
+    ///
+    /// # 运算类别（ADR-0001 的 D32）
+    ///
+    /// 本判据只用到 `abs` / `max` / 减法 / 比较与 `next_up`（IEEE-754 精确类,
+    /// 全部是位运算与精确算术）, **不含**超越函数, 因此按 D32 第 1 类**可以在任何架构上
+    /// 逐位断言**, 不需要 `cfg!(target_arch)` 的分支。
+    #[test]
+    fn the_measurement_resolution_uses_the_larger_operand_and_its_upper_spacing() {
+        // 8.0 恰是 2 的幂: 它的上方间距是 2^-20, 而它下方第二个可表示值的上方间距只有
+        // 2^-21 —— 两者相差一倍。两个间距都写成 `f32::EPSILON` 的整数倍（2^-23 的
+        // 倍数）, 因此是**精确**的 2 的幂, 不是十进制近似。
+        let upper_spacing = 8.0f32 * f32::EPSILON; // 2^-20
+        let lower_spacing = 4.0f32 * f32::EPSILON; // 2^-21
+        let demand = 8.0f32;
+        // 7.99999904632568359375 = 8.0 - 2^-20（跨档的下方操作数）。
+        let actual = f32::from_bits(0x40FF_FFFE);
+        // Sterbenz 引理: 两数在 2 倍以内, 减法**精确**, 因此残差恰好是上方间距。
+        let residual = demand - actual;
+
+        assert_eq!(residual, upper_spacing, "残差必须恰好是 2^-20");
+        assert_eq!(demand.next_up() - demand, upper_spacing);
+        assert_eq!(actual.next_up() - actual, lower_spacing);
+        assert!(
+            residual > lower_spacing,
+            "残差必须严格大于下方那一档的间距, 否则本条分不出 max/min 与 next_up/next_down"
+        );
+        assert!(
+            within_measurement_resolution(demand, actual, residual),
+            "量级较大的那个操作数的**上方**间距必须吸收这个残差"
+        );
+    }
+
     /// 静音: 响度测不出 ⇒ **不动样本**, 不产生 NaN。
     #[test]
     fn silence_is_never_normalized_and_never_becomes_nan() {

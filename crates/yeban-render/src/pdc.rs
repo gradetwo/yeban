@@ -667,6 +667,63 @@ mod tests {
         );
     }
 
+    /// 判据 (**类别 4: 参数极值 / 整数溢出**): 沿路径累加 `latency_samples` 必须**饱和**
+    /// 在 `u32::MAX`, 不得回绕成一个小数, 也不得让 debug 档 panic。
+    ///
+    /// # 为什么这是一个**可达**的输入, 不是造出来的极值
+    ///
+    /// [`yeban_model::DeviceDefinition::latency_samples`] 的类型是 `u32`（现位于
+    /// `crates/yeban-model/src/project.rs` 的设备定义里）, 而
+    /// [`crate::render::track_latencies`] 从设备链把它累加出来时走的是
+    /// `saturating_add`。因此"一条轨道报 `u32::MAX` 帧、它下游的总线再报一个非零值"
+    /// 是模型层允许的输入; 两个节点**串联**时就是本判据的两个加数。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 `arrives.saturating_add(own)` 注入成 `arrives + own`, 全量 168 条判据
+    /// **全绿**（`test result: ok. 168 passed; 0 failed`）—— 既有的极值判据里没有一笔
+    /// 累加超过 `u32::MAX`。debug 档下这条注入是 `attempt to add with overflow`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一条两节点的串联路径 `a`(自身 `u32::MAX`) → `b`(自身 `5`) → `master`;
+    /// 本判据只算延迟, 不写文件, 因此与容器种类无关。单位: 延迟是**采样帧数**（`u32`）。
+    /// 读数: [`Plan::arrival`]、[`Plan::output_latency`]、[`Plan::longest_path`] 与
+    /// `delay_of` 的四个值。
+    ///
+    /// # 非空证明
+    ///
+    /// 两个加数都**非零**, 且它们的精确和（`u64` 口径）大于 `u32::MAX` —— 因此本条不是
+    /// "0 + 0" 或"两个小值"这种退化情形。
+    #[test]
+    fn accumulated_latency_saturates_at_u32_max_instead_of_wrapping() {
+        let g = graph(
+            &["a", "b", "master"],
+            &[("a", "b"), ("b", "master")],
+            &[("a", u32::MAX), ("b", 5)],
+        );
+        let plan = plan(&g, "master").expect("无环");
+        assert_eq!(plan.arrival["b"], u32::MAX, "a 的自身延迟原样到达 b");
+        assert_eq!(
+            plan.output_latency["b"],
+            u32::MAX,
+            "u32::MAX + 5 必须饱和, 不得回绕"
+        );
+        assert_eq!(plan.longest_path, u32::MAX, "关键路径同样饱和");
+        assert_eq!(
+            plan.delay_of("b", "master"),
+            Some(0),
+            "饱和之后 b 与 master 之间不需要额外补偿"
+        );
+
+        // 非空证明: 真实和确实超出 `u32` 的口径 ⇒ 上面那两条不是空断言。
+        let exact = u64::from(u32::MAX) + 5;
+        assert!(
+            exact > u64::from(u32::MAX),
+            "真实和 {exact} 必须大于 u32::MAX"
+        );
+    }
+
     #[test]
     fn cycles_are_rejected() {
         let g = graph(
