@@ -2116,4 +2116,94 @@ mod tests {
             );
         }
     }
+
+    // ------------------------------------------------------------------
+    // 配额边界：行字节、宏替换次数、警告条数（都是**闭**上界）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_line_byte_cap_boundary_is_exact() {
+        // `max_line_bytes` 是闭上界，且长度含行尾换行（`split_inclusive` 的切片口径）：
+        // 恰好等长放行，多 1 字节才 `Err`。
+        let source = "<region>sample=a.wav\n";
+        let exact = ParseLimits {
+            max_line_bytes: source.len(),
+            ..ParseLimits::default()
+        };
+        parse_text(source, &exact).expect("a line of exactly the cap is accepted");
+        let one_less = ParseLimits {
+            max_line_bytes: source.len() - 1,
+            ..ParseLimits::default()
+        };
+        let error = parse_text(source, &one_less).expect_err("one byte past the cap");
+        assert!(
+            matches!(
+                error,
+                SfzError::LineTooLong { len, limit, .. }
+                    if len == source.len() && limit == source.len() - 1
+            ),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_macro_expansion_cap_boundary_is_exact() {
+        // 每行替换次数同样是闭上界：`n` 次放行，第 `n + 1` 次才 `Err`。
+        let mut table: MacroTable<'_> = MacroTable::new();
+        table.insert("A", Cow::Borrowed("36"));
+        let two = ParseLimits {
+            max_macro_expansions_per_line: 2,
+            ..ParseLimits::default()
+        };
+        let expanded = expand_macros(
+            "$A$A",
+            1,
+            two,
+            |name| table.get(name).map(|v| v.as_ref().to_string()),
+            |_| {},
+        )
+        .expect("exactly the cap fits");
+        assert_eq!(expanded, "3636");
+        let error = expand_macros(
+            "$A$A$A",
+            1,
+            two,
+            |name| table.get(name).map(|v| v.as_ref().to_string()),
+            |_| {},
+        )
+        .expect_err("one substitution past the cap");
+        assert!(
+            matches!(error, SfzError::MacroExpansionExceeded { limit: 2, .. }),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_warning_cap_boundary_is_exact() {
+        // 警告条数上限也是闭上界：`n` 条全留，第 `n + 1` 条起被丢弃。
+        let limits = ParseLimits {
+            max_warnings: 2,
+            ..ParseLimits::default()
+        };
+        let instrument = parse_text("<x1>\n<x2>\n<x3>\n<region>sample=a.wav", &limits)
+            .expect("unknown headers only warn");
+        assert_eq!(instrument.warnings().len(), 2);
+    }
+
+    #[test]
+    fn the_default_warning_cap_is_the_registered_number() {
+        // 缺省上限是 DoS 防线的一部分：这里钉的是**字面**读数 256，而不是
+        // `DEFAULT_MAX_WARNINGS` —— 用常量自比会让判据在常量被改时恒真，
+        // 而「常量被改成 257」正是要防的那类改动。
+        let mut text = String::new();
+        for index in 0..512 {
+            text.push_str(&format!("<x{index}>\n"));
+        }
+        let instrument = parse_text(&text, &ParseLimits::default()).expect("warns, never fails");
+        assert_eq!(
+            instrument.warnings().len(),
+            256,
+            "the registered default warning cap"
+        );
+    }
 }

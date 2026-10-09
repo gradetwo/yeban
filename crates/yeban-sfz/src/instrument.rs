@@ -5433,4 +5433,58 @@ v127=1
             "a two-way split of the same bytes must keep every line number"
         );
     }
+
+    // ------------------------------------------------------------------
+    // `<midi>` 的段隔离、总预算边界与 `is_empty` 的单条下界
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_second_midi_section_carries_only_its_own_opcodes() {
+        // 「定义段不继承上一段」是这一族的判据本身：段头必须重置段内寄存器，
+        // 否则第二个 `<midi>` 会把第一个的 opcode 再登记一遍（数据重复而不是丢失）。
+        let instrument = parse_text(
+            "<midi>cc1=64\n<midi>cc2=1\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let sections = instrument.midi_sections();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].len(), 1);
+        assert_eq!(sections[0].opcodes()[0].name(), "cc1");
+        assert_eq!(sections[1].len(), 1, "a new <midi> header starts empty");
+        assert_eq!(sections[1].opcodes()[0].name(), "cc2");
+        assert_eq!(sections[1].opcodes()[0].value(), "1");
+    }
+
+    #[test]
+    fn a_single_opcode_midi_section_is_not_empty() {
+        // `is_empty` 的边界是「零条」而不是「一条」：空段也登记，所以有 1 条 opcode
+        // 的段必须读作非空 —— 否则消费方会把一条真实声明当成占位符。
+        let instrument =
+            parse_text("<midi>cc1=64\n<region>sample=a.wav", &Default::default()).expect("parses");
+        let section = &instrument.midi_sections()[0];
+        assert_eq!(section.len(), 1);
+        assert!(!section.is_empty(), "one opcode is not an empty section");
+        let empty =
+            parse_text("<midi>\n<region>sample=a.wav", &Default::default()).expect("parses");
+        assert!(empty.midi_sections()[0].is_empty());
+    }
+
+    #[test]
+    fn the_midi_opcode_budget_boundary_is_exact() {
+        // 总预算是**闭**上界：`max_midi_opcodes = n` 恰好放行 n 条，第 n + 1 条才 `Err`。
+        let limits = ParseLimits {
+            max_midi_opcodes: 2,
+            ..ParseLimits::default()
+        };
+        let accepted =
+            parse_text("<midi>cc1=64\n<midi>cc2=1", &limits).expect("exactly the budget fits");
+        assert_eq!(accepted.midi_sections().len(), 2);
+        let error = parse_text("<midi>cc1=64\n<midi>cc2=1\n<midi>cc3=2", &limits)
+            .expect_err("one entry past the budget");
+        assert!(
+            matches!(error, SfzError::TooManyMidiOpcodes { limit: 2 }),
+            "unexpected verdict: {error:?}"
+        );
+    }
 }

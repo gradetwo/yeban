@@ -300,3 +300,384 @@ fn recursive_glob_is_bounded_and_ordered() {
         .collect();
     assert_eq!(samples, vec!["deep_a.wav", "deep_b.wav"]);
 }
+
+// ---------------------------------------------------------------------------
+// 配额边界、目录 / 隐藏项 / 符号链接过滤与行号（沙箱的另一半契约）
+// ---------------------------------------------------------------------------
+
+/// 在 `root` 下建一条 `f0.sfz -> f1.sfz -> ...` 的 include 链，末个文件里放一个 region。
+fn build_chain(root: &Path, count: usize) {
+    for index in 0..count {
+        let body = if index + 1 == count {
+            "<region>sample=deep.wav\n".to_string()
+        } else {
+            format!("#include \"f{}.sfz\"\n", index + 1)
+        };
+        write_file(root, &format!("f{index}.sfz"), &body);
+    }
+}
+
+#[test]
+fn include_depth_limit_is_exact() {
+    // 深度是闭上界：`max_include_depth = 3` 恰好放行 3 个文件（深度 0..=2），
+    // 第 4 个文件（深度 3）才 `Err`。
+    let limits = ParseLimits {
+        max_include_depth: 3,
+        ..ParseLimits::default()
+    };
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    build_chain(root, 3);
+    IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("f0.sfz")
+        .expect("exactly the depth cap is accepted");
+
+    let deep = TempDir::new("sfz");
+    let deep_root = deep.path();
+    build_chain(deep_root, 4);
+    let error = IncludeResolver::new(deep_root, limits)
+        .expect("base dir")
+        .resolve("f0.sfz")
+        .expect_err("one level past the cap");
+    assert!(
+        matches!(error, SfzError::IncludeDepthExceeded { limit: 3 }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn include_file_count_limit_is_exact() {
+    // 文件计数**含入口文件本身**：`max_include_files = 2` 恰好放行「入口 + 1 个被包含文件」。
+    let limits = ParseLimits {
+        max_include_files: 2,
+        ..ParseLimits::default()
+    };
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "p0.sfz", "<region>sample=p0.wav\n");
+    write_file(root, "p1.sfz", "<region>sample=p1.wav\n");
+    write_file(root, "one.sfz", "#include \"p0.sfz\"\n");
+    IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("one.sfz")
+        .expect("entry plus one include is exactly the cap");
+
+    write_file(
+        root,
+        "two.sfz",
+        "#include \"p0.sfz\"\n#include \"p1.sfz\"\n",
+    );
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("two.sfz")
+        .expect_err("one file past the cap");
+    assert!(
+        matches!(error, SfzError::IncludeCountExceeded { limit: 2 }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn an_include_of_a_directory_is_not_a_file() {
+    // `canonical_include` 的 `is_file` 断言：目录即使以 `.sfz` 结尾也必须变成明确的
+    // `IncludeNotAFile`，不能落进 `fs::read` 的 I/O 错误（那是不可区分的诊断）。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    fs::create_dir_all(root.join("d.sfz")).expect("create dir");
+    write_file(root, "main.sfz", "#include \"d.sfz\"\n");
+    let error = resolve_and_parse(root, "main.sfz").expect_err("must reject");
+    assert!(
+        matches!(error, SfzError::IncludeNotAFile { .. }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn globs_skip_dot_entries() {
+    // `entries` 的口径是「可见项」：点开头的条目既不参与匹配也不参与排序。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "parts/a.sfz", "<region>sample=a.wav\n");
+    write_file(root, "parts/.hidden.sfz", "<region>sample=hidden.wav\n");
+    write_file(root, "main.sfz", "#include \"parts/*.sfz\"\n");
+    let instrument = resolve_and_parse(root, "main.sfz").expect("resolves");
+    let samples: Vec<&str> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.sample.as_ref())
+        .collect();
+    assert_eq!(samples, vec!["a.wav"]);
+}
+
+#[test]
+fn a_recursive_glob_does_not_descend_into_a_symlinked_directory() {
+    // 递归 glob 与单文件 include 同一条「不跟随符号链接」口径：链接目录里的匹配项
+    // 不得进结果集（即使链接目标仍在沙箱内），否则 `**` 会绕开 `is_symlink` 过滤。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "kit/a.sfz", "<region>sample=direct.wav\n");
+    write_file(root, "elsewhere/b.sfz", "<region>sample=through_link.wav\n");
+    std::os::unix::fs::symlink(root.join("elsewhere"), root.join("kit/linked"))
+        .expect("create dir symlink");
+    write_file(root, "main.sfz", "#include \"kit/**/*.sfz\"\n");
+    let instrument = resolve_and_parse(root, "main.sfz").expect("resolves");
+    let samples: Vec<&str> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.sample.as_ref())
+        .collect();
+    assert_eq!(samples, vec!["direct.wav"]);
+}
+
+#[test]
+fn glob_match_quota_is_exact() {
+    // 匹配数配额是闭上界：恰好 `n` 个匹配放行，第 `n + 1` 个才 `Err`。
+    let limits = ParseLimits {
+        max_glob_matches: 2,
+        ..ParseLimits::default()
+    };
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "parts/a.sfz", "<region>sample=a.wav\n");
+    write_file(root, "parts/b.sfz", "<region>sample=b.wav\n");
+    write_file(root, "main.sfz", "#include \"parts/*.sfz\"\n");
+    IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect("exactly the match cap is accepted");
+
+    write_file(root, "parts/c.sfz", "<region>sample=c.wav\n");
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("one match past the cap");
+    assert!(
+        matches!(error, SfzError::GlobMatchesExceeded { limit: 2, .. }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn glob_scanned_quota_is_exact() {
+    // 扫描配额（`read_dir` 迭代次数）同样是闭上界：扫到第 `n + 1` 个目录项才 `Err`。
+    let limits = ParseLimits {
+        max_glob_scanned: 2,
+        ..ParseLimits::default()
+    };
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "parts/a.sfz", "<region>sample=a.wav\n");
+    write_file(root, "parts/b.sfz", "<region>sample=b.wav\n");
+    write_file(root, "main.sfz", "#include \"parts/*.sfz\"\n");
+    IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect("two directory entries are exactly the cap");
+
+    write_file(root, "parts/c.sfz", "<region>sample=c.wav\n");
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("one entry past the cap");
+    assert!(
+        matches!(error, SfzError::GlobScanExceeded { limit: 2, .. }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn a_backslash_separator_is_normalized() {
+    // 词法检查把 `\` 归一成 `/`（Windows 写法的 include 在登记语料里存在）。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "sub/a.sfz", "<region>sample=sub.wav\n");
+    write_file(root, "main.sfz", "#include \"sub\\a.sfz\"\n");
+    let instrument = resolve_and_parse(root, "main.sfz").expect("resolves");
+    assert_eq!(instrument.regions()[0].sample, "sub.wav");
+}
+
+#[test]
+fn the_resolver_define_cap_boundary_is_exact() {
+    // resolver 侧的 `#define` 表与解析器侧是**两条**独立上限（各自检查），
+    // 因此各自的闭上界都要钉住。
+    let limits = ParseLimits {
+        max_defines: 2,
+        ..ParseLimits::default()
+    };
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(
+        root,
+        "two.sfz",
+        "#define $A 1\n#define $B 2\n<region>sample=a.wav\n",
+    );
+    IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("two.sfz")
+        .expect("exactly two defines fit");
+
+    write_file(
+        root,
+        "three.sfz",
+        "#define $A 1\n#define $B 2\n#define $C 3\n<region>sample=a.wav\n",
+    );
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("three.sfz")
+        .expect_err("one define past the cap");
+    assert!(
+        matches!(error, SfzError::TooManyDefines { limit: 2 }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn the_source_byte_cap_boundary_is_exact() {
+    // 源文件字节上限是闭上界：恰好等长放行，多 1 字节才 `Err`。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    let body = "<region>sample=a.wav\n";
+    write_file(root, "exact.sfz", body);
+    let exact = ParseLimits {
+        max_source_bytes: body.len(),
+        ..ParseLimits::default()
+    };
+    IncludeResolver::new(root, exact)
+        .expect("base dir")
+        .resolve("exact.sfz")
+        .expect("a file of exactly the cap is accepted");
+
+    let one_less = ParseLimits {
+        max_source_bytes: body.len() - 1,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, one_less)
+        .expect("base dir")
+        .resolve("exact.sfz")
+        .expect_err("one byte past the cap");
+    assert!(
+        matches!(
+            error,
+            SfzError::SourceTooLarge { len, limit, .. }
+                if len == body.len() && limit == body.len() - 1
+        ),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn the_resolver_line_byte_cap_boundary_is_exact() {
+    // 行上限在 resolver 的文件扫描循环里是**第二处**独立检查（与 `Parser::run` 同口径），
+    // 边界同样含行尾换行。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    let body = "<region>sample=a.wav\n";
+    write_file(root, "exact.sfz", body);
+    let exact = ParseLimits {
+        max_line_bytes: body.len(),
+        ..ParseLimits::default()
+    };
+    IncludeResolver::new(root, exact)
+        .expect("base dir")
+        .resolve("exact.sfz")
+        .expect("a line of exactly the cap is accepted");
+
+    let one_less = ParseLimits {
+        max_line_bytes: body.len() - 1,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, one_less)
+        .expect("base dir")
+        .resolve("exact.sfz")
+        .expect_err("one byte past the cap");
+    assert!(
+        matches!(
+            error,
+            SfzError::LineTooLong { len, limit, .. }
+                if len == body.len() && limit == body.len() - 1
+        ),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn include_error_line_numbers_are_one_based() {
+    // 沙箱错误必须指向**文件里的 1-based 行号**：第 2 行的坏 include 报 2，不是 1。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(
+        root,
+        "main.sfz",
+        "<region>sample=a.wav\n#include \"missing.sfz\"\n",
+    );
+    let error = resolve_and_parse(root, "main.sfz").expect_err("must reject");
+    assert!(
+        matches!(error, SfzError::IncludeNotFound { line: 2, .. }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn a_segment_after_an_include_keeps_the_right_first_line() {
+    // `SfzSource::first_line` 必须继续数下去：include 之后的 region 行号 = 文件行号；
+    // **第二处** include 之前的片段也要拿它自己的起始行（两处 push 分支都要对）。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "inc.sfz", "<region>sample=inc.wav\n");
+    write_file(
+        root,
+        "main.sfz",
+        "#include \"inc.sfz\"\n<region>sample=second.wav\n#include \"inc.sfz\"\n<region>sample=fourth.wav\n",
+    );
+    let instrument = resolve_and_parse(root, "main.sfz").expect("resolves");
+    let lines: Vec<usize> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.source_line)
+        .collect();
+    assert_eq!(lines, vec![1, 2, 1, 4]);
+}
+
+#[test]
+fn the_default_include_depth_is_the_registered_constant() {
+    // 缺省深度上限是 DoS 防线的一部分：这里钉的是它的**行为**读数
+    // （16 个文件的链放行，17 个文件的链拒绝）。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    build_chain(root, 16);
+    IncludeResolver::new(root, ParseLimits::default())
+        .expect("base dir")
+        .resolve("f0.sfz")
+        .expect("the default depth admits 16 files");
+
+    let deep = TempDir::new("sfz");
+    let deep_root = deep.path();
+    build_chain(deep_root, 17);
+    let error = IncludeResolver::new(deep_root, ParseLimits::default())
+        .expect("base dir")
+        .resolve("f0.sfz")
+        .expect_err("the default depth rejects 17 files");
+    assert!(
+        matches!(error, SfzError::IncludeDepthExceeded { limit: 16 }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+#[test]
+fn a_wildcard_glob_does_not_descend_into_a_symlinked_directory() {
+    // 通配符的「非末段」目录展开与递归 glob 是**两处**独立的 `is_symlink` 过滤，
+    // 两处都要钉住：`kit/*/b.sfz` 不得穿过 `kit/linked` 这个链接目录。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "elsewhere/b.sfz", "<region>sample=through_link.wav\n");
+    fs::create_dir_all(root.join("kit")).expect("create kit dir");
+    std::os::unix::fs::symlink(root.join("elsewhere"), root.join("kit/linked"))
+        .expect("create dir symlink");
+    write_file(root, "main.sfz", "#include \"kit/*/b.sfz\"\n");
+    let error = resolve_and_parse(root, "main.sfz").expect_err("the link must not match");
+    assert!(
+        matches!(error, SfzError::IncludeNoMatch { .. }),
+        "unexpected verdict: {error:?}"
+    );
+}

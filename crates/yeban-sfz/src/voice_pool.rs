@@ -1814,4 +1814,19 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn masking_a_voice_clears_its_pending_fade_in() {
+        // 文档口径：**淡出胜过淡入** —— `apply_note_polyphony` 让位时必须把残留的淡入计数
+        // 归零，否则被让位的声部会同时带着「淡入」与「淡出」两个计数器进入 `process`。
+        let mut pool = VoicePool::new(8, 48_000.0).expect("valid capacity");
+        let victim = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let start = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        pool.apply_note_polyphony(start, limit(1, true))
+            .expect("live handle");
+        let info = pool.voice(victim).expect("still active");
+        assert!(info.retiring, "the masked voice enters the fade path");
+        assert!(info.fade_remaining > 0, "the fade-out length is armed");
+        assert_eq!(info.fade_in_remaining, 0, "a fade-out wins over a fade-in");
+    }
 }

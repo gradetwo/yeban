@@ -1299,3 +1299,23 @@ fn structured_note_polyphony_inputs_never_panic_and_are_deterministic() {
         );
     }
 }
+
+#[test]
+fn the_region_cap_boundary_is_exact() {
+    // `max_regions` 是闭上界：恰好 `n` 个 region 放行，第 `n + 1` 个才 `Err`。
+    let limits = ParseLimits {
+        max_regions: 2,
+        ..ParseLimits::default()
+    };
+    parse_text("<region>sample=a.wav\n<region>sample=b.wav\n", &limits)
+        .expect("exactly the cap fits");
+    let error = parse_text(
+        "<region>sample=a.wav\n<region>sample=b.wav\n<region>sample=c.wav\n",
+        &limits,
+    )
+    .expect_err("one region past the cap");
+    assert!(
+        matches!(error, SfzError::TooManyRegions { limit: 2 }),
+        "unexpected verdict: {error:?}"
+    );
+}
