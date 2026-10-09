@@ -38,18 +38,29 @@
 //!
 //! ## 已知边界（如实登记）
 //!
-//! - **读取器对任意字节输入都是全函数**（本轮加固）：chunk 循环的"起点 + 声明长度"
+//! - **读取器对任意字节输入都是全函数**（上一轮加固）：chunk 循环的"起点 + 声明长度"
 //!   一律 `checked_add`，`PcmFormat::block_align` / `byte_rate` 一律饱和，
 //!   `parse_fmt_payload` 另外把放不进 `nBlockAlign` 的声道布局判为
 //!   [`Rf64Error::UnrepresentableBlockAlign`]。判据是破坏扫描（三种容器各一遍）与
-//!   三条超大声明长度。**写入器一侧**只有 `for_payload` 的长度算术被加固成饱和；
-//!   `write_container` 仍然按调用方给的真实负载写字节。
+//!   三条超大声明长度。
+//! - **写入器只写自己读得回的容器**（本轮加固）：[`ContainerPlan::validate`] 把两类
+//!   "读取器必然拒绝"的计划挡在**任何字节落盘之前** —— `fmt ` 的声道数为 0、帧对齐放不
+//!   进 `u16`（判定与读取器**共用** [`PcmFormat::block_align_fits_u16`]），以及 `bext`
+//!   文本字段含 NUL（读取器在第一个 NUL 处截断）。修复前 `write_container` 对这两类计划
+//!   返回 `Ok(())` 并写出完整字节, 调用方拿到的是一个本 crate 自己读不回来的交付物;
+//!   判据是 `a_format_the_writer_accepts_the_reader_reads_back_identically` 与
+//!   `a_bext_text_field_that_cannot_round_trip_is_refused_before_any_byte`。
+//!   [`ContainerPlan::header_bytes`] 仍然信任计划（它没有 `Result` 出口）, 因此直接用它
+//!   拼文件的调用方要先过 `validate()`。
 //! - 只实现 `bext` 版本 1 与 2 的读写; 1997 年的 v0 布局未核验, 读到即返回
 //!   [`Rf64Error::UnsupportedBextVersion`], 登记为 `pending`。**写入器与读取器的
 //!   接受集现在是同一个** `{1, 2}`: [`Bext::to_bytes`] 对 v0 **与 v≥3** 都拒绝
 //!   （修复前只有下界, 于是 `version = 3` 会被照写进文件, 而本 crate 自己读不回来;
 //!   判据是 `every_version_the_writer_accepts_round_trips` 与
-//!   `the_writer_refuses_a_version_the_reader_cannot_read`）。
+//!   `the_writer_refuses_a_version_the_reader_cannot_read`）。**文本字段的取值也是同一个
+//!   接受集**: 含 NUL 的 `Description` / `Originator` / `OriginatorReference` /
+//!   `OriginationDate` / `OriginationTime` 与以 NUL 结尾的 `CodingHistory` 都被拒绝
+//!   （读取器读回的不是同一个字符串, 见 [`Bext::field_that_does_not_round_trip`]）。
 //! - BW64 的 `axml`/`bxml`/`sxml`/`chna` 四个 XML chunk 未实现（[ARCH-FMT-001]
 //!   只要求 RF64/BW64 容器 + `bext`）, `ContainerKind::Bw64` 产出的是
 //!   "BW64 标识 + `ds64` + `fmt ` + （浮点时 `fact`）+ `bext`"这一子集, 不是完整
@@ -230,6 +241,24 @@ impl PcmFormat {
     #[must_use]
     pub const fn block_align(&self) -> u16 {
         self.channels.saturating_mul(self.bytes_per_sample())
+    }
+
+    /// 真实的帧对齐（`channels × bytes_per_sample`）能否装进 `fmt ` 的 `u16`
+    /// `nBlockAlign` 字段。
+    ///
+    /// 这是**读取器与写入器共用的唯一谓词**：读取器
+    /// （`parse_fmt_payload`）对"装不下"的布局返回
+    /// [`Rf64Error::UnrepresentableBlockAlign`]，写入器
+    /// （[`ContainerPlan::validate`]）对同一个谓词为假的计划在写任何字节之前拒绝。
+    /// 两处各写一遍乘法就会漂移 —— 而漂移的后果正是"写入器写出一个读取器读不回的
+    /// 容器"（见 [`ContainerPlan::validate`] 的文档）。
+    ///
+    /// 与 [`Self::block_align`] 的分工：那个是**写入用的饱和值**（永远不会回绕），
+    /// 这个是**可表示性判定**（饱和恰恰说明不可表示）。
+    #[must_use]
+    pub const fn block_align_fits_u16(&self) -> bool {
+        let exact = (self.channels as u32) * (self.bytes_per_sample() as u32);
+        exact <= u16::MAX as u32
     }
 
     /// 每秒字节数（`nAvgBytesPerSec`）。与 [`Self::block_align`] 同源，同样**饱和**：
@@ -703,6 +732,17 @@ impl Bext {
         BEXT_FIXED_LEN
     }
 
+    /// [`Self::to_bytes`] 会写出的负载长度（`fixed_len() + CodingHistory` 的字节数）。
+    ///
+    /// 这是**纯算术**的读数, 与 `to_bytes` 末尾的 `debug_assert_eq!` 同一口径。
+    /// [`ContainerPlan::for_payload`] 用它算头部长度, 因此**不需要**在那里调用
+    /// `to_bytes` —— 后者对畸形的块会 panic, 而"头部有多长"这个问题不该顺带回答
+    /// "这个块能不能写"（那由 [`ContainerPlan::validate`] 回答, 出口是 `Result`）。
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        self.fixed_len() + self.coding_history.len()
+    }
+
     /// 编码为 `bext` chunk 的负载（固定前缀 + coding history）。
     ///
     /// # Panics
@@ -720,6 +760,27 @@ impl Bext {
     /// 自己读不回来**的容器, 而调用方拿到的是成功。判据是
     /// `the_writer_refuses_a_version_the_reader_cannot_read`; 导出路径上的对应落点是
     /// [`crate::mastering::MasterExportError::UnsupportedBextVersion`]。
+    ///
+    /// # 文本字段里含 NUL 也 panic（写入器只写读取器读得回同一个值的块）
+    ///
+    /// 五个定长文本字段是 **NUL 补位**的定长字段, `CodingHistory` 是变长字段而读取器
+    /// 会裁掉它的尾随 NUL（RIFF 的偶数字节补位就是那个 `0`, 两者在字节层无法区分）。
+    /// 因此一个**含 NUL** 的取值在这个编码里**无法表示**: [`Self::from_bytes`] 的读取在
+    /// 第一个 NUL 处停止, 于是"写出去的值"与"读回来的值"不是同一个字符串。
+    /// 本机实测（修复前, 六种形态各自都是这一结果）:
+    ///
+    /// ```text
+    /// Description      "a\0b"        -> 读回 "a"      (往返不等)
+    /// Originator       "Yeban\0DAW"  -> 读回 "Yeban"  (往返不等)
+    /// OriginationTime  "13\0:37:00"  -> 读回 "13"     (往返不等)
+    /// CodingHistory    "A=PCM\0"     -> 读回 "A=PCM"  (往返不等, 尾随 NUL 被裁掉)
+    /// ```
+    ///
+    /// 判定落在纯函数 [`Self::field_that_does_not_round_trip`]（判据可以直接读它）;
+    /// 导出路径上的落点是
+    /// [`crate::mastering::MasterExportError::UnrepresentableBextField`]。
+    /// 这是私有函数 `push_fixed` 那条"截断点必须落在字符边界上"的同一条纪律的另一半:
+    /// **写入器不静默改写调用方给的字段值**。
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         assert!(
@@ -740,8 +801,14 @@ impl Bext {
                 "bext 版本 1 没有响度字段, 不应提供"
             );
         }
+        if let Some(field) = self.field_that_does_not_round_trip() {
+            panic!(
+                "bext 的 {field} 取值含 NUL: 字段是 NUL 终止的, 读取器会在第一个 NUL 处截断, \
+                 写出去的值与读回来的值不是同一个字符串 (拒绝写入)"
+            );
+        }
 
-        let mut out = Vec::with_capacity(self.fixed_len() + self.coding_history.len());
+        let mut out = Vec::with_capacity(self.encoded_len());
         push_fixed(&mut out, &self.description, 256);
         push_fixed(&mut out, &self.originator, 32);
         push_fixed(&mut out, &self.originator_reference, 32);
@@ -757,8 +824,48 @@ impl Bext {
             out.extend_from_slice(&[0u8; 190]);
         }
         out.extend_from_slice(self.coding_history.as_bytes());
-        debug_assert_eq!(out.len(), self.fixed_len() + self.coding_history.len());
+        debug_assert_eq!(out.len(), self.encoded_len());
         out
+    }
+
+    /// 第一个**读不回同一个值**的文本字段名; 全部字段都能往返 ⇒ `None`。
+    ///
+    /// # 判定规则（与 [`Self::from_bytes`] 的读取规则一一对应）
+    ///
+    /// | 字段 | 不能往返的取值 |
+    /// | :--- | :--- |
+    /// | `Description` / `Originator` / `OriginatorReference` / `OriginationDate` / `OriginationTime` | 含 NUL（读取器在第一个 NUL 处停止, 其余字节读不回来） |
+    /// | `CodingHistory` | **以 NUL 结尾**（读取器的 `trim_end_matches('\0')` 会裁掉它; 中间的 NUL 不受影响） |
+    ///
+    /// 除这些文本字段之外的字节（`TimeReference` / `Version` / `UMID` / 响度块）都是
+    /// 二进制字段, 不存在这条问题。
+    ///
+    /// # 为什么只查"读取器真的会读丢"的形态
+    ///
+    /// 定长字段的**超长截断**是**有意的**（见私有函数 `push_fixed`: 字段宽 256/32/32/10/8 字节,
+    /// 写不下的部分按字符边界丢掉）, 因此它不在这里; 而 `CodingHistory` 的**尾随** NUL
+    /// 是另一个来源: 读取器必须裁掉它, 因为奇数长度的 `bext` 负载会被 RIFF 的偶数字节
+    /// 补位补一个 `0` —— 那个补位字节落在负载里。于是"调用方给的尾随 NUL"与"补位字节"
+    /// 在字节层无法区分, 只能拒绝前者。
+    ///
+    /// 返回**字段名**而不是 `bool`: 调用方（导出错误、判据）要能点名是哪个字段。
+    #[must_use]
+    pub fn field_that_does_not_round_trip(&self) -> Option<&'static str> {
+        [
+            ("Description", self.description.as_str()),
+            ("Originator", self.originator.as_str()),
+            ("OriginatorReference", self.originator_reference.as_str()),
+            ("OriginationDate", self.origination_date.as_str()),
+            ("OriginationTime", self.origination_time.as_str()),
+        ]
+        .into_iter()
+        .find(|(_, value)| value.contains('\0'))
+        .map(|(name, _)| name)
+        .or_else(|| {
+            self.coding_history
+                .ends_with('\0')
+                .then_some("CodingHistory")
+        })
     }
 
     /// 从 `bext` chunk 负载解码。
@@ -918,9 +1025,13 @@ impl ContainerPlan {
         } else {
             0
         };
+        // 头部长度用**算术**算, 不调 `Bext::to_bytes` —— 后者对畸形的 `bext` 块会
+        // panic（见它的 `# Panics`）。头部长度算术不该把"这个块能不能写"提前引爆:
+        // 一个不可写的块现在能构造出计划, 再由 [`Self::validate`] 在**写任何字节之前**
+        // 明确拒绝。`Bext::encoded_len` 与 `to_bytes` 的 `debug_assert_eq!` 同一口径。
         let bext_total = bext
             .as_ref()
-            .map_or(0, |block| chunk_total(block.to_bytes().len()));
+            .map_or(0, |block| chunk_total(block.encoded_len()));
         let header_no_ds64 = 12 + fmt_total + fact_total + bext_total + 8;
         // RIFF 的长度字段包含 chunk 之间的偶数补位字节, 因此 data 负载的补位也要算进去。
         //
@@ -940,23 +1051,7 @@ impl ContainerPlan {
         let riff_size = (header_len as u64)
             .saturating_add(payload_total)
             .saturating_sub(8);
-        debug_assert_eq!(
-            Self {
-                kind,
-                format,
-                sizes: Rf64Sizes {
-                    riff_size,
-                    data_size: payload_len,
-                    sample_count: frame_count
-                },
-                bext: bext.clone(),
-            }
-            .header_bytes()
-            .len(),
-            header_len,
-            "头部长度计算必须与实际写出的字节数一致"
-        );
-        Self {
+        let plan = Self {
             kind,
             format,
             sizes: Rf64Sizes {
@@ -965,7 +1060,69 @@ impl ContainerPlan {
                 sample_count: frame_count,
             },
             bext,
+        };
+        // 头部长度自洽性只在**可写**的计划上要求: 一个 [`Self::validate`] 拒绝的计划
+        // 会被 `write_container` 在写任何字节之前拒绝, 它的头部长度算得对不对无关紧要
+        // —— 而 `header_bytes` 对畸形 `bext` 字段会 panic（`to_bytes` 的既有纪律）,
+        // 那条 panic 不该在这里被当成"长度算错了"。
+        debug_assert!(
+            plan.validate().is_err() || plan.header_bytes().len() == header_len,
+            "头部长度计算必须与实际写出的字节数一致"
+        );
+        plan
+    }
+
+    /// 这份计划写出的容器, 本 crate 的读取器是否读得回来。
+    ///
+    /// # 为什么写入器需要这一条（实测的缺口）
+    ///
+    /// [`Self::for_payload`] 对格式**不做校验**（它的返回值不是 `Result`）, 于是
+    /// 修复前 [`write_container`] 会为一个读取器**必然拒绝**的 `fmt ` 写出完整的容器
+    /// 并返回 `Ok(())` —— 调用方拿到成功, 交付物却是一个本 crate 自己读不回来的文件。
+    /// 本机实测（判据
+    /// `a_format_the_writer_accepts_the_reader_reads_back_identically` 的输入网格,
+    /// 每种格式都真的调 `write_container` 再调 `parse_container`）:
+    ///
+    /// ```text
+    /// channels = 0    bits = 16 -> write_container Ok(写出 52 字节), parse_container Err(ZeroChannels)
+    /// channels = 0xFFFF bits = 32 -> write_container Ok(写出 76 字节), parse_container Err(UnrepresentableBlockAlign { .. })
+    /// bext Description = "a\0b" -> write_container Ok(写出 662 字节), 读回的 Description 是 "a"
+    /// ```
+    ///
+    /// 两类拒绝**就是**读取器的两个既有变体（当初为读取器写的）:
+    ///
+    /// 1. `channels == 0` ⇒ [`Rf64Error::ZeroChannels`];
+    /// 2. 帧对齐放不进 `u16` ⇒ [`Rf64Error::UnrepresentableBlockAlign`], 判定走
+    ///    [`PcmFormat::block_align_fits_u16`] —— 与读取器**共用同一个谓词**;
+    /// 3. `bext` 文本字段含 NUL ⇒ [`Rf64Error::UnrepresentableBextField`]
+    ///    （读取器读回的不是同一个字符串, 见
+    ///    [`Bext::field_that_does_not_round_trip`]）。
+    ///
+    /// 这与 [`Bext::to_bytes`] 那条"写入器只写 [`Bext::from_bytes`] 读得回的版本"
+    /// 是同一条纪律: **写入器与读取器的接受集必须是同一个**。
+    ///
+    /// # Errors
+    ///
+    /// 上面三类。`Ok(())` ⇒ [`write_container`] 写出的字节能被 [`parse_container`]
+    /// 读回, 且 `fmt ` 的四个字段逐字段相同。
+    pub fn validate(&self) -> Result<(), Rf64Error> {
+        if self.format.channels == 0 {
+            return Err(Rf64Error::ZeroChannels);
         }
+        if !self.format.block_align_fits_u16() {
+            return Err(Rf64Error::UnrepresentableBlockAlign {
+                channels: self.format.channels,
+                bytes_per_sample: self.format.bytes_per_sample(),
+            });
+        }
+        if let Some(field) = self
+            .bext
+            .as_ref()
+            .and_then(Bext::field_that_does_not_round_trip)
+        {
+            return Err(Rf64Error::UnrepresentableBextField { field });
+        }
+        Ok(())
     }
 
     /// 构造头部字节（`data` chunk 头之后、音频负载之前的一切）。
@@ -976,6 +1133,9 @@ impl ContainerPlan {
     ///
     /// 这是个**纯函数** —— 大尺寸场景的全部判据都打在它身上, 因此不需要真的写
     /// 4 GiB。
+    ///
+    /// **它信任计划合法**: 返回值不是 `Result`, 因此调用方在直接用它拼文件之前要先过
+    /// [`ContainerPlan::validate`]。走 [`write_container`] 的调用方已经过了。
     #[must_use]
     pub fn header_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1103,6 +1263,14 @@ pub enum Rf64Error {
     },
     /// `bext` 版本不受支持（本实现只支持 1 与 2）。
     UnsupportedBextVersion(u16),
+    /// `bext` 的某个文本字段取值在字段编码里**无法表示**（含 NUL, 读取器会截断它）。
+    ///
+    /// 与 [`Self::UnrepresentableBlockAlign`] 同一条纪律的另一半: 写入器只写
+    /// 读取器读得回**同一个值**的块。判定见 [`Bext::field_that_does_not_round_trip`]。
+    UnrepresentableBextField {
+        /// 出问题的字段名（BWF 的字段名, 如 `Description`）。
+        field: &'static str,
+    },
     /// 起始时间码不是 `HH:MM:SS`（或时/分/秒越界）。
     ///
     /// 这是**构造期的拒绝**, 不是"解析时宽容一下": `TimeReference` 写错会产出一个
@@ -1133,6 +1301,11 @@ impl core::fmt::Display for Rf64Error {
             Self::UnsupportedBextVersion(version) => {
                 write!(f, "不受支持的 bext 版本: {version}")
             }
+            Self::UnrepresentableBextField { field } => write!(
+                f,
+                "bext 的 {field} 字段取值含 NUL: 读取器在 NUL 处停止（或裁掉尾随 NUL）, \
+                 写出去的值与读回来的值不是同一个字符串"
+            ),
             Self::BadStartTimecode(value) => write!(
                 f,
                 "起始时间码 {value:?} 不是 HH:MM:SS（时分秒必须各自在合法范围内）"
@@ -1154,14 +1327,22 @@ impl From<io::Error> for Rf64Error {
 /// 头部完全由 [`ContainerPlan::header_bytes`] 决定, 因此"假想大尺寸"的头部判据
 /// 与真实写入走的是同一条代码路径 —— 不存在"测试测的是另一段代码"。
 ///
+/// # 校验先于任何字节
+///
+/// 本函数先调 [`ContainerPlan::validate`], 因此一个"读取器必然拒绝 / 必然读回不同值"
+/// 的计划会**在写出第一个字节之前**返回 `Err` —— `out` 里不会留下半个容器。
+/// 这条顺序是有意的: `out` 可以是真实文件, 先写头再报错会留下一个残缺的交付物
+/// （与 [`crate::wav::write_plain_wav`] 的"拒绝时不留字节"同一条纪律）。
+///
 /// # Errors
 ///
-/// 底层写入失败。
+/// 计划不可写（见 [`ContainerPlan::validate`]）或底层写入失败。
 pub fn write_container<W: Write>(
     out: &mut W,
     plan: &ContainerPlan,
     payload: &[u8],
 ) -> Result<(), Rf64Error> {
+    plan.validate()?;
     out.write_all(&plan.header_bytes())?;
     out.write_all(payload)?;
     if payload.len() % 2 == 1 {
@@ -1369,8 +1550,10 @@ fn parse_fmt_payload(payload: &[u8], declared_len: u32) -> Result<PcmFormat, Rf6
     // **无法表示**。本机实测（判据 `unrepresentable_block_align_is_rejected`）:
     // 不查这一条时, `channels = 0xFFFF` + 32-bit 会让 `PcmFormat::block_align`
     // 的乘法在 debug 下 panic。
-    let exact_block_align = u32::from(format.channels) * u32::from(format.bytes_per_sample());
-    if exact_block_align > u32::from(u16::MAX) {
+    //
+    // 判定走 `PcmFormat::block_align_fits_u16` —— 写入器（`ContainerPlan::validate`）
+    // 用的是**同一个**谓词, 因此"读取器拒绝的布局"与"写入器拒绝的计划"不会漂移。
+    if !format.block_align_fits_u16() {
         return Err(Rf64Error::UnrepresentableBlockAlign {
             channels: format.channels,
             bytes_per_sample: format.bytes_per_sample(),
@@ -2087,7 +2270,9 @@ mod tests {
     ///
     /// # 量的是什么
     ///
-    /// `Rf64Error` 共 13 个变体。把这 13 个变体各自在**本模块的判据代码**里出现的
+    /// `Rf64Error` 在**本判据落地时**共 13 个变体（现在 14 个: 后来加的
+    /// `UnrepresentableBextField` 是**写入器侧**的拒绝, 与 `Io` 一样不对应任何字节
+    /// 输入, 因此不在本判据的射程内）。把这 13 个变体各自在**本模块的判据代码**里出现的
     /// 次数数一遍（数法: 在 `#[cfg(test)] mod tests` 的字节范围里对每个变体
     /// `grep -c`; 用 `git show` 取本判据落地**之前**的那一版）: **9 个变体 ≥ 1 次,
     /// 4 个是 0 次**。4 个里有一个不在本判据的射程内 —— `Io` 是底层 I/O 的透传包装
@@ -2881,6 +3066,246 @@ mod tests {
         block.version = 3;
         // 响度字段**留着**: 版本 3 在修复前正是靠这一格溜过去的
         // （`version >= 2` 的 `loudness.is_some()` 断言满足 ⇒ 整块照写）。
+        let _ = block.to_bytes();
+    }
+
+    /// 判据 25: **写入器与读取器对 `fmt ` 的接受集是同一个** —— 凡是
+    /// [`write_container`] 接受并写出字节的计划, [`parse_container`] 都必须读回同一个
+    /// 格式; 凡是不可写的计划, 都必须在**写出任何字节之前**返回 `Err`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: `channels × bits × is_float` 的格式网格 = 5 × 3 × 2 = **30 个格式组合**。
+    /// 单位: "格式组合"。每个组合都真的调一次 [`write_container`]（写进一个 `Vec`）
+    /// 再调一次 [`parse_container`]; 两个计数器 `accepted` / `refused` 分别是
+    /// "写得出去且读得回来"与"被拒且 0 字节"的组合数。
+    ///
+    /// # 修复前的字面读数（本机实测: 同一份探针分别编 base 与本轮两版; 探针的负载是
+    /// **8 字节**, 因此下面的文件长度比本判据（16 字节负载）的产物各少 8 字节）
+    ///
+    /// ```text
+    /// channels = 0,      bits = 16 -> write_container Ok(写出 52 字节), parse_container Err(ZeroChannels)
+    /// channels = 0x8000, bits = 24 -> write_container Ok(写出 76 字节), parse_container Err(UnrepresentableBlockAlign)
+    /// channels = 0xFFFF, bits = 32 -> write_container Ok(写出 76 字节), parse_container Err(UnrepresentableBlockAlign)
+    /// ```
+    ///
+    /// 修复后前一行是 `Err(ZeroChannels)` + 0 字节, 后两行是
+    /// `Err(UnrepresentableBlockAlign)` + 0 字节; `channels = 2` 与 `channels = 0x3FFF`
+    /// （帧对齐恰好 `≤ u16::MAX`）的字节数与判决**一位未变**。
+    ///
+    /// # 注入（两个方向都要有判别力）
+    ///
+    /// - 删掉 [`ContainerPlan::validate`] 里 `block_align_fits_u16` 那一支 ⇒
+    ///   `0x8000` / `0xFFFF` 的六格回到"写出 76 字节 + 读取器拒绝" ⇒ 红;
+    /// - 删掉 `channels == 0` 那一支 ⇒ 三格回到"写出 52 字节" ⇒ 红;
+    /// - 把 `validate` 整个换成 `Ok(())` ⇒ 两种红的形态同时出现。
+    ///
+    /// 反向的防空判据是同一条断言的另一半: `channels = 2` / `0x3FFF` 必须**写得出去
+    /// 且读得回来** —— 少了它, "30 格全部 `Err`"也会让本判据变绿。
+    #[test]
+    fn a_format_the_writer_accepts_the_reader_reads_back_identically() {
+        let data = payload(4);
+        let mut accepted = 0usize;
+        let mut refused = 0usize;
+        for channels in [0u16, 2, 0x3FFF, 0x8000, 0xFFFF] {
+            for bits in [16u16, 24, 32] {
+                for is_float in [false, true] {
+                    let format = PcmFormat {
+                        channels,
+                        sample_rate: 48_000,
+                        bits_per_sample: bits,
+                        is_float,
+                        channel_mask: None,
+                    };
+                    let plan = ContainerPlan::for_payload(
+                        ContainerKind::Riff,
+                        format,
+                        data.len() as u64,
+                        4,
+                        None,
+                    );
+                    let validated = plan.validate();
+                    let mut file = Vec::new();
+                    let written = write_container(&mut file, &plan, &data);
+                    let label = format!("ch={channels} bits={bits} float={is_float}");
+                    match validated {
+                        Err(expected) => {
+                            refused += 1;
+                            assert_eq!(
+                                written,
+                                Err(expected),
+                                "{label}: validate 与 write_container 必须是同一个判决"
+                            );
+                            assert!(file.is_empty(), "{label}: 被拒的计划不得留下任何字节");
+                        }
+                        Ok(()) => {
+                            accepted += 1;
+                            written.unwrap_or_else(|error| {
+                                panic!("{label}: validate Ok 却写不出去: {error}")
+                            });
+                            let parsed = parse_container(&file).unwrap_or_else(|error| {
+                                panic!("{label}: 写得出去却读不回来: {error}")
+                            });
+                            assert_eq!(
+                                (
+                                    parsed.format.channels,
+                                    parsed.format.sample_rate,
+                                    parsed.format.bits_per_sample,
+                                    parsed.format.is_float,
+                                ),
+                                (channels, 48_000, bits, is_float),
+                                "{label}: fmt 的四个字段必须逐字段往返"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            accepted > 0 && refused > 0,
+            "网格必须同时覆盖接受与拒绝（accepted={accepted}, refused={refused}）"
+        );
+    }
+
+    /// 判据 26: **写入器不静默改写 `bext` 的文本字段** —— 一个读取器读不回同一个值的块
+    /// 必须在写任何字节之前被拒绝。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: **6 种**"读不回同一个值"的形态 —— 五个定长文本字段各一个含内部 NUL 的
+    /// 取值, 加 `CodingHistory` 的尾随 NUL。单位: "字段形态"。每一种都查三件事:
+    /// ① 纯函数 [`Bext::field_that_does_not_round_trip`] 点名**该**字段;
+    /// ② [`ContainerPlan::validate`] 与 [`write_container`] 返回同一个
+    /// [`Rf64Error::UnrepresentableBextField`]; ③ `out` 里 0 字节。
+    ///
+    /// # 修复前的字面读数（本机实测: 同一份探针编 base 与本轮两版; 探针的负载是
+    /// **8 字节** —— 长度读数只用于与修复后对比, 与判据本体的负载无关）
+    ///
+    /// ```text
+    /// Description    = "a\0b"        -> write_container Ok(写出 662 字节), from_bytes 读回 "a"
+    /// CodingHistory  = "A=PCM\0"     -> write_container Ok(写出 668 字节), from_bytes 读回 "A=PCM"
+    /// ```
+    ///
+    /// # 注入
+    ///
+    /// 删掉 `validate` 里 `field_that_does_not_round_trip` 那一支 ⇒ 本判据红。本机实测的
+    /// **字面**红形态不是"写出整份容器并返回 `Ok`", 而是 [`Bext::to_bytes`] 的 `panic!`:
+    /// 少了这一支之后, `for_payload` 末尾的自洽检查会走到 `header_bytes`, 而后者对畸形
+    /// 字段仍然 panic。两条出口都算红, 但它们钉的不是同一件事 —— 因此判据同时断言错误值
+    /// **与**"0 字节"。
+    ///
+    /// 防空判据是后半段: 同一个字段的**合法**取值必须写得出去、读回同一个字符串, 而且
+    /// **读取器读出的块永远过得了这道检查**（否则写入器会拒绝自己读取器的产物）。
+    #[test]
+    fn a_bext_text_field_that_cannot_round_trip_is_refused_before_any_byte() {
+        let data = payload(4);
+        let format = PcmFormat::integer(2, 48_000, 16);
+        let cases: [(&'static str, Bext); 6] = [
+            (
+                "Description",
+                Bext {
+                    description: "a\u{0}b".to_owned(),
+                    ..Bext::default()
+                },
+            ),
+            (
+                "Originator",
+                Bext {
+                    originator: "Yeban\u{0}DAW".to_owned(),
+                    ..Bext::default()
+                },
+            ),
+            (
+                "OriginatorReference",
+                Bext {
+                    originator_reference: "ULID\u{0}X".to_owned(),
+                    ..Bext::default()
+                },
+            ),
+            (
+                "OriginationDate",
+                Bext {
+                    origination_date: "2026\u{0}1008".to_owned(),
+                    ..Bext::default()
+                },
+            ),
+            (
+                "OriginationTime",
+                Bext {
+                    origination_time: "13\u{0}37:00".to_owned(),
+                    ..Bext::default()
+                },
+            ),
+            (
+                "CodingHistory",
+                Bext {
+                    coding_history: "A=PCM\u{0}".to_owned(),
+                    ..Bext::default()
+                },
+            ),
+        ];
+        for (field, block) in cases {
+            assert_eq!(
+                block.field_that_does_not_round_trip(),
+                Some(field),
+                "{field}: 纯函数必须点名这个字段"
+            );
+            let plan = ContainerPlan::for_payload(
+                ContainerKind::Riff,
+                format,
+                data.len() as u64,
+                4,
+                Some(block),
+            );
+            let expected = Rf64Error::UnrepresentableBextField { field };
+            assert_eq!(plan.validate(), Err(expected.clone()), "{field}");
+            let mut file = Vec::new();
+            assert_eq!(
+                write_container(&mut file, &plan, &data),
+                Err(expected),
+                "{field}: 写入器必须拒绝, 而不是截断"
+            );
+            assert!(file.is_empty(), "{field}: 被拒的计划不得留下任何字节");
+        }
+
+        // ---- 防空判据: 合法取值必须往返 ----
+        let good = Bext {
+            description: "a b".to_owned(),
+            coding_history: "A=PCM".to_owned(),
+            ..Bext::default()
+        };
+        assert_eq!(good.field_that_does_not_round_trip(), None);
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            format,
+            data.len() as u64,
+            4,
+            Some(good.clone()),
+        );
+        assert_eq!(plan.validate(), Ok(()));
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("合法字段必须写得出去");
+        let decoded = parse_container(&file).expect("读回").bext.expect("有 bext");
+        assert_eq!(decoded.description, good.description);
+        assert_eq!(decoded.coding_history, good.coding_history);
+        // 读取器产出的块**永远**过得了这道检查。
+        assert_eq!(decoded.field_that_does_not_round_trip(), None);
+    }
+
+    /// 判据 27: 直接调 [`Bext::to_bytes`] 也不能把含 NUL 的字段悄悄写出去。
+    ///
+    /// 判据 26 管的是**容器**出口（`write_container` 返回 `Err`）; 这一条管**块**出口
+    /// （`to_bytes` 是 `# Panics` 文档里点名的第 4 类调用方构造错误）。
+    ///
+    /// 注入: 删掉 `to_bytes` 里 `field_that_does_not_round_trip` 那段检查 ⇒ 本判据不再
+    /// panic ⇒ 红（`should_panic` 未触发）。
+    #[test]
+    #[should_panic(expected = "含 NUL")]
+    fn the_raw_block_writer_refuses_a_field_that_would_be_truncated() {
+        let block = Bext {
+            originator: "Yeban\u{0}DAW".to_owned(),
+            ..Bext::default()
+        };
         let _ = block.to_bytes();
     }
 }

@@ -464,6 +464,24 @@ pub enum MasterExportError {
     /// 交付物却是一个**自己读不回来**的容器。判据是
     /// `the_export_refuses_a_bext_version_the_reader_cannot_read`。
     UnsupportedBextVersion(u16),
+    /// `bext` 模板的某个文本字段取值在字段编码里**无法表示**（含 NUL）⇒ 既不写, 也不截断。
+    ///
+    /// # 为什么需要这一条（与版本上界同族的实测缺口）
+    ///
+    /// BWF 的文本字段是 NUL 终止的定长/变长字节串, 因此 [`crate::rf64::Bext::from_bytes`]
+    /// 在第一个 NUL 处停止读取。修复前 [`export_master`] 会把含 NUL 的字段照写进文件,
+    /// 而同一份字节读回来的字符串**比调用方给的那个短**（本机实测:
+    /// `Description = "a\0b"` 读回 `"a"`, `OriginationTime = "13\0:37:00"` 读回 `"13"`）
+    /// —— 调用方拿到成功, 交付物的元数据却与请求的不是同一个值。
+    /// 判定与容器层共用 [`crate::rf64::Bext::field_that_does_not_round_trip`]。
+    ///
+    /// 检查点在**任何改写之前**: 失败时调用方的 [`RenderOutput`] 与它的位级摘要一位未动
+    /// （与 [`Self::NonFiniteSamples`] 同一条纪律）。判据是
+    /// `the_export_refuses_a_bext_field_the_reader_cannot_read_back`。
+    UnrepresentableBextField {
+        /// 出问题的字段名（BWF 的字段名, 如 `Description`）。
+        field: &'static str,
+    },
     /// `bext` 模板的版本小于 2 ⇒ 它没有 EBU R128 响度字段 [ARCH-FMT-001]。
     ///
     /// 拒绝而不是把版本改成 2：版本是调用方给的元数据语义, 本函数不改写它;
@@ -515,6 +533,11 @@ impl core::fmt::Display for MasterExportError {
                 f,
                 "bext 版本 {version} 的字段表未核验（读取器只接受 1 与 2）; \
                  写出去就会产出一个本 crate 读不回来的容器"
+            ),
+            Self::UnrepresentableBextField { field } => write!(
+                f,
+                "bext 的 {field} 字段取值含 NUL: 读取器在 NUL 处停止（或裁掉尾随 NUL）, \
+                 写出去的元数据与请求的不是同一个值"
             ),
             Self::BextCannotCarryLoudness(version) => write!(
                 f,
@@ -641,6 +664,11 @@ pub fn export_master(
     }
     if metadata.version < 2 {
         return Err(MasterExportError::BextCannotCarryLoudness(metadata.version));
+    }
+    // 文本字段的取值必须能被读取器**读回同一个字符串**。与上面两条版本检查同一个位置:
+    // 都在**任何改写之前**, 因此拒绝时调用方的缓冲与摘要一位未动。
+    if let Some(field) = metadata.field_that_does_not_round_trip() {
+        return Err(MasterExportError::UnrepresentableBextField { field });
     }
     // 非有限样本在**任何**改写之前就拒绝: 这样 `master` 保持调用方交进来的原样
     // （不触发"先施加增益、再报错"的半成品状态）, 且 `NaN` 不会先污染响度读数。
@@ -1814,6 +1842,105 @@ mod tests {
         .expect("版本 2 是受支持的模板");
         let parsed = crate::rf64::parse_container(&export.file).expect("产物必须能被读回来");
         assert_eq!(parsed.bext.expect("导出必须带 bext").version, 2);
+    }
+
+    /// 判据: 一个**读不回同一个字符串**的 `bext` 文本字段必须让导出明确拒绝, 而且拒绝
+    /// 发生在**任何改写之前**。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: **2 种**形态（`Description` 含内部 NUL、`CodingHistory` 尾随 NUL）。
+    /// 单位: "字段形态"。每一种都查三件事:
+    /// ① 错误值精确等于
+    /// [`MasterExportError::UnrepresentableBextField`] 且点名该字段;
+    /// ② 调用方交进来的 `RenderOutput` 的样本与位级摘要**一位未动**（与调用前的快照比）;
+    /// ③ 正对照: 同一个字段的**合法**取值照旧导出, 且容器里读回的字符串与模板逐字节相同。
+    ///
+    /// # 修复前的字面读数（本机实测: 把 base 的 `mastering.rs` 与 `rf64.rs` 放回工作树,
+    /// 加一个临时探针跑出来的一行）
+    ///
+    /// ```text
+    /// BASE export_master = Ok; file = 192676 bytes; read-back Description = "a"
+    /// ```
+    ///
+    /// 也就是说: 调用方拿到 `Ok` 与一份 192676 字节的交付物, 而里面的
+    /// `Description` 已经不是它给的那个字符串（`"a\0b"` ⇒ `"a"`）。
+    ///
+    /// # 注入（本机实测的**字面**红形态）
+    ///
+    /// 删掉 [`export_master`] 里那次 `field_that_does_not_round_trip` 检查 ⇒ 导出在算缓冲
+    /// 容量时会直接调 [`crate::rf64::ContainerPlan::header_bytes`], 而后者对这段畸形字段会经
+    /// [`crate::rf64::Bext::to_bytes`] panic（实测: 该函数里的 `panic!`）⇒ 本判据以一个
+    /// 非预期的 panic 结束, 因此红。少了"样本与摘要一位未动"那两条断言,
+    /// "先施加增益、再在容器层报错"的形态就会溜过去。
+    #[test]
+    fn the_export_refuses_a_bext_field_the_reader_cannot_read_back() {
+        let tone = sine_997(0.1, 48_000);
+        let cases: [(&'static str, Bext); 2] = [
+            (
+                "Description",
+                Bext {
+                    description: "a\u{0}b".to_owned(),
+                    ..metadata()
+                },
+            ),
+            (
+                "CodingHistory",
+                Bext {
+                    coding_history: "A=PCM\u{0}".to_owned(),
+                    ..metadata()
+                },
+            ),
+        ];
+        for (field, template) in cases {
+            let mut master = master_output(&tone, &tone);
+            let samples_before = master.samples.clone();
+            let digest_before = master.digest;
+            let mut rng = seed_rng(1);
+            assert_eq!(
+                export_master(
+                    48_000,
+                    &mut master,
+                    ExportPreset::streaming(),
+                    BitDepth::Int16,
+                    ContainerKind::Riff,
+                    &template,
+                    &mut rng
+                ),
+                Err(MasterExportError::UnrepresentableBextField { field }),
+                "{field}: 含 NUL 的字段必须让导出拒绝, 而不是截断"
+            );
+            assert_eq!(
+                master.samples, samples_before,
+                "{field}: 拒绝必须发生在任何改写之前"
+            );
+            assert_eq!(
+                master.digest, digest_before,
+                "{field}: 拒绝时位级摘要也必须一位未动"
+            );
+        }
+
+        // 正对照: 同一个字段的合法取值照旧导出, 且读回的值与模板逐字节相同。
+        let mut template = metadata();
+        template.description = "a b".to_owned();
+        let mut master = master_output(&tone, &tone);
+        let mut rng = seed_rng(1);
+        let export = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::streaming(),
+            BitDepth::Int16,
+            ContainerKind::Riff,
+            &template,
+            &mut rng,
+        )
+        .expect("合法字段必须照旧导出");
+        let parsed = crate::rf64::parse_container(&export.file).expect("读回");
+        assert_eq!(
+            parsed.bext.expect("有 bext").description,
+            "a b",
+            "读回的 Description 必须与调用方给的值逐字节相同"
+        );
     }
 
     /// 就地施加增益后, `master.digest` 必须跟上缓冲 —— 摘要不许过期。
