@@ -173,7 +173,17 @@ pub fn note_frame_span(
     let start = ticks_to_frames(clamped, ppq, bpm, sample_rate);
     let end_tick = clamped.saturating_add(duration_ticks.max(1));
     let end = ticks_to_frames(end_tick, ppq, bpm, sample_rate);
-    (saturating_i64(start), saturating_i64(end.max(start + 1)))
+    // `start` 是**饱和**过的帧数（[`ticks_to_frames`] 的 `frames >= u64::MAX as f64`
+    // 分支返回 `u64::MAX`）⇒ "至少 1 帧"这条下界必须用饱和加法表达。
+    // 写成 `start + 1` 时 `start == u64::MAX` 会**整数溢出 panic**；工具参数
+    // （`yeban_edit_notes` 的 `note.startTick` / `placement.startTick`）能取到
+    // 让 `placement.start_tick + note.start_tick >= 737869762948382017` 的值
+    // ⇒ 随后一次 `yeban_render_master` 不是返回 `RENDER_FAILED`，而是把进程打死。
+    // 姊妹函数 `render_clip_math::clip_frame_span` 一直是 `start.saturating_add(1)`。
+    (
+        saturating_i64(start),
+        saturating_i64(end.max(start.saturating_add(1))),
+    )
 }
 
 /// `u64` → `i64` 的饱和转换（帧数上限远小于 `i64::MAX`，这里是防御性写法）。
@@ -419,6 +429,40 @@ mod tests {
             shifted,
             i64::try_from(ticks_to_frames(1_200, 960, 120.0, 48_000)).expect("小整数")
         );
+    }
+
+    /// 判据 7b: 时间轴末端**饱和**到 `u64::MAX` 时，"至少 1 帧"这条下界不得整数溢出。
+    ///
+    /// 触发点是 `ticks_to_frames` 的 `frames >= u64::MAX as f64` 分支（它返回
+    /// `u64::MAX`）。960 PPQ / 120 BPM / 48 kHz 下 `frames == tick * 25`，因此第一个
+    /// 命中的 tick 是 `737869762948382017` —— 本判据先**机械复核**这个常量，再要求
+    /// 区间是 `(i64::MAX, i64::MAX)`。
+    ///
+    /// 可以变红的方式：把 `start.saturating_add(1)` 写回 `start + 1` ⇒ 本判据
+    /// `attempt to add with overflow`。工具面可达（`note.startTick` /
+    /// `placement.startTick`，端到端判据在 `tests/render_master.rs`）。
+    #[test]
+    fn a_saturated_timeline_end_does_not_overflow_the_one_frame_floor() {
+        const SATURATING_TICK: u64 = 737_869_762_948_382_017;
+        assert_eq!(
+            ticks_to_frames(SATURATING_TICK, 960, 120.0, 48_000),
+            u64::MAX,
+            "这个常量必须是**第一个**让 tick→帧饱和的 tick，否则本判据测的不是那条分支"
+        );
+        assert!(
+            ticks_to_frames(SATURATING_TICK - 1, 960, 120.0, 48_000) < u64::MAX,
+            "紧邻它的上一个 tick 还没有饱和 ⇒ 这个常量是那条分支的**第一个**触发点"
+        );
+        let (start, end) = note_frame_span(SATURATING_TICK, 480, 0, 960, 120.0, 48_000);
+        assert_eq!((start, end), (i64::MAX, i64::MAX));
+        // 正常取值仍然满足"至少 1 帧"（饱和分支不能被当成唯一路径）。
+        let (start, end) = note_frame_span(0, 480, 0, 960, 120.0, 48_000);
+        assert_eq!(start, 0);
+        assert_eq!(
+            end,
+            i64::try_from(ticks_to_frames(480, 960, 120.0, 48_000)).expect("小整数")
+        );
+        assert!(end > start);
     }
 
     /// 判据 8: 日历换算对已知历元精确（含闰年与负 time_t 分支的整数路径）。

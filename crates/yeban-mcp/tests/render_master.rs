@@ -19,6 +19,7 @@
 //! | 8 | 输出路径不得是工程文件或锁文件 | 去掉护栏 |
 //! | 9 | 母带不是静音且声相真的生效（左右 RMS 不对称） | 静音产物/忽略 pan |
 //! | 9b | 经 `yeban_edit_notes` 写的静音真的让源轨不发声（`audible=false`、浮点母带为 0），写回 `false` ⇒ 产物逐字节相同 | 工具面写不了开关 / 渲染器忽略 `mute` |
+//! | 9c | 经工具面写的极值起始 tick（`note.startTick` / `placement.startTick` 取到 tick→帧**饱和**的那一个值）⇒ `RENDER_FAILED`（帧数超限），不是整数溢出 panic | 把 `note_frame_span` 的 `start.saturating_add(1)` 写回 `start + 1` |
 //! | 10 | 延迟表来自 `DeviceDefinition::latency_samples`（含旁通不算） | 自建第二延迟来源 |
 //! | 11 | `format` 只改容器字节，不改音频负载 | 在音频路径上按格式分叉 |
 //! | 12 | 实测数字自洽：frames/blocks/bytes/header/payload/sha256 | 报估算值 |
@@ -1565,6 +1566,122 @@ fn a_mute_written_through_the_tool_face_silences_the_source_in_the_master() {
         fs::read(&plain_path).expect("基线产物"),
         "静音写回 false 之后, 母带产物必须与写之前逐字节相同"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 9c：经工具面写进来的**极值 tick** 只能换来 RENDER_FAILED, 不能打死进程
+// ---------------------------------------------------------------------------
+
+/// `ticks_to_frames` 在 960 PPQ / 120 BPM / 48 kHz 下是 `frames == tick * 25`；
+/// 它的 `frames >= u64::MAX as f64` 分支返回 `u64::MAX`，**第一个**命中的 tick 就是
+/// 这个常量（`note_frame_span` 的单元判据 7b 机械复核它）。
+const SATURATING_START_TICK: u64 = 737_869_762_948_382_017;
+
+/// 工具面能把 `note.startTick` / `placement.startTick` 写到让 tick→帧**饱和**的取值
+/// （实数轴上界由 `u64` 决定，工具面没有更小的上界）。这条判据钉住：那种工程再渲染
+/// 一次，得到的是契约内的 `RENDER_FAILED`（帧数超上限），**不是**整数溢出 panic。
+///
+/// 可以变红的方式：把 `render_math::note_frame_span` 的 `start.saturating_add(1)`
+/// 写回 `start + 1` ⇒ 本判据在 `yeban_render_master` 那一步
+/// `attempt to add with overflow`。这条判据走的是**真 `tools/call` 管线 + 真渲染**，
+/// 因此它同时钉住"工具面可达"。
+#[test]
+fn a_saturated_start_tick_from_the_tool_face_is_a_contract_error_not_a_panic() {
+    // 两条可达路径各自一条: 音符自己的起点, 与摆放的起点。
+    for (tag, extra) in [
+        (
+            "note",
+            json!({"ops": [{
+                "kind": "add",
+                "note": {
+                    "startTick": SATURATING_START_TICK,
+                    "pitch": 72,
+                    "durationTicks": 480
+                }
+            }]}),
+        ),
+        (
+            "placement",
+            json!({
+                "ops": [],
+                "placement": {"startTick": SATURATING_START_TICK, "durationTicks": 480}
+            }),
+        ),
+    ] {
+        let scratch = Scratch::new(&format!("saturating-{tag}"));
+        let spec = Spec::default();
+        let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
+        let lead = id(2).to_canonical_string();
+        let clip = id(10).to_canonical_string();
+
+        // 写入提案并合并 —— 这一半此前就已经通过（规划期只看 `u64` 的非负性）。
+        let mut arguments = json!({"trackId": lead, "clipId": clip});
+        for (key, value) in extra.as_object().expect("对象") {
+            arguments[key] = value.clone();
+        }
+        let written = call_tool(&mut dispatcher, &auth, "yeban_edit_notes", arguments);
+        assert_eq!(written["status"], "success", "{tag}: {written}");
+        let proposal_id = written["data"]["proposal"]["proposalId"]
+            .as_str()
+            .expect("proposalId")
+            .to_owned();
+        let merged = call_tool(
+            &mut dispatcher,
+            &auth,
+            "yeban_merge_proposal",
+            json!({"proposalId": proposal_id, "commitMessage": "saturating"}),
+        );
+        assert_eq!(merged["status"], "success", "{tag}: {merged}");
+
+        // 断言极值**真的**落进了文档（否则这条判据测不到那条算术）。
+        let view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+        assert_eq!(view["status"], "success", "{tag}: {view}");
+        let project_json = &view["data"]["project"];
+        let at_extreme = |value: &Value| value.as_u64() == Some(SATURATING_START_TICK);
+        match tag {
+            "note" => {
+                let notes = &project_json["clip_pool"][&clip]["content"]["Midi"]["notes"];
+                assert!(
+                    notes
+                        .as_object()
+                        .expect("notes")
+                        .values()
+                        .any(|note| at_extreme(&note["start_tick"])),
+                    "{tag}: 极值起点必须真的写进文档: {notes}"
+                );
+            }
+            _ => {
+                let clips = &project_json["tracks"][&lead]["clips"];
+                assert!(
+                    clips
+                        .as_object()
+                        .expect("clips")
+                        .values()
+                        .any(|placement| at_extreme(&placement["start_tick"])),
+                    "{tag}: 极值摆放起点必须真的写进文档: {clips}"
+                );
+            }
+        }
+
+        // 真渲染: 必须是契约内的 RENDER_FAILED（帧数超出 1 小时上限），不是 panic。
+        let out = scratch.join(&format!("{tag}.wav"));
+        let rendered = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+        );
+        assert_domain_error(&rendered, "RENDER_FAILED", tag);
+        assert!(
+            rendered["error"]["data"]["frames"]
+                .as_u64()
+                .is_some_and(|frames| frames > 172_800_000),
+            "{tag}: 必须报出真实的超限帧数: {rendered}"
+        );
+        assert!(
+            !out.exists(),
+            "{tag}: 被拒绝的渲染不得留下任何文件: {out:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
