@@ -25,6 +25,7 @@
 //! | D8 | 换快照：同一轨从鼓机换回复音合成器 ⇒ `armed_drums(轨)` 变 `None`、武装槽位归 0；换一套映射 ⇒ 读数跟着变 | 武装表只增不减 / 换轨不 `reset` |
 //! | D9 | 鼓机器件**自己**的四个计数器进 `EngineStats`：`drum_hits == drum_triggers`（等号，两侧是同一事件）、有鼓击时 `drum_sounding_slot_frames > 0`、密集敲击时 `drum_voice_steals > 0`、闭镲压开镲时 `drum_hat_chokes == 1`；未武装工程四条全 0 | 漏读器件 getter（恒 0） / 把 `drum_triggers` 写成 `drum_hits` 的副本 / 把鼓机窃取记进复音 `voice_steals` |
 //! | D10 | **复音**触发面的两侧：混合夹具（一条鼓机轨 + 一条复音轨）`notes_triggered − drum_hits == poly_notes_triggered` 且三段都落在确定值（7 / 4 / 3）；只有鼓机时复音侧恒 0；只有复音时 `notes_triggered == poly_notes_triggered` | 把 `poly_notes_triggered` 写成常数 0 / 写成 `notes_triggered` 的副本（混合夹具给 7，正确值 3） / 漏读器件 `PolySynth::notes_triggered` |
+//! | D11 | 鼓机槽位池的**瞬时占用**量规：三个鼓件同一 tick ⇒ 1 个量子后 `drum_active_slots == 3`，200 个量子后回落到 0，而 `drum_triggers == 3` 不回退；未武装工程恒 0 | 把 `drum_active_slots` 写成常数 / 写成 `drum_triggers` 的副本（累计量不回落）/ 漏读器件 `DrumMachine::active_slots` |
 //!
 //! ## D0 的指纹是**接线前**的实测值
 //!
@@ -901,6 +902,112 @@ fn the_poly_device_counter_separates_the_two_sources() {
     assert_eq!(
         only_poly.stats.notes_triggered, only_poly.stats.poly_notes_triggered,
         "只有复音时派发合计必须恰好等于器件收到数"
+    );
+}
+
+/// D11：鼓机槽位池的**瞬时占用**读数（量规）与累计量是**两个维度**。
+///
+/// 量什么（单位：**槽位**）：
+///
+/// | 读数 | 数什么 | 维度 | 出处 |
+/// | :--- | :--- | :--- | :--- |
+/// | `EngineStats::drum_active_slots` | 此刻占用着的槽位数 | **量规**（可升可降） | `DrumMachine::active_slots` |
+/// | `drum_triggers` / `drum_sounding_slot_frames` | 累计触发次数 / 累计"槽位×帧" | 累计（只增不减） | `DrumMachine` 自己的计数器 |
+///
+/// 为什么需要它：[`EngineStats::drum_voice_steals`] 只在**槽位池满**时推进 ⇒
+/// 它证明"池曾经满过"，证明不了"池现在有多满"。本条判据把这条盲区变成可读的：
+/// 同一份夹具下，**量规回落**而**累计量不动**。
+///
+/// 判据（等号，全部落在**由夹具算出**的确定值上）：
+///
+/// 1. 三个鼓件在**同一个 tick**（kick 36 / snare 38 / clap 39，全在映射里）⇒
+///    渲染 1 个量子之后 `drum_active_slots == 3`（三个生成器都还没结束），
+///    且 `drum_voice_steals == 0`（3 < [`DRUM_SLOTS`]）；
+/// 2. 渲染 400 个量子（51 200 帧）之后 `drum_active_slots == 0` —— **量规回落**。
+///    算得出余量：`Adsr` 的 decay 系数按 6 个时间常数定义（`1 − e⁻⁶`），
+///    且 `value < 1e-4` 才判 Idle ⇒ 从 1.0 衰减到 1e-4 需
+///    `ln(1e4) / 6 ≈ 1.535` 个 `decay_s`：底鼓 0.40 s ⇒ ≈ 29 473 帧 ≈ 230 个量子，
+///    400 个量子（51 200 帧）是它的 **1.74 倍**（最长衰减就是底鼓）；
+/// 3. 同一时刻 `drum_triggers == 3` 且 `drum_sounding_slot_frames > 0`
+///    —— 累计量**不回退**（两个维度必须分开）；
+/// 4. 未武装的对照工程 `drum_active_slots == 0`（否则"读数被写死成常数"也能让上面成立）。
+///
+/// 怎么变红：① 把 `drum_active_slots` 写成常数（第 1 与第 2 条至少一条红）；
+/// ② 把它写成 `drum_triggers` 的副本（第 2 条红：累计量不会回落到 0）；
+/// ③ 漏读器件 `DrumMachine::active_slots`（第 1 条红）。
+#[test]
+fn the_drum_occupancy_gauge_falls_while_the_counters_only_grow() {
+    // ---- 判据 1：三个鼓件同一 tick ⇒ 一个量子之后三个槽位在响 ----
+    let stacked = [
+        NoteSpec::at(0, 480, 36, 127),
+        NoteSpec::at(0, 480, 38, 110),
+        NoteSpec::at(0, 480, 39, 90),
+    ];
+    let fixture = note_project(&stacked);
+    let track = fixture.track;
+    let mut project = fixture.project;
+    mount(&mut project, track, vec![kit(&[])]);
+
+    let first = render(&project, 1);
+    println!(
+        "[engine-drums/D11] 第 1 个量子: 占用={} 派发={} 器件收到={} 窃取={} 发声槽位帧={} 容量={DRUM_SLOTS}",
+        first.stats.drum_active_slots,
+        first.stats.drum_hits,
+        first.stats.drum_triggers,
+        first.stats.drum_voice_steals,
+        first.stats.drum_sounding_slot_frames,
+    );
+    assert_eq!(
+        first.stats.drum_hits, 3,
+        "三个音符都命中映射（同一个 tick 三个鼓件）"
+    );
+    assert_eq!(
+        first.stats.drum_active_slots, 3,
+        "一个量子（128 帧）之后三个生成器都还在响 ⇒ 占用恰好 3"
+    );
+    assert_eq!(
+        first.stats.drum_voice_steals, 0,
+        "3 个槽位 < 容量 {DRUM_SLOTS} ⇒ 不许窃取（占用不是窃取的副本）"
+    );
+    assert!(
+        first.stats.drum_active_slots <= DRUM_SLOTS as u64,
+        "占用不可能超过槽位容量"
+    );
+
+    // ---- 判据 2 / 3：量规回落到 0，累计量一条都不回退 ----
+    let settled = render(&project, 400);
+    println!(
+        "[engine-drums/D11] 第 400 个量子: 占用={} 派发={} 器件收到={} 发声槽位帧={} 非零={}",
+        settled.stats.drum_active_slots,
+        settled.stats.drum_hits,
+        settled.stats.drum_triggers,
+        settled.stats.drum_sounding_slot_frames,
+        settled.nonzero(),
+    );
+    assert_eq!(
+        settled.stats.drum_active_slots, 0,
+        "51 200 帧 ≈ 1.74 × 最长衰减到静默的 29 473 帧 ⇒ 三个槽位都必须已回收"
+    );
+    assert_eq!(
+        settled.stats.drum_triggers, 3,
+        "累计触发数**不得**跟着量规回落（两个维度必须分开）"
+    );
+    assert!(
+        settled.stats.drum_sounding_slot_frames > 0,
+        "器件必须真的算过非零样本（否则上面那条回落是空转）"
+    );
+    assert!(settled.nonzero() > 0, "夹具必须真的出声");
+
+    // ---- 判据 4：未武装的对照臂 ----
+    let unarmed = render(&note_project(&stacked).project, 1);
+    println!(
+        "[engine-drums/D11] 未武装对照: 占用={} 派发={}",
+        unarmed.stats.drum_active_slots, unarmed.stats.drum_hits
+    );
+    assert_eq!(unarmed.stats.drum_hits, 0, "没有鼓机设备 ⇒ 一次都不许派发");
+    assert_eq!(
+        unarmed.stats.drum_active_slots, 0,
+        "没有鼓机设备 ⇒ 占用恒为 0（读数不是常数 3）"
     );
 }
 

@@ -248,6 +248,29 @@ pub struct EngineStats {
     /// **冷值 0**：全部轨都不是复音合成器时（默认）恒为 0。读它只汇总 16 个 `u64`
     /// 字段：不碰样本、不分配、不加锁 ⇒ 渲染输出逐位不变。
     pub poly_notes_triggered: u64,
+    /// **复音合成器此刻占用着的声部数**（各槽之和；单位：声部；0 = 一个都没有）。
+    ///
+    /// 这是一个**量规**（可升可降），与它上面那一族的每一个读数都不同：
+    /// [`Self::notes_triggered`] / [`Self::poly_notes_triggered`] /
+    /// [`Self::voice_steals`] 都只增不减，它们回答"曾经发生过什么"；本读数回答
+    /// "**现在**占了多少"。`voice_steals > 0` 只证明池**曾经**满过 ⇒ 没有本读数时，
+    /// "正在溢出"与"刚好差一个声部"在读数面上不可区分。
+    ///
+    /// 口径（三条，都要与判据一起读）：
+    ///
+    /// 1. 读数取各槽 `PolySynth::active_voices` 之和
+    ///    （`SynthEngine::poly_active_voices`）。该器件 getter 在本次改动前
+    ///    **只有一条读者**，且那条读者住在 `#[cfg(debug_assertions)]` 的
+    ///    `SynthEngine::debug_active_voices` 里 —— 那个访问器在 `src` 与 `tests` 里
+    ///    **零调用者**（量法：`grep -rnw 'debug_active_voices' crates/yeban-engine`
+    ///    在本次改动前命中 `src` 1 行 = 它自己的定义、`tests` 0 行）⇒
+    ///    **产物路径上**这件事根本读不出来；
+    /// 2. 它只数 16 个槽位的定长声部数组（每槽 16 个 `active` 布尔）⇒ 不碰样本、
+    ///    不分配、不加锁、不做 I/O ⇒ 渲染输出逐位不变；
+    /// 3. 口径是**全池合计**（与 [`Self::voice_steals`] 的跨槽口径相同），不是逐轨。
+    ///
+    /// **冷值 0**：全部轨都不是复音合成器时（默认）恒为 0。
+    pub poly_active_voices: u64,
     /// 声部池累计**软窃取**次数（每次伴随 3 ms 淡出 [ARCH-RT-004]）。
     pub voice_steals: u64,
     /// 母线限制器**累计压过的样本数**（[ARCH-DSP-001]；0 = 从未越过阈值）。
@@ -496,6 +519,28 @@ pub struct EngineStats {
     /// [`Self::drum_hits`] 照常增长而输出逐位静音。本字段是那条覆盖度见证。
     /// 全部轨都不是鼓机时（默认）**恒为 0**。
     pub drum_sounding_slot_frames: u64,
+    /// **鼓机此刻占用着的槽位数**（各槽之和；单位：槽位；0 = 一件鼓都不在响）。
+    ///
+    /// 它与 [`Self::drum_sounding_slot_frames`] 是**两个不同的质量维度**：那个是
+    /// **累计**的"槽位×帧"覆盖度读数（只增不减），本读数是**瞬时**占用数（可升可降）。
+    /// 器件里两个读数早就有（`DrumMachine::sounding_slot_frames` 与
+    /// `DrumMachine::active_slots`），而后者在本次改动前在 `yeban-engine` 的
+    /// `src` 与 `tests` 里**一个读者都没有**（量法：
+    /// `grep -rnw 'active_slots' crates/yeban-engine` ⇒ `src` 0 行、`tests` 0 行）。
+    ///
+    /// 口径（三条，都要与判据一起读）：
+    ///
+    /// 1. 读数取各槽 `DrumMachine::active_slots` 之和
+    ///    （`SynthEngine::drum_active_slots`）：只数 16 个槽位的定长数组，每个槽位一个
+    ///    `active` 布尔 ⇒ 不碰样本、不分配、不加锁、不做 I/O ⇒ 渲染输出逐位不变；
+    /// 2. 与 [`Self::poly_active_voices`] **分开记账**：鼓机与复音是**两个独立的池**
+    ///    （该口径见 [`Self::drum_voice_steals`] 的文档），合并成一个数会让"哪个池
+    ///    满了/多满"无法区分；
+    /// 3. 与 [`Self::drum_triggers`] 一族的**累计量**口径刻意不同：本读数是**量规**，
+    ///    器件 `reset` 清空槽位时它会当场回落。
+    ///
+    /// **冷值 0**：全部轨都不是鼓机时（默认）恒为 0。
+    pub drum_active_slots: u64,
     /// 当前快照下武装的**每秒量子数**（= `sample_rate / DEFAULT_BLOCK_FRAMES`）。
     ///
     /// 为什么把它暴露出来: 它曾经被错算成 `sample_rate / 设备缓冲长度`
@@ -1097,6 +1142,10 @@ impl EngineRuntime {
             // 它不碰任何样本、不分配、不加锁 ⇒ 实时路径的分配/锁/IO 读数不变
             // （判据见 `tests/synth_rt_zero_alloc.rs` 的场景 11）。
             poly_notes_triggered: self.synth.poly_notes_triggered(),
+            // 复音声部池的**瞬时占用**（量规）：与上面那条同一个 `fold` 形状，
+            // 只是把 `u64` 字段求和换成把每槽的 `active` 布尔计数。不碰样本、
+            // 不分配、不加锁 ⇒ 渲染输出逐位不变。
+            poly_active_voices: self.synth.poly_active_voices(),
             limiter_gain_reductions: self.limiter_gain_reductions,
             limiter_max_reduction: self.limiter_max_reduction,
             limiter_current_reduction: self.limiter_current_reduction,
@@ -1128,6 +1177,9 @@ impl EngineRuntime {
             drum_voice_steals: self.synth.drum_voice_steals(),
             drum_hat_chokes: self.synth.drum_hat_chokes(),
             drum_sounding_slot_frames: self.synth.drum_sounding_slot_frames(),
+            // 鼓机槽位池的**瞬时占用**（量规）：与复音那一侧分开记账（两个独立的池），
+            // 与上面一族的累计量口径刻意不同。同样不碰样本、不分配、不加锁。
+            drum_active_slots: self.synth.drum_active_slots(),
             quanta_per_second: self.armed_quanta_per_second,
             transport_state: self.transport.state(),
             position_ticks: self.transport.position_ticks(),

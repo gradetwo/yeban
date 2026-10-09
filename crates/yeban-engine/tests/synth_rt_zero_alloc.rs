@@ -213,18 +213,31 @@
 //! 见证取两条**形态**判据：① `notes_triggered − drum_hits == poly_notes_triggered`；
 //! ② `poly_notes_triggered > 0`（复音轨真的被派发过）。
 //! 本追记**不新增场景**，也不改变任何窗口的分配断言。
+//!
+//! # 场景 11 的覆盖度见证（`line/engine-16` 追记）：两条音源池的**瞬时占用**
+//!
+//! 新增读数 `EngineStats::poly_active_voices` / `drum_active_slots` 的来源是
+//! 器件里早就存在的 `PolySynth::active_voices` / `DrumMachine::active_slots`
+//! （各槽之和，与上面那一族同一个 `fold` 形状），读它们同样发生在 `stats()` 里
+//! ⇒ 来源与读路径**都在**实时窗口内部。量规的瞬时值随时刻变化，因此见证取
+//! **窗口里的峰值**（每量子读一次 `stats()`）而不是窗口末尾的值，判据是两条
+//! **形态**判据：① 峰值 > 0（量规真的抬起来过）；② 峰值 ≤ 对应池的容量
+//! （读数不是把某个累计量搬过来 —— 累计量会远超容量）。
+//! 本追记**不新增场景**，也不改变任何窗口的分配断言。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use yeban_engine::drums::DRUM_SLOTS;
 use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
 use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
+use yeban_engine::synth::VOICES_PER_TRACK;
 
 mod support;
 
@@ -1384,9 +1397,19 @@ fn main() -> ExitCode {
         .filter(|index| index * 240 * 25 < window_end)
         .count();
     let mut drum_nonzero = 0usize;
+    // `line/engine-16`：两条音源池的**瞬时占用**读数（`poly_active_voices` /
+    // `drum_active_slots`）也在这个 `stats()` 里读（各自一个 `fold`）⇒ 那条读路径
+    // 同样落在本窗口内部。量规的**瞬时值**随时间变化，因此见证取"窗口里的峰值"
+    // 而不是窗口末尾的值：峰值 > 0 证明量规真的抬起来过（不是冷值），
+    // 上界证明它没有超过池容量（读数不是把某个累计量搬过来）。
+    let mut max_poly_active = 0u64;
+    let mut max_drum_active = 0u64;
     let (allocations, deallocations) = measure("drum instrument 10_000 quanta", || {
         for _ in 0..10_000 {
             drum_runtime.process_quantum(&mut drum_output, 2);
+            let now = drum_runtime.stats();
+            max_poly_active = max_poly_active.max(now.poly_active_voices);
+            max_drum_active = max_drum_active.max(now.drum_active_slots);
             for sample in &drum_output {
                 if *sample != 0.0 {
                     drum_nonzero += 1;
@@ -1461,9 +1484,36 @@ fn main() -> ExitCode {
             "复音轨在窗口里一次都没有触发 —— `poly_notes_triggered` 在实时窗口里是冷值".to_owned(),
         );
     }
+    // `line/engine-16`：两条音源池的**瞬时占用**量规（鼓机 `drum_active_slots` /
+    // 复音 `poly_active_voices`）在同一个 `stats()` 里读 ⇒ 读路径也在本窗口内部。
+    // 形态判据（不钉精确值：瞬时占用随窗口内的时刻变化）：
+    //   ① 峰值 > 0 —— 量规真的抬起来过（器件 `active` 位不是恒假）；
+    //   ② 峰值 ≤ 对应池的容量 —— 读数不是把某个累计量搬过来（累计量会远超容量）。
+    if max_drum_active == 0 {
+        failures.push(
+            "鼓机槽位池的占用量规在窗口里从没抬起过 —— `drum_active_slots` 是冷值".to_owned(),
+        );
+    }
+    if max_drum_active > DRUM_SLOTS as u64 {
+        failures.push(format!(
+            "鼓机占用峰值 {max_drum_active} 超过一个池的容量 {DRUM_SLOTS} —— \
+             读数不像瞬时占用"
+        ));
+    }
+    if max_poly_active == 0 {
+        failures.push(
+            "复音声部池的占用量规在窗口里从没抬起过 —— `poly_active_voices` 是冷值".to_owned(),
+        );
+    }
+    if max_poly_active > VOICES_PER_TRACK as u64 {
+        failures.push(format!(
+            "复音占用峰值 {max_poly_active} 超过一个槽的容量 {VOICES_PER_TRACK} —— \
+             读数不像瞬时占用"
+        ));
+    }
     println!(
         "[engine-drums/J11] 鼓机音源: quanta={} 鼓击={} 器件收到={} 发声槽位帧={} choke={} 窃取={} \
-         复音收到={} 非零样本={drum_nonzero} 武装槽位={}",
+         复音收到={} 非零样本={drum_nonzero} 武装槽位={} 占用峰值(鼓/复音)={max_drum_active}/{max_poly_active}",
         drum_stats.quanta,
         drum_stats.drum_hits,
         drum_stats.drum_triggers,

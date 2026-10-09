@@ -1014,6 +1014,41 @@ impl SynthEngine {
         })
     }
 
+    /// **复音合成器此刻占用着的声部数**（各槽之和；单位：声部；0 = 一个都没有）。
+    ///
+    /// 这是一个**量规**（可升可降），不是累计量 —— 与上面那一族的每一个读数都不同：
+    /// [`Self::notes_triggered`] / [`Self::poly_notes_triggered`] / [`Self::voice_steals`]
+    /// 都只增不减，它们回答"曾经发生过什么"；本读数回答"**现在**占了多少"。
+    ///
+    /// 口径（三条，都要与判据一起读）：
+    ///
+    /// 1. 读数取 `PolySynth::active_voices`（器件里**早就存在**的 getter，现位于
+    ///    `crates/yeban-dsp/src/polysynth.rs` 第 868 行）。它在 `yeban-engine` 里
+    ///    此前**只有一条读者**，而且那条读者住在
+    ///    `#[cfg(debug_assertions)]` 的 [`Self::debug_active_voices`] 里 —— 那个访问器
+    ///    在 `src` 与 `tests` 里**零调用者**（量法：
+    ///    `grep -rnw 'debug_active_voices' crates/yeban-engine` 在本次改动前命中
+    ///    `src` **1** 行 = 它自己的定义、`tests` **0** 行）⇒ **产物路径上**
+    ///    "现在有几个声部在响"根本读不出来；
+    /// 2. 它只数 `PolySynth` 的定长声部数组（每个声部一个 `active` 布尔）⇒ 不碰样本、
+    ///    不分配、不加锁、不做 I/O。汇总方式是 16 个槽位的 `fold`，与
+    ///    [`Self::poly_notes_triggered`] / [`Self::voice_steals`] 同一条路径；
+    /// 3. **逐轨口径不可用**：本读数是**全池合计**（与 [`Self::voice_steals`] 的跨槽
+    ///    口径相同）。要"某一轨有几个声部在响"请用
+    ///    [`Self::debug_active_voices`]（仅 debug 构建），产物路径没有它，
+    ///    这正是产物读数取合计口径的理由。
+    ///
+    /// 为什么需要它：[`Self::voice_steals`] 只在**声部池溢出**时推进 ⇒ 它证明
+    /// "池**曾经**满过"，证明不了"池**现在**有多满"。一个正在溢出的工程与一个刚好
+    /// 差一个声部就溢出的工程在这两个读数上完全一样，只有本读数能把它们分开。
+    /// 全部轨都不是复音合成器时（默认）**恒为 0**。
+    #[must_use]
+    pub fn poly_active_voices(&self) -> u64 {
+        self.slots.iter().fold(0u64, |total, slot| {
+            total.saturating_add(slot.synth.active_voices() as u64)
+        })
+    }
+
     /// 累计的**鼓击触发数**（覆盖度读数：> 0 才说明鼓机真的在打鼓）。
     ///
     /// 口径：引擎在**派发处**记 1（`render_track` 的鼓机分支，紧接着调用
@@ -1085,6 +1120,38 @@ impl SynthEngine {
     pub fn drum_sounding_slot_frames(&self) -> u64 {
         self.drums.iter().fold(0u64, |total, machine| {
             total.saturating_add(machine.sounding_slot_frames())
+        })
+    }
+
+    /// **鼓机此刻占用着的槽位数**（各槽之和；单位：槽位；0 = 一件鼓都不在响）。
+    ///
+    /// 它与 [`Self::drum_sounding_slot_frames`] 是**两个不同的质量维度**，所以两个都
+    /// 要留着：那个是**累计**的"槽位×帧"覆盖度读数（只增不减，回答"器件算过东西吗"），
+    /// 本读数是**瞬时**的占用数（可升可降，回答"现在同时有几件鼓在响"）。
+    ///
+    /// 口径（三条，都要与判据一起读）：
+    ///
+    /// 1. 读数取 `DrumMachine::active_slots`（器件里**早就存在**的 getter，现位于
+    ///    `crates/yeban-dsp/src/drums/mod.rs` 第 956 行）。它在 `yeban-engine` 的
+    ///    `src` 与 `tests` 里**一个读者都没有**（量法：
+    ///    `grep -rnw 'active_slots' crates/yeban-engine` 在本次改动前命中 `src`
+    ///    **0** 行、`tests` **0** 行）—— 连 debug 访问器都没有，与复音那一侧不同；
+    /// 2. 它只数 `DrumMachine` 的定长槽位数组（每个槽位一个 `active` 布尔）
+    ///    ⇒ 不碰样本、不分配、不加锁、不做 I/O。汇总方式是 16 个槽位的 `fold`，
+    ///    与 [`Self::drum_triggers`] / [`Self::drum_voice_steals`] 同一条路径；
+    /// 3. 器件计数器**只增不减**，槽位数组却是**活的**：`DrumMachine::reset` 清空
+    ///    全部槽位 ⇒ 本读数会当场回落。这与 [`Self::drum_voice_steals`] 的
+    ///    "生命周期累计量"口径**刻意不同**，判据必须钉住这条差别。
+    ///
+    /// 为什么需要它：与复音那一侧同一个理由 —— [`Self::drum_voice_steals`] 只在
+    /// **槽位池满**时才推进 ⇒ 它证明"池曾经满过"，证明不了"池现在有多满"。
+    /// 鼓机与复音是**两个独立的池**（该口径见 [`Self::drum_voice_steals`] 的文档），
+    /// 因此这条瞬时读数也要两池各一份，不能相加成一个数。
+    /// 全部轨都不是鼓机时（默认）**恒为 0**。
+    #[must_use]
+    pub fn drum_active_slots(&self) -> u64 {
+        self.drums.iter().fold(0u64, |total, machine| {
+            total.saturating_add(machine.active_slots() as u64)
         })
     }
 
@@ -1849,6 +1916,76 @@ mod tests {
             "重新武装与 seek 都不得清零器件计数器"
         );
         assert_eq!(engine.notes_triggered(), 8, "起音只允许发生一次");
+    }
+
+    /// 判据：复音声部池的**瞬时占用**读数随重叠起音上升、随包络走完回落。
+    ///
+    /// 量什么：`SynthEngine::poly_active_voices()`（单位：**声部**）。
+    /// 它数的是器件里 `active == true` 的声部，与累计量 [`SynthEngine::notes_triggered`]
+    /// / [`SynthEngine::poly_notes_triggered`] 是**两个维度**：后两者只增不减。
+    ///
+    /// 怎么变红：① 把它写成常数 0（三次等号全红）；② 把它写成
+    /// [`SynthEngine::notes_triggered`] 的副本（累计量只增不减 ⇒ 回落那一档红）；
+    /// ③ 漏读器件 `PolySynth::active_voices`（冷值那一档红白对照都在）。
+    ///
+    /// ⚠ 期望值是**由夹具算出**的确定值（8 个重叠起音 / 池容量 16），不是"大于 0"：
+    /// 8 < 16 ⇒ 本夹具不产生窃取，占用数因此恰好等于"已起音且未回收"的音符数。
+    #[test]
+    fn poly_active_voices_is_a_gauge_that_rises_with_overlap_and_falls_on_retire() {
+        let id = EntityId::new();
+        // 一个量子一个起音（128 帧 = 1 个量子）；终点 40000 远在 8 个量子之后
+        // ⇒ 8 个音符全部重叠。
+        let notes: Vec<ScheduledNote> = (0..8)
+            .map(|index| note((index * 128) as u64, 40_000, 60, 127, 48_000.0))
+            .collect();
+        let schedule = NoteSchedule::from_sorted(notes);
+        let mut engine = rig(id);
+        assert_eq!(engine.poly_active_voices(), 0, "冷引擎的占用必须是 0");
+
+        for quantum in 0..8usize {
+            render(&mut engine, id, &schedule, 128);
+            assert_eq!(
+                engine.poly_active_voices(),
+                (quantum + 1) as u64,
+                "第 {} 个量子之后必须有 {} 个声部在响（占用是量规，不是累计量）",
+                quantum + 1,
+                quantum + 1
+            );
+        }
+        assert_eq!(engine.voice_steals(), 0, "8 个声部 < 池容量 16 ⇒ 不许窃取");
+        assert!(
+            engine.poly_active_voices() <= VOICES_PER_TRACK as u64,
+            "占用不可能超过池容量"
+        );
+        let peak = engine.poly_active_voices();
+
+        // 走完终点（40000）＋释放（50 ms @48 kHz = 2400 帧）⇒ 声部全部回收。
+        // 400 个量子 = 51200 帧，位置 52224 > 42400。
+        let mut tail_nonzero = 0usize;
+        for _ in 0..400 {
+            tail_nonzero += render(&mut engine, id, &schedule, 128)
+                .iter()
+                .filter(|sample| **sample != 0.0)
+                .count();
+        }
+        println!(
+            "[engine-synth/G1] 复音占用量规: 8 个重叠起音后={peak} 尾段(400 量子)后={} \
+             累计触发={} 窃取={} 尾段非零={tail_nonzero} 池容量={VOICES_PER_TRACK}",
+            engine.poly_active_voices(),
+            engine.notes_triggered(),
+            engine.voice_steals(),
+        );
+        assert!(tail_nonzero > 0, "尾段必须真的出过声（否则回落是空转）");
+        assert_eq!(
+            engine.poly_active_voices(),
+            0,
+            "包络走完、声部回收 ⇒ 占用必须回落到 0（累计量则不回退）"
+        );
+        assert_eq!(
+            engine.notes_triggered(),
+            8,
+            "累计触发数在占用回落后**不得**跟着回落（两个维度必须分开）"
+        );
     }
 
     /// 判据：没有槽位/不在快照里的轨道渲染静音且不 panic。
