@@ -81,6 +81,10 @@
 //! ## 不可信输入边界零 panic
 //!
 //! 畸形文件、截断流、未知编码、声明与实际不符，全部返回 [`DecodeError`]。
+//! **浮点容器里的非有限样本（NaN / ±∞）算畸形输入**：IEEE float 的 `data` 块体是任意
+//! 字节，而一份含 NaN 的资产会顺着渲染链毒化整条混音总线，下游没有任何一处能把它变回
+//! 有限值 ⇒ 解码入口拒绝它（整型格式不可能产出非有限值，因而不受影响）。判据
+//! `decode::tests::a_float_container_with_non_finite_samples_is_refused`。
 //! 本 crate 的**非测试代码**里没有 `unwrap` / `panic!`，也没有输入驱动的切片索引；
 //! 唯一的 `expect` 落在 [`limits::PcmBudget::default`] 的**编译期常量**推导上（两条产品
 //! 要求换不出 `u64` 字节数是构建期缺陷，不是输入的函数）。输入驱动的路径全部走 `Result`。

@@ -95,6 +95,19 @@ pub fn resample_interleaved(
 /// 分配的一份完整 PCM。若这里继续用写死的常量，调用方给 `decode` 的预算就在重采样这一
 /// 步被悄悄绕过 —— `HD-24` 改建后所有使用点必须走同一个 [`PcmBudget`]。
 ///
+/// ## 非有限样本（NaN / ±∞）**不被拒绝** —— 这是有意的
+///
+/// 本函数是纯 DSP 函数，吃的是调用方给的类型化 `&[f32]`，不是不可信字节：它只校验
+/// **形状**（`samples.len()` 是 `channels` 的整数倍、三者都在闸门内）。线性滤波对非有限
+/// 输入的行为由 IEEE 754 逐位规定，因此本函数保留传播而不是清洗 —— 清洗会静默改变
+/// 信号，而"静默改变信号"正是本 crate 要避免的。判据
+/// `non_finite_input_propagates_deterministically_and_keeps_the_length_contract` 把这条
+/// 语义钉住（恒等路径逐位原样、滤波路径两次调用逐位一致、输出长度与有限输入相同）。
+///
+/// 不可信字节的边界在 [`crate::decode`]：`decode_*` 会拒绝**含非有限浮点样本的容器**
+/// （判据 `a_float_container_with_non_finite_samples_is_refused`），因此本 crate 内部
+/// 唯一一条"资产 → 重采样"的路径（[`resample_asset_with_budget`]）拿到的样本必然有限。
+///
 /// # Errors
 ///
 /// - 采样率为 0 或超出 [`PcmBudget::max_sample_rate`]；
@@ -517,6 +530,59 @@ mod tests {
             resample_interleaved(&[0.0; 5], 2, 48_000, 96_000),
             Err(DecodeError::InconsistentLayout { .. })
         ));
+    }
+
+    /// 判据（类别①：非有限输入）：非有限样本**传播**而不是被清洗，并且传播是确定性的、
+    /// 不改变长度契约。
+    ///
+    /// 语义与"为什么这里不拒绝"的取舍写在 `resample_interleaved_with_budget` 的文档里
+    /// （不可信字节的边界在 `decode`，那里会拒绝）。本判据只钉三件可观察的事：
+    /// 1. **恒等路径逐位原样**：`in_rate == out_rate` 时输出与输入逐位相同（含 NaN 载荷与
+    ///    ±∞ 的符号位）—— 同时证明恒等路径没有偷偷清洗；
+    /// 2. **滤波路径两次调用逐位一致**（[ARCH-DET-001]）：同一份非有限输入不能因为传播
+    ///    顺序而给出不同的位模式，且传播确实发生了（不是被清洗成 0）；
+    /// 3. **长度契约与有限性无关**：同一形状的有限输入与非有限输入输出长度相同 ——
+    ///    "样本是不是有限"与长度闸门是两件互不干扰的事。
+    ///
+    /// 注入：把恒等分支的 `samples.to_vec()` 换成
+    /// `samples.iter().map(|s| if s.is_finite() { *s } else { 0.0 }).collect()` ⇒ 第 1 条红
+    /// （NaN 的位型变成 `0.0` 的位型）；只在滤波分支上按 `is_finite` 过滤 ⇒ 第 3 条红。
+    #[test]
+    fn non_finite_input_propagates_deterministically_and_keeps_the_length_contract() {
+        for (name, bad) in [
+            ("NaN", f32::NAN),
+            ("+inf", f32::INFINITY),
+            ("-inf", f32::NEG_INFINITY),
+        ] {
+            let input = [bad, 1.0, 0.5, -1.0];
+
+            let same = resample_interleaved(&input, 2, 48_000, 48_000).expect("identity path");
+            assert_eq!(
+                same.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+                input.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+                "{name}: the identity path must not sanitize"
+            );
+
+            let a = resample_interleaved(&input, 2, 48_000, 96_000).expect("filter path");
+            let b = resample_interleaved(&input, 2, 48_000, 96_000).expect("filter path");
+            assert_eq!(
+                a.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+                b.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+                "{name}: non-finite propagation must be bit-deterministic"
+            );
+            assert!(
+                a.iter().any(|s| !s.is_finite()),
+                "{name}: the filter path must propagate, not sanitize"
+            );
+
+            let finite = [0.25, 1.0, 0.5, -1.0];
+            let c = resample_interleaved(&finite, 2, 48_000, 96_000).expect("finite control");
+            assert_eq!(
+                a.len(),
+                c.len(),
+                "{name}: output length must not depend on finiteness"
+            );
+        }
     }
 
     /// 判据 (闸门站点 / 参数极值 + 块长度极值)：**声道数**闸门必须在任何分配之前、

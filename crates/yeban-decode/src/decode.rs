@@ -23,6 +23,16 @@
 //! 本模块**只**在后台线程/池里被调用。它按设计会分配、会做阻塞式文件 I/O —— 这正是
 //! 它不能出现在 cpal 实时回调路径上的原因。实时线程只读已经就绪的
 //! [`DecodedAsset`]（不可变资产），不做解码、不做重采样。
+//!
+//! ## 不可信字节的两条"内容级"拒绝
+//!
+//! 除了尺寸/布局闸门，本模块还拒绝两类**内容**本身不可信的输入：
+//!
+//! 1. 会让上游 RIFF 解析器整型溢出的 `fmt ` 声明（见 [`precheck_riff_wave_fmt`]）；
+//! 2. **浮点容器里的非有限样本（NaN / ±∞）** —— IEEE float 的 `data` 块体是任意字节，
+//!    而含 NaN 的资产会毒化整条混音总线，下游没有任何一处能把它变回有限值。判据
+//!    `tests::a_float_container_with_non_finite_samples_is_refused`。整型格式不可能
+//!    产出非有限值，因此这一条只对浮点容器付出一次扫描的代价。
 
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
@@ -370,6 +380,30 @@ pub fn decode_source<'s>(
         let start = samples.len();
         samples.resize(start + total, 0.0);
         buffer.copy_to_slice_interleaved(&mut samples[start..]);
+        // [ARCH-SEC-003] 浮点样本必须是**有限**的。一个 IEEE 754 位型可以编码 NaN 或
+        // ±∞，而"解出一份含非有限样本的资产"会把 NaN 顺着渲染链带进整条混音总线 ——
+        // 本 crate 的产物是不可变资产，下游（重采样、量化、电平表、母带导出）没有任何
+        // 一处能把它变回有限值。整数格式（PCM / FLAC）不可能产出非有限值，因此这道
+        // 检查只对浮点容器（IEEE float WAV、Vorbis）付出一次扫描的代价。
+        //
+        // 判定紧跟拷贝：这一包的样本已经在缓冲里，因此报错能精确指出帧号与声道号，
+        // 而返回值仍然只是一个 `DecodeError`（不可信输入零 panic）。`planes == 0` 已在
+        // 上面被拒，所以 `channels >= 1`；`max(1)` 只是让这条除法在任何情况下都不可能
+        // 除零。
+        if buffer_format.is_float()
+            && let Some(offset) = samples[start..].iter().position(|s| !s.is_finite())
+        {
+            let offset = u64::try_from(offset).unwrap_or(u64::MAX);
+            let per_frame = u64::from(channels).max(1);
+            return Err(DecodeError::Malformed {
+                detail: format!(
+                    "decoded float sample {offset} is not finite (NaN or ±inf): frame {} \
+                     channel {}; a non-finite sample would poison every downstream stage",
+                    offset / per_frame,
+                    offset % per_frame
+                ),
+            });
+        }
         decoded_frames = projected_frames;
         // 这一轮真的推进了，闸门清零。
         idle_packets.reset();
@@ -1037,6 +1071,102 @@ mod tests {
             Some(yeban_model::BitDepth::Float32)
         );
         assert_eq!(asset.samples(), values.as_slice());
+    }
+
+    /// 判据（类别①：非有限输入）：浮点容器里的非有限样本必须**拒绝**，不许解成资产。
+    ///
+    /// 为什么这条闸门的存在理由是输入字节而不是"调用方给错参数"：IEEE float WAV 的
+    /// `data` 块体是**任意字节**，`0x7fc00000` 就是一个合法的 f32 载荷。本 crate 的契约是
+    /// "不可信输入要么给出自洽的资产、要么给出类型化错误"，而一份含 NaN 的资产既不自洽
+    /// （下游没有任何一处能把它变回有限值）也没有别的出口 ⇒ 在这里拒绝是唯一不撒谎的
+    /// 处置。整型容器不受影响（`PcmFormat::is_float()` 之外零成本）。
+    ///
+    /// 判据同时钉住三件事，缺一条都不能算过：
+    /// 1. 三个形状（`NaN` / `+∞` / `-∞`）在 F32 与 F64 上都被拒，且是
+    ///    [`DecodeError::Malformed`]（不是 panic、不是 Ok）；
+    /// 2. **非空洞**：同一个夹具把那个槽位换成有限值就 `Ok`，且逐位相同 —— 证明这条闸门
+    ///    拒的是"非有限"而不是"浮点 WAV"或"这个夹具"；
+    /// 3. **只拒非有限**：次正规数（`f32::from_bits(1)`，最小的正 f32）与 `-0.0` 都是
+    ///    有限值，必须照常解出 —— 否则这条闸门就成了"拒绝一切不寻常的位型"。
+    ///
+    /// 注入：把 `decode_source` 循环里那一整块
+    /// `if buffer_format.is_float() && let Some(offset) = …` 删掉 ⇒ 本判据的第一组断言全红
+    /// （实测：`F32 NaN must be refused: DecodedAsset { … samples: [NaN, …] }`），并且整库
+    /// **只有本判据**红（lib 116 → 115 passed / 1 failed），因此那个站点此前没有任何判据
+    /// 钉着。整型一侧不需要单独的对照注入：`is_float()` 为假时 `position` 那一半根本不会
+    /// 被求值，因此"整数样本不可能非有限"是类型事实，不是运行期分支。
+    #[test]
+    fn a_float_container_with_non_finite_samples_is_refused() {
+        let f32_spec = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits: 32,
+            format: WavFormat::Float,
+        };
+        let f64_spec = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits: 64,
+            format: WavFormat::Float,
+        };
+        // 位置固定在第 0 个样本（帧 0、声道 0），其余样本有限：因此文案里的
+        // "frame 0 channel 0" 是可以被断言的具体值，闸门也必须能在第 0 个样本上触发。
+        let poisoned = [
+            ("NaN", f32::NAN, f64::NAN),
+            ("+inf", f32::INFINITY, f64::INFINITY),
+            ("-inf", f32::NEG_INFINITY, f64::NEG_INFINITY),
+        ];
+        for (name, bad32, bad64) in poisoned {
+            let values32 = [bad32, -0.25, 0.5, -0.5];
+            let bytes = wav(&f32_spec, &encode_f32_samples(&values32));
+            let err = decode_bytes(&bytes, &DecodeOptions::default())
+                .expect_err(&format!("F32 {name} must be refused"));
+            let detail = match &err {
+                DecodeError::Malformed { detail } => detail.clone(),
+                other => panic!("F32 {name} must be Malformed, got {other:?}"),
+            };
+            assert!(
+                detail.contains("frame 0 channel 0"),
+                "F32 {name}: detail must name the offending position, got {detail}"
+            );
+
+            let mut data64 = Vec::new();
+            for v in [bad64, -0.25, 0.5, -0.5] {
+                data64.extend_from_slice(&v.to_le_bytes());
+            }
+            let bytes64 = wav(&f64_spec, &data64);
+            assert!(
+                matches!(
+                    decode_bytes(&bytes64, &DecodeOptions::default()),
+                    Err(DecodeError::Malformed { .. })
+                ),
+                "F64 {name} must be refused as Malformed"
+            );
+
+            // 非空洞对照：同一个夹具、同一个槽位，换成有限值就 Ok，且逐位相同。
+            let good32 = [name.len() as f32 * 0.25, -0.25, 0.5, -0.5];
+            let good_bytes = wav(&f32_spec, &encode_f32_samples(&good32));
+            let asset = decode_bytes(&good_bytes, &DecodeOptions::default())
+                .expect("the finite control must decode");
+            assert_eq!(asset.samples(), good32.as_slice());
+        }
+
+        // 只拒非有限：次正规数与 -0.0 都是有限值，照常解出且逐位保留。
+        let odd_but_finite = [f32::from_bits(1), -0.0, f32::MIN_POSITIVE, f32::MAX];
+        let bytes = wav(&f32_spec, &encode_f32_samples(&odd_but_finite));
+        let asset = decode_bytes(&bytes, &DecodeOptions::default())
+            .expect("subnormal / -0.0 / MAX are finite and must decode");
+        assert_eq!(
+            asset
+                .samples()
+                .iter()
+                .map(|s| s.to_bits())
+                .collect::<Vec<_>>(),
+            odd_but_finite
+                .iter()
+                .map(|s| s.to_bits())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
