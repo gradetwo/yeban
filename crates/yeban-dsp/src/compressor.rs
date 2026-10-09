@@ -158,6 +158,13 @@
 //! | 超幅（如 `4.0` = +12.04 dBFS） | 走膝上分支，`gain_db = (1/R−1)·o` | 有限 |
 //! | `gain_db = −∞`（比率极端） | `db_to_gain` 在 `≤ −120 dB` 处返回 `0.0` | 0，非 NaN |
 //! | 参数为 `NaN`/`∞` | [`CompressorParams::sanitised`] 在设置时钳到合法域 | 有限 |
+//! | `\|x\| > 2.1e37` **且** makeup > 0 dB | 乘积溢出 ⇒ `output_sample` 归零 | 0 |
+//!
+//! ⚠ 前两条说的是**写回调用方缓冲**的那一步。只把清洗后的值喂给检波器不够：
+//! 检波器干净了，缓冲里却还是原来的 `NaN`。同类的两个器件都写回清洗后的值
+//! （[`crate::limiter::Limiter::process_stereo`] 写 `nan_to_zero` 的结果、
+//! [`crate::channel_strip::ChannelStrip::process_stereo`] 写
+//! [`crate::meter::sanitize_sample`] 的结果），本器件此前是那条表里的例外。
 //!
 //! [定理] **输出恒为有限数**。证明（每一步的取值域都写出来）：
 //!
@@ -172,13 +179,18 @@
 //! 4. [`gain_db_for`] 是三段分段函数；硬膝分支不需要 `W`，软膝分支的分母
 //!    `2W > 0`（该分支只在 `W > 0` 时可达）；`T`、`R` 有限 ⇒ `gain_db` 有限且 `≤ 0`。
 //! 5. `db_to_gain(gain_db)` 对任何有限输入返回 `[0, 1]` 内的有限数；增益递推的
-//!    结果再经 `.clamp(0.0, 1.0)` ⇒ **`gain_lin ∈ [0, 1]` 是构造性的**。
-//! 6. 最后两次乘法的因子 `gain_lin ∈ [0, 1]` 与 `makeup_gain ∈ [10^−1.2, 10^1.2]`
-//!    均有限 ⇒ 输出有限。
+//!    结果再经 `.clamp(0.0, 1.0)` ⇒ **`gain_lin ∈ [0, 1]` 是构造性的**；
+//!    `makeup_gain ∈ [10^−1.2, 10^1.2]`（`makeup_db` 先经 [`CompressorParams::sanitised`]）
+//!    ⇒ 每一步返回的 `gain_lin · makeup_gain` **有限**。
+//! 6. **写回**走 `output_sample`：它对乘积再取一次 `finite_or_zero` ⇒
+//!    写进缓冲的样本**恒有限**（`NaN`/`±∞` 的输入样本与溢出的乘积都落在这一条里）。
+//!    第 5 步的界在这里用来解释**为什么这一步是必要的**：`gain ≤ 10^1.2`，
+//!    所以 `|x| > 2.1e37` 的**有限**输入也能让乘积溢出。
 //!
 //! 判据 `hostile_samples_never_escape_into_the_state`、
-//! `a_full_scale_square_wave_never_escapes_the_bound` 与
-//! `mean_square_never_leaves_its_domain` 对该证明做反证法检查。
+//! `a_full_scale_square_wave_never_escapes_the_bound`、
+//! `mean_square_never_leaves_its_domain` 与
+//! `hostile_blocks_never_write_a_non_finite_sample` 对该证明做反证法检查。
 //!
 //! ## 7. 实时安全（[ARCH-RT-001] / `MUST-GATE-001`）
 //!
@@ -188,6 +200,12 @@
 //! `α` 与 `exp` 只在参数设置时算一次（与 [`crate::smoothing`] 同一纪律）；
 //! 逐样本路径只有两处比较、一次 `log10`、一次 `exp2`（[`crate::math::db_to_gain`]）、
 //! 一次 `log2`（[`crate::math::gain_to_db`]）与两次乘法。
+//!
+//! 块 API 的**写回**（`output_sample`）每个样本各多一次 `is_finite` 分支。
+//! 它不加分配、不加锁、不做 I/O ——
+//! 运行期由 `crates/yeban-dsp/tests/compressor_rt_zero_alloc.rs` 的
+//! `allocations == 0 && deallocations == 0` 读数覆盖（那块判据走的正是
+//! [`Compressor::process_stereo`] 与 [`Compressor::process_mono`]）。
 //!
 //! ## 8. 移植源（核实结论，⛔ 不是猜测）
 //!
@@ -450,6 +468,38 @@ fn one_pole_alpha_reference(time_s: f32, sample_rate: f32) -> f32 {
 #[must_use]
 fn finite_or_zero(sample: f32) -> f32 {
     if sample.is_finite() { sample } else { 0.0 }
+}
+
+/// 计算**写回调用方缓冲**的那一个样本：`input · gain`，乘积非有限时归零。
+///
+/// 这是模块注释 §6 那条"输出恒有限"在**块 API** 上的落点。**一次**清洗管住两个来源：
+///
+/// 1. **非有限的输入样本**：`NaN` / `±∞` ⇒ 乘积非有限 ⇒ `0.0`。
+///    只把清洗后的值喂给检波器是**不够**的 —— 那样算出来的增益虽然有限，
+///    写回缓冲的却仍是原样本，器件于是把上游的数值事故原样交给了下游。
+///    同类的两个器件都**不**把原样本写回：[`crate::limiter::Limiter::process_stereo`]
+///    把 `nan_to_zero` 之后的值写进环形缓冲，
+///    [`crate::channel_strip::ChannelStrip::process_stereo`] 把
+///    `sanitize_sample` 之后的值写回切片。本器件此前是那条表里的例外。
+/// 2. **乘积溢出**：`gain` 的合法上限是
+///    `db_to_gain(`[`MAX_MAKEUP_DB`]`) = 10^(24/20) ≈ 15.85`，因此
+///    `|input| > f32::MAX / 15.85 ≈ 2.1e37` 的**有限**输入乘上它仍会溢出成 `±∞`。
+///
+/// `gain` 由 [`Compressor::process_gain`] 返回，它恒有限（`gain_lin` 钳在
+/// `[0, 1]`、`makeup_gain` 由钳过的 dB 值算出），所以**只清洗乘积**就够。
+/// ⚠ 实测：把输入**单独**先清洗一次（`finite_or_zero(finite_or_zero(input) * gain)`）
+/// **没有任何判据会变红** —— 那两个式子在 `gain` 有限的全部取值上相等
+/// （`NaN · g = NaN`、`±∞ · g = ±∞`，两者都被外层归零），因此本实现不做那次
+/// 不可观测的冗余清洗。这条按"没红的注入要报出来"登记。
+///
+/// 对**有限**输入且乘积有限的样本，本函数逐位恒等（[`finite_or_zero`] 对有限值
+/// 返回同一个值）⇒ 既有输出一个字不改。判据
+/// `finite_block_inputs_are_bit_identical_to_input_times_gain` 对 `±0.0`／
+/// 次正规数／`f32::MAX`／`f32::MIN` 逐位钉住这一条。
+#[inline]
+#[must_use]
+fn output_sample(input: f32, gain: f32) -> f32 {
+    finite_or_zero(input * gain)
 }
 
 /// 钳到 `[low, high]`，且**非有限输入一律归到 `low`**。
@@ -726,13 +776,15 @@ impl Compressor {
     /// - 共享一个增益（立体声联动），因此声像不被拉开。
     /// - 两个切片长度不等时只处理 `min(len)` 个帧（**不 panic**），并返回该帧数。
     /// - 空切片 ⇒ 空操作，返回 0。
+    /// - 写回的是 `output_sample` 的结果：`NaN`/`±∞` 的**输入样本**归零、
+    ///   乘积溢出也归零 ⇒ **输出缓冲里不会出现非有限值**（模块注释 §6）。
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) -> usize {
         let frames = left.len().min(right.len());
         let (left, right) = (&mut left[..frames], &mut right[..frames]);
         for frame in 0..frames {
             let gain = self.process_gain(left[frame], right[frame]);
-            left[frame] *= gain;
-            right[frame] *= gain;
+            left[frame] = output_sample(left[frame], gain);
+            right[frame] = output_sample(right[frame], gain);
         }
         // `process_gain` 每帧记 1；立体声帧是**两个**声道 ⇒ 这里补上另一声道。
         // 这样 `processed_samples()` 的口径就是"按声道计"，与 `process_mono` 一致。
@@ -746,11 +798,11 @@ impl Compressor {
     /// [`Self::process_stereo`] 传入两条相同声道时**逐位一致**（判据钉死）。
     ///
     /// 返回处理的样本数（即 `samples.len()`）。逐样本**无分配**。
+    /// 写回口径与 [`Self::process_stereo`] 相同（`output_sample`）。
     pub fn process_mono(&mut self, samples: &mut [f32]) -> usize {
         for sample in samples.iter_mut() {
-            let value = *sample;
-            let gain = self.process_gain(value, value);
-            *sample *= gain;
+            let gain = self.process_gain(*sample, *sample);
+            *sample = output_sample(*sample, gain);
         }
         samples.len()
     }
@@ -1306,6 +1358,188 @@ mod tests {
             }
         }
         assert!(comp.gain_db() <= 0.0);
+    }
+
+    /// 量什么：`NaN` / `±∞` **输入样本**经块 API 写回后的位模式（单位：`f32` 位）。
+    ///
+    /// 判据：写回的恰好是 `+0.0`（`to_bits() == 0`），**不是**原样本。
+    /// 这是模块注释 §6 表格前两行在**块 API** 上的落点：只把清洗后的值喂给
+    /// 检波器（[`Compressor::process_gain`] 本来就在做）不会让调用方的缓冲变干净。
+    ///
+    /// 注入：把块 API 的写回改回 `*= gain` ⇒ 本判据在 mono 与 stereo 两处变红
+    /// （字面红行见提交说明）。
+    #[test]
+    fn non_finite_input_samples_are_written_back_as_zero() {
+        let hostile = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+
+        let mut mono = hostile;
+        let mut comp = Compressor::new(CompressorParams::DEFAULT, 48_000.0);
+        comp.process_mono(&mut mono);
+        for (i, sample) in mono.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.0f32.to_bits(),
+                "mono 第 {i} 个样本写回的是 {sample}（位 {:#010x}），不是 +0.0",
+                sample.to_bits()
+            );
+        }
+
+        let mut left = hostile;
+        let mut right = hostile;
+        let mut comp = Compressor::new(CompressorParams::DEFAULT, 48_000.0);
+        comp.process_stereo(&mut left, &mut right);
+        for (i, sample) in left.iter().chain(right.iter()).enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.0f32.to_bits(),
+                "stereo 第 {i} 个样本写回的是 {sample}（位 {:#010x}），不是 +0.0",
+                sample.to_bits()
+            );
+        }
+    }
+
+    /// 量什么：**块 API** 写回缓冲里的非有限样本个数（单位：个）。
+    ///
+    /// 判据：`0`。输入面覆盖 `NaN` / `±∞` / `±1e38` / `±3e38` / `f32::MAX` /
+    /// `f32::MIN` / `±0.0` / 最小正次正规数；参数面覆盖默认（makeup 0 dB）与
+    /// makeup `+`[`MAX_MAKEUP_DB`]（合法域上界，`gain ≤ 10^1.2 ≈ 15.85`
+    /// ⇒ `|x| > 2.1e37` 的**有限**输入会把乘积溢出成 `±∞`）。
+    /// 判据内部有正对照：输入表必须真的含非有限值，否则这条是空判据。
+    ///
+    /// 注入：把写回退回 `*sample *= gain`（即 [`output_sample`] 的清洗整个去掉）
+    /// ⇒ 本判据在两组 makeup 上都变红（字面红行见提交说明）。
+    /// ⚠ 另一条注入**不变红**并登记在此：把输入先清洗一次、再清洗乘积
+    /// （`finite_or_zero(finite_or_zero(input) * gain)`）与只清洗乘积**在 `gain`
+    /// 有限的全部取值上相等** ⇒ 那次冗余清洗不写进实现。
+    #[test]
+    fn hostile_blocks_never_write_a_non_finite_sample() {
+        let hostile = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            1.0e38,
+            -1.0e38,
+            3.0e38,
+            f32::MAX,
+            f32::MIN,
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            0.5,
+        ];
+        assert!(
+            hostile.iter().any(|v| !v.is_finite()),
+            "夹具失效：输入表里没有非有限值 ⇒ 本判据是空判据"
+        );
+
+        for makeup_db in [0.0f32, MAX_MAKEUP_DB] {
+            let params = CompressorParams {
+                makeup_db,
+                ..CompressorParams::DEFAULT
+            };
+
+            let mut mono = hostile;
+            let mut comp = Compressor::new(params, 48_000.0);
+            assert_eq!(comp.process_mono(&mut mono), hostile.len());
+            let bad = mono.iter().filter(|v| !v.is_finite()).count();
+            assert_eq!(
+                bad, 0,
+                "makeup={makeup_db} dB：mono 写回了 {bad} 个非有限样本：mono={mono:?}"
+            );
+
+            let mut left = hostile;
+            let mut right = hostile;
+            let mut comp = Compressor::new(params, 48_000.0);
+            assert_eq!(comp.process_stereo(&mut left, &mut right), hostile.len());
+            let bad = left
+                .iter()
+                .chain(right.iter())
+                .filter(|v| !v.is_finite())
+                .count();
+            assert_eq!(
+                bad, 0,
+                "makeup={makeup_db} dB：stereo 写回了 {bad} 个非有限样本：\
+                 L={left:?} R={right:?}"
+            );
+        }
+    }
+
+    /// 量什么：有限输入下，块 API 写回的样本与"手算 `输入 × process_gain`
+    /// 返回的增益"的位模式是否相等（单位：`f32` 位；读数是**不同的样本个数**）。
+    ///
+    /// 判据：`0` 个不同。这条钉住"写回清洗对**有限**输入逐位恒等"——
+    /// 也就是"补齐 §6 的表格**没有**改动任何既有输出"。
+    /// 输入覆盖 `±0.0` / 最小正次正规数 / `f32::MIN_POSITIVE` / `f32::MAX` /
+    /// `f32::MIN` / `±1e30` / 正弦与满幅方波；makeup 取 `0` 与 `−`[`MAX_MAKEUP_DB`]
+    /// （增益 `≤ 1`，乘积不会溢出，因此参考机的手算只用到 `f32` 乘法本身）。
+    #[test]
+    fn finite_block_inputs_are_bit_identical_to_input_times_gain() {
+        let mut input: Vec<f32> = vec![
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            f32::MAX,
+            f32::MIN,
+            1.0e30,
+            -1.0e30,
+            0.5,
+            -0.5,
+        ];
+        for i in 0..200 {
+            input.push((i as f32 * 0.37).sin());
+            input.push(if i % 3 == 0 { 4.0 } else { -2.0 });
+        }
+
+        for makeup_db in [0.0f32, -MAX_MAKEUP_DB] {
+            let params = CompressorParams {
+                makeup_db,
+                ..CompressorParams::DEFAULT
+            };
+
+            // 参考机：逐样本取增益，手算乘积（**不**经过块 API 的写回）。
+            let mut reference = Compressor::new(params, 48_000.0);
+            let expected: Vec<f32> = input
+                .iter()
+                .map(|x| {
+                    let gain = reference.process_gain(*x, *x);
+                    *x * gain
+                })
+                .collect();
+
+            let mut device = Compressor::new(params, 48_000.0);
+            let mut got = input.clone();
+            assert_eq!(device.process_mono(&mut got), input.len());
+            let differences = got
+                .iter()
+                .zip(expected.iter())
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert_eq!(
+                differences, 0,
+                "makeup={makeup_db} dB：{differences} 个样本的位模式与手算不同"
+            );
+
+            // 既有契约（"两声道同信号 ⇒ 与单声道逐位一致"）在新写回下仍然成立。
+            let mut left = input.clone();
+            let mut right = input.clone();
+            let mut stereo = Compressor::new(params, 48_000.0);
+            assert_eq!(stereo.process_stereo(&mut left, &mut right), input.len());
+            assert!(
+                left.iter()
+                    .zip(got.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "makeup={makeup_db} dB：左声道与单声道路径不再逐位一致"
+            );
+            assert!(
+                right
+                    .iter()
+                    .zip(got.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "makeup={makeup_db} dB：右声道与单声道路径不再逐位一致"
+            );
+        }
     }
 
     /// 量什么：均方状态是否**始终**落在 `[0, 1e12]` 内，且电平 `≥ MIN_LEVEL_DB`。
