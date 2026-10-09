@@ -3751,6 +3751,37 @@ mod tests {
     }
 
     #[test]
+    fn the_four_on_the_floor_registration_is_pinned_to_the_measured_ids() {
+        // 数什么：登记了四踩底鼓的流派 **ID**（单位 = "条"），按字典序写死。
+        // 条数判据抓不到"把两条流派的登记互换"（例如把 house 改回 metric、
+        // 把 gregorian_chant 改成 four-on-the-floor：13/169 不变、4/4 也成立）。
+        // 这条判据把 ID 本身钉住，互换因此变红。
+        let mut ids: Vec<&str> = GenreLibrary::by_drum_style(DrumStyle::FourOnTheFloor)
+            .iter()
+            .map(|rule| rule.id)
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                "amapiano",
+                "boogie",
+                "deep_house",
+                "disco",
+                "garage_house",
+                "hardstyle",
+                "house",
+                "minimal_techno",
+                "progressive_house",
+                "psytrance",
+                "tech_house",
+                "techno",
+                "trance",
+            ]
+        );
+    }
+
+    #[test]
     fn registered_four_on_the_floor_genres_get_a_kick_on_every_beat() {
         // 4/4 下每拍一击：只要网格至少含 4 个 onset（每拍一个），
         // 四踩底鼓恒是 4 个；度量口径恒是 2 个（第 0、2 拍这两个组起点）。
