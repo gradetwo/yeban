@@ -219,6 +219,42 @@ pub enum SfzError {
         max: i64,
     },
 
+    /// 浮点取值越界（规范表格给出 Range 的浮点 opcode，拒绝而不静默钳位）。
+    ///
+    /// 目前只有两个来源：`amp_veltrack`（<https://sfzformat.com/opcodes/amp_veltrack/>，
+    /// Range = -100 to 100）与 `amp_velcurve_N`
+    /// （<https://sfzformat.com/opcodes/amp_velcurve_N/>，Range = 0 to 1）。
+    /// 与 [`SfzError::IntegerOutOfRange`] 的分工：那个用于整数语法（`parse_int`），
+    /// 这个用于浮点语法（`as_f32`）。
+    #[error("line {line}: `{opcode}` value {value} out of range {min}..={max}")]
+    FloatOutOfRange {
+        /// 1-based 行号。
+        line: usize,
+        /// opcode 名。
+        opcode: String,
+        /// 实际取值。
+        value: f32,
+        /// 允许下界（含）。
+        min: f32,
+        /// 允许上界（含）。
+        max: f32,
+    },
+
+    /// `amp_velcurve_N` 的下标 `N` 不是 `0..=127` 的十进制整数。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/amp_velcurve_N/> 正文："N can be from 0 to 127"。
+    /// 名字形如 `amp_velcurve_` 后跟**全数字**时按下标处理；数字解析溢出或大于 127 时
+    /// 报本错误（不静默丢弃该点，那样会让力度曲线无声地变错）。
+    #[error("line {line}: `{opcode}` velocity index `{index}` is not in 0..=127")]
+    VelocityCurveIndexOutOfRange {
+        /// 1-based 行号。
+        line: usize,
+        /// opcode 名。
+        opcode: String,
+        /// 原始下标文本。
+        index: String,
+    },
+
     /// `opcode=value` 的取值无法解析成浮点数。
     #[error("line {line}: `{opcode}` expects a number, got `{value}`")]
     InvalidFloat {

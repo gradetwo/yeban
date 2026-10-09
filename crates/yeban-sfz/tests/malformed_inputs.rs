@@ -166,6 +166,43 @@ const MALFORMED_SAMPLES: &[&str] = &[
     "<region>sample=a.wav off_time=99999999999999999999",
     "<region>sample=a.wav off_time=0.05 off_time=-0.05",
     "<group>off_time=0.25\n<region>sample=a.wav",
+    // `amp_veltrack` / `amp_velcurve_N` 已建模（见
+    // `velocity_response_is_modeled_and_range_checked_explicitly`）：
+    // 这里只要求「任何字节都只允许 Ok / Err，不允许 panic」。
+    "<region>sample=a.wav amp_veltrack=",
+    "<region>sample=a.wav amp_veltrack=abc",
+    "<region>sample=a.wav amp_veltrack=NaN",
+    "<region>sample=a.wav amp_veltrack=inf",
+    "<region>sample=a.wav amp_veltrack=-inf",
+    "<region>sample=a.wav amp_veltrack=-100",
+    "<region>sample=a.wav amp_veltrack=100",
+    "<region>sample=a.wav amp_veltrack=-100.0001",
+    "<region>sample=a.wav amp_veltrack=101",
+    "<region>sample=a.wav amp_veltrack=1e999",
+    "<region>sample=a.wav amp_veltrack=99999999999999999999",
+    "<region>sample=a.wav amp_velcurve_=",
+    "<region>sample=a.wav amp_velcurve_foo=0.5",
+    "<region>sample=a.wav amp_velcurve_1x=0.5",
+    "<region>sample=a.wav amp_velcurve_1=",
+    "<region>sample=a.wav amp_velcurve_1=abc",
+    "<region>sample=a.wav amp_velcurve_1=NaN",
+    "<region>sample=a.wav amp_velcurve_1=inf",
+    "<region>sample=a.wav amp_velcurve_1=-0.0",
+    "<region>sample=a.wav amp_velcurve_1=-1",
+    "<region>sample=a.wav amp_velcurve_1=1.0000001",
+    "<region>sample=a.wav amp_velcurve_1=2",
+    "<region>sample=a.wav amp_velcurve_1=1e999",
+    "<region>sample=a.wav amp_velcurve_0=0 amp_velcurve_127=1",
+    "<region>sample=a.wav amp_velcurve_127=0.5",
+    "<region>sample=a.wav amp_velcurve_128=0.5",
+    "<region>sample=a.wav amp_velcurve_255=0.5",
+    "<region>sample=a.wav amp_velcurve_256=0.5",
+    "<region>sample=a.wav amp_velcurve_99999999999999999999=0.5",
+    "<region>sample=a.wav amp_velcurve_000000000000000000001=0.5",
+    "<region>sample=a.wav amp_velcurve_+1=0.5",
+    "<global>amp_velcurve_64=0.1\n<master>amp_velcurve_64=0.2\n<group>amp_velcurve_64=0.3\n<region>sample=a.wav amp_velcurve_64=0.4",
+    "<region>sample=a.wav amp_velcurve_1=0.2 amp_velcurve_3=0.3",
+    "<region>sample=a.wav amp_veltrack=0 amp_velcurve_1=0.5",
 ];
 
 #[test]
@@ -656,4 +693,122 @@ fn off_time_is_modeled_and_range_checked_explicitly() {
             "off_time={bad:?} must be an explicit Err, got {outcome:?}"
         );
     }
+}
+
+#[test]
+fn velocity_response_is_modeled_and_range_checked_explicitly() {
+    let limits = ParseLimits::default();
+
+    // 缺省：`amp_veltrack` 是规范缺省 100，且没有点表 ⇒ 力度响应用标准曲线。
+    let default = parse_text("<region>sample=a.wav", &limits).expect("parses");
+    let region = &default.regions()[0];
+    assert_eq!(region.amp_veltrack, 100.0);
+    assert!(region.velocity_curve.is_none());
+    assert_eq!(region.velocity_gain(127), 1.0);
+    assert!((region.velocity_gain(64) - (64.0f32 / 127.0).powi(2)).abs() <= 1.0e-6);
+
+    // 语料里出现的 5 个不同 `amp_veltrack` 取值全部读得到（扫描口径见本票报告）。
+    for text in ["0", "100", "50", "40", "35"] {
+        let source = format!("<region>sample=a.wav amp_veltrack={text}");
+        let instrument = parse_text(&source, &limits).expect("parses");
+        let expected: f32 = text.parse().expect("literal parses as f32");
+        assert_eq!(instrument.regions()[0].amp_veltrack, expected, "{text}");
+    }
+
+    // `amp_veltrack` 越界是明确 Err；边界（含）合法；非数字 / 非有限值是明确 Err。
+    for bad in ["101", "-100.5", "99999999999999999999"] {
+        let source = format!("<region>sample=a.wav amp_veltrack={bad}");
+        let outcome = parse_text(&source, &limits);
+        assert!(
+            matches!(outcome, Err(SfzError::FloatOutOfRange { .. })),
+            "amp_veltrack={bad:?} must be an explicit FloatOutOfRange, got {outcome:?}"
+        );
+    }
+    for bad in ["", "abc", "NaN", "inf", "-inf", "1e999"] {
+        let source = format!("<region>sample=a.wav amp_veltrack={bad}");
+        let outcome = parse_text(&source, &limits);
+        assert!(
+            matches!(
+                outcome,
+                Err(SfzError::InvalidFloat { .. } | SfzError::NonFiniteFloat { .. })
+            ),
+            "amp_veltrack={bad:?} must be an explicit Err, got {outcome:?}"
+        );
+    }
+    for good in ["-100", "100"] {
+        let source = format!("<region>sample=a.wav amp_veltrack={good}");
+        parse_text(&source, &limits).expect("range endpoints are inside");
+    }
+
+    // 下标 `N` 的取值域是规范正文的 0..=127：越界与解析溢出都必须是明确 Err
+    // （不静默丢弃该点 —— 那会让力度曲线无声地变错）。
+    let index = parse_text("<region>sample=a.wav amp_velcurve_128=0.5", &limits);
+    assert!(
+        matches!(
+            index,
+            Err(SfzError::VelocityCurveIndexOutOfRange { ref index, .. }) if index == "128"
+        ),
+        "amp_velcurve_128 must be an explicit Err, got {index:?}"
+    );
+    let overflow = parse_text(
+        "<region>sample=a.wav amp_velcurve_99999999999999999999=0.5",
+        &limits,
+    );
+    assert!(
+        matches!(overflow, Err(SfzError::VelocityCurveIndexOutOfRange { .. })),
+        "an overflowing index must be an explicit Err, got {overflow:?}"
+    );
+
+    // 取值域是规范表格的 0..=1：越界是明确 Err，端点（含）合法。
+    let amplitude = parse_text("<region>sample=a.wav amp_velcurve_1=1.5", &limits);
+    assert!(
+        matches!(
+            amplitude,
+            Err(SfzError::FloatOutOfRange {
+                min: 0.0,
+                max: 1.0,
+                ..
+            })
+        ),
+        "amp_velcurve_1=1.5 must be an explicit FloatOutOfRange, got {amplitude:?}"
+    );
+    parse_text(
+        "<region>sample=a.wav amp_velcurve_1=0 amp_velcurve_2=1",
+        &limits,
+    )
+    .expect("0 and 1 are inside the range");
+
+    // 规范原文算例（<https://sfzformat.com/opcodes/amp_velcurve_N/>）：
+    // `amp_velcurve_1=0.2 amp_velcurve_3=0.3` ⇒ `amp_velcurve_2` 是 0.25。
+    let worked = parse_text(
+        "<region>sample=a.wav amp_velcurve_1=0.2 amp_velcurve_3=0.3",
+        &limits,
+    )
+    .expect("parses");
+    assert_eq!(worked.regions()[0].velocity_gain(2), 0.25);
+    assert_eq!(worked.regions()[0].velocity_gain(0), 0.0);
+    assert_eq!(worked.regions()[0].velocity_gain(127), 1.0);
+
+    // 显式点表压过 `amp_veltrack`（本 crate 的工程裁决）；只有当点表缺席时
+    // `amp_veltrack=0` 才给出恒等。
+    let combined = parse_text(
+        "<region>sample=a.wav amp_veltrack=0 amp_velcurve_1=0.5",
+        &limits,
+    )
+    .expect("parses");
+    assert_eq!(combined.regions()[0].velocity_gain(1), 0.5);
+    let tracked_only = parse_text("<region>sample=a.wav amp_veltrack=0", &limits).expect("parses");
+    assert_eq!(tracked_only.regions()[0].velocity_gain(1), 1.0);
+
+    // 四级作用域链：region → group → master → global，内层胜。
+    let scoped = parse_text(
+        "<global>amp_velcurve_64=0.1\n\
+         <master>amp_velcurve_64=0.2 amp_velcurve_32=0.7\n\
+         <group>amp_velcurve_64=0.3\n\
+         <region>sample=a.wav amp_velcurve_64=0.4",
+        &limits,
+    )
+    .expect("parses");
+    assert_eq!(scoped.regions()[0].velocity_gain(64), 0.4);
+    assert_eq!(scoped.regions()[0].velocity_gain(32), 0.7);
 }

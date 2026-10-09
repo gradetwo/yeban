@@ -37,11 +37,16 @@
 //! `region.transpose`、`region.tune` 只决定音高；采样文件自身的采样率只能由解码器给出，
 //! 因此它作为 [`RenderRates`] 的输入（**不是**本 crate 猜测的值）。
 //!
+//! # 力度 → 增益的两段口径
+//!
+//! [`PlaybackSpec::gain`] 只含 `volume`（dB → 线性）；力度 → 振幅是**另一段**，
+//! 由 [`PlaybackSpec::velocity_gain`] 携带（`amp_velcurve_N` 点表优先，否则
+//! `amp_veltrack` 幂律；全部出处与工程裁决见 [`crate::velocity`]）。
+//! 合并值是 [`PlaybackSpec::total_gain`]。这样分段是为了不静默改变既有消费方的电平：
+//! 加这个字段之前 `gain` 就只含 `volume`。
+//!
 //! # 刻意不做的换算（避免发明语义）
 //!
-//! - **力度 → 增益**：`amp_veltrack` / `amp_velcurve_N` 未建模（见
-//!   `docs/ledger/sfz-core-notes.md` §5），因此 [`PlaybackSpec`] 只**携带** `velocity`，
-//!   不把它折进 `gain`。调用方用自己的力度律。
 //! - **声相定律**：`pan` 原样以百分比输出；`pan_law` 是引擎侧的 need（N4）。
 //! - **循环窗口缺省**：本 crate 不解码音频，所以 `loop_mode` 缺省是
 //!   [`LoopMode::NoLoop`]（见 `crate::instrument::Region` 文档），一律不循环。
@@ -189,7 +194,9 @@ impl SampleSpan {
 pub struct PlaybackSpec {
     /// 触发音符（MIDI 号 0..=127）。
     pub note: u8,
-    /// 触发力度 0..=127。**不**折进 [`PlaybackSpec::gain`]（见模块文档）。
+    /// 触发力度 0..=127。**不**折进 [`PlaybackSpec::gain`]：力度的影响单独由
+    /// [`PlaybackSpec::velocity_gain`] 携带（理由见模块文档与
+    /// [`PlaybackSpec::total_gain`]）。
     pub velocity: u8,
     /// 该 region 的根音（`pitch_keycenter`）。
     pub pitch_keycenter: i32,
@@ -204,7 +211,26 @@ pub struct PlaybackSpec {
     /// 该 region 的 `volume`（dB，原样）。
     pub volume_db: f32,
     /// `volume` 换算出的**线性**增益：`10 ^ (volume_db / 20)`。
+    ///
+    /// **不含**力度：只折 `volume`。力度 → 振幅在
+    /// [`PlaybackSpec::velocity_gain`]，两者相乘见 [`PlaybackSpec::total_gain`]。
     pub gain: f32,
+    /// 该 region 的 `amp_veltrack`（%，原样；缺省
+    /// [`crate::velocity::AMP_VELTRACK_DEFAULT`]）。
+    ///
+    /// 只在源文件**没有**给出 `amp_velcurve_N` 时决定
+    /// [`PlaybackSpec::velocity_gain`]；单独带出是为了让消费方能自己换算。
+    pub amp_veltrack: f32,
+    /// 力度 → **线性振幅**的因子（0.0 = 静音，1.0 = 满幅）。
+    ///
+    /// 就是 [`crate::instrument::Region::velocity_gain`]（`velocity` 处的读数）：
+    /// 文件给了 `amp_velcurve_N` 就用那条点表，否则用 `amp_veltrack` 幂律
+    /// （缺省 100 ⇒ `(v/127)^2`）。出处与工程裁决见 [`crate::velocity`]。
+    ///
+    /// **刻意不折进 [`PlaybackSpec::gain`]**：加这个字段前 `gain` 只含 `volume`，
+    /// 既有消费方（以及本 crate 的既有判据）按那个口径读；把力度并进去会静默改变
+    /// 它们的电平。要用合并值请调 [`PlaybackSpec::total_gain`]。
+    pub velocity_gain: f32,
     /// 该 region 的 `pan`（百分比，原样；声相定律由调用方决定）。
     pub pan: f32,
     /// 该 region 的 `trigger`（原样）。
@@ -244,6 +270,15 @@ pub struct PlaybackSpec {
 }
 
 impl PlaybackSpec {
+    /// `volume` 与力度两段的**合并**线性增益：`gain * velocity_gain`。
+    ///
+    /// 两段刻意分开（见 [`PlaybackSpec::gain`] 与 [`PlaybackSpec::velocity_gain`] 的
+    /// 文档）；本方法是唯一的合并点。逐样本路径上是两次乘法，不分配、不加锁。
+    #[must_use]
+    pub fn total_gain(&self) -> f32 {
+        self.gain * self.velocity_gain
+    }
+
     /// 是否循环（`loop_mode` 要求循环**且**窗口有效）。
     #[must_use]
     pub fn loops(&self) -> bool {
@@ -414,6 +449,8 @@ impl<'a> Region<'a> {
             rate: self.playback_rate(note, rates),
             volume_db: self.volume,
             gain: self.linear_gain(),
+            amp_veltrack: self.amp_veltrack,
+            velocity_gain: self.velocity_gain(velocity),
             pan: self.pan,
             trigger: self.trigger,
             off_mode: self.off_mode,
@@ -796,6 +833,8 @@ mod tests {
                             hivel: 127,
                             lochan: 1,
                             hichan: 16,
+                            amp_veltrack: crate::velocity::AMP_VELTRACK_DEFAULT,
+                            velocity_curve: None,
                             loop_start: 0,
                             loop_end: 0,
                             loop_mode: LoopMode::NoLoop,
@@ -1058,5 +1097,57 @@ mod tests {
             steal_millis,
             "the region-level off_time must not rewrite the ARCH-RT-004 steal fade"
         );
+    }
+
+    #[test]
+    fn playback_spec_carries_the_velocity_gain_without_touching_gain() {
+        // 分段口径：`gain` 只含 volume，力度单独走 `velocity_gain`。
+        let instrument = parse_text(
+            "<region>sample=a.wav volume=-6 amp_velcurve_1=0.2 amp_velcurve_3=0.3",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = instrument.regions()[0].playback_spec(60, 2, RATES_EQUAL);
+        assert_eq!(spec.volume_db, -6.0);
+        // `gain` 与力度无关：不同力度下同一个值。
+        let other = instrument.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.gain, other.gain);
+        assert_eq!(other.gain, instrument.regions()[0].linear_gain());
+        // `velocity_gain` 才是随力度变的那个：规范算例 amp_velcurve_2 = 0.25。
+        assert_eq!(spec.velocity_gain, 0.25);
+        assert!(other.velocity_gain > 0.25);
+        // 合并值只在 total_gain() 里出现。
+        assert_eq!(spec.total_gain(), spec.gain * 0.25);
+        assert_ne!(spec.total_gain(), spec.gain);
+    }
+
+    #[test]
+    fn playback_spec_defaults_velocity_to_the_amp_veltrack_curve() {
+        let instrument =
+            parse_text("<region>sample=a.wav amp_veltrack=0", &Default::default()).expect("parses");
+        let spec = instrument.regions()[0].playback_spec(60, 32, RATES_EQUAL);
+        assert_eq!(spec.amp_veltrack, 0.0);
+        assert_eq!(spec.velocity_gain, 1.0, "amp_veltrack=0 means no tracking");
+        assert_eq!(spec.total_gain(), spec.gain);
+
+        let default = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let spec = default.regions()[0].playback_spec(60, 32, RATES_EQUAL);
+        assert_eq!(spec.amp_veltrack, crate::AMP_VELTRACK_DEFAULT);
+        assert!(spec.velocity_gain < 1.0, "the default curve attenuates");
+        assert_eq!(spec.velocity_gain, default.regions()[0].velocity_gain(32));
+    }
+
+    #[test]
+    fn playback_for_and_playback_spec_agree_on_the_velocity_gain() {
+        let instrument = parse_text(
+            "<region>key=36 sample=a.wav amp_velcurve_1=0.4",
+            &Default::default(),
+        )
+        .expect("parses");
+        let played = instrument
+            .playback_for(RegionQuery::new(36, 100), RATES_EQUAL)
+            .expect("region covers note 36");
+        assert_eq!(played.spec.velocity_gain, played.region.velocity_gain(100));
+        assert_eq!(played.spec.velocity, 100);
     }
 }

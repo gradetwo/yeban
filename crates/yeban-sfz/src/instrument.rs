@@ -15,12 +15,16 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use crate::curve::Curve;
+use crate::curve::{Curve, CurvePoint};
 use crate::effect::{Effect, EffectBus};
 use crate::error::SfzError;
 use crate::midi::MidiSection;
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
+use crate::velocity::{
+    AMP_VELTRACK_DEFAULT, AMP_VELTRACK_MAX, AMP_VELTRACK_MIN, MAX_VELCURVE_AMPLITUDE,
+    MAX_VELCURVE_INDEX, MIN_VELCURVE_AMPLITUDE, MIN_VELCURVE_INDEX, VelocityCurve, veltrack_gain,
+};
 
 /// 循环模式。取值与默认语义见 <https://sfzformat.com/opcodes/loop_mode/>。
 ///
@@ -322,6 +326,28 @@ pub struct Region<'a> {
     pub lochan: u8,
     /// MIDI 通道上界（含，1..=16）。
     pub hichan: u8,
+    /// `amp_veltrack`：力度 → 振幅的跟踪量（%，规范范围 -100..=100，缺省 100）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/amp_veltrack/> 的表格行
+    /// （Type = float，Default = 100，Range = -100 to 100，Unit = %）。
+    /// 缺省值 [`AMP_VELTRACK_DEFAULT`]；越界是明确 `Err`（不静默钳位）。
+    ///
+    /// 与 [`Region::velocity_curve`] 的分工：本字段是**标准曲线**的跟踪量，
+    /// [`Region::velocity_curve`] 是文件**显式覆写**的点表。求值见
+    /// [`Region::velocity_gain`]（显式点表优先，见那里的工程裁决）。
+    pub amp_veltrack: f32,
+    /// `amp_velcurve_N`：显式给出的力度 → 归一化振幅点表（规范 Range 0 to 1）。
+    ///
+    /// `None` 表示源文件**没有**给出任何 `amp_velcurve_N`；此时力度响应由
+    /// [`Region::amp_veltrack`] 决定。刻意区分 `None` 与 `Some(曲线)`：前者是
+    /// 「没说」，后者是「文件显式覆写了标准曲线」——与 [`Region::off_time`] 的
+    /// `None` / `Some(0.0)` 是同一条口径。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/amp_velcurve_N/>：点为
+    /// 「该力度处的归一化振幅 (0 to 1)」，未给出的点**线性插值**，缺省端点
+    /// `amp_velcurve_0 = 0`、`amp_velcurve_127 = 1`（见
+    /// [`VelocityCurve::from_points`]）。
+    pub velocity_curve: Option<VelocityCurve>,
     /// 循环起点（采样点）。
     pub loop_start: u32,
     /// 循环终点（采样点）。
@@ -469,6 +495,49 @@ impl<'a> Region<'a> {
     #[must_use]
     pub fn has_held_notes_gate(&self) -> bool {
         matches!(self.trigger, Trigger::First | Trigger::Legato)
+    }
+
+    /// `amp_veltrack` 标准曲线的力度 → 线性振幅（[`veltrack_gain`] 的绑定版）。
+    ///
+    /// 只在 [`Region::velocity_curve`] 为 `None` 时参与 [`Region::velocity_gain`]；
+    /// 单独暴露是为了让消费方能显式选择「忽略文件里的显式点表、只用 `amp_veltrack`」。
+    ///
+    /// 零分配、可在实时路径调用（读一个标量字段 + 一个 `powf`）。
+    #[must_use]
+    pub fn veltrack_gain(&self, velocity: u8) -> f32 {
+        veltrack_gain(velocity, self.amp_veltrack)
+    }
+
+    /// 力度 → **线性振幅**（0.0 = 静音，1.0 = 满幅）。
+    ///
+    /// 规则（出处与工程裁决见 [`crate::velocity`] 的模块文档）：
+    ///
+    /// | 条件 | 结果 |
+    /// | :--- | :--- |
+    /// | 文件给出了 `amp_velcurve_N` | [`VelocityCurve::amplitude`]（规范线性插值 + 缺省端点） |
+    /// | 否则 | [`Region::veltrack_gain`]（`amp_veltrack` 幂律，缺省 100 ⇒ `(v/127)^2`） |
+    ///
+    /// **工程裁决**：两套都给出时**显式点表胜**。依据是 `amp_velcurve_N` 页的表格行把
+    /// 该 opcode 的 Default 写成 "Standard curve (see `amp_veltrack`)" ——
+    /// 即点表的缺省**就是** `amp_veltrack` 的标准曲线，所以文件一旦给出点表，它就是
+    /// 对标准曲线的**覆写**而不是叠乘。同页正文也把两者说成**替代**关系：
+    /// "Both `amp_velcurve_n` and `amp_veltrack` can be used together, though there's
+    /// probably more risk of confusion than benefit to doing this."
+    /// （登记语料里有 21 个文件同时给出两者，所以这不是纯理论问题。）
+    ///
+    /// **与 [`crate::playback::PlaybackSpec::gain`] 的分工**：那个只是 `volume` 的 dB→线性
+    /// 换算，**不含**力度；本方法的结果由
+    /// [`crate::playback::PlaybackSpec::velocity_gain`] 单独携带，两者相乘见
+    /// [`crate::playback::PlaybackSpec::total_gain`]。这样「只折 volume」的既有消费方
+    /// 一个字都不用改。
+    ///
+    /// 零分配、无锁、无 I/O，可在实时路径调用。
+    #[must_use]
+    pub fn velocity_gain(&self, velocity: u8) -> f32 {
+        match &self.velocity_curve {
+            Some(curve) => curve.amplitude(velocity),
+            None => self.veltrack_gain(velocity),
+        }
     }
 }
 
@@ -890,6 +959,26 @@ pub(crate) fn build_region<'a>(
         None => None,
     };
 
+    // ---- 力度 → 振幅（`amp_veltrack` / `amp_velcurve_N`，见 crate::velocity） ----
+    // 规范：Default = 100，Range = -100 to 100（<https://sfzformat.com/opcodes/amp_veltrack/>）。
+    let amp_veltrack = match scopes.get("amp_veltrack") {
+        Some(value) => {
+            let tracked = value.as_f32()?;
+            if !(AMP_VELTRACK_MIN..=AMP_VELTRACK_MAX).contains(&tracked) {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "amp_veltrack".to_string(),
+                    value: tracked,
+                    min: AMP_VELTRACK_MIN,
+                    max: AMP_VELTRACK_MAX,
+                });
+            }
+            tracked
+        }
+        None => AMP_VELTRACK_DEFAULT,
+    };
+    let velocity_curve = read_velocity_curve(&scopes, line)?;
+
     // ---- 键映射 ----
     let key = match scopes.get("key") {
         Some(value) => Some(value.as_note(-1, 127)?),
@@ -1027,6 +1116,8 @@ pub(crate) fn build_region<'a>(
         hivel,
         lochan,
         hichan,
+        amp_veltrack,
+        velocity_curve,
         loop_start,
         loop_end,
         loop_mode,
@@ -1063,6 +1154,96 @@ fn parse_cc_gate_name(name: &str) -> Option<(bool, u8)> {
     }
     let cc: u8 = digits.parse().ok()?;
     if cc > 127 { None } else { Some((is_low, cc)) }
+}
+
+/// 识别 `amp_velcurve_N`，返回**下标文本** `N`。
+///
+/// 只在 `amp_velcurve_` 之后是**全 ASCII 数字**时命中；其它形态（如
+/// `amp_velcurve_foo`、`amp_velcurve_`）返回 `None`，按未知 opcode 忽略 ——
+/// 这条口径与 [`parse_cc_gate_name`] 一致。
+///
+/// 返回文本而不是 `u8`，是为了把「数字但越界 / 溢出」的输入交给调用方报
+/// [`SfzError::VelocityCurveIndexOutOfRange`] 并带上原始文本（`parse::<u8>()` 溢出时
+/// 拿不到值，且 `IntegerOutOfRange` 的字段是 `i64`，装不下畸形的超长数字串）。
+fn parse_velocity_curve_name(name: &str) -> Option<&str> {
+    let digits = name.strip_prefix("amp_velcurve_")?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(digits)
+}
+
+/// 把四个作用域里的 `amp_velcurve_N` 归约成一条 [`VelocityCurve`]。
+///
+/// 优先级：`region → group → master → global`（与其它 opcode 同一条链，见
+/// [`Scopes::get`]），实现方式是按 `global → master → group → region` 的顺序喂点，
+/// 同一 `N` 上后者胜。
+///
+/// `Ok(None)` 表示四个作用域都没有给出任何 `amp_velcurve_N`：此时力度响应由
+/// `amp_veltrack` 决定（见 [`Region::velocity_gain`]）。刻意区分 `None` 与
+/// 「给了点但都是缺省端点」——后者是文件的显式覆写。
+///
+/// 取值域：`N` 必须能解析成 `0..=127`（规范正文 "N can be from 0 to 127"）；
+/// 取值必须落在规范表格的 `0 to 1`。两者越界都是明确 `Err`（不静默丢弃、不钳位）。
+fn read_velocity_curve(
+    scopes: &Scopes<'_, '_>,
+    line: usize,
+) -> Result<Option<VelocityCurve>, SfzError> {
+    let mut points: BTreeMap<u8, f32> = BTreeMap::new();
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let Some(digits) = parse_velocity_curve_name(name.as_ref()) else {
+                continue;
+            };
+            let index: u8 = digits
+                .parse()
+                .ok()
+                .filter(|index| (MIN_VELCURVE_INDEX..=MAX_VELCURVE_INDEX).contains(index))
+                .ok_or_else(|| SfzError::VelocityCurveIndexOutOfRange {
+                    line,
+                    opcode: name.to_string(),
+                    index: digits.to_string(),
+                })?;
+            let opcode = || format!("amp_velcurve_{index}");
+            let amplitude = match value.as_ref().parse::<f32>() {
+                Err(_) => {
+                    return Err(SfzError::InvalidFloat {
+                        line,
+                        opcode: opcode(),
+                        value: value.to_string(),
+                    });
+                }
+                Ok(amplitude) if !amplitude.is_finite() => {
+                    return Err(SfzError::NonFiniteFloat {
+                        line,
+                        opcode: opcode(),
+                        value: value.to_string(),
+                    });
+                }
+                Ok(amplitude)
+                    if !(MIN_VELCURVE_AMPLITUDE..=MAX_VELCURVE_AMPLITUDE).contains(&amplitude) =>
+                {
+                    return Err(SfzError::FloatOutOfRange {
+                        line,
+                        opcode: opcode(),
+                        value: amplitude,
+                        min: MIN_VELCURVE_AMPLITUDE,
+                        max: MAX_VELCURVE_AMPLITUDE,
+                    });
+                }
+                Ok(amplitude) => amplitude,
+            };
+            points.insert(index, amplitude);
+        }
+    }
+    if points.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(VelocityCurve::from_points(
+        points
+            .into_iter()
+            .map(|(at, value)| CurvePoint { at, value }),
+    )))
 }
 
 fn read_u8(
@@ -1128,6 +1309,8 @@ mod tests {
             hivel: 127,
             lochan: 1,
             hichan: 16,
+            amp_veltrack: AMP_VELTRACK_DEFAULT,
+            velocity_curve: None,
             loop_start: 0,
             loop_end: 0,
             loop_mode: LoopMode::NoLoop,
@@ -2663,5 +2846,210 @@ type=com.mda.Limiter
         assert_eq!(section.opcodes()[1].value(), "99999999999999999999");
         assert_eq!(section.opcodes()[2].value(), "");
         assert_eq!(section.opcodes()[3].value(), "\u{00e9}");
+    }
+
+    // ------------------------------------------------------------------
+    // amp_veltrack / amp_velcurve_N（力度 → 振幅）
+    // ------------------------------------------------------------------
+
+    /// 解析出第一个 region，便于逐条判据读字段。
+    fn first_region(text: &str) -> Region<'_> {
+        parse_text(text, &Default::default())
+            .expect("parses")
+            .regions()
+            .first()
+            .cloned()
+            .expect("one region")
+    }
+
+    #[test]
+    fn amp_veltrack_defaults_to_the_specification_value_and_gives_identity_at_127() {
+        // 规范表格：Default = 100（<https://sfzformat.com/opcodes/amp_veltrack/>）。
+        let absent = first_region("<region>sample=a.wav");
+        assert_eq!(absent.amp_veltrack, AMP_VELTRACK_DEFAULT);
+        assert_eq!(absent.velocity_curve, None, "no amp_velcurve_N given");
+        assert_eq!(absent.velocity_gain(127), 1.0);
+        // 缺省 100 ⇒ 规范公式 (v/127)^2。
+        let expected = (64.0f32 / 127.0) * (64.0 / 127.0);
+        assert!((absent.velocity_gain(64) - expected).abs() <= 1.0e-6);
+
+        // 显式 0 ⇒ 力度不改变振幅（教程：dynamics 由别的东西控制时设 0）。
+        let off = first_region("<region>sample=a.wav amp_veltrack=0");
+        assert_eq!(off.amp_veltrack, 0.0);
+        assert_eq!(off.velocity_gain(64), 1.0);
+    }
+
+    #[test]
+    fn amp_veltrack_out_of_range_is_an_explicit_error() {
+        for value in ["101", "-100.5", "1e9"] {
+            let error = parse_text(
+                &format!("<region>sample=a.wav amp_veltrack={value}"),
+                &Default::default(),
+            )
+            .expect_err("outside the -100..=100 range");
+            assert!(
+                matches!(error, SfzError::FloatOutOfRange { .. }),
+                "value {value} gave {error:?}"
+            );
+        }
+        // 边界值（含端点）合法。
+        for value in ["-100", "100"] {
+            parse_text(
+                &format!("<region>sample=a.wav amp_veltrack={value}"),
+                &Default::default(),
+            )
+            .expect("endpoints are inside the range");
+        }
+    }
+
+    #[test]
+    fn amp_velcurve_points_are_read_with_the_specification_endpoint_defaults() {
+        let region = first_region("<region>sample=a.wav amp_velcurve_1=0.2 amp_velcurve_3=0.3");
+        let curve = region.velocity_curve.as_ref().expect("explicit curve");
+        assert_eq!(curve.points().first().map(|p| p.at), Some(0));
+        assert_eq!(curve.points().first().map(|p| p.value), Some(0.0));
+        assert_eq!(curve.points().last().map(|p| p.at), Some(127));
+        assert_eq!(curve.points().last().map(|p| p.value), Some(1.0));
+        // 规范原文算例：amp_velcurve_2 是 0.25。
+        assert_eq!(region.velocity_gain(2), 0.25);
+    }
+
+    #[test]
+    fn amp_velcurve_wins_over_amp_veltrack_when_both_are_given() {
+        // 工程裁决：显式点表是「覆写标准曲线」而不是叠乘（出处见 velocity 模块文档）。
+        // 登记语料里有 21 个文件同时给出两者，所以这条不是纯理论。
+        let region = first_region("<region>sample=a.wav amp_veltrack=0 amp_velcurve_1=0.5");
+        assert_eq!(region.amp_veltrack, 0.0, "the field is still carried");
+        assert_eq!(
+            region.velocity_gain(1),
+            0.5,
+            "the explicit table must win over amp_veltrack=0"
+        );
+        // 对照：同一条 region 去掉点表后，amp_veltrack=0 给出恒等。
+        let without_curve = first_region("<region>sample=a.wav amp_veltrack=0");
+        assert_eq!(without_curve.velocity_gain(1), 1.0);
+    }
+
+    #[test]
+    fn amp_velcurve_follows_the_four_level_scope_chain() {
+        // 优先级 region → group → master → global；同一 N 上内层胜。
+        let region = first_region(
+            "<global>amp_velcurve_64=0.1\n\
+             <master>amp_velcurve_64=0.2 amp_velcurve_32=0.7\n\
+             <group>amp_velcurve_64=0.3\n\
+             <region>sample=a.wav amp_velcurve_64=0.4",
+        );
+        assert!(region.velocity_curve.is_some(), "explicit curve");
+        assert_eq!(
+            region.velocity_gain(64),
+            0.4,
+            "region wins over the other three"
+        );
+        assert_eq!(region.velocity_gain(32), 0.7, "master value survives");
+    }
+
+    #[test]
+    fn amp_velcurve_index_and_value_ranges_are_enforced() {
+        let index = parse_text(
+            "<region>sample=a.wav amp_velcurve_128=0.5",
+            &Default::default(),
+        )
+        .expect_err("N must be 0..=127");
+        assert!(
+            matches!(
+                index,
+                SfzError::VelocityCurveIndexOutOfRange { ref index, .. } if index == "128"
+            ),
+            "unexpected verdict: {index:?}"
+        );
+
+        // 数字但超出 u8：解析溢出也必须报同一个错误，而不是 panic 或静默丢弃。
+        let overflow = parse_text(
+            "<region>sample=a.wav amp_velcurve_99999999999999999999=0.5",
+            &Default::default(),
+        )
+        .expect_err("a 20-digit index cannot be a u8");
+        assert!(
+            matches!(overflow, SfzError::VelocityCurveIndexOutOfRange { .. }),
+            "unexpected verdict: {overflow:?}"
+        );
+
+        let value = parse_text(
+            "<region>sample=a.wav amp_velcurve_1=1.5",
+            &Default::default(),
+        )
+        .expect_err("amplitude must be 0..=1");
+        assert!(
+            matches!(
+                value,
+                SfzError::FloatOutOfRange {
+                    min: 0.0,
+                    max: 1.0,
+                    ..
+                }
+            ),
+            "unexpected verdict: {value:?}"
+        );
+
+        // 端点（含）合法。
+        parse_text(
+            "<region>sample=a.wav amp_velcurve_1=0 amp_velcurve_2=1",
+            &Default::default(),
+        )
+        .expect("0 and 1 are inside the range");
+    }
+
+    #[test]
+    fn amp_velcurve_non_numeric_value_uses_the_shared_float_errors() {
+        let invalid = parse_text("<region>sample=a.wav amp_velcurve_1=x", &Default::default())
+            .expect_err("not a number");
+        assert!(
+            matches!(invalid, SfzError::InvalidFloat { .. }),
+            "unexpected verdict: {invalid:?}"
+        );
+        let non_finite = parse_text(
+            "<region>sample=a.wav amp_velcurve_1=inf",
+            &Default::default(),
+        )
+        .expect_err("not finite");
+        assert!(
+            matches!(non_finite, SfzError::NonFiniteFloat { .. }),
+            "unexpected verdict: {non_finite:?}"
+        );
+    }
+
+    #[test]
+    fn names_that_only_look_like_amp_velcurve_are_ignored_like_any_unknown_opcode() {
+        // 「未知不报错」口径与 `loccN` / `hiccN` 的识别函数一致：只有
+        // `amp_velcurve_` + 全数字才按下标处理。
+        let region = first_region(
+            "<region>sample=a.wav amp_velcurve_foo=0.5 amp_velcurve_=0.5 amp_velcurve_1x=0.5",
+        );
+        assert_eq!(region.velocity_curve, None);
+        assert_eq!(region.velocity_gain(64), region.veltrack_gain(64));
+    }
+
+    #[test]
+    fn velocity_gain_is_deterministic_and_never_panics_over_the_whole_domain() {
+        // 叶子 crate 红线：任意已解析输入都不得 panic，也不得产生 NaN / inf。
+        let instrument = parse_text(
+            "<region>sample=a.wav amp_veltrack=-100\n\
+             <region>sample=b.wav amp_velcurve_0=0 amp_velcurve_127=1\n\
+             <region>sample=c.wav amp_velcurve_1=0.4 amp_velcurve_63=1",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 3);
+        for region in instrument.regions() {
+            for velocity in 0u8..=127 {
+                let gain = region.velocity_gain(velocity);
+                assert!(
+                    gain.is_finite(),
+                    "velocity {velocity} on {} gave {gain}",
+                    region.sample
+                );
+                assert_eq!(gain, region.velocity_gain(velocity), "not deterministic");
+            }
+        }
     }
 }

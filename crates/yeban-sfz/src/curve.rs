@@ -43,7 +43,8 @@ use std::borrow::Cow;
 /// 曲线上的一个显式点：`vNNN` 里的 `NNN` 是 [`CurvePoint::at`]，取值是 [`CurvePoint::value`]。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CurvePoint {
-    /// 横坐标（`0..=127`），即 `vNNN` 里的 `NNN`。
+    /// 横坐标（`0..=127`）：`<curve>` 的 `vNNN` 里的 `NNN`，
+    /// 或 `amp_velcurve_N` 里的 `N`（见 [`crate::velocity::VelocityCurve`]）。
     pub at: u8,
     /// 该点的取值。规范允许负值；本 crate 不钳位。
     pub value: f32,

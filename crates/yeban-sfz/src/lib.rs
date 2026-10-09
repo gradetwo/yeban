@@ -22,6 +22,12 @@
 //! （<https://sfzformat.com/opcodes/off_time/>），不改写 [ARCH-RT-004] 的 3 ms
 //! 窃取淡出常量。
 //!
+//! 力度 → 振幅由 `amp_veltrack`（[`Region::amp_veltrack`]，缺省
+//! [`AMP_VELTRACK_DEFAULT`]）与 `amp_velcurve_N`（[`Region::velocity_curve`]）成对带出；
+//! 求值见 [`Region::velocity_gain`]，合并进 [`PlaybackSpec::total_gain`]。
+//! **显式点表优先于 `amp_veltrack`** 是本 crate 的工程裁决，理由与规范出处见
+//! [`velocity`]（该模块的文档同时登记了 `amp_veltrack` 非缺省取值的待裁决项）。
+//!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2 ARCH-RT-001 / ARCH-RT-004
@@ -131,6 +137,36 @@
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
+//! 力度 → 振幅：`amp_veltrack`（规范缺省 100 ⇒ `(v/127)^2`）与
+//! `amp_velcurve_N`（归一化振幅点表，未给出的点线性插值，缺省端点 0 与 1）：
+//!
+//! ```
+//! use yeban_sfz::{ParseLimits, RegionQuery, RenderRates, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<region>key=36 sample=kick.wav amp_velcurve_1=0.2 amp_velcurve_3=0.3",
+//!     &ParseLimits::default(),
+//! )?;
+//! let region = &instrument.regions()[0];
+//! // 规范原文算例：amp_velcurve_1=0.2 / amp_velcurve_3=0.3 ⇒ amp_velcurve_2 是 0.25。
+//! assert_eq!(region.velocity_gain(2), 0.25);
+//! assert_eq!(region.velocity_gain(0), 0.0); // 缺省端点
+//! assert_eq!(region.velocity_gain(127), 1.0); // 缺省端点
+//!
+//! let standard = parse_text(
+//!     "<region>key=36 sample=kick.wav",
+//!     &ParseLimits::default(),
+//! )?;
+//! // 没有点表 ⇒ amp_veltrack 的规范缺省 100 ⇒ (v/127)^2。
+//! assert_eq!(standard.regions()[0].velocity_gain(127), 1.0);
+//! let play = standard
+//!     .playback_for(RegionQuery::new(36, 127), RenderRates::default())
+//!     .expect("region covers note 36");
+//! assert_eq!(play.spec.velocity_gain, 1.0);
+//! assert_eq!(play.spec.total_gain(), play.spec.gain);
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
 //! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
 //!
 //! ```no_run
@@ -196,6 +232,7 @@ pub mod instrument;
 pub mod midi;
 pub mod parser;
 pub mod playback;
+pub mod velocity;
 pub mod voice_pool;
 
 pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
@@ -212,6 +249,10 @@ pub use parser::{
 };
 pub use playback::{
     FALLBACK_SAMPLE_RATE, LoopWindow, PlaybackSpec, RegionPlay, RenderRates, SampleSpan,
+};
+pub use velocity::{
+    AMP_VELTRACK_DEFAULT, AMP_VELTRACK_MAX, AMP_VELTRACK_MIN, MAX_VELCURVE_AMPLITUDE,
+    MAX_VELCURVE_INDEX, MIN_VELCURVE_AMPLITUDE, MIN_VELCURVE_INDEX, VelocityCurve, veltrack_gain,
 };
 pub use voice_pool::{
     DEFAULT_VOICE_CAPACITY, MAX_VOICE_CAPACITY, NoteOnOutcome, SILENT_DBFS, STEAL_FADE_FLOOR,
