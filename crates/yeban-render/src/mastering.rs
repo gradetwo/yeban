@@ -51,11 +51,21 @@
 //! 判据 `short_term_values_match_a_hand_driven_meter` 钉住第 1 件事: 本模块的读数与**手工喂**
 //! [`crate::loudness::GatedLoudness`] 得到的向量**逐位相同** ⇒ 不存在第二份窗口实现。
 //!
-//! ## 真峰值的两个口径声明
+//! ## 真峰值的口径: 母带这一侧用 **16×**（[`MASTERING_TRUE_PEAK_OVERSAMPLING`]）
 //!
-//! - **过采样倍数 8×**（[`crate::loudness`] 的邻居 `yeban_dsp::meter::TruePeakDetector::new`）。
-//!   `HD-26` 已裁决真峰值 4× → 8×（`docs/ledger/human-decisions.md:57`）, 且 8× 在 `0.4·fs`
-//!   附近**仍有固有欠读**（同处记录 4× 欠读 0.44 dB）。**本模块不声称**真峰值上限是"不会削顶"的保证。
+//! - **两个场景, 两个倍数**。上游台账 `docs/ledger/dsp-loudness-notes.md` 的 §2.5 结论原文:
+//!   "**默认 8×** —— 逐通道计量（大工程里每个声部都挂表）时成本敏感 …… **母带母线 /
+//!   导出天花板用 16×** —— "只付一次"的场景, 把最坏欠读压到 −0.064 dB, 这对 `-1 dBTP`
+//!   这类硬天花板是有意义的余量"; 同一份台账的 N1 与 N6 把下一步的归属分别写成
+//!   "后续母带/计量线" 与 "母带线"。
+//!   `HD-26`（`docs/ledger/human-decisions.md`, 现位于第 57 行）的落地记录同口径: "真峰值 4× → **8×**
+//!   （母带 16× 可选）"。
+//! - 因此本模块的母带测量（[`measure_master`]）与导出天花板（[`ExportPreset::apply`] /
+//!   [`export_master`]）走 **16×**（[`TruePeakOversampling::Sixteen`]）, 而不是
+//!   `yeban_dsp::meter::TruePeakDetector::new()` 的 8× 默认值。8× 那一档由
+//!   [`measure_master_at`] / [`ExportPreset::apply_at`] 显式给出（逐通道计量口径）。
+//! - **本模块不声称**真峰值上限是"不会削顶"的保证: 16× 在 `6/13·fs` 附近仍有 −0.0636 dB
+//!   的固有欠读（台账 §2.5 的频点表）。
 //! - **dB 换算一律走 `libm`**（[ARCH-DET-001] 的"不使用平台 libm"纪律）: 本模块用
 //!   `libm::log10f` / `libm::pow`, **不用** `yeban_dsp::meter::dbfs`（它走 std 的 `f32::log10`）。
 //!   两者在**最后一位**上可能不同。理由: 母带读数是可复算的交付物, 不该随宿主 libm 漂移。
@@ -142,6 +152,47 @@ pub const EBU_R128_TARGET_LUFS: f32 = -23.0;
 /// 两个内置预设共用的真峰值上限（dBTP）。**工程选择**: 规范未定义真峰值上限。
 pub const DEFAULT_TRUE_PEAK_CEILING_DBTP: f32 = -1.0;
 
+/// 真峰值检测器的**过采样倍数**（`yeban_dsp::meter::TruePeakDetector` 的相位数）。
+///
+/// 这是一个**封闭**的两档枚举, 而不是一个裸 `usize`: `yeban-dsp` 只接受 8 与 16
+/// （`TruePeakDetector::with_oversampling` 对其余值返回 `None`, **不静默回落**）,
+/// 用枚举把"不可能的倍数"表达不出来, 于是本模块不需要一条运行期校验分支。
+///
+/// 两档各有归属（上游台账 `docs/ledger/dsp-loudness-notes.md` §2.5 的结论）:
+/// 逐通道计量用 8×（每个声部都挂表时成本敏感）; 母带母线 / 导出天花板用 16×。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TruePeakOversampling {
+    /// 8× —— `yeban_dsp::meter::TruePeakDetector::new()` 的默认口径（逐通道计量）。
+    Eight,
+    /// 16× —— 母带母线 / 导出天花板口径。
+    Sixteen,
+}
+
+impl TruePeakOversampling {
+    /// 相位数（`L`）。就是传给 `TruePeakDetector::with_oversampling` 的那个数。
+    #[must_use]
+    pub const fn phases(self) -> usize {
+        match self {
+            Self::Eight => 8,
+            Self::Sixteen => 16,
+        }
+    }
+}
+
+/// 本模块（母带母线 / 导出天花板）使用的真峰值过采样倍数。
+///
+/// 取值 [`TruePeakOversampling::Sixteen`], 依据是上游台账
+/// `docs/ledger/dsp-loudness-notes.md` 的 §2.5 结论原文: "默认 8× …… **母带母线 /
+/// 导出天花板用 16×**"。`HD-26`（`docs/ledger/human-decisions.md`, 现位于第 57 行）的落地记录
+/// 同口径（"真峰值 4× → 8×（母带 16× 可选）"）。
+///
+/// **为什么不是 `TruePeakDetector::new()`**: 那个构造器给的是 8×。母带这一侧必须
+/// **显式**选 16×, 否则 `bext` 的 `MaxTruePeakLevel` 与 `-1 dBTP` 这类硬天花板都按
+/// 8× 的欠读口径测量。实测差（本机, 精确 ±1.0 的周期 9 方波, 见判据
+/// `the_mastering_true_peak_uses_the_sixteen_times_oversampling`）:
+/// 8× 读到 `0x3FB2A846`, 16× 读到 `0x3FB33680`, 收紧了 `0.026969 dB`。
+pub const MASTERING_TRUE_PEAK_OVERSAMPLING: TruePeakOversampling = TruePeakOversampling::Sixteen;
+
 /// 一次母带测量的全部读数（离线、一次性）。
 ///
 /// 所有 dB 量都可能取到 `f32::NEG_INFINITY`, 它表示"**测不出**"而不是一个很大的负分贝:
@@ -157,8 +208,15 @@ pub struct MasterLoudness {
     pub max_momentary_lufs: f32,
     /// 迄今最大的短时（3 s）读数（LUFS）。从未填满窗口 ⇒ `NEG_INFINITY`。
     pub max_short_term_lufs: f32,
-    /// 真峰值（dBTP, 8× 过采样）。幅度为 0 ⇒ `NEG_INFINITY`。
+    /// 真峰值（dBTP）。幅度为 0 ⇒ `NEG_INFINITY`。
+    ///
+    /// **读数自带口径**: 它是哪个过采样倍数测出来的, 由 [`Self::oversampling`] 写明。
+    /// 8× 与 16× 在 `4/9·fs` 一类相称频率上**不是同一个数**（16× 从不更差, 见
+    /// `yeban-dsp` 的 `sixteen_times_contains_eight_times_phases_bit_for_bit`）,
+    /// 因此"这个 dBTP 是 8× 还是 16× 测的"是读数的一部分, 不是可以靠上下文推断的东西。
     pub true_peak_dbtp: f32,
+    /// [`Self::true_peak_dbtp`] 的口径（过采样倍数）。
+    pub oversampling: TruePeakOversampling,
 }
 
 impl MasterLoudness {
@@ -292,6 +350,10 @@ impl ExportPreset {
     /// 采样率不在 `crate::loudness::K_WEIGHTING_SAMPLE_RATES_HZ`（44.1 / 48 / 88.2 / 96 kHz）
     /// 里 ⇒ `None`（**不静默回落**到 48 kHz 的系数, 那会给出错误读数）。
     ///
+    /// 真峰值按 [`MASTERING_TRUE_PEAK_OVERSAMPLING`]（**16×**）测量 —— 这是"导出天花板"
+    /// 的口径, 见模块文档 §"真峰值的口径"。要指定倍数（例如逐通道计量的 8×）用
+    /// [`Self::apply_at`]。
+    ///
     /// 增益为 `0.0` 时**不碰任何样本**（逐位不变）—— 判据
     /// `a_zero_gain_preset_leaves_every_sample_bit_identical` 钉住这一点。
     /// 两声道按**较短者**测量并施加（与 [`measure_master`] 同一约定）。
@@ -312,7 +374,30 @@ impl ExportPreset {
         left: &mut [f32],
         right: &mut [f32],
     ) -> Option<NormalizeOutcome> {
-        let before = measure_master(sample_rate, left, right)?;
+        self.apply_at(sample_rate, left, right, MASTERING_TRUE_PEAK_OVERSAMPLING)
+    }
+
+    /// 与 [`Self::apply`] 相同, 但**显式指定**真峰值过采样倍数。
+    ///
+    /// 两次测量（增益之前与之后）用**同一个**倍数, 否则 [`NormalizeOutcome::before`] 与
+    /// [`NormalizeOutcome::after`] 会把两个口径的数并排放在一起（见
+    /// [`MasterLoudness::oversampling`]）。倍数决定的是**天花板怎么算**:
+    /// [`GainBound::TruePeakCeiling`] 的 `allowed_db = ceiling − before.true_peak_dbtp`,
+    /// 因此 `before` 按 8× 测、而导出文件按 16× 读时, 天花板在 16× 口径下会差 0.027 dB
+    /// （实测, 见判据 `both_normalize_readings_share_one_oversampling`）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::apply`] 相同（采样率不受支持 ⇒ `None`）。
+    #[must_use]
+    pub fn apply_at(
+        &self,
+        sample_rate: u32,
+        left: &mut [f32],
+        right: &mut [f32],
+        oversampling: TruePeakOversampling,
+    ) -> Option<NormalizeOutcome> {
+        let before = measure_master_at(sample_rate, left, right, oversampling)?;
         let mut gain_db = 0.0f32;
         let mut bound = GainBound::NothingToDo;
 
@@ -344,7 +429,7 @@ impl ExportPreset {
             }
         }
 
-        let after = measure_master(sample_rate, left, right)?;
+        let after = measure_master_at(sample_rate, left, right, oversampling)?;
         Some(NormalizeOutcome {
             gain_db,
             bound,
@@ -490,6 +575,9 @@ fn require_finite_samples(samples: &[f32]) -> Result<(), MasterExportError> {
 ///    不会在这里变成非有限值（论证见函数体内那段注释）;
 /// 3. **测量**: 用第 2 步返回的 `after`（在**抖动之前**的浮点母带上测的），
 ///    经 [`MasterLoudness::to_bext_loudness`] 写进 `bext` v2 的 EBU R128 块;
+///    `after.true_peak_dbtp` 及其写进 `bext` 的 `MaxTruePeakLevel` 都是
+///    [`MASTERING_TRUE_PEAK_OVERSAMPLING`]（**16×**）口径 —— 这是"导出天花板"的口径,
+///    见模块文档 §"真峰值的口径";
 /// 4. **抖动/量化**: [`crate::dither::quantize`]（16/24 位走 TPDF, 32f 透传）;
 /// 5. **容器**: [`ContainerPlan::for_payload`] + [`write_container`]。
 ///
@@ -641,6 +729,10 @@ fn sha256_of(bytes: &[u8]) -> [u8; 32] {
 /// 信号被遍历三遍（短时窗口扫描、门限积分两遍）。这是**离线**接口, 代价可接受;
 /// 实时路径不许调用它（本 crate 的契约本来就是"完全离线", 见 crate 的模块头文档）。
 ///
+/// 真峰值按 [`MASTERING_TRUE_PEAK_OVERSAMPLING`]（**16×**）测量 —— 母带这一侧的口径,
+/// 依据见模块文档 §"真峰值的口径"。要指定倍数（例如逐通道计量的 8×）用
+/// [`measure_master_at`]。
+///
 /// # 声道长度不等时按**较短者**测量
 ///
 /// 三处读数全部只覆盖 `min(left.len(), right.len())` 帧:
@@ -657,13 +749,47 @@ fn sha256_of(bytes: &[u8]) -> [u8; 32] {
 /// ⇒ 输出仍然超过上限（判据 `tests::a_true_peak_ceiling_is_really_achieved_on_ragged_channels`）。
 #[must_use]
 pub fn measure_master(sample_rate: u32, left: &[f32], right: &[f32]) -> Option<MasterLoudness> {
+    measure_master_at(sample_rate, left, right, MASTERING_TRUE_PEAK_OVERSAMPLING)
+}
+
+/// 与 [`measure_master`] 相同, 但**显式指定**真峰值过采样倍数。
+///
+/// 两次调用（同一个信号、两个倍数）除 [`MasterLoudness::true_peak_dbtp`] 与
+/// [`MasterLoudness::oversampling`] 之外**每一项都相同**: 响度三件套（积分、瞬时、短时）
+/// 与真峰值检测器无关, 本函数只把倍数喂给两个检测器。
+///
+/// # 为什么倍数必须显式给出
+///
+/// `yeban_dsp::meter::TruePeakDetector::new()` 给的是 8×, 而母带母线 / 导出天花板按
+/// 上游台账 §2.5 的结论要用 16×。若把倍数留给调用方"顺手用默认值", 母带这一侧就会
+/// 悄悄退回 8×（实测差 0.026969 dB, 见 [`MASTERING_TRUE_PEAK_OVERSAMPLING`]）——
+/// 这正是本函数存在的理由。
+///
+/// # 读数的口径自带
+///
+/// [`MasterLoudness::oversampling`] 记录本次用的是哪一档, 因此不必从调用链上下文
+/// 推断一个 dBTP 读数的口径。
+#[must_use]
+pub fn measure_master_at(
+    sample_rate: u32,
+    left: &[f32],
+    right: &[f32],
+    oversampling: TruePeakOversampling,
+) -> Option<MasterLoudness> {
     let rate = sample_rate as f32;
     let scan = scan_short_term(rate, left, right)?;
     let integrated_lufs = GatedLoudness::integrated_stereo_at(rate, left, right)?;
 
+    // `TruePeakOversampling` 是**封闭**的枚举, 两档都在 `yeban-dsp` 的支持集里
+    // （判据 `both_oversampling_choices_are_supported_by_the_detector` 钉住这条）。
+    // 这里 `expect` 而不是回落: 上游若有一天不再支持某一档, 母带读数**必须是红**,
+    // 不能安静地换一个倍数继续算（那正是"口径漂移"）。
+    let mut detector_left = TruePeakDetector::with_oversampling(oversampling.phases())
+        .expect("TruePeakOversampling 的两档都必须被 yeban-dsp 支持");
+    let mut detector_right = TruePeakDetector::with_oversampling(oversampling.phases())
+        .expect("TruePeakOversampling 的两档都必须被 yeban-dsp 支持");
+
     let frames = left.len().min(right.len());
-    let mut detector_left = TruePeakDetector::new();
-    let mut detector_right = TruePeakDetector::new();
     detector_left.process(&left[..frames]);
     detector_right.process(&right[..frames]);
     let true_peak = detector_left.true_peak().max(detector_right.true_peak());
@@ -674,6 +800,7 @@ pub fn measure_master(sample_rate: u32, left: &[f32], right: &[f32]) -> Option<M
         max_momentary_lufs: scan.max_momentary_lufs,
         max_short_term_lufs: scan.max_short_term_lufs,
         true_peak_dbtp: amplitude_to_dbtp(true_peak),
+        oversampling,
     })
 }
 
@@ -1732,6 +1859,201 @@ mod tests {
         left.push(1.0);
         left.extend(core::iter::repeat_n(0.0f32, 16));
         (left, right, tail_start)
+    }
+
+    /// 精确 `±1.0` 的**周期 9 方波**: 谐波落在 `k/9`, 其中 `4/9·fs` 正是
+    /// 上游台账 `docs/ledger/dsp-loudness-notes.md` §2.5 记录的两个口径的**最坏点**。
+    ///
+    /// 只用精确可表示的 `±1.0`, **不用** `sin`/`sinf`: 输入位型因此与平台 libm 无关,
+    /// 而 `TruePeakDetector::process` 只做 f32 乘加、`abs` 与比较（IEEE 精确类）
+    /// ⇒ 本夹具的线性读数**逐位**跨平台相同（ADR-0001 的 D32「按运算类别分策」,
+    /// `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md`, 现位于第 373 行起）。
+    /// 这不是"碰巧稳定", 是刻意避开超越函数。dB 值那一层走 `libm::log10f`
+    /// （超越函数类）, 因此判据里的 dB **比较**只在同一次运行内互相比较,
+    /// 不写平台相关的十进制字面量。
+    fn p9_square(frames: usize) -> Vec<f32> {
+        (0..frames)
+            .map(|index| if index % 9 < 4 { 1.0f32 } else { -1.0 })
+            .collect()
+    }
+
+    /// **母带这一侧的真峰值走 16×**, 不是 `TruePeakDetector::new()` 的 8×。
+    ///
+    /// 依据（原文）: `docs/ledger/dsp-loudness-notes.md` §2.5 的结论
+    /// "**默认 8×** …… **母带母线 / 导出天花板用 16×** —— "只付一次"的场景,
+    /// 把最坏欠读压到 −0.064 dB, 这对 `-1 dBTP` 这类硬天花板是有意义的余量";
+    /// `HD-26`（`docs/ledger/human-decisions.md`, 现位于第 57 行）同口径（"母带 16× 可选"）。
+    ///
+    /// 判别力（本机实测, 硬红字面量）: 同一个周期 9 方波, 8× 的线性读数是
+    /// `0x3FB2A846`、16× 是 `0x3FB33680`。把 [`MASTERING_TRUE_PEAK_OVERSAMPLING`]
+    /// 改成 [`TruePeakOversampling::Eight`] ⇒ 红在"母带读数不是 16× 口径"。
+    #[test]
+    fn the_mastering_true_peak_uses_the_sixteen_times_oversampling() {
+        let signal = p9_square(48_000);
+
+        let mut eight = TruePeakDetector::with_oversampling(8).expect("8× 必须可选");
+        let mut sixteen = TruePeakDetector::with_oversampling(16).expect("16× 必须可选");
+        eight.process(&signal);
+        sixteen.process(&signal);
+        assert_eq!(eight.true_peak().to_bits(), 0x3FB2_A846, "8× 的线性读数");
+        assert_eq!(sixteen.true_peak().to_bits(), 0x3FB3_3680, "16× 的线性读数");
+        assert!(
+            sixteen.true_peak() > eight.true_peak(),
+            "这个夹具必须让两个口径分开, 否则本判据没有区分力"
+        );
+        // 收紧量是**超越函数类**（两个 `libm::log10f` 之差）: 按 ADR-0001:379-383 的
+        // 4096 ulp 预算给容差。本机实测 0.026969 dB, 余量约 27×。
+        let db_tightening =
+            amplitude_to_dbtp(sixteen.true_peak()) - amplitude_to_dbtp(eight.true_peak());
+        assert!(
+            (0.02..0.04).contains(&db_tightening),
+            "16× 相对 8× 的收紧量本机实测 0.026969 dB, 实际 {db_tightening}"
+        );
+
+        let measured = measure_master(48_000, &signal, &signal).expect("48 kHz");
+        assert_eq!(
+            measured.oversampling,
+            TruePeakOversampling::Sixteen,
+            "母带读数的口径必须自带, 且必须是 16×"
+        );
+        assert_eq!(
+            measured.true_peak_dbtp.to_bits(),
+            amplitude_to_dbtp(sixteen.true_peak()).to_bits(),
+            "母带读数不是 16× 口径: 实际 {} dBTP",
+            measured.true_peak_dbtp
+        );
+        assert_ne!(
+            measured.true_peak_dbtp.to_bits(),
+            amplitude_to_dbtp(eight.true_peak()).to_bits(),
+            "8× 与 16× 在这个夹具上必须给出不同的读数"
+        );
+    }
+
+    /// 显式 **8×** 的入口与 `TruePeakDetector::new()`（8× 默认）**逐位**一致
+    /// ⇒ 本切片没有动"逐通道计量"那一档。
+    #[test]
+    fn the_explicit_eight_times_entry_matches_the_detector_default() {
+        let signal = p9_square(48_000);
+        let measured = measure_master_at(48_000, &signal, &signal, TruePeakOversampling::Eight)
+            .expect("48 kHz");
+        assert_eq!(measured.oversampling, TruePeakOversampling::Eight);
+
+        let mut default_detector = TruePeakDetector::new();
+        default_detector.process(&signal);
+        assert_eq!(default_detector.oversampling(), 8, "new() 必须是 8×");
+        assert_eq!(
+            measured.true_peak_dbtp.to_bits(),
+            amplitude_to_dbtp(default_detector.true_peak()).to_bits(),
+            "显式 8× 必须与检测器默认口径同值"
+        );
+    }
+
+    /// 两个口径都被 `yeban-dsp` 接受（否则 [`measure_master_at`] 会 panic,
+    /// 那是"口径漂移"而不是静默回落）。
+    #[test]
+    fn both_oversampling_choices_are_supported_by_the_detector() {
+        for choice in [TruePeakOversampling::Eight, TruePeakOversampling::Sixteen] {
+            let detector = TruePeakDetector::with_oversampling(choice.phases());
+            assert!(
+                detector.is_some(),
+                "yeban-dsp 不再支持 {}× —— measure_master_at 会 panic, 必须显式处理",
+                choice.phases()
+            );
+            assert_eq!(
+                detector.expect("上面刚断言过").oversampling(),
+                choice.phases()
+            );
+        }
+        assert_eq!(TruePeakOversampling::Eight.phases(), 8);
+        assert_eq!(TruePeakOversampling::Sixteen.phases(), 16);
+        assert_eq!(
+            MASTERING_TRUE_PEAK_OVERSAMPLING,
+            TruePeakOversampling::Sixteen,
+            "母带口径就是台账 §2.5 的 16×"
+        );
+    }
+
+    /// [`NormalizeOutcome`] 的**两次测量共用同一个口径**。
+    ///
+    /// 混用会让 `before` 与 `after` 不可比: 增益是按 `before` 算的, 而"上限是否真的被
+    /// 达到"是按 `after` 读的。8× 与 16× 在同一条信号上差 0.027 dB（见上一条判据）
+    /// ⇒ 混用会让 `GainBound::TruePeakCeiling` 的结论失真。判据同时钉住"两个字段都等于
+    /// 请求的那一档", 因此 `before` 用参数、`after` 写死常数这类半途而废的写法会红。
+    #[test]
+    fn both_normalize_readings_share_one_oversampling() {
+        for choice in [TruePeakOversampling::Eight, TruePeakOversampling::Sixteen] {
+            let signal = p9_square(48_000);
+            let (mut left, mut right) = (signal.clone(), signal);
+            let outcome = ExportPreset::new(None, Some(0.0))
+                .apply_at(48_000, &mut left, &mut right, choice)
+                .expect("48 kHz");
+            assert_eq!(
+                outcome.before.oversampling, choice,
+                "增益之前的测量口径不对"
+            );
+            assert_eq!(
+                outcome.after.oversampling, choice,
+                "增益之后的测量口径不对 —— 两次测量必须同口径"
+            );
+            assert_eq!(outcome.bound, GainBound::TruePeakCeiling);
+        }
+    }
+
+    /// **导出天花板的口径落到容器**: [`export_master`] 写进 `bext` v2 的
+    /// `MaxTruePeakLevel` 是 **16×** 的读数, 不是 8× 的。
+    ///
+    /// 归一化用**已经满足的上限** `Some(3.5)` dBTP（夹具的真峰值 ≈ 2.92 dBTP）
+    /// ⇒ 增益恒 `0.0`、样本逐位不改、`after == before`, 于是 `bext` 里就是输入信号
+    /// 自身那一档的读数 —— 口径因此成为唯一变量。
+    ///
+    /// 本机实测（0.01 dBTP 刻度）: 16× ⇒ **292**, 8× ⇒ **290**。判据按**同一次运行内**
+    /// 算出的两个值比较, 不写平台相关的十进制字面量。
+    #[test]
+    fn the_export_lands_the_sixteen_times_true_peak_in_the_bext() {
+        let signal = p9_square(48_000);
+        let mut master = master_output(&signal, &signal);
+        let before: Vec<u32> = master.samples.iter().map(|s| s.to_bits()).collect();
+        let mut rng = seed_rng(0x0BAD_C0DE_DEAD_BEEF);
+
+        let export = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::new(None, Some(3.5)),
+            BitDepth::Int24,
+            ContainerKind::Rf64,
+            &metadata(),
+            &mut rng,
+        )
+        .expect("导出必须成功");
+
+        assert_eq!(export.outcome.bound, GainBound::NothingToDo);
+        assert_eq!(export.outcome.gain_db, 0.0);
+        assert_eq!(
+            before,
+            master
+                .samples
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            "上限本就满足 ⇒ 样本必须逐位不改"
+        );
+
+        let mut sixteen = TruePeakDetector::with_oversampling(16).expect("16×");
+        sixteen.process(&signal);
+        let mut eight = TruePeakDetector::with_oversampling(8).expect("8×");
+        eight.process(&signal);
+        let landed = Loudness::from_dbtp(amplitude_to_dbtp(sixteen.true_peak()));
+        let eight_only = Loudness::from_dbtp(amplitude_to_dbtp(eight.true_peak()));
+        assert_ne!(landed, eight_only, "两个口径必须给出不同的 bext 值");
+        assert_eq!(
+            export
+                .bext
+                .loudness
+                .expect("v2 模板必带响度块")
+                .max_true_peak_level,
+            landed,
+            "bext 的 MaxTruePeakLevel 必须是 16× 口径（本机实测 292, 8× 是 290）"
+        );
     }
 
     /// **参差声道的真峰值口径**: 长边多出来的尾巴**不得**进真峰值读数。
