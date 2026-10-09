@@ -1232,3 +1232,203 @@ fn new_op_names_match_their_json_tags() {
         assert_eq!(back, op, "必须能往返");
     }
 }
+
+// ---------------------------------------------------------------------------
+// ⑨ 位置规则：泳道挂在"目标自己的音轨"上（唯一求值入口的可达性）
+// ---------------------------------------------------------------------------
+
+/// ⑨a 内存构造：泳道被塞进**别的**音轨的 `automation_lanes` ⇒ 文档必须被拒。
+///
+/// 这条与 ⑧c 的差别是本判据存在的理由：`automation_lanes` 的键就是 `lane.target`，
+/// 因此"键 == 载荷"那条比对在这里**恒真**（`insert(f.volume, lane)` 的键与载荷逐位相同），
+/// 位置错误只能由"目标所指的音轨 != 宿主音轨"这一条抓住。
+#[test]
+fn a_lane_filed_under_a_foreign_track_is_rejected() {
+    let (mut doc, f) = fixture();
+    let master = doc.master_bus_track_id;
+    assert_ne!(master, f.lead, "夹具必须有两条音轨，否则本判据空跑");
+
+    // 键与载荷逐位相同（不是 ⑧c 那种"键 != 载荷"）。
+    let parked = lane(f.volume, vec![point(100, 0, -6.0, CurveType::Linear)]);
+    assert_eq!(parked.target, f.volume);
+    doc.tracks
+        .get_mut(&master)
+        .expect("master")
+        .automation_lanes
+        .insert(f.volume, parked.clone());
+
+    // 见证一：泳道**确实**在 master 的数组里（不是"没插进去"）。
+    assert_eq!(
+        doc.tracks
+            .get(&master)
+            .and_then(|track| track.automation_lanes.get(&f.volume))
+            .cloned(),
+        Some(parked),
+        "泳道必须真的被塞进了 master 的数组"
+    );
+    // 见证二：唯一求值入口按目标查（lead），因此读不到它 —— 这就是"静默失效"。
+    assert!(
+        doc.automation_lane(&f.volume).is_none(),
+        "唯一求值入口只查目标自己的音轨，挂错音轨的泳道读不到"
+    );
+    // 于是文档必须被拒绝，而不是让两个消费者各看到一件事。
+    assert!(matches!(
+        doc.validate(),
+        Err(ModelError::AutomationLaneTargetMismatch { .. })
+    ));
+}
+
+/// ⑨b 字节边界：位置错误**可以由 JSON 表达**，且反序列化 + 校验必须拒绝。
+///
+/// 做法是拿一份合法样本，把某个音轨数组里的一条泳道元素**原样搬进**另一条音轨的数组：
+/// 元素本身逐字节未改，只有它所在的数组变了。这证明 ⑨a 抓的不是"内存里手搓的畸形"，
+/// 而是"磁盘上真的写得出"的形态。
+#[test]
+fn a_lane_moved_into_another_tracks_json_array_is_rejected() {
+    use serde_json::Value;
+
+    let doc = yeban_model::samples::filled_project();
+    let mut value: Value = serde_json::to_value(&doc).expect("serialize");
+    let tracks = value
+        .get_mut("tracks")
+        .and_then(Value::as_object_mut)
+        .expect("tracks 必须是对象");
+
+    let donor = tracks
+        .iter()
+        .find(|(_, track)| {
+            track
+                .get("automation_lanes")
+                .and_then(Value::as_array)
+                .is_some_and(|lanes| !lanes.is_empty())
+        })
+        .map(|(key, _)| key.clone())
+        .expect("规范样本里必须有一条带泳道的音轨");
+    let host = tracks
+        .keys()
+        .find(|key| **key != donor)
+        .cloned()
+        .expect("规范样本里必须有第二条音轨");
+
+    let moved = tracks
+        .get_mut(&donor)
+        .and_then(|track| track.get_mut("automation_lanes"))
+        .and_then(Value::as_array_mut)
+        .expect("donor 的 automation_lanes 必须是数组")
+        .remove(0);
+    tracks
+        .get_mut(&host)
+        .and_then(|track| track.get_mut("automation_lanes"))
+        .and_then(Value::as_array_mut)
+        .expect("host 的 automation_lanes 必须是数组")
+        .push(moved);
+
+    let broken: YebanProjectV1 =
+        serde_json::from_value(value).expect("搬动之后的字节仍然是合法的 JSON 形状");
+    let host_id = EntityId::from_str(&host).expect("轨道键必须是规范 ULID");
+    let donor_id = EntityId::from_str(&donor).expect("轨道键必须是规范 ULID");
+    let parked = broken
+        .tracks
+        .get(&host_id)
+        .and_then(|track| track.automation_lanes.keys().next().copied())
+        .expect("搬动之后 host 音轨上必须有一条泳道");
+    assert_eq!(
+        parked.track_id(),
+        donor_id,
+        "搬过来的泳道仍然指向原来的音轨（元素本身未改）"
+    );
+    assert!(
+        broken.automation_lane(&parked).is_none(),
+        "见证：搬动后唯一求值入口读不到它"
+    );
+    assert!(matches!(
+        broken.validate(),
+        Err(ModelError::AutomationLaneTargetMismatch { .. })
+    ));
+}
+
+/// ⑨c 三份规范样本：每一条泳道都必须能被它自己的目标**读到**（合法文档的不变式）。
+///
+/// 这是位置规则的**正向**半边：拒绝畸形只是手段，目的是"凡是合法文档，
+/// 逐轨遍历（界面投影）看到的泳道集合与按目标查（求值入口）看到的**是同一批**"。
+#[test]
+fn every_lane_of_a_valid_sample_is_reachable_through_its_own_target() {
+    let samples = [
+        ("default", yeban_model::samples::default_project()),
+        ("filled", yeban_model::samples::filled_project()),
+        ("demo", yeban_model::samples::demo_project()),
+    ];
+    let mut seen = 0_usize;
+    for (name, project) in samples {
+        project
+            .validate()
+            .unwrap_or_else(|error| panic!("样本 {name} 必须合法: {error}"));
+        for (track_id, track) in &project.tracks {
+            assert_eq!(*track_id, track.id, "样本 {name}: 集合键必须等于实体 id");
+            for (target, lane) in &track.automation_lanes {
+                assert_eq!(
+                    target.track_id(),
+                    track.id,
+                    "样本 {name}: 泳道必须挂在目标自己的音轨上"
+                );
+                assert_eq!(
+                    project.automation_lane(target),
+                    Some(lane),
+                    "样本 {name}: 每条泳道都必须能被唯一求值入口读到"
+                );
+                seen += 1;
+            }
+        }
+    }
+    assert!(
+        seen > 0,
+        "三份样本合起来必须至少有一条泳道，否则本判据是空跑"
+    );
+}
+
+/// ⑨d 边界（**刻意不收紧**的那一半）：`validate()` 只强制**位置**，不强制**存在性**。
+///
+/// `Op::RemoveDevice` 是合法操作，而它会让 `DeviceParam` 目标悬空（设备链是 `Vec`，
+/// 下标寻址）。因此"目标还存在吗"这条对账**不能**进 `validate()` —— 否则一次合法的
+/// 设备移除就会造出一份自己校验不过的文档。存在性由唯一求值入口如实报具体错误。
+#[test]
+fn a_device_removal_legally_leaves_a_dangling_target_that_validate_still_accepts() {
+    let (mut doc, f) = fixture();
+    doc.tracks
+        .get_mut(&f.lead)
+        .expect("lead")
+        .automation_lanes
+        .insert(
+            f.param,
+            lane(f.param, vec![point(100, 0, 1200.0, CurveType::Linear)]),
+        );
+
+    let previous_device = doc
+        .tracks
+        .get(&f.lead)
+        .expect("lead")
+        .devices
+        .first()
+        .cloned()
+        .expect("夹具的 lead 必须有设备");
+    Op::RemoveDevice {
+        track_id: f.lead,
+        slot_index: 0,
+        previous_device,
+    }
+    .apply(&mut doc)
+    .expect("移除设备是合法操作");
+
+    assert_eq!(
+        doc.validate(),
+        Ok(()),
+        "位置规则不涉及目标存在性 ⇒ 悬空目标仍然让文档合法"
+    );
+    assert!(
+        matches!(
+            doc.automation_value_at(&f.param, 0),
+            Err(ModelError::DeviceSlotOutOfRange { .. })
+        ),
+        "存在性由唯一求值入口报**具体**错误，而不是在校验期假装它没问题"
+    );
+}

@@ -280,12 +280,21 @@ pub enum ModelError {
         embedded: AssetHash,
     },
 
-    /// 自动化泳道的键与其 `target` 不一致。
-    #[error("automation lane key `{key}` does not match embedded target `{embedded}`")]
+    /// 自动化泳道的目标与它在文档里的**位置**不一致。两种情形共用本变体：
+    ///
+    /// 1. `TrackV3::automation_lanes` 的**键**与该泳道内部携带的 `lane.target` 不一致
+    ///    （键 ≠ 载荷）；
+    /// 2. 泳道挂在了**别的**音轨的 `automation_lanes` 里 —— 即 `target.track_id()`
+    ///    不等于宿主音轨的 `id`（`AutomationTarget::track_id` 的文档把"泳道在文档里的
+    ///    位置"定义为该目标自己的音轨）。
+    ///
+    /// 两种情形都让同一份文档在不同消费者眼里成为两件事（唯一求值入口按目标查、
+    /// 界面投影按音轨遍历），因此一律**响亮拒绝**而不是猜一个。
+    #[error("automation lane target does not match its position: {key} vs {embedded}")]
     AutomationLaneTargetMismatch {
-        /// 集合键（目标调试形式）。
+        /// 情形 1：集合键（目标调试形式）；情形 2：宿主音轨身份（规范 ULID 文本）。
         key: String,
-        /// 泳道内部携带的目标调试形式。
+        /// 情形 1：泳道内部携带的目标调试形式；情形 2：目标音轨身份（规范 ULID 文本）。
         embedded: String,
     },
 

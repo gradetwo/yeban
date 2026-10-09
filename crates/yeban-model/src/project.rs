@@ -1198,6 +1198,8 @@ impl TrackV3 {
     ///
     /// - 音量/声相非有限 → [`ModelError::NonFiniteValue`]；
     /// - 声相越界 → [`ModelError::PanOutOfRange`]；
+    /// - 自动化泳道的键与 `lane.target` 不一致，或泳道的目标指向**别的**音轨
+    ///   → [`ModelError::AutomationLaneTargetMismatch`]；
     /// - 设备/宏/自动化/摆放非法 → 冒泡对应错误。
     pub fn validate(&self) -> Result<(), ModelError> {
         if !self.volume_db.is_finite() {
@@ -1226,6 +1228,24 @@ impl TrackV3 {
                 return Err(ModelError::AutomationLaneTargetMismatch {
                     key: format!("{target:?}"),
                     embedded: format!("{:?}", lane.target),
+                });
+            }
+            // 位置规则：泳道必须挂在**它自己的目标所指的那条音轨**上。
+            //
+            // 依据：[`AutomationTarget::track_id`] 的文档把"泳道在文档里的位置"定义为该目标
+            // 自己的音轨。而 `automation_lanes` 的 JSON 形态是**数组**（数组元素的键就是
+            // `lane.target`），因此上面那条"键 == 载荷"的比对在**反序列化得到的**文档上
+            // 恒真 —— "泳道挂在别的音轨上"这一种自相矛盾只能在这里拦住。
+            //
+            // 为什么不能放行：唯一求值入口 [`YebanProjectV1::automation_lane`] 只查目标
+            // 自己的音轨，因此挂错音轨的泳道**永远读不到**（静默失效）；而按音轨遍历的
+            // 消费者（界面投影逐轨读 `automation_lanes`）却会把这条曲线画出来。同一份
+            // 文档在两个消费者眼里成为两件事，且没有任何报错 —— 按 [ADR-0001 D43]
+            // "让损坏的文件响亮失败"的口径，这是必须拒绝的自相矛盾输入。
+            if target.track_id() != self.id {
+                return Err(ModelError::AutomationLaneTargetMismatch {
+                    key: self.id.to_canonical_string(),
+                    embedded: target.track_id().to_canonical_string(),
                 });
             }
             lane.validate()?;
