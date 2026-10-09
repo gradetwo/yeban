@@ -335,15 +335,19 @@ pub struct EngineSnapshot {
     /// 它**不是**模型的第二份定义，等模型线补齐后应整体删除
     /// （见 `docs/ledger/engine-mix-notes.md` 的 needs 与 [`crate::synth::ToneParams`]）。
     tones: BTreeMap<EntityId, ToneParams>,
-    /// 每轨的**插入链**（两件器件：通道条（其动态级即压缩器）与混响）
+    /// 每轨的**插入链**（三件器件：通道条（其动态级即压缩器）、混响与卷积混响）
     /// [ARCH-RT-001, ARCH-DET-001]。
     ///
     /// ⚠ **引擎侧临时形状**（与 [`Self::tones`] 同族）：`yeban-model` 还没有
     /// "效果器参数 → 音频线程"的投影（`docs/ledger/engine-mix-notes.md` §8.2 的 N5），
     /// 因此这里由 [`InsertParams::from_devices`] 从 `TrackV3.devices` 的
     /// `InternalEffect` 设备的 `params` 里按**约定参数名**抽取
-    /// （两件器件各自的规则见 [`crate::insert`] 模块文档 §4 与 §8）。
+    /// （三件器件各自的规则见 [`crate::insert`] 模块文档 §4、§8 与 §9）。
     /// 模型线补齐后本投影应整体删除（见 [`crate::insert`] 模块文档 §5）。
+    ///
+    /// ⚠ 卷积混响那一件**不只带参数**：模型层的 `ParameterValue` 只有 `name`/`value`/`unit`
+    /// 三个字段，放不下器件的 IR（一段 `&[f32]`）⇒ 本表里的 [`crate::insert::ConvolutionPlan`]
+    /// 带着一份**构造期合成好**的 IR。理由与出处见 [`crate::insert`] 模块文档 §9.1／§9.2。
     ///
     /// 只收录**非空**的链（[`InsertParams::is_empty`] 为假的那些）：
     /// "不在表里"与"表里是空链"在实时侧同解 ⇒ 这个容器的大小只与"真的挂了几台插入器件"有关，
@@ -473,10 +477,14 @@ impl EngineSnapshot {
         let mut inserts: BTreeMap<EntityId, InsertParams> = BTreeMap::new();
         // 只收录识别出鼓机的轨道（见 `EngineSnapshot::drums` 的字段文档）。
         let mut drums: BTreeMap<EntityId, DrumsParams> = BTreeMap::new();
+        // 三件插入器件里**只有卷积混响**需要采样率：它的 IR 帧数是 `采样率 ÷ 10` 的
+        // 引擎常量，而 IR 本身在**这里**（控制线程的构造期）合成 —— 模型层没有承载
+        // 样本数组的字段，理由与两处出处见 `crate::insert` 模块文档 §9.1／§9.2。
+        let sample_rate = project.audio_config.sample_rate.hz();
         for (id, track) in &project.tracks {
             tracks.insert(*id, TrackParams::from_track(track, latencies.get(id)));
             tones.insert(*id, ToneParams::from_devices(&track.devices));
-            let insert = InsertParams::from_devices(&track.devices);
+            let insert = InsertParams::from_devices(&track.devices, sample_rate);
             if !insert.is_empty() {
                 inserts.insert(*id, insert);
             }

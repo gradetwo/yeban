@@ -126,6 +126,27 @@
 //! ⚠ **本目标只测四元组里的两个分量**（`allocations` / `deallocations`）：
 //! 它没有锁探针，也没有 I/O 边界（那是 `tests/rt_zero_alloc.rs` 的
 //! `[MUST-GATE-001]` 目标）。因此本文件的全部场景**不**声称"六分量全 0"。
+//!
+//! # 场景 17 / 18（`line/engine-7` 追加）：每轨插入**卷积混响**
+//!
+//! 卷积混响是引擎里**唯一**一件"要吃一份数据（IR）而不是只吃标量"的插入器件，因此它
+//! 与前面所有器件有**两处结构差别**，两处都必须被覆盖：
+//!
+//! 1. 它的缓冲（四条 IR 频谱 ＋ 预延迟线）在 `EngineRuntime::new` 里按**引擎常量**的
+//!    IR 长度（帧数 = 采样率 ÷ 10）建满 ⇒ 快照边界上的换 IR 只走**长度不变**那条路径
+//!    （原地复用缓冲，零分配）。器件自己的契约写在
+//!    `crates/yeban-dsp/src/convolution.rs` 的 `set_impulse_response` 文档里
+//!    （现位于第 271 行）："**长度不变**时缓冲区原地复用（此时零分配）；长度改变时按
+//!    新长度重新分配"。
+//! 2. 那条边界上**重设 IR** 会重算 `分区数` 次 256 点变换（0.1 秒 IR 是 38 次/核）——
+//!    那是乘加，不是分配，但它是本文件里**唯一**一处"快照边界有非平凡计算量"的路径。
+//!    因此场景 18 显式走一次：把 `conv_ir_decay_s` 改掉再发布 ⇒ 内容标识
+//!    （`ConvolutionPlan::ir_hash`）不同 ⇒ 走 `set_impulse_response`，断言仍零分配。
+//!
+//! 场景 17 用两条轨（一条同时带通道条＋卷积混响、一条只有卷积混响）跑 10,000 个量子；
+//! 场景 18 做 31 次**等价**重新武装（内容标识相同 ⇒ 只 `set_params`）、1 次**换 IR**、
+//! 1 次 **44.1 kHz**（IR 帧数变 ⇒ 引擎拒绝重建缓冲并按设备数计数）与 1 次换回 48 kHz。
+//! 覆盖度自检取**整窗的精确帧数**（`2 × 10,001 × 128`），不是"大于 0"。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -1722,6 +1743,352 @@ fn main() -> ExitCode {
         failures.push("换采样率把已武装的参数目标丢了 —— α 重算不该复位平滑器".to_owned());
     }
 
+    // ---- 场景 17：**每轨插入卷积混响**（`crate::insert` 的第三件器件）在实时窗口内零分配 ----
+    //
+    // 为什么必须单独一个场景（本场景与前面所有场景的**结构差别**）：
+    // 卷积混响是引擎里**唯一**一件"要吃一份数据（IR）而不是只吃标量"的插入器件。本票
+    // 把那条数据流按"构造期预建 + 快照边界同长度换 IR"的形状接上（`crate::insert`
+    // 模块文档 §9.2／§9.5）：
+    //   * IR 的**长度**是引擎常量 ⇒ 每个槽位的频谱缓冲在 `EngineRuntime::new` 里建满；
+    //   * 快照边界只允许**长度不变**的 `set_impulse_response`（原地复用缓冲）与 `set_params`。
+    // 这条判据就是那个说法的运行期证据：10,000 个量子（逐样本路径）必须零分配零释放
+    // [MUST-GATE-001, ARCH-RT-001]。
+    //
+    // 夹具设计（每一项都对应一件事）：
+    //   * 两条轨，各自的音符都铺满整个窗口（沿用 `saturated_notes`）；
+    //   * 轨 A 的**同一台设备**同时带通道条**与**卷积混响旋钮（覆盖"一条轨上三级串联"）；
+    //   * 轨 B 只有卷积混响旋钮（覆盖"一台设备只出卷积混响"）；
+    //   * `conv_wet = 1.0` ⇒ 器件每个量子都在处理（`is_active()` 恒真）。
+    let (mut conv_project, conv_strip_track, conv_only_track) =
+        two_track_project(&saturated_notes(), &saturated_notes());
+    {
+        let entry = conv_project
+            .tracks
+            .get_mut(&conv_strip_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Strip+Convolution".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "eq_low_gain".to_owned(),
+                    value: 6.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "threshold_db".to_owned(),
+                    value: -30.0,
+                    unit: Some("dB".to_owned()),
+                },
+                ParameterValue {
+                    name: "ratio".to_owned(),
+                    value: 8.0,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "conv_wet".to_owned(),
+                    value: 1.0,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "conv_dry".to_owned(),
+                    value: 0.5,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "conv_ir_decay_s".to_owned(),
+                    value: 0.35,
+                    unit: Some("s".to_owned()),
+                },
+                ParameterValue {
+                    name: "conv_ir_seed".to_owned(),
+                    value: 7.0,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    {
+        let entry = conv_project
+            .tracks
+            .get_mut(&conv_only_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices = vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Convolution".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "conv_wet".to_owned(),
+                    value: 0.8,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "conv_predelay_s".to_owned(),
+                    value: 0.02,
+                    unit: Some("s".to_owned()),
+                },
+                ParameterValue {
+                    name: "conv_ir_seed".to_owned(),
+                    value: 11.0,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        }];
+    }
+    let conv_snapshot = EngineSnapshot::from_project(&conv_project, 1).expect("卷积混响夹具快照");
+    if conv_snapshot.inserts().len() != 2 {
+        failures.push(format!(
+            "卷积混响夹具应有 2 条插入链（两条轨各一台设备），实际 {} 条",
+            conv_snapshot.inserts().len()
+        ));
+    }
+    let conv_slot = SnapshotSlot::new(conv_snapshot);
+    let (conv_retire, mut conv_queue) = retire_channel(64);
+    let (_sender, conv_receiver) = event_channel(64);
+    let (conv_publisher, _conv_collector) = meter_channel(8192);
+    let mut conv_runtime =
+        EngineRuntime::new(&conv_slot, conv_retire, conv_receiver, conv_publisher);
+    let mut conv_output = vec![0.0f32; 128 * 2];
+    // 首次武装（`set_impulse_response` 同长度换 IR ＋ `set_params`）与首个量子。
+    // 频谱缓冲与预延迟线本身在 `new` 里就分配好了（那是本器件唯一的分配点）。
+    // ⚠ 这一步**在测量窗口里**（与前面几个场景的"预热"不同）：它是"池的预建长度
+    // 必须等于投影的长度"这条契约的**唯一**拦截点 —— 若两处用了不同的长度，
+    // `set_impulse_response` 会在这里重建缓冲（分配），而后面每一次同长度的换 IR
+    // 都会是零分配 ⇒ 只有这个窗口能看见它。
+    let (first_allocations, first_deallocations) =
+        measure("convolution first arm + quantum", || {
+            conv_runtime.process_quantum(&mut conv_output, 2);
+        });
+    if first_allocations != 0 || first_deallocations != 0 {
+        failures.push(format!(
+            "卷积混响**首次武装**时分配/释放了内存: allocations={first_allocations} \
+             deallocations={first_deallocations} —— 两条已知成因：池的预建 IR 长度与投影的 \
+             长度不一致（器件会按新长度重建缓冲），或那条路径自己造了临时缓冲 \
+             （例如改用会在方法内分配零切片的入口）",
+        ));
+    }
+    if conv_runtime.armed_convolution_slot_count() != 2 {
+        failures.push(format!(
+            "卷积混响夹具应武装 2 台，实际 {} 台",
+            conv_runtime.armed_convolution_slot_count()
+        ));
+    }
+    if conv_runtime.armed_convolution_sample_rate() != 48_000 {
+        failures.push(format!(
+            "卷积混响缓冲池应按初始快照的 48 kHz 预建，实际 {} Hz",
+            conv_runtime.armed_convolution_sample_rate()
+        ));
+    }
+    let conv_ir_frames = yeban_engine::insert::convolution_ir_frames(48_000);
+    for (label, track) in [
+        ("通道条＋卷积混响", conv_strip_track),
+        ("只有卷积混响", conv_only_track),
+    ] {
+        if conv_runtime.armed_convolution(&track).is_none() {
+            failures.push(format!("{label} 那条轨必须武装进实时侧"));
+        }
+        if conv_runtime.armed_convolution_ir_frames(&track) != Some(conv_ir_frames) {
+            failures.push(format!(
+                "{label} 那条轨武装的 IR 帧数应为 {conv_ir_frames}，实际 {:?}",
+                conv_runtime.armed_convolution_ir_frames(&track)
+            ));
+        }
+    }
+
+    let mut conv_nonzero = 0usize;
+    let (allocations, deallocations) = measure("insert convolution 10_000 quanta", || {
+        for _ in 0..10_000 {
+            conv_runtime.process_quantum(&mut conv_output, 2);
+            for sample in &conv_output {
+                if *sample != 0.0 {
+                    conv_nonzero += 1;
+                }
+            }
+        }
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "每轨插入卷积混响在实时窗口内分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations}"
+        ));
+    }
+    if conv_nonzero == 0 {
+        failures.push("卷积混响窗口里没有任何非零样本 —— 零分配判据是空转（假绿）".to_owned());
+    }
+    let conv_stats = conv_runtime.stats();
+    // 覆盖度：取**整窗的精确帧数**（与场景 9 同款），不是"大于 0"。
+    let expected_conv_frames = 2 * (10_000 + 1) * 128;
+    if conv_stats.insert_convolution_frames != expected_conv_frames {
+        failures.push(format!(
+            "卷积混响整窗处理帧数={}（期望 {} = 2 条轨 × 10,001 个量子 × 128 帧）—— \
+             这条零分配判据没有覆盖整条逐样本路径",
+            conv_stats.insert_convolution_frames, expected_conv_frames
+        ));
+    }
+    if conv_stats.insert_convolution_rejects != 0 {
+        failures.push(format!(
+            "采样率没有变、IR 合法，卷积混响不该被拒绝武装，实际拒绝 {} 次",
+            conv_stats.insert_convolution_rejects
+        ));
+    }
+    println!(
+        "[engine-7/J17] 插入卷积混响: quanta={} 处理帧数={} IR帧数={conv_ir_frames} \
+         非零样本={conv_nonzero} 武装采样率={}；尺寸读数（字节）：ConvolutionReverb={} \
+         EngineRuntime={}（后者**不含**池本身：池是 Box<[_; 16]>）",
+        conv_stats.quanta,
+        conv_stats.insert_convolution_frames,
+        conv_runtime.armed_convolution_sample_rate(),
+        core::mem::size_of::<yeban_engine::insert::ConvolutionReverb>(),
+        core::mem::size_of::<EngineRuntime>(),
+    );
+    // 尺寸判据（本票实测栈溢出的机械形式）：卷积混响池必须是 `Box<[_; 16]>` 而不是内联数组
+    // —— 否则 `EngineRuntime`（一个**按值返回、按值传递**的结构体）的每一个局部变量都会
+    // 背上一份 16 × `ConvolutionReverb` 的值。
+    //
+    // 门槛 `192 KiB` 的来历（**实测**）：本机 `size_of::<ConvolutionReverb>() = 5 192` 字节、
+    // `size_of::<EngineRuntime>() = 140 784` 字节（Box 版，上一条打印就是它）。
+    // 把池改回内联 `[ConvolutionReverb; 16]` 之后的值 = `140 784 + 16 × 5 192 = 223 856`
+    // 字节（算术）> 192 KiB ⇒ **本判据变红**；而那次改动在本机还实测让
+    // `tests/param_automation.rs` 的 `the_default_paths_are_bit_identical_to_no_wiring`
+    // 以 `fatal runtime error: stack overflow` 中止（SIGABRT）。
+    if core::mem::size_of::<EngineRuntime>() >= 192 * 1024 {
+        failures.push(format!(
+            "EngineRuntime 的值尺寸是 {} 字节（门槛 196 608）—— 器件池必须留在堆上（Box）",
+            core::mem::size_of::<EngineRuntime>()
+        ));
+    }
+
+    // ---- 场景 18：重新武装卷积混响（等价 / **换 IR** / 换采样率拒绝 / 换回）（都零分配）----
+    //
+    // 四段各自对应一条真实路径：
+    //   * 31 次等价交换 = **同一条 IR** ⇒ 内容标识（`ConvolutionPlan::ir_hash`）相同
+    //     ⇒ 只走 `set_params`（器件的时间状态保留，输出逐位不变）；
+    //   * 1 次**换衰减**交换 = 内容标识不同 ⇒ 走 `set_impulse_response`（**同长度**，
+    //     原地复用缓冲）⇒ **零分配**。这是全引擎唯一一处"在快照边界上重算
+    //     `分区数` 次 256 点变换"的地方：它是乘加，不是分配；
+    //   * 1 次**换采样率**交换（44.1 kHz）⇒ IR 帧数变成 `44_100 ÷ 10 = 4_410 ≠ 4_800`
+    //     ⇒ 引擎**拒绝**重建缓冲（那会 `Vec` 重分配 + 释放），整段不武装并计数
+    //     （每台设备 +1）。一个"无条件重设 IR"的实现会在这里分配 ⇒ 本场景变红；
+    //   * 1 次换回 48 kHz ⇒ 必须能重新武装（守卫是"拒绝这一份"，不是"永久停用"）。
+    let mut conv_switches = 0u64;
+    for revision in 2..=32u64 {
+        // 发布在窗口**之外**：控制线程允许分配。
+        let next = EngineSnapshot::from_project(&conv_project, revision).expect("快照");
+        conv_slot.publish(next);
+        let (allocations, deallocations) = measure("convolution re-arm + quantum", || {
+            conv_runtime.process_quantum(&mut conv_output, 2);
+        });
+        if allocations != 0 {
+            failures.push(format!(
+                "重新武装卷积混响时实时路径分配了 {allocations} 次（revision={revision}）"
+            ));
+        }
+        if deallocations != 0 {
+            failures.push(format!(
+                "重新武装卷积混响时实时线程释放了 {deallocations} 次（revision={revision}）"
+            ));
+        }
+        conv_switches += conv_queue.drain(64) as u64;
+    }
+    if conv_switches == 0 {
+        failures.push("卷积混响场景没有从退役队列回收任何旧快照 —— 场景 18 是空转".to_owned());
+    }
+    if conv_runtime.armed_convolution_slot_count() != 2 {
+        failures.push("同采样率重新武装之后两条轨的卷积混响都必须仍被武装".to_owned());
+    }
+
+    // **换 IR**（衰减旋钮改了）：同长度 ⇒ 必须零分配。
+    let mut conv_redecayed = conv_project.clone();
+    {
+        let entry = conv_redecayed
+            .tracks
+            .get_mut(&conv_only_track)
+            .expect("夹具里必须有那条 MIDI 轨");
+        entry.devices[0].params.push(ParameterValue {
+            name: "conv_ir_decay_s".to_owned(),
+            value: 0.05,
+            unit: Some("s".to_owned()),
+        });
+    }
+    let redecayed_snapshot =
+        EngineSnapshot::from_project(&conv_redecayed, 33).expect("换 IR 的快照");
+    conv_slot.publish(redecayed_snapshot);
+    let (allocations, deallocations) = measure("convolution new-IR re-arm + quantum", || {
+        conv_runtime.process_quantum(&mut conv_output, 2);
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "换一条**同长度**的 IR 时分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations} —— 同长度换 IR 必须原地复用缓冲"
+        ));
+    }
+    if conv_runtime.armed_convolution_slot_count() != 2 {
+        failures.push("换 IR 之后两条轨的卷积混响都必须仍被武装".to_owned());
+    }
+
+    // 换采样率：44.1 kHz 的快照**不**武装卷积混响（IR 帧数会变 ⇒ 缓冲要重建）。
+    let mut conv_shifted = conv_redecayed.clone();
+    conv_shifted.audio_config.sample_rate = SampleRate::Hz44100;
+    let conv_shifted_snapshot =
+        EngineSnapshot::from_project(&conv_shifted, 34).expect("换采样率快照");
+    conv_slot.publish(conv_shifted_snapshot);
+    let before_rejects = conv_runtime.stats().insert_convolution_rejects;
+    let (allocations, deallocations) =
+        measure("convolution rate-mismatch re-arm + quantum", || {
+            conv_runtime.process_quantum(&mut conv_output, 2);
+        });
+    if allocations != 0 {
+        failures.push(format!(
+            "换采样率时实时路径分配了 {allocations} 次 —— IR 缓冲绝不能在音频线程重建"
+        ));
+    }
+    if deallocations != 0 {
+        failures.push(format!(
+            "换采样率时实时线程释放了 {deallocations} 次 —— IR 缓冲绝不能在音频线程重建"
+        ));
+    }
+    let after = conv_runtime.stats();
+    if after.insert_convolution_rejects != before_rejects + 2 {
+        failures.push(format!(
+            "换采样率应按'这一份快照里的卷积混响设备数'（2 台）累加拒绝，实测 {} -> {}",
+            before_rejects, after.insert_convolution_rejects
+        ));
+    }
+    if conv_runtime.armed_convolution_slot_count() != 0 {
+        failures.push(format!(
+            "换采样率之后卷积混响必须整段不武装，实际仍武装 {} 台",
+            conv_runtime.armed_convolution_slot_count()
+        ));
+    }
+    // 换回 48 kHz：必须能重新武装（守卫是"拒绝这一份"，不是"永久停用"）。
+    let conv_back_snapshot = EngineSnapshot::from_project(&conv_redecayed, 35).expect("换回快照");
+    conv_slot.publish(conv_back_snapshot);
+    let (allocations, deallocations) = measure("convolution rate-restore re-arm + quantum", || {
+        conv_runtime.process_quantum(&mut conv_output, 2);
+    });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "换回 48 kHz 重新武装卷积混响时分配/释放: allocations={allocations} \
+             deallocations={deallocations}"
+        ));
+    }
+    if conv_runtime.armed_convolution_slot_count() != 2 {
+        failures.push("换回 48 kHz 之后两条轨的卷积混响必须重新武装".to_owned());
+    }
+    println!(
+        "[engine-7/J18] 卷积混响重新武装: 等价交换={} 次；换 IR 1 次；换采样率后拒绝累计={} 次；\
+         武装采样率={} Hz",
+        conv_switches,
+        conv_runtime.stats().insert_convolution_rejects,
+        conv_runtime.armed_convolution_sample_rate(),
+    );
+
     // ---- 场景 15：`EngineStats` 的**跨线程只读镜像**（设备腿形态）----
     //
     // 为什么必须单独一个场景：前面 14 个场景都在**同一条线程**上既渲染又读统计
@@ -1908,6 +2275,9 @@ fn main() -> ExitCode {
              + 31 次鼓机重新武装 + 换采样率 / 换键位映射 / 换回复音合成器 \
              + 10,000 量子波形选择＋两条振荡器支路 + 31 次振荡器重新武装 \
              + 10,000 量子实时侧参数目标表（事件边界 + 逐样本乘法）+ 换采样率的 α 重算 \
+             + 10,000 量子每轨插入卷积混响（两条轨，含通道条＋卷积混响同一台设备；\
+             IR 在构造期预建、快照边界只做同长度换 IR）\
+             + 31 次等价重新武装 + 1 次换 IR + 换采样率时的拒绝路径 + 换回复武装 \
              + 2,000 量子 `EngineStats` 跨线程只读镜像（写者＝音频线程 / 读者＝控制线程），\
              实时窗口内零分配零释放"
         );

@@ -31,6 +31,8 @@
 //!       SynthEngine::render_track(该轨的 NoteSchedule) → track_scratch（声相之前、单声道）
 //!         →  **插入链：该轨的通道条**（`TrackV3.devices` 的内置效果器投影 ⇒ `yeban_dsp::channel_strip`；没有则整段跳过）
 //!         →  **插入链：该轨的混响**（同一份设备链 ⇒ `yeban_dsp::reverb`，单声道喂两路取中值；没有则整段跳过）
+//!         →  **插入链：该轨的卷积混响**（同一份设备链 ⇒ `yeban_dsp::convolution_reverb`，
+//!            交错立体声喂同一样本、取中值；IR 在构造期合成并预建，没有则整段跳过）
 //!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
 //!         →  **PDC 补偿延迟线（`D(v) = L_max − arrival(v)` 采样点）** [ARCH-PDC-001]
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
@@ -91,14 +93,18 @@
 //! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 16]`（每轨插入链，定长；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
 //! - [`EngineRuntime::reverb_pool`]：`[Reverb; 16]`（每轨混响，**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
 //! - [`EngineRuntime::reverb_scratch`]：`[[f32; 128]; 2]`（混响的单声道取中值暂存，栈/内联）
+//! - [`EngineRuntime::conv_pool`]：`[ConvolutionReverb; 16]`（每轨卷积混响；**IR 频谱与预延迟线
+//!   在构造期分配**，长度是引擎常量 ⇒ 回调内只做同长度的换 IR 与 `set_params`）
+//! - [`EngineRuntime::conv_scratch`]：`[f32; 256]`（卷积混响的**交错立体声**暂存，栈/内联）
 //! - [`EngineRuntime::synth`] 的 `drums`：`Box<[DrumMachine<16>; 16]>`（每槽一台鼓机，
 //!   **构造期一次性分配**；回调内只 `set_params` / `trigger` / `render`）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
-//! ⚠ [`EngineRuntime::reverb_pool`] 与 [`SynthEngine`] 的鼓机池是这份清单里**仅有的**
-//! 持有堆的字段（混响有自己的延迟线 `Vec`，鼓机池是 `Box<[_; 16]>`）。它们满足禁令的
+//! ⚠ [`EngineRuntime::reverb_pool`] / [`EngineRuntime::conv_pool`] 与 [`SynthEngine`] 的
+//! 鼓机池是这份清单里**仅有的**持有堆的字段（混响有自己的延迟线 `Vec`，卷积混响有 IR 频谱
+//! 与预延迟线 `Vec`，鼓机池是 `Box<[_; 16]>`）。它们满足禁令的
 //! 方式不是"没有堆"，而是"**堆只在构造期建立**"（[`EngineRuntime::new`]）：
-//! 回调内一次也不分配、不释放。见 [`crate::insert`] 模块文档 §8.4 与 §8.5
+//! 回调内一次也不分配、不释放。见 [`crate::insert`] 模块文档 §8.4、§8.5 与 §9.5
 //! （为什么连"换采样率"也不能在回调里重建延迟线）与 [`crate::synth`] 的
 //! `drums` 字段文档（为什么鼓机池要 `Box`：实测 `DrumMachine<16>` = 13 616 字节）。
 //!
@@ -112,7 +118,10 @@ use yeban_model::EntityId;
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 use crate::fpu::{self, FtzDazOutcome};
 use crate::graph::CompensationBank;
-use crate::insert::{ChannelStrip, ChannelStripParams, CompressorParams, Reverb, ReverbParams};
+use crate::insert::{
+    ChannelStrip, ChannelStripParams, CompressorParams, ConvolutionReverb, ConvolutionReverbParams,
+    Reverb, ReverbParams,
+};
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
@@ -233,6 +242,25 @@ pub struct EngineStats {
     /// （那会分配 + 释放 [MUST-GATE-001]）⇒ 那一份快照里混响不工作。它是"容量/
     /// 配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
     pub insert_reverb_rate_rejects: u64,
+    /// **每轨插入器件的卷积混响级**累计处理过的帧数（[`crate::insert`]；0 = 从未处理）。
+    ///
+    /// 口径：读数由引擎在**真的调用了** [`ConvolutionReverb::process`] 的那一条分支上累加
+    /// （条件 = 本轨武装了卷积混响 **且** `ConvolutionReverb::is_active()`，
+    /// 即 `wet > 1e-4`）。与 [`Self::insert_reverb_frames`] 同族：没有它，"卷积混响真的
+    /// 接在轨上"就只能从音频输出反推。全部轨都没有卷积混响时（默认）**恒为 0**。
+    pub insert_convolution_frames: u64,
+    /// 因**配置不可用**而整段未武装的卷积混响设备次数（[`crate::insert`] 模块文档 §9.5；
+    /// 正常恒为 0）。
+    ///
+    /// 两条来源，都记在这一个读数里（都是"这一份快照里有卷积混响设备，但引擎没有武装它"）：
+    ///
+    /// 1. 快照的采样率与**武装时**不同（IR 的帧数是 `采样率 ÷ 10` ⇒ 缓冲要重建 = 分配，
+    ///    音频线程不允许 [MUST-GATE-001]）；
+    /// 2. 器件**拒绝**了这条 IR（非有限样本 / 频谱溢出）—— 由构造期合成的 IR 在数学上
+    ///    不可能触发（峰值归一化的有限噪声），这条是器件的唯一拦截点留下的**安全网**。
+    ///
+    /// 它是"容量/配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
+    pub insert_convolution_rejects: u64,
     /// **实时侧参数目标表**累计把增益乘过的帧数（[`crate::param`]；0 = 从未乘过）。
     ///
     /// 它是"`SetParam` 真的改变了声音"的**见证**：没有它，`events_applied` 只能证明
@@ -497,6 +525,57 @@ pub struct EngineRuntime {
     ///
     /// 复用一个定长缓冲（与 [`Self::track_scratch`] 同一个形状）⇒ 零分配。
     reverb_scratch: [[f32; DEFAULT_BLOCK_FRAMES]; 2],
+    /// **卷积混响池**：每槽一台，**构造期**按初始快照的采样率把 IR 频谱与预延迟线
+    /// 全部建好 [ARCH-RT-001, MUST-GATE-001]。
+    ///
+    /// 与 [`Self::reverb_pool`] 同一个槽位表形状，但"分配发生在哪"这件事**不同**：
+    /// 卷积混响要在构造期交给器件一条**IR**（占位用全零、长度 = [`convolution_ir_frames`]），
+    /// 因为器件的 IR 长度一旦改变就会重建缓冲。占位 IR 把每槽的缓冲**长度**钉死，
+    /// 于是快照边界上的换 IR 是**长度不变**的那条路径 ⇒ 零分配
+    /// （`crates/yeban-dsp/src/convolution.rs` 的 `set_impulse_response` 文档，
+    /// 现位于第 271 行）。理由见 [`crate::insert`] 模块文档 §9.2／§9.5。
+    ///
+    /// ⚠ 代价是每个槽位都持有一份 IR 频谱（与"按上限预分配预延迟线"同款）。量级：
+    /// `48 kHz` ⇒ IR 4 800 帧 ⇒ 38 个分区 ⇒ 每槽 4 条核 × 4 个 `4 902` 长的 `f32` 数组
+    /// ≈ 313 KiB，16 槽 ≈ 4.8 MiB（算术口径与出处见 [`crate::insert`] 模块文档 §9.2）。
+    ///
+    /// ⚠ 类型是 **`Box<[_; 16]>`** 而不是 `[_; 16]`，理由与 [`SynthEngine`] 的鼓机池
+    /// **同款**（那里的字段文档记了尺寸读数）：`[ConvolutionReverb; 16]` 是一个
+    /// **约 81 KiB** 的值，把它放进 `EngineRuntime`（一个按值返回、按值传递的结构体）
+    /// 会把它加到**每一个** `EngineRuntime` 局部变量的栈帧上。实测（本票）：加上它之后
+    /// `tests/param_automation.rs` 的一条判据**栈溢出**（`fatal runtime error:
+    /// stack overflow`）⇒ 这是必须 `Box` 的机械证据，不是风格问题。
+    /// 分配的**次数**是 1（`Vec::with_capacity` → `into_boxed_slice`），发生在
+    /// [`Self::new`] 里，回调内一次也不分配。
+    conv_pool: Box<[ConvolutionReverb]>,
+    /// 本快照武装的卷积混响 `(轨道, 是否武装)`；前 [`Self::armed_conv_slots`] 项有效。
+    ///
+    /// 与 [`Self::armed_reverbs`] 同款：槽位里装的**不是** `Option<ConvolutionReverb>`
+    /// —— 缓冲必须是**构造期**建好的那一批，`Option` 只表达"这一槽本快照是否武装"。
+    armed_convs: [(EntityId, bool); MAX_TRACK_SLOTS],
+    /// 本快照武装的卷积混响条数（前 `n` 项有效）。
+    armed_conv_slots: usize,
+    /// 每个槽位里**当前装着的那一份 IR** 的内容标识（[`ConvolutionPlan::ir_hash`]）。
+    ///
+    /// 用途：快照边界上判断"这一条 IR 与器件里已经装着的是不是同一个" ⇒ 是同一个就
+    /// **只**调 `set_params`（保留频域延迟线与重叠相加尾），不是同一个才重设 IR
+    /// （那会把状态复位）。没有它，**每一次工程编辑**都会切断全部卷积尾巴，并为每条轨
+    /// 重算 `分区数` 次 256 点变换。理由与碰撞口径见 [`ConvolutionPlan`] 的字段文档。
+    ///
+    /// 初值 `0` 与任何真实 IR 的哈希都不同（FNV-1a 的偏移基值不是 0）⇒ 未武装过的槽位
+    /// 第一次一定会走"重设 IR"那一支。
+    armed_conv_ir_hashes: [u64; MAX_TRACK_SLOTS],
+    /// 卷积混响池武装时用的采样率（**构造期**定，运行期不变）。
+    ///
+    /// ⚠ 它同时钉住 IR 的**帧数**（`采样率 ÷ 10`）⇒ 换采样率必须整段不武装，
+    /// 否则那条边界上会出现一次 `Vec` 重建（分配）。与 §8.5 同款，见 §9.5。
+    armed_conv_sample_rate: u32,
+    /// 卷积混响的**交错立体声**暂存：`2 × 量子长度`（`[L, R, L, R, …]`）。
+    ///
+    /// 器件的接口是交错立体声（[`crate::insert`] §9.4），引擎的插入点是单声道
+    /// ⇒ 先把单声道样本**同时**写进左右两路，处理完再取两路的中值。复用一个定长缓冲
+    /// ⇒ 零分配。
+    conv_scratch: [f32; 2 * DEFAULT_BLOCK_FRAMES],
     /// 累计被**插入器件的动态级**压过的帧数（与 [`EngineStats::insert_gain_reductions`] 同源）。
     insert_gain_reductions: u64,
     /// 插入器件累计最大衰减（dB；与 [`EngineStats::insert_max_reduction_db`] 同源）。
@@ -508,6 +587,12 @@ pub struct EngineRuntime {
     /// 因混响延迟线的采样率不匹配而未武装的修订次数
     /// （与 [`EngineStats::insert_reverb_rate_rejects`] 同源）。
     insert_reverb_rate_rejects: u64,
+    /// 累计被**插入器件的卷积混响级**处理过的帧数
+    /// （与 [`EngineStats::insert_convolution_frames`] 同源）。
+    insert_convolution_frames: u64,
+    /// 因配置不可用而未武装的卷积混响设备次数
+    /// （与 [`EngineStats::insert_convolution_rejects`] 同源）。
+    insert_convolution_rejects: u64,
     /// **实时侧参数目标表**（[`crate::param`]）：`SetParam` → 逐样本平滑的逐轨增益乘子。
     ///
     /// 与 [`Self::armed_strips`] 的差别：这张表由**事件**（不是快照）驱动
@@ -574,6 +659,27 @@ impl EngineRuntime {
             // 构造期允许分配（`Vec` 延迟线在这里建好，回调内一次也不重建）。
             reverb.set_sample_rate(armed_reverb_sample_rate as f32);
         }
+        // 卷积混响池的**唯一**分配点（[`crate::insert`] 模块文档 §9.2／§9.5）：预延迟线
+        // ＋ 四条 IR 频谱。两者都按**引擎常量**的 IR 长度建满，于是快照边界上的换 IR
+        // 永远是"长度不变"的那条路径 ⇒ 零分配。
+        //
+        // ⚠ 占位 IR 是**全零**而不是空：空 IR 在器件里是"拒绝"（回到未配置直通，
+        // 缓冲容量保留但内容被清），而我们要的是**缓冲长度**被建出来。全零非空 ⇒ 校验通过
+        // ⇒ `span` 从此固定。未武装的槽位永远不会被逐样本路径查表命中（查的是
+        // `armed_convs`），因此这份占位数据不会出声。
+        let armed_conv_sample_rate = armed_reverb_sample_rate;
+        let conv_placeholder_frames = crate::insert::convolution_ir_frames(armed_conv_sample_rate);
+        let placeholder = vec![0.0f32; conv_placeholder_frames];
+        // ⚠ 逐台建、再 `into_boxed_slice`，**不**写 `Box::new([...; 16])`：后者会先造一个
+        // 约 81 KiB 的栈上临时量（那正是本节要避免的东西，见字段文档的栈溢出读数）。
+        let mut conv_pool: Vec<ConvolutionReverb> = Vec::with_capacity(MAX_TRACK_SLOTS);
+        for _ in 0..MAX_TRACK_SLOTS {
+            let mut conv = ConvolutionReverb::new();
+            conv.set_sample_rate(armed_conv_sample_rate as f32);
+            conv.set_impulse_response(&placeholder, &placeholder, &placeholder, &placeholder);
+            conv_pool.push(conv);
+        }
+        let conv_pool = conv_pool.into_boxed_slice();
         // 参数目标表：同样在**构造期**按初始快照的采样率建满（每个平滑器的 `α`
         // 含一次 `exp`；回调内一次也不重算 —— 采样率不变时 `set_sample_rate` 直接返回）。
         let params = ParamTable::new(armed_reverb_sample_rate as f32);
@@ -627,6 +733,8 @@ impl EngineRuntime {
             insert_strip_frames: 0,
             insert_reverb_frames: 0,
             insert_reverb_rate_rejects: 0,
+            insert_convolution_frames: 0,
+            insert_convolution_rejects: 0,
             // 参数目标表：**构造期**建满（回调内惰性分配的槽位都落在这张定长表里）。
             params,
             armed_master,
@@ -636,6 +744,14 @@ impl EngineRuntime {
             armed_reverb_slots: 0,
             armed_reverb_sample_rate,
             reverb_scratch: [[0.0; DEFAULT_BLOCK_FRAMES]; 2],
+            // 卷积混响池：**构造期**按初始快照的采样率把占位 IR 与预延迟线全部建好
+            // （回调内只做同长度的换 IR 与 `set_params`）。
+            conv_pool,
+            armed_convs: [(EntityId::default(), false); MAX_TRACK_SLOTS],
+            armed_conv_slots: 0,
+            armed_conv_ir_hashes: [0; MAX_TRACK_SLOTS],
+            armed_conv_sample_rate,
+            conv_scratch: [0.0; 2 * DEFAULT_BLOCK_FRAMES],
             armed_revision: None,
             quanta: 0,
             events_applied: 0,
@@ -747,6 +863,8 @@ impl EngineRuntime {
             insert_strip_frames: self.insert_strip_frames,
             insert_reverb_frames: self.insert_reverb_frames,
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
+            insert_convolution_frames: self.insert_convolution_frames,
+            insert_convolution_rejects: self.insert_convolution_rejects,
             param_gain_frames: self.params.gain_frames(),
             param_gain_rejects: self.params.rejections(),
             param_unmapped_events: self.params.unmapped(),
@@ -927,6 +1045,47 @@ impl EngineRuntime {
         self.armed_reverb_sample_rate
     }
 
+    /// 本快照武装的**每轨插入器件（卷积混响）参数**（诊断/判据用）。
+    ///
+    /// 返回 `None` = 这条轨**没有**卷积混响（实时侧整段跳过）。
+    /// 与 [`Self::armed_reverb`] 同族，读数取自器件自己的 `params()`（本器件同样没有
+    /// "级开关"这一类中间读数）。
+    #[must_use]
+    pub fn armed_convolution(&self, track: &EntityId) -> Option<ConvolutionReverbParams> {
+        // 槽位下标就是池的下标（同一张表）⇒ 先找下标，再读池里那一台的当前参数。
+        self.armed_convs[..self.armed_conv_slots]
+            .iter()
+            .position(|(id, armed)| *armed && id == track)
+            .map(|index| self.conv_pool[index].params())
+    }
+
+    /// 武装表里的**卷积混响**条数。
+    #[must_use]
+    pub const fn armed_convolution_slot_count(&self) -> usize {
+        self.armed_conv_slots
+    }
+
+    /// 卷积混响池武装时用的采样率（**构造期**定；诊断/判据用）。
+    ///
+    /// ⚠ 它同时是"IR 帧数"的权威来源（帧数 = 采样率 ÷ 10，
+    /// 见 [`crate::insert::convolution_ir_frames`]）。
+    #[must_use]
+    pub const fn armed_convolution_sample_rate(&self) -> u32 {
+        self.armed_conv_sample_rate
+    }
+
+    /// 某条轨**武装进去的 IR 帧数**（诊断/判据用；`None` = 没有武装卷积混响）。
+    ///
+    /// 存在的理由：判据要能证明"武装进去的 IR 就是投影合成的那一条"，
+    /// 而器件自己不公开它的 IR ⇒ 这里读器件真正接受的帧数。
+    #[must_use]
+    pub fn armed_convolution_ir_frames(&self, track: &EntityId) -> Option<usize> {
+        self.armed_convs[..self.armed_conv_slots]
+            .iter()
+            .position(|(id, armed)| *armed && id == track)
+            .map(|index| self.conv_pool[index].ir_frames())
+    }
+
     /// 本快照武装的**每轨鼓机音源**（[`crate::drums`]；诊断/判据用）。
     ///
     /// 与 [`Self::armed_reverb`] 同族：把"武装进去的那一份投影"变成**可读**的，
@@ -1086,6 +1245,14 @@ impl EngineRuntime {
             reverb_scratch,
             insert_reverb_frames,
             insert_reverb_rate_rejects,
+            conv_pool,
+            armed_convs,
+            armed_conv_slots,
+            armed_conv_ir_hashes,
+            armed_conv_sample_rate,
+            conv_scratch,
+            insert_convolution_frames,
+            insert_convolution_rejects,
             params,
             armed_master,
             pdc_unarmed_nodes,
@@ -1320,6 +1487,82 @@ impl EngineRuntime {
                     *insert_reverb_rate_rejects = insert_reverb_rate_rejects.wrapping_add(1);
                 }
 
+                // --- 2c'''') 每轨插入器件的**卷积混响级**：与混响同一个槽位表形状 ---
+                // [crate::insert] 模块文档 §9。器件的缓冲（IR 频谱 ＋ 预延迟线）在
+                // `Self::new` 里就按**初始快照的采样率**与**引擎常量的 IR 长度**建好了
+                // （`set_impulse_response` 是本器件唯一的分配入口）⇒ 这里**只允许**
+                // **长度不变**的换 IR（原地复用缓冲，实测零分配）与 `set_params`
+                // （标量 ＋ 一次 `libm::expf` 折算 IR 增益）。
+                //
+                // ⚠ **采样率与武装时不同 ⇒ 整段不武装**：IR 的帧数是 `采样率 ÷ 10`
+                // ⇒ 换采样率就要改缓冲长度 = 分配，音频线程不允许 [MUST-GATE-001]。
+                // 与混响的 §8.5 同款：宁可少一个器件，也不在回调里分配、也不拿旧长度的
+                // IR 去处理新采样率的信号。次数进 `insert_convolution_rejects`。
+                //
+                // 默认口径：`insert.convolution()` 在设备没有已识别 `conv_` 参数时是
+                // `None` ⇒ 本循环那一项 `continue`、`armed_conv_slots` 保持 0 ⇒ 逐样本
+                // 路径整段跳过（不是"参数取成透明"）⇒ 那类轨的输出与接线前**逐位相同**。
+                *armed_conv_slots = 0;
+                if current.sample_rate() == *armed_conv_sample_rate {
+                    for (id, insert) in current.inserts() {
+                        if *id == master || *armed_conv_slots >= MAX_TRACK_SLOTS {
+                            continue;
+                        }
+                        let Some(plan) = insert.convolution() else {
+                            continue;
+                        };
+                        // IR 的长度在**构造期**由同一个 `convolution_ir_frames` 决定，
+                        // 而采样率已在这一支的门口比对过 ⇒ 长度**必然**相等。把它写成
+                        // 显式守卫仍然值得：长度相等正是"零分配"的全部前提，一旦将来
+                        // 有人让长度变成旋钮，这条 `continue` 就是唯一的拦截点。
+                        let slot = *armed_conv_slots;
+                        if plan.ir_frames()
+                            != crate::insert::convolution_ir_frames(*armed_conv_sample_rate)
+                        {
+                            *insert_convolution_rejects =
+                                insert_convolution_rejects.wrapping_add(1);
+                            continue;
+                        }
+                        let (existing, was_armed) = armed_convs[slot];
+                        if existing == *id
+                            && was_armed
+                            && armed_conv_ir_hashes[slot] == plan.ir_hash()
+                        {
+                            // 同一条轨、同一条 IR ⇒ **只**换参数：频域延迟线与重叠相加尾
+                            // （时间状态）保留 ⇒ 输出逐位不变（判据 V4 的第二半）。
+                            conv_pool[slot].set_params(plan.params());
+                        } else {
+                            let accepted = conv_pool[slot].set_impulse_response(
+                                plan.ir(),
+                                plan.silence(),
+                                plan.silence(),
+                                plan.ir(),
+                            );
+                            if accepted != plan.ir_frames() {
+                                // 器件拒绝（非有限样本 / 频谱溢出）⇒ 整台已回到未配置直通。
+                                // 构造期合成的 IR 不可能走到这里（有限、峰值归一化），
+                                // 这条是器件的唯一拦截点留下的安全网，并**计数**而不是静默。
+                                *insert_convolution_rejects =
+                                    insert_convolution_rejects.wrapping_add(1);
+                                continue;
+                            }
+                            conv_pool[slot].set_params(plan.params());
+                            armed_convs[slot] = (*id, true);
+                            armed_conv_ir_hashes[slot] = plan.ir_hash();
+                        }
+                        *armed_conv_slots += 1;
+                    }
+                } else {
+                    // 这一份快照里**可能**有卷积混响设备（也可能没有）⇒ 只有真的有
+                    // 才计数：读数要回答"有几个设备因此没工作"，不是"换过几次采样率"。
+                    let unarmed = current
+                        .inserts()
+                        .iter()
+                        .filter(|(id, insert)| **id != master && insert.convolution().is_some())
+                        .count() as u64;
+                    *insert_convolution_rejects = insert_convolution_rejects.wrapping_add(unarmed);
+                }
+
                 // --- 2d) 节拍器：波形与拍栅格都在**构造期**算好（`sin` 属超越函数类），
                 // 这里只把两个整数（每拍 tick / 每小节拍数）与一个开关读进实时侧
                 // （[`crate::metronome`]）。**关掉时**把武装标志置假并丢掉可能正在响的
@@ -1467,6 +1710,46 @@ impl EngineRuntime {
                                 (reverb_scratch[0][index] + reverb_scratch[1][index]) * 0.5;
                         }
                         *insert_reverb_frames = insert_reverb_frames.wrapping_add(frames as u64);
+                    }
+                }
+                // --- 3a'''') 插入链的**卷积混响级**：逐样本（器件的接口是交错立体声块）---
+                // [crate::insert] 模块文档 §9.4。位置与混响**同一条链上的后一级**：
+                // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
+                //
+                // 单声道口径（与混响同款）：把 `track_scratch` **同时**写进左右两路，
+                // 取两路输出的中值 `(out_l + out_r) · 0.5`。那是恒等式而不是近似：
+                // 四条通路线性，中值 = `conv((h_LL + h_LR + h_RL + h_RR) / 2, m)`，
+                // 而投影交进去的是 `h_LL = h_RR = ir`、`h_LR = h_RL = 0` ⇒ 恰好是
+                // `conv(ir, m)`（§9.4 给了这段代数）。
+                //
+                // ⚠ IR 本身**不在**这条路径上：它只在快照边界换（且长度不变 ⇒ 零分配）。
+                //
+                // **默认口径**：本轨没有卷积混响（`armed_convs` 里查不到武装项）⇒
+                // 整段跳过；`ConvolutionReverb::is_active()`（`wet ≤ 1e-4` 或未配置）为假时
+                // 同样跳过 ⇒ 这两种情形下器件的状态**不推进**。
+                //
+                // 逐样本只有频域分块乘加与 256 点变换；**零分配、零锁、零 I/O、零日志**
+                // [MUST-GATE-001]。⚠ 它是 [ADR-0001 D32] 的**超越函数类**（旋转因子表由
+                // 宿主 libm 的 `f32::cos`/`f32::sin` 在构造期算出）⇒ 本票不声称跨架构逐位相同。
+                if let Some(index) = armed_convs[..*armed_conv_slots]
+                    .iter()
+                    .position(|(id, armed)| *armed && id == &track)
+                {
+                    let conv = &mut conv_pool[index];
+                    if conv.is_active() {
+                        let frames = frames.min(DEFAULT_BLOCK_FRAMES);
+                        for frame in 0..frames {
+                            let mono = track_scratch[frame];
+                            conv_scratch[2 * frame] = mono;
+                            conv_scratch[2 * frame + 1] = mono;
+                        }
+                        conv.process(&mut conv_scratch[..2 * frames]);
+                        for frame in 0..frames {
+                            track_scratch[frame] =
+                                (conv_scratch[2 * frame] + conv_scratch[2 * frame + 1]) * 0.5;
+                        }
+                        *insert_convolution_frames =
+                            insert_convolution_frames.wrapping_add(frames as u64);
                     }
                 }
                 if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {

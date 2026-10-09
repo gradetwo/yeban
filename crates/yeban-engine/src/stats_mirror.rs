@@ -168,6 +168,8 @@ pub struct EngineStatsMirror {
     insert_strip_frames: AtomicU64,
     insert_reverb_frames: AtomicU64,
     insert_reverb_rate_rejects: AtomicU64,
+    insert_convolution_frames: AtomicU64,
+    insert_convolution_rejects: AtomicU64,
     param_gain_frames: AtomicU64,
     param_gain_rejects: AtomicU64,
     param_unmapped_events: AtomicU64,
@@ -220,6 +222,8 @@ impl EngineStatsMirror {
             insert_strip_frames: AtomicU64::new(0),
             insert_reverb_frames: AtomicU64::new(0),
             insert_reverb_rate_rejects: AtomicU64::new(0),
+            insert_convolution_frames: AtomicU64::new(0),
+            insert_convolution_rejects: AtomicU64::new(0),
             param_gain_frames: AtomicU64::new(0),
             param_gain_rejects: AtomicU64::new(0),
             param_unmapped_events: AtomicU64::new(0),
@@ -292,6 +296,10 @@ impl EngineStatsMirror {
             .store(stats.insert_reverb_frames, Ordering::Relaxed);
         self.insert_reverb_rate_rejects
             .store(stats.insert_reverb_rate_rejects, Ordering::Relaxed);
+        self.insert_convolution_frames
+            .store(stats.insert_convolution_frames, Ordering::Relaxed);
+        self.insert_convolution_rejects
+            .store(stats.insert_convolution_rejects, Ordering::Relaxed);
         self.param_gain_frames
             .store(stats.param_gain_frames, Ordering::Relaxed);
         self.param_gain_rejects
@@ -371,6 +379,8 @@ impl EngineStatsMirror {
             insert_strip_frames: self.insert_strip_frames.load(Ordering::Relaxed),
             insert_reverb_frames: self.insert_reverb_frames.load(Ordering::Relaxed),
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects.load(Ordering::Relaxed),
+            insert_convolution_frames: self.insert_convolution_frames.load(Ordering::Relaxed),
+            insert_convolution_rejects: self.insert_convolution_rejects.load(Ordering::Relaxed),
             param_gain_frames: self.param_gain_frames.load(Ordering::Relaxed),
             param_gain_rejects: self.param_gain_rejects.load(Ordering::Relaxed),
             param_unmapped_events: self.param_unmapped_events.load(Ordering::Relaxed),
@@ -445,6 +455,8 @@ mod tests {
             insert_strip_frames: 19,
             insert_reverb_frames: 20,
             insert_reverb_rate_rejects: 21,
+            insert_convolution_frames: 27,
+            insert_convolution_rejects: 28,
             param_gain_frames: 40,
             param_gain_rejects: 41,
             param_unmapped_events: 42,
