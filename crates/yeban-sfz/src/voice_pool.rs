@@ -51,6 +51,12 @@ pub struct StealFade {
 
 impl StealFade {
     /// 按采样率构造（非法采样率回退 48kHz；结果永远落在 `1..=MAX_FADE_SAMPLES`）。
+    ///
+    /// 淡出长度在 `f64` 里算。理由：`f32` 的 `rate * 3 / 1000` 在采样率大于约
+    /// `1.13e38` 时先上溢成 `inf`，于是「极大采样率」落进 `else` 分支退化成 **1** 个采样
+    /// —— 既与 `MAX_FADE_SAMPLES` 的钳制意图相反，也让长度对采样率**非单调**
+    /// （`1e37` 给 1048576，`f32::MAX` 反而给 1）。`f64` 的中间乘积最大约 `1.02e36`，
+    /// 恒为有限值，因此钳制重新成为唯一的收口。
     #[must_use]
     pub fn new(sample_rate: f32) -> Self {
         let safe_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
@@ -58,8 +64,9 @@ impl StealFade {
         } else {
             48_000.0
         };
-        let raw = (safe_rate * STEAL_FADE_MILLIS / 1000.0).ceil();
+        let raw = (f64::from(safe_rate) * f64::from(STEAL_FADE_MILLIS) / 1000.0).ceil();
         let samples = if raw.is_finite() && raw >= 1.0 {
+            // `f64 as u32` 在 Rust 里是饱和转换：超大 `raw` 收成 `u32::MAX` 再被钳住。
             (raw as u32).min(MAX_FADE_SAMPLES)
         } else {
             1
@@ -138,6 +145,10 @@ pub struct VoiceInfo {
     /// 触发序号（越大越晚触发）。
     pub order: u64,
     /// 剩余淡出采样数。
+    ///
+    /// 不变量：`retiring == false` 时恒为 `0`；`retiring == true` 时恒 `>= 1`
+    /// （只有 [`VoicePool::retire`] / [`VoicePool::apply_note_polyphony`] 会把它设成正数，
+    /// 只有 [`VoicePool::process`] 与 [`VoicePool::set_stage`] / [`VoicePool::finish`] 会清它）。
     pub fade_remaining: u32,
     /// 剩余窃取淡入采样数。
     pub fade_in_remaining: u32,
@@ -480,10 +491,18 @@ impl VoicePool {
     }
 
     /// 设置包络阶段。
+    ///
+    /// 同时**取消**该声部尚未走完的 `retire` / `note_polyphony` 让位淡出：`retiring`
+    /// 归 `false`，淡出计数 [`VoiceInfo::fade_remaining`] 一并清零。
+    ///
+    /// 两者必须一起复位。只清 `retiring` 会留下「不在淡出、却仍记着剩余淡出采样数」的
+    /// 残值，而 [`VoicePool::process`] 只在 `retiring` 为真时推进该计数 —— 残值既不会被
+    /// 推进，也不会被回收，快照读出来就是个没有意义的数。
     pub fn set_stage(&mut self, handle: VoiceHandle, stage: VoiceStage) -> Result<(), SfzError> {
         let slot = self.slot_mut(handle)?;
         slot.stage = stage;
         slot.retiring = false;
+        slot.fade_remaining = 0;
         Ok(())
     }
 
@@ -731,6 +750,48 @@ mod tests {
     }
 
     #[test]
+    fn set_stage_cancels_the_pending_fade_and_clears_its_counter() {
+        let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
+        let handle = pool.note_on(60, 100, -6.0).started();
+        pool.retire(handle).expect("live handle");
+        assert_eq!(
+            pool.voice(handle).expect("still active").fade_remaining,
+            pool.steal_fade().samples()
+        );
+
+        pool.set_stage(handle, VoiceStage::Sustain)
+            .expect("live handle");
+        let info = pool.voice(handle).expect("still active");
+        assert!(!info.retiring, "set_stage cancels the pending fade");
+        assert_eq!(info.stage, VoiceStage::Sustain);
+        assert_eq!(
+            info.fade_remaining, 0,
+            "a cancelled fade must not leave its counter behind"
+        );
+
+        // 取消之后 `process` 不再回收这个槽位（渲染器必须显式 finish / retire）——
+        // 这条同时证明残值不是「靠 process 兜住」的。
+        pool.process(pool.steal_fade().samples());
+        assert!(pool.voice(handle).is_some());
+        assert_eq!(pool.voice(handle).expect("still active").fade_remaining, 0);
+
+        // 让位淡出（`apply_note_polyphony`）走的是同一条 `retiring` 路径，同样被取消。
+        let mut masked = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let victim = masked.note_on_in_group(60, 100, -6.0, 0).started();
+        let start = masked.note_on_in_group(60, 100, -6.0, 0).started();
+        masked
+            .apply_note_polyphony(start, limit(1, true))
+            .expect("live handle");
+        assert!(masked.voice(victim).expect("still active").retiring);
+        masked
+            .set_stage(victim, VoiceStage::Release)
+            .expect("live handle");
+        let cancelled = masked.voice(victim).expect("still active");
+        assert!(!cancelled.retiring);
+        assert_eq!(cancelled.fade_remaining, 0);
+    }
+
+    #[test]
     fn steal_fade_envelope_decays_exponentially_to_silence() {
         let fade = StealFade::new(48_000.0);
         assert_eq!(fade.samples(), 144);
@@ -748,6 +809,45 @@ mod tests {
         // 非法采样率回退，不会 panic / 不会产生 0 采样淡出。
         assert!(StealFade::new(f32::NAN).samples() >= 1);
         assert!(StealFade::new(-1.0).samples() == 144);
+    }
+
+    #[test]
+    fn the_fade_length_saturates_at_the_clamp_for_huge_sample_rates() {
+        // `f32` 中间乘积在 rate > f32::MAX/3 时上溢成 `inf`，旧口径因此把 `f32::MAX`
+        // 变成 1 个采样；`f64` 里算之后钳制成为唯一的收口。
+        assert_eq!(StealFade::new(f32::MAX).samples(), MAX_FADE_SAMPLES);
+        assert_eq!(StealFade::new(1.0e38).samples(), MAX_FADE_SAMPLES);
+        assert_eq!(StealFade::new(48_000.0).samples(), 144, "3ms @ 48kHz");
+        assert_eq!(StealFade::new(44_100.0).samples(), 133, "ceil(132.3)");
+        assert_eq!(StealFade::new(1.0).samples(), 1);
+
+        // 长度对采样率单调不减，且恒落在 `1..=MAX_FADE_SAMPLES`。
+        let mut previous = 0u32;
+        for rate in [
+            1.0f32,
+            100.0,
+            44_100.0,
+            48_000.0,
+            1.0e6,
+            1.0e9,
+            1.0e12,
+            1.0e30,
+            1.0e37,
+            1.13e38,
+            1.14e38,
+            f32::MAX,
+        ] {
+            let samples = StealFade::new(rate).samples();
+            assert!(
+                (1..=MAX_FADE_SAMPLES).contains(&samples),
+                "rate {rate} gave {samples}"
+            );
+            assert!(
+                samples >= previous,
+                "rate {rate} went backwards: {samples} < {previous}"
+            );
+            previous = samples;
+        }
     }
 
     #[test]
