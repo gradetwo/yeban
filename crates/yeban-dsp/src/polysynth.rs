@@ -85,6 +85,26 @@
 //! 的 S4 把 `144 帧 = 3 ms @48 kHz` 写成了**既有期望值**。
 //! 本票遵守"既有判据不许弱化、期望值一个字不改" ⇒ 保持 3 ms，并把
 //! 5 ms 升余弦登记为**未做**（引擎侧的 `light` 门禁与 CI 都读不到这条差异）。
+//!
+//! ## 6. 延迟上报（[ARCH-PDC-001]）
+//!
+//! [`PolySynth::latency_samples`] 恒为 **0 帧**。理由不是"没有观察到延迟"，
+//! 而是本器件是**声源**、不是输入信号的处理器：
+//!
+//! 1. **没有前视缓冲**：`render` 的第 `i` 帧只依赖此刻的声部状态，
+//!    不读任何未来的样本；
+//! 2. **没有延迟线**：本模块不引用 `crate::delay`；
+//! 3. **没有过采样往返**：本模块不引用 `crate::oversample`
+//!    （[`LadderFilter`] 在基础采样率上直接跑，没有半带滤波器的群延迟）。
+//!
+//! 构造性依据（可对账，不是断言）：把同一个音符的 `start_sample` 从 `0` 移到
+//! `P`，渲染结果恰是原结果**整体后移 `P` 帧**，且 `[0, P)` 全为 `0.0`。
+//! 判据 `tests/polysynth_rt_zero_alloc.rs` 的
+//! `a_delayed_trigger_shifts_the_waveform_by_exactly_the_trigger_offset` 钉住这条，
+//! 同文件的 `the_reported_latency_is_the_zero_constant` 钉住读数；
+//! `tests/polysynth_render.rs` 的 P3 另有"包络起振落在第 0 个块"这条既有读数。
+//! ⚠ 上报口径的**唯一事实源**仍是模型层的 `DeviceDefinition::latency_samples`
+//!（本成员是它的构造性依据，不改变任何输出）。
 
 use crate::MIN_SAMPLE_RATE;
 use crate::envelope::{Adsr, AdsrStage, STEAL_RELEASE_SECONDS};
@@ -858,6 +878,18 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// 释放全部声部（走带 seek 的接入点）。不重算参数、不改采样率。
     pub fn reset(&mut self) {
         self.voices = [PolyVoice::IDLE; VOICES];
+    }
+
+    /// 本器件引入的处理延迟：**恒为 `0` 帧** [ARCH-PDC-001]。
+    ///
+    /// 本器件是**声源**，不是输入信号的处理器：没有前视缓冲、没有延迟线、
+    /// 没有过采样往返（本模块不引用 `crate::oversample`）。`render` 的第 `i` 帧
+    /// 只依赖此刻的声部状态，`NoteEvent::start_sample` 就是发声的首帧。
+    ///
+    /// 构造性依据与判据见模块文档 §6。**实时路径**：`const fn`，零分配、零锁。
+    #[must_use]
+    pub const fn latency_samples(&self) -> usize {
+        0
     }
 
     /// 回收"已过终点且包络已静音"的声部（快照边界的游标校正一并做）。

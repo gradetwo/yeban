@@ -131,6 +131,103 @@ const RESET_EVERY: u64 = 4_000;
 /// 每多少个量子换一次采样率（覆盖 `set_sample_rate` 的系数重算路径）。
 const RATE_EVERY: u64 = 3_000;
 
+// ---------------------------------------------------------------------------
+// 判据 0：新面（延迟上报）的读数与构造性依据
+// ---------------------------------------------------------------------------
+
+/// 量什么：`DrumMachine::latency_samples()` 的读数（单位：帧）。
+///
+/// 判据：恒为 `0`，且与采样率、鼓组参数、槽位容量、触发都无关
+/// （它是编译期常量返回）。
+/// 口径依据：[ARCH-PDC-001] 要求每个内置设备精确上报处理延迟；本器件是**声源**，
+/// 没有前视缓冲、没有延迟线、没有过采样往返 ⇒ 它引入的延迟是 `0` 帧。
+/// 与 `yeban_dsp::reverb` / 压缩器 / 通道条同口径（都上报 `0`）。
+#[test]
+fn the_reported_latency_is_the_zero_constant() {
+    for sample_rate in [44_100u32, 48_000, 96_000] {
+        let mut machine = DrumMachine::<DRUM_SLOTS>::new(sample_rate);
+        assert_eq!(
+            machine.latency_samples(),
+            0,
+            "声源器件不上报延迟 ⇒ 采样率 {sample_rate} Hz 下读数必须是 0"
+        );
+        machine.set_params(DrumKitParams::DEFAULT);
+        machine.trigger(DrumHit::new(DrumVoice::Kick, 0, 1.0));
+        let mut block = vec![0.0f32; 64];
+        machine.render(0, &mut block);
+        assert_eq!(machine.latency_samples(), 0, "有鼓击在响时读数不变");
+        machine.set_sample_rate(96_000);
+        assert_eq!(machine.latency_samples(), 0, "换采样率后读数不变");
+        machine.set_steal_fade_frames(0);
+        assert_eq!(machine.latency_samples(), 0, "硬窃取配置下读数不变");
+    }
+    // 槽位容量是编译期参数 ⇒ 换容量也不改读数。
+    assert_eq!(DrumMachine::<4>::new(48_000).latency_samples(), 0);
+    assert_eq!(DrumMachine::<64>::new(48_000).latency_samples(), 0);
+    eprintln!("[yeban-dsp/RT] drums 延迟上报: latency_samples()=0 帧（与采样率/参数/容量无关）");
+}
+
+/// 量什么：把同一击的起点从 `0` 移到 `P` 之后，两次渲染的**逐位关系**
+/// （单位：帧；比较用 `f32::to_bits`），以及发声首帧的**绝对**读数。
+///
+/// 判据：① 移位版的前 `P` 帧全为 `0.0`；② 第 `P` 帧起与原版**逐位相同**；
+/// ③ **绝对锚点**：起点击在第 0 帧时，第 0 帧就已经有非零输出；④ 两次渲染
+/// 整体不同（夹具真的出声 ⇒ 这条判据有牙）。
+/// ① ② 是"`latency_samples() == 0`"的构造性依据（输出没有任何整体后移）；
+/// ③ 是**绝对**刻度。只有 ① ② 时，"把起音整体推后一帧"这类错法与"调用方把起点
+/// 写晚一帧"在输出上不可区分 —— 本机实测：注入 `now < start + 1` 时 ① ② 仍为真
+///（整段波形一致后移），加上 ③ 才把它变红。
+///
+/// ⚠ 夹具用**闭镲**：它的发生器在第 0 帧就给出非零样本（本机实测
+/// `out[0] = 0.0029026011`），因此"第 0 帧有没有声音"是可直接读的绝对刻度。
+/// （底鼓的第 0 帧恰为 `0.0`：正弦在相位 0、包络首步也是 `0.0` ⇒ 它读不出这个刻度。）
+#[test]
+fn a_delayed_hit_shifts_the_waveform_by_exactly_the_hit_offset() {
+    /// 起点偏移（帧）。取非零且非块长整数倍的值，避免与 `128` 的块边界混淆。
+    const OFFSET: usize = 100;
+    /// 渲染帧数（帧）。
+    const FRAMES: usize = 1_024;
+
+    let render_at = |start: u64| -> Vec<f32> {
+        let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+        machine.set_params(DrumKitParams::DEFAULT);
+        machine.trigger(DrumHit::new(DrumVoice::ClosedHat, start, 1.0));
+        let mut out = vec![0.0f32; FRAMES];
+        machine.render(0, &mut out);
+        out
+    };
+    let at_zero = render_at(0);
+    let at_offset = render_at(OFFSET as u64);
+
+    assert!(
+        at_zero.iter().any(|sample| *sample != 0.0),
+        "夹具必须出声（否则下面四条都可能空过）"
+    );
+    assert_ne!(
+        at_zero[0], 0.0,
+        "起点落在第 0 帧时，第 0 帧就必须有非零输出 ⇒ 触发帧就是发声首帧"
+    );
+    assert!(
+        at_offset[..OFFSET].iter().all(|sample| *sample == 0.0),
+        "起点之前必须一帧都不出声"
+    );
+    let aligned = (0..FRAMES - OFFSET).all(|index| at_zero[index] == at_offset[OFFSET + index]);
+    assert!(
+        aligned,
+        "移位后的波形不是原波形整体后移 {OFFSET} 帧 ⇒ 器件引入了额外延迟或提前"
+    );
+    assert_ne!(
+        at_zero.iter().map(|s| s.to_bits()).collect::<Vec<u32>>(),
+        at_offset.iter().map(|s| s.to_bits()).collect::<Vec<u32>>(),
+        "移动起点居然没改变输出 ⇒ 这条判据没有牙"
+    );
+    eprintln!(
+        "[yeban-dsp/RT] drums 起点移位: offset={OFFSET} 帧, 前 {OFFSET} 帧全 0, \
+         [ {OFFSET} .. {FRAMES} ) 逐位相同, out[0]={}",
+        at_zero[0]
+    );
+}
+
 /// 量什么：`drums` 的**实时路径**在 10 000 个量子（每量子 128 帧单声道）里的
 /// **堆分配次数与释放次数**（单位：次数）。
 ///
@@ -176,8 +273,14 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
     let mut rendered_frames: u64 = 0;
     let mut nonzero_frames: u64 = 0;
     let mut voices_seen = [false; 5];
+    // 新面（`latency_samples`）的运行期零分配判据：在**同一个观测窗口**内每个量子
+    // 取一次读数，并把读数累加 —— 分配计数因此也覆盖这个新成员。
+    let mut latency_calls: u64 = 0;
+    let mut latency_sum: usize = 0;
     let reading = window(|| {
         for quantum in 0..RT_QUANTA {
+            latency_calls += 1;
+            latency_sum += machine.latency_samples();
             // 每量子一击 ⇒ 16 个槽位在第 17 个量子就撞满，之后**每量子都走一次
             // 窃取路径** ⇒ 窃取与 3 ms 淡出被密集覆盖。
             //
@@ -263,10 +366,15 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
         block.iter().all(|sample| sample.is_finite()),
         "路径产出了非有限值"
     );
+    assert_eq!(
+        latency_calls, RT_QUANTA,
+        "延迟读数必须在窗口里的每个量子都被取一次"
+    );
+    assert_eq!(latency_sum, 0, "窗口里累加的延迟读数必须恒为 0 帧");
     eprintln!(
         "[yeban-dsp/RT] drums 10 000 量子 × {WINDOW_FRAMES} 帧: \
          allocations={} deallocations={} rendered_frames={} nonzero_frames={} \
-         triggered={} steals={} chokes={} voices_seen={voices_seen:?}          sounding_slot_frames={} ({sounding_per_frame:.2}/{DRUM_SLOTS} 每帧)",
+         triggered={} steals={} chokes={} voices_seen={voices_seen:?}          sounding_slot_frames={} ({sounding_per_frame:.2}/{DRUM_SLOTS} 每帧) latency_calls={latency_calls} latency_sum={latency_sum}",
         reading.allocations,
         reading.deallocations,
         rendered_frames,

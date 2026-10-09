@@ -107,9 +107,10 @@
 //!
 //! | 器件 | 参数 | 构造/设置 | 触发 | 处理 | 读取器 |
 //! | :--- | :--- | :--- | :--- | :--- | :--- |
-//! | [`DrumMachine`] | [`DrumKitParams`] | [`DrumMachine::new`] / [`DrumMachine::set_params`] / [`DrumMachine::reset`] / [`DrumMachine::set_sample_rate`] | [`DrumMachine::trigger`] | [`DrumMachine::render`] | `slots` / `active_slots` / `triggers` / `voice_steals` / `hat_chokes` / `steal_fade_frames` / `params` |
+//! | [`DrumMachine`] | [`DrumKitParams`] | [`DrumMachine::new`] / [`DrumMachine::set_params`] / [`DrumMachine::reset`] / [`DrumMachine::set_sample_rate`] | [`DrumMachine::trigger`] | [`DrumMachine::render`] | `slots` / `active_slots` / `triggers` / `voice_steals` / `hat_chokes` / `steal_fade_frames` / `params` / [`DrumMachine::latency_samples`] |
 //!
 //! 与 `compressor.rs` / `channel_strip.rs` / `limiter.rs` / `polysynth.rs` 同形。
+//! 延迟上报见 §7。
 //!
 //! ## 2.1 为什么是 `drums/mod.rs`（而不是 `drums.rs`）
 //!
@@ -188,6 +189,25 @@
 //! （测法：`grep -rn 'dsp' crates/yeban-engine/tests/*.rs`）。
 //! ⚠ 本 crate 的库目标仍是 `#![forbid(unsafe_code)]`（`lib.rs:70`）；
 //! 计数型全局分配器只存在于**集成测试目标**（树里已有 4 个同款先例）。
+//!
+//! # 7. 延迟上报（[ARCH-PDC-001]）
+//!
+//! [`DrumMachine::latency_samples`] 恒为 **0 帧**。理由不是"没有观察到延迟"，
+//! 而是本器件是**声源**、不是输入信号的处理器：
+//!
+//! 1. **没有前视缓冲**：`render` 只在 `now >= DrumHit::start_sample` 时发声，
+//!    触发落在哪一帧就从那一帧起音；
+//! 2. **没有延迟线**：本模块不引用 `crate::delay`；
+//! 3. **没有过采样往返**：本模块不引用 `crate::oversample`
+//!    （波形在基础采样率上直接合成）。
+//!
+//! 构造性依据（可对账，不是断言）：把同一击的 `start_sample` 从 `0` 移到 `P`，
+//! 渲染结果恰是原结果**整体后移 `P` 帧**，且 `[0, P)` 全为 `0.0`。
+//! 判据 `tests/drums_rt_zero_alloc.rs` 的
+//! `a_delayed_hit_shifts_the_waveform_by_exactly_the_hit_offset` 钉住这条，
+//! 同文件的 `the_reported_latency_is_the_zero_constant` 钉住读数。
+//! ⚠ 上报口径的**唯一事实源**仍是模型层的 `DeviceDefinition::latency_samples`
+//!（本成员是它的构造性依据，不改变任何输出）。
 
 use crate::envelope::STEAL_RELEASE_SECONDS;
 use crate::math::sanitise_sample_rate;
@@ -1017,6 +1037,18 @@ impl<const SLOTS: usize> DrumMachine<SLOTS> {
     /// 全部槽位回到空闲（不改参数、不改计数器、不改采样率）。
     pub fn reset(&mut self) {
         self.slots = [Slot::IDLE; SLOTS];
+    }
+
+    /// 本器件引入的处理延迟：**恒为 `0` 帧** [ARCH-PDC-001]。
+    ///
+    /// 本器件是**声源**，不是输入信号的处理器：没有前视缓冲、没有延迟线、
+    /// 没有过采样往返。`render` 只在 `now >= DrumHit::start_sample` 时发声，
+    /// 触发帧就是发声的首帧。
+    ///
+    /// 构造性依据与判据见模块文档 §7。**实时路径**：`const fn`，零分配、零锁。
+    #[must_use]
+    pub const fn latency_samples(&self) -> usize {
+        0
     }
 
     /// 回收"包络已走完且不在淡出中"的槽位。

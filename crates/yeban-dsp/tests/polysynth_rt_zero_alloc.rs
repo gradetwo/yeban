@@ -132,6 +132,110 @@ const RESET_EVERY: u64 = 4_000;
 /// 每多少个量子塞一个**短音符**（终点 = 当前位置 + 512 帧）⇒ 覆盖回收分支。
 const SHORT_NOTE_EVERY: u64 = 2_000;
 
+// ---------------------------------------------------------------------------
+// 判据 0：新面（延迟上报）的读数与构造性依据
+// ---------------------------------------------------------------------------
+
+/// 量什么：`PolySynth::latency_samples()` 的读数（单位：帧）。
+///
+/// 判据：恒为 `0`，且与采样率、参数、声部容量、起点都无关（它是编译期常量返回）。
+/// 口径依据：[ARCH-PDC-001] 要求每个内置设备精确上报处理延迟；本器件是**声源**，
+/// 没有前视缓冲、没有延迟线、没有过采样往返 ⇒ 它引入的延迟是 `0` 帧。
+/// 与 `yeban_dsp::reverb` / 压缩器 / 通道条同口径（都上报 `0`）。
+#[test]
+fn the_reported_latency_is_the_zero_constant() {
+    let tables = PolySynthTables::from_recipes(&[HOLLOW]);
+    for sample_rate in [44_100u32, 48_000, 96_000] {
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(sample_rate);
+        synth.set_params(
+            PolySynthParams::new()
+                .with_oscillators(OscSettings::new(0, 1.0, 0.0), OscSettings::new(1, 0.5, 7.0))
+                .with_filter(1_200.0, 0.3, 0.2, false)
+                .with_envelope(0.004, 0.06, 0.6, 0.04),
+            &tables,
+        );
+        assert_eq!(
+            synth.latency_samples(),
+            0,
+            "声源器件不上报延迟 ⇒ 采样率 {sample_rate} Hz 下读数必须是 0"
+        );
+        synth.note_on(NoteEvent::new(0, 10_000, 440.0, 1.0), &tables);
+        assert_eq!(synth.latency_samples(), 0, "有音符在鸣时读数不变");
+        synth.set_steal_fade_frames(0);
+        assert_eq!(synth.latency_samples(), 0, "硬窃取配置下读数不变");
+    }
+    // 声部容量是编译期参数 ⇒ 换容量也不改读数。
+    assert_eq!(PolySynth::<4>::new(48_000).latency_samples(), 0);
+    assert_eq!(PolySynth::<64>::new(48_000).latency_samples(), 0);
+    eprintln!(
+        "[yeban-dsp/RT] polysynth 延迟上报: latency_samples()=0 帧（与采样率/参数/容量无关）"
+    );
+}
+
+/// 量什么：把同一音符的起点从 `0` 移到 `P` 之后，两次渲染的**逐位关系**
+/// （单位：帧；比较用 `f32::to_bits`），以及起音首个非零帧的**绝对**下标。
+///
+/// 判据：① 移位版的前 `P` 帧全为 `0.0`；② 第 `P` 帧起与原版**逐位相同**；
+/// ③ **绝对锚点**：原版首个非零帧的下标恰为 `1`；④ 两次渲染整体不同
+/// （夹具真的出声 ⇒ 这条判据有牙）。
+/// ① ② 是"`latency_samples() == 0`"的构造性依据（输出没有任何整体后移）；
+/// ③ 是**绝对**刻度。只有 ① ② 时，"把起音整体推后一帧"这类错法与"调用方把起点
+/// 写晚一帧"在输出上不可区分 —— 本机实测：注入 `now < start + 1` 时 ① ② 仍为真
+///（整段波形一致后移），加上 ③ 才把它变红。
+///
+/// ⚠ `1` 是本机实测的读数：`HOLLOW` 波表的第 0 个样本是 `0.0`（各次谐波在相位 0
+/// 处都是 `0.0`），`Adsr` 处理的第一帧电平也是 `0.0` ⇒ 第 0 帧被处理但输出为 `0.0`，
+/// 首个非零样本落在第 1 帧。
+#[test]
+fn a_delayed_trigger_shifts_the_waveform_by_exactly_the_trigger_offset() {
+    /// 起点偏移（帧）。取非零且非块长整数倍的值，避免与 `128` 的块边界混淆。
+    const OFFSET: usize = 100;
+    /// 渲染帧数（帧）。
+    const FRAMES: usize = 1_024;
+    /// 起音首个非零样本的**绝对**下标（帧；本机实测，见本条文档）。
+    const FIRST_NONZERO: Option<usize> = Some(1);
+
+    let tables = PolySynthTables::from_recipes(&[HOLLOW]);
+    let render_at = |start: u64| -> Vec<f32> {
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+        synth.set_params(PolySynthParams::new(), &tables);
+        synth.note_on(NoteEvent::new(start, 10_000_000, 440.0, 1.0), &tables);
+        let mut out = vec![0.0f32; FRAMES];
+        synth.render(&tables, 0, &mut out);
+        out
+    };
+    let at_zero = render_at(0);
+    let at_offset = render_at(OFFSET as u64);
+
+    assert!(
+        at_zero.iter().any(|sample| *sample != 0.0),
+        "夹具必须出声（否则下面四条都可能空过）"
+    );
+    assert!(
+        at_offset[..OFFSET].iter().all(|sample| *sample == 0.0),
+        "起点之前必须一帧都不出声"
+    );
+    let aligned = (0..FRAMES - OFFSET).all(|index| at_zero[index] == at_offset[OFFSET + index]);
+    assert!(
+        aligned,
+        "移位后的波形不是原波形整体后移 {OFFSET} 帧 ⇒ 器件引入了额外延迟或提前"
+    );
+    assert_eq!(
+        at_zero.iter().position(|sample| *sample != 0.0),
+        FIRST_NONZERO,
+        "起音首个非零帧的绝对下标必须是 {FIRST_NONZERO:?} 帧 ⇒ 起音没有被整体推后"
+    );
+    assert_ne!(
+        at_zero.iter().map(|s| s.to_bits()).collect::<Vec<u32>>(),
+        at_offset.iter().map(|s| s.to_bits()).collect::<Vec<u32>>(),
+        "移动起点居然没改变输出 ⇒ 这条判据没有牙"
+    );
+    eprintln!(
+        "[yeban-dsp/RT] polysynth 起点移位: offset={OFFSET} 帧, 前 {OFFSET} 帧全 0, \
+         [ {OFFSET} .. {FRAMES} ) 逐位相同, 首个非零帧={FIRST_NONZERO:?}"
+    );
+}
+
 /// 量什么：`polysynth` 的**实时路径**在 10 000 个量子（每量子 128 帧单声道）里的
 /// **堆分配次数与释放次数**（单位：次数）。
 ///
@@ -175,8 +279,14 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
     let mut triggered: u64 = 0;
     let mut rendered_frames: u64 = 0;
     let mut nonzero_frames: u64 = 0;
+    // 新面（`latency_samples`）的运行期零分配判据：在**同一个观测窗口**内每个量子
+    // 取一次读数，并把读数累加 —— 分配计数因此也覆盖这个新成员。
+    let mut latency_calls: u64 = 0;
+    let mut latency_sum: usize = 0;
     let reading = window(|| {
         for quantum in 0..RT_QUANTA {
+            latency_calls += 1;
+            latency_sum += synth.latency_samples();
             if quantum % NOTE_EVERY == 0 {
                 // 循环取音符 ⇒ 反复撞满声部池 ⇒ 窃取与淡出状态机每个量子窗口都被走到。
                 let event = events[(triggered as usize) % events.len()];
@@ -234,10 +344,15 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
         block.iter().all(|sample| sample.is_finite()),
         "路径产出了非有限值"
     );
+    assert_eq!(
+        latency_calls, RT_QUANTA,
+        "延迟读数必须在窗口里的每个量子都被取一次"
+    );
+    assert_eq!(latency_sum, 0, "窗口里累加的延迟读数必须恒为 0 帧");
     eprintln!(
         "[yeban-dsp/RT] polysynth 10 000 量子 × {WINDOW_FRAMES} 帧: \
          allocations={} deallocations={} rendered_frames={} nonzero_frames={} \
-         triggered={} steals={}",
+         triggered={} steals={} latency_calls={latency_calls} latency_sum={latency_sum}",
         reading.allocations,
         reading.deallocations,
         rendered_frames,
