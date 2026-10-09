@@ -127,6 +127,9 @@ where
 /// 这里**显式写出 `'s`**，不让 `Box<dyn MediaSource>` 落到类型默认的 `'static`：
 /// 内存入口传进来的是 `Cursor<&[u8]>`，它借用调用方的切片，不可能是 `'static`。
 ///
+/// **不可回退的源**（`is_seekable() == false`）会先被整份读进内存，再当成可回退的源
+/// 解码。理由与代价见下面的注释；上限就是调用方的 [`PcmBudget::max_input_bytes`]。
+///
 /// # Errors
 ///
 /// 见 [`DecodeError`]。
@@ -135,8 +138,32 @@ pub fn decode_source<'s>(
     hint: &Hint,
     options: &DecodeOptions,
 ) -> DecodeResult<DecodedAsset> {
-    // 上游的 RIFF/WAVE 解析器在一条畸形声明上会整型溢出并 panic。本 crate 的契约是
-    // "不可信输入只返回 DecodeError"，而我们不能改上游，因此在探测之前先走一遍块头。
+    // 预检与 symphonia 的解封装都要"先读一段、再从头读一遍"（[`precheck_riff_wave_fmt`]
+    // 扫完块头会把游标还给起点）。对**不可回退**的源，旧实现的选择是"预检直接放弃"
+    // （`!is_seekable` ⇒ `Ok(())`），于是上游那两处未检查算术完全不受本条闸门约束。
+    //
+    // 2026-10-09 实测：那个 fail-open 是**可达**的，而且不是"理论上的第三方源" ——
+    // symphonia 的 `impl MediaSource for std::fs::File` 把 `is_seekable()` 定义为
+    // `metadata().is_file()`，所以一条 **FIFO** 路径（`decode_path` / `import_path` 收
+    // 路径，`metadata().len()` 为 0 因而输入字节闸门放行）就落在这条分支上：
+    //   · 合法 WAV（44 字节）经不可回退源 ⇒ `Ok(frames=2)`（**今天能解**）；
+    //   · 33 声道 `WAVE_FORMAT_EXTENSIBLE` 经不可回退源 ⇒ panic（`wave/chunks.rs` 690）；
+    //   · 32769 声道 tag 1 经不可回退源 ⇒ panic（`wave/chunks.rs` 100）。
+    // 因此这里不能 fail closed（那是对第一行能力的真实回归），改为把输入读进内存：
+    // 读完之后源就是可回退的，预检与解封装都恢复原状，而且这条路径**第一次**受输入字节
+    // 预算约束（此前它绕过了 [`limits::check_input_len`]）。
+    //
+    // 代价（诚实声明）：不可回退的源的峰值内存多了**一份输入容器字节**，上限是预算里的
+    // `max_input_bytes`。可回退的源（本 crate 的三个入口都是）一个字节都不多读。
+    let mut source: Box<dyn MediaSource + 's> = if source.is_seekable() {
+        source
+    } else {
+        let bytes = slurp_unseekable(&mut *source, options.budget.max_input_bytes)?;
+        Box::new(Cursor::new(bytes))
+    };
+    // 上游的 RIFF/WAVE 解析器有两处畸形声明会整型溢出并 panic（`u16` 乘法与 `u32` 移位）。
+    // 本 crate 的契约是"不可信输入只返回 DecodeError"，而我们不能改上游，因此在探测之前
+    // 先把 `fmt ` 块走一遍。
     precheck_riff_wave_fmt(&mut *source)?;
     let stream = MediaSourceStream::new(source, Default::default());
     let mut reader = symphonia::default::get_probe()
@@ -322,18 +349,91 @@ pub fn decode_source<'s>(
 /// `u16` 溢出乘法重新暴露出来。代价写在 [`precheck_riff_wave_fmt`] 的文档里。
 const RIFF_PRECHECK_MAX_CHUNKS: u32 = 4_096;
 
+/// RIFF/WAVE 的 `fmt ` 块里 `WAVE_FORMAT_PCM` 的格式标签（`wFormatTag = 0x0001`）。
+///
+/// 上游那次 `num_channels * (bits_per_sample / 8)` 的 `u16` 乘法只有本标签会走到。
+const WAVE_FORMAT_PCM: u16 = 0x0001;
+
+/// [`slurp_unseekable`] 一次从源里读入的字节数：64 KiB。
+///
+/// 与 [`crate::asset`] 的摘要缓冲同一个量级：决定的是 **I/O 次数**，与被读的容器长度无关。
+const SLURP_CHUNK_BYTES: usize = 64 * 1024;
+
+/// RIFF/WAVE 的 `fmt ` 块里 `WAVE_FORMAT_EXTENSIBLE` 的格式标签（`wFormatTag = 0xFFFE`）。
+///
+/// 单独命名，是因为这个标签有**自己的**一处上游未检查算术：`read_ext_fmt` 之后调用
+/// `fix_wave_channel_mask`，其中 `1u32 << (num_channels - channel_mask.count_ones())` 在
+/// 差值达到 32 时移位溢出（现位于 `wave/chunks.rs` 第 690 行）。tag 1 的那次 `u16` 乘法
+/// 与它是**两个**不同的落点，因此必须分开判。
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+
+/// `fmt ` 块里 `WAVE_FORMAT_EXTENSIBLE` 的 `sub_format_guid`：会用**声道掩码**定位声道的
+/// 四个取值。
+///
+/// 上游 `read_ext_fmt` 只对这四个 GUID 调用 `fix_wave_channel_mask`（也就是唯一会移位
+/// 溢出的地方）；另外两个 Ambisonic GUID 走 `map_amb_channel_count`（无移位），其余 GUID
+/// 直接 `unsupported_error`。这四个常量因此必须是**逐字节**正确的：认错一个方向就会
+/// 要么漏判（放行 ⇒ 上游 panic），要么误拒（Ambisonic 文件被当成掩码文件）。
+/// 漏判那一侧由判据
+/// `a_wave_extensible_fmt_that_shift_overflows_is_refused_not_a_panic` 逐个 GUID 钉住
+/// （四个 GUID 各要被拒一次）；误拒那一侧由
+/// `the_extensible_gate_refuses_only_the_shape_that_really_shifts_over` 的 Ambisonic 与
+/// 未知 GUID 用例钉住。
+const WAVE_SUBTYPE_PCM: [u8; 16] = [
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+];
+
+/// `KSDATAFORMAT_SUBTYPE_IEEE_FLOAT`（同 [`WAVE_SUBTYPE_PCM`] 的说明）。
+const WAVE_SUBTYPE_IEEE_FLOAT: [u8; 16] = [
+    0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+];
+
+/// `KSDATAFORMAT_SUBTYPE_ALAW`（同 [`WAVE_SUBTYPE_PCM`] 的说明）。
+const WAVE_SUBTYPE_ALAW: [u8; 16] = [
+    0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+];
+
+/// `KSDATAFORMAT_SUBTYPE_MULAW`（同 [`WAVE_SUBTYPE_PCM`] 的说明）。
+const WAVE_SUBTYPE_MULAW: [u8; 16] = [
+    0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+];
+
+/// `KSDATAFORMAT_SUBTYPE_AMBISONIC_B_FORMAT_PCM`：**不**走声道掩码那条路（无移位）。
+///
+/// 只出现在判据里：本闸门对它与"未知 GUID"是同一个结论，因此非测试代码不认它（见
+/// [`reaches_the_wave_channel_mask_fix`] 的文档）。判据把它写出来，是为了钉住"闸门认的
+/// 那四个 GUID 与 Ambisonic 不是同一份字节"。
+#[cfg(test)]
+const WAVE_SUBTYPE_AMBISONIC_PCM: [u8; 16] = [
+    0x01, 0x00, 0x00, 0x00, 0x21, 0x07, 0xd3, 0x11, 0x86, 0x44, 0xc8, 0xc1, 0xca, 0x00, 0x00, 0x00,
+];
+
+/// `KSDATAFORMAT_SUBTYPE_AMBISONIC_B_FORMAT_IEEE_FLOAT`：**不**走声道掩码那条路。
+#[cfg(test)]
+const WAVE_SUBTYPE_AMBISONIC_IEEE_FLOAT: [u8; 16] = [
+    0x03, 0x00, 0x00, 0x00, 0x21, 0x07, 0xd3, 0x11, 0x86, 0x44, 0xc8, 0xc1, 0xca, 0x00, 0x00, 0x00,
+];
+
 /// 在探测之前拒掉会让上游 RIFF 解析器整型溢出的 `fmt ` 声明。
 ///
-/// 上游事实（逐行读源码得到；本 crate **不能**修改上游）：
-/// `symphonia-format-riff-0.6.1/src/wave/chunks.rs:100`
-/// `let expected_block_align = num_channels * (bits_per_sample / 8);`
-/// 两个操作数都是 `u16`。乘积大于 `u16::MAX` 时，debug 与 release 都会 panic ——
-/// 根 `Cargo.toml` 的 `[profile.release] overflow-checks = true` 让它在生产构建里也炸。
-/// 那次乘法只有**一个**调用点：`WAVE_FORMAT_PCM`（tag `0x0001`，同文件 `chunks.rs:438-440`）。
-/// 复现基线：44 字节 WAV 头 + 2 个 16-bit 样本（共 48 字节），`num_channels = 32769` ⇒
-/// `32769 × 2 = 65538 > 65535`。
+/// 上游事实（逐行读源码得到；本 crate **不能**修改上游）——**两处**未检查算术：
 ///
-/// 这道闸门是**只拒**的：它只在"上游那次乘法确实会溢出"时报错。上游能正常解析的文件
+/// 1. `symphonia-format-riff-0.6.1/src/wave/chunks.rs:100`
+///    `let expected_block_align = num_channels * (bits_per_sample / 8);`
+///    两个操作数都是 `u16`。乘积大于 `u16::MAX` 时，debug 与 release 都会 panic ——
+///    根 `Cargo.toml` 的 `[profile.release] overflow-checks = true` 让它在生产构建里也炸。
+///    那次乘法只有**一个**调用点：`WAVE_FORMAT_PCM`（tag `0x0001`，同文件 `chunks.rs:438-440`）。
+///    复现基线：44 字节 WAV 头 + 2 个 16-bit 样本（共 48 字节），`num_channels = 32769` ⇒
+///    `32769 × 2 = 65538 > 65535`。
+/// 2. `fix_wave_channel_mask`（同文件第 682 行起）的 `1u32 << channel_diff`（第 690 行）：
+///    tag `0xFFFE`（`WAVE_FORMAT_EXTENSIBLE`）走 `read_ext_fmt` 之后调用它，
+///    `num_channels - channel_mask.count_ones() >= 32` 即移位溢出。这条与第 1 条**不是**
+///    同一个落点：tag 1 的那次 `u16` 乘法挡不住它。复现基线：**134 字节**、
+///    `fmt ` 声明 40 字节、`num_channels = 33`、`channel_mask = 0`、PCM 子格式 GUID ⇒
+///    `attempt to shift left with overflow`。判据与读数见
+///    `decode::tests::a_wave_extensible_fmt_that_shift_overflows_is_refused_not_a_panic`。
+///
+/// 这道闸门是**只拒**的：它只在"上游确实会执行那次乘法/移位"时报错。上游能正常解析的文件
 /// 一个都不会被它拒掉 —— **唯一**的例外是块数超过 [`RIFF_PRECHECK_MAX_CHUNKS`] 的文件
 /// （那种文件的块结构已经不可信，宁可立刻报错也不放行；见 [`scan_riff_for_fmt`]）。
 /// 扫描不到 `fmt ` 块时它什么都不做，把判定留给探测器。
@@ -374,7 +474,8 @@ fn precheck_riff_wave_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
 ///
 /// # Errors
 ///
-/// 只在"上游那次 `u16` 乘法确实会溢出"，或扫描预算用尽时返回
+/// 只在"上游那次 `u16` 乘法确实会溢出"、"上游那次 `u32` 移位确实会溢出"
+/// （见 [`refuse_extensible_fmt_shift_overflow`]），或扫描预算用尽时返回
 /// [`DecodeError::Malformed`]。
 fn scan_riff_for_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
     let mut header = [0u8; 12];
@@ -428,19 +529,26 @@ fn scan_riff_for_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
             let format_tag = u16::from_le_bytes([body[0], body[1]]);
             let num_channels = u16::from_le_bytes([body[2], body[3]]);
             let bits_per_sample = u16::from_le_bytes([body[14], body[15]]);
-            // 只有 tag 1 + 上游接受的位深才会走到那次乘法；其余形状上游自己会报错。
-            let bytes_per_sample = match bits_per_sample {
-                8 | 16 | 24 | 32 => u32::from(bits_per_sample / 8),
-                _ => return Ok(()),
-            };
-            if format_tag == 1 && u32::from(num_channels) * bytes_per_sample > u32::from(u16::MAX) {
-                return Err(DecodeError::Malformed {
-                    detail: format!(
-                        "WAV fmt declares {num_channels} channels at {bits_per_sample} bits per \
-                         sample: the RIFF parser computes num_channels * (bits_per_sample / 8) in \
-                         u16 and would overflow (symphonia-format-riff src/wave/chunks.rs:100)"
-                    ),
-                });
+            if format_tag == WAVE_FORMAT_PCM {
+                // 只有 tag 1 + 上游接受的位深才会走到那次乘法；其余形状上游自己会报错。
+                let bytes_per_sample = match bits_per_sample {
+                    8 | 16 | 24 | 32 => u32::from(bits_per_sample / 8),
+                    _ => return Ok(()),
+                };
+                if u32::from(num_channels) * bytes_per_sample > u32::from(u16::MAX) {
+                    return Err(DecodeError::Malformed {
+                        detail: format!(
+                            "WAV fmt declares {num_channels} channels at {bits_per_sample} bits \
+                             per sample: the RIFF parser computes \
+                             num_channels * (bits_per_sample / 8) in u16 and would overflow \
+                             (symphonia-format-riff src/wave/chunks.rs:100)"
+                        ),
+                    });
+                }
+            } else if format_tag == WAVE_FORMAT_EXTENSIBLE {
+                // 第二处上游未检查算术（`fix_wave_channel_mask` 的 `u32` 移位）。tag 1 的
+                // 那次 `u16` 乘法挡不住它，所以这里必须单独判。
+                refuse_extensible_fmt_shift_overflow(source, size, num_channels, bits_per_sample)?;
             }
             return Ok(());
         }
@@ -468,6 +576,156 @@ fn scan_riff_for_fmt(source: &mut dyn MediaSource) -> DecodeResult<()> {
              refusing to hand the file to the parser"
         ),
     })
+}
+
+/// 上游 `read_ext_fmt` → `fix_wave_channel_mask` 的**未检查移位**：只拒这一份输入。
+///
+/// 上游事实（逐行读源码得到；本 crate **不能**修改上游）：
+/// `fix_wave_channel_mask`（现位于 `wave/chunks.rs` 第 682 行）先算
+/// `channel_diff = num_channels as i32 - channel_mask.count_ones() as i32`，在
+/// `channel_diff > 0` 时执行 `1u32 << channel_diff`（第 690 行）。`channel_diff >= 32`
+/// 就是一次移位溢出 —— debug 构建与 `overflow-checks = true` 的 release 构建都会
+/// panic，而**134 字节**的畸形文件就足以触发（实测读数见判据
+/// `a_wave_extensible_fmt_that_shift_overflows_is_refused_not_a_panic`）。
+///
+/// 本函数**只**在"上游真的会走到那次移位"时说拒绝：它在移位之前的分支逐条镜像上游
+/// （声明长度 < 40、`cbSize != 22`、位深不是 8 的倍数、GUID 是 Ambisonic 或未知、
+/// 各子格式自己的位深约束）。任何一条不满足时上游都会先报错、不会 panic，此时本函数
+/// 返回 `Ok(())`，把判定留给上游 —— 这与"只拒"的取舍一致：宁可让上游去报自己的错，
+/// 也不用一条**不成立**的理由拒绝一个文件。
+///
+/// # Errors
+///
+/// 上游那次移位确实会溢出时返回 [`DecodeError::Malformed`]。
+fn refuse_extensible_fmt_shift_overflow(
+    source: &mut dyn MediaSource,
+    size: u32,
+    num_channels: u16,
+    bits_per_sample: u16,
+) -> DecodeResult<()> {
+    // 上游 `read_ext_fmt` 的第一条：声明长度 < 40 直接 `decode_error`，走不到移位。
+    if size < 40 {
+        return Ok(());
+    }
+    // 40 字节块体里剩下的 24 字节，顺序与上游读取顺序一致：
+    // `cbSize(2)` → `valid_bits_per_sample(2)` → `channel_mask(4)` → `sub_format_guid(16)`。
+    let mut ext = [0u8; 24];
+    if source.read_exact(&mut ext).is_err() {
+        return Ok(());
+    }
+    // `cbSize` 必须是 22（`WaveFormatEx` 的 22 字节扩展），否则上游报错。
+    if u16::from_le_bytes([ext[0], ext[1]]) != 22 {
+        return Ok(());
+    }
+    let valid_bits = u16::from_le_bytes([ext[2], ext[3]]);
+    // 上游在读到 `cbSize`/`valid_bits` 之后、读声道掩码之前就拒绝非 8 倍数位深。
+    if !bits_per_sample.is_multiple_of(8) {
+        return Ok(());
+    }
+    let channel_mask = u32::from_le_bytes([ext[4], ext[5], ext[6], ext[7]]);
+    let sub_format = &ext[8..24];
+    if !reaches_the_wave_channel_mask_fix(sub_format, bits_per_sample, valid_bits) {
+        return Ok(());
+    }
+    if !would_shift_overflow(num_channels, channel_mask) {
+        return Ok(());
+    }
+    Err(DecodeError::Malformed {
+        detail: format!(
+            "WAV fmt (WAVE_FORMAT_EXTENSIBLE) declares {num_channels} channels at \
+             {bits_per_sample} bits per sample with channel mask {channel_mask:#010x}: the RIFF \
+             parser's channel-mask fix-up computes 1u32 << channel_diff and would shift-overflow \
+             (symphonia-format-riff wave/chunks.rs line 690)"
+        ),
+    })
+}
+
+/// 上游 `read_ext_fmt` 读完 40 字节块体之后，会不会走到 `fix_wave_channel_mask`。
+///
+/// 只有**声道掩码定位**的四个子格式会走到那里（`sub_format_guid` 为 PCM / IEEE_FLOAT /
+/// ALAW / MULAW）。上游另外还认两个 Ambisonic B-format GUID，它们走
+/// `map_amb_channel_count`（没有移位），其余 GUID 直接 `unsupported_error` —— 这两类对
+/// 本闸门是**同一个**结论（`false`），因此这里只认那四个，不给 Ambisonic 单开分支：
+/// 开了也观察不到差别（判据 `the_extensible_gate_refuses_only_the_shape_that_really_
+/// shifts_over` 的 Ambisonic 用例与"未知 GUID"用例走的就是同一条返回路径）。
+///
+/// 每个子格式在移位之前还有自己的位深约束（不满足时上游报错），这里一并镜像：位深不合法
+/// 的输入由上游报它自己的错，不由本条闸门冒充"移位会溢出"。
+fn reaches_the_wave_channel_mask_fix(
+    sub_format: &[u8],
+    bits_per_sample: u16,
+    valid_bits: u16,
+) -> bool {
+    if sub_format == WAVE_SUBTYPE_PCM {
+        // 上游：位深 ∈ {8,16,24,32}（0 与 > 32 先报错），且 `valid <= bits`。
+        matches!(bits_per_sample, 8 | 16 | 24 | 32) && valid_bits <= bits_per_sample
+    } else if sub_format == WAVE_SUBTYPE_IEEE_FLOAT {
+        // 上游：`valid == bits`，且位深 ∈ {32,64}。
+        matches!(bits_per_sample, 32 | 64) && valid_bits == bits_per_sample
+    } else if sub_format == WAVE_SUBTYPE_ALAW || sub_format == WAVE_SUBTYPE_MULAW {
+        // 上游：a-law / mu-law 只接受 8 位。
+        bits_per_sample == 8
+    } else {
+        // Ambisonic 与未知 GUID：上游不调用那次移位。把这两类当成"会走到移位"的代价是
+        // **误拒**（用一个不成立的理由拒绝文件），因此判据里各有一条对照。
+        false
+    }
+}
+
+/// 上游 `fix_wave_channel_mask` 里那次 `1u32 << channel_diff` 会不会移位溢出。
+///
+/// 上游算的是 `channel_diff = num_channels as i32 - channel_mask.count_ones() as i32`，
+/// 只在 `channel_diff > 0` 时移位。`u32` 的移位量 ≥ 32 即溢出，因此条件是
+/// `num_channels - popcount(mask) >= 32`。这里用无符号写法（`popcount` 恒 ≤ 32，
+/// 两个写法在 `num_channels >= 0` 上等价），避免任何有符号转换。
+fn would_shift_overflow(num_channels: u16, channel_mask: u32) -> bool {
+    u32::from(num_channels) >= channel_mask.count_ones() + 32
+}
+
+/// 把一份**不可回退**的输入整份读进内存，并在读取过程中施加输入字节闸门。
+///
+/// 为什么必须边读边查：不可回退的源无法先量长度（[`MediaSource::byte_len`] 对管道可能是
+/// `None`），"读完再查"等于"先把内存吃光再报错"。这里的判定与 [`limits::check_input_len`]
+/// 同口径：**闭区间**（恰好等于 `max_input_bytes` 通过），超过一个字节即
+/// [`LimitViolation::InputTooLarge`]（错误里的 `bytes` 是**投影值**，即"再读这一块会到多少"，
+/// 而不是"读到多少才发现"）。
+///
+/// 读缓冲固定 [`SLURP_CHUNK_BYTES`]：与 [`crate::asset`] 的摘要缓冲同一个量级，与输入长度
+/// 无关；增长用 `try_reserve`，因此"分配器说不"是错误而不是 abort。
+///
+/// # Errors
+///
+/// - 输入超过 `max_input_bytes` ⇒ [`LimitViolation::InputTooLarge`]；
+/// - 分配器拒绝 ⇒ [`LimitViolation::AllocationRefused`]（该变体的计数**在这里的单位是
+///   容器字节**，因为被增长的缓冲装的是容器字节，不是音频样本）；
+/// - 源自身的 I/O 失败原样上报。
+fn slurp_unseekable(source: &mut dyn MediaSource, max_input_bytes: u64) -> DecodeResult<Vec<u8>> {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; SLURP_CHUNK_BYTES];
+    loop {
+        match source.read(&mut chunk) {
+            Ok(0) => return Ok(bytes),
+            Ok(filled) => {
+                let projected = u64::try_from(bytes.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(u64::try_from(filled).unwrap_or(u64::MAX));
+                if projected > max_input_bytes {
+                    return Err(DecodeError::Budget(LimitViolation::InputTooLarge {
+                        bytes: projected,
+                        limit: max_input_bytes,
+                    }));
+                }
+                bytes.try_reserve(filled).map_err(|_| {
+                    DecodeError::Budget(LimitViolation::AllocationRefused {
+                        samples: u64::try_from(filled).unwrap_or(u64::MAX),
+                    })
+                })?;
+                bytes.extend_from_slice(&chunk[..filled]);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
 }
 
 /// 记录"这一轮没有产出样本"，超过闸门即报错 [MUST-GATE-011]。
@@ -548,8 +806,9 @@ where
 mod tests {
     use super::*;
     use crate::testfix::{
-        FlacSpec, WavFormat, WavSpec, encode_f32_samples, encode_int_samples, flac_constant,
-        fmt_body_offset, wav, wav_with_chunks_before_fmt, wav_with_declared_len,
+        FlacSpec, WavExtensibleSpec, WavFormat, WavSpec, encode_f32_samples, encode_int_samples,
+        flac_constant, fmt_body_offset, wav, wav_extensible, wav_extensible_with_junk,
+        wav_with_chunks_before_fmt, wav_with_declared_len,
     };
 
     fn int_spec(channels: u16, bits: u16) -> WavSpec {
@@ -946,6 +1205,351 @@ mod tests {
                 .frame_count(),
             2
         );
+    }
+
+    /// `WAVE_FORMAT_EXTENSIBLE` 的夹具参数（`sample_rate` 固定 8 kHz：它不参与本判据）。
+    fn ext_spec(
+        channels: u16,
+        bits: u16,
+        valid_bits: u16,
+        channel_mask: u32,
+        sub_format: [u8; 16],
+    ) -> WavExtensibleSpec {
+        WavExtensibleSpec {
+            channels,
+            sample_rate: 8_000,
+            bits,
+            valid_bits,
+            channel_mask,
+            sub_format,
+        }
+    }
+
+    /// 跑一遍 RIFF 预检本身（不经过探测器），用来钉"这条闸门**拒什么、不拒什么**"。
+    fn scan_precheck(bytes: &[u8]) -> DecodeResult<()> {
+        let mut source = Cursor::new(bytes);
+        scan_riff_for_fmt(&mut source)
+    }
+
+    /// 判据 ([ARCH-SEC-003] / 不可信输入零 panic)：`WAVE_FORMAT_EXTENSIBLE` 的
+    /// **声道掩码修正**是上游第二处未检查算术，必须同样在探测之前拦下。
+    ///
+    /// 上游事实：`fix_wave_channel_mask`（现位于 `wave/chunks.rs` 第 682 行）算
+    /// `channel_diff = num_channels - channel_mask.count_ones()`，在 `channel_diff > 0` 时
+    /// 执行 `1u32 << channel_diff`（第 690 行）。`channel_diff >= 32` ⇒ 移位溢出 ⇒ debug
+    /// 与 `overflow-checks = true` 的 release 都 panic。实测（2026-10-09，把本条闸门去掉
+    /// 之后）：**134 字节**的 40 字节 `fmt `（`num_channels = 33`、`channel_mask = 0`、
+    /// PCM 子格式 GUID）让 `decode_bytes` 直接 panic 在 `wave/chunks.rs` 第 690 行，
+    /// 消息是 `attempt to shift left with overflow`。
+    ///
+    /// 四个"掩码定位"GUID 都要覆盖：`sub_format_guid` 的字节是这条闸门的开关，认错一个
+    /// 就是一条漏判（放行 ⇒ panic）。闭区间在这一侧：`channel_diff = 31`（31 声道 + 空掩码）
+    /// 仍然合法（上游随后以 `UnsupportedFormat` 拒绝），`channel_diff = 32` 才溢出。
+    #[test]
+    fn a_wave_extensible_fmt_that_shift_overflows_is_refused_not_a_panic() {
+        let data = encode_int_samples(8, &[0x11, 0x22]);
+        // (标签, GUID, 位深, valid bits)：四种掩码定位子格式各一条，位深都取该子格式
+        // 合法的最小值，因此上游一定会走到那次移位。
+        let sub_formats: [(&str, [u8; 16], u16, u16); 4] = [
+            ("pcm", WAVE_SUBTYPE_PCM, 8, 8),
+            ("ieee", WAVE_SUBTYPE_IEEE_FLOAT, 32, 32),
+            ("alaw", WAVE_SUBTYPE_ALAW, 8, 8),
+            ("mulaw", WAVE_SUBTYPE_MULAW, 8, 8),
+        ];
+        for (label, guid, bits, valid_bits) in sub_formats {
+            for channels in [32u16, 33, 1_000, u16::MAX] {
+                let bytes = wav_extensible(&ext_spec(channels, bits, valid_bits, 0, guid), &data);
+                let err = decode_bytes(&bytes, &DecodeOptions::default()).unwrap_err();
+                assert!(
+                    matches!(
+                        &err,
+                        DecodeError::Malformed { detail }
+                            if detail.contains("shift-overflow")
+                                && detail.contains(&channels.to_string())
+                    ),
+                    "{label} with {channels} channels and an empty mask must be refused by the \
+                     precheck, got {err}"
+                );
+            }
+        }
+
+        // 掩码只置 1 位也一样：`channel_diff = channels - 1`，因此 33 声道仍 ≥ 32。
+        let one_bit = wav_extensible(&ext_spec(33, 8, 8, 0x1, WAVE_SUBTYPE_PCM), &data);
+        assert!(matches!(
+            decode_bytes(&one_bit, &DecodeOptions::default()),
+            Err(DecodeError::Malformed { .. })
+        ));
+
+        // `fmt ` 前面有别的块时，块网格走查器必须照样看得见这块 `fmt `（第二处算术与第一处
+        // 共用同一条扫描路径，因此这条对照必须跟着覆盖）。
+        let four = [0xEEu8; 4];
+        let junk: [([u8; 4], &[u8]); 2] = [(*b"JUNK", &four), (*b"LIST", &four)];
+        let behind =
+            wav_extensible_with_junk(&ext_spec(33, 8, 8, 0, WAVE_SUBTYPE_PCM), &junk, &data);
+        assert!(
+            matches!(
+                decode_bytes(&behind, &DecodeOptions::default()),
+                Err(DecodeError::Malformed { .. })
+            ),
+            "the precheck must find the extensible fmt chunk behind other chunks"
+        );
+
+        // 闭区间的另一侧：`channel_diff = 31` 时上游那次移位合法，因此本条闸门不许拒它
+        // （上游随后会以 `UnsupportedFormat` 拒绝这份掩码，那是上游的判定，不是本闸门的）。
+        let boundary = wav_extensible(&ext_spec(31, 8, 8, 0, WAVE_SUBTYPE_PCM), &data);
+        match decode_bytes(&boundary, &DecodeOptions::default()) {
+            Err(DecodeError::Malformed { detail }) => assert!(
+                !detail.contains("shift-overflow"),
+                "channel_diff = 31 does not overflow the shift, got {detail}"
+            ),
+            other => assert!(
+                other.is_err(),
+                "expected an upstream refusal, got {other:?}"
+            ),
+        }
+    }
+
+    /// 判据 ([ARCH-SEC-003] 的"只拒"一侧)：本条闸门只拒**上游真的会走到那次移位**的形状。
+    ///
+    /// 为什么需要它：`sub_format_guid` / `cbSize` / 位深这些分支在上游都排在移位**之前**，
+    /// 认错一个方向就会把上游本来会正常报错（而不是 panic）的文件改说成"移位会溢出" ——
+    /// 错误文案指错原因，而本 crate 的错误文案要进 MCP 响应体。这里直接跑预检本身，
+    /// 因此"谁拒的"不靠文案猜。
+    #[test]
+    fn the_extensible_gate_refuses_only_the_shape_that_really_shifts_over() {
+        let data = encode_int_samples(8, &[0x11, 0x22]);
+
+        // 会走到移位 ⇒ 拒绝。
+        for channels in [32u16, 33, u16::MAX] {
+            let bytes = wav_extensible(&ext_spec(channels, 8, 8, 0, WAVE_SUBTYPE_PCM), &data);
+            assert!(
+                scan_precheck(&bytes).is_err(),
+                "{channels} channels with an empty mask must be refused"
+            );
+        }
+
+        // 上游不会走到移位 ⇒ 预检必须放行（判定留给上游）。
+        let stays_with_upstream = [
+            ("ambisonic pcm", WAVE_SUBTYPE_AMBISONIC_PCM, 8u16, 8u16),
+            ("ambisonic ieee", WAVE_SUBTYPE_AMBISONIC_IEEE_FLOAT, 32, 32),
+            ("unknown guid", [0u8; 16], 8, 8),
+        ];
+        for (label, guid, bits, valid_bits) in stays_with_upstream {
+            let bytes = wav_extensible(&ext_spec(33, bits, valid_bits, 0, guid), &data);
+            assert!(
+                scan_precheck(&bytes).is_ok(),
+                "{label}: upstream never calls the mask fix-up for this GUID, so the precheck \
+                 must not refuse it"
+            );
+        }
+
+        // 移位量 31：合法（`1u32 << 31`）。
+        let thirty_one = wav_extensible(&ext_spec(31, 8, 8, 0, WAVE_SUBTYPE_PCM), &data);
+        assert!(scan_precheck(&thirty_one).is_ok());
+
+        // 上游在移位**之前**就报错的形状：预检也必须放行（否则错误文案会把原因指错）。
+        // ① 声明长度 < 40（上游 `read_ext_fmt` 的第一条判据）。
+        let mut short_declared = wav_extensible(&ext_spec(33, 8, 8, 0, WAVE_SUBTYPE_PCM), &data);
+        let body = fmt_body_offset(&short_declared).expect("fixture has a fmt chunk");
+        short_declared[body - 4..body].copy_from_slice(&17u32.to_le_bytes());
+        assert!(
+            scan_precheck(&short_declared).is_ok(),
+            "a fmt chunk that declares fewer than 40 bytes never reaches the mask fix-up"
+        );
+        // ② `cbSize != 22`。
+        let mut bad_cb_size = wav_extensible(&ext_spec(33, 8, 8, 0, WAVE_SUBTYPE_PCM), &data);
+        let body = fmt_body_offset(&bad_cb_size).expect("fixture has a fmt chunk");
+        bad_cb_size[body + 16..body + 18].copy_from_slice(&0u16.to_le_bytes());
+        assert!(scan_precheck(&bad_cb_size).is_ok());
+        // ③ 位深不是 8 的倍数。
+        let mut bad_bits = wav_extensible(&ext_spec(33, 12, 12, 0, WAVE_SUBTYPE_PCM), &data);
+        let body = fmt_body_offset(&bad_bits).expect("fixture has a fmt chunk");
+        bad_bits[body + 14..body + 16].copy_from_slice(&12u16.to_le_bytes());
+        assert!(scan_precheck(&bad_bits).is_ok());
+        // ④ 子格式自己的位深约束不满足（a-law 只接受 8 位）。
+        let alaw_16 = wav_extensible(&ext_spec(33, 16, 16, 0, WAVE_SUBTYPE_ALAW), &data);
+        assert!(scan_precheck(&alaw_16).is_ok());
+        // ⑤ `valid_bits > bits`（PCM 子格式）。
+        let bad_valid = wav_extensible(&ext_spec(33, 8, 9, 0, WAVE_SUBTYPE_PCM), &data);
+        assert!(scan_precheck(&bad_valid).is_ok());
+    }
+
+    /// 判据 (闸门不得误拒)：合法的 `WAVE_FORMAT_EXTENSIBLE` 素材必须照常解出。
+    ///
+    /// 没有这条，上面两条判据可以用"拒绝一切 `0xFFFE`"来变绿 —— 而 `WAVE_FORMAT_
+    /// EXTENSIBLE` 正是多声道母带最常见的封装，误拒它会让 5.1/7.1 素材整批导入失败。
+    #[test]
+    fn a_legal_extensible_wav_still_decodes() {
+        let cases: [(u16, u32, &[i32]); 2] = [
+            (2, 0x3, &[1_000, -1_000, 2_000, -2_000]),
+            (
+                6,
+                0x3F,
+                &[
+                    100, -100, 200, -200, 300, -300, 400, -400, 500, -500, 600, -600,
+                ],
+            ),
+        ];
+        for (channels, mask, values) in cases {
+            let data = encode_int_samples(16, values);
+            assert_eq!(values.len(), usize::from(channels) * 2, "fixture shape");
+            let bytes = wav_extensible(&ext_spec(channels, 16, 16, mask, WAVE_SUBTYPE_PCM), &data);
+            let asset = decode_bytes(&bytes, &DecodeOptions::default()).unwrap_or_else(|err| {
+                panic!("a legal {channels}-channel extensible WAV must decode, got {err}")
+            });
+            assert_eq!(asset.channels(), channels);
+            assert_eq!(asset.frame_count(), 2);
+            assert_eq!(asset.pcm_format(), PcmFormat::S16);
+        }
+    }
+
+    /// 一个**不可回退**的源：`is_seekable() == false`，且每一次 `seek` 都失败。
+    ///
+    /// 为什么它代表真实输入：symphonia 把 `impl MediaSource for std::fs::File` 的
+    /// `is_seekable()` 定义成 `metadata().is_file()`，所以 `decode_path` / `import_path`
+    /// 收下的一条 **FIFO**（或字符设备）路径就落在这条分支上 —— 实测：指向 FIFO 时
+    /// `metadata().is_file() == false`、`metadata().len() == 0`，输入字节闸门因此放行。
+    /// 判据不真的建 FIFO（那要依赖 `mkfifo` 这个外部程序，且不是每个平台都有），只把
+    /// `is_seekable` 报成 `false`：走的是**同一段**代码。
+    struct NonSeekableSource {
+        inner: Cursor<Vec<u8>>,
+    }
+
+    impl NonSeekableSource {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                inner: Cursor::new(bytes),
+            }
+        }
+    }
+
+    impl Read for NonSeekableSource {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.inner.read(buf)
+        }
+    }
+
+    impl Seek for NonSeekableSource {
+        fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this source cannot seek",
+            ))
+        }
+    }
+
+    impl MediaSource for NonSeekableSource {
+        fn is_seekable(&self) -> bool {
+            false
+        }
+        fn byte_len(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    /// 判据 ([ARCH-SEC-003] / 不可信输入零 panic)：**不可回退的源**也必须过 RIFF 预检。
+    ///
+    /// 为什么需要它：预检要"扫一遍再把游标还给起点"，所以旧实现见到
+    /// `!is_seekable()` 直接返回 `Ok(())` —— 那等于让上游那两处未检查算术完全不受本条
+    /// 闸门约束。实测（2026-10-09，修复前）：33 声道 `WAVE_FORMAT_EXTENSIBLE` 与 32769
+    /// 声道 tag 1 这两种输入，经不可回退源都**直接 panic**
+    /// （`wave/chunks.rs` 第 690 行 / 第 100 行），而合法 WAV 同样经不可回退源却能
+    /// `Ok(frames=2)` —— 所以既不能 fail open，也不能 fail closed。
+    ///
+    /// 本判据同时钉住"没有把不可回退的源变成回归"：第三段要求合法 WAV 经这条路径得到的
+    /// 样本与内存入口**逐位相同**。
+    #[test]
+    fn a_non_seekable_source_is_buffered_so_the_precheck_still_runs() {
+        let source =
+            |bytes: Vec<u8>| -> Box<dyn MediaSource> { Box::new(NonSeekableSource::new(bytes)) };
+
+        // ① tag 1 的 `u16` 乘法：32769 声道。
+        let mut tag1 = int_wav(1, 16, &[0x1234, -0x1234]);
+        patch_declared_channels(&mut tag1, 32_769);
+        let err = decode_source(source(tag1), &Hint::new(), &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("32769")),
+            "a non-seekable source must still be prechecked, got {err}"
+        );
+
+        // ② `WAVE_FORMAT_EXTENSIBLE` 的 `u32` 移位：33 声道 + 空掩码。
+        let data = encode_int_samples(8, &[0x11, 0x22]);
+        let extensible = wav_extensible(&ext_spec(33, 8, 8, 0, WAVE_SUBTYPE_PCM), &data);
+        let err =
+            decode_source(source(extensible), &Hint::new(), &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("shift-overflow")),
+            "a non-seekable source must still be prechecked, got {err}"
+        );
+
+        // ③ 反向对照：合法输入经不可回退源必须解出**同一份**样本（缓冲不得改动字节）。
+        let legal = int_wav(2, 16, &[1, -2, 3, -4, 5, -6, 7, -8]);
+        let buffered = decode_source(
+            source(legal.clone()),
+            &Hint::new(),
+            &DecodeOptions::default(),
+        )
+        .expect("a legal WAV from a non-seekable source must still decode");
+        let direct = decode_bytes(&legal, &DecodeOptions::default()).unwrap();
+        assert_eq!(buffered.frame_count(), direct.frame_count());
+        assert_eq!(buffered.pcm_hash(), direct.pcm_hash());
+        assert_eq!(
+            buffered
+                .samples()
+                .iter()
+                .map(|s| s.to_bits())
+                .collect::<Vec<_>>(),
+            direct
+                .samples()
+                .iter()
+                .map(|s| s.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// 判据 ([ARCH-SEC-003] / `HD-24` 第五道闸门)：不可回退的源也要过**输入字节**闸门。
+    ///
+    /// 为什么需要它：不可回退的源无法先量长度（`byte_len()` 是 `None`），因此旧实现里
+    /// 这类输入**完全绕过**了 `check_input_len`。缓冲之后它在读取过程中边读边判，判定与
+    /// [`limits::check_input_len`] 同口径：**闭区间**（恰好等于上限通过），错误里带精确的
+    /// 投影字节数与生效上限。
+    #[test]
+    fn a_non_seekable_source_obeys_the_input_byte_budget() {
+        let limit = 256u64;
+        let budget = PcmBudget::new(limit, !3u64, 64, 768_000, 60);
+        let options = DecodeOptions {
+            budget,
+            ..DecodeOptions::default()
+        };
+
+        // 恰好 `limit` 字节：**不**因输入字节被拒（内容当然是垃圾，因此另有其错）。
+        let exact = vec![0u8; usize::try_from(limit).unwrap()];
+        if let Err(DecodeError::Budget(LimitViolation::InputTooLarge { bytes, limit: got })) =
+            decode_source(
+                Box::new(NonSeekableSource::new(exact)),
+                &Hint::new(),
+                &options,
+            )
+        {
+            panic!("exactly {bytes} bytes must pass the {got}-byte cap (closed interval)");
+        }
+
+        // 多一个字节：必须报 `InputTooLarge`，且数字是投影值 `limit + 1`。
+        let over = vec![0u8; usize::try_from(limit + 1).unwrap()];
+        match decode_source(
+            Box::new(NonSeekableSource::new(over)),
+            &Hint::new(),
+            &options,
+        ) {
+            Err(DecodeError::Budget(LimitViolation::InputTooLarge { bytes, limit: got })) => {
+                assert_eq!(bytes, limit + 1);
+                assert_eq!(got, limit);
+            }
+            other => panic!(
+                "expected InputTooLarge for {} bytes, got {other:?}",
+                limit + 1
+            ),
+        }
     }
 
     #[test]

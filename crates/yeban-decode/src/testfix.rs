@@ -184,6 +184,97 @@ pub fn fmt_body_offset(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+/// `WAVE_FORMAT_EXTENSIBLE`（tag `0xFFFE`）WAV 的参数：40 字节 `fmt ` 块体。
+///
+/// 存在的理由：上游 `read_ext_fmt` 之后调用 `fix_wave_channel_mask`，其中
+/// `1u32 << channel_diff` 在 `channel_diff >= 32` 时移位溢出。这与 [`WavSpec`] 的 tag 1
+/// 路径是**两处**不同的未检查算术，因此夹具必须能单独构造这条形状 —— 而
+/// `num_channels = 33` 之类的声明不能写进 [`WavSpec`]（那会让 `block_align` 先回绕）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WavExtensibleSpec {
+    /// 声道数（`wFormatTag` 之后的第一个 `u16`）。
+    pub channels: u16,
+    /// 采样率 (Hz)。
+    pub sample_rate: u32,
+    /// `wBitsPerSample`。
+    pub bits: u16,
+    /// `wValidBitsPerSample`。
+    pub valid_bits: u16,
+    /// `dwChannelMask`。
+    pub channel_mask: u32,
+    /// `SubFormat` 的 16 字节 GUID（调用方从 `decode` 的常量取，避免两处各写一份）。
+    pub sub_format: [u8; 16],
+}
+
+/// 生成一个 `WAVE_FORMAT_EXTENSIBLE` 的 RIFF/WAVE 文件：`fmt ` 声明 **40** 字节。
+///
+/// 结构：12 字节 RIFF 头 + `fmt ` (8 + 40) + `data` (8 + `data.len()`)；RIFF 尺寸按最终
+/// 真实长度回填，`data` 长度为奇数时补 1 个填充字节（与 [`wav_with_declared_len`] 同规则）。
+/// 生成的文件在"上游能解析"的形状下是合法 WAV：判据
+/// `decode::tests::a_legal_extensible_wav_still_decodes` 用它做"闸门不得误拒"的对照物。
+#[must_use]
+pub fn wav_extensible(spec: &WavExtensibleSpec, data: &[u8]) -> Vec<u8> {
+    wav_extensible_with_junk(spec, &[], data)
+}
+
+/// [`wav_extensible`] 的完整版：允许在 `fmt ` **之前**插入任意个未知块。
+///
+/// 为什么需要块网格上的第二个位置：本 crate 的 RIFF 预检是一台块网格走查器，`fmt ` 在
+/// 别的块之后时它必须仍然看得见这块 `fmt `（否则第二处未检查移位会重新暴露）。
+pub fn wav_extensible_with_junk(
+    spec: &WavExtensibleSpec,
+    junk: &[([u8; 4], &[u8])],
+    data: &[u8],
+) -> Vec<u8> {
+    let bytes_per_sample = u32::from(spec.bits / 8);
+    // 这两个字段上游只用于日志/推算，畸形形状下可以饱和；夹具**不**据此判任何东西。
+    let block_align =
+        u16::try_from(u32::from(spec.channels) * bytes_per_sample).unwrap_or(u16::MAX);
+    let byte_rate =
+        u32::try_from(u64::from(spec.sample_rate) * u64::from(block_align)).unwrap_or(u32::MAX);
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&0u32.to_le_bytes()); // 占位，最后回填真实长度
+    out.extend_from_slice(b"WAVE");
+    for (tag, body) in junk {
+        out.extend_from_slice(tag);
+        out.extend_from_slice(
+            &u32::try_from(body.len())
+                .expect("junk body fits u32")
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            out.push(0);
+        }
+    }
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&0xFFFEu16.to_le_bytes()); // WAVE_FORMAT_EXTENSIBLE
+    out.extend_from_slice(&spec.channels.to_le_bytes());
+    out.extend_from_slice(&spec.sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&spec.bits.to_le_bytes());
+    out.extend_from_slice(&22u16.to_le_bytes()); // cbSize = sizeof(WAVEFORMATEXTENSIBLE) - 18
+    out.extend_from_slice(&spec.valid_bits.to_le_bytes());
+    out.extend_from_slice(&spec.channel_mask.to_le_bytes());
+    out.extend_from_slice(&spec.sub_format);
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(
+        &u32::try_from(data.len())
+            .expect("fixture data fits u32")
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(data);
+    if data.len() % 2 == 1 {
+        out.push(0);
+    }
+    let riff_len = u32::try_from(out.len() - 8).expect("fixture fits u32");
+    out[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    out
+}
+
 /// 把整数样本编码为 `bits` 位小端字节流（8-bit 为无符号偏移 128 的约定）。
 #[must_use]
 pub fn encode_int_samples(bits: u16, values: &[i32]) -> Vec<u8> {
@@ -610,6 +701,63 @@ mod tests {
             None,
             "a header-only RIFF has no fmt chunk"
         );
+    }
+
+    #[test]
+    fn extensible_fixture_writes_a_40_byte_fmt_body_at_the_chunk_grid() {
+        // 判据 (夹具自检): `WAVE_FORMAT_EXTENSIBLE` 夹具的 40 字节块体必须逐字段落在
+        // 上游 `read_ext_fmt` 读的位置上（tag / 声道 / 位深 / `cbSize` / valid bits /
+        // 声道掩码 / GUID）。夹具错了，判据会把"位移没有溢出"读成"闸门漏判"。
+        let spec = WavExtensibleSpec {
+            channels: 33,
+            sample_rate: 8_000,
+            bits: 8,
+            valid_bits: 8,
+            channel_mask: 0,
+            sub_format: [0xA5; 16],
+        };
+        let junk: [([u8; 4], &[u8]); 1] = [(*b"JUNK", &[0xEEu8; 4])];
+        let bytes = wav_extensible_with_junk(&spec, &junk, &[0u8; 4]);
+        let body = fmt_body_offset(&bytes).expect("fixture must contain a fmt chunk");
+        let at = |offset: usize| bytes[body + offset];
+        assert_eq!(
+            u32::from_le_bytes([
+                bytes[body - 4],
+                bytes[body - 3],
+                bytes[body - 2],
+                bytes[body - 1]
+            ]),
+            40,
+            "the fmt chunk must declare exactly 40 bytes"
+        );
+        assert_eq!(u16::from_le_bytes([at(0), at(1)]), 0xFFFE);
+        assert_eq!(u16::from_le_bytes([at(2), at(3)]), 33);
+        assert_eq!(
+            u32::from_le_bytes([at(4), at(5), at(6), at(7)]),
+            spec.sample_rate
+        );
+        assert_eq!(u16::from_le_bytes([at(14), at(15)]), 8, "wBitsPerSample");
+        assert_eq!(u16::from_le_bytes([at(16), at(17)]), 22, "cbSize");
+        assert_eq!(
+            u16::from_le_bytes([at(18), at(19)]),
+            8,
+            "wValidBitsPerSample"
+        );
+        assert_eq!(u32::from_le_bytes([at(20), at(21), at(22), at(23)]), 0);
+        assert_eq!(
+            &bytes[body + 24..body + 40],
+            &[0xA5u8; 16],
+            "SubFormat GUID"
+        );
+        // `data` 紧跟在 40 字节块体之后（`fmt ` 的长度是偶数，因此没有填充字节）。
+        assert_eq!(&bytes[body + 40..body + 44], b"data");
+        assert_eq!(
+            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize,
+            bytes.len() - 8,
+            "RIFF size must be backfilled from the real length"
+        );
+        // 块链 = 12 字节 RIFF 头 + JUNK(8+4) + fmt(8+40) + data(8+4)。
+        assert_eq!(bytes.len(), 12 + 12 + 48 + 12);
     }
 
     #[test]
