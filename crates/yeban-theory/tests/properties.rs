@@ -615,6 +615,32 @@ proptest! {
         }
     }
 
+    /// 类别①（非有限输入）：[`yeban_theory::genre::GenreRule::swing`] 是 `pub`
+    /// 字段，调用方可以塞进**任意** `f32` 位模式（`NaN` / `±∞` / 子正规数 /
+    /// 极大有限值）。判据：`swing_permille()` 不 panic，且结果只能是
+    /// `Err(SwingOutOfRange)` 或 `500..=1000` 的合法千分比 ——
+    /// 绝不返回越界值，也绝不把 `Some` 报成 `None`。
+    ///
+    /// 覆盖口径：`any::<u32>()` 均匀抽位模式，因此 `NaN` 的 2^24 - 2 个编码、
+    /// `±∞`、全部子正规数与全部大指数都落在取值空间内（不是枚举登记表）。
+    #[test]
+    fn any_f32_swing_bit_pattern_errors_or_yields_a_legal_permille(bits in any::<u32>()) {
+        let mut rule = GenreLibrary::all()[0];
+        let value = f32::from_bits(bits);
+        rule.swing = Some(value);
+        match rule.swing_permille() {
+            Ok(None) => prop_assert!(false, "swing = Some({value}) reported as absent"),
+            Ok(Some(permille)) => prop_assert!(
+                (500..=1000).contains(&permille),
+                "bits {bits:#010x} ({value}) gave illegal permille {permille}"
+            ),
+            Err(error) => prop_assert!(
+                matches!(error, TheoryError::SwingOutOfRange { .. }),
+                "bits {bits:#010x} ({value}) gave unexpected {error:?}"
+            ),
+        }
+    }
+
     /// 每条流派规则都能产出节奏网格：每小节恰好 `onsets` 个 onset、
     /// tick 严格升序、全部落在本小节内、`hits_in_bar` 与全局序列一致。
     #[test]

@@ -426,13 +426,32 @@ impl GenreRule {
     /// 避免落到各平台的标准库实现。越界值钳制到区间端点，再交
     /// [`crate::swing::validate_swing_permille`] 校验（防御性分支）。
     ///
+    /// # 非有限输入（类别①：显式口径，不靠转换的巧合）
+    ///
+    /// [`GenreRule::swing`] 是 `pub` 字段，调用方可以自行构造规则，因此
+    /// `NaN` / `±∞` 是**可达输入**，不能当成不可能。口径与
+    /// [`crate::pitch::hz_to_note`] 的"非有限先判"一致：
+    ///
+    /// - `NaN`：不是"越界值"，没有可钳制的端点 ⇒ 返回
+    ///   [`TheoryError::SwingOutOfRange`]（`value` 字段沿用 `0`，与本函数在显式
+    ///   判据加入之前观测到的取值逐位一致）；
+    /// - `+∞` / `-∞`：按上面的钳制口径落到区间端点 ⇒ `1000` / `500`。
+    ///
+    /// `NaN` 的拒绝写成**显式分支**，是因为不加分支时它靠 `NaN as u16` 的饱和
+    /// 转换得到 `0`、再由 [`crate::swing`] 的区间下界拒绝 —— 那是两个无关机制的
+    /// 巧合：一旦区间下界变成 `0`，`NaN` 就会静默变成一个合法的摇摆比例。
+    ///
     /// # Errors
     ///
-    /// 钳制后的千分比仍越界时返回 [`TheoryError::SwingOutOfRange`]。
+    /// `swing` 为 `NaN`、或钳制后的千分比仍越界时返回
+    /// [`TheoryError::SwingOutOfRange`]。
     pub fn swing_permille(&self) -> Result<Option<u16>, TheoryError> {
         let Some(percent) = self.swing else {
             return Ok(None);
         };
+        if percent.is_nan() {
+            return Err(TheoryError::SwingOutOfRange { value: 0 });
+        }
         let clamped = libm::roundf(percent * 10.0).clamp(
             f32::from(crate::swing::SWING_PERMILLE_STRAIGHT),
             f32::from(crate::swing::SWING_PERMILLE_MAX),

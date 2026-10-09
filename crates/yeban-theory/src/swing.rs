@@ -447,4 +447,48 @@ mod tests {
             }
         );
     }
+
+    /// 类别①（非有限输入）：[`crate::genre::GenreRule::swing`] 是 `pub` 字段，
+    /// 调用方可以自行构造规则，因此 `NaN` / `±∞` 是可达输入。
+    ///
+    /// 量什么：`swing_permille()` 在 6 种非有限 / 端值登记上的返回值，单位 = "对"。
+    /// 三条读数**写死**在这里：任何一条变了都必须显式改判据，不许改成"本机读数"。
+    /// 在显式分支加入之前，本 crate 没有任何判据覆盖这条路径（登记表里的
+    /// `swing` 全是有限值，属性测试只枚举登记表）。
+    #[test]
+    fn non_finite_swing_registrations_follow_the_documented_policy() {
+        use crate::genre::GenreLibrary;
+
+        // 用登记表里真实存在的一条当模板，只替换被考察的字段。
+        let with = |swing: f32| {
+            let mut rule = GenreLibrary::all()[0];
+            rule.swing = Some(swing);
+            rule.swing_permille()
+        };
+
+        // NaN 不是"越界值"，没有可钳制的端点 ⇒ Err。
+        assert_eq!(
+            with(f32::NAN).unwrap_err(),
+            TheoryError::SwingOutOfRange { value: 0 }
+        );
+        // ±∞ 按登记层的钳制口径落到区间端点。
+        assert_eq!(with(f32::INFINITY).unwrap(), Some(SWING_PERMILLE_MAX));
+        assert_eq!(
+            with(f32::NEG_INFINITY).unwrap(),
+            Some(SWING_PERMILLE_STRAIGHT)
+        );
+        // 极大的有限值与同号无穷走同一条读数（钳制是这一层的口径）。
+        assert_eq!(with(1.0e30).unwrap(), with(f32::INFINITY).unwrap());
+        assert_eq!(with(-1.0e30).unwrap(), with(f32::NEG_INFINITY).unwrap());
+        // 子正规数仍是有限值：钳到平直端点，既不 Err 也不 panic。
+        assert_eq!(
+            with(f32::MIN_POSITIVE).unwrap(),
+            Some(SWING_PERMILLE_STRAIGHT)
+        );
+        assert_eq!(with(0.0).unwrap(), Some(SWING_PERMILLE_STRAIGHT));
+        // `None` 与 `Some(NaN)` 必须走不同分支：前者合法缺省，后者是坏数据。
+        let mut none_rule = GenreLibrary::all()[0];
+        none_rule.swing = None;
+        assert_eq!(none_rule.swing_permille().unwrap(), None);
+    }
 }
