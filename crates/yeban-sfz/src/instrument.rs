@@ -202,6 +202,38 @@ impl Trigger {
 /// 由消费方决定何时使用。两者不互相改写。
 pub const OFF_TIME_DEFAULT_SECONDS: f32 = 0.006;
 
+/// `bend_up` opcode 的规范缺省值，单位**音分**。
+///
+/// 出处：<https://sfzformat.com/opcodes/bend_up/> 的表格行
+/// （Type = integer，Default = 200，Range = -9600 to 9600，Unit = cents）。
+/// 同页正文界定了语义："Pitch bend range when Bend Wheel or Joystick is moved up,
+/// in cents"，并写明取值可为负："If `bend_up` is negative, then moving the pitch wheel
+/// up will cause the pitch to move down."
+pub const BEND_UP_DEFAULT_CENTS: i32 = 200;
+
+/// `bend_down` opcode 的规范缺省值，单位**音分**。
+///
+/// 出处：<https://sfzformat.com/opcodes/bend_down/> 的表格行
+/// （Type = integer，Default = -200，Range = -9600 to 9600，Unit = cents）。
+/// 同页正文："Pitch bend range when Bend Wheel or Joystick is moved down, in cents"，
+/// 并写明取正值的用途："Positive values of `bend_down` can be useful with instruments
+/// such as zithers or guitars ... this way, moving the pitch wheel in either direction
+/// will result in a realistic-sounding upwards bend." —— 因此本 crate **不**把
+/// "`bend_down` 必须非正"当校验，登记语料里也确有 `bend_down=1200`（19 次）。
+pub const BEND_DOWN_DEFAULT_CENTS: i32 = -200;
+
+/// `bend_up` / `bend_down` opcode 的规范取值域端点，单位**音分**。
+///
+/// 两个格式页的表格 Range 都是 `-9600 to 9600`（＝ ±8 个八度）；越界是明确
+/// [`SfzError::IntegerOutOfRange`]，**不**静默钳位（与 `tune` / `transpose` 同一条口径）。
+pub const BEND_RANGE_MAX_CENTS: i32 = 9600;
+
+/// 弯音轮处于中位（未弯音）的 MIDI 值。
+///
+/// 弯音轮是 14 位量（0..=16383），中位是 8192；本 crate 只接收已归约到
+/// `0..=127` 的**单一**弯音量（见 [`Region::bend_cents`]），其中位是 [`PITCH_BEND_CENTER`]。
+pub const PITCH_BEND_CENTER: u8 = 64;
+
 /// `off_mode` opcode：region 被**关断**时声部如何结束。
 ///
 /// 取值集合与缺省值取自登记语料的 opcode 普查（三个取值 `normal` / `fast` / `time`，
@@ -364,6 +396,26 @@ pub struct Region<'a> {
     pub tune: i32,
     /// 移调（半音，规范范围 -127..=127）。
     pub transpose: i32,
+    /// `bend_up`：弯音轮**向上**时的弯音范围，单位音分（规范缺省
+    /// [`BEND_UP_DEFAULT_CENTS`]，范围 -9600..=9600）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/bend_up/> 的表格行（Type = integer，
+    /// Default = 200，Range = -9600 to 9600，Unit = cents）。允许为负：规范正文写明
+    /// "If `bend_up` is negative, then moving the pitch wheel up will cause the pitch
+    /// to move down."
+    ///
+    /// **只喂给 [`Region::bend_cents`]**：本 crate 不接收弯音轮状态、不做 I/O，
+    /// 因此它不改写 [`Region::pitch_ratio`]（那需要调用方给出轮值）。越界是明确
+    /// [`SfzError::IntegerOutOfRange`]，不静默钳位。
+    pub bend_up: i32,
+    /// `bend_down`：弯音轮**向下**时的弯音范围，单位音分（规范缺省
+    /// [`BEND_DOWN_DEFAULT_CENTS`]，范围 -9600..=9600）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/bend_down/> 的表格行（Type = integer，
+    /// Default = -200，Range = -9600 to 9600，Unit = cents）。**允许为任意符号**：
+    /// 规范正文明写正值在齐特琴 / 吉他一类乐器上有用（两个方向都把音高往上弯），
+    /// 登记语料里 `bend_down=1200` 出现 19 次 —— 因此本 crate 不做「必须非正」的校验。
+    pub bend_down: i32,
     /// 音量（dB，规范范围 -144..=6；本实现只要求有限）。
     pub volume: f32,
     /// 声相（%，规范范围 -100..=100；本实现只要求有限）。
@@ -1032,6 +1084,22 @@ pub(crate) fn build_region<'a>(
     // ---- 音高 / 电平 ----
     let tune = read_i32(&scopes, "tune", -100, 100, 0)?;
     let transpose = read_i32(&scopes, "transpose", -127, 127, 0)?;
+    // 弯音范围：两个端点各自独立，规范缺省 200 / -200，Range 都是 ±9600 音分
+    // （<https://sfzformat.com/opcodes/bend_up/>、<https://sfzformat.com/opcodes/bend_down/>）。
+    let bend_up = read_i32(
+        &scopes,
+        "bend_up",
+        -i64::from(BEND_RANGE_MAX_CENTS),
+        i64::from(BEND_RANGE_MAX_CENTS),
+        BEND_UP_DEFAULT_CENTS,
+    )?;
+    let bend_down = read_i32(
+        &scopes,
+        "bend_down",
+        -i64::from(BEND_RANGE_MAX_CENTS),
+        i64::from(BEND_RANGE_MAX_CENTS),
+        BEND_DOWN_DEFAULT_CENTS,
+    )?;
     let volume = match scopes.get("volume").or_else(|| scopes.get("gain")) {
         Some(value) => value.as_f32()?,
         None => 0.0,
@@ -1126,6 +1194,8 @@ pub(crate) fn build_region<'a>(
         direction,
         tune,
         transpose,
+        bend_up,
+        bend_down,
         volume,
         pan,
         seq_position,
@@ -1319,6 +1389,8 @@ mod tests {
             direction: PlayDirection::Forward,
             tune: 0,
             transpose: 0,
+            bend_up: BEND_UP_DEFAULT_CENTS,
+            bend_down: BEND_DOWN_DEFAULT_CENTS,
             volume: 0.0,
             pan: 0.0,
             seq_position,
@@ -1994,6 +2066,179 @@ mod tests {
                 "off_time={bad:?} must be an explicit error, got {outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn bend_up_and_bend_down_default_to_the_spec_values() {
+        // 规范表格（<https://sfzformat.com/opcodes/bend_up/>、
+        // <https://sfzformat.com/opcodes/bend_down/>）的 Default 列分别是 200 与 -200。
+        // 来源是字段声明，因此两个缺省必须**成对**出现在每一个没有写这两个 opcode 的 region 上。
+        let default = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let region = &default.regions()[0];
+        assert_eq!(region.bend_up, 200);
+        assert_eq!(region.bend_down, -200);
+        assert_eq!(region.bend_up, BEND_UP_DEFAULT_CENTS);
+        assert_eq!(region.bend_down, BEND_DOWN_DEFAULT_CENTS);
+
+        // 显式 0 是「弯音轮不改变音高」，与缺省 200 / -200 不是一回事：
+        // 缺省轮子推到底会弯 200 音分，显式 0 则一个音分都不弯。
+        let zero = parse_text(
+            "<region>sample=a.wav bend_up=0 bend_down=0",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(zero.regions()[0].bend_up, 0);
+        assert_eq!(zero.regions()[0].bend_down, 0);
+        assert_eq!(zero.regions()[0].bend_cents(127), 0);
+        assert_eq!(zero.regions()[0].bend_cents(0), 0);
+    }
+
+    #[test]
+    fn bend_opcodes_read_every_distinct_value_found_in_the_registered_corpus() {
+        // 出处：对 `git ls-files` 引入的 1398 个登记 `.sfz` 逐文件剥掉 `//` 注释后取
+        // `bend_up=<literal>` / `bend_down=<literal>`（探针命令见本票报告）。
+        // 两个 opcode 各出现 708 次（合计 1416 次赋值，71 个文件），不同取值共 13 个，
+        // 这里是全部 13 个。注意 `bend_up=0` / `bend_down=0` 与 `bend_down=1200` 都在其中：
+        // 前者要求「显式 0 ≠ 缺省」，后者要求「`bend_down` 不强制非正」。
+        for (opcode, literals) in [
+            ("bend_up", &["0", "300", "500", "1200", "2400"][..]),
+            (
+                "bend_down",
+                &[
+                    "-3600", "-2400", "-1200", "-700", "-500", "-400", "0", "1200",
+                ][..],
+            ),
+        ] {
+            for literal in literals {
+                let source = format!("<region>sample=a.wav {opcode}={literal}");
+                let instrument = parse_text(&source, &Default::default()).expect("parses");
+                let region = &instrument.regions()[0];
+                let expected: i32 = literal.parse().expect("literal parses as i32");
+                let parsed = if opcode == "bend_up" {
+                    region.bend_up
+                } else {
+                    region.bend_down
+                };
+                assert_eq!(parsed, expected, "{opcode}={literal}");
+            }
+        }
+
+        // 语料里两个 opcode 的极值（1200 / -3600）都落在规范 Range ±9600 之内，
+        // 因此上面那条循环**不会**因为越界而失败 —— 这一点是测量结论，不是假设。
+        let extremes = parse_text(
+            "<region>sample=a.wav bend_up=2400 bend_down=-3600",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &extremes.regions()[0];
+        assert!(region.bend_up.abs() <= BEND_RANGE_MAX_CENTS);
+        assert!(region.bend_down.abs() <= BEND_RANGE_MAX_CENTS);
+        assert_eq!(region.bend_up, 2400);
+        assert_eq!(region.bend_down, -3600);
+    }
+
+    #[test]
+    fn bend_opcodes_are_read_from_the_four_scope_chain() {
+        // 与其它 opcode 同一条 `region → group → master → global` 查找链。
+        // 语料实测：1416 次赋值里 58 次在 `<global>`、647 次在 `<group>`、1 次在 `<master>`，
+        // 因此这条链的每一级都必须能带出取值。
+        let inherited = parse_text(
+            "<global>bend_up=1200\n<master>bend_down=1200\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(inherited.regions()[0].bend_up, 1200);
+        assert_eq!(inherited.regions()[0].bend_down, 1200);
+
+        let by_group = parse_text(
+            "<group>bend_up=500\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(by_group.regions()[0].bend_up, 500);
+
+        let overridden = parse_text(
+            "<global>bend_up=300\n<group>bend_up=500\n<region>sample=a.wav bend_up=1200",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(overridden.regions()[0].bend_up, 1200);
+    }
+
+    #[test]
+    fn an_out_of_range_bend_range_is_an_error_not_a_silent_clamp() {
+        // 两个格式页的表格 Range 都是 -9600 to 9600。越界是明确 `Err`。
+        for source in [
+            "<region>sample=a.wav bend_up=9601",
+            "<region>sample=a.wav bend_up=-9601",
+            "<region>sample=a.wav bend_down=9601",
+            "<region>sample=a.wav bend_down=-9601",
+        ] {
+            let outcome = parse_text(source, &Default::default());
+            assert!(
+                matches!(
+                    outcome,
+                    Err(SfzError::IntegerOutOfRange {
+                        min: -9600,
+                        max: 9600,
+                        ..
+                    })
+                ),
+                "{source} must be rejected, got {outcome:?}"
+            );
+        }
+        // 两个端点本身是合法取值（Range 是闭区间）。
+        let edges = parse_text(
+            "<region>sample=a.wav bend_up=9600 bend_down=-9600",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(edges.regions()[0].bend_up, 9600);
+        assert_eq!(edges.regions()[0].bend_down, -9600);
+    }
+
+    #[test]
+    fn a_non_integer_bend_range_is_an_error() {
+        for bad in ["", "abc", "12.5", "1e3"] {
+            for opcode in ["bend_up", "bend_down"] {
+                let source = format!("<region>sample=a.wav {opcode}={bad}");
+                let outcome = parse_text(&source, &Default::default());
+                assert!(
+                    matches!(outcome, Err(SfzError::InvalidInteger { .. })),
+                    "{opcode}={bad:?} must be an explicit error, got {outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bend_opcodes_do_not_change_region_selection_or_the_static_pitch_ratio() {
+        // 弯音范围**不**参与 region 选择，也不改写 `pitch_ratio` / `transpose` / `tune`：
+        // 中位轮值下的音高比必须和没有这两个 opcode 时逐位相同。
+        let plain = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60 transpose=2 tune=50",
+            &Default::default(),
+        )
+        .expect("parses");
+        let bent = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60 transpose=2 tune=50 \
+             bend_up=1200 bend_down=-1200",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(bent.len(), 1);
+        assert_eq!(
+            plain.regions()[0].pitch_ratio(36),
+            bent.regions()[0].pitch_ratio(36)
+        );
+        assert_eq!(
+            bent.regions()[0].bend_ratio(36, PITCH_BEND_CENTER),
+            plain.regions()[0].pitch_ratio(36)
+        );
+        assert!(
+            bent.region_for(60, 100).is_some(),
+            "a bend range must not gate region selection"
+        );
     }
 
     #[test]

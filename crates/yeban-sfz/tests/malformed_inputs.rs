@@ -9,7 +9,9 @@
 
 use std::fs;
 
-use yeban_sfz::{IncludeResolver, ParseLimits, SfzError, parse_sources, parse_text};
+use yeban_sfz::{
+    IncludeResolver, PITCH_BEND_CENTER, ParseLimits, SfzError, parse_sources, parse_text,
+};
 
 mod support;
 
@@ -811,4 +813,98 @@ fn velocity_response_is_modeled_and_range_checked_explicitly() {
     .expect("parses");
     assert_eq!(scoped.regions()[0].velocity_gain(64), 0.4);
     assert_eq!(scoped.regions()[0].velocity_gain(32), 0.7);
+}
+
+#[test]
+fn bend_range_is_modeled_and_range_checked_explicitly() {
+    let limits = ParseLimits::default();
+
+    // 缺省：规范表格（<https://sfzformat.com/opcodes/bend_up/>、
+    // <https://sfzformat.com/opcodes/bend_down/>）的 Default 列是 200 / -200，
+    // 范围都是 -9600 to 9600。缺省**不是** 0：缺省轮子推到底要弯两个半音。
+    let default = parse_text("<region>sample=a.wav", &limits).expect("parses");
+    let region = &default.regions()[0];
+    assert_eq!(region.bend_up, 200);
+    assert_eq!(region.bend_down, -200);
+    assert_eq!(region.bend_cents(PITCH_BEND_CENTER), 0);
+    assert_eq!(region.bend_cents(127), 200);
+    assert_eq!(region.bend_cents(0), -200);
+
+    // 语料里两个 opcode 的 13 个不同取值全部读得到（扫描口径见本票报告）：
+    // 含 `bend_up=0` / `bend_down=0`（显式 0 ≠ 缺省）与 `bend_down=1200`（正值合法）。
+    for (opcode, literals) in [
+        ("bend_up", &["0", "300", "500", "1200", "2400"][..]),
+        (
+            "bend_down",
+            &[
+                "-3600", "-2400", "-1200", "-700", "-500", "-400", "0", "1200",
+            ][..],
+        ),
+    ] {
+        for literal in literals {
+            let source = format!("<region>sample=a.wav {opcode}={literal}");
+            let instrument = parse_text(&source, &limits).expect("parses");
+            let expected: i32 = literal.parse().expect("literal parses as i32");
+            let parsed = if opcode == "bend_up" {
+                instrument.regions()[0].bend_up
+            } else {
+                instrument.regions()[0].bend_down
+            };
+            assert_eq!(parsed, expected, "{opcode}={literal}");
+        }
+    }
+
+    // 越界是明确 Err（不静默钳位）；端点（含）合法。
+    for bad in ["9601", "-9601"] {
+        for opcode in ["bend_up", "bend_down"] {
+            let source = format!("<region>sample=a.wav {opcode}={bad}");
+            let outcome = parse_text(&source, &limits);
+            assert!(
+                matches!(
+                    outcome,
+                    Err(SfzError::IntegerOutOfRange {
+                        min: -9600,
+                        max: 9600,
+                        ..
+                    })
+                ),
+                "{opcode}={bad} must be an explicit IntegerOutOfRange, got {outcome:?}"
+            );
+        }
+    }
+    parse_text("<region>sample=a.wav bend_up=9600 bend_down=-9600", &limits)
+        .expect("the range endpoints are inside");
+
+    // 非整数 / 空值 / 超长数字都是明确 Err，不是 panic，也不是静默缺省。
+    for bad in ["", "abc", "12.5", "1e3", "99999999999999999999"] {
+        for opcode in ["bend_up", "bend_down"] {
+            let source = format!("<region>sample=a.wav {opcode}={bad}");
+            let outcome = parse_text(&source, &limits);
+            assert!(
+                matches!(
+                    outcome,
+                    Err(SfzError::InvalidInteger { .. } | SfzError::IntegerOutOfRange { .. })
+                ),
+                "{opcode}={bad:?} must be an explicit Err, got {outcome:?}"
+            );
+        }
+    }
+
+    // 中位轮值下音高比与静态音高比逐位相同（`2^0 = 1` 是乘法单位元）：
+    // 这条把「新增字段不改变既有消费方电平」钉成位级判据。
+    let bent = parse_text(
+        "<region>sample=a.wav pitch_keycenter=60 bend_up=1200 bend_down=-1200",
+        &limits,
+    )
+    .expect("parses");
+    let plain = parse_text("<region>sample=a.wav pitch_keycenter=60", &limits).expect("parses");
+    for note in [0u8, 36, 60, 127] {
+        assert_eq!(
+            bent.regions()[0]
+                .bend_ratio(note, PITCH_BEND_CENTER)
+                .to_bits(),
+            plain.regions()[0].pitch_ratio(note).to_bits(),
+            "note {note}"
+        );
+    }
 }

@@ -15,6 +15,10 @@
 //!   <https://sfzformat.com/opcodes/transpose/>
 //! - `tune`：微调，单位音分（cent），默认 0，SFZ1 范围 -100..=100。
 //!   <https://sfzformat.com/opcodes/tune/>
+//! - `bend_up`：弯音轮上推的弯音范围，单位音分，默认 200，范围 -9600..=9600。
+//!   <https://sfzformat.com/opcodes/bend_up/>
+//! - `bend_down`：弯音轮下推的弯音范围，单位音分，默认 -200，范围 -9600..=9600。
+//!   <https://sfzformat.com/opcodes/bend_down/>
 //! - `volume`：音量，单位 dB，默认 0，规范范围 -144..=6。
 //!   <https://sfzformat.com/opcodes/volume/>
 //! - `offset`：采样起始偏移，单位采样点，默认 0。
@@ -47,6 +51,9 @@
 //!
 //! # 刻意不做的换算（避免发明语义）
 //!
+//! - **弯音轮状态**：`bend_up` / `bend_down` 只作为字段（[`PlaybackSpec::bend_up`] /
+//!   [`PlaybackSpec::bend_down`]）与两个**纯函数**（[`Region::bend_cents`] /
+//!   [`Region::bend_ratio`]）带出；本 crate **不持有**弯音轮值 —— 那是引擎的 MIDI 输入。
 //! - **声相定律**：`pan` 原样以百分比输出；`pan_law` 是引擎侧的 need（N4）。
 //! - **循环窗口缺省**：本 crate 不解码音频，所以 `loop_mode` 缺省是
 //!   [`LoopMode::NoLoop`]（见 `crate::instrument::Region` 文档），一律不循环。
@@ -204,6 +211,16 @@ pub struct PlaybackSpec {
     pub transpose: i32,
     /// 该 region 的微调（音分）。
     pub tune: i32,
+    /// 该 region 的 `bend_up`（音分，原样；缺省 [`crate::BEND_UP_DEFAULT_CENTS`]）。
+    ///
+    /// 弯音范围**不是**每样本都用的量：调用方把它与弯音轮值一起送进
+    /// [`Region::bend_cents`] / [`Region::bend_ratio`]。单独带出是为了让消费方能自己换算，
+    /// 也为了 [`PlaybackSpec::bend_up`] 与 [`PlaybackSpec::bend_down`] 在 `Copy` 结构里可读。
+    pub bend_up: i32,
+    /// 该 region 的 `bend_down`（音分，原样；缺省 [`crate::BEND_DOWN_DEFAULT_CENTS`]）。
+    ///
+    /// 允许为正（规范正文明写正值可用于齐特琴 / 吉他），见 [`Region::bend_down`]。
+    pub bend_down: i32,
     /// 音高比：`2 ^ (((note - pitch_keycenter + transpose) * 100 + tune) / 1200)`。
     pub pitch_ratio: f32,
     /// 步进比：每输出一个采样前进的源采样个数（已含采样率换算）。
@@ -363,6 +380,69 @@ impl<'a> Region<'a> {
         self.pitch_ratio(note) * (rates.sample_hz / rates.engine_hz)
     }
 
+    /// 弯音轮在 `wheel`（0..=127，中位 [`crate::PITCH_BEND_CENTER`]）处贡献的**音分数**。
+    ///
+    /// 规范语义（<https://sfzformat.com/opcodes/bend_up/>、
+    /// <https://sfzformat.com/opcodes/bend_down/>）：轮子朝一个方向走 `bend_up` 音分，
+    /// 朝另一个方向走 `bend_down` 音分。本 crate 按**线性**在两个端点之间插值：
+    ///
+    /// ```text
+    /// wheel > 64    ⇒  bend_up   * (wheel - 64) / 63
+    /// wheel == 64   ⇒  0
+    /// wheel < 64    ⇒  bend_down * (64 - wheel) / 64
+    /// ```
+    ///
+    /// `bend_up` / `bend_down` **可正可负**：规范正文明写 `bend_up` 为负时「轮子上推使音高
+    /// 下降」，`bend_down` 为正时两个方向都往上弯。因此本函数不做符号钳制。
+    ///
+    /// 取值返回音分数（`i32`）。解析路径保证两个范围都在 ±9600 内（见
+    /// [`crate::BEND_RANGE_MAX_CENTS`]），此时插值结果必然也在 ±9600 内，不会溢出；
+    /// 手工构造的 region 若把范围设成 `i32::MAX` / `i32::MIN`，本函数仍**不 panic**：
+    /// 中间乘积走 `i128` 并饱和到 `i32`。
+    ///
+    /// 零分配、无锁、无 I/O，可在实时路径调用。[`crate::PITCH_BEND_CENTER`] 是「未弯音」；
+    /// `wheel` 以 `u8` 传入，越界（>127）在类型上不可能。14 位轮值（0..=16383）
+    /// 的归约属于调用方。
+    #[must_use]
+    pub fn bend_cents(&self, wheel: u8) -> i32 {
+        let scaled = |range: i32, steps: u8, total: i32| -> i32 {
+            let product = i128::from(range) * i128::from(steps);
+            let quotient = product / i128::from(total);
+            i32::try_from(quotient).unwrap_or(if quotient > 0 { i32::MAX } else { i32::MIN })
+        };
+        match wheel.cmp(&crate::PITCH_BEND_CENTER) {
+            core::cmp::Ordering::Equal => 0,
+            // 上界 63 个刻度（65..=127）映射到完整的 `bend_up`。
+            core::cmp::Ordering::Greater => {
+                scaled(self.bend_up, wheel - crate::PITCH_BEND_CENTER, 63)
+            }
+            // 下界 64 个刻度（0..=63）映射到完整的 `bend_down`。
+            core::cmp::Ordering::Less => {
+                scaled(self.bend_down, crate::PITCH_BEND_CENTER - wheel, 64)
+            }
+        }
+    }
+
+    /// 含弯音的**音高比**：`pitch_ratio(note) * 2 ^ (bend_cents(wheel) / 1200)`。
+    ///
+    /// 这是把一次 note-on 的完整音高信息折算成单一乘数的唯一位置：
+    /// [`Region::pitch_ratio`] 仍是「不含弯音」的口径（既有消费方按那个口径读），
+    /// 本函数只是它乘上 [`Region::bend_cents`] 的指数。
+    ///
+    /// **裁决（工程）**：弯音是**乘法**作用于音高比，不是加到音分上再一起取指数 ——
+    /// 规范给的是两个独立范围（`bend_up` / `bend_down` 音分），乘法与「先合成总音分」
+    /// 在数学上等价，但乘法不必重新读 `pitch_keycenter` / `transpose` / `tune`。
+    /// 逐位一致性沿用 [`Region::pitch_ratio`] 的同一条 pending（`exp2` 的跨架构口径）。
+    ///
+    /// `wheel == PITCH_BEND_CENTER` 时结果与 [`Region::pitch_ratio`] **逐位相同**：
+    /// 指数是 `2^0 = 1`，一次乘 1.0 不改变任何有限值（含 `-0.0` 与次正规数）。
+    /// 零分配，可在实时路径调用。
+    #[must_use]
+    pub fn bend_ratio(&self, note: u8, wheel: u8) -> f32 {
+        let bend = f64::from(self.bend_cents(wheel)) / CENTS_PER_OCTAVE;
+        self.pitch_ratio(note) * bend.exp2() as f32
+    }
+
     /// `volume` (dB) → 线性增益：`10 ^ (volume / 20)`。
     ///
     /// 解析路径保证 `volume` 有限（[`crate::parser::OpcodeValue::as_f32`] 拒绝
@@ -445,6 +525,8 @@ impl<'a> Region<'a> {
             pitch_keycenter: self.pitch_keycenter,
             transpose: self.transpose,
             tune: self.tune,
+            bend_up: self.bend_up,
+            bend_down: self.bend_down,
             pitch_ratio: self.pitch_ratio(note),
             rate: self.playback_rate(note, rates),
             volume_db: self.volume,
@@ -493,6 +575,7 @@ impl<'a> Instrument<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PITCH_BEND_CENTER;
     use crate::parser::parse_text;
 
     const RATES_EQUAL: RenderRates = RenderRates {
@@ -526,6 +609,127 @@ mod tests {
         assert!(
             close(region.pitch_ratio(61), 2.0f32.powf(1.0 / 12.0), 1.0e-6),
             "one semitone must be 2^(1/12)"
+        );
+    }
+
+    #[test]
+    fn bend_cents_maps_the_wheel_endpoints_to_the_two_spec_ranges() {
+        let instrument = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60 bend_up=1200 bend_down=-1200",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+
+        // 中位（未弯音）恒为 0，与两个范围取值无关。
+        assert_eq!(region.bend_cents(PITCH_BEND_CENTER), 0);
+        for (up, down) in [(200, -200), (1200, -1200), (0, 0), (-1200, 1200)] {
+            let source = format!("<region>sample=a.wav bend_up={up} bend_down={down}");
+            let probe = parse_text(&source, &Default::default()).expect("parses");
+            assert_eq!(probe.regions()[0].bend_cents(64), 0, "up={up} down={down}");
+        }
+
+        // 端点：轮子上限 127 走满 `bend_up`，轮子下限 0 走满 `bend_down`。
+        assert_eq!(region.bend_cents(127), 1200);
+        assert_eq!(region.bend_cents(0), -1200);
+
+        // 严格单调（`bend_up` 为正时，轮值越大音分越高）。
+        let rising: Vec<i32> = (0u8..=127).map(|wheel| region.bend_cents(wheel)).collect();
+        assert!(
+            rising.windows(2).all(|pair| pair[0] <= pair[1]),
+            "bend_cents must be monotone in the wheel value"
+        );
+        assert_eq!(rising.len(), 128, "every wheel value is defined");
+
+        // 规范正文明写两个范围都可以为负 / 为正：
+        // "If `bend_up` is negative, then moving the pitch wheel up will cause the pitch
+        // to move down." 因此上推方向**不**被钳制成正值。
+        let inverted = parse_text(
+            "<region>sample=a.wav bend_up=-1200 bend_down=1200",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(inverted.regions()[0].bend_cents(127), -1200);
+        assert_eq!(inverted.regions()[0].bend_cents(0), 1200);
+    }
+
+    #[test]
+    fn bend_ratio_at_center_is_bit_identical_to_the_static_pitch_ratio() {
+        // 关键相容判据：没有弯音输入时，含弯音的音高比必须与既有 `pitch_ratio` 逐位相同
+        // （`2^0 = 1` 恰好是乘法单位元）。若这条红了，说明中位轮值不再是恒等变换，
+        // 既有的所有 `pitch_ratio` 消费方会被静默改电平/音高。
+        let instrument = parse_text(
+            "<region>sample=a.wav pitch_keycenter=48 bend_up=1200 bend_down=-1200",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        for note in [0u8, 1, 48, 60, 72, 127] {
+            let ratio = region.pitch_ratio(note);
+            assert_eq!(
+                region.bend_ratio(note, PITCH_BEND_CENTER).to_bits(),
+                ratio.to_bits(),
+                "note {note}: the centered wheel must be the identity"
+            );
+        }
+
+        // 1200 音分的两个端点 ⇒ 正好一个八度，与 `transpose=±12` 同值。
+        assert_eq!(region.bend_ratio(48, 127), region.pitch_ratio(48) * 2.0);
+        assert_eq!(region.bend_ratio(48, 0), region.pitch_ratio(48) * 0.5);
+        assert_eq!(region.bend_ratio(48, 127), region.pitch_ratio(60));
+        assert_eq!(region.bend_ratio(48, 0), region.pitch_ratio(36));
+    }
+
+    #[test]
+    fn the_spec_default_bend_range_is_plus_minus_two_semitones() {
+        // 缺省 200 / -200 音分 ⇒ 两个端点各是两个半音。这条把「规范缺省值」
+        // 与「可听结果」钉在一起：缺省不是 0，也不是 0 钳位。
+        let instrument = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.bend_cents(127), 200);
+        assert_eq!(region.bend_cents(0), -200);
+        assert!(
+            close(region.bend_ratio(60, 127), 2.0f32.powf(2.0 / 12.0), 1.0e-6),
+            "the default bend_up must be two semitones"
+        );
+        assert!(close(
+            region.bend_ratio(60, 0),
+            2.0f32.powf(-2.0 / 12.0),
+            1.0e-6
+        ));
+    }
+
+    #[test]
+    fn bend_cents_never_overflows_the_integer_type() {
+        // 字段是 `pub`：手工构造越界 region 也不得 panic / 回绕（叶子 crate 的硬约束）。
+        // `bend_cents` 的最坏情形是 ±9600 × 64 = 614 400，远小于 `i32::MAX`。
+        let extreme = parse_text(
+            "<region>sample=a.wav bend_up=9600 bend_down=-9600",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &extreme.regions()[0];
+        assert_eq!(region.bend_cents(127), 9600);
+        assert_eq!(region.bend_cents(0), -9600);
+        for wheel in 0u8..=127 {
+            let cents = region.bend_cents(wheel);
+            assert!(cents.abs() <= 9600, "wheel {wheel} gave {cents}");
+        }
+
+        // 手工构造的（解析路径不可能产生的）越界字段：结果必须是确定的算术，不是 panic。
+        let mut handcrafted = extreme.regions()[0].clone();
+        handcrafted.bend_up = i32::MAX;
+        handcrafted.bend_down = i32::MIN;
+        assert_eq!(handcrafted.bend_cents(64), 0);
+        assert_eq!(
+            handcrafted.bend_cents(127),
+            i32::MAX,
+            "saturating, not wrapping"
+        );
+        assert_eq!(
+            handcrafted.bend_cents(0),
+            i32::MIN,
+            "saturating, not wrapping"
         );
     }
 
@@ -710,6 +914,7 @@ mod tests {
     fn playback_spec_carries_the_region_fields_and_is_deterministic() {
         let instrument = parse_text(
             "<region>sample=a.wav key=36 pitch_keycenter=60 transpose=-2 tune=50 \
+             bend_up=1200 bend_down=1200 \
              volume=-3 pan=-25 loop_mode=loop_sustain loop_start=5 loop_end=105 group=7 off_by=9",
             &Default::default(),
         )
@@ -721,6 +926,9 @@ mod tests {
         assert_eq!(spec.pitch_keycenter, 60);
         assert_eq!(spec.transpose, -2);
         assert_eq!(spec.tune, 50);
+        // `bend_down=1200` 是语料里真实出现的正取值（19 次），必须原样带出、不被钳制。
+        assert_eq!(spec.bend_up, 1200);
+        assert_eq!(spec.bend_down, 1200);
         assert_eq!(spec.volume_db, -3.0);
         assert_eq!(spec.pan, -25.0);
         assert_eq!(spec.loop_mode, LoopMode::LoopSustain);
@@ -843,6 +1051,8 @@ mod tests {
                             direction: PlayDirection::Forward,
                             tune,
                             transpose,
+                            bend_up: crate::BEND_UP_DEFAULT_CENTS,
+                            bend_down: crate::BEND_DOWN_DEFAULT_CENTS,
                             volume: 0.0,
                             pan: 0.0,
                             seq_position: 1,

@@ -28,6 +28,12 @@
 //! **显式点表优先于 `amp_veltrack`** 是本 crate 的工程裁决，理由与规范出处见
 //! [`velocity`]（该模块的文档同时登记了 `amp_veltrack` 非缺省取值的待裁决项）。
 //!
+//! 弯音范围由 `bend_up`（[`Region::bend_up`]，缺省 [`BEND_UP_DEFAULT_CENTS`]）与
+//! `bend_down`（[`Region::bend_down`]，缺省 [`BEND_DOWN_DEFAULT_CENTS`]）成对带出，
+//! 单位都是音分、范围都是 `±BEND_RANGE_MAX_CENTS`；求值见 [`Region::bend_cents`] /
+//! [`Region::bend_ratio`]，字段也进 [`PlaybackSpec`]。轮值本身由调用方提供
+//! （本 crate 不接收 MIDI 输入）。
+//!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
 //! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §3.2 ARCH-RT-001 / ARCH-RT-004
@@ -167,8 +173,37 @@
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
-//! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
+//! 弯音范围：`bend_up` / `bend_down` 是**两个独立**的音分数（规范缺省 200 / -200，
+//! 范围都是 ±9600），线性插值见 [`Region::bend_cents`]：
 //!
+//! ```
+//! use yeban_sfz::{ParseLimits, PITCH_BEND_CENTER, RegionQuery, RenderRates, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<region>key=36 sample=kick.wav pitch_keycenter=60 bend_up=1200 bend_down=-1200",
+//!     &ParseLimits::default(),
+//! )?;
+//! let region = &instrument.regions()[0];
+//! assert_eq!(region.bend_up, 1200);
+//! assert_eq!(region.bend_down, -1200);
+//! // 中位轮值不弯音 ⇒ 与不含弯音的音高比逐位相同。
+//! assert_eq!(region.bend_cents(PITCH_BEND_CENTER), 0);
+//! assert_eq!(region.bend_ratio(36, PITCH_BEND_CENTER), region.pitch_ratio(36));
+//! // 轮子推到底（127）正好是整个 bend_up 范围；音高比是它乘上 2^(12/12) = 2。
+//! assert_eq!(region.bend_cents(127), 1200);
+//! assert_eq!(region.bend_ratio(36, 127), region.pitch_ratio(36) * 2.0);
+//! // 轮子拉到 0 正好是整个 bend_down 范围（负值 ⇒ 音高下降）。
+//! assert_eq!(region.bend_cents(0), -1200);
+//!
+//! let play = instrument
+//!     .playback_for(RegionQuery::new(36, 100), RenderRates::default())
+//!     .expect("region covers note 36");
+//! assert_eq!(play.spec.bend_up, 1200);
+//! assert_eq!(play.spec.bend_down, -1200);
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
+//! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
 //! ```no_run
 //! use yeban_sfz::{IncludeResolver, ParseLimits, parse_sources};
 //!
@@ -239,7 +274,8 @@ pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};
 pub use error::SfzError;
 pub use instrument::{
-    CcGate, Instrument, LoopMode, OFF_TIME_DEFAULT_SECONDS, OffMode, PlayDirection, Region,
+    BEND_DOWN_DEFAULT_CENTS, BEND_RANGE_MAX_CENTS, BEND_UP_DEFAULT_CENTS, CcGate, Instrument,
+    LoopMode, OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PlayDirection, Region,
     RegionQuery, SampleEnd, Trigger, TriggerEvent,
 };
 pub use midi::{MidiOpcode, MidiSection};
