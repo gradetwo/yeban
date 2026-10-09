@@ -2023,6 +2023,18 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   要决定 `sceneId` / `name` / `tempo` / `color` 的形状，留在它自己的一票）。
 ///   本形态是**场景级**（既不是音轨级也不是路由级也不是段落级，见
 ///   `notes::NoteOp::is_scene_level`），因此提案标题必须自带一个桶。
+/// - **场景级写入**（`ops[].kind == "setScene"`）：把操作对象**自带的** `scene.sceneId`
+///   那个**场景**写进 `project.scenes`（`Op::SetScene`，撤销载荷 `old_scene` 从当前
+///   文档读：新建时是 `None`，更新时是整条现值的克隆）。`scene.create: true` 表示新建
+///   （身份必须**不在**文档里，否则 `CONFLICT`；且 `name` 必填），缺省表示更新
+///   （身份必须**在**文档里，否则 `ENTITY_NOT_FOUND`）。上面那个"场景级取走"形态只关掉了
+///   读侧报得出、写侧动不了的那一半 —— 这一半把**建/改**也接上，于是
+///   `Op::SetScene` 与 `Op::RemoveScene` 这一对互逆操作在工具面上都可达。
+///   三个属性键（`name` / `tempo` / `color`）按**合并**语义施加（缺省 = 保留现值，
+///   显式 `null` = 清空可空的那两个），与 `setAutomationLane` 的 `lane` 逐条同口径。
+///   同一个场景在一次调用里写两次由 `notes::reject_duplicate_scene_targets` 响亮拒绝。
+///   本形态与取走形态共用**同一个**场景级桶（见 `notes::NoteOp::is_scene_level`），
+///   因此提案标题在两个形态上是同一个说法。
 ///
 /// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
 /// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
@@ -2087,6 +2099,8 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         // 同一个泳道在一次调用里只能被写一次：批内第二条的 `old_lane` 与文档现值
         // 必然不符（模型会报 `OpStateMismatch`），因此在建提案之前就响亮拒绝。
         notes::reject_duplicate_lane_targets(&track_id, &note_ops)?;
+        // 同一个**场景**同理（`setScene` 的 `old_scene` 也从调用前的文档读）。
+        notes::reject_duplicate_scene_targets(&note_ops)?;
         notes::compile(project, &track_id, &clip_id, &note_ops)?
     };
     let placement_description = match placement {
@@ -4238,6 +4252,117 @@ mod tests {
         );
         assert!(after.validate().is_ok(), "取走之后工程必须仍然合法");
         assert_ne!(after, project_before, "合并必须真的改了工程");
+
+        let mut undone = after;
+        for stamped in proposal.ops.iter().rev() {
+            stamped.apply_inverse(&mut undone).expect("逆操作");
+        }
+        assert_eq!(undone, project_before, "模型自己的 invert 必须能退回原状");
+    }
+
+    /// `setScene` 走**真**工具路径：一次提案把一个新场景建出来，合并之后它真的在
+    /// `project.scenes` 里，而那条提案自带的 `ops` 能用模型自己的 `apply_inverse`
+    /// 把工程退回原状（新建的逆操作是 `RemoveScene` —— D12）。
+    ///
+    /// 这一条对着"读侧报得出场景、写侧只能删不能建"的缺口：上一个形态关掉了取走那一半，
+    /// 而本票之前 `Op::SetScene` 在 MCP 侧的构造点实测是 0
+    /// ⇒ 一个场景都建不出来。
+    ///
+    /// 注入（实测红）：把 `notes::NoteOp::is_scene_level` 里的 `SetScene` 去掉
+    /// ⇒ 提案标题变成"音轨级编辑: 1 步"（那条 `title` 断言红）。
+    #[test]
+    fn edit_notes_writes_a_scene_through_the_tool_path() {
+        let mut domain = domain();
+        let project_before = domain.active_project().cloned().expect("工程");
+        let track = fixture_track(&domain);
+        let clip = clip_id(&domain);
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000779").expect("ULID");
+        assert!(
+            !project_before.scenes.contains_key(&fresh),
+            "夹具前提: 这个身份还没有场景"
+        );
+
+        let created = execute(
+            &mut domain,
+            &call(
+                "yeban_edit_notes",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "clipId": clip.to_canonical_string(),
+                    "ops": [
+                        {"kind": "setScene", "scene": {
+                            "create": true,
+                            "sceneId": fresh.to_canonical_string(),
+                            "name": "Bridge",
+                            "tempo": 96.0,
+                        }}
+                    ],
+                }),
+            ),
+        )
+        .expect("提案");
+        assert_eq!(created["status"], "success");
+        let proposal_id = EntityId::from_str(
+            created["data"]["proposal"]["proposalId"]
+                .as_str()
+                .expect("提案身份"),
+        )
+        .expect("ULID");
+        let proposal = domain.proposal(&proposal_id).expect("记录").clone();
+        assert_eq!(proposal.kind, "notes");
+        assert_eq!(
+            proposal.title, "场景级编辑: 1 步",
+            "描述必须如实说这是场景级编辑 (不冒充音轨级或段落级): {created}"
+        );
+
+        execute(
+            &mut domain,
+            &call(
+                "yeban_merge_proposal",
+                serde_json::json!({
+                    "proposalId": proposal_id.to_canonical_string(),
+                    "commitMessage": "新建场景",
+                }),
+            ),
+        )
+        .expect("合并");
+        let after = domain.active_project().cloned().expect("工程");
+        let scene = after
+            .scenes
+            .get(&fresh)
+            .expect("合并之后场景必须真的在工程里");
+        assert_eq!(scene.name, "Bridge");
+        assert_eq!(scene.tempo, Some(96.0));
+        assert!(after.validate().is_ok(), "新建之后工程必须仍然合法");
+        assert_ne!(after, project_before, "合并必须真的改了工程");
+
+        // 同一个场景在一次调用里写两次 ⇒ 在**建提案之前**就响亮拒绝
+        // （不让一个自相矛盾的批去撞模型的 `OpStateMismatch`）。
+        let duplicate = execute(
+            &mut domain,
+            &call(
+                "yeban_edit_notes",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "clipId": clip.to_canonical_string(),
+                    "ops": [
+                        {"kind": "setScene", "scene": {
+                            "sceneId": fresh.to_canonical_string(), "name": "a"}},
+                        {"kind": "setScene", "scene": {
+                            "sceneId": fresh.to_canonical_string(), "tempo": 100.0}}
+                    ],
+                }),
+            ),
+        )
+        .expect("带内");
+        assert_eq!(
+            duplicate["error"]["code"], "INVALID_PARAMETER_RANGE",
+            "{duplicate}"
+        );
+        assert_eq!(
+            duplicate["error"]["data"]["reason"], "duplicateSceneTarget",
+            "{duplicate}"
+        );
 
         let mut undone = after;
         for stamped in proposal.ops.iter().rev() {

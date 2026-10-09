@@ -516,7 +516,8 @@
 //! 对 `Op::RemoveScene` 读出 ① **3** / ② **20**（`compile` 的构造点 + 本节的变体定义
 //! 与两条判据里的同名模式）—— 这正是"新写下的构造点会被这个模式看见"的正向对照。
 //! ⚠ 诚实边界：本节的行文本身也会提到那几个仍然为 0 的变体名，因此在**工作树**上它们的
-//! ② 不再是 0（各 1 次，全部来自本节）；上表的 0 一律是 **`origin/main`** 上的读数。
+//! ② 不再是 0（全部来自本节）；上表的 0 一律是 **`origin/main`** 上的读数。
+//! （`Op::SetScene` 那一行在**本票**之后也离开了这张表 —— 见下一节。）
 //! 缺口的形状是：
 //!
 //! | 事实 | 依据 |
@@ -551,6 +552,83 @@
 //!
 //! 目标**不在**顶层 `trackId` / `clipId` 上：本形态自带寻址（`sceneId`），与段落级、
 //! 三个路由级形态同一纪律；场景形态一个音符都不读，因此**不要求**片段是 MIDI。
+//!
+//! ## 场景写入形态（`ops[].kind == "setScene"`）
+//! —— 关闭"读侧报得出场景、写侧只能删不能建"这条缺口
+//!
+//! 上一节把场景实体上**无自由度**的那一半（取走）接上了工具面，并明文登记"创建/更新那一半
+//! 要决定 `sceneId` / `name` / `tempo` / `color` 的形状，留在它自己的一票"。本票就是那一票：
+//! 模型 [`Op::SetScene`] 的构造点在 `crates/yeban-mcp/src` 里此前是 **0**（上一节的表在它自己
+//! 标注的 ref `8474e4b^` 上读 `Op::SetScene` ① **0** / ② **0**，同表 `Op::SetSection` 读
+//! 2 / 10、`Op::SetMacro` 读 2 / 3 —— 模式有效）。本形态把它接上。
+//!
+//! 落地之后，同一份 git-grep 模式在**工作树**上的读数（单位 = "匹配到的个数"，
+//! 作用域 = `crates/yeban-mcp/src`，与上一节逐字同一对模式）：
+//!
+//! | 变体 | ① 构造点 | ② 任何提及 | 对照读数（同一模式 / 同一作用域 / 同一工作树） |
+//! | :--- | ---: | ---: | :--- |
+//! | `Op::SetScene` | **4** | **27** | `Op::SetSection` 2 / 12 |
+//! | `Op::RemoveScene` | 3 | 22 | `Op::SetMacro` 2 / 4 |
+//! | `Op::RemoveTrack` | 0 | 1 | `Op::SetSection` 2 / 12 |
+//! | `Op::InsertDevice` | 0 | 1 | `Op::SetSection` 2 / 12 |
+//! | `Op::RemoveDevice` | 0 | 1 | `Op::SetSection` 2 / 12 |
+//!
+//! 读法：正向对照（`Op::SetScene` 由 0 变成非零）证明"新写下的构造点会被这个模式看见"；
+//! 右列证明模式在同一次运行里对别的成员读出非零，因此**仍然为 0 的那三个**
+//! （`RemoveTrack` / `InsertDevice` / `RemoveDevice`）是"那里真的没有"，不是"模式把一切都
+//! 扫成 0"。⚠ 诚实边界：那三个的 ② 不是 0（各 1 次），因为上一节的表与本节的行文都提到了
+//! 它们的名字；② 的 0 只在**未提到**它们的 ref 上成立。
+//!
+//! 本票对上一节登记的**三个自由度**逐条裁决（每条都给理由，不冒充规范）：
+//!
+//! | 自由度 | 本票的决定 | 理由 |
+//! | :--- | :--- | :--- |
+//! | `sceneId` 可选还是必填 | **必填**（新建与更新都要） | 本工具面的身份一律由调用方给出（`create: true` 的 `clipId` 是 §7.2 的必填实参；`removeScene` 的 `sceneId` 同样必填）。`ops[]` 信封**没有**回传"服务端替你生成的身份"的通道，确定性派生又会让两个同名场景撞成一个 ⇒ 派生不是可选项 |
+//! | `name` 是否必填 | **新建时必填**；更新时可省（合并） | `SceneV3::name` 是普通 `String`，模型对它**没有任何校验**（`project.rs` 的 `SceneV3::validate` 只查 `tempo`）⇒ 空名会一路静默落盘。`yeban_import_audio` 建材料时同样要求 `name` |
+//! | `tempo` / `color` 合并还是整体替换 | **合并**（缺省 = 保留文档现值；显式 `null` = 清空） | 与本工具里 [`LanePatch`] 的口径逐条相同（`{"kind":"setAutomationLane"}` 的 `domain` 也是"`null` 清掉"）。三态**不折叠**：`None`（没提）与 `Some(None)`（明写 `null`）不是同一件事 |
+//!
+//! 新建与更新由载荷里的 `create` 布尔**显式**区分（缺省 `false`），不靠"文档里没有这个身份
+//! 就当作新建"：后者会让一个打错的 `sceneId` **静默建出一个新场景**，而那正是本仓库
+//! "响亮失败、绝不静默降级"纪律要拦的形状。`create` 与工具顶层的 `create` 同词同义
+//! （`ADR-0001` D48）—— "目标不存在才新建，已存在就响亮拒绝"；两者不可能同时为真
+//! （顶层 `create: true` 只放行 `add`）。
+//!
+//! 形态：`{"kind":"setScene","scene":{...}}` —— 载荷是**自包含**的 `scene` 对象
+//! （与 `setAutomationLane` 的 `lane`、`removeAutomationPoint` 的 `point` 同一形状）：
+//!
+//! ```json
+//! {"kind":"setScene","scene":{"create":true,"sceneId":"<ULID>","name":"Verse",
+//!                             "tempo":128.0,"color":"#22AA88"}}
+//! {"kind":"setScene","scene":{"sceneId":"<ULID>","name":"Verse 2","tempo":null}}
+//! ```
+//!
+//! 撤销载荷 `old_scene` 由 [`compile`] 从**当前文档**读（新建时是 `None`，更新时是整条现值
+//! 的克隆）：模型的前置条件要求它逐字等于文档现值，因此本层不采信调用方声明的旧状态。
+//! `SetScene` 的逆操作是 [`Op::invert`] 定义的（更新 → 反向 `SetScene`；新建 →
+//! `RemoveScene`），因此**新建一次 + 合并**之后，一次 `yeban_undo` 就能把这个场景整条取走。
+//!
+//! 六条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有 `kind` / `scene` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownSetSceneOpField"`） |
+//! | `scene` 对象里有 [`SET_SCENE_FIELDS`] 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownSetSceneField"`） |
+//! | `sceneId` 缺失 / 不是字符串 / 不是合法 ULID | `INVALID_PARAMETER_RANGE`（缺字段走统一的缺字段错误） |
+//! | `create: true` 且 `project.scenes` 里**已有**该身份 | `CONFLICT`（`reason = "sceneAlreadyExists"`，与 `create: true` 的 `clipAlreadyExists` 同口径） |
+//! | `create` 非真（缺省）且 `project.scenes` 里**没有**该身份 | `ENTITY_NOT_FOUND`（`reason = "sceneNotFound"`，与 `removeScene` 同一个词同一个意思） |
+//! | `name` 出现但是空串 / `color` 出现但是空串 / `name` 或 `color` 给了 `null` | `INVALID_PARAMETER_RANGE`（`reason = "sceneNameMustBeNonEmptyString"` / `"sceneColorMustBeNonEmptyString"` / `"sceneNameMustBeString"`） |
+//!
+//! `tempo` 的**值域与有限性不在本层判**（与 `setParam` 的"值域由模型判"同一纪律）：
+//! `SceneV3::validate` 报的 `NonFiniteValue` / `BpmOutOfRange` 经由
+//! `domain/error.rs` 的 `code_for_model` 落到 `INVALID_PARAMETER_RANGE` / `OUT_OF_RANGE`，
+//! 那两条在**提案模拟**那一步就会跑（`propose_draft` 的整批 `apply`），因此越界的 `tempo`
+//! 连提案都建不出来。⚠ 同一场景在**一次调用**里被写两次由
+//! [`reject_duplicate_scene_targets`] 在建提案之前响亮拒绝（批内每条的撤销载荷都从调用前的
+//! 文档读，第二条必然对不上状态 —— 与 [`reject_duplicate_lane_targets`] 同因）。
+//!
+//! 目标**不在**顶层 `trackId` / `clipId` 上：本形态自带寻址（`sceneId`），与场景取走形态
+//! 同一纪律；它一个音符都不读，因此**不要求**片段是 MIDI，也不碰音轨、片段池、路由图
+//! 与曲式段落。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -560,7 +638,8 @@ use serde_json::{Map, Value};
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
-    ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, TrackV3, YebanProjectV1,
+    ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, SceneV3, TrackV3,
+    YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -744,7 +823,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 音轨级、路由级、段落级与场景级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 15] = [
+pub const OP_KINDS: [&str; 16] = [
     "add",
     "delete",
     "move",
@@ -760,6 +839,7 @@ pub const OP_KINDS: [&str; 15] = [
     REMOVE_ROUTING_NODE_KIND,
     REMOVE_SECTION_KIND,
     REMOVE_SCENE_KIND,
+    SET_SCENE_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -1164,6 +1244,62 @@ pub const SCENE_FIELD: &str = "sceneId";
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const REMOVE_SCENE_FIELDS: [&str; 2] = ["kind", SCENE_FIELD];
 
+/// `ops[].kind` 的**写入场景**形态名（写 [`Op::SetScene`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetScene` 的小驼峰），与 [`REMOVE_SCENE_KIND`] /
+/// [`SET_AUTOMATION_LANE_KIND`] 同一条命名规则。
+pub const SET_SCENE_KIND: &str = "setScene";
+
+/// 写入场景形态的**载荷**字段名（`ops[].scene`，必填，对象）。
+///
+/// 与 `setAutomationLane` 的 [`SET_AUTOMATION_LANE_FIELD`]（`lane`）/
+/// `removeAutomationPoint` 的 [`REMOVE_POINT_FIELD`]（`point`）同一形状：
+/// 目标与属性都装在这个**自包含**的对象里，工具顶层的 `trackId` / `clipId`
+/// 与本形态无关。
+pub const SCENE_PAYLOAD_FIELD: &str = "scene";
+
+/// 写入场景形态的**新建**开关字段名（`ops[].scene.create`，可选，缺省 `false`）。
+///
+/// 与 [`CREATE_PARAM`]（工具顶层）同词同义（`ADR-0001` D48）："目标不存在才新建，
+/// 已存在就响亮拒绝"。为什么**必须**有它：靠"文档里没有这个身份"推断新建，会让一个
+/// 打错的 `sceneId` 静默建出一个新场景。
+pub const SCENE_CREATE_FIELD: &str = "create";
+
+/// 写入场景形态的**场景名**字段名（`ops[].scene.name`）。
+///
+/// 新建时**必填**，更新时可省（缺省 = 保留现值）。`SceneV3::name` 是普通 `String`，
+/// 模型对它没有任何校验 ⇒ 空名在这里就被响亮拒绝（绝不静默落盘一个没有名字的场景）。
+pub const SCENE_NAME_FIELD: &str = "name";
+
+/// 写入场景形态的**速度覆盖**字段名（`ops[].scene.tempo`，可选）。
+///
+/// 三态：缺省 = 保留现值；数字 = `Some(f64)`；`null` = 清空（跟随工程速度）。
+/// 值域（20.0..=999.0）与有限性由模型 `SceneV3::validate` 判。
+pub const SCENE_TEMPO_FIELD: &str = "tempo";
+
+/// 写入场景形态的**界面色标**字段名（`ops[].scene.color`，可选）。
+///
+/// 三态与 [`SCENE_TEMPO_FIELD`] 相同（缺省 = 保留现值；字符串 = 覆盖；`null` = 清空）。
+pub const SCENE_COLOR_FIELD: &str = "color";
+
+/// 写入场景形态的 `scene` 对象允许出现的**全部**键（判别键 + 寻址键 + 三个属性键）。
+///
+/// 场景的**旧状态**不在里面：撤销载荷 `old_scene` 由 [`compile`] 从**当前文档**读。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const SET_SCENE_FIELDS: [&str; 5] = [
+    SCENE_CREATE_FIELD,
+    SCENE_FIELD,
+    SCENE_NAME_FIELD,
+    SCENE_TEMPO_FIELD,
+    SCENE_COLOR_FIELD,
+];
+
+/// 写入场景形态的**操作对象**允许出现的全部键（判别键 + 载荷键）。
+///
+/// 与 [`REMOVE_POINT_OP_FIELDS`] 同一条口径：寻址与属性都在载荷对象里，
+/// 操作对象顶层只认这两个键（嵌套的 `sceneId` 直接放在顶层是拼写错误）。
+pub const SET_SCENE_OP_FIELDS: [&str; 2] = ["kind", SCENE_PAYLOAD_FIELD];
+
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
 /// 目标名逐字等于 `project.json` 的变体名（[`LaneKind::parse`] 那一份词表）；
@@ -1379,6 +1515,48 @@ impl LanePatch {
     }
 }
 
+/// 一个场景的**逐键覆盖**（`None` = 调用方没提这个键 ⇒ 保留现值）。
+///
+/// 三态刻意不折叠（与 [`LanePatch`] 逐条同口径）：`tempo` / `color` 的 `Some(None)`
+/// （明写 `null` = 清掉覆盖）与 `None`（缺省 = 保留现值）是两件不同的事。
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ScenePatch {
+    /// 场景名（`None` = 保留现值）。
+    pub name: Option<String>,
+    /// 速度覆盖（外层 `Option` = 调用方提没提；内层 = 覆盖值还是"清掉"）。
+    pub tempo: Option<Option<f64>>,
+    /// 界面色标（外层 `Option` = 调用方提没提；内层 = 覆盖值还是"清掉"）。
+    pub color: Option<Option<String>>,
+}
+
+impl ScenePatch {
+    /// 该覆盖是否一个键都没提（`true` ⇒ 结果必然等于基础，是一次无操作）。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.name.is_none() && self.tempo.is_none() && self.color.is_none()
+    }
+
+    /// 把覆盖施加到一条**基础**场景上（基础 = 文档现值，或新建时的空形状）。
+    ///
+    /// 返回替换后的整条场景。`id` **不在**覆盖范围内（它是寻址，由
+    /// [`NoteOp::SetScene`] 的 `scene_id` 给出）：这里原样保留，因此本形态不可能
+    /// 顺手改掉一个场景的身份。
+    #[must_use]
+    pub fn apply_to(&self, base: &SceneV3) -> SceneV3 {
+        let mut scene = base.clone();
+        if let Some(name) = &self.name {
+            scene.name.clone_from(name);
+        }
+        if let Some(tempo) = self.tempo {
+            scene.tempo = tempo;
+        }
+        if let Some(color) = &self.color {
+            scene.color.clone_from(color);
+        }
+        scene
+    }
+}
+
 /// 一个音符编辑操作。
 #[derive(Clone, Debug, PartialEq)]
 pub enum NoteOp {
@@ -1562,6 +1740,32 @@ pub enum NoteOp {
         /// 场景身份（本形态自带寻址）。
         scene_id: EntityId,
     },
+    /// **写入一个场景**（[`Op::SetScene`]）：新建（`create` 为真）或更新（合并）。
+    ///
+    /// 与 [`Self::RemoveScene`] **同族**（场景级、目标由自带的 `sceneId` 给出、
+    /// 与顶层 `trackId` / `clipId` 无关），但动作相反：它是"建/改"的那一半。
+    /// ⚠ 在它之前，工具面**既建不出**场景、也取不走场景；上一个形态关掉了"取走"
+    /// 那一半，本形态关掉"建/改"那一半 —— 于是 [`Op::SetScene`] 与
+    /// [`Op::RemoveScene`] 这一对互逆操作在工具面上都可达。
+    ///
+    /// 载荷（除寻址外）是一个 [`ScenePatch`]：三个属性键**各自可选**，缺省 = 保留
+    /// 文档现值（是**合并**不是整体替换），显式 `null` = 清空可空的那两个。
+    /// 撤销载荷 `old_scene` 由 [`compile`] 从**当前文档**读（新建时 `None`，
+    /// 更新时整条现值的克隆）—— 模型的前置条件要求它逐字等于文档现值，因此本层
+    /// 不采信调用方声明的旧状态。
+    ///
+    /// `create` 显式区分新建与更新（缺省 `false` = 更新，身份必须已在
+    /// `project.scenes` 里，否则 `ENTITY_NOT_FOUND`）：靠"文档里没有就当作新建"
+    /// 会让打错的 `sceneId` 静默建出一个新场景。
+    SetScene {
+        /// 场景身份（本形态自带寻址；新建与更新都必须给出）。
+        scene_id: EntityId,
+        /// `true` = 新建（身份必须**不在**文档里，否则 `CONFLICT`）；
+        /// `false` = 更新（身份必须**在**文档里，否则 `ENTITY_NOT_FOUND`）。
+        create: bool,
+        /// 属性覆盖（合并语义）。
+        patch: ScenePatch,
+    },
 }
 
 impl NoteOp {
@@ -1583,6 +1787,7 @@ impl NoteOp {
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
             Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
+            Self::SetScene { .. } => SET_SCENE_KIND,
         }
     }
 
@@ -1609,6 +1814,7 @@ impl NoteOp {
                 | Self::RemoveRoutingNode { .. }
                 | Self::RemoveSection { .. }
                 | Self::RemoveScene { .. }
+                | Self::SetScene { .. }
         )
     }
 
@@ -1641,12 +1847,12 @@ impl NoteOp {
     /// 该形态改的是**场景**（而不是音符 / 音轨 / 泳道 / 片段池 / 路由图 / 曲式段落）。
     ///
     /// 与 [`Self::is_section_level`] 同因（`domain::plan_edit_notes` 的分类）：
-    /// 场景不是段落，一次纯 `removeScene` 的调用不能被报成"段落级编辑"
-    /// —— 本形态**不是**音轨级（[`Self::is_note_level`] 为 `false`），
-    /// 也不是路由级、不是段落级，因此必须有自己的桶。
+    /// 场景不是段落，一次纯 `removeScene` / 纯 `setScene` 的调用不能被报成
+    /// "段落级编辑" —— 两个形态都**不是**音轨级（[`Self::is_note_level`] 为 `false`），
+    /// 也不是路由级、不是段落级，因此共用同一个桶。
     #[must_use]
     pub const fn is_scene_level(&self) -> bool {
-        matches!(self, Self::RemoveScene { .. })
+        matches!(self, Self::RemoveScene { .. } | Self::SetScene { .. })
     }
 }
 
@@ -1677,6 +1883,9 @@ impl NoteOp {
 /// {"kind":"removeRoutingNode","nodeId":"<ULID>"}
 /// {"kind":"removeSection","sectionId":"<ULID>"}
 /// {"kind":"removeScene","sceneId":"<ULID>"}
+/// {"kind":"setScene","scene":{"create":true,"sceneId":"<ULID>","name":"Verse",
+///                             "tempo":128.0,"color":"#22AA88"}}
+/// {"kind":"setScene","scene":{"sceneId":"<ULID>","name":"Verse 2","tempo":null}}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -1718,11 +1927,18 @@ impl NoteOp {
 /// （与节点 / 边 / 片段都是**不同的**实体），撤销载荷 `previous_section` 从当前文档读，
 /// 对象里 [`REMOVE_SECTION_FIELDS`] 之外的键一律响亮拒绝。
 ///
-/// `removeScene` 是**唯一的场景级**形态（见 [`NoteOp::RemoveScene`]，
+/// `removeScene` 是**唯一的场景级取走**形态（见 [`NoteOp::RemoveScene`]，
 /// [`NoteOp::is_scene_level`]）：它把 `sceneId` 那个**场景**从 `project.scenes` 取走
 /// （[`Op::RemoveScene`]），用 [`SCENE_FIELD`] 寻址（与段落 / 节点 / 边 / 片段都是
 /// **不同的**实体），撤销载荷 `previous_scene` 从当前文档读，
 /// 对象里 [`REMOVE_SCENE_FIELDS`] 之外的键一律响亮拒绝。
+///
+/// `setScene` 是**场景级写入**形态（见 [`NoteOp::SetScene`]，
+/// [`NoteOp::is_scene_level`]）：载荷是自包含的 `scene` 对象（[`SET_SCENE_FIELDS`]），
+/// `create: true` 表示新建（身份必须**不在**文档里，且 `name` 必填），缺省表示更新
+/// （身份必须**在**文档里，三个属性按**合并**语义施加，显式 `null` 清空可空的那两个），
+/// 撤销载荷 `old_scene` 从当前文档读，操作对象里 [`SET_SCENE_OP_FIELDS`] 之外的键
+/// 一律响亮拒绝。
 ///
 /// # Errors
 ///
@@ -1733,9 +1949,12 @@ impl NoteOp {
 ///   [`DISCONNECT_ROUTING_FIELDS`] 之外的键 / 取走路由节点对象里有
 ///   [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键 / 取走段落对象里有
 ///   [`REMOVE_SECTION_FIELDS`] 之外的键 / 取走场景对象里有
-///   [`REMOVE_SCENE_FIELDS`] 之外的键 →
+///   [`REMOVE_SCENE_FIELDS`] 之外的键 / 写入场景的操作对象里有
+///   [`SET_SCENE_OP_FIELDS`] 之外的键 / 写入场景的 `scene` 对象里有
+///   [`SET_SCENE_FIELDS`] 之外的键 / `name` 或 `color` 是空串 / `create: true` 而没给
+///   `name` →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
-///   非布尔开关值、未知写模式、既不是数字也不是 `null` 的增益值）；
+///   非布尔开关值、未知写模式、既不是数字也不是 `null` 的增益值或速度）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
 /// - 身份文本不是合法 ULID → `INVALID_PARAMETER_RANGE`。
 pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
@@ -1840,6 +2059,38 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             reject_remove_scene_fields(object)?;
             Ok(NoteOp::RemoveScene {
                 scene_id: read_id(object, SCENE_FIELD)?,
+            })
+        }
+        SET_SCENE_KIND => {
+            reject_set_scene_op_fields(object)?;
+            let payload = object
+                .get(SCENE_PAYLOAD_FIELD)
+                .and_then(Value::as_object)
+                .ok_or_else(|| missing(SCENE_PAYLOAD_FIELD, "对象"))?;
+            reject_set_scene_fields(payload)?;
+            let scene_id = read_id(payload, SCENE_FIELD)?;
+            let create = read_optional_scene_bool(payload, SCENE_CREATE_FIELD)?.unwrap_or(false);
+            let patch = parse_scene_patch(payload)?;
+            if create && patch.name.is_none() {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{SET_SCENE_KIND}` 且 `{SCENE_CREATE_FIELD}: true` 时必须给出 \
+                         `{SCENE_NAME_FIELD}`: 模型的 `SceneV3::name` 没有校验, \
+                         空名会静默落盘"
+                    ),
+                    serde_json::json!({
+                        "field": format!("{SCENE_PAYLOAD_FIELD}.{SCENE_NAME_FIELD}"),
+                        "reason": "sceneNameRequiredWhenCreating",
+                        "hint": "新建场景必须有名 (`name` 是非空字符串); \
+                                 只想改名字/速度/色标就不要给 `create: true`",
+                    }),
+                ));
+            }
+            Ok(NoteOp::SetScene {
+                scene_id,
+                create,
+                patch,
             })
         }
         other => Err(Fault::domain_with_data(
@@ -2043,6 +2294,199 @@ fn reject_remove_scene_fields(object: &Map<String, Value>) -> Result<(), Fault> 
                      撤销载荷 `previousScene` 由服务端从当前文档读 (不接受调用方声明)",
         }),
     ))
+}
+
+/// 拒绝 `setScene` **操作对象**里 [`SET_SCENE_OP_FIELDS`] 之外的键。
+///
+/// 与 [`reject_point_removal_op_fields`] 同一口径：寻址与属性都在载荷对象里，
+/// 因此操作对象顶层只认 `kind` 与 `scene`。最像"写对了"的错法是把 `sceneId`
+/// 直接放在顶层（那是 `removeScene` 的形状）—— 那会被静默忽略，
+/// 而调用方以为场景已经改好了。
+///
+/// # Errors
+///
+/// 出现 `kind` / `scene` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownSetSceneOpField"`）。
+fn reject_set_scene_op_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !SET_SCENE_OP_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{SET_SCENE_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {SET_SCENE_OP_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownSetSceneOpField",
+            "unsupportedFields": unknown,
+            "supportedSetSceneOpFields": SET_SCENE_OP_FIELDS,
+            "hint": "寻址与属性都在 `scene` 对象里 (与 `removeScene` 不同: 那个把 \
+                     `sceneId` 放在操作对象顶层)",
+        }),
+    ))
+}
+
+/// 拒绝 `setScene` 的 `scene` **载荷对象**里 [`SET_SCENE_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_scene_fields`] / [`reject_track_flag_fields`] 同一口径
+/// （"拼错的键必须被拒绝, 不能静默忽略"）：最像"写对了"的错法是把别的实体的
+/// 寻址（`sectionId` / `nodeId` / `edgeId`）或工具顶层的 `trackId` 搬进来 ——
+/// 全都会被静默忽略。场景的**旧状态**（`oldScene` / `previousScene`）同样不在
+/// 支持集合里：撤销载荷由 [`compile`] 从当前文档读。
+///
+/// # Errors
+///
+/// 出现 [`SET_SCENE_FIELDS`] 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownSetSceneField"`）。
+fn reject_set_scene_fields(payload: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = payload
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !SET_SCENE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{SET_SCENE_KIND}` 的 `{SCENE_PAYLOAD_FIELD}` 对象里有不支持的键: {} \
+             (支持集合只有 {SET_SCENE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownSetSceneField",
+            "unsupportedFields": unknown,
+            "supportedSetSceneFields": SET_SCENE_FIELDS,
+            "hint": "场景身份取自 `yeban_query_project` 的 `entities[]` 里 \
+                     `kind == \"scene\"` 的条目; 撤销载荷 `oldScene` 由服务端从当前文档读 \
+                     (不接受调用方声明)",
+        }),
+    ))
+}
+
+/// 解析 `setScene` 的 `scene` 对象里的三个**属性**键（寻址与 `create` 由调用处读）。
+///
+/// 三态**不折叠**（与 [`parse_lane_patch`] 逐条同口径）：键**缺省** = 保留文档现值；
+/// 显式 `null` = 清空（只对两个可空字段 `tempo` / `color` 合法）；给了值 = 覆盖。
+/// `name` 在模型里**不是**可空字段（普通 `String`），因此 `null` 是响亮失败而不是"清空"。
+///
+/// # Errors
+///
+/// - `name` / `color` 出现但不是**非空**字符串 → `INVALID_PARAMETER_RANGE`
+///   （`reason = "sceneNameMustBeNonEmptyString"` / `"sceneColorMustBeNonEmptyString"`）；
+/// - `tempo` 出现但不是数字也不是 `null` → `INVALID_PARAMETER_RANGE`
+///   （`reason = "sceneTempoMustBeNumberOrNull"`）。
+fn parse_scene_patch(payload: &Map<String, Value>) -> Result<ScenePatch, Fault> {
+    let name = match payload.get(SCENE_NAME_FIELD) {
+        None => None,
+        Some(value) => Some(read_non_empty_string(
+            value,
+            SCENE_NAME_FIELD,
+            "sceneNameMustBeNonEmptyString",
+        )?),
+    };
+    // `null` = 清空覆盖（跟随工程速度）; 数字 = `Some(f64)`。
+    // 值域 (20.0..=999.0) 与有限性**不在这里**判: 模型 `SceneV3::validate` 是
+    // 唯一事实源, 它的 `NonFiniteValue` / `BpmOutOfRange` 在提案模拟那一步就报。
+    let tempo = match payload.get(SCENE_TEMPO_FIELD) {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(value) => Some(Some(value.as_f64().ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`{SCENE_PAYLOAD_FIELD}.{SCENE_TEMPO_FIELD}` 必须是数字或 null, \
+                     实际收到 {value}"
+                ),
+                serde_json::json!({
+                    "field": format!("{SCENE_PAYLOAD_FIELD}.{SCENE_TEMPO_FIELD}"),
+                    "reason": "sceneTempoMustBeNumberOrNull",
+                    "received": value,
+                }),
+            )
+        })?)),
+    };
+    let color = match payload.get(SCENE_COLOR_FIELD) {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(value) => Some(Some(read_non_empty_string(
+            value,
+            SCENE_COLOR_FIELD,
+            "sceneColorMustBeNonEmptyString",
+        )?)),
+    };
+    Ok(ScenePatch { name, tempo, color })
+}
+
+/// 读一个**必须是非空字符串**的文本键。
+///
+/// `name` / `color` 都是给人看的标签：模型的 `SceneV3` 对它们**没有任何校验**，
+/// 空串因此会一路静默落盘成一个看不见名字（或没有颜色）的场景。本层在解析期
+/// 就把它拦下 —— "响亮失败，绝不静默降级"。
+///
+/// # Errors
+///
+/// 不是字符串 → `INVALID_PARAMETER_RANGE`（`data.reason = "{reason}MustBeString"`）；
+/// 是空串 → `INVALID_PARAMETER_RANGE`（`data.reason = reason`）。
+fn read_non_empty_string(value: &Value, field: &str, reason: &str) -> Result<String, Fault> {
+    let text = value.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{SCENE_PAYLOAD_FIELD}.{field}` 必须是字符串, 实际收到 {value} \
+                 (模型的 `SceneV3` 对文本字段没有校验, 因此本层不接受 null 或别的类型)"
+            ),
+            serde_json::json!({
+                "field": format!("{SCENE_PAYLOAD_FIELD}.{field}"),
+                "reason": format!("{reason}MustBeString"),
+                "received": value,
+            }),
+        )
+    })?;
+    if text.is_empty() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SCENE_PAYLOAD_FIELD}.{field}` 不得为空串"),
+            serde_json::json!({
+                "field": format!("{SCENE_PAYLOAD_FIELD}.{field}"),
+                "reason": reason,
+            }),
+        ));
+    }
+    Ok(text.to_owned())
+}
+
+/// 读一个**可选**布尔键（`None` = 缺省；给出 `null` / 数字 / 字符串一律响亮失败）。
+///
+/// 与 [`read_optional_lane_bool`] 同口径：不做真假值强转。
+fn read_optional_scene_bool(
+    payload: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<bool>, Fault> {
+    match payload.get(field) {
+        None => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`{SCENE_PAYLOAD_FIELD}.{field}` 必须是布尔, 实际收到 {value}"),
+                serde_json::json!({
+                    "field": format!("{SCENE_PAYLOAD_FIELD}.{field}"),
+                    "reason": "valueMustBeBoolean",
+                    "received": value,
+                }),
+            )
+        }),
+    }
 }
 
 /// 读 `setRoutingGain` 的目标增益（`ops[].value`，数字**或** `null`）。
@@ -3197,6 +3641,62 @@ pub fn compile(
                     previous_scene,
                 }
             }
+            NoteOp::SetScene {
+                scene_id,
+                create,
+                patch,
+            } => {
+                // 新建与更新由**显式**的 `create` 区分（不靠"文档里没有这个身份就当作
+                // 新建" —— 那会让一个打错的 `sceneId` 静默建出一个新场景）。
+                // 两条前置条件都在这里提前报（模型 `Op::validate` 只在提案模拟那一步
+                // 跑，消息里没有本层的 `reason` / `hint`）。
+                let current = project.scenes.get(scene_id).cloned();
+                if *create {
+                    if current.is_some() {
+                        return Err(Fault::domain_with_data(
+                            ErrorCode::Conflict,
+                            format!(
+                                "工程里已经有身份 {scene_id} 的场景, `{SCENE_CREATE_FIELD}: true` \
+                                 不覆盖既有场景"
+                            ),
+                            serde_json::json!({
+                                "sceneId": scene_id.to_canonical_string(),
+                                "reason": "sceneAlreadyExists",
+                                "hint": "把 `create` 去掉就是一次普通更新; 要新建请换一个 `sceneId`",
+                            }),
+                        ));
+                    }
+                } else if current.is_none() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!(
+                            "工程里没有身份 {scene_id} 的场景, 没有场景可以更新 \
+                             (新建请给 `{SCENE_CREATE_FIELD}: true`)"
+                        ),
+                        serde_json::json!({
+                            "sceneId": scene_id.to_canonical_string(),
+                            "reason": "sceneNotFound",
+                            "hint": "场景的身份由 `yeban_query_project` 的 `entities[]` 里 \
+                                     `kind == \"scene\"` 的条目报出",
+                        }),
+                    ));
+                }
+                // 撤销载荷来自**当前文档**：模型 `SetScene` 的前置条件要求
+                // `old_scene` **逐字段**等于文档现值（`None` = 新建），因此本层不采信
+                // 调用方声明的旧状态。基础 = 文档现值；新建时用 `SceneV3` 的**空形状**
+                // （`name` 由 `create` 分支强制要求，因此不可能落下一个空名）。
+                let base = current.clone().unwrap_or(SceneV3 {
+                    id: *scene_id,
+                    name: String::new(),
+                    tempo: None,
+                    color: None,
+                });
+                Op::SetScene {
+                    scene_id: *scene_id,
+                    old_scene: current,
+                    new_scene: patch.apply_to(&base),
+                }
+            }
         });
     }
     Ok(compiled)
@@ -3287,6 +3787,46 @@ pub fn reject_duplicate_lane_targets(track_id: &EntityId, ops: &[NoteOp]) -> Res
             ));
         }
         seen.push(target);
+    }
+    Ok(())
+}
+
+/// 拒绝**同一次调用里同一个场景被写两次**（`setScene`）。
+///
+/// 与 [`reject_duplicate_lane_targets`] **逐条同因**：批内每一条的撤销载荷
+/// （`old_scene`）都是 [`compile`] 从**调用前**的文档读的，而批是顺序施加的 ⇒
+/// 第二条的 `old_scene` 必然与那一刻的文档现值不符，模型会报
+/// `OpStateMismatch`（契约码 `CONFLICT`）。那条消息说不清是哪一条 op 的错，
+/// 因此在**建提案之前**就响亮拒绝。
+///
+/// 只在真的出现 `setScene` 时才做（其余形态逐字节等于接线之前的行为）。
+///
+/// # Errors
+///
+/// 同一场景身份的 `setScene` 出现两次以上 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "duplicateSceneTarget"`，`data.sceneId` = 那个身份）。
+pub fn reject_duplicate_scene_targets(ops: &[NoteOp]) -> Result<(), Fault> {
+    let mut seen: Vec<EntityId> = Vec::new();
+    for op in ops {
+        let NoteOp::SetScene { scene_id, .. } = op else {
+            continue;
+        };
+        if seen.contains(scene_id) {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "同一次调用里同一个场景被写了两次: {scene_id} \
+                     (批内每条的撤销载荷都从调用前的文档读, 第二条必然对不上状态)"
+                ),
+                serde_json::json!({
+                    "reason": "duplicateSceneTarget",
+                    "sceneId": scene_id.to_canonical_string(),
+                    "hint": "同一个场景的多处修改请折成**一条** `setScene` \
+                             (三个属性键可以一起给), 而不是两条",
+                }),
+            ));
+        }
+        seen.push(*scene_id);
     }
     Ok(())
 }
@@ -4575,9 +5115,10 @@ mod tests {
         // 2026-10-09：新增 `disconnectRouting` 后全集为 12（裁决 R22，性质不变）；
         // 同日新增 `removeRoutingNode`（第三个路由级形态）后为 13；同日再新增
         // `removeSection`（唯一的段落级形态）后为 14；同日再新增 `removeScene`
-        // （唯一的场景级形态）后为 15 —— 这是**同步**计数
+        // （唯一的场景级形态）后为 15；本票再新增 `setScene`（场景级**写入**形态，
+        // 与 `removeScene` 共用场景级那个桶）后为 16 —— 这是**同步**计数
         // （多了一个真存在的 `kind`），不是弱化判据。
-        assert_eq!(OP_KINDS.len(), 15);
+        assert_eq!(OP_KINDS.len(), 16);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -4589,6 +5130,7 @@ mod tests {
         assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
         assert!(OP_KINDS.contains(&REMOVE_SECTION_KIND));
         assert!(OP_KINDS.contains(&REMOVE_SCENE_KIND));
+        assert!(OP_KINDS.contains(&SET_SCENE_KIND));
         assert_eq!(LANE_WRITE_MODES.len(), 4);
     }
 
@@ -6591,8 +7133,457 @@ mod tests {
         }
     }
 
-    /// 池级形态的两条**排他性规则**：与别的 `kind` 同给 / 与 `placement` 同给都响亮失败，
-    /// 而"单独出现且没有摆放"必须放行（阴性对照，防"全都拒"）。
+    /// 场景**写入**形态（`setScene`）的两条路：新建（`create: true`，撤销载荷为空）
+    /// 与更新（缺省，撤销载荷是**文档现值**整条），两条都能被 `Op::invert` 逐字节回退。
+    ///
+    /// 这一条对着"读侧报得出场景、写侧只能删不能建"的缺口：上个形态关掉了取走那一半，
+    /// 而 `Op::SetScene` 的构造点在 `crates/yeban-mcp/src` 里仍是 **0**（见模块头
+    /// "场景写入形态"一节的对照读数）。
+    ///
+    /// 注入（实测红）：把 `old_scene` 从 `current` 换成 `None`（把更新当成新建）⇒
+    /// 更新那条的 `old_scene` 断言红，而且模型的前置条件会在 `apply` 时拒绝它。
+    #[test]
+    fn set_scene_creates_and_updates_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+
+        // ---- 新建：身份**不在**文档里，三个属性一起给 ----
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000777").expect("ULID");
+        assert!(!project.scenes.contains_key(&fresh), "夹具前提");
+        let bytes_before_create = serde_json::to_string(&project).expect("序列化");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_SCENE_KIND,
+            "scene": {
+                "create": true,
+                "sceneId": fresh.to_canonical_string(),
+                "name": "Bridge",
+                "tempo": 96.5,
+                "color": "#22AA88",
+            }
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_SCENE_KIND);
+        assert!(!ops[0].is_note_level(), "场景级不读不写音符");
+        assert!(!ops[0].is_routing_level(), "场景不是路由图的一部分");
+        assert!(!ops[0].is_section_level(), "场景不是曲式段落");
+        assert!(ops[0].is_scene_level());
+        assert_eq!(
+            ops[0],
+            NoteOp::SetScene {
+                scene_id: fresh,
+                create: true,
+                patch: ScenePatch {
+                    name: Some("Bridge".to_owned()),
+                    tempo: Some(Some(96.5)),
+                    color: Some(Some("#22AA88".to_owned())),
+                },
+            }
+        );
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetScene {
+                scene_id,
+                old_scene,
+                new_scene,
+            } => {
+                assert_eq!(*scene_id, fresh);
+                assert_eq!(
+                    *old_scene, None,
+                    "新建的撤销载荷必须是空的 (不是调用方声明的)"
+                );
+                assert_eq!(new_scene.id, fresh, "身份由寻址给出, 覆盖不可能改它");
+                assert_eq!(new_scene.name, "Bridge");
+                assert_eq!(new_scene.tempo, Some(96.5));
+                assert_eq!(new_scene.color.as_deref(), Some("#22AA88"));
+            }
+            other => panic!("应当是 SetScene: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("新建");
+        assert!(
+            project.scenes.contains_key(&fresh),
+            "场景必须真的落进 `scenes`"
+        );
+        assert!(project.validate().is_ok(), "新建之后工程必须仍然合法");
+        assert_ne!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before_create,
+            "新建必须真的改了文档"
+        );
+
+        // 逆操作: `SetScene { old_scene: None }` 的逆是 `RemoveScene`（D12），
+        // 因此一次 `yeban_undo` 就应当把这个新场景整条取走。
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert!(
+            !project.scenes.contains_key(&fresh),
+            "逆操作必须取走新建的场景"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before_create,
+            "逆操作必须逐字节回到新建之前的文档"
+        );
+
+        // ---- 更新：身份**在**文档里，合并语义（只改给出来的那两个键）----
+        let existing = *project.scenes.keys().next().expect("样本里必须有场景");
+        let expected_before = project.scenes[&existing].clone();
+        let bytes_before_update = serde_json::to_string(&project).expect("序列化");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_SCENE_KIND,
+            "scene": {
+                "sceneId": existing.to_canonical_string(),
+                "name": "Scene 1 (renamed)",
+                "tempo": null,
+            }
+        }]))
+        .expect("规范形状必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetScene {
+                old_scene,
+                new_scene,
+                ..
+            } => {
+                assert_eq!(
+                    old_scene.as_ref(),
+                    Some(&expected_before),
+                    "撤销载荷必须是**文档里那一条**场景 (不是调用方声明的)"
+                );
+                assert_eq!(new_scene.name, "Scene 1 (renamed)");
+                assert_eq!(new_scene.tempo, None, "显式 null 必须清空速度覆盖");
+                assert_eq!(
+                    new_scene.color, expected_before.color,
+                    "没给出来的键必须保留现值 (合并, 不是整体替换)"
+                );
+                assert_eq!(new_scene.id, existing);
+            }
+            other => panic!("应当是 SetScene: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("更新");
+        assert_eq!(project.scenes[&existing].name, "Scene 1 (renamed)");
+        assert_eq!(project.scenes[&existing].tempo, None);
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before_update,
+            "更新形态的逆操作必须逐字节回到更新之前的文档"
+        );
+    }
+
+    /// 场景写入形态的**字段名与支持集合**被钉住（不多报一个键，也不少报一个键）。
+    ///
+    /// 注入（实测红）：把 [`SET_SCENE_KIND`] 改成 `removeScene` ⇒ 本判据红 ——
+    /// 写与取走是两个相反的形态，同名会让"这次是建还是删"从字面上无法区分。
+    #[test]
+    fn set_scene_field_names_are_pinned() {
+        assert_eq!(SET_SCENE_KIND, "setScene");
+        assert_eq!(SCENE_PAYLOAD_FIELD, "scene");
+        assert_eq!(SCENE_CREATE_FIELD, "create");
+        assert_eq!(SCENE_NAME_FIELD, "name");
+        assert_eq!(SCENE_TEMPO_FIELD, "tempo");
+        assert_eq!(SCENE_COLOR_FIELD, "color");
+        assert_eq!(SCENE_FIELD, "sceneId", "寻址与取走形态同词同义");
+        assert_eq!(
+            SET_SCENE_FIELDS,
+            ["create", "sceneId", "name", "tempo", "color"]
+        );
+        assert_eq!(SET_SCENE_OP_FIELDS, ["kind", "scene"]);
+        assert_ne!(SET_SCENE_KIND, REMOVE_SCENE_KIND, "写与取走不是同一个词");
+        assert!(OP_KINDS.contains(&SET_SCENE_KIND));
+        // 与模型自己的变体名同词（不手写第二张会漂移的表）。
+        let project = filled_project();
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+        assert_eq!(
+            Op::SetScene {
+                scene_id,
+                old_scene: None,
+                new_scene: project.scenes[&scene_id].clone(),
+            }
+            .name(),
+            "SetScene"
+        );
+    }
+
+    /// 场景写入形态的形状错误**响亮失败**（绝不静默丢弃），而规范形状放行。
+    ///
+    /// 注入（实测红）：去掉 [`reject_set_scene_op_fields`] 的调用 ⇒ 前两条
+    /// （把 `removeScene` 的形状搬过来：`sceneId` 直接放在操作对象顶层）被**静默接受**
+    /// 成一个"没给 sceneId"的更新，本判据红。
+    #[test]
+    fn set_scene_shapes_fail_loudly() {
+        let project = filled_project();
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+        let scene_text = scene_id.to_canonical_string();
+        let (track_id, clip_id) = lead_clip(&project);
+        let section_id = *project
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+        let (node, _) = a_non_master_node(&project);
+
+        // 操作对象顶层的键：只认 `kind` 与 `scene`。
+        for broken in [
+            // 把**取走**形态的形状搬过来: `sceneId` 在顶层, 而载荷键缺失。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "sceneId": scene_text}]),
+            // 顶层多写一个别的实体的寻址。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x"}, "sectionId": scene_text}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x"}, "trackId": track_id.to_canonical_string()}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x"}, "clipId": clip_id.to_canonical_string()}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownSetSceneOpField",
+                "{broken}"
+            );
+        }
+
+        // `scene` 载荷对象里的键：只认那五个。
+        for broken in [
+            // 把别的实体的寻址搬进载荷对象。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "sectionId": section_id.to_canonical_string()}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "nodeId": node.to_canonical_string()}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "edgeId": scene_text}}]),
+            // 以为要报告"场景写入前的状态"而多写 `oldScene` / `previousScene`。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "oldScene": null}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "previousScene": null}}]),
+            // 拼错的属性名（模型里没有这个字段）。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "bpm": 120.0}}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownSetSceneField",
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedSetSceneFields"],
+                serde_json::json!(["create", "sceneId", "name", "tempo", "color"]),
+                "{broken}"
+            );
+        }
+
+        // 载荷缺失 / 不是对象 / 寻址与文本属性形状不对。
+        for broken in [
+            serde_json::json!([{"kind": SET_SCENE_KIND}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": 7}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"name": "x"}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": 70, "name": "x"}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": "not-a-ulid",
+                                "name": "x"}}]),
+            // `create` 不是布尔（不做真假值强转）。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "create": "true", "name": "x"}}]),
+            // `create: true` 而没给 `name`（模型对 name 没有校验 ⇒ 本层必拦）。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "create": true}}]),
+            // `name` 是空串 / 不是字符串 / 给了 null（模型里 name 不是可空字段）。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "create": true, "name": ""}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "create": true, "name": 7}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": null}}]),
+            // `color` 是空串 / 不是字符串 / 给了契约外的形状。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "color": ""}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "color": 7}}]),
+            // `tempo` 既不是数字也不是 null（布尔/字符串/对象都不折叠）。
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "tempo": "128"}}]),
+            serde_json::json!([{"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text,
+                                "name": "x", "tempo": true}}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+        }
+
+        // 阴性对照: 一个只改 `color` 的最小更新必须被接受 —— 上面红的不是"全都拒"。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_text, "color": "#123456"}}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(ops[0].is_scene_level());
+        compile(&project, &track_id, &clip_id, &ops).expect("编译");
+    }
+
+    /// 场景写入的两条**存在性**规则（响亮、且各自带 `reason`）：
+    /// 更新一个不存在的场景 / 新建一个已存在的场景。
+    ///
+    /// 注入（实测红）：把 `create` 分支删掉（一律当更新）⇒ 第一条的
+    /// `sceneAlreadyExists` 断言红（它会掉进"没有场景可以更新"那条）。
+    #[test]
+    fn set_scene_refuses_missing_on_update_and_existing_on_create() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let existing = *project.scenes.keys().next().expect("样本里必须有场景");
+        let missing = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        assert!(!project.scenes.contains_key(&missing), "夹具前提");
+
+        // 更新一个不存在的场景 ⇒ ENTITY_NOT_FOUND (与 removeScene 同一个 reason)。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_SCENE_KIND, "scene": {"sceneId": missing.to_canonical_string(),
+                                               "name": "x"}}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("场景不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "sceneNotFound");
+        assert_eq!(
+            lane_fault_data(&fault)["sceneId"],
+            serde_json::json!(missing.to_canonical_string())
+        );
+
+        // 新建一个**已存在**的场景 ⇒ CONFLICT (与 `create: true` 的 clipAlreadyExists 同口径)。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_SCENE_KIND, "scene": {"create": true,
+                                               "sceneId": existing.to_canonical_string(),
+                                               "name": "x"}}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("场景已存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        assert_eq!(lane_fault_data(&fault)["reason"], "sceneAlreadyExists");
+
+        // 编译期只读: 两次失败都不许改文档。
+        assert_eq!(project, filled_project(), "编译期失败不得改文档");
+    }
+
+    /// 场景写入形态**不要求片段是 MIDI**（一个音符都不读），落**场景级**那个桶，
+    /// 而且同一个场景在一次调用里写两次被 [`reject_duplicate_scene_targets`] 响亮拒绝。
+    ///
+    /// 注入（实测红）：把 `SetScene` 从 `is_note_level` 的对照里去掉 ⇒ 音频片段那条
+    /// 编译时撞上"必须是 MIDI 片段"（`CLIP_NOT_FOUND`）；把 `reject_duplicate_scene_targets`
+    /// 的循环体去掉 ⇒ 重复那条不再报错。
+    #[test]
+    fn set_scene_does_not_need_midi_and_refuses_a_duplicate_target() {
+        let project = filled_project();
+        let audio_track = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_id.to_canonical_string(),
+                                               "name": "Scene 1 (again)"}}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &audio_track, &audio_clip, &ops)
+            .expect("场景级写入不读片段内容, 非 MIDI 片段也必须被接受");
+        assert_eq!(compiled.len(), 1);
+
+        // 四个谓词在**一条**操作上不能同时说真话 (分类靠它们, 说两遍会让标题多算一步)。
+        for op in &ops {
+            let buckets = [
+                op.is_note_level(),
+                op.is_routing_level(),
+                op.is_section_level(),
+                op.is_scene_level(),
+            ];
+            assert_eq!(
+                buckets.iter().filter(|flag| **flag).count(),
+                1,
+                "每个形态必须恰好落在一个桶里: {op:?}"
+            );
+        }
+
+        // 同一个场景写两次: 第二条的 `old_scene` 与那一刻的文档现值必然不符 ⇒ 提前拒。
+        let duplicate = parse_ops(&serde_json::json!([
+            {"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_id.to_canonical_string(),
+                                               "name": "a"}},
+            {"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_id.to_canonical_string(),
+                                               "tempo": 100.0}}
+        ]))
+        .expect("解析");
+        let fault = reject_duplicate_scene_targets(&duplicate).expect_err("同一场景写两次");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(lane_fault_data(&fault)["reason"], "duplicateSceneTarget");
+        assert_eq!(
+            lane_fault_data(&fault)["sceneId"],
+            serde_json::json!(scene_id.to_canonical_string())
+        );
+        // 阴性对照: 单条 / 不同身份的两条都必须放行 (防"全都拒")。
+        assert!(reject_duplicate_scene_targets(&ops).is_ok());
+        let other = EntityId::from_str("01J8ZQ00000000000000000778").expect("ULID");
+        let two = parse_ops(&serde_json::json!([
+            {"kind": SET_SCENE_KIND, "scene": {"create": true,
+                                               "sceneId": other.to_canonical_string(),
+                                               "name": "a"}},
+            {"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_id.to_canonical_string(),
+                                               "name": "b"}}
+        ]))
+        .expect("解析");
+        assert!(reject_duplicate_scene_targets(&two).is_ok());
+    }
+
+    /// 场景写入的 `tempo` **值域**由模型判（本层不复制第二份真相），
+    /// 而失败**不改文档**。
+    ///
+    /// 注入（实测红）：把 `crates/yeban-mcp/src/domain/error.rs` 的
+    /// `ModelError::BpmOutOfRange` 从 `OUT_OF_RANGE` 挪走 ⇒ 本判据红。
+    #[test]
+    fn set_scene_tempo_range_is_judged_by_the_model() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_SCENE_KIND, "scene": {"sceneId": scene_id.to_canonical_string(),
+                                               "tempo": 100_000.0}}
+        ]))
+        .expect("解析: 值域不在本层判");
+        // 本层只编译, 值域那条由模型在 `apply` 里报（`Op::SetScene` 的 precondition
+        // 调 `SceneV3::validate`）—— 契约码经 `code_for_model` 落到 OUT_OF_RANGE。
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        let mut probe = project.clone();
+        let failure = compiled[0]
+            .apply(&mut probe)
+            .expect_err("模型必须拒绝越界的速度");
+        assert_eq!(
+            super::super::error::code_for_model(&failure),
+            ErrorCode::OutOfRange,
+            "{failure:?}"
+        );
+        assert_eq!(probe, project, "失败不得改文档");
+    }
+
     ///
     /// 注入（实测红）：删掉 mixed 那条分支 ⇒ 第一条红；删掉 `placement_present` 那条分支
     /// ⇒ 第二条红；把"没有 `removeClip` 时什么都不做"去掉 ⇒ 末条红。
