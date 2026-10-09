@@ -76,7 +76,14 @@
 //!   接受集现在是同一个** `{1, 2}`: [`Bext::to_bytes`] 对 v0 **与 v≥3** 都拒绝
 //!   （修复前只有下界, 于是 `version = 3` 会被照写进文件, 而本 crate 自己读不回来;
 //!   判据是 `every_version_the_writer_accepts_round_trips` 与
-//!   `the_writer_refuses_a_version_the_reader_cannot_read`）。**文本字段的取值也是同一个
+//!   `the_writer_refuses_a_version_the_reader_cannot_read`）。**并且这个接受集要在
+//!   [`ContainerPlan::validate`] 这一层也成立**（本轮补上）: 一个带着 v≥3、或版本与
+//!   响度块矛盾（v2 缺响度 / v1 带响度）的 `bext` 的计划, 此前 `validate` 返回 `Ok(())`
+//!   而 [`write_container`] 在 `Bext::to_bytes` 的 `assert!` 上 **panic**
+//!   （release 与本机实测的字面读数: `validate() = Ok(()) -> write_container = PANIC`,
+//!   写出 0 字节; debug 构建下连 [`ContainerPlan::for_payload`] 末尾的自洽检查都会
+//!   panic）。判据是 `every_bext_shape_the_writer_accepts_the_reader_reads_back`。
+//!   **文本字段的取值也是同一个
 //!   接受集**: 含 NUL 的 `Description` / `Originator` / `OriginatorReference` /
 //!   `OriginationDate` / `OriginationTime` 与以 NUL 结尾的 `CodingHistory` 都被拒绝
 //!   （读取器读回的不是同一个字符串, 见 [`Bext::field_that_does_not_round_trip`]）。
@@ -1155,9 +1162,30 @@ impl ContainerPlan {
     /// 这与 [`Bext::to_bytes`] 那条"写入器只写 [`Bext::from_bytes`] 读得回的版本"
     /// 是同一条纪律: **写入器与读取器的接受集必须是同一个**。
     ///
+    /// # 第六类: `bext` 的版本与响度块矛盾, 或版本根本不受支持（本轮补上）
+    ///
+    /// 前五类都是"本 crate 的读取器会**返回 `Err`**"或"外部解码器打不开"。第六类不同:
+    /// 读取器对这两种形态根本读不出一个值, 而 [`Bext::to_bytes`] 对它们**直接 panic**
+    /// （那是该函数文档写明的 `# Panics`）。因此修复前 [`write_container`] 不是"写出坏
+    /// 字节", 而是**在写出任何字节之前 panic** —— 一个返回 `Result` 的写入器不该 panic。
+    ///
+    /// 判定与 [`Bext::to_bytes`] 的三条 `assert!` 一一对应, 因此
+    /// `validate() == Ok(())` **蕴含** [`Self::header_bytes`] 不会 panic
+    /// （`header_bytes` 的文档正是这句"它信任计划合法"）:
+    ///
+    /// 1. `version ∉ {1, 2}` ⇒ [`Rf64Error::UnsupportedBextVersion`] —— 与
+    ///    [`Bext::from_bytes`] 用的是**同一个**变体, 因此"写入器与读取器的接受集是同一个
+    ///    `{1, 2}`"在**计划**这一层也成立（此前只在 [`Bext`] 这一层成立）;
+    /// 2. `version >= 2` 却 `loudness.is_none()`, 或 `version == 1` 却
+    ///    `loudness.is_some()` ⇒ [`Rf64Error::BextLoudnessVersionMismatch`] ——
+    ///    读取器对版本恒给出固定的响度取值, 这两种形态读不回同一个值。
+    ///
+    /// 顺序放在前五条**之后**: 一个同时含 NUL 字段与坏版本的块仍然先报字段那条（既有的
+    /// 判据因此逐条不变）。
+    ///
     /// # Errors
     ///
-    /// 上面五类。`Ok(())` ⇒ [`write_container`] 写出的字节能被 [`parse_container`]
+    /// 上面六类。`Ok(())` ⇒ [`write_container`] 写出的字节能被 [`parse_container`]
     /// 读回, 且 `fmt ` 的四个字段逐字段相同。
     pub fn validate(&self) -> Result<(), Rf64Error> {
         if self.format.channels == 0 {
@@ -1184,6 +1212,17 @@ impl ContainerPlan {
         {
             return Err(Rf64Error::UnrepresentableBextField { field });
         }
+        if let Some(block) = self.bext.as_ref() {
+            if !matches!(block.version, 1 | 2) {
+                return Err(Rf64Error::UnsupportedBextVersion(block.version));
+            }
+            if block.loudness.is_some() != (block.version >= 2) {
+                return Err(Rf64Error::BextLoudnessVersionMismatch {
+                    version: block.version,
+                    has_loudness: block.loudness.is_some(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -1198,6 +1237,16 @@ impl ContainerPlan {
     ///
     /// **它信任计划合法**: 返回值不是 `Result`, 因此调用方在直接用它拼文件之前要先过
     /// [`ContainerPlan::validate`]。走 [`write_container`] 的调用方已经过了。
+    ///
+    /// # "信任计划合法"是一句**可执行**的话（本轮补上）
+    ///
+    /// 上面那句话此前有一个反例: 一个 `bext` 版本不受支持（或版本与响度块矛盾）的计划
+    /// 会让 [`ContainerPlan::validate`] 返回 `Ok(())`, 于是本函数在这里 `panic` ——
+    /// 调用方**过了** `validate` 却仍然被 panic 打中。现在 `validate` 查了那三条,
+    /// 因此 `validate() == Ok(())` 蕴含本函数不会 panic。
+    /// 判据 `every_bext_shape_the_writer_accepts_the_reader_reads_back` 对
+    /// `version × loudness × 容器` 的 18 格逐格断言这一点（而不是只断言"不 panic"：
+    /// 它同时对被接受的格断言往返、对被拒的格断言错误值与 0 字节）。
     #[must_use]
     pub fn header_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1360,6 +1409,34 @@ pub enum Rf64Error {
     },
     /// `bext` 版本不受支持（本实现只支持 1 与 2）。
     UnsupportedBextVersion(u16),
+    /// `bext` 的 `Version` 字段与它的 EBU R128 响度块**互相矛盾**：
+    /// 版本 2 少了响度块, 或版本 1 却带着响度块。
+    ///
+    /// # 为什么这是一个必须由**计划**挡住的形态（实测）
+    ///
+    /// 读取器对版本**恒**给出一个确定的响度取值: [`Bext::from_bytes`] 对版本 1 给
+    /// `None`、对版本 2 给 `Some(..)`（现位于第 912 行起的那个 `match`）。因此上面两种
+    /// 形态**读不回同一个值**, 而 [`Bext::to_bytes`] 对它们直接 `panic`
+    /// （"bext 版本 2 必须提供 EBU R128 响度字段" / "bext 版本 1 没有响度字段"）。
+    ///
+    /// 修复前 [`ContainerPlan::validate`] **不查**这两条, 于是同一份探针的字面读数
+    /// 分成两半（本机实测; 判据
+    /// `every_bext_shape_the_writer_accepts_the_reader_reads_back` 现在把两半都钉住）:
+    ///
+    /// ```text
+    /// release 构建: validate() = Ok(()) -> write_container = PANIC（写出 0 字节）
+    /// debug   构建: ContainerPlan::for_payload 自己 PANIC（它末尾的 debug_assert 会调 header_bytes）
+    /// ```
+    ///
+    /// 也就是说一个返回 `Result` 的写入器在**两种构建下都 panic**, 而
+    /// [`ContainerPlan::header_bytes`] 的文档写的是"走 [`write_container`] 的调用方
+    /// 已经过了 `validate`"。这个变体就是那条文档的落地。
+    BextLoudnessVersionMismatch {
+        /// 块声明的 `Version` 字段。
+        version: u16,
+        /// 块是否带 EBU R128 响度块（[`Bext::loudness`]）。
+        has_loudness: bool,
+    },
     /// `bext` 的某个文本字段取值在字段编码里**无法表示**（含 NUL, 读取器会截断它）。
     ///
     /// 与 [`Self::UnrepresentableBlockAlign`] 同一条纪律的另一半: 写入器只写
@@ -1403,6 +1480,26 @@ impl core::fmt::Display for Rf64Error {
             ),
             Self::UnsupportedBextVersion(version) => {
                 write!(f, "不受支持的 bext 版本: {version}")
+            }
+            Self::BextLoudnessVersionMismatch {
+                version,
+                has_loudness,
+            } => {
+                let expected = if *version >= 2 {
+                    "必须带"
+                } else {
+                    "不得带"
+                };
+                let actual = if *has_loudness {
+                    "却带着"
+                } else {
+                    "却没有"
+                };
+                write!(
+                    f,
+                    "bext 版本 {version} {expected} EBU R128 响度字段, 实际{actual}: \
+                     读取器对这个版本恒给出同一个取值, 写出去就是一个往返不等的容器"
+                )
             }
             Self::UnrepresentableBextField { field } => write!(
                 f,
@@ -3474,6 +3571,126 @@ mod tests {
             ..Bext::default()
         };
         let _ = block.to_bytes();
+    }
+
+    /// 判据 27b: **计划层的接受集与 [`Bext`] 层的接受集是同一个** —— 一个版本不受
+    /// 支持、或版本与响度块互相矛盾的 `bext` 必须在 `validate()` 处被拒绝, 而不是让
+    /// [`write_container`] 在 [`Bext::to_bytes`] 的 `assert!` 上 **panic**。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: `version ∈ {1, 2, 3}` × `loudness ∈ {无, 有}` = **6 种** `bext` 形态
+    /// × **3 种**容器 = **18 格**。单位: "形态格"。每格查四件事:
+    /// ① [`ContainerPlan::for_payload`] 不 panic（debug 构建下它末尾的自洽检查会调
+    /// `header_bytes`, 于是"计划被接受"与"头部写得出来"在 debug 下是同一件事 ——
+    /// 这一格正是修复前 debug 下最先炸的地方）;
+    /// ② `validate()` 与 `write_container` 返回**同一个**判决;
+    /// ③ 被拒的格在 `out` 里留下 **0 字节**;
+    /// ④ 被接受的格必须**往返**: `parse_container` 读回的 `bext` 逐字段等于写进去的那个。
+    ///
+    /// # 修复前的字面读数（本机实测: 探针把本文件按 `#[path]` 单独编译, release 与
+    /// debug 各一份可执行文件; 负载 32 字节）
+    ///
+    /// ```text
+    /// release: bext v3               -> validate() = Ok(()), write_container = PANIC（0 字节）
+    /// release: bext v2 loudness=None -> validate() = Ok(()), write_container = PANIC（0 字节）
+    /// release: bext v1 loudness=Some -> validate() = Ok(()), write_container = PANIC（0 字节）
+    /// debug  : 上面三格都是 ContainerPlan::for_payload 自己 PANIC
+    /// ```
+    ///
+    /// 即: 一个返回 `Result` 的写入器在**两种构建下都 panic**, 而
+    /// [`ContainerPlan::header_bytes`] 的文档写的是"走 [`write_container`] 的调用方
+    /// 已经过了 `validate`"。
+    ///
+    /// # 同一个版本号, 读取器与写入器给出同一个变体
+    ///
+    /// `version ∉ {1, 2}` 那一支不止"被拒绝": 判定用的**就是**读取器的变体。本判据拿
+    /// 一份合法 v2 块的字节、只改版本字段（`bext` 的 `Version` 现位于第 346 字节）再交给
+    /// [`Bext::from_bytes`], 得到 `Err(UnsupportedBextVersion(3))` —— 与计划侧的判决
+    /// 逐字相同。这与 `block_align_fits_u16` / `ZeroBitsPerSample` 是同一个手法:
+    /// 两侧共用一个谓词, 接受集不会漂移。
+    ///
+    /// # 注入
+    ///
+    /// - 删掉 [`ContainerPlan::validate`] 末尾那整段 `bext` 形态检查 ⇒ 12 个"被拒"格
+    ///   全部回到 `validate` = `Ok` 且 `write_container` = `panic` ⇒ 红;
+    /// - 只删掉响度那一支（保留版本那一支）⇒ 只有 `v2/无响度` 与 `v1/有响度` 两族红;
+    /// - 只删掉版本那一支 ⇒ 只有 `v3` 那两族红 —— 两支各有独立的判别力。
+    ///
+    /// 防空判据是同一条网格的另一半: `v1/无响度` 与 `v2/有响度` **必须**写得出去、
+    /// 逐字段往返, 且计数恰好是 `(接受 6, 拒绝 12)` —— 少了它, "18 格全部 `Err`"
+    /// 也会让本判据变绿。
+    #[test]
+    fn every_bext_shape_the_writer_accepts_the_reader_reads_back() {
+        let data = payload(4);
+        let format = PcmFormat::integer(2, 48_000, 16);
+        let legal = Bext::for_project("01J8ZK9WQ7F5N2V4B6C8D0E1F2", "2026-10-08", "13:37:00");
+
+        // 读取器对同一个版本号的判决: 改的是合法块的字节, 不是另造一个块。
+        let mut raw = legal.to_bytes();
+        raw[346..348].copy_from_slice(&3u16.to_le_bytes());
+        assert_eq!(
+            Bext::from_bytes(&raw),
+            Err(Rf64Error::UnsupportedBextVersion(3)),
+            "读取器对版本 3 的判决必须就是 UnsupportedBextVersion(3)"
+        );
+
+        let mut accepted = 0usize;
+        let mut refused = 0usize;
+        for version in [1u16, 2, 3] {
+            for has_loudness in [false, true] {
+                let mut block = legal.clone();
+                block.version = version;
+                block.loudness = if has_loudness { legal.loudness } else { None };
+                for kind in [
+                    ContainerKind::Riff,
+                    ContainerKind::Rf64,
+                    ContainerKind::Bw64,
+                ] {
+                    let plan = ContainerPlan::for_payload(
+                        kind,
+                        format,
+                        data.len() as u64,
+                        4,
+                        Some(block.clone()),
+                    );
+                    let validated = plan.validate();
+                    let mut file = Vec::new();
+                    let written = write_container(&mut file, &plan, &data);
+                    let label = format!("{kind:?}: bext v{version} loudness={has_loudness}");
+                    match validated {
+                        Err(expected) => {
+                            refused += 1;
+                            assert_eq!(
+                                written,
+                                Err(expected),
+                                "{label}: validate 与 write_container 必须是同一个判决"
+                            );
+                            assert!(file.is_empty(), "{label}: 被拒的计划不得留下任何字节");
+                        }
+                        Ok(()) => {
+                            accepted += 1;
+                            written.unwrap_or_else(|error| {
+                                panic!("{label}: validate Ok 却写不出去: {error}")
+                            });
+                            let parsed = parse_container(&file).unwrap_or_else(|error| {
+                                panic!("{label}: 写得出去却读不回来: {error}")
+                            });
+                            assert_eq!(
+                                parsed.bext,
+                                Some(block.clone()),
+                                "{label}: bext 必须逐字段往返"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            (accepted, refused),
+            (6, 12),
+            "接受集必须是 {{v1/无响度, v2/有响度}} × 3 种容器 = 6 格, 其余 12 格被拒"
+        );
     }
 
     /// 判据 28: **负载长度必须等于计划声明的 `data` 长度** —— 两条长度来源不一致时,
