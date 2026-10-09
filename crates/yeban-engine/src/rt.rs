@@ -3184,6 +3184,16 @@ mod tests {
     }
 
     /// 判据：轨道数超过电平状态容量时**不 panic、不扩容**，而是计数并保留母线。
+    ///
+    /// `line/engine-24` 追加了 `track_drops` 那一格：它与 `meter_capacity_drops` 是
+    /// **两个不同的容量面**（前者是声部池的 `MAX_TRACK_SLOTS`，后者是电平的
+    /// `SCRATCH_METERS`）⇒ 必须各自被钉住。量法（单位：条）：注入实测把
+    /// `EngineStats::track_drops` 那一格硬写成 `0` 之后，整个
+    /// `cargo test -p yeban-engine --no-default-features --all-targets`（**20** 个目标）
+    /// **全绿** ⇒ 在此之前那条搬运**没有任何判据**。
+    /// 期望值 `300 − MAX_TRACK_SLOTS = 284`：夹具是 300 条**非母线**轨，声部池只有
+    /// [`MAX_TRACK_SLOTS`] 个槽，`begin_snapshot` 按 `BTreeMap` 键序把前 16 条放进池、
+    /// 其余逐条计入丢弃（`synth.rs` 的 `None => self.track_drops.saturating_add(1)`）。
     #[test]
     fn oversized_track_set_is_counted_and_never_panics() {
         let slot = SnapshotSlot::new(snapshot_with_master_track(1, SCRATCH_METERS + 44));
@@ -3198,6 +3208,14 @@ mod tests {
         assert_eq!(stats.meter_capacity_drops, 45);
         assert_eq!(stats.meter_frames, SCRATCH_METERS as u64);
         assert_eq!(stats.meter_bulk_publishes, 1);
+        // 声部池那一侧：300 条非母线轨只有 16 个声部槽 ⇒ 284 条被丢弃。
+        assert_eq!(
+            stats.track_drops,
+            (SCRATCH_METERS + 44 - crate::synth::MAX_TRACK_SLOTS) as u64,
+            "超出声部池的 {MAX_TRACK_SLOTS} 个槽的轨道必须逐条计入 `track_drops`；\
+             这条搬运此前没有任何判据（把那一格硬写成 0 时 20 个目标全绿）",
+            MAX_TRACK_SLOTS = crate::synth::MAX_TRACK_SLOTS
+        );
     }
 
     #[test]
