@@ -1987,6 +1987,11 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   取走一个自动化点"这条缺口。
 ///   它们都是**音轨级**的：`compile` 的"片段必须是 MIDI"断言只在真的有音符操作时
 ///   成立（见 `notes::NoteOp::is_note_level`）。
+/// - **路由级编辑**（`ops[].kind == "setRoutingGain"`）：写操作对象**自带的**
+///   `edgeId` 那条路由边的静态增益（`Op::SetRoutingGain`，载荷是 `Option<f32>`：
+///   `value: null` = 单位增益）。目标**不在**顶层 `trackId` / `clipId` 上 ——
+///   与音轨级形态一样，它与片段内容无关（见 `notes::NoteOp::is_routing_level`），
+///   因此提案标题按实际内容报成"路由级编辑"，不冒充音轨级。
 ///
 /// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
 /// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
@@ -2094,20 +2099,34 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     if !removing_clip {
         notes::check_polyphony(project, &clip_id, &compiled)?;
     }
-    // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"，也不把池级取走
-    // 说成"音轨级编辑" —— 那是三个不同的对象）。
+    // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"，把池级取走说成
+    // "音轨级编辑"，也不把一次纯路由边增益写入说成"音轨级编辑" —— 那是四个不同的
+    // 对象）。三个非音符的桶各自计数，混合调用只报**真的出现过**的那些桶。
     let note_level = note_ops.iter().filter(|op| op.is_note_level()).count();
-    let track_level = note_ops.len() - note_level;
+    let routing_level = note_ops.iter().filter(|op| op.is_routing_level()).count();
+    let track_level = note_ops.len() - note_level - routing_level;
     let description = if removing_clip {
         format!("取走片段池条目: {clip_id}")
     } else if note_ops.is_empty() {
         placement_description
-    } else if note_level == 0 {
+    } else if routing_level == note_ops.len() {
+        format!("路由级编辑: {routing_level} 步")
+    } else if note_level == 0 && routing_level == 0 {
         format!("音轨级编辑: {track_level} 步")
-    } else if track_level == 0 {
+    } else if track_level == 0 && routing_level == 0 {
         format!("音符编辑: {note_level} 步")
     } else {
-        format!("音符编辑: {note_level} 步 + 音轨级编辑: {track_level} 步")
+        let mut parts: Vec<String> = Vec::with_capacity(3);
+        if note_level > 0 {
+            parts.push(format!("音符编辑: {note_level} 步"));
+        }
+        if track_level > 0 {
+            parts.push(format!("音轨级编辑: {track_level} 步"));
+        }
+        if routing_level > 0 {
+            parts.push(format!("路由级编辑: {routing_level} 步"));
+        }
+        parts.join(" + ")
     };
     propose_draft(
         domain,

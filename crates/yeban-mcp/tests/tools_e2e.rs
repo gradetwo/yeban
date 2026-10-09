@@ -3531,6 +3531,220 @@ fn edit_notes_set_param_writes_the_static_mix_value_and_undo_restores_it() {
     );
 }
 
+/// **工具面真的能写路由边的静态增益**：`ops[].kind == "setRoutingGain"` 走完
+/// `tools/call` → 提案 → 合并 → 撤销 的整条管线。
+///
+/// 这条判据对着一处**实测缺口**：模型有 `Op::SetRoutingGain`（载荷是
+/// `Option<f32>`：`None` = 单位增益），`read_param` / `write_param` **明文拒绝**
+/// `SendGain`（"发送增益必须走 `Op::SetRoutingGain`"），`yeban_edit_automation`
+/// 的 `staticValue` 又**报得出**这条边的现值 —— 而在这个 kind 之前，
+/// `crates/yeban-mcp/src` 里**没有任何一个构造点**（改动前实测
+/// `grep -rn 'Op::SetRoutingGain {' crates/yeban-mcp/src` 命中 **0 行**；
+/// 仅有的两条提及都是文字，都在说"必须走它"）。于是工具面**读得出、写不了**。
+///
+/// 判据里两条写入是刻意的，各自钉住一件事：
+///
+/// - 第一条打在**单位增益**（`gain_db == None`）的边上 ⇒ 撤销载荷必须是 JSON `null`。
+///   若撤销载荷走 `AutomationTarget::static_value`（那个入口把 `None` 折算成 `0.0`），
+///   这里会读成 `0.0`，而且**模型会直接拒**（`same_gain` 逐位比较 ⇒ `OpStateMismatch`）；
+/// - 第二条打在**有具体增益**的边上并写 `null` ⇒ `null` 必须真的把边变回单位增益
+///   （`Some(0.0)` 是另一件事）。
+///
+/// 注入（实测红）：删掉 `parse_one` 的 `SET_ROUTING_GAIN_KIND` 分支（未知 `kind`）；
+/// 把 `old_gain_db` 换成 `AutomationTarget::static_value` 的读数（第一条断言读到
+/// `0.0`）；把 `new_gain_db` 由 `*gain_db` 改成 `Some(gain_db.unwrap_or(0.0))`
+/// （第二条不再是 `null`）；或无条件要求 MIDI 片段。
+#[test]
+fn edit_notes_set_routing_gain_writes_the_edge_and_undo_restores_it() {
+    let scratch = Scratch::new("routing-gain-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    // 样本里两种边都有：两条 `None`（单位增益）与一条 `Some(-12.0)`。
+    let unit_edge = project
+        .routing_graph
+        .edges
+        .values()
+        .find(|edge| edge.gain_db.is_none())
+        .expect("样本里必须有单位增益的边")
+        .id;
+    let gain_edge = project
+        .routing_graph
+        .edges
+        .values()
+        .find(|edge| edge.gain_db.is_some())
+        .expect("样本里必须有带增益的边");
+    let (gain_edge_id, gain_before) = (gain_edge.id, gain_edge.gain_db.expect("Some"));
+    let (track_id, clip_id) = {
+        let clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let track = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+        (track, clip)
+    };
+    let (track_text, clip_text) = (
+        track_id.to_canonical_string(),
+        clip_id.to_canonical_string(),
+    );
+    let (unit_text, gain_text) = (
+        unit_edge.to_canonical_string(),
+        gain_edge_id.to_canonical_string(),
+    );
+
+    // 缺口的前一半：**读侧**报得出这条边的静态值（工具面此前只能读）。
+    let reading = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_automation",
+        json!({"trackId": track_text, "lane": "SendGain", "edgeId": unit_text, "ticks": [0]}),
+    );
+    assert_eq!(reading["status"], "success", "{reading}");
+    assert_eq!(
+        reading["data"]["read"]["values"][0]["staticValue"], 0.0,
+        "读侧报的是把 `None` 折算成 0.0 之后的单位增益: {reading}"
+    );
+
+    // 响亮失败三条：未知键（含最危险的 `gainDb`）/ 不存在的边 / 收窄后非有限。
+    let unknown = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip_text,
+               "ops": [{"kind": "setRoutingGain", "edgeId": unit_text,
+                        "gainDb": -3.0}]}),
+    );
+    assert_domain_error(&unknown, "INVALID_PARAMETER_RANGE", "模型字段名 `gainDb`");
+    assert_eq!(
+        unknown["error"]["data"]["reason"], "unknownRoutingGainField",
+        "{unknown}"
+    );
+    let missing = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip_text,
+               "ops": [{"kind": "setRoutingGain",
+                        "edgeId": "01J8ZQ00000000000000000999", "value": -3.0}]}),
+    );
+    assert_domain_error(&missing, "ENTITY_NOT_FOUND", "不存在的路由边");
+    assert_eq!(
+        missing["error"]["data"]["reason"], "routingEdgeNotFound",
+        "{missing}"
+    );
+    let non_finite = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip_text,
+               "ops": [{"kind": "setRoutingGain", "edgeId": unit_text, "value": 1e300}]}),
+    );
+    assert_domain_error(
+        &non_finite,
+        "INVALID_PARAMETER_RANGE",
+        "收窄到 f32 后非有限",
+    );
+    assert_eq!(
+        non_finite["error"]["data"]["reason"], "nonFiniteValue",
+        "{non_finite}"
+    );
+
+    let bytes_before = project_bytes(&dispatcher);
+    // 目标是**非 MIDI**（音频）片段：纯路由级写入一个音符都不读, 因此必须被接受。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip_text, "includeOps": true,
+            "ops": [
+                {"kind": "setRoutingGain", "edgeId": unit_text, "value": -4.5},
+                {"kind": "setRoutingGain", "edgeId": gain_text, "value": null}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["title"], "路由级编辑: 2 步",
+        "描述必须如实说这是路由级编辑 (不冒充音轨级): {created}"
+    );
+    // 撤销载荷必须来自**当前文档**的**原样** `Option<f32>`。
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetRoutingGain"]["old_gain_db"],
+        Value::Null,
+        "单位增益那条边的撤销载荷必须是 `null` (不是 0.0): {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetRoutingGain"]["new_gain_db"],
+        json!(-4.5),
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetRoutingGain"]["old_gain_db"],
+        json!(gain_before),
+        "撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetRoutingGain"]["new_gain_db"],
+        Value::Null,
+        "`null` 写进去的是单位增益: {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "路由边增益" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher.domain().active_project().expect("工程");
+    assert_eq!(
+        after.routing_graph.edge(&unit_edge).expect("边").gain_db,
+        Some(-4.5),
+        "合并后那条边必须真的改了"
+    );
+    assert_eq!(
+        after.routing_graph.edge(&gain_edge_id).expect("边").gain_db,
+        None,
+        "写 `null` 必须真的把那条边变回单位增益"
+    );
+
+    // 合并之后同一个读入口报得出新值（读侧与写侧落在**同一个**模型字段上）。
+    let reading = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_automation",
+        json!({"trackId": track_text, "lane": "SendGain", "edgeId": unit_text, "ticks": [0]}),
+    );
+    assert_eq!(reading["status"], "success", "{reading}");
+    assert_eq!(
+        reading["data"]["read"]["values"][0]["staticValue"], -4.5,
+        "写进去的值必须被读侧看见: {reading}"
+    );
+
+    // 可回退：撤销一次 ⇒ 逐字节回到提案之前的工程。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (路由边增益随 Op::SetRoutingGain 一起可逆)"
+    );
+}
+
 /// **工具面真的能写通道条的静音 / 独奏**：`ops[].kind == "setTrackMute"` /
 /// `"setTrackSolo"` 走完 `tools/call` → 提案 → 合并 → 撤销 的整条管线。
 ///

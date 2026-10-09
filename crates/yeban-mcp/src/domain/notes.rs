@@ -326,6 +326,61 @@
 //! ⚠ 如实登记的边界：取走池条目**不回收 CAS 资产字节** —— 模型 `Op` 全集里没有任何
 //! 资产变体（见 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-2），
 //! 因此"孤儿字节"仍然要等模型侧一个资产声明/回收 `Op`。
+//!
+//! ## 路由边增益形态（`ops[].kind == "setRoutingGain"`）
+//! —— 关闭"工具面写不了发送增益"这一半
+//!
+//! 模型有 [`Op::SetRoutingGain`]（载荷 `old_gain_db` / `new_gain_db` 都是
+//! `Option<f32>`：`None` = **单位增益**），而在这个形态之前，这个变体在整个
+//! `crates/yeban-mcp/src` 里**一次都没有被构造过**。实测（可复跑）：
+//! `git grep -n 'Op::SetRoutingGain' origin/main -- crates/yeban-mcp/src` 只命中
+//! **2 行**，而且两行**都是文字** —— 一条在 [`StaticLane`] 的文档里，一条在
+//! `setParam` 拒绝 `SendGain` 的错误消息里，两条都在说"必须走
+//! `Op::SetRoutingGain`"；把口径收紧到**构造点**
+//! （`git grep -hoE 'Op::SetRoutingGain \{' origin/main -- crates/yeban-mcp/src | wc -l`）
+//! 读数是 **0**。工具面把这条通路**指了出来**，却没有把它接上。
+//!
+//! 缺口的形状是"**读得出、写不了**"，与 `setParam` 那一票**互为镜像**：
+//!
+//! | 事实 | 依据 |
+//! | :--- | :--- |
+//! | 读侧报得出静态值 | `yeban_edit_automation` 的 `lane.staticValue` 走 `AutomationTarget::static_value`，`SendGain` 那一支返回 `edge.gain_db.unwrap_or(0.0)` |
+//! | 渲染器真的消费它 | 路由边的 `gain_db` 在母带混音路径上（不是装饰字段） |
+//! | 模型指定唯一写者 | `read_param` / `write_param` **明文拒绝** `SendGain`（`AutomationTargetNotApplicable`），理由是 `SetParam` 的载荷是裸 `f32`、`None` 与 `Some(0.0)` 会不可区分 |
+//! | 工具面却没有写者 | 17 个工具里**没有**任何一个构造过 `Op::SetRoutingGain` |
+//!
+//! 于是 AI Agent 读得到发送增益、听得见它、却**改不动**它 —— 与
+//! "音轨静态音量 / 声相只能读不能写"（`setParam` 那一票关掉的）同一族。
+//!
+//! 为什么是**新形态**而不是给 `setParam` 的 `lane` 再加一个目标名：
+//! `setParam` 编译成 [`Op::SetParam`]，而模型**明文拒绝**它写 `SendGain`。
+//! 把 `SendGain` 塞进那个形态等于在工具面说一套、在模型层做另一套
+//! （[`StaticLane`] 用二值枚举把"哪三个不可写"做成**不可表达**，正是为了这件事）。
+//! 本形态的名字与 [`Op::SetRoutingGain`] 同词（变体名的小驼峰），与其余 kind 同一规则。
+//!
+//! 形态：`{"kind":"setRoutingGain","edgeId":"<ULID>","value":<数字 | null>}` ——
+//! `null` 就是模型的 `None`（单位增益），**不是** `0.0`（`Some(0.0)` 是另一件事）。
+//!
+//! 五条刻意设成**响亮失败**或**从文档读**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有 `kind` / `edgeId` / `value` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownRoutingGainField"`） |
+//! | `value` 既不是数字也不是 `null`（缺字段 / 布尔 / 字符串 / 对象） | `INVALID_PARAMETER_RANGE` |
+//! | `value` 收窄到 `f32` 后不是有限数 | `INVALID_PARAMETER_RANGE`（`reason = "nonFiniteValue"`，与 `setParam` 同一口径：**先收窄再判**） |
+//! | 文档里没有这条路由边 | `ENTITY_NOT_FOUND`（`reason = "routingEdgeNotFound"`） |
+//! | `old_gain_db` | **从当前文档读**，不是调用方声明；且读 `RoutingGraph::edge` 的**原样** `Option<f32>` |
+//!
+//! ⚠ 为什么撤销载荷**不能**走 `AutomationTarget::static_value`（`setParam` 走的那个
+//! 唯一静态值入口）：那个入口把 `None` **折算**成 `0.0`，而模型的 `same_gain` 是
+//! **逐位**比较 —— `None` 与 `Some(0.0)` 不是同一个值。用 `static_value` 读出的
+//! `0.0` 会让 [`Op::SetRoutingGain`] 的前置条件在"文档里是单位增益"的边上失败
+//! （`OpStateMismatch` ⇒ `CONFLICT`），也就是**改不了**最常见的那一类边。
+//!
+//! 目标**不在**顶层 `trackId` 上：本形态自带寻址（`edgeId`），与
+//! `setAutomationLane` 的 `lane` / `removeAutomationPoint` 的 `point` 同一纪律。
+//! `SendGain` 的自动化**点**仍走 `yeban_edit_automation` 与 [`NoteOp::SetLane`]
+//! （那是泳道的事）；本形态只管**静态**增益这一个字段。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -515,10 +570,11 @@ pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
 /// 多写一个键（尤其是嵌套的 `trackId`）是**响亮失败**，不静默丢弃。
 pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 
-/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 摆放形态在前，音轨级形态在后）。
+/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 摆放形态在前，
+/// 音轨级与路由级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 10] = [
+pub const OP_KINDS: [&str; 11] = [
     "add",
     "delete",
     "move",
@@ -529,6 +585,7 @@ pub const OP_KINDS: [&str; 10] = [
     SET_TRACK_SOLO_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
+    SET_ROUTING_GAIN_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -538,6 +595,9 @@ pub const OP_KINDS: [&str; 10] = [
 /// `Op::SetRoutingGain`）；`DeviceParam` / `Macro` 的静态写入在本工具面**没有**
 /// 通路。用二值类型把"哪三个不可写"变成**不可表达**，比在 `compile` 里补一条
 /// 不可达分支更诚实。
+///
+/// `SendGain` 的静态增益由 [`SET_ROUTING_GAIN_KIND`] 承载（那是**另一个**模型变体，
+/// 因此仍然**不**属于本枚举 —— 把它并进来就是让本枚举的名字说谎）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StaticLane {
     /// 音轨静态音量（`TrackV3::volume_db`，单位 dB，有限值）。
@@ -815,6 +875,36 @@ pub const REMOVE_CLIP_KIND: &str = "removeClip";
 /// 多写一个键（尤其是嵌套的 `clipId`）是**响亮失败**，不静默丢弃 ——
 /// 与 [`TRACK_FLAG_FIELDS`] / [`REMOVE_POINT_OP_FIELDS`] 同一纪律。
 pub const REMOVE_CLIP_FIELDS: [&str; 1] = ["kind"];
+
+/// `ops[].kind` 的**路由边增益**形态名（写 [`Op::SetRoutingGain`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetRoutingGain` 的小驼峰），与 [`SET_PARAM_KIND`] /
+/// [`REMOVE_CLIP_KIND`] 同一条命名规则。
+pub const SET_ROUTING_GAIN_KIND: &str = "setRoutingGain";
+
+/// 路由边增益形态的**寻址**字段名（`ops[].edgeId`，必填）。
+///
+/// 与 `yeban_edit_automation` 的同名实参逐字同词（`ADR-0001` D48：同一个词必须
+/// 同一个意思 —— "那条路由边"），而 `SendGain` 泳道的寻址在 `setAutomationLane` 里
+/// 住在嵌套的 `lane.edgeId`（那边还带着泳道属性，本形态只有这一个字段）。
+pub const SET_ROUTING_GAIN_EDGE_FIELD: &str = "edgeId";
+
+/// 路由边增益形态的**新值**字段名（`ops[].value`，必填，数字**或** `null`）。
+///
+/// 与 [`SET_PARAM_VALUE_FIELD`] / [`TRACK_FLAG_VALUE_FIELD`] 同词（"这次要写进去的
+/// 值"），但**类型不同**：本字段是 `Option<f32>` 的字面形态 —— `null` = 模型的
+/// `None` = **单位增益**，数字 = `Some(f32)`。两者**必须可区分**（见模块头）。
+pub const SET_ROUTING_GAIN_VALUE_FIELD: &str = "value";
+
+/// 路由边增益形态允许出现的**全部**键（判别键 + 寻址键 + 新值键）。
+///
+/// 目标音轨与目标片段**都不在**这里：本形态自带寻址（`edgeId`），
+/// 与 [`REMOVE_CLIP_FIELDS`] 同一纪律（多写一个键是**响亮失败**，不静默丢弃）。
+pub const SET_ROUTING_GAIN_FIELDS: [&str; 3] = [
+    "kind",
+    SET_ROUTING_GAIN_EDGE_FIELD,
+    SET_ROUTING_GAIN_VALUE_FIELD,
+];
 
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
@@ -1113,6 +1203,21 @@ pub enum NoteOp {
     /// 与 [`Self::Add`] 的镜像关系：`create: true` 走的是另一条入口（整批折成一条
     /// `Op::AddClip`），而"把池里那条材料取走"此前**没有任何形态**能表达。
     RemoveClip,
+    /// 写一条**路由边**的静态增益（[`Op::SetRoutingGain`]）。
+    ///
+    /// 这是本枚举里唯一的**路由级**形态：它不读不写任何音符，也不碰音轨与片段，
+    /// 目标由**自带的** `edgeId` 给出（顶层 `trackId` / `clipId` 与本形态无关）。
+    ///
+    /// 载荷是 `Option<f32>` 的**字面**形态（[`Option`] 这一层不可省）：
+    /// `None` = **单位增益**，`Some(0.0)` = 0 dB —— 模型明文要求两者可区分，
+    /// 因此撤销载荷 `old_gain_db` 由 [`compile`] 从**当前文档**读**原样**的
+    /// `Option<f32>`（**不走**会把 `None` 折算成 `0.0` 的静态值入口）。
+    SetRoutingGain {
+        /// 路由边身份（本形态自带寻址）。
+        edge_id: EntityId,
+        /// 目标增益（dB）；`None` = 单位增益。
+        gain_db: Option<f32>,
+    },
 }
 
 impl NoteOp {
@@ -1129,13 +1234,15 @@ impl NoteOp {
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
+            Self::SetRoutingGain { .. } => SET_ROUTING_GAIN_KIND,
         }
     }
 
     /// 该形态是否**读/写音符**（即是否必须在一条 MIDI 片段上施加）。
     ///
     /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
-    /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的：它们跟片段内容无关。
+    /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
+    /// [`Self::SetRoutingGain`] 是**路由级**的：它们跟片段内容无关。
     /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
@@ -1147,7 +1254,17 @@ impl NoteOp {
                 | Self::SetLane { .. }
                 | Self::RemovePoint { .. }
                 | Self::RemoveClip
+                | Self::SetRoutingGain { .. }
         )
+    }
+
+    /// 该形态改的是**路由边**（而不是音符 / 音轨 / 泳道 / 片段池）。
+    ///
+    /// 只用于把提案标题写成**实际内容**（`domain::plan_edit_notes` 的分类）：
+    /// 一次纯 `setRoutingGain` 的调用不能被报成"音轨级编辑"（那是三个不同的对象）。
+    #[must_use]
+    pub const fn is_routing_level(&self) -> bool {
+        matches!(self, Self::SetRoutingGain { .. })
     }
 }
 
@@ -1172,6 +1289,8 @@ impl NoteOp {
 /// {"kind":"removeAutomationPoint","point":{"lane":"Macro","macroIndex":0,
 ///                                          "pointId":"<ULID>"}}
 /// {"kind":"removeClip"}
+/// {"kind":"setRoutingGain","edgeId":"<ULID>","value":-6.0}
+/// {"kind":"setRoutingGain","edgeId":"<ULID>","value":null}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -1192,13 +1311,19 @@ impl NoteOp {
 /// `removeClip` 是唯一的**池级**形态（见 [`NoteOp::RemoveClip`]）：载荷是**空**的，
 /// 目标片段是工具顶层的 `clipId`；对象里 [`REMOVE_CLIP_FIELDS`] 之外的键一律响亮拒绝。
 ///
+/// `setRoutingGain` 是唯一的**路由级**形态（见 [`NoteOp::SetRoutingGain`]）：
+/// 目标由对象里**自带的** `edgeId` 给出（顶层 `trackId` / `clipId` 都与它无关），
+/// `value` 是 `Option<f32>` 的字面形态（`null` = 单位增益 = 模型的 `None`），
+/// 对象里 [`SET_ROUTING_GAIN_FIELDS`] 之外的键一律响亮拒绝。
+///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
 ///   开关对象里有 [`TRACK_FLAG_FIELDS`] 之外的键 / `lane` 对象里有
-///   [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 →
+///   [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 / 路由边增益对象里有
+///   [`SET_ROUTING_GAIN_FIELDS`] 之外的键 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
-///   非布尔开关值、未知写模式）；
+///   非布尔开关值、未知写模式、既不是数字也不是 `null` 的增益值）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
 /// - 身份文本不是合法 ULID → `INVALID_PARAMETER_RANGE`。
 pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
@@ -1274,12 +1399,85 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             reject_remove_clip_fields(object)?;
             Ok(NoteOp::RemoveClip)
         }
+        SET_ROUTING_GAIN_KIND => {
+            reject_routing_gain_fields(object)?;
+            Ok(NoteOp::SetRoutingGain {
+                edge_id: read_id(object, SET_ROUTING_GAIN_EDGE_FIELD)?,
+                gain_db: read_routing_gain(object)?,
+            })
+        }
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("未知 `kind`: `{other}`"),
             serde_json::json!({ "supportedKinds": OP_KINDS }),
         )),
     }
+}
+
+/// 拒绝 `setRoutingGain` 操作对象里 [`SET_ROUTING_GAIN_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_clip_fields`] / [`reject_track_flag_fields`] 同一口径
+/// （"拼错的键必须被拒绝, 不能静默忽略"）：最像"写对了"的错法是把目标写成
+/// 工具顶层的 `trackId` 或把增益写成 `gainDb` —— 两者都会被静默忽略，
+/// 而调用方以为发送增益已经改了。
+///
+/// # Errors
+///
+/// 出现 `kind` / `edgeId` / `value` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownRoutingGainField"`）。
+fn reject_routing_gain_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !SET_ROUTING_GAIN_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{SET_ROUTING_GAIN_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {SET_ROUTING_GAIN_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRoutingGainField",
+            "unsupportedFields": unknown,
+            "supportedRoutingGainFields": SET_ROUTING_GAIN_FIELDS,
+            "hint": "增益字段是 `value` (不是 `gainDb`); 路由边由操作对象自带的 \
+                     `edgeId` 寻址, 嵌套的 `trackId` 不会被读取",
+        }),
+    ))
+}
+
+/// 读 `setRoutingGain` 的目标增益（`ops[].value`，数字**或** `null`）。
+///
+/// 三态**不折叠**：JSON `null` 就是模型的 `None`（单位增益），数字才是 `Some(f32)`。
+/// 缺字段、布尔、字符串、对象都是**响亮失败**（[`read_number`] 的 `valueMustBeNumber`
+/// 只在"给了但不是数字"时报，缺字段走统一的 [`missing`]）。
+///
+/// 收窄与有限性判定**复用一个入口**（[`read_number`]）：`f64 → f32` 的舍入是模型
+/// 载荷类型本身要求的，而"收窄之后不是有限数"（例如 `1e39`）必须**在收窄之后**判 ——
+/// 否则一个 JSON 里有限、`f32` 里是 `inf` 的值会一路走到模型层才被拒
+/// （与 `setParam` 那一票修正过的口径逐条相同）。
+///
+/// # Errors
+///
+/// - 缺 `value` → 统一的缺字段错误；
+/// - `value` 既不是数字也不是 `null` → `INVALID_PARAMETER_RANGE`
+///   （`reason = "valueMustBeNumber"`）；
+/// - `value` 收窄到 `f32` 后不是有限数 → `INVALID_PARAMETER_RANGE`
+///   （`reason = "nonFiniteValue"`）。
+fn read_routing_gain(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
+    let raw = object
+        .get(SET_ROUTING_GAIN_VALUE_FIELD)
+        .ok_or_else(|| missing(SET_ROUTING_GAIN_VALUE_FIELD, "数字或 null"))?;
+    if raw.is_null() {
+        return Ok(None);
+    }
+    read_number(object, SET_ROUTING_GAIN_VALUE_FIELD).map(Some)
 }
 
 /// 解析 `setParam` 的 `lane`（只认 [`StaticLane::NAMES`]）。
@@ -2229,6 +2427,31 @@ pub fn compile(
                 Op::RemoveClip {
                     clip_id: *clip_id,
                     previous_clip: entry.clone(),
+                }
+            }
+            NoteOp::SetRoutingGain { edge_id, gain_db } => {
+                // 撤销载荷来自**当前文档**，而且读的是 `RoutingGraph::edge` 的
+                // **原样** `Option<f32>`（**不**走 `AutomationTarget::static_value`：
+                // 那个唯一静态值入口把 `None` 折算成 `0.0`，而模型的 `same_gain`
+                // 逐位比较 —— `None` 与 `Some(0.0)` 不是同一个值）。用折算过的值会让
+                // 模型的前置条件在"文档里是单位增益"的边上失败（`OpStateMismatch`
+                // ⇒ `CONFLICT`），也就是改不了最常见的那一类边。
+                let edge = project.routing_graph.edge(edge_id).ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {edge_id} 的路由边, 没有增益可以写"),
+                        serde_json::json!({
+                            "edgeId": edge_id.to_canonical_string(),
+                            "reason": "routingEdgeNotFound",
+                            "hint": "路由边的身份由 `yeban_query_project` 的 \
+                                     `routing_graph` 字段报出",
+                        }),
+                    )
+                })?;
+                Op::SetRoutingGain {
+                    edge_id: *edge_id,
+                    old_gain_db: edge.gain_db,
+                    new_gain_db: *gain_db,
                 }
             }
         });
@@ -3603,15 +3826,16 @@ mod tests {
             compile(&project, &track_id, &audio_clip.id, &ops).expect("纯开关写入不要求 MIDI 材料");
         assert_eq!(compiled.len(), 2);
 
-        // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字
+        // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字 + 一个路由级名字
         // （错误信息的 `supportedKinds` 与判据共用同一份真相）。
-        assert_eq!(OP_KINDS.len(), 10);
+        assert_eq!(OP_KINDS.len(), 11);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
         assert!(OP_KINDS.contains(&SET_AUTOMATION_LANE_KIND));
         assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
         assert!(OP_KINDS.contains(&REMOVE_CLIP_KIND));
+        assert!(OP_KINDS.contains(&SET_ROUTING_GAIN_KIND));
         assert_eq!(LANE_WRITE_MODES.len(), 4);
     }
 
@@ -4436,6 +4660,362 @@ mod tests {
         assert_eq!(
             parse_ops(&serde_json::json!([{"kind": "removeClip"}])).expect("规范形状"),
             vec![NoteOp::RemoveClip]
+        );
+    }
+
+    /// 样本里的一条路由边：`(身份, 文档现值)`，按"现值是不是单位增益"挑。
+    ///
+    /// `filled_project` 恰好两种都有（两条 `None`、一条 `Some(-12.0)`），
+    /// 因此两种情形都能被**真的**量到，而不是靠构造一个假的文档。
+    fn an_edge(project: &YebanProjectV1, unit_gain: bool) -> (EntityId, Option<f32>) {
+        let edge = project
+            .routing_graph
+            .edges
+            .values()
+            .find(|edge| edge.gain_db.is_none() == unit_gain)
+            .expect("样本里必须有这两种路由边");
+        (edge.id, edge.gain_db)
+    }
+
+    /// 路由级形态的**字面**判据：`old_gain_db` 来自当前文档的**原样** `Option<f32>`
+    /// （`None` 不是 `0.0`）、`new_gain_db` 是 `Option<f32>` 的字面载荷、
+    /// 且 `Op::invert` 能逐字节回退。
+    ///
+    /// 这一条对着"工具面写不了发送增益"的缺口：模型指定 `Op::SetRoutingGain` 是它
+    /// 唯一的写者（`read_param` / `write_param` 明文拒绝 `SendGain`），而本形态出现
+    /// 之前没有任何工具构造过这个变体。
+    ///
+    /// 注入（实测红）：把 `old_gain_db` 换成 `AutomationTarget::static_value` 的读数
+    /// ⇒ 单位增益那条边的 `old_gain_db` 变成 `Some(0.0)`（`left: Some(0.0)` /
+    /// `right: None`），且**施加**时模型的前置条件直接报 `OpStateMismatch`；
+    /// 把 `new_gain_db` 由 `*gain_db` 改成 `Some(gain_db.unwrap_or(0.0))` ⇒ 第二条
+    /// （写 `null`）不再是 `None`。
+    #[test]
+    fn set_routing_gain_compiles_against_the_document_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let (unit_edge, unit_before) = an_edge(&project, true);
+        let (gain_edge, gain_before) = an_edge(&project, false);
+        assert_eq!(unit_before, None, "夹具前提: 单位增益那条边是 `None`");
+        assert!(gain_before.is_some(), "夹具前提: 另一条边有具体增益");
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_ROUTING_GAIN_KIND,
+             "edgeId": unit_edge.to_canonical_string(), "value": -4.5},
+            {"kind": SET_ROUTING_GAIN_KIND,
+             "edgeId": gain_edge.to_canonical_string(), "value": null}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_ROUTING_GAIN_KIND);
+        assert!(
+            ops.iter().all(|op| !op.is_note_level()),
+            "路由级不读不写音符"
+        );
+        assert!(ops.iter().all(NoteOp::is_routing_level));
+        assert_eq!(
+            ops[0],
+            NoteOp::SetRoutingGain {
+                edge_id: unit_edge,
+                gain_db: Some(-4.5),
+            }
+        );
+        assert_eq!(
+            ops[1],
+            NoteOp::SetRoutingGain {
+                edge_id: gain_edge,
+                gain_db: None,
+            },
+            "JSON `null` 必须解析成模型的 `None` (单位增益), 不是 `Some(0.0)`"
+        );
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 2);
+        match &compiled[0] {
+            Op::SetRoutingGain {
+                edge_id,
+                old_gain_db,
+                new_gain_db,
+            } => {
+                assert_eq!(*edge_id, unit_edge);
+                assert_eq!(
+                    *old_gain_db, unit_before,
+                    "撤销载荷必须是文档的**原样** `Option<f32>` (单位增益 ≠ 0.0 dB)"
+                );
+                assert_eq!(*new_gain_db, Some(-4.5));
+            }
+            other => panic!("应当是 SetRoutingGain: {other:?}"),
+        }
+        match &compiled[1] {
+            Op::SetRoutingGain {
+                old_gain_db,
+                new_gain_db,
+                ..
+            } => {
+                assert_eq!(*old_gain_db, gain_before, "撤销载荷必须来自当前文档");
+                assert_eq!(*new_gain_db, None, "`null` 写进去的是单位增益");
+            }
+            other => panic!("应当是 SetRoutingGain: {other:?}"),
+        }
+
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "setRoutingGain".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        assert_eq!(
+            project.routing_graph.edge(&unit_edge).expect("边").gain_db,
+            Some(-4.5)
+        );
+        assert_eq!(
+            project.routing_graph.edge(&gain_edge).expect("边").gain_db,
+            None,
+            "写 `null` 必须真的把该边变回单位增益"
+        );
+
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到原状"
+        );
+    }
+
+    /// `-0.0` 与 `0.0` 在模型里是**两个**值（`same_gain` 逐位比较）：
+    /// 本形态必须原样搬运，不"顺手归一化"。
+    ///
+    /// 注入（实测红）：把 `new_gain_db` 由 `*gain_db` 改成 `gain_db.map(|v| v + 0.0)`
+    /// （`-0.0 + 0.0` 是 `0.0`）⇒ 第一条断言红（`left: 0` / `right: 2147483648`）；
+    /// 把 `old_gain_db` 折成裸 `f32` 的读数（`None` → `0.0`）⇒ 第二条断言红。
+    #[test]
+    fn set_routing_gain_keeps_minus_zero_and_none_apart() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let (edge_id, before) = an_edge(&project, true);
+        assert_eq!(before, None);
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_id.to_canonical_string(), "value": -0.0}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetRoutingGain { new_gain_db, .. } => {
+                let written = new_gain_db.expect("必须是 `Some`");
+                assert_eq!(
+                    written.to_bits(),
+                    (-0.0_f32).to_bits(),
+                    "`-0.0` 必须逐位原样搬进去 (不是 `0.0`)"
+                );
+                assert_ne!(written.to_bits(), 0.0_f32.to_bits());
+            }
+            other => panic!("应当是 SetRoutingGain: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("施加");
+        assert_eq!(
+            project
+                .routing_graph
+                .edge(&edge_id)
+                .expect("边")
+                .gain_db
+                .expect("`Some(-0.0)`")
+                .to_bits(),
+            (-0.0_f32).to_bits()
+        );
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.routing_graph.edge(&edge_id).expect("边").gain_db,
+            None,
+            "逆操作必须回到 `None` (不是 `Some(0.0)`)"
+        );
+    }
+
+    /// 路由级形态的**字段名与支持集合**被钉住（不多报一个键，也不少报一个）。
+    ///
+    /// 注入（实测红）：把 [`SET_ROUTING_GAIN_FIELDS`] 少写一个键 ⇒ 本判据红；
+    /// 把 [`SET_ROUTING_GAIN_KIND`] 改成模型里没有的名字 ⇒ 本判据红。
+    #[test]
+    fn set_routing_gain_field_names_are_pinned() {
+        assert_eq!(SET_ROUTING_GAIN_KIND, "setRoutingGain");
+        assert_eq!(SET_ROUTING_GAIN_EDGE_FIELD, "edgeId");
+        assert_eq!(SET_ROUTING_GAIN_VALUE_FIELD, "value");
+        assert_eq!(SET_ROUTING_GAIN_FIELDS, ["kind", "edgeId", "value"]);
+        assert!(OP_KINDS.contains(&SET_ROUTING_GAIN_KIND));
+        // 与模型自己的变体名同词（不手写第二张会漂移的表）。
+        assert_eq!(
+            Op::SetRoutingGain {
+                edge_id: EntityId::from_str("01J8ZQ00000000000000000060").expect("ULID"),
+                old_gain_db: None,
+                new_gain_db: None,
+            }
+            .name(),
+            "SetRoutingGain"
+        );
+    }
+
+    /// 路由级形态的形状错误**响亮失败**（绝不静默丢弃），而规范形状放行。
+    ///
+    /// 注入（实测红）：去掉 [`reject_routing_gain_fields`] 的调用 ⇒ 第一条（把目标
+    /// 写成工具顶层的 `trackId`）被**静默接受**（`left: SetRoutingGain { … }`），本判据红。
+    #[test]
+    fn set_routing_gain_shapes_fail_loudly() {
+        let project = filled_project();
+        let (edge_id, _) = an_edge(&project, true);
+        let (track_id, clip_id) = lead_clip(&project);
+        let edge_text = edge_id.to_canonical_string();
+
+        for broken in [
+            // 目标写在顶层 `trackId` 上（那是别的形态的寻址，本形态不读它）。
+            serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text,
+                                "value": -3.0, "trackId": track_id.to_canonical_string()}]),
+            // 增益键写成模型字段名 `gainDb`：`value` 缺失、`gainDb` 未知，两条都要报。
+            serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text,
+                                "gainDb": -3.0}]),
+            serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text,
+                                "value": -3.0, "null": true}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err("必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownRoutingGainField",
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedRoutingGainFields"],
+                serde_json::json!(["kind", "edgeId", "value"]),
+                "{broken}"
+            );
+        }
+
+        for (broken, expected_reason) in [
+            // 缺 `value`：统一的缺字段错误（没有 `data`）。
+            (
+                serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text}]),
+                None,
+            ),
+            // 缺 `edgeId`。
+            (
+                serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "value": -3.0}]),
+                None,
+            ),
+            // `value` 是布尔 / 字符串 / 对象 ⇒ 既不是数字也不是 `null`。
+            (
+                serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text,
+                                    "value": true}]),
+                Some("valueMustBeNumber"),
+            ),
+            (
+                serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text,
+                                    "value": "quiet"}]),
+                Some("valueMustBeNumber"),
+            ),
+            (
+                serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text,
+                                    "value": {}}]),
+                Some("valueMustBeNumber"),
+            ),
+            // 有限 `f64` 收窄到 `f32` 会溢出成 `inf` ⇒ 这一条**可达**（不是摆设）。
+            (
+                serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text,
+                                    "value": 1e300}]),
+                Some("nonFiniteValue"),
+            ),
+            // `edgeId` 不是合法 ULID。
+            (
+                serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": "not-a-ulid",
+                                    "value": -3.0}]),
+                None,
+            ),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            match expected_reason {
+                Some(reason) => assert_eq!(lane_fault_data(&fault)["reason"], reason, "{broken}"),
+                None => assert!(
+                    matches!(&fault, Fault::Domain { data: None, .. }),
+                    "缺字段 / 非法身份的失败不该带 `data`: {broken} / {fault:?}"
+                ),
+            }
+        }
+
+        // 阴性对照: 规范形状(数字 / `null` / `-0.0`)必须被接受 —— 上面红的不是"全都拒"。
+        for value in [
+            serde_json::json!(-3.0),
+            serde_json::json!(null),
+            serde_json::json!(-0.0),
+        ] {
+            let ops = parse_ops(&serde_json::json!([
+                {"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text, "value": value}
+            ]))
+            .unwrap_or_else(|fault| panic!("规范形状必须被接受: {value} / {fault:?}"));
+            assert_eq!(ops.len(), 1);
+            assert!(ops[0].is_routing_level());
+            // 顺带证明"路由级 -> 编译"这一跳也能走通（不是只解析得动）。
+            compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        }
+    }
+
+    /// 路由级形态**不要求片段是 MIDI**（一个音符都不读），而指向**不存在**的边时
+    /// 报 `ENTITY_NOT_FOUND`（与模型 `RoutingEdgeNotFound` 同一个契约码）。
+    ///
+    /// 注入（实测红）：把 `SetRoutingGain` 从 `is_note_level` 的对照里去掉 ⇒
+    /// 音频片段那条编译时撞上"必须是 MIDI 片段"（`CLIP_NOT_FOUND`）；
+    /// 把缺边的错误码换成 `CONFLICT` ⇒ 第二条红。
+    #[test]
+    fn set_routing_gain_does_not_need_midi_and_a_missing_edge_is_entity_not_found() {
+        let project = filled_project();
+        let audio_track = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let (edge_id, _) = an_edge(&project, true);
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_id.to_canonical_string(), "value": -6.0}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &audio_track, &audio_clip, &ops)
+            .expect("路由级写入不读片段内容, 非 MIDI 片段也必须被接受");
+        assert_eq!(compiled.len(), 1);
+
+        // 指向一条**不存在**的边: 本层在编译期就报 `ENTITY_NOT_FOUND`。
+        let missing = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        assert!(project.routing_graph.edge(&missing).is_none(), "夹具前提");
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_ROUTING_GAIN_KIND, "edgeId": missing.to_canonical_string(), "value": -6.0}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &audio_track, &audio_clip, &ops).expect_err("边不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "routingEdgeNotFound",
+            "缺边的 `reason` 必须点名是路由边"
+        );
+        assert_eq!(
+            lane_fault_data(&fault)["edgeId"],
+            serde_json::json!(missing.to_canonical_string())
         );
     }
 
