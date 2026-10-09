@@ -1301,4 +1301,48 @@ mod tests {
         assert_eq!(c.max - c.ideal_ceil, relative);
         assert!(c.max - c.ideal_ceil < SINC_LEN);
     }
+
+    /// 判据（类别⑤ 幂等性）：[`IdleGuard`] 是全 crate **唯一**的可变状态对象
+    /// （非测试代码里的 `&mut self` 只有 `bump` 与 `reset` 两处），因此"把同一个值重复
+    /// 施加到同一个对象"在本 crate 里唯一的落点就是它的 `reset`。重复复位必须与一次复位
+    /// 得到**逐字段相同**的状态，且不得留下任何残余。
+    ///
+    /// 与 `idle_guard_trips_exactly_at_the_cap_and_resets_on_progress` 的分工：那条钉跳闸点
+    /// 与"一次复位"，本条钉"重复复位"以及复位之后的计数**真的**从头起算。
+    ///
+    /// 注入：把 `reset` 的 `self.idle = 0` 换成 `self.idle = self.idle.saturating_sub(1)`
+    /// （复位留下与次数有关的残余）⇒ 本条以 `IdleGuard { idle: 1030 }` 对
+    /// `IdleGuard { idle: 1029 }` 红，读数是 `109 passed / 2 failed`（另一条红的是既有的
+    /// `idle_guard_trips_exactly_at_the_cap_and_resets_on_progress`）。
+    #[test]
+    fn repeated_resets_leave_the_guard_in_the_same_state_as_a_single_reset() {
+        let mut once = IdleGuard::new();
+        let mut twice = IdleGuard::new();
+        // 走到闸门之外若干次（计数是饱和加法，因此这里也会覆盖饱和之后的状态）。
+        for _ in 0..(MAX_IDLE_PACKETS + 7) {
+            let _ = once.bump();
+            let _ = twice.bump();
+        }
+        assert_eq!(once.idle(), twice.idle());
+
+        once.reset();
+        twice.reset();
+        twice.reset();
+        // 重复复位与一次复位逐字段相同，且状态回到"全新"。
+        assert_eq!(once, twice);
+        assert_eq!(twice, IdleGuard::new());
+        assert_eq!(twice.idle(), 0);
+
+        // 复位是**真的**重新起算：再跳 `MAX_IDLE_PACKETS` 次不得提前跳闸，且每一步都与
+        // 一个全新计数器同值。
+        let mut fresh = IdleGuard::new();
+        for step in 0..MAX_IDLE_PACKETS {
+            assert_eq!(
+                twice.bump(),
+                fresh.bump(),
+                "step {step} after a double reset must match a fresh guard"
+            );
+        }
+        assert_eq!(twice, fresh);
+    }
 }

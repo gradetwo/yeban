@@ -2198,4 +2198,107 @@ mod tests {
             );
         }
     }
+
+    /// 判据（类别⑦ 块长度极值）：1 帧与**非 2 的幂**帧数的流按容器声明逐帧解出；一路信号
+    /// 相同的立体声流解出的交织对逐位相同；合法但 0 帧的流按既有口径返回
+    /// [`DecodeError::EmptyStream`]。
+    ///
+    /// 0 帧那半的必要性：[`DecodeError::EmptyStream`] 的口径写在它自己的文档里
+    /// （"夜半不导入零长资产"），但此前**没有任何判据**用合法的 0 帧容器走到它 ——
+    /// `arbitrary_garbage_is_an_error_not_a_panic` 只要求"是错误"，因此一个把 0 帧流
+    /// 当成 `Ok(0 帧)` 的回归在那条判据下仍然全绿。本判据钉的是**具体变体**与**具体文案**。
+    ///
+    /// 实测读数（本机）：44 字节头 + 0 字节 `data` 的 16-bit 单声道 WAV 在
+    /// `decode_bytes` / `decode_reader` / `decode_path` / `import_bytes` 四个入口上全部
+    /// 返回 `EmptyStream`（文案 `stream decoded to zero audio frames`）；同一个夹具在
+    /// 1 / 2 / 3 / 5 / 1023 / 1024 / 1025 / 2047 帧下解出的帧数逐条等于声明值。
+    ///
+    /// 注入：把取得布局那一步的 `ok_or(DecodeError::EmptyStream)` 换成 `Malformed` ⇒
+    /// 本条以 `decode_bytes: expected EmptyStream, got malformed stream: injected
+    /// zero-frame variant` 红，且**只有**本条红（`110 passed / 1 failed`）。
+    /// ⚠ 另一条信息给下一位：只把解码循环**之后**那次 `frames == 0` 的返回变体改掉
+    /// **不会**变红 —— 0 帧 WAV 一个样本都没解出，因此它在"取得布局"那一步就已是
+    /// `None`，根本走不到循环之后的那次判定。注入点位必须选对，否则会误判"判据无效"。
+    #[test]
+    fn one_frame_and_non_power_of_two_streams_decode_exactly_and_zero_frames_are_refused() {
+        let spec = int_spec(1, 16);
+        for frames in [1usize, 2, 3, 5, 1_023, 1_024, 1_025, 2_047] {
+            let data = encode_int_samples(16, &vec![100i32; frames]);
+            let asset = decode_bytes(&wav(&spec, &data), &DecodeOptions::default())
+                .unwrap_or_else(|err| panic!("{frames} frames must decode: {err}"));
+            assert_eq!(asset.frame_count(), u64::try_from(frames).unwrap());
+            assert_eq!(asset.channels(), 1);
+            assert_eq!(asset.samples().len(), frames);
+        }
+
+        // 同一信号喂两路：交织对必须逐位相同（多声道一致性的解码侧落点）。
+        let mut values = Vec::new();
+        for index in 0..513usize {
+            let value = i32::try_from(index % 101).unwrap() * 100 - 5_000;
+            values.push(value);
+            values.push(value);
+        }
+        let stereo = wav(&int_spec(2, 16), &encode_int_samples(16, &values));
+        let asset = decode_bytes(&stereo, &DecodeOptions::default()).unwrap();
+        assert_eq!(asset.frame_count(), 513);
+        let mismatched = asset
+            .samples()
+            .chunks(2)
+            .filter(|pair| pair[0].to_bits() != pair[1].to_bits())
+            .count();
+        assert_eq!(
+            mismatched, 0,
+            "the same declared value in both channels must decode to the same bits"
+        );
+
+        // 合法但 0 帧：`data` 块声明 0 字节，整份文件是格式完全正确的 WAV。
+        let empty = wav(&spec, &[]);
+        assert_eq!(empty.len(), 44, "the fixture is a bare 44-byte WAV header");
+        let outcomes: [(&str, DecodeResult<DecodedAsset>); 2] = [
+            (
+                "decode_bytes",
+                decode_bytes(&empty, &DecodeOptions::default()),
+            ),
+            (
+                "decode_reader",
+                decode_reader(Cursor::new(empty.clone()), &DecodeOptions::default()),
+            ),
+        ];
+        for (label, outcome) in outcomes {
+            let err = outcome.expect_err("a zero-frame stream must be refused");
+            assert!(
+                matches!(err, DecodeError::EmptyStream),
+                "{label}: expected EmptyStream, got {err}"
+            );
+            assert!(
+                err.to_string().contains("zero audio frames"),
+                "{label}: the refusal must name the cause, got {err}"
+            );
+        }
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("yeban-decode-empty-{}.wav", std::process::id()));
+        std::fs::write(&path, &empty).unwrap();
+        let from_path = decode_path(&path, &DecodeOptions::default());
+        let cleanup = std::fs::remove_file(&path);
+        let err = from_path.expect_err("a zero-frame file must be refused");
+        assert!(
+            matches!(err, DecodeError::EmptyStream),
+            "decode_path: expected EmptyStream, got {err}"
+        );
+        cleanup.unwrap();
+
+        assert!(
+            matches!(
+                crate::asset::import_bytes(
+                    &empty,
+                    "empty.wav",
+                    "CC0-1.0",
+                    &DecodeOptions::default()
+                ),
+                Err(DecodeError::EmptyStream)
+            ),
+            "import_bytes must report the same refusal"
+        );
+    }
 }

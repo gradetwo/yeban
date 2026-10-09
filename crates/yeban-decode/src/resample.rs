@@ -788,4 +788,270 @@ mod tests {
         assert_eq!(converted.sample_rate(), 96_000);
         assert!(converted.frame_count() >= 24_000);
     }
+
+    /// 样本的位模式。类别⑤与类别⑥的判据只承认**逐位**相同，不承认"值相等"
+    /// （`-0.0` 与 `+0.0` 值相等而位模式不等，`pcm_hash` 也区分二者）。
+    fn bits(samples: &[f32]) -> Vec<u32> {
+        samples.iter().map(|sample| sample.to_bits()).collect()
+    }
+
+    /// 判据（类别⑤ 幂等性）：**四个重采样入口**在同一个对象上重复施加同一个值，与只施加
+    /// 一次逐位相同；把同一个转换再施加到**它自己的输出**上（输出资产的采样率已经等于
+    /// `out_rate`）也得到同一个资产。
+    ///
+    /// 机械枚举的口径（全 crate，`grep -rnw` 加词边界）：非测试代码里属于"把同一个值施加
+    /// 到同一个对象"这一形态的公共入口**只有** `resample_interleaved` /
+    /// `resample_interleaved_with_budget` / `resample_asset` / `resample_asset_with_budget`
+    /// 四个。全 crate 唯一的可变状态对象是 `limits::IdleGuard`（`&mut self` 的非测试
+    /// 出现只有 `bump` 与 `reset` 两处），它的重复复位由 `limits` 侧的判据
+    /// `repeated_resets_leave_the_guard_in_the_same_state_as_a_single_reset` 钉住。
+    /// `decode_*` / `import_*` 的重复施加已由 `decoding_the_same_bytes_twice_is_bit_identical`
+    /// 与 `importing_the_same_bytes_twice_yields_the_same_keys` 钉住；`asset_index` /
+    /// `reconcile` / `limits::*` 是纯函数（无状态、无 I/O），重复调用即同一次调用。
+    ///
+    /// 非确定性来源的机械排查（全 crate，加词边界）：`SystemTime` 1 处、`now()` 1 处，
+    /// **两处都在 `decode.rs` 的测试模块内**（临时文件名），非测试代码里是 **0 处**；
+    /// `rand` / `Uuid` / `Instant` / `HashMap` / `env::` 各 0 处。因此重复施加的输出里
+    /// **没有**需要登记为"允许"的时钟或 ULID：内容只有样本位模式、`DecodeFacts`
+    /// 与 SHA-256（后者本身是内容的函数）。
+    ///
+    /// 注入：在非恒等路径的 `truncate` 之后按**调用计数器**给第 0 个样本加 `1.0e-7`
+    /// （偶数次调用加、奇数次不加）⇒ 本条以 `resample_interleaved repeated at
+    /// 48000 -> 44100` 红，位模式首元素是 `3198797749` 对 `3198797746`（相差 3 个 ULP）；
+    /// 同一批里 `same_input_resamples_identically_in_two_threads` 也红，读数是
+    /// `108 passed / 3 failed`。
+    #[test]
+    fn every_resample_entry_is_idempotent_on_repeated_application() {
+        // 1001 帧：非 2 的幂、也不是 `CHUNK_FRAMES` 的整数倍，因此分块余数与既有判据
+        // （12000 / 24000 / 48000 帧）不同。
+        let frames = 1_001usize;
+        let input: Vec<f32> = (0..frames)
+            .map(|index| (index % 61) as f32 * 0.01 - 0.3)
+            .collect();
+        for (in_rate, out_rate) in [
+            (48_000u32, 44_100u32),
+            (48_000, 96_000),
+            (44_100, 48_000),
+            (48_000, 48_000),
+        ] {
+            let first = resample_interleaved(&input, 1, in_rate, out_rate)
+                .unwrap_or_else(|err| panic!("{in_rate} -> {out_rate}: {err}"));
+            let second = resample_interleaved(&input, 1, in_rate, out_rate)
+                .unwrap_or_else(|err| panic!("{in_rate} -> {out_rate}: {err}"));
+            assert_eq!(
+                bits(&first),
+                bits(&second),
+                "resample_interleaved repeated at {in_rate} -> {out_rate}"
+            );
+
+            let first_budgeted = resample_interleaved_with_budget(
+                &input,
+                1,
+                in_rate,
+                out_rate,
+                &PcmBudget::default(),
+            )
+            .unwrap();
+            let second_budgeted = resample_interleaved_with_budget(
+                &input,
+                1,
+                in_rate,
+                out_rate,
+                &PcmBudget::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                bits(&first_budgeted),
+                bits(&second_budgeted),
+                "resample_interleaved_with_budget repeated at {in_rate} -> {out_rate}"
+            );
+            // 裸入口就是"默认预算入口"（见 `the_plain_entry_points_are_the_default_budget_
+            // entry_points`），因此两条入口的重复施加必须是同一个读数。
+            assert_eq!(bits(&first), bits(&first_budgeted));
+        }
+
+        // 资产级入口：同一个资产重复转换，样本 / 事实 / 摘要三样都必须逐位相同。
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits: 32,
+            format: WavFormat::Float,
+        };
+        let mut interleaved = Vec::with_capacity(frames * 2);
+        for index in 0..frames {
+            let value = (index % 61) as f32 * 0.01 - 0.3;
+            interleaved.push(value);
+            interleaved.push(-value);
+        }
+        let bytes = wav(&spec, &encode_f32_samples(&interleaved));
+        let asset = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        for out_rate in [44_100u32, 96_000, 48_000] {
+            let first = resample_asset(&asset, out_rate).unwrap();
+            let second = resample_asset(&asset, out_rate).unwrap();
+            assert_eq!(first.facts(), second.facts(), "facts at {out_rate}");
+            assert_eq!(
+                first.pcm_hash(),
+                second.pcm_hash(),
+                "pcm_hash at {out_rate}"
+            );
+            assert_eq!(bits(first.samples()), bits(second.samples()));
+
+            let first_budgeted =
+                resample_asset_with_budget(&asset, out_rate, &PcmBudget::default()).unwrap();
+            let second_budgeted =
+                resample_asset_with_budget(&asset, out_rate, &PcmBudget::default()).unwrap();
+            assert_eq!(first_budgeted.pcm_hash(), second_budgeted.pcm_hash());
+            assert_eq!(
+                bits(first_budgeted.samples()),
+                bits(second_budgeted.samples())
+            );
+            assert_eq!(first.pcm_hash(), first_budgeted.pcm_hash());
+
+            // 幂等投影：把同一个转换再施加到它自己的输出上。第二次的 `out_rate` 已经等于
+            // 该资产的采样率，因此走的是恒等分支 —— 结果必须与只施加一次逐位相同。
+            let again = resample_asset(&first, out_rate).unwrap();
+            assert_eq!(
+                again.pcm_hash(),
+                first.pcm_hash(),
+                "idempotent projection at {out_rate}"
+            );
+            assert_eq!(bits(again.samples()), bits(first.samples()));
+            assert_eq!(again.facts(), first.facts());
+        }
+    }
+
+    /// 判据（类别⑦ 块长度极值）：1 帧、2 帧、非 2 的幂帧长、以及 [`CHUNK_FRAMES`]
+    /// （1024）边界两侧都必须按长度契约返回，并且**非空输入绝不产出空输出**。
+    ///
+    /// 为什么需要这条：长度契约对短片段会追加 [`limits::SINC_LEN`] 帧的额外放宽，于是这些
+    /// 长度的契约下界是 **0**（实测：1 帧 48 kHz → 44.1 kHz 的契约是 `0..=265`）。
+    /// "输出 0 帧"这种回归因此能穿过契约判据，与"正确裁掉了启动延迟"无法区分。本判据改用
+    /// `produced >= 1` 直接钉住"非空输入 ⇒ 非空输出"，并把 2 倍比例下的**精确**输出帧数
+    /// （= 2 × 输入帧数）钉成字面值。
+    ///
+    /// 实测读数（本机 aarch64、debug 构建）：48 kHz → 96 kHz 下本判据的每一种帧数都
+    /// **恰好**翻倍（1→2、2→4、3→6、5→10、7→14、8→16、63→126、255→510、1023→2046、
+    /// 1024→2048、1025→2050、2047→4094）；48 kHz → 44.1 kHz 下是 1→1、2→2、3→3、5→5、
+    /// 7→7、8→8、63→58、255→235、1023→940、1024→941、1025→942、2047→1881。
+    /// 比例 2.0 是精确的二进制数，输出帧数只由整数索引运算给出，因此"恰好翻倍"与 SIMD
+    /// 后端无关（`rubato` 的 `nbr_points()` 在 AVX / SSE / NEON / 标量四套实现里都是
+    /// `round_sinc_len(256) = 256`）。
+    ///
+    /// 0 帧输入**不**在本判据里重复：实现侧由 `zero_frame_input_stays_zero_frame_output`
+    /// 钉住，契约侧由 `limits` 的 `a_zero_frame_input_admits_exactly_zero_output_frames`
+    /// 钉住。
+    ///
+    /// 注入：把 0 帧的提前返回从 `frames == 0` 放宽成 `frames <= 1` ⇒ 本条以
+    /// `1 frames at 48000 -> 44100 produced an empty output` 红，读数是
+    /// `109 passed / 2 failed`（另一条红的是类别⑥的判据，因为它的帧数表里也有 1 帧）。
+    #[test]
+    fn tiny_and_non_power_of_two_block_lengths_stay_inside_the_contract() {
+        let frame_counts: [usize; 12] = [1, 2, 3, 5, 7, 8, 63, 255, 1_023, 1_024, 1_025, 2_047];
+        for frames in frame_counts {
+            let input = dc(frames, 1, 0.5);
+            for (in_rate, out_rate) in [
+                (48_000u32, 44_100u32),
+                (48_000, 96_000),
+                (44_100, 48_000),
+                (48_000, 48_000),
+            ] {
+                let output =
+                    resample_interleaved(&input, 1, in_rate, out_rate).unwrap_or_else(|err| {
+                        panic!("{frames} frames at {in_rate} -> {out_rate}: {err}")
+                    });
+                let produced = u64::try_from(output.len()).unwrap();
+                // ① 非空输入 ⇒ 非空输出。契约对短片段的下界是 0，因此这条**不是**契约的推论。
+                assert!(
+                    produced >= 1,
+                    "{frames} frames at {in_rate} -> {out_rate} produced an empty output"
+                );
+                // ② 输出必须落在契约里 —— 长度关系的唯一数值来源。
+                let contract = limits::check_resampled_len(
+                    u64::try_from(frames).unwrap(),
+                    out_rate,
+                    in_rate,
+                    produced,
+                )
+                .unwrap_or_else(|err| panic!("{frames} frames at {in_rate} -> {out_rate}: {err}"));
+                assert!(contract.min <= produced && produced <= contract.max);
+                // ③ 恒等比例（`in_rate == out_rate`）必须逐位原样返回，1 帧也不例外。
+                if in_rate == out_rate {
+                    assert_eq!(bits(&output), bits(&input), "identity at {frames} frames");
+                }
+            }
+            // ④ 2 倍比例下输出帧数精确翻倍。契约对 1 帧输入允许 `0..=266`，因此这一步是
+            //    比契约更强的一条判据。
+            let doubled = resample_interleaved(&input, 1, 48_000, 96_000).unwrap();
+            assert_eq!(
+                doubled.len(),
+                2 * frames,
+                "48 kHz -> 96 kHz must double {frames} frames exactly"
+            );
+        }
+    }
+
+    /// 判据（类别⑥ 多声道一致性）：同一信号喂两路 ⇒ 两路输出**逐位**相同；一路为 `0.0`
+    /// 的立体声 ⇒ 该路输出**逐位为 `+0.0`**（包含上采样、下采样、1 帧与长块）。
+    ///
+    /// 为什么必须逐位而不是"值相等"：一个"只对某一路按另一种权重求和"的缺陷在近似比较下
+    /// 会静默通过，而 `pcm_hash` 与 L2 对账都按位模式判。
+    ///
+    /// 实测读数（本机 aarch64、debug 构建）：5000 帧的同一信号在 48 kHz → 44.1 kHz、
+    /// 48 kHz → 96 kHz、44.1 kHz → 48 kHz 三种转换下，`L != R` 的输出帧数都是 **0**
+    /// （输出分别是 4594 / 10000 / 5443 帧）；一路恒为 `0.0` 时，三种转换 × 帧数
+    /// {1, 2, 7, 100, 5000} 的 15 组里非 `+0.0` 的输出样本数是 **0**。
+    ///
+    /// 注入：在非恒等路径的 `truncate` 之后**确定性**地把 `output[1]` 置成 `1.0e-9` ⇒
+    /// 本条以 `48000 -> 44100: both channels carry the same input` 红（`left: 1` /
+    /// `right: 0`），而**只有**本条红（`110 passed / 1 failed`）—— 这条注入是确定性的，
+    /// 因此类别⑤那条幂等判据照样绿：两条判据量的是不同的东西。
+    #[test]
+    fn identical_channels_resample_bit_identically_and_a_silent_channel_stays_silent() {
+        // 非直流信号：只用整数运算生成，不调用任何超越函数。
+        let frames = 5_000usize;
+        let mut input = Vec::with_capacity(frames * 2);
+        for index in 0..frames {
+            let value = (index % 37) as f32 * 0.02 - 0.4;
+            input.push(value);
+            input.push(value);
+        }
+        for (in_rate, out_rate) in [(48_000u32, 44_100u32), (48_000, 96_000), (44_100, 48_000)] {
+            let output = resample_interleaved(&input, 2, in_rate, out_rate).unwrap();
+            assert!(output.len().is_multiple_of(2));
+            let mismatched = output
+                .chunks(2)
+                .filter(|pair| pair[0].to_bits() != pair[1].to_bits())
+                .count();
+            assert_eq!(
+                mismatched, 0,
+                "{in_rate} -> {out_rate}: both channels carry the same input"
+            );
+        }
+
+        // 单声道信号喂立体声器件：只填一路，另一路恒为 0.0。
+        for (in_rate, out_rate) in [(48_000u32, 96_000u32), (48_000, 44_100), (44_100, 48_000)] {
+            for frames in [1usize, 2, 7, 100, 5_000] {
+                let mut stereo = Vec::with_capacity(frames * 2);
+                for index in 0..frames {
+                    stereo.push((index % 37) as f32 * 0.02 - 0.4);
+                    stereo.push(0.0);
+                }
+                let output = resample_interleaved(&stereo, 2, in_rate, out_rate).unwrap();
+                let silent = output
+                    .chunks(2)
+                    .filter(|pair| pair[1].to_bits() == 0)
+                    .count();
+                assert_eq!(
+                    silent,
+                    output.len() / 2,
+                    "{frames} frames at {in_rate} -> {out_rate}: the silent channel must stay +0.0"
+                );
+                // 非空洞证据：被驱动的那一路**不**是零，否则"两路都寂静"也会让上一条变绿。
+                assert!(
+                    output.chunks(2).any(|pair| pair[0].to_bits() != 0),
+                    "{frames} frames at {in_rate} -> {out_rate}: the driven channel must carry signal"
+                );
+            }
+        }
+    }
 }
