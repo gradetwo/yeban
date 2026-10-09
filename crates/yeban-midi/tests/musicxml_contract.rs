@@ -2233,3 +2233,137 @@ fn mxl_unquoted_rootfile_attribute_is_not_silently_accepted() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ③ 容器层的三处**字面边界**（本票第三批注入暴露；类别④ 参数极值 / 类别① 越界输入）
+// ---------------------------------------------------------------------------
+
+/// 判据: EOCD 的注释窗口按 APPNOTE 4.3.16 的**完整**上限 65535 字节向前搜索。
+///
+/// ## 补的是哪个缺口（本票注入实测）
+///
+/// `find_eocd` 只在 `文件长度 - (22 + EOCD_MAX_COMMENT)` 之上向前搜。把
+/// `EOCD_MAX_COMMENT` 从 `0xffff` 改成 `0x00ff`（注入 Z3）后，本 crate 的 **118** 条判据
+/// **全绿** ⇒ 既有的 `mxl_eocd_scan_honours_the_comment_length` 只用 **24** 字节的注释
+/// ⇒ 那个常量当时没有任何判据钉住。
+///
+/// ## 量什么（单位 = 一个 `Result<MusicXmlScore, MxlError>`）
+///
+/// ① 注释取 16 位字段的**上界** 65535 字节 ⇒ 真 EOCD 恰好落在搜索窗口的**最远端**，
+/// 仍必须被找到；② 再多 1 字节 ⇒ 长度字段装不下（回绕成 0）⇒ 结构自相矛盾 ⇒ `NotZip`。
+#[test]
+fn mxl_eocd_scan_reaches_the_maximum_comment_length() {
+    let build = || {
+        build_zip(
+            &[
+                ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
+                ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+            ],
+            None,
+        )
+    };
+    let expected = parse_mxl(&build()).expect("加注释之前必须可读");
+
+    // ① 65535 字节的注释 = EOCD 注释长度字段（16 位）的上界。
+    let mut at_limit = build();
+    append_eocd_comment(&mut at_limit, &vec![0xa5u8; 0xffff]);
+    assert_eq!(
+        parse_mxl(&at_limit),
+        Ok(expected),
+        "注释取 16 位上限时, 真 EOCD 必须仍在搜索窗口之内"
+    );
+
+    // ② 多 1 字节 ⇒ 长度字段回绕成 0 ⇒ 不再是自洽的 EOCD。
+    let mut past_limit = build();
+    append_eocd_comment(&mut past_limit, &vec![0xa5u8; 0x1_0000]);
+    assert_eq!(
+        parse_mxl(&past_limit),
+        Err(MxlError::NotZip),
+        "注释长度装不下 16 位字段时, 容器不再是 ZIP"
+    );
+}
+
+/// 判据: 标签的 `>` 扫描按 **XML 的引号规则**走 —— 引号里的 `>` 不是标签的结尾。
+///
+/// ## 补的是哪个缺口（本票注入实测）
+///
+/// `tag_end` 只跟双引号、不跟单引号（注入 Z6 把 `b'"' | b'\'' => quote = Some(byte)`
+/// 改成只认 `b'"'`）后，**118** 条判据**全绿** ⇒ 既有的
+/// `mxl_rootfile_attribute_is_not_read_from_another_attribute_value` 里的单引号只出现在
+/// **双引号包的属性值内部**，因此没有覆盖"单引号本身是一层引号"这一半。
+///
+/// ## 量什么（单位 = 一个 `Result<MusicXmlScore, MxlError>`）
+///
+/// 两种引号各一条：`>` 写在被引号包住的属性值里，`full-path` 写在它**后面**
+/// ⇒ 容器必须照常可读，且读到的是真载荷（`Ok(text)` 就是逐字段比较）。
+#[test]
+fn mxl_tag_scan_skips_a_greater_than_inside_a_quoted_value() {
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    let containers: [&[u8]; 2] = [
+        br#"<container><rootfiles><rootfile note='>' full-path="score.xml"/></rootfiles></container>"#,
+        br#"<container><rootfiles><rootfile note=">" full-path='score.xml'/></rootfiles></container>"#,
+    ];
+    for container in containers {
+        let zip = build_zip(
+            &[
+                ZipEntrySpec::stored("META-INF/container.xml", container),
+                ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+            ],
+            None,
+        );
+        assert_eq!(
+            parse_mxl(&zip),
+            Ok(text.clone()),
+            "引号里的 > 不是标签结尾: {}",
+            String::from_utf8_lossy(container)
+        );
+    }
+}
+
+/// 判据: 中央目录条目的**注释**字段属于该条目，不是下一条目的开头。
+///
+/// ## 补的是哪个缺口（本票注入实测）
+///
+/// `central_directory` 推进游标时把 `comment_len` 也算进去；把它从那句
+/// `pos = name_start + name_len + extra_len + comment_len` 里去掉（注入 Z15）后，
+/// **118** 条判据**全绿** ⇒ APPNOTE 4.3.12 的第三个长度字段（条目注释）当时没有任何
+/// 判据覆盖 —— 判据侧的 `build_zip` 恒写 0，因此**全部**已提交容器都碰不到它。
+///
+/// ## 量什么（单位 = 一个 `Result<MusicXmlScore, MxlError>`）
+///
+/// 给第一个中央目录条目补 7 字节注释（同时改它的注释长度字段与 EOCD 的目录尺寸），
+/// 容器必须照常可读且载荷逐字段不变。⛔ 本地头偏移不用动：中央目录在所有本地头
+/// **之后**，在目录内部插入不改变任何 `PK\x03\x04` 的位置。
+#[test]
+fn mxl_central_entry_comment_is_skipped_not_read_as_the_next_entry() {
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    let mut bytes = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(parse_mxl(&bytes), Ok(text.clone()), "补注释之前必须可读");
+
+    let comment = b"COMMENT";
+    let eocd = bytes.len() - 22;
+    assert_eq!(&bytes[eocd..eocd + 4], b"PK\x05\x06");
+    let central = le32(&bytes, eocd + 16) as usize;
+    assert_eq!(&bytes[central..central + 4], b"PK\x01\x02");
+    let name_len = usize::from(le16(&bytes, central + 28));
+    let extra_len = usize::from(le16(&bytes, central + 30));
+    assert_eq!(le16(&bytes, central + 32), 0, "判据侧写出器不写注释");
+    let insert_at = central + 46 + name_len + extra_len;
+    bytes[central + 32..central + 34].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+    bytes.splice(insert_at..insert_at, comment.iter().copied());
+    let eocd = bytes.len() - 22;
+    let size = le32(&bytes, eocd + 12) + comment.len() as u32;
+    bytes[eocd + 12..eocd + 16].copy_from_slice(&size.to_le_bytes());
+
+    assert_eq!(
+        parse_mxl(&bytes),
+        Ok(text),
+        "条目注释必须被跳过, 不许当成下一条目的签名"
+    );
+}

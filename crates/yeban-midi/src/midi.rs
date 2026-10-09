@@ -1396,4 +1396,119 @@ mod tests {
         );
         assert!(MidiTempo::from_bpm(1.0e12).microseconds_per_quarter <= Some(0x00FF_FFFF));
     }
+
+    /// 判据 (类别⑦ delta 累加溢出): 起点 + 时值在 `u64` 上界附近**饱和**时，
+    /// `to_smf_bytes` 必须给出明确的 `Err`，⛔ 不许 wrap、也不许 panic。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `track_events` 里的
+    /// `start.saturating_add(note.duration_ticks)` 换成裸 `+`（注入 M4）后，
+    /// 本 crate 的 **118** 条判据**全绿**（0 failed、退出码 0）⇒ 那个饱和加法
+    /// 当时没有任何判据钉住。
+    #[test]
+    fn a_note_end_that_saturates_is_rejected_not_wrapped() {
+        // 起点已经大于 VLQ 上限 ⇒ 第一颗事件本身就是 `DeltaOverflow`。
+        // 关键在**时值那一步不许溢出**：`start + 100` 在 debug 构建会 panic。
+        let start = u64::MAX - 10;
+        let source = export(
+            MidiFormat::SingleTrack,
+            vec![track_from_notes("", 0, &[note(start, 60, 100, 64)])],
+        );
+        assert_eq!(
+            source.to_smf_bytes(),
+            Err(MidiError::DeltaOverflow {
+                tick: start,
+                delta: start
+            })
+        );
+    }
+
+    /// 判据 (类别④ 参数极值 / 类别⑦ 累加溢出): 正的 `micro_timing_ticks` 把起点推到
+    /// `u64` 上界之外时，起点**饱和**成 `u64::MAX`，随后是明确的 `DeltaOverflow`。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `effective_start` 的正偏移分支换成裸 `+`
+    /// （注入 M6）后，**118** 条判据全绿 ⇒ 只有负偏移的下溢有判据
+    /// （`micro_timing_shifts_the_start_tick_without_underflow`），上溢那一半没有。
+    #[test]
+    fn a_positive_micro_offset_that_saturates_is_rejected_not_wrapped() {
+        let start = u64::MAX - 5;
+        let mut shifted = note(start, 60, 120, 64);
+        shifted.micro_timing_ticks = Some(10);
+        assert_eq!(
+            effective_start(&shifted),
+            u64::MAX,
+            "起点必须饱和到 u64 的上界，不许绕回小 tick"
+        );
+        assert_eq!(
+            export(
+                MidiFormat::SingleTrack,
+                vec![track_from_notes("", 0, &[shifted])]
+            )
+            .to_smf_bytes(),
+            Err(MidiError::DeltaOverflow {
+                tick: u64::MAX,
+                delta: u64::MAX
+            })
+        );
+    }
+
+    /// 判据 (类别⑤ 幂等性 / `[ARCH-DET-001]`): **同一组** tempo map 记录，只把
+    /// `tempos` 这个 `Vec` 的输入顺序换一下 ⇒ 导出字节**逐字节相同**。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：删掉 `to_smf_bytes` 里那句
+    /// `groups.sort_unstable()`（注入 M10 —— 换成一个恒等的比较器以保持可编译）后，
+    /// **118** 条判据全绿 ⇒ "导出字节只由内容决定"当时只被
+    /// `export_is_byte_deterministic`（同一份 `Vec` 导两次）覆盖，而那一条**看不见**
+    /// 输入顺序。本条同时钉住配对：同一 tick 上"只有 tempo"与"只有拍号"的两条记录
+    /// 不得被回读成**一条**合并记录（旧顺序下它们会相邻 ⇒ 拍号会挂到 tempo 上）。
+    #[test]
+    fn one_tempo_map_content_in_two_input_orders_is_byte_identical() {
+        let tempo_only = MidiTempo {
+            tick: 0,
+            microseconds_per_quarter: Some(600_000),
+            numerator: None,
+            denominator_pow2: None,
+        };
+        let signature_only = MidiTempo {
+            tick: 0,
+            microseconds_per_quarter: None,
+            numerator: Some(3),
+            denominator_pow2: Some(2),
+        };
+        let build = |first: MidiTempo, second: MidiTempo| MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: vec![first, second],
+            tracks: vec![track_from_notes("T", 0, &[note(0, 60, 960, 64)])],
+        };
+        let forward = build(tempo_only, signature_only);
+        let reverse = build(signature_only, tempo_only);
+        let first = forward.to_smf_bytes().expect("编码");
+        let second = reverse.to_smf_bytes().expect("编码");
+        assert_eq!(
+            first, second,
+            "同一组 tempo 记录的两种输入顺序必须写出同一份字节"
+        );
+        for bytes in [&first, &second] {
+            let parsed = parse_smf(bytes).expect("回读");
+            assert_eq!(parsed.tempos.len(), 2, "两条记录必须各自回来, 不许被合并");
+            assert!(
+                parsed
+                    .tempos
+                    .iter()
+                    .any(|tempo| tempo.microseconds_per_quarter == Some(600_000)
+                        && tempo.numerator.is_none()),
+                "只有 tempo 的记录必须原样回来: {:?}",
+                parsed.tempos
+            );
+            assert!(
+                parsed
+                    .tempos
+                    .iter()
+                    .any(|tempo| tempo.microseconds_per_quarter.is_none()
+                        && tempo.numerator == Some(3)),
+                "只有拍号的记录必须原样回来: {:?}",
+                parsed.tempos
+            );
+        }
+    }
 }

@@ -1842,4 +1842,112 @@ mod tests {
             "根元素 + 256 层 = 257 层必须拒绝"
         );
     }
+
+    /// 判据 (类别④ 参数极值 / 类别① 越界输入): `<octave>` 取 `i32` 的极值时是明确的
+    /// `PitchOutOfRange`，⛔ 不是 `octave + 1` 的溢出 panic。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `pitch_to_key` 的算术从 `i64` 降回 `i32`
+    /// （注入 X1，即 `(i64::from(octave) + 1) * 12 + …` → `(octave + 1) * 12 + …`）
+    /// 后，**118** 条判据全绿 ⇒ 代码注释里点名的那颗炸弹
+    /// （`<octave>2147483647</octave>`）当时**没有判据**引爆过。
+    #[test]
+    fn an_extreme_octave_is_an_error_not_an_overflow() {
+        for octave in ["2147483647", "-2147483648"] {
+            let xml = format!(
+                "<score-partwise><part id=\"P1\"><measure>\
+                 <note><pitch><step>C</step><octave>{octave}</octave></pitch>\
+                 <duration>1</duration></note></measure></part></score-partwise>"
+            );
+            assert!(
+                matches!(
+                    parse_musicxml(xml.as_bytes()),
+                    Err(MusicXmlError::PitchOutOfRange { .. })
+                ),
+                "<octave>{octave}</octave> 必须是 PitchOutOfRange, 不是 panic"
+            );
+        }
+    }
+
+    /// 判据 (类别② 变更后沿用旧数据 / 类别⑤ 幂等性): 文件里出现**第二个**
+    /// `<divisions>` 时，采用的是**第一次**出现的那个（模块文档的白名单写明了
+    /// "只认第一次出现的 `divisions`"）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `divisions_seen` 那道门去掉
+    /// （注入 X5，`if !self.divisions_seen` → `if true`）后，**118** 条判据全绿
+    /// ⇒ "第一次赢"当时没有判据；已提交夹具每个只有**一个** `<divisions>`
+    /// （量法 = 对 `tests/fixtures/*.musicxml` 逐文件数 `<divisions>` 的出现次数）。
+    #[test]
+    fn two_divisions_elements_keep_the_first() {
+        let xml = "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><divisions>4</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note>\
+             <attributes><divisions>8</divisions></attributes>\
+             <note><pitch><step>D</step><octave>4</octave></pitch><duration>8</duration></note>\
+             </measure></part></score-partwise>";
+        let parsed = score(xml);
+        assert_eq!(parsed.divisions, 4, "第一个 <divisions> 赢");
+        assert_eq!(
+            parsed.parts[0]
+                .notes
+                .iter()
+                .map(|note| (note.key, note.duration_ticks))
+                .collect::<Vec<_>>(),
+            vec![(60, 960), (62, 1920)],
+            "两个音符都按 divisions=4 换算: 4 个 unit = 960, 8 个 unit = 1920              （若第二个 divisions=8 生效, 读数会是 480 与 960）"
+        );
+    }
+
+    /// 判据 (类别④ 参数极值 / 取整边界): `divisions` 单位 ⇒ 960 PPQ tick 的换算是
+    /// **四舍五入**，半格向上。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `ticks_from_units` 的
+    /// `(numerator + denominator / 2) / denominator` 换成截断的
+    /// `numerator / denominator`（注入 X2）后，**118** 条判据全绿 ⇒ 已提交语料的
+    /// `divisions ∈ {1, 2, 4, 12, 960}` 全部整除 960，因此取整规则**碰不到**
+    /// （`ticks_from_units(1, 7)` 截断与四舍五入都给 137）。
+    ///
+    /// 量什么（单位 = tick）：`divisions = 1920` 时 1 个 unit 恰好是半格 ⇒ 进到 1；
+    /// `divisions = 1921` 时略小于半格 ⇒ 回到 0。
+    #[test]
+    fn tick_conversion_rounds_half_up_at_the_boundary() {
+        assert_eq!(ticks_from_units(1, 1920), Ok(1), "恰好半格 ⇒ 向上");
+        assert_eq!(ticks_from_units(1, 1921), Ok(0), "略小于半格 ⇒ 向下");
+        assert_eq!(ticks_from_units(1, 1280), Ok(1), "0.75 格 ⇒ 向上");
+        assert_eq!(ticks_from_units(3, 1920), Ok(2), "1.5 格 ⇒ 向上");
+    }
+
+    /// 判据 (类别④ 参数极值): 嵌套深度上限是**恰好** `MAX_DEPTH` 层（含根元素）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `stack.len() >= MAX_DEPTH` 改成 `>`
+    /// （注入 X7，等于把上限放宽一层）后，**118** 条判据全绿 ⇒ 既有的
+    /// `deep_nesting_is_an_error` 只造了 `MAX_DEPTH + 8` 层 ⇒ 多一层、少一层都
+    /// 还是 `DepthExceeded`，上界的**位置**没有判据。
+    #[test]
+    fn the_depth_limit_is_exactly_max_depth() {
+        let nested = |depth: usize| {
+            let mut xml = String::from("<score-partwise>");
+            for _ in 0..depth {
+                xml.push_str("<x>");
+            }
+            for _ in 0..depth {
+                xml.push_str("</x>");
+            }
+            xml.push_str("</score-partwise>");
+            xml
+        };
+        // 根元素占 1 层 ⇒ 再嵌 MAX_DEPTH - 1 层刚好到上限。
+        let at_limit = score(&nested(MAX_DEPTH - 1));
+        assert_eq!(
+            at_limit.ignored_elements.get("x"),
+            Some(&(MAX_DEPTH as u64 - 1)),
+            "刚好 MAX_DEPTH 层必须全部被读到"
+        );
+        assert!(
+            matches!(
+                parse_musicxml(nested(MAX_DEPTH).as_bytes()),
+                Err(MusicXmlError::DepthExceeded { .. })
+            ),
+            "第 {MAX_DEPTH} 层嵌套必须被拒绝"
+        );
+    }
 }

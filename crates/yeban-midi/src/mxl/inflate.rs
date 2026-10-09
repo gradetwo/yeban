@@ -887,4 +887,159 @@ mod tests {
             "恰好填满表尾的 16 重复必须被接受, 且块在块结束码处收束"
         );
     }
+
+    /// 判据: dynamic 块的表头字段按 RFC 1951 §3.2.7 的**精确**上界拒绝。
+    ///
+    /// `HLIT` 是 5 位 ⇒ literal/length 码数 = `HLIT + 257` 落在 257..=288，而规范只允许
+    /// 257..=286；`HDIST` 同样是 5 位 ⇒ distance 码数 = `HDIST + 1` 落在 1..=32，规范只
+    /// 允许 1..=30。四个越界表头必须在读码长表**之前**被点名拒绝。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `literal_count > 286` 放宽成 `> 288`
+    /// （注入 I12）后，**118** 条判据全绿 ⇒ 已提交语料的 `HLIT` 只到 29（= 286 个码），
+    /// 两个上界当时都没有判据。
+    #[test]
+    fn dynamic_code_counts_above_the_rfc_limits_are_rejected() {
+        /// 判据自己拼的表头：BFINAL=1、BTYPE=2、再三个定长字段（17 位 ⇒ 3 字节）。
+        fn header(hlit: u32, hdist: u32) -> Vec<u8> {
+            let mut bits = BitWriter::new();
+            bits.value(1, 1); // BFINAL = 1
+            bits.value(2, 2); // BTYPE = 10（dynamic；低位先出 ⇒ 先 0 后 1）
+            bits.value(hlit, 5);
+            bits.value(hdist, 5);
+            bits.value(0, 4); // HCLEN = 0 ⇒ 只传 4 个码长码
+            bits.finish()
+        }
+        for (hlit, hdist, detail) in [
+            (30u32, 0u32, "literal/length 码数超过 286"), // 287 个码
+            (31, 0, "literal/length 码数超过 286"),       // 288 个码
+            (0, 30, "distance 码数超过 30"),              // 31 个码
+            (0, 31, "distance 码数超过 30"),              // 32 个码
+        ] {
+            match inflate_raw(&header(hlit, hdist), 1 << 20) {
+                Err(InflateError {
+                    detail: got,
+                    kind: InflateErrorKind::Malformed,
+                    ..
+                }) => assert_eq!(got, detail, "HLIT={hlit} HDIST={hdist} 的读数"),
+                other => panic!("HLIT={hlit} HDIST={hdist} 必须被拒绝，得到 {other:?}"),
+            }
+        }
+    }
+
+    /// 判据: dynamic 块取**规范上界本身**（`HLIT = 29` ⇒ 286、`HDIST = 29` ⇒ 30）时不被
+    /// 那两个上界检查拒绝，而是一路走到"缺失块结束码 256"这一步。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `lengths[256] == 0` 那一步去掉
+    /// （注入 I7）后，**118** 条判据全绿 ⇒ 一个没有符号 256 的表当时没有判据
+    /// （`arbitrary_bytes_never_panic` 只要求"不 panic"）。
+    ///
+    /// 量什么（单位 = 一个 `InflateError`）：表头后面每个码长都是 0 ⇒ 唯一可能的拒绝
+    /// 就是"缺失块结束码 256"，因此这一条同时钉住 286 / 30 是**上界本身**（不越界）。
+    #[test]
+    fn a_dynamic_block_without_an_end_of_block_code_is_rejected() {
+        let mut bits = BitWriter::new();
+        bits.value(1, 1); // BFINAL = 1
+        bits.value(2, 2); // BTYPE = dynamic
+        bits.value(29, 5); // HLIT = 29 ⇒ 286 个 literal/length 码（恰是规范上界）
+        bits.value(29, 5); // HDIST = 29 ⇒ 30 个 distance 码（恰是规范上界）
+        bits.value(0, 4); // HCLEN = 0 ⇒ 传输顺序里的 4 个码长码
+        // 码长码的长度按 RFC 1951 §3.2.7 的顺序传输：16, 17, 18, 0。
+        bits.value(0, 3); // 符号 16 的长度 = 0
+        bits.value(0, 3); // 符号 17 = 0
+        bits.value(0, 3); // 符号 18 = 0
+        bits.value(1, 3); // 符号 0 的长度 = 1 ⇒ 一位就能解出"码长 0"
+        for _ in 0..(286 + 30) {
+            bits.bit(0);
+        }
+        match inflate_raw(&bits.finish(), 1 << 20) {
+            Err(InflateError {
+                detail,
+                kind: InflateErrorKind::Malformed,
+                ..
+            }) => assert_eq!(detail, "缺失块结束码 256"),
+            other => panic!("没有块结束码的 dynamic 块必须被拒绝，得到 {other:?}"),
+        }
+    }
+
+    /// 判据: 压缩块的**字面量**路径在输出上界处精确拒绝（多一个字节都不行）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `codes` 里那句
+    /// `out.len() >= max_output` 放宽成 `>`（注入 I14）后，**118** 条判据全绿
+    /// ⇒ 字面量路径的上界当时只被"匹配路径"的上界间接掩护
+    /// （`full_window_match_...` 的上界断言落在匹配那一步）。
+    #[test]
+    fn a_literal_run_cannot_exceed_the_output_limit() {
+        /// 固定 Huffman 块：`count` 个字面量 `'a'` + 块结束码（BFINAL = 1）。
+        fn literal_block(count: usize) -> Vec<u8> {
+            let mut bits = BitWriter::new();
+            bits.value(1, 1);
+            bits.value(1, 2); // BTYPE = 01（固定 Huffman）
+            for _ in 0..count {
+                fixed_symbol(&mut bits, u32::from(b'a'));
+            }
+            fixed_symbol(&mut bits, 256);
+            bits.finish()
+        }
+        // 对照臂：输出**恰好**等于上界 ⇒ 接受（上界数的是字节数，不是"最多能再放几个"）。
+        assert_eq!(
+            inflate_raw(&literal_block(4), 4).as_deref(),
+            Ok(&b"aaaa"[..])
+        );
+        // 越界一个字节 ⇒ 在上界处报 Limit。
+        match inflate_raw(&literal_block(5), 4) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("越界一个字节必须报 Limit，得到 {other:?}"),
+        }
+    }
+
+    /// 判据: `stored` 块的输出上界同样是"字节数"，载荷**恰好**等于上界时必须接受。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `stored` 里那句
+    /// `out.len() + length > max_output` 改成 `>=`（注入 I15）后，**118** 条判据全绿
+    /// ⇒ 既有的 `stored_block_respects_the_output_limit` 用的是 100 字节载荷配 99 的上界
+    /// （差 1 字节**越界**），恰好相等的那一侧没有判据。
+    #[test]
+    fn a_stored_payload_exactly_equal_to_the_limit_is_accepted() {
+        let stream = encode_stored(&[0u8; 100]);
+        assert_eq!(
+            inflate_raw(&stream, 100).as_deref(),
+            Ok(&[0u8; 100][..]),
+            "载荷恰好等于上界 ⇒ 必须接受"
+        );
+        match inflate_raw(&stream, 99) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("少一个字节的上界必须报 Limit，得到 {other:?}"),
+        }
+    }
+
+    /// 判据: Kraft 不等式的上界是**恰好完整**（`left == 0`）：超出一个码、且超出发生在
+    /// 最后一层时必须拒绝。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `if left < 0` 放宽成 `if left < -1`
+    /// （注入 I5）后，**118** 条判据全绿 —— 既有的
+    /// `over_subscribed_huffman_table_is_rejected` 用 `[1, 1, 1]`，它在**第二层**就
+    /// 让 `left` 变成 `-2` ⇒ 那个注入碰不到它。差别只在"最后一层恰好差半个码位"：
+    /// 32769 个长度 15 的码 ⇒ Kraft 和 = 32769/32768。
+    ///
+    /// ⚠️ 这个形状**不是**从文件字节可达的（dynamic 块最多 286 + 30 = 316 个码长，
+    /// 固定表是 288 / 30）⇒ 本条钉的是 `Huffman::build` 这个**内部函数**的契约，
+    /// 不是容器层的输入。
+    #[test]
+    fn a_full_table_plus_one_code_at_the_last_level_is_rejected() {
+        assert!(
+            Huffman::build(&vec![15u8; 32768]).is_ok(),
+            "32768 个长度 15 的码是恰好完整的表"
+        );
+        assert_eq!(
+            Huffman::build(&vec![15u8; 32769]).err(),
+            Some("Huffman 码被过度订阅"),
+            "多一个码 ⇒ Kraft 和 > 1 ⇒ 必须拒绝"
+        );
+    }
 }

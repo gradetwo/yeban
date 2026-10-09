@@ -1166,3 +1166,149 @@ fn key_signature_meta_is_ignored_without_moving_the_tick() {
         "导出侧不写调号元事件"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ③ 注入暴露的缺口（本票第三批）：后开先关 / 最早未闭合 / 拍号不跨 tick 配对 /
+//    running status 与显式状态字节等价（类别 ⑤ 幂等、类别 ⑦ 边界）
+// ---------------------------------------------------------------------------
+
+/// 判据 (类别⑤ 幂等性 / 同一音的**重叠**): 同一个 `(通道, 音高)` 上重叠的两颗音符
+/// 按**后开先关**配对（`close_note` 用 `rposition`）。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `close_note` 的 `rposition` 换成 `position`
+/// （注入 M16）后，**118** 条判据全绿 ⇒ "后开先关"这条写在文档里的语义
+/// （`close_note` 的 doc：`关掉一个已开启的音符 (后开先关)`）当时**零判据**。
+///
+/// 量什么（单位 = 一颗音符的 `(起始 tick, 时值, 力度)`）：力度把两颗音符区分开 ⇒
+/// 配对方向不同时，读数**不同**：
+/// - 后开先关（今天）: `(0, 300, 64)` 与 `(100, 100, 100)`；
+/// - 先开先关（注入后）: `(0, 200, 64)` 与 `(100, 200, 100)`。
+#[test]
+fn overlapping_notes_of_one_key_close_last_in_first_out() {
+    let track: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // tick 0:   NoteOn  ch0 key60 vel64
+        0x64, 0x90, 0x3C, 0x64, // +100:     NoteOn  ch0 key60 vel100（重叠）
+        0x64, 0x80, 0x3C, 0x00, // +100=200: NoteOff ch0 key60
+        0x64, 0x80, 0x3C, 0x00, // +100=300: NoteOff ch0 key60
+        0x00, 0xFF, 0x2F, 0x00, // EndOfTrack
+    ];
+    let bytes = hand_built_smf(0, [0x03, 0xC0], &[track]);
+    let parsed = parse_smf(&bytes).expect("手工拼的重叠音符必须可读");
+    assert_eq!(
+        parsed_keys(&parsed),
+        vec![(0, 60, 64, 0, 300), (0, 60, 100, 100, 100)],
+        "后开的先关: 力度 100 的那颗只活了 100 tick"
+    );
+}
+
+/// 判据 (类别① 越界输入 / 错误读数): 同一轨道上有**多颗**未闭合音符时，
+/// `UnclosedNote` 报的是**最早**开启的那一颗（`open.first()`）。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `open.first()` 换成 `open.last()`
+/// （注入 M17）后，**118** 条判据全绿 ⇒ 报哪一颗当时没有判据约束。
+#[test]
+fn an_unclosed_note_reports_the_earliest_open_note() {
+    let track: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // tick 0:   NoteOn key60（先开）
+        0x64, 0x90, 0x40, 0x40, // +100:     NoteOn key64（后开）
+        0x00, 0xFF, 0x2F, 0x00, // 两颗都没有 NoteOff
+    ];
+    let bytes = hand_built_smf(0, [0x03, 0xC0], &[track]);
+    assert_eq!(
+        parse_smf(&bytes),
+        Err(MidiError::UnclosedNote {
+            start_tick: 0,
+            key: 60
+        }),
+        "必须点名**最早**开启的那一颗未闭合音符"
+    );
+}
+
+/// 判据 (类别⑤ 幂等性 / 配对边界): 拍号只挂到**同一 tick**、紧邻的前一条 tempo 上。
+/// 不同 tick 的拍号必须如实落成"只有拍号"的一条记录。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `parse_smf` 的 `last.tick == tick`
+/// 放宽成 `<=`（注入 M18）后，**118** 条判据全绿 ⇒ 那个 `==` 当时没有判据。
+#[test]
+fn a_signature_later_than_the_tempo_does_not_attach_to_it() {
+    let conductor: &[u8] = &[
+        0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // tick 0:   Tempo 500000
+        0x83, 0x60, 0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08, // +480: 4/4（不同 tick）
+        0x00, 0xFF, 0x2F, 0x00, // EndOfTrack
+    ];
+    let bytes = hand_built_smf(0, [0x03, 0xC0], &[conductor]);
+    let parsed = parse_smf(&bytes).expect("回读");
+    assert_eq!(parsed.tempos.len(), 2, "不同 tick 的拍号是两条记录");
+    let tempo = parsed
+        .tempos
+        .iter()
+        .find(|tempo| tempo.microseconds_per_quarter.is_some())
+        .expect("必须有一条带 tempo 的记录");
+    assert_eq!(tempo.tick, 0);
+    assert_eq!(
+        tempo.numerator, None,
+        "tick 480 的拍号不得挂到 tick 0 的 tempo 上"
+    );
+    let signature = parsed
+        .tempos
+        .iter()
+        .find(|tempo| tempo.numerator.is_some())
+        .expect("必须有一条带拍号的记录");
+    assert_eq!(signature.tick, 480);
+    assert_eq!(signature.microseconds_per_quarter, None);
+}
+
+/// 判据 (类别⑤ 幂等性 / running status 边界): 同一段音乐分别用**running status**
+/// （省略重复的状态字节）与**逐事件显式状态字节**写出 ⇒ 回读结果必须**完全相同**。
+///
+/// 补的是哪个缺口（本票定焦点时实测）：已提交夹具里 running status 确实被走到
+/// （量法 = 本文件旁边的独立 VLQ 扫描器逐事件数；单位 = 事件条数）：
+/// `fur_elise_480ppq_1mtrk.mid` **514** 条、`fur_elise_480ppq_3mtrk.mid` **896** 条、
+/// `fur_elise_woo59_384ppq_3mtrk.mid` **0** 条 ⇒ 那两个真文件判据**间接**覆盖了它，
+/// 但没有任何判据把"省字节不改变读数"这条**等价性**单独钉住（真文件只有一份字节，
+/// 失败时也说不清是 running status 还是别处）。
+///
+/// 量什么（单位 = 一个 `ParsedMidi`）：两条轨道的字节除状态字节外逐字节对齐，
+/// 解析结果必须整体相等（`ParsedMidi` 派生了 `PartialEq`）。
+#[test]
+fn running_status_and_explicit_status_bytes_parse_identically() {
+    // 显式状态字节：每个通道事件都自带 `9x` / `8x`。
+    let explicit: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // NoteOn  ch0 key60 vel64
+        0x00, 0x90, 0x3E, 0x50, // NoteOn  ch0 key62 vel80
+        0x83, 0x60, 0x80, 0x3C, 0x00, // +480 NoteOff ch0 key60
+        0x00, 0x80, 0x3E, 0x00, // +0   NoteOff ch0 key62
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    // running status：第 2 个 NoteOn 与第 4 个 NoteOff 省略状态字节。
+    let running: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // NoteOn  ch0 key60 vel64（建立状态）
+        0x00, 0x3E, 0x50, // running: NoteOn ch0 key62 vel80
+        0x83, 0x60, 0x80, 0x3C, 0x00, // +480 NoteOff ch0 key60
+        0x00, 0x3E, 0x00, // running: NoteOff ch0 key62
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    let explicit_bytes = hand_built_smf(0, [0x03, 0xC0], &[explicit]);
+    let running_bytes = hand_built_smf(0, [0x03, 0xC0], &[running]);
+    assert!(
+        running_bytes.len() < explicit_bytes.len(),
+        "running status 那份必须更短（否则本判据没在测 running status）"
+    );
+    let a = parse_smf(&explicit_bytes).expect("显式状态字节必须可读");
+    let b = parse_smf(&running_bytes).expect("running status 必须可读");
+    assert_eq!(a, b, "省掉状态字节不得改变读数");
+    assert_eq!(
+        parsed_keys(&a),
+        vec![(0, 60, 64, 0, 480), (0, 62, 80, 0, 480)],
+        "两颗音符都从 tick 0 起, 时值 480"
+    );
+    // 而且 running status 下的 `NoteOn` 力度 0 仍然等价于 `NoteOff`。
+    let zero_velocity: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // NoteOn ch0 key60 vel64
+        0x60, 0x3C, 0x00, // running: NoteOn ch0 key60 vel0 ⇒ 关闭
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    let closed = parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[zero_velocity]))
+        .expect("running status 下的零力度 NoteOn 也必须可读");
+    assert_eq!(parsed_keys(&closed), vec![(0, 60, 64, 0, 96)]);
+}

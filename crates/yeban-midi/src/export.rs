@@ -294,7 +294,7 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::midi::{parse_smf, track_chunks};
+    use crate::midi::{MidiError, parse_smf, track_chunks};
     use yeban_model::samples::filled_project;
 
     /// 演示夹具（`bridge::demo_project()`）的 MIDI 事实。
@@ -829,5 +829,116 @@ mod tests {
             (0..9).collect::<Vec<u8>>(),
             "通道 = 导出顺序 % 16 ⇒ 0,1,…,8"
         );
+    }
+
+    /// 判据 (类别⑦ 累加溢出): 摆放起点与片段内起点在 `u64` 上界附近相加时**饱和**，
+    /// 随后是编码层的明确 `DeltaOverflow`，⛔ 不是
+    /// `placement.start_tick + note.start_tick` 的溢出 panic。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `track_notes` 的
+    /// `placement.start_tick.saturating_add(note.start_tick)` 换成裸 `+`
+    /// （注入 E1）后，**118** 条判据全绿 ⇒ 那个饱和加法当时没有判据。
+    ///
+    /// ⚠️ 工程由判据**自己**造（不借 `filled_project`）：片段内起点明确是 `1`
+    /// ⇒ `u64::MAX + 1` 只能饱和成 `u64::MAX`，期望值是字面的。
+    #[test]
+    fn a_placement_start_that_saturates_is_rejected_not_wrapped() {
+        let mut project = YebanProjectV1::default();
+        let clip_id = EntityId::new();
+        let note_id = EntityId::new();
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(note_id, MidiNote::new(note_id, 1, 60, 480));
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "Clip".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let track_id = EntityId::new();
+        let placement_id = EntityId::new();
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "Sat".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: u64::MAX,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+
+        let export = export_from_project(&project).expect("投影");
+        assert_eq!(export.tracks.len(), 1);
+        assert_eq!(
+            export.to_smf_bytes(),
+            Err(MidiError::DeltaOverflow {
+                tick: u64::MAX,
+                delta: u64::MAX
+            }),
+            "饱和到 u64::MAX 的起点必须报 DeltaOverflow, 不许绕回小 tick"
+        );
+    }
+
+    /// 判据 (类别④ 参数极值 / `MIDI_CHANNEL_COUNT` 的回绕): 超过 16 条含 MIDI 的
+    /// 轨道时，通道号按 `i % 16` 从 0 重新开始（`MIDI_CHANNEL_COUNT` 的 doc 写明了
+    /// 这条，并说"如实记录在 `exported-midi:` 行的 `tracks=` 里"）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `tracks.len() % usize::from(MIDI_CHANNEL_COUNT)`
+    /// 换成 `% 15`（注入 E2）后，**118** 条判据全绿 ⇒ 既有的
+    /// `each_midi_track_gets_its_own_chunk_and_channel` 只有 **2** 条轨道
+    /// ⇒ 回绕那一步没被走到。
+    ///
+    /// ⚠️ 身份用 `EntityId::new()`：本条的断言**与轨道顺序无关**（20 条轨道内容全同
+    /// ⇒ 第 i 条导出轨道拿通道 `i % 16`，谁排第几只影响哪条轨道是哪一个身份）。
+    #[test]
+    fn more_than_sixteen_tracks_reuse_channels_from_zero() {
+        let mut project = YebanProjectV1::default();
+        let clip_id = EntityId::new();
+        let note_id = EntityId::new();
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(note_id, MidiNote::new(note_id, 0, 60, 480));
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "Clip".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        for index in 0..20u8 {
+            let track_id = EntityId::new();
+            let placement_id = EntityId::new();
+            let mut track = yeban_model::project::TrackV3 {
+                id: track_id,
+                name: format!("T{index}"),
+                ..yeban_model::project::TrackV3::default()
+            };
+            track.clips.insert(
+                placement_id,
+                ClipPlacement {
+                    id: placement_id,
+                    clip_id,
+                    start_tick: 0,
+                    duration_ticks: 960,
+                    ..ClipPlacement::default()
+                },
+            );
+            project.insert_track(track).expect("插入音轨");
+        }
+        let export = export_from_project(&project).expect("20 条轨道必须可投影");
+        assert_eq!(export.tracks.len(), 20, "一条不漏");
+        let channels: Vec<u8> = export.tracks.iter().map(|track| track.channel).collect();
+        assert_eq!(channels[0], 0);
+        assert_eq!(channels[15], 15, "第 16 条轨道用通道 15");
+        assert_eq!(channels[16], 0, "第 17 条轨道回绕到通道 0");
+        assert_eq!(channels[19], 3);
     }
 }
