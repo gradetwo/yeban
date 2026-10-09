@@ -692,6 +692,13 @@ impl Op {
                 Ok(())
             }
             Self::AddClip { clip } => {
+                // 载荷校验必须在这里做：`content.validate()` 是**唯一**拦住非有限数值的
+                // 地方（音频片段的 `gain_db`、MIDI 音符的 `probability`），而
+                // `YebanProjectV1::validate()` 只在文档**已经**被污染之后才报错
+                // （类别 1「非有限输入」）。同族入口 `AddNote` / `AddTrack` /
+                // `InsertDevice` / `ConnectRouting` / `AddClipPlacement` 都先校验载荷，
+                // 本变体是**唯一**漏掉的那个。
+                clip.content.validate()?;
                 if doc.clip_pool.contains_key(&clip.id) {
                     return Err(ModelError::DuplicateEntityId { id: clip.id });
                 }

@@ -236,13 +236,39 @@ impl AutomationLane {
 }
 
 /// 在 `low`/`high` 之间按 `low.curve` 插值；调用者保证 `low.tick < high.tick`。
+///
+/// ## 端点极值下的有限性（类别 4）
+///
+/// 两个端点的值都只要求**有限**，因此它们的**差**可以溢出到 `±inf`
+/// （实测：两端点为 `-f32::MAX` 与 `f32::MAX` 时差值为 `+inf`）。既有的
+/// `low.value + delta * eased` 在这种输入上会吐出非有限值：
+///
+/// - `eased == 0` ⇒ `inf * 0.0 == NaN`（于是"`T` 恰在点上"的逐位精确承诺被击穿）；
+/// - `eased > 0` ⇒ `low.value + inf == inf`。
+///
+/// 于是这里分三段，且**只在端点命中与差值溢出时**与旧公式不同：
+///
+/// 1. `offset == 0`（`T` 恰在 `low` 上）⇒ 直接返回 `low.value`。这既是模块文档
+///    承诺的"逐位精确"，也顺带保住 `low.value == -0.0` 的符号
+///    （`-0.0 + 0.0 == +0.0` 会把它丢掉）；
+/// 2. 差值有限 ⇒ **原公式**，逐位不变（既有判据的期望值因此一个都不动）；
+/// 3. 差值溢出 ⇒ 数学等价的凸组合 `low·(1−u) + high·u`。差值溢出蕴含
+///    `low < 0 < high`，两项异号，因此和必然有限（不会二次溢出）。
 fn interpolate(low: &AutomationPoint, high: &AutomationPoint, tick: u64) -> f32 {
     debug_assert!(high.tick > low.tick, "插值区间必须非空");
     let span = high.tick - low.tick;
     let offset = tick - low.tick;
+    if offset == 0 {
+        return low.value;
+    }
     let t = offset as f32 / span as f32;
     let eased = low.curve.ease(t);
-    low.value + (high.value - low.value) * eased
+    let delta = high.value - low.value;
+    if delta.is_finite() {
+        low.value + delta * eased
+    } else {
+        low.value * (1.0 - eased) + high.value * eased
+    }
 }
 
 impl YebanProjectV1 {

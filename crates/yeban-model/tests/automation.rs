@@ -403,6 +403,104 @@ fn same_tick_points_resolve_deterministically_by_point_id() {
     );
 }
 
+/// ②g 类别 4「参数极值」：端点值**有限但极大**时，唯一求值入口必须仍然给出有限值，
+/// 且"`T` 恰在采样点上 ⇒ 该点的值逐位精确"的承诺不得被击穿。
+///
+/// 量什么：4 种 `CurveType` × 4 组极值端点 × 每个采样点自身 tick + 5 个区间内 tick
+/// 的 `AutomationLane::value_at` 结果。单位：每一次求值的 `f32` 位模式。
+///
+/// 缺陷形态（改动前实测）：两端点为 `-f32::MAX` 与 `f32::MAX` 时，
+/// `(high.value - low.value)` 溢出为 `+inf`，于是
+/// `low.value + inf * eased` 在 `eased == 0` 处给出 `NaN`、在 `eased > 0` 处给出 `inf`
+/// —— 一份能通过 `YebanProjectV1::validate()` 的**合法**文档经由唯一求值入口吐出非有限值。
+#[test]
+fn extreme_finite_point_values_never_make_evaluation_non_finite() {
+    let (doc, f) = fixture();
+    assert_eq!(doc.validate(), Ok(()), "夹具本身必须是合法文档");
+
+    let extremes = [
+        (-f32::MAX, f32::MAX),
+        (f32::MAX, -f32::MAX),
+        (-f32::MAX, 0.0),
+        (0.0, f32::MAX),
+    ];
+    let curves = [
+        CurveType::Linear,
+        CurveType::Exponential,
+        CurveType::Logarithmic,
+        CurveType::SCurve,
+    ];
+
+    for (low, high) in extremes {
+        for curve in curves {
+            let automation = lane(
+                f.volume,
+                vec![
+                    point(400, 0, low, curve),
+                    point(401, 960, high, CurveType::Linear),
+                ],
+            );
+            // ① 命中采样点：逐位等于该点自己的值。
+            assert_eq!(
+                automation.value_at(0).map(f32::to_bits),
+                Some(low.to_bits()),
+                "tick=0 命中首点必须逐位精确: 端点 ({low}, {high}) / {curve:?}"
+            );
+            assert_eq!(
+                automation.value_at(960).map(f32::to_bits),
+                Some(high.to_bits()),
+                "tick=960 命中末点必须逐位精确: 端点 ({low}, {high}) / {curve:?}"
+            );
+            // ② 区间内：插值结果必须有限（既不是 NaN 也不是 ±inf）。
+            for tick in [1_u64, 240, 480, 720, 959] {
+                let value = automation.value_at(tick).expect("非空泳道必须有值");
+                assert!(
+                    value.is_finite(),
+                    "tick={tick} 的插值必须有限: 端点 ({low}, {high}) / {curve:?}, 实际 {value}"
+                );
+            }
+        }
+    }
+
+    // ③ 对称极值的中点必须是精确的 0.0（`-f32::MAX` 到 `f32::MAX` 的凸组合）。
+    let symmetric = lane(
+        f.volume,
+        vec![
+            point(402, 0, -f32::MAX, CurveType::Linear),
+            point(403, 960, f32::MAX, CurveType::Linear),
+        ],
+    );
+    assert_eq!(
+        symmetric.value_at(480).map(f32::to_bits),
+        Some(0.0_f32.to_bits()),
+        "±f32::MAX 的中点在 Linear 下必须是 0.0"
+    );
+
+    // ④ `-0.0` 的符号必须被保住（`-0.0 + 0.0 == +0.0` 会把它丢掉）。
+    let negative_zero = lane(
+        f.volume,
+        vec![
+            point(404, 0, -0.0, CurveType::Linear),
+            point(405, 960, 1.0, CurveType::Linear),
+        ],
+    );
+    assert_eq!(
+        negative_zero.value_at(0).map(f32::to_bits),
+        Some((-0.0_f32).to_bits()),
+        "tick=0 命中 `-0.0` 采样点必须逐位返回 `-0.0`"
+    );
+
+    // ⑤ 单点极值：处处保持该点值（含 `f32::MAX`）。
+    let single = lane(f.volume, vec![point(406, 100, f32::MAX, CurveType::Linear)]);
+    for tick in [0_u64, 100, 960, u64::MAX] {
+        assert_eq!(
+            single.value_at(tick).map(f32::to_bits),
+            Some(f32::MAX.to_bits()),
+            "单点泳道在 tick={tick} 必须保持 f32::MAX"
+        );
+    }
+}
+
 /// ②f 采样点序列按 `(tick, point_id)` 升序，且与插入顺序无关。
 #[test]
 fn points_in_tick_order_is_deterministic_and_ordered() {

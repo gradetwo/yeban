@@ -1791,10 +1791,17 @@ impl YebanProjectV1 {
 
     /// 追加音轨；身份重复即拒绝。
     ///
+    /// 载荷先经 [`TrackV3::validate`]（与 [`Op::AddTrack`](crate::ops::Op::AddTrack)
+    /// 同一把尺子，也与同族的 [`YebanProjectV1::insert_note`] 对称）：直接落进文档的
+    /// 外部数值 —— 音量、声相、宏位置、自动化点值 —— 必须在**入口**就被判定，
+    /// 否则文档会先被污染、再由 [`YebanProjectV1::validate`] 在别处报错（类别 1）。
+    ///
     /// # Errors
     ///
-    /// `track.id` 已存在 → [`ModelError::DuplicateEntityId`]。
+    /// - 音轨自身非法 → 冒泡 [`TrackV3::validate`] 的错误（含非有限数值）；
+    /// - `track.id` 已存在 → [`ModelError::DuplicateEntityId`]。
     pub fn insert_track(&mut self, track: TrackV3) -> Result<(), ModelError> {
+        track.validate()?;
         if self.tracks.contains_key(&track.id) {
             return Err(ModelError::DuplicateEntityId { id: track.id });
         }
@@ -1837,10 +1844,16 @@ impl YebanProjectV1 {
 
     /// 追加片段池条目；身份重复即拒绝。
     ///
+    /// 载荷先经 [`ClipContent::validate`]（与 [`Op::AddClip`](crate::ops::Op::AddClip)
+    /// 同一把尺子）：音频片段的 `gain_db` 与 MIDI 音符的 `probability` 都是外部数值，
+    /// 落在入口之外检查会让文档先被污染（类别 1）。
+    ///
     /// # Errors
     ///
-    /// `entry.id` 已存在 → [`ModelError::DuplicateEntityId`]。
+    /// - 内容非法 → 冒泡 [`ClipContent::validate`] 的错误（含非有限数值）；
+    /// - `entry.id` 已存在 → [`ModelError::DuplicateEntityId`]。
     pub fn insert_clip(&mut self, entry: ClipPoolEntry) -> Result<(), ModelError> {
+        entry.content.validate()?;
         if self.clip_pool.contains_key(&entry.id) {
             return Err(ModelError::DuplicateEntityId { id: entry.id });
         }
@@ -2918,5 +2931,1258 @@ mod tests {
             .iter()
             .map(|path| std::fs::read_to_string(path).expect("read sample"))
             .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // 类别 1（非有限输入）与类别 4（参数极值）：机械枚举 + 逐项判定
+    //
+    // 手册口径：「先用 grep 机械列出同类全部候选，再汇成一张表逐项判定」。
+    // Rust 没有反射，因此清单直接从源码文本推出来（`struct`／`enum` 体，
+    // 枚举载荷字段与 `Option<f32>` 都看得见），再与冻结表**双向**比较。
+    // -----------------------------------------------------------------------
+
+    use crate::ops::Op;
+
+    /// 三个非有限 `f32`：逐项判定必须对它们**逐一**成立。
+    const NON_FINITE_F32: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+
+    /// 三个非有限 `f64`。
+    const NON_FINITE_F64: [f64; 3] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+
+    /// 机械清单（本 crate 全部数值字段声明的唯一事实源）。
+    ///
+    /// 键的形态 `<crate 相对路径>::<拥有者>::<成员>`；枚举载荷字段写作
+    /// `<变体>.<字段>`（一个枚举里可以有两个同名字段，例如 `Op::SetParam.old_val`
+    /// 与 `Op::SetMacro.old_val`）。
+    ///
+    /// 量什么：`crates/yeban-model/src/**/*.rs` 里类型为 `f32`／`Option<f32>`／
+    /// `f64`／`Option<f64>` 的字段声明条数。单位：条（实测 27）。
+    const NUMERIC_FIELD_INVENTORY: &[&str] = &[
+        // `ModelError` 的 `value` 是**输出载体**（错误里携带的被拒值），不是入口：
+        // 它不进文档、不需要判据，故在 `NUMERIC_FIELD_POLICY` 里显式豁免。
+        "src/error.rs::ModelError::ProbabilityOutOfRange.value",
+        "src/error.rs::ModelError::BpmOutOfRange.value",
+        "src/error.rs::ModelError::NonFiniteValue.value",
+        "src/error.rs::ModelError::PanOutOfRange.value",
+        "src/error.rs::ModelError::MacroValueOutOfRange.value",
+        "src/error.rs::ModelError::MacroDepthOutOfRange.value",
+        // 持久化实体与 Op 载荷
+        "src/music.rs::MidiNote::probability",
+        "src/ops.rs::Op::SetRoutingGain.old_gain_db",
+        "src/ops.rs::Op::SetRoutingGain.new_gain_db",
+        "src/ops.rs::Op::SetParam.old_val",
+        "src/ops.rs::Op::SetParam.new_val",
+        "src/ops.rs::Op::SetMacro.old_val",
+        "src/ops.rs::Op::SetMacro.new_val",
+        "src/project.rs::ParameterValue::value",
+        "src/project.rs::MacroMapping::depth",
+        "src/project.rs::MacroParameter::value",
+        "src/project.rs::AutomationPoint::value",
+        "src/project.rs::AutomationValueDomain::min",
+        "src/project.rs::AutomationValueDomain::max",
+        // `Repr` 是 `AutomationValueDomain::deserialize` 的私有中间体，两端点
+        // 只能经 `AutomationValueDomain::new` 进入（同一个有限性判据）。
+        "src/project.rs::Repr::min",
+        "src/project.rs::Repr::max",
+        "src/project.rs::ClipContent::Audio.gain_db",
+        "src/project.rs::TrackV3::volume_db",
+        "src/project.rs::TrackV3::pan",
+        "src/project.rs::SceneV3::tempo",
+        "src/project.rs::RoutingEdge::gain_db",
+        "src/project.rs::YebanProjectV1::bpm",
+    ];
+
+    /// 一个数值字段的判定探针：`Err(理由)` 表示判定不成立。
+    type NumericProbe = fn() -> Result<(), String>;
+
+    /// **逐项判定表**：清单里除 `ModelError` 输出载体之外的每一个数值字段一行。
+    ///
+    /// 行 = `(清单键, 判定结论, 探针)`。键集合必须**恰好**等于
+    /// `NUMERIC_FIELD_INVENTORY` 减去那 6 个输出载体（多一行、少一行都红）。
+    const NUMERIC_FIELD_POLICY: &[(&str, &str, NumericProbe)] = &[
+        (
+            "src/music.rs::MidiNote::probability",
+            "非有限拒绝（ProbabilityOutOfRange）；0.0..=1.0 外拒绝；None=必然触发",
+            probe_midi_note_probability,
+        ),
+        (
+            "src/ops.rs::Op::SetRoutingGain.old_gain_db",
+            "旧值只做逐位比较：NaN 不可能与文档里的有限值逐位相等 ⇒ OpStateMismatch",
+            probe_set_routing_gain_old,
+        ),
+        (
+            "src/ops.rs::Op::SetRoutingGain.new_gain_db",
+            "非有限拒绝（routing.edge.gain_db）；有限极值接受（dB 无模型级范围）",
+            probe_set_routing_gain_new,
+        ),
+        (
+            "src/ops.rs::Op::SetParam.old_val",
+            "旧值只做逐位比较：NaN ⇒ OpStateMismatch",
+            probe_set_param_old,
+        ),
+        (
+            "src/ops.rs::Op::SetParam.new_val",
+            "非有限拒绝（param.value）；声相 -1..=1、宏 0..=1 外拒绝；音量/设备参数无范围",
+            probe_set_param_new,
+        ),
+        (
+            "src/ops.rs::Op::SetMacro.old_val",
+            "旧值只做逐位比较：NaN ⇒ OpStateMismatch",
+            probe_set_macro_old,
+        ),
+        (
+            "src/ops.rs::Op::SetMacro.new_val",
+            "非有限与越界都报 MacroValueOutOfRange；0.0/1.0 接受",
+            probe_set_macro_new,
+        ),
+        (
+            "src/project.rs::ParameterValue::value",
+            "非有限拒绝（device.param.value）；有限极值接受（取值域模型不可知）",
+            probe_parameter_value,
+        ),
+        (
+            "src/project.rs::MacroMapping::depth",
+            "非有限拒绝（macro.mapping.depth）；0.0..=1.0 外报 MacroDepthOutOfRange",
+            probe_macro_mapping_depth,
+        ),
+        (
+            "src/project.rs::MacroParameter::value",
+            "非有限与越界都报 MacroValueOutOfRange；0.0/1.0 接受",
+            probe_macro_parameter_value,
+        ),
+        (
+            "src/project.rs::AutomationPoint::value",
+            "非有限拒绝（automation.point.value）；有限极值接受（求值端保证有限输出）",
+            probe_automation_point_value,
+        ),
+        (
+            "src/project.rs::AutomationValueDomain::min",
+            "非有限拒绝（automation.lane.domain.min）；端点按定义排序",
+            probe_domain_min,
+        ),
+        (
+            "src/project.rs::AutomationValueDomain::max",
+            "非有限拒绝（automation.lane.domain.max）",
+            probe_domain_max,
+        ),
+        (
+            "src/project.rs::Repr::min",
+            "私有反序列化中间体：只能经 new() 进入 ⇒ 与 AutomationValueDomain::min 同一判据",
+            probe_domain_min,
+        ),
+        (
+            "src/project.rs::Repr::max",
+            "私有反序列化中间体：只能经 new() 进入 ⇒ 与 AutomationValueDomain::max 同一判据",
+            probe_domain_max,
+        ),
+        (
+            "src/project.rs::ClipContent::Audio.gain_db",
+            "非有限拒绝（clip.audio.gain_db）；有限极值接受；入口（AddClip/insert_clip）已校验",
+            probe_clip_audio_gain,
+        ),
+        (
+            "src/project.rs::TrackV3::volume_db",
+            "非有限拒绝（track.volume_db）；dB 无模型级范围 ⇒ 有限极值接受",
+            probe_track_volume_db,
+        ),
+        (
+            "src/project.rs::TrackV3::pan",
+            "非有限拒绝（track.pan）；-1.0..=1.0 外报 PanOutOfRange",
+            probe_track_pan,
+        ),
+        (
+            "src/project.rs::SceneV3::tempo",
+            "非有限拒绝（scene.tempo）；20.0..=999.0 外报 BpmOutOfRange；None=跟随工程",
+            probe_scene_tempo,
+        ),
+        (
+            "src/project.rs::RoutingEdge::gain_db",
+            "非有限拒绝（routing.edge.gain_db）；None=单位增益；有限极值接受",
+            probe_routing_edge_gain,
+        ),
+        (
+            "src/project.rs::YebanProjectV1::bpm",
+            "非有限拒绝（bpm）；20.0..=999.0 外报 BpmOutOfRange",
+            probe_project_bpm,
+        ),
+    ];
+
+    /// `crates/yeban-model/src/**` 下（递归、按路径排序）的全部 `*.rs` 文件。
+    fn source_files() -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+                .unwrap_or_else(|error| panic!("读取 {} 失败: {error}", dir.display()))
+                .map(|entry| entry.expect("目录项").path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        out
+    }
+
+    /// 从一个 `name: type` 片段解析数值字段名；不是 `f32`／`f64` 字段则 `None`。
+    fn numeric_field(fragment: &str) -> Option<String> {
+        let fragment = fragment.trim().trim_end_matches(',').trim();
+        let fragment = fragment
+            .strip_prefix("pub(crate) ")
+            .or_else(|| fragment.strip_prefix("pub "))
+            .unwrap_or(fragment);
+        let (name, ty) = fragment.split_once(':')?;
+        let name = name.trim();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            return None;
+        }
+        let ty = ty.trim();
+        matches!(ty, "f32" | "f64" | "Option<f32>" | "Option<f64>").then(|| name.to_owned())
+    }
+
+    /// 识别 `struct`／`enum` 声明行（必须同一行开 `{`），返回 `(是否枚举, 类型名)`。
+    fn type_declaration(line: &str) -> Option<(bool, String)> {
+        let rest = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        let (is_enum, rest) = if let Some(rest) = rest.strip_prefix("enum ") {
+            (true, rest)
+        } else {
+            (false, rest.strip_prefix("struct ")?)
+        };
+        if !rest.contains('{') {
+            return None;
+        }
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some((is_enum, name))
+    }
+
+    /// 扫描源码，抽出全部数值字段声明。
+    fn scan_numeric_fields() -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut found = Vec::new();
+        for path in source_files() {
+            let relative = path
+                .strip_prefix(root)
+                .expect("src 下的文件必在 crate 根之下")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = std::fs::read_to_string(&path).expect("读取源文件");
+            let mut owner: Option<(bool, String, usize)> = None;
+            let mut variant = String::new();
+            for line in text.lines() {
+                let trimmed = line.trim_start();
+                let indent = line.len() - trimmed.len();
+                if let Some((is_enum, name, decl_indent)) = owner.clone() {
+                    // 声明体的终点：缩进不深于声明行、且以 `}` 开头的那一行。
+                    if trimmed.starts_with('}') && indent <= decl_indent {
+                        owner = None;
+                        variant.clear();
+                        continue;
+                    }
+                    if is_enum
+                        && trimmed
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_uppercase())
+                    {
+                        let candidate: String = trimmed
+                            .chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                            .collect();
+                        if !candidate.is_empty() {
+                            variant.clone_from(&candidate);
+                        }
+                    }
+                    if let Some(field) = numeric_field(trimmed) {
+                        let member = if is_enum && !variant.is_empty() {
+                            format!("{variant}.{field}")
+                        } else {
+                            field
+                        };
+                        found.push(format!("{relative}::{name}::{member}"));
+                    }
+                    continue;
+                }
+                if let Some((is_enum, name)) = type_declaration(trimmed) {
+                    owner = Some((is_enum, name, indent));
+                    variant.clear();
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// 断言：三个非有限 `f32` 都必须被 `NonFiniteValue` 拒绝，且 `field` 逐字等于 `expected`。
+    fn rejects_non_finite_f32(
+        expected: &'static str,
+        mut check: impl FnMut(f32) -> Result<(), ModelError>,
+    ) -> Result<(), String> {
+        for value in NON_FINITE_F32 {
+            match check(value) {
+                Err(ref error) if field_of(error) == Some(expected) => {}
+                other => {
+                    return Err(format!(
+                        "非有限 {value} 必须以 NonFiniteValue({expected}) 拒绝, 实际 {other:?}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 同上，`f64`。
+    fn rejects_non_finite_f64(
+        expected: &'static str,
+        mut check: impl FnMut(f64) -> Result<(), ModelError>,
+    ) -> Result<(), String> {
+        for value in NON_FINITE_F64 {
+            match check(value) {
+                Err(ref error) if field_of(error) == Some(expected) => {}
+                other => {
+                    return Err(format!(
+                        "非有限 {value} 必须以 NonFiniteValue({expected}) 拒绝, 实际 {other:?}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 取 `NonFiniteValue` 携带的规范字段路径。
+    fn field_of(error: &ModelError) -> Option<&'static str> {
+        match error {
+            ModelError::NonFiniteValue { field, .. } => Some(field),
+            _ => None,
+        }
+    }
+
+    /// 断言结果被**指定**错误拒绝。
+    fn rejects_matching(
+        what: &str,
+        result: Result<(), ModelError>,
+        matcher: impl Fn(&ModelError) -> bool,
+    ) -> Result<(), String> {
+        match result {
+            Err(ref error) if matcher(error) => Ok(()),
+            other => Err(format!("{what} 必须被指定错误拒绝, 实际 {other:?}")),
+        }
+    }
+
+    /// 断言结果被接受（有限极值必须走得通）。
+    fn accepts(what: &str, result: Result<(), ModelError>) -> Result<(), String> {
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => Err(format!("{what} 必须被接受, 实际 {error}")),
+        }
+    }
+
+    fn probe_midi_note_probability() -> Result<(), String> {
+        for value in NON_FINITE_F32 {
+            let note = MidiNote {
+                probability: Some(value),
+                ..MidiNote::default()
+            };
+            rejects_matching("非有限概率", note.validate(), |error| {
+                matches!(error, ModelError::ProbabilityOutOfRange { .. })
+            })?;
+        }
+        for bad in [1.5_f32, -0.1] {
+            rejects_matching(
+                "越界概率",
+                MidiNote {
+                    probability: Some(bad),
+                    ..MidiNote::default()
+                }
+                .validate(),
+                |error| matches!(error, ModelError::ProbabilityOutOfRange { .. }),
+            )?;
+        }
+        for good in [0.0_f32, 0.5, 1.0] {
+            accepts(
+                "闭区间概率",
+                MidiNote {
+                    probability: Some(good),
+                    ..MidiNote::default()
+                }
+                .validate(),
+            )?;
+        }
+        accepts(
+            "None（必然触发）",
+            MidiNote {
+                probability: None,
+                ..MidiNote::default()
+            }
+            .validate(),
+        )
+    }
+
+    fn probe_parameter_value() -> Result<(), String> {
+        let parameter = |value| ParameterValue {
+            name: "cutoff".to_owned(),
+            value,
+            unit: None,
+        };
+        rejects_non_finite_f32("device.param.value", |value| parameter(value).validate())?;
+        for value in [-f32::MAX, f32::MAX] {
+            accepts("设备参数有限极值", parameter(value).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_macro_mapping_depth() -> Result<(), String> {
+        let mapping = |depth| MacroMapping {
+            target: AutomationTarget::TrackVolume {
+                track_id: fixture_id(5),
+            },
+            depth,
+        };
+        rejects_non_finite_f32("macro.mapping.depth", |value| mapping(value).validate())?;
+        for bad in [1.5_f32, -0.5] {
+            rejects_matching("深度越界", mapping(bad).validate(), |error| {
+                matches!(error, ModelError::MacroDepthOutOfRange { .. })
+            })?;
+        }
+        for good in [0.0_f32, 1.0] {
+            accepts("闭区间深度", mapping(good).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_macro_parameter_value() -> Result<(), String> {
+        let macro_parameter = |value| MacroParameter {
+            name: "Brightness".to_owned(),
+            value,
+            mappings: Vec::new(),
+        };
+        for value in NON_FINITE_F32 {
+            rejects_matching(
+                "非有限宏位置",
+                macro_parameter(value).validate(),
+                |error| matches!(error, ModelError::MacroValueOutOfRange { .. }),
+            )?;
+        }
+        for bad in [1.5_f32, -0.5] {
+            rejects_matching("越界宏位置", macro_parameter(bad).validate(), |error| {
+                matches!(error, ModelError::MacroValueOutOfRange { .. })
+            })?;
+        }
+        for good in [0.0_f32, 1.0] {
+            accepts("闭区间宏位置", macro_parameter(good).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_automation_point_value() -> Result<(), String> {
+        let point = |value| AutomationPoint {
+            id: fixture_id(6),
+            tick: 0,
+            value,
+            curve: CurveType::Linear,
+        };
+        rejects_non_finite_f32("automation.point.value", |value| point(value).validate())?;
+        for value in [-f32::MAX, f32::MAX] {
+            accepts("自动化点有限极值", point(value).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_domain_min() -> Result<(), String> {
+        rejects_non_finite_f32("automation.lane.domain.min", |value| {
+            AutomationValueDomain::new(value, 0.0).map(|_| ())
+        })?;
+        let flipped = AutomationValueDomain::new(12.0, -60.0).map_err(|error| error.to_string())?;
+        if (flipped.min(), flipped.max()) != (-60.0, 12.0) {
+            return Err(format!(
+                "端点必须按定义排序, 实际 ({}, {})",
+                flipped.min(),
+                flipped.max()
+            ));
+        }
+        Ok(())
+    }
+
+    fn probe_domain_max() -> Result<(), String> {
+        rejects_non_finite_f32("automation.lane.domain.max", |value| {
+            AutomationValueDomain::new(0.0, value).map(|_| ())
+        })
+    }
+
+    fn probe_clip_audio_gain() -> Result<(), String> {
+        let asset = AssetHash::of_bytes(b"probe");
+        let audio = |gain_db| ClipContent::Audio {
+            asset: asset.clone(),
+            gain_db,
+        };
+        rejects_non_finite_f32("clip.audio.gain_db", |value| audio(value).validate())?;
+        for value in [0.0_f32, -f32::MAX, f32::MAX] {
+            accepts("音频片段有限增益极值", audio(value).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_track_volume_db() -> Result<(), String> {
+        let track = |volume_db| TrackV3 {
+            volume_db,
+            ..midi_track(fixture_id(1))
+        };
+        rejects_non_finite_f32("track.volume_db", |value| track(value).validate())?;
+        for value in [0.0_f32, -f32::MAX, f32::MAX] {
+            accepts("音轨音量有限极值", track(value).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_track_pan() -> Result<(), String> {
+        let track = |pan| TrackV3 {
+            pan,
+            ..midi_track(fixture_id(1))
+        };
+        rejects_non_finite_f32("track.pan", |value| track(value).validate())?;
+        for bad in [1.5_f32, -1.5, 2.0] {
+            rejects_matching("声相越界", track(bad).validate(), |error| {
+                matches!(error, ModelError::PanOutOfRange { .. })
+            })?;
+        }
+        for edge in [-1.0_f32, -0.5, 0.0, 1.0] {
+            accepts("闭区间声相端点", track(edge).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_scene_tempo() -> Result<(), String> {
+        let scene = |tempo| SceneV3 {
+            id: fixture_id(4),
+            name: "Verse".to_owned(),
+            tempo,
+            color: None,
+        };
+        rejects_non_finite_f64("scene.tempo", |value| scene(Some(value)).validate())?;
+        for bad in [19.9_f64, 999.5, 0.0, -120.0] {
+            rejects_matching("速度越界", scene(Some(bad)).validate(), |error| {
+                matches!(error, ModelError::BpmOutOfRange { .. })
+            })?;
+        }
+        accepts("None（跟随工程速度）", scene(None).validate())?;
+        for good in [MIN_BPM, 120.0, MAX_BPM] {
+            accepts("闭区间速度端点", scene(Some(good)).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_routing_edge_gain() -> Result<(), String> {
+        let edge = |gain_db| RoutingEdge {
+            id: fixture_id(3),
+            source_node: fixture_id(1),
+            destination_node: fixture_id(2),
+            kind: RoutingKind::TrackToBus,
+            gain_db,
+        };
+        rejects_non_finite_f32("routing.edge.gain_db", |value| edge(Some(value)).validate())?;
+        accepts("None（单位增益）", edge(None).validate())?;
+        for value in [-f32::MAX, f32::MAX] {
+            accepts("路由增益有限极值", edge(Some(value)).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_project_bpm() -> Result<(), String> {
+        let project = |bpm| YebanProjectV1 {
+            bpm,
+            ..YebanProjectV1::default()
+        };
+        rejects_non_finite_f64("bpm", |value| project(value).validate())?;
+        for bad in [19.9_f64, 999.5, 0.0, -120.0] {
+            rejects_matching("bpm 越界", project(bad).validate(), |error| {
+                matches!(error, ModelError::BpmOutOfRange { .. })
+            })?;
+        }
+        for good in [MIN_BPM, 120.0, MAX_BPM] {
+            accepts("闭区间 bpm 端点", project(good).validate())?;
+        }
+        Ok(())
+    }
+
+    /// Op 探针夹具：一条主总线音轨（含一个设备参数与一个宏）+ 一条路由边。
+    #[derive(Clone, Copy)]
+    struct NumericFixture {
+        master: EntityId,
+        edge: EntityId,
+        point: EntityId,
+    }
+
+    fn numeric_fixture() -> (YebanProjectV1, NumericFixture) {
+        let master = fixture_id(901);
+        let edge_id = fixture_id(902);
+        let doc = YebanProjectV1 {
+            master_bus_track_id: master,
+            tracks: BTreeMap::from([(
+                master,
+                TrackV3 {
+                    id: master,
+                    name: "Master".to_owned(),
+                    kind: TrackKind::Master,
+                    volume_db: -6.0,
+                    pan: 0.0,
+                    devices: vec![DeviceDefinition {
+                        id: fixture_id(903),
+                        name: "Synth".to_owned(),
+                        params: vec![ParameterValue {
+                            name: "cutoff".to_owned(),
+                            value: 1200.0,
+                            unit: None,
+                        }],
+                        ..DeviceDefinition::default()
+                    }],
+                    macros: vec![MacroParameter {
+                        name: "Brightness".to_owned(),
+                        value: 0.5,
+                        mappings: Vec::new(),
+                    }],
+                    ..TrackV3::default()
+                },
+            )]),
+            routing_graph: RoutingGraph {
+                nodes: vec![master],
+                edges: BTreeMap::from([(
+                    edge_id,
+                    RoutingEdge {
+                        id: edge_id,
+                        source_node: master,
+                        destination_node: master,
+                        kind: RoutingKind::BusToMaster,
+                        gain_db: None,
+                    },
+                )]),
+            },
+            ..YebanProjectV1::default()
+        };
+        assert_eq!(doc.validate(), Ok(()), "Op 探针夹具必须是合法文档");
+        let fixture = NumericFixture {
+            master,
+            edge: edge_id,
+            point: fixture_id(904),
+        };
+        (doc, fixture)
+    }
+
+    /// 施加 `op` 并断言它被拒绝、文档逐字节不动、且被拒之后文档仍合法。
+    fn apply_rejected(
+        doc: &mut YebanProjectV1,
+        op: &Op,
+        label: &str,
+    ) -> Result<ModelError, String> {
+        let before = serde_json::to_vec(doc).map_err(|error| error.to_string())?;
+        let Err(error) = op.apply(doc) else {
+            return Err(format!("{label}: 必须被拒绝, 却成功了"));
+        };
+        let after = serde_json::to_vec(doc).map_err(|error| error.to_string())?;
+        if before != after {
+            return Err(format!("{label}: 被拒之后文档必须逐字节不动"));
+        }
+        doc.validate()
+            .map_err(|error| format!("{label}: 被拒之后文档必须仍合法: {error}"))?;
+        Ok(error)
+    }
+
+    /// 施加 `op` 并断言它被接受、且接受之后文档仍合法。
+    fn apply_accepted(doc: &mut YebanProjectV1, op: &Op, label: &str) -> Result<(), String> {
+        op.apply(doc)
+            .map_err(|error| format!("{label}: 必须被接受, 实际 {error}"))?;
+        doc.validate()
+            .map_err(|error| format!("{label}: 接受之后文档必须仍合法: {error}"))
+    }
+
+    fn probe_set_param_old() -> Result<(), String> {
+        let (mut doc, f) = numeric_fixture();
+        for value in NON_FINITE_F32 {
+            let op = Op::SetParam {
+                target: AutomationTarget::TrackVolume { track_id: f.master },
+                old_val: value,
+                new_val: -6.0,
+            };
+            match apply_rejected(&mut doc, &op, "SetParam(old_val 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "旧值只做逐位比较, 非有限旧值必须报 OpStateMismatch, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        Ok(())
+    }
+
+    fn probe_set_param_new() -> Result<(), String> {
+        // ① 音量目标：非有限拒绝（field = "param.value"），有限极值接受。
+        let (mut doc, f) = numeric_fixture();
+        let volume = |new_val| Op::SetParam {
+            target: AutomationTarget::TrackVolume { track_id: f.master },
+            old_val: -6.0,
+            new_val,
+        };
+        for value in NON_FINITE_F32 {
+            match apply_rejected(&mut doc, &volume(value), "SetParam(音量非有限)") {
+                Ok(ModelError::NonFiniteValue {
+                    field: "param.value",
+                    ..
+                }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "音量非有限必须报 NonFiniteValue(\"param.value\"), 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for value in [-f32::MAX, f32::MAX] {
+            let (mut doc, f) = numeric_fixture();
+            let op = Op::SetParam {
+                target: AutomationTarget::TrackVolume { track_id: f.master },
+                old_val: -6.0,
+                new_val: value,
+            };
+            apply_accepted(&mut doc, &op, "SetParam(音量有限极值)")?;
+        }
+
+        // ② 声相目标：非有限与越界都拒绝，闭区间端点接受。
+        let (mut doc, f) = numeric_fixture();
+        let pan = |new_val| Op::SetParam {
+            target: AutomationTarget::TrackPan { track_id: f.master },
+            old_val: 0.0,
+            new_val,
+        };
+        for value in NON_FINITE_F32 {
+            match apply_rejected(&mut doc, &pan(value), "SetParam(声相非有限)") {
+                Ok(ModelError::NonFiniteValue {
+                    field: "param.value",
+                    ..
+                }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "声相非有限必须报 NonFiniteValue(\"param.value\"), 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for bad in [1.5_f32, -1.5, 2.0] {
+            match apply_rejected(&mut doc, &pan(bad), "SetParam(声相越界)") {
+                Ok(ModelError::PanOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("声相 {bad} 必须报 PanOutOfRange, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for edge in [-1.0_f32, 0.0, 1.0] {
+            let (mut doc, f) = numeric_fixture();
+            let op = Op::SetParam {
+                target: AutomationTarget::TrackPan { track_id: f.master },
+                old_val: 0.0,
+                new_val: edge,
+            };
+            apply_accepted(&mut doc, &op, "SetParam(声相端点)")?;
+        }
+
+        // ③ 宏目标：非有限先被有限性判据拦下（field = "param.value"），
+        //    有限越界才报 MacroValueOutOfRange（`validate_param_value` 的先后顺序即口径）。
+        let (mut doc, f) = numeric_fixture();
+        let macro_target = |new_val| Op::SetParam {
+            target: AutomationTarget::Macro {
+                track_id: f.master,
+                macro_index: 0,
+            },
+            old_val: 0.5,
+            new_val,
+        };
+        for value in NON_FINITE_F32 {
+            match apply_rejected(&mut doc, &macro_target(value), "SetParam(宏非有限)") {
+                Ok(ModelError::NonFiniteValue {
+                    field: "param.value",
+                    ..
+                }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "宏位置非有限必须报 NonFiniteValue(\"param.value\"), 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for bad in [1.5_f32, -0.5] {
+            match apply_rejected(&mut doc, &macro_target(bad), "SetParam(宏越界)") {
+                Ok(ModelError::MacroValueOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "宏位置 {bad} 必须报 MacroValueOutOfRange, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+
+        // ④ 设备参数目标：非有限拒绝，取值域模型不可知 ⇒ 有限极值接受。
+        let (mut doc, f) = numeric_fixture();
+        let device = |new_val| Op::SetParam {
+            target: AutomationTarget::DeviceParam {
+                track_id: f.master,
+                slot_index: 0,
+                param_index: 0,
+            },
+            old_val: 1200.0,
+            new_val,
+        };
+        for value in NON_FINITE_F32 {
+            match apply_rejected(&mut doc, &device(value), "SetParam(设备参数非有限)") {
+                Ok(ModelError::NonFiniteValue {
+                    field: "param.value",
+                    ..
+                }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "设备参数非有限必须报 NonFiniteValue(\"param.value\"), 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for value in [-f32::MAX, f32::MAX] {
+            let (mut doc, f) = numeric_fixture();
+            let op = Op::SetParam {
+                target: AutomationTarget::DeviceParam {
+                    track_id: f.master,
+                    slot_index: 0,
+                    param_index: 0,
+                },
+                old_val: 1200.0,
+                new_val: value,
+            };
+            apply_accepted(&mut doc, &op, "SetParam(设备参数极值)")?;
+        }
+
+        // ⑤ 发送增益必须继续走 SetRoutingGain（Option 语义不可经 SetParam 破坏）。
+        let (mut doc, f) = numeric_fixture();
+        let send = Op::SetParam {
+            target: AutomationTarget::SendGain {
+                track_id: f.master,
+                edge_id: f.edge,
+            },
+            old_val: 0.0,
+            new_val: -3.0,
+        };
+        match apply_rejected(&mut doc, &send, "SetParam(SendGain)") {
+            Ok(ModelError::AutomationTargetNotApplicable { .. }) => Ok(()),
+            Ok(other) => Err(format!(
+                "SendGain 必须报 AutomationTargetNotApplicable, 实际 {other:?}"
+            )),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    fn probe_set_macro_old() -> Result<(), String> {
+        let (mut doc, f) = numeric_fixture();
+        for value in NON_FINITE_F32 {
+            let op = Op::SetMacro {
+                track_id: f.master,
+                macro_index: 0,
+                old_val: value,
+                new_val: 0.5,
+            };
+            match apply_rejected(&mut doc, &op, "SetMacro(old_val 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("非有限旧值必须报 OpStateMismatch, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        Ok(())
+    }
+
+    fn probe_set_macro_new() -> Result<(), String> {
+        let (mut doc, f) = numeric_fixture();
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.5, -0.5] {
+            let op = Op::SetMacro {
+                track_id: f.master,
+                macro_index: 0,
+                old_val: 0.5,
+                new_val: bad,
+            };
+            match apply_rejected(&mut doc, &op, "SetMacro(新值)") {
+                Ok(ModelError::MacroValueOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "宏新值 {bad} 必须报 MacroValueOutOfRange, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for good in [0.0_f32, 1.0] {
+            let (mut doc, f) = numeric_fixture();
+            let op = Op::SetMacro {
+                track_id: f.master,
+                macro_index: 0,
+                old_val: 0.5,
+                new_val: good,
+            };
+            apply_accepted(&mut doc, &op, "SetMacro(闭区间端点)")?;
+        }
+        Ok(())
+    }
+
+    fn probe_set_routing_gain_old() -> Result<(), String> {
+        let (mut doc, f) = numeric_fixture();
+        for value in NON_FINITE_F32 {
+            let op = Op::SetRoutingGain {
+                edge_id: f.edge,
+                old_gain_db: Some(value),
+                new_gain_db: Some(-3.0),
+            };
+            match apply_rejected(&mut doc, &op, "SetRoutingGain(old 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "非有限旧增益必须报 OpStateMismatch, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        Ok(())
+    }
+
+    fn probe_set_routing_gain_new() -> Result<(), String> {
+        let (mut doc, f) = numeric_fixture();
+        for value in NON_FINITE_F32 {
+            let op = Op::SetRoutingGain {
+                edge_id: f.edge,
+                old_gain_db: None,
+                new_gain_db: Some(value),
+            };
+            match apply_rejected(&mut doc, &op, "SetRoutingGain(new 非有限)") {
+                Ok(ModelError::NonFiniteValue {
+                    field: "routing.edge.gain_db",
+                    ..
+                }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "非有限新增益必须报 NonFiniteValue(\"routing.edge.gain_db\"), 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        for value in [
+            None,
+            Some(-f32::MAX),
+            Some(f32::MAX),
+            Some(-60.0),
+            Some(12.0),
+        ] {
+            let (mut doc, f) = numeric_fixture();
+            let op = Op::SetRoutingGain {
+                edge_id: f.edge,
+                old_gain_db: None,
+                new_gain_db: value,
+            };
+            apply_accepted(&mut doc, &op, "SetRoutingGain(有限或 None)")?;
+        }
+        Ok(())
+    }
+
+    /// 类别 1／4 的**机械清单**：源码里每一个 `f32`／`f64` 字段都必须在冻结表里。
+    ///
+    /// 这条判据挡的是"新增了一个外部数值字段，但没人给它判据"—— 本仓库命中过的
+    /// 7 类缺陷里第 1 类的入口。漏登记与多登记都会红。
+    #[test]
+    fn every_numeric_field_in_the_model_is_inventoried() {
+        let found = scan_numeric_fields();
+        let mut expected: Vec<String> = NUMERIC_FIELD_INVENTORY
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect();
+        expected.sort();
+        assert_eq!(
+            found, expected,
+            "源码里的数值字段与冻结清单（NUMERIC_FIELD_INVENTORY）不一致;\n\
+             新增字段请登记并补判定, 删字段请同步清单"
+        );
+        assert_eq!(found.len(), 27, "实测读数: 27 条数值字段声明");
+    }
+
+    /// 逐项判定：清单里每个**入口**字段都有一行判定，且该行的探针必须真的成立。
+    ///
+    /// `ModelError` 的 6 个 `value` 字段是错误输出载体（不是入口），
+    /// 因此被**显式**豁免 —— 豁免集合本身也被钉住（恰好 6 条），不能悄悄扩大。
+    #[test]
+    fn every_numeric_entry_point_has_a_passing_policy_probe() {
+        let inventory: std::collections::BTreeSet<&str> =
+            NUMERIC_FIELD_INVENTORY.iter().copied().collect();
+        let outputs: std::collections::BTreeSet<&str> = inventory
+            .iter()
+            .copied()
+            .filter(|key| key.starts_with("src/error.rs::ModelError::"))
+            .collect();
+        assert_eq!(
+            outputs.len(),
+            6,
+            "输出载体豁免必须恰好 6 条（ModelError 的 value 字段）: {outputs:?}"
+        );
+        let expected: std::collections::BTreeSet<&str> =
+            inventory.difference(&outputs).copied().collect();
+        let registered: std::collections::BTreeSet<&str> = NUMERIC_FIELD_POLICY
+            .iter()
+            .map(|(key, _, _)| *key)
+            .collect();
+        assert_eq!(
+            registered, expected,
+            "判定表与机械清单必须**双向**对齐（漏一行/多一行都红）"
+        );
+
+        for (key, verdict, probe) in NUMERIC_FIELD_POLICY {
+            probe().unwrap_or_else(|reason| panic!("{key} 的判定「{verdict}」不成立: {reason}"));
+        }
+    }
+
+    /// 类别 1：`Op::AddClip` 与 `YebanProjectV1::insert_clip` 曾经**不校验载荷**。
+    ///
+    /// 缺陷形态（改动前实测）：`apply` 返回 `Ok(())`、片段入池，随后
+    /// `YebanProjectV1::validate()` 才报 `NonFiniteValue`/`ProbabilityOutOfRange`
+    /// —— 也就是说"先污染、后报错"，而两个入口的书写者都以为载荷被检查过。
+    #[test]
+    fn add_clip_and_insert_clip_reject_non_finite_content() {
+        for gain in NON_FINITE_F32 {
+            let audio = ClipPoolEntry {
+                id: fixture_id(910),
+                name: "Audio".to_owned(),
+                content: ClipContent::Audio {
+                    asset: AssetHash::of_bytes(b"probe"),
+                    gain_db: gain,
+                },
+            };
+
+            // ① Op 入口
+            let (mut doc, _) = numeric_fixture();
+            let before = serde_json::to_vec(&doc).expect("序列化");
+            let error = Op::AddClip {
+                clip: audio.clone(),
+            }
+            .apply(&mut doc)
+            .expect_err("非有限片段增益必须被拒");
+            assert!(
+                matches!(&error, ModelError::NonFiniteValue { field, .. } if *field == "clip.audio.gain_db"),
+                "实际 {error:?}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("序列化"),
+                before,
+                "被拒之后文档必须逐字节不动"
+            );
+            assert!(doc.clip_pool.is_empty(), "被拒之后片段池必须为空");
+            assert_eq!(doc.validate(), Ok(()));
+
+            // ② 文档级入口
+            let mut doc = YebanProjectV1::default();
+            let error = doc.insert_clip(audio).expect_err("非有限片段增益必须被拒");
+            assert!(
+                matches!(&error, ModelError::NonFiniteValue { field, .. } if *field == "clip.audio.gain_db"),
+                "实际 {error:?}"
+            );
+            assert!(doc.clip_pool.is_empty(), "被拒之后片段池必须为空");
+            assert_eq!(doc.validate(), Ok(()));
+
+            // ③ MIDI 片段的音符概率（同一入口的另一种载荷）
+            let note = MidiNote {
+                probability: Some(gain),
+                ..MidiNote::default()
+            };
+            let midi = ClipPoolEntry {
+                id: fixture_id(911),
+                name: "Midi".to_owned(),
+                content: ClipContent::Midi {
+                    notes: BTreeMap::from([(note.id, note)]),
+                },
+            };
+            let (mut doc, _) = numeric_fixture();
+            let before = serde_json::to_vec(&doc).expect("序列化");
+            let error = Op::AddClip { clip: midi.clone() }
+                .apply(&mut doc)
+                .expect_err("非有限音符概率必须被拒");
+            assert!(
+                matches!(error, ModelError::ProbabilityOutOfRange { .. }),
+                "实际 {error:?}"
+            );
+            assert_eq!(serde_json::to_vec(&doc).expect("序列化"), before);
+            assert!(doc.clip_pool.is_empty());
+            assert_eq!(doc.validate(), Ok(()));
+
+            let mut doc = YebanProjectV1::default();
+            assert!(doc.insert_clip(midi).is_err());
+            assert!(doc.clip_pool.is_empty());
+        }
+    }
+
+    /// 类别 1：`insert_track` 曾不校验载荷（同族的 `insert_note` 校验），
+    /// 于是"先污染、后由 `validate()` 报错"。既有期望值（合法音轨可插入、
+    /// 身份重复报 `DuplicateEntityId`）一个都没动。
+    #[test]
+    fn insert_track_rejects_non_finite_payloads() {
+        for volume in NON_FINITE_F32 {
+            let mut doc = YebanProjectV1::default();
+            let track = TrackV3 {
+                id: fixture_id(920),
+                name: "T".to_owned(),
+                volume_db: volume,
+                ..TrackV3::default()
+            };
+            let error = doc.insert_track(track).expect_err("非有限音量必须被拒");
+            assert!(
+                matches!(&error, ModelError::NonFiniteValue { field, .. } if *field == "track.volume_db"),
+                "实际 {error:?}"
+            );
+            assert!(doc.tracks.is_empty(), "被拒之后音轨集合必须为空");
+        }
+        for pan in [f32::NAN, 1.5] {
+            let mut doc = YebanProjectV1::default();
+            let track = TrackV3 {
+                id: fixture_id(921),
+                name: "T".to_owned(),
+                pan,
+                ..TrackV3::default()
+            };
+            assert!(doc.insert_track(track).is_err(), "声相 {pan} 必须被拒");
+            assert!(doc.tracks.is_empty());
+        }
+
+        let mut doc = YebanProjectV1::default();
+        let track = midi_track(fixture_id(922));
+        doc.insert_track(track.clone()).expect("合法音轨必须能插入");
+        assert_eq!(
+            doc.insert_track(track),
+            Err(ModelError::DuplicateEntityId {
+                id: fixture_id(922)
+            }),
+            "身份重复仍必须报 DuplicateEntityId"
+        );
+    }
+
+    /// 类别 1：**载荷类型间接含 `f32`** 的其余 `Op` 入口也必须拒绝非有限值。
+    ///
+    /// `SetParam`／`SetMacro`／`SetRoutingGain` 由 `NUMERIC_FIELD_POLICY` 的三行覆盖；
+    /// 这里补齐 `AddTrack`（`TrackV3::volume_db`）、`SetAutomationPoint`／
+    /// `SetAutomationLane`（`AutomationPoint::value`）与 `Batch`（整批原子回滚）。
+    #[test]
+    fn every_numeric_op_entry_point_rejects_non_finite_payloads() {
+        for value in NON_FINITE_F32 {
+            // AddTrack
+            let (mut doc, _) = numeric_fixture();
+            let track = TrackV3 {
+                id: fixture_id(930),
+                name: "New".to_owned(),
+                volume_db: value,
+                ..TrackV3::default()
+            };
+            let error = Op::AddTrack { track }
+                .apply(&mut doc)
+                .expect_err("AddTrack 非有限音量必须被拒");
+            assert!(
+                matches!(&error, ModelError::NonFiniteValue { field, .. } if *field == "track.volume_db"),
+                "实际 {error:?}"
+            );
+            assert!(doc.tracks.len() == 1, "被拒之后不得新增音轨");
+            assert_eq!(doc.validate(), Ok(()));
+
+            // SetAutomationPoint
+            let (mut doc, f) = numeric_fixture();
+            let error = Op::SetAutomationPoint {
+                target: AutomationTarget::TrackVolume { track_id: f.master },
+                point_id: f.point,
+                old_point: None,
+                new_point: AutomationPoint {
+                    id: f.point,
+                    tick: 0,
+                    value,
+                    curve: CurveType::Linear,
+                },
+            }
+            .apply(&mut doc)
+            .expect_err("SetAutomationPoint 非有限点值必须被拒");
+            assert!(
+                matches!(&error, ModelError::NonFiniteValue { field, .. } if *field == "automation.point.value"),
+                "实际 {error:?}"
+            );
+            assert_eq!(doc.validate(), Ok(()));
+
+            // SetAutomationLane
+            let (mut doc, f) = numeric_fixture();
+            let target = AutomationTarget::TrackVolume { track_id: f.master };
+            let error = Op::SetAutomationLane {
+                target,
+                old_lane: None,
+                new_lane: AutomationLane {
+                    target,
+                    points: BTreeMap::from([(
+                        f.point,
+                        AutomationPoint {
+                            id: f.point,
+                            tick: 0,
+                            value,
+                            curve: CurveType::Linear,
+                        },
+                    )]),
+                    read_enabled: true,
+                    write_mode: crate::project::AutomationWriteMode::Off,
+                    domain: None,
+                },
+            }
+            .apply(&mut doc)
+            .expect_err("SetAutomationLane 非有限点值必须被拒");
+            assert!(
+                matches!(&error, ModelError::NonFiniteValue { field, .. } if *field == "automation.point.value"),
+                "实际 {error:?}"
+            );
+            assert!(doc.automation_lane(&target).is_none());
+            assert_eq!(doc.validate(), Ok(()));
+        }
+
+        // Batch：子操作非法 ⇒ 整批不生效（原子性 + 非有限拒绝）。
+        let (mut doc, f) = numeric_fixture();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let batch = Op::Batch {
+            ops: vec![Op::SetParam {
+                target: AutomationTarget::TrackVolume { track_id: f.master },
+                old_val: -6.0,
+                new_val: f32::NAN,
+            }],
+            description: "非有限子操作".to_owned(),
+        };
+        assert!(batch.apply(&mut doc).is_err(), "Batch 内的非有限写必须被拒");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("序列化"),
+            before,
+            "Batch 失败必须整批回滚"
+        );
+        assert_eq!(doc.validate(), Ok(()));
     }
 }
