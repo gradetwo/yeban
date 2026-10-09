@@ -1510,4 +1510,336 @@ mod tests {
         assert_eq!(parsed.tempos[1].microseconds_per_quarter, Some(500_000));
         assert!(parsed.tempos.iter().all(|tempo| tempo.tick == 0));
     }
+
+    // -----------------------------------------------------------------------
+    // 第二批判据（本票新增）：数值边界、配对方向、tick 累加溢出、拍号/调号极值
+    //
+    // 每条的"补的是哪个缺口"由同票的注入实测给出（字面替换表见提交正文）：
+    // 这些替换在本节之前让本 crate 的全部判据保持**绿**。
+    // -----------------------------------------------------------------------
+
+    /// `divisions` 只认**第一次**出现的那个（模块文档的未实现清单第 5 条）。
+    ///
+    /// 注入实测（本票）：去掉"只认第一次"的开关后全绿 —— 既有夹具都只声明一次。
+    #[test]
+    fn only_the_first_divisions_element_wins() {
+        let xml = "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><divisions>2</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>\
+             <attributes><divisions>8</divisions></attributes>\
+             <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration></note>\
+             </measure></part></score-partwise>";
+        let parsed = score(xml);
+        assert_eq!(parsed.divisions, 2, "⛔ 第二次的 divisions 不许覆盖第一次");
+        let starts: Vec<u64> = parsed.parts[0]
+            .notes
+            .iter()
+            .map(|note| note.start_tick)
+            .collect();
+        assert_eq!(starts, vec![0, 480], "1 unit = 960 / 2 = 480 tick");
+    }
+
+    /// `<sound tempo>` 拒绝非有限/非正数，并把 `mpqn` 钳在 `1..=0x00FF_FFFF`。
+    ///
+    /// 注入实测（本票）：去掉 `bpm.is_finite()` 后全绿（`inf` 会落成 `mpqn = 1`）；
+    /// 把下钳从 `1.0` 放到 `0.0` 后也全绿（`1e300` 会落成 `mpqn = 0`）。
+    #[test]
+    fn sound_tempo_rejects_non_finite_and_clamps_both_ends() {
+        let document = |tempo: &str| {
+            format!(
+                "<score-partwise><direction><sound tempo=\"{tempo}\"/></direction></score-partwise>"
+            )
+        };
+        for tempo in ["inf", "-inf", "nan"] {
+            assert_eq!(
+                parse_musicxml(document(tempo).as_bytes()),
+                Err(MusicXmlError::InvalidTempo {
+                    text: tempo.to_owned()
+                }),
+                "{tempo} 不是正的有限数"
+            );
+        }
+        assert_eq!(
+            score(&document("1e300")).tempos[0].microseconds_per_quarter,
+            Some(1),
+            "极大 BPM 的 mpqn 下钳到 1 (⛔ 不是 0)"
+        );
+        assert_eq!(
+            score(&document("1e-300")).tempos[0].microseconds_per_quarter,
+            Some(0x00FF_FFFF),
+            "u24 的上界"
+        );
+    }
+
+    /// `<beats>` 是 `u8`：255 必须接受，256 必须拒绝；0 是 u8 的合法值
+    /// （⚠️ 本模块**不**校验正数，这里钉住现状）。
+    ///
+    /// 注入实测（本票）：给 `parse_u8("beats")` 加一个 `.min(4)` 后全绿
+    /// （既有夹具的 beats ∈ {3,4,6}）。
+    #[test]
+    fn beats_is_a_u8_and_its_boundary_is_enforced() {
+        let document = |beats: &str| {
+            format!(
+                "<score-partwise><part id=\"P1\"><measure><attributes><time>\
+                 <beats>{beats}</beats><beat-type>4</beat-type></time></attributes>\
+                 </measure></part></score-partwise>"
+            )
+        };
+        let parsed = score(&document("255"));
+        assert_eq!(parsed.tempos[0].numerator, Some(255), "255 是 u8 的上界");
+        assert_eq!(parsed.tempos[0].denominator_pow2, Some(2));
+        assert_eq!(
+            parse_musicxml(document("256").as_bytes()),
+            Err(MusicXmlError::InvalidNumber {
+                element: "beats",
+                text: "256".to_owned()
+            })
+        );
+        assert_eq!(
+            score(&document("0")).tempos[0].numerator,
+            Some(0),
+            "⚠️ 现状: beats=0 被原样接受 (⛔ 不是承诺)"
+        );
+    }
+
+    /// `<beat-type>` 的上界：`2^31` 是 `u32` 里最大的 2 的幂 ⇒ `denominator_pow2 = 31`；
+    /// 非 2 的幂与超过 `u32` 的文本各自被明确拒绝。
+    #[test]
+    fn beat_type_is_accepted_up_to_the_power_of_two_boundary() {
+        let document = |beat_type: &str| {
+            format!(
+                "<score-partwise><part id=\"P1\"><measure><attributes><time>\
+                 <beats>3</beats><beat-type>{beat_type}</beat-type></time></attributes>\
+                 </measure></part></score-partwise>"
+            )
+        };
+        assert_eq!(
+            score(&document("2147483648")).tempos[0].denominator_pow2,
+            Some(31),
+            "2^31"
+        );
+        assert_eq!(
+            parse_musicxml(document("2147483649").as_bytes()),
+            Err(MusicXmlError::UnsupportedBeatType {
+                value: 2_147_483_649
+            })
+        );
+        assert_eq!(
+            parse_musicxml(document("4294967296").as_bytes()),
+            Err(MusicXmlError::InvalidNumber {
+                element: "beat-type",
+                text: "4294967296".to_owned()
+            })
+        );
+    }
+
+    /// 只有一半的 `<time>`（只有 beats 或只有 beat-type）**不写** tempo 记录。
+    #[test]
+    fn a_half_filled_time_element_writes_no_record() {
+        let xml = "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><time><beats>4</beats></time>\
+             <time><beat-type>4</beat-type></time></attributes>\
+             </measure></part></score-partwise>";
+        assert!(score(xml).tempos.is_empty(), "两个字段都齐了才写记录");
+    }
+
+    /// `<key><fifths>`（调号）的边界值 `-7` / `0` / `+7`：白名单外 ⇒ 跳过并登记，
+    /// **不**移调、**不**移动 tick、**不**进 tempo map。
+    ///
+    /// ⛔ `fifths` 不在本 MVP 的语义里（模块文档的未实现清单）：这里钉住的是
+    /// "如实跳过"，不是"支持调号"。
+    #[test]
+    fn key_signature_fifths_are_ignored_at_their_boundaries() {
+        let document = |fifths: i32| {
+            format!(
+                "<score-partwise><part id=\"P1\"><measure>\
+                 <attributes><divisions>1</divisions><key><fifths>{fifths}</fifths></key>\
+                 </attributes>\
+                 <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>\
+                 </measure></part></score-partwise>"
+            )
+        };
+        for fifths in [-7, 0, 7] {
+            let parsed = score(&document(fifths));
+            assert_eq!(parsed.note_count(), 1, "fifths={fifths} 不改变音符数");
+            assert_eq!(parsed.parts[0].notes[0].start_tick, 0);
+            assert_eq!(parsed.parts[0].notes[0].key, 60, "调号不移调 (⛔ 不猜)");
+            assert_eq!(parsed.ignored_elements.get("key"), Some(&1));
+            assert_eq!(parsed.ignored_elements.get("fifths"), Some(&1));
+            assert!(parsed.tempos.is_empty(), "调号不是 tempo map 记录");
+        }
+    }
+
+    /// `pitch_to_key` 的两端：127 是最高可表达音高（G9），128 与 -1 都越界。
+    ///
+    /// 注入实测（本票）：把 `0..=127` 收成 `0..=126` 后全绿
+    /// （既有判据没有站在 127 上的音高）。
+    #[test]
+    fn pitch_127_is_the_highest_expressible_key() {
+        assert_eq!(pitch_to_key(7, 0, 9), Ok(127), "G9 = (9+1)*12 + 7 = 127");
+        assert_eq!(
+            pitch_to_key(7, 1, 9),
+            Err(MusicXmlError::PitchOutOfRange {
+                step: 'G',
+                alter: 1,
+                octave: 9
+            }),
+            "G#9 = 128 ⇒ 越界"
+        );
+        assert_eq!(pitch_to_key(0, 0, -1), Ok(0), "C-1 = MIDI 0");
+        assert_eq!(
+            pitch_to_key(0, -1, -1),
+            Err(MusicXmlError::PitchOutOfRange {
+                step: 'C',
+                alter: -1,
+                octave: -1
+            }),
+            "-1 ⇒ 越界"
+        );
+    }
+
+    /// `ticks_from_units` 在**半个 tick** 处四舍五入（不是截断）。
+    ///
+    /// 注入实测（本票）：把 `(numerator + denominator / 2) / denominator`
+    /// 换成 `numerator / denominator` 后全绿（既有断言的商都不是 `x.5`）。
+    #[test]
+    fn tick_conversion_rounds_half_up_at_the_half_tick() {
+        assert_eq!(ticks_from_units(1, 128), Ok(8), "960/128 = 7.5 ⇒ 8");
+        assert_eq!(ticks_from_units(3, 128), Ok(23), "2880/128 = 22.5 ⇒ 23");
+        assert_eq!(ticks_from_units(1, 100), Ok(10), "960/100 = 9.6 ⇒ 10");
+        assert_eq!(ticks_from_units(1, 200), Ok(5), "960/200 = 4.8 ⇒ 5");
+    }
+
+    /// tick 累加越过 `u64` 上界 ⇒ 明确 `TickOverflow`（⛔ 不是饱和、不是回绕）。
+    ///
+    /// 注入实测（本票）：把 `tick_add` 的 `checked_add` 换成 `saturating_add` 后全绿
+    /// —— 既有判据的巨型 `duration` 在 `ticks_from_units` 那一步就先越界了。
+    #[test]
+    fn a_second_note_past_the_tick_axis_is_an_error_not_a_wrap() {
+        // divisions = 1 ⇒ 1 unit = 960 tick。1e16 unit = 9.6e18 tick（装得进 u64），
+        // 两颗这样的音符 ⇒ 第二颗的结束 tick 越过 u64 上界。
+        let note = "<note><pitch><step>C</step><octave>4</octave></pitch>\
+             <duration>10000000000000000</duration></note>";
+        let xml = format!(
+            "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><divisions>1</divisions></attributes>{note}{note}\
+             </measure></part></score-partwise>"
+        );
+        assert_eq!(
+            parse_musicxml(xml.as_bytes()),
+            Err(MusicXmlError::TickOverflow)
+        );
+    }
+
+    /// 延音配对只认**恰好相接**的前驱：中间隔了缺口就不合并。
+    ///
+    /// 注入实测（本票）：去掉 `existing.end_tick() == note.start_tick` 后全绿
+    /// （既有夹具的延音都恰好相接）。
+    #[test]
+    fn a_tie_stop_pairs_only_with_an_exactly_adjacent_note() {
+        // divisions = 2 ⇒ 1 unit = 480 tick（`duration` 的单位是 unit，不是 tick）。
+        let xml = "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><divisions>2</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration>\
+             <tie type=\"start\"/></note>\
+             <note><rest/><duration>1</duration></note>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration>\
+             <tie type=\"stop\"/></note>\
+             </measure></part></score-partwise>";
+        let parsed = score(xml);
+        let notes: Vec<(u64, u64)> = parsed.parts[0]
+            .notes
+            .iter()
+            .map(|note| (note.start_tick, note.duration_ticks))
+            .collect();
+        assert_eq!(
+            notes,
+            vec![(0, 480), (960, 480)],
+            "中间 480 tick 的缺口 ⇒ 不许合并成一颗"
+        );
+    }
+
+    /// 延音收尾延的是**最近写入**的那颗同键前驱（`rev()`），不是最早的那颗。
+    ///
+    /// 注入实测（本票）：把 `iter_mut().rev().find(..)` 换成 `iter_mut().find(..)`
+    /// 后全绿（既有夹具的候选前驱只有一个）。
+    #[test]
+    fn a_tie_stop_extends_the_latest_matching_note() {
+        // divisions = 4 ⇒ 1 unit = 240 tick。
+        // A: 0..480；backup 240；B: 240..480（与 A 同键、同 end_tick）；
+        // 收尾音符从 480 起 ⇒ rev 选 B（240..960），find 会选 A（0..960）。
+        let xml = "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><divisions>4</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration></note>\
+             <backup><duration>1</duration></backup>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration>\
+             <tie type=\"stop\"/></note>\
+             </measure></part></score-partwise>";
+        let mut notes: Vec<(u64, u64)> = score(xml).parts[0]
+            .notes
+            .iter()
+            .map(|note| (note.start_tick, note.duration_ticks))
+            .collect();
+        notes.sort_unstable();
+        assert_eq!(
+            notes,
+            vec![(0, 480), (240, 720)],
+            "收尾延的是最近写入的那颗 (240..960)"
+        );
+    }
+
+    /// 和弦音符**不推进** cursor，也不许把它拉回去：cursor 取 `max`。
+    ///
+    /// 注入实测（本票）：把 `self.cursor.max(end)` 换成 `self.cursor = end` 后全绿
+    /// （既有夹具的和弦都不短于当拍 cursor）。
+    #[test]
+    fn a_chord_note_shorter_than_the_cursor_does_not_rewind_it() {
+        // divisions = 2 ⇒ 1 unit = 480 tick。第一颗 2 unit（960 tick）；和声 1 unit
+        // （480 tick，比 cursor 短）；第三颗从 cursor 起。
+        let xml = "<score-partwise><part id=\"P1\"><measure>\
+             <attributes><divisions>2</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration></note>\
+             <note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration></note>\
+             <note><pitch><step>G</step><octave>4</octave></pitch><duration>2</duration></note>\
+             </measure></part></score-partwise>";
+        let starts: Vec<(u64, u8)> = score(xml).parts[0]
+            .notes
+            .iter()
+            .map(|note| (note.start_tick, note.key))
+            .collect();
+        assert_eq!(
+            starts,
+            vec![(0, 60), (0, 64), (960, 67)],
+            "和声不推进 cursor; 第三颗从 960 起"
+        );
+    }
+
+    /// 嵌套深度上界：`MAX_DEPTH` 是**字面** 256；恰好 256 层接受，257 层拒绝。
+    ///
+    /// 注入实测（本票）：把 `MAX_DEPTH` 从 256 降到 64 后，**只看常量**的判据会跟着
+    /// 缩放而全绿 ⇒ 本判据因此把两边都写成字面值（`assert_eq!(MAX_DEPTH, 256)`
+    /// 与固定深度的两份文档），常量一改就先红。
+    #[test]
+    fn the_depth_limit_is_256_and_inclusive_below_it() {
+        assert_eq!(MAX_DEPTH, 256, "深度上限是字面读数, ⛔ 不许静默缩放");
+        let document = |depth: usize| {
+            format!(
+                "<score-partwise>{}{}</score-partwise>",
+                "<x>".repeat(depth),
+                "</x>".repeat(depth)
+            )
+        };
+        assert!(
+            parse_musicxml(document(MAX_DEPTH - 1).as_bytes()).is_ok(),
+            "根元素 + 255 层 = 256 层必须接受"
+        );
+        assert!(
+            matches!(
+                parse_musicxml(document(MAX_DEPTH).as_bytes()),
+                Err(MusicXmlError::DepthExceeded { .. })
+            ),
+            "根元素 + 256 层 = 257 层必须拒绝"
+        );
+    }
 }

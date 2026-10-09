@@ -729,3 +729,440 @@ fn smf_readers_never_panic_on_arbitrary_bytes() {
     println!("smf_readers_never_panic_on_arbitrary_bytes: runs={runs}");
     assert!(runs >= 5_000, "探针只跑了 {runs} 次，样本太少");
 }
+
+// ---------------------------------------------------------------------------
+// ④ 第二批判据（本票新增）：内容序、配对方向、VLQ/拍号/调号的边界值
+//
+// 每条的"补的是哪个缺口"由同票的注入实测给出（字面替换表见提交正文）：
+// 这些替换在本节之前让本 crate 的全部判据保持**绿**，即当时没有任何判据守着它们。
+// ⛔ 本节不改任何既有判据的期望值，只增加判据。
+// ---------------------------------------------------------------------------
+
+/// 判据 ⑭ (类别⑤ 幂等 / `ARCH-DET-001`): tempo map 的**输入 Vec 顺序**不影响导出字节。
+///
+/// `to_smf_bytes` 的文档写着"写出前按**内容**规范化排序（不是按本 `Vec` 的输入顺序）
+/// ⇒ 导出字节只由内容决定"。同一批记录换一个输入顺序必须给出**逐字节相同**的文件。
+///
+/// 注入实测（本票）：去掉组排序那一步（`groups.sort_unstable()`）后，本判据之前
+/// 本 crate 的全部判据保持绿 —— 因为它们都按"同一份输入"导出两次。
+#[test]
+fn tempo_map_bytes_depend_only_on_content_not_input_order() {
+    let first = MidiTempo {
+        tick: 0,
+        microseconds_per_quarter: Some(500_000),
+        numerator: Some(4),
+        denominator_pow2: Some(2),
+    };
+    let second = MidiTempo {
+        tick: 0,
+        microseconds_per_quarter: Some(833_333),
+        numerator: Some(3),
+        denominator_pow2: Some(2),
+    };
+    let with = |tempos: Vec<MidiTempo>| MidiExport {
+        tempos,
+        ..single_track_export(DEFAULT_PPQ)
+    };
+    let forward = with(vec![first, second]).to_smf_bytes().expect("编码");
+    let reversed = with(vec![second, first]).to_smf_bytes().expect("编码");
+    assert_eq!(forward, reversed, "同一批 tempo 记录换序后字节必须不变");
+
+    // 对照臂: 内容**不同**（第二条的 mpqn 减 1）⇒ 字节必须不同，
+    // 否则上面那条"相等"是空断言。
+    let other = with(vec![
+        first,
+        MidiTempo {
+            microseconds_per_quarter: Some(833_332),
+            ..second
+        },
+    ])
+    .to_smf_bytes()
+    .expect("编码");
+    assert_ne!(forward, other, "内容不同必须改变字节");
+
+    // 回读的记录多重集也相同（字节相同已蕴含，但这里显式钉住读出的那一边）。
+    let records = |bytes: &[u8]| {
+        let mut out = parse_smf(bytes).expect("回读").tempos;
+        out.sort_by_key(|tempo| {
+            (
+                tempo.tick,
+                tempo.microseconds_per_quarter,
+                tempo.numerator,
+                tempo.denominator_pow2,
+            )
+        });
+        out
+    };
+    assert_eq!(records(&forward), records(&reversed));
+    assert_eq!(records(&forward).len(), 2, "两条记录一条不少");
+}
+
+/// 判据 ⑮ (类别④/⑦ 累加溢出): 音符的结束 tick 用**饱和**加法算 ⇒ 越过 `u64` 上界时
+/// 必须报 `DeltaOverflow`（明确 `Err`），⛔ 不是 debug 档的加法 panic、也不是回绕。
+///
+/// 注入实测（本票）：把 `start.saturating_add(duration_ticks)` 换成裸 `+` 后，
+/// 本判据之前本 crate 的全部判据保持绿 —— 没有任何判据把音符放在 tick 轴的末端。
+#[test]
+fn a_note_at_the_end_of_the_tick_axis_is_refused_not_wrapped() {
+    let export = MidiExport {
+        tracks: vec![MidiExportTrack {
+            name: String::new(),
+            channel: 0,
+            notes: vec![note(u64::MAX, 60, 120)],
+        }],
+        ..single_track_export(DEFAULT_PPQ)
+    };
+    assert_eq!(
+        export.to_smf_bytes(),
+        Err(MidiError::DeltaOverflow {
+            tick: u64::MAX,
+            delta: u64::MAX,
+        }),
+        "末端 tick 的 delta 超过 VLQ 的 28 位上限 ⇒ 明确拒绝"
+    );
+}
+
+/// 判据 ⑯ (类别④): 同一个 `(通道, 音高)` 的**重叠**音符按"后开先关"配对。
+///
+/// `parse_smf` 的 `close_note` 文档写着"后开先关"：`open` 是一个 `Vec`，配对用
+/// `rposition` 找**最近一次**未闭合的同键音符。用 `position`（先开先关）会得到
+/// **另一份**音符集合 —— 同一份字节，两个读取器读出不同的时值。
+///
+/// 注入实测（本票）：`rposition` → `position` 后，本判据之前本 crate 的全部判据保持绿
+/// （既有判据里的同音高音符都不重叠）。
+#[test]
+fn overlapping_same_key_notes_close_last_opened_first_closed() {
+    let track: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // NoteOn ch0 key60 vel64 @0
+        0x83, 0x60, 0x90, 0x3C, 0x40, // +480: 同一个 (通道, 音高) 再开一次
+        0x83, 0x60, 0x80, 0x3C, 0x00, // +480: 先关掉**后**开的那一个
+        0x83, 0x60, 0x80, 0x3C, 0x00, // +480: 再关掉先开的那一个
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    let parsed = parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[track])).expect("必须可读");
+    assert_eq!(
+        parsed_keys(&parsed),
+        vec![(0, 60, 64, 0, 1440), (0, 60, 64, 480, 480)],
+        "后开先关: 第一个 NoteOff 结束 tick 480 那颗, 第二个结束 tick 0 那颗"
+    );
+}
+
+/// 判据 ⑰ (类别④): 未闭合音符的**上报身份** = 最早仍未闭合的那一颗。
+///
+/// 注入实测（本票）：`open.first()` → `open.last()` 后全绿；把关闭时的 `remove`
+/// 换成 `swap_remove` 后也全绿（两者都只改"报哪一颗"）。本判据同时钉住两者：
+/// 关掉最早打开的那一颗之后，剩下两颗的顺序必须仍然按打开先后 ⇒ 报第二颗。
+#[test]
+fn the_reported_unclosed_note_is_the_earliest_still_open() {
+    let track: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // A: key60 @0
+        0x0A, 0x90, 0x3E, 0x40, // +10 B: key62 @10
+        0x0A, 0x90, 0x40, 0x40, // +10 C: key64 @20
+        0x0A, 0x80, 0x3C, 0x00, // +10 关掉 A
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    assert_eq!(
+        parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[track])),
+        Err(MidiError::UnclosedNote {
+            start_tick: 10,
+            key: 62,
+        }),
+        "B 是**最早**仍未闭合的音符 (A 已被关掉)"
+    );
+}
+
+/// 判据 ⑱ (类别⑤): 格式 0 且输入**多于一条**轨道时不写 `TrackName`；
+/// 恰好一条输入轨道时名字照旧写进去。
+///
+/// 注入实测（本票）：`self.tracks.len() == 1` → `>= 1` 后全绿
+/// （既有判据里没有"格式 0 + 两条输入轨道"的形状）。
+#[test]
+fn format_zero_with_several_tracks_writes_no_track_name() {
+    let has_track_name = |bytes: &[u8]| {
+        let chunks = track_chunks(bytes).expect("chunk 布局");
+        assert_eq!(chunks.len(), 2, "MThd + 一条 MTrk");
+        let payload = &bytes[chunks[1].payload.clone()];
+        payload
+            .windows(2)
+            .any(|window| window[0] == 0xFF && window[1] == 0x03)
+    };
+
+    let two = MidiExport {
+        tracks: vec![
+            MidiExportTrack {
+                name: "A".to_owned(),
+                channel: 0,
+                notes: vec![note(0, 60, 120)],
+            },
+            MidiExportTrack {
+                name: "B".to_owned(),
+                channel: 1,
+                notes: vec![note(0, 64, 120)],
+            },
+        ],
+        ..single_track_export(DEFAULT_PPQ)
+    };
+    let bytes = two.to_smf_bytes().expect("编码");
+    assert!(
+        !has_track_name(&bytes),
+        "格式 0 且多于一条输入轨道 ⇒ 不写 TrackName meta"
+    );
+    assert_eq!(parse_smf(&bytes).expect("回读").notes.len(), 2);
+
+    let one = MidiExport {
+        tracks: vec![MidiExportTrack {
+            name: "A".to_owned(),
+            channel: 0,
+            notes: vec![note(0, 60, 120)],
+        }],
+        ..single_track_export(DEFAULT_PPQ)
+    };
+    let bytes = one.to_smf_bytes().expect("编码");
+    assert!(
+        has_track_name(&bytes),
+        "只有一条输入轨道时 TrackName 必须保留"
+    );
+}
+
+/// 判据 ⑲ (类别④ 参数极值): MIDI 音高的**上界本身** 127 必须接受，128 必须拒绝。
+///
+/// 注入实测（本票）：`note.pitch > 127` → `> 128` 后全绿
+/// （既有判据用的是 200 这类远离边界的越界值）。
+#[test]
+fn pitch_127_is_accepted_and_128_is_rejected() {
+    let highest = MidiExport {
+        tracks: vec![MidiExportTrack {
+            name: String::new(),
+            channel: 0,
+            notes: vec![note(0, 127, 120)],
+        }],
+        ..single_track_export(DEFAULT_PPQ)
+    };
+    let bytes = highest.to_smf_bytes().expect("127 是 7 位字段的上界");
+    assert_eq!(parse_smf(&bytes).expect("回读").notes[0].key, 127);
+
+    let too_high = MidiExport {
+        tracks: vec![MidiExportTrack {
+            name: String::new(),
+            channel: 0,
+            notes: vec![note(0, 128, 120)],
+        }],
+        ..single_track_export(DEFAULT_PPQ)
+    };
+    assert_eq!(
+        too_high.to_smf_bytes(),
+        Err(MidiError::PitchOutOfRange(128))
+    );
+}
+
+/// 判据 ⑳ (类别① 非有限输入 / 类别④ 参数极值): `from_bpm` 对非有限 BPM 回退，
+/// 并对 `mpqn` 的**两端**都钳制。
+///
+/// 注入实测（本票）：去掉 `bpm.is_finite()` 后全绿（`+∞` 会落到 `mpqn = 1`）；
+/// 把下钳从 `1.0` 放到 `0.0` 后也全绿（极大 BPM 会落到 `mpqn = 0`）。
+/// `mpqn = 0` 在 SMF 里是退化速度，`1` 才是本模块契约里的下界。
+#[test]
+fn bpm_conversion_handles_non_finite_input_and_clamps_both_ends() {
+    for bpm in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -120.0] {
+        assert_eq!(
+            MidiTempo::from_bpm(bpm).microseconds_per_quarter,
+            Some(500_000),
+            "非正 / 非有限的 BPM ({bpm}) 必须回退到 120 BPM"
+        );
+    }
+    // 上钳: 60_000_000 / 3 = 20_000_000 > 0x00FF_FFFF (16777215)。
+    assert_eq!(
+        MidiTempo::from_bpm(3.0).microseconds_per_quarter,
+        Some(0x00FF_FFFF),
+        "mpqn 是 u24 ⇒ 上钳到 0x00FFFFFF"
+    );
+    // 下钳: 微秒数不许是 0。
+    assert_eq!(
+        MidiTempo::from_bpm(1.0e300).microseconds_per_quarter,
+        Some(1),
+        "极大 BPM 的 mpqn 下钳到 1 (⛔ 不是 0)"
+    );
+}
+
+/// 判据 ㉑ (类别④): 拍号只与**同一个 tick 上、紧邻的前一条** tempo 配对；
+/// 跨 tick 的拍号必须落成"只有拍号"的记录。
+///
+/// 注入实测（本票）：去掉配对判断里的 `last.tick == tick` 后全绿
+/// （既有合成夹具的 tempo 与拍号都在同一个 tick 上）。
+#[test]
+fn a_time_signature_pairs_only_within_the_same_tick() {
+    let track: &[u8] = &[
+        0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // Tempo 500000 @0
+        0x64, 0xFF, 0x58, 0x04, 0x03, 0x02, 0x18, 0x08, // +100: 拍号 3/4
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    let parsed = parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[track])).expect("必须可读");
+    assert_eq!(
+        parsed.tempos,
+        vec![
+            MidiTempo {
+                tick: 0,
+                microseconds_per_quarter: Some(500_000),
+                numerator: None,
+                denominator_pow2: None,
+            },
+            MidiTempo {
+                tick: 100,
+                microseconds_per_quarter: None,
+                numerator: Some(3),
+                denominator_pow2: Some(2),
+            },
+        ],
+        "跨 tick 的拍号必须落成**只有拍号**的记录, ⛔ 不许挂到上一条 tempo 上"
+    );
+}
+
+/// 判据 ㉒ (新轴: running status 的**数据字节数**边界): 省略状态字节时，
+/// 事件的数据字节数由仍生效的状态字节决定 —— 单数据字节的 `0xC0`（Program Change）
+/// 与双数据字节的 `0x90`（NoteOn）必须各吃对字节数，否则其后的 delta 与事件整体错位。
+///
+/// ⛔ 本判据钉的是 `parse_smf` 的**可观测量**（音符集合），不是上游库的内部实现：
+/// 改坏了中间的字节宽度，读出的音符集合就会变（对照臂）。
+#[test]
+fn running_status_keeps_the_previous_status_and_its_data_length() {
+    let track: &[u8] = &[
+        0x00, 0xC0, 0x05, // Program Change ch0 (1 个数据字节) ⇒ 状态 0xC0 生效
+        0x00,
+        0x05, // delta 0, 裸数据字节 ⇒ running status 0xC0 再一个 Program Change
+        0x00, 0x90, 0x3C, 0x40, // NoteOn ch0 key60 vel64
+        0x83, 0x60, 0x3C,
+        0x00, // +480, 裸数据字节 ⇒ running status 0x90, vel0 = NoteOff
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    let parsed =
+        parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[track])).expect("running status 必须可读");
+    assert_eq!(
+        parsed_keys(&parsed),
+        vec![(0, 60, 64, 0, 480)],
+        "Program Change 不产生音符; 两次 running status 各吃 1 / 2 个数据字节"
+    );
+    assert_eq!(parsed.tempos.len(), 0, "Program Change 不是 tempo map 事件");
+
+    // 对照臂 ①: 同样的事件写成**显式**状态字节 ⇒ 音符集合必须相同
+    // （running status 只是把状态字节省掉，语义不变）。
+    let explicit: &[u8] = &[
+        0x00, 0xC0, 0x05, // 显式的 Program Change
+        0x00, 0xC0, 0x05, // 显式的第二个 Program Change
+        0x00, 0x90, 0x3C, 0x40, 0x83, 0x60, 0x90, 0x3C, 0x00, // 显式的 NoteOn vel0
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    let explicit =
+        parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[explicit])).expect("显式状态字节也必须可读");
+    assert_eq!(
+        parsed_keys(&explicit),
+        parsed_keys(&parsed),
+        "bare 数据字节与显式状态字节必须读出同一批音符"
+    );
+
+    // 对照臂 ②: 文件**开头**就是裸数据字节（没有前驱状态字节）。
+    // ⚠️ 实测读数（**不是承诺**）: `midly` 接受这种开头并回出 **0 颗音符** ——
+    // 它既不报错、也不猜一个状态。这里把现状钉住（与判据 ⑧ 同口径）：
+    // 将来任何一侧收紧成 `Err`、或开始"猜"出一个音符，本行都会先变红。
+    let orphan: &[u8] = &[0x00, 0x05, 0x00, 0xFF, 0x2F, 0x00];
+    let orphan =
+        parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[orphan])).expect("实测: 目前接受这种开头");
+    assert_eq!(
+        orphan.notes.len(),
+        0,
+        "没有可继承的状态字节时, 不许凭空猜出一个音符"
+    );
+    assert!(orphan.tempos.is_empty());
+}
+
+/// 判据 ㉓ (新轴: running status 的**取消**边界): meta 事件取消 running status
+/// （SMF 1.0: "Sysex events and meta-events cancel any running status which was in effect"）
+/// ⇒ meta 之后光秃秃的数据字节不得被当成事件。
+#[test]
+fn a_meta_event_cancels_running_status() {
+    let track: &[u8] = &[
+        0x00, 0x90, 0x3C, 0x40, // NoteOn ch0 key60 vel64 ⇒ 状态 0x90 生效
+        0x00, 0xFF, 0x01, 0x02, 0x41,
+        0x42, // Text meta (FF 01 02 "AB") ⇒ 取消 running status
+        0x60, 0x3C, 0x00, // 裸数据字节 (没有状态字节) ⇒ 不是合法事件
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    assert!(
+        parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[track])).is_err(),
+        "meta 之后的裸数据字节没有状态字节可依附"
+    );
+}
+
+/// 判据 ㉔ (类别④ 拍号边界值): `FF 58` 的分子与分母幂字段**原样**往返 ——
+/// `0` 与 `255` 都不许被钳制、不许被"缺省"替换。
+///
+/// 对照臂: 两个字段都在同一个 tick 上，且内容不同 ⇒ 两条记录都必须留下。
+#[test]
+fn time_signature_meta_fields_round_trip_at_their_extremes() {
+    let source = MidiExport {
+        format: MidiFormat::Parallel,
+        ppq: DEFAULT_PPQ,
+        tempos: vec![
+            MidiTempo {
+                tick: 0,
+                microseconds_per_quarter: None,
+                numerator: Some(0),
+                denominator_pow2: Some(0),
+            },
+            MidiTempo {
+                tick: 0,
+                microseconds_per_quarter: None,
+                numerator: Some(255),
+                denominator_pow2: Some(255),
+            },
+        ],
+        tracks: vec![MidiExportTrack {
+            name: String::new(),
+            channel: 0,
+            notes: vec![note(0, 60, 120)],
+        }],
+    };
+    let bytes = source.to_smf_bytes().expect("编码");
+    let records: Vec<(Option<u8>, Option<u8>)> = parse_smf(&bytes)
+        .expect("回读")
+        .tempos
+        .iter()
+        .map(|tempo| (tempo.numerator, tempo.denominator_pow2))
+        .collect();
+    assert_eq!(
+        records,
+        vec![(Some(0), Some(0)), (Some(255), Some(255))],
+        "0 与 255 都必须原样回来"
+    );
+}
+
+/// 判据 ㉕ (新轴: 调号的边界值): `FF 59`（Key Signature）**不导出**，回读时被忽略，
+/// 且**不移动 tick**、不进入 tempo map。`fifths` 是带符号字节 `-7..=7`，
+/// 这里覆盖两端与一个越界字节（`0x7F`）。
+#[test]
+fn key_signature_meta_is_ignored_without_moving_the_tick() {
+    let track: &[u8] = &[
+        0x00, 0xFF, 0x59, 0x02, 0xF9, 0x00, // fifths = -7 (0xF9), mode 0
+        0x00, 0xFF, 0x59, 0x02, 0x07, 0x01, // fifths = +7, mode 1 (minor)
+        0x00, 0x90, 0x3C, 0x40, // NoteOn ch0 key60 vel64 @0
+        0x83, 0x60, 0x80, 0x3C, 0x00, // +480 NoteOff
+        0x00, 0xFF, 0x59, 0x02, 0x7F, 0x00, // 越界 fifths = 127 (仍必须不 panic)
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+    let parsed = parse_smf(&hand_built_smf(0, [0x03, 0xC0], &[track])).expect("必须可读");
+    assert_eq!(
+        parsed_keys(&parsed),
+        vec![(0, 60, 64, 0, 480)],
+        "调号事件不移动 tick、不改变音符"
+    );
+    assert!(parsed.tempos.is_empty(), "调号不是 tempo map 记录");
+
+    // 对照臂: 导出侧**不写** `FF 59`（调号不在 SMF 导出的白名单里）。
+    let export = single_track_export(DEFAULT_PPQ);
+    let bytes = export.to_smf_bytes().expect("编码");
+    assert!(
+        !bytes
+            .windows(2)
+            .any(|window| window[0] == 0xFF && window[1] == 0x59),
+        "导出侧不写调号元事件"
+    );
+}

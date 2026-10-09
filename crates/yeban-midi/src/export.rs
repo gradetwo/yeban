@@ -701,4 +701,133 @@ mod tests {
             Err(MidiExportError::UnsupportedTimeSignature { denominator: 3 })
         ));
     }
+
+    /// 判据 ⑧ (类别④/⑦ 累加溢出): 摆放起点 + 片段内起点用**饱和**加法 ⇒
+    /// 不 panic、不回绕，两个操作数都到上界时结果就是 `u64::MAX`。
+    ///
+    /// 注入实测（本票）：把 `placement.start_tick.saturating_add(note.start_tick)`
+    /// 换成裸 `+` 后，本判据之前本 crate 的全部判据保持绿
+    /// （既有判据的摆放起点都远小于上界，debug 档也不会碰到加法溢出）。
+    #[test]
+    fn placement_start_saturates_at_the_end_of_the_tick_axis() {
+        let mut project = filled_project();
+        let track_id = project
+            .tracks
+            .values()
+            .find(|track| track.id != project.master_bus_track_id)
+            .map(|track| track.id)
+            .expect("filled 样本必有非主总线轨道");
+        let placement_id = project.tracks[&track_id]
+            .clips
+            .keys()
+            .next()
+            .copied()
+            .expect("第一条轨道必有 MIDI 摆放");
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨道在")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放在")
+            .start_tick = u64::MAX;
+
+        let export = export_from_project(&project).expect("饱和加不许 panic");
+        let notes: Vec<&MidiNote> = export
+            .tracks
+            .iter()
+            .flat_map(|track| track.notes.iter())
+            .collect();
+        assert_eq!(notes.len(), 4, "filled 样本的片段有 4 颗音符");
+        assert!(
+            notes.iter().all(|note| note.start_tick == u64::MAX),
+            "u64::MAX + 非零片段内起点必须饱和到 u64::MAX, ⛔ 不是回绕"
+        );
+    }
+
+    /// 判据 ⑨: 主总线轨道**不导出** —— 即使它自己带一个 MIDI 摆放。
+    ///
+    /// 映射表写着"主总线轨道（`master_bus_track_id`）**不导出**（它是声学出口，
+    /// 不是内容轨）"。注入实测（本票）：去掉那条 `continue` 后全绿
+    /// （filled 样本的主总线轨道本来没有 MIDI 摆放 ⇒ 差别不可观测）。
+    #[test]
+    fn the_master_bus_track_is_not_exported_even_with_a_midi_clip() {
+        let mut project = filled_project();
+        let midi_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_some())
+            .map(|entry| entry.id)
+            .expect("filled 样本必有 MIDI 片段");
+        let master = project.master_bus_track_id;
+        assert!(
+            project.tracks.contains_key(&master),
+            "反例前提: 主总线轨道必须在 `tracks` 里"
+        );
+        let placement_id = EntityId::new();
+        project
+            .tracks
+            .get_mut(&master)
+            .expect("主总线在")
+            .clips
+            .insert(
+                placement_id,
+                ClipPlacement {
+                    id: placement_id,
+                    clip_id: midi_clip,
+                    start_tick: 0,
+                    duration_ticks: 3840,
+                    ..ClipPlacement::default()
+                },
+            );
+
+        let export = export_from_project(&project).expect("投影");
+        assert_eq!(
+            export.tracks.len(),
+            1,
+            "主总线轨道带 MIDI 摆放也不导出 ⇒ 仍只有 Lead 一条"
+        );
+        assert_ne!(
+            export.tracks[0].name, project.tracks[&master].name,
+            "导出的那条不是主总线轨道"
+        );
+    }
+
+    /// 判据 ⑩: 通道按**导出顺序** `i % 16` 取 —— 第 9 条轨道是通道 8，不是 0。
+    ///
+    /// 注入实测（本票）：把 `% MIDI_CHANNEL_COUNT`（16）换成 `% 8` 后全绿
+    /// （既有判据最多只有 2 条含 MIDI 的轨道 ⇒ 复用边界碰不到）。
+    #[test]
+    fn channels_are_assigned_modulo_sixteen_in_export_order() {
+        let mut project = filled_project();
+        let template = project
+            .tracks
+            .values()
+            .find(|track| {
+                track.id != project.master_bus_track_id
+                    && track.clips.values().any(|placement| {
+                        project
+                            .clip_pool
+                            .get(&placement.clip_id)
+                            .is_some_and(|entry| entry.content.notes().is_some())
+                    })
+            })
+            .cloned()
+            .expect("filled 样本必有一条带 MIDI 摆放的非主总线轨道");
+        // 复制到 **9** 条含 MIDI 的轨道：`% 16` 给 0..=8，`% 8` 会在第 9 条回到 0。
+        for _ in 0..8 {
+            let mut clone = template.clone();
+            clone.id = EntityId::new();
+            project.tracks.insert(clone.id, clone);
+        }
+
+        let export = export_from_project(&project).expect("投影");
+        assert_eq!(export.tracks.len(), 9, "9 条轨道都有 MIDI");
+        let channels: Vec<u8> = export.tracks.iter().map(|track| track.channel).collect();
+        assert_eq!(
+            channels,
+            (0..9).collect::<Vec<u8>>(),
+            "通道 = 导出顺序 % 16 ⇒ 0,1,…,8"
+        );
+    }
 }

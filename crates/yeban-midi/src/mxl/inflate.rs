@@ -795,4 +795,96 @@ mod tests {
         println!("arbitrary_bytes_never_panic (inflate): runs={runs}");
         assert!(runs >= 85_000, "探针只跑了 {runs} 次，样本太少");
     }
+
+    // -----------------------------------------------------------------------
+    // 第二批判据（本票新增）：码长上界、dynamic 头的两个码数上界、码长重复的**恰好填满**
+    // -----------------------------------------------------------------------
+
+    /// 码长 **15**（RFC 1951 §3.2.5 的上界）必须被接受，且能解出符号。
+    ///
+    /// 注入实测（本票）：把 `index > MAX_CODE_BITS` 收成 `>=` 后全绿
+    /// （既有判据的固定表最长 9 位，已提交的 dynamic 流也没用到 15 位）。
+    #[test]
+    fn a_fifteen_bit_huffman_code_is_accepted() {
+        // 16 个符号的码长 1,2,…,14,15,15：Kraft 和恰好 = 1（完整的 canonical 表）。
+        let mut lengths: Vec<u8> = (1..=14).collect();
+        lengths.push(15);
+        lengths.push(15);
+        let table = Huffman::build(&lengths).expect("15 位码长在 RFC 1951 的范围内");
+        // 全 1 的位流是最后（最长）那个符号的码。
+        let mut bits = Bits::new(&[0xff, 0xff]);
+        assert_eq!(table.decode(&mut bits), Ok(15));
+    }
+
+    /// dynamic 头的 `HLIT` 上界：码数 **287** 必须被拒绝并给出**字面**说明。
+    ///
+    /// 注入实测（本票）：把 `literal_count > 286` 放宽到 `> 287` 后全绿
+    /// （既有判据的流都只声明 257..=286 个 literal/length 码）。
+    #[test]
+    fn a_dynamic_header_with_too_many_literal_codes_is_rejected() {
+        let mut bits = BitWriter::new();
+        bits.value(1, 1); // BFINAL = 1
+        bits.value(2, 2); // BTYPE = 10（dynamic）
+        bits.value(30, 5); // HLIT = 30 ⇒ literal_count = 287（上界是 286）
+        bits.value(0, 5); // HDIST = 0 ⇒ distance_count = 1
+        bits.value(0, 4); // HCLEN = 0 ⇒ 4 个码长
+        let stream = bits.finish();
+        let error = inflate_raw(&stream, 1 << 20).expect_err("HLIT 声明的码数超过 286");
+        assert_eq!(error.detail, "literal/length 码数超过 286");
+        assert_eq!(error.kind, InflateErrorKind::Malformed);
+    }
+
+    /// dynamic 头的 `HDIST` 上界：码数 **31** 必须被拒绝并给出**字面**说明。
+    ///
+    /// 注入实测（本票）：把 `distance_count > 30` 放宽到 `> 31` 后全绿。
+    #[test]
+    fn a_dynamic_header_with_too_many_distance_codes_is_rejected() {
+        let mut bits = BitWriter::new();
+        bits.value(1, 1); // BFINAL = 1
+        bits.value(2, 2); // BTYPE = 10（dynamic）
+        bits.value(0, 5); // HLIT = 0 ⇒ literal_count = 257（合法）
+        bits.value(30, 5); // HDIST = 30 ⇒ distance_count = 31（上界是 30）
+        bits.value(0, 4); // HCLEN = 0
+        let stream = bits.finish();
+        let error = inflate_raw(&stream, 1 << 20).expect_err("HDIST 声明的码数超过 30");
+        assert_eq!(error.detail, "distance 码数超过 30");
+        assert_eq!(error.kind, InflateErrorKind::Malformed);
+    }
+
+    /// 码长重复码 **16** 的**恰好填满**边界：`index + repeat == 表长` 必须接受
+    /// （RFC 1951 §3.2.7 的重复只受"不越过表尾"约束）。
+    ///
+    /// 流（判据自己拼）：`HLIT=0` / `HDIST=0` ⇒ 表长 258；前面的 251 项用两个
+    /// `18`（零重复）填掉，第 252 项写码长 8，末尾用 `16` 重复 **6** 次 ⇒ 正好 258。
+    /// 注入实测（本票）：把这一处的 `>` 改成 `>=` 后全绿
+    /// （既有判据的重复都没有落在表尾上）。
+    #[test]
+    fn a_code_length_repeat_that_exactly_fills_the_table_is_accepted() {
+        let mut bits = BitWriter::new();
+        bits.value(1, 1); // BFINAL = 1
+        bits.value(2, 2); // BTYPE = 10（dynamic）
+        bits.value(0, 5); // HLIT = 0 ⇒ literal_count = 257
+        bits.value(0, 5); // HDIST = 0 ⇒ distance_count = 1
+        bits.value(1, 4); // HCLEN = 1 ⇒ 5 个码长（顺序 = 16,17,18,0,8）
+        // 码长表的码长：s16 = 3、s17 = 0、s18 = 1、s0 = 0、s8 = 2。
+        for length in [3u32, 0, 1, 0, 2] {
+            bits.value(length, 3);
+        }
+        // canonical 码：s18 = `0`（1 位）、s8 = `10`（2 位）、s16 = `110`（3 位）。
+        bits.code(0, 1);
+        bits.value(138 - 11, 7); // 18: 138 个 0
+        bits.code(0, 1);
+        bits.value(113 - 11, 7); // 18: 113 个 0 ⇒ 累计 251
+        bits.code(2, 2); // s8 ⇒ lengths[251] = 8
+        bits.code(6, 3);
+        bits.value(6 - 3, 2); // 16: 重复 6 次 ⇒ 252..=257 = 8，正好填满 258
+        // literal/length 表里符号 251..=256 的码长都是 8 ⇒ 块结束码 256 的 canonical 码 = 5。
+        bits.code(5, 8);
+        let stream = bits.finish();
+        assert_eq!(
+            inflate_raw(&stream, 1 << 20).as_deref(),
+            Ok(&b""[..]),
+            "恰好填满表尾的 16 重复必须被接受, 且块在块结束码处收束"
+        );
+    }
 }

@@ -2050,3 +2050,186 @@ fn mxl_malformed_readings_are_pinned_by_offset_and_detail() {
     // 确定性 [ARCH-DET-001]：同一份字节两次结果相同。
     assert_eq!(parse_mxl(&broken_signature), parse_mxl(&broken_signature));
 }
+
+// ---------------------------------------------------------------------------
+// 第二批判据（本票新增）：`.mxl` 容器的**长度/上界边界**与**逐字段契约**
+//
+// 每条的"补的是哪个缺口"由同票的注入实测给出（字面替换表见提交正文）。
+// ⛔ 不新增夹具文件：字节全部由判据自己拼。
+// ---------------------------------------------------------------------------
+
+/// 判据（本票新增）: `.mxl` 的导入结果与纯文本**逐字段**相同。
+///
+/// 单位 = 字段（每条 `assert_eq!` 数一个字段/一条记录）：`divisions` / `ppq` /
+/// `tempos` / 每个 `part` 的 `id`、`name`、`notes`（整表逐音符）/
+/// `ignored_elements` / `unsupported_elements` / `note_count` / `tick_range`。
+///
+/// 五个容器覆盖三条 Huffman 路径（dynamic / fixed）、data descriptor、
+/// 多块流与 32 KiB 长匹配 ⇒ 容器层的任何一处读错都会在**具名字段**上现形。
+#[test]
+fn mxl_import_matches_the_plain_text_field_by_field() {
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    let cases: [(&str, &[u8]); 5] = [
+        ("dynamic", HANDMADE_MXL),
+        ("fixed", HANDMADE_MXL_FIXED),
+        ("data_descriptor", HANDMADE_MXL_DATA_DESCRIPTOR),
+        ("multiblock", HANDMADE_MXL_MULTIBLOCK),
+        ("long_match", HANDMADE_MXL_LONG_MATCH),
+    ];
+    for (name, bytes) in cases {
+        let container = parse_mxl(bytes).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(container.divisions, text.divisions, "{name}: divisions");
+        assert_eq!(container.ppq, text.ppq, "{name}: ppq");
+        assert_eq!(container.tempos, text.tempos, "{name}: tempo 记录");
+        assert_eq!(container.parts.len(), text.parts.len(), "{name}: 部件数");
+        for (index, (got, want)) in container.parts.iter().zip(&text.parts).enumerate() {
+            assert_eq!(got.id, want.id, "{name}: 部件 {index} 的 id");
+            assert_eq!(got.name, want.name, "{name}: 部件 {index} 的 name");
+            assert_eq!(got.notes, want.notes, "{name}: 部件 {index} 的音符逐字段");
+        }
+        assert_eq!(
+            container.ignored_elements, text.ignored_elements,
+            "{name}: ignored_elements"
+        );
+        assert_eq!(
+            container.unsupported_elements, text.unsupported_elements,
+            "{name}: unsupported_elements"
+        );
+        assert_eq!(container.note_count(), text.note_count(), "{name}: 音符数");
+        assert_eq!(
+            container.tick_range(),
+            text.tick_range(),
+            "{name}: tick 范围"
+        );
+    }
+}
+
+/// 判据（本票新增）: `MxlLimits` 的三条上界都是**闭**的 —— 读数**等于**上界时必须接受，
+/// 只比上界大 1 才拒绝。
+///
+/// 注入实测（本票）：把三处 `>` 改成 `>=` 后全绿（既有判据的上界都远小于实际读数）
+/// ⇒ 那时"上界"变成了"严格小于"，一个恰好在预算内的容器会被误拒。
+#[test]
+fn mxl_limits_accept_a_reading_equal_to_the_limit() {
+    let container = container_xml("score.xml");
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    // 实测读数（单位 = 条目 / 字节）：2 个条目；条目名 22（`META-INF/container.xml`）
+    // 与 9（`score.xml`）；声明的未压缩长度 146 与 2716。
+    let entries = central_entries(&zip);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].name, b"META-INF/container.xml");
+    assert_eq!(entries[0].uncompressed, 146);
+    assert_eq!(entries[1].uncompressed, 2716);
+    let expected = parse("handmade_mvp_partwise", HANDMADE_MVP);
+
+    // ① 三个上界**恰好等于**最大读数 ⇒ 必须接受。
+    let exact = MxlLimits {
+        max_entry_bytes: 2716,
+        max_entries: 2,
+        max_name_bytes: 22,
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &exact),
+        Ok(expected.clone()),
+        "上界是闭区间: 读数 == 上界必须接受"
+    );
+
+    // ② 每个上界各减 1 ⇒ 该条上界开火（且点名的 limit 正确）。
+    let less_entries = MxlLimits {
+        max_entries: 1,
+        ..exact
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &less_entries),
+        Err(MxlError::LimitExceeded {
+            limit: "entries",
+            value: 2,
+            max: 1,
+        })
+    );
+    let less_name = MxlLimits {
+        max_name_bytes: 21,
+        ..exact
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &less_name),
+        Err(MxlError::LimitExceeded {
+            limit: "name_bytes",
+            value: 22,
+            max: 21,
+        })
+    );
+    let less_bytes = MxlLimits {
+        max_entry_bytes: 2715,
+        ..exact
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &less_bytes),
+        Err(MxlError::LimitExceeded {
+            limit: "entry_bytes",
+            value: 2716,
+            max: 2715,
+        })
+    );
+}
+
+/// 判据（本票新增）: EOCD 的注释**最大长度** 65535（`0xFFFF`，APPNOTE 4.3.16）
+/// 必须落在向前搜索的窗口内。
+///
+/// 注入实测（本票）：把 `EOCD_MAX_COMMENT` 从 `0xffff` 降到 `0xfffe` 后全绿
+/// （既有判据的注释只有 24 字节）⇒ 恰好 65535 字节的注释会让扫描提前一格放弃。
+#[test]
+fn mxl_eocd_scan_covers_the_maximum_comment_length() {
+    let mut bytes = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    let expected = parse_mxl(&bytes).expect("加注释之前必须可读");
+    // 65535 = EOCD 注释长度字段（u16）的上界本身。
+    let comment = vec![0u8; 0xffff];
+    append_eocd_comment(&mut bytes, &comment);
+    assert_eq!(
+        parse_mxl(&bytes),
+        Ok(expected),
+        "注释长度 = 0xFFFF 时真正的 EOCD 仍必须在搜索窗口内"
+    );
+}
+
+/// 判据（本票新增）: `full-path` 的值**必须带引号**（XML 语法）。
+/// 不带引号的 `full-path=scores.xml` 不是属性 ⇒ 明确的 [`MxlError::NoRootFile`]。
+///
+/// 注入实测（本票）：去掉 `quoted_value` 的引号检查后全绿 —— 那时
+/// `full-path=scores.xml` 会被读成 `core`（拿重复的那个 `s` 当结束引号），
+/// 报的是 `MissingRootFile { path: "core" }` 而不是"没有这个属性"。
+#[test]
+fn mxl_unquoted_rootfile_attribute_is_not_silently_accepted() {
+    for text in [
+        b"<container><rootfiles><rootfile full-path=score.xml></rootfile></rootfiles></container>"
+            .as_slice(),
+        b"<container><rootfiles><rootfile full-path=scores.xml></rootfile></rootfiles></container>"
+            .as_slice(),
+    ] {
+        let zip = build_zip(
+            &[
+                ZipEntrySpec::stored("META-INF/container.xml", text),
+                ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+            ],
+            None,
+        );
+        assert_eq!(
+            parse_mxl(&zip),
+            Err(MxlError::NoRootFile),
+            "属性值没有引号 ⇒ 这个 <rootfile> 没有 full-path: {}",
+            String::from_utf8_lossy(text)
+        );
+    }
+}
