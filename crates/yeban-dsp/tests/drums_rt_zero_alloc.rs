@@ -494,3 +494,59 @@ fn an_empty_vec_does_not_allocate() {
     );
     assert_eq!(reading.total(), 0, "`Vec::new()` 不该分配");
 }
+
+/// 量什么：`render` 在 **`u64` 时间轴末端**（`position` 使 `position + k` 溢出，
+/// 走 `saturating_add` 的饱和分支）时的运行期堆分配/释放次数（单位：次数）。
+///
+/// 观测方式：窗口里连续喂 `SATURATING_BLOCKS` 个 128 帧块，位置固定在
+/// `u64::MAX − HEAD_FRAMES` ⇒ 每块的后 `HEAD_FRAMES` 帧都落在饱和分支上；
+/// 每块同时触发一击（`trigger` 也在实时路径上），因此逐槽位循环在整个窗口里
+/// 都有活干，不走 `render` 开头的静音短路。
+///
+/// 判据：`allocations == 0 && deallocations == 0`；覆盖度自检：窗口里确有非零
+/// 输出样本（饱和分支所在的逐样本循环真的被执行）。
+///
+/// 为什么单独一条：`saturating_add` 是本票新增的分支，它必须与其余实时路径同
+/// 一个口径 —— 零分配、零释放 [ARCH-RT-001 / `MUST-GATE-001`]。
+#[test]
+fn saturating_positions_allocate_nothing() {
+    /// 饱和分支在每块里覆盖的帧数（帧）：块长减去它就落在未溢出的区段上。
+    const HEAD_FRAMES: u64 = 64;
+    /// 窗口里的块数（块）。
+    const SATURATING_BLOCKS: u64 = 2_000;
+
+    let position = u64::MAX - HEAD_FRAMES;
+    let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+    machine.set_params(DrumKitParams::DEFAULT);
+    let mut block = vec![0.0f32; WINDOW_FRAMES];
+    let mut triggered: u64 = 0;
+    let mut nonzero_frames: u64 = 0;
+
+    let reading = window(|| {
+        for block_index in 0..SATURATING_BLOCKS {
+            let voice = DrumVoice::ALL[(block_index as usize) % DrumVoice::ALL.len()];
+            machine.trigger(DrumHit::new(voice, position, 1.0));
+            triggered += 1;
+            machine.render(position, &mut block);
+            nonzero_frames += block.iter().filter(|sample| **sample != 0.0).count() as u64;
+        }
+    });
+
+    assert_eq!(machine.triggers(), triggered, "触发计数必须对得上");
+    assert!(
+        nonzero_frames > 0,
+        "窗口里一个非零样本都没有 ⇒ 饱和分支可能没被执行（假绿）"
+    );
+    assert!(
+        block.iter().all(|sample| sample.is_finite()),
+        "末端饱和路径产出了非有限值"
+    );
+    assert_eq!(reading.allocations, 0, "末端饱和路径发生堆分配");
+    assert_eq!(reading.deallocations, 0, "末端饱和路径发生堆释放");
+    eprintln!(
+        "[yeban-dsp/RT] drums 末端饱和: blocks={SATURATING_BLOCKS} × {WINDOW_FRAMES} 帧 at \
+         position=u64::MAX-{HEAD_FRAMES}, 每块后 {HEAD_FRAMES} 帧饱和, triggered={triggered}, \
+         nonzero_frames={nonzero_frames} allocations={} deallocations={}",
+        reading.allocations, reading.deallocations
+    );
+}

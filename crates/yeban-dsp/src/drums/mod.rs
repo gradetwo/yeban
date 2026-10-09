@@ -1202,6 +1202,13 @@ impl<const SLOTS: usize> DrumMachine<SLOTS> {
     ///
     /// **实时路径**：零分配、零释放、零锁、零阻塞 I/O、零日志
     /// [ARCH-RT-001 / `MUST-GATE-001`]。
+    ///
+    /// ⚠ **播放头在时间轴末端饱和**：第 `k` 帧的绝对位置是
+    /// `position.saturating_add(k)`，不是 `position + k`。后者在
+    /// `position > u64::MAX - out.len()` 时溢出 —— debug 档 panic（音频线程上
+    /// 的一次真实崩溃），release 档回绕成一个小位置（**已结束或尚未开始的鼓击
+    /// 会重新发声**，那是一次静默的音画错误）。饱和把末端定义成一个总函数：
+    /// 所有越界帧共用 `u64::MAX`，输出仍然有限、仍然确定。
     pub fn render(&mut self, position: u64, out: &mut [f32]) {
         out.fill(0.0);
         if !self.slots.iter().any(|slot| slot.active) {
@@ -1211,7 +1218,7 @@ impl<const SLOTS: usize> DrumMachine<SLOTS> {
         let mut sounding: u64 = 0;
         for (frame, output) in out.iter_mut().enumerate() {
             #[allow(clippy::cast_possible_truncation)]
-            let now = position + frame as u64;
+            let now = position.saturating_add(frame as u64);
             let mut accumulator = 0.0f32;
             for slot in &mut self.slots {
                 if !slot.active || now < slot.start_sample {
@@ -1682,5 +1689,131 @@ mod tests {
         }
         assert_eq!(DrumVoice::from_u8(DrumVoice::ALL.len() as u8), None);
         assert_eq!(DrumVoice::from_u8(u8::MAX), None);
+    }
+
+    /// 量什么：同一串鼓击经**两种块切分**渲染后的输出是否**逐位相同**
+    /// （单位：样本值的位模式，逐位比较）。切分取 1 / 3 / 7 / 100 / 128 / 129 帧。
+    ///
+    /// 判据：全部 0 处不同；正对照是整块渲染里真的有非零样本。
+    ///
+    /// 为什么这是块长极值面（类别⑦）：[`DrumMachine::render`] 用**绝对位置**
+    /// `position` 定位，槽位状态是逐样本推进的 ⇒ "把一段流切成任意块长"必须与
+    /// "一次渲染整段"逐位等价。1 帧（最短块）、129 帧（刚过一个量子）、
+    /// 100 帧（非 2 的幂）都在这里。既有判据只喂固定块长，这条不变式此前
+    /// **没有判据**。
+    ///
+    /// 怎么变红：把 `render` 的 `now` 改成块内计数器（即忽略 `position`）⇒
+    /// 切成 1 帧后每个块都从同一个位置重新开始，逐位差异非 0。
+    #[test]
+    fn render_is_bit_identical_under_any_block_split() {
+        /// 总帧数：质数，避开 128 的整数倍。
+        const TOTAL: usize = 997;
+        /// 切分块长（帧）。
+        const SPLITS: [usize; 6] = [1, 3, 7, 100, 128, 129];
+
+        fn fixture() -> DrumMachine<DRUM_SLOTS> {
+            let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+            machine.set_params(DrumKitParams::DEFAULT);
+            machine.trigger(DrumHit::new(DrumVoice::Kick, 0, 0.9));
+            machine.trigger(DrumHit::new(DrumVoice::Snare, 64, 0.7));
+            machine.trigger(DrumHit::new(DrumVoice::ClosedHat, 300, 0.5));
+            machine
+        }
+
+        let mut whole = vec![0.0f32; TOTAL];
+        fixture().render(0, &mut whole);
+        assert!(
+            whole.iter().any(|sample| *sample != 0.0),
+            "夹具必须出声（否则逐位相等是空转）"
+        );
+
+        for split in SPLITS {
+            let mut machine = fixture();
+            let mut chopped = vec![0.0f32; TOTAL];
+            let mut at = 0usize;
+            while at < TOTAL {
+                let frames = split.min(TOTAL - at);
+                machine.render(at as u64, &mut chopped[at..at + frames]);
+                at += frames;
+            }
+            let mismatch =
+                (0..TOTAL).find(|index| whole[*index].to_bits() != chopped[*index].to_bits());
+            assert!(
+                mismatch.is_none(),
+                "块长 {split} 帧的切分在第 {} 个样本上与整块渲染不同：{} vs {}",
+                mismatch.unwrap_or(0),
+                whole[mismatch.unwrap_or(0)],
+                chopped[mismatch.unwrap_or(0)]
+            );
+        }
+    }
+
+    /// 量什么：播放头落在 `u64` 时间轴**末端**时，两种切分的读数是否**逐位相同**
+    /// （单位：样本值的位模式），以及输出是否有限。
+    ///
+    /// 判据：
+    /// 1. "起点 `u64::MAX − 8` 上一次渲染 16 帧"与"先在起点上渲染 8 帧、再在
+    ///    `u64::MAX` 上渲染 8 帧"逐位相同 —— 这条**证明**第 8 帧起的绝对位置真的
+    ///    饱和成 `u64::MAX`：若它回绕成一个小位置，切分 B 的 `now` 序列不同，
+    ///    逐位相等立刻破；
+    /// 2. 输出有限，且夹具真的出声（正对照）。
+    ///
+    /// 缺口（修复前**实测变红**）：`now = position + frame as u64` 在
+    /// `position > u64::MAX − out.len()` 时溢出 —— debug 档 panic
+    /// （`attempt to add with overflow`，音频线程上的一次真实崩溃），release 档
+    /// 回绕 ⇒ 已经结束或尚未开始的鼓击重新发声。
+    ///
+    /// 怎么变红：把 `saturating_add` 改回 `+` ⇒ debug 档直接 panic。
+    #[test]
+    fn the_playhead_saturates_at_the_end_of_the_timeline() {
+        /// 饱和之前还有多少帧（帧）。
+        const HEAD: usize = 8;
+        /// 饱和之后还有多少帧（帧）。
+        const TAIL: usize = 8;
+
+        let start = u64::MAX - HEAD as u64;
+        let fixture = || {
+            let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+            machine.set_params(DrumKitParams::DEFAULT);
+            machine.trigger(DrumHit::new(DrumVoice::ClosedHat, start, 0.9));
+            machine
+        };
+
+        // 路径 A：一次 16 帧。
+        let mut one_shot_device = fixture();
+        let mut one_shot = vec![0.0f32; HEAD + TAIL];
+        one_shot_device.render(start, &mut one_shot);
+
+        // 路径 B：8 帧 + 8 帧，第二次的起点是 `u64::MAX` 本身。
+        let mut split_device = fixture();
+        let mut head = vec![0.0f32; HEAD];
+        let mut tail = vec![0.0f32; TAIL];
+        split_device.render(start, &mut head);
+        split_device.render(u64::MAX, &mut tail);
+
+        assert!(
+            one_shot.iter().any(|sample| *sample != 0.0),
+            "夹具必须出声（否则逐位相等是空转）"
+        );
+        assert!(
+            one_shot.iter().all(|sample| sample.is_finite()),
+            "末端饱和路径必须产出有限样本"
+        );
+        for index in 0..HEAD {
+            assert_eq!(
+                one_shot[index].to_bits(),
+                head[index].to_bits(),
+                "饱和之前的第 {index} 帧不同"
+            );
+        }
+        for index in 0..TAIL {
+            assert_eq!(
+                one_shot[HEAD + index].to_bits(),
+                tail[index].to_bits(),
+                "饱和之后的第 {index} 帧不同：一次渲染 {} vs 切分 {}",
+                one_shot[HEAD + index],
+                tail[index]
+            );
+        }
     }
 }

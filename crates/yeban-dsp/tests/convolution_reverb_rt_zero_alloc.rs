@@ -36,6 +36,7 @@ use std::cell::Cell;
 
 use yeban_dsp::convolution::CONV_BLOCK_FRAMES;
 use yeban_dsp::convolution::CONV_LATENCY;
+use yeban_dsp::convolution::CONV_MAX_IR_FRAMES;
 use yeban_dsp::convolution_reverb::{
     ConvolutionReverb, ConvolutionReverbParams, MAX_IR_GAIN_DB, MAX_PRE_DELAY_FRAMES,
     MAX_PRE_DELAY_SECONDS, MIN_IR_GAIN_DB,
@@ -53,11 +54,35 @@ thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
     static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
     static DEALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+    /// 当前存活的**字节**数（单位：字节）。只在 `ARMED` 时维护。
+    static LIVE_BYTES: Cell<u64> = const { Cell::new(0) };
+    /// 窗口内的**峰值**存活字节数（单位：字节）。
+    static PEAK_BYTES: Cell<u64> = const { Cell::new(0) };
 }
 
 /// 本线程是否在分配观测窗口内（`try_with`：线程 teardown 期间绝不 panic）。
 fn alloc_armed_here() -> bool {
     ARMED.try_with(Cell::get).unwrap_or(false)
+}
+
+/// 记一次存活字节的净增（`delta` 为负表示释放）。
+fn track_bytes(delta: i64) {
+    if !alloc_armed_here() {
+        return;
+    }
+    let _ = LIVE_BYTES.try_with(|live| {
+        let next = if delta >= 0 {
+            live.get().saturating_add(delta.unsigned_abs())
+        } else {
+            live.get().saturating_sub(delta.unsigned_abs())
+        };
+        live.set(next);
+        let _ = PEAK_BYTES.try_with(|peak| {
+            if next > peak.get() {
+                peak.set(next);
+            }
+        });
+    });
 }
 
 // SAFETY: 每个方法都只是"按线程计数 + 原样转发给 `System`"，不改变指针/布局语义，
@@ -68,13 +93,18 @@ unsafe impl GlobalAlloc for CountingAllocator {
             let _ = ALLOCATIONS.try_with(|cell| cell.set(cell.get() + 1));
         }
         // SAFETY: 契约由本类型的调用方持有；这里原样转发给系统分配器。
-        unsafe { System.alloc(layout) }
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() {
+            track_bytes(layout.size() as i64);
+        }
+        pointer
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if alloc_armed_here() {
             let _ = DEALLOCATIONS.try_with(|cell| cell.set(cell.get() + 1));
         }
+        track_bytes(-(layout.size() as i64));
         // SAFETY: 同上，原样转发。
         unsafe { System.dealloc(ptr, layout) }
     }
@@ -86,7 +116,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
             let _ = DEALLOCATIONS.try_with(|cell| cell.set(cell.get() + 1));
         }
         // SAFETY: 同上，原样转发。
-        unsafe { System.realloc(ptr, layout, new_size) }
+        let pointer = unsafe { System.realloc(ptr, layout, new_size) };
+        track_bytes(new_size as i64 - layout.size() as i64);
+        pointer
     }
 }
 
@@ -110,6 +142,34 @@ fn window<F: FnOnce()>(body: F) -> Reading {
     Reading {
         allocations: ALLOCATIONS.with(Cell::get),
         deallocations: DEALLOCATIONS.with(Cell::get),
+    }
+}
+
+/// 一次**字节**观测的读数（单位：字节），`allocations` 是同窗口的分配次数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ByteReading {
+    allocations: u64,
+    live_bytes: u64,
+    peak_bytes: u64,
+}
+
+/// 在一个观测窗口里跑 `body`，返回窗口内的分配次数与**峰值存活字节数**。
+///
+/// 峰值口径：窗口内 `LIVE_BYTES` 的最大值（单位：字节）。窗口**之前**就已存活的
+/// 分配不计入（它们的 `alloc` 未武装），因此这个读数数的是**窗口内新分配**的净存活
+/// 峰值；两个输入长度的读数可以直接相减比较。
+fn byte_window<F: FnOnce()>(body: F) -> ByteReading {
+    ALLOCATIONS.with(|c| c.set(0));
+    DEALLOCATIONS.with(|c| c.set(0));
+    LIVE_BYTES.with(|c| c.set(0));
+    PEAK_BYTES.with(|c| c.set(0));
+    ARMED.with(|c| c.set(true));
+    body();
+    ARMED.with(|c| c.set(false));
+    ByteReading {
+        allocations: ALLOCATIONS.with(Cell::get),
+        live_bytes: LIVE_BYTES.with(Cell::get),
+        peak_bytes: PEAK_BYTES.with(Cell::get),
     }
 }
 
@@ -384,4 +444,85 @@ fn retuning_across_the_whole_pre_delay_range_allocates_nothing() {
     );
     assert_eq!(reading.allocations, 0, "扫预延迟不该分配");
     assert_eq!(reading.deallocations, 0, "扫预延迟不该释放");
+}
+
+/// 量什么：`set_mono_impulse_response` / `set_stereo_impulse_response` 在**一次调用**
+/// 里的**峰值存活字节数**（单位：字节），输入长度分别取 1× 与 4× 的接受上限
+/// [`CONV_MAX_IR_FRAMES`]。
+///
+/// 判据：两种输入长度的峰值字节**完全相等**，且两次报告的接受帧数都等于上限。
+///
+/// 为什么：上限的文档承诺是"载入一个误选的超长文件有一个**有界的、可预测的**后果"。
+/// 临时零切片若按**未钳制**的输入长度分配，超出的部分一个字节都不参与卷积却照样
+/// 占内存，那半句承诺就不成立。本机实测（修复前）：1× 上限 = 32 894 336 B、
+/// 4× 上限 = 38 654 336 B，差 5 760 000 B = 3 × 480 000 帧 × 4 B。
+///
+/// 怎么变红：把 `let frames = h_l.len().min(CONV_MAX_IR_FRAMES);` 改回
+/// `let silence = vec![0.0f32; h_l.len()];`（单声道那条同理）⇒ 4× 的读数比 1× 大
+/// 3 × 480 000 × 4 B。
+#[test]
+fn an_over_long_convenience_ir_does_not_scale_the_temporary_with_the_input() {
+    /// 超长输入的倍数（相对接受上限）。
+    const OVER: usize = 4;
+
+    let capped = vec![0.1f32; CONV_MAX_IR_FRAMES];
+    let over_long = vec![0.1f32; CONV_MAX_IR_FRAMES * OVER];
+
+    for (label, one_x, four_x) in [
+        ("set_mono_impulse_response", &capped, &over_long),
+        ("set_stereo_impulse_response", &capped, &over_long),
+    ] {
+        let mut at_cap = ConvolutionReverb::new();
+        at_cap.set_sample_rate(48_000.0);
+        let mut over = ConvolutionReverb::new();
+        over.set_sample_rate(48_000.0);
+        let (mut accepted_cap, mut accepted_over) = (0usize, 0usize);
+
+        let (mono, stereo) = if label.starts_with("set_mono") {
+            (true, false)
+        } else {
+            (false, true)
+        };
+        let reading_cap = byte_window(|| {
+            accepted_cap = if mono {
+                at_cap.set_mono_impulse_response(one_x)
+            } else if stereo {
+                at_cap.set_stereo_impulse_response(one_x, one_x)
+            } else {
+                0
+            };
+        });
+        let reading_over = byte_window(|| {
+            accepted_over = if mono {
+                over.set_mono_impulse_response(four_x)
+            } else if stereo {
+                over.set_stereo_impulse_response(four_x, four_x)
+            } else {
+                0
+            };
+        });
+
+        assert_eq!(
+            accepted_cap, CONV_MAX_IR_FRAMES,
+            "{label}: 1× 输入必须被接受到上限"
+        );
+        assert_eq!(
+            accepted_over, CONV_MAX_IR_FRAMES,
+            "{label}: 4× 输入必须被截断到同一条上限"
+        );
+        assert!(
+            reading_cap.peak_bytes > 0,
+            "{label}: 仪表必须看得见分配（否则相等是空转）"
+        );
+        assert_eq!(
+            reading_over.peak_bytes,
+            reading_cap.peak_bytes,
+            "{label}: 4× 上限的输入多占了 {} 字节的峰值存活内存 —— 临时零切片没有钳到上限",
+            reading_over.peak_bytes as i64 - reading_cap.peak_bytes as i64
+        );
+        eprintln!(
+            "[yeban-dsp/RT] {label} 超长输入: 1× peak={} B / 4× peak={} B (相等) accepted={accepted_cap}",
+            reading_cap.peak_bytes, reading_over.peak_bytes
+        );
+    }
 }

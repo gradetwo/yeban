@@ -912,4 +912,90 @@ mod tests {
         fft_radix2(&mut re, &mut im, &tw_re, &tw_im, true);
         assert!((re[0] - 3.0).abs() < 1e-6 && (re[1] - 1.0).abs() < 1e-6);
     }
+
+    /// 量什么：**在一个已经处理过一块的实例上**喂入 37 帧（非 2 的幂、短于
+    /// 量子）后写回的 37 帧，与"喂入同样内容但显式补零到 128 帧"的同一段输出，
+    /// 是否**逐位相同**（单位：样本值的位模式）。
+    ///
+    /// 判据：37 帧全部逐位相同；正对照是**第一条**（补零）路径的 37 帧里有非零
+    /// 输出（夹具真的出声）。
+    ///
+    /// 为什么这是块长极值面（类别⑦）：[`Self::process`] 的契约是"块短于
+    /// [`CONV_BLOCK_FRAMES`] 时按**零补齐**"。既有判据
+    /// （`partitioned_convolution_matches_direct_time_domain_convolution`）只喂
+    /// 恰好 128 帧的块 ⇒ 这条承诺此前**没有判据**。夹具特意让**前一个块**先把
+    /// 工作缓冲写脏，才能把"补齐的是零"与"补齐的是上一块的残留"分开。
+    ///
+    /// 怎么变红：删掉 `process` 里的 `self.work_re.fill(0.0)` 与
+    /// `self.work_im.fill(0.0)`（改成只覆盖前 `n` 帧）⇒ 短块路径把上一块的残留
+    /// 当成输入尾巴，两条读数在第 37 帧之前就分叉。
+    #[test]
+    fn a_short_block_is_exactly_an_explicitly_zero_padded_quantum() {
+        /// 短块帧数：非 2 的幂、且不是任何分区的整数倍。
+        const SHORT: usize = 37;
+
+        let ir = pseudo_random(400, 0x51ED);
+        let warmup = pseudo_random(CONV_BLOCK_FRAMES, 0x2222);
+        let content = pseudo_random(CONV_BLOCK_FRAMES, 0x3333);
+
+        // 路径 A：先跑一个满量子（把工作缓冲写脏），再喂 37 帧的短块。
+        let mut short_device = Convolution::new();
+        short_device.set_impulse_response(&ir);
+        let mut warm = warmup.clone();
+        short_device.process(&mut warm);
+        let mut short = content[..SHORT].to_vec();
+        let done = short_device.process(&mut short);
+
+        // 路径 B：先跑**同一个**满量子，再喂"37 帧内容 + 91 帧零"的满量子。
+        let mut padded_device = Convolution::new();
+        padded_device.set_impulse_response(&ir);
+        let mut warm = warmup.clone();
+        padded_device.process(&mut warm);
+        let mut padded = vec![0.0f32; CONV_BLOCK_FRAMES];
+        padded[..SHORT].copy_from_slice(&content[..SHORT]);
+        let padded_done = padded_device.process(&mut padded);
+
+        assert_eq!(done, SHORT, "短块必须报出它自己的帧数");
+        assert_eq!(padded_done, CONV_BLOCK_FRAMES, "补零块必须报出量子的帧数");
+        assert!(
+            padded[..SHORT].iter().any(|sample| *sample != 0.0),
+            "夹具必须出声（否则逐位相等是空转）"
+        );
+        for index in 0..SHORT {
+            assert_eq!(
+                short[index].to_bits(),
+                padded[index].to_bits(),
+                "第 {index} 帧不同：短块 {} vs 补零块 {}",
+                short[index],
+                padded[index]
+            );
+        }
+    }
+
+    /// 量什么：喂入 400 帧（超过一个量子）时的**返回值**（单位：帧）与
+    /// **未被触碰的尾巴**（单位：样本值的位模式，逐位比较）。
+    ///
+    /// 判据：返回值 = [`CONV_BLOCK_FRAMES`]；第 128 帧起的样本与输入逐位相同
+    ///（超长块的尾部不读不写，见 `process` 的文档第 2 条）。
+    ///
+    /// 怎么变红：把 `let n = block.len().min(CONV_BLOCK_FRAMES);` 改成
+    /// `let n = block.len();` ⇒ 尾部被写（返回值也不再是 128）。
+    #[test]
+    fn an_over_long_block_leaves_its_tail_untouched() {
+        let ir = pseudo_random(400, 0x7A11);
+        let source = pseudo_random(400, 0x4B4B);
+        let mut device = Convolution::new();
+        device.set_impulse_response(&ir);
+        let mut block = source.clone();
+        let done = device.process(&mut block);
+
+        assert_eq!(done, CONV_BLOCK_FRAMES, "超长块只处理一个量子");
+        for index in CONV_BLOCK_FRAMES..block.len() {
+            assert_eq!(
+                block[index].to_bits(),
+                source[index].to_bits(),
+                "第 {index} 帧被写了：超长块的尾部必须原样不碰"
+            );
+        }
+    }
 }

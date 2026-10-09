@@ -142,7 +142,7 @@
 //! IR 频谱。判据：`non_finite_impulse_responses_are_rejected_by_the_shell` 与
 //! `a_rejected_impulse_response_cannot_poison_the_wet_path`。
 
-use crate::convolution::{CONV_BLOCK_FRAMES, CONV_LATENCY};
+use crate::convolution::{CONV_BLOCK_FRAMES, CONV_LATENCY, CONV_MAX_IR_FRAMES};
 use crate::convolution_stereo::TrueStereoConvolution;
 use crate::math::{db_to_gain, sanitise_sample_rate};
 
@@ -320,14 +320,25 @@ impl ConvolutionReverb {
     /// ⚠ 代价：四条核仍然各自运行（两条对角有效、两条乘的是一片零谱），因此
     /// 普通立体声的代价与真立体声**同阶**。这是"不复制第二份 2×2 路由"的代价。
     ///
-    /// 临时零切片在**本方法内**分配一次（属允许的构造期分配）。返回值同
+    /// 临时零切片在**本方法内**分配一次（属允许的构造期分配），长度**钳到接受上限**
+    /// [`CONV_MAX_IR_FRAMES`]（理由见下）。返回值同
     /// [`Self::set_impulse_response`]。
+    ///
+    /// ⚠ **为什么临时切片也要钳制**：[`Self::set_impulse_response`] 只接受前
+    /// [`CONV_MAX_IR_FRAMES`] 帧，而那个上限的文档承诺是"`载入一个误选的超长文件`
+    /// 有一个**有界的、可预测的**后果"。按**未钳制**的输入长度开零切片会让那半句
+    /// 不成立：超出的部分一个字节都不参与卷积，却照样占内存。本机实测（计数分配器，
+    /// 单位：一次调用的峰值存活字节数）：输入 1× 上限 = 32 894 336 B，
+    /// 4× 上限 = 38 654 336 B（多 5 760 000 B = 3 × 480 000 帧 × 4 B），
+    /// 16× 上限 = 61 694 336 B。钳制之后三个读数**逐字节相同**，而接受的帧数与
+    /// 产出的音频一个比特都不变。
     pub fn set_stereo_impulse_response(&mut self, h_l: &[f32], h_r: &[f32]) -> usize {
         if h_l.len() != h_r.len() {
             return self.set_impulse_response(&[], &[], &[], &[]);
         }
-        let silence = vec![0.0f32; h_l.len()];
-        self.set_impulse_response(h_l, &silence, &silence, h_r)
+        let frames = h_l.len().min(CONV_MAX_IR_FRAMES);
+        let silence = vec![0.0f32; frames];
+        self.set_impulse_response(&h_l[..frames], &silence, &silence, &h_r[..frames])
     }
 
     /// 设定一条单声道脉冲响应，喂给**两个输出声道**（`h_LL = h_RR = ir`，两条交叉
@@ -337,9 +348,13 @@ impl ConvolutionReverb {
     /// 的湿信号，而不是一段假立体声。
     ///
     /// `ir` 未通过取值校验（非有限样本 / 频谱溢出）时返回 `0` 并置回未配置直通。
+    ///
+    /// 临时零切片同样**钳到接受上限** [`CONV_MAX_IR_FRAMES`]，理由与
+    /// [`Self::set_stereo_impulse_response`] 的文档相同（那里有实测读数）。
     pub fn set_mono_impulse_response(&mut self, ir: &[f32]) -> usize {
-        let silence = vec![0.0f32; ir.len()];
-        self.set_impulse_response(ir, &silence, &silence, ir)
+        let frames = ir.len().min(CONV_MAX_IR_FRAMES);
+        let silence = vec![0.0f32; frames];
+        self.set_impulse_response(&ir[..frames], &silence, &silence, &ir[..frames])
     }
 
     /// 设定参数（**零分配**，可以逐块调用）。
