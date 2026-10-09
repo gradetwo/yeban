@@ -88,6 +88,12 @@
 //! - **不实现限制器**: 真峰值上限的做法是**减小增益**（让步响度目标）, 不是"加增益后削顶"。
 //!   削顶是限幅器的职责（`ROAD-M2` 的 `yeban-dsp` 侧）, 本模块不代它做决定。
 //! - **不做流式**: 全部接口都是一次性离线计算（本 crate 的承重契约就是"完全离线"）。
+//! - **有限但荒谬的目标不做白名单**: 目标/上限只要求**有限**（非有限的按"未提供"处理,
+//!   见 [`ExportPreset::apply`]）; 一个有限却远离节目响度的目标（例如 +100 LUFS）仍会
+//!   按请求施加增益, 于是样本可能被量化器钳到端点轨。本模块**不发明**一个"合法 LUFS
+//!   区间"—— 那是工具面的输入校验（`yeban-mcp` 对 `targetLufs` 就登记了 `[-70, 0]`）。
+//!   真正把"静默交出坏文件"堵死的是: 增益把样本推成非有限时 [`export_master`] **拒绝**
+//!   （判据 `the_export_refuses_a_gain_that_overflows_the_master`）。
 //!
 //! ## 例
 //!
@@ -289,6 +295,16 @@ impl ExportPreset {
     /// 增益为 `0.0` 时**不碰任何样本**（逐位不变）—— 判据
     /// `a_zero_gain_preset_leaves_every_sample_bit_identical` 钉住这一点。
     /// 两声道按**较短者**测量并施加（与 [`measure_master`] 同一约定）。
+    ///
+    /// # 非有限的目标与上限**不是约束**
+    ///
+    /// `Some(f32::INFINITY)` / `Some(f32::NAN)` 这样的目标或上限按"未提供"处理,
+    /// 因为它们算不出一个可施加的倍数: [`crate::render::db_to_linear`] 对非有限输入
+    /// 返回 `1.0`。若不这样挡, 返回的 [`NormalizeOutcome`] 会**自相矛盾** ——
+    /// 实测（见判据 `tests::a_non_finite_target_or_ceiling_is_not_a_constraint`）:
+    /// `Some(f32::INFINITY)` 的目标给出 `gain_db = inf` 与
+    /// `bound = LoudnessTarget`, 而样本一位都没动。按"未提供"处理后,
+    /// `gain_db` 恒为有限数, 因此 [`NormalizeOutcome`] 永远描述一件真事。
     #[must_use]
     pub fn apply(
         &self,
@@ -301,6 +317,7 @@ impl ExportPreset {
         let mut bound = GainBound::NothingToDo;
 
         if let Some(target) = self.target_lufs
+            && target.is_finite()
             && before.integrated_is_measurable()
         {
             gain_db = target - before.integrated_lufs;
@@ -308,6 +325,7 @@ impl ExportPreset {
         }
 
         if let Some(ceiling) = self.true_peak_ceiling_dbtp
+            && ceiling.is_finite()
             && before.true_peak_dbtp.is_finite()
         {
             // 上限允许多少增益: 真峰值加上它就正好碰到上限。
@@ -359,6 +377,10 @@ pub enum MasterExportError {
     /// 母带缓冲里有 `NaN` / `±inf` 样本 ⇒ 拒绝, **不**静默换成一个 0 样本。
     ///
     /// `index` 是**交错缓冲里第一个**非有限样本的下标, `value` 是那个样本本身。
+    ///
+    /// 两个来源共用本变体: 调用方交进来的缓冲（在增益之前查）, 以及按预设施加增益
+    /// **之后**变成非有限的缓冲（在回写之前查）。后者由 [`ExportPreset::apply`]
+    /// 施加的一个**有限但溢出**的增益引起 —— 见 [`export_master`] 的 `# Errors`。
     ///
     /// # 为什么拒绝而不是让抖动层替换
     ///
@@ -486,7 +508,11 @@ fn require_finite_samples(samples: &[f32]) -> Result<(), MasterExportError> {
 /// # Errors
 ///
 /// 见 [`MasterExportError`]。`sample_rate` 不受支持时**不静默回落**到 48 kHz;
-/// 母带里有 `NaN` / `±inf` 样本时**不静默替换成 0**。
+/// 母带里有 `NaN` / `±inf` 样本时**不静默替换成 0** —— 这条纪律对**两处**都成立:
+/// 调用方交进来的缓冲（增益之前）, 以及按预设施加增益**之后**的缓冲。
+/// 后一种由目标本身是有限数、但算出的增益把样本推出 `f32` 有限域引起（判据
+/// `the_export_refuses_a_gain_that_overflows_the_master`）。两种情况都**在回写
+/// `master` 之前**拒绝, 因此失败时调用方的缓冲与摘要一位未动。
 pub fn export_master(
     sample_rate: u32,
     master: &mut RenderOutput,
@@ -527,6 +553,21 @@ pub fn export_master(
         .apply(sample_rate, &mut left, &mut right)
         .ok_or(MasterExportError::UnsupportedSampleRate(sample_rate))?;
 
+    // 增益**之后**再查一遍有限性, 而且查在**回写 `master` 之前**。
+    //
+    // 旧实现只有上面那一遍（施加增益之前的调用方缓冲）, 理由是"有限的 f32 样本乘上
+    // 有限的线性增益不会产生 NaN"。那条论证对**调用方给的目标**不成立: 目标本身有限,
+    // 不代表由它算出的增益不会把样本推出 f32 的有限域。实测（见判据
+    // `the_export_refuses_a_gain_that_overflows_the_master`）: 2 秒 −20.00 LUFS 的母带
+    // + 目标 `1e38` LUFS ⇒ 增益 `1e38` dB ⇒ 96,000 个样本全部变成 `+inf`,
+    // 而旧实现照旧返回 `Ok` —— 容器写成功, 里面的样本却是量化器钳出来的轨,
+    // `bext` 里更是一份由钳位值算出的读数。
+    //
+    // 放在回写之前: 失败时调用方的 `RenderOutput` 与它的位级摘要**一位都没动**
+    // （与上面那遍"在任何改写之前拒绝"同一条纪律）。
+    require_finite_samples(&left)?;
+    require_finite_samples(&right)?;
+
     // 把归一化后的母带回写, 并让位级摘要跟上传缓冲 —— 摘要不许过期。
     for (slot, (left_sample, right_sample)) in master
         .samples
@@ -538,13 +579,8 @@ pub fn export_master(
         slot[0] = *left_sample;
         slot[1] = *right_sample;
     }
-    // 施加增益**之后**不再查一遍有限性。理由: [`ExportPreset::apply`] 只会施加一个
-    // 由**有限**读数算出的增益 —— 目标响度与实测响度之差, 或真峰值上限与实测真峰值之差,
-    // 且它在 `gain_db` 非有限时根本不动样本（`db_to_linear` 对非有限输入返回 1.0）。
-    // 有限的 f32 样本乘上有限的线性增益不会产生 `NaN`; 溢出成 `±inf` 需要那个增益远超
-    // 实测读数所能给出的范围。本机实测（满量程 997 Hz 正弦 + 目标 −1 LUFS）: 实测积分
-    // 响度 16.04 LUFS ⇒ 增益 **−17.04 dB**, 输出真峰值 +1.96 dBTP, 全程有限。
-    // 因此上面那一遍查的调用方缓冲就是唯一可能的非有限来源。
+    // 到这里 `left`/`right` 已被上面那一遍有限性检查确认过, 因此回写是安全的,
+    // 位级摘要也跟着母带一起更新（摘要不许过期）。
     master.digest = RenderOutput::digest_of(&master.samples);
 
     // 实测响度进 `bext` v2 的 EBU R128 块。测不出的量由 `to_bext_loudness` 写哨兵。
@@ -604,16 +640,32 @@ fn sha256_of(bytes: &[u8]) -> [u8; 32] {
 ///
 /// 信号被遍历三遍（短时窗口扫描、门限积分两遍）。这是**离线**接口, 代价可接受;
 /// 实时路径不许调用它（本 crate 的契约本来就是"完全离线", 见 crate 的模块头文档）。
+///
+/// # 声道长度不等时按**较短者**测量
+///
+/// 三处读数全部只覆盖 `min(left.len(), right.len())` 帧:
+///
+/// - 短时窗口（[`scan_short_term`] 的 `frames`）;
+/// - 门限积分（`yeban_dsp::loudness` 的 `GatedLoudness` 自己就按 `min` 取）;
+/// - **真峰值**（本函数里那两个检测器）。
+///
+/// 第三条是本函数此前的缺口（实测见判据
+/// `tests::the_true_peak_of_a_ragged_pair_comes_from_the_shorter_channel`）:
+/// 旧实现把两路**整条**切片喂给各自的检测器, 于是长边多出来的尾巴也进了真峰值。
+/// 这不只是"读数偏大" —— [`ExportPreset::apply`] 用这个读数算增益, 而增益只施加在
+/// `min` 帧上, 因此 [`GainBound::TruePeakCeiling`] 会声称"上限赢了", 而尾巴一位都没改
+/// ⇒ 输出仍然超过上限（判据 `tests::a_true_peak_ceiling_is_really_achieved_on_ragged_channels`）。
 #[must_use]
 pub fn measure_master(sample_rate: u32, left: &[f32], right: &[f32]) -> Option<MasterLoudness> {
     let rate = sample_rate as f32;
     let scan = scan_short_term(rate, left, right)?;
     let integrated_lufs = GatedLoudness::integrated_stereo_at(rate, left, right)?;
 
+    let frames = left.len().min(right.len());
     let mut detector_left = TruePeakDetector::new();
     let mut detector_right = TruePeakDetector::new();
-    detector_left.process(left);
-    detector_right.process(right);
+    detector_left.process(&left[..frames]);
+    detector_right.process(&right[..frames]);
     let true_peak = detector_left.true_peak().max(detector_right.true_peak());
 
     Some(MasterLoudness {
@@ -1582,5 +1634,185 @@ mod tests {
                 })
             );
         }
+    }
+
+    /// 造一对**参差**的声道: 右声道是 `common`, 左声道是 `common` 再加 33 帧尾巴,
+    /// 尾巴中段一个满幅脉冲（尾巴完全落在右声道不存在的那一段里）。
+    ///
+    /// 尾巴长度固定 33（16 + 1 + 16）: 尾部脉冲的**两侧各留 16 帧**静音,
+    /// 与真峰值检测器的窗长同阶, 保证脉冲不靠相邻样本把读数抬起来。
+    fn ragged_pair_with_a_full_scale_tail_spike(common: Vec<f32>) -> (Vec<f32>, Vec<f32>, usize) {
+        let right = common.clone();
+        let mut left = common;
+        let tail_start = left.len();
+        left.extend(core::iter::repeat_n(0.0f32, 16));
+        left.push(1.0);
+        left.extend(core::iter::repeat_n(0.0f32, 16));
+        (left, right, tail_start)
+    }
+
+    /// **参差声道的真峰值口径**: 长边多出来的尾巴**不得**进真峰值读数。
+    ///
+    /// 共同区是 0.25 幅度的 997 Hz 正弦 ⇒ 真峰值**本机实测 −12.041201 dBTP**;
+    /// 尾巴里的脉冲是 **0 dBTP**。旧实现（两路各自整条切片）读到尾巴那一格。
+    ///
+    /// 判别力: 把 `measure_master` 里那两个检测器的入参从最短切片还原成整条切片 ⇒ 红。
+    #[test]
+    fn the_true_peak_of_a_ragged_pair_comes_from_the_shorter_channel() {
+        let (left, right, tail_start) =
+            ragged_pair_with_a_full_scale_tail_spike(sine_997(0.25, 4_096));
+        assert_eq!(left.len() - right.len(), 33, "尾巴必须真的比右声道长");
+
+        let ragged = measure_master(48_000, &left, &right).expect("48 kHz");
+        let truncated = measure_master(48_000, &left[..tail_start], &right).expect("48 kHz");
+
+        assert_eq!(
+            ragged.true_peak_dbtp.to_bits(),
+            truncated.true_peak_dbtp.to_bits(),
+            "参差的尾巴进了真峰值: 完整 {} dBTP vs 截断 {} dBTP",
+            ragged.true_peak_dbtp,
+            truncated.true_peak_dbtp
+        );
+        assert!(
+            (ragged.true_peak_dbtp + 12.041_201).abs() < 0.05,
+            "共同区的真峰值本机实测 −12.041201 dBTP, 实际 {}",
+            ragged.true_peak_dbtp
+        );
+    }
+
+    /// **参差声道下的真峰值上限必须真的被达到**: [`GainBound::TruePeakCeiling`] 不是一句空话。
+    ///
+    /// 尾巴里的满幅脉冲不在母带区域内（[`ExportPreset::apply`] 只改最短的 `min` 帧）,
+    /// 因此它不该抬 `before`、也不该让 `after` 停在 0 dBTP。
+    ///
+    /// 旧实现: 真峰值看整条切片 ⇒ `before` = 0 dBTP ⇒ 增益被上限压到 −20 dB,
+    /// 而尾巴一位未改 ⇒ `after.true_peak_dbtp` 仍是 **0 dBTP** ⇒ 本判据红。
+    #[test]
+    fn a_true_peak_ceiling_is_really_achieved_on_ragged_channels() {
+        let (mut left, mut right, tail_start) =
+            ragged_pair_with_a_full_scale_tail_spike(sine_997(0.25, 4_096));
+        let tail_before: Vec<u32> = left[tail_start..]
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect();
+
+        let outcome = ExportPreset::new(None, Some(-20.0))
+            .apply(48_000, &mut left, &mut right)
+            .expect("48 kHz");
+
+        assert_eq!(outcome.bound, GainBound::TruePeakCeiling);
+        assert!(
+            outcome.after.true_peak_dbtp <= -20.0 + 1e-3,
+            "声称上限赢, 输出却是 {} dBTP",
+            outcome.after.true_peak_dbtp
+        );
+        assert_eq!(
+            left[tail_start..]
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            tail_before,
+            "尾巴不在母带区域内, 增益不该碰它"
+        );
+    }
+
+    /// **非有限的目标/上限不是约束**: 归一化的报告不许出现"算出 inf 增益却没动样本"。
+    ///
+    /// 旧实现: `Some(f32::INFINITY)` 的目标 ⇒ `gain_db = inf`、`bound = LoudnessTarget`,
+    /// 而 `db_to_linear(inf)` 返回 `1.0` ⇒ 样本一位未动 —— 报告与实际互相矛盾。
+    /// `Some(f32::NEG_INFINITY)` 的上限同理 ⇒ `gain_db = -inf`、`bound = TruePeakCeiling`。
+    ///
+    /// 判别力: 去掉 `apply` 里的 `target.is_finite()` 或 `ceiling.is_finite()` ⇒ 红。
+    #[test]
+    fn a_non_finite_target_or_ceiling_is_not_a_constraint() {
+        let tone = sine_997(0.1, 48_000 * 2);
+
+        for target in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            let (mut left, mut right) = (tone.clone(), tone.clone());
+            let pristine: Vec<u32> = left.iter().map(|sample| sample.to_bits()).collect();
+            let outcome = ExportPreset::new(Some(target), None)
+                .apply(48_000, &mut left, &mut right)
+                .expect("48 kHz");
+            assert!(
+                outcome.gain_db.is_finite(),
+                "目标 {target} 算出了 {} dB 的增益",
+                outcome.gain_db
+            );
+            assert_eq!(outcome.gain_db, 0.0, "目标 {target}");
+            assert_eq!(outcome.bound, GainBound::NothingToDo, "目标 {target}");
+            assert_eq!(
+                left.iter()
+                    .map(|sample| sample.to_bits())
+                    .collect::<Vec<_>>(),
+                pristine,
+                "目标 {target}: 0 dB 增益必须逐位不动样本"
+            );
+        }
+
+        for ceiling in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            let (mut left, mut right) = (tone.clone(), tone.clone());
+            let pristine: Vec<u32> = left.iter().map(|sample| sample.to_bits()).collect();
+            let outcome = ExportPreset::new(None, Some(ceiling))
+                .apply(48_000, &mut left, &mut right)
+                .expect("48 kHz");
+            assert_eq!(outcome.gain_db, 0.0, "上限 {ceiling}");
+            assert_eq!(outcome.bound, GainBound::NothingToDo, "上限 {ceiling}");
+            assert_eq!(
+                left.iter()
+                    .map(|sample| sample.to_bits())
+                    .collect::<Vec<_>>(),
+                pristine,
+                "上限 {ceiling}"
+            );
+        }
+    }
+
+    /// **导出拒绝一个把样本推成非有限的增益**（目标本身有限, 但算出的增益溢出）。
+    ///
+    /// 实测: 2 秒 0.1 幅度的 997 Hz 正弦（本机读数 −19.999952 LUFS）+ 目标 `1e38` LUFS
+    /// ⇒ 增益 `1e38` dB ⇒ `db_to_linear` 溢出成 `+inf` ⇒ 全部样本变成 `+inf`。
+    /// 旧实现照旧返回 `Ok`: 容器写成功, 里面的样本是量化器钳出来的轨, `bext`
+    /// 里是一份由钳位值算出的读数 —— 正是 [`MasterExportError::NonFiniteSamples`]
+    /// 要挡的那件事, 只是入口从"调用方的缓冲"换成了"预设算出的增益"。
+    ///
+    /// 判别力: 去掉 `export_master` 里增益之后那两遍有限性检查 ⇒ 红。
+    #[test]
+    fn the_export_refuses_a_gain_that_overflows_the_master() {
+        let tone = sine_997(0.1, 48_000 * 2);
+        let mut master = master_output(&tone, &tone);
+        let pristine: Vec<u32> = master
+            .samples
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect();
+        let digest_before = master.digest;
+        let mut rng = seed_rng(0x0BAD_C0DE_DEAD_BEEF);
+
+        let error = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::new(Some(1.0e38), None),
+            BitDepth::Int24,
+            ContainerKind::Riff,
+            &metadata(),
+            &mut rng,
+        )
+        .expect_err("溢出成 ±inf 的母带必须在回写之前被拒绝");
+
+        assert!(
+            matches!(error, MasterExportError::NonFiniteSamples { .. }),
+            "期望 NonFiniteSamples, 得到 {error:?}"
+        );
+        // 拒绝是**纯**的: 缓冲与位级摘要一位未动。
+        assert_eq!(
+            master
+                .samples
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            pristine,
+            "被拒的导出不许改动母带"
+        );
+        assert_eq!(master.digest, digest_before, "被拒的导出不许改动摘要");
     }
 }
