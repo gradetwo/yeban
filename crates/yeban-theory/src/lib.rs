@@ -317,6 +317,47 @@ mod tests {
         );
     }
 
+    /// `derive_range_i64` 的区间是**闭**的：两个端点都必须真的取得到。
+    ///
+    /// 注入实测（theory-16 形态 D）：把宽度从 `high - low + 1` 改成
+    /// `high - low`，全部既有判据保持全绿 —— 既有判据只断言"落在区间内"，
+    /// 而少算 1 只会让**上界**永远取不到，读数仍然落在区间内。这条判据补上
+    /// "闭区间两端可达"这一半：宽度少 1 时上界立刻不可达，注入变红。
+    ///
+    /// 口径：对每个区间扫 `seed = 0..4096`（固定盐），收集实际出现的值；
+    /// 断言 `low` 与 `high` 都出现过，且全部读数都落在 `low..=high` 内。
+    /// 这是**探测**（宽度少 1 时上界要靠更大的种子空间才能偶然补回来），
+    /// 不是统计断言：被测区间都远小于 4096 个种子的覆盖能力。
+    #[test]
+    fn derive_range_reaches_both_ends_of_the_closed_interval() {
+        for (low, high) in [
+            (0i64, 1i64),
+            (0, 2),
+            (0, 7),
+            (0, 100),
+            (60, 120),
+            (-5, 5),
+            (i64::MAX - 1, i64::MAX),
+        ] {
+            let mut seen_low = false;
+            let mut seen_high = false;
+            for seed in 0u64..4096 {
+                let value = derive_range_i64(seed, 3, low, high);
+                assert!(
+                    (low..=high).contains(&value),
+                    "seed {seed}: {value} outside [{low}, {high}]"
+                );
+                seen_low |= value == low;
+                seen_high |= value == high;
+            }
+            assert!(seen_low, "[{low}, {high}]: the lower end is unreachable");
+            assert!(seen_high, "[{low}, {high}]: the upper end is unreachable");
+        }
+        // 退化区间 `low >= high` 恒返回 `low`（与宽度无关的既有口径）。
+        assert_eq!(derive_range_i64(0, 0, 5, 5), 5);
+        assert_eq!(derive_range_i64(0, 0, 9, 3), 9);
+    }
+
     #[test]
     fn crate_has_no_hidden_nondeterminism_sources() {
         // 机械检查：本 crate 的生产代码里不得出现时钟、线程、环境变量、

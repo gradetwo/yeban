@@ -873,6 +873,33 @@ mod tests {
         ));
     }
 
+    /// `is_meter_group_start` 对**小节之外**的格点恒返回 `false`。
+    ///
+    /// 注入实测（theory-16 形态 D）：把该函数里的 `cell as u64 >= cells` 改成
+    /// `> cells`，全部既有判据保持全绿 —— 既有判据只喂小节**之内**的格点，
+    /// 而越界那一条是公开契约（文档写着"`cell` 越出小节时返回 `false`"）。
+    /// 危害：`cell == cells` 是**下一小节的第 0 格**，它恰好是强位，于是
+    /// 被误判成"本小节的组起点"，底鼓会多打一击。
+    #[test]
+    fn a_cell_past_the_bar_is_never_a_group_start() {
+        for (meter, cells_per_beat) in [
+            (COMMON, 4u64),
+            (Meter::WALTZ, 4),
+            (Meter::COMPOUND_DUPLE, 6),
+            (Meter::SEVEN_EIGHT, 2),
+        ] {
+            let cells = cells_per_bar(meter).unwrap();
+            for cell in [cells as u32, cells as u32 + 1, 2 * cells as u32, u32::MAX] {
+                assert!(
+                    !is_meter_group_start(meter, cell, cells_per_beat),
+                    "{meter:?} cell {cell} (bar has {cells} cells) must not be a group start"
+                );
+            }
+            // 小节内的格点读数不受影响（回归护栏）。
+            assert!(is_meter_group_start(meter, 0, cells_per_beat));
+        }
+    }
+
     #[test]
     fn every_onset_carries_a_hihat_and_hits_are_ascending_in_tick_then_voice() {
         for meter in [Meter::MARCH, Meter::WALTZ, COMMON, Meter::SEVEN_EIGHT] {

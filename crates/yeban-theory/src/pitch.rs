@@ -906,6 +906,38 @@ mod tests {
         assert_eq!(parse_pitch_class(&net_two).unwrap(), PitchClass::D);
     }
 
+    /// 变音记号对**音级读数**的作用量必须恰好是 1 个半音。
+    ///
+    /// 注入实测（theory-16 形态 D）：把 `parse_pitch_class` 里升号的
+    /// `saturating_add(1)` 改成 `saturating_add(2)`，全部既有判据保持全绿 ——
+    /// 既有的极值判据只用"接受/拒绝"这一个二值读数（`C#` 与 `C##` 都仍然
+    /// 被接受，只是落在错的音级上），没有任何一条钉住"一个记号 = 一个半音"。
+    /// 危害：`C#` 会被读成 D，`C#` 与 `Db` 不再同音，全部以文本音名解析的
+    /// 入口（和弦符号、音阶名、MCP 文本）都会静默移调。
+    #[test]
+    fn one_accidental_moves_the_pitch_class_by_exactly_one_semitone() {
+        let sharp = |n: usize| parse_pitch_class(&format!("C{}", "#".repeat(n))).unwrap();
+        let flat = |n: usize| parse_pitch_class(&format!("C{}", "b".repeat(n))).unwrap();
+        let unicode_sharp = parse_pitch_class("C\u{266f}").unwrap();
+        let unicode_flat = parse_pitch_class("C\u{266d}").unwrap();
+
+        assert_eq!(parse_pitch_class("C").unwrap().semitones(), 0);
+        assert_eq!(sharp(1).semitones(), 1);
+        assert_eq!(sharp(2).semitones(), 2);
+        assert_eq!(flat(1).semitones(), 11);
+        assert_eq!(flat(2).semitones(), 10);
+        assert_eq!(unicode_sharp, sharp(1));
+        assert_eq!(unicode_flat, flat(1));
+        // 同音异名的两支必须落在同一个音级（一个记号 = 一个半音的直接推论）。
+        assert_eq!(sharp(1), flat(1).transpose(2));
+        // 一个记号的净值与 `NoteName::new` 的 `alter` 语义一致。
+        assert_eq!(NoteName::new(0, 1).unwrap().pitch_class(), sharp(1));
+        assert_eq!(NoteName::new(0, -1).unwrap().pitch_class(), flat(1));
+        // 三个同号记号仍然越界（回归护栏）。
+        assert!(parse_pitch_class("C###").is_err());
+        assert!(parse_pitch_class("Cbbb").is_err());
+    }
+
     #[test]
     fn octave_arithmetic_matches_scientific_pitch_notation() {
         assert_eq!(

@@ -1355,6 +1355,40 @@ mod tests {
         assert!(BeatGrouping::new(COMMON, &[0, 4]).is_none());
     }
 
+    /// 与上一条互补：构造一份**整段和回绕后恰好等于拍数**的分组切片。
+    ///
+    /// 上一条只用"恰好不溢出"与"溢出后回绕成别的值"两种切片，两者在
+    /// "先停下"与"整段回绕累加"两种实现下都返回 `None` ⇒ 判据没有判别力。
+    /// 注入实测（theory-16 形态 D）：把提前停下换成 `.wrapping_add` 整段累加，
+    /// 全部既有判据保持全绿。
+    ///
+    /// 这条判据用**回绕后恰好等于拍数**的切片：整段累加的实现会把它当成
+    /// 合法分组而返回 `Some`（底鼓与军鼓会落在错的拍上），提前停下的实现
+    /// 只能返回 `None`。
+    ///
+    /// 构造（4/4 ⇒ 拍数 4）：`n = 16_843_010` 个 `255`，再把最后一个改成 `5`。
+    /// 整段和 = `255 × n - 250 = 2^32 + 4`，在 `u32` 上回绕成 `4`（= 拍数）。
+    /// 断言只用公式与常量，不重新遍历那份 1600 万元素的切片。
+    #[test]
+    fn a_group_slice_whose_wrapped_sum_equals_the_beat_count_is_rejected() {
+        const N: usize = 16_843_010;
+        const LAST: u32 = 5;
+        let sum = 255u128 * (N as u128 - 1) + LAST as u128;
+        assert_eq!(sum, (1u128 << 32) + 4, "the construction pins the wrap");
+        assert_eq!(
+            (sum % (1u128 << 32)) as u32,
+            4,
+            "wrapped sum == the beat count"
+        );
+
+        let mut groups = vec![255u8; N];
+        groups[N - 1] = LAST as u8;
+        assert!(
+            BeatGrouping::new(COMMON, &groups).is_none(),
+            "a slice whose u32 sum wraps onto the beat count must still be rejected"
+        );
+    }
+
     /// 组起点的判定：第 0 拍恒是起点，越界的拍不是。
     #[test]
     fn beat_grouping_marks_exactly_the_group_boundaries() {

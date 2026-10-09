@@ -545,6 +545,73 @@ mod tests {
         assert_eq!(result.max_voice_jump(), 0);
     }
 
+    /// 单音音域（`lower == upper`）是合法的：它表达"这个声部只唱一个音"。
+    ///
+    /// 注入实测（theory-16 形态 D）：把 `VoicingConstraints` 的构造校验里的
+    /// `lower > upper` 改成 `lower >= upper`，全部既有判据保持全绿 ——
+    /// 既有判据只用**多音**音域，没有一个钉住"相等端点是合法的下界"。
+    /// 危害是实打实的：单音音域被拒之后，`realize` 会把本来可行的配置判成
+    /// `NoFeasibleVoicing`（可用配置变不可用）。
+    ///
+    /// 这条判据同时钉住**单声部跳进上界取严格不等号**：下面这段进行只有一个
+    /// 可行解，且三个声部里有一个恰好移动 2 个半音（= 上界）。把硬约束的
+    /// `>` 改成 `>=` 会把那个声部剪掉，于是整个进行报 `NoFeasibleVoicing`。
+    #[test]
+    fn a_single_pitch_range_is_legal_and_realizable() {
+        use crate::pitch::Pitch;
+
+        let c4 = VoiceRange::new(Pitch::C4, Pitch::C4).unwrap();
+        assert_eq!(c4.lower, Pitch::C4);
+        assert_eq!(c4.upper, Pitch::C4);
+        assert_eq!(c4.width(), 1);
+
+        // 反向音域仍然要拒绝（回归护栏：放宽不能把这条一起放走）。
+        assert!(VoiceRange::new(Pitch::C5, Pitch::C4).is_err());
+
+        // `I -> IV` 在 C 大调上、这组音域里的可行解**唯一**：
+        // C4-E4-G4 -> C4-F4-A4，三个声部分别移动 0 / 1 / 2 个半音。
+        // 第三个声部的 2 恰好是上界，因此上界必须允许"相等"。
+        const RANGES: [VoiceRange; 3] = [
+            VoiceRange {
+                lower: Pitch::C4,
+                upper: Pitch::D4,
+            },
+            VoiceRange {
+                lower: Pitch::E4,
+                upper: Pitch::F4,
+            },
+            VoiceRange {
+                lower: Pitch::G4,
+                upper: Pitch::A4,
+            },
+        ];
+        let key = c_major();
+        let spans = expand_progression(&key, "I-IV", 2).unwrap();
+
+        let at_the_bound = VoicingConstraints {
+            ranges: &RANGES,
+            max_voice_jump: 2,
+            max_total_movement: 24,
+        };
+        let result = realize(&spans, &at_the_bound).unwrap();
+        assert_eq!(result.voicings.len(), 2);
+        assert_eq!(result.voicings[0], vec![Pitch::C4, Pitch::E4, Pitch::G4]);
+        assert_eq!(result.voicings[1], vec![Pitch::C4, Pitch::F4, Pitch::A4]);
+        assert_eq!(result.movements, vec![vec![0u8, 1, 2]]);
+        assert_eq!(result.max_voice_jump(), 2);
+        assert_eq!(result.total_movement, 3);
+
+        let too_tight = VoicingConstraints {
+            ranges: &RANGES,
+            max_voice_jump: 1,
+            max_total_movement: 24,
+        };
+        assert_eq!(
+            realize(&spans, &too_tight).unwrap_err(),
+            TheoryError::NoFeasibleVoicing
+        );
+    }
+
     #[test]
     fn search_is_deterministic_across_repeated_calls() {
         let key = c_major();
