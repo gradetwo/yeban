@@ -696,6 +696,61 @@ mod tests {
         }
     }
 
+    /// **判据（新写，可红）**：`bits` 的**下界**（`4.0`）把一切更小的合法请求
+    /// **折叠到同一条输出**上，而不是让它们各自生效。
+    ///
+    /// 量什么：同一段输入在五个 `bits` 请求下的输出位型（单位：`f32` 位型序列）
+    /// 是否与 `bits = 4.0` 的那一次**逐位相同**。
+    ///
+    /// 为什么需要它：[`bit_depth_sets_the_quantisation_step`] 的夹具最小只到
+    /// `4.0`（正是下界本身），而且它的网格期望是用**请求值**算出来的
+    ///（`2.0 / 2f32.powf(bits)`）⇒ 把下界 `4.0` 放宽成 `1.0`（本票注入 S01）之后
+    /// 请求值与量化步长一起变，判据自洽 ⇒ 全量 417 条判据全绿。
+    ///
+    /// 链路只有比较、`powf` 与乘除：`powf` 属 ADR-0001 的超越函数类
+    /// ⇒ 只在**同一架构内**比对五次读数的位型，⛔ 不与字面常量比。
+    #[test]
+    fn a_bit_depth_below_the_floor_is_folded_onto_the_floor() {
+        let n = 4_096;
+        let input: Vec<f32> = (0..n)
+            .map(|index| ((index * 37 % 101) as f32 / 101.0) - 0.5)
+            .collect();
+        let render = |bits: f32| {
+            let mut out = vec![0.0f32; n];
+            let mut out_r = vec![0.0f32; n];
+            BitCrusher::new().process(
+                &input,
+                &input,
+                &mut out,
+                &mut out_r,
+                CrushParams {
+                    bits,
+                    down: 1.0,
+                    aa: 0.0,
+                },
+                SR,
+            );
+            out.iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<u32>>()
+        };
+        let floor = render(4.0);
+        for bits in [-5.0f32, 0.0, 1.0, 2.0, 3.999] {
+            assert_eq!(
+                render(bits),
+                floor,
+                "bits = {bits} 必须被折到下界 4.0 的同一输出上"
+            );
+        }
+        // 正对照：下界**之上**必须真的不同，否则上面几条可能是"整条路都不敏感"。
+        assert_ne!(render(6.0), floor, "6 bit 必须与 4 bit 不同");
+        // 非空证明：夹具本身必须真的产生非零输出。
+        assert!(
+            floor.iter().any(|bits| *bits != 0),
+            "夹具输出全零 ⇒ 判据测的是空壳"
+        );
+    }
+
     #[test]
     fn divisor_and_anti_alias_move_the_mirror() {
         // 分频器带来两种不同的产物：

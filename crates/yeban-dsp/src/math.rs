@@ -308,6 +308,49 @@ mod tests {
         }
     }
 
+    /// **判据（新写，可红）**：`db_to_gain` 与 `gain_to_db` 的**文档边界本身**
+    /// 被逐位钉住，而不是只钉界内的往返。
+    ///
+    /// 量什么：返回值的 `to_bits()`（单位：`f32` 位型）与字面位型。
+    ///
+    /// 为什么需要它：[`db_conversion_round_trips`] 只测了 `−200 dB`（深在界内）
+    /// 与 `−60…+12 dB` 的往返，**没有**碰 `−120 dB` 这个交界点。实测（本票注入
+    /// A08）：把实现里的 `db <= -120.0` 改成 `db < -120.0` 之后，全量 417 条判据
+    /// 仍全绿 —— 而 `−120 dB` 会掉进 `exp2` 分支、给出 `9.97e-7` 而不是
+    /// `compressor` 模块注释写明的 `0.0`（该注释写的是"`db_to_gain` 在
+    /// `≤ −120 dB` 处返回 `0.0`"，实测 `db_to_gain(-120.0) = 9.971e-7`）。
+    ///
+    /// 同理（注入 A09）：`gain_to_db` 的 `gain <= 0.0` 改成 `gain < 0.0` 之后
+    /// 也全绿 —— `gain = 0.0` 两条分支逐位相同（`6.0206 · log2(+0.0)` 与 `6.0206 ·
+    /// log2(−0.0)` 都是 `−∞`），但**负数增益**从 `−∞` 变成 `NaN`，而全仓没有一条
+    /// 判据碰过负数增益。
+    ///
+    /// 链路只有比较、`exp2`／`log2` 与乘法：交界点两侧的读数（`+0.0` 与 `−∞`）
+    /// 都是**常量**，可以硬断言；`exp2` 属 ADR-0001 的超越函数类，因此界内一侧
+    /// 只钉"必须离开 0"（`> 0.0`），不钉位型。
+    #[test]
+    fn db_conversion_boundaries_are_pinned_at_the_documented_thresholds() {
+        // 交界点及以下：恰好是 `+0.0`（不是"很小的正数"）。
+        assert_eq!(db_to_gain(-120.0), 0.0);
+        assert_eq!(db_to_gain(-120.000_1), 0.0);
+        assert_eq!(db_to_gain(f32::NEG_INFINITY), 0.0);
+        assert_eq!(db_to_gain(f32::NAN), 0.0);
+        // 交界点之上必须**离开** 0：否则"边界在 −120 dB"这句话没有内容。
+        assert!(
+            db_to_gain(-119.999) > 0.0,
+            "刚过 −120 dB 就必须给出正增益，实测 {}",
+            db_to_gain(-119.999)
+        );
+        // `gain_to_db`：`<= 0` 一侧全是 `−∞`，**含负数**（⛔ 不许是 NaN）。
+        assert_eq!(gain_to_db(-1.0), f32::NEG_INFINITY);
+        assert_eq!(gain_to_db(-0.0), f32::NEG_INFINITY);
+        assert_eq!(gain_to_db(0.0), f32::NEG_INFINITY);
+        assert!(!gain_to_db(-1.0).is_nan(), "负数增益不许返回 NaN");
+        // 正对照：正增益必须给出有限且为正的 dB（否则上面三条 `−∞` 可能是"整条路都坏"）。
+        assert!(gain_to_db(1.0).is_finite() && gain_to_db(1.0) == 0.0);
+        assert!(gain_to_db(2.0).is_finite() && gain_to_db(2.0) > 0.0);
+    }
+
     #[test]
     fn soft_limit_is_transparent_then_bounded() {
         // 线性区内逐位透明…
@@ -473,7 +516,13 @@ mod tests {
     /// 零影响"的证据：夹具、位型、哈希三者都逐位未变。
     ///
     /// 怎么变红：动这条路径上任何一个数 —— 把逆变换的尺度 `1.0 / n as f64` 改成
-    /// `1.0 / (n as f64 + 1.0)`，或把位反转置换的 `i < j` 改成 `i <= j`。
+    /// `1.0 / (n as f64 + 1.0)`（实测本票注入 A02：红 2 条），或把旋转因子的符号
+    /// 反过来（A03：红 1 条）。
+    ///
+    /// ⚠ **不是**变红手段：把位反转置换的 `i < j` 改成 `i <= j`。本票实测（注入 A01）
+    /// 该改动**全绿** —— `i == j` 时 `slice::swap(i, i)` 是逐位恒等的空操作，
+    /// 因此那不是一条能测出来的坏改动。本判据的早期文档曾把它列为变红手段，
+    /// 该说法已被实测推翻，在此更正。
     #[test]
     fn the_power_of_two_transform_is_frozen_bit_for_bit() {
         let fixture = |n: usize| -> (Vec<f64>, Vec<f64>) {

@@ -764,8 +764,12 @@ fn sanitise_band(first: f32, second: f32) -> (f32, f32) {
 
 /// 窃取淡出的帧数：`STEAL_RELEASE_SECONDS`（3 ms）× 采样率。
 ///
-/// 上限 0.5 s（采样率异常大时也不会把槽位卡死），下限 1 帧。
-/// 与 `polysynth::steal_fade_frames_for` 同口径。
+/// 上限 `24 000` 帧（`0.5 s` @ 48 kHz；采样率异常大时也不会把槽位卡死），下限 1 帧。
+///
+/// ⚠ 与 `polysynth::steal_fade_frames_for` **不是**同一条口径：那一侧的上限分支
+/// （`frames >= 0.5 · fs`）在本 crate 的参数域下恒假（`0.003 · fs ≥ 0.5 · fs`
+/// 需要 `0.003 ≥ 0.5`）⇒ 实测（本票注入 P01／P02）改它与删它都不可观测。
+/// 真正生效的上限只有本函数这一处。
 #[must_use]
 pub fn steal_fade_frames_for(sample_rate: f32) -> u32 {
     let frames = STEAL_RELEASE_SECONDS * sanitise_sample_rate(sample_rate);
@@ -1389,6 +1393,86 @@ mod tests {
         }
     }
 
+    /// **判据（新写，可红）**：**有限**的越界值也必须被抬/压到文档写明的界上。
+    ///
+    /// 量什么：`sanitised()` 之后各字段的读数（单位：各字段自己的单位）。
+    ///
+    /// 为什么需要它：[`sanitised_clamps_every_field_into_its_documented_domain`]
+    /// 的敌意夹具里，越界项多数是 `NaN`／`±∞`（走**回落**分支，落到下界）；
+    /// 唯一有限的越界项是 `snare.tone_hz = -1.0`，而它在那个判据里只被
+    /// "全部字段有限"的遍历碰到、**没有**被域断言碰到。实测（本票注入）：
+    ///
+    /// - A32：把 `clamp_freq` 的下界 `MIN_FREQ_HZ` 改成 `0.0` ⇒ 全量 417 条全绿；
+    /// - A34：把 `clamp_ratio` 的下界 `MIN_RATIO` 改成 `0.0` ⇒ 全绿；
+    /// - A36：把 [`sanitise_band`] 里 `(low · MIN_BAND_RATIO).min(MAX_FREQ_HZ)`
+    ///   的 `.min(MAX_FREQ_HZ)` 删掉 ⇒ 全绿（两端都贴近上界时，被撑开的那一端
+    ///   会越出 `MAX_FREQ_HZ`，而那个字段只有"有限"与"有序"两条断言）。
+    ///
+    /// 链路只有比较与 `min`／`max` ⇒ IEEE 精确类 ⇒ 处处硬断言位型。
+    #[test]
+    fn finite_values_outside_a_domain_reach_the_bound_exactly() {
+        let mut kit = DrumKitParams::DEFAULT;
+        // 有限且**低于**各自的下界（不是 NaN，不是 ±∞）。
+        kit.kick.tune_hz = MIN_FREQ_HZ * 0.5;
+        kit.hihat.base_hz = MIN_FREQ_HZ - 1.0;
+        kit.snare.tone_hz = 0.0;
+        kit.snare.tone_ratio = MIN_RATIO * 0.5;
+        let clean = kit.sanitised();
+        assert_eq!(
+            clean.kick.tune_hz, MIN_FREQ_HZ,
+            "tune_hz 的有限下越界必须抬到下界"
+        );
+        assert_eq!(clean.hihat.base_hz, MIN_FREQ_HZ, "base_hz 同上");
+        assert_eq!(clean.snare.tone_hz, MIN_FREQ_HZ, "0 Hz 不是合法音高");
+        assert_eq!(
+            clean.snare.tone_ratio, MIN_RATIO,
+            "0.5 · MIN_RATIO 必须抬到 MIN_RATIO"
+        );
+
+        // 带通：两端都在上界附近时，被 `MIN_BAND_RATIO` 撑开的那一端必须仍被
+        // `MAX_FREQ_HZ` 压住 —— 这是 `.min(MAX_FREQ_HZ)` 唯一的可观测点
+        // （`low · MIN_BAND_RATIO > MAX_FREQ_HZ` 需要 `low > 17 142.9 Hz`）。
+        let band = SnareParams {
+            noise_highpass_hz: 17_500.0,
+            noise_lowpass_hz: 17_600.0,
+            ..SnareParams::DEFAULT
+        }
+        .sanitised();
+        assert!(
+            band.noise_highpass_hz <= MAX_FREQ_HZ && band.noise_lowpass_hz <= MAX_FREQ_HZ,
+            "带通两端都不得越出频率上界（实测 {} / {}）",
+            band.noise_highpass_hz,
+            band.noise_lowpass_hz
+        );
+        assert_eq!(
+            band.noise_lowpass_hz, MAX_FREQ_HZ,
+            "被撑开的一端必须被压到 MAX_FREQ_HZ（实测 {}）",
+            band.noise_lowpass_hz
+        );
+        assert!(
+            band.noise_lowpass_hz >= band.noise_highpass_hz,
+            "带通两端必须保持有序"
+        );
+        // ⚠ 天花板生效时 `MIN_BAND_RATIO` **不再**成立（`18 000 < 17 500 · 1.05`）。
+        // 这是模块文档写明的退化情形（"两端都顶到上界不会被强行撑开"），
+        // 因此下面单独钉一条**比例仍然生效**的读数作为它的对照。
+        let widened = SnareParams {
+            noise_highpass_hz: 200.0,
+            noise_lowpass_hz: 205.0,
+            ..SnareParams::DEFAULT
+        }
+        .sanitised();
+        assert_eq!(
+            widened.noise_lowpass_hz,
+            200.0 * MIN_BAND_RATIO,
+            "天花板之下，被撑开的一端必须恰好落在 lo · MIN_BAND_RATIO"
+        );
+
+        // 非空证明：上面的读数与"不做任何钳制"的输入**不同**。
+        assert_ne!(clean.snare.tone_ratio, MIN_RATIO * 0.5);
+        assert_ne!(band.noise_lowpass_hz, 17_500.0 * MIN_BAND_RATIO);
+    }
+
     /// 量什么：**敌意参数**下每个音色的渲染输出是否**恒为有限数**
     /// （`NaN`/`Inf` 计数，单位：个样本）。
     #[test]
@@ -1513,6 +1597,30 @@ mod tests {
         assert_eq!(steal_fade_frames_for(f32::INFINITY), 3);
         let machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
         assert_eq!(machine.steal_fade_frames(), 144);
+    }
+
+    /// **判据（新写，可红）**：`steal_fade_frames_for` 的**上界**（`24 000` 帧）
+    /// 被钉住。
+    ///
+    /// 量什么：返回的帧数（单位：帧）。
+    ///
+    /// 为什么需要它：[`the_default_steal_fade_is_the_three_millisecond_constant`]
+    /// 只测到 `96 kHz`（`288` 帧），而 `0.003 · fs > 24 000` 需要 `fs > 8 MHz`
+    /// ⇒ 那个夹具永远碰不到上界。实测（本票注入 A37）：把上限 `24_000.0` 改成
+    /// `48_000.0` 之后全量 417 条判据全绿。上界正是模块注释写明的
+    /// "采样率异常大时也不会把槽位卡死"那一句的内容。
+    #[test]
+    fn the_steal_fade_cap_is_pinned_for_absurd_sample_rates() {
+        // 上界：异常采样率下必须**停止增长**。
+        assert_eq!(steal_fade_frames_for(16.0e6), 24_000, "1.6e7 Hz 已越过上界");
+        assert_eq!(steal_fade_frames_for(1.0e9), 24_000, "1e9 Hz 已越过上界");
+        // 正对照：上界**之下**必须是比例关系，否则上面两条可能是"常数"。
+        assert_eq!(steal_fade_frames_for(48_000.0), 144);
+        assert_eq!(steal_fade_frames_for(4.0e6), 12_000);
+        assert!(
+            steal_fade_frames_for(4.0e6) < steal_fade_frames_for(8.0e6),
+            "8 MHz 处仍必须低于上界，否则正对照落在钳制区里"
+        );
     }
 
     /// 量什么：触发闭镲时在响的开镲是否进入淡出（单位：choke 次数 + 枚举值）。

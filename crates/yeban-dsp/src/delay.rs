@@ -716,6 +716,53 @@ mod tests {
         assert!(d.max_seconds() <= MAX_DELAY_SECONDS + 1e-3);
     }
 
+    /// **判据（新写，可红）**：`time_s` 的**下界**（`0.001 s`）把一切更小的请求
+    /// **折到界上**，而不是让它们各自生效。
+    ///
+    /// 量什么：同一段脉冲输入在若干 `time_s` 下的输出位型（单位：`f32` 位型序列）。
+    ///
+    /// 为什么需要它：实测（本票注入 D01）把 `params.time_s.clamp(0.001, …)` 的
+    /// 下界放宽成 `0.0` 之后，全量 417 条判据仍全绿 ——
+    /// [`degenerate_parameters_never_escape_the_clamps`] 只喂 `NaN` 与 `0.01 s`，
+    /// 从不喂**低于下界**的有限值，而 `0.0 s` 会把"延迟"退化成"同一格的即时递归"。
+    ///
+    /// 链路只有比较、钳位与 `+ − × ÷` ⇒ IEEE 精确类 ⇒ 处处硬断言位型。
+    #[test]
+    fn the_time_floor_is_folded_onto_the_documented_minimum() {
+        let render = |time_s: f32| {
+            let mut delay = Delay::new();
+            delay.configure(48_000.0);
+            let mut left = vec![0.0f32; 4_096];
+            let mut right = vec![0.0f32; 4_096];
+            left[0] = 1.0;
+            right[0] = 1.0;
+            let params = DelayParams {
+                time_s,
+                feedback: 0.5,
+                mix: 1.0,
+                damp: 0.0,
+                ping_pong: false,
+            };
+            delay.process(params, &mut left, &mut right);
+            left.iter()
+                .chain(right.iter())
+                .map(|value| value.to_bits())
+                .collect::<Vec<u32>>()
+        };
+        let floor = render(0.001);
+        // 非空证明：夹具必须真的写出非零样本，否则下面几条"相同"是空话。
+        assert!(floor.iter().any(|bits| *bits != 0), "夹具输出全零");
+        for time_s in [-1.0f32, 0.0, 0.000_9] {
+            assert_eq!(
+                render(time_s),
+                floor,
+                "time_s = {time_s} 必须被折到下界 0.001 s 上"
+            );
+        }
+        // 正对照：下界**之上**必须真的不同。
+        assert_ne!(render(0.01), floor, "0.01 s 必须与 0.001 s 不同");
+    }
+
     /// **判据（新写，可红）**：`reset()` 之后处理一个块，与一台**刚 `configure` 过**
     /// 的实例逐帧逐位相同。
     ///

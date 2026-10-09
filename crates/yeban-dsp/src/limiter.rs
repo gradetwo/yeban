@@ -487,6 +487,57 @@ mod tests {
         assert!(peak > 0.5, "峰值被压得太狠（{peak}），弹道可疑");
     }
 
+    /// **判据（新写，可红）**：两条**文档常数**被字面钉住，且"不越天花板"
+    /// 这条保证用**字面**上界断言，而不是引用常数自己。
+    ///
+    /// 量什么：`LIMITER_CEILING` / `LIMITER_THRESHOLD` 的 `to_bits()`（单位：
+    /// `f32` 位型）与 `soft_knee` 在极端幅度下的返回值（单位：线性幅度）。
+    ///
+    /// 为什么需要它：[`limited_peak_never_exceeds_threshold`] 的断言写的是
+    /// `peak <= LIMITER_CEILING` —— 判据与它要守的常数是**同一个符号**。
+    /// 本票注入 X02 把 `LIMITER_CEILING` 从 `0.95` 改成 `0.99`：目标线随常数
+    /// 一起移动（`soft_knee` 渐近到新天花板，夹具峰值 `0.90006` 在两个上界下
+    /// 都合格）⇒ 全量 417 条判据仍全绿。这是"判据引用了被测常量"这一类伪绿。
+    ///
+    /// 链路：`soft_knee` 只有比较、`exp` 与 `+ − × ÷`。`exp` 属 ADR-0001 的
+    /// 超越函数类 ⇒ 渐近值只钉"不超过**字面** `0.95`"与"真的落在天花板上"，
+    /// 两条常数本身是常量 ⇒ 位型硬断言。
+    #[test]
+    fn the_documented_ceiling_is_pinned_by_a_literal_not_by_itself() {
+        assert_eq!(
+            LIMITER_CEILING.to_bits(),
+            0.95f32.to_bits(),
+            "天花板常数漂移"
+        );
+        assert_eq!(
+            LIMITER_THRESHOLD.to_bits(),
+            0.9f32.to_bits(),
+            "阈值常数漂移"
+        );
+        // 阈值以上的所有幅度都必须 ≤ **字面** 0.95（不是 ≤ `LIMITER_CEILING`）。
+        for magnitude in [0.9f32, 1.0, 1.2, 10.0, 1.0e6] {
+            let shaped = soft_knee(magnitude);
+            assert!(
+                shaped <= 0.95,
+                "soft_knee({magnitude}) = {shaped} 越过字面天花板 0.95"
+            );
+            assert!(
+                shaped >= 0.9,
+                "soft_knee({magnitude}) = {shaped} 掉到字面阈值 0.9 之下"
+            );
+        }
+        // 正对照（非空证明）：夹具必须**真的**触到渐近区，否则上面两条是空断言。
+        assert_eq!(soft_knee(1.0e6), 0.95, "极端幅度必须恰好落在天花板上");
+        assert!(
+            soft_knee(1.0) < 0.95,
+            "1.0 幅度还不到天花板 ⇒ 渐近区被真的走到"
+        );
+        // 阈值以下逐位恒等（天花板的另一侧）。
+        for sample in [0.9f32, 0.5, -0.9, -0.25, 0.0, -0.0] {
+            assert_eq!(soft_knee(sample).to_bits(), sample.to_bits());
+        }
+    }
+
     /// **判据**：未超阈值的样本**逐位不变**（`gain == 1.0` 时乘法是恒等）。
     #[test]
     fn sub_threshold_samples_are_bit_identical() {

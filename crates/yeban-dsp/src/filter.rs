@@ -143,6 +143,14 @@ impl LadderFilter {
         self.feedback
     }
 
+    /// 当前的输入驱动增益（进入饱和级之前）。**旋钮底部是 `1.0`（单位增益）**，
+    /// 上限见 [`Self::configure`] 的文档。与 [`Self::coefficient`] /
+    /// [`Self::feedback`] 同一条纪律：只读、无副作用、供判据与调试使用。
+    #[must_use]
+    pub const fn drive(&self) -> f32 {
+        self.drive
+    }
+
     /// 处理一个样本。
     #[inline]
     pub fn process(&mut self, input: f32) -> f32 {
@@ -363,6 +371,88 @@ mod tests {
             assert!(filter.process(x).is_finite());
         }
         assert!(filter.coefficient() < 1.0);
+    }
+
+    /// **判据（新写，可红）**：截止频率的**天花板**（`0.45 · fs`）被逐位钉住。
+    ///
+    /// 量什么：`LadderFilter::coefficient()` 的 `to_bits()`（单位：`f32` 位型），
+    /// 五个截止频率之间的相等关系。
+    ///
+    /// 为什么需要它：[`degenerate_configuration_is_clamped`] 只断言
+    /// `coefficient() < 1.0` 且有限。实测（本票注入 A31）：把 `sample_rate * 0.45`
+    /// 放宽成 `sample_rate * 1.45` 之后，全量 417 条判据仍全绿 —— 越界的截止频率
+    /// 让 `π · fc / fs` 越过 `π/2`，`tan` 翻成负数，`w / (1 + w)` 落进负区间再被
+    /// `clamp(0.0, 0.999_99)` 抬成 `0.0`，于是读数变成"滤波器完全打开"，而
+    /// `0.0 < 1.0` 与"有限"两条断言都仍然成立。
+    ///
+    /// 判据：`0.45·fs` 与它之上的四个截止频率必须给出**同一个**系数位型；
+    /// 并带非空证明（天花板读数必须**不同于**下界读数）。链路只有 `tan`、除法、
+    /// 钳位 ⇒ 超越函数类 ⇒ 只在同一架构内比对位型，⛔ 不与字面常量比。
+    #[test]
+    fn the_cutoff_ceiling_is_pinned_at_forty_five_percent_of_the_sample_rate() {
+        const SR: f32 = 48_000.0;
+        let coefficient = |cutoff_hz: f32| {
+            let mut filter = LadderFilter::new();
+            filter.configure(SR, cutoff_hz, 0.0, 0.0);
+            filter.coefficient().to_bits()
+        };
+        let ceiling = coefficient(SR * 0.45);
+        for cutoff_hz in [SR * 0.5, SR * 0.75, SR, SR * 1.45, 1.0e9] {
+            assert_eq!(
+                coefficient(cutoff_hz),
+                ceiling,
+                "截止频率 {cutoff_hz} Hz 必须与 0.45·fs 的天花板给出同一个系数"
+            );
+        }
+        // 非空证明：天花板读数**不是**下界读数（否则"同一个"这句话没有内容）。
+        assert_ne!(
+            ceiling,
+            coefficient(1.0),
+            "天花板读数与下界读数相同 ⇒ 判据测不出这个边界"
+        );
+        // 正对照：天花板确实在 (0, 1) 内，不是被钳到 0 或 1。
+        // （正浮点数的位型序与数值序同向 ⇒ 可以直接比位型。）
+        assert!(
+            ceiling > 0.0f32.to_bits() && ceiling < 1.0f32.to_bits(),
+            "天花板读数 {ceiling:#010x} 越界"
+        );
+    }
+
+    /// **判据（新写，可红）**：驱动增益的范围（`1.0` 到 `1.8`）被钉住。
+    ///
+    /// 量什么：`LadderFilter::drive()` 的读数（单位：线性增益）。
+    ///
+    /// 为什么需要它：[`degenerate_configuration_is_clamped`] 用 `drive = 1.0`
+    /// 只断言输出有限。实测（本票注入 S08）：把 `* 0.8` 改成 `* 0.4` 之后，
+    /// 全量 417 条判据仍全绿 —— 驱动量被砍掉一半，而没有任何判据读它。
+    /// `configure` 的注释写明"旋钮底部是单位增益，最大到 2×"（实现取
+    /// `1.0 + 旋钮 · 0.8`），这条范围就是本判据钉的内容。
+    ///
+    /// 链路只有比较、钳位与乘加 ⇒ IEEE 精确类 ⇒ 处处硬断言位型。
+    #[test]
+    fn the_drive_range_is_pinned_from_unity_to_the_documented_maximum() {
+        let mut filter = LadderFilter::new();
+        // 构造期的默认值。
+        assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
+        // 旋钮底部：单位增益。
+        filter.configure(48_000.0, 1_000.0, 0.0, 0.0);
+        assert_eq!(
+            filter.drive().to_bits(),
+            1.0f32.to_bits(),
+            "底部必须是单位增益"
+        );
+        // 旋钮顶部：1.8×。
+        filter.configure(48_000.0, 1_000.0, 0.0, 1.0);
+        assert_eq!(filter.drive().to_bits(), 1.8f32.to_bits(), "顶部比例漂移了");
+        // 越界与非有限：钳到两端。
+        filter.configure(48_000.0, 1_000.0, 0.0, 1.0e9);
+        assert_eq!(filter.drive().to_bits(), 1.8f32.to_bits());
+        filter.configure(48_000.0, 1_000.0, 0.0, -3.0);
+        assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
+        filter.configure(48_000.0, 1_000.0, 0.0, f32::NAN);
+        assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
+        // 非空证明：两端必须真的不同。
+        assert_ne!(1.0f32.to_bits(), 1.8f32.to_bits());
     }
 
     #[test]

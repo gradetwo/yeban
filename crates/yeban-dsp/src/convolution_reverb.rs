@@ -590,6 +590,54 @@ mod tests {
         }
     }
 
+    /// **判据（新写，可红）**：预延迟的**文档上界**（`0.1 s`）与帧数上限
+    /// （`MAX_PRE_DELAY_FRAMES` = `9 600`）被钉住。
+    ///
+    /// 量什么：`frames_for_pre_delay(seconds, sample_rate)` 的返回值（单位：帧）。
+    ///
+    /// 为什么需要它：实测（本票注入 C07）把 `seconds.clamp(0.0, MAX_PRE_DELAY_SECONDS)`
+    /// 里的上界放宽成 `MAX_PRE_DELAY_SECONDS * 2.0`（即 `0.2 s`）之后，全量 417 条
+    /// 判据仍全绿 —— 既有判据只喂 `0.1 s` 及以下的预延迟，从不喂越界值。
+    ///
+    /// 链路只有比较、钳位、乘 `f32` 再转 `usize` ⇒ IEEE 精确类 ⇒ 处处硬断言。
+    #[test]
+    fn the_pre_delay_upper_bound_is_pinned_by_a_literal() {
+        assert_eq!(
+            MAX_PRE_DELAY_SECONDS.to_bits(),
+            0.1f32.to_bits(),
+            "上界常数漂移"
+        );
+        assert_eq!(MAX_PRE_DELAY_FRAMES, 9_600, "帧数上限漂移");
+        // 界内：按秒换算（`4 800 Hz` × `0.1 s` = `480` 帧）。
+        assert_eq!(frames_for_pre_delay(0.0, 4_800.0), 0);
+        assert_eq!(frames_for_pre_delay(0.05, 4_800.0), 240);
+        assert_eq!(frames_for_pre_delay(0.1, 4_800.0), 480);
+        // 越界：必须**折到 0.1 秒**，不是各自生效。
+        for seconds in [0.1 + f32::EPSILON, 0.2, 1.0, 1.0e6] {
+            assert_eq!(
+                frames_for_pre_delay(seconds, 4_800.0),
+                frames_for_pre_delay(0.1, 4_800.0),
+                "{seconds} s 的预延迟请求必须被折到 0.1 s 上"
+            );
+        }
+        // 负值与非有限值 ⇒ 0（不是回绕成一个巨大的 `usize`）。
+        assert_eq!(frames_for_pre_delay(-1.0, 4_800.0), 0);
+        assert_eq!(frames_for_pre_delay(f32::NAN, 4_800.0), 0);
+        assert_eq!(frames_for_pre_delay(f32::INFINITY, 4_800.0), 0);
+        // 帧数上限：`96 kHz` 下 `0.1 s` 恰好是 `9 600` 帧，再大的采样率被帧数上限压住。
+        assert_eq!(frames_for_pre_delay(0.1, 96_000.0), MAX_PRE_DELAY_FRAMES);
+        assert_eq!(
+            frames_for_pre_delay(0.1, 192_000.0),
+            MAX_PRE_DELAY_FRAMES,
+            "帧数上限必须同时生效"
+        );
+        // 非空证明：界内读数与越界读数必须真的不同。
+        assert_ne!(
+            frames_for_pre_delay(0.05, 4_800.0),
+            frames_for_pre_delay(0.1, 4_800.0)
+        );
+    }
+
     fn interleaved(frames: usize, quantum: u64, scale: f32) -> Vec<f32> {
         let mut block = vec![0.0f32; 2 * frames];
         fill(&mut block, quantum, scale);

@@ -1298,4 +1298,126 @@ mod tests {
             "正对照不出声 ⇒ 这套夹具听不到线里的旧音频，② 是空断言"
         );
     }
+
+    /// **判据（新写，可红）**：一段**湿路脉冲响应**被逐位冻结（位型哈希 +
+    /// 首次到达的帧下标），三个夹具各一份。
+    ///
+    /// 量什么：
+    /// - `48 kHz` / 预延迟 `12 ms` / `mix = 1.0`（纯湿）下 `8 192` 帧的
+    ///   `left` ＋ `right` 全部 `f32` 位型折成一个 `FNV-1a 64`（覆盖 `16 384` 个位型）；
+    /// - `96 kHz` / 预延迟 `0.1 s`（**参数上界**）/ 同上，`16 384` 帧；
+    /// - `48 kHz` / 预延迟 `0.1 s` / 同上（用来钉"`0.2 s` 必须折到 `0.1 s`"）；
+    /// - 三份夹具各自**首次非零湿样本的下标**（单位：帧）。
+    ///
+    /// ⚠ 脉冲只喂 **L** 声道：两声道相同时 `side = (wet_l − wet_r) · 0.5 · …`
+    /// 恒为 `0`，`mid`／`side` 的两个 `0.5` 平均就都不可观测（实测：两声道都喂时
+    /// 注入 R04/R07 存活）。
+    ///
+    /// 为什么需要它：本票的注入 R01–R07 **全部存活**（全量 417 条判据无一变红）。
+    /// 既有判据测的是"尾巴是否衰减""干湿是否线性叠加""预延迟是否按秒位移"这类
+    /// **结构**性质，对整条链的**绝对刻度**不敏感。被躲过的七处是：
+    /// ① 参考采样率 `44 100 → 48 000`（改变全部梳状/全通长度）；
+    /// ② 预延迟帧数上限差一（在 `96 kHz × 0.1 s` 这个角上才可观测：`9 600` 对 `9 599`）；
+    /// ③ 输入混合的 `0.5` 平均（`(dl + dr) · 0.5 · 0.015`）；
+    /// ④ `mid` 的 `0.5` 平均；
+    /// ⑤ 全通反馈 `0.5`；
+    /// ⑥ 预延迟**参数**上界 `0.1 s`（放宽成 `0.2 s` 后 `0.2 s` 请求各自生效）；
+    /// ⑦ `side` 的 `0.5` 平均。
+    /// 首次到达的下标对 ①／②／⑥ 敏感（长度变了），位型哈希对 ③／④／⑤／⑦ 敏感（刻度变了）。
+    ///
+    /// 跨架构（裁决 R24）：湿路只有 `+ − × ÷` 与比较，**没有**超越函数
+    /// （`sin`／`cos` 只出现在本模块的测试夹具里）⇒ 属 ADR-0001 的 **IEEE 精确类**
+    /// ⇒ 处处硬断言位型与下标，⛔ 不需要 `aarch64` 门。
+    #[test]
+    fn the_wet_impulse_response_is_frozen_bit_for_bit() {
+        /// 把一整段位型折成一个 64 位数（与 `math.rs` 的判据同一算法）。
+        fn fnv1a64(words: &[u64]) -> u64 {
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            for word in words {
+                for byte in word.to_le_bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            hash
+        }
+
+        /// 纯湿夹具：一个单位脉冲进湿路（`dry = 1 − mix = 0`），返回
+        /// （首次到达下标，位型哈希，位型总数）。
+        fn reading(sample_rate: f32, predelay: f32, frames: usize) -> (usize, u64, usize) {
+            let mut verb = Reverb::new();
+            verb.set_sample_rate(sample_rate);
+            verb.set_params(ReverbParams {
+                size: 0.45,
+                damp: 0.35,
+                mix: 1.0,
+                width: 0.8,
+                predelay,
+            });
+            let mut left = vec![0.0f32; frames];
+            let mut right = vec![0.0f32; frames];
+            // ⚠ **再调一次** `set_sample_rate`：预延迟帧数在 `set_sample_rate` 与
+            // `set_params` 两处各算一次，只调一次时后者的读数会覆盖前者 ⇒
+            // `set_sample_rate` 里的上限（`PREDELAY_MAX − 1`）不可观测（实测：注入 R02
+            // 在只调一次的夹具下存活）。这一次调用不改变基线读数（长度与状态都和
+            // 刚才那次相同），只让那条上限可观测。
+            verb.set_sample_rate(sample_rate);
+            // ⚠ 只喂 **L**：两声道相同时 `side = (wet_l − wet_r) · 0.5 · …` 恒为 0，
+            // `mid`／`side` 的两个 `0.5` 平均就都不可观测（本票注入 R04/R07 实测）。
+            left[0] = 1.0;
+            verb.process(&mut left, &mut right);
+            let first = left
+                .iter()
+                .position(|value| *value != 0.0)
+                .expect("湿路必须有首次到达");
+            let words: Vec<u64> = left
+                .iter()
+                .chain(right.iter())
+                .map(|value| u64::from(value.to_bits()))
+                .collect();
+            (first, fnv1a64(&words), words.len())
+        }
+
+        let fast = reading(48_000.0, 0.012, 8_192);
+        assert_eq!(fast.2, 16_384, "夹具规模变了 ⇒ 指纹的前提不再成立");
+
+        let corner = reading(96_000.0, 0.1, 16_384);
+        assert_eq!(corner.2, 32_768, "夹具规模变了 ⇒ 指纹的前提不再成立");
+
+        // 预延迟的**参数上界**（0.1 秒）：`0.2 s` 必须与 `0.1 s` 落在同一条输出上。
+        // 这是注入 R06 唯一可观测的地方（`0.2 s` 在 `48 kHz` 下是 `9 600` 帧，
+        // 而上限 `PREDELAY_MAX − 1` 是 `9 599`）。
+        let upper = reading(48_000.0, 0.1, 8_192);
+        assert_eq!(upper.2, 16_384, "夹具规模变了 ⇒ 指纹的前提不再成立");
+        let clamped = reading(48_000.0, 0.2, 8_192);
+        assert_eq!(clamped.2, 16_384, "夹具规模变了 ⇒ 指纹的前提不再成立");
+
+        assert_eq!(clamped.0, upper.0, "0.2 s 的预延迟请求必须被折到 0.1 s 上");
+        assert_eq!(
+            clamped.1, upper.1,
+            "0.2 s 的预延迟请求必须给出与 0.1 s 相同的位型"
+        );
+        assert_ne!(upper.0, fast.0, "0.1 s 与 0.012 s 的首次到达必须不同");
+
+        assert_eq!(fast.0, 1_790, "48 kHz 的首次到达下标漂移了");
+        assert_eq!(
+            fast.1, 0xf8b0_4ea6_a09c_bfeb,
+            "48 kHz 的湿路脉冲响应位型漂移了"
+        );
+        assert_eq!(corner.0, 12_028, "96 kHz × 0.1 s 的首次到达下标漂移了");
+        assert_eq!(
+            corner.1, 0xd6a6_5b46_cfd5_e413,
+            "96 kHz × 0.1 s 的湿路脉冲响应位型漂移了"
+        );
+        assert_eq!(upper.0, 6_014, "0.1 s 的首次到达下标漂移了");
+        assert_eq!(
+            upper.1, 0x748c_6054_5c60_6989,
+            "0.1 s 的湿路脉冲响应位型漂移了"
+        );
+
+        // 非空证明：两份夹具必须给出**不同**的读数，否则"两个采样率各一份"
+        // 这句话没有内容（例如某个读数恒为 0 时两条断言都会通过）。
+        assert_ne!(fast.0, corner.0, "两个采样率的首次到达必须不同");
+        assert_ne!(fast.1, corner.1, "两个采样率的位型必须不同");
+    }
 }
