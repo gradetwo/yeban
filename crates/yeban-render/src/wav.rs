@@ -659,6 +659,60 @@ mod tests {
         assert_eq!(format.block_align(), 6);
     }
 
+    /// 判据 (**类别 6: 缓冲变体 / 类别一致性**): [`format_of`] 对**三个**缓冲变体都反推出
+    /// 同类别的格式 —— 浮点缓冲必须给出 `is_float = true` 的格式, 否则它自己反推出来的
+    /// 格式会被自己的 [`check_match`] 拒绝。
+    ///
+    /// # 为什么既有判据测不到（本机实测的注入读数）
+    ///
+    /// 本机把 `BitDepth::Float32 => PcmFormat::float(channels, sample_rate, 32)` 注入成
+    /// `PcmFormat::integer(channels, sample_rate, 32)` 时, 全量
+    /// `cargo test -p yeban-render` **全绿**（`test result: ok. 176 passed; 0 failed`）——
+    /// 既有的 `format_of_agrees_with_check_match` 只走了 `Int24` 这**一个**变体,
+    /// 而 `mismatched_format_and_buffer_are_rejected` 里的浮点格式是**手写**的,
+    /// 不经过 `format_of`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 三个变体各一份**合法**缓冲（`Int16` / `Int24` / `Float32`, 声道数 2,
+    /// 采样率 48 kHz）。单位: 位深是**位/样本**。读数: `format_of` 的
+    /// `bits_per_sample` 与 `is_float`, 以及 `check_match` 的判决。
+    ///
+    /// # 非空证明
+    ///
+    /// 三个变体覆盖了 `is_float` 的**两个**取值（`false` × 2 与 `true` × 1）——
+    /// 只断言 `Int16`/`Int24` 的话, `is_float` 这一位根本没有判别力。
+    #[test]
+    fn format_of_covers_every_buffer_variant() {
+        let cases = [
+            (PcmBuffer::Int16(vec![0, 1]), 16u16, false),
+            (PcmBuffer::Int24(vec![0, 1]), 24, false),
+            (PcmBuffer::Float32(vec![0.0, 1.0]), 32, true),
+        ];
+        let mut float_cases = 0usize;
+        for (buffer, bits, is_float) in cases {
+            let format = format_of(&buffer, 2, 48_000);
+            assert_eq!(format.channels, 2);
+            assert_eq!(format.sample_rate, 48_000);
+            assert_eq!(
+                format.bits_per_sample, bits,
+                "{buffer:?}: format_of 反推的位深"
+            );
+            assert_eq!(
+                format.is_float, is_float,
+                "{buffer:?}: 类别必须与缓冲的变体一致"
+            );
+            assert!(
+                check_match(&format, &buffer).is_ok(),
+                "{buffer:?}: format_of 与 check_match 必须自洽"
+            );
+            if is_float {
+                float_cases += 1;
+            }
+        }
+        assert!(float_cases > 0, "必须至少覆盖一个浮点变体");
+    }
+
     /// 判据 10（**跨模块**）: 同一个 `PcmFormat` 在本 crate 的**两条写入器**上必须得到
     /// 同一个判决 —— 这里取 `bits_per_sample == 0` 这一格。
     ///
