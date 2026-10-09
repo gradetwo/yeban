@@ -811,6 +811,67 @@ mod tests {
         );
     }
 
+    /// **判据（可红）**：同一 IR 重复施加的**后置条件** [ARCH-DET-001]。
+    ///
+    /// [`Self::set_impulse_response`] 的契约是"每一次调用都重算 IR 频谱并清空频域
+    /// 延迟线与重叠相加尾"（见该方法的文档）。因此在一段音频**中间**用**同一个**
+    /// IR 再调用一次，等价于一次复位：接下来的块必须与"一台刚配置好该 IR 的实例
+    /// 处理同一个块"**逐位相同**，而不是"上一块的继续"。
+    ///
+    /// 量什么：两个 128 帧块。先处理块 A（把延迟线与 OLA 尾灌满），再决定要不要
+    /// 用同一 IR 再配置一次；随后对同一台实例处理块 B。参照是一台**只**处理块 B 的
+    /// 新实例。断言两条：重复施加后与参照逐位相同（后置条件），且**不**重复施加时
+    /// 与参照不同（证明本判据观测的是这次清除，而不是一个恒真式）。
+    ///
+    /// 注入（本机实测）：把 `set_impulse_response` 末尾那次 `self.reset()` 删掉 ⇒
+    /// 第二条断言仍然成立，第一条变红（残留的 OLA 尾把块 B 的前 128 帧改掉）。
+    #[test]
+    fn re_applying_the_same_ir_resets_like_a_fresh_device() {
+        let ir = pseudo_random(300, 0x0DDF_0001);
+        let a = pseudo_random(CONV_BLOCK_FRAMES, 0x0DDF_0002);
+        let b = pseudo_random(CONV_BLOCK_FRAMES, 0x0DDF_0003);
+
+        // 参照：刚配置好该 IR 的实例只处理块 B。
+        let mut fresh = Convolution::new();
+        fresh.set_impulse_response(&ir);
+        let mut reference = b.clone();
+        fresh.process(&mut reference);
+
+        // 主体：处理块 A，用同一 IR 再配置一次，再处理块 B。
+        let mut conv = Convolution::new();
+        conv.set_impulse_response(&ir);
+        let mut pa = a.clone();
+        conv.process(&mut pa);
+        conv.set_impulse_response(&ir);
+        let mut after_reset = b.clone();
+        conv.process(&mut after_reset);
+        assert!(
+            after_reset
+                .iter()
+                .zip(reference.iter())
+                .all(|(x, y)| x.to_bits() == y.to_bits()),
+            "同一 IR 重复施加后与全新实例不逐位相同"
+        );
+
+        // 对照：不在中间重复施加时，块 B 是块 A 的**继续**（OLA 尾还在），
+        // 因此它与参照必须不同 —— 否则上面的断言什么都没观测到。
+        let mut continuous = Convolution::new();
+        continuous.set_impulse_response(&ir);
+        let mut pa2 = a.clone();
+        continuous.process(&mut pa2);
+        let mut continued = b.clone();
+        continuous.process(&mut continued);
+        let differing = continued
+            .iter()
+            .zip(reference.iter())
+            .filter(|(x, y)| x.to_bits() != y.to_bits())
+            .count();
+        assert!(
+            differing > 0,
+            "不带中间重配置的块 B 与参照相同 ⇒ 本判据没有观测到那次清除"
+        );
+    }
+
     /// **判据（可红）**：超长 IR 被截断到 [`CONV_MAX_IR_FRAMES`]，返回值报出真值。
     ///
     /// 注入：把 `ir.len().min(CONV_MAX_IR_FRAMES)` 改成 `ir.len()` ⇒ 本判据变红。

@@ -974,6 +974,124 @@ mod tests {
         );
     }
 
+    /// **判据（可红）**：同一组参数**重复**施加是严格空操作 [ARCH-DET-001]。
+    ///
+    /// [`Reverb::set_params`] 的文档声明："预延迟的帧数**没变**时一个字节都不动：
+    /// 梳状组、全通组与两条预延迟线的历史全部保留，因此『同一组参数重复设置』是
+    /// 严格空操作。" 本判据把这条声明变成可红断言 —— 逐位一致类判据不靠改期望值变绿。
+    ///
+    /// 量什么（单位：个样本）：三台同参数实例吃**同样**的激励块，随后
+    ///   * `baseline` 不再动参数；
+    ///   * `reapplied` 在块 A 与块 B 之间把**同一** `ReverbParams` 再设置一次；
+    ///   * `cleared` 也再设置一次，但它吃的是一根**很短的**脉冲（`[1, 0, 0, …]`，湿
+    ///     路只被激励一帧）⇒ 块 A 之后它的两条预延迟线与梳状组里只剩一点衰减尾，
+    ///     与 `baseline` 灌满的历史明显不同。
+    ///
+    /// 断言两条：① `reapplied` 的块 B 与 `baseline` **逐位相同**（重复设参是空操作）；
+    /// ② `cleared` 与 `baseline` **至少 `1` 个样本不同** —— 第二条是本判据的**牙**：
+    /// 它证明"预延迟线里确实有上一块留下的历史"，因此第一条不是"本来就没历史"
+    /// 的假绿。预延迟取 `0.02 s`（`960` 帧 @48 kHz），块长 `4 096` 帧 ⇒ 探测块里
+    /// 的湿路读的是**上一块**写进预延迟线的样本。
+    ///
+    /// 注入（本机实测）：把 [`Reverb::set_params`] 里 `if wanted != self.pre_len`
+    /// 的条件去掉（即每次设参都清两条预延迟线）⇒ 断言 ① 立即变红；把该分支整体
+    /// 删掉（帧数变了也不清）⇒ 既有的
+    /// [`tests::changing_the_pre_delay_length_never_replays_stale_audio`] 变红，
+    /// 本判据仍绿。
+    #[test]
+    fn re_applying_the_same_params_is_a_no_op() {
+        /// 每个块的帧数。`0.02 s` 预延迟 = `960` 帧，`4 096` 帧让两条预延迟线
+        /// 与最长的梳状线都绕过好几圈。
+        const FRAMES: usize = 4_096;
+
+        let params = ReverbParams {
+            size: 0.8,
+            damp: 0.3,
+            mix: 0.6,
+            width: 0.6,
+            predelay: 0.02,
+        };
+        let build = || {
+            let mut verb = Reverb::new();
+            verb.set_sample_rate(SR);
+            verb.set_params(params);
+            verb
+        };
+
+        // 块 A：`baseline` 与 `reapplied` 吃同样的激励，把预延迟线与梳状组灌满；
+        // `cleared` 吃一根脉冲，湿路全零 ⇒ 它的历史是零。
+        let mut baseline = build();
+        let mut reapplied = build();
+        let mut cleared = build();
+        let mut left = vec![0.0f32; FRAMES];
+        let mut right = vec![0.0f32; FRAMES];
+        excite(&mut left, &mut right, 7, 0.5);
+        baseline.process(&mut left, &mut right);
+        excite(&mut left, &mut right, 7, 0.5);
+        reapplied.process(&mut left, &mut right);
+        let mut impulse_l = vec![0.0f32; FRAMES];
+        let mut impulse_r = vec![0.0f32; FRAMES];
+        impulse_l[0] = 1.0;
+        impulse_r[0] = 1.0;
+        cleared.process(&mut impulse_l, &mut impulse_r);
+        assert!(
+            left.iter().any(|v| v.abs() > 1e-3),
+            "块 A 没有产生任何输出 ⇒ 本判据测的是空壳"
+        );
+
+        // 重复施加**同一**参数。
+        reapplied.set_params(params);
+        cleared.set_params(params);
+
+        // 块 B：三台处理同一段输入。
+        let mut probe_left = vec![0.0f32; FRAMES];
+        let mut probe_right = vec![0.0f32; FRAMES];
+        excite(&mut probe_left, &mut probe_right, 8, 0.4);
+
+        let mut base_l = probe_left.clone();
+        let mut base_r = probe_right.clone();
+        baseline.process(&mut base_l, &mut base_r);
+
+        let mut re_l = probe_left.clone();
+        let mut re_r = probe_right.clone();
+        reapplied.process(&mut re_l, &mut re_r);
+
+        let mut clr_l = probe_left.clone();
+        let mut clr_r = probe_right.clone();
+        cleared.process(&mut clr_l, &mut clr_r);
+
+        // ① 重复施加同样的参数 ⇒ 与只施加一次的实例逐位相同。
+        for (i, (out, want)) in re_l.iter().zip(&base_l).enumerate() {
+            assert_eq!(
+                out.to_bits(),
+                want.to_bits(),
+                "样本 {i}: 重复施加同一组参数改变了左声道"
+            );
+        }
+        for (i, (out, want)) in re_r.iter().zip(&base_r).enumerate() {
+            assert_eq!(
+                out.to_bits(),
+                want.to_bits(),
+                "样本 {i}: 重复施加同一组参数改变了右声道"
+            );
+        }
+
+        // ② 反向对照：历史被清掉的那一台必须与保留历史的那一台不同。
+        let cleared_differences = clr_l
+            .iter()
+            .zip(&base_l)
+            .filter(|(out, want)| out.to_bits() != want.to_bits())
+            .count();
+        assert!(
+            cleared_differences > 0,
+            "清掉历史的实例与保留历史的实例逐位相同 ⇒ 本判据的断言 ① 没有判别力"
+        );
+        eprintln!(
+            "[yeban-dsp] reverb::set_params 重复施加读数（单位：个样本）: \
+             与只施加一次逐位差异=0；清历史对照差异={cleared_differences}/{FRAMES}"
+        );
+    }
+
     /// **判据（新写，可红）**：延迟上报恒为 `0`，且预延迟**只**推迟湿路。
     ///
     /// 量什么：① [`Reverb::latency_samples`] 的读数（单位：帧）；② 预延迟
