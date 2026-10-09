@@ -2747,19 +2747,33 @@ fn apply_propose(
             )
         })
         .collect();
-    let head_commit = domain
-        .graph
-        .genesis(
-            CommitDraft::new(
-                EntityId::new(),
-                branch.clone(),
-                AGENT_NAME,
-                draft.title.clone(),
+    let head_commit = {
+        // 隔离分支建在**提案的基线提交**上（`CommitGraph::create_branch`），再在上面写
+        // 提案提交（`CommitGraph::append`）。于是"提案基于哪个提交"是**图谱里的一条父边**，
+        // 而不是只写在 `Proposal` 记录里的一个字面量。
+        //
+        // 为什么不是 `genesis`（孤立根提交）：孤立根与基线之间没有任何父边 ⇒ 只看
+        // `history.dag` 无法说出这个提案是从哪儿分出来的。两处的差别只在图谱写什么，
+        // 主分支的头、工程字节与 op 日志都不动（`create_branch` **不**写提交，
+        // 且**不**动任何既有分支头）。
+        domain
+            .graph
+            .create_branch(branch.clone(), &draft.base_commit)
+            .map_err(|failure| error::from_model("提案分支", &failure))?;
+        domain
+            .graph
+            .append(
+                CommitDraft::new(
+                    EntityId::new(),
+                    branch.clone(),
+                    AGENT_NAME,
+                    draft.title.clone(),
+                )
+                .with_created_at(now_ms)
+                .with_ops(stamped.clone()),
             )
-            .with_created_at(now_ms)
-            .with_ops(stamped.clone()),
-        )
-        .map_err(|failure| error::from_model("提案分支", &failure))?;
+            .map_err(|failure| error::from_model("提案分支", &failure))?
+    };
     let record = Proposal {
         id: proposal_id,
         branch: branch.clone(),
@@ -2886,7 +2900,10 @@ fn apply_merge(
             ..
         } = domain;
         let active = active.as_mut().ok_or_else(no_active_project)?;
-        undo_session::commit(
+        // **多父合并提交**（`docs/ledger/tools-domain-notes.md` 的 needs-5 第二半）：
+        // 额外父 = 提案分支的头提交 ⇒ `history.dag` 自己就说得清"这次合并并了谁"。
+        // 第一父仍是活跃分支头（`append_merge` 的既定语义）⇒ 主干方向与撤销不变。
+        undo_session::commit_merge(
             graph,
             &mut active.project,
             undo,
@@ -2899,9 +2916,29 @@ fn apply_merge(
                 message: commit_message.to_owned(),
                 ops,
             },
+            &[snapshot.head_commit],
         )
         .map_err(undo_refusal_to_fault)?
     };
+
+    // 父集合从**图谱里读回**，不把"我请求的父"当成事实：有已撤销的步骤时提交落在
+    // `fork_anonymous` 上（单父），此时上报一条 `isMerge: false` 才是真话。
+    let commit_record = domain
+        .graph()
+        .commit(&merge_commit)
+        .map_err(|failure| error::from_model("合并提交读取", &failure))?;
+    let commit_parents: Vec<Value> = commit_record
+        .parents
+        .iter()
+        .map(|parent| Value::from(parent.to_canonical_string()))
+        .collect();
+    let commit_is_merge = commit_record.is_merge();
+    // 深度缓存与提交集合的键集**恒**相同（模型 `CommitGraph::validate` 的第 3 条不变量）
+    // ⇒ 这里读不到深度是图谱损坏，按领域失败上报，绝不静默记成 0。
+    let commit_depth = domain
+        .graph()
+        .depth_of(&merge_commit)
+        .map_err(|failure| error::from_model("合并提交深度读取", &failure))?;
 
     let new_digest = domain
         .active_project()
@@ -2934,6 +2971,10 @@ fn apply_merge(
             "branch": branch,
             "message": commit_message,
             "atomicBatch": true,
+            "parents": commit_parents,
+            "parentCount": commit_parents.len(),
+            "isMerge": commit_is_merge,
+            "depth": commit_depth,
         },
         "proposal": detail,
     })))
@@ -3428,6 +3469,194 @@ mod tests {
         )
         .expect("带内");
         assert_eq!(rejected["error"]["code"], "CONFLICT");
+    }
+
+    /// 判据：合并提案写出的是一条**多父合并提交**，且"提案基于哪个提交"是图谱里的一条父边。
+    ///
+    /// 关闭 `docs/ledger/tools-domain-notes.md` 的 **needs-5** 第二半（模型层已提供
+    /// `CommitGraph::append_merge` 与 `CommitGraph::create_branch`）。
+    ///
+    /// 三个量各自钉住一件事：
+    ///
+    /// 1. 合并提交的父集合**逐位**是 `[合并前的活跃头, 提案头]` ⇒ "并了谁"写进图谱；
+    /// 2. `CommitGraph::ancestry` 只走第一父 ⇒ 提案的提交**不**进主干祖先链，
+    ///    因此撤销仍然是"一次回退整套 AI 变更"；
+    /// 3. 提案分支头的第一父 = 提案的 `baseCommit` ⇒ 分叉点也在图谱里。
+    #[test]
+    fn a_merged_proposal_is_a_two_parent_commit_and_the_base_is_a_real_parent() {
+        let mut domain = domain();
+        let track = fixture_track(&domain);
+        let base_commit = domain.active_head().expect("基线头");
+
+        let created = execute(
+            &mut domain,
+            &call(
+                "yeban_set_macro",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "macroIndex": 0,
+                    "value": 0.25,
+                }),
+            ),
+        )
+        .expect("创建提案");
+        let proposal_id = created["data"]["proposal"]["proposalId"]
+            .as_str()
+            .expect("proposalId")
+            .to_owned();
+        let proposal_head = created["data"]["proposal"]["headCommit"]
+            .as_str()
+            .expect("headCommit")
+            .to_owned();
+
+        // ① 提案分支头是**基线提交的子**，不再是孤立根提交。
+        let proposal_head_id = EntityId::from_str(&proposal_head).expect("提案头是 ULID");
+        let proposal_commit = domain
+            .graph()
+            .commit(&proposal_head_id)
+            .expect("提案提交在图谱里");
+        assert_eq!(
+            proposal_commit.parents,
+            vec![base_commit],
+            "提案提交的父必须恰是它的 baseCommit"
+        );
+
+        // ② 创建提案**不动**主分支头，也不动工程字节。
+        assert_eq!(domain.active_head(), Some(base_commit), "主分支头不得前移");
+
+        let merged = execute(
+            &mut domain,
+            &call(
+                "yeban_merge_proposal",
+                serde_json::json!({"proposalId": proposal_id, "commitMessage": "接入宏"}),
+            ),
+        )
+        .expect("合并");
+        assert_eq!(merged["data"]["merged"], true);
+        assert_eq!(domain.commit_count(), 3, "根提交 + 提案提交 + 合并提交");
+
+        // ③ 合并提交：响应与图谱**逐位一致**，父集合是 `[基线, 提案头]`。
+        let merge_commit = EntityId::from_str(
+            merged["data"]["commit"]["id"]
+                .as_str()
+                .expect("合并提交身份"),
+        )
+        .expect("合并身份是 ULID");
+        let expected_parents = vec![base_commit, proposal_head_id];
+        assert_eq!(
+            domain
+                .graph()
+                .commit(&merge_commit)
+                .expect("合并提交")
+                .parents,
+            expected_parents,
+            "第一父恒为合并前的活跃头, 第二父是提案头"
+        );
+        assert_eq!(
+            merged["data"]["commit"]["parents"],
+            serde_json::json!([base_commit.to_canonical_string(), proposal_head]),
+            "响应里的父集合必须与图谱逐位相同"
+        );
+        assert_eq!(merged["data"]["commit"]["isMerge"], true);
+        assert_eq!(merged["data"]["commit"]["parentCount"], 2);
+        assert_eq!(merged["data"]["commit"]["depth"], 3, "根=1 ⇒ 合并提交=3");
+        assert_eq!(domain.graph().validate(), Ok(()), "多父合并后图谱必须自洽");
+
+        // ④ 主干祖先链只走第一父：提案提交**不**在 `main` 的祖先链上。
+        let ancestry = domain.graph().ancestry(&merge_commit).expect("祖先链");
+        assert_eq!(ancestry, vec![merge_commit, base_commit], "主干只有两跳");
+        assert!(!ancestry.contains(&proposal_head_id), "提案提交不得进主干");
+
+        // ⑤ 合并仍然算**一步**撤销。
+        let undone =
+            execute(&mut domain, &call("yeban_undo", serde_json::json!({}))).expect("撤销合并");
+        assert_eq!(undone["data"]["steps"], 1);
+    }
+
+    /// 判据：撤销之后继续合并落在**匿名分支**上时，响应必须**如实**报"这不是一次合并"。
+    ///
+    /// 这一条钉住的是"父集合从图谱读回、而不是把请求当成事实"这个决定。
+    /// `undo_session::commit_merge` 在"撤销位置"上只能走 `CommitGraph::fork_anonymous`
+    /// （它没有额外父参数）⇒ 写出的提交是**单父**的。若这里改成把请求的父集合
+    /// （`[活跃头, 提案头]`）当成事实写进响应，本条判据变红。
+    #[test]
+    fn merging_after_an_undo_reports_the_single_parent_it_actually_wrote() {
+        let mut domain = domain();
+        let track = fixture_track(&domain);
+        let root_commit = domain.active_head().expect("根提交");
+
+        // 第一条提案：合并 => main 头前移一格。
+        let first = execute(
+            &mut domain,
+            &call(
+                "yeban_set_macro",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "macroIndex": 0,
+                    "value": 0.25,
+                }),
+            ),
+        )
+        .expect("第一条提案");
+        execute(
+            &mut domain,
+            &call(
+                "yeban_merge_proposal",
+                serde_json::json!({
+                    "proposalId": first["data"]["proposal"]["proposalId"],
+                    "commitMessage": "第一次",
+                }),
+            ),
+        )
+        .expect("第一次合并");
+
+        // 撤销一步 ⇒ 下一步编辑（这里是一次合并）必须落在撤销位置上的匿名分支。
+        let undone =
+            execute(&mut domain, &call("yeban_undo", serde_json::json!({}))).expect("撤销");
+        assert_eq!(undone["data"]["steps"], 1);
+
+        let second = execute(
+            &mut domain,
+            &call(
+                "yeban_set_macro",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "macroIndex": 0,
+                    "value": 0.5,
+                }),
+            ),
+        )
+        .expect("第二条提案");
+        let merged = execute(
+            &mut domain,
+            &call(
+                "yeban_merge_proposal",
+                serde_json::json!({
+                    "proposalId": second["data"]["proposal"]["proposalId"],
+                    "commitMessage": "撤销之后",
+                }),
+            ),
+        )
+        .expect("撤销之后合并");
+
+        assert_eq!(merged["data"]["merged"], true);
+        // `baseCommitMoved` 量的是**活跃分支头**：撤销不动分支头，因此这里是 `false`。
+        // 撤销留下的痕迹体现在别处 —— 提交落在一条匿名分支上（见下）。
+        assert_eq!(merged["data"]["baseCommitMoved"], false);
+        assert!(
+            merged["data"]["commit"]["branch"]
+                .as_str()
+                .expect("分支名")
+                .starts_with("anon-"),
+            "撤销位置上的提交必须落在匿名分支上: {merged}"
+        );
+        assert_eq!(
+            merged["data"]["commit"]["parents"],
+            serde_json::json!([root_commit.to_canonical_string()]),
+            "写出来的就是单父提交 ⇒ 响应不得声称它有两个父"
+        );
+        assert_eq!(merged["data"]["commit"]["isMerge"], false);
+        assert_eq!(merged["data"]["commit"]["parentCount"], 1);
     }
 
     #[test]

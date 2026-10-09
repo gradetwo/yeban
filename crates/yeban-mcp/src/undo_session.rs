@@ -58,6 +58,14 @@
 //! 在克隆体上试跑），并且只产生一条 [`StampedOp`] ⇒ `yeban_propose_section` 产出的那批
 //! （章节 + 摆放 + 声部连接）算**一步**，不是 N 步。
 //!
+//! ## 多父合并提交：[`commit_merge`]
+//!
+//! [`commit_merge`] 与 [`commit`] 是**同一个实现体**（私有 [`commit_with`]），只差一个
+//! "额外父集合"参数。它把 `yeban-model` 的 [`CommitGraph::append_merge`] 用于
+//! "提案分支 → 主分支"的合并，因此**合并这件事写进图谱**，而不是只写在调用方的记录里。
+//! 主干的形状不变：`append_merge` 的第一父恒为当前分支头，
+//! [`CommitGraph::ancestry`] 与跨提交撤销仍然只走主干。
+//!
 //! ## 判据怎么用本文件
 //!
 //! 本文件的 `#[cfg(test)]` 会**在两个 crate 里各跑一遍**（这正是"同一份实现"的证据）。
@@ -448,6 +456,49 @@ pub fn commit(
     state: &mut UndoState,
     request: CommitRequest,
 ) -> Result<EntityId, UndoRefusal> {
+    commit_with(graph, project, state, request, &[])
+}
+
+/// 同 [`commit`]，但把这次提交写成**多父合并提交**（`merge_parents` 是额外的父提交）。
+///
+/// [`CommitGraph::append_merge`] 的语义照搬过来，一字不改：父集合 =
+/// `[当前分支头] ++ merge_parents`，**第一父恒为当前分支头**。因此：
+///
+/// - `CommitGraph::ancestry` 与跨提交撤销走的仍是同一条主干（被合并那一侧的提交
+///   **不**出现在主干的祖先链上）⇒ "一次 `Cmd+Z` 回退整套被合并的 op"不变；
+/// - 合并关系由**图谱本身**承担，而不是只写在调用方（MCP 的 `Proposal` 记录）里。
+///
+/// ## `merge_parents` 什么时候**不**生效
+///
+/// 当前有已撤销的步骤时（`state.cursor.skip > 0`），提交必须落在**撤销位置**上并派生
+/// 匿名分支（见 [`commit`] 的第 2 步）—— 那是 [`CommitGraph::fork_anonymous`]，它没有
+/// "额外父"这个参数。此时 `merge_parents` 被**忽略**，写出的提交是**单父**的。
+///
+/// 这一点是刻意**不**静默的：调用方必须从图谱里**读回**这条提交的真实父集合再上报，
+/// 而不是把自己请求的父集合当成事实（`crate::domain` 的 `yeban_merge_proposal` 就是这么做的）。
+///
+/// # Errors
+///
+/// 与 [`commit`] 相同，外加 [`CommitGraph::append_merge`] 的拒绝（父集合内有重复、
+/// 某个父不是已知提交）。
+pub fn commit_merge(
+    graph: &mut CommitGraph,
+    project: &mut YebanProjectV1,
+    state: &mut UndoState,
+    request: CommitRequest,
+    merge_parents: &[EntityId],
+) -> Result<EntityId, UndoRefusal> {
+    commit_with(graph, project, state, request, merge_parents)
+}
+
+/// [`commit`] 与 [`commit_merge`] 的**唯一**实现体（两者只在"额外父集合"上不同）。
+fn commit_with(
+    graph: &mut CommitGraph,
+    project: &mut YebanProjectV1,
+    state: &mut UndoState,
+    request: CommitRequest,
+    merge_parents: &[EntityId],
+) -> Result<EntityId, UndoRefusal> {
     let batch = Op::Batch {
         ops: request.ops,
         description: request.message.clone(),
@@ -482,12 +533,19 @@ pub fn commit(
     .with_created_at(request.now_ms)
     .with_ops(stamped);
     // `fork_anonymous` 会用 `anon-<新提交 ULID>` 命名分支并**忽略**草稿里的分支名，
-    // 因此这里把三种写法的返回值归一成"（可选的新分支名, 提交身份）"。
+    // 因此这里把几种写法的返回值归一成"（可选的新分支名, 提交身份）"。
+    //
+    // ⚠ 分支顺序即语义：有已撤销的步骤时 `fork_from` 恒为 `Some`，此时多父合并**写不出来**
+    // （`fork_anonymous` 没有额外父参数）⇒ `merge_parents` 被忽略，写出的是单父提交。
+    // 调用方必须从图谱读回真实父集合，见 [`commit_merge`] 的文档。
     let written = match fork_from {
         Some(from) => graph
             .fork_anonymous(&from, draft)
             .map(|(branch, id)| (Some(branch), id)),
         None if graph.commit_count() == 0 => graph.genesis(draft).map(|id| (None, id)),
+        None if !merge_parents.is_empty() => graph
+            .append_merge(draft, merge_parents)
+            .map(|id| (None, id)),
         None => graph.append(draft).map(|id| (None, id)),
     };
     // 3) 提交写成之后才替换权威工程。

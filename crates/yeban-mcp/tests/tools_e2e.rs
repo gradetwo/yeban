@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,7 +29,7 @@ use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::jsonrpc::ErrorObject;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{ErrorCode, TOOLS};
-use yeban_model::YebanProjectV1;
+use yeban_model::{EntityId, YebanProjectV1};
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -570,6 +571,102 @@ fn idempotent_merge_does_not_apply_the_batch_twice() {
     assert_eq!(third["data"]["alreadyMerged"], true);
     assert_eq!(third["data"]["appliedOps"], 0);
     assert_eq!(dispatcher.domain().commit_count(), commits_after_first);
+}
+
+// ---------------------------------------------------------------------------
+// 判据 ②·合并：多父合并提交必须**落进 `history.dag`**
+// ---------------------------------------------------------------------------
+
+/// 判据：合并提案写出的**多父合并提交**经过一次真实的"存档 → 关 → 重开"仍然逐位不变。
+///
+/// 关闭 `docs/ledger/tools-domain-notes.md` 的 **needs-5** 第二半：合并关系由
+/// `CommitGraph`（= 容器里的 `history.dag`）承担，而不是只写在 MCP 的 `Proposal` 记录里。
+/// 因此判据必须**跨进程边界**成立 —— 只在内存的 `Domain` 上看一眼不算。
+///
+/// 量的是三个**身份集合**（不是"返回了 Ok"）：
+/// 合并提交的父集合、提案提交的父集合、以及 `validate()` 的结论。
+#[test]
+fn the_merge_commit_survives_the_container_round_trip_with_both_parents() {
+    let scratch = Scratch::new("merge-dag");
+    let (mut dispatcher, auth) = dispatcher();
+    let (path, _opened) = open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_set_macro",
+        json!({ "trackId": track, "macroIndex": 0, "value": 0.7 }),
+    );
+    let proposal = &created["data"]["proposal"];
+    let proposal_id = proposal["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let base_commit = proposal["baseCommit"]
+        .as_str()
+        .expect("baseCommit")
+        .to_owned();
+    let proposal_head = proposal["headCommit"]
+        .as_str()
+        .expect("headCommit")
+        .to_owned();
+
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "接入宏" }),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+    let merge_commit = merged["data"]["commit"]["id"]
+        .as_str()
+        .expect("合并提交身份")
+        .to_owned();
+    assert_eq!(
+        merged["data"]["commit"]["parents"],
+        json!([base_commit, proposal_head]),
+        "第一父 = 合并前的活跃头, 第二父 = 提案头"
+    );
+    assert_eq!(merged["data"]["commit"]["isMerge"], true);
+
+    // 存档 → 关 → 重开：走真实的容器字节（`project.json` + `history.dag` + assets）。
+    let saved = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_save_project",
+        json!({ "force": true }),
+    );
+    assert_eq!(saved["status"], "success", "{saved}");
+    let closed = call(&mut dispatcher, &auth, "yeban_close_project", json!({}));
+    assert_eq!(closed["data"]["closed"], true, "{closed}");
+    let reopened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(reopened["status"], "success", "{reopened}");
+
+    let graph = dispatcher.domain().graph();
+    let merge_id = EntityId::from_str(&merge_commit).expect("合并身份是 ULID");
+    let head_id = EntityId::from_str(&proposal_head).expect("提案身份是 ULID");
+    let base_id = EntityId::from_str(&base_commit).expect("基线身份是 ULID");
+    let round_tripped = graph
+        .commit(&merge_id)
+        .expect("合并提交必须落进 history.dag");
+    assert_eq!(
+        round_tripped.parents,
+        vec![base_id, head_id],
+        "重开之后父集合与顺序都必须逐位相同"
+    );
+    assert!(round_tripped.is_merge(), "重开之后必须仍认得出这是一次合并");
+    assert_eq!(
+        graph.commit(&head_id).expect("提案提交").parents,
+        vec![base_id],
+        "分叉点（提案头 → 基线）也必须落盘"
+    );
+    assert_eq!(graph.validate(), Ok(()), "重开的图谱必须自洽");
 }
 
 // ---------------------------------------------------------------------------

@@ -8,24 +8,26 @@
 //! 只有 `yeban_merge_proposal` 才会把 op 落到主分支上；`yeban_reject_proposal`
 //! 只改记录状态，**不删除**记录 —— "拒绝"也必须可追溯。
 //!
-//! ## `CommitGraph` 的 API 缺口（登记，不隐藏）
+//! ## `CommitGraph` 的两条缺口：**已关闭**（就地更正，不是改写历史）
 //!
-//! 实测 `yeban-model` 的 `CommitGraph`：
+//! 实测 `yeban-model` 的 `CommitGraph` 曾经缺两条能力（`docs/ledger/tools-domain-notes.md`
+//! 的 **needs-5**）：
 //!
-//! | 想要的能力 | 现实 |
+//! | 曾经缺的能力 | 模型层现在有什么 |
 //! | :--- | :--- |
-//! | 在**指定父提交**上创建**命名**分支 | **没有**。`genesis` 建根提交（`parents: []`），`append` 要求分支已存在，`fork_anonymous` 把分支名强制成 `anon-<ulid>` |
-//! | 创建**多父**合并提交 | **没有**。`Commit` 有 `parents: Vec<EntityId>`，但 `append` 永远写 `parents: vec![head]` |
+//! | 在**指定父提交**上创建**命名**分支 | `CommitGraph::create_branch`：指向一个**已存在**的提交，分支名由调用方决定，**不**写提交、**不**动既有分支头 |
+//! | 创建**多父**合并提交 | `CommitGraph::append_merge`：父集合 = `[当前分支头] ++ extra_parents`，第一父恒为当前分支头 |
 //!
-//! 本线的处置：
+//! 本线的处置（**needs-5 的第二半就在这两条上关闭**）：
 //!
-//! - 提案分支用 `genesis` 建成**孤立根提交** —— 这正是"隔离分支"的字面语义
-//!   （它的 `ancestry()` 只有它自己，不会把提案的 op 混进主分支的撤销链）；
-//! - **合并**在主分支上 `append` 一个携带单一原子 `Op::Batch` 的提交，
-//!   两个方向的身份（`base_commit` / `head_commit` / `merge_commit`）由本模块的
-//!   记录承担，主分支的撤销仍然是"一次 `Cmd+Z` 回退整套 AI 变更"（`ARCH-OPS-002`）。
+//! - 提案分支用 `create_branch` 建在 `draft.base_commit` 上，再用 `append` 写提案提交
+//!   ⇒ **分叉点是一条父边**，而不是只写在 [`Proposal::base_commit`] 里的一个字面量；
+//! - **合并**用 `crate::undo_session::commit_merge` 写一条**多父合并提交**，
+//!   第二父是提案分支的头 ⇒ "这次合并并了谁"由**图谱**（`history.dag`）自己承担；
+//!   [`Proposal`] 记录是**另一份**可读的索引，不再是唯一的一份。
 //!
-//! 两条缺口都写进 `docs/ledger/tools-domain-notes.md` 的 needs 清单。
+//! 主干形状**没有**变：`append_merge` 的第一父仍是活跃分支头，`main` 的祖先链上
+//! 不出现提案的提交，撤销仍然是"一次 `Cmd+Z` 回退整套 AI 变更"（`ARCH-OPS-002`）。
 
 use serde_json::{Map, Value};
 
@@ -90,7 +92,7 @@ pub struct Proposal {
     pub status: ProposalStatus,
     /// 基于的主分支头。
     pub base_commit: EntityId,
-    /// 提案分支的（孤立根）提交。
+    /// 提案分支上的提交（其父提交 **=** `base_commit`，见 `CommitGraph::create_branch`）。
     pub head_commit: EntityId,
     /// 主分支上的合并提交（未合并时为 `None`）。
     pub merge_commit: Option<EntityId>,
