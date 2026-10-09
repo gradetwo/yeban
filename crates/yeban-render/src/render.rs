@@ -178,6 +178,24 @@ pub enum RenderError {
     ZeroBlockSize,
     /// 总帧数为 0。
     ZeroFrames,
+    /// 尺寸的乘法**溢出 `usize`** —— `what` 是被算溢出的那个乘积。
+    ///
+    /// [`RenderPlan::compile`] 要算两个乘积: `block_size × channels`（一个节点的交错缓冲
+    /// 长度）与 `frames × channels`（整条母带的采样总数）。两者都用 `checked_mul`。
+    ///
+    /// # 为什么必须由编译期挡（实测）
+    ///
+    /// 修复前 `block_size = usize::MAX`、`channels = 2` 会在 debug 下**直接 panic**
+    /// （`attempt to multiply with overflow`）, 在 release 下回绕成一个小缓冲、随后在
+    /// `buffer[..width]` 上越界。判据是
+    /// `tests::an_extreme_block_size_is_rejected_instead_of_overflowing`。
+    ///
+    /// 这是一条**算术可表示性**检查, 不是内存检查: "这台机器装不下"不是本层能回答的问题,
+    /// 本层只回答"这个乘积在 `usize` 里存不存在"。
+    SizeOverflow {
+        /// 溢出的那个乘积（如 `"block_size * channels"`）。
+        what: &'static str,
+    },
     /// 某条源节点没有注册样本源。
     MissingSource(EntityId),
     /// 给一个**有入边**的节点注册了样本源 —— 那是总线, 不是声部。
@@ -204,6 +222,7 @@ impl core::fmt::Display for RenderError {
             Self::ZeroChannels => f.write_str("声道数为 0"),
             Self::ZeroBlockSize => f.write_str("块大小为 0"),
             Self::ZeroFrames => f.write_str("总帧数为 0"),
+            Self::SizeOverflow { what } => write!(f, "{what} 溢出 usize"),
             Self::MissingSource(node) => write!(f, "节点 {node} 没有注册样本源"),
             Self::SourceOnBusNode(node) => write!(f, "节点 {node} 有入边, 不能注册样本源"),
             Self::UnknownNode(node) => {
@@ -437,6 +456,23 @@ impl RenderPlan {
         if options.frames == 0 {
             return Err(RenderError::ZeroFrames);
         }
+        // 两个尺寸乘积的**可表示性**在编译期定下, `execute` 里的同款乘法因此不再需要
+        // 检查 (它用的是同一对因子)。`frames` 先 `try_from` 再乘: 在 32 位宿主上
+        // `frames as usize` 本身会截断, 截断后乘积仍然"不溢出" —— 那会静默把母带长度
+        // 改掉。`try_from` 把这一格也变成显式的 `Err`。
+        let Some(block_width) = options.block_size.checked_mul(options.channels) else {
+            return Err(RenderError::SizeOverflow {
+                what: "block_size * channels",
+            });
+        };
+        let total_width = usize::try_from(options.frames)
+            .ok()
+            .and_then(|frames| frames.checked_mul(options.channels));
+        if total_width.is_none() {
+            return Err(RenderError::SizeOverflow {
+                what: "frames * channels",
+            });
+        }
         graph
             .validate()
             .map_err(|error| RenderError::InvalidGraph(error.to_string()))?;
@@ -538,7 +574,8 @@ impl RenderPlan {
             .collect();
 
         // ---- 5. 每个节点的入边贡献, 按 (source_node, edge_id) 字典序固定 ----
-        let block_width = options.block_size * options.channels;
+        // `block_width` 已在上面用 `checked_mul` 校验过, 这里直接复用那个值 ——
+        // 不再做第二遍可能溢出的乘法。
         let mut states: Vec<NodeState> = ordered
             .iter()
             .map(|&node| NodeState {
@@ -644,6 +681,20 @@ impl RenderPlan {
     /// `sources` 只需为**真正的源节点** (无入边的保留节点) 提供实现; 给总线注册源
     /// 会被拒绝 ([`RenderError::SourceOnBusNode`])。
     ///
+    /// # 可重复执行 (复位契约)
+    ///
+    /// 本方法在**每一次**执行开始时复位全部跨执行存活的可变状态 (源槽与各条 PDC 延迟线),
+    /// 因此**同一个 [`RenderPlan`] 连续执行多次与每次全新编译再执行逐位等价**。
+    /// 入参 `sources` 是"**这一次**用哪些源": 上一次装载的对象一律不再沿用, 本次没给的
+    /// 源节点报 [`RenderError::MissingSource`]。
+    ///
+    /// 没有这一段复位时, 第二次执行的前 `delay_frames` 帧会读到上一次留在延迟线环里的
+    /// 尾部样本 (旧数据被重放), 且本次缺失的源会静默沿用上一次的对象。判据是
+    /// `tests::a_second_execution_matches_a_fresh_plan` 与
+    /// `tests::a_second_execution_does_not_reuse_sources_from_the_first`。
+    ///
+    /// 源表被拒绝时, 计划里**一个源都没装载** (先整表校验、再装载)。
+    ///
     /// # Errors
     ///
     /// 见 [`RenderError`]。
@@ -655,8 +706,26 @@ impl RenderPlan {
         let block_size = self.options.block_size;
         let total_frames = self.options.frames;
 
-        // 装载样本源, 并做"源节点 vs 总线节点"的静态检查。
-        for (node, source) in sources {
+        // ---- 0. 复位上一次执行留下的可变状态 ----
+        //
+        // 这一段必须发生在**任何装载之前**, 否则"同一个计划执行两次"与"全新编译再
+        // 执行"就不等价: 延迟线的环形缓冲里还留着上一次的尾部样本, 源槽里还留着上一次
+        // 的对象。`NodeState::buffer` / `NodeState::scratch` **不需要**复位 ——
+        // `render_node` 在读取之前会写满 `buffer[..width]`, 而 `DelayLine::process`
+        // 会写满 `scratch[..width]` (见各自文档), 因此每一块读到的都是本块刚写进去的值。
+        for state in &mut self.states {
+            state.source = None;
+            for line in &mut state.delay_lines {
+                line.reset();
+            }
+        }
+
+        // ---- 1. 先校验整张源表, 再装载 ----
+        //
+        // 分两遍是刻意的: 校验失败时计划必须留在**定义明确**的状态 (一个源都没装载),
+        // 而不是"装到一半就返回"。旧实现在同一个循环里边查边装, 于是被拒的源表会在
+        // `states` 里留下排在它前面的那几个源, 下一次执行就把它们当成"调用方给的源"。
+        for &node in sources.keys() {
             let slot = self
                 .slot_of
                 .get(&node)
@@ -665,6 +734,9 @@ impl RenderPlan {
             if !self.states[slot].incoming.is_empty() {
                 return Err(RenderError::SourceOnBusNode(node));
             }
+        }
+        for (node, source) in sources {
+            let slot = self.slot_of[&node];
             self.states[slot].source = Some(source);
         }
         for state in &self.states {
@@ -685,6 +757,8 @@ impl RenderPlan {
             .map_err(|error| RenderError::ThreadPool(error.to_string()))?;
 
         let blocks = total_frames.div_ceil(block_size as u64);
+        // `frames * channels` 的可表示性由 `compile` 的 `checked_mul` 定下 (那一步不过就
+        // 拿不到这个计划), 因此这里的乘法不会溢出 —— 不需要第二遍检查。
         let mut samples = vec![0.0f32; (total_frames as usize) * channels];
 
         pool.install(|| -> Result<(), RenderError> {
@@ -967,6 +1041,11 @@ mod tests {
     }
 
     /// 判据: 同线程数、同输入重复执行 ⇒ 同摘要 (进程内可复现)。
+    ///
+    /// 注意本判据刻意**各自编译一个计划**: 它证明的是"两个全新实例互相一致"。
+    /// "**同一个**计划连续执行两次"是另一条契约, 见
+    /// `a_second_execution_matches_a_fresh_plan` —— 那一条需要真实延迟线才有的区分力,
+    /// 本判据的星形图没有延迟。
     #[test]
     fn repeated_runs_agree() {
         let (routing, master, sources) = star_graph(8);
@@ -980,6 +1059,112 @@ mod tests {
             .execute(synthetic_sources(&sources, options.seed))
             .expect("渲染");
         assert_eq!(a.digest, b.digest);
+    }
+
+    /// 判据 (**复位契约**): **同一个计划**连续执行两次, 第二次必须与**全新编译**的
+    /// 计划逐位一致。
+    ///
+    /// 延迟线的环形缓冲与帧游标是跨执行存活的可变状态。不复位时, 第二次执行的前
+    /// `delay_frames` 帧读到的是**上一次执行留在环里的尾部样本** —— 旧数据被重放,
+    /// 同一份输入两次执行因此给出不同的母带。
+    ///
+    /// 图必须含**真实补偿延迟**, 否则这条判据没有区分力: 这里复用
+    /// `pdc_compensation_delays_the_short_branch` 的形状 (短支路补 `L_max` = 96 帧)。
+    #[test]
+    fn a_second_execution_matches_a_fresh_plan() {
+        let master = ulid(0xFFFF);
+        let fast = ulid(1);
+        let slow_bus = ulid(2);
+        let slow_in = ulid(3);
+        let routing = graph(
+            &[master, fast, slow_bus, slow_in],
+            vec![
+                edge(fast, master, None),
+                edge(slow_bus, master, None),
+                edge(slow_in, slow_bus, None),
+            ],
+        );
+        let mut latencies = BTreeMap::new();
+        latencies.insert(slow_bus, 96u32);
+        let options = RenderOptions::l1(256, 1, 48_000, 0).with_threads(1);
+        let sources = || -> BTreeMap<EntityId, Box<dyn AudioSource>> {
+            let mut map: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+            map.insert(fast, Box::new(ConstantSource(1.0)));
+            map.insert(slow_in, Box::new(ConstantSource(0.0)));
+            map
+        };
+
+        let mut reused = RenderPlan::compile_with_latencies(&routing, master, options, &latencies)
+            .expect("编译");
+        let first = reused.execute(sources()).expect("第一次渲染");
+        let second = reused.execute(sources()).expect("第二次渲染");
+
+        let mut fresh = RenderPlan::compile_with_latencies(&routing, master, options, &latencies)
+            .expect("编译");
+        let reference = fresh.execute(sources()).expect("渲染");
+
+        assert_eq!(
+            first.samples, reference.samples,
+            "第一次执行必须与全新计划一致"
+        );
+        assert_eq!(
+            second.samples, reference.samples,
+            "第二次执行必须与全新计划一致 —— 延迟线的环形缓冲与游标必须先复位"
+        );
+        assert_eq!(second.digest, reference.digest);
+
+        // 延迟真的在这张图里: 前 96 帧里 fast 的贡献是静音。
+        assert_eq!(reference.samples[0], 0.0, "延迟线前段必须是静音");
+        assert_eq!(reference.samples[96], 1.0, "延迟 96 帧后出现");
+    }
+
+    /// 判据 (**复位契约**): 第二次执行**不得沿用**上一次装载的样本源。
+    ///
+    /// `execute` 的入参是"**这一次**执行用哪些源"。空表意味着一个源都没有, 必须报
+    /// [`RenderError::MissingSource`]; 旧实现在 `states[slot].source` 上留着上一次的
+    /// 对象, 于是空表静默渲染**上一次的旧源** —— 调用方拿到成功, 却渲染了他没给的东西。
+    #[test]
+    fn a_second_execution_does_not_reuse_sources_from_the_first() {
+        let (routing, master, sources) = star_graph(1);
+        let options = RenderOptions::l1(128, 1, 48_000, 0);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        plan.execute(synthetic_sources(&sources, options.seed))
+            .expect("第一次渲染");
+        let empty: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+        assert!(
+            matches!(plan.execute(empty), Err(RenderError::MissingSource(_))),
+            "空源表必须报 MissingSource, 不许沿用上一次的源"
+        );
+    }
+
+    /// 判据: 源表被拒绝之后, 计划里**不许残留**任何已装载的源。
+    ///
+    /// 本判据的图只有一个源节点, 且 `master` 的 ULID 排在它后面。被拒的源表里同时
+    /// 有一个合法源和一个总线源: 若"被拒时装载一半"的残留能跨执行存活, 那么随后用
+    /// 空表执行会**静默成功** (源"还在"); 正确行为是报 [`RenderError::MissingSource`]。
+    ///
+    /// 兜住这条性质的是每次执行开始时的那一段复位 (源槽清空); `execute` 里"先整表校验、
+    /// 再装载"的两遍写法把同一条性质收紧到**调用内部也成立**, 但它**单独不可观测** ——
+    /// 实测把两遍合并成一遍时本判据仍然绿 (复位已经兜住了跨执行的那一半)。
+    #[test]
+    fn a_rejected_source_map_loads_nothing() {
+        let (routing, master, sources) = star_graph(1);
+        let options = RenderOptions::l1(128, 1, 48_000, 0);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+
+        let mut mixed: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+        mixed.insert(sources[0], Box::new(ConstantSource(1.0)));
+        mixed.insert(master, Box::new(ConstantSource(1.0)));
+        assert!(
+            matches!(plan.execute(mixed), Err(RenderError::SourceOnBusNode(_))),
+            "给总线注册源必须被拒绝"
+        );
+
+        let empty: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+        assert!(
+            matches!(plan.execute(empty), Err(RenderError::MissingSource(_))),
+            "被拒的源表不得留下任何已装载的源"
+        );
     }
 
     /// 判据: Master 的归约顺序等于 `EntityId` 字典序, 且**不是**边身份顺序。
@@ -1348,6 +1533,42 @@ mod tests {
             RenderPlan::compile(&broken, master, RenderOptions::l1(128, 1, 48_000, 0)),
             Err(RenderError::InvalidGraph(_))
         ));
+    }
+
+    /// 判据 (**参数极值**): 尺寸乘积溢出 `usize` 时必须报错, **不得 panic**。
+    ///
+    /// 修复前 `block_size = usize::MAX`、`channels = 2` 在 debug 下直接
+    /// `attempt to multiply with overflow`（实测 panic 位置是 `compile` 里那一行
+    /// `options.block_size * options.channels`）, 在 release 下回绕成一个小缓冲、
+    /// 随后在 `buffer[..width]` 上越界。两条都在**编译期**被这条检查消灭。
+    ///
+    /// 本判据的图是"只有一个 Master 的最小图", 因此除了尺寸之外没有别的拒绝理由。
+    #[test]
+    fn an_extreme_block_size_is_rejected_instead_of_overflowing() {
+        let master = ulid(0xFFFF);
+        let routing = graph(&[master], vec![]);
+        let extreme = RenderOptions {
+            block_size: usize::MAX,
+            ..RenderOptions::l1(1, 2, 48_000, 0)
+        };
+        assert_eq!(
+            RenderPlan::compile(&routing, master, extreme).err(),
+            Some(RenderError::SizeOverflow {
+                what: "block_size * channels"
+            })
+        );
+
+        // 另一条乘积同族: `usize::MAX` 帧的母带长度也存不下。
+        let huge = RenderOptions::l1(u64::MAX, 2, 48_000, 0);
+        assert_eq!(
+            RenderPlan::compile(&routing, master, huge).err(),
+            Some(RenderError::SizeOverflow {
+                what: "frames * channels"
+            })
+        );
+
+        // 有区分力: 同一个图在正常尺寸下编译成功。
+        assert!(RenderPlan::compile(&routing, master, RenderOptions::l1(1, 2, 48_000, 0)).is_ok());
     }
 
     /// 判据: `track_latencies` 累加未旁通设备的延迟, 并跳过旁通设备。

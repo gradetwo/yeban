@@ -320,6 +320,24 @@ impl DelayLine {
         self.delay_frames == 0
     }
 
+    /// 把这条线复位到**与 [`Self::new`] 逐位一致**的状态: 环形缓冲清零、帧游标归零。
+    ///
+    /// # 为什么需要显式复位
+    ///
+    /// 环形缓冲与帧游标是**跨调用存活**的可变状态 (这是延迟线的定义)。同一个实例
+    /// 处理第二段信号时若不先复位, 输出的前 `delay_frames` 帧读到的是**上一段信号
+    /// 留在环里的尾部样本** —— 旧数据被重放, 同一份输入两次执行得到不同的母带。
+    /// 判据见本模块的 `reset_returns_the_line_to_its_fresh_state`。
+    ///
+    /// 旁路 (零延迟) 线不持有可读的采样数据, 但清零仍是"定义明确的值"里最省事的一个,
+    /// 且它让 `reset` 对**任何**延迟值都是同一条式子。
+    ///
+    /// 零分配、逐位确定: 只写自己已经拥有的缓冲。
+    pub fn reset(&mut self) {
+        self.buffer.fill(0.0);
+        self.frame_cursor = 0;
+    }
+
     /// 交错块的延迟处理: 读写 `input` 指向的交错块, 把延迟后的样本写进 `out`。
     ///
     /// **只处理两条切片共有的那一段**, 即 `common = input.len().min(out.len())`:
@@ -862,5 +880,43 @@ mod tests {
         let mut out = [f32::MAX; 3];
         line.process(&[1.0f32, 2.0, 3.0], &mut out);
         assert_eq!(out, [f32::MAX; 3]);
+    }
+
+    /// 判据 (**复位契约**): `reset` 之后再处理, 必须与**全新实例**逐位一致。
+    ///
+    /// 这条判据同时自证有区分力: 同一个"先喂一段再喂第二段"的序列**不复位**时给出的
+    /// 位型与全新实例**不同** (`assert_ne!`), 因此上面那条 `assert_eq!` 不是空判据。
+    #[test]
+    fn reset_returns_the_line_to_its_fresh_state() {
+        let signal = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut fresh = DelayLine::new(3, 1);
+        let mut fresh_out = [f32::MAX; 6];
+        fresh.process(&signal, &mut fresh_out);
+
+        // 不复位: 前 3 帧读到的是上一段留在环里的 [4, 5, 6]。
+        let mut stale = DelayLine::new(3, 1);
+        let mut warm_up = [0.0f32; 6];
+        stale.process(&signal, &mut warm_up);
+        let mut stale_out = [0.0f32; 6];
+        stale.process(&signal, &mut stale_out);
+        assert_ne!(
+            stale_out.map(f32::to_bits),
+            fresh_out.map(f32::to_bits),
+            "不复位必须给出不同的位型, 否则下面的判据没有区分力"
+        );
+
+        // 复位之后: 与全新实例逐位一致。
+        let mut reused = DelayLine::new(3, 1);
+        let mut first_pass = [0.0f32; 6];
+        reused.process(&signal, &mut first_pass);
+        reused.reset();
+        let mut reused_out = [f32::MAX; 6];
+        reused.process(&signal, &mut reused_out);
+        assert_eq!(
+            reused_out.map(f32::to_bits),
+            fresh_out.map(f32::to_bits),
+            "复位后的输出必须与全新实例逐位一致"
+        );
+        assert!(!reused.is_bypass(), "复位不得把延迟量改掉 (只动缓冲与游标)");
     }
 }
