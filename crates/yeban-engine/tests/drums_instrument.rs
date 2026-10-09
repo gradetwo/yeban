@@ -24,6 +24,7 @@
 //! | D7 | 确定性：同输入两次独立装配逐位相同；**同一装配**里周期性重新武装（等价快照）不改变输出，且累计触发数单调 | 引入真熵源 / 重新武装清掉在响的鼓 |
 //! | D8 | 换快照：同一轨从鼓机换回复音合成器 ⇒ `armed_drums(轨)` 变 `None`、武装槽位归 0；换一套映射 ⇒ 读数跟着变 | 武装表只增不减 / 换轨不 `reset` |
 //! | D9 | 鼓机器件**自己**的四个计数器进 `EngineStats`：`drum_hits == drum_triggers`（等号，两侧是同一事件）、有鼓击时 `drum_sounding_slot_frames > 0`、密集敲击时 `drum_voice_steals > 0`、闭镲压开镲时 `drum_hat_chokes == 1`；未武装工程四条全 0 | 漏读器件 getter（恒 0） / 把 `drum_triggers` 写成 `drum_hits` 的副本 / 把鼓机窃取记进复音 `voice_steals` |
+//! | D10 | **复音**触发面的两侧：混合夹具（一条鼓机轨 + 一条复音轨）`notes_triggered − drum_hits == poly_notes_triggered` 且三段都落在确定值（7 / 4 / 3）；只有鼓机时复音侧恒 0；只有复音时 `notes_triggered == poly_notes_triggered` | 把 `poly_notes_triggered` 写成常数 0 / 写成 `notes_triggered` 的副本（混合夹具给 7，正确值 3） / 漏读器件 `PolySynth::notes_triggered` |
 //!
 //! ## D0 的指纹是**接线前**的实测值
 //!
@@ -48,7 +49,9 @@
 
 mod support;
 
-use support::{MixSpec, NoteSpec, note_project, render, render_with, tuned_project};
+use support::{
+    MixSpec, NoteSpec, note_project, render, render_with, tuned_project, two_track_project,
+};
 use yeban_engine::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumVoice, DrumsParams};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
@@ -784,6 +787,120 @@ fn the_drum_device_counters_are_readable_and_agree_with_the_dispatch_counter() {
     assert!(
         unarmed.nonzero() > 0,
         "未武装的对照臂仍须出声（复音合成器）"
+    );
+}
+
+/// D10：**复音触发面的两侧**（引擎派发 vs 器件收到）—— 鼓机那一对（D9）在复音侧的缺项。
+///
+/// 量什么（单位都是**次**）：
+///
+/// | 读数 | 数什么 | 出处 |
+/// | :--- | :--- | :--- |
+/// | `notes_triggered` | **两条**音源合起来的派发数（鼓机 + 复音） | 引擎派发处（`render_track` 两条分支） |
+/// | `drum_hits` | 只有鼓机那条的派发数 | 引擎派发处（鼓机分支） |
+/// | `poly_notes_triggered` | 只有复音那条的**器件收到**数（各槽之和） | `PolySynth::notes_triggered` |
+///
+/// 为什么需要这一条：`EngineStats::notes_triggered` 把两条音源的派发**混在一个数**里
+/// （鼓机分支同时 `+1` 到 `drum_hits` 与它），而 `voice_steals` 只在**声部池溢出**时推进
+/// ⇒ "复音轨真的触发了"此前没有任何读数见证。器件侧的 `PolySynth::notes_triggered`
+/// 在本次改动前在 `yeban-engine` 里**零读者**（量法：
+/// `grep -rn 'slot\.synth\.' crates/yeban-engine/src` 命中 12 个器件调用点，无一命中它）。
+///
+/// 三条判据（三个夹具各一条等号）：
+///
+/// 1. **混合夹具**（一条鼓机轨 + 一条复音轨）：`notes_triggered − drum_hits
+///    == poly_notes_triggered`，且三个数都**落在确定值上**（4 / 3 / 7）—— 两侧支路
+///    都在推进，减法才有意义；
+/// 2. **只有鼓机**：`poly_notes_triggered == 0` 且 `notes_triggered == drum_hits`
+///    （复音侧一次都不许记）；
+/// 3. **只有复音**（D9 的未武装对照臂）：`drum_hits == 0` 且
+///    `notes_triggered == poly_notes_triggered`。
+///
+/// ⚠ 判据 ① 是"把 `poly_notes_triggered` 写成 `notes_triggered` 的**副本**"这条注入的
+/// 唯一杀手：判据 ③ 的夹具上两者本来就相等，只有混合夹具能把副本照出来
+/// （副本会给 7，正确值给 3）。
+#[test]
+fn the_poly_device_counter_separates_the_two_sources() {
+    // ---- 判据 ①：混合夹具 ----
+    let poly_notes = [
+        NoteSpec::at(0, 480, 60, 100),
+        NoteSpec::at(240, 480, 64, 100),
+        NoteSpec::at(480, 480, 67, 100),
+    ];
+    let (mut project, drum_track, poly_track) = two_track_project(&DRUM_NOTES, &poly_notes);
+    mount(&mut project, drum_track, vec![kit(&[])]);
+    // 快照层先钉住"哪条轨是哪种音源"：本判据的减法只在这一点成立时才有意义。
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("混合夹具快照");
+    assert_eq!(snapshot.drums().len(), 1, "恰好一条轨武装鼓机");
+    assert!(
+        snapshot.drum_params(&drum_track).is_some(),
+        "鼓机轨必须武装"
+    );
+    assert!(
+        snapshot.drum_params(&poly_track).is_none(),
+        "复音轨不得武装鼓机"
+    );
+
+    let mixed = render(&project, QUANTA);
+    println!(
+        "[engine-drums/D10] 混合夹具: 派发合计={} 鼓机派发={} 复音收到(器件侧)={} 非零={}",
+        mixed.stats.notes_triggered,
+        mixed.stats.drum_hits,
+        mixed.stats.poly_notes_triggered,
+        mixed.nonzero()
+    );
+    assert_eq!(mixed.stats.drum_hits, 4, "四个映射内的音符各触发一次");
+    assert_eq!(
+        mixed.stats.poly_notes_triggered, 3,
+        "复音轨的三个音符各触发一次（器件收到）"
+    );
+    assert_eq!(mixed.stats.notes_triggered, 7, "两条音源的派发合计");
+    assert_eq!(
+        mixed.stats.notes_triggered - mixed.stats.drum_hits,
+        mixed.stats.poly_notes_triggered,
+        "触发面的两侧必须恒等：引擎派发(合计 − 鼓机)={} 器件收到={}",
+        mixed.stats.notes_triggered - mixed.stats.drum_hits,
+        mixed.stats.poly_notes_triggered
+    );
+    assert!(mixed.nonzero() > 0, "混合夹具必须真的出声");
+
+    // ---- 判据 ②：只有鼓机 ⇒ 复音侧恒为 0 ----
+    let drum_only = note_project(&DRUM_NOTES);
+    let mut drum_only_project = drum_only.project.clone();
+    mount(&mut drum_only_project, drum_only.track, vec![kit(&[])]);
+    let only_drums = render(&drum_only_project, QUANTA);
+    println!(
+        "[engine-drums/D10] 只有鼓机: 派发合计={} 鼓机派发={} 复音收到={}",
+        only_drums.stats.notes_triggered,
+        only_drums.stats.drum_hits,
+        only_drums.stats.poly_notes_triggered
+    );
+    assert_eq!(only_drums.stats.drum_hits, 4);
+    assert_eq!(
+        only_drums.stats.poly_notes_triggered, 0,
+        "全部轨都是鼓机 ⇒ 复音器件一次都不许收到触发"
+    );
+    assert_eq!(
+        only_drums.stats.notes_triggered, only_drums.stats.drum_hits,
+        "只有鼓机时派发合计必须恰好等于鼓机派发数"
+    );
+
+    // ---- 判据 ③：只有复音（D9 的未武装对照臂）----
+    let only_poly = render(&note_project(&BASELINE_NOTES).project, QUANTA);
+    println!(
+        "[engine-drums/D10] 只有复音: 派发合计={} 鼓机派发={} 复音收到={}",
+        only_poly.stats.notes_triggered,
+        only_poly.stats.drum_hits,
+        only_poly.stats.poly_notes_triggered
+    );
+    assert_eq!(only_poly.stats.drum_hits, 0);
+    assert_eq!(
+        only_poly.stats.poly_notes_triggered, 2,
+        "两个音符各触发一次（器件收到）"
+    );
+    assert_eq!(
+        only_poly.stats.notes_triggered, only_poly.stats.poly_notes_triggered,
+        "只有复音时派发合计必须恰好等于器件收到数"
     );
 }
 

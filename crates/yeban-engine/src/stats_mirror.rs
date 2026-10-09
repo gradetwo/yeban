@@ -161,6 +161,7 @@ pub struct EngineStatsMirror {
     note_schedule_drops: AtomicU64,
     track_drops: AtomicU64,
     notes_triggered: AtomicU64,
+    poly_notes_triggered: AtomicU64,
     voice_steals: AtomicU64,
     limiter_gain_reductions: AtomicU64,
     limiter_max_reduction_bits: AtomicU32,
@@ -225,6 +226,7 @@ impl EngineStatsMirror {
             note_schedule_drops: AtomicU64::new(0),
             track_drops: AtomicU64::new(0),
             notes_triggered: AtomicU64::new(0),
+            poly_notes_triggered: AtomicU64::new(0),
             voice_steals: AtomicU64::new(0),
             limiter_gain_reductions: AtomicU64::new(0),
             limiter_max_reduction_bits: AtomicU32::new(0),
@@ -302,6 +304,8 @@ impl EngineStatsMirror {
         self.track_drops.store(stats.track_drops, Ordering::Relaxed);
         self.notes_triggered
             .store(stats.notes_triggered, Ordering::Relaxed);
+        self.poly_notes_triggered
+            .store(stats.poly_notes_triggered, Ordering::Relaxed);
         self.voice_steals
             .store(stats.voice_steals, Ordering::Relaxed);
         self.limiter_gain_reductions
@@ -410,6 +414,7 @@ impl EngineStatsMirror {
             note_schedule_drops: self.note_schedule_drops.load(Ordering::Relaxed),
             track_drops: self.track_drops.load(Ordering::Relaxed),
             notes_triggered: self.notes_triggered.load(Ordering::Relaxed),
+            poly_notes_triggered: self.poly_notes_triggered.load(Ordering::Relaxed),
             voice_steals: self.voice_steals.load(Ordering::Relaxed),
             limiter_gain_reductions: self.limiter_gain_reductions.load(Ordering::Relaxed),
             limiter_max_reduction: f32::from_bits(
@@ -471,7 +476,7 @@ impl Default for EngineStatsMirror {
 }
 
 impl core::fmt::Debug for EngineStatsMirror {
-    /// 打印**读出来**的那一份读数（不是 55 个原子量的内部状态）。
+    /// 打印**读出来**的那一份读数（不是 56 个原子量的内部状态）。
     ///
     /// 这个数是**机械读数**（`sed -n '/^pub struct EngineStatsMirror {/,/^}/p'` 里
     /// `Atomic` 字段的行数），与 `EngineStats` 的字段数一一对应（一个字段一个原子量）。
@@ -510,6 +515,7 @@ mod tests {
             note_schedule_drops: 11,
             track_drops: 12,
             notes_triggered: 13,
+            poly_notes_triggered: 51,
             voice_steals: 14,
             limiter_gain_reductions: 15,
             limiter_max_reduction: 0.25,

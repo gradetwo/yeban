@@ -218,8 +218,36 @@ pub struct EngineStats {
     pub note_schedule_drops: u64,
     /// 因声部池轨道槽耗尽而未参与合成的轨道次数。
     pub track_drops: u64,
-    /// 累计触发过的音符数。
+    /// 累计触发过的音符数（**两条音源合计**：鼓机派发 + 复音派发）。
+    ///
+    /// ⚠ 口径：本计数器在鼓机分支与复音分支上都 `+1` ⇒ 它**不是**"复音合成器触发过
+    /// 几个音"。要单独要复音那一条，读 [`Self::poly_notes_triggered`]（器件侧），
+    /// 或做这条减法：`notes_triggered − drum_hits`。
     pub notes_triggered: u64,
+    /// **复音合成器器件自己**累计接收的触发数（各槽之和；单位：次；0 = 从没触发）。
+    ///
+    /// 它与 [`Self::notes_triggered`] − [`Self::drum_hits`]（引擎侧的复音派发数）是
+    /// **同一个事件的两侧**，与鼓机那一对（[`Self::drum_hits`] /
+    /// [`Self::drum_triggers`]）**同款**：那个在引擎的派发处 `+1`，这个在器件的
+    /// `note_on` 入口 `+1`。两者在静止点上**恒等**：
+    /// `notes_triggered − drum_hits == poly_notes_triggered`
+    /// （判据见 `tests/drums_instrument.rs` 的 D10 与 `src/synth.rs` 的库单测）。
+    ///
+    /// 口径：读数取各槽 `PolySynth::notes_triggered` 之和
+    /// （`SynthEngine::poly_notes_triggered`）。器件计数器**只增不减**，且器件自己的
+    /// `reset` 只清在响的声部、**不**清它；槽位一旦占用就不会被重建
+    /// ⇒ 本字段与 [`Self::notes_triggered`] 同为引擎生命周期的累计量。
+    ///
+    /// 为什么需要它：[`Self::notes_triggered`] 混了两条音源 ⇒ 只读它无法区分
+    /// "复音轨真的触发了"与"全是鼓机在打"；而 [`Self::voice_steals`] 只在**声部池溢出**
+    /// 时才推进 ⇒ 一个从不溢出的复音工程在读数面上没有"触发过"的见证。
+    /// 该器件 getter 在本次改动前在 `yeban-engine` 里**一个读者都没有**
+    /// （量法：`grep -rn 'slot\.synth\.' crates/yeban-engine/src` 命中 12 个器件调用点
+    /// = 11 个方法名，其中 `notes_triggered` 零命中；改动后同一条命令命中 13 行）。
+    ///
+    /// **冷值 0**：全部轨都不是复音合成器时（默认）恒为 0。读它只汇总 16 个 `u64`
+    /// 字段：不碰样本、不分配、不加锁 ⇒ 渲染输出逐位不变。
+    pub poly_notes_triggered: u64,
     /// 声部池累计**软窃取**次数（每次伴随 3 ms 淡出 [ARCH-RT-004]）。
     pub voice_steals: u64,
     /// 母线限制器**累计压过的样本数**（[ARCH-DSP-001]；0 = 从未越过阈值）。
@@ -1064,6 +1092,11 @@ impl EngineRuntime {
             voice_steals: self.synth.voice_steals(),
             track_drops: self.synth.track_drops(),
             notes_triggered: self.synth.notes_triggered(),
+            // 复音触发面的**另一侧**（器件侧）：与上面那一条只差一次字段汇总
+            // （`SynthEngine::poly_notes_triggered` 的 `fold` 16 个槽位）。
+            // 它不碰任何样本、不分配、不加锁 ⇒ 实时路径的分配/锁/IO 读数不变
+            // （判据见 `tests/synth_rt_zero_alloc.rs` 的场景 11）。
+            poly_notes_triggered: self.synth.poly_notes_triggered(),
             limiter_gain_reductions: self.limiter_gain_reductions,
             limiter_max_reduction: self.limiter_max_reduction,
             limiter_current_reduction: self.limiter_current_reduction,

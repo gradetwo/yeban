@@ -203,6 +203,16 @@
 //! ⇒ 那两条分支在本夹具上**本来就不该发生**。它们的见证是 `tests/drums_instrument.rs`
 //! 的 D9（专门造池压与 choke 的夹具），本条只负责"那条读路径在实时窗口里不分配"。
 //! 本追记**不新增场景**，也不改变任何窗口的分配断言。
+//!
+//! # 场景 11 的覆盖度见证（`line/engine-15` 追记）：**复音**触发面的另一侧
+//!
+//! 新增读数 `EngineStats::poly_notes_triggered` 的来源是**复音合成器器件自己**的
+//! `PolySynth::notes_triggered`（各槽之和，同一个 `fold` 形状），读它同样发生在
+//! `stats()` 里 ⇒ 来源与读路径**都在**实时窗口内部。场景 11 本来就是**混合**夹具
+//! （一条鼓机轨 + 一条复音轨）⇒ 引擎派发合计减鼓机派发恰好隔离出复音那一条，
+//! 见证取两条**形态**判据：① `notes_triggered − drum_hits == poly_notes_triggered`；
+//! ② `poly_notes_triggered > 0`（复音轨真的被派发过）。
+//! 本追记**不新增场景**，也不改变任何窗口的分配断言。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -1430,15 +1440,37 @@ fn main() -> ExitCode {
             "器件一帧非零样本都没算出来 —— `drum_sounding_slot_frames` 在窗口里是冷值".to_owned(),
         );
     }
+    // `line/engine-15`：**复音**触发面的另一侧（`EngineStats::poly_notes_triggered`）
+    // 在同一个 `stats()` 里读（`SynthEngine::poly_notes_triggered` 的 `fold`）
+    // ⇒ 那条读路径同样落在本窗口内部。本夹具是**混合**的（一条鼓机轨 + 一条复音轨）
+    // ⇒ 引擎派发合计减鼓机派发恰好隔离出复音那一条。两条**形态**判据：等号 + 复音侧 > 0。
+    // 写成 `notes_triggered` 的副本的注入在这里**也会**红（本夹具里鼓机派发 > 0 ⇒
+    // 副本会比正确值大 `drum_hits`）。
+    if drum_stats.notes_triggered - drum_stats.drum_hits != drum_stats.poly_notes_triggered {
+        failures.push(format!(
+            "复音触发面的两侧不相等：引擎派发(合计 {} − 鼓机 {})={} 器件收到={} —— \
+             这条读路径在实时窗口里读出了不一致的值",
+            drum_stats.notes_triggered,
+            drum_stats.drum_hits,
+            drum_stats.notes_triggered - drum_stats.drum_hits,
+            drum_stats.poly_notes_triggered
+        ));
+    }
+    if drum_stats.poly_notes_triggered == 0 {
+        failures.push(
+            "复音轨在窗口里一次都没有触发 —— `poly_notes_triggered` 在实时窗口里是冷值".to_owned(),
+        );
+    }
     println!(
         "[engine-drums/J11] 鼓机音源: quanta={} 鼓击={} 器件收到={} 发声槽位帧={} choke={} 窃取={} \
-         非零样本={drum_nonzero} 武装槽位={}",
+         复音收到={} 非零样本={drum_nonzero} 武装槽位={}",
         drum_stats.quanta,
         drum_stats.drum_hits,
         drum_stats.drum_triggers,
         drum_stats.drum_sounding_slot_frames,
         drum_stats.drum_hat_chokes,
         drum_stats.drum_voice_steals,
+        drum_stats.poly_notes_triggered,
         drum_runtime.armed_drum_slot_count(),
     );
 

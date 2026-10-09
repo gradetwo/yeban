@@ -959,9 +959,59 @@ impl SynthEngine {
     }
 
     /// 累计触发过的音符数。
+    ///
+    /// ⚠ 口径（必须与 [`Self::poly_notes_triggered`] 一起读）：本计数器在**两条**
+    /// 派发分支上都 `+1` —— 鼓机分支（紧接着 [`DrumMachine::trigger`]）与复音分支
+    /// （紧接着 `PolySynth::note_on`）⇒ 它数的是"**两条音源合起来**派发了几次"。
+    /// 想单独要复音那一条，读 [`Self::poly_notes_triggered`]（器件侧），
+    /// 或做这条减法：`notes_triggered − drum_hits`。
     #[must_use]
     pub const fn notes_triggered(&self) -> u64 {
         self.notes_triggered
+    }
+
+    /// **复音合成器器件自己**累计接收的触发数（各槽之和；单位：次；0 = 从没触发）。
+    ///
+    /// 它不是 [`Self::notes_triggered`] 的第二份副本，而是那条**内部一致性判据**的
+    /// 另一侧 —— 与鼓机那一对（[`Self::drum_hits`] / [`Self::drum_triggers`]）**同款**：
+    /// 引擎在派发处记数，器件在 `note_on` 入口记数，两侧数的是同一个事件。
+    ///
+    /// 口径（三条，都要与判据一起读）：
+    ///
+    /// 1. 读数取 `PolySynth::notes_triggered`（器件里**早就存在**的 getter，
+    ///    住在 `crates/yeban-dsp/src/polysynth.rs`，现位于第 828 行），
+    ///    而 `yeban-engine` 此前**一个读者都没有**（量法：
+    ///    `grep -rn 'slot\.synth\.' crates/yeban-engine/src` 在本次改动前命中
+    ///    **12** 个器件调用点 = 11 个方法名（`set_steal_fade_frames` 出现两次）——
+    ///    `voice_steals` / `set_steal_fade_frames` / `voices` / `debug_voice` /
+    ///    `active_voices` / `reset` / `set_sample_rate` / `set_params` /
+    ///    `retire_finished` / `note_on` / `render` —— 其中 `notes_triggered` **零**命中；
+    ///    本次改动后同一条命令命中 **13** 行，多的那一条就是本读数）。
+    ///    它只读一个 `u64` 字段：不碰样本、不分配、不加锁 ⇒ 渲染输出逐位不变；
+    /// 2. **恒等式**（等号，无容差；静止点上）：
+    ///    `notes_triggered − drum_hits == poly_notes_triggered`。
+    ///    成立的理由是两条派发分支的记账形状：鼓机分支同时 `+1` 到
+    ///    [`Self::drum_hits`] 与 [`Self::notes_triggered`]，复音分支只 `+1` 到
+    ///    [`Self::notes_triggered`] 并调用一次 `note_on`（器件那一侧**每次都** `+1`）
+    ///    ⇒ 相减恰好隔离出复音那一条。任何"派发了却没到器件"（或反之）的接线错误
+    ///    都会让这条等号当场不成立，而从音频输出反推不出来；
+    /// 3. 器件计数器**只增不减**，且器件自己的 `reset` 只清在响的声部、**不**清它
+    ///    ⇒ 本读数是引擎生命周期里的累计量。槽位一旦占用就**不会**被重建
+    ///    （`begin_snapshot` 只为 `assigned == false` 的槽建新器件，而 `assigned`
+    ///    只从 `false` 变 `true`）⇒ 各槽计数器不会被悄悄清零。
+    ///
+    /// 为什么需要它：[`Self::notes_triggered`] 混了两条音源 ⇒ 只读它无法区分
+    /// "复音轨真的触发了"与"全是鼓机在打"；而 [`Self::voice_steals`] 只在
+    /// **声部池溢出**时才推进 ⇒ 一个从不溢出的复音工程在读数面上没有"触发过"的见证。
+    /// 全部轨都不是复音合成器时（默认）**恒为 0**。
+    ///
+    /// 读它只汇总 16 个 `u64` 字段（`fold`），与 [`Self::voice_steals`] /
+    /// [`Self::drum_triggers`] 同一条路径：零分配、零锁、零 I/O。
+    #[must_use]
+    pub fn poly_notes_triggered(&self) -> u64 {
+        self.slots.iter().fold(0u64, |total, slot| {
+            total.saturating_add(slot.synth.notes_triggered())
+        })
     }
 
     /// 累计的**鼓击触发数**（覆盖度读数：> 0 才说明鼓机真的在打鼓）。
@@ -1731,6 +1781,74 @@ mod tests {
         }
         assert_eq!(engine.voice_steals(), 4, "超出复音上限的音符必须走窃取");
         assert!(rendered.iter().any(|s| *s != 0.0));
+    }
+
+    /// 判据：复音触发面的**两侧**（引擎派发 vs 器件收到）在**每个**量子边界上恒等，
+    /// 且器件计数器只增不减（`seek` / 重新武装都不清它）。
+    ///
+    /// 量什么（三个数，单位都是**次**）：
+    ///
+    /// | 读数 | 数什么 | 出处 |
+    /// | :--- | :--- | :--- |
+    /// | [`SynthEngine::notes_triggered`] | **两条**音源合起来的派发数（鼓机 + 复音） | 引擎派发处 |
+    /// | [`SynthEngine::drum_hits`] | 只有鼓机那条的派发数 | 引擎派发处 |
+    /// | [`SynthEngine::poly_notes_triggered`] | 只有复音那条的**器件收到**数 | `PolySynth::notes_triggered` |
+    ///
+    /// 恒等式：`notes_triggered − drum_hits == poly_notes_triggered`。
+    ///
+    /// 怎么变红：① 把 `poly_notes_triggered` 写成常数（等号与"必须 > 0"同时红）；
+    /// ② 把它写成 `notes_triggered` 的副本（本夹具 `drum_hits == 0`，所以这一条**不会**
+    /// 红 —— 它由 `tests/drums_instrument.rs` 的 D10 混合夹具抓住）；③ 在复音分支
+    /// 漏记一次派发，或让器件 `note_on` 不被调用（等号当场不成立）。
+    ///
+    /// ⚠ 本夹具的声部数**低于**池容量 ⇒ `voice_steals == 0`：这正是"新读数存在的理由"
+    /// 的见证 —— 一条从不溢出的复音工程在 `voice_steals` 上看不到任何触发。
+    #[test]
+    fn poly_trigger_faces_agree_and_the_device_counter_only_grows() {
+        let id = EntityId::new();
+        // 一个量子一个起音（128 帧 = 1 个量子）⇒ 8 个量子恰好消费全部 8 个音符。
+        let notes: Vec<ScheduledNote> = (0..8)
+            .map(|index| note((index * 128) as u64, 40_000, 60, 127, 48_000.0))
+            .collect();
+        let schedule = NoteSchedule::from_sorted(notes);
+        let mut engine = rig(id);
+        assert_eq!(engine.poly_notes_triggered(), 0, "冷引擎必须是 0");
+
+        let mut rendered = Vec::new();
+        let mut previous = engine.poly_notes_triggered();
+        for quantum in 0..8 {
+            rendered.extend(render(&mut engine, id, &schedule, 128));
+            let now = engine.poly_notes_triggered();
+            assert!(
+                now >= previous,
+                "器件计数器只增不减：量子 {quantum} 读到 {now} < 上一次 {previous}"
+            );
+            previous = now;
+        }
+        assert!(
+            rendered.iter().any(|sample| *sample != 0.0),
+            "夹具必须真的出声（否则'器件收到过触发'是空转）"
+        );
+        assert_eq!(engine.drum_hits(), 0, "本夹具没有鼓机轨");
+        assert_eq!(engine.notes_triggered(), 8, "8 个音符各起音一次");
+        assert_eq!(engine.voice_steals(), 0, "声部数低于池容量 ⇒ 不许有窃取");
+        assert_eq!(
+            engine.poly_notes_triggered(),
+            engine.notes_triggered() - engine.drum_hits(),
+            "触发面的两侧必须恒等：引擎派发 − 鼓机派发 == 器件收到"
+        );
+        assert_eq!(engine.poly_notes_triggered(), 8);
+
+        // `seek` + 等价快照重新武装**不**清器件计数器、也不重触发（游标只增不减）。
+        engine.begin_snapshot(48_000, &[id], [], []);
+        engine.align_cursors(std::iter::once((&id, &schedule)));
+        engine.seek(0);
+        assert_eq!(
+            engine.poly_notes_triggered(),
+            8,
+            "重新武装与 seek 都不得清零器件计数器"
+        );
+        assert_eq!(engine.notes_triggered(), 8, "起音只允许发生一次");
     }
 
     /// 判据：没有槽位/不在快照里的轨道渲染静音且不 panic。
