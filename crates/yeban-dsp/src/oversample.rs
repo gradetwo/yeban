@@ -449,4 +449,153 @@ mod tests {
             self.os.downsample(&self.up, out, &mut self.scratch);
         }
     }
+
+    /// **判据（新写，可红）**：同一个流**切块**喂进去与一次喂完**逐位相同**。
+    ///
+    /// 量什么：192 帧往返输出（`f32` 位型）。
+    ///
+    /// 这是"块边界上的历史被正确接上"的唯一机械读数：`up_tail` 与 `down_tail` 就是
+    /// 为分块 FIR 存在的。既有判据全部**一次喂完**（单块），块边界状态因此从未被
+    /// 走过。注入实测两处：把上采样尾巴写成 `scratch[0..OS_CENTRE]`（而不是本次输入
+    /// 的最后 `OS_CENTRE` 个样本）、以及不把 `up_tail` 接到 `scratch` 前段
+    /// ⇒ 两次都**全绿** ⇒ 本判据两次都变红（块间读到陈旧／全零历史）。
+    ///
+    /// 整条路径只有乘加与拷贝（无超越函数）⇒ 属 IEEE 精确类，逐位断言跨架构成立
+    /// （裁决 R24）。
+    #[test]
+    fn splitting_a_stream_into_blocks_is_bit_identical_to_one_pass() {
+        let input: Vec<f32> = (0..192)
+            .map(|index| (core::f32::consts::TAU * 500.0 * index as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        let mut whole = Oversampler2x::new();
+        let mut one_pass = [0.0f32; 192];
+        let mut upsampled = [0.0f32; 384];
+        let mut scratch = [0.0f32; 1_024];
+        whole.process_round_trip(&input, &mut one_pass, &mut upsampled, &mut scratch);
+
+        let mut split = Oversampler2x::new();
+        let mut blocked = [0.0f32; 192];
+        for block in 0..6 {
+            let lo = block * 32;
+            split.process_round_trip(
+                &input[lo..lo + 32],
+                &mut blocked[lo..lo + 32],
+                &mut upsampled[..64],
+                &mut scratch,
+            );
+        }
+        assert_eq!(one_pass, blocked, "切块喂入与一次喂完必须逐位相同");
+    }
+
+    /// **判据（新写，可红）**：往返脉冲响应**关于上报的延迟对称**（线性相位）。
+    ///
+    /// 量什么：往返输出在 `40 + OS_LATENCY` 两侧各 40 个样本的位型差（线性幅度）。
+    ///
+    /// 上采样把偶相位与奇相位分别用 `h[2j]` 与 `h[2j+1]` 算出。把奇相位写成偶相位的
+    /// **复本**（`out[2i+1] = 2.0 * even`）会让整条响应变成阶梯 ⇒ 关于上报延迟不再
+    /// 对称。既有判据只读**峰值落在哪一格**、直流增益与阻带衰减，对阶梯不敏感
+    /// ⇒ 注入实测：奇相位复制偶相位**全绿** ⇒ 本判据变红（同一注入也把
+    /// `the_odd_phase_is_the_half_sample_and_not_a_copy_of_the_even_phase` 打红）。
+    ///
+    /// ⚠ 反例要写清楚：**偶/奇相位互换**（`out[2i]` 与 `out[2i+1]` 两条赋值互换）
+    /// 在**本判据下全绿** —— 互换后同一个子滤波器仍关于中心抽头对称，而本判据只比
+    /// 同奇偶性的两点。那一格由
+    /// `the_upsample_phase_order_puts_the_prototype_peak_at_its_centre_tap` 单独钉住。
+    ///
+    /// 两侧由不同的累加顺序算出 ⇒ 只断言差 ≤ `1e-5`（注入实测的差是 `0.37` 量级，
+    /// 判别力不受影响）；⛔ 不钉逐位（这是同一台机器上两个求和顺序的舍入差，
+    /// 不是跨架构问题）。
+    #[test]
+    fn the_round_trip_impulse_response_is_symmetric_about_the_reported_latency() {
+        let mut os = Oversampler2x::new();
+        let mut input = [0.0f32; 128];
+        input[40] = 1.0;
+        let mut out = [0.0f32; 128];
+        let mut upsampled = [0.0f32; 256];
+        let mut scratch = [0.0f32; 1_024];
+        os.process_round_trip(&input, &mut out, &mut upsampled, &mut scratch);
+        let centre = 40 + OS_LATENCY;
+        assert!(
+            out[centre].abs() > 0.1,
+            "夹具必须让脉冲真的落在上报延迟那一格：{}",
+            out[centre]
+        );
+        for distance in 1..40usize {
+            let before = out[centre - distance];
+            let after = out[centre + distance];
+            assert!(
+                (before - after).abs() <= 1.0e-5,
+                "往返脉冲响应在延迟周围不对称（距离 {distance}）：{before} 对 {after}"
+            );
+        }
+    }
+
+    /// **判据（新写，可红）**：奇相位真的算的是**半样本**，不是偶相位的复本。
+    ///
+    /// 量什么：上采样输出里"相邻两相（`out[2i]` 与 `out[2i+1]`）位型不同"的
+    /// 基础样本占比。
+    ///
+    /// 文档写明偶相位配 `h[2j]`、奇相位配 `h[2j+1]`（"两者之间的半样本"）。
+    /// 把奇相位写成 `2.0 * even` 让两相**恒等**，既有判据仍然全绿（直流、延迟、
+    /// 阻带衰减都对同一个复本不敏感）。本判据只断言"两相在绝大多数基础样本上
+    /// 不同"这条**相对**性质：任何保相位的实现都满足，任何一个"复制偶相位"的
+    /// 实现都不满足 —— 注入实测：96 个基础样本里 **0** 个相邻两相不同。⛔ 不涉及
+    /// 绝对电平，不含超越函数。
+    #[test]
+    fn the_odd_phase_is_the_half_sample_and_not_a_copy_of_the_even_phase() {
+        let input: Vec<f32> = (0..128)
+            .map(|index| (core::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).cos())
+            .collect();
+        let mut os = Oversampler2x::new();
+        let mut out = [0.0f32; 256];
+        let mut scratch = [0.0f32; 1_024];
+        os.upsample(&input, &mut out, &mut scratch);
+        // 跳过前 32 个基础样本的起步瞬态。
+        let mut total = 0usize;
+        let mut differing = 0usize;
+        for index in 32..128usize {
+            total += 1;
+            if out[2 * index + 1].to_bits() != out[2 * index].to_bits() {
+                differing += 1;
+            }
+        }
+        assert!(
+            differing * 10 >= total * 9,
+            "奇相位复本了偶相位：{total} 个基础样本里只有 {differing} 个相邻两相不同"
+        );
+    }
+
+    /// **判据（新写，可红）**：上采样脉冲响应的**峰位**落在原型中心抽头上。
+    ///
+    /// 量什么：`upsample` 输出的绝对最大值下标（过采样栅格，整数位）。
+    ///
+    /// 偶相位配 `h[2j]`、奇相位配 `h[2j+1]`；原型峰在中心抽头 `h[OS_CENTRE]`，
+    /// 而 `OS_CENTRE` 是**奇数** ⇒ 零插值脉冲在基础下标 `k` 处时，输出的峰必须落在
+    /// `2k + OS_CENTRE` 这个**奇数**过采样下标上。把两条赋值**互换**等于在过采样
+    /// 栅格上整体平移一个样本（基础栅格的半个样本），峰落到 `2k + OS_CENTRE − 1`。
+    /// 既有判据（往返延迟的峰位在**基础**栅格、直流增益、阻带衰减、两相对称）都对
+    /// 这个半样本平移不敏感（注入实测：互换**全绿**）⇒ 本判据变红。
+    ///
+    /// 只比较同一次运行内的下标（整数）⇒ 与 `h` 的浮点值无关，跨架构无关。
+    #[test]
+    fn the_upsample_phase_order_puts_the_prototype_peak_at_its_centre_tap() {
+        let mut input = [0.0f32; 64];
+        let impulse = 32usize;
+        input[impulse] = 1.0;
+        let mut os = Oversampler2x::new();
+        let mut out = [0.0f32; 128];
+        let mut scratch = [0.0f32; 1_024];
+        os.upsample(&input, &mut out, &mut scratch);
+        let peak = out
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).expect("有限系数"))
+            .map(|(index, _)| index)
+            .expect("输出非空");
+        assert_eq!(
+            peak,
+            2 * impulse + OS_CENTRE,
+            "上采样峰位必须在原型中心抽头上（相位顺序被互换）"
+        );
+    }
 }

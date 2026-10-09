@@ -1847,4 +1847,47 @@ mod tests {
             "立体声块按帧推进，按声道计数"
         );
     }
+
+    /// **判据（新写，可红）**：八个文档化的域由**字面量**钉住，不引用常量本身。
+    ///
+    /// 量什么：六个界常量与两个时间常量的 `f32` 位型，以及 `sanitised()` 在**上界**
+    /// 上的落点（`f32` 位型）。
+    ///
+    /// 既有判据 `sanitised_clamps_every_field_into_its_documented_domain` 写的是
+    /// `assert_eq!(q.knee_db, MAX_KNEE_DB)`：**目标线随常量移动**，把 24 改成 48
+    /// 它照样绿（与限制器 `LIMITER_CEILING` 被改时同一种躲法）。注入实测：
+    /// `MAX_KNEE_DB` 24→48、`MAX_THRESHOLD_DB` 24→12、`MAX_MAKEUP_DB` 24→12
+    /// 三次都**全绿** ⇒ 本判据逐条变红。
+    ///
+    /// 含 `exp` 的路径不在这里：本判据只读**参数域常量**与钳制结果，没有超越函数
+    /// （比较与 `clamp` 都是 IEEE 精确类）⇒ 按裁决 R24 可跨架构硬断言。
+    #[test]
+    fn the_documented_domains_are_pinned_by_literals_not_by_themselves() {
+        assert_eq!(MAX_RATIO.to_bits(), 1_000.0f32.to_bits());
+        assert_eq!(MAX_KNEE_DB.to_bits(), 24.0f32.to_bits());
+        assert_eq!(MAX_THRESHOLD_DB.to_bits(), 24.0f32.to_bits());
+        assert_eq!(MAX_MAKEUP_DB.to_bits(), 24.0f32.to_bits());
+        assert_eq!(MIN_LEVEL_DB.to_bits(), (-120.0f32).to_bits());
+        assert_eq!(POWER_FLOOR.to_bits(), 1.0e-12f32.to_bits());
+        assert_eq!(MIN_TIME_S.to_bits(), 0.000_1f32.to_bits());
+        assert_eq!(MAX_TIME_S.to_bits(), 10.0f32.to_bits());
+
+        let p = CompressorParams {
+            threshold_db: 1.0e9,
+            ratio: 1.0e9,
+            knee_db: 1.0e9,
+            detector_s: 1.0e9,
+            attack_s: 1.0e9,
+            release_s: 1.0e9,
+            makeup_db: 1.0e9,
+        }
+        .sanitised();
+        assert_eq!(p.threshold_db.to_bits(), 24.0f32.to_bits());
+        assert_eq!(p.ratio.to_bits(), 1_000.0f32.to_bits());
+        assert_eq!(p.knee_db.to_bits(), 24.0f32.to_bits());
+        assert_eq!(p.detector_s.to_bits(), 10.0f32.to_bits());
+        assert_eq!(p.attack_s.to_bits(), 10.0f32.to_bits());
+        assert_eq!(p.release_s.to_bits(), 10.0f32.to_bits());
+        assert_eq!(p.makeup_db.to_bits(), 24.0f32.to_bits());
+    }
 }

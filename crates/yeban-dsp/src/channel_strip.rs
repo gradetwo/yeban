@@ -1795,4 +1795,54 @@ mod tests {
         }
         2.0 * ((re * re + im * im).sqrt() / n as f64) as f32
     }
+
+    /// **判据（新写，可红）**：立体声计量取**较响**的那一声道（两条链的四项读数）。
+    ///
+    /// 量什么：`input_peak()` / `input_rms()` / `output_peak()` / `output_rms()`
+    /// （前两项线性幅度、后两项线性 RMS）。
+    ///
+    /// 模块注释的"计量读取器"写明逐帧取两声道中**较大者**（与压缩机检波器同一个
+    /// `max(l², r²)` 口径）。既有判据的夹具全部走 `process_mono`（左右同值）或
+    /// 两级相同时的立体声 ⇒ `max` 与 `min` 在那些夹具上不可分辨。注入实测：
+    /// `input_mean_square` 的 `.max(r * r)` 改成 `.min(...)`、`output_mean_square`
+    /// 同样一处改坏 ⇒ 两次都**全绿** ⇒ 本判据的前两项与后两项分别变红。
+    ///
+    /// 夹具把三级全旁通、两个增益都为 `0 dB` ⇒ 输出等于输入，四项读数都应是 `1.0`
+    /// （较响的 L 声道），与 `.min` 给出的 `0.0` 正好互相排斥。
+    #[test]
+    fn stereo_metering_follows_the_louder_channel() {
+        let params = ChannelStripParams {
+            input_gain_db: 0.0,
+            eq_enabled: false,
+            filter_enabled: false,
+            compressor_enabled: false,
+            output_gain_db: 0.0,
+            ..ChannelStripParams::DEFAULT
+        };
+        let mut strip = ChannelStrip::new(params, SR);
+        const FRAMES: usize = 512;
+        let mut left = [1.0f32; FRAMES];
+        let mut right = [0.0f32; FRAMES];
+        strip.process_stereo(&mut left, &mut right);
+        assert!(
+            (strip.input_peak() - 1.0).abs() < 1.0e-6,
+            "输入峰值 {} 必须取较响的 L 声道（1.0）",
+            strip.input_peak()
+        );
+        assert!(
+            (strip.input_rms() - 1.0).abs() < 1.0e-6,
+            "输入 RMS {} 必须取较响的 L 声道（1.0）",
+            strip.input_rms()
+        );
+        assert!(
+            (strip.output_peak() - 1.0).abs() < 1.0e-6,
+            "输出峰值 {} 必须取较响的 L 声道（1.0）",
+            strip.output_peak()
+        );
+        assert!(
+            (strip.output_rms() - 1.0).abs() < 1.0e-6,
+            "输出 RMS {} 必须取较响的 L 声道（1.0）",
+            strip.output_rms()
+        );
+    }
 }

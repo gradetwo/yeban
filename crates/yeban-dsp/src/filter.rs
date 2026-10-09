@@ -499,4 +499,91 @@ mod tests {
         blockwise.process_block(&mut buffer);
         assert_eq!(buffer, expected);
     }
+
+    /// **判据（新写，可红）**：截止频率天花板是 `0.45 · fs` 这个**比例**本身。
+    ///
+    /// 量什么：`coefficient()` 的 `f32` 位型（三处）。
+    ///
+    /// 既有判据只断言"`0.45 · fs` 与更大的请求给出**同一个**位型" —— 把比例改成
+    /// `0.40` 时所有越界请求仍被钳到同一个点 ⇒ 那条判据照样绿（注入实测 0.45→0.40
+    /// **全绿**）。本判据补上另一半：天花板**之下**（`0.44 · fs`）必须仍然改变系数
+    /// ⇒ 比例本身被钉住。三处比较都在同一台机器的同一次运行内 ⇒ 与 `tan` 的跨架构
+    /// 差异无关（裁决 R24）。
+    #[test]
+    fn the_cutoff_ceiling_ratio_is_pinned_by_a_literal() {
+        let mut filter = LadderFilter::new();
+        filter.configure(48_000.0, 48_000.0 * 0.45, 0.0, 0.0);
+        let at_ceiling = filter.coefficient();
+        filter.configure(48_000.0, 1.0e9, 0.0, 0.0);
+        assert_eq!(
+            filter.coefficient().to_bits(),
+            at_ceiling.to_bits(),
+            "天花板之上的请求必须与 0.45·fs 给出同一位型"
+        );
+        filter.configure(48_000.0, 48_000.0 * 0.44, 0.0, 0.0);
+        assert_ne!(
+            filter.coefficient().to_bits(),
+            at_ceiling.to_bits(),
+            "0.44·fs 必须给出与 0.45·fs 不同的系数（否则天花板比例不是 0.45）"
+        );
+        assert!(
+            at_ceiling > 0.0 && at_ceiling < 1.0,
+            "天花板处的单极点系数必须落在 (0, 1) 内：{at_ceiling}"
+        );
+    }
+
+    /// **判据（新写，可红）**：谐振满量程是字面量 `3.9`（旋钮 `1.0` 给出它）。
+    ///
+    /// 量什么：`feedback()` 的 `f32` 位型（满量程、半量程、越界三处）。
+    ///
+    /// 既有判据只测"谐振会抬起截止点附近的增益"这类**相对**性质，对满量程的绝对
+    /// 刻度不敏感。注入实测：`resonance.clamp(0.0, 1.0) * 3.9` 改成 `* 3.0`
+    /// ⇒ 既有全量判据**全绿** ⇒ 本判据变红。§`full_resonance_stays_bounded`
+    /// 仍然绿，因为 3.0 也有界 —— 那正是这条判据要补的位置。
+    #[test]
+    fn the_full_resonance_feedback_is_pinned_by_a_literal() {
+        let mut filter = LadderFilter::new();
+        filter.configure(48_000.0, 1_000.0, 1.0, 0.0);
+        assert_eq!(filter.feedback().to_bits(), 3.9f32.to_bits());
+        filter.configure(48_000.0, 1_000.0, 0.5, 0.0);
+        assert_eq!(filter.feedback().to_bits(), 1.95f32.to_bits());
+        for over in [2.0f32, 1.0e9, f32::NAN, f32::INFINITY] {
+            filter.configure(48_000.0, 1_000.0, over, 0.0);
+            assert!(
+                filter.feedback() <= 3.9,
+                "谐振旋钮 {over} 必须钳到满量程（实测 {}）",
+                filter.feedback()
+            );
+        }
+    }
+
+    /// **判据（新写，可红）**：饱和拐点由字面量 `0.7` 从**两侧**钉住 —— 拐点以下
+    /// （含拐点本身）逐位恒等，拐点以上立刻开始塑形。
+    ///
+    /// 量什么：`bounded_saturate` 在 5 个拐点以下取值上的 `f32` 位型，以及 5 个拐点
+    /// 以上取值的幅度是否**严格变小**。
+    ///
+    /// 拐点常量只在"拐点之上"生效，而既有判据 `is_transparent_below_the_knee` 用的
+    /// 幅度全在拐点之下，且只测谐波比例（相对量）⇒ 拐点改成 `0.5` 或 `0.8` 都
+    /// **全绿**（注入实测两次都绿）。本判据两侧同时钉：改小 ⇒ 拐点以下的逐位恒等
+    /// 失败；改大 ⇒ 拐点以上的"严格变小"失败。`pade_tanh` 是代数式（无超越函数），
+    /// 且全部断言在同一台机器上比较同一函数的输出 ⇒ 跨架构无关。
+    #[test]
+    fn the_saturation_knee_is_pinned_from_both_sides() {
+        for sample in [0.0f32, 0.1, 0.5, 0.7, -0.7] {
+            assert_eq!(
+                bounded_saturate(sample).to_bits(),
+                sample.to_bits(),
+                "拐点以下（含拐点本身）必须逐位恒等：{sample}"
+            );
+        }
+        for sample in [0.71f32, 0.8, 1.0, -0.71, -1.0] {
+            let out = bounded_saturate(sample);
+            assert!(
+                out.abs() < sample.abs(),
+                "拐点以上 {sample} 必须被塑形，实际 {out}"
+            );
+            assert!(out.is_finite() && out.abs() < 1.0, "饱和输出越界：{out}");
+        }
+    }
 }

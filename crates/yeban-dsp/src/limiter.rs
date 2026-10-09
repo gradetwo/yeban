@@ -864,4 +864,84 @@ mod tests {
             );
         }
     }
+
+    /// **判据（新写，可红）**：释放期间增益**永不超过 1.0**（也不越过它自己的目标）。
+    ///
+    /// 量什么：逐样本 `gain()` 的最大值、是否回到 1.0、`engaged()`。
+    ///
+    /// 模块文档 §3 的峰值上界证明依赖 `G(n)` 被夹在 `target` 与上一增益之间；
+    /// 释放支路那句 `.min(target)` 就是这条前提的落点。夹具先用 2.0 的尖峰把增益
+    /// 压到 0.45 附近，再用足够长的静音让它按 `release` 回升 —— 回升过程必经
+    /// "`previous < 1.0` 且 `target == 1.0`" 的那一格，而**只有**那一格能把
+    /// "越过目标"暴露出来（其它格子上 `min(target)` 与 `previous + release` 同值）。
+    /// 注入实测：去掉 `.min(target)` ⇒ 那一格的增益变成 `previous + release`
+    /// （实测 `1.0000412 > 1.0`）⇒ 本判据变红，而既有全量判据全绿（尖峰之后被延迟的
+    /// 样本恰好是静音，过冲乘在 `0.0` 上不可见）。
+    #[test]
+    fn the_release_ramp_never_overshoots_its_target() {
+        let mut limiter = Limiter::new();
+        let mut left = [0.0f32; 1];
+        let mut right = [0.0f32; 1];
+        // 尖峰：让增益掉到 `threshold / 2.0` 附近。
+        left[0] = 2.0;
+        right[0] = 2.0;
+        limiter.process_stereo(&mut left, &mut right);
+        assert!(limiter.gain() < 1.0, "夹具必须先把增益压下去");
+        let mut worst = limiter.gain();
+        let mut returned_to_unity = false;
+        for _ in 0..40_000 {
+            left[0] = 0.0;
+            right[0] = 0.0;
+            limiter.process_stereo(&mut left, &mut right);
+            let gain = limiter.gain();
+            worst = worst.max(gain);
+            returned_to_unity |= gain == 1.0;
+        }
+        assert!(
+            worst <= 1.0,
+            "释放期间增益越过 1.0：最大 {worst}（释放上限 {LIMITER_RELEASE_PER_SAMPLE}）"
+        );
+        assert!(
+            returned_to_unity,
+            "40 000 帧内必须回到 1.0（每样本 {LIMITER_RELEASE_PER_SAMPLE} ⇒ 约 20 000 帧）"
+        );
+        assert!(limiter.engaged(), "夹具必须真的驱动限制器");
+    }
+
+    /// **判据（新写，可红）**：立体声联动取**较响**的那一侧 —— 一侧的瞬态必须
+    /// 同时压住两侧。
+    ///
+    /// 量什么：强侧被延迟的那个输出样本（线性）、`engaged()`、被压计数、两条输出
+    /// 各自的峰值上界。
+    ///
+    /// 联动的理由是声像稳定（见 [`Limiter`] 的文档）：窗口峰值取两声道绝对值的
+    /// **最大者**。既有判据的夹具全部把左右填成同一个信号 ⇒ `max` 与 `min` 在那些
+    /// 夹具上逐位不可分辨。注入实测：把窗口扫描里的
+    /// `ring[0].abs().max(ring[1].abs())` 改成 `.min(...)` ⇒ 静音侧说了算、窗口峰值
+    /// 恒为 `0.0` ⇒ 限制器**根本不就位**（第一条断言 `engaged()` 就红），强侧瞬态
+    /// 原样穿出；既有全量判据全绿。
+    #[test]
+    fn stereo_linking_follows_the_louder_channel() {
+        let mut limiter = Limiter::new();
+        let mut left = [0.0f32; FRAMES];
+        let mut right = [0.0f32; FRAMES];
+        let spike = 40usize;
+        left[spike] = 2.0;
+        right[spike] = 0.0;
+        limiter.process_stereo(&mut left, &mut right);
+        assert!(limiter.engaged(), "一侧的瞬态必须让限制器就位");
+        assert!(limiter.reduction_count() > 0, "一侧的瞬态必须产生压限");
+        let delayed = spike + LOOKAHEAD_SAMPLES;
+        let limited = left[delayed];
+        assert!(
+            limited.abs() < 1.2,
+            "强侧瞬态没有被压：{limited}（联动取了静音侧，窗口峰值被低估）"
+        );
+        assert!(
+            left.iter()
+                .chain(right.iter())
+                .all(|s| s.abs() <= LIMITER_CEILING),
+            "两侧输出都不得超过天花板 {LIMITER_CEILING}"
+        );
+    }
 }

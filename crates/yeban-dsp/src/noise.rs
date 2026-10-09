@@ -431,4 +431,197 @@ mod tests {
             assert!(noise.process(white, 0.0).is_finite());
         }
     }
+
+    /// **判据（新写，可红）**：给定种子的序列被**逐位冻结**。
+    ///
+    /// 量什么：`Rng::new(0xdead_beef)` 的前 8 个 `next_u32()`（整数）、前 8 个
+    /// `next_unit()` 与 `next_bipolar()` 的 `f32` 位型、以及 `Rng::new(0)` 的内部状态。
+    ///
+    /// [ARCH-DET-001] 要求"跨运行/跨机器同序"，而既有判据要么是**同一个算法自己
+    /// 对自己**（`rng_is_deterministic_and_bipolar` 比的是两个 `Rng::new(42)`），
+    /// 要么是统计性质 ⇒ 换掉 xorshift 的移位常量、换掉零种子的替代常量都**全绿**
+    /// （注入实测：左移 13→12、替代种子 `0x9e37_79b9`→`0x1234_5678`）。
+    /// 本判据把序列本身钉成字面量 ⇒ 两次注入都变红。
+    ///
+    /// 这里的运算只有整数异或/移位与 `f32` 的除、乘、减 ⇒ 属 IEEE 精确类，
+    /// 跨架构逐位相同（裁决 R24 不需要 ulp 预算）。
+    #[test]
+    fn the_seeded_sequence_is_frozen_bit_for_bit() {
+        let mut rng = Rng::new(0xdead_beef);
+        let mut words = [0u32; 8];
+        for slot in &mut words {
+            *slot = rng.next_u32();
+        }
+        assert_eq!(
+            words,
+            [
+                0x477d_20b7,
+                0x8e1d_9142,
+                0xba8c_2458,
+                0xfee0_503b,
+                0x680e_0348,
+                0xa48d_b81b,
+                0x6254_ea5c,
+                0x1cfd_afb3,
+            ],
+            "xorshift 的序列漂移了（跨运行同序是 [ARCH-DET-001] 的契约）"
+        );
+
+        let mut rng = Rng::new(0xdead_beef);
+        let mut unit_bits = [0u32; 8];
+        for slot in &mut unit_bits {
+            *slot = rng.next_unit().to_bits();
+        }
+        assert_eq!(
+            unit_bits,
+            [
+                0x3e8e_fa41,
+                0x3f0e_1d91,
+                0x3f3a_8c24,
+                0x3f7e_e050,
+                0x3ed0_1c07,
+                0x3f24_8db8,
+                0x3ec4_a9d5,
+                0x3de7_ed7e,
+            ],
+            "next_unit 的映射漂移了"
+        );
+
+        let mut rng = Rng::new(0xdead_beef);
+        let mut bipolar_bits = [0u32; 8];
+        for slot in &mut bipolar_bits {
+            *slot = rng.next_bipolar().to_bits();
+        }
+        assert_eq!(
+            bipolar_bits,
+            [
+                0xbee2_0b7e,
+                0x3de1_d910,
+                0x3eea_3090,
+                0x3f7d_c0a0,
+                0xbe3f_8fe4,
+                0x3e92_36e0,
+                0xbe6d_58ac,
+                0xbf46_04a0,
+            ],
+            "next_bipolar 的映射漂移了"
+        );
+
+        // 零种子的替代值也是对外可观测的（`Rng::new(0)` 的序列由它决定）。
+        assert_eq!(Rng::new(0).state(), 0x9e37_79b9);
+    }
+
+    /// 固定夹具：给定颜色、转折频率与采样率，喂 8 个固定的白噪声样本。
+    fn render_bits(colour: NoiseColour, corner_hz: f32, sample_rate: f32) -> [u32; 8] {
+        let mut noise = NoiseGen::new();
+        noise.set_colour(colour);
+        noise.set_corner_hz(corner_hz);
+        let mut out = [0u32; 8];
+        for (index, slot) in out.iter_mut().enumerate() {
+            let white = if index % 2 == 0 { 0.5 } else { -0.25 };
+            *slot = noise.process(white, sample_rate).to_bits();
+        }
+        out
+    }
+
+    /// **判据（新写，可红）**：三种颜色的渲染被**逐位冻结**。
+    ///
+    /// 量什么：8 个输出样本的 `f32` 位型（白／粉／棕各一组）。
+    ///
+    /// 成文契约只有"白平坦、粉 −3 dB/倍频程、棕 −6 dB/倍频程"与"有界"这两条，
+    /// 而既有斜率判据的容差是 ±0.6／±0.8 dB ⇒ 极点系数与输出缩放都能在容差内被改掉
+    /// 而**全绿**（注入实测三处：粉噪声第 0 极点 `0.99765→0.99`、棕噪声积分步长
+    /// `0.05→0.5`、粉噪声输出缩放 `0.28→0.5`）⇒ 本判据三处都变红。
+    ///
+    /// 噪声的滤波链只有乘加、`TAU` 常量与一次除法（无超越函数）⇒ 属 IEEE 精确类，
+    /// 跨架构逐位相同（裁决 R24）。
+    #[test]
+    fn the_noise_render_is_frozen_bit_for_bit() {
+        assert_eq!(
+            render_bits(NoiseColour::White, 5.0, 48_000.0),
+            [
+                0x3f00_0000,
+                0xbe80_0000,
+                0x3f00_0000,
+                0xbe80_0000,
+                0x3f00_0000,
+                0xbe80_0000,
+                0x3f00_0000,
+                0xbe80_0000,
+            ],
+            "白噪声渲染漂移"
+        );
+        assert_eq!(
+            render_bits(NoiseColour::Pink, 5.0, 48_000.0),
+            [
+                0x3e6a_1d4e,
+                0x3cc0_8589,
+                0x3e85_11c5,
+                0x3d53_2142,
+                0x3e92_581c,
+                0x3d9b_a5df,
+                0x3e9e_4dc7,
+                0x3dc9_b36a,
+            ],
+            "粉噪声渲染漂移（极点系数或输出缩放被改了）"
+        );
+        assert_eq!(
+            render_bits(NoiseColour::Brown, 50.0, 48_000.0),
+            [
+                0x3db2_06f2,
+                0x3d2f_b25e,
+                0x3e04_a678,
+                0x3dae_8cf4,
+                0x3e2f_b7b7,
+                0x3e02_0f90,
+                0x3e5a_391d,
+                0x3e2c_49bd,
+            ],
+            "棕噪声渲染漂移（漏积分步长或泄漏被改了）"
+        );
+    }
+
+    /// **判据（新写，可红）**：棕噪声泄漏的钳制区间**两端都是承重的**。
+    ///
+    /// 量什么：两组"原始泄漏落在钳制区间之外"的 `(corner, sample_rate)` 各自的 32 个
+    /// 输出样本位型；同一组内两个请求必须逐位相同。
+    ///
+    /// `leak = 1 − TAU·corner/sr`，文档域是 `corner ∈ [1, 200] Hz` 与
+    /// `sr ≥ MIN_SAMPLE_RATE = 1 000 Hz`（采样率没有上界）。既有判据全部用
+    /// `48 kHz / 5 Hz`（原始泄漏 `0.99935`，落在区间**之内**）⇒ 把
+    /// `leak.clamp(0.9, 0.999_9)` 放宽成 `(0.0, 1.0)` **全绿**（注入实测）。
+    /// 本判据在两端各取一对"原始泄漏都越界"的输入：下界侧
+    /// `(200 Hz, 1 kHz)` 的原始泄漏是 `−0.2566`、`(200 Hz, 2 kHz)` 是 `0.3717`；
+    /// 上界侧 `(1 Hz, 1e8)` 是 `0.99999994`、`(1 Hz, 1e9)` 在 `f32` 里正好是 `1.0`。
+    /// 钳制生效时组内逐位相同，钳制被拿掉时组内立刻分叉。
+    #[test]
+    fn the_brown_leak_clamp_is_load_bearing_at_both_ends() {
+        let render = |corner_hz: f32, sample_rate: f32| -> [u32; 32] {
+            let mut noise = NoiseGen::new();
+            noise.set_colour(NoiseColour::Brown);
+            noise.set_corner_hz(corner_hz);
+            let mut out = [0u32; 32];
+            for (index, slot) in out.iter_mut().enumerate() {
+                let white = if index % 2 == 0 { 0.5 } else { -0.25 };
+                *slot = noise.process(white, sample_rate).to_bits();
+            }
+            out
+        };
+        assert_eq!(
+            render(200.0, 1_000.0),
+            render(200.0, 2_000.0),
+            "下界侧：两个原始泄漏都低于 0.9 的请求必须折到同一个泄漏上"
+        );
+        assert_eq!(
+            render(1.0, 1.0e8),
+            render(1.0, 1.0e9),
+            "上界侧：两个原始泄漏都高于 0.9999 的请求必须折到同一个泄漏上"
+        );
+        // 正对照：不越界的两组请求必须给出不同的流（这条判据不是在空转）。
+        assert_ne!(
+            render(1.0, 48_000.0),
+            render(200.0, 48_000.0),
+            "不同的原始泄漏必须给出不同的流"
+        );
+    }
 }
