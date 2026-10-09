@@ -2492,12 +2492,12 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             // 这里复用按钮那条链：[`UndoPort::perform`] 写运行态，[`refresh_undo_window`]
             // 把同一批显示态属性回写 —— 关闭与打开/切换因此**不可能**分叉。
             // `reproject = false`：关闭不改工程（与 `ToggleUndoTree` 同口径）。
-            if let Some(port) = undo {
-                if port.undo_tree_open() {
-                    port.perform(UiAction::CloseUndoTree);
-                    refresh_undo_window(ui, port, false);
-                    return true;
-                }
+            if let Some(port) = undo
+                && port.undo_tree_open()
+            {
+                port.perform(UiAction::CloseUndoTree);
+                refresh_undo_window(ui, port, false);
+                return true;
             }
             let height = cancel_track_height_drag(ui, undo);
             let mixer = ui.invoke_mixer_cancel_gesture();
