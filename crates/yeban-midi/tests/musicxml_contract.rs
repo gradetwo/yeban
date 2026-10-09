@@ -23,6 +23,12 @@
 //!    都必须读成同一个 score。这两种形状由**独立生产者**（CPython `zipfile` / `zlib`）写的
 //!    已提交夹具钉住 —— 已提交的另两份夹具与本机 6 个真 `.mxl` 的容器都**不是**这两种形状
 //!    （实测：16/16 个条目的 bit 3 = 0；16/16 个 DEFLATE 流只有单块且 `BFINAL=1`）。
+//! ⑧ **滑动窗口的大小**（本票新增，`mxl_long_range_match_*`）：`score.xml` 里有一次距离
+//!    **32506** 字节的匹配 ⇒ 解码器必须有 RFC 1951 的完整 32 KiB 窗口。
+//!    ⚠️ 在本票之前，这条断言**没有**已提交证据：本票之前那 4 份已提交 `.mxl` 夹具的 **8 个**
+//!    DEFLATE 流的最远匹配距离是 **1881 / 1881 / 1881 / 1187**（`score.xml`）与 4×**95**
+//!    （`container.xml`）字节（量法 = 手写 raw-DEFLATE 走查器，单位 = 字节）
+//!    ⇒ `MAX_WINDOW` 降到 2048 也不会让任何判据变红。
 //!
 //! ## 规范出处
 //!
@@ -32,8 +38,9 @@
 //!
 //! ## 本文件**没有**证明什么
 //!
-//! - ⛔ 不证明 `.mxl` 的**全部**形态可读：只覆盖 4 个已提交夹具（`score.xml` 分别是
-//!   dynamic 与 fixed Huffman 块、真 data descriptor 容器、**多块** DEFLATE 流）与判据自造的
+//! - ⛔ 不证明 `.mxl` 的**全部**形态可读：只覆盖 5 个已提交夹具（`score.xml` 分别是
+//!   dynamic 与 fixed Huffman 块、真 data descriptor 容器、**多块** DEFLATE 流、
+//!   距离 32506 字节的**长匹配**）与判据自造的
 //!   容器（stored 条目、stored DEFLATE 块）。ZIP64 / 加密 / 非 deflate 压缩法的**接受**仍然
 //!   **没有**判据 —— 这三者的**拒绝**有判据（见 `src/mxl.rs` 的边界 1/2/3）。
 //!   `data descriptor` 与多块流的**接受**由本票新增的判据钉住（边界 7 与 `src/mxl/inflate.rs`）。
@@ -83,6 +90,10 @@ const HANDMADE_MXL_DATA_DESCRIPTOR: &[u8] =
 /// 配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 8 节。
 const HANDMADE_MXL_MULTIBLOCK: &[u8] =
     include_bytes!("fixtures/handmade_mvp_partwise_multiblock.mxl");
+/// 自造夹具：`score.xml` 里有一次距离 **32506** 字节的匹配（生产者 = CPython `zlib`）
+/// ⇒ 只认 16 KiB 窗口的解码器读不出它。配方 / 字节 / SHA-256 见 `tests/fixtures/README.md` 第 9 节。
+const HANDMADE_MXL_LONG_MATCH: &[u8] =
+    include_bytes!("fixtures/handmade_mvp_partwise_long_match.mxl");
 
 /// 全部已提交的**纯文本**夹具（名字 + 字节）。
 ///
@@ -972,6 +983,62 @@ fn mxl_multiblock_deflate_stream_is_read_to_its_last_block() {
 }
 
 #[test]
+fn mxl_long_range_match_needs_the_full_32_kib_window() {
+    // ## 量什么（单位 = 字节）
+    //
+    // `score.xml` 的 DEFLATE 流里有一次距离 **32506** 字节的匹配：258 字节的**非周期**串 `Z`
+    // 在载荷里出现两次，两次的起点相距 `32506`（配方见 `tests/fixtures/README.md` 第 9 节）。
+    // `32506` 是 CPython `zlib` 在 `windowBits=15` 下的最大可用距离
+    // （`32768 - MIN_LOOKAHEAD(262)`）⇒ 这是**独立生产者**今天能给出的最远匹配。
+    //
+    // ⇒ 只认 16 KiB（或更小）窗口的解码器在这一条上必然 `Err`：`back > MAX_WINDOW` 开火，
+    // 报 `InvalidDeflate { detail: "匹配距离超过 32 KiB 窗口" }`。⚠️ 本判据是
+    // `src/mxl/inflate.rs` 的 `MAX_WINDOW` 的**唯一**集成证据：本票之前那 4 份 `.mxl` 夹具的
+    // **8 个** DEFLATE 流的最远匹配距离是 **1881 / 1881 / 1881 / 1187**（`score.xml`）与
+    // 4×**95**（`container.xml`）字节（量法 = 手写 raw-DEFLATE 走查器）
+    // ⇒ 在本票之前，`MAX_WINDOW` 从 `32768` 降到 `2048` 不会让任何判据变红。
+    //
+    // 载荷 = 纯文本夹具 + 一段长注释 ⇒ 注释被 XML 层跳过 ⇒ `score` 与纯文本夹具相同。
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    assert_eq!(
+        parse_mxl(HANDMADE_MXL_LONG_MATCH),
+        Ok(text),
+        "长距离载体必须解出与纯文本夹具同一个 score"
+    );
+
+    // 容器字段（逐项字面读数；单位 = 字节）。第 1 个条目 179 → 131、第 2 个 35487 → 1316。
+    let entries = local_entries(HANDMADE_MXL_LONG_MATCH);
+    assert_eq!(entries.len(), 2, "本夹具是 2 个条目的容器");
+    let names: Vec<&str> = entries.iter().map(|entry| entry.name).collect();
+    assert_eq!(names, vec!["META-INF/container.xml", "score.xml"]);
+    assert!(entries.iter().all(|entry| entry.method == 8));
+    assert_eq!(entries[0].crc32, 0x8a9f_eb2b);
+    assert_eq!((entries[0].uncompressed, entries[0].compressed), (179, 131));
+    assert_eq!(entries[1].crc32, 0x44f2_4fca);
+    assert_eq!(
+        (entries[1].uncompressed, entries[1].compressed),
+        (35487, 1316)
+    );
+    // 压缩比（无量纲）：35487 / 1316 = 26.9 ⇒ 载荷的绝大部分是**距离 1** 的 `'a'` 匹配，
+    // 长距离只出现在 `Z` 的第二次出现处（258 字节）。
+    assert!(
+        entries[1].uncompressed > 20 * entries[1].compressed,
+        "长距离夹具的压缩比必须 ≳ 20"
+    );
+
+    // 首块是 dynamic（`(BFINAL, BTYPE) = (1, 2)`）—— 远匹配**不是**靠 stored 块造出来的。
+    let bodies = local_bodies(HANDMADE_MXL_LONG_MATCH);
+    assert_eq!(bodies.len(), 2, "本夹具是 2 个条目");
+    assert_eq!(first_deflate_block(bodies[1]), (1, 2), "score.xml 的首块");
+
+    // 确定性 [ARCH-DET-001]：同一份字节两次结果相同。
+    assert_eq!(
+        parse_mxl(HANDMADE_MXL_LONG_MATCH),
+        parse_mxl(HANDMADE_MXL_LONG_MATCH)
+    );
+}
+
+#[test]
 fn mxl_rootfile_path_is_followed_and_its_absence_is_explicit() {
     let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
 
@@ -1237,8 +1304,9 @@ fn mxl_limits_stop_both_declared_and_actual_blowups() {
 
 #[test]
 fn mxl_container_fuzz_never_panics() {
-    // 3 个容器：2 个已提交夹具 + 1 个判据自造（stored 条目 + stored DEFLATE 块）。
-    // 对每个做**截断 / 翻转**，只允许 Ok 或 Err。
+    // 6 个容器：5 个**已提交**夹具（dynamic / fixed / data descriptor / multiblock / 长距离匹配）
+    // + 1 个判据自造（stored 条目 + stored DEFLATE 块）。
+    // 对每个做**截断 / 翻转 / 插入**，只允许 Ok 或 Err。
     let built = build_zip(
         &[
             ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
@@ -1246,24 +1314,39 @@ fn mxl_container_fuzz_never_panics() {
         ],
         None,
     );
-    let containers: [(&str, &[u8]); 3] = [
+    let containers: [(&str, &[u8]); 6] = [
         ("handmade_mvp_partwise.mxl", HANDMADE_MXL),
         (
             "handmade_mvp_partwise_deflate_fixed.mxl",
             HANDMADE_MXL_FIXED,
         ),
+        (
+            "handmade_mvp_partwise_data_descriptor.mxl",
+            HANDMADE_MXL_DATA_DESCRIPTOR,
+        ),
+        (
+            "handmade_mvp_partwise_multiblock.mxl",
+            HANDMADE_MXL_MULTIBLOCK,
+        ),
+        (
+            "handmade_mvp_partwise_long_match.mxl",
+            HANDMADE_MXL_LONG_MATCH,
+        ),
         ("built_stored_and_deflate_stored", &built),
     ];
     let mut runs = 0usize;
+    let mut insertions = 0usize;
     for (name, bytes) in containers {
         assert!(
             parse_mxl(bytes).is_ok(),
             "{name} 在变形之前就必须是可读的（否则本判据没有意义）"
         );
+        // ① 截断：每个前缀。
         for cut in 0..bytes.len() {
             let _ = parse_mxl(&bytes[..cut]);
             runs += 1;
         }
+        // ② 翻转：单字节替换。
         for index in (0..bytes.len()).step_by(3) {
             for replacement in [0x00u8, 0xff, b'P', b'K'] {
                 let mut copy = bytes.to_vec();
@@ -1272,10 +1355,27 @@ fn mxl_container_fuzz_never_panics() {
                 runs += 1;
             }
         }
+        // ③ 插入：整体后移 ⇒ 中央目录 / 本地头的偏移字段与真实位置不再一致。
+        for index in (0..bytes.len()).step_by(37) {
+            for inserted in [0x00u8, 0xff, b'P'] {
+                let mut copy = bytes.to_vec();
+                copy.insert(index, inserted);
+                let _ = parse_mxl(&copy);
+                runs += 1;
+                insertions += 1;
+            }
+        }
     }
-    // 判据本身是"没 panic"；这个数字让"到底跑了多少次"可复核。
-    println!("mxl_container_fuzz_never_panics: runs={runs}");
+    // 判据本身是"没 panic"；这两个数字让"三种变形到底跑了多少次"可复核。
+    println!(
+        "mxl_container_fuzz_never_panics: runs={runs} insertions={insertions} containers={}",
+        containers.len()
+    );
     assert!(runs >= 5_000, "探针只跑了 {runs} 次，样本太少");
+    assert!(
+        insertions >= 500,
+        "插入这一种变形只跑了 {insertions} 次（模块文档声称做截断 / 翻转 / 插入）"
+    );
 }
 
 // ---------------------------------------------------------------------------

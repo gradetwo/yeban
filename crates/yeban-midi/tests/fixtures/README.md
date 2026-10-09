@@ -422,3 +422,96 @@ blob = (c.compress(SCORE[:half]) + c.flush(zlib.Z_FULL_FLUSH)
    `/tmp/musicxml/**`，**未提交**）。
 4. ⛔ 不证明这两个生产者（CPython / zlib）的**版本间**输出稳定：夹具字节已冻结，
    判据读的是冻结字节，不是"重新跑配方"。
+
+## 9. `.mxl` 的**长距离匹配**夹具：钉住 32 KiB 滑动窗口（本票新增）
+
+本节的读者是 `crates/yeban-midi/tests/musicxml_contract.rs` 的判据
+`mxl_long_range_match_needs_the_full_32_kib_window` 与
+`crates/yeban-midi/src/mxl/inflate.rs` 的常量 `MAX_WINDOW` 及其单元判据
+`full_window_match_is_accepted_and_the_history_check_runs_after_it`。
+
+### 9.1 为什么需要这一份
+
+`crates/yeban-midi/src/mxl/inflate.rs` 的模块文档断言 `MAX_WINDOW` **必须**是 RFC 1951 的
+**完整 32 KiB**（16 KiB 的捷径不够）。那条断言的依据只是**未提交**的本机语料
+（`/tmp/musicxml/**` 的 6 个真 `.mxl`，最远匹配距离 `29393..32502` 字节）。
+
+**本票实测**（量法 = 本机手写的 raw-DEFLATE 走查器，逐块解 Huffman 并记录每个长度/距离对的
+距离；单位 = **字节**）：本节之前那 4 份已提交 `.mxl` 夹具的 **8 个** DEFLATE 流的**最远**匹配距离是
+
+| 本节之前的已提交夹具 | `score.xml`（字节） | `META-INF/container.xml`（字节） |
+| :--- | ---: | ---: |
+| `handmade_mvp_partwise.mxl` | 1881 | 95 |
+| `handmade_mvp_partwise_deflate_fixed.mxl` | 1881 | 95 |
+| `handmade_mvp_partwise_data_descriptor.mxl` | 1881 | 95 |
+| `handmade_mvp_partwise_multiblock.mxl` | 1187 | 95 |
+
+⇒ 8 个流里的最大值是 **1881**：在**本节之前**，把 `MAX_WINDOW` 从 `32768` 降到 `2048` 也不会让
+任何**已提交**判据变红 —— 那条断言**没有**已提交证据。本节补一份**独立生产者**（CPython `zlib`）
+写的、最远匹配距离 **32506** 字节的容器，把 32 KiB 窗口钉成**会变红**的判据
+（注入证据见本票报告）。
+
+### 9.2 逐件登记（来源 · 许可 · SHA-256）
+
+| 本目录文件 | 字节 | SHA-256 | 来源 | 许可 |
+| :--- | ---: | :--- | :--- | :--- |
+| `handmade_mvp_partwise_long_match.mxl` | 1683 | `6f0bb37c0e707606bed047a39031d02686aba52ecdc2b13b28c85a57c0bfdd9c` | 夜半项目自造（本票）：`handmade_mvp_partwise.musicxml` 在 XML 声明之后插一段**长注释**（内含 258 字节块 `Z` 的两次出现，起点相距 32506 字节）后由 CPython `zipfile` 打包 | 本仓库许可 |
+
+容器内有 **2** 个条目、**2/2** deflate：
+
+| 条目 | 本地头偏移 | CRC-32 | 压缩后 | 未压缩 | 首块 `(BFINAL, BTYPE)` | 最远匹配距离（字节） |
+| :--- | ---: | ---: | ---: | ---: | :--- | ---: |
+| `META-INF/container.xml` | 0 | `0x8a9feb2b` | 131 | 179 | `(1, 2)` | 128 |
+| `score.xml` | 184 | `0x44f24fca` | 1316 | 35487 | `(1, 2)` | **32506** |
+
+`score.xml` 的载荷 = 纯文本夹具 `handmade_mvp_partwise.musicxml` **加上**那段注释
+（⇒ 解出的 `MusicXmlScore` 与纯文本夹具**相等**：注释被 XML 层跳过）。
+`32506` 是 CPython `zlib` 在 `windowBits=15` 下的最大可用距离
+（`MAX_DIST = 32768 - MIN_LOOKAHEAD(262) = 32506`，zlib 源码的 `deflate.h`）——
+RFC 1951 的最大距离是 **32768**，那个**精确**边界由 `src/mxl/inflate.rs` 的单元判据用手写
+固定-Huffman 流钉住（不依赖生产者的 `MAX_DIST`）。
+
+### 9.3 构造配方（**确定性**：同一份输入 ⇒ 同一份字节）
+
+```python
+import io, zipfile
+
+text = open("handmade_mvp_partwise.musicxml", "rb").read()          # 2716 字节
+decl_end = text.index(b"?>") + 2
+alphabet = b"bcdefghijklmnopqrstuvwxyz0123456789"                    # 无 '-'（XML 注释里不许 '--'）
+Z = bytes(alphabet[(i * 7 + i // 13) % len(alphabet)] for i in range(258))
+comment = b"<!--" + Z + b"a" * (32506 - 258) + Z + b"-->"
+payload = text[:decl_end] + comment + text[decl_end:]                # 35487 字节
+
+container = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    "<container>\n  <rootfiles>\n"
+    '    <rootfile full-path="score.xml" media-type="application/vnd.recordare.musicxml"/>\n'
+    "  </rootfiles>\n</container>\n"
+).encode()
+
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    for name, body in (("META-INF/container.xml", container), ("score.xml", payload)):
+        info = zipfile.ZipInfo(name, date_time=(2026, 10, 9, 0, 0, 0))   # ⚠ 缺省是 localtime ⇒ 非确定
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+        z.writestr(info, body)
+open("handmade_mvp_partwise_long_match.mxl", "wb").write(buf.getvalue())
+```
+
+为什么这样能造出**远**匹配：夹在两次 `Z` 之间的 **32248** 个 `'a'` 由距离 1 的匹配压缩掉
+（几乎不占字节），而 `Z` 是 258 字节的**非周期**串 ⇒ 第二次出现时窗口里**只有**首次出现
+那一处可以匹配，于是 zlib 必须用距离 `258 + 32248 = 32506`。
+
+复核（本票实测，全部为**真**）：配方连跑两次字节相同（`cmp` 通过）；SHA-256 与上表相同；
+`zlib.decompress(流, -15) == payload`（2/2）；走查器读出 `score.xml` 的最远匹配距离 = **32506**。
+
+### 9.4 本节**没有**证明什么
+
+1. ⛔ 不证明 **32768** 这个 RFC 上界可读：zlib 生产的流到不了它（`MAX_DIST = 32506`）。
+   该边界由 `src/mxl/inflate.rs` 的**手写**固定-Huffman 流钉住（判据侧的编码器，不进本目录）。
+2. ⛔ 不证明**任意**长距离流可读：只覆盖"单个 dynamic 块 + 距离 32506 的一次 3 字节匹配"。
+3. ⛔ 不证明本夹具代表真实 `.mxl`：本机 6 个真文件（`/tmp/musicxml/**`，**未提交**）的最远
+   匹配距离是 `29393..32502`，本夹具的 `32506` 是**构造**出来的上界样本，不是语料读数。
+4. ⛔ 不证明"距离 32507..32768 的流"在 CPython 侧存在：那是 zlib 的 `MAX_DIST` 之外。

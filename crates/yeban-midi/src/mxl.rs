@@ -61,6 +61,14 @@
 //!    ⇒ 已提交判据碰不到多块链。该形状由判据
 //!    `mxl_multiblock_deflate_stream_is_read_to_its_last_block` 与
 //!    `tests/fixtures/README.md` 第 8 节的自造夹具钉住（3 块，中间那块是 `stored`）。
+//! 10. **滑动窗口**：`inflate::MAX_WINDOW` 是 RFC 1951 的完整 32 KiB。⛔ 本节之前那 4 份 `.mxl`
+//!     夹具的 **8 个** DEFLATE 流的最远匹配距离只有 **1881 / 1881 / 1881 / 1187**（`score.xml`）
+//!     与 4×**95**（`META-INF/container.xml`）字节（单位 = 字节）⇒ 单靠它们钉不住这个常量
+//!     （把它降到 `2048` 也不会让任何判据变红）。证据是
+//!     `tests/fixtures/handmade_mvp_partwise_long_match.mxl`（`score.xml` 里有一次距离
+//!     **32506** 字节的匹配，生产者 = CPython `zlib`）与单元判据
+//!     `full_window_match_is_accepted_and_the_history_check_runs_after_it`（手写固定 Huffman 流，
+//!     钉住 RFC 的**精确**上界 **32768** —— `zlib` 的 `MAX_DIST` 只到 `32506`，所以两条都需要）。
 //!
 //! ## 分配（MusicXML **不在**音频线程 ⇒ 零分配不适用，但必须有界）
 //!
@@ -80,7 +88,8 @@
 //!
 //! 任意字节输入只产生 `Ok` 或 [`MxlError`](crate::mxl::MxlError)：没有 `unwrap` / `expect` / 索引恐慌 /
 //! 算术溢出（长度相加一律先查上界或用 `checked_add`）。
-//! 判据 `mxl_container_fuzz_never_panics` 对本目录的 4 个容器夹具做截断 / 翻转 / 插入。
+//! 判据 `mxl_container_fuzz_never_panics` 对本目录的 **5** 个 `.mxl` 夹具与 1 个判据自造的容器
+//! 做**截断 / 翻转 / 插入**（三种变形都做；跑的次数由那条判据自己数出来并打印）。
 
 use crate::musicxml::{MusicXmlError, MusicXmlScore, parse_musicxml};
 

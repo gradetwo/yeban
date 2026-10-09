@@ -35,6 +35,21 @@
 //! DEFLATE 流的最远匹配距离落在 29393..32502 ⇒ 上界 **32502 > 16384**（16 KiB）。
 //! 因此 `MAX_WINDOW` 必须是 RFC 1951 的**完整 32 KiB**，16 KiB 的捷径不够。
 //!
+//! ⚠️ **上面那段是未提交语料**，所以它不构成判据。本票之前那 4 份**已提交** `.mxl` 夹具的
+//! **8 个** DEFLATE 流的最远匹配距离只有 **1881 / 1881 / 1881 / 1187**（`score.xml`）与
+//! 4×**95**（`META-INF/container.xml`）字节（量法 = 手写 raw-DEFLATE 走查器；单位 = 字节）
+//! ⇒ 在本票之前，把 `MAX_WINDOW` 从 `32768` 降到 `2048` 也不会让任何已提交判据变红。
+//! 本票因此补了两条证据：
+//!
+//! - **集成**（独立生产者 = CPython `zlib`）：已提交夹具
+//!   `tests/fixtures/handmade_mvp_partwise_long_match.mxl` 的 `score.xml` 里有一次距离
+//!   **32506** 字节的匹配（配方见 `tests/fixtures/README.md` 第 9 节），由判据
+//!   `mxl_long_range_match_needs_the_full_32_kib_window` 钉住。
+//! - **单元**（判据自己拼流，⛔ 不依赖生产者）：下面的判据
+//!   `full_window_match_is_accepted_and_the_history_check_runs_after_it` 用一条固定 Huffman 流
+//!   钉住 RFC 1951 的**精确**最大距离 **32768**（`zlib` 的 `MAX_DIST` 只到 **32506**
+//!   = `32768 - MIN_LOOKAHEAD(262)`，所以生产者给的流到不了这个边界）。
+//!
 //! ## 有界性（⛔ 不是音频线程）
 //!
 //! 本模块**不在**音频线程上被调用（MusicXML / `.mxl` 是离线导入）。
@@ -474,6 +489,149 @@ mod tests {
         out.extend_from_slice(&(!length).to_le_bytes());
         out.extend_from_slice(payload);
         out
+    }
+
+    /// raw-DEFLATE 的**判据侧**位写出器（RFC 1951 §3.1.1：字节内低位先出）。
+    ///
+    /// ⛔ 它不是受测代码 —— 只被下面的判据用来**造**输入。它的输出由一个**独立生产者**
+    /// 核验过：CPython `zlib.decompressobj(-15)` 对同一份字节给出同样的 `32771` 字节。
+    struct BitWriter {
+        out: Vec<u8>,
+        hold: u32,
+        /// `hold` 里已填的比特数（`< 8`）。
+        bits: u32,
+    }
+
+    impl BitWriter {
+        fn new() -> Self {
+            Self {
+                out: Vec::new(),
+                hold: 0,
+                bits: 0,
+            }
+        }
+
+        /// Huffman 码：**高位先**入。
+        fn code(&mut self, code: u32, len: u32) {
+            for shift in (0..len).rev() {
+                self.bit((code >> shift) & 1);
+            }
+        }
+
+        /// 定长字段与额外位：**低位先**入。
+        fn value(&mut self, value: u32, len: u32) {
+            for shift in 0..len {
+                self.bit((value >> shift) & 1);
+            }
+        }
+
+        fn bit(&mut self, bit: u32) {
+            self.hold |= bit << self.bits;
+            self.bits += 1;
+            if self.bits == 8 {
+                self.out.push(self.hold as u8);
+                self.hold = 0;
+                self.bits = 0;
+            }
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            if self.bits > 0 {
+                self.out.push(self.hold as u8);
+            }
+            self.out
+        }
+    }
+
+    /// 固定 Huffman 表（RFC 1951 §3.2.6）里的一个符号：字面量、长度码、块结束码共用这张表。
+    fn fixed_symbol(bits: &mut BitWriter, symbol: u32) {
+        match symbol {
+            0..=143 => bits.code(0x30 + symbol, 8),
+            144..=255 => bits.code(0x190 + (symbol - 144), 9),
+            256..=279 => bits.code(symbol - 256, 7),
+            _ => bits.code(0xc0 + (symbol - 280), 8),
+        }
+    }
+
+    /// 只支持本判据需要的两个距离码：`1`（码 0）与 `32768`（码 29 + 13 位额外位全 1）。
+    fn fixed_distance(bits: &mut BitWriter, distance: u32) {
+        match distance {
+            1 => bits.code(0, 5),
+            32768 => {
+                bits.code(29, 5);
+                bits.value(8191, 13);
+            }
+            other => panic!("本编码器只支持距离 1 与 32768，收到 {other}"),
+        }
+    }
+
+    /// 一个固定 Huffman 块：先铺 `pad` 个 `'a'` 字节（1 个字面 + 若干个长度 258 / 距离 1 的匹配），
+    /// 再放一次长度 3 / 距离 `32768` 的匹配，最后是块结束码。`BFINAL = 1`。
+    fn fixed_stream(pad: usize) -> Vec<u8> {
+        assert!(pad >= 1, "至少要有一个字面量");
+        let mut bits = BitWriter::new();
+        bits.value(1, 1); // BFINAL = 1
+        bits.value(1, 2); // BTYPE = 01（固定 Huffman；低位先出 ⇒ 先 1 后 0）
+        fixed_symbol(&mut bits, u32::from(b'a')); // 1 字节
+        let mut remaining = pad - 1;
+        while remaining >= 258 {
+            fixed_symbol(&mut bits, 285); // 长度码 285 = 258 字节
+            fixed_distance(&mut bits, 1);
+            remaining -= 258;
+        }
+        for _ in 0..remaining {
+            fixed_symbol(&mut bits, u32::from(b'a'));
+        }
+        fixed_symbol(&mut bits, 257); // 长度码 257 = 3 字节
+        fixed_distance(&mut bits, 32768);
+        fixed_symbol(&mut bits, 256); // 块结束码
+        bits.finish()
+    }
+
+    /// 窗口的**精确**上界：距离 `32768`（RFC 1951 §3.2.5 的距离码 29 的最大值）必须可读。
+    ///
+    /// ## 量什么（单位 = 字节）
+    ///
+    /// 输入是**判据自己**拼的固定 Huffman 流（长 **213** 字节），输出 **32771** 字节 `'a'`。
+    /// `32768` 是 RFC 1951 允许的**最大**距离 ⇒ 接受它意味着 `MAX_WINDOW` **必须 ≥ 32768**。
+    /// 这是 `MAX_WINDOW` 精确值的**唯一**证据：集成判据用的独立生产者（`zlib`）到不了这个边界
+    /// （它的 `MAX_DIST` 是 `32506`），而 `MAX_WINDOW` 一旦小于 `32768`，两条断言都会报
+    /// `"匹配距离超过 32 KiB 窗口"`。
+    ///
+    /// ## 两项检查的**次序**
+    ///
+    /// 对照臂：少放**一个**字节（输出 `32767` 字节）时，同一个距离只能由**历史**检查拒绝
+    /// （`"匹配距离超过已输出字节数"`）—— 它证明 `back > MAX_WINDOW` 的检查在**先**，
+    /// 且它在 `32768` 处**没有**开火（否则报的是窗口越界）。
+    #[test]
+    fn full_window_match_is_accepted_and_the_history_check_runs_after_it() {
+        let full = fixed_stream(32768);
+        assert_eq!(full.len(), 213, "拼出来的输入字节数（字面读数）");
+        let out = inflate_raw(&full, 1 << 20).expect("距离 32768 是 RFC 1951 的最大值，必须可读");
+        assert_eq!(out.len(), 32771);
+        assert!(out.iter().all(|&byte| byte == b'a'));
+
+        // 输出上界仍然开火（同一个流，上界只比输出少 1 字节）。
+        assert_eq!(
+            inflate_raw(&full, 32770),
+            Err(InflateError {
+                offset: 212,
+                detail: "输出超过上界",
+                kind: InflateErrorKind::Limit,
+            })
+        );
+
+        // 对照臂：少一个字节 ⇒ 同一个距离落在**历史**检查上。
+        let short = fixed_stream(32767);
+        assert_eq!(short.len(), 212, "少一次字面量就少一个字节");
+        assert_eq!(
+            inflate_raw(&short, 1 << 20),
+            Err(InflateError {
+                offset: 211,
+                detail: "匹配距离超过已输出字节数",
+                kind: InflateErrorKind::Malformed,
+            })
+        );
     }
 
     #[test]
