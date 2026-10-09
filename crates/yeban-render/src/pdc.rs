@@ -13,18 +13,34 @@
 //! > 插入 `D_i = L_max − L_i` 采样点的环形延迟缓冲 (PDC Delay Line); 实时音频引擎与
 //! > Rayon 离线母带渲染器**完全共用同一套 PDC 算法**。
 //!
-//! ## 本模块的状态: 最小同构实现 —— **待 `yeban-engine` 线提供后必须改为复用**
+//! ## 本模块的状态: 引擎现在**有** PDC API 了, 但两者还不是同一个式子
 //!
-//! `crates/yeban-engine` 在本分支上仍是 scaffold (`src/lib.rs` 只有文档), 没有暴露
-//! 任何 PDC API。为了让离线渲染器的相位对齐不是"写死的 0", 这里实现了一份**最小
-//! 同构**版本。它是纯函数、零 cpal 依赖、零第三方依赖, 因此:
+//! `crates/yeban-engine` 已经落地了 `graph::PdcPlan::compute`（拓扑排序 + 关键路径
+//! `L(v)` / `arrival(v)` + 每节点补偿 `compensation`）, 并且按 [ADR-0001 D19] 用
+//! `default-features = false` 就能不拖 `cpal` 消费它。**可直接复用的是它的拓扑排序
+//! 与关键路径**；**不能**整段换成它的 `compensation`，因为那是另一个式子:
 //!
-//! - 本机可以用 `rustc --edition 2024 --test` 单独验证 (见 `verify/pure_modules.rs`);
-//! - 引擎线提供接口后, 这里的 `plan()` 应当**整体退役**, 换成对
-//!   `yeban_engine::pdc::plan()` 的调用, 并由 `render.rs` 的等价性测试
-//!   (`pdc_plan_matches_engine_reference`) 防止两条实现漂移。
+//! | | 本模块（逐边） | `yeban-engine` 的 `compensation`（逐节点, 施加在节点输出） |
+//! | :--- | :--- | :--- |
+//! | 公式 | `D(s→d) = arrival[d] − output_latency[s]` | `D(v) = L_max − arrival(v)` |
+//! | 基准 | **目的节点自己**的 `arrival`（局部） | **Master 的** `L_max`（全局） |
 //!
-//! 这一条已登记进 `docs/ledger/render-master-notes.md` 的 `needs` 清单。
+//! 两者在星形图（所有源直连 Master）上给出相同的数, 但在"中间节点自己有延迟"的图上
+//! 不同。取 `a(自身 0) → m`、`b(自身 0) → v(自身 5) → m`、`m(自身 0)`:
+//! `L_max = 5` ⇒ 引擎给 `D(a)=5, D(b)=5, D(v)=0`, 于是 `v` 的输出落在第 10 帧
+//! （`b` 的 5 帧 + `v` 自身的 5 帧）, 而 `a` 落在第 5 帧 —— **两条支路相差 5 帧**;
+//! 本模块给 `D(a→m)=5, D(b→v)=0, D(v→m)=0` ⇒ 两条支路都在第 5 帧到达 `m`。
+//! 差异的根源正是本模块文档下面第 2 条警告的"用全局 `L_max` 会把下游节点的自身延迟
+//! 补偿第二次" —— `render.rs` 的判据 `pdc_compensation_is_inserted_only_where_branches_merge`
+//! 就是为消灭这个行为写的（它的文档把这一形态称作"旧实现"）。
+//!
+//! 因此"整体退役 `plan()`"这件事**不是**一次替换: 要么引擎先按上表的逐边口径收敛,
+//! 要么本模块只把**拓扑排序 + 关键路径**换成引擎的实现而保留逐边分配。本模块仍未
+//! 依赖 `yeban-engine`（那需要给本 crate 加一条依赖边, 见 [ADR-0001 D19] 与
+//! `docs/ledger/render-master-notes.md` 的 `needs` 清单）。
+//!
+//! 在那之前, 本模块是**纯函数、零 cpal 依赖、零第三方依赖**的, 因此本机可以用
+//! `rustc --edition 2024 --test` 单独验证 (见 `verify/pure_modules.rs`)。
 //!
 //! ## 补偿延迟插在哪条边上: `D = arrival[目的] − output_latency[源]`
 //!

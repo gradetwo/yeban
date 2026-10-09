@@ -38,6 +38,12 @@
 //!
 //! ## 已知边界（如实登记）
 //!
+//! - **读取器对任意字节输入都是全函数**（本轮加固）：chunk 循环的"起点 + 声明长度"
+//!   一律 `checked_add`，`PcmFormat::block_align` / `byte_rate` 一律饱和，
+//!   `parse_fmt_payload` 另外把放不进 `nBlockAlign` 的声道布局判为
+//!   [`Rf64Error::UnrepresentableBlockAlign`]。判据是破坏扫描（三种容器各一遍）与
+//!   三条超大声明长度。**写入器一侧**只有 `for_payload` 的长度算术被加固成饱和；
+//!   `write_container` 仍然按调用方给的真实负载写字节。
 //! - 只实现 `bext` 版本 1 与 2 的读写; 1997 年的 v0 布局未核验, 读到即返回
 //!   [`Rf64Error::UnsupportedBextVersion`], 登记为 `pending`。
 //! - BW64 的 `axml`/`bxml`/`sxml`/`chna` 四个 XML chunk 未实现（[ARCH-FMT-001]
@@ -210,15 +216,23 @@ impl PcmFormat {
     }
 
     /// 帧对齐字节数（`nBlockAlign`）。
+    ///
+    /// **饱和**而不是回绕：`nBlockAlign` 在 `fmt ` 里是 `u16` 字段，而 `channels`
+    /// 与 `bits_per_sample` 都来自文件或调用方，未受约束。本机实测：不饱和时
+    /// `channels = 0xFFFF` 与 32-bit 的乘积在 debug 下 panic（`attempt to multiply
+    /// with overflow`）。解析器另外会把"放不下"的布局判为
+    /// [`Rf64Error::UnrepresentableBlockAlign`]，因此饱和值只会出现在**构造期**
+    /// 由调用方给出的畸形格式上。
     #[must_use]
     pub const fn block_align(&self) -> u16 {
-        self.channels * self.bytes_per_sample()
+        self.channels.saturating_mul(self.bytes_per_sample())
     }
 
-    /// 每秒字节数（`nAvgBytesPerSec`）。
+    /// 每秒字节数（`nAvgBytesPerSec`）。与 [`Self::block_align`] 同源，同样**饱和**：
+    /// `nAvgBytesPerSec` 是 `u32` 字段，而采样率与帧对齐都未受约束。
     #[must_use]
     pub const fn byte_rate(&self) -> u32 {
-        self.sample_rate * (self.block_align() as u32)
+        self.sample_rate.saturating_mul(self.block_align() as u32)
     }
 
     /// 是否必须使用 `WAVE_FORMAT_EXTENSIBLE`。
@@ -854,15 +868,23 @@ impl ContainerPlan {
             .map_or(0, |block| chunk_total(block.to_bytes().len()));
         let header_no_ds64 = 12 + fmt_total + fact_total + bext_total + 8;
         // RIFF 的长度字段包含 chunk 之间的偶数补位字节, 因此 data 负载的补位也要算进去。
-        let payload_total = payload_len + (payload_len % 2);
-        let projected = header_no_ds64 as u64 + payload_total;
+        //
+        // 与读取器同一族的纪律: 这一段全部用**饱和**加法。`payload_len` 是调用方给的
+        // `u64`, `u64::MAX` 附近的输入会让 `payload_len + (payload_len % 2)` 在 debug 下
+        // panic、在 release 下回绕。饱和之后 `for_payload` 对**任意** `u64` 都是全函数
+        // （判据 `an_impossible_payload_length_saturates_instead_of_panicking`）;
+        // 真实调用只传得出实际负载长度, 因此这条只影响畸形输入。
+        let payload_total = payload_len.saturating_add(payload_len % 2);
+        let projected = (header_no_ds64 as u64).saturating_add(payload_total);
         let kind = if projected > u64::from(SENTINEL_U32) && !preferred.uses_ds64() {
             ContainerKind::Rf64
         } else {
             preferred
         };
         let header_len = header_no_ds64 + if kind.uses_ds64() { 36 } else { 0 };
-        let riff_size = header_len as u64 + payload_total - 8;
+        let riff_size = (header_len as u64)
+            .saturating_add(payload_total)
+            .saturating_sub(8);
         debug_assert_eq!(
             Self {
                 kind,
@@ -1014,6 +1036,16 @@ pub enum Rf64Error {
     UnsupportedFormatTag(u16),
     /// 声道数为 0。
     ZeroChannels,
+    /// `fmt ` 的 `nBlockAlign`（声道数 × 每样本容器字节数）放不进 `u16`。
+    ///
+    /// 这是一个**无法在 WAV 里表示**的声道布局（两个因子都直接来自文件字节）,
+    /// 因此拒绝, 而不是让 [`PcmFormat::block_align`] 的乘法溢出。
+    UnrepresentableBlockAlign {
+        /// 声明的声道数。
+        channels: u16,
+        /// 每个样本占用的容器字节数。
+        bytes_per_sample: u16,
+    },
     /// `bext` 版本不受支持（本实现只支持 1 与 2）。
     UnsupportedBextVersion(u16),
     /// 起始时间码不是 `HH:MM:SS`（或时/分/秒越界）。
@@ -1036,6 +1068,13 @@ impl core::fmt::Display for Rf64Error {
             Self::BadFmtLen(len) => write!(f, "fmt chunk 长度不受支持: {len}"),
             Self::UnsupportedFormatTag(tag) => write!(f, "不受支持的格式标签: {tag:#06X}"),
             Self::ZeroChannels => f.write_str("声道数为 0"),
+            Self::UnrepresentableBlockAlign {
+                channels,
+                bytes_per_sample,
+            } => write!(
+                f,
+                "声道布局无法表示: {channels} 声道 × {bytes_per_sample} 字节/样本 超过 nBlockAlign 的 u16 上限"
+            ),
             Self::UnsupportedBextVersion(version) => {
                 write!(f, "不受支持的 bext 版本: {version}")
             }
@@ -1082,6 +1121,12 @@ pub fn write_container<W: Write>(
 /// 长度字段是哨兵; 若 `ds64` 声明的长度超出实际文件, 返回 [`Rf64Error::Truncated`]
 /// 而不是"假装读到了"。
 ///
+/// **本函数对任意字节输入都是全函数**: chunk 循环里所有"起点 + 声明长度"的算术
+/// 都是 `checked_add`（声明长度既可能来自 chunk 头的 32 位字段, 也可能来自 `ds64`
+/// 的 64 位字段），因此畸形长度只会得到一个 `Err`，不会在 debug 下 panic、也不会在
+/// release 下回绕。判据是 `every_single_byte_mutation_returns_a_result_instead_of_panicking`
+/// 与 `an_oversized_declared_length_is_rejected_instead_of_overflowing`。
+///
 /// # Errors
 ///
 /// 容器结构非法、缺 chunk、或声明的长度与实际字节不符。
@@ -1099,6 +1144,11 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer, Rf64Error> {
         return Err(Rf64Error::NotWaveContainer);
     }
 
+    // 统一的"声明长度超出文件"出口: 只差一个说明字段, 实际字节数恒为文件长度。
+    let truncated = |what: &'static str| Rf64Error::Truncated {
+        what,
+        got: bytes.len(),
+    };
     let mut chunks = Vec::new();
     let mut ds64: Option<Rf64Sizes> = None;
     let mut format: Option<PcmFormat> = None;
@@ -1106,7 +1156,11 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer, Rf64Error> {
     let mut data: Option<(usize, usize)> = None;
 
     let mut cursor = 12usize;
-    while cursor + 8 <= bytes.len() {
+    // 循环条件本身也要 checked: `cursor` 由下面的声明长度算出, 在对齐前不得回绕。
+    while cursor
+        .checked_add(8)
+        .is_some_and(|chunk_header_end| chunk_header_end <= bytes.len())
+    {
         let id: [u8; 4] = bytes[cursor..cursor + 4].try_into().expect("4 字节");
         let declared = le::read_u32(bytes, cursor + 4).ok_or(Rf64Error::Truncated {
             what: "chunk 长度字段",
@@ -1126,6 +1180,19 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer, Rf64Error> {
             declared as usize
         };
 
+        // `payload_end = 起始偏移 + 声明长度`。这一步**必须**是 checked 加法:
+        // `data` 的长度来自文件里的 64 位 `ds64.data_size` 字段, 一个损坏或恶意的值
+        // 可以让这个和溢出 `usize`。溢出意味着"声明的长度比任何可能的文件都长",
+        // 与"文件比声明的短"是同一件事, 因此走同一个 `Truncated` 出口 ——
+        // 既不是 debug 下的 `attempt to add with overflow` panic, 也不是 release 下
+        // 的回绕 (回绕会让 `cursor` 倒退, 同一个 chunk 被反复解析)。
+        let payload_end = payload_offset
+            .checked_add(effective)
+            .ok_or(Rf64Error::Truncated {
+                what: "chunk 负载长度 (起始偏移 + 声明长度超出 usize)",
+                got: bytes.len(),
+            })?;
+
         chunks.push(ChunkInfo {
             fourcc: id,
             payload_offset,
@@ -1138,45 +1205,41 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer, Rf64Error> {
                     return Err(Rf64Error::BadDs64Len(declared));
                 }
                 let payload = bytes
-                    .get(payload_offset..payload_offset + effective)
-                    .ok_or(Rf64Error::Truncated {
-                        what: "ds64 负载",
-                        got: bytes.len(),
-                    })?;
+                    .get(payload_offset..payload_end)
+                    .ok_or_else(|| truncated("ds64 负载"))?;
                 ds64 = Rf64Sizes::from_bytes(payload);
             }
             b"fmt " => {
                 let payload = bytes
-                    .get(payload_offset..payload_offset + effective)
-                    .ok_or(Rf64Error::Truncated {
-                        what: "fmt 负载",
-                        got: bytes.len(),
-                    })?;
+                    .get(payload_offset..payload_end)
+                    .ok_or_else(|| truncated("fmt 负载"))?;
                 format = Some(parse_fmt_payload(payload, declared)?);
             }
             b"bext" => {
                 let payload = bytes
-                    .get(payload_offset..payload_offset + effective)
-                    .ok_or(Rf64Error::Truncated {
-                        what: "bext 负载",
-                        got: bytes.len(),
-                    })?;
+                    .get(payload_offset..payload_end)
+                    .ok_or_else(|| truncated("bext 负载"))?;
                 bext = Some(Bext::from_bytes(payload)?);
             }
             b"data" => {
-                if payload_offset + effective > bytes.len() {
+                if payload_end > bytes.len() {
                     return Err(Rf64Error::Truncated {
                         what: "data 负载",
                         got: bytes.len(),
                     });
                 }
-                data = Some((payload_offset, payload_offset + effective));
+                data = Some((payload_offset, payload_end));
             }
             _ => {}
         }
 
         // 前进: chunk 头 8 字节 + 负载 + 偶数补位。
-        cursor = payload_offset + effective + (effective % 2);
+        cursor = payload_end
+            .checked_add(effective % 2)
+            .ok_or(Rf64Error::Truncated {
+                what: "chunk 负载长度 (补位字节超出 usize)",
+                got: bytes.len(),
+            })?;
     }
 
     let format = format.ok_or(Rf64Error::MissingFmt)?;
@@ -1239,13 +1302,26 @@ fn parse_fmt_payload(payload: &[u8], declared_len: u32) -> Result<PcmFormat, Rf6
     } else {
         bits_per_sample
     };
-    Ok(PcmFormat {
+    let format = PcmFormat {
         channels,
         sample_rate,
         bits_per_sample: valid_bits,
         is_float,
         channel_mask,
-    })
+    };
+    // `nBlockAlign` 是 `fmt ` 里的 `u16` 字段, 而它必须容纳"声道数 × 每样本字节数"。
+    // 两个因子都直接来自文件字节, 因此这一步必须显式检查: 放不下的布局在 WAV 里
+    // **无法表示**。本机实测（判据 `unrepresentable_block_align_is_rejected`）:
+    // 不查这一条时, `channels = 0xFFFF` + 32-bit 会让 `PcmFormat::block_align`
+    // 的乘法在 debug 下 panic。
+    let exact_block_align = u32::from(format.channels) * u32::from(format.bytes_per_sample());
+    if exact_block_align > u32::from(u16::MAX) {
+        return Err(Rf64Error::UnrepresentableBlockAlign {
+            channels: format.channels,
+            bytes_per_sample: format.bytes_per_sample(),
+        });
+    }
+    Ok(format)
 }
 
 /// 从容器字节里抽出每个 chunk 的 fourcc（顺序敏感）。
@@ -1418,6 +1494,35 @@ mod tests {
 
         assert!(!requires_rf64(u64::from(SENTINEL_U32)));
         assert!(requires_rf64(u64::from(SENTINEL_U32) + 1));
+    }
+
+    /// 判据 4b: `for_payload` 对**任意** `u64` 负载长度都是全函数 —— 一个不可能的
+    /// `u64::MAX` 只让长度**饱和**, 不让算术在 debug 下溢出（release 下则回绕）。
+    ///
+    /// 注入证明（本机实测）：把 `payload_len.saturating_add(payload_len % 2)` 换回
+    /// `payload_len + (payload_len % 2)`，本判据以 `attempt to add with overflow` 结束。
+    /// 与读取器那两条判据（12b / 12d）是同一族纪律：**声明的长度算术不得 panic**。
+    #[test]
+    fn an_impossible_payload_length_saturates_instead_of_panicking() {
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            stereo_16bit(),
+            u64::MAX,
+            u64::MAX,
+            None,
+        );
+        assert_eq!(
+            plan.kind,
+            ContainerKind::Rf64,
+            "饱和后的长度必然超过 4 GiB, 因此必须升级"
+        );
+        assert_eq!(plan.sizes.data_size, u64::MAX, "负载长度本身原样保留");
+        assert_eq!(
+            plan.sizes.riff_size,
+            u64::MAX - 8,
+            "riffSize = 头部 + 饱和后的负载总量 − 8"
+        );
+        assert!(!plan.header_bytes().is_empty(), "头部仍然必须写得出来");
     }
 
     /// 判据 5: 三种容器写出的文件都能被**自己的**读取器读回, 且长度三元组一致。
@@ -1803,6 +1908,199 @@ mod tests {
         assert_eq!(parsed.format, format);
         assert_eq!(parsed.kind, ContainerKind::Bw64);
         assert_eq!(parsed.sizes.sample_count, 10);
+    }
+
+    /// 判据 12b: `ds64` 里那个 **64 位** `dataSize` 可以让"负载起点 + 声明长度"溢出
+    /// `usize`。这种输入必须走 `Truncated` 出口 —— **不得 panic, 也不得回绕**。
+    ///
+    /// 注入证明（本机实测）：把本轮引入的 `checked_add` 换回普通的 `+`，本判据在
+    /// debug 下以 `attempt to add with overflow` 结束（实测位置是读 `data` 负载长度
+    /// 的那次加法），而不是返回 `Err`。release 下同一处会**回绕**：`cursor` 因此可以
+    /// 倒退到已经解析过的位置，同一个 chunk 被反复解析。两种行为都不是本模块的契约。
+    ///
+    /// 断言只钉"`Err(Truncated)`"而不是某一个具体字节数：这条判据管的是算术的
+    /// **定义域**，与文件长度无关。
+    #[test]
+    fn an_oversized_declared_length_is_rejected_instead_of_overflowing() {
+        // 每个值都让 `data` 的"负载起点 + 声明长度"越过 `usize::MAX`（本机 64 位；
+        // 32 位下 `usize::MAX` 那一项也越界，因此这组值不是平台相关的）。
+        let extremes = [
+            u64::MAX,
+            u64::MAX - 1,
+            u64::MAX - 7,
+            usize::MAX as u64,
+            (usize::MAX - 32) as u64,
+        ];
+        for declared in extremes {
+            let plan = ContainerPlan::for_payload(ContainerKind::Rf64, stereo_16bit(), 16, 4, None);
+            let mut file = plan.header_bytes();
+            // ds64 的负载从偏移 20 开始: riffSize @20, dataSize @28, sampleCount @36。
+            file[28..36].copy_from_slice(&declared.to_le_bytes());
+            file.extend_from_slice(&[0u8; 16]);
+            assert!(
+                matches!(parse_container(&file), Err(Rf64Error::Truncated { .. })),
+                "ds64 dataSize = {declared} 必须被拒绝, 不是 panic/回绕"
+            );
+        }
+    }
+
+    /// 判据 12c: **非 `data`** 的 chunk 把 32 位长度字段顶到 `0xFFFFFFFF` 时同样只报错。
+    ///
+    /// 这条与 12b 是两条不同的路径：那里的和来自 `ds64`（64 位字段），这里的和来自
+    /// chunk 头自己的 32 位长度。在 32 位宿主上 `payload_offset + effective` 同样可能
+    /// 溢出，因此两条都必须走 checked 加法。
+    #[test]
+    fn a_chunk_that_declares_the_max_u32_length_is_rejected() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        raw.extend_from_slice(b"fmt ");
+        // 哨兵在非 `data` chunk 上就是"声明了 4 GiB 负载"的损坏文件。
+        raw.extend_from_slice(&SENTINEL_U32.to_le_bytes());
+        raw.extend_from_slice(&stereo_16bit().fmt_payload());
+        assert!(matches!(
+            parse_container(&raw),
+            Err(Rf64Error::Truncated { .. })
+        ));
+    }
+
+    /// 判据 12e: `fmt ` 声明的声道布局放不进 `nBlockAlign` 的 `u16` 时被**拒绝**,
+    /// 而不是让帧对齐的乘法溢出。
+    ///
+    /// 注入证明（两条都变红，实测其一）：把 `block_align` 改回普通乘法并删掉
+    /// `parse_fmt_payload` 里那条上限检查 ⇒ 本判据以 `attempt to multiply with
+    /// overflow` 结束；只把 `block_align` 改成饱和而**保留**检查 ⇒ 解析会成功，
+    /// 本判据在那条 `Err` 断言上变红。
+    #[test]
+    fn unrepresentable_block_align_is_rejected() {
+        let mut over = stereo_16bit().fmt_payload();
+        over[2..4].copy_from_slice(&0xFFFFu16.to_le_bytes()); // 声道数
+        over[14..16].copy_from_slice(&32u16.to_le_bytes()); // 每样本位数
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        push_chunk(&mut raw, b"fmt ", &over);
+        push_chunk(&mut raw, b"data", &payload(2));
+        assert_eq!(
+            parse_container(&raw),
+            Err(Rf64Error::UnrepresentableBlockAlign {
+                channels: 0xFFFF,
+                bytes_per_sample: 4
+            })
+        );
+
+        // 合法端点必须仍然能解析（否则这条判据只是把功能关掉）:
+        // 8191 声道 × 4 字节 = 32764 ≤ u16::MAX。
+        let mut edge = stereo_16bit().fmt_payload();
+        edge[2..4].copy_from_slice(&8191u16.to_le_bytes());
+        edge[14..16].copy_from_slice(&32u16.to_le_bytes());
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        push_chunk(&mut raw, b"fmt ", &edge);
+        push_chunk(&mut raw, b"data", &payload(2));
+        let parsed = parse_container(&raw).expect("合法端点必须能解析");
+        assert_eq!(parsed.format.channels, 8191);
+        assert_eq!(parsed.format.block_align(), 32_764);
+    }
+
+    /// 判据 12d: **任意单字节破坏都不 panic**（把每个字节单独置成 `0xFF` 后重解析），
+    /// 三种容器各扫一遍：`RIFF`（无 `ds64`、长度字段是真值）与 `RF64` / `BW64`
+    /// （有 `ds64`、`data` 长度是哨兵）走的是两条不同的算术路径。
+    ///
+    /// 这是"损坏输入"那一族的机械读数：本判据不断言"必须是 `Err`"——有些破坏会落在
+    /// 不被读取的字节上，于是解析成功是**允许**的；它断言的是**每一种破坏都只能返回
+    /// `Ok` 或 `Err`**。`parse_container` 的循环前进量现在全部是 checked 加法，因此
+    /// 破坏声明长度也不可能让解析器回绕或死循环。
+    ///
+    /// **本判据是本轮的探针，不是补充**：它第一次跑就抓到了第二条缺陷 ——
+    /// 由文件字节算出的 `channels` 让 `PcmFormat::block_align` 里那次
+    /// `channels * bytes_per_sample` 乘法在 debug 下溢出（实测
+    /// `attempt to multiply with overflow`）。修法是两侧都做：访问器饱和 +
+    /// [`Rf64Error::UnrepresentableBlockAlign`] 拒绝。
+    #[test]
+    fn every_single_byte_mutation_returns_a_result_instead_of_panicking() {
+        let data = payload(8);
+        let bext_v2 = Bext {
+            version: 2,
+            loudness: Some(Loudness {
+                loudness_value: Loudness::from_lufs(-14.0),
+                loudness_range: 500,
+                max_true_peak_level: Loudness::from_dbtp(-1.0),
+                max_momentary_loudness: Loudness::from_lufs(-12.0),
+                max_short_term_loudness: Loudness::from_lufs(-13.0),
+            }),
+            coding_history: "A=PCM,F=48000,W=24,M=stereo,T=Yeban".to_owned(),
+            ..Bext::default()
+        };
+        // 三种容器各一份基准：`RIFF` 走"没有 ds64、长度字段是真值"的那条分支,
+        // `RF64` / `BW64` 走 `ds64` 与哨兵那条。破坏扫描必须覆盖两条分支。
+        let cases: Vec<(&str, ContainerKind, PcmFormat, Option<Bext>)> = vec![
+            (
+                "riff-int24",
+                ContainerKind::Riff,
+                PcmFormat::integer(2, 48_000, 24),
+                None,
+            ),
+            (
+                "rf64-float32",
+                ContainerKind::Rf64,
+                PcmFormat::float(2, 48_000, 32),
+                Some(bext_v2.clone()),
+            ),
+            (
+                "bw64-v1-bext",
+                ContainerKind::Bw64,
+                PcmFormat::integer(2, 48_000, 16),
+                Some(Bext {
+                    version: 1,
+                    coding_history: "A=PCM".to_owned(),
+                    ..Bext::default()
+                }),
+            ),
+        ];
+
+        for (case, kind, format, bext) in cases {
+            let plan = ContainerPlan::for_payload(
+                kind,
+                format,
+                data.len() as u64,
+                (data.len() / usize::from(format.block_align())) as u64,
+                bext,
+            );
+            let mut file = Vec::new();
+            write_container(&mut file, &plan, &data).expect("写入");
+            assert!(parse_container(&file).is_ok(), "{case}: 基准文件必须能解析");
+
+            let mut rejected = 0usize;
+            let mut accepted = 0usize;
+            for index in 0..file.len() {
+                let mut broken = file.clone();
+                broken[index] = 0xFF;
+                // 只钉"返回了结果"; `Ok` 与 `Err` 都合法 —— 有些破坏落在不被读取的字节上。
+                if parse_container(&broken).is_err() {
+                    rejected += 1;
+                } else {
+                    accepted += 1;
+                }
+            }
+            assert_eq!(
+                rejected + accepted,
+                file.len(),
+                "{case}: 每个字节都必须被扫到一次"
+            );
+            assert!(
+                rejected > 0,
+                "{case}: 一次破坏都没被拒绝 ⇒ 这条判据没有覆盖到被解析的字段"
+            );
+            assert!(
+                accepted > 0,
+                "{case}: 每个字节都被拒绝 ⇒ 扫描可能根本没读到基准文件"
+            );
+        }
     }
 
     /// 判据 12: `ds64` 声明的长度超过实际字节时必须报错 —— 不得"假装读到了"。
