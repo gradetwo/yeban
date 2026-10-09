@@ -207,14 +207,23 @@ mod contract_tests {
         (RoutingGraph { nodes, edges }, master, sources)
     }
 
-    fn constant_sources(
-        sources: &[EntityId],
-        value: f32,
-    ) -> BTreeMap<EntityId, Box<dyn AudioSource>> {
+    /// 逐轨**不同**的常量源（幅度随轨道序号变化）。
+    ///
+    /// 为什么不能用"整块同值"的常量源: 一组**相等**的加数无论按什么
+    /// 顺序相加都得到同一串部分和, 因此"归约顺序被线程数改变"这一类缺陷在这组输入上
+    /// **不可观测**。实测（注入: 线程数大于 1 时按反序归约）时, 本判据仍然全绿, 而
+    /// `render::tests::output_is_bit_identical_across_thread_counts` 与
+    /// `tests/l1_digest_contract.rs::thread_counts_do_not_change_the_digest` 同时变红 ——
+    /// 说明当时的夹具对"汇聚顺序随线程数变化"没有判别力。逐轨取不同幅度后, 反序累加
+    /// 会改变部分和的舍入, 同一注入即被本判据抓到。
+    ///
+    /// 幅度刻意都落在 `[-1.0, 1.0]` 内, 以免量化阶段把差异掩盖在饱和里。
+    fn distinct_constant_sources(sources: &[EntityId]) -> BTreeMap<EntityId, Box<dyn AudioSource>> {
         sources
             .iter()
-            .map(|&node| {
-                let source: Box<dyn AudioSource> = Box::new(Constant(value));
+            .enumerate()
+            .map(|(index, &node)| {
+                let source: Box<dyn AudioSource> = Box::new(Constant(0.001 * (index as f32 + 1.0)));
                 (node, source)
             })
             .collect()
@@ -262,6 +271,9 @@ mod contract_tests {
     ///
     /// 这是把 [ARCH-DET-002] 与 [ARCH-FMT-001] 串起来的那条判据: 如果汇聚顺序受
     /// 线程数影响, 差异会一路穿过抖动与容器, 最终体现在文件哈希上。
+    ///
+    /// 夹具用**逐轨不同**的常量（[`distinct_constant_sources`]）: 整块同值会让
+    /// "顺序被线程数改变"这个缺陷不可观测（见该函数的文档与实测）。
     #[test]
     fn full_lint_to_master_chain_is_thread_count_invariant() {
         let (routing, master, sources) = star(32);
@@ -276,7 +288,7 @@ mod contract_tests {
                 RenderOptions::l1(frames, channels, sample_rate, seed).with_threads(threads);
             let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
             let output = plan
-                .execute(constant_sources(&sources, 0.01))
+                .execute(distinct_constant_sources(&sources))
                 .expect("渲染");
             assert_eq!(output.blocks, 8, "1024 / 128");
 
