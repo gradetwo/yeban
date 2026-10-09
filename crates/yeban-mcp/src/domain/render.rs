@@ -50,7 +50,7 @@
 //! | `deviceChainDsp` | 设备链的**参数**（滤波器/音色）没有求值；只有 `latency_samples` 进了 PDC |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
-//! | `clipLoopRepetition` | `loop_config` 的**重复**没有渲染（只渲染第一遍） |
+//! | `clipLoopRepetition` | `loop_config` 的**重复**没有展开（只渲染摆放的第一遍）。登记口径 = "启用中**且**区间不是恰好 `0..duration_ticks`"（覆盖才静默；见下面的 `loop_requests_repetition`） |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -1473,6 +1473,25 @@ fn is_source_node(plan: &RenderPlan, node: EntityId) -> bool {
         .is_none_or(|inputs| inputs.is_empty())
 }
 
+/// 一个摆放的循环配置是否**请求了重复播放**（= 本渲染器没有展开的东西）。
+///
+/// 本层只渲染摆放的**第一遍**：时间轴区间 `0..duration_ticks`，内容一位都不回卷。
+/// 一个启用中的循环区间，只有当它**恰好覆盖**整个摆放跨度（`start_tick == 0` 且
+/// `end_tick == duration_ticks`）时，回卷点才与摆放末端重合 ⇒ 播放结果与"不循环"
+/// 逐位相同，可以**静默**；其余任何形态都可能在摆放结束前回卷 ⇒ 必须登记。
+///
+/// 为什么是"覆盖才静默"而不是"越过末端才登记"：`loop_config` 的 tick 坐标语义
+/// （相对摆放还是相对片段内容）在规范里未裁决（`docs/ledger/mcp-render-notes.md`
+/// 的 pending 与 `yeban-engine` 的 `loop_config` 边界都如实登记了这一点）。本层因此
+/// 取**保守**的一侧：只有"两种解释下都不可能回卷"的形态才不报，绝不拿未裁决的语义
+/// 去少报。判据与 `yeban-render` 的两个导出器（`logic.rs` 与 `als.rs` 的
+/// `loop_covers`）同一条口径，本层不另立第二种"什么算覆盖"。
+fn loop_requests_repetition(placement: &yeban_model::ClipPlacement) -> bool {
+    let loop_config = placement.loop_config;
+    let covers = loop_config.start_tick == 0 && loop_config.end_tick == placement.duration_ticks;
+    loop_config.enabled && !covers
+}
+
 /// 音轨上**可闻内容**的时间轴末端（没有内容时为 `None`）。
 ///
 /// 只做"有没有/到哪"的判定，不做排程 —— 它服务于"总线轨上的片段必须被登记为
@@ -2056,9 +2075,7 @@ fn build_source(
                 .start_tick
                 .saturating_add(placement.duration_ticks),
         );
-        if placement.loop_config.enabled
-            && placement.loop_config.end_tick > placement.duration_ticks
-        {
+        if loop_requests_repetition(placement) {
             note_unsupported(unsupported, counts, "clipLoopRepetition");
         }
         match &clip.content {
@@ -2538,5 +2555,34 @@ mod tests {
             },
         );
         assert_eq!(audible_end_tick(&track), Some(2_880));
+    }
+
+    /// `loop_requests_repetition` 的**穷尽边界**（纯函数, 不需要渲染）。
+    ///
+    /// 摆放跨度固定为 `0..1920`；逐个形态钉住"登记 / 静默"的判定。
+    #[test]
+    fn loop_repetition_is_claimed_unless_the_region_covers_the_placement() {
+        fn placed(enabled: bool, start_tick: u64, end_tick: u64) -> yeban_model::ClipPlacement {
+            yeban_model::ClipPlacement {
+                duration_ticks: 1_920,
+                loop_config: yeban_model::LoopConfig {
+                    enabled,
+                    start_tick,
+                    end_tick,
+                },
+                ..yeban_model::ClipPlacement::default()
+            }
+        }
+        // 关掉的循环从来不登记（哪怕区间形态怪异）。
+        assert!(!loop_requests_repetition(&placed(false, 0, 0)));
+        assert!(!loop_requests_repetition(&placed(false, 480, 960)));
+        // 恰好覆盖 `0..duration_ticks` ⇒ 回卷点与末端重合 ⇒ 静默。
+        assert!(!loop_requests_repetition(&placed(true, 0, 1_920)));
+        // 区间短于摆放 ⇒ 摆放内一定回卷 ⇒ 登记（这正是旧实现的静默口）。
+        assert!(loop_requests_repetition(&placed(true, 0, 960)));
+        // 起点不为 0 ⇒ 不是覆盖 ⇒ 保守登记。
+        assert!(loop_requests_repetition(&placed(true, 480, 1_920)));
+        // 终点越过摆放末端 ⇒ 同样不是覆盖 ⇒ 保守登记（既有的判据 12 钉住这一形态）。
+        assert!(loop_requests_repetition(&placed(true, 0, 3_840)));
     }
 }

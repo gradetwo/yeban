@@ -21,6 +21,7 @@
 //! | 10 | 延迟表来自 `DeviceDefinition::latency_samples`（含旁通不算） | 自建第二延迟来源 |
 //! | 11 | `format` 只改容器字节，不改音频负载 | 在音频路径上按格式分叉 |
 //! | 12 | 实测数字自洽：frames/blocks/bytes/header/payload/sha256 | 报估算值 |
+//! | 12b | 循环区间短于摆放跨度 ⇒ 登记 `clipLoopRepetition`，且母带与"关循环"逐位相同 | 只在区间越过摆放末端时才报（静默丢掉重复） |
 //!
 //! ## 临时目录纪律
 //!
@@ -1583,6 +1584,123 @@ fn unsupported_features_are_named_and_counted_only_when_present() {
         "干净工程不该有 unsupported 项: {result}"
     );
     assert_eq!(result["data"]["unsupportedCounts"], json!({}));
+}
+
+// ---------------------------------------------------------------------------
+// 判据 12b：循环区间**短于**摆放跨度 ⇒ 请求了重复 ⇒ 必须登记 + 不得静默丢掉
+// ---------------------------------------------------------------------------
+
+/// 渲染一个只调循环配置的夹具工程，返回（响应, 产物路径）。
+fn render_with_loop(scratch: &Scratch, tag: &str, loop_config: LoopConfig) -> (Value, PathBuf) {
+    let spec = Spec {
+        loop_config,
+        ..Spec::default()
+    };
+    assert_eq!(spec.end_tick, 1_920, "夹具的摆放跨度 (tick)");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&spec), &scratch.join(&format!("{tag}.yeban")));
+    let out = scratch.join(&format!("{tag}.wav"));
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(result["status"], "success", "{tag}: {result}");
+    (result, out)
+}
+
+/// 循环区间 `0..960` 落在摆放跨度 `0..1920` **之内** ⇒ 摆放结束前必然回卷一次，
+/// 也就是"作者请求了重复播放"。本渲染器只渲染第一遍（`0..duration_ticks`），
+/// 因此这一条**必须**登记 `clipLoopRepetition`；同时母带字节必须与"循环关掉"
+/// 的那一次渲染**逐位相同** —— 后者是"重复真的没有被展开"的机械证据。
+///
+/// 可被什么注入破坏：
+/// - 把登记条件写回 `end_tick > duration_ticks`（只在区间越过摆放末端时才报）
+///   ⇒ 本条第一段红：区间短于摆放这个**真会回卷**的形态被静默；
+/// - 哪一天渲染器真的展开了重复 ⇒ 第二条 `masterDigest` 相等断言红。
+#[test]
+fn a_loop_shorter_than_the_placement_is_reported_and_not_expanded() {
+    let scratch = Scratch::new("loop-short");
+    let short_loop = LoopConfig {
+        enabled: true,
+        start_tick: 0,
+        end_tick: 960,
+    };
+    let (result, out) = render_with_loop(&scratch, "short", short_loop);
+    let unsupported = result["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported");
+    assert!(
+        unsupported.iter().any(|key| key == "clipLoopRepetition"),
+        "区间短于摆放跨度 = 请求重复, 本渲染器只播第一遍 ⇒ 必须登记: {result}"
+    );
+    assert_eq!(
+        result["data"]["unsupportedCounts"]["clipLoopRepetition"], 1,
+        "一个摆放出现一次: {result}"
+    );
+
+    // 循环关掉的那一次渲染：同一份夹具，唯一差别是 `loop_config`。
+    let (plain, plain_out) = render_with_loop(&scratch, "plain", LoopConfig::default());
+    assert_eq!(
+        plain["data"]["unsupported"],
+        json!([]),
+        "关掉循环的工程不该登记: {plain}"
+    );
+    assert_eq!(
+        plain["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "关循环的那一次就是既有默认夹具 (常量锚)"
+    );
+    assert_eq!(
+        result["data"]["masterDigest"], plain["data"]["masterDigest"],
+        "重复**没有**被展开: 母带样本摘要必须与关循环时相同"
+    );
+    assert_eq!(
+        result["data"]["sha256"], plain["data"]["sha256"],
+        "文件字节摘要同理"
+    );
+    assert_eq!(
+        fs::read(&out).expect("产物"),
+        fs::read(&plain_out).expect("产物"),
+        "产物文件必须逐字节相同"
+    );
+}
+
+/// 循环登记的**边界**：只有"恰好覆盖整个摆放跨度"的启用区间才不登记。
+///
+/// - `0..1920`（== 摆放跨度）⇒ 回卷点与摆放末端重合 ⇒ 播放结果与不循环相同 ⇒ 不登记；
+/// - `480..1920`（区间不覆盖，且 `end_tick == duration_ticks`）⇒ **保守登记**：
+///   坐标语义在规范里未裁决，本层不为"看起来更准"而少报。
+///
+/// 可被什么注入破坏：把条件写成 `end_tick >= duration_ticks`（丢掉 `start_tick == 0`
+/// 那一半）⇒ 第二段红；写成恒真 ⇒ 第一段红。
+#[test]
+fn only_a_loop_that_covers_the_whole_placement_is_silent() {
+    let scratch = Scratch::new("loop-covers");
+    let covering = LoopConfig {
+        enabled: true,
+        start_tick: 0,
+        end_tick: 1_920,
+    };
+    let (covers, _) = render_with_loop(&scratch, "covers", covering);
+    assert_eq!(
+        covers["data"]["unsupported"],
+        json!([]),
+        "区间 == 摆放跨度 ⇒ 没有重复可丢, 不许凭空登记: {covers}"
+    );
+
+    let offset = LoopConfig {
+        enabled: true,
+        start_tick: 480,
+        end_tick: 1_920,
+    };
+    let (shifted, _) = render_with_loop(&scratch, "offset", offset);
+    let unsupported = shifted["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported");
+    assert!(
+        unsupported.iter().any(|key| key == "clipLoopRepetition"),
+        "区间不是 0..duration_ticks 就不是覆盖, 保守登记: {shifted}"
+    );
 }
 
 // ---------------------------------------------------------------------------
