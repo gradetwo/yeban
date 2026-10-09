@@ -1617,14 +1617,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_repeated_identical_declaration_leaves_the_reduced_form_unchanged() {
+        // 解析层的同值重复：同一个作用域里把同一个 opcode 写成同一个值两次 = 只写一次
+        // （`OpcodeMap` 是 `BTreeMap`，后写的同值覆盖前者）。读数落在归约结果上。
+        let once =
+            parse_text("<region>sample=a.wav volume=-6", &Default::default()).expect("parses");
+        let twice = parse_text(
+            "<region>sample=a.wav volume=-6 volume=-6",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            once.regions(),
+            twice.regions(),
+            "same opcode, same value, twice"
+        );
+        let spec_once = once.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        let spec_twice = twice.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec_once, spec_twice);
+        assert_eq!(spec_once.gain.to_bits(), spec_twice.gain.to_bits());
+
+        // `<control>` 的两个文件级声明族同样如此（`set_ccN` 与 `label_ccN`）。
+        let control_once = parse_text(
+            "<control>set_cc7=100 label_cc7=Volume\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let control_twice = parse_text(
+            "<control>set_cc7=100 set_cc7=100 label_cc7=Volume label_cc7=Volume\n\
+             <region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(control_once.cc_defaults(), control_twice.cc_defaults());
+        assert_eq!(control_once.cc_labels(), control_twice.cc_labels());
+        assert_eq!(control_twice.cc_defaults().get(&7), Some(&100));
+        assert_eq!(
+            control_twice
+                .cc_labels()
+                .get(&7)
+                .map(|label| label.as_ref()),
+            Some("Volume")
+        );
+    }
+
     // ------------------------------------------------------------------
     // 多声道一致性（类别 6）：同一个信号喂给 N 路
     // ------------------------------------------------------------------
     //
-    // 本 crate **不含**音频缓冲（全仓检索 `[f32]` 数组切片 0 命中），因此没有左右声道
-    // 这回事：基线提交上全仓对该英文词的加词边界检索命中 0 条。它的「声道」轴是 SFZ 的
-    // `lochan` / `hichan`（MIDI 通道 1..=16）。本节把「同一个信号喂给每一路 ⇒ 各路输出
-    // 逐位相同」与「只填一路 ⇒ 其余路不被污染」这两条搬到该轴上。
+    // 本 crate **不含**音频缓冲（没有任何逐路样本数据），因此没有左右声道这回事：它唯一的
+    // 「多路」结构是 `<effect>` 的 4 路发送量与这里的 MIDI 通道轴。本节把「同一个信号
+    // 喂给每一路 ⇒ 各路输出逐位相同」与「只填一路 ⇒ 其余路不被污染」这两条搬到该轴上。
 
     #[test]
     fn the_same_signal_on_every_matching_channel_is_bit_identical() {
