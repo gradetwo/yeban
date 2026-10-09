@@ -80,12 +80,28 @@
 //! ② 31 轮里至少有一次输出指纹发生变化（参数真的到了器件）。
 //! 两个场景的每一个窗口都断言 `allocations == 0 && deallocations == 0`。
 //!
+//! # 场景 15（`line/engine-4` 追加）：`EngineStats` 的**跨线程只读镜像**
+//!
+//! 前面 14 个场景都在**同一条线程**上既渲染又读统计。设备腿的真实形态不是这样：
+//! `EngineRuntime` 归 cpal 回调线程所有 ⇒ 控制线程只能用
+//! `yeban_engine::stats_mirror::EngineStatsMirror` 读健康读数（`yeban-app` 的
+//! `EngineHost::engine_stats` 在设备腿活跃时返回 `None`，其模块文档把修法登记为
+//! "一条跨线程只读统计镜像"）。这条**读写分居两条线程**的形态此前没有任何零分配
+//! 判据覆盖过。
+//!
+//! 场景 15 因此真的开一条音频线程（2_000 个量子，每量子发布一次镜像）＋ 控制线程
+//! 在**同一个窗口**里持续 `read()`：窗口内的分配断言同时覆盖**写路径与读路径**。
+//! 覆盖度见证取"读者看到至少两个不同的 `quanta` 值"（证明它读到过中间值）；
+//! **权威判据**取静止点上的**逐字段等号**（镜像 == 音频线程自己读的
+//! `EngineRuntime::stats()`）—— 与 `snapshot_retire_churn` 的"镜像 == 权威"同口径。
+//!
 //! ⚠ **本目标只测四元组里的两个分量**（`allocations` / `deallocations`）：
 //! 它没有锁探针，也没有 I/O 边界（那是 `tests/rt_zero_alloc.rs` 的
-//! `[MUST-GATE-001]` 目标）。因此这两个场景**不**声称"六分量全 0"。
+//! `[MUST-GATE-001]` 目标）。因此本文件的全部场景**不**声称"六分量全 0"。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use yeban_engine::meter::meter_channel;
@@ -161,6 +177,13 @@ fn saturated_notes() -> Vec<NoteSpec> {
 
 /// 场景 11 / 12 的**键位映射**（五个鼓件各一个音高）。
 const DRUM_MAP: [u8; 5] = [36, 38, 42, 46, 39];
+
+/// 场景 15 的音频线程量子数。
+///
+/// 取 2_000 而不是 10_000：这一条要的是"控制线程在窗口**中间**读到过中间值"，
+/// 而读者循环的迭代速度远高于一次量子（实测每量子约 0.1 ms 量级）⇒ 2_000 已经
+/// 足够产生大量不同读数，同时把"两条线程并行"的墙钟压在 1 秒以内。
+const MIRROR_QUANTA: u64 = 2_000;
 
 /// 场景 11 / 12 的鼓机音符：与 [`saturated_notes`] 同一个时间栅格（每 240 tick 起音），
 /// 但音高**轮流落在 [`DRUM_MAP`] 的五个音高上** ⇒ 每一记都命中一个鼓件。
@@ -1471,6 +1494,151 @@ fn main() -> ExitCode {
         osc_stats.quanta,
     );
 
+    // ---- 场景 15：`EngineStats` 的**跨线程只读镜像**（设备腿形态）----
+    //
+    // 为什么必须单独一个场景：前面 14 个场景都在**同一条线程**上既渲染又读统计
+    // （`runtime.stats()`）。设备腿的真实形态是**另一条线程**读（cpal 回调线程拥有
+    // `EngineRuntime` ⇒ 控制线程拿不到 `&EngineRuntime`），而这条形态从来没有被
+    // 零分配判据覆盖过。本场景把"写者 = 音频线程 / 读者 = 控制线程"真的分开跑。
+    //
+    // 夹具设计（每一项都对应一件事）：
+    //   * 256 个交叠音符（沿用 `saturated_notes`）⇒ 窗口里真的有声部在跑，
+    //     统计量每一量子都在变（否则"镜像会更新"这条见证可能空转）；
+    //   * 音频线程跑 2_000 个量子，每量子发布一次镜像；控制线程**在同一个窗口里**
+    //     持续 `read()` ⇒ 零分配断言同时覆盖**写路径与读路径**；
+    //   * 覆盖度见证：读者必须看到**至少两个不同**的 `quanta` 值（证明它在窗口
+    //     中间读到了中间值，而不是只在收尾读了一次）。
+    //
+    // ⚠ 计数型分配器是**进程全局**的，所以三件事必须做对，否则读数会假红/假绿：
+    //   ① 建线程与全部 `Arc` 都在**武装之前**（`std::thread::spawn` 自己会分配）；
+    //   ② 音频线程进入闭包后先报 `ready`，等 `go` 再开始渲染 ⇒ 线程启动期的分配
+    //      不会被记到实时窗口头上；
+    //   ③ 读者循环里**只做原子读与整数比较**（不 `println!`、不 `Vec::push`）——
+    //      读路径本身也在"零分配"这句话的范围内。
+    let mirror_fixture = note_project(&saturated_notes());
+    let mirror_snapshot =
+        EngineSnapshot::from_project(&mirror_fixture.project, 1).expect("统计镜像夹具快照");
+    let mirror_slot = SnapshotSlot::new(mirror_snapshot);
+    let (mirror_retire, _mirror_queue) = retire_channel(8);
+    let (_mirror_sender, mirror_receiver) = event_channel(64);
+    let (mirror_publisher, _mirror_collector) = meter_channel(8192);
+    let mut mirror_runtime = EngineRuntime::new(
+        &mirror_slot,
+        mirror_retire,
+        mirror_receiver,
+        mirror_publisher,
+    );
+    let mirror = mirror_runtime.stats_mirror();
+    // 预热（窗口外）：包络模板、波表 mip 级、首量子的一次性路径。
+    // ⚠ 这块缓冲**移动**进音频线程复用（不在窗口里 `vec!`）：`vec!` 会分配，
+    // 而第一版正是在窗口里分配了它 ⇒ 实测 `allocations=1 deallocations=1`（假红）。
+    // 这条教训与"建线程必须在武装之前"是同一族：**窗口里只许有实时路径本身**。
+    let mut mirror_warmup = vec![0.0f32; 128 * 2];
+    mirror_runtime.process_quantum(&mut mirror_warmup, 2);
+    let mirror_base_quanta = mirror_runtime.stats().quanta;
+
+    let rt_ready = Arc::new(AtomicBool::new(false));
+    let rt_go = Arc::new(AtomicBool::new(false));
+    let rt_done = Arc::new(AtomicBool::new(false));
+    let rt_ready_child = Arc::clone(&rt_ready);
+    let rt_go_child = Arc::clone(&rt_go);
+    let rt_done_child = Arc::clone(&rt_done);
+    // ⚠ `JoinHandle` 的返回值就是**权威读数**（音频线程自己在最后一个量子之后读的），
+    // 用来与控制线程在静止点读到的镜像做逐字段等号。
+    let audio_thread = std::thread::spawn(move || {
+        rt_ready_child.store(true, Ordering::SeqCst);
+        while !rt_go_child.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
+        let mut output = mirror_warmup;
+        for _ in 0..MIRROR_QUANTA {
+            mirror_runtime.process_quantum(&mut output, 2);
+        }
+        let authoritative = mirror_runtime.stats();
+        rt_done_child.store(true, Ordering::SeqCst);
+        authoritative
+    });
+    while !rt_ready.load(Ordering::SeqCst) {
+        std::hint::spin_loop();
+    }
+
+    ALLOCATIONS.store(0, Ordering::SeqCst);
+    DEALLOCATIONS.store(0, Ordering::SeqCst);
+    ARMED.store(true, Ordering::SeqCst);
+    rt_go.store(true, Ordering::SeqCst);
+    let mut reads = 0u64;
+    let mut monotone_violations = 0u64;
+    let mut distinct_quanta = 0u64;
+    let mut last_quanta = 0u64;
+    let mut first_quanta = 0u64;
+    let mut observed = false;
+    while !rt_done.load(Ordering::SeqCst) {
+        let snapshot = mirror.read();
+        reads += 1;
+        if observed && snapshot.quanta < last_quanta {
+            monotone_violations += 1;
+        }
+        if snapshot.quanta != last_quanta {
+            distinct_quanta += 1;
+            last_quanta = snapshot.quanta;
+        }
+        if !observed {
+            first_quanta = snapshot.quanta;
+            observed = true;
+        }
+    }
+    let final_read = mirror.read();
+    ARMED.store(false, Ordering::SeqCst);
+    let (allocations, deallocations) = (
+        ALLOCATIONS.load(Ordering::SeqCst),
+        DEALLOCATIONS.load(Ordering::SeqCst),
+    );
+    println!(
+        "[engine-stats-mirror/J15] 跨线程只读镜像: allocations={allocations} \
+         deallocations={deallocations} 读次数={reads} 不同 quanta 值={distinct_quanta} \
+         区间={first_quanta}..={} 单调违例={monotone_violations}",
+        final_read.quanta
+    );
+    let authoritative = audio_thread.join().expect("音频线程不许 panic");
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "跨线程统计镜像在实时窗口内分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations}（写路径与控制线程读路径都在窗口里）"
+        ));
+    }
+    if reads == 0 {
+        failures.push("控制线程一次都没读到镜像 —— 场景 15 是空转".to_owned());
+    }
+    if distinct_quanta < 2 {
+        failures.push(format!(
+            "控制线程只看到 {distinct_quanta} 个不同的 `quanta` 值 ⇒ 它没有在窗口中间读到中间值，\
+             这条判据退化成'收尾读一次'"
+        ));
+    }
+    if monotone_violations != 0 {
+        failures.push(format!(
+            "镜像的 `quanta` 出现 {monotone_violations} 次回退 —— 计数类字段必须单调不减"
+        ));
+    }
+    // ⭐ **权威判据**：静止点上镜像与权威读数**逐字段相等**（与
+    // `snapshot_retire_churn` 的"镜像 == 权威"同一个口径，且同样是**等号**、无容差）。
+    if final_read != authoritative {
+        failures.push(format!(
+            "静止点上镜像与权威读数不一致：\n  镜像 = {final_read:?}\n  权威 = {authoritative:?}"
+        ));
+    }
+    // 覆盖度自检：窗口里真的处理了量子（否则"相等"可能只是两个全零）。
+    // ⚠ 比对的是**增量**（`quanta` 是累计量，预热那一个量子在窗口之前就已经计入）。
+    if authoritative.quanta != mirror_base_quanta + MIRROR_QUANTA {
+        failures.push(format!(
+            "音频线程在窗口里推进了 {} 个量子，期望 {MIRROR_QUANTA} 个（窗口前基线 {mirror_base_quanta}）",
+            authoritative.quanta - mirror_base_quanta
+        ));
+    }
+    if authoritative.notes_triggered == 0 {
+        failures.push("统计镜像场景的窗口里没有触发任何音符 —— 读数没有在动".to_owned());
+    }
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -1491,7 +1659,9 @@ fn main() -> ExitCode {
              + 31 次混响重新武装 + 换采样率时的拒绝路径 \
              + 10,000 量子每轨鼓机音源（两条轨，一条鼓机＋一条复音） \
              + 31 次鼓机重新武装 + 换采样率 / 换键位映射 / 换回复音合成器 \
-             + 10,000 量子波形选择＋第二条振荡器 + 31 次振荡器重新武装，实时窗口内零分配零释放"
+             + 10,000 量子波形选择＋第二条振荡器 + 31 次振荡器重新武装 \
+             + 2,000 量子 `EngineStats` 跨线程只读镜像（写者＝音频线程 / 读者＝控制线程），\
+             实时窗口内零分配零释放"
         );
         ExitCode::SUCCESS
     } else {

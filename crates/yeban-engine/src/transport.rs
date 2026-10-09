@@ -114,7 +114,11 @@ impl TransportState {
     }
 
     /// 原子量编码（`u8`）。
-    const fn code(self) -> u8 {
+    ///
+    /// `pub(crate)`：跨线程镜像（[`crate::stats_mirror`]）要存同一个状态 ⇒
+    /// **复用这一张表**，不复制第二份编码（复制出来的第二份会漂移）。
+    /// `match` 是穷举的 ⇒ 新增枚举变体会在这里**编译失败**。
+    pub(crate) const fn code(self) -> u8 {
         match self {
             Self::Stopped => 0,
             Self::Playing => 1,
@@ -123,7 +127,7 @@ impl TransportState {
     }
 
     /// 原子量解码：未知字节按 `Stopped`（保守：宁可显示停住，也不假装在播）。
-    const fn from_code(code: u8) -> Self {
+    pub(crate) const fn from_code(code: u8) -> Self {
         match code {
             1 => Self::Playing,
             2 => Self::Recording,

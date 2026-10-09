@@ -119,6 +119,7 @@ use crate::mixer::{BusLimiter, PanLaw};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::rt_probe::{self, RtDiagEvent};
 use crate::snapshot::{RetireProducer, SnapshotReader, SnapshotSlot};
+use crate::stats_mirror::EngineStatsMirror;
 use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
 use crate::transport::{
     Transport, TransportEffect, TransportMirror, TransportReading, TransportState,
@@ -382,6 +383,17 @@ pub struct EngineRuntime {
     /// 控制面（`yeban-app::engine_host`）持同一个 `Arc` 的一份克隆读数。
     /// 实时侧只写不读，因此永远不会被读者阻塞。
     transport_mirror: Arc<TransportMirror>,
+    /// **累计统计的跨线程只读镜像**（[`crate::stats_mirror`]）。
+    ///
+    /// 为什么需要：运行时一旦挂到设备回调上就归音频线程所有 ⇒ 控制线程拿不到
+    /// [`Self::stats`]（`yeban-app` 的 `EngineHost::engine_stats` 因此返回 `None`，
+    /// 登记见该模块文档与 `docs/ledger/feature-alignment.md` 的 "cpal 设备宿主" 行）。
+    /// 构造期把这份 `Arc` 的克隆交给控制面（[`Self::stats_mirror`]），此后**每量子**
+    /// 发布一次 ⇒ 设备腿活跃时健康读数仍然可读。
+    ///
+    /// 与 `transport_mirror` 同款：实时侧只写、控制侧只读，双向都不阻塞；
+    /// 发布只做原子存（零分配、零锁、零 I/O、零日志）[MUST-GATE-001]。
+    stats_mirror: Arc<EngineStatsMirror>,
     /// 母线峰值限制器（前瞻式，立体声联动）[ARCH-DSP-001]。
     ///
     /// 位置：**逐轨汇流之后、母线电平之前** ⇒ 母线电平读数（[`EngineStats::meter_frames`]）
@@ -546,6 +558,8 @@ impl EngineRuntime {
             // 在 `EngineHost::reload` 之后就这么做；`reload` 自己**不**碰走带状态）。
             transport: Transport::free_running(48_000, yeban_model::project::DEFAULT_BPM),
             transport_mirror: Arc::new(TransportMirror::new()),
+            // 统计镜像：**构造期**分配一次（回调内只做原子存）[MUST-GATE-001]。
+            stats_mirror: Arc::new(EngineStatsMirror::new()),
             limiter: BusLimiter::new(),
             // PDC 延迟线池：**构造期**按上限预分配（回调内绝不再分配）。
             pdc: CompensationBank::preallocated(PDC_SLOTS, MAX_PDC_DELAY_FRAMES),
@@ -598,7 +612,27 @@ impl EngineRuntime {
         // 先发布一次初值：控制面在**第一次量子之前**就能读到"Playing / tick 0"，
         // 而不是一个与引擎实际状态不符的冷值（`TransportReading::cold`）。
         runtime.transport.publish(&runtime.transport_mirror);
+        // 统计镜像也先发布一次：控制面在**第一个量子之前**就能读到与引擎实际状态
+        // 相符的数（`ftz` 与走带状态就是这一批里最有用的两个），而不是全零冷值。
+        // 与上面那条同一个理由、同一个位置（非实时路径）。
+        let cold = runtime.stats();
+        runtime.stats_mirror.publish(&cold);
         runtime
+    }
+
+    /// 累计统计的**跨线程只读镜像**（构造期建好；`Arc` 的一份克隆）。
+    ///
+    /// 用途：设备腿把 [`Self`] 移进 cpal 回调之后，控制线程再也拿不到 `&Self`
+    /// ⇒ 想要引擎健康读数就只能读这份镜像（[`EngineStatsMirror::read`]）。
+    /// 取句柄**必须在移走运行时之前**（克隆 `Arc`，不分配）。
+    ///
+    /// ⚠ 这是 [`Self::stats`] 的**搬运**，不是第二份事实源：写入点只有
+    /// [`Self::process_quantum`] 的每量子发布（值取自同一个 [`Self::stats`]）
+    /// 与 [`Self::new`] 的初值发布。判据：静止点上 `stats_mirror().read()` 与
+    /// `stats()` **逐字段相等**（`tests/synth_rt_zero_alloc.rs` 场景 ⑮）。
+    #[must_use]
+    pub fn stats_mirror(&self) -> Arc<EngineStatsMirror> {
+        Arc::clone(&self.stats_mirror)
     }
 
     /// 处理一个（可能是任意长度的）输出缓冲：按 [`DEFAULT_BLOCK_FRAMES`] 切成整量子。
@@ -624,6 +658,13 @@ impl EngineRuntime {
             offset += frames;
         }
         // 帧边界对齐的交错缓冲不会留下尾巴；非对齐的残余保持 cpal 预填的静音。
+        //
+        // 收尾：把**此刻**的累计统计发布到跨线程镜像（[`Self::stats_mirror`]）。
+        // 位置取"本回调全部量子都渲染完之后"而不是每个量子中间：镜像的读者是控制面，
+        // 它要的是"现在引擎处在什么状态"，中间的过渡值对它没有意义；而一次回调发布
+        // 一次也把原子存的总量压到最低。发布本身只做原子存（零分配/零锁/零 I/O）。
+        let stats = self.stats();
+        self.stats_mirror.publish(&stats);
     }
 
     /// 当前累计统计（**只读快照**：无锁、零分配；读它不会影响渲染路径）。
@@ -635,6 +676,10 @@ impl EngineRuntime {
     /// [`EngineStats::release_thread_is_main`] / [`EngineStats::foreign_drains`]
     /// （"释放发生在哪个线程"）。判定见 [`EngineStats::is_snapshot_lagging`] 与
     /// [`EngineStats::stash_events_since_last_read`]。
+    ///
+    /// ⚠ 本函数要 `&self` ⇒ 只有在**调用者就是音频线程**（或运行时尚未移走）时才能用。
+    /// 运行时归 cpal 回调线程所有之后，控制面请读 [`Self::stats_mirror`]
+    /// （同一份读数的跨线程镜像；每量子发布一次）。
     #[must_use]
     pub fn stats(&self) -> EngineStats {
         let retire = self.snapshot.retire_accounting();

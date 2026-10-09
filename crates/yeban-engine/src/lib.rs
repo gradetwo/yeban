@@ -27,6 +27,7 @@
 //! | [`transport`] | **确定性走带状态机**（960 PPQ 整数 tick：`Play`/`Stop`/`SeekTicks`）+ RT→UI 原子读数镜面 | [ARCH-RT-001]、[ARCH-DET-001]、[MODEL-ISO-001]、[ROAD-M2-001] |
 //! | [`rt`] | 渲染量子驱动（`EngineRuntime`），**不依赖 cpal** | [ARCH-TOP-002]、[ARCH-RT-001] |
 //! | [`rt_probe`] | 实时路径的**可插桩边界**：见证型锁探针 + 单一诊断/I-O 出口 + 线程窗口与外线程计数 | [ARCH-RT-001]、[MUST-GATE-001] |
+//! | [`stats_mirror`] | [`rt::EngineStats`] 的**跨线程只读镜像**（一个字段一个原子量；设备腿活跃时控制面仍可读引擎健康读数） | [ARCH-TOP-002]、[ARCH-RT-001]、[ROAD-M2-001] |
 //! | `device` | cpal 宿主、配置协商、`NullBackend`（**feature `device`**） | [ARCH-TOP-002]、[ROAD-M2-001] |
 //!
 //! ## Cargo features：设备 I/O 与 PDC 算法必须能分开消费
@@ -128,6 +129,7 @@ pub mod ring;
 pub mod rt;
 pub mod rt_probe;
 pub mod snapshot;
+pub mod stats_mirror;
 pub mod synth;
 pub mod transport;
 
