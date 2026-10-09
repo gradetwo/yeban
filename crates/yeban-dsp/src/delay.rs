@@ -38,6 +38,25 @@
 //! ⚠ 与 [`crate::convolution`] 的"逐样本净化是调用方的职责"**不矛盾**：卷积核没有
 //! 递归状态，`NaN` 写进它的频域延迟线后会在 `partitions` 个块之内被冲掉；
 //! 本模块的环是永久的。
+//!
+//! ## 抽头位置也是历史（本轮补齐）
+//!
+//! 延迟量不是参数快照，而是**状态**：[`Delay::samples`] 是当前（已滑行的）抽头距离，
+//! [`Delay::target`] 是它的目标。这两个量此前只有 [`Delay::configure`] 会归零，
+//! [`Delay::reset`] 只清线 —— 于是 `reset()` 之后旧时间被重放：抽头仍停在复位前的
+//! 距离上，第一条回声落在**旧**延迟时间处、再按 `TIME_SLEW` 滑向新时间；而同一段输入
+//! 喂给一台"刚 `configure` 过"的实例时，抽头是**直接**落在目标时间上的。⇒ 同一组参数、
+//! 同一段输入，"中间复位过一次"与"刚建好"得到不同的输出，不是 [ARCH-DET-001] 允许的
+//! 可复现输出。
+//!
+//! ⇒ [`Delay::reset`] 现在把 `samples` 与 `target` 一并归零，复位后的实例与刚
+//! [`Delay::configure`] 过的实例**逐帧逐位相同** —— 两个标量写，**逐样本零分配**
+//! [ARCH-RT-001]。判据
+//! `delay::tests::reset_reproduces_a_freshly_built_device_bit_for_bit`。
+//!
+//! ⚠ 边界（不隐藏）：本器件**不**在复位时做交叉淡化 —— 线已经清了，所以第一条回声
+//! 本来就从静音里长出来；这里改的只是它**落在哪一帧**。要平滑拖动延迟时间的调用方
+//! 应照旧依赖 `TIME_SLEW`（不调用 `reset`）。
 
 use crate::math::finite_or_zero;
 
@@ -143,13 +162,24 @@ impl Delay {
         self.ready
     }
 
-    /// 清空延迟线与阻尼状态（不重新分配）。
+    /// 清空延迟线、阻尼状态**与抽头位置**（不重新分配）。
+    ///
+    /// 抽头（`samples` 与 `target`）同属历史：只清线而留着抽头的话，复位后第一条回声
+    /// 会落在**上一次**用过的延迟时间上，并按 `TIME_SLEW` 滑向新的时间 —— 而
+    /// [`Self::process`] 的契约是"刚复位 ⇒ **直接**从目标时间开始，而不是从零滑上去"。
+    /// 因此这里把两者一并归零，复位后的实例与一台刚 [`Self::configure`] 过的实例在
+    /// 逐帧输出上**逐位相同**（判据
+    /// `delay::tests::reset_reproduces_a_freshly_built_device_bit_for_bit`）。
+    ///
+    /// **逐样本零分配**（两个标量写，不经堆）[ARCH-RT-001]。
     pub fn reset(&mut self) {
         for line in self.lines.iter_mut() {
             line.fill(0.0);
         }
         self.damp_state = [0.0; 2];
         self.index = 0;
+        self.samples = 0.0;
+        self.target = 0.0;
     }
 
     /// 本实例能产生的最长延迟（秒）。
@@ -175,6 +205,10 @@ impl Delay {
     /// 原地处理一个块：湿信号以 `mix` **叠加**到干信号上。
     ///
     /// 长度取 `left`/`right` 的较短者；未配置时直通。全程零分配。
+    ///
+    /// ⚠ 延迟时间的变化是**滑行**（`TIME_SLEW`）而不是跳变，**除了**刚
+    /// [`Self::configure`]／刚 [`Self::reset`] 那一次 —— 那两个入口把抽头归零，
+    /// 因此首次处理是"直接落在目标时间上"（见下面的 `samples <= 0.0` 分支）。
     pub fn process(&mut self, params: DelayParams, left: &mut [f32], right: &mut [f32]) {
         if !self.ready || self.lines[0].is_empty() {
             return;
@@ -189,6 +223,9 @@ impl Delay {
         let target = (time * self.sample_rate).min(max);
         if self.samples <= 0.0 {
             // 首次使用或刚复位：直接从目标时间开始，而不是从零滑上去。
+            // 这条不变式由 `configure` 与 `reset` **两个**入口共同维持 —— 两个都把
+            // `samples` / `target` 归零（见 `reset` 的文档与判据
+            // `delay::tests::reset_reproduces_a_freshly_built_device_bit_for_bit`）。
             self.samples = target;
         }
         self.target = target;
@@ -253,6 +290,7 @@ impl Default for Delay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::noise::Rng;
 
     const SR: f32 = 48_000.0;
 
@@ -676,5 +714,85 @@ mod tests {
         d.process(long, &mut left, &mut right);
         assert!(left.iter().all(|v| v.is_finite()));
         assert!(d.max_seconds() <= MAX_DELAY_SECONDS + 1e-3);
+    }
+
+    /// **判据（新写，可红）**：`reset()` 之后处理一个块，与一台**刚 `configure` 过**
+    /// 的实例逐帧逐位相同。
+    ///
+    /// 量什么：两台实例在同一段输入上的逐帧输出**位模式**。单位是**帧**（有多少帧的
+    /// 位模式不同）。
+    ///
+    /// 契约：`reset()` 的语义是"从现在起当它没响过"，与
+    /// `reverb::tests::reset_reproduces_a_freshly_built_device_bit_for_bit` 同一个口径；
+    /// [`Delay::process`] 的注释也把"刚复位"列进"直接从目标时间开始，而不是从零滑上去"
+    /// 的那一支。**抽头位置**（`samples` / `target`）同属历史：清线却留着抽头，
+    /// 复位后第一条回声就落在**旧**延迟时间上、再按 `TIME_SLEW` 滑过去。
+    ///
+    /// 夹具：被测实例先用 `0.05 s` 跑一个块（把抽头钉在 `2400` 帧），`reset()`，然后
+    /// 与"刚 `configure`"的实例一起用 `0.4 s` 跑 `24000` 帧（`time_s` 差 `8` 倍 ⇒
+    /// 抽头在头几千帧里的落点差一个数量级）。输入是确定性噪声，首帧为 `1.0` 的冲激。
+    ///
+    /// 判据：`differing == 0`。**本机实测（aarch64，本票）**：把 [`Delay::reset`] 里
+    /// 那两行 `samples` / `target` 归零删掉 ⇒ `differing` = `48000` 帧
+    /// （`24000` 帧 × `2` 声道，两条线全不同）⇒ 断言变红。
+    #[test]
+    fn reset_reproduces_a_freshly_built_device_bit_for_bit() {
+        /// 复位**前**用过的延迟时间（秒）。
+        const USED_S: f32 = 0.05;
+        /// 复位**后**要求的延迟时间（秒）：`8` 倍，滑行要走上千帧。
+        const WANTED_S: f32 = 0.4;
+        /// 观测的帧数。
+        const FRAMES: usize = 24_000;
+
+        fn params(time_s: f32) -> DelayParams {
+            DelayParams {
+                time_s,
+                feedback: 0.3,
+                mix: 1.0,
+                damp: 0.2,
+                ping_pong: false,
+            }
+        }
+
+        let mut used = Delay::new();
+        used.configure(SR);
+        let mut warm_l = vec![0.0f32; 64];
+        let mut warm_r = vec![0.0f32; 64];
+        used.process(params(USED_S), &mut warm_l, &mut warm_r);
+        used.reset();
+
+        let mut fresh = Delay::new();
+        fresh.configure(SR);
+
+        let mut rng = Rng::new(0x5EED_1234);
+        let mut input: Vec<f32> = (0..FRAMES).map(|_| rng.next_bipolar() * 0.1).collect();
+        input[0] = 1.0;
+
+        let mut used_l = input.clone();
+        let mut used_r = input.clone();
+        let mut fresh_l = input.clone();
+        let mut fresh_r = input;
+        used.process(params(WANTED_S), &mut used_l, &mut used_r);
+        fresh.process(params(WANTED_S), &mut fresh_l, &mut fresh_r);
+
+        let differing = used_l
+            .iter()
+            .zip(fresh_l.iter())
+            .chain(used_r.iter().zip(fresh_r.iter()))
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        // 覆盖度自检：夹具真的把抽头动起来了（否则"逐位相同"可能是两台都静止）。
+        assert!(
+            fresh_l.iter().any(|v| v.abs() > 0.05) && used_l.iter().any(|v| v.abs() > 0.05),
+            "两台实例都没有湿路输出 ⇒ 判据测的是空壳"
+        );
+        eprintln!(
+            "[yeban-dsp/delay] reset 与刚 configure 的逐位差异: {differing} / {} 帧",
+            2 * FRAMES
+        );
+        assert_eq!(
+            differing, 0,
+            "reset 之后与刚 configure 的实例有 {differing} 帧不同 ⇒ 旧抽头位置被重放"
+        );
     }
 }

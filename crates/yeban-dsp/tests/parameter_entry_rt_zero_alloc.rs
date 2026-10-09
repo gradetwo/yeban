@@ -1,37 +1,45 @@
 //! `yeban_dsp::smoothing::ParamSmoother` 与
 //! `yeban_dsp::oscillator::WavetableOscillator` 的**运行期零分配判据**
-//! （[ARCH-RT-001] / `MUST-GATE-001`）。
+//! （[ARCH-RT-001] / `MUST-GATE-001`），外加 `yeban_dsp::comb::CombFilter` 的
+//! **换长度**入口与 `yeban_dsp::delay::Delay` 的**复位**入口（判据 4）。
 //!
-//! # 为什么是这两个器件、在这一票
+//! # 为什么是这些器件、在这一票
 //!
-//! 本票给这两个类型的**参数入口**补齐了非有限守卫
-//! （`ParamSmoother::set_target` / `snap_to`、`WavetableOscillator::set_phase`）。
+//! 本文件原为前几票的两个参数入口（`ParamSmoother::set_target` / `snap_to`、
+//! `WavetableOscillator::set_phase`）而建；判据 4 补上本票改到的两个**内部历史**
+//! 入口：`CombFilter::tune` 换长度（读抽头改成"写头按容量回绕 ＋ 定距抽头"）与
+//! `Delay::reset` 归零抽头位置。
 //! 这些入口**在实时路径上被调用**：参数自动化的事件边界就在音频回调里
 //!（`yeban-engine` 的 `ParamTable::accept` 逐事件调 `set_target` / `snap_to`），
-//! 而 `ParamSmoother::process` / `WavetableOscillator::process_block` 是逐样本路径。
+//! 而 `ParamSmoother::process` / `WavetableOscillator::process_block` /
+//! `CombFilter::process` / `Delay::process` 是逐样本路径。
 //! 因此"入口 ＋ 逐样本"两段必须落在**同一个**观测窗口里，读数必须是 `0`。
 //!
 //! # 仪器口径（与 `reverb_rt_zero_alloc.rs` 的三处关键决定相同）
 //!
 //! 1. **按线程武装**：`thread_local!` ＋ `const` 初始化，只有本判据自己的线程计数；
-//! 2. **窗口只包住实时路径**：波表的构造（本 crate 里唯一会分配的一步）在窗口**外**；
+//! 2. **窗口只包住实时路径**：会分配的那几步（`Wavetable::from_recipe`、
+//!    `CombFilter::prepare`、`Delay::configure`）都在窗口**外**；
 //! 3. **判据有牙（正对照）**：判据 3 在窗口**内**做一次 `Vec::<u8>::with_capacity(1)`，
 //!    要求 `allocations == 1 && deallocations == 1`。若计数器坏了，判据 3 会红 ——
-//!    因此判据 1／2 的"全 0"是**测出来的 0**。
+//!    因此判据 1／2／4 的"全 0"是**测出来的 0**。
 //!
 //! ⚠ 覆盖范围（明说，不暗示）：
 //!
 //! - 本文件**只**覆盖"堆分配 / 堆释放"两个分量。锁与阻塞 I/O 的分量由引擎的
 //!   `rt_probe` 承担，本 crate **没有**那套探针 ⇒ 本文件对锁与 I/O **不表态**
 //!   （不是"已证明为 0"）；
-//! - 两个被测类型都**不含**堆所有权（`ParamSmoother` 全是 `f32`，
-//!   `WavetableOscillator` 的波表由调用方持有），因此本文件**没有**
+//! - 判据 1／2 的两个被测类型都**不含**堆所有权（`ParamSmoother` 全是 `f32`，
+//!   `WavetableOscillator` 的波表由调用方持有），因此那两条**没有**
 //!   "构造期分配入口"的反对照（那种对照在 `reverb_rt_zero_alloc.rs` 里是
-//!   `set_sample_rate`）。判据 3 的正对照就是这里的全部"牙"。
+//!   `set_sample_rate`；判据 4 的分配入口是 `CombFilter::prepare` 与
+//!   `Delay::configure`，两者都在窗口外）。判据 3 的正对照就是这里的全部"牙"。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
+use yeban_dsp::comb::CombFilter;
+use yeban_dsp::delay::{Delay, DelayParams};
 use yeban_dsp::oscillator::{FACTORY_RECIPES, Wavetable, WavetableOscillator};
 use yeban_dsp::smoothing::ParamSmoother;
 
@@ -307,4 +315,102 @@ fn the_counter_has_teeth_a_deliberate_allocation_is_counted() {
     );
     assert_eq!(reading.allocations, 1, "计数器没数到分配 ⇒ 仪器坏了");
     assert_eq!(reading.deallocations, 1, "计数器没数到释放 ⇒ 仪器坏了");
+}
+
+// ---------------------------------------------------------------------------
+// 判据 4：梳状滤波器换长度 ＋ 延迟线复位 —— 两条"内部历史入口 ＋ 逐样本"的零分配
+// ---------------------------------------------------------------------------
+
+/// 梳状滤波器的慢音高（Hz）：`48000 / 100` ⇒ 长度 `480` 帧。
+const COMB_SLOW_HZ: f32 = 100.0;
+/// 梳状滤波器的快音高（Hz）：`48000 / 4000` ⇒ 长度 `12` 帧（与慢的差 `40` 倍）。
+const COMB_FAST_HZ: f32 = 4_000.0;
+/// 延迟线的两个时间（秒）：逐量子交替，让"抽头归零"这一步有可观测后果。
+const DELAY_TIMES_S: [f32; 2] = [0.05, 0.4];
+
+/// 量什么：`CombFilter::tune`（换长度）＋ `CombFilter::process` 与 `Delay::reset`
+/// ＋ `Delay::process` 在 **5 000 个量子**里的堆分配次数与堆释放次数（单位：次数）。
+/// 每个量子是 `128` 帧。
+///
+/// 窗口里跑的是：每 [`RETUNE_EVERY`] 个量子一次 [`CombFilter::tune`]（音高在
+/// [`COMB_SLOW_HZ`] 与 [`COMB_FAST_HZ`] 之间交替 ⇒ **长度真的变**，本票改到的定距
+/// 读抽头两条分支都被走到），每 [`SNAP_EVERY`] 个量子一次 [`Delay::reset`]（本票新增的
+/// 两行抽头归零被走到），延迟时间逐量子交替。两条器件的分配入口
+/// （[`CombFilter::prepare`] / [`Delay::configure`]）都在窗口**外**。
+///
+/// 判据：`allocations == 0 && deallocations == 0`；长度变更次数与复位次数都 `> 0`、
+/// 梳状滤波器写出了非零样本（覆盖度自检：否则"全 0"可能是"什么都没跑"）；
+/// 输出全部有限。
+#[test]
+fn the_comb_and_delay_state_entries_allocate_nothing_over_5_000_quanta() {
+    let mut comb = CombFilter::new();
+    comb.prepare(SAMPLE_RATE);
+    comb.tune(SAMPLE_RATE, COMB_SLOW_HZ, 0.9);
+    let mut delay = Delay::new();
+    delay.configure(SAMPLE_RATE);
+
+    let mut input = [0.0f32; QUANTUM_FRAMES];
+    for (index, sample) in input.iter_mut().enumerate() {
+        *sample = index as f32 / QUANTUM_FRAMES as f32 - 0.5;
+    }
+    let mut comb_out = [0.0f32; QUANTUM_FRAMES];
+    let mut left = [0.0f32; QUANTUM_FRAMES];
+    let mut right = [0.0f32; QUANTUM_FRAMES];
+    let mut length_changes = 0u64;
+    let mut resets = 0u64;
+    let mut nonzero = 0u64;
+    let mut finite = true;
+
+    let reading = window(|| {
+        let mut previous = comb.delay_samples();
+        for quantum in 0..RT_QUANTA {
+            if quantum % RETUNE_EVERY == 0 {
+                let slow = (quantum / RETUNE_EVERY).is_multiple_of(2);
+                let freq = if slow { COMB_SLOW_HZ } else { COMB_FAST_HZ };
+                comb.tune(SAMPLE_RATE, freq, 0.9);
+                let now = comb.delay_samples();
+                if now != previous {
+                    length_changes += 1;
+                    previous = now;
+                }
+            }
+            if quantum % SNAP_EVERY == 0 {
+                delay.reset();
+                resets += 1;
+            }
+            let params = DelayParams {
+                time_s: DELAY_TIMES_S[usize::try_from(quantum % 2).unwrap_or(0)],
+                feedback: 0.3,
+                mix: 0.5,
+                damp: 0.2,
+                ping_pong: (quantum / 2).is_multiple_of(2),
+            };
+            comb.process(&input, &mut comb_out);
+            left.copy_from_slice(&input);
+            right.copy_from_slice(&input);
+            delay.process(params, &mut left, &mut right);
+            finite &= comb_out.iter().all(|sample| sample.is_finite())
+                && left.iter().all(|sample| sample.is_finite())
+                && right.iter().all(|sample| sample.is_finite());
+            nonzero += comb_out.iter().filter(|sample| **sample != 0.0).count() as u64;
+        }
+    });
+
+    // ---- 覆盖度自检 ----
+    assert!(length_changes > 0, "窗口里没有换过长度 ⇒ 新分支没被覆盖");
+    assert!(resets > 0, "窗口里没有复位过 ⇒ 新分支没被覆盖");
+    assert!(
+        nonzero > 0,
+        "梳状滤波器一个非零样本都没写出 ⇒ 判据测的是空壳"
+    );
+    assert!(finite, "窗口里出现非有限输出");
+
+    eprintln!(
+        "[yeban-dsp/RT] CombFilter::tune + Delay::reset {RT_QUANTA} 量子 × ({QUANTUM_FRAMES} 帧，\
+         每 {RETUNE_EVERY} 量子换长度、每 {SNAP_EVERY} 量子复位，长度变更 {length_changes} 次、\
+         复位 {resets} 次、梳状非零样本 {nonzero} 个): allocations={} deallocations={}",
+        reading.allocations, reading.deallocations
+    );
+    assert_eq!(reading.allocations, 0, "实时路径发生堆分配");
+    assert_eq!(reading.deallocations, 0, "实时路径发生堆释放");
 }
