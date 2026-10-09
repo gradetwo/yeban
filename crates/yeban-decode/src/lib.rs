@@ -29,8 +29,14 @@
 //! `libm`"。本 crate 的落实方式是：
 //!
 //! 1. **无随机源**：全 crate 不引用任何 PRNG，也不读时钟、环境变量或线程数；
-//! 2. **无超越函数**：唯一的浮点运算是一次 `f64` 除法（时长换算）与 `rubato` 内部的
-//!    乘加。**不需要** `libm`，因此本 crate 不依赖它；
+//! 2. **无超越函数**：全 crate 只有**两次** `f64` 除法 —— [`DecodedAsset::duration_seconds`]
+//!    的时长换算，与 [`resample_interleaved_with_budget`] 构造重采样比例时的那一次
+//!    —— 再加上 `rubato` 内部的乘加。IEEE 754 的除法是正确舍入且逐位规定的，因此这两处
+//!    在 L1 与 L2 上都是同一位模式。**不需要** `libm`，因此本 crate 不依赖它；
+//!    （2026-10-09 更正：本行此前只记了一次除法、并把两处混成"时长换算"，漏记了重采样
+//!    比例那一处。本 crate 自己的 `f64` **运算**只在这两处：一处除法取时长，一处除法取
+//!    比例。唯一的另一个 `f64` 是 `resample` 的 `MAX_RELATIVE_RATIO` 常量，它只被当作
+//!    构造参数传下去，不参与本 crate 的算术。）
 //! 3. **固定的重采样配置**：sinc 窗 `BlackmanHarris2`、`sinc_len = 256`、分块 1024、
 //!    最大相对比例 1.0 —— 全部是 `pub const`，见 [`resample`]；
 //! 4. **不启用 symphonia 的 SIMD feature**（`opt-simd-*`）：那会让解码路径依赖运行时
@@ -60,7 +66,11 @@
 //! | 采样率 | 768 kHz | [`limits::DEFAULT_MAX_SAMPLE_RATE`]（DXD 之上再留一倍） |
 //! | 时长 | 6 小时 | [`limits::DEFAULT_MAX_DURATION_SECS`]（低采样率 × 少声道的独立 backstop） |
 //!
-//! 四道闸门**各自独立**、全部发生在**分配之前**；判定是闭区间（恰好等于上限通过）。
+//! 上表**五道**闸门**各自独立**、全部发生在**分配之前**；判定是闭区间（恰好等于上限
+//! 通过）。前四道（PCM 字节 / 声道数 / 采样率 / 时长）由 [`limits::check_layout`] 判定，
+//! 第五道（输入容器字节）由 [`limits::check_input_len`] 在打开与探测之前判定；"每一道都能
+//! 单独把输入挡下"由 `limits` 的判据逐道钉住（`every_budget_gate_trips_on_its_own`
+//! 与 `input_byte_budget_is_enforced`）。
 //! 预算显式可配置（[`DecodeOptions::budget`]、`resample_interleaved_with_budget`），
 //! 并且一律用 `Vec::try_reserve` 把"分配器拒绝"变成错误而不是 abort —— 畸形输入
 //! 不能把进程吃掉 [ARCH-SEC-003]。

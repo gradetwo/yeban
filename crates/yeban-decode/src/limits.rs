@@ -52,9 +52,14 @@
 //! ## 峰值内存（本模块能证明的上界）
 //!
 //! `check_layout` 通过 ⇒ `frames × channels × 4 ≤ max_pcm_bytes`。解码期峰值 ≈ 1 份
-//! 资产；重采样期峰值 ≈ 资产 + 输出（≈ 2 份，见 [`crate::resample`]）；`pcm_hash`
-//! 另需一份与样本等长的字节缓冲（见 notes 的 `needs`）。因此 `max_pcm_bytes` 是
-//! **单份 PCM** 的预算，不是进程峰值；这一点写在 notes 里，调用方按需放大。
+//! 资产；重采样期峰值 ≈ 资产 + 输出（≈ 2 份，见 [`crate::resample`]）；
+//! [`DecodedAsset::pcm_hash`](crate::asset::DecodedAsset::pcm_hash) 的峰值**与样本数
+//! 无关** —— 它按定长分块喂摘要，暂存缓冲是固定大小的一块栈空间，不再复制整份样本。
+//! 因此 `max_pcm_bytes` 是**单份 PCM** 的预算，不是进程峰值；调用方按需放大。
+//!
+//! ⚠ 2026-10-09 更正：本段此前写"`pcm_hash` 另需一份与样本等长的字节缓冲"，那是
+//! `ccee870` 把该路径改成流式**之前**的事实，改完后没有回写这里。同一份更正也已写进
+//! `docs/ledger/decode-limits-notes.md` 的 §8 更正注（本 crate 不改该文件）。
 //!
 //! 边界: 本模块**不做**任何 I/O、不持有缓冲、不知道 symphonia 的存在。它只回答
 //! "这个尺寸/这个长度是否在预算内"。
@@ -239,7 +244,12 @@ impl Default for PcmBudget {
 /// 并在判据里与上游参数对上（见 `resample.rs` 的配置判据）。
 pub const SINC_LEN: u64 = 256;
 
-/// 长度契约的相对容差：0.1%（单位 ppm 的千分之一，见 [`LEN_TOLERANCE_PPM`]）。
+/// 长度契约的相对容差：百万分之 1 000，也就是 0.1%。
+///
+/// `PPM` 是 "parts per million"：本常量的单位就是 ppm，换成百分比要再除以 10 000。
+/// 它与 [`MIN_LEN_TOLERANCE_FRAMES`] 一起构成 [`resample_len_contract`] 的相对容差项
+/// （`max(理想输出帧数 × 0.1%, 8 帧)`），再按 [`SHORT_CLIP_THRESHOLD_FRAMES`] 决定是否
+/// 追加 [`SINC_LEN`]。
 pub const LEN_TOLERANCE_PPM: u64 = 1_000;
 
 /// 长度契约的绝对容差下限（帧）。防止"短片段 + 相对容差"退化成零容差。
@@ -461,6 +471,22 @@ pub enum LenContractViolation {
         /// 输出采样率。
         out_rate: u32,
     },
+    /// 采样率都非 0，但理想输出帧数连 `u64` 都放不下 ⇒ 契约无表示。
+    ///
+    /// 与 [`Self::UndefinedRatio`] 分开的理由：两者的**原因与处置都不同**。比例无定义是
+    /// "调用方给的采样率非法"，改采样率即可；这一条是"帧数 × 比例超出了 `u64` 量程"，
+    /// 采样率完全合法。把后者报成"ratio undefined"是在错误文案里说假话，而本 crate 的
+    /// 错误是要进 MCP 响应体的（`decodeError` 分类），所以文案必须指对原因。
+    ///
+    /// 判定仍然**只拒**：无法表示契约时返回错误，绝不退化成"放行"。
+    Unrepresentable {
+        /// 输入帧数。
+        input_frames: u64,
+        /// 输入采样率。
+        in_rate: u32,
+        /// 输出采样率。
+        out_rate: u32,
+    },
     /// 实际输出帧数落在契约区间之外。
     OutsideBounds {
         /// 实际输出帧数。
@@ -476,6 +502,15 @@ impl fmt::Display for LenContractViolation {
             Self::UndefinedRatio { in_rate, out_rate } => {
                 write!(f, "resample ratio undefined: {in_rate} Hz -> {out_rate} Hz")
             }
+            Self::Unrepresentable {
+                input_frames,
+                in_rate,
+                out_rate,
+            } => write!(
+                f,
+                "resample length contract for {input_frames} frames ({in_rate} Hz -> \
+                 {out_rate} Hz) does not fit in u64 frames"
+            ),
             Self::OutsideBounds { produced, contract } => write!(
                 f,
                 "resampler produced {produced} frames, outside the contract {}..={} \
@@ -503,11 +538,15 @@ pub fn check_input_len(bytes: u64, budget: &PcmBudget) -> Result<(), LimitViolat
     Ok(())
 }
 
-/// 校验 `frames × channels`，溢出或超预算都返回错误。
+/// 精确计算 `frames × channels`；`u64` 放不下时返回错误，**绝不回绕**。
+///
+/// 这里**不查预算** —— 它没有 `budget` 参数，因此它只回答"乘法本身是否成立"。要判
+/// "这个尺寸是否在预算内"请用 [`check_layout`]（它内部就用本函数算样本数，再与
+/// [`PcmBudget::interleaved_samples_limit`] 比较）。
 ///
 /// # Errors
 ///
-/// 见 [`LimitViolation`] 的变体说明。
+/// 只有一种：[`LimitViolation::LayoutOverflow`]（乘积超出 `u64`）。
 pub fn interleaved_samples(frames: u64, channels: u16) -> Result<u64, LimitViolation> {
     frames
         .checked_mul(u64::from(channels))
@@ -577,7 +616,18 @@ pub fn check_layout(
 /// `max(理想值 × 0.1%, 8 帧)`；当理想输出帧数小于 [`SHORT_CLIP_THRESHOLD_FRAMES`]
 /// 时再额外放宽 [`SINC_LEN`] 帧（被裁掉的前置延迟相对短片段不可忽略）。
 ///
-/// 返回 `None` 表示任一采样率为 0（比例无定义）。
+/// **零帧输入是精确的，不享受任何容差**：输入 0 帧 ⇒ 契约恰为 `[0, 0]`。容差描述的是
+/// "有限长滤波器把前置延迟裁掉之后剩下的边界效应"，而 0 帧输入没有任何边界可谈；
+/// 没有这条特例，容差公式会给 `[0, SINC_LEN + 8]` —— 一个"零帧输入最多能产出 264 帧"
+/// 的区间，等于把契约放宽到能接受一个不可能正确的输出。实现侧同样如此：
+/// [`crate::resample::resample_interleaved_with_budget`] 对 0 帧输入直接返回空。
+///
+/// 返回 `None` 有两种原因，二者的处置不同：
+/// - 任一采样率为 0（比例无定义）—— 调用方该改采样率；
+/// - 采样率都非 0，但理想输出帧数（及其容差）放不进 `u64` —— 输入帧数与比例的组合
+///   超出量程，见 [`LenContractViolation::Unrepresentable`]。
+///
+/// 两种 `None` 都不会退化成"放行"：[`check_resampled_len`] 一律返回错误。
 #[must_use]
 pub fn resample_len_contract(
     input_frames: u64,
@@ -586,6 +636,15 @@ pub fn resample_len_contract(
 ) -> Option<LenContract> {
     if in_rate == 0 || out_rate == 0 {
         return None;
+    }
+    // 0 帧输入 ⇒ 恰好 0 帧输出。见上面的文档：容差在这里没有物理含义。
+    if input_frames == 0 {
+        return Some(LenContract {
+            min: 0,
+            max: 0,
+            ideal_floor: 0,
+            ideal_ceil: 0,
+        });
     }
     let num = u128::from(out_rate);
     let den = u128::from(in_rate);
@@ -609,15 +668,28 @@ pub fn resample_len_contract(
 ///
 /// # Errors
 ///
-/// 采样率为 0，或 `produced` 落在 [`resample_len_contract`] 给出的区间之外时返回错误。
+/// - [`LenContractViolation::UndefinedRatio`]：任一采样率为 0；
+/// - [`LenContractViolation::Unrepresentable`]：采样率合法，但契约放不进 `u64`；
+/// - [`LenContractViolation::OutsideBounds`]：`produced` 落在
+///   [`resample_len_contract`] 给出的区间之外。
 pub fn check_resampled_len(
     input_frames: u64,
     out_rate: u32,
     in_rate: u32,
     produced: u64,
 ) -> Result<LenContract, LenContractViolation> {
-    let contract = resample_len_contract(input_frames, out_rate, in_rate)
-        .ok_or(LenContractViolation::UndefinedRatio { in_rate, out_rate })?;
+    // 先分开"比例无定义"，再让 `resample_len_contract` 的 `None` 只剩"契约无表示"一种
+    // 含义 —— 否则错误文案会把一条合法的采样率组合说成 "ratio undefined"。
+    if in_rate == 0 || out_rate == 0 {
+        return Err(LenContractViolation::UndefinedRatio { in_rate, out_rate });
+    }
+    let contract = resample_len_contract(input_frames, out_rate, in_rate).ok_or(
+        LenContractViolation::Unrepresentable {
+            input_frames,
+            in_rate,
+            out_rate,
+        },
+    )?;
     if produced < contract.min || produced > contract.max {
         return Err(LenContractViolation::OutsideBounds { produced, contract });
     }
@@ -994,6 +1066,86 @@ mod tests {
         );
         // 而正确裁剪后的结果在区间内。
         assert!(check_resampled_len(in_frames, 44_100, 48_000, 44_100).is_ok());
+    }
+
+    /// 判据 (长度契约的零帧端点)：0 帧输入 ⇒ 契约恰为 `[0, 0]`。
+    ///
+    /// 为什么单独钉：短片段特例会往容差里加 [`SINC_LEN`] 帧，于是 0 帧输入的区间会变成
+    /// `[0, SINC_LEN + MIN_LEN_TOLERANCE_FRAMES]` —— 一个"零帧输入最多能产出 264 帧"的
+    /// 区间。那是一个**不可能正确**的输出，契约不能接受它。
+    ///
+    /// 注入：删掉 `input_frames == 0` 的提前返回（让它继续走容差公式）⇒ 本判据的第一条
+    /// 断言红，实测字面值是 `left: (0, 264, 0, 0)` / `right: (0, 0, 0, 0)`。
+    #[test]
+    fn a_zero_frame_input_admits_exactly_zero_output_frames() {
+        for &(out_rate, in_rate) in &[(44_100u32, 48_000u32), (96_000, 48_000), (48_000, 44_100)] {
+            let c = resample_len_contract(0, out_rate, in_rate).expect("non-zero rates");
+            assert_eq!(
+                (c.min, c.max, c.ideal_floor, c.ideal_ceil),
+                (0, 0, 0, 0),
+                "a zero-frame input has no boundary effect to allow for: {c:?}"
+            );
+            // 恰好 0 帧通过；多一帧即拒（闭区间，且不能是空判据）。
+            assert_eq!(check_resampled_len(0, out_rate, in_rate, 0), Ok(c));
+            assert!(matches!(
+                check_resampled_len(0, out_rate, in_rate, 1),
+                Err(LenContractViolation::OutsideBounds { produced: 1, .. })
+            ));
+        }
+        // 特例**只**作用于 0 帧：1 帧输入仍然享受短片段容差（否则就是把契约焊死）。
+        let one = resample_len_contract(1, 44_100, 48_000).expect("non-zero rates");
+        assert!(one.max >= MIN_LEN_TOLERANCE_FRAMES + SINC_LEN);
+        // 零采样率仍然没有契约 —— 与 0 帧是两件事。
+        assert!(resample_len_contract(0, 0, 48_000).is_none());
+        assert!(resample_len_contract(0, 48_000, 0).is_none());
+    }
+
+    /// 判据 (长度契约的两种 `None` 必须分开报)：比例无定义 ≠ 契约无表示。
+    ///
+    /// 采样率是合法的（1 Hz → 768 kHz），只是 `u64::MAX` 帧乘上这个比例之后连理想值都
+    /// 放不进 `u64`。改建前这条路径复用 `UndefinedRatio`，于是错误文案会把一组完全合法的
+    /// 采样率说成 "ratio undefined"，与 MCP 侧 `decodeError` 的分类一起把原因指错。
+    ///
+    /// 注入：把 `check_resampled_len` 里新加的零采样率分支删掉（回到"`None` 一律
+    /// `UndefinedRatio`"）⇒ 本判据的第二条断言红：拿到 `UndefinedRatio { in_rate: 1,
+    /// out_rate: 768_000 }` 而不是 `Unrepresentable`。
+    #[test]
+    fn an_unrepresentable_contract_is_not_reported_as_an_undefined_ratio() {
+        let input_frames = u64::MAX;
+        assert!(
+            resample_len_contract(input_frames, 768_000, 1).is_none(),
+            "the fixture must actually overflow the contract bounds"
+        );
+        assert_eq!(
+            check_resampled_len(input_frames, 768_000, 1, 0),
+            Err(LenContractViolation::Unrepresentable {
+                input_frames,
+                in_rate: 1,
+                out_rate: 768_000,
+            })
+        );
+        // 两种原因都**不**放行：`produced` 给什么都不行（fail-closed）。
+        assert!(check_resampled_len(input_frames, 768_000, 1, u64::MAX).is_err());
+        // 零采样率仍走 UndefinedRatio，且文案说的是采样率。
+        let err = check_resampled_len(1_000, 0, 48_000, 0).unwrap_err();
+        assert_eq!(
+            err,
+            LenContractViolation::UndefinedRatio {
+                in_rate: 48_000,
+                out_rate: 0,
+            }
+        );
+        assert!(err.to_string().contains("ratio undefined"), "got {err}");
+        // 无表示这条的文案说的是帧数量程，不是"比例无定义"。
+        let overflow = check_resampled_len(input_frames, 768_000, 1, 0).unwrap_err();
+        assert!(
+            overflow.to_string().contains("does not fit in u64"),
+            "got {overflow}"
+        );
+        assert!(
+            !overflow.to_string().contains("ratio undefined"),
+            "got {overflow}"
+        );
     }
 
     #[test]
