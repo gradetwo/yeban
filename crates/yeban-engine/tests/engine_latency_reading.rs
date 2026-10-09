@@ -9,9 +9,11 @@
 //! 但 `yeban-engine` 的**运行时**从不读它们：
 //!
 //! ```text
-//! $ grep -rn 'output_latency' crates/yeban-engine/src
-//! …（全部命中都在 `graph.rs` 自己的定义与文档里：两条模块文档、一个字段声明与
-//!    两个 getter；`rt.rs` 零命中。逐字的行号读数写在本票的报告里，不写进注释）
+//! $ grep -rn 'output_latency' crates/yeban-engine/src      # 本次改动前的读数
+//! graph.rs    13 行（定义、文档与 getter）
+//! mixer.rs     2 行（文档引用）
+//! snapshot.rs  5 行（文档与判据里的引用）
+//! rt.rs        0 行  ← 运行时没有任何读者
 //! ```
 //!
 //! ⇒ 引擎**知道**自己有多少输出延迟，却没有任何读者能读到它（`EngineStats` 只在

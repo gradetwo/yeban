@@ -345,10 +345,11 @@ pub struct EngineStats {
     /// 出现在输出"。它是 `[ARCH-PDC-002]` 的监听延迟预算表里"内部 DSP 拓扑调度"
     /// 那一格**在引擎侧**的可读形式：这个数此前**只算不读** ——
     /// `PdcPlan::output_latency` 由母线限制器延迟回填那一条改动（`b6842b0`）引入，
-    /// 而 `yeban-engine` 侧没有任何读者（量法：
-    /// `grep -rn 'output_latency' crates/yeban-engine/src` 在本次改动前只命中
-    /// `graph.rs` 自身的定义与文档）。控制面要算端到端预算，必须把设备侧读数
-    /// （[`crate::latency`]）与这个数相加。
+    /// 而 `yeban-engine` 侧没有任何**运行时**读者（量法：
+    /// `grep -rn 'output_latency' crates/yeban-engine/src` 在本次改动前的读数是
+    /// `graph.rs` 13 行（定义与文档）、`mixer.rs` 2 行与 `snapshot.rs` 5 行
+    /// （都是文档或判据里的引用）、**`rt.rs` 零行**）。控制面要算端到端预算，
+    /// 必须把设备侧读数（[`crate::latency`]）与这个数相加。
     ///
     /// 取**已武装快照**的计划值（快照边界覆写；还没有任何快照被处理时是 `0`）。
     /// 生产路径（[`crate::snapshot::EngineSnapshot::from_project`]）在 `master` 上回填
