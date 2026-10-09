@@ -1927,24 +1927,44 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 
 /// `yeban_edit_notes`。
 ///
-/// 两个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
+/// 三个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
 ///
-/// - **编辑**（缺省，`create: false`）：`clipId` 必须已经在 `clip_pool` 里，
-///   每条 `NoteOp` 编译成一条 `Op` —— **缺省路径逐字节不变**；
+/// - **编辑**（缺省，`create: false` 且无 `placement`）：`clipId` 必须已经在
+///   `clip_pool` 里，每条 `NoteOp` 编译成一条 `Op` —— **缺省路径逐字节不变**；
 /// - **创建材料**（`create: true`）：`clipId` 是**将要新建的**片段身份，
 ///   `ops` 只允许 `add`，整批折成**一条** `Op::AddClip` ⇒ 池子里多一条
 ///   "MIDI 且至少一个音符"的材料（关闭 `docs/ledger/tools-domain-notes.md:283`
-///   的 needs-8：空池工程从此能做 `yeban_propose_section`）。
+///   的 needs-8：空池工程从此能做 `yeban_propose_section`）；
+/// - **摆放材料**（`placement` 在场）：在音符那一半之外**追加**一条
+///   `Op::AddClipPlacement`，把已有的 `clipId` 摆到 `trackId` 的 `startTick` 上
+///   （关闭 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-6：
+///   池子里的片段此前**没有任何工具**能摆上时间轴 ⇒ 渲染器一帧都不出声）。
+///   此时 `ops` 允许是**空数组** —— "这次调用做什么"由 `placement` 承载。
+///
+/// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
+/// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
 fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let track_id = arg_id(call, "trackId")?;
     let clip_id = arg_id(call, "clipId")?;
+    let creating = arg_bool(call, notes::CREATE_PARAM, false);
+    let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
+    if creating && placement_raw.is_some() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`placement` 与 `create: true` 不能同给: 前者摆**已有**片段, 后者建**新**片段",
+            serde_json::json!({
+                "reason": "placementIsNotCreation",
+                "hint": "先 `create: true` 建材料, 再单独一次调用给 `placement` 摆它",
+            }),
+        ));
+    }
     let raw_ops = call
         .arguments
         .get("ops")
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "缺少 `ops`"))?;
-    let note_ops = notes::parse_ops(raw_ops)?;
-    if arg_bool(call, notes::CREATE_PARAM, false) {
+    if creating {
+        let note_ops = notes::parse_ops(raw_ops)?;
         let clip_name = arg_str(call, notes::CLIP_NAME_PARAM)
             .filter(|name| !name.is_empty())
             .unwrap_or(notes::DEFAULT_NEW_CLIP_NAME);
@@ -1960,13 +1980,39 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             include_ops(call),
         );
     }
-    let compiled = notes::compile(project, &track_id, &clip_id, &note_ops)?;
+    // 摆放那一半先解析（它会拒绝未知键、越界与"推不出长度"，也拒绝已被占用的摆放身份）。
+    let placement = notes::parse_placement(project, &track_id, &clip_id, &call.arguments)?;
+    // 空 `ops` 只在摆放在场时成立；否则仍走 `parse_ops` 的空数组守卫
+    // （"空操作不是一次编辑请求"这条口径没有放松）。
+    let note_ops =
+        if placement.is_some() && raw_ops.as_array().is_some_and(|items| items.is_empty()) {
+            Vec::new()
+        } else {
+            notes::parse_ops(raw_ops)?
+        };
+    // 顺序 = 施加顺序: 先改音符, 再把（此刻内容已确定的）片段摆上去。
+    let mut compiled = if note_ops.is_empty() {
+        Vec::new()
+    } else {
+        notes::compile(project, &track_id, &clip_id, &note_ops)?
+    };
+    if let Some(placement) = placement {
+        compiled.push(Op::AddClipPlacement {
+            track_id,
+            placement,
+        });
+    }
     notes::check_polyphony(project, &clip_id, &compiled)?;
+    let description = if note_ops.is_empty() {
+        format!("摆放片段: {clip_id} → 音轨 {track_id}")
+    } else {
+        format!("音符编辑: {} 步", note_ops.len())
+    };
     propose_draft(
         domain,
         project,
         "notes",
-        format!("音符编辑: {} 步", note_ops.len()),
+        description,
         format!("edit_notes {clip_id}"),
         compiled,
         include_ops(call),

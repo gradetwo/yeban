@@ -76,6 +76,29 @@
 //!
 //! 创建出来的片段**只在池子里**（本工具不摆放；摆放是 `Op::AddClipPlacement` 的事，
 //! 而"配器"只要求池里有材料）。这一点如实写在 [`compile_create`] 的文档与响应里。
+//!
+//! ## 摆放形态（`arguments.placement`）—— 关闭 needs-6 的"放置/引用片段"那一半
+//!
+//! 台账 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 **needs-6** 记的事实是：
+//! "没有『放置/引用片段』的工具" —— `Op::AddClipPlacement` 在 MCP 侧只有三个写者
+//! （`yeban_open_project` 的 `seed`、`yeban_propose_section` 自建的声部、以及
+//! `yeban_import_audio` 的**音频**片段），而**已经躺在 `clip_pool` 里的片段**
+//! （例如上面 `create: true` 刚建出来的 MIDI 材料）**没有任何工具**能摆到时间轴上
+//! ⇒ 渲染器只遍历 `track.clips`，因此那些材料一帧都不出声。
+//!
+//! [`parse_placement`] 补上这一半：`placement` 在场时，除音符编辑之外再产出一条
+//! [`Op::AddClipPlacement`]，把 `clipId` 摆到 `trackId` 的 `startTick` 上。
+//!
+//! 三条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | `placement` 与 `create: true` 同给 | `INVALID_PARAMETER_RANGE`（`reason = "placementIsNotCreation"`）—— 先 `create` 再 `place`，两步各自成一个提案 |
+//! | `placement` 里的键不在 [`PLACEMENT_FIELDS`] | `INVALID_PARAMETER_RANGE`（`reason = "unknownPlacementField"`） |
+//! | 片段推不出长度（非 MIDI / 空 MIDI）且没给 `durationTicks` | `INVALID_PARAMETER_RANGE`（`reason = "durationNotDerivable"`）—— 不猜一个假长度 |
+//!
+//! 空 `ops` 只在**摆放在场**时被接受：那时"这次调用要做什么"由 `placement` 承载，
+//! 音符那一半就是"一个音符都不动"（[`parse_ops`] 自己的空数组守卫**没有**放松）。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -83,7 +106,9 @@ use std::str::FromStr as _;
 use serde_json::{Map, Value};
 
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
-use yeban_model::{ClipContent, ClipPoolEntry, EntityId, MidiNote, Op, YebanProjectV1};
+use yeban_model::{
+    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, YebanProjectV1,
+};
 
 use super::error::{Fault, from_model};
 use super::ids::deterministic_id;
@@ -152,6 +177,31 @@ pub const NOTE_FIELDS: &[&str] = &[
     RATCHET_FIELD,
     MICRO_TIMING_FIELD,
 ];
+
+/// `yeban_edit_notes` 的**摆放**实参名（`arguments.placement`，可选）。
+///
+/// 语义：把**已经在 `clip_pool` 里**的片段摆到 `trackId` 的时间轴上
+/// （模型 `Op::AddClipPlacement`，渲染器**真的**消费它 —— `crate::domain::render`
+/// 只遍历 `track.clips`，池子里没被摆放的片段一帧都不出声）。
+///
+/// 为什么扩本工具而不新增工具：台账 `docs/ledger/mcp-tools-expansion-notes.md` §6 的
+/// needs-6 记的事实是"没有『放置/引用片段』的工具"，并给出两条出路 —— 新增
+/// `yeban_place_clip`，**或扩展 `yeban_edit_notes`**。`ADR-0001` **D46** 的扩张原则是
+/// "先扩既有工具的参数，只有确实不合适才新增工具"，而新增工具必须同步
+/// `schemas/mcp-tools.schema.json` 的 `name.enum` + `ExtensionToolArguments` + `allOf`
+/// 三处（本线禁改 `schemas/**`）。
+///
+/// 本工具此前已经有 `create: true`（**建**材料，`f1098e2`）这一形态；本参数补上它的
+/// 下一半（**摆**材料）。`§7.2` 的参数表因此**一字未动**：`ops` 仍是必填实参
+/// （只摆放的调用给空数组，见 [`parse_ops`] 的空数组口径）。
+pub const PLACEMENT_FIELD: &str = "placement";
+
+/// `placement` 对象**允许**出现的全部键。
+///
+/// 与 [`parse_placement`] 真正读取的键**同源**（判据 `placement_field_names_are_pinned`
+/// 钉住"不多报"）：集合之外的键一律**响亮拒绝**
+/// （[`reject_unknown_placement_fields`]），绝不静默丢弃 —— 与 [`NOTE_FIELDS`] 同一口径。
+pub const PLACEMENT_FIELDS: &[&str] = &["startTick", "durationTicks", "placementId", "muted"];
 
 /// 单个片段的**发声数**上限（同时发声的音符数）。
 ///
@@ -655,6 +705,249 @@ pub fn compile_create(
             content: ClipContent::Midi { notes },
         },
     }])
+}
+
+/// 一次**摆放**的确定性标签：`(片段身份, 音轨身份, 起始 tick)`。
+///
+/// 与 `extension_pure::placement_label`（音频导入那一侧）**分开**一个前缀：
+/// 两条路径的片段不是同一类材料，标签也不该长得一样（同一份 `deterministic_id`
+/// 输入不同的标签 ⇒ 不同的摆放身份）。
+///
+/// 时值**不在**标签里：同一片段、同一音轨、同一起点是**同一次摆放**，改时值是
+/// "改这一次摆放的长度"，不是凭空多出第二条摆放（重复提交同一起点但不同时值由
+/// [`parse_placement`] 判成 `CONFLICT`，与"同身份不同内容的片段"同一口径）。
+#[must_use]
+pub fn placement_label(clip_id: &str, track_id: &str, start_tick: u64) -> String {
+    format!("midi-placement:{clip_id}:{track_id}:{start_tick}")
+}
+
+/// 解析 `arguments.placement`（缺省 = `None` = **不摆放** = 逐字节等于旧行为）。
+///
+/// ```json
+/// {"placement": {"startTick": 0, "durationTicks": 3840,
+///                "placementId": "<可选 26 字符 ULID>", "muted": false}}
+/// ```
+///
+/// 四个键全部**可选**：`startTick` 缺省 0；`durationTicks` 缺省由片段内容推导；
+/// `placementId` 缺省由 [`placement_label`] 确定性派生；`muted` 缺省 `false`。
+///
+/// 三条刻意设成**响亮失败**的口径（绝不静默降级）：
+///
+/// | 情形 | 结果 |
+/// | :--- | :--- |
+/// | `placement` 对象里有 [`PLACEMENT_FIELDS`] 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownPlacementField"`，列出支持集合） |
+/// | `durationTicks` 缺省、而片段**推不出**长度（非 MIDI 片段 / 空 MIDI 片段） | `INVALID_PARAMETER_RANGE`（`reason = "durationNotDerivable"`）—— 不猜一个假长度 |
+/// | 目标音轨上**已经有**这个摆放身份 | `CONFLICT`（逐字段相同 ⇒ `reason = "placementAlreadyExists"`；内容不同 ⇒ `reason = "placementIdConflict"`） |
+///
+/// # Errors
+///
+/// - `placement` 不是对象 / 键类型不对 / `placementId` 不是 ULID → `INVALID_PARAMETER_RANGE`；
+/// - 音轨不存在 → `TRACK_NOT_FOUND`；片段不存在 → `CLIP_NOT_FOUND`；
+/// - `durationTicks == 0` → `INVALID_PARAMETER_RANGE`（模型拒绝零时值的摆放）；
+/// - 摆放身份已被占用 → `CONFLICT`；
+/// - 模型层 [`ClipPlacement::validate`] 失败 → [`from_model`] 给出的契约码。
+pub fn parse_placement(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    clip_id: &EntityId,
+    arguments: &Map<String, Value>,
+) -> Result<Option<ClipPlacement>, Fault> {
+    let Some(raw) = arguments.get(PLACEMENT_FIELD) else {
+        return Ok(None);
+    };
+    let object = raw.as_object().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}` 必须是对象, 实际收到 {raw}"),
+        )
+    })?;
+    reject_unknown_placement_fields(object)?;
+    // 目标音轨与片段都必须**真的存在**：摆放是"把已有材料放到已有轨道上"，
+    // 两个端点缺一个都不是一次摆放（`compile` 的编辑路径有同一对前置条件）。
+    //
+    // ⚠ 音轨句柄**只查一次**并留到函数末尾（摆放身份的占用判定要读它的 `clips`）：
+    // 同一处检查写两遍时，删掉前一处**没有任何判据会变红**（实测：注入后全绿）
+    // —— 那种守卫是"看起来在守"的装饰，不留。
+    let track = project
+        .track(track_id)
+        .map_err(|error| from_model("摆放的目标音轨", &error))?;
+    let entry = project
+        .clip_pool
+        .get(clip_id)
+        .ok_or_else(|| Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}")))?;
+
+    let start_tick = read_optional_u64(object, "startTick")?.unwrap_or(0);
+    let duration_ticks = match read_optional_u64(object, "durationTicks")? {
+        Some(0) => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                "`placement.durationTicks` 必须 >= 1 (模型层拒绝零时值的摆放)",
+                serde_json::json!({
+                    "field": format!("{PLACEMENT_FIELD}.durationTicks"),
+                    "value": 0,
+                }),
+            ));
+        }
+        Some(value) => value,
+        // 缺省 = 片段内容自己的长度（MIDI 片段 = 最后一个音符的结束 tick）。
+        // **推不出就不猜**：非 MIDI 片段（音频片段由 `yeban_import_audio` 的
+        // `durationTicks` 承载，那里的时值来自素材帧数）与空 MIDI 片段都必须显式给。
+        None => match entry.content.notes().and_then(|notes| {
+            notes
+                .values()
+                .map(|note| note.start_tick.saturating_add(note.duration_ticks))
+                .max()
+        }) {
+            Some(extent) if extent > 0 => extent,
+            _ => {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    "这个片段推不出长度 (非 MIDI 片段或空 MIDI 片段) ⇒ 必须显式给出 \
+                     `placement.durationTicks`",
+                    serde_json::json!({
+                        "reason": "durationNotDerivable",
+                        "field": format!("{PLACEMENT_FIELD}.durationTicks"),
+                        "clipId": clip_id.to_canonical_string(),
+                        "isMidi": entry.content.notes().is_some(),
+                    }),
+                ));
+            }
+        },
+    };
+    let placement_id = match object.get("placementId") {
+        Some(value) => {
+            let text = value.as_str().ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    "`placement.placementId` 必须是 26 字符 ULID 字符串",
+                )
+            })?;
+            EntityId::from_str(text).map_err(|error| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`placement.placementId` 不是合法 ULID: {error}"),
+                )
+            })?
+        }
+        None => deterministic_id(&placement_label(
+            &clip_id.to_canonical_string(),
+            &track_id.to_canonical_string(),
+            start_tick,
+        )),
+    };
+    let placement = ClipPlacement {
+        id: placement_id,
+        clip_id: *clip_id,
+        start_tick,
+        duration_ticks,
+        // 循环配置是模型的**必需**子结构 [ADR-0001 D43]：缺省 = 关闭（不重复）。
+        // "循环重复"不在渲染的已支持面里（响应 `unsupported: clipLoopRepetition`），
+        // 因此这里刻意不暴露 `loopEnabled` —— 那会给出一个渲染不了的旋钮
+        // （与 `yeban_import_audio` 同一个理由）。
+        loop_config: LoopConfig::default(),
+        muted: read_optional_bool(object, "muted")?.unwrap_or(false),
+    };
+    placement
+        .validate()
+        .map_err(|error| from_model("摆放校验", &error))?;
+    // 摆放身份在**目标音轨**的 `clips` 里必须还没有被占用：`AddClipPlacement`
+    // 的前置条件拒绝重复身份，在这里先判一次才能给出 `field`/`reason` 的结构化 `data`
+    // （与 `compile_create` 的 `clipAlreadyExists` 同一口径）。
+    match track.clips.get(&placement.id) {
+        None => {}
+        Some(existing) if *existing == placement => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::Conflict,
+                format!(
+                    "音轨 {track_id} 上已经有这条摆放 {} (逐字段相同), 没有可提交的改动",
+                    placement.id
+                ),
+                serde_json::json!({
+                    "reason": "placementAlreadyExists",
+                    "trackId": track_id.to_canonical_string(),
+                    "placementId": placement.id.to_canonical_string(),
+                    "hint": "幂等重放请用 `idempotencyKey`; 要挪位置就换 `placement.startTick`",
+                }),
+            ));
+        }
+        Some(existing) => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::Conflict,
+                format!(
+                    "音轨 {track_id} 上已有摆放身份 {}, 但内容不同",
+                    placement.id
+                ),
+                serde_json::json!({
+                    "reason": "placementIdConflict",
+                    "trackId": track_id.to_canonical_string(),
+                    "placementId": placement.id.to_canonical_string(),
+                    "existing": serde_json::to_value(existing).unwrap_or(Value::Null),
+                    "requested": serde_json::to_value(placement).unwrap_or(Value::Null),
+                    "hint": "换一个 `placement.placementId`/`startTick`, 或给出逐字段相同的载荷",
+                }),
+            ));
+        }
+    }
+    Ok(Some(placement))
+}
+
+/// 拒绝 `placement` 对象里 [`PLACEMENT_FIELDS`] 之外的键（与 [`reject_unknown_note_fields`]
+/// 同一口径：拼错/不支持的键一律响亮拒绝，绝不静默丢弃）。
+///
+/// 键序是确定性的（`serde_json::Map` 在本 crate 的 feature 集合下是 `BTreeMap`），
+/// 因此同一个非法载荷每次报的是**同一个** `field` —— 判据可以逐字钉住它。
+///
+/// # Errors
+///
+/// 出现未知键 ⇒ `INVALID_PARAMETER_RANGE`，`data` 带 `field`（第一个未知键）、
+/// `reason`、`supportedPlacementFields`（[`PLACEMENT_FIELDS`]）与 `hint`。
+fn reject_unknown_placement_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let Some(unknown) = object
+        .keys()
+        .find(|key| !PLACEMENT_FIELDS.contains(&key.as_str()))
+    else {
+        return Ok(());
+    };
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!("`{PLACEMENT_FIELD}` 不接受字段 `{unknown}` (不是可选项缺失, 而是拼写/不支持)"),
+        serde_json::json!({
+            "reason": "unknownPlacementField",
+            "field": unknown,
+            "supportedPlacementFields": PLACEMENT_FIELDS,
+            "hint": "未知键不静默忽略: 去掉它, 或改用 supportedPlacementFields 里的字段",
+        }),
+    ))
+}
+
+/// 读一个**可选**的非负整数键（缺省 = `None`；负数、非整数、溢出都拒绝）。
+///
+/// 与 `import_audio` 的 `parse_optional_u64` 同一条口径（那里读的是顶层实参，名字不带
+/// `placement.` 前缀，因此错误的措辞不同）。它只做 **JSON 形状**读取，不携带领域语义 ——
+/// "时值必须非零""音轨必须存在"这类裁决分别在 [`parse_placement`] 与模型层。
+fn read_optional_u64(object: &Map<String, Value>, field: &str) -> Result<Option<u64>, Fault> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    value.as_u64().map(Some).ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}.{field}` 必须是非负整数, 实际收到 {value}"),
+        )
+    })
+}
+
+/// 读一个**可选**的布尔键（缺省 = `None`；非布尔拒绝）。
+fn read_optional_bool(object: &Map<String, Value>, field: &str) -> Result<Option<bool>, Fault> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    value.as_bool().map(Some).ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}.{field}` 必须是布尔值, 实际收到 {value}"),
+        )
+    })
 }
 
 /// 峰值同时发声数（在 `[start, start + duration)` 上的最大重叠）。
@@ -1415,6 +1708,362 @@ mod tests {
         assert_eq!(
             check_polyphony(&project, &clip_id, &ok).expect("上限之内"),
             MAX_POLYPHONY
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 摆放形态（`arguments.placement`）—— 关闭 needs-6 的"放置/引用片段"那一半
+    // -----------------------------------------------------------------------
+
+    /// 一份 `placement` 实参（键序稳定：判据要逐字钉住错误载荷）。
+    fn placement_args(value: Value) -> Map<String, Value> {
+        let mut arguments = Map::new();
+        arguments.insert(PLACEMENT_FIELD.to_owned(), value);
+        arguments
+    }
+
+    /// 把一组 op 当成**一次提交**来施加/回退（与 `propose_draft` 的封装同一形状）。
+    fn batch(ops: &[Op]) -> Op {
+        Op::Batch {
+            ops: ops.to_vec(),
+            description: "判据".to_owned(),
+        }
+    }
+
+    /// 一个**只有一条 MIDI 片段、且该片段还没被摆放**的工程
+    /// （阴性前提：摆放判据必须能看到"池里有、时间轴上没有"这个真实状态）。
+    fn unplaced_midi_clip() -> (YebanProjectV1, EntityId, EntityId) {
+        let mut project = filled_project();
+        // 把每一条音轨上的摆放全部清掉（池子不动）—— 于是池里的 MIDI 片段
+        // 一条都没上时间轴，正是 needs-6 描述的状态。
+        for track in project.tracks.values_mut() {
+            track.clips.clear();
+        }
+        let (track_id, clip_id) = lead_clip(&project);
+        assert!(
+            project.tracks.values().all(|track| track.clips.is_empty()),
+            "阴性前提: 时间轴上必须没有任何摆放"
+        );
+        assert!(project.clip_pool.contains_key(&clip_id), "材料必须在池子里");
+        (project, track_id, clip_id)
+    }
+
+    /// 字段名与支持集合被钉住（不多报一个键，也不少报一个）。
+    #[test]
+    fn placement_field_names_are_pinned() {
+        assert_eq!(PLACEMENT_FIELD, "placement");
+        assert_eq!(
+            PLACEMENT_FIELDS,
+            ["startTick", "durationTicks", "placementId", "muted"]
+        );
+    }
+
+    /// 缺省（不给 `placement`）= `None` = 不摆放：接线之前的行为逐字节不变。
+    #[test]
+    fn no_placement_argument_means_no_placement() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let parsed = parse_placement(&project, &track_id, &clip_id, &Map::new()).expect("缺省");
+        assert_eq!(parsed, None);
+    }
+
+    /// 四个键全部缺省时：起点 0、时值 = 片段内容长度、身份由标签确定性派生、不静音。
+    #[test]
+    fn placement_defaults_come_from_the_clip_content() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let placement = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({})),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(placement.clip_id, clip_id);
+        assert_eq!(placement.start_tick, 0);
+        assert!(!placement.muted);
+        assert_eq!(
+            placement.loop_config,
+            LoopConfig::default(),
+            "刻意不暴露循环旋钮 (渲染没有展开它)"
+        );
+        // 时值 = 片段里最后一个音符的结束 tick（不猜、不夹紧）。
+        let expected = project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("MIDI")
+            .values()
+            .map(|note| note.start_tick + note.duration_ticks)
+            .max()
+            .expect("至少一个音符");
+        assert_eq!(placement.duration_ticks, expected);
+        // 身份 = `placement_label` 的确定性派生（同一请求 ⇒ 同一身份）。
+        assert_eq!(
+            placement.id,
+            deterministic_id(&placement_label(
+                &clip_id.to_canonical_string(),
+                &track_id.to_canonical_string(),
+                0
+            ))
+        );
+        // 两条独立事实：同一个标签两次派生必须同值；不同起点必须不同值。
+        assert_eq!(
+            deterministic_id(&placement_label("c", "t", 0)),
+            deterministic_id(&placement_label("c", "t", 0))
+        );
+        assert_ne!(
+            deterministic_id(&placement_label("c", "t", 0)),
+            deterministic_id(&placement_label("c", "t", 1))
+        );
+    }
+
+    /// 显式给的两个键**逐字**落进载荷（起点进标签 ⇒ 换起点换身份）。
+    #[test]
+    fn explicit_start_and_duration_reach_the_placement() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let explicit = deterministic_id("placement:explicit");
+        let placement = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "startTick": 7680,
+                "durationTicks": 960,
+                "placementId": explicit.to_canonical_string(),
+                "muted": true,
+            })),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(placement.start_tick, 7680);
+        assert_eq!(placement.duration_ticks, 960);
+        assert_eq!(placement.id, explicit);
+        assert!(placement.muted);
+    }
+
+    /// `durationTicks` 推不出来的两种片段都必须**响亮**要求显式给（不猜假长度）。
+    #[test]
+    fn duration_must_be_explicit_when_the_clip_cannot_derive_it() {
+        let (mut project, track_id, clip_id) = unplaced_midi_clip();
+        // ① 空 MIDI 片段：把音符清空。
+        let notes = project
+            .clip_pool
+            .get_mut(&clip_id)
+            .and_then(|entry| entry.content.notes_mut())
+            .expect("MIDI 片段");
+        notes.clear();
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({})),
+        )
+        .expect_err("空片段推不出长度");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "durationNotDerivable");
+        assert_eq!(value["error"]["data"]["isMidi"], true);
+        // 显式给时值 ⇒ 空 MIDI 片段也能摆（诚实: 它只是不出声）。
+        let placed = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"durationTicks": 960})),
+        )
+        .expect("显式时值")
+        .expect("在场");
+        assert_eq!(placed.duration_ticks, 960);
+        // ② 非 MIDI 片段（音频条目）同理。
+        let project = filled_project();
+        let audio = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有音频条目")
+            .id;
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &audio,
+            &placement_args(serde_json::json!({})),
+        )
+        .expect_err("音频片段推不出长度");
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "durationNotDerivable");
+        assert_eq!(value["error"]["data"]["isMidi"], false);
+    }
+
+    /// 时值 0 在**这一层**就被拒（模型层同样拒绝；这里多给 `field`/`value` 的结构化载荷）。
+    #[test]
+    fn zero_duration_is_refused_with_the_field() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"durationTicks": 0})),
+        )
+        .expect_err("零时值必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["field"], "placement.durationTicks");
+        assert_eq!(value["error"]["data"]["value"], 0);
+    }
+
+    /// 未知键**响亮拒绝**并列出支持集合（与 `note` 的未知键同一口径，绝不静默丢弃）。
+    #[test]
+    fn unknown_placement_fields_are_rejected_with_the_supported_set() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        for unknown in ["start", "starttick", "loopEnabled", "clipId"] {
+            let mut payload = serde_json::json!({"startTick": 0});
+            payload[unknown] = serde_json::json!(1);
+            let fault = parse_placement(&project, &track_id, &clip_id, &placement_args(payload))
+                .expect_err("必须拒绝");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(value["error"]["data"]["reason"], "unknownPlacementField");
+            assert_eq!(value["error"]["data"]["field"], unknown);
+            let supported = value["error"]["data"]["supportedPlacementFields"]
+                .as_array()
+                .expect("必须是数组");
+            for expected in PLACEMENT_FIELDS {
+                assert!(
+                    supported.iter().any(|item| item == expected),
+                    "支持集合必须含 {expected}"
+                );
+            }
+        }
+    }
+
+    /// 形状错（不是对象 / 键类型不对 / 身份不是 ULID / 负数）都是参数错误，不是静默缺省。
+    #[test]
+    fn bad_placement_shapes_are_parameter_errors() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let cases = [
+            serde_json::json!("place it"),
+            serde_json::json!({"startTick": -1}),
+            serde_json::json!({"startTick": 1.5}),
+            serde_json::json!({"durationTicks": "960"}),
+            serde_json::json!({"muted": "yes"}),
+            serde_json::json!({"placementId": "not-a-ulid"}),
+            serde_json::json!({"placementId": 42}),
+        ];
+        for case in cases {
+            let fault =
+                parse_placement(&project, &track_id, &clip_id, &placement_args(case.clone()))
+                    .expect_err("必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{case}"
+            );
+        }
+    }
+
+    /// 两个端点必须真的存在：音轨不存在 ⇒ `TRACK_NOT_FOUND`；片段不存在 ⇒ `CLIP_NOT_FOUND`。
+    #[test]
+    fn both_endpoints_must_exist() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let ghost = deterministic_id("ghost");
+        let fault = parse_placement(
+            &project,
+            &ghost,
+            &clip_id,
+            &placement_args(serde_json::json!({})),
+        )
+        .expect_err("幽灵音轨");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &ghost,
+            &placement_args(serde_json::json!({})),
+        )
+        .expect_err("幽灵片段");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
+    }
+
+    /// 同一条摆放重复提交 ⇒ `CONFLICT`（逐字段相同的重放请走 `idempotencyKey`），
+    /// 同一身份不同内容 ⇒ 同样是 `CONFLICT`，但 `reason` 不同。
+    #[test]
+    fn an_existing_placement_identity_is_a_conflict() {
+        let (mut project, track_id, clip_id) = unplaced_midi_clip();
+        let first = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"startTick": 0})),
+        )
+        .expect("解析")
+        .expect("在场");
+        // 先把这条摆放"做出来"（直接施加到克隆体，模拟上一次调用已经合并）。
+        Op::AddClipPlacement {
+            track_id,
+            placement: first,
+        }
+        .apply(&mut project)
+        .expect("施加");
+        // ① 逐字段相同 ⇒ placementAlreadyExists。
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"startTick": 0})),
+        )
+        .expect_err("已存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "placementAlreadyExists");
+        assert_eq!(
+            value["error"]["data"]["placementId"],
+            first.id.to_canonical_string()
+        );
+        // ② 同身份、不同时值 ⇒ placementIdConflict。
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "startTick": 0,
+                "placementId": first.id.to_canonical_string(),
+                "durationTicks": 480,
+            })),
+        )
+        .expect_err("身份被占用");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "placementIdConflict");
+    }
+
+    /// 摆放编译成**一条** `Op::AddClipPlacement`，端点与载荷逐字段等于解析结果。
+    #[test]
+    fn placement_compiles_into_one_add_clip_placement_op() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let placement = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"startTick": 1920, "muted": true})),
+        )
+        .expect("解析")
+        .expect("在场");
+        let ops = vec![Op::AddClipPlacement {
+            track_id,
+            placement,
+        }];
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].name(), "AddClipPlacement");
+        // 施加到克隆体 ⇒ 时间轴上真的多出这一条（渲染器读的就是 `track.clips`）。
+        let mut after = project.clone();
+        batch(&ops).apply(&mut after).expect("整批施加");
+        assert_eq!(after.tracks[&track_id].clips[&placement.id], placement);
+        assert_eq!(after.clip_pool[&clip_id], project.clip_pool[&clip_id]);
+        // 逆操作逐字节回到原位（`Batch` 的逆 = 逆序取逆）。
+        let mut back = after;
+        batch(&ops).apply_inverse(&mut back).expect("回退");
+        assert_eq!(
+            serde_json::to_value(&back).expect("序列化"),
+            serde_json::to_value(&project).expect("序列化"),
+            "撤销必须逐字段复原"
         );
     }
 }

@@ -596,7 +596,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建)",
+        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `placement` 时把已有片段摆到音轨时间轴上 (材料摆放)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -611,7 +611,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "ops",
                 "array",
                 true,
-                "音符操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,probability?,ratchet?,microTimingTicks?}}` / `delete` / `move` / `velocity`。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]; `note.ratchet` (可选, 整数 1..=16) 的连击细分与 `note.microTimingTicks` (可选, 整数 -240..=240 tick) 的起点偏移都由母带渲染器**真的**消费 (与实时引擎同一条格点公式)。`note` 里这 8 个键之外的字段一律 `INVALID_PARAMETER_RANGE` (绝不静默丢弃): 模型另有 `slide`/`pitchBendCurve`/`syllable`/`phonemes` 四个表现力字段, 工具面**还没有**通路, 渲染器会如实登记进 `unsupported`",
+                "音符操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,probability?,ratchet?,microTimingTicks?}}` / `delete` / `move` / `velocity`。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]; `note.ratchet` (可选, 整数 1..=16) 的连击细分与 `note.microTimingTicks` (可选, 整数 -240..=240 tick) 的起点偏移都由母带渲染器**真的**消费 (与实时引擎同一条格点公式)。`note` 里这 8 个键之外的字段一律 `INVALID_PARAMETER_RANGE` (绝不静默丢弃): 模型另有 `slide`/`pitchBendCurve`/`syllable`/`phonemes` 四个表现力字段, 工具面**还没有**通路, 渲染器会如实登记进 `unsupported`。给了 `placement` 时允许空数组 (这次调用只摆放, 一个音符都不动)",
             ),
             // `create` / `clipName` 是**可选**实参（缺省 = 逐字节等于旧行为），
             // 与 `yeban_open_project` 的 `create` 同词同义（ADR-0001 D48）。
@@ -631,6 +631,17 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "string",
                 false,
                 "`create:true` 时的片段名 (缺省 `Clip`; 只是给人看的标签, 不参与身份)",
+            ),
+            // `placement` 是**可选**实参（缺省 = 不摆放 = 逐字节等于旧行为）。
+            // 它关闭 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-6：
+            // 渲染器只遍历 `track.clips`，池子里没被摆放的片段一帧都不出声，
+            // 而此前**没有任何工具**能把已有片段摆到音轨上（`create:true` 建出来的
+            // MIDI 材料正是这种"在池子里但发不出声"的状态）。
+            param(
+                "placement",
+                "object",
+                false,
+                "把已有的 `clipId` 摆到 `trackId` 上 (`Op::AddClipPlacement`, 渲染**真的**消费): `{startTick?: 非负整数 (默认 0), durationTicks?: >=1 (默认 = 片段内容长度; 片段推不出长度时必填), placementId?: ULID (默认由 片段+音轨+起点 确定性派生), muted?: 布尔 (默认 false)}`。这四个键之外的键一律 `INVALID_PARAMETER_RANGE`。目标音轨上已有该摆放身份 ⇒ `CONFLICT` (内容相同的重放请用 `idempotencyKey`)。与 `create:true` 同给 ⇒ `INVALID_PARAMETER_RANGE` (先建材料, 再单独一次调用摆放)",
             ),
             param(
                 "idempotencyKey",

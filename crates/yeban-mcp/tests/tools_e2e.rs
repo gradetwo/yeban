@@ -3393,3 +3393,397 @@ fn edit_notes_ratchet_and_micro_timing_reach_the_rendered_master() {
         "撤销必须逐字节复原 (连击与微时序随 AddNote 一起可逆)"
     );
 }
+
+/// 合并上一步拿到的提案（提案类工具的下一步永远是这一步；判据里出现多次，抽成一行）。
+///
+/// # Panics
+///
+/// 提案响应不含 `proposalId`，或合并失败。
+fn merge(dispatcher: &mut Dispatcher, auth: &str, proposal: &Value, message: &str) {
+    let proposal_id = proposal["data"]["proposal"]["proposalId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("提案必须有 proposalId: {proposal}"))
+        .to_owned();
+    let merged = call(
+        dispatcher,
+        auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": message }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+}
+
+/// **needs-6 的关闭判据**（`docs/ledger/mcp-tools-expansion-notes.md` §6）：
+/// "没有『放置/引用片段』的工具" —— `Op::AddClipPlacement` 在 MCP 侧只有三个写者
+/// （`yeban_open_project` 的 `seed`、`yeban_propose_section` **自建**的声部、
+/// `yeban_import_audio` 的**音频**片段），而**已经在 `clip_pool` 里**的片段
+/// （尤其 `create: true` 刚建出来的 MIDI 材料）**没有任何工具**能摆到音轨上。
+/// 渲染器只遍历 `track.clips` ⇒ 那些材料一帧都不出声。
+///
+/// 这条判据从工具调用一路走到**磁盘上的 WAV**，因此"摆放真的改变了母带"是实测的，
+/// 不是声明的：
+///
+/// 1. **阴性对照**（这条判据的承重结构）：先把材料建进池子、**不摆放**，
+///    此时母带字节必须与建材料**之前**逐字节相同（`sha256` 相等、帧数相等）——
+///    这一条钉住"池子里的片段不出声"这个前提本身；
+/// 2. 再用 `placement` 把它摆到时间轴上 ⇒ 母带 `sha256` 必须**变**且帧数**变长**；
+/// 3. 摆放逐字段可读（`startTick`/`durationTicks`/`muted`/身份）；
+/// 4. 撤销逐字节复原。
+///
+/// 另有三条**响亮失败**（同一判据内，全部要求工程字节不变）：`placement` 与
+/// `create: true` 同给 / `placement` 里的未知键 / 同一摆放身份重复提交。
+#[test]
+fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it() {
+    let scratch = Scratch::new("needs-6-placement");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("placement.yeban");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "Placement",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+
+    // 种子里**已经摆好**的 MIDI 片段所在的那条音轨（渲染器只看得到被摆放的东西）。
+    let track = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        project
+            .tracks
+            .values()
+            .find_map(|track| {
+                track
+                    .clips
+                    .values()
+                    .any(|placement| {
+                        project
+                            .clip_pool
+                            .get(&placement.clip_id)
+                            .is_some_and(|entry| entry.content.notes().is_some())
+                    })
+                    .then(|| track.id.to_canonical_string())
+            })
+            .expect("默认种子必须有一条被摆放的 MIDI 片段")
+    };
+
+    // ---- ① 阴性对照: 材料在池子里但没摆放 ⇒ 母带一位都不变 ----
+    let rendered_before = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({ "format": "wav", "sampleRate": 48_000 }),
+    );
+    assert_eq!(rendered_before["status"], "success", "{rendered_before}");
+    let sha_before = rendered_before["data"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_owned();
+    let frames_before = rendered_before["data"]["frames"].as_u64().expect("frames");
+    // 逐源**排程到的音符数**（判据用它证明新片的音符真的进了排程，而不只是"文件变长了"）。
+    let scheduled_notes = |rendered: &Value| -> u64 {
+        rendered["data"]["sources"]
+            .as_array()
+            .expect("sources")
+            .iter()
+            .map(|source| source["notes"].as_u64().unwrap_or(0))
+            .sum()
+    };
+    let notes_before = scheduled_notes(&rendered_before);
+
+    let pool_clip =
+        yeban_mcp::domain::ids::deterministic_id("clip:needs-6:pool-only").to_canonical_string();
+    let material = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "clipName": "PoolOnly", "create": true,
+            "ops": [{"kind": "add", "note": {"startTick": 0, "pitch": 100, "durationTicks": 480}}],
+        }),
+    );
+    assert_eq!(material["status"], "success", "{material}");
+    merge(&mut dispatcher, &auth, &material, "池子材料");
+
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        assert!(
+            project
+                .clip_pool
+                .keys()
+                .any(|id| id.to_canonical_string() == pool_clip),
+            "材料必须真的进了池子"
+        );
+        assert!(
+            project.tracks.values().all(|track| track
+                .clips
+                .values()
+                .all(|placement| placement.clip_id.to_canonical_string() != pool_clip)),
+            "`create: true` **不摆放** —— 这正是 needs-6 描述的状态"
+        );
+    }
+    let rendered_pool_only = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({ "format": "wav", "sampleRate": 48_000 }),
+    );
+    assert_eq!(
+        rendered_pool_only["data"]["sha256"].as_str(),
+        Some(sha_before.as_str()),
+        "阴性对照: 池子里的片段没被摆放 ⇒ 母带字节必须逐字节不变: {rendered_pool_only}"
+    );
+    assert_eq!(
+        rendered_pool_only["data"]["frames"].as_u64(),
+        Some(frames_before),
+        "阴性对照: 没摆放的片段不得改变母带长度"
+    );
+    let bytes_before_placement = project_bytes(&dispatcher);
+
+    // ---- ② `ops: []` 单独给（没有 placement）仍然响亮失败: 空数组守卫没被放松 ----
+    let empty_ops = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({ "trackId": track, "clipId": pool_clip, "ops": [] }),
+    );
+    assert_domain_error(
+        &empty_ops,
+        "INVALID_PARAMETER_RANGE",
+        "空 ops 不是一次编辑请求",
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before_placement,
+        "失败不得改工程"
+    );
+
+    // ---- ③ 摆放: 空 `ops` + `placement` 合法, 且编译成**一条** AddClipPlacement ----
+    let placed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"startTick": 7680, "muted": false},
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(placed["status"], "success", "{placed}");
+    assert_eq!(
+        placed["data"]["willCreate"]["opKinds"],
+        json!(["AddClipPlacement"]),
+        "摆放必须编译成一条 AddClipPlacement: {placed}"
+    );
+    let placement_payload = &placed["data"]["proposal"]["ops"][0]["op"]["AddClipPlacement"];
+    assert_eq!(
+        placement_payload["placement"]["clip_id"], pool_clip,
+        "摆放必须指向池子里那条材料: {placed}"
+    );
+    assert_eq!(
+        placement_payload["placement"]["start_tick"], 7680,
+        "{placed}"
+    );
+    assert_eq!(
+        placement_payload["placement"]["duration_ticks"], 480,
+        "时值缺省 = 片段内容长度 (最后一个音符的结束 tick): {placed}"
+    );
+    assert_eq!(placement_payload["placement"]["muted"], false, "{placed}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before_placement,
+        "提案不得改工程字节"
+    );
+    let placement_id = placed["data"]["willCreate"]["placements"][0]["id"]
+        .as_str()
+        .expect("placement id")
+        .to_owned();
+    merge(&mut dispatcher, &auth, &placed, "摆放池子材料");
+
+    // ---- ④ 摆放逐字段可读 ----
+    {
+        let project = dispatcher.domain().active_project().expect("工程");
+        let track_entry = project
+            .tracks
+            .values()
+            .find(|entry| entry.id.to_canonical_string() == track)
+            .expect("目标音轨");
+        let placement = track_entry
+            .clips
+            .values()
+            .find(|placement| placement.id.to_canonical_string() == placement_id)
+            .expect("时间轴上必须有这条摆放");
+        assert_eq!(placement.start_tick, 7680);
+        assert_eq!(placement.duration_ticks, 480);
+        assert!(!placement.muted);
+        assert_eq!(placement.clip_id.to_canonical_string(), pool_clip);
+    }
+
+    // ---- ⑤ 母带**真的**听得见它: 字节变、帧数变长 ----
+    let rendered_placed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({ "format": "wav", "sampleRate": 48_000 }),
+    );
+    assert_eq!(rendered_placed["status"], "success", "{rendered_placed}");
+    assert_ne!(
+        rendered_placed["data"]["sha256"].as_str(),
+        Some(sha_before.as_str()),
+        "摆放之后母带必须变 (阴性对照已经证明不摆放时它不变): {rendered_placed}"
+    );
+    let frames_placed = rendered_placed["data"]["frames"].as_u64().expect("frames");
+    assert!(
+        frames_placed > frames_before,
+        "摆在 7680 tick 之后母带必须更长: {frames_placed} vs {frames_before}"
+    );
+    // 长度变长**还不够**：一条"只把时间轴拉长、但不排程新片音符"的注入也会让字节变、
+    // 让帧数变长。因此再钉一条**排程读数**：逐源音符数恰好 +1（新片只有 1 个音符），
+    // 且最长源的 `endTick` 恰好是摆放的末端 7680 + 480。
+    assert_eq!(
+        scheduled_notes(&rendered_placed),
+        notes_before + 1,
+        "新片的音符必须真的进排程: {rendered_placed}"
+    );
+    let max_end_tick = rendered_placed["data"]["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .map(|source| source["endTick"].as_u64().unwrap_or(0))
+        .max()
+        .expect("至少一个源");
+    assert_eq!(
+        max_end_tick, 8160,
+        "时间轴末端必须落在摆放末端 (7680 + 480): {rendered_placed}"
+    );
+    let wav = scratch.join("placement.master.wav");
+    assert_eq!(
+        file_sha256(&wav),
+        rendered_placed["data"]["sha256"].as_str().expect("sha256"),
+        "磁盘字节的摘要必须等于响应里的读数"
+    );
+
+    // ---- ⑥ 三条响亮失败 (全部要求工程字节不变) ----
+    let bytes_after_placement = project_bytes(&dispatcher);
+    // (a) 同一摆放身份重复提交 ⇒ CONFLICT (幂等重放请走 idempotencyKey)。
+    let dup = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"startTick": 7680},
+        }),
+    );
+    assert_domain_error(&dup, "CONFLICT", "同一条摆放不重复提交");
+    assert_eq!(
+        dup["error"]["data"]["reason"], "placementAlreadyExists",
+        "{dup}"
+    );
+    // (b) `placement` 与 `create: true` 同给 ⇒ INVALID_PARAMETER_RANGE。
+    //     `ops` 刻意给**一条合法 `add`** 且 `clipId` 是一个**池子里还没有**的身份：
+    //     于是"没有这道守卫"的世界里这次调用会**成功**（并静默丢掉 `placement`），
+    //     判据因此卡在 `status` 上，而不是卡在别的错误码上。
+    let fresh = yeban_mcp::domain::ids::deterministic_id("clip:needs-6:create-and-place")
+        .to_canonical_string();
+    let both = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": fresh, "create": true,
+            "ops": [{"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}],
+            "placement": {"startTick": 0},
+        }),
+    );
+    assert_domain_error(&both, "INVALID_PARAMETER_RANGE", "建与摆不能同给");
+    assert_eq!(
+        both["error"]["data"]["reason"], "placementIsNotCreation",
+        "{both}"
+    );
+    // (c) `placement` 里的未知键 ⇒ INVALID_PARAMETER_RANGE + 支持集合 (不静默丢弃)。
+    let typo = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"startTick": 0, "loopEnabled": true},
+        }),
+    );
+    assert_domain_error(&typo, "INVALID_PARAMETER_RANGE", "未知摆放键不得静默丢弃");
+    assert_eq!(
+        typo["error"]["data"]["reason"], "unknownPlacementField",
+        "{typo}"
+    );
+    assert_eq!(typo["error"]["data"]["field"], "loopEnabled", "{typo}");
+    let supported = typo["error"]["data"]["supportedPlacementFields"]
+        .as_array()
+        .expect("supportedPlacementFields 必须是数组");
+    for expected in ["startTick", "durationTicks", "placementId", "muted"] {
+        assert!(
+            supported.iter().any(|value| value == expected),
+            "支持集合必须含 {expected}: {typo}"
+        );
+    }
+    // (d) 零时值 ⇒ 响亮拒绝 (不是静默夹紧到 1)。
+    let zero = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": pool_clip, "ops": [],
+            "placement": {"startTick": 0, "durationTicks": 0},
+        }),
+    );
+    assert_domain_error(&zero, "INVALID_PARAMETER_RANGE", "零时值的摆放必须被拒");
+    assert_eq!(
+        zero["error"]["data"]["field"], "placement.durationTicks",
+        "{zero}"
+    );
+    // (e) 两个端点必须真的存在。
+    let ghost = yeban_mcp::domain::ids::deterministic_id("ghost").to_canonical_string();
+    let ghost_clip = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({ "trackId": track, "clipId": ghost, "ops": [], "placement": {"startTick": 0} }),
+    );
+    assert_domain_error(&ghost_clip, "CLIP_NOT_FOUND", "幽灵片段必须响亮失败");
+    let ghost_track = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({ "trackId": ghost, "clipId": pool_clip, "ops": [], "placement": {"startTick": 0} }),
+    );
+    assert_domain_error(&ghost_track, "TRACK_NOT_FOUND", "幽灵音轨必须响亮失败");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_after_placement,
+        "五条失败都不得改动工程字节"
+    );
+
+    // ---- ⑦ 可回退: 撤销一次 ⇒ 逐字节回到摆放之前的工程 ----
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before_placement,
+        "撤销必须逐字节复原 (摆放随 AddClipPlacement 一起可逆)"
+    );
+    let rendered_after_undo = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({ "format": "wav", "sampleRate": 48_000 }),
+    );
+    assert_eq!(
+        rendered_after_undo["data"]["sha256"].as_str(),
+        Some(sha_before.as_str()),
+        "撤销之后母带必须回到摆放之前的字节: {rendered_after_undo}"
+    );
+}
