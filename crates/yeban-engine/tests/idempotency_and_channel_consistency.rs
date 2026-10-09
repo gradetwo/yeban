@@ -78,8 +78,8 @@
 //! | 记号 | 不加边界 | `-w` 加边界 | 下降的主因（实测分类） |
 //! | :--- | ---: | ---: | :--- |
 //! | `mono` | 18 | 7 | **更长标识符**，三块正好加满 11 行：`process_mono`（7 行）、`monotonic`（3 行）、`mono_impulse_response`（1 行）。⚠ `monotonic` 是**另一个词**（前缀相撞），其余同族复合名 |
-//! | `channel` | 136 | 6 | **复数与复合词**：命中 `channels` 的行 **47** 行、命中 `channel_strip*` 的行 **28** 行（两块有重叠 ⇒ 不相加），余下是判据名（`*_channel_counts_*`、`*_channel_capacity_*`）⇒ 不是词边界的功劳，是选错了词 |
-//! | `channels` | 47 | 41 | 复合词：`channels_at_once`、`channels_linked`、判据名 `*_channel_counts_*` |
+//! | `channel` | 136 | 6 | **复数与复合词**：命中 `channels` 的行 **47** 行、命中 `channel_strip*` 的行 **28** 行（两块有重叠 ⇒ 不相加），其余主因是**与声道无关、只是名字里带 channel 的记号**：`retire_channel`（23 行）、`meter_channel`（16 行）、`event_channel`（15 行，这三者是 SPSC 通道）；余下的判据名如 `*_channel_count*`、`*_channel_linked` ⇒ 不是词边界的功劳，是选错了词 |
+//! | `channels` | 47 | 41 | **更长标识符**，被筛掉的 6 行三类正好加满：`channels_at_once`、`want_channels`、`default_channels` |
 //! | `interleaved` | 3 | 3 | **没有假阳性**：3 行就是 `device.rs` 的三处（字段、初值、切片）⇒ 不为形式而加边界 |
 //!
 //! ⚠ 派单文本里那句"`mono` 实测 5 → 5（0 行被筛掉）"**在本 crate 复现不出来**：
