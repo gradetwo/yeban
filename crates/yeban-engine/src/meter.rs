@@ -39,12 +39,45 @@
 //!
 //! - 音频线程**每个量子恰好一次** `publish`，一次推 `轨道数 + 母线 1 条`；
 //! - `publish` 绝不阻塞、绝不扩容（满则丢并计数）；
-//! - `NaN`/`Inf` 输入不得让任何一帧变成 `NaN`（[`MeterFrame::is_sane`]）。
+//! - `NaN`/`Inf` 输入不得让任何一帧变成 `NaN`（[`MeterFrame::is_sane`]）；
+//! - **弹道系数属于池**：[`MeterBank::set_quanta_per_second`] 记下本池当前的每秒
+//!   量子数，**惰性建立**的槽位与 [`MeterBank::reset`] 都按它建检测器 ⇒ 一条轨的
+//!   弹道不取决于"它的槽位是在哪一次修订被建立的"。
 
 use rtrb::{Consumer, Producer, RingBuffer};
 use yeban_model::EntityId;
 
-use crate::level::{self, LevelDetector, LevelReading, dbfs, dbfs_clamped};
+use crate::level::{
+    self, DEFAULT_PEAK_DECAY_DB_PER_SEC, DEFAULT_QUANTA_PER_SECOND, DEFAULT_RMS_TIME_CONSTANT_SEC,
+    LevelDetector, LevelReading, dbfs, dbfs_clamped,
+};
+
+/// 把每秒量子数钳到合法域：与 `LevelDetector::set_ballistics` 的回落口径**逐字相同**
+/// （非有限或 ≤ 0 ⇒ [`DEFAULT_QUANTA_PER_SECOND`]）。
+///
+/// 池必须与器件用**同一个**口径判合法，否则"池记下的数"与"器件实际用的系数"会分叉。
+#[must_use]
+fn sanitise_quanta_per_second(quanta_per_second: f32) -> f32 {
+    if quanta_per_second.is_finite() && quanta_per_second > 0.0 {
+        quanta_per_second
+    } else {
+        DEFAULT_QUANTA_PER_SECOND
+    }
+}
+
+/// 按**给定的**每秒量子数建一台电平检测器（沿用默认的 20 dB/s 与 τ = 300 ms）。
+///
+/// 它与 `LevelDetector::set_quanta_per_second`（本池刷新在册槽位时用的那一个）
+/// **是同一条算术**：两者都调用 `set_ballistics(qps, 默认 dB/s, 默认 τ)` ⇒
+/// "刷新一个已有槽位"与"新建一个槽位"得到的系数**逐位相同**。
+#[must_use]
+fn detector_at(quanta_per_second: f32) -> LevelDetector {
+    LevelDetector::with_ballistics(
+        quanta_per_second,
+        DEFAULT_PEAK_DECAY_DB_PER_SEC,
+        DEFAULT_RMS_TIME_CONSTANT_SEC,
+    )
+}
 
 /// 电平队列默认容量（条）。
 pub const DEFAULT_METER_CAPACITY: usize = 8192;
@@ -426,11 +459,17 @@ impl MeterSlot {
         touched: 0,
     };
 
-    /// 为一个节点新建激活槽（默认弹道）。
-    fn fresh(node: EntityId, quantum: u64) -> Self {
+    /// 为一个节点新建激活槽（**按池当前的弹道**，不是按器件默认口径）。
+    ///
+    /// ⚠ 这里曾经写 `LevelDetector::new()`：那是硬编码的 375 量子/s（48 kHz）⇒
+    /// 一个在**换采样率之后**才第一次被计量的节点会拿到旧采样率的系数，而它每个量子
+    /// 仍被推进一次 ⇒ 峰值保持按 `20 dB/s × (本率 / 48 kHz)` 回落（96 kHz 下是
+    /// **40 dB/s**），RMS 时间常数同比例失真。判据见
+    /// `tests::a_slot_activated_after_the_rate_change_uses_the_armed_ballistics`。
+    fn fresh(node: EntityId, quantum: u64, quanta_per_second: f32) -> Self {
         Self {
             node: Some(node),
-            detector: LevelDetector::new(),
+            detector: detector_at(quanta_per_second),
             touched: quantum,
         }
     }
@@ -468,6 +507,16 @@ impl MeterSlot {
 pub struct MeterBank<const N: usize> {
     slots: [MeterSlot; N],
     bus: LevelDetector,
+    /// 本池**当前**的每秒量子数（弹道系数的唯一事实源）。
+    ///
+    /// 它必须住在池里而不是只存在于"最近一次刷新"的调用里：槽位是**惰性**建立的
+    /// （[`MeterSlot::fresh`]，在音频线程的 [`Self::measure`] 里），而
+    /// [`Self::set_quanta_per_second`] 只刷新**已经在册**的槽位 ⇒ 没有这个字段，
+    /// "换率之后才出现的节点"就会拿到器件默认口径（375 量子/s = 48 kHz）。
+    ///
+    /// 初值 [`DEFAULT_QUANTA_PER_SECOND`]：池在收到任何快照之前的行为与旧实现
+    /// **逐位相同**（48 kHz 下那正是 `sample_rate / 128`）。
+    quanta_per_second: f32,
     measured: usize,
     capacity_drops: u64,
 }
@@ -485,6 +534,7 @@ impl<const N: usize> MeterBank<N> {
         Self {
             slots: [MeterSlot::EMPTY; N],
             bus: LevelDetector::new(),
+            quanta_per_second: DEFAULT_QUANTA_PER_SECOND,
             measured: 0,
             capacity_drops: 0,
         }
@@ -498,7 +548,13 @@ impl<const N: usize> MeterBank<N> {
     /// 按 `sample_rate / block_frames` 重设全部节点与母线的弹道系数（保留电平状态）。
     ///
     /// 快照切换时调用一次。只做 `powf`/`exp` 与赋值：零分配、零锁。
+    ///
+    /// ⚠ 本方法只覆盖**已经在册**的槽位；**之后**才第一次被计量的节点由
+    /// `MeterSlot::fresh` 按本方法刚刚记下的同一个数建检测器 ⇒
+    /// "节点什么时候出现"不影响它的弹道。
     pub fn set_quanta_per_second(&mut self, quanta_per_second: f32) {
+        let quanta_per_second = sanitise_quanta_per_second(quanta_per_second);
+        self.quanta_per_second = quanta_per_second;
         self.bus.set_quanta_per_second(quanta_per_second);
         for slot in &mut self.slots {
             if slot.node.is_some() {
@@ -508,9 +564,13 @@ impl<const N: usize> MeterBank<N> {
     }
 
     /// 全部清零（换流/关流时用）。
+    ///
+    /// **弹道系数不清**：它是配置（由 [`Self::set_quanta_per_second`] 武装），
+    /// 与"电平状态"不是一回事 —— 与 `LevelDetector::reset` 的"系数保留"同口径。
+    /// 母线的检测器因此也按**本池当前**的每秒量子数重建，而不是回到器件默认口径。
     pub fn reset(&mut self) {
         self.slots = [MeterSlot::EMPTY; N];
-        self.bus = LevelDetector::new();
+        self.bus = detector_at(self.quanta_per_second);
         self.measured = 0;
         self.capacity_drops = 0;
     }
@@ -540,7 +600,7 @@ impl<const N: usize> MeterBank<N> {
             Some(found) => found,
             None => match self.slots.iter().position(|slot| slot.node.is_none()) {
                 Some(free) => {
-                    self.slots[free] = MeterSlot::fresh(node, quantum);
+                    self.slots[free] = MeterSlot::fresh(node, quantum, self.quanta_per_second);
                     free
                 }
                 None => {
@@ -554,7 +614,7 @@ impl<const N: usize> MeterBank<N> {
                         }
                     }
                     self.capacity_drops = self.capacity_drops.saturating_add(1);
-                    self.slots[victim] = MeterSlot::fresh(node, quantum);
+                    self.slots[victim] = MeterSlot::fresh(node, quantum, self.quanta_per_second);
                     victim
                 }
             },
@@ -867,6 +927,116 @@ mod tests {
         assert!(frame.is_sane(), "NaN/Inf 不得污染电平帧: {frame:?}");
         assert!(frame.peak <= level::MAX_LINEAR_MAGNITUDE);
         assert!(frame.peak_dbfs().is_finite());
+    }
+
+    /// `[ARCH-UI-002]` 弹道系数属于**池**，不属于"槽位建立的那一刻"。
+    ///
+    /// 量什么：同一份输入、同一个每秒量子数（750 = 96 kHz ÷ 128）下，两条臂的
+    /// `peak_hold` / `rms_smoothed`（单位：线性幅度）。
+    ///
+    /// 两条臂的**唯一**差别是"槽位建立的时刻"与"换率时刻"的先后：
+    /// 臂 A 的节点槽在换率**之前**建立（弹道由 `set_quanta_per_second` 转发），
+    /// 臂 B 的节点槽在换率**之后**才第一次被计量（走 `MeterSlot::fresh`）。
+    /// 旧实现里 `fresh` 用 `LevelDetector::new()`（硬编码 375 量子/s = 48 kHz）
+    /// ⇒ 臂 B 拿到的是**旧采样率**的系数，而它每个量子仍被推进一次
+    /// ⇒ 峰值保持按 **40 dB/s** 回落（而不是契约的 20 dB/s）、RMS 时间常数
+    /// 减半（300 ms → 150 ms）。
+    ///
+    /// 判据两段：① 两条臂**逐位相等**（弹道与槽位寿命无关）；
+    /// ② 形态 —— 750 个静音量子（= 1 秒）之后峰值保持恰好回落 20 dB（不是 40 dB）。
+    fn ballistics_arms_at(quanta_per_second: f32) -> (MeterBank<2>, MeterBank<2>, EntityId) {
+        let node = EntityId::new();
+        // 臂 A：槽位在换率**之前**建立。
+        let mut early = MeterBank::<2>::new();
+        early.begin_quantum();
+        assert!(early.measure(node, 0, &[]).is_some(), "容量足够");
+        early.set_quanta_per_second(quanta_per_second);
+        // 臂 B：槽位在换率**之后**才建立。
+        let mut late = MeterBank::<2>::new();
+        late.set_quanta_per_second(quanta_per_second);
+        late.begin_quantum();
+        assert!(late.measure(node, 0, &[]).is_some(), "容量足够");
+        (early, late, node)
+    }
+
+    #[test]
+    fn a_slot_activated_after_the_rate_change_uses_the_armed_ballistics() {
+        const RATE_96K_QPS: f32 = 750.0;
+        let loud = [1.0f32; 128];
+        let silence: [f32; 0] = [];
+        let (mut early, mut late, node) = ballistics_arms_at(RATE_96K_QPS);
+
+        let mut last_early = 0.0f32;
+        let mut last_late = 0.0f32;
+        for quantum in 1..=751u64 {
+            let samples: &[f32] = if quantum == 1 { &loud } else { &silence };
+            early.begin_quantum();
+            let a = early.measure(node, quantum, samples).expect("容量足够");
+            late.begin_quantum();
+            let b = late.measure(node, quantum, samples).expect("容量足够");
+            assert_eq!(
+                a.peak.to_bits(),
+                b.peak.to_bits(),
+                "量子 {quantum}: 本量子的块峰值不该受弹道影响"
+            );
+            assert_eq!(
+                a.peak_hold.to_bits(),
+                b.peak_hold.to_bits(),
+                "量子 {quantum}: 峰值保持 {:.4}（{:.3} dB）vs {:.4}（{:.3} dB）\
+                 —— 槽位建立的时刻不得改变弹道",
+                a.peak_hold,
+                a.peak_hold_dbfs(),
+                b.peak_hold,
+                b.peak_hold_dbfs()
+            );
+            assert_eq!(
+                a.rms_smoothed.to_bits(),
+                b.rms_smoothed.to_bits(),
+                "量子 {quantum}: 平滑 RMS {:.6} vs {:.6} —— 同上",
+                a.rms_smoothed,
+                b.rms_smoothed
+            );
+            last_early = a.peak_hold;
+            last_late = b.peak_hold;
+        }
+
+        // 形态判据：750 个静音量子（= 1 秒）之后必须回落 20 dB（旧实现：40 dB）。
+        let decay_db = -20.0 * last_early.log10();
+        assert!(
+            (decay_db - 20.0).abs() < 0.05,
+            "96 kHz（750 量子/s）下 1 秒的静音应让峰值保持回落 20 dB，实测 {decay_db:.3} dB \
+             （臂 A={last_early}、臂 B={last_late}）"
+        );
+        assert!(
+            (last_late - last_early).abs() < 1e-6,
+            "臂 B（换率之后才建立的槽位）的峰值保持={last_late} 必须与臂 A 的 {last_early} 同口径"
+        );
+    }
+
+    #[test]
+    fn meter_bank_reset_keeps_the_armed_ballistics() {
+        const RATE_96K_QPS: f32 = 750.0;
+        let master = EntityId::new();
+        let loud = [1.0f32; 128];
+        let silence: [f32; 0] = [];
+        let mut bank = MeterBank::<1>::new();
+        bank.set_quanta_per_second(RATE_96K_QPS);
+        let _ = bank.measure_bus(master, 0, &loud);
+        bank.reset();
+
+        // `reset` 清的是**电平状态**（峰值保持 / 均方），不是**配置**（弹道系数）
+        // —— 与 `LevelDetector::reset` 的"系数保留"同口径。
+        let mut last = 0.0f32;
+        for quantum in 1..=751u64 {
+            let samples: &[f32] = if quantum == 1 { &loud } else { &silence };
+            last = bank.measure_bus(master, quantum, samples).peak_hold;
+        }
+        let decay_db = -20.0 * last.log10();
+        assert!(
+            (decay_db - 20.0).abs() < 0.05,
+            "reset 之后母线仍须按已武装的 750 量子/s（20 dB/s）回落，实测 {decay_db:.3} dB \
+             （peak_hold={last}）—— 回到器件默认口径会给出 40 dB"
+        );
     }
 
     #[test]

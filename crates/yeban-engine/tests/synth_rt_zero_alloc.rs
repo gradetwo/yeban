@@ -248,6 +248,21 @@
 //! 语义（`α` 必须是新采样率的）**不**在这里钉 —— 它由 `src/param.rs` 的判据 ⑧
 //! 与 `tests/param_automation.rs` 的 P13 用逐位等号钉住。
 //! 本追记**不新增场景**。
+//!
+//! # 场景 16 的覆盖度见证（`line/engine-19` 追记）：换采样率之后**才**建的电平槽位
+//!
+//! `MeterBank` 的每节点槽位是**惰性**建立的（`MeterSlot::fresh`，在音频线程的
+//! `measure` 里），而 `set_quanta_per_second` 只刷新**已经在册**的槽位 ⇒ 池必须自己
+//! 记住当前的每秒量子数，否则"换采样率之后才出现的节点"会拿到器件默认口径
+//! （375 量子/s = 48 kHz）。本追记在**同一个场景**里加一个窗口：发布一份 44.1 kHz 的
+//! 双轨快照（rev 1 的那条轨不在其中 ⇒ 两条轨的电平槽位都在窗口里**新建**）
+//! ⇒ 两个新槽位的建立（弹道系数含 `powf`/`exp`）落在测量窗口内部，断言
+//! `allocations == 0 && deallocations == 0`，并以"新增电平帧恰好 4 × 3 条
+//! （2 轨 + 母线）"作覆盖度自检。
+//! ⚠ 修法与旧写法**都不分配** ⇒ 本窗口在注入下不会变红；它是零分配 + 覆盖度见证。
+//! 语义（系数必须是新采样率的）由 `src/meter.rs` 的判据
+//! `a_slot_activated_after_the_rate_change_uses_the_armed_ballistics` 与
+//! `tests/meter_rt_contract.rs` 的 S9 用逐位等号钉住。本追记**不新增场景**。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -2114,6 +2129,69 @@ fn main() -> ExitCode {
         other => failures.push(format!(
             "换采样率之后武装的主总线平滑值不在'仍在平滑中'的区间 (0.25, 1.0) 里: {other:?}"
         )),
+    }
+
+    // ---- 场景 16 的覆盖度见证（`line/engine-19` 追记）：换采样率之后**才**建电平槽位 ----
+    //
+    // `MeterBank` 的每节点槽位是**惰性**建立的（`MeterSlot::fresh`，在音频线程的
+    // `measure` 里），而 `set_quanta_per_second` 只刷新**已经在册**的槽位。本票把
+    // "池当前的每秒量子数"存进池里，让**新建**槽位也拿到它（语义由 `src/meter.rs` 的
+    // 判据 `a_slot_activated_after_the_rate_change_uses_the_armed_ballistics` 与
+    // `tests/meter_rt_contract.rs` 的 S9 用逐位等号钉住）。
+    //
+    // 本窗口量的是同一条路径的**零分配**属性：44.1 kHz 的快照里出现 **rev 1 里没有的
+    // 两条轨** ⇒ 两个新槽位的建立（弹道系数含 `powf`/`exp`）落在窗口内部。
+    // 既有场景里槽位都在 48 kHz 建好、换采样率只刷新在册槽位 ⇒ 对这条路径是空转。
+    //
+    // ⚠ 本窗口是**零分配 + 覆盖度**见证，**不是**语义判据：修法与旧写法都不分配
+    // （两者都只做 `powf`/`exp`）⇒ 本窗口在注入下不会变红；"系数必须是新采样率的"
+    // 由上面两条判据钉住。
+    let meter_shift_fixture = note_project(&saturated_notes());
+    let meter_shift_snapshot =
+        EngineSnapshot::from_project(&meter_shift_fixture.project, 1).expect("计量夹具快照");
+    let meter_shift_slot = SnapshotSlot::new(meter_shift_snapshot);
+    let (meter_shift_retire, _meter_shift_queue) = retire_channel(8);
+    let (_meter_shift_sender, meter_shift_receiver) = event_channel(16);
+    let (meter_shift_publisher, _meter_shift_collector) = meter_channel(8192);
+    let mut meter_shift_runtime = EngineRuntime::new(
+        &meter_shift_slot,
+        meter_shift_retire,
+        meter_shift_receiver,
+        meter_shift_publisher,
+    );
+    let mut meter_shift_output = vec![0.0f32; 128 * 2];
+    meter_shift_runtime.process_quantum(&mut meter_shift_output, 2); // 预热（窗口外）
+    let (mut meter_shift_project, _, _) = two_track_project(&saturated_notes(), &saturated_notes());
+    meter_shift_project.audio_config.sample_rate = SampleRate::Hz44100;
+    let meter_shift_next =
+        EngineSnapshot::from_project(&meter_shift_project, 2).expect("44.1 kHz 双轨快照");
+    meter_shift_slot.publish(meter_shift_next);
+    let meter_frames_before = meter_shift_runtime.stats().meter_frames;
+    let (allocations, deallocations) = measure("meter slot activation after rate change", || {
+        for _ in 0..4 {
+            meter_shift_output.fill(0.0);
+            meter_shift_runtime.process_quantum(&mut meter_shift_output, 2);
+        }
+    });
+    let meter_frames_after = meter_shift_runtime.stats().meter_frames;
+    println!(
+        "[engine-19/J20] 换采样率之后**新建**电平槽位: allocations={allocations} \
+         deallocations={deallocations} 新增电平帧={}",
+        meter_frames_after - meter_frames_before
+    );
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "换采样率之后**新建**电平槽位时分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations}（`MeterSlot::fresh` 的弹道系数含 `powf`/`exp`）"
+        ));
+    }
+    // 覆盖度：每个量子 2 条轨 + 1 条母线 ⇒ 新槽位真的被建立并被计量（不是空转）。
+    if meter_frames_after - meter_frames_before != 4 * 3 {
+        failures.push(format!(
+            "换采样率之后的 4 个量子应发布 {} 条电平帧（2 轨 + 母线 1 条），实测 {}",
+            4 * 3,
+            meter_frames_after - meter_frames_before
+        ));
     }
 
     // ---- 场景 17：**每轨插入卷积混响**（`crate::insert` 的第三件器件）在实时窗口内零分配 ----

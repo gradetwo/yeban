@@ -21,6 +21,7 @@
 //! | S6 | 队列溢出**可观测**：`dropped > 0` 且 UI 看到的 quantum 落后于生产者 | 把 dropped 计数删掉 |
 //! | S7 | `drain_latest` 抽干整批且自身零分配 | 在 collector 里分配临时 `Vec` |
 //! | S8 | 丢帧读数在**运行时路径**上可读（`EngineStats::meter_dropped_frames`），且 `meter_frames + dropped == 本应发布帧数`；两个臂的窗口都零分配 | 把 `stats()` 的该字段写死 `0`，或把它接到 `meter_capacity_drops` |
+//! | S9 | **换采样率之后才第一次被计量的节点**必须用新采样率的弹道：96 kHz 下"只发布一份快照"与"再发布一份等价快照"的电平帧逐位相同 | 让 `MeterSlot::fresh` 回到 `LevelDetector::new()`（器件默认 375 量子/s） |
 //!
 //! 覆盖度自检（S1 末尾）：quanta / 帧数必须真的达到压测规模，避免"窗口里什么都没跑"的假绿。
 
@@ -29,6 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::level::{self, LevelDetector};
 use yeban_engine::meter::{
     MeterBank, MeterBoard, MeterCollector, MeterFrame, MeterPublisher, SCRATCH_METERS,
@@ -37,7 +39,7 @@ use yeban_engine::meter::{
 use yeban_engine::ring::event_channel;
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
-use yeban_model::EntityId;
+use yeban_model::{EntityId, SampleRate};
 
 /// 包住 [`System`] 的计数型分配器。
 struct CountingAllocator;
@@ -596,6 +598,104 @@ fn scenario_real_levels_and_zero_alloc_consumer(report: &mut Report) {
     report.check(unique == 1 && scratch[0].quantum == 2047, "S7 只留最新一帧");
 }
 
+/// S9：换采样率之后**才**第一次被计量的节点，其弹道系数必须跟着采样率。
+///
+/// 量什么：96 kHz 工程下同一条轨的 `peak_hold` / `rms_smoothed`（单位：线性幅度），
+/// 以及整个输出块的 `f32` **位模式**（对照基线的有效性见证）。
+///
+/// 两条臂的**唯一**差别是"快照有没有在中间被重新发布一次"：
+/// * 臂 A：一份 96 kHz 快照（修订 1）跑完 400 个量子；
+/// * 臂 B：同一份工程，在第 0 个量子之后发布**等价**的第二份（修订 2）
+///   ⇒ 快照边界再跑一次 `MeterBank::set_quanta_per_second`。
+///
+/// 等价快照不改变渲染输出（两臂的输出位模式必须逐位相等 —— 本判据同时钉住这一点），
+/// 因此两臂的电平帧**必须逐位相同**：一条轨的弹道不该取决于"它的槽位是在哪一次修订
+/// 被建立的"。旧实现里 `MeterSlot::fresh` 用 `LevelDetector::new()`（硬编码
+/// 375 量子/s = 48 kHz）⇒ 臂 A 的弹道按 40 dB/s（而不是契约的 20 dB/s）走，
+/// 而臂 B 在重发布时被刷成 750 量子/s ⇒ 本判据在重发布之后的第一个量子
+/// （`MeterFrame::quantum = 2`，实测 `rms_smoothed` 0.007567941 vs 0.0055855257）就红。
+fn scenario_ballistics_follow_the_armed_sample_rate(report: &mut Report) {
+    const QUANTA: usize = 400;
+
+    /// 跑一条臂：96 kHz 夹具 + 可选"第 0 个量子之后重新发布一份等价快照"。
+    ///
+    /// 返回 `(每量子的该轨电平帧, 全部输出样本的位模式, 每个量子都拿到帧了吗)`。
+    fn run(republish_after_first: bool) -> (Vec<MeterFrame>, Vec<u32>, bool) {
+        let mut project = yeban_model::samples::filled_project();
+        project.audio_config.sample_rate = SampleRate::Hz96000;
+        let snapshot = EngineSnapshot::from_project(&project, 1).expect("96 kHz 夹具快照");
+        let track = *snapshot
+            .tracks()
+            .keys()
+            .find(|id| **id != snapshot.master())
+            .expect("夹具里必须有至少一条普通轨");
+        let slot = SnapshotSlot::new(snapshot);
+        let (retire, _queue) = retire_channel(64);
+        let (_sender, receiver) = event_channel(64);
+        let (publisher, mut collector) = meter_channel(8192);
+        let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+
+        let mut output = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        let mut frames = Vec::with_capacity(QUANTA);
+        let mut bits = Vec::with_capacity(QUANTA * DEFAULT_BLOCK_FRAMES * 2);
+        let mut metered_every_quantum = true;
+        for quantum in 0..QUANTA {
+            runtime.process_quantum(&mut output, 2);
+            if republish_after_first && quantum == 0 {
+                // 发布在**实时测量窗口之外**：控制线程允许分配。
+                let next = EngineSnapshot::from_project(&project, 2).expect("等价快照");
+                slot.publish(next);
+            }
+            bits.extend(output.iter().map(|sample| sample.to_bits()));
+            let mut scratch = [MeterFrame::default(); SCRATCH_METERS];
+            let drained = collector.tick(&mut scratch);
+            match scratch[..drained].iter().find(|frame| frame.node == track) {
+                Some(frame) => frames.push(*frame),
+                None => metered_every_quantum = false,
+            }
+        }
+        (frames, bits, metered_every_quantum)
+    }
+
+    let (single, bits_single, single_metered) = run(false);
+    let (republished, bits_republished, republished_metered) = run(true);
+
+    report.check(
+        single_metered && republished_metered,
+        "S9 覆盖度：每个量子都必须产出该轨的电平帧（槽位真的被建立并被计量）",
+    );
+    report.check(
+        single.len() == QUANTA && republished.len() == QUANTA,
+        format!(
+            "S9 覆盖度：两臂各应有 {QUANTA} 条轨电平帧，实测 {} / {}",
+            single.len(),
+            republished.len()
+        ),
+    );
+    report.check(
+        bits_single == bits_republished,
+        "S9 对照基线：重新发布一份等价快照不得改变渲染输出（否则两臂的读数不可比）",
+    );
+    if single.len() == QUANTA && republished.len() == QUANTA {
+        let mut divergence: Option<(usize, MeterFrame, MeterFrame)> = None;
+        for (index, (early, late)) in single.iter().zip(republished.iter()).enumerate() {
+            if early.peak_hold.to_bits() != late.peak_hold.to_bits()
+                || early.rms_smoothed.to_bits() != late.rms_smoothed.to_bits()
+            {
+                divergence = Some((index, *early, *late));
+                break;
+            }
+        }
+        report.check(
+            divergence.is_none(),
+            format!(
+                "S9：96 kHz 下'只发布一份快照'与'再发布一份等价快照'的电平帧必须逐位相同 \
+                 —— 槽位建立的时刻不得改变弹道；首个分歧 {divergence:?}"
+            ),
+        );
+    }
+}
+
 fn main() -> ExitCode {
     let mut report = Report::new();
 
@@ -605,6 +705,7 @@ fn main() -> ExitCode {
     scenario_ui_latest_wins_and_overflow_is_observable(&mut report);
     scenario_meter_drop_readout(&mut report);
     scenario_real_levels_and_zero_alloc_consumer(&mut report);
+    scenario_ballistics_follow_the_armed_sample_rate(&mut report);
 
     if report.failures.is_empty() {
         println!(
