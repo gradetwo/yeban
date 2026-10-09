@@ -1067,7 +1067,10 @@ mod tests {
     }
 
     /// 判据: PDC —— 有延迟的支路不补, 无延迟的支路补 `L_max`。
-    /// 延迟由调用方注入 (model 层尚无 `latency_samples` 字段)。
+    /// 延迟由调用方**显式注入**: 模型层 `DeviceDefinition::latency_samples` 是唯一事实源,
+    /// 生产路径用 [`track_latencies`] 把它投影成本表; 本判据手写固定值, 免得依赖模型夹具。
+    /// （旧注释写"model 层尚无 `latency_samples` 字段"—— 该字段已存在, 见
+    /// `DeviceDefinition::latency_samples` 的文档。）
     #[test]
     fn pdc_compensation_delays_the_short_branch() {
         let master = ulid(0xFFFF);

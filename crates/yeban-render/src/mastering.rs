@@ -698,6 +698,19 @@ struct Scan {
 }
 
 /// 用一个 [`GatedLoudness`] 喂完整段信号, 每 **1 s** 读一次短时值。
+///
+/// **尾巴必须也喂进 meter**: 不足一个整秒的剩余帧**不产生** short-term 读数
+/// （1 s 步进的契约, 见 [`short_term_values`]）, 但它们仍是信号的一部分 ——
+/// `max_momentary_lufs`（400 ms 窗口）与 `max_short_term_lufs`（3 s 窗口）是
+/// **整段信号的最大值**, 不喂尾巴就会漏掉尾巴里的窗口。
+///
+/// 旧实现的缺口（实测, 见判据
+/// `tests::the_tail_still_reaches_the_momentary_and_short_term_maxima`）:
+/// 循环条件 `start + step <= frames` 之后没有任何尾巴喂入, 于是 48 kHz、
+/// 前 4 s 数字静音 + 尾 0.5 s −20 dBFS 的 997 Hz 正弦给出
+/// `integrated_lufs = -21.548813`（有限）而两个最大值**都是** `NEG_INFINITY`
+/// ⇒ `bext` 的 `LoudnessValue` 写实测值、`MaxMomentaryLoudness` /
+/// `MaxShortTermLoudness` 写 `UNKNOWN` 哨兵, 同一份元数据自相矛盾。
 fn scan_short_term(sample_rate: f32, left: &[f32], right: &[f32]) -> Option<Scan> {
     let mut meter = GatedLoudness::for_sample_rate(sample_rate)?;
     let step = sample_rate.round() as usize;
@@ -712,6 +725,11 @@ fn scan_short_term(sample_rate: f32, left: &[f32], right: &[f32]) -> Option<Scan
         meter.add_stereo(&left[start..end], &right[start..end]);
         short_terms.push(meter.short_term_lufs());
         start = end;
+    }
+    // 尾巴: **不推** short-term 读数（1 s 步进的契约不许变）, 但必须进 meter,
+    // 否则尾巴里的瞬时/短时窗口到不了两个最大值。
+    if start < frames {
+        meter.add_stereo(&left[start..frames], &right[start..frames]);
     }
     Some(Scan {
         short_terms,
@@ -852,6 +870,71 @@ mod tests {
         assert!(values[2].is_finite(), "t = 3 s: 窗口第一次填满");
         assert!(values[3].is_finite());
         assert!(values[4].is_finite());
+    }
+
+    /// 判据: **尾巴里的 400 ms 瞬时值必须进 `max_momentary_lufs`**。
+    ///
+    /// 缺口原文: [`scan_short_term`] 的函数文档写"用一个 [`GatedLoudness`] 喂**完整段信号**",
+    /// 而循环是 `while start + step <= frames` ⇒ 尾巴 `frames % step` 帧**一位都没进 meter**。
+    /// 后果不是"少一条 LRA 读数"（"1 s 步进、尾巴不产生读数"那条契约是**对的**,
+    /// 本判据同时把它钉住）, 而是两个**最大值**读数被截断:
+    ///
+    /// 实测夹具 = 48 kHz、前 4 s 数字静音 + 尾 0.5 s −20 dBFS 的 997 Hz 正弦。
+    /// 尾巴里有 5 个完整 100 ms 跳 ⇒ 最后一个 400 ms 瞬时窗口**整体**是有声的。
+    #[test]
+    fn the_tail_still_reaches_the_momentary_and_short_term_maxima() {
+        const WHOLE: usize = 48_000 * 4;
+        const TAIL: usize = 24_000;
+        let mut left = vec![0.0f32; WHOLE + TAIL];
+        let mut right = left.clone();
+        let tone = sine_997(0.1, TAIL);
+        left[WHOLE..].copy_from_slice(&tone);
+        right[WHOLE..].copy_from_slice(&tone);
+
+        // 尾巴**不产生** short-term 读数: 4 s 整秒 ⇒ 4 条（这条契约不许被这次修复改变）。
+        assert_eq!(
+            short_term_values(48_000, &left, &right)
+                .expect("48 kHz")
+                .len(),
+            4,
+            "尾巴不得新增 short-term 读数"
+        );
+
+        let measured = measure_master(48_000, &left, &right).expect("48 kHz");
+        assert!(
+            measured.integrated_is_measurable(),
+            "尾巴里有 0.5 s 有声信号 ⇒ 积分响度必须测得出, 实际 {}",
+            measured.integrated_lufs
+        );
+        assert!(
+            measured.max_momentary_lufs.is_finite(),
+            "尾巴最后一个 400 ms 窗口整体有声 ⇒ 瞬时最大值必须有限, 实际 {}",
+            measured.max_momentary_lufs
+        );
+        // **手算**: 短时窗口 = 30 个 100 ms 跳, 其中末尾 **5** 跳有声（0.5 s 尾巴）
+        // ⇒ 窗口均方 = 满值的 5/30 ⇒ `−20 + 10·log10(5/30)` = **−27.7815** LUFS。
+        // 少喂一份、多喂一份（或整个尾巴不喂）都会让这个数变。实测 **−27.781736**。
+        assert!(
+            (measured.max_short_term_lufs + 27.7815).abs() < 0.01,
+            "手算 −20 + 10·log10(5/30) = −27.7815 LUFS, 实际 {}",
+            measured.max_short_term_lufs
+        );
+
+        // `bext` 侧因此既不许写"未知"哨兵, 也不许写别的数。旧实现把尾巴丢掉之后
+        // 同一份元数据是**自相矛盾**的: `LoudnessValue` 写实测的 −2155,
+        // 而 `MaxMomentaryLoudness` / `MaxShortTermLoudness` 都写 `UNKNOWN`
+        // （= `i16::MIN` = −32768, 见 `crate::rf64::Loudness`）。
+        // 单位是 0.01 LUFS（[`crate::rf64::Loudness`] 的刻度）。
+        let bext = measured.to_bext_loudness();
+        assert_eq!(
+            (
+                bext.loudness_value,
+                bext.max_momentary_loudness,
+                bext.max_short_term_loudness
+            ),
+            (-2155, -2000, -2778),
+            "0.01 刻度的实测字面量: −21.548813 / −19.999035 / −27.781736 LUFS"
+        );
     }
 
     /// **手算判据**: 50 条 −20 LUFS + 50 条 −40 LUFS。
