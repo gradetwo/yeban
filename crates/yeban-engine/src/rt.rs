@@ -1293,6 +1293,35 @@ impl EngineRuntime {
         self.pdc.rebindings()
     }
 
+    /// **本量子**已计量的节点次数
+    /// （[`MeterBank::active_nodes`](crate::meter::MeterBank::active_nodes) 的搬运）。
+    ///
+    /// ## 它为什么存在（`line/engine-26` 的注入 R13 实测）
+    ///
+    /// 每个量子开始时 [`EngineRuntime::render_block`] 调用一次
+    /// `bank.begin_quantum()`，而那个方法的**唯一**效果是把计量池里的 `measured` 归零。
+    /// 在补上本访问器之前，`measured` 在 `EngineRuntime` 之外**没有任何读者**
+    /// （量法：`grep -rn active_nodes crates/yeban-engine/src crates/yeban-engine/tests`
+    /// 只命中 `meter.rs` 自己的定义与它自己的三条单测；`EngineStats` 不搬它）
+    /// ⇒ 把那个调用整句删掉，产物与**全部**既有判据都看不出差别
+    /// （本票注入 R13 实测：`cargo test -p yeban-engine --no-default-features --all-targets`
+    /// 之下**没有任何判据**因它变红。⚠ `snapshot_retire_churn` 的 60Hz 节拍判据在本机
+    /// 高负载时本来就红 —— 它与本注入无关，见本票交付报告里的负载读数）。
+    ///
+    /// 因此本访问器是那条接线的**可读见证**，与 [`Self::pdc_rebindings`] /
+    /// [`Self::armed_metronome_ticks_per_beat`] 同族：把"内部计数真的每量子重置"
+    /// 变成可判定的差分（判据见 `rt::tests::meter_active_nodes_is_per_quantum_not_cumulative`）。
+    ///
+    /// 它只读一个 `usize` 字段：零分配、零锁、零 I/O。
+    ///
+    /// 口径：数的是本量子走 `MeterBank::measure`（**逐轨槽位**）的次数 ——
+    /// 母线走 `measure_bus_stereo`，它有自己的检测器、**不计入**此数
+    /// （`meter.rs` 的 `MeterBank::measure` 是唯一推进它的入口）。
+    #[must_use]
+    pub const fn meter_active_nodes(&self) -> usize {
+        self.bank.active_nodes()
+    }
+
     /// 走带状态机的只读视图（**实时侧状态**；同线程判据/诊断用）。
     ///
     /// 跨线程读数请用 [`Self::transport_mirror`] —— 直接读 `&Transport` 只有在
@@ -2900,6 +2929,33 @@ mod tests {
         assert_eq!(stats.meter_capacity_drops, 0);
         assert!(rig.runtime.ftz_armed());
         assert_eq!(rig.runtime.revision(), Some(1));
+    }
+
+    /// 判据（`line/engine-26` 注入 R13 的处置）：`EngineRuntime` 每个量子开始都必须
+    /// 调用一次 `MeterBank::begin_quantum`，因此
+    /// [`EngineRuntime::meter_active_nodes`] 是**本量子**的计量节点数，不是累计量。
+    ///
+    /// 为什么需要它：`begin_quantum` 的唯一效果是把池里的 `measured` 归零，而那个计数
+    /// 在 `EngineRuntime` 之外**没有任何读者**（`EngineStats` 不搬它）⇒ 删掉那个调用，
+    /// 全部既有判据都看不出差别（本票注入 R13 实测：那个注入之下没有任何判据变红）。
+    /// 本判据把"本量子 vs 累计"做成可判定的差分：
+    /// 夹具（`simple_snapshot(1)`）每个量子走 `MeterBank::measure` **1** 次
+    /// （1 条轨；母线走 `measure_bus_stereo`，不计入此数），三个量子之后必须是 **1**；
+    /// 累计会给出 **3**。
+    #[test]
+    fn meter_active_nodes_is_per_quantum_not_cumulative() {
+        let mut rig = rig();
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for quantum in 1..=3u64 {
+            rig.runtime.process_quantum(&mut out, 2);
+            assert_eq!(
+                rig.runtime.meter_active_nodes(),
+                1,
+                "第 {quantum} 个量子：夹具 `simple_snapshot(1)` 逐轨计量 1 次\
+                 （累计会给出 {quantum}）"
+            );
+        }
+        assert_eq!(rig.runtime.stats().quanta, 3, "覆盖度：真的跑了三个量子");
     }
 
     #[test]

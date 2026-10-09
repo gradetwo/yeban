@@ -53,6 +53,7 @@
 //! | ⑰ | PDC 补偿延迟线：2 000 量子稳态 + 1 000 量子跨快照**重新武装**（32 → 96 帧） | `CompensationBank::rearm` 的 `set_delay` 分支 + 逐样本环形延迟读写（`ROAD-M2-004` 接线之后新增；行为判据在 `tests/pdc_mix_path.rs`） |
 //! | ⑱ | 退役队列欠容（容量 1 + 控制面**故意**不排空）64 轮 | `SnapshotReader::retire_or_stash` 的 `PushError::Full` 分支 ⇒ `note_suppressed(SnapshotRetireStash)`（`N6` 选项 A） |
 //! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A）；**⑲d**（`line/engine-12`）在同一窗口里追加"SPSC 环满的丢帧读数"`EngineStats::meter_dropped_frames`：`写入 + 丢弃 == 量子数 × SCRATCH_METERS`（等号）且丢弃 > 0 |
+//! | ⑲e | 电平容量**边界**（轨道数**恰好** `SCRATCH_METERS − 1` = 255）64 量子 | 同一条判定的**另一侧**：`metered_tracks > track_budget` 是**严格大于** ⇒ 恰好等于时零丢弃、零被抑制诊断，但仍然每量子发满一批（`line/engine-26` 注入 R17 的处置：把 `>` 改成 `>=` 时只有本场景变红） |
 //! | ⑳ | 设备回调体 2 000 次（`yeban_engine::device::render_callback`） | cpal 建流的闭包、`NullBackend::render` 与判据调用的**同一个**函数 ⇒ "回调里多做了事"（分配/锁/I-O/日志）在这里变红；**feature `device` 门控**（`--no-default-features` 下本场景不跑） |
 //! | ㉑ | 节拍器 2 000 量子全程打拍（`transport.metronome_enabled = true`；关闭侧另 200 量子） | `render_block` 的 3a'（`metronome::render_quantum`）：每拍帧位置反算（`Transport::frames_until_tick` 的整数 `div_ceil`）、强弱拍增益选择、逐样本"比对 + 一次乘 + 两次加"、**跨量子延续**的游标；关闭侧覆盖"整段跳过"分支。行为判据在 `tests/metronome_render.rs` |
 //! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
@@ -105,6 +106,7 @@
 //! | I12 | 删掉 `rt.rs::render_block` 的混响采样率守卫（`if current.sample_rate() == *armed_reverb_sample_rate`）**并**把"同轨同槽只 `set_params`"的快路径也去掉（⇒ 每次重新武装都调 `Reverb::set_sample_rate`） | **仅** ㉒（换采样率那一段）的**分配/释放**分量；实测红行：`reverb rate-mismatch re-arm + quantum: allocations=48 deallocations=48` ⇒ `㉒ FAIL … 实时路径分配了 48 次`，汇总 `43 / 44`；⚠ **只删守卫、保留快路径的注入不会变红**（同轨同槽不调 `set_sample_rate` ⇒ 零分配）—— 那条半注入的实测红行是 `㉒c FAIL … 换采样率之后混响必须整段不武装`，见本票报告 |
 //! | I13 | `synth.rs::render_track` 的**鼓机触发分支**里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉓（鼓机音源侧）的**分配/释放**分量；实测红行：`㉓ FAIL … 四元组[alloc=216 dealloc=216 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]` ⇒ 汇总 `45 / 46`。同一个注入也打红 `synth_rt_zero_alloc` 的 J11（`drum instrument 10_000 quanta: allocations=213 deallocations=213`；213 = 那个窗口的鼓击数）；还原后 `46 / 46` 与 J11 全窗 `allocations=0 deallocations=0` |
 //! | I14 | `rt.rs::stats()` 的 `meter_dropped_frames` 写死 `0`（`line/engine-12`） | **仅** ⑲d（新读数的精确分解）的**行为**分量（不是四元组）；同族判据同时红：`meter_rt_contract` 的 S8、`synth_rt_zero_alloc` 的 J19、`rt` 库单测；见下节 |
+//! | I15 | `rt.rs::render_block` 的 `metered_tracks > track_budget` 改成 `>=`（`line/engine-26`） | **仅** ⑲e（新判据）。⑲ 的夹具（300 条轨）两种写法同解 ⇒ 在本判据补上之前，这条注入让**全部**既有目标绿（本票注入 R17 实测） |
 //!
 //! # I14 的实测记录（`line/engine-12`：电平 SPSC 丢帧读数）
 //!
@@ -660,8 +662,22 @@ impl RtDiagSink for WitnessSink {
 /// 安装后立刻**真实地走一遍边界**（一次自检写）：这既是"边界通不通"的自检，
 /// 也把首次加锁 / 首次写控制台的一次性开销挤到**任何窗口之外**
 /// （macOS 上每个 `std::sync::Mutex` 实例的首次加锁会分配 64 字节，见 `rt_probe` 模块文档）。
+///
+/// # 见证文件名的进程唯一性（判据 ⑦c 的隔离前提，实测补上）
+///
+/// 文件名里带 `std::process::id()`。理由是本判据**读到过**一次假红：见证路径原先
+/// 只有固定名 `yeban-rt-zero-alloc-witness.log`，而 `std::env::temp_dir()` 在同一台
+/// 机器上对**所有进程**是同一个目录 ⇒ 另一个同时在跑的 `rt_zero_alloc` 进程
+/// （本机实测是同一 workspace 的另一个 worktree）在自己的 `main` 末尾
+/// `remove_file` 掉这个名字，于是本进程的文件描述符还有效、路径却已不存在：
+/// `write_all` 全部返回 `Ok`、fd 的 `metadata().len()` 从 24 涨到 128，
+/// 而 `count_lines(路径)` 得到 `NotFound` ⇒ `lines_after - lines_before == 0` ⇒ ⑦c 假红。
+/// 进程唯一名把这条耦合切断（两个并发实例各自读写自己的文件）。
 fn install_witness_sink() -> Arc<WitnessSink> {
-    let path = std::env::temp_dir().join("yeban-rt-zero-alloc-witness.log");
+    let path = std::env::temp_dir().join(format!(
+        "yeban-rt-zero-alloc-witness-{}.log",
+        std::process::id()
+    ));
     let file = std::fs::File::create(&path).expect("见证 sink 必须能创建临时文件");
     let witness = Arc::new(WitnessSink {
         file,
@@ -2007,6 +2023,78 @@ fn scenario_meter_capacity_overflow(report: &mut Report) {
     );
 }
 
+/// ⑲e：电平容量不足的判定是**严格大于**（`line/engine-26` 注入 R17 的处置）。
+///
+/// ## 契约与它此前为什么没有判据
+///
+/// `render_block` 的边界是 `metered_tracks > track_budget`
+/// （`track_budget = SCRATCH_METERS - 1`，给母线留一个发布槽位）。这条判定同时决定
+/// 两件事：把超出部分记进 `meter_capacity_drops`，以及走**纯计数**诊断出口
+/// `rt_probe::note_suppressed(MeterCapacityDrop)`。
+///
+/// 把 `>` 改成 `>=` 之后，**恰好等于**预算的工程会走那条分支：丢弃数加上
+/// `metered_tracks - track_budget = 0`（读数**看不出来**），但每个量子会多发一条
+/// "容量不足"的被抑制诊断 —— 一条**假警报**。
+///
+/// 既有判据为什么看不见它：⑲ 的夹具是 `SCRATCH_METERS + 44` 条轨（远超预算），
+/// 两种写法的分支结果完全一样 ⇒ 本票注入 R17 实测**全绿**。本场景把夹具压到边界上。
+///
+/// ## 覆盖度自检（防假绿）
+///
+/// "没有诊断"这件事在"夹具其实没计量满一批"时也会成立 ⇒ 同时断言每量子**恰好一次**
+/// 批量发布、且本应发布的帧数 = 量子数 × `SCRATCH_METERS`（写入 + 丢弃）。
+fn scenario_meter_capacity_boundary(report: &mut Report) {
+    /// 边界场景的量子数（每个量子都在判定边界上走一次）。
+    const BOUNDARY_QUANTA: u64 = 64;
+
+    // 恰好 `SCRATCH_METERS - 1` 条普通轨 ⇒ `metered_tracks == track_budget`。
+    let budget = SCRATCH_METERS - 1;
+    let mut rig = Rig::from_snapshot(
+        meter_snapshot_with_tracks(1, budget),
+        1 << 20, // 环足够大 ⇒ 本场景不测丢帧，只测判定边界
+        64,
+        64,
+    );
+    rig.preheat();
+    let before = rig.stats();
+
+    let mut scenario = Scenario::new("⑲e电平容量边界");
+    scenario.absorb(BOUNDARY_QUANTA, &rig.pump(BOUNDARY_QUANTA));
+
+    let stats = rig.stats();
+    let drops = stats
+        .meter_capacity_drops
+        .saturating_sub(before.meter_capacity_drops);
+    let publishes = stats
+        .meter_bulk_publishes
+        .saturating_sub(before.meter_bulk_publishes);
+    let frames = stats.meter_frames.saturating_sub(before.meter_frames);
+    let dropped_frames = stats
+        .meter_dropped_frames
+        .saturating_sub(before.meter_dropped_frames);
+    let offered_frames = SCRATCH_METERS as u64 * BOUNDARY_QUANTA;
+    scenario.note(format!(
+        "普通轨={budget}（恰好 = 暂存槽 {SCRATCH_METERS} − 1）量子={BOUNDARY_QUANTA}；\
+         容量丢弃={drops}（要求 0）批量发布={publishes}（要求 {BOUNDARY_QUANTA}）；\
+         纯计数诊断={}（要求 0：边界是**严格大于**）；\
+         本应发布的帧数={offered_frames} = 写入 {frames} + 丢弃 {dropped_frames}",
+        scenario.suppressed
+    ));
+
+    report.assert(
+        "⑲e",
+        "电平容量判定是严格大于：轨道数**恰好等于**暂存槽 − 1 时零丢弃、零被抑制诊断，\
+         且本量子仍发满一批（覆盖度）",
+        scenario.quad.is_zero()
+            && scenario.witness_ok()
+            && scenario.suppressed == 0
+            && drops == 0
+            && publishes == BOUNDARY_QUANTA
+            && frames + dropped_frames == offered_frames,
+        scenario.detail(),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 场景 ㉑ 节拍器（咔哒声）
 // ---------------------------------------------------------------------------
@@ -2446,6 +2534,15 @@ fn scenario_drum_instrument(report: &mut Report) {
 /// 走的是与真实投影**同一套**下层构造（`TrackParams::from_track` + `from_parts`），
 /// 只是绕开了"工程 → 快照"的投影（真实工程不会长成这样）。
 fn oversized_meter_snapshot(revision: u64) -> EngineSnapshot {
+    meter_snapshot_with_tracks(revision, OVERSIZE_TRACKS)
+}
+
+/// 造一份**恰好 `tracks` 条普通轨**（外加母线）的快照。
+///
+/// `line/engine-26` 的 ⑲e 需要"轨道数**恰好等于**电平暂存槽 − 1"这个边界值
+/// （`SCRATCH_METERS - 1 = 255` 条普通轨）：容量不足的判定是**严格大于**，
+/// 恰好等于时既不该计入丢弃、也不该产生被抑制诊断。
+fn meter_snapshot_with_tracks(revision: u64, tracks_wanted: usize) -> EngineSnapshot {
     let master = EntityId::new();
     let mut routing = RoutingGraph {
         nodes: vec![master],
@@ -2462,7 +2559,7 @@ fn oversized_meter_snapshot(revision: u64) -> EngineSnapshot {
             0,
         ),
     );
-    for _ in 0..OVERSIZE_TRACKS {
+    for _ in 0..tracks_wanted {
         let track = EntityId::new();
         routing.nodes.push(track);
         let edge = EntityId::new();
@@ -3020,6 +3117,7 @@ fn main() -> ExitCode {
     scenario_pdc_delay_lines(&mut report);
     scenario_retire_queue_overflow(&mut report);
     scenario_meter_capacity_overflow(&mut report);
+    scenario_meter_capacity_boundary(&mut report);
     #[cfg(feature = "device")]
     scenario_device_callback_body(&mut report);
     scenario_metronome(&mut report);
