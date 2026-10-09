@@ -1957,7 +1957,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 
 /// `yeban_edit_notes`。
 ///
-/// 四个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
+/// 五个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
 ///
 /// - **编辑**（缺省，`create: false` 且无 `placement`）：`clipId` 必须已经在
 ///   `clip_pool` 里，每条 `NoteOp` 编译成一条 `Op` —— **缺省路径逐字节不变**；
@@ -1965,6 +1965,13 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   `ops` 只允许 `add`，整批折成**一条** `Op::AddClip` ⇒ 池子里多一条
 ///   "MIDI 且至少一个音符"的材料（关闭 `docs/ledger/tools-domain-notes.md:283`
 ///   的 needs-8：空池工程从此能做 `yeban_propose_section`）；
+/// - **取走材料**（`ops[].kind == "removeClip"`，必须单独出现）：把顶层 `clipId`
+///   这个**片段池条目**取走（`Op::RemoveClip`，撤销载荷 `previous_clip` 从当前文档读）
+///   ⇒ 上一形态的镜像；此前池里的条目**没有任何工具**能取走（`yeban_query_project`
+///   的实体索引却在报它们的身份）。与 `create: true` / `placement` / 其它任何
+///   `kind` 同给都是**响亮失败**（`removeClipTakesNoOtherOps` /
+///   `removeClipIsNotPlacement` / `createRequiresAddOps`）；还有摆放引用它时由模型
+///   报 `ClipInUse` ⇒ `CONFLICT`；
 /// - **摆放材料**（`placement` 在场）：在音符那一半之外**追加**一条
 ///   `Op::AddClipPlacement`，把已有的 `clipId` 摆到 `trackId` 的 `startTick` 上
 ///   （关闭 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-6：
@@ -2031,6 +2038,12 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         } else {
             notes::parse_ops(raw_ops)?
         };
+    // 池级形态（`removeClip`）**单独成一路**：它把顶层 `clipId` 那个**片段池条目**
+    // 取走，既不读不写音符，也不碰摆放 ⇒ 与另外三路互斥。两条排他性规则住在
+    // `notes::reject_remove_clip_conflicts`（那里能被本机探针真的执行到），
+    // 判定时点是**编译之前**（绝不让一个自相矛盾的批去撞一个更难懂的错误）。
+    let removing_clip = matches!(note_ops.as_slice(), [notes::NoteOp::RemoveClip]);
+    notes::reject_remove_clip_conflicts(&note_ops, placement.is_some())?;
     // 顺序 = 施加顺序: 先改音符, 再施加（此刻内容已确定的）摆放编辑。
     let mut compiled = if note_ops.is_empty() {
         Vec::new()
@@ -2074,11 +2087,20 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         }
         None => String::new(),
     };
-    notes::check_polyphony(project, &clip_id, &compiled)?;
-    // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"）。
+    // 池级取走**跳过发声数检查**：那项检查量的是"这条片段在施加 ops 之后的音符重叠"，
+    // 而池级取走一个音符都不读、取走之后池里也没有这条片段可量（旧代码会在克隆体上
+    // 白跑一遍全文档模拟，然后读到一个已被取走的身份）。模型的 `ClipInUse` 前置条件
+    // 仍由 `propose_draft` 的整批模拟把关 —— 那一步没有被跳过。
+    if !removing_clip {
+        notes::check_polyphony(project, &clip_id, &compiled)?;
+    }
+    // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"，也不把池级取走
+    // 说成"音轨级编辑" —— 那是三个不同的对象）。
     let note_level = note_ops.iter().filter(|op| op.is_note_level()).count();
     let track_level = note_ops.len() - note_level;
-    let description = if note_ops.is_empty() {
+    let description = if removing_clip {
+        format!("取走片段池条目: {clip_id}")
+    } else if note_ops.is_empty() {
         placement_description
     } else if note_level == 0 {
         format!("音轨级编辑: {track_level} 步")

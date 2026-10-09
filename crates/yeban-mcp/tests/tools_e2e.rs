@@ -5210,3 +5210,363 @@ fn placement_edits_move_and_remove_a_placement_and_the_master_follows() {
         "五条失败都不得改动工程字节"
     );
 }
+
+/// **片段池取走的关闭判据**：`ops[].kind == "removeClip"` 走完
+/// `tools/call` → 提案 → 合并 → 撤销 的整条管线，池子里的条目真的消失，撤销逐字节复原。
+///
+/// 这条判据对着一处**实测缺口**：模型有 `Op::RemoveClip`（自包含撤销载荷），
+/// `yeban_edit_notes` 的 `create: true` 能把 MIDI 材料**放进**池子、`placement` 能把
+/// 已有材料摆上时间轴 / 把摆放取走，而池子里的条目**没有任何工具**能取走
+/// （量法：改前 `git grep -c 'RemoveClip {' HEAD -- crates/yeban-mcp/src` 命中 **0** 个文件）。
+/// `yeban_query_project` 的实体索引却在报每一条 `{"kind":"clip","id":…}` ⇒
+/// 工具面"看得到、建得出、**取不走**"；`yeban_undo` 补不上它（撤销是栈顶回退，
+/// 不能只取走一条旧材料而保住之后的编辑）。
+///
+/// 判据的**牙齿**：目标片段由**顶层 `clipId`** 给出（本形态自带空载荷），因此
+/// "取走的身份"改成派生值 / 别的条目在这里会红 —— 提案里的 `clip_id` 与
+/// `previous_clip` 都钉在字面值上，标题也必须如实说这是"取走片段池条目"。
+///
+/// 注入（都能让它变红）：删掉 `parse_one` 的 `removeClip` 分支（未知 `kind`）；
+/// 把 `previous_clip` 换成常量（模型报 `OpStateMismatch` ⇒ `CONFLICT`）；
+/// 去掉 `reject_remove_clip_fields`（嵌套 `clipId` 那条被静默接受）；
+/// 去掉 `removeClipTakesNoOtherOps` / `removeClipIsNotPlacement` 两条排他检查
+/// （那两条必须被拒的调用被接受）；把描述分支去掉（标题变成"音轨级编辑: 1 步"）。
+#[test]
+fn pool_entry_removal_reaches_the_document_and_undo_restores_it() {
+    let scratch = Scratch::new("remove-clip-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Midi)
+        .expect("样本里必须有 MIDI 音轨");
+    let track_text = track.id.to_canonical_string();
+    let placed_midi = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("样本里必须有 MIDI 片段")
+        .id;
+    let placed_midi_text = placed_midi.to_canonical_string();
+    // 阴性对照用：那条片段**还被摆放引用**（模型 `ClipInUse` 的前置条件不成立）。
+    let (placed_track, placed_placement) = project
+        .tracks
+        .values()
+        .find_map(|track| {
+            track
+                .clips
+                .values()
+                .find(|placement| placement.clip_id == placed_midi)
+                .map(|placement| (track.id, placement.id))
+        })
+        .expect("样本里的 MIDI 片段必须被摆放引用");
+    let pool_before = project.clip_pool.len();
+
+    // 一条**没有任何摆放引用**的新材料（`Op::RemoveClip` 的前置条件成立）。
+    let new_clip = yeban_mcp::domain::ids::deterministic_id("clip:e2e:remove-clip");
+    let new_clip_text = new_clip.to_canonical_string();
+
+    // 第一步：用本工具的 `create: true` 建材料（`Op::AddClip`）⇒ 读侧必须看得到它。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": new_clip_text, "create": true,
+               "clipName": "待取走",
+               "ops": [{"kind": "add",
+                        "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}]}),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    merge(&mut dispatcher, &auth, &created, "建材料");
+    let queried = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({ "limit": 100 }),
+    );
+    let entity_ids: Vec<&str> = queried["data"]["entities"]
+        .as_array()
+        .expect("实体索引")
+        .iter()
+        .filter_map(|record| record["id"].as_str())
+        .collect();
+    assert!(
+        entity_ids.contains(&new_clip_text.as_str()),
+        "读侧必须报出刚建的池条目身份: {queried}"
+    );
+    assert_eq!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .clip_pool
+            .len(),
+        pool_before + 1,
+        "夹具前提: 池子里真的多了一条"
+    );
+    let bytes_before_failures = project_bytes(&dispatcher);
+
+    // 第二步：五条响亮失败（工程字节必须一位不变）。
+    // (a) 与 `ops` 里的其它形态同给 ⇒ 不能既编辑一条片段又把它取走。
+    let mixed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": new_clip_text,
+               "ops": [{"kind": "removeClip"}, {"kind": "setTrackMute", "value": true}]}),
+    );
+    assert_domain_error(&mixed, "INVALID_PARAMETER_RANGE", "池级形态必须单独出现");
+    assert_eq!(
+        mixed["error"]["data"]["reason"], "removeClipTakesNoOtherOps",
+        "{mixed}"
+    );
+    // (b) 与 `placement` 同给 ⇒ 取走池里的材料与动时间轴上的摆放是两件事。
+    let with_placement = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": placed_track.to_canonical_string(), "clipId": placed_midi_text,
+               "ops": [{"kind": "removeClip"}],
+               "placement": {"kind": "remove",
+                             "placementId": placed_placement.to_canonical_string()}}),
+    );
+    assert_domain_error(
+        &with_placement,
+        "INVALID_PARAMETER_RANGE",
+        "池级形态与摆放互斥",
+    );
+    assert_eq!(
+        with_placement["error"]["data"]["reason"], "removeClipIsNotPlacement",
+        "{with_placement}"
+    );
+    // (c) 操作对象里的嵌套 `clipId`（"看起来对"的错法）⇒ 响亮拒绝, 不静默丢弃。
+    let nested = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": new_clip_text,
+               "ops": [{"kind": "removeClip", "clipId": placed_midi_text}]}),
+    );
+    assert_domain_error(&nested, "INVALID_PARAMETER_RANGE", "嵌套 clipId 必须被拒");
+    assert_eq!(
+        nested["error"]["data"]["reason"], "unknownRemoveClipField",
+        "{nested}"
+    );
+    // (d) 池里没有这个身份 ⇒ `CLIP_NOT_FOUND`（不静默成功）。
+    let ghost = yeban_mcp::domain::ids::deterministic_id("ghost-pool-entry");
+    let missing = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": ghost.to_canonical_string(),
+               "ops": [{"kind": "removeClip"}]}),
+    );
+    assert_domain_error(&missing, "CLIP_NOT_FOUND", "幽灵池条目必须响亮失败");
+    // (e) 还有**任何**摆放引用它 ⇒ 模型自己的 `ClipInUse` ⇒ `CONFLICT`。
+    let in_use = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": placed_midi_text,
+               "ops": [{"kind": "removeClip"}]}),
+    );
+    assert_domain_error(&in_use, "CONFLICT", "被摆放引用的池条目不得被取走");
+    assert!(
+        in_use["error"]["data"]["model"]
+            .as_str()
+            .is_some_and(|model| model.contains("ClipInUse")),
+        "必须是模型自己的 ClipInUse: {in_use}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before_failures,
+        "五条失败都不得改动工程字节"
+    );
+
+    // 第三步：真的取走那条没被引用的材料（提案一位都不改工程）。
+    let removal = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": new_clip_text, "includeOps": true,
+               "ops": [{"kind": "removeClip"}]}),
+    );
+    assert_eq!(removal["status"], "success", "{removal}");
+    assert_eq!(
+        removal["data"]["proposal"]["title"],
+        json!(format!("取走片段池条目: {new_clip_text}")),
+        "描述必须如实说这是池级取走 (不冒充音符 / 音轨级编辑): {removal}"
+    );
+    let op = &removal["data"]["proposal"]["ops"][0]["op"]["RemoveClip"];
+    assert_eq!(op["clip_id"], json!(new_clip_text), "{removal}");
+    assert_eq!(
+        op["previous_clip"]["name"],
+        json!("待取走"),
+        "撤销载荷必须是文档现值: {removal}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before_failures,
+        "提案不得改工程"
+    );
+
+    merge(&mut dispatcher, &auth, &removal, "取走池条目");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert!(
+        !project.clip_pool.contains_key(&new_clip),
+        "被取走的池条目必须真的不在文档里"
+    );
+    assert_eq!(
+        project.clip_pool.len(),
+        pool_before,
+        "池子必须回到建材料之前的条数 (没有顺手取走别的)"
+    );
+    let queried = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({ "limit": 100 }),
+    );
+    let entity_ids: Vec<&str> = queried["data"]["entities"]
+        .as_array()
+        .expect("实体索引")
+        .iter()
+        .filter_map(|record| record["id"].as_str())
+        .collect();
+    assert!(
+        !entity_ids.contains(&new_clip_text.as_str()),
+        "读侧不得再报出被取走的身份: {queried}"
+    );
+
+    // 第四步：撤销 ⇒ 逐字节回到取走之前（池条目随 `Op::RemoveClip` 一起可逆）。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before_failures,
+        "撤销必须逐字节复原 (池条目与它的名字一起回来)"
+    );
+    assert!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .clip_pool
+            .contains_key(&new_clip),
+        "撤销之后材料必须真的在池子里"
+    );
+}
+
+/// 池级形态**不要求片段是 MIDI**：`yeban_import_audio` 放进池子的**音频**条目
+/// 在它的摆放被取走之后同样取得走 —— 那是工具面上**唯一**的池回收通路
+/// （此前音频条目永远留在池子里）。负向的一半在同一判据里：摆放还在时模型报 `ClipInUse`。
+///
+/// 注入（都能让它变红）：把 `RemoveClip` 从 `is_note_level` 的对照里去掉 ⇒ 音频条目
+/// 在编译期撞上"必须是 MIDI 片段"的断言（`CLIP_NOT_FOUND`），第一步红；
+/// 把"先取走摆放"那一步跳过 ⇒ 第二步红（`CONFLICT`）。
+#[test]
+fn pool_entry_removal_also_covers_a_non_midi_entry_once_unplaced() {
+    let scratch = Scratch::new("remove-audio-clip-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let audio_clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_none())
+        .expect("样本里必须有非 MIDI 片段")
+        .id;
+    let audio_text = audio_clip.to_canonical_string();
+    let (owner, placement_id) = project
+        .tracks
+        .values()
+        .find_map(|track| {
+            track
+                .clips
+                .values()
+                .find(|placement| placement.clip_id == audio_clip)
+                .map(|placement| (track.id, placement.id))
+        })
+        .expect("样本里的音频片段必须被摆放引用");
+    let owner_text = owner.to_canonical_string();
+    let pool_before = project.clip_pool.len();
+    let bytes_before = project_bytes(&dispatcher);
+
+    // 摆放还在 ⇒ 池条目取不走（模型前置条件, 本层不复制一份）。
+    let in_use = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": owner_text, "clipId": audio_text,
+               "ops": [{"kind": "removeClip"}]}),
+    );
+    assert_domain_error(&in_use, "CONFLICT", "被摆放引用的音频池条目不得被取走");
+
+    // 先取走摆放（`Op::RemoveClipPlacement`）。
+    let unplaced = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": owner_text, "clipId": audio_text, "ops": [],
+               "placement": {"kind": "remove",
+                             "placementId": placement_id.to_canonical_string()}}),
+    );
+    assert_eq!(unplaced["status"], "success", "{unplaced}");
+    merge(&mut dispatcher, &auth, &unplaced, "取走摆放");
+    assert!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .track(&owner)
+            .expect("音轨")
+            .clips
+            .is_empty(),
+        "摆放必须真的不在了"
+    );
+    let bytes_unplaced = project_bytes(&dispatcher);
+    assert_ne!(bytes_unplaced, bytes_before, "取走摆放必须真的改了工程");
+
+    // 现在同一条池条目取得走（它一个音符都不读 ⇒ 不要求 MIDI）。
+    let removal = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": owner_text, "clipId": audio_text, "includeOps": true,
+               "ops": [{"kind": "removeClip"}]}),
+    );
+    assert_eq!(removal["status"], "success", "{removal}");
+    assert_eq!(
+        removal["data"]["proposal"]["ops"][0]["op"]["RemoveClip"]["previous_clip"]["name"],
+        json!("Kick"),
+        "撤销载荷必须是文档里那条音频条目: {removal}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_unplaced, "提案不得改工程");
+    merge(&mut dispatcher, &auth, &removal, "取走音频池条目");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert!(
+        !project.clip_pool.contains_key(&audio_clip),
+        "音频池条目必须真的不在文档里"
+    );
+    assert_eq!(project.clip_pool.len(), pool_before - 1);
+
+    // 两次撤销 ⇒ 逐字节回到最初（先回材料, 再回摆放）。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_unplaced,
+        "第一次撤销恢复材料"
+    );
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "第二次撤销连摆放一起逐字节复原"
+    );
+}

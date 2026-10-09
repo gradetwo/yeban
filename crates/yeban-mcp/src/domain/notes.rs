@@ -281,6 +281,51 @@
 //! （`{tick, value, curve?}`），本形态是"要取走的点的**寻址**"
 //! （`{lane, …, tick | pointId}`）。同名的理由是两者都指"那一个自动化点"，
 //! 且本对象**自带**泳道寻址（工具顶层只有一个 `trackId`，音轨之外的分量无处可放）。
+//!
+//! ## 片段池取走形态（`ops[].kind == "removeClip"`）
+//! —— 关闭"工具面取不走一个片段池条目"这一半
+//!
+//! 模型有 [`Op::RemoveClip`]（载荷 `clip_id` / `previous_clip` 自包含），而在这个形态
+//! 之前，这个变体在整个 `crates/yeban-mcp/src` 里**一次都没有被构造过**（实测：
+//! `git grep -c 'RemoveClip {' HEAD -- crates/yeban-mcp/src` 命中 **0** 个文件）。
+//!
+//! 缺口与材料创建（`create: true`）那一票**互为镜像**：本工具能用 `create: true`
+//! 把一条 MIDI 材料放进 `clip_pool`（[`Op::AddClip`]），`placement` 能把已有材料摆上
+//! 时间轴、也能把摆放取走（[`Op::RemoveClipPlacement`]），而池子里的条目**没有任何
+//! 工具**能取走 —— `yeban_query_project` 的实体索引早就在报每一条
+//! `{"kind":"clip","id":…}`，于是工具面"看得到、建得出、**取不走**"。`yeban_undo`
+//! 补不上它：撤销是操作日志的栈顶回退，不能只取走一条旧材料而保住之后的编辑。
+//!
+//! 为什么落在本工具的 `ops[]` 上（而不是新增工具、也不改别的扩展工具的实参）：
+//! 与 `setParam` / `setAutomationLane` / `removeAutomationPoint` 那三票**逐条同因** ——
+//! `NoteOp` 的 JSON 形状没有契约（架构 §7.2 只写 `ops: Vec<NoteOp>`，
+//! `schemas/mcp-tools.schema.json` 把 `ops` 声明为无约束数组），而扩展工具的实参集合被
+//! `definitions.ExtensionToolArguments.$defs` 逐字段钉住 ⇒ 往它们身上加实参会**必须**
+//! 同步 `schemas/**`（本线禁改）；`ADR-0001` **D46** 的扩张原则是"先扩既有工具的参数，
+//! 只有确实不合适才新增工具"。
+//!
+//! 形态：`{"kind":"removeClip"}` —— **空载荷**。目标片段就是工具**顶层**的 `clipId`
+//! （那正是本工具必填的"目标片段"），因此这个操作对象只认 `kind` 一个键：
+//! 多写任何键（尤其嵌套的 `clipId`）都是**响亮失败**，不静默丢弃。
+//!
+//! 五条刻意设成**响亮失败**或**如实上报**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有 `kind` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownRemoveClipField"`） |
+//! | 与 `ops` 里的其它任何形态同给 | `INVALID_PARAMETER_RANGE`（`reason = "removeClipTakesNoOtherOps"`）—— 不能在同一次调用里既编辑一条片段又把它取走 |
+//! | 与 `placement` 同给 | `INVALID_PARAMETER_RANGE`（`reason = "removeClipIsNotPlacement"`） |
+//! | 池子里没有这条片段 | `CLIP_NOT_FOUND` |
+//! | 还有**任何**摆放引用它 | `CONFLICT`（模型自己的 `ClipInUse`，带 `placement_count`）—— 先取走摆放，再取走材料 |
+//!
+//! `previous_clip` **从当前文档读**（不是调用方的声明），因此模型 `RemoveClip` 的
+//! 前置条件天然成立，撤销仍是模型自己的 [`Op::invert`]。
+//!
+//! 这个形态**不要求片段是 MIDI**：它一个音符都不读，因此 `yeban_import_audio`
+//! 放进池子的**音频**片段同样取得走（那是本形态唯一的池回收通路）。
+//! ⚠ 如实登记的边界：取走池条目**不回收 CAS 资产字节** —— 模型 `Op` 全集里没有任何
+//! 资产变体（见 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-2），
+//! 因此"孤儿字节"仍然要等模型侧一个资产声明/回收 `Op`。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -470,14 +515,15 @@ pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
 /// 多写一个键（尤其是嵌套的 `trackId`）是**响亮失败**，不静默丢弃。
 pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 
-/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 摆放形态在前，音轨级形态在后）。
+/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 摆放形态在前，音轨级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 9] = [
+pub const OP_KINDS: [&str; 10] = [
     "add",
     "delete",
     "move",
     "velocity",
+    REMOVE_CLIP_KIND,
     SET_PARAM_KIND,
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
@@ -756,6 +802,19 @@ pub const LANE_TARGET_FIELDS: [&str; 5] = [
 /// 点寻址**不在**这里：它在 `point` 对象里（顶层写 `tick` 是"看起来对"的错法，
 /// 因此被 [`reject_point_removal_op_fields`] 点名拒绝，而不是静默忽略）。
 pub const REMOVE_POINT_OP_FIELDS: [&str; 2] = ["kind", REMOVE_POINT_FIELD];
+
+/// `ops[].kind` 的**片段池取走**形态名（写 [`Op::RemoveClip`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveClip` 的小驼峰），与 [`SET_PARAM_KIND`] /
+/// [`REMOVE_AUTOMATION_POINT_KIND`] 同一条命名规则。
+pub const REMOVE_CLIP_KIND: &str = "removeClip";
+
+/// 池级形态的**操作对象**允许出现的全部键（只有判别键 —— 载荷是**空**的）。
+///
+/// 目标片段**不在**这里：它是工具顶层的 `clipId`（与 `create: true` 的目标同一条口径）。
+/// 多写一个键（尤其是嵌套的 `clipId`）是**响亮失败**，不静默丢弃 ——
+/// 与 [`TRACK_FLAG_FIELDS`] / [`REMOVE_POINT_OP_FIELDS`] 同一纪律。
+pub const REMOVE_CLIP_FIELDS: [&str; 1] = ["kind"];
 
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
@@ -1045,6 +1104,15 @@ pub enum NoteOp {
         /// 要取走的那一个点（文档上的 `tick` 或点的显式身份，恰好一个）。
         address: PointAddress,
     },
+    /// 取走**一个片段池条目**（[`Op::RemoveClip`]）。
+    ///
+    /// 这是本枚举里唯一的**池级**形态：它不读不写任何音符，也不碰任何摆放，目标就是
+    /// 工具**顶层**的 `clipId`（与 [`Self::Add`] 之外的形态不同，它连音轨都不需要）。
+    /// 载荷是**空**的：撤销载荷 `previous_clip` 由 [`compile`] 从**当前文档**读。
+    ///
+    /// 与 [`Self::Add`] 的镜像关系：`create: true` 走的是另一条入口（整批折成一条
+    /// `Op::AddClip`），而"把池里那条材料取走"此前**没有任何形态**能表达。
+    RemoveClip,
 }
 
 impl NoteOp {
@@ -1060,14 +1128,16 @@ impl NoteOp {
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
+            Self::RemoveClip => REMOVE_CLIP_KIND,
         }
     }
 
     /// 该形态是否**读/写音符**（即是否必须在一条 MIDI 片段上施加）。
     ///
     /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
-    /// 都是**音轨级**的：它们跟片段内容无关。这条区分让 [`compile`] 的"必须是 MIDI 片段"
-    /// 断言只在真的有音符操作时成立（旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
+    /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的：它们跟片段内容无关。
+    /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
+    /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
     pub const fn is_note_level(&self) -> bool {
         !matches!(
@@ -1076,6 +1146,7 @@ impl NoteOp {
                 | Self::SetTrackFlag { .. }
                 | Self::SetLane { .. }
                 | Self::RemovePoint { .. }
+                | Self::RemoveClip
         )
     }
 }
@@ -1100,6 +1171,7 @@ impl NoteOp {
 /// {"kind":"removeAutomationPoint","point":{"lane":"TrackVolume","tick":3840}}
 /// {"kind":"removeAutomationPoint","point":{"lane":"Macro","macroIndex":0,
 ///                                          "pointId":"<ULID>"}}
+/// {"kind":"removeClip"}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -1116,6 +1188,9 @@ impl NoteOp {
 /// `setAutomationLane` 的**载荷**是 `lane` 对象（见 [`parse_lane_edit`]），
 /// 三个属性键各自可选（缺省 = 保留文档现值）；`removeAutomationPoint` 的**载荷**是
 /// `point` 对象（见 [`parse_point_removal`]），`tick` 与 `pointId` 恰好给一个。
+///
+/// `removeClip` 是唯一的**池级**形态（见 [`NoteOp::RemoveClip`]）：载荷是**空**的，
+/// 目标片段是工具顶层的 `clipId`；对象里 [`REMOVE_CLIP_FIELDS`] 之外的键一律响亮拒绝。
 ///
 /// # Errors
 ///
@@ -1194,6 +1269,10 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         REMOVE_AUTOMATION_POINT_KIND => {
             let (spec, address) = parse_point_removal(object)?;
             Ok(NoteOp::RemovePoint { spec, address })
+        }
+        REMOVE_CLIP_KIND => {
+            reject_remove_clip_fields(object)?;
+            Ok(NoteOp::RemoveClip)
         }
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -1513,6 +1592,37 @@ fn reject_point_removal_op_fields(object: &Map<String, Value>) -> Result<(), Fau
                 "点寻址在 `{REMOVE_POINT_FIELD}` 对象里 (`{REMOVE_POINT_TICK_FIELD}` 或 \
                  `{REMOVE_POINT_ID_FIELD}`); 目标音轨是工具顶层的 `trackId`"
             ),
+        }),
+    ))
+}
+
+/// 拒绝 `removeClip` 操作对象里 [`REMOVE_CLIP_FIELDS`] 之外的键。
+///
+/// 与 [`reject_point_removal_op_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：
+/// 本形态的载荷是**空**的，目标片段是工具顶层的 `clipId`；嵌套写一个 `clipId`
+/// （或任何别的键）若被静默忽略，调用方会以为取走的是另一个片段。
+fn reject_remove_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_CLIP_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_CLIP_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_CLIP_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRemoveClipField",
+            "unsupportedFields": unknown,
+            "supportedRemoveClipFields": REMOVE_CLIP_FIELDS,
+            "hint": "要取走的片段池条目是工具顶层的 `clipId` (这个形态自带空载荷)",
         }),
     ))
 }
@@ -2110,6 +2220,17 @@ pub fn compile(
                     previous_point,
                 }
             }
+            NoteOp::RemoveClip => {
+                // 撤销载荷来自**当前文档**：`entry` 就是池子里那一条（上面已经查过，
+                // 因此"池里没有这条片段"在这一行之前就已经是 `CLIP_NOT_FOUND`）。
+                // 模型 `RemoveClip` 的 `validate` 要求 `previous_clip` **逐字段**等于
+                // 文档现值，并且**没有任何摆放引用它**（否则 `ClipInUse`）—— 那两条
+                // 都不在本层复制，模型是唯一事实源。
+                Op::RemoveClip {
+                    clip_id: *clip_id,
+                    previous_clip: entry.clone(),
+                }
+            }
         });
     }
     Ok(compiled)
@@ -2204,6 +2325,48 @@ pub fn reject_duplicate_lane_targets(track_id: &EntityId, ops: &[NoteOp]) -> Res
     Ok(())
 }
 
+/// 拒绝**池级形态**（`removeClip`）与另外三路混用。
+///
+/// 池级取走把顶层 `clipId` 那条**片段池条目**取走：它既不读不写音符，也不碰摆放，
+/// 因此它必须**单独**出现在 `ops` 里，也不能和 `placement`（动时间轴上的摆放）
+/// 同给。两条规则都在**建提案之前**响亮拒绝 —— 让一个自相矛盾的批走到模型层，
+/// 撞到的会是一个说不清是哪条 op 的错。
+///
+/// 与 [`reject_duplicate_lane_targets`] 同一条纪律：只在真的出现 `removeClip` 时才做事
+/// （其余形态逐字节等于接线之前的行为）。
+///
+/// # Errors
+///
+/// - `removeClip` 与别的 `kind` 同给 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "removeClipTakesNoOtherOps"`，`data.opKinds` = 本次真给的 `kind` 列表）；
+/// - `removeClip` 与 `placement` 同给 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "removeClipIsNotPlacement"`）。
+pub fn reject_remove_clip_conflicts(ops: &[NoteOp], placement_present: bool) -> Result<(), Fault> {
+    let removing_clip = matches!(ops, [NoteOp::RemoveClip]);
+    if ops.iter().any(|op| matches!(op, NoteOp::RemoveClip)) && !removing_clip {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`removeClip` 只能**单独**出现: 同一次调用不能既编辑一条片段又把它取走",
+            serde_json::json!({
+                "reason": "removeClipTakesNoOtherOps",
+                "opKinds": ops.iter().map(NoteOp::kind_name).collect::<Vec<_>>(),
+                "hint": "先做音符 / 音轨级编辑, 再单独一次调用取走池里那条材料",
+            }),
+        ));
+    }
+    if removing_clip && placement_present {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`removeClip` 与 `placement` 不能同给: 前者取走池里的材料, 后者动时间轴上的摆放",
+            serde_json::json!({
+                "reason": "removeClipIsNotPlacement",
+                "hint": "先 `placement.kind: \"remove\"` 取走摆放, 再单独一次调用取走池里的材料",
+            }),
+        ));
+    }
+    Ok(())
+}
+
 /// **材料创建**形态的编译（`arguments.create: true`）：把一组 `add` 折成**一条**
 /// [`Op::AddClip`]。
 ///
@@ -2266,8 +2429,9 @@ pub fn compile_create(
                     format!(
                         "`create: true` 时 `ops` 只允许 `add` (新片段里还没有音符可以被 \
                          `delete`/`move`/`velocity` 指向; 音轨级的 \
-                         `setParam`/`setTrackMute`/`setTrackSolo` 与建材料无关), \
-                         实际收到 `{}`",
+                         `setParam`/`setTrackMute`/`setTrackSolo`/`setAutomationLane`/\
+                         `removeAutomationPoint` 与建材料无关; 池级的 `removeClip` 更是 \
+                         与「建」相反的一步), 实际收到 `{}`",
                         other.kind_name()
                     ),
                     serde_json::json!({
@@ -3439,14 +3603,15 @@ mod tests {
             compile(&project, &track_id, &audio_clip.id, &ops).expect("纯开关写入不要求 MIDI 材料");
         assert_eq!(compiled.len(), 2);
 
-        // `kind` 的全集必须真的登记这四个音轨级名字
+        // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字
         // （错误信息的 `supportedKinds` 与判据共用同一份真相）。
-        assert_eq!(OP_KINDS.len(), 9);
+        assert_eq!(OP_KINDS.len(), 10);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
         assert!(OP_KINDS.contains(&SET_AUTOMATION_LANE_KIND));
         assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_CLIP_KIND));
         assert_eq!(LANE_WRITE_MODES.len(), 4);
     }
 
@@ -4092,6 +4257,232 @@ mod tests {
                 .points
                 .contains_key(&write.point_id),
             "取走必须真的把写侧那个点从文档里拿掉"
+        );
+    }
+
+    /// 池级形态的**字段名与支持集合**被钉住（不多报一个键，也不少报一个）。
+    ///
+    /// 注入（实测红）：把 [`REMOVE_CLIP_FIELDS`] 改成两个键 ⇒ 本判据红；
+    /// 把 [`REMOVE_CLIP_KIND`] 改成模型里没有的名字 ⇒ 本判据红。
+    #[test]
+    fn remove_clip_field_names_are_pinned() {
+        assert_eq!(REMOVE_CLIP_KIND, "removeClip");
+        assert_eq!(REMOVE_CLIP_FIELDS, ["kind"]);
+        assert!(OP_KINDS.contains(&REMOVE_CLIP_KIND));
+    }
+
+    /// **字面**判据：池里那条**没被摆放**的片段取得走 ⇒ 文档里真的少了那条条目 ⇒
+    /// 逆操作逐字节回原；并且它的撤销载荷是**文档现值**（不是调用方声明）。
+    ///
+    /// 夹具前提：`unplaced_midi_clip` 把每条音轨的摆放都清掉，因此池里的 MIDI 材料
+    /// 一条都没上时间轴 —— 这正是 [`Op::RemoveClip`] 的前置条件（没有任何摆放引用它）。
+    ///
+    /// 注入（实测红）：把 `previous_clip` 换成常量 / 另一条条目 ⇒ 模型前置条件报
+    /// `OpStateMismatch`；把 `clip_id` 换成派生身份 ⇒ `ClipNotFound`；把 `is_note_level`
+    /// 漏掉 `RemoveClip` 且在音频条目上编译 ⇒ `CLIP_NOT_FOUND`（见下一条判据）。
+    #[test]
+    fn a_pool_entry_is_removed_and_the_inverse_restores_it_byte_for_byte() {
+        let (mut project, track_id, clip_id) = unplaced_midi_clip();
+        let entry_before = project
+            .clip_pool
+            .get(&clip_id)
+            .expect("夹具前提: 材料在池子里")
+            .clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        let ops =
+            parse_ops(&serde_json::json!([{"kind": "removeClip"}])).expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), REMOVE_CLIP_KIND);
+        assert!(!ops[0].is_note_level(), "池级形态不读不写音符");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::RemoveClip {
+                clip_id: written,
+                previous_clip,
+            } => {
+                assert_eq!(*written, clip_id, "目标必须是顶层 `clipId`");
+                assert_eq!(
+                    previous_clip, &entry_before,
+                    "撤销载荷必须是文档现值 (不是调用方声明)"
+                );
+            }
+            other => panic!("应当是 RemoveClip: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("施加");
+        assert!(
+            !project.clip_pool.contains_key(&clip_id),
+            "被取走的池条目必须真的不在文档里"
+        );
+        assert_eq!(
+            project.clip_pool.len(),
+            filled_project().clip_pool.len() - 1,
+            "池子必须有且只有一条被取走"
+        );
+
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到原状"
+        );
+    }
+
+    /// 池级形态**不要求片段是 MIDI**：它一个音符都不读，因此音频池条目也取得走。
+    ///
+    /// 阴性对照在同一判据里：那条音频片段**仍然被摆放引用** ⇒ 模型报 `ClipInUse`
+    /// （先取走摆放，再取走材料）。这条同时证明本形态把模型的前置条件**原样**留给模型，
+    /// 本层不自己复制一份。
+    ///
+    /// 注入（实测红）：把 `RemoveClip` 从 `is_note_level` 的对照里去掉 ⇒ 音频条目
+    /// 编译时撞上"必须是 MIDI 片段"这条断言（`CLIP_NOT_FOUND`），前一段红。
+    #[test]
+    fn a_pool_entry_is_removed_without_midi_and_in_use_is_a_model_conflict() {
+        let mut project = filled_project();
+        let (track_id, _midi_clip) = lead_clip(&project);
+        let audio_clip_id = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let ops = parse_ops(&serde_json::json!([{"kind": "removeClip"}])).expect("解析");
+
+        // 阴性对照：音频片段还在 `bass` 的摆放里 ⇒ 编译本身成功，但**施加**被模型拒。
+        let compiled = compile(&project, &track_id, &audio_clip_id, &ops)
+            .expect("音频条目同样可编译 (本形态不要求 MIDI)");
+        assert_eq!(compiled.len(), 1);
+        let error = compiled[0]
+            .apply(&mut project)
+            .expect_err("还有摆放引用它 ⇒ 模型必须拒绝");
+        assert!(
+            matches!(error, yeban_model::ModelError::ClipInUse { .. }),
+            "必须是模型自己的 ClipInUse, 实际是 {error:?}"
+        );
+        assert!(
+            project.clip_pool.contains_key(&audio_clip_id),
+            "被拒绝的批次不得改动文档"
+        );
+
+        // 取走引用它的那条摆放之后，同一条 op 就成立了。
+        let placements: Vec<(EntityId, EntityId)> = project
+            .tracks
+            .values()
+            .flat_map(|track| {
+                track
+                    .clips
+                    .values()
+                    .filter(|placement| placement.clip_id == audio_clip_id)
+                    .map(|placement| (track.id, placement.id))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(!placements.is_empty(), "夹具前提: 音频片段确实被摆放引用");
+        for (owner, placement_id) in placements {
+            let placement = *project
+                .track(&owner)
+                .expect("音轨")
+                .clips
+                .get(&placement_id)
+                .expect("摆放");
+            Op::RemoveClipPlacement {
+                track_id: owner,
+                placement_id,
+                previous_placement: placement,
+            }
+            .apply(&mut project)
+            .expect("取走摆放");
+        }
+        compiled[0]
+            .apply(&mut project)
+            .expect("没有摆放引用它之后, 池条目取得走");
+        assert!(!project.clip_pool.contains_key(&audio_clip_id));
+    }
+
+    /// 池级形态的形状错误**响亮失败**（绝不静默丢弃）。
+    ///
+    /// 注入（实测红）：去掉 [`reject_remove_clip_fields`] ⇒ 嵌套 `clipId` 那条不再红
+    /// （调用方会以为取走的是另一个片段）。
+    #[test]
+    fn remove_clip_shapes_fail_loudly() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+
+        for broken in [
+            serde_json::json!([{"kind": "removeClip", "clipId": clip_id.to_canonical_string()}]),
+            serde_json::json!([{"kind": "removeClip", "trackId": track_id.to_canonical_string()}]),
+            serde_json::json!([{"kind": "removeClip", "remove": true}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err("必须被拒");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownRemoveClipField",
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedRemoveClipFields"],
+                serde_json::json!(["kind"]),
+                "{broken}"
+            );
+        }
+
+        // 恰好一个键的规范形状必须被接受（阴性对照：上面三条红的不是"全都拒"）。
+        assert_eq!(
+            parse_ops(&serde_json::json!([{"kind": "removeClip"}])).expect("规范形状"),
+            vec![NoteOp::RemoveClip]
+        );
+    }
+
+    /// 池级形态的两条**排他性规则**：与别的 `kind` 同给 / 与 `placement` 同给都响亮失败，
+    /// 而"单独出现且没有摆放"必须放行（阴性对照，防"全都拒"）。
+    ///
+    /// 注入（实测红）：删掉 mixed 那条分支 ⇒ 第一条红；删掉 `placement_present` 那条分支
+    /// ⇒ 第二条红；把"没有 `removeClip` 时什么都不做"去掉 ⇒ 末条红。
+    #[test]
+    fn remove_clip_conflicts_fail_loudly() {
+        let single = parse_ops(&serde_json::json!([{"kind": "removeClip"}])).expect("解析");
+        assert!(
+            reject_remove_clip_conflicts(&single, false).is_ok(),
+            "阴性对照: 单独出现且没有摆放 ⇒ 放行"
+        );
+
+        let mixed = parse_ops(&serde_json::json!([
+            {"kind": "removeClip"},
+            {"kind": "velocity", "noteId": "01J8Z0000000000000000000AB", "velocity": 40}
+        ]))
+        .expect("解析");
+        let fault = reject_remove_clip_conflicts(&mixed, false).expect_err("必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "removeClipTakesNoOtherOps"
+        );
+        assert_eq!(
+            lane_fault_data(&fault)["opKinds"],
+            serde_json::json!(["removeClip", "velocity"]),
+            "报出的必须是本次真给的 kind 列表"
+        );
+
+        let fault = reject_remove_clip_conflicts(&single, true).expect_err("必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "removeClipIsNotPlacement"
+        );
+
+        // 没有 `removeClip` 的调用逐字节等于旧行为（摆放形态也照旧）。
+        let note_ops = parse_ops(&serde_json::json!([
+            {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}
+        ]))
+        .expect("解析");
+        assert!(
+            reject_remove_clip_conflicts(&note_ops, true).is_ok(),
+            "别的形态不受这两条规则影响"
         );
     }
 
