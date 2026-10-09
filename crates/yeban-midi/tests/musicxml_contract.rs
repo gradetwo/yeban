@@ -40,8 +40,10 @@
 //!    (b) 在本票新增的判据**之后**，同一次注入让本 crate **唯一**变红的就是
 //!        `value_rejections_are_explicit_and_their_messages_are_pinned`
 //!        （`musicxml_contract` 读数 `25 passed; 1 failed`，红行是本判据的第一条断言）。
-//!    另有一轮一条一测的注入：四类检查与四条 `Display` 文本各改坏一次（共 **11** 次），
-//!    每次都只有本判据变红（同一次运行里 `musicxml_contract` 的其余 **25** 条与 **65** 条
+//!    另有一轮**一条一测**的注入，共 **11** 次 —— 四类检查占 **7** 处
+//!    （`InvalidNumber` 的 4 个叶子各一处，`UnsupportedAlter` / `UnsupportedBeatType` /
+//!    `InvalidTempo` 各一处），四条 `Display` 文本各一处。每次都只有本判据变红
+//!    （同一次运行里 `musicxml_contract` 的其余 **25** 条与 **65** 条单元判据全绿；
 //!    单元判据全绿；`cargo test` 在出现失败后**不再**执行后面两个 SMF 二进制）。
 //!    ⇒ 本票之后，`MusicXmlError` 的 **15/15** 个变体各有至少一条判据。
 //! ⑩ **容器层的三处读数**（本票新增，`mxl_rootfile_attribute_*` / `mxl_zip64_markers_*` /
@@ -391,6 +393,8 @@ fn measure_document(body: &str) -> Vec<u8> {
 ///
 /// 每条 `assert_eq!` 数的是**一个 `Err` 值**（判别式 + 载荷）；四条 `Display` 断言各数
 /// **一个字符串**。全部输入与期望值都在本函数里 ⇒ 没有第二个来源。
+/// 本条判据一共 **13** 条 `assert_eq!`：`InvalidNumber` **4** 条、`UnsupportedAlter`
+/// **1** 条、`UnsupportedBeatType` **2** 条、`InvalidTempo` **2** 条、`Display` 文本 **4** 条。
 #[test]
 fn value_rejections_are_explicit_and_their_messages_are_pinned() {
     // ① `InvalidNumber`：叶子元素的文本不是期望的数字。四个叶子各走一条不同的解析器
