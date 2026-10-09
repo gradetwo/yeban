@@ -906,6 +906,9 @@ pub struct DrumMachine<const SLOTS: usize = DRUM_SLOTS> {
     /// 窃取淡出帧数（默认 3 ms ⇒ @48 kHz = 144 帧）。判据可覆盖成 0（硬窃取）。
     steal_fade_frames: u32,
     /// 白噪声播种计数（每触发一次 +1；与音色号混合成种子）。
+    ///
+    /// 它是**音频状态**而不是诊断计数器：它决定每一击听到的是哪一段噪声，
+    /// 因此 [`DrumMachine::reset`] 把它归零（见那里的契约）。
     trigger_seed: u32,
     triggers: u64,
     voice_steals: u64,
@@ -1034,9 +1037,25 @@ impl<const SLOTS: usize> DrumMachine<SLOTS> {
         }
     }
 
-    /// 全部槽位回到空闲（不改参数、不改计数器、不改采样率）。
+    /// 全部槽位回到空闲，并把**白噪声播种计数**归零
+    /// （不改参数、不改诊断计数器、不改采样率）。
+    ///
+    /// 契约（由判据
+    /// `drums::tests::reset_reproduces_a_freshly_built_machine_bit_for_bit` 钉住）：
+    /// `reset()` 之后再处理，与一台**用同样参数新建**的实例在同一串触发、同一段
+    /// 位置上**逐位相同**。
+    ///
+    /// ⚠ 播种计数（`trigger_seed`）是**音频状态**，不是诊断计数器：每一击的白噪声
+    /// 种子由"音色号 × 播种计数"推出，它决定这一击听到的是**哪一段**噪声。只清槽位池
+    /// 的话，一次定位（引擎 `seek` 的接入点就是本方法）之后重放同一串鼓击会得到
+    /// **与从头渲染不同**的噪声 ⇒ 同一份工程两次渲染不逐位相同 [ARCH-DET-001]。
+    /// 四个诊断计数器（`triggers` / `voice_steals` / `hat_chokes` /
+    /// `sounding_slot_frames`）**照旧只增不减** —— 它们不改变音频输出。
+    ///
+    /// **逐样本零分配**（一个标量写），可以在实时线程上调用 [ARCH-RT-001]。
     pub fn reset(&mut self) {
         self.slots = [Slot::IDLE; SLOTS];
+        self.trigger_seed = 0;
     }
 
     /// 本器件引入的处理延迟：**恒为 `0` 帧** [ARCH-PDC-001]。
@@ -1586,6 +1605,71 @@ mod tests {
             .filter(|slot| slot.3 > 0)
             .count();
         assert_eq!(fading_before, fading_after, "set_params 取消了淡出");
+    }
+
+    /// 量什么：`reset()` **之后**再处理一段的输出，与一台"用同样参数新建"的实例在
+    /// 同一串触发、同一段位置上是否**逐位相同**（单位：样本值的位模式，逐位比较）。
+    ///
+    /// 为什么噪声播种计数是**音频状态**：每一击的白噪声种子由"音色号 × 播种计数"
+    /// 推出（[`DrumMachine::trigger`] 的 `trigger_seed`），它决定这一击听到的是
+    /// **哪一段**噪声。它没有 getter、也不是诊断读数 —— 诊断计数器
+    /// （`triggers` / `voice_steals` / `hat_chokes` / `sounding_slot_frames`）
+    /// 不改变音频，本字段改变音频。
+    ///
+    /// 缺口（本判据在修复前**实测变红**）：`reset()` 只清槽位池、不清播种计数
+    /// ⇒ 引擎在定位（`seek` 的接入点就是 `reset`）之后重放同一串鼓击，得到的是
+    /// **与从头渲染不同**的噪声 ⇒ 同一份工程两次渲染不逐位相同 [ARCH-DET-001]。
+    ///
+    /// 怎么变红：把 `reset` 改回"只清槽位池"（即撤掉播种计数的归零）。
+    #[test]
+    fn reset_reproduces_a_freshly_built_machine_bit_for_bit() {
+        const FRAMES: usize = 512;
+        // 覆盖四条音色：底鼓（音高包络、无噪声）、军鼓（噪声）、闭镲/开镲（噪声）、
+        // 拍手（多 onset）。开镲与闭镲相邻 ⇒ choke 路径也在窗口里。
+        const HITS: [(DrumVoice, u64); 6] = [
+            (DrumVoice::Kick, 0),
+            (DrumVoice::Snare, 300),
+            (DrumVoice::ClosedHat, 500),
+            (DrumVoice::OpenHat, 700),
+            (DrumVoice::Clap, 900),
+            (DrumVoice::Kick, 1_100),
+        ];
+
+        /// 逐击触发并渲染，把全部块拼起来（渲染位置与触发位置一致）。
+        fn play(machine: &mut DrumMachine<DRUM_SLOTS>, hits: [(DrumVoice, u64); 6]) -> Vec<f32> {
+            let mut out = Vec::new();
+            for (voice, start) in hits {
+                machine.trigger(DrumHit::new(voice, start, 0.9));
+                let mut block = vec![0.0f32; FRAMES];
+                machine.render(start, &mut block);
+                out.extend_from_slice(&block);
+            }
+            out
+        }
+
+        let mut fresh = DrumMachine::<DRUM_SLOTS>::new(48_000);
+        fresh.set_params(DrumKitParams::DEFAULT);
+        let expected = play(&mut fresh, HITS);
+
+        // 用过一段历史（播种计数因此前进），再复位。
+        let mut used = DrumMachine::<DRUM_SLOTS>::new(48_000);
+        used.set_params(DrumKitParams::DEFAULT);
+        let _ = play(&mut used, HITS);
+        used.reset();
+        let actual = play(&mut used, HITS);
+
+        assert_eq!(actual.len(), expected.len(), "夹具长度");
+        assert!(
+            actual.iter().any(|sample| *sample != 0.0),
+            "夹具必须真的出声（否则逐位相等是空转）"
+        );
+        for (index, (got, want)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "复位后的输出与全新实例在第 {index} 个样本上不同：{got} vs {want}"
+            );
+        }
     }
 
     /// 量什么：`DrumVoice::from_u8` 与 `as_u8` 是否互为逆（越界返回 `None`）。
