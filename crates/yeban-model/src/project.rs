@@ -2434,6 +2434,179 @@ mod tests {
         );
     }
 
+    /// 类别 2/5 的系统性判据：**每一个**带内嵌身份字段的集合都必须核对"键 == 内嵌身份"。
+    ///
+    /// 实测：`collection_key_must_match_embedded_id` 只覆盖 `tracks` 一格；把
+    /// `clip_pool` / `sections` / `scenes` / `assets` / 摆放 / 自动化点 / 路由边 的核对
+    /// **逐个**关掉时，全仓判据保持全绿 —— 于是一份"键与内嵌身份不一致"的文件会被放行，
+    /// 而按 BTreeMap 遍历的消费者与按内嵌 id 寻址的消费者会把它读成两件事。
+    #[test]
+    fn every_collection_key_must_match_its_embedded_identity() {
+        let other = fixture_id(2);
+
+        // ① `clip_pool`
+        let mut project = filled_project();
+        let clip = project
+            .clip_pool
+            .values()
+            .next()
+            .expect("至少一个片段")
+            .clone();
+        let embedded = clip.id;
+        project.clip_pool.insert(other, clip);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::EntityKeyMismatch {
+                key: other,
+                embedded,
+            })
+        );
+
+        // ② `sections`
+        let mut project = filled_project();
+        let section = project
+            .sections
+            .values()
+            .next()
+            .expect("至少一个段落")
+            .clone();
+        let embedded = section.id;
+        project.sections.insert(other, section);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::EntityKeyMismatch {
+                key: other,
+                embedded,
+            })
+        );
+
+        // ③ `scenes`
+        let mut project = filled_project();
+        let scene = project
+            .scenes
+            .values()
+            .next()
+            .expect("至少一个场景")
+            .clone();
+        let embedded = scene.id;
+        project.scenes.insert(other, scene);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::EntityKeyMismatch {
+                key: other,
+                embedded,
+            })
+        );
+
+        // ④ `assets`（键是 CAS 摘要，错误变体是 `AssetKeyMismatch`）
+        let mut project = filled_project();
+        let metadata = project
+            .assets
+            .values()
+            .next()
+            .expect("至少一条资产")
+            .clone();
+        let embedded = metadata.hash.clone();
+        let foreign = AssetHash::of_bytes(b"a-foreign-asset-key");
+        assert_ne!(foreign, embedded, "探针键必须与内嵌摘要不同");
+        project.assets.insert(foreign.clone(), metadata);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::AssetKeyMismatch {
+                key: foreign,
+                embedded,
+            })
+        );
+
+        // ⑤ 音轨内的**摆放**
+        let mut project = filled_project();
+        let track_id = project
+            .tracks
+            .iter()
+            .find(|(_, track)| !track.clips.is_empty())
+            .map(|(id, _)| *id)
+            .expect("至少一条轨带摆放");
+        let placement = project.tracks[&track_id]
+            .clips
+            .values()
+            .next()
+            .expect("摆放")
+            .to_owned();
+        let embedded = placement.id;
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨道")
+            .clips
+            .insert(other, placement);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::EntityKeyMismatch {
+                key: other,
+                embedded,
+            })
+        );
+
+        // ⑥ 音轨内的**自动化点**
+        let mut project = filled_project();
+        let (track_id, target) = project
+            .tracks
+            .iter()
+            .find_map(|(track_id, track)| {
+                track
+                    .automation_lanes
+                    .iter()
+                    .find(|(_, lane)| !lane.points.is_empty())
+                    .map(|(target, _)| (*track_id, *target))
+            })
+            .expect("至少一条泳道带采样点");
+        let point = project.tracks[&track_id]
+            .automation_lanes
+            .get(&target)
+            .expect("泳道")
+            .points
+            .values()
+            .next()
+            .expect("采样点")
+            .to_owned();
+        let embedded = point.id;
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨道")
+            .automation_lanes
+            .get_mut(&target)
+            .expect("泳道")
+            .points
+            .insert(other, point);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::EntityKeyMismatch {
+                key: other,
+                embedded,
+            })
+        );
+
+        // ⑦ 路由图的**边**
+        let mut project = filled_project();
+        let edge = project
+            .routing_graph
+            .edges
+            .values()
+            .next()
+            .expect("至少一条边")
+            .to_owned();
+        let embedded = edge.id;
+        project.routing_graph.edges.insert(other, edge);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::EntityKeyMismatch {
+                key: other,
+                embedded,
+            })
+        );
+    }
+
     #[test]
     fn dangling_folder_and_clip_references_are_rejected() {
         let track_id = fixture_id(1);
@@ -3204,6 +3377,25 @@ mod tests {
             .any(|token| token == "f32" || token == "f64")
     }
 
+    /// `Some(字段声明前缀)`：该行是一个**未完成**的字段声明 —— 类型写在下一行。
+    ///
+    /// 返回值保留可见性（`pub gain_db:`），因为它要与下一行拼接后交给同一个识别器。
+    /// 实测：`pub gain_db:`（换行）`f32,` 这种写法对逐行识别器完全不可见，
+    /// 于是一个数值字段可以用"类型换行"绕过"新数值字段必被登记"这条常驻判据。
+    fn incomplete_field_prefix(line: &str) -> Option<String> {
+        let line = line.split("//").next().unwrap_or(line).trim();
+        let code = line
+            .strip_prefix("#[")
+            .and_then(|rest| rest.find(']').map(|close| &rest[close + 1..]))
+            .map_or(line, str::trim_start);
+        let name = strip_visibility(code).trim().strip_suffix(':')?.trim();
+        (!name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+        .then(|| code.trim().to_owned())
+    }
+
     /// 数值字段名；`aliases` 里的类型别名也算数值（`type X = f32;` 之后的 `X`）。
     ///
     /// 实测（收紧前）：`type ProbeAlias = f32;` 加 `pub gain: ProbeAlias` 对清单判据
@@ -3349,6 +3541,8 @@ mod tests {
         for (relative, text) in &sources {
             let mut owner: Option<(bool, String, usize)> = None;
             let mut variant = String::new();
+            // "类型写在下一行"的未完成字段名前缀（见 `incomplete_field_prefix`）。
+            let mut pending: Option<String> = None;
             for line in text.lines() {
                 let trimmed = line.trim_start();
                 let indent = line.len() - trimmed.len();
@@ -3357,6 +3551,7 @@ mod tests {
                     if trimmed.starts_with('}') && indent <= decl_indent {
                         owner = None;
                         variant.clear();
+                        pending = None;
                         continue;
                     }
                     if is_enum
@@ -3373,7 +3568,22 @@ mod tests {
                             variant.clone_from(&candidate);
                         }
                     }
-                    for field in numeric_fields_on_line_with(trimmed, &aliases) {
+                    // 字段名前缀与它的类型可能分处两行 ⇒ 拼接后再抽取。
+                    let joined;
+                    let candidate = if let Some(prefix) = pending.take() {
+                        joined = format!("{prefix} {trimmed}");
+                        joined.as_str()
+                    } else {
+                        trimmed
+                    };
+                    let fields = numeric_fields_on_line_with(candidate, &aliases);
+                    if fields.is_empty()
+                        && let Some(prefix) = incomplete_field_prefix(trimmed)
+                    {
+                        pending = Some(prefix);
+                        continue;
+                    }
+                    for field in fields {
                         let member = if is_enum && !variant.is_empty() {
                             format!("{variant}.{field}")
                         } else {
@@ -3402,6 +3612,7 @@ mod tests {
                     }
                     owner = Some((is_enum, name, indent));
                     variant = variant_here;
+                    pending = None;
                 }
             }
         }
@@ -4209,6 +4420,43 @@ mod tests {
             numeric_fields_on_line_with("    pub ids: Vec<EntityId>,", &numeric_aliases).is_empty()
         );
         assert!(numeric_fields_on_line_with("    pub n: u64,", &numeric_aliases).is_empty());
+    }
+
+    /// 识别器的第三条盲区：**字段名前缀与它的类型分处两行**。
+    ///
+    /// 实测：`pub gain_db:`（换行）`f32,` 这种写法对逐行识别器完全不可见 ⇒
+    /// 一个数值字段可以用"类型换行"绕过 `every_numeric_field_in_the_model_is_inventoried`。
+    /// `scan_numeric_fields` 用 `incomplete_field_prefix` 把两行拼起来再抽取；
+    /// 这里按合成输入逐个钉住该前缀识别器（正/负对照）。
+    #[test]
+    fn the_numeric_field_scanner_sees_a_field_type_on_the_next_line() {
+        assert_eq!(
+            incomplete_field_prefix("    pub gain_db:"),
+            Some("pub gain_db:".to_owned())
+        );
+        assert_eq!(
+            incomplete_field_prefix("    pub(crate) gain_db:"),
+            Some("pub(crate) gain_db:".to_owned())
+        );
+        // 拼接之后的整行必须被识别器看得见（这就是 `scan_numeric_fields` 做的事）。
+        assert_eq!(
+            numeric_fields_on_line(&format!(
+                "{} f32,",
+                incomplete_field_prefix("    pub gain_db:").expect("字段名前缀")
+            )),
+            vec!["gain_db".to_owned()]
+        );
+        assert_eq!(
+            numeric_fields_on_line(&format!(
+                "{} Option<f64>,",
+                incomplete_field_prefix("    gain_db:").expect("字段名前缀")
+            )),
+            vec!["gain_db".to_owned()]
+        );
+        // 负对照：已经带类型的字段行、文档行、属性行都不是"未完成前缀"。
+        assert!(incomplete_field_prefix("    pub gain_db: f32,").is_none());
+        assert!(incomplete_field_prefix("    /// 文档").is_none());
+        assert!(incomplete_field_prefix("    #[serde(default)]").is_none());
     }
 
     /// 类别 1／4 的**机械清单**：源码里每一个 `f32`／`f64` 字段都必须在冻结表里。
