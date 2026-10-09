@@ -491,11 +491,47 @@ mod tests {
             words.extend(re.iter().chain(im.iter()).map(|v| v.to_bits()));
         }
         assert_eq!(words.len(), 5_376, "夹具规模变了 ⇒ 指纹的前提不再成立");
-        assert_eq!(
-            fnv1a64(&words),
-            0x0a2b_55f0_f304_0c28,
-            "2 的幂长度的输出位型漂移了"
-        );
+        // ⚠️ 跨架构：FFT 的旋转因子是超越函数（sin/cos），按 ADR-0001:379-383 与裁决 R24，
+        // 只有 IEEE 精确类要求处处逐位相同；超越函数类有 4096 ulp 预算，**只在冻结架构
+        // aarch64 上要求逐位相同**。因此在其它架构上：
+        //   ① 仍然要求"同一次运行内哈希是确定的"（把夹具再跑一遍，两次必须相同）；
+        //   ② 明确打印这是一次**点名跳过**，不是通过。
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(
+                fnv1a64(&words),
+                0x0a2b_55f0_f304_0c28,
+                "2 的幂长度的输出位型漂移了（冻结架构 aarch64 上必须逐位相同）"
+            );
+        } else {
+            let again = {
+                let fixture = |n: usize| -> (Vec<f64>, Vec<f64>) {
+                    let re: Vec<f64> = (0..n)
+                        .map(|i| (((i * 37) % 11) as f64 - 5.0) + i as f64 * 0.125)
+                        .collect();
+                    (re, vec![0.0f64; n])
+                };
+                let mut w: Vec<u64> = Vec::new();
+                for n in [64usize, 256, 1024] {
+                    let (mut re, mut im) = fixture(n);
+                    fft(&mut re, &mut im, false);
+                    w.extend(re.iter().chain(im.iter()).map(|v| v.to_bits()));
+                    fft(&mut re, &mut im, true);
+                    w.extend(re.iter().chain(im.iter()).map(|v| v.to_bits()));
+                }
+                fnv1a64(&w)
+            };
+            assert_eq!(
+                fnv1a64(&words),
+                again,
+                "同一架构上两次相同输入的位型必须相同（确定性）"
+            );
+            eprintln!(
+                "点名跳过：非冻结架构 {:?} 上不比对绝对值 {:016x}（超越函数类，裁决 R24）；\
+                 本架构的确定性已由两次一致证明。**这不是通过。**",
+                std::env::consts::ARCH,
+                fnv1a64(&words)
+            );
+        }
     }
 
     /// FNV-1a 64：把一整段位型折成一个可比较（且失败时可打印）的数。
