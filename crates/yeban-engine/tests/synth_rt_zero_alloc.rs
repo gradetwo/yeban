@@ -1952,9 +1952,10 @@ fn main() -> ExitCode {
     // 背上一份 16 × `ConvolutionReverb` 的值。
     //
     // 门槛 `192 KiB` 的来历（**实测**）：本机 `size_of::<ConvolutionReverb>() = 5 192` 字节、
-    // `size_of::<EngineRuntime>() = 140 784` 字节（Box 版，上一条打印就是它）。
-    // 把池改回内联 `[ConvolutionReverb; 16]` 之后的值 = `140 784 + 16 × 5 192 = 223 856`
-    // 字节（算术）> 192 KiB ⇒ **本判据变红**；而那次改动在本机还实测让
+    // `size_of::<EngineRuntime>() = 140 784` 字节（**Box 版**，上一条打印就是它；其中
+    // `Box<[T]>` 这个胖指针占 16 字节）。
+    // 把池改回内联 `[ConvolutionReverb; 16]` 之后的值 = `140 784 − 16 + 16 × 5 192 = 223 840`
+    // 字节（算术）> `196 608`（192 KiB）⇒ **本判据变红**；而那次改动在本机还实测让
     // `tests/param_automation.rs` 的 `the_default_paths_are_bit_identical_to_no_wiring`
     // 以 `fatal runtime error: stack overflow` 中止（SIGABRT）。
     if core::mem::size_of::<EngineRuntime>() >= 192 * 1024 {
