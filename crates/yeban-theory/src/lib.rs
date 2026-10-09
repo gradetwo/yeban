@@ -93,6 +93,15 @@
 //! 另一半（逐流派的鼓点型数据）**没有**做：登记的 `note_density_hint` 计的是
 //! 音符数而不是 onset 数（见 [`rhythm`] 的模块文档），要补它需要新增登记数据。
 //!
+//! 同一处还有一条本模块自己记下的偏差（"各地区的节拍分组，例如 5/4 的 3+2 与
+//! 2+3，本函数与 `metric_weight_in` 都不给：那需要逐流派数据"）：[`rhythm`]
+//! 补上了它的**机制**侧 —— [`rhythm::BeatGrouping`] 让调用方把加性分组
+//! （7/8 = 2+2+3、5/4 = 3+2、11/8 = 2+2+3+2+2）传进来，
+//! [`rhythm::metric_weight_grouped`] 与 [`rhythm::grouped_metric_grid`] 按它
+//! 算重量与选点。**逐流派的分组数据仍未登记**（`GENRES` 里没有这个字段，
+//! 7/8 的两种切法都通行），因此 [`genre::GenreRule::rhythm_grid`] 继续走
+//! 拍号口径，本 crate 不替任何流派猜一个分组。
+//!
 //! 同一台账的 `pending 4`（"没有实现旋律生成"）由 [`melody`] 关闭：
 //! [`melody::melody_over_chords`] 在既有的音阶 + 和声区段 + 节奏网格上落出
 //! 一条确定性的单声部旋律（种子驱动，[`melody::genre_melody`] 读流派的登记数据）。
@@ -123,9 +132,10 @@ pub use progression::{
     ChordSpan, Degree, Meter, PPQ, Progression, RomanQuality, expand_progression,
 };
 pub use rhythm::{
-    BEAT_WEIGHT, GridHit, MAX_METRIC_WEIGHT, MetricGrid, OFFBEAT_WEIGHT, STRONG_BEAT_WEIGHT,
-    cells_per_bar, felt_beats_per_bar, is_compound_meter, metric_grid, metric_weight,
-    metric_weight_in,
+    BEAT_WEIGHT, BeatGrouping, GridHit, MAX_METRIC_WEIGHT, MetricGrid, OFFBEAT_WEIGHT,
+    STRONG_BEAT_WEIGHT, cells_per_bar, felt_beats_per_bar, grouped_metric_grid,
+    grouped_swung_metric_grid, is_compound_meter, metric_grid, metric_weight,
+    metric_weight_grouped, metric_weight_in,
 };
 pub use scale::{Scale, ScaleKind};
 pub use swing::{

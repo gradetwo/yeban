@@ -25,7 +25,8 @@ use yeban_theory::melody::{
 use yeban_theory::pitch::{Pitch, PitchClass, note_to_hz, parse_pitch_class};
 use yeban_theory::progression::{Degree, Meter, Progression, RomanQuality, expand_progression};
 use yeban_theory::rhythm::{
-    MAX_METRIC_WEIGHT, cells_per_bar, felt_beats_per_bar, is_compound_meter, metric_grid,
+    BeatGrouping, MAX_METRIC_WEIGHT, cells_per_bar, felt_beats_per_bar, grouped_metric_grid,
+    grouped_swung_metric_grid, is_compound_meter, metric_grid, metric_weight_grouped,
     metric_weight_in, swung_metric_grid,
 };
 use yeban_theory::scale::{Scale, ScaleKind};
@@ -760,6 +761,140 @@ fn compound_duple_and_waltz_are_not_the_same_grid() {
         a.hits().iter().map(|hit| hit.tick).collect::<Vec<_>>(),
         vec![0, 1440, 2880, 4320]
     );
+}
+
+// ---------------------------------------------------------------------------
+// 7.6 加性拍分组（`pending 3` 剩余部分的**机制**侧）
+// ---------------------------------------------------------------------------
+
+/// 全部参与分组属性的拍号（含 `GENRES` 没用到的 5/4、8/8、9/8、11/8、12/8）。
+const GROUPING_METERS: [Meter; 10] = [
+    Meter::MARCH,
+    Meter::WALTZ,
+    Meter::COMMON,
+    Meter::QUINTUPLE,
+    Meter::COMPOUND_DUPLE,
+    Meter::SEVEN_EIGHT,
+    Meter {
+        numerator: 8,
+        denominator: 8,
+    },
+    Meter {
+        numerator: 9,
+        denominator: 8,
+    },
+    Meter {
+        numerator: 11,
+        denominator: 8,
+    },
+    Meter {
+        numerator: 12,
+        denominator: 8,
+    },
+];
+
+proptest! {
+    /// 任意**构造成功**的分组，都保持网格的全部结构不变量；当请求的 onset 数
+    /// 恰好等于组数时，选出的格点**恒是组起点**（组起点重量 8 或 3，其余 ≤ 2）。
+    ///
+    /// 单位：`checked` 数的是**被属性测试接受的分组样本个数**（`BeatGrouping::new`
+    /// 返回 `None` 的样本被跳过，不计入）；`checked > 0` 是防真空判据。
+    #[test]
+    fn a_grouped_grid_selects_the_group_starts_and_keeps_every_invariant(
+        meter_index in 0usize..GROUPING_METERS.len(),
+        groups in prop::collection::vec(1u8..=4, 1..=6),
+        permille in prop::option::of(500u16..=1000),
+        bars in 1u32..4,
+    ) {
+        let meter = GROUPING_METERS[meter_index];
+        let Some(grouping) = BeatGrouping::new(meter, &groups) else {
+            return Ok(());
+        };
+        let group_count = grouping.group_count() as u32;
+        let cells = u32::try_from(cells_per_bar(meter).unwrap()).unwrap();
+        prop_assume!(group_count <= cells);
+
+        let grid = grouped_swung_metric_grid(meter, bars, group_count, permille, grouping)?;
+        prop_assert_eq!(grid.len(), (bars * group_count) as usize);
+        prop_assert_eq!(grid.meter(), meter);
+        prop_assert_eq!(grid.swing_permille(), permille);
+
+        let bar_ticks = meter.ticks_per_bar();
+        for window in grid.hits().windows(2) {
+            prop_assert!(window[0].tick < window[1].tick, "{:?}", window);
+        }
+        for hit in grid.hits() {
+            let bar_start = u64::from(hit.bar) * bar_ticks;
+            prop_assert!(hit.tick >= bar_start && hit.tick < bar_start + bar_ticks);
+            // hit 的重量必须与公开的重量函数逐位一致（两个口径都不看混杂状态）。
+            prop_assert_eq!(hit.weight, metric_weight_grouped(meter, hit.cell, grouping));
+            // 组起点的重量恒 > 非组起点的拍重量。
+            let cells_per_beat = cells / u32::from(felt_beats_per_bar(meter));
+            let beat = hit.cell / cells_per_beat;
+            if hit.cell % cells_per_beat == 0 {
+                let expected = if beat == 0 {
+                    MAX_METRIC_WEIGHT
+                } else if grouping.is_group_start(beat as u8) {
+                    3
+                } else {
+                    2
+                };
+                prop_assert_eq!(hit.weight, expected, "beat {}", beat);
+                prop_assert!(hit.weight >= 2);
+            }
+        }
+
+        // 恰取"组数个 onset" ⇒ 选出的**就是**每一组的起点。
+        let got: Vec<u32> = grid.hits_in_bar(0).iter().map(|hit| hit.cell).collect();
+        let cells_per_beat = cells / u32::from(felt_beats_per_bar(meter));
+        let beats = u32::from(felt_beats_per_bar(meter));
+        let want: Vec<u32> = (0..beats)
+            .filter(|&beat| grouping.is_group_start(beat as u8))
+            .map(|beat| beat * cells_per_beat)
+            .collect();
+        prop_assert_eq!(got, want);
+    }
+}
+
+/// 内置口径（不分组）在每个**登记**拍号上都必须与"该拍号的内置分组"逐位一致，
+/// 且与分组口径在这些拍号上给出同一个网格 —— 分组是**加法**，不是替换。
+///
+/// 单位：`checked` 数的是 `GENRES` 里**不同的拍号**种数（不是流派条数）。
+#[test]
+fn the_builtin_hierarchy_survives_the_grouping_api_on_every_registered_meter() {
+    let mut meters = std::collections::BTreeSet::new();
+    for rule in GenreLibrary::all() {
+        meters.insert(rule.meter);
+    }
+    let builtin: std::collections::BTreeMap<(u8, u8), &[u8]> = [
+        ((2, 4), &[2u8][..]),
+        ((3, 4), &[3][..]),
+        ((4, 4), &[2, 2][..]),
+        ((6, 8), &[1, 1][..]),
+        ((7, 8), &[7][..]),
+    ]
+    .into_iter()
+    .collect();
+    let mut checked = 0usize;
+    for (numerator, denominator) in meters {
+        let meter = Meter::new(numerator, denominator).unwrap();
+        let groups = builtin
+            .get(&(numerator, denominator))
+            .unwrap_or_else(|| panic!("no builtin grouping for {numerator}/{denominator}"));
+        let grouping = BeatGrouping::new(meter, groups)
+            .unwrap_or_else(|| panic!("{numerator}/{denominator}: builtin grouping must cover it"));
+        for onsets in [1u32, 2, 3, 5] {
+            assert_eq!(
+                grouped_metric_grid(meter, 2, onsets, grouping)
+                    .unwrap()
+                    .hits(),
+                metric_grid(meter, 2, onsets).unwrap().hits(),
+                "{numerator}/{denominator} onsets {onsets}"
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 5, "registered meter kinds changed");
 }
 
 // ---------------------------------------------------------------------------
