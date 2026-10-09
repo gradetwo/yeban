@@ -4571,6 +4571,84 @@ mod tests {
         );
     }
 
+    /// `AddClipPlacement` 必须在落盘**之前**拒绝"片段池里没有这个片段"（类别 1：先污染、后报错）。
+    ///
+    /// 为什么需要：`commit` 会无条件把摆放插进 `track.clips`，入口唯一的悬空引用检查
+    /// 是 `precondition` 里的 `doc.clip_pool.contains_key(&placement.clip_id)`。
+    /// 实测（本次注入）：把那个 `if` 的条件改成恒假时全仓判据保持全绿 —— `apply` 返回
+    /// `Ok(())`、文档里多出一条指向不存在片段的摆放，直到 `YebanProjectV1::validate()`
+    /// 才报错（而撤销/保存路径未必每次都跑全量 `validate`）。本判据钉住 Op 入口的
+    /// 具体错误码与"被拒之后文档逐字节不动"。
+    #[test]
+    fn add_clip_placement_rejects_a_placement_for_a_clip_outside_the_pool() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let ghost = fixture_id(999);
+        assert!(
+            !doc.clip_pool.contains_key(&ghost),
+            "探针片段必须不在池子里"
+        );
+        let error = Op::AddClipPlacement {
+            track_id: f.bass,
+            placement: ClipPlacement {
+                id: fixture_id(998),
+                clip_id: ghost,
+                start_tick: 0,
+                duration_ticks: 960,
+                loop_config: LoopConfig::default(),
+                muted: false,
+            },
+        }
+        .apply(&mut doc)
+        .expect_err("指向池外片段的摆放必须被拒");
+        assert_eq!(error, ModelError::ClipNotFound { id: ghost });
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("序列化"),
+            before,
+            "被拒之后文档必须逐字节不动"
+        );
+        assert_eq!(doc.validate(), Ok(()));
+    }
+
+    /// `ConnectRouting` 必须在落盘**之前**拒绝"端点不在 `routing_graph.nodes` 里"。
+    ///
+    /// 为什么需要：同族的数值校验（`edge.validate()`）已有判据
+    /// （`connect_routing_rejects_a_non_finite_gain_before_mutating`），但**端点存在性**
+    /// 那一段 `for endpoint in [edge.source_node, edge.destination_node]` 没有判据。
+    /// 实测（本次注入）：把那个 `if` 的条件改成恒假时全仓判据保持全绿 —— `apply` 返回
+    /// `Ok(())`、悬空端点的边入图，直到 `RoutingGraph::validate()` 才报错。
+    /// 本判据对源端点与目标端点**各**钉一次，并钉住"被拒之后文档逐字节不动"。
+    #[test]
+    fn connect_routing_rejects_an_endpoint_outside_the_node_list() {
+        let f = fixture();
+        let ghost = fixture_id(997);
+        for (source, destination) in [(ghost, f.master), (f.bass, ghost)] {
+            let mut doc = fixture_document();
+            let before = serde_json::to_vec(&doc).expect("序列化");
+            let edge_id = fixture_id(996);
+            let error = Op::ConnectRouting {
+                edge: RoutingEdge {
+                    id: edge_id,
+                    source_node: source,
+                    destination_node: destination,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            }
+            .apply(&mut doc)
+            .expect_err("端点不在 nodes 里的路由边必须被拒");
+            assert_eq!(error, ModelError::RoutingNodeNotFound { id: ghost });
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("序列化"),
+                before,
+                "被拒之后文档必须逐字节不动"
+            );
+            assert!(!doc.routing_graph.edges.contains_key(&edge_id));
+            assert_eq!(doc.validate(), Ok(()));
+        }
+    }
+
     /// `ConnectRouting` 必须先校验载荷的数值有限性（类别 1：先污染、后报错）。
     ///
     /// 为什么需要：`commit` 会无条件把边插进 `routing_graph.edges`，入口唯一的载荷校验

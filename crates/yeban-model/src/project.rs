@@ -3405,11 +3405,65 @@ mod tests {
         aliases: &std::collections::BTreeSet<String>,
     ) -> Option<String> {
         let (name, ty) = field_name_and_type(fragment)?;
-        let numeric = is_numeric_type(&ty)
+        type_is_numeric(&ty, aliases).then_some(name)
+    }
+
+    /// 类型原文是否承载数值（`f32`／`f64` 记号，或数值别名）。
+    fn type_is_numeric(ty: &str, aliases: &std::collections::BTreeSet<String>) -> bool {
+        is_numeric_type(ty)
             || ty
                 .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .any(|token| aliases.contains(token));
-        numeric.then_some(name)
+                .any(|token| aliases.contains(token))
+    }
+
+    /// 圆括号里**没有名字**的数值载荷（元组结构体字段、元组变体字段）。
+    ///
+    /// 为什么需要：`field_name_and_type` 只认 `name: type`，而
+    /// `pub struct ProbeTupleNumeric(f32, f64);` 与枚举变体 `Scalar(f32)` 的载荷
+    /// **没有名字**（`pub f32` 这种带可见性的写法也被 `is_numeric_type` 按记号看到）。
+    /// 实测（本次注入）：两种写法各藏一个数值字段时
+    /// `every_numeric_field_in_the_model_is_inventoried` 保持全绿。
+    /// 命名口径：按载荷在圆括号里的位置编号（`#0`、`#1`），与 `name: type` 字段不会碰撞。
+    fn numeric_unnamed_payloads(
+        group: &str,
+        aliases: &std::collections::BTreeSet<String>,
+    ) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut rest = group;
+        while let Some(open) = rest.find('(') {
+            let Some(close) = rest[open + 1..].find(')') else {
+                break;
+            };
+            let inner = &rest[open + 1..open + 1 + close];
+            for (position, part) in inner.split(',').enumerate() {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let ty = part.split_once(':').map_or(part, |(_, ty)| ty.trim());
+                if type_is_numeric(ty, aliases) {
+                    found.push(format!("#{position}"));
+                }
+            }
+            rest = &rest[open + 1 + close + 1..];
+        }
+        found
+    }
+
+    /// 类型原文里是否还有**未闭合**的 `<`（用于把折行的字段声明攒成一行）。
+    ///
+    /// 实测（本次注入）：`pub probe_wrapped: Option<` 换行再写 `f32,` 时，逐行扫描器
+    /// 只看第一行（`Option<` 不含完整类型）⇒ 该数值字段对清单判据不可见。
+    fn has_unclosed_brackets(ty: &str) -> bool {
+        let mut depth: i32 = 0;
+        for ch in ty.chars() {
+            match ch {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => depth -= 1,
+                _ => {}
+            }
+        }
+        depth > 0
     }
 
     /// 识别 `type NAME = <类型>;` 声明，返回 `(别名, 别名是否数值)`。
@@ -3425,6 +3479,20 @@ mod tests {
             return None;
         }
         Some((name.to_owned(), is_numeric_type(rhs)))
+    }
+
+    /// 识别 `use …::f32 as NAME;` 形态的数值别名。
+    ///
+    /// 实测（本次注入）：`use core::primitive::f32 as ProbeF32;` 之后的
+    /// `pub probe_alias: ProbeF32` 对清单判据不可见 —— `type_alias` 只认 `type` 声明。
+    fn use_alias(line: &str) -> Option<String> {
+        let rest = line.strip_prefix("use ")?;
+        let (path, alias) = rest.split_once(" as ")?;
+        let alias = alias.trim().trim_end_matches(';').trim();
+        if alias.is_empty() || !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        is_numeric_type(path).then(|| alias.to_owned())
     }
 
     /// 一行声明里的**全部**数值字段名。
@@ -3472,6 +3540,8 @@ mod tests {
                     found.push(field);
                 }
             }
+            // 无名载荷（元组结构体 / 元组变体）没有 `name: type` 形态，按位置编号收进来。
+            found.extend(numeric_unnamed_payloads(group, aliases));
         }
         found
     }
@@ -3506,6 +3576,30 @@ mod tests {
         (!name.is_empty()).then_some((is_enum, name))
     }
 
+    /// 识别**元组结构体**声明（`pub struct NAME(…);`，没有花括号）。
+    ///
+    /// 返回 `(类型名, 本行是否已闭合)`。实测（本次注入）：元组结构体的数值载荷
+    /// （`pub struct ProbeTupleNumeric(f32, f64);`）对清单判据完全不可见 ——
+    /// `type_declaration` 要求同一行开 `{`，于是整行连扫描都不会进入。
+    fn tuple_struct_declaration(line: &str) -> Option<(String, bool)> {
+        let rest = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        let rest = rest.strip_prefix("struct ")?;
+        if !rest.contains('(') || rest.contains('{') {
+            return None;
+        }
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            return None;
+        }
+        Some((name, rest.contains(')')))
+    }
+
     /// 扫描源码，抽出全部数值字段声明。
     ///
     /// 两遍：先收集数值类型别名（`type X = f32;` ⇒ 字段类型写 `X` 也算数值），
@@ -3527,11 +3621,14 @@ mod tests {
             })
             .collect();
 
-        // 第一遍：数值类型别名。
+        // 第一遍：数值类型别名（`type X = f32;` 与 `use …::f32 as X;` 两种形态）。
         let mut aliases: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (_, text) in &sources {
             for line in text.lines() {
                 if let Some((name, true)) = type_alias(line.trim_start()) {
+                    aliases.insert(name);
+                }
+                if let Some(name) = use_alias(line.trim_start()) {
                     aliases.insert(name);
                 }
             }
@@ -3541,17 +3638,37 @@ mod tests {
         for (relative, text) in &sources {
             let mut owner: Option<(bool, String, usize)> = None;
             let mut variant = String::new();
+            let mut tuple_owner = false;
+            let mut tuple_body = String::new();
             // "类型写在下一行"的未完成字段名前缀（见 `incomplete_field_prefix`）。
             let mut pending: Option<String> = None;
             for line in text.lines() {
                 let trimmed = line.trim_start();
                 let indent = line.len() - trimmed.len();
                 if let Some((is_enum, name, decl_indent)) = owner.clone() {
-                    // 声明体的终点：缩进不深于声明行、且以 `}` 开头的那一行。
-                    if trimmed.starts_with('}') && indent <= decl_indent {
+                    // 声明体的终点：缩进不深于声明行、且以 `}`（花括号声明）或
+                    // `)`（元组结构体）开头的那一行。
+                    let brace_end = trimmed.starts_with('}') && indent <= decl_indent;
+                    let tuple_end =
+                        tuple_owner && trimmed.starts_with(')') && indent <= decl_indent;
+                    if brace_end || tuple_end {
+                        if tuple_owner {
+                            // 元组结构体的载荷跨行时，把体拼回一个括号组再按位置收字段。
+                            let wrapped = format!("({tuple_body})");
+                            for field in numeric_unnamed_payloads(&wrapped, &aliases) {
+                                found.push(format!("{relative}::{name}::{field}"));
+                            }
+                        }
                         owner = None;
                         variant.clear();
+                        tuple_owner = false;
+                        tuple_body.clear();
                         pending = None;
+                        continue;
+                    }
+                    if tuple_owner {
+                        tuple_body.push_str(trimmed);
+                        tuple_body.push(' ');
                         continue;
                     }
                     if is_enum
@@ -3576,6 +3693,14 @@ mod tests {
                     } else {
                         trimmed
                     };
+                    // 折行类型：类型原文还有未闭合的 `<` 时先攒着，等括号闭合再判定
+                    // （实测：`pub probe: Option<` 换行写 `f32,` 是清单判据的一条盲区）。
+                    if let Some((_, ty)) = field_name_and_type(candidate)
+                        && has_unclosed_brackets(&ty)
+                    {
+                        pending = Some(candidate.to_owned());
+                        continue;
+                    }
                     let fields = numeric_fields_on_line_with(candidate, &aliases);
                     if fields.is_empty()
                         && let Some(prefix) = incomplete_field_prefix(trimmed)
@@ -3590,6 +3715,17 @@ mod tests {
                             field
                         };
                         found.push(format!("{relative}::{name}::{member}"));
+                    }
+                    continue;
+                }
+                if let Some((name, closed)) = tuple_struct_declaration(trimmed) {
+                    for field in numeric_fields_on_line_with(trimmed, &aliases) {
+                        found.push(format!("{relative}::{name}::{field}"));
+                    }
+                    if !closed {
+                        owner = Some((false, name, indent));
+                        tuple_owner = true;
+                        tuple_body.clear();
                     }
                     continue;
                 }
@@ -4356,6 +4492,56 @@ mod tests {
         assert_eq!(
             numeric_fields_on_line("    public: f32,"),
             vec!["public".to_owned()]
+        );
+    }
+
+    /// 识别器的**第四组**正/负对照：折行类型、无名载荷（元组结构体 / 元组变体）、
+    /// `use … as` 形态的数值别名。
+    ///
+    /// 为什么需要：第三组收紧之后仍然留着三条常见绕道。实测（本次注入，四次全绿）：
+    /// `pub probe_wrapped: Option<` 换行写 `f32,`；`struct ProbeTupleNumeric(f32, f64);`；
+    /// 枚举元组变体 `Scalar(f32)`；`use core::primitive::f32 as ProbeF32;` 之后的
+    /// `pub probe_alias: ProbeF32` —— 四种写法各能藏一个数值字段过常驻清单判据。
+    /// 本判据按合成输入逐个钉住新的识别面（正对照必须收进来，负对照必须不收），
+    /// 折行那一组的"攒行"由 `scan_numeric_fields` 的 `pending` 缓冲承担，
+    /// 这里同时钉住"单行不完整时必须先不收"。
+    #[test]
+    fn the_numeric_field_scanner_sees_wrapped_tuple_and_use_alias_forms() {
+        // 折行类型：未闭合的那一行单看必须什么都收不到（由 `scan_numeric_fields` 攒行）。
+        assert!(numeric_fields_on_line("    pub probe_wrapped: Option<").is_empty());
+        assert!(has_unclosed_brackets("Option<"));
+        assert!(!has_unclosed_brackets("Option< f32, >,"));
+        assert_eq!(
+            numeric_fields_on_line("    pub probe_wrapped: Option< f32, >,"),
+            vec!["probe_wrapped".to_owned()]
+        );
+
+        // 无名载荷：元组结构体与元组变体的字段没有名字，按位置编号。
+        assert_eq!(
+            numeric_fields_on_line("pub struct ProbeTupleNumeric(f32, f64);"),
+            vec!["#0".to_owned(), "#1".to_owned()]
+        );
+        assert_eq!(
+            numeric_fields_on_line("    Scalar(f32),"),
+            vec!["#0".to_owned()]
+        );
+        assert!(numeric_fields_on_line("    Scalar(String),").is_empty());
+        assert!(
+            numeric_unnamed_payloads("(f32, f64)", &std::collections::BTreeSet::new()).len() == 2
+        );
+
+        // `use …::f32 as NAME;` 也是数值别名的来源。
+        assert_eq!(
+            use_alias("use core::primitive::f32 as ProbeF32;"),
+            Some("ProbeF32".to_owned())
+        );
+        assert_eq!(use_alias("use std::collections::BTreeMap as Map;"), None);
+        assert_eq!(use_alias("use serde_json::Value;"), None);
+        let mut use_aliases = std::collections::BTreeSet::new();
+        use_aliases.insert("ProbeF32".to_owned());
+        assert_eq!(
+            numeric_fields_on_line_with("    pub probe_alias: ProbeF32,", &use_aliases),
+            vec!["probe_alias".to_owned()]
         );
     }
 

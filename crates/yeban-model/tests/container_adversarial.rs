@@ -379,6 +379,40 @@ fn spec_defaults_are_pinned() {
     );
 }
 
+/// **五道**上限的默认值逐条钉住（规范 §5.3 的 2 GB / 100:1 + 本实现加的两道）。
+///
+/// 为什么需要：`spec_defaults_are_pinned` 只钉了 `max_entry_bytes` 与 `max_ratio`。
+/// 实测（本次注入）：把 `DEFAULT_MAX_TOTAL_BYTES` 从 8 GB 改成 4 GB、把
+/// `DEFAULT_MAX_ENTRIES` 从 4096 改成 2048，**全仓判据保持全绿** —— 两道防线的默认值
+/// 可以被悄悄收紧（拒绝合法工程）而没有一条判据看得见。本判据把四个默认常数与
+/// `ContainerLimits::default()` 的四个字段逐条对上，并钉住它们之间的组合关系。
+#[test]
+fn every_container_default_limit_is_pinned() {
+    assert_eq!(
+        DEFAULT_MAX_ENTRY_BYTES, 2_000_000_000,
+        "规范 §5.3 原文 ≤ 2GB"
+    );
+    assert_eq!(DEFAULT_MAX_TOTAL_BYTES, 8_000_000_000);
+    assert_eq!(DEFAULT_MAX_RATIO, 100, "规范 §5.3 原文 100:1");
+    assert_eq!(DEFAULT_MAX_ENTRIES, 4096);
+
+    let defaults = ContainerLimits::default();
+    assert_eq!(defaults.max_entry_bytes, DEFAULT_MAX_ENTRY_BYTES);
+    assert_eq!(defaults.max_total_bytes, DEFAULT_MAX_TOTAL_BYTES);
+    assert_eq!(defaults.max_ratio, DEFAULT_MAX_RATIO);
+    assert_eq!(defaults.max_entries, DEFAULT_MAX_ENTRIES);
+
+    // 组合关系：总体积上限必须夹在"单条目上限"与"单条目上限 × 条目数上限"之间 ——
+    // 低于前者会让单条目闸门永远不可达，高于后者会让总体积闸门永远不可达。
+    assert!(defaults.max_total_bytes >= defaults.max_entry_bytes);
+    assert!(
+        defaults.max_total_bytes
+            <= defaults
+                .max_entry_bytes
+                .saturating_mul(defaults.max_entries as u64)
+    );
+}
+
 /// 声明的解压体积超过 `max_entry_bytes` ⇒ 拒绝（不截断、不跳过）。
 #[test]
 fn declared_entry_size_over_limit_is_rejected() {

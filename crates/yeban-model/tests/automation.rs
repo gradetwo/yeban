@@ -1165,6 +1165,61 @@ fn automation_value_at_reconciles_the_target_and_reports_specific_errors() {
     assert_eq!(f.volume.validate_against(&doc), Ok(()));
 }
 
+/// ⑦g 目标对账的**下标边界**：`index == len` 是恰好一格的越界，不是"存在"。
+///
+/// 为什么需要：`validate_against` 的三处 `>=` 与 `>` 在改动前**不可区分** ——
+/// 既有判据只试了远大于 `len` 的下标（插槽 7 / 参数 9 / 宏 3），于是把
+/// `param_index >= device.params.len()` 或 `macro_index >= track.macros.len()`
+/// 改成 `>` 时，全仓判据保持全绿（实测：C02 / C03 两次注入）。越界一格的后果是
+/// "目标对账说存在、求值入口却按不存在处理"，两条路径给出**互相矛盾**的答案。
+/// 本判据把边界钉在 `len - 1`（合法）与 `len`（越界）两侧，并同时走工程级求值入口。
+#[test]
+fn automation_target_index_boundary_is_exclusive_at_length() {
+    let (doc, f) = fixture();
+
+    // 设备插槽恰好一格越界（夹具的 `devices.len() == 1`）。
+    assert_eq!(
+        AutomationTarget::DeviceParam {
+            track_id: f.lead,
+            slot_index: 1,
+            param_index: 0,
+        }
+        .validate_against(&doc),
+        Err(ModelError::DeviceSlotOutOfRange { index: 1, len: 1 })
+    );
+    // 设备存在，参数下标恰好一格越界（夹具的 `params.len() == 2`）。
+    let one_past_param = AutomationTarget::DeviceParam {
+        track_id: f.lead,
+        slot_index: 0,
+        param_index: 2,
+    };
+    assert_eq!(
+        one_past_param.validate_against(&doc),
+        Err(ModelError::ParamIndexOutOfRange { index: 2, len: 2 })
+    );
+    assert_eq!(
+        doc.automation_value_at(&one_past_param, 0),
+        Err(ModelError::ParamIndexOutOfRange { index: 2, len: 2 }),
+        "工程级求值入口必须与 validate_against 给出同一个答案"
+    );
+    // 宏下标恰好一格越界（夹具的 `macros.len() == 1`）。
+    let one_past_macro = AutomationTarget::Macro {
+        track_id: f.lead,
+        macro_index: 1,
+    };
+    assert_eq!(
+        one_past_macro.validate_against(&doc),
+        Err(ModelError::MacroIndexOutOfRange { index: 1, len: 1 })
+    );
+    assert_eq!(
+        doc.automation_value_at(&one_past_macro, 0),
+        Err(ModelError::MacroIndexOutOfRange { index: 1, len: 1 })
+    );
+    // 边界内侧一格：三个目标都合法（否则上面对 `Err` 的断言可能来自别的原因）。
+    assert_eq!(f.param.validate_against(&doc), Ok(()));
+    assert_eq!(f.macro_target.validate_against(&doc), Ok(()));
+}
+
 /// ⑦d 静态值入口：音量/声相/设备参数/宏直接可取；发送增益的 `None` 是"单位增益 = 0 dB"。
 #[test]
 fn static_value_covers_every_target_including_send_gain() {
