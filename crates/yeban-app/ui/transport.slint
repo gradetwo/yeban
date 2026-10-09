@@ -80,6 +80,9 @@ export component Transport inherits Rectangle {
         accessible-label: "播放 / 暂停 (Space)";
         accessible-checkable: true;
         accessible-checked: root.playing;
+        // `[UI-A11Y-003]` §7.3：无障碍动作。落点与 `play_area` 的 `clicked` 逐字相同 ——
+        // 没有它 accesskit 不给这个节点挂 `Action::Click`，屏读器只能读、不能按。
+        accessible-action-default => { root.toggle-play(); }
 
         UiText {
             x: 0;
@@ -112,6 +115,8 @@ export component Transport inherits Rectangle {
         accessible-role: button;
         accessible-id: "transport-stop-button";
         accessible-label: "停止 (回到起始点)";
+        // `[UI-A11Y-003]` §7.3：落点与 `stop_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.stop(); }
 
         UiText {
             x: 0;
@@ -381,6 +386,8 @@ export component Transport inherits Rectangle {
         accessible-role: button;
         accessible-id: "transport-save-button";
         accessible-label: "保存工程";
+        // `[UI-A11Y-003]` §7.3：落点与 `save_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.save-project(); }
 
         UiText {
             x: 0;
@@ -437,6 +444,8 @@ export component Transport inherits Rectangle {
         accessible-id: "transport-ai-proposal-badge";
         // 标签**只描述动作**，不再声称"有待审查的提案"（那个读数没有数据源）。
         accessible-label: "打开 AI 编曲提案审核抽屉";
+        // `[UI-A11Y-003]` §7.3：落点与 `proposal_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.open-ai-proposals(); }
         // ⛔ 这里**不许**再出现 `accessible-value`：提案条数今天没有数据源，
         // 任何写死的数字都是编造的读数。条数的**唯一**诚实来源是提案抽屉自己的
         // `accessible-value`（= `MusicalPrDrawer.proposal-count`，此刻为 `"0"`）。
@@ -476,6 +485,8 @@ export component Transport inherits Rectangle {
         accessible-label: "Session 触发矩阵 (F5)";
         accessible-item-selected: !root.arrangement-view;
         accessible-item-selectable: true;
+        // `[UI-A11Y-003]` §7.3：落点与 `view_session_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.show-session(); }
 
         UiText {
             x: 0;
@@ -507,6 +518,8 @@ export component Transport inherits Rectangle {
         accessible-label: "Arrangement 时间轴 (F6)";
         accessible-item-selected: root.arrangement-view;
         accessible-item-selectable: true;
+        // `[UI-A11Y-003]` §7.3：落点与 `view_arr_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.show-arrangement(); }
 
         UiText {
             x: 0;
@@ -537,6 +550,8 @@ export component Transport inherits Rectangle {
         accessible-role: button;
         accessible-id: "transport-view-toggle-button";
         accessible-label: "切换 Session / Arrangement (Tab, 仅画布聚焦时)";
+        // `[UI-A11Y-003]` §7.3：落点与 `toggle_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.toggle-view(); }
 
         UiText {
             x: 0;
@@ -569,6 +584,8 @@ export component Transport inherits Rectangle {
         accessible-label: "AI 协作栏抽屉 (Cmd/Ctrl + 反斜杠)";
         accessible-expandable: true;
         accessible-expanded: root.ai-drawer-open;
+        // `[UI-A11Y-003]` §7.3：落点与 `drawer_area` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.toggle-ai-drawer(); }
 
         UiText {
             x: 0;

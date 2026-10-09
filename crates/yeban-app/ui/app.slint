@@ -111,9 +111,16 @@ component AiRail inherits Rectangle {
         accessible-role: button;
         accessible-id: "ai-rail-diagnose-button";
         accessible-label: "声学诊断";
+        // `[UI-A11Y-003]` §7.3：无障碍**动作**。屏读器 / OS 辅助技术激活这个节点时走
+        // 下面 `TouchArea` 的**同一个**回调（判据见 `elements.rs` 的
+        // `every_clickable_control_binds_a_matching_accessibility_action`）。
+        // 为什么必须有它：上游 `i-slint-backend-winit` 只按 `accessible-action-*`
+        // 的绑定情况导出 accesskit 动作（`supported_accessibility_actions`），
+        // 没有它这个节点读得到标签、却**按不动**。
+        accessible-action-default => { root.run-acoustic-diagnosis(); }
         // **不得**声明 `accessible-checkable`（台账 R11c）：这是**瞬态动作**，不是切换，
         // 故"可勾选"是假话。实测（落这一行时，本文件删掉本注释块后的行号）：本处有真的
-        // 点击源 `TouchArea`（`:134`）＋ `clicked => { root.run-acoustic-diagnosis(); }`（`:137`），
+        // 点击源 `TouchArea`（现位于第 141 行）＋ `clicked => { root.run-acoustic-diagnosis(); }`（现位于第 144 行），
         // 而该回调的宿主实现 `crates/yeban-app/src/main.rs:645` 的
         // `ui.on_run_acoustic_diagnosis(..)` 只打一行 stderr —— **不置位任何状态**
         // （全仓 `run_acoustic_diagnosis` 的命中里没有一处是状态写者）。
@@ -148,6 +155,8 @@ component AiRail inherits Rectangle {
         accessible-role: button;
         accessible-id: "diagnostics-export-action";
         accessible-label: "导出诊断包";
+        // `[UI-A11Y-003]` §7.3：落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.export-diagnostics(); }
 
         UiText {
             x: Tokens.space-3;
@@ -176,6 +185,8 @@ component AiRail inherits Rectangle {
         accessible-role: button;
         accessible-id: "ai-rail-musical-pr-button";
         accessible-label: "打开 AI 编曲提案审核抽屉";
+        // `[UI-A11Y-003]` §7.3：落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.open-musical-pr(); }
 
         UiText {
             x: 0;

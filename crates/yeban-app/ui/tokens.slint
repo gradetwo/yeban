@@ -200,7 +200,7 @@ export global Tokens {
     // **本切片实测结论: 它在本 UI 上只对 2 处文本可见, 且看不出收益 ⇒ 不施加。**
     // 测法: 给 `UiText` 整体加 `line-height-factor: 1.45` 重渲 1920x1080 再逐像素比对,
     // 与施加前 **2,429 个像素不同**, 包围盒 `x1654..1756 × y96..195` —— 恰好是 AI 协作栏
-    // 那**两个两行**按钮 (`app.slint:90` / `app.slint:117` 的 `"…\n…"`); 全部**单行居中**
+    // 那**两个两行**按钮 (`app.slint:90` / `app.slint:124` 的 `"…\n…"`); 全部**单行居中**
     // 文本 **0** 像素变化 (整帧 sha256 只在这两处改变)。逐行量墨迹 (声学诊断按钮,
     // 盒 y104..167): 第 2 行 `y142..153` **一位未动**, 只有第 1 行 `y114..123 → y117..126`
     // 下移 3px —— 行距是**收紧**而不是舒展, 所以这不是一个可报的改进。
@@ -806,7 +806,7 @@ export component UiSerifText inherits Text {
 // | `font-serif` | `Noto Serif SC` | `assets/fonts/NotoSerifSC-Regular-subset.otf` | 8888964 | `4293341c25ff2cf9220025114289088184a367e784f9655db4773e07770f5f55` |
 //
 // - **只带 Regular (400)**: 用到这两族的三个位置
-//   (`UiMonoText` 36 处 / `transport.slint:217` 的 BPM `TextInput` / `UiSerifText`,
+//   (`UiMonoText` 36 处 / `transport.slint:222` 的 BPM `TextInput` / `UiSerifText`,
 //   全界面只有 `arrangement_view.slint:108` 一处) **一处都没写 `font-weight`**,
 //   而全仓 5 处 `font-weight` 全挂在 `font-ui` 那三支上 ⇒ 这两族在本 UI 上只被请求 400。
 //   带 Bold/Medium 是没有使用点的字节 (`JetBrains Mono` 每字面约 274 KB,

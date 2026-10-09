@@ -2564,4 +2564,353 @@ mod tests {
             }
         }
     }
+
+    // =======================================================================
+    // `[UI-A11Y-003]` §7.3 第 4 条（`TEST-SPEC-005` 用例 ①）：
+    // **遍历交互控件, 断言无障碍名称非空**, 并且断言它的无障碍**动作**真的接在
+    // 指针点击的同一个落点上。
+    //
+    // 为什么这一族判据住在纯 Rust 侧: 它们读的是 `.slint` 源码文本, 不需要 Slint
+    // 运行时, 因此**本机**（不许编译 Slint 的机器）也能跑。运行时那一半
+    // （真控件树的标签非空）住在 `test_port_adapter.rs`, 只有 CI 能跑 —— 两半都在,
+    // 判据才既"早"又"真"。
+    //
+    // ## 为什么"绑定了 `accessible-action-*`"才是判据
+    //
+    // 上游只在 `.slint` 绑定了 `accessible-action-*` 时才把动作导出给 OS 无障碍树:
+    // `i-slint-compiler-1.18.1/generator/rust.rs` 的 `supported_accessibility_actions`
+    // 只从 `component.accessible_prop` 里的 `Action*` 项收集; `i-slint-backend-winit`
+    // 的 accesskit 适配器只按它 `node.add_action(accesskit::Action::Click)`。
+    // 也就是说: **一个只声明了 `accessible-role: button` 的节点, 屏读器读得到标签、
+    // 却按不动它。** 这一族判据把"按得动"从口号变成机械检查。
+    // =======================================================================
+
+    /// `.slint` 文本里一个声明了 `accessible-role` 的**元素块**（行区间）。
+    #[derive(Debug)]
+    struct RoleBlock {
+        /// 元素开头那一行在文件里的下标。
+        start: usize,
+        /// 配平 `{ … }` 的那一行在文件里的下标。
+        end: usize,
+        /// `accessible-role` 的字面取值（`button` / `tab` / …）。
+        role: String,
+    }
+
+    /// 一行开头的空格数 —— `.slint` 用缩进表达父子关系。
+    fn indent_of(line: &str) -> usize {
+        line.len() - line.trim_start().len()
+    }
+
+    /// 找到全部声明了 `accessible-role` 的元素块。
+    ///
+    /// 口径（机械, 不猜）：
+    /// 1. 某一行含 `accessible-role: <kebab 字面量>;` —— 字面量不是单一 kebab 标识符的
+    ///    行不算（那样可以把注释里的示例文本误认成声明, 但注释已在 `code_only` 里剥掉）;
+    /// 2. 块首 = 该行**之前**最近的一行, 它更浅缩进且以 `{` 结尾;
+    /// 3. 块尾 = 从块首起花括号**首次配平**的那一行。
+    fn role_blocks(lines: &[&str]) -> Vec<RoleBlock> {
+        let mut out = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let Some((_, rest)) = line.split_once("accessible-role:") else {
+                continue;
+            };
+            let role = rest.trim().trim_end_matches(';').trim().to_owned();
+            if role.is_empty() || !role.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+                continue;
+            }
+            let indent = indent_of(line);
+            let start = (0..index).rev().find(|&probe| {
+                lines[probe].trim_end().ends_with('{') && indent_of(lines[probe]) < indent
+            });
+            let Some(start) = start else {
+                continue;
+            };
+            let mut depth = 1_i32;
+            let mut end = lines.len() - 1;
+            for (probe, text) in lines.iter().enumerate().skip(start + 1) {
+                depth += text.matches('{').count() as i32 - text.matches('}').count() as i32;
+                if depth <= 0 {
+                    end = probe;
+                    break;
+                }
+            }
+            out.push(RoleBlock { start, end, role });
+        }
+        out
+    }
+
+    /// 取出 `keyword => { … }` 的全部块体（花括号配平）。
+    ///
+    /// - 返回 `(块体首行的文件行下标, 空白归一化后的块体文本)`;
+    /// - `base_line` 是 `code` 首行在文件里的下标（传整份文件时是 0）;
+    /// - 关键字必须**独立成词**（前后不是标识符字符）, 否则 `clicked` 会命中
+    ///   `pointer-clicked` 这类更长名字。
+    fn arrow_bodies(code: &str, keyword: &str, base_line: usize) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        let mut from = 0_usize;
+        while let Some(offset) = code[from..].find(keyword) {
+            let at = from + offset;
+            from = at + keyword.len();
+            let before_ok = code[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_'));
+            if !before_ok {
+                continue;
+            }
+            let rest = code[at + keyword.len()..].trim_start();
+            let Some(rest) = rest.strip_prefix("=>") else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let Some(rest) = rest.strip_prefix('{') else {
+                continue;
+            };
+            let mut depth = 1_i32;
+            for (index, ch) in rest.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let body = rest[..index]
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let line = base_line + code[..at].matches('\n').count();
+                            out.push((line, body));
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    /// `ui/**.slint` 的 `(相对路径, 文本)` 清单（按路径排序, 迭代顺序确定）。
+    fn slint_sources() -> Vec<(String, String)> {
+        let ui = ui_dir();
+        let mut files = Vec::new();
+        collect_slint_files(&ui, &mut files);
+        files.sort();
+        files
+            .into_iter()
+            .map(|file| {
+                let rel = file
+                    .strip_prefix(&ui)
+                    .unwrap_or(&file)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let text = std::fs::read_to_string(&file).expect("读取 .slint 失败");
+                (rel, text)
+            })
+            .collect()
+    }
+
+    /// 判据（`[UI-A11Y-003]` §7.3 第 4 条 ① / `TEST-SPEC-005`）：**每一个可点击的交互
+    /// 控件都必须绑定无障碍动作, 而且落点与指针点击逐字相同。**
+    ///
+    /// 口径：
+    /// - "可点击的交互控件" = 某一行有 `clicked => { … }`, 且它**最内层**的
+    ///   `accessible-role` 元素块的角色属于交互族（`button` / `tab` / `switch` /
+    ///   `checkbox` / `radio-button` / `combobox` / `list-item`）。用"最内层"是为了
+    ///   正确归属**嵌套**点击：轨道头（`list-item`）里包着静音 / 独奏两个按钮,
+    ///   那两处点击属于按钮, 不属于轨道头。
+    /// - "落点逐字相同" = 无障碍动作块体与点击块体在**空白归一化**后相等。
+    ///   这就排除了"挂一个什么都不做的动作"与"挂到另一个回调上"。
+    /// - 动作声明必须**在点击源之前**（本文件的既有形状: 无障碍属性与几何 / 颜色一起
+    ///   写在元素自己那一块, 子元素在后）—— 这条同时挡住了"借用子元素动作"的假通过。
+    ///
+    /// 注入证明（破坏 ⇒ 抓字面红行）：见交付报告。摘掉任意一条
+    /// `accessible-action-default => { … }` 即红。
+    #[test]
+    fn every_clickable_control_binds_a_matching_accessibility_action() {
+        const INTERACTIVE_ROLES: [&str; 7] = [
+            "button",
+            "tab",
+            "switch",
+            "checkbox",
+            "radio-button",
+            "combobox",
+            "list-item",
+        ];
+        let mut checked = 0_usize;
+        for (rel, text) in slint_sources() {
+            let code = code_only(&text);
+            let lines: Vec<&str> = code.lines().collect();
+            let blocks = role_blocks(&lines);
+            for (click_line, click_body) in arrow_bodies(&code, "clicked", 0) {
+                let block = blocks
+                    .iter()
+                    .filter(|block| block.start < click_line && click_line <= block.end)
+                    .max_by_key(|block| block.start);
+                let Some(block) = block else {
+                    continue;
+                };
+                if !INTERACTIVE_ROLES.contains(&block.role.as_str()) {
+                    continue;
+                }
+                let block_text = lines[block.start..=block.end].join("\n");
+                let actions: Vec<(usize, String)> = ["default", "expand"]
+                    .iter()
+                    .flat_map(|name| {
+                        arrow_bodies(
+                            &block_text,
+                            &format!("accessible-action-{name}"),
+                            block.start,
+                        )
+                    })
+                    .filter(|(line, _)| *line < click_line)
+                    .collect();
+                assert!(
+                    actions.iter().any(|(_, body)| *body == click_body),
+                    "{rel} 第 {} 行: 角色 `{}` 的控件有点击源, 却没有绑**同一个落点**的 \
+                     `accessible-action-*`。\n\
+                     点击落点: {click_body:?}\n\
+                     该元素块里的无障碍动作: {actions:?}\n\
+                     宪法依据: `[UI-A11Y-003]` §7.3 第 4 条 ① —— 没有动作绑定, OS 无障碍树里\
+                     这个节点读得到、按不动（上游 `supported_accessibility_actions` 只收集\
+                     `accessible-action-*`）。",
+                    click_line + 1,
+                    block.role
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 20,
+            "只检查到 {checked} 个可点击控件 ⇒ 判据可能空转（口径或文本解析漂了）"
+        );
+    }
+
+    /// 判据（`[UI-A11Y-003]` §7.3 第 4 条 ①）：**无障碍名称不得出现空字面量。**
+    ///
+    /// §7.3 第 4 条 ① 的原话是"遍历主界面所有交互控件并断言无障碍名称非空"。文本层
+    /// 能机械抓住的那一类缺陷就是"表达式里写了 `\"\"`"：`sidebar-item-{i}` 曾经写成
+    /// `root.compact ? \"\" : root.items[item_index]` ⇒ 折叠断点下 8 个可交互条目在
+    /// 无障碍树里全是**无名**节点（屏读器读到 8 个一模一样的空项目）。
+    ///
+    /// 为什么连"三元表达式的一支"也算违规: §7.3 第 4 条 ① 要求的是名称**非空**,
+    /// 不是"在某个断点下非空"; 折叠是视觉选择, 不该抹掉名称。运行时那一半
+    /// （两个断点下真控件树的标签都非空）在 `test_port_adapter.rs`。
+    #[test]
+    fn no_accessible_name_may_be_the_empty_literal() {
+        let mut labels = 0_usize;
+        for (rel, text) in slint_sources() {
+            for (index, line) in code_only(&text).lines().enumerate() {
+                let Some((_, rest)) = line.split_once("accessible-label:") else {
+                    continue;
+                };
+                labels += 1;
+                assert!(
+                    !rest.contains("\"\""),
+                    "{rel} 第 {} 行: 无障碍名称里出现空字面量 ⇒ 某个断点下这个交互控件会变成\
+                     **无名**节点（`[UI-A11Y-003]` §7.3 第 4 条 ① 要求名称非空）。\n{line}",
+                    index + 1
+                );
+            }
+        }
+        assert!(
+            labels >= 90,
+            "只读到 {labels} 条 accessible-label ⇒ 判据可能空转（口径或文本解析漂了）"
+        );
+    }
+
+    /// 判据：**没有点击源的交互控件必须恰好是这一份清单**（每一个都有登记的理由）。
+    ///
+    /// 这条判据补的是 [`every_clickable_control_binds_a_matching_accessibility_action`]
+    /// 的缺口：那条只约束"有点击源的控件"。一个**新加**的、`accessible-role: button`
+    /// 却谁也不接的控件（"看起来能按、按下去什么都不发生"）不会让那条变红。本判据把
+    /// "今天确实没有动作"的控件**逐个点名** —— 清单外新增一个, 或者修好一个却忘了
+    /// 从清单里删掉, 都会红。
+    ///
+    /// 清单里每一条的现状（逐条核对过, 不是凭记忆）：
+    ///
+    /// | 语义 ID（`.slint` 右值） | 为什么今天没有动作 |
+    /// | :--- | :--- |
+    /// | `"ai-rail-intent-button"` | 意图生成能力不存在: 没有 `callback`、没有宿主写者 |
+    /// | `"console-maximize-button"` | 底部控制台最大化只有键盘路径（`Cmd/Ctrl+Alt+M`） |
+    /// | `"device-" + i + "-bypass-switch"` | 旁通没有宿主面（`device_rack.slint` 自己写着命中 0） |
+    /// | `"mixer-master-mute-button"` | 主控静音只有**显示**（`apply_mixer` 写 `master-mute`），没有 `mixer-master-mute-toggle` 回调 |
+    /// | `"mixer-master-solo-button"` | 同上（`master-solo`） |
+    /// | `"sidebar-category-" + i + "-button"` | 分类切换状态机不存在（只有静态选中态 `category_index == 0`） |
+    /// | `"transport-record-button"` | 录音能力不存在（判据 `the_record_button_has_no_click_handler_and_recording_is_unimplemented` 已钉） |
+    /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
+    /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
+    /// | `"transport-revert-button"` | 同上（能力存在但未接线） |
+    /// | `"scene-launch-" + i + "-button"` | 场景激发没有宿主面（`TouchArea` 存在但没有 `clicked`） |
+    #[test]
+    fn controls_without_any_click_source_are_exactly_the_known_empty_ones() {
+        const CONTROL_ROLES: [&str; 6] = [
+            "button",
+            "tab",
+            "switch",
+            "checkbox",
+            "radio-button",
+            "combobox",
+        ];
+        let mut found: Vec<String> = Vec::new();
+        for (rel, text) in slint_sources() {
+            let code = code_only(&text);
+            let lines: Vec<&str> = code.lines().collect();
+            let blocks = role_blocks(&lines);
+            let clicks = arrow_bodies(&code, "clicked", 0);
+            for block in &blocks {
+                if !CONTROL_ROLES.contains(&block.role.as_str()) {
+                    continue;
+                }
+                let has_own_click = clicks.iter().any(|(line, _)| {
+                    let innermost = blocks
+                        .iter()
+                        .filter(|probe| probe.start < *line && *line <= probe.end)
+                        .max_by_key(|probe| probe.start);
+                    innermost.is_some_and(|probe| probe.start == block.start)
+                });
+                if has_own_click {
+                    continue;
+                }
+                let block_text = lines[block.start..=block.end].join("\n");
+                let id = block_text
+                    .lines()
+                    .find_map(|line| line.split_once("accessible-id:").map(|(_, rest)| rest))
+                    .map(|rest| rest.trim().trim_end_matches(';').trim().to_owned())
+                    .unwrap_or_else(|| {
+                        panic!("{rel}: 角色 `{}` 的元素块没有 accessible-id", block.role)
+                    });
+                found.push(format!("{rel} :: {id}"));
+            }
+        }
+        found.sort();
+        found.dedup();
+        assert_eq!(
+            found,
+            KNOWN_ACTIONLESS_CONTROLS
+                .iter()
+                .map(|entry| (*entry).to_owned())
+                .collect::<Vec<String>>(),
+            "没有点击源的交互控件集合与登记不符。\n\
+             新增一个 ⇒ 要么给它接一个真动作（`accessible-action-default` + `clicked` 同一个落点），\
+             要么把它登记进本判据并写清理由;\n\
+             修好一个 ⇒ 从 `KNOWN_ACTIONLESS_CONTROLS` 里删掉它（本判据是活文档）。"
+        );
+    }
+
+    /// [`controls_without_any_click_source_are_exactly_the_known_empty_ones`] 的期望集合。
+    ///
+    /// 已排序（`BTreeMap` 口径的确定性: 判据的期望值不依赖文件系统迭代顺序）。
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 11] = [
+        "app.slint :: \"ai-rail-intent-button\"",
+        "console/console_tabs.slint :: \"console-maximize-button\"",
+        "console/device_rack.slint :: \"device-\" + device_index + \"-bypass-switch\"",
+        "console/mixer_console.slint :: \"mixer-master-mute-button\"",
+        "console/mixer_console.slint :: \"mixer-master-solo-button\"",
+        "sidebar.slint :: \"sidebar-category-\" + category_index + \"-button\"",
+        "transport.slint :: \"transport-branch-button\"",
+        "transport.slint :: \"transport-commit-button\"",
+        "transport.slint :: \"transport-record-button\"",
+        "transport.slint :: \"transport-revert-button\"",
+        "workspace/session_view.slint :: \"scene-launch-\" + scene_index + \"-button\"",
+    ];
 }

@@ -82,6 +82,8 @@ export component MusicalPrDrawer inherits Rectangle {
             accessible-role: button;
             accessible-id: "musical-pr-close-button";
             accessible-label: "关闭提案抽屉";
+            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+            accessible-action-default => { root.close(); }
 
             UiText {
                 x: 0;
@@ -325,6 +327,8 @@ export component MusicalPrDrawer inherits Rectangle {
         accessible-role: button;
         accessible-id: "musical-pr-accept-button";
         accessible-label: "采纳提案 (Shift+Enter)";
+        // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.accept(); }
 
         UiText {
             x: 0;
@@ -356,6 +360,8 @@ export component MusicalPrDrawer inherits Rectangle {
         accessible-role: button;
         accessible-id: "musical-pr-reject-button";
         accessible-label: "放弃提案 (Esc)";
+        // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.reject(); }
 
         UiText {
             x: 0;

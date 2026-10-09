@@ -284,6 +284,8 @@ export component ArrangementView inherits Rectangle {
             accessible-label: "轨道 " + track_name + " 静音";
             accessible-checkable: true;
             accessible-checked: root.track-mutes[track_index];
+            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+            accessible-action-default => { root.track-mute-toggle(track_index); }
 
             UiText {
                 x: 0;
@@ -321,6 +323,8 @@ export component ArrangementView inherits Rectangle {
             accessible-label: "轨道 " + track_name + " 独奏";
             accessible-checkable: true;
             accessible-checked: root.track-solos[track_index];
+            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+            accessible-action-default => { root.track-solo-toggle(track_index); }
 
             UiText {
                 x: 0;

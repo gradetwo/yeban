@@ -112,6 +112,18 @@ export component ConsoleTabs inherits Rectangle {
         accessible-item-count: 3;
         accessible-item-selectable: true;
         accessible-item-selected: root.active-tab == tab_index;
+        // `[UI-A11Y-003]` §7.3：无障碍动作。落点与下面 `TouchArea` 的 `clicked`
+        // **逐字同一段**（同一条 `if / else if / else`）—— 因此"屏读器选中这一页"
+        // 与"鼠标点这一页"不可能分叉。
+        accessible-action-default => {
+            if tab_index == 0 {
+                root.select-piano-roll();
+            } else if tab_index == 1 {
+                root.select-mixer();
+            } else {
+                root.select-devices();
+            }
+        }
 
         UiText {
             x: 0;

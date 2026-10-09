@@ -2989,3 +2989,135 @@ fn pressing_the_record_button_today_changes_nothing() {
         after.state, after.position_ticks, journal_before, checked_after, observed,
     ));
 }
+
+/// 判据（`[UI-A11Y-003]` §7.3 第 4 条 ① / `TEST-SPEC-005` 用例 ①）：
+/// **真控件树里每一个交互控件都必须有一个非空的无障碍名称。**
+///
+/// 规范原文（`docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md` §7.3 第 4 条）：
+/// "CI 流水线中必须包含至少 3 个屏幕阅读器集成测试用例：① 遍历主界面所有交互控件并断言
+/// 无障碍名称非空"。本条就是 ①：遍历的是**活的运行时树**（真实 `MainWindow` + Tier-1
+/// 平台），不是注册表 —— 因此它抓得到"动态标签算出来是空串"这一类注册表看不见的缺陷。
+///
+/// ## 两个读数都要非空（**缺一不可**）
+///
+/// 1. **树里的** `label`（`ui/tree` / `ui/node` 的读数，控制面消费者看这个）；
+/// 2. **活元素上的** `accessible-label`（`ui/property id label`，屏读器看这个）。
+///
+/// 为什么两个都要（**实测教训, 不是偏好**）：把静态注册表合并进运行时树的那一步会**填**
+/// 空标签 —— `yeban_ui_test_port::tree::ControlTree::merge_dynamic_flags_from` 的
+/// `if node.label.is_empty() && !source.label.is_empty() { node.label.clone_from(&source.label) }`。
+/// 于是"活元素上的标签是空串"会被注册表里的合成标签（`sidebar-item-{i}` 是
+/// `"资源条目 {i}"`）**掩盖**：只读树的话，注入实验（把标签改回
+/// `root.compact ? "" : …`）**不会变红** —— 本判据的第一版就是这样漏掉它的。
+/// 第 2 个读数直接问活元素，因此注册表补不了它。
+///
+/// ## 为什么查**两个断点**
+///
+/// `[UI-GRID-002]` §1.2 的 1366–1919 断点把左栏收成 36px 图标导轨：折叠是**视觉**选择，
+/// 但它曾经连带把 `sidebar-item-{i}` 的 `accessible-label` 写成 `""` ⇒ 折叠断点下 8 个
+/// 可交互条目在无障碍树里全变成**无名**节点（屏读器读到 8 个一模一样的空项目）。
+/// 只查默认断点会漏掉它，所以本判据在 `compact = false` 与 `compact = true` 下各遍历一次。
+///
+/// ## 与文本层判据的分工
+///
+/// `src/elements.rs` 的 `no_accessible_name_may_be_the_empty_literal` 抓"源码里写了 `""`"
+/// （本机可跑、零 Slint）；本条抓"**运行时**这个节点真的没有名字"（只有 CI 能跑）。
+/// 两半都在，才既早又真。
+///
+/// ## 注入证明（破坏 ⇒ 抓字面红行）
+///
+/// 把 `ui/sidebar.slint` 的 `accessible-label` 改回 `root.compact ? "" : …` ⇒ 第二遍
+/// （`compact = true`）立刻红，红行里点名 `sidebar-item-0`（第 2 个读数）。
+/// 见交付报告的注入实测。
+#[test]
+fn every_interactive_node_in_the_live_tree_carries_a_non_empty_accessible_name() {
+    /// "交互控件"的角色族（§7.3 第 4 条 ① 的对象）。
+    ///
+    /// `region` / `main` / `complementary` / `groupbox` 是**容器**（它们也接指针事件,
+    /// 但那是画布手势, 不是"控件"）；`text` / `image` 是读数与装饰。
+    const INTERACTIVE_ROLES: [&str; 9] = [
+        "button",
+        "tab",
+        "switch",
+        "checkbox",
+        "radio-button",
+        "combobox",
+        "slider",
+        "text-input",
+        "list-item",
+    ];
+
+    let view = ViewState::demo();
+    let scene = DemoScene::from_view(&view);
+    let registry = demo_registry();
+    let static_tree = registry_to_tree(&registry).expect("注册表适配");
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
+        build_demo_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + MainWindow");
+
+    if port.tree().is_empty() {
+        report_capability(
+            "unavailable: crates/yeban-app 的 .slint 没有编译期 debug info ⇒ ElementHandle \
+             遍历拿到一棵空树 (见 docs/ledger/ui-test-port-notes.md §2 #27 / §10 needs 0)",
+        );
+        panic!(
+            "[UI-A11Y-003] 运行时控件树为空 ⇒ 判据的前置条件不满足（.slint 缺编译期 debug info）。\n\
+             详见 test_port_adapter.rs 的 runtime_control_tree_cross_check_against_the_registry。"
+        );
+    }
+
+    let mut total = 0_usize;
+    for compact in [false, true] {
+        port.ui().set_compact(compact);
+        // `refresh_tree` 借的是 `port` 的**可变**借用；下一段还要用 `read_property`
+        // 读活元素（不可变借用）⇒ 先把树拷下来，借用当场结束（本判据只看这一帧的快照）。
+        let tree = port
+            .refresh_tree(Some(&static_tree))
+            .expect("UI 状态变了之后重抓控件树")
+            .clone();
+        let mut interactive = 0_usize;
+        for node in tree.iter() {
+            if !INTERACTIVE_ROLES.contains(&node.role.as_str()) {
+                continue;
+            }
+            interactive += 1;
+            assert!(
+                !node.label.trim().is_empty(),
+                "[UI-A11Y-003] §7.3 第 4 条 ①: `compact = {compact}` 下交互控件 `{}` \
+                 (角色 `{}`) 的树内无障碍名称是空的 —— 屏读器读不出它是什么, 用户无法在 \
+                 一组无名控件里做出选择。",
+                node.id,
+                node.role
+            );
+            // 第 2 个读数: **活元素**上的 `accessible-label`（注册表补不了它, 见文件头）。
+            let live = port
+                .read_property(&node.id, "label")
+                .unwrap_or_else(|err| panic!("读活元素的 `{}`.label 失败: {err}", node.id));
+            assert!(
+                !live.trim().is_empty(),
+                "[UI-A11Y-003] §7.3 第 4 条 ①: `compact = {compact}` 下交互控件 `{}` \
+                 (角色 `{}`) 的**活元素**无障碍名称是空串 ⇒ 屏读器读到的是一个无名控件。\n\
+                 ⚠ 树里的标签非空但活元素上是空的 ⇒ 那是静态注册表在填充 \
+                 (`ControlTree::merge_dynamic_flags_from`), 不是真的有人写了名字。",
+                node.id,
+                node.role
+            );
+        }
+        observe(&format!(
+            "[a11y-①] compact = {compact}: 运行时树 {} 条, 其中交互控件 {interactive} 个, \
+             树内标签与活元素上的 accessible-label 都非空",
+            tree.len()
+        ));
+        assert!(
+            interactive >= 20,
+            "[a11y-①] compact = {compact} 下只找到 {interactive} 个交互控件 ⇒ 判据可能空转 \
+             （角色表或树的可见性口径漂了）"
+        );
+        total += interactive;
+    }
+    observe(&format!(
+        "[a11y-①] 两个断点合计遍历交互控件 {total} 个（`[UI-A11Y-003]` §7.3 第 4 条 ①）"
+    ));
+}

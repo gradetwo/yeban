@@ -507,7 +507,7 @@ fn production_tick_does_not_inject_when_the_window_track_count_disagrees() {
 ///
 /// - "默认帧逐字节可复现" 说的是**外观的确定性**；
 /// - "默认帧不随电平变" 说的是**这一档画面里没有电平条** —— 它**不**蕴含"电平没接上"。
-///   恰恰相反：电平条住在**混音台那一档**（`ui/console/mixer_console.slint:251` 的
+///   恰恰相反：电平条住在**混音台那一档**（`ui/console/mixer_console.slint:255` 的
 ///   `100px * root.track-meter-levels[track_index]`，只有控制台 Tab = 1 才在控件树里）。
 ///   要判"接上了没有"，靠的是本文件前三条判据，以及下一条**混音台档**的像素判据。
 #[test]

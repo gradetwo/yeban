@@ -99,6 +99,9 @@ export component PianoRoll inherits Rectangle {
         accessible-item-count: 5;
         accessible-checkable: true;
         accessible-checked: root.active-tool == tool_index;
+        // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同
+        // （同一个 `Tool::from_digit` 数字口径）。
+        accessible-action-default => { root.tool-selected(tool_index + 1); }
 
         UiText {
             x: 0;

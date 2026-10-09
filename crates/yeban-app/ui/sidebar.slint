@@ -72,6 +72,8 @@ export component Sidebar inherits Rectangle {
             accessible-label: root.compact ? "展开左侧资源栏" : "收起左侧资源栏";
             accessible-expandable: true;
             accessible-expanded: !root.compact;
+            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+            accessible-action-default => { root.toggle-collapse(); }
 
             UiText {
                 x: 0;
@@ -163,7 +165,11 @@ export component Sidebar inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "sidebar-item-" + item_index;
-        accessible-label: root.compact ? "" : root.items[item_index];
+        // ⚠ 折叠态**不再**把标签置空（`[UI-A11Y-003]` §7.3 第 4 条 ①：交互控件的
+        // 无障碍名称不得为空）。折叠是**视觉**选择（只画 24px 图标位，见下面两个
+        // `visible`），而屏读器在任何断点下都需要念得出这一条是什么 ——
+        // 空标签会让"资源条目 0‥7"变成 8 个不可区分的节点。
+        accessible-label: root.items[item_index];
         accessible-item-index: item_index;
         accessible-item-count: 8;
         accessible-item-selectable: true;

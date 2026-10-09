@@ -182,6 +182,8 @@ export component SessionView inherits Rectangle {
         accessible-role: button;
         accessible-id: "session-back-to-arrangement-button";
         accessible-label: "返回编曲 (Back to Arrangement)";
+        // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+        accessible-action-default => { root.back-to-arrangement(); }
 
         UiText {
             x: 0;

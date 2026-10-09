@@ -122,6 +122,8 @@ export component UndoTreeModal inherits Rectangle {
             accessible-role: button;
             accessible-id: "undo-tree-close-button";
             accessible-label: "关闭时光机";
+            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+            accessible-action-default => { root.close(); }
 
             UiText {
                 x: 0;
@@ -264,6 +266,9 @@ export component UndoTreeModal inherits Rectangle {
             accessible-role: button;
             accessible-id: "undo-tree-undo-button";
             accessible-label: "撤销一步 (Cmd+Z)";
+            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同
+            // （同一格 `UndoPort::perform`，与 `Cmd+Z` 同源）。
+            accessible-action-default => { root.undo-step(); }
 
             UiText {
                 x: 0;

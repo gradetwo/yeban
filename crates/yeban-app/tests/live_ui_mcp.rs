@@ -2101,7 +2101,7 @@ fn escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
 /// 命题 ①（「默认帧可复现」= 确定性）**分开陈述**，两者不可互相代替。
 ///
 /// 驱动入口是 `MainWindow` 的三个混音台回调（`.slint` 的 `TouchArea` 调的就是它们，
-/// 见 `ui/console/mixer_console.slint:318-328`）—— 与真实指针事件同一条链。
+/// 见 `ui/console/mixer_console.slint:322-332`）—— 与真实指针事件同一条链。
 /// `LiveUi::capture` 是 `ui/screenshot` 内部用的**同一个** `capture_tier1`，因此这里
 /// 不需要第二套像素路径，也**不碰 golden**（比的是同一次运行的两帧）。
 #[test]
@@ -2343,7 +2343,7 @@ fn a_committed_master_fader_gesture_changes_the_frame() {
 /// | 心跳之后 | 同上 | `-33.2`（= 提交进工程的那一版） |
 ///
 /// 手势走的是 `MainWindow` 的**三个混音台回调**（`.slint` 的 `TouchArea` 调的就是它们，
-/// 见 `ui/console/mixer_console.slint:320-326`）—— 与真实指针事件同一条链（后者另有判据 7）。
+/// 见 `ui/console/mixer_console.slint:324-330`）—— 与真实指针事件同一条链（后者另有判据 7）。
 ///
 /// ## 会变红的注入（实测见交付报告）
 ///

@@ -16,8 +16,8 @@
 // 命中 0）：`"EQ 4 段" / "Compressor" / "Space Reverb"` 声称装着三台设备，
 // `[0.62, 0.48, 0.44, 0.58]` 声称四条增益读数 —— 两批都是编造的。
 // 严重度**低于** `status_bar.slint` 与 AI 徽章：`DeviceRack` 只在
-// `crates/yeban-app/ui/console/console_tabs.slint:261` 被实例化一处，且 `visible` 绑在
-// `root.active-tab == 2`（`console_tabs.slint:266`）上，而 `active-tab` 的默认值是 `0`，
+// `crates/yeban-app/ui/console/console_tabs.slint:273` 被实例化一处，且 `visible` 绑在
+// `root.active-tab == 2`（`console_tabs.slint:278`）上，而 `active-tab` 的默认值是 `0`，
 // 且 `crates/yeban-app/src/**` 里**没有**任何把该 tab 设为 `2` 的宿主写者
 // （按函数名 `set_active_tab` 搜 `crates/**/*.rs` 得 0 个定义、0 个调用）
 // ⇒ 默认帧不渲染它、它也不在默认的运行时控件树里。
@@ -25,7 +25,7 @@
 // 并引 `grep -n 'DeviceRack' crates/yeban-app/ui/*.slint` 命中 0 为证 —— 那句是**假的**：
 // 该 grep 只扫 `ui/` 顶层、不含 `ui/console/` 子目录，所以扫不到上面那处实例化。
 // 递归的 `grep -rn 'DeviceRack' crates/yeban-app/ui/` 会回 `console_tabs.slint:16` 的 import
-// 与 `:261` 的实例化。结论（"不是用户此刻看得到的东西"）未变，依据换成 `visible` 条件。
+// 与 `:273` 的实例化。结论（"不是用户此刻看得到的东西"）未变，依据换成 `visible` 条件。
 // 处置建议（下一票）：`band-names` / `band-labels` 是**频段词汇表**（合法常量，保留）；
 // `device-names` / `band-gains` 是**数据面**，应该清空并画空态 —— 而"设备链"今天在界面侧
 // 根本没有模型实体（`docs/ledger/feature-alignment.md` 的 `MODEL-ISO-001` 行写着
