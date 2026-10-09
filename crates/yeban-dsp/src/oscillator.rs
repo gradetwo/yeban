@@ -530,8 +530,22 @@ impl WavetableOscillator {
     }
 
     /// 直接设置相位（复位到周期起点、或做相位对齐时使用）。
+    ///
+    /// ⚠ **非有限相位被忽略**（当前相位不动）。`phase` 是递归状态：非有限值一旦写
+    /// 进去，每一次 [`Self::process`] 都把它原样留下（`NaN + inc = NaN`），而
+    /// [`Wavetable::sample`] 对非有限相位的插值也返回非有限值（残差是 `NaN`）；
+    /// 实时路径上无法报错，只能就地回落。
+    ///
+    /// 与相邻的 [`Self::set_frequency`] 不同，这里选"忽略"而不是"归到下界 `0.0`"：
+    /// 相位是一个**圆周**上的量，没有"更安全的一侧"；而把它归零会在一个样本上把
+    /// 波形拽回周期起点，那正是 [ARCH-DSP-001] 要根除的阶跃断崖。忽略是唯一
+    /// **不改变信号**的一侧（与 [`crate::noise::NoiseGen::set_corner_hz`] 同一条口径）。
+    ///
+    /// **有限相位逐位不变**（含 `rem_euclid` 的规格化）。
     pub fn set_phase(&mut self, phase: f32) {
-        self.phase = phase.rem_euclid(1.0);
+        if phase.is_finite() {
+            self.phase = phase.rem_euclid(1.0);
+        }
     }
 
     /// 复位相位。
@@ -1036,6 +1050,53 @@ mod tests {
         oscillator.set_sample_rate(96_000.0, &table);
         assert!(oscillator.level() <= before.max(table.level_for(2093.0, 96_000.0)));
         assert_eq!(oscillator.level(), table.level_for(2093.0, 96_000.0));
+    }
+
+    /// **判据（新写，可红）**：非有限**相位**不得写进递归状态。
+    ///
+    /// 观测：以 `440 Hz`、相位 `0.25` 建两个位相同的实例，其中一个 `set_phase` 成
+    /// `NaN`／`±∞`；要求它的相位**逐位不动**，且随后 `4 096` 个样本与未注入的那个
+    /// **逐位相同**。同一夹具顺带钉住守卫**不改变有限输入**的行为（`−0.25` 仍按
+    /// `rem_euclid` 规格化成 `0.75`）。
+    ///
+    /// 为什么输出一定看得见：`phase` 是递归状态（`phase += inc`），一个非有限相位
+    /// 会让每一次迭代都留在非有限值上，而 [`Wavetable::sample`] 的插值残差也是
+    /// 非有限值 ⇒ 输出**永久**非有限。
+    ///
+    /// 注入（实测红行见报告）：去掉 [`WavetableOscillator::set_phase`] 里的
+    /// `is_finite` 判断 ⇒ 第一个断言就报"相位被 NaN 毒化"。
+    #[test]
+    fn a_non_finite_phase_never_enters_the_oscillator_state() {
+        let table = Wavetable::from_recipe(ORGAN);
+        for hostile in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut reference = WavetableOscillator::new(48_000.0);
+            reference.set_frequency(&table, 440.0);
+            reference.set_phase(0.25);
+            let mut poisoned = reference;
+            poisoned.set_phase(hostile);
+            assert!(
+                poisoned.phase().is_finite(),
+                "相位被 {hostile} 毒化成 {}",
+                poisoned.phase()
+            );
+            assert_eq!(
+                poisoned.phase().to_bits(),
+                0.25f32.to_bits(),
+                "set_phase({hostile}) 移动了相位"
+            );
+            let mut wrapped = reference;
+            wrapped.set_phase(-0.25);
+            assert_eq!(wrapped.phase(), 0.75, "有限相位的规格化被守卫改掉了");
+            for sample in 0..4_096 {
+                let clean = reference.process(&table);
+                let tainted = poisoned.process(&table);
+                assert_eq!(
+                    clean.to_bits(),
+                    tainted.to_bits(),
+                    "sample {sample}: 相位 {hostile} 之后输出分叉"
+                );
+            }
+        }
     }
 
     // ---------------------------------------------------------------- LFO

@@ -26,6 +26,16 @@
 //! 一条可断言的判据。
 //!
 //! 本模块无堆分配、无全局状态、无锁 [ARCH-RT-001]。
+//!
+//! ## 非有限参数（入口回落）
+//!
+//! `value` 是**递归**状态（`value ← value + (1 − α)·(target − value)`），而它的两个
+//! 自变量都来自控制面。非有限输入一旦写进它，每一次迭代都把它原样留下：`NaN` 是
+//! 不动点（`NaN − NaN = NaN`），`±∞` 更糟 —— 下一步 `∞ − ∞` 就化成 `NaN`。
+//! `reset` 之外没有出路，而本类型没有 `reset`。因此两个**写目标 / 写值**的入口
+//! （[`ParamSmoother::set_target`]、[`ParamSmoother::snap_to`]）都**忽略**非有限
+//! 输入，保持当前值与当前目标不动。构造期与 [`ParamSmoother::set_time_constant`]
+//! 那一侧的守卫在 [`ParamSmoother::recompute`] 里（非有限 τ 是"关闭平滑"）。
 
 use crate::math::sanitise_sample_rate;
 
@@ -117,8 +127,27 @@ impl ParamSmoother {
     }
 
     /// 设置自动化目标；输出按 τ 逼近它。
+    ///
+    /// ⚠ **非有限目标被忽略**（当前目标与当前值都不动）。`alpha`／`value`／`target`
+    /// 里只有 `value` 是**递归**状态，而一个非有限目标会在**同一个样本**里把它写成
+    /// 非有限值：`difference = target − value` 是 `NaN`／`±∞`，吸附判断为假，
+    /// `value += (1 − α)·difference` 于是把 `NaN`／`±∞` 留在 `value` 上；
+    /// 此后每一步都是同一个结果（`NaN − NaN = NaN`），输入恢复干净也回不来。
+    /// 实时路径上无法报错，只能在入口回落。
+    ///
+    /// "忽略"而不是"退回某个默认值"是**保守**的一侧：本类型是**通用**平滑器
+    /// （增益、截止频率、声像都用它），没有一个能对所有用途都安全的默认值 ——
+    /// 对增益而言 `0.0` 是静音，那是本仓库明文登记过的"巨大且听得见的改动"
+    /// （见 [`crate::channel_strip::ChannelStripParams::sanitised`] 的说明）。
+    /// 忽略也正与唯一的生产调用方 `yeban-engine` 的 `ParamTable` 对非法参数的口径
+    /// 一致（那里是"拒绝且**不施加**"）；同一条口径的另一个既有站点是
+    /// [`crate::noise::NoiseGen::set_corner_hz`]。
+    ///
+    /// **有限目标逐位不变**。
     pub fn set_target(&mut self, target: f32) {
-        self.target = target;
+        if target.is_finite() {
+            self.target = target;
+        }
     }
 
     /// 当前目标值。
@@ -128,9 +157,16 @@ impl ParamSmoother {
     }
 
     /// 立即跳到某个值（初始化、复位、采样率切换时使用；不产生渐变）。
+    ///
+    /// ⚠ **非有限的 `value` 被忽略**（当前值与当前目标都不动），理由与
+    /// [`Self::set_target`] 相同。这里还多一条：本方法是**唯一**能把一个已被毒化的
+    /// 平滑器救回来的入口（它直接写 `value`），因此它自己更不能写进非有限值 ——
+    /// 否则"回落"这条路就被堵死了。
     pub fn snap_to(&mut self, value: f32) {
-        self.value = value;
-        self.target = value;
+        if value.is_finite() {
+            self.value = value;
+            self.target = value;
+        }
     }
 
     /// 当前输出值。
@@ -350,5 +386,63 @@ mod tests {
         let stable = smoother.alpha();
         smoother.set_sample_rate(96_000.0);
         assert_eq!(smoother.alpha(), stable);
+    }
+
+    /// **判据（新写，可红）**：非有限**目标 / 吸附值**不得写进递归状态。
+    ///
+    /// 观测：吸附到 `0.4` 之后，把目标设成 `NaN`／`±∞`（再用同样的值调 `snap_to`），
+    /// 然后推进 `1 000` 个样本。要求：目标与值都**逐位不动**、`is_settled` 仍为真、
+    /// 每个输出逐位等于 `0.4`。最后验证**恢复路径**仍然活着（`snap_to` 一个新值仍生效）。
+    ///
+    /// 注入（实测红行见报告）：去掉 [`ParamSmoother::set_target`] 里的 `is_finite`
+    /// 判断 ⇒ 第 0 个样本就是 `NaN`，本判据立即变红。同一处对
+    /// [`ParamSmoother::snap_to`] 同理。
+    #[test]
+    fn a_non_finite_target_or_snap_never_enters_the_recursive_state() {
+        for hostile in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut smoother = ParamSmoother::with_default_time(SR);
+            smoother.snap_to(0.4);
+            let value_before = smoother.value();
+            let target_before = smoother.target();
+
+            smoother.set_target(hostile);
+            assert_eq!(
+                smoother.target().to_bits(),
+                target_before.to_bits(),
+                "set_target({hostile}) 移动了目标"
+            );
+            assert_eq!(
+                smoother.value().to_bits(),
+                value_before.to_bits(),
+                "set_target({hostile}) 移动了值"
+            );
+
+            smoother.snap_to(hostile);
+            assert_eq!(
+                smoother.target().to_bits(),
+                target_before.to_bits(),
+                "snap_to({hostile}) 移动了目标"
+            );
+            assert_eq!(
+                smoother.value().to_bits(),
+                value_before.to_bits(),
+                "snap_to({hostile}) 移动了值"
+            );
+
+            assert!(smoother.is_settled(), "非有限值把'已吸附'拆散了");
+            for sample in 0..1_000 {
+                let out = smoother.process();
+                assert_eq!(
+                    out.to_bits(),
+                    0.4f32.to_bits(),
+                    "sample {sample}: 非有限值之后输出 {out}"
+                );
+            }
+
+            // 恢复路径必须仍然活着：吸附到一个新值要真的生效。
+            smoother.snap_to(0.9);
+            assert_eq!(smoother.value(), 0.9);
+            assert_eq!(smoother.target(), 0.9);
+        }
     }
 }
