@@ -390,10 +390,17 @@ pub fn decode_source<'s>(
         // 而返回值仍然只是一个 `DecodeError`（不可信输入零 panic）。`planes == 0` 已在
         // 上面被拒，所以 `channels >= 1`；`max(1)` 只是让这条除法在任何情况下都不可能
         // 除零。
+        //
+        // ⚠ 2026-10-10 更正（由本线新增的判据
+        // `a_non_finite_float_sample_past_the_first_packet_is_refused_and_named` 的**首次
+        // 运行**读出来）：上面那句"精确指出帧号与声道号"此前**只在第一个缓冲里成立**。
+        // `position` 返回的是包内下标，而这一包在 `samples` 里的起点是 `start`；上游
+        // RIFF 读端每包 1152 帧，于是"第三包的样本 1391"被报成 `frame 695 channel 1`，
+        // 而它真实的帧号是 2999。判据把两个数字都钉住 ⇒ 这里必须把 `start` 加回去。
         if buffer_format.is_float()
             && let Some(offset) = samples[start..].iter().position(|s| !s.is_finite())
         {
-            let offset = u64::try_from(offset).unwrap_or(u64::MAX);
+            let offset = u64::try_from(start.saturating_add(offset)).unwrap_or(u64::MAX);
             let per_frame = u64::from(channels).max(1);
             return Err(DecodeError::Malformed {
                 detail: format!(
@@ -1169,6 +1176,59 @@ mod tests {
         );
     }
 
+    /// 判据（类别① 非有限输入）：非有限样本出现在**第一个解码缓冲之后**时同样必须被拒，
+    /// 而且错误文案必须点名它**真实**所在的帧与声道。
+    ///
+    /// 为什么需要它：`a_float_container_with_non_finite_samples_is_refused` 的夹具只有
+    /// 4 个样本，在解码循环里只对应**一个**缓冲 —— 那个站点上"每个缓冲都扫一遍"与
+    /// "只扫第一个缓冲"给出同一个读数。本判据的夹具是 3 000 帧的 48 kHz 浮点立体声：
+    /// 上游 RIFF 读端按每包 1152 帧切分，因此污染点落在**后面的**缓冲里；把扫描限制在
+    /// 第一个缓冲（或只扫已经写入的前缀）就会把它整份放行。
+    ///
+    /// 同一条判据还钉住文案里的帧/声道分解：污染点取最后一个交错下标（帧 2 999、声道 1），
+    /// 而"交错下标"与"帧/声道"只有在声道数为 1 时才相同。
+    #[test]
+    fn a_non_finite_float_sample_past_the_first_packet_is_refused_and_named() {
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits: 32,
+            format: WavFormat::Float,
+        };
+        let frames = 3_000usize;
+        let poisoned_frame = frames - 1;
+        let poisoned_channel = 1usize;
+        let offset = poisoned_frame * 2 + poisoned_channel;
+        let mut values = vec![0.25f32; frames * 2];
+        values[offset] = f32::NAN;
+
+        let err = decode_bytes(
+            &wav(&spec, &encode_f32_samples(&values)),
+            &DecodeOptions::default(),
+        )
+        .expect_err("a NaN past the first packet must still be refused");
+        let detail = match &err {
+            DecodeError::Malformed { detail } => detail.clone(),
+            other => panic!("expected Malformed, got {other:?}"),
+        };
+        assert!(
+            detail.contains("frame 2999 channel 1"),
+            "the refusal must name the sample's real frame and channel, got {detail}"
+        );
+
+        // 非空洞对照：同一份夹具只把那一个槽位换成有限值 ⇒ 正常解出，且长度逐帧对齐。
+        // 这证明上面红的是"非有限"，而不是这份夹具或这个长度本身不可解。
+        let mut finite = values.clone();
+        finite[offset] = -0.25;
+        let asset = decode_bytes(
+            &wav(&spec, &encode_f32_samples(&finite)),
+            &DecodeOptions::default(),
+        )
+        .expect("the same fixture with a finite sample must decode");
+        assert_eq!(asset.frame_count(), u64::try_from(frames).unwrap());
+        assert_eq!(asset.channels(), 2);
+    }
+
     #[test]
     fn flac_constant_block_decodes_with_its_declared_length() {
         let spec = FlacSpec {
@@ -1336,6 +1396,59 @@ mod tests {
         );
     }
 
+    /// 判据 ([ARCH-SEC-003] 闸门站点)：**声道数闸门必须在第一个解码缓冲处判** ——
+    /// 也就是在任何样本缓冲增长之前。声道数超预算时，报出来的必须是
+    /// `TooManyChannels`，即使同一份预算的 PCM 字节上限也小到会跳闸。
+    ///
+    /// 为什么需要它：`the_channel_and_rate_gates_fire_on_their_own` 只把
+    /// `max_channels` 压到 1，PCM 字节预算保持默认（不可能跳闸），因此它分不开
+    /// "在第一个缓冲处判"与"在整段解完之后的终检处判"—— 两条路径报的是同一个变体、
+    /// 同一组字段，而后者会让整段素材先分配出来。本判据把字节上限一起压到刚好够
+    /// 单声道版的一帧数：若声道闸门迟到，先跳闸的就是 `PcmBudgetExceeded`（变体不同），
+    /// 于是"迟到"第一次变成可观察的。第二段是反向对照：把声道预算放宽、只留字节闸门 ⇒
+    /// 那时必须报 `PcmBudgetExceeded`（证明这条判据不是"永远报声道错"）。
+    #[test]
+    fn the_channel_gate_fires_on_the_first_buffer_before_the_sample_budget() {
+        // 256 帧立体声 ⇒ 单声道折算 256 个样本；字节上限给到 256 个样本，
+        // 因此循环之前那次按 `channels = 1` 做的预检放行。
+        let stereo = int_wav(2, 16, &[1_000; 512]);
+        let both_tight = DecodeOptions {
+            budget: PcmBudget {
+                max_channels: 1,
+                max_pcm_bytes: 256 * 4,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        assert!(
+            matches!(
+                decode_bytes(&stereo, &both_tight),
+                Err(DecodeError::Budget(LimitViolation::TooManyChannels {
+                    channels: 2,
+                    limit: 1
+                }))
+            ),
+            "the channel gate must be judged on the first buffer, before the sample budget"
+        );
+        let bytes_only = DecodeOptions {
+            budget: PcmBudget {
+                max_channels: 2,
+                max_pcm_bytes: 256 * 4,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        assert!(
+            matches!(
+                decode_bytes(&stereo, &bytes_only),
+                Err(DecodeError::Budget(
+                    LimitViolation::PcmBudgetExceeded { .. }
+                ))
+            ),
+            "with the channel gate relaxed the sample budget must be the one that trips"
+        );
+    }
+
     #[test]
     fn the_input_byte_budget_is_enforced_before_probing() {
         let bytes = int_wav(1, 16, &[7; 8]);
@@ -1457,6 +1570,80 @@ mod tests {
         assert!(
             decode_bytes(&short_riff, &DecodeOptions::default()).is_err(),
             "a RIFF length below 4 must not decode"
+        );
+    }
+
+    /// 判据 ([ARCH-SEC-003] / 块网格末端边界)：当 `fmt ` 的 **8 字节块头恰好落在父块
+    /// （RIFF 声明的块区）的最后 8 字节**时，预检仍然必须读它的 16 字节块体并判定那次
+    /// `u16` 乘法。
+    ///
+    /// 为什么需要它：`scan_riff_for_fmt` 的"还够一个块头吗"这一步镜像的是上游
+    /// `ChunksReader::next` 的条件 `consumed + 8 > len`（**严格大于**）。把它放宽成
+    /// `>=` 会在这一格提前返回 `Ok(())`（放行）；而上游在那一格不会被"块长超出父块"
+    /// 挡住 —— 声明长度为 0 时 `len - consumed == 0 < 0` 为假，于是 `fmt ` 照样被解析、
+    /// 那次乘法照样溢出。既有的块网格判据用的都是"`fmt ` 后面还有块"的布局，
+    /// 因此这一格此前是空白。
+    ///
+    /// 夹具是手工拼的：`N` 个 0 长度 `JUNK` 块（每个恰好 8 字节）加一个 `fmt ` 块头
+    /// 构成整个父块区，`riff_len` 只声明到 `fmt ` 头的末尾（比真实文件短 24 字节），
+    /// 16 字节块体物理上落在父块区**之外**。
+    #[test]
+    fn the_riff_precheck_reads_an_fmt_header_that_ends_the_parent_chunk() {
+        let junk_chunks = 4usize;
+        let total = 12 + junk_chunks * 8 + 8 + 16;
+        let mut bytes = Vec::with_capacity(total);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&u32::try_from(total - 24).unwrap().to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        for _ in 0..junk_chunks {
+            bytes.extend_from_slice(b"JUNK");
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+        }
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // 声明的块体长度是 0
+        // 16 字节块体：tag 1、32769 声道、16-bit ⇒ 上游那次 `u16` 乘法溢出。
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&32_769u16.to_le_bytes());
+        bytes.extend_from_slice(&8_000u32.to_le_bytes());
+        bytes.extend_from_slice(&16_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        assert_eq!(bytes.len(), total, "fixture shape");
+
+        let err = scan_precheck(&bytes).expect_err(
+            "an fmt block header at the parent chunk's last 8 bytes must still be judged",
+        );
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("32769")),
+            "got {err}"
+        );
+    }
+
+    /// 判据 ([ARCH-SEC-003] 的"只拒 WAV"一侧)：`RIFF` 容器但 form type 不是 `WAVE`
+    /// 时，预检必须**完全不参与**。上游的 WAV 读端在 form type 那一层就报错，永远走不到
+    /// `fmt ` 的解析，因此本闸门不能用一个不成立的理由（"乘法会溢出"）去拒它 ——
+    /// 本 crate 的错误文案要进 MCP 响应体，原因必须指对。
+    #[test]
+    fn the_riff_precheck_stands_down_for_a_riff_container_that_is_not_wave() {
+        let spec = int_spec(1, 16);
+        let mut bytes = wav_with_chunks_before_fmt(
+            &spec,
+            &[(*b"JUNK", &[0xEEu8; 4])],
+            &encode_int_samples(16, &[0x1234, -0x1234]),
+        );
+        patch_declared_channels(&mut bytes, 32_769);
+        // 同一份字节只把 form type 换成 AVI：它不再是 WAV。
+        bytes[8..12].copy_from_slice(b"AVI ");
+        assert!(
+            scan_precheck(&bytes).is_ok(),
+            "a RIFF container that is not WAVE never reaches the WAV fmt parser"
+        );
+        // 对照：form type 改回 WAVE，同一份字节必须被拒 —— 证明上面绿的是 form type
+        // 这一层，而不是这份夹具恰好不会触发那次溢出。
+        bytes[8..12].copy_from_slice(b"WAVE");
+        assert!(
+            scan_precheck(&bytes).is_err(),
+            "the same bytes as WAVE must still be refused"
         );
     }
 
@@ -1662,6 +1849,53 @@ mod tests {
         // ⑤ `valid_bits > bits`（PCM 子格式）。
         let bad_valid = wav_extensible(&ext_spec(33, 8, 9, 0, WAVE_SUBTYPE_PCM), &data);
         assert!(scan_precheck(&bad_valid).is_ok());
+    }
+
+    /// 判据 ([ARCH-SEC-003] 的"只拒"一侧 / `channel_diff == 0` 那一格)：声道掩码里
+    /// 置位的个数**恰好等于**声道数时，上游 `fix_wave_channel_mask` 的循环条件一开始
+    /// 就为假（`channel_diff == 0`），那次移位根本不会执行 —— 因此即使掩码的第 31 位
+    /// 是 1，本闸门也必须放行。
+    ///
+    /// 为什么需要它：既有的"不能拒"对照用的都是 `channel_diff < 0`（2.0 / 5.1 / 7.1
+    /// 的掩码位数多于声道数）或空掩码，没有一条落在"`count_ones() == channels` 且最高
+    /// 掩码位置位"这一格。把"声道数不多于掩码位数 ⇒ 不进移位分支"这条短路从 `>=`
+    /// 放宽成 `>`，这一格就会被"外移会溢出"误拒。
+    #[test]
+    fn the_extensible_gate_stands_down_when_the_channel_difference_is_zero() {
+        let data = encode_int_samples(8, &[0x11, 0x22]);
+        for (channels, mask) in [(1u16, 0x8000_0000u32), (3, 0x8000_0003), (32, 0xFFFF_FFFF)] {
+            let bytes = wav_extensible(&ext_spec(channels, 8, 8, mask, WAVE_SUBTYPE_PCM), &data);
+            assert!(
+                scan_precheck(&bytes).is_ok(),
+                "{channels} channels with mask {mask:#010x}: the mask has exactly {channels} \
+                 bits set, so upstream never enters the shift branch"
+            );
+        }
+    }
+
+    /// 判据 ([ARCH-SEC-003] 的"只拒"一侧)：`sub_format = IEEE_FLOAT` 时上游要求
+    /// `valid_bits_per_sample == bits_per_sample`，不满足就在**移位之前**报错 ——
+    /// 因此 `valid < bits` 的形状本闸门必须放行，哪怕它的 `channel_diff` 大到会溢出。
+    ///
+    /// 为什么需要它：既有的位深约束对照只覆盖 PCM 的 `valid > bits`（被上游拒绝）
+    /// 那一侧，IEEE_FLOAT 的**相等**约束没有被任何判据走过。
+    #[test]
+    fn the_extensible_gate_stands_down_for_float_valid_bits_below_the_depth() {
+        let data = encode_int_samples(8, &[0x11, 0x22]);
+        // 33 声道 + 空掩码：位深与 valid 一致时确实会走到那次溢出移位。
+        let overflows_when_reached =
+            wav_extensible(&ext_spec(33, 32, 32, 0, WAVE_SUBTYPE_IEEE_FLOAT), &data);
+        assert!(
+            scan_precheck(&overflows_when_reached).is_err(),
+            "the fixture must actually reach the overflowing shift"
+        );
+        // 同一个形状只把 valid_bits 降到 24：上游在移位之前就报错，本闸门必须放行。
+        let valid_below_depth =
+            wav_extensible(&ext_spec(33, 32, 24, 0, WAVE_SUBTYPE_IEEE_FLOAT), &data);
+        assert!(
+            scan_precheck(&valid_below_depth).is_ok(),
+            "IEEE_FLOAT requires valid_bits == bits_per_sample; upstream errors before the shift"
+        );
     }
 
     /// 判据 (闸门不得误拒)：合法的 `WAVE_FORMAT_EXTENSIBLE` 素材必须照常解出。
@@ -1937,6 +2171,82 @@ mod tests {
         }
     }
 
+    /// 判据 ([ARCH-SEC-003] / `HD-24` 第五道闸门)：不可回退的源必须在**读的过程中**就被
+    /// 输入字节闸门切断，而不是"整份读完再判"。
+    ///
+    /// 为什么需要它：`a_non_seekable_source_obeys_the_input_byte_budget` 只钉返回的错误
+    /// 变体与数字。缓冲之后 `decode_source` 还会对 `Cursor` 的 `byte_len()` 再判一次，
+    /// 因此即使把 `slurp_unseekable` 的上限换成 `u64::MAX`，那条判据读到的错误
+    /// （`InputTooLarge { bytes: limit + 1, limit }`）**逐字相同** —— 两道判定的可观察
+    /// 结果重合，掩盖了"输入已经被整份读进内存"这件事。本判据改从**源一侧**计量：
+    /// 一个能提供 8 个 64 KiB 分块的源，在上限 256 字节下被读走的字节数必须不超过一个
+    /// 读分块（`SLURP_CHUNK_BYTES`），且错误里的字节数是第一个分块的投影值。
+    #[test]
+    fn an_unseekable_source_is_cut_off_while_reading_not_after() {
+        struct CountingUnseekable {
+            remaining: usize,
+            read: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        impl Read for CountingUnseekable {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let filled = buf.len().min(self.remaining);
+                buf[..filled].fill(0);
+                self.remaining -= filled;
+                self.read
+                    .fetch_add(filled, std::sync::atomic::Ordering::SeqCst);
+                Ok(filled)
+            }
+        }
+
+        impl Seek for CountingUnseekable {
+            fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "this source cannot seek",
+                ))
+            }
+        }
+
+        impl MediaSource for CountingUnseekable {
+            fn is_seekable(&self) -> bool {
+                false
+            }
+            fn byte_len(&self) -> Option<u64> {
+                None
+            }
+        }
+
+        let limit = 256u64;
+        let options = DecodeOptions {
+            budget: PcmBudget::new(limit, !3u64, 64, 768_000, 60),
+            ..DecodeOptions::default()
+        };
+        let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let available = 8 * SLURP_CHUNK_BYTES;
+        let source = CountingUnseekable {
+            remaining: available,
+            read: std::sync::Arc::clone(&read),
+        };
+
+        match decode_source(Box::new(source), &Hint::new(), &options) {
+            Err(DecodeError::Budget(LimitViolation::InputTooLarge { bytes, limit: got })) => {
+                assert_eq!(
+                    (bytes, got),
+                    (u64::try_from(SLURP_CHUNK_BYTES).unwrap(), limit),
+                    "the refusal must carry the projection of the first read chunk"
+                );
+            }
+            other => panic!("expected InputTooLarge after the first chunk, got {other:?}"),
+        }
+        let consumed = read.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            consumed <= SLURP_CHUNK_BYTES,
+            "the gate must fire during the read: {consumed} bytes were consumed out of \
+             {available} available"
+        );
+    }
+
     /// 判据 ([ARCH-SEC-003] / `HD-24` 第五道闸门)：**可回退**的源经公共入口
     /// [`decode_source`] 也必须过输入字节闸门。
     ///
@@ -2197,6 +2507,51 @@ mod tests {
                 .frame_count(),
             16_000
         );
+    }
+
+    /// 判据 ([ARCH-SEC-003] 闸门站点)：容器**声明**的时长超过预算时，必须在开始解码
+    /// 之前就被时长闸门挡下 —— 报出来的帧数是声明折算值，而不是"真读到文件尾"的 I/O 错误。
+    ///
+    /// 为什么需要它：既有的时长判据用的都是"文件里真有那么多帧"的夹具，因此"按声明先判
+    /// 一次"与"只逐包判"给出同一个变体与同一个数字；
+    /// `a_declared_data_length_far_beyond_the_real_bytes_returns_instead_of_looping`
+    /// 只要求 `is_err()`，同样分不开两者。本判据的夹具声明 200 000 字节的 `data`
+    /// （16-bit 单声道 ⇒ 100 000 帧）而只有 64 字节真实样本：只有把声明折算成帧数再判，
+    /// 才会得到 `DurationTooLong` 与声明值；否则先发生的是上游在真实字节耗尽时的 I/O 错误。
+    #[test]
+    fn a_declared_duration_over_the_cap_is_refused_before_decoding() {
+        let spec = int_spec(1, 16);
+        let real_data = encode_int_samples(16, &[1_000; 32]); // 32 帧 = 64 字节
+        let declared_bytes = 200_000u32; // 声明的 `data` 长度 ⇒ 100 000 帧
+        let bytes = wav_with_declared_len(&spec, &real_data, declared_bytes);
+        let one_second = DecodeOptions {
+            budget: PcmBudget {
+                max_duration_secs: 1,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        match decode_bytes(&bytes, &one_second) {
+            Err(DecodeError::Budget(LimitViolation::DurationTooLong {
+                frames,
+                sample_rate,
+                seconds,
+                limit_secs,
+            })) => {
+                assert_eq!(
+                    (frames, sample_rate, seconds, limit_secs),
+                    (100_000, 8_000, 12, 1),
+                    "the refusal must carry the declared frame count, not the decoded one"
+                );
+            }
+            other => panic!(
+                "a declared 100 000-frame stream must be refused by the declared-length \
+                 pre-check, got {other:?}"
+            ),
+        }
+        // 对照：同一份畸形字节在默认预算下仍然返回错误（它本来就是截断的流），
+        // 因此上面红的是那道按声明判的时长闸门，不是这份夹具整类不可解。
+        assert!(decode_bytes(&bytes, &DecodeOptions::default()).is_err());
     }
 
     #[test]

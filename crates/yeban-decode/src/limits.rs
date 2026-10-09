@@ -1345,4 +1345,113 @@ mod tests {
         }
         assert_eq!(twice, fresh);
     }
+
+    /// 判据 (长度契约的两个容差常数)：短片段阈值与绝对容差下限都必须**真的**在闭区间的
+    /// 边界上生效，而且两个常数都取文档写明的字面值。
+    ///
+    /// 为什么需要它：既有的 `short_clips_get_an_explicit_delay_allowance` 只取理想的
+    /// 100 帧与 199 369 帧两端，因此阈值取 4096 还是 8192、下限取 8 还是 16 都读不出
+    /// 差别 —— 这些数字只在"恰好等于阈值"与"相对容差小于下限"这两格上可观察。
+    /// 本判据把两格都钉住（纯整数运算，与架构无关，因此字面值可以在任何目标上硬断言）。
+    #[test]
+    fn the_length_contract_pins_the_tolerance_floor_and_the_short_clip_boundary() {
+        // 理想输出恰好 4096 帧：**不**追加 SINC_LEN（阈值是"小于"）。
+        let at_threshold = resample_len_contract(4_096, 48_000, 48_000).expect("non-zero rates");
+        assert_eq!(
+            (at_threshold.ideal_floor, at_threshold.ideal_ceil),
+            (4_096, 4_096)
+        );
+        // 相对容差 = 4096 × 1000 ppm = 4 帧，小于 8 帧下限 ⇒ 生效的是下限。
+        assert_eq!(at_threshold.min, 4_096 - 8);
+        assert_eq!(at_threshold.max, 4_096 + 8);
+        // 低于阈值一帧：追加 SINC_LEN = 256 帧。
+        let below_threshold = resample_len_contract(4_095, 48_000, 48_000).expect("non-zero rates");
+        assert_eq!(below_threshold.min, 4_095 - 8 - 256);
+        assert_eq!(below_threshold.max, 4_095 + 8 + 256);
+        // 更短：相对容差（1000 × 1000 ppm = 1 帧）同样被下限抬起。
+        let tiny = resample_len_contract(1_000, 48_000, 48_000).expect("non-zero rates");
+        assert_eq!(tiny.min, 1_000 - 8 - 256);
+        assert_eq!(tiny.max, 1_000 + 8 + 256);
+    }
+
+    /// 判据 (长度契约的上下界公式)：上界必须由**上取整**得出，相对容差必须由**下取整**
+    /// 得出 —— 两个取整方向各自都有可观察的字面值。
+    ///
+    /// 为什么需要它：既有的契约判据只钉"区间包含理想值"与三个整数比例的规范转换，
+    /// 那几组里 floor 与 ceil 恰好相等（或相对容差恰好不受取整方向影响），因此
+    /// "上取整退化成下取整"与"相对容差改用 ceil"两种改法都读不出差别。
+    /// 本判据取两组 floor ≠ ceil 的比例：1001 帧 44.1 kHz → 48 kHz（1089 / 1090），
+    /// 与 13 333 帧 2 Hz → 3 Hz（19 999 / 20 000，这一组的相对容差两侧相差 1 帧）。
+    /// 全部是整数运算，与架构无关。
+    #[test]
+    fn the_length_contract_takes_its_ceiling_and_its_relative_slack_from_the_right_rounding() {
+        let up = resample_len_contract(1_001, 48_000, 44_100).expect("non-zero rates");
+        assert_eq!((up.ideal_floor, up.ideal_ceil), (1_089, 1_090));
+        // floor = 1089 < 4096 ⇒ 容差 = max(1089 × 1000 ppm, 8) + 256 = 1 + 256。
+        assert_eq!(up.min, 1_089 - 264);
+        assert_eq!(up.max, 1_090 + 264);
+
+        // floor = 19 999 / ceil = 20 000：相对容差必须取 floor 那一侧（19 帧）。
+        let extreme = resample_len_contract(13_333, 3, 2).expect("non-zero rates");
+        assert_eq!((extreme.ideal_floor, extreme.ideal_ceil), (19_999, 20_000));
+        assert_eq!(extreme.min, 19_999 - 19);
+        assert_eq!(extreme.max, 20_000 + 19);
+    }
+
+    /// 判据 (默认预算是冻结的常量)：`PcmBudget::default()` 的五个字段必须是字面值，
+    /// 而不只是"与同名的公开常量一致"。
+    ///
+    /// 为什么需要它：`default_budget_is_recomputed_from_the_product_requirements` 的
+    /// 断言都用同一个常量或同一条公式复算（例如
+    /// `max_input_bytes == max_pcm_bytes + CONTAINER_OVERHEAD_BYTES`），因此单独改
+    /// `DEFAULT_MAX_SAMPLE_RATE`、`DEFAULT_MAX_DURATION_SECS` 或
+    /// `CONTAINER_OVERHEAD_BYTES` 的**数值**不会让任何断言变红。[ARCH-DET-001] 要求
+    /// 预算是不随运行机器变化的常量，这些数字同时写在 `lib.rs` 的口径表里，因此它们
+    /// 必须由判据逐条钉住。
+    #[test]
+    fn the_default_budget_numbers_are_frozen_literals() {
+        let budget = PcmBudget::default();
+        // 3 h @ 96 kHz 立体声交织 f32 = 10 800 s × 96 000 帧/s × 2 声道 × 4 字节。
+        assert_eq!(budget.max_pcm_bytes, 8_294_400_000);
+        // 输入字节上限 = PCM 预算 + 1 MiB 的容器开销。
+        assert_eq!(budget.max_input_bytes, 8_294_400_000 + 1_048_576);
+        assert_eq!(budget.max_channels, 64);
+        assert_eq!(budget.max_sample_rate, 768_000);
+        assert_eq!(budget.max_duration_secs, 21_600);
+        // 推导输入本身也钉住：只钉结果的话，"两条产品要求一起被改小"仍然读不出来。
+        assert_eq!(DEFAULT_REFERENCE_SECONDS, 10_800);
+        assert_eq!(DEFAULT_REFERENCE_RATE, 96_000);
+        assert_eq!(DEFAULT_REFERENCE_CHANNELS, 2);
+        assert_eq!(DEFAULT_MULTITRACK_SECONDS, 1_800);
+        assert_eq!(DEFAULT_MULTITRACK_CHANNELS, 8);
+        assert_eq!(DEFAULT_MAX_CHANNELS, 64);
+        assert_eq!(DEFAULT_MAX_SAMPLE_RATE, 768_000);
+        assert_eq!(DEFAULT_MAX_DURATION_SECS, 21_600);
+        assert_eq!(CONTAINER_OVERHEAD_BYTES, 1_048_576);
+    }
+
+    /// 判据 (构造侧 `for_layout`)：反推出来的预算必须把**容器开销**算进输入字节上限，
+    /// 而且那是闭区间。
+    ///
+    /// 为什么需要它：`for_layout_admits_exactly_the_requirement_it_was_derived_from`
+    /// 只断言 `max_pcm_bytes`，因此"输入字节上限丢掉 1 MiB 容器开销"在那条判据下完全
+    /// 不可见（一份 44 字节头 + 恰好 `max_pcm_bytes` 的 WAV 会因此被误拒）。
+    #[test]
+    fn for_layout_adds_the_container_overhead_to_the_input_cap() {
+        let pcm = pcm_bytes_for(3_600, 96_000, 2).expect("1 h @ 96 kHz stereo fits u64");
+        assert_eq!(pcm, 3_600 * 96_000 * 2 * 4);
+        let budget = PcmBudget::for_layout(3_600, 96_000, 2).expect("a 1-hour stereo layout");
+        assert_eq!(budget.max_pcm_bytes, pcm);
+        assert_eq!(budget.max_input_bytes, pcm + 1_048_576);
+        // 闭区间：恰好 pcm + 1 MiB 的容器字节通过，多一字节即拒。
+        let cap = pcm + 1_048_576;
+        assert_eq!(check_input_len(cap, &budget), Ok(()));
+        assert_eq!(
+            check_input_len(cap + 1, &budget),
+            Err(LimitViolation::InputTooLarge {
+                bytes: cap + 1,
+                limit: cap,
+            })
+        );
+    }
 }
