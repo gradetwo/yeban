@@ -3729,6 +3729,28 @@ mod tests {
     }
 
     #[test]
+    fn a_genre_rule_with_an_impossible_meter_reports_instead_of_panicking() {
+        // `GenreRule` 的字段全是公有的：登记表之外的规则可以带 `meter: (4, 0)`
+        // 这种分母为 0 的拍号。旧码把它灌进 `Progression` 再展开 ⇒ 整除 panic。
+        let broken = GenreRule {
+            meter: (4, 0),
+            ..GenreLibrary::all()[0]
+        };
+        assert_eq!(broken.meter_value().ticks_per_bar(), 0);
+        assert_eq!(broken.sketch(PitchClass::C, 4), Err(TheoryError::ZeroBars));
+        assert_eq!(
+            broken.sketch_at(PitchClass::C, 4, 0),
+            Err(TheoryError::ZeroBars)
+        );
+        assert_eq!(
+            broken.sketch_for(PitchClass::C, 4, 0),
+            Err(TheoryError::ZeroBars)
+        );
+        // 网格路径本来就借用 `Meter::new` 的校验：读数不变。
+        assert_eq!(broken.rhythm_grid(4, 4), Err(TheoryError::ZeroBars));
+    }
+
+    #[test]
     fn drum_style_histogram_covers_every_rule() {
         // 数什么：182 条流派的 `drum_style` 字段逐条计数，单位 = "条"。
         // 登记读数：169 条 metric（= 旧口径）+ 13 条 four-on-the-floor。

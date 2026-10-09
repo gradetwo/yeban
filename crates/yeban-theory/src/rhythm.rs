@@ -301,13 +301,25 @@ pub struct BeatGrouping<'a> {
 
 impl<'a> BeatGrouping<'a> {
     /// 为 `meter` 构造一条覆盖它全部拍的分组；不合法时返回 `None`（见类型文档）。
+    ///
+    /// ⚠ `groups` 是调用方给的切片，**长度没有上界**：累加在**任一前缀超过
+    /// 拍数**时立刻停下，因此不会溢出（旧码把整段 `.sum::<u32>()` 加完，长度
+    /// 足够时在 debug 下 panic、在关闭溢出检查的 release 档下回绕）。
     #[must_use]
     pub fn new(meter: Meter, groups: &'a [u8]) -> Option<Self> {
         let beats = felt_beats_per_bar(meter);
         if beats == 0 || groups.is_empty() || groups.contains(&0) {
             return None;
         }
-        let total: u32 = groups.iter().map(|&count| u32::from(count)).sum();
+        // 各组至少 1 拍（0 已被拒），因此前缀和是单调不减的：任一前缀超过拍数
+        // 等价于总和超过拍数。提前停下后 `total <= 拍数 + 255`，累加不可能溢出。
+        let mut total: u32 = 0;
+        for &count in groups {
+            total += u32::from(count);
+            if total > u32::from(beats) {
+                return None;
+            }
+        }
         if total != u32::from(beats) {
             return None;
         }
@@ -1313,6 +1325,34 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    /// `groups` 是**调用方给的切片**，长度没有上界：旧码用 `.sum::<u32>()` 把
+    /// 它整段累加，长度足够时溢出（debug 下 panic；开启溢出检查的 release 档
+    /// 同样 panic；关闭检查的 release 档回绕）。新码在**任一前缀**超过拍数时
+    /// 立刻返回 `None`，于是累加值恒不超过 `拍数 + 255`，不可能溢出。
+    #[test]
+    fn a_group_slice_long_enough_to_overflow_the_sum_is_rejected() {
+        // 255 × 16843009 = u32::MAX（恰好不溢出）；再多一个 255 就溢出。
+        let fits = u32::MAX / 255;
+        assert_eq!(255u32 * fits, u32::MAX);
+        let overflowing_len = fits as usize + 1;
+        let overflowing = vec![255u8; overflowing_len];
+        assert!(BeatGrouping::new(COMMON, &overflowing).is_none());
+
+        // 对照：长度少一个，旧码不溢出（和恰好 = `u32::MAX` ≠ 拍数 4）⇒ 也判 None。
+        let just_fits = vec![255u8; fits as usize];
+        assert!(BeatGrouping::new(COMMON, &just_fits).is_none());
+
+        // 合法/非法短分组的读数逐位不变（回归护栏）。
+        assert_eq!(
+            BeatGrouping::new(COMMON, &[2, 2]).unwrap().groups(),
+            &[2, 2]
+        );
+        assert!(BeatGrouping::new(COMMON, &[4]).is_some());
+        assert!(BeatGrouping::new(COMMON, &[2, 3]).is_none());
+        assert!(BeatGrouping::new(COMMON, &[]).is_none());
+        assert!(BeatGrouping::new(COMMON, &[0, 4]).is_none());
     }
 
     /// 组起点的判定：第 0 拍恒是起点，越界的拍不是。

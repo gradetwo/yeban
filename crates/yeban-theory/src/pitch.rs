@@ -465,6 +465,9 @@ impl fmt::Display for PitchClass {
 ///
 /// 文本为空、音级字母非法，或变音记号超出重升/重降时返回
 /// [`TheoryError::NoteNameUnknown`]。
+///
+/// 变音记号在 `i32` 上累加：记号个数就是输入长度，因此本函数对**任意长度**的
+/// 输入都不 panic（见 `a_long_run_of_accidentals_is_rejected_instead_of_overflowing`）。
 pub fn parse_pitch_class(text: &str) -> Result<PitchClass, TheoryError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -481,15 +484,24 @@ pub fn parse_pitch_class(text: &str) -> Result<PitchClass, TheoryError> {
         'B' => 6,
         _ => return Err(TheoryError::NoteNameUnknown),
     };
-    let mut alter: i8 = 0;
+    // 累加在 `i32` 上做：变音记号的个数**就是输入长度**，本函数没有
+    // `SpelledPitch` 那条 `MAX_NOTE_TEXT_LEN` 上限，在 `i8` 上累加会在第 128 个
+    // 同号记号处溢出（debug 与开启溢出检查的 release 档都 panic；Cargo 默认关闭
+    // 检查的 release 档回绕 —— 回绕值可能落在 `-2..=2` 内而被当成合法音名）。
+    // 区间判定只做一次，且与 `NoteName::new` 的 `-2..=2` 同口径，因此**装得下的
+    // 输入与旧口径逐位相同**；饱和加法让任意长度的输入都不 panic。
+    let mut alter: i32 = 0;
     for ch in chars {
         match ch {
-            '#' | '\u{266f}' => alter += 1,
-            'b' | 'B' | '\u{266d}' => alter -= 1,
+            '#' | '\u{266f}' => alter = alter.saturating_add(1),
+            'b' | 'B' | '\u{266d}' => alter = alter.saturating_sub(1),
             _ => return Err(TheoryError::NoteNameUnknown),
         }
     }
-    let name = NoteName::new(letter, alter)?;
+    if !(-2..=2).contains(&alter) {
+        return Err(TheoryError::NoteNameUnknown);
+    }
+    let name = NoteName::new(letter, alter as i8)?;
     Ok(name.pitch_class())
 }
 
@@ -839,6 +851,59 @@ mod tests {
             "H4".parse::<SpelledPitch>(),
             Err(TheoryError::NoteNameUnknown)
         );
+    }
+
+    /// 变音记号的个数**就是输入长度**，因此这是"极长入参"上的累加极值：
+    /// `parse_pitch_class` 只有它自己这一条解析路径，没有 `SpelledPitch` 那样的
+    /// 长度上限（后者见 `MAX_NOTE_TEXT_LEN`）。
+    ///
+    /// 旧码把变音记号累加进 `i8`：第 128 个**同号**记号让它溢出（debug 与开启
+    /// 溢出检查的 release 档都 panic，关闭检查的 release 档回绕），而
+    /// `NoteName::new` 的 `-2..=2` 校验在**之后**才跑。新码在 `i32` 上累加、
+    /// 只在结尾判一次区间 ⇒ 装得下的输入与旧口径逐位相同，装不下的输入被拒绝
+    /// 而不是回绕。
+    #[test]
+    fn a_long_run_of_accidentals_is_rejected_instead_of_overflowing() {
+        // 下界 0 与上界"同号记号多到溢出"都要有明确读数。
+        for count in [0usize, 1, 2, 3, 127, 128, 129, 255, 256, 4096] {
+            let sharps = format!("C{}", "#".repeat(count));
+            let flats = format!("C{}", "b".repeat(count));
+            assert_eq!(
+                parse_pitch_class(&sharps).is_ok(),
+                count <= 2,
+                "{count} sharps must be accepted iff within double-sharp"
+            );
+            assert_eq!(
+                parse_pitch_class(&flats).is_ok(),
+                count <= 2,
+                "{count} flats must be accepted iff within double-flat"
+            );
+        }
+
+        // 逐位一致读数：**旧码不 panic** 的 36 组输入（前缀全程留在 `i8` 值域内）
+        // 上，新口径必须与旧口径给同一个答案 —— 旧口径的裁决就是
+        // `NoteName::new` 的 `-2..=2`。这里独立复算净值，不复用被测实现。
+        let mut compared = 0usize;
+        for sharps in [0usize, 1, 2, 3, 62, 127] {
+            for flats in [0usize, 1, 2, 3, 62, 127] {
+                let text = format!("C{}{}", "#".repeat(sharps), "b".repeat(flats));
+                let net = sharps as i32 - flats as i32;
+                assert_eq!(
+                    parse_pitch_class(&text).is_ok(),
+                    (-2..=2).contains(&net),
+                    "{sharps} sharps then {flats} flats (net {net})"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 36);
+
+        // 混号但净值仍在重升/重降内：这条输入旧码**不** panic（先升到 127 再降
+        // 回 0），因此读数必须逐位保留。
+        let net_zero = format!("C{}{}", "#".repeat(127), "b".repeat(127));
+        assert_eq!(parse_pitch_class(&net_zero).unwrap(), PitchClass::C);
+        let net_two = format!("C{}{}", "#".repeat(127), "b".repeat(125));
+        assert_eq!(parse_pitch_class(&net_two).unwrap(), PitchClass::D);
     }
 
     #[test]

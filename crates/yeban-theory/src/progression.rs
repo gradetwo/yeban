@@ -64,8 +64,15 @@ impl Meter {
     }
 
     /// 每小节 tick 数（整数）。
+    ///
+    /// 分母为 0 的拍号只能由公有字段绕过 [`Meter::new`] 得到，此时返回 `0`
+    /// （"没有时长"）而不是 panic —— 除数是入参，而本 crate 的计算路径承诺
+    /// 绝不 panic。其余输入（含非 2 的幂的分母）的读数与旧口径**逐位相同**。
     #[must_use]
     pub const fn ticks_per_bar(self) -> u64 {
+        if self.denominator == 0 {
+            return 0;
+        }
         PPQ * 4 * self.numerator as u64 / self.denominator as u64
     }
 
@@ -186,25 +193,33 @@ impl Degree {
     /// # Errors
     ///
     /// 语法不合法时返回 [`TheoryError::DegreeSymbolUnknown`]，数字越界时返回
-    /// [`TheoryError::DegreeNumberOutOfRange`]。
+    /// [`TheoryError::DegreeNumberOutOfRange`]，前缀变音记号的绝对值超过
+    /// `i8` 能表达的范围时也返回 [`TheoryError::DegreeSymbolUnknown`]
+    /// （**拒绝**，不回绕）。
     pub fn parse(text: &str) -> Result<Self, TheoryError> {
         let trimmed = text.trim();
         let mut body = trimmed;
-        let mut accidental: i8 = 0;
+        // 累加在 `i32` 上做：前缀变音记号的个数就是输入长度，`i8` 会在第 129 个
+        // 降号（或第 128 个升号）上溢出（debug 与开启溢出检查的 release 档都
+        // panic；Cargo 默认关闭检查的 release 档回绕成 `Ok(127)` 这种错值）。
+        // `accidental` 是 `i8`，因此只在**装不下**时拒绝；装得下的输入与旧口径
+        // 逐位相同（含 `b` ×128 ⇒ `-128` 这条旧码不 panic 的边界）。
+        let mut accidental: i32 = 0;
         // 前缀变音记号
         while let Some(ch) = body.chars().next() {
             match ch {
                 'b' | '\u{266d}' => {
-                    accidental -= 1;
+                    accidental = accidental.saturating_sub(1);
                     body = &body[ch.len_utf8()..];
                 }
                 '#' | '\u{266f}' => {
-                    accidental += 1;
+                    accidental = accidental.saturating_add(1);
                     body = &body[ch.len_utf8()..];
                 }
                 _ => break,
             }
         }
+        let accidental = i8::try_from(accidental).map_err(|_| TheoryError::DegreeSymbolUnknown)?;
         // 罗马数字本体：取最长的前缀
         let rest: &str = body;
         let rest_upper = rest.to_ascii_uppercase();
@@ -387,8 +402,8 @@ impl Progression {
     ///
     /// # Errors
     ///
-    /// `degrees` 为空时返回 [`TheoryError::EmptyProgression`]；`bars` 为 0 时
-    /// 返回 [`TheoryError::ZeroBars`]。
+    /// `degrees` 为空时返回 [`TheoryError::EmptyProgression`]；`bars` 为 0 或
+    /// `meter` 不是合法拍号（见 [`Meter::new`]）时返回 [`TheoryError::ZeroBars`]。
     pub fn new(degrees: Vec<Degree>, meter: Meter, bars: u32) -> Result<Self, TheoryError> {
         if degrees.is_empty() {
             return Err(TheoryError::EmptyProgression);
@@ -396,6 +411,9 @@ impl Progression {
         if bars == 0 {
             return Err(TheoryError::ZeroBars);
         }
+        // 借用 `Meter::new` 的校验：`Meter` 的字段是公有的，调用方可以绕过它的
+        // 构造器；分母为 0 的拍号会让 `ticks_per_bar` 的整除无法定义。
+        Meter::new(meter.numerator, meter.denominator)?;
         Ok(Self {
             degrees,
             meter,
@@ -465,6 +483,11 @@ impl Progression {
     }
 
     /// 设置拍号。
+    ///
+    /// 本函数是 `const fn` 且不返回 `Result`（`Progression` 的字段对外不可见，
+    /// 日常入口是 [`Progression::parse`]），因此它**不**校验拍号：非法拍号由
+    /// [`Progression::expand`] 以 [`TheoryError::ZeroBars`] 拒绝，
+    /// [`Progression::ticks_per_bar`] 与 [`Progression::total_ticks`] 给 `0`。
     #[must_use]
     pub const fn with_meter(mut self, meter: Meter) -> Self {
         self.meter = meter;
@@ -504,12 +527,17 @@ impl Progression {
     ///
     /// # Errors
     ///
-    /// 走向为空时返回 [`TheoryError::EmptyProgression`]；过密时返回
-    /// [`TheoryError::ProgressionTooDense`]。
+    /// 走向为空时返回 [`TheoryError::EmptyProgression`]；拍号非法（分母为 0，
+    /// 只能由 [`Progression::with_meter`] 灌进来）时返回 [`TheoryError::ZeroBars`]；
+    /// 过密时返回 [`TheoryError::ProgressionTooDense`]。
     pub fn expand(&self, key: &Scale) -> Result<Vec<ChordSpan>, TheoryError> {
         if self.degrees.is_empty() {
             return Err(TheoryError::EmptyProgression);
         }
+        // `with_meter` 不返回 `Result`，因此非法拍号在这里也要拒绝：否则
+        // `ticks_per_bar` 的整除会退化（分母为 0 时旧码 panic），而"时值恒为正、
+        // 首尾相接"这两条不变量在总时长为 0 时会同时失效。
+        Meter::new(self.meter.numerator, self.meter.denominator)?;
         let ticks_per_bar = self.ticks_per_bar();
         let total = self.total_ticks();
         let bars = u64::from(self.bars);
@@ -824,6 +852,94 @@ mod tests {
             TheoryError::ZeroBars
         );
         assert!(expand_progression(&Scale::new(PitchClass::C, ScaleKind::Major), "I", 0).is_err());
+    }
+
+    /// 前缀变音记号的个数**就是输入长度**：`Degree::parse` 用 `i8` 累加，
+    /// 第 129 个降号（或第 128 个升号）让它溢出 —— 边界随符号不对称，正是
+    /// "累加器宽度"而不是"音乐语义"在起作用。新码在 `i32` 上累加，只在装不下
+    /// `i8` 时用既有的 [`TheoryError::DegreeSymbolUnknown`] 拒绝。
+    #[test]
+    fn degree_accidentals_that_do_not_fit_i8_are_rejected_instead_of_overflowing() {
+        assert_eq!(Degree::parse("VII").unwrap().accidental, 0);
+        assert_eq!(Degree::parse("bVII").unwrap().accidental, -1);
+        assert_eq!(Degree::parse("bbVII").unwrap().accidental, -2);
+
+        // 旧码不 panic 的整段边界（`i8::MIN` 恰好装得下 128 个降号，
+        // `i8::MAX` 只装得下 127 个升号）⇒ 读数逐位保留。
+        let deepest_flats = format!("{}VII", "b".repeat(128));
+        assert_eq!(Degree::parse(&deepest_flats).unwrap().accidental, -128);
+        let highest_sharps = format!("{}VII", "#".repeat(127));
+        assert_eq!(Degree::parse(&highest_sharps).unwrap().accidental, 127);
+
+        // 越出 `i8`：拒绝，不回绕、不 panic。
+        for count in [129usize, 200, 4096] {
+            assert!(
+                Degree::parse(&format!("{}VII", "b".repeat(count))).is_err(),
+                "{count} flats must be rejected"
+            );
+        }
+        for count in [128usize, 200, 4096] {
+            assert!(
+                Degree::parse(&format!("{}VII", "#".repeat(count))).is_err(),
+                "{count} sharps must be rejected"
+            );
+        }
+
+        // 同一条路径的公开入口也必须报错而不是 panic。
+        assert!(Progression::parse(&format!("{}VII", "b".repeat(4096))).is_err());
+    }
+
+    /// 分母为 0 的拍号只能由**公有字段**绕过 [`Meter::new`] 得到，而
+    /// `ticks_per_bar` 会做整除 ⇒ 旧码 panic（debug 与 release 都 panic）。
+    /// 拒绝发生在构造期与展开期，读数口给"空"值 0。
+    #[test]
+    fn a_meter_with_a_zero_denominator_is_rejected_and_never_panics() {
+        let c_major = Scale::new(PitchClass::C, ScaleKind::Major);
+        let broken = Meter {
+            numerator: 4,
+            denominator: 0,
+        };
+        assert!(Meter::new(4, 0).is_err());
+        assert_eq!(broken.ticks_per_bar(), 0);
+
+        // 构造期拒绝。
+        let degrees = vec![Degree::parse("I").unwrap()];
+        assert_eq!(
+            Progression::new(degrees.clone(), broken, 4).unwrap_err(),
+            TheoryError::ZeroBars
+        );
+        // `with_meter` 仍是无 `Result` 的 `const fn`，因此展开期拒绝。
+        let via_setter = Progression::parse("I-V").unwrap().with_meter(broken);
+        assert_eq!(via_setter.ticks_per_bar(), 0);
+        assert_eq!(via_setter.total_ticks(), 0);
+        assert_eq!(
+            via_setter.expand(&c_major).unwrap_err(),
+            TheoryError::ZeroBars
+        );
+
+        // 合法拍号的读数逐位不变（含非 2 的幂分母这一"旧码不 panic"的分支）。
+        assert_eq!(Meter::COMMON.ticks_per_bar(), 3840);
+        assert_eq!(Meter::WALTZ.ticks_per_bar(), 2880);
+        assert_eq!(Meter::COMPOUND_DUPLE.ticks_per_bar(), 2880);
+        assert_eq!(Meter::MARCH.ticks_per_bar(), 1920);
+        assert_eq!(Meter::QUINTUPLE.ticks_per_bar(), 4800);
+        assert_eq!(Meter::SEVEN_EIGHT.ticks_per_bar(), 3360);
+        assert_eq!(
+            Meter {
+                numerator: 4,
+                denominator: 3
+            }
+            .ticks_per_bar(),
+            5120
+        );
+        assert_eq!(
+            Meter {
+                numerator: 0,
+                denominator: 4
+            }
+            .ticks_per_bar(),
+            0
+        );
     }
 
     #[test]
