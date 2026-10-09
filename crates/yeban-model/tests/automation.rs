@@ -707,6 +707,50 @@ fn serde_round_trip_of_the_full_shape() {
     assert_eq!(first, second, "同一文档两次序列化必须逐字节相同");
 }
 
+/// ④a2 `track.automation_lanes` 的 JSON 形态是**按 `AutomationTarget` 升序**的数组。
+///
+/// 为什么需要：泳道集合是 `BTreeMap<AutomationTarget, AutomationLane>`，但 JSON 形态是
+/// 数组（`serde_json` 的对象键必须是字符串）。既有判据只钉**采样点**的键序
+/// （`evaluation_and_serialization_are_independent_of_insertion_order`）与结构往返，
+/// 而结构往返对数组顺序**不敏感**。实测（本次注入）：把
+/// `automation_lane_map::serialize` 的 `lanes.values()` 换成 `lanes.values().rev()` 时
+/// 全仓判据保持全绿 —— 同一份工程的导出字节可以整体改变而无人察觉
+/// （`ARCH-DET-001` / `MODEL-AST-003` 的导出确定性）。本判据按 `Ord` 逐项核对数组顺序。
+#[test]
+fn lane_arrays_serialize_in_target_key_order() {
+    let (mut doc, f) = fixture();
+    let mut lanes = BTreeMap::new();
+    // 故意按非升序插入，且真的放了不止一条泳道（否则"顺序"无意义）。
+    for target in [f.send, f.volume, f.macro_target, f.param, f.pan] {
+        lanes.insert(
+            target,
+            lane(target, vec![point(100, 0, 0.0, CurveType::Linear)]),
+        );
+    }
+    let mut expected: Vec<AutomationTarget> = lanes.keys().copied().collect();
+    expected.sort();
+    assert!(
+        expected.windows(2).all(|pair| pair[0] < pair[1]),
+        "夹具必须真的有多条不同泳道: {expected:?}"
+    );
+
+    doc.tracks.get_mut(&f.lead).expect("lead").automation_lanes = lanes;
+    assert_eq!(doc.validate(), Ok(()), "夹具必须合法");
+
+    let track = serde_json::to_value(&doc.tracks[&f.lead]).expect("serialize");
+    let array = track["automation_lanes"]
+        .as_array()
+        .expect("automation_lanes 必须是 JSON 数组");
+    let actual: Vec<AutomationTarget> = array
+        .iter()
+        .map(|entry| serde_json::from_value(entry["target"].clone()).expect("target"))
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "泳道数组必须按 AutomationTarget 的 Ord 升序（导出字节因此确定）"
+    );
+}
+
 /// ④b 取值域与写模式的 JSON 形状稳定：端点排序、默认值不落盘、非有限端点被拒。
 #[test]
 fn value_domain_and_write_mode_json_shape_is_stable() {

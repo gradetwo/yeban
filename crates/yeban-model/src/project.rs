@@ -2958,7 +2958,8 @@ mod tests {
     //
     // 手册口径：「先用 grep 机械列出同类全部候选，再汇成一张表逐项判定」。
     // Rust 没有反射，因此清单直接从源码文本推出来（`struct`／`enum` 体，
-    // 枚举载荷字段与 `Option<f32>` 都看得见），再与冻结表**双向**比较。
+    // 枚举载荷字段、`Option<f32>`、`Vec<f32>` 这类容器类型与数值类型别名都看得见），
+    // 再与冻结表**双向**比较。
     // -----------------------------------------------------------------------
 
     use crate::ops::Op;
@@ -2975,8 +2976,9 @@ mod tests {
     /// `<变体>.<字段>`（一个枚举里可以有两个同名字段，例如 `Op::SetParam.old_val`
     /// 与 `Op::SetMacro.old_val`）。
     ///
-    /// 量什么：`crates/yeban-model/src/**/*.rs` 里类型为 `f32`／`Option<f32>`／
-    /// `f64`／`Option<f64>` 的字段声明条数。单位：条（实测 27）。
+    /// 量什么：`crates/yeban-model/src/**/*.rs` 里**承载数值**的字段声明条数 ——
+    /// 类型原文里出现 `f32`／`f64` 标识符（含 `Option<f32>`／`Vec<f32>`／`[f64; 4]`），
+    /// 或类型是数值类型别名（`type X = f32;`）。单位：条（实测 27）。
     const NUMERIC_FIELD_INVENTORY: &[&str] = &[
         // `ModelError` 的 `value` 是**输出载体**（错误里携带的被拒值），不是入口：
         // 它不进文档、不需要判据，故在 `NUMERIC_FIELD_POLICY` 里显式豁免。
@@ -3171,8 +3173,8 @@ mod tests {
         fragment
     }
 
-    /// 从一个 `name: type` 片段解析数值字段名；不是 `f32`／`f64` 字段则 `None`。
-    fn numeric_field(fragment: &str) -> Option<String> {
+    /// 从一个 `name: type` 片段解析出 `(字段名, 类型原文)`。
+    fn field_name_and_type(fragment: &str) -> Option<(String, String)> {
         let fragment = fragment.trim().trim_end_matches(',').trim();
         // 属性与可见性都只是前缀：`#[serde(default)] pub(super) x: f32` 也是数值字段。
         let fragment = fragment
@@ -3189,8 +3191,48 @@ mod tests {
         {
             return None;
         }
-        let ty = ty.trim();
-        matches!(ty, "f32" | "f64" | "Option<f32>" | "Option<f64>").then(|| name.to_owned())
+        Some((name.to_owned(), ty.trim().to_owned()))
+    }
+
+    /// 类型原文里是否出现 `f32`／`f64` 这两个**独立的标识符**。
+    ///
+    /// 按 token 而不是逐字比较：`Vec<f32>`、`[f64; 4]`、`Option<Vec<f32>>` 都是
+    /// 承载数值的字段声明。实测（收紧前）：把 `probe_curve: Vec<f32>` 加进 `src/**` 时
+    /// `every_numeric_field_in_the_model_is_inventoried` 保持全绿 —— 数值字段可以藏进容器类型。
+    fn is_numeric_type(ty: &str) -> bool {
+        ty.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|token| token == "f32" || token == "f64")
+    }
+
+    /// 数值字段名；`aliases` 里的类型别名也算数值（`type X = f32;` 之后的 `X`）。
+    ///
+    /// 实测（收紧前）：`type ProbeAlias = f32;` 加 `pub gain: ProbeAlias` 对清单判据
+    /// 完全不可见 —— 别名是绕过"新数值字段必被登记"的第二条常见路径。
+    fn numeric_field_with(
+        fragment: &str,
+        aliases: &std::collections::BTreeSet<String>,
+    ) -> Option<String> {
+        let (name, ty) = field_name_and_type(fragment)?;
+        let numeric = is_numeric_type(&ty)
+            || ty
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|token| aliases.contains(token));
+        numeric.then_some(name)
+    }
+
+    /// 识别 `type NAME = <类型>;` 声明，返回 `(别名, 别名是否数值)`。
+    fn type_alias(line: &str) -> Option<(String, bool)> {
+        let rest = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        let rest = rest.strip_prefix("type ")?;
+        let (name, rhs) = rest.split_once('=')?;
+        let name = name.trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        Some((name.to_owned(), is_numeric_type(rhs)))
     }
 
     /// 一行声明里的**全部**数值字段名。
@@ -3206,6 +3248,14 @@ mod tests {
     /// 于是 `enum P { One { gain_db: f32 } }` 的内层能被看到），按 `,` 拆开逐段判定；
     /// 一行里一个花括号都没有时（普通的 `struct` 字段行）整行就是一段。
     fn numeric_fields_on_line(line: &str) -> Vec<String> {
+        numeric_fields_on_line_with(line, &std::collections::BTreeSet::new())
+    }
+
+    /// 同上，但把数值类型别名也算作数值（`scan_numeric_fields` 用它）。
+    fn numeric_fields_on_line_with(
+        line: &str,
+        aliases: &std::collections::BTreeSet<String>,
+    ) -> Vec<String> {
         let line = line.split("//").next().unwrap_or(line);
         let mut groups: Vec<&str> = Vec::new();
         let mut starts: Vec<usize> = Vec::new();
@@ -3226,7 +3276,7 @@ mod tests {
         let mut found = Vec::new();
         for group in groups {
             for piece in group.split(',') {
-                if let Some(field) = numeric_field(piece) {
+                if let Some(field) = numeric_field_with(piece, aliases) {
                     found.push(field);
                 }
             }
@@ -3265,16 +3315,38 @@ mod tests {
     }
 
     /// 扫描源码，抽出全部数值字段声明。
+    ///
+    /// 两遍：先收集数值类型别名（`type X = f32;` ⇒ 字段类型写 `X` 也算数值），
+    /// 再抽字段。别名先于字段是因为 `src/**` 的读序与声明序无关。
     fn scan_numeric_fields() -> Vec<String> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let sources: Vec<(String, String)> = source_files()
+            .into_iter()
+            .map(|path| {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("src 下的文件必在 crate 根之下")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (
+                    relative,
+                    std::fs::read_to_string(&path).expect("读取源文件"),
+                )
+            })
+            .collect();
+
+        // 第一遍：数值类型别名。
+        let mut aliases: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (_, text) in &sources {
+            for line in text.lines() {
+                if let Some((name, true)) = type_alias(line.trim_start()) {
+                    aliases.insert(name);
+                }
+            }
+        }
+
         let mut found = Vec::new();
-        for path in source_files() {
-            let relative = path
-                .strip_prefix(root)
-                .expect("src 下的文件必在 crate 根之下")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let text = std::fs::read_to_string(&path).expect("读取源文件");
+        for (relative, text) in &sources {
             let mut owner: Option<(bool, String, usize)> = None;
             let mut variant = String::new();
             for line in text.lines() {
@@ -3301,7 +3373,7 @@ mod tests {
                             variant.clone_from(&candidate);
                         }
                     }
-                    for field in numeric_fields_on_line(trimmed) {
+                    for field in numeric_fields_on_line_with(trimmed, &aliases) {
                         let member = if is_enum && !variant.is_empty() {
                             format!("{variant}.{field}")
                         } else {
@@ -3320,7 +3392,7 @@ mod tests {
                     } else {
                         String::new()
                     };
-                    for field in numeric_fields_on_line(trimmed) {
+                    for field in numeric_fields_on_line_with(trimmed, &aliases) {
                         let member = if is_enum && !variant_here.is_empty() {
                             format!("{variant_here}.{field}")
                         } else {
@@ -4074,6 +4146,69 @@ mod tests {
             numeric_fields_on_line("    public: f32,"),
             vec!["public".to_owned()]
         );
+    }
+
+    /// 识别器的**第三组**正/负对照：容器类型里的数值标量 + 数值类型别名。
+    ///
+    /// 为什么需要：识别器原先只把类型原文与
+    /// `"f32" | "f64" | "Option<f32>" | "Option<f64>"` **逐字**比较。实测（收紧前）：
+    /// 往 `src/**` 里加 `pub probe_curve: Vec<f32>` 或
+    /// `type ProbeAlias = f32;` + `pub gain: ProbeAlias` 时，
+    /// 常驻判据 `every_numeric_field_in_the_model_is_inventoried` **保持全绿** ——
+    /// 两种常见写法可以各藏一个数值字段过清单判据。本判据按合成输入逐个钉住新的识别面
+    /// （正对照必须收进来，负对照必须不收）。
+    #[test]
+    fn the_numeric_field_scanner_sees_container_types_and_type_aliases() {
+        // 正对照：容器里的数值标量按**标识符**判定，不要求逐字相等。
+        assert_eq!(
+            numeric_fields_on_line("    pub probe_curve: Vec<f32>,"),
+            vec!["probe_curve".to_owned()]
+        );
+        assert_eq!(
+            numeric_fields_on_line("    pub probe_curve: [f64; 4],"),
+            vec!["probe_curve".to_owned()]
+        );
+        assert_eq!(
+            numeric_fields_on_line("    pub probe_curve: Option<Vec<f32>>,"),
+            vec!["probe_curve".to_owned()]
+        );
+
+        // 正对照：数值类型别名（`type X = f32;`）之后，类型写 `X` 的字段也是数值字段。
+        let mut numeric_aliases = std::collections::BTreeSet::new();
+        numeric_aliases.insert("ProbeAlias".to_owned());
+        assert_eq!(
+            numeric_fields_on_line_with("    pub gain: ProbeAlias,", &numeric_aliases),
+            vec!["gain".to_owned()]
+        );
+        assert_eq!(
+            numeric_fields_on_line_with("    pub gain: Option<Vec<ProbeAlias>>,", &numeric_aliases),
+            vec!["gain".to_owned()]
+        );
+        // 别名本身要被识别出来（数值 / 非数值两种）。
+        assert_eq!(
+            type_alias("type ProbeAlias = f32;"),
+            Some(("ProbeAlias".to_owned(), true))
+        );
+        assert_eq!(
+            type_alias("pub type NameAlias = String;"),
+            Some(("NameAlias".to_owned(), false))
+        );
+        assert_eq!(
+            type_alias("type Err = ModelError;"),
+            Some(("Err".to_owned(), false))
+        );
+        // 带泛型参数或没有 `=` 的声明不是别名。
+        assert_eq!(type_alias("type Generic<T> = Vec<T>;"), None);
+        assert_eq!(type_alias("typealias X;"), None);
+
+        // 负对照：别名集合里没有的类型 / 非数值容器 / 非数值标量都不许被收进来。
+        assert!(
+            numeric_fields_on_line_with("    pub name: NameAlias,", &numeric_aliases).is_empty()
+        );
+        assert!(
+            numeric_fields_on_line_with("    pub ids: Vec<EntityId>,", &numeric_aliases).is_empty()
+        );
+        assert!(numeric_fields_on_line_with("    pub n: u64,", &numeric_aliases).is_empty());
     }
 
     /// 类别 1／4 的**机械清单**：源码里每一个 `f32`／`f64` 字段都必须在冻结表里。

@@ -685,7 +685,7 @@ fn ratio_exceeded(uncompressed: u64, compressed: u64, max_ratio: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CENTRAL_DIRECTORY_SIGNATURE, DOS_DATE, DOS_TIME, EOCD_SIGNATURE,
+        CENTRAL_DIRECTORY_SIGNATURE, DOS_DATE, DOS_TIME, EOCD_LEN, EOCD_SIGNATURE,
         LOCAL_FILE_HEADER_SIGNATURE, find_eocd, ratio_exceeded, u16_at, u32_at, write_zip,
         write_zip_borrowed,
     };
@@ -730,6 +730,105 @@ mod tests {
             u16_at(&bytes, central + 14),
             Some(DOS_DATE),
             "central header 的 date 在 +14"
+        );
+    }
+
+    /// ZIP 头部**每一个常量的取值**必须逐字等于 APPNOTE 6.3.10 的规定值。
+    ///
+    /// 为什么需要：既有的 `zip_headers_put_the_time_field_before_the_date_field` 把头部
+    /// 字段与**常量本身**比较（`Some(DOS_TIME)` / `Some(DOS_DATE)`），因此常量取值错了
+    /// 它照样全绿。实测（本次注入）：把 `DOS_DATE` 改成 `0x0022`、`DOS_TIME` 改成 `1`、
+    /// `VERSION_NEEDED` 改成 `10`、`FLAG_UTF8` 改成 `0`、`VERSION_MADE_BY_UNIX` 改成
+    /// `0x0314`、`UNIX_MODE_REGULAR_FILE` 改成 `0o100755` 时，**全仓判据全部保持全绿** ——
+    /// 6 个静默的格式违背。本判据按偏移钉住字面值（路径上无浮点、无超越函数 ⇒
+    /// 按 ADR-0001 D32 可在所有架构硬断言）。
+    #[test]
+    fn zip_header_constants_carry_the_appnote_values() {
+        let bytes = write_zip_borrowed(&[("a", b"x".as_slice())]).expect("写容器");
+
+        // --- local file header（APPNOTE 4.3.7）---
+        assert_eq!(u32_at(&bytes, 0), Some(0x0403_4B50), "local signature");
+        assert_eq!(u16_at(&bytes, 4), Some(20), "version needed = 2.0");
+        assert_eq!(u16_at(&bytes, 6), Some(0x0800), "bit 11 = 文件名为 UTF-8");
+        assert_eq!(u16_at(&bytes, 8), Some(0), "method = stored");
+        assert_eq!(u16_at(&bytes, 10), Some(0), "DOS time = 00:00:00");
+        assert_eq!(u16_at(&bytes, 12), Some(0x0021), "DOS date = 1980-01-01");
+        assert_eq!(u16_at(&bytes, 26), Some(1), "name length");
+        assert_eq!(u16_at(&bytes, 28), Some(0), "extra length");
+
+        // --- central directory file header（APPNOTE 4.3.12）---
+        let eocd = find_eocd(&bytes).expect("EOCD 必须存在");
+        let central =
+            usize::try_from(u32_at(&bytes, eocd + 16).expect("central 偏移")).expect("usize");
+        assert_eq!(
+            u32_at(&bytes, central),
+            Some(0x0201_4B50),
+            "central signature"
+        );
+        assert_eq!(
+            u16_at(&bytes, central + 4),
+            Some(0x031E),
+            "version made by = host 3 (Unix) + 规范 3.0"
+        );
+        assert_eq!(u16_at(&bytes, central + 6), Some(20), "version needed");
+        assert_eq!(u16_at(&bytes, central + 8), Some(0x0800), "flags: UTF-8");
+        assert_eq!(u16_at(&bytes, central + 10), Some(0), "method = stored");
+        assert_eq!(u16_at(&bytes, central + 12), Some(0), "DOS time");
+        assert_eq!(u16_at(&bytes, central + 14), Some(0x0021), "DOS date");
+        assert_eq!(
+            u32_at(&bytes, central + 38),
+            Some((0o100_644u32) << 16),
+            "external attributes 的高 16 位 = Unix 常规文件 0o100644"
+        );
+        assert_eq!(
+            u32_at(&bytes, central + 42),
+            Some(0),
+            "首条 local header 偏移 = 0"
+        );
+
+        // --- end of central directory（APPNOTE 4.3.16）---
+        assert_eq!(u32_at(&bytes, eocd), Some(0x0605_4B50), "EOCD signature");
+        assert_eq!(u16_at(&bytes, eocd + 4), Some(0), "disk number = 0");
+        assert_eq!(
+            u16_at(&bytes, eocd + 6),
+            Some(0),
+            "central directory 所在盘 = 0"
+        );
+        assert_eq!(u16_at(&bytes, eocd + 8), Some(1), "本盘条目数");
+        assert_eq!(u16_at(&bytes, eocd + 10), Some(1), "总条目数");
+        assert_eq!(u16_at(&bytes, eocd + 20), Some(0), "注释长度 = 0");
+        assert_eq!(eocd + EOCD_LEN, bytes.len(), "写入器不写注释");
+    }
+
+    /// EOCD 的"注释长度恰好补齐到文件末尾"是**精确等式**，不是上界。
+    ///
+    /// 为什么需要：`find_eocd` 从尾部往前扫。把
+    /// `cursor + EOCD_LEN + comment_len == bytes.len()` 放宽成 `<=` 时，**注释内部**的
+    /// 假 EOCD 签名（它比真 EOCD 更靠近文件末尾）会被当成真 EOCD ⇒ 同一份归档被解析成
+    /// 另一个（空的 / 恶意的）central directory。实测（本次注入）：既有判据
+    /// `earlier_fake_eocd_signature_is_skipped` 的假签名在真签名**之前**，反向扫描本来就
+    /// 先撞到真的那个 ⇒ 那条判据对 `<=` 没有判别力，全仓保持全绿。
+    #[test]
+    fn find_eocd_requires_the_comment_length_to_reach_the_end_exactly() {
+        let mut bytes = write_zip_borrowed(&[("a", b"x".as_slice())]).expect("写容器");
+        let real = find_eocd(&bytes).expect("真 EOCD");
+        assert_eq!(real + EOCD_LEN, bytes.len(), "写入器不写注释");
+
+        // 追加 32 字节注释：头 22 字节是一个**假** EOCD（签名 + 全零，注释长度字段 = 0），
+        // 它在文件里的位置比真 EOCD 更靠后。
+        let mut comment = Vec::new();
+        comment.extend_from_slice(&EOCD_SIGNATURE.to_le_bytes());
+        comment.extend_from_slice(&[0u8; 18]);
+        comment.extend_from_slice(&[0u8; 10]);
+        assert_eq!(comment.len(), 32);
+        bytes.extend_from_slice(&comment);
+        // 真 EOCD 的注释长度字段（+20，小端 u16）改成 32，让"精确等式"成立。
+        bytes[real + 20..real + 22].copy_from_slice(&32u16.to_le_bytes());
+
+        assert_eq!(
+            find_eocd(&bytes),
+            Ok(real),
+            "假 EOCD 在注释里时必须继续往前扫到真的那一个"
         );
     }
 

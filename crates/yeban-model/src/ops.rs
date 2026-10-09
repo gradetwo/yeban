@@ -4145,6 +4145,116 @@ mod tests {
         }
     }
 
+    /// `routing_graph.nodes` 恒按字典序 [MODEL-AST-003]。
+    ///
+    /// 为什么需要：`commit` 用 `partition_point` 做二分插入（注释写明"按字典序插入 ⇒
+    /// `nodes` 恒有序"），而 `RoutingGraph::validate()` **不**检查有序（只查端点与重复）。
+    /// 实测（本次注入）：把 `nodes.insert(position, *node)` 换成 `nodes.push(*node)` 时，
+    /// 全仓判据保持全绿 —— 既有夹具的 `nodes` 是 `[1, 2, 3]`，被判据加进去的新身份恰好
+    /// 都大于它们，于是 push 与二分插入给出同一个列表。
+    /// 本判据插入一个身份**小于**全部既有节点的节点，直接钉住列表顺序。
+    #[test]
+    fn routing_node_ops_keep_the_node_list_sorted() {
+        let mut doc = fixture_document();
+        let before = doc.routing_graph.nodes.clone();
+        assert!(
+            before.windows(2).all(|pair| pair[0] < pair[1]),
+            "夹具自身必须已经有序: {before:?}"
+        );
+
+        let smallest = fixture_id(0);
+        Op::AddRoutingNode { node: smallest }
+            .apply(&mut doc)
+            .expect("新增路由节点");
+        assert_eq!(
+            doc.routing_graph.nodes.first(),
+            Some(&smallest),
+            "新节点必须排在最前（push 会把它放到末尾）"
+        );
+        assert!(
+            doc.routing_graph
+                .nodes
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+            "nodes 必须保持字典序: {:?}",
+            doc.routing_graph.nodes
+        );
+        assert_eq!(doc.validate(), Ok(()));
+
+        Op::RemoveRoutingNode { node: smallest }
+            .apply(&mut doc)
+            .expect("移除路由节点");
+        assert_eq!(doc.routing_graph.nodes, before, "增删必须互为逆");
+    }
+
+    /// `MoveNote` 的增量取反溢出（`i64::MIN`）必须被**拒绝**，不得 wrapping。
+    ///
+    /// 为什么需要：`structural_inverse` 用 `checked_neg` 防溢出，但它只有在"逆操作的
+    /// 前置条件也恰好放行"时才可观测。实测（本次注入）：把 `delta_tick.checked_neg()…?`
+    /// 换成 `delta_tick.wrapping_neg()` 时全仓判据保持全绿 —— 既有判据里音符的
+    /// `start_tick` 都是 0，于是逆操作前置条件的 `shifted_tick` 负数守卫先报错，
+    /// `checked_neg` 从未被单独观察到。
+    /// 本判据把音符放到时钟顶端（`u64::MAX`）：`u64::MAX + i64::MIN` 仍是合法 tick，
+    /// 逆操作的前置条件放行，唯一的守卫就是 `checked_neg`。
+    #[test]
+    fn inverting_a_min_delta_move_note_is_rejected_not_wrapped() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        doc.note_mut(&f.clip, &f.note).expect("音符存在").start_tick = u64::MAX;
+
+        let op = Op::MoveNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            delta_tick: i64::MIN,
+            delta_pitch: 0,
+        };
+        assert_eq!(
+            op.invert(&doc),
+            Err(ModelError::OpStateMismatch { op: "MoveNote" }),
+            "i64::MIN 的取反溢出必须报 OpStateMismatch, 不得 wrapping 成一个错误的逆操作"
+        );
+    }
+
+    /// `ConnectRouting` 必须先校验载荷的数值有限性（类别 1：先污染、后报错）。
+    ///
+    /// 为什么需要：`commit` 会无条件把边插进 `routing_graph.edges`，入口唯一的载荷校验
+    /// 是 `precondition` 里的 `edge.validate()`。实测（本次注入）：删掉那一行时全仓判据
+    /// 保持全绿 —— `apply` 返回 `Ok(())`、非有限增益入图，随后
+    /// `YebanProjectV1::validate()` 才报错。本判据钉住 Op 入口的具体错误码与
+    /// "被拒之后文档逐字节不动"。
+    #[test]
+    fn connect_routing_rejects_a_non_finite_gain_before_mutating() {
+        let f = fixture();
+        for gain in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut doc = fixture_document();
+            let before = serde_json::to_vec(&doc).expect("序列化");
+            let edge_id = fixture_id(31);
+            let error = Op::ConnectRouting {
+                edge: RoutingEdge {
+                    id: edge_id,
+                    source_node: f.bass,
+                    destination_node: f.master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: Some(gain),
+                },
+            }
+            .apply(&mut doc)
+            .expect_err("非有限增益的路由边必须被拒");
+            assert!(
+                matches!(&error, ModelError::NonFiniteValue { field, .. } if *field == "routing.edge.gain_db"),
+                "实际 {error:?}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("序列化"),
+                before,
+                "被拒之后文档必须逐字节不动"
+            );
+            assert!(!doc.routing_graph.edges.contains_key(&edge_id));
+            assert_eq!(doc.validate(), Ok(()));
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             cases: 32,

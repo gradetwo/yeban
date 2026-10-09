@@ -582,6 +582,60 @@ fn session_state_has_no_serde_surface() {
     ));
 }
 
+/// 红线 4 / [MODEL-AST-003]：**整个 `src/**`** 的真代码里不许出现 `HashMap` / `HashSet`。
+///
+/// 为什么需要：既有 `session_state_has_no_serde_surface` 只对 `session.rs` 做这条扫描
+/// （它的注释写的是"G01 对整个 src 生效"，但 G01 是 `scripts/guards/policy_check.py`，
+/// 在**本 crate 的判据面之外**）。实测（本次注入）：往 `src/project.rs` 里加
+/// `use std::collections::HashMap;` 或 `use std::collections::HashSet;` 时，
+/// 本 crate 的**全部 303 条判据保持全绿** —— 持久化 AST 的"确定性集合"红线在
+/// 本 crate 内没有任何判据守着。本判据递归遍历 `src/**` 的每一个 `*.rs`，
+/// 逐文件剥掉整行注释后扫描这两个记号（`lib.rs` 只在文档注释里提到它们）。
+#[test]
+fn no_hash_containers_anywhere_in_src() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("读取 {} 失败: {error}", dir.display()))
+            .map(|entry| entry.expect("目录项").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&src_root, &mut files);
+    // 反空洞：遍历必须真的走完 `src/**`（当前 16 个文件），否则"没命中"是空转。
+    assert!(
+        files.len() >= 16,
+        "src/** 至少 16 个 *.rs, 实际 {}",
+        files.len()
+    );
+
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("读取源文件");
+        for needle in ["HashMap", "HashSet"] {
+            assert!(
+                !code_has(&text, needle),
+                "{} 的真代码里出现了 `{needle}`（红线 4 / MODEL-AST-003: \
+                 持久化 AST 实体集合必须用 BTreeMap 以保证迭代顺序确定）",
+                path.display()
+            );
+        }
+    }
+
+    // 扫描器自身有牙：合成输入逐个命中，注释里的记号不算。
+    assert!(code_has("use std::collections::HashMap;", "HashMap"));
+    assert!(code_has("struct X { m: HashSet<u8> }", "HashSet"));
+    assert!(!code_has("// HashMap 只出现在注释里\n", "HashMap"));
+}
+
 // ---------------------------------------------------------------------------
 // ⑦⑧ 本机配置不进工程容器
 // ---------------------------------------------------------------------------

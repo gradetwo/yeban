@@ -329,6 +329,24 @@ fn symlink_entry_is_rejected() {
     );
 }
 
+/// EOCD 的"本盘条目数"与"总条目数"必须一致，否则是跨盘/拼接形态 ⇒ 拒绝。
+///
+/// 为什么需要：`read_zip` 把三个字段一起判（磁盘号 / central 所在盘 / 两个条目数），
+/// 而 `multi_disk_archive_is_rejected` 只改磁盘号。实测（本次注入）：从那个 `||` 链里
+/// 删掉 `entries_on_disk != total_entries` 时全仓判据保持全绿 —— 判据只覆盖了并列的
+/// 另一条分支。本判据单独把"两个条目数不一致"这一条钉住。
+#[test]
+fn disagreeing_eocd_entry_counts_are_rejected() {
+    let mut bytes = container(&[("aaaa", b"\x01")]);
+    let eocd = find_eocd(&bytes);
+    put_u16(&mut bytes, eocd + EOCD_ENTRIES_ON_DISK, 0);
+    assert_rejected(
+        &bytes,
+        &small_limits(),
+        ContainerError::UnsupportedMultiDisk,
+    );
+}
+
 // ======================================================================
 // MUST-GATE-007：解压炸弹防御
 // ======================================================================
