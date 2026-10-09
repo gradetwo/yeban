@@ -20,7 +20,27 @@
 //!    时会在 `self.pre[0][self.pre_index]` 上越界 panic，而实时路径上不允许；
 //! 4. `process` 用 `zip` 而不是按下标写 `right[i]`（同上，长度不等就会 panic）；
 //! 5. 立体声展宽与前置延迟的事件顺序、参数映射常量（0.70…0.94 反馈、
-//!    0.05…0.77 阻尼、`WET_GAIN`）逐一保持与来源相同，既有音色不变。
+//!    0.05…0.77 阻尼、`WET_GAIN`）逐一保持与来源相同，既有音色不变；
+//! 6. **新增** [`Reverb::reset`] 与 [`Reverb::latency_samples`]（＋公共常量
+//!    [`REVERB_LATENCY`]）—— 来源没有这两项，见下一节。两者都是**纯增量**：
+//!    `process` 的逐样本路径一个字都没改，既有音色与既有读数不变。
+//!
+//! ## 器件形状与延迟上报 [ARCH-PDC-001]
+//!
+//! 本类型与 `compressor` / `channel_strip` / `limiter` / `polysynth` / `drums` /
+//! `convolution_reverb` 同形：
+//! `new` / `set_sample_rate` / `set_params` / `params` / `is_configured` /
+//! `is_active` / `process` / `reset` / `latency_samples`。
+//!
+//! 后两项是本线按 [ARCH-PDC-001] 补齐的。规范原文（`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md`
+//! 第 398 行）要求"每个插件与内置设备必须精确上报其引入的处理延迟
+//! （`DeviceDefinition::latency_samples`）"。Freeverb 的预延迟**只**推迟送进梳状组的
+//! 湿信号，干路逐样本即时 ⇒ 本器件的净延迟是 **0**，见 [`Reverb::latency_samples`]。
+//! 口径与 [`crate::convolution_reverb`] 模块文档 §2.1 相同。
+//!
+//! [`Reverb::reset`] 是"清历史、不动配置"的唯一入口：停带、定位或换工程时，
+//! 反馈环里的尾巴必须有一个定义明确的去处（否则同一段输入在第二次渲染里与第一次
+//! 不同）。它逐样本零分配。
 
 /// 梳状调音，单位样本 @44.1 kHz（Freeverb 的原始数字）。
 const COMB_TUNING: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
@@ -39,6 +59,14 @@ const ALLPASS_MAX: usize = 1536;
 
 /// 预延迟缓冲：100 ms @96 kHz。
 const PREDELAY_MAX: usize = 9600;
+
+/// 本器件引入的**处理延迟**（帧）。`0` = 不参与 [ARCH-PDC-001] 的补偿量。
+///
+/// 取 `0` 的理由与 [`crate::convolution::CONV_LATENCY`] 同款：本器件的预延迟
+/// **只**推迟湿路，干路用的是当前样本 ⇒ 整机对输入没有净延迟。
+/// ⚠ 这意味着"预延迟"**不是** `ARCH-PDC-001` 的延迟，[`Reverb::latency_samples`]
+/// 不把它算进去。
+pub const REVERB_LATENCY: usize = 0;
 
 /// 湿路径的输出微调。梳状组加四级全通扩散器有很高的谐振增益
 ///（在梳谐振处可达 ~25×），因此原始求和远热于干信号；这一项把全湿拉回大约单位增益。
@@ -82,6 +110,16 @@ impl Comb {
         self.store = 0.0;
     }
 
+    /// 清空这条延迟线的**历史**（缓冲内容 ＋ 一极点阻尼状态 ＋ 读写头）。
+    ///
+    /// 长度与系数（`len` / `damp` / `feedback`）不动 —— 清的是历史，不是配置。
+    /// 未配置时 `buf` 是空 `Vec`，`fill` 是空操作（不 panic、不分配）。
+    fn reset(&mut self) {
+        self.buf.fill(0.0);
+        self.index = 0;
+        self.store = 0.0;
+    }
+
     #[inline]
     fn process(&mut self, input: f32) -> f32 {
         let out = self.buf[self.index];
@@ -119,6 +157,14 @@ impl Allpass {
         } else {
             self.buf.fill(0.0);
         }
+        self.index = 0;
+    }
+
+    /// 清空这条扩散器的**历史**（缓冲内容与读写头）。长度不动。
+    ///
+    /// 未配置时 `buf` 是空 `Vec`，`fill` 是空操作（不 panic、不分配）。
+    fn reset(&mut self) {
+        self.buf.fill(0.0);
         self.index = 0;
     }
 
@@ -322,9 +368,57 @@ impl Reverb {
     }
 
     /// 湿信号是否可闻（`mix > 1e-4`）。
+    ///
+    /// ⚠ 未配置时本方法**仍**按 `mix` 回答（既有判据
+    /// `an_unconfigured_reverb_is_a_passthrough` 钉住这条）；它说的是"这个参数
+    /// 设置会不会出声"，不是"这台实例现在会不会处理"。
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.params.mix > 1e-4
+    }
+
+    /// 本器件引入的**处理延迟**（帧），恒为 [`REVERB_LATENCY`] = `0`
+    /// [ARCH-PDC-001]。
+    ///
+    /// 预延迟**不在**这个数里：`process` 里干路用的是**当前**样本 `l` / `r`，
+    /// 预延迟线只喂梳状组 ⇒ 整机对输入没有净延迟。判据
+    /// `reverb::tests::latency_is_zero_and_the_predelay_delays_only_the_wet_path`。
+    ///
+    /// 口径与 [`crate::convolution_reverb::ConvolutionReverb::latency_samples`] 相同
+    /// （那里也把预延迟排除在 PDC 之外）。
+    #[must_use]
+    pub const fn latency_samples(&self) -> usize {
+        REVERB_LATENCY
+    }
+
+    /// 清空全部延迟线的**历史**：16 条梳状、8 条全通、两条预延迟。
+    ///
+    /// 契约（由判据
+    /// `reverb::tests::reset_reproduces_a_freshly_built_device_bit_for_bit` 钉住）：
+    /// `reset()` 之后处理任意块，与一台**刚用同样参数装配好**的实例
+    /// （`new` → `set_sample_rate` → `set_params`）逐位相同。
+    ///
+    /// **配置不动**：采样率、参数、各条线的长度与系数都保持不变 —— 清的只是历史。
+    /// 与 [`Self::set_params`] 的取舍不同：那里**故意不清**预延迟线（参数是平滑的，
+    /// 块边界上擦掉尾巴会听见），而 `reset()` 是调用方显式要求"从现在起当它没响过"。
+    ///
+    /// **逐样本零分配**（只对已分配的缓冲做原地写，不经堆），可以在实时线程上调用
+    /// [ARCH-RT-001]。未配置时是空操作（空 `Vec` 的 `fill` 不分配也不 panic）。
+    pub fn reset(&mut self) {
+        for combs in self.combs.iter_mut() {
+            for comb in combs.iter_mut() {
+                comb.reset();
+            }
+        }
+        for allpasses in self.allpass.iter_mut() {
+            for allpass in allpasses.iter_mut() {
+                allpass.reset();
+            }
+        }
+        for line in &mut self.pre {
+            line.fill(0.0);
+        }
+        self.pre_index = 0;
     }
 
     /// 立体声块的原地湿/干混合。
@@ -417,6 +511,17 @@ mod tests {
 
     fn rms(samples: &[f32]) -> f32 {
         (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    /// 一段**确定性**激励，原地写进一对声道缓冲（同一个 `quantum` 给同一段样本）。
+    ///
+    /// 没有 RNG 对象、没有分配：本票的两条新判据要给多台实例喂**同一段**输入。
+    fn excite(left: &mut [f32], right: &mut [f32], quantum: u64, scale: f32) {
+        for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+            let t = i as f32 * 0.011;
+            *l = scale * (quantum as f32 * 0.37 + t).sin();
+            *r = scale * (quantum as f32 * 0.29 - t).cos();
+        }
     }
 
     #[test]
@@ -681,6 +786,200 @@ mod tests {
         assert!(
             (verb.params().mix - 0.5).abs() < 1e-6,
             "the finite knob was dropped"
+        );
+    }
+
+    /// **判据（新写，可红）**：`reset()` 之后逐位等于**刚用同样参数装配好**的实例。
+    ///
+    /// 量什么：三台同源实例（同样的采样率与参数）在**同一个探测块**上的输出比特。
+    /// `used` 先被 8 个块激励（留下尾巴）然后 `reset()`；`fresh` 从未处理过任何输入；
+    /// `stale` 与 `used` 经历**完全相同**的输入但**不** `reset()`（反向对照）。
+    ///
+    /// 判据：① 左/右声道 `used` 的每一个比特等于 `fresh`；② `stale` 与 `fresh`
+    /// 至少 `512` 个样本不同 —— 第二条证明这个探测块**测得出**尾巴，因此第一条
+    /// 不是"尾巴本来就没有"的假绿。
+    ///
+    /// 注入：删掉 [`Reverb::reset`] 里梳状与全通的 `reset()` 循环（只留预延迟清零）
+    /// ⇒ 断言 ① 立即变红（输出里还留着 8 个块的尾巴）；删掉预延迟清零那一句
+    /// 同样变红（预延迟线的残余把 `stale` 的历史带进湿路）。
+    #[test]
+    fn reset_reproduces_a_freshly_built_device_bit_for_bit() {
+        /// 每个块的帧数。`0.02 s` 的预延迟在 48 kHz 下是 `960` 帧，`8 × 4096`
+        /// 帧足够让两条预延迟线与最长的梳状线都绕过好几圈。
+        const FRAMES: usize = 4_096;
+        /// 反向对照的**最小**差异样本数（左声道）。实测远大于它。
+        const MIN_STALE_DIFFERENCES: usize = 512;
+
+        let params = ReverbParams {
+            size: 0.85,
+            damp: 0.2,
+            mix: 0.6,
+            width: 0.7,
+            predelay: 0.02,
+        };
+        let build = || {
+            let mut verb = Reverb::new();
+            verb.set_sample_rate(SR);
+            verb.set_params(params);
+            verb
+        };
+
+        let mut used = build();
+        let mut stale = build();
+        let mut fresh = build();
+
+        // 激励：`used` 与 `stale` 吃**同样**的 8 个块。
+        let mut left = vec![0.0f32; FRAMES];
+        let mut right = vec![0.0f32; FRAMES];
+        for quantum in 0..8 {
+            excite(&mut left, &mut right, quantum, 0.5);
+            used.process(&mut left, &mut right);
+            excite(&mut left, &mut right, quantum, 0.5);
+            stale.process(&mut left, &mut right);
+        }
+        // 覆盖度自检：激励之后尾巴必须还在（否则反向对照没有意义）。
+        assert!(
+            left.iter().any(|v| v.abs() > 1e-3),
+            "激励块没有产生任何输出 ⇒ 本判据测的是空壳"
+        );
+
+        used.reset();
+
+        // 探测块：三台处理同一段输入。
+        let mut probe_left = vec![0.0f32; FRAMES];
+        let mut probe_right = vec![0.0f32; FRAMES];
+        excite(&mut probe_left, &mut probe_right, 99, 0.4);
+
+        let mut used_left = probe_left.clone();
+        let mut used_right = probe_right.clone();
+        used.process(&mut used_left, &mut used_right);
+
+        let mut fresh_left = probe_left.clone();
+        let mut fresh_right = probe_right.clone();
+        fresh.process(&mut fresh_left, &mut fresh_right);
+
+        let mut stale_left = probe_left.clone();
+        let mut stale_right = probe_right.clone();
+        stale.process(&mut stale_left, &mut stale_right);
+
+        // ① 正向：逐位相同。
+        for (i, (out, want)) in used_left.iter().zip(&fresh_left).enumerate() {
+            assert_eq!(
+                out.to_bits(),
+                want.to_bits(),
+                "样本 {i}: reset 之后左声道必须逐位等于新建实例"
+            );
+        }
+        for (i, (out, want)) in used_right.iter().zip(&fresh_right).enumerate() {
+            assert_eq!(
+                out.to_bits(),
+                want.to_bits(),
+                "样本 {i}: reset 之后右声道必须逐位等于新建实例"
+            );
+        }
+
+        // ② 反向对照：不 reset 的实例必须与新建实例**明显**不同。
+        let mut differences = 0usize;
+        for (out, want) in stale_left.iter().zip(&fresh_left) {
+            if out.to_bits() != want.to_bits() {
+                differences += 1;
+            }
+        }
+        assert!(
+            differences >= MIN_STALE_DIFFERENCES,
+            "不 reset 的实例与新建实例只有 {differences}/{FRAMES} 个样本不同 ⇒ \
+             这个探测块测不出尾巴，判据 ① 的绿没有判别力"
+        );
+        // 反向对照在右声道上同样成立（防止判据只在一个声道上有牙）。
+        let right_differences = stale_right
+            .iter()
+            .zip(&fresh_right)
+            .filter(|(out, want)| out.to_bits() != want.to_bits())
+            .count();
+        assert!(
+            right_differences >= MIN_STALE_DIFFERENCES,
+            "右声道只有 {right_differences}/{FRAMES} 个样本不同 ⇒ 判据只在一个声道上有牙"
+        );
+        eprintln!(
+            "[yeban-dsp] reverb::reset 读数（单位：个样本）: FRAMES={FRAMES} 采样率={SR} Hz \
+             预延迟={} 帧 reset 后与新建实例的比特差异=0；不 reset 的对照差异 左={differences} \
+             右={right_differences}（门限 {MIN_STALE_DIFFERENCES}）",
+            (params.predelay * SR) as usize
+        );
+    }
+
+    /// **判据（新写，可红）**：延迟上报恒为 `0`，且预延迟**只**推迟湿路。
+    ///
+    /// 量什么：① [`Reverb::latency_samples`] 的读数（单位：帧）；② 预延迟
+    /// `0.0 s` 与 `0.05 s` 下，单位脉冲输出的**第 0 帧**（比特）与湿路首次超过
+    /// `1e-4` 的样本下标（单位：帧）。
+    ///
+    /// 判据：① 读数恒为 `REVERB_LATENCY = 0`；② 两种预延迟下第 0 帧都**恰好**是
+    /// `1.0`（`1.0 · dry + 0.0 · mix`，干路用当前样本）；③ `50 ms` 的预延迟把湿路
+    /// 的首次可闻输出推后**超过** `2 000` 帧（`50 ms @48 kHz` = `2 400` 帧）
+    /// —— ② 与 ③ 一起才说明"干路即时、湿路被推迟"。
+    ///
+    /// 注入：让预延迟推迟**整个**输入（干路也进延迟线）⇒ 断言 ② 变红；
+    /// 把 `set_sample_rate` 里的 `predelay * sample_rate` 写死成 `0.0` ⇒ 断言 ③ 变红。
+    #[test]
+    fn latency_is_zero_and_the_predelay_delays_only_the_wet_path() {
+        /// 观测长度（帧）：`50 ms` 预延迟 ＋ 梳状组的最长首达都装得下。
+        const FRAMES: usize = 9_600;
+        /// 湿/干平衡。取 `0.5` 而不是接近 `0` 的值：湿路的**首个**到达只有
+        /// `脉冲 · 0.015 · WET_GAIN · mix` 量级，`mix` 太小时它落在 `1e-4`
+        /// 门限以下，判据测到的就不是"首个到达"而是"积累到可闻"。
+        const MIX: f32 = 0.5;
+
+        let probe = |predelay: f32| {
+            let mut verb = Reverb::new();
+            verb.set_sample_rate(SR);
+            verb.set_params(ReverbParams {
+                size: 0.5,
+                damp: 0.35,
+                // 大于 `process` 的 `1e-4` 静音守卫 ⇒ 湿路真的参与运算。
+                mix: MIX,
+                width: 0.8,
+                predelay,
+            });
+            assert_eq!(verb.latency_samples(), REVERB_LATENCY);
+            assert_eq!(verb.latency_samples(), 0, "预延迟不是 PDC 延迟");
+            let mut left = vec![0.0f32; FRAMES];
+            let mut right = vec![0.0f32; FRAMES];
+            left[0] = 1.0;
+            right[0] = 1.0;
+            verb.process(&mut left, &mut right);
+            // 干路即时：第 0 帧 = `1.0 · dry + 0.0 · mix`，湿项在那时还是 0。
+            assert_eq!(
+                left[0].to_bits(),
+                (1.0f32 - MIX).to_bits(),
+                "预延迟 {predelay} s: 干路被推迟了（第 0 帧不是干项）"
+            );
+            assert_eq!(right[0].to_bits(), (1.0f32 - MIX).to_bits());
+            // 湿路首次可闻输出（跳过第 0 帧的干项；之后输入恒为 0，剩下的只有湿路）。
+            let first = left[1..]
+                .iter()
+                .position(|s| s.abs() > 1e-4)
+                .map(|i| i + 1)
+                .expect("湿路一直没有出声");
+            (left[0], first)
+        };
+
+        let (dry_none, wet_none) = probe(0.0);
+        let (dry_fifty, wet_fifty) = probe(0.05);
+        assert_eq!(dry_none.to_bits(), dry_fifty.to_bits());
+        assert!(
+            wet_fifty > wet_none + 2_000,
+            "50 ms 的预延迟只把湿路推后了 {} 帧（{wet_none} → {wet_fifty}）",
+            wet_fifty - wet_none
+        );
+        assert!(wet_none < 1_920, "预延迟 0 时湿路来晚了：{wet_none} 帧");
+        eprintln!(
+            "[yeban-dsp] reverb::latency 读数（单位：帧）: latency_samples()={} \
+             第 0 帧干项=0x{:08x}（两种预延迟相同）；湿路首次可闻 预延迟 0 s → {wet_none} 帧、\
+             0.05 s → {wet_fifty} 帧，增量 {} 帧",
+            REVERB_LATENCY,
+            dry_none.to_bits(),
+            wet_fifty - wet_none
         );
     }
 }
