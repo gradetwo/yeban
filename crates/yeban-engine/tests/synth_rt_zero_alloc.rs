@@ -304,6 +304,28 @@
 //! 夹具自身的合法性（`project.validate().is_ok()`）与"增益确实落在上溢区间"
 //! 也在场景里断言 ⇒ 这是一个**模型接受**的工程，不是构造出来的非法输入。
 
+//! # 场景 22（`line/engine-24` 追加）：PDC 池**两条上限**被触及时零分配
+//!
+//! `CompensationBank::rearm` 有两条上限，各自的差额由 `render_block` 的快照边界搬进
+//! `EngineStats::pdc_unarmed_nodes`（**节点个数**）与 `EngineStats::pdc_clamped_frames`
+//! （**采样帧数**）。搬进去的理由写在那里的注释上：**"池装不下的部分不静默"**。
+//!
+//! **本场景的存在理由是一条实测的缺口**（量法：把 `crates/yeban-engine` 全部 `*.rs`
+//! 里对这两个字段的引用逐条读出、按"断言 / 只读搬运"分类；单位：条）：全仓对它们的
+//! 测试引用只有 `== 0`（池装得下）⇒ **没有任何判据让它们非零过**。注入实测（逐次还原
+//! 并 `sha256` 核对）把 `render_block` 里那两条累加**互换**之后，整个
+//! `cargo test -p yeban-engine --no-default-features`（20 个目标）**全绿** ——
+//! 也就是说那两行写成什么都不会有判据变红，而读者会把"漏了 4 条延迟线"读成"钳了 0 帧"。
+//!
+//! 修法分两半：**语义值与"两个读数不得互换"**由 `tests/pdc_mix_path.rs` 的 P5 / P6
+//! 用精确等号钉住；**运行期零分配**由本场景钉住（那两条分支此前从未在一个测量窗口里
+//! 被走到过）。夹具（`pdc_shortfall_project`）是 `PDC_SLOTS + 3` 条并联静音支路，
+//! 其中一条上报超过线容量的设备链延迟 ⇒ 同一个窗口里既漏节点又钳帧。
+//! 窗口断言 `allocations == 0 && deallocations == 0`，覆盖度自检取"两个读数**都**非零"
+//! （少了它，"池其实装得下"也能让分配断言成立）。
+//! ⚠ 本场景**不**声称"六分量全 0"（那只属于 `tests/rt_zero_alloc.rs` 的
+//! `[MUST-GATE-001]` 目标）。
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -315,7 +337,7 @@ use yeban_engine::meter::meter_channel;
 use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
 use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
-use yeban_engine::rt::EngineRuntime;
+use yeban_engine::rt::{EngineRuntime, MAX_PDC_DELAY_FRAMES, PDC_SLOTS};
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
 use yeban_engine::synth::{VOICES_PER_TRACK, track_gain};
 
@@ -325,7 +347,9 @@ use support::{
     MixSpec, NoteSpec, PDC_REBIND_LATENCY, note_project, pdc_rebind_fixture, tuned_project,
     two_track_project,
 };
-use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, SampleRate};
+use yeban_model::{
+    DeviceDefinition, DeviceKind, EntityId, ParameterValue, SampleRate, YebanProjectV1,
+};
 
 /// 包住 [`System`] 的计数型分配器。
 struct CountingAllocator;
@@ -386,6 +410,73 @@ fn saturated_notes() -> Vec<NoteSpec> {
     (0..256u64)
         .map(|index| NoteSpec::at(index * 240, 480, 60 + (index % 12) as u8, 100))
         .collect()
+}
+
+/// 场景 22 的夹具：`PDC_SLOTS + 3` 条并联**静音**支路各自直连 master，
+/// 其中一条上报的**设备链延迟超过线容量**。
+///
+/// ⇒ PDC 计划有 `PDC_SLOTS + 4` 项（超过池的槽位数 ⇒ `RearmShortfall::unarmed_nodes`），
+/// 且除那一条之外的每个 `D(v)` 都等于 `超过容量 + 1 000` 帧、被 `DelayLine::set_delay`
+/// 钳到容量上界（⇒ `RearmShortfall::clamped_frames`）。两条上限因此在**同一个窗口**里
+/// 都被触及，而窗口里没有任何分配。
+fn pdc_shortfall_project() -> YebanProjectV1 {
+    use std::collections::BTreeMap;
+
+    use yeban_model::{RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3};
+
+    let master = EntityId::new();
+    let mut tracks = BTreeMap::new();
+    let mut nodes = vec![master];
+    let mut routing = RoutingGraph::default();
+    let over_capacity = MAX_PDC_DELAY_FRAMES as u32 + 1_000;
+    for index in 0..PDC_SLOTS + 3 {
+        let id = EntityId::new();
+        let mut track = TrackV3 {
+            id,
+            name: format!("Branch {index}"),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        };
+        if index == 0 {
+            track.devices = vec![DeviceDefinition {
+                id: EntityId::new(),
+                name: "Reported".to_owned(),
+                kind: DeviceKind::InternalEffect,
+                bypassed: false,
+                params: Vec::new(),
+                latency_samples: over_capacity,
+            }];
+        }
+        tracks.insert(id, track);
+        nodes.push(id);
+        let edge = EntityId::new();
+        routing.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: id,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+    }
+    tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+    routing.nodes = nodes;
+    YebanProjectV1 {
+        master_bus_track_id: master,
+        tracks,
+        routing_graph: routing,
+        ..YebanProjectV1::default()
+    }
 }
 
 /// 场景 11 / 12 的**键位映射**（五个鼓件各一个音高）。
@@ -3022,6 +3113,69 @@ fn main() -> ExitCode {
         );
     }
 
+    // ---- 场景 22（`line/engine-24` 追加）：PDC 池**两条上限**被触及时零分配 ----
+    //
+    // 见文件头 §场景 22。窗口里跑的是"快照边界重新武装 → 计划的项数超过池的槽位数
+    // （`RearmShortfall::unarmed_nodes`）→ 想要的延迟超过线容量、被 `DelayLine::set_delay`
+    // 钳到容量上界（`RearmShortfall::clamped_frames`）→ 两条差额分别累加进
+    // `EngineStats::pdc_unarmed_nodes` / `pdc_clamped_frames`"。
+    //
+    // 这两条上限此前**没有**任何运行期判据让它们非零过：全仓对这两个字段的测试引用
+    // 只有 `== 0`（池装得下）。语义值与"两个读数不得互换"由
+    // `tests/pdc_mix_path.rs` 的 P5 / P6 用精确等号钉住；本场景只负责
+    // "两条上限真的在实时窗口里被触及过，且窗口零分配"。
+    const SHORTFALL_QUANTA: usize = 64;
+    let shortfall_project = pdc_shortfall_project();
+    let shortfall_planned = EngineSnapshot::from_project(&shortfall_project, 1)
+        .expect("上限夹具快照必须能编译")
+        .pdc()
+        .compensated_len();
+    // 武装发生在**窗口内部**：槽里的快照已经是 rev 2，而 `armed_revision` 初值是 `None`。
+    let shortfall_slot = SnapshotSlot::new(
+        EngineSnapshot::from_project(&shortfall_project, 2).expect("上限夹具快照必须能编译"),
+    );
+    let (shortfall_retire, mut shortfall_queue) = retire_channel(8);
+    let (_shortfall_sender, shortfall_receiver) = event_channel(64);
+    let (shortfall_publisher, _shortfall_collector) = meter_channel(4096);
+    let mut shortfall_runtime = EngineRuntime::new(
+        &shortfall_slot,
+        shortfall_retire,
+        shortfall_receiver,
+        shortfall_publisher,
+    );
+    let mut shortfall_output = vec![0.0f32; 128 * 2];
+    let (shortfall_alloc, shortfall_dealloc) =
+        measure("pdc pool limits (unarmed nodes + clamped frames)", || {
+            for _ in 0..SHORTFALL_QUANTA {
+                shortfall_runtime.process_quantum(&mut shortfall_output, 2);
+            }
+        });
+    let shortfall_stats = shortfall_runtime.stats();
+    while shortfall_queue.drain(8) > 0 {}
+    println!(
+        "[engine-24/J22] PDC 池上限窗口: {SHORTFALL_QUANTA} 量子 allocations={shortfall_alloc} \
+         deallocations={shortfall_dealloc} 计划 {shortfall_planned} 项 / 池 {PDC_SLOTS} 槽 \
+         pdc_unarmed_nodes={} pdc_clamped_frames={}",
+        shortfall_stats.pdc_unarmed_nodes, shortfall_stats.pdc_clamped_frames
+    );
+    if shortfall_alloc != 0 || shortfall_dealloc != 0 {
+        failures.push(format!(
+            "PDC 池上限（槽位用尽 + 容量钳制）在实时窗口内分配/释放了内存: \
+             allocations={shortfall_alloc} deallocations={shortfall_dealloc}\
+             （两条差额都只是标量加法，不允许分配）"
+        ));
+    }
+    // 覆盖度见证：窗口里两条上限**都**被触及过。少了它，"池其实装得下"也能让
+    // 分配断言成立 —— 那样本场景对这两条分支就是空转。
+    if shortfall_stats.pdc_unarmed_nodes == 0 || shortfall_stats.pdc_clamped_frames == 0 {
+        failures.push(format!(
+            "本场景对 `rearm` 的两条上限是空转：pdc_unarmed_nodes={} pdc_clamped_frames={}；\
+             计划 {shortfall_planned} 项必须超过池的 {PDC_SLOTS} 槽，且至少一个 D(v) 必须超过 \
+             {MAX_PDC_DELAY_FRAMES} 帧",
+            shortfall_stats.pdc_unarmed_nodes, shortfall_stats.pdc_clamped_frames
+        ));
+    }
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -3053,7 +3207,10 @@ fn main() -> ExitCode {
              + 2 × 2,000 量子电平满队列窗口（容量 1 ⇒ 丢帧读数 meter_dropped_frames 在窗口内\
              非零，且 写入 + 丢弃 == 本应发布帧数）\
              + 64 量子 PDC 槽位重绑（剪掉一条轨 ⇒ 后面的节点各下移一格并清线），\
-             实时窗口内零分配零释放（重绑计数在窗口内增长作覆盖度见证）"
+             实时窗口内零分配零释放（重绑计数在窗口内增长作覆盖度见证）\
+             + 64 量子 PDC 池**两条上限**（计划超过池的槽位 ⇒ pdc_unarmed_nodes 非零；\
+             上报延迟超过线容量 ⇒ pdc_clamped_frames 非零），\
+             实时窗口内零分配零释放（两个读数都非零作覆盖度见证）"
         );
         ExitCode::SUCCESS
     } else {

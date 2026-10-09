@@ -29,7 +29,7 @@
 //! | ⑥-7 | 母线限制器**介入**时，居中的单声道母线仍然左右逐位相同（立体声联动） | `process_stereo` 改成两路各自检波 | 联动本身由 `tests/limiter_contract.rs` 钉住 |
 //! | ⑥-8 | 全左声相 + 限制器介入：右声道**整段逐位为 `+0.0`**（"只填一路"没有串扰） | 立体声器件把左路的信号混进右路（串扰）/ 右路乘子不为 `+0.0` | 注入后变红 |
 //! | ⑥-9 | 左右两路来自**同一条标量声相曲线**：全右的左声道 == `+0.0 + 全左的左声道 × cos(π/2)`，全右的右声道 == 全左的左声道（均逐位） | 两条声道各算一份曲线（哪怕差一个 ulp） | 注入后变红 |
-//! | ⑥-10 | 交错输出的通道映射：`ch0 = 左`、`ch1..chN-1 = 右`（N = 1/2/3/4/6/8，逐量子逐路逐位） | `AudioBlock::get` 的通道判定取反 | 注入后变红（参照取自 `AudioBlock::left()/right()`，**不是**再跑一遍 `process_quantum`） |
+//! | ⑥-10 | 交错输出的通道映射：`ch0 = 左`、`ch1..chN-1 = 右`（N = 1/2/3/4/6/8，逐量子逐路逐位）；**`line/engine-24` 加宽**：通道数的**下界** `0` 必须与 `1` **逐位相同**（0 路被 `channels.max(1)` 归一到单路） | `AudioBlock::get` 的通道判定取反；去掉 `process_quantum` 的 `channels.max(1)` ⇒ `attempt to divide by zero`（实测字面红行见交付报告） | 注入后变红（参照取自 `AudioBlock::left()/right()`，**不是**再跑一遍 `process_quantum`） |
 //!
 //! ⚠ ⑤-1 的两种形态**都必须有**：两条同值事件落在同一个事件批次里时，任何
 //! "先在 `accept` 里吸附、再设目标"的实现都会被顺序抹平（实测注入：同批形态全绿、
@@ -86,6 +86,18 @@
 //! 同一个记号在 `src/` 是 **18 → 7**、在 `tests/` 是 **31 → 1**、全 crate 是 **49 → 8**
 //! （后两个口径量于未改动的树上）。三个口径都不是 5 ⇒ 那条读数属于**别的 crate
 //! 或别的口径**，不得转述成本 crate 的读数。
+//!
+//! ## 3b. 类别⑦（块长／范围极值）的通道数**下界**（`line/engine-24` 追加）
+//!
+//! **量什么／怎么量**：把 `crates/yeban-engine` 全部 `*.rs` 里 `process_quantum(`
+//! 的调用逐个读出，数**第二实参为 `0`** 的调用（单位：处）。量在**本票改动之前**
+//! 的树上（`git stash` 之后工作树即 `origin/main`）：**118** 处调用、其中 **0** 处
+//! 传 `0` ⇒ `usize::from(channels.max(1))` 这条守卫没有任何判据走过。注入实测
+//! （已还原，与基线 `sha256` 相同）：去掉 `.max(1)` 之后跑本文件，⑥-10 当场红 ——
+//! 字面红行 `attempt to divide by zero`（panic 点在 `crates/yeban-engine/src/rt.rs`
+//! 的 `let total_frames = output.len() / channels;`，现位于第 1145 行）。
+//! 因此本条**加宽** ⑥-10（不新增判据编号、不动任何期望值）：以 0 路推进一个量子
+//! 必须与以 1 路推进**逐位相同**，且必须仍然渲染**恰好一个**量子。
 //!
 //! ## 4. 本票发现（**不改**，只报告）
 //!
@@ -862,4 +874,52 @@ fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
         "[engine-chan/6-10] 单声道设备 + 全右声相（+6 dB）的峰值 = {:e}（左声道残差；见模块文档 §4 发现 1）",
         mono_peak_of_hard_right()
     );
+
+    // ---- `line/engine-24` 加宽（**不新增判据编号**、不动任何期望值）：通道数的**下界** 0 ----
+    //
+    // `process_quantum` 用 `usize::from(channels.max(1))` 把 0 归一到**单路** ——
+    // 这条守卫此前**没有任何判据**走过（⑥-10 的 N 从 1 起，全仓没有一处
+    // `process_quantum(…, 0)`）⇒ 去掉 `.max(1)` 会得到 `output.len() / 0` 的 panic，
+    // 而一条判据都不会红。这里把它钉住：**以 0 路推进一个量子，与以 1 路推进一个量子
+    // 逐位相同**（同一份工程、同一个修订、同样的初值）。
+    //
+    // ⚠ 本臂只钉"0 路被归一到 1 路"，**不**钉"0 路应当怎么混"（见模块文档 §4 发现 1
+    // 的裁决请求）—— 它与单声道映射是同一件待裁决的事，不是第二件。
+    {
+        let notes = [NoteSpec::at(0, 960, 69, 127)];
+        let project = tuned_project(&notes, MixSpec::pan(0.0)).project;
+        // 两个 rig 都按 1 路建（输出缓冲 128 格），因为 0 路被归一之后**就是** 1 路。
+        let mut one = EventRig::new(&project, 1, 1);
+        one.quantum(1);
+        let mut zero = EventRig::new(&project, 1, 1);
+        zero.output.fill(0.0);
+        zero.runtime.process_quantum(&mut zero.output, 0);
+        assert_eq!(
+            zero.runtime.stats().quanta,
+            1,
+            "以 0 路推进必须仍然渲染**恰好一个**量子（0 路不是\"什么都不做\"）"
+        );
+        let mut compared = 0usize;
+        for (index, (zero_sample, one_sample)) in
+            zero.output.iter().zip(one.output.iter()).enumerate()
+        {
+            assert_eq!(
+                zero_sample.to_bits(),
+                one_sample.to_bits(),
+                "channels == 0 必须与 channels == 1 逐位相同；第 {index} 个样本"
+            );
+            compared += 1;
+        }
+        assert_eq!(
+            compared, DEFAULT_BLOCK_FRAMES,
+            "必须逐位核对整块（{DEFAULT_BLOCK_FRAMES} 个样本）"
+        );
+        assert!(
+            zero.output.iter().any(|sample| *sample != 0.0),
+            "0 路臂必须真的出声（否则\"逐位相同\"是静音对静音）"
+        );
+        println!(
+            "[engine-chan/6-10] channels=0 ⇒ 归一为单路：{compared} 个样本与 channels=1 逐位相同"
+        );
+    }
 }

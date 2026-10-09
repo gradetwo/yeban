@@ -20,8 +20,11 @@
 //! | P1 | 短支路的输出在**汇入母线前**整体后移 `D(v)` 帧，逐位精确 | 删掉 `render_block` 里的 `self.pdc.apply(...)` 调用 ⇒ 移位量变 0 |
 //! | P2 | 并联两条支路在求和节点上**采样级同相**（`D` 的差额被补齐） | 同上；另把 `set_delay` 的读写指针约定写反 ⇒ 逐位比对红 |
 //! | P3 | 母线限制器 33 帧**回填**进 `LatencyTable` 之后，渲染输出**逐位不变**（那 33 帧在总线求和之后） | 把 `PdcPlan::compute` 的对齐基准换回 `arrival(master)` ⇒ 每条支路 +33 帧、逐位比对红 |
+//! | P4 | 剪掉一条支路之后，幸存支路挪进的**槽位**不得重放被剪支路的音频（见该判据自己的文档块） | 删掉 `CompensationBank::rearm` 里"换主人就清线"那一句 ⇒ 继承的环把上一任的音频播出来 |
+//! | P5 | 计划项数超过池的槽位 ⇒ `pdc_unarmed_nodes` 如实累加，`pdc_clamped_frames` **保持 0**（两个读数各归各的） | 把两条累加**互换**，或把任一条改成不累加（两种注入实测都让本判据红，见交付报告） |
+//! | P6 | 补偿量超过线容量 ⇒ `pdc_clamped_frames` 按**帧**如实累加，`pdc_unarmed_nodes` **保持 0** | 同上 |
 //!
-//! 两条判据都**走产品路径**：模型 `YebanProjectV1` → `EngineSnapshot::from_project`
+//! 判据都**走产品路径**：模型 `YebanProjectV1` → `EngineSnapshot::from_project`
 //! （`LatencyTable::from_project` 读 `DeviceDefinition::latency_samples`）→
 //! `SnapshotSlot` → `EngineRuntime::process_quantum`。没有任何测试专用捷径。
 //!
@@ -40,6 +43,34 @@
 //! 3. **混音路径是"平的"**：`render_block` 把每条非母线轨直接累加进 master
 //!    （`sum_into_bus` 的文档已登记"发送/辅助汇流未做"）。因此这里能测的图是
 //!    "两条并联支路各自直连 master"，而不是任意多级总线树。
+//!
+//! ## P5 / P6（`line/engine-24` 追加）：两条"不静默"读数此前**没有任何判据**
+//!
+//! `CompensationBank::rearm` 的两条上限（槽位不够 ⇒ `RearmShortfall::unarmed_nodes`；
+//! 延迟超过线容量 ⇒ `RearmShortfall::clamped_frames`）由 `render_block` 的快照边界
+//! 搬进 `EngineStats::pdc_unarmed_nodes` / `pdc_clamped_frames`。搬进去的理由写在那
+//! 里的注释上：**"池装不下的部分不静默"**。
+//!
+//! **量什么／怎么量**：数 `crates/yeban-engine/tests/` 下对这两个字段的**引用条数**
+//! （单位：条），再数其中带 `== 0` 的条数。量在**本票改动之前**的树上（`git stash`
+//! 之后工作树即 `origin/main`）：`pdc_unarmed_nodes` **5** 条 / 其中 `== 0` **2** 条；
+//! `pdc_clamped_frames` **3** 条 / 其中 `== 0` **1** 条 —— 两处 `== 0`
+//! （`tests/idempotency_and_channel_consistency.rs` 与 `tests/rt_zero_alloc.rs`）
+//! 都只是"池装得下"，**没有任何判据让它们非零过**：那个 `== 0` 满足于"这个数从来
+//! 没被算错过"。
+//!
+//! **注入实测**（本票，两次，逐次还原并 `sha256` 核对）：把 `render_block` 里那两条
+//! 累加**互换**（`unarmed_nodes += clamped_frames` 与反向），整个 `cargo test
+//! -p yeban-engine --no-default-features`（**20** 个目标）全绿 —— 也就是说这两行
+//! **写成什么都不会有判据变红**。⇒ 读者（界面/诊断）会把"漏了 4 条延迟线"读成
+//! "钳了 0 帧"，把相位错位的**形状**读反。
+//!
+//! 修法就是补判据（实现那一行是对的，本票**不改它**）：P5 把计划撑过池容量，
+//! P6 让 `D(v)` 超过线容量，两者都断言**自己的读数非零且对方的读数恰好为 0**，
+//! 并在中途重发一份等价快照以钉住"累加"（而不是"覆写"或"重置"）。
+//! 两条判据都带覆盖度见证：P5 数**池里实际武装了几条线**（必须恰好 `PDC_SLOTS`），
+//! P6 读**那条被钳的线实际武装到的延迟**（必须是容量上界）—— 少了它们，
+//! "夹具其实没撑过容量"也能让等号成立。
 
 mod support;
 
@@ -48,6 +79,7 @@ use std::collections::BTreeMap;
 use support::{render, render_snapshot};
 use yeban_engine::graph::LatencyTable;
 use yeban_engine::mixer::{BUS_LIMITER_LATENCY_FRAMES, LIMITER_THRESHOLD};
+use yeban_engine::rt::{MAX_PDC_DELAY_FRAMES, PDC_SLOTS};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
@@ -633,5 +665,221 @@ fn pruning_a_branch_never_replays_the_removed_branch_from_the_reused_slot() {
          逐位零；渲染 {} 帧",
         render.frames(),
         render.frames()
+    );
+}
+
+/// `branches` 里每条轨各一条边**直连** `master`、延迟全部为 0 的工程。
+///
+/// PDC 计划对**每一个可达节点**都分一条补偿延迟线（`D(v)` 恒为 0，但线仍然存在
+/// —— `PdcPlan::compensation` 的键集合是"能到达 master 的节点"）⇒ 计划项数
+/// 恰好是 `branches.len() + 1`（含 master）。这是把计划**撑过** [`PDC_SLOTS`]
+/// 的最省形状：不需要任何设备、不需要任何音符。
+fn fan_in_project(master: EntityId, branches: &[EntityId]) -> YebanProjectV1 {
+    let mut tracks = BTreeMap::new();
+    let mut nodes = vec![master];
+    let mut routing = RoutingGraph::default();
+    for branch in branches {
+        tracks.insert(
+            *branch,
+            TrackV3 {
+                id: *branch,
+                name: "Branch".to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            },
+        );
+        nodes.push(*branch);
+        let edge = EntityId::new();
+        routing.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: *branch,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+    }
+    tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+    routing.nodes = nodes;
+    YebanProjectV1 {
+        master_bus_track_id: master,
+        tracks,
+        routing_graph: routing,
+        ..YebanProjectV1::default()
+    }
+}
+
+/// P5：计划项数**超过池的槽位**时，漏掉的节点数必须进 `pdc_unarmed_nodes`，
+/// 而 `pdc_clamped_frames` 必须**保持 0**（两个读数各归各的，不得互换）。
+///
+/// **量什么／单位**：`EngineStats::pdc_unarmed_nodes` 数的是**节点个数**（个），
+/// `EngineStats::pdc_clamped_frames` 数的是**采样帧数**（帧）。两者量纲不同
+/// ⇒ 互换之后读数在类型上合法、在语义上是错的，而本判据就是拦这一条的那道门。
+///
+/// **为什么窗口里有两次武装**：首次 `process_quantum`（`armed_revision` 是 `None`）
+/// 与中途发布等价快照各武装一次 ⇒ 两个读数都必须**累加**（`wrapping_add`）而不是
+/// 被覆写或被重置。期望值因此是"每次武装的差额 × 2"。
+///
+/// **变红的注入**（本票实测，均已整体还原）：① 把 `render_block` 里两条累加互换；
+/// ② 把任一条改成不累加。两种注入下本判据的两条等号同时红。
+#[test]
+fn an_exhausted_pdc_pool_is_counted_as_unarmed_nodes_and_never_as_clamped_frames() {
+    /// 渲染长度（量子）：覆盖两次武装之后的若干量子。
+    const WINDOW: usize = 8;
+    /// 中途重发等价快照的量子边界 ⇒ 第二次武装。
+    const REPUBLISH_QUANTUM: usize = 4;
+
+    let master = EntityId::new();
+    let branches: Vec<EntityId> = (0..PDC_SLOTS + 3).map(|_| EntityId::new()).collect();
+    let project = fan_in_project(master, &branches);
+
+    // ---- 前提（与实现无关的纯函数读数）：计划真的比池大 ----
+    let planned = EngineSnapshot::from_project(&project, 1)
+        .expect("夹具工程必须合法")
+        .pdc()
+        .compensated_len();
+    assert_eq!(
+        planned,
+        branches.len() + 1,
+        "可达节点数是 {} 条支路 + master；实测 {planned}",
+        branches.len()
+    );
+    let per_rearm = planned - PDC_SLOTS;
+    assert!(per_rearm > 0, "夹具必须真的把计划撑过池容量");
+
+    // ---- 行为面：走产品路径，在窗口内部读池里实际武装了几条线 ----
+    let nodes: Vec<EntityId> = project.tracks.keys().copied().collect();
+    let mut armed_lines_in_pool = 0usize;
+    let render = support::render_with(&project, WINDOW, 1, |quantum, rig| {
+        if quantum == REPUBLISH_QUANTUM {
+            rig.slot
+                .publish(EngineSnapshot::from_project(&project, 2).expect("等价快照必须合法"));
+        }
+        if quantum + 1 == WINDOW {
+            armed_lines_in_pool = nodes
+                .iter()
+                .filter(|node| rig.runtime.armed_pdc_delay(node).is_some())
+                .count();
+        }
+    });
+
+    assert_eq!(
+        render.stats.pdc_unarmed_nodes,
+        2 * per_rearm as u64,
+        "首发与等价快照各武装一次，每次漏掉 {per_rearm} 个节点（计划 {planned} 项 / 池 {PDC_SLOTS} 槽）\
+         ⇒ 必须累加成 {}；实测 {}（把两条累加互换、或改成不累加，这条就红）",
+        2 * per_rearm,
+        render.stats.pdc_unarmed_nodes
+    );
+    assert_eq!(
+        render.stats.pdc_clamped_frames, 0,
+        "本夹具的 D(v) 全为 0 ⇒ 一帧都没有被容量钳掉；这个读数量的是**帧**，不是**节点**"
+    );
+    // ---- 覆盖度见证：池里**恰好** PDC_SLOTS 条线（其余节点的 `armed_pdc_delay` 是 `None`）----
+    // 少了它，"夹具其实没撑过容量"也能让上面那条等号成立（两边都是 0）。
+    assert_eq!(
+        armed_lines_in_pool, PDC_SLOTS,
+        "池里恰好能有 {PDC_SLOTS} 条延迟线；实测 {armed_lines_in_pool} 条被武装"
+    );
+    println!(
+        "[pdc-mix] P5 池用尽：计划 {planned} 项 / 池 {PDC_SLOTS} 槽 ⇒ 每次武装漏 {per_rearm} 个节点，\
+         两次共 {}；pdc_clamped_frames={}；池内实武装 {armed_lines_in_pool} 条",
+        render.stats.pdc_unarmed_nodes, render.stats.pdc_clamped_frames
+    );
+}
+
+/// P6：补偿延迟量**超过线容量**时，被钳掉的**帧数**必须进 `pdc_clamped_frames`，
+/// 而 `pdc_unarmed_nodes` 必须**保持 0**（两个读数各归各的，不得互换）。
+///
+/// 夹具与 [`SLOW_LATENCY`] 同形，只把慢支路上报的延迟换成"超出容量 + `OVER` 帧"：
+/// `L_max = 慢支路上报值` ⇒ `D(fast) = L_max`、`D(slow) = 0`。
+/// `DelayLine::set_delay` 把超过 `capacity - 1`（= [`MAX_PDC_DELAY_FRAMES`]）的值钳到
+/// 容量上界 ⇒ 差额恰好是 `OVER` 帧/次武装。
+///
+/// **变红的注入**：同 P5（互换 / 不累加）。
+#[test]
+fn an_over_long_pdc_delay_is_counted_in_frames_and_never_as_unarmed_nodes() {
+    /// 渲染长度（量子）。
+    const WINDOW: usize = 8;
+    /// 中途重发等价快照的量子边界。
+    const REPUBLISH_QUANTUM: usize = 4;
+    /// 让 `D(fast)` 超出线容量的余量（采样点）。
+    const OVER: u32 = 808;
+
+    let ids = ids();
+    let wanted = MAX_PDC_DELAY_FRAMES as u32 + OVER;
+    // 两条支路都发声：慢支路 `D = 0` ⇒ 窗口里立刻有音频（"真的渲染过"的见证），
+    // 而快支路被钳到 `MAX_PDC_DELAY_FRAMES` 帧 ⇒ 它的声音落在这个窗口之外。
+    let project = project(ids, wanted, Some(0), Some(0));
+
+    // ---- 前提：计划里的 `D(fast)` 真的超出容量 ----
+    let planned = EngineSnapshot::from_project(&project, 1).expect("夹具工程必须合法");
+    let d_fast = planned
+        .pdc()
+        .compensation(&ids.fast)
+        .expect("fast 必须在本计划里") as usize;
+    assert_eq!(
+        d_fast, wanted as usize,
+        "L_max 由慢支路上报的自身延迟决定，而 fast 的累积延迟是 0"
+    );
+    assert!(
+        d_fast > MAX_PDC_DELAY_FRAMES,
+        "夹具必须真的超出线容量（D(fast)={d_fast} 帧）"
+    );
+    let per_rearm = d_fast - MAX_PDC_DELAY_FRAMES;
+
+    // ---- 行为面 ----
+    let mut armed_fast = None;
+    let render = support::render_with(&project, WINDOW, 1, |quantum, rig| {
+        if quantum == REPUBLISH_QUANTUM {
+            rig.slot
+                .publish(EngineSnapshot::from_project(&project, 2).expect("等价快照必须合法"));
+        }
+        if quantum + 1 == WINDOW {
+            armed_fast = rig.runtime.armed_pdc_delay(&ids.fast);
+        }
+    });
+
+    assert_eq!(
+        render.stats.pdc_clamped_frames,
+        2 * per_rearm as u64,
+        "首发与等价快照各武装一次，每次钳掉 {per_rearm} 帧（想要的 {d_fast} 帧 > 容量 \
+         {MAX_PDC_DELAY_FRAMES}）⇒ 必须累加成 {}；实测 {}（把两条累加互换、或改成不累加，\
+         这条就红）",
+        2 * per_rearm,
+        render.stats.pdc_clamped_frames
+    );
+    assert_eq!(
+        render.stats.pdc_unarmed_nodes, 0,
+        "本夹具只有 3 个计划项（≪ 池容量）⇒ 没有任何节点被漏掉；这个读数量的是**节点**，不是**帧**"
+    );
+    // ---- 覆盖度见证 ①：那条被钳的线真的武装到了**容量上界**（不是"根本没武装"）----
+    assert_eq!(
+        armed_fast,
+        Some(MAX_PDC_DELAY_FRAMES),
+        "fast 的延迟线必须武装到容量上界（钳制之后的值）"
+    );
+    // ---- 覆盖度见证 ②：窗口里真的在出声（否则"钳了 {per_rearm} 帧"是静音上的算术）----
+    assert!(
+        render.nonzero() > 0,
+        "夹具必须真的在窗口里出声（慢支路 D=0）"
+    );
+    println!(
+        "[pdc-mix] P6 容量钳制：D(fast)={d_fast} 帧 > 容量 {MAX_PDC_DELAY_FRAMES} ⇒ 每次钳 \
+         {per_rearm} 帧，两次共 {}；pdc_unarmed_nodes={}；池内 D(fast)={armed_fast:?}；\
+         窗口非零样本 {}",
+        render.stats.pdc_clamped_frames,
+        render.stats.pdc_unarmed_nodes,
+        render.nonzero()
     );
 }
