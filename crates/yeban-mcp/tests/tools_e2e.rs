@@ -1476,6 +1476,16 @@ fn opening_a_locked_project_is_project_locked_and_leaves_it_alone() {
         outcome["error"]["data"]["advisoryLockHeld"], true,
         "PROJECT_LOCKED 的载荷必须说明占用来自内核建议锁: {outcome}"
     );
+    // R20: `heartbeatAgeSecs` 是**随时间变化**的诊断量 ⇒ 只钉"非负整数"的**形态**,
+    // 绝不钉数值。本夹具写入的锁元数据不含 `last_heartbeat`,锁元数据解析按 0 兜底,
+    // 于是该年龄实际等于当前 Unix 秒 —— 任何针对它的数值比较都必然随墙上时钟漂移,
+    // 因此这里不做精确相等, 也不设上界。
+    assert!(
+        outcome["error"]["data"]["heartbeatAgeSecs"]
+            .as_u64()
+            .is_some(),
+        "PROJECT_LOCKED 的诊断载荷必须带非负整数心跳年龄（只判形态, 不判数值）: {outcome}"
+    );
     assert!(dispatcher.domain().active_project().is_none());
     assert_eq!(fs::read(&path).expect("读"), original);
 
