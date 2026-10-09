@@ -3521,6 +3521,196 @@ fn edit_notes_set_param_writes_the_static_mix_value_and_undo_restores_it() {
     );
 }
 
+/// **工具面真的能写通道条的静音 / 独奏**：`ops[].kind == "setTrackMute"` /
+/// `"setTrackSolo"` 走完 `tools/call` → 提案 → 合并 → 撤销 的整条管线。
+///
+/// 这条判据对着一处**实测缺口**：模型有 `Op::SetTrackMute` / `Op::SetTrackSolo`
+/// （载荷是 `bool`，各带 `old_mute` / `old_solo` 撤销载荷），母带渲染器的 `audible`
+/// 判定真的读 `track.mute` / `track.solo`，而这两个变体在整个 `crates/yeban-mcp` 里
+/// **一次都没有被构造过**（`git grep -c 'Op::SetTrackMute' HEAD -- crates/yeban-mcp/src`
+/// 在改动前是 0 个文件）。注入都能让它变红：删掉 `parse_one` 的两个分支（未知 `kind`）、
+/// 把 `TrackFlag::read` 写死成常量（`data.proposal.ops[*]` 的撤销载荷不再是文档现值）、
+/// 或无条件要求 MIDI 片段（音频片段那条路径变成 `CLIP_NOT_FOUND`）。
+///
+/// 判据里的两段写入是刻意的：第二段在文档**已经是** `true` 时再写 `false`，
+/// 因此"撤销载荷来自文档"这条断言有牙齿 —— 若只写一次（文档现值恰好是 `false`），
+/// 把 `old_*` 写死成 `false` 的注入也能全绿（实测过一次，故补第二段）。
+#[test]
+fn edit_notes_track_flags_write_mute_and_solo_and_undo_restores_them() {
+    let scratch = Scratch::new("track-flags-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Audio)
+        .expect("样本里必须有音频轨");
+    let (track_id, mute_before, solo_before) = (track.id, track.mute, track.solo);
+    let track_text = track_id.to_canonical_string();
+    let clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_none())
+        .expect("样本里必须有非 MIDI 片段")
+        .id
+        .to_canonical_string();
+
+    // 响亮失败：猜一个更短的名字（`setMute`）不是别名；`value` 不是布尔；
+    // 开关对象里多写一个嵌套 `trackId`（写错音轨的典型形态）。
+    let alias = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setMute", "value": true}]}),
+    );
+    assert_domain_error(&alias, "INVALID_PARAMETER_RANGE", "`setMute` 别名");
+    assert!(
+        alias["error"]["data"]["supportedKinds"]
+            .as_array()
+            .is_some_and(|kinds| kinds.iter().any(|kind| kind == "setTrackMute")),
+        "未知 kind 的响应必须报出全集: {alias}"
+    );
+    let number = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setTrackMute", "value": 1}]}),
+    );
+    assert_domain_error(&number, "INVALID_PARAMETER_RANGE", "开关值不是布尔");
+    assert_eq!(
+        number["error"]["data"]["reason"], "valueMustBeBoolean",
+        "{number}"
+    );
+    let nested = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setTrackMute", "value": true, "trackId": track_text}]}),
+    );
+    assert_domain_error(&nested, "INVALID_PARAMETER_RANGE", "嵌套 trackId");
+    assert_eq!(
+        nested["error"]["data"]["reason"], "unknownFlagField",
+        "{nested}"
+    );
+
+    let bytes_before = project_bytes(&dispatcher);
+    // 目标是**非 MIDI**（音频）片段：纯开关写入不读片段内容, 因此必须被接受。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip, "includeOps": true,
+            "ops": [
+                {"kind": "setTrackMute", "value": true},
+                {"kind": "setTrackSolo", "value": true}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    // 撤销载荷必须来自**当前文档**, 不是调用方声明。
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["old_mute"],
+        json!(mute_before),
+        "静音撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetTrackSolo"]["old_solo"],
+        json!(solo_before),
+        "独奏撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["title"], "音轨级编辑: 2 步",
+        "描述必须如实说这是音轨级编辑 (不冒充音符编辑): {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "通道条开关" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .track(&track_id)
+        .expect("音轨");
+    assert!(after.mute, "合并后静音必须真的生效");
+    assert!(after.solo, "合并后独奏必须真的生效");
+
+    // 第二段：文档此刻**已经是** `true`，再写 `false`。
+    // 这一段是"撤销载荷来自文档"的**牙齿**：文档值恰好等于注入常量时，
+    // 把 `old_mute` / `old_solo` 写死成 `false` 的注入也能全绿（实测过一次）。
+    let bytes_after_first_merge = project_bytes(&dispatcher);
+    let cleared = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip, "includeOps": true,
+            "ops": [
+                {"kind": "setTrackMute", "value": false},
+                {"kind": "setTrackSolo", "value": false}
+            ]
+        }),
+    );
+    assert_eq!(cleared["status"], "success", "{cleared}");
+    assert_eq!(
+        cleared["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["old_mute"], true,
+        "第二次写入的撤销载荷必须是上一次真的落盘的 true: {cleared}"
+    );
+    assert_eq!(
+        cleared["data"]["proposal"]["ops"][1]["op"]["SetTrackSolo"]["old_solo"], true,
+        "第二次写入的撤销载荷必须是上一次真的落盘的 true: {cleared}"
+    );
+    let cleared_id = cleared["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": cleared_id, "commitMessage": "取消开关" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .track(&track_id)
+        .expect("音轨");
+    assert!(!after.mute && !after.solo, "第二次合并必须把两个开关关掉");
+
+    // 可回退：两步各自可撤销 ⇒ 第一次撤销回到第一段的状态, 第二次逐字节回到最初。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_after_first_merge,
+        "一次撤销必须回到第一段合并之后的工程字节"
+    );
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (静音 / 独奏随模型变体一起可逆)"
+    );
+}
+
 /// **连击与微时序在工具面上可达，且被母带渲染器真的消费**：
 /// `yeban_edit_notes` 的 `add.note.ratchet` / `add.note.microTimingTicks` 进工程
 /// （合并后逐字段可读），渲染响应的 `data.ratchet` 与逐源 `notesRatcheted` 反映它，

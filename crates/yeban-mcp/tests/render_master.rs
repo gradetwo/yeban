@@ -18,6 +18,7 @@
 //! | 7 | 参数非法与不可实现的组合 ⇒ 契约内错误码（`INVALID_PARAMETER_RANGE` / `RENDER_FAILED`） | 发明新码/假装成功 |
 //! | 8 | 输出路径不得是工程文件或锁文件 | 去掉护栏 |
 //! | 9 | 母带不是静音且声相真的生效（左右 RMS 不对称） | 静音产物/忽略 pan |
+//! | 9b | 经 `yeban_edit_notes` 写的静音真的让源轨不发声（`audible=false`、浮点母带为 0），写回 `false` ⇒ 产物逐字节相同 | 工具面写不了开关 / 渲染器忽略 `mute` |
 //! | 10 | 延迟表来自 `DeviceDefinition::latency_samples`（含旁通不算） | 自建第二延迟来源 |
 //! | 11 | `format` 只改容器字节，不改音频负载 | 在音频路径上按格式分叉 |
 //! | 12 | 实测数字自洽：frames/blocks/bytes/header/payload/sha256 | 报估算值 |
@@ -274,11 +275,17 @@ fn dispatcher_with(project: &YebanProjectV1, path: &Path) -> (Dispatcher, String
 
 /// 走真实 `tools/call` 管线；工具路径上**不允许**任何 JSON-RPC 层错误。
 fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
+    call_tool(dispatcher, auth, "yeban_render_master", arguments)
+}
+
+/// 与 [`call`] 同一条管线，但**点名**工具（供"先经 `yeban_edit_notes` 写、再渲染"这类
+/// 跨工具判据使用；本文件绝大多数判据只调 `yeban_render_master`，因此 [`call`] 不变）。
+fn call_tool(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -> Value {
     let line = json!({
         "jsonrpc": "2.0",
         "id": "t",
         "method": "tools/call",
-        "params": {"name": "yeban_render_master", "arguments": arguments}
+        "params": {"name": name, "arguments": arguments}
     })
     .to_string();
     let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
@@ -1420,6 +1427,143 @@ fn the_master_is_not_silent_and_panning_moves_the_image() {
     assert!(
         (left - right).abs() < 1.0e-4,
         "居中的声相必须左右对称: L={left} R={right}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 9b：工具面写进去的静音**真的**在母带里生效（不是只写进了工程 JSON）
+// ---------------------------------------------------------------------------
+
+/// 经 `yeban_edit_notes` 的 `ops[].kind == "setTrackMute"` 写静音 ⇒ 母带里那条源轨
+/// `audible == false`、浮点母带严格为 0、解码样本只剩 TPDF 抖动；再写回 `false`
+/// ⇒ 产物与写之前**逐字节相同**。
+///
+/// 这条判据把"开关可达"与"渲染器真的读它"接在一起：`render` 的 `audible` 判定读
+/// `TrackV3::mute`，而在这个 `kind` 之前整个 `crates/yeban-mcp` **没有**任何 `Op` 写者
+/// （`Op::SetTrackMute` / `Op::SetTrackSolo` 的构造点数为 0）⇒ 已实现的静音能力在工具面
+/// 不可达。它是 `setParam` 那一票的同一族缺口。
+///
+/// 可被什么注入破坏：删掉 `parse_one` 的开关分支（工具调用红）、把撤销载荷写死成
+/// 常量（`old_mute` 断言红）、或让渲染器忽略 `mute`（`audible` / 峰值红 —— 那条注入
+/// 落在另一个 crate，本判据仍会如实变红）。
+#[test]
+fn a_mute_written_through_the_tool_face_silences_the_source_in_the_master() {
+    let scratch = Scratch::new("mute-tool-face");
+    let spec = Spec::default();
+    let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
+    let lead = id(2).to_canonical_string();
+    let clip = id(10).to_canonical_string();
+
+    // 基线：未静音时那条源轨真的发声（判据必须有"能区分"的一侧）。
+    let plain_path = scratch.join("plain.wav");
+    let plain = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": plain_path.display().to_string()}),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+    assert_eq!(
+        plain["data"]["sources"][0]["audible"], true,
+        "未静音时源轨必须发声: {plain}"
+    );
+    let plain_samples = verify_file_shape(&plain, &plain_path);
+    assert!(
+        peak(&plain_samples) > DITHER_ONLY_PEAK,
+        "基线母带不能只是抖动: 实测峰值 {}",
+        peak(&plain_samples)
+    );
+
+    // 经工具面写静音（提案 → 合并），撤销载荷必须来自当前文档。
+    let written = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead, "clipId": clip, "includeOps": true,
+            "ops": [{"kind": "setTrackMute", "value": true}]
+        }),
+    );
+    assert_eq!(written["status"], "success", "{written}");
+    assert_eq!(
+        written["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["old_mute"], false,
+        "撤销载荷必须等于文档现值: {written}"
+    );
+    let proposal_id = written["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal_id, "commitMessage": "mute"}),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+
+    // 母带说这一轨不发声，且浮点母带严格为 0（文件里只剩 TPDF 抖动）。
+    let muted_path = scratch.join("muted.wav");
+    let muted = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": muted_path.display().to_string()}),
+    );
+    assert_eq!(muted["status"], "success", "{muted}");
+    assert_eq!(
+        muted["data"]["sources"][0]["audible"], false,
+        "静音后源轨必须被渲染器判为不发声: {muted}"
+    );
+    assert_eq!(
+        muted["data"]["peak"]["after"], 0.0,
+        "抖动前的浮点母带必须严格为 0: {muted}"
+    );
+    let muted_samples = verify_file_shape(&muted, &muted_path);
+    assert!(
+        peak(&muted_samples) <= DITHER_ONLY_PEAK,
+        "静音后只允许 TPDF 抖动: 实测峰值 {}",
+        peak(&muted_samples)
+    );
+
+    // 写回 `false` ⇒ 产物与写之前**逐字节相同**（开关完全可逆，音频层面也逐字节）。
+    let restored = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead, "clipId": clip, "includeOps": true,
+            "ops": [{"kind": "setTrackMute", "value": false}]
+        }),
+    );
+    assert_eq!(restored["status"], "success", "{restored}");
+    assert_eq!(
+        restored["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["old_mute"], true,
+        "第二次写入的撤销载荷必须是上一次真的落盘的那个 true: {restored}"
+    );
+    let restored_id = restored["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": restored_id, "commitMessage": "unmute"}),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let unmuted_path = scratch.join("unmuted.wav");
+    let unmuted = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": unmuted_path.display().to_string()}),
+    );
+    assert_eq!(unmuted["status"], "success", "{unmuted}");
+    assert_eq!(
+        unmuted["data"]["sources"][0]["audible"], true,
+        "取消静音后源轨必须重新发声: {unmuted}"
+    );
+    assert_eq!(
+        fs::read(&unmuted_path).expect("产物"),
+        fs::read(&plain_path).expect("基线产物"),
+        "静音写回 false 之后, 母带产物必须与写之前逐字节相同"
     );
 }
 

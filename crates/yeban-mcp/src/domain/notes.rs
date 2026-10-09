@@ -133,6 +133,31 @@
 //!   `apply` 会调模型自己的 `validate_param_value`，本层只拦"不是数字"这类 JSON 形状错误。
 //!
 //! 落地路径与本工具既有的音符编辑**完全相同**：先提案、再 `yeban_merge_proposal`。
+//!
+//! ## 音轨开关形态（`ops[].kind == "setTrackMute"` / `"setTrackSolo"`）
+//! —— 关闭"工具面写不了静音 / 独奏"这一半
+//!
+//! 上一票让 `setParam` 能写音轨的**静态**音量与声相，但同一排通道条上另外两个开关
+//! 仍然够不着：模型有 [`Op::SetTrackMute`] / [`Op::SetTrackSolo`]（载荷是 `bool`，
+//! 各自带自包含的 `old_mute` / `old_solo` 撤销载荷），母带渲染器**真的**读它们
+//! （`super::render` 的 `audible` 判定），而这两个变体在整个 `crates/yeban-mcp` 里
+//! **一次都没有被构造过** ⇒ 也就是"渲染器会静音"这件已实现的能力在 17 个工具的
+//! 面上**不可达**（与 `setParam` 之前那一票同型的缺口）。
+//!
+//! 为什么**不能**把它们塞进 `setParam` 的两个目标：`AutomationTarget` 没有静音 /
+//! 独奏变体，而 `SetParam` 的两个载荷都是 `f32`（`TrackV3::mute` / `solo` 是 `bool`）
+//! ⇒ 布尔开关在 `SetParam` 里**不可表达**。因此本文件加两个 `kind`，名字是模型 `Op`
+//! 变体名的小驼峰（与 [`SET_PARAM_KIND`] 同一条命名规则）。
+//!
+//! 两条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | `value` 不是 JSON 布尔（`1` / `"true"` / 缺字段） | `INVALID_PARAMETER_RANGE`（`reason = "valueMustBeBoolean"`）—— 不做真假值强转 |
+//! | 开关对象里有 `kind` / `value` 之外的键（含嵌套 `trackId`） | `INVALID_PARAMETER_RANGE`（`reason = "unknownFlagField"`）—— 目标音轨是**顶层** `trackId`，嵌套写它只会被静默忽略 |
+//!
+//! `old_mute` / `old_solo` 从**当前文档**读（不是调用方的声明），因此模型的
+//! `OpStateMismatch` 前置条件天然成立，撤销仍是模型自己的 [`Op::invert`]。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -142,7 +167,7 @@ use serde_json::{Map, Value};
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote,
-    Op, YebanProjectV1,
+    Op, TrackV3, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -302,10 +327,38 @@ pub const SET_PARAM_LANE_FIELD: &str = "lane";
 /// `setParam` 的**新值**字段名（`ops[].value`，必填，数字）。
 pub const SET_PARAM_VALUE_FIELD: &str = "value";
 
-/// `ops[].kind` 的**全集**（规范顺序：四个音符/摆放形态在前，静态值在后）。
+/// `ops[].kind` 的**音轨静音**形态名（写 [`Op::SetTrackMute`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetTrackMute` 的小驼峰），与 [`SET_PARAM_KIND`] 同一条规则。
+pub const SET_TRACK_MUTE_KIND: &str = "setTrackMute";
+
+/// `ops[].kind` 的**音轨独奏**形态名（写 [`Op::SetTrackSolo`]）。
+pub const SET_TRACK_SOLO_KIND: &str = "setTrackSolo";
+
+/// 音轨开关形态的**新值**字段名（`ops[].value`，必填，布尔）。
+///
+/// 与 [`SET_PARAM_VALUE_FIELD`] 逐字同词（`ADR-0001` D48：同一个词必须同一个意思 ——
+/// "这次要写进去的值"），但**类型不同**：开关只收 JSON 布尔，不做真假值强转。
+pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
+
+/// 音轨开关形态允许出现的**全部**键（判别键 + 新值键）。
+///
+/// 目标音轨**不在**这里：它是工具顶层的 `trackId`（与 `setParam` 同一条口径）。
+/// 多写一个键（尤其是嵌套的 `trackId`）是**响亮失败**，不静默丢弃。
+pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
+
+/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 摆放形态在前，音轨级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 5] = ["add", "delete", "move", "velocity", SET_PARAM_KIND];
+pub const OP_KINDS: [&str; 7] = [
+    "add",
+    "delete",
+    "move",
+    "velocity",
+    SET_PARAM_KIND,
+    SET_TRACK_MUTE_KIND,
+    SET_TRACK_SOLO_KIND,
+];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
 ///
@@ -335,6 +388,62 @@ impl StaticLane {
         match self {
             Self::TrackVolume => AutomationTarget::TrackVolume { track_id },
             Self::TrackPan => AutomationTarget::TrackPan { track_id },
+        }
+    }
+}
+
+/// 通道条上的一个**布尔开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`]）。
+///
+/// 为什么单列一个二值枚举：两个 `kind` 的**载荷完全相同**（一个 `bool`），
+/// 差异只在目标字段与模型变体上。用类型把这条差异收成一处，
+/// [`parse_one`] 与 [`compile`] 各自只有**一个**开关分支（不是两份会漂移的复制）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackFlag {
+    /// 音轨静音（`TrackV3::mute`，[`Op::SetTrackMute`]）。
+    Mute,
+    /// 音轨独奏（`TrackV3::solo`，[`Op::SetTrackSolo`]）。
+    Solo,
+}
+
+impl TrackFlag {
+    /// 两个形态名，**规范顺序**（错误信息的 `allowed` 与判据共用）。
+    pub const NAMES: [&'static str; 2] = [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND];
+
+    /// 该开关在 `arguments.ops[].kind` 里的字面名字（错误信息与判据共用同一份真相）。
+    #[must_use]
+    pub const fn kind_name(self) -> &'static str {
+        match self {
+            Self::Mute => SET_TRACK_MUTE_KIND,
+            Self::Solo => SET_TRACK_SOLO_KIND,
+        }
+    }
+
+    /// 撤销载荷要读的**当前**开关态（`TrackV3::mute` / `TrackV3::solo`）。
+    ///
+    /// 与模型 `apply` 的前置条件读的是**同一个字段**：本层不复制那份判定，
+    /// 只是把文档现值搬进 `Op` 的 `old_*`。
+    #[must_use]
+    pub const fn read(self, track: &TrackV3) -> bool {
+        match self {
+            Self::Mute => track.mute,
+            Self::Solo => track.solo,
+        }
+    }
+
+    /// 编译成模型变体（`old_*` 由调用方从文档读入）。
+    #[must_use]
+    pub const fn compile(self, track_id: EntityId, old: bool, new: bool) -> Op {
+        match self {
+            Self::Mute => Op::SetTrackMute {
+                track_id,
+                old_mute: old,
+                new_mute: new,
+            },
+            Self::Solo => Op::SetTrackSolo {
+                track_id,
+                old_solo: old,
+                new_solo: new,
+            },
         }
     }
 }
@@ -419,7 +528,7 @@ pub enum NoteOp {
     },
     /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量或声相。
     ///
-    /// 这是本枚举里**唯一**音轨级（而非音符级）的形态：它不读、不写任何音符，
+    /// 这是本枚举里第一个**音轨级**（而非音符级）的形态：它不读、不写任何音符，
     /// 目标音轨由调用方的 `trackId` 给出（见 [`compile`]）。值域判定在模型层
     /// （[`Op::SetParam`] 的 `apply` → `validate_param_value`）。
     SetParam {
@@ -427,6 +536,18 @@ pub enum NoteOp {
         lane: StaticLane,
         /// 目标值；`TrackVolume` 单位 dB（有限值），`TrackPan` ∈ -1.0..=1.0。
         value: f32,
+    },
+    /// 写一个**音轨开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`]）。
+    ///
+    /// 与 [`Self::SetParam`] 同族（音轨级、目标由顶层 `trackId` 给出），
+    /// 但载荷是**布尔**：模型把 `mute` / `solo` 从 `SetParam` 里分出去的理由
+    /// （`f32` 写不了 `bool`）在工具面这一侧同样成立。撤销载荷 `old_*` 由
+    /// [`TrackFlag::read`] 从**当前文档**读，不是调用方声明。
+    SetTrackFlag {
+        /// 哪个开关。
+        flag: TrackFlag,
+        /// 目标态。
+        value: bool,
     },
 }
 
@@ -440,17 +561,18 @@ impl NoteOp {
             Self::Move { .. } => "move",
             Self::Velocity { .. } => "velocity",
             Self::SetParam { .. } => SET_PARAM_KIND,
+            Self::SetTrackFlag { flag, .. } => flag.kind_name(),
         }
     }
 
     /// 该形态是否**读/写音符**（即是否必须在一条 MIDI 片段上施加）。
     ///
-    /// [`Self::SetParam`] 是**音轨级**的：它跟片段内容无关。这条区分让
-    /// [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
+    /// [`Self::SetParam`] 与 [`Self::SetTrackFlag`] 都是**音轨级**的：它们跟片段内容
+    /// 无关。这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
     pub const fn is_note_level(&self) -> bool {
-        !matches!(self, Self::SetParam { .. })
+        !matches!(self, Self::SetParam { .. } | Self::SetTrackFlag { .. })
     }
 }
 
@@ -467,6 +589,8 @@ impl NoteOp {
 /// {"kind":"velocity","noteId":"<ULID>","velocity":80}
 /// {"kind":"setParam","lane":"TrackVolume","value":-6.0}
 /// {"kind":"setParam","lane":"TrackPan","value":-0.25}
+/// {"kind":"setTrackMute","value":true}
+/// {"kind":"setTrackSolo","value":false}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -474,15 +598,18 @@ impl NoteOp {
 /// 见 [`PROBABILITY_FIELD`] / [`RATCHET_FIELD`] / [`MICRO_TIMING_FIELD`]。
 /// `note` 里 [`NOTE_FIELDS`] 之外的键一律**响亮拒绝**，不静默丢弃。
 ///
-/// `setParam` 是唯一的**音轨级**形态：`lane` 只认 [`StaticLane::NAMES`]，
+/// `setParam` / `setTrackMute` / `setTrackSolo` 是**音轨级**形态（见
+/// [`NoteOp::is_note_level`]）：`setParam` 的 `lane` 只认 [`StaticLane::NAMES`]，
 /// 其余三个自动化目标名（`SendGain` / `DeviceParam` / `Macro`）与未知名字都是
 /// **响亮失败**（`INVALID_PARAMETER_RANGE`，`data.allowed` 给出全集）。
-/// 值的范围判定**不在本层**（见 [`compile`]）。
+/// 值的范围判定**不在本层**（见 [`compile`]）；两个开关形态的 `value` 只收 JSON 布尔。
 ///
 /// # Errors
 ///
-/// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 →
-///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`）；
+/// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
+///   开关对象里有 [`TRACK_FLAG_FIELDS`] 之外的键 →
+///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
+///   非布尔开关值）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
 /// - 身份文本不是合法 ULID → `INVALID_PARAMETER_RANGE`。
 pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
@@ -538,6 +665,14 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         SET_PARAM_KIND => Ok(NoteOp::SetParam {
             lane: parse_static_lane(object)?,
             value: read_number(object, SET_PARAM_VALUE_FIELD)?,
+        }),
+        SET_TRACK_MUTE_KIND => Ok(NoteOp::SetTrackFlag {
+            flag: TrackFlag::Mute,
+            value: parse_track_flag_value(object)?,
+        }),
+        SET_TRACK_SOLO_KIND => Ok(NoteOp::SetTrackFlag {
+            flag: TrackFlag::Solo,
+            value: parse_track_flag_value(object)?,
         }),
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -617,6 +752,65 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
             }),
         )),
     }
+}
+
+/// 读一个**音轨开关**的目标态（`ops[].value`，只收 JSON 布尔）。
+///
+/// 先把开关对象上**不该出现**的键拒掉（[`reject_track_flag_fields`]），再读值：
+/// 顺序是刻意的 —— 嵌套的 `trackId` 是最危险的错键（写错音轨却静默成功），
+/// 它必须在任何"值看起来没问题"的路径之前就被点名。
+///
+/// `1` / `0` / `"true"` / `null` 一律**响亮失败**，不做真假值强转：模型 `TrackV3::mute`
+/// 是 `bool`，一次"猜调用方意思"的强转就是第二份语义。
+fn parse_track_flag_value(object: &Map<String, Value>) -> Result<bool, Fault> {
+    reject_track_flag_fields(object)?;
+    let raw = object
+        .get(TRACK_FLAG_VALUE_FIELD)
+        .ok_or_else(|| missing(TRACK_FLAG_VALUE_FIELD, "布尔"))?;
+    raw.as_bool().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{TRACK_FLAG_VALUE_FIELD}` 必须是布尔, 实际收到 {raw} \
+                 (开关不做真假值强转: `1` / `\"true\"` 都不是布尔)"
+            ),
+            serde_json::json!({
+                "field": TRACK_FLAG_VALUE_FIELD,
+                "reason": "valueMustBeBoolean",
+                "received": raw,
+            }),
+        )
+    })
+}
+
+/// 拒绝开关对象里 [`TRACK_FLAG_FIELDS`] 之外的键。
+///
+/// 与 [`reject_unknown_note_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"），
+/// 只是对象更小。`data.hint` 明确写出目标音轨的正确位置（顶层 `trackId`）——
+/// 最常见的错法是把它嵌套进操作对象，那一写会被静默忽略、开关落到**别的**音轨上。
+fn reject_track_flag_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !TRACK_FLAG_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "音轨开关操作里有不支持的键: {} (支持集合只有 {TRACK_FLAG_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownFlagField",
+            "unsupportedFields": unknown,
+            "supportedFlagFields": TRACK_FLAG_FIELDS,
+            "hint": "目标音轨是工具顶层的 `trackId`; 嵌套在操作对象里的 `trackId` 不会被读取",
+        }),
+    ))
 }
 
 /// 读一个**有限**的 JSON 数字（`f64` → `f32`，与 `value` 的模型类型同宽）。
@@ -841,11 +1035,14 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// （[`AutomationTarget::static_value`]，与 `yeban_edit_automation` 的 `staticValue`
 /// 读数同一个入口），因此模型的 `OpStateMismatch` 前置条件天然成立。
 ///
+/// [`NoteOp::SetTrackFlag`] 同样是**音轨级**的：`old_mute` / `old_solo` 由
+/// [`TrackFlag::read`] 从当前文档读（模型 `apply` 的前置条件读的是同一个字段）。
+///
 /// # Errors
 ///
 /// - 音轨不存在 → `TRACK_NOT_FOUND`；
 /// - 片段不存在 → `CLIP_NOT_FOUND`；**有音符操作**且片段不是 MIDI → `CLIP_NOT_FOUND`
-///   （纯 `setParam` 调用不要求片段是 MIDI：它不读片段内容）；
+///   （纯 `setParam` / 纯开关调用不要求片段是 MIDI：它们不读片段内容）；
 /// - 音符不存在 → `ENTITY_NOT_FOUND`；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
 pub fn compile(
@@ -854,7 +1051,7 @@ pub fn compile(
     clip_id: &EntityId,
     ops: &[NoteOp],
 ) -> Result<Vec<Op>, Fault> {
-    project
+    let track = project
         .track(track_id)
         .map_err(|error| from_model("音轨查找", &error))?;
     let entry = project
@@ -955,6 +1152,11 @@ pub fn compile(
                     new_val: *value,
                 }
             }
+            NoteOp::SetTrackFlag { flag, value } => {
+                // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
+                // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
+                flag.compile(*track_id, flag.read(track), *value)
+            }
         });
     }
     Ok(compiled)
@@ -1021,8 +1223,9 @@ pub fn compile_create(
                     ErrorCode::InvalidParameterRange,
                     format!(
                         "`create: true` 时 `ops` 只允许 `add` (新片段里还没有音符可以被 \
-                         `delete`/`move`/`velocity` 指向; `setParam` 是音轨级的, 与\
-                         建材料无关), 实际收到 `{}`",
+                         `delete`/`move`/`velocity` 指向; 音轨级的 \
+                         `setParam`/`setTrackMute`/`setTrackSolo` 与建材料无关), \
+                         实际收到 `{}`",
                         other.kind_name()
                     ),
                     serde_json::json!({
@@ -1982,6 +2185,196 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
     }
 
+    /// `ops[].kind == "setTrackMute"` / `"setTrackSolo"` 的**规范**形状：
+    /// 解析 → 编译 → 真的改工程 → 逆操作回原。
+    ///
+    /// 这一条是"工具面写不了静音 / 独奏"缺口的**字面**判据：它钉住
+    /// `old_mute` / `old_solo` 来自当前文档（不是调用方声明）、`new_*` 是模型变体的载荷、
+    /// 且 `Op::invert` 能逐字节回退。
+    ///
+    /// 文档先被推到"两个开关**已经打开**"再写 `false`：这条安排是判据的**牙齿** ——
+    /// 文档值恰好等于注入常量时，"把 `old_*` 写死成常量"的注入会全绿（实测过一次）。
+    ///
+    /// 注入（实测红）：删掉 `parse_one` 的两个分支 ⇒ 未知 `kind`；把
+    /// [`TrackFlag::read`] 写死成常量 ⇒ 这里报 `old_mute` 不是 `true`。
+    #[test]
+    fn track_flags_compile_against_the_document_and_invert_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        {
+            let track = project.track_mut(&track_id).expect("音轨");
+            track.mute = true;
+            track.solo = true;
+        }
+        let track_before = project.track(&track_id).expect("音轨").clone();
+        let mute_before = track_before.mute;
+        let solo_before = track_before.solo;
+        assert!(mute_before && solo_before, "夹具前提: 两个开关先是打开的");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackMute", "value": false},
+            {"kind": "setTrackSolo", "value": false}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(ops.iter().all(|op| !op.is_note_level()), "两条都是音轨级");
+        assert_eq!(ops[0].kind_name(), SET_TRACK_MUTE_KIND);
+        assert_eq!(ops[1].kind_name(), SET_TRACK_SOLO_KIND);
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 2);
+        match &compiled[0] {
+            Op::SetTrackMute {
+                track_id: target,
+                old_mute,
+                new_mute,
+            } => {
+                assert_eq!(*target, track_id);
+                assert_eq!(*old_mute, mute_before, "撤销载荷必须来自当前文档");
+                assert!(!*new_mute, "目标态是调用方给的 false");
+            }
+            other => panic!("应当是 SetTrackMute: {other:?}"),
+        }
+        match &compiled[1] {
+            Op::SetTrackSolo {
+                track_id: target,
+                old_solo,
+                new_solo,
+            } => {
+                assert_eq!(*target, track_id);
+                assert_eq!(*old_solo, solo_before, "撤销载荷必须来自当前文档");
+                assert!(!*new_solo);
+            }
+            other => panic!("应当是 SetTrackSolo: {other:?}"),
+        }
+
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "track flags".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        let muted = project.track(&track_id).expect("音轨");
+        assert!(!muted.mute, "合并后静音必须真的关掉");
+        assert!(!muted.solo, "合并后独奏必须真的关掉");
+        assert_eq!(muted.volume_db, track_before.volume_db, "开关不碰音量");
+        assert_eq!(muted.pan, track_before.pan, "开关不碰声相");
+        assert_eq!(
+            muted.solo_safe, track_before.solo_safe,
+            "`Op::SetTrackSolo` 不顺手改 `solo_safe`"
+        );
+
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            project.track(&track_id).expect("音轨"),
+            &track_before,
+            "逆操作必须逐字段回到原音轨"
+        );
+    }
+
+    /// 开关的**形状**错误全部响亮失败：非布尔值、缺字段、多写的键（含嵌套 `trackId`）。
+    ///
+    /// 注入：把 `raw.as_bool()` 换成 `raw.as_bool().unwrap_or(false)` ⇒ 前两条不再红。
+    #[test]
+    fn track_flags_reject_non_boolean_values_and_unknown_keys() {
+        // 非布尔值。
+        for payload in [
+            serde_json::json!([{"kind": "setTrackMute", "value": 1}]),
+            serde_json::json!([{"kind": "setTrackSolo", "value": "true"}]),
+            serde_json::json!([{"kind": "setTrackMute", "value": null}]),
+            serde_json::json!([{"kind": "setTrackSolo", "value": ["yes"]}]),
+        ] {
+            let fault = parse_ops(&payload).expect_err(&format!("必须被拒: {payload}"));
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(
+                value["error"]["data"]["reason"], "valueMustBeBoolean",
+                "{payload}"
+            );
+        }
+
+        // 缺 `value`：统一的缺字段错误（不带 data）。
+        let fault = parse_ops(&serde_json::json!([{"kind": "setTrackMute"}])).expect_err("缺字段");
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("必须是领域失败");
+        };
+        assert!(data.is_none(), "缺字段错误不该带 data: {data:?}");
+
+        // 开关对象里 `kind` / `value` 之外的键：**响亮失败**，并指出目标音轨的
+        // 正确位置是顶层 `trackId`（嵌套写它会被静默忽略 ⇒ 开关落到别的音轨上）。
+        for payload in [
+            serde_json::json!([{"kind": "setTrackMute", "value": true,
+                               "trackId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}]),
+            serde_json::json!([{"kind": "setTrackSolo", "value": false, "lane": "TrackVolume"}]),
+        ] {
+            let fault = parse_ops(&payload).expect_err(&format!("必须被拒: {payload}"));
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            let value = fault.into_result().expect("带内");
+            assert_eq!(
+                value["error"]["data"]["reason"], "unknownFlagField",
+                "{payload}"
+            );
+            assert_eq!(
+                value["error"]["data"]["supportedFlagFields"],
+                serde_json::json!(TRACK_FLAG_FIELDS),
+                "{payload}"
+            );
+            assert!(
+                value["error"]["data"]["hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains("trackId")),
+                "必须指出目标音轨在顶层: {payload}"
+            );
+        }
+
+        // 猜一个更短的名字（`setMute`）不是别名，而是**未知 kind**：错误里给出全集。
+        let fault = parse_ops(&serde_json::json!([{"kind": "setMute", "value": true}]))
+            .expect_err("`setMute` 不是本工具的形态名");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(
+            value["error"]["data"]["supportedKinds"],
+            serde_json::json!(OP_KINDS),
+            "未知 kind 必须报出全集 (含两个新开关)"
+        );
+    }
+
+    /// 两个开关是**音轨级**的：纯开关调用不要求片段是 MIDI（一个音符都不读），
+    /// 而 `create: true` 的形状里它们仍然被响亮拒绝。
+    ///
+    /// 注入：把 `NoteOp::is_note_level` 改回"只有 `SetParam` 是音轨级" ⇒ 第一条红。
+    #[test]
+    fn track_flags_alone_do_not_require_a_midi_clip() {
+        let project = filled_project();
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段");
+        let track_id = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackMute", "value": true},
+            {"kind": "setTrackSolo", "value": false}
+        ]))
+        .expect("解析");
+        let compiled =
+            compile(&project, &track_id, &audio_clip.id, &ops).expect("纯开关写入不要求 MIDI 材料");
+        assert_eq!(compiled.len(), 2);
+
+        // `kind` 的全集必须真的登记这两个名字（错误信息的 `supportedKinds` 与判据共用）。
+        assert_eq!(OP_KINDS.len(), 7);
+        assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
+        assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
+        assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
+    }
+
     #[test]
     fn peak_polyphony_ignores_abutting_notes() {
         assert_eq!(peak_polyphony([] as [(u64, u64); 0]), 0);
@@ -2383,6 +2776,15 @@ mod tests {
             (
                 "velocity",
                 serde_json::json!({"kind": "velocity", "noteId": note, "velocity": 1}),
+            ),
+            // 两个音轨级开关与建材料**无关**：`create: true` 只收 `add`。
+            (
+                "setTrackMute",
+                serde_json::json!({"kind": "setTrackMute", "value": true}),
+            ),
+            (
+                "setTrackSolo",
+                serde_json::json!({"kind": "setTrackSolo", "value": true}),
             ),
         ] {
             let mut items = vec![add_json(0, 60)];

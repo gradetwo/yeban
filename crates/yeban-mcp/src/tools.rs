@@ -611,7 +611,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind == \"setParam\"` 写 `trackId` 那条轨的静态混音值 (音量 / 声相, `Op::SetParam`)",
+        summary: "在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的三个音轨级形态写 `trackId` 那条轨的静态混音值与通道条开关 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo`)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -626,7 +626,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "ops",
                 "array",
                 true,
-                "操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,probability?,ratchet?,microTimingTicks?}}` / `delete` / `move` / `velocity` / `setParam`。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]; `note.ratchet` (可选, 整数 1..=16) 的连击细分与 `note.microTimingTicks` (可选, 整数 -240..=240 tick) 的起点偏移都由母带渲染器**真的**消费 (与实时引擎同一条格点公式)。`note` 里这 8 个键之外的字段一律 `INVALID_PARAMETER_RANGE` (绝不静默丢弃): 模型另有 `slide`/`pitchBendCurve`/`syllable`/`phonemes` 四个表现力字段, 工具面**还没有**通路, 渲染器会如实登记进 `unsupported`。`{\"kind\":\"setParam\",\"lane\":\"TrackVolume\"|\"TrackPan\",\"value\":number}` 写的是 `trackId` 那条轨的**静态**混音值 (`Op::SetParam`: `TrackV3::volume_db` / `pan`), 走与本工具音符编辑**相同**的提案路径; `lane` 只认这两个规范名 (其余三个自动化目标 `SendGain`/`DeviceParam`/`Macro` 与未知名字都 `INVALID_PARAMETER_RANGE`); 值域 (声相 -1.0..=1.0, 有限值) 由模型层 `validate_param_value` 判。给了 `placement` 时允许空数组 (这次调用只摆放, 一个音符都不动)",
+                "操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,probability?,ratchet?,microTimingTicks?}}` / `delete` / `move` / `velocity` / `setParam` / `setTrackMute` / `setTrackSolo`。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]; `note.ratchet` (可选, 整数 1..=16) 的连击细分与 `note.microTimingTicks` (可选, 整数 -240..=240 tick) 的起点偏移都由母带渲染器**真的**消费 (与实时引擎同一条格点公式)。`note` 里这 8 个键之外的字段一律 `INVALID_PARAMETER_RANGE` (绝不静默丢弃): 模型另有 `slide`/`pitchBendCurve`/`syllable`/`phonemes` 四个表现力字段, 工具面**还没有**通路, 渲染器会如实登记进 `unsupported`。三个**音轨级**形态 (不读不写任何音符, 目标都是顶层 `trackId`): `{\"kind\":\"setParam\",\"lane\":\"TrackVolume\"|\"TrackPan\",\"value\":number}` 写 `TrackV3::volume_db` / `pan` (`Op::SetParam`), `lane` 只认这两个规范名 (其余三个自动化目标 `SendGain`/`DeviceParam`/`Macro` 与未知名字都 `INVALID_PARAMETER_RANGE`), 值域 (声相 -1.0..=1.0, 有限值) 由模型层 `validate_param_value` 判; `{\"kind\":\"setTrackMute\",\"value\":bool}` / `{\"kind\":\"setTrackSolo\",\"value\":bool}` 写 `TrackV3::mute` / `solo` (`Op::SetTrackMute` / `Op::SetTrackSolo`, 母带渲染器的 `audible` 判定真的读它们), `value` 只收 JSON 布尔 (不做真假值强转), 开关对象里 `kind`/`value` 之外的键一律 `INVALID_PARAMETER_RANGE` (含嵌套的 `trackId`)。三个形态都走与本工具音符编辑**相同**的提案路径, 撤销载荷从当前文档读。给了 `placement` 时允许空数组 (这次调用只摆放, 一个音符都不动)",
             ),
             // `create` / `clipName` 是**可选**实参（缺省 = 逐字节等于旧行为），
             // 与 `yeban_open_project` 的 `create` 同词同义（ADR-0001 D48）。

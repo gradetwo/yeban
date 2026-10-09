@@ -1970,10 +1970,12 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   （关闭 `docs/ledger/mcp-tools-expansion-notes.md` §6 的 needs-6：
 ///   池子里的片段此前**没有任何工具**能摆上时间轴 ⇒ 渲染器一帧都不出声）。
 ///   此时 `ops` 允许是**空数组** —— "这次调用做什么"由 `placement` 承载。
-/// - **静态混音值**（`ops[].kind == "setParam"`）：写 `trackId` 那条轨的
-///   `TrackV3::volume_db` / `pan`（`Op::SetParam`）—— 关闭"17 个工具没有一个能写
-///   静态混音值"这条缺口。它是**音轨级**的：`compile` 的"片段必须是 MIDI"断言只在
-///   真的有音符操作时成立（见 `notes::NoteOp::is_note_level`）。
+/// - **音轨级编辑**（`ops[].kind` ∈ `setParam` / `setTrackMute` / `setTrackSolo`）：
+///   分别写 `trackId` 那条轨的 `TrackV3::volume_db` / `pan`（`Op::SetParam`）与
+///   `TrackV3::mute` / `solo`（`Op::SetTrackMute` / `Op::SetTrackSolo`）
+///   —— 关闭"17 个工具没有一个能写静态混音值 / 通道条开关"这条缺口。
+///   它们都是**音轨级**的：`compile` 的"片段必须是 MIDI"断言只在真的有音符操作时
+///   成立（见 `notes::NoteOp::is_note_level`）。
 ///
 /// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
 /// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
@@ -2066,17 +2068,17 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         None => String::new(),
     };
     notes::check_polyphony(project, &clip_id, &compiled)?;
-    // 描述按**实际内容**报（不把一次纯静态混音值写入说成"音符编辑"）。
+    // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"）。
     let note_level = note_ops.iter().filter(|op| op.is_note_level()).count();
-    let static_level = note_ops.len() - note_level;
+    let track_level = note_ops.len() - note_level;
     let description = if note_ops.is_empty() {
         placement_description
     } else if note_level == 0 {
-        format!("静态混音值: {static_level} 步")
-    } else if static_level == 0 {
+        format!("音轨级编辑: {track_level} 步")
+    } else if track_level == 0 {
         format!("音符编辑: {note_level} 步")
     } else {
-        format!("音符编辑: {note_level} 步 + 静态混音值: {static_level} 步")
+        format!("音符编辑: {note_level} 步 + 音轨级编辑: {track_level} 步")
     };
     propose_draft(
         domain,
