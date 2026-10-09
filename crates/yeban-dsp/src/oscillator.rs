@@ -580,6 +580,31 @@ impl WavetableOscillator {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：`Lfo::reset` 之后的 LFO 与**全新实例**在同样的速率下
+    /// 逐位一致（相位与输出都回到周期起点）。
+    ///
+    /// 量什么：64 个输出样本（`f32` 位型）与 `phase()`。
+    ///
+    /// `Lfo::reset` 清相位与输出两处，而同文件的
+    /// `lfo_shapes_are_bounded_and_retriggerable` 在复位之后只读输出值、**不读相位**。
+    /// 注入实测：去掉 `self.phase = 0.0;` ⇒ 既有全量判据**全绿**。
+    #[test]
+    fn reset_reproduces_a_freshly_built_lfo_bit_for_bit() {
+        let drive = |lfo: &mut Lfo| -> (f32, Vec<f32>) {
+            let out = (0..64)
+                .map(|_| lfo.process(LfoWave::Sine, 3.0, 48_000.0))
+                .collect();
+            (lfo.phase(), out)
+        };
+        let mut used = Lfo::new();
+        let _ = drive(&mut used);
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut Lfo::new());
+        assert_eq!(after.0.to_bits(), fresh.0.to_bits(), "复位后的相位不一致");
+        assert_eq!(after.1, fresh.1, "复位后的输出不一致");
+    }
+
     // ---------------------------------------------------------------- 波表
 
     /// 高于某频率的能量，用对该级自身的直接 DFT 测量。

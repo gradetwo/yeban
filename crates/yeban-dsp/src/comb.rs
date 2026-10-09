@@ -235,6 +235,34 @@ mod tests {
     use super::*;
     use crate::noise::Rng;
 
+    /// **判据（新写，可红）**：`reset` 之后的梳状滤波器与**全新构造的同参数实例**
+    /// 在同样输入下逐位一致。
+    ///
+    /// 量什么：512 帧输出（`f32` 位型）。
+    ///
+    /// `reset` 清四处状态（延迟线、写头、阻尼、隔直）。既有判据覆盖"换长度不重放
+    /// 旧音频"与"固定长度逐位等于教科书环形缓冲"，但**没有一条**把复位后的实例与
+    /// 全新实例对照。注入实测：去掉 `self.dc = 0.0;` ⇒ 既有全量判据**全绿**
+    /// ⇒ 隔直状态没有被守住（它与阻尼状态都会经写回样本进环、再经抽头出来）。
+    #[test]
+    fn reset_reproduces_a_freshly_built_comb_bit_for_bit() {
+        let build = || comb(SR, 220.0, 0.9);
+        let drive = |comb: &mut CombFilter| -> Vec<f32> {
+            let input: Vec<f32> = (0..512)
+                .map(|index| if index < 8 { 1.0 } else { 0.0 })
+                .collect();
+            let mut out = vec![0.0f32; input.len()];
+            comb.process(&input, &mut out);
+            out
+        };
+        let mut used = build();
+        let _ = drive(&mut used);
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut build());
+        assert_eq!(after, fresh, "reset 之后与全新实例逐位不一致");
+    }
+
     const SR: f32 = 48_000.0;
 
     fn comb(sample_rate: f32, freq: f32, resonance: f32) -> CombFilter {

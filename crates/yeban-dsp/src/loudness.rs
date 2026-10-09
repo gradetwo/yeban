@@ -789,6 +789,53 @@ fn clean(sample: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：`GatedLoudness::reset` 之后的实例与**全新实例**在
+    /// 同样的流式输入下给出逐位相同的窗口读数。
+    ///
+    /// 量什么：瞬时读数与最大瞬时读数（LUFS，`f32` 位型）。
+    ///
+    /// 夹具刻意在**复位之后只喂 3 个跳（300 ms）**：结算一个跳时用"环里已有的跳数"
+    /// 决定瞬时窗口是否成立，而瞬时窗口需要 4 个跳 ⇒ 全新实例此时读出 `−∞`，
+    /// 而带陈旧跳数的实例会提前给出有限读数。注入实测：去掉
+    /// `self.ring_filled = 0;` ⇒ 既有全量判据**全绿**。
+    #[test]
+    fn reset_reproduces_a_freshly_built_gated_meter_bit_for_bit() {
+        let samples: Vec<f32> = (0..24_000)
+            .map(|index| {
+                let phase = std::f64::consts::TAU * 997.0 * index as f64 / 48_000.0;
+                (phase.sin() * 0.25) as f32
+            })
+            .collect();
+        // 先喂 0.5 s（5 个跳）把"环里已有的跳数"推到瞬时窗口之上。
+        let mut used = GatedLoudness::new_48k();
+        used.add_stereo(&samples, &samples);
+        assert!(used.momentary_lufs().is_finite(), "预热必须让瞬时窗口成立");
+        used.reset();
+        // 复位之后只喂 0.3 s（3 个跳）：全新实例的瞬时窗口还不成立。
+        let short = &samples[..14_400];
+        let drive = |meter: &mut GatedLoudness| -> (f32, f32) {
+            meter.add_stereo(short, short);
+            (meter.momentary_lufs(), meter.max_momentary_lufs())
+        };
+        let after = drive(&mut used);
+        let fresh = drive(&mut GatedLoudness::new_48k());
+        assert_eq!(
+            fresh.0,
+            f32::NEG_INFINITY,
+            "全新实例在 3 个跳时不应有瞬时读数"
+        );
+        assert_eq!(
+            after.0.to_bits(),
+            fresh.0.to_bits(),
+            "复位后的瞬时读数不一致"
+        );
+        assert_eq!(
+            after.1.to_bits(),
+            fresh.1.to_bits(),
+            "复位后的最大瞬时读数不一致"
+        );
+    }
+
     /// 997 Hz 的正弦（振幅 = 幅度），长度 = 1 秒。
     fn sine_997(amplitude: f32, len: usize) -> Vec<f32> {
         (0..len)

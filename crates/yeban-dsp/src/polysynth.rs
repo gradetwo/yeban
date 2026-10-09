@@ -1362,6 +1362,39 @@ mod tests {
     use super::*;
     use crate::oscillator::{HOLLOW, ORGAN};
 
+    /// **判据（新写，可红）**：`reset` 之后的复音合成器与**全新实例**在同样的触发
+    /// 序列下逐位一致（全部声部槽位都归 `IDLE`）。
+    ///
+    /// 量什么：512 帧输出（`f32` 位型）。
+    ///
+    /// `reset` 只做一件事：把全部声部置为 `PolyVoice::IDLE`。注入实测：把它改成
+    /// 只重置下标 0 的声部 ⇒ 其余槽位仍带旧状态，后续 `note_on` 会走窃取路径
+    /// ⇒ 输出与全新实例不同，而**既有全量判据全绿** ⇒ 这条复位契约此前没有被守住。
+    #[test]
+    fn reset_reproduces_a_freshly_built_synth_bit_for_bit() {
+        let tables = tables();
+        let build = || {
+            let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+            synth.set_params(PolySynthParams::new(), &tables);
+            synth
+        };
+        let drive = |synth: &mut PolySynth<VOICES_PER_SLOT>| -> Vec<f32> {
+            for (index, frequency) in [440.0f32, 554.37, 659.25].into_iter().enumerate() {
+                let gain = 1.0 - 0.2 * index as f32;
+                synth.note_on(NoteEvent::new(0, 96_000, frequency, gain), &tables);
+            }
+            let mut out = vec![0.0f32; 512];
+            synth.render(&tables, 0, &mut out);
+            out
+        };
+        let mut used = build();
+        let _ = drive(&mut used);
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut build());
+        assert_eq!(after, fresh, "reset 之后与全新实例不一致");
+    }
+
     /// 单 bin DFT 的幅度（判据用；窗口为矩形，故读数含泄漏 —— 只用于"峰在不在"）。
     fn bin_magnitude(samples: &[f32], freq_hz: f32, sample_rate: f32) -> f64 {
         let mut re = 0.0f64;

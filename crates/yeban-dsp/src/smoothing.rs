@@ -231,6 +231,100 @@ impl Default for ParamSmoother {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：吸附门限有 `1.0` 的**绝对下限**，因此远小于门限的
+    /// 目标在**一个样本**内被取到。
+    ///
+    /// 量什么：`process()` 的返回值（线性参数值，`f32` 位型）与 `is_settled()`。
+    ///
+    /// 文档化的门限是 `1e-5 · max(|value|, |target|, 1)` —— `1.0` 那一项让门限在
+    /// **小参数上不随参数缩小**。它正是模块注释里那条理由：差值继续缩小会进入
+    /// 次正规区间（x86 上可达 100× 周期），[ARCH-RT-003] 要根除那条路径。
+    /// 注入实测：把 `scale` 的 `.max(1.0)` 去掉 ⇒ 门限缩成 `1e-5 · 1e-6 = 1e-11`，
+    /// 第一步只走 `(1 − α)·1e-6 ≈ 4.2e-9` ⇒ 本判据变红。
+    #[test]
+    fn the_snap_threshold_has_an_absolute_floor_for_tiny_parameters() {
+        let mut smoother = ParamSmoother::with_default_time(SR);
+        smoother.snap_to(0.0);
+        smoother.set_target(1.0e-6);
+        let first = smoother.process();
+        assert_eq!(
+            first.to_bits(),
+            1.0e-6f32.to_bits(),
+            "远小于绝对门限的目标必须在一个样本内被取到（实得 {first:e}）"
+        );
+        assert!(smoother.is_settled());
+    }
+
+    /// **判据（新写，可红）**：文档化的吸附门限量级被两端夹住。
+    ///
+    /// 量什么：阶跃响应里 `is_settled()` 第一次为真的样本下标（单位：样本）。
+    ///
+    /// `τ = 5 ms` @48 kHz 的误差按 `exp(-n/240)` 缩小，吸附发生在
+    /// `|目标 − 值| ≤ 1e-5 · scale` 时 ⇒ 下标约 `240 · ln(1e5) ≈ 2 763`。
+    /// 因此 `2 000` 之前**不得**吸附（否则门限被放大到 `> 2.4e-4`，参数在可听误差
+    /// 处就被硬拽到目标），`3 000` 之时**必须**已经吸附且逐位相等（否则门限被压到
+    /// 浮点停摆点 `≈ 7e-6` 之下，平滑器停摆）。
+    ///
+    /// 注入实测：`SNAP_RELATIVE` 从 `1e-5` 改成 `1e-3` ⇒ 吸附提前到约 `1 658` 样本
+    /// ⇒ 第一条断言变红；改成 `1e-7` ⇒ 停摆、`expect` 变红。
+    ///
+    /// 链路含 `exp` ⇒ 按 [ADR-0001 D32] 属超越函数类，因此只断言**区间**，
+    /// ⛔ 不钉精确下标。
+    #[test]
+    fn the_snap_threshold_sits_between_the_stall_point_and_the_audible_error() {
+        let mut smoother = ParamSmoother::with_default_time(SR);
+        smoother.snap_to(0.0);
+        smoother.set_target(1.0);
+        let mut settled_at = None;
+        for sample in 0..3_000 {
+            smoother.process();
+            if smoother.is_settled() {
+                settled_at = Some(sample + 1);
+                break;
+            }
+        }
+        let settled_at = settled_at.expect("3 000 样本之内必须吸附（门限不得低于浮点停摆点）");
+        assert!(
+            settled_at > 2_000,
+            "吸附发生在样本 {settled_at} ⇒ 门限被放大到可听误差量级"
+        );
+        assert!(settled_at <= 3_000, "吸附不得晚于 3 000 样本: {settled_at}");
+        assert_eq!(
+            smoother.value().to_bits(),
+            1.0f32.to_bits(),
+            "吸附必须逐位取目标值"
+        );
+    }
+
+    /// **判据（新写，可红）**：极大的时间常数不得把 α 舍入成 `1.0`。
+    ///
+    /// 量什么：`alpha()`（无量纲）与推进 64 个样本后的输出（线性参数值）。
+    ///
+    /// [`ParamSmoother::recompute`] 的上界 `1.0 - f32::EPSILON` 存在的理由是
+    /// "α 舍入到 1 会让平滑器永久卡住"，但既有夹具的时间常数最大只到 `10 s`
+    ///（`τ·fs = 480 000`），离 `exp(-1/(τ·fs))` 在 `f32` 上舍入到 `1.0` 的门槛
+    ///（`τ·fs > 2^24 ≈ 1.7e7`）还差两个数量级 ⇒ 那个上界从未被走到。
+    /// 注入实测：上界改成 `1.0` ⇒ α 恰为 `1.0`，本判据第一条断言变红。
+    ///
+    /// 链路含 `exp` ⇒ 只断言性质（α 严格小于 1、递归仍然移动），⛔ 不钉精确值。
+    #[test]
+    fn a_time_constant_beyond_the_float_grid_cannot_round_alpha_to_one() {
+        let mut smoother = ParamSmoother::new(SR, 1.0e30);
+        assert!(
+            smoother.alpha() < 1.0,
+            "α 舍入到 1.0 ⇒ 平滑器永久卡死：{}",
+            smoother.alpha()
+        );
+        assert!(smoother.alpha() >= 0.0, "α 不得为负: {}", smoother.alpha());
+        smoother.snap_to(0.0);
+        smoother.set_target(1.0);
+        let mut moved = false;
+        for _ in 0..64 {
+            moved |= smoother.process() > 0.0;
+        }
+        assert!(moved, "输出一步都不动 ⇒ 递归被 α 停摆");
+    }
+
     const SR: f32 = 48_000.0;
 
     /// **判据（新写，可红）**：阶跃输入下输出**不得**出现瞬时跳变。

@@ -187,6 +187,67 @@ impl Default for NoiseGen {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：转折频率的**下界 1 Hz** 被钉住 —— 低于下界的请求与
+    /// 请求下界本身给出**逐位相同**的输出流。
+    ///
+    /// 量什么：128 个输出样本（`f32` 位型）。
+    ///
+    /// 文档化的域是 `1–200 Hz`（见 [`NoiseGen::set_corner_hz`]）。注入实测：把
+    /// `hz.clamp(1.0, 200.0)` 的下界改成 `0.0` ⇒ 既有全量判据**全绿**
+    /// ⇒ 这条下界此前没有被守住（0 Hz 的漏积分器把泄漏项顶到自己的上界，
+    /// 棕噪声的音色随之改变）。
+    #[test]
+    fn a_corner_below_the_documented_floor_is_folded_onto_the_floor() {
+        let render = |corner_hz: f32| -> Vec<f32> {
+            let mut noise = NoiseGen::new();
+            noise.set_colour(NoiseColour::Brown);
+            noise.set_corner_hz(corner_hz);
+            (0..128)
+                .map(|index| {
+                    let white = if index % 2 == 0 { 0.5 } else { -0.5 };
+                    noise.process(white, 48_000.0)
+                })
+                .collect()
+        };
+        let at_floor = render(1.0);
+        for below in [0.0f32, -1.0, 0.5] {
+            assert_eq!(render(below), at_floor, "转折频率 {below} Hz 必须折到 1 Hz");
+        }
+        // 正对照：下界之上不得被折，否则上面三条是空断言。
+        assert_ne!(render(50.0), at_floor, "50 Hz 必须与 1 Hz 不同");
+    }
+
+    /// **判据（新写，可红）**：`reset` 之后的噪声源与**全新构造的同色实例**在同样
+    /// 白噪声序列下逐位一致。
+    ///
+    /// 量什么：128 个输出样本（`f32` 位型）。
+    ///
+    /// `reset` 清两处颜色状态（粉噪声三元组与棕噪声漏积分器）。既有判据
+    /// `stays_bounded` 只是**在循环里**调 `reset` 而不比对读数 ⇒ 没有一条判据守住
+    /// 复位后的等价性。注入实测：去掉 `self.brown = 0.0;` ⇒ 既有全量判据**全绿**。
+    #[test]
+    fn reset_reproduces_a_freshly_built_noise_gen_bit_for_bit() {
+        let build = || {
+            let mut noise = NoiseGen::new();
+            noise.set_colour(NoiseColour::Brown);
+            noise
+        };
+        let drive = |noise: &mut NoiseGen| -> Vec<f32> {
+            (0..128)
+                .map(|index| {
+                    let white = if index % 2 == 0 { 0.5 } else { -0.5 };
+                    noise.process(white, 48_000.0)
+                })
+                .collect()
+        };
+        let mut used = build();
+        let _ = drive(&mut used);
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut build());
+        assert_eq!(after, fresh, "reset 之后与全新实例逐位不一致");
+    }
+
     /// 以倍频程带能量算出的 dB/倍频程斜率（250 Hz–4 kHz，四个倍频程）。
     ///
     /// 在频域测量是**要点**：粉/棕是关于频谱的陈述，只看电平无法把它和白噪声区分开。

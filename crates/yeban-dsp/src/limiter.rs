@@ -449,6 +449,73 @@ fn nan_to_zero(sample: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：窗口峰值**恰好等于**阈值时不是一次压限。
+    ///
+    /// 量什么：`gain()`（无量纲）、`reduction_count()`（个样本）、`engaged()`（布尔）。
+    ///
+    /// `threshold / peak` 在 `peak == threshold` 处**恰好**是 `1.0` ⇒ 该样本逐位
+    /// 不变、计数不涨。`engaged` 是公开的"夹具真的驱动过限制器"证据（峰值上界那条
+    /// 判据靠它反假绿），因此"恰好等于阈值"这一格必须留在"未压"的一侧。
+    /// 注入实测：`peak > threshold` 改成 `>=` ⇒ 第三条断言变红（前两条仍绿，
+    /// 因为目标增益本来就是 `1.0`）。
+    #[test]
+    fn a_peak_exactly_at_the_threshold_is_not_a_reduction() {
+        let mut limiter = Limiter::new();
+        let mut left = [0.0f32; FRAMES];
+        let mut right = [0.0f32; FRAMES];
+        left[0] = LIMITER_THRESHOLD;
+        right[0] = LIMITER_THRESHOLD;
+        limiter.process_stereo(&mut left, &mut right);
+        assert_eq!(limiter.gain(), 1.0, "恰好等于阈值时目标增益就是 1.0");
+        assert_eq!(limiter.reduction_count(), 0);
+        assert!(!limiter.engaged(), "恰好等于阈值不是一次压限");
+    }
+
+    /// **判据（新写，可红）**：`reset` 之后的实例与**全新构造的同参数实例**在同样
+    /// 输入下逐位一致。
+    ///
+    /// 量什么：两条 128 帧立体声输出（`f32` 位型）、`gain()`、`reduction_count()`、
+    /// `engaged()`。
+    ///
+    /// `reset` 清五处状态（环、写头、增益、`engaged`、被压计数），而既有判据只测
+    /// "零帧是空操作"与"未超阈值逐位不变"，**没有一条**把复位后的实例与全新实例
+    /// 对照。注入实测：去掉 `self.reductions = 0;` ⇒ 既有全量判据**全绿**
+    /// ⇒ 那个计数没有被守住。（去掉 `self.write = 0;` 同样全绿，但那一条是
+    /// **不可观测的规范自由度**：环已清零，写头相位只让整条输出循环平移，
+    /// 而读窗口遍历整个环 ⇒ 输出逐位相同，本判据不假装能抓住它。）
+    #[test]
+    fn reset_reproduces_a_freshly_built_limiter_bit_for_bit() {
+        let build = || {
+            let mut limiter = Limiter::new();
+            limiter.set_threshold(0.5);
+            limiter
+        };
+        let drive = |limiter: &mut Limiter| {
+            let mut left = [0.0f32; FRAMES];
+            let mut right = [0.0f32; FRAMES];
+            for (frame, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                let value = 1.8 * ((frame as f32) * 0.21).sin();
+                *l = value;
+                *r = 0.6 * value;
+            }
+            limiter.process_stereo(&mut left, &mut right);
+            (
+                left,
+                right,
+                limiter.gain(),
+                limiter.reduction_count(),
+                limiter.engaged(),
+            )
+        };
+        let mut used = build();
+        let warmup = drive(&mut used);
+        assert!(warmup.4, "夹具必须真的驱动限制器");
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut build());
+        assert_eq!(after, fresh, "reset 之后与全新实例不一致");
+    }
+
     /// 一个量子的帧数（与本仓库的固定处理块长同值 [ARCH-DET-001]）。
     const FRAMES: usize = 128;
 

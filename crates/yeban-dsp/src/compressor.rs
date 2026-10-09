@@ -819,6 +819,45 @@ impl Default for Compressor {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：`reset` 之后的压缩器与**全新构造的同参数实例**在
+    /// 同样输入下逐位一致。
+    ///
+    /// 量什么：256 个输出样本（`f32` 位型）、`gain_linear()`、`gain_db()`、
+    /// `max_reduction_db()`、`reduction_count()`。
+    ///
+    /// `reset` 清七处状态，而同文件的 `reset_clears_state_and_statistics` 只读五个
+    /// 读数，**不读**线性增益。注入实测：去掉 `self.gain_lin = 1.0;`
+    /// ⇒ 既有全量判据**全绿** ⇒ 那条弹道状态没有被守住（复位后第一帧从旧增益起步）。
+    #[test]
+    fn reset_reproduces_a_freshly_built_compressor_bit_for_bit() {
+        let params = CompressorParams {
+            threshold_db: -20.0,
+            ratio: 8.0,
+            ..CompressorParams::DEFAULT
+        };
+        let build = || Compressor::new(params, 48_000.0);
+        let drive = |compressor: &mut Compressor| -> (Vec<f32>, f32, f32, f32, u64) {
+            let mut buffer: Vec<f32> = (0..256)
+                .map(|index| 2.5 * ((index as f32) * 0.03).sin())
+                .collect();
+            compressor.process_mono(&mut buffer);
+            (
+                buffer,
+                compressor.gain_linear(),
+                compressor.gain_db(),
+                compressor.max_reduction_db(),
+                compressor.reduction_count(),
+            )
+        };
+        let mut used = build();
+        let warmup = drive(&mut used);
+        assert!(warmup.4 > 0, "夹具必须真的驱动压缩器");
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut build());
+        assert_eq!(after, fresh, "reset 之后与全新实例不一致");
+    }
+
     /// 量什么：`α` 的两个独立算式（`exp` 与 `exp2`）之差，单位无量纲。
     /// 容差 1e-6 是为了容最后一位舍入，不是为了让错的公式通过 —— 见下一条判据。
     #[test]

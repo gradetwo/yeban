@@ -285,6 +285,44 @@ impl Default for Adsr {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：`reset` 之后的包络与**全新构造的同参数实例**在同样
+    /// 的门信号下逐位一致。
+    ///
+    /// 量什么：128 个输出样本（`f32` 位型）、`value()`、`stage()`。
+    ///
+    /// `reset` 清两处（阶段与电平）。注入实测：去掉 `self.value = 0.0;`
+    /// ⇒ 既有全量判据**全绿** ⇒ 复位后的电平没有被守住（下一次 attack 从旧电平起跳，
+    /// 起振曲线与全新实例不同）。
+    #[test]
+    fn reset_reproduces_a_freshly_built_envelope_bit_for_bit() {
+        let build = || {
+            let mut envelope = Adsr::new();
+            // ⚠ 夹具刻意用**非默认**参数：`Adsr::new()` 的三个系数是占位值
+            //（`attack_inc = 1.0`、`decay_coef = release_coef = 0.0`），要等一次
+            // **真的**参数变更才由 `recompute` 算出来；参数与构造器里存的四个秒值
+            // 完全相等时那次重算会被去抖门限跳过。本判据测的是复位等价性，
+            // 因此绕开那条待裁决的路径（见本票报告）。
+            envelope.set_params(0.012, 0.22, 0.75, 0.33);
+            envelope
+        };
+        let drive = |envelope: &mut Adsr| -> (Vec<f32>, f32, AdsrStage) {
+            envelope.gate_on();
+            let mut out: Vec<f32> = (0..64).map(|_| envelope.process(true)).collect();
+            envelope.gate_off();
+            out.extend((0..64).map(|_| envelope.process(false)));
+            (out, envelope.value(), envelope.stage())
+        };
+        let mut used = build();
+        let warmup = drive(&mut used);
+        assert!(warmup.1 > 0.0, "夹具必须真的把包络推离初态");
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut build());
+        assert_eq!(after.0, fresh.0, "复位后的输出不一致");
+        assert_eq!(after.1.to_bits(), fresh.1.to_bits(), "复位后的电平不一致");
+        assert_eq!(after.2, fresh.2, "复位后的阶段不一致");
+    }
+
     fn render(envelope: &mut Adsr, gate: bool, samples: usize) -> f32 {
         let mut last = 0.0;
         for _ in 0..samples {

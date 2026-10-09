@@ -198,6 +198,36 @@ impl Default for Oversampler2x {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：`reset` 之后的过采样器与**全新实例**在同样的往返
+    /// 输入下逐位一致。
+    ///
+    /// 量什么：128 帧往返输出（`f32` 位型）。
+    ///
+    /// `reset` 清两处尾巴（`up_tail` 与 `down_tail`）。既有判据只测往返的延迟、
+    /// 直流增益与两步 API 的等价，**没有一条**把复位后的实例与全新实例对照。
+    /// 注入实测：把 `self.down_tail = [0.0; OS_TAPS - 1];` 改成只清第 0 格
+    /// ⇒ 既有全量判据**全绿**。
+    #[test]
+    fn reset_reproduces_a_freshly_built_oversampler_bit_for_bit() {
+        let drive = |oversampler: &mut Oversampler2x| -> Vec<f32> {
+            let input: Vec<f32> = (0..128)
+                .map(|index| (core::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin())
+                .collect();
+            let mut up = [0.0f32; 256];
+            let mut scratch = [0.0f32; 1024];
+            let mut out = vec![0.0f32; input.len()];
+            oversampler.upsample(&input, &mut up, &mut scratch);
+            oversampler.downsample(&up, &mut out, &mut scratch);
+            out
+        };
+        let mut used = Oversampler2x::new();
+        let _ = drive(&mut used);
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut Oversampler2x::new());
+        assert_eq!(after, fresh, "reset 之后与全新实例逐位不一致");
+    }
+
     /// 抽取器的真正职责：1× 流承载不了的内容必须在"每隔一个样本丢一个"**之前**
     /// 消失，否则就会折回。过采样率下的 30 kHz 音（高于 24 kHz 基础 Nyquist）
     /// 不得以 18 kHz 的镜像活下来。

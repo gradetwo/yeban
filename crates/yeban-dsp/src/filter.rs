@@ -219,6 +219,37 @@ impl Default for LadderFilter {
 mod tests {
     use super::*;
 
+    /// **判据（新写，可红）**：`reset` 之后的梯形滤波器与**全新构造的同参数实例**
+    /// 在同样输入下逐位一致（四级状态整组归零）。
+    ///
+    /// 量什么：256 个输出样本（`f32` 位型）。
+    ///
+    /// `reset` 的唯一动作是把四级状态整组清零。注入实测：把它改成只清第 0 级
+    /// ⇒ 其余三级带旧状态 ⇒ 输出与全新实例不同，而**既有全量判据全绿**
+    /// ⇒ 这条复位契约此前没有被守住。
+    #[test]
+    fn reset_reproduces_a_freshly_built_filter_bit_for_bit() {
+        let build = || {
+            let mut filter = LadderFilter::new();
+            filter.configure(48_000.0, 1_200.0, 0.7, 0.5);
+            filter
+        };
+        let drive = |filter: &mut LadderFilter| -> Vec<f32> {
+            (0..256)
+                .map(|index| {
+                    let phase = core::f32::consts::TAU * 300.0 * index as f32 / 48_000.0;
+                    filter.process(phase.sin())
+                })
+                .collect()
+        };
+        let mut used = build();
+        let _ = drive(&mut used);
+        used.reset();
+        let after = drive(&mut used);
+        let fresh = drive(&mut build());
+        assert_eq!(after, fresh, "reset 之后与全新实例逐位不一致");
+    }
+
     fn render(freq: f32, res: f32, drive: f32, seconds: f32) -> Vec<f32> {
         let sr = 48_000.0;
         let mut filter = LadderFilter::new();
