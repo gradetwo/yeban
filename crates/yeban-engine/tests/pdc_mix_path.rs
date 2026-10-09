@@ -533,3 +533,105 @@ fn bus_limiter_latency_backfill_keeps_the_render_bit_identical() {
         a.fingerprint(),
     );
 }
+
+/// P4：**剪掉一条支路之后，幸存支路挪进的槽位不得重放被剪支路的音频**。
+///
+/// 槽位是**按 PDC 计划键序的下标**绑定的（`PdcPlan::compensation` 是按键升序的
+/// `BTreeMap`）⇒ 键集合一变，后面的节点就各下移一格、继承上一任的环。
+/// 夹具（`support::pdc_rebind_fixture`）按身份升序钉住四个角色：
+///
+/// | 角色 | 键序 | 上报延迟 | 音符 | 满计划 `D` | 剪枝后 `D` |
+/// | :--- | :--- | :--- | :--- | :--- | :--- |
+/// | `removed` | 1 | 0 | **有**（唯一出声） | 400 | 不存在 |
+/// | `keeper` | 2 | 0 | 无 | 400 | 400 |
+/// | `slow` | 3 | 400 | 无 | 0 | 0 |
+/// | `master` | 4 | 0 | — | 0 | 0 |
+///
+/// 中途发布剪掉 `removed` 的快照 ⇒ `keeper` 从第 2 槽下移到第 1 槽，而那一槽的环里
+/// 留着 `removed` 的 400 帧历史。`keeper` 自己不出声 ⇒ **正确输出是静音**。
+///
+/// 窗口口径：跳过切换之后的 [`BUS_LIMITER_LATENCY_FRAMES`] 帧 —— 母线限制器前瞻环里
+/// 装着切换前的音频，那是**真实播放过**的声音（不是泄漏）⇒ 从 `switch + 33` 到渲染
+/// 结束的每一帧、左右两声道都必须**逐位零**。
+///
+/// 变红的注入：删掉 `CompensationBank::rearm` 里"换主人就清线"那一句 ⇒ `keeper` 把
+/// `removed` 的 400 帧播出来，本判据在那 400 帧里逐位红（实测红行见交付报告）。
+#[test]
+fn pruning_a_branch_never_replays_the_removed_branch_from_the_reused_slot() {
+    /// 切换发生在第几个量子边界。8 × 128 = 1024 帧：`removed` 的音符早已在响，
+    /// 环里至少写进了 1024 个样本（> 400 帧历史）。
+    const SWITCH_QUANTUM: usize = 8;
+    /// 渲染长度（量子）：必须覆盖"切换 + 在途 33 帧 + 400 帧泄漏窗口"。
+    const QUANTA: usize = 32;
+
+    let fixture = support::pdc_rebind_fixture();
+    let mut rebindings_before_switch = 0u64;
+    let mut rebindings_after_switch = 0u64;
+    let render = support::render_with(&fixture.project, QUANTA, 1, |quantum, rig| {
+        if quantum == SWITCH_QUANTUM {
+            rebindings_before_switch = rig.runtime.pdc_rebindings();
+            let pruned =
+                EngineSnapshot::from_project(&fixture.pruned, 2).expect("剪枝快照必须能编译");
+            rig.slot.publish(pruned);
+        }
+        if quantum + 1 == QUANTA {
+            rebindings_after_switch = rig.runtime.pdc_rebindings();
+        }
+    });
+
+    let switch_frame = SWITCH_QUANTUM * 128;
+    let leak_start = switch_frame + BUS_LIMITER_LATENCY_FRAMES as usize;
+    let leak_frames = support::PDC_REBIND_LATENCY as usize;
+
+    // ---- 覆盖度 ①：切换之前**真的有音频流过那条延迟线** ----
+    let before_nonzero = render.left[..switch_frame]
+        .iter()
+        .filter(|sample| **sample != 0.0)
+        .count();
+    assert!(
+        before_nonzero > 0,
+        "切换之前左声道一帧非零都没有 ⇒ `removed` 支路根本没写进延迟线，判据是空转"
+    );
+    // ---- 覆盖度 ②：槽位重绑**真的发生过**（清线分支的唯一入口）----
+    assert!(
+        rebindings_after_switch > rebindings_before_switch,
+        "剪枝之后槽位重绑计数没有增长（{rebindings_before_switch} → {rebindings_after_switch}）\
+         ⇒ 本判据对 `rearm` 的清线分支是空转"
+    );
+    assert!(
+        render.frames() >= leak_start + leak_frames,
+        "渲染窗口只有 {} 帧，覆盖不到泄漏窗口 [{leak_start}, {})",
+        render.frames(),
+        leak_start + leak_frames
+    );
+
+    let mut offenders: Vec<usize> = Vec::new();
+    for frame in leak_start..render.frames() {
+        if render.left[frame].to_bits() != 0.0f32.to_bits()
+            || render.right[frame].to_bits() != 0.0f32.to_bits()
+        {
+            offenders.push(frame);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "第 {switch_frame} 帧剪掉 `removed` 之后，幸存支路在 [{leak_start}, {}) 上必须逐位静音\
+         （它继承的槽位必须被清成零历史）；实测 {} 个非零帧，前 3 个 {:?}（值 {:?}）",
+        render.frames(),
+        offenders.len(),
+        &offenders[..offenders.len().min(3)],
+        offenders
+            .iter()
+            .take(3)
+            .map(|frame| render.left[*frame])
+            .collect::<Vec<f32>>()
+    );
+
+    println!(
+        "[pdc-mix] P4 剪枝不重放上一任的音频：切换前非零帧={before_nonzero} 重绑计数 \
+         {rebindings_before_switch} → {rebindings_after_switch}；静音窗口 [{leak_start}, {}) \
+         逐位零；渲染 {} 帧",
+        render.frames(),
+        render.frames()
+    );
+}

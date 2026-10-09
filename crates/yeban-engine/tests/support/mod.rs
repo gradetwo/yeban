@@ -476,6 +476,188 @@ pub fn two_track_project(
     )
 }
 
+/// PDC 槽位重绑夹具里**长支路**的设备链上报延迟（采样点）。
+///
+/// 400 = 16 tick（1 tick = 25 样本）⇒ 落在夹具栅格上。它同时是两条短支路的补偿量
+/// `D(v)`（`L_max = 400`），也就是"槽位换主人时环里留多少历史"的帧数。
+pub const PDC_REBIND_LATENCY: u32 = 400;
+
+/// PDC 槽位重绑夹具的**音符时值**（tick）：960 = 一个四分音符 = 24 000 帧。
+pub const PDC_REBIND_NOTE_TICKS: u64 = 960;
+
+/// PDC 槽位重绑夹具的**力度**。
+///
+/// 刻意压到母线限制器阈值之下：限制器一旦真的压限，它的增益弹道会带上远超
+/// `BUS_LIMITER_LATENCY_FRAMES` 的记忆 ⇒"切换之后跳过那 33 帧就是逐位静音"
+/// 这条窗口口径不再成立（不是缺陷，是夹具没设计好）。
+const PDC_REBIND_VELOCITY: u8 = 40;
+
+/// **PDC 槽位重绑**夹具的角色（`line/engine-20` 新增）。
+///
+/// 四个身份按 **ULID 升序**分配成固定角色。为什么必须排序：`CompensationBank::rearm`
+/// 是**按 `PdcPlan::compensation` 的键序下标**逐槽绑定的（那是一个 `BTreeMap`，
+/// 迭代顺序 = 身份升序）⇒"谁在哪个槽"完全由身份大小决定。判据要能预测"删掉一条轨
+/// 之后谁挪进了谁的槽"，就只能自己把顺序钉住，否则测到的只是运气。
+///
+/// | 角色 | 键序 | 设备链上报延迟 | 音符 | 满计划 `D` | 剪枝后 `D` |
+/// | :--- | :--- | :--- | :--- | :--- | :--- |
+/// | [`removed`](Self::removed) | 1 | 0 | **有**（唯一出声的轨） | 400 | 不存在 |
+/// | [`keeper`](Self::keeper) | 2 | 0 | 无 | 400 | 400 |
+/// | [`slow`](Self::slow) | 3 | [`PDC_REBIND_LATENCY`] | 无 | 0 | 0 |
+/// | [`master`](Self::master) | 4 | 0 | — | 0 | 0 |
+///
+/// 因此 `pruned` 一发布，`keeper` 就**下移进第 1 槽** —— 而那一槽的环里留着
+/// `removed` 的 400 帧历史。
+#[derive(Clone, Debug)]
+pub struct PdcRebindFixture {
+    /// 满计划：`removed` / `keeper` / `slow` / `master` 四条节点都在。
+    pub project: YebanProjectV1,
+    /// 剪掉 `removed` 之后的工程（同一组身份、同一条 `slow`、同一条 `master`）。
+    pub pruned: YebanProjectV1,
+    /// 被剪掉的支路（键序最小 ⇒ 占第 1 槽，且它有音频历史）。
+    pub removed: EntityId,
+    /// 幸存支路（键序第二 ⇒ 剪枝后下移进第 1 槽；它自己**没有音符**）。
+    pub keeper: EntityId,
+    /// 长支路（键序第三；它的上报延迟钉住 `L_max`，它自己**没有音符**）。
+    pub slow: EntityId,
+    /// 主总线（键序最大）。
+    pub master: EntityId,
+}
+
+/// 构造 [`PdcRebindFixture`]。
+///
+/// ⚠ `[EntityId::new(); 4]` 只会调**一次** `new()` 再把那个值复制四份
+/// （`EntityId` 是 `Copy`）⇒ 四个身份全相同、路由图会拼出自环。必须用
+/// `core::array::from_fn`。
+#[must_use]
+pub fn pdc_rebind_fixture() -> PdcRebindFixture {
+    let mut ids: [EntityId; 4] = core::array::from_fn(|_| EntityId::new());
+    ids.sort_unstable();
+    assert!(
+        ids.windows(2).all(|pair| pair[0] != pair[1]),
+        "四个身份必须两两不同：{ids:?}"
+    );
+    let [removed, keeper, slow, master] = ids;
+    PdcRebindFixture {
+        project: rebind_project(removed, keeper, slow, master, true),
+        pruned: rebind_project(removed, keeper, slow, master, false),
+        removed,
+        keeper,
+        slow,
+        master,
+    }
+}
+
+/// 一条没有任何片段的 MIDI 轨（渲染出来是逐位静音）。
+fn rebind_silent_track(id: EntityId, name: &str) -> TrackV3 {
+    TrackV3 {
+        id,
+        name: name.to_owned(),
+        kind: TrackKind::Midi,
+        ..TrackV3::default()
+    }
+}
+
+/// 一条有一个 960 tick 长音符的 MIDI 轨（`t = 0` 起音，力度见
+/// [`PDC_REBIND_VELOCITY`]）。
+fn rebind_sounding_track(id: EntityId) -> (TrackV3, ClipPoolEntry) {
+    let clip = EntityId::new();
+    let placement = EntityId::new();
+    let note_id = EntityId::new();
+    let mut note = MidiNote::new(note_id, 0, 60, PDC_REBIND_NOTE_TICKS);
+    note.velocity = PDC_REBIND_VELOCITY;
+    let entry = ClipPoolEntry {
+        id: clip,
+        name: "Rebind clip".to_owned(),
+        content: ClipContent::Midi {
+            notes: BTreeMap::from([(note_id, note)]),
+        },
+    };
+    let mut track = rebind_silent_track(id, "Removed");
+    track.clips.insert(
+        placement,
+        ClipPlacement {
+            id: placement,
+            clip_id: clip,
+            start_tick: 0,
+            duration_ticks: PDC_REBIND_NOTE_TICKS,
+            loop_config: LoopConfig::default(),
+            muted: false,
+        },
+    );
+    (track, entry)
+}
+
+/// 组装夹具工程；`keep_removed = false` 时**整条** `removed` 轨（及其路由边）都不存在。
+fn rebind_project(
+    removed: EntityId,
+    keeper: EntityId,
+    slow: EntityId,
+    master: EntityId,
+    keep_removed: bool,
+) -> YebanProjectV1 {
+    let mut tracks = BTreeMap::new();
+    let mut pool = BTreeMap::new();
+    let mut nodes = vec![keeper, slow, master];
+
+    if keep_removed {
+        let (track, clip) = rebind_sounding_track(removed);
+        pool.insert(clip.id, clip);
+        tracks.insert(removed, track);
+        nodes.push(removed);
+    }
+    tracks.insert(keeper, rebind_silent_track(keeper, "Keeper"));
+
+    // `slow`：唯一带设备链上报延迟的轨。它不出声，只把 `L_max` 钉在
+    // `PDC_REBIND_LATENCY` 上 ⇒ 两条短支路的 `D(v)` 恒等于它。
+    let mut slow_track = rebind_silent_track(slow, "Slow");
+    slow_track.devices = vec![DeviceDefinition {
+        id: EntityId::new(),
+        name: "Reported".to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: Vec::new(),
+        latency_samples: PDC_REBIND_LATENCY,
+    }];
+    tracks.insert(slow, slow_track);
+    tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+
+    let mut routing = RoutingGraph {
+        nodes,
+        ..RoutingGraph::default()
+    };
+    for source in tracks.keys().copied().filter(|id| *id != master) {
+        let edge = EntityId::new();
+        routing.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: source,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+    }
+
+    YebanProjectV1 {
+        bpm: FIXTURE_BPM,
+        master_bus_track_id: master,
+        tracks,
+        routing_graph: routing,
+        clip_pool: pool,
+        ..YebanProjectV1::default()
+    }
+}
+
 /// 一次端到端渲染的结果。
 #[derive(Clone, Debug)]
 pub struct Render {

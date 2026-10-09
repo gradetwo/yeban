@@ -261,6 +261,11 @@ const FLOOD_QUANTA: u64 = 500;
 const PDC_QUANTA: u64 = 2_000;
 /// ⑰ PDC **跨快照重新武装**窗口的量子数（覆盖 `rearm` 的 `set_delay` 分支）。
 const PDC_REARM_QUANTA: u64 = 1_000;
+/// ⑰d PDC **槽位重绑**窗口的量子数（覆盖 `rearm` 里"换主人就清线"那一支）。
+///
+/// 取 64 而不是 1_000：这一支是**每个修订一次**的（一次 `fill`），窗口只需覆盖
+/// "换快照的那一个量子 + 若干稳态量子"；取大了只会让判据变慢。
+const PDC_REBIND_QUANTA: u64 = 64;
 /// ⑱ 故意不足的**退役队列容量**（条）：生产装配是 64（`Rig::new`）。
 ///
 /// 取 1 是**实测过的**语义（`rt.rs::stats_flag_snapshot_lagging_when_the_reader_cannot_keep_up`）：
@@ -1764,6 +1769,48 @@ fn scenario_pdc_delay_lines(report: &mut Report) {
             stats.pdc_unarmed_nodes,
             stats.pdc_clamped_frames
         ),
+    );
+
+    // ---- ⑰d（`line/engine-20` 追加）：**节点集合变小**的重新武装（槽位重绑）----
+    //
+    // 上面两个窗口都是"同一份节点集合、只换延迟" ⇒ 槽位的主人一位没变，
+    // 于是 `rearm` 里"换主人就清线"那一支**一次都没跑** —— 四元组对那条新分支
+    // 是**盲的**（清线不分配、不加锁、不做 I/O，删掉它读数一模一样）。
+    //
+    // 本窗口发布一份**剪掉了一条轨**的快照：`PdcPlan::compensation` 的键集合变小
+    // ⇒ 它后面的每个节点各下移一格、继承上一任的延迟线环 ⇒ 清线分支真的被走到。
+    // 断言仍是四元组全 0（含 `io_requests == io_ops == 0`，witness sink 真装着），
+    // 覆盖度见证取两件事：① `EngineRuntime::pdc_rebindings()` 在窗口内**增长**；
+    // ② 幸存支路在剪枝后的武装延迟等于 `support::PDC_REBIND_LATENCY`
+    //    （证明窗口覆盖到的正是那条有历史的线）。
+    //
+    // 行为面（被继承的环真的被清成零历史、不重放上一任的音频）由
+    // `src/graph.rs` 的 `rebinding_a_slot_never_replays_the_previous_nodes_audio`
+    // 与 `tests/pdc_mix_path.rs` 的 P4 用逐位判据负责；本窗口只管实时安全。
+    let mut rebind_scenario = Scenario::new("⑰dPDC 槽位重绑");
+    let rebind = support::pdc_rebind_fixture();
+    let rebind_base = rig.runtime.pdc_rebindings();
+    let rebind_pruned =
+        EngineSnapshot::from_project(&rebind.pruned, 9).expect("剪枝快照必须能编译");
+    // 发布在窗口**之外**（控制线程允许分配）。
+    rig.slot.publish(rebind_pruned);
+    rebind_scenario.absorb(PDC_REBIND_QUANTA, &rig.pump(PDC_REBIND_QUANTA));
+    let rebind_after = rig.runtime.pdc_rebindings();
+    let rebind_delay = rig.runtime.armed_pdc_delay(&rebind.keeper);
+    rebind_scenario.note(format!(
+        "重绑计数 {rebind_base} → {rebind_after}（剪掉键序最小的那条轨 ⇒ 后面的节点各下移一格）；         读者停在 revision={:?}；幸存支路武装延迟={rebind_delay:?} 帧（要求 {:?}）",
+        rig.runtime.revision(),
+        Some(support::PDC_REBIND_LATENCY as usize)
+    ));
+    report.assert(
+        "⑰d",
+        "[MUST-GATE-001] PDC 槽位重绑（节点集合变小的重新武装，快照边界一次 `fill` 清线）：四元组全 0",
+        rebind_scenario.quad.is_zero()
+            && rebind_scenario.witness_ok()
+            && rebind_scenario.suppressed == 0
+            && rebind_after > rebind_base
+            && rebind_delay == Some(support::PDC_REBIND_LATENCY as usize),
+        rebind_scenario.detail(),
     );
 }
 

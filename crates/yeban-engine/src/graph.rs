@@ -432,8 +432,38 @@ impl PdcPlan {
 ///
 /// - 缓冲在构造期一次性分配（`Vec<f32>`），`process*` **零分配、零锁、无分支预测悬崖**
 ///   [ARCH-RT-001]；
-/// - `delay == 0` 是显式直通快路径（不读旧样本，避免"延迟 0 却读到陈旧值"的经典 bug）；
+/// - `delay == 0` 是显式直通快路径（**不读**旧样本，避免"延迟 0 却读到陈旧值"的经典
+///   bug）—— 注意它仍然**写**（见下面的不变量）；
 /// - 索引按下标取模而非 `%` 运算，避免每样本一次除法。
+///
+/// ## 环的**不变量**：它是输入端最近 `capacity − 1` 个样本的连续记录
+///
+/// `process*` 每处理一帧都把那帧写进环 —— `delay == 0` 时也写，只是不做抽头读。
+/// 于是"写头之前 `delay` 格"永远是"`delay` 帧之前的那个输入样本"。这条不变量是
+/// 两件事的前提：
+///
+/// 1. **换延迟**只改抽头距离 ⇒ 输出永远是新延迟下的输入，不会吐出"上一次非零延迟
+///    留下、此后从未被读出的陈音频"（[ARCH-DET-001] 要求可复现的输出，而"吐什么"
+///    取决于上一次调过什么延迟，那不是可复现的输出）；
+/// 2. **清线**（[`Self::reset`]）之后，本线与一个全新的 `DelayLine::new(capacity)`
+///    加 `set_delay(delay)` **逐样本逐位相同**。
+///
+/// ⚠ 少了"`delay == 0` 也写"这一条，环会在直通期间**冻结**在直通之前的时刻：
+/// 之后延迟再变正，抽头读到的就是那段陈音频（可能来自几秒前），而不是零历史。
+/// 这与 `crate::rt` 逐轨循环里"停住时也喂延迟线 —— 不推进它会让恢复播放时吐出
+/// 上一次停住前的陈音频"是同一条理由，只是这里冻结的触发条件是 `delay == 0`。
+///
+/// ## 代价与**被否决的替代方案**（写进代码，因为这是取舍不是疏忽）
+///
+/// 记录意味着 `delay == 0` 的直通分支不再是"整块 O(1) 直接返回"，而是每帧一次
+/// `buffer[write] = sample` 加一次写头推进（**没有设备链延迟的工程里全部节点的
+/// `D(v)` 都是 0** ⇒ 那条分支对每条轨都跑）。换来的回报是"把延迟开正"那一刻输出
+/// **无缝**变成 `x(t − delay)`（正是 PDC 要的对齐，没有空档）。
+///
+/// 替代方案是"直通期间不记录，但在 `delay` 由 0 变正时清线"：稳态零代价，代价是
+/// 那一刻**吞掉 `delay` 帧**（`delay = 400` 时是 8 ms 的空档）。两者都会动到一段
+/// 音频（插入延迟这件事本身如此），但"吞掉 8 ms"是一条听得见的断口，而"重复最近
+/// `delay` 帧"只是相位跳变 —— 与 `crate::rt` 已有的"停住时也喂线"同口径，故选前者。
 #[derive(Clone, Debug)]
 pub struct DelayLine {
     buffer: Vec<f32>,
@@ -474,7 +504,17 @@ impl DelayLine {
         self.delay
     }
 
-    /// 清零缓冲内容（保留延迟设置）。
+    /// 清零缓冲内容并把写头归零（**保留延迟设置**）。
+    ///
+    /// ## 语义口径：清完之后与一个**全新实例**逐位相同
+    ///
+    /// 结果状态 = `DelayLine::new(capacity)` 加 `set_delay(delay)` 两条调用之后的
+    /// 状态：缓冲全零、写头 `0`。因此接下来的 `delay` 个输出样本是**逐位零**，
+    /// 之后是本线自己的输入 —— 环里**不留**任何旧抽头（这正是
+    /// [`CompensationBank::rearm`] 在槽位换主人时要它的理由）。
+    ///
+    /// 代价是一次 `fill`（零分配、零锁、零 I/O [MUST-GATE-001]）⇒ 只在
+    /// **配置变更**时调用，绝不进逐样本路径。
     pub fn reset(&mut self) {
         self.buffer.fill(0.0);
         self.write = 0;
@@ -490,12 +530,26 @@ impl DelayLine {
     ///
     /// 因为是就地环形推进，块边界天然连续 —— PDC 的对齐在任意块长下都成立，
     /// 不要求 `buf.len()` 等于渲染量子。
+    ///
+    /// ⚠ `delay == 0` 时输出**逐位等于输入**，但输入仍然写进环：见类型文档的
+    /// "环的不变量"。少了这次写，之后把延迟开正就会重放陈音频。
     pub fn process_in_place(&mut self, buf: &mut [f32]) {
-        if self.delay == 0 || buf.is_empty() {
+        if buf.is_empty() {
             return;
         }
         let capacity = self.buffer.len();
         let mut write = self.write;
+        if self.delay == 0 {
+            for sample in buf.iter() {
+                self.buffer[write] = *sample;
+                write += 1;
+                if write == capacity {
+                    write = 0;
+                }
+            }
+            self.write = write;
+            return;
+        }
         let mut read = (write + capacity - self.delay) % capacity;
         for sample in buf.iter_mut() {
             let delayed = self.buffer[read];
@@ -514,15 +568,24 @@ impl DelayLine {
     }
 
     /// 处理 `input` 写入 `output`（按较短者长度工作，不 panic）。
+    ///
+    /// `delay == 0` 的分支与 [`Self::process_in_place`] 同款：输出逐位等于输入，
+    /// 但输入仍然写进环（见类型文档的不变量）。
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        let capacity = self.buffer.len();
+        let mut write = self.write;
         if self.delay == 0 {
             for (out, inp) in output.iter_mut().zip(input) {
                 *out = *inp;
+                self.buffer[write] = *inp;
+                write += 1;
+                if write == capacity {
+                    write = 0;
+                }
             }
+            self.write = write;
             return;
         }
-        let capacity = self.buffer.len();
-        let mut write = self.write;
         let mut read = (write + capacity - self.delay) % capacity;
         for (out, inp) in output.iter_mut().zip(input) {
             let delayed = self.buffer[read];
@@ -567,6 +630,13 @@ pub struct CompensationBank {
     entries: Vec<(EntityId, DelayLine)>,
     /// 已武装的条数（`entries[..armed]` 有效且按键升序）。
     armed: usize,
+    /// **见证计数**：槽位**换了主人**的累计次数（每个"绑定变更·槽位"记 1）。
+    ///
+    /// 它是"重绑分支真的被走到"的机械证据。重绑是**唯一**会清延迟线的路径，而
+    /// "走过重绑"与"没走过"在分配/锁/I/O 读数上完全一样（两支都不分配）⇒ 没有
+    /// 这个数，零分配判据对那条新分支就是**盲的**（可以删掉它而全绿）。
+    /// 与 [`Self::processed_blocks`] 同族：只增不减，`wrapping_add` 无分支。
+    rebindings: u64,
     /// **见证计数**：`apply` 真的施加过**非零**延迟的"节点·块"次数。
     ///
     /// 只增不减、`delay == 0` 的直通不计。它是"延迟线真的在信号路径上"的机械证据：
@@ -610,6 +680,7 @@ impl CompensationBank {
         Self {
             entries,
             armed,
+            rebindings: 0,
             processed_blocks: 0,
         }
     }
@@ -626,15 +697,30 @@ impl CompensationBank {
         Self {
             entries,
             armed: 0,
+            rebindings: 0,
             processed_blocks: 0,
         }
     }
 
-    /// 用一份新计划重新武装（**零分配**：只写节点键与 `set_delay`）。
+    /// 用一份新计划重新武装（**零分配**：只写节点键、`set_delay` 与"换主人时清线"）。
     ///
     /// 武装顺序就是计划里 `compensation` 的迭代顺序（`BTreeMap` 按键升序），因此
     /// `entries[..armed]` 始终保持按键升序 —— [`apply`](Self::apply) 的
     /// `binary_search` 前提由此成立。
+    ///
+    /// ## 槽位绑定变更时必须清线
+    ///
+    /// 槽位是**按下标**绑定的（"计划里的第 i 个键"→"第 i 条延迟线"），而计划里的键
+    /// 就是**能到达母线**的节点集合 ⇒ 工程里删掉一条轨（或任何节点）会让它后面的
+    /// 每个节点**各下移一格**。那条线里留着上一任节点的输入历史与写头位置
+    /// （[`DelayLine`] 的不变量）⇒ 新主人会先把**另一个节点的音频**播出来，最长
+    /// `delay` 帧。修法是"换主人就 [`DelayLine::reset`]"：清完之后那条线与一个全新
+    /// 实例逐位相同。同一张表在 `crate::rt` 里的三个姊妹实现（通道条 / 混响 /
+    /// 卷积混响）都按"身份变了就复位或重建"处理，这里是那张表的第四条。
+    ///
+    /// 这一支是**逐修订**的（不是逐样本），只做一次 `fill` 加两个标量写：
+    /// 零分配、零锁、零 I/O [MUST-GATE-001]。稳态（节点集合不变）下一次都不跑 ——
+    /// 那时 `slot_node` 与计划键逐位相同。
     ///
     /// 两个上限（都由构造期容量决定，**都不静默**）：
     /// 1. 槽位不够 ⇒ 多出来的节点进 [`RearmShortfall::unarmed_nodes`]；
@@ -643,6 +729,7 @@ impl CompensationBank {
     pub fn rearm(&mut self, plan: &PdcPlan) -> RearmShortfall {
         let mut shortfall = RearmShortfall::default();
         let mut armed = 0usize;
+        let mut rebindings = 0u64;
         for (node, &wanted) in plan.compensation.iter() {
             if armed >= self.entries.len() {
                 shortfall.unarmed_nodes += 1;
@@ -650,7 +737,11 @@ impl CompensationBank {
             }
             let wanted = wanted as usize;
             let (slot_node, line) = &mut self.entries[armed];
-            *slot_node = *node;
+            if *slot_node != *node {
+                line.reset();
+                *slot_node = *node;
+                rebindings = rebindings.wrapping_add(1);
+            }
             let actual = line.set_delay(wanted);
             if actual != wanted {
                 shortfall.clamped_frames += (wanted - actual) as u64;
@@ -658,6 +749,7 @@ impl CompensationBank {
             armed += 1;
         }
         self.armed = armed;
+        self.rebindings = self.rebindings.wrapping_add(rebindings);
         shortfall
     }
 
@@ -677,6 +769,16 @@ impl CompensationBank {
     #[must_use]
     pub const fn processed_blocks(&self) -> u64 {
         self.processed_blocks
+    }
+
+    /// 见 [`Self::rebindings`] 字段（累计；每个"槽位换主人"一次）。
+    ///
+    /// 用途是**覆盖度见证**：零分配/零锁/零 I/O 判据必须能回答"那条清线分支真的
+    /// 被走到了吗"。调用方（`crate::rt`）把它转成
+    /// [`EngineRuntime::pdc_rebindings`](crate::rt::EngineRuntime::pdc_rebindings)。
+    #[must_use]
+    pub const fn rebindings(&self) -> u64 {
+        self.rebindings
     }
 
     /// 是否没有武装任何延迟线。
@@ -1251,6 +1353,132 @@ mod tests {
         assert_eq!(bank.line(&a).map(DelayLine::delay), Some(3));
         assert_eq!(bank.line(&b).map(DelayLine::delay), Some(0));
         assert!(bank.line(&stranger).is_none());
+    }
+
+    /// **槽位换主人时必须清线**：新主人不得把上一任的音频播出来。
+    ///
+    /// 槽位是**按计划键序的下标**绑定的（`compensation` 是按键升序的 `BTreeMap`），
+    /// 因此"谁在哪个槽"由身份大小决定 ⇒ 本判据先把四个身份**排序**再分配角色，
+    /// 把"槽位会怎么挪"变成可预测的事实（不依赖 ULID 的偶然顺序）。
+    ///
+    /// 图（键序 = 身份升序）：`short_a(0) → master`、`short_b(0) → master`、
+    /// `slow(上报 32) → master` ⇒ `L_max = 32`、`D(short_a) = D(short_b) = 32`、
+    /// `D(slow) = 0`。满计划的键序是 `[short_a, short_b, slow, master]` ⇒
+    /// `short_a` 占第 1 槽。剪掉 `short_a` 之后键序是 `[short_b, slow, master]` ⇒
+    /// **`short_b` 从第 2 槽下移到第 1 槽**，而那一槽的环里留着 `short_a` 写进去的
+    /// 128 个 `MARKER` 样本。
+    ///
+    /// 变红的注入：删掉 `rearm` 里的 `line.reset()` ⇒ `short_b` 的第一个块吐出
+    /// `short_a` 的标记样本（本判据实测红行见交付报告）。
+    #[test]
+    fn rebinding_a_slot_never_replays_the_previous_nodes_audio() {
+        /// 上一任写进环里的标记样本（`0.0` 之外的可辨认值）。
+        const MARKER: f32 = 7.0;
+        /// 补偿延迟（采样点），同时决定"环里留多少历史"。
+        const DELAY: u32 = 32;
+        /// 一个块的长度：大于环长的一半 ⇒ 环里到处都有标记，判据不可能靠运气变绿。
+        const BLOCK: usize = 128;
+
+        // ⚠ `[EntityId::new(); 4]` 只会调**一次** `new()` 再把那个值复制四份
+        // （`EntityId` 是 `Copy`）⇒ 四个身份全相同。必须用 `from_fn`。
+        let mut ids: [EntityId; 4] = core::array::from_fn(|_| EntityId::new());
+        ids.sort_unstable();
+        assert!(
+            ids.windows(2).all(|pair| pair[0] != pair[1]),
+            "身份必须两两不同：{ids:?}"
+        );
+        let [short_a, short_b, slow, master] = ids;
+
+        let full = graph_of(&[(short_a, master), (short_b, master), (slow, master)]);
+        let table = latency_table(&[(slow, DELAY)]);
+        let plan = PdcPlan::compute(&full, master, &table).expect("合法 DAG");
+        assert_eq!(plan.compensation(&short_a), Some(DELAY));
+        assert_eq!(plan.compensation(&short_b), Some(DELAY));
+        assert_eq!(plan.compensation(&slow), Some(0));
+
+        let mut bank = CompensationBank::preallocated(4, 128);
+        let shortfall = bank.rearm(&plan);
+        assert!(shortfall.is_exact(), "4 个节点 4 条线：{shortfall:?}");
+        assert_eq!(bank.rebindings(), 4, "全新的池：四个槽位都换了主人");
+        assert_eq!(
+            bank.line(&short_a).map(DelayLine::delay),
+            Some(DELAY as usize),
+            "最小身份占第 1 槽"
+        );
+
+        // 在**第 1 槽**（`short_a`）里灌满可辨认的历史。`DELAY = 32 < BLOCK` ⇒
+        // 输出的后 96 个样本回读的是本块自己写进去的标记，前 32 个是零初始历史。
+        let mut donor = [MARKER; BLOCK];
+        assert!(bank.apply(&short_a, &mut donor));
+        assert_eq!(donor[..DELAY as usize], [0.0; DELAY as usize]);
+        assert_eq!(donor[DELAY as usize..], [MARKER; BLOCK - DELAY as usize]);
+
+        // 剪掉最小的身份 ⇒ `short_b` 下移进第 1 槽。
+        let pruned = graph_of(&[(short_b, master), (slow, master)]);
+        let after = PdcPlan::compute(&pruned, master, &table).expect("合法 DAG");
+        assert!(
+            after.compensation(&short_a).is_none(),
+            "被剪掉的节点不在新计划里"
+        );
+        assert_eq!(after.compensation(&short_b), Some(DELAY));
+        let before_rebindings = bank.rebindings();
+        bank.rearm(&after);
+        assert!(
+            bank.rebindings() > before_rebindings,
+            "重绑必须被计数（覆盖度见证：零分配判据靠它证明没有空转）"
+        );
+
+        let mut inherited = [1.0f32; BLOCK];
+        assert!(bank.apply(&short_b, &mut inherited));
+        assert_eq!(
+            inherited[..DELAY as usize],
+            [0.0f32; DELAY as usize],
+            "重绑的槽位前 {DELAY} 帧必须逐位静音（= 全新实例的零历史），\
+             而不是上一任的 {MARKER} 标记样本"
+        );
+        assert_eq!(
+            inherited[DELAY as usize..],
+            [1.0f32; BLOCK - DELAY as usize],
+            "延迟之后的样本必须来自**本节点自己的**输入（逐位等于全新实例）"
+        );
+    }
+
+    /// **直通期间也必须记录**：`delay == 0` 不是"环的暂停键"。
+    ///
+    /// 不变量（见 [`DelayLine`] 的类型文档）：环永远是输入端最近 `capacity − 1` 个
+    /// 样本的连续记录。少了这条，直通期间环会**冻结**，之后把延迟开正就会重放
+    /// 冻结之前那段陈音频。
+    ///
+    /// 变红的注入：把 `process_in_place` / `process` 的 `delay == 0` 分支改回
+    /// "直接返回"（只读不写）⇒ 第二个断言吐出的是 `[0, 0, 0, 0, 9, 10, 11, 12]`
+    /// （冻结的零历史），而不是 `[5, 6, 7, 8, 9, 10, 11, 12]`。
+    #[test]
+    fn a_line_that_was_passing_through_keeps_a_continuous_history() {
+        let first = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let second = [9.0f32, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0];
+        let expected = [5.0f32, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
+
+        // 就地变体。
+        let mut line = DelayLine::new(8);
+        assert_eq!(line.set_delay(0), 0);
+        let mut buf = first;
+        line.process_in_place(&mut buf);
+        assert_eq!(buf, first, "delay 0 必须直通");
+        assert_eq!(line.set_delay(4), 4);
+        let mut buf = second;
+        line.process_in_place(&mut buf);
+        assert_eq!(buf, expected, "直通期间的历史必须是连续的");
+
+        // 非就地变体：同一条不变量。
+        let mut line = DelayLine::new(8);
+        line.set_delay(0);
+        let mut sink = [0.0f32; 8];
+        line.process(&first, &mut sink);
+        assert_eq!(sink, first);
+        line.set_delay(4);
+        let mut sink = [0.0f32; 8];
+        line.process(&second, &mut sink);
+        assert_eq!(sink, expected);
     }
 
     /// 池装不下时必须**回报**差额，而不是静默地少补。

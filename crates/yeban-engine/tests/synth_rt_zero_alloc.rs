@@ -264,6 +264,26 @@
 //! `a_slot_activated_after_the_rate_change_uses_the_armed_ballistics` 与
 //! `tests/meter_rt_contract.rs` 的 S9 用逐位等号钉住。本追记**不新增场景**。
 
+//! # 场景 20（`line/engine-20` 追加）：PDC 延迟线的槽位**重绑**
+//!
+//! `CompensationBank::rearm` 的槽位是**按 PDC 计划键序的下标**绑定的
+//! （`PdcPlan::compensation` 是按键升序的 `BTreeMap`）⇒ 工程里删掉一个节点就会让
+//! 它后面的每个节点**各下移一格**、继承上一任的环。那是"旧数据被沿用"那一类缺陷：
+//! 新主人会先把**另一个节点的音频**播出来（最长 `delay` 帧）。修法是"换主人就清线"
+//! ——快照边界上的一次 `fill`（`DelayLine::reset`），**不分配**，但它是这条路径上
+//! 全新的代码 ⇒ 必须有运行期分配判据覆盖它。
+//!
+//! 场景 20 在**同一个窗口**里做两件事：① 发布一份**剪掉了一条轨**的快照（键集合变小
+//! ⇒ 至少一个槽位换主人），② 在窗口内跑 64 个量子。断言 `allocations == 0 &&
+//! deallocations == 0`。覆盖度自检取 `EngineRuntime::pdc_rebindings()` 的**增长**
+//! ——清线分支与"没有重绑"在分配读数上完全一样（两支都不分配）⇒ 没有这个见证，
+//! 把整条清线逻辑删掉也照样全绿。行为面（被继承的环真的被清成**零历史**）由
+//! `src/graph.rs` 的 `rebinding_a_slot_never_replays_the_previous_nodes_audio`
+//! 与 `tests/pdc_mix_path.rs` 的 P4 用逐位判据负责。
+//!
+//! ⚠ 本场景的**四元组**（锁尝试/等待、I/O 请求/发生）在 `tests/rt_zero_alloc.rs`
+//! 的 ⑰d 里测：那条判据的窗口附带 `rt_probe` 锁与 I/O 探针。
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -281,7 +301,10 @@ use yeban_engine::synth::VOICES_PER_TRACK;
 
 mod support;
 
-use support::{MixSpec, NoteSpec, note_project, tuned_project, two_track_project};
+use support::{
+    MixSpec, NoteSpec, PDC_REBIND_LATENCY, note_project, pdc_rebind_fixture, tuned_project,
+    two_track_project,
+};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, SampleRate};
 
 /// 包住 [`System`] 的计数型分配器。
@@ -2820,6 +2843,65 @@ fn main() -> ExitCode {
         ));
     }
 
+    // ---- 场景 20（`line/engine-20` 追加）：PDC 槽位**重绑**在实时窗口内零分配 ----
+    //
+    // 见文件头 §场景 20。窗口里跑的是"发布剪枝快照 → 快照边界重新武装 →
+    // 换主人的槽位清线 → 逐样本环形读写"，全部在 `process_quantum` 内部。
+    const REBIND_QUANTA: usize = 64;
+    let rebind = pdc_rebind_fixture();
+    let rebind_snapshot =
+        EngineSnapshot::from_project(&rebind.project, 1).expect("重绑夹具快照必须能编译");
+    let rebind_slot = SnapshotSlot::new(rebind_snapshot);
+    let (rebind_retire, mut rebind_queue) = retire_channel(8);
+    let (_rebind_sender, rebind_receiver) = event_channel(64);
+    let (rebind_publisher, _rebind_collector) = meter_channel(4096);
+    let mut rebind_runtime = EngineRuntime::new(
+        &rebind_slot,
+        rebind_retire,
+        rebind_receiver,
+        rebind_publisher,
+    );
+    let mut rebind_output = vec![0.0f32; 128 * 2];
+    // 预热（窗口之外）：首份快照的武装本身就会绑定全部槽位。
+    rebind_runtime.process_quantum(&mut rebind_output, 2);
+    let rebind_base = rebind_runtime.pdc_rebindings();
+    // 剪掉键序最小的那条轨 ⇒ 它后面的节点各下移一格。
+    // 发布在**窗口之外**（控制线程允许分配）。
+    let rebind_pruned =
+        EngineSnapshot::from_project(&rebind.pruned, 2).expect("剪枝快照必须能编译");
+    rebind_slot.publish(rebind_pruned);
+    let (rebind_alloc, rebind_dealloc) = measure("pdc slot rebind (pruned node set)", || {
+        for _ in 0..REBIND_QUANTA {
+            rebind_runtime.process_quantum(&mut rebind_output, 2);
+        }
+    });
+    let rebind_after = rebind_runtime.pdc_rebindings();
+    let rebind_keeper_delay = rebind_runtime.armed_pdc_delay(&rebind.keeper);
+    while rebind_queue.drain(8) > 0 {}
+    println!(
+        "[engine-20/J20] PDC 槽位重绑窗口: {REBIND_QUANTA} 量子 allocations={rebind_alloc} \
+         deallocations={rebind_dealloc} 重绑计数 {rebind_base} → {rebind_after} \
+         幸存支路的武装延迟={rebind_keeper_delay:?} 帧"
+    );
+    if rebind_alloc != 0 || rebind_dealloc != 0 {
+        failures.push(format!(
+            "PDC 槽位重绑在实时窗口内分配/释放了内存: allocations={rebind_alloc} \
+             deallocations={rebind_dealloc}（清线是快照边界上的一次 `fill`，不允许分配）"
+        ));
+    }
+    if rebind_after <= rebind_base {
+        failures.push(format!(
+            "剪枝之后 `pdc_rebindings` 没有增长（{rebind_base} → {rebind_after}）⇒ \
+             本场景对 `rearm` 的清线分支是空转"
+        ));
+    }
+    if rebind_keeper_delay != Some(PDC_REBIND_LATENCY as usize) {
+        failures.push(format!(
+            "剪枝之后幸存支路的武装延迟必须是 {PDC_REBIND_LATENCY} 帧，实际 \
+             {rebind_keeper_delay:?} ⇒ 场景 20 的窗口没有覆盖那条有历史的延迟线"
+        ));
+    }
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -2849,7 +2931,9 @@ fn main() -> ExitCode {
              实时窗口内零分配零释放（63 次快照交换同时见证 PDC 延迟读数：对齐 {want_alignment} / \
              引擎输出 {want_output}）\
              + 2 × 2,000 量子电平满队列窗口（容量 1 ⇒ 丢帧读数 meter_dropped_frames 在窗口内\
-             非零，且 写入 + 丢弃 == 本应发布帧数）"
+             非零，且 写入 + 丢弃 == 本应发布帧数）\
+             + 64 量子 PDC 槽位重绑（剪掉一条轨 ⇒ 后面的节点各下移一格并清线），\
+             实时窗口内零分配零释放（重绑计数在窗口内增长作覆盖度见证）"
         );
         ExitCode::SUCCESS
     } else {

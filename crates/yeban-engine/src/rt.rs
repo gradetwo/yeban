@@ -1265,6 +1265,22 @@ impl EngineRuntime {
         self.pdc.line(node).map(crate::graph::DelayLine::delay)
     }
 
+    /// **见证**：PDC 补偿延迟线的槽位**换过主人**的累计次数
+    /// （[`CompensationBank::rebindings`](crate::graph::CompensationBank::rebindings)）。
+    ///
+    /// 槽位是**按计划键序的下标**绑定的（`compensation` 是按键升序的 `BTreeMap`）
+    /// ⇒ 工程里删掉一个节点就会让它后面的节点各下移一格，新节点继承上一任的环。
+    /// 修法是"换主人就清线"（见 `CompensationBank::rearm` 的文档）。
+    ///
+    /// 存在理由与 [`Self::snapshot_stash_events`] 同族：清线是**唯一**会读/写旧历史
+    /// 的配置变更路径，而"走过它"与"没走过"在四元组读数上完全一样（两支都不分配、
+    /// 不加锁、不做 I/O）⇒ 零分配判据必须用这个数证明自己没有空转。
+    /// 判据：`tests/synth_rt_zero_alloc.rs` 的场景 20 与 `tests/rt_zero_alloc.rs` 的 ⑰d。
+    #[must_use]
+    pub const fn pdc_rebindings(&self) -> u64 {
+        self.pdc.rebindings()
+    }
+
     /// 走带状态机的只读视图（**实时侧状态**；同线程判据/诊断用）。
     ///
     /// 跨线程读数请用 [`Self::transport_mirror`] —— 直接读 `&Transport` 只有在
@@ -2199,8 +2215,9 @@ impl EngineRuntime {
                 // --- PDC：本轨输出 → 补偿延迟线 → 声相/母线求和 ---
                 // [ARCH-PDC-001, ROAD-M2-004] 位置就是规范 §3.4 第 3 条说的
                 // "在进入总线求和节点前"。延迟量在快照边界武装好（见 2b''），
-                // 这里只做环形读写：**零分配、逐样本无分支**（`delay == 0` 时
-                // `process_in_place` 直接返回，是显式直通快路径）。
+                // 这里只做环形读写：**零分配、逐样本无分支**（`delay == 0` 时输出
+                // 逐位等于输入，但延迟线**仍然记录** —— 见 `graph::DelayLine` 的
+                // "环的不变量"）。
                 //
                 // ⚠ 刻意放在 `bank.measure` **之后**：逐轨电平的取样点因此**一位没动**
                 // （仍是"该轨自己渲染出来的、声相之前的单声道结果"），PDC 是**求和节点
