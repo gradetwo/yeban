@@ -5,13 +5,17 @@
 //! [MUST-GATE-011]。
 //!
 //! 识别的段头是 `<control>` / `<global>` / `<master>` / `<group>` / `<region>`、
-//! `<curve>` 与 `<effect>`，作用域链 `region → group → master → global`（[`Header::Master`]
-//! 是 ARIA 扩展，见 <https://sfzformat.com/headers/>）。`<curve>` 是**定义段**：它的
+//! `<curve>`、`<effect>` 与 `<midi>`，作用域链 `region → group → master → global`
+//! （[`Header::Master`] 是 ARIA 扩展，见 <https://sfzformat.com/headers/>）。
+//! `<curve>` 是**定义段**：它的
 //! `curve_index` 与 `v000..v127` 只进 [`Curve`]（经 [`Instrument::curves`] /
 //! [`Instrument::curve_value_at`] 读取），不进继承链、也不清空继承链。`<effect>` 同为
 //! **定义段**：它的 `bus` / `type` / `param_offset` / `dsp_order` / `effect1`..`effect4`
 //! 只进 [`Effect`]（经 [`Instrument::effects`] 读取），同样不进继承链、也不清空继承链。
-//! 其余段头（`<midi>` / `<sample>`）产生 [`Warning::IgnoredHeader`] 并丢弃其 opcode。
+//! `<midi>` 也是**定义段**：它的 opcode 只进 [`MidiSection`]（经
+//! [`Instrument::midi_sections`] 读取），**原样登记、不解释语义**（ARIA 的 `<midi>`
+//! opcode 词汇跨播放器不一致）。仍未建模的段头（`<sample>`）产生
+//! [`Warning::IgnoredHeader`] 并丢弃其 opcode。
 //!
 //! 关断语义由 `off_mode`（[`OffMode`]）与 `off_time`（[`Region::off_time`]，缺省
 //! [`OFF_TIME_DEFAULT_SECONDS`]）成对带出；后者只在 `off_mode=time` 时生效
@@ -104,6 +108,29 @@
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
+//! `<midi>` 段声明 ARIA 的 MIDI 预处理器（定义段，不进继承链）。段内 opcode 的
+//! **语义**本 crate 不解释（词汇跨播放器不一致），只**原样**登记名字 / 取值 / 行号；
+//! 规范把 `<effect>bus=midi` 说成它的替代写法，两者对
+//! [`Instrument::midi_preprocessor_declared`] 等价：
+//!
+//! ```
+//! use yeban_sfz::{ParseLimits, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<midi>cc1=64 curve_index=7\n<effect>bus=midi\n<region>sample=kick.wav",
+//!     &ParseLimits::default(),
+//! )?;
+//! assert_eq!(instrument.len(), 1, "the region after the declarations survives");
+//! let section = &instrument.midi_sections()[0];
+//! assert_eq!(section.line(), 1);
+//! assert_eq!(section.len(), 2);
+//! assert_eq!(section.opcode("cc1"), Some("64"));
+//! assert_eq!(section.opcodes()[1].name(), "curve_index");
+//! assert_eq!(section.opcodes()[1].value(), "7");
+//! assert!(instrument.midi_preprocessor_declared());
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
 //! 需要 `#include` 时先解析再解析文本（两步走，保持核心解析器是纯函数）：
 //!
 //! ```no_run
@@ -166,6 +193,7 @@ pub mod curve;
 pub mod effect;
 pub mod error;
 pub mod instrument;
+pub mod midi;
 pub mod parser;
 pub mod playback;
 pub mod voice_pool;
@@ -177,6 +205,7 @@ pub use instrument::{
     CcGate, Instrument, LoopMode, OFF_TIME_DEFAULT_SECONDS, OffMode, PlayDirection, Region,
     RegionQuery, SampleEnd, Trigger, TriggerEvent,
 };
+pub use midi::{MidiOpcode, MidiSection};
 pub use parser::{
     Header, IncludeResolver, OpcodeValue, ParseLimits, SfzSource, Warning, parse_f32, parse_int,
     parse_note, parse_sources, parse_text,

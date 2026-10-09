@@ -138,6 +138,14 @@ const MALFORMED_SAMPLES: &[&str] = &[
     "<effect>bus=aux1\n\n// 注释\ntype=com.mda.Limiter",
     "<master>key=36",
     "<midi>",
+    "<midi>\ncc1=64\ncurve_index=7\n<region>sample=a.wav",
+    "<midi>cc1=\ncc2=not-a-number\ncc3=99999999999999999999",
+    "<midi>cc1=64\n<midi>cc1=1\n<midi>\n<region>sample=a.wav",
+    "<MIDI>cc1=64",
+    "<midi >cc1=64",
+    "<midi>cc1=\"quoted value\"",
+    "<midi>$UNDEFINED=1",
+    "<midi>cc1=64 // comment\ncc2=1",
     "<sample>",
     "sample=a.wav",
     "=a.wav",
@@ -314,25 +322,47 @@ fn parse_text_reports_includes_it_did_not_resolve() {
 
 #[test]
 fn unknown_headers_are_ignored_with_a_warning_not_treated_as_regions() {
-    // `<curve>` / `<effect>` 已建模（见各自的 `*_is_no_longer_an_ignored_header` 测试），
-    // 这里用仍未建模的 `<midi>` / `<sample>` 守同一条红线：
+    // `<curve>` / `<effect>` / `<midi>` 已建模（见各自的 `*_is_no_longer_an_ignored_header`
+    // 测试），这里用仍未建模的 `<sample>` 守同一条红线：
     // 未实现的段头必须产生告警并丢掉段内 opcode，绝不当作 region。
     let instrument = parse_text(
-        "<midi>\nmidi_cc1=64\n<sample>\nsample=b.wav\n<region>sample=a.wav\n",
+        "<sample>\nsample=b.wav\n<region>sample=a.wav\n",
         &ParseLimits::default(),
     )
     .expect("parses");
     assert_eq!(instrument.len(), 1, "only the <region> becomes a region");
     assert_eq!(instrument.regions()[0].sample, "a.wav");
-    for name in ["midi", "sample"] {
-        assert!(
-            instrument
-                .warnings()
-                .iter()
-                .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name: got, .. } if got == name)),
-            "{name} must be reported as an ignored header"
-        );
-    }
+    assert!(
+        instrument.warnings().iter().any(
+            |warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name, .. } if name == "sample")
+        ),
+        "sample must be reported as an ignored header"
+    );
+}
+
+#[test]
+fn midi_header_is_modeled_and_is_no_longer_an_ignored_header() {
+    // 登记语料（`git ls-files` 里的 1 398 个 `.sfz`）**没有**任何 `<midi>` 段，
+    // 所以这里的形状取自规范页与 `EffectBus::Midi` 已经记下的等价关系，而不是语料。
+    let instrument = parse_text(
+        "<midi>cc1=64\ncurve_index=7\n\n//Curves\n<region>sample=a.wav\n",
+        &ParseLimits::default(),
+    )
+    .expect("parses");
+    assert_eq!(instrument.len(), 1, "the <region> after the <midi> is kept");
+    assert_eq!(instrument.regions()[0].sample, "a.wav");
+    assert!(
+        !instrument
+            .warnings()
+            .iter()
+            .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name, .. } if name == "midi")),
+        "<midi> is modeled now: it must not be reported as an ignored header"
+    );
+    let sections = instrument.midi_sections();
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].opcode("cc1"), Some("64"));
+    assert_eq!(sections[0].opcode("curve_index"), Some("7"));
+    assert!(instrument.midi_preprocessor_declared());
 }
 
 #[test]

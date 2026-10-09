@@ -341,6 +341,23 @@ pub enum SfzError {
         limit: usize,
     },
 
+    /// `<midi>` 数量超过 [`crate::parser::ParseLimits::max_midi_sections`]。
+    #[error("more than {limit} <midi> sections")]
+    TooManyMidiSections {
+        /// 上限。
+        limit: usize,
+    },
+
+    /// 全文登记的 `<midi>` opcode 总数超过 [`crate::parser::ParseLimits::max_midi_opcodes`]。
+    ///
+    /// 与 `<curve>` / `<effect>` 不同：`<midi>` 的 opcode 是**原样**登记的，段内条目会
+    /// 全部留到解析结束，因此需要一条**总**预算（段数 × 单段条目数会相乘）。
+    #[error("more than {limit} <midi> opcodes are registered in total")]
+    TooManyMidiOpcodes {
+        /// 上限。
+        limit: usize,
+    },
+
     /// 单个作用域内的 opcode 数量超过 [`crate::parser::ParseLimits::max_opcodes_per_header`]。
     #[error("`{scope}` scope declares more than {limit} distinct opcodes")]
     TooManyOpcodes {

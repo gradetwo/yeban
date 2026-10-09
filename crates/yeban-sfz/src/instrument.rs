@@ -16,8 +16,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::curve::Curve;
-use crate::effect::Effect;
+use crate::effect::{Effect, EffectBus};
 use crate::error::SfzError;
+use crate::midi::MidiSection;
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
 
@@ -580,6 +581,9 @@ pub struct Instrument<'a> {
     curves: Vec<Curve>,
     /// `<effect>` 段定义的效果器总线声明（文件出现顺序，确定性；不去重）。
     effects: Vec<Effect<'a>>,
+    /// `<midi>` 段定义的 MIDI 预处理器声明（文件出现顺序，确定性；不去重、空段也登记、
+    /// 段内 opcode 原样保存不解释）。
+    midi_sections: Vec<MidiSection<'a>>,
     /// 按音符分桶的 region 下标（加速 `region_for`，构造后只读）。
     key_buckets: Vec<Vec<u32>>,
     warnings: Vec<Warning>,
@@ -591,6 +595,7 @@ impl<'a> Instrument<'a> {
         regions: Vec<Region<'a>>,
         curves: Vec<Curve>,
         effects: Vec<Effect<'a>>,
+        midi_sections: Vec<MidiSection<'a>>,
         warnings: Vec<Warning>,
     ) -> Self {
         let mut key_buckets: Vec<Vec<u32>> = vec![Vec::new(); 128];
@@ -611,6 +616,7 @@ impl<'a> Instrument<'a> {
             regions,
             curves,
             effects,
+            midi_sections,
             key_buckets,
             warnings,
         }
@@ -643,6 +649,33 @@ impl<'a> Instrument<'a> {
     #[must_use]
     pub fn effects(&self) -> &[Effect<'a>] {
         &self.effects
+    }
+
+    /// 全部 `<midi>` 段（保持文件出现顺序，确定性；段不去重、空段也在内）。
+    ///
+    /// 段内 opcode 是**原样**登记的（名字 / 取值 / 行号），本 crate **不解释**它们的语义：
+    /// ARIA 的 `<midi>` opcode 词汇跨播放器不一致，且本切片无法核验规范表。
+    /// 读取本切片零分配、无锁、无 I/O，可在实时路径使用。
+    #[must_use]
+    pub fn midi_sections(&self) -> &[MidiSection<'a>] {
+        &self.midi_sections
+    }
+
+    /// 文件是否声明了 ARIA 的 MIDI 预处理器。
+    ///
+    /// 规范原文（<https://sfzformat.com/headers/midi/>，转引自 [`EffectBus::Midi`]）：
+    /// "From ARIA v1.0.8.0+ an `<effect>` section with a `bus=midi` can be used instead."
+    /// ⇒ **两种写法等价**，任一出现即为 `true`：至少一个 `<midi>` 段，或至少一条
+    /// `bus=midi` 的 `<effect>` 声明。
+    ///
+    /// 零分配、无锁、无 I/O，可在实时路径调用。
+    #[must_use]
+    pub fn midi_preprocessor_declared(&self) -> bool {
+        !self.midi_sections.is_empty()
+            || self
+                .effects
+                .iter()
+                .any(|effect| effect.bus() == EffectBus::Midi)
     }
 
     /// 求一条曲线的值：**文件内定义的优先**，否则退回 ARIA 内建曲线。
@@ -1077,6 +1110,7 @@ fn read_u32(
 mod tests {
     use super::*;
     use crate::curve::CurvePoint;
+    use crate::midi::MidiOpcode;
     use crate::parser::{Header, ParseLimits, parse_text};
 
     fn region(note: u8, seq_position: u32, seq_length: u32) -> Region<'static> {
@@ -1445,6 +1479,7 @@ mod tests {
     fn instrument_region_lookup_uses_key_range() {
         let instrument = Instrument::new(
             vec![region(60, 1, 1), region(62, 1, 1)],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -2442,5 +2477,191 @@ type=com.mda.Limiter
         assert_eq!(instrument.regions()[0].volume, -6.0);
         assert_eq!(instrument.regions()[1].volume, -6.0);
         assert_eq!(instrument.effects().len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // `<midi>` 头（ARIA；规范 <https://sfzformat.com/headers/midi/>）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn midi_opcodes_are_registered_verbatim_in_file_order_with_their_own_lines() {
+        let instrument = parse_text(
+            "<group>key=36\n\
+             <midi>cc1=64\n\
+             curve_index=7\n\
+             cc1=1\n\
+             <region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 1, "the region after the <midi> survives");
+        let sections = instrument.midi_sections();
+        assert_eq!(sections.len(), 1);
+        let section = &sections[0];
+        assert_eq!(section.line(), 2, "the <midi> header line");
+        assert_eq!(section.len(), 3);
+        // 原样登记：顺序 = 文件顺序，同名不被归并（与继承链的「后者胜」口径相反）。
+        let names: Vec<&str> = section.opcodes().iter().map(MidiOpcode::name).collect();
+        assert_eq!(names, vec!["cc1", "curve_index", "cc1"]);
+        let values: Vec<&str> = section.opcodes().iter().map(MidiOpcode::value).collect();
+        assert_eq!(values, vec!["64", "7", "1"]);
+        // 每个 opcode 记的是**它自己**的行号，不是段头行。
+        let lines: Vec<usize> = section.opcodes().iter().map(MidiOpcode::line).collect();
+        assert_eq!(lines, vec![2, 3, 4]);
+        assert_eq!(section.opcode("cc1"), Some("64"), "first match wins");
+        assert_eq!(section.opcode("curve_index"), Some("7"));
+        assert_eq!(section.opcode("CC1"), None, "lookup does not fold case");
+        // 关键回归：`<midi>` 是定义段，**不**清空继承链。
+        assert_eq!(instrument.regions()[0].lokey, 36, "group key survives");
+        assert_eq!(instrument.regions()[0].hikey, 36);
+    }
+
+    #[test]
+    fn an_empty_midi_section_is_registered_unlike_curve_and_effect() {
+        // `<midi>` 段本身就是声明（规范把 `bus=midi` 的 `<effect>` 说成它的替代写法），
+        // 所以空段也登记；`<curve>` / `<effect>` 的空段没有数据可丢，不产生条目。
+        let instrument = parse_text(
+            "<midi>\n<curve>\n<effect>\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.midi_sections().len(), 1);
+        assert!(instrument.midi_sections()[0].is_empty());
+        assert_eq!(instrument.midi_sections()[0].line(), 1);
+        assert!(instrument.curves().is_empty(), "empty <curve> has no data");
+        assert!(
+            instrument.effects().is_empty(),
+            "empty <effect> has no data"
+        );
+    }
+
+    #[test]
+    fn midi_preprocessor_declaration_covers_both_equivalent_spellings() {
+        // 规范原文（<https://sfzformat.com/headers/midi/>，转引自 `EffectBus::Midi`）：
+        // "From ARIA v1.0.8.0+ an `<effect>` section with a `bus=midi` can be used instead."
+        let none = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        assert!(!none.midi_preprocessor_declared());
+        let header =
+            parse_text("<midi>\n<region>sample=a.wav", &Default::default()).expect("parses");
+        assert!(header.midi_preprocessor_declared(), "<midi> declaration");
+        let alternative = parse_text(
+            "<effect>bus=midi\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(
+            alternative.midi_preprocessor_declared(),
+            "<effect>bus=midi is the specification's alternative spelling"
+        );
+        assert!(
+            alternative.midi_sections().is_empty(),
+            "the alternative spelling does not invent a <midi> section"
+        );
+        let other_bus = parse_text(
+            "<effect>bus=aux1\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(!other_bus.midi_preprocessor_declared());
+    }
+
+    #[test]
+    fn a_midi_section_between_two_regions_keeps_both_regions() {
+        let instrument = parse_text(
+            "<global>volume=-6\n<region>sample=a.wav\n<midi>cc1=64\n<region>sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 2);
+        assert_eq!(instrument.regions()[0].volume, -6.0);
+        assert_eq!(instrument.regions()[1].volume, -6.0);
+        assert_eq!(instrument.midi_sections().len(), 1);
+    }
+
+    #[test]
+    fn midi_reduction_is_deterministic_across_independent_parses() {
+        let text = "<midi>cc1=64\ncurve_index=7\n<midi>\n<region>sample=a.wav";
+        let limits: ParseLimits = Default::default();
+        let first = parse_text(text, &limits).expect("parses");
+        let second = parse_text(text, &limits).expect("parses");
+        assert_eq!(first.midi_sections(), second.midi_sections());
+        assert_eq!(
+            format!("{:?}", first.midi_sections()),
+            format!("{:?}", second.midi_sections())
+        );
+    }
+
+    #[test]
+    fn too_many_midi_sections_hits_the_explicit_limit() {
+        // 显式小上限：`DEFAULT_MAX_MIDI_SECTIONS` 调大也抓不到这条（见报告里的「没红的注入」）。
+        let limits = ParseLimits {
+            max_midi_sections: 1,
+            ..ParseLimits::default()
+        };
+        let error = parse_text("<midi>\n<midi>\n<region>sample=a.wav", &limits)
+            .expect_err("second section exceeds max_midi_sections");
+        assert!(
+            matches!(error, SfzError::TooManyMidiSections { limit: 1 }),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn too_many_opcodes_in_a_midi_block_hits_the_per_header_limit() {
+        let limits = ParseLimits {
+            max_opcodes_per_header: 2,
+            ..ParseLimits::default()
+        };
+        let error = parse_text("<midi>cc1=64\ncurve_index=7\ncc2=1", &limits)
+            .expect_err("third opcode exceeds the per-header limit");
+        assert!(
+            matches!(
+                error,
+                SfzError::TooManyOpcodes {
+                    scope: "midi",
+                    limit: 2
+                }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_total_midi_opcode_budget_is_enforced_across_sections() {
+        // 两个段各 1 条：单段上限（默认 4096）抓不到，只有**总**预算能抓到。
+        let limits = ParseLimits {
+            max_midi_opcodes: 1,
+            ..ParseLimits::default()
+        };
+        let error = parse_text("<midi>cc1=64\n<midi>cc2=1", &limits)
+            .expect_err("second entry exceeds the total budget");
+        assert!(
+            matches!(error, SfzError::TooManyMidiOpcodes { limit: 1 }),
+            "unexpected verdict: {error:?}"
+        );
+        // 空段不消耗预算：4 个空段在 `max_midi_opcodes: 0` 下仍然全是合法声明。
+        let limits = ParseLimits {
+            max_midi_opcodes: 0,
+            ..ParseLimits::default()
+        };
+        let empty = parse_text("<midi>\n<midi>\n<midi>\n<midi>", &limits).expect("parses");
+        assert_eq!(empty.midi_sections().len(), 4);
+    }
+
+    #[test]
+    fn a_midi_opcode_is_registered_verbatim_and_never_typed() {
+        // 原样登记口径：本 crate 不做类型化读取，所以「不是数字」「超长」「重复」的取值
+        // 都只是字符串，不产生 Err（与继承链里的未知 opcode 同一条「未知不报错」口径）。
+        let instrument = parse_text(
+            "<midi>cc1=not-a-number\ncurve_index=99999999999999999999\ncc1=\ncc3=\u{00e9}",
+            &Default::default(),
+        )
+        .expect("arbitrary text is registered verbatim, not typed");
+        let section = &instrument.midi_sections()[0];
+        assert_eq!(section.len(), 4);
+        assert_eq!(section.opcodes()[0].value(), "not-a-number");
+        assert_eq!(section.opcodes()[1].value(), "99999999999999999999");
+        assert_eq!(section.opcodes()[2].value(), "");
+        assert_eq!(section.opcodes()[3].value(), "\u{00e9}");
     }
 }

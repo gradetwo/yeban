@@ -43,6 +43,7 @@ use crate::curve::{Curve, CurvePoint};
 use crate::effect::{Effect, EffectBuilder};
 use crate::error::SfzError;
 use crate::instrument::{Instrument, Region, build_region};
+use crate::midi::{MidiOpcode, MidiSection};
 
 // ---------------------------------------------------------------------------
 // 显式上限 (DoS 防线) —— 数值本身也是「口径」，镜像到 docs/ledger/sfz-core-notes.md
@@ -84,6 +85,21 @@ pub const DEFAULT_MAX_CURVES: usize = 4_096;
 /// **needs（集成者）**：本上限由本切片新增，`docs/ledger/sfz-core-notes.md` 第 4 节的
 /// 上限表需要补一行（该文件由集成者独占）。
 pub const DEFAULT_MAX_EFFECTS: usize = 4_096;
+/// 最大 `<midi>` 数量 (4096)：与 [`DEFAULT_MAX_CURVES`] 同理 —— 每个 `<midi>` 段都是独立
+/// 作用域。
+///
+/// **needs（集成者）**：本上限由本切片新增，`docs/ledger/sfz-core-notes.md` 第 4 节的
+/// 上限表需要补一行（该文件由集成者独占）。
+pub const DEFAULT_MAX_MIDI_SECTIONS: usize = 4_096;
+/// 全文登记的 `<midi>` opcode **总数**上限 (4096)。
+///
+/// 为什么 `<midi>` 需要一条**总**预算：[`DEFAULT_MAX_MIDI_SECTIONS`] 与
+/// [`DEFAULT_MAX_OPCODES_PER_HEADER`] 相乘才是 `<midi>` 的内存上界（两个上限都是 4096
+/// ⇒ 最坏 16.7M 条），而 `<curve>` / `<effect>` 的每段数据是定长的，不存在这个乘积。
+/// 本上限把「原样登记的 opcode」总量钉在 4096 条，使内存上界与段数上限**解耦**。
+///
+/// **needs（集成者）**：同上，第 4 节的上限表需要补一行。
+pub const DEFAULT_MAX_MIDI_OPCODES: usize = 4_096;
 
 /// 解析器硬性上限。
 ///
@@ -99,6 +115,10 @@ pub struct ParseLimits {
     pub max_curves: usize,
     /// 最大 `<effect>` 数量，见 [`DEFAULT_MAX_EFFECTS`]。
     pub max_effects: usize,
+    /// 最大 `<midi>` 数量，见 [`DEFAULT_MAX_MIDI_SECTIONS`]。
+    pub max_midi_sections: usize,
+    /// 全文登记的 `<midi>` opcode 总数，见 [`DEFAULT_MAX_MIDI_OPCODES`]。
+    pub max_midi_opcodes: usize,
     /// 单作用域最大 opcode 数，见 [`DEFAULT_MAX_OPCODES_PER_HEADER`]。
     pub max_opcodes_per_header: usize,
     /// 最大 `#define` 变量数，见 [`DEFAULT_MAX_DEFINES`]。
@@ -128,6 +148,8 @@ impl Default for ParseLimits {
             max_regions: DEFAULT_MAX_REGIONS,
             max_curves: DEFAULT_MAX_CURVES,
             max_effects: DEFAULT_MAX_EFFECTS,
+            max_midi_sections: DEFAULT_MAX_MIDI_SECTIONS,
+            max_midi_opcodes: DEFAULT_MAX_MIDI_OPCODES,
             max_opcodes_per_header: DEFAULT_MAX_OPCODES_PER_HEADER,
             max_defines: DEFAULT_MAX_DEFINES,
             max_macro_expansions_per_line: DEFAULT_MAX_MACRO_EXPANSIONS_PER_LINE,
@@ -153,6 +175,8 @@ impl ParseLimits {
             max_regions: usize::MAX,
             max_curves: usize::MAX,
             max_effects: usize::MAX,
+            max_midi_sections: usize::MAX,
+            max_midi_opcodes: usize::MAX,
             max_opcodes_per_header: usize::MAX,
             max_defines: usize::MAX,
             max_macro_expansions_per_line: usize::MAX,
@@ -173,7 +197,7 @@ impl ParseLimits {
 
 /// 本解析器识别的 SFZ 段头。
 ///
-/// 其余规范段头（`<midi>` / `<sample>`）
+/// 仍未建模的规范段头（`<sample>`）
 /// 会被识别为「忽略」：产生 [`Warning::IgnoredHeader`] 并跳过其 opcode，
 /// 而不是静默当作 region 处理。见 <https://sfzformat.com/headers/>。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +230,13 @@ pub enum Header {
     /// 既不写进继承链、也不清空继承链。规范原文见
     /// <https://sfzformat.com/headers/effect/>。
     Effect,
+    /// `<midi>`（ARIA）：MIDI 预处理器声明。
+    ///
+    /// 与 [`Header::Curve`] / [`Header::Effect`] 同为**定义段**：段内的 opcode 只进
+    /// [`crate::MidiSection`]，既不写进继承链、也不清空继承链。段内 opcode 的**语义**
+    /// 本 crate 不解释（opcode 词汇跨播放器不一致），只原样登记。规范原文见
+    /// <https://sfzformat.com/headers/midi/>。
+    Midi,
 }
 
 impl Header {
@@ -226,6 +257,8 @@ impl Header {
             Some(Self::Curve)
         } else if name.eq_ignore_ascii_case("effect") {
             Some(Self::Effect)
+        } else if name.eq_ignore_ascii_case("midi") {
+            Some(Self::Midi)
         } else {
             None
         }
@@ -242,6 +275,7 @@ impl Header {
             Self::Region => "region",
             Self::Curve => "curve",
             Self::Effect => "effect",
+            Self::Midi => "midi",
         }
     }
 }
@@ -253,7 +287,7 @@ impl Header {
 /// 非致命的解析异常。**不**中断解析，只是告诉调用方「这段输入被降级处理了」。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
-    /// 未知 / 未实现的段头被跳过（`<midi>` / `<sample>` …）。
+    /// 未知 / 未实现的段头被跳过（`<sample>` …）。
     IgnoredHeader {
         /// 1-based 行号（折算回原文件）。
         line: usize,
@@ -723,6 +757,15 @@ struct Parser<'a> {
     effect: EffectBuilder<'a>,
     /// 当前 `<effect>` 段里已消费的 opcode 数（DoS 上限，与 `<curve>` 同口径）。
     effect_opcodes: usize,
+    /// 已归约的 `<midi>` 段（保持文件出现顺序，确定性；不去重、空段也登记）。
+    midi_sections: Vec<MidiSection<'a>>,
+    /// 当前 `<midi>` 段头所在行（归约时用于错误定位）。
+    midi_line: usize,
+    /// 当前 `<midi>` 段原样登记的 opcode。
+    midi_opcodes: Vec<MidiOpcode<'a>>,
+    /// 全文已登记的 `<midi>` opcode 总数（含当前段；DoS 上限，见
+    /// [`ParseLimits::max_midi_opcodes`]）。
+    midi_opcode_total: usize,
     /// 当前 `<region>` 段头所在行（归约时用于错误定位）。
     region_line: usize,
     warnings: Vec<Warning>,
@@ -740,6 +783,8 @@ enum Scope {
     Curve,
     /// `<effect>`：opcode 进 [`Parser::effect`]，不进继承链（同为定义段）。
     Effect,
+    /// `<midi>`：opcode **原样**进 [`Parser::midi_opcodes`]，不进继承链（同为定义段）。
+    Midi,
     /// 空行 / 注释 / 未知段头之后：丢弃 opcode，但 `#define` 仍然生效。
     Ignored,
 }
@@ -766,6 +811,10 @@ impl<'a> Parser<'a> {
             effect_line: 1,
             effect: EffectBuilder::new(),
             effect_opcodes: 0,
+            midi_sections: Vec::new(),
+            midi_line: 1,
+            midi_opcodes: Vec::new(),
+            midi_opcode_total: 0,
             region_line: 1,
             warnings: Vec::new(),
             warnings_truncated: false,
@@ -787,16 +836,24 @@ impl<'a> Parser<'a> {
             Scope::Master => Some((&mut self.master, "master")),
             Scope::Group => Some((&mut self.group, "group")),
             Scope::Region => Some((&mut self.region, "region")),
-            Scope::Curve | Scope::Effect | Scope::Ignored => None,
+            Scope::Curve | Scope::Effect | Scope::Midi | Scope::Ignored => None,
         }
     }
 
-    fn insert_opcode(&mut self, name: Cow<'a, str>, value: Cow<'a, str>) -> Result<(), SfzError> {
+    fn insert_opcode(
+        &mut self,
+        name: Cow<'a, str>,
+        value: Cow<'a, str>,
+        line: usize,
+    ) -> Result<(), SfzError> {
         if self.scope == Scope::Curve {
             return self.insert_curve_opcode(name, value);
         }
         if self.scope == Scope::Effect {
             return self.insert_effect_opcode(name, value);
+        }
+        if self.scope == Scope::Midi {
+            return self.insert_midi_opcode(name, value, line);
         }
         let limit = self.limits.max_opcodes_per_header;
         let scope = self.scope;
@@ -953,6 +1010,64 @@ impl<'a> Parser<'a> {
             });
         }
         self.effects.push(builder.build());
+        Ok(())
+    }
+
+    /// 把 `<midi>` 段里的一个 opcode **原样**登记进当前段。
+    ///
+    /// 本 crate 不解释 `<midi>` 的 opcode 语义（见 [`crate::midi`] 的模块文档），因此这里
+    /// 不做任何类型化读取、不做范围检查、不做去重：名字与取值按 `Cow` 原样保存
+    /// （无宏替换时是借用的，零拷贝）。`line` 是**该 opcode 自己的行号**。
+    ///
+    /// DoS 防线两条（都返回明确 `Err`，不静默截断）：
+    /// - 单段条目数超过 [`ParseLimits::max_opcodes_per_header`] ⇒
+    ///   [`SfzError::TooManyOpcodes`]（`scope` 为 `"midi"`，与 `<curve>` / `<effect>` 同口径）；
+    /// - 全文累计条目数超过 [`ParseLimits::max_midi_opcodes`] ⇒
+    ///   [`SfzError::TooManyMidiOpcodes`]。
+    ///
+    /// 单段计数器就是 `midi_opcodes.len()`（原样登记**不**归并同名 opcode，所以条目数
+    /// 与「不同名字数」在这里是同一个数）。
+    fn insert_midi_opcode(
+        &mut self,
+        name: Cow<'a, str>,
+        value: Cow<'a, str>,
+        line: usize,
+    ) -> Result<(), SfzError> {
+        let limit = self.limits.max_opcodes_per_header;
+        if self.midi_opcodes.len() >= limit {
+            return Err(SfzError::TooManyOpcodes {
+                scope: "midi",
+                limit,
+            });
+        }
+        let total = self.limits.max_midi_opcodes;
+        if self.midi_opcode_total >= total {
+            return Err(SfzError::TooManyMidiOpcodes { limit: total });
+        }
+        self.midi_opcode_total += 1;
+        self.midi_opcodes.push(MidiOpcode::new(name, value, line));
+        Ok(())
+    }
+
+    /// 结束当前 `<midi>`：把原样登记的 opcode 冻结成 [`MidiSection`] 并压栈。
+    ///
+    /// 规则：
+    /// - **空段也登记**：与 `<curve>` / `<effect>` 不同，`<midi>` 段本身就是声明
+    ///   （规范把 `<effect>bus=midi` 说成它的替代写法），所以没有 opcode 的段仍然产生条目；
+    /// - 段数超过 [`ParseLimits::max_midi_sections`] ⇒ [`SfzError::TooManyMidiSections`]；
+    /// - 段**不去重**：同一条总线上可以有多段声明（与 `<effect>` 同口径）。
+    fn finalize_midi(&mut self) -> Result<(), SfzError> {
+        if self.scope != Scope::Midi {
+            return Ok(());
+        }
+        let line = self.midi_line;
+        let opcodes = core::mem::take(&mut self.midi_opcodes);
+        if self.midi_sections.len() >= self.limits.max_midi_sections {
+            return Err(SfzError::TooManyMidiSections {
+                limit: self.limits.max_midi_sections,
+            });
+        }
+        self.midi_sections.push(MidiSection::new(line, opcodes));
         Ok(())
     }
 
@@ -1124,7 +1239,7 @@ impl<'a> Parser<'a> {
         }
 
         for (name, value) in (OpcodeIter { rest }) {
-            self.insert_opcode(convert(name), convert(value))?;
+            self.insert_opcode(convert(name), convert(value), line_no)?;
         }
         Ok(())
     }
@@ -1173,6 +1288,8 @@ impl<'a> Parser<'a> {
         self.finalize_curve()?;
         // `<effect>` 同为定义段：口径与 `<curve>` 一致。
         self.finalize_effect()?;
+        // `<midi>` 同为定义段：口径与 `<curve>` / `<effect>` 一致（区别是空段也登记）。
+        self.finalize_midi()?;
         match Header::from_name(name) {
             Some(Header::Control) => {
                 // ARIA 语义：新的 `<control>` 会重置 `default_path`。
@@ -1225,6 +1342,13 @@ impl<'a> Parser<'a> {
                 self.effect_opcodes = 0;
                 self.scope = Scope::Effect;
             }
+            Some(Header::Midi) => {
+                // 定义段：只重置 MIDI 声明寄存器，**不**动 `global` / `master` / `group`
+                // （与 `<curve>` / `<effect>` 同一条口径）。
+                self.midi_line = line_no;
+                self.midi_opcodes.clear();
+                self.scope = Scope::Midi;
+            }
             None => {
                 self.warn(Warning::IgnoredHeader {
                     line: line_no,
@@ -1237,7 +1361,13 @@ impl<'a> Parser<'a> {
     }
 
     fn finish(self) -> Instrument<'a> {
-        Instrument::new(self.regions, self.curves, self.effects, self.warnings)
+        Instrument::new(
+            self.regions,
+            self.curves,
+            self.effects,
+            self.midi_sections,
+            self.warnings,
+        )
     }
 }
 
@@ -1277,6 +1407,7 @@ pub fn parse_text<'a>(text: &'a str, limits: &ParseLimits) -> Result<Instrument<
     parser.finalize_region()?;
     parser.finalize_curve()?;
     parser.finalize_effect()?;
+    parser.finalize_midi()?;
     Ok(parser.finish())
 }
 
@@ -1294,6 +1425,7 @@ pub fn parse_sources<'a>(
     parser.finalize_region()?;
     parser.finalize_curve()?;
     parser.finalize_effect()?;
+    parser.finalize_midi()?;
     Ok(parser.finish())
 }
 

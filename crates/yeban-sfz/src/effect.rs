@@ -38,7 +38,8 @@
 //!
 //! - `effect1` / `effect2` **在 `<region>` 段**（SFZ v1 用法）本 crate 不读：那是「region 的
 //!   发送量」，与 `<effect>` 段的同名 opcode 语义不同，本切片只做 `<effect>` 段。
-//! - `<midi>` / `<sample>` 段头仍未建模（见 `docs/ledger/sfz-core-notes.md`；该文件由集成者独占）。
+//! - `<sample>` 段头仍未建模（`<midi>` 段头见 [`crate::midi`]；两处的登记都在
+//!   `docs/ledger/sfz-core-notes.md`，该文件由集成者独占）。
 
 use std::borrow::Cow;
 
