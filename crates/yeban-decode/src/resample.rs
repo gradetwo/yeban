@@ -1426,4 +1426,75 @@ mod tests {
             );
         }
     }
+    /// 判据（类别④ 参数极值）：两个重采样入口在**采样率的 0 端点与类型极大值端点**上
+    /// 都必须给类型化错误，且错误里报的采样率就是调用方给的那个（不是被夹过的近似值）。
+    ///
+    /// 逐项判定（量什么 → 怎么量 → 结论）：
+    ///
+    /// | 入口 | 输入 | 期望 | 依据 |
+    /// | :--- | :--- | :--- | :--- |
+    /// | `resample_interleaved` | `in_rate = 0` | `ZeroSampleRate` | 第一道闸门 |
+    /// | `resample_interleaved` | `out_rate = 0` | `ZeroSampleRate` | 第一道闸门 |
+    /// | `resample_interleaved` | `out_rate = u32::MAX` | `SampleRateTooHigh { rate: u32::MAX, limit: 768 000 }` | 闸门在任何分配之前 |
+    /// | `resample_interleaved` | `in_rate = u32::MAX` | `SampleRateTooHigh { rate: u32::MAX, .. }` | `rate = in_rate.max(out_rate)` |
+    /// | `resample_asset` | `out_rate = 0` | `ZeroSampleRate` | 落到 `resample_interleaved_with_budget` |
+    /// | `resample_asset` | `out_rate = u32::MAX` | `SampleRateTooHigh` | 同上 |
+    ///
+    /// 量的是 **Hz**。这一格此前没有判据：既有的 `degenerate_arguments_are_rejected_rather_than_guessed`
+    /// 用的是 `2_000_000`（超过上限但不是类型极大值），而 `resample_asset` 的 0 端点
+    /// 一处都没测。
+    ///
+    /// 注入（实测）：把 `out_rate > budget.max_sample_rate || in_rate > budget.max_sample_rate`
+    /// 里的 `>` 改成 `>=` ⇒ 恰好 `max_sample_rate` 的合法转换被误拒，本条以
+    /// `exactly max_sample_rate must not be refused by the rate gate` 红（`0 passed /
+    /// 1 failed`，只打红这一条）；`u32::MAX` 那几行仍绿 —— 因此本判据同时钉住
+    /// "闸门存在"与"闸门是闭区间"。
+    #[test]
+    fn the_rate_endpoints_are_refused_and_reported_verbatim() {
+        let default_limit = PcmBudget::default().max_sample_rate;
+        for (in_rate, out_rate) in [(0u32, 48_000u32), (48_000, 0)] {
+            assert!(
+                matches!(
+                    resample_interleaved(&[0.0; 4], 1, in_rate, out_rate),
+                    Err(DecodeError::Budget(LimitViolation::ZeroSampleRate))
+                ),
+                "{in_rate} -> {out_rate} must be a zero-rate error"
+            );
+        }
+        for (in_rate, out_rate) in [(1u32, u32::MAX), (u32::MAX, 1)] {
+            match resample_interleaved(&[0.0; 4], 1, in_rate, out_rate) {
+                Err(DecodeError::Budget(LimitViolation::SampleRateTooHigh { rate, limit })) => {
+                    assert_eq!(rate, in_rate.max(out_rate));
+                    assert_eq!(limit, default_limit);
+                }
+                other => {
+                    panic!("{in_rate} -> {out_rate}: expected SampleRateTooHigh, got {other:?}")
+                }
+            }
+        }
+        // 闭区间对照：恰好等于上限的一对必须仍然被放行到下一道判定
+        // （48 帧 @ 768 kHz → 768 kHz 走恒等路径，代价可忽略）。
+        assert!(
+            resample_interleaved(&[0.0; 48], 1, default_limit, default_limit).is_ok(),
+            "exactly max_sample_rate must not be refused by the rate gate"
+        );
+
+        let asset = decode_bytes(&wav_f32(4, 1, 48_000, 0.25), &DecodeOptions::default())
+            .expect("a 4-frame 48 kHz mono fixture");
+        assert!(
+            matches!(
+                resample_asset(&asset, 0),
+                Err(DecodeError::Budget(LimitViolation::ZeroSampleRate))
+            ),
+            "the asset entry must not treat a 0 Hz target as the identity path"
+        );
+        assert!(
+            matches!(
+                resample_asset(&asset, u32::MAX),
+                Err(DecodeError::Budget(LimitViolation::SampleRateTooHigh { rate, .. }))
+                    if rate == u32::MAX
+            ),
+            "the asset entry must refuse an over-cap target rate before resampling"
+        );
+    }
 }
