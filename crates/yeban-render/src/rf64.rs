@@ -455,6 +455,48 @@ fn coding_history(sample_rate: Option<u32>, bits_per_sample: Option<u16>) -> Str
     out
 }
 
+/// 把 `HH:MM:SS` 的起始时间码换成 `bext` 的 `TimeReference`（**采样数**）。
+///
+/// # 口径（核验过的上游事实）
+///
+/// ExifTool 的 RIFF 标签表把 `TimeReference`（`bext` 偏移 338）标为
+/// "(first sample count since midnight)" —— 即"从当日零点到**首个采样点**之间的
+/// **采样数**"。因此换算只有一次乘法:
+///
+/// ```text
+/// TimeReference = (时·3600 + 分·60 + 秒) · 采样率
+/// ```
+///
+/// 这里的"秒"是**整秒**。`bext` 没有小数秒字段, 而它的兄弟字段
+/// `OriginationTime` 也是 8 字符的 `HH:MM:SS`, 所以本函数接受什么粒度就写什么粒度,
+/// **不**把毫秒偷偷乘进去。
+///
+/// # 为什么返回 `Option` 而不是回落到 0
+///
+/// `TimeReference = 0` 是一个**合法值**, 它的含义是"首个采样点在当日零点"。
+/// 因此"时间码写错了"绝不能回落成 0 —— 那正是本模块已在 `CodingHistory` 上禁止过的
+/// 占位符做法（见私有函数 `coding_history` 的注释）: 文件会声称一件没发生的事。
+/// 时间码不合语法时本函数返回 `None`, 由调用方决定拒绝还是显式用 0。
+///
+/// 小时 / 分钟必须 `< 60`, 秒必须 `< 60`, **小时还必须 `< 24`** —— 参照点是"当日
+/// 零点", 而一天只有 24 小时, 因此 `25:00:00` 不是时刻（它是 1 天又 1 小时, 写进
+/// `TimeReference` 就与"当日零点"这个定义自相矛盾）。整串必须恰好是 `HH:MM:SS`。
+///
+/// 本函数是纯整数运算（IEEE 精确类, 见 `docs/adr/ADR-0001` 的裁决口径）, 不碰浮点,
+/// 因此跨架构逐位相同。
+#[must_use]
+pub fn time_reference_samples(start_timecode: &str, sample_rate: u32) -> Option<u64> {
+    let mut fields = start_timecode.split(':');
+    let hours: u64 = fields.next()?.parse().ok()?;
+    let minutes: u64 = fields.next()?.parse().ok()?;
+    let seconds: u64 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || hours >= 24 || minutes >= 60 || seconds >= 60 {
+        return None;
+    }
+    let rate = u64::from(sample_rate);
+    (hours * 3600 + minutes * 60 + seconds).checked_mul(rate)
+}
+
 impl Bext {
     /// 为一次母带导出构造 `bext` 块: 工程 ULID 写进 `OriginatorReference`。
     ///
@@ -472,6 +514,18 @@ impl Bext {
     /// `A=PCM,M=stereo,T=Yeban` —— 只写已知项, **不写占位符**。
     /// 需要把 `F=`/`W=` 一并写进交付文件的调用方用
     /// [`Self::for_project_with_format`]。
+    ///
+    /// # `TimeReference`（本函数的默认值是 0, 且这是一个**声明**）
+    ///
+    /// 本函数把 `TimeReference`（首个采样点距当日零点的**采样数**）留在
+    /// [`Self::default`] 的 `0`。0 在 BWF 里是一个合法读数, 它的含义是
+    /// "首个采样点在当日零点" —— 对一个从工程起点（tick 0）导出的母带而言,
+    /// 这正是本 crate 现有调用方的情形（数据模型里没有会话起始时间码字段,
+    /// 见 `docs/ledger/render-master-notes.md` 的 `needs`）。
+    ///
+    /// **调用方若知道起始时间码, 不要用本函数再手改字段** —— 用
+    /// [`Self::for_project_with_timecode`], 它把时间码、`OriginationTime` 与
+    /// `TimeReference` 一起写, 三者不会互相矛盾。
     #[must_use]
     pub fn for_project(ulid: &str, origination_date: &str, origination_time: &str) -> Self {
         Self {
@@ -525,6 +579,59 @@ impl Bext {
             coding_history: coding_history(Some(sample_rate), Some(bits_per_sample)),
             ..Self::for_project(ulid, origination_date, origination_time)
         }
+    }
+
+    /// 与 [`Self::for_project_with_format`] 相同, 但把**起始时间码**一并写成
+    /// `TimeReference`。
+    ///
+    /// `start_timecode` 是 `HH:MM:SS`。它同时被写进两个字段, 因此不可能互相矛盾:
+    ///
+    /// - `OriginationTime`（偏移 330, 8 字符 ASCII）—— `bext` 的**定长**字段;
+    /// - `TimeReference`（偏移 338, `u64`）—— 换算见 [`time_reference_samples`]。
+    ///
+    /// # 这是 [ARCH-FMT-001] 三项里唯一没有**构造器落点**的那一项
+    ///
+    /// > 完整内嵌广播级 `bext` (Broadcast Extension) 元数据块（**录制起始时间码**、
+    /// > 响度元数据 EBU R128、工程 ULID 全局唯一标识）
+    /// > —— `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §5.2（现位于第 461 行）
+    ///
+    /// 三项里"响度"由 [`Self::for_project`] 的响度哨兵 + 母带链的实测改写承载,
+    /// "ULID"由 `OriginatorReference` 承载（映射裁决见 [`Self::for_project`]）,
+    /// 而"录制起始时间码"此前**没有构造器写过**: [`Self::for_project`] 与
+    /// [`Self::for_project_with_format`] 都把 [`Self::time_reference`] 留在
+    /// [`Self::default`] 的 `0`, 于是文件一边声称发起时间是 `13:37:00`、一边声称
+    /// 首个采样点在当日零点。本函数补上这个落点。
+    ///
+    /// **本函数不改写既有构造器**（那会改变下游交付文件的字节, 而"起始时间码"至今没有
+    /// 数据模型字段, 见 `docs/ledger/render-master-notes.md` 的 `needs`）。想知道起始
+    /// 时间码的调用方换用本函数; 仍用 `for_project` 的调用方继续得到 `0`（它也是
+    /// [`Self::for_project`] 文档里那条**声明**）。
+    ///
+    /// # Errors
+    ///
+    /// `start_timecode` 不合 `HH:MM:SS` 语法（或时/分/秒越界）⇒
+    /// [`Rf64Error::BadStartTimecode`]。**不**回落成 0: 见
+    /// [`time_reference_samples`] 的"为什么返回 `Option` 而不是回落到 0"。
+    /// `sample_rate == 0` 是合法的（换算结果 0）, 由调用方按格式约束负责。
+    pub fn for_project_with_timecode(
+        ulid: &str,
+        origination_date: &str,
+        start_timecode: &str,
+        sample_rate: u32,
+        bits_per_sample: u16,
+    ) -> Result<Self, Rf64Error> {
+        let time_reference = time_reference_samples(start_timecode, sample_rate)
+            .ok_or_else(|| Rf64Error::BadStartTimecode(start_timecode.to_owned()))?;
+        Ok(Self {
+            time_reference,
+            ..Self::for_project_with_format(
+                ulid,
+                origination_date,
+                start_timecode,
+                sample_rate,
+                bits_per_sample,
+            )
+        })
     }
 
     /// 固定前缀长度。
@@ -898,6 +1005,11 @@ pub enum Rf64Error {
     ZeroChannels,
     /// `bext` 版本不受支持（本实现只支持 1 与 2）。
     UnsupportedBextVersion(u16),
+    /// 起始时间码不是 `HH:MM:SS`（或时/分/秒越界）。
+    ///
+    /// 这是**构造期的拒绝**, 不是"解析时宽容一下": `TimeReference` 写错会产出一个
+    /// 声称首个采样点在某个不存在时刻的文件（见 [`time_reference_samples`]）。
+    BadStartTimecode(String),
 }
 
 impl core::fmt::Display for Rf64Error {
@@ -916,6 +1028,10 @@ impl core::fmt::Display for Rf64Error {
             Self::UnsupportedBextVersion(version) => {
                 write!(f, "不受支持的 bext 版本: {version}")
             }
+            Self::BadStartTimecode(value) => write!(
+                f,
+                "起始时间码 {value:?} 不是 HH:MM:SS（时分秒必须各自在合法范围内）"
+            ),
         }
     }
 }
@@ -1966,5 +2082,99 @@ mod tests {
             assert_eq!(decoded.coding_history, expected);
             assert_eq!(decoded, block, "带真实编码历史的块必须原样往返");
         }
+    }
+
+    /// 判据 21: 起始时间码 ⇒ `TimeReference` 是**采样数**, 且落在 `bext` 的 338 偏移上。
+    ///
+    /// # 这条判据钉住的是什么
+    ///
+    /// [ARCH-FMT-001]（现位于 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` 第 461 行）
+    /// 要求 `bext` 内嵌"录制起始时间码", 而修复前 [`Bext::for_project`] 与
+    /// [`Bext::for_project_with_format`] 都把 `TimeReference` 留在 [`Bext::default`]
+    /// 的 `0` ⇒ 交付文件一边写着发起时间 `13:37:00`、一边声称首个采样点在当日零点。
+    /// 本判据同时钉住三件事:
+    ///
+    /// 1. 换算口径（ExifTool: "first sample count since midnight"）: `13:37:00` ⇒
+    ///    `49_020` 秒 ⇒ ×48000 ⇒ `2_352_960_000` **采样数**（不是秒、不是帧号）;
+    /// 2. **字节落点**: `bext` 负载的 338..346 小端 `u64` 就是这个数（字符串对但
+    ///    写错偏移的文件依然读不到时间参照）;
+    /// 3. 同一时间码同时进 `OriginationTime`（330..338）⇒ 两个字段不会互相矛盾。
+    ///
+    /// 负向对照也在里面: 0 与"时/分/秒越界"都**被拒绝**, 因为 `TimeReference = 0`
+    /// 是一个合法读数（"首个采样点在当日零点"）, 拿它当错误哨兵会让文件说谎。
+    #[test]
+    fn a_start_timecode_becomes_the_time_reference_in_samples() {
+        // 口径: 13:37:00 = 13·3600 + 37·60 = 49_020 秒; ×48000 = 2_352_960_000 采样。
+        assert_eq!(
+            time_reference_samples("13:37:00", 48_000),
+            Some(2_352_960_000)
+        );
+        assert_eq!(time_reference_samples("00:00:00", 48_000), Some(0));
+        assert_eq!(
+            time_reference_samples("01:00:00", 44_100),
+            Some(158_760_000)
+        );
+        assert_eq!(time_reference_samples("00:00:01", 96_000), Some(96_000));
+        // 不支持的时长/语法**不**回落成 0（0 是合法读数, 不能当错误哨兵）。
+        for bad in [
+            "25:00:00",
+            "00:70:00",
+            "00:00:99",
+            "13:37",
+            "13:37:00:01",
+            "-1:00:00",
+            "13:37:0x",
+            "",
+            "a:b:c",
+        ] {
+            assert_eq!(
+                time_reference_samples(bad, 48_000),
+                None,
+                "{bad:?} 不是 HH:MM:SS, 必须报错而不是写成 0"
+            );
+        }
+
+        let block = Bext::for_project_with_timecode(
+            "01J8ZK9WQ7F5N2V4B6C8D0E1F2",
+            "2026-10-08",
+            "13:37:00",
+            48_000,
+            24,
+        )
+        .expect("13:37:00 是合法时间码");
+        assert_eq!(block.time_reference, 2_352_960_000);
+        assert_eq!(block.origination_time, "13:37:00");
+        assert_eq!(block.coding_history, "A=PCM,F=48000,W=24,M=stereo,T=Yeban");
+
+        // 字节落点: 日期 320..330、时间 330..338、时间参照 338..346。
+        let bytes = block.to_bytes();
+        assert_eq!(&bytes[330..338], b"13:37:00", "OriginationTime 在偏移 330");
+        assert_eq!(
+            le::read_u64(&bytes, 338),
+            Some(2_352_960_000),
+            "TimeReference 必须落在偏移 338"
+        );
+        // 读回来的是同一个数, 且重新编码逐字节相同。
+        let decoded = Bext::from_bytes(&bytes).expect("解码");
+        assert_eq!(decoded.time_reference, 2_352_960_000);
+        assert_eq!(decoded, block);
+        assert_eq!(decoded.to_bytes(), bytes);
+
+        // 时间码不合法 ⇒ 构造失败, 且错误里带**原值**（调用方要能定位是哪一串坏的）。
+        assert_eq!(
+            Bext::for_project_with_timecode("u", "2026-10-08", "25:00:00", 48_000, 24),
+            Err(Rf64Error::BadStartTimecode("25:00:00".to_owned()))
+        );
+
+        // 两个既有构造器的时间参照仍是 0（它们是**声明**, 不是缺口）—— 这条同时防
+        // "把 for_project 的默认值悄悄改掉"。
+        assert_eq!(
+            Bext::for_project("u", "2026-10-08", "13:37:00").time_reference,
+            0
+        );
+        assert_eq!(
+            Bext::for_project_with_format("u", "2026-10-08", "13:37:00", 48_000, 24).time_reference,
+            0
+        );
     }
 }
