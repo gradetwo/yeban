@@ -1992,6 +1992,12 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   `value: null` = 单位增益）。目标**不在**顶层 `trackId` / `clipId` 上 ——
 ///   与音轨级形态一样，它与片段内容无关（见 `notes::NoteOp::is_routing_level`），
 ///   因此提案标题按实际内容报成"路由级编辑"，不冒充音轨级。
+/// - **路由级取走**（`ops[].kind == "disconnectRouting"`）：把操作对象**自带的**
+///   `edgeId` 那条路由边**取走**（`Op::DisconnectRouting`，撤销载荷 `previous_edge`
+///   从当前文档读整条边）。同一个"路由级"分类（`notes::NoteOp::is_routing_level`），
+///   但改的是边**本身**而不是边上的一个值 —— 关闭"工具面造得出的边取不走"这条
+///   缺口（`yeban_propose_section` 的建批是 `Op::ConnectRouting` 在 MCP 侧唯一的
+///   构造点，而 `yeban_query_project` 的实体索引一直在报那些边的身份）。
 ///
 /// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
 /// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。

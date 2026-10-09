@@ -574,7 +574,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 音轨级与路由级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 11] = [
+pub const OP_KINDS: [&str; 12] = [
     "add",
     "delete",
     "move",
@@ -586,6 +586,7 @@ pub const OP_KINDS: [&str; 11] = [
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
+    DISCONNECT_ROUTING_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -882,12 +883,18 @@ pub const REMOVE_CLIP_FIELDS: [&str; 1] = ["kind"];
 /// [`REMOVE_CLIP_KIND`] 同一条命名规则。
 pub const SET_ROUTING_GAIN_KIND: &str = "setRoutingGain";
 
-/// 路由边增益形态的**寻址**字段名（`ops[].edgeId`，必填）。
+/// **路由边**的寻址字段名（`ops[].edgeId`，必填）。
+///
+/// 两条路由级形态（[`SET_ROUTING_GAIN_KIND`] 与 [`DISCONNECT_ROUTING_KIND`]）寻址的是
+/// **同一种实体**，因此共用这一个字面量 —— 词汇表只有一份（不是两张会各自漂移的表）。
 ///
 /// 与 `yeban_edit_automation` 的同名实参逐字同词（`ADR-0001` D48：同一个词必须
 /// 同一个意思 —— "那条路由边"），而 `SendGain` 泳道的寻址在 `setAutomationLane` 里
-/// 住在嵌套的 `lane.edgeId`（那边还带着泳道属性，本形态只有这一个字段）。
-pub const SET_ROUTING_GAIN_EDGE_FIELD: &str = "edgeId";
+/// 住在嵌套的 `lane.edgeId`（那边还带着泳道属性，两条路由级形态都只有这一个字段）。
+pub const ROUTING_EDGE_FIELD: &str = "edgeId";
+
+/// 路由边增益形态的**寻址**字段名（= [`ROUTING_EDGE_FIELD`]，同一个字面量）。
+pub const SET_ROUTING_GAIN_EDGE_FIELD: &str = ROUTING_EDGE_FIELD;
 
 /// 路由边增益形态的**新值**字段名（`ops[].value`，必填，数字**或** `null`）。
 ///
@@ -905,6 +912,20 @@ pub const SET_ROUTING_GAIN_FIELDS: [&str; 3] = [
     SET_ROUTING_GAIN_EDGE_FIELD,
     SET_ROUTING_GAIN_VALUE_FIELD,
 ];
+
+/// `ops[].kind` 的**断开路由边**形态名（写 [`Op::DisconnectRouting`]）。
+///
+/// 与模型 `Op` 变体名同词（`DisconnectRouting` 的小驼峰），与 [`SET_ROUTING_GAIN_KIND`] /
+/// [`REMOVE_CLIP_KIND`] 同一条命名规则。
+pub const DISCONNECT_ROUTING_KIND: &str = "disconnectRouting";
+
+/// 断开路由边形态允许出现的**全部**键（判别键 + 寻址键）。
+///
+/// 目标音轨、目标片段与边的旧增益**都不在**这里：本形态自带寻址
+/// （[`ROUTING_EDGE_FIELD`]），撤销载荷 `previous_edge` 由 [`compile`] 从**当前文档**
+/// 读（与 [`SET_ROUTING_GAIN_KIND`] 的 `old_gain_db` 同一条纪律）。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const DISCONNECT_ROUTING_FIELDS: [&str; 2] = ["kind", ROUTING_EDGE_FIELD];
 
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
@@ -1218,6 +1239,25 @@ pub enum NoteOp {
         /// 目标增益（dB）；`None` = 单位增益。
         gain_db: Option<f32>,
     },
+    /// 断开**一条路由边**（[`Op::DisconnectRouting`]，即把这条边从
+    /// `routing_graph.edges` 取走）。
+    ///
+    /// 与 [`Self::SetRoutingGain`] **同族**（路由级、目标由自带的 `edgeId` 给出、
+    /// 与顶层 `trackId` / `clipId` 无关），但取走的不是边上的一个值而是**边本身**：
+    /// 写侧只有 [`Op::ConnectRouting`]（本工具面只在 `yeban_propose_section` 的建批里
+    /// 构造它）⇒ 没有本形态，工具面**造得出**的边**取不走**（`yeban_query_project`
+    /// 的实体索引与 `routing_graph` 字段却一直在报它们的身份）。
+    ///
+    /// 载荷是**空**的：撤销载荷 `previous_edge` 由 [`compile`] 从**当前文档**读
+    /// （模型的前置条件要求它逐字段等于文档现值，因此本层不采信调用方声明的旧状态）。
+    /// 断开一条边**不会**动 `routing_graph.nodes`：模型 `YebanProjectV1::validate`
+    /// 只要求主总线出现在 `nodes` 里（那条要求与本形态无关），而
+    /// `RemoveRoutingNode` 有"没有任何边引用它"的前置条件 —— 想取走节点必须先断开
+    /// 引用它的每一条边，两步各自成一次可审查的调用。
+    DisconnectRouting {
+        /// 路由边身份（本形态自带寻址）。
+        edge_id: EntityId,
+    },
 }
 
 impl NoteOp {
@@ -1235,6 +1275,7 @@ impl NoteOp {
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
             Self::SetRoutingGain { .. } => SET_ROUTING_GAIN_KIND,
+            Self::DisconnectRouting { .. } => DISCONNECT_ROUTING_KIND,
         }
     }
 
@@ -1242,7 +1283,8 @@ impl NoteOp {
     ///
     /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
     /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
-    /// [`Self::SetRoutingGain`] 是**路由级**的：它们跟片段内容无关。
+    /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] 是**路由级**的：
+    /// 它们跟片段内容无关。
     /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
@@ -1255,16 +1297,21 @@ impl NoteOp {
                 | Self::RemovePoint { .. }
                 | Self::RemoveClip
                 | Self::SetRoutingGain { .. }
+                | Self::DisconnectRouting { .. }
         )
     }
 
     /// 该形态改的是**路由边**（而不是音符 / 音轨 / 泳道 / 片段池）。
     ///
     /// 只用于把提案标题写成**实际内容**（`domain::plan_edit_notes` 的分类）：
-    /// 一次纯 `setRoutingGain` 的调用不能被报成"音轨级编辑"（那是三个不同的对象）。
+    /// 一次纯 `setRoutingGain` 或纯 `disconnectRouting` 的调用不能被报成"音轨级编辑"
+    /// （那是三个不同的对象）。
     #[must_use]
     pub const fn is_routing_level(&self) -> bool {
-        matches!(self, Self::SetRoutingGain { .. })
+        matches!(
+            self,
+            Self::SetRoutingGain { .. } | Self::DisconnectRouting { .. }
+        )
     }
 }
 
@@ -1291,6 +1338,7 @@ impl NoteOp {
 /// {"kind":"removeClip"}
 /// {"kind":"setRoutingGain","edgeId":"<ULID>","value":-6.0}
 /// {"kind":"setRoutingGain","edgeId":"<ULID>","value":null}
+/// {"kind":"disconnectRouting","edgeId":"<ULID>"}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -1311,17 +1359,23 @@ impl NoteOp {
 /// `removeClip` 是唯一的**池级**形态（见 [`NoteOp::RemoveClip`]）：载荷是**空**的，
 /// 目标片段是工具顶层的 `clipId`；对象里 [`REMOVE_CLIP_FIELDS`] 之外的键一律响亮拒绝。
 ///
-/// `setRoutingGain` 是唯一的**路由级**形态（见 [`NoteOp::SetRoutingGain`]）：
+/// `setRoutingGain` 是**写路由边上一个值**的路由级形态（见 [`NoteOp::SetRoutingGain`]）：
 /// 目标由对象里**自带的** `edgeId` 给出（顶层 `trackId` / `clipId` 都与它无关），
 /// `value` 是 `Option<f32>` 的字面形态（`null` = 单位增益 = 模型的 `None`），
 /// 对象里 [`SET_ROUTING_GAIN_FIELDS`] 之外的键一律响亮拒绝。
+///
+/// `setRoutingGain` 与 `disconnectRouting` 是**两个**路由级形态
+/// （见 [`NoteOp::is_routing_level`]）：前者写边上的一个值，后者把边**本身**取走
+/// （见 [`NoteOp::DisconnectRouting`]）。两者都用 [`ROUTING_EDGE_FIELD`] 寻址，
+/// 因此 `disconnectRouting` 对象里 [`DISCONNECT_ROUTING_FIELDS`] 之外的键一律响亮拒绝。
 ///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
 ///   开关对象里有 [`TRACK_FLAG_FIELDS`] 之外的键 / `lane` 对象里有
 ///   [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 / 路由边增益对象里有
-///   [`SET_ROUTING_GAIN_FIELDS`] 之外的键 →
+///   [`SET_ROUTING_GAIN_FIELDS`] 之外的键 / 断开路由边对象里有
+///   [`DISCONNECT_ROUTING_FIELDS`] 之外的键 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
 ///   非布尔开关值、未知写模式、既不是数字也不是 `null` 的增益值）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
@@ -1406,6 +1460,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 gain_db: read_routing_gain(object)?,
             })
         }
+        DISCONNECT_ROUTING_KIND => {
+            reject_disconnect_routing_fields(object)?;
+            Ok(NoteOp::DisconnectRouting {
+                edge_id: read_id(object, ROUTING_EDGE_FIELD)?,
+            })
+        }
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("未知 `kind`: `{other}`"),
@@ -1448,6 +1508,44 @@ fn reject_routing_gain_fields(object: &Map<String, Value>) -> Result<(), Fault> 
             "supportedRoutingGainFields": SET_ROUTING_GAIN_FIELDS,
             "hint": "增益字段是 `value` (不是 `gainDb`); 路由边由操作对象自带的 \
                      `edgeId` 寻址, 嵌套的 `trackId` 不会被读取",
+        }),
+    ))
+}
+
+/// 拒绝 `disconnectRouting` 操作对象里 [`DISCONNECT_ROUTING_FIELDS`] 之外的键。
+///
+/// 与 [`reject_routing_gain_fields`] / [`reject_remove_clip_fields`] 同一口径
+/// （"拼错的键必须被拒绝, 不能静默忽略"）：最像"写对了"的错法是**把上一条形态的
+/// 键搬过来** —— 把目标写成工具顶层的 `trackId`，或以为要报告"断开前的值"而多写
+/// `value` / `gainDb`。三种都会被静默忽略，而调用方以为边已经断了。
+///
+/// # Errors
+///
+/// 出现 `kind` / `edgeId` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownDisconnectRoutingField"`）。
+fn reject_disconnect_routing_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !DISCONNECT_ROUTING_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{DISCONNECT_ROUTING_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {DISCONNECT_ROUTING_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownDisconnectRoutingField",
+            "unsupportedFields": unknown,
+            "supportedDisconnectRoutingFields": DISCONNECT_ROUTING_FIELDS,
+            "hint": "本形态的载荷是空的 (只认 `kind` 与 `edgeId`); 断开前的整条边由 \
+                     `compile` 从当前文档读, 不需要 (也不接受) 调用方声明",
         }),
     ))
 }
@@ -2452,6 +2550,34 @@ pub fn compile(
                     edge_id: *edge_id,
                     old_gain_db: edge.gain_db,
                     new_gain_db: *gain_db,
+                }
+            }
+            NoteOp::DisconnectRouting { edge_id } => {
+                // 撤销载荷来自**当前文档**的**整条**边：模型 `DisconnectRouting` 的
+                // 前置条件要求 `previous_edge` 逐字段等于文档现值（`RoutingEdge` 是
+                // `Copy`，因此这里是值搬运），因此本层不采信调用方声明的旧状态，
+                // 也不接受调用方送来的载荷（`reject_disconnect_routing_fields` 只认
+                // `kind` 与 `edgeId`）。`nodes` 一个字都不动 —— 取走节点是
+                // `Op::RemoveRoutingNode` 的事，它有"没有任何边引用它"的前置条件。
+                let previous_edge = project
+                    .routing_graph
+                    .edge(edge_id)
+                    .copied()
+                    .ok_or_else(|| {
+                        Fault::domain_with_data(
+                            ErrorCode::EntityNotFound,
+                            format!("工程里没有身份 {edge_id} 的路由边, 没有边可以断开"),
+                            serde_json::json!({
+                                "edgeId": edge_id.to_canonical_string(),
+                                "reason": "routingEdgeNotFound",
+                                "hint": "路由边的身份由 `yeban_query_project` 的 \
+                                         `routing_graph` 字段报出",
+                            }),
+                        )
+                    })?;
+                Op::DisconnectRouting {
+                    edge_id: *edge_id,
+                    previous_edge,
                 }
             }
         });
@@ -3828,7 +3954,8 @@ mod tests {
 
         // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字 + 一个路由级名字
         // （错误信息的 `supportedKinds` 与判据共用同一份真相）。
-        assert_eq!(OP_KINDS.len(), 11);
+        // 2026-10-09：新增 `disconnectRouting` 后全集为 12（裁决 R22，性质不变）。
+        assert_eq!(OP_KINDS.len(), 12);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
