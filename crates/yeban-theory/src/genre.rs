@@ -292,6 +292,13 @@ impl GenreRule {
     /// （[`GENRE_SCALE_SALT`]）⇒ 走向与音阶是两次互相独立的抽取，
     /// 能组合出 `走向条数 × 音阶个数` 种编排。
     ///
+    /// ⚠ 返回值是 [`Scale`]（含**种类**），不是登记表里的**下标**：同一个种类在
+    /// `typical_scales` 里出现两次时（登记表里有 5 条流派如此），本函数只能让
+    /// 先出现的那一条被选中，后出现的那一条**永远不被种子选中**。那两条的种类
+    /// 相同 ⇒ 返回的 [`Scale`] 逐位相同，调用方观察不到差别；要按下标取到它，
+    /// 用 [`GenreRule::scale_at`]。判据
+    /// `only_the_duplicate_kind_positions_stay_out_of_the_seed_space` 钉住这一点。
+    ///
     /// # Errors
     ///
     /// 该流派没有登记任何音阶、或选中的音阶名无法识别时返回
@@ -3381,6 +3388,132 @@ mod tests {
     fn library_is_deterministic_across_calls() {
         assert_eq!(GenreLibrary::ids(), GenreLibrary::ids());
         assert_eq!(GenreLibrary::search("jazz"), GenreLibrary::search("jazz"));
+        // 类别⑤（幂等性）：只读入口重复调用必须逐位相同，**包括**那两个由
+        // `OnceLock` 惰性构建的缓存之后的路径（第二次调用走的是已初始化的
+        // 分支，与第一次构建的结果必须一致）。
+        assert_eq!(
+            GenreLibrary::by_scale("major"),
+            GenreLibrary::by_scale("major")
+        );
+        assert_eq!(
+            GenreLibrary::by_source(SOURCE_TRADITIONAL_THEORY),
+            GenreLibrary::by_source(SOURCE_TRADITIONAL_THEORY)
+        );
+        assert_eq!(
+            GenreLibrary::source_histogram(),
+            GenreLibrary::source_histogram()
+        );
+        assert_eq!(
+            GenreLibrary::by_drum_style(DrumStyle::FourOnTheFloor),
+            GenreLibrary::by_drum_style(DrumStyle::FourOnTheFloor)
+        );
+        assert_eq!(
+            GenreLibrary::drum_style_histogram(),
+            GenreLibrary::drum_style_histogram()
+        );
+        // `all()` 是同一份 `'static` 切片：重复调用不许换一份拷贝。
+        assert!(std::ptr::eq(GenreLibrary::all(), GenreLibrary::all()));
+        // 本 crate 没有可变状态，因此"重复 reset"对应"重新取一次只读视图"：
+        // 中间夹着别的调用时，缓存过的入口给出的读数必须仍然逐位相同。
+        assert_eq!(GenreLibrary::ids(), GenreLibrary::ids());
+        assert_eq!(GenreLibrary::search("jazz"), GenreLibrary::search("jazz"));
+    }
+
+    #[test]
+    fn the_seed_selector_can_reach_every_registered_kind() {
+        // 类别⑤／类别③：种子选择的**幂等性**与**可复现性**。
+        // 数什么：对每条流派、每个种子，`progression_for` / `scale_for` 连续
+        // 调用两次的比较次数，单位 = "次"。种子 0..=63。
+        let mut comparisons = 0usize;
+        for rule in GenreLibrary::all() {
+            for seed in 0u64..64 {
+                let first = rule.progression_for(seed).unwrap();
+                let second = rule.progression_for(seed).unwrap();
+                comparisons += 1;
+                assert_eq!(first, second, "{} seed {seed}", rule.id);
+                // `sketch_for` 每次都要从登记数据**重新构造**一遍整条链
+                // （走向 + 音阶 + 展开），两次的结果必须逐位相同。
+                assert_eq!(
+                    rule.sketch_for(PitchClass::C, 4, seed),
+                    rule.sketch_for(PitchClass::C, 4, seed),
+                    "{} seed {seed}",
+                    rule.id
+                );
+                comparisons += 1;
+                let scale_a = rule.scale_for(PitchClass::C, seed).unwrap();
+                let scale_b = rule.scale_for(PitchClass::C, seed).unwrap();
+                comparisons += 1;
+                assert_eq!(scale_a, scale_b, "{} seed {seed}", rule.id);
+                // 返回的音阶必须等于某个**已登记**位置上的音阶（不发明音阶）。
+                let ns = rule.scale_count();
+                assert!(
+                    (0..ns).any(|index| rule.scale_at(PitchClass::C, index).unwrap() == scale_a),
+                    "{} seed {seed}: seed picked an unregistered scale",
+                    rule.id
+                );
+                comparisons += 1;
+            }
+        }
+        assert_eq!(comparisons, GenreLibrary::len() * 64 * 4);
+    }
+
+    #[test]
+    fn only_the_duplicate_kind_positions_stay_out_of_the_seed_space() {
+        // 类别⑤：`scale_for` 的种子空间对每条流派的**每一个登记位置**是否可达。
+        // 数什么：种子 0..=4095 里从未被选中的**音阶登记位置数**，单位 = "个"。
+        //
+        // 实测口径（写死，不引用常量）：5 条流派各有一个"同种类的第二个登记位置"
+        // 从未被选中，其余位置全部可达。这不是缺陷：那 5 个位置的种类与先出现的
+        // 那一条**逐位相同**，`scale_for` 返回的是种类，因此观察不到差别。
+        let mut unreachable: Vec<(&str, Vec<usize>)> = Vec::new();
+        for rule in GenreLibrary::all() {
+            let count = rule.scale_count();
+            // 预先算一次每个位置的种类，避免在内层循环里反复构造 `Scale`。
+            let kinds: Vec<ScaleKind> = (0..count)
+                .map(|index| rule.scale_at(PitchClass::C, index).unwrap().kind)
+                .collect();
+            let mut reached = vec![false; count];
+            for seed in 0u64..4096 {
+                let kind = rule.scale_for(PitchClass::C, seed).unwrap().kind;
+                // 种子选中一个**种类**；把"具体哪个位置被选中"按 `position`
+                // 口径记账 ⇒ 同种类的第二个位置永远不会被记为已达。
+                let picked = kinds
+                    .iter()
+                    .position(|registered| *registered == kind)
+                    .unwrap();
+                reached[picked] = true;
+            }
+            let missed: Vec<usize> = (0..count).filter(|&index| !reached[index]).collect();
+            if !missed.is_empty() {
+                // 每个未被选中的位置都必须是"同种类先出现过"的重复位置。
+                for index in &missed {
+                    assert!(
+                        kinds[..*index].contains(&kinds[*index]),
+                        "{}: index {index} is unreachable and not a duplicate kind",
+                        rule.id
+                    );
+                    // 它与先出现的那一条逐位相同 ⇒ 调用方观察不到差别。
+                    assert_eq!(kinds[0], kinds[*index], "{}: index {index}", rule.id);
+                }
+                unreachable.push((rule.id, missed));
+            }
+        }
+        assert_eq!(unreachable.len(), 5, "{unreachable:?}");
+        // 读数按 `GENRES` 的**登记顺序**（不是字典序）：这 5 条按登记先后排列。
+        let readings: Vec<(&str, &[usize])> = unreachable
+            .iter()
+            .map(|(id, indexes)| (*id, indexes.as_slice()))
+            .collect();
+        assert_eq!(
+            readings,
+            vec![
+                ("orchestral_film_score", [3].as_slice()),
+                ("hymn", [1].as_slice()),
+                ("indie_rock", [2].as_slice()),
+                ("progressive_house", [2].as_slice()),
+                ("synthwave", [2].as_slice()),
+            ]
+        );
     }
 
     /// 一个字段齐全、走向与音阶都是空表的流派，用来验证"没有登记数据"的路径。
