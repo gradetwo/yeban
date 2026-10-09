@@ -47,6 +47,12 @@
 //! 有一个**响亮**的后果（`is_configured()` 为假 ⇒ 输出逐位等于输入），而不是一段
 //! 听起来只是有点怪的声音。长度上限与截断语义沿用 [`CONV_MAX_IR_FRAMES`]。
 //!
+//! 同一条拒绝纪律也覆盖**每一条** IR 的取值：任一条含非有限样本（`NaN`/`±inf`）
+//! 或频谱溢出时，四条**一起**被拒绝 —— 只留三条新型号会让被拒那条继续用旧 IR 响，
+//! 而"四条代表同一个空间"的前提已经被破坏。每条的校验本体在
+//! [`crate::convolution::Convolution::set_impulse_response`]，本层负责把四个返回值
+//! 收齐并裁决。
+//!
 //! ## 4. 分配纪律 [ARCH-RT-001]
 //!
 //! [`TrueStereoConvolution::set_impulse_response`] 是**唯一**的分配入口（它把四个
@@ -109,8 +115,14 @@ impl TrueStereoConvolution {
     ///
     /// 参数名就是映射：`h_lr` 是 `L → R` 那条（在左声道激励、于右声道接收）。
     ///
-    /// 返回**真正接受**的帧数：四个切片等长时为 `min(len, CONV_MAX_IR_FRAMES)`；
-    /// 四个切片不等长或任一为空时返回 `0`，实例被置回**未配置的直通**状态。
+    /// 返回**真正接受**的帧数：四个切片等长且全部通过每条的校验时为
+    /// `min(len, CONV_MAX_IR_FRAMES)`；四个切片不等长、任一为空、或任一条的 IR 校验
+    /// 不通过（非有限样本 / 频谱溢出，见
+    /// [`crate::convolution::Convolution::set_impulse_response`]）时返回 `0`，
+    /// 实例被置回**未配置的直通**状态（四条核一起清空）。
+    ///
+    /// "任一条不通过就四条一起拒绝"是**必须**的：四条等长的假设是这套 2×2 装配的
+    /// 前提，只留三条新型号会让被拒那条继续用旧 IR 响。
     ///
     /// **这是本类型唯一的分配入口**，必须在音频回调之外调用。**长度不变**时
     /// 缓冲区原地复用（零分配），长度改变时按新长度重新分配 —— 与
@@ -132,26 +144,35 @@ impl TrueStereoConvolution {
             return 0;
         }
 
-        // 逐条转发。四条等长 ⇒ 四个返回值必然相同，故只用最后一个做交叉核对。
-        let accepted = self.kernels[0][0].set_impulse_response(&h_ll[..frames]);
-        let _ = self.kernels[0][1].set_impulse_response(&h_lr[..frames]);
-        let _ = self.kernels[1][0].set_impulse_response(&h_rl[..frames]);
-        let _ = self.kernels[1][1].set_impulse_response(&h_rr[..frames]);
-        debug_assert_eq!(accepted, frames);
+        // 逐条转发。四条等长 ⇒ 四个返回值只有在**校验拒绝**（返回 0）时才不同。
+        let accepted_ll = self.kernels[0][0].set_impulse_response(&h_ll[..frames]);
+        let accepted_lr = self.kernels[0][1].set_impulse_response(&h_lr[..frames]);
+        let accepted_rl = self.kernels[1][0].set_impulse_response(&h_rl[..frames]);
+        let accepted_rr = self.kernels[1][1].set_impulse_response(&h_rr[..frames]);
+        if accepted_ll != frames
+            || accepted_lr != frames
+            || accepted_rl != frames
+            || accepted_rr != frames
+        {
+            self.reject();
+            return 0;
+        }
 
         self.ir_frames = frames;
         self.configured = true;
         frames
     }
 
-    /// 拒绝一次配置：置回未配置的**直通**，并把四条核都清空。
+    /// 拒绝一次配置：置回未配置的**直通**，并把四条核的 IR 频谱与历史都清空。
     ///
     /// 清空四条核是必须的：否则"未配置"只是本结构体上的一个标志位，而四条核里
     /// 还留着上一次 IR 的能量（若将来 `process` 的守卫被改坏，泄漏就会真的响）。
+    /// ⚠ 它**不**释放四条核已经拿到的堆缓冲（`Convolution` 的拒绝路径只做原地清零，
+    /// `Vec` 的容量保留）—— 这里清的是内容，不是容量。
     fn reject(&mut self) {
         for row in &mut self.kernels {
             for kernel in row {
-                // 空 IR ⇒ 该核回到未配置的直通状态（同时释放它的缓冲区）。
+                // 空 IR ⇒ 该核回到未配置的直通状态（内容清零，容量保留）。
                 kernel.set_impulse_response(&[]);
             }
         }
@@ -535,6 +556,46 @@ mod tests {
         let before = long.clone();
         assert_eq!(conv.process(&mut long), CONV_BLOCK_FRAMES);
         assert_eq!(long, before, "未配置时必须是逐位直通");
+    }
+
+    /// **判据（可红）**：任一条 IR 含非有限样本 ⇒ **四条一起**被拒绝。
+    ///
+    /// 观测方式：四条里各挑一条放 `NaN`（依次放在 `h_LL` / `h_LR` / `h_RL` / `h_RR`），
+    /// 每次检查返回 `0`、`is_configured()` 假、`ir_frames()` 为 `0`，且随后一个交错块的
+    /// 输出**逐位**等于输入。四条各测一次，因为拒绝必须覆盖全部四个转发点。
+    ///
+    /// 量什么：`set_impulse_response` 的返回值（单位：帧）与一个 128 帧交错块的每个比特。
+    ///
+    /// 注入（实测见本票报告）：把 `if accepted_ll != frames || …` 的判据换成一条
+    /// 永不成立的条件（`accepted_ll == usize::MAX && …`），即**不接受**下层的裁决
+    /// ⇒ 本判据在返回值断言处变红（实得 `512`，期望 `0`）。
+    #[test]
+    fn a_non_finite_ir_rejects_all_four_paths() {
+        let good = pseudo_random(512, 0x6666_0001);
+        for victim in 0..4 {
+            let mut paths = [good.clone(), good.clone(), good.clone(), good.clone()];
+            paths[victim][7] = f32::NAN;
+
+            let mut conv = TrueStereoConvolution::new();
+            assert_eq!(
+                conv.set_impulse_response(&paths[0], &paths[1], &paths[2], &paths[3]),
+                0,
+                "第 {victim} 条含 NaN ⇒ 四条必须一起被拒绝"
+            );
+            assert!(!conv.is_configured(), "第 {victim} 条：拒绝后必须是未配置");
+            assert_eq!(conv.ir_frames(), 0, "第 {victim} 条：拒绝后不得留下帧数");
+
+            let input = pseudo_random(CONV_BLOCK_FRAMES * 2, 0x6666_0002);
+            let mut block = input.clone();
+            assert_eq!(conv.process(&mut block), CONV_BLOCK_FRAMES);
+            for (i, (out, want)) in block.iter().zip(&input).enumerate() {
+                assert_eq!(
+                    out.to_bits(),
+                    want.to_bits(),
+                    "第 {victim} 条：拒绝后的样本 {i} 必须逐位直通"
+                );
+            }
+        }
     }
 
     /// **判据**：确定性 —— 同一交错输入两次逐位相同（四条通路各自都是确定性的）。

@@ -59,6 +59,12 @@
 //! 污染后续若干个块。逐样本净化不在本器件的职责内（`delay`/`comb`/`reverb` 同样不做），
 //! 净化由调用方在进入器件之前完成。
 //!
+//! ⚠ 这条只管**运行期的输入样本**。**配置期交进来的 IR 是另一回事**：它是一份静态
+//! 数据，校验在这里既便宜（每个分区扫 129×2 项）又是唯一的拦截点。实测（本机 aarch64，
+//! 本票读数）：IR 里放**一个** `NaN`（或 `±inf`）后，输出 **128/128** 个样本非有限，
+//! 且 `reset()` 之后仍是 **128/128** —— 因为 `reset()` 只清频域延迟线与 OLA 尾，不清
+//! `ir_*`。所以校验放在 [`Convolution::set_impulse_response`] 里，见该方法的说明。
+//!
 //! ## 7. 到"对标 ReaVerb"的距离（未实现清单）
 //!
 //! 本模块交付的是卷积**核**，不是一台完整的卷积混响。明确**没有**做的：
@@ -68,7 +74,9 @@
 //!    本模块仍是单声道核，这一点不变；
 //! 2. **IR 载入与预处理**：文件 I/O、采样率换算、首波对齐、长度归一化、淡出 ——
 //!    全部属于上层（`yeban-dsp` 无 I/O，这是本 crate 的物理边界）。本器件只接受
-//!    已经就绪的 `&[f32]`；
+//!    已经就绪的 `&[f32]`。⚠ 例外只有**验收**一处：非有限（或频谱溢出）的 IR 在本
+//!    模块被**拒绝**（见 [`Convolution::set_impulse_response`]），因为那是唯一能挡住
+//!    "湿路永久变成非有限值"的地方；"载入"与"预处理"仍然全在上层；
 //! 3. **非均匀分区**：长 IR 用更大的尾部分区可以把成本再降一档；本器件是严格均匀的；
 //! 4. **IR 的增益/湿干混合/预延迟**：~~由调用方（或 `reverb` 那类外壳）承担~~ ⇒
 //!    **已交付**，那个外壳是 [`crate::convolution_reverb`]（湿路预延迟 ＋ 独立湿/干
@@ -251,21 +259,24 @@ impl Convolution {
     /// 设定脉冲响应。**这是本类型唯一的分配入口**，必须在音频回调之外调用。
     ///
     /// 返回**真正接受**的帧数：`min(ir.len(), CONV_MAX_IR_FRAMES)`。返回 `0`
-    /// （空 IR）会把实例置回未配置的直通状态。
+    /// 有两条出路，都落到未配置的直通状态：空 IR，以及**校验不通过**（见下一段）。
+    /// 两条出路都会清掉 IR 频谱与全部历史。
+    ///
+    /// **校验（配置期，唯一的拦截点）**：接受的 IR 必须满足"分区频谱逐项有限"。
+    /// 非有限样本（`NaN` / `±inf`）会把每一个 bin 污染成非有限值；**有限但过大**的
+    /// 样本同样会（例如 512 帧的 `3e38`，求和即溢出）。这类 IR 一旦被接受就会把
+    /// `ir_*` 永久写成非有限值，而 [`Self::reset`] **清不掉它**（它只清频域延迟线与
+    /// OLA 尾）⇒ 湿路从此恒为非有限值。因此这里拒绝，而不是让它进去。
     ///
     /// 重复调用会重算 IR 频谱并清空频域延迟线与重叠相加尾，因此上一个 IR 的尾巴
     /// **不会**残留。**长度不变**时缓冲区原地复用（此时零分配）；长度改变时按新
     /// 长度重新分配。判据：`tests/convolution_rt_zero_alloc.rs` 的两条
-    /// "同长度换 IR 零分配 / 改长度换 IR 会分配"。
+    /// "同长度换 IR 零分配 / 改长度换 IR 会分配"，以及本文件的
+    /// `non_finite_impulse_responses_are_rejected`。
     pub fn set_impulse_response(&mut self, ir: &[f32]) -> usize {
         let frames = ir.len().min(CONV_MAX_IR_FRAMES);
         if frames == 0 {
-            self.configured = false;
-            self.partitions = 0;
-            self.ir_frames = 0;
-            // 历史可能留着上一个 IR 的能量；清掉，免得"未配置"是假的。
-            self.reset();
-            return 0;
+            return self.reject_impulse_response();
         }
 
         let partitions = frames.div_ceil(CONV_BLOCK_FRAMES);
@@ -319,6 +330,14 @@ impl Convolution {
             self.ir_im[slot..slot + CONV_BINS].copy_from_slice(&self.work_im[..CONV_BINS]);
         }
 
+        // 校验：存下来的 IR 频谱必须逐项有限。放在**写入之后、置 configured 之前** ——
+        // 这是"能被接受"的唯一入口。一次扫描，不分配。
+        if !self.ir_re[..span].iter().all(|v| v.is_finite())
+            || !self.ir_im[..span].iter().all(|v| v.is_finite())
+        {
+            return self.reject_impulse_response();
+        }
+
         self.partitions = partitions;
         self.ir_frames = frames;
         self.configured = true;
@@ -357,6 +376,22 @@ impl Convolution {
         self.hist_im.fill(0.0);
         self.ola.fill(0.0);
         self.head = 0;
+    }
+
+    /// 拒绝一次配置：清掉 IR 频谱与全部历史，置回**未配置的直通**状态，返回 `0`。
+    ///
+    /// 清 `ir_*` 不是装饰。`process` 的守卫（`!configured || partitions == 0`）已经
+    /// 挡住被拒绝的 IR，但把非有限频谱留在缓冲区里，等于让"未配置"只靠一个标志位
+    /// 成立 —— 与 [`crate::convolution_stereo::TrueStereoConvolution`] 的拒绝路径
+    /// 同一条纪律。全程零分配（`fill` 与 [`Self::reset`] 都是原地清零）。
+    fn reject_impulse_response(&mut self) -> usize {
+        self.configured = false;
+        self.partitions = 0;
+        self.ir_frames = 0;
+        self.ir_re.fill(0.0);
+        self.ir_im.fill(0.0);
+        self.reset();
+        0
     }
 
     /// 原地处理一个块，返回处理的帧数。
@@ -660,6 +695,96 @@ mod tests {
         let mut block = vec![0.0f32; 8];
         assert_eq!(conv.process(&mut block), 8, "短块只处理其自身长度");
         assert!(block.iter().all(|v| v.is_finite()));
+    }
+
+    /// **判据（可红）**：非有限（或频谱溢出）的 IR 被**拒绝**，实例回到未配置的直通。
+    ///
+    /// 观测方式：四种坏 IR —— 一个 `NaN`、一个 `+inf`、一个 `-inf`、以及**有限但溢出**
+    /// 的 `3e38 × 512` —— 各自配置一次，检查返回值 `0`、`is_configured()` 假、
+    /// `partitions()` 与 `ir_frames()` 都是 `0`，且随后一个块的输出**逐位**等于输入。
+    ///
+    /// 量什么：`set_impulse_response` 的返回值（单位：帧）与一个 128 帧块的每一个比特。
+    ///
+    /// 注入（实测见本票报告）：删掉 `set_impulse_response` 里的频谱有限性校验
+    /// ⇒ 本判据在第一类（`NaN`）的返回值断言处变红（实得 `512`，期望 `0`）。
+    #[test]
+    fn non_finite_impulse_responses_are_rejected() {
+        let good = pseudo_random(512, 0x0FF1_CE01);
+        let mut cases: Vec<(&str, Vec<f32>)> = Vec::new();
+        for (label, bad) in [
+            ("NaN", f32::NAN),
+            ("+inf", f32::INFINITY),
+            ("-inf", f32::NEG_INFINITY),
+        ] {
+            let mut ir = good.clone();
+            ir[7] = bad;
+            cases.push((label, ir));
+        }
+        cases.push(("有限但溢出（3e38 × 512）", vec![3.0e38f32; 512]));
+
+        for (label, ir) in cases {
+            let mut conv = Convolution::new();
+            assert_eq!(
+                conv.set_impulse_response(&ir),
+                0,
+                "{label}：坏 IR 必须被拒绝（返回 0）"
+            );
+            assert!(!conv.is_configured(), "{label}：拒绝后必须是未配置");
+            assert_eq!(conv.partitions(), 0, "{label}：拒绝后不得留下分区");
+            assert_eq!(conv.ir_frames(), 0, "{label}：拒绝后不得留下帧数");
+
+            let input = pseudo_random(CONV_BLOCK_FRAMES, 0x00C0_FFEE);
+            let mut block = input.clone();
+            assert_eq!(conv.process(&mut block), CONV_BLOCK_FRAMES);
+            for (i, (out, want)) in block.iter().zip(&input).enumerate() {
+                assert_eq!(
+                    out.to_bits(),
+                    want.to_bits(),
+                    "{label}：拒绝后的样本 {i} 必须逐位直通"
+                );
+            }
+        }
+    }
+
+    /// **判据（可红）**：一次坏 IR 不能把**已经跑起来**的实例永久毒化。
+    ///
+    /// 观测方式：先用好 IR 灌满频域延迟线（湿路有尾巴），再交一条**同长度**、含 `NaN`
+    /// 的 IR，然后喂一个非静音块：输出必须**逐位**等于输入（未配置直通），而不是 `NaN`。
+    /// 这条正是"`reset()` 清不掉 `ir_*`"那个失效模式的判据：它只有在拒绝路径同时清掉
+    /// `ir_*` 与历史、并真的把 `configured` 置回假时才成立。
+    ///
+    /// 量什么：一次坏 IR 换入后，一个 128 帧块的每一个比特与非有限样本个数。
+    ///
+    /// 注入（实测见本票报告）：删掉频谱有限性校验（即恢复旧行为"照单全收"）
+    /// ⇒ 本判据在**第一条**断言处变红（实得 `1000`，期望 `0`）；`is_configured()`
+    /// 那条把守的是"拒绝必须把标志位也置回去"（另一处注入，见报告）。
+    #[test]
+    fn a_rejected_ir_cannot_poison_a_running_instance() {
+        let good = pseudo_random(1_000, 0xDEAD_BEEF);
+        let mut conv = Convolution::new();
+        assert_eq!(conv.set_impulse_response(&good), 1_000);
+        let mut impulse = vec![0.0f32; CONV_BLOCK_FRAMES];
+        impulse[0] = 1.0;
+        conv.process(&mut impulse);
+        assert!(conv.is_configured());
+
+        let mut bad = good.clone();
+        bad[9] = f32::NAN;
+        assert_eq!(
+            conv.set_impulse_response(&bad),
+            0,
+            "含 NaN 的 IR 必须被拒绝"
+        );
+        assert!(!conv.is_configured(), "拒绝后必须回到未配置");
+
+        let input = pseudo_random(CONV_BLOCK_FRAMES, 0x5A5A_1234);
+        let mut block = input.clone();
+        conv.process(&mut block);
+        let non_finite = block.iter().filter(|v| !v.is_finite()).count();
+        assert_eq!(non_finite, 0, "拒绝后的路径仍产出非有限值");
+        for (i, (out, want)) in block.iter().zip(&input).enumerate() {
+            assert_eq!(out.to_bits(), want.to_bits(), "样本 {i} 未逐位直通");
+        }
     }
 
     /// **判据（可红）**：确定性 —— 同样输入两次逐位相同。

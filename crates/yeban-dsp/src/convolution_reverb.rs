@@ -56,6 +56,15 @@
 //! `out = x · dry + conv(predelay(x)) · ir_gain · wet`。两条路**各自独立**：
 //! `dry = 1, wet = 0` 是逐位直通；`dry = 0, wet = 0` 是**精确静音**（不是直通）。
 //!
+//! ⚠ "逐位直通"有一个例外，**实测**（本机 aarch64，本票读数）：全干时湿项是 `±0.0`，
+//! 而 IEEE-754 规定 `-0.0 + 0.0 = +0.0` ⇒ 输入里的 `-0.0` 会变成 `+0.0`
+//! （实得比特 `0x8000_0000` → `0x0000_0000`；湿项为 `-0.0` 时则保持 `-0.0`，
+//! 因此这条还依赖该样本处的湿信号符号）。其余每一个比特都与输入相同。
+//! 这是加法单位的固有行为，不是混合公式的缺陷：改成"全干就短路"能让它逐位成立，
+//! 但那样湿路的历史就不再推进，与本节"没有短路"的设计正面冲突。
+//! ⚠ 本例外**没有**单独的判据：`wet = 0` 时混合式对除干项以外的任何改动都不敏感，
+//! 写一条只钉住这个 IEEE 行为的表征测试没有判别力。它在此登记，不假装被覆盖。
+//!
 //! ⚠ **没有**"`wet == 0` 就跳过卷积"的短路：短路会让 `dry = 0, wet = 0` 输出原信号
 //! 而不是静音，那不是本模块的语义。热路径的成本因此与 `wet` 无关；调用方若要
 //! 真正旁通，用 [`ConvolutionReverb::is_active`] 在**器件之外**跳过。
@@ -107,6 +116,12 @@
 //! 该函数的实参被钳到 `≥ -60 dB`，因此增益恒为正常数、不会是 `0` 或非有限值。
 //! 非有限**输入样本**仍会产生非有限输出（卷积核的既有口径：逐样本净化是调用方的
 //! 职责，见 [`crate::convolution`] 的输入取值域一节），本模块不额外承诺。
+//!
+//! **IR 走的是相反的一条**：它在配置期被**校验**。非有限样本（`NaN`/`±inf`）或
+//! 频谱溢出的 IR 会被拒绝，整台回到未配置的直通（`is_configured()` 为假）——
+//! 那是唯一能挡住"湿路从此永久非有限"的地方，因为 `reset()` 清不掉已经写坏的
+//! IR 频谱。判据：`non_finite_impulse_responses_are_rejected_by_the_shell` 与
+//! `a_rejected_impulse_response_cannot_poison_the_wet_path`。
 
 use crate::convolution::{CONV_BLOCK_FRAMES, CONV_LATENCY};
 use crate::convolution_stereo::TrueStereoConvolution;
@@ -258,7 +273,9 @@ impl ConvolutionReverb {
     /// 设定四条脉冲响应：`h_ll` / `h_lr` / `h_rl` / `h_rr`。
     ///
     /// 语义完全沿用 [`crate::convolution_stereo::TrueStereoConvolution::set_impulse_response`]：
-    /// 四条必须**等长且非空**，否则拒绝（返回 `0`）并置回未配置的**直通**状态。
+    /// 四条必须**等长且非空**，且每一条都必须通过卷积核的取值校验（非有限样本 /
+    /// 频谱溢出 ⇒ 拒绝）；任一条件不满足就整台拒绝，返回 `0` 并置回未配置的
+    /// **直通**状态。本器件**不做** IR 的净化与修补：拒绝是唯一的出路。
     ///
     /// 返回**真正接受**的帧数。**这是分配入口之一**，必须在音频回调之外调用。
     pub fn set_impulse_response(
@@ -276,6 +293,9 @@ impl ConvolutionReverb {
     ///
     /// 两条**交叉**通路被显式设成**同长度的零 IR**（`H = 0` ⇒ 湿输出恒 `0`），
     /// 而不是留空 —— 留空在这套核里是**直通**，会把对侧信号原样漏过来。
+    ///
+    /// 两条不等长，或任一条未通过取值校验（非有限样本 / 频谱溢出，见
+    /// [`Self::set_impulse_response`]）时，返回 `0` 并把整台置回未配置直通。
     ///
     /// ⚠ 代价：四条核仍然各自运行（两条对角有效、两条乘的是一片零谱），因此
     /// 普通立体声的代价与真立体声**同阶**。这是"不复制第二份 2×2 路由"的代价。
@@ -295,6 +315,8 @@ impl ConvolutionReverb {
     ///
     /// 注意这不是"复制成两条独立 IR"：对侧不泄漏，因此单声道 IR 得到的是**居中**
     /// 的湿信号，而不是一段假立体声。
+    ///
+    /// `ir` 未通过取值校验（非有限样本 / 频谱溢出）时返回 `0` 并置回未配置直通。
     pub fn set_mono_impulse_response(&mut self, ir: &[f32]) -> usize {
         let silence = vec![0.0f32; ir.len()];
         self.set_impulse_response(ir, &silence, &silence, ir)
@@ -1137,6 +1159,143 @@ mod tests {
         for (i, (out, want)) in block.iter().zip(&expected).enumerate() {
             assert_eq!(out.to_bits(), want.to_bits(), "样本 {i}: 空 IR 后必须直通");
         }
+    }
+
+    /// 量什么：三个 IR 入口各自对一条含 `NaN` 的 IR 的返回值（单位：帧）与
+    /// `is_configured()` 的读数（单位：布尔）。
+    ///
+    /// 判据：三个入口都返回 `0` 并把整台置回未配置；随后一个交错块的输出**逐位**
+    /// 等于输入。好 IR 仍必须被接受（否则"拒绝"会退化成"永远拒绝"）。
+    ///
+    /// 注入（实测见本票报告）：两种都试过 —— 删掉卷积核的频谱有限性校验，
+    /// 或让 `TrueStereoConvolution` 忽略四个返回值 ⇒ 本判据都在第一条断言处变红
+    /// （实得 `256`，期望 `0`）。
+    #[test]
+    fn non_finite_impulse_responses_are_rejected_by_the_shell() {
+        let good = decaying_ir(256, 0.3);
+        let mut bad = good.clone();
+        bad[5] = f32::NAN;
+
+        // 四通路入口：坏的是 `h_LL`。
+        let mut shell = shell_with_ir(&good);
+        assert!(shell.is_configured());
+        assert_eq!(
+            shell.set_impulse_response(&bad, &good, &good, &good),
+            0,
+            "含 NaN 的 h_LL 必须被拒绝"
+        );
+        assert!(!shell.is_configured(), "拒绝后必须回到未配置");
+        assert_eq!(shell.ir_frames(), 0, "拒绝后不得留下帧数");
+        assert!(!shell.is_active(), "未配置时湿路不可闻");
+
+        let mut block = interleaved(128, 43, 0.8);
+        let expected = block.clone();
+        shell.process(&mut block);
+        for (i, (out, want)) in block.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                out.to_bits(),
+                want.to_bits(),
+                "样本 {i}: 拒绝后必须逐位直通"
+            );
+        }
+
+        // 四通路入口：坏的是对侧的一条（`h_LR`）—— 不许只挡住对角线。
+        assert_eq!(
+            shell.set_impulse_response(&good, &bad, &good, &good),
+            0,
+            "含 NaN 的 h_LR 也必须拒绝整台"
+        );
+        assert!(!shell.is_configured());
+
+        // 普通立体声入口：`h_l` 坏；`h_r` 坏同样要拒。
+        let mut shell = ConvolutionReverb::new();
+        shell.set_sample_rate(SR);
+        assert_eq!(shell.set_stereo_impulse_response(&bad, &good), 0);
+        assert!(!shell.is_configured());
+        assert_eq!(shell.set_stereo_impulse_response(&good, &bad), 0);
+        assert!(!shell.is_configured());
+        assert_eq!(
+            shell.set_stereo_impulse_response(&good, &good),
+            256,
+            "好 IR 必须被接受"
+        );
+        assert!(shell.is_configured());
+
+        // 单声道入口。
+        assert_eq!(shell.set_mono_impulse_response(&bad), 0);
+        assert!(!shell.is_configured());
+        assert_eq!(shell.set_mono_impulse_response(&good), 256);
+        assert!(shell.is_configured());
+
+        // 频谱溢出（有限但过大）走同一条拒绝路径。
+        let overflow = vec![3.0e38f32; 256];
+        assert_eq!(shell.set_mono_impulse_response(&overflow), 0);
+        assert!(!shell.is_configured());
+    }
+
+    /// 量什么：一条**已经跑起来**的湿路在换入坏 IR 之后的非有限样本个数（单位：个）
+    /// 与一个交错块的每一个比特。
+    ///
+    /// 判据：非有限样本 `0` 个，且输出**逐位**等于输入。没有这条，坏 IR 会让湿路
+    /// 从此恒为 `NaN` —— `reset()` 清不掉 `ir_*`，而 `wet = 0` 也救不回来
+    /// （实测：`finite * 0.0` 仍是 `NaN`）。
+    ///
+    /// 注入（实测见本票报告）：删掉卷积核的频谱有限性校验 ⇒ 本判据在**第一条**
+    /// 断言（`set_impulse_response` 必须返回 `0`）处变红（实得 `512`，期望 `0`）；
+    /// `non_finite == 0` 那条是**第二道**防线，只有在返回值被另一次改动静默忽略时
+    /// 才会轮到它。
+    #[test]
+    fn a_rejected_impulse_response_cannot_poison_the_wet_path() {
+        let good = decaying_ir(512, 0.7);
+        let mut shell = shell_with_ir(&good);
+        shell.set_params(ConvolutionReverbParams {
+            pre_delay_s: 0.0,
+            dry: 0.0,
+            wet: 1.0,
+            ir_gain_db: 0.0,
+        });
+        let mut warmup = interleaved(128, 47, 0.9);
+        shell.process(&mut warmup);
+        assert!(shell.is_active(), "前置条件：湿路必须是开的");
+
+        let mut bad = good.clone();
+        bad[11] = f32::INFINITY;
+        assert_eq!(shell.set_impulse_response(&bad, &bad, &bad, &bad), 0);
+        assert!(!shell.is_configured(), "拒绝后必须回到未配置");
+        assert!(!shell.is_active());
+
+        let mut block = interleaved(128, 53, 0.9);
+        let expected = block.clone();
+        shell.process(&mut block);
+        let non_finite = block.iter().filter(|v| !v.is_finite()).count();
+        assert_eq!(
+            non_finite, 0,
+            "换入坏 IR 之后湿路仍产出非有限值 ⇒ IR 校验没挡住"
+        );
+        for (i, (out, want)) in block.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                out.to_bits(),
+                want.to_bits(),
+                "样本 {i}: 拒绝后必须逐位直通"
+            );
+        }
+
+        // 好 IR 换回来必须能重新工作（拒绝不是"一票永久停机"）。
+        assert_eq!(shell.set_impulse_response(&good, &good, &good, &good), 512);
+        assert!(shell.is_configured());
+        let mut again = interleaved(128, 53, 0.9);
+        shell.process(&mut again);
+        assert!(
+            again.iter().all(|v| v.is_finite()),
+            "换回好 IR 之后仍有非有限值"
+        );
+        assert!(
+            again
+                .iter()
+                .zip(&expected)
+                .any(|(out, want)| (out - want).abs() > 1e-6),
+            "换回好 IR 之后湿路没有参与运算"
+        );
     }
 
     /// 量什么：`latency_samples()` 的读数（单位：帧）。

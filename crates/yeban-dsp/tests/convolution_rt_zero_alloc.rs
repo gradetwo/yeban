@@ -345,3 +345,62 @@ fn changing_the_ir_length_inside_the_window_would_allocate() {
         "改长度换 IR 居然零分配 ⇒ 上一条判据的反对照失效（本器件可能整体不分配）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 判据 6：IR 的**取值校验**也是零分配的，而且拒绝后不留下毒
+// ---------------------------------------------------------------------------
+
+/// 量什么：**同长度**换入一条含 `NaN` 的 IR（即"校验并拒绝"这条路）加一次 `process`，
+/// 在窗口里的分配/释放读数（单位：次数）。
+///
+/// 为什么单列一条：[`Convolution::set_impulse_response`] 现在多了一道取值校验
+/// （IR 的分区频谱必须逐项有限）。这道校验跑在**换 IR** 这条路上，而实测已经证明
+/// "同长度换 IR"在音频线程上零分配 —— 于是校验不能自己引入分配
+/// （例如 `iter().copied().collect::<Vec<_>>()` 那种写法就会）。
+/// 判据把"校验零分配"与"拒绝的后果"一起钉住：
+///
+/// 1. `allocations == 0 && deallocations == 0`；
+/// 2. 拒绝之后 `is_configured()` 为假，且同一块**逐位**直通（没有 `NaN` 泄漏）。
+///
+/// 注入（实测见报告）：把 `set_impulse_response` 的有限性扫描写成
+/// `let probe = self.ir_re[..span].to_vec();` ⇒ 本判据在分配断言处变红。
+#[test]
+fn rejecting_a_non_finite_ir_of_the_same_length_allocates_nothing() {
+    let good = make_ir(IR_FRAMES, 0.0);
+    let mut bad = make_ir(IR_FRAMES, 4.0);
+    bad[5] = f32::NAN;
+    let mut conv = Convolution::new();
+    assert_eq!(conv.set_impulse_response(&good), IR_FRAMES);
+
+    let mut block = vec![0.0f32; WINDOW_FRAMES];
+    refill(&mut block, 13, 0.5);
+    let expected = block.clone();
+
+    let reading = window(|| {
+        assert_eq!(
+            conv.set_impulse_response(&bad),
+            0,
+            "含 NaN 的同长度 IR 必须被拒绝"
+        );
+        conv.process(&mut block);
+    });
+
+    assert!(!conv.is_configured(), "拒绝之后必须回到未配置");
+    assert_eq!(conv.partitions(), 0, "拒绝之后不得留下分区");
+    let non_finite = block.iter().filter(|v| !v.is_finite()).count();
+    for (i, (out, want)) in block.iter().zip(&expected).enumerate() {
+        assert_eq!(
+            out.to_bits(),
+            want.to_bits(),
+            "样本 {i}: 拒绝之后必须逐位直通（非有限样本 {non_finite} 个）"
+        );
+    }
+
+    eprintln!(
+        "[yeban-dsp/RT] convolution 同长度换入含 NaN 的 IR（{IR_FRAMES} 帧）+ process: \
+         allocations={} deallocations={} 非有限样本={non_finite}",
+        reading.allocations, reading.deallocations
+    );
+    assert_eq!(reading.allocations, 0, "IR 的取值校验不该分配");
+    assert_eq!(reading.deallocations, 0, "IR 的取值校验不该释放");
+}
