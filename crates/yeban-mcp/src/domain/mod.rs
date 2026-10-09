@@ -1957,7 +1957,7 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 
 /// `yeban_edit_notes`。
 ///
-/// 八个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
+/// 九个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
 ///
 /// - **编辑**（缺省，`create: false` 且无 `placement`）：`clipId` 必须已经在
 ///   `clip_pool` 里，每条 `NoteOp` 编译成一条 `Op` —— **缺省路径逐字节不变**；
@@ -2006,6 +2006,13 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   而此前**没有**任何工具能取走它 —— 工具说明甚至写了"再单独一次调用取走节点"，
 ///   那次调用却不存在。本形态只有**非**主总线节点可被取走（主总线身份由 `compile`
 ///   响亮拒绝），"没有任何边引用它"由模型 `RoutingNodeInUse` 报出。
+/// - **段落级取走**（`ops[].kind == "removeSection"`）：把操作对象**自带的**
+///   `sectionId` 那个**曲式段落**从 `project.sections` 取走
+///   （`Op::RemoveSection`，撤销载荷 `previous_section` 从当前文档读整条段落）。
+///   `yeban_propose_section` 的建批是 `Op::SetSection` 在 MCP 侧唯一的构造点，
+///   而此前**没有**任何工具能取走一个段落 —— 工具面能建、能看见身份、取不走。
+///   本形态是**段落级**（既不是音轨级也不是路由级，见 `notes::NoteOp::is_section_level`），
+///   因此提案标题必须自带一个桶，不冒充"音轨级编辑"。
 ///
 /// `placement` 与 `create: true` **同给**是响亮失败（`placementIsNotCreation`）：
 /// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
@@ -2114,28 +2121,35 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         notes::check_polyphony(project, &clip_id, &compiled)?;
     }
     // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"，把池级取走说成
-    // "音轨级编辑"，也不把一次纯路由边增益写入说成"音轨级编辑" —— 那是四个不同的
-    // 对象）。三个非音符的桶各自计数，混合调用只报**真的出现过**的那些桶。
+    // "音轨级编辑"，不把一次纯路由边增益写入说成"音轨级编辑"，也不把一次纯段落取走
+    // 说成"音轨级编辑" —— 那是五个不同的对象）。四个非音符的桶各自计数，混合调用
+    // 只报**真的出现过**的那些桶。
     let note_level = note_ops.iter().filter(|op| op.is_note_level()).count();
     let routing_level = note_ops.iter().filter(|op| op.is_routing_level()).count();
-    let track_level = note_ops.len() - note_level - routing_level;
+    let section_level = note_ops.iter().filter(|op| op.is_section_level()).count();
+    let track_level = note_ops.len() - note_level - routing_level - section_level;
     let description = if removing_clip {
         format!("取走片段池条目: {clip_id}")
     } else if note_ops.is_empty() {
         placement_description
     } else if routing_level == note_ops.len() {
         format!("路由级编辑: {routing_level} 步")
-    } else if note_level == 0 && routing_level == 0 {
+    } else if section_level == note_ops.len() {
+        format!("段落级编辑: {section_level} 步")
+    } else if note_level == 0 && routing_level == 0 && section_level == 0 {
         format!("音轨级编辑: {track_level} 步")
-    } else if track_level == 0 && routing_level == 0 {
+    } else if track_level == 0 && routing_level == 0 && section_level == 0 {
         format!("音符编辑: {note_level} 步")
     } else {
-        let mut parts: Vec<String> = Vec::with_capacity(3);
+        let mut parts: Vec<String> = Vec::with_capacity(4);
         if note_level > 0 {
             parts.push(format!("音符编辑: {note_level} 步"));
         }
         if track_level > 0 {
             parts.push(format!("音轨级编辑: {track_level} 步"));
+        }
+        if section_level > 0 {
+            parts.push(format!("段落级编辑: {section_level} 步"));
         }
         if routing_level > 0 {
             parts.push(format!("路由级编辑: {routing_level} 步"));
@@ -4061,6 +4075,81 @@ mod tests {
             for stamped in proposal.ops.iter().rev() {
                 stamped.apply_inverse(&mut undone).expect("逆操作");
             }
+        }
+        assert_eq!(undone, project_before, "模型自己的 invert 必须能退回原状");
+    }
+
+    /// `removeSection` 走**真**工具路径：一次提案、一次合并之后工程里那个曲式段落真的
+    /// 没了，而那条提案自带的 `ops` 能用模型自己的 `apply_inverse` 退回原状。
+    ///
+    /// 这一条对着"已实现但工具面不可达"的缺口：`yeban_propose_section` 的建批是
+    /// `Op::SetSection` 在 MCP 侧**唯一**的构造点 ⇒ 本票之前没有任何工具能取走一个
+    /// 已经存在的段落（读侧 `yeban_query_project` 的 `entities[]` 却一直在报它的身份）。
+    ///
+    /// 注入（实测红）：把 `notes::NoteOp::is_section_level` 里的 `RemoveSection` 去掉
+    /// ⇒ 提案标题变成"音轨级编辑: 1 步"（那条 `title` 断言红）。
+    #[test]
+    fn edit_notes_takes_a_section_away_through_the_tool_path() {
+        let mut domain = domain();
+        let project_before = domain.active_project().cloned().expect("工程");
+        let track = fixture_track(&domain);
+        let clip = clip_id(&domain);
+        let section = *project_before
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+
+        let created = execute(
+            &mut domain,
+            &call(
+                "yeban_edit_notes",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "clipId": clip.to_canonical_string(),
+                    "ops": [
+                        {"kind": "removeSection", "sectionId": section.to_canonical_string()}
+                    ],
+                }),
+            ),
+        )
+        .expect("提案");
+        assert_eq!(created["status"], "success");
+        let proposal_id = EntityId::from_str(
+            created["data"]["proposal"]["proposalId"]
+                .as_str()
+                .expect("提案身份"),
+        )
+        .expect("ULID");
+        let proposal = domain.proposal(&proposal_id).expect("记录").clone();
+        assert_eq!(proposal.kind, "notes");
+        assert_eq!(
+            proposal.title, "段落级编辑: 1 步",
+            "描述必须如实说这是段落级编辑 (不冒充音轨级): {created}"
+        );
+
+        execute(
+            &mut domain,
+            &call(
+                "yeban_merge_proposal",
+                serde_json::json!({
+                    "proposalId": proposal_id.to_canonical_string(),
+                    "commitMessage": "取走曲式段落",
+                }),
+            ),
+        )
+        .expect("合并");
+        let after = domain.active_project().cloned().expect("工程");
+        assert!(
+            !after.sections.contains_key(&section),
+            "合并之后段落必须真的从工程里消失"
+        );
+        assert!(after.validate().is_ok(), "取走之后工程必须仍然合法");
+        assert_ne!(after, project_before, "合并必须真的改了工程");
+
+        let mut undone = after;
+        for stamped in proposal.ops.iter().rev() {
+            stamped.apply_inverse(&mut undone).expect("逆操作");
         }
         assert_eq!(undone, project_before, "模型自己的 invert 必须能退回原状");
     }

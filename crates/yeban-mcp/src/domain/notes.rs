@@ -436,6 +436,61 @@
 //!
 //! 目标**不在**顶层 `trackId` / `clipId` 上：本形态自带寻址（`nodeId`），与
 //! `setRoutingGain` / `disconnectRouting` 同一纪律。
+//!
+//! ## 段落取走形态（`ops[].kind == "removeSection"`）
+//! —— 关闭"工具面造得出的段落取不走"这条缺口
+//!
+//! 模型有 [`Op::RemoveSection`]（载荷 `section_id` / `previous_section`），而在这个形态
+//! 之前，这个变体在整个 `crates/yeban-mcp/src` 里**一次都没有被构造过**。实测
+//! （可复跑，单位 = "匹配到的构造点个数"）：
+//! `git grep -hoE '(^|[^A-Za-z0-9_])Op::RemoveSection \{' origin/main -- crates/yeban-mcp/src | wc -l`
+//! 读数是 **0**（同一个模式对 `Op::SetSection` 读数是 **2** ⇒ 模式本身**有效**，
+//! 0 不是"模式写坏了"）；`git grep -c 'Op::RemoveSection' origin/main -- crates/yeban-mcp/src`
+//! 命中 **0 行** —— 连一句文字都没有。
+//!
+//! 缺口形状与 `removeClip` / `removeRoutingNode` 两票**逐条同因**：
+//!
+//! | 事实 | 依据 |
+//! | :--- | :--- |
+//! | 读侧报得出段落身份 | `yeban_query_project` 的 `entities[]` 里 `kind == "section"` 的条目 |
+//! | 写侧已经造得出段落 | `yeban_propose_section` 的建批写出 [`Op::SetSection`]（配器骨架） |
+//! | 模型指定唯一写者 | 17 个工具里**没有**任何一个构造过 [`Op::RemoveSection`] |
+//!
+//! 于是 AI Agent 建得出一个曲式段落、看得见它的身份、却**取不走**它。
+//! `RemoveSection` 这个变体存在的理由本身就是**不可逆性**（`docs/adr/ADR-0001` 的
+//! D12）：`SetSection { old_section: None }` 表示"新建"，它的逆操作必须是删除，
+//! 而 `Op` 全集里**没有**第二个变体能表达删除 ⇒ 它是"新建段落"这一步的**唯一**逆操作。
+//! 工具面能走前半步、不能走后半步，正是本会话连修的那一类缺口。
+//!
+//! 为什么落在 [`compile`] 所在的 `yeban_edit_notes` 而不给 `yeban_propose_section`
+//! 加开关：后者的语义是"在隔离分支上**建**一个配器骨架"，把"取走一个**已有**段落"
+//! 塞进去就是让那个工具的名字说谎；`ADR-0001` D46 的扩张原则是"先扩既有工具的参数，
+//! 只有确实不合适才新增工具"，而新增工具要同步 `schemas/mcp-tools.schema.json` 的
+//! `name.enum` / `$defs` / `allOf` 三处（本线禁改 `schemas/**`）。`yeban_edit_notes`
+//! 已经是本工具面的操作日志编辑器（`removeClip` / `setRoutingGain` /
+//! `disconnectRouting` / `removeRoutingNode` 都住在它里面），段落取走因此落在同一处。
+//!
+//! 形态：`{"kind":"removeSection","sectionId":"<ULID>"}` —— 载荷是**空**的（只有寻址）；
+//! 撤销载荷 `previous_section` 由 [`compile`] 从**当前文档**读（模型的前置条件要求它
+//! 逐字段等于文档现值，因此本层不采信调用方声明的旧状态）。
+//!
+//! 三条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有 `kind` / `sectionId` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownRemoveSectionField"`） |
+//! | `sectionId` 缺失 / 不是字符串 / 不是合法 ULID | `INVALID_PARAMETER_RANGE`（缺字段走统一的缺字段错误） |
+//! | `project.sections` 里没有这个身份 | `ENTITY_NOT_FOUND`（`reason = "sectionNotFound"`） |
+//!
+//! ⚠ 本层**不**把"段落存在"这条前置条件交给模型去报：`Op::validate` 报的是
+//! `SectionNotFound`（契约码相同），但那条路径只在提案模拟那一步跑，消息里没有本层的
+//! `reason` / `hint`；"现值等于 `previous_section`"那一条**不**复制（撤销载荷本来就是
+//! 本层从文档读的，因此它自动成立 —— 与 `disconnectRouting` 同一条纪律）。
+//!
+//! 目标**不在**顶层 `trackId` / `clipId` 上：本形态自带寻址（`sectionId`），与三个
+//! 路由级形态同一纪律。⚠ 但工具签名的 `trackId` / `clipId` 依旧是**必填**的
+//! （`compile` 的入口先查音轨与片段池 —— 这是本工具既有的口径，三个路由级形态处在
+//! 同一处境）；段落形态一个音符都不读，因此**不要求**片段是 MIDI。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -626,10 +681,10 @@ pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
 pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 
 /// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 摆放形态在前，
-/// 音轨级与路由级形态在后）。
+/// 音轨级、路由级与段落级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 13] = [
+pub const OP_KINDS: [&str; 14] = [
     "add",
     "delete",
     "move",
@@ -643,6 +698,7 @@ pub const OP_KINDS: [&str; 13] = [
     SET_ROUTING_GAIN_KIND,
     DISCONNECT_ROUTING_KIND,
     REMOVE_ROUTING_NODE_KIND,
+    REMOVE_SECTION_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
@@ -1008,6 +1064,25 @@ pub const REMOVE_ROUTING_NODE_KIND: &str = "removeRoutingNode";
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const REMOVE_ROUTING_NODE_FIELDS: [&str; 2] = ["kind", ROUTING_NODE_FIELD];
 
+/// `ops[].kind` 的**取走曲式段落**形态名（写 [`Op::RemoveSection`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveSection` 的小驼峰），与 [`REMOVE_ROUTING_NODE_KIND`] /
+/// [`REMOVE_CLIP_KIND`] 同一条命名规则。
+pub const REMOVE_SECTION_KIND: &str = "removeSection";
+
+/// 取走段落形态的**目标**字段名（`ops[].sectionId`，必填）。
+///
+/// 段落身份与路由节点身份（[`ROUTING_NODE_FIELD`]）、片段身份（顶层 `clipId`）**不是**
+/// 同一个字面量：三者是三种实体，共用一个词会让"取走的是哪一个"从形状上无法区分。
+pub const SECTION_FIELD: &str = "sectionId";
+
+/// 取走段落形态允许出现的**全部**键（判别键 + 寻址键）。
+///
+/// 目标音轨、目标片段与段落的旧状态**都不在**这里：本形态自带寻址（[`SECTION_FIELD`]），
+/// 而撤销载荷 `previous_section` 由 [`compile`] 从**当前文档**读。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const REMOVE_SECTION_FIELDS: [&str; 2] = ["kind", SECTION_FIELD];
+
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
 /// 目标名逐字等于 `project.json` 的变体名（[`LaneKind::parse`] 那一份词表）；
@@ -1363,6 +1438,27 @@ pub enum NoteOp {
         /// 路由节点身份（音轨或总线；本形态自带寻址）。
         node_id: EntityId,
     },
+    /// 取走**一个曲式段落**（[`Op::RemoveSection`]，即把这个身份从
+    /// `project.sections` 取走）。
+    ///
+    /// 这是本枚举里唯一的**段落级**形态：它不读不写任何音符，也不碰音轨、片段池与
+    /// 路由图，目标由**自带的** `sectionId` 给出（顶层 `trackId` / `clipId` 与本形态
+    /// 无关）。
+    ///
+    /// 写侧只有 [`Op::SetSection`]（本工具面只在 `yeban_propose_section` 的建批里
+    /// 构造它）⇒ 没有本形态，工具面**造得出**的段落**取不走**
+    /// （`yeban_query_project` 的 `entities[]` 里 `kind == "section"` 的条目却一直在
+    /// 报它们的身份）。`RemoveSection` 与 `SetSection { old_section: None }` 互为逆
+    /// 操作（见 `docs/adr/ADR-0001` 的 D12），因此它是"新建段落"的**唯一**逆操作。
+    ///
+    /// 载荷是**空**的：只有寻址。撤销载荷 `previous_section` 由 [`compile`] 从
+    /// **当前文档**读（模型的前置条件要求它逐字段等于文档现值，因此本层不采信
+    /// 调用方声明的旧状态），[`reject_remove_section_fields`] 只认 `kind` 与
+    /// `sectionId`。
+    RemoveSection {
+        /// 曲式段落身份（本形态自带寻址）。
+        section_id: EntityId,
+    },
 }
 
 impl NoteOp {
@@ -1382,6 +1478,7 @@ impl NoteOp {
             Self::SetRoutingGain { .. } => SET_ROUTING_GAIN_KIND,
             Self::DisconnectRouting { .. } => DISCONNECT_ROUTING_KIND,
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
+            Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
         }
     }
 
@@ -1390,7 +1487,7 @@ impl NoteOp {
     /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
     /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
     /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] / [`Self::RemoveRoutingNode`]
-    /// 是**路由级**的：它们跟片段内容无关。
+    /// 是**路由级**的、[`Self::RemoveSection`] 是**段落级**的：它们跟片段内容无关。
     /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
@@ -1405,10 +1502,11 @@ impl NoteOp {
                 | Self::SetRoutingGain { .. }
                 | Self::DisconnectRouting { .. }
                 | Self::RemoveRoutingNode { .. }
+                | Self::RemoveSection { .. }
         )
     }
 
-    /// 该形态改的是**路由图**（而不是音符 / 音轨 / 泳道 / 片段池）。
+    /// 该形态改的是**路由图**（而不是音符 / 音轨 / 泳道 / 片段池 / 段落）。
     ///
     /// 只用于把提案标题写成**实际内容**（`domain::plan_edit_notes` 的分类）：
     /// 一次纯 `setRoutingGain` / 纯 `disconnectRouting` / 纯 `removeRoutingNode`
@@ -1421,6 +1519,17 @@ impl NoteOp {
                 | Self::DisconnectRouting { .. }
                 | Self::RemoveRoutingNode { .. }
         )
+    }
+
+    /// 该形态改的是**曲式段落**（而不是音符 / 音轨 / 泳道 / 片段池 / 路由图）。
+    ///
+    /// 与 [`Self::is_routing_level`] 同因（`domain::plan_edit_notes` 的分类）：
+    /// 段落不是音轨，一次纯 `removeSection` 的调用不能被报成"音轨级编辑"
+    /// —— 本形态**不是**音轨级（[`Self::is_note_level`] 为 `false`，
+    /// [`Self::is_routing_level`] 也为 `false`），因此必须有自己的桶。
+    #[must_use]
+    pub const fn is_section_level(&self) -> bool {
+        matches!(self, Self::RemoveSection { .. })
     }
 }
 
@@ -1449,6 +1558,7 @@ impl NoteOp {
 /// {"kind":"setRoutingGain","edgeId":"<ULID>","value":null}
 /// {"kind":"disconnectRouting","edgeId":"<ULID>"}
 /// {"kind":"removeRoutingNode","nodeId":"<ULID>"}
+/// {"kind":"removeSection","sectionId":"<ULID>"}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -1484,6 +1594,12 @@ impl NoteOp {
 /// `routing_graph.nodes` 取走，用 [`ROUTING_NODE_FIELD`] 寻址（与边**不同的**实体），
 /// 对象里 [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键一律响亮拒绝。
 ///
+/// `removeSection` 是**唯一的段落级**形态（见 [`NoteOp::RemoveSection`]，
+/// [`NoteOp::is_section_level`]）：它把 `sectionId` 那个**曲式段落**从
+/// `project.sections` 取走（[`Op::RemoveSection`]），用 [`SECTION_FIELD`] 寻址
+/// （与节点 / 边 / 片段都是**不同的**实体），撤销载荷 `previous_section` 从当前文档读，
+/// 对象里 [`REMOVE_SECTION_FIELDS`] 之外的键一律响亮拒绝。
+///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
@@ -1491,7 +1607,8 @@ impl NoteOp {
 ///   [`SET_AUTOMATION_LANE_FIELDS`] 之外的键 / 路由边增益对象里有
 ///   [`SET_ROUTING_GAIN_FIELDS`] 之外的键 / 断开路由边对象里有
 ///   [`DISCONNECT_ROUTING_FIELDS`] 之外的键 / 取走路由节点对象里有
-///   [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键 →
+///   [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键 / 取走段落对象里有
+///   [`REMOVE_SECTION_FIELDS`] 之外的键 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`、
 ///   非布尔开关值、未知写模式、既不是数字也不是 `null` 的增益值）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
@@ -1586,6 +1703,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             reject_remove_routing_node_fields(object)?;
             Ok(NoteOp::RemoveRoutingNode {
                 node_id: read_id(object, ROUTING_NODE_FIELD)?,
+            })
+        }
+        REMOVE_SECTION_KIND => {
+            reject_remove_section_fields(object)?;
+            Ok(NoteOp::RemoveSection {
+                section_id: read_id(object, SECTION_FIELD)?,
             })
         }
         other => Err(Fault::domain_with_data(
@@ -1707,6 +1830,46 @@ fn reject_remove_routing_node_fields(object: &Map<String, Value>) -> Result<(), 
             "hint": "本形态的载荷是空的 (只认 `kind` 与 `nodeId`); 节点身份取自 \
                      `yeban_query_project` 的 `routing_graph.nodes`, 边由 `edgeId` 寻址 \
                      (那个键属于 `setRoutingGain` / `disconnectRouting`)",
+        }),
+    ))
+}
+
+/// 拒绝 `removeSection` 操作对象里 [`REMOVE_SECTION_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_routing_node_fields`] / [`reject_disconnect_routing_fields`]
+/// 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：最像"写对了"的三种错法是把
+/// **别的实体的**寻址搬过来（`nodeId` / `edgeId` / 嵌套的 `clipId`）、把目标写成
+/// 工具顶层的 `trackId`、或以为要报告"段落取走前的状态"而多写 `previousSection`
+/// —— 三种都会被静默忽略，而调用方以为段落已经取走。
+///
+/// # Errors
+///
+/// 出现 `kind` / `sectionId` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownRemoveSectionField"`）。
+fn reject_remove_section_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_SECTION_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_SECTION_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_SECTION_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRemoveSectionField",
+            "unsupportedFields": unknown,
+            "supportedRemoveSectionFields": REMOVE_SECTION_FIELDS,
+            "hint": "本形态的载荷是空的 (只认 `kind` 与 `sectionId`); 段落身份取自 \
+                     `yeban_query_project` 的 `entities[]` 里 `kind == \"section\"` 的条目, \
+                     撤销载荷 `previousSection` 由服务端从当前文档读 (不接受调用方声明)",
         }),
     ))
 }
@@ -2482,14 +2645,19 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// （`old_gain_db` / `previous_edge`），[`NoteOp::RemoveRoutingNode`] 的载荷是空的
 /// —— 它只查"节点在 `nodes` 里"与"不是主总线"两条（见该分支的注释）。
 ///
+/// **段落级**形态 [`NoteOp::RemoveSection`] 同样自带寻址（`sectionId`，与
+/// `track_id` / `clip_id` 无关）：它从当前文档读**整条**段落当撤销载荷
+/// （`previous_section`），并且**先**查"段落真的在 `project.sections` 里"
+/// —— 那一条模型也会报（`SectionNotFound`），但那条路径只在提案模拟里跑。
+///
 /// # Errors
 ///
 /// - 音轨不存在 → `TRACK_NOT_FOUND`；
 /// - 片段不存在 → `CLIP_NOT_FOUND`；**有音符操作**且片段不是 MIDI → `CLIP_NOT_FOUND`
-///   （纯 `setParam` / 纯开关调用不要求片段是 MIDI：它们不读片段内容）；
+///   （纯 `setParam` / 纯开关 / 纯路由 / 纯段落调用不要求片段是 MIDI：它们不读片段内容）；
 /// - 音符不存在 → `ENTITY_NOT_FOUND`；自动化泳道或点不存在 → `ENTITY_NOT_FOUND`；
 ///   路由边或路由节点不存在 → `ENTITY_NOT_FOUND`（`routingEdgeNotFound` /
-///   `routingNodeNotFound`）；
+///   `routingNodeNotFound`）；曲式段落不存在 → `ENTITY_NOT_FOUND`（`sectionNotFound`）；
 /// - 目标是主总线（`removeRoutingNode`）→ `CONFLICT`（`masterBusNodeCannotBeRemoved`）；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
 pub fn compile(
@@ -2799,6 +2967,30 @@ pub fn compile(
                     ));
                 }
                 Op::RemoveRoutingNode { node: *node_id }
+            }
+            NoteOp::RemoveSection { section_id } => {
+                // 撤销载荷来自**当前文档**的**整条**段落：模型 `RemoveSection` 的前置条件
+                // 要求 `previous_section` 逐字段等于文档现值，因此本层不采信调用方声明的
+                // 旧状态，也不接受调用方送来的载荷（`reject_remove_section_fields` 只认
+                // `kind` 与 `sectionId`）。`SectionV3` 不与别的实体交叉引用，因此这里
+                // **没有**"还被谁引用"这一类前置条件要查（与 `RemoveClip` /
+                // `RemoveRoutingNode` 不同 —— 那两条的模型前置条件真的存在，本层不复制）。
+                let previous_section = project.sections.get(section_id).cloned().ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {section_id} 的曲式段落, 没有段落可以取走"),
+                        serde_json::json!({
+                            "sectionId": section_id.to_canonical_string(),
+                            "reason": "sectionNotFound",
+                            "hint": "段落的身份由 `yeban_query_project` 的 `entities[]` 里 \
+                                     `kind == \"section\"` 的条目报出",
+                        }),
+                    )
+                })?;
+                Op::RemoveSection {
+                    section_id: *section_id,
+                    previous_section,
+                }
             }
         });
     }
@@ -4173,11 +4365,12 @@ mod tests {
         assert_eq!(compiled.len(), 2);
 
         // `kind` 的全集必须真的登记这四个音轨级名字 + 一个池级名字 + 两个路由级名字
-        // （错误信息的 `supportedKinds` 与判据共用同一份真相）。
+        // + 一个段落级名字（错误信息的 `supportedKinds` 与判据共用同一份真相）。
         // 2026-10-09：新增 `disconnectRouting` 后全集为 12（裁决 R22，性质不变）；
-        // 同日新增 `removeRoutingNode`（第三个路由级形态）后为 13 —— 这是**同步**
-        // 计数（多了一个真存在的 `kind`），不是弱化判据。
-        assert_eq!(OP_KINDS.len(), 13);
+        // 同日新增 `removeRoutingNode`（第三个路由级形态）后为 13；同日再新增
+        // `removeSection`（唯一的段落级形态）后为 14 —— 这是**同步**计数
+        // （多了一个真存在的 `kind`），不是弱化判据。
+        assert_eq!(OP_KINDS.len(), 14);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -4187,6 +4380,7 @@ mod tests {
         assert!(OP_KINDS.contains(&SET_ROUTING_GAIN_KIND));
         assert!(OP_KINDS.contains(&DISCONNECT_ROUTING_KIND));
         assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_SECTION_KIND));
         assert_eq!(LANE_WRITE_MODES.len(), 4);
     }
 
@@ -5688,6 +5882,259 @@ mod tests {
         .expect("一个批里先断开再取走 (批在演化中的文档上逐条校验)");
         assert!(!probe.routing_graph.nodes.contains(&node));
         assert!(probe.validate().is_ok(), "取走之后工程必须仍然合法");
+    }
+
+    /// 段落形态的**字面**判据：载荷只有段落身份（撤销载荷从**当前文档**读整条段落），
+    /// 一步就能被 `Op::invert` 逐字节回退到原状。
+    ///
+    /// 这一条对着"工具面造得出的段落取不走"的缺口：`yeban_propose_section` 的建批
+    /// 会构造 `Op::SetSection`，而本形态之前**没有任何工具**构造过 `Op::RemoveSection`
+    /// （读侧 `yeban_query_project` 的 `entities[]` 却一直在报 `kind == "section"` 的身份）。
+    ///
+    /// 注入（实测红）：把编译出的模型变体由 `Op::RemoveSection` 换成
+    /// `Op::SetSection`（一次什么都不删的写）⇒ 变体匹配那条红；把撤销载荷换成**另一条**
+    /// 段落的克隆（而不是文档里那一条）⇒ "撤销载荷必须是文档里那一条"红。
+    #[test]
+    fn remove_section_compiles_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let section_id = *project
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+        let expected = project.sections[&section_id].clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+        let (track_id, clip_id) = lead_clip(&project);
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SECTION_KIND, "sectionId": section_id.to_canonical_string()}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), REMOVE_SECTION_KIND);
+        assert!(!ops[0].is_note_level(), "段落级不读不写音符");
+        assert!(!ops[0].is_routing_level(), "段落不是路由图的一部分");
+        assert!(ops[0].is_section_level());
+        assert_eq!(ops[0], NoteOp::RemoveSection { section_id });
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::RemoveSection {
+                section_id: target,
+                previous_section,
+            } => {
+                assert_eq!(*target, section_id);
+                assert_eq!(
+                    previous_section, &expected,
+                    "撤销载荷必须是**文档里那一条**段落 (不是调用方声明的)"
+                );
+            }
+            other => panic!("应当是 RemoveSection: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("取走");
+        assert!(
+            !project.sections.contains_key(&section_id),
+            "段落必须真的从 `sections` 里消失"
+        );
+        assert!(project.validate().is_ok(), "取走之后工程必须仍然合法");
+
+        // 逆操作: `RemoveSection` 的逆是 `SetSection { old_section: None }`
+        // （`docs/adr/ADR-0001` 的 D12），因此必须把段落原样放回去。
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.sections.get(&section_id),
+            Some(&expected),
+            "逆操作必须把段落放回原来的形状"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到取走之前的文档"
+        );
+    }
+
+    /// 段落形态的**字段名与支持集合**被钉住（不多报一个键，也不少报一个键）。
+    ///
+    /// 注入（实测红）：把 [`SECTION_FIELD`] 改成 `nodeId` ⇒ 本判据红 ——
+    /// 段落与路由节点是两种实体，共用一个词会让"取走的是哪一个"从形状上无法区分。
+    #[test]
+    fn remove_section_field_names_are_pinned() {
+        assert_eq!(REMOVE_SECTION_KIND, "removeSection");
+        assert_eq!(SECTION_FIELD, "sectionId");
+        assert_ne!(
+            SECTION_FIELD, ROUTING_NODE_FIELD,
+            "段落与路由节点不是同一个字面量"
+        );
+        assert_ne!(SECTION_FIELD, ROUTING_EDGE_FIELD, "段落不是路由边");
+        assert_eq!(REMOVE_SECTION_FIELDS, ["kind", "sectionId"]);
+        assert!(OP_KINDS.contains(&REMOVE_SECTION_KIND));
+        // 与模型自己的变体名同词（不手写第二张会漂移的表）。
+        let project = filled_project();
+        let section_id = *project
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+        assert_eq!(
+            Op::RemoveSection {
+                section_id,
+                previous_section: project.sections[&section_id].clone(),
+            }
+            .name(),
+            "RemoveSection"
+        );
+    }
+
+    /// 段落形态的形状错误**响亮失败**（绝不静默丢弃），而规范形状放行。
+    ///
+    /// 注入（实测红）：去掉 [`reject_remove_section_fields`] 的调用 ⇒ 前三条
+    /// （把别的实体的寻址 `nodeId` / `edgeId` / 工具顶层的 `trackId` 搬过来）
+    /// 被**静默接受**，本判据红。
+    #[test]
+    fn remove_section_shapes_fail_loudly() {
+        let project = filled_project();
+        let section_id = *project
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+        let section_text = section_id.to_canonical_string();
+        let (track_id, clip_id) = lead_clip(&project);
+        let (node, _) = a_non_master_node(&project);
+
+        for broken in [
+            // 把**路由节点**的寻址搬过来: `sectionId` 缺失, 而且 `nodeId` 不是本形态的键。
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND, "nodeId": section_text}]),
+            // 把**路由边**的寻址搬过来。
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND, "edgeId": section_text}]),
+            // 把工具顶层的 `trackId` / `clipId` 搬过来（那是别的形态的寻址）。
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND, "sectionId": section_text,
+                                "trackId": track_id.to_canonical_string()}]),
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND, "sectionId": section_text,
+                                "clipId": clip_id.to_canonical_string()}]),
+            // 以为要报告"段落删除前的状态"而多写 `previousSection`。
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND, "sectionId": section_text,
+                                "previousSection": null}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownRemoveSectionField",
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedRemoveSectionFields"],
+                serde_json::json!(["kind", "sectionId"]),
+                "{broken}"
+            );
+        }
+
+        for broken in [
+            // 缺 `sectionId`。
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND}]),
+            // `sectionId` 不是字符串。
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND, "sectionId": 70}]),
+            // `sectionId` 不是合法 ULID。
+            serde_json::json!([{"kind": REMOVE_SECTION_KIND, "sectionId": "not-a-ulid"}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+        }
+
+        // 阴性对照: 规范形状必须被接受 —— 上面红的不是"全都拒"。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SECTION_KIND, "sectionId": section_text}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(ops[0].is_section_level());
+        compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        // 路由节点的寻址字面量在本形态里**不是**合法的键, 但它自己仍然有效。
+        assert!(project.routing_graph.nodes.contains(&node), "夹具前提");
+    }
+
+    /// 段落不存在 ⇒ 本层 `ENTITY_NOT_FOUND`（带上 `reason` 与 `sectionId`），
+    /// 而且失败**不改文档**（编译期只读）。
+    ///
+    /// 注入（实测红）：把存在性检查换成一条**兜底**（取文档里任意一条段落当撤销载荷，
+    /// 而不是报错）⇒ 本判据红，诊断里 `previousSection` 是**另一条**段落的身份
+    /// （`Intro` 配上一个不存在的 `sectionId`）—— 那正是"静默取错载荷"的形状。
+    #[test]
+    fn remove_section_refuses_a_missing_section() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let missing = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        assert!(!project.sections.contains_key(&missing), "夹具前提");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SECTION_KIND, "sectionId": missing.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("段落不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "sectionNotFound");
+        assert_eq!(
+            lane_fault_data(&fault)["sectionId"],
+            serde_json::json!(missing.to_canonical_string())
+        );
+    }
+
+    /// 段落形态**不要求片段是 MIDI**（一个音符都不读），而且它既不是音符级也不是路由级
+    /// —— 三个谓词必须**互斥地**说真话（提案标题的分类靠它们）。
+    ///
+    /// 注入（实测红）：把 `RemoveSection` 从 `is_note_level` 的对照里去掉 ⇒
+    /// 音频片段那条编译时撞上"必须是 MIDI 片段"（`CLIP_NOT_FOUND`）。
+    #[test]
+    fn remove_section_does_not_need_midi_and_is_its_own_level() {
+        let project = filled_project();
+        let audio_track = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let section_id = *project
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_SECTION_KIND, "sectionId": section_id.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &audio_track, &audio_clip, &ops)
+            .expect("段落级写入不读片段内容, 非 MIDI 片段也必须被接受");
+        assert_eq!(compiled.len(), 1);
+
+        // 三个谓词在**一条**操作上不能同时说真话 (分类靠它们, 说两遍会让标题多算一步)。
+        for op in &ops {
+            let buckets = [
+                op.is_note_level(),
+                op.is_routing_level(),
+                op.is_section_level(),
+            ];
+            assert_eq!(
+                buckets.iter().filter(|flag| **flag).count(),
+                1,
+                "每个形态必须恰好落在一个桶里: {op:?}"
+            );
+        }
     }
 
     /// 池级形态的两条**排他性规则**：与别的 `kind` 同给 / 与 `placement` 同给都响亮失败，
