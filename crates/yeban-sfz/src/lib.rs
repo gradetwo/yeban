@@ -4,10 +4,12 @@
 //! [ARCH-RT-004]。解析器是不可信输入边界：必须能承受 `cargo-fuzz` 千万次变异零崩溃
 //! [MUST-GATE-011]。
 //!
-//! 识别的段头是 `<control>` / `<global>` / `<master>` / `<group>` / `<region>`，
-//! 作用域链 `region → group → master → global`（[`Header::Master`] 是 ARIA 扩展，
-//! 见 <https://sfzformat.com/headers/>）。其余段头（`<curve>` / `<effect>` / `<midi>` /
-//! `<sample>`）产生 [`Warning::IgnoredHeader`] 并丢弃其 opcode。
+//! 识别的段头是 `<control>` / `<global>` / `<master>` / `<group>` / `<region>` 与
+//! `<curve>`，作用域链 `region → group → master → global`（[`Header::Master`] 是 ARIA 扩展，
+//! 见 <https://sfzformat.com/headers/>）。`<curve>` 是**定义段**：它的 `curve_index` 与
+//! `v000..v127` 只进 [`Curve`]（经 [`Instrument::curves`] / [`Instrument::curve_value_at`]
+//! 读取），不进继承链、也不清空继承链。其余段头（`<effect>` / `<midi>` / `<sample>`）
+//! 产生 [`Warning::IgnoredHeader`] 并丢弃其 opcode。
 //!
 //! 规范来源 (Normative):
 //! - `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` ROAD-M2-005 / ROAD-M2-006
@@ -52,6 +54,23 @@
 //! assert_eq!(play.region.sample, "k1.wav");
 //! assert_eq!(play.spec.pitch_ratio, 0.5); // 36 比根音 48 低一个八度
 //! assert!(play.spec.rate < 0.5); // 再乘上 44100/48000 的采样率换算
+//! # Ok::<(), yeban_sfz::SfzError>(())
+//! ```
+//!
+//! `<curve>` 段定义 MIDI CC 调制曲线（`curve_index` 7..=254，点 `v000..v127`；
+//! 点之间按规范线性插值，`v000` / `v127` 缺省为 0 与 1）：
+//!
+//! ```
+//! use yeban_sfz::{ParseLimits, parse_text};
+//!
+//! let instrument = parse_text(
+//!     "<curve>curve_index=7\nv000=0\nv095=1\nv127=1",
+//!     &ParseLimits::default(),
+//! )?;
+//! assert_eq!(instrument.curve_value_at(7, 95.0), Some(1.0));
+//! assert_eq!(instrument.curve_value_at(7, 47.5), Some(0.5)); // 0 与 95 的中点
+//! // 0..=6 是 ARIA 内建曲线（不可覆写）：编号 1 是 -1 → 1 的双极直线。
+//! assert_eq!(instrument.curve_value_at(1, 0.0), Some(-1.0));
 //! # Ok::<(), yeban_sfz::SfzError>(())
 //! ```
 //!
@@ -113,12 +132,14 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod curve;
 pub mod error;
 pub mod instrument;
 pub mod parser;
 pub mod playback;
 pub mod voice_pool;
 
+pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use error::SfzError;
 pub use instrument::{
     CcGate, Instrument, LoopMode, OffMode, PlayDirection, Region, RegionQuery, SampleEnd, Trigger,

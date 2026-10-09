@@ -279,9 +279,43 @@ pub enum SfzError {
         limit: usize,
     },
 
+    /// `<curve>` 段定义了点却没有 `curve_index`：无法知道这条曲线属于哪个编号。
+    #[error("line {line}: <curve> defines points but no curve_index")]
+    CurveWithoutIndex {
+        /// 1-based 行号（`<curve>` 段头所在行）。
+        line: usize,
+    },
+
+    /// `<curve>` 的 `curve_index` 落在 ARIA 内建曲线 `0..=6` 上；规范明文这些不可覆写。
+    #[error(
+        "line {line}: curve_index {index} is reserved for an ARIA built-in curve (use 7..=254)"
+    )]
+    ReservedCurveIndex {
+        /// 1-based 行号（`<curve>` 段头所在行）。
+        line: usize,
+        /// 被拒绝的曲线编号。
+        index: u8,
+    },
+
+    /// 同一个 `curve_index` 在文件里定义了两次：哪一条生效没有规范依据，不猜。
+    #[error("line {line}: curve_index {index} is already defined")]
+    DuplicateCurveIndex {
+        /// 1-based 行号（重复定义所在的 `<curve>` 段头行）。
+        line: usize,
+        /// 重复的曲线编号。
+        index: u8,
+    },
+
     /// `<region>` 数量超过 [`crate::parser::ParseLimits::max_regions`]。
     #[error("more than {limit} <region> sections")]
     TooManyRegions {
+        /// 上限。
+        limit: usize,
+    },
+
+    /// `<curve>` 数量超过 [`crate::parser::ParseLimits::max_curves`]。
+    #[error("more than {limit} <curve> sections")]
+    TooManyCurves {
         /// 上限。
         limit: usize,
     },

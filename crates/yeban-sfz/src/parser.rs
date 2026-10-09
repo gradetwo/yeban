@@ -39,6 +39,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::curve::{Curve, CurvePoint};
 use crate::error::SfzError;
 use crate::instrument::{Instrument, Region, build_region};
 
@@ -70,6 +71,12 @@ pub const DEFAULT_MAX_GLOB_DEPTH: usize = 16;
 pub const DEFAULT_MAX_GLOB_SCANNED: usize = 65_536;
 /// 解析警告最多记录多少条 (256)：超过后静默截断，避免恶意输入撑爆内存。
 pub const DEFAULT_MAX_WARNINGS: usize = 256;
+/// 最大 `<curve>` 数量 (4096)：每个 `<curve>` 段都是独立作用域，不受
+/// [`DEFAULT_MAX_OPCODES_PER_HEADER`] 的跨段约束，因此需要自己的显式上限。
+///
+/// **needs（集成者）**：本上限由本切片新增，`docs/ledger/sfz-core-notes.md` 第 4 节的
+/// 上限表需要补一行（该文件由集成者独占；本工作线的可改写范围只有 `crates/yeban-sfz/**`）。
+pub const DEFAULT_MAX_CURVES: usize = 4_096;
 
 /// 解析器硬性上限。
 ///
@@ -81,6 +88,8 @@ pub struct ParseLimits {
     pub max_line_bytes: usize,
     /// 最大 `<region>` 数量，见 [`DEFAULT_MAX_REGIONS`]。
     pub max_regions: usize,
+    /// 最大 `<curve>` 数量，见 [`DEFAULT_MAX_CURVES`]。
+    pub max_curves: usize,
     /// 单作用域最大 opcode 数，见 [`DEFAULT_MAX_OPCODES_PER_HEADER`]。
     pub max_opcodes_per_header: usize,
     /// 最大 `#define` 变量数，见 [`DEFAULT_MAX_DEFINES`]。
@@ -108,6 +117,7 @@ impl Default for ParseLimits {
         Self {
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             max_regions: DEFAULT_MAX_REGIONS,
+            max_curves: DEFAULT_MAX_CURVES,
             max_opcodes_per_header: DEFAULT_MAX_OPCODES_PER_HEADER,
             max_defines: DEFAULT_MAX_DEFINES,
             max_macro_expansions_per_line: DEFAULT_MAX_MACRO_EXPANSIONS_PER_LINE,
@@ -131,6 +141,7 @@ impl ParseLimits {
         Self {
             max_line_bytes: usize::MAX,
             max_regions: usize::MAX,
+            max_curves: usize::MAX,
             max_opcodes_per_header: usize::MAX,
             max_defines: usize::MAX,
             max_macro_expansions_per_line: usize::MAX,
@@ -151,7 +162,7 @@ impl ParseLimits {
 
 /// 本解析器识别的 SFZ 段头。
 ///
-/// 其余规范段头（`<curve>` / `<effect>` / `<midi>` / `<sample>` SFZ v2）
+/// 其余规范段头（`<effect>` / `<midi>` / `<sample>` SFZ v2）
 /// 会被识别为「忽略」：产生 [`Warning::IgnoredHeader`] 并跳过其 opcode，
 /// 而不是静默当作 region 处理。见 <https://sfzformat.com/headers/>。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +182,12 @@ pub enum Header {
     Group,
     /// `<region>`（SFZ v1）：最基本的可播放单位。
     Region,
+    /// `<curve>`（SFZ v2）：定义一条 MIDI CC 调制曲线。
+    ///
+    /// 它是**定义段**，不属于 `region → group → master → global` 继承链：段内的 opcode
+    /// 只进 [`crate::Curve`]（`curve_index` + `v000..v127`），绝不写进任何一个继承作用域，
+    /// 也不会清空任何继承作用域。规范原文见 <https://sfzformat.com/headers/curve/>。
+    Curve,
 }
 
 impl Header {
@@ -187,6 +204,8 @@ impl Header {
             Some(Self::Group)
         } else if name.eq_ignore_ascii_case("region") {
             Some(Self::Region)
+        } else if name.eq_ignore_ascii_case("curve") {
+            Some(Self::Curve)
         } else {
             None
         }
@@ -201,6 +220,7 @@ impl Header {
             Self::Master => "master",
             Self::Group => "group",
             Self::Region => "region",
+            Self::Curve => "curve",
         }
     }
 }
@@ -212,7 +232,7 @@ impl Header {
 /// 非致命的解析异常。**不**中断解析，只是告诉调用方「这段输入被降级处理了」。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
-    /// 未知 / 未实现的段头被跳过（`<curve>` / `<effect>` / `<midi>` / `<sample>` …）。
+    /// 未知 / 未实现的段头被跳过（`<effect>` / `<midi>` / `<sample>` …）。
     IgnoredHeader {
         /// 1-based 行号（折算回原文件）。
         line: usize,
@@ -663,6 +683,17 @@ struct Parser<'a> {
     /// 当前 opcode 应该写进哪个作用域。
     scope: Scope,
     regions: Vec<Region<'a>>,
+    /// 已归约的 `<curve>` 段（保持文件出现顺序，确定性）。
+    curves: Vec<Curve>,
+    /// 当前 `<curve>` 段头所在行（归约时用于错误定位）。
+    curve_line: usize,
+    /// 当前 `<curve>` 的 `curve_index`（同一段里重复给出时后者胜，与其它 opcode 的
+    /// 「`BTreeMap` 后者覆盖」口径一致）。
+    curve_index: Option<u8>,
+    /// 当前 `<curve>` 的点（同一段里重复给出同一个 `vNNN` 时后者胜）。
+    curve_points: Vec<CurvePoint>,
+    /// 当前 `<curve>` 段里已消费的 opcode 数（DoS 上限，见 [`ParseLimits::max_opcodes_per_header`]）。
+    curve_opcodes: usize,
     /// 当前 `<region>` 段头所在行（归约时用于错误定位）。
     region_line: usize,
     warnings: Vec<Warning>,
@@ -676,6 +707,8 @@ enum Scope {
     Master,
     Group,
     Region,
+    /// `<curve>`：opcode 进 [`Parser::curve_points`] / `curve_index`，不进继承链。
+    Curve,
     /// 空行 / 注释 / 未知段头之后：丢弃 opcode，但 `#define` 仍然生效。
     Ignored,
 }
@@ -693,6 +726,11 @@ impl<'a> Parser<'a> {
             // 规范要求显式段头；没有段头的裸 opcode 按 `<global>` 处理（宽松但无损）。
             scope: Scope::Global,
             regions: Vec::new(),
+            curves: Vec::new(),
+            curve_line: 1,
+            curve_index: None,
+            curve_points: Vec::new(),
+            curve_opcodes: 0,
             region_line: 1,
             warnings: Vec::new(),
             warnings_truncated: false,
@@ -714,11 +752,14 @@ impl<'a> Parser<'a> {
             Scope::Master => Some((&mut self.master, "master")),
             Scope::Group => Some((&mut self.group, "group")),
             Scope::Region => Some((&mut self.region, "region")),
-            Scope::Ignored => None,
+            Scope::Curve | Scope::Ignored => None,
         }
     }
 
     fn insert_opcode(&mut self, name: Cow<'a, str>, value: Cow<'a, str>) -> Result<(), SfzError> {
+        if self.scope == Scope::Curve {
+            return self.insert_curve_opcode(name, value);
+        }
         let limit = self.limits.max_opcodes_per_header;
         let scope = self.scope;
         let Some((map, scope_name)) = self.map_for(scope) else {
@@ -731,6 +772,72 @@ impl<'a> Parser<'a> {
             });
         }
         map.insert(name, value);
+        Ok(())
+    }
+
+    /// 把 `<curve>` 段里的一个 opcode 写进当前曲线。
+    ///
+    /// 只认 `curve_index` 与 `v000..v127`（名字大小写敏感，与其它 opcode 的读取口径一致）；
+    /// 其余 opcode 与全文件口径一致地被忽略（未知 opcode 不报错）。
+    ///
+    /// [`ParseLimits::max_opcodes_per_header`] 在这里按**行数**计（不是「不同名字数」，
+    /// 因为曲线不进 `BTreeMap`）：合法曲线最多 129 个 opcode，所以这个更严的口径
+    /// 不会误伤真实文件，却仍然挡住「无限 opcode 行」的 DoS。
+    ///
+    /// 错误定位用**段头行**（与 [`build_region`] 用 `<region>` 段头行的口径一致）。
+    fn insert_curve_opcode(
+        &mut self,
+        name: Cow<'a, str>,
+        value: Cow<'a, str>,
+    ) -> Result<(), SfzError> {
+        let limit = self.limits.max_opcodes_per_header;
+        self.curve_opcodes += 1;
+        if self.curve_opcodes > limit {
+            return Err(SfzError::TooManyOpcodes {
+                scope: "curve",
+                limit,
+            });
+        }
+        let text: &str = name.as_ref();
+        let line = self.curve_line;
+        if text == "curve_index" {
+            let parsed = OpcodeValue::new("curve_index", value, line)
+                .as_int(0, i64::from(crate::curve::MAX_CURVE_INDEX))?;
+            let index = parsed as u8;
+            if index <= crate::curve::MAX_BUILT_IN_CURVE_INDEX {
+                // 规范原文："These cannot be overwritten. Use `curve_index` numbers of 7
+                // and above for custom curves." ⇒ 明确 Err，不静默丢弃也不静默覆盖内建曲线。
+                return Err(SfzError::ReservedCurveIndex { line, index });
+            }
+            self.curve_index = Some(index);
+            return Ok(());
+        }
+        let Some(digits) = text
+            .strip_prefix('v')
+            .filter(|digits| digits.len() == 3 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        else {
+            // 不是 `vNNN`（例如 `v5` / `v0000` / 任何未知 opcode）：与全文件口径一致地忽略。
+            return Ok(());
+        };
+        let at = digits
+            .bytes()
+            .fold(0u32, |acc, byte| acc * 10 + u32::from(byte - b'0'));
+        if at > 127 {
+            return Err(SfzError::IntegerOutOfRange {
+                line,
+                opcode: text.to_string(),
+                value: i64::from(at),
+                min: 0,
+                max: 127,
+            });
+        }
+        let at = at as u8;
+        let value = OpcodeValue::new(text, value, line).as_f32()?;
+        match self.curve_points.iter_mut().find(|point| point.at == at) {
+            // 同一段里重复给出同一个点：后者胜（与 `BTreeMap` 作用域的覆盖口径一致）。
+            Some(existing) => existing.value = value,
+            None => self.curve_points.push(CurvePoint { at, value }),
+        }
         Ok(())
     }
 
@@ -754,6 +861,51 @@ impl<'a> Parser<'a> {
             None => self.warn(Warning::RegionWithoutSample { line }),
         }
         self.region.clear();
+        Ok(())
+    }
+
+    /// 结束当前 `<curve>`：归约成 [`Curve`] 并压栈。
+    ///
+    /// 规则（规范出处 <https://sfzformat.com/headers/curve/>）：
+    /// - 规范缺省 `v000=0` / `v127=1` 在没被显式给出时补上，因此每条曲线都覆盖 `0..=127`
+    ///   （`Curve::value_at` 永远不需要外推）；
+    /// - **空段**（既无 `curve_index` 也无任何点）不产生曲线、也不报错：没有数据可丢；
+    /// - 有数据却没有 `curve_index` ⇒ [`SfzError::CurveWithoutIndex`]（明确 Err，不静默丢弃）；
+    /// - 同一个 `curve_index` 定义两次 ⇒ [`SfzError::DuplicateCurveIndex`]（含义歧义，不猜）；
+    /// - 曲线条数超过 [`ParseLimits::max_curves`] ⇒ [`SfzError::TooManyCurves`]。
+    fn finalize_curve(&mut self) -> Result<(), SfzError> {
+        if self.scope != Scope::Curve {
+            return Ok(());
+        }
+        let line = self.curve_line;
+        let index = self.curve_index.take();
+        let mut points = core::mem::take(&mut self.curve_points);
+        self.curve_opcodes = 0;
+        if index.is_none() && points.is_empty() {
+            return Ok(());
+        }
+        let Some(index) = index else {
+            return Err(SfzError::CurveWithoutIndex { line });
+        };
+        if self.curves.iter().any(|curve| curve.index() == index) {
+            return Err(SfzError::DuplicateCurveIndex { line, index });
+        }
+        if self.curves.len() >= self.limits.max_curves {
+            return Err(SfzError::TooManyCurves {
+                limit: self.limits.max_curves,
+            });
+        }
+        if !points.iter().any(|point| point.at == 0) {
+            points.push(CurvePoint { at: 0, value: 0.0 });
+        }
+        if !points.iter().any(|point| point.at == 127) {
+            points.push(CurvePoint {
+                at: 127,
+                value: 1.0,
+            });
+        }
+        points.sort_by_key(|point| point.at);
+        self.curves.push(Curve::from_points(index, points));
         Ok(())
     }
 
@@ -902,6 +1054,8 @@ impl<'a> Parser<'a> {
         // 让尚未归约的 region 要么丢掉继承值、要么被整段丢弃（回归判据：
         // `region_inherits_group_values_even_when_a_later_group_header_intervenes`）。
         self.finalize_region()?;
+        // `<curve>` 是定义段：先归约上一条曲线，再开新段。它**不**动继承表。
+        self.finalize_curve()?;
         match Header::from_name(name) {
             Some(Header::Control) => {
                 // ARIA 语义：新的 `<control>` 会重置 `default_path`。
@@ -938,6 +1092,14 @@ impl<'a> Parser<'a> {
                 self.region_line = line_no;
                 self.scope = Scope::Region;
             }
+            Some(Header::Curve) => {
+                // 定义段：只重置曲线寄存器，**不**动 `global` / `master` / `group`。
+                self.curve_line = line_no;
+                self.curve_index = None;
+                self.curve_points.clear();
+                self.curve_opcodes = 0;
+                self.scope = Scope::Curve;
+            }
             None => {
                 self.warn(Warning::IgnoredHeader {
                     line: line_no,
@@ -950,7 +1112,7 @@ impl<'a> Parser<'a> {
     }
 
     fn finish(self) -> Instrument<'a> {
-        Instrument::new(self.regions, self.warnings)
+        Instrument::new(self.regions, self.curves, self.warnings)
     }
 }
 
@@ -974,6 +1136,7 @@ pub fn parse_text<'a>(text: &'a str, limits: &ParseLimits) -> Result<Instrument<
     let mut parser = Parser::new(*limits);
     parser.run(text, 1, true)?;
     parser.finalize_region()?;
+    parser.finalize_curve()?;
     Ok(parser.finish())
 }
 
@@ -989,6 +1152,7 @@ pub fn parse_sources<'a>(
         parser.run(&source.text, source.first_line, false)?;
     }
     parser.finalize_region()?;
+    parser.finalize_curve()?;
     Ok(parser.finish())
 }
 

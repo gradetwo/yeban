@@ -15,6 +15,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use crate::curve::Curve;
 use crate::error::SfzError;
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
@@ -527,6 +528,8 @@ impl<'q> RegionQuery<'q> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Instrument<'a> {
     regions: Vec<Region<'a>>,
+    /// `<curve>` 段定义的调制曲线（文件出现顺序，确定性；同一编号重复定义会被拒绝）。
+    curves: Vec<Curve>,
     /// 按音符分桶的 region 下标（加速 `region_for`，构造后只读）。
     key_buckets: Vec<Vec<u32>>,
     warnings: Vec<Warning>,
@@ -534,7 +537,11 @@ pub struct Instrument<'a> {
 
 impl<'a> Instrument<'a> {
     /// 从 region 列表构造乐器（并建立音符索引）。
-    pub(crate) fn new(regions: Vec<Region<'a>>, warnings: Vec<Warning>) -> Self {
+    pub(crate) fn new(
+        regions: Vec<Region<'a>>,
+        curves: Vec<Curve>,
+        warnings: Vec<Warning>,
+    ) -> Self {
         let mut key_buckets: Vec<Vec<u32>> = vec![Vec::new(); 128];
         for (index, region) in regions.iter().enumerate() {
             if !region.trigger_by_note {
@@ -551,6 +558,7 @@ impl<'a> Instrument<'a> {
         }
         Self {
             regions,
+            curves,
             key_buckets,
             warnings,
         }
@@ -560,6 +568,33 @@ impl<'a> Instrument<'a> {
     #[must_use]
     pub fn regions(&self) -> &[Region<'a>] {
         &self.regions
+    }
+
+    /// 全部 `<curve>`（保持文件出现顺序，确定性；`curve_index` 不保证升序）。
+    #[must_use]
+    pub fn curves(&self) -> &[Curve] {
+        &self.curves
+    }
+
+    /// 按 `curve_index` 取一条**文件内定义**的曲线（线性扫描，零分配）。
+    ///
+    /// 取不到时调用方可以退回 ARIA 内建曲线，见 [`Curve::built_in`]。
+    #[must_use]
+    pub fn curve(&self, index: u8) -> Option<&Curve> {
+        self.curves.iter().find(|curve| curve.index() == index)
+    }
+
+    /// 求一条曲线的值：**文件内定义的优先**，否则退回 ARIA 内建曲线。
+    ///
+    /// 返回 `None` 表示这个编号既没有定义、也不是内建（`0..=254` 之外，或 4..=6 这类
+    /// 规范只说 `Nonlinear` 而没给公式的内建曲线）。该调用零分配、无锁、无 I/O，
+    /// 可在实时路径使用。
+    #[must_use]
+    pub fn curve_value_at(&self, index: u8, x: f32) -> Option<f32> {
+        if let Some(curve) = self.curve(index) {
+            return Some(curve.value_at(x));
+        }
+        Curve::built_in(index).map(|curve| curve.value_at(x))
     }
 
     /// region 数量。
@@ -962,7 +997,8 @@ fn read_u32(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{Header, parse_text};
+    use crate::curve::CurvePoint;
+    use crate::parser::{Header, ParseLimits, parse_text};
 
     fn region(note: u8, seq_position: u32, seq_length: u32) -> Region<'static> {
         Region {
@@ -1327,7 +1363,11 @@ mod tests {
 
     #[test]
     fn instrument_region_lookup_uses_key_range() {
-        let instrument = Instrument::new(vec![region(60, 1, 1), region(62, 1, 1)], Vec::new());
+        let instrument = Instrument::new(
+            vec![region(60, 1, 1), region(62, 1, 1)],
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(instrument.region_for(60, 100).map(|r| r.lokey), Some(60));
         assert_eq!(instrument.region_for(62, 100).map(|r| r.lokey), Some(62));
         assert!(instrument.region_for(61, 100).is_none());
@@ -1820,5 +1860,320 @@ mod tests {
         assert!(!Trigger::Attack.is_release_family());
         assert!(!Trigger::First.is_release_family());
         assert!(!Trigger::Legato.is_release_family());
+    }
+
+    // ------------------------------------------------------------------
+    // `<curve>` 头（规范 <https://sfzformat.com/headers/curve/>）
+    // ------------------------------------------------------------------
+
+    /// 登记语料里的真实曲线块（`assets/samples/aliexpress-erhu/…/curves.sfz` 的形状）。
+    const CORPUS_CURVES: &str = "\
+<curve>curve_index=7
+v000=0
+v095=1
+v127=1
+<curve>curve_index=8
+v000=0
+v095=0.5
+v127=1
+<region>sample=a.wav";
+
+    #[test]
+    fn curve_blocks_are_reduced_in_file_order_with_the_spec_defaults() {
+        let instrument = parse_text(CORPUS_CURVES, &Default::default()).expect("parses");
+        assert_eq!(instrument.len(), 1, "the region after the curves survives");
+        let indices: Vec<u8> = instrument.curves().iter().map(Curve::index).collect();
+        assert_eq!(indices, vec![7, 8], "file order, deterministic");
+        assert_eq!(
+            instrument.curve(7).map(Curve::points),
+            Some(
+                &[
+                    CurvePoint { at: 0, value: 0.0 },
+                    CurvePoint { at: 95, value: 1.0 },
+                    CurvePoint {
+                        at: 127,
+                        value: 1.0
+                    },
+                ][..]
+            )
+        );
+        // 未显式给出的 v000 / v127 用规范缺省补齐（0 与 1）。
+        let sparse =
+            parse_text("<curve>curve_index=9\nv064=0.25", &Default::default()).expect("parses");
+        assert_eq!(
+            sparse.curve(9).map(Curve::points),
+            Some(
+                &[
+                    CurvePoint { at: 0, value: 0.0 },
+                    CurvePoint {
+                        at: 64,
+                        value: 0.25
+                    },
+                    CurvePoint {
+                        at: 127,
+                        value: 1.0
+                    },
+                ][..]
+            )
+        );
+        // 未定义的编号：既不是文件里的，也不是 0..=3 内建 ⇒ None。
+        assert_eq!(instrument.curve_value_at(11, 64.0), None);
+        assert_eq!(instrument.curve(9), None);
+    }
+
+    #[test]
+    fn curve_values_are_not_clamped_and_keep_their_sign() {
+        // 内建 `Bipolar` 是 -1..1，语料里也曾出现 v000=-1（例如 `docs/ledger` 第 11 节的
+        // 普查口径），因此取值不钳位。
+        let instrument = parse_text("<curve>curve_index=7\nv000=-1\nv127=1", &Default::default())
+            .expect("parses");
+        let curve = instrument.curve(7).expect("defined");
+        assert_eq!(curve.value_at(0.0), -1.0);
+        assert_eq!(curve.value_at(63.5), 0.0);
+        assert_eq!(curve.value_at(127.0), 1.0);
+    }
+
+    #[test]
+    fn curve_opcodes_do_not_leak_into_the_inheritance_chain() {
+        // `<curve>` 是定义段：段内 opcode 不得写进 group/global，也不得变成 region。
+        let instrument = parse_text(
+            "<group>key=36 volume=-3\n\
+             <region>sample=a.wav\n\
+             <curve>curve_index=7\nsample=b.wav\nvolume=99\nkey=48\nv000=0\n\
+             <region>sample=c.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.len(), 2, "only two real regions");
+        assert_eq!(instrument.regions()[0].sample, "a.wav");
+        assert_eq!(instrument.regions()[1].sample, "c.wav");
+        for region in instrument.regions() {
+            assert_eq!(
+                region.volume, -3.0,
+                "the curve block must not change volume"
+            );
+            assert_eq!((region.lokey, region.hikey), (36, 36));
+        }
+        assert_eq!(instrument.curves().len(), 1);
+        assert_eq!(
+            instrument
+                .curve(7)
+                .map(Curve::points)
+                .map(<[CurvePoint]>::len),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn a_curve_block_without_points_or_index_is_accepted_and_empty() {
+        let instrument = parse_text("<curve>", &Default::default()).expect("parses");
+        assert!(instrument.curves().is_empty());
+        assert!(instrument.warnings().is_empty(), "nothing was dropped");
+        // 只有 `curve_index` 没有点：规范缺省就是 0 → 1 的直线。
+        let identity = parse_text("<curve>curve_index=7", &Default::default()).expect("parses");
+        assert_eq!(identity.curve_value_at(7, 63.5), Some(0.5));
+    }
+
+    #[test]
+    fn a_curve_block_with_points_but_no_index_is_an_error() {
+        let error = parse_text("<curve>\nv000=0", &Default::default())
+            .expect_err("points without curve_index are ambiguous");
+        assert!(
+            matches!(error, SfzError::CurveWithoutIndex { line: 1 }),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_reserved_built_in_curve_index_is_an_error_not_a_silent_overwrite() {
+        // 规范原文："These cannot be overwritten. Use `curve_index` numbers of 7 and above
+        // for custom curves." ⇒ 0..=6 一律 Err。
+        for index in 0u8..=6 {
+            let source = format!("<curve>curve_index={index}\nv000=0\nv127=1");
+            let error = parse_text(&source, &Default::default()).expect_err("reserved index");
+            assert!(
+                matches!(error, SfzError::ReservedCurveIndex { line: 1, index: got } if got == index),
+                "unexpected verdict for {index}: {error:?}"
+            );
+        }
+        // 7 与 254 是合法自定义编号；255 越界成显式 Err（不是 panic）。
+        for index in [7u8, 254] {
+            let source = format!("<curve>curve_index={index}\nv000=0\nv127=1");
+            let instrument = parse_text(&source, &Default::default()).expect("custom index");
+            assert_eq!(instrument.curve(index).map(Curve::index), Some(index));
+        }
+        let error = parse_text("<curve>curve_index=255\nv000=0", &Default::default())
+            .expect_err("255 is above the ARIA ceiling");
+        assert!(
+            matches!(
+                error,
+                SfzError::IntegerOutOfRange {
+                    line: 1,
+                    value: 255,
+                    min: 0,
+                    max: 254,
+                    ..
+                }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_curve_index_is_an_error_not_a_guess() {
+        let error = parse_text(
+            "<curve>curve_index=7\nv000=0\n<curve>curve_index=7\nv000=1",
+            &Default::default(),
+        )
+        .expect_err("duplicate index has no normative resolution");
+        assert!(
+            matches!(error, SfzError::DuplicateCurveIndex { line: 3, index: 7 }),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_curve_point_above_v127_is_an_error_and_a_malformed_point_is_ignored() {
+        let error = parse_text("<curve>curve_index=7\nv128=0", &Default::default())
+            .expect_err("v128 is outside v000..=v127");
+        assert!(
+            matches!(
+                error,
+                SfzError::IntegerOutOfRange {
+                    line: 1,
+                    value: 128,
+                    min: 0,
+                    max: 127,
+                    ..
+                }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+        // 不是 `vNNN` 形态的名字（`v5` / `v0000` / 未知 opcode）与全文件口径一致地忽略。
+        let instrument = parse_text(
+            "<curve>curve_index=7\nv5=0.5\nv0000=0.5\nv096=0.5",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            instrument.curve(7).map(Curve::points),
+            Some(
+                &[
+                    CurvePoint { at: 0, value: 0.0 },
+                    CurvePoint { at: 96, value: 0.5 },
+                    CurvePoint {
+                        at: 127,
+                        value: 1.0
+                    },
+                ][..]
+            )
+        );
+    }
+
+    #[test]
+    fn a_repeated_point_in_one_block_keeps_the_last_value() {
+        // 与其它作用域「后者覆盖」的 `BTreeMap` 口径一致，也保证点表没有重复 `at`
+        // （重复 `at` 会让插值分母为 0）。
+        let instrument = parse_text(
+            "<curve>curve_index=7\nv064=1\nv064=0.25",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.curve_value_at(7, 64.0), Some(0.25));
+    }
+
+    #[test]
+    fn a_non_finite_curve_value_is_an_error() {
+        for bad in ["nan", "inf", "-inf", "1e999"] {
+            let source = format!("<curve>curve_index=7\nv000={bad}");
+            let error = parse_text(&source, &Default::default()).expect_err("non-finite value");
+            assert!(
+                matches!(
+                    error,
+                    SfzError::NonFiniteFloat { .. } | SfzError::InvalidFloat { .. }
+                ),
+                "unexpected verdict for {bad}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn too_many_curves_hits_the_explicit_limit() {
+        let limits = ParseLimits {
+            max_curves: 1,
+            ..ParseLimits::default()
+        };
+        let error = parse_text(
+            "<curve>curve_index=7\nv000=0\n<curve>curve_index=8\nv000=0",
+            &limits,
+        )
+        .expect_err("second curve exceeds max_curves");
+        assert!(
+            matches!(error, SfzError::TooManyCurves { limit: 1 }),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn too_many_opcodes_in_a_curve_block_hits_the_explicit_limit() {
+        let limits = ParseLimits {
+            max_opcodes_per_header: 2,
+            ..ParseLimits::default()
+        };
+        let error = parse_text("<curve>curve_index=7\nv000=0\nv001=0", &limits)
+            .expect_err("third opcode exceeds the per-header limit");
+        assert!(
+            matches!(
+                error,
+                SfzError::TooManyOpcodes {
+                    scope: "curve",
+                    limit: 2
+                }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn curve_lookup_prefers_file_data_over_the_built_in_table() {
+        // 内建曲线 1 是 -1 → 1；文件里的 40 是 0 → 1（语料里 `*_curveccN=40` 出现过 76 次）。
+        let instrument = parse_text("<curve>curve_index=40\nv000=0\nv127=1", &Default::default())
+            .expect("parses");
+        assert_eq!(instrument.curve_value_at(40, 0.0), Some(0.0));
+        assert_eq!(instrument.curve_value_at(1, 0.0), Some(-1.0), "built-in 1");
+        assert_eq!(instrument.curve_value_at(1, 127.0), Some(1.0));
+        assert_eq!(
+            instrument.curve_value_at(5, 0.0),
+            None,
+            "4..=6 have no formula"
+        );
+        assert_eq!(
+            instrument.curve_value_at(200, 0.0),
+            None,
+            "undefined and not built in"
+        );
+    }
+
+    #[test]
+    fn curve_reduction_is_deterministic_across_independent_parses() {
+        let limits: ParseLimits = Default::default();
+        let first = parse_text(CORPUS_CURVES, &limits).expect("parses");
+        let second = parse_text(CORPUS_CURVES, &limits).expect("parses");
+        assert_eq!(first.curves(), second.curves());
+        let samples: Vec<f32> = (0..=127)
+            .map(|x| {
+                first
+                    .curve_value_at(8, f32::from(x as u8))
+                    .expect("curve 8")
+            })
+            .collect();
+        let again: Vec<f32> = (0..=127)
+            .map(|x| {
+                second
+                    .curve_value_at(8, f32::from(x as u8))
+                    .expect("curve 8")
+            })
+            .collect();
+        assert_eq!(samples, again);
     }
 }

@@ -87,6 +87,25 @@ const MALFORMED_SAMPLES: &[&str] = &[
     "<region>sample=a.wav //",
     "<region>sample=a.wav // <region>sample=b.wav",
     "<curve>",
+    // `<curve>` 段（1 个合法块 + 各种畸形）：任何字节都只允许 Ok / Err，不允许 panic。
+    "<curve>curve_index=7",
+    "<curve>curve_index=7\nv000=0\nv127=1\n<region>sample=a.wav",
+    "<curve>curve_index=7\nv000=nan",
+    "<curve>curve_index=7\nv000=1e40",
+    "<curve>curve_index=7\nv128=0",
+    "<curve>curve_index=7\nv=0\nv00=0\nv0000=0\nv999=0",
+    "<curve>curve_index=0\nv000=0",
+    "<curve>curve_index=6\nv000=-1",
+    "<curve>curve_index=-1\nv000=0",
+    "<curve>curve_index=255\nv000=0",
+    "<curve>curve_index=99999999999999999999999\nv000=0",
+    "<curve>curve_index=",
+    "<curve>curve_index",
+    "<curve>v000=0",
+    "<curve>curve_index=7\nv000=\n<curve>curve_index=7",
+    "<CURVE>curve_index=7\nv000=0",
+    "<curve>>curve_index=7",
+    "<curve>curve_index=7\n\n// 注释\nv127=1",
     "<master>key=36",
     "<effect>",
     "<midi>",
@@ -251,19 +270,50 @@ fn parse_text_reports_includes_it_did_not_resolve() {
 
 #[test]
 fn unknown_headers_are_ignored_with_a_warning_not_treated_as_regions() {
+    // `<curve>` 已建模（见 `curve_header_is_modeled_and_is_no_longer_an_ignored_header`），
+    // 这里改用仍未建模的 `<effect>` / `<midi>` / `<sample>` 守同一条红线：
+    // 未实现的段头必须产生告警并丢掉段内 opcode，绝不当作 region。
     let instrument = parse_text(
-        "<curve>\ncurve_index=1\n<region>sample=a.wav\n",
+        "<effect>\ntype=reverb\n<midi>\nmidi_cc1=64\n<sample>\nsample=b.wav\n<region>sample=a.wav\n",
+        &ParseLimits::default(),
+    )
+    .expect("parses");
+    assert_eq!(instrument.len(), 1, "only the <region> becomes a region");
+    assert_eq!(instrument.regions()[0].sample, "a.wav");
+    for name in ["effect", "midi", "sample"] {
+        assert!(
+            instrument
+                .warnings()
+                .iter()
+                .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name: got, .. } if got == name)),
+            "{name} must be reported as an ignored header"
+        );
+    }
+}
+
+#[test]
+fn curve_header_is_modeled_and_is_no_longer_an_ignored_header() {
+    let instrument = parse_text(
+        "<curve>curve_index=7\nv000=0\nv095=1\nv127=1\n<region>sample=a.wav\n",
         &ParseLimits::default(),
     )
     .expect("parses");
     assert_eq!(instrument.len(), 1);
     assert_eq!(instrument.regions()[0].sample, "a.wav");
     assert!(
-        instrument
+        !instrument
             .warnings()
             .iter()
-            .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name, .. } if name == "curve"))
+            .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { name, .. } if name == "curve")),
+        "<curve> is modeled now: it must not be reported as an ignored header"
     );
+    let curves = instrument.curves();
+    assert_eq!(curves.len(), 1);
+    assert_eq!(curves[0].index(), 7);
+    assert_eq!(instrument.curve_value_at(7, 95.0), Some(1.0));
+    assert_eq!(instrument.curve(7).map(yeban_sfz::Curve::index), Some(7));
+    // 内建曲线仍然可取（`curve_index` 0..=6 不可覆写，所以文件里定义的编号必然 ≥ 7）。
+    assert_eq!(instrument.curve_value_at(1, 0.0), Some(-1.0));
 }
 
 #[test]
