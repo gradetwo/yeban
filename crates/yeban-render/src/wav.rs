@@ -658,4 +658,80 @@ mod tests {
         assert!(check_match(&format, &buffer).is_ok());
         assert_eq!(format.block_align(), 6);
     }
+
+    /// 判据 10（**跨模块**）: 同一个 `PcmFormat` 在本 crate 的**两条写入器**上必须得到
+    /// 同一个判决 —— 这里取 `bits_per_sample == 0` 这一格。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: **一个**格式 `channels = 2, sample_rate = 48_000, bits_per_sample = 0`
+    /// （整数 PCM），分别交给 ① 本模块走 `hound` 的 [`write_plain_wav`],
+    /// ② [`crate::rf64::ContainerPlan`] + [`crate::rf64::write_container`]。
+    /// 单位: 判决（接受 / 拒绝）与 `out` / 磁盘上的**字节数**（都必须是 0）。
+    ///
+    /// # 为什么这条不属于本模块
+    ///
+    /// 本模块的拒绝理由在 [`check_container_fields`]（`bits ∉ {16, 24, 32}` ⇒
+    /// [`WavError::UnsupportedDepth`]）, 而 0 位深在**另一条**写入器上修复前是**接受**的:
+    /// `PcmFormat::bytes_per_sample` 对 0 位给 0, 于是那份 `fmt ` 声明
+    /// `nBlockAlign = 0` / `nAvgBytesPerSec = 0` —— 合规解码器按 `nBlockAlign` 求帧数就是
+    /// 除零。两条写入器对同一个显然不可用的格式给出两个判决, 与 `sample_rate == 0`
+    /// 那一格是同一条纪律（那一格由 `crate::rf64::ContainerPlan::validate` 补上, 判据
+    /// `crate::rf64::tests::a_zero_sample_rate_is_refused_before_any_byte`）。
+    ///
+    /// 容器侧的完整判据在 `crate::rf64::tests::a_zero_bit_depth_is_refused_before_any_byte`;
+    /// 本判据只钉"两条写入器一致"这一个读数, 因此它**不**重复那边的网格。
+    #[test]
+    fn the_two_writers_in_this_crate_agree_on_a_zero_bit_depth() {
+        let zero_bits = PcmFormat::integer(2, 48_000, 0);
+        let buffer = PcmBuffer::Int16(vec![0, 1, -1, 0]);
+
+        // ① 走 `hound` 的写入器: 拒绝, 且理由是位深（不是别的字段）。
+        assert_eq!(
+            hound_spec(&zero_bits),
+            Err(WavError::UnsupportedDepth(0)),
+            "0 位深必须由 check_container_fields 拒绝"
+        );
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("zero_bits.wav");
+        assert!(write_plain_wav(&path, &zero_bits, &buffer).is_err());
+        assert!(!path.exists(), "被拒的写入不得留下文件（实测零字节）");
+
+        // ② 自研容器写入器: 必须给出**同一个**判决（修复前是 `Ok` + 写出 52 字节）。
+        let data = buffer.to_le_bytes();
+        let plan = crate::rf64::ContainerPlan::for_payload(
+            crate::rf64::ContainerKind::Riff,
+            zero_bits,
+            data.len() as u64,
+            (data.len() / 4) as u64,
+            None,
+        );
+        assert_eq!(
+            plan.validate(),
+            Err(crate::rf64::Rf64Error::ZeroBitsPerSample),
+            "两条写入器必须对 0 位深给出同一个判决"
+        );
+        let mut file = Vec::new();
+        assert_eq!(
+            crate::rf64::write_container(&mut file, &plan, &data),
+            Err(crate::rf64::Rf64Error::ZeroBitsPerSample)
+        );
+        assert!(file.is_empty(), "被拒的写入不得留下任何字节");
+
+        // 防空判据: 只把位深换成 16, **同一个**声道布局/采样率/负载必须两条路都通。
+        let good = PcmFormat::integer(2, 48_000, 16);
+        let good_path = directory.path().join("good.wav");
+        write_plain_wav(&good_path, &good, &buffer).expect("16 位必须写得出去");
+        let (read_format, read_pcm) = read_plain_wav(&good_path).expect("读回");
+        assert_eq!(read_format, good);
+        assert_eq!(read_pcm, buffer);
+        let plan = crate::rf64::ContainerPlan::for_payload(
+            crate::rf64::ContainerKind::Riff,
+            good,
+            data.len() as u64,
+            (data.len() / 4) as u64,
+            None,
+        );
+        assert_eq!(plan.validate(), Ok(()), "16 位必须可写");
+    }
 }

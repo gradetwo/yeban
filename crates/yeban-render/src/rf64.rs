@@ -62,6 +62,15 @@
 //!   `nAvgBytesPerSec = 0` 容器，而同一个 crate 走 `hound` 的写入器
 //!   （[`crate::wav::check_container_fields`]）早已拒绝它。判据是
 //!   `a_zero_sample_rate_is_refused_before_any_byte`。
+//! - **`bits_per_sample == 0` 也被拒绝**（本轮新增，与上一行同族的第三个"零分母字段"）：
+//!   `PcmFormat::bytes_per_sample` 对 0 位给 0，于是 `fmt ` 会同时声明
+//!   `nBlockAlign = 0` 与 `nAvgBytesPerSec = 0` —— 合规解码器按 `nBlockAlign` 求帧数
+//!   就是除零。同一个 crate 走 `hound` 的写入器（[`crate::wav::check_container_fields`]）
+//!   早已把它判为 `UnsupportedDepth(0)`。本模块的**读取器**此前也接受它，并把 `data` 的
+//!   **字节数**当成帧数（`data_size` 除以被 `max(1)` 兜住的 `nBlockAlign`）；两侧现在
+//!   共用同一个拒绝 [`Rf64Error::ZeroBitsPerSample`]。判据是
+//!   `a_zero_bit_depth_is_refused_before_any_byte`（容器侧）与
+//!   `the_two_writers_in_this_crate_agree_on_a_zero_bit_depth`（两条写入器之间）。
 //! - 只实现 `bext` 版本 1 与 2 的读写; 1997 年的 v0 布局未核验, 读到即返回
 //!   [`Rf64Error::UnsupportedBextVersion`], 登记为 `pending`。**写入器与读取器的
 //!   接受集现在是同一个** `{1, 2}`: [`Bext::to_bytes`] 对 v0 **与 v≥3** 都拒绝
@@ -1127,12 +1136,28 @@ impl ContainerPlan {
     /// 即本 crate 的读取器**读得回来**, 所以这一条不是对称性判据, 而是"同一 crate 的
     /// 两条写入器不得对同一个显然不可用的格式给出两个判决"。
     ///
+    /// # 第五类: `bits_per_sample == 0`（本轮补上, 与上一类同一个来源）
+    ///
+    /// [`PcmFormat::bytes_per_sample`] 对 0 位给 0, 于是 `nBlockAlign` 与
+    /// `nAvgBytesPerSec` 都被写成 0 —— 又是一个"合规解码器按 `nBlockAlign` 求帧数就是
+    /// 除零"的容器。同一个 crate 走 `hound` 的写入器
+    /// （[`crate::wav::check_container_fields`]）早已把它判为 `UnsupportedDepth(0)`。
+    /// 与上一类不同的是: 本模块的**读取器也在本轮同步拒绝**它
+    /// （[`Rf64Error::ZeroBitsPerSample`]）, 因为它此前会把 `data` 的**字节数**当成帧数
+    /// —— `data_size` 除以被 `max(1)` 兜住的 `nBlockAlign`, 于是 8 字节负载被报告成
+    /// **8 帧**。本机实测（修复前, 判据
+    /// `a_zero_bit_depth_is_refused_before_any_byte`）:
+    ///
+    /// ```text
+    /// RIFF ch=2 bits=0 rate=48000 -> validate Ok(()), write_container Ok(写出 52 字节), nBlockAlign = 0, nAvgBytesPerSec = 0, parse_container Ok(bits_per_sample = 0, sample_count = 8) —— 负载只有 8 字节
+    /// ```
+    ///
     /// 这与 [`Bext::to_bytes`] 那条"写入器只写 [`Bext::from_bytes`] 读得回的版本"
     /// 是同一条纪律: **写入器与读取器的接受集必须是同一个**。
     ///
     /// # Errors
     ///
-    /// 上面四类。`Ok(())` ⇒ [`write_container`] 写出的字节能被 [`parse_container`]
+    /// 上面五类。`Ok(())` ⇒ [`write_container`] 写出的字节能被 [`parse_container`]
     /// 读回, 且 `fmt ` 的四个字段逐字段相同。
     pub fn validate(&self) -> Result<(), Rf64Error> {
         if self.format.channels == 0 {
@@ -1140,6 +1165,11 @@ impl ContainerPlan {
         }
         if self.format.sample_rate == 0 {
             return Err(Rf64Error::ZeroSampleRate);
+        }
+        // 与上面两条同一个位置（写任何字节之前）。判定与读取器侧的
+        // `parse_fmt_payload` 用的是**同一个字段**, 因此两条路的接受集不会漂移。
+        if self.format.bits_per_sample == 0 {
+            return Err(Rf64Error::ZeroBitsPerSample);
         }
         if !self.format.block_align_fits_u16() {
             return Err(Rf64Error::UnrepresentableBlockAlign {
@@ -1292,6 +1322,19 @@ pub enum Rf64Error {
     /// 做除法 ⇒ 除数为 0 的 panic。[`crate::wav::check_container_fields`] 因此早已把
     /// `sample_rate == 0` 列进"必须在创建文件之前说'不'"。
     ZeroSampleRate,
+    /// 位深为 0。
+    ///
+    /// 与 [`Self::ZeroChannels`] / [`Self::ZeroSampleRate`] 是同一条纪律的第三个成员:
+    /// `fmt ` 的这三个字段里任何一个取 0, 容器就**声明了一个零分母**。
+    /// [`PcmFormat::bytes_per_sample`] 对 0 位给 0, 于是 `nBlockAlign` 与
+    /// `nAvgBytesPerSec` 都是 0 —— 合规解码器按 `nBlockAlign` 求帧数就是除零。
+    /// 本 crate 的**另一条**写入器（[`crate::wav::check_container_fields`]）早已把
+    /// 0 位深判为 `UnsupportedDepth(0)`（那里连 `hound` 都进不去）; 而本模块的旧读取器
+    /// 读得回它, 并把 `data` 的**字节数**当成帧数（`data_size` 除以被 `max(1)` 兜住的
+    /// `nBlockAlign`）—— 数目是编出来的, 不是文件里写的。
+    /// 判定在写入器侧（[`ContainerPlan::validate`]）与读取器侧
+    /// （`parse_fmt_payload`）**各一处**, 两边共用本变体。
+    ZeroBitsPerSample,
     /// [`write_container`] 拿到的负载长度与计划里声明的 `data` 长度不一致。
     ///
     /// 声明值落在 `data` chunk 的 32 位长度字段（`RIFF`）或 `ds64.dataSize`
@@ -1346,6 +1389,7 @@ impl core::fmt::Display for Rf64Error {
             Self::UnsupportedFormatTag(tag) => write!(f, "不受支持的格式标签: {tag:#06X}"),
             Self::ZeroChannels => f.write_str("声道数为 0"),
             Self::ZeroSampleRate => f.write_str("采样率为 0"),
+            Self::ZeroBitsPerSample => f.write_str("位深为 0"),
             Self::DataSizeMismatch { declared, actual } => write!(
                 f,
                 "声明的 data 负载长度是 {declared} 字节, 实际交进来的是 {actual} 字节"
@@ -1608,6 +1652,13 @@ fn parse_fmt_payload(payload: &[u8], declared_len: u32) -> Result<PcmFormat, Rf6
     let bits_per_sample = le::read_u16(payload, 14).ok_or(Rf64Error::BadFmtLen(declared_len))?;
     if channels == 0 {
         return Err(Rf64Error::ZeroChannels);
+    }
+    // 0 位深与 0 声道同族: `bytes_per_sample()` 会是 0, 于是 `nBlockAlign` 也是 0,
+    // 而下面算 `sample_count` 的那次除法只能靠 `max(1)` 兜住 —— 结果是**把负载的字节数
+    // 当成帧数**。这是编出来的读数, 不是文件里写的, 因此整条拒绝。
+    // 写入器侧 [`ContainerPlan::validate`] 用同一个字段做同一个判决。
+    if bits_per_sample == 0 {
+        return Err(Rf64Error::ZeroBitsPerSample);
     }
     let (is_float, channel_mask) = match tag {
         0x0001 => (false, None),
@@ -2368,10 +2419,8 @@ mod tests {
     ///
     /// # 量的是什么
     ///
-    /// `Rf64Error` 在**本判据落地时**共 13 个变体（现在 14 个: 后来加的
-    /// `UnrepresentableBextField` 是**写入器侧**的拒绝, 与 `Io` 一样不对应任何字节
-    /// 输入, 因此不在本判据的射程内）。把这 13 个变体各自在**本模块的判据代码**里出现的
-    /// 次数数一遍（数法: 在 `#[cfg(test)] mod tests` 的字节范围里对每个变体
+    /// `Rf64Error` 在**本判据落地时**共 13 个变体。把这 13 个变体各自在**本模块的判据
+    /// 代码**里出现的次数数一遍（数法: 在 `#[cfg(test)] mod tests` 的字节范围里对每个变体
     /// `grep -c`; 用 `git show` 取本判据落地**之前**的那一版）: **9 个变体 ≥ 1 次,
     /// 4 个是 0 次**。4 个里有一个不在本判据的射程内 —— `Io` 是底层 I/O 的透传包装
     /// （只能由真实的读写失败产生, 不是对字节输入的判决）。剩下这 3 个都**从字节
@@ -2382,6 +2431,17 @@ mod tests {
     /// | `BadFmtLen` | `fmt ` 负载短于 16 字节, 或 EXTENSIBLE 标签的负载短于 40 字节 | 0 |
     /// | `MissingData` | 容器里没有 `data` chunk | 0 |
     /// | `ZeroChannels` | `fmt ` 里的声道数为 0 | 0 |
+    ///
+    /// > ⚠️ **变体计数已同步（新增成员, 不是弱化）**: 本判据落地之后 `Rf64Error` 又多了
+    /// > 4 个变体 —— `ZeroSampleRate`、`DataSizeMismatch`、`BadStartTimecode` 与
+    /// > `ZeroBitsPerSample`, 因此**现在是 17 个**。其中 `ZeroBitsPerSample` 是**读取器侧
+    /// > 可达的字节判决**, 已按本判据的形式补进下面的 `cases`（`[Case; 4]` → `[Case; 5]`,
+    /// > 正文说明由"四种畸形形状"改为"五种"）。另外三个是**写入器侧 / 构造期**的拒绝
+    /// > （`DataSizeMismatch` 与 `BadStartTimecode` 在写入点, `ZeroSampleRate` 两处都有
+    /// > 但不在本判据的射程内）, 各自有自己的判据:
+    /// > `the_payload_length_must_match_the_declared_data_length`、
+    /// > `a_timecode_field_must_be_exactly_two_ascii_digits`、
+    /// > `a_zero_sample_rate_is_refused_before_any_byte`。
     ///
     /// 本判据把每一个都喂给 [`parse_container`] 并断言**具体的**变体, 而不是
     /// "返回了 `Err` 就行"。
@@ -2403,14 +2463,14 @@ mod tests {
     /// 三种注入在本判据下各自变红，红行点名下面表里的 `case`。
     #[test]
     fn every_member_of_the_reader_rejection_family_is_pinned() {
-        // 四种畸形形状。每个闭包都**不捕获**环境（因此能放进 `fn` 指针表里）
+        // 五种畸形形状。每个闭包都**不捕获**环境（因此能放进 `fn` 指针表里）
         // 并现场造出容器, 使每行自证其输入。
         //
         // 这个别名不是风格: 把三元素元组直接写成数组的元素类型会触发
         // `clippy::type_complexity`（本项目 `clippy::all` 是 `deny`）, 而加
         // `#[allow]` 是弱化门禁。别名让类型仍被写清楚, 同时满足 lint。
         type Case = (&'static str, fn() -> Vec<u8>, Rf64Error);
-        let cases: [Case; 4] = [
+        let cases: [Case; 5] = [
             (
                 "fmt 声明长度 10 (< 16)",
                 || raw_riff(10, &stereo_16bit().fmt_payload()[..10], true),
@@ -2439,17 +2499,26 @@ mod tests {
                 },
                 Rf64Error::ZeroChannels,
             ),
+            (
+                "fmt 的位深为 0",
+                || {
+                    let mut body = stereo_16bit().fmt_payload();
+                    body[14..16].copy_from_slice(&0u16.to_le_bytes());
+                    raw_riff(16, &body, true)
+                },
+                Rf64Error::ZeroBitsPerSample,
+            ),
         ];
         for (case, build, expected) in cases {
             assert_eq!(parse_container(&build()), Err(expected), "{case}");
         }
 
         // 基准（防空判据）: 同一个构造函数 + 一个合法 `fmt ` + `data` ⇒ 必须成功。
-        // 少了这一条, "四种形状全都 `Err`"也可能只是因为这个构造器造出来的容器
+        // 少了这一条, "五种形状全都 `Err`"也可能只是因为这个构造器造出来的容器
         // 本来就坏, 而与被点名的字段无关。
         assert!(
             parse_container(&raw_riff(16, &stereo_16bit().fmt_payload(), true)).is_ok(),
-            "基准形状必须能解析, 否则上面的四行没有区分力"
+            "基准形状必须能解析, 否则上面的五行没有区分力"
         );
     }
 
@@ -3573,6 +3642,127 @@ mod tests {
                     assert_eq!(
                         parsed.format.sample_rate, 48_000,
                         "{label}: 48 kHz 必须原样读回"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 判据 30: `bits_per_sample == 0` 在**创建任何字节之前**被拒绝, 读取器同样拒绝
+    /// 一个声明了 0 位深的 `fmt ` —— 不是写出一个 `nBlockAlign = 0` 的容器。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: **3 种**声道布局（`1` / `2` / `6` 声道, 位深固定为 0）× 三种容器, 每种查
+    /// 三件事: ① [`ContainerPlan::validate`] 的判决; ② [`write_container`] 的判决与 `out`
+    /// 的**字节数**（必须是 0）; ③ **同一个 `fmt ` 负载**只把 `wBitsPerSample` 字段
+    /// （偏移 14, 单位是**位/样本**）改成 0 之后, [`parse_container`] 的判决。
+    /// 单位: 位深是**位/样本**（本判据只用到 `0` 与 `16`/`32`）, 帧数是**帧**。
+    ///
+    /// # 为什么这一条是跨写入器的（如实说明）
+    ///
+    /// 本 crate 有**两条**写入器: 本模块的 [`write_container`] 与 [`crate::wav`] 里走
+    /// `hound` 的 [`crate::wav::write_plain_wav`]。后者经
+    /// [`crate::wav::check_container_fields`] 早已把 0 位深判为 `UnsupportedDepth(0)`;
+    /// 修复前本模块却**接受**同一个 `PcmFormat`, 并写出 `nBlockAlign = 0` /
+    /// `nAvgBytesPerSec = 0` 的 `fmt `。两条写入器对同一个格式的两个判决由跨模块判据
+    /// `crate::wav::tests::the_two_writers_in_this_crate_agree_on_a_zero_bit_depth` 钉住。
+    ///
+    /// # 修复前的字面读数（本机实测, 三种容器逐格同形, 负载 **8 字节**）
+    ///
+    /// ```text
+    /// Riff  bits=0 bytes_per_sample=0 block_align=0 validate=Ok(()) written=true file_bytes=52 nBlockAlign=0 nAvgBytesPerSec=0 reader=Ok((bits=0, sample_count=8))
+    /// Rf64  bits=0 bytes_per_sample=0 block_align=0 validate=Ok(()) written=true file_bytes=88 nBlockAlign=0 nAvgBytesPerSec=0 reader=Ok((bits=0, sample_count=2))
+    /// Bw64  bits=0 bytes_per_sample=0 block_align=0 validate=Ok(()) written=true file_bytes=88 nBlockAlign=0 nAvgBytesPerSec=0 reader=Ok((bits=0, sample_count=2))
+    /// ```
+    ///
+    /// `RIFF` 那一格的 `sample_count = 8` 是**编出来的**: 8 字节负载 ÷ `max(nBlockAlign, 1)`
+    /// = 8。`RF64`/`BW64` 那一格的 2 是 `ds64.sampleCount` 里的原值, 不是算出来的。
+    ///
+    /// # 注入
+    ///
+    /// ① 删掉 [`ContainerPlan::validate`] 里 `bits_per_sample == 0` 那一支 ⇒ 第 ①② 面
+    /// 回到上表（`Ok` 且写出字节）⇒ 红; ② 删掉 `parse_fmt_payload` 里的同名检查 ⇒ 第 ③ 面
+    /// 回到 `Ok(bits_per_sample = 0)` ⇒ 红。
+    ///
+    /// 防空判据是后半段: 同一个声道布局在 16 / 32 位下必须写得出去、读回**同一个**位深,
+    /// 且读取器报告的全部样本数等于 `data` 负载的长度 —— 少了它, "全部 `Err`" 也会让
+    /// 本判据变绿。
+    #[test]
+    fn a_zero_bit_depth_is_refused_before_any_byte() {
+        let data = payload(6);
+        for channels in [1u16, 2, 6] {
+            for kind in [
+                ContainerKind::Riff,
+                ContainerKind::Rf64,
+                ContainerKind::Bw64,
+            ] {
+                let label = format!("{kind:?} ch={channels} bits=0");
+
+                // ①② 写入器侧: 同一个声道布局配 0 位深必须被拒, 且不留字节。
+                let zero = PcmFormat::integer(channels, 48_000, 0);
+                // 帧数取同一个声道布局在 16 位下的**精确**帧数（与负载长度一致）: 本判据
+                // 要判的是位深那一格, 不想顺带卷入"帧数与负载长度是否一致"。
+                let frames = (data.len() / 2 / usize::from(channels)) as u64;
+                let plan = ContainerPlan::for_payload(kind, zero, data.len() as u64, frames, None);
+                assert_eq!(
+                    plan.validate(),
+                    Err(Rf64Error::ZeroBitsPerSample),
+                    "{label}: 0 位深必须被 validate 拒绝"
+                );
+                let mut file = Vec::new();
+                assert_eq!(
+                    write_container(&mut file, &plan, &data),
+                    Err(Rf64Error::ZeroBitsPerSample),
+                    "{label}: 0 位深必须被 write_container 拒绝"
+                );
+                assert!(
+                    file.is_empty(),
+                    "{label}: 被拒的写入不得留下任何字节（实测零字节）"
+                );
+
+                // 后半段（防空判据）: 同一个布局在 16 / 32 位下必须可写、可读回。
+                for bits in [16u16, 32] {
+                    let good = PcmFormat::integer(channels, 48_000, bits);
+                    let frames = (data.len() / usize::from(good.block_align())) as u64;
+                    let plan =
+                        ContainerPlan::for_payload(kind, good, data.len() as u64, frames, None);
+                    assert_eq!(
+                        plan.validate(),
+                        Ok(()),
+                        "{label}: {bits} 位必须可写（否则本条判据只是把功能关掉）"
+                    );
+                    let mut file = Vec::new();
+                    write_container(&mut file, &plan, &data)
+                        .unwrap_or_else(|error| panic!("{label}: {bits} 位写不出去: {error}"));
+                    let parsed = parse_container(&file)
+                        .unwrap_or_else(|error| panic!("{label}: {bits} 位读不回来: {error}"));
+
+                    assert_eq!(
+                        parsed.format.bits_per_sample, bits,
+                        "{label}: 位深必须原样读回"
+                    );
+                    assert_eq!(
+                        parsed.data.len(),
+                        data.len(),
+                        "{label}: 读取器必须交出整条负载"
+                    );
+
+                    // ③ 读取器侧: 只把 `fmt ` 的 `wBitsPerSample`（负载偏移 14）改成 0。
+                    //    偏移从**同一份合法文件**的 chunk 表里取, 因此不靠手算常量。
+                    let fmt = parsed
+                        .chunks
+                        .iter()
+                        .find(|chunk| &chunk.fourcc == b"fmt ")
+                        .expect("容器必须有 fmt ");
+                    let at = fmt.payload_offset + 14;
+                    let mut broken = file.clone();
+                    broken[at..at + 2].copy_from_slice(&0u16.to_le_bytes());
+                    assert_eq!(
+                        parse_container(&broken),
+                        Err(Rf64Error::ZeroBitsPerSample),
+                        "{label}: 声明 0 位深的 fmt 必须被读取器拒绝（字节 {at}..{}）",
+                        at + 2
                     );
                 }
             }
